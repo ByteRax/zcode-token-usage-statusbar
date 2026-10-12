@@ -5,7 +5,7 @@
  * 为什么是旁挂而不是改 ZCode：
  *   直连页 HTML 由 server 每次请求从磁盘读（packages/server/src/http.ts:464），远控页由
  *   relay 伺服；两者都可以在 nginx 层注入一行 <script>。于是整套功能只需要
- *   「一个只读旁挂进程 + nginx 三行」，不碰 ZCode 源码、不重建、不重启 zcode-web / relay。
+ *   「一个只读旁挂进程 + nginx 三行」，不碰 ZCode 源码、不重建、不重启 ZCode web 与 relay。
  *
  * 数据链：
  *   常驻 python（zusage.py serve，经 readonly-guard.py 强制只读）
@@ -44,8 +44,6 @@ const HOST = process.env.ZUSAGE_HOST || '127.0.0.1';
  *    /api/server-info，200 即有效（与直连页/远控页同一套配对会话，30s 正缓存）。
  *  - /zusage/health 详情闸同样走会话校验。
  *  - 本服务对 3030 的出站调用不再需要任何凭据（数据全部来自本机 sqlite 只读）。
- *    ZCODE_RELAY_LOCAL_SESSION（relay 系统设备凭据）仅保留读取能力，供诊断用途，
- *    不参与鉴权；未设置无影响。
  */
 const DATA_DIR =
   (process.env.ZCODE_DATA_BASE_DIR || process.env.ZUSAGE_DATA_DIR || '/opt/zcode-data').trim();
@@ -298,8 +296,8 @@ function sanitize(raw) {
  * 为什么必须逐条修：zusage.py 的 context_window 来自 cfg["context_window"]（默认 128000）。
  * 插件的模型目录查表 CATALOG_PATH 是**硬编码的 Windows 路径**
  * （zusage.py:417 `D:\ZCode\resources\model-providers\...`），在 Linux 上永远落空 →
- * 落到 128000。而本机 deepseek-v4.1-flash 的真实窗口是 1000000，不修就会把
- * 248166 显示成 194%。
+ * 落到 128000。而真实窗口 1M 的模型，不修就会把
+ * 248166 显示成 194%（按 128000 算）。
  *
  * 会话池里每条都有自己的 last.model（顶层 last 永远是「最近会话」的，见 withMine），
  * 所以逐条按自己的模型查。
@@ -444,7 +442,7 @@ async function sessionOk(req) {
 
 /** 静态文件白名单：只允许这几个路径，杜绝任意读文件。
  *  注意 overlay.js 是**我们自己的**一份实现（窄屏/宽屏自适应），不是插件仓库里那份
- *  Electron 桌面版 —— 方案 §5.2 决策 A：避免两套让位逻辑同时写同一个输入框卡片。 */
+ *  Electron 桌面版：避免两套让位逻辑同时写同一个输入框卡片。 */
 const STATIC = new Map([
   ['/zusage/boot.js', join(HERE, 'boot.js')],
   ['/zusage/overlay.js', join(HERE, 'overlay.js')],

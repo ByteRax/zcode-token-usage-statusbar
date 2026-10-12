@@ -34,7 +34,7 @@ def _guarded_connect(database, *args, **kwargs):
             # -wal/-shm 伴生文件。为什么必须有：服务跑在 ProtectHome=read-only
             # 的沙箱里，ZCode 写库期间（WAL 活跃）只读连接会尝试 O_CREAT
             # db.sqlite-wal → EROFS → "unable to open database file"（2026-10-10
-            # 实录：zcode-web 重启后 WAL 活跃，状态栏连续 500）。代价是读不到
+            # 实录：ZCode web 服务重启后 WAL 活跃，状态栏连续 500）。代价是读不到
             # 未 checkpoint 的 WAL 数据——状态栏本来就是近似展示，可接受。
             s = "file:{}?mode=ro&immutable=1".format(s)
             kwargs["uri"] = True

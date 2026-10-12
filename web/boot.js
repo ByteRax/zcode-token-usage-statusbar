@@ -7,7 +7,7 @@
  *
  * 与桌面版的差异（web 没有文件系统、没有 IPC）：
  *   - 触发：fs.watch 事件 → 轮询（可见 2~4s / 隐藏 20s / visibilitychange 立即）
- *   - 当前会话：IPC 上报 → composer 祖先链的 data-session-id（两端 DOM 一致，见方案 §6.3）
+ *   - 当前会话：IPC 上报 → composer 祖先链的 data-session-id（两端 DOM 结构一致）
  *   - 凭证：设备会话 Cookie（/login 配对后自动随请求带上，URL 无任何凭据参数）。
  *          v3（2026-10-11）：旧 URL ?token= 与钩 WebSocket 取 wsUrl ?token= 的通道随
  *          单 token 模型退役（3030 已不认 query token）；未配对时快照 401 → 自动退避 30s。
@@ -120,7 +120,7 @@
   window.addEventListener('online', poll);
 
   /* ZCode 页面的 SW 注册 / 刷新+崩溃遥测 / 移动端 App 兼容标记已迁往
-   * /zcode-boot-probe.js（随 ZCode web dist 发布，nginx sub_filter 并列注入），
+   * 另一个引导探针脚本（随 web 构建发布、nginx 与本脚本并列注入），
    * 本脚本回归状态栏旁挂服务的单一职责：数据泵 + overlay 注入。 */
 
   function start() {
