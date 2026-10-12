@@ -60,15 +60,16 @@
 | 打开侧栏或侧面板抽屉 | **照常显示**，但层级低于抽屉，被它盖住 |
 | 打开状态条自己的明细抽屉 | 照常显示（由层级决定谁在上面） |
 | 设置界面 | **隐藏**（`[data-testid="settings-page"]`） |
+| 打开模态弹窗（模型配置、添加供应商等） | **隐藏**（v62 起：body 下有模态遮罩且文档存在 `[role="dialog"]` 时整体收起，弹窗里的编辑框不会被当成聊天输入框） |
 | 没有输入框的页面（任务列表等） | 自动隐藏 |
 
 ## 文件
 
 | 文件 | 作用 |
 |---|---|
-| `boot.js` | 注入进页面的唯一入口：取 token、跟踪当前会话、轮询快照、推给 overlay |
+| `boot.js` | 注入进页面的唯一入口：认设备会话 Cookie、跟踪当前会话、轮询快照、推给 overlay |
 | `overlay.js` | 渲染（窄屏一行 / 宽屏胶囊条 + 抽屉 / 弹层）。**与仓库根目录那份桌面版 `overlay.js` 不是同一个文件** |
-| `zusage-sidecar.mjs` | 旁挂服务：常驻 python 泵 + 快照 API + 静态脚本 + token 校验 |
+| `zusage-sidecar.mjs` | 旁挂服务：常驻 python 泵 + 快照 API + 静态脚本 + 设备会话校验 |
 | `readonly-guard.py` | 强制只读包装器，见下 |
 | `zusage-sidecar.service` | systemd 单元模板 |
 | `nginx.conf.example` | nginx 接入片段（三处新增） |
@@ -130,14 +131,17 @@ sudo nginx -t && sudo systemctl reload nginx
 其余一律只读：不加 class、不改 `<html>`、不注入全局 CSS 变量、不监听 React。
 断点用 `(max-width: 767.5px)`，与树内 `useIsNarrowViewport.ts` 同值。
 
-远控页的 URL 上没有 token（它是 relay 经 workspace-bridge 下发的 `wsUrl` 查询参数），
-所以 `boot.js` 在**拿不到 URL token 时**才钩一次 `WebSocket` 构造把它取出来；
-直连页 URL 自带 `?token=`，不挂钩。钩子只做透传：保留 `prototype`、复制静态常量。
+**鉴权（v3，2026-10-11 起）**：快照请求带的是浏览器的**设备会话 Cookie**（`/login` 配对后
+自动随请求同源发出，URL 上没有任何凭据参数）。旁挂服务把请求里的会话 Cookie 透传给
+ZCode server 的 `/api/server-info` 校验（200 即有效；30s 正缓存 / 5s 负缓存，fail closed），
+直连页与远控页同一套会话。旧单 token 通道（URL `?token=`、钩 `WebSocket` 取 `wsUrl` 里的
+token、`x-zcode-lite-token` 头、`.zcode-token` 文件）已随单 token 模型一并退役；
+未配对（无有效会话）时快照返回 401，`boot.js` 自动退避到 30s 一次重试，不再每 2.5s 空转。
 
 ## 已知限制
 
 - 只服务**自托管**部署。官方云端的页面由官方伺服，没有注入点。
-- 快照接口的 token 复用 ZCode 自己的那份。多用户/多租户场景需要另行设计。
+- 快照接口鉴权用浏览器设备会话 Cookie（透传 3030 `/api/server-info` 校验）。多用户/多租户场景需要另行设计。
 - 远控页从宽屏缩到手机宽度会回退到任务列表 —— 这是官方远控页自身的布局切换行为，
   与本插件无关（已用 A/B 对照验证）。
 

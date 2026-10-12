@@ -65,15 +65,16 @@ sheet / popover; changes apply immediately and are remembered.
 | Sidebar or side-panel drawer open | **still shown**, but layered *below* the drawer |
 | The bar's own detail sheet open | still shown (layering decides) |
 | Settings page | **hidden** (`[data-testid="settings-page"]`) |
+| Modal dialog open (model config, add-provider, …) | **hidden** (since v62: a full-screen modal scrim plus a `[role="dialog"]` in the document collapses the bar, so an editor inside the dialog is never mistaken for the composer) |
 | Pages without a composer (task list, etc.) | hidden automatically |
 
 ## Files
 
 | File | Role |
 |---|---|
-| `boot.js` | The single injected entry: token, current-session tracking, polling, push to overlay |
+| `boot.js` | The single injected entry: device-session cookie, current-session tracking, polling, push to overlay |
 | `overlay.js` | Rendering (narrow line / wide capsule + sheet / popover). **Not the same file as the desktop `overlay.js` at the repository root** |
-| `zusage-sidecar.mjs` | Sidecar service: resident python pump + snapshot API + static scripts + token check |
+| `zusage-sidecar.mjs` | Sidecar service: resident python pump + snapshot API + static scripts + device-session check |
 | `readonly-guard.py` | Forced read-only wrapper, see below |
 | `zusage-sidecar.service` | systemd unit template |
 | `nginx.conf.example` | nginx snippet (three additions) |
@@ -138,16 +139,20 @@ Everything else is read-only: no classes added, no `<html>` changes, no global C
 no React hooks. The breakpoint is `(max-width: 767.5px)`, identical to the in-tree
 `useIsNarrowViewport.ts`.
 
-The remote-control page carries no token in its URL (it arrives as a query parameter of the
-`wsUrl` that the relay delivers through `workspace-bridge`), so `boot.js` hooks the
-`WebSocket` constructor **only when no URL token is present**; the direct page supplies
-`?token=` and is not hooked. The hook is a pure pass-through: same `prototype`, copied
-static constants.
+**Authentication (v3, since 2026-10-11)**: snapshot requests carry the browser's
+**device-session cookie** (set by `/login` pairing and sent automatically same-origin — no
+credential ever appears in the URL). The sidecar forwards that cookie to the ZCode server's
+`/api/server-info` for validation (200 = valid; 30s positive / 5s negative cache, fail closed);
+the direct page and the remote-control page share the same session. The old single-token
+channels (URL `?token=`, hooking `WebSocket` for a `wsUrl` token, the `x-zcode-lite-token`
+header, the `.zcode-token` file) are retired together with the single-token model. When the
+browser is not paired the snapshot endpoint answers 401 and `boot.js` backs off to one retry
+every 30s instead of spinning every 2.5s.
 
 ## Known limitations
 
 - Self-hosted deployments only. The official cloud serves its own pages; there is no injection point.
-- The snapshot endpoint reuses ZCode's own token. Multi-tenant setups need their own design.
+- The snapshot endpoint authenticates with the browser device-session cookie (forwarded to `/api/server-info` on 3030). Multi-tenant setups need their own design.
 - Resizing the remote-control page from wide to phone width returns to the task list — that is
   the official page's own layout-switch behaviour, unrelated to this plugin (verified with an A/B control).
 

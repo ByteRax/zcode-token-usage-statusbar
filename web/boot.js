@@ -8,7 +8,9 @@
  * 与桌面版的差异（web 没有文件系统、没有 IPC）：
  *   - 触发：fs.watch 事件 → 轮询（可见 2~4s / 隐藏 20s / visibilitychange 立即）
  *   - 当前会话：IPC 上报 → composer 祖先链的 data-session-id（两端 DOM 一致，见方案 §6.3）
- *   - token：直连页读 URL 的 ?token=；远控页 URL 上没有，钩一次 WebSocket 从 /ws?token= 取
+ *   - 凭证：设备会话 Cookie（/login 配对后自动随请求带上，URL 无任何凭据参数）。
+ *          v3（2026-10-11）：旧 URL ?token= 与钩 WebSocket 取 wsUrl ?token= 的通道随
+ *          单 token 模型退役（3030 已不认 query token）；未配对时快照 401 → 自动退避 30s。
  *
  * 渲染全部交给 overlay.js（一份实现，窄屏/宽屏自适应）。
  */
@@ -18,43 +20,19 @@
   window.__zusageBoot = true;
 
   var NS = (window.__zusageWeb = window.__zusageWeb || {});
-  NS.version = 'web-2';
-  NS.token = '';
+  NS.version = 'web-3';
   NS.lastPayload = null;
-  NS.diag = { bootAt: Date.now(), polls: 0, errors: 0, lastError: '' };
+  NS.diag = { bootAt: Date.now(), polls: 0, errors: 0, lastError: '', noAuth: false };
 
   var BASE = '/zusage';
   var OVERLAY = BASE + '/overlay.js';
 
-  /* ---------- token ---------- */
-  function fromUrl() {
-    try {
-      var t = new URLSearchParams(location.search).get('token');
-      if (t) { NS.token = t; return true; }
-    } catch (e) {}
-    return false;
+  /* ---------- 快照请求 ---------- */
+  /* 凭证：设备会话 Cookie（credentials:'same-origin' 自动携带），URL 无凭据参数。 */
+  function snapshotUrl(sids, sid) {
+    var q = '?sids=' + encodeURIComponent(sids.join(',')) + '&mine=' + encodeURIComponent(sid);
+    return BASE + '/snapshot' + q;
   }
-  /* 远控页 URL 上没有 token —— 它是 relay 经 workspace-bridge 下发的 wsUrl 里的查询参数。
-   * 只在确实拿不到时才挂钩，避免无谓地改动直连页的运行环境。 */
-  function hookWebSocket() {
-    var Native = window.WebSocket;
-    if (!Native || Native.__zusageHooked) return;
-    function Hooked(url, protocols) {
-      try {
-        var u = new URL(String(url), location.href);
-        var t = u.searchParams.get('token');
-        if (t) NS.token = t;
-      } catch (e) {}
-      return protocols === undefined ? new Native(url) : new Native(url, protocols);
-    }
-    Hooked.prototype = Native.prototype;
-    ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED'].forEach(function (k) {
-      try { Hooked[k] = Native[k]; } catch (e) {}
-    });
-    Hooked.__zusageHooked = true;
-    try { window.WebSocket = Hooked; } catch (e) {}
-  }
-  if (!fromUrl()) hookWebSocket();
 
   /* ---------- 当前会话（与插件同源规则：composer 祖先链的 data-session-id） ---------- */
   function currentSid() {
@@ -89,12 +67,13 @@
 
   function cadence() {
     if (document.hidden) return 20000;
+    // 无凭证（未配对/旧 Cookie 丢了）：退避到 30s，避免每 2.5s 一次无谓 401
+    if (NS.noAuth) return 30000;
     return NS.lastPayload && NS.lastPayload.mine ? 2500 : 4000;
   }
 
   function poll() {
     if (inflightReq) return;
-    if (!NS.token) { schedule(); return; }
     var sid = currentSid();
     NS.sid = sid;
 
@@ -108,12 +87,10 @@
     if (sid) sids.push(sid);
     want.forEach(function (s) { if (s && sids.indexOf(s) < 0) sids.push(s); });
 
-    var url = BASE + '/snapshot?token=' + encodeURIComponent(NS.token) +
-      '&sids=' + encodeURIComponent(sids.join(',')) +
-      '&mine=' + encodeURIComponent(sid);
-
-    inflightReq = fetch(url, { credentials: 'same-origin' })
+    inflightReq = fetch(snapshotUrl(sids, sid), { credentials: 'same-origin' })
       .then(function (r) {
+        if (r.status === 401) { NS.noAuth = true; NS.diag.noAuth = true; throw new Error('HTTP 401（未配对）'); }
+        NS.noAuth = false; NS.diag.noAuth = false;
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.json();
       })
@@ -141,6 +118,10 @@
     if (document.hidden) schedule(); else poll();
   }, true);
   window.addEventListener('online', poll);
+
+  /* ZCode 页面的 SW 注册 / 刷新+崩溃遥测 / 移动端 App 兼容标记已迁往
+   * /zcode-boot-probe.js（随 ZCode web dist 发布，nginx sub_filter 并列注入），
+   * 本脚本回归状态栏旁挂服务的单一职责：数据泵 + overlay 注入。 */
 
   function start() {
     injectOverlay();

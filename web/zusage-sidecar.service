@@ -14,9 +14,10 @@ Environment=ZUSAGE_HOST=127.0.0.1
 # zusage.py 所在目录（默认会在 ../ 与 ../zcode-token-usage-statusbar 之间自定位，通常不用设）
 # 不设则自动在 web/ 的上一级找 zusage.py（仓库内布局与并列布局都能自定位）
 #Environment=ZUSAGE_PLUGIN_DIR=/opt/zcode-token-usage-statusbar
-# token 来源：ZCode 自己那份（一行文本）。该 token 只用于给 /zusage/snapshot 把关，不写入任何文件。
-# 不设则用内置默认 /opt/zcode-data/.zcode-token；也可以直接给 ZCODE_SERVER_TOKEN 环境变量。
-#Environment=ZUSAGE_TOKEN_FILE=/path/to/zcode-data/.zcode-token
+# 鉴权：快照/health 详情走浏览器设备会话 Cookie，透传 ZCode server(3030) /api/server-info 校验。
+# 旧单 token（ZCODE_SERVER_TOKEN / .zcode-token 文件 / URL ?token=）已退役，本服务不再读取。
+# ZCode server 源头可覆盖（默认 http://127.0.0.1:3030）：
+#Environment=ZCODE_HOST_ORIGIN=http://127.0.0.1:3030
 # ZCode 的模型目录：contextWindow 的正确来源。
 # 插件内置的模型目录查表指向一个硬编码的 Windows 路径（zusage.py:417），在 Linux 上必然落空，
 # 会退到 config 默认的 128000 —— 对本机 1M 窗口的模型会把用量显示成 8 倍。这里读服务端真正的目录。
