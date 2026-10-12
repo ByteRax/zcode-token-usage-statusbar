@@ -5,7 +5,7 @@
  *     ⚡ 86 t/s        ◔ 31.7%        Σ 1.45M
  *     点整条 → 底部抽屉看全量
  *
- *   宽屏 ≥768px（桌面）—— 与 ZCode 桌面客户端插件条（插件仓库 overlay.js v61）同款：
+ *   宽屏 ≥768px（桌面）—— 与 ZCode 桌面客户端插件条（插件仓库 overlay.js v62）同款：
  *     ⚡86 t/s │ ▬31.7% │ ⟳67.8K 90% 7次 ⇅18.4s ▮1.4s │ 💬1.45M 90% 23轮 187次 │ 🔧142 ⓘ2 │ 📅3.42M │ ⑂236.4K ● ⚙
  *     等宽字 14px / 玻璃胶囊 / 发丝分隔 / 46×5 上下文微条 / 三档自调色（#3ecf8e·#f5b944·#ff6b57）
  *     悬停某一组 → 条上方浮出该组明细（弹层是条的子树，鼠标可直接移进去）
@@ -338,15 +338,41 @@
       return r.width > 0 && r.height > 0;
     } catch (e) { return false; }
   }
+  /* 模态弹窗打开判定（v62，issue #9，与插件 overlay.js 同款）：Radix Dialog 往 body 挂
+   * 「固定全屏 + 带底色 + 抬层」的遮罩，且文档里同时有 [role="dialog"]（下拉菜单/选择器
+   * 只设 body pointer-events:none、不挂遮罩——实测）。遮罩在时聊天区不可交互，条整体收起，
+   * 弹窗内的编辑框也不再被当输入框。自己的浮层（.zu-bar/.zu-back/.zu-sheet）不算。 */
+  function modalOpen() {
+    try {
+      if (!document.querySelector('[role="dialog"]')) return false;
+      var kids = document.body.children;
+      for (var i = 0; i < kids.length; i++) {
+        var el = kids[i];
+        var cls = String((el.getAttribute && el.getAttribute('class')) || '');
+        if (el.id === 'zusage-bar' || /(^|\s)zu-(bar|back|sheet)(\s|$)/.test(cls)) continue;
+        var cs = getComputedStyle(el);
+        if (cs.position !== 'fixed' || cs.display === 'none' || cs.visibility === 'hidden') continue;
+        if (parseFloat(cs.opacity || '1') < 0.05) continue;
+        if (!(parseInt(cs.zIndex, 10) >= 10)) continue;   // 遮罩必抬层；普通全屏容器不抬
+        var r = el.getBoundingClientRect();
+        if (r.width < innerWidth * 0.9 || r.height < innerHeight * 0.9) continue;
+        var bg = cs.backgroundColor;
+        if (!bg || bg === 'transparent' || bg === 'rgba(0, 0, 0, 0)') continue;
+        return true;
+      }
+    } catch (e) {}
+    return false;
+  }
   function findComposer() {
     // 1) 稳定锚点
     try {
       var exact = document.querySelector('[data-testid="v4-composer-input"]');
-      if (exact && reallyVisible(exact)) return exact;
+      if (exact && reallyVisible(exact) && !(exact.closest && exact.closest('[role="dialog"]'))) return exact;
     } catch (e) {}
     // 2) 启发式：视口下半部的可见 textarea（聊天输入框特征）
     var best = null;
     document.querySelectorAll('textarea').forEach(function (ta) {
+      if (ta.closest && ta.closest('[role="dialog"]')) return;   // v62：弹窗内的编辑框不是聊天输入框（issue #9）
       if (!reallyVisible(ta)) return;
       var r = ta.getBoundingClientRect();
       if (r.top < innerHeight * 0.45) return;
@@ -527,9 +553,9 @@
       ensurePad();
 
       var r = composer.getBoundingClientRect();
-      // 开抽屉/浮动面板一律照常显示（靠层级让它们盖住条）；只有设置界面才收起来
+      // 开抽屉/浮动面板一律照常显示（靠层级让它们盖住条）；只有设置界面与模态弹窗才收起来
       var on = r.width > 60 && r.height > 14 && r.bottom > 0 && r.top < innerHeight &&
-        !onSettingsPage();
+        !onSettingsPage() && !modalOpen();   // v62：模态弹窗（模型配置等）打开时整体收起（issue #9）
       if (!on) {
         if (!hideSince) hideSince = Date.now();
         if (Date.now() - hideSince > 400) { hideBar(); hidePop(); }

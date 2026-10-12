@@ -102,7 +102,7 @@ ZCode 的插件机制（`plugin.json`）只能提供 MCP / skills / commands / h
   }
   ```
 
-  前提：本地到服务器的 `ssh` 免密可用（公钥认证）。实现上，本地 `zusage.py` 对本地库查不到的会话 id（双重白名单校验）执行 `ssh <host> python3 <script> json <sids>`，把远端快照合并进 payload；远端返回 `known_sids` 供负缓存（确认无此会话 2 分钟内不重问，ssh 失败 60 秒退避），本地新会话（session 表已有行）不会触发远端查询。泵在远端会话聚焦期间按 `poll_ms` 轮询（本地会话仍是纯事件触发、零轮询）；`poll_ms` 别低于 1000，跨公网建议配合 ssh ControlMaster 连接复用。
+  前提：本地到服务器的 `ssh` 免密可用（公钥认证）。**`ssh` 也可以写成数组（argv 形式）**——凡是能在远端执行命令的通道都能借道，不必有公网 sshd 与公钥免密：跑在本地 Docker 容器里的 zcode-server 用 `["docker","exec","-i","<容器名>"]`、WSL 用 `["wsl","-d","<发行版>"]`、k8s 用 `["kubectl","exec","-i","<pod>","--"]` 都可以（实测场景：容器 sshd 认证不通，`docker exec` 直读容器内 `db.sqlite`，端到端合并正常）。实现上，本地 `zusage.py` 对本地库查不到的会话 id（双重白名单校验）执行 `ssh <host> python3 <script> json <sids>`，把远端快照合并进 payload；远端返回 `known_sids` 供负缓存（确认无此会话 2 分钟内不重问，ssh 失败 60 秒退避），本地新会话（session 表已有行）不会触发远端查询。泵在远端会话聚焦期间按 `poll_ms` 轮询（本地会话仍是纯事件触发、零轮询）；`poll_ms` 别低于 1000，跨公网建议配合 ssh ControlMaster 连接复用。远端命中但各项为 0（远端库有该会话、却没有已完成的请求）与「本地库没有这个会话、又没配 remote」两种情形，条面徽标会写明原因，不再只显示一排 0。
 - **MCP 对话内查询**：`token_usage(scope)` 工具，scope 支持 current / today / week / days:N / sessions:N / models:days / session:<id前缀>（含按模型与子代理明细）/ workspace:<目录关键词>（按工作区聚合主会话+子代理，含按会话与按模型明细；关键词未命中时会列出候选目录）。
 - **CLI**：`python zusage.py [now|today|json|days N|sessions [N]|models [days]|workspace <目录关键词>|session <id前缀>|watch [秒]]`。
 - **/usage 命令**：对话输入框触发 MCP 查询。

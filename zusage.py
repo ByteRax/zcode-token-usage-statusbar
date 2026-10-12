@@ -917,6 +917,9 @@ def snapshot(force_sid=""):
         remote_by, remote_today, remote_err = {}, None, None
         if rcfg and force_sids:
             remote_by, remote_today, remote_err = _remote_fetch(force_sids, have_local, rcfg)
+        # 本地库里没有的 force 会话（远端/他机会话，或数据还没落库）。渲染端据此给提示：
+        # 零值不再只能靠用户猜"插件坏了"（issue #14），也区分"远端也没查到"（issue #10）。
+        not_local = [s for s in force_sids if s not in have_local] if force_sids else []
         latest_sid = max(rows, key=lambda r: r[1])[0] if rows else None
         if latest_sid:
             base = _session_snapshot(con, latest_sid, cfg)
@@ -972,6 +975,8 @@ def snapshot(force_sid=""):
             # 远端数据源（v9）：显示远端会话时 overlay 用 remote_today 替代本地 today
             "remote_today": remote_today,
             "remote_error": remote_err,
+            "not_local": not_local,               # 不在本地库的 force 会话 id（issue #14 提示用）
+            "remote_enabled": bool(rcfg),         # 是否配了 remote 段（区分"没配"与"配了没查到"）
             "known_sids": known_sids,
             "context_window": base["context_window"],
             "context_auto": base["context_auto"],

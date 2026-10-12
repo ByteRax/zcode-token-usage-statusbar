@@ -119,6 +119,7 @@
       try {
         var best = {};
         document.querySelectorAll(SEL).forEach(function (el) {
+          if (el.closest && el.closest('[role="dialog"]')) return;   // v62：弹窗内的编辑框不是聊天输入框，不派实例（issue #9）
           var r = el.getBoundingClientRect();
           if (!(r.width > 40 && r.height > 8 && r.bottom > 0 && r.top < innerHeight)) return;
           if (r.top < innerHeight * 0.45) return;   // 聊天输入框特征：视口下半部（排除设置页等处元素）
@@ -146,7 +147,7 @@
   /* ---------- 实例工厂（v61.1）：一个 pane 一套 条/面板/气泡/tooltip/定位循环。
    * slot 0 保留 #zusage-bar/#zusage-tip 兼容 id（泵热更新按它清理），其余实例仅类名。 */
   function spawnInstance(pid, slot) {
-    var VERSION = "v61";   // v61：修正常聊天误藏（删 coverLock/穿透=被盖，改幽灵子树检测）+ 分屏多实例   // 随提交递增（悬停 ⚙ 面板可见）；未提交的中间迭代不涨号
+    var VERSION = "v62";   // v62：模态弹窗（模型配置等）打开时整体收起 + 弹窗内编辑框不再被当输入框（issue #9）；零值会话的来源提示（issue #14）   // 随提交递增（悬停 ⚙ 面板可见）；未提交的中间迭代不涨号
     /* ---------- 状态（实例级） ---------- */
     var excOn = false,    // 本 pane 会话处于"上下文超限被拒"状态（render 时按 picked 会话计算）
       excGone = false,    // 用户点 ✕ 关闭了本次气泡；超限解除后自动复位
@@ -487,7 +488,22 @@
           '<span class="dim">' + L("远端", "remote") + "</span>",
           L("数据源：SSH 远程服务器 ", "Data source: remote server over SSH ") + (d.remote_host || "?") + "\n" +
           L("会话数据实时取自远端机的 ZCode 数据库，「今日合计」亦为远端值", "Session data is fetched live from the remote machine's ZCode database; today's total is the remote value") +
-          (d.remote_error ? "\n⚠ " + L("最近一次远端查询失败：", "Last remote query failed: ") + d.remote_error : ""));
+          (d.remote_error ? "\n⚠ " + L("最近一次远端查询失败：", "Last remote query failed: ") + d.remote_error : "") +
+          (d.remote_empty ? "\n⚠ " + L("远端库里这个会话还没有已完成的请求（各项为 0）——确认远端 zusage.py 读到的库与远端 ZCode 实际写入的库是同一个",
+                                        "The remote database has no completed requests for this session (all items are 0) — check that the remote zusage.py reads the same database the remote ZCode actually writes") : ""));
+      }
+      if (d.not_local) {   // v62（issue #14）：本地库没有这个会话 —— 全 0 不是插件坏了，是数据不在这儿
+        it(ico('<circle cx="12" cy="12" r="9"/><path d="M12 16h.01"/><path d="M12 8h.01"/>') +
+          '<span class="dim">' + L("不在本地库", "not in local db") + "</span>",
+          L("这个会话不在本地数据库里（~/.zcode/cli/db/db.sqlite 查不到它），所以各项显示 0 —— 不是插件坏了。",
+            "This session is not in the local database (~/.zcode/cli/db/db.sqlite), which is why every item reads 0 — the plugin is not broken.") + "\n" +
+          (d.remote_enabled
+            ? L("已配置 remote 段，但远端查询没有返回它：", "A remote section is configured, but the remote query did not return it: ")
+              + (d.remote_error ? L("查询失败 ", "query failed: ") + d.remote_error
+                 : L("远端库里也没有这个会话（核对远端 zusage.py 读的库/用户与远端 ZCode 实际写入的是否一致）",
+                     "the remote database does not have it either (verify the database/user the remote zusage.py reads matches what the remote ZCode writes)"))
+            : L("若这是 SSH 远程 / 他机会话：在 config.json 配置 remote 段即可（README「SSH 远程会话支持」；ssh 也可写成 argv 数组，docker exec / wsl / kubectl exec 等通道都能借道）",
+                "If this is an SSH/remote session, add the remote section to config.json (see README; ssh may also be an argv array, so docker exec / wsl / kubectl exec all work)")));
       }
       if (last.tps) {   // 最近一次请求的生成速度，置顶显示；随数值三档变色
         var tpsCls = last.tps >= 70 ? "ok" : last.tps >= 40 ? "warm" : "hot";
@@ -690,6 +706,11 @@
         context_window: p.context_window, context_auto: p.context_auto,
         code: p.code, ctx_exc: p.ctx_exc, tools: p.tools,
         remote: !!p.remote, remote_host: p.remote_host || "", remote_error: d.remote_error || "",
+        /* v62（issue #14 / #10）：该会话不在本地库且没命中远端 → 条面给一次配置指引，
+         * 把"各项全 0 = 插件坏了"的误判转成可执行的下一步；远端命中的会话由 ☁ 徽标那套说明。 */
+        not_local: (d.not_local || []).indexOf(p.sid) >= 0 && !p.remote,
+        remote_enabled: !!d.remote_enabled,
+        remote_empty: !!(p.remote && !p.requests),   // 远端答了、但远端库里该会话没有已完成请求
         sub: p.sub || {requests: 0, total: 0, input: 0, output: 0, cache_read: 0, active: false, list: []},
       };
       lastSub = view.sub;   // 子代理明细面板的数据源（开关面板/数据推送刷新用）
@@ -1056,6 +1077,7 @@
         if (found || !doc || depth > 8) return;
         try {
           doc.querySelectorAll(COMPOSER_SEL).forEach(function (el) {
+            if (el.closest && el.closest('[role="dialog"]')) return;   // v62：弹窗内的编辑框不是聊天输入框（issue #9）
             if (!found && visible(el) && el.getBoundingClientRect().top > innerHeight * 0.45) found = el;
             else if (found && el.getBoundingClientRect().top > found.getBoundingClientRect().top && visible(el)) found = el;
           });
@@ -1100,6 +1122,33 @@
       } catch (e) { }
       return false;
     }
+    /* 模态弹窗打开判定（v62，issue #9）：Radix Dialog 往 body 挂一层「固定全屏 + 带底色 +
+     * z-index 抬升」的遮罩（下拉菜单/选择器只设 body pointer-events:none、不挂遮罩——v61
+     * 实测），且文档里同时存在 [role="dialog"]。此时聊天区整体不可交互，条必须整体收起：
+     * 模型配置弹窗里的「推理参数映射」编辑框正好落在视口下半部，会被 findComposer 的
+     * 启发式当聊天输入框，条就冒在弹窗里（用户 issue #9 截图）。
+     * 自己的浮层（.zu-bar/.zu-back/.zu-sheet——移动端抽屉遮罩是同款全屏底色）不算。 */
+    function modalOpen() {
+      try {
+        if (!document.querySelector('[role="dialog"]')) return false;
+        var kids = document.body.children;
+        for (var i = 0; i < kids.length; i++) {
+          var el = kids[i];
+          var cls = String(el.getAttribute && el.getAttribute("class") || "");
+          if (el.id === "zusage-bar" || /(^|\s)zu-(bar|back|sheet)(\s|$)/.test(cls)) continue;
+          var cs = getComputedStyle(el);
+          if (cs.position !== "fixed" || cs.display === "none" || cs.visibility === "hidden") continue;
+          if (parseFloat(cs.opacity || "1") < 0.05) continue;
+          if (!(parseInt(cs.zIndex, 10) >= 10)) continue;   // 遮罩必抬层（z-40/50）；普通全屏容器不抬
+          var r = el.getBoundingClientRect();
+          if (r.width < innerWidth * 0.9 || r.height < innerHeight * 0.9) continue;
+          var bg = cs.backgroundColor;
+          if (!bg || bg === "transparent" || bg === "rgba(0, 0, 0, 0)") continue;
+          return true;
+        }
+      } catch (e) { }
+      return false;
+    }
     function reallyVisible(el, ownOK) {
       if (!visible(el)) return false;
       if (inGhostSubtree(el)) return false;   // 设置页等幽灵壳：视觉已隐藏（v61）
@@ -1121,6 +1170,7 @@
     function findComposer() {
       var best = null;
       document.querySelectorAll("textarea").forEach(function (ta) {
+        if (ta.closest && ta.closest('[role="dialog"]')) return;   // v62：弹窗内的编辑框不是聊天输入框（模型配置弹窗的「推理参数映射」落在下半屏，issue #9）
         if (!reallyVisible(ta)) return;
         var r = ta.getBoundingClientRect();
         if (r.top < innerHeight * 0.45) return;   // 聊天输入框特征：在视口下半部（排除设置页等处元素）
@@ -1355,6 +1405,7 @@
       FATAL.hidden = {
         time: new Date().toISOString(),
         ghost: inGhostSubtree(composer),
+        modal: modalOpen(),   // v62：模态弹窗判定（弹窗打开时条本就该收起，用于区分"误藏"与"应藏"）
         bodyPE: bodyPE,
         hit: elDesc(hit),
         chain: chain,
@@ -1413,6 +1464,7 @@
         var r = composer.getBoundingClientRect();
         var on = r.width > 60 && r.height > 14 && r.bottom > 0 && r.top < innerHeight &&
           !inGhostSubtree(composer) &&   // 设置页等幽灵壳（opacity-0/inert）：视觉已隐藏（v61）
+          !modalOpen() &&                // v62：模态弹窗（模型配置等）打开时整体收起，弹窗内容不归条管（issue #9）
           (reallyVisible(composer, true) || coverOK(composer));
         if (!on) {
           if (slot === 0) diagHidden(r);   // 隐藏现场周期转储（v61，节流 4s；仅 0 号实例写，槽位共享）
