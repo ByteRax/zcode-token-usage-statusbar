@@ -11,6 +11,10 @@
  * 主题（v58）：配色全量跟随客户端主题 —— 颜色一律 var(--color-*, 兜底值) 引用客户端语义
  *       变量（<html> 的 .dark 类翻转整套值，zai-light/zai-dark 特殊主题同样适配），
  *       MutationObserver 观察该类同步 .zu-light（仅剩阴影/光晕程度性差异）。
+ * 字体（v64）：字族/字号跟随客户端 —— font-family 一律 var(--font-mono, 旧硬编码栈兜底)
+ *       （客户端 ：root 上的等宽令牌，macOS 解析为 SF Mono，含中文回退）；字号一律
+ *       var(--ui-font-size, 14px) 按应用 text-ui 档位加减偏移（设置页「界面字号」
+ *       运行时写 <html> 内联 --ui-font-size，改动实时联动），不再硬编码 px。
  * 数据：主进程泵推 window.__zusageUpdate；显示项可在 ⚙ 面板配置（localStorage 持久化）。
  * 分屏（v61.1）：协调器每 600ms 扫描可见输入框，按 pane（data-pane-id）派发实例——
  *       一个 pane 一条，各自显示 composer 祖先链 data-session-id 指向的会话；
@@ -148,7 +152,7 @@
   /* ---------- 实例工厂（v61.1）：一个 pane 一套 条/面板/气泡/tooltip/定位循环。
    * slot 0 保留 #zusage-bar/#zusage-tip 兼容 id（泵热更新按它清理），其余实例仅类名。 */
   function spawnInstance(pid, slot) {
-    var VERSION = "v63";   // v63：条宽与卡片一致（min-width=卡片宽，box-sizing:border-box；内容更宽仍随内容、上限按视口）+ 条目均匀分布撑满、⚙ 靠最右   // 随提交递增（悬停 ⚙ 面板可见）；未提交的中间迭代不涨号
+    var VERSION = "v64";   // v64：字体跟随客户端 —— font-family 走 var(--font-mono)、字号走 var(--ui-font-size)（设置页「界面字号」实时联动），旧值兜底   // 随提交递增（悬停 ⚙ 面板可见）；未提交的中间迭代不涨号
     /* ---------- 状态（实例级） ---------- */
     var excOn = false,    // 本 pane 会话处于"上下文超限被拒"状态（render 时按 picked 会话计算）
       excGone = false,    // 用户点 ✕ 关闭了本次气泡；超限解除后自动复位
@@ -166,7 +170,9 @@
        * var(--color-*, 旧值兜底) 引用客户端语义变量（<html> 的 .dark 类翻转整套值，
        * zai-light/zai-dark 特殊主题同样自动适配）；color-mix 处加同值前置声明，
        * 不支持 color-mix 的旧引擎落到实色行不至于透明。 */
-      ".zusage-root{position:fixed;box-sizing:border-box;font:14px/1.3 Consolas,'Cascadia Mono',Menlo,'Microsoft YaHei UI','Microsoft YaHei',monospace;" +
+      ".zusage-root{position:fixed;box-sizing:border-box;" +
+      "font-family:var(--font-mono,Consolas,'Cascadia Mono',Menlo,'Microsoft YaHei UI','Microsoft YaHei',monospace);" +
+      "font-size:var(--ui-font-size,14px);line-height:1.3;" +
       "font-variant-numeric:tabular-nums;color:var(--color-foreground-subtle,#8791a3);" +
       "background:rgba(15,18,25,.86);background:color-mix(in srgb,var(--color-background,#0f1219) 86%,transparent);" +
       "backdrop-filter:blur(14px) saturate(1.3);-webkit-backdrop-filter:blur(14px) saturate(1.3);" +
@@ -196,7 +202,7 @@
       "transition:background-color .12s ease-out,color .12s ease-out}" +
       ".btn:hover{color:var(--color-foreground,#e9edf4);background:var(--color-hover,rgba(255,255,255,.07))}" +
       ".btn:active{transform:scale(.96)}" +
-      ".zu-gear{flex:0 0 auto;font-size:17px;border-radius:6px}" +
+      ".zu-gear{flex:0 0 auto;font-size:calc(var(--ui-font-size,14px) + 3px);border-radius:6px}" +
       /* 行内 SVG 线性图标（v54）：currentColor 跟随文字色，一处定义全局换色 */
       ".ico{width:12px;height:12px;flex:0 0 auto;color:var(--color-foreground-subtle,#7e8899);opacity:.85}" +
       /* 工具错误数徽标 */
@@ -211,12 +217,14 @@
       ".cbar>i{display:block;height:100%;border-radius:999px;background:currentColor}" +
       /* 子代理运行中呼吸灯 */
       "@keyframes zupulse{0%,100%{opacity:1}50%{opacity:.2}}" +
-      ".dot{animation:zupulse 1.6s ease-in-out infinite;font-size:14px;line-height:1}" +
+      ".dot{animation:zupulse 1.6s ease-in-out infinite;font-size:var(--ui-font-size,14px);line-height:1}" +
       ".panel{position:absolute;bottom:calc(100% + 10px);left:0;background:rgba(19,22,30,.97);" +
       "background:color-mix(in srgb,var(--color-card,#13161e) 96%,transparent);" +
       "backdrop-filter:blur(18px) saturate(1.3);-webkit-backdrop-filter:blur(18px) saturate(1.3);" +
       "border:1px solid var(--color-border,rgba(255,255,255,.09));border-radius:12px;padding:12px 14px;display:none;" +
-      "flex-direction:column;gap:4px;font:13px/1.6 Consolas,Menlo,'Microsoft YaHei UI',monospace;color:var(--color-foreground,#c6cdd9);" +
+      "flex-direction:column;gap:4px;" +
+      "font-family:var(--font-mono,Consolas,Menlo,'Microsoft YaHei UI',monospace);" +
+      "font-size:calc(var(--ui-font-size,14px) - 1px);line-height:1.6;color:var(--color-foreground,#c6cdd9);" +
       "box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 12px 32px rgba(0,0,0,.5),0 2px 8px rgba(0,0,0,.35);" +
       "min-width:280px;max-width:480px;max-height:72vh;overflow:auto;white-space:normal;z-index:2147483647;" +
       "scrollbar-width:thin;scrollbar-color:var(--color-border,rgba(255,255,255,.14)) transparent}" +
@@ -229,9 +237,9 @@
       "color:var(--color-foreground,#e9edf4);border-radius:6px;padding:2px 7px;font:inherit;outline:none}" +
       ".panel input[type=text]:focus{border-color:var(--color-brand,#57c7ff);box-shadow:0 0 0 2px rgba(87,199,255,.15)}" +
       ".panel .hr{border-top:1px solid var(--color-border,rgba(255,255,255,.08));margin:5px 0}" +
-      ".panel .cap{color:var(--color-foreground-subtlest,#6b7484);margin:4px 0 2px;font-size:12px;letter-spacing:.08em}" +
-      ".panel .phead{font-weight:700;color:var(--color-foreground,#eef2f8);font-size:16px;margin-bottom:5px;display:flex;align-items:center;gap:8px}" +
-      ".panel .pver{color:var(--color-brand,#57c7ff);font-weight:400;font-size:12px;background:rgba(87,199,255,.12);background:color-mix(in srgb,var(--color-brand,#57c7ff) 12%,transparent);border-radius:999px;padding:1px 8px}" +
+      ".panel .cap{color:var(--color-foreground-subtlest,#6b7484);margin:4px 0 2px;font-size:calc(var(--ui-font-size,14px) - 2px);letter-spacing:.08em}" +
+      ".panel .phead{font-weight:700;color:var(--color-foreground,#eef2f8);font-size:calc(var(--ui-font-size,14px) + 2px);margin-bottom:5px;display:flex;align-items:center;gap:8px}" +
+      ".panel .pver{color:var(--color-brand,#57c7ff);font-weight:400;font-size:calc(var(--ui-font-size,14px) - 2px);background:rgba(87,199,255,.12);background:color-mix(in srgb,var(--color-brand,#57c7ff) 12%,transparent);border-radius:999px;padding:1px 8px}" +
       ".panel label em{font-style:normal;color:var(--color-foreground-subtle,#6f7989);display:block}" +
       ".panel input[type=checkbox]{accent-color:var(--color-brand,#57c7ff);margin-top:3px}" +
       ".panel .pnote{line-height:1.6;color:var(--color-foreground-subtle,#6f7989);margin-top:3px}" +
@@ -241,9 +249,9 @@
       ".zu-sub:hover .v{color:var(--color-foreground,#fff)}" +
       ".panel.subp{width:420px;max-width:60vw;gap:8px}" +
       ".subrow{padding:8px 10px;background:var(--color-surface,rgba(255,255,255,.03));border:1px solid var(--color-border,rgba(255,255,255,.06));border-radius:8px}" +
-      ".subname{font-weight:600;color:var(--color-foreground,#e9edf4);font-size:14px;overflow-wrap:anywhere}" +
+      ".subname{font-weight:600;color:var(--color-foreground,#e9edf4);font-size:var(--ui-font-size,14px);overflow-wrap:anywhere}" +
       ".substat{color:var(--color-foreground-subtle,#8791a3);margin-top:2px}" +
-      ".sublive{color:#3ecf8e;font-size:12px;font-weight:400;background:rgba(62,207,142,.12);border-radius:999px;padding:0 7px;margin-left:7px}" +
+      ".sublive{color:#3ecf8e;font-size:calc(var(--ui-font-size,14px) - 2px);font-weight:400;background:rgba(62,207,142,.12);border-radius:999px;padding:0 7px;margin-left:7px}" +
       /* 自绘 tooltip（v31）：向上弹出（原生 title 方向不可控且会被窗口下缘遮挡），
        * 支持多 tab；white-space:pre-line 保留数据里的 \n 换行。
        * v32：fixed 挂 body —— 原 absolute 挂 bar，被页面消息流的层叠上下文盖住
@@ -251,12 +259,13 @@
       ".tip{position:fixed;background:rgba(19,22,30,.98);background:color-mix(in srgb,var(--color-background,#13161e) 98%,transparent);" +
       "backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);" +
       "border:1px solid var(--color-border,rgba(255,255,255,.1));border-radius:10px;padding:8px 12px;" +
-      "font:13px/1.6 Consolas,'Microsoft YaHei UI',monospace;color:var(--color-foreground,#c6cdd9);" +
+      "font-family:var(--font-mono,Consolas,'Microsoft YaHei UI',monospace);" +
+      "font-size:calc(var(--ui-font-size,14px) - 1px);line-height:1.6;color:var(--color-foreground,#c6cdd9);" +
       "box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 10px 28px rgba(0,0,0,.5),0 2px 6px rgba(0,0,0,.3);" +
       "white-space:pre-line;z-index:2147483646;max-width:560px;display:none;scrollbar-width:thin}" +
       ".ttabs{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:7px}" +
       ".ttab{cursor:pointer;padding:2px 10px;border-radius:999px;background:var(--color-hover,rgba(255,255,255,.06));" +
-      "color:var(--color-foreground-subtle,#8791a3);white-space:nowrap;font-size:13px;" +
+      "color:var(--color-foreground-subtle,#8791a3);white-space:nowrap;font-size:calc(var(--ui-font-size,14px) - 1px);" +
       "transition:background-color .12s ease-out,color .12s ease-out}" +
       ".ttab:hover{color:var(--color-foreground,#e9edf4);background:rgba(255,255,255,.1);background:color-mix(in srgb,var(--color-foreground,#fff) 10%,transparent)}" +
       ".ttab.on{background:rgba(87,199,255,.16);background:color-mix(in srgb,var(--color-brand,#5ac8ff) 16%,transparent);color:var(--color-brand,#5ac8ff)}" +
@@ -271,13 +280,14 @@
       "background:linear-gradient(180deg,color-mix(in srgb,var(--color-destructive,#ff2d55) 10%,var(--color-background,#1b0e10)),color-mix(in srgb,var(--color-destructive,#ff2d55) 5%,var(--color-background,#1b0e10)));" +
       "border:1px solid rgba(255,45,85,.4);border-color:color-mix(in srgb,var(--color-destructive,#ff2d55) 40%,transparent);" +
       "border-radius:12px;padding:12px 15px;" +
-      "font:13px/1.7 Consolas,'Microsoft YaHei UI',monospace;color:var(--color-foreground,#e9edf4);" +
+      "font-family:var(--font-mono,Consolas,'Microsoft YaHei UI',monospace);" +
+      "font-size:calc(var(--ui-font-size,14px) - 1px);line-height:1.7;color:var(--color-foreground,#e9edf4);" +
       "box-shadow:0 12px 32px rgba(0,0,0,.5),0 4px 18px rgba(255,45,85,.12);white-space:normal;z-index:2147483647;" +
       "user-select:text;display:none}" +
       ".zusage-exc .xb-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px}" +
       ".zusage-exc .xb-title{font-weight:700;color:var(--color-destructive,#ff5c77)}" +
       ".zusage-exc .xb-step{color:var(--color-foreground-subtle,#c6cdd9)}" +
-      ".zusage-exc .xb-close{cursor:pointer;color:var(--color-foreground-subtlest,#8791a5);padding:2px 5px;border-radius:6px;font-size:16px;line-height:1}" +
+      ".zusage-exc .xb-close{cursor:pointer;color:var(--color-foreground-subtlest,#8791a5);padding:2px 5px;border-radius:6px;font-size:calc(var(--ui-font-size,14px) + 2px);line-height:1}" +
       ".zusage-exc .xb-close:hover{color:var(--color-foreground,#fff);background:var(--color-hover,rgba(255,255,255,.08))}" +
       ".zusage-exc .xb-sid{color:var(--color-brand,#57c7ff);cursor:pointer;text-decoration:underline dotted}" +
       ".zusage-exc .xb-sid:hover{text-decoration-style:solid}" +
@@ -1507,6 +1517,15 @@
             version: VERSION, mode: "below-card", bodyPE: (function () { try { return getComputedStyle(document.body).pointerEvents; } catch (e) { return ""; } })(),
             panes: diagPanes(),
             theme: themeDark ? "dark" : "light",
+            /* 字体跟随（v64）实测：条面计算字体 + 客户端两个字体变量的原值（验证 var 命中） */
+            font: (function () {
+              try {
+                var rs = getComputedStyle(document.documentElement), cs = getComputedStyle(bar);
+                return { fam: String(cs.fontFamily).slice(0, 90), size: cs.fontSize,
+                  mono: String(rs.getPropertyValue("--font-mono")).slice(0, 80).trim(),
+                  ui: String(rs.getPropertyValue("--ui-font-size")).trim() };
+              } catch (e) { return "ERR:" + e; }
+            })(),
             tip: (function () { return { stats: tipStats, disp: tip.style.display, barRect: (function () { var b = bar.getBoundingClientRect(); return [Math.round(b.left), Math.round(b.top), Math.round(b.width), Math.round(b.height)]; })() }; })(),
             composerRect: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)],
             anchorRect: [Math.round(ar.left), Math.round(ar.top), Math.round(ar.width), Math.round(ar.height)],
