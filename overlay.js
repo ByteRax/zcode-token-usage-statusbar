@@ -152,7 +152,7 @@
   /* ---------- 实例工厂（v61.1）：一个 pane 一套 条/面板/气泡/tooltip/定位循环。
    * slot 0 保留 #zusage-bar/#zusage-tip 兼容 id（泵热更新按它清理），其余实例仅类名。 */
   function spawnInstance(pid, slot) {
-    var VERSION = "v64";   // v64：字体跟随客户端 —— font-family 走 var(--font-mono)、字号走 var(--ui-font-size)（设置页「界面字号」实时联动），旧值兜底   // 随提交递增（悬停 ⚙ 面板可见）；未提交的中间迭代不涨号
+    var VERSION = "v65";   // v65：悬浮气泡豁免 —— 非模态浮层部分盖住输入框中心不再判"被盖"（「剩余额度」hover 卡悬停时整条消失），整体罩住仍收起   // 随提交递增（悬停 ⚙ 面板可见）；未提交的中间迭代不涨号
     /* ---------- 状态（实例级） ---------- */
     var excOn = false,    // 本 pane 会话处于"上下文超限被拒"状态（render 时按 picked 会话计算）
       excGone = false,    // 用户点 ✕ 关闭了本次气泡；超限解除后自动复位
@@ -1176,6 +1176,13 @@
        * 都是真·未被盖（弹层在别处，输入框露着）。 */
       if (hit === document.body || hit === document.documentElement) return true;
       if (hit === el || hit.contains(el) || el.contains(hit)) return true;   // 命中自身/祖先/内部装饰层
+      /* 悬浮气泡豁免（v65）：非模态浮层（「剩余额度」hover 卡、下拉/选择器弹层——body
+       * 直挂、无遮罩）会压住输入框中心点，按旧判定悬停一超 400ms 迟滞整条就消失
+       * （用户实测）。但条挂在输入框正下方，上方浮层与条并无几何冲突：命中元素只是
+       * 部分遮挡（未把输入框矩形整体罩住）时仍判可见。整体罩住才维持"被盖"——模态
+       * 全屏遮罩等真接管行为不变，模态弹窗/设置页另有 modalOpen/inGhostSubtree 收口。 */
+      var hr = hit.getBoundingClientRect();
+      if (hr.left > r.left || hr.top > r.top || hr.right < r.right || hr.bottom < r.bottom) return true;
       if (ownOK && isOwnOverlay(hit)) return true;
       return false;
     }
