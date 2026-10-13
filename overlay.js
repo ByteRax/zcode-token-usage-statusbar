@@ -1,7 +1,8 @@
 /* ZCode token 用量状态条 v58（渲染进程注入，自包含 IIFE）。
  * 形态：输入框视觉卡片正下方的悬浮胶囊条 —— 给卡片加 margin-bottom 上移让位，
  *       条 fixed 悬浮在卡片边框外、窗口底边上的空带里，rAF 每帧跟随，
- *       左右两缘都与卡片对齐（min-width=卡片宽；内容更宽时随内容、上限按视口）。
+ *       左右两缘都与卡片对齐（宽=卡片实测宽；内容超宽先藏「本轮/会话累计」
+ *       的缓存命中率，仍装不下右缘渐隐）。
  *       （条不能放在输入框中心点所在矩形内：命中检测自遮挡 = 周期性闪烁，v12-v14 实测。）
  * 视觉（v28）：半透明胶囊底 + 组间 │ 分隔 + 上下文微进度条（三档色）+ 子代理呼吸灯；
  *       条面只放主数值，明细进 hover title。
@@ -152,14 +153,16 @@
   /* ---------- 实例工厂（v61.1）：一个 pane 一套 条/面板/气泡/tooltip/定位循环。
    * slot 0 保留 #zusage-bar/#zusage-tip 兼容 id（泵热更新按它清理），其余实例仅类名。 */
   function spawnInstance(pid, slot) {
-    var VERSION = "v65";   // v65：悬浮气泡豁免 —— 非模态浮层部分盖住输入框中心不再判"被盖"（「剩余额度」hover 卡悬停时整条消失），整体罩住仍收起   // 随提交递增（悬停 ⚙ 面板可见）；未提交的中间迭代不涨号
+    var VERSION = "v66";   // v66：内容超卡片宽时分级收缩 —— 隐藏「本轮/会话累计」的缓存命中率（tps/上下文/会话累计优先），仍装不下右缘渐隐；宽度始终锁死卡片   // 随提交递增（悬停 ⚙ 面板可见）；未提交的中间迭代不涨号
     /* ---------- 状态（实例级） ---------- */
     var excOn = false,    // 本 pane 会话处于"上下文超限被拒"状态（render 时按 picked 会话计算）
       excGone = false,    // 用户点 ✕ 关闭了本次气泡；超限解除后自动复位
       nativeCtxVal = 0,   // 本 pane 输入框卡片上读到的原生上下文总量
       lastSub = null,     // 子代理明细面板数据源
       instSid = "",       // 本 pane 当前会话（composer 祖先链 data-session-id）
-      pendingSid = "", wantedEl = null;   // 协调器派发的最新 composer/会话
+      pendingSid = "", wantedEl = null,   // 协调器派发的最新 composer/会话
+      shrink = 0,         // 分级收缩（v66）：1 = 内容超卡片宽，「本轮/会话累计」缓存命中率已让位
+      fadeOn = false;     // 收缩后仍超宽：右缘渐隐（.zu-clip）
 
     /* ---------- DOM ---------- */
     /* 样式表挂在 bar 内部而非 head：React 可能清理 head 里的外来 style，
@@ -183,6 +186,9 @@
        * 超宽截断由 #zu-main 自己负责。 */
       "z-index:50}" +
       ".zu-main{overflow:hidden;min-width:0;flex:1 1 auto;display:flex;align-items:center;gap:1px;justify-content:space-between}" +
+      /* 收缩兜底（v66）：分级收缩后仍装不下时右缘 26px 渐隐，替代生硬的截断 */
+      ".zu-main.zu-clip{-webkit-mask-image:linear-gradient(90deg,#000 calc(100% - 26px),transparent);" +
+      "mask-image:linear-gradient(90deg,#000 calc(100% - 26px),transparent)}" +
       /* zu-main 不得带 .it class：querySelectorAll('.it') 收集 tooltip 时会把它算进第 0 位，
        * tips 全部错位一位且末项为 null —— v31"悬停只有空胶囊/内容错位"的根因 */
       ".it{display:flex;align-items:center;gap:4px;padding:2px 6px;border-radius:6px;" +
@@ -308,7 +314,7 @@
       ".it,.btn,.ttab,.panel label{transition:none}}";
 
     /* 结构：条撑满卡片宽后 .zu-main 占满剩余宽、条目+分隔线 space-between 均匀分布，
-     * ⚙ 落在最右缘（内容超宽时无剩余空间，自动退回紧凑排列并裁剪）；面板绝对定位向上展开 */
+     * ⚙ 落在最右缘（内容超宽时分级收缩、极限右缘渐隐 .zu-clip）；面板绝对定位向上展开 */
     var bar = document.createElement("div");
     bar.className = "zusage-root";
     if (slot === 0) bar.id = "zusage-bar";
@@ -548,7 +554,7 @@
       if (state.show.turn) {
         it(ico('<path d="M23 4v6h-6"/><path d="M20.49 15A9 9 0 1 1 18.36 5.64L23 10"/>') +
           '<span class="v">' + fmt(lt.total) + "</span>" +
-          cachePct(lt.cache_read, lt.input) +
+          (shrink ? "" : cachePct(lt.cache_read, lt.input)) +   // v66 超宽时命中率让位，明细仍在悬停 tooltip
           '<span class="dim">' + (lt.requests || 0) + L("次", " req") + "</span>" +
           ico('<path d="M6 3h12M6 21h12M8 3v3.5L12 11l4-4.5V3M8 21v-3.5L12 13l4 4.5V21"/>') +
           '<span class="dim">' + sec(last.duration_ms) + "</span>" +
@@ -565,7 +571,7 @@
       if (state.show.win) {
         it(ico('<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>') +
           '<span class="v">' + fmt(sess.total) + "</span>" +
-          cachePct(sess.cache_read, sess.input) +
+          (shrink ? "" : cachePct(sess.cache_read, sess.input)) +   // v66 同上
           '<span class="dim">' + (sess.turns || 0) + L("轮 ", " turns · ") + (sess.requests || 0) + L("次", " req") + "</span>",
           L("会话累计：当前会话全部请求的 token 消耗", "Session total: tokens of all requests in the current session") + "\n" + ioc(sess.input, sess.output, sess.cache_read, sess.reasoning, sess.cache_write) +
           "\n" + (sess.turns || 0) + L(" 轮 · ", " turns · ") + (sess.requests || 0) + L(" 次请求", " requests") +
@@ -1506,15 +1512,21 @@
           bar.style.left = left + "px"; bar.style.top = top + "px";
           lastPos = [left, top];
         }
-        /* 宽度与卡片一致（v63）：min-width = 卡片宽（border-box，外缘含边框正好压在
-         * 卡片两缘上）—— 内容窄于卡片时条撑满卡片，右缘不再悬空短一截（v62 实测
-         * 764 vs 864 用户观感"宽度不一致"）。内容超卡片时条仍随内容走，上限改按
-         * 视口剩余宽：web 版实测过按卡片宽硬夹会把数值挤没（"1.4s"→"1"）；
-         * 被上限夹住时由 .zu-main overflow:hidden 裁剪。 */
+        /* 宽度锁死卡片（v63 对齐，v66 收缩）：min=max-width = 卡片实测宽（border-box，
+         * 外缘含边框正好压在卡片两缘上），任何内容量下条都与会话框两缘对齐。
+         * 内容超宽不撑破卡片，分级收缩：先隐藏「本轮/会话累计」的缓存命中率
+         * （核心项 tps/上下文/会话累计不动，明细仍在悬停 tooltip），迟滞 +12px/-120px
+         * 防数值刷新在阈值附近来回闪；仍装不下由 .zu-main 右缘渐隐兜底（.zu-clip）。 */
         var minW = Math.max(60, Math.round(ar.width));
-        var maxW = Math.max(minW, Math.round(innerWidth - left - 8));
         if (bar.style.minWidth !== minW + "px") bar.style.minWidth = minW + "px";
-        if (bar.style.maxWidth !== maxW + "px") bar.style.maxWidth = maxW + "px";
+        if (bar.style.maxWidth !== minW + "px") bar.style.maxWidth = minW + "px";
+        var ov = main.scrollWidth - main.clientWidth;
+        var ns = shrink;
+        if (!shrink && ov > 12) ns = 1;
+        else if (shrink && ov < -120) ns = 0;
+        if (ns !== shrink) { shrink = ns; render(state.data || { session: {}, last_turn: {}, today: {}, context_window: 0 }); }
+        var clip = main.scrollWidth > main.clientWidth + 1;
+        if (clip !== fadeOn) { fadeOn = clip; main.classList.toggle("zu-clip", clip); }
         everMounted = true;
         if (slot === 0 && Date.now() - lastMountDiagAt > 5000) {
           lastMountDiagAt = Date.now();
