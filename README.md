@@ -1,160 +1,158 @@
 <div align="center">
 
-# ZCode Token Usage Status Bar
+# ZCode Token 用量状态栏
 
-**See token usage, model speed and remaining context at a glance.**
+**用了多少 token，模型有多快，上下文还剩多少——一眼看清。**
 
-A real-time usage bar for your [ZCode](https://zcode.z.ai) conversation window.
+给 [ZCode](https://zcode.z.ai) 对话窗口加一条实时用量状态栏。
 
-English · [简体中文](README.zh-CN.md)
+简体中文 · [English](README.en.md)
 
 Windows / macOS · Python 3.8+ · [MIT](LICENSE)
 
-![Status bar overview](docs/tour/shots/en/hero.png)
+![状态条整体效果](docs/tour/shots/hero.png)
 
 </div>
 
-## What it does
+## 能做什么
 
-- **Track usage**: see the current turn, session and today's totals without opening Settings.
-- **Check speed**: see generation speed and the wait for the first token.
-- **Watch context**: a color-coded indicator warns as the context window fills up.
-- **Inspect details**: hover for cache and thinking tokens, click for subagent usage, and spot tool errors.
-- **Make it yours**: use ⚙ to choose visible items, switch languages and manage plugin updates.
-- **Query in chat**: use `/usage` for reports; the plugin also adds a rate line to eligible replies.
+- **看消耗**：本轮、当前会话和今日总用量，不用来回切设置页。
+- **看速度**：生成速度、首字等待时间，模型快不快一眼可读。
+- **防超限**：显示上下文占比，接近上限时变色提醒。
+- **查明细**：悬停看缓存与思考 token，点击查看子智能体消耗，工具出错也有提示。
+- **按需显示**：点 ⚙ 调整显示项、语言和插件更新设置。
+- **对话内查询**：输入 `/usage` 查看报表；插件还支持在符合条件的回答末尾显示速率。
 
-[Feature screenshots and details →](docs/features.md)
+[查看功能截图与说明 →](docs/features.md)
 
-## Quick start
+## 快速开始
 
-**Using the desktop app?** Choose either installation method below, not both.
-**Self-hosting the web UI?** Follow the [Web edition guide](web/README.md) instead.
+**用桌面客户端？** 选下面任意一种安装方式，不用两种都装。
+**用自托管网页？** 请直接看 [Web 版安装](web/README.zh-CN.md)。
 
-### One-command installer
+### 一键安装
 
-Install [Python](https://www.python.org/downloads/) and [Git](https://git-scm.com/downloads), then run in a terminal:
+先安装 [Python](https://www.python.org/downloads/) 和 [Git](https://git-scm.com/downloads)，在终端执行：
 
 ```bash
-git clone https://github.com/xhwxt/zcode-token-usage-statusbar.git
+git clone https://github.com/ByteRax/zcode-token-usage-statusbar.git
 cd zcode-token-usage-statusbar
-python install.py --lang en
+python install.py
 ```
 
-On macOS, use `python3 install.py --lang en` if `python` is unavailable.
+macOS 上若找不到 `python`，改用 `python3 install.py`。
 
-**After installation succeeds, quit ZCode completely and reopen it.** The bar appears at the bottom of a conversation window.
+**安装成功后，完全退出 ZCode，再重新打开。** 状态条会出现在对话窗口底部。
 
-### Install through ZCode plugins (local directory)
+### 通过 ZCode 插件安装（本地目录）
 
-Choose this method to manage installation, enablement and updates inside ZCode. The plugin provides **usage queries, reply rates and plugin updates**. To add the floating bar, use its built-in installer; there is no need to run `python install.py` separately.
+适合希望在 ZCode 内管理安装、启停和更新的用户。插件提供**用量查询、回答速率和插件更新**；需要窗口底部的状态条时，再执行插件内置的安装命令，不必另跑 `python install.py`。
 
-Prepare this project's source with a root-level `marketplace.json`, then:
+准备好包含 `marketplace.json` 的本项目源码，然后：
 
-1. Open **Settings → Plugin → Add marketplace**.
-2. Click **Choose directory**, select the repository root (not the `plugins/` subdirectory), and add it.
-3. Find **ZCode Token Usage Statusbar**, install it and leave it enabled.
-4. Start or reopen a session and enter:
+1. 打开 **设置 → 插件 → 添加插件市场**。
+2. 点 **选择目录**，选择仓库根目录（不是 `plugins/` 子目录），添加市场。
+3. 找到 **ZCode Token Usage Statusbar**，点击安装并保持启用。
+4. 新建或重新打开会话，输入：
 
    ```text
    /zcode-token-usage-statusbar:install-overlay
    ```
 
-5. After installation succeeds, **quit ZCode completely and reopen it**.
+5. 安装成功后，**完全退出并重新打开 ZCode**。
 
 <details>
-<summary>Installation screenshot and command alternative</summary>
+<summary>安装截图与命令方式</summary>
 
-![Add marketplace dialog: use Choose directory to select the repository root (Chinese UI)](docs/plugin-marketplace-add.png)
+![添加插件市场：点击「选择目录」，选中仓库根目录](docs/plugin-marketplace-add.png)
 
-Alternatively, enter these commands in **ZCode's chat input**, replacing the path with your repository directory:
+也可以在 **ZCode 对话输入框**执行（将路径换成实际仓库目录）：
 
 ```text
-/plugin marketplace add /absolute/path/to/zcode-token-usage-statusbar
+/plugin marketplace add /绝对路径/到/zcode-token-usage-statusbar
 /plugin install zcode-token-usage-statusbar@zusage-marketplace
 ```
 
-`marketplace add` only adds the marketplace; the second command installs the plugin. Follow steps 4 and 5 to install the bar afterward.
+`marketplace add` 只添加市场，第二条命令才安装插件；之后仍按第 4、5 步安装状态条。
 
 </details>
 
-**Installing the plugin alone does not install the bar.** For query tools and reply rates only, skip steps 4 and 5. The bar installer modifies client files; only run it if you trust this project.
+**装插件不等于装状态条。** 只需要用量查询和回答速率的用户，可以跳过第 4、5 步。状态条安装会修改客户端文件，执行前请确认信任此项目。
 
-**How do I update it later?**
+**以后如何更新？**
 
-1. Update your local source, then enter `/plugin marketplace update zusage-marketplace` in ZCode to refresh the marketplace.
-2. Update this plugin in **Settings → Plugin → Installed**. With the bar installed, you can also check and update through **⚙ → Plugin updates**.
-3. Start or reopen a session afterward. If prompted about changed main-process files, quit ZCode completely and reopen it.
+1. 先更新本地源码，再在 ZCode 输入 `/plugin marketplace update zusage-marketplace` 刷新市场。
+2. 在 **设置 → 插件 → 已安装** 更新本插件；有状态条时，也可在 **⚙ → 插件更新** 中检查并更新。
+3. 更新后新建或重新打开会话；若提示主进程文件变化，完全退出并重开 ZCode。
 
-ZCode runs an installed copy: **editing the repository does not update the plugin**, and a local-directory marketplace never runs `git pull` for you.
-The public repositories' default branches do not currently include the plugin entry point; use a source version containing `marketplace.json`.
-[More installation, updates and troubleshooting →](docs/user-guide.md#插件安装) (Chinese)
+ZCode 使用的是已安装副本，**修改仓库不等于更新插件**；本地目录市场也不会自动执行 `git pull`。
+请确认选择的源码根目录包含 `marketplace.json`，而不是仅选择 `plugins/` 子目录。
+[更多安装、更新与排查说明 →](docs/user-guide.md#插件安装)
 
-## Everyday use
+## 日常使用
 
-- **Hover** an item for its detailed figures.
-- **Click Sub-agents** for per-task usage.
-- **Click ⚙** to hide items, switch language or check for plugin updates.
-- **Run `/usage today`** for today's usage, or `/usage week` for the past week.
+- **悬停**：查看某项的详细数据。
+- **点击子智能体**：展开各个任务的用量。
+- **点击 ⚙**：隐藏不关心的项目、切换语言，或检查插件更新。
+- **输入 `/usage today`**：查看今天的用量；`/usage week` 查看近一周。
 
-The plugin command's full name is `/zcode-token-usage-statusbar:usage`.
+插件命令的完整名称是 `/zcode-token-usage-statusbar:usage`。
 
-## Safety and caveats
+## 安全与注意事项
 
-- **Usage data is not uploaded**: local queries do not use the network. Configured remote sessions read the remote database over your chosen transport. Plugin updates download code over the network.
-- **The bar modifies client files**: it is not a native ZCode feature. Removal strips only this project's injection, without reverting the client version.
-- **ZCode upgrades may remove the bar**: rerun the installer. The plugin can optionally repair the injection, but a restart is still required.
-- **Uninstalling the plugin may leave the bar behind**: follow the removal steps below.
+- **用量数据不上传**：本地查询不联网；配置远程会话后会通过指定通道读取远端数据库。插件更新会联网下载代码。
+- **状态条会修改客户端文件**：它不是 ZCode 原生功能。卸载时只移除本项目的注入，不回滚客户端版本。
+- **ZCode 升级后可能需要重装状态条**：可以重新运行安装命令；插件可配置自动修复，修复后仍需重启。
+- **只卸载插件，状态条可能还在**：请按下方步骤一并清理。
 
-## FAQ
+## 常见问题
 
-**I installed the plugin. Where is the bar?**
+**安装了插件，为什么没有状态条？**
 
-The plugin does not install it automatically by default. Run `install-overlay`, wait for success, then quit and reopen ZCode.
+插件默认不自动安装状态条。请运行 `install-overlay` 命令，确认成功后完全退出并重开 ZCode。
 
-**Why don't the numbers change continuously?**
+**数字怎么没有一直变化？**
 
-They mainly refresh when a model request completes, not with each streamed token. A new session with no requests can show zeros.
+主要在一次模型请求完成后刷新，不是逐字计数。新会话还没有请求时，显示零值是正常的。
 
-**Why do some replies have no rate line?**
+**回答末尾为什么有时没有速率行？**
 
-Pure Q&A and questions with no stored request data omit it rather than reuse the previous turn. Disable it with the per-answer rate toggle in ⚙.
+纯问答或当前提问尚无已入库数据时不会显示，避免误用上一轮数据。可在 ⚙ 中关闭「逐问速率行」。
 
-**Does this show my bill or plan balance?**
+**能显示套餐费用或剩余额度吗？**
 
-It shows token usage, not billing. Use ZCode's official pages for pricing and plan limits.
+这里显示 token 用量，不是账单。套餐费用与额度仍以 ZCode 官方页面为准。
 
-[More troubleshooting, automatic updates and remote setup →](docs/user-guide.md) (Chinese)
+[更多排查、自动更新和远程配置 →](docs/user-guide.md)
 
-## Uninstall
+## 卸载
 
-**One-command installation**: run this from the repository, then quit and reopen ZCode:
+**一键安装的用户**，在仓库目录执行，然后完全退出并重开 ZCode：
 
 ```bash
 python install.py --remove
 ```
 
-**Plugin installation**: follow this order so the bar is removed along with the plugin:
+**插件用户**，按顺序操作，避免只删插件却留下状态条：
 
-1. Turn off automatic updates in ⚙ and let any update already running finish.
-2. Run `/zcode-token-usage-statusbar:uninstall-overlay` and confirm success.
-3. Open **Settings → Plugin → Installed → ZCode Token Usage Statusbar → ⋯ → Uninstall**.
-4. Quit ZCode completely, reopen it and confirm the bar is gone.
+1. 在 ⚙ 中关闭自动更新；若更新正在进行，等它结束。
+2. 运行 `/zcode-token-usage-statusbar:uninstall-overlay`，确认成功。
+3. 打开 **设置 → 插件 → 已安装 → ZCode Token Usage Statusbar → ⋯ → 卸载**。
+4. 完全退出并重开 ZCode，确认状态条消失。
 
 <details>
-<summary>Uninstall screenshot (Chinese UI)</summary>
+<summary>查看卸载截图</summary>
 
-![Uninstall in the plugin card's three-dot menu](docs/plugin-uninstall.png)
+![插件卡片右侧三个点菜单中的「卸载」](docs/plugin-uninstall.png)
 
 </details>
 
-To remove settings, caches and the marketplace too, follow the [full cleanup guide](docs/user-guide.md#彻底卸载) (Chinese).
+需要删除设置、缓存和插件市场？请看 [彻底清理步骤](docs/user-guide.md#彻底卸载)。
 
-## More documentation
+## 更多文档
 
-Detailed desktop guides are currently in Chinese.
-
-- [Feature screenshots](docs/features.md) · [Installation, configuration and troubleshooting](docs/user-guide.md)
-- [Web edition](web/README.md) · [Architecture and data semantics](docs/design-notes.md)
-- [Development and releases](docs/maintaining.md) · [Tests](tests/README.md)
+- [功能截图](docs/features.md) · [安装、配置与排查](docs/user-guide.md)
+- [Web 版](web/README.zh-CN.md) · [实现原理与数据口径](docs/design-notes.md)
+- [开发与发布](docs/maintaining.md) · [测试说明](tests/README.md)
 
 [MIT License](LICENSE)

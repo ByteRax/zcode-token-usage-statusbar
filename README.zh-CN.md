@@ -6,7 +6,7 @@
 
 给 [ZCode](https://zcode.z.ai) 对话窗口加一条实时用量状态栏。
 
-[English](README.md) · 简体中文
+简体中文 · [English](README.en.md)
 
 Windows / macOS · Python 3.8+ · [MIT](LICENSE)
 
@@ -35,7 +35,7 @@ Windows / macOS · Python 3.8+ · [MIT](LICENSE)
 先安装 [Python](https://www.python.org/downloads/) 和 [Git](https://git-scm.com/downloads)，在终端执行：
 
 ```bash
-git clone https://github.com/xhwxt/zcode-token-usage-statusbar.git
+git clone https://github.com/ByteRax/zcode-token-usage-statusbar.git
 cd zcode-token-usage-statusbar
 python install.py
 ```
@@ -86,7 +86,7 @@ macOS 上若找不到 `python`，改用 `python3 install.py`。
 3. 更新后新建或重新打开会话；若提示主进程文件变化，完全退出并重开 ZCode。
 
 ZCode 使用的是已安装副本，**修改仓库不等于更新插件**；本地目录市场也不会自动执行 `git pull`。
-目前公开仓库的默认分支尚未包含插件入口，需使用包含 `marketplace.json` 的源码版本。
+请确认选择的源码根目录包含 `marketplace.json`，而不是仅选择 `plugins/` 子目录。
 [更多安装、更新与排查说明 →](docs/user-guide.md#插件安装)
 
 ## 日常使用
