@@ -27,6 +27,8 @@ Windows / macOS · Python 3.8+ · [MIT](LICENSE)
 
 ## Quick start
 
+> ⚠️ **The floating bar does not appear immediately after its first installation. Quit ZCode completely and restart it to load the bar. Closing the window alone is not enough.**
+
 **Using the desktop app?** Plugin installation is recommended; the one-command installer below is an alternative. Do not install both.
 **Self-hosting the web UI?** Follow the [Web edition guide](web/README.md) instead.
 
@@ -77,7 +79,9 @@ After either plugin installation method, leave the plugin enabled, start or reop
 
 After installation succeeds, **quit ZCode completely and reopen it**.
 
-**Installing the plugin alone does not install the bar.** Skip this step if you only want queries and reply rates. The bar installer modifies client files; only run it if you trust this project.
+**Installing the plugin alone does not install the bar.** Automatic installation is off by default; restarting an uninjected client cannot install it. Skip this step if you only want queries and reply rates. The bar installer modifies client files; only run it if you trust this project.
+
+To opt in to automatic installation/repair, merge `"plugin_auto_install_overlay": true` into `~/.zcode/zcode-token-usage-statusbar/config.json` without replacing other settings, or set `ZUSAGE_PLUGIN_AUTO_INSTALL=1`, then start or resume a session. A full restart is still required after installation succeeds. Each session start repeats the installation reminder until the bar is installed or you run `uninstall-overlay` to opt out.
 
 **How do I update it later?**
 

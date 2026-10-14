@@ -169,6 +169,35 @@
     rateTip.style.display = "none";
     rateTipFor = null;
   }
+  /* 客户端会过滤回复 HTML 的 style/class；提醒先用 Markdown 加粗，加载浮层后再着色。 */
+  var noticeStyle = document.createElement("style");
+  noticeStyle.textContent = '[data-zusage-notice="' + MY_GEN + '"], [data-zusage-notice="' + MY_GEN + '"] * {' +
+    "color:#ef4444!important;font-weight:700!important}";
+  document.body.appendChild(noticeStyle);
+  var noticeNodes = [];
+  function isPluginNotice(el) {
+    var parent = el.parentElement;
+    return document.body.contains(el) && parent && /^(P|BLOCKQUOTE)$/.test(parent.tagName) &&
+      (el.textContent || "").trim().indexOf("🔴 zcode-token-usage-statusbar 插件提醒：") === 0 &&
+      (parent.textContent || "").trim() === (el.textContent || "").trim() &&
+      el.closest('blockquote') && el.closest('[class~="group/assistant-row"]') &&
+      !el.closest('pre, code, [data-v4-user-input-bubble], [data-markdown-preview], .zusage-root, .zusage-rate-tip');
+  }
+  function clearNotice(el) {
+    if (el.dataset.zusageNotice === String(MY_GEN)) delete el.dataset.zusageNotice;
+  }
+  function scanPluginNotices() {
+    noticeNodes = noticeNodes.filter(function (el) {
+      if (isPluginNotice(el)) return true;
+      clearNotice(el);
+      return false;
+    });
+    document.querySelectorAll("blockquote strong").forEach(function (el) {
+      if (el.dataset.zusageNotice === String(MY_GEN) || !isPluginNotice(el)) return;
+      el.dataset.zusageNotice = String(MY_GEN);
+      noticeNodes.push(el);
+    });
+  }
   var rateBindings = [];
   function isRateLine(el) {
     var t = el.textContent || "";
@@ -185,6 +214,7 @@
   function onRateEnter() { showRateTip(this); }
   function scanRateLines() {
     if (stale()) { cleanupRateTip(); return; }
+    scanPluginNotices();
     rateBindings = rateBindings.filter(function (binding) {
       if (state.rateLine && isRateLine(binding.el)) return true;
       unbindRateLine(binding);
@@ -208,6 +238,9 @@
     window.removeEventListener("scroll", hideRateTip, true);
     rateBindings.forEach(unbindRateLine);
     rateBindings = [];
+    noticeNodes.forEach(clearNotice);
+    noticeNodes = [];
+    noticeStyle.remove();
     hideRateTip();
     rateTip.remove();
     if (window.__zusageRateCleanup === cleanupRateTip) delete window.__zusageRateCleanup;

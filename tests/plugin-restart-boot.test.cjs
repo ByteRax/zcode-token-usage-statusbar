@@ -8,7 +8,7 @@ const vm = require("vm");
 const crypto = require("crypto");
 const { execFile } = require("child_process");
 
-async function bootLoader(t, markerHashes, createdAt) {
+async function bootLoader(t, markerHashes, createdAt, installation = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "zusage-restart-boot-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const files = { "inject-main.cjs": "/* current loader */", "plugin-updater.cjs": "/* current updater */",
@@ -22,13 +22,13 @@ async function bootLoader(t, markerHashes, createdAt) {
   fs.writeFileSync(path.join(root, "config.json"), JSON.stringify({ python_path: process.env.ZUSAGE_TEST_PYTHON || "python3" }));
   const marker = path.join(root, ".plugin-restart-required");
   fs.writeFileSync(marker, JSON.stringify({ createdAt: createdAt || Date.now() / 1000 - 1,
-    hashes: markerHashes ? markerHashes(hashes) : hashes }));
+    hashes: markerHashes ? markerHashes(hashes) : hashes, ...installation }));
   let complete;
   const done = new Promise((resolve, reject) => { complete = { resolve, reject }; });
   const source = fs.readFileSync(path.join(__dirname, "..", "inject-main.cjs"), "utf8");
   const prefix = source.slice(0, source.indexOf("/* config.json 内容缓存"));
   vm.runInNewContext(prefix + "\nacknowledgeRestart();", {
-    __dirname: root, console: { error: () => {} }, process: { platform: process.platform, uptime: () => 0 },
+    __dirname: root, console: { error: () => {} }, process: { platform: process.platform, uptime: () => installation.uptime || 0 },
     require: (id) => {
       if (id === "electron") return {};
       if (id === "child_process") return { execFile: (command, args, options, callback) => {
@@ -59,4 +59,27 @@ test("restart notification written after startup snapshot is not cleared even if
   const boot = await bootLoader(t, null, Date.now() / 1000 + 60);
   assert.ok(fs.existsSync(boot.marker));
   assert.deepEqual(JSON.parse(fs.readFileSync(boot.marker, "utf8")).hashes, boot.hashes);
+});
+
+test("unpublished install rejects current loader even with matching startup runtime hashes", async (t) => {
+  const boot = await bootLoader(t, null, Date.now() / 1000 - 10, {
+    state: "pending-install", installation: { asar: "fixture", entryHash: "a".repeat(64) },
+  });
+  assert.ok(fs.existsSync(boot.marker));
+});
+
+test("loader imported after publication still obeys actual process start before publication", async (t) => {
+  const boot = await bootLoader(t, null, Date.now() / 1000 - 120, {
+    state: "pending-install", installation: { asar: "fixture", entryHash: "a".repeat(64) },
+    publishedAt: Date.now() - 30000, uptime: 60,
+  });
+  assert.ok(fs.existsSync(boot.marker));
+});
+
+test("new process after install publication acknowledges without rewriting the marker", async (t) => {
+  const boot = await bootLoader(t, null, Date.now() / 1000 - 10, {
+    state: "pending-install", installation: { asar: "fixture", entryHash: "a".repeat(64) },
+    publishedAt: Date.now() - 1000,
+  });
+  assert.equal(fs.existsSync(boot.marker), false);
 });

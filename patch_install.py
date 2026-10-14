@@ -32,7 +32,8 @@ import tempfile
 import time
 from pathlib import Path
 
-from runtime_lock import file_lock
+from contextlib import nullcontext
+from runtime_lock import file_lock, publish_install
 
 IS_WIN = sys.platform == "win32"
 IS_MAC = sys.platform == "darwin"
@@ -531,7 +532,14 @@ def _replace_pending(operation, verified=None, client_closed=None):
     # 紧贴 rename 再核对。外部升级不共享 OS 锁，仍有无法彻底消除的极短 TOCTOU 窗口。
     if pending_tmp(operation) != meta:
         raise PendingTmpError("sidecar changed before replacement")
-    os.replace(TMP, ASAR)
+    publication = (publish_install(RUNTIME, {"asar": str(ASAR.resolve()),
+                   "entryHash": hashlib.sha256(entry_bytes_of(TMP)).hexdigest()})
+                   if meta["operation"] == "install" and (RUNTIME / ".plugin-restart-required").is_file()
+                   else nullcontext())
+    with publication:
+        if pending_tmp(operation) != meta:
+            raise PendingTmpError("sidecar changed before replacement")
+        os.replace(TMP, ASAR)
     try:
         if _load_tmp_metadata() == meta:
             TMP_META.unlink()
@@ -553,19 +561,19 @@ def finalize_tmp(operation="install", client_closed=None, verified=None):
 
 # ---------- 安装 / 卸载 ----------
 
-def install(finalize=False):
-    """Serialize install/remove/finalize across processes without nested locks."""
+def install(finalize=False, before_publish=None):
+    """Serialize install/remove/finalize; optional callback precedes a new install's publication."""
     if finalize:
         return _install(finalize=True)
     try:
         with _target_lock():
-            return _install()
+            return _install(before_publish=before_publish)
     except OSError as e:
         print(L(f"安装锁获取失败：{e}", f"Cannot acquire install lock: {e}"))
         return False
 
 
-def _install(finalize=False):
+def _install(finalize=False, before_publish=None):
     """返回 True=已安装/已指向当前目录，False=失败或待收尾。"""
     if finalize:
         try:
@@ -606,6 +614,9 @@ def _install(finalize=False):
                 "Old injection line detected (possibly pointing at an old directory); it will be replaced with the new path."))
     print(L("重打包（307MB，约需十几秒）...", "repacking (307MB, takes ~10-20 seconds)..."))
     try:
+        if before_publish is not None:
+            before_publish({"asar": str(ASAR.resolve()),
+                            "entryHash": hashlib.sha256(new_entry).hexdigest()})
         _prepare_tmp({"/" + ENTRY: new_entry}, source=source)
     except (OSError, PendingTmpError) as e:
         print(L(f"待替换包生成失败，未替换：{e}", f"Pending package preparation failed; not replaced: {e}"))

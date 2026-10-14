@@ -36,6 +36,17 @@ class Element extends Target {
   }
   contains(el) { return this === el || this.children.some(child => child.contains(el)); }
   querySelector(selector) { return selector === 'p' ? this.children.find(el => el.tagName === 'P') || null : null; }
+  closest(selector) {
+    for (let node = this; node; node = node.parentElement) {
+      if (selector.includes('pre') && ['PRE', 'CODE'].includes(node.tagName)) return node;
+      if (selector === 'blockquote' && node.tagName === 'BLOCKQUOTE') return node;
+      if (selector === '[class~="group/assistant-row"]' && node.className.split(/\s+/).includes('group/assistant-row')) return node;
+      if (selector.includes('[data-v4-user-input-bubble]') && 'v4UserInputBubble' in node.dataset) return node;
+      if (selector.includes('[data-markdown-preview]') && 'markdownPreview' in node.dataset) return node;
+      if (selector.includes('.zusage-root') && node.className.includes('zusage-root')) return node;
+    }
+    return null;
+  }
   getBoundingClientRect() { return { left: 20, top: 400, bottom: 430, width: 500, height: 30 }; }
 }
 
@@ -46,9 +57,11 @@ function harness(lang = 'zh', rateLine = true) {
   const line = quote.appendChild(new Element('p'));
   line.textContent = '⚡ 153.8 tok/s(本轮) · 首字 3.0s · 输出 2,000 tok';
   line.style.cursor = 'text';
+  const notices = [];
   const document = {
     body, createElement: tag => new Element(tag),
     querySelectorAll(selector) {
+      if (selector === 'blockquote strong') return notices;
       if (selector === 'blockquote p, blockquote, p') return [line, quote];
       if (selector.startsWith('.zusage-root')) return body.children.filter(el => /zusage-/.test(el.className));
       return [];
@@ -65,11 +78,68 @@ function harness(lang = 'zh', rateLine = true) {
   const executable = source.replace(/\}\)\(\);\s*$/, 'window.rateTest = { language: function(lang) { state.lang = lang; renderAll(true); } };})();');
   function inject() { window.__zusageOverlay = false; vm.runInContext(executable, sandbox); }
   inject();
-  return { window, body, line, quote, intervals, inject,
+  function addNotice(text = '🔴 zcode-token-usage-statusbar 插件提醒：请退出并重新打开 ZCode。') {
+    // Renderer v3t/Xit/_ot: group/assistant-row > selectable div > blockquote > p > strong.
+    const row = body.appendChild(new Element('div')); row.className = 'group/assistant-row';
+    const content = row.appendChild(new Element('div')); content.dataset.conversationSelectable = 'true';
+    const quote = content.appendChild(new Element('blockquote')); quote.dataset.markdownBlockquote = '';
+    const paragraph = quote.appendChild(new Element('p'));
+    const strong = paragraph.appendChild(new Element('strong')); strong.className = 'font-medium';
+    strong.textContent = paragraph.textContent = quote.textContent = text;
+    notices.push(strong);
+    return { row, content, quote, paragraph, strong };
+  }
+  return { window, body, line, quote, intervals, inject, addNotice,
     tip: () => body.children.find(el => el.className.includes('zusage-rate-tip')),
+    noticeStyle: () => body.children.find(el => el.tagName === 'STYLE' && el.textContent.includes('data-zusage-notice')),
     scan: () => { for (const timer of [...intervals.values()]) if (timer.ms === 2000) timer.fn(); },
   };
 }
+
+test('plugin notices are red and bold independently of answer rate toggle', () => {
+  const h = harness('zh', false), n = h.addNotice();
+  h.scan();
+  assert.equal(n.strong.dataset.zusageNotice, String(h.window.__zusageGen));
+  assert.match(h.noticeStyle().textContent, /color:#ef4444!important/);
+  assert.doesNotMatch(h.noticeStyle().textContent, /var\(--color/);
+  assert.match(h.noticeStyle().textContent, /font-weight:700!important/);
+  assert.match(h.noticeStyle().textContent, /\] \*/);
+  assert.equal(h.line.count('mouseenter'), 0);
+});
+
+test('notice styling does not color ordinary quotes, user messages, code or mixed paragraphs', () => {
+  const h = harness(), ordinary = h.addNotice('ordinary quote'), user = h.addNotice();
+  user.row.className = ''; user.row.dataset.v4UserInputBubble = 'true';
+  const preview = h.addNotice(); preview.row.dataset.markdownPreview = 'true';
+  const unrelated = h.addNotice(); unrelated.row.className = '';
+  const code = h.addNotice(); code.quote.tagName = 'PRE';
+  const mixed = h.addNotice(); mixed.paragraph.textContent += ' ordinary explanation';
+  h.scan();
+  for (const n of [ordinary, user, preview, unrelated, code, mixed]) assert.equal(n.strong.dataset.zusageNotice, undefined);
+});
+
+test('notice styling cleans recycled nodes, detached nodes and previous injection generations', () => {
+  const h = harness(), n = h.addNotice();
+  h.scan(); const previous = h.noticeStyle();
+  h.inject();
+  assert.equal(previous.parentElement, null);
+  assert.equal(n.strong.dataset.zusageNotice, String(h.window.__zusageGen));
+  assert.equal(h.intervals.size, 1);
+  n.strong.textContent = 'ordinary reply'; h.scan();
+  assert.equal(n.strong.dataset.zusageNotice, undefined);
+  const detached = h.addNotice(); h.scan(); detached.quote.remove(); h.scan();
+  assert.equal(detached.strong.dataset.zusageNotice, undefined);
+});
+
+test('notice styling clears when a tracked paragraph leaves its quote or assistant row', () => {
+  const h = harness(), moved = h.addNotice(), recycled = h.addNotice();
+  h.scan();
+  moved.paragraph.remove(); moved.content.appendChild(moved.paragraph);
+  recycled.row.className = ''; recycled.row.dataset.v4UserInputBubble = 'true';
+  h.scan();
+  assert.equal(moved.strong.dataset.zusageNotice, undefined);
+  assert.equal(recycled.strong.dataset.zusageNotice, undefined);
+});
 
 test('R9: actual bilingual rate tooltip HTML has seven populated rows and correct thinking basis', () => {
   for (const lang of ['zh', 'en']) {

@@ -235,54 +235,110 @@ def preflight(root, repo, manifest, asset):
     return head
 
 
-def publish(root, repo, asset, manifest_path, approved=False, confirm=None):
+def publish(root, repo, asset, manifest_path, approved=False, confirm=None, notes_file=None):
     repo = repository(repo)
-    manifest = verify(asset, manifest_path, repo)
-    tag = manifest["tag"]
-    require(not approved or confirm == f"{repo}/{tag}", "--publish requires --confirm owner/repo/vVERSION")
-    head = preflight(root, repo, manifest, asset)
-    commands = [
-        ["gh", "release", "create", tag, "--repo", "github.com/" + repo, "--draft", "--verify-tag",
-         "--target", head, "--title", tag, "--notes", f"{PLUGIN} {tag}"],
-        ["gh", "release", "upload", tag, str(asset.resolve()), str(manifest_path.resolve()),
-         "--repo", "github.com/" + repo],
-        ["gh", "release", "edit", tag, "--repo", "github.com/" + repo, "--draft=false", "--verify-tag"],
-    ]
-    plan = {"dryRun": not approved, "repository": repo, "tag": tag, "commit": head,
-            "zip": str(asset.resolve()), "manifest": str(manifest_path.resolve()), "commands": commands,
-            "betweenUploadAndPublish": "verify draft identity and downloaded asset bytes"}
-    if not approved:
+    require(asset.name != manifest_path.name and manifest_path.name == "release-manifest.json",
+            "expected separate release-manifest.json")
+    asset_input, manifest_input = str(asset.resolve()), str(manifest_path.resolve())
+    # Verify, upload and compare only owned snapshots, never mutable input assets.
+    with tempfile.TemporaryDirectory(prefix="zusage-release-snapshot-") as temporary:
+        directory = Path(temporary)
+        asset_snapshot, manifest_snapshot = directory / asset.name, directory / manifest_path.name
+        asset_snapshot.write_bytes(read_file(asset, MAX_ASSET))
+        manifest_snapshot.write_bytes(read_file(manifest_path, MAX_MANIFEST))
+        asset, manifest_path = asset_snapshot, manifest_snapshot
+        manifest = verify(asset, manifest_path, repo)
+        tag = manifest["tag"]
+        require(not approved or confirm == f"{repo}/{tag}", "--publish requires --confirm owner/repo/vVERSION")
+        require(notes_file is not None, "publish requires --notes-file")
+        notes_file = Path(notes_file).absolute()
+        notes = read_file(notes_file, MAX_MANIFEST).decode("utf-8")
+        label = notes.strip().strip("#*_`").strip()
+        if len(label.splitlines()) == 1:
+            # Only unwrap inline link destinations for the placeholder check, not the notes.
+            parts, start = [], 0
+            for match in re.finditer(r"\[([^\[\]\r\n]+)\]\(", label):
+                if match.start() < start:
+                    continue
+                end, depth, delimiter = match.end(), 1, None
+                while end < len(label) and depth:
+                    char = label[end]
+                    if char == "\\":
+                        end += 2
+                        continue
+                    if delimiter:
+                        if char == delimiter:
+                            delimiter = None
+                    elif char == "<":
+                        delimiter = ">"
+                    elif char in "\"'" and label[end - 1].isspace():
+                        delimiter = char
+                    elif char == "(":
+                        depth += 1
+                    elif char == ")":
+                        depth -= 1
+                    end += 1
+                if depth:
+                    break  # Preserve the unclosed suffix; never rescan it for nested links.
+                parts.extend((label[start:match.start()], match.group(1)))
+                start = end
+            label = ("".join(parts) + label[start:]).strip().strip("#*_`").strip()
+        require(label and label.lower() not in (PLUGIN, "zusage-marketplace") and not re.fullmatch(
+            rf"(?:(?:{re.escape(PLUGIN)}|zusage-marketplace|release)\s*[-:–—]?\s*)?v?"
+            + re.escape(manifest["version"]), label, re.I), "release notes are empty or placeholder-only")
+        head = preflight(root, repo, manifest, asset)
+        commands = [
+            ["gh", "release", "create", tag, "--repo", "github.com/" + repo, "--draft", "--verify-tag",
+             "--target", head, "--title", tag, "--notes-file", str(notes_file)],
+            ["gh", "release", "upload", tag, asset_input, manifest_input,
+             "--repo", "github.com/" + repo],
+            ["gh", "release", "edit", tag, "--repo", "github.com/" + repo, "--draft=false", "--verify-tag"],
+        ]
+        plan = {"dryRun": not approved, "repository": repo, "tag": tag, "commit": head,
+                "zip": asset_input, "manifest": manifest_input, "commands": commands,
+                "notesFile": str(notes_file), "notes": notes,
+                "betweenUploadAndPublish": "verify draft identity, body and downloaded asset bytes"}
+        if not approved:
+            return plan
+        # gh reads the owned notes snapshot, never the input file again after review.
+        snapshot = directory / "release-notes.md"
+        snapshot.write_bytes(notes.encode("utf-8"))
+        run(root, *commands[0][:-1], str(snapshot))
+        run(root, *commands[1][:4], str(asset), str(manifest_path), *commands[1][6:])
+        pages = gh_json(root, f"repos/{repo}/releases?per_page=100", "--paginate", "--slurp")
+        drafts = [r for page in pages for r in page if r.get("tag_name") == tag]
+        require(len(drafts) == 1, "remote draft missing/ambiguous; left unpublished")
+        draft = drafts[0]
+        require(draft.get("draft") is True and draft.get("prerelease") is False and
+                draft.get("tag_name") == tag, "remote draft identity disagrees; left unpublished")
+        require(isinstance(draft.get("body"), str) and
+                draft["body"].replace("\r\n", "\n").rstrip() == notes.replace("\r\n", "\n").rstrip(),
+                "remote draft body disagrees; draft left unpublished")
+        assets = draft.get("assets", [])
+        require(len(assets) == 2 and {a.get("name") for a in assets} == {asset.name, manifest_path.name},
+                "remote assets disagree; draft left unpublished")
+        for path in (asset, manifest_path):
+            entry = next(a for a in assets if a.get("name") == path.name)
+            require(type(entry.get("id")) is int and entry.get("state") == "uploaded" and
+                    entry.get("size") == path.stat().st_size, "remote asset metadata disagrees")
+            content = run(root, "gh", "api", f"repos/{repo}/releases/assets/{entry['id']}", "--hostname",
+                          "github.com", "--method", "GET", "--header", "Accept: application/octet-stream")
+            require(content == read_file(path, MAX_TOTAL), "remote asset hash disagrees; draft left unpublished")
+        # Fail closed if the remote tag changed while the draft was uploaded.
+        remote = gh_json(root, f"repos/{repo}/commits/{tag}")
+        require(remote.get("sha") == head, "remote tag changed; draft left unpublished")
+        run(root, *commands[2])
+        published = gh_json(root, f"repos/{repo}/releases/tags/{tag}")
+        require(published.get("draft") is False and published.get("prerelease") is False and
+                published.get("tag_name") == tag and sorted(
+                    (a.get("id"), a.get("name"), a.get("size"), a.get("state"))
+                    for a in published.get("assets", [])) == sorted(
+                    (a.get("id"), a.get("name"), a.get("size"), a.get("state")) for a in assets),
+                "published release state/assets disagree; inspect release manually")
+        require(isinstance(published.get("body"), str) and
+                published["body"].replace("\r\n", "\n").rstrip() == notes.replace("\r\n", "\n").rstrip(),
+                "published release body disagrees; inspect release manually")
         return plan
-    run(root, *commands[0])
-    run(root, *commands[1])
-    pages = gh_json(root, f"repos/{repo}/releases?per_page=100", "--paginate", "--slurp")
-    drafts = [r for page in pages for r in page if r.get("tag_name") == tag]
-    require(len(drafts) == 1, "remote draft missing/ambiguous; left unpublished")
-    draft = drafts[0]
-    require(draft.get("draft") is True and draft.get("prerelease") is False and
-            draft.get("tag_name") == tag, "remote draft identity disagrees; left unpublished")
-    assets = draft.get("assets", [])
-    require(len(assets) == 2 and {a.get("name") for a in assets} == {asset.name, manifest_path.name},
-            "remote assets disagree; draft left unpublished")
-    for path in (asset, manifest_path):
-        entry = next(a for a in assets if a.get("name") == path.name)
-        require(type(entry.get("id")) is int and entry.get("state") == "uploaded" and
-                entry.get("size") == path.stat().st_size, "remote asset metadata disagrees")
-        content = run(root, "gh", "api", f"repos/{repo}/releases/assets/{entry['id']}", "--hostname",
-                      "github.com", "--method", "GET", "--header", "Accept: application/octet-stream")
-        require(content == read_file(path, MAX_TOTAL), "remote asset hash disagrees; draft left unpublished")
-    # Fail closed if the remote tag changed while the draft was uploaded.
-    remote = gh_json(root, f"repos/{repo}/commits/{tag}")
-    require(remote.get("sha") == head, "remote tag changed; draft left unpublished")
-    run(root, *commands[2])
-    published = gh_json(root, f"repos/{repo}/releases/tags/{tag}")
-    require(published.get("draft") is False and published.get("prerelease") is False and
-            published.get("tag_name") == tag and sorted(
-                (a.get("id"), a.get("name"), a.get("size"), a.get("state"))
-                for a in published.get("assets", [])) == sorted(
-                (a.get("id"), a.get("name"), a.get("size"), a.get("state")) for a in assets),
-            "published release state/assets disagree; inspect release manually")
-    return plan
 
 
 def main(argv=None):
@@ -299,6 +355,7 @@ def main(argv=None):
             p.add_argument("--zip", dest="asset", type=Path, required=True)
             p.add_argument("--manifest", type=Path, required=True)
         if command == "publish":
+            p.add_argument("--notes-file", type=Path, required=True, help="UTF-8 release notes (not a placeholder)")
             group = p.add_mutually_exclusive_group()
             group.add_argument("--publish", action="store_true")
             group.add_argument("--dry-run", action="store_true")
@@ -311,7 +368,8 @@ def main(argv=None):
             result = {"zip": str(args.asset.resolve()), "manifest": str(args.manifest.resolve()),
                       **verify(args.asset, args.manifest, args.repo)}
         else:
-            result = publish(args.root.resolve(), args.repo, args.asset, args.manifest, args.publish, args.confirm)
+            result = publish(args.root.resolve(), args.repo, args.asset, args.manifest, args.publish, args.confirm,
+                             notes_file=args.notes_file)
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0
     except (ReleaseError, OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile) as error:

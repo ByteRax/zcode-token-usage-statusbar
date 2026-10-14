@@ -23,7 +23,7 @@ sync_plugin.py 生成的副本；本脚本把副本同步进稳定运行时目�
   或环境变量 ZUSAGE_PLUGIN_AUTO_INSTALL=1（临时/测试用，优先级更高）。
 
 提示豁免：运行时目录写 .plugin-overlay-optout 后 hook 永久静默（remove 自动写入）；
-.plugin-overlay-nudge 是"只提示一次"的标记，安装成功后清除。
+未安装时每次 SessionStart 都提示；旧 .plugin-overlay-nudge 不再阻止提示，安装成功后清除。
 """
 import contextlib
 import hashlib
@@ -114,10 +114,10 @@ def is_zcode_asar(pi, asar):
         return False
 
 
-def resolve_paths():
+def resolve_paths(runtime=None):
     """返回 (runtime_dir, patch_install 模块)；无有效目标时 ASAR 为 None。"""
     pi = load_patch_install()
-    runtime = Path(os.environ.get("ZUSAGE_PLUGIN_RUNTIME") or default_runtime()).expanduser().resolve()
+    runtime = Path(runtime or os.environ.get("ZUSAGE_PLUGIN_RUNTIME") or default_runtime()).expanduser().resolve()
     pi.set_runtime(runtime)
     test_asar = os.environ.get("ZUSAGE_PLUGIN_ASAR")
     if test_asar:
@@ -486,15 +486,26 @@ def write_marker(marker):
         return False
 
 
-def _nudge(runtime, message):
-    write_marker(nudge_marker(runtime))
-    return message
+def _nudge(output, message):
+    from restart_notice import visible_context
+    output["systemMessage"] = message
+    output["hookSpecificOutput"] = {
+        "hookEventName": "SessionStart",
+        "additionalContext": visible_context("安装提醒", "状态条安装尚未完成。", message)}
+    return output
+
+
+def _install_overlay(runtime, pi):
+    from restart_notice import record_restart
+    return pi.install(before_publish=lambda installation: record_restart(
+        runtime, {"state": "pending-install", "installation": installation}))
 
 
 def run_hook():
     """SessionStart hook 主体：返回 hook 协议 JSON dict。任何异常都转成合法输出，
     绝不影响会话；patch_install 的人类可读输出重定向到 stderr，保证 stdout 纯 JSON。"""
     out = {"suppressOutput": True}
+    runtime = Path(os.environ.get("ZUSAGE_PLUGIN_RUNTIME") or default_runtime())
     try:
         runtime, pi = resolve_paths()
         changed = sync_runtime(runtime)["changed"]
@@ -503,25 +514,19 @@ def run_hook():
             start_auto_update(runtime, pi)
         except Exception as e:
             print(f"[zusage-plugin] 后台更新启动失败（已忽略）：{e}", file=sys.stderr)
+        if optout_marker(runtime).exists():
+            return out
         st = injected_status(pi)
         if st is None:
             return out  # 本机没有可定位的桌面客户端（远程会话等），静默
         save_runtime_config(runtime, pi)
         if st:
-            from restart_notice import MESSAGE, reminder_context
-            context = reminder_context(runtime)
-            if context:
-                cold_files = {"inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs"}
-                if (load_runtime_config(runtime) or {}).get("hot_reload") is False:
-                    cold_files.update(("overlay.js", "zusage.py"))
-                restart_files = [name for name in changed if name in cold_files]
-                out["systemMessage"] = (("zusage 悬浮条：" + " / ".join(restart_files) +
-                                         " 已更新，重启 ZCode 后生效。") if restart_files else MESSAGE)
-                out["hookSpecificOutput"] = {"hookEventName": "SessionStart",
-                                             "additionalContext": context}
-            return out
-        if optout_marker(runtime).exists():
-            return out
+            from restart_notice import session_notice
+            cold_files = {"inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs"}
+            if (load_runtime_config(runtime) or {}).get("hot_reload") is False:
+                cold_files.update(("overlay.js", "zusage.py"))
+            restart_files = [name for name in changed if name in cold_files]
+            return session_notice(runtime, out, injected=st, restart_files=restart_files)
         if auto_enabled(runtime):
             monitor_env = {name: os.environ.get(name) for name in
                            ("ZUSAGE_NO_MONITOR", "ZUSAGE_MONITOR_QUIET")}
@@ -529,7 +534,7 @@ def run_hook():
                 os.environ["ZUSAGE_NO_MONITOR"] = "1"
                 os.environ["ZUSAGE_MONITOR_QUIET"] = "1"  # 无窗口后台收尾
                 with contextlib.redirect_stdout(sys.stderr):
-                    ok = pi.install()
+                    ok = _install_overlay(runtime, pi)
             finally:
                 for name, value in monitor_env.items():
                     if value is None:
@@ -538,22 +543,23 @@ def run_hook():
                         os.environ[name] = value
             if ok:
                 clear_markers(runtime)
-                out["systemMessage"] = "悬浮状态条已自动安装，重启 ZCode 后生效。"
                 from restart_notice import session_notice
-                session_notice(runtime, out)
+                session_notice(runtime, out, injected=injected_status(pi))
             else:
-                out["systemMessage"] = _nudge(runtime, (
-                    "悬浮状态条自动安装未完成（详见客户端 hook 日志）。"
-                    "可稍后运行 /zcode-token-usage-statusbar:install-overlay 重试；本提示只出现一次。"))
+                from restart_notice import PREFIX
+                _nudge(out, (PREFIX + "用量状态条自动安装未完成。"
+                             "请运行 /zcode-token-usage-statusbar:install-overlay 重试；"
+                             "不需要请运行 /zcode-token-usage-statusbar:uninstall-overlay，之后不再提示。"
+                             "如果仍然失败，请查看客户端插件日志。"))
             return out
-        if not nudge_marker(runtime).exists():
-            out["systemMessage"] = _nudge(runtime, (
-                "zcode-token-usage-statusbar 可为本机 ZCode 客户端安装悬浮用量状态条"
-                "（修改 app.asar，重启客户端生效）。需要请运行 /zcode-token-usage-statusbar:install-overlay；"
-                "不需要请运行 /zcode-token-usage-statusbar:uninstall-overlay，之后不再提示。"))
-        return out
+        from restart_notice import INSTALL_MESSAGE
+        return _nudge(out, INSTALL_MESSAGE)
     except Exception as e:  # noqa: BLE001 — hook 绝不能抛
-        out["systemMessage"] = f"zusage 插件自检失败（已忽略）：{e}"
+        message = f"zusage 插件自检失败（已忽略）：{e}"
+        if optout_marker(runtime).exists():
+            print("[zusage-plugin] " + message, file=sys.stderr)
+            return {"suppressOutput": True}
+        out["systemMessage"] = message
         return out
 
 
@@ -578,15 +584,12 @@ def main():
         return
     if cmd == "install":
         clear_markers(runtime)  # 主动安装 = 重新参与提示逻辑
-        previously_injected = injected_status(pi)
-        ok = pi.install()
-        if ok and previously_injected is False:
-            from restart_notice import record_restart
-            record_restart(runtime)
+        ok = _install_overlay(runtime, pi)
         if ok:
-            from restart_notice import MESSAGE, reminder_context
-            if reminder_context(runtime):
-                print(MESSAGE)
+            from restart_notice import reminder
+            notice = reminder(runtime, injected=injected_status(pi))
+            if notice:
+                print(notice["message"])
         if ok or injected_status(pi) is not None:
             save_runtime_config(runtime, pi)
     elif cmd == "remove":
