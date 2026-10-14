@@ -60,7 +60,7 @@
 
 **装插件不等于装状态条。** 默认不自动安装，未注入时仅重启无法安装状态条。只需要查询工具与回答速率，可以跳过浮层安装。状态条会修改客户端文件，执行前请确认信任此项目。
 
-如需自动安装/修复，在 `~/.zcode/zcode-token-usage-statusbar/config.json` 中合并 `"plugin_auto_install_overlay": true`（保留其它设置），或设置环境变量 `ZUSAGE_PLUGIN_AUTO_INSTALL=1`，然后新建或恢复会话。成功后仍需完全重启。未安装时每次会话启动都会提示安装；不需要浮层可运行 `/zcode-token-usage-statusbar:uninstall-overlay`，之后不再提示。
+如需自动安装/修复，在 `~/.zcode/zcode-token-usage-statusbar/config.json` 中合并 `"plugin_auto_install_overlay": true`（保留其它设置），或设置环境变量 `ZUSAGE_PLUGIN_AUTO_INSTALL=1`，然后新建或恢复会话。成功后仍需完全重启。未安装时每次会话启动都会提示安装；不需要浮层可运行 `/uninstall-overlay`，之后不再提示。
 
 Windows 若找不到 `python3`，需在插件的 `.mcp.json` 与 `hooks/hooks.json` 中改用可用的 Python 命令，再刷新安装；只改仓库不会改变已安装副本。
 
@@ -320,7 +320,7 @@ python3 patch_install.py check
 **先停用，再清理文件。不要只删除运行目录。** 自动更新或仍在运行的主进程可能重建文件。
 
 1. 如果使用插件，在 ⚙ 关闭自动更新；没有状态条时在现有配置中设置 `plugin_auto_update: false`。等待已经开始的更新结束。
-2. 在插件仍启用时执行 `/zcode-token-usage-statusbar:uninstall-overlay`，确认成功。这会移除注入并留下阻止重注入的标记。
+2. 在插件仍启用时执行 `/uninstall-overlay`，确认成功。这会移除注入并留下阻止重注入的标记。
 3. 在 **设置 → 插件 → 已安装 → ZCode Token Usage Statusbar → ⋯ → 卸载**。这是卸载插件组件，不负责移除外部状态条与个人配置。
 4. 完全退出并重开 ZCode，确认状态条消失。若此前也用一键安装器注册过 `/usage`，在插件卸载后运行 `python install.py --remove` 清理独立注册与运行目录，再重启确认。
 5. 不再需要插件市场时，在设置里移除 `zusage-marketplace`。保留供其它插件使用的市场和目录，不要删除整个 `.zcode`。

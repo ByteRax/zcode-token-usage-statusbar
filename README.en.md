@@ -153,7 +153,7 @@ python install.py --remove
 **Plugin installation**: follow this order so the bar is removed along with the plugin:
 
 1. Turn off automatic updates in ⚙ and let any update already running finish.
-2. Run `/zcode-token-usage-statusbar:uninstall-overlay` and confirm success.
+2. Run `/uninstall-overlay` and confirm success.
 3. Open **Settings → Plugin → Installed → ZCode Token Usage Statusbar → ⋯ → Uninstall**.
 4. Quit ZCode completely, reopen it and confirm the bar is gone.
 

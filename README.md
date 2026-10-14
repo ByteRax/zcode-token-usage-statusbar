@@ -153,7 +153,7 @@ python install.py --remove
 **插件用户**，按顺序操作，避免只删插件却留下状态条：
 
 1. 在 ⚙ 中关闭自动更新；若更新正在进行，等它结束。
-2. 运行 `/zcode-token-usage-statusbar:uninstall-overlay`，确认成功。
+2. 运行 `/uninstall-overlay`，确认成功。
 3. 打开 **设置 → 插件 → 已安装 → ZCode Token Usage Statusbar → ⋯ → 卸载**。
 4. 完全退出并重开 ZCode，确认状态条消失。
 

@@ -21,7 +21,7 @@ description: 为本机 ZCode 桌面客户端安装/更新悬浮用量状态条�
 
 补充说明（用户问起时再展开，不必每次输出）：
 
-- 卸载：`/zcode-token-usage-statusbar:uninstall-overlay`（卸载后 hook 不再提示）。
+- 卸载：`/uninstall-overlay`（卸载后 hook 不再提示）。
 - 自动安装默认关闭：在 `~/.zcode/zcode-token-usage-statusbar/config.json` 中合并 `"plugin_auto_install_overlay": true`（保留其它设置），或设置环境变量 `ZUSAGE_PLUGIN_AUTO_INSTALL=1`，新建/恢复会话时 hook 会自动安装/修复，成功后仍需完全重启。未安装时仅重启无效，每次会话启动都会提示安装，直到安装成功或执行卸载命令豁免。
 - 该安装只影响桌面客户端；SSH 远程会话、Web 版与本插件无关。
 
