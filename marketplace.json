@@ -1,26 +1,33 @@
 {
+  "description": "zcode-token-usage-statusbar \u63d2\u4ef6\u5e02\u573a\uff1aZCode token \u7528\u91cf\u67e5\u8be2\uff08MCP / \u547d\u4ee4 / \u6280\u80fd\uff09\u4e0e\u684c\u9762\u60ac\u6d6e\u72b6\u6001\u6761\u5b89\u88c5\u3002",
   "name": "zusage-marketplace",
-  "description": "zcode-token-usage-statusbar 插件市场：ZCode token 用量查询（MCP / 命令 / 技能）与桌面悬浮状态条安装。",
   "owner": {
     "name": "xhwxt"
   },
   "plugins": [
     {
-      "name": "zcode-token-usage-statusbar",
-      "source": "./plugins/zcode-token-usage-statusbar",
-      "description": "ZCode token 用量查询（token_usage MCP 工具 + /usage 命令 + 技能，读本地 usage 数据库）；可选为桌面客户端安装悬浮用量状态条（需重启客户端生效，默认不自动装）；每次回答末尾自动追加逐问速率行（即时 tok/s 含思考、首字延迟、输出 token、生成耗时、段数/峰值与会话累计，--current 守卫防旧数据充数）。",
-      "version": "1.4.0",
       "author": {
         "name": "xhwxt"
       },
       "category": "monitoring",
+      "description": "ZCode token \u7528\u91cf\u67e5\u8be2\uff08token_usage MCP \u5de5\u5177 + /usage \u547d\u4ee4 + \u6280\u80fd\uff0c\u8bfb\u672c\u5730 usage \u6570\u636e\u5e93\uff09\uff1b\u53ef\u9009\u4e3a\u684c\u9762\u5ba2\u6237\u7aef\u5b89\u88c5\u60ac\u6d6e\u7528\u91cf\u72b6\u6001\u6761\uff08\u9700\u91cd\u542f\u5ba2\u6237\u7aef\u751f\u6548\uff0c\u9ed8\u8ba4\u4e0d\u81ea\u52a8\u88c5\uff09\uff1b\u6bcf\u6b21\u56de\u7b54\u672b\u5c3e\u81ea\u52a8\u8ffd\u52a0\u9010\u95ee\u901f\u7387\u884c\uff08\u5373\u65f6 tok/s \u542b\u601d\u8003\u3001\u9996\u5b57\u5ef6\u8fdf\u3001\u8f93\u51fa token\u3001\u751f\u6210\u8017\u65f6\u3001\u6bb5\u6570/\u5cf0\u503c\u4e0e\u4f1a\u8bdd\u7d2f\u8ba1\uff0c--current \u5b88\u536b\u9632\u65e7\u6570\u636e\u5145\u6570\uff09\u3002",
       "keywords": [
         "token",
         "usage",
         "statusbar",
         "monitor",
         "zusage"
-      ]
+      ],
+      "name": "zcode-token-usage-statusbar",
+      "source": {
+        "path": "plugins/zcode-token-usage-statusbar",
+        "sha256": "f674d956fe756c649eda45d993c15e6893659ab5c82d48e80b953e4c6867efbb",
+        "source": "url",
+        "stripRoot": false,
+        "type": "zip",
+        "url": "https://github.com/ByteRax/zcode-token-usage-statusbar/releases/download/v1.4.0/zcode-token-usage-statusbar-v1.4.0.zip"
+      },
+      "version": "1.4.0"
     }
   ]
 }
