@@ -71,17 +71,19 @@ Or enter these commands in ZCode, replacing the path with your repository direct
 
 #### Add the floating bar
 
-After either plugin installation method, leave the plugin enabled, start or reopen a session, and run:
+> **Scope:** References to automatic bar installation/repair being enabled by default apply only to the current `main` / newer local source, not yet published to the stable channel. Stable `v1.4.1` from `#plugin-releases` still defaults to disabled; run `/install-overlay`, or merge `"plugin_auto_install_overlay": true` into the config file below and start or resume a session.
+
+After installing the newer local source plugin from the current `main`, leave the plugin enabled and start or reopen a session. The plugin automatically installs/repairs the bar by default. **This modifies the client's `app.asar`; only enable it if you trust this project. After installation succeeds, quit ZCode completely and reopen it.** Closing the window alone is not enough.
+
+If automatic installation fails, use this manual fallback and follow the actual output to troubleshoot. A full restart is still required after success:
 
 ```text
-/zcode-token-usage-statusbar:install-overlay
+/install-overlay
 ```
 
-After installation succeeds, **quit ZCode completely and reopen it**.
+**Only want queries and reply rates?** Merge `"plugin_auto_install_overlay": false` into `~/.zcode/zcode-token-usage-statusbar/config.json` without replacing other settings, or run `/uninstall-overlay` to remove the bar and keep an uninstall opt-out that blocks automatic reinjection and installation reminders.
 
-**Installing the plugin alone does not install the bar.** Automatic installation is off by default; restarting an uninjected client cannot install it. Skip this step if you only want queries and reply rates. The bar installer modifies client files; only run it if you trust this project.
-
-To opt in to automatic installation/repair, merge `"plugin_auto_install_overlay": true` into `~/.zcode/zcode-token-usage-statusbar/config.json` without replacing other settings, or set `ZUSAGE_PLUGIN_AUTO_INSTALL=1`, then start or resume a session. A full restart is still required after installation succeeds. Each session start repeats the installation reminder until the bar is installed or you run `uninstall-overlay` to opt out.
+A missing config file or key defaults to enabled; an existing explicit `false` is preserved. `ZUSAGE_PLUGIN_AUTO_INSTALL=1` / `0` takes precedence over config, but never bypasses the uninstall opt-out. Without an environment override, corrupt config or a non-boolean value does not enable automatic installation.
 
 **How do I update it later?**
 
@@ -119,14 +121,14 @@ The plugin command's full name is `/zcode-token-usage-statusbar:usage`.
 
 - **Usage data is not uploaded**: local queries do not use the network. Configured remote sessions read the remote database over your chosen transport. Plugin updates download code over the network.
 - **The bar modifies client files**: it is not a native ZCode feature. Removal strips only this project's injection, without reverting the client version.
-- **ZCode upgrades may remove the bar**: rerun the installer. The plugin can optionally repair the injection, but a restart is still required.
+- **ZCode upgrades may remove the bar**: the plugin repairs the injection by default; quit completely and reopen after success. Use the installer as a fallback if automatic repair fails.
 - **Uninstalling the plugin may leave the bar behind**: follow the removal steps below.
 
 ## FAQ
 
 **I installed the plugin. Where is the bar?**
 
-The plugin does not install it automatically by default. Run `install-overlay`, wait for success, then quit and reopen ZCode.
+Leave the plugin enabled and start or reopen a session to trigger automatic installation/repair, then quit ZCode completely and reopen after success. If automatic installation fails, use `install-overlay` as a fallback and check permissions, config and the uninstall opt-out. Restarting alone cannot repair a bar that was not successfully installed.
 
 **Why don't the numbers change continuously?**
 
@@ -153,7 +155,7 @@ python install.py --remove
 **Plugin installation**: follow this order so the bar is removed along with the plugin:
 
 1. Turn off automatic updates in ⚙ and let any update already running finish.
-2. Run `/zcode-token-usage-statusbar:uninstall-overlay` and confirm success.
+2. Run `/uninstall-overlay` and confirm success.
 3. Open **Settings → Plugin → Installed → ZCode Token Usage Statusbar → ⋯ → Uninstall**.
 4. Quit ZCode completely, reopen it and confirm the bar is gone.
 

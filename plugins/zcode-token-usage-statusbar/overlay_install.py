@@ -18,9 +18,9 @@ sync_plugin.py 生成的副本；本脚本把副本同步进稳定运行时目�
 测试接缝（环境变量）：ZUSAGE_PLUGIN_RUNTIME / ZUSAGE_PLUGIN_ASAR 可把运行时目录和
 目标 asar 指到别处（自测用临时副本，不碰真机）。
 
-自动安装开关（默认关，开(enable)后 SessionStart hook 自动执行 install）：
-  运行时目录 config.json 写 "plugin_auto_install_overlay": true，
-  或环境变量 ZUSAGE_PLUGIN_AUTO_INSTALL=1（临时/测试用，优先级更高）。
+自动安装开关（默认开，SessionStart hook 自动执行安装/修复）：
+  运行时目录 config.json 写 "plugin_auto_install_overlay": false 可关闭；
+  配置损坏或字段不是布尔值时不自动安装，环境变量 ZUSAGE_PLUGIN_AUTO_INSTALL 优先。
 
 提示豁免：运行时目录写 .plugin-overlay-optout 后 hook 永久静默（remove 自动写入）；
 未安装时每次 SessionStart 都提示；旧 .plugin-overlay-nudge 不再阻止提示，安装成功后清除。
@@ -474,7 +474,8 @@ def auto_enabled(runtime):
     v = os.environ.get("ZUSAGE_PLUGIN_AUTO_INSTALL")
     if v is not None:
         return v.strip().lower() in ("1", "true", "yes", "on")
-    return (load_runtime_config(runtime) or {}).get("plugin_auto_install_overlay") is True
+    config = load_runtime_config(runtime)
+    return config is not None and config.get("plugin_auto_install_overlay", True) is True
 
 
 def write_marker(marker):

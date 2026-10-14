@@ -1,7 +1,7 @@
 ---
-description: 为本机 ZCode 桌面客户端安装/更新悬浮用量状态条（修改 app.asar，重启客户端生效）
+description: 自动安装失败时手动安装/更新本机 ZCode 悬浮用量状态条（修改 app.asar，完全退出并重开生效）
 ---
-帮助用户把 zcode-token-usage-statusbar 的悬浮状态条安装到本机 ZCode 桌面客户端。
+帮助用户在默认自动安装/修复失败时，手动把 zcode-token-usage-statusbar 的悬浮状态条安装到本机 ZCode 桌面客户端；此命令是兜底，不是默认必经步骤。
 
 执行：用 Bash 运行安装器（插件根目录 = 本命令文件所在目录的上一级）：
 
@@ -21,8 +21,9 @@ description: 为本机 ZCode 桌面客户端安装/更新悬浮用量状态条�
 
 补充说明（用户问起时再展开，不必每次输出）：
 
-- 卸载：`/zcode-token-usage-statusbar:uninstall-overlay`（卸载后 hook 不再提示）。
-- 自动安装默认关闭：在 `~/.zcode/zcode-token-usage-statusbar/config.json` 中合并 `"plugin_auto_install_overlay": true`（保留其它设置），或设置环境变量 `ZUSAGE_PLUGIN_AUTO_INSTALL=1`，新建/恢复会话时 hook 会自动安装/修复，成功后仍需完全重启。未安装时仅重启无效，每次会话启动都会提示安装，直到安装成功或执行卸载命令豁免。
+- 卸载：`/uninstall-overlay`（留下卸载豁免，阻止自动重注入与安装提醒）。
+- 自动安装/修复默认开启：配置文件不存在或缺少 `plugin_auto_install_overlay` 字段时启用，已有的显式 `false` 会保留；环境变量 `ZUSAGE_PLUGIN_AUTO_INSTALL=1` / `0` 优先于配置，但不能绕过卸载豁免。未设置环境变量时，损坏配置或非布尔字段不开启。自动安装会修改 `app.asar`，成功后仍需完全退出并重开；失败时才使用本命令兜底，仅重启无法修复尚未成功安装的状态条。
+- 只需要查询与回答速率时，在 `~/.zcode/zcode-token-usage-statusbar/config.json` 中合并 `"plugin_auto_install_overlay": false`（保留其它设置），或执行卸载命令豁免。
 - 该安装只影响桌面客户端；SSH 远程会话、Web 版与本插件无关。
 
 用户附加要求：$ARGUMENTS

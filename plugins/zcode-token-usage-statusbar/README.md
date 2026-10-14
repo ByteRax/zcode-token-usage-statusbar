@@ -2,7 +2,9 @@
 
 在 ZCode 对话里查看 token 用量、生成速度和上下文容量。
 
-本插件提供用量查询与回答速率；悬浮状态条需要单独安装。用量数据不上传，插件更新会从已配置的来源下载代码。
+本插件提供用量查询与回答速率；安装/修复悬浮状态条会修改客户端 `app.asar`，成功后需完全退出并重开。用量数据不上传，插件更新会从已配置的来源下载代码。
+
+> **适用范围：** 本文关于状态条默认自动安装/修复的说明仅适用于当前 `main` / 本地新版源码，尚未发布到正式渠道。`#plugin-releases` 的正式版 `v1.4.1` 仍默认关闭自动安装；请执行 `/install-overlay`，或在下述配置文件中合并 `"plugin_auto_install_overlay": true` 后新建或恢复会话。
 
 ## 安装
 
@@ -23,15 +25,17 @@
 
 ### 安装状态条
 
-两种方式装好插件后，新建或重新打开会话，输入：
+安装当前 `main` 的本地新版源码插件后，保持插件启用，新建或重新打开会话，插件默认自动安装/修复状态条。**这会修改客户端的 `app.asar`，请确认信任此项目。成功后必须完全退出并重开 ZCode**，只关闭窗口不算退出。
+
+自动安装失败时，再手动执行以下兜底命令，按实际输出排查；成功后仍需完全退出并重开：
 
 ```text
-/zcode-token-usage-statusbar:install-overlay
+/install-overlay
 ```
 
-安装成功后，完全退出并重开 ZCode。**默认不自动安装，未注入时仅重启无法安装状态条。** 只需要查询工具和回答速率时可以跳过状态条安装；它会修改客户端文件，请确认信任后再执行。
+只需要查询工具和回答速率时，在 `~/.zcode/zcode-token-usage-statusbar/config.json` 中合并 `"plugin_auto_install_overlay": false`（保留其它设置），或运行 `/uninstall-overlay` 移除状态条并保留卸载豁免，阻止自动重注入与安装提醒。
 
-如需自动安装/修复，在 `~/.zcode/zcode-token-usage-statusbar/config.json` 中合并 `"plugin_auto_install_overlay": true`（保留其它设置），或设置环境变量 `ZUSAGE_PLUGIN_AUTO_INSTALL=1`，然后新建或恢复会话；成功后仍需完全重启。未安装时每次会话启动都会提示，运行 `/zcode-token-usage-statusbar:uninstall-overlay` 可停止安装提醒。
+配置文件不存在或缺少该字段时默认开启；已有的显式 `false` 会保留。环境变量 `ZUSAGE_PLUGIN_AUTO_INSTALL=1` / `0` 优先于配置，但不能绕过卸载豁免。未设置环境变量时，损坏配置或非布尔字段不会启用自动安装。
 
 提醒会标注「zcode-token-usage-statusbar 插件提醒」，使用加粗文字和红色圆点。状态条已加载时，提醒正文会显示为红色；首次尚未加载时，客户端会过滤 HTML 颜色样式，正文只能加粗，红色圆点仍保留。
 
@@ -48,12 +52,12 @@
 
 本地市场不会自动 `git pull`。先自行更新源码，然后刷新 `zusage-marketplace` 并在插件页更新本插件；修改仓库不会自动修改安装缓存。GitHub 更新只使用正式 Release，包与市场清单必须一致。
 
-更新后重开会话；主进程文件变化时按提示完全重启客户端。ZCode 升级可能移除状态条，重新运行安装命令即可恢复。
+更新后重开会话；主进程文件变化时按提示完全重启客户端。ZCode 升级可能移除状态条，插件默认自动修复，失败时再运行安装命令兜底。
 
 ## 卸载
 
 1. 关闭自动更新，等待正在进行的更新结束。
-2. 运行 `/zcode-token-usage-statusbar:uninstall-overlay`，确认成功。
+2. 运行 `/uninstall-overlay`，确认成功。
 3. **设置 → 插件 → 已安装 → ZCode Token Usage Statusbar → ⋯ → 卸载**。
 4. 完全退出并重开 ZCode，确认状态条消失。
 
@@ -65,7 +69,7 @@
 
 - `answer_rate_line: false`：关闭回答速率行。
 - `plugin_auto_update: false`：关闭插件自动更新。
-- `plugin_auto_install_overlay: true`：新建/恢复会话时自动修复状态条注入；默认关，修复后仍需重启。
+- `plugin_auto_install_overlay: false`：关闭新建/恢复会话时自动安装/修复状态条；默认开，成功后仍需完全退出并重开。
 
 Windows 若没有 `python3`，需要把 `.mcp.json` 和 `hooks/hooks.json` 中的 Python 命令改成可用的名称，再刷新安装。
 
