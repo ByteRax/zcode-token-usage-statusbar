@@ -58,7 +58,9 @@
 
 安装成功后，**完全退出并重新打开 ZCode**；只关闭窗口不一定退出主进程。
 
-**装插件不等于装状态条。** 只需要查询工具与回答速率，可以跳过浮层安装。状态条会修改客户端文件，执行前请确认信任此项目。
+**装插件不等于装状态条。** 默认不自动安装，未注入时仅重启无法安装状态条。只需要查询工具与回答速率，可以跳过浮层安装。状态条会修改客户端文件，执行前请确认信任此项目。
+
+如需自动安装/修复，在 `~/.zcode/zcode-token-usage-statusbar/config.json` 中合并 `"plugin_auto_install_overlay": true`（保留其它设置），或设置环境变量 `ZUSAGE_PLUGIN_AUTO_INSTALL=1`，然后新建或恢复会话。成功后仍需完全重启。未安装时每次会话启动都会提示安装；不需要浮层可运行 `/zcode-token-usage-statusbar:uninstall-overlay`，之后不再提示。
 
 Windows 若找不到 `python3`，需在插件的 `.mcp.json` 与 `hooks/hooks.json` 中改用可用的 Python 命令，再刷新安装；只改仓库不会改变已安装副本。
 

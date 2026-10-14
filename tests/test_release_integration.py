@@ -81,6 +81,8 @@ class ReleaseIntegrationTests(unittest.TestCase):
         self.catalog = Path(self.built["catalog"])
         self.output = self.base / "unpacked"
         self.calls = []
+        self.notes_file = self.base / "release-notes.md"
+        self.notes_file.write_text("## 新增\n\n- 发布可独立安装的插件包，并校验下载完整性。\n", encoding="utf-8")
 
     def stub_run(self, root, *args, **kwargs):
         self.assertEqual(Path(root).resolve(), self.root)
@@ -259,10 +261,13 @@ class ReleaseIntegrationTests(unittest.TestCase):
         before = {path.relative_to(self.base).as_posix(): path.read_bytes()
                   for path in self.base.rglob("*") if path.is_file()}
         with mock.patch.object(self.tool, "run", side_effect=self.stub_run):
-            plan = self.tool.publish(self.root, REPOSITORY, self.archive, self.manifest)
+            plan = self.tool.publish(self.root, REPOSITORY, self.archive, self.manifest, notes_file=self.notes_file)
         self.assertTrue(plan["dryRun"])
         self.assertEqual((plan["repository"], plan["tag"], plan["commit"]), (REPOSITORY, self.tag, HEAD))
         self.assertEqual((plan["zip"], plan["manifest"]), (str(self.archive), str(self.manifest)))
+        self.assertEqual(plan["notesFile"], str(self.notes_file))
+        self.assertEqual(plan["notes"], self.notes_file.read_text(encoding="utf-8"))
+        self.assertEqual(plan["commands"][0][-2:], ["--notes-file", str(self.notes_file)])
         self.assertEqual([command[:3] for command in plan["commands"]],
                          [["gh", "release", "create"], ["gh", "release", "upload"],
                           ["gh", "release", "edit"]])
@@ -276,6 +281,33 @@ class ReleaseIntegrationTests(unittest.TestCase):
         self.assertFalse((self.root / ".git").exists())
         self.assertEqual(list((self.base / "home").iterdir()), [])
 
+    def test_publish_dry_run_verifies_and_preflights_same_owned_asset_snapshot(self):
+        expected = {self.archive.name: self.archive.read_bytes(), self.manifest.name: self.manifest.read_bytes()}
+        original_verify = self.tool.verify
+        original_preflight = self.tool.preflight
+        snapshots = []
+        def checked_verify(asset, manifest, repo):
+            snapshots.extend((asset, manifest))
+            self.assertNotEqual(asset, self.archive)
+            self.assertNotEqual(manifest, self.manifest)
+            self.assertEqual(asset.parent, manifest.parent)
+            self.assertEqual({path.name: path.read_bytes() for path in snapshots}, expected)
+            return original_verify(asset, manifest, repo)
+        def checked_preflight(root, repo, manifest, asset):
+            self.assertEqual(asset, snapshots[0])
+            self.assertEqual({path.name: path.read_bytes() for path in snapshots}, expected)
+            return original_preflight(root, repo, manifest, asset)
+        with mock.patch.object(self.tool, "verify", side_effect=checked_verify), \
+                mock.patch.object(self.tool, "preflight", side_effect=checked_preflight), \
+                mock.patch.object(self.tool, "run", side_effect=self.stub_run):
+            plan = self.tool.publish(self.root, REPOSITORY, self.archive, self.manifest, notes_file=self.notes_file)
+        self.assertTrue(plan["dryRun"])
+        self.assertEqual(plan["commands"][1][4:6], [str(self.archive), str(self.manifest)])
+        self.assertEqual(len(snapshots), 2)
+        self.assertFalse(snapshots[0].parent.exists())
+        self.assertEqual({self.archive.name: self.archive.read_bytes(),
+                          self.manifest.name: self.manifest.read_bytes()}, expected)
+
     def test_dirty_fixture_preflight_stops_before_github_or_publish(self):
         def dirty_run(root, *args):
             if args[:2] == ("git", "status"):
@@ -285,7 +317,7 @@ class ReleaseIntegrationTests(unittest.TestCase):
 
         with mock.patch.object(self.tool, "run", side_effect=dirty_run):
             with self.assertRaisesRegex(self.tool.ReleaseError, "dirty or untracked"):
-                self.tool.publish(self.root, REPOSITORY, self.archive, self.manifest)
+                self.tool.publish(self.root, REPOSITORY, self.archive, self.manifest, notes_file=self.notes_file)
         self.assertTrue(self.calls)
         self.assertFalse(any(call[0] == "gh" for call in self.calls))
         self.assertFalse(self.output.exists())
@@ -293,7 +325,8 @@ class ReleaseIntegrationTests(unittest.TestCase):
     def test_explicit_publish_without_confirmation_stops_before_preflight(self):
         with mock.patch.object(self.tool, "run", side_effect=self.stub_run):
             with self.assertRaisesRegex(self.tool.ReleaseError, "--confirm"):
-                self.tool.publish(self.root, REPOSITORY, self.archive, self.manifest, approved=True)
+                self.tool.publish(self.root, REPOSITORY, self.archive, self.manifest, approved=True,
+                                  notes_file=self.notes_file)
         self.assertEqual(self.calls, [])
 
     def test_built_asset_tamper_and_expected_source_mismatch_never_extract(self):

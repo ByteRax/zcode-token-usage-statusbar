@@ -1,5 +1,5 @@
 {
-  "description": "zcode-token-usage-statusbar: 会话启动时同步运行时文件并按需安装悬浮状态条(默认只提示一次,auto 开关后自动装);每次提问记录时刻并下达「本问统计」指令(回复末尾追加逐问速率行,--current 守卫防止拿上一轮数据充数)",
+  "description": "zcode-token-usage-statusbar: 会话启动时同步运行时文件;默认不自动安装悬浮状态条,未安装时每次启动提示 /zcode-token-usage-statusbar:install-overlay;config.json 设置 plugin_auto_install_overlay=true 或 ZUSAGE_PLUGIN_AUTO_INSTALL=1 后自动安装/修复;仅已注入且待加载时提醒重启,uninstall-overlay 可豁免提醒;每次提问记录时刻并下达「本问统计」指令(回复末尾追加逐问速率行,--current 守卫防止拿上一轮数据充数)",
   "hooks": {
     "SessionStart": [
       {

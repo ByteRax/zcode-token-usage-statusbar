@@ -50,6 +50,17 @@ class PluginPackageTests(unittest.TestCase):
             self.assertIn(name, installer.RUNTIME_FILES)
             self.assertEqual((ROOT / name).read_bytes(), (PLUGIN / name).read_bytes())
 
+    def test_release_skill_requires_post_release_pr_merge_and_verification(self):
+        text = (ROOT / ".zcode/skills/zcode-github-release/SKILL.md").read_text(encoding="utf-8")
+        section = text.split("## 发布后合并源码 PR\n", 1)[1].split("## 收尾\n", 1)[0]
+        self.assertIn("创建并合并源码 PR → 验收合并结果", text)
+        self.assertIn("完整正式发版默认包含发布后源码 PR 的创建与合并", text)
+        for requirement in ("gh pr list", "gh pr create", "gh pr merge", "--match-head-commit",
+                            "statusCheckRollup", "MERGED", "远端 base tip", "不移动已发布 tag"):
+            self.assertIn(requirement, section)
+        self.assertIn("仅预演、仅 Release、仅修改说明或用户明确禁止合并时不执行", text)
+        self.assertIn("只进入 PR", section)
+
     def test_release_skill_is_project_only_and_uses_root_tools(self):
         skill = ROOT / ".zcode" / "skills" / "zcode-github-release"
         text = (skill / "SKILL.md").read_text(encoding="utf-8")

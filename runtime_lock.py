@@ -133,10 +133,33 @@ def record_restart(runtime, data):
         previous = _read_marker(marker)
         hashes = _hashes(previous.get("hashes"))
         hashes.update(_hashes(data.get("hashes")))
+        if data.get("state") == "pending-install":
+            previous.pop("publishedAt", None)  # A retry/new intent cannot inherit an earlier publication.
         previous.update(data)
         previous.update(createdAt=time.time(), hashes=hashes)
         _write_marker(marker, previous)
     return {"ok": True}
+
+
+@contextmanager
+def publish_install(runtime, installation):
+    """ASAR publication and its existing intent share the ack lock; never recreate a marker."""
+    runtime = Path(runtime)
+    marker = runtime / ".plugin-restart-required"
+    if not marker.is_file():
+        yield
+        return
+    with file_lock(runtime / "plugin-restart.lock"):
+        data = _read_marker(marker)
+        owned = data.get("installation") == installation
+        yield
+        if owned and marker.is_file() and _read_marker(marker) == data:
+            data["publishedAt"] = time.time() * 1000
+            try:
+                _write_marker(marker, data)
+            except OSError as exc:
+                # ASAR is already published. Leave the intent unconfirmed, not a false success.
+                print("[zusage-plugin] installation publication record failed: " + str(exc), file=sys.stderr)
 
 
 def ack_restart(runtime, loaded):
@@ -155,6 +178,14 @@ def ack_restart(runtime, loaded):
             created_at = marker.stat().st_mtime
         if isinstance(loaded_at, (int, float)) and created_at * 1000 > loaded_at:
             return {"ok": True, "cleared": False}
+        installation = data.get("installation")
+        if data.get("state") == "pending-install" or installation is not None:
+            published_at = data.get("publishedAt")
+            if (not isinstance(installation, dict)
+                    or not isinstance(published_at, (int, float)) or isinstance(published_at, bool)
+                    or not isinstance(loaded_at, (int, float)) or isinstance(loaded_at, bool)
+                    or loaded_at <= published_at):
+                return {"ok": True, "cleared": False}
         hashes = _hashes(data.get("hashes"))
         if hashes:
             remaining = {key: digest for key, digest in hashes.items() if loaded.get(key) != digest}

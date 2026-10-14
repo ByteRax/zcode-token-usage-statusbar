@@ -103,7 +103,7 @@ python3 release_tool.py verify --repo OWNER/REPO \
 
 ### 发布预演与正式渠道
 
-`release_tool.py publish --dry-run` 使用同样的 `--repo`、`--zip` 和 `--manifest` 参数。预演仍要求相关源码已提交、目标仓库权限可用、本地与远端 tag 指向该提交且 Release 尚不存在；它不是绕过这些前置条件的离线检查。
+`release_tool.py publish --dry-run` 使用同样的 `--repo`、`--zip` 和 `--manifest` 参数，并必须提供 `--notes-file /绝对路径/release-notes.md`。先核对上一正式 tag 到目标提交的实际变化，生成包含修复、升级注意和验证结果的非空 UTF-8 更新说明；不要只填版本号。预演会展示完整正文，说明变化后应重新预演。预演仍要求相关源码已提交、目标仓库权限可用、本地与远端 tag 指向该提交且 Release 尚不存在；它不是绕过这些前置条件的离线检查。
 
 正式发布还需明确 `--publish` 与 `--confirm OWNER/REPO/v版本号`，先上传草稿并核验下载字节，再发布。提交、tag 推送、Release 和渠道清单推送分别需要授权；默认不替用户执行。
 

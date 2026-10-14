@@ -29,7 +29,11 @@
 /zcode-token-usage-statusbar:install-overlay
 ```
 
-安装成功后，完全退出并重开 ZCode。只需要查询工具和回答速率时可以跳过状态条安装；它会修改客户端文件，请确认信任后再执行。
+安装成功后，完全退出并重开 ZCode。**默认不自动安装，未注入时仅重启无法安装状态条。** 只需要查询工具和回答速率时可以跳过状态条安装；它会修改客户端文件，请确认信任后再执行。
+
+如需自动安装/修复，在 `~/.zcode/zcode-token-usage-statusbar/config.json` 中合并 `"plugin_auto_install_overlay": true`（保留其它设置），或设置环境变量 `ZUSAGE_PLUGIN_AUTO_INSTALL=1`，然后新建或恢复会话；成功后仍需完全重启。未安装时每次会话启动都会提示，运行 `/zcode-token-usage-statusbar:uninstall-overlay` 可停止安装提醒。
+
+提醒会标注「zcode-token-usage-statusbar 插件提醒」，使用加粗文字和红色圆点。状态条已加载时，提醒正文会显示为红色；首次尚未加载时，客户端会过滤 HTML 颜色样式，正文只能加粗，红色圆点仍保留。
 
 ## 使用
 

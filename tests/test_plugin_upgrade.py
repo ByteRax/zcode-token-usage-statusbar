@@ -3,11 +3,13 @@
 import contextlib
 import importlib.util
 import io
+import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import struct
+import subprocess
 import sys
 import tempfile
 import types
@@ -46,6 +48,7 @@ class PluginUpgradeTests(unittest.TestCase):
         for name in self.installer.RUNTIME_FILES:
             (self.plugin / name).write_bytes((PLUGIN_ROOT / name).read_bytes())
         self.updater = types.SimpleNamespace(start_auto_update=mock.Mock())
+        self.notice = load_module("upgrade_restart_notice", PLUGIN_ROOT / "restart_notice.py")
         for patcher in (
                 mock.patch.object(self.installer, "PLUGIN_ROOT", self.plugin),
                 mock.patch.object(self.installer, "load_patch_install", return_value=self.pi),
@@ -54,7 +57,7 @@ class PluginUpgradeTests(unittest.TestCase):
                 mock.patch.object(self.pi, "launch_monitor"),
                 mock.patch.object(self.pi, "client_running", return_value=False),
                 mock.patch.dict(sys.modules, {"plugin_auto_update": self.updater,
-                    "restart_notice": load_module("upgrade_restart_notice", PLUGIN_ROOT / "restart_notice.py")}),
+                    "restart_notice": self.notice}),
                 mock.patch.dict(os.environ, {"ZUSAGE_PLUGIN_RUNTIME": str(self.runtime),
                     "HOME": str(self.root / "home"), "USERPROFILE": str(self.root / "home"),
                     "PATH": os.environ.get("PATH", "")}, clear=True)):
@@ -291,6 +294,45 @@ class PluginUpgradeTests(unittest.TestCase):
         stub.entry_bytes_of = lambda _: self.body + line * 2
         self.assertFalse(self.installer.injected_status(stub))
 
+    def test_clean_first_session_and_prompt_require_install_before_restart(self):
+        os.environ["ZUSAGE_PLUGIN_ASAR"] = str(self.asar)
+        original = self.asar.read_bytes()
+        for _ in range(2):
+            result, _ = self.hook()
+            self.assertIn("install-overlay", result["systemMessage"])
+            self.assertIn("用户可见·安装提醒", result["hookSpecificOutput"]["additionalContext"])
+            self.assertEqual(self.asar.read_bytes(), original)
+            prompt = subprocess.run([sys.executable, str(PLUGIN_ROOT / "hooks" / "prompt-submit.py")],
+                                    input="{}", capture_output=True, text=True, timeout=10)
+            self.assertEqual(prompt.returncode, 0, prompt.stderr)
+            context = json.loads(prompt.stdout)["hookSpecificOutput"]["additionalContext"]
+            self.assertIn("用户可见·安装提醒", context)
+            self.assertNotIn("请完全退出 ZCode", context)
+            self.assertIn("本轮统计指令", context)
+        self.assertEqual(self.main("install")[0], 0)
+        context = self.notice.reminder_context(self.runtime)
+        self.assertIn("用户可见·重启提醒", context)
+        self.assertIn("完全退出 ZCode", context)
+        helper = load_module("first_install_runtime_lock", PLUGIN_ROOT / "runtime_lock.py")
+        marker = json.loads((self.runtime / ".plugin-restart-required").read_text())
+        helper.ack_restart(self.runtime, dict(marker.get("hashes", {}), _loadedAt=marker["publishedAt"] + 1))
+        self.assertEqual(self.notice.reminder_context(self.runtime), "")
+        self.assertEqual(self.hook()[0], {"suppressOutput": True})
+
+    def test_remove_suppresses_session_and_prompt_notices_with_leftover_marker(self):
+        os.environ["ZUSAGE_PLUGIN_ASAR"] = str(self.asar)
+        self.assertEqual(self.main("install")[0], 0)
+        self.assertEqual(self.main("remove")[0], 0)
+        self.assertTrue((self.runtime / ".plugin-restart-required").exists())
+        self.assertEqual(self.hook()[0], {"suppressOutput": True})
+        self.assertEqual(self.notice.reminder_context(self.runtime), "")
+        prompt = subprocess.run([sys.executable, str(PLUGIN_ROOT / "hooks" / "prompt-submit.py")],
+                                input="{}", capture_output=True, text=True, timeout=10)
+        self.assertEqual(prompt.returncode, 0, prompt.stderr)
+        context = json.loads(prompt.stdout)["hookSpecificOutput"]["additionalContext"]
+        self.assertNotIn("用户可见·", context)
+        self.assertIn("本轮统计指令", context)
+
     def test_client_upgrade_overwrite_is_repaired_only_with_optin(self):
         self.write_config({"asar_path": str(self.asar)})
         self.assertEqual(self.main("install")[0], 0)
@@ -304,7 +346,7 @@ class PluginUpgradeTests(unittest.TestCase):
         settings["plugin_auto_install_overlay"] = True
         self.write_config(settings)
         result, _ = self.hook()
-        self.assertIn("已自动安装", result["systemMessage"])
+        self.assertIn("用量状态条已安装或更新", result["systemMessage"])
         self.assertEqual(result["hookSpecificOutput"]["hookEventName"], "SessionStart")
         self.assertIn("第一行", result["hookSpecificOutput"]["additionalContext"])
         self.assertTrue((self.runtime / ".plugin-restart-required").is_file())
@@ -316,7 +358,8 @@ class PluginUpgradeTests(unittest.TestCase):
         repack.assert_not_called()
         helper = load_module("upgrade_runtime_lock", PLUGIN_ROOT / "runtime_lock.py")
         hashes = json.loads((self.runtime / ".plugin-restart-required").read_text()).get("hashes", {})
-        helper.ack_restart(self.runtime, hashes)
+        published = json.loads((self.runtime / ".plugin-restart-required").read_text())
+        helper.ack_restart(self.runtime, dict(hashes, _loadedAt=published["publishedAt"] + 1))
         after_restart, _ = self.hook()
         self.assertEqual(after_restart, {"suppressOutput": True})
         with self.asar.open("rb") as stream:
@@ -337,9 +380,307 @@ class PluginUpgradeTests(unittest.TestCase):
             with self.subTest(suffix=suffix):
                 self.write_asar(self.asar, entry=self.body + suffix)
                 result, _ = self.hook()
-                self.assertIn("已自动安装", result["systemMessage"])
+                self.assertIn("用量状态条已安装或更新", result["systemMessage"])
                 self.assertEqual(self.pi.entry_bytes_of(self.asar), self.body + current)
                 self.assertTrue(self.installer.injected_status(self.pi))
+
+    def test_publication_intent_precedes_asar_and_ack_is_not_rebuilt(self):
+        import runtime_lock
+        import time
+        os.environ["ZUSAGE_PLUGIN_ASAR"] = str(self.asar)
+        original_publish = self.pi.publish_install
+        original_prepare = self.pi._prepare_tmp
+        original_repack = self.pi.repack
+        starts = []
+
+        def unconfirmed_start(*args, **kwargs):
+            marker = json.loads((self.runtime / self.notice.MARKER).read_text())
+            starts.append(time.time() * 1000)
+            self.assertNotIn("publishedAt", marker)
+            # 新启动时间也不能确认重包前/发布前意图，旧loader无时间字段同样拒绝。
+            self.assertFalse(runtime_lock.ack_restart(self.runtime, dict(marker["hashes"],
+                                                                        _loadedAt=starts[-1]))["cleared"])
+            self.assertFalse(runtime_lock.ack_restart(self.runtime, marker["hashes"])["cleared"])
+
+        def prepare(*args, **kwargs):
+            unconfirmed_start()
+            return original_prepare(*args, **kwargs)
+
+        def repack(*args, **kwargs):
+            unconfirmed_start()
+            return original_repack(*args, **kwargs)
+
+        @contextlib.contextmanager
+        def publish(runtime, installation):
+            unconfirmed_start()
+            with original_publish(runtime, installation):
+                yield
+            marker_path = self.runtime / self.notice.MARKER
+            marker = json.loads(marker_path.read_text())
+            self.assertEqual(marker["installation"], installation)
+            self.assertTrue(self.installer.injected_status(self.pi))
+            # 进程在旧入口开始、动态import却在发布后执行，也不能用新磁盘内容确认。
+            for start in starts:
+                self.assertFalse(runtime_lock.ack_restart(runtime, dict(marker["hashes"], _loadedAt=start))["cleared"])
+            loaded = dict(marker["hashes"], _loadedAt=marker["publishedAt"] + 1)
+            self.assertTrue(runtime_lock.ack_restart(runtime, loaded)["cleared"])
+
+        for mode in ("auto", "explicit"):
+            with self.subTest(mode=mode):
+                self.pi.set_runtime(self.runtime)
+                old = self.pi.INJECT_LINE_TMPL.format(url=(self.root / "old/inject-main.cjs").as_uri()).encode()
+                self.write_asar(self.asar, entry=self.body + old + self.pi.INJECT_LINE.encode())
+                starts.clear()
+                os.environ["ZUSAGE_PLUGIN_AUTO_INSTALL"] = "1"
+                with mock.patch.object(self.pi, "publish_install", publish), \
+                        mock.patch.object(self.pi, "_prepare_tmp", side_effect=prepare), \
+                        mock.patch.object(self.pi, "repack", side_effect=repack):
+                    if mode == "auto":
+                        self.assertEqual(self.hook()[0], {"suppressOutput": True})
+                    else:
+                        code, output, _ = self.main("install")
+                        self.assertEqual(code, 0)
+                        self.assertNotIn(self.notice.PREFIX, output)
+                self.assertGreaterEqual(len(starts), 3)
+                self.assertFalse((self.runtime / self.notice.MARKER).exists())
+                self.assertEqual(self.hook()[0], {"suppressOutput": True})
+
+    def test_delayed_finalize_blocks_prepublication_start_and_allows_new_boot(self):
+        import runtime_lock
+        import time
+        os.environ["ZUSAGE_PLUGIN_ASAR"] = str(self.asar)
+        self.pi.set_runtime(self.runtime)
+        old = self.pi.INJECT_LINE_TMPL.format(url=(self.root / "old/inject-main.cjs").as_uri()).encode()
+        self.write_asar(self.asar, entry=self.body + old + self.pi.INJECT_LINE.encode())
+        real_replace = os.replace
+        def occupied(source, destination):
+            if Path(destination) == self.asar:
+                raise PermissionError("occupied")
+            real_replace(source, destination)
+        with mock.patch.object(self.pi.os, "replace", side_effect=occupied):
+            code, _, _ = self.main("install")
+        self.assertEqual(code, 1)
+        marker_path = self.runtime / self.notice.MARKER
+        before = marker_path.read_bytes()
+        self.assertNotIn("publishedAt", json.loads(before))
+        self.assertTrue(self.pi.TMP.exists())
+        loaded = dict(json.loads(before)["hashes"], _loadedAt=time.time() * 1000)
+        self.assertFalse(runtime_lock.ack_restart(self.runtime, loaded)["cleared"])
+        self.assertEqual(marker_path.read_bytes(), before)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertTrue(self.pi.finalize_tmp(client_closed=lambda: True))
+        published = json.loads(marker_path.read_text())
+        self.assertEqual(published["createdAt"], json.loads(before)["createdAt"])
+        self.assertGreater(published["publishedAt"], loaded["_loadedAt"])
+        self.assertFalse(runtime_lock.ack_restart(self.runtime, loaded)["cleared"])
+        self.assertIn("用户可见·重启提醒", self.notice.reminder_context(self.runtime))
+        self.assertTrue(runtime_lock.ack_restart(self.runtime, dict(published["hashes"],
+            _loadedAt=published["publishedAt"] + 1))["cleared"])
+        self.assertEqual(self.hook()[0], {"suppressOutput": True})
+
+    def test_published_asar_record_failure_is_conservative_not_retried(self):
+        os.environ["ZUSAGE_PLUGIN_ASAR"] = str(self.asar)
+        real_replace = os.replace
+        marker_path = self.runtime / self.notice.MARKER
+        def deny_publication_record(source, destination):
+            if Path(destination) == marker_path and "publishedAt" in json.loads(Path(source).read_text()):
+                raise OSError("publication record denied")
+            real_replace(source, destination)
+        with mock.patch.object(self.pi.os, "replace", side_effect=deny_publication_record):
+            code, output, errors = self.main("install")
+        self.assertEqual(code, 0)  # ASAR 已实际替换；不能让收尾重复 rename。
+        self.assertTrue(self.installer.injected_status(self.pi))
+        self.assertFalse(self.pi.TMP.exists())
+        self.assertIn("publication record denied", errors)
+        self.assertIn("记录无法确认", output)
+        self.assertNotIn(self.notice.MESSAGE, output)
+        self.assertNotIn("publishedAt", json.loads(marker_path.read_text()))
+
+    def run_monitor_process(self, backend):
+        script = r'''
+import json, sys
+sys.path.insert(0, sys.argv[1])
+sys.argv = ["install_monitor.py", "0", sys.argv[2], sys.argv[3]]
+import install_monitor as monitor
+import patch_install as pi
+operations = []
+finalize = pi.finalize_tmp
+def observed_finalize(*args, **kwargs):
+    operations.append(kwargs.get("operation", "missing"))
+    return finalize(*args, **kwargs)
+pi.finalize_tmp = observed_finalize
+monitor.zcode_pids = lambda: set()
+monitor.main()
+print(json.dumps(operations))
+'''
+        result = subprocess.run([sys.executable, "-B", "-c", script, str(backend),
+                                 str(self.asar), str(self.runtime)], capture_output=True, text=True,
+                                env=dict(os.environ, ZUSAGE_MONITOR_QUIET="1",
+                                         PYTHONDONTWRITEBYTECODE="1"), timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout.splitlines()[-1]), [None])
+        self.assertFalse(self.pi.TMP.exists())
+        self.assertFalse(self.pi.TMP_META.exists())
+
+    def ack_process(self, backend, loaded):
+        result = subprocess.run([sys.executable, "-B", str(backend / "runtime_lock.py"),
+                                 "--ack-restart", str(self.runtime), json.dumps(loaded)],
+                                capture_output=True, text=True,
+                                env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"), timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def test_real_monitor_operation_none_installs_and_removes_without_false_publication(self):
+        os.environ["ZUSAGE_PLUGIN_ASAR"] = str(self.asar)
+        real_replace = os.replace
+        def occupied(source, destination):
+            if Path(destination) == self.asar:
+                raise PermissionError("occupied")
+            real_replace(source, destination)
+        for backend in (PLUGIN_ROOT.parents[1], PLUGIN_ROOT):
+            for operation in ("install", "remove"):
+                with self.subTest(backend=backend, operation=operation):
+                    self.pi.set_runtime(self.runtime)
+                    entry = self.body + (self.pi.INJECT_LINE.encode() if operation == "remove" else b"")
+                    self.write_asar(self.asar, entry=entry)
+                    marker_path = self.runtime / self.notice.MARKER
+                    if operation == "remove":
+                        self.notice.record_restart(self.runtime, {"state": "pending-install", "installation": {
+                            "asar": str(self.asar), "entryHash": hashlib.sha256(entry).hexdigest()}})
+                    with mock.patch.object(self.pi.os, "replace", side_effect=occupied):
+                        self.assertEqual(self.main(operation)[0], 1)
+                    before = marker_path.read_bytes()
+                    self.assertNotIn("publishedAt", json.loads(before))
+                    self.run_monitor_process(backend)
+                    if operation == "install":
+                        marker = json.loads(marker_path.read_text())
+                        self.assertIn("publishedAt", marker)
+                        self.assertTrue(self.installer.injected_status(self.pi))
+                        self.assertTrue(self.ack_process(backend, dict(marker["hashes"],
+                            _loadedAt=marker["publishedAt"] + 1))["cleared"])
+                    else:
+                        self.assertEqual(marker_path.read_bytes(), before)
+                        self.assertFalse(self.installer.injected_status(self.pi))
+
+    def test_cold_sync_intent_real_monitor_then_new_start_partial_and_full_ack(self):
+        os.environ["ZUSAGE_PLUGIN_ASAR"] = str(self.asar)
+        real_replace = os.replace
+        def occupied(source, destination):
+            if Path(destination) == self.asar:
+                raise PermissionError("occupied")
+            real_replace(source, destination)
+        for backend in (PLUGIN_ROOT.parents[1], PLUGIN_ROOT):
+            with self.subTest(backend=backend):
+                self.write_asar(self.asar)
+                with mock.patch.object(self.pi.os, "replace", side_effect=occupied):
+                    self.assertEqual(self.main("install")[0], 1)
+                marker_path = self.runtime / self.notice.MARKER
+                intent = json.loads(marker_path.read_text())["installation"]
+                for name in ("inject-main.cjs", "plugin-storage.cjs"):
+                    source = self.plugin / name
+                    source.write_bytes(source.read_bytes() + b"\n// test cold sync before monitor\n")
+                self.installer.sync_runtime(self.runtime)
+                merged = json.loads(marker_path.read_text())
+                self.assertEqual(merged["state"], "pending-sync")
+                self.assertEqual(merged["installation"], intent)
+                self.assertNotIn("publishedAt", merged)
+                self.assertFalse(self.ack_process(backend, dict(merged["hashes"],
+                    _loadedAt=merged["createdAt"] * 1000 + 1))["cleared"])
+                self.run_monitor_process(backend)
+                published = json.loads(marker_path.read_text())
+                self.assertEqual(published["state"], "pending-sync")
+                self.assertEqual(published["installation"], intent)
+                self.assertEqual(published["hashes"], merged["hashes"])
+                self.assertIn("publishedAt", published)
+                start = published["publishedAt"] + 1
+                self.assertIn("用户可见·重启提醒", self.notice.reminder_context(self.runtime))
+                acknowledged_name = next(iter(published["hashes"]))
+                partial_loaded = {"_loadedAt": start, acknowledged_name: published["hashes"][acknowledged_name]}
+                self.assertFalse(self.ack_process(backend, partial_loaded)["cleared"])
+                partial = json.loads(marker_path.read_text())
+                self.assertEqual(partial["installation"], intent)
+                self.assertEqual(partial["publishedAt"], published["publishedAt"])
+                self.assertEqual(partial["hashes"], {name: digest for name, digest in published["hashes"].items()
+                                                  if name != acknowledged_name})
+                self.assertTrue(self.ack_process(backend, dict(partial["hashes"], _loadedAt=start))["cleared"])
+                self.assertFalse(marker_path.exists())
+                self.assertEqual(self.hook()[0], {"suppressOutput": True})
+
+    def test_failed_publication_keeps_intent_without_claiming_installed(self):
+        os.environ["ZUSAGE_PLUGIN_ASAR"] = str(self.asar)
+        os.environ["ZUSAGE_PLUGIN_AUTO_INSTALL"] = "1"
+        real_replace = os.replace
+        before = self.asar.read_bytes()
+
+        def deny_publication(source, destination):
+            if Path(destination) == self.asar:
+                self.assertEqual(json.loads((self.runtime / self.notice.MARKER).read_text())["state"],
+                                 "pending-install")
+                raise OSError("asar denied")
+            real_replace(source, destination)
+
+        with mock.patch.object(self.pi.os, "replace", side_effect=deny_publication):
+            result, _ = self.hook()
+        self.assertEqual(self.asar.read_bytes(), before)
+        self.assertIn("自动安装未完成", result["systemMessage"])
+        self.assertNotIn("已安装或更新", result["systemMessage"])
+        self.assertIn("用户可见·安装提醒", self.notice.reminder_context(self.runtime))
+        self.assertEqual(json.loads((self.runtime / self.notice.MARKER).read_text())["state"],
+                         "pending-install")
+        self.assertEqual(self.main("install")[0], 0)  # 同一意图可由正常重试完成。
+        self.assertIn("用户可见·重启提醒", self.notice.reminder_context(self.runtime))
+
+    def test_intent_write_failure_blocks_even_pending_tmp_publication(self):
+        os.environ["ZUSAGE_PLUGIN_ASAR"] = str(self.asar)
+        os.environ["ZUSAGE_PLUGIN_AUTO_INSTALL"] = "1"
+        before = self.asar.read_bytes()
+        self.installer.resolve_paths()
+        self.installer.sync_runtime(self.runtime)
+        with mock.patch.object(self.notice, "record_restart", side_effect=OSError("intent denied")), \
+                mock.patch.object(self.pi, "_prepare_tmp") as prepare:
+            result, _ = self.hook()
+        prepare.assert_not_called()
+        self.assertEqual(self.asar.read_bytes(), before)
+        self.assertFalse(self.pi.TMP.exists())
+        self.assertFalse(self.pi.TMP_META.exists())
+        self.assertNotIn("已安装或更新", result["systemMessage"])
+
+    def test_before_publish_callback_is_optional_and_skipped_for_noop(self):
+        os.environ["ZUSAGE_PLUGIN_ASAR"] = str(self.asar)
+        self.installer.resolve_paths()
+        self.installer.sync_runtime(self.runtime)
+        callback = mock.Mock()
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertTrue(self.pi.install(before_publish=callback))
+            callback.assert_called_once_with({"asar": str(self.asar),
+                "entryHash": hashlib.sha256(self.pi.entry_bytes_of(self.asar)).hexdigest()})
+            callback.reset_mock()
+            self.assertTrue(self.pi.install(before_publish=callback))
+            callback.assert_not_called()
+            self.assertTrue(self.pi.install())
+
+    def test_existing_injection_cold_update_notice_wins_over_noop_log(self):
+        os.environ["ZUSAGE_PLUGIN_ASAR"] = str(self.asar)
+        self.assertEqual(self.main("install")[0], 0)
+        helper = load_module("noop_runtime_lock", PLUGIN_ROOT / "runtime_lock.py")
+        marker = json.loads((self.runtime / self.notice.MARKER).read_text())
+        self.assertTrue(helper.ack_restart(self.runtime, dict(marker["hashes"],
+                          _loadedAt=marker.get("publishedAt", marker["createdAt"] * 1000) + 1))["cleared"])
+        loader = self.plugin / "plugin-updater.cjs"
+        loader.write_bytes(loader.read_bytes() + b"\n// test cold update\n")
+        # 该文件为验收器，运行时验收使用同步前的可信快照。
+        code, output, _ = self.main("install")
+        self.assertEqual(code, 0)
+        self.assertIn("已安装，注入行已指向当前目录", output)
+        self.assertIn(self.notice.MESSAGE, output)
+        marker = json.loads((self.runtime / self.notice.MARKER).read_text())
+        self.assertTrue(helper.ack_restart(self.runtime, dict(marker["hashes"],
+                          _loadedAt=marker.get("publishedAt", marker["createdAt"] * 1000) + 1))["cleared"])
+        code, output, _ = self.main("install")
+        self.assertEqual(code, 0)
+        self.assertIn("已安装，注入行已指向当前目录", output)
+        self.assertNotIn(self.notice.PREFIX, output)
+        self.assertFalse((self.runtime / self.notice.MARKER).exists())
 
     def test_hook_existing_valid_target_backfills_config_without_enabling_auto(self):
         self.pi.set_runtime(self.runtime)
@@ -366,7 +707,7 @@ class PluginUpgradeTests(unittest.TestCase):
         self.write_config({"asar_path": str(self.asar), "plugin_auto_install_overlay": True})
         self.updater.start_auto_update.side_effect = RuntimeError("update unavailable")
         result, errors = self.hook()
-        self.assertIn("已自动安装", result["systemMessage"])
+        self.assertIn("用量状态条已安装或更新", result["systemMessage"])
         self.assertIn("update unavailable", errors)
         self.assertTrue(self.installer.injected_status(self.pi))
 

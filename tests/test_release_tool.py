@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -31,7 +32,19 @@ state = json.loads(state_path.read_text()) if state_path.exists() else {}
 def emit(value):
     print(json.dumps(value))
 def release(draft):
-    return {"draft": draft, "prerelease": False, "tag_name": "v1.2.3", "assets": state.get("assets", [])}
+    body = state.get("body")
+    if mode == "baddraftbody" and draft or mode == "badfinalbody" and not draft:
+        body = "Unreviewed release notes"
+    elif mode == "missingdraftbody" and draft or mode == "missingfinalbody" and not draft:
+        body = None
+    elif mode == "normalizedbody" and isinstance(body, str):
+        body = body.replace("\r\n", "\n").rstrip() + "\r\n \t"
+    elif mode == "leadingbody" and draft:
+        body = " " + body
+    elif mode == "linewhitespacebody" and draft:
+        body = body.replace("\r\n", " \r\n")
+    return {"draft": draft, "prerelease": False, "tag_name": "v1.2.3", "body": body,
+            "assets": state.get("assets", [])}
 if args[:2] == ["auth", "status"]:
     sys.exit(1 if mode == "noauth" else 0)
 if args[0] == "api":
@@ -54,12 +67,19 @@ if args[0] == "api":
         emit({"full_name": "ByteRax/zcode-token-usage-statusbar", "permissions": {"push": mode != "readonly"}})
 elif args[:2] == ["release", "create"]:
     state["draft"] = True
+    state["body"] = pathlib.Path(args[args.index("--notes-file") + 1]).read_bytes().decode("utf-8")
 elif args[:2] == ["release", "upload"]:
-    paths = args[3:5]
-    state["paths"] = {str(i + 1): p for i, p in enumerate(paths)}
-    state["assets"] = [{"id": i + 1, "name": pathlib.Path(p).name,
-                        "size": pathlib.Path(p).stat().st_size, "state": "uploaded"}
-                       for i, p in enumerate(paths)]
+    server = root / "gh-assets"
+    server.mkdir(exist_ok=True)
+    state["paths"] = {}
+    state["assets"] = []
+    for i, p in enumerate(args[3:5], 1):
+        data = pathlib.Path(p).read_bytes()
+        stored = server / str(i)
+        stored.write_bytes(data)
+        state["paths"][str(i)] = str(stored)
+        state["assets"].append({"id": i, "name": pathlib.Path(p).name,
+                                "size": len(data), "state": "uploaded"})
 elif args[:2] == ["release", "edit"]:
     state["draft"] = mode == "badpublish"
 else:
@@ -114,6 +134,9 @@ class ReleaseToolTests(unittest.TestCase):
         built = tool.build(self.root, REPO, self.base / "out")
         self.asset = Path(built["zip"])
         self.manifest = Path(built["manifest"])
+        self.notes_file = self.base / "notes.md"
+        self.notes = "## 更新说明\r\n\r\n- 修复发布正文校验。\r\n- 保留完整 Markdown 和 UTF-8 说明。\r\n"
+        self.notes_file.write_bytes(self.notes.encode("utf-8"))
 
     def git(self, *args):
         return subprocess.check_output(["git", *args], cwd=self.root, stderr=subprocess.PIPE).decode()
@@ -348,43 +371,181 @@ class ReleaseToolTests(unittest.TestCase):
             tool.verify(self.asset, self.manifest, REPO)
 
     def test_dry_run_reports_only_plan(self):
-        plan = tool.publish(self.root, REPO, self.asset, self.manifest)
+        plan = tool.publish(self.root, REPO, self.asset, self.manifest, notes_file=self.notes_file)
         self.assertTrue(plan["dryRun"])
         self.assertEqual(plan["repository"], REPO)
         self.assertEqual(plan["tag"], "v1.2.3")
+        self.assertEqual(plan["notesFile"], str(self.notes_file))
+        self.assertEqual(plan["notes"], self.notes)
+        self.assertEqual(plan["commands"][0][-2:], ["--notes-file", str(self.notes_file)])
+        self.assertNotIn("--notes", plan["commands"][0])
         self.assert_no_publish()
+
+    def test_missing_notes_file_rejected_before_preflight(self):
+        for path in (None, self.base / "missing.md"):
+            with self.subTest(path=path), self.assertRaisesRegex(tool.ReleaseError, "--notes-file|regular source"):
+                tool.publish(self.root, REPO, self.asset, self.manifest, True, REPO + "/v1.2.3",
+                             notes_file=path)
+        self.assertEqual(self.calls(), [])
+
+    def test_empty_and_placeholder_notes_rejected(self):
+        for notes in ("", " \t\r\n", "1.2.3", "v1.2.3\n", tool.PLUGIN,
+                      tool.PLUGIN + " v1.2.3\n", tool.PLUGIN + " 1.2.3",
+                      "# " + tool.PLUGIN + " v1.2.3\n", "## v1.2.3\n",
+                      "zusage-marketplace v1.2.3", "Release v1.2.3"):
+            with self.subTest(notes=notes):
+                self.notes_file.write_text(notes, encoding="utf-8")
+                with self.assertRaisesRegex(tool.ReleaseError, "empty or placeholder"):
+                    tool.publish(self.root, REPO, self.asset, self.manifest, True, REPO + "/v1.2.3",
+                                 notes_file=self.notes_file)
+        self.assertEqual(self.calls(), [])
+
+    def test_single_line_markdown_link_placeholders_rejected(self):
+        labels = ("1.2.3", "v1.2.3", tool.PLUGIN, "zusage-marketplace",
+                  tool.PLUGIN + " v1.2.3", "Release v1.2.3")
+        cases = [wrapper.format(label) for label in labels for wrapper in (
+            "[{}](https://example.invalid)",
+            "## **[{}](https://example.invalid/releases(v1))**")]
+        cases.extend(("[" + tool.PLUGIN + "](https://example.invalid) [v1.2.3](https://example.invalid)",
+                      "[**v1.2.3**](https://example.invalid)",
+                      "[zusage-marketplace](https://example.invalid \"Release notes\")"))
+        for notes in cases:
+            with self.subTest(notes=notes):
+                self.notes_file.write_text(notes + "\n", encoding="utf-8")
+                with self.assertRaisesRegex(tool.ReleaseError, "empty or placeholder"):
+                    tool.publish(self.root, REPO, self.asset, self.manifest, True, REPO + "/v1.2.3",
+                                 notes_file=self.notes_file)
+        self.assertEqual(self.calls(), [])
+
+    def test_substantive_notes_with_markdown_links_preserved(self):
+        for notes in ("[修复发布校验](https://example.invalid)",
+                      "[v1.2.3](https://example.invalid) 修复资产校验。",
+                      "[v1.2.3](https://example.invalid)\n\n- 修复资产校验。\n"):
+            with self.subTest(notes=notes):
+                self.notes_file.write_text(notes, encoding="utf-8")
+                plan = tool.publish(self.root, REPO, self.asset, self.manifest, notes_file=self.notes_file)
+                self.assertEqual(plan["notes"], notes)
+        self.assert_no_publish()
+
+    def test_deep_and_angle_url_link_placeholders_rejected_before_preflight(self):
+        destinations = ("https://example.invalid/a(b(c(d(e))))",
+                        "<https://example.invalid/a(b(c))>",
+                        "<https://example.invalid/a(b(c>",
+                        '<https://example.invalid/a(b(c))> "Release (notes"',
+                        r"https://example.invalid/a\(b(c(d))\)")
+        with mock.patch.object(tool, "preflight") as preflight:
+            for label in ("v1.2.3", tool.PLUGIN, tool.PLUGIN + " v1.2.3"):
+                for destination in destinations:
+                    notes = f"[{label}]({destination})\n"
+                    with self.subTest(notes=notes):
+                        self.notes_file.write_text(notes, encoding="utf-8")
+                        with self.assertRaisesRegex(tool.ReleaseError, "empty or placeholder"):
+                            tool.publish(self.root, REPO, self.asset, self.manifest, notes_file=self.notes_file)
+            preflight.assert_not_called()
+        self.assertEqual(self.calls(), [])
+
+    def test_deep_and_angle_url_substantive_notes_preserved(self):
+        for notes in ("[修复发布校验](https://example.invalid/a(b(c(d))))",
+                      "[修复发布校验](<https://example.invalid/a(b(c))>)",
+                      "[v1.2.3](<https://example.invalid/a(b(c))>) 修复资产校验。",
+                      "[v1.2.3](https://example.invalid/a(b(c))) (修复资产校验。)",
+                      '[v1.2.3](<https://example.invalid/a(b(c))> "Release (notes")\n\n- 修复资产校验。\n'):
+            with self.subTest(notes=notes):
+                self.notes_file.write_text(notes, encoding="utf-8")
+                plan = tool.publish(self.root, REPO, self.asset, self.manifest, notes_file=self.notes_file)
+                self.assertEqual(plan["notes"], notes)
+        self.assert_no_publish()
+
+    def test_unclosed_link_and_label_max_bound_complete_within_timeout(self):
+        script = r'''
+import importlib.util, sys
+from pathlib import Path
+from unittest import mock
+spec = importlib.util.spec_from_file_location("bounded_notes_test", sys.argv[1])
+tool = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(tool)
+asset, manifest, notes_file = map(Path, sys.argv[2:])
+seed = "[v1.2.3]("
+notes = seed * (tool.MAX_MANIFEST // len(seed))
+cases = (seed * 29100, notes + "x" * (tool.MAX_MANIFEST - len(notes)),
+         "[" * tool.MAX_MANIFEST)
+with mock.patch.object(tool, "preflight", return_value="0" * 40):
+    for notes in cases:
+        assert len(notes.encode("utf-8")) <= tool.MAX_MANIFEST
+        notes_file.write_text(notes, encoding="utf-8")
+        plan = tool.publish(asset.parent, "ByteRax/zcode-token-usage-statusbar", asset, manifest,
+                            notes_file=notes_file)
+        assert plan["dryRun"] and plan["notes"] == notes
+print("bounded unclosed notes completed")
+'''
+        result = subprocess.run([sys.executable, "-B", "-c", script, str(ROOT / "release_tool.py"),
+                                 str(self.asset), str(self.manifest), str(self.notes_file)],
+                                capture_output=True, text=True, timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("bounded unclosed notes completed", result.stdout)
+        self.assertEqual(self.calls(), [])
+
+    def test_unclosed_suffix_preserved_without_unwrapping_later_links(self):
+        suffix = "[broken](<unfinished [v1.2.3](https://example.invalid)"
+        for prefix in ("", "[修复](https://example.invalid) "):
+            notes = prefix + suffix
+            with self.subTest(notes=notes):
+                self.notes_file.write_text(notes, encoding="utf-8")
+                with mock.patch.object(tool.re, "fullmatch", wraps=tool.re.fullmatch) as fullmatch, \
+                        mock.patch.object(tool, "preflight", return_value="0" * 40):
+                    plan = tool.publish(self.root, REPO, self.asset, self.manifest, notes_file=self.notes_file)
+                self.assertEqual(fullmatch.call_args.args[1], ("修复 " if prefix else "") + suffix)
+                self.assertEqual(plan["notes"], notes)
+        self.assertEqual(self.calls(), [])
+
+    def test_notes_require_bounded_regular_utf8_file(self):
+        self.notes_file.write_bytes(b"\xff")
+        with self.assertRaises(UnicodeDecodeError):
+            tool.publish(self.root, REPO, self.asset, self.manifest, notes_file=self.notes_file)
+        self.notes_file.write_bytes(b"x" * (tool.MAX_MANIFEST + 1))
+        with self.assertRaisesRegex(tool.ReleaseError, "oversize"):
+            tool.publish(self.root, REPO, self.asset, self.manifest, notes_file=self.notes_file)
+        self.notes_file.unlink()
+        self.notes_file.symlink_to(self.manifest)
+        with self.assertRaisesRegex(tool.ReleaseError, "regular source"):
+            tool.publish(self.root, REPO, self.asset, self.manifest, notes_file=self.notes_file)
+        self.assertEqual(self.calls(), [])
 
     def test_publish_requires_both_explicit_approvals(self):
         for confirm in (None, "origin/v1.2.3", REPO + "/v1.2.4"):
             with self.subTest(confirm=confirm), self.assertRaisesRegex(tool.ReleaseError, "--confirm"):
-                tool.publish(self.root, REPO, self.asset, self.manifest, True, confirm)
+                tool.publish(self.root, REPO, self.asset, self.manifest, True, confirm,
+                             notes_file=self.notes_file)
         self.assert_no_publish()
 
     def test_dirty_and_untracked_relevant_git_never_publish(self):
         (self.root / "runtime_lock.py").write_text("dirty")
         with self.assertRaises(tool.ReleaseError):
-            tool.publish(self.root, REPO, self.asset, self.manifest, True, REPO + "/v1.2.3")
+            tool.publish(self.root, REPO, self.asset, self.manifest, True, REPO + "/v1.2.3",
+                             notes_file=self.notes_file)
         self.git("checkout", "--", "runtime_lock.py")
         (self.root / tool.PREFIX / "local.py").write_text("untracked")
         with self.assertRaisesRegex(tool.ReleaseError, "dirty or untracked"):
-            tool.publish(self.root, REPO, self.asset, self.manifest)
+            tool.publish(self.root, REPO, self.asset, self.manifest, notes_file=self.notes_file)
         self.assert_no_publish()
 
     def test_noauth_readonly_tag_mismatch_and_existing_draft_never_publish(self):
         for mode in ("noauth", "readonly", "badtag", "exists"):
             with self.subTest(mode=mode), mock.patch.dict(os.environ, {"STUB_MODE": mode}):
                 with self.assertRaises(tool.ReleaseError):
-                    tool.publish(self.root, REPO, self.asset, self.manifest, True, REPO + "/v1.2.3")
+                    tool.publish(self.root, REPO, self.asset, self.manifest, True, REPO + "/v1.2.3",
+                             notes_file=self.notes_file)
         self.assert_no_publish()
 
     def test_explicit_remote_not_automatically_origin(self):
         self.git("remote", "remove", "writable")
         with self.assertRaisesRegex(tool.ReleaseError, "configured GitHub remote"):
-            tool.publish(self.root, REPO, self.asset, self.manifest)
+            tool.publish(self.root, REPO, self.asset, self.manifest, notes_file=self.notes_file)
         self.assertEqual(self.calls(), [])
 
     def test_stub_publish_draft_upload_verify_then_publish(self):
-        plan = tool.publish(self.root, REPO, self.asset, self.manifest, True, REPO + "/v1.2.3")
+        plan = tool.publish(self.root, REPO, self.asset, self.manifest, True, REPO + "/v1.2.3",
+                             notes_file=self.notes_file)
         self.assertFalse(plan["dryRun"])
         calls = self.calls()
         write_positions = [i for i, c in enumerate(calls) if c[0] == "release"]
@@ -397,10 +558,133 @@ class ReleaseToolTests(unittest.TestCase):
         self.assertTrue(calls[-1][1].endswith("/releases/tags/v1.2.3"))
         self.assertFalse(any("--clobber" in c or "--force" in c for c in calls))
 
+    def test_original_assets_replaced_after_preflight_upload_only_verified_snapshot(self):
+        expected = {self.asset.name: self.asset.read_bytes(), self.manifest.name: self.manifest.read_bytes()}
+        original_preflight = tool.preflight
+        original_read = tool.read_file
+        reads = []
+        checked = []
+        def tracked_read(path, *args):
+            if path in (self.asset, self.manifest):
+                reads.append(path)
+            return original_read(path, *args)
+        def replacing_preflight(root, repo, manifest, asset):
+            head = original_preflight(root, repo, manifest, asset)
+            checked.append(asset)
+            self.rewrite_zip(lambda i, info, data: (info, b"unreviewed release content\n")
+                             if info.filename == tool.PREFIX + "token_rate.py" else (info, data))
+            return head
+        with mock.patch.object(tool, "verify", wraps=tool.verify) as verify, \
+                mock.patch.object(tool, "preflight", side_effect=replacing_preflight), \
+                mock.patch.object(tool, "read_file", side_effect=tracked_read):
+            plan = tool.publish(self.root, REPO, self.asset, self.manifest, True, REPO + "/v1.2.3",
+                                notes_file=self.notes_file)
+        self.assertFalse(plan["dryRun"])
+        self.assertEqual(reads, [self.asset, self.manifest])
+        upload = next(call for call in self.calls() if call[:2] == ["release", "upload"])
+        snapshots = [Path(path) for path in upload[3:5]]
+        self.assertEqual(verify.call_args.args[:2], tuple(snapshots))
+        self.assertEqual(checked, snapshots[:1])
+        self.assertEqual(snapshots[0].parent, snapshots[1].parent)
+        create = next(call for call in self.calls() if call[:2] == ["release", "create"])
+        notes_snapshot = Path(create[create.index("--notes-file") + 1])
+        self.assertEqual(notes_snapshot, snapshots[0].parent / "release-notes.md")
+        self.assertEqual([path.name for path in snapshots], [self.asset.name, self.manifest.name])
+        self.assertNotEqual(snapshots[0], self.asset)
+        self.assertNotEqual(snapshots[1], self.manifest)
+        state = json.loads((self.base / "gh-state.json").read_text())
+        self.assertFalse(state["draft"])
+        for entry in state["assets"]:
+            self.assertEqual(Path(state["paths"][str(entry["id"])]).read_bytes(), expected[entry["name"]])
+        self.assertNotEqual(self.asset.read_bytes(), expected[self.asset.name])
+        self.assertNotEqual(self.manifest.read_bytes(), expected[self.manifest.name])
+        self.assertFalse(snapshots[0].parent.exists())
+
+    def test_original_assets_deleted_after_upload_do_not_affect_download_verification(self):
+        expected = {self.asset.name: self.asset.read_bytes(), self.manifest.name: self.manifest.read_bytes()}
+        original_run = tool.run
+        def deleting_run(root, *args):
+            result = original_run(root, *args)
+            if args[:3] == ("gh", "release", "upload"):
+                self.asset.unlink()
+                self.manifest.unlink()
+            return result
+        with mock.patch.object(tool, "run", side_effect=deleting_run):
+            plan = tool.publish(self.root, REPO, self.asset, self.manifest, True, REPO + "/v1.2.3",
+                                notes_file=self.notes_file)
+        self.assertFalse(plan["dryRun"])
+        state = json.loads((self.base / "gh-state.json").read_text())
+        self.assertFalse(state["draft"])
+        for entry in state["assets"]:
+            self.assertEqual(Path(state["paths"][str(entry["id"])]).read_bytes(), expected[entry["name"]])
+
+    def test_changed_notes_input_uses_reviewed_snapshot_and_reads_once(self):
+        original_run = tool.run
+        original_read = tool.read_file
+        reads = []
+        snapshots = []
+        def tracked_read(path, *args):
+            if path == self.notes_file:
+                reads.append(path)
+            return original_read(path, *args)
+        def changing_run(root, *args):
+            if args[:3] == ("git", "rev-parse", "--show-toplevel"):
+                self.notes_file.write_text("Unreviewed changes", encoding="utf-8")
+            if args[:3] == ("gh", "release", "create"):
+                snapshot = Path(args[args.index("--notes-file") + 1])
+                snapshots.append(snapshot)
+                self.assertNotEqual(snapshot, self.notes_file)
+                self.assertEqual(snapshot.read_bytes(), self.notes.encode("utf-8"))
+            return original_run(root, *args)
+        with mock.patch.object(tool, "read_file", side_effect=tracked_read), \
+                mock.patch.object(tool, "run", side_effect=changing_run):
+            plan = tool.publish(self.root, REPO, self.asset, self.manifest, True, REPO + "/v1.2.3",
+                                notes_file=self.notes_file)
+        self.assertEqual(len(reads), 1)
+        self.assertEqual(len(snapshots), 1)
+        self.assertFalse(snapshots[0].exists())
+        self.assertEqual(plan["notes"], self.notes)
+        self.assertEqual(json.loads((self.base / "gh-state.json").read_text())["body"], self.notes)
+
+    def test_draft_body_mismatch_leaves_draft_and_never_rebuilds(self):
+        for mode in ("baddraftbody", "missingdraftbody", "leadingbody", "linewhitespacebody"):
+            with self.subTest(mode=mode), mock.patch.dict(os.environ, {"STUB_MODE": mode}):
+                with self.assertRaisesRegex(tool.ReleaseError, "draft body disagrees"):
+                    tool.publish(self.root, REPO, self.asset, self.manifest, True, REPO + "/v1.2.3",
+                                 notes_file=self.notes_file)
+                state = json.loads((self.base / "gh-state.json").read_text())
+                self.assertTrue(state["draft"])
+                self.assertEqual([c[1] for c in self.calls() if c[0] == "release"], ["create", "upload"])
+                with self.assertRaisesRegex(tool.ReleaseError, "already exists"):
+                    tool.publish(self.root, REPO, self.asset, self.manifest, True, REPO + "/v1.2.3",
+                                 notes_file=self.notes_file)
+                self.assertEqual([c[1] for c in self.calls() if c[0] == "release"], ["create", "upload"])
+                (self.base / "gh-state.json").unlink()
+                (self.base / "gh.log").unlink()
+
+    def test_final_body_mismatch_fails_acceptance(self):
+        for mode in ("badfinalbody", "missingfinalbody"):
+            with self.subTest(mode=mode), mock.patch.dict(os.environ, {"STUB_MODE": mode}):
+                with self.assertRaisesRegex(tool.ReleaseError, "published release body disagrees"):
+                    tool.publish(self.root, REPO, self.asset, self.manifest, True, REPO + "/v1.2.3",
+                                 notes_file=self.notes_file)
+                self.assertEqual([c[1] for c in self.calls() if c[0] == "release"],
+                                 ["create", "upload", "edit"])
+                (self.base / "gh-state.json").unlink()
+                (self.base / "gh.log").unlink()
+
+    def test_draft_and_final_body_allow_only_crlf_and_trailing_whitespace(self):
+        with mock.patch.dict(os.environ, {"STUB_MODE": "normalizedbody"}):
+            plan = tool.publish(self.root, REPO, self.asset, self.manifest, True, REPO + "/v1.2.3",
+                                notes_file=self.notes_file)
+        self.assertFalse(plan["dryRun"])
+        self.assertEqual(plan["notes"], self.notes)
+
     def test_failed_remote_asset_verification_leaves_draft(self):
         with mock.patch.dict(os.environ, {"STUB_MODE": "badhash"}):
             with self.assertRaisesRegex(tool.ReleaseError, "hash disagrees"):
-                tool.publish(self.root, REPO, self.asset, self.manifest, True, REPO + "/v1.2.3")
+                tool.publish(self.root, REPO, self.asset, self.manifest, True, REPO + "/v1.2.3",
+                             notes_file=self.notes_file)
         self.assertEqual([c[1] for c in self.calls() if c[0] == "release"], ["create", "upload"])
         self.assertTrue(json.loads((self.base / "gh-state.json").read_text())["draft"])
 
@@ -426,7 +710,7 @@ class ReleaseToolTests(unittest.TestCase):
     def test_missing_or_wrong_local_tag_never_publish(self):
         self.git("tag", "-d", "v1.2.3")
         with self.assertRaises(tool.ReleaseError):
-            tool.publish(self.root, REPO, self.asset, self.manifest)
+            tool.publish(self.root, REPO, self.asset, self.manifest, notes_file=self.notes_file)
         self.assertEqual(self.calls(), [])
 
     def test_source_must_be_committed_at_head(self):
@@ -434,18 +718,62 @@ class ReleaseToolTests(unittest.TestCase):
         path.write_text("uncommitted source\n")
         built = tool.build(self.root, REPO, self.base / "dirty-out")
         with self.assertRaisesRegex(tool.ReleaseError, "dirty or untracked"):
-            tool.publish(self.root, REPO, Path(built["zip"]), Path(built["manifest"]), True, REPO + "/v1.2.3")
+            tool.publish(self.root, REPO, Path(built["zip"]), Path(built["manifest"]), True, REPO + "/v1.2.3",
+                         notes_file=self.notes_file)
         self.assertEqual(self.calls(), [])
 
     def test_publish_postcondition_checked(self):
         with mock.patch.dict(os.environ, {"STUB_MODE": "badpublish"}):
             with self.assertRaisesRegex(tool.ReleaseError, "published release state"):
-                tool.publish(self.root, REPO, self.asset, self.manifest, True, REPO + "/v1.2.3")
+                tool.publish(self.root, REPO, self.asset, self.manifest, True, REPO + "/v1.2.3",
+                             notes_file=self.notes_file)
+
+    def test_cli_publish_requires_notes_file_even_for_dry_run(self):
+        for mode in ([], ["--dry-run"], ["--publish", "--confirm", REPO + "/v1.2.3"]):
+            stderr = __import__("io").StringIO()
+            with self.subTest(mode=mode), contextlib.redirect_stderr(stderr):
+                with self.assertRaises(SystemExit) as error:
+                    tool.main(["publish", "--root", str(self.root), "--repo", REPO,
+                               "--zip", str(self.asset), "--manifest", str(self.manifest), *mode])
+            self.assertEqual(error.exception.code, 2)
+            self.assertIn("--notes-file", stderr.getvalue())
+        self.assertEqual(self.calls(), [])
+
+    def test_cli_notes_file_and_complete_dry_run_body(self):
+        for mode in ([], ["--dry-run"]):
+            stdout = __import__("io").StringIO()
+            with self.subTest(mode=mode), contextlib.redirect_stdout(stdout):
+                code = tool.main(["publish", "--root", str(self.root), "--repo", REPO,
+                                  "--zip", str(self.asset), "--manifest", str(self.manifest),
+                                  "--notes-file", str(self.notes_file), *mode])
+            self.assertEqual(code, 0)
+            plan = json.loads(stdout.getvalue())
+            self.assertTrue(plan["dryRun"])
+            self.assertEqual(plan["notesFile"], str(self.notes_file))
+            self.assertEqual(plan["notes"], self.notes)
+            self.assertEqual(plan["commands"][0][-2:], ["--notes-file", str(self.notes_file)])
+        self.assert_no_publish()
+
+    def test_cli_publish_passes_notes_file_and_approvals(self):
+        with contextlib.redirect_stdout(__import__("io").StringIO()):
+            code = tool.main(["publish", "--root", str(self.root), "--repo", REPO,
+                              "--zip", str(self.asset), "--manifest", str(self.manifest),
+                              "--notes-file", str(self.notes_file), "--publish", "--confirm", REPO + "/v1.2.3"])
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads((self.base / "gh-state.json").read_text())["body"], self.notes)
+
+    def test_cli_build_and_verify_do_not_require_notes_file(self):
+        for args in (["build", "--out", str(self.base / "cli-out")],
+                     ["verify", "--zip", str(self.asset), "--manifest", str(self.manifest)]):
+            with self.subTest(command=args[0]), contextlib.redirect_stdout(__import__("io").StringIO()):
+                self.assertEqual(tool.main([*args, "--root", str(self.root), "--repo", REPO]), 0)
+        self.assertEqual(self.calls(), [])
 
     def test_cli_failure_reports_nonzero_without_side_effect(self):
         with contextlib.redirect_stderr(__import__("io").StringIO()):
             code = tool.main(["publish", "--root", str(self.root), "--repo", REPO,
-                              "--zip", str(self.asset), "--manifest", str(self.manifest), "--publish"])
+                              "--zip", str(self.asset), "--manifest", str(self.manifest),
+                              "--notes-file", str(self.notes_file), "--publish"])
         self.assertEqual(code, 1)
         self.assertEqual(self.calls(), [])
 
