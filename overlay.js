@@ -370,12 +370,9 @@
       ".eb{background:rgba(255,107,87,.14);background:color-mix(in srgb,var(--color-destructive,#ff6b57) 14%,transparent);" +
       "color:var(--color-destructive,#ff8a73);border-radius:999px;padding:0 6px;line-height:16px;font-weight:600;display:inline-flex;align-items:center;gap:2px}" +
       ".eb .ico{color:inherit}" +
-      /* 上下文微进度条：量感一眼可读，填充色随占比三档。
-       * 填充块 background:currentColor —— 三档色类只给 color，填充靠 currentColor 着色
-       * （v28 只写了 height 没写背景，填充块全透明 = "空条"根因）。 */
-      ".cbar{display:inline-block;width:46px;height:5px;border-radius:999px;" +
-      "background:var(--color-hover,rgba(255,255,255,.1));overflow:hidden;flex:0 0 auto}" +
-      ".cbar>i{display:block;height:100%;border-radius:999px;background:currentColor}" +
+      ".cbar{display:block;width:calc(var(--ui-font-size,14px) + 2px);height:calc(var(--ui-font-size,14px) + 2px);flex:0 0 auto;fill:none;stroke-width:3}" +
+      ".cbar-track{stroke:var(--color-hover,rgba(255,255,255,.1))}" +
+      ".cbar-value{stroke:currentColor}" +
       /* 子代理运行中呼吸灯 */
       "@keyframes zupulse{0%,100%{opacity:1}50%{opacity:.2}}" +
       ".dot{animation:zupulse 1.6s ease-in-out infinite;font-size:var(--ui-font-size,14px);line-height:1}" +
@@ -408,6 +405,47 @@
       ".panel .zu-update-actions button{font:inherit;color:var(--color-foreground,#e9edf4);background:var(--color-hover,rgba(255,255,255,.07));border:1px solid var(--color-border,rgba(255,255,255,.14));border-radius:6px;padding:3px 10px;cursor:pointer}" +
       ".panel .zu-update-actions button:disabled{opacity:.5;cursor:default}" +
       ".panel .zu-update-status{overflow-wrap:anywhere;white-space:pre-line}" +
+      ".panel.zu-settings{box-sizing:border-box;min-width:0;max-width:none;" +
+      "max-height:min(72vh,var(--zu-settings-height,72vh));padding:0;gap:0;overflow:hidden;line-height:1.5}" +
+      ".zu-settings .zu-settings-head{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;gap:12px;" +
+      "padding:14px 16px;border-bottom:1px solid var(--color-border,rgba(255,255,255,.09))}" +
+      ".zu-settings .phead{margin:0;font-size:var(--ui-font-size,14px);font-weight:600}" +
+      ".zu-settings .zu-settings-close{background:none;border:0;font:inherit;color:var(--color-foreground-subtle,#8791a3);" +
+      "padding:2px 6px;border-radius:6px;cursor:pointer}" +
+      ".zu-settings .zu-settings-close:hover{background:var(--color-hover,rgba(255,255,255,.07))}" +
+      ".zu-settings .zu-settings-body{min-height:0;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable;" +
+      "padding:12px 12px 16px;scrollbar-width:thin;scrollbar-color:var(--color-foreground-subtlest,#6b7484) transparent}" +
+      ".zu-settings-body::-webkit-scrollbar{width:8px}" +
+      ".zu-settings-body::-webkit-scrollbar-thumb{background:var(--color-foreground-subtlest,#6b7484);border:2px solid var(--color-card,#13161e);border-radius:999px}" +
+      ".zu-settings.zu-settings-more .zu-settings-body{mask-image:linear-gradient(#000 calc(100% - 16px),transparent)}" +
+      ".zu-settings .cap{margin:0 4px 7px;letter-spacing:0;color:var(--color-foreground-subtle,#8791a3);font-weight:600;" +
+      "font-size:calc(var(--ui-font-size,14px) - 1px)}" +
+      ".zu-settings .zu-settings-section+.zu-settings-section{margin-top:16px}" +
+      ".zu-settings .zu-settings-card{border:1px solid var(--color-border,rgba(255,255,255,.09));border-radius:9px;" +
+      "background:var(--color-hover,rgba(255,255,255,.03));overflow:hidden}" +
+      ".zu-settings label{align-items:center;gap:12px;margin:0;padding:9px 11px;border-radius:0}" +
+      ".zu-settings .zu-settings-card>label+label{border-top:1px solid var(--color-border,rgba(255,255,255,.09))}" +
+      ".zu-settings label>span{flex:1;min-width:0;font-weight:500}" +
+      ".zu-settings label em{font-weight:400;margin-top:2px;font-size:calc(var(--ui-font-size,14px) - 2px);line-height:1.5}" +
+      ".zu-settings input[type=checkbox]{appearance:none;-webkit-appearance:none;order:2;position:relative;flex:0 0 28px;" +
+      "width:28px;height:16px;margin:0;border:1px solid var(--color-border,rgba(255,255,255,.18));border-radius:999px;" +
+      "background:var(--color-input,rgba(255,255,255,.12));cursor:pointer}" +
+      ".zu-settings input[type=checkbox]::before{content:'';position:absolute;left:2px;top:2px;width:10px;height:10px;" +
+      "border-radius:50%;background:var(--color-foreground-subtle,#8791a3)}" +
+      ".zu-settings input[type=checkbox]:checked{background:var(--color-brand,#57c7ff);border-color:var(--color-brand,#57c7ff)}" +
+      ".zu-settings input[type=checkbox]:checked::before{left:14px;background:var(--color-background,#13161e)}" +
+      ".zu-settings input:focus-visible,.zu-settings button:focus-visible{outline:2px solid var(--color-brand,#57c7ff);outline-offset:2px}" +
+      ".zu-settings input:disabled{opacity:.4;cursor:default}" +
+      ".zu-settings .zu-ctxov{order:2;box-sizing:border-box;width:120px;min-width:0;padding:5px 7px}" +
+      ".zu-settings .zu-settings-langs{display:flex;gap:8px;padding:9px 11px}" +
+      ".zu-settings .zu-settings-langs label{flex:1;padding:5px 8px;border:1px solid var(--color-border,rgba(255,255,255,.14));border-radius:6px}" +
+      ".zu-settings input[type=radio]{accent-color:var(--color-brand,#57c7ff);margin:0}" +
+      ".zu-settings .zu-settings-detail{padding:0 11px 10px}" +
+      ".zu-settings .zu-settings-detail .pnote{font-size:calc(var(--ui-font-size,14px) - 2px)}" +
+      ".zu-settings .zu-settings-foot{flex:0 0 auto;border-top:1px solid var(--color-border,rgba(255,255,255,.09));padding:9px 12px}" +
+      ".zu-settings .zu-settings-scroll{display:block;width:100%;border:0;background:none;font:inherit;" +
+      "font-size:calc(var(--ui-font-size,14px) - 2px);color:var(--color-brand,#57c7ff);padding:2px;cursor:pointer}" +
+      ".zu-settings .zu-settings-scroll:disabled{color:var(--color-foreground-subtle,#8791a3);cursor:default}" +
       /* 子代理明细面板（v49）：点击条目弹出的固定面板（与设置面板同机制，互斥打开）；
        * 面板不随鼠标消失，绕开悬停+tab 的全部几何问题。 */
       ".zu-sub{cursor:pointer}" +
@@ -487,37 +525,41 @@
     bar.innerHTML = '<span class="zu-main">…</span>' +
       '<span class="btn zu-gear">⚙</span>';
     var panel = document.createElement("div");
-    panel.className = "panel";
+    panel.className = "panel zu-settings";
+    function settingRow(input, title, note) {
+      return '<label>' + input + '<span>' + title + '<em>' + note + '</em></span></label>';
+    }
     /* 面板文案可随语言重建（事件走 panel 级委托，重建不丢监听） */
     function buildPanel() {
+      var oldBody = panel.querySelector(".zu-settings-body");
+      var scrollTop = oldBody ? oldBody.scrollTop : 0;
       panel.innerHTML =
-      '<div class="phead">⚙ ' + L("状态条设置", "Status bar settings") + '<span class="pver">' + VERSION + '</span></div>' +
-      '<div class="cap">' + L("显示项（条面）", "Display items (bar)") + '</div>' +
-      '<label><input type="checkbox" data-k="ctx"><span>' + L("上下文", "Context") + '<em>' + L("进度条 + 百分比，颜色随占比变化", "Progress bar + percentage, color by usage") + '</em></span></label>' +
-      '<label><input type="checkbox" data-k="turn"><span>' + L("本轮", "Current turn") + '<em>' + L("tokens / 次数 / 单次耗时 / 首字", "tokens / requests / duration / first token") + '</em></span></label>' +
-      '<label><input type="checkbox" data-k="win"><span>' + L("会话累计", "Session total") + '<em>' + L("当前会话 tokens / 轮数 / 次数", "session tokens / turns / requests") + '</em></span></label>' +
-      '<label><input type="checkbox" data-k="tools"><span>' + L("工具调用", "Tool calls") + '<em>' + L("当前会话，悬停看各工具明细与错误", "per-session, hover for per-tool details and errors") + '</em></span></label>' +
-      '<label><input type="checkbox" data-k="today"><span>' + L("今日合计", "Today's total") + '<em>' + L("今天所有会话的消耗", "consumption of all sessions today") + '</em></span></label>' +
-      '<label><input type="checkbox" data-k="sub"><span>' + L("子代理", "Sub-agents") + '<em>' + L("后台子代理消耗，点击条目看明细面板", "background sub-agent usage, click the item for the detail panel") + '</em></span></label>' +
-      '<div class="hr"></div>' +
-      '<div class="cap">' + L("上下文窗口", "Context window") + '</div>' +
-      '<label><input type="text" class="zu-ctxov" placeholder="' + L("自动(按模型)", "auto") + '"><span class="dim">' + L("留空 = 自动（原生UI > 模型目录）", "leave empty = auto (native UI > model catalog)") + '</span></label>' +
-      '<div class="hr"></div>' +
-      '<div class="cap">Language / 语言</div>' +
-      '<label><input type="radio" name="zu-lang" value="zh"><span>中文</span></label>' +
-      '<label><input type="radio" name="zu-lang" value="en"><span>English</span></label>' +
-      '<div class="hr"></div>' +
-      '<div class="cap">' + L("逐问速率行", "Per-answer rate line") + '</div>' +
-      '<label><input type="checkbox" class="zu-rate-line"><span>' + L("回答末尾追加统计行（默认开启）", "Append stats line to each reply (on by default)") + '<em>' + L("即时 tok/s（含思考）/ 首字延迟 / 输出 / 生成耗时 / 段数峰值 / 会话累计；由插件提问钩子注入，开关下一问生效", "Instant tok/s (incl. thinking), TTFT, output, generation time, segments/peak, session total; injected by the plugin prompt hook, effective on the next prompt") + '</em></span></label>' +
-      '<div class="hr"></div>' +
-      '<div class="cap">' + L("插件更新", "Plugin updates") + '</div>' +
-      '<label><input type="checkbox" class="zu-auto-update"><span>' + L("自动更新", "Automatic updates") + '<em>' + L("每 24 小时检测并安装新版（默认开启，可关闭）", "Check and install every 24 hours (on by default, can be disabled)") + '</em></span></label>' +
-      '<div class="zu-update-actions"><button type="button" data-update="check">' + L("检查更新", "Check for updates") + '</button><button type="button" data-update="update">' + L("立即更新", "Update now") + '</button></div>' +
+      '<div class="zu-settings-head"><div class="phead">' + L("状态条设置", "Status bar settings") + '<span class="pver zu-settings-version"></span></div>' +
+      '<button type="button" class="zu-settings-close" aria-label="' + L("关闭设置", "Close settings") + '">✕</button></div>' +
+      '<div class="zu-settings-body" tabindex="0" role="region" aria-label="' + L("状态条设置选项", "Status bar settings options") + '">' +
+      '<section class="zu-settings-section"><div class="cap">' + L("状态条显示", "Display items") + '</div><div class="zu-settings-card">' +
+      settingRow('<input type="checkbox" data-k="ctx">', L("上下文", "Context"), L("进度条与占用比例，颜色随用量变化", "Progress and usage percentage, colored by usage")) +
+      settingRow('<input type="checkbox" data-k="turn">', L("本轮", "Current turn"), L("tokens、请求次数、耗时与首字延迟", "Tokens, requests, duration and first-token latency")) +
+      settingRow('<input type="checkbox" data-k="win">', L("会话累计", "Session total"), L("当前会话的 tokens、轮数与请求次数", "Tokens, turns and requests in this session")) +
+      settingRow('<input type="checkbox" data-k="tools">', L("工具调用", "Tool calls"), L("悬停查看各工具明细与错误", "Hover for per-tool details and errors")) +
+      settingRow('<input type="checkbox" data-k="today">', L("今日合计", "Today's total"), L("今天所有会话的消耗", "Usage across all sessions today")) +
+      settingRow('<input type="checkbox" data-k="sub">', L("子代理", "Sub-agents"), L("点击状态条上的子代理查看明细", "Click the bar item for sub-agent details")) +
+      '</div></section>' +
+      '<section class="zu-settings-section"><div class="cap">' + L("通用", "General") + '</div><div class="zu-settings-card">' +
+      settingRow('<input type="text" class="zu-ctxov" inputmode="numeric" aria-label="' + L("上下文窗口", "Context window") + '" placeholder="' + L("自动（按模型）", "Auto (model)") + '">', L("上下文窗口", "Context window"), L("留空自动识别，优先使用客户端数值", "Leave empty to detect automatically; prefer the client value")) +
+      '<div class="zu-settings-langs"><label><input type="radio" name="zu-lang" value="zh"><span>中文</span></label>' +
+      '<label><input type="radio" name="zu-lang" value="en"><span>English</span></label></div></div></section>' +
+      '<section class="zu-settings-section"><div class="cap">' + L("回答统计", "Reply statistics") + '</div><div class="zu-settings-card">' +
+      settingRow('<input type="checkbox" class="zu-rate-line">', L("回答末尾追加统计行", "Append stats to each reply"), L("默认开启，下一次提问生效。包含速率（含思考）、首字延迟、输出量、生成耗时、段数峰值与会话累计。", "On by default; effective on the next prompt. Includes speed (with thinking), first-token latency, output, duration, segments/peak and session total.")) +
+      '</div></section>' +
+      '<section class="zu-settings-section"><div class="cap">' + L("插件更新", "Plugin updates") + '</div><div class="zu-settings-card">' +
+      settingRow('<input type="checkbox" class="zu-auto-update">', L("自动更新", "Automatic updates"), L("每 24 小时检查并安装新版，默认开启", "Check and install every 24 hours; on by default")) +
+      '<div class="zu-settings-detail"><div class="zu-update-actions"><button type="button" data-update="check">' + L("检查更新", "Check for updates") + '</button><button type="button" data-update="update">' + L("立即更新", "Update now") + '</button></div>' +
       '<div class="pnote zu-update-status" role="status" aria-live="polite"></div>' +
-      '<div class="pnote">' + L("仅更新此插件；通过已配置的插件市场检测。GitHub 来源会联网，本地目录来源只检查本地文件，不上传用量数据。", "Only this plugin is updated through its configured marketplace. GitHub sources use the network; directory sources check local files. Usage data is never uploaded.") + '</div>' +
-      '<div class="hr"></div>' +
-      '<div class="pnote">' + L("悬停条面各项看明细；点击子代理项看全部明细面板。数据源 ~/.zcode/cli/db/db.sqlite（只读），请求完成后才落库，数值随上次完成请求变化。",
-        "Hover bar items for details; click the sub-agent item for the full detail panel. Data source ~/.zcode/cli/db/db.sqlite (read-only); rows are written when requests complete, numbers follow the latest completed request.") + '</div>';
+      '<div class="pnote">' + L("仅更新此插件。GitHub 来源会联网，本地目录来源只检查本地文件，不上传用量数据。", "Only this plugin is updated. GitHub sources use the network; directory sources check local files. Usage data is never uploaded.") + '</div></div></div></section>' +
+      '<section class="zu-settings-section"><div class="cap">' + L("关于数据", "About the data") + '</div><div class="pnote">' +
+      L("悬停状态条查看明细。数据源 ~/.zcode/cli/db/db.sqlite（只读），请求完成后才落库。", "Hover bar items for details. Data source ~/.zcode/cli/db/db.sqlite (read-only); data is written after requests complete.") + '</div></section></div>' +
+      '<div class="zu-settings-foot"><button type="button" class="zu-settings-scroll"></button></div>';
       panel.querySelectorAll('input[name=zu-lang]').forEach(function (r) {
         r.checked = state.lang === r.value;
       });
@@ -529,7 +571,37 @@
       var ovInput = panel.querySelector(".zu-ctxov");
       if (ovInput) ovInput.value = state.ctxOv;
       syncUpdate();
+      panel.querySelector(".zu-settings-body").scrollTop = scrollTop;
+      syncSettingsScroll();
     }
+    function syncSettingsScroll() {
+      var body = panel.querySelector(".zu-settings-body");
+      var button = panel.querySelector(".zu-settings-scroll");
+      if (!body || !button) return;
+      var overflow = body.scrollHeight > body.clientHeight + 2;
+      var more = overflow && body.scrollHeight - body.clientHeight - body.scrollTop > 2;
+      panel.classList.toggle("zu-settings-more", more);
+      button.disabled = !more;
+      var text = more ? L("↓ 下方还有设置 · 滚动或点击查看更多", "↓ More settings below · scroll or click to see more") :
+        overflow ? L("✓ 已到底部 · 所有设置已展示", "✓ End of settings") : L("所有设置已展示", "All settings are visible");
+      if (button.textContent !== text) button.textContent = text;
+    }
+    function positionSettingsPanel() {
+      if (!panel.classList.contains("open")) return;
+      var br = bar.getBoundingClientRect();
+      var height = Math.max(0, Math.floor(br.top - 18));
+      var value = height + "px";
+      if (panel.style.getPropertyValue("--zu-settings-height") !== value) panel.style.setProperty("--zu-settings-height", value);
+      value = br.width + "px";
+      if (panel.style.width !== value) panel.style.width = value;
+      value = -bar.clientLeft + "px";
+      if (panel.style.left !== value) panel.style.left = value;
+      syncSettingsScroll();
+    }
+    panel.addEventListener("scroll", syncSettingsScroll, true);
+    panel.addEventListener("keydown", function (e) {
+      if (e.key === "Escape") panel.classList.remove("open");
+    });
     buildPanel();
     bar.appendChild(panel);
     /* 子代理明细面板（v49）：与设置面板同款 .panel 机制，点击条目开关，互斥打开 */
@@ -722,8 +794,9 @@
         /* 占比档位分两套：窗口 ≥100 万时同一百分比的绝对 token 量大，40/60 提前预警；其余维持 70/85。 */
         var big = cw >= 1000000;
         var cls = exc ? "exc" : pct >= (big ? 60 : 85) ? "hot" : pct >= (big ? 40 : 70) ? "warm" : "ok";
-        var bar = cw ? '<span class="cbar"><i class="' + cls + '" style="width:' +
-          Math.min(100, pct).toFixed(1) + '%"></i></span>' : "";
+        var bar = cw ? '<svg class="cbar" viewBox="0 0 24 24" aria-hidden="true"><circle class="cbar-track" cx="12" cy="12" r="9"/>' +
+          '<circle class="cbar-value ' + cls + '" cx="12" cy="12" r="9" pathLength="100" stroke-dasharray="' +
+          Math.max(0, Math.min(100, pct)).toFixed(1) + ' 100" transform="rotate(-90 12 12)"/></svg>' : "";
         it(bar + (cw ? '<span class="pct ' + cls + '">' + pct.toFixed(1) + "%</span>"
               : '<span class="v' + (exc ? " exc" : "") + '">' + fmt(sess.ctx) + "</span>"),
           "\x01" +
@@ -1140,6 +1213,9 @@
     function syncUpdate() {
       var u = state.pluginUpdate;
       var active = !!(u && u.supported);
+      var version = panel.querySelector(".zu-settings-version");
+      version.textContent = active && u.currentVersion ? u.currentVersion : "";
+      version.hidden = !version.textContent;
       var cb = panel.querySelector(".zu-auto-update");
       cb.checked = !!(u && u.auto);
       cb.disabled = !active;
@@ -1177,6 +1253,16 @@
       syncUpdate();
     }
     panel.addEventListener("click", function (e) {
+      if (e.target.closest && e.target.closest(".zu-settings-close")) {
+        panel.classList.remove("open");
+        return;
+      }
+      if (e.target.closest && e.target.closest(".zu-settings-scroll")) {
+        var body = panel.querySelector(".zu-settings-body");
+        body.scrollTop += Math.max(1, Math.round(body.clientHeight * .8));
+        syncSettingsScroll();
+        return;
+      }
       var button = e.target.closest && e.target.closest("[data-update]");
       if (button && !button.disabled) pluginRequest(button.dataset.update);
     });
@@ -1186,6 +1272,7 @@
       var opening = !panel.classList.contains("open");
       panel.classList.toggle("open");
       if (opening) {
+        positionSettingsPanel();
         subPanel.classList.remove("open");   // 两面板同位重叠，互斥打开（v49）
         hideTip(true, "gear-open");   // 移向齿轮的路上可能触发过条目 tooltip，开面板时一并收掉
       }
@@ -1214,7 +1301,7 @@
       if (t2.type === "checkbox") {
         state.show[t2.dataset.k] = t2.checked ? 1 : 0;
         persist();
-      } else if (t2.id === "zu-ctxov") {
+      } else if (t2.classList.contains("zu-ctxov")) {
         state.ctxOv = t2.value.trim();
         persist();
       }
@@ -1311,12 +1398,23 @@
         body.appendChild(row);
       }
     }
+    function positionSubPanel() {
+      if (!subPanel.classList.contains("open")) return;
+      var item = bar.querySelector(".zu-sub");
+      if (!item) return;
+      var br = bar.getBoundingClientRect(), ir = item.getBoundingClientRect();
+      var width = subPanel.offsetWidth;
+      var left = ir.left + ir.width / 2 - width / 2;
+      left = Math.max(8, Math.min(left, window.innerWidth - width - 8));
+      subPanel.style.left = Math.round(left - br.left - bar.clientLeft) + "px";
+    }
     function toggleSubPanel() {
       var opening = !subPanel.classList.contains("open");
       subPanel.classList.toggle("open", opening);
       if (opening) {
         panel.classList.remove("open");   // 与设置面板互斥
         buildSubPanel(lastSub);
+        positionSubPanel();
         hideTip(true, "sub-open");
       }
     }
@@ -1783,6 +1881,8 @@
         if (ns !== shrink) { shrink = ns; render(state.data || { session: {}, last_turn: {}, today: {}, context_window: 0 }); }
         var clip = main.scrollWidth > main.clientWidth + 1;
         if (clip !== fadeOn) { fadeOn = clip; main.classList.toggle("zu-clip", clip); }
+        positionSettingsPanel();
+        positionSubPanel();
         everMounted = true;
         if (slot === 0 && Date.now() - lastMountDiagAt > 5000) {
           lastMountDiagAt = Date.now();
