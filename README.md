@@ -74,7 +74,7 @@ Windows / macOS · Python 3.8+ · [MIT](LICENSE)
 以上两种方式装好插件后，保持插件启用，新建或重新打开会话，执行：
 
 ```text
-/zcode-token-usage-statusbar:install-overlay
+/install-overlay
 ```
 
 安装成功后，**完全退出并重新打开 ZCode**。

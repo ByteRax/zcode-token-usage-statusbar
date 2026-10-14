@@ -26,7 +26,7 @@
 两种方式装好插件后，新建或重新打开会话，输入：
 
 ```text
-/zcode-token-usage-statusbar:install-overlay
+/install-overlay
 ```
 
 安装成功后，完全退出并重开 ZCode。**默认不自动安装，未注入时仅重启无法安装状态条。** 只需要查询工具和回答速率时可以跳过状态条安装；它会修改客户端文件，请确认信任后再执行。
