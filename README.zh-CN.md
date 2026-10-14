@@ -27,10 +27,68 @@ Windows / macOS · Python 3.8+ · [MIT](LICENSE)
 
 ## 快速开始
 
-**用桌面客户端？** 选下面任意一种安装方式，不用两种都装。
+**用桌面客户端？** 推荐通过插件安装，也可以选择下方的一键安装，无需重复安装。
 **用自托管网页？** 请直接看 [Web 版安装](web/README.zh-CN.md)。
 
-### 一键安装
+### 通过 ZCode 插件安装
+
+插件提供**用量查询、回答速率和插件更新**。先安装 [Python 3.8+](https://www.python.org/downloads/)，然后任选一种方式添加插件。
+
+#### 方式一：远程安装（无需下载源码）
+
+在 **ZCode 对话输入框**依次执行：
+
+```text
+/plugin marketplace add ByteRax/zcode-token-usage-statusbar#plugin-releases
+/plugin install zcode-token-usage-statusbar@zusage-marketplace
+```
+
+也可以打开 **设置 → 插件 → 添加插件市场**，输入 `https://github.com/ByteRax/zcode-token-usage-statusbar#plugin-releases`，添加后找到 **ZCode Token Usage Statusbar** 并安装。此渠道安装经过校验的正式 Release，不跟随开发分支。
+
+#### 方式二：本地目录安装
+
+下载或克隆本仓库后：
+
+1. 打开 **设置 → 插件 → 添加插件市场**，点击 **选择目录**。
+2. 选择包含 `marketplace.json` 的仓库根目录（不是 `plugins/` 子目录），添加市场。
+3. 找到 **ZCode Token Usage Statusbar**，点击安装。
+
+也可在 ZCode 中执行，路径替换为实际仓库目录：
+
+```text
+/plugin marketplace add /绝对路径/到/zcode-token-usage-statusbar
+/plugin install zcode-token-usage-statusbar@zusage-marketplace
+```
+
+<details>
+<summary>查看添加插件市场截图</summary>
+
+![添加插件市场：远程方式填写 GitHub 地址，本地方式点击「选择目录」](docs/plugin-marketplace-add.png)
+
+</details>
+
+#### 安装窗口底部的状态条
+
+以上两种方式装好插件后，保持插件启用，新建或重新打开会话，执行：
+
+```text
+/zcode-token-usage-statusbar:install-overlay
+```
+
+安装成功后，**完全退出并重新打开 ZCode**。
+
+**装插件不等于装状态条。** 只需要查询和回答速率，可以跳过这一步。状态条安装会修改客户端文件，请确认信任此项目。
+
+**以后如何更新？**
+
+- **远程安装**：在 ZCode 输入 `/plugin marketplace update zusage-marketplace`，再到 **设置 → 插件 → 已安装** 更新本插件。
+- **本地安装**：先自行更新本地源码，再执行同样的刷新和更新步骤；本地市场不会替你 `git pull`。
+- 更新后新建或重新打开会话；若提示主进程文件变化，完全退出并重开 ZCode。
+
+远程推荐使用 `#plugin-releases` 正式渠道，配套清单与发布包的地址、版本和 SHA256 一致。已从默认分支或本地目录添加市场的用户，来源不会自动切换；迁移步骤见 [用户指南](docs/user-guide.md#切换已有市场到正式渠道)。
+[更多安装、更新与排查说明 →](docs/user-guide.md#插件安装)
+
+### 一键安装（不通过插件）
 
 先安装 [Python](https://www.python.org/downloads/) 和 [Git](https://git-scm.com/downloads)，在终端执行：
 
@@ -43,51 +101,6 @@ python install.py
 macOS 上若找不到 `python`，改用 `python3 install.py`。
 
 **安装成功后，完全退出 ZCode，再重新打开。** 状态条会出现在对话窗口底部。
-
-### 通过 ZCode 插件安装（本地目录）
-
-适合希望在 ZCode 内管理安装、启停和更新的用户。插件提供**用量查询、回答速率和插件更新**；需要窗口底部的状态条时，再执行插件内置的安装命令，不必另跑 `python install.py`。
-
-准备好包含 `marketplace.json` 的本项目源码，然后：
-
-1. 打开 **设置 → 插件 → 添加插件市场**。
-2. 点 **选择目录**，选择仓库根目录（不是 `plugins/` 子目录），添加市场。
-3. 找到 **ZCode Token Usage Statusbar**，点击安装并保持启用。
-4. 新建或重新打开会话，输入：
-
-   ```text
-   /zcode-token-usage-statusbar:install-overlay
-   ```
-
-5. 安装成功后，**完全退出并重新打开 ZCode**。
-
-<details>
-<summary>安装截图与命令方式</summary>
-
-![添加插件市场：点击「选择目录」，选中仓库根目录](docs/plugin-marketplace-add.png)
-
-也可以在 **ZCode 对话输入框**执行（将路径换成实际仓库目录）：
-
-```text
-/plugin marketplace add /绝对路径/到/zcode-token-usage-statusbar
-/plugin install zcode-token-usage-statusbar@zusage-marketplace
-```
-
-`marketplace add` 只添加市场，第二条命令才安装插件；之后仍按第 4、5 步安装状态条。
-
-</details>
-
-**装插件不等于装状态条。** 只需要用量查询和回答速率的用户，可以跳过第 4、5 步。状态条安装会修改客户端文件，执行前请确认信任此项目。
-
-**以后如何更新？**
-
-1. 先更新本地源码，再在 ZCode 输入 `/plugin marketplace update zusage-marketplace` 刷新市场。
-2. 在 **设置 → 插件 → 已安装** 更新本插件；有状态条时，也可在 **⚙ → 插件更新** 中检查并更新。
-3. 更新后新建或重新打开会话；若提示主进程文件变化，完全退出并重开 ZCode。
-
-ZCode 使用的是已安装副本，**修改仓库不等于更新插件**；本地目录市场也不会自动执行 `git pull`。
-请确认选择的源码根目录包含 `marketplace.json`，而不是仅选择 `plugins/` 子目录。
-[更多安装、更新与排查说明 →](docs/user-guide.md#插件安装)
 
 ## 日常使用
 

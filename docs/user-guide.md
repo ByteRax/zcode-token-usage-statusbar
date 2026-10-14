@@ -6,13 +6,92 @@
 
 ## 选择安装方式
 
-- **桌面客户端**：一键安装器直接安装状态条和查询工具；插件方式由 ZCode 管理查询、回答速率与插件更新，再单独安装状态条。两者使用同一个运行目录和同一行注入，不要重复安装查询组件。
+- **桌面客户端**：推荐通过 ZCode 插件安装，可选择远程市场或本地目录。插件管理查询、回答速率与更新，状态条需另执行安装命令。也可以使用下方的一键安装器；两者共用运行目录与注入行，无需重复安装。
 - **自托管网页**：按 [Web 版文档](../web/README.zh-CN.md) 部署，不能用桌面安装器给浏览器页面添加状态条。
 - **官方云端网页**：本仓库的 Web 方案需要你控制服务器与 nginx，不适用于官方托管页面。
 
 桌面版需要 Python 3.8+，不需要额外 Python 包。支持 Windows、macOS；Linux 系统级路径可能需要管理员权限，界面与发行版兼容性需自行验证。
 
+## 插件安装
+
+### 方式一：远程安装（无需下载源码）
+
+在 **ZCode 对话输入框**中依次执行（不是系统终端）：
+
+```text
+/plugin marketplace add ByteRax/zcode-token-usage-statusbar#plugin-releases
+/plugin install zcode-token-usage-statusbar@zusage-marketplace
+```
+
+第一条添加市场，第二条安装插件。也可以通过界面操作：
+
+1. 打开 **设置 → 插件 → 添加插件市场**；某些版本入口在「发现」页的 **+**。
+2. 输入 `https://github.com/ByteRax/zcode-token-usage-statusbar#plugin-releases`，添加市场。
+3. 找到 **ZCode Token Usage Statusbar**，安装到用户范围并启用。
+
+此渠道从经过校验的正式 Release ZIP 安装插件，不跟随开发分支，也不需要自己下载源码。装好后按下方「安装状态条」完成浮层安装。
+
+### 方式二：本地目录安装
+
+从 [ByteRax 仓库](https://github.com/ByteRax/zcode-token-usage-statusbar) 下载或克隆源码后：
+
+1. 打开 **设置 → 插件 → 添加插件市场**，点击 **选择目录**。
+2. 选择包含 `marketplace.json` 的仓库根目录（不是 `plugins/` 子目录），添加市场。
+3. 找到 **ZCode Token Usage Statusbar**，安装到用户范围并启用。
+
+也可在 **ZCode 对话输入框**执行，将路径换成实际仓库目录；路径含空格时用引号包住：
+
+```text
+/plugin marketplace add /绝对路径/到/zcode-token-usage-statusbar
+/plugin install zcode-token-usage-statusbar@zusage-marketplace
+```
+
+![添加插件市场：远程方式填写 GitHub 地址，本地方式点击「选择目录」](plugin-marketplace-add.png)
+
+### 安装状态条（两种插件方式通用）
+
+按宿主提示加载插件，新建或重新打开会话；已有会话不会补触发启动钩子。执行：
+
+```text
+/zcode-token-usage-statusbar:install-overlay
+```
+
+安装成功后，**完全退出并重新打开 ZCode**；只关闭窗口不一定退出主进程。
+
+**装插件不等于装状态条。** 只需要查询工具与回答速率，可以跳过浮层安装。状态条会修改客户端文件，执行前请确认信任此项目。
+
+Windows 若找不到 `python3`，需在插件的 `.mcp.json` 与 `hooks/hooks.json` 中改用可用的 Python 命令，再刷新安装；只改仓库不会改变已安装副本。
+
+### 正式 Release 渠道
+
+[`plugin-releases` 分支](https://github.com/ByteRax/zcode-token-usage-statusbar/tree/plugin-releases) 已发布与 `v1.4.0` 正式包一致的市场清单。新用户请使用 `ByteRax/zcode-token-usage-statusbar#plugin-releases`。
+
+清单指向正式 ZIP，包含 SHA256 与插件子目录；下载时核对 Release manifest、版本、包内容和清单一致性，不回退开发分支。后续正式版本仍需维护者同步发布渠道清单，单独发布 Release 不等于渠道已经更新。
+
+默认 `main` 的市场清单仍用于源码安装，本地目录也保持原用法；不要把正式渠道清单复制到自己的源码根目录。私有仓库认证下载和非 GitHub 远端自动更新目前不支持。发布操作见 [维护文档](maintaining.md#发布插件)。
+
+### 切换已有市场到正式渠道
+
+市场名仍是 `zusage-marketplace`，但来源从默认分支/本地目录变为 `#plugin-releases`。**已安装用户不会自动切换，也不必为了添加分支卸载浮层。** 想迁移时：
+
+1. 先关闭插件自动更新，等待正在进行的更新结束，记下现有市场来源。
+2. 在 ZCode 对话输入框重新添加同名正式市场：
+
+   ```text
+   /plugin marketplace add ByteRax/zcode-token-usage-statusbar#plugin-releases
+   ```
+
+   当前官方 CLI 会用新来源更新同名市场注册，保留已安装插件、启用状态与缓存；无需先卸载插件或浮层。此行为已在隔离本地市场中实测，远端下载仍需网络可用。
+3. 在市场管理中确认 `zusage-marketplace` 指向新地址，来源的 `ref` 为 `plugin-releases`，再刷新市场并在插件页按需更新。不要只看到插件已安装就假定来源已切换。
+4. 确认正式包可读取后，按自己的偏好开启自动更新。更新涉及主进程文件时，完全退出并重开 ZCode。
+
+如果客户端版本不支持同名来源替换，可先移除旧市场注册再添加正式地址；**移除市场与卸载插件是不同操作**。不要执行卸载命令来替代来源迁移。
+
+迁移操作须由你明确选择；本项目不会静默修改个人市场注册、删除设置或移动本地源码。
+
 ## 一键安装
+
+不通过插件时，先安装 Python 和 Git，在系统终端执行：
 
 ```bash
 git clone https://github.com/ByteRax/zcode-token-usage-statusbar.git
@@ -48,59 +127,33 @@ python3 install.py --root /Applications/ZCode.app
 | `--dev` | 开发模式，直接引用仓库文件；此时不能删除或移动仓库 |
 | `--remove` | 移除注入、独立注册的查询工具、`/usage` 和运行目录；不等于卸载 ZCode 插件 |
 
-## 插件安装
-
-### 本地目录
-
-从 [ByteRax 仓库](https://github.com/ByteRax/zcode-token-usage-statusbar) 下载或克隆源码，确认根目录包含 `marketplace.json`。添加市场时选这一层目录，不是 `plugins/` 子目录。
-
-1. 在 ZCode 打开 **设置 → 插件 → 添加插件市场**；某些版本入口在「发现」页的 **+**。
-2. 点击 **选择目录**，选择包含 `marketplace.json` 的仓库根目录，添加市场。
-3. 找到 **ZCode Token Usage Statusbar**，安装到用户范围并启用。
-4. 按宿主提示加载插件，新建或重新打开会话；已有会话不会补触发启动钩子。
-5. 如果需要状态条，执行下面命令，成功后完全退出并重开 ZCode：
-
-```text
-/zcode-token-usage-statusbar:install-overlay
-```
-
-![添加插件市场对话框：选择本地仓库根目录](plugin-marketplace-add.png)
-
-也可以在 **ZCode 对话输入框**中添加市场并安装（不是系统终端）：
-
-```text
-/plugin marketplace add /绝对路径/到/zcode-token-usage-statusbar
-/plugin install zcode-token-usage-statusbar@zusage-marketplace
-```
-
-路径含空格时用引号包住。Windows 若找不到 `python3`，需在插件的 `.mcp.json` 与 `hooks/hooks.json` 中改用可用的 Python 命令，再刷新安装；只改仓库不会改变已安装副本。
-
-### 远端市场
-
-只有仓库发布了插件市场清单与可安装包，才可使用 `owner/repo` 形式。
-GitHub 正式更新渠道使用 `OWNER/REPO#plugin-releases`，须以维护者实际发布的地址为准，不能复制占位符安装。
-
-远端更新只采用正式 Release，不回退开发分支；Release 包与市场清单必须一致。私有仓库认证下载和非 GitHub 远端自动更新目前不支持。发布操作见 [维护文档](maintaining.md#发布插件)。
-
 ## 更新与客户端升级
 
 ### 插件更新
 
-状态条 **⚙ → 插件更新** 提供「检查更新」「立即更新」和「自动更新」。
+正式渠道可在 ⚙ 检查或安装更新，也可以按以下步骤手动更新：
+
+1. 远程安装无需更新本地源码；本地目录安装需先自行获取最新源码。
+2. 在 ZCode 对话输入框刷新市场：
+
+   ```text
+   /plugin marketplace update zusage-marketplace
+   ```
+
+3. 打开 **设置 → 插件 → 已安装**，更新 **ZCode Token Usage Statusbar**。
+4. 新建或重新打开会话；若提示主进程文件变化，再完全退出并重开 ZCode。
+
+本地目录市场**不会执行 `git pull`**。ZCode 使用的是独立安装副本，修改仓库不等于完成插件更新。
+
+状态条 **⚙ → 插件更新** 还提供「检查更新」「立即更新」和「自动更新」：
 
 - **检查更新**不会安装；发现新版后可点「立即更新」。
 - **自动更新默认开启**，首次运行检查，之后按 24 小时间隔检测与安装；你显式关闭的设置会保留。
+- GitHub 来源需正式 Release 与市场清单一致；新远程安装使用 `#plugin-releases`。旧默认分支市场若未迁移仍会报告清单不一致，不会回退到开发分支。
 - 更新代码会访问已注册来源，不上传用量数据；来源错误或网络失败会显示原因。
 - 只支持本插件的用户级安装；不会替你启用已禁用的插件。
-- 本地目录市场只刷新本地文件，**不会执行 `git pull`**。先自行更新源码，再刷新市场并更新插件。
 
-手动刷新市场：
-
-```text
-/plugin marketplace update zusage-marketplace
-```
-
-之后在插件页更新本插件，新建或重新打开会话；若提示主进程文件变化，再完全退出并重开 ZCode。已安装插件是源码的独立副本，修改仓库不等于完成更新。
+自动或手动更新成功后，都需按提示重开会话或重启客户端。
 
 ### ZCode 升级后状态条消失
 
