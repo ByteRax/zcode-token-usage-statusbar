@@ -6,19 +6,30 @@
 
 ## 安装
 
-使用包含 `marketplace.json` 的源码版本：
+### 远程正式渠道
 
-1. 打开 **设置 → 插件 → 添加插件市场**，点击 **选择目录**，选择仓库根目录。
-2. 安装并启用 **ZCode Token Usage Statusbar**。
-3. 新建或重新打开会话，输入：
+在 ZCode 对话输入框执行：
 
-   ```text
-   /zcode-token-usage-statusbar:install-overlay
-   ```
+```text
+/plugin marketplace add ByteRax/zcode-token-usage-statusbar#plugin-releases
+/plugin install zcode-token-usage-statusbar@zusage-marketplace
+```
 
-4. 安装成功后，完全退出并重开 ZCode。
+此渠道使用正式 Release 包；已从本地目录或默认分支添加过同名市场时，可重新执行添加命令切换来源，之后确认市场的 `ref` 为 `plugin-releases`。插件不会自行迁移你的市场注册。
 
-只需要查询工具和回答速率时，可以跳过第 3、4 步。状态条会修改客户端文件，请确认信任后再安装。
+### 本地目录
+
+使用包含 `marketplace.json` 的源码版本，打开 **设置 → 插件 → 添加插件市场**，点击 **选择目录**，选择仓库根目录，安装并启用 **ZCode Token Usage Statusbar**。
+
+### 安装状态条
+
+两种方式装好插件后，新建或重新打开会话，输入：
+
+```text
+/zcode-token-usage-statusbar:install-overlay
+```
+
+安装成功后，完全退出并重开 ZCode。只需要查询工具和回答速率时可以跳过状态条安装；它会修改客户端文件，请确认信任后再执行。
 
 ## 使用
 

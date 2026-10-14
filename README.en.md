@@ -27,10 +27,68 @@ Windows / macOS · Python 3.8+ · [MIT](LICENSE)
 
 ## Quick start
 
-**Using the desktop app?** Choose either installation method below, not both.
+**Using the desktop app?** Plugin installation is recommended; the one-command installer below is an alternative. Do not install both.
 **Self-hosting the web UI?** Follow the [Web edition guide](web/README.md) instead.
 
-### One-command installer
+### Install through ZCode plugins
+
+The plugin provides **usage queries, reply rates and plugin updates**. Install [Python 3.8+](https://www.python.org/downloads/), then choose either method below.
+
+#### Method 1: remote installation (no source download needed)
+
+Enter these commands in **ZCode's chat input**, in order:
+
+```text
+/plugin marketplace add ByteRax/zcode-token-usage-statusbar#plugin-releases
+/plugin install zcode-token-usage-statusbar@zusage-marketplace
+```
+
+Alternatively, open **Settings → Plugin → Add marketplace**, enter `https://github.com/ByteRax/zcode-token-usage-statusbar#plugin-releases`, then find and install **ZCode Token Usage Statusbar**. This channel installs verified stable Release assets, not development branch code.
+
+#### Method 2: local-directory installation
+
+Download or clone this repository, then:
+
+1. Open **Settings → Plugin → Add marketplace** and click **Choose directory**.
+2. Select the repository root containing `marketplace.json` (not the `plugins/` subdirectory) and add it.
+3. Find **ZCode Token Usage Statusbar** and install it.
+
+Or enter these commands in ZCode, replacing the path with your repository directory:
+
+```text
+/plugin marketplace add /absolute/path/to/zcode-token-usage-statusbar
+/plugin install zcode-token-usage-statusbar@zusage-marketplace
+```
+
+<details>
+<summary>Add marketplace screenshot</summary>
+
+![Add marketplace: enter the GitHub URL for remote installation or choose a directory for local installation (Chinese UI)](docs/plugin-marketplace-add.png)
+
+</details>
+
+#### Add the floating bar
+
+After either plugin installation method, leave the plugin enabled, start or reopen a session, and run:
+
+```text
+/zcode-token-usage-statusbar:install-overlay
+```
+
+After installation succeeds, **quit ZCode completely and reopen it**.
+
+**Installing the plugin alone does not install the bar.** Skip this step if you only want queries and reply rates. The bar installer modifies client files; only run it if you trust this project.
+
+**How do I update it later?**
+
+- **Remote installation**: enter `/plugin marketplace update zusage-marketplace` in ZCode, then update this plugin in **Settings → Plugin → Installed**.
+- **Local installation**: update your source first, then follow the same refresh and update steps. The local marketplace never runs `git pull` for you.
+- Start or reopen a session afterward. If prompted about changed main-process files, quit ZCode completely and reopen it.
+
+Use the `#plugin-releases` stable channel for remote installs; its catalog matches the asset URL, version and SHA256. Existing default-branch or local-directory registrations do not switch automatically; see the [migration guide](docs/user-guide.md#切换已有市场到正式渠道) (Chinese).
+[More installation, updates and troubleshooting →](docs/user-guide.md#插件安装) (Chinese)
+
+### One-command installer (without plugins)
 
 Install [Python](https://www.python.org/downloads/) and [Git](https://git-scm.com/downloads), then run in a terminal:
 
@@ -43,51 +101,6 @@ python install.py --lang en
 On macOS, use `python3 install.py --lang en` if `python` is unavailable.
 
 **After installation succeeds, quit ZCode completely and reopen it.** The bar appears at the bottom of a conversation window.
-
-### Install through ZCode plugins (local directory)
-
-Choose this method to manage installation, enablement and updates inside ZCode. The plugin provides **usage queries, reply rates and plugin updates**. To add the floating bar, use its built-in installer; there is no need to run `python install.py` separately.
-
-Prepare this project's source with a root-level `marketplace.json`, then:
-
-1. Open **Settings → Plugin → Add marketplace**.
-2. Click **Choose directory**, select the repository root (not the `plugins/` subdirectory), and add it.
-3. Find **ZCode Token Usage Statusbar**, install it and leave it enabled.
-4. Start or reopen a session and enter:
-
-   ```text
-   /zcode-token-usage-statusbar:install-overlay
-   ```
-
-5. After installation succeeds, **quit ZCode completely and reopen it**.
-
-<details>
-<summary>Installation screenshot and command alternative</summary>
-
-![Add marketplace dialog: use Choose directory to select the repository root (Chinese UI)](docs/plugin-marketplace-add.png)
-
-Alternatively, enter these commands in **ZCode's chat input**, replacing the path with your repository directory:
-
-```text
-/plugin marketplace add /absolute/path/to/zcode-token-usage-statusbar
-/plugin install zcode-token-usage-statusbar@zusage-marketplace
-```
-
-`marketplace add` only adds the marketplace; the second command installs the plugin. Follow steps 4 and 5 to install the bar afterward.
-
-</details>
-
-**Installing the plugin alone does not install the bar.** For query tools and reply rates only, skip steps 4 and 5. The bar installer modifies client files; only run it if you trust this project.
-
-**How do I update it later?**
-
-1. Update your local source, then enter `/plugin marketplace update zusage-marketplace` in ZCode to refresh the marketplace.
-2. Update this plugin in **Settings → Plugin → Installed**. With the bar installed, you can also check and update through **⚙ → Plugin updates**.
-3. Start or reopen a session afterward. If prompted about changed main-process files, quit ZCode completely and reopen it.
-
-ZCode runs an installed copy: **editing the repository does not update the plugin**, and a local-directory marketplace never runs `git pull` for you.
-Make sure the selected source directory contains `marketplace.json`; do not select only the `plugins/` subdirectory.
-[More installation, updates and troubleshooting →](docs/user-guide.md#插件安装) (Chinese)
 
 ## Everyday use
 
