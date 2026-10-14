@@ -70,12 +70,6 @@ ZCode 的插件机制只有五种组件——skills / commands / agents / hooks 
 /plugin marketplace add /绝对路径/到/zcode-token-usage-statusbar
 ```
 
-![设置 → 插件管理 → 发现 → + 的「添加插件市场」对话框：输入 GitHub 仓库地址即方式一，点「选择目录」指向仓库根即方式二](docs/plugin-marketplace-add.png)
-
-上图：**设置 → 插件管理 → 发现 → +** 弹出的「添加插件市场」对话框——输入 GitHub 仓库地址即方式一，
-点「选择目录」指向仓库根即方式二；确认后执行 `/plugin install zcode-token-usage-statusbar@zusage-marketplace`
-完成安装。
-
 更新（插件 1.1.0 起）：浮层的 **⚙ 设置 → 插件更新** 提供：
 
 - **检查更新**：按已注册来源检测版本，不安装；显示当前/可用版本、来源与上次检测时间。
@@ -87,7 +81,7 @@ ZCode 的插件机制只有五种组件——skills / commands / agents / hooks 
 
 **1.4.0 起，更新来源跟随已注册的市场**：GitHub 来源及托管在 GitHub 的 Git 来源走 **正式 Release 检测与下载**，不按开发分支版本更新。枚举 Release 并排除 draft、预发布和截图 tag；更新时校验 manifest、ZIP、SHA256 与安全解包，再核对官方市场清单指向完全相同的 ZIP/hash，最后由官方安装器按原插件 ID 安装。本地目录仍只刷新本地文件，**不会替你 git pull**。
 
-维护者须将生成的 Release 渠道清单发布到用户注册的同仓库/ref；新远端用户建议注册 `OWNER/REPO#plugin-releases`。已有注册不会自动切换。没有正式包、清单不一致或非 GitHub 远端会明确报错，不回退开发分支；私有仓库暂不支持认证下载，不会借用凭据。详见 [Release 更新与发布](docs/plugin-release-updates.md)。
+维护者须将生成的 Release 渠道清单发布到用户注册的同仓库/ref；新远端用户建议注册 `OWNER/REPO#plugin-releases`。已有注册不会自动切换。没有正式包、清单不一致或非 GitHub 远端会明确报错，不回退开发分支；私有仓库暂不支持认证下载，不会借用凭据。
 
 项目专用技能 [`zcode-github-release`](.zcode/skills/zcode-github-release/SKILL.md) 可触发检查、确定性打包、发布预演和正式发布流程。技能仅放在本项目 `.zcode/skills/`，直接调用仓库根脚本，不全局安装，也不随插件分发。提交、tag 推送、Release 和渠道清单推送均须明确授权，创建技能不等于已经发布。
 
@@ -114,9 +108,9 @@ Windows 正在运行导致替换失败时，使用无窗口收尾进程等待退
 不会自行重启客户端。旧版插件须先通过插件管理页升级到 **1.2.2** 才含首次重启提醒，只修改本仓库不会让 1.0.0 缓存获得修复。
 
 **1.2.3 起**，运行时 loader（`inject-main.cjs`）或 updater（`plugin-updater.cjs`）更新时，即使现有注入有效、无需再次注入，也会生成重启提醒。
-SessionStart 最近一次诊断保存在运行时目录的 `plugin-session-start.json`；`source` 字段可区分手动验证（如 `manual-repair-check`）与自然 SessionStart 事件，手动执行成功不等于自然触发已验证。真实部署证据及待验证项见[本机修复记录](docs/plugin-live-repair.md)。
+SessionStart 最近一次诊断保存在运行时目录的 `plugin-session-start.json`；`source` 字段可区分手动验证（如 `manual-repair-check`）与自然 SessionStart 事件，手动执行成功不等于自然触发已验证。
 
-**1.3.1 更新可靠性修复**：更新与运行时同步使用独立的操作系统锁，避免并发回滚；可信 hash 基线持续保护热修，同版同步也不会覆盖手改。安装提交后错误会协调实际安装记录，后台更新的重启需求持久保存，loader 仅确认已加载的文件指纹。检查期间可关闭自动更新，已经开始的安装不会取消；待替换 asar 校验生成时来源与 TMP 身份，短暂占用会重试，未知历史 TMP 不自动替换。相同源 mtime 的内容升级也会触发热更新。旧更新器无法遵守新锁，升级此版后须完全退出并启动一次；Windows 收尾分支有隔离回归，尚未实机验证。详见[批量修复验收](docs/plugin-batch-fixes.md)。
+**1.3.1 更新可靠性修复**：更新与运行时同步使用独立的操作系统锁，避免并发回滚；可信 hash 基线持续保护热修，同版同步也不会覆盖手改。安装提交后错误会协调实际安装记录，后台更新的重启需求持久保存，loader 仅确认已加载的文件指纹。检查期间可关闭自动更新，已经开始的安装不会取消；待替换 asar 校验生成时来源与 TMP 身份，短暂占用会重试，未知历史 TMP 不自动替换。相同源 mtime 的内容升级也会触发热更新。旧更新器无法遵守新锁，升级此版后须完全退出并启动一次；Windows 收尾分支有隔离回归，尚未实机验证。
 
 注意分界：**装插件只有查询能力，没有浮层**——浮层要么跑安装命令、要么继续用一键安装器；
 两者操作的是同一个运行时目录和同一行注入，可互相替换。插件卸载不会自动卸载浮层，
@@ -319,8 +313,6 @@ python install.py --remove    # 从 asar 剥离本工具注入行 + 移除 MCP �
 ### 插件
 
 在 ZCode 中打开 **设置 → 插件 → 已安装 → ZCode Token Usage Statusbar → 点击三个点 → 卸载**：
-
-![设置 → 插件 → 已安装 → ZCode Token Usage Statusbar 右侧三个点菜单中的「卸载」](docs/plugin-uninstall.png)
 
 这一步**只卸插件本体**：注销 `token_usage` MCP、`/usage` 等命令、技能与 SessionStart hook，并删除
 `~/.zcode/cli/plugins/cache/` 下的安装副本。
