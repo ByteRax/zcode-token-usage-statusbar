@@ -53,7 +53,7 @@
 按宿主提示加载插件，新建或重新打开会话；已有会话不会补触发启动钩子。执行：
 
 ```text
-/zcode-token-usage-statusbar:install-overlay
+/install-overlay
 ```
 
 安装成功后，**完全退出并重新打开 ZCode**；只关闭窗口不一定退出主进程。

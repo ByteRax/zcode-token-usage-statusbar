@@ -74,7 +74,7 @@ Or enter these commands in ZCode, replacing the path with your repository direct
 After either plugin installation method, leave the plugin enabled, start or reopen a session, and run:
 
 ```text
-/zcode-token-usage-statusbar:install-overlay
+/install-overlay
 ```
 
 After installation succeeds, **quit ZCode completely and reopen it**.
