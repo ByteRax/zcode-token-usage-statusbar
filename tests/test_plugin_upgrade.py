@@ -42,7 +42,7 @@ class PluginUpgradeTests(unittest.TestCase):
         self.write_asar(self.asar)
         manifest = self.plugin / ".zcode-plugin" / "plugin.json"
         manifest.parent.mkdir(parents=True)
-        manifest.write_text('{"version":"1.0.0"}', encoding="utf-8")
+        manifest.write_text('{"name":"zcode-token-usage-statusbar","version":"1.0.0"}', encoding="utf-8")
         for name in self.installer.RUNTIME_FILES:
             (self.plugin / name).write_bytes((PLUGIN_ROOT / name).read_bytes())
         self.updater = types.SimpleNamespace(start_auto_update=mock.Mock())
@@ -55,7 +55,9 @@ class PluginUpgradeTests(unittest.TestCase):
                 mock.patch.object(self.pi, "client_running", return_value=False),
                 mock.patch.dict(sys.modules, {"plugin_auto_update": self.updater,
                     "restart_notice": load_module("upgrade_restart_notice", PLUGIN_ROOT / "restart_notice.py")}),
-                mock.patch.dict(os.environ, {"ZUSAGE_PLUGIN_RUNTIME": str(self.runtime)}, clear=True)):
+                mock.patch.dict(os.environ, {"ZUSAGE_PLUGIN_RUNTIME": str(self.runtime),
+                    "HOME": str(self.root / "home"), "USERPROFILE": str(self.root / "home"),
+                    "PATH": os.environ.get("PATH", "")}, clear=True)):
             patcher.start()
             self.addCleanup(patcher.stop)
 
@@ -201,7 +203,10 @@ class PluginUpgradeTests(unittest.TestCase):
         self.assertFalse(self.installer.auto_enabled(self.runtime))
         self.assertTrue(self.installer.injected_status(self.pi))
         self.pi.launch_monitor.assert_called_once()
-        self.pi.syntax_check.assert_called_once_with(self.pi.TMP)
+        self.pi.syntax_check.assert_called_once()
+        checked = self.pi.syntax_check.call_args.args[0]
+        self.assertEqual(checked.parent, self.pi.TMP.parent)
+        self.assertTrue(checked.name.startswith(self.pi.TMP.name + ".") and checked.name.endswith(".stage"))
         self.assertFalse(self.pi.TMP.exists())
         # 后续卸载仅靠已记住的非标准位置，不依赖环境变量或缓存目标。
         del os.environ["ZCODE_ASAR"]
@@ -254,10 +259,9 @@ class PluginUpgradeTests(unittest.TestCase):
             raise OSError("config replace denied")
 
         with mock.patch.object(self.installer.os, "replace", side_effect=inspect_replace):
-            with self.assertRaisesRegex(OSError, "config replace denied"):
-                self.installer.save_runtime_config(self.runtime, self.pi)
+            self.assertFalse(self.installer.save_runtime_config(self.runtime, self.pi))
         self.assertEqual(config_path.read_bytes(), before)
-        self.assertFalse(list(self.runtime.glob(".config.json.*")))
+        self.assertFalse(list(self.runtime.glob("config.json.*.tmp")))
         with mock.patch.object(self.installer.os, "replace", wraps=real_replace) as replace:
             self.assertTrue(self.installer.save_runtime_config(self.runtime, self.pi))
         self.assertEqual(replace.call_count, 1)

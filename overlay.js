@@ -32,6 +32,7 @@
   /* 代际守卫：热更新后旧实例（interval/rAF 闭包无法外部清除）发现代号落后即永久罢工 */
   var MY_GEN = (window.__zusageGen = (window.__zusageGen || 0) + 1);
   function stale() { return MY_GEN !== window.__zusageGen; }
+  if (window.__zusageRateCleanup) window.__zusageRateCleanup();
 
   var FATAL = (window.__zusageDiag = {});
   /* 多实例（v61.1）：热更新时泵只按 id 清 0 号条，其余实例的 DOM（条/tip/气泡）
@@ -72,6 +73,7 @@
   var instances = [];   // spawnInstance 返回的 api：{pid, attach, render, ...}
   var nextSlot = 0;     // 实例序号；0 号保留兼容 id（#zusage-bar，泵热更新按它清理）
   function renderAll(rebuildPanels) {
+    if (rateTipFor) showRateTip(rateTipFor);
     for (var i = 0; i < instances.length; i++) {
       if (rebuildPanels) instances[i].rebuild();   // 语言切换等文案重建（各实例面板独立 DOM）
       if (state.data) instances[i].render(state.data);
@@ -92,6 +94,7 @@
     if (stale() || JSON.stringify(state.pluginUpdate) === JSON.stringify(s)) return;
     window.__zusagePluginState = state.pluginUpdate = s;
     if (s && typeof s.rateLine === "boolean") state.rateLine = s.rateLine;
+    scanRateLines();
     instances.forEach(function (inst) { inst.syncUpdate(); });
   };
   function refreshWants() {
@@ -130,9 +133,8 @@
   /* 结构化内容：样式内嵌本浮层（选择器带 .zusage-rate-tip 前缀，随元素清理），
    * 不依赖条实例的 <style>；全部为静态双语文案，无任何插值。 */
   function rateTipHTML() {
-    var zh = state.lang !== "en";
-    var row = function (label, zhText, enText) {
-      return '<div class="rt-row"><b>' + label + "</b><span>" + (zh ? zhText : enText) + "</span></div>";
+    var row = function (label, text) {
+      return '<div class="rt-row"><b>' + label + "</b><span>" + text + "</span></div>";
     };
     return '<style>.zusage-rate-tip .rt-h{font-weight:600;color:var(--color-foreground,#e9edf4);margin:0 0 7px}' +
       ".zusage-rate-tip .rt-row{display:flex;gap:10px;margin:3px 0}" +
@@ -140,10 +142,10 @@
       ".zusage-rate-tip .rt-row span{color:var(--color-foreground-subtle,#8791a3)}" +
       '.zusage-rate-tip .rt-note{margin-top:8px;padding-top:7px;border-top:1px solid var(--color-border,rgba(255,255,255,.1));color:var(--color-foreground-subtle,#8791a3)}</style>' +
       '<div class="rt-h">⚡ ' + L("本问速率 · 各数值含义", "Rate line · what each figure means") + "</div>" +
-      row("tok/s", "本问各段加权平均：总输出 ÷ 总生成时长，工具等待不计入", "weighted average of all segments: total output ÷ total generation time, tool waits excluded") +
+      row("tok/s", L("本问各段加权平均：总输出 ÷ 总生成时长，工具等待不计入", "weighted average of all segments: total output ÷ total generation time, tool waits excluded")) +
       row(L("首字", "TTFT"), L("第一段从发出请求到首个 token 的等待", "wait from request to the first token of the first segment")) +
       row(L("输出", "Output"), L("本问各段输出合计（思考 token 已含其中）", "sum of segment output (thinking tokens already included)")) +
-      row(L("生成", "Gen"), L("各段纯生成时长合计，不含首字与工具等待", "sum of pure generation time; TTFT and tool waits excluded")) +
+      row(L("生成", "Gen"), L("各段生成窗口合计：含思考用 completed_at − started_at，否则用 completed_at − first_token_at；不含段间工具等待", "sum of segment generation windows: with thinking use completed_at − started_at, otherwise completed_at − first_token_at; tool waits between segments excluded")) +
       row(L("段 / 峰", "Seg/Peak"), L("段＝模型请求次数；峰＝最快一段的速率", "segments = model requests; peak = fastest segment")) +
       row(L("累计", "Session"), L("本会话已完成请求的输出总量（不含子代理）", "cumulative output of completed requests (sub-agents excluded)")) +
       row("⏱", L("采样时刻——写正文前自测，收尾正文段未计入", "sample time — self-tested before the final text, so that segment is excluded")) +
@@ -151,7 +153,7 @@
         "The bar's \"generation speed\" is the latest segment's instant value; this line is the whole-answer average — a difference is expected. Toggle in ⚙ settings.") + "</div>";
   }
   function showRateTip(el) {
-    if (stale()) return;
+    if (stale() || !state.rateLine || !isRateLine(el)) { hideRateTip(); return; }
     rateTip.innerHTML = rateTipHTML();
     rateTip.style.display = "block";
     var r = el.getBoundingClientRect(), tw = rateTip.offsetWidth, th = rateTip.offsetHeight;
@@ -167,31 +169,52 @@
     rateTip.style.display = "none";
     rateTipFor = null;
   }
-  window.addEventListener("scroll", hideRateTip, true);   // 捕获：任意容器滚动即收（虚拟列表换页时兜底）
-  function onRateEnter() {
-    var t = this.textContent || "";
-    if (t.indexOf("tok/s(本轮)") < 0 || t.indexOf("⚡") < 0) return;   // 虚拟列表复用节点换了文本：不再弹
-    showRateTip(this);
+  var rateBindings = [];
+  function isRateLine(el) {
+    var t = el.textContent || "";
+    return document.body.contains(el) && t.indexOf("tok/s(本轮)") >= 0 && t.indexOf("⚡") >= 0 &&
+      !(el.tagName === "BLOCKQUOTE" && el.querySelector("p"));
   }
+  function unbindRateLine(binding) {
+    var el = binding.el;
+    el.removeEventListener("mouseenter", onRateEnter);
+    el.removeEventListener("mouseleave", hideRateTip);
+    if (el.dataset.zusageRateTip === String(MY_GEN)) delete el.dataset.zusageRateTip;
+    if (el.style.cursor === "help") el.style.cursor = binding.cursor;
+  }
+  function onRateEnter() { showRateTip(this); }
   function scanRateLines() {
-    if (stale()) return;   // 热更新换了新代：旧代的扫描自然退出
+    if (stale()) { cleanupRateTip(); return; }
+    rateBindings = rateBindings.filter(function (binding) {
+      if (state.rateLine && isRateLine(binding.el)) return true;
+      unbindRateLine(binding);
+      return false;
+    });
+    if (!state.rateLine) { hideRateTip(); return; }
     var nodes = document.querySelectorAll("blockquote p, blockquote, p");
     for (var i = 0; i < nodes.length; i++) {
       var el = nodes[i];
-      if (el.dataset.zusageRateTip) continue;
-      var t = el.textContent || "";
-      if (t.indexOf("tok/s(本轮)") < 0 || t.indexOf("⚡") < 0) continue;
-      /* 客户端把引用块渲染成 blockquote>p 时两层都会命中：只绑最内层（p），
-       * 避免跨 p/blockquote 边界悬停时两份 enter/leave 交替导致 tooltip 闪烁 */
-      if (el.tagName === "BLOCKQUOTE" && el.querySelector("p")) continue;
-      el.dataset.zusageRateTip = "1";
+      if (el.dataset.zusageRateTip === String(MY_GEN) || !isRateLine(el)) continue;
+      rateBindings.push({ el: el, cursor: el.style.cursor });
+      el.dataset.zusageRateTip = String(MY_GEN);
       el.style.cursor = "help";
       el.addEventListener("mouseenter", onRateEnter);
       el.addEventListener("mouseleave", hideRateTip);
     }
-    if (rateTipFor && !document.body.contains(rateTipFor)) hideRateTip();
+    if (rateTipFor && !isRateLine(rateTipFor)) hideRateTip();
   }
-  setInterval(scanRateLines, 2000);
+  function cleanupRateTip() {
+    clearInterval(rateScanTimer);
+    window.removeEventListener("scroll", hideRateTip, true);
+    rateBindings.forEach(unbindRateLine);
+    rateBindings = [];
+    hideRateTip();
+    rateTip.remove();
+    if (window.__zusageRateCleanup === cleanupRateTip) delete window.__zusageRateCleanup;
+  }
+  window.addEventListener("scroll", hideRateTip, true);   // 捕获：任意容器滚动即收
+  var rateScanTimer = setInterval(scanRateLines, 2000);
+  window.__zusageRateCleanup = cleanupRateTip;
   scanRateLines();
 
   setTimeout(function () {
@@ -1143,6 +1166,7 @@
       if (t2.classList.contains("zu-rate-line")) {
         /* 乐观更新勾选态，真值以主进程写 config.json 后回推的 rateLine 为准 */
         state.rateLine = t2.checked;
+        scanRateLines();
         pluginRequest("rate-line", t2.checked);
         return;
       }

@@ -71,6 +71,14 @@ function runFile(command, args, options, input, onSpawn) {
   });
 }
 
+async function updateConfig(runtime, changes, python, defaults) {
+  const result = await runFile(python, [path.join(__dirname, "runtime_lock.py"), "--update-config", runtime], {
+    windowsHide: true, timeout: 15000, maxBuffer: 1024 * 1024,
+  }, JSON.stringify({ changes, defaults }));
+  if (result.ok !== true || typeof result.changed !== "boolean") throw new Error("配置更新没有返回有效确认");
+  return result;
+}
+
 function readState(file, currentTime) {
   const value = readJson(file, {});
   const saved = value && typeof value === "object" && !Array.isArray(value) ? value : {};
@@ -134,6 +142,64 @@ function acquireUpdateLock(runtime, python, helper) {
       });
     });
   });
+}
+
+function verifyCommittedRelease(record, expected, currentChannel) {
+  const release = expected && expected.release, manifest = expected && expected.manifest;
+  if (!release || !manifest || !expected.channel || !isDeepStrictEqual(currentChannel, expected.channel)) throw new Error("Release 更新意图无效或市场来源已变化，停止运行时同步");
+  const validated = releaseChannel.validateRelease({ tag_name: release.tag, draft: false, prerelease: false,
+    assets: [release.archive, release.manifest] }, release.repository);
+  if (!validated || validated.version !== release.version || expected.channel.kind !== "release" ||
+      !releaseChannel.sameRepository(expected.channel.repository, release.repository)) throw new Error("Release 更新意图无效，停止运行时同步");
+  releaseChannel.validateManifest(manifest, validated);
+  if (record.version !== release.version || !record.source || !releaseChannel.sameAssetUrl(record.source.url, release.archive.browser_download_url) ||
+      record.source.sha256 !== manifest.asset.sha256 || record.source.source !== "url" || record.source.type !== "zip" ||
+      record.source.path !== "plugins/zcode-token-usage-statusbar" ||
+      (record.source.stripRoot !== undefined && record.source.stripRoot !== false) || record.source.headers !== undefined) throw new Error("官方安装结果与选定 Release 不一致，停止运行时同步");
+}
+
+function verifyRuntimeSync(options) {
+  const { runtime, pluginRoot, home = os.homedir(), env = process.env } = options;
+  const readObject = (file, missing) => {
+    let value;
+    try { value = JSON.parse(fs.readFileSync(file, "utf8")); }
+    catch (error) { if (error.code === "ENOENT") return missing; throw error; }
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("同步验收记录不是 JSON 对象: " + file);
+    return value;
+  };
+  const root = fs.realpathSync(pluginRoot);
+  const manifest = readObject(path.join(root, ".zcode-plugin", "plugin.json"), null);
+  if (!manifest || manifest.name !== PLUGIN_ID.split("@")[0]) throw new Error("同步插件清单身份无效");
+  compareVersions(manifest.version, manifest.version);
+  const pending = readObject(path.join(runtime, "plugin-update.json"), null);
+  const hasPending = pending && (pending.pendingSync === true || (pending.pendingRelease !== undefined && pending.pendingRelease !== null) || pending.pendingPid);
+  if (legacyLockBusy(runtime)) throw new Error("旧更新进程仍在运行，停止运行时同步");
+  if (pending && pending.pendingPid) {
+    if (!Number.isSafeInteger(pending.pendingPid) || pending.pendingPid <= 0) throw new Error("安装进程记录无效");
+    try { process.kill(pending.pendingPid, 0); throw new Error("插件安装进程仍在运行，停止运行时同步"); }
+    catch (error) { if (error.code !== "ESRCH") throw error; }
+  }
+  const storage = resolvePluginStorage(home, env);
+  if (fs.existsSync(path.join(storage, "marketplaces", ".zusage-marketplace.transaction.json"))) throw new Error("官方市场事务尚未完成，停止运行时同步");
+  const inventory = readObject(path.join(storage, "installed_plugins.json"), null);
+  if (inventory && !Array.isArray(inventory.plugins)) throw new Error("官方安装记录形状无效");
+  const records = inventory ? inventory.plugins.filter((row) => row && row.id === PLUGIN_ID && row.scope === "user") : [];
+  if (!records.length) {
+    if (hasPending || inventory) throw new Error("同步所需用户插件安装记录不存在");
+    return { ok: true, pluginRoot: root, version: manifest.version, identity: { record: null, channel: null, pending, manifest } };
+  }
+  if (records.length !== 1) throw new Error("同步所需用户插件安装记录不唯一");
+  const record = records[0];
+  if (record.enabled === false || typeof record.installPath !== "string" || fs.realpathSync(record.installPath) !== root || record.version !== manifest.version) throw new Error("同步插件与官方安装记录不一致或已禁用");
+  const selected = releaseChannel.readChannel(home, storage);
+  const currentChannel = { kind: selected.kind, repository: selected.repository || "", source: selected.marketplace ? selected.marketplace.source : null };
+  if (hasPending) {
+    if (pending.pendingSync !== true) throw new Error("待同步意图不完整，停止运行时同步");
+    if (pending.pendingVersion && compareVersions(record.version, pending.pendingVersion) <= 0) throw new Error("插件安装尚未提交新版，停止运行时同步");
+    if (pending.pendingRelease !== undefined && pending.pendingRelease !== null) verifyCommittedRelease(record, pending.pendingRelease, currentChannel);
+    else if (currentChannel.kind === "release") throw new Error("历史更新意图缺少 Release 校验信息，停止运行时同步");
+  }
+  return { ok: true, pluginRoot: root, version: manifest.version, identity: { record, channel: currentChannel, pending, manifest } };
 }
 
 function createUpdater(options) {
@@ -297,7 +363,7 @@ function createUpdater(options) {
     try {
       if (selectedRelease) {
         const currentChannel = channel();
-        if (!isDeepStrictEqual(currentChannel, selectedChannel) || currentChannel.kind !== "release" || currentChannel.repository !== selectedRelease.repository) throw new Error("更新期间市场来源已变化");
+        if (!isDeepStrictEqual(currentChannel, selectedChannel) || currentChannel.kind !== "release" || !releaseChannel.sameRepository(currentChannel.repository, selectedRelease.repository)) throw new Error("更新期间市场来源已变化");
         downloaded = await prepareRelease(selectedRelease);
         releaseChannel.validateManifest(downloaded.manifest, selectedRelease);
         const market = await cli(["marketplace", "update", "zusage-marketplace"]); diagnostics(market);
@@ -344,18 +410,7 @@ function createUpdater(options) {
     } finally { if (downloaded && downloaded.cleanup) downloaded.cleanup(); }
   }
   function verifyReleaseCommit(record) {
-    const expected = state.pendingRelease;
-    const release = expected && expected.release, manifest = expected && expected.manifest;
-    if (!release || !manifest || !expected.channel || !isDeepStrictEqual(channel(), expected.channel)) throw new Error("Release 更新意图无效或市场来源已变化，停止运行时同步");
-    const validated = releaseChannel.validateRelease({ tag_name: release.tag, draft: false, prerelease: false,
-      assets: [release.archive, release.manifest] }, release.repository);
-    if (!validated || validated.version !== release.version || expected.channel.kind !== "release" ||
-        expected.channel.repository !== release.repository) throw new Error("Release 更新意图无效，停止运行时同步");
-    releaseChannel.validateManifest(manifest, validated);
-    if (record.version !== release.version || !record.source || record.source.url !== release.archive.browser_download_url ||
-        record.source.sha256 !== manifest.asset.sha256 || record.source.source !== "url" || record.source.type !== "zip" ||
-        record.source.path !== "plugins/zcode-token-usage-statusbar" ||
-        (record.source.stripRoot !== undefined && record.source.stripRoot !== false) || record.source.headers !== undefined) throw new Error("官方安装结果与选定 Release 不一致，停止运行时同步");
+    verifyCommittedRelease(record, state.pendingRelease, channel());
   }
   async function recordRestart(report) {
     if (report.restartRecorded === true) return;
@@ -392,12 +447,7 @@ function createUpdater(options) {
     if (!req) return;
     if (req.action === "auto" && typeof req.enabled === "boolean") {
       try {
-        let cfg;
-        try { cfg = JSON.parse(fs.readFileSync(configFile, "utf8")); }
-        catch (e) { if (e.code === "ENOENT") cfg = {}; else throw e; }
-        if (!cfg || typeof cfg !== "object" || Array.isArray(cfg)) throw new Error("config.json 不是对象");
-        cfg.plugin_auto_update = req.enabled;
-        writeJson(configFile, cfg);
+        await updateConfig(runtime, { plugin_auto_update: req.enabled }, python());
         refreshLocal(); state.error = "";
         publish();
         if (req.enabled) await check(true);
@@ -436,8 +486,16 @@ async function runAutoCommand(argv) {
   if (state.phase === "error") process.exitCode = 1;
 }
 
-module.exports = { createUpdater, compareVersions, INTERVAL_MS, PLUGIN_ID, runAutoCommand };
-if (require.main === module) runAutoCommand(process.argv.slice(2)).catch((e) => {
-  console.error("[zusage-plugin] 自动更新失败:", e.message);
-  process.exitCode = 1;
-});
+module.exports = { createUpdater, compareVersions, INTERVAL_MS, PLUGIN_ID, runAutoCommand, updateConfig, verifyRuntimeSync };
+if (require.main === module) {
+  const argv = process.argv.slice(2);
+  if (argv[0] === "--verify-runtime-sync") {
+    try {
+      if (argv.length !== 3) throw new Error("同步验收需要运行时与插件路径");
+      process.stdout.write(JSON.stringify(verifyRuntimeSync({ runtime: path.resolve(argv[1]), pluginRoot: path.resolve(argv[2]) })) + "\n");
+    } catch (error) { console.error("[zusage-plugin] 同步验收失败:", error.message); process.exitCode = 1; }
+  } else runAutoCommand(argv).catch((e) => {
+    console.error("[zusage-plugin] 自动更新失败:", e.message);
+    process.exitCode = 1;
+  });
+}

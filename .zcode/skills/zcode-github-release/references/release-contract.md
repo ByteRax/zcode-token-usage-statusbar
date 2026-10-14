@@ -20,6 +20,8 @@ manifest：
 
 ZIP 根必须有 `marketplace.json`、`LICENSE` 和 `plugins/zcode-token-usage-statusbar/` 的实际可独立安装文件。两个插件清单与市场版本/name一致。禁止绝对路径、`..`、重复条目、符号链接、设备文件、过量解压及用户配置/usage/锁/cache。发布包由工具白名单构建，根运行时代码与插件副本应字节一致。
 
+非核心文件增删须在两个插件清单中声明相同的 `packageLayout: {"schemaVersion": 1, "files": [...]}`，files 为完整 ZIP 文件路径集，并显式更新发布工具源码白名单。校验器按固定 bootstrap 和受约束脚本/资源目录校验，不执行新包 helper；固定引导文件不能删除，未声明布局的旧包仍要求完整历史文件集。引导合同变化需另行设计迁移，不能仅递增 schemaVersion 绕过旧校验。
+
 sha256 来自同一 Release 的 manifest，用来验证下载完整性；它不是独立签名，不能防止发布账号或 GitHub 仓库同时被攻破。信任来源是用户注册的 GitHub 仓库与 HTTPS，远端更新不得绕过更高版本比较、来源匹配和安全解压校验。
 
 

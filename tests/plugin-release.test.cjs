@@ -62,6 +62,47 @@ function mockHttps(t, routes) {
   });
   return calls;
 }
+test("R6 repository case is compatible but hosts tags and asset paths remain exact", () => {
+  const selected = validateRelease(release("1.4.0"), "byterax/zcode-token-usage-statusbar");
+  const f = packageFixture();
+  validateManifest({ ...f.manifest, repository: "BYTERAX/ZCODE-TOKEN-USAGE-STATUSBAR" }, selected);
+  const entry = { name: "zcode-token-usage-statusbar", version: "1.4.0", source: { source: "url", type: "zip",
+    url: selected.archive.browser_download_url.replace("ByteRax", "byterax"), sha256: f.manifest.asset.sha256,
+    path: "plugins/zcode-token-usage-statusbar" } };
+  validateCatalog({ name: "zusage-marketplace", plugins: [entry] }, selected, f.manifest);
+  for (const url of [selected.archive.browser_download_url.replace("github.com", "GITHUB.COM"),
+    selected.archive.browser_download_url.replace("v1.4.0", "V1.4.0"), selected.archive.browser_download_url + "?x=1"]) {
+    const row = release("1.4.0"); row.assets[0].browser_download_url = url;
+    assert.throws(() => validateRelease(row, selected.repository));
+  }
+});
+
+test("R13 redirected download shares one deadline and cancels current request", async (t) => {
+  const timers = new Set(), requests = [];
+  t.mock.method(global, "setTimeout", (fn, ms) => { const timer = { fn, ms }; timers.add(timer); return timer; });
+  t.mock.method(global, "clearTimeout", (timer) => timers.delete(timer));
+  t.mock.method(https, "get", (url, options, callback) => {
+    const request = new EventEmitter();
+    request.setTimeout = () => request;
+    request.destroy = (error) => { request.destroyed = true; queueMicrotask(() => request.emit("error", error)); };
+    requests.push(request);
+    const redirect = requests.length === 1;
+    queueMicrotask(() => {
+      const response = new EventEmitter(); response.headers = {}; response.destroy = () => { response.destroyed = true; };
+      response.resume = () => {}; response.statusCode = redirect ? 302 : 200;
+      if (redirect) response.headers.location = "https://release-assets.githubusercontent.com/fixture";
+      callback(response);
+    });
+    return request;
+  });
+  const pending = fetchBytes("https://github.com/owner/repo/asset", 100);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(requests.length, 2); assert.equal(timers.size, 1);
+  const rejected = assert.rejects(pending, /总时限/);
+  [...timers][0].fn(); await rejected;
+  assert.equal(requests[1].destroyed, true); assert.equal(timers.size, 0);
+});
+
 test("registered directory stays local and GitHub/git repository selects release without rebinding", (t) => {
   assert.equal(channel(fixture(t, { source: "directory", path: "/dev" })).kind, "local");
   assert.equal(channel(fixture(t, { source: "github", repo: "ByteRax/zcode-token-usage-statusbar", ref: "plugin-releases" })).repository, "ByteRax/zcode-token-usage-statusbar");

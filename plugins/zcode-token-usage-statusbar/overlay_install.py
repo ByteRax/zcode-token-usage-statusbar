@@ -31,6 +31,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -39,7 +40,7 @@ from pathlib import Path
 PLUGIN_ROOT = Path(__file__).parent.resolve()
 if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
-from runtime_lock import file_lock
+from runtime_lock import file_lock, update_config
 # 会同步进运行时目录的插件副本（usage_mcp.py 不在其中：MCP 直接从插件目录跑）
 RUNTIME_FILES = [
     "inject-main.cjs",
@@ -197,15 +198,141 @@ def _atomic_write(dst, data, src=None):
             pass
 
 
+@contextlib.contextmanager
+def _sync_verifier(runtime):
+    pending_path = runtime / "plugin-update.json"
+    try:
+        pending = json.loads(pending_path.read_text(encoding="utf-8"))
+        if not isinstance(pending, dict):
+            raise ValueError("plugin-update.json 必须是对象")
+    except FileNotFoundError:
+        pending = {}
+    active = (pending.get("pendingSync") is True or pending.get("pendingRelease") is not None
+              or pending.get("pendingPid"))
+    base = runtime if (runtime / "plugin-updater.cjs").is_file() else PLUGIN_ROOT
+    if active and base != runtime:
+        raise ValueError("待恢复安装缺少可信运行时验收器，停止同步")
+    executable = shutil.which("node")
+    config = load_runtime_config(runtime) or {}
+    asar = os.environ.get("ZCODE_ASAR") or config.get("asar_path")
+    if asar:
+        target = Path(asar)
+        candidates = ([target.parent.parent / "MacOS" / "ZCode"] if sys.platform == "darwin"
+                      else [target.parent.parent / ("ZCode.exe" if sys.platform == "win32" else "zcode")])
+        executable = next((str(item) for item in candidates if item.is_file()), executable)
+    if not executable:
+        raise ValueError("未找到运行时验收所需 Node/ZCode 可执行文件")
+    names = ("plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs")
+    with tempfile.TemporaryDirectory(prefix="zusage-sync-verifier-") as directory:
+        snapshot = Path(directory)
+        original = {}
+        for name in names:
+            original[name] = (base / name).read_bytes()
+            (snapshot / name).write_bytes(original[name])
+        if any((base / name).read_bytes() != data for name, data in original.items()):
+            raise ValueError("可信验收器在读取期间变化，停止同步")
+        # The migration contract belongs to this installer, never to the new
+        # cache helper. Require only the frozen runtime modules; newer runtimes
+        # retain their own verifier, while HEAD runtimes use this fixed adapter.
+        verifier_script = r'''
+const fs = require("fs"), path = require("path"), os = require("os");
+const { isDeepStrictEqual } = require("util");
+const [snapshot, runtime, pluginRoot] = process.argv.slice(1);
+const updater = require(path.join(snapshot, "plugin-updater.cjs"));
+function migrate() {
+  const release = require(path.join(snapshot, "plugin-release.cjs"));
+  const { resolvePluginStorage } = require(path.join(snapshot, "plugin-storage.cjs"));
+  const readObject = (file, missing) => {
+    let value;
+    try { value = JSON.parse(fs.readFileSync(file, "utf8")); }
+    catch (error) { if (error.code === "ENOENT") return missing; throw error; }
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw Error("同步验收记录不是 JSON 对象: " + file);
+    return value;
+  };
+  const root = fs.realpathSync(pluginRoot), id = "zcode-token-usage-statusbar@zusage-marketplace";
+  const manifest = readObject(path.join(root, ".zcode-plugin", "plugin.json"), null);
+  if (!manifest || manifest.name !== id.split("@")[0]) throw Error("同步插件清单身份无效");
+  updater.compareVersions(manifest.version, manifest.version);
+  const pending = readObject(path.join(runtime, "plugin-update.json"), null);
+  const hasPending = pending && (pending.pendingSync === true || pending.pendingRelease != null || pending.pendingPid);
+  const live = pid => {
+    try { process.kill(pid, 0); return true; }
+    catch (error) { return error.code !== "ESRCH"; }
+  };
+  const legacy = path.join(runtime, "plugin-update.lock");
+  try {
+    let owner;
+    try { owner = JSON.parse(fs.readFileSync(legacy, "utf8")); } catch (error) { owner = {}; }
+    if ((owner && Number.isSafeInteger(owner.pid) && owner.pid > 0)
+        ? live(owner.pid) : Date.now() - fs.statSync(legacy).mtimeMs < 600000) throw Error("旧更新进程仍在运行，停止运行时同步");
+  } catch (error) { if (error.code !== "ENOENT") throw error; }
+  if (pending && pending.pendingPid) {
+    if (!Number.isSafeInteger(pending.pendingPid) || pending.pendingPid <= 0) throw Error("安装进程记录无效");
+    if (live(pending.pendingPid)) throw Error("插件安装进程仍在运行，停止运行时同步");
+  }
+  const storage = resolvePluginStorage(os.homedir(), process.env);
+  if (fs.existsSync(path.join(storage, "marketplaces", ".zusage-marketplace.transaction.json"))) throw Error("官方市场事务尚未完成，停止运行时同步");
+  const inventory = readObject(path.join(storage, "installed_plugins.json"), null);
+  if (inventory && !Array.isArray(inventory.plugins)) throw Error("官方安装记录形状无效");
+  const records = inventory ? inventory.plugins.filter(row => row && row.id === id && row.scope === "user") : [];
+  if (!records.length) {
+    if (hasPending || inventory) throw Error("同步所需用户插件安装记录不存在");
+    return { ok: true, pluginRoot: root, identity: { record: null, channel: null, pending, manifest } };
+  }
+  if (records.length !== 1) throw Error("同步所需用户插件安装记录不唯一");
+  const record = records[0];
+  if (record.enabled === false || typeof record.installPath !== "string" || fs.realpathSync(record.installPath) !== root || record.version !== manifest.version) throw Error("同步插件与官方安装记录不一致或已禁用");
+  const selected = release.readChannel(os.homedir(), storage);
+  const channel = { kind: selected.kind, repository: selected.repository || "", source: selected.marketplace ? selected.marketplace.source : null };
+  if (hasPending) {
+    if (pending.pendingSync !== true) throw Error("待同步意图不完整，停止运行时同步");
+    if (pending.pendingVersion && updater.compareVersions(record.version, pending.pendingVersion) <= 0) throw Error("插件安装尚未提交新版，停止运行时同步");
+    if (pending.pendingRelease != null) {
+      const expected = pending.pendingRelease, r = expected.release, m = expected.manifest;
+      if (!r || !m || !expected.channel || !isDeepStrictEqual(channel, expected.channel)) throw Error("Release 更新意图无效或市场来源已变化，停止运行时同步");
+      const validated = release.validateRelease({ tag_name: r.tag, draft: false, prerelease: false, assets: [r.archive, r.manifest] }, r.repository);
+      if (!validated || validated.version !== r.version || channel.kind !== "release" || channel.repository !== r.repository) throw Error("Release 更新意图无效，停止运行时同步");
+      release.validateManifest(m, validated);
+      const source = record.source;
+      if (record.version !== r.version || !source || source.url !== r.archive.browser_download_url || source.sha256 !== m.asset.sha256 || source.source !== "url" || source.type !== "zip" || source.path !== "plugins/zcode-token-usage-statusbar" || (source.stripRoot !== undefined && source.stripRoot !== false) || source.headers !== undefined) throw Error("官方安装结果与选定 Release 不一致，停止运行时同步");
+    } else if (channel.kind === "release") throw Error("历史更新意图缺少 Release 校验信息，停止运行时同步");
+  }
+  return { ok: true, pluginRoot: root, identity: { record, channel, pending, manifest } };
+}
+try {
+  const result = typeof updater.verifyRuntimeSync === "function"
+    ? updater.verifyRuntimeSync({ runtime, pluginRoot }) : migrate();
+  process.stdout.write(JSON.stringify(result) + "\n");
+} catch (error) { console.error("[zusage-plugin] 同步验收失败:", error.message); process.exitCode = 1; }
+'''
+        def verify():
+            result = subprocess.run([executable, "-e", verifier_script, str(snapshot),
+                                     str(runtime), str(PLUGIN_ROOT)],
+                                    capture_output=True, text=True, timeout=10,
+                                    env=dict(os.environ, ELECTRON_RUN_AS_NODE="1"))
+            if result.returncode:
+                raise ValueError("运行时同步验收失败: " + result.stderr.strip()[:1000])
+            data = json.loads(result.stdout)
+            if data.get("ok") is not True or data.get("pluginRoot") != str(PLUGIN_ROOT.resolve()):
+                raise ValueError("运行时同步验收结果无效")
+            return data["identity"]
+        identity = verify()
+        def recheck():
+            if verify() != identity:
+                raise ValueError("运行时同步期间安装身份发生变化")
+        yield recheck
+
+
 def sync_runtime(runtime):
-    """读基线、规划、预写重启标记、替换文件与提交记录在跨进程事务锁内。"""
+    """All entry points verify installed identity before the shared transaction."""
     runtime = Path(runtime)
     runtime.mkdir(parents=True, exist_ok=True)
     with file_lock(runtime / "plugin-runtime.lock"):
-        return _sync_runtime_locked(runtime)
+        with _sync_verifier(runtime) as verify:
+            return _sync_runtime_locked(runtime, verify)
 
 
-def _sync_runtime_locked(runtime):
+def _sync_runtime_locked(runtime, verify=lambda: None):
     """可信 hash 持续保护手改；无基线迁移用 mtime，旧插件不能回滚新版。"""
     version = plugin_version()
     current_version = _version_key(version)
@@ -218,6 +345,31 @@ def _sync_runtime_locked(runtime):
     if not isinstance(previous, dict):
         raise ValueError("plugin-runtime.json 必须是对象")
     previous_version = _version_key(previous["version"]) if previous else None
+    journal_path = runtime / "plugin-runtime-pending.json"
+    try:
+        journal = json.loads(journal_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        journal = None
+    if journal is not None:
+        if not isinstance(journal, dict) or not isinstance(journal.get("targets"), dict) or not isinstance(journal.get("base"), dict):
+            raise ValueError("运行时待同步记录损坏")
+        if previous == journal["base"]:
+            recovered = dict(previous)
+            recovered_hashes = dict(previous.get("hashes", {}))
+            for name, digest in journal["targets"].items():
+                if name not in RUNTIME_FILES or not isinstance(digest, str) or not re.fullmatch("[0-9a-f]{64}", digest):
+                    raise ValueError("运行时待同步 hash 无效")
+                target = runtime / name
+                if target.is_file() and hashlib.sha256(target.read_bytes()).hexdigest() == digest:
+                    recovered_hashes[name] = digest
+            recovered["hashes"] = recovered_hashes
+            if not previous and recovered_hashes:
+                recovered.update(version="0.0.0", plugin_root=str(PLUGIN_ROOT.resolve()))
+            if recovered != previous:
+                verify()
+                _atomic_write(record_path, (json.dumps(recovered) + "\n").encode("utf-8"))
+                previous = recovered
+        journal_path.unlink()
     downgrade = previous_version is not None and current_version < previous_version
     recorded_hashes = previous.get("hashes", {})
     if not isinstance(recorded_hashes, dict):
@@ -231,6 +383,7 @@ def _sync_runtime_locked(runtime):
         hashes[name] = digest.lower()
     changed, skipped, preserved = [], [], []
     writes = []
+    planned_targets = {}
     for name in RUNTIME_FILES:
         src, dst = PLUGIN_ROOT / name, runtime / name
         if not src.is_file() or downgrade:
@@ -238,6 +391,7 @@ def _sync_runtime_locked(runtime):
             continue
         data = src.read_bytes()
         src_hash = hashlib.sha256(data).hexdigest()
+        planned_targets[name] = hashlib.sha256(dst.read_bytes()).hexdigest() if dst.is_file() else None
         if dst.is_file():
             dst_hash = hashlib.sha256(dst.read_bytes()).hexdigest()
             if dst_hash == src_hash:
@@ -266,17 +420,28 @@ def _sync_runtime_locked(runtime):
     if (load_runtime_config(runtime) or {}).get("hot_reload") is False:
         cold_files.update(("overlay.js", "zusage.py"))
     restart_hashes = {name: hashes[name] for name in changed if name in cold_files}
+    verify()
+    if writes:
+        journal = {"base": previous, "targets": {dst.name: hashes[dst.name] for dst, _, _ in writes}}
+        _atomic_write(journal_path, (json.dumps(journal) + "\n").encode("utf-8"))
     if restart_hashes:
         from restart_notice import record_restart
         record_restart(runtime, {"hashes": restart_hashes, "changed": changed,
-                                 "version": version})
+                                 "version": version, "state": "pending-sync"})
     for dst, data, src in writes:
+        verify()
+        current_hash = hashlib.sha256(dst.read_bytes()).hexdigest() if dst.is_file() else None
+        if current_hash != planned_targets[dst.name]:
+            raise ValueError("运行时文件在同步规划后发生变化，保留手改并停止同步: " + dst.name)
         _atomic_write(dst, data, src)
+    verify()
     record = dict(result)
     if downgrade:
         record["version"] = previous["version"]
         record["plugin_root"] = previous["plugin_root"]
     _atomic_write(record_path, (json.dumps(record, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
+    if journal_path.exists():
+        journal_path.unlink()
     return result
 
 
@@ -297,17 +462,11 @@ def save_runtime_config(runtime, pi):
     """调用方已确认目标有效/安装成功；仅补 Python 路径与实际 asar 位置。"""
     if pi.ASAR is None:
         return False
-    config = load_runtime_config(runtime)
-    if config is None:
-        print("[zusage-plugin] config.json 损坏或不可读，保留原文件。", file=sys.stderr)
+    try:
+        update_config(runtime, {"asar_path": str(pi.ASAR)}, {"python_path": sys.executable})
+    except (OSError, ValueError, TimeoutError):
+        print("[zusage-plugin] config.json 损坏、不可读或锁忙，保留原文件。", file=sys.stderr)
         return False
-    updated = dict(config)
-    updated.setdefault("python_path", sys.executable)
-    updated["asar_path"] = str(pi.ASAR)
-    if updated != config:
-        runtime.mkdir(parents=True, exist_ok=True)
-        _atomic_write(runtime / "config.json",
-                      (json.dumps(updated, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
     return True
 
 

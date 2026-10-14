@@ -22,11 +22,15 @@
   按段累加，段间工具等待不计入。
 """
 import json
+import math
 import os
 import sqlite3
 import sys
+import tempfile
 import time
 from pathlib import Path
+
+from runtime_lock import file_lock
 
 DB_PATH = os.environ.get("ZCODE_USAGE_DB") or str(
     Path.home() / ".zcode" / "cli" / "db" / "db.sqlite")
@@ -39,47 +43,57 @@ MIN_GEN_MS = 200      # 有效样本：最短生成耗时
 MAX_GEN_MS = 3_600_000  # 有效样本：最长生成耗时（1h）
 
 
+def valid_state_ts(value, now=None):
+    now = time.time() * 1000 if now is None else now
+    return (isinstance(value, (int, float)) and not isinstance(value, bool)
+            and math.isfinite(value) and 0 <= now - value <= STATE_TTL_MS)
+
+
 def read_state():
     try:
         st = json.loads(Path(STATE_FILE).read_text(encoding="utf-8"))
     except Exception:
         return None
-    if not isinstance(st, dict) or not isinstance(st.get("ts"), (int, float)):
-        return None
-    if time.time() * 1000 - st["ts"] > STATE_TTL_MS:
-        return None
-    return st
+    return st if isinstance(st, dict) and valid_state_ts(st.get("ts")) else None
 
 
 def write_session_state(session_id, source):
-    """hooks 共用的状态写入：会话启动记 sessionId，提问时再补 promptTs（守卫依据）。
-
-    prompts 是每会话提问时刻映射：多窗口/多会话交替提问时全局 promptTs 会被后问的
-    会话覆盖，守卫若只看全局值会误吞先问会话的本轮数据（v1.3.0 修复）。"""
-    now = int(time.time() * 1000)
+    """持久文件锁内合并每会话提问时刻，再原子替换；会话启动不伪造提问。"""
     path = Path(STATE_FILE)
+    tmp = None
     try:
-        try:
-            prev = json.loads(path.read_text(encoding="utf-8"))
-            prompts = prev.get("prompts") if isinstance(prev, dict) else None
-        except Exception:
-            prompts = None
-        if not isinstance(prompts, dict):
-            prompts = {}
-        # 顺手按 TTL 清理久未活跃会话的映射，防无限增长
-        prompts = {k: v for k, v in prompts.items()
-                   if isinstance(v, (int, float)) and now - v <= STATE_TTL_MS}
-        prompts[session_id] = now
-        # 原子写（tmp+rename）：写一半被杀不留半截 JSON——状态损坏会让守卫失守
-        tmp = str(path) + f".{os.getpid()}.tmp"
         path.parent.mkdir(parents=True, exist_ok=True)
-        with open(tmp, "w", encoding="utf-8") as f:
-            f.write(json.dumps({
-                "sessionId": session_id, "ts": now, "promptTs": now,
-                "source": source, "prompts": prompts}))
-        os.replace(tmp, str(path))
+        with file_lock(str(path) + ".lock"):
+            now = int(time.time() * 1000)
+            try:
+                prev = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                prev = None
+            prompts = prev.get("prompts") if isinstance(prev, dict) else None
+            # 迁移仅含全局字段的旧状态，且不把 SessionStart 的 ts 当提问。
+            if not isinstance(prompts, dict):
+                prompts = {}
+                if isinstance(prev, dict) and prev.get("sessionId") \
+                        and valid_state_ts(prev.get("promptTs"), now):
+                    prompts[prev["sessionId"]] = prev["promptTs"]
+            prompts = {k: v for k, v in prompts.items() if valid_state_ts(v, now)}
+            if source == "prompt-submit":
+                prompts[session_id] = max(prompts.get(session_id, 0), now)
+            data = {"sessionId": session_id, "ts": now, "source": source, "prompts": prompts}
+            if session_id in prompts:
+                data["promptTs"] = prompts[session_id]
+            fd, tmp = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                json.dump(data, stream)
+            os.replace(tmp, path)
     except Exception:
         pass
+    finally:
+        if tmp is not None:
+            try:
+                os.unlink(tmp)
+            except FileNotFoundError:
+                pass
 
 
 def open_db():
@@ -193,34 +207,38 @@ def query_latest(session_id=None):
             db.close()
 
 
-# 本轮 = 会话里最新的 turn_id（一次用户消息触发的全部请求共享同一 turn_id，
-# 含"模型→工具→模型"的每一段）。回复收尾时本轮已完成的各段均已实时入库。
-def latest_turn_id(db, sid):
+# 一次用户消息的各段共享 turn_id。按整轮最早 started_at 排序，不能用完成时间：
+# 上轮迟到的完成/工具后续段可能比本轮更晚，但轮次身份仍属上轮。
+def latest_turn_id(db, sid, prompt_ts=None):
     if db is None:
         return None
+    sql = ("select turn_id from model_usage where session_id=? and query_source='main_turn'"
+           " and turn_id is not null and turn_id != '' group by turn_id")
+    args = [sid]
+    if prompt_ts is not None:
+        sql += " having min(started_at) >= ?"
+        args.append(prompt_ts)
     try:
-        row = db.execute(
-            "select turn_id from model_usage where session_id=? and turn_id is not null"
-            " order by completed_at desc limit 1", [sid]).fetchone()
-        return row[0] if row else None
+        row = db.execute(sql + " order by min(started_at) desc, turn_id desc limit 1", args).fetchone()
     except sqlite3.OperationalError:
-        return None  # 旧版客户端的库没有 turn_id 列
+        return None
+    return row[0] if row else None
 
 
-def last_prompt_ts(session_id=None):
-    """本会话的提问时刻：优先 prompts 映射里的每会话值；旧状态文件/CLI 无会话时
-    回退全局 promptTs（与 v1.2.x 行为一致）。"""
-    st = read_state()
+def last_prompt_ts(session_id=None, state=None):
+    """仅接受本会话的有效提问时刻；映射缺项不借别的会话/SessionStart 的时刻。"""
+    st = read_state() if state is None else state
     if not st:
         return None
+    sid = session_id or st.get("sessionId")
     prompts = st.get("prompts")
-    if session_id and isinstance(prompts, dict) \
-            and isinstance(prompts.get(session_id), (int, float)):
-        return prompts[session_id]
-    ts = st.get("promptTs") if isinstance(st.get("promptTs"), (int, float)) else None
-    if not isinstance(ts, (int, float)):
-        ts = st.get("ts") if isinstance(st.get("ts"), (int, float)) else None
-    return ts
+    if isinstance(prompts, dict):
+        ts = prompts.get(sid)
+    elif st.get("sessionId") == sid:
+        ts = st.get("promptTs")
+    else:
+        ts = None
+    return ts if valid_state_ts(ts) else None
 
 
 def query_turn(session_id=None, current=False):
@@ -235,21 +253,22 @@ def query_turn(session_id=None, current=False):
             win = db.execute(scope_sql + " order by completed_at desc limit ?", args + [N]).fetchall()
             rated = [i for i in map(to_item, win) if i["tokPerSec"] is not None]
             session = session_aggregate(db, scope_sql, args, rated)
-        turn_id = latest_turn_id(db, sid)
+        prompt_ts = last_prompt_ts(sid) if current else None
+        if current and prompt_ts is None:
+            return {"sessionId": sid, "turnId": None, "turn": None,
+                    "noCurrentTurnData": True, "currentTurnUnavailableReason": "missingPromptState", "session": session}
+        turn_id = latest_turn_id(db, sid, prompt_ts)
         if not turn_id or db is None:
-            return {"sessionId": sid, "turnId": turn_id, "turn": None, "session": session}
-        rows = db.execute(scope_sql + " and turn_id = ? order by completed_at asc",
+            result = {"sessionId": sid, "turnId": turn_id, "turn": None, "session": session}
+            if current:
+                has_identity = db is not None and latest_turn_id(db, sid) is not None
+                result.update(noCurrentTurnData=True,
+                              currentTurnUnavailableReason="noMatchingTurn" if has_identity else "missingTurnIdentity")
+            return result
+        rows = db.execute(scope_sql + " and turn_id = ? order by started_at asc, completed_at asc",
                           args + [turn_id]).fetchall()
         if not rows:
             return {"sessionId": sid, "turnId": turn_id, "turn": None, "session": session}
-        # --current 守卫：最新 turn 的行全部早于本次提问时刻 → 本问还没有任何模型请求
-        # （典型场景：纯问答轮在回答结束前），绝不把上一轮数据冒充"本问"返回。
-        # 比对用本会话自己的提问时刻（多窗口互不干扰）。
-        if current:
-            ts = last_prompt_ts(sid)
-            if ts and max(r["completed_at"] or 0 for r in rows) < ts:
-                return {"sessionId": sid, "turnId": turn_id, "turn": None,
-                        "noCurrentTurnData": True, "session": session}
         items = [to_item(r) for r in rows]
         rated = [i for i in items if i["tokPerSec"] is not None]
         total_tok = sum(i["outputTokens"] for i in rated)   # output 已含思考，不再相加
@@ -259,7 +278,7 @@ def query_turn(session_id=None, current=False):
             "rated": len(rated),
             "ttftMs": items[0]["ttftMs"],  # 本轮第一段的首字延迟
             "firstAt": items[0]["completedAt"],
-            "lastAt": items[-1]["completedAt"],
+            "lastAt": max(i["completedAt"] for i in items),
             "genMs": gen_ms,
             "totalOutput": sum(i["outputTokens"] for i in items),
             "totalReasoning": sum(i["reasoningTokens"] for i in items),

@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import struct
+import stat
 import tempfile
 import unittest
 from unittest import mock
@@ -239,7 +240,8 @@ class PendingAsarTests(unittest.TestCase):
         make_asar(self.asar, b"official;" + old_injection)
         source = self.pi.source_fingerprint(self.asar)
         self.pi.TMP.write_bytes(self.asar.read_bytes())
-        self.pi.write_tmp_metadata(source, operation="remove")
+        with self.assertRaises(self.pi.PendingTmpError):
+            self.pi.write_tmp_metadata(source, operation="remove")
         with self.assertRaises(self.pi.PendingTmpError):
             self.pi.finalize_tmp(operation=None)
         self.assertTrue(self.pi.TMP.exists())
@@ -256,6 +258,98 @@ class PendingAsarTests(unittest.TestCase):
         self.assertFalse(self.pi.install())
         self.assertEqual(user_file.read_bytes(), b"user content")
         self.assertTrue(self.pi.TMP.is_symlink())
+
+    @unittest.skipIf(os.name == "nt", "POSIX permissions")
+    def test_stage_install_and_remove_preserve_asar_mode_and_owner(self):
+        self.asar.chmod(0o644)
+        before = self.asar.stat()
+        self.assertTrue(self.pi.install())
+        for after in (self.asar.stat(),):
+            self.assertEqual(stat.S_IMODE(after.st_mode), 0o644)
+            self.assertEqual((after.st_uid, after.st_gid), (before.st_uid, before.st_gid))
+        self.assertTrue(self.pi.remove())
+        after = self.asar.stat()
+        self.assertEqual(stat.S_IMODE(after.st_mode), 0o644)
+        self.assertEqual((after.st_uid, after.st_gid), (before.st_uid, before.st_gid))
+
+    def test_failed_install_syntax_cannot_be_manually_finalized(self):
+        original = self.asar.read_bytes()
+        with mock.patch.object(self.pi, "syntax_check", return_value=False):
+            self.assertFalse(self.pi.install())
+        self.assertFalse(self.pi.install(finalize=True))
+        self.assertEqual(self.asar.read_bytes(), original)
+        self.assertFalse(self.pi.TMP.exists())
+        self.assertFalse(self.pi.TMP_META.exists())
+        self.assertTrue(self.pi.install())
+
+    def test_failed_remove_syntax_cannot_be_finalized(self):
+        make_asar(self.asar, b"official;" + self.pi.INJECT_LINE.encode())
+        original = self.asar.read_bytes()
+        with mock.patch.object(self.pi, "syntax_check", return_value=False):
+            self.assertFalse(self.pi.remove())
+        with self.assertRaises(self.pi.PendingTmpError):
+            self.pi.finalize_tmp(operation=None)
+        self.assertEqual(self.asar.read_bytes(), original)
+        self.assertTrue(self.pi.remove())
+
+    def test_partial_repack_failure_can_retry_without_orphan_tmp(self):
+        def partial(src, modify, dst):
+            self.assertNotEqual(dst, self.pi.TMP)
+            Path(dst).write_bytes(b"partial package")
+            raise OSError("disk full")
+        with mock.patch.object(self.pi, "repack", side_effect=partial):
+            self.assertFalse(self.pi.install())
+        self.assertFalse(self.pi.TMP.exists())
+        self.assertFalse(self.pi.TMP_META.exists())
+        self.assertEqual(list(self.root.glob(self.pi.TMP.name + ".*.stage")), [])
+        self.assertTrue(self.pi.install())
+
+    def test_partial_repack_preserves_previous_owned_pending_pair(self):
+        self.prepare()
+        before = (self.pi.TMP.read_bytes(), self.pi.TMP_META.read_bytes())
+        def partial(src, modify, dst):
+            Path(dst).write_bytes(b"half-written")
+            raise OSError("disk full")
+        with mock.patch.object(self.pi, "repack", side_effect=partial):
+            self.assertFalse(self.pi.install())
+        self.assertEqual((self.pi.TMP.read_bytes(), self.pi.TMP_META.read_bytes()), before)
+        self.assertTrue(self.pi.install())
+
+    def test_upgrade_during_repack_can_retry_against_new_source(self):
+        repack = self.pi.repack
+        def upgrade(src, modify, dst):
+            repack(src, modify, dst)
+            make_asar(self.asar, b"console.log('official v2');")
+        with mock.patch.object(self.pi, "repack", side_effect=upgrade):
+            self.assertFalse(self.pi.install())
+        self.assertFalse(self.pi.TMP.exists())
+        self.assertFalse(self.pi.TMP_META.exists())
+        self.assertTrue(self.pi.install())
+        self.assertIn(b"official v2", self.pi.entry_bytes_of(self.asar))
+
+    def test_sidecar_write_failure_can_retry_before_and_after_tmp_publication(self):
+        atomic = self.pi._atomic_tmp_metadata
+        for failure in (1, 2):
+            with self.subTest(failure=failure):
+                make_asar(self.asar)
+                calls = []
+                def fail(meta):
+                    calls.append(meta)
+                    if len(calls) == failure:
+                        raise OSError("sidecar write failed")
+                    return atomic(meta)
+                with mock.patch.object(self.pi, "_atomic_tmp_metadata", side_effect=fail):
+                    self.assertFalse(self.pi.install())
+                self.assertFalse(self.pi.install(finalize=True))
+                self.assertNotIn(b"inject-main.cjs", self.pi.entry_bytes_of(self.asar))
+                self.assertTrue(self.pi.install())
+
+    def test_unknown_tmp_is_preserved_after_repack_failure(self):
+        self.pi.TMP.write_bytes(b"unknown historical TMP")
+        with mock.patch.object(self.pi, "repack", side_effect=OSError("disk full")) as repack:
+            self.assertFalse(self.pi.install())
+        repack.assert_not_called()
+        self.assertEqual(self.pi.TMP.read_bytes(), b"unknown historical TMP")
 
     def test_cli_dispatches_finalize_flag(self):
         with mock.patch.object(self.pi, "install", return_value=True) as install:

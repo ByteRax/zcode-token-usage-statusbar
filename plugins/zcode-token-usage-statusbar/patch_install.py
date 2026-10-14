@@ -32,6 +32,8 @@ import tempfile
 import time
 from pathlib import Path
 
+from runtime_lock import file_lock
+
 IS_WIN = sys.platform == "win32"
 IS_MAC = sys.platform == "darwin"
 
@@ -279,10 +281,12 @@ def syntax_check(asar_path: Path):
                 "  [check] ZCode executable not found; syntax check skipped"))
         return True
     src = entry_bytes_of(asar_path)
-    tmp_js = HERE / ".entry-check.js"
-    tmp_js.write_bytes(src)
     env = dict(os.environ, ELECTRON_RUN_AS_NODE="1")
+    fd, name = tempfile.mkstemp(prefix=".entry-check.", suffix=".js", dir=HERE)
+    tmp_js = Path(name)
     try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(src)
         r = subprocess.run([str(exe), "--check", str(tmp_js)], capture_output=True, text=True, env=env)
     except OSError as e:
         r = None
@@ -389,30 +393,55 @@ def _atomic_tmp_metadata(meta):
         Path(name).unlink(missing_ok=True)
 
 
-def write_tmp_metadata(source, operation="install"):
-    """repack 完成后原子发布 sidecar；source 必须在读取入口/repack 前取得。"""
+def _target_lock():
+    # Independent of runtime/update locks: never call runtime synchronization here.
+    return file_lock(ASAR.with_name(ASAR.name + ".zusage.lock"))
+
+
+def _checked_tmp_metadata(path, source, operation):
     if operation not in ("install", "remove"):
         raise PendingTmpError("invalid pending operation")
     _same_stamp(ASAR, source)
-    meta = {"version": 1, "asar": str(ASAR.resolve()), "tmp_path": str(TMP.absolute()),
-            "runtime": str(RUNTIME.resolve()), "operation": operation,
-            "source": source, "tmp": source_fingerprint(TMP)}
+    before = source_fingerprint(path)
+    try:
+        ok = self_check(path, expect=operation == "install") and syntax_check(path)
+    except (ValueError, AssertionError, KeyError, struct.error) as e:
+        raise PendingTmpError(f"pending validation failed: {e}") from e
+    if not ok:
+        raise PendingTmpError("pending structure/syntax validation failed")
+    _same_stamp(path, before)
     _same_stamp(ASAR, source)
-    _atomic_tmp_metadata(meta)
-    return meta
+    return {"version": 1, "asar": str(ASAR.resolve()), "tmp_path": str(TMP.absolute()),
+            "runtime": str(RUNTIME.resolve()), "operation": operation,
+            "validated": True, "source": source, "tmp": before}
+
+
+def write_tmp_metadata(source, operation="install"):
+    """Existing TMP helper: authorize only after structure and syntax validation."""
+    with _target_lock():
+        meta = _checked_tmp_metadata(TMP, source, operation)
+        _atomic_tmp_metadata(meta)
+        return meta
 
 
 def _owned_tmp_metadata():
-    """只认可本目标且 TMP 内容仍匹配的旧包，未知文件不可覆写或删除。"""
+    """Only reclaim proven files, including our interrupted publication journal."""
     meta = _load_tmp_metadata()
     if TMP.exists() or TMP.is_symlink():
-        if source_fingerprint(TMP) != meta["tmp"]:
+        current = source_fingerprint(TMP)
+        matches = current == meta["tmp"]
+        if meta["operation"] == "cancelled" and meta.get("publishing") is True:
+            # rename can change ctime. Same inode, content and other stamps prove
+            # ownership; the prior package may still be present before rename.
+            fields = ("size", "mtime_ns", "dev", "ino", "sha256")
+            matches = matches or all(current[key] == meta["tmp"][key] for key in fields)
+            matches = matches or current == meta.get("previous_tmp")
+        if not matches:
             raise PendingTmpError("pending TMP no longer belongs to its sidecar")
     return meta
 
 
-def cancel_pending_install():
-    """remove/optout 先撤销旧 install 收尾；保留 TMP 和原子取消标记供诊断。"""
+def _cancel_pending_install():
     if not TMP_META.exists() and not TMP_META.is_symlink():
         return
     meta = _load_tmp_metadata()
@@ -421,24 +450,58 @@ def cancel_pending_install():
         _atomic_tmp_metadata(meta)
 
 
-def prepare_tmp(modify, operation="install", source=None):
-    """从来源快照生成 TMP，不接管无可信 sidecar 的历史/用户文件。"""
+def cancel_pending_install():
+    """remove/optout revokes prior install finalization under the target lock."""
+    with _target_lock():
+        _cancel_pending_install()
+
+
+def _prepare_tmp(modify, operation="install", source=None):
     source = source if source is not None else source_fingerprint(ASAR)
     _same_stamp(ASAR, source)
+    previous = None
     if TMP.exists() or TMP.is_symlink() or TMP_META.exists() or TMP_META.is_symlink():
-        meta = _owned_tmp_metadata()
-        if meta["operation"] != "cancelled":
-            meta["operation"] = "cancelled"
-            _atomic_tmp_metadata(meta)
-    _same_stamp(ASAR, source)
-    repack(ASAR, modify, TMP)
-    return write_tmp_metadata(source, operation)
+        previous = _owned_tmp_metadata()
+    fd, name = tempfile.mkstemp(prefix=TMP.name + ".", suffix=".stage", dir=TMP.parent)
+    os.close(fd)
+    stage = Path(name)
+    try:
+        repack(ASAR, modify, stage)
+        original_stat = ASAR.stat()
+        if os.name != "nt":
+            stage_stat = stage.stat()
+            if (stage_stat.st_uid, stage_stat.st_gid) != (original_stat.st_uid, original_stat.st_gid):
+                os.chown(stage, original_stat.st_uid, original_stat.st_gid)
+        os.chmod(stage, stat.S_IMODE(original_stat.st_mode))
+        meta = _checked_tmp_metadata(stage, source, operation)
+        # Two files cannot be atomically published together. Persist a cancelled
+        # ownership journal first, so any interruption is safe and recoverable.
+        journal = dict(meta, operation="cancelled", publishing=True)
+        if previous is not None and TMP.exists():
+            journal["previous_tmp"] = source_fingerprint(TMP)
+        _atomic_tmp_metadata(journal)
+        _same_stamp(ASAR, source)
+        _same_stamp(stage, meta["tmp"])
+        os.replace(stage, TMP)
+        meta["tmp"] = source_fingerprint(TMP)
+        _same_stamp(ASAR, source)
+        _atomic_tmp_metadata(meta)
+        return meta
+    finally:
+        # Only this invocation's exclusive name, never glob historical TMPs.
+        stage.unlink(missing_ok=True)
+
+
+def prepare_tmp(modify, operation="install", source=None):
+    """Generate privately, validate, then publish; unknown historical TMPs stay."""
+    with _target_lock():
+        return _prepare_tmp(modify, operation, source)
 
 
 def pending_tmp(operation="install", verify_hash=False, verified=None):
     """校验来源及 TMP；verified 是单次监控的缓存，stat/sidecar 不变才复用 hash。"""
     meta = _load_tmp_metadata()
-    if (meta["operation"] == "cancelled" or
+    if (meta["operation"] == "cancelled" or meta.get("validated") is not True or
             (operation is not None and meta["operation"] != operation) or
             (meta["operation"] == "install" and meta["runtime"] != str(RUNTIME.resolve()))):
         raise PendingTmpError("pending operation/runtime is no longer authorized")
@@ -482,12 +545,27 @@ def finalize_tmp(operation="install", client_closed=None, verified=None):
     closed = client_closed if client_closed is not None else lambda: not client_running()
     if not closed():
         return False
-    return _replace_pending(operation, verified=verified, client_closed=closed)
+    with _target_lock():
+        if not closed():
+            return False
+        return _replace_pending(operation, verified=verified, client_closed=closed)
 
 
 # ---------- 安装 / 卸载 ----------
 
 def install(finalize=False):
+    """Serialize install/remove/finalize across processes without nested locks."""
+    if finalize:
+        return _install(finalize=True)
+    try:
+        with _target_lock():
+            return _install()
+    except OSError as e:
+        print(L(f"安装锁获取失败：{e}", f"Cannot acquire install lock: {e}"))
+        return False
+
+
+def _install(finalize=False):
     """返回 True=已安装/已指向当前目录，False=失败或待收尾。"""
     if finalize:
         try:
@@ -528,13 +606,9 @@ def install(finalize=False):
                 "Old injection line detected (possibly pointing at an old directory); it will be replaced with the new path."))
     print(L("重打包（307MB，约需十几秒）...", "repacking (307MB, takes ~10-20 seconds)..."))
     try:
-        prepare_tmp({"/" + ENTRY: new_entry}, source=source)
+        _prepare_tmp({"/" + ENTRY: new_entry}, source=source)
     except (OSError, PendingTmpError) as e:
         print(L(f"待替换包生成失败，未替换：{e}", f"Pending package preparation failed; not replaced: {e}"))
-        return False
-    print(L("结构自检：", "self-check:"))
-    if not (self_check(TMP) and syntax_check(TMP)):
-        print(L("自检失败，未替换。TMP 保留供排查:", "self-check failed; not replaced. TMP kept for inspection:"), TMP)
         return False
     if client_running():
         try:
@@ -557,7 +631,7 @@ def install(finalize=False):
             launch_monitor(time.time())
             return False
     try:
-        if not finalize_tmp():
+        if not _replace_pending("install", client_closed=lambda: not client_running()):
             launch_monitor(time.time())
             return False
     except PendingTmpError as e:
@@ -574,10 +648,19 @@ def install(finalize=False):
 
 
 def remove():
+    try:
+        with _target_lock():
+            return _remove()
+    except OSError as e:
+        print(L(f"卸载锁获取失败：{e}", f"Cannot acquire remove lock: {e}"))
+        return False
+
+
+def _remove():
     """卸载：从当前 asar 剥离本工具注入行（不依赖备份，其它工具的注入行不受影响）。
     返回 True=已卸载/本就未注入，False=需人工处理（替换失败待收尾）。"""
     try:
-        cancel_pending_install()  # 即使目标未注入，也不能让旧 install TMP 在 optout 后重注入。
+        _cancel_pending_install()  # 即使目标未注入，也不能让旧 install TMP 在 optout 后重注入。
         source = source_fingerprint(ASAR)
         old = entry_bytes_of(ASAR)
         _same_stamp(ASAR, source)
@@ -591,13 +674,9 @@ def remove():
         return True
     print(L("重打包（剥离注入行，约需十几秒）...", "repacking (stripping the injection line, takes ~10-20 seconds)..."))
     try:
-        prepare_tmp({"/" + ENTRY: stripped}, operation="remove", source=source)
+        _prepare_tmp({"/" + ENTRY: stripped}, operation="remove", source=source)
     except (OSError, PendingTmpError) as e:
         print(L(f"卸载待替换包生成失败：{e}", f"Remove pending package preparation failed: {e}"))
-        return False
-    print(L("结构自检：", "self-check:"))
-    if not (self_check(TMP, expect=False) and syntax_check(TMP)):
-        print(L("自检失败，未替换。TMP 保留供排查:", "self-check failed; not replaced. TMP kept for inspection:"), TMP)
         return False
     running = client_running()
     try:

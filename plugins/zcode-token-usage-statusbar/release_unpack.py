@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import shlex
 import stat
 import struct
 import sys
@@ -43,6 +44,41 @@ ALLOWED_DIRS = frozenset(parent for name in ALLOWED_FILES
 # Official releases are complete products, not reduced test fixtures: omitted runtime
 # dependencies can pass identity checks but fail when installed.
 REQUIRED_FILES = ALLOWED_FILES
+BOOTSTRAP_FILES = frozenset(("marketplace.json", "LICENSE") + tuple(PREFIX + name for name in (
+    ".zcode-plugin/plugin.json", ".claude-plugin/plugin.json", "overlay_install.py",
+    "inject-main.cjs", "overlay.js", "zusage.py", "patch_install.py", "install_monitor.py",
+    "plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs", "runtime_lock.py",
+    "release_unpack.py", "plugin_auto_update.py", "restart_notice.py")))
+
+
+def layout_path(name, is_dir=False):
+    if name in (ALLOWED_DIRS if is_dir else ALLOWED_FILES):
+        return True
+    if not name.startswith(PREFIX):
+        return False
+    relative = name[len(PREFIX):]
+    if is_dir:
+        return relative in ("hooks", "commands", "skills", "skills/zcode-token-usage")
+    if "/" not in relative:
+        return bool(re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*\.(?:py|cjs|js)", relative)
+                    and relative not in ("release_tool.py", "install.py", "sync_plugin.py"))
+    return bool(re.fullmatch(r"hooks/[A-Za-z][A-Za-z0-9_-]*\.py|commands/[A-Za-z][A-Za-z0-9_-]*\.md", relative))
+
+
+def release_files(data):
+    manifest = json_object(data[PREFIX + ".zcode-plugin/plugin.json"], "plugin manifest")
+    layout = manifest.get("packageLayout")
+    if layout is None:
+        require(set(data) == REQUIRED_FILES, "ZIP is missing required release files")
+        return
+    require(isinstance(layout, dict) and type(layout.get("schemaVersion")) is int and layout["schemaVersion"] == 1,
+            "unsupported package layout schema")
+    names = layout.get("files")
+    require(isinstance(names, list) and all(isinstance(name, str) for name in names)
+            and len(names) == len(set(names)), "invalid package layout files")
+    files = set(names)
+    require(files == set(data) and BOOTSTRAP_FILES <= files and all(layout_path(name) for name in files),
+            "package layout is incomplete or outside the bootstrap contract")
 
 
 class UnpackError(ValueError):
@@ -107,7 +143,7 @@ def release_manifest(data, archive_name, expected_repository, expected_version):
     manifest = json_object(data, "release manifest")
     require(type(manifest.get("schemaVersion")) is int and manifest["schemaVersion"] == 1,
             "unsupported release manifest schema")
-    require(repository(manifest.get("repository")) == expected_repository,
+    require(repository(manifest.get("repository")).lower() == expected_repository.lower(),
             "release repository disagrees with expected source")
     require(stable_version(manifest.get("version")) == expected_version,
             "release version disagrees with expected version")
@@ -157,9 +193,9 @@ def declared_resources(manifest, data):
             require(relative == component or relative.startswith(component + "/"),
                     "unsafe declared " + component + " path")
             name = PREFIX + relative
-            require(name in ALLOWED_FILES or name in ALLOWED_DIRS,
+            require(name in data or any(key.startswith(name + "/") for key in data),
                     "non-whitelisted declared resource: " + value)
-            if name in ALLOWED_FILES:
+            if name in data:
                 require(name in data and (name.endswith(".md") if component == "commands"
                                          else name.endswith("/SKILL.md")),
                         "missing declared resource: " + value)
@@ -169,17 +205,22 @@ def declared_resources(manifest, data):
                         "empty declared resource directory: " + value)
 
 
-def referenced_resources(value, data):
+def referenced_resources(value, data, literal=False):
     if isinstance(value, dict):
-        for item in value.values():
-            referenced_resources(item, data)
+        structured = isinstance(value.get("args"), list)
+        for key, item in value.items():
+            referenced_resources(item, data, key == "args" or (key == "command" and structured))
     elif isinstance(value, list):
         for item in value:
-            referenced_resources(item, data)
+            referenced_resources(item, data, True)
     elif isinstance(value, str) and "${ZCODE_PLUGIN_ROOT}" in value:
-        for reference in re.findall(r"\$\{ZCODE_PLUGIN_ROOT\}([^\s\"']*)", value):
-            require(reference.startswith("/") and PREFIX + reference[1:] in data,
-                    "missing or unsafe declared plugin resource: " + reference)
+        tokens = [value] if literal else shlex.split(value)
+        for token in tokens:
+            if "${ZCODE_PLUGIN_ROOT}" not in token:
+                continue
+            require(token.startswith("${ZCODE_PLUGIN_ROOT}/") and
+                    PREFIX + token[len("${ZCODE_PLUGIN_ROOT}/"):] in data,
+                    "missing or unsafe declared plugin resource: " + token)
 
 
 def identities(data, version):
@@ -237,7 +278,7 @@ def validate_zip(payload, version):
             require(canonical not in seen, "duplicate or colliding ZIP path: " + path)
             seen.add(canonical)
             is_dir = member.is_dir()
-            require(path in (ALLOWED_DIRS if is_dir else ALLOWED_FILES),
+            require(layout_path(path, is_dir),
                     "non-whitelisted ZIP path: " + path)
             mode = stat.S_IFMT(member.external_attr >> 16)
             require(mode in (0, stat.S_IFDIR if is_dir else stat.S_IFREG) and
@@ -258,7 +299,7 @@ def validate_zip(payload, version):
             total += member.file_size
             require(total <= MAX_TOTAL, "ZIP extracted total exceeds limit")
         files = {member_path(member) for member in members if not member.is_dir()}
-        require(files == REQUIRED_FILES, "ZIP is missing required release files")
+        require(BOOTSTRAP_FILES <= files, "ZIP is missing required release files")
         # Read every member (including directories) to validate CRC and advertised size.
         # No directory or package code is touched until every member and identity is valid.
         for member in members:
@@ -269,6 +310,7 @@ def validate_zip(payload, version):
                         "ZIP actual size disagrees: " + member.filename)
             if not member.is_dir():
                 data[member.filename] = content
+    release_files(data)
     identities(data, version)
     return data
 

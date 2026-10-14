@@ -44,7 +44,9 @@ class QuietMonitorTests(unittest.TestCase):
     def pending(self, data=b"verified package", operation="install"):
         source = self.patch.source_fingerprint(self.asar)
         self.tmp.write_bytes(data)
-        self.patch.write_tmp_metadata(source, operation)
+        with mock.patch.object(self.patch, "self_check", return_value=True), \
+                mock.patch.object(self.patch, "syntax_check", return_value=True):
+            self.patch.write_tmp_metadata(source, operation)
 
     def test_quiet_monitor_launches_without_console_and_with_no_monitor_flag(self):
         env = {"ZUSAGE_NO_MONITOR": "1", "ZUSAGE_MONITOR_QUIET": "1"}
@@ -71,7 +73,7 @@ class QuietMonitorTests(unittest.TestCase):
     def test_waits_for_client_exit_then_self_checks_and_finalizes(self):
         self.pending()
         with mock.patch.dict(sys.modules, {"patch_install": self.patch}), \
-                mock.patch.object(self.monitor, "zcode_pids", side_effect=[{"1"}, set(), set(), set()]), \
+                mock.patch.object(self.monitor, "zcode_pids", side_effect=[{"1"}, set(), set(), set(), set(), set()]), \
                 mock.patch.object(self.monitor.time, "sleep") as sleep, \
                 mock.patch.object(self.patch, "self_check", return_value=True) as check:
             self.monitor.main()
@@ -181,7 +183,7 @@ class QuietMonitorTests(unittest.TestCase):
         self.pending()
         with mock.patch.dict(sys.modules, {"patch_install": self.patch}), \
                 mock.patch.object(self.monitor, "zcode_pids", return_value=set()), \
-                mock.patch.object(self.monitor.time, "monotonic", side_effect=[0, 1, 86400]), \
+                mock.patch.object(self.monitor.time, "monotonic", side_effect=[0, 1, 2, 86400]), \
                 mock.patch.object(self.monitor.time, "sleep") as sleep, \
                 mock.patch.object(self.patch, "self_check", return_value=True), \
                 mock.patch.object(self.patch.os, "replace", side_effect=PermissionError("locked")) as replace:
@@ -235,6 +237,37 @@ class QuietMonitorTests(unittest.TestCase):
                         mock.patch.object(self.monitor.os, "replace") as replace:
                     self.monitor.main()
                 replace.assert_not_called()
+
+    def test_failed_syntax_is_not_activated_by_quiet_or_visible_monitor(self):
+        from test_pending_asar import make_asar
+        for quiet in (True, False):
+            for operation in ("install", "remove"):
+                with self.subTest(quiet=quiet, operation=operation):
+                    entry = b"const broken = ;"
+                    if operation == "remove":
+                        entry += self.patch.INJECT_LINE.encode()
+                    make_asar(self.asar, entry)
+                    original = self.asar.read_bytes()
+                    (self.runtime / "inject-main.cjs").write_text("// fixture")
+                    with mock.patch.object(self.patch, "syntax_check", return_value=False), \
+                            mock.patch.object(self.patch, "client_running", return_value=False):
+                        with contextlib.redirect_stdout(io.StringIO()):
+                            self.assertFalse(getattr(self.patch, operation)())
+                    # A later monitor must not authorize the rejected package even if
+                    # its own syntax checker is unavailable or now accepts it.
+                    with mock.patch.dict(sys.modules, {"patch_install": self.patch}), \
+                            mock.patch.object(self.monitor, "QUIET", quiet), \
+                            mock.patch.object(sys, "argv", ["install_monitor.py", "0"]), \
+                            mock.patch.object(self.monitor, "zcode_pids", return_value=set()), \
+                            mock.patch.object(self.patch, "self_check", return_value=True), \
+                            mock.patch.object(self.patch, "syntax_check", return_value=True), \
+                            mock.patch.object(self.monitor, "draw"), \
+                            mock.patch.object(self.monitor.time, "sleep", side_effect=KeyboardInterrupt):
+                        try:
+                            self.monitor.main()
+                        except KeyboardInterrupt:
+                            pass
+                    self.assertEqual(self.asar.read_bytes(), original)
 
     def test_visible_monitor_finishes_remove_metadata_without_reinjecting(self):
         self.pending(b"removed package", operation="remove")

@@ -4,6 +4,7 @@ import argparse
 import errno
 import json
 import os
+import stat
 import sys
 import tempfile
 import time
@@ -69,18 +70,57 @@ def _hashes(value):
             and isinstance(digest, str) and digest}
 
 
-def _write_marker(marker, data):
+def _write_marker(marker, data, preserve=None):
     fd, name = tempfile.mkstemp(prefix=marker.name + ".", suffix=".tmp", dir=marker.parent)
     try:
+        if preserve is not None:
+            if os.name != "nt":
+                current = os.fstat(fd)
+                if (current.st_uid, current.st_gid) != (preserve.st_uid, preserve.st_gid):
+                    os.fchown(fd, preserve.st_uid, preserve.st_gid)
+            os.chmod(name, stat.S_IMODE(preserve.st_mode))
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            fd = None
             json.dump(data, stream, ensure_ascii=False)
             stream.write("\n")
         os.replace(name, marker)
     finally:
+        if fd is not None:
+            os.close(fd)
         try:
             os.unlink(name)
         except FileNotFoundError:
             pass
+
+
+def update_config(runtime, changes, defaults=None):
+    """Merge only the requested keys after rereading config under its shared lock."""
+    if not isinstance(changes, dict) or (defaults is not None and not isinstance(defaults, dict)):
+        raise ValueError("config changes/defaults must be JSON objects")
+    runtime = Path(runtime)
+    runtime.mkdir(parents=True, exist_ok=True)
+    config = runtime / "config.json"
+    lock_path = runtime / "plugin-config.lock"
+    with file_lock(lock_path):
+        owner = config.stat() if config.exists() else runtime.stat()
+        if os.name != "nt" and hasattr(os, "geteuid") and os.geteuid() == 0:
+            lock_stat = lock_path.stat()
+            if (lock_stat.st_uid, lock_stat.st_gid) != (owner.st_uid, owner.st_gid):
+                os.chown(lock_path, owner.st_uid, owner.st_gid)
+        try:
+            current = json.loads(config.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            current = {}
+        if not isinstance(current, dict):
+            raise ValueError("config.json must be a JSON object")
+        updated = dict(current)
+        for key, value in (defaults or {}).items():
+            updated.setdefault(key, value)
+        updated.update(changes)
+        if updated == current and config.exists():
+            return False
+        _write_marker(config, updated, config.stat() if config.exists() else None)
+        return True
 
 
 def record_restart(runtime, data):
@@ -132,6 +172,7 @@ def main():
     operation.add_argument("--hold", metavar="LOCKPATH")
     operation.add_argument("--record-restart", metavar="RUNTIME")
     operation.add_argument("--ack-restart", nargs=2, metavar=("RUNTIME", "HASHES_JSON"))
+    operation.add_argument("--update-config", metavar="RUNTIME")
     args = parser.parse_args()
     if args.hold:
         try:
@@ -143,6 +184,12 @@ def main():
             print(json.dumps({"locked": False}, separators=(",", ":")), flush=True)
     elif args.record_restart:
         print(json.dumps(record_restart(args.record_restart, json.load(sys.stdin))))
+    elif args.update_config:
+        data = json.load(sys.stdin)
+        if not isinstance(data, dict) or "changes" not in data:
+            raise ValueError("config update must contain changes")
+        changed = update_config(args.update_config, data["changes"], data.get("defaults"))
+        print(json.dumps({"ok": True, "changed": changed}))
     else:
         print(json.dumps(ack_restart(args.ack_restart[0], json.loads(args.ack_restart[1]))))
 

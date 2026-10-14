@@ -16,6 +16,15 @@ function githubRepository(value) {
   const match = /^(?:https:\/\/github\.com\/|ssh:\/\/git@github\.com\/|git@github\.com:)?([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9][A-Za-z0-9._-]*?)(?:\.git)?\/?$/.exec(value);
   return match ? match[1] : null;
 }
+function sameRepository(a, b) {
+  return typeof a === "string" && typeof b === "string" && githubRepository(a) === a && githubRepository(b) === b && a.toLowerCase() === b.toLowerCase();
+}
+function sameAssetUrl(actual, expected) {
+  if (typeof actual !== "string" || typeof expected !== "string") return false;
+  const parse = (value) => /^https:\/\/github\.com\/([^/]+\/[^/]+)(\/releases\/download\/[^?#]+)$/.exec(value);
+  const a = parse(actual), b = parse(expected);
+  return !!a && !!b && sameRepository(a[1], b[1]) && a[2] === b[2];
+}
 function readChannel(home, root = require("./plugin-storage.cjs").resolvePluginStorage(home)) {
   const file = path.join(root, "known_marketplaces.json");
   const data = JSON.parse(fs.readFileSync(file, "utf8"));
@@ -31,45 +40,61 @@ function readChannel(home, root = require("./plugin-storage.cjs").resolvePluginS
   if (!repository) throw new Error("远端自动更新仅支持已注册的 GitHub 仓库来源，不能回退开发分支");
   return { kind: "release", repository, marketplace: market };
 }
-async function fetchBytes(url, limit, redirects = 0) {
-  const parsed = new URL(url);
-  const allowed = parsed.protocol === "https:" && !parsed.username && !parsed.password && !parsed.port &&
-    ["api.github.com", "github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com"].includes(parsed.hostname);
-  if (!allowed) return Promise.reject(new Error("拒绝非 GitHub HTTPS 更新地址"));
-  let timer;
+async function fetchBytes(url, limit) {
+  let activeRequest, activeResponse, timer, settled = false;
   return new Promise((resolve, reject) => {
-    const request = https.get(parsed, { headers: { "User-Agent": "zcode-token-usage-statusbar-release-updater",
-      "Accept": parsed.hostname === "api.github.com" ? "application/vnd.github+json" : "application/octet-stream",
-      "X-GitHub-Api-Version": "2022-11-28" } }, (response) => {
-      if ([301, 302, 303, 307, 308].includes(response.statusCode)) {
-        response.resume();
-        if (!response.headers.location || redirects >= 3) { reject(new Error("GitHub 下载重定向无效")); return; }
-        try { fetchBytes(new URL(response.headers.location, parsed).href, limit, redirects + 1).then(resolve, reject); }
-        catch (error) { reject(error); }
-        return;
-      }
-      if (response.statusCode !== 200) {
-        response.resume(); reject(new Error(`GitHub Release 请求失败 (${response.statusCode})`)); return;
-      }
-      const declared = Number(response.headers["content-length"] || 0);
-      if (declared > limit) { response.destroy(); reject(new Error("GitHub 发布资源超过大小上限")); return; }
-      const chunks = []; let length = 0;
-      response.on("data", (chunk) => {
-        length += chunk.length;
-        if (length > limit) { response.destroy(); reject(new Error("GitHub 发布资源超过大小上限")); }
-        else chunks.push(chunk);
-      });
-      response.on("error", reject);
-      response.on("aborted", () => reject(new Error("GitHub 发布资源下载中断")));
-      response.on("end", () => {
-        if (!response.complete || (declared && declared !== length)) reject(new Error("GitHub 发布资源下载不完整"));
-        else resolve(Buffer.concat(chunks));
-      });
-    });
-    timer = setTimeout(() => { const error = new Error("GitHub Release 请求超过总时限"); request.destroy(error); reject(error); }, 60000);
-    request.setTimeout(30000, () => request.destroy(new Error("GitHub Release 请求超时")));
-    request.on("error", reject);
-  }).finally(() => clearTimeout(timer));
+    const finish = (error, bytes) => {
+      if (settled) return;
+      settled = true; clearTimeout(timer);
+      if (error) {
+        if (activeResponse) activeResponse.destroy();
+        if (activeRequest) activeRequest.destroy(error);
+        reject(error);
+      } else resolve(bytes);
+    };
+    const visit = (target, redirects) => {
+      try {
+        const parsed = new URL(target);
+        const allowed = parsed.protocol === "https:" && !parsed.username && !parsed.password && !parsed.port &&
+          ["api.github.com", "github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com"].includes(parsed.hostname);
+        if (!allowed) throw new Error("拒绝非 GitHub HTTPS 更新地址");
+        const request = https.get(parsed, { headers: { "User-Agent": "zcode-token-usage-statusbar-release-updater",
+          "Accept": parsed.hostname === "api.github.com" ? "application/vnd.github+json" : "application/octet-stream",
+          "X-GitHub-Api-Version": "2022-11-28" } }, (response) => {
+          if (settled) { response.destroy(); return; }
+          activeResponse = response;
+          response.on("error", (error) => finish(error));
+          response.on("aborted", () => finish(new Error("GitHub 发布资源下载中断")));
+          if ([301, 302, 303, 307, 308].includes(response.statusCode)) {
+            response.resume();
+            if (!response.headers.location || redirects >= 3) { finish(new Error("GitHub 下载重定向无效")); return; }
+            try { visit(new URL(response.headers.location, parsed).href, redirects + 1); }
+            catch (error) { finish(error); }
+            return;
+          }
+          if (response.statusCode !== 200) { finish(new Error(`GitHub Release 请求失败 (${response.statusCode})`)); return; }
+          const declared = Number(response.headers["content-length"] || 0);
+          if (!Number.isSafeInteger(declared) || declared < 0 || declared > limit) { finish(new Error("GitHub 发布资源超过大小上限")); return; }
+          const chunks = []; let length = 0;
+          response.on("data", (chunk) => {
+            if (settled) return;
+            length += chunk.length;
+            if (length > limit) finish(new Error("GitHub 发布资源超过大小上限"));
+            else chunks.push(chunk);
+          });
+          response.on("end", () => {
+            if (!response.complete || (declared && declared !== length)) finish(new Error("GitHub 发布资源下载不完整"));
+            else finish(null, Buffer.concat(chunks));
+          });
+        });
+        activeRequest = request;
+        request.setTimeout(30000, () => finish(new Error("GitHub Release 请求超时")));
+        request.on("error", (error) => finish(error));
+      } catch (error) { finish(error); }
+    };
+    timer = setTimeout(() => finish(new Error("GitHub Release 请求超过总时限")), 60000);
+    visit(url, 0);
+  });
 }
 function releaseAssetUrl(repository, tag, name) {
   return `https://github.com/${repository}/releases/download/${encodeURIComponent(tag)}/${encodeURIComponent(name)}`;
@@ -86,7 +111,7 @@ function validateRelease(release, repository) {
   for (const asset of [archive, manifest]) {
     const limit = asset === archive ? MAX_ASSET : MAX_JSON;
     if (asset.state !== "uploaded" || !Number.isSafeInteger(asset.size) || asset.size <= 0 || asset.size > limit ||
-        asset.browser_download_url !== releaseAssetUrl(repository, release.tag_name, asset.name)) throw new Error("GitHub Release 资产来源或大小无效");
+        !sameAssetUrl(asset.browser_download_url, releaseAssetUrl(repository, release.tag_name, asset.name))) throw new Error("GitHub Release 资产来源或大小无效");
   }
   return { version, tag: release.tag_name, repository, archive, manifest,
     url: `https://github.com/${repository}/releases/tag/${encodeURIComponent(release.tag_name)}` };
@@ -111,7 +136,7 @@ async function checkRelease(repository, compareVersions, fetch = fetchBytes) {
 }
 function validateManifest(manifest, release) {
   const asset = manifest && manifest.asset;
-  if (!manifest || manifest.schemaVersion !== 1 || manifest.repository !== release.repository ||
+  if (!manifest || manifest.schemaVersion !== 1 || !sameRepository(manifest.repository, release.repository) ||
       manifest.version !== release.version || manifest.tag !== release.tag || manifest.pluginId !== PLUGIN_ID || !asset ||
       asset.name !== release.archive.name || asset.size !== release.archive.size ||
       !Number.isSafeInteger(asset.size) || asset.size <= 0 || asset.size > MAX_ASSET ||
@@ -150,10 +175,10 @@ function validateCatalog(catalog, release, manifest) {
   const source = entry && entry.source;
   if (!catalog || catalog.name !== "zusage-marketplace" || !entry || entry.version !== release.version ||
       !source || typeof source !== "object" || source.source !== "url" || source.type !== "zip" ||
-      source.url !== release.archive.browser_download_url || source.sha256 !== manifest.asset.sha256 ||
+      !sameAssetUrl(source.url, release.archive.browser_download_url) || source.sha256 !== manifest.asset.sha256 ||
       source.path !== "plugins/zcode-token-usage-statusbar" || (source.stripRoot !== undefined && source.stripRoot !== false) ||
       source.headers !== undefined) throw new Error("市场尚未发布与正式 Release 一致的校验下载源；请维护者发布 Release 渠道清单，不能回退开发分支");
   return entry;
 }
-module.exports = { githubRepository, readChannel, checkRelease, downloadRelease, validateRelease, validateManifest, validateCatalog,
+module.exports = { sameRepository, sameAssetUrl, githubRepository, readChannel, checkRelease, downloadRelease, validateRelease, validateManifest, validateCatalog,
   fetchBytes, MAX_ASSET, MAX_JSON, PLUGIN_ID };

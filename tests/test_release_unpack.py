@@ -313,6 +313,44 @@ class ReleaseUnpackTests(unittest.TestCase):
                 self.pack([(PREFIX + relative, b"secret")])
                 self.assert_rejected(contains="whitelisted")
 
+    def test_R7_existing_validator_accepts_versioned_add_remove_layout_without_executing_new_helper(self):
+        self.data[PREFIX + "future-helper.py"] = b"raise RuntimeError('must not execute')"
+        del self.data[PREFIX + "token_rate.py"]
+        self.set_plugin_manifest(dict(self.plugin_manifest, packageLayout={
+            "schemaVersion": 1, "files": sorted(self.data)}))
+        self.pack()
+        code, out, err = self.run_cli()
+        self.assertEqual(code, 0, err)
+        self.assertEqual((self.output / PREFIX / "future-helper.py").read_bytes(), self.data[PREFIX + "future-helper.py"])
+        self.assertFalse((self.output / PREFIX / "token_rate.py").exists())
+
+    def test_R7_versioned_layout_cannot_omit_bootstrap_or_add_config(self):
+        original = self.data.copy()
+        for change in ("bootstrap", "config", "undeclared"):
+            self.data = original.copy()
+            if change == "bootstrap":
+                del self.data[PREFIX + "plugin-updater.cjs"]
+            elif change == "config":
+                self.data[PREFIX + "config.json"] = b"{}"
+            layout = {"schemaVersion": 1, "files": sorted(self.data)}
+            if change == "undeclared":
+                self.data[PREFIX + "future.py"] = b"code"
+            self.set_plugin_manifest(dict(self.plugin_manifest, packageLayout=layout))
+            self.pack()
+            self.assert_rejected()
+
+    def test_R8_structured_argv_is_validated_as_a_complete_literal(self):
+        self.data[PREFIX + ".mcp.json"] = encoded({"mcpServers": {PLUGIN: {
+            "command": "python3", "args": ["${ZCODE_PLUGIN_ROOT}/usage_mcp.py nonexistent-suffix.py"]}}})
+        self.pack()
+        self.assert_rejected(contains="missing or unsafe declared")
+        self.data[PREFIX + ".mcp.json"] = encoded({"mcpServers": {PLUGIN: {
+            "command": "python3", "args": ["${ZCODE_PLUGIN_ROOT}/usage_mcp.py"]}}})
+        self.data[PREFIX + "hooks/hooks.json"] = encoded({"hooks": {"command":
+            'python3 "${ZCODE_PLUGIN_ROOT}/hooks/session-start.py"'}})
+        self.pack()
+        self.assertEqual(self.run_cli()[0], 0)
+
     def test_complete_release_whitelist_is_required_including_runtime_unpacker(self):
         self.assertEqual(unpacker.REQUIRED_FILES, unpacker.ALLOWED_FILES)
         self.assertEqual(set(self.data), unpacker.ALLOWED_FILES)

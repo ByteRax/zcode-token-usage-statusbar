@@ -412,15 +412,10 @@ function broadcastPluginState() {
   const base = pluginUpdater ? pluginUpdater.status() : {};
   webContents.getAllWebContents().forEach((wc) => pushPluginState(wc, base));
 }
-function setAnswerRateLine(enabled) {
+async function setAnswerRateLine(enabled) {
   try {
-    let raw = {};
-    try { raw = JSON.parse(fs.readFileSync(CONFIG, "utf8")); } catch (e) { if (e.code !== "ENOENT") throw e; }
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("config.json 不是对象");
-    raw.answer_rate_line = !!enabled;
-    const tmp = CONFIG + "." + process.pid + ".tmp";
-    fs.writeFileSync(tmp, JSON.stringify(raw, null, 2) + "\n");
-    fs.renameSync(tmp, CONFIG);
+    const { updateConfig } = require("./plugin-updater.cjs");
+    await updateConfig(HERE, { answer_rate_line: enabled }, readCfgCached().python_path || (process.platform === "win32" ? "python" : "python3"));
     cfgCache = null;   // 写后置空，下一次 readCfgCached 立即重读（mtime 判变的双保险）
     broadcastPluginState();
   } catch (e) { LOG("answer_rate_line toggle failed:", e.message); }

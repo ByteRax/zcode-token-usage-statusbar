@@ -138,10 +138,88 @@ class TestTurnCurrent(RateTestBase):
         r = self.run_rate("--turn", state=self.state)
         self.assertIn("tok/s(本轮)", r.stdout)
 
-    def test_no_state_file_skips_guard(self):
-        # 状态文件缺失：无提问时刻可用，守卫无法判定（插件路径下 hook 总会先写状态）
-        r = self.run_rate("--turn", "--current", state=str(Path(self.tmp.name) / "absent.json"))
-        self.assertIn("tok/s(本轮)", r.stdout)
+    def test_no_state_file_fails_closed_with_explicit_reason(self):
+        absent = str(Path(self.tmp.name) / "absent.json")
+        r = self.run_rate("--turn", "--current", state=absent)
+        self.assertEqual(r.stdout, "")
+        data = json.loads(self.run_rate("--turn", "--current", "--json", state=absent).stdout)
+        self.assertIsNone(data["turn"])
+        self.assertTrue(data["noCurrentTurnData"])
+        self.assertEqual(data["currentTurnUnavailableReason"], "missingPromptState")
+
+    def test_invalid_or_other_session_state_fails_closed(self):
+        for state in [
+            {"sessionId": "sess_other", "ts": self.t0, "promptTs": self.t0},
+            {"sessionId": SID, "ts": self.t0, "source": "session-start"},
+            {"sessionId": SID, "ts": self.t0, "promptTs": True},
+            {"sessionId": SID, "ts": self.t0, "promptTs": self.t0,
+             "prompts": {"sess_other": self.t0}},
+            {"sessionId": SID, "ts": self.t0, "promptTs": self.t0 - 8 * 86400000},
+        ]:
+            with self.subTest(state=state):
+                self.write_state(state)
+                data = json.loads(self.run_rate("--turn", "--current", "--json").stdout)
+                self.assertIsNone(data["turn"])
+                self.assertEqual(data["currentTurnUnavailableReason"], "missingPromptState")
+        Path(self.state).write_text("{broken")
+        self.assertEqual(self.run_rate("--turn", "--current").stdout, "")
+
+    def insert_rows(self, rows):
+        with sqlite3.connect(self.db) as con:
+            con.executemany("insert into model_usage values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+
+    def test_delayed_old_completion_does_not_replace_current_turn(self):
+        self.write_state({"sessionId": SID, "ts": self.t0, "promptTs": self.t0})
+        self.insert_rows([row("late", SID, "turn_a", "main_turn",
+                              self.t0 - 500, self.t0 + 100, 600, self.t0 + 50000, 10, 9000, 0)])
+        data = json.loads(self.run_rate("--turn", "--current", "--json").stdout)
+        self.assertEqual(data["turnId"], "turn_b")
+        self.assertEqual(data["turn"]["totalOutput"], 2000)
+
+    def test_old_turn_late_segment_is_not_current_even_if_segment_started_after_prompt(self):
+        with sqlite3.connect(self.db) as con:
+            con.execute("delete from model_usage where turn_id='turn_b'")
+        self.insert_rows([row("late", SID, "turn_a", "main_turn",
+                              self.t0 + 100, self.t0 + 200, 100, self.t0 + 50000, 10, 9000, 0)])
+        self.write_state({"sessionId": SID, "ts": self.t0, "promptTs": self.t0})
+        data = json.loads(self.run_rate("--turn", "--current", "--json").stdout)
+        self.assertIsNone(data["turn"])
+        self.assertEqual(data["currentTurnUnavailableReason"], "noMatchingTurn")
+
+    def test_newer_title_turn_does_not_mask_main_turn(self):
+        self.write_state({"sessionId": SID, "ts": self.t0, "promptTs": self.t0})
+        self.insert_rows([row("new-title", SID, "turn_new_title", "session_title",
+                              self.t0 + 30000, self.t0 + 31000, 1000, self.t0 + 40000, 10, 99999, 0)])
+        data = json.loads(self.run_rate("--turn", "--current", "--json").stdout)
+        self.assertEqual(data["turnId"], "turn_b")
+        self.assertEqual(data["turn"]["totalOutput"], 2000)
+
+    def test_segment_order_and_latest_identity_use_start_not_completion(self):
+        self.write_state({"sessionId": SID, "ts": self.t0, "promptTs": self.t0})
+        with sqlite3.connect(self.db) as con:
+            con.execute("update model_usage set completed_at=? where id='b1'", [self.t0 + 21000])
+        data = json.loads(self.run_rate("--turn", "--current", "--json").stdout)
+        self.assertEqual(data["turn"]["ttftMs"], 3000)
+        self.assertEqual(data["turn"]["lastAt"], self.t0 + 21000)
+
+    def test_old_schema_without_turn_id_degrades_without_traceback(self):
+        self.write_state({"sessionId": SID, "ts": self.t0, "promptTs": self.t0})
+        with sqlite3.connect(self.db) as con:
+            con.execute("alter table model_usage rename column turn_id to legacy_turn")
+        result = self.run_rate("--turn", "--current", "--json")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        data = json.loads(result.stdout)
+        self.assertIsNone(data["turn"])
+        self.assertEqual(data["currentTurnUnavailableReason"], "missingTurnIdentity")
+        self.assertEqual(self.run_rate("--turn", "--current").stdout, "")
+
+    def test_missing_turn_identity_explicitly_degrades(self):
+        self.write_state({"sessionId": SID, "ts": self.t0, "promptTs": self.t0})
+        with sqlite3.connect(self.db) as con:
+            con.execute("update model_usage set turn_id=null")
+        data = json.loads(self.run_rate("--turn", "--current", "--json").stdout)
+        self.assertIsNone(data["turn"])
+        self.assertEqual(data["currentTurnUnavailableReason"], "missingTurnIdentity")
 
     def test_guard_per_session_prompt_ts(self):
         # 多窗口交替提问：全局 promptTs 已被会话 B 的提问覆盖（晚于 A 全部入库行），
@@ -307,6 +385,99 @@ class TestPromptSubmitHook(RateTestBase):
         r = self.run_hook()
         out = json.loads(r.stdout)
         self.assertIn("本轮统计指令", out["hookSpecificOutput"]["additionalContext"])
+
+    def test_concurrent_real_hooks_share_state_lock_and_preserve_all_prompts(self):
+        # Parent holds the real OS lock; children execute the real hook and record
+        # state reads. A read before lock release is a deterministic lost-update bug.
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("rate_test_lock", REPO / "runtime_lock.py")
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
+        self.write_state({"sessionId": "seed", "ts": self.t0, "promptTs": self.t0,
+                          "prompts": {"seed": self.t0}})
+        script = r'''
+import os, runpy, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+import token_rate
+ready, observed = Path(sys.argv[3]), Path(sys.argv[4])
+original_write = token_rate.write_session_state
+original_read = Path.read_text
+
+def write(*args):
+    ready.write_text("ready")
+    return original_write(*args)
+
+def read(path, *args, **kwargs):
+    if path == Path(token_rate.STATE_FILE): observed.write_text("read")
+    return original_read(path, *args, **kwargs)
+
+token_rate.write_session_state = write
+Path.read_text = read
+runpy.run_path(sys.argv[2], run_name="__main__")
+'''
+        processes, markers = [], []
+        try:
+            with helper.file_lock(self.state + ".lock"):
+                for index in range(8):
+                    ready = Path(self.tmp.name) / f"ready-{index}"
+                    observed = Path(self.tmp.name) / f"read-{index}"
+                    markers.append((ready, observed))
+                    env = dict(os.environ, ZCODE_USAGE_DB=self.db,
+                               ZCODE_SESSION_ID=f"sess_parallel_{index}",
+                               ZUSAGE_RATE_STATE_FILE=self.state,
+                               ZUSAGE_PLUGIN_RUNTIME=str(self.runtime),
+                               PYTHONDONTWRITEBYTECODE="1")
+                    processes.append(subprocess.Popen(
+                        [sys.executable, "-c", script, str(PLUGIN), str(PROMPT_HOOK),
+                         str(ready), str(observed)], stdin=subprocess.DEVNULL,
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env))
+                deadline = time.monotonic() + 10
+                while not all(ready.exists() for ready, _ in markers) and time.monotonic() < deadline:
+                    time.sleep(.01)
+                self.assertTrue(all(ready.exists() for ready, _ in markers))
+                time.sleep(.15)
+                self.assertFalse(any(observed.exists() for _, observed in markers),
+                                 "real hooks read state before acquiring the shared lock")
+            previous_keys = {"seed"}
+            deadline = time.monotonic() + 15
+            while any(process.poll() is None for process in processes) and time.monotonic() < deadline:
+                snapshot = json.loads(Path(self.state).read_text())
+                keys = set(snapshot["prompts"])
+                self.assertTrue(previous_keys <= keys, "atomic snapshots lost a session")
+                previous_keys = keys
+                time.sleep(.001)
+            for process in processes:
+                out, err = process.communicate(timeout=5)
+                self.assertEqual(process.returncode, 0, err)
+                self.assertEqual(json.loads(out)["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit")
+            state = json.loads(Path(self.state).read_text())
+            self.assertEqual(set(state["prompts"]), {"seed"} | {f"sess_parallel_{i}" for i in range(8)})
+            self.assertTrue(Path(self.state + ".lock").exists())
+            self.assertEqual(list(Path(self.tmp.name).glob("state.json.*.tmp")), [])
+        finally:
+            for process in processes:
+                if process.poll() is None:
+                    process.kill()
+                process.communicate(timeout=5)
+
+    def test_session_start_preserves_prompt_instead_of_fabricating_one(self):
+        self.run_hook()
+        before = json.loads(Path(self.state).read_text())
+        script = "import sys; sys.path.insert(0, sys.argv[1]); import token_rate; token_rate.write_session_state(sys.argv[2], 'session-start')"
+        env = dict(os.environ, ZUSAGE_RATE_STATE_FILE=self.state, PYTHONDONTWRITEBYTECODE="1")
+        result = subprocess.run([sys.executable, "-c", script, str(PLUGIN), SID],
+                                capture_output=True, text=True, env=env, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        after = json.loads(Path(self.state).read_text())
+        self.assertEqual(after["prompts"][SID], before["prompts"][SID])
+        self.assertEqual(after["promptTs"], before["promptTs"])
+        result = subprocess.run([sys.executable, "-c", script, str(PLUGIN), "sess_new"],
+                                capture_output=True, text=True, env=env, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        state = json.loads(Path(self.state).read_text())
+        self.assertNotIn("sess_new", state["prompts"])
+        self.assertNotIn("promptTs", state)
 
     def test_state_written_has_per_session_map(self):
         # hook 写状态带 prompts 每会话映射（守卫按会话取提问时刻的依据）

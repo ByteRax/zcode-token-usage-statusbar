@@ -48,6 +48,12 @@ class PluginRuntimeTests(unittest.TestCase):
         patcher = mock.patch.dict(sys.modules, {"plugin_auto_update": updater})
         patcher.start()
         self.addCleanup(patcher.stop)
+        @contextlib.contextmanager
+        def fixture_verifier(runtime):
+            yield lambda: None
+        patcher = mock.patch.object(installer, "_sync_verifier", fixture_verifier)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def patch_install_stub(self):
         pi = mock.Mock()
@@ -296,6 +302,8 @@ class PluginRuntimeTests(unittest.TestCase):
                 marker = json.loads(source.read_text(encoding="utf-8"))
                 self.assertEqual(set(marker["hashes"]), {"inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs"})
                 self.assertFalse(any((self.runtime / name).exists() for name in installer.RUNTIME_FILES))
+            elif destination.name == "plugin-runtime-pending.json":
+                self.assertEqual(set(json.loads(source.read_text())["targets"]), set(installer.RUNTIME_FILES))
             else:
                 self.assertEqual(json.loads(source.read_text(encoding="utf-8"))["version"], "1.0.0")
             destinations.append(destination.name)
@@ -303,9 +311,9 @@ class PluginRuntimeTests(unittest.TestCase):
 
         with mock.patch.object(installer.os, "replace", side_effect=inspect_replace):
             self.sync()
-        self.assertEqual(destinations, [notice.MARKER] + installer.RUNTIME_FILES + ["plugin-runtime.json"])
+        self.assertEqual(destinations, ["plugin-runtime-pending.json", notice.MARKER] + installer.RUNTIME_FILES + ["plugin-runtime.json"])
         self.assertEqual(sorted(path.name for path in self.runtime.iterdir()),
-                         sorted(destinations + ["plugin-runtime.lock", "plugin-restart.lock"]))
+                         sorted([name for name in destinations if name != "plugin-runtime-pending.json"] + ["plugin-runtime.lock", "plugin-restart.lock"]))
 
     def test_failed_file_replace_preserves_destination_and_cleans_temporary_file(self):
         destination = self.runtime / "inject-main.cjs"
@@ -315,7 +323,7 @@ class PluginRuntimeTests(unittest.TestCase):
                 installer.sync_runtime(self.runtime)
         self.assertEqual(destination.read_bytes(), b"old bytes")
         self.assertEqual(sorted(path.name for path in self.runtime.iterdir()),
-                         sorted([destination.name, "plugin-runtime.lock", "plugin-restart.lock"]))
+                         sorted([destination.name, "plugin-runtime.lock"]))
 
     def test_failed_record_replace_does_not_return_success_or_clobber_record(self):
         self.sync()
@@ -386,9 +394,10 @@ class PluginRuntimeTests(unittest.TestCase):
         environment.update({"ZUSAGE_PLUGIN_RUNTIME": str(self.runtime),
                             "ZUSAGE_PLUGIN_ASAR": str(self.root / "missing.asar"),
                             "PYTHONDONTWRITEBYTECODE": "1"})
-        command = ("import importlib.util; from pathlib import Path; "
+        command = ("import contextlib, importlib.util; from pathlib import Path; "
                    "s=importlib.util.spec_from_file_location('overlay_install', {!r}); "
                    "m=importlib.util.module_from_spec(s); s.loader.exec_module(m); "
+                   "m._sync_verifier=lambda runtime: contextlib.nullcontext(lambda: None); "
                    "m.PLUGIN_ROOT=Path({!r}); m.main()".format(str(INSTALLER_PATH), str(self.plugin)))
         result = subprocess.run([sys.executable, "-c", command, "sync"], env=environment,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10)
@@ -592,7 +601,9 @@ class PluginRuntimeTests(unittest.TestCase):
         with mock.patch.object(notice, "_record_restart", side_effect=OSError("marker denied")):
             with self.assertRaisesRegex(OSError, "marker denied"):
                 self.sync()
-        self.assertEqual(before, {p.name: p.read_bytes() for p in self.runtime.iterdir() if p.is_file()})
+        self.assertEqual(before, {p.name: p.read_bytes() for p in self.runtime.iterdir()
+                                  if p.is_file() and p.name != "plugin-runtime-pending.json"})
+        self.assertTrue((self.runtime / "plugin-runtime-pending.json").is_file())
 
     def test_loader_ack_during_sync_is_not_overwritten_by_hook_postwrite(self):
         import runtime_lock
@@ -655,6 +666,114 @@ class PluginRuntimeTests(unittest.TestCase):
         self.assertEqual(self.record()["version"], "1.1.0")
         self.assertEqual(result["hashes"]["overlay.js"], self.digest(self.runtime / "overlay.js"))
 
+    def test_edit_after_planning_is_preserved_and_partial_transaction_recovers(self):
+        self.sync()
+        self.set_version("1.1.0")
+        self.write_file(self.plugin / "inject-main.cjs", b"new loader")
+        self.write_file(self.plugin / "overlay.js", b"new overlay")
+        real_write = installer._atomic_write
+        def edit_next(destination, data, source=None):
+            real_write(destination, data, source)
+            if destination.name == "inject-main.cjs":
+                (self.runtime / "overlay.js").write_bytes(b"user edited after planning")
+        with mock.patch.object(installer, "_atomic_write", side_effect=edit_next):
+            with self.assertRaisesRegex(ValueError, "规划后发生变化"):
+                self.sync()
+        self.assertEqual((self.runtime / "overlay.js").read_bytes(), b"user edited after planning")
+        self.assertTrue((self.runtime / "plugin-runtime-pending.json").exists())
+        result, _ = self.sync()
+        self.assertEqual(result["preserved"], ["overlay.js"])
+        self.assertEqual((self.runtime / "overlay.js").read_bytes(), b"user edited after planning")
+        self.assertFalse((self.runtime / "plugin-runtime-pending.json").exists())
+
+    def test_record_failure_cross_version_retry_recovers_synchronizer_hashes(self):
+        self.sync()
+        self.set_version("1.1.0")
+        self.write_file(self.plugin / "overlay.js", b"release 1.1 overlay")
+        real_write = installer._atomic_write
+
+        def fail_record(destination, data, source=None):
+            if destination.name == "plugin-runtime.json":
+                raise OSError("record denied")
+            real_write(destination, data, source)
+
+        with mock.patch.object(installer, "_atomic_write", side_effect=fail_record):
+            with self.assertRaisesRegex(OSError, "record denied"):
+                self.sync()
+        self.set_version("1.2.0")
+        self.write_file(self.plugin / "overlay.js", b"release 1.2 overlay")
+        result, _ = self.sync()
+        self.assertEqual(result["preserved"], [])
+        self.assertEqual((self.runtime / "overlay.js").read_bytes(), b"release 1.2 overlay")
+        self.assertEqual(self.record()["hashes"]["overlay.js"], self.digest(self.runtime / "overlay.js"))
+
+    def test_partial_cross_version_retry_keeps_real_hotfix_across_later_upgrades(self):
+        self.sync()
+        baseline = self.record()["hashes"]["overlay.js"]
+        self.set_version("1.1.0")
+        self.write_file(self.plugin / "overlay.js", b"release 1.1 overlay")
+        self.write_file(self.plugin / "zusage.py", b"release 1.1 python")
+        real_write = installer._atomic_write
+
+        def fail_second(destination, data, source=None):
+            if destination.name == "zusage.py":
+                raise OSError("python denied")
+            real_write(destination, data, source)
+
+        with mock.patch.object(installer, "_atomic_write", side_effect=fail_second):
+            with self.assertRaisesRegex(OSError, "python denied"):
+                self.sync()
+        self.write_file(self.runtime / "overlay.js", b"real user hotfix", self.timestamp - 100)
+        for version in ("1.2.0", "1.3.0"):
+            self.set_version(version)
+            self.write_file(self.plugin / "overlay.js", version.encode())
+            result, _ = self.sync()
+            self.assertEqual(result["preserved"], ["overlay.js"])
+            self.assertEqual(result["hashes"]["overlay.js"], baseline)
+            self.assertEqual((self.runtime / "overlay.js").read_bytes(), b"real user hotfix")
+
+    def test_partial_cross_version_retry_recovers_written_file_and_updates_unwritten_file(self):
+        self.sync()
+        self.set_version("1.1.0")
+        for name in ("overlay.js", "zusage.py"):
+            self.write_file(self.plugin / name, b"release 1.1:" + name.encode())
+        real_write = installer._atomic_write
+
+        def fail_second(destination, data, source=None):
+            if destination.name == "zusage.py":
+                raise OSError("python denied")
+            real_write(destination, data, source)
+
+        with mock.patch.object(installer, "_atomic_write", side_effect=fail_second):
+            with self.assertRaisesRegex(OSError, "python denied"):
+                self.sync()
+        self.set_version("1.2.0")
+        for name in ("overlay.js", "zusage.py"):
+            self.write_file(self.plugin / name, b"release 1.2:" + name.encode())
+        result, _ = self.sync()
+        self.assertEqual(result["preserved"], [])
+        for name in ("overlay.js", "zusage.py"):
+            self.assertEqual((self.runtime / name).read_bytes(), b"release 1.2:" + name.encode())
+
+    def test_failed_sync_marker_never_claims_success_in_prompt_context(self):
+        real_write = installer._atomic_write
+
+        def fail_first(destination, data, source=None):
+            if destination.name == "inject-main.cjs":
+                raise OSError("loader denied")
+            real_write(destination, data, source)
+
+        with mock.patch.object(installer, "_atomic_write", side_effect=fail_first):
+            with self.assertRaisesRegex(OSError, "loader denied"):
+                self.sync()
+        self.assertTrue((self.runtime / notice.MARKER).is_file())
+        self.assertFalse((self.runtime / "inject-main.cjs").exists())
+        context = notice.reminder_context(self.runtime)
+        self.assertNotIn("已成功", context)
+        self.assertNotIn("已自动安装", context)
+        self.assertIn("同步尚未完成", context)
+        json.loads(json.dumps({"hookSpecificOutput": {"additionalContext": context}}, ensure_ascii=False))
+
     def test_auto_install_config_requires_literal_true_and_environment_remains_explicit(self):
         self.runtime.mkdir()
         with mock.patch.dict(os.environ, {}, clear=True):
@@ -700,6 +819,10 @@ import contextlib, importlib.util, json, sys, time
 from pathlib import Path
 spec = importlib.util.spec_from_file_location("process_installer", sys.argv[1])
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+@contextlib.contextmanager
+def fixture_verifier(runtime):
+    yield lambda: None
+m._sync_verifier = fixture_verifier
 m.PLUGIN_ROOT = Path(sys.argv[2]); runtime = Path(sys.argv[3]); mode = sys.argv[4]
 entered, attempted, baseline_read, release = map(Path, sys.argv[5:9])
 read = Path.read_text

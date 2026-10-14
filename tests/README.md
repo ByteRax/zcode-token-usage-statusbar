@@ -20,6 +20,8 @@ python3 sync_plugin.py --check
 
 另覆盖正式 GitHub Release 筛选、分页、资产来源和 SHA256、目录/远端分流、自定义 storage 与官方 CLI 一致性、渠道清单一致性、安装前关闭/禁用/卸载、来源/ref 变化、安装提交结果错配持续阻止同步及离线恢复。安全解包检查完整源码白名单、JSON/资源引用、路径/符号链接、真实压缩流/CRC/大小边界；发布工具共享此校验器。发布只使用临时仓库和 gh stub，真实源码 build → verify → download → unpack 有闭环回归，不执行真实发布。
 
+另覆盖 R1–R14 修复：真实 Node 验收器与 SessionStart/sync/install 入口联动、活安装 PID 和错误 Release 拒绝、跨版本部分写入恢复并保护真实热修；语法失败包不能被手工/quiet/可见收尾激活，独有 TMP 暂存与发布中断可重试；所有运行时配置写入口共享锁；仓库大小写、版本化非核心文件增删、字面 argv、重定向总超时取消；实际双语 tooltip 和热更新代际清理、真实并发 hooks、本问开始时间/轮次身份与旧 schema 降级、未完成同步提示不冒称安装成功。
+
 ## 宿主真实 CLI 集成（macOS）
 
 ```bash
