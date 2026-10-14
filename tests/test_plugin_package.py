@@ -27,7 +27,7 @@ class PluginPackageTests(unittest.TestCase):
     def test_default_update_setting_and_bilingual_panel_copy_agree(self):
         config = json.loads((ROOT / "config.example.json").read_text(encoding="utf-8"))
         self.assertIs(config["plugin_auto_update"], True)
-        self.assertIs(config["plugin_auto_install_overlay"], False)
+        self.assertIs(config["plugin_auto_install_overlay"], True)
         overlay = (ROOT / "overlay.js").read_text(encoding="utf-8")
         self.assertIn("每 24 小时检测并安装新版（默认开启，可关闭）", overlay)
         self.assertIn("Check and install every 24 hours (on by default, can be disabled)", overlay)

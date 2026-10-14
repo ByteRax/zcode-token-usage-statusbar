@@ -203,7 +203,7 @@ class PluginUpgradeTests(unittest.TestCase):
         os.environ["ZCODE_ASAR"] = str(self.asar)
         self.assertEqual(self.main("install")[0], 0)
         self.assertEqual(self.config(), {"python_path": sys.executable, "asar_path": str(self.asar)})
-        self.assertFalse(self.installer.auto_enabled(self.runtime))
+        self.assertTrue(self.installer.auto_enabled(self.runtime))
         self.assertTrue(self.installer.injected_status(self.pi))
         self.pi.launch_monitor.assert_called_once()
         self.pi.syntax_check.assert_called_once()
@@ -294,8 +294,53 @@ class PluginUpgradeTests(unittest.TestCase):
         stub.entry_bytes_of = lambda _: self.body + line * 2
         self.assertFalse(self.installer.injected_status(stub))
 
+    def test_first_session_defaults_to_install_and_preserves_explicit_disable(self):
+        os.environ["ZUSAGE_PLUGIN_ASAR"] = str(self.asar)
+        result, _ = self.hook()
+        self.assertTrue(self.installer.injected_status(self.pi))
+        self.assertIn("用户可见·重启提醒", result["hookSpecificOutput"]["additionalContext"])
+        self.assertNotIn("plugin_auto_install_overlay", self.config())
+        self.assertTrue(self.installer.auto_enabled(self.runtime))
+        self.assertEqual(self.config()["asar_path"], str(self.asar))
+        for config in ({"plugin_auto_install_overlay": False},
+                       {"plugin_auto_install_overlay": "true"}):
+            self.write_asar(self.asar)
+            self.write_config(config)
+            before = self.asar.read_bytes()
+            for _ in range(2):
+                result, _ = self.hook()
+                self.assertEqual(self.asar.read_bytes(), before)
+                self.assertIn("install-overlay", result["systemMessage"])
+            self.assertEqual(self.config()["plugin_auto_install_overlay"], config["plugin_auto_install_overlay"])
+        self.write_config({"plugin_auto_install_overlay": False})
+        os.environ["ZUSAGE_PLUGIN_AUTO_INSTALL"] = "1"
+        self.hook()
+        self.assertTrue(self.installer.injected_status(self.pi))
+        self.assertIs(self.config()["plugin_auto_install_overlay"], False)
+
+    def test_default_install_preserves_corrupt_config_and_respects_environment_off(self):
+        os.environ["ZUSAGE_PLUGIN_ASAR"] = str(self.asar)
+        self.runtime.mkdir()
+        config = self.runtime / "config.json"
+        original = self.asar.read_bytes()
+        for content in ('{bad', '[]', 'null'):
+            config.write_text(content, encoding="utf-8")
+            self.hook()
+            self.assertEqual(config.read_text(), content)
+            self.assertEqual(self.asar.read_bytes(), original)
+        config.unlink()
+        os.environ["ZUSAGE_PLUGIN_AUTO_INSTALL"] = "0"
+        self.hook()
+        self.assertEqual(self.asar.read_bytes(), original)
+        os.environ.pop("ZUSAGE_PLUGIN_AUTO_INSTALL")
+        self.assertTrue(self.installer.auto_enabled(self.runtime))
+        (self.runtime / ".plugin-overlay-optout").write_text("1")
+        self.assertEqual(self.hook()[0], {"suppressOutput": True})
+        self.assertEqual(self.asar.read_bytes(), original)
+
     def test_clean_first_session_and_prompt_require_install_before_restart(self):
         os.environ["ZUSAGE_PLUGIN_ASAR"] = str(self.asar)
+        self.write_config({"plugin_auto_install_overlay": False})
         original = self.asar.read_bytes()
         for _ in range(2):
             result, _ = self.hook()
@@ -333,8 +378,8 @@ class PluginUpgradeTests(unittest.TestCase):
         self.assertNotIn("用户可见·", context)
         self.assertIn("本轮统计指令", context)
 
-    def test_client_upgrade_overwrite_is_repaired_only_with_optin(self):
-        self.write_config({"asar_path": str(self.asar)})
+    def test_client_upgrade_overwrite_preserves_explicit_disable(self):
+        self.write_config({"asar_path": str(self.asar), "plugin_auto_install_overlay": False})
         self.assertEqual(self.main("install")[0], 0)
         upgraded = b"export const clientVersion = '2.0.0';\n"
         self.write_asar(self.asar, entry=upgraded, version="2.0.0")

@@ -560,7 +560,8 @@ class PluginRuntimeTests(unittest.TestCase):
             for _ in range(3):
                 result = installer.run_hook()
                 self.assertIn("/zcode-token-usage-statusbar:install-overlay", result["systemMessage"])
-                self.assertIn("默认不自动安装", result["systemMessage"])
+                self.assertIn("还没有安装好", result["systemMessage"])
+                self.assertNotIn("默认不自动安装", result["systemMessage"])
                 self.assertIn("用户可见·安装提醒", result["hookSpecificOutput"]["additionalContext"])
                 self.assertNotIn("请完全退出 ZCode", result["systemMessage"])
         pi.install.assert_not_called()
@@ -819,6 +820,21 @@ class PluginRuntimeTests(unittest.TestCase):
         self.assertNotIn("已自动安装", context)
         self.assertIn("同步尚未完成", context)
         json.loads(json.dumps({"hookSpecificOutput": {"additionalContext": context}}, ensure_ascii=False))
+
+    def test_auto_install_defaults_on_only_for_missing_valid_configuration(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertTrue(installer.auto_enabled(self.runtime))
+            self.runtime.mkdir()
+            for content in ('{}', '{"lang": "en"}'):
+                (self.runtime / "config.json").write_text(content, encoding="utf-8")
+                self.assertTrue(installer.auto_enabled(self.runtime))
+            for content in ('{bad', '[]', 'null', '"text"'):
+                (self.runtime / "config.json").write_text(content, encoding="utf-8")
+                self.assertFalse(installer.auto_enabled(self.runtime))
+            with mock.patch.object(installer.Path, "read_text", side_effect=PermissionError("denied")):
+                self.assertFalse(installer.auto_enabled(self.runtime))
+            os.environ["ZUSAGE_PLUGIN_AUTO_INSTALL"] = "1"
+            self.assertTrue(installer.auto_enabled(self.runtime))
 
     def test_auto_install_config_requires_literal_true_and_environment_remains_explicit(self):
         self.runtime.mkdir()

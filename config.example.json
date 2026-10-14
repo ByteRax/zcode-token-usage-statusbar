@@ -5,7 +5,7 @@
   "hot_reload": true,
   "answer_rate_line": true,
   "plugin_auto_update": true,
-  "plugin_auto_install_overlay": false,
+  "plugin_auto_install_overlay": true,
   "context_window": 1000000,
   "lang": "zh",
   "remote": {

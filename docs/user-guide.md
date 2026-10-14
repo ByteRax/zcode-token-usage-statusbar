@@ -4,9 +4,11 @@
 
 这份文档面向需要自定义安装、远程查询或彻底清理的用户。日常使用通常不需要改配置文件。
 
+> **适用范围：** 本文关于状态条默认自动安装/修复的说明仅适用于当前 `main` / 本地新版源码，尚未发布到正式渠道。`#plugin-releases` 的正式版 `v1.4.1` 仍默认关闭自动安装；请执行 `/install-overlay`，或在 `~/.zcode/zcode-token-usage-statusbar/config.json` 中合并 `"plugin_auto_install_overlay": true`（保留其它设置）后新建或恢复会话。
+
 ## 选择安装方式
 
-- **桌面客户端**：推荐通过 ZCode 插件安装，可选择远程市场或本地目录。插件管理查询、回答速率与更新，状态条需另执行安装命令。也可以使用下方的一键安装器；两者共用运行目录与注入行，无需重复安装。
+- **桌面客户端**：推荐通过 ZCode 插件安装，可选择远程市场或本地目录。插件管理查询、回答速率与更新，默认自动安装/修复状态条，成功后需完全退出并重开。也可以使用下方的一键安装器；两者共用运行目录与注入行，无需重复安装。
 - **自托管网页**：按 [Web 版文档](../web/README.zh-CN.md) 部署，不能用桌面安装器给浏览器页面添加状态条。
 - **官方云端网页**：本仓库的 Web 方案需要你控制服务器与 nginx，不适用于官方托管页面。
 
@@ -29,7 +31,7 @@
 2. 输入 `https://github.com/ByteRax/zcode-token-usage-statusbar#plugin-releases`，添加市场。
 3. 找到 **ZCode Token Usage Statusbar**，安装到用户范围并启用。
 
-此渠道从经过校验的正式 Release ZIP 安装插件，不跟随开发分支，也不需要自己下载源码。装好后按下方「安装状态条」完成浮层安装。
+此渠道从经过校验的正式 Release ZIP 安装插件，不跟随开发分支，也不需要自己下载源码。正式版 `v1.4.1` 请按上方适用范围说明手动安装或显式开启自动安装，成功后完全退出并重开。
 
 ### 方式二：本地目录安装
 
@@ -48,19 +50,19 @@
 
 ![添加插件市场：远程方式填写 GitHub 地址，本地方式点击「选择目录」](plugin-marketplace-add.png)
 
-### 安装状态条（两种插件方式通用）
+### 安装状态条（本地新版源码）
 
-按宿主提示加载插件，新建或重新打开会话；已有会话不会补触发启动钩子。执行：
+安装当前 `main` 的本地新版源码插件后，按宿主提示加载插件，新建或重新打开会话；已有会话不会补触发启动钩子。插件默认自动安装/修复状态条，**会修改客户端的 `app.asar`，请确认信任此项目。成功后必须完全退出并重新打开 ZCode**；只关闭窗口不一定退出主进程。
+
+自动安装失败时，再手动执行以下兜底命令，按实际输出排查；成功后仍需完全退出并重开：
 
 ```text
 /install-overlay
 ```
 
-安装成功后，**完全退出并重新打开 ZCode**；只关闭窗口不一定退出主进程。
+只需要查询工具与回答速率时，在 `~/.zcode/zcode-token-usage-statusbar/config.json` 中合并 `"plugin_auto_install_overlay": false`（保留其它设置），或运行 `/uninstall-overlay` 移除状态条并保留卸载豁免，阻止自动重注入与安装提醒。
 
-**装插件不等于装状态条。** 默认不自动安装，未注入时仅重启无法安装状态条。只需要查询工具与回答速率，可以跳过浮层安装。状态条会修改客户端文件，执行前请确认信任此项目。
-
-如需自动安装/修复，在 `~/.zcode/zcode-token-usage-statusbar/config.json` 中合并 `"plugin_auto_install_overlay": true`（保留其它设置），或设置环境变量 `ZUSAGE_PLUGIN_AUTO_INSTALL=1`，然后新建或恢复会话。成功后仍需完全重启。未安装时每次会话启动都会提示安装；不需要浮层可运行 `/uninstall-overlay`，之后不再提示。
+配置文件不存在或缺少该字段时默认开启；已有的显式 `false` 会保留。环境变量 `ZUSAGE_PLUGIN_AUTO_INSTALL=1` / `0` 优先于配置，但不能绕过卸载豁免。未设置环境变量时，损坏配置或非布尔字段不会启用自动安装。
 
 Windows 若找不到 `python3`，需在插件的 `.mcp.json` 与 `hooks/hooks.json` 中改用可用的 Python 命令，再刷新安装；只改仓库不会改变已安装副本。
 
@@ -159,17 +161,17 @@ python3 install.py --root /Applications/ZCode.app
 
 ### ZCode 升级后状态条消失
 
-客户端升级可能覆盖 `app.asar`。最直接的恢复方式是重跑 `install-overlay` 或 `python install.py`，成功后重启。
+客户端升级可能覆盖 `app.asar`。插件默认在新建或恢复会话时自动修复，成功后仍需完全退出并重开 ZCode；自动修复失败时，再运行 `install-overlay` 或 `python install.py` 兜底。
 
-若希望插件在新建或恢复会话时自动修复，在已有运行配置中设置：
+只需要查询、不希望自动修改客户端时，在已有运行配置中设置：
 
 ```json
 {
-  "plugin_auto_install_overlay": true
+  "plugin_auto_install_overlay": false
 }
 ```
 
-只合并这一项，不要覆盖其它设置。它**默认关闭**，与默认开启的 `plugin_auto_update` 是两个独立开关：更新插件不代表授权修改客户端。
+只合并这一项，不要覆盖其它设置。它**默认开启**，缺配置文件或缺字段时启用，已有的显式 `false` 会保留；损坏或非布尔配置不会启用自动安装（环境变量另有设置时以其为准）。`ZUSAGE_PLUGIN_AUTO_INSTALL=1` / `0` 优先于配置，但不能绕过卸载豁免。它与 `plugin_auto_update` 是两个独立开关：关闭插件更新并不会关闭客户端自动安装/修复。
 
 自动修复不会直接调用斜杠命令，而是在启动钩子中执行同一个安装器；`SessionStart` 覆盖新建、清空和恢复会话（`startup|clear|resume`）。
 
@@ -202,7 +204,7 @@ Windows 对应用户目录下的 `.zcode\zcode-token-usage-statusbar\config.json
   "hot_reload": true,
   "answer_rate_line": true,
   "plugin_auto_update": true,
-  "plugin_auto_install_overlay": false,
+  "plugin_auto_install_overlay": true,
   "context_window": 1000000
 }
 ```
@@ -214,7 +216,7 @@ Windows 对应用户目录下的 `.zcode\zcode-token-usage-statusbar\config.json
 | `hot_reload` | 状态条脚本是否热更新 |
 | `answer_rate_line` | 插件回答末尾的速率行，默认开，下一问生效 |
 | `plugin_auto_update` | 插件自动更新，默认开；损坏或非布尔配置不会启动更新 |
-| `plugin_auto_install_overlay` | 自动修复客户端注入，默认关 |
+| `plugin_auto_install_overlay` | 自动安装/修复客户端注入，默认开（缺配置或缺字段）；显式 false 保留，环境变量优先，卸载豁免仍阻止；无环境变量覆盖时损坏或非布尔配置不开启 |
 | `context_window` | 自动识别失败时的上下文窗口大小兜底 |
 | `resident` | 使用常驻 Python 查询进程，默认开 |
 | `activity_min_ms` | 活跃期最小查询间隔，默认 1500ms |
@@ -298,8 +300,8 @@ python zusage.py watch
 
 | 现象 | 先做什么 |
 |---|---|
-| 装插件后没有状态条 | 新建或恢复会话，执行 `install-overlay`，确认成功后完全退出并重开 |
-| ZCode 升级后消失 | 重新安装注入，再重启；检查自动修复是否开启 |
+| 装插件后没有状态条 | 新建或恢复会话触发默认自动安装，成功后完全退出并重开；失败时用 `install-overlay` 兜底 |
+| ZCode 升级后消失 | 新建或恢复会话触发默认自动修复，成功后完全退出并重开；检查配置与卸载豁免，失败时手动安装 |
 | 新会话都是零 | 完成一次模型请求后再查看 |
 | 远端会话没有数据 | 确认远程配置、远端脚本和非交互通道可用 |
 | Python 启动失败 | 检查 Python 命令与 `python_path`；Windows 的命令可能叫 `python` |
