@@ -37,7 +37,7 @@
   /* 多实例（v61.1）：热更新时泵只按 id 清 0 号条，其余实例的 DOM（条/tip/气泡）
    * 在新代码启动时按类名统一自清；旧实例闭包靠 stale() 罢工。 */
   try {
-    document.querySelectorAll(".zusage-root,.zusage-tip-root,.zusage-exc").forEach(function (el) { el.remove(); });
+    document.querySelectorAll(".zusage-root,.zusage-tip-root,.zusage-exc,.zusage-rate-tip").forEach(function (el) { el.remove(); });
   } catch (e) { }
 
   /* ---------- 共享状态（多实例一致）：显示项/语言/上下文覆盖/最近一次数据 ---------- */
@@ -45,7 +45,10 @@
   var state = {
     show: { win: 1, ctx: 1, today: 1, turn: 1, sub: 1, tools: 1 },
     ctxOv: "", data: null,
-    lang: "zh",
+    lang: "zh", pluginUpdate: window.__zusagePluginState || null,
+    /* 逐问速率行开关：真值在运行时 config.json 的 answer_rate_line（主进程随插件状态推送
+       rateLine 字段），渲染端只做展示与请求转发；缺省开启 */
+    rateLine: !(window.__zusagePluginState && window.__zusagePluginState.rateLine === false),
   };
   /* ---------- i18n（v57）：L(中文, English) 内联双语文案，语言存 localStorage ---------- */
   function L(zh, en) { return state.lang === "en" ? en : zh; }
@@ -81,6 +84,16 @@
       try { instances[i].render(d); } catch (e) { FATAL.updateErr = String((e && e.stack) || e); }
     }
   };
+  window.__zusagePluginRequests = [];
+  function pluginRequest(action, enabled) {
+    window.__zusagePluginRequests.push({ action: action, enabled: enabled });
+  }
+  window.__zusagePluginUpdate = function (s) {
+    if (stale() || JSON.stringify(state.pluginUpdate) === JSON.stringify(s)) return;
+    window.__zusagePluginState = state.pluginUpdate = s;
+    if (s && typeof s.rateLine === "boolean") state.rateLine = s.rateLine;
+    instances.forEach(function (inst) { inst.syncUpdate(); });
+  };
   function refreshWants() {
     /* 各 pane 会话 id 汇总给泵：__zusageWantSids（新泵按数组强制纳入快照），
      * __zusageWantSid 保底兼容旧泵单值通路（取 0 号实例的会话） */
@@ -94,6 +107,92 @@
       if (arr.length) window.__zusageWantSid = arr[0];
     } catch (e) { }
   }
+
+  /* ---------- 回复末尾速率行的悬停解释（v67）：给消息流里的统计行挂同款 tooltip ----------
+   * 统计行是模型贴的 Markdown 引用块（⚡ … tok/s(本轮)），本身没有 hover 能力；
+   * 浮层是注入 DOM 的，所以由它扫描消息流、给匹配节点挂自绘 tooltip（与状态条同套路：
+   * 挂 body 的 fixed 浮层，免疫消息流层叠上下文）。document 级、只此一份，不随 pane 实例走。 */
+  var rateTip = document.createElement("div");
+  rateTip.className = "tip zusage-rate-tip";
+  /* .tip 的类样式挂在条实例的 <style> 里（样式随条走）——本浮层是 document 级的，
+   * 实例销毁/重建的间隙会失去类样式。内联关键属性兜底（值与 .tip 类一致，含主题 var），
+   * 类样式在位时两者相同、不冲突；display 由 show/hide 控制。 */
+  rateTip.style.cssText =
+    "position:fixed;display:none;background:rgba(19,22,30,.98);" +
+    "background:color-mix(in srgb,var(--color-background,#13161e) 98%,transparent);" +
+    "border:1px solid var(--color-border,rgba(255,255,255,.1));border-radius:10px;padding:10px 14px;" +
+    "font-family:var(--font-mono,Consolas,'Microsoft YaHei UI',monospace);" +
+    "font-size:calc(var(--ui-font-size,14px) - 1px);line-height:1.55;color:var(--color-foreground,#c6cdd9);" +
+    "box-shadow:0 10px 28px rgba(0,0,0,.5),0 2px 6px rgba(0,0,0,.3);" +
+    "white-space:normal;z-index:2147483646;max-width:520px;box-sizing:border-box";
+  document.body.appendChild(rateTip);
+  var rateTipFor = null;
+  /* 结构化内容：样式内嵌本浮层（选择器带 .zusage-rate-tip 前缀，随元素清理），
+   * 不依赖条实例的 <style>；全部为静态双语文案，无任何插值。 */
+  function rateTipHTML() {
+    var zh = state.lang !== "en";
+    var row = function (label, zhText, enText) {
+      return '<div class="rt-row"><b>' + label + "</b><span>" + (zh ? zhText : enText) + "</span></div>";
+    };
+    return '<style>.zusage-rate-tip .rt-h{font-weight:600;color:var(--color-foreground,#e9edf4);margin:0 0 7px}' +
+      ".zusage-rate-tip .rt-row{display:flex;gap:10px;margin:3px 0}" +
+      ".zusage-rate-tip .rt-row b{flex:0 0 auto;min-width:78px;color:var(--color-foreground,#e9edf4);font-weight:600}" +
+      ".zusage-rate-tip .rt-row span{color:var(--color-foreground-subtle,#8791a3)}" +
+      '.zusage-rate-tip .rt-note{margin-top:8px;padding-top:7px;border-top:1px solid var(--color-border,rgba(255,255,255,.1));color:var(--color-foreground-subtle,#8791a3)}</style>' +
+      '<div class="rt-h">⚡ ' + L("本问速率 · 各数值含义", "Rate line · what each figure means") + "</div>" +
+      row("tok/s", "本问各段加权平均：总输出 ÷ 总生成时长，工具等待不计入", "weighted average of all segments: total output ÷ total generation time, tool waits excluded") +
+      row(L("首字", "TTFT"), L("第一段从发出请求到首个 token 的等待", "wait from request to the first token of the first segment")) +
+      row(L("输出", "Output"), L("本问各段输出合计（思考 token 已含其中）", "sum of segment output (thinking tokens already included)")) +
+      row(L("生成", "Gen"), L("各段纯生成时长合计，不含首字与工具等待", "sum of pure generation time; TTFT and tool waits excluded")) +
+      row(L("段 / 峰", "Seg/Peak"), L("段＝模型请求次数；峰＝最快一段的速率", "segments = model requests; peak = fastest segment")) +
+      row(L("累计", "Session"), L("本会话已完成请求的输出总量（不含子代理）", "cumulative output of completed requests (sub-agents excluded)")) +
+      row("⏱", L("采样时刻——写正文前自测，收尾正文段未计入", "sample time — self-tested before the final text, so that segment is excluded")) +
+      '<div class="rt-note">' + L("状态条「生成速度」是最近一段的瞬时值，与本行的整问均值不同，数值有差异属正常。⚙ 设置可关。",
+        "The bar's \"generation speed\" is the latest segment's instant value; this line is the whole-answer average — a difference is expected. Toggle in ⚙ settings.") + "</div>";
+  }
+  function showRateTip(el) {
+    if (stale()) return;
+    rateTip.innerHTML = rateTipHTML();
+    rateTip.style.display = "block";
+    var r = el.getBoundingClientRect(), tw = rateTip.offsetWidth, th = rateTip.offsetHeight;
+    var vw = window.innerWidth, vh = window.innerHeight;
+    var left = Math.max(8, Math.min(r.left, vw - tw - 8));
+    var top = r.top - th - 8;               // 优先弹在统计行上方
+    if (top < 8) top = Math.min(r.bottom + 8, vh - th - 8);   // 上方放不下改下方
+    rateTip.style.left = Math.round(left) + "px";
+    rateTip.style.top = Math.round(top) + "px";
+    rateTipFor = el;
+  }
+  function hideRateTip() {
+    rateTip.style.display = "none";
+    rateTipFor = null;
+  }
+  window.addEventListener("scroll", hideRateTip, true);   // 捕获：任意容器滚动即收（虚拟列表换页时兜底）
+  function onRateEnter() {
+    var t = this.textContent || "";
+    if (t.indexOf("tok/s(本轮)") < 0 || t.indexOf("⚡") < 0) return;   // 虚拟列表复用节点换了文本：不再弹
+    showRateTip(this);
+  }
+  function scanRateLines() {
+    if (stale()) return;   // 热更新换了新代：旧代的扫描自然退出
+    var nodes = document.querySelectorAll("blockquote p, blockquote, p");
+    for (var i = 0; i < nodes.length; i++) {
+      var el = nodes[i];
+      if (el.dataset.zusageRateTip) continue;
+      var t = el.textContent || "";
+      if (t.indexOf("tok/s(本轮)") < 0 || t.indexOf("⚡") < 0) continue;
+      /* 客户端把引用块渲染成 blockquote>p 时两层都会命中：只绑最内层（p），
+       * 避免跨 p/blockquote 边界悬停时两份 enter/leave 交替导致 tooltip 闪烁 */
+      if (el.tagName === "BLOCKQUOTE" && el.querySelector("p")) continue;
+      el.dataset.zusageRateTip = "1";
+      el.style.cursor = "help";
+      el.addEventListener("mouseenter", onRateEnter);
+      el.addEventListener("mouseleave", hideRateTip);
+    }
+    if (rateTipFor && !document.body.contains(rateTipFor)) hideRateTip();
+  }
+  setInterval(scanRateLines, 2000);
+  scanRateLines();
 
   setTimeout(function () {
     try { coordinator(); } catch (e) {
@@ -153,7 +252,7 @@
   /* ---------- 实例工厂（v61.1）：一个 pane 一套 条/面板/气泡/tooltip/定位循环。
    * slot 0 保留 #zusage-bar/#zusage-tip 兼容 id（泵热更新按它清理），其余实例仅类名。 */
   function spawnInstance(pid, slot) {
-    var VERSION = "v66";   // v66：内容超卡片宽时分级收缩 —— 隐藏「本轮/会话累计」的缓存命中率（tps/上下文/会话累计优先），仍装不下右缘渐隐；宽度始终锁死卡片   // 随提交递增（悬停 ⚙ 面板可见）；未提交的中间迭代不涨号
+    var VERSION = "v67";   // v67：回复末尾统计行悬停解释 —— 浮层扫描消息流给 ⚡ 统计行挂同款 tooltip（逐数值口径详解）   // 随提交递增（悬停 ⚙ 面板可见）；未提交的中间迭代不涨号
     /* ---------- 状态（实例级） ---------- */
     var excOn = false,    // 本 pane 会话处于"上下文超限被拒"状态（render 时按 picked 会话计算）
       excGone = false,    // 用户点 ✕ 关闭了本次气泡；超限解除后自动复位
@@ -249,6 +348,10 @@
       ".panel label em{font-style:normal;color:var(--color-foreground-subtle,#6f7989);display:block}" +
       ".panel input[type=checkbox]{accent-color:var(--color-brand,#57c7ff);margin-top:3px}" +
       ".panel .pnote{line-height:1.6;color:var(--color-foreground-subtle,#6f7989);margin-top:3px}" +
+      ".panel .zu-update-actions{display:flex;gap:8px;margin:5px 0}" +
+      ".panel .zu-update-actions button{font:inherit;color:var(--color-foreground,#e9edf4);background:var(--color-hover,rgba(255,255,255,.07));border:1px solid var(--color-border,rgba(255,255,255,.14));border-radius:6px;padding:3px 10px;cursor:pointer}" +
+      ".panel .zu-update-actions button:disabled{opacity:.5;cursor:default}" +
+      ".panel .zu-update-status{overflow-wrap:anywhere;white-space:pre-line}" +
       /* 子代理明细面板（v49）：点击条目弹出的固定面板（与设置面板同机制，互斥打开）；
        * 面板不随鼠标消失，绕开悬停+tab 的全部几何问题。 */
       ".zu-sub{cursor:pointer}" +
@@ -269,6 +372,12 @@
       "font-size:calc(var(--ui-font-size,14px) - 1px);line-height:1.6;color:var(--color-foreground,#c6cdd9);" +
       "box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 10px 28px rgba(0,0,0,.5),0 2px 6px rgba(0,0,0,.3);" +
       "white-space:pre-line;z-index:2147483646;max-width:560px;display:none;scrollbar-width:thin}" +
+      /* 结构化 tooltip 行排版（v67.1，与统计行悬停解释同款；仅状态条 .tip 作用域） */
+      ".tip .rt-h{font-weight:600;color:var(--color-foreground,#e9edf4);margin:0 0 6px}" +
+      ".tip .rt-row{display:flex;gap:10px;margin:3px 0}" +
+      ".tip .rt-row b{flex:0 0 auto;min-width:86px;color:var(--color-foreground,#e9edf4);font-weight:600}" +
+      ".tip .rt-row span{color:var(--color-foreground-subtle,#8791a3)}" +
+      ".tip .rt-note{margin-top:7px;padding-top:6px;border-top:1px solid var(--color-border,rgba(255,255,255,.1));color:var(--color-foreground-subtle,#8791a3)}" +
       ".ttabs{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:7px}" +
       ".ttab{cursor:pointer;padding:2px 10px;border-radius:999px;background:var(--color-hover,rgba(255,255,255,.06));" +
       "color:var(--color-foreground-subtle,#8791a3);white-space:nowrap;font-size:calc(var(--ui-font-size,14px) - 1px);" +
@@ -342,6 +451,15 @@
       '<label><input type="radio" name="zu-lang" value="zh"><span>中文</span></label>' +
       '<label><input type="radio" name="zu-lang" value="en"><span>English</span></label>' +
       '<div class="hr"></div>' +
+      '<div class="cap">' + L("逐问速率行", "Per-answer rate line") + '</div>' +
+      '<label><input type="checkbox" class="zu-rate-line"><span>' + L("回答末尾追加统计行（默认开启）", "Append stats line to each reply (on by default)") + '<em>' + L("即时 tok/s（含思考）/ 首字延迟 / 输出 / 生成耗时 / 段数峰值 / 会话累计；由插件提问钩子注入，开关下一问生效", "Instant tok/s (incl. thinking), TTFT, output, generation time, segments/peak, session total; injected by the plugin prompt hook, effective on the next prompt") + '</em></span></label>' +
+      '<div class="hr"></div>' +
+      '<div class="cap">' + L("插件更新", "Plugin updates") + '</div>' +
+      '<label><input type="checkbox" class="zu-auto-update"><span>' + L("自动更新", "Automatic updates") + '<em>' + L("每 24 小时检测并安装新版（默认开启，可关闭）", "Check and install every 24 hours (on by default, can be disabled)") + '</em></span></label>' +
+      '<div class="zu-update-actions"><button type="button" data-update="check">' + L("检查更新", "Check for updates") + '</button><button type="button" data-update="update">' + L("立即更新", "Update now") + '</button></div>' +
+      '<div class="pnote zu-update-status" role="status" aria-live="polite"></div>' +
+      '<div class="pnote">' + L("仅更新此插件；通过已配置的插件市场检测。GitHub 来源会联网，本地目录来源只检查本地文件，不上传用量数据。", "Only this plugin is updated through its configured marketplace. GitHub sources use the network; directory sources check local files. Usage data is never uploaded.") + '</div>' +
+      '<div class="hr"></div>' +
       '<div class="pnote">' + L("悬停条面各项看明细；点击子代理项看全部明细面板。数据源 ~/.zcode/cli/db/db.sqlite（只读），请求完成后才落库，数值随上次完成请求变化。",
         "Hover bar items for details; click the sub-agent item for the full detail panel. Data source ~/.zcode/cli/db/db.sqlite (read-only); rows are written when requests complete, numbers follow the latest completed request.") + '</div>';
       panel.querySelectorAll('input[name=zu-lang]').forEach(function (r) {
@@ -349,11 +467,12 @@
       });
       /* 重建后回填全部控件状态（语言切换路径不走 syncPanel）：checkbox 按 state.show、
          上下文窗口输入框按 state.ctxOv——否则切语言后勾选态清空、首次点击语义反转 */
-      panel.querySelectorAll("input[type=checkbox]").forEach(function (cb) {
+      panel.querySelectorAll("input[type=checkbox][data-k]").forEach(function (cb) {
         cb.checked = !!state.show[cb.dataset.k];
       });
       var ovInput = panel.querySelector(".zu-ctxov");
       if (ovInput) ovInput.value = state.ctxOv;
+      syncUpdate();
     }
     buildPanel();
     bar.appendChild(panel);
@@ -492,6 +611,12 @@
         (cw > 0 ? L(" / 缓存写入 ", " / Cache write ") + fmt(cw) : "") +
         (rea > 0 ? L(" / 思考 ", " / Thinking ") + fmt(rea) : "");
     }
+    /* 结构化 tooltip（v67.1）：\x01 前缀标记 HTML 内容（drawTip 分流），行/脚注排版与
+     * 回复末尾统计行 tooltip 同款；动态值一律过 ttEsc（innerHTML 安全，如工具名/错误文案） */
+    function ttEsc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+    function ttH(t) { return '<div class="rt-h">' + ttEsc(t) + "</div>"; }
+    function ttRow(k, v) { return '<div class="rt-row"><b>' + ttEsc(k) + '</b><span>' + ttEsc(v) + "</span></div>"; }
+    function ttNote(v) { return '<div class="rt-note">' + ttEsc(v) + "</div>"; }
     /* 行内 SVG 线性图标（v54）：stroke 走 currentColor，颜色由 .ico 控制统一换色 */
     function ico(paths) {
       return '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + paths + "</svg>";
@@ -527,8 +652,12 @@
         var tpsCls = last.tps >= 70 ? "ok" : last.tps >= 40 ? "warm" : "hot";
         it(ico('<path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/>') +
           '<span class="' + tpsCls + '">' + last.tps + '</span><span class="dim">t/s</span>',
-          L("生成速度：最近完成请求的输出 tokens ÷ 生成耗时（首 token → 完成）\n≥70 t/s 绿色 · 40–70 黄色 · <40 红色",
-            "Generation speed: output tokens ÷ generation time of the latest completed request (first token → completion)\n≥70 t/s green · 40–70 yellow · <40 red"));
+          "\x01" +
+          ttH(L("生成速度 · 最近一段", "Generation speed · latest segment")) +
+          ttRow(L("口径", "Basis"), L("输出 tokens（含思考）÷ 生成耗时", "output tokens (thinking incl.) ÷ generation time")) +
+          ttRow(L("档位", "Bands"), L("≥70 绿 · 40–70 黄 · <40 红", "≥70 green · 40–70 yellow · <40 red")) +
+          ttNote(L("回答期间每段完成即刷新。回复末尾的统计行是整问加权均值，两者数值不同属正常",
+            "Refreshes as each segment completes. The reply-end rate line is the whole-turn weighted average, so the two legitimately differ")));
       }
       if (state.show.ctx) {
         var cw = parseInt(state.ctxOv, 10) || d.native_ctx || d.context_window || 0;
@@ -541,15 +670,16 @@
           Math.min(100, pct).toFixed(1) + '%"></i></span>' : "";
         it(bar + (cw ? '<span class="pct ' + cls + '">' + pct.toFixed(1) + "%</span>"
               : '<span class="v' + (exc ? " exc" : "") + '">' + fmt(sess.ctx) + "</span>"),
-          L("上下文：当前会话上下文大小（最近一次请求的总输入）÷ 窗口容量",
-            "Context: session context size (total input of the latest request) ÷ window capacity") + "\n" +
-          L("已用 ", "Used ") + fmt(sess.ctx) + L(" / 窗口 ", " / window ") + fmt(cw) +
-          "\n" + L("颜色随占比：", "Color by usage: ") + (big
-            ? L("≤40% 绿 · 40–60% 黄 · ≥60% 红（窗口 ≥100 万）", "≤40% green · 40–60% yellow · ≥60% red (windows ≥1M)")
-            : L("<70% 绿 · 70–85% 黄 · ≥85% 红", "<70% green · 70–85% yellow · ≥85% red")) +
-          L(" · 超限被拒=亮红闪烁", " · rejected over-limit = flashing red") +
-          (exc ? "\n" + L("⚠ 上下文超限：最近一次请求超出窗口容量被拒绝（", "⚠ Context over limit: the latest request was rejected for exceeding the window capacity (") +
-            fmtTime(d.ctx_exc) + L("），需要压缩会话或新开会话", ") — compress the session or start a new one") : ""));
+          "\x01" +
+          ttH(L("上下文容量", "Context capacity")) +
+          (cw ? ttRow(L("已用 / 窗口", "Used / window"), fmt(sess.ctx) + " / " + fmt(cw))
+              : ttRow(L("已用", "Used"), fmt(sess.ctx) + L("（窗口容量未知）", " (window capacity unknown)"))) +
+          ttRow(L("颜色档位", "Color bands"),
+            (big ? L("≤40% 绿 · 40–60% 黄 · ≥60% 红", "≤40% green · 40–60% yellow · ≥60% red")
+                 : L("<70% 绿 · 70–85% 黄 · ≥85% 红", "<70% green · 70–85% yellow · ≥85% red")) +
+            L(" · 超限=亮红闪烁", " · over-limit = flashing red")) +
+          (exc ? ttNote(L("⚠ 上下文超限：最近一次请求被拒（" + fmtTime(d.ctx_exc) + "），需压缩会话或新开会话",
+                          "⚠ Over limit: the latest request was rejected (" + fmtTime(d.ctx_exc) + ") — compress or restart the session")) : ""));
       }
       if (state.show.turn) {
         it(ico('<path d="M23 4v6h-6"/><path d="M20.49 15A9 9 0 1 1 18.36 5.64L23 10"/>') +
@@ -560,46 +690,67 @@
           '<span class="dim">' + sec(last.duration_ms) + "</span>" +
           ico('<path d="M5 20v-5M12 20v-9M19 20V5"/>') +
           '<span class="dim">' + sec(last.ttft_ms) + "</span>",
-          L("本轮：最近一轮的 token 消耗（该轮共 ", "Turn: token usage of the latest turn (") + (lt.requests || 0) +
-          L(" 次模型请求）", " model requests in total)") + "\n" +
-          ioc(lt.input, lt.output, lt.cache_read, lt.reasoning, lt.cache_write) +
-          "\n" + L("单次耗时 ", "Single request ") + sec(last.duration_ms) + L(" · 首字 ", " · First token ") + sec(last.ttft_ms) +
-          L(" · 轮总耗时 ", " · Turn total ") + sec(lt.duration_ms) +
-          (lt.tool_calls ? L(" · 工具调用 ", " · Tool calls ") + lt.tool_calls : "") +
-          ((lt.retries || lt.tool_errors) ? L(" · 重试 ", " · Retries ") + (lt.retries || 0) + L(" · 工具错误 ", " · Tool errors ") + (lt.tool_errors || 0) : ""));
+          "\x01" +
+          ttH(state.lang === "en"
+            ? "Latest turn · " + (lt.requests || 0) + " requests"
+            : "本轮 · " + (lt.requests || 0) + " 次请求") +
+          ttRow(L("输入", "Input"), fmt(lt.input) +
+            (lt.input > 0 && lt.cache_read > 0 ? L("（命中 " + Math.round(lt.cache_read / lt.input * 100) + "%）", " (" + Math.round(lt.cache_read / lt.input * 100) + "% cached)") : "")) +
+          ttRow(L("输出", "Output"), fmt(lt.output) +
+            (lt.reasoning > 0 ? L("（含思考 " + fmt(lt.reasoning) + "）", " (incl. " + fmt(lt.reasoning) + " thinking)") : "")) +
+          (lt.cache_write > 0 ? ttRow(L("缓存写入", "Cache write"), fmt(lt.cache_write)) : "") +
+          ttRow(L("耗时", "Time"), L("单次 ", "request ") + sec(last.duration_ms) + L(" · 首字 ", " · TTFT ") + sec(last.ttft_ms) + L(" · 轮总 ", " · turn ") + sec(lt.duration_ms)) +
+          ((lt.tool_calls || lt.retries || lt.tool_errors)
+            ? ttRow(L("工具", "Tools"), (lt.tool_calls ? lt.tool_calls + L(" 次调用", " calls") : "") +
+                (lt.retries ? L(" · 重试 ", " · retries ") + lt.retries : "") +
+                (lt.tool_errors ? L(" · 错误 ", " · errors ") + lt.tool_errors : "")) : ""));
       }
       if (state.show.win) {
         it(ico('<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>') +
           '<span class="v">' + fmt(sess.total) + "</span>" +
           (shrink ? "" : cachePct(sess.cache_read, sess.input)) +   // v66 同上
           '<span class="dim">' + (sess.turns || 0) + L("轮 ", " turns · ") + (sess.requests || 0) + L("次", " req") + "</span>",
-          L("会话累计：当前会话全部请求的 token 消耗", "Session total: tokens of all requests in the current session") + "\n" + ioc(sess.input, sess.output, sess.cache_read, sess.reasoning, sess.cache_write) +
-          "\n" + (sess.turns || 0) + L(" 轮 · ", " turns · ") + (sess.requests || 0) + L(" 次请求", " requests") +
-          (sess.tool_calls ? L(" · 工具调用 ", " · Tool calls ") + sess.tool_calls : "") +
-          (sess.retries ? L(" · 重试 ", " · Retries ") + sess.retries : "") +
-          (d.code && (d.code.add || d.code.del) ?
-            "\n" + L("代码变更 +", "Code changes +") + (d.code.add || 0) + L(" / -", " / −") + (d.code.del || 0) +
-            (d.code.files ? L("（", " (") + d.code.files + L(" 文件）", " files)") : "") : ""));
+          "\x01" +
+          ttH(L("会话累计 · 全部请求", "Session total · all requests")) +
+          ttRow(L("输入", "Input"), fmt(sess.input) +
+            (sess.input > 0 && sess.cache_read > 0 ? L("（命中 " + Math.round(sess.cache_read / sess.input * 100) + "%）", " (" + Math.round(sess.cache_read / sess.input * 100) + "% cached)") : "")) +
+          ttRow(L("输出", "Output"), fmt(sess.output) +
+            (sess.reasoning > 0 ? L("（含思考 " + fmt(sess.reasoning) + "）", " (incl. " + fmt(sess.reasoning) + " thinking)") : "")) +
+          (sess.cache_write > 0 ? ttRow(L("缓存写入", "Cache write"), fmt(sess.cache_write)) : "") +
+          ttRow(L("规模", "Scale"), (sess.turns || 0) + L(" 轮 · ", " turns · ") + (sess.requests || 0) + L(" 次请求", " requests") +
+            (sess.tool_calls ? L(" · 工具 ", " · tools ") + sess.tool_calls : "") +
+            (sess.retries ? L(" · 重试 ", " · retries ") + sess.retries : "")) +
+          (d.code && (d.code.add || d.code.del)
+            ? ttRow(L("代码变更", "Code changes"), "+" + (d.code.add || 0) + " / -" + (d.code.del || 0) +
+                (d.code.files ? L("（" + d.code.files + " 文件）", " (" + d.code.files + " files)") : "")) : ""));
       }
       if (state.show.tools) {
-        var toolLines = [];
-        (tls.list || []).forEach(function (t1) {
-          toolLines.push(t1.name + " " + t1.count + L("次", " calls") + " · " + sec(t1.duration_ms) +
-          (t1.errors ? L(" · 错 ", " · ") + t1.errors + L(" 个错误", " errors") : ""));
-        });
+        var toolRows = (tls.list || []).map(function (t1) {
+          return ttRow(t1.name, t1.count + L(" 次 · ", " calls · ") + sec(t1.duration_ms) +
+            (t1.errors ? L(" · 错误 ", " · errors ") + t1.errors : ""));
+        }).join("");
         it(ico('<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>') +
           '<span class="v">' + (tls.total || 0) + "</span>" +
           (tls.errors ? '<span class="eb">' +
             ico('<circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/>') +
             tls.errors + "</span>" : ""),
-          L("工具调用：当前会话的工具使用统计（按调用次数排序）", "Tool calls: tool usage stats of the current session (sorted by calls)") + "\n" +
-          (toolLines.length ? toolLines.join("\n") : L("无工具调用记录", "No tool calls recorded")));
+          "\x01" +
+          ttH(state.lang === "en"
+            ? "Tool calls · " + (tls.total || 0) + " total" + (tls.errors ? ", " + tls.errors + " errors" : "")
+            : "工具调用 · 共 " + (tls.total || 0) + " 次" + (tls.errors ? " · 错误 " + tls.errors : "")) +
+          (toolRows || ttNote(L("无工具调用记录", "No tool calls recorded"))));
       }
       if (state.show.today) {
         it(ico('<rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/>') +
           '<span class="v">' + fmt(today.total) + "</span>",
-          L("今日合计：今天所有会话的 token 消耗", "Today's total: tokens of all sessions today") + "\n" + ioc(today.input, today.output, today.cache_read, today.reasoning, today.cache_write) +
-          "\n" + (today.requests || 0) + L(" 次请求", " requests") + (today.retries ? L(" · 重试 ", " · Retries ") + today.retries : ""));
+          "\x01" +
+          ttH(L("今日合计 · 今天所有会话", "Today · all sessions")) +
+          ttRow(L("输入", "Input"), fmt(today.input) +
+            (today.input > 0 && today.cache_read > 0 ? L("（命中 " + Math.round(today.cache_read / today.input * 100) + "%）", " (" + Math.round(today.cache_read / today.input * 100) + "% cached)") : "")) +
+          ttRow(L("输出", "Output"), fmt(today.output) +
+            (today.reasoning > 0 ? L("（含思考 " + fmt(today.reasoning) + "）", " (incl. " + fmt(today.reasoning) + " thinking)") : "")) +
+          ttRow(L("请求", "Requests"), (today.requests || 0) +
+            (today.retries ? L(" 次请求 · 重试 ", " requests · retries ") + today.retries : L(" 次", " requests"))));
       }
       if (state.show.sub && d.sub && (d.sub.total || d.sub.active)) {
         /* v50：悬停 tooltip 只放汇总 + 打开面板的提示；各子代理明细在点击弹出的
@@ -795,7 +946,8 @@
       }
       tipSig = t;
       tip.innerHTML = '<div class="tbody"></div>';
-      tip.firstChild.textContent = t;
+      if (t.charCodeAt(0) === 1) tip.firstChild.innerHTML = t.slice(1);   // \x01 前缀 = 结构化 HTML（v67.1）
+      else tip.firstChild.textContent = t;
       tip.style.display = "block";
       positionTip(el, keepTop);
     }
@@ -929,12 +1081,49 @@
     }
 
     /* ---------- 设置面板 ---------- */
+    function syncUpdate() {
+      var u = state.pluginUpdate;
+      var active = !!(u && u.supported);
+      var cb = panel.querySelector(".zu-auto-update");
+      cb.checked = !!(u && u.auto);
+      cb.disabled = !active;
+      panel.querySelector('[data-update=check]').disabled = !active || !!u.busy;
+      panel.querySelector('[data-update=update]').disabled = !active || !!u.busy || u.phase !== "available";
+      var messages = {
+        idle: L("尚未检测", "Not checked yet"),
+        checking: L("正在检查更新…", "Checking for updates…"),
+        available: L("发现新版本", "Update available"),
+        current: L("当前已是最新版本", "Up to date"),
+        updating: L("正在更新插件…", "Updating plugin…"),
+        updated: L("插件已更新；请重开会话以加载新版插件组件", "Plugin updated; start a new session to load the new components"),
+        error: L("更新失败：", "Update failed: ") + (u && u.error || ""),
+      };
+      var text = !active ? L("仅支持已安装的 zusage-marketplace 用户插件；更新通道未就绪时需先升级插件并重启 ZCode。", "Requires the installed user plugin from zusage-marketplace. Upgrade the plugin and restart ZCode if the update channel is not ready.") : messages[u.phase] || messages.idle;
+      if (!active && u && u.error) text += "\n" + messages.error;
+      if (active && u.currentVersion) text += "\n" + L("当前版本：", "Current version: ") + u.currentVersion;
+      if (active && u.latestVersion) text += (u.channel === "release" ? L(" · Release 版本：", " · Release version: ") : L(" · 市场版本：", " · Marketplace version: ")) + u.latestVersion;
+      if (active && u.channel) text += "\n" + (u.channel === "release" ? L("更新来源：GitHub 正式 Release（校验 ZIP 与 SHA256）", "Update source: stable GitHub Release (validated ZIP and SHA256)") : L("更新来源：本地目录市场", "Update source: local directory marketplace"));
+      if (active && u.releaseUrl) text += "\n" + u.releaseUrl;
+      if (active && u.checkedAt) text += "\n" + L("上次检测：", "Last checked: ") + new Date(u.checkedAt).toLocaleString();
+      if (u && u.phase === "updating") text += "\n" + L("关闭自动更新仅阻止后续安装；已开始的安装会继续完成", "Turning automatic updates off stops future installs; an install already started will finish");
+      if (u && u.restartRequired) text += "\n" + L("主进程或关闭热更新的文件已更新，需重启 ZCode", "Restart ZCode to load main-process updates or files with hot reload disabled");
+      if (u && u.skipped && u.skipped.length) text += "\n" + L("保留本地热修（未覆盖）：", "Local edits preserved (not overwritten): ") + u.skipped.join(", ");
+      panel.querySelector(".zu-update-status").textContent = text;
+      /* 逐问速率行开关勾选态：state.rateLine 由主进程推送（或 change 时代乐观更新） */
+      var rl = panel.querySelector(".zu-rate-line");
+      if (rl) rl.checked = state.rateLine;
+    }
     function syncPanel() {
-      panel.querySelectorAll("input[type=checkbox]").forEach(function (cb) {
+      panel.querySelectorAll("input[type=checkbox][data-k]").forEach(function (cb) {
         cb.checked = !!state.show[cb.dataset.k];
       });
       panel.querySelector(".zu-ctxov").value = state.ctxOv;
+      syncUpdate();
     }
+    panel.addEventListener("click", function (e) {
+      var button = e.target.closest && e.target.closest("[data-update]");
+      if (button && !button.disabled) pluginRequest(button.dataset.update);
+    });
     gear.addEventListener("click", function (e) {
       e.stopPropagation();
       syncPanel();
@@ -947,6 +1136,16 @@
     });
     panel.addEventListener("change", function (e) {
       var t2 = e.target;
+      if (t2.classList.contains("zu-auto-update")) {
+        pluginRequest("auto", t2.checked);
+        return;
+      }
+      if (t2.classList.contains("zu-rate-line")) {
+        /* 乐观更新勾选态，真值以主进程写 config.json 后回推的 rateLine 为准 */
+        state.rateLine = t2.checked;
+        pluginRequest("rate-line", t2.checked);
+        return;
+      }
       if (t2.name === "zu-lang") {
         state.lang = t2.value;
         persist();
@@ -1607,6 +1806,7 @@
         heavy();   // 立即对账（composer 重建/pane 关闭的最快收敛路径）
       },
       render: render,
+      syncUpdate: syncUpdate,
       rebuild: function () { buildPanel(); rebuildExcBubble(); syncPanel(); },
       getSid: function () { return pickedSid || ""; },
     };
