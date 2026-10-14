@@ -1,6 +1,6 @@
 ---
 name: zcode-github-release
-description: "仅为当前 zcode-token-usage-statusbar 项目准备、校验并发布 GitHub 正式 Release，或根据提交补充/修订已有 Release 更新说明。发布新版、创建 GitHub Release、发布预演或修改发布说明时使用；默认只做检查、打包和预演，提交、tag 推送、Release 与渠道发布须明确授权。"
+description: "仅为当前 zcode-token-usage-statusbar 项目准备、校验并发布 GitHub 正式 Release，发布验收后创建并合并源码 PR，或根据提交补充/修订已有 Release 更新说明。发布新版、创建 GitHub Release、发布预演、补合并发布 PR 或修改发布说明时使用；默认只做检查、打包和预演，正式发布须明确授权，完整发版包含同一目标仓库的源码 PR 合并，渠道发布须独立授权。"
 ---
 
 # 当前项目的 GitHub 正式 Release
@@ -10,11 +10,12 @@ description: "仅为当前 zcode-token-usage-statusbar 项目准备、校验并�
 - 本技能仅供所在仓库使用。以本技能目录向上三级得到项目根目录，验证该目录与 `git rev-parse --show-toplevel` 一致，且有 `marketplace.json`、`sync_plugin.py`、`release_tool.py`、`release_unpack.py` 和 `plugins/zcode-token-usage-statusbar/`。不要在其它项目或已安装插件缓存执行发布。
 - 阅读项目指令，检查 `git status`、当前分支与 `git remote -v`，保留未提交及其它会话改动。用户只要求预演时不提交、不打 tag、不推送、不发布。
 - 要求明确发布目标 `owner/repo`；核对本项目配置的 `fork` / `origin`，不默认选 origin，也不因另一仓库有权限就切换。使用 `gh repo view OWNER/REPO --json viewerPermission` 核验权限；目标只读则报告阻塞。
+- 完整正式发版默认包含发布后源码 PR 的创建与合并。确认本次发布授权时一并说明：合并到同一发布仓库的默认分支（通过 `gh repo view OWNER/REPO --json defaultBranchRef` 核实），仅包含已审查的本次发布提交；用户指定其它 base 时以其要求为准。用户明确授权完整发版后，不在发布成功后再次询问这项收尾；仅预演、仅 Release、仅修改说明或用户明确禁止合并时不执行，也不延伸到上游仓库。
 - 阅读 [发布包合同](references/release-contract.md)。仅正式三段版本 `X.Y.Z`、tag `vX.Y.Z`，不将截图托管 Release 或开发分支提交当作正式版本。
 
 ## 生成更新说明
 
-- 新发布按以下顺序执行：确认目标提交 → 生成说明 → 检查/打包 → 带说明预演 → 授权发布 → 验收正文与资产。仅修订已有说明时跳到「修订已发布说明」，不重新发布。
+- 新发布按以下顺序执行：确认目标提交与 PR 合并目标 → 生成说明 → 检查/打包 → 带说明预演 → 授权发布 → 验收正文与资产 → 完成已授权的渠道更新 → 创建并合并源码 PR → 验收合并结果。仅修订已有说明时跳到「修订已发布说明」，不重新发布或合并 PR。
 - 阅读目标仓库的正式 Release 与 tag。仅选已发布、非 draft、非 prerelease 的 `vX.Y.Z`，并确认上一版本是目标提交的祖先；排除 `screenshots-*` 和其它素材 tag。查看 `git log --no-merges PREVIOUS_TAG..TARGET --oneline`，再用相关 diff、已提交文档和测试核实实际行为，不只改写提交标题。
 - 没有上一正式版时说明「首个正式 Release」，选可核实的近期集成基线并注明 commit/比较链接；不要虚构上一版本或将全部仓库历史都说成本版新增。合并提交、重复补丁、纯格式调整不逐条罗列。
 - 按 [更新说明规范](references/release-notes.md) 撰写面向用户的 Markdown，涵盖实际新增、修复、升级注意、验证与提交范围。未发布的渠道、未安装的客户端、仅夹具验证的平台必须如实区分。
@@ -59,7 +60,16 @@ python3 -B release_tool.py publish --root /absolute/project --zip /new/artifact-
 - 正常推送，禁止强推。之后从远端读取并核对版本、完整 ZIP URL/hash/path 与本次资产；渠道未成功时不能声称远端更新可用。
 - 新用户注册 `OWNER/REPO#plugin-releases`。已有注册不会自动切换，维护者须在原 ref 发布一致清单，或由用户明确选择迁移；不修改用户市场注册。
 
+## 发布后合并源码 PR
+
+- 正式 Release 正文与资产验收通过后，必须完成本次源码 PR 合并，不能把「Release 已发布、源码仅在发布分支」当作完整发版完成。渠道分支仅存市场清单，不作为源码 PR 的 head 或 base；补合并已发布版本时不重新打包或移动 tag。
+- 用 `gh pr list --repo OWNER/REPO --state all --head HEAD_BRANCH --base BASE_BRANCH` 查找本次 PR；已有 open PR 则复用，已合并则验收后跳过，关闭未合并或不明确对应关系时先核对原因，不创建重复 PR。没有 PR 时用 `gh pr create --repo OWNER/REPO --head HEAD_BRANCH --base BASE_BRANCH --title ... --body-file ...` 创建，正文包含版本、Release 链接、修复范围和实际验证结果。
+- 合并前读取 PR 的 `headRefOid`、`baseRefName`、`files`、`mergeable` 和 `statusCheckRollup`，核对 head 包含已验收 tag 的提交且 diff 仅为本次已审查改动。检查失败、冲突、待运行检查或分支内容变化时停止并修复/重新验证，不使用 `--admin` 绕过规则。无检查时按真实状态记录，仍须具备已执行的本地测试证据。
+- 优先使用 merge commit 保留已发布提交历史：`gh pr merge NUMBER --repo OWNER/REPO --merge --match-head-commit VERIFIED_HEAD`。仓库不允许该方式时，依据仓库策略选择可用方式并核对主分支的实际文件；不要强推，不移动已发布 tag，不因合并重传资产，也不自动删除分支。
+- 合并后用 `gh pr view NUMBER --repo OWNER/REPO --json state,mergedAt,mergeCommit,url` 确认 `MERGED`；重新读取远端 base tip，验证包含 merge commit，以及已发布提交的祖先关系（merge 方式）或等价文件内容。报告 PR URL、合并 commit 和 base。合并被阻止时明确标记「Release 已发布，PR 合并未完成」，不得宣称完整发版完成。
+- 保留本地其它会话改动，远端合并不要求切换或清理脏工作区。若发布后增加技能/文档等必要收尾提交，应单独测试并明确它们位于 tag 之后，只进入 PR，不写成已发布包中的功能。
+
 ## 收尾
 
-- 分别报告打包、提交/tag/推送、Release、渠道与更新端验证状态。未执行就明确写未执行。
+- 分别报告打包、提交/tag/推送、Release、渠道、更新端验证及源码 PR 合并状态。未执行就明确写未执行；完整发版须给出已合并 PR 的 URL 与验证结果。
 - 不安装或覆盖用户缓存，不自动重启客户端。发布成功不等于用户已安装。
