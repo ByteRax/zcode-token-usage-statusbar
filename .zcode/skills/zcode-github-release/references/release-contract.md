@@ -48,4 +48,3 @@ ZIP 内仍用相对源码 source，避免清单包含自身 ZIP 的 hash 形成�
 5. 给新用户市场来源 `OWNER/REPO#plugin-releases`。已有用户仍追踪原 ref；不会自动迁移。原 ref 若仍是开发用相对 source，更新器应报渠道不一致，不退回开发分支安装。
 
 Release 资产上传成功但渠道尚未发布时，检测可以发现版本，安装会安全停止。私有仓库当前不支持认证下载；不要将 gh token、URL 凭据或自定义 headers 交给更新器。
-
