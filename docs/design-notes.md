@@ -6,7 +6,7 @@
 
 - `input_tokens` 已含 cache_read；轮数一律用 `count(distinct turn_id)`（`turn_usage` 表覆盖不全）。
 - 缓存命中率 = cache_read ÷ input_tokens（input 已含 cache_read）。缓存写入是本次请求新写进供应商缓存的量（计费高于普通输入），缓存命中是直接复用已有缓存前缀的量。
-- token/s = 最近一次请求的 output_tokens ÷ 生成耗时（completed_at − first_token_at）。db 只在请求完成时落库，故该值每完成一次请求更新一次，不是流式过程中的实时速率。
+- token/s = 最近一次请求的 output_tokens（已含思考 token）÷ 生成耗时。生成耗时默认 completed_at − first_token_at；含思考的请求（reasoning_tokens > 0，或 Claude 这类不单独上报思考的模型）用 completed_at − started_at，因为思考 token 在 first_token_at 之前流出——2026-10-15 真库中 claude-opus-5-5 按首字窗口有 35% 请求超过 300 t/s。db 只在请求完成时落库，故该值每完成一次请求更新一次，不是流式过程中的实时速率。
 - 上下文容量 = 最近一次 completed 请求的 input_tokens ÷ 上下文窗口（会话压缩后自然回落，不显示峰值）。
 - "当前会话"识别（状态条）：主链路是**泵按窗口注入 mine**——渲染端经客户端自带 IPC 通道 `zcode:sync-active-task-session` 上报本窗口焦点会话 id，主进程推送时按窗口带上；overlay 只显示 mine 对应的池条目，池里没有（新会话无数据）就显示零值，**绝不回退到别的会话**（多窗口共享 localStorage 时旧启发式必错，实测）。兜底（辅助窗口/泵无该窗口信息）：读 localStorage 的 `zcode-v4-last-session:v1:<工作区路径>` 键（ZCode 切换会话即更新），值 = 会话 id，与快照 `recent`（12 条）求交集；多工作区候选时优先取刚切换的、否则取最近活跃的。**顶栏的会话标题不在可扫描的 DOM 文本节点里，标题扫描方案实测永远失败，勿回退。**
 - "当前会话"（CLI / MCP `scope=current`）= 最近 30 分钟内有请求的 session（`current_session`，状态条不用此口径）。
