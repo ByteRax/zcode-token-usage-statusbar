@@ -118,6 +118,9 @@ class ReleaseToolTests(unittest.TestCase):
         self.git("init", "--quiet")
         self.git("config", "user.name", "Release Fixture")
         self.git("config", "user.email", "fixture@example.invalid")
+        # 关闭行尾转换：系统级 autocrlf=true（Git for Windows 默认装法）会让测试体里的
+        # git checkout -- 把归一成 LF 的文件恢复成 CRLF，误报 runtime copy drift。
+        self.git("config", "core.autocrlf", "false")
         self.git("add", ".")
         self.git("commit", "--quiet", "-m", "fixture")
         self.git("tag", "v1.2.3")
