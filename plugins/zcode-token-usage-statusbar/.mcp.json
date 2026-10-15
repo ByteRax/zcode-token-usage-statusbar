@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "zcode-token-usage-statusbar": {
+    "zusage": {
       "type": "stdio",
       "command": "python3",
       "args": [

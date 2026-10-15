@@ -4,7 +4,7 @@
 
 这份文档面向需要自定义安装、远程查询或彻底清理的用户。日常使用通常不需要改配置文件。
 
-> **适用范围：** 本文关于状态条默认自动安装/修复的说明仅适用于当前 `main` / 本地新版源码，尚未发布到正式渠道。`#plugin-releases` 的正式版 `v1.4.1` 仍默认关闭自动安装；请执行 `/install-overlay`，或在 `~/.zcode/zcode-token-usage-statusbar/config.json` 中合并 `"plugin_auto_install_overlay": true`（保留其它设置）后新建或恢复会话。
+> **当前正式版：** `#plugin-releases` 正式渠道默认自动安装/修复状态条；配置文件不存在或缺少字段时开启，已有显式 `false` 会保留。安装/修复会修改客户端 `app.asar`，请确认信任此项目；成功后需完全退出并重开。
 
 ## 选择安装方式
 
@@ -18,20 +18,13 @@
 
 ### 方式一：远程安装（无需下载源码）
 
-在 **ZCode 对话输入框**中依次执行（不是系统终端）：
-
-```text
-/plugin marketplace add ByteRax/zcode-token-usage-statusbar#plugin-releases
-/plugin install zcode-token-usage-statusbar@zusage-marketplace
-```
-
-第一条添加市场，第二条安装插件。也可以通过界面操作：
+通过客户端界面操作，无需系统 PATH 中有 `zcode`：
 
 1. 打开 **设置 → 插件 → 添加插件市场**；某些版本入口在「发现」页的 **+**。
 2. 输入 `https://github.com/ByteRax/zcode-token-usage-statusbar#plugin-releases`，添加市场。
 3. 找到 **ZCode Token Usage Statusbar**，安装到用户范围并启用。
 
-此渠道从经过校验的正式 Release ZIP 安装插件，不跟随开发分支，也不需要自己下载源码。正式版 `v1.4.1` 请按上方适用范围说明手动安装或显式开启自动安装，成功后完全退出并重开。
+此渠道从经过校验的正式 Release ZIP 安装插件，不跟随开发分支，也不需要自己下载源码。当前正式版默认自动安装/修复状态条；成功后完全退出并重开，已有显式关闭配置不会被改为开启。
 
 ### 方式二：本地目录安装
 
@@ -41,18 +34,11 @@
 2. 选择包含 `marketplace.json` 的仓库根目录（不是 `plugins/` 子目录），添加市场。
 3. 找到 **ZCode Token Usage Statusbar**，安装到用户范围并启用。
 
-也可在 **ZCode 对话输入框**执行，将路径换成实际仓库目录；路径含空格时用引号包住：
-
-```text
-/plugin marketplace add /绝对路径/到/zcode-token-usage-statusbar
-/plugin install zcode-token-usage-statusbar@zusage-marketplace
-```
-
 ![添加插件市场：远程方式填写 GitHub 地址，本地方式点击「选择目录」](plugin-marketplace-add.png)
 
-### 安装状态条（本地新版源码）
+### 安装状态条
 
-安装当前 `main` 的本地新版源码插件后，按宿主提示加载插件，新建或重新打开会话；已有会话不会补触发启动钩子。插件默认自动安装/修复状态条，**会修改客户端的 `app.asar`，请确认信任此项目。成功后必须完全退出并重新打开 ZCode**；只关闭窗口不一定退出主进程。
+安装插件后，按宿主提示加载插件，新建或恢复会话；已有会话不会补触发启动钩子。插件默认自动安装/修复状态条，**会修改客户端的 `app.asar`，请确认信任此项目。成功后必须完全退出并重新打开 ZCode**；只关闭窗口不一定退出主进程。
 
 自动安装失败时，再手动执行以下兜底命令，按实际输出排查；成功后仍需完全退出并重开：
 
@@ -68,7 +54,7 @@ Windows 若找不到 `python3`，需在插件的 `.mcp.json` 与 `hooks/hooks.js
 
 ### 正式 Release 渠道
 
-[`plugin-releases` 分支](https://github.com/ByteRax/zcode-token-usage-statusbar/tree/plugin-releases) 已发布与 `v1.4.0` 正式包一致的市场清单。新用户请使用 `ByteRax/zcode-token-usage-statusbar#plugin-releases`。
+[`plugin-releases` 分支](https://github.com/ByteRax/zcode-token-usage-statusbar/tree/plugin-releases) 的市场清单指向当前正式 Release。新用户请在添加市场界面使用 `https://github.com/ByteRax/zcode-token-usage-statusbar#plugin-releases`，具体版本以该清单为准。
 
 清单指向正式 ZIP，包含 SHA256 与插件子目录；下载时核对 Release manifest、版本、包内容和清单一致性，不回退开发分支。后续正式版本仍需维护者同步发布渠道清单，单独发布 Release 不等于渠道已经更新。
 
@@ -79,13 +65,7 @@ Windows 若找不到 `python3`，需在插件的 `.mcp.json` 与 `hooks/hooks.js
 市场名仍是 `zusage-marketplace`，但来源从默认分支/本地目录变为 `#plugin-releases`。**已安装用户不会自动切换，也不必为了添加分支卸载浮层。** 想迁移时：
 
 1. 先关闭插件自动更新，等待正在进行的更新结束，记下现有市场来源。
-2. 在 ZCode 对话输入框重新添加同名正式市场：
-
-   ```text
-   /plugin marketplace add ByteRax/zcode-token-usage-statusbar#plugin-releases
-   ```
-
-   当前官方 CLI 会用新来源更新同名市场注册，保留已安装插件、启用状态与缓存；无需先卸载插件或浮层。此行为已在隔离本地市场中实测，远端下载仍需网络可用。
+2. 打开 **设置 → 插件 → 发现 → +（添加插件市场）**，填写 `https://github.com/ByteRax/zcode-token-usage-statusbar#plugin-releases`。通过市场管理确认并切换同名市场来源；不支持同名来源替换时，先移除旧市场注册再添加正式地址，**无需卸载插件或浮层**。
 3. 在市场管理中确认 `zusage-marketplace` 指向新地址，来源的 `ref` 为 `plugin-releases`，再刷新市场并在插件页按需更新。不要只看到插件已安装就假定来源已切换。
 4. 确认正式包可读取后，按自己的偏好开启自动更新。更新涉及主进程文件时，完全退出并重开 ZCode。
 
@@ -138,14 +118,9 @@ python3 install.py --root /Applications/ZCode.app
 正式渠道可在 ⚙ 检查或安装更新，也可以按以下步骤手动更新：
 
 1. 远程安装无需更新本地源码；本地目录安装需先自行获取最新源码。
-2. 在 ZCode 对话输入框刷新市场：
-
-   ```text
-   /plugin marketplace update zusage-marketplace
-   ```
-
-3. 打开 **设置 → 插件 → 已安装**，更新 **ZCode Token Usage Statusbar**。
-4. 新建或重新打开会话；若提示主进程文件变化，再完全退出并重开 ZCode。
+2. 打开 **设置 → 插件**，在市场管理中刷新 `zusage-marketplace`。
+3. 到 **已安装** 更新 **ZCode Token Usage Statusbar**。
+4. 新建或恢复会话；若提示主进程文件变化，再完全退出并重开 ZCode。
 
 本地目录市场**不会执行 `git pull`**。ZCode 使用的是独立安装副本，修改仓库不等于完成插件更新。
 
@@ -173,7 +148,7 @@ python3 install.py --root /Applications/ZCode.app
 
 只合并这一项，不要覆盖其它设置。它**默认开启**，缺配置文件或缺字段时启用，已有的显式 `false` 会保留；损坏或非布尔配置不会启用自动安装（环境变量另有设置时以其为准）。`ZUSAGE_PLUGIN_AUTO_INSTALL=1` / `0` 优先于配置，但不能绕过卸载豁免。它与 `plugin_auto_update` 是两个独立开关：关闭插件更新并不会关闭客户端自动安装/修复。
 
-自动修复不会直接调用斜杠命令，而是在启动钩子中执行同一个安装器；`SessionStart` 覆盖新建、清空和恢复会话（`startup|clear|resume`）。
+自动修复不会直接调用斜杠命令，而是在启动钩子中执行同一个安装器；`SessionStart` 覆盖新建和恢复会话（`startup|resume`），清空后新会话走 `startup`，不依赖独立 `clear` 事件。宿主 schema 接受 `clear`，但当前没有独立事件派发。
 
 自动修复后仍需完全退出并再次启动 ZCode。插件会请求助手给出重启提醒，不会自行重启。插件未启用、启动钩子没触发、无写入权限或客户端结构不兼容时，自动修复不能保证成功。
 
@@ -256,7 +231,7 @@ Windows 对应用户目录下的 `.zcode\zcode-token-usage-statusbar\config.json
 
 ### 对话内查询
 
-一键安装使用 `/usage`；插件的完整名称是 `/zcode-token-usage-statusbar:usage`：
+一键安装和插件都使用裸名 `/usage`（不加插件名前缀）：
 
 ```text
 /usage

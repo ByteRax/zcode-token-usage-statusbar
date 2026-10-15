@@ -51,7 +51,21 @@ def main():
         import overlay_install
         result = overlay_install.run_hook()
     except Exception as e:  # noqa: BLE001 — hook 绝不能抛
-        result = {"suppressOutput": True, "systemMessage": f"zusage 插件自检失败（已忽略）：{e}"}
+        message = f"zusage 插件自检失败（已忽略）：{e}"
+        result = {"suppressOutput": True}
+        try:
+            runtime = Path(os.environ.get("ZUSAGE_PLUGIN_RUNTIME") or Path.home() / ".zcode/zcode-token-usage-statusbar")
+            (runtime / ".plugin-overlay-optout").stat()
+            opted_out = True
+        except FileNotFoundError:
+            opted_out = False
+        except (OSError, RuntimeError):
+            opted_out = True
+        if opted_out:
+            print("[zusage-plugin] " + message, file=sys.stderr)
+        else:
+            result.update(systemMessage=message, hookSpecificOutput={
+                "hookEventName": "SessionStart", "additionalContext": message})
     try:
         runtime = Path(os.environ.get("ZUSAGE_PLUGIN_RUNTIME") or Path.home() / ".zcode/zcode-token-usage-statusbar")
         record = {"time": time.time(), "pluginRoot": str(PLUGIN_ROOT),
