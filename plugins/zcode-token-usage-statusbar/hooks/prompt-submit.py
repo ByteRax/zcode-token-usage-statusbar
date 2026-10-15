@@ -38,15 +38,24 @@ def read_stdin(timeout_s=2.0):
 # 防折叠约束：客户端把带工具调用的消息折叠进「模型轨迹」区，只有轮次最后一条纯文字消息
 # 默认展开——若模型先写完正文再补跑脚本、让统计行单独成条，用户就只能看到一行统计。
 RATE_SCRIPT = PLUGIN_ROOT / "token_rate.py"
-TURN_STATS_INSTRUCTION = [
-    "",
-    "【本轮统计指令】若你在本次回答中已经调用过工具,请严格按以下顺序收尾:",
-    f"1. 在开始写最终回复正文之前,运行一次:python3 \"{RATE_SCRIPT}\" --turn --current",
-    "2. 然后输出完整的最终回复正文(用户需要的全部内容),并把脚本输出的那一行原样放入 Markdown 引用块(新行行首加「> 」)附在这条回复的最末尾;不要改写数字、不要追加任何其他内容。",
-    "关键约束:统计行必须与完整回复正文在同一条消息里。绝不能让统计行(或只含统计行的短消息)单独成为你最后一条消息,也绝不能在写完全部回复正文之后再调用任何工具——客户端会折叠之前带工具调用的消息,用户将只能看到一行统计。",
-    "降级规则:若你已经写完回复正文才发现没运行统计脚本,就直接省略统计行结束回答,不要事后补调用工具。",
-    "注意:①上面【内部背景·勿展示】行是上一条提问的历史数据,仅供你了解背景,绝不展示给用户;②若脚本没有输出任何统计行,或本次回答你没有调用过任何工具,则不要显示任何统计行、也不要为此额外调用工具。",
-]
+
+
+def turn_stats_instruction(sid):
+    """带上本会话 id（--session）：模型执行该命令的时刻可能远晚于本次钩子触发，其间若有
+    并行会话抢先提问，会改写 token_rate 状态文件里"用户最后所处的会话"字段——模型执行时
+    走 Bash 工具、没有会话环境变量，回退到该字段就会把别的会话的数据当成本问结果
+    （2026-10-15 真机事故：已完成多轮对话的 ⚡ 行显示了另一并行会话的首字延迟/输出量）。
+    sid 为空（主机未提供会话环境变量）时退化为不带 --session 的旧形式。"""
+    session_flag = f' --session "{sid}"' if sid else ""
+    return [
+        "",
+        "【本轮统计指令】若你在本次回答中已经调用过工具,请严格按以下顺序收尾:",
+        f"1. 在开始写最终回复正文之前,运行一次:python3 \"{RATE_SCRIPT}\" --turn --current{session_flag}",
+        "2. 然后输出完整的最终回复正文(用户需要的全部内容),并把脚本输出的那一行原样放入 Markdown 引用块(新行行首加「> 」)附在这条回复的最末尾;不要改写数字、不要追加任何其他内容。",
+        "关键约束:统计行必须与完整回复正文在同一条消息里。绝不能让统计行(或只含统计行的短消息)单独成为你最后一条消息,也绝不能在写完全部回复正文之后再调用任何工具——客户端会折叠之前带工具调用的消息,用户将只能看到一行统计。",
+        "降级规则:若你已经写完回复正文才发现没运行统计脚本,就直接省略统计行结束回答,不要事后补调用工具。",
+        "注意:①上面【内部背景·勿展示】行是上一条提问的历史数据,仅供你了解背景,绝不展示给用户;②若脚本没有输出任何统计行,或本次回答你没有调用过任何工具,则不要显示任何统计行、也不要为此额外调用工具。",
+    ]
 
 
 def emit(ctx):
@@ -75,10 +84,10 @@ def rate_line_enabled():
 def main():
     read_stdin()
     enabled = rate_line_enabled()   # 先判开关：关闭时不再开库查"上轮行"（白查还占锁）
+    sid = os.environ.get("ZCODE_SESSION_ID") or os.environ.get("CLAUDE_SESSION_ID") or ""
     try:
         sys.path.insert(0, str(PLUGIN_ROOT))
         import token_rate
-        sid = os.environ.get("ZCODE_SESSION_ID") or os.environ.get("CLAUDE_SESSION_ID") or ""
         if sid:
             token_rate.write_session_state(sid, "prompt-submit")
         prev = None if not enabled else token_rate.format_line(token_rate.query_latest(sid or None))
@@ -95,7 +104,7 @@ def main():
             emit(head)   # 关：只留重启提醒（若有），不下达统计指令、不查库
             return
         emit(head + "【内部背景·勿展示】上一条回复:" + (prev or "暂无已完成的模型请求")
-             + "\n" + "\n".join(TURN_STATS_INSTRUCTION))
+             + "\n" + "\n".join(turn_stats_instruction(sid)))
     except Exception:
         emit("")
 

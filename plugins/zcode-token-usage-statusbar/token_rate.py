@@ -9,6 +9,9 @@
                                          同上，但本问尚无入库数据时输出为空（--current 守卫，
                                          绝不把上一轮数据当作本问返回）
   python3 token_rate.py --json           JSON 输出
+  python3 token_rate.py --session sess_xxx 显式指定会话（优先于下面两个环境变量；钩子下达
+                                         的统计指令带此参数，防止模型迟迟才跑该命令时，
+                                         并行会话抢先提问把"最近提问会话"状态覆盖掉）
   ZCODE_SESSION_ID=xxx python3 ...       只统计指定会话
   ZCODE_USAGE_DB=/path/db.sqlite         指定数据库路径（默认按用户主目录解析）
   ZUSAGE_RATE_STATE_FILE=/path           指定钩子状态文件（测试接缝）
@@ -392,9 +395,24 @@ def format_line(r):
     return " · ".join(parts)
 
 
+def _session_arg(argv):
+    """解析 --session <id> / --session=<id>；返回 None 表示命令行未显式指定。"""
+    for i, a in enumerate(argv):
+        if a == "--session":
+            return argv[i + 1] if i + 1 < len(argv) else None
+        if a.startswith("--session="):
+            return a[len("--session="):]
+    return None
+
+
 def main(argv):
     json_out = "--json" in argv
-    sid = os.environ.get("ZCODE_SESSION_ID") or os.environ.get("CLAUDE_SESSION_ID") or None
+    # 显式 --session 优先级最高：钩子下达统计指令时会带上本会话 id（见 prompt-submit.py），
+    # 模型执行该命令的时刻可能远晚于钩子触发，其间若有并行会话提问，会改写状态文件里
+    # "用户最后所处的会话"（fallback_session_id 的依据），env 变量在 Bash 工具里也不存在，
+    # 没有 --session 时会错把别的会话的数据当成本问结果（2026-10-15 真机事故）。
+    sid = (_session_arg(argv) or os.environ.get("ZCODE_SESSION_ID")
+           or os.environ.get("CLAUDE_SESSION_ID") or None)
     if "--turn" in argv:
         r = query_turn(sid, current="--current" in argv)
         if json_out:
