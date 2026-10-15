@@ -4,7 +4,7 @@ const assert = require("node:assert/strict");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { createUpdater, compareVersions, INTERVAL_MS, PLUGIN_ID } = require("../plugin-updater.cjs");
+const { createUpdater, compareVersions, INTERVAL_MS, PLUGIN_ID, listOverview } = require("../plugin-updater.cjs");
 
 function fixture(t, settings = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "zusage-update-test-"));
@@ -27,10 +27,14 @@ function fixture(t, settings = {}) {
     calls.push(args);
     if (error) throw new Error(error);
     if (args[0] === "marketplace") return { diagnostics: [] };
-    if (args[0] === "list") return {
-      installed: [{ id: PLUGIN_ID, version: record.version, enabled }],
-      available: missing ? [] : [{ id: PLUGIN_ID, version }], diagnostics: [],
-    };
+    if (args[0] === "list") {
+      // Real CLI shapes: plain list answers a top-level array; --available adds the object envelope.
+      if (!args.includes("--available")) return [{ id: PLUGIN_ID, version: record.version, enabled, diagnostics: [] }];
+      return {
+        installed: [{ id: PLUGIN_ID, version: record.version, enabled }],
+        available: missing ? [] : [{ id: PLUGIN_ID, version }], diagnostics: [],
+      };
+    }
     if (args[0] === "update") { record.version = version; writeRecord(); return { ok: true, version, diagnostics: [] }; }
     throw new Error("Unexpected CLI command");
   };
@@ -50,6 +54,21 @@ test("semantic versions compare numeric components, prereleases and build metada
   assert.equal(compareVersions("1.1.0-1", "1.1.0-beta"), -1);
   assert.equal(compareVersions("1.1.0+new", "1.1.0+old"), 0);
   assert.throws(() => compareVersions("", "1.0.0"));
+});
+test("list overview accepts both real CLI list shapes, keeps foreign diagnostics out, rejects unknown shapes", () => {
+  const entry = { id: PLUGIN_ID, version: "1.0.0", enabled: true, diagnostics: [] };
+  const plain = [{ id: "other@zusage-marketplace", version: "9.9.9", enabled: true,
+    diagnostics: [{ severity: "error", message: "foreign plugin broken" }] }, entry];
+  const fromPlain = listOverview(plain);
+  assert.equal(fromPlain.installed.length, 2); assert.deepEqual(fromPlain.available, []);
+  assert.deepEqual(fromPlain.diagnostics, []); // other plugins' errors are not ours to act on
+  assert.deepEqual(listOverview([{ id: PLUGIN_ID, diagnostics: [{ severity: "error", message: "ours" }] }]).diagnostics,
+    [{ severity: "error", message: "ours" }]);
+  const envelope = listOverview({ installed: [entry], available: [{ id: PLUGIN_ID, version: "1.1.0" }], diagnostics: [] });
+  assert.deepEqual(envelope.installed, [entry]); assert.deepEqual(envelope.available, [{ id: PLUGIN_ID, version: "1.1.0" }]);
+  assert.deepEqual(listOverview([]).installed, []); // real absence, not a shape problem
+  assert.deepEqual(listOverview({ available: [] }).installed, []); // envelope may omit installed
+  for (const junk of ["garbage", null, 7, { diagnostics: [] }, {}]) assert.throws(() => listOverview(junk), /无法识别/);
 });
 test("missing auto setting defaults to on and tick checks plus installs", async (t) => {
   const f = fixture(t); const before = fs.readFileSync(f.configFile, "utf8");
