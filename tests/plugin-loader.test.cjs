@@ -52,7 +52,10 @@ test("loader consumes only fixed update actions from trusted local windows and p
   assert.ok(poll); await poll.fn();
   assert.equal(acknowledgements.length, 1);
   const ack = acknowledgements[0];
-  assert.deepEqual(Array.from(ack.args.slice(0, 3)), ["/fixture/runtime/runtime_lock.py", "--ack-restart", "/fixture/runtime"]);
+  // loader 用 path.join(HERE, ...) 构造命令；Windows 上产出反斜杠是真实运行所需，
+  // 预期值须同用 path.join 保持平台一致。
+  assert.deepEqual(Array.from(ack.args.slice(0, 3)),
+    [path.join("/fixture/runtime", "runtime_lock.py"), "--ack-restart", "/fixture/runtime"]);
   const loaded = JSON.parse(ack.args[3]);
   assert.ok(loaded._loadedAt > 0);
   for (const name of ["inject-main.cjs", "plugin-updater.cjs", "overlay.js", "zusage.py"]) assert.match(loaded[name], /^[a-f0-9]{64}$/);

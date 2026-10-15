@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """使用临时微型 asar 验证目标迁移、客户端升级覆盖及配置安全。"""
 import contextlib
+import ctypes
 import importlib.util
 import io
 import hashlib
@@ -49,6 +50,12 @@ class PluginUpgradeTests(unittest.TestCase):
             (self.plugin / name).write_bytes((PLUGIN_ROOT / name).read_bytes())
         self.updater = types.SimpleNamespace(start_auto_update=mock.Mock())
         self.notice = load_module("upgrade_restart_notice", PLUGIN_ROOT / "restart_notice.py")
+        # Windows 上 SystemRoot 缺失会让 node 验收子进程启动即崩（ncrypto CSPRNG 断言），
+        # 清空环境时必须保留系统关键变量；同时固定子进程 IO 编码为 UTF-8——被清空后
+        # 子进程会回落到 GBK 控制台编码输出中文，父进程 UTF-8 解码在读线程崩溃（stdout 变 None）。
+        windows_essentials = {name: os.environ[name] for name in
+                              ("SystemRoot", "TEMP", "TMP") if os.name == "nt" and name in os.environ}
+        windows_essentials.update({"PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"})
         for patcher in (
                 mock.patch.object(self.installer, "PLUGIN_ROOT", self.plugin),
                 mock.patch.object(self.installer, "load_patch_install", return_value=self.pi),
@@ -60,7 +67,7 @@ class PluginUpgradeTests(unittest.TestCase):
                     "restart_notice": self.notice}),
                 mock.patch.dict(os.environ, {"ZUSAGE_PLUGIN_RUNTIME": str(self.runtime),
                     "HOME": str(self.root / "home"), "USERPROFILE": str(self.root / "home"),
-                    "PATH": os.environ.get("PATH", "")}, clear=True)):
+                    "PATH": os.environ.get("PATH", ""), **windows_essentials}, clear=True)):
             patcher.start()
             self.addCleanup(patcher.stop)
 
@@ -764,6 +771,26 @@ print(json.dumps(operations))
         self.assertIn("完全退出 ZCode", result["systemMessage"])
         self.updater.start_auto_update.assert_called_once_with(self.runtime, self.pi)
         self.pi.launch_monitor.assert_called_once()
+
+    def test_windows_candidates_cover_custom_drive_program_files(self):
+        # 回归：ZCode 装在 D:\Program Files\ZCode 等非默认位置时探测不到，
+        # 只能靠手工设 ZCODE_ASAR（1.4.2 Windows 实机问题）。盘符只枚举本地固定盘。
+        # setUp 把 asar_candidates 打成恒空以隔离真机探测，这里用保存的真实实现。
+        with mock.patch.object(self.installer.sys, "platform", "win32"), \
+                mock.patch.object(self.installer, "fixed_drives", return_value=["D", "E"]) as fixed:
+            candidates = self.real_candidates()
+        fixed.assert_called_once_with("DEFGHIJKLMNOPQRSTUVWXYZ")
+        self.assertIn(Path("D:/Program Files/ZCode/resources/app.asar"), candidates)
+        self.assertIn(Path("E:/ZCode/resources/app.asar"), candidates)
+        self.assertNotIn(Path("F:/ZCode/resources/app.asar"), candidates)
+
+    def test_fixed_drives_skip_network_removable_and_missing_drives(self):
+        # 离线映射网络盘一被访问就触发重连，光驱/读卡器可能无介质：只保留 DRIVE_FIXED(3)。
+        kinds = {"D:\\": 3, "E:\\": 4, "F:\\": 2}   # 固定/网络/可移动；其余 1=DRIVE_NO_ROOT_DIR
+        kernel32 = mock.Mock()
+        kernel32.GetDriveTypeW.side_effect = lambda root: kinds.get(root, 1)
+        with mock.patch.object(ctypes, "windll", mock.Mock(kernel32=kernel32), create=True):
+            self.assertEqual(self.installer.fixed_drives("DEFG"), ["D"])
 
 
 if __name__ == "__main__":

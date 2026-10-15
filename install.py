@@ -159,8 +159,8 @@ def asar_package_name(asar_path):
         if b"\x00" in data:   # 被 pickle 对齐补零 / 条目加密等异常，放弃识别
             return None
         return json.loads(data.decode("utf-8")).get("name")
-    except (OSError, ValueError, KeyError, struct.error):
-        return None
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, struct.error):
+        return None   # 畸形 asar（header/package.json 是合法 JSON 但非对象）按读不到处理，跳过该候选
 
 
 def is_zcode_app(asar_path):
@@ -174,15 +174,36 @@ def is_zcode_app(asar_path):
     return isinstance(name, str) and "zcode" in name.lower()
 
 
+def fixed_drives(letters):
+    """本地固定盘盘符：离线的映射网络盘一被访问就触发重连（可卡数秒），光驱/读卡器可能无介质。"""
+    try:
+        import ctypes
+        drive_type = ctypes.windll.kernel32.GetDriveTypeW
+    except (ImportError, AttributeError, OSError):
+        return []
+    return [letter for letter in letters if drive_type(f"{letter}:\\") == 3]   # DRIVE_FIXED
+
+
+def drive_candidates():
+    """自定义盘符安装（如 D:\\Program Files\\ZCode）：逐个本地固定盘枚举两种常见布局
+    （%ProgramFiles% 只跟系统盘走）。"""
+    return [f"{letter}:\\{folder}\\resources\\app.asar"
+            for letter in fixed_drives("CDEFGHIJKLMNOPQRSTUVWXYZ")
+            for folder in (r"Program Files\ZCode", "ZCode")]
+
+
 def find_asar():
     env = os.environ.get("ZCODE_ASAR")   # 非默认安装位置：设一次环境变量，永久免 --asar
     if env:
         p = expand(env)
         if p.is_file():
-            return p
-    for c in ASAR_CANDIDATES:
+            return p    # 用户显式指定的目标不校验身份（自己的选择）
+    drives = drive_candidates() if sys.platform == "win32" else []
+    for c in dict.fromkeys(ASAR_CANDIDATES + drives):
         p = expand(c)
-        if p.is_file():
+        # 枚举候选必须过 is_zcode_app：<盘>:\Program Files\ZCode 等路径名不是身份依据，
+        # 命中其它 Electron 应用会注入错目标：真 ZCode 永不生效。
+        if p.is_file() and is_zcode_app(p):
             return p
     if sys.platform == "win32":
         # 兜底：扫 %LOCALAPPDATA%\Programs 一层子目录

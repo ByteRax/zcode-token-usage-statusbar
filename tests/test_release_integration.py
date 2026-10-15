@@ -82,7 +82,16 @@ class ReleaseIntegrationTests(unittest.TestCase):
         self.output = self.base / "unpacked"
         self.calls = []
         self.notes_file = self.base / "release-notes.md"
-        self.notes_file.write_text("## 新增\n\n- 发布可独立安装的插件包，并校验下载完整性。\n", encoding="utf-8")
+        # 字节落盘：Windows 文本模式会把 \n 写成 \r\n，破坏与发布计划的逐字比较。
+        self.notes_file.write_bytes(
+            "## 新增\n\n- 发布可独立安装的插件包，并校验下载完整性。\n".encode("utf-8"))
+
+    @staticmethod
+    def blob_oid(content):
+        # 模拟 git 的 text=auto 清洗（CRLF→LF 归一化）后的 blob OID：preflight 比较
+        # hash-object（工作区）与 rev-parse HEAD:path（已提交 blob），两端都用它。
+        cleaned = content.replace(b"\r\n", b"\n")
+        return hashlib.sha1(b"blob %d\x00%s" % (len(cleaned), cleaned)).hexdigest()
 
     def stub_run(self, root, *args, **kwargs):
         self.assertEqual(Path(root).resolve(), self.root)
@@ -95,8 +104,12 @@ class ReleaseIntegrationTests(unittest.TestCase):
             return (HEAD + "\n").encode()
         if args == ("git", "status", "--porcelain", "--untracked-files=all", "--", *self.tool.RELEVANT):
             return b""
-        if len(args) == 3 and args[:2] == ("git", "show") and args[2].startswith("HEAD:"):
-            return self.source_bytes[args[2][len("HEAD:"):]]
+        if len(args) == 4 and args[:3] == ("git", "hash-object", "--"):
+            return (self.blob_oid((self.root / args[3]).read_bytes()) + "\n").encode()
+        if len(args) == 3 and args[:2] == ("git", "rev-parse") and args[2].startswith("HEAD:"):
+            return (self.blob_oid(self.source_bytes[args[2][len("HEAD:"):]]) + "\n").encode()
+        if len(args) == 4 and args[:3] == ("git", "cat-file", "blob") and args[3].startswith("HEAD:"):
+            return self.source_bytes[args[3][len("HEAD:"):]]
         if args == ("git", "remote", "-v"):
             return ("origin https://github.com/" + REPOSITORY + ".git (fetch)\n").encode()
         if args == ("gh", "auth", "status", "--hostname", "github.com"):

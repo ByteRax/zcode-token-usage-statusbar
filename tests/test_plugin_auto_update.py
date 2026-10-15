@@ -254,6 +254,8 @@ class PluginAutoUpdateTests(unittest.TestCase):
                 self.assertIn("可执行文件", errors)
                 self.popen.assert_not_called()
 
+    @unittest.skipIf(os.name == "nt",
+                     "Windows 的 chmod 不区分可执行位，os.access(X_OK) 恒真；仅 POSIX 有此拒绝路径")
     def test_posix_non_executable_file_is_rejected(self):
         self.executable.chmod(0o644)
         result, errors = self.launch()

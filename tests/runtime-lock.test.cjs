@@ -94,10 +94,23 @@ test("orphaned official installer keeps recovery waiting until actual child exit
   const persisted = JSON.parse(fs.readFileSync(path.join(f.runtime, "plugin-update.json")));
   assert.equal(persisted.pendingPid, pid); assert.equal(persisted.pendingVersion, "1.0.0");
   parent.kill("SIGKILL"); await exited(parent);
+  const alive = () => { try { process.kill(pid, 0); return true; } catch (e) { return e.code !== "ESRCH"; } };
   let calls = 0, syncs = 0;
   const updater = createUpdater({ runtime: f.runtime, home, resourcesPath: f.runtime, executable: process.execPath,
     cli: async () => { calls++; throw new Error("must not dispatch"); }, sync: async () => { syncs++; return {}; } });
-  await updater.tick(); assert.equal(updater.status().phase, "updating"); assert.equal(updater.status().pendingSync, true);
+  if (process.platform === "win32") {
+    // Windows 上非 detached 子进程随父进程的 libuv Job 一起被杀（异步传播，先等它真正退出），
+    // 恢复逻辑据此立即继续是正确行为；“等真孤儿退出”只有 POSIX 语义可验证。
+    for (let attempt = 0; attempt < 200 && alive(); attempt++) await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(alive(), false);
+    await updater.tick();
+    assert.equal(updater.status().phase, "updated"); assert.equal(updater.status().pendingSync, false);
+    assert.equal(calls, 0); assert.equal(syncs, 1);
+    return;
+  }
+  assert.equal(alive(), true);
+  await updater.tick();
+  assert.equal(updater.status().phase, "updating"); assert.equal(updater.status().pendingSync, true);
   assert.equal(calls, 0); assert.equal(syncs, 0);
   fs.writeFileSync(gate, "release");
   for (let attempt = 0; attempt < 200; attempt++) {

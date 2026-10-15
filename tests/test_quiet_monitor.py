@@ -2,10 +2,12 @@
 import importlib.util
 import io
 import contextlib
+import ctypes
 import os
 from pathlib import Path
 import sys
 import tempfile
+import types
 import unittest
 from unittest import mock
 
@@ -56,7 +58,13 @@ class QuietMonitorTests(unittest.TestCase):
         kwargs = spawn.call_args.kwargs
         self.assertEqual(kwargs["stdout"], self.patch.subprocess.DEVNULL)
         self.assertEqual(kwargs["stdin"], self.patch.subprocess.DEVNULL)
-        self.assertTrue(kwargs["start_new_session"])
+        if os.name == "nt":
+            # Windows 无窗口收尾：CREATE_NO_WINDOW + 尝试脱离父进程 Job（监控不能随
+            # agent 会话清理被杀）；具体位由下方 Windows 用例逐位断言。
+            self.assertTrue(kwargs["creationflags"])
+            self.assertNotIn("start_new_session", kwargs)
+        else:
+            self.assertTrue(kwargs["start_new_session"])
 
     def test_explicit_no_monitor_still_disables_interactive_monitor(self):
         with mock.patch.dict(os.environ, {"ZUSAGE_NO_MONITOR": "1", "ZUSAGE_MONITOR_QUIET": ""}), \
@@ -77,7 +85,8 @@ class QuietMonitorTests(unittest.TestCase):
                 mock.patch.object(self.monitor.time, "sleep") as sleep, \
                 mock.patch.object(self.patch, "self_check", return_value=True) as check:
             self.monitor.main()
-        sleep.assert_called_once()
+        # 等待路径平台分歧（POSIX 睡眠 / Windows 句柄不可得立即返回），不断言 sleep 次数；
+        # sleep 仍须 mock，避免 POSIX 上真睡一个轮询周期。
         check.assert_called_once_with(self.tmp, expect=True)
         self.assertEqual(self.asar.read_bytes(), b"verified package")
         self.assertFalse(self.tmp.exists())
@@ -92,13 +101,13 @@ class QuietMonitorTests(unittest.TestCase):
 
     def test_client_upgrade_while_waiting_cancels_old_package_replacement(self):
         self.pending(b"older patched version")
-        def upgrade(_):
+        def upgrade(*_args):
             self.asar.write_bytes(b"new official version")
             os.utime(self.asar, ns=(1, 1))
         with mock.patch.dict(sys.modules, {"patch_install": self.patch}), \
                 mock.patch.object(self.monitor, "zcode_pids", return_value={"1"}), \
-                mock.patch.object(self.monitor.time, "sleep", side_effect=upgrade), \
-                mock.patch.object(self.monitor, "finalize_tmp") as finalize:
+                mock.patch.object(self.monitor, "wait_any_exit", side_effect=upgrade), \
+                mock.patch.object(self.patch, "finalize_tmp") as finalize:
             self.monitor.main()
         finalize.assert_not_called()
         self.assertEqual(self.asar.read_bytes(), b"new official version")
@@ -153,7 +162,8 @@ class QuietMonitorTests(unittest.TestCase):
                 mock.patch.object(self.monitor.time, "sleep") as sleep, \
                 mock.patch.object(self.patch, "source_fingerprint") as hashes:
             self.monitor.main()
-        self.assertEqual(sleep.call_count, 2)
+        # 等待只读 stat（不重 hash 大包），一天期限后停止重试；等待路径的平台分歧
+        # （POSIX 睡眠 / Windows 句柄不可得立即返回）不影响这两个核心断言。
         hashes.assert_not_called()
 
     def test_changed_package_cancels_after_oserror_without_retry(self):
@@ -171,13 +181,29 @@ class QuietMonitorTests(unittest.TestCase):
         self.assertEqual(self.asar.read_bytes(), b"official version")
 
     def test_windows_quiet_launch_uses_no_window_flag(self):
+        flags = {"CREATE_NO_WINDOW": 0x08000000, "CREATE_BREAKAWAY_FROM_JOB": 0x01000000}
         with mock.patch.dict(os.environ, {"ZUSAGE_NO_MONITOR": "1", "ZUSAGE_MONITOR_QUIET": "1"}), \
                 mock.patch.object(self.patch, "IS_WIN", True), \
-                mock.patch.object(self.patch.subprocess, "CREATE_NO_WINDOW", 0x08000000, create=True), \
+                mock.patch.multiple(self.patch.subprocess, create=True, **flags), \
                 mock.patch.object(self.patch.subprocess, "Popen") as spawn:
             self.patch.launch_monitor(0)
-        self.assertEqual(spawn.call_args.kwargs["creationflags"], 0x08000000)
-        self.assertFalse(spawn.call_args.kwargs["start_new_session"])
+        # 无窗口 + 优先尝试脱离 Job（会话清理不连带杀掉收尾监控）
+        self.assertEqual(spawn.call_count, 1)
+        self.assertEqual(spawn.call_args.kwargs["creationflags"], 0x08000000 | 0x01000000)
+        self.assertFalse(spawn.call_args.kwargs.get("start_new_session"))
+
+    def test_windows_breakaway_denied_falls_back_to_plain_flags(self):
+        flags = {"CREATE_NO_WINDOW": 0x08000000, "CREATE_BREAKAWAY_FROM_JOB": 0x01000000}
+        with mock.patch.dict(os.environ, {"ZUSAGE_NO_MONITOR": "1", "ZUSAGE_MONITOR_QUIET": "1"}), \
+                mock.patch.object(self.patch, "IS_WIN", True), \
+                mock.patch.multiple(self.patch.subprocess, create=True, **flags), \
+                mock.patch.object(self.patch.subprocess, "Popen",
+                                  side_effect=[OSError("job object does not allow breakaway"),
+                                               mock.DEFAULT]) as spawn:
+            self.patch.launch_monitor(0)
+        self.assertEqual(spawn.call_count, 2)
+        self.assertEqual(spawn.call_args_list[0].kwargs["creationflags"], 0x08000000 | 0x01000000)
+        self.assertEqual(spawn.call_args_list[1].kwargs["creationflags"], 0x08000000)
 
     def test_oserror_retry_stops_at_one_day_deadline(self):
         self.pending()
@@ -284,6 +310,45 @@ class QuietMonitorTests(unittest.TestCase):
                 self.monitor.main()
         check.assert_called_once_with(self.tmp, expect=False)
         self.assertEqual(self.asar.read_bytes(), b"removed package")
+
+
+class WaitAnyExitTests(unittest.TestCase):
+    """Windows 句柄等待分支：用假 kernel32 在任意平台覆盖分支逻辑。"""
+
+    def setUp(self):
+        with mock.patch.object(sys, "argv", ["install_monitor.py", "0", "app.asar", "."]):
+            self.monitor = module("wait_any_exit_test", ROOT / "install_monitor.py")
+
+    def wait(self, opened, error):
+        kernel32 = mock.Mock()
+        kernel32.OpenProcess.side_effect = lambda access, inherit, pid: opened.get(pid, 0)
+        with mock.patch.object(self.monitor, "os", types.SimpleNamespace(name="nt")), \
+                mock.patch.object(ctypes, "WinDLL", create=True, return_value=kernel32), \
+                mock.patch.object(ctypes, "get_last_error", create=True, return_value=error), \
+                mock.patch.object(self.monitor.time, "sleep") as sleep:
+            self.monitor.wait_any_exit(["11", "12"], 10)
+        return kernel32, sleep
+
+    def test_waits_on_every_handle_and_closes_them(self):
+        kernel32, sleep = self.wait({11: 101, 12: 102}, error=0)
+        count, handles, wait_all, timeout = kernel32.WaitForMultipleObjects.call_args.args
+        self.assertEqual((count, list(handles), wait_all, timeout), (2, [101, 102], False, 10000))
+        self.assertEqual([c.args for c in kernel32.CloseHandle.call_args_list], [(101,), (102,)])
+        sleep.assert_not_called()
+
+    def test_pid_gone_since_sampling_returns_immediately(self):
+        # 采集后已退出（ERROR_INVALID_PARAMETER）：「任一退出」已发生，不能再等或睡，
+        # 否则正好错过「退出→立即重启」空档。
+        kernel32, sleep = self.wait({11: 101}, error=87)
+        kernel32.WaitForMultipleObjects.assert_not_called()
+        sleep.assert_not_called()
+        kernel32.CloseHandle.assert_called_once_with(101)
+
+    def test_inaccessible_processes_sleep_one_full_interval(self):
+        # 进程都在但全部无权等待（ERROR_ACCESS_DENIED）：按轮询间隔睡，不忙转。
+        kernel32, sleep = self.wait({}, error=5)
+        kernel32.WaitForMultipleObjects.assert_not_called()
+        sleep.assert_called_once_with(10)
 
 
 if __name__ == "__main__":

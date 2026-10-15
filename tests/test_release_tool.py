@@ -99,8 +99,10 @@ class ReleaseToolTests(unittest.TestCase):
             path = self.root / name
             path.parent.mkdir(parents=True, exist_ok=True)
             source = ROOT / name
-            path.write_bytes(source.read_bytes() if source.is_file() else b"// fixture source\n")
-        helper = (ROOT / "release_unpack.py").read_bytes()
+            # 归一成 LF：夹具不随开发者检出的行尾变化（Windows 旧检出可能仍是 CRLF）。
+            content = source.read_bytes().replace(b"\r\n", b"\n") if source.is_file() else b"// fixture source\n"
+            path.write_bytes(content)
+        helper = (ROOT / "release_unpack.py").read_bytes().replace(b"\r\n", b"\n")
         (self.root / tool.PREFIX / "release_unpack.py").write_bytes(helper)
         manifest = {"name": tool.PLUGIN, "version": "1.2.3", "commands": "commands", "skills": "skills"}
         for name in (".zcode-plugin/plugin.json", ".claude-plugin/plugin.json"):
@@ -127,6 +129,19 @@ class ReleaseToolTests(unittest.TestCase):
         gh = bin_dir / "gh"
         gh.write_text(GH_STUB)
         gh.chmod(0o755)
+        if os.name == "nt":
+            # Windows 的 CreateProcess 解析不了无扩展名的 shebang 脚本（gh stub）：
+            # 垫片把 gh 命令改派给本进程的 Python 解释器执行 stub。仅测试进程内生效，
+            # 真机上 gh.exe 由 GitHub CLI 官方安装，不受影响。
+            real_run = tool.run
+
+            def run_via_python(root, *args, **kwargs):
+                if args and args[0] == "gh":
+                    args = (sys.executable, str(gh), *args[1:])
+                return real_run(root, *args, **kwargs)
+
+            tool.run = run_via_python
+            self.addCleanup(setattr, tool, "run", real_run)
         self.env = mock.patch.dict(os.environ, {"PATH": str(bin_dir) + os.pathsep + os.environ["PATH"],
                                   "STUB_ROOT": str(self.base), "STUB_MODE": "ok"})
         self.env.start()
@@ -422,7 +437,7 @@ class ReleaseToolTests(unittest.TestCase):
                       "[v1.2.3](https://example.invalid) 修复资产校验。",
                       "[v1.2.3](https://example.invalid)\n\n- 修复资产校验。\n"):
             with self.subTest(notes=notes):
-                self.notes_file.write_text(notes, encoding="utf-8")
+                self.notes_file.write_bytes(notes.encode("utf-8"))  # 字节落盘：Windows 文本模式会把 \n 转 \r\n
                 plan = tool.publish(self.root, REPO, self.asset, self.manifest, notes_file=self.notes_file)
                 self.assertEqual(plan["notes"], notes)
         self.assert_no_publish()
@@ -451,7 +466,7 @@ class ReleaseToolTests(unittest.TestCase):
                       "[v1.2.3](https://example.invalid/a(b(c))) (修复资产校验。)",
                       '[v1.2.3](<https://example.invalid/a(b(c))> "Release (notes")\n\n- 修复资产校验。\n'):
             with self.subTest(notes=notes):
-                self.notes_file.write_text(notes, encoding="utf-8")
+                self.notes_file.write_bytes(notes.encode("utf-8"))  # 字节落盘：Windows 文本模式会把 \n 转 \r\n
                 plan = tool.publish(self.root, REPO, self.asset, self.manifest, notes_file=self.notes_file)
                 self.assertEqual(plan["notes"], notes)
         self.assert_no_publish()
@@ -718,6 +733,20 @@ print("bounded unclosed notes completed")
         path.write_text("uncommitted source\n")
         built = tool.build(self.root, REPO, self.base / "dirty-out")
         with self.assertRaisesRegex(tool.ReleaseError, "dirty or untracked"):
+            tool.publish(self.root, REPO, Path(built["zip"]), Path(built["manifest"]), True, REPO + "/v1.2.3",
+                         notes_file=self.notes_file)
+        self.assertEqual(self.calls(), [])
+
+    def test_crlf_checkout_is_rejected_with_line_ending_hint(self):
+        # Windows 旧检出（autocrlf）：git 视为干净、清洗后 OID 等于 HEAD，但发布包会装进
+        # CRLF 字节，同一 tag 跨平台产物不同。须逐字节拦下并提示重新检出。
+        self.git("config", "core.autocrlf", "true")
+        self.git("rm", "--cached", "-r", "-q", ".")
+        self.git("reset", "--quiet", "--hard")
+        self.assertIn(b"\r\n", (self.root / tool.PREFIX / "token_rate.py").read_bytes())
+        self.assertEqual(self.git("status", "--porcelain"), "")
+        built = tool.build(self.root, REPO, self.base / "crlf-out")
+        with self.assertRaisesRegex(tool.ReleaseError, "line endings differ from HEAD"):
             tool.publish(self.root, REPO, Path(built["zip"]), Path(built["manifest"]), True, REPO + "/v1.2.3",
                          notes_file=self.notes_file)
         self.assertEqual(self.calls(), [])

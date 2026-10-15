@@ -81,6 +81,54 @@ def zcode_pids():
     return {t.strip() for t in r.stdout.decode().split() if t.strip()}
 
 
+def wait_any_exit(pids, timeout_s):
+    """阻塞到任一 ZCode 进程退出或超时。Windows 用进程句柄事件驱动等待，消灭固定
+    轮询间隔可能错过的「退出→立即重启」空档（等错过后监控只会看到新进程，永远收不了尾）；
+    采集后已退出的 PID 视为退出已发生，立即返回；句柄不可得（权限/句柄数超限/非 Windows）
+    时退化为普通睡眠。"""
+    if os.name != "nt" or not pids:
+        time.sleep(timeout_s)
+        return
+    import ctypes
+    from ctypes import wintypes
+    SYNCHRONIZE = 0x00100000
+    ERROR_INVALID_PARAMETER = 87   # OpenProcess：该 PID 已没有进程
+    MAX_WAIT = 60   # WaitForMultipleObjects 上限 64，留余量；进程数更多时退化为睡眠
+    try:
+        pids = [int(pid) for pid in pids]
+    except ValueError:
+        time.sleep(timeout_s)
+        return
+    if len(pids) > MAX_WAIT:
+        time.sleep(timeout_s)
+        return
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.WaitForMultipleObjects.argtypes = [
+        wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE), wintypes.BOOL, wintypes.DWORD]
+    kernel32.WaitForMultipleObjects.restype = wintypes.DWORD
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    handles = []
+    try:
+        for pid in pids:
+            handle = kernel32.OpenProcess(SYNCHRONIZE, False, pid)
+            if handle:
+                handles.append(handle)
+            elif ctypes.get_last_error() == ERROR_INVALID_PARAMETER:
+                return   # 采集后已退出：「任一退出」已经发生，立即复查
+        if not handles:
+            # 进程都在但全部无权等待（如其它用户会话的 ZCode）：按轮询间隔睡，
+            # 立即返回会让监控忙转。
+            time.sleep(timeout_s)
+            return
+        array = (wintypes.HANDLE * len(handles))(*handles)
+        kernel32.WaitForMultipleObjects(len(handles), array, False, int(timeout_s * 1000))
+    finally:
+        for handle in handles:
+            kernel32.CloseHandle(handle)
+
+
 def diag_fresh(since):
     """返回安装时刻之后更新过的 diag 文件名（注入链路已加载的证据），没有则 None。"""
     for f in sorted(RUNTIME_DIR.glob("diag-*.json")):
@@ -119,8 +167,12 @@ def quiet_finalize():
     while TMP.exists() and time.monotonic() < deadline:
         try:
             pi.pending_tmp(operation=None)  # 等待/重试只读 stat，不每 10 秒 hash 大包。
-            if zcode_pids() == set() and finalize_tmp(verified=verified):
+            pids = zcode_pids()
+            if pids == set() and finalize_tmp(verified=verified):
                 return
+            if pids:   # 客户端在跑：事件驱动等任一进程退出，立即复查（见 wait_any_exit）
+                wait_any_exit(pids, POLL)
+                continue
         except pi.PendingTmpError:
             return  # 完整性/来源失效立刻取消；不删旧包，更不能回滚客户端新版。
         except OSError:
@@ -242,7 +294,10 @@ def main():
         if done:
             time.sleep(BYE)
             return
-        time.sleep(POLL)
+        if pending is not None and pids:
+            wait_any_exit(pids, POLL)   # 有待替换且客户端在跑：任一进程退出立即醒来复查
+        else:
+            time.sleep(POLL)
 
 
 if __name__ == "__main__":

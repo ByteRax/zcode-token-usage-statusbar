@@ -31,6 +31,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -78,6 +79,16 @@ def load_runtime_config(runtime):
     return config if isinstance(config, dict) else None
 
 
+def fixed_drives(letters):
+    """本地固定盘盘符：离线的映射网络盘一被访问就触发重连（可卡数秒），光驱/读卡器可能无介质。"""
+    try:
+        import ctypes
+        drive_type = ctypes.windll.kernel32.GetDriveTypeW
+    except (ImportError, AttributeError, OSError):
+        return []
+    return [letter for letter in letters if drive_type(f"{letter}:\\") == 3]   # DRIVE_FIXED
+
+
 def asar_candidates():
     """仅枚举当前平台常见位置；候选仍须通过包身份校验。"""
     if sys.platform == "darwin":
@@ -92,6 +103,11 @@ def asar_candidates():
                              ("LOCALAPPDATA", "ZCode"), ("ProgramFiles", "ZCode")):
         if os.environ.get(variable):
             candidates.append(Path(os.environ[variable]) / suffix / "resources/app.asar")
+    # 自定义盘符安装（如 D:\Program Files\ZCode）：逐个本地固定盘枚举两种常见布局；
+    # %ProgramFiles% 只跟系统盘走。候选仍须通过 is_zcode_asar 包身份校验。
+    candidates.extend(Path(f"{letter}:/{folder}/resources/app.asar")
+                      for letter in fixed_drives("DEFGHIJKLMNOPQRSTUVWXYZ")
+                      for folder in ("Program Files/ZCode", "ZCode"))
     if os.environ.get("LOCALAPPDATA"):
         programs = Path(os.environ["LOCALAPPDATA"]) / "Programs"
         candidates.extend(sorted(programs.glob("*/resources/app.asar")))
@@ -198,6 +214,43 @@ def _atomic_write(dst, data, src=None):
             pass
 
 
+VERIFY_TIMEOUT = 10   # 单次验收器运行上限（秒）
+
+
+def _run_verifier(command, env):
+    """运行一次验收器，输出按 UTF-8 解码（Node 恒写 UTF-8，系统区域编码会把中文路径解错）。
+    超时先结束整棵进程树再上报 TimeoutExpired：subprocess.run 只杀直接子进程，且在
+    Windows 上之后还会不限时地读完输出管道，子孙若继承了管道就永远等不到 EOF。
+    收尾总耗时有界（taskkill 3 秒、回收 2 秒），叠加后仍在更新器 30 秒时限内。"""
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
+                               start_new_session=os.name != "nt")
+    try:
+        stdout, stderr = process.communicate(timeout=VERIFY_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        if os.name == "nt":
+            try:
+                subprocess.run(["taskkill", "/T", "/F", "/PID", str(process.pid)],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
+            except (OSError, subprocess.SubprocessError):
+                pass
+            process.kill()
+            try:
+                process.communicate(timeout=2)   # 读线程收尾；整棵树没结束干净时放弃，不能无限等
+            except subprocess.TimeoutExpired:
+                pass
+        else:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)   # 新会话即新进程组：连同子孙一起结束
+            except OSError:
+                process.kill()
+            process.stdout.close()   # POSIX 的 communicate 不起读线程，直接关管道即可
+            process.stderr.close()
+        process.wait()
+        raise
+    return subprocess.CompletedProcess(command, process.returncode, stdout.decode("utf-8", "replace"),
+                                       stderr.decode("utf-8", "replace"))
+
+
 @contextlib.contextmanager
 def _sync_verifier(runtime):
     pending_path = runtime / "plugin-update.json"
@@ -212,7 +265,8 @@ def _sync_verifier(runtime):
     base = runtime if (runtime / "plugin-updater.cjs").is_file() else PLUGIN_ROOT
     if active and base != runtime:
         raise ValueError("待恢复安装缺少可信运行时验收器，停止同步")
-    executable = shutil.which("node")
+    node = shutil.which("node")
+    executable = node
     config = load_runtime_config(runtime) or {}
     asar = os.environ.get("ZCODE_ASAR") or config.get("asar_path")
     if asar:
@@ -220,7 +274,10 @@ def _sync_verifier(runtime):
         candidates = ([target.parent.parent / "MacOS" / "ZCode"] if sys.platform == "darwin"
                       else [target.parent.parent / ("ZCode.exe" if sys.platform == "win32" else "zcode")])
         executable = next((str(item) for item in candidates if item.is_file()), executable)
-    if not executable:
+    # asar 旁的同名可执行文件可能是外部应用/损坏文件（文件名不是身份依据）：
+    # 启动失败（OSError/WinError 216）或启动后挂起超时，都回退 PATH 里的 node 再试。
+    launch_candidates = list(dict.fromkeys(e for e in (executable, node) if e))
+    if not launch_candidates:
         raise ValueError("未找到运行时验收所需 Node/ZCode 可执行文件")
     names = ("plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs")
     with tempfile.TemporaryDirectory(prefix="zusage-sync-verifier-") as directory:
@@ -306,10 +363,19 @@ try {
 } catch (error) { console.error("[zusage-plugin] 同步验收失败:", error.message); process.exitCode = 1; }
 '''
         def verify():
-            result = subprocess.run([executable, "-e", verifier_script, str(snapshot),
-                                     str(runtime), str(PLUGIN_ROOT)],
-                                    capture_output=True, text=True, timeout=10,
-                                    env=dict(os.environ, ELECTRON_RUN_AS_NODE="1"))
+            result = None
+            for candidate in list(launch_candidates):
+                try:
+                    result = _run_verifier([candidate, "-e", verifier_script, str(snapshot),
+                                            str(runtime), str(PLUGIN_ROOT)],
+                                           env=dict(os.environ, ELECTRON_RUN_AS_NODE="1"))
+                    break
+                except (OSError, subprocess.TimeoutExpired):
+                    # 无法启动（非 PE/格式错误）或挂起不退出：本次同步不再试它，
+                    # 否则每次复核都要再等满一个超时，叠加起来超过调用方的时限。
+                    launch_candidates.remove(candidate)
+            if result is None:
+                raise ValueError("运行时验收所需可执行文件均无法启动或超时")
             if result.returncode:
                 raise ValueError("运行时同步验收失败: " + result.stderr.strip()[:1000])
             data = json.loads(result.stdout)

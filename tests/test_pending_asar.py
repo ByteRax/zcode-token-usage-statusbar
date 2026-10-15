@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import struct
 import stat
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -355,6 +356,85 @@ class PendingAsarTests(unittest.TestCase):
         with mock.patch.object(self.pi, "install", return_value=True) as install:
             self.pi.main(["install", "--finalize"])
         install.assert_called_once_with(finalize=True)
+
+    def test_stamp_fields_platform_contract(self):
+        # Windows 的 ctime 是创建时间（无防篡改价值），且杀软过滤驱动下路径 lstat 与
+        # 句柄 fstat 恒不一致，必须剔除；POSIX 的 ctime 是 inode 变更时间，保留。
+        fields = self.pi._STAMP_FIELDS
+        if sys.platform == "win32":
+            self.assertNotIn("ctime_ns", fields)
+        else:
+            self.assertIn("ctime_ns", fields)
+        meta = self.prepare()
+        for fingerprint in (meta["source"], meta["tmp"]):
+            self.assertEqual({key for key in fingerprint if key != "sha256"}, set(fields))
+
+    def legacy_sidecar(self, **changes):
+        """改写成升级前的 sidecar：旧版全平台都记录 ctime_ns（Windows 现已不比对）。"""
+        meta = json.loads(self.pi.TMP_META.read_text(encoding="utf-8"))
+        for field in ("source", "tmp"):
+            meta[field]["ctime_ns"] = 1
+        meta.update(changes)
+        self.pi.TMP_META.write_text(json.dumps(meta), encoding="utf-8")
+
+    def without_ctime(self):
+        """按 Windows 字段集运行：Windows 上即实际值，POSIX 上模拟升级后的 Windows。"""
+        fields = tuple(key for key in self.pi._STAMP_FIELDS if key != "ctime_ns")
+        return mock.patch.object(self.pi, "_STAMP_FIELDS", fields)
+
+    def test_legacy_sidecar_with_ctime_is_finalized_after_upgrade(self):
+        # 回归：Windows 剔除 ctime_ns 后，旧 sidecar 多出的字段曾让 hash 复核恒报
+        # "pending source/TMP hash mismatch"，收尾被取消。
+        self.prepare()
+        self.legacy_sidecar()
+        with self.without_ctime():
+            self.pi.pending_tmp("install", verify_hash=True)
+            self.assertTrue(self.pi.install(finalize=True))
+        self.assertTrue(self.pi.self_check(self.asar))
+        self.assertFalse(self.pi.TMP.exists())
+
+    def test_legacy_sidecar_still_rejects_hash_mismatch(self):
+        # 只忽略旧版多出的字段：sha256 与当前字段仍逐一比对。
+        meta = self.prepare()
+        self.legacy_sidecar(tmp=dict(meta["tmp"], ctime_ns=1, sha256="0" * 64))
+        with self.without_ctime(), \
+                self.assertRaisesRegex(self.pi.PendingTmpError, "hash mismatch"):
+            self.pi.pending_tmp("install", verify_hash=True)
+        self.assertTrue(self.pi.TMP.exists())
+
+    def test_reinstall_reclaims_legacy_pending_pair_and_publication_journal(self):
+        # 回归：旧 sidecar 曾让重装报 "pending TMP no longer belongs to its sidecar"；
+        # 中断发布留下的旧版 journal（previous_tmp 带 ctime_ns）同理。
+        for journal in (False, True):
+            with self.subTest(journal=journal):
+                self.pi.TMP.unlink(missing_ok=True)
+                self.pi.TMP_META.unlink(missing_ok=True)
+                make_asar(self.asar)
+                meta = self.prepare()
+                if journal:
+                    self.legacy_sidecar(operation="cancelled", publishing=True,
+                                        tmp=dict(meta["tmp"], sha256="0" * 64),
+                                        previous_tmp=dict(meta["tmp"], ctime_ns=1))
+                else:
+                    self.legacy_sidecar()
+                with self.without_ctime():
+                    fresh = self.prepare()
+                self.assertNotIn("ctime_ns", fresh["tmp"])
+
+    def test_same_fingerprint_treats_missing_fields_as_mismatch(self):
+        current = {"size": 1, "sha256": "a"}
+        self.assertTrue(self.pi._same_fingerprint(current, dict(current, ctime_ns=5)))
+        self.assertFalse(self.pi._same_fingerprint(current, {"sha256": "a"}))
+        self.assertFalse(self.pi._same_fingerprint(current, None))
+
+    @unittest.skipIf(sys.platform != "win32", "Windows 过滤驱动 ctime 怪癖回归")
+    def test_windows_path_and_handle_stamps_agree_on_fresh_files(self):
+        # 曾在 NTFS+杀软环境必现：刚写完的文件路径 stat 与句柄 fstat 的 ctime_ns 不一致，
+        # source_fingerprint 直接抛 "file changed before hashing"，安装全流程不可用。
+        for _ in range(3):
+            make_asar(self.asar)
+            self.assertEqual(self.pi.source_fingerprint(self.asar),
+                             self.pi.source_fingerprint(self.asar))
 
 
 if __name__ == "__main__":
