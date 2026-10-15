@@ -83,7 +83,12 @@ function fixture(t, settings = {}, customStorage = false) {
     if (args[0] === "list") {
       assert.deepEqual(args, ["list"]);
       if (f.afterList) await f.afterList(++listCount);
-      return { installed: f.uninstalled ? [] : [{ id: PLUGIN_ID, version: record.version, scope: "user", enabled: f.enabled }], diagnostics: [] };
+      // Real plain `plugins list --json`: top-level array, no scope field, per-entry
+      // diagnostics. A foreign broken plugin must not block our install.
+      if (f.uninstalled) return [];
+      return [{ id: "other@" + MARKET, version: "9.9.9", enabled: true,
+        diagnostics: [{ severity: "error", message: "foreign plugin broken" }] },
+        { id: PLUGIN_ID, version: record.version, enabled: f.enabled, diagnostics: [] }];
     }
     if (args[0] === "marketplace") {
       assert.deepEqual(args, ["marketplace", "update", MARKET]);
