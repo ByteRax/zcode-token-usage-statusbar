@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """悬浮状态条的插件侧安装器（CLI + SessionStart hook 共用）。
 
-CLI 用法（/zcode-token-usage-statusbar:install-overlay 与 :uninstall-overlay 背后就是它）：
+CLI 用法（/install-overlay 与 /uninstall-overlay 背后就是它）：
   python3 overlay_install.py sync      # 仅同步运行时文件，stdout 输出 JSON（不读取 asar）
   python3 overlay_install.py install   # 同步运行时文件 + 写入 asar 注入行（幂等）
   python3 overlay_install.py remove    # 剥离注入行，并写豁免标记（hook 不再提示/自动安装）
@@ -615,8 +615,8 @@ def run_hook():
             else:
                 from restart_notice import PREFIX
                 _nudge(out, (PREFIX + "用量状态条自动安装未完成。"
-                             "请运行 /zcode-token-usage-statusbar:install-overlay 重试；"
-                             "不需要请运行 /zcode-token-usage-statusbar:uninstall-overlay，之后不再提示。"
+                             "请运行 /install-overlay 重试；"
+                             "不需要请运行 /uninstall-overlay，之后不再提示。"
                              "如果仍然失败，请查看客户端插件日志。"))
             return out
         from restart_notice import INSTALL_MESSAGE
@@ -627,6 +627,7 @@ def run_hook():
             print("[zusage-plugin] " + message, file=sys.stderr)
             return {"suppressOutput": True}
         out["systemMessage"] = message
+        out["hookSpecificOutput"] = {"hookEventName": "SessionStart", "additionalContext": message}
         return out
 
 

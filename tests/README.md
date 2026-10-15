@@ -22,13 +22,18 @@ python3 sync_plugin.py --check
 
 另覆盖 R1–R14 修复：真实 Node 验收器与 SessionStart/sync/install 入口联动、活安装 PID 和错误 Release 拒绝、跨版本部分写入恢复并保护真实热修；语法失败包不能被手工/quiet/可见收尾激活，独有 TMP 暂存与发布中断可重试；所有运行时配置写入口共享锁；仓库大小写、版本化非核心文件增删、字面 argv、重定向总超时取消；实际双语 tooltip 和热更新代际清理、真实并发 hooks、本问开始时间/轮次身份与旧 schema 降级、未完成同步提示不冒称安装成功。
 
+另覆盖宿主插件契约：市场条目的中英本地化及 Release 渠道保留、统计命令路径/会话的 POSIX 参数引用、Windows PowerShell 编码调用的字面参数、短 MCP 服务键与钩子 matcher/超时；SessionStart 两层异常路径、卸载豁免和探测权限失败、安装未完成和正常重启提示均检查有效的 `additionalContext` 通道（`test_plugin_contract.py`、`test_session_start_channels.py`）。Windows 原生 CMD/Git Bash 执行测试仅在相应环境运行，macOS 会明确跳过；编码结构校验不代表 Windows 实机验收。
+
 ## 宿主真实 CLI 集成（macOS）
 
 ```bash
 python3 -B tests/plugin-cli-smoke.py
+python3 -B tests/plugin-commands-cli-smoke.py
 ```
 
 需要已安装 `/Applications/ZCode.app` 和 macOS 自带 `sandbox-exec`。脚本在临时 HOME/cwd 下建立无 hook/MCP 的最小市场，运行官方添加、安装、检测及更新命令，验证 1.0.0 升为 1.1.0 的安装记录与缓存，并测试真正的 `createUpdater` 及独立 `--auto` 子进程入口。独立入口仅附带固定 JSON 输出的同步夹具脚本，不包含真实注入器。网络、临时目录外写入、读取真实 HOME/仓库/asar 均被沙箱拒绝。临时目录会自动删除。
+
+`plugin-commands-cli-smoke.py` 使用真实客户端 CLI 和临时 bundle 副本，验证三个裸名命令的 list/inspect、实际协议命令目录与纯文本参数展开，旧插件前缀名明确 not-found；还验证旧聊天安装/更新子命令只返回 Usage，以及短 MCP 服务键对应的模型工具名。只复制清单、命令和被测分派代码，不复制或运行 hook/安装器；不启动模型、NDJSON 会话或 UI，因此不是界面端到端测试。bundle 结构改变时会明确失败，不退回模拟实现。
 
 ## 设置面板交互
 
