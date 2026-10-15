@@ -308,7 +308,7 @@
   /* ---------- 实例工厂（v61.1）：一个 pane 一套 条/面板/气泡/tooltip/定位循环。
    * slot 0 保留 #zusage-bar/#zusage-tip 兼容 id（泵热更新按它清理），其余实例仅类名。 */
   function spawnInstance(pid, slot) {
-    var VERSION = "v69";   // v69：速率口径说明补充 Claude 系列（不单独上报思考）按含思考计时   // 随提交递增（悬停 ⚙ 面板可见）；未提交的中间迭代不涨号
+    var VERSION = "v70";   // v70：⚙ 面板底栏新增「反馈问题」按钮（经 zcode openExternal 桥用系统默认浏览器打开 issues）   // 随提交递增（悬停 ⚙ 面板可见）；未提交的中间迭代不涨号
     /* ---------- 状态（实例级） ---------- */
     var excOn = false,    // 本 pane 会话处于"上下文超限被拒"状态（render 时按 picked 会话计算）
       excGone = false,    // 用户点 ✕ 关闭了本次气泡；超限解除后自动复位
@@ -442,10 +442,14 @@
       ".zu-settings input[type=radio]{accent-color:var(--color-brand,#57c7ff);margin:0}" +
       ".zu-settings .zu-settings-detail{padding:0 11px 10px}" +
       ".zu-settings .zu-settings-detail .pnote{font-size:calc(var(--ui-font-size,14px) - 2px)}" +
-      ".zu-settings .zu-settings-foot{flex:0 0 auto;border-top:1px solid var(--color-border,rgba(255,255,255,.09));padding:9px 12px}" +
-      ".zu-settings .zu-settings-scroll{display:block;width:100%;border:0;background:none;font:inherit;" +
+      ".zu-settings .zu-settings-foot{flex:0 0 auto;display:flex;align-items:center;gap:10px;border-top:1px solid var(--color-border,rgba(255,255,255,.09));padding:9px 12px}" +
+      ".zu-settings .zu-settings-scroll{display:block;flex:1;min-width:0;width:auto;border:0;background:none;font:inherit;" +
       "font-size:calc(var(--ui-font-size,14px) - 2px);color:var(--color-brand,#57c7ff);padding:2px;cursor:pointer}" +
       ".zu-settings .zu-settings-scroll:disabled{color:var(--color-foreground-subtle,#8791a3);cursor:default}" +
+      /* 反馈按钮（v70）：常驻底栏右缘，点击经 zcode openExternal 桥用系统默认浏览器打开 issues */
+      ".zu-settings .zu-settings-feedback{flex:0 0 auto;font:inherit;font-size:calc(var(--ui-font-size,14px) - 2px);" +
+      "color:var(--color-foreground,#e9edf4);background:var(--color-hover,rgba(255,255,255,.07));" +
+      "border:1px solid var(--color-border,rgba(255,255,255,.14));border-radius:6px;padding:3px 10px;cursor:pointer}" +
       /* 子代理明细面板（v49）：点击条目弹出的固定面板（与设置面板同机制，互斥打开）；
        * 面板不随鼠标消失，绕开悬停+tab 的全部几何问题。 */
       ".zu-sub{cursor:pointer}" +
@@ -559,7 +563,8 @@
       '<div class="pnote">' + L("仅更新此插件。GitHub 来源会联网，本地目录来源只检查本地文件，不上传用量数据。", "Only this plugin is updated. GitHub sources use the network; directory sources check local files. Usage data is never uploaded.") + '</div></div></div></section>' +
       '<section class="zu-settings-section"><div class="cap">' + L("关于数据", "About the data") + '</div><div class="pnote">' +
       L("悬停状态条查看明细。数据源 ~/.zcode/cli/db/db.sqlite（只读），请求完成后才落库。", "Hover bar items for details. Data source ~/.zcode/cli/db/db.sqlite (read-only); data is written after requests complete.") + '</div></section></div>' +
-      '<div class="zu-settings-foot"><button type="button" class="zu-settings-scroll"></button></div>';
+      '<div class="zu-settings-foot"><button type="button" class="zu-settings-scroll"></button>' +
+      '<button type="button" class="zu-settings-feedback">' + L("反馈问题", "Report an issue") + '</button></div>';
       panel.querySelectorAll('input[name=zu-lang]').forEach(function (r) {
         r.checked = state.lang === r.value;
       });
@@ -1261,6 +1266,14 @@
         var body = panel.querySelector(".zu-settings-body");
         body.scrollTop += Math.max(1, Math.round(body.clientHeight * .8));
         syncSettingsScroll();
+        return;
+      }
+      if (e.target.closest && e.target.closest(".zu-settings-feedback")) {
+        /* 优先走客户端 zcode 桥（IPC → 主进程 shell.openExternal，系统默认浏览器）；
+           window.open 会被客户端内置浏览器接管，仅作无桥环境兜底 */
+        var zc = window.zcode, issuesUrl = "https://github.com/ByteRax/zcode-token-usage-statusbar/issues";
+        if (zc && typeof zc.openExternal === "function") zc.openExternal(issuesUrl);
+        else window.open(issuesUrl, "_blank", "noopener");
         return;
       }
       var button = e.target.closest && e.target.closest("[data-update]");
