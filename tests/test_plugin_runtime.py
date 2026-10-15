@@ -530,7 +530,14 @@ class PluginRuntimeTests(unittest.TestCase):
                         return True
 
                     patch_install.install.side_effect = install_overlay
-                    environment = dict(previous, ZUSAGE_PLUGIN_AUTO_INSTALL="1")
+                    # 清空环境时仍须给 hook 保留可解析的家目录（Windows 的 Path.home()
+                    # 依赖 USERPROFILE，缺失会 RuntimeError）与系统关键变量。
+                    environment = dict(previous, ZUSAGE_PLUGIN_AUTO_INSTALL="1",
+                                       HOME=str(self.root), USERPROFILE=str(self.root),
+                                       ZUSAGE_PLUGIN_RUNTIME=str(self.runtime),
+                                       **{name: os.environ[name] for name in
+                                          ("SystemRoot", "TEMP", "TMP")
+                                          if os.name == "nt" and name in os.environ})
                     with mock.patch.object(installer, "resolve_paths", return_value=(self.runtime, patch_install)), \
                             mock.patch.object(installer, "injected_status", side_effect=[False, True]), \
                             mock.patch.dict(os.environ, environment, clear=True), \

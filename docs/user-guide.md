@@ -119,7 +119,7 @@ python install.py --root "D:\Apps\ZCode"
 python3 install.py --root /Applications/ZCode.app
 ```
 
-也可传 `--asar <app.asar 完整路径>` 或设置环境变量 `ZCODE_ASAR`。自动探测只采用确认属于 ZCode 的目标，首次安装后会保存位置。
+也可传 `--asar <app.asar 完整路径>` 或设置环境变量 `ZCODE_ASAR`。自动探测只采用确认属于 ZCode 的目标，首次安装后会保存位置；Windows 会依次探测用户目录、`%ProgramFiles%` 与各盘的 `Program Files\ZCode`、`<盘>:\ZCode` 等常见布局（如 `D:\Program Files\ZCode` 也能自动找到）。
 
 ### 其它选项
 

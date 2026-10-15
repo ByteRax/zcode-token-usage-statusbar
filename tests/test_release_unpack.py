@@ -127,7 +127,7 @@ class ReleaseUnpackTests(unittest.TestCase):
         self.assertEqual(json.loads(result.stdout), {
             "ok": True, "marketplaceRoot": str(self.output.resolve()),
             "pluginRoot": str((self.output / "plugins" / PLUGIN).resolve()), "version": VERSION})
-        actual = {str(path.relative_to(self.output)): path.read_bytes()
+        actual = {path.relative_to(self.output).as_posix(): path.read_bytes()
                   for path in self.output.rglob("*") if path.is_file()}
         self.assertEqual(actual, self.data)
 

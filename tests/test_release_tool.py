@@ -127,6 +127,19 @@ class ReleaseToolTests(unittest.TestCase):
         gh = bin_dir / "gh"
         gh.write_text(GH_STUB)
         gh.chmod(0o755)
+        if os.name == "nt":
+            # Windows 的 CreateProcess 解析不了无扩展名的 shebang 脚本（gh stub）：
+            # 垫片把 gh 命令改派给本进程的 Python 解释器执行 stub。仅测试进程内生效，
+            # 真机上 gh.exe 由 GitHub CLI 官方安装，不受影响。
+            real_run = tool.run
+
+            def run_via_python(root, *args, **kwargs):
+                if args and args[0] == "gh":
+                    args = (sys.executable, str(gh), *args[1:])
+                return real_run(root, *args, **kwargs)
+
+            tool.run = run_via_python
+            self.addCleanup(setattr, tool, "run", real_run)
         self.env = mock.patch.dict(os.environ, {"PATH": str(bin_dir) + os.pathsep + os.environ["PATH"],
                                   "STUB_ROOT": str(self.base), "STUB_MODE": "ok"})
         self.env.start()
@@ -422,7 +435,7 @@ class ReleaseToolTests(unittest.TestCase):
                       "[v1.2.3](https://example.invalid) 修复资产校验。",
                       "[v1.2.3](https://example.invalid)\n\n- 修复资产校验。\n"):
             with self.subTest(notes=notes):
-                self.notes_file.write_text(notes, encoding="utf-8")
+                self.notes_file.write_bytes(notes.encode("utf-8"))  # 字节落盘：Windows 文本模式会把 \n 转 \r\n
                 plan = tool.publish(self.root, REPO, self.asset, self.manifest, notes_file=self.notes_file)
                 self.assertEqual(plan["notes"], notes)
         self.assert_no_publish()
@@ -451,7 +464,7 @@ class ReleaseToolTests(unittest.TestCase):
                       "[v1.2.3](https://example.invalid/a(b(c))) (修复资产校验。)",
                       '[v1.2.3](<https://example.invalid/a(b(c))> "Release (notes")\n\n- 修复资产校验。\n'):
             with self.subTest(notes=notes):
-                self.notes_file.write_text(notes, encoding="utf-8")
+                self.notes_file.write_bytes(notes.encode("utf-8"))  # 字节落盘：Windows 文本模式会把 \n 转 \r\n
                 plan = tool.publish(self.root, REPO, self.asset, self.manifest, notes_file=self.notes_file)
                 self.assertEqual(plan["notes"], notes)
         self.assert_no_publish()

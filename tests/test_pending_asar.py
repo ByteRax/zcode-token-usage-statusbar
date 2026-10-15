@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import struct
 import stat
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -355,6 +356,27 @@ class PendingAsarTests(unittest.TestCase):
         with mock.patch.object(self.pi, "install", return_value=True) as install:
             self.pi.main(["install", "--finalize"])
         install.assert_called_once_with(finalize=True)
+
+    def test_stamp_fields_platform_contract(self):
+        # Windows 的 ctime 是创建时间（无防篡改价值），且杀软过滤驱动下路径 lstat 与
+        # 句柄 fstat 恒不一致，必须剔除；POSIX 的 ctime 是 inode 变更时间，保留。
+        fields = self.pi._STAMP_FIELDS
+        if sys.platform == "win32":
+            self.assertNotIn("ctime_ns", fields)
+        else:
+            self.assertIn("ctime_ns", fields)
+        meta = self.prepare()
+        for fingerprint in (meta["source"], meta["tmp"]):
+            self.assertEqual({key for key in fingerprint if key != "sha256"}, set(fields))
+
+    @unittest.skipIf(sys.platform != "win32", "Windows 过滤驱动 ctime 怪癖回归")
+    def test_windows_path_and_handle_stamps_agree_on_fresh_files(self):
+        # 曾在 NTFS+杀软环境必现：刚写完的文件路径 stat 与句柄 fstat 的 ctime_ns 不一致，
+        # source_fingerprint 直接抛 "file changed before hashing"，安装全流程不可用。
+        for _ in range(3):
+            make_asar(self.asar)
+            self.assertEqual(self.pi.source_fingerprint(self.asar),
+                             self.pi.source_fingerprint(self.asar))
 
 
 if __name__ == "__main__":

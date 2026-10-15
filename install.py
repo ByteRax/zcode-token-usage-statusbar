@@ -117,6 +117,13 @@ else:
         r"%LOCALAPPDATA%\ZCode\resources\app.asar",
         r"%ProgramFiles%\ZCode\resources\app.asar",
     ]
+    # 自定义盘符安装（如 D:\Program Files\ZCode）：逐盘枚举两种常见布局
+    # （%ProgramFiles% 只跟系统盘走）。与上面的预设候选去重；
+    # find_asar 对所有枚举候选都过 is_zcode_app 身份校验。
+    ASAR_CANDIDATES = list(dict.fromkeys(ASAR_CANDIDATES + [
+        f"{letter}:\\{folder}\\resources\\app.asar"
+        for letter in "CDEFGHIJKLMNOPQRSTUVWXYZ"
+        for folder in (r"Program Files\ZCode", r"ZCode")]))
 
 LANG = "zh"   # 输出语言（main 里按 --lang / 已有 config.json 确定）
 
@@ -159,8 +166,8 @@ def asar_package_name(asar_path):
         if b"\x00" in data:   # 被 pickle 对齐补零 / 条目加密等异常，放弃识别
             return None
         return json.loads(data.decode("utf-8")).get("name")
-    except (OSError, ValueError, KeyError, struct.error):
-        return None
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, struct.error):
+        return None   # 畸形 asar（header/package.json 是合法 JSON 但非对象）按读不到处理，跳过该候选
 
 
 def is_zcode_app(asar_path):
@@ -179,10 +186,12 @@ def find_asar():
     if env:
         p = expand(env)
         if p.is_file():
-            return p
+            return p    # 用户显式指定的目标不校验身份（自己的选择）
     for c in ASAR_CANDIDATES:
         p = expand(c)
-        if p.is_file():
+        # 枚举候选必须过 is_zcode_app：<盘>:\Program Files\ZCode 等路径名不是身份依据，
+        # 命中其它 Electron 应用会注入错目标：真 ZCode 永不生效。
+        if p.is_file() and is_zcode_app(p):
             return p
     if sys.platform == "win32":
         # 兜底：扫 %LOCALAPPDATA%\Programs 一层子目录

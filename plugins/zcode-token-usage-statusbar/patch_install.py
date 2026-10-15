@@ -156,6 +156,19 @@ def client_running():
         return True  # 查不到时按在跑处理，走安全路径
 
 
+def _spawn_detached(cmd, flags, **kwargs):
+    """Windows：优先带 CREATE_BREAKAWAY_FROM_JOB 拉起，让监控脱离父进程的 Job 对象——
+    从 agent/工具会话里跑安装时，会话清理会整树杀掉子进程，监控等不到客户端退出就被杀，
+    收尾只能寄望下次 SessionStart 重试。Job 不允许 breakaway 时降级为普通创建。"""
+    if not IS_WIN:
+        return None
+    breakaway = getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0)
+    try:
+        return subprocess.Popen(cmd, creationflags=flags | breakaway, **kwargs)
+    except OSError:
+        return subprocess.Popen(cmd, creationflags=flags, **kwargs)
+
+
 def launch_monitor(epoch):
     """Windows 开新控制台窗口跑安装监控（提醒重启 + 确认生效 + .tmp 收尾）；
     macOS/Linux 无控制台概念，后台静默跑（收尾与自动退出照常）。设 ZUSAGE_NO_MONITOR=1 可禁用。"""
@@ -167,13 +180,16 @@ def launch_monitor(epoch):
     cmd = [sys.executable, str(monitor), "%.3f" % epoch, str(ASAR), str(RUNTIME)]
     try:
         if os.environ.get("ZUSAGE_MONITOR_QUIET"):
-            flags = subprocess.CREATE_NO_WINDOW if IS_WIN else 0
-            return subprocess.Popen(cmd, creationflags=flags, cwd=str(HERE),
-                                    start_new_session=not IS_WIN,
+            if IS_WIN:
+                return _spawn_detached(cmd, subprocess.CREATE_NO_WINDOW, cwd=str(HERE),
+                                       stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                       stderr=subprocess.DEVNULL)
+            return subprocess.Popen(cmd, creationflags=0, cwd=str(HERE),
+                                    start_new_session=True,
                                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                     stderr=subprocess.DEVNULL)
         if IS_WIN:
-            return subprocess.Popen(cmd, creationflags=subprocess.CREATE_NEW_CONSOLE, cwd=str(HERE))
+            return _spawn_detached(cmd, subprocess.CREATE_NEW_CONSOLE, cwd=str(HERE))
         return subprocess.Popen(cmd, cwd=str(HERE),
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except OSError as e:
@@ -320,14 +336,22 @@ class PendingTmpError(ValueError):
     """来源/身份不可信：立即取消收尾，保留文件供诊断，不按文件占用重试。"""
 
 
-_STAMP_FIELDS = ("size", "mtime_ns", "ctime_ns", "dev", "ino")
+# Windows 的 st_ctime 是创建时间：内容修改不会改变它（没有防篡改价值），且杀软过滤
+# 驱动下同一路径 lstat 与打开句柄 fstat 读到的 ctime_ns 可能恒不一致（NTFS 实测，
+# size/mtime/dev/ino 均相同），纳入比对会让每次 source_fingerprint 都误报
+# "file changed"。POSIX 的 ctime 是 inode 变更时间，写入会更新，保留作额外信号。
+if sys.platform == "win32":
+    _STAMP_FIELDS = ("size", "mtime_ns", "dev", "ino")
+else:
+    _STAMP_FIELDS = ("size", "mtime_ns", "ctime_ns", "dev", "ino")
 
 
 def _stat_stamp(st):
     if not stat.S_ISREG(st.st_mode):
         raise PendingTmpError("not a regular file")
-    return dict(zip(_STAMP_FIELDS, (st.st_size, st.st_mtime_ns, st.st_ctime_ns,
-                                   st.st_dev, st.st_ino)))
+    values = {"size": st.st_size, "mtime_ns": st.st_mtime_ns,
+              "ctime_ns": st.st_ctime_ns, "dev": st.st_dev, "ino": st.st_ino}
+    return {key: values[key] for key in _STAMP_FIELDS}
 
 
 def file_stamp(path):

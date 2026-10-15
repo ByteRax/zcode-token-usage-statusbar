@@ -41,6 +41,8 @@ STATE_TTL_MS = 7 * 24 * 3600 * 1000  # 过旧的状态文件视为失效
 N = 5                 # 上轮行的统计窗口（均/峰）
 MIN_GEN_MS = 200      # 有效样本：最短生成耗时
 MAX_GEN_MS = 3_600_000  # 有效样本：最长生成耗时（1h）
+PROMPT_SKEW_MS = 3000  # 钩子冷启动（Windows 杀软扫描尤甚）写提问时刻可能晚于本轮
+                       # 首个请求 started_at，--current 守卫放宽 3 秒容差防毫秒级失配
 
 
 def valid_state_ts(value, now=None):
@@ -55,6 +57,20 @@ def read_state():
     except Exception:
         return None
     return st if isinstance(st, dict) and valid_state_ts(st.get("ts")) else None
+
+
+def _replace_state_file(tmp, path):
+    """os.replace 短暂重试：Windows 上读者/杀软正打开目标文件时（无 FILE_SHARE_DELETE）
+    替换会被拒绝，静默放弃会丢掉提问时刻、让 --current 守卫整轮失效；读者都是微秒级
+    短开，重试窗口远大于它。POSIX 的 rename 不受并发读者影响，重试零成本。"""
+    for attempt in range(20):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if attempt == 19:
+                raise
+            time.sleep(0.01)
 
 
 def write_session_state(session_id, source):
@@ -85,7 +101,7 @@ def write_session_state(session_id, source):
             fd, tmp = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
             with os.fdopen(fd, "w", encoding="utf-8") as stream:
                 json.dump(data, stream)
-            os.replace(tmp, path)
+            _replace_state_file(tmp, path)
     except Exception:
         pass
     finally:
@@ -216,8 +232,12 @@ def latest_turn_id(db, sid, prompt_ts=None):
            " and turn_id is not null and turn_id != '' group by turn_id")
     args = [sid]
     if prompt_ts is not None:
+        # 容差见 PROMPT_SKEW_MS：钩子冷启动晚写提问时刻时，本轮首段 started_at 可能
+        # 略早于记录值，毫秒级失配曾让 --current 间歇性丢失 ⚡ 行。已知窄窗口：用户
+        # 3 秒内连发两条消息且本轮尚无任何入库行时，可能短暂显示上一轮速率（数据真实、
+        # 仅轮次归属过期）；排序取 min(started_at) 最大组，本轮有行时必胜出。
         sql += " having min(started_at) >= ?"
-        args.append(prompt_ts)
+        args.append(prompt_ts - PROMPT_SKEW_MS)
     try:
         row = db.execute(sql + " order by min(started_at) desc, turn_id desc limit 1", args).fetchone()
     except sqlite3.OperationalError:

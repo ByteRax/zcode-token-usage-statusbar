@@ -62,11 +62,15 @@ class RuntimeSyncGuardTests(unittest.TestCase):
                         "pendingRelease": {"release": release, "manifest": manifest,
                             "channel": {"kind": "release", "repository": repo, "source": self.source.copy()}}}
         self.save_state()
+        # Windows 上 SystemRoot 缺失会让 node 验收子进程启动即崩（ncrypto CSPRNG 断言），
+        # 清空环境时必须保留系统关键变量。
+        windows_essentials = {name: os.environ[name] for name in
+                              ("SystemRoot", "TEMP", "TMP") if os.name == "nt" and name in os.environ}
         patchers = (mock.patch.object(self.installer, "PLUGIN_ROOT", self.plugin),
                     mock.patch.object(Path, "home", return_value=self.home),
                     mock.patch.dict(os.environ, {"HOME": str(self.home), "USERPROFILE": str(self.home),
                         "ZUSAGE_PLUGIN_RUNTIME": str(self.runtime), "PYTHONDONTWRITEBYTECODE": "1",
-                        "PATH": os.environ.get("PATH", "")}, clear=True))
+                        "PATH": os.environ.get("PATH", ""), **windows_essentials}, clear=True))
         for patcher in patchers:
             patcher.start()
             self.addCleanup(patcher.stop)

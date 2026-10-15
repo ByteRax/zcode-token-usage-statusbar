@@ -10,6 +10,7 @@ fixture 库模拟一轮「上轮两段 + 本问两段」的 model_usage，覆盖
 
 运行：python3 -B -m unittest discover -s tests -p 'test_*.py'
 """
+import contextlib
 import json
 import os
 import sqlite3
@@ -97,7 +98,15 @@ class RateTestBase(unittest.TestCase):
         make_db(self.db, rows)
 
     def tearDown(self):
-        self.tmp.cleanup()
+        # Windows：刚退出的 token_rate 子进程或杀软扫描可能仍短暂持有 db.sqlite
+        # 句柄（WinError 32），先重试几轮，仍失败则放弃清理（不掩盖断言结果）。
+        for attempt in range(5):
+            try:
+                self.tmp.cleanup()
+                return
+            except OSError:
+                time.sleep(0.2 * (attempt + 1))
+        self.tmp.cleanup(ignore_errors=True)
 
     def write_state(self, obj):
         Path(self.state).write_text(json.dumps(obj), encoding="utf-8")
@@ -165,7 +174,7 @@ class TestTurnCurrent(RateTestBase):
         self.assertEqual(self.run_rate("--turn", "--current").stdout, "")
 
     def insert_rows(self, rows):
-        with sqlite3.connect(self.db) as con:
+        with contextlib.closing(sqlite3.connect(self.db)) as con, con:
             con.executemany("insert into model_usage values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
 
     def test_delayed_old_completion_does_not_replace_current_turn(self):
@@ -177,11 +186,27 @@ class TestTurnCurrent(RateTestBase):
         self.assertEqual(data["turn"]["totalOutput"], 2000)
 
     def test_old_turn_late_segment_is_not_current_even_if_segment_started_after_prompt(self):
-        with sqlite3.connect(self.db) as con:
+        with contextlib.closing(sqlite3.connect(self.db)) as con, con:
             con.execute("delete from model_usage where turn_id='turn_b'")
         self.insert_rows([row("late", SID, "turn_a", "main_turn",
                               self.t0 + 100, self.t0 + 200, 100, self.t0 + 50000, 10, 9000, 0)])
         self.write_state({"sessionId": SID, "ts": self.t0, "promptTs": self.t0})
+        data = json.loads(self.run_rate("--turn", "--current", "--json").stdout)
+        self.assertIsNone(data["turn"])
+        self.assertEqual(data["currentTurnUnavailableReason"], "noMatchingTurn")
+
+    def test_late_hook_prompt_within_skew_still_matches_current_turn(self):
+        # Windows 实测回归：钩子冷启动（杀软扫描）写提问时刻晚于本轮首个请求 started_at，
+        # 毫秒级失配曾让 --current 每次都判 noMatchingTurn、⚡ 行间歇丢失。
+        # b1 于 t0+1000 开始；钩子在 +1500ms（容差 3000ms 内）才记下提问时刻。
+        self.write_state({"sessionId": SID, "ts": self.t0 + 1500, "promptTs": self.t0 + 1500})
+        data = json.loads(self.run_rate("--turn", "--current", "--json").stdout)
+        self.assertEqual(data["turnId"], "turn_b")
+        self.assertEqual(data["turn"]["totalOutput"], 2000)
+
+    def test_prompt_older_than_skew_still_rejects_current_turn(self):
+        # 容差有界：提问时刻晚于本轮最早段 3 秒以上仍须拦下（不放宽守卫本体）。
+        self.write_state({"sessionId": SID, "ts": self.t0 + 4500, "promptTs": self.t0 + 4500})
         data = json.loads(self.run_rate("--turn", "--current", "--json").stdout)
         self.assertIsNone(data["turn"])
         self.assertEqual(data["currentTurnUnavailableReason"], "noMatchingTurn")
@@ -196,7 +221,7 @@ class TestTurnCurrent(RateTestBase):
 
     def test_segment_order_and_latest_identity_use_start_not_completion(self):
         self.write_state({"sessionId": SID, "ts": self.t0, "promptTs": self.t0})
-        with sqlite3.connect(self.db) as con:
+        with contextlib.closing(sqlite3.connect(self.db)) as con, con:
             con.execute("update model_usage set completed_at=? where id='b1'", [self.t0 + 21000])
         data = json.loads(self.run_rate("--turn", "--current", "--json").stdout)
         self.assertEqual(data["turn"]["ttftMs"], 3000)
@@ -204,7 +229,7 @@ class TestTurnCurrent(RateTestBase):
 
     def test_old_schema_without_turn_id_degrades_without_traceback(self):
         self.write_state({"sessionId": SID, "ts": self.t0, "promptTs": self.t0})
-        with sqlite3.connect(self.db) as con:
+        with contextlib.closing(sqlite3.connect(self.db)) as con, con:
             con.execute("alter table model_usage rename column turn_id to legacy_turn")
         result = self.run_rate("--turn", "--current", "--json")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -215,7 +240,7 @@ class TestTurnCurrent(RateTestBase):
 
     def test_missing_turn_identity_explicitly_degrades(self):
         self.write_state({"sessionId": SID, "ts": self.t0, "promptTs": self.t0})
-        with sqlite3.connect(self.db) as con:
+        with contextlib.closing(sqlite3.connect(self.db)) as con, con:
             con.execute("update model_usage set turn_id=null")
         data = json.loads(self.run_rate("--turn", "--current", "--json").stdout)
         self.assertIsNone(data["turn"])
@@ -442,7 +467,11 @@ runpy.run_path(sys.argv[2], run_name="__main__")
             previous_keys = {"seed"}
             deadline = time.monotonic() + 15
             while any(process.poll() is None for process in processes) and time.monotonic() < deadline:
-                snapshot = json.loads(Path(self.state).read_text())
+                try:
+                    snapshot = json.loads(Path(self.state).read_text())
+                except (OSError, ValueError):
+                    time.sleep(.01)  # Windows：写者 os.replace / 杀软瞬时占用，读快照可暂时被拒
+                    continue
                 keys = set(snapshot["prompts"])
                 self.assertTrue(previous_keys <= keys, "atomic snapshots lost a session")
                 previous_keys = keys
