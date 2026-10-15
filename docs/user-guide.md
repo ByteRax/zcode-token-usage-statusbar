@@ -201,11 +201,105 @@ Windows 对应用户目录下的 `.zcode\zcode-token-usage-statusbar\config.json
 
 ## 远程会话
 
-桌面客户端连接 SSH 远端 ZCode 时，数据在远端，本地查询不会自动拥有这些数据。将 `remote` 合并到运行配置：
+> 本节远端适配与恢复功能属于当前 `main` / 本地新版源码，**尚未发布到正式 Release**。本机必须更新插件安装副本/运行文件，完成状态条安装或修复后**完全退出并重启 ZCode**；只修改仓库不会更新已安装副本，只关闭窗口不算退出。
+
+桌面连接 SSH 远端 ZCode 时，数据在远端。支持的是**桌面状态条的 JSON 查询链**，不是把所有命令都变成远端命令：MCP、`/usage` 和回答末尾速率不自动跨机，纯 CLI 没有状态条 UI，自托管 Web 仍按独立文档部署。
+
+### 功能清单与身份边界
+
+- **自动连接适配**：读取客户端保存的 SSH 工作区连接设置（默认 `~/.zcode/v2/setting.json` 的 `lastWorkspaceSession`），生成可用通道；结合宿主合法工作区 IPC 与本窗口会话证据取得 `workspaceIdentity`。
+- **多服务器路由**：以会话 ID 和工作区身份共同选目标，不仅凭 ID、主机标签或远端最近活跃会话猜测。自动模式只查询已确认远端 scope，不对历史服务器试探本地未知会话 ID。手动目标用 `identity` 或 `identities` 绑定工作区，可覆盖同身份的自动目标。
+- **独立 today/error**：各目标独立返回今日总量与错误，不能把某服务器的今日量混入本地或另一服务器；一台不可达不应中断其它来源查询。相同会话 ID 仍需按工作区/目标隔离。
+- **失败与未知持续重试**：查询失败、远端暂未找到会话或尚无可信身份时不会永久放弃；已知远端 scope 保持退避重试，身份未知则等待合法身份重新出现，不盲发到其它服务器。
+- **恢复与重连**：恢复历史会话、切换工作区或宿主 SSH 重连后，取得可靠身份才继续远端查询。这里的自恢复是**统计查询链恢复**，不是插件替宿主自动重连 SSH。身份广播依赖宿主功能与事件；晚加载且没有可信工作区证据时默认不猜测；重开工作区或完全重启可能重新触发事件，但不能保证主 pane 被识别。
+
+**主面板归属边界**：partial 远端 IPC 只说明部分工作区是远端，不等于当前主 pane 的归属。真实 `workspace-main` 不在 `panes` 中且没有可靠 scope 时，只上报本地 `sids`，不从历史候选推断远端，也不共享其它分栏同 SID 的远端数据；未知 main 显示本地匹配或 0。明确绑定远端工作区的右侧分栏（right）仍自动路由，可使用该分栏查看远端统计。重开工作区或完全重启可以重新触发宿主事件，但不能保证识别 main；手动单通道兼容查询也不构成主 pane 归属证据。
+
+明确分栏的工作区身份与 SID 组合仍可生成远端 scope；空 scope 则 fail-closed，不借同 SID 的远端快照。配置 `targets.identity` 只绑定查询目标，并不凭空证明主 pane 属于该工作区。
+
+### 前置准备：远端脚本需手工部署
+
+每台 SSH 远端需部署与本机匹配的 `zusage.py`，默认路径 `~/.zcode/zcode-token-usage-statusbar/zusage.py`。远端需要 Python 3.8+（含标准库 `sqlite3`），并让执行脚本的用户能读取其 ZCode 数据库。示例在**本机仓库目录**执行；请替换连接地址：
+
+```bash
+ssh user@server 'mkdir -p ~/.zcode/zcode-token-usage-statusbar'
+scp zusage.py user@server:.zcode/zcode-token-usage-statusbar/zusage.py
+ssh -o BatchMode=yes user@server 'python3 ~/.zcode/zcode-token-usage-statusbar/zusage.py today'
+```
+
+最后一条只验证远端脚本/数据库可读，不证明桌面身份路由或所有服务器已实机验收。自定义远端安装位置时设置 `remote.script`。远端查询带递归防护，无需在远端安装桌面状态条或再次启用远端转发。
+
+本机查询通道必须免交互可用。插件**不能解密复用宿主保存的密码、加密私钥或口令**，不会自动登录或应答认证提示；请自行配置 SSH key/agent。自动生成的 SSH 通道使用 `BatchMode=yes`，不支持的凭据不会变成可用登录。自动适配不等于自动部署，不能承诺完全零配置。
+
+### 自动模式与手动关闭
+
+将需要的字段合并到运行配置，保留其它设置：
 
 ```json
 {
   "remote": {
+    "auto": true,
+    "enabled": false,
+    "script": "~/.zcode/zcode-token-usage-statusbar/zusage.py",
+    "python": "python3",
+    "timeout_s": 6,
+    "poll_ms": 3000
+  }
+}
+```
+
+- `remote.auto` 缺省为 `true`，独立控制自动发现/身份路由。
+- `remote.enabled: false` 保留为旧单通道/无身份 fallback 的手动关闭，不关闭已确认身份的自动路由。
+- `remote.auto: false` 关闭自动发现；手动使用带身份的 `targets` 时需显式 `enabled: true`。
+- 不再查询任何远端时，设置 `auto: false`、`enabled: false`；已有 `targets` 可保留而不会执行：
+
+```json
+{
+  "remote": {
+    "auto": false,
+    "enabled": false
+  }
+}
+```
+
+### 多服务器：必须绑定工作区身份
+
+下面示例中的身份字符串仅是格式示例。请从客户端连接工作区记录的 `workspaceIdentity` 复制实际值，必须与当前工作区完全匹配；不要只依据标签、主机名或目录自行猜值。
+
+```json
+{
+  "remote": {
+    "auto": true,
+    "enabled": false,
+    "script": "~/.zcode/zcode-token-usage-statusbar/zusage.py",
+    "python": "python3",
+    "timeout_s": 6,
+    "poll_ms": 3000,
+    "targets": [
+      {
+        "identity": "remote:ssh:build.example.com:22:alice:/srv/build",
+        "ssh": "ssh alice@build.example.com",
+        "host_label": "构建机"
+      },
+      {
+        "identities": ["remote:ssh:gpu.example.com:2222:bob:/srv/gpu"],
+        "ssh": ["ssh", "-i", "~/.ssh/id_ed25519", "-p", "2222", "bob@gpu.example.com"],
+        "host_label": "GPU 机",
+        "timeout_s": 6
+      }
+    ]
+  }
+}
+```
+
+`targets` 在自动模式或显式 `enabled: true` 时接收；`auto: false` 且 `enabled` 非 true 为总关闭。用 `identity` 绑定一个工作区，或用 `identities` 绑定同一目标的多个工作区。目标的 `script`、`python`、`timeout_s` 未设置时继承 `remote` 顶层值。多个目标不应争抢同一身份；不带身份的多机配置不能实现精准 route。
+
+### 旧 CLI 单通道 fallback（显式开启，非桌面空 scope 兜底）
+
+```json
+{
+  "remote": {
+    "auto": false,
     "enabled": true,
     "ssh": "ssh user@server",
     "script": "~/.zcode/zcode-token-usage-statusbar/zusage.py",
@@ -217,15 +311,20 @@ Windows 对应用户目录下的 `.zcode\zcode-token-usage-statusbar\config.json
 }
 ```
 
-远端部署同一份 `zusage.py`，且远端配置**不要再启用 remote**，避免递归。本地需能够通过该通道免交互执行命令。
+仅旧 CLI `python3 zusage.py json <SID>` 的 SID/逗号列表协议，在 `enabled: true` 时可使用 `remote.ssh` 或首个手动目标作为默认单通道 fallback。桌面始终发送 JSON 请求；显式 `scopes: []` 禁止 legacy fallback，即使 `enabled: true` 也不会把未知 main 借通道查成远端。桌面远端仍必须有可靠 scope，不猜历史身份。多服务器推荐上方带身份的配置。`ssh` 也可用 argv 数组指定其它免交互通道，例如 Docker `['docker', 'exec', '-i', '容器名']`、WSL `['wsl', '-d', '发行版']` 或 Kubernetes `['kubectl', 'exec', '-i', 'pod名', '--']`（写入 JSON 时改用双引号）。
 
-`ssh` 也可以用参数数组指定其它通道：
+### 刷新、恢复与排查
 
-- Docker：`["docker", "exec", "-i", "容器名"]`
-- WSL：`["wsl", "-d", "发行版"]`
-- Kubernetes：`["kubectl", "exec", "-i", "pod名", "--"]`
+远端按 `poll_ms` 刷新，默认 3000ms、最少 1000ms，首次查询即建立续查定时器；本地仍以数据库写入事件触发。单目标 `timeout_s` 限制 1–6 秒，最多 4 个并行查询、整轮总预算 6 秒；配置更大值不能突破预算。失败或暂未找到会话持续退避重试，包括已确认远端 scope 尚未配置目标的情况；总关闭则停止远端轮询。
 
-配置后远端会话出现 ☁ 标记。远端按 `poll_ms` 刷新，本地仍以数据库写入事件触发；不要把远端间隔设得低于 1000ms。
+有效失败条目保留最近成功的同工作区快照并标为 stale/error；首次无缓存显示零值，不借本地今日量。null/error 响应不清空最近成功的显示，不代表取得成功新数据。不需要为了短暂断线反复安装状态条；宿主自身断线需先由宿主/用户恢复连接。配置或客户端连接设置变化、关闭后重新开启由心跳检测（默认 30000ms、最少 10000ms），不是修改文件后立即生效。
+
+1. 确认本机确实加载新版安装副本且完全重启过。
+2. 确认远端脚本、Python、数据库读取权限和免交互 SSH 命令可用；认证失败先修认证，不是重装插件。
+3. 确认客户端当前会话 `workspaceIdentity` 与目标 `identity`/`identities` 匹配。partial 远端 IPC 不证明主 pane 归属；未知 main 显示本地匹配或 0，可使用明确绑定远端工作区的右侧分栏。重开工作区或完全重启不能保证识别，默认不猜测服务器。
+4. 恢复连接后等待轮询与退避重试，再查看各目标独立的今日量和错误；暂未找到会话时先确认远端请求已入库。
+
+协议使用 JSON 请求 `{sids, scopes: [{sid, workspaceIdentity}]}`，响应 `recent` 携带 `workspace_identity`；本机与远端脚本应同步更新，不能把旧版的无身份结果当作多服务器验证。自动化回归说明见 [测试文档](../tests/README.md#远端路由与恢复回归)。
 
 ## 查询与数据口径
 
