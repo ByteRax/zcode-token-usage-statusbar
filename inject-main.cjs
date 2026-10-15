@@ -98,7 +98,10 @@ function pushOnce(wc, payload) {
    * overlay 收到 mine 字段就优先显示它，不再多窗口共享同一个猜测。
    * 必须对象合并后序列化，禁止对 JSON 字符串做括号手术——v34 首版 slice 掐尾少补一个
    * 右括号，生成语法错误代码且失败只进静默 catch，全部窗口停在初始零值（实测翻车）。 */
-  const obj = activeSid.has(wc.id) ? Object.assign({}, payload, { mine: activeSid.get(wc.id) || "" }) : payload;
+  const obj = Object.assign({}, payload, {
+    ...(activeSid.has(wc.id) ? { mine: activeSid.get(wc.id) || "" } : {}),
+    scope_bindings: scopeBindings.get(wc.id) || {},
+  });
   /* U+2028/2029 转义：JSON.stringify 会输出裸字符，放进 executeJavaScript 字符串字面量
    * 有语法风险（zusage.py 侧 ensure_ascii 的同款考量；会话标题可能含任意文本） */
   const js = `window.__zusageUpdate && window.__zusageUpdate(${JSON.stringify(obj).replace(/[\u2028\u2029]/g, (c) => c === "\u2028" ? "\\u2028" : "\\u2029")})`;
@@ -110,8 +113,39 @@ function pushOnce(wc, payload) {
  * 不在表里 = 该窗口从未同步（辅助窗口），推送时不带 mine，overlay 走本地键启发式。 */
 const IPC_ACTIVE_SID = "zcode:sync-active-task-session";
 const activeSid = new Map();   // webContents.id → 会话 id 或 ""
+const windowWorkspaces = new Map();
+const windowTasks = new Map();
+const scopeBindings = new Map();
+function trustedSender(e) {
+  try {
+    if (!e || !e.sender || e.sender.isDestroyed() || !isMainWindowState(e.sender)) return false;
+    const url = e.sender.getURL();
+    if (!url.startsWith("file:")) return false;
+    const relative = path.relative(process.resourcesPath, fileURLToPath(url));
+    return !relative.startsWith("..") && !path.isAbsolute(relative);
+  } catch (e) { return false; }
+}
 try {
   const { ipcMain } = require("electron");
+  // 只旁听宿主公开的单向同步，不读取凭据或 Electron 私有 handler 状态。
+  ipcMain.on("zcode:sync-web-remote-control-workspaces", (e, rows) => {
+    if (!trustedSender(e) || !Array.isArray(rows)) return;
+    windowWorkspaces.set(e.sender.id, rows.filter((r) => r && typeof r.workspacePath === "string")
+      .map((r) => ({ kind: r.kind, identity: typeof r.workspaceIdentity === "string" ? r.workspaceIdentity.trim() : "" })));
+    scheduleRetry(300);
+  });
+  ipcMain.on("zcode:sync-web-remote-control-tasks", (e, rows) => {
+    if (!trustedSender(e) || !Array.isArray(rows)) return;
+    const tasks = new Map();
+    for (const r of rows) {
+      if (!r || typeof r.taskId !== "string") continue;
+      const identity = r.workspaceKind === "remote" && typeof r.workspaceIdentity === "string" ? r.workspaceIdentity.trim() : "";
+      if (!tasks.has(r.taskId)) tasks.set(r.taskId, new Set());
+      tasks.get(r.taskId).add(identity);
+    }
+    windowTasks.set(e.sender.id, tasks);
+    scheduleRetry(300);
+  });
   ipcMain.on(IPC_ACTIVE_SID, (e, sid) => {
     if (!e || !e.sender || e.sender.isDestroyed()) return;
     const s = typeof sid === "string" ? sid.trim() : "";
@@ -137,11 +171,19 @@ function dbStamp() {
   return m;
 }
 
-/* v9 远程数据源：payload.recent 里带 remote 标记的会话 = zusage.py 经 SSH 从远端机取得。
- * 本地 fs.watch 对远端库写入无感，聚焦远端会话期间由泵按 remote.poll_ms 主动轮询
- * （默认 3s），切回本地会话即恢复纯事件触发、零进程零轮询。 */
-const remoteSids = new Set();
-let lastHadRemote = false;
+/* 远端状态按 (sid, workspaceIdentity) 隔离；显式可信 scope 首查失败也续查。
+ * 请求直接携带 identity，不依赖上一份 payload 的临时目标序号。
+ * 最后成功 remote 标记保留 10 分钟，pending 保证失败后持续恢复。 */
+const REMOTE_STICKY_MS = 10 * 60 * 1000;
+const remoteSids = new Map();      // sid → lastSeen ms
+const pendingSids = new Map();     // sid → next attempt ms
+let targetByIdentity = new Map();  // workspaceIdentity → 目标键（最近一次 payload）
+function isRemoteSid(s) {
+  const t = remoteSids.get(s);
+  if (t === undefined) return false;
+  if (Date.now() - t > REMOTE_STICKY_MS) { remoteSids.delete(s); return false; }
+  return true;
+}
 function remotePollMs() {
   const r = readCfgCached().remote;
   return Math.max(1000, (r && r.poll_ms | 0) || 3000);
@@ -152,11 +194,62 @@ let pushCount = 0;
 let lastSpawn = 0;    // 上次发起查询时刻（activity_min_ms 限频用）
 let lastStamp = 0;    // 上次拉取时的 db mtime（去重：无新写入不拉）
 let lastWants = "";   // 上次查询用的会话 id 集合（变化即拉，防"会话切了但 db 没写入"滞留旧数据）
+let lastRequest = { sids: [], scopes: [] };
+let lastSourceStamp = "";
+let collecting = false;
+function scopeKey(sid, identity) { return JSON.stringify([sid, identity || ""]); }
+function requestKeys(request) {
+  return request.sids.map((sid) => scopeKey(sid, "")).concat(request.scopes.map((s) => scopeKey(s.sid, s.workspaceIdentity)));
+}
+function sourceStamp() {
+  const home = (process.env && process.env.ZCODE_DESKTOP_HOME_DIR) || app.getPath("home");
+  const files = [CONFIG, path.join(home, ".zcode", "v2", "setting.json")];
+  return files.map((file) => { try { const s = fs.statSync(file); return `${s.mtimeMs}:${s.size}`; } catch (e) { return "missing"; } }).join("|");
+}
+let lastHadRemote = false;
 
-function handlePayload(payload) {
-  if (!payload || typeof payload !== "object") return;
+function remoteDisabled() {
+  const remote = readCfgCached().remote || {};
+  return remote.auto === false && remote.enabled === false;
+}
+function clearRemoteRecovery() {
   remoteSids.clear();
-  for (const r of (payload.recent || [])) if (r && r.remote && r.sid) remoteSids.add(r.sid);
+  pendingSids.clear();
+  lastHadRemote = false;
+  clearTimeout(retryTimer);
+  retryTimer = 0;
+}
+function handlePayload(payload) {
+  const disabled = remoteDisabled();
+  if (disabled) clearRemoteRecovery();
+  // serve 的 error 是查询失败，不是空快照；不可清掉重试状态和最后成功数据显示。
+  if (!payload || typeof payload !== "object" || payload.error) return;
+  const now = Date.now();
+  const marks = new Set();
+  for (const r of (payload.recent || [])) if (r && r.remote && r.sid && !r.remote_error && !r.remote_missing) {
+    const key = scopeKey(r.sid, r.workspace_identity);
+    marks.add(key);
+    remoteSids.set(key, now);
+  }
+  const idents = new Map();
+  for (const t of (payload.remote_targets || [])) {
+    if (!t || !t.key) continue;
+    for (const id of (t.identities || [])) if (id) idents.set(String(id), String(t.key));
+  }
+  targetByIdentity = idents;
+  const notLocal = new Set(Array.isArray(payload.not_local) ? payload.not_local : []);
+  const poll = remotePollMs();
+  const keys = requestKeys(lastRequest);
+  for (const key of keys) {
+    const [sid, identity] = JSON.parse(key);
+    if (marks.has(key)) { pendingSids.delete(key); continue; }
+    const remote = readCfgCached().remote || {};
+    if (identity && !(remote.auto === false && remote.enabled === false) || (notLocal.has(sid) && payload.remote_enabled && remote.enabled === true)) pendingSids.set(key, now + poll);
+    else { pendingSids.delete(key); remoteSids.delete(key); }
+  }
+  for (const key of pendingSids.keys()) if (!keys.includes(key)) pendingSids.delete(key);
+  if (disabled) clearRemoteRecovery(); // 关闭期间返回的迟到成功快照也不能重建粘性标记。
+  else lastHadRemote = keys.some((key) => isRemoteSid(key) || pendingSids.has(key));
   for (const wc of webContents.getAllWebContents()) pushOnce(wc, payload);
   // 定位诊断：每 ~15 次拉取收集每个窗口各自的 __zusageDiag，附加泵侧证据后写 diag-<n>.json（多窗口互不覆盖）
   if (++pushCount % 15 === 1) {
@@ -213,6 +306,17 @@ function startResident() {
     }
   });
   proc.stderr.on("data", () => { });
+  proc.on("error", (e) => {
+    LOG("resident spawn failed:", e.message);
+    const pending = state.waiters.splice(0);
+    pending.forEach((w) => w(null));
+  });
+  proc.stdin.on("error", (e) => {
+    LOG("resident stdin failed:", e.message);
+    const pending = state.waiters.splice(0);
+    pending.forEach((w) => w(null));
+    try { proc.kill(); } catch (e) { }
+  });
   proc.on("close", () => {
     if (pyRes === state) pyRes = null;
     const pending = state.waiters;
@@ -238,54 +342,65 @@ function killResidentForUpgrade() {
   try { pyRes.proc.kill(); } catch (e) { }
 }
 
-/* 统一查询入口：resident 可用走行协议，否则一次性 spawn（config.resident=false 或判不稳定） */
-function runQuery(wants) {
+/* 统一查询入口：resident 可用走 JSON 行协议，否则一次性 spawn。 */
+function runQuery(request) {
   busy = true;
+  let settled = false;
   const done = (payload) => {
+    // timeout、error、close 只能结算一次；旧请求不得解除新请求的 busy。
+    if (settled) return;
+    settled = true;
     busy = false;
-    if (payload) handlePayload(payload);
-    if (lastHadRemote) scheduleRetry(remotePollMs());   // 远端会话聚焦期间维持轮询链
-    // 失败不原地重试：下一笔 db 写入/心跳会再拉，最多滞后一个心跳
+    if (remoteDisabled()) {
+      clearRemoteRecovery();
+      if (payload && !payload.error) handlePayload(payload);
+    } else if (payload && !payload.error) handlePayload(payload);
+    else {
+      for (const key of requestKeys(request)) pendingSids.set(key, Date.now() + remotePollMs());
+      lastHadRemote = requestKeys(request).length > 0;
+    }
+    if (lastHadRemote) scheduleRetry(remotePollMs());
   };
+  const line = JSON.stringify(request);
   if (readCfgCached().resident !== false && pyFail < 3) {
     if (!pyRes) startResident();
     if (pyRes && pyRes.proc.stdin.writable) {
       const state = pyRes;
+      const waiter = (payload) => { clearTimeout(timer); done(payload); };
       const timer = setTimeout(() => {
         LOG("resident query timeout, restarting it");
+        const index = state.waiters.indexOf(waiter);
+        if (index >= 0) state.waiters.splice(index, 1);
         pyRestarting = true;
         try { state.proc.kill(); } catch (e) { }
         done(null);
       }, 15000);
-      state.waiters.push((payload) => { clearTimeout(timer); done(payload); });
-      try { state.proc.stdin.write((wants || "") + "\n"); } catch (e) { }
+      state.waiters.push(waiter);
+      try { state.proc.stdin.write(line + "\n"); }
+      catch (e) { waiter(null); }
       return;
     }
   }
-  legacySpawn(wants);
+  legacySpawn(line, done);
 }
 
-/* 回退路径（一次性 spawn）：常驻不可用时走 */
-function legacySpawn(wants) {
-  /* wants：各窗口当前会话 id（逗号分隔）。全部强制纳入快照，共享池里包含每个窗口
-   * 自己的会话；zusage.py 逐个白名单校验。泵侧整体格式白名单防注入。 */
-  const args = [path.join(HERE, "zusage.py"), "json"];
-  if (wants && /^[A-Za-z0-9_,-]{1,600}$/.test(wants)) args.push(wants);
+/* 回退路径仍使用同款 JSON scope 请求，避免 resident=false 丢失隔离。 */
+function legacySpawn(line, done) {
+  const args = [path.join(HERE, "zusage.py"), "json", line];
   const py = spawn(readCfg().python_path, args, { windowsHide: true });
   let out = "";
-  /* 兜底：查询进程 15 秒不退出按挂死杀掉，close 事件照常触发，busy 不会永久卡住 */
-  const killTimer = setTimeout(() => { LOG("query timeout, killing"); try { py.kill(); } catch (e) { } }, 15000);
+  const killTimer = setTimeout(() => {
+    LOG("query timeout, killing");
+    try { py.kill(); } catch (e) { }
+    done(null);
+  }, 15000);
   py.stdout.on("data", (d) => { out += d; });
-  py.on("error", (e) => { busy = false; LOG("spawn failed:", e.message); });
+  py.on("error", (e) => { clearTimeout(killTimer); LOG("spawn failed:", e.message); done(null); });
   py.on("close", () => {
     clearTimeout(killTimer);
-    busy = false;
-    if (lastHadRemote) scheduleRetry(remotePollMs());
-    if (out.trim()) {
-      let payload;
-      try { payload = JSON.parse(out); } catch (e) { payload = null; }
-      if (payload) handlePayload(payload);
-    }
+    let payload = null;
+    try { payload = JSON.parse(out); } catch (e) { }
+    done(payload);
   });
 }
 
@@ -297,9 +412,10 @@ function scheduleRetry(ms) {
   retryTimer = setTimeout(maybeSpawn, ms);
 }
 function maybeSpawn() {
-  if (busy) { scheduleRetry(300); return; }
+  if (busy || collecting) { scheduleRetry(300); return; }
   const st = dbStamp();
   const cfg = readCfgCached();
+  if (remoteDisabled()) clearRemoteRecovery();
   const wait = Math.max(300, cfg.activity_min_ms | 0 || 1500);
   /* 先取各窗口的"当前会话 id"：主进程 IPC 映射（应用自己上报的焦点会话，v6）优先，
    * overlay 从 localStorage 键读出的 __zusageWantSid 兜底；无窗口时直接短路（空闲零进程的
@@ -309,34 +425,80 @@ function maybeSpawn() {
   const wcs = webContents.getAllWebContents().filter((wc) => isMainWindowState(wc) && !wc.isDestroyed());
   if (!wcs.length) return;
   const withTimeout = (p, ms) => Promise.race([p, new Promise((r) => setTimeout(() => r(""), ms))]);
-  /* 各窗口的 pane 会话 id（v10，__zusageWantSids 数组，分屏多实例状态条用）+ 旧单值兜底。
-   * v8 曾在 mine 模式跳过页面求值；分屏后每 pane 有自己的会话，必须读回数组才能全部纳入快照。 */
-  const readWantsJs = "(function(){var a=window.__zusageWantSids;if(!a||!a.length){a=window.__zusageWantSid?[window.__zusageWantSid]:[]}return JSON.stringify(a)})()";
-  Promise.all(wcs.map((wc) => withTimeout(wc.executeJavaScript(readWantsJs, true).catch(() => "[]"), 1000)))
+  /* 各窗口的 pane 会话 id（v10，__zusageWantSids 数组，分屏多实例状态条用）+ 旧单值兜底；
+   * v12 附带 __zusageSidWs（sid→workspaceIdentity，多服务器路由）。 */
+  collecting = true;
+  const readWantsJs = '(function(){var a=window.__zusageWantSids;if(!a||!a.length){a=window.__zusageWantSid?[window.__zusageWantSid]:[]}return JSON.stringify({s:a,w:window.__zusageSidWs||{},p:window.__zusagePaneScopes||{}})})()';
+  Promise.all(wcs.map((wc) => withTimeout(Promise.resolve().then(() => wc.executeJavaScript(readWantsJs, true)).catch(() => ""), 1000)))
     .then((vals) => {
-      /* 汇总全部窗口的全部 pane 会话（去重）：mine（窗口焦点会话）优先，pane 会话随后 */
-      const wants = [];
-      const push = (sid) => { if (sid && /^[A-Za-z0-9_-]{1,80}$/.test(sid) && !wants.includes(sid)) wants.push(sid); };
+      const request = { sids: [], scopes: [] };
+      const add = (sid, identity) => {
+        if (identity) {
+          if (!request.scopes.some((s) => s.sid === sid && s.workspaceIdentity === identity)) request.scopes.push({ sid, workspaceIdentity: identity });
+        } else if (!request.sids.includes(sid)) request.sids.push(sid);
+      };
       wcs.forEach((wc, i) => {
-        if (activeSid.has(wc.id)) push(activeSid.get(wc.id) || "");
-        let arr = [];
-        try { arr = JSON.parse(vals[i] || "[]"); } catch (e) { }
-        if (Array.isArray(arr)) arr.forEach(push);
+        let parsed = {};
+        try { parsed = JSON.parse(vals[i] || "{}"); } catch (e) { }
+        const wants = Array.isArray(parsed.s) ? parsed.s.slice() : [];
+        if (activeSid.get(wc.id)) wants.push(activeSid.get(wc.id));
+        const workspaces = windowWorkspaces.get(wc.id) || [];
+        const trusted = new Set(workspaces.filter((w) => w.kind === "remote" && w.identity.startsWith("remote:ssh:")).map((w) => w.identity));
+        const tasks = windowTasks.get(wc.id);
+        const bindings = {};
+        for (const [pid, pane] of Object.entries(parsed.p || {})) {
+          if (!pane || !wants.includes(pane.sid) || typeof pane.sid !== "string" || !/^[A-Za-z0-9_-]{1,80}$/.test(pane.sid)) continue;
+          bindings[pid] = ""; // 本地/未知 pane 显式隔离，不能从同 sid 远端绑定继承。
+          if (pane.identity === "" || (pid === "workspace-main" && !Object.prototype.hasOwnProperty.call(pane, "identity"))) {
+            // 工作区同步可能只含 connected remotes，不能证明主 pane 当前属于远端。
+            add(pane.sid, "");
+            continue;
+          }
+          if (!trusted.has(pane.identity)) continue;
+          const taskScopes = tasks && tasks.get(pane.sid);
+          if (taskScopes && !taskScopes.has(pane.identity)) continue;
+          bindings[pid] = pane.identity;
+          add(pane.sid, pane.identity);
+        }
+        for (const sid of wants) {
+          if (typeof sid !== "string" || !/^[A-Za-z0-9_-]{1,80}$/.test(sid)) continue;
+          const raw = parsed.w && parsed.w[sid];
+          const candidates = (Array.isArray(raw) ? raw : typeof raw === "string" ? [raw] : []).filter((id) => trusted.has(id));
+          const taskScopes = tasks && tasks.get(sid);
+          const eligible = [...new Set(candidates)].filter((id) => !taskScopes || taskScopes.has(id));
+          const primary = parsed.p && parsed.p["workspace-main"];
+          if (primary && primary.sid === sid && !Object.prototype.hasOwnProperty.call(primary, "identity")) continue;
+          if (eligible.length === 1) {
+            bindings[sid] = eligible[0];
+            add(sid, eligible[0]);
+          } else if (!request.scopes.some((s) => s.sid === sid)) {
+            // 本地/未知不能自动借唯一历史SSH通道；Python JSON无scope默认只查本地。
+            add(sid, "");
+          }
+        }
+        scopeBindings.set(wc.id, bindings);
       });
-      const key = wants.join(",");
-      /* v9：聚焦 SSH 远程会话时本地 db 不写入（st 恒定），短路径放行、改按 remote 轮询间隔 */
-      const remoteActive = wants.some((s) => remoteSids.has(s));
-      if (key === lastWants && st && st === lastStamp && !remoteActive) return;   // 会话与数据都没变：零进程
+      request.sids.sort();
+      request.scopes.sort((a, b) => scopeKey(a.sid, a.workspaceIdentity).localeCompare(scopeKey(b.sid, b.workspaceIdentity)));
+      const key = JSON.stringify(request);
+      const src = sourceStamp();
+      const keys = requestKeys(request);
       const now = Date.now();
-      const effWait = remoteActive ? remotePollMs() : wait;
+      const remoteActive = keys.some((s) => isRemoteSid(s));
+      const pendingDue = keys.some((s) => { const t = pendingSids.get(s); return t !== undefined && t <= now; });
+      if (key === lastWants && src === lastSourceStamp && st && st === lastStamp && !remoteActive && !pendingDue) return;
+      const effWait = (remoteActive || pendingDue) ? remotePollMs() : wait;
       if (now - lastSpawn < effWait) { scheduleRetry(effWait - (now - lastSpawn) + 50); return; }
       lastWants = key;
-      lastHadRemote = remoteActive;
+      lastSourceStamp = src;
+      lastRequest = request;
+      lastHadRemote = remoteActive || pendingDue || request.scopes.length > 0;
       if (st) lastStamp = st;
       lastSpawn = now;
-      runQuery(key);
+      runQuery(request);
     })
-    .catch(() => { });
+    .catch(() => { })
+    .finally(() => { collecting = false; });
 }
 
 /* 监听 db 目录：WAL/主库一有写入立刻（去抖 300ms）触发拉取；完全空闲时零进程零轮询 */
@@ -469,4 +631,12 @@ const hook = (wc) => {
 app.on("web-contents-created", (e, wc) => hook(wc));
 for (const wc of webContents.getAllWebContents()) hook(wc);
 
-LOG("injected v11 (per-pane wants array, resident query mode + remote SSH datasource, answer_rate_line config write for the per-answer rate line toggle, plugin request polling decoupled from updater availability)");
+/* 测试接缝：vm 沙箱加载后取内部引用复现真实控制流；生产加载方（asar 动态 import）不用它。 */
+if (typeof module === "object" && module && module.exports) {
+  module.exports.__zusageTest = {
+    handlePayload, maybeSpawn, isRemoteSid, remoteSids, pendingSids,
+    targetByIdentity: () => targetByIdentity,
+  };
+}
+
+LOG("injected v12 (auto remote targets from client setting.json, per-sid multi-server routing, sticky remote marks + pending-retry self recovery, per-pane wants array, resident query mode, answer_rate_line config write, plugin request polling decoupled from updater availability)");

@@ -22,6 +22,7 @@ Windows / macOS · Python 3.8+ · [MIT](LICENSE)
 - **Inspect details**: hover for cache and thinking tokens, click for subagent usage, and spot tool errors.
 - **Make it yours**: use ⚙ to choose visible items, switch languages and manage plugin updates.
 - **Query in chat**: use `/usage` for reports; the plugin also adds a rate line to eligible replies.
+- **Follow remote sessions**: adapt to connected SSH workspaces and route by `workspaceIdentity` across servers, with separate daily totals and errors. Failed or not-yet-found sessions keep retrying; resumed sessions and reconnects continue querying. See the remote section below.
 
 [Feature screenshots and details →](docs/features.md)
 
@@ -117,9 +118,58 @@ On macOS, use `python3 install.py --lang en` if `python` is unavailable.
 
 The plugin command's full name is `/zcode-token-usage-statusbar:usage`.
 
+## SSH remote support (current main)
+
+> These features are in the current `main` / newer local source and **have not been published as a stable Release**. Editing the repository does not update a running plugin or injection. Update the local installed plugin copy/runtime files, complete installation or repair, then **quit ZCode completely and restart it**. An existing stable-channel installation does not imply these features are present.
+
+### Features and data sources
+
+- **Automatic connection adaptation**: derive query transports from saved SSH workspace connection settings, and identify remote sessions using the current workspace identity supplied by the host. Automatic mode queries only confirmed remote scopes; it does not probe historical servers with unknown local session IDs.
+- **Precise multi-server routing**: use the session ID together with `workspaceIdentity` to select its server. Manual targets need the matching `identity`, not just a host label. Matching IDs alone do not merge data across workspaces, windows or servers.
+- **Separate daily totals and errors**: each target keeps its own `today` and error state. A remote total is not substituted for local or another server's daily total, and a failing target should not block other sources.
+- **Continued recovery**: failed or not-yet-found sessions keep retrying with backoff rather than being permanently abandoned. After resuming a historical session, switching workspaces or reconnecting SSH, remote queries continue only when a reliable identity is available. An unconfirmed identity is not guessed.
+
+**Main-pane ownership boundary**: partial remote IPC identifies only some remote workspaces, not the current main pane. If the actual `workspace-main` is absent from `panes` and has no reliable scope, only local `sids` are reported. Historical candidates do not infer remote ownership, and remote data from another pane with the same SID is not shared. An unknown main pane shows a local match or 0. The right pane explicitly bound to a remote workspace still routes automatically and can be used for remote statistics. Reopening or restarting may trigger host events again but cannot guarantee main-pane identification; legacy manual single-channel queries are not ownership evidence.
+
+### Prerequisites and limits
+
+1. **Manually deploy the matching `zusage.py` on each SSH server**, by default at `~/.zcode/zcode-token-usage-statusbar/zusage.py`. The server needs Python 3.8+ and permission to read that user's ZCode database. Adapting a connection does not install the remote script; this is not a completely zero-configuration setup.
+2. The local query transport must work non-interactively. The plugin **cannot decrypt and reuse** passwords, encrypted private keys or passphrases saved by the client. Configure SSH keys/agent authentication yourself. The plugin does not automatically log in or handle authentication prompts.
+3. Remote queries include a recursion guard. Run only the query script remotely; no desktop bar installation or further remote forwarding is required there.
+4. This support covers only the **desktop bar's JSON query chain**. MCP, `/usage` and reply rate lines do not automatically fetch data across machines. Pure CLI use has no bar UI; self-hosted Web follows its separate deployment guide.
+5. Automated fixtures verify routing and recovery logic, not live acceptance on every desktop version, SSH authentication method or multi-server environment.
+
+### Switches and manual targets
+
+`remote.auto` defaults to `true` independently of the legacy single-channel switch. `remote.enabled: false` preserves manual opt-out from legacy `ssh`/unscoped fallback; it does not disable automatic identity routing. Manual `targets` with `identity`/`identities` override automatic targets for the same identity. With discovery off, explicitly set `enabled: true` to use manual targets. Merge only the needed fields and replace the sample identity with the client's actual `workspaceIdentity`:
+
+```json
+{
+  "remote": {
+    "auto": true,
+    "enabled": false,
+    "targets": [
+      {
+        "identity": "remote:ssh:build.example.com:22:alice:/srv/build",
+        "ssh": "ssh alice@build.example.com",
+        "host_label": "build"
+      }
+    ]
+  }
+}
+```
+
+Unset target `script`, `python` and `timeout_s` inherit from the top-level `remote` section (per-target timeout is bounded to 1–6 seconds). To stop all remote queries, set both `auto: false` and `enabled: false`; keep `targets` configured without executing them. `enabled: true` allows the legacy CLI `python3 zusage.py json <SID>` (SID/comma-list protocol) to use a default single-channel fallback. The desktop always sends JSON requests; `scopes: []` forbids this fallback. An unknown main pane does not borrow that channel to query remotely or guess historical identity.
+
+Failures retain the last successful workspace snapshot with stale/error feedback; a first failure without cache shows zeros, never local daily totals. Null/error responses do not clear the last successful display. Remote polling defaults to 3 seconds (minimum 1 second), with continued backoff for failed/unknown sessions. Re-enabling queries and changes to config/connection settings are detected by the heartbeat (default 30 seconds, minimum 10 seconds).
+
+**Recovery boundary**: the plugin does not reconnect the host's SSH connection. Recovery means continued statistics-query retries and resuming after the host reconnects. Missing trusted identity is not guessed; reopening the workspace or completely restarting does not guarantee identification of the main pane.
+
+See the [remote session guide](docs/user-guide.md#远程会话) (Chinese) for switches, identity-bearing multi-server examples and recovery troubleshooting. Merge only the needed fields and preserve your settings.
+
 ## Safety and caveats
 
-- **Usage data is not uploaded**: local queries do not use the network. Configured remote sessions read the remote database over your chosen transport. Plugin updates download code over the network.
+- **Usage data is not uploaded**: local queries do not use the network. Enabled remote queries read remote databases through the chosen transport; see [SSH remote support](#ssh-remote-support-current-main) for prerequisites and limits. Plugin updates download code over the network.
 - **The bar modifies client files**: it is not a native ZCode feature. Removal strips only this project's injection, without reverting the client version.
 - **ZCode upgrades may remove the bar**: the plugin repairs the injection by default; quit completely and reopen after success. Use the installer as a fallback if automatic repair fails.
 - **Uninstalling the plugin may leave the bar behind**: follow the removal steps below.

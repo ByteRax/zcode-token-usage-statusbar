@@ -9,8 +9,21 @@
   "context_window": 1000000,
   "lang": "zh",
   "remote": {
+    "auto": true,
     "enabled": false,
     "ssh": "ssh 用户名@服务器地址",
+    "targets": [
+      {
+        "identity": "remote:ssh:build.example.com:22:alice:/srv/build",
+        "ssh": "ssh alice@build.example.com",
+        "host_label": "构建机"
+      },
+      {
+        "identities": ["remote:ssh:gpu.example.com:2222:bob:/srv/gpu"],
+        "ssh": ["ssh", "-p", "2222", "bob@gpu.example.com"],
+        "host_label": "GPU 机"
+      }
+    ],
     "script": "~/.zcode/zcode-token-usage-statusbar/zusage.py",
     "python": "python3",
     "timeout_s": 6,
