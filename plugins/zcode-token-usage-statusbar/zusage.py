@@ -609,6 +609,14 @@ def _light_snapshot(con, sid, cfg):
     }
 
 
+def hides_reasoning(model_id):
+    """Claude 系列不单独上报思考 token：reasoning_tokens 恒为 0，output_tokens 却已含思考，
+    且思考在 first_token_at 之前流出。按首字窗口计时会把思考期漏出分母（2026-10-15 真库：
+    claude-opus-5-5 有 35% 请求按首字窗口超过 300 tok/s），须同含思考段一样从 started_at 起算。
+    与 token_rate.hides_reasoning 同一规则。"""
+    return "claude" in (model_id or "").lower()
+
+
 def _session_snapshot(con, sid, cfg):
     """单个会话的完整快照（最新会话与 recent 列表共用一份结构）。"""
     srow = con.execute("select * from session where id=?", (sid,)).fetchone()
@@ -660,13 +668,15 @@ def _session_snapshot(con, sid, cfg):
     #   分子 = output_tokens（ZCode 该列已含思考 token，不另加）；
     #   分母 = completed − first_token（首 token 之后到完成），但思考 token 在
     #   first_token_at 之前流出（2026-10-14 真库裁决），含思考段的窗口前移到
-    #   started_at，否则思考时长被漏出分母、速率虚高；缺 first_token_at 时退化总耗时。
+    #   started_at，否则思考时长被漏出分母、速率虚高；Claude 系列不单独上报思考 token，
+    #   也按含思考段计时（见 hides_reasoning）；缺 first_token_at 时退化总耗时。
     tps = 0
     if last and last["output_tokens"]:
         gen_ms = None
         if last["first_token_at"] and last["completed_at"] and last["completed_at"] > last["first_token_at"]:
             gen_ms = last["completed_at"] - last["first_token_at"]
-            if last["reasoning_tokens"] and last["started_at"] and last["completed_at"] > last["started_at"]:
+            if ((last["reasoning_tokens"] or hides_reasoning(last["model_id"]))
+                    and last["started_at"] and last["completed_at"] > last["started_at"]):
                 gen_ms = last["completed_at"] - last["started_at"]
         elif last["duration_ms"]:
             gen_ms = last["duration_ms"]

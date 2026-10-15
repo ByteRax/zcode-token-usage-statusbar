@@ -4,7 +4,8 @@
 
 fixture 库模拟一轮「上轮两段 + 本问两段」的 model_usage，覆盖：
   --current 守卫（本问无入库数据时输出为空，绝不拿上一轮充数）
-  加权速率（分子=output 已含思考；含思考段窗口=completed−started）、首字延迟取第一段、
+  加权速率（分子=output 已含思考；含思考段窗口=completed−started，Claude 系列不上报思考也按此）、
+  首字延迟取第一段、
   段数/峰值、会话累计（Σoutput，思考已含不另加）
   hook 输出为严格 JSON（hookSpecificOutput.hookEventName=UserPromptSubmit + additionalContext）
 
@@ -283,6 +284,31 @@ class TestTurnCurrent(RateTestBase):
         self.assertIn("输出 600 tok / 生成 3.0s", line)
         self.assertNotIn("段 / 峰", line)
         self.assertIn("累计 600 tok", line)
+
+    def test_claude_unreported_thinking_counts_from_request_start(self):
+        # 回归（2026-10-15 真库同款数据）：Claude 系列 reasoning_tokens 恒为 0，但 output 已含
+        # 思考、思考在 first_token_at 之前流出——按首字窗口曾算出 1074 ÷ 1.426s = 753.2 tok/s。
+        # 须按含思考段从 started_at 计时：1074 ÷ 15.087s = 71.2；缺首字时同样按整段；
+        # 非 Claude 模型口径不变（仍是首字窗口）。
+        start = self.t0 + 1000
+        cases = (("claude-opus-5-5", start + 13661, 71.2),
+                 ("claude-opus-5-5", None, 71.2),
+                 ("test-model", start + 13661, 753.2))
+        for i, (model, first_token, expected) in enumerate(cases):
+            with self.subTest(model=model, first_token=first_token):
+                segment = list(row("c1", "sess_claude", "turn_c", "main_turn", start, first_token,
+                                   13661 if first_token else None, start + 15087, 10, 1074, 0))
+                segment[4] = model
+                db2 = Path(self.tmp.name) / f"claude-{i}.sqlite"
+                make_db(str(db2), [tuple(segment)])
+                state2 = Path(self.tmp.name) / f"claude-{i}.json"
+                state2.write_text(json.dumps({"sessionId": "sess_claude", "ts": self.t0, "promptTs": self.t0}))
+                env = dict(os.environ, ZCODE_USAGE_DB=str(db2), ZCODE_SESSION_ID="sess_claude",
+                           ZUSAGE_RATE_STATE_FILE=str(state2))
+                r = subprocess.run([sys.executable, str(RATE), "--turn", "--current", "--json"],
+                                   capture_output=True, text=True, env=env, timeout=30)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                self.assertEqual(json.loads(r.stdout)["turn"]["tokPerSec"], expected)
 
     def test_json_output(self):
         self.write_state({"sessionId": SID, "ts": self.t0, "promptTs": self.t0})

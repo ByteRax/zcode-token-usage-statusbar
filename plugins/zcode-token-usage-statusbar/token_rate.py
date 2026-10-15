@@ -19,7 +19,8 @@
   = input + output 不另加 reasoning，不能再相加）；
   分母 = 纯生成时长——无思考段 completed_at − first_token_at，含思考段
   completed_at − started_at（思考 token 在 first_token_at 之前流出，窗口须前移），
-  按段累加，段间工具等待不计入。
+  按段累加，段间工具等待不计入。Claude 系列不单独上报思考 token（reasoning_tokens
+  恒为 0）也按含思考段计时（2026-10-15 真库裁决，见 hides_reasoning）。
 """
 import json
 import math
@@ -153,6 +154,13 @@ def scope_for(db, sid):
     return base + tail, args
 
 
+def hides_reasoning(model_id):
+    """Claude 系列不单独上报思考 token：reasoning_tokens 恒为 0，output_tokens 却已含思考，
+    且思考在 first_token_at 之前流出。按首字窗口计时会把思考期漏出分母（2026-10-15 真库：
+    claude-opus-5-5 有 35% 请求按首字窗口超过 300 tok/s），须同含思考段一样从 started_at 起算。"""
+    return "claude" in (model_id or "").lower()
+
+
 def to_item(r):
     # 口径（2026-10-14 据真库 raw_usage_json 裁决，与 Changlan4/zcode-tps-widget 核对一致）：
     # 1) ZCode 的 output_tokens **已包含** reasoning_tokens（provider 原生 totalTokens =
@@ -165,7 +173,8 @@ def to_item(r):
     ft, ct, st = r["first_token_at"], r["completed_at"], r["started_at"]
     has_time = isinstance(ct, int) and ct > (ft if isinstance(ft, int) else ct)
     gen_ms = ct - ft if has_time else None
-    if reasoning > 0 and isinstance(st, int) and ct > st:
+    if ((reasoning > 0 or hides_reasoning(r["model_id"]))
+            and isinstance(st, int) and isinstance(ct, int) and ct > st):
         gen_ms = ct - st   # 含思考段：窗口前移到 started_at，把思考期计入生成时长
     valid = gen_ms is not None and MIN_GEN_MS <= gen_ms < MAX_GEN_MS and tok > 0
     ttft = r["time_to_first_token_ms"]
