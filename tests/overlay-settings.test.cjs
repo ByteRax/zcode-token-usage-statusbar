@@ -157,7 +157,7 @@ test('panel retains all controls, scroll position and settings-only styling', ()
   for (const key of ['ctx', 'turn', 'win', 'tools', 'today', 'sub']) {
     assert.ok(source.includes('data-k="' + key + '"'));
   }
-  for (const selector of ['zu-rate-line', 'zu-auto-update', 'zu-ctxov', 'data-update="check"', 'data-update="update"', 'name="zu-lang"']) {
+  for (const selector of ['zu-rate-line', 'zu-auto-update', 'zu-ctxov', 'data-update="check"', 'data-update="update"', 'name="zu-lang"', 'zu-settings-feedback']) {
     assert.ok(source.includes(selector));
   }
   assert.match(source, /\.zu-settings-body"\)\.scrollTop = scrollTop/);
@@ -165,4 +165,69 @@ test('panel retains all controls, scroll position and settings-only styling', ()
   assert.match(source, /panel\.addEventListener\("scroll", syncSettingsScroll, true\)/);
   assert.match(source, /body\.scrollTop \+= Math\.max\(1, Math\.round\(body\.clientHeight \* \.8\)\)/);
   assert.match(source, /positionSettingsPanel\(\);\s*positionSubPanel\(\);\s*everMounted = true/);
+});
+
+const ISSUES_URL = 'https://github.com/ByteRax/zcode-token-usage-statusbar/issues';
+test('feedback button sits in the footer with localized copy', () => {
+  const buildSource = extract('    function settingRow(', '    function syncSettingsScroll() {');
+  const body = { scrollTop: 0 };
+  const context = {
+    panel: {
+      innerHTML: '',
+      querySelector: () => body, querySelectorAll: () => [],
+    },
+    state: { lang: 'zh', show: {}, ctxOv: '' },
+    L: (zh, en) => context.state.lang === 'en' ? en : zh,
+    syncUpdate: () => {}, syncSettingsScroll: () => {},
+  };
+  vm.runInNewContext(buildSource + '\nbuildPanel();', context);
+  assert.match(context.panel.innerHTML, /class="zu-settings-feedback">反馈问题<\/button>/);
+  assert.ok(context.panel.innerHTML.indexOf('zu-settings-feedback') > context.panel.innerHTML.indexOf('zu-settings-scroll'));
+  context.state.lang = 'en';
+  vm.runInNewContext('buildPanel();', context);
+  assert.match(context.panel.innerHTML, /class="zu-settings-feedback">Report an issue<\/button>/);
+});
+test('footer feedback click prefers the zcode openExternal bridge over window.open', () => {
+  const clickSource = extract('    panel.addEventListener("click",', '    gear.addEventListener("click"');
+  let handler;
+  const opened = [], bridged = [];
+  let pluginCalls = 0;
+  const context = {
+    panel: {
+      addEventListener: (_, fn) => { handler = fn; },
+      classList: { remove: () => {} },
+      querySelector: () => ({ scrollTop: 0 }),
+    },
+    window: { open: (...args) => { opened.push(args); }, zcode: { openExternal: url => { bridged.push(url); } } },
+    syncSettingsScroll: () => {},
+    pluginRequest: () => { pluginCalls++; },
+  };
+  vm.runInNewContext(clickSource, context);
+  handler({ target: { closest: sel => sel === '.zu-settings-feedback' ? {} : null } });
+  assert.deepEqual(bridged, [ISSUES_URL]);
+  assert.deepEqual(opened, []);
+  assert.equal(pluginCalls, 0);
+});
+test('footer feedback click falls back to window.open when the bridge is absent', () => {
+  const clickSource = extract('    panel.addEventListener("click",', '    gear.addEventListener("click"');
+  let handler;
+  const opened = [];
+  let pluginCalls = 0;
+  const context = {
+    panel: {
+      addEventListener: (_, fn) => { handler = fn; },
+      classList: { remove: () => {} },
+      querySelector: () => ({ scrollTop: 0 }),
+    },
+    window: { open: (...args) => { opened.push(args); }, zcode: { openExternal: 'broken' } },
+    syncSettingsScroll: () => {},
+    pluginRequest: () => { pluginCalls++; },
+  };
+  vm.runInNewContext(clickSource, context);
+  handler({ target: { closest: sel => sel === '.zu-settings-feedback' ? {} : null } });
+  assert.deepEqual(opened, [[ISSUES_URL, '_blank', 'noopener']]);
+  assert.equal(pluginCalls, 0);
+  handler({ target: { closest: sel => sel === '[data-update]' ? { dataset: { update: 'check' } } : null } });
+  assert.equal(pluginCalls, 1);
+  assert.equal(opened.length, 1);
 });
