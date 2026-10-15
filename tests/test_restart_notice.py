@@ -40,7 +40,8 @@ class RestartNoticeTests(unittest.TestCase):
         with mock.patch.object(notice, "installation_status", return_value=False):
             context = notice.reminder_context(self.runtime)
         self.assertIn("用户可见·安装提醒", context)
-        self.assertIn("/zcode-token-usage-statusbar:install-overlay", context)
+        self.assertIn("/install-overlay", context)
+        self.assertIn("/uninstall-overlay", context)
         self.assertNotIn("请完全退出 ZCode", context)
         self.assertEqual((self.runtime / notice.MARKER).read_bytes(), original)
 

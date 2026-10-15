@@ -39,14 +39,7 @@ Windows / macOS · Python 3.8+ · [MIT](LICENSE)
 
 #### 方式一：远程安装（无需下载源码）
 
-在 **ZCode 对话输入框**依次执行：
-
-```text
-/plugin marketplace add ByteRax/zcode-token-usage-statusbar#plugin-releases
-/plugin install zcode-token-usage-statusbar@zusage-marketplace
-```
-
-也可以打开 **设置 → 插件 → 添加插件市场**，输入 `https://github.com/ByteRax/zcode-token-usage-statusbar#plugin-releases`，添加后找到 **ZCode Token Usage Statusbar** 并安装。此渠道安装经过校验的正式 Release，不跟随开发分支。
+打开 **设置 → 插件 → 发现 → +（添加插件市场）**，输入 `https://github.com/ByteRax/zcode-token-usage-statusbar#plugin-releases`，添加后找到 **ZCode Token Usage Statusbar**，点击安装并保持启用。此渠道安装经过校验的正式 Release，不跟随开发分支。
 
 #### 方式二：本地目录安装
 
@@ -55,13 +48,6 @@ Windows / macOS · Python 3.8+ · [MIT](LICENSE)
 1. 打开 **设置 → 插件 → 添加插件市场**，点击 **选择目录**。
 2. 选择包含 `marketplace.json` 的仓库根目录（不是 `plugins/` 子目录），添加市场。
 3. 找到 **ZCode Token Usage Statusbar**，点击安装。
-
-也可在 ZCode 中执行，路径替换为实际仓库目录：
-
-```text
-/plugin marketplace add /绝对路径/到/zcode-token-usage-statusbar
-/plugin install zcode-token-usage-statusbar@zusage-marketplace
-```
 
 <details>
 <summary>查看添加插件市场截图</summary>
@@ -72,9 +58,9 @@ Windows / macOS · Python 3.8+ · [MIT](LICENSE)
 
 #### 安装窗口底部的状态条
 
-> **适用范围：** 本文关于状态条默认自动安装/修复的说明仅适用于当前 `main` / 本地新版源码，尚未发布到正式渠道。`#plugin-releases` 的正式版 `v1.4.1` 仍默认关闭自动安装；请执行 `/install-overlay`，或在下述配置文件中合并 `"plugin_auto_install_overlay": true` 后新建或恢复会话。
+> **当前正式版：** `#plugin-releases` 正式渠道默认自动安装/修复状态条；配置文件不存在或缺少字段时开启，已有显式 `false` 会保留，详见下文。
 
-安装当前 `main` 的本地新版源码插件后，保持插件启用，新建或重新打开会话，插件默认自动安装/修复状态条。**这会修改客户端的 `app.asar`，请确认信任此项目。安装成功后，必须完全退出并重新打开 ZCode**，只关闭窗口不算退出。
+安装插件后，保持插件启用，新建或恢复会话，插件默认自动安装/修复状态条。**这会修改客户端的 `app.asar`，请确认信任此项目。安装成功后，必须完全退出并重新打开 ZCode**，只关闭窗口不算退出。
 
 自动安装失败时，再手动执行以下兜底命令，按实际输出排查；成功后仍需完全退出并重开：
 
@@ -88,7 +74,7 @@ Windows / macOS · Python 3.8+ · [MIT](LICENSE)
 
 **以后如何更新？**
 
-- **远程安装**：在 ZCode 输入 `/plugin marketplace update zusage-marketplace`，再到 **设置 → 插件 → 已安装** 更新本插件。
+- **远程安装**：打开 **设置 → 插件**，在市场管理中刷新 `zusage-marketplace`，再到 **已安装** 更新本插件。
 - **本地安装**：先自行更新本地源码，再执行同样的刷新和更新步骤；本地市场不会替你 `git pull`。
 - 更新后新建或重新打开会话；若提示主进程文件变化，完全退出并重开 ZCode。
 
@@ -114,9 +100,9 @@ macOS 上若找不到 `python`，改用 `python3 install.py`。
 - **悬停**：查看某项的详细数据。
 - **点击子智能体**：展开各个任务的用量。
 - **点击 ⚙**：隐藏不关心的项目、切换语言，或检查插件更新。
-- **输入 `/usage today`**：查看今天的用量；`/usage week` 查看近一周。
+- **输入 `/usage today`**：查看今天的用量；`/usage week` 查看近一周，`/usage days:14` 按天查看近 14 天。
 
-插件命令的完整名称是 `/zcode-token-usage-statusbar:usage`。
+插件命令按文件名注册，实际名称是 `/usage`、`/install-overlay`、`/uninstall-overlay`，不加插件名前缀。插件启用后，可在输入框的 `/` 命令菜单找到它们。`disable-noninteractive: true` 会将命令从桌面协议命令列表隐藏，并不是阻止执行的安全门，因此安装/卸载命令不设置该字段。
 
 ## SSH 远端支持（当前 main）
 

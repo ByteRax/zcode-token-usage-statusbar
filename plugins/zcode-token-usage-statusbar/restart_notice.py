@@ -17,9 +17,9 @@ RESTART_ACTION = ("请完全退出 ZCode（所有窗口）：从 ZCode 菜单选
                   "让窗口底部的用量状态条加载新版本。只关窗口、刷新页面或重开会话无效。")
 MESSAGE = PREFIX + "用量状态条已安装或更新。" + RESTART_ACTION
 INSTALL_MESSAGE = (PREFIX + "窗口底部的用量状态条还没有安装好。插件默认自动安装，但当前尚未完成。"
-                   "需要请运行 /zcode-token-usage-statusbar:install-overlay（会修改客户端文件），"
+                   "需要请运行 /install-overlay（会修改客户端文件），"
                    "安装成功后再退出并重开 ZCode；仅重启不能完成安装。"
-                   "不需要请运行 /zcode-token-usage-statusbar:uninstall-overlay，之后不再提示。")
+                   "不需要请运行 /uninstall-overlay，之后不再提示。")
 
 
 def runtime_dir():
@@ -102,7 +102,7 @@ def reminder(runtime=None, injected=None, restart_files=()):
     if incomplete:
         detail = "状态条运行时同步尚未完成或提醒记录不可验证，不能确认安装成功。"
         message = (PREFIX + "用量状态条的安装或更新还没有完成，或记录无法确认。请运行 "
-                   "/zcode-token-usage-statusbar:install-overlay 重试；仅重启不能保证修复。"
+                   "/install-overlay 重试；仅重启不能保证修复。"
                    "如果仍然失败，请查看插件日志。")
         label = "安装提醒"
     else:

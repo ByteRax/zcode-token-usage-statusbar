@@ -14,9 +14,11 @@ fixture 库模拟一轮「上轮两段 + 本问两段」的 model_usage，覆盖
 运行：python3 -B -m unittest discover -s tests -p 'test_*.py'
 """
 import contextlib
+import base64
 import json
 import os
 import sqlite3
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -397,17 +399,20 @@ class TestPromptSubmitHook(RateTestBase):
         before = int(time.time() * 1000)
         r = self.run_hook()
         self.assertEqual(r.returncode, 0, r.stderr)
-        out = json.loads(r.stdout)  # 多余键会让客户端校验失败，这里必须恰好只有协议键
+        out = json.loads(r.stdout)
         self.assertEqual(set(out), {"hookSpecificOutput"})
         inner = out["hookSpecificOutput"]
         self.assertEqual(set(inner), {"hookEventName", "additionalContext"})
         self.assertEqual(inner["hookEventName"], "UserPromptSubmit")
         ctx = inner["additionalContext"]
         self.assertIn("【内部背景·勿展示】上一条回复:", ctx)
-        self.assertIn("--turn --current", ctx)
-        self.assertIn(f'--session "{SID}"', ctx)   # 回归：钩子必须把本会话 id 钉进命令行，
-        # 见 test_explicit_session_flag_overrides_global_last_active_pointer 的理由
-        self.assertIn("token_rate.py", ctx)
+        command = next(line.split("运行一次:", 1)[1] for line in ctx.splitlines() if "运行一次:" in line)
+        if sys.platform == "win32":
+            payload = base64.b64decode(shlex.split(command)[-1], validate=True).decode("utf-16le")
+            self.assertIn("'--turn' '--current' '--session' '" + SID + "'", payload)
+            self.assertIn("token_rate.py", payload)
+        else:
+            self.assertEqual(shlex.split(command), [sys.executable, str(RATE), "--turn", "--current", "--session", SID])
         self.assertIn("Markdown 引用块", ctx)
         # 状态文件：记录了会话与提问时刻（--current 守卫依据）
         st = json.loads(Path(self.state).read_text())
@@ -433,7 +438,11 @@ class TestPromptSubmitHook(RateTestBase):
         out = json.loads(r.stdout)
         self.assertEqual(out["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit")
         self.assertFalse(Path(self.state).exists())  # 无会话不写状态
-        self.assertNotIn("--session", out["hookSpecificOutput"]["additionalContext"])
+        context = out["hookSpecificOutput"]["additionalContext"]
+        command = next(line.split("运行一次:", 1)[1] for line in context.splitlines() if "运行一次:" in line)
+        if sys.platform == "win32":
+            command = base64.b64decode(shlex.split(command)[-1], validate=True).decode("utf-16le")
+        self.assertNotIn("--session", command)
 
     def test_toggle_off_injects_no_instruction(self):
         # ⚙ 面板关闭（config.json answer_rate_line=false）：不下达统计指令，仍严格 JSON；

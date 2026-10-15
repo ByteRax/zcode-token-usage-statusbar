@@ -566,7 +566,8 @@ class PluginRuntimeTests(unittest.TestCase):
                 mock.patch.dict(os.environ, {"ZUSAGE_PLUGIN_AUTO_INSTALL": "0"}):
             for _ in range(3):
                 result = installer.run_hook()
-                self.assertIn("/zcode-token-usage-statusbar:install-overlay", result["systemMessage"])
+                self.assertIn("/install-overlay", result["systemMessage"])
+                self.assertIn("/uninstall-overlay", result["systemMessage"])
                 self.assertIn("还没有安装好", result["systemMessage"])
                 self.assertNotIn("默认不自动安装", result["systemMessage"])
                 self.assertIn("用户可见·安装提醒", result["hookSpecificOutput"]["additionalContext"])

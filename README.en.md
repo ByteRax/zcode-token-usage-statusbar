@@ -39,14 +39,7 @@ The plugin provides **usage queries, reply rates and plugin updates**. Install [
 
 #### Method 1: remote installation (no source download needed)
 
-Enter these commands in **ZCode's chat input**, in order:
-
-```text
-/plugin marketplace add ByteRax/zcode-token-usage-statusbar#plugin-releases
-/plugin install zcode-token-usage-statusbar@zusage-marketplace
-```
-
-Alternatively, open **Settings → Plugin → Add marketplace**, enter `https://github.com/ByteRax/zcode-token-usage-statusbar#plugin-releases`, then find and install **ZCode Token Usage Statusbar**. This channel installs verified stable Release assets, not development branch code.
+Open **Settings → Plugin → Discover → + (Add marketplace)**, enter `https://github.com/ByteRax/zcode-token-usage-statusbar#plugin-releases`, then find and install **ZCode Token Usage Statusbar** and leave it enabled. This channel installs verified stable Release assets, not development branch code.
 
 #### Method 2: local-directory installation
 
@@ -55,13 +48,6 @@ Download or clone this repository, then:
 1. Open **Settings → Plugin → Add marketplace** and click **Choose directory**.
 2. Select the repository root containing `marketplace.json` (not the `plugins/` subdirectory) and add it.
 3. Find **ZCode Token Usage Statusbar** and install it.
-
-Or enter these commands in ZCode, replacing the path with your repository directory:
-
-```text
-/plugin marketplace add /absolute/path/to/zcode-token-usage-statusbar
-/plugin install zcode-token-usage-statusbar@zusage-marketplace
-```
 
 <details>
 <summary>Add marketplace screenshot</summary>
@@ -72,9 +58,9 @@ Or enter these commands in ZCode, replacing the path with your repository direct
 
 #### Add the floating bar
 
-> **Scope:** References to automatic bar installation/repair being enabled by default apply only to the current `main` / newer local source, not yet published to the stable channel. Stable `v1.4.1` from `#plugin-releases` still defaults to disabled; run `/install-overlay`, or merge `"plugin_auto_install_overlay": true` into the config file below and start or resume a session.
+> **Current stable release:** The `#plugin-releases` channel enables automatic bar installation/repair by default when the config file or key is missing. An existing explicit `false` is preserved; see below.
 
-After installing the newer local source plugin from the current `main`, leave the plugin enabled and start or reopen a session. The plugin automatically installs/repairs the bar by default. **This modifies the client's `app.asar`; only enable it if you trust this project. After installation succeeds, quit ZCode completely and reopen it.** Closing the window alone is not enough.
+After installing the plugin, leave it enabled and start or resume a session. The plugin automatically installs/repairs the bar by default. **This modifies the client's `app.asar`; proceed only if you trust this project. After installation succeeds, quit ZCode completely and reopen it.** Closing the window alone is not enough.
 
 If automatic installation fails, use this manual fallback and follow the actual output to troubleshoot. A full restart is still required after success:
 
@@ -88,7 +74,7 @@ A missing config file or key defaults to enabled; an existing explicit `false` i
 
 **How do I update it later?**
 
-- **Remote installation**: enter `/plugin marketplace update zusage-marketplace` in ZCode, then update this plugin in **Settings → Plugin → Installed**.
+- **Remote installation**: open **Settings → Plugin**, refresh `zusage-marketplace` in marketplace management, then update this plugin under **Installed**.
 - **Local installation**: update your source first, then follow the same refresh and update steps. The local marketplace never runs `git pull` for you.
 - Start or reopen a session afterward. If prompted about changed main-process files, quit ZCode completely and reopen it.
 
@@ -114,9 +100,9 @@ On macOS, use `python3 install.py --lang en` if `python` is unavailable.
 - **Hover** an item for its detailed figures.
 - **Click Sub-agents** for per-task usage.
 - **Click ⚙** to hide items, switch language or check for plugin updates.
-- **Run `/usage today`** for today's usage, or `/usage week` for the past week.
+- **Run `/usage today`** for today's usage, `/usage week` for the past week, or `/usage days:14` for daily totals over the past 14 days.
 
-The plugin command's full name is `/zcode-token-usage-statusbar:usage`.
+Commands are registered by filename as `/usage`, `/install-overlay` and `/uninstall-overlay`, without a plugin-name prefix. When the plugin is enabled, find them in the input's `/` command menu. `disable-noninteractive: true` hides a command from the desktop protocol catalog; it is not an execution security gate, so the install/uninstall commands do not set it.
 
 ## SSH remote support (current main)
 

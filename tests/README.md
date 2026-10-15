@@ -41,13 +41,18 @@ Node 查询泵回归还覆盖首个成功/SSH 失败/error/null 响应后的实�
 
 **验收边界**：夹具结果不等于 Windows/macOS 桌面、多服务器或各种 SSH 认证方式的实机验收。源码 `main` 尚未发正式 Release；真实使用需更新本机安装副本、完全退出重启，并手工在 SSH 远端部署同版本查询脚本。插件不会自动登录、解密复用宿主密码/加密私钥、安装远端脚本或替宿主自动重连 SSH；自恢复仅指统计查询链持续重试及宿主重连后续查。partial 远端 IPC 不等于当前主 pane 归属；身份未知时不推断，重开工作区或完全重启不能保证识别。桌面 JSON 链支持不代表 MCP/回答速率自动跨机，纯 CLI 无状态条 UI。
 
+另覆盖宿主插件契约：市场条目的中英本地化及 Release 渠道保留、统计命令路径/会话的 POSIX 参数引用、Windows PowerShell 编码调用的字面参数、短 MCP 服务键与钩子 matcher/超时；SessionStart 两层异常路径、卸载豁免和探测权限失败、安装未完成和正常重启提示均检查有效的 `additionalContext` 通道（`test_plugin_contract.py`、`test_session_start_channels.py`）。Windows 原生 CMD/Git Bash 执行测试仅在相应环境运行，macOS 会明确跳过；编码结构校验不代表 Windows 实机验收。
+
 ## 宿主真实 CLI 集成（macOS）
 
 ```bash
 python3 -B tests/plugin-cli-smoke.py
+python3 -B tests/plugin-commands-cli-smoke.py
 ```
 
 需要已安装 `/Applications/ZCode.app` 和 macOS 自带 `sandbox-exec`。脚本在临时 HOME/cwd 下建立无 hook/MCP 的最小市场，运行官方添加、安装、检测及更新命令，验证 1.0.0 升为 1.1.0 的安装记录与缓存，并测试真正的 `createUpdater` 及独立 `--auto` 子进程入口。独立入口仅附带固定 JSON 输出的同步夹具脚本，不包含真实注入器。网络、临时目录外写入、读取真实 HOME/仓库/asar 均被沙箱拒绝。临时目录会自动删除。
+
+`plugin-commands-cli-smoke.py` 使用真实客户端 CLI 和临时 bundle 副本，验证三个裸名命令的 list/inspect、实际协议命令目录与纯文本参数展开，旧插件前缀名明确 not-found；还验证旧聊天安装/更新子命令只返回 Usage，以及短 MCP 服务键对应的模型工具名。只复制清单、命令和被测分派代码，不复制或运行 hook/安装器；不启动模型、NDJSON 会话或 UI，因此不是界面端到端测试。bundle 结构改变时会明确失败，不退回模拟实现。
 
 ## 设置面板交互
 
