@@ -3,11 +3,11 @@
 
 运行：python3 -B -m unittest discover -s tests -p 'test_*.py'
 """
+import ctypes
 import importlib.util
 import json
 import os
 import struct
-import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 _spec = importlib.util.spec_from_file_location("install_discovery_test", ROOT / "install.py")
 installer = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(installer)
+REAL_DRIVE_CANDIDATES = installer.drive_candidates   # setUp 会替换，盘符用例要用真实实现
 
 
 def make_asar(path, files):
@@ -54,6 +55,10 @@ class DiscoveryTests(unittest.TestCase):
         env = mock.patch.dict(os.environ, {"ZCODE_ASAR": ""})
         env.start()
         self.addCleanup(env.stop)
+        # 盘符扫描默认关闭，隔离 Windows 测试机上真实存在的 ZCode；盘符用例单独打开。
+        drives = mock.patch.object(installer, "drive_candidates", return_value=[])
+        self.drive_candidates = drives.start()
+        self.addCleanup(drives.stop)
 
     def zcode_asar(self, name="zcode-desktop"):
         path = self.root / "ZCode" / "resources" / "app.asar"
@@ -88,14 +93,33 @@ class DiscoveryTests(unittest.TestCase):
                                [header_is_list, files_is_list, package_is_list]):
             self.assertIsNone(installer.find_asar())
 
-    def test_windows_candidates_cover_custom_drive_layouts(self):
-        if sys.platform != "win32":
-            self.skipTest("Windows 盘符候选")
-        candidates = installer.ASAR_CANDIDATES
-        self.assertIn(r"D:\Program Files\ZCode\resources\app.asar", candidates)
-        self.assertIn(r"E:\ZCode\resources\app.asar", candidates)
-        # 去重：预置候选与盘符枚举不重复出现。
-        self.assertEqual(len(candidates), len(set(candidates)))
+    def test_drive_candidates_cover_custom_layouts_on_fixed_drives(self):
+        with mock.patch.object(installer, "fixed_drives", return_value=["D", "E"]) as fixed:
+            candidates = REAL_DRIVE_CANDIDATES()
+        fixed.assert_called_once_with("CDEFGHIJKLMNOPQRSTUVWXYZ")
+        self.assertEqual(candidates, [r"D:\Program Files\ZCode\resources\app.asar",
+                                      r"D:\ZCode\resources\app.asar",
+                                      r"E:\Program Files\ZCode\resources\app.asar",
+                                      r"E:\ZCode\resources\app.asar"])
+
+    def test_fixed_drives_skip_network_removable_and_missing_drives(self):
+        # 离线映射网络盘一被访问就触发重连，光驱/读卡器可能无介质：只保留 DRIVE_FIXED(3)。
+        kinds = {"C:\\": 3, "D:\\": 4, "E:\\": 3, "F:\\": 2, "G:\\": 5}   # 1=DRIVE_NO_ROOT_DIR
+        kernel32 = mock.Mock()
+        kernel32.GetDriveTypeW.side_effect = lambda root: kinds.get(root, 1)
+        with mock.patch.object(ctypes, "windll", mock.Mock(kernel32=kernel32), create=True):
+            self.assertEqual(installer.fixed_drives("CDEFGH"), ["C", "E"])
+        if not hasattr(ctypes, "windll"):
+            self.assertEqual(installer.fixed_drives("CD"), [])
+
+    def test_find_asar_checks_identity_of_drive_candidates(self):
+        foreign = self.root / "foreign" / "resources" / "app.asar"
+        make_asar(foreign, {"package.json": json.dumps({"name": "another-electron-app"}).encode()})
+        good = self.zcode_asar()
+        self.drive_candidates.return_value = [str(foreign), str(good)]
+        with mock.patch.object(installer, "ASAR_CANDIDATES", []), \
+                mock.patch.object(installer.sys, "platform", "win32"):
+            self.assertEqual(installer.find_asar(), good)
 
 
 if __name__ == "__main__":

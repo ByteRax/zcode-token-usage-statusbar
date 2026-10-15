@@ -108,6 +108,8 @@ class ReleaseIntegrationTests(unittest.TestCase):
             return (self.blob_oid((self.root / args[3]).read_bytes()) + "\n").encode()
         if len(args) == 3 and args[:2] == ("git", "rev-parse") and args[2].startswith("HEAD:"):
             return (self.blob_oid(self.source_bytes[args[2][len("HEAD:"):]]) + "\n").encode()
+        if len(args) == 4 and args[:3] == ("git", "cat-file", "blob") and args[3].startswith("HEAD:"):
+            return self.source_bytes[args[3][len("HEAD:"):]]
         if args == ("git", "remote", "-v"):
             return ("origin https://github.com/" + REPOSITORY + ".git (fetch)\n").encode()
         if args == ("gh", "auth", "status", "--hostname", "github.com"):

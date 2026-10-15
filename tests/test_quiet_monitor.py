@@ -2,10 +2,12 @@
 import importlib.util
 import io
 import contextlib
+import ctypes
 import os
 from pathlib import Path
 import sys
 import tempfile
+import types
 import unittest
 from unittest import mock
 
@@ -308,6 +310,45 @@ class QuietMonitorTests(unittest.TestCase):
                 self.monitor.main()
         check.assert_called_once_with(self.tmp, expect=False)
         self.assertEqual(self.asar.read_bytes(), b"removed package")
+
+
+class WaitAnyExitTests(unittest.TestCase):
+    """Windows 句柄等待分支：用假 kernel32 在任意平台覆盖分支逻辑。"""
+
+    def setUp(self):
+        with mock.patch.object(sys, "argv", ["install_monitor.py", "0", "app.asar", "."]):
+            self.monitor = module("wait_any_exit_test", ROOT / "install_monitor.py")
+
+    def wait(self, opened, error):
+        kernel32 = mock.Mock()
+        kernel32.OpenProcess.side_effect = lambda access, inherit, pid: opened.get(pid, 0)
+        with mock.patch.object(self.monitor, "os", types.SimpleNamespace(name="nt")), \
+                mock.patch.object(ctypes, "WinDLL", create=True, return_value=kernel32), \
+                mock.patch.object(ctypes, "get_last_error", create=True, return_value=error), \
+                mock.patch.object(self.monitor.time, "sleep") as sleep:
+            self.monitor.wait_any_exit(["11", "12"], 10)
+        return kernel32, sleep
+
+    def test_waits_on_every_handle_and_closes_them(self):
+        kernel32, sleep = self.wait({11: 101, 12: 102}, error=0)
+        count, handles, wait_all, timeout = kernel32.WaitForMultipleObjects.call_args.args
+        self.assertEqual((count, list(handles), wait_all, timeout), (2, [101, 102], False, 10000))
+        self.assertEqual([c.args for c in kernel32.CloseHandle.call_args_list], [(101,), (102,)])
+        sleep.assert_not_called()
+
+    def test_pid_gone_since_sampling_returns_immediately(self):
+        # 采集后已退出（ERROR_INVALID_PARAMETER）：「任一退出」已发生，不能再等或睡，
+        # 否则正好错过「退出→立即重启」空档。
+        kernel32, sleep = self.wait({11: 101}, error=87)
+        kernel32.WaitForMultipleObjects.assert_not_called()
+        sleep.assert_not_called()
+        kernel32.CloseHandle.assert_called_once_with(101)
+
+    def test_inaccessible_processes_sleep_one_full_interval(self):
+        # 进程都在但全部无权等待（ERROR_ACCESS_DENIED）：按轮询间隔睡，不忙转。
+        kernel32, sleep = self.wait({}, error=5)
+        kernel32.WaitForMultipleObjects.assert_not_called()
+        sleep.assert_called_once_with(10)
 
 
 if __name__ == "__main__":

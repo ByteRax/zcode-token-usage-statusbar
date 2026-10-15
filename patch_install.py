@@ -384,6 +384,13 @@ def _same_stamp(path, fingerprint):
         raise PendingTmpError(f"file identity changed: {path}")
 
 
+def _same_fingerprint(current, recorded):
+    """按当前平台字段集比较：升级前写的 sidecar 可能多带 Windows 已不比对的 ctime_ns；
+    缺字段或非对象（未经校验的 previous_tmp）按不匹配处理。"""
+    return isinstance(recorded, dict) and all(
+        recorded.get(key) == value for key, value in current.items())
+
+
 def _load_tmp_metadata():
     try:
         if TMP_META.is_symlink():
@@ -454,13 +461,13 @@ def _owned_tmp_metadata():
     meta = _load_tmp_metadata()
     if TMP.exists() or TMP.is_symlink():
         current = source_fingerprint(TMP)
-        matches = current == meta["tmp"]
+        matches = _same_fingerprint(current, meta["tmp"])
         if meta["operation"] == "cancelled" and meta.get("publishing") is True:
             # rename can change ctime. Same inode, content and other stamps prove
             # ownership; the prior package may still be present before rename.
             fields = ("size", "mtime_ns", "dev", "ino", "sha256")
             matches = matches or all(current[key] == meta["tmp"][key] for key in fields)
-            matches = matches or current == meta.get("previous_tmp")
+            matches = matches or _same_fingerprint(current, meta.get("previous_tmp"))
         if not matches:
             raise PendingTmpError("pending TMP no longer belongs to its sidecar")
     return meta
@@ -533,8 +540,8 @@ def pending_tmp(operation="install", verify_hash=False, verified=None):
     _same_stamp(ASAR, meta["source"])
     _same_stamp(TMP, meta["tmp"])
     if verify_hash and (verified is None or verified.get("metadata") != meta):
-        if (source_fingerprint(ASAR) != meta["source"] or
-                source_fingerprint(TMP) != meta["tmp"]):
+        if not (_same_fingerprint(source_fingerprint(ASAR), meta["source"]) and
+                _same_fingerprint(source_fingerprint(TMP), meta["tmp"])):
             raise PendingTmpError("pending source/TMP hash mismatch")
         try:
             ok = self_check(TMP, expect=meta["operation"] == "install")

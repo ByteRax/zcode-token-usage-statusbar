@@ -8,9 +8,11 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -138,6 +140,30 @@ class RuntimeSyncGuardTests(unittest.TestCase):
             self.assertIn("updater.verifyRuntimeSync", call.args[0][2])
             self.assertNotIn(str(self.plugin / "plugin-updater.cjs"), call.args[0])
         self.assertTrue(json.loads((self.runtime / "plugin-update.json").read_text())["pendingSync"])
+
+    def test_hanging_bundled_executable_falls_back_to_path_node(self):
+        # asar 旁的同名可执行文件能启动却挂起（外部应用、禁用 RunAsNode 的宿主等）：
+        # 超时后须换 PATH 里的 node 重试，不能让 TimeoutExpired 冒泡中止同步；且本次同步
+        # 只试一次——每次复核都重等超时会叠加超过调用方时限（更新器 30 秒、钩子 60 秒）。
+        asar = self.root / "app" / "resources" / "app.asar"
+        bundled = asar.parent.parent / ("MacOS/ZCode" if sys.platform == "darwin"
+                                        else "ZCode.exe" if sys.platform == "win32" else "zcode")
+        bundled.parent.mkdir(parents=True, exist_ok=True)
+        bundled.write_bytes(b"hangs")
+        os.environ["ZCODE_ASAR"] = str(asar)
+        self.write(self.runtime / "config.json", {"plugin_auto_update": False})
+        run, launched = self.installer._run_verifier, []
+        def hang_bundled(command, env):
+            launched.append(command[0])
+            if command[0] == str(bundled):
+                raise subprocess.TimeoutExpired(command, self.installer.VERIFY_TIMEOUT)
+            return run(command, env)
+        with mock.patch.object(self.installer, "_run_verifier", side_effect=hang_bundled):
+            result = self.sync()
+        self.assertEqual(result["preserved"], [])
+        self.assertEqual((self.runtime / "overlay.js").read_bytes(), (self.plugin / "overlay.js").read_bytes())
+        self.assertEqual(launched.count(str(bundled)), 1)
+        self.assertEqual(set(launched[1:]), {shutil.which("node")})
 
     def test_registration_ref_or_inventory_hash_change_is_rejected(self):
         for change in ("ref", "hash", "path"):
@@ -301,6 +327,76 @@ class RuntimeSyncGuardTests(unittest.TestCase):
         self.pending = {}
         self.save_state()
         self.assertEqual(self.sync()["preserved"], [])
+
+
+class RunVerifierTests(unittest.TestCase):
+    def setUp(self):
+        spec = importlib.util.spec_from_file_location("run_verifier_installer", PLUGIN / "overlay_install.py")
+        self.installer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.installer)
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+
+    def test_output_is_decoded_as_utf8_regardless_of_locale(self):
+        # Node 恒写 UTF-8；按系统区域编码（中文 Windows 为 GBK）解码会把中文路径解错。
+        # 放进强制非 UTF-8 区域编码的解释器里调用，任何平台都能拦下“按区域编码解码”的实现；
+        # 参数一律用 ASCII 转义，避免命令行本身受区域编码影响。
+        script = f"import sys; sys.stdout.buffer.write({ascii('中文路径')}.encode('utf-8'))"
+        probe = ("import importlib.util, sys\n"
+                 "spec = importlib.util.spec_from_file_location('probe', sys.argv[1])\n"
+                 "module = importlib.util.module_from_spec(spec)\n"
+                 "spec.loader.exec_module(module)\n"
+                 f"result = module._run_verifier([sys.executable, '-c', {script!r}], None)\n"
+                 "sys.stdout.buffer.write(result.stdout.encode('utf-8'))\n")
+        env = dict(os.environ, LC_ALL="C", PYTHONUTF8="0", PYTHONCOERCECLOCALE="0")
+        out = subprocess.run([sys.executable, "-c", probe, str(PLUGIN / "overlay_install.py")],
+                             capture_output=True, env=env, timeout=60)
+        self.assertEqual(out.stdout.decode("utf-8"), "中文路径", out.stderr.decode("utf-8", "replace"))
+
+    def test_timeout_ends_process_tree_instead_of_waiting_for_inherited_pipes(self):
+        # 子进程派生的孙进程继承了输出管道：subprocess.run 超时只杀直接子进程，Windows 上还会
+        # 一直等到孙进程退出才返回。须有界返回，并连同孙进程一起结束。
+        marker = self.root / "grandchild.pid"
+        self.addCleanup(lambda: marker.exists() and kill_quietly(int(marker.read_text())))
+        script = ("import subprocess, sys, time\n"
+                  "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'],"
+                  " stdout=sys.stdout, stderr=sys.stderr)\n"
+                  f"open({str(marker)!r}, 'w').write(str(child.pid))\n"
+                  "time.sleep(30)\n")
+        started = time.monotonic()
+        with mock.patch.object(self.installer, "VERIFY_TIMEOUT", 3), \
+                self.assertRaises(subprocess.TimeoutExpired):
+            self.installer._run_verifier([sys.executable, "-c", script], dict(os.environ))
+        self.assertLess(time.monotonic() - started, 15)
+        self.assertTrue(marker.exists(), "孙进程须在超时前已派生，否则没测到继承管道的情形")
+        grandchild = int(marker.read_text())
+        for _ in range(50):
+            if not alive(grandchild):
+                break
+            time.sleep(0.1)
+        self.assertFalse(alive(grandchild), "超时须连同继承管道的孙进程一起结束")
+
+
+def alive(pid):
+    if os.name == "nt":   # Windows 的 os.kill(pid, 0) 会直接结束进程，不能用来探测
+        rows = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                              capture_output=True).stdout
+        return f'"{pid}"'.encode() in rows
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def kill_quietly(pid):
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        pass
 
 
 if __name__ == "__main__":

@@ -84,13 +84,15 @@ def zcode_pids():
 def wait_any_exit(pids, timeout_s):
     """阻塞到任一 ZCode 进程退出或超时。Windows 用进程句柄事件驱动等待，消灭固定
     轮询间隔可能错过的「退出→立即重启」空档（等错过后监控只会看到新进程，永远收不了尾）；
-    句柄不可得（权限/句柄数超限/非 Windows）时退化为普通睡眠。"""
+    采集后已退出的 PID 视为退出已发生，立即返回；句柄不可得（权限/句柄数超限/非 Windows）
+    时退化为普通睡眠。"""
     if os.name != "nt" or not pids:
         time.sleep(timeout_s)
         return
     import ctypes
     from ctypes import wintypes
     SYNCHRONIZE = 0x00100000
+    ERROR_INVALID_PARAMETER = 87   # OpenProcess：该 PID 已没有进程
     MAX_WAIT = 60   # WaitForMultipleObjects 上限 64，留余量；进程数更多时退化为睡眠
     try:
         pids = [int(pid) for pid in pids]
@@ -113,10 +115,12 @@ def wait_any_exit(pids, timeout_s):
             handle = kernel32.OpenProcess(SYNCHRONIZE, False, pid)
             if handle:
                 handles.append(handle)
+            elif ctypes.get_last_error() == ERROR_INVALID_PARAMETER:
+                return   # 采集后已退出：「任一退出」已经发生，立即复查
         if not handles:
-            # 句柄全拿不到：要么恰逢进程全部退出（尽快复查），要么权限不足恒失败
-            # （不能立即返回——监控会忙转烧 CPU 一整天），睡短间隔折衷。
-            time.sleep(min(1.0, timeout_s))
+            # 进程都在但全部无权等待（如其它用户会话的 ZCode）：按轮询间隔睡，
+            # 立即返回会让监控忙转。
+            time.sleep(timeout_s)
             return
         array = (wintypes.HANDLE * len(handles))(*handles)
         kernel32.WaitForMultipleObjects(len(handles), array, False, int(timeout_s * 1000))

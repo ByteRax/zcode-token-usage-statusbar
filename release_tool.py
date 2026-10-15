@@ -206,11 +206,14 @@ def preflight(root, repo, manifest, asset):
     require(not run(root, "git", "status", "--porcelain", "--untracked-files=all", "--", *RELEVANT),
             "relevant git files are dirty or untracked")
     for name in NAMES:
-        # 比较经 git 清洗过滤器（text=auto/autocrlf 的 CRLF↔LF 归一化）后的 blob OID，
-        # 而非裸字节：Windows 工作区检出为 CRLF、仓库 blob 是 LF，裸字节比较恒不等。
+        # 先比经 git 清洗过滤器（CRLF→LF 归一化）后的 blob OID，区分“内容未提交”；
+        # 再要求逐字节一致：发布包取的是工作区字节，Windows 的 CRLF 检出会让同一 tag
+        # 打出不同产物。.gitattributes 已固定 eol=lf，旧检出须按 maintaining.md 重新检出。
         oid = run(root, "git", "hash-object", "--", name).decode().strip()
         require(oid == run(root, "git", "rev-parse", f"HEAD:{name}").decode().strip(),
                 "source not committed in HEAD")
+        require(run(root, "git", "cat-file", "blob", "HEAD:" + name) == data[name],
+                f"line endings differ from HEAD: {name}; re-checkout with LF (see docs/maintaining.md)")
     remotes = run(root, "git", "remote", "-v").decode().splitlines()
     urls = [line.split()[1] for line in remotes if len(line.split()) >= 2]
     require(any(re.fullmatch(r"(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)" +
