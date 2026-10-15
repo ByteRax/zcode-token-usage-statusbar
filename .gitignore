@@ -1,7 +1,7 @@
 __pycache__/
 *.pyc
 diag-*.json
-.entry-check.js
+.entry-check*.js
 .v2c/
 .video_agent/
 .research-tmp/

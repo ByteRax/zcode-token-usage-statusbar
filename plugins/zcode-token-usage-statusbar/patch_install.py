@@ -304,7 +304,10 @@ def syntax_check(asar_path: Path):
     try:
         with os.fdopen(fd, "wb") as stream:
             stream.write(src)
-        r = subprocess.run([str(exe), "--check", str(tmp_js)], capture_output=True, text=True, env=env)
+        # Node 恒写 UTF-8：按区域编码解码，回显里的非 ASCII（中文路径/源码行）会让 Windows
+        # 读线程崩溃（stderr 变 None）或解成乱码。
+        r = subprocess.run([str(exe), "--check", str(tmp_js)], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", env=env)
     except OSError as e:
         r = None
         run_err = str(e)
@@ -314,7 +317,11 @@ def syntax_check(asar_path: Path):
         print(L(f"  [check] 语法检查无法执行（{run_err}），跳过",
                 f"  [check] syntax check failed to run ({run_err}); skipped"))
         return True
-    print(L("  [check] 语法检查 exit=", "  [check] node --check exit=") + str(r.returncode) + " " + r.stderr.strip()[:200])
+    # 当前输出编码打印不了的字符（cp1252/ASCII 管道上的中文路径等）转义，其余原样显示；
+    # 重定向到 StringIO 时 encoding 为 None，按 UTF-8 处理。
+    enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+    detail = r.stderr.strip()[:200].encode(enc, "backslashreplace").decode(enc)
+    print(L("  [check] 语法检查 exit=", "  [check] node --check exit=") + str(r.returncode) + " " + detail)
     return r.returncode == 0
 
 
