@@ -6,8 +6,10 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import struct
 import stat
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -435,6 +437,35 @@ class PendingAsarTests(unittest.TestCase):
             make_asar(self.asar)
             self.assertEqual(self.pi.source_fingerprint(self.asar),
                              self.pi.source_fingerprint(self.asar))
+
+
+@unittest.skipUnless(shutil.which("node"), "需要 Node 跑真实语法检查")
+class SyntaxCheckTests(unittest.TestCase):
+    def test_failure_diagnostic_survives_non_utf8_locale(self):
+        # Node 恒写 UTF-8：语法错误回显的源码行/路径含非 ASCII 时，按区域编码解码会让 Windows
+        # 读线程崩溃（stderr 变 None → AttributeError）或解成乱码；打印回显也不能因输出编码再崩。
+        # 放进强制非 UTF-8 区域编码的解释器里跑，任何平台都能区分新旧实现；参数一律 ASCII 转义。
+        # 输出编码能表示的字符原样显示，表示不了的才转义。
+        source = ascii('const 名字 = "中文" +;\n')
+        probe = ("import importlib.util, sys\n"
+                 "from pathlib import Path\n"
+                 "spec = importlib.util.spec_from_file_location('probe', sys.argv[1])\n"
+                 "module = importlib.util.module_from_spec(spec)\n"
+                 "spec.loader.exec_module(module)\n"
+                 "module._LANG = 'en'\n"
+                 "module.ZCODE_EXE = Path(sys.argv[2])\n"
+                 f"module.entry_bytes_of = lambda path: {source}.encode('utf-8')\n"
+                 "print('RESULT', module.syntax_check(None))\n")
+        ascii_only = {"LC_ALL": "C", "PYTHONUTF8": "0", "PYTHONCOERCECLOCALE": "0", "PYTHONIOENCODING": "ascii"}
+        for overrides, shown in ((ascii_only, r"\u540d"), ({"PYTHONIOENCODING": "utf-8"}, "名")):
+            with self.subTest(env=overrides):
+                out = subprocess.run([sys.executable, "-B", "-c", probe, str(ROOT / "patch_install.py"),
+                                      shutil.which("node")], capture_output=True,
+                                     env=dict(os.environ, **overrides), timeout=60)
+                stdout = out.stdout.decode("utf-8", "replace")
+                self.assertEqual(out.returncode, 0, out.stderr.decode("utf-8", "replace"))
+                self.assertIn("RESULT False", stdout)
+                self.assertIn(shown, stdout)   # 回显的源码行（“名”）没被解坏
 
 
 if __name__ == "__main__":
