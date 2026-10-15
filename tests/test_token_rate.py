@@ -7,7 +7,9 @@ fixture 库模拟一轮「上轮两段 + 本问两段」的 model_usage，覆盖
   加权速率（分子=output 已含思考；含思考段窗口=completed−started，Claude 系列不上报思考也按此）、
   首字延迟取第一段、
   段数/峰值、会话累计（Σoutput，思考已含不另加）
-  hook 输出为严格 JSON（hookSpecificOutput.hookEventName=UserPromptSubmit + additionalContext）
+  hook 输出为严格 JSON（hookSpecificOutput.hookEventName=UserPromptSubmit + additionalContext），
+  且把本会话 id 钉进下达的命令行（--session），防止模型迟迟才执行该命令时被并行会话
+  覆盖状态文件里"最近提问会话"字段，拿错会话的数据
 
 运行：python3 -B -m unittest discover -s tests -p 'test_*.py'
 """
@@ -326,6 +328,30 @@ class TestTurnCurrent(RateTestBase):
         self.assertEqual(data["session"]["totalOutput"], 3500)
         self.assertEqual(data["session"]["totalReasoning"], 600)
 
+    def test_explicit_session_flag_overrides_global_last_active_pointer(self):
+        # 回归（2026-10-15 真机事故）：模型通过 Bash 工具执行统计指令时没有会话环境变量，
+        # 旧实现回退到状态文件顶层 sessionId（"用户最后所处的会话"）；若执行时刻晚于钩子
+        # 触发（常见——中间还要写完整回复），并行会话这期间提问会把该字段改写成它自己的
+        # 会话，导致本会话的 ⚡ 行显示了别的会话的首字延迟/输出量。--session 必须优先于
+        # 状态文件与环境变量，且在完全没有会话环境变量时也能拿到正确会话的数据。
+        other_turn = row("p1", "sess_parallel", "turn_p", "main_turn",
+                         self.t0 + 30000, self.t0 + 31000, 1000, self.t0 + 33000, 10, 999, 0)
+        self.insert_rows([other_turn])
+        # 状态文件顶层指向并行会话（它在本会话写完回复前抢先提问，真机场景的时间顺序）；
+        # prompts 映射里两个会话各自的提问时刻仍然都对。
+        self.write_state({"sessionId": "sess_parallel", "ts": self.t0 + 30000,
+                          "promptTs": self.t0 + 30000,
+                          "prompts": {SID: self.t0, "sess_parallel": self.t0 + 30000}})
+        env = dict(os.environ, ZCODE_USAGE_DB=self.db, ZUSAGE_RATE_STATE_FILE=self.state)
+        env.pop("ZCODE_SESSION_ID", None)
+        env.pop("CLAUDE_SESSION_ID", None)   # 模拟 Bash 工具调用：无任何会话环境变量
+        r = subprocess.run([sys.executable, str(RATE), "--turn", "--current", "--json",
+                            "--session", SID], capture_output=True, text=True, env=env, timeout=30)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        data = json.loads(r.stdout)
+        self.assertEqual(data["sessionId"], SID)
+        self.assertEqual(data["turn"]["totalOutput"], 2000)   # turn_b，不是并行会话的 999
+
 
 class TestLatestLine(RateTestBase):
     def test_default_output_is_prev_round(self):
@@ -379,6 +405,8 @@ class TestPromptSubmitHook(RateTestBase):
         ctx = inner["additionalContext"]
         self.assertIn("【内部背景·勿展示】上一条回复:", ctx)
         self.assertIn("--turn --current", ctx)
+        self.assertIn(f'--session "{SID}"', ctx)   # 回归：钩子必须把本会话 id 钉进命令行，
+        # 见 test_explicit_session_flag_overrides_global_last_active_pointer 的理由
         self.assertIn("token_rate.py", ctx)
         self.assertIn("Markdown 引用块", ctx)
         # 状态文件：记录了会话与提问时刻（--current 守卫依据）
@@ -405,6 +433,7 @@ class TestPromptSubmitHook(RateTestBase):
         out = json.loads(r.stdout)
         self.assertEqual(out["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit")
         self.assertFalse(Path(self.state).exists())  # 无会话不写状态
+        self.assertNotIn("--session", out["hookSpecificOutput"]["additionalContext"])
 
     def test_toggle_off_injects_no_instruction(self):
         # ⚙ 面板关闭（config.json answer_rate_line=false）：不下达统计指令，仍严格 JSON；
