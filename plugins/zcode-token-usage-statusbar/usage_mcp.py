@@ -5,6 +5,7 @@
 协议仅实现 initialize / tools/list / tools/call；调试信息只走 stderr。
 """
 import json
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -104,10 +105,18 @@ def main():
                 text = tool_token_usage(**args)
                 reply(req_id, {"content": [{"type": "text", "text": text}], "isError": False})
             except Exception as e:  # noqa: BLE001
+                hint = ""
+                if isinstance(e, sqlite3.OperationalError):
+                    # 库结构漂移（ZCode 升级改列/表）给出可行动提示，与 zusage.py CLI 同款
+                    hint = L("\n多半是 ZCode 升级改了用量库结构（表/列变更）。请更新本插件后再查询；"
+                             "已落库的历史数据不受影响。",
+                             "\nMost likely ZCode changed the usage DB schema in an update. "
+                             "Update this plugin before querying; stored history is unaffected.")
                 reply(
                     req_id,
                     {
-                        "content": [{"type": "text", "text": L(f"查询失败: {e}", f"Query failed: {e}")}],
+                        "content": [{"type": "text",
+                                     "text": L(f"查询失败: {e}", f"Query failed: {e}") + hint}],
                         "isError": True,
                     },
                 )
