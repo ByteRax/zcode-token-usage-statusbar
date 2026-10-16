@@ -7,10 +7,12 @@
    原样引用在回复末尾。--current 保证绝不把上一轮数据冒充本问（纯问答轮无输出）。
 ⚙ 面板开关：运行时 config.json 的 answer_rate_line（缺省=开启）；关闭后每次提问
    仍记录时刻（守卫数据保持新鲜），但不再注入统计指令——下一问即生效，无需重启。
-输出必须为严格 JSON（多余键会校验失败被丢弃）。
+输出只包含 hook 协议字段，诊断不得混入 stdout。
 """
+import base64
 import json
 import os
+import shlex
 import sys
 import threading
 from pathlib import Path
@@ -38,8 +40,6 @@ def read_stdin(timeout_s=2.0):
 # 防折叠约束：客户端把带工具调用的消息折叠进「模型轨迹」区，只有轮次最后一条纯文字消息
 # 默认展开——若模型先写完正文再补跑脚本、让统计行单独成条，用户就只能看到一行统计。
 RATE_SCRIPT = PLUGIN_ROOT / "token_rate.py"
-# 钩子自身正在运行的解释器绝对路径：Windows 没有 python3 命令，写死会害模型执行失败。
-INTERPRETER = sys.executable or "python3"
 
 
 def turn_stats_instruction(sid):
@@ -48,11 +48,23 @@ def turn_stats_instruction(sid):
     走 Bash 工具、没有会话环境变量，回退到该字段就会把别的会话的数据当成本问结果
     （2026-10-15 真机事故：已完成多轮对话的 ⚡ 行显示了另一并行会话的首字延迟/输出量）。
     sid 为空（主机未提供会话环境变量）时退化为不带 --session 的旧形式。"""
-    session_flag = f' --session "{sid}"' if sid else ""
+    args = [sys.executable or "python3", str(RATE_SCRIPT), "--turn", "--current"]
+    if sid:
+        args.extend(("--session", sid))
+    if sys.platform == "win32":
+        # 宿主可用 CMD 或 Git Bash；编码调用避免两者对引号、% 和 $ 的解释差异。
+        payload = "$ErrorActionPreference = 'Stop'; & " + " ".join(
+            "'" + "".join(char * 2 if char in "'\u2018\u2019\u201a\u201b" else char for char in arg) + "'"
+            for arg in args)
+        payload += "; exit $LASTEXITCODE"
+        encoded = base64.b64encode(payload.encode("utf-16le")).decode("ascii")
+        command = "powershell.exe -NoProfile -NonInteractive -EncodedCommand " + encoded
+    else:
+        command = " ".join(shlex.quote(arg) for arg in args)
     return [
         "",
         "【本轮统计指令】若你在本次回答中已经调用过工具,请严格按以下顺序收尾:",
-        f"1. 在开始写最终回复正文之前,运行一次:\"{INTERPRETER}\" \"{RATE_SCRIPT}\" --turn --current{session_flag}",
+        f"1. 在开始写最终回复正文之前,运行一次:{command}",
         "2. 然后输出完整的最终回复正文(用户需要的全部内容),并把脚本输出的那一行原样放入 Markdown 引用块(新行行首加「> 」)附在这条回复的最末尾;不要改写数字、不要追加任何其他内容。",
         "关键约束:统计行必须与完整回复正文在同一条消息里。绝不能让统计行(或只含统计行的短消息)单独成为你最后一条消息,也绝不能在写完全部回复正文之后再调用任何工具——客户端会折叠之前带工具调用的消息,用户将只能看到一行统计。",
         "降级规则:若你已经写完回复正文才发现没运行统计脚本,就直接省略统计行结束回答,不要事后补调用工具。",
