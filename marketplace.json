@@ -2,15 +2,20 @@
   "description": "zcode-token-usage-statusbar \u63d2\u4ef6\u5e02\u573a\uff1aZCode token \u7528\u91cf\u67e5\u8be2\uff08MCP / \u547d\u4ee4 / \u6280\u80fd\uff09\u4e0e\u9ed8\u8ba4\u81ea\u52a8\u5b89\u88c5/\u4fee\u590d\u684c\u9762\u60ac\u6d6e\u72b6\u6001\u6761\uff08\u4fee\u6539 app.asar\uff0c\u6210\u529f\u540e\u9700\u5b8c\u5168\u9000\u51fa\u5e76\u91cd\u5f00\uff09\u3002",
   "name": "zusage-marketplace",
   "owner": {
-    "name": "xhwxt"
+    "name": "xhwxt/ByteRax",
+    "url": "https://github.com/ByteRax"
   },
   "plugins": [
     {
       "author": {
-        "name": "xhwxt"
+        "name": "xhwxt/ByteRax"
       },
       "category": "monitoring",
       "description": "ZCode token \u7528\u91cf\u67e5\u8be2\uff08token_usage MCP \u5de5\u5177 + /usage \u547d\u4ee4 + \u6280\u80fd\uff0c\u8bfb\u672c\u5730 usage \u6570\u636e\u5e93\uff09\uff1b\u7f3a\u914d\u7f6e\u6587\u4ef6\u6216\u7f3a\u5b57\u6bb5\u65f6\u9ed8\u8ba4\u4e3a\u684c\u9762\u5ba2\u6237\u7aef\u81ea\u52a8\u5b89\u88c5/\u4fee\u590d\u60ac\u6d6e\u7528\u91cf\u72b6\u6001\u6761\uff08\u4fee\u6539 app.asar\uff0c\u6210\u529f\u540e\u9700\u5b8c\u5168\u9000\u51fa\u5e76\u91cd\u5f00\uff1b\u663e\u5f0f false \u4fdd\u7559\uff0c\u73af\u5883\u53d8\u91cf\u4f18\u5148\uff0c\u5378\u8f7d\u8c41\u514d\u963b\u6b62\u91cd\u6ce8\u5165\uff0c\u65e0\u73af\u5883\u53d8\u91cf\u8986\u76d6\u65f6\u635f\u574f/\u975e\u5e03\u5c14\u914d\u7f6e\u4e0d\u5f00\u542f\uff09\uff1b\u6bcf\u6b21\u56de\u7b54\u672b\u5c3e\u81ea\u52a8\u8ffd\u52a0\u9010\u95ee\u901f\u7387\u884c\uff08\u5373\u65f6 tok/s \u542b\u601d\u8003\u3001\u9996\u5b57\u5ef6\u8fdf\u3001\u8f93\u51fa token\u3001\u751f\u6210\u8017\u65f6\u3001\u6bb5\u6570/\u5cf0\u503c\u4e0e\u4f1a\u8bdd\u7d2f\u8ba1\uff0c--current \u5b88\u536b\u9632\u65e7\u6570\u636e\u5145\u6570\uff09\u3002",
+      "description_i18n": {
+        "en": "ZCode token usage query via the token_usage MCP tool, /usage command, and skill (reads the local usage DB). By default auto-installs the desktop floating usage status bar (modifies app.asar; fully quit and reopen ZCode to take effect; opt-out respected). Appends a per-answer rate line (tok/s, TTFT, output tokens) at the end of each reply.",
+        "zh-CN": "ZCode token \u7528\u91cf\u67e5\u8be2\uff08token_usage MCP \u5de5\u5177 + /usage \u547d\u4ee4 + \u6280\u80fd\uff0c\u8bfb\u672c\u5730 usage \u6570\u636e\u5e93\uff09\uff1b\u7f3a\u914d\u7f6e\u6587\u4ef6\u6216\u7f3a\u5b57\u6bb5\u65f6\u9ed8\u8ba4\u4e3a\u684c\u9762\u5ba2\u6237\u7aef\u81ea\u52a8\u5b89\u88c5/\u4fee\u590d\u60ac\u6d6e\u7528\u91cf\u72b6\u6001\u6761\uff08\u4fee\u6539 app.asar\uff0c\u6210\u529f\u540e\u9700\u5b8c\u5168\u9000\u51fa\u5e76\u91cd\u5f00\uff1b\u663e\u5f0f false \u4fdd\u7559\uff0c\u73af\u5883\u53d8\u91cf\u4f18\u5148\uff0c\u5378\u8f7d\u8c41\u514d\u963b\u6b62\u91cd\u6ce8\u5165\uff0c\u65e0\u73af\u5883\u53d8\u91cf\u8986\u76d6\u65f6\u635f\u574f/\u975e\u5e03\u5c14\u914d\u7f6e\u4e0d\u5f00\u542f\uff09\uff1b\u6bcf\u6b21\u56de\u7b54\u672b\u5c3e\u81ea\u52a8\u8ffd\u52a0\u9010\u95ee\u901f\u7387\u884c\uff08\u5373\u65f6 tok/s \u542b\u601d\u8003\u3001\u9996\u5b57\u5ef6\u8fdf\u3001\u8f93\u51fa token\u3001\u751f\u6210\u8017\u65f6\u3001\u6bb5\u6570/\u5cf0\u503c\u4e0e\u4f1a\u8bdd\u7d2f\u8ba1\uff0c--current \u5b88\u536b\u9632\u65e7\u6570\u636e\u5145\u6570\uff09\u3002"
+      },
       "keywords": [
         "token",
         "usage",
@@ -21,13 +26,13 @@
       "name": "zcode-token-usage-statusbar",
       "source": {
         "path": "plugins/zcode-token-usage-statusbar",
-        "sha256": "ccc82a362f1e771bfad74a867b5e3a525b2abbc4631eabc16a1c022f1e1f5dd8",
+        "sha256": "c57b14db193900326255a6ce0dfb3019cb85579305a04c352bdbf757e20fc1a4",
         "source": "url",
         "stripRoot": false,
         "type": "zip",
-        "url": "https://github.com/ByteRax/zcode-token-usage-statusbar/releases/download/v1.4.3/zcode-token-usage-statusbar-v1.4.3.zip"
+        "url": "https://github.com/ByteRax/zcode-token-usage-statusbar/releases/download/v1.4.4/zcode-token-usage-statusbar-v1.4.4.zip"
       },
-      "version": "1.4.3"
+      "version": "1.4.4"
     }
   ]
 }
