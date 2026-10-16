@@ -382,9 +382,15 @@ try {
             if data.get("ok") is not True or data.get("pluginRoot") != str(PLUGIN_ROOT.resolve()):
                 raise ValueError("运行时同步验收结果无效")
             return data["identity"]
-        identity = verify()
+        # 惰性校验：首次 verify() 才拉起 node 验收进程并锚定身份，其后每次调用复核比对。
+        # 稳态同步（无任何写入计划）由调用方直接跳过 verify —— 每次会话启动省 1-3 次
+        # node 子进程（实测 ~400ms），写入路径的安全语义不变。
+        anchor = {}
         def recheck():
-            if verify() != identity:
+            current = verify()
+            if "identity" not in anchor:
+                anchor["identity"] = current
+            elif current != anchor["identity"]:
                 raise ValueError("运行时同步期间安装身份发生变化")
         yield recheck
 
@@ -486,10 +492,20 @@ def _sync_runtime_locked(runtime, verify=lambda: None):
     if (load_runtime_config(runtime) or {}).get("hot_reload") is False:
         cold_files.update(("overlay.js", "zusage.py"))
     restart_hashes = {name: hashes[name] for name in changed if name in cold_files}
-    verify()
+    record = dict(result)
+    if downgrade:
+        record["version"] = previous["version"]
+        record["plugin_root"] = previous["plugin_root"]
+    # 稳态（无写入计划、无待恢复 journal、记录内容不变）：跳过 node 验收与重复落盘。
+    # 无写入即无"覆盖手改"风险，身份校验保护的恰是写入路径；此路径是每次会话启动的
+    # 常态，省 1-3 次 node 子进程（实测 ~400ms）。record != previous 的字段差异
+    # （旧版本写入的历史记录缺 restartRecorded 等）仍走完整校验后落盘。
+    steady = not writes and not restart_hashes and journal is None and record == previous
+    if not steady:
+        verify()
     if writes:
-        journal = {"base": previous, "targets": {dst.name: hashes[dst.name] for dst, _, _ in writes}}
-        _atomic_write(journal_path, (json.dumps(journal) + "\n").encode("utf-8"))
+        journal_out = {"base": previous, "targets": {dst.name: hashes[dst.name] for dst, _, _ in writes}}
+        _atomic_write(journal_path, (json.dumps(journal_out) + "\n").encode("utf-8"))
     if restart_hashes:
         from restart_notice import record_restart
         record_restart(runtime, {"hashes": restart_hashes, "changed": changed,
@@ -500,12 +516,9 @@ def _sync_runtime_locked(runtime, verify=lambda: None):
         if current_hash != planned_targets[dst.name]:
             raise ValueError("运行时文件在同步规划后发生变化，保留手改并停止同步: " + dst.name)
         _atomic_write(dst, data, src)
-    verify()
-    record = dict(result)
-    if downgrade:
-        record["version"] = previous["version"]
-        record["plugin_root"] = previous["plugin_root"]
-    _atomic_write(record_path, (json.dumps(record, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
+    if not steady:
+        verify()
+        _atomic_write(record_path, (json.dumps(record, ensure_ascii=False, indent=2) + "\n").encode("utf-8"))
     if journal_path.exists():
         journal_path.unlink()
     return result
