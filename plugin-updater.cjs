@@ -202,6 +202,30 @@ function verifyRuntimeSync(options) {
   return { ok: true, pluginRoot: root, version: manifest.version, identity: { record, channel: currentChannel, pending, manifest } };
 }
 
+function listOverview(data) {
+  // The official CLI answers different shapes by flag: plain `plugins list --json`
+  // returns a top-level array of installed entries (no scope field, per-entry
+  // diagnostics), while `--available` returns { installed, available, diagnostics }.
+  // Accept both so an absent plugin is a real absence, never a shape mismatch.
+  if (Array.isArray(data)) {
+    const diagnostics = [];
+    for (const entry of data) {
+      if (entry && entry.id === PLUGIN_ID && Array.isArray(entry.diagnostics)) diagnostics.push(...entry.diagnostics);
+    }
+    return { installed: data, available: [], diagnostics };
+  }
+  if (data && typeof data === "object") {
+    const installed = Array.isArray(data.installed) ? data.installed : null;
+    const available = Array.isArray(data.available) ? data.available : null;
+    // An envelope without either list is a shape we do not know; an empty list
+    // is a real absence. Never let shape drift masquerade as "not installed".
+    if (!installed && !available) throw new Error("插件管理器返回了无法识别的插件列表");
+    return { installed: installed || [], available: available || [],
+      diagnostics: Array.isArray(data.diagnostics) ? data.diagnostics : [] };
+  }
+  throw new Error("插件管理器返回了无法识别的插件列表");
+}
+
 function createUpdater(options) {
   const { runtime, home, resourcesPath, executable, notify = () => {}, now = Date.now } = options;
   const configFile = path.join(runtime, "config.json");
@@ -300,7 +324,7 @@ function createUpdater(options) {
         const newer = compareVersions(state.latestVersion, record.version) > 0;
         state.phase = newer ? "available" : "current"; state.checkedAt = now(); save();
         if ((auto || install) && newer) {
-          const overview = await cli(["list"]); diagnostics(overview);
+          const overview = listOverview(await cli(["list"])); diagnostics(overview);
           const installed = (overview.installed || []).find((p) => p && p.id === PLUGIN_ID && (!p.scope || p.scope === "user"));
           if (!installed) throw new Error("用户插件未注册，不能安装 Release");
           if (installed.enabled !== false) await installUpdate(auto);
@@ -308,7 +332,7 @@ function createUpdater(options) {
       } else {
         const market = await cli(["marketplace", "update", "zusage-marketplace"]);
         diagnostics(market);
-        const overview = await cli(["list", "--available"]);
+        const overview = listOverview(await cli(["list", "--available"]));
         diagnostics(overview);
         if (!isDeepStrictEqual(channel(), source)) throw new Error("更新期间市场来源已变化");
         const installed = (overview.installed || []).find((p) => p && p.id === PLUGIN_ID && (!p.scope || p.scope === "user"));
@@ -373,7 +397,7 @@ function createUpdater(options) {
         if (!record) throw new Error("插件已卸载，更新已取消");
         if (auto && !state.auto) return;
         if (compareVersions(selectedRelease.version, record.version) <= 0) return;
-        const overview = await cli(["list"]); diagnostics(overview);
+        const overview = listOverview(await cli(["list"])); diagnostics(overview);
         const installed = (overview.installed || []).find((p) => p && p.id === PLUGIN_ID && (!p.scope || p.scope === "user"));
         if (!installed) throw new Error("用户插件已卸载，Release 安装已取消");
         if (installed.enabled === false) return;
@@ -486,7 +510,7 @@ async function runAutoCommand(argv) {
   if (state.phase === "error") process.exitCode = 1;
 }
 
-module.exports = { createUpdater, compareVersions, INTERVAL_MS, PLUGIN_ID, runAutoCommand, updateConfig, verifyRuntimeSync };
+module.exports = { createUpdater, compareVersions, INTERVAL_MS, PLUGIN_ID, runAutoCommand, updateConfig, verifyRuntimeSync, listOverview };
 if (require.main === module) {
   const argv = process.argv.slice(2);
   if (argv[0] === "--verify-runtime-sync") {

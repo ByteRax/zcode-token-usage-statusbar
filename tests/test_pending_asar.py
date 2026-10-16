@@ -359,6 +359,153 @@ class PendingAsarTests(unittest.TestCase):
             self.pi.main(["install", "--finalize"])
         install.assert_called_once_with(finalize=True)
 
+    def test_consume_flag_arg_parses_both_forms_and_strips_them(self):
+        self.assertEqual(self.pi._consume_flag_arg(["install", "--asar", "/x/app.asar", "--finalize"], "asar"),
+                         ("/x/app.asar", ["install", "--finalize"]))
+        self.assertEqual(self.pi._consume_flag_arg(["--asar=/x/app.asar", "check"], "asar"),
+                         ("/x/app.asar", ["check"]))
+        self.assertEqual(self.pi._consume_flag_arg(["install", "--finalize"], "asar"),
+                         (None, ["install", "--finalize"]))
+        self.assertEqual(self.pi._consume_flag_arg(["--asar"], "asar"), (None, ["--asar"]))   # 缺值：原样保留，不崩
+        # 出现多次取最后一次，与常见 CLI 行为一致；--runtime 复用同一套解析逻辑。
+        self.assertEqual(self.pi._consume_flag_arg(["--runtime", "/a", "--runtime", "/b"], "runtime"),
+                         ("/b", []))
+        # 紧随其后的 token 本身像另一个 flag：按缺值处理，原样保留，不误吞成这个 flag 的值。
+        self.assertEqual(self.pi._consume_flag_arg(["--asar", "--finalize", "install"], "asar"),
+                         (None, ["--asar", "--finalize", "install"]))
+
+    def fresh_module(self):
+        """未调用 set_target() 的全新实例：复现 issue #14——standalone 运行时模块级 ASAR
+        仍是平台默认猜测路径，而非真实安装位置。"""
+        spec = importlib.util.spec_from_file_location("fresh_patch_test", ROOT / "patch_install.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_standalone_without_asar_guesses_default_and_crashes(self):
+        # 复现：standalone 调用在猜错的默认路径上 FileNotFoundError（check() 不捕获此异常），
+        # 与 issue 里报告的崩溃一致；默认猜测本身是否存在跟开发机是否装了 ZCode 有关，
+        # 这里直接模拟"猜测路径不是真实安装位置"这个必然场景，不依赖本机环境。
+        fresh = self.fresh_module()
+        with mock.patch.object(fresh, "ASAR", self.root / "not-the-real-install" / "app.asar"), \
+                contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaises(FileNotFoundError):
+                fresh.main(["check"])
+
+    def test_standalone_asar_flag_fixes_default_path_guess(self):
+        fresh = self.fresh_module()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), \
+                mock.patch.object(fresh, "syntax_check", return_value=True):
+            fresh.main(["check", "--asar", str(self.asar)])
+        self.assertEqual(fresh.ASAR, self.asar.resolve())
+        self.assertIn("asar:", buf.getvalue())
+
+    def test_standalone_zcode_asar_env_fixes_default_path_guess(self):
+        fresh = self.fresh_module()
+        with mock.patch.dict(os.environ, {"ZCODE_ASAR": str(self.asar)}), \
+                contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch.object(fresh, "syntax_check", return_value=True):
+            fresh.main(["check"])
+        self.assertEqual(fresh.ASAR, self.asar.resolve())
+
+    def test_cli_asar_flag_takes_priority_over_env_var(self):
+        fresh = self.fresh_module()
+        other = self.root / "other.asar"
+        make_asar(other)
+        with mock.patch.dict(os.environ, {"ZCODE_ASAR": str(other)}), \
+                contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch.object(fresh, "syntax_check", return_value=True):
+            fresh.main(["check", "--asar", str(self.asar)])
+        self.assertEqual(fresh.ASAR, self.asar.resolve())
+
+    def test_install_while_running_failure_hint_includes_asar_path(self):
+        # 回归：client_running 时原子替换因文件占用失败，提示里的 "手动执行" 命令必须
+        # 带上当前真实目标，standalone 复制执行才不会落到默认猜测路径；还要带 --runtime，
+        # 否则 install --finalize 会被 sidecar 来源授权校验拒绝（见下面两条端到端用例）。
+        buf = io.StringIO()
+        with mock.patch.object(self.pi, "client_running", return_value=True), \
+                mock.patch.object(self.pi, "_replace_pending", side_effect=PermissionError("locked")), \
+                mock.patch.object(self.pi, "launch_monitor"), \
+                contextlib.redirect_stdout(buf):
+            self.assertFalse(self.pi.install())
+        output = buf.getvalue()
+        self.assertIn(f'--asar "{self.asar.resolve()}"', output)
+        self.assertIn(f'--runtime "{self.pi.RUNTIME}"', output)
+
+    def test_remove_failure_hint_includes_asar_path(self):
+        self.pi.install()   # 先注入，_remove() 才会走到 _replace_pending
+        buf = io.StringIO()
+        with mock.patch.object(self.pi, "_replace_pending", side_effect=PermissionError("locked")), \
+                contextlib.redirect_stdout(buf):
+            self.assertFalse(self.pi.remove())
+        output = buf.getvalue()
+        self.assertIn(f'--asar "{self.asar.resolve()}"', output)
+        self.assertNotIn("--runtime", output)   # remove 不走来源授权的 runtime 校验，不需要
+
+    def test_check_pending_tmp_hint_includes_asar_path(self):
+        self.prepare()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.pi.check()
+        output = buf.getvalue()
+        self.assertIn(f'--asar "{self.asar.resolve()}"', output)
+        self.assertIn(f'--runtime "{self.pi.RUNTIME}"', output)
+
+    def test_check_pending_remove_tmp_hint_suggests_remove_not_install(self):
+        # 回归：待替换 TMP 若是 remove 操作，提示必须是 remove，不能照搬 install --finalize——
+        # 那条命令会被 pending_tmp 的操作类型校验拒绝（"no longer authorized"）。
+        self.pi.install()   # 先注入，remove 的 TMP 才有意义
+        self.prepare(operation="remove")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.pi.check()
+        output = buf.getvalue()
+        self.assertIn(f'remove --asar "{self.asar.resolve()}"', output)
+        self.assertNotIn("install --finalize", output)
+        self.assertNotIn("--runtime", output)
+
+    def test_runtime_flag_accepts_relative_path_without_crashing(self):
+        # 回归（第三轮复审发现）：--runtime 改为不 resolve 以保字节一致（见上面两条用例）后，
+        # LOADER.as_uri() 要求绝对路径，手动敲相对路径会直接崩溃；提示本身回显的永远是
+        # 绝对路径不受影响，但命令行参数要对手动输入也宽容。os.path.abspath 补全成绝对路径、
+        # 不跟随符号链接解析，两头都不破。--asar 一并指向 fixture，隔离本机真实 ZCode 安装。
+        fresh = self.fresh_module()
+        with contextlib.redirect_stdout(io.StringIO()):
+            fresh.main(["check", "--asar", str(self.asar), "--runtime", "relative/sub/dir"])   # 不应抛出
+        self.assertTrue(fresh.RUNTIME.is_absolute())
+        self.assertTrue(str(fresh.RUNTIME).endswith(str(Path("relative/sub/dir"))))
+
+    def test_standalone_finalize_without_runtime_flag_is_rejected_by_sidecar(self):
+        # 回归（issue #14 复审发现的残留问题）：仅 --asar 不够，install --finalize 还要求
+        # sidecar 记录的运行时目录与当前 RUNTIME 一致（pending_tmp 来源授权校验）；standalone
+        # 默认 RUNTIME 是脚本自身所在目录，和生成 TMP 时的插件运行时数据目录是两回事。
+        self.prepare()   # 用已 set_target/set_runtime 到 self.runtime 的 self.pi 生成待替换 TMP
+        other_dir = self.root / "elsewhere"
+        other_dir.mkdir()
+        fresh = self.fresh_module()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), mock.patch.object(fresh, "syntax_check", return_value=True):
+            result = fresh.main(["install", "--finalize", "--asar", str(self.asar), "--runtime", str(other_dir)])
+        self.assertFalse(result)
+        self.assertIn("no longer authorized", buf.getvalue())
+        self.assertTrue(self.pi.TMP.exists())   # 拒绝收尾；不误删/误替换
+
+    def test_standalone_finalize_with_matching_runtime_flag_succeeds(self):
+        # main() 不对 --runtime 做 resolve：和各提示原样回显的 RUNTIME 字节对齐，用户复制
+        # 粘贴即可还原成同一个值，不会在符号链接路径上被 resolve 带偏（如 macOS
+        # /var -> /private/var）；这里故意用未 resolve 的 self.runtime 验证这一点。
+        self.prepare()
+        fresh = self.fresh_module()
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf), \
+                mock.patch.object(fresh, "syntax_check", return_value=True), \
+                mock.patch.object(fresh, "client_running", return_value=False):
+            result = fresh.main(["install", "--finalize", "--asar", str(self.asar),
+                                "--runtime", str(self.runtime)])
+        self.assertTrue(result, buf.getvalue())
+        self.assertFalse(self.pi.TMP.exists())
+
     def test_stamp_fields_platform_contract(self):
         # Windows 的 ctime 是创建时间（无防篡改价值），且杀软过滤驱动下路径 lstat 与
         # 句柄 fstat 恒不一致，必须剔除；POSIX 的 ctime 是 inode 变更时间，保留。

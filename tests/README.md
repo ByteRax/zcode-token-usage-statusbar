@@ -18,9 +18,28 @@ python3 sync_plugin.py --check
 
 另覆盖真实多进程 OS 锁唯一持有者、EOF/父进程退出释放、同步交错防回滚、同版持续热修保护、安装提交后超时/孤儿安装进程协调、跨实例检查中关闭、持久重启哈希确认、相同源 mtime 的实际 loader/常驻 Python 热更新，以及 quiet/可见监控/`--finalize` 的来源/TMP 身份检查和短暂占用重试。测试只使用临时夹具，不操作真实客户端；Windows 分支测试不等同于 Windows 实机验收。
 
-另覆盖正式 GitHub Release 筛选、分页、资产来源和 SHA256、目录/远端分流、自定义 storage 与官方 CLI 一致性、渠道清单一致性、安装前关闭/禁用/卸载、来源/ref 变化、安装提交结果错配持续阻止同步及离线恢复。安全解包检查完整源码白名单、JSON/资源引用、路径/符号链接、真实压缩流/CRC/大小边界；发布工具共享此校验器。发布只使用临时仓库和 gh stub，真实源码 build → verify → download → unpack 有闭环回归，不执行真实发布。
+另覆盖正式 GitHub Release 筛选、分页、资产来源和 SHA256、目录/远端分流、自定义 storage 与官方 CLI 一致性（普通 list --json 顶层数组与 list --available 对象包络两种真实形状）、渠道清单一致性、安装前关闭/禁用/卸载、来源/ref 变化、安装提交结果错配持续阻止同步及离线恢复。安全解包检查完整源码白名单、JSON/资源引用、路径/符号链接、真实压缩流/CRC/大小边界；发布工具共享此校验器。发布只使用临时仓库和 gh stub，真实源码 build → verify → download → unpack 有闭环回归，不执行真实发布。
 
 另覆盖 R1–R14 修复：真实 Node 验收器与 SessionStart/sync/install 入口联动、活安装 PID 和错误 Release 拒绝、跨版本部分写入恢复并保护真实热修；语法失败包不能被手工/quiet/可见收尾激活，独有 TMP 暂存与发布中断可重试；所有运行时配置写入口共享锁；仓库大小写、版本化非核心文件增删、字面 argv、重定向总超时取消；实际双语 tooltip 和热更新代际清理、真实并发 hooks、本问开始时间/轮次身份与旧 schema 降级、未完成同步提示不冒称安装成功。
+
+## 远端路由与恢复回归
+
+在仓库根目录可单独运行：
+
+```bash
+python3 -B -m unittest discover -s tests -p 'test_remote_targets.py'
+node --test tests/inject-remote-recovery.test.cjs
+```
+
+这些测试使用临时客户端设置、数据库/传输夹具与隔离查询泵，不应访问真实 SSH 服务器、个人配置或真实客户端注入。覆盖自动连接适配、`auto` 与旧 `enabled` 开关独立、手动 `identity`/`identities` 绑定、多目标路由和独立 `today`/错误、失败与暂未找到会话的持续重试，以及统计查询链恢复。更新后的 JSON scope 协议与工作区身份隔离需配合全量自动回归检查，不能只凭脚本语法通过就宣称跨机验收成功。
+
+Node 查询泵回归还覆盖首个成功/SSH 失败/error/null 响应后的实际定时续查、已有链连续错误与空响应、同 SID 切换身份免握手、同 SID 跨窗口/分栏 scope 隔离、晚加载/不可信/歧义身份默认关闭路由后由合法 IPC 恢复、配置与客户端设置变化打破去重、常驻进程错误/看门狗及单次查询只结算一次，以及彻底关闭后停止远端轮询、重新开启时恢复。不会替宿主执行真实 SSH 重连。
+
+真实宿主 schema 回归还检查单叶/分栏布局、真实 `workspace-main` 不在 `panes` 时不从历史候选推断归属、本地与远端分栏同 SID 不共享远端数据，以及空 scope fail-closed；明确绑定远端身份的 right 分栏仍自动路由。未知 main 仅显示本地匹配或 0，partial 远端 IPC 不能当作主 pane 的身份证据。
+
+文档与配置还需检查：`config.example.json` 及 Markdown 的 JSON 代码块能解析，手动多服务器例子含身份，README 本地链接/锚点有效，`README.md` 与 `README.zh-CN.md` 一致，中英文远端发布范围与限制一致。
+
+**验收边界**：夹具结果不等于 Windows/macOS 桌面、多服务器或各种 SSH 认证方式的实机验收。源码 `main` 尚未发正式 Release；真实使用需更新本机安装副本、完全退出重启，并手工在 SSH 远端部署同版本查询脚本。插件不会自动登录、解密复用宿主密码/加密私钥、安装远端脚本或替宿主自动重连 SSH；自恢复仅指统计查询链持续重试及宿主重连后续查。partial 远端 IPC 不等于当前主 pane 归属；身份未知时不推断，重开工作区或完全重启不能保证识别。桌面 JSON 链支持不代表 MCP/回答速率自动跨机，纯 CLI 无状态条 UI。
 
 另覆盖宿主插件契约：市场条目的中英本地化及 Release 渠道保留、统计命令路径/会话的 POSIX 参数引用、Windows PowerShell 编码调用的字面参数、短 MCP 服务键与钩子 matcher/超时；SessionStart 两层异常路径、卸载豁免和探测权限失败、安装未完成和正常重启提示均检查有效的 `additionalContext` 通道（`test_plugin_contract.py`、`test_session_start_channels.py`）。Windows 原生 CMD/Git Bash 执行测试仅在相应环境运行，macOS 会明确跳过；编码结构校验不代表 Windows 实机验收。
 

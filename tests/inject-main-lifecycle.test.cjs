@@ -58,7 +58,9 @@ function harness() {
     setOverlay: (s, m) => { overlay = s; mtime = m; }, reads: () => reads,
     poll: () => intervals.find(t => t.ms === 1000).fn() };
 }
-async function flush() { for (let i = 0; i < 8; i++) await Promise.resolve(); }
+/* v12 融合后收集链多一层 Promise.resolve().then（renderer 同步销毁防御），microtask 深度 +2；
+ * 16 轮覆盖 maybeSpawn→wants 收集→runQuery→resident spawn 全链 */
+async function flush() { for (let i = 0; i < 16; i++) await Promise.resolve(); }
 
 test('hotreload stats before reading and accepts source only after syntax validation', async () => {
   const h = harness(); await flush();
@@ -90,7 +92,7 @@ test('resident stdin error settles pending request without unhandled EPIPE', asy
 test('resident timeout cannot later release a newer query or deliver stale output', async () => {
   const h = harness(); await flush(); const old = h.procs[0];
   h.runTimer(15000); assert.equal(h.evalCode('busy'), false); h.runTimer(0);
-  h.evalCode('runQuery("sid_next")'); const current = h.procs[1];
+  h.evalCode('runQuery({ sids: ["sid_next"], scopes: [] })'); const current = h.procs[1];
   old.emit('close', 0); old.stdout.emit('data', '{"recent":[]}\n');
   assert.equal(h.evalCode('busy'), true); assert.equal(h.evalCode('pyRes.proc') === current, true);
   current.stdout.emit('data', '{"recent":[]}\n'); assert.equal(h.evalCode('busy'), false);
@@ -112,12 +114,12 @@ test('idle/config-off/no-window/quit stop resident and never schedule unconditio
 
 test('one-shot error/close and timeout share single settlement, preserving remote polling', async () => {
   const h = harness(); await flush(); h.evalCode('stopResident()'); h.setCfg({ resident: false });
-  h.evalCode('lastHadRemote = true; runQuery("remote_sid")'); const p = h.procs.at(-1);
+  h.evalCode('lastHadRemote = true; runQuery({ sids: ["remote_sid"], scopes: [] })'); const p = h.procs.at(-1);
   assert.equal(p.request, undefined);
   p.emit('error', new Error('ENOENT')); h.evalCode('busy = true'); p.emit('close', 1);
   assert.equal(h.evalCode('busy'), true);
   assert.equal([...h.timers.values()].filter(t => t.ms === 3000).length, 1);
-  h.evalCode('busy = false; runQuery("remote_sid")'); h.runTimer(15000);
+  h.evalCode('busy = false; runQuery({ sids: ["remote_sid"], scopes: [] })'); h.runTimer(15000);
   assert.equal(h.evalCode('busy'), false);
 });
 
@@ -131,7 +133,7 @@ test('resident synchronous and callback stdin failures release busy immediately'
   for (const mode of ['writeError', 'callbackError']) {
     const h = harness(); await flush(); const p = h.procs[0];
     p.stdout.emit('data', '{"recent":[]}\n');
-    p[mode] = new Error('EPIPE'); h.evalCode('runQuery("next_sid")');
+    p[mode] = new Error('EPIPE'); h.evalCode('runQuery({ sids: ["next_sid"], scopes: [] })');
     assert.equal(h.evalCode('busy'), false);
     p.emit('close', 1); assert.equal(h.evalCode('pyFail'), 1);
     assert.equal([...h.timers.values()].filter(t => t.ms === 15000).length, 0);
@@ -145,7 +147,7 @@ test('three early resident failures fall back to one-shot without another reside
     if (i < 2) h.runTimer(i === 0 ? 1000 : 2000);
   }
   assert.equal(h.evalCode('pyFail'), 3);
-  h.evalCode('runQuery("fallback_sid")');
+  h.evalCode('runQuery({ sids: ["fallback_sid"], scopes: [] })');
   assert.equal(h.procs.length, 4); assert.equal(h.procs[3].request, undefined);
   h.procs[3].emit('close', 0); assert.equal(h.evalCode('busy'), false);
 });

@@ -1,27 +1,28 @@
 <div align="center">
 
-# ZCode Token 用量状态栏
+# ZCode Token 速度状态栏
 
-**用了多少 token，模型有多快，上下文还剩多少——一眼看清。**
+**模型有多快、用了多少 token、上下文还剩多少——一眼看清。**
 
-给 [ZCode](https://zcode.z.ai) 对话窗口加一条实时用量状态栏。
+给 [ZCode](https://zcode.z.ai) 对话窗口加一条实时速度状态栏。
 
 简体中文 · [English](README.en.md)
 
 Windows / macOS · Python 3.8+ · [MIT](LICENSE)
 
-![状态条整体效果](docs/tour/shots/hero.png)
+![ZCode Token 速度状态栏宣传图](docs/promo/promo.png)
 
 </div>
 
 ## 能做什么
 
-- **看消耗**：本轮、当前会话和今日总用量，不用来回切设置页。
 - **看速度**：生成速度、首字等待时间，模型快不快一眼可读。
+- **看消耗**：本轮、当前会话和今日总用量，不用来回切设置页。
 - **防超限**：显示上下文占比，接近上限时变色提醒。
 - **查明细**：悬停看缓存与思考 token，点击查看子智能体消耗，工具出错也有提示。
 - **按需显示**：点 ⚙ 调整显示项、语言和插件更新设置。
 - **对话内查询**：输入 `/usage` 查看报表；插件还支持在符合条件的回答末尾显示速率。
+- **看远端会话**：自动适配已连接的 SSH 工作区，按 `workspaceIdentity` 路由到不同服务器；各服务器的今日用量与错误独立，失败或暂未找到的会话持续重试，恢复会话与重连后继续查询。详见下方远端章节。
 
 [查看功能截图与说明 →](docs/features.md)
 
@@ -38,7 +39,14 @@ Windows / macOS · Python 3.8+ · [MIT](LICENSE)
 
 #### 方式一：远程安装（无需下载源码）
 
-打开 **设置 → 插件 → 发现 → +（添加插件市场）**，输入 `https://github.com/ByteRax/zcode-token-usage-statusbar#plugin-releases`，添加后找到 **ZCode Token Usage Statusbar**，点击安装并保持启用。此渠道安装经过校验的正式 Release，不跟随开发分支。
+在 **ZCode 对话输入框**依次执行：
+
+```text
+/plugin marketplace add ByteRax/zcode-token-usage-statusbar#plugin-releases
+/plugin install zcode-token-usage-statusbar@zusage-marketplace
+```
+
+也可以打开 **设置 → 插件 → 添加插件市场**，输入 `https://github.com/ByteRax/zcode-token-usage-statusbar#plugin-releases`，添加后找到 **ZCode Token Usage Statusbar** 并安装。此渠道安装经过校验的正式 Release，不跟随开发分支。
 
 #### 方式二：本地目录安装
 
@@ -47,6 +55,13 @@ Windows / macOS · Python 3.8+ · [MIT](LICENSE)
 1. 打开 **设置 → 插件 → 添加插件市场**，点击 **选择目录**。
 2. 选择包含 `marketplace.json` 的仓库根目录（不是 `plugins/` 子目录），添加市场。
 3. 找到 **ZCode Token Usage Statusbar**，点击安装。
+
+也可在 ZCode 中执行，路径替换为实际仓库目录：
+
+```text
+/plugin marketplace add /绝对路径/到/zcode-token-usage-statusbar
+/plugin install zcode-token-usage-statusbar@zusage-marketplace
+```
 
 <details>
 <summary>查看添加插件市场截图</summary>
@@ -57,9 +72,9 @@ Windows / macOS · Python 3.8+ · [MIT](LICENSE)
 
 #### 安装窗口底部的状态条
 
-> **当前正式版：** `#plugin-releases` 正式渠道默认自动安装/修复状态条；配置文件不存在或缺少字段时开启，已有显式 `false` 会保留，详见下文。
+> **适用范围：** 本文关于状态条默认自动安装/修复的说明仅适用于当前 `main` / 本地新版源码，尚未发布到正式渠道。`#plugin-releases` 的正式版 `v1.4.1` 仍默认关闭自动安装；请执行 `/install-overlay`，或在下述配置文件中合并 `"plugin_auto_install_overlay": true` 后新建或恢复会话。
 
-安装插件后，保持插件启用，新建或恢复会话，插件默认自动安装/修复状态条。**这会修改客户端的 `app.asar`，请确认信任此项目。安装成功后，必须完全退出并重新打开 ZCode**，只关闭窗口不算退出。
+安装当前 `main` 的本地新版源码插件后，保持插件启用，新建或重新打开会话，插件默认自动安装/修复状态条。**这会修改客户端的 `app.asar`，请确认信任此项目。安装成功后，必须完全退出并重新打开 ZCode**，只关闭窗口不算退出。
 
 自动安装失败时，再手动执行以下兜底命令，按实际输出排查；成功后仍需完全退出并重开：
 
@@ -73,7 +88,7 @@ Windows / macOS · Python 3.8+ · [MIT](LICENSE)
 
 **以后如何更新？**
 
-- **远程安装**：打开 **设置 → 插件**，在市场管理中刷新 `zusage-marketplace`，再到 **已安装** 更新本插件。
+- **远程安装**：在 ZCode 输入 `/plugin marketplace update zusage-marketplace`，再到 **设置 → 插件 → 已安装** 更新本插件。
 - **本地安装**：先自行更新本地源码，再执行同样的刷新和更新步骤；本地市场不会替你 `git pull`。
 - 更新后新建或重新打开会话；若提示主进程文件变化，完全退出并重开 ZCode。
 
@@ -99,13 +114,62 @@ macOS 上若找不到 `python`，改用 `python3 install.py`。
 - **悬停**：查看某项的详细数据。
 - **点击子智能体**：展开各个任务的用量。
 - **点击 ⚙**：隐藏不关心的项目、切换语言，或检查插件更新。
-- **输入 `/usage today`**：查看今天的用量；`/usage week` 查看近一周，`/usage days:14` 按天查看近 14 天。
+- **输入 `/usage today`**：查看今天的用量；`/usage week` 查看近一周。
 
-插件命令按文件名注册，实际名称是 `/usage`、`/install-overlay`、`/uninstall-overlay`，不加插件名前缀。插件启用后，可在输入框的 `/` 命令菜单找到它们。`disable-noninteractive: true` 会将命令从桌面协议命令列表隐藏，并不是阻止执行的安全门，因此安装/卸载命令不设置该字段。
+插件命令的完整名称是 `/zcode-token-usage-statusbar:usage`。
+
+## SSH 远端支持（当前 main）
+
+> 本节功能属于当前 `main` / 本地新版源码，**尚未发布到正式 Release**。只修改仓库不会更新正在运行的插件或注入文件；本机需更新插件安装副本/运行文件、完成安装或修复后，**完全退出并重启 ZCode**。现有正式渠道安装不代表已获得这些功能。
+
+### 功能与数据来源
+
+- **自动连接适配**：从客户端保存的 SSH 工作区连接设置生成可用查询通道，并结合宿主提供的当前会话工作区身份识别远端。自动模式只查询已确认的远端 scope，不向历史服务器试探本地未知会话 ID。
+- **多服务器精准路由**：会话 ID 与 `workspaceIdentity` 一起确定所属服务器；手动目标需配置对应的 `identity`，不能只写主机标签。不同工作区、窗口和服务器的数据不会仅因 ID 相同而混在一起。
+- **独立今日用量与错误**：各目标保留自己的 `today` 和错误状态，不把某台远端的总量当成本地或另一台服务器的今日用量；一台失败不应阻断其它来源。
+- **持续恢复**：查询失败或暂未找到会话时继续按退避规则重试，不永久放弃；恢复历史会话、切换工作区或 SSH 重连后，若重新取得可靠身份则继续远端查询。无法确认身份时不猜测服务器。
+
+**主面板归属边界**：partial 远端 IPC 只说明部分工作区是远端，不等于当前主 pane 的归属。真实 `workspace-main` 不在 `panes` 中且没有可靠 scope 时，只上报本地 `sids`，不从历史候选推断远端，也不共享其它分栏同 SID 的远端数据；未知 main 显示本地匹配或 0。明确绑定远端工作区的右侧分栏（right）仍自动路由，可使用该分栏查看远端统计。重开工作区或完全重启可以重新触发宿主事件，但不能保证识别 main；手动单通道兼容查询也不构成主 pane 归属证据。
+
+### 使用前提与限制
+
+1. **SSH 远端需手工部署同版本 `zusage.py`**，默认位置为 `~/.zcode/zcode-token-usage-statusbar/zusage.py`；远端需有 Python 3.8+，查询进程可读取该用户的 ZCode 数据库。自动适配连接不等于自动安装远端脚本，不能承诺完全零配置。
+2. 本机必须能免交互执行查询通道。客户端保存的密码、加密私钥或口令**不能由插件解密并复用**；请自行配置 SSH key/agent 等认证。插件不会自动登录，也不会替你处理认证提示。
+3. 远端查询带递归防护；远端只运行查询脚本，不需要在那里安装桌面状态条或再次启用远端转发。
+4. 此支持仅覆盖**桌面状态条的 JSON 查询链**；MCP、`/usage` 和回答末尾速率不自动跨机取数。纯 CLI 没有状态条 UI；自托管 Web 按其独立部署文档处理。
+5. 自动化夹具用于验证路由与恢复逻辑，不等同于每种桌面版本、SSH 认证方式或多服务器环境的实机验收。
+
+### 配置开关与手动目标
+
+`remote.auto` 默认 `true`，独立于旧单通道开关；`remote.enabled: false` 保留手动关闭旧 `ssh`/无身份 fallback，不关闭自动身份路由。手动 `targets` 以 `identity`/`identities` 覆盖同身份自动目标；关闭自动发现后需显式 `enabled: true` 才使用手动目标。示例仅合并需要的字段，身份值应替换为客户端实际 `workspaceIdentity`：
+
+```json
+{
+  "remote": {
+    "auto": true,
+    "enabled": false,
+    "targets": [
+      {
+        "identity": "remote:ssh:build.example.com:22:alice:/srv/build",
+        "ssh": "ssh alice@build.example.com",
+        "host_label": "build"
+      }
+    ]
+  }
+}
+```
+
+目标未设置的 `script`、`python`、`timeout_s` 继承 `remote` 顶层（单目标超时限制 1–6 秒）。彻底停用远端查询应同时设置 `auto: false`、`enabled: false`，可保留 `targets` 配置而不执行；`enabled: true` 允许旧 CLI `python3 zusage.py json <SID>`（SID/逗号列表协议）使用默认单通道 fallback。桌面始终发送 JSON 请求，`scopes: []` 禁止该 fallback；未知 main 不会借单通道查询远端，也不会猜历史身份。
+
+失败时保留最近成功的工作区快照并提示过期/错误，首次无缓存才显示零值，不借用本地今日量；null/error 不清空最近成功显示。远端默认每 3 秒轮询（最少 1 秒），失败/未知持续退避重试；关闭后重开查询、配置与连接设置变更由心跳检测（默认 30 秒，最少 10 秒）。
+
+**恢复边界**：插件不会替宿主自动重连 SSH；自恢复指统计链持续重试以及宿主恢复连接后的续查。缺少可信身份时不会猜测；重开工作区或完全重启不保证取得主 pane 的远端归属。
+
+配置开关、带身份的多服务器示例和恢复排查见 [远程会话指南](docs/user-guide.md#远程会话)。只合并需要的字段，保留个人设置。
 
 ## 安全与注意事项
 
-- **用量数据不上传**：本地查询不联网；配置远程会话后会通过指定通道读取远端数据库。插件更新会联网下载代码。
+- **用量数据不上传**：本地查询不联网；启用远端查询后经指定通道读取远端数据库，前提与限制见 [SSH 远端支持](#ssh-远端支持当前-main)。插件更新会联网下载代码。
 - **状态条会修改客户端文件**：它不是 ZCode 原生功能。卸载时只移除本项目的注入，不回滚客户端版本。
 - **ZCode 升级后可能需要重装状态条**：插件默认自动修复，修复后仍需完全退出并重开；失败时再运行安装命令兜底。
 - **只卸载插件，状态条可能还在**：请按下方步骤一并清理。

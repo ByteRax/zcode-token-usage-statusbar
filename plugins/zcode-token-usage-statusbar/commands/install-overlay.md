@@ -1,5 +1,6 @@
 ---
 description: 自动安装失败时手动安装/更新本机 ZCode 悬浮用量状态条（修改 app.asar，完全退出并重开生效）
+disable-noninteractive: true
 ---
 帮助用户在默认自动安装/修复失败时，手动把 zcode-token-usage-statusbar 的悬浮状态条安装到本机 ZCode 桌面客户端；此命令是兜底，不是默认必经步骤。
 

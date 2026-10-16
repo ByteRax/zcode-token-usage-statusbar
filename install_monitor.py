@@ -247,7 +247,9 @@ def main():
                     lines = [L("[!] ZCode 已退出但替换失败（文件仍被占用？）",
                                "[!] ZCode has exited but the replacement failed (file still locked?)"),
                              L("稍后自动重试；也可手动执行：", "Will retry automatically; you can also run manually:"),
-                             "  python patch_install.py " + ("remove" if pending["operation"] == "remove" else "install --finalize")]
+                             "  python patch_install.py "
+                             + (f'remove --asar "{ASAR}"' if pending["operation"] == "remove"
+                                else f'install --finalize --asar "{ASAR}" --runtime "{RUNTIME_DIR}"')]
             else:
                 lines = [L("[等待] 有待替换文件，请完全退出 ZCode。",
                            "[waiting] A pending replacement file exists; please exit ZCode completely."),
@@ -279,8 +281,8 @@ def main():
                            "[?] ZCode restarted, but no injection load detected within %ds." % CONFIRM_WAIT),
                          L("若 ZCode 刚升级过，asar 会被官方版本覆盖，",
                            "If ZCode was just upgraded, app.asar was overwritten by the official build —"),
-                         L("请重新运行：python patch_install.py install",
-                           "please re-run: python patch_install.py install"),
+                         L(f'请重新运行：python patch_install.py install --asar "{ASAR}"',
+                           f'please re-run: python patch_install.py install --asar "{ASAR}"'),
                          L("（继续检测中，diag 一更新即确认）", "(still watching; will confirm as soon as diag updates)")]
             else:
                 lines = [L("ZCode 已重启（新实例），正在确认注入加载……",

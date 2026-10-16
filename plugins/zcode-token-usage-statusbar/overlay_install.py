@@ -58,8 +58,73 @@ RUNTIME_FILES = [
 ]
 
 
+def sudo_user():
+    """sudo 运行时的真实用户名（POSIX；非 sudo / Windows 返回 None）。"""
+    if sys.platform == "win32" or not os.environ.get("SUDO_USER"):
+        return None
+    try:
+        return os.environ["SUDO_USER"] if os.geteuid() == 0 else None
+    except AttributeError:
+        return None
+
+
+def real_home():
+    """真实用户家目录：sudo 会重置 HOME，Path.home() 指向 /root，而运行时目录、config.json
+    与 hook 都以普通用户身份读写，必须落在 SUDO_USER 的家里（与根目录 install.py 同源）。
+    Linux 上 /opt 等系统安装位置写入需要 root，这是本函数存在的唯一场景。"""
+    user = sudo_user()
+    if user:
+        try:
+            import pwd
+            return Path(pwd.getpwnam(user).pw_dir)
+        except (KeyError, OSError, ImportError):
+            pass
+    return Path.home()
+
+
 def default_runtime():
-    return Path.home() / ".zcode" / "zcode-token-usage-statusbar"
+    return real_home() / ".zcode" / "zcode-token-usage-statusbar"
+
+
+SYSTEM_NODE_LOCATIONS = ("/usr/local/bin/node", "/usr/bin/node", "/usr/bin/nodejs")
+
+
+def _nvm_node_versions(nvm):
+    """nvm 的版本目录（v24.12.0）按 SemVer 降序；目录名带 v 前缀，_version_key 不认。"""
+    versions = []
+    for path in nvm.glob("v*"):
+        try:
+            versions.append((_version_key(path.name.lstrip("v")), path))
+        except ValueError:
+            continue
+    return [path / "bin" / "node" for _, path in sorted(versions, reverse=True)]
+
+
+def _node_candidates():
+    """验收器可用的 Node 解释器（按优先级，去重保序）。
+
+    sudo 的 secure_path 会重置 PATH，nvm 装的 node 不在 root 的 PATH 里，
+    `shutil.which("node")` 返回 None（issue #15）；因此还要探测 SUDO_USER 的 nvm
+    目录与常见系统位置。候选仍会在启动失败时逐个回退，不做身份保证。"""
+    from_path = shutil.which("node")   # which 已验证存在且可执行，不必再 is_file()
+    candidates = []
+    user = sudo_user()
+    if user:
+        try:
+            import pwd
+            nvm = Path(pwd.getpwnam(user).pw_dir) / ".nvm" / "versions" / "node"
+            candidates.extend(_nvm_node_versions(nvm))
+        except (KeyError, OSError, ImportError, ValueError):
+            pass
+    candidates.extend(SYSTEM_NODE_LOCATIONS)
+    exists = [Path(from_path)] if from_path else []
+    for candidate in candidates:
+        if not candidate:
+            continue
+        path = Path(candidate)
+        if path.is_file() and path not in exists:
+            exists.append(path)
+    return exists
 
 
 def load_patch_install():
@@ -253,7 +318,9 @@ def _run_verifier(command, env):
 
 
 @contextlib.contextmanager
-def _sync_verifier(runtime):
+def _sync_verifier(runtime, target_asar=None):
+    """target_asar 是本轮已解析的安装目标（resolve_paths 已做过包身份校验）。sudo 下
+    ZCODE_ASAR 与 /root 的 config 都为空，只有它能让 asar 旁的 ZCode 可执行文件参与验收。"""
     pending_path = runtime / "plugin-update.json"
     try:
         pending = json.loads(pending_path.read_text(encoding="utf-8"))
@@ -266,20 +333,25 @@ def _sync_verifier(runtime):
     base = runtime if (runtime / "plugin-updater.cjs").is_file() else PLUGIN_ROOT
     if active and base != runtime:
         raise ValueError("待恢复安装缺少可信运行时验收器，停止同步")
-    node = shutil.which("node")
-    executable = node
+    nodes = _node_candidates()
+    executable = None
     config = load_runtime_config(runtime) or {}
-    asar = os.environ.get("ZCODE_ASAR") or config.get("asar_path")
+    asar = target_asar or os.environ.get("ZCODE_ASAR") or config.get("asar_path")
     if asar:
         target = Path(asar)
         candidates = ([target.parent.parent / "MacOS" / "ZCode"] if sys.platform == "darwin"
                       else [target.parent.parent / ("ZCode.exe" if sys.platform == "win32" else "zcode")])
-        executable = next((str(item) for item in candidates if item.is_file()), executable)
+        executable = next((str(item) for item in candidates if item.is_file()), None)
     # asar 旁的同名可执行文件可能是外部应用/损坏文件（文件名不是身份依据）：
-    # 启动失败（OSError/WinError 216）或启动后挂起超时，都回退 PATH 里的 node 再试。
-    launch_candidates = list(dict.fromkeys(e for e in (executable, node) if e))
+    # 启动失败（OSError/WinError 216）或启动后挂起超时，都回退 Node 再试。
+    launch_candidates = list(dict.fromkeys(str(item) for item in
+                                           ([executable] if executable else []) + nodes))
     if not launch_candidates:
-        raise ValueError("未找到运行时验收所需 Node/ZCode 可执行文件")
+        raise ValueError(
+            "未找到运行时验收所需的 Node 可执行文件。sudo 会重置 PATH：nvm 等用户级 node "
+            "不在 root 的 PATH 里。请改用保留环境的方式重跑，例如："
+            " sudo env \"HOME=$HOME\" \"PATH=$PATH\" python3 overlay_install.py install"
+            "（或把 node 加入 root 的 PATH / 设 ZCODE_ASAR 指向 /opt/ZCode/resources/app.asar）")
     names = ("plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs")
     with tempfile.TemporaryDirectory(prefix="zusage-sync-verifier-") as directory:
         snapshot = Path(directory)
@@ -390,13 +462,18 @@ try {
         yield recheck
 
 
-def sync_runtime(runtime):
-    """All entry points verify installed identity before the shared transaction."""
+def sync_runtime(runtime, target_asar=None):
+    """All entry points verify installed identity before the shared transaction.
+
+    target_asar 是本轮已解析的安装目标（可为 None）：随 sync 一起进入验收器，
+    让 sudo 下也能用 asar 旁的 ZCode 可执行文件验收。"""
     runtime = Path(runtime)
     runtime.mkdir(parents=True, exist_ok=True)
     with file_lock(runtime / "plugin-runtime.lock"):
-        with _sync_verifier(runtime) as verify:
-            return _sync_runtime_locked(runtime, verify)
+        with _sync_verifier(runtime, target_asar) as verify:
+            result = _sync_runtime_locked(runtime, verify)
+        chown_runtime_to_user(runtime)   # root 写的运行时文件须归还给 sudo 的真实用户。
+        return result
 
 
 def _sync_runtime_locked(runtime, verify=lambda: None):
@@ -554,6 +631,29 @@ def write_marker(marker):
         return False
 
 
+def chown_runtime_to_user(runtime):
+    """sudo 安装后把运行时目录归还给 SUDO_USER：root 写的文件属主是 root，之后普通用户
+    身份运行的 hook / 自动更新无法再写（升级、豁免标记都会失败）。非 sudo 是 no-op。"""
+    user = sudo_user()
+    if not user:
+        return
+    try:
+        import pwd
+        record = pwd.getpwnam(user)
+    except (KeyError, OSError, ImportError):
+        return
+    targets = [runtime]
+    try:
+        targets.extend(path for path in runtime.iterdir() if not path.is_dir())
+    except OSError:
+        pass
+    for path in targets:
+        try:
+            os.chown(path, record.pw_uid, record.pw_gid)
+        except OSError:
+            pass
+
+
 def _nudge(output, message):
     from restart_notice import visible_context
     output["systemMessage"] = message
@@ -576,7 +676,7 @@ def run_hook():
     runtime = Path(os.environ.get("ZUSAGE_PLUGIN_RUNTIME") or default_runtime())
     try:
         runtime, pi = resolve_paths()
-        changed = sync_runtime(runtime)["changed"]
+        changed = sync_runtime(runtime, pi.ASAR)["changed"]
         try:
             from plugin_auto_update import start_auto_update
             start_auto_update(runtime, pi)
@@ -645,7 +745,7 @@ def main():
         return
     runtime, pi = resolve_paths()
     if cmd == "install":
-        sync_runtime(runtime)
+        sync_runtime(runtime, pi.ASAR)
     if pi.ASAR is None:
         print("[zusage-plugin] 未找到有效 ZCode app.asar；请设置 ZCODE_ASAR。", file=sys.stderr)
         if cmd in ("install", "remove"):
@@ -661,10 +761,12 @@ def main():
                 print(notice["message"])
         if ok or injected_status(pi) is not None:
             save_runtime_config(runtime, pi)
+        chown_runtime_to_user(runtime)
     elif cmd == "remove":
         ok = pi.remove()
         if ok and not write_marker(optout_marker(runtime)):
             print("（豁免标记写入失败，hook 可能继续提示）")
+        chown_runtime_to_user(runtime)
     else:
         st = injected_status(pi)
         print(f"runtime: {runtime}")

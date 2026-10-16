@@ -7,6 +7,16 @@
   python patch_install.py install --finalize  # 客户端退出后完成替换
   python patch_install.py remove    # 卸载（从 asar 剥离本工具注入行，不依赖备份）
   python patch_install.py check     # 检查当前注入状态与入口语法
+  python patch_install.py install --finalize --asar <app.asar 完整路径> --runtime <运行时目录>
+                                    # standalone 运行须显式指定非默认安装位置的目标，
+                                    # 否则按平台默认位置猜测，自定义路径下会猜错/找不到文件；
+                                    # 也可各设一次环境变量 ZCODE_ASAR / ZCODE_RUNTIME 代替每次都传
+                                    # （命令行参数优先于环境变量）。--runtime 只有 install --finalize
+                                    # 需要——pending TMP 的 sidecar 记录了生成时的运行时目录，
+                                    # standalone 默认 RUNTIME 是脚本自身所在目录，插件安装的运行时
+                                    # 数据目录通常是另一个目录，不传会被来源授权校验拒绝；
+                                    # remove/check 不受影响。install.py / overlay_install.py
+                                    # 拉起时会调用 set_target()/set_runtime() 代为处理，不受此限制。
 
 原理：asar 主入口 out/main/index.js 尾部追加一行 dynamic import(loader)（ESM 入口，实测见下）。
 Electron fuses: EmbeddedAsarIntegrityValidation=0（已实测），改动 asar 可正常加载。
@@ -599,6 +609,32 @@ def finalize_tmp(operation="install", client_closed=None, verified=None):
 
 # ---------- 安装 / 卸载 ----------
 
+def target_writable():
+    """asar 与其所在目录都可写（/opt 等系统位置需要 root：只读目标不能再重打包）。"""
+    return os.access(ASAR, os.W_OK) and os.access(ASAR.parent, os.W_OK)
+
+
+def sudo_hint(operation="install"):
+    """系统位置不可写时可操作的提示：sudo 默认重置 HOME/PATH，必须显式保留，
+    否则 nvm 装的 node 与 ~/.zcode 下的运行时目录都会找错（issue #15）。
+    插件安装走 overlay_install.py，仓库根一键安装走 install.py；用当前目录实际在的那个。
+    operation 必须和调用方实际要做的事一致：install 场景提示装，remove 场景提示卸载，
+    否则会把想卸载的用户引导去重新安装/注入（issue #15 的 review 发现）。"""
+    print(L(f"[权限] app.asar 或所在目录不可写（Linux 上 /opt 等系统位置需要 root）：{ASAR}",
+            f"[permission] app.asar or its directory is not writable (Linux system locations like /opt need root): {ASAR}"))
+    print(L("请用 sudo 重跑，并保留当前 HOME 与 PATH（sudo 默认重置它们，会让 nvm 的 node "
+            "和 ~/.zcode 下的运行时目录定位失败）：",
+            "Re-run with sudo while keeping the current HOME and PATH (sudo resets both by default, "
+            "which hides an nvm node and mislocates the runtime dir under ~/.zcode):"))
+    here = Path(__file__).resolve().parent
+    args = {"install": ("overlay_install.py", "install"), "remove": ("overlay_install.py", "remove")}[operation]
+    fallback = ("install.py", "" if operation == "install" else "--remove")
+    script, cmd = next(((here / name, cmd) for name, cmd in (args, fallback)
+                        if (here / name).is_file()), (here / fallback[0], fallback[1]))
+    print(L('  sudo env HOME="$HOME" PATH="$PATH" python3 "{}" {}'.format(script, cmd).rstrip(),
+            '  sudo env HOME="$HOME" PATH="$PATH" python3 "{}" {}'.format(script, cmd).rstrip()))
+
+
 def install(finalize=False, before_publish=None):
     """Serialize install/remove/finalize; optional callback precedes a new install's publication."""
     if finalize:
@@ -624,13 +660,8 @@ def _install(finalize=False, before_publish=None):
             cleanup_legacy_bak()
         return ok
     assert LOADER.exists(), L(f"loader 缺失：{LOADER}", f"loader missing: {LOADER}")
-    if not os.access(ASAR, os.W_OK) or not os.access(ASAR.parent, os.W_OK):
-        print(L(f"[权限] app.asar 或所在目录不可写（Linux 上 /opt 等系统位置需要 root）：{ASAR}",
-                f"[permission] app.asar or its directory is not writable (Linux system locations like /opt need root): {ASAR}"))
-        print(L("请用 sudo 重跑（推荐走一键安装，会自动处理目标定位与数据目录归属）：",
-                "Please re-run with sudo (the one-shot installer is recommended; it resolves the target and data-dir ownership automatically):"))
-        print(L("  sudo python install.py            # 自动探测（含 /opt/ZCode）",
-                "  sudo python install.py            # auto-detects (including /opt/ZCode)"))
+    if not target_writable():
+        sudo_hint()
         return False
     try:
         source = source_fingerprint(ASAR)  # 必须在读取待修改入口和 repack 前取得。
@@ -675,8 +706,8 @@ def _install(finalize=False, before_publish=None):
         except OSError as e:
             print(L(f"\n运行中替换失败（{e}）。已弹出监控窗口：完全退出 ZCode 后会自动完成替换，",
                     f"\nReplacement while running failed ({e}). A monitor window has opened: it finishes the replacement once ZCode quits completely,"))
-            print(L("或之后手动执行：python patch_install.py install --finalize",
-                    "or run manually afterwards: python patch_install.py install --finalize"))
+            print(L(f'或之后手动执行：python patch_install.py install --finalize --asar "{ASAR}" --runtime "{RUNTIME}"',
+                    f'or run manually afterwards: python patch_install.py install --finalize --asar "{ASAR}" --runtime "{RUNTIME}"'))
             launch_monitor(time.time())
             return False
     try:
@@ -696,7 +727,36 @@ def _install(finalize=False, before_publish=None):
     return True
 
 
+def injected_state():
+    """True=已注入 False=未注入 None=asar 读不到；只读即可判定，不需要目标锁。"""
+    try:
+        return bool(ZUSAGE_LINE_RE.search(entry_bytes_of(ASAR)))
+    except (OSError, ValueError, AssertionError, KeyError, struct.error):
+        return None
+
+
 def remove():
+    # 系统位置（/opt 等）下普通用户拿不到 asar 锁：此时只有"确无注入"才该免 root 放行。
+    # 安装从未成功过（issue #15 的常见状态）不需要剥离任何东西，豁免标记必须能写，
+    # 否则「关闭自动安装与提醒」这件事本身也被权限卡住。
+    if not target_writable():
+        state = injected_state()
+        if state is False:
+            try:
+                _cancel_pending_install()
+            except (OSError, PendingTmpError) as e:
+                print(L(f"（未注入，但旧安装意图清理失败：{e}）",
+                        f"(not injected, but cleaning the stale install intent failed: {e})"))
+            print(L("当前 asar 未注入，无需 root 权限。", "The current asar is not injected; root is not needed."))
+            cleanup_legacy_bak()
+            return True
+        if state is None:
+            # 读都读不到：把"关闭提醒"交回给调用方，别把 optout 也一起卡住。
+            print(L("无法读取 app.asar（不存在或权限不足），无法确认注入状态。",
+                    "Cannot read app.asar (missing or permission denied); the injection state is unknown."))
+            return False
+        sudo_hint("remove")
+        return False
     try:
         with _target_lock():
             return _remove()
@@ -734,8 +794,8 @@ def _remove():
         print(L(f"卸载待替换包已失效，未替换：{e}", f"Remove pending package invalidated; not replaced: {e}"))
         return False
     except OSError as e:
-        print(L(f"\n替换失败（{e}）。请完全退出 ZCode 后重跑 python patch_install.py remove，",
-                f"\nReplacement failed ({e}). Quit ZCode completely and re-run python patch_install.py remove, "))
+        print(L(f'\n替换失败（{e}）。请完全退出 ZCode 后重跑 python patch_install.py remove --asar "{ASAR}"，',
+                f'\nReplacement failed ({e}). Quit ZCode completely and re-run python patch_install.py remove --asar "{ASAR}", '))
         print(L("待替换文件保留；不要手动 move/mv 覆盖可能已升级的 app.asar。",
                 "Pending files kept; do not manually move/mv over a possibly upgraded app.asar."))
         return False
@@ -753,11 +813,69 @@ def check():
     if injected:
         syntax_check(ASAR)
     if TMP.exists():
-        print(L("存在待替换 TMP:", "Pending replacement TMP exists:"), TMP, L("（退出 ZCode 后跑 install --finalize）", "(quit ZCode, then run install --finalize)"))
+        # 待替换 TMP 可能是 install 也可能是 remove（sidecar 的 operation 字段），命令不能
+        # 写死 install --finalize——remove 的 TMP 照抄这条命令会被 pending_tmp 的操作类型
+        # 校验拒绝；读不到/不可信时保留原本的 install --finalize 兜底（成功率更高的默认值）。
+        try:
+            operation = _load_tmp_metadata().get("operation")
+        except PendingTmpError:
+            operation = None
+        if operation == "remove":
+            hint = L(f'（退出 ZCode 后跑 remove --asar "{ASAR}"）',
+                     f'(quit ZCode, then run remove --asar "{ASAR}")')
+        else:
+            hint = L(f'（退出 ZCode 后跑 install --finalize --asar "{ASAR}" --runtime "{RUNTIME}"）',
+                     f'(quit ZCode, then run install --finalize --asar "{ASAR}" --runtime "{RUNTIME}")')
+        print(L("存在待替换 TMP:", "Pending replacement TMP exists:"), TMP, hint)
+
+
+def _consume_flag_arg(argv, name):
+    """取出并剥离 --<name> <value> / --<name>=<value>（不论在 argv 哪个位置），返回
+    (value_or_None, 剩余 argv)；剩余 argv 保持原有顺序，cmd/--finalize 解析不受影响。
+    出现多次时取最后一次（与常见 CLI 行为一致）；紧跟的下一个 token 本身像另一个 flag
+    （以 -- 开头）时按缺值处理，原样保留在剩余 argv 里，不会被误吞成这个 flag 的值。"""
+    flag = f"--{name}"
+    value, remaining, i = None, [], 0
+    while i < len(argv):
+        a = argv[i]
+        if a == flag and i + 1 < len(argv) and not argv[i + 1].startswith("--"):
+            value = argv[i + 1]
+            i += 2
+            continue
+        if a.startswith(flag + "="):
+            value = a[len(flag) + 1:]
+            i += 1
+            continue
+        remaining.append(a)
+        i += 1
+    return value, remaining
 
 
 def main(argv=None):
     args = sys.argv[1:] if argv is None else argv
+    # standalone 运行（install.py/overlay_install.py 拉起时已 set_target()/set_runtime()，
+    # 不会带这两个参数）：命令行优先于对应环境变量；都没有时沿用模块级默认值。
+    # --asar 不猜自定义安装位置（按平台默认猜测，猜错即 FileNotFoundError）；
+    # --runtime 不对就算 --asar 对了也无济于事——install --finalize 要求 sidecar 记录的
+    # runtime 与当前 RUNTIME 一致（pending_tmp 的来源授权校验，二者各自 .resolve() 后比较，
+    # 不受符号链接影响），standalone 默认 RUNTIME=HERE（脚本所在目录），插件安装时 sidecar
+    # 记的却是运行时数据目录，两者不一致会被拒绝 "pending operation/runtime is no longer
+    # authorized"。两者均见文件顶部用法说明。
+    asar_arg, args = _consume_flag_arg(args, "asar")
+    asar_arg = asar_arg or os.environ.get("ZCODE_ASAR")
+    if asar_arg:
+        set_target(os.path.expandvars(os.path.expanduser(asar_arg)))
+    runtime_arg, args = _consume_flag_arg(args, "runtime")
+    runtime_arg = runtime_arg or os.environ.get("ZCODE_RUNTIME")
+    if runtime_arg:
+        # 不用 .resolve()：各打印点原样回显当前 RUNTIME（见上方 install/check 的提示），
+        # 用户复制粘贴后必须字节级还原成同一个值——self_check() 用 RUNTIME 现算的
+        # INJECT_LINE 与 TMP 里已固化的内容做字面比较，不再重新 resolve；若这里 resolve，
+        # 符号链接路径上（如 macOS /var 对 /private/var）会生成不同字符串，白白通过授权
+        # 校验却自检失败。但 LOADER.as_uri() 要求绝对路径，手动输入相对路径会直接崩溃
+        # （提示本身回显的永远是绝对路径，不受影响）；os.path.abspath 只补全成绝对路径、
+        # 不跟随符号链接解析，对已是绝对路径的输入是纯粹的 no-op，两头都不破。
+        set_runtime(os.path.abspath(os.path.expandvars(os.path.expanduser(runtime_arg))))
     cmd = args[0] if args else "check"
     if cmd == "install":
         return install(finalize="--finalize" in args[1:])

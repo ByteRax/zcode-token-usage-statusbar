@@ -95,8 +95,37 @@
       if (state.data) instances[i].render(state.data);
     }
   }
+  var remoteCache = {};
+  var remoteTodayCache = {};
+  function sessionFor(d, sid, pid) {
+    var binding = d.scope_bindings || {};
+    // 空 identity 是显式本地绑定；真实 pane 缺绑定时也不能继承同 sid 的远端。
+    var identity = Object.prototype.hasOwnProperty.call(binding, pid) ? binding[pid]
+      : (pid === "auto" && Object.prototype.hasOwnProperty.call(binding, sid) ? binding[sid] : "");
+    var recent = d.recent || [], found = null;
+    for (var i = 0; i < recent.length; i++) {
+      var r = recent[i];
+      if (r.sid === sid && (r.workspace_identity || "") === identity) { found = r; break; }
+    }
+    if (!identity) return found;
+    var target = found && found.remote_target || "";
+    var key = JSON.stringify([sid, identity, target]);
+    if (found && found.remote && !found.remote_error && !found.remote_missing) {
+      if (target) remoteCache[key] = found;
+      return found;
+    }
+    // 只复用同目标的成功快照；identity 改指其它目标或目标未知时不能继承旧源数据。
+    if (target && remoteCache[key]) return Object.assign({}, remoteCache[key], {
+      remote_error: (found && found.remote_error) || "remote data unavailable; showing last successful snapshot",
+      remote_missing: true, remote_stale: true,
+    });
+    return found || { sid: sid, workspace_identity: identity, remote: true, remote_missing: true };
+  }
   window.__zusageUpdate = function (d) {
-    if (stale()) return;
+    if (stale() || !d || d.error) return;
+    if (d.remote_today) for (var key in d.remote_today) {
+      if (d.remote_today[key] && typeof d.remote_today[key] === "object") remoteTodayCache[key] = d.remote_today[key];
+    }
     state.data = d;
     for (var i = 0; i < instances.length; i++) {
       try { instances[i].render(d); } catch (e) { FATAL.updateErr = String((e && e.stack) || e); }
@@ -113,9 +142,46 @@
     scanRateLines();
     instances.forEach(function (inst) { inst.syncUpdate(); });
   };
+  /* v12 多服务器路由：sid → workspaceIdentity（remote:ssh:host:port:user:path，重连换代不变）。
+   * 来源1 客户端 pane 布局树（本窗口各 pane 的 sessionId + workspaceScope，最新鲜）；
+   * 来源2 zcode-v4-last-session:v1:<workspaceKey> 前缀键（跨窗口历史，仅补缺）。
+   * 泵将候选与本窗可信 workspace/task IPC 做交集；歧义不猜，JSON 请求携带 identity。 */
+  function collectSidWs() {
+    var map = {};
+    function add(sid, identity) {
+      if (!sid || !identity || String(identity).indexOf("remote:ssh:") !== 0) return;
+      if (!map[sid]) map[sid] = [];
+      if (map[sid].indexOf(String(identity)) < 0) map[sid].push(String(identity));
+    }
+    try {
+      var tree = JSON.parse(localStorage.getItem("zcode-v4-pane-layout:v2") || "null");
+      var panes = tree && tree.panes;
+      if (panes) for (var pid in panes) {
+        var pn = panes[pid] || {}, sc = pn.workspaceScope || {};
+        var idt = sc.workspaceIdentity, sid2 = pn.sessionId;
+        add(sid2, idt);
+      }
+    } catch (e) { }
+    try {
+      for (var i = 0; i < localStorage.length; i++) {
+        var k = localStorage.key(i);
+        if (typeof k !== "string" || k.indexOf("zcode-v4-last-session:v1:") !== 0) continue;
+        var wk = k.slice("zcode-v4-last-session:v1:".length);
+        if (wk.indexOf("remote:") !== 0) continue;
+        var v = localStorage.getItem(k), sid3 = v;
+        if (v && v.charAt(0) === '"') { try { sid3 = JSON.parse(v); } catch (e2) { } }
+        else if (v && v.charAt(0) === "{") {
+          try { sid3 = JSON.parse(v).sessionId; } catch (e3) { }
+        }
+        if (sid3 && typeof sid3 === "string") add(sid3, wk);
+      }
+    } catch (e4) { }
+    return map;
+  }
   function refreshWants() {
     /* 各 pane 会话 id 汇总给泵：__zusageWantSids（新泵按数组强制纳入快照），
-     * __zusageWantSid 保底兼容旧泵单值通路（取 0 号实例的会话） */
+     * __zusageWantSid 保底兼容旧泵单值通路（取 0 号实例的会话）；
+     * __zusageSidWs 供多服务器路由（v12，旧泵忽略）。 */
     try {
       var arr = [];
       for (var i = 0; i < instances.length; i++) {
@@ -123,7 +189,22 @@
         if (s1 && arr.indexOf(s1) < 0) arr.push(s1);
       }
       window.__zusageWantSids = arr;
-      window.__zusageWantSid = arr[0] || "";
+      if (arr.length) window.__zusageWantSid = arr[0];
+      window.__zusageSidWs = collectSidWs();
+      var panes = {};
+      try {
+        var layout = JSON.parse(ls("zcode-v4-pane-layout:v2", "null"));
+        for (var n = 0; n < instances.length; n++) {
+          var inst = instances[n], binding = layout && layout.panes && layout.panes[inst.pid];
+          if (binding && binding.sessionId === inst.getSid() && binding.workspaceScope) {
+            panes[inst.pid] = { sid: inst.getSid(), identity: binding.workspaceScope.workspaceIdentity || "" };
+          } else if (inst.pid === "workspace-main" && inst.getSid()) {
+            // 宿主主叶不进入持久化 panes；仅上报当前 DOM 会话，缺可靠工作区证据时泵拒绝远端推断。
+            panes[inst.pid] = { sid: inst.getSid() };
+          }
+        }
+      } catch (e2) { }
+      window.__zusagePaneScopes = panes;
     } catch (e) { }
   }
 
@@ -842,7 +923,7 @@
       ".zu-settings .zu-settings-scroll{display:block;flex:1;min-width:0;width:auto;border:0;background:none;font:inherit;" +
       "font-size:calc(var(--ui-font-size,14px) - 2px);color:var(--color-brand,#57c7ff);padding:2px;cursor:pointer}" +
       ".zu-settings .zu-settings-scroll:disabled{color:var(--color-foreground-subtle,#8791a3);cursor:default}" +
-      /* 反馈按钮（v70）：常驻底栏右缘，点击经 zcode openExternal 桥用系统默认浏览器打开 issues */
+      /* 反馈按钮（v70）：常驻底栏右缘，点击经 window.open 交由系统默认浏览器打开 issues */
       ".zu-settings .zu-settings-feedback{flex:0 0 auto;font:inherit;font-size:calc(var(--ui-font-size,14px) - 2px);" +
       "color:var(--color-foreground,#e9edf4);background:var(--color-hover,rgba(255,255,255,.07));" +
       "border:1px solid var(--color-border,rgba(255,255,255,.14));border-radius:6px;padding:3px 10px;cursor:pointer}" +
@@ -1174,6 +1255,7 @@
           L("数据源：SSH 远程服务器 ", "Data source: remote server over SSH ") + (d.remote_host || "?") + "\n" +
           L("会话数据实时取自远端机的 ZCode 数据库，「今日合计」亦为远端值", "Session data is fetched live from the remote machine's ZCode database; today's total is the remote value") +
           (d.remote_error ? "\n⚠ " + L("最近一次远端查询失败：", "Last remote query failed: ") + d.remote_error : "") +
+          (d.remote_stale ? "\n" + L("当前显示最后成功快照，正在重试", "Showing last successful snapshot; retrying") : "") +
           (d.remote_empty ? "\n⚠ " + L("远端库里这个会话还没有已完成的请求（各项为 0）——确认远端 zusage.py 读到的库与远端 ZCode 实际写入的库是同一个",
                                         "The remote database has no completed requests for this session (all items are 0) — check that the remote zusage.py reads the same database the remote ZCode actually writes") : ""));
       }
@@ -1187,8 +1269,8 @@
               + (d.remote_error ? L("查询失败 ", "query failed: ") + d.remote_error
                  : L("远端库里也没有这个会话（核对远端 zusage.py 读的库/用户与远端 ZCode 实际写入的是否一致）",
                      "the remote database does not have it either (verify the database/user the remote zusage.py reads matches what the remote ZCode writes)"))
-            : L("若这是 SSH 远程 / 他机会话：在 config.json 配置 remote 段即可（README「SSH 远程会话支持」；ssh 也可写成 argv 数组，docker exec / wsl / kubectl exec 等通道都能借道）",
-                "If this is an SSH/remote session, add the remote section to config.json (see README; ssh may also be an argv array, so docker exec / wsl / kubectl exec all work)")));
+            : L("若这是 SSH 远程会话：客户端连过的远端工作区会自动被发现并查询（v12 零配置）；没查到时核对远端机已部署 zusage.py，或在 config.json 配置 remote 段（README「远程会话」；ssh 也可写成 argv 数组，docker exec / wsl / kubectl exec 等通道都能借道）",
+                "If this is a remote SSH session: remote workspaces the client connected to are discovered and queried automatically (v12, zero config); if it's still missing, make sure zusage.py is deployed on the remote machine, or add the remote section to config.json (see README; ssh may also be an argv array, so docker exec / wsl / kubectl exec all work)")));
       }
       /* v73：生成速度——桥命中（本 pane 会话有 renderer 投影）时用它的估算/真实 tok/s，
        * 否则退回原 DB 最近一段值（与 state.rateLine 开关无关：桥不可用或开关关闭时
@@ -1505,8 +1587,7 @@
          * （客户端每个 pane 自带该标记，比窗口级 mine 更准，绝不串 pane）；
          * 会话不在池里（还没拉取）就显示本会话 0 值 —— 绝不回退到别的会话（v34 原则）。 */
         pickedSid = instSid;
-        var rec = d.recent || [];
-        for (var i = 0; i < rec.length; i++) if (rec[i].sid === instSid) { p = rec[i]; break; }
+        p = sessionFor(d, instSid, pid);
         if (!p) p = stubFor(instSid);
       } else {
         var mine = d.mine;   // 泵按窗口注入：string=本窗口焦点会话（空串=该窗口当前无会话），undefined=泵无该窗口信息
@@ -1514,8 +1595,7 @@
           pickedSid = mine;
           window.__zusageWantSid = mine;
           if (mine) {
-            var rec2 = d.recent || [];
-            for (var j = 0; j < rec2.length; j++) if (rec2[j].sid === mine) { p = rec2[j]; break; }
+            p = sessionFor(d, mine, pid);
             if (!p) p = stubFor(mine);
           } else {
             p = stubFor("");
@@ -1529,19 +1609,28 @@
         }
       }
       excOn = excActive(p);   // 气泡的显示依据（track 每帧消费）
+      /* v12 多服务器：remote_today/remote_errors 按目标键分组，取本会话所属主机的分片；
+       * 旧格式（单目标，顶层对象即 today）兜底兼容。 */
+      var myTarget = p.remote_target || "";
+      var remoteToday = null;
+      if (p.remote && d.remote_today && typeof d.remote_today === "object") {
+        remoteToday = typeof d.remote_today.requests === "number" ? d.remote_today
+          : (myTarget && (d.remote_today[myTarget] || remoteTodayCache[myTarget])) || null;
+      }
       var view = {
         session: p, last_turn: p.last_turn || {}, last: p.last || {},
         /* v9：远端会话的「今日合计」用远端机数据，本地 today 只在显示本地会话时使用 */
-        today: (p.remote && d.remote_today) ? d.remote_today : d.today,
+        today: p.remote ? (remoteToday || {}) : d.today,
         native_ctx: nativeCtxVal,
         context_window: p.context_window, context_auto: p.context_auto,
         code: p.code, ctx_exc: p.ctx_exc, tools: p.tools,
-        remote: !!p.remote, remote_host: p.remote_host || "", remote_error: d.remote_error || "",
+        remote: !!p.remote, remote_host: p.remote_host || "", remote_error: p.remote_error || (d.remote_errors && myTarget && d.remote_errors[myTarget]) || (!d.remote_errors && d.remote_error) || "",
         /* v62（issue #14 / #10）：该会话不在本地库且没命中远端 → 条面给一次配置指引，
          * 把"各项全 0 = 插件坏了"的误判转成可执行的下一步；远端命中的会话由 ☁ 徽标那套说明。 */
         not_local: (d.not_local || []).indexOf(p.sid) >= 0 && !p.remote,
         remote_enabled: !!d.remote_enabled,
-        remote_empty: !!(p.remote && !p.requests),   // 远端答了、但远端库里该会话没有已完成请求
+        remote_stale: !!p.remote_stale,
+        remote_empty: !!(p.remote && !p.requests && !p.remote_missing),
         sub: p.sub || {requests: 0, total: 0, input: 0, output: 0, cache_read: 0, active: false, list: []},
       };
       lastSub = view.sub;   // 子代理明细面板的数据源（开关面板/数据推送刷新用）

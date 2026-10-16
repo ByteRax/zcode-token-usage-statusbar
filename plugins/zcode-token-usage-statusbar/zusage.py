@@ -4,17 +4,18 @@
 既可作 CLI（python zusage.py [now|today|days N|sessions [N]|models [days]|workspace 关键词|session id前缀|watch [sec]]），
 也可被 usage_mcp.py import 为查询库。
 """
+import hashlib
 import json
+import os
 import re
 import shlex
 import sqlite3
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
-
-from usage_stats import hides_reasoning, request_stats
 
 DB_PATH = Path.home() / ".zcode" / "cli" / "db" / "db.sqlite"
 CONFIG_PATH = Path(__file__).parent / "config.json"
@@ -92,6 +93,9 @@ def fmt(n):
 
 
 SESSION_TIMEOUT_MS = 30 * 60 * 1000  # 最近30分钟有请求视为活跃会话
+_TPS_MIN_GEN_MS = 200          # 有效样本下限，同 token_rate.MIN_GEN_MS
+_TPS_MAX_GEN_MS = 3_600_000    # 有效样本上限（1h），同 token_rate.MAX_GEN_MS
+_TPS_LOOKBACK = 20             # first_token_at 缺失时向前找有效请求的扫描条数上限
 
 
 _AGG_TTL_MS = 2000   # 聚合短缓存：今日合计/会话池是慢变量，2s 陈旧无感；泵 1.5s 拉一次省约一半全表聚合
@@ -611,12 +615,57 @@ def _light_snapshot(con, sid, cfg):
     }
 
 
+def hides_reasoning(model_id):
+    """Claude 系列不单独上报思考 token：reasoning_tokens 恒为 0，output_tokens 却已含思考，
+    且思考在 first_token_at 之前流出。按首字窗口计时会把思考期漏出分母（2026-10-15 真库：
+    claude-opus-5-5 有 35% 请求按首字窗口超过 300 tok/s），须同含思考段一样从 started_at 起算。
+    与 token_rate.hides_reasoning 同一规则。"""
+    return "claude" in (model_id or "").lower()
+
+
+def _row_gen_ms(r):
+    """按 token_rate.py 同款口径算一行 model_usage 的生成时长；first_token_at 缺失
+    或窗口非正则不可信，返回 None（该请求不参与 last.tps 计算）。"""
+    ft, ct, st = r["first_token_at"], r["completed_at"], r["started_at"]
+    if not ft or not ct or ct <= ft:
+        return None
+    gen_ms = ct - ft
+    if (r["reasoning_tokens"] or hides_reasoning(r["model_id"])) and st and ct > st:
+        gen_ms = ct - st   # 含思考段/Claude 系列：窗口前移到 started_at
+    return gen_ms
+
+
+def _last_valid_tps(con, sid, last):
+    """last.tps：状态栏置顶的"最近一次生成速度"。
+    first_token_at 缺失时不能退化用总耗时当生成时长——等待期会被当成生成期，速率严重
+    低估（2026-10-16 真库抽样：近半请求缺该时间戳，退化值里七成明显偏低，极端到 11
+    token/6.2s 算出 1.8 这种荒谬值）。缺失时向前找最近一条时间戳完整、口径有效的
+    请求代替；仍找不到则 0（chip 按既有约定隐藏，不引入"速度不可用"文案）。"""
+    if last and last["output_tokens"]:
+        gen_ms = _row_gen_ms(last)
+        if gen_ms and _TPS_MIN_GEN_MS <= gen_ms < _TPS_MAX_GEN_MS:
+            return round(last["output_tokens"] / (gen_ms / 1000), 1)
+    rows = con.execute(
+        """select output_tokens, first_token_at, completed_at, started_at, reasoning_tokens, model_id
+           from model_usage where session_id=? and status='completed'
+           order by completed_at desc limit ?""",
+        (sid, _TPS_LOOKBACK),
+    ).fetchall()
+    for r in rows:
+        if not r["output_tokens"]:
+            continue
+        gen_ms = _row_gen_ms(r)
+        if gen_ms and _TPS_MIN_GEN_MS <= gen_ms < _TPS_MAX_GEN_MS:
+            return round(r["output_tokens"] / (gen_ms / 1000), 1)
+    return 0
+
+
 def _session_snapshot(con, sid, cfg):
     """单个会话的完整快照（最新会话与 recent 列表共用一份结构）。"""
     srow = con.execute("select * from session where id=?", (sid,)).fetchone()
     u = session_usage(con, sid)
     last = con.execute(
-        """select duration_ms, time_to_first_token_ms, completed_at, turn_id, model_id,
+        """select duration_ms, coalesce(time_to_first_token_ms,0), completed_at, turn_id, model_id,
                   output_tokens, first_token_at, started_at, reasoning_tokens
            from model_usage where session_id=? and status='completed'
            order by completed_at desc limit 1""",
@@ -658,29 +707,8 @@ def _session_snapshot(con, sid, cfg):
     lr = con.execute("select max(completed_at) from model_usage where session_id=?", (sid,)).fetchone()
     active = bool(lr and lr[0] and int(time.time() * 1000) - lr[0] < SESSION_TIMEOUT_MS)
     ctx_auto = lookup_context_window(last["model_id"]) if last else None
-    # Shared per-request calculation: an invalid latest request never borrows an older rate.
-    rate = request_stats(last) if last else None
-    tps = rate["tokPerSec"] if rate else None
-    if tps is None and last and last["output_tokens"]:
-        # 显示层兜底（v77.3，修订 v77.2）：严格口径（request_stats）对缺 first_token_at
-        # 的行按设计不评分——v77.2 曾退化用 DB 落库的总耗时估算，把等待期当成生成期，
-        # 真库 11 token/6.173s 的尾巴请求借此显示过 1.8 t/s 这种荒谬值（2026-10-16 复核
-        # 发现：换了层皮的同一缺陷）。改为向前找最近一条严格口径本身评分通过的请求
-        # 顶上（展示用途，和逐问结算行的严格聚合互不影响）；仍找不到才留空，chip 隐藏。
-        rows = con.execute(
-            """select output_tokens, first_token_at, completed_at, started_at,
-                      reasoning_tokens, model_id, time_to_first_token_ms
-               from model_usage where session_id=? and status='completed'
-               order by completed_at desc limit 20""",
-            (sid,),
-        ).fetchall()
-        for r in rows:
-            if not r["output_tokens"]:
-                continue
-            r_rate = request_stats(r)
-            if r_rate["tokPerSec"] is not None:
-                tps = r_rate["tokPerSec"]
-                break
+    # 生成速度：输出 token ÷ 生成耗时，置顶显示；口径细节与缺失兜底见 _last_valid_tps。
+    tps = _last_valid_tps(con, sid, last)
     sub_rows = con.execute(
         """select m.session_id, coalesce(m.agent,''), coalesce(s2.title,''), count(*),
                   coalesce(sum(m.computed_total_tokens),0),
@@ -757,10 +785,6 @@ def _session_snapshot(con, sid, cfg):
             "ttft_ms": last[1] if last else 0,
             "model": last["model_id"] if last else "",
             "tps": tps,
-            "genMs": rate["genMs"] if rate else None,
-            "ratedOutput": rate["ratedOutput"] if rate else 0,
-            "unratedOutput": rate["unratedOutput"] if rate else 0,
-            "rateUnavailableReason": rate["rateUnavailableReason"] if rate else "noRequest",
         },
         # 代码变更统计（session 表 summary_* 列，ZCode 目前未填充、全库为 NULL，有值才会显示）
         "code": {
@@ -788,26 +812,142 @@ _EMPTY_TURN = {"requests": 0, "retries": 0, "tool_calls": 0, "tool_errors": 0, "
                "total": 0, "duration_ms": 0, "ttft_ms": 0}
 
 
-# ---------- 远端数据源（SSH，v9）----------
-# SSH 远程场景：桌面客户端连的是远端 zcode-server，会话数据落在远端机的
-# ~/.zcode/cli/db/db.sqlite，本地库里查不到。config.json 配了 remote 时，
-# force 会话中本地无数据的 sid 改为 SSH 到远端执行同一份 zusage.py json，
-# 把远端快照（结构同源）打上 remote 标记合并进本 payload；today 同理带回远端值。
-# 服务器侧只需部署同一份 zusage.py（无需 config 的 remote 段，保持关闭防递归）。
+# ---------- 远端数据源：identity 路由与目标隔离 ----------
 
+_REMOTE_NEG = {}                        # (sid, 目标键) -> [查询时刻ms, 生效TTLms]
 _REMOTE_NEG_TTL_OK = 2 * 60 * 1000      # 远端确认"无此会话"后多久内不再问（远端新会话极少数竞态下最迟 2 分钟自愈）
 _REMOTE_NEG_TTL_ERR = 60 * 1000         # ssh 失败/超时：短退避，尽快自愈
-_REMOTE_NEG = {}                        # sid -> [查询时刻ms, 生效TTLms]
+_REMOTE_TARGET_KEY_RE = re.compile(r"[a-z][a-z0-9]{0,31}")
+_REMOTE_SID_RE = re.compile(r"[A-Za-z0-9_-]{1,80}")
+
+_DESKTOP_SETTING_SUBPATH = (".zcode", "v2", "setting.json")
+_CLIENT_STATE_CACHE = {"sig": None, "entries": []}
 
 
-def _remote_cfg(cfg):
-    """config.json 的 remote 段 → 归一化配置或 None。字段：
-    enabled(true) / ssh("ssh 主机别名" 或 argv 数组) / script(远端 zusage.py 路径) /
-    python(远端解释器) / timeout_s(ssh 超时) / host_label(徽标显示名)。"""
+def _desktop_home():
+    """客户端 setting.json 的 HOME 基准：dev 实例可用 ZCODE_DESKTOP_HOME_DIR 改写
+    （与客户端 packages/services/src/setting 的解析顺序对齐），否则当前用户家目录。"""
+    return (os.environ.get("ZCODE_DESKTOP_HOME_DIR", "").strip()
+            or os.environ.get("HOME", "").strip()
+            or os.environ.get("USERPROFILE", "").strip() or str(Path.home()))
+
+
+def _desktop_setting_path():
+    return Path(_desktop_home()).joinpath(*_DESKTOP_SETTING_SUBPATH)
+
+
+def _read_client_remote_entries():
+    """客户端持久化的远程工作区条目（lastWorkspaceSession，兼容旧键 remoteWorkspaceHistory）。
+    带 mtime 缓存（文件每次变更整写一遍，stat 开销可忽略）；解析失败一律返回 []，只读不写。"""
+    sig = None
+    try:
+        p = _desktop_setting_path()
+        sig = (str(p), p.stat().st_mtime_ns)
+    except OSError:
+        pass
+    if sig is None:
+        _CLIENT_STATE_CACHE["sig"] = None
+        _CLIENT_STATE_CACHE["entries"] = []
+        return []
+    if _CLIENT_STATE_CACHE["sig"] == sig:
+        return _CLIENT_STATE_CACHE["entries"]
+    entries = []
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return []
+        raw = data.get("lastWorkspaceSession")
+        legacy = data.get("remoteWorkspaceHistory")
+        legacy = legacy if isinstance(legacy, list) else []
+        if isinstance(raw, list):
+            by_id = {e.get("id"): e for e in legacy if isinstance(e, dict)}
+            raw = [by_id.get(e.get("historyId"), e) if isinstance(e, dict) else e for e in raw]
+        else:
+            raw = legacy
+        if isinstance(raw, list):
+            entries = [e for e in raw if isinstance(e, dict)]
+    except (OSError, ValueError):
+        entries = []
+    _CLIENT_STATE_CACHE["sig"] = sig
+    _CLIENT_STATE_CACHE["entries"] = entries
+    return entries
+
+
+def _normalize_identity_path(p):
+    """客户端 normalizeWorkspacePathForIdentity 同款：反斜杠归一、折叠重复斜杠、去尾补头。"""
+    s = str(p or "").replace("\\", "/")
+    while "//" in s:
+        s = s.replace("//", "/")
+    s = s.rstrip("/") or "/"
+    return s if s.startswith("/") else "/" + s
+
+
+def _ssh_identity(host, port, username, path):
+    """客户端 workspaceIdentity 构造算法（remote-workspace-identity.ts）的 Python 版：
+    remote:ssh:<host小写>:<port>:<username>:<归一路径>。重连换代（remoteSessionId 变）不影响它，
+    是 sid→目标路由的稳定键。"""
+    try:
+        port = int(port or 22)
+    except (TypeError, ValueError):
+        port = 22
+    return "remote:ssh:{}:{}:{}:{}".format(
+        str(host).strip().lower(), port, str(username).strip(), _normalize_identity_path(path))
+
+
+def _auto_targets(cfg):
+    """客户端 setting.json → 自动 SSH 目标列表。auto:false 或递归子查询（ZUSAGE_REMOTE_CHILD=1）
+    时返回 []。同一连接（别名/密钥+主机+端口+用户）多个工作区合并为一条通道、identities 聚合；
+    纯密码凭据（passwordCredentialKey 且无密钥/别名）无法免交互，跳过。"""
     r = cfg.get("remote")
-    if not isinstance(r, dict) or not r.get("enabled"):
+    if isinstance(r, dict) and r.get("auto") is False:
+        return []
+    if os.environ.get("ZUSAGE_REMOTE_CHILD") == "1":
+        return []
+    merged = {}
+    for e in _read_client_remote_entries():
+        t = e.get("target")
+        if not isinstance(t, dict) or t.get("kind") != "ssh":
+            continue
+        host = str(t.get("host") or "").strip()
+        username = str(t.get("username") or "").strip()
+        if not host or not username:
+            continue
+        alias = str(t.get("sshConfigAlias") or "").strip()
+        key_path = str(t.get("privateKeyPath") or "").strip()
+        if not alias and not key_path and t.get("passwordCredentialKey"):
+            continue   # 密码认证拿不到明文，ssh 也无法免交互
+        try:
+            port = int(t.get("port") or 22)
+        except (TypeError, ValueError):
+            port = 22
+        ident = str(e.get("workspaceIdentity") or "").strip() or _ssh_identity(
+            host, port, username, e.get("workspacePath"))
+        ck = (alias, host.lower(), port, username, key_path)
+        ent = merged.get(ck)
+        if ent is None:
+            argv = ["ssh", "-o", "BatchMode=yes"]
+            if alias:
+                argv.append(alias)   # 别名交给用户 ssh_config 解析 host/port/密钥
+            else:
+                if port != 22:
+                    argv += ["-p", str(port)]
+                if key_path:
+                    argv += ["-i", key_path, "-o", "IdentitiesOnly=yes"]
+                argv.append(f"{username}@{host}")
+            ent = {"ssh_argv": argv, "host_label": alias or host, "identities": []}
+            merged[ck] = ent
+        if ident not in ent["identities"]:
+            ent["identities"].append(ident)
+    return sorted(merged.values(), key=lambda x: (x["host_label"], x["identities"]))
+
+
+def _normalize_remote_entry(ent):
+    """单目标条目 → 归一化 rcfg 或 None。字段同旧 _remote_cfg，另收 identities[]（路由键）。"""
+    if not isinstance(ent, dict):
         return None
-    ssh = r.get("ssh") or ""
+    ssh = ent.get("ssh")
+    if ssh is None:
+        ssh = ent.get("ssh_argv") or []
     if isinstance(ssh, list):
         ssh_argv = [str(x) for x in ssh]
     else:
@@ -817,20 +957,111 @@ def _remote_cfg(cfg):
             ssh_argv = str(ssh).split()
     if not ssh_argv:
         return None
+    idents = ent.get("identities")
+    if not isinstance(idents, list):
+        idents = [ent.get("identity")] if ent.get("identity") else []
     return {
         "ssh_argv": ssh_argv,
-        "script": str(r.get("script") or ".zcode/zcode-token-usage-statusbar/zusage.py"),
-        "python": str(r.get("python") or "python3"),
-        "timeout_s": min(14.0, max(1.0, float(r.get("timeout_s") or 6))),
-        "host_label": str(r.get("host_label") or (ssh_argv[-1] if len(ssh_argv) > 1 else "remote")),
+        "script": str(ent.get("script") or ".zcode/zcode-token-usage-statusbar/zusage.py"),
+        "python": str(ent.get("python") or "python3"),
+        "timeout_s": min(6.0, max(1.0, float(ent.get("timeout_s") or 6))),
+        "host_label": str(ent.get("host_label") or (ssh_argv[-1] if len(ssh_argv) > 1 else "remote")),
+        "identities": [str(x).strip() for x in idents if str(x).strip()],
     }
 
 
-def _remote_exec(sids, rcfg):
-    """SSH 执行远端 zusage.py json <sids>。返回 (by_sid, remote_today, err)。
-    sid 在进入该函数前已过 [A-Za-z0-9_-]+ 白名单（snapshot 与泵双重校验），
-    ssh 远端命令按 shell 拼接，此处不再引入任何可注入内容。"""
-    cmd = rcfg["ssh_argv"] + [rcfg["python"], rcfg["script"], "json", ",".join(sids)]
+def _remote_setup(cfg):
+    """自动目标只接受 identity 路由；enabled:true 保留旧单通道兜底。"""
+    if os.environ.get("ZUSAGE_REMOTE_CHILD") == "1":
+        return None
+    r = cfg.get("remote")
+    r = r if isinstance(r, dict) else {}
+    if r.get("auto") is False and r.get("enabled") is not True:
+        return None
+    targets, identities = {}, {}
+    default = None
+
+    def add(ent):
+        defaults = {k: r[k] for k in ("script", "python", "timeout_s") if k in r}
+        try:
+            rc = _normalize_remote_entry({**defaults, **ent})
+        except (TypeError, ValueError):
+            return None
+        if not rc:
+            return None
+        fingerprint = json.dumps([rc["ssh_argv"], rc["python"], rc["script"]], ensure_ascii=True)
+        key = "t" + hashlib.sha256(fingerprint.encode()).hexdigest()[:16]
+        if key in targets:
+            rc["identities"] = list(dict.fromkeys(targets[key]["identities"] + rc["identities"]))
+        targets[key] = rc
+        for ident in rc["identities"]:
+            identities[ident] = key
+        return key
+
+    if r.get("auto") is not False:
+        for ent in _auto_targets(cfg):
+            add(ent)
+    # 后加入的手动 identity 覆盖自动连接参数，不依赖目标列表顺序。
+    for ent in (r.get("targets") or []):
+        if isinstance(ent, dict):
+            key = add(ent)
+            if r.get("enabled") is True and default is None:
+                default = key
+    if r.get("enabled") is True and r.get("ssh"):
+        default = add({"ssh": r["ssh"], "identities": [], "host_label": r.get("host_label")})
+    if not targets:
+        return None
+    return {"targets": targets, "default": default, "identities": identities,
+            "auto": r.get("auto") is not False}
+
+
+def _parse_routes(s):
+    """路由段 'sid@key,sid2@key2' → {sid: key}。逐 token 白名单校验（泵侧同款），脏 token 忽略。"""
+    routes = {}
+    for tok in str(s or "").split(","):
+        if "@" not in tok:
+            continue
+        sid, key = tok.split("@", 1)
+        sid, key = sid.strip(), key.strip()
+        if _REMOTE_SID_RE.fullmatch(sid) and _REMOTE_TARGET_KEY_RE.fullmatch(key):
+            routes[sid] = key
+    return routes
+
+
+def _parse_query(line):
+    """兼容旧逗号协议与携带 workspaceIdentity 的 JSON 请求。"""
+    if line.lstrip().startswith("{"):
+        data = json.loads(line)
+        if not isinstance(data, dict):
+            raise ValueError("query must be an object")
+        sids = data.get("sids") or []
+        if not isinstance(sids, list):
+            raise ValueError("sids must be an array")
+        return ",".join(str(s) for s in sids), data.get("scopes") or []
+    if "|" in line:
+        sids, rstr = line.split("|", 1)
+        return sids.strip(), _parse_routes(rstr)
+    return line.strip(), {}
+
+
+def _remote_exec(sids, rcfg, key):
+    """执行通道返回 (by_sid, today, error)，远端子查询禁止再次访问远端。"""
+    argv = ["env", "ZUSAGE_REMOTE_CHILD=1", rcfg["python"], rcfg["script"], "json", ",".join(sids)]
+    channel = rcfg["ssh_argv"]
+    if Path(channel[0]).stem.lower() == "ssh":
+        # OpenSSH 将参数重新拼成 shell 文本，必须在远端边界引用，而非依赖本地 argv。
+        def quote(arg):
+            if arg.startswith("~/"):
+                return '"$HOME"/' + shlex.quote(arg[2:])
+            return shlex.quote(arg)
+        cmd = channel + [" ".join(quote(arg) for arg in argv)]
+    else:
+        # docker/wsl/kubectl 的 exec 接口直接接收 argv，不解析 shell assignment。
+        script = rcfg["script"]
+        if script.startswith("~/"):
+            bootstrap = "import os,runpy,sys;p=os.path.expanduser(sys.argv[1]);sys.argv=sys.argv[1:];runpy.run_path(p,run_name='__main__')"
+            argv = ["env", "ZUSAGE_REMOTE_CHILD=1", rcfg["python"], "-c", bootstrap, script, "json", ",".join(sids)]
+        cmd = channel + argv
     err = None
     payload = None
     try:
@@ -856,6 +1087,8 @@ def _remote_exec(sids, rcfg):
         err = f"ssh spawn failed: {e}"
     if payload is None:
         return {}, None, err or "remote query failed"
+    if payload.get("error") or payload.get("local_error"):
+        return {}, None, "remote query failed: " + str(payload.get("error") or payload["local_error"])[:160]
     # known_sids = 远端库里真实存在的 force 会话（session 行或任一 usage 行）。
     # 远端对未知 sid 也会产出零值快照，不按它过滤的话"确无此会话"永远判不了，
     # 负缓存失效 → 本地新会话每轮都白跑一次 ssh。缺 known_sids 字段 = 远端是旧版
@@ -873,88 +1106,185 @@ def _remote_exec(sids, rcfg):
         if found:
             rec["remote"] = True
             rec["remote_host"] = rcfg["host_label"]
+            rec["remote_target"] = key
             by[rec["sid"]] = rec
     return by, payload.get("today"), err
 
 
-def _remote_fetch(force_sids, have_local, rcfg):
-    """本地库不存在的 force 会话 → 远端补齐。带负缓存：远端确认无此会话按 TTL 免问；
-    ssh 失败用短 TTL 快速自愈。have_local = 本地 session/usage 表真实存在的 sid 集合
-    （本地新会话即便还没有请求也不会去远端白跑）。"""
+def _remote_fetch(force_sids, have_local, setup, routes=None, scopes=None):
+    """按 identity 查目标；旧请求仅手动默认兜底，负缓存按 (sid, target) 隔离。"""
     now_ms = int(time.time() * 1000)
+    routes = routes or {}
+    default = setup.get("default")
+
+    def resolve(s):
+        key = routes.get(s)
+        return key if key in setup["targets"] else default   # 未知/过期目标键回退默认通道
+
     missing = []
     for s in force_sids:
         if s in have_local:
             continue
-        ent = _REMOTE_NEG.get(s)
+        ent = _REMOTE_NEG.get((s, resolve(s)))
         if ent and now_ms - ent[0] < ent[1]:
             continue
         missing.append(s)
-    if not missing:
-        return {}, None, None
-    by, today, err = _remote_exec(missing, rcfg)
-    if len(_REMOTE_NEG) > 256:
-        _REMOTE_NEG.clear()   # 防长驻膨胀，正常会话数到不了
-    for s in missing:
-        if s in by:
-            _REMOTE_NEG.pop(s, None)
-        else:
-            _REMOTE_NEG[s] = (now_ms, _REMOTE_NEG_TTL_ERR if err else _REMOTE_NEG_TTL_OK)
-    return by, today, err
+    if not missing and scopes is None:
+        errs = {resolve(s): _REMOTE_NEG[(s, resolve(s))][2] for s in force_sids
+                if (s, resolve(s)) in _REMOTE_NEG and len(_REMOTE_NEG[(s, resolve(s))]) > 2
+                and _REMOTE_NEG[(s, resolve(s))][2]}
+        return {}, {}, errs
+    groups = {}
+    scoped_keys = {}
+    if scopes is not None:
+        for sid, ident in scopes:
+            if not ident.startswith("remote:"):
+                continue
+            key = setup["identities"].get(ident)
+            scoped_keys[(sid, ident)] = key
+            if key and (not _REMOTE_NEG.get((sid, key)) or
+                        now_ms - _REMOTE_NEG[(sid, key)][0] >= _REMOTE_NEG[(sid, key)][1]):
+                bucket = groups.setdefault(key, [])
+                if sid not in bucket:
+                    bucket.append(sid)
+    else:
+        for s in missing:
+            key = resolve(s)
+            if key in setup["targets"]:
+                groups.setdefault(key, []).append(s)
+    by, today, errs = {}, {}, {}
+    per_target = {}
+    selected = {(sid, key) for (sid, _), key in scoped_keys.items()} if scopes is not None else {
+        (sid, resolve(sid)) for sid in force_sids}
+    for sid, key in selected:
+        cached = _REMOTE_NEG.get((sid, key))
+        if cached and now_ms - cached[0] < cached[1] and len(cached) > 2 and cached[2]:
+            errs[key] = cached[2]
+    # 各目标独立执行；总预算6秒，排队目标不再启动，避免超过桌面15秒看门狗。
+    deadline = time.monotonic() + 6.0
+    def bounded_query(item):
+        key, sids = item
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return key, sids, ({}, None, "remote query budget exhausted")
+        rc = dict(setup["targets"][key], timeout_s=min(setup["targets"][key]["timeout_s"], remaining))
+        try:
+            result = _remote_exec(sids, rc, key)
+        except Exception as exc:
+            result = ({}, None, "remote query failed: " + str(exc)[:160])
+        return key, sids, result
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(bounded_query, groups.items()))
+    for key, sids, (by_sid, t, err) in results:
+        per_target[key] = by_sid
+        by.update(by_sid)
+        if isinstance(t, dict):
+            today[key] = t
+        if err:
+            errs[key] = err
+        for s in sids:
+            if s in by_sid:
+                _REMOTE_NEG.pop((s, key), None)
+            else:
+                _REMOTE_NEG[(s, key)] = (int(time.time() * 1000), _REMOTE_NEG_TTL_ERR if err else _REMOTE_NEG_TTL_OK, err)
+    if scopes is not None:
+        by = {}
+        for (sid, ident), key in scoped_keys.items():
+            rec = dict(per_target.get(key, {}).get(sid) or {})
+            rec.update(sid=sid, workspace_identity=ident, remote=True,
+                       remote_target=key or "", remote_host=setup["targets"].get(key, {}).get("host_label", ""))
+            if not per_target.get(key, {}).get(sid):
+                error = (errs.get(key) or "remote session not found") if key else "remote target not configured"
+                rec.update(remote_missing=True, remote_error=error)
+            by[(sid, ident)] = rec
+    if len(_REMOTE_NEG) > 512:
+        _REMOTE_NEG.clear()   # 防长驻膨胀（多目标下键数翻倍，上限同步放宽）
+    return by, today, errs
 
 
-def snapshot(force_sid=""):
+def _empty_snapshot(sid, cfg):
+    return {"sid": sid, "title": "", "active": False, "turns": 0, "requests": 0,
+            "input": 0, "output": 0, "reasoning": 0, "cache_read": 0, "cache_write": 0,
+            "total": 0, "tool_calls": 0, "retries": 0, "ctx": 0, "updated": "", "last_at": 0,
+            "last_turn": dict(_EMPTY_TURN), "last": {"duration_ms": 0, "ttft_ms": 0, "model": "", "tps": 0},
+            "code": {"add": None, "del": None, "files": None}, "ctx_exc": 0,
+            "tools": {"total": 0, "errors": 0, "list": []},
+            "sub": {"requests": 0, "total": 0, "input": 0, "output": 0, "cache_read": 0,
+                    "reasoning": 0, "cache_write": 0, "active": False, "list": []},
+            "context_window": cfg["context_window"], "context_auto": False}
+
+
+def snapshot(force_sid="", routes=None):
     """单次快照：最新会话 + 最近 6+6 会话池 + 今日。
     force_sid：各窗口当前会话 id，逗号分隔（泵按窗口汇总上报：主进程 IPC 映射的焦点会话 +
     overlay localStorage 键兜底），全部强制纳入快照——不在 6+6 池里的会话（新开的、久远的）
-    也能被各窗口找到自己的会话并显示（v32 起；v34 改为多窗口多 sid）。"""
+    也能被各窗口找到自己的会话并显示（v32 起；v34 改为多窗口多 sid）。
+    routes：sid→目标键（泵按窗口 workspaceIdentity 路由）；未路由会话走默认目标。"""
     cfg = load_config()
-    con = connect()
+    scopes = None
+    if isinstance(routes, list):
+        scopes = []
+        for scope in routes:
+            if not isinstance(scope, dict):
+                continue
+            sid, ident = str(scope.get("sid") or ""), str(scope.get("workspaceIdentity") or "").strip()
+            if _REMOTE_SID_RE.fullmatch(sid) and ident and (sid, ident) not in scopes:
+                scopes.append((sid, ident))
+        force_sid = ",".join([str(force_sid)] + [s for s, _ in scopes])
+        routes = {}
+    con = None
+    local_error = None
+    try:
+        con = connect()
+    except sqlite3.Error as exc:
+        local_error = str(exc)[:200]
     try:
         force_sids = []
         for fs in str(force_sid).split(","):
             fs = fs.strip()
             if fs and re.fullmatch(r"[A-Za-z0-9_-]+", fs) and fs not in force_sids:
                 force_sids.append(fs)
-        today = _cached_agg("today", lambda: range_usage(
-            con, _epoch_ms(_day_start()), _epoch_ms(_day_start() + timedelta(days=1))))
-        rows = _scan_session_ids(con)
-        # v9：force 会话在本库的真实存在性（session 行或任一 usage 行）。远端数据源
-        # 双向依赖它：本地已存在 → 不去远端白跑；远端按同款判定区分"确无此会话"与
-        # "零值快照"（负缓存的依据）。两次索引点查 <1ms。
-        known_sids = []
-        if force_sids:
-            qmarks = ",".join("?" * len(force_sids))
-            have_local = {r[0] for r in con.execute(
-                f"select id from session where id in ({qmarks})", force_sids)}
-            have_local |= {r[0] for r in con.execute(
-                f"select distinct session_id from model_usage where session_id in ({qmarks})",
-                force_sids)}
-            known_sids = [s for s in force_sids if s in have_local]
-        # 远端补齐（v9）：本地不存在的 force 会话（SSH 远程会话）改查远端库
-        rcfg = _remote_cfg(cfg)
-        remote_by, remote_today, remote_err = {}, None, None
-        if rcfg and force_sids:
-            remote_by, remote_today, remote_err = _remote_fetch(force_sids, have_local, rcfg)
+        try:
+            today = _cached_agg("today", lambda: range_usage(
+                con, _epoch_ms(_day_start()), _epoch_ms(_day_start() + timedelta(days=1)))) if con else (0,) * 9
+            rows = _scan_session_ids(con) if con else []
+            have_local = set()
+            if con and force_sids:
+                qmarks = ",".join("?" * len(force_sids))
+                have_local = {r[0] for r in con.execute(
+                    f"select id from session where id in ({qmarks})", force_sids)}
+                have_local |= {r[0] for r in con.execute(
+                    f"select distinct session_id from model_usage where session_id in ({qmarks})", force_sids)}
+        except sqlite3.Error as exc:
+            local_error = str(exc)[:200]
+            con.close()
+            con = None
+            today, rows, have_local = (0,) * 9, [], set()
+        known_sids = [s for s in force_sids if s in have_local]
+        # 远端补齐（v12）：本地不存在的 force 会话按路由分组查各自远端库
+        setup = _remote_setup(cfg)
+        remote_by, remote_today, remote_errs = {}, {}, {}
+        if force_sids and (setup or scopes is not None):
+            remote_by, remote_today, remote_errs = _remote_fetch(
+                force_sids, have_local, setup or {"targets": {}, "identities": {}, "default": None}, routes, scopes)
+        remote_err = next(iter(remote_errs.values()), None)   # 兼容旧单错误字段（第一个目标）
         # 本地库里没有的 force 会话（远端/他机会话，或数据还没落库）。渲染端据此给提示：
         # 零值不再只能靠用户猜"插件坏了"（issue #14），也区分"远端也没查到"（issue #10）。
         not_local = [s for s in force_sids if s not in have_local] if force_sids else []
+        def local_snapshot(sid, light=False):
+            nonlocal local_error
+            if con is None:
+                return _empty_snapshot(sid, cfg)
+            try:
+                return (_light_snapshot if light else _session_snapshot)(con, sid, cfg)
+            except sqlite3.Error as exc:
+                # 本地明细表缺失不能丢弃已成功的远端分片，失败行单独降级。
+                local_error = str(exc)[:200]
+                return _empty_snapshot(sid, cfg)
+
         latest_sid = max(rows, key=lambda r: r[1])[0] if rows else None
-        if latest_sid:
-            base = _session_snapshot(con, latest_sid, cfg)
-        else:
-            # 空库（无任何 completed 请求）fallback：字段必须与 _session_snapshot 对齐，
-            # 否则 snapshot() 顶层读 base["code"]/["tools"]/["ctx_exc"] 直接 KeyError（v32 审查修复）
-            base = {"sid": "", "title": "", "active": False, "turns": 0, "requests": 0,
-                    "input": 0, "output": 0, "reasoning": 0, "cache_read": 0, "cache_write": 0,
-                    "total": 0, "tool_calls": 0, "retries": 0, "ctx": 0, "updated": "",
-                    "last_turn": dict(_EMPTY_TURN),
-                    "last": {"duration_ms": 0, "ttft_ms": 0, "model": "", "tps": 0},
-                    "code": {"add": None, "del": None, "files": None}, "ctx_exc": 0,
-                    "tools": {"total": 0, "errors": 0, "list": []},
-                    "sub": {"requests": 0, "total": 0, "input": 0, "output": 0, "cache_read": 0,
-                            "reasoning": 0, "cache_write": 0, "active": False, "list": []},
-                    "context_window": cfg["context_window"], "context_auto": False}
+        base = local_snapshot(latest_sid) if latest_sid else _empty_snapshot("", cfg)
         normal = sorted((r for r in rows if not str(r[0]).startswith("sess_subagent")),
                         key=lambda r: -r[1])[:6]
         suba = sorted((r for r in rows if str(r[0]).startswith("sess_subagent")),
@@ -975,14 +1305,19 @@ def snapshot(force_sid=""):
         rec = []
         for i, sid in enumerate(ids):
             if sid == latest_sid:
-                rec.append(base)   # base 本就是 latest 的完整快照，不重算第二遍
-            elif i < full_n:
-                rec.append(_session_snapshot(con, sid, cfg))
+                rec.append(base)
             else:
-                rec.append(_light_snapshot(con, sid, cfg))
+                rec.append(local_snapshot(sid, light=i >= full_n))
         # rec 建好后把远端快照挂到池首：overlay 按 sid 匹配 mine，顺序只影响兜底展示
-        rec = [remote_by[s] for s in reversed(remote_ids)] + rec
+        rec = ([remote_by[s] for s in reversed(remote_ids)] + rec) if scopes is None else (
+            [{**_empty_snapshot(sid, cfg), **row} for (sid, _), row in remote_by.items()] + rec)
+        if scopes is not None:
+            local_rows = {row["sid"]: row for row in rec if not row.get("remote")}
+            for sid, ident in scopes:
+                if not ident.startswith("remote:"):
+                    rec.insert(0, {**local_rows.get(sid, _empty_snapshot(sid, cfg)), "workspace_identity": ident})
         return {
+            "local_error": local_error,
             "session": base,
             "last_turn": base["last_turn"],
             "last": base["last"],
@@ -991,11 +1326,18 @@ def snapshot(force_sid=""):
                 "cache_read": today[3], "total": today[4],
                 "reasoning": today[6], "retries": today[7], "cache_write": today[8],
             },
-            # 远端数据源（v9）：显示远端会话时 overlay 用 remote_today 替代本地 today
+            # 远端数据源（v12）：显示远端会话时 overlay 按其 remote_target 取对应主机的今日值；
+            # dict 键=目标键。remote_error 保留首个错误（旧字段），remote_errors 按目标细分。
             "remote_today": remote_today,
             "remote_error": remote_err,
+            "remote_errors": remote_errs,
+            # 目标清单（泵路由用）：identity → 键；host_label 供日志/诊断
+            "remote_targets": [
+                {"key": k, "host_label": rc["host_label"], "identities": rc["identities"]}
+                for k, rc in (setup or {}).get("targets", {}).items()
+            ],
             "not_local": not_local,               # 不在本地库的 force 会话 id（issue #14 提示用）
-            "remote_enabled": bool(rcfg),         # 是否配了 remote 段（区分"没配"与"配了没查到"）
+            "remote_enabled": bool(setup),        # 是否存在可用远端目标（区分"没配"与"配了没查到"）
             "known_sids": known_sids,
             "context_window": base["context_window"],
             "context_auto": base["context_auto"],
@@ -1005,7 +1347,8 @@ def snapshot(force_sid=""):
             "recent": rec,
         }
     finally:
-        con.close()
+        if con is not None:
+            con.close()
 
 
 # ---------- CLI ----------
@@ -1024,7 +1367,8 @@ def serve():
         if not line:
             return
         try:
-            out = json.dumps(snapshot(line.strip()))
+            force_sid, routes = _parse_query(line.strip())
+            out = json.dumps(snapshot(force_sid, routes))
         except Exception as e:
             out = json.dumps({"error": str(e)[:200]})   # 单次查询失败不杀常驻进程
         sys.stdout.write(out + "\n")
@@ -1037,17 +1381,18 @@ def main(argv):
     except Exception:
         pass
     cmd = argv[0] if argv else "now"
+    if cmd == "json":
+        force_sid, routes = _parse_query(argv[1] if len(argv) > 1 else "")
+        if len(argv) > 2 and not isinstance(routes, list):
+            routes = _parse_routes(argv[2])
+        print(json.dumps(snapshot(force_sid, routes)))
+        return
+    if cmd == "serve":
+        serve()
+        return
     con = connect()
     if cmd == "now":
         print(render_current(con))
-    elif cmd == "json":
-        # ensure_ascii 默认 True：全部 \u 转义，保证注入 executeJavaScript 时无 U+2028 类语法风险
-        # 可选第二参数：强制纳入快照的会话 id，逗号分隔（各窗口当前会话，泵汇总上报）
-        force_sid = argv[1] if len(argv) > 1 else ""
-        print(json.dumps(snapshot(force_sid)))
-    elif cmd == "serve":
-        con.close()   # serve 自管连接（每请求新开），退掉 main 预建的这把
-        serve()
     elif cmd == "today":
         print(render_today(con))
     elif cmd == "days":

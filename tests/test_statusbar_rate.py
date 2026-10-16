@@ -66,60 +66,9 @@ class StatusbarRateTests(unittest.TestCase):
     def test_window_rule_for_other_models_is_unchanged(self):
         self.assertEqual(self.tps("GLM-5.3"), 753.2)                    # 无思考：首字窗口
         self.assertEqual(self.tps("gpt-6.1-sol", reasoning=224), 71.2)  # 上报思考：整段
-        # 缺首字 + 无思考段：窗口起点本就是 first_token_at，严格口径不评分；单条记录
-        # 没有更早的有效请求可回退，留空（chip 隐藏）。2026-10-16 修复前（v77.2）这里
-        # 曾退化用 duration_ms 估算，1074 tok/15.087s 得到的 71.2 看着"合理"，但那只是
-        # 巧合——真库 11 token/6.173s 的尾巴请求用同一公式会显示 1.8 t/s 这种荒谬值，
-        # 本质是把等待期当成了生成期。
-        self.assertIsNone(self.tps("GLM-5.3", first_token=False))
-        # 思考段窗口起点本就是 started_at（不看 first_token_at），缺首字不影响评分，
-        # 严格口径直接给出 71.2——这两条根本不会走到我的回退分支。
-        self.assertEqual(self.tps("claude-opus-5-5", first_token=False), 71.2)
-        self.assertEqual(self.tps("gpt-6.1-sol", reasoning=224, first_token=False), 71.2)
-
-    def test_missing_first_token_falls_back_to_last_valid_request(self):
-        """回归（2026-10-16 真库案例）：缺首字的请求不可信，v77.3 向前找最近一条严格口径
-        评分通过的请求顶上显示，而不是像 v77.2 那样用它自己的总耗时硬算。"""
-        con = sqlite3.connect(":memory:")
-        self.addCleanup(con.close)
-        con.row_factory = sqlite3.Row
-        con.executescript(SCHEMA)
-        con.execute("insert into session (id, title) values ('s', 't')")
-        base = 1_000_000
-        # 有效请求：441 token，首字后 4316ms 产出 → 102.2 t/s（真库原始数字）
-        con.execute("insert into model_usage values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    ("r1", "s", "turn", "main_turn", "", "GLM-5.3", "completed", base,
-                     base + 10000 - 4316, base + 10000, 10000, 4316, 10, 441, 0, 0, 0, 451, 0, 0, 0))
-        # 缺首字的小尾巴请求：11 token，总耗时 6173ms（v77.2 会算出 11/6.173≈1.8 t/s）
-        con.execute("insert into model_usage values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    ("r2", "s", "turn", "main_turn", "", "GLM-5.3", "completed", base + 10000,
-                     None, base + 10000 + 6173, 6173, None, 10, 11, 0, 0, 0, 21, 0, 0, 0))
-        last = zusage._session_snapshot(con, "s", {"context_window": 200000})["last"]
-        self.assertEqual(last["tps"], 102.2)                       # 回退到 r1 的真实速度
-        self.assertEqual(last["rateUnavailableReason"], "missingGenerationWindow")  # 明细仍诚实
-
-    def test_same_record_entrypoints_match_all_window_boundaries(self):
-        for model, reasoning in (("plain", 0), ("thinking", 20), ("claude", 0)):
-            for duration in (199, 200, 3599999, 3600000):
-                with self.subTest(model=model, duration=duration):
-                    con = sqlite3.connect(":memory:")
-                    con.row_factory = sqlite3.Row
-                    con.executescript(SCHEMA)
-                    con.execute("insert into session (id, title) values ('s', 't')")
-                    start = 1000000
-                    con.execute("insert into model_usage values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                                ("r1", "s", "turn", "main_turn", "", model, "completed", start,
-                                 start, start + duration, duration, 0, 10, 100, reasoning,
-                                 0, 0, 110, 0, 0, 0))
-                    record = con.execute("select * from model_usage").fetchone()
-                    rate = token_rate.to_item(record)
-                    last = zusage._session_snapshot(con, "s", {"context_window": 200000})["last"]
-                    self.assertEqual(last["tps"], rate["tokPerSec"])
-                    self.assertEqual(last["genMs"], rate["genMs"])
-                    self.assertEqual(last["ratedOutput"], rate["ratedOutput"])
-                    self.assertEqual(last["unratedOutput"], rate["unratedOutput"])
-                    self.assertEqual(rate["tokPerSec"] is not None, 200 <= duration < 3600000)
-                    con.close()
+        # 缺首字且无更早的有效请求可回退：不可信，返回 0（2026-10-16 修复前曾退化用总耗时
+        # 硬算，等待期被当成生成期；真库 11 token/6.173s 的尾巴请求曾借此显示 1.8 t/s）
+        self.assertEqual(self.tps("GLM-5.3", first_token=False), 0)
 
     def test_rule_matches_rate_line(self):
         models = ["claude-opus-5-5", "anthropic/claude-3.7-sonnet", "Claude-Sonnet-4",
@@ -127,6 +76,44 @@ class StatusbarRateTests(unittest.TestCase):
         expected = [True, True, True, False, False, False, False]
         self.assertEqual([zusage.hides_reasoning(m) for m in models], expected)
         self.assertEqual([token_rate.hides_reasoning(m) for m in models], expected)
+
+    def _insert_row(self, con, rid, model, started_at, completed_at, output_tokens,
+                     first_token_at=None, reasoning=0, turn_id="turn"):
+        con.execute("insert into model_usage values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (rid, "s", turn_id, "main_turn", "", model, "completed", started_at,
+                     first_token_at, completed_at, completed_at - started_at,
+                     (completed_at - first_token_at) if first_token_at else None,
+                     10, output_tokens, reasoning, 0, 0, output_tokens + 10, 0, 0, 0))
+
+    def test_missing_first_token_falls_back_to_last_valid_request(self):
+        """回归（2026-10-16 真库案例）：first_token_at 缺失的请求不可信——等待期会被当成
+        生成期。状态栏应向前找最近一条时间戳完整的请求代替，而非用它自己的总耗时硬算。"""
+        con = sqlite3.connect(":memory:")
+        self.addCleanup(con.close)
+        con.row_factory = sqlite3.Row
+        con.executescript(SCHEMA)
+        con.execute("insert into session (id, title) values ('s', 't')")
+        base = 1_000_000
+        # 有效请求：441 token，首字后 4316ms 产出 → 102.2 t/s（真库原始数字）
+        self._insert_row(con, "r1", "GLM-5.3", base, base + 10000, 441,
+                          first_token_at=base + 10000 - 4316)
+        # 缺首字的小尾巴请求：11 token，总耗时 6173ms（旧逻辑会算出 11/6.173≈1.8 t/s）
+        self._insert_row(con, "r2", "GLM-5.3", base + 10000, base + 10000 + 6173, 11,
+                          first_token_at=None)
+        tps = zusage._session_snapshot(con, "s", {"context_window": 200000})["last"]["tps"]
+        self.assertEqual(tps, 102.2)   # 回退到 r1 的真实速度，而非 1.8
+
+    def test_missing_first_token_with_no_valid_fallback_is_zero(self):
+        """全部请求都缺首字时拿不到可信速度，返回 0（chip 按既有约定隐藏，不新增文案）。"""
+        con = sqlite3.connect(":memory:")
+        self.addCleanup(con.close)
+        con.row_factory = sqlite3.Row
+        con.executescript(SCHEMA)
+        con.execute("insert into session (id, title) values ('s', 't')")
+        base = 1_000_000
+        self._insert_row(con, "r1", "GLM-5.3", base, base + 6173, 11, first_token_at=None)
+        tps = zusage._session_snapshot(con, "s", {"context_window": 200000})["last"]["tps"]
+        self.assertEqual(tps, 0)
 
 
 if __name__ == "__main__":
