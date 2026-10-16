@@ -311,6 +311,62 @@ class QuietMonitorTests(unittest.TestCase):
         check.assert_called_once_with(self.tmp, expect=False)
         self.assertEqual(self.asar.read_bytes(), b"removed package")
 
+    def test_visible_monitor_fallback_hint_includes_asar_path(self):
+        # 回归（issue #14 同款根因，复审后追加 --runtime）：窗口模式"也可手动执行"提示若不带
+        # --asar/--runtime，standalone 跑该命令会用默认猜测路径、且会被 sidecar 来源授权
+        # 校验拒绝；patch_install.py 自身三处同文案已有专门测试，这里补窗口监控拼接的这处。
+        self.tmp.write_bytes(b"pending")
+        def stop(_):
+            raise KeyboardInterrupt
+        with mock.patch.object(self.monitor, "QUIET", False), \
+                mock.patch.object(sys, "argv", ["install_monitor.py", "0"]), \
+                mock.patch.object(self.monitor, "patch_module", return_value=self.patch), \
+                mock.patch.object(self.patch, "pending_tmp", return_value={"operation": "install"}), \
+                mock.patch.object(self.monitor, "zcode_pids", return_value=set()), \
+                mock.patch.object(self.monitor, "finalize_tmp", return_value=False), \
+                mock.patch.object(self.monitor, "draw") as draw, \
+                mock.patch.object(self.monitor.time, "sleep", side_effect=stop):
+            with self.assertRaises(KeyboardInterrupt):
+                self.monitor.main()
+        lines = draw.call_args.args[0]
+        output = "\n".join(lines)
+        self.assertIn(f'--asar "{self.asar}"', output)
+        self.assertIn(f'--runtime "{self.patch.RUNTIME}"', output)
+
+    def test_visible_monitor_remove_fallback_hint_has_no_runtime_flag(self):
+        # remove 不走来源授权的 runtime 校验，提示不该带这个用不上的参数。
+        self.tmp.write_bytes(b"pending")
+        def stop(_):
+            raise KeyboardInterrupt
+        with mock.patch.object(self.monitor, "QUIET", False), \
+                mock.patch.object(sys, "argv", ["install_monitor.py", "0"]), \
+                mock.patch.object(self.monitor, "patch_module", return_value=self.patch), \
+                mock.patch.object(self.patch, "pending_tmp", return_value={"operation": "remove"}), \
+                mock.patch.object(self.monitor, "zcode_pids", return_value=set()), \
+                mock.patch.object(self.monitor, "finalize_tmp", return_value=False), \
+                mock.patch.object(self.monitor, "draw") as draw, \
+                mock.patch.object(self.monitor.time, "sleep", side_effect=stop):
+            with self.assertRaises(KeyboardInterrupt):
+                self.monitor.main()
+        output = "\n".join(draw.call_args.args[0])
+        self.assertIn(f'remove --asar "{self.asar}"', output)
+        self.assertNotIn("--runtime", output)
+
+    def test_visible_monitor_upgrade_reinstall_hint_includes_asar_path(self):
+        # 回归：ZCode 官方升级覆盖 asar 后提示"重新运行 install"（无 --finalize，不涉及
+        # sidecar，不需要 --runtime），同样必须带 --asar 才能 standalone 跑通。
+        with mock.patch.object(self.monitor, "QUIET", False), \
+                mock.patch.object(sys, "argv", ["install_monitor.py", "0"]), \
+                mock.patch.object(self.monitor, "zcode_pids", side_effect=[{"1"}, {"2"}, {"2"}]), \
+                mock.patch.object(self.monitor, "diag_fresh", return_value=None), \
+                mock.patch.object(self.monitor, "CONFIRM_WAIT", -1), \
+                mock.patch.object(self.monitor, "draw") as draw, \
+                mock.patch.object(self.monitor.time, "sleep", side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                self.monitor.main()
+        output = "\n".join(draw.call_args.args[0])
+        self.assertIn(f'--asar "{self.asar}"', output)
+
 
 class WaitAnyExitTests(unittest.TestCase):
     """Windows 句柄等待分支：用假 kernel32 在任意平台覆盖分支逻辑。"""
