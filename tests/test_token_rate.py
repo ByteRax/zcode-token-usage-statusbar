@@ -8,17 +8,15 @@ fixture 库模拟一轮「上轮两段 + 本问两段」的 model_usage，覆盖
   首字延迟取第一段、
   段数/峰值、会话累计（Σoutput，思考已含不另加）
   hook 输出为严格 JSON（hookSpecificOutput.hookEventName=UserPromptSubmit + additionalContext），
-  且把本会话 id 钉进下达的命令行（--session），防止模型迟迟才执行该命令时被并行会话
-  覆盖状态文件里"最近提问会话"字段，拿错会话的数据
+  注入上一轮背景行与状态写入（--current 守卫依据）；统计行已改为 overlay.js 确定性渲染，
+  hook 不再向模型下达统计指令（不再出现 token_rate.py 命令行 / Markdown 引用块要求）
 
 运行：python3 -B -m unittest discover -s tests -p 'test_*.py'
 """
 import contextlib
-import base64
 import json
 import os
 import sqlite3
-import shlex
 import subprocess
 import sys
 import tempfile
@@ -200,14 +198,50 @@ class TestTurnCurrent(RateTestBase):
         self.assertIsNone(data["turn"])
         self.assertEqual(data["currentTurnUnavailableReason"], "noMatchingTurn")
 
-    def test_late_hook_prompt_within_skew_still_matches_current_turn(self):
-        # Windows 实测回归：钩子冷启动（杀软扫描）写提问时刻晚于本轮首个请求 started_at，
-        # 毫秒级失配曾让 --current 每次都判 noMatchingTurn、⚡ 行间歇丢失。
-        # b1 于 t0+1000 开始；钩子在 +1500ms（容差 3000ms 内）才记下提问时刻。
+    def test_late_hook_without_identity_fails_closed_instead_of_borrowing_turn(self):
         self.write_state({"sessionId": SID, "ts": self.t0 + 1500, "promptTs": self.t0 + 1500})
         data = json.loads(self.run_rate("--turn", "--current", "--json").stdout)
-        self.assertEqual(data["turnId"], "turn_b")
-        self.assertEqual(data["turn"]["totalOutput"], 2000)
+        self.assertIsNone(data["turn"])
+        self.assertEqual(data["currentTurnUnavailableReason"], "noMatchingTurn")
+
+    def test_fixed_turn_id_needs_no_state_and_never_follows_latest(self):
+        data = json.loads(self.run_rate("--turn", "--current", "--json", "--turn-id", "turn_a").stdout)
+        self.assertEqual(data["turnId"], "turn_a")
+        self.assertEqual(data["turn"]["totalOutput"], 1500)
+        self.assertEqual(data["turnIdentitySource"], "explicitTurnId")
+        self.assertTrue(data["currentTurnIdentityVerified"])
+        missing = json.loads(self.run_rate("--turn", "--current", "--json", "--turn-id=absent").stdout)
+        self.assertIsNone(missing["turn"])
+        self.assertTrue(missing["noCurrentTurnData"])
+        self.assertFalse(missing["currentTurnIdentityVerified"])
+
+    def test_quick_new_prompt_does_not_claim_previous_turn(self):
+        # Previous turn started just 1 second ago: the old -3s tolerance borrowed it.
+        self.write_state({"sessionId": SID, "ts": self.t0 + 2000, "promptTs": self.t0 + 2000})
+        data = json.loads(self.run_rate("--turn", "--current", "--json").stdout)
+        self.assertIsNone(data["turn"])
+
+    def test_time_compatibility_is_explicitly_not_verified_identity(self):
+        self.write_state({"sessionId": SID, "ts": self.t0, "promptTs": self.t0})
+        data = json.loads(self.run_rate("--turn", "--current", "--json").stdout)
+        self.assertEqual(data["turnIdentitySource"], "promptTimeCompatibility")
+        self.assertFalse(data["currentTurnIdentityVerified"])
+
+    def test_mixed_rated_and_unrated_output_has_explicit_coverage(self):
+        self.insert_rows([row("b3", SID, "turn_b", "main_turn", self.t0 + 21000,
+                              None, None, self.t0 + 22000, 10, 500, 0)])
+        data = json.loads(self.run_rate("--turn", "--json", "--turn-id=turn_b").stdout)
+        turn = data["turn"]
+        self.assertEqual(turn["requests"], 3)
+        self.assertEqual(turn["rated"], 2)
+        self.assertEqual(turn["unrated"], 1)
+        self.assertEqual(turn["ratedOutput"], 2000)
+        self.assertEqual(turn["unratedOutput"], 500)
+        self.assertEqual(turn["rateCoverage"], .8)
+        self.assertEqual(turn["tokPerSec"], 153.8)
+        latest = json.loads(self.run_rate("--json").stdout)["latest"]
+        self.assertEqual(latest["outputTokens"], 500)
+        self.assertIsNone(latest["tokPerSec"])
 
     def test_prompt_older_than_skew_still_rejects_current_turn(self):
         # 容差有界：提问时刻晚于本轮最早段 3 秒以上仍须拦下（不放宽守卫本体）。
@@ -395,7 +429,7 @@ class TestPromptSubmitHook(RateTestBase):
         return subprocess.run([sys.executable, str(PROMPT_HOOK)], input="",
                               capture_output=True, text=True, env=env, timeout=30)
 
-    def test_strict_json_and_state_written(self):
+    def test_strict_json_state_written_and_no_model_instruction(self):
         before = int(time.time() * 1000)
         r = self.run_hook()
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -406,14 +440,11 @@ class TestPromptSubmitHook(RateTestBase):
         self.assertEqual(inner["hookEventName"], "UserPromptSubmit")
         ctx = inner["additionalContext"]
         self.assertIn("【内部背景·勿展示】上一条回复:", ctx)
-        command = next(line.split("运行一次:", 1)[1] for line in ctx.splitlines() if "运行一次:" in line)
-        if sys.platform == "win32":
-            payload = base64.b64decode(shlex.split(command)[-1], validate=True).decode("utf-16le")
-            self.assertIn("'--turn' '--current' '--session' '" + SID + "'", payload)
-            self.assertIn("token_rate.py", payload)
-        else:
-            self.assertEqual(shlex.split(command), [sys.executable, str(RATE), "--turn", "--current", "--session", SID])
-        self.assertIn("Markdown 引用块", ctx)
+        self.assertIn("160 tok/s(上轮)", ctx)
+        # 统计行已确定性渲染（overlay.js 桥接）：不再向模型下达任何统计指令
+        for banned in ("本轮统计指令", "运行一次:", "Markdown 引用块",
+                       "token_rate.py", "--turn", "--current", "--session"):
+            self.assertNotIn(banned, ctx, banned)
         # 状态文件：记录了会话与提问时刻（--current 守卫依据）
         st = json.loads(Path(self.state).read_text())
         self.assertEqual(st["sessionId"], SID)
@@ -439,14 +470,12 @@ class TestPromptSubmitHook(RateTestBase):
         self.assertEqual(out["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit")
         self.assertFalse(Path(self.state).exists())  # 无会话不写状态
         context = out["hookSpecificOutput"]["additionalContext"]
-        command = next(line.split("运行一次:", 1)[1] for line in context.splitlines() if "运行一次:" in line)
-        if sys.platform == "win32":
-            command = base64.b64decode(shlex.split(command)[-1], validate=True).decode("utf-16le")
-        self.assertNotIn("--session", command)
+        self.assertIn("【内部背景·勿展示】", context)   # 背景行通道保留
+        self.assertNotIn("本轮统计指令", context)       # 统计指令已删除
 
     def test_toggle_off_injects_no_instruction(self):
-        # ⚙ 面板关闭（config.json answer_rate_line=false）：不下达统计指令，仍严格 JSON；
-        # 状态文件照写（--current 守卫数据保持新鲜，CLI 手动排查不受开关影响）
+        # ⚙ 面板关闭（config.json answer_rate_line=false）：不下达统计指令、不注入背景行，
+        # 仍严格 JSON；状态文件照写（--current 守卫数据保持新鲜，CLI 手动排查不受开关影响）
         (self.runtime / "config.json").write_text(
             '{"answer_rate_line": false, "lang": "zh"}', encoding="utf-8")
         r = self.run_hook()
@@ -456,24 +485,27 @@ class TestPromptSubmitHook(RateTestBase):
         inner = out["hookSpecificOutput"]
         self.assertEqual(set(inner), {"hookEventName", "additionalContext"})
         self.assertEqual(inner["hookEventName"], "UserPromptSubmit")
-        self.assertNotIn("本轮统计指令", inner["additionalContext"])
-        self.assertNotIn("内部背景", inner["additionalContext"])
+        self.assertEqual(inner["additionalContext"], "")   # fixture 无重启提醒：关闭即空上下文
         st = json.loads(Path(self.state).read_text())
         self.assertEqual(st["sessionId"], SID)
 
     def test_toggle_corrupt_config_defaults_on(self):
-        # config 损坏 → 视为开启（开关失效不吞功能）
+        # config 损坏 → 视为开启（开关失效不吞功能）：背景行仍在
         (self.runtime / "config.json").write_text("{broken", encoding="utf-8")
         r = self.run_hook()
         out = json.loads(r.stdout)
-        self.assertIn("本轮统计指令", out["hookSpecificOutput"]["additionalContext"])
+        ctx = out["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("【内部背景·勿展示】", ctx)
+        self.assertNotIn("本轮统计指令", ctx)
 
     def test_toggle_explicit_true(self):
         # 显式 true 与缺省同义：开启
         (self.runtime / "config.json").write_text('{"answer_rate_line": true}', encoding="utf-8")
         r = self.run_hook()
         out = json.loads(r.stdout)
-        self.assertIn("本轮统计指令", out["hookSpecificOutput"]["additionalContext"])
+        ctx = out["hookSpecificOutput"]["additionalContext"]
+        self.assertIn("【内部背景·勿展示】", ctx)
+        self.assertNotIn("本轮统计指令", ctx)
 
     def test_concurrent_real_hooks_share_state_lock_and_preserve_all_prompts(self):
         # Parent holds the real OS lock; children execute the real hook and record

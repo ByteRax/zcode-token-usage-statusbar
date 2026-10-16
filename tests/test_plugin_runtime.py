@@ -1032,12 +1032,12 @@ vm.createContext(sandbox); vm.runInContext(source, sandbox);
 const hot = intervals.find(i => i.ms === 2000); assert.ok(hot); hot.fn();
 windows.push({ getType: () => "window", isDestroyed: () => false,
   executeJavaScript: async src => { injected.push(src); }, on() {}, isLoading: () => false });
-vm.runInContext("pyRes = {proc: {kill: onKill}}", sandbox);
+vm.runInContext("pyRes = {proc: {kill: onKill}, finish: function(){pyRes = null}}", sandbox);
 process.stdout.write("ready\n");
 process.stdin.once("data", async () => {
   try {
     hot.fn(); await new Promise(resolve => setImmediate(resolve));
-    assert.ok(injected.includes("globalThis.overlayRevision = 2;"), "actual loader did not re-inject changed overlay");
+    assert.ok(injected.some(src => src.endsWith("globalThis.overlayRevision = 2;") && src.includes("__zusageDispose")), "actual loader did not re-inject changed overlay after cleanup");
     assert.equal(killed, 1, "actual loader did not restart changed resident Python");
     console.log(JSON.stringify({ overlayReloaded: true, pythonRestarted: true }));
   } catch (e) { console.error(e); process.exitCode = 1; }

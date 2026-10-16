@@ -53,24 +53,26 @@ test('settings geometry matches the bar outer width and edges only when open', (
   const values = {};
   let syncs = 0;
   const panel = {
-    offsetWidth: 420,
+    offsetWidth: 420, offsetHeight: 300,
     classList: { contains: () => true },
     style: { getPropertyValue: k => values[k], setProperty: (k, v) => { values[k] = v; } },
   };
   let rect = { left: 250, top: 600, width: 800.5 };
   const context = {
-    panel, bar: { clientLeft: 1, getBoundingClientRect: () => rect },
+    panel, bar: { getBoundingClientRect: () => rect }, innerWidth: 1400,
     syncSettingsScroll: () => { syncs++; },
   };
   vm.runInNewContext(positionSource + '\npositionSettingsPanel();', context);
   assert.equal(values['--zu-settings-height'], '582px');
   assert.equal(panel.style.width, '800.5px');
-  assert.equal(panel.style.left, '-1px');
+  assert.equal(panel.style.left, '250px');   // v80 面板挂 body：视口坐标左缘随条
+  assert.equal(panel.style.top, '290px');    // 条上沿 600 − 面板高 300 − 10px 缝
   assert.equal(syncs, 1);
   rect = { left: 10, top: 350, width: 320 };
   vm.runInNewContext('positionSettingsPanel();', context);
   assert.equal(panel.style.width, '320px');
-  assert.equal(panel.style.left, '-1px');
+  assert.equal(panel.style.left, '10px');
+  assert.equal(panel.style.top, '40px');
   assert.equal(values['--zu-settings-height'], '332px');
   panel.classList.contains = () => false;
   vm.runInNewContext('positionSettingsPanel();', context);
@@ -111,7 +113,7 @@ test('buildPanel initializes and rebuilds controls without losing state or scrol
 });
 
 test('context-window changes persist through the actual delegated handler', () => {
-  const changeSource = extract('    panel.addEventListener("change",', '    document.addEventListener("mousedown",');
+  const changeSource = extract('    panel.addEventListener("change",', '    listenGlobal(document, "mousedown",');
   let handler, saved = 0, renders = 0;
   const context = {
     panel: { addEventListener: (_, fn) => { handler = fn; } },

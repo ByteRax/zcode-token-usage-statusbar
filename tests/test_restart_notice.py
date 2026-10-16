@@ -305,7 +305,8 @@ class RestartNoticeTests(unittest.TestCase):
             self.assertEqual(set(output), {"hookSpecificOutput"})
             context = output["hookSpecificOutput"]["additionalContext"]
             self.assertEqual("用户可见·重启提醒" in context, pending)
-            self.assertIn("本轮统计指令", context)
+            self.assertIn("【内部背景·勿展示】", context)
+            self.assertNotIn("本轮统计指令", context)
 
 
 if __name__ == "__main__":

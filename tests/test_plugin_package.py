@@ -46,7 +46,7 @@ class PluginPackageTests(unittest.TestCase):
         self.assertIn("runtime_lock.py", installer.RUNTIME_FILES)
         self.assertNotIn("config.json", installer.RUNTIME_FILES)
         self.assertNotIn("plugin-update.json", installer.RUNTIME_FILES)
-        for name in ("inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs", "release_unpack.py", "runtime_lock.py", "overlay.js"):
+        for name in ("inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs", "release_unpack.py", "runtime_lock.py", "usage_stats.py", "turn-stats.js", "overlay.js"):
             self.assertIn(name, installer.RUNTIME_FILES)
             self.assertEqual((ROOT / name).read_bytes(), (PLUGIN / name).read_bytes())
 

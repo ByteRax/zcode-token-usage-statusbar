@@ -1,6 +1,7 @@
 /* ZCode token 用量注入 loader v2（主进程）。
  * 由 patch_install.py 在 app.asar 入口尾部追加一行 import 引入。
- * 职责：1) 向每个窗口注入 overlay.js（mtime 变化热更新，免重启）；
+ * 职责：1) 向每个窗口注入 turn-stats.js + overlay.js（前者先注入：renderer 会话
+ *          store 的只读投影统计，overlay 读 globalThis.ZUsageTurnStats；mtime 热更新）；
  *       2) 触发式拉取：fs.watch 监听 db 目录，db.sqlite/-wal 一有写入（去抖 300ms）就
  *          查询并推送。限频 config.activity_min_ms（默认 1500ms），限频到点
  *          自动补拉，最后一笔写入不漏；完全空闲时零进程零轮询，仅兜底心跳
@@ -24,7 +25,9 @@ const { fileURLToPath } = require("url");
 const HERE = __dirname;   // 本 loader 被 asar 注入行按绝对 file:// URL import，__dirname 即真实目录（克隆到任意路径无需改代码）
 const CONFIG = path.join(HERE, "config.json");
 const OVERLAY = path.join(HERE, "overlay.js");
+const TURN_STATS = path.join(HERE, "turn-stats.js");
 const ZUSAGE = path.join(HERE, "zusage.py");
+const TOKEN_RATE = path.join(HERE, "token_rate.py");
 const LOG = (...a) => console.error("[zusage]", ...a);
 const loadedHashes = { _loadedAt: Date.now() - process.uptime() * 1000 };
 for (const name of ["inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs", "overlay.js", "zusage.py"]) {
@@ -59,32 +62,50 @@ function readCfgCached() {
   return cfgCache;
 }
 
-/* overlay 注入源 + 热更新：mtime 变了就重注入（移除旧条+复位守卫）。
- * 载入前用 new Function 校验语法，避免把写到一半的文件载入页面。 */
+/* 页面注入源 + 热更新：mtime 变了就重注入（移除旧条+复位守卫）。
+ * 载入前用 new Function 校验语法，避免把写到一半的文件载入页面。
+ * turn-stats.js（renderer 会话 store 的只读投影统计）必须先于 overlay.js 注入：
+ * overlay 启动时读 globalThis.ZUsageTurnStats。两资产任一 mtime 变化即整体重注入；
+ * 都不变时零动作（overlay 无需重建）。 */
+function loadValidatedAsset(file) {
+  try {
+    const m = fs.statSync(file).mtimeMs;
+    const src = fs.readFileSync(file, "utf8");
+    new Function(src);
+    return { mtime: m, src: src };
+  } catch (e) { return null; }
+}
 let overlaySrc = "";
 let overlayMtime = 0;
-try {
-  overlaySrc = fs.readFileSync(OVERLAY, "utf8");
-  overlayMtime = fs.statSync(OVERLAY).mtimeMs;
-} catch (e) { LOG("overlay.js missing:", e.message); }
+let turnStatsSrc = "";
+let turnStatsMtime = 0;
+{
+  const ov = loadValidatedAsset(OVERLAY);
+  if (ov) { overlaySrc = ov.src; overlayMtime = ov.mtime; }
+  else LOG("overlay.js missing");
+  const ts = loadValidatedAsset(TURN_STATS);
+  if (ts) { turnStatsSrc = ts.src; turnStatsMtime = ts.mtime; }
+  else LOG("turn-stats.js missing (live/deterministic stats disabled)");
+}
 
 function hotReloadIfChanged() {
-  let m = 0, src = "";
-  try {
-    m = fs.statSync(OVERLAY).mtimeMs;
-    src = fs.readFileSync(OVERLAY, "utf8");
-  } catch (e) { return; }
-  if (m === overlayMtime) return;
-  try { new Function(src); } catch (e) { LOG("overlay.js syntax not ready, skip:", e.message); return; }
-  overlayMtime = m;
-  overlaySrc = src;
-  LOG("overlay.js changed, hot-reloading");
+  let changed = false;
+  for (const asset of [{ file: TURN_STATS, srcKey: "turnStats" }, { file: OVERLAY, srcKey: "overlay" }]) {
+    let m = 0;
+    try { m = fs.statSync(asset.file).mtimeMs; } catch (e) { continue; }
+    const known = asset.srcKey === "turnStats" ? turnStatsMtime : overlayMtime;
+    if (m === known) continue;   // mtime 未变：不读文件（每 2s 心跳零读盘）
+    const loaded = loadValidatedAsset(asset.file);
+    if (!loaded) continue;       // 语法没写完：保留旧 mtime，下轮重试
+    if (asset.srcKey === "turnStats") { turnStatsMtime = loaded.mtime; turnStatsSrc = loaded.src; }
+    else { overlayMtime = loaded.mtime; overlaySrc = loaded.src; }
+    changed = true;
+  }
+  if (!changed) return;
+  LOG("overlay assets changed, hot-reloading");
   for (const wc of webContents.getAllWebContents()) {
     if (!isMainWindowState(wc) || wc.isDestroyed()) continue;
-    wc.executeJavaScript(
-      '(function(){var b=document.getElementById("zusage-bar");if(b)b.remove();var t=document.getElementById("zusage-tip");if(t)t.remove();window.__zusageOverlay=false;})()', true
-    ).catch(() => { });
-    injectOverlay(wc);
+    injectOverlay(wc, true);
   }
 }
 
@@ -196,7 +217,6 @@ let lastStamp = 0;    // 上次拉取时的 db mtime（去重：无新写入不�
 let lastWants = "";   // 上次查询用的会话 id 集合（变化即拉，防"会话切了但 db 没写入"滞留旧数据）
 let lastRequest = { sids: [], scopes: [] };
 let lastSourceStamp = "";
-let collecting = false;
 function scopeKey(sid, identity) { return JSON.stringify([sid, identity || ""]); }
 function requestKeys(request) {
   return request.sids.map((sid) => scopeKey(sid, "")).concat(request.scopes.map((s) => scopeKey(s.sid, s.workspaceIdentity)));
@@ -284,15 +304,69 @@ function handlePayload(payload) {
 let pyRes = null;        // { proc, buf, waiters: [fn], born }
 let pyFail = 0;          // 启动 30s 内退出次数（>=3 判不稳定，回退一次性 spawn）
 let pyBackoff = 1000;
-let pyRestarting = false;   // 主动 kill（升级/超时）标记，close 时不计失败
-
+let residentRestartTimer = 0, residentIdleTimer = 0;
+let shuttingDown = false;
+function hasWindows() {
+  return webContents.getAllWebContents().some((wc) => isMainWindowState(wc) && !wc.isDestroyed());
+}
+function residentAllowed() {
+  return !shuttingDown && readCfgCached().resident !== false && pyFail < 3 && hasWindows();
+}
+function stopResident(restart = false) {
+  clearTimeout(residentRestartTimer);
+  clearTimeout(residentIdleTimer);
+  const state = pyRes;
+  if (!state) return;
+  state.intentional = true;
+  state.restart = restart;
+  try { state.proc.kill(); } catch (e) { }
+  state.finish();
+}
+function armResidentIdle() {
+  clearTimeout(residentIdleTimer);
+  if (pyRes) residentIdleTimer = setTimeout(() => stopResident(), 30000);
+}
 function startResident() {
-  if (pyRes) return;
-  const proc = spawn(readCfg().python_path, [path.join(HERE, "zusage.py"), "serve"], { windowsHide: true });
-  const state = { proc, buf: "", waiters: [], born: Date.now() };
+  if (pyRes || !residentAllowed()) return;
+  let proc;
+  try { proc = spawn(readCfgCached().python_path, [ZUSAGE, "serve"], { windowsHide: true }); }
+  catch (e) { LOG("resident spawn failed:", e.message); pyFail++; return; }
+  const state = { proc, buf: "", waiters: [], born: Date.now(), finished: false, intentional: false, restart: false };
   pyRes = state;
   LOG("resident python starting");
+  state.finish = () => {
+    if (state.finished) return;
+    state.finished = true;
+    if (pyRes === state) pyRes = null;
+    clearTimeout(residentIdleTimer);
+    const pending = state.waiters;
+    state.waiters = [];
+    pending.forEach((w) => w(null));
+    if (state.intentional) {
+      if (state.restart && residentAllowed()) residentRestartTimer = setTimeout(startResident, 0);
+      return;
+    }
+    if (Date.now() - state.born < 30000) {
+      pyFail++;
+      if (pyFail >= 3) { LOG("resident unstable (3 early exits), fallback to one-shot spawn"); return; }
+      if (residentAllowed()) residentRestartTimer = setTimeout(startResident, pyBackoff);
+      pyBackoff = Math.min(pyBackoff * 2, 30000);
+    } else {
+      pyFail = 0;
+      pyBackoff = 1000;
+      if (residentAllowed()) residentRestartTimer = setTimeout(startResident, 0);
+    }
+  };
+  const fail = (e) => {
+    LOG("resident failed:", e.message);
+    try { proc.kill(); } catch (e2) { }
+    state.finish();
+  };
+  proc.on("error", fail);
+  proc.stdin.on("error", fail);
+  proc.on("close", state.finish);
   proc.stdout.on("data", (d) => {
+    if (state.finished) return;
     state.buf += d.toString("utf8");
     let i;
     while ((i = state.buf.indexOf("\n")) >= 0) {
@@ -306,101 +380,91 @@ function startResident() {
     }
   });
   proc.stderr.on("data", () => { });
-  proc.on("error", (e) => {
-    LOG("resident spawn failed:", e.message);
-    const pending = state.waiters.splice(0);
-    pending.forEach((w) => w(null));
-  });
-  proc.stdin.on("error", (e) => {
-    LOG("resident stdin failed:", e.message);
-    const pending = state.waiters.splice(0);
-    pending.forEach((w) => w(null));
-    try { proc.kill(); } catch (e) { }
-  });
-  proc.on("close", () => {
-    if (pyRes === state) pyRes = null;
-    const pending = state.waiters;
-    state.waiters = [];
-    pending.forEach((w) => w(null));   // 挂起请求失败收场，泵侧等下一笔写入/心跳补拉
-    if (pyRestarting) { pyRestarting = false; startResident(); return; }
-    if (Date.now() - state.born < 30000) {   // 早期崩溃：退避重启，3 次判不稳定
-      pyFail++;
-      if (pyFail >= 3) { LOG("resident unstable (3 early exits), fallback to one-shot spawn"); return; }
-      setTimeout(startResident, pyBackoff);
-      pyBackoff = Math.min(pyBackoff * 2, 30000);
-    } else {   // 长跑后退出（升级/外部误杀）：立即重启，不计失败
-      pyFail = 0;
-      pyBackoff = 1000;
-      startResident();
-    }
-  });
+  armResidentIdle();
+  /* 进程级错误处理在 startResident 体内统一走 fail/close（state.finish 带退避重启与
+   * intentional 标记），main 侧旧版分段处理不再需要 */
 }
+function killResidentForUpgrade() { stopResident(true); }
 
-function killResidentForUpgrade() {
-  if (!pyRes) return;
-  pyRestarting = true;
-  try { pyRes.proc.kill(); } catch (e) { }
-}
-
-/* 统一查询入口：resident 可用走 JSON 行协议，否则一次性 spawn。 */
+/* 统一查询入口：resident 可用走 JSON 行协议（scopes 路由请求），否则一次性 spawn。
+ * 每笔请求只结算一次；error 载荷转 pendingSids 由远端重试链兜底。 */
 function runQuery(request) {
   busy = true;
   let settled = false;
   const done = (payload) => {
-    // timeout、error、close 只能结算一次；旧请求不得解除新请求的 busy。
     if (settled) return;
     settled = true;
     busy = false;
-    if (remoteDisabled()) {
+    const keys = requestKeys(request);
+    if (payload && !payload.error) {
+      if (!shuttingDown && hasWindows()) handlePayload(payload);
+    } else if (remoteDisabled()) {
       clearRemoteRecovery();
-      if (payload && !payload.error) handlePayload(payload);
-    } else if (payload && !payload.error) handlePayload(payload);
-    else {
-      for (const key of requestKeys(request)) pendingSids.set(key, Date.now() + remotePollMs());
-      lastHadRemote = requestKeys(request).length > 0;
+    } else {
+      for (const key of keys) pendingSids.set(key, Date.now() + remotePollMs());
+      lastHadRemote = keys.length > 0;
     }
-    if (lastHadRemote) scheduleRetry(remotePollMs());
+    if (!shuttingDown && lastHadRemote && hasWindows()) scheduleRetry(remotePollMs());
+    armResidentIdle();
   };
   const line = JSON.stringify(request);
-  if (readCfgCached().resident !== false && pyFail < 3) {
+  if (residentAllowed()) {
+    clearTimeout(residentRestartTimer);
     if (!pyRes) startResident();
     if (pyRes && pyRes.proc.stdin.writable) {
+      clearTimeout(residentIdleTimer);
       const state = pyRes;
       const waiter = (payload) => { clearTimeout(timer); done(payload); };
       const timer = setTimeout(() => {
         LOG("resident query timeout, restarting it");
-        const index = state.waiters.indexOf(waiter);
-        if (index >= 0) state.waiters.splice(index, 1);
-        pyRestarting = true;
-        try { state.proc.kill(); } catch (e) { }
-        done(null);
+        stopResident(true);
       }, 15000);
       state.waiters.push(waiter);
-      try { state.proc.stdin.write(line + "\n"); }
-      catch (e) { waiter(null); }
+      try {
+        state.proc.stdin.write(line + "\n", (error) => {
+          if (error && !state.finished) {
+            LOG("resident write failed:", error.message);
+            try { state.proc.kill(); } catch (e) { }
+            state.finish();
+          }
+        });
+      } catch (e) {
+        LOG("resident write failed:", e.message);
+        try { state.proc.kill(); } catch (e2) { }
+        state.finish();
+      }
       return;
     }
   }
   legacySpawn(line, done);
 }
 
-/* 回退路径仍使用同款 JSON scope 请求，避免 resident=false 丢失隔离。 */
+/* 回退路径：沿用同款 JSON scope 请求（resident=false 不丢隔离），error/close/timeout 共用单次结算。 */
 function legacySpawn(line, done) {
-  const args = [path.join(HERE, "zusage.py"), "json", line];
-  const py = spawn(readCfg().python_path, args, { windowsHide: true });
-  let out = "";
+  const args = [ZUSAGE, "json"];
+  if (line) args.push(line);
+  let py;
+  try { py = spawn(readCfgCached().python_path, args, { windowsHide: true }); }
+  catch (e) { LOG("spawn failed:", e.message); done(null); return; }
+  let out = "", finished = false;
+  const finish = (payload) => {
+    if (finished) return;
+    finished = true;
+    clearTimeout(killTimer);
+    done(payload);
+  };
   const killTimer = setTimeout(() => {
     LOG("query timeout, killing");
     try { py.kill(); } catch (e) { }
-    done(null);
+    finish(null);
   }, 15000);
   py.stdout.on("data", (d) => { out += d; });
-  py.on("error", (e) => { clearTimeout(killTimer); LOG("spawn failed:", e.message); done(null); });
+  py.stderr.on("data", () => { });
+  py.on("error", (e) => { LOG("spawn failed:", e.message); finish(null); });
   py.on("close", () => {
-    clearTimeout(killTimer);
     let payload = null;
     try { payload = JSON.parse(out); } catch (e) { }
-    done(payload);
+    finish(payload);
   });
 }
 
@@ -411,8 +475,19 @@ function scheduleRetry(ms) {
   clearTimeout(retryTimer);
   retryTimer = setTimeout(maybeSpawn, ms);
 }
+let collectingWants = false;
 function maybeSpawn() {
-  if (busy || collecting) { scheduleRetry(300); return; }
+  if (shuttingDown) return;
+  if (!hasWindows()) {
+    clearTimeout(retryTimer);
+    lastHadRemote = false;
+    stopResident();
+    activeSid.clear();
+    lastWants = "";
+    lastStamp = 0;
+    return;
+  }
+  if (busy || collectingWants) { scheduleRetry(300); return; }
   const st = dbStamp();
   const cfg = readCfgCached();
   if (remoteDisabled()) clearRemoteRecovery();
@@ -424,13 +499,25 @@ function maybeSpawn() {
    * mine 模式下 WantSid 已非主数据源，省掉活跃期每 1.5s × N 窗口的页面求值。 */
   const wcs = webContents.getAllWebContents().filter((wc) => isMainWindowState(wc) && !wc.isDestroyed());
   if (!wcs.length) return;
-  const withTimeout = (p, ms) => Promise.race([p, new Promise((r) => setTimeout(() => r(""), ms))]);
+  const liveIds = new Set(wcs.map((wc) => wc.id));
+  for (const id of activeSid.keys()) if (!liveIds.has(id)) activeSid.delete(id);
+  const withTimeout = (p, ms) => {
+    let timer;
+    return Promise.race([p, new Promise((r) => { timer = setTimeout(() => r(""), ms); })])
+      .finally(() => clearTimeout(timer));
+  };
   /* 各窗口的 pane 会话 id（v10，__zusageWantSids 数组，分屏多实例状态条用）+ 旧单值兜底；
-   * v12 附带 __zusageSidWs（sid→workspaceIdentity，多服务器路由）。 */
-  collecting = true;
+   * v12 附带 __zusageSidWs（sid→workspaceIdentity）与 __zusagePaneScopes（pane 绑定，
+   * 多服务器路由）。 */
+  collectingWants = true;
   const readWantsJs = '(function(){var a=window.__zusageWantSids;if(!a||!a.length){a=window.__zusageWantSid?[window.__zusageWantSid]:[]}return JSON.stringify({s:a,w:window.__zusageSidWs||{},p:window.__zusagePaneScopes||{}})})()';
+  /* Promise.resolve().then 包裹：renderer 同步销毁时 executeJavaScript 直接 throw，
+   * 转成 rejected promise 交给 catch 吞掉，别把整轮收集锁死 */
   Promise.all(wcs.map((wc) => withTimeout(Promise.resolve().then(() => wc.executeJavaScript(readWantsJs, true)).catch(() => ""), 1000)))
     .then((vals) => {
+      if (shuttingDown || !hasWindows()) { stopResident(); return; }
+      /* 汇总全部窗口的全部 pane 会话（去重）：request.sids 无 identity、
+       * request.scopes 带 workspaceIdentity（远端路由键）；add 的去重按 (sid, identity) 对。 */
       const request = { sids: [], scopes: [] };
       const add = (sid, identity) => {
         if (identity) {
@@ -498,7 +585,7 @@ function maybeSpawn() {
       runQuery(request);
     })
     .catch(() => { })
-    .finally(() => { collecting = false; });
+    .finally(() => { collectingWants = false; });
 }
 
 /* 监听 db 目录：WAL/主库一有写入立刻（去抖 300ms）触发拉取；完全空闲时零进程零轮询 */
@@ -532,6 +619,7 @@ let overlayMtimeKnown = false;
 let zusageMtime = 0;
 setInterval(() => {
   const cfg = readCfgCached();
+  if (!residentAllowed()) stopResident();
   if (cfg.hot_reload === false) return;
   hotReloadIfChanged();
   try {
@@ -582,6 +670,51 @@ async function setAnswerRateLine(enabled) {
     broadcastPluginState();
   } catch (e) { LOG("answer_rate_line toggle failed:", e.message); }
 }
+/* 确定性历史行的数据库富文本（v75）：渲染端只从 turn 容器拿到 DOM turn id，
+ * 桥接数据里没有首字延迟/分段/峰值/累计等字段，拼不出模型时代那行统计；这里按
+ * turn 身份一次性查库（token_rate.py --turn --session --turn-id，纯文本），把结果
+ * 推回请求它的那个渲染进程。用一次性 spawn 而非常驻泵：这是低频（每个完成的轮次
+ * 至多几次重试）、与主数据泵完全并行的旁路查询，不能占用泵的 stdin 行协议。
+ * 查不到（数据库还没追上）时回推空串，渲染端据此限流重试。 */
+/* 确定性历史行的富文本旁路查询：桥接数据里没有首字延迟/分段/峰值/累计等字段，拼不出
+ * 模型时代那行统计；数据库的 turn_id（turn_<uuid>）和渲染器投影的 turnId/productTurnId
+ * （msg_<uuid>，DOM data-turn-id 同源）是两套互不相通的标识，前端没有、也查不到后者
+ * 对应的数据库主键——不能按显式 turn-id 查库。改为复用 Hook 原本依赖的 --current 时间戳
+ * 推断路径（token_rate.py 按 session 记录的"提问时刻"反查最新一轮，session 级映射，
+ * 并行会话不串台），这正是模型以前实际在跑的同一条查询，口径已被验证过。
+ * 用一次性 spawn 而非常驻泵：低频（每个完成的轮次至多几次重试）、与主数据泵完全并行
+ * 的旁路查询，不占用泵的 stdin 行协议。查不到（数据库还没追上/没有有效提问时刻/
+ * 这一轮已被新提问越过）时回推空串，不是错误，渲染端据此限流重试。 */
+function queryTurnText(sid, wc) {
+  const deliver = (text) => {
+    if (!wc || wc.isDestroyed()) return;
+    wc.executeJavaScript("window.__zusageDeliverTurnText && window.__zusageDeliverTurnText(" +
+      JSON.stringify(sid) + "," + JSON.stringify(text || "") + ")", true).catch(() => { });
+  };
+  if (typeof sid !== "string" || !/^[A-Za-z0-9_-]{1,80}$/.test(sid)) return;
+  let py;
+  try {
+    py = spawn(readCfgCached().python_path,
+      [TOKEN_RATE, "--turn", "--current", "--session", sid], { windowsHide: true });
+  } catch (e) { LOG("turn text spawn failed:", e.message); deliver(""); return; }
+  let out = "", finished = false;
+  const finish = (text) => {
+    if (finished) return;
+    finished = true;
+    clearTimeout(killTimer);
+    deliver(text);
+  };
+  const killTimer = setTimeout(() => {
+    LOG("turn text query timeout, killing");
+    try { py.kill(); } catch (e) { }
+    finish("");
+  }, 15000);
+  py.stdout.on("data", (d) => { out += d; });
+  py.stderr.on("data", () => { });
+  py.on("error", (e) => { LOG("turn text spawn failed:", e.message); finish(""); });
+  py.on("close", () => { finish(String(out).trim()); });   // 空串 = 库里还没这一轮，不是错误
+}
+
 async function pollPluginRequests() {
   if (pluginRequestBusy) return;
   pluginRequestBusy = true;
@@ -604,6 +737,8 @@ async function pollPluginRequests() {
           if (pluginUpdater) pluginUpdater.request(req).catch((e) => LOG("plugin update action failed:", e.message));
         } else if (req && req.action === "rate-line" && typeof req.enabled === "boolean") {
           setAnswerRateLine(req.enabled);
+        } else if (req && req.action === "turn-text" && typeof req.sid === "string") {
+          queryTurnText(req.sid, wc);
         }
       }
     }
@@ -614,9 +749,12 @@ setInterval(pollPluginRequests, 1000);
 setInterval(() => { if (pluginUpdater) pluginUpdater.tick().catch((e) => LOG("plugin auto update:", e.message)); }, 60000);
 if (pluginUpdater) pluginUpdater.tick().catch((e) => LOG("plugin auto update:", e.message));
 
-function injectOverlay(wc) {
-  if (!overlaySrc || !isMainWindowState(wc)) return;
-  wc.executeJavaScript(overlaySrc, true).then(() => {
+function injectOverlay(wc, reload = false) {
+  if (!overlaySrc || !isMainWindowState(wc) || wc.isDestroyed()) return;
+  const cleanup = '(function(){if(window.__zusageDispose)window.__zusageDispose();else{document.querySelectorAll(".zusage-root,.zusage-tip-root,.zusage-exc").forEach(function(e){e.remove()});if(window.__zusageRateCleanup)window.__zusageRateCleanup()}window.__zusageOverlay=false;})();\n';
+  /* turn-stats.js 先于 overlay.js 注入（IIFE 幂等，重复执行只是重挂 ZUsageTurnStats）：
+   * overlay 启动即读取该全局做实时/确定性统计；overlay 缺它时自动降级为 DB 轮询路径。 */
+  wc.executeJavaScript((reload ? cleanup : "") + turnStatsSrc + "\n" + overlaySrc, true).then(() => {
     /* 无条件推送：updater 不可用时也要让面板拿到 rateLine 真值（缺省开） */
     pushPluginState(wc, pluginUpdater ? pluginUpdater.status() : {});
   }).catch(() => { });
@@ -624,6 +762,16 @@ function injectOverlay(wc) {
 
 const hook = (wc) => {
   if (!isMainWindowState(wc)) return;
+  wc.on("destroyed", () => {
+    activeSid.delete(wc.id);
+    if (!hasWindows()) {
+      clearTimeout(retryTimer);
+      lastHadRemote = false;
+      lastWants = "";
+      lastStamp = 0;
+      stopResident();
+    }
+  });
   wc.on("did-finish-load", () => injectOverlay(wc));
   if (wc.isLoading()) return;
   injectOverlay(wc);
@@ -639,4 +787,12 @@ if (typeof module === "object" && module && module.exports) {
   };
 }
 
-LOG("injected v12 (auto remote targets from client setting.json, per-sid multi-server routing, sticky remote marks + pending-retry self recovery, per-pane wants array, resident query mode, answer_rate_line config write, plugin request polling decoupled from updater availability)");
+LOG("injected v12 (auto remote targets + per-sid multi-server routing, per-pane wants array, resident query mode with idle shutdown, renderer bridge probe, answer_rate_line config write, plugin request polling)");
+
+app.on("before-quit", () => {
+  shuttingDown = true;
+  clearTimeout(retryTimer);
+  clearTimeout(debounceTimer);
+  stopResident();
+  if (dbWatcher) { try { dbWatcher.close(); } catch (e) { } dbWatcher = null; }
+});

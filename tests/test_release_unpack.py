@@ -136,6 +136,21 @@ class ReleaseUnpackTests(unittest.TestCase):
         self.pack(directories, zipfile.ZIP_DEFLATED)
         self.assertEqual(self.run_cli()[0], 0)
 
+    def test_shared_stats_and_turn_module_are_required_even_with_layout(self):
+        original = dict(self.data)
+        for module in ("usage_stats.py", "turn-stats.js"):
+            for layout in (False, True):
+                with self.subTest(module=module, layout=layout):
+                    self.data = dict(original)
+                    del self.data[PREFIX + module]
+                    manifest = dict(self.plugin_manifest)
+                    if layout:
+                        manifest["packageLayout"] = {"schemaVersion": 1, "files": sorted(self.data)}
+                    self.set_plugin_manifest(manifest)
+                    self.pack()
+                    self.assert_rejected()
+        self.data = original
+
     def test_asset_tamper_rejected_before_output_creation(self):
         self.archive.write_bytes(self.archive.read_bytes() + b"tamper")
         self.assert_rejected(contains="size/sha256")

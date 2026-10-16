@@ -28,17 +28,33 @@
  * 诊断：异常与挂载信息写 window.__zusageDiag，由主进程泵取回写 diag-<n>.json。 */
 (function () {
   if (window.__zusageOverlay) return;
+  /* 代际守卫保底；正常热更新先主动释放上一代资源。 */
+  if (window.__zusageDispose) window.__zusageDispose();
   window.__zusageOverlay = true;
-  /* 代际守卫：热更新后旧实例（interval/rAF 闭包无法外部清除）发现代号落后即永久罢工 */
+  var disposed = false, coordinatorTimer = 0, bootTimer = 0;
   var MY_GEN = (window.__zusageGen = (window.__zusageGen || 0) + 1);
-  function stale() { return MY_GEN !== window.__zusageGen; }
+  function stale() { return disposed || MY_GEN !== window.__zusageGen; }
   if (window.__zusageRateCleanup) window.__zusageRateCleanup();
 
   var FATAL = (window.__zusageDiag = {});
-  /* 多实例（v61.1）：热更新时泵只按 id 清 0 号条，其余实例的 DOM（条/tip/气泡）
-   * 在新代码启动时按类名统一自清；旧实例闭包靠 stale() 罢工。 */
+  /* 多实例（v61.1）：热更新时泵只按 id 清 0 号条，其余实例的 DOM（条/tip/气泡/面板）
+   * 在新代码启动时按类名统一自清；旧实例闭包靠 stale() 罢工。
+   * 确定性历史行（[data-zusage-deterministic]，挂在消息流 turn 容器末尾）一并自清。
+   * v80：面板（.zusage-panel）挂 body 不随条走，清理选择器单列。 */
   try {
-    document.querySelectorAll(".zusage-root,.zusage-tip-root,.zusage-exc,.zusage-rate-tip").forEach(function (el) { el.remove(); });
+    document.querySelectorAll(".zusage-root,.zusage-tip-root,.zusage-exc,.zusage-rate-tip,.zusage-panel,[data-zusage-deterministic],[data-zusage-loading-status]").forEach(function (el) { el.remove(); });
+  } catch (e) { }
+
+  try {
+    document.querySelectorAll("[data-zu-pad],[data-zu-old-pad]").forEach(function (el) {
+      el.style.paddingBottom = el.dataset.zuPad || el.dataset.zuOldPad || "";
+      delete el.dataset.zuPad;
+      delete el.dataset.zuOldPad;
+    });
+    document.querySelectorAll("[data-zu-cardpad]").forEach(function (el) {
+      el.style.marginBottom = el.dataset.zuCardPad || "";
+      delete el.dataset.zuCardPad;
+    });
   } catch (e) { }
 
   /* ---------- 共享状态（多实例一致）：显示项/语言/上下文覆盖/最近一次数据 ---------- */
@@ -202,11 +218,10 @@
    * 实例销毁/重建的间隙会失去类样式。内联关键属性兜底（值与 .tip 类一致，含主题 var），
    * 类样式在位时两者相同、不冲突；display 由 show/hide 控制。 */
   rateTip.style.cssText =
-    "position:fixed;display:none;background:rgba(19,22,30,.98);" +
-    "background:color-mix(in srgb,var(--color-background,#13161e) 98%,transparent);" +
-    "border:1px solid var(--color-border,rgba(255,255,255,.1));border-radius:10px;padding:10px 14px;" +
+    "position:fixed;display:none;background:var(--color-tooltip,#171717);" +
+    "border:1px solid var(--color-border,transparent);border-radius:10px;padding:10px 14px;" +
     "font-family:var(--font-mono,Consolas,'Microsoft YaHei UI',monospace);" +
-    "font-size:calc(var(--ui-font-size,14px) - 1px);line-height:1.55;color:var(--color-foreground,#c6cdd9);" +
+    "font-size:calc(var(--ui-font-size,14px) - 1px);line-height:1.55;color:var(--color-tooltip-foreground,#fafafa);" +
     "box-shadow:0 10px 28px rgba(0,0,0,.5),0 2px 6px rgba(0,0,0,.3);" +
     "white-space:normal;z-index:2147483646;max-width:520px;box-sizing:border-box";
   document.body.appendChild(rateTip);
@@ -217,11 +232,11 @@
     var row = function (label, text) {
       return '<div class="rt-row"><b>' + label + "</b><span>" + text + "</span></div>";
     };
-    return '<style>.zusage-rate-tip .rt-h{font-weight:600;color:var(--color-foreground,#e9edf4);margin:0 0 7px}' +
+    return '<style>.zusage-rate-tip .rt-h{font-weight:600;color:var(--color-tooltip-foreground,#fafafa);margin:0 0 7px}' +
       ".zusage-rate-tip .rt-row{display:flex;gap:10px;margin:3px 0}" +
-      ".zusage-rate-tip .rt-row b{flex:0 0 auto;min-width:78px;color:var(--color-foreground,#e9edf4);font-weight:600}" +
-      ".zusage-rate-tip .rt-row span{color:var(--color-foreground-subtle,#8791a3)}" +
-      '.zusage-rate-tip .rt-note{margin-top:8px;padding-top:7px;border-top:1px solid var(--color-border,rgba(255,255,255,.1));color:var(--color-foreground-subtle,#8791a3)}</style>' +
+      ".zusage-rate-tip .rt-row b{flex:0 0 auto;min-width:78px;color:var(--color-tooltip-foreground,#fafafa);font-weight:600}" +
+      ".zusage-rate-tip .rt-row span{color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      '.zusage-rate-tip .rt-note{margin-top:8px;padding-top:7px;border-top:1px solid var(--color-border,transparent);color:var(--color-tooltip-tag-foreground,#a6a6a6)}</style>' +
       '<div class="rt-h">⚡ ' + L("本问速率 · 各数值含义", "Rate line · what each figure means") + "</div>" +
       row("tok/s", L("本问各段加权平均：总输出 ÷ 总生成时长，工具等待不计入", "weighted average of all segments: total output ÷ total generation time, tool waits excluded")) +
       row(L("首字", "TTFT"), L("第一段从发出请求到首个 token 的等待", "wait from request to the first token of the first segment")) +
@@ -331,7 +346,361 @@
   window.__zusageRateCleanup = cleanupRateTip;
   scanRateLines();
 
-  setTimeout(function () {
+  /* ---------- renderer 会话 store 桥（v71）：实时统计 + 确定性历史行 ----------
+   * 只读桥由 renderer 侧资产注入：__zusageGetExistingConversationStore(scope) 返回
+   * {getState,subscribe,off}|null；__zusageConversationDiagnostics() 枚举存活 registry
+   * （sessions[].key = "<remoteSessionId> <workspace>"，topic = "conversation/<sid>"）。
+   * 统计内核在 turn-stats.js（先于本文件注入，globalThis.ZUsageTurnStats）。
+   * API 缺失 / 无匹配 session / 无内核：整体降级为 DB 轮询路径（悬浮条行为不变）。 */
+  var TURN_STATS = null;   // 注入序保证先于本文件；缺失即禁用桥功能
+  try { TURN_STATS = window.ZUsageTurnStats || globalThis.ZUsageTurnStats || null; } catch (e) { }
+  function zuBridgeApi() {
+    try {
+      var diag = window.__zusageConversationDiagnostics, get = window.__zusageGetExistingConversationStore;
+      if (typeof diag !== "function" || typeof get !== "function") return null;
+      return { diag: diag, get: get };
+    } catch (e) { return null; }
+  }
+  /* scope 的 workspace 半边从 diagnostics 的 key 解析（renderer_live_check 实测格式：
+   * "<remote> <workspace>"，本地会话 remote="__base__"）。workspacePath / workspaceIdentity
+   * 两种键各试一次，命中即返回 store。 */
+  function zuTryBindStore(sid) {
+    var api = zuBridgeApi();
+    if (!api || !sid) return null;
+    var diag = null;
+    try { diag = api.diag(); } catch (e) { return null; }
+    var sessions = (diag && diag.sessions) || [];
+    var topic = "conversation/" + sid;
+    for (var i = 0; i < sessions.length; i++) {
+      var entry = sessions[i];
+      if (!entry || entry.topic !== topic) continue;
+      var key = String(entry.key || ""), sp = key.indexOf(" ");
+      if (sp < 0) continue;
+      var remote = key.slice(0, sp), workspace = key.slice(sp + 1);
+      if (!remote || !workspace.trim()) continue;
+      var scopes = remote === "__base__"
+        ? [{ sessionId: sid, workspacePath: workspace }, { sessionId: sid, workspaceIdentity: workspace }]
+        : [{ sessionId: sid, workspacePath: workspace, remoteSessionId: remote },
+           { sessionId: sid, workspaceIdentity: workspace, remoteSessionId: remote }];
+      for (var j = 0; j < scopes.length; j++) {
+        try { var store = api.get(scopes[j]); if (store) return store; } catch (e) { }
+      }
+    }
+    return null;
+  }
+  /* 活跃 turn：快照窗口里最后一个 turnHeader（key 与 turn-stats 一致 = productTurnId 优先） */
+  function zuActiveTurnId(snap) {
+    var rows = snap && snap.rows && snap.rows.window;
+    if (!Array.isArray(rows)) return "";
+    for (var i = rows.length - 1; i >= 0; i--) {
+      var r = rows[i];
+      if (r && r.kind === "turnHeader" && typeof r.turnId === "string") return r.productTurnId || r.turnId;
+    }
+    return "";
+  }
+  /* 完成态摘要：与模型统计行同款标记「tok/s(本轮)」——可被 isRateLine 识别并复用悬停解释 */
+  function zuFinalText(stats) {
+    var text = TURN_STATS.format(stats);
+    return text.indexOf("tok/s") >= 0 ? text.replace("tok/s", "tok/s(本轮)") : text + "(本轮)";
+  }
+  function zuUnavailableText() {
+    return "⚡ " + L("本轮统计不可用", "turn stats unavailable") + "(本轮)";
+  }
+  /* v74：完成但零输出（如纯控制/后台轮次，无可见正文）时不编造"输出 0 tok · 耗时
+   * XXXs"这种无意义数字——与"记录已清"同样处理为不可用，而不是把字段值直接拼进文案。 */
+  function zuHasMeaningfulOutput(stats) {
+    return !!stats && typeof stats.outputTokens === "number" && stats.outputTokens > 0;
+  }
+  /* v73：悬浮条「生成速度」合并 chip 专用——与 zuFinalText（对话内确定性
+   * 历史行用，格式不可变）分开。两态统一用 tok/s 单位，避免生成中/完成切换单位：
+   * 生成中按「字符/s ÷ 每 token 字符数」估算（c2t），每 token 字符数由本会话最近一次
+   * 完成的真实轮次自校准（bridge handle 级，session/store 换代即重置）；首轮尚无样本
+   * 时退回 DEFAULT_CHARS_PER_TOKEN 粗略估计。完成态直接用 tracker 给出的真实 tok/s。 */
+  var DEFAULT_CHARS_PER_TOKEN = 2;   // 校准前的粗略估计（中英混排粗略量级），有样本后立即被取代
+  /* 返回 null = 调用方应把这当成"没有可展示的桥接视图"处理（回退 DB/不渲染），
+   * 而不是当成"确定性地算出了没有速度"。 */
+  function zuBarSpeedView(stats, charsPerToken) {
+    if (!stats.complete) {
+      // 工具执行期间优先显示与消息流同款的状态词（正在读取/正在编辑…+已耗时），
+      // 让悬浮条与 toolCall 行状态对应；没有工具在跑才退回字符估算/存活心跳。
+      if (stats.runningTool) {
+        var verb = zuToolVerb(stats.runningTool.name);
+        var st = stats.runningTool.startedAt;
+        if (typeof st === "number" && st > 0 && Date.now() >= st)
+          verb += " · " + ((Date.now() - st) / 1000).toFixed(1) + "s";
+        return { cls: "dim", text: verb, phase: "tool" };
+      }
+      // 无工具且无可测字符流（首段未流出/字符停滞>2s，多数模型思考期对桥不可见，
+      // 看到的就是时间在走）：按用户语义定为"思考中"——动效脑图标 + 思考中…Xs。
+      // 秒数是本轮存活时长（首观测起算），不是精确思考时长。
+      if (stats.characterRate == null)
+        return { cls: "dim", text: L("思考中…", "thinking…") + (stats.observedMs / 1000).toFixed(1) + "s",
+                 phase: "thinking" };
+      var est = stats.characterRate / (charsPerToken || DEFAULT_CHARS_PER_TOKEN);
+      return { cls: "dim", text: est.toFixed(1) + L(" t/s", " t/s"),
+               /* phase 兜底 thinking：新轮刚开始（最后活动行还是 userInput）时
+                * stats.phase 为 null，不兜底会让图标在这一瞬回闪电再切回脑（闪烁）。 */
+               phase: stats.phase || "thinking" };
+    }
+    /* 切换/重新绑定到一个会话时，桥接首次订阅就可能直接捞到一个老早之前已完成的
+     * 轮次（这次 ingest 从未见过它处于未完成状态）。这种"历史存量"不是我们亲历的
+     * 完成过程，详细字段也可能已被宿主精简——不该把它当成"刚刚发生、算出来没速度"
+     * 显示给用户（会被误读成这个会话突然坏了），交回调用方当作无桥数据处理。 */
+    if (!stats.observedLive) return null;
+    /* 完成但缺口径（宿主完成时 outputTokens/modelDurationMs 是可选字段，可能缺席）
+     * 或零输出：同样回退 DB 最近一段值，绝不显示刺眼的"速度不可用"——那会被读成
+     * "这个会话坏了"，而真相只是"这一轮的详细字段暂时没有"。DB 也没有值时调用方
+     * 自然整枚 chip 不渲染。 */
+    if (stats.tokenRate == null || !zuHasMeaningfulOutput(stats)) return null;
+    var cls = stats.tokenRate >= 70 ? "ok" : stats.tokenRate >= 40 ? "warm" : "hot";
+    return { cls: cls, text: stats.tokenRate.toFixed(1) + L(" t/s", " t/s"), phase: null };
+  }
+  /* 思考态动效图标（用户提供的设计稿）：呼吸脑轮廓 + 流动信号 + 脉冲节点，纯 CSS
+   * 动画内嵌在 SVG 里（样式随节点走，不依赖外部样式表，宿主清 head 也不受影响）。
+   * 类名一律 zu-tk-* 前缀，防与宿主/插件其它样式互相污染；prefers-reduced-motion
+   * 时停播（动画 none，信号线半透明保持可读）。 */
+  function zuIcoThinking() {
+    return '<svg class="ico zu-think" viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
+      '<style>' +
+      '.zu-tk-brain{animation:zuTkBreathe 2.4s ease-in-out infinite}' +
+      '.zu-tk-signal{stroke-dasharray:3 18;animation:zuTkFlow 2.4s linear infinite}' +
+      '.zu-tk-node{transform-box:fill-box;transform-origin:center;animation:zuTkPulse 2.4s ease-in-out infinite}' +
+      '.zu-tk-n2{animation-delay:-1.6s}.zu-tk-n3{animation-delay:-.8s}' +
+      '@keyframes zuTkBreathe{0%,100%{opacity:.65}50%{opacity:1}}' +
+      '@keyframes zuTkFlow{from{stroke-dashoffset:21}to{stroke-dashoffset:0}}' +
+      '@keyframes zuTkPulse{0%,60%,100%{opacity:.35;transform:scale(.8)}25%{opacity:1;transform:scale(1.2)}}' +
+      '@media(prefers-reduced-motion:reduce){.zu-tk-brain,.zu-tk-signal,.zu-tk-node{animation:none}.zu-tk-signal{opacity:.7}}' +
+      '</style>' +
+      '<g stroke-linecap="round" stroke-linejoin="round">' +
+      '<g class="zu-tk-brain" stroke="#7e8899" stroke-width="1.5">' +
+      '<path d="M12 5.3C12 2.2 7.5 2 6.8 5.2C4.2 4.8 2.7 7.3 3.6 9.5C1.5 11 1.6 14.1 3.8 15.4C3.1 18 5 20 7.2 19.5C8.2 22 12 21.2 12 18.5V5.3Z"/>' +
+      '<path d="M12 5.3C12 2.2 16.5 2 17.2 5.2C19.8 4.8 21.3 7.3 20.4 9.5C22.5 11 22.4 14.1 20.2 15.4C20.9 18 19 20 16.8 19.5C15.8 22 12 21.2 12 18.5"/>' +
+      '</g>' +
+      '<g stroke="#8171E8" stroke-width="1.2" opacity=".45">' +
+      '<path d="M7 7.5V10L9 12V16.5M17 7.5V10L15 12V16.5M5.5 14H7L9 16.5M18.5 14H17L15 16.5"/>' +
+      '</g>' +
+      '<g stroke="#A385E6" stroke-width="1.4">' +
+      '<path class="zu-tk-signal" d="M7 7.5V10L9 12V16.5"/>' +
+      '<path class="zu-tk-signal" style="animation-delay:-1.2s" d="M15 16.5V12L17 10V7.5"/>' +
+      '</g>' +
+      '</g>' +
+      '<g fill="#A385E6">' +
+      '<circle class="zu-tk-node" cx="7" cy="7.5" r="1.15"/>' +
+      '<circle class="zu-tk-node zu-tk-n2" cx="17" cy="7.5" r="1.15"/>' +
+      '<circle class="zu-tk-node zu-tk-n3" cx="9" cy="16.5" r="1.15"/>' +
+      '<circle class="zu-tk-node" cx="15" cy="16.5" r="1.15"/>' +
+      '</g>' +
+      '</svg>';
+  }
+  /* v75：数据库富文本覆盖层。桥接数据只有 outputTokens/modelMs 等有限字段，拼不出
+   * 模型时代那行（首字/分段/峰值/累计/采样时刻）——这些只在 usage 库里。所以完成态
+   * 历史行先用桥接简化文案占位，同时按 session 向主进程要一次纯文本统计行；拿到后
+   * 覆盖占位（见 zuRequestTurnText / window.__zusageDeliverTurnText）。
+   * 查询刻意不带显式 turn-id：数据库 turn_id（turn_<uuid>）和渲染器投影的
+   * turnId/productTurnId（msg_<uuid>，DOM data-turn-id 同源）是两套互不相通的标识，
+   * 前端查不到后者对应的数据库主键。改用 token_rate.py 原本给 Hook 用的 --current
+   * 时间戳推断（按 session 记录的"提问时刻"反查最新一轮），这正是模型以前实际在跑
+   * 的同一条查询。key 用扫描循环里的 DOM tid（statsFor(tid) 的入参，虚拟列表重挂后
+   * 还能对应回同一个容器）；请求/交付按 sid 关联（richTextRequestTids 是 sid→tid 的
+   * 反向映射，同一 session 同一时刻只认最新发起的那个 tid——如果请求在途时又有新的
+   * 一轮在同一 session 完成，交付结果可能被关联到新 tid 上而非发起时的旧 tid，这是
+   * 一个已知的、极窄时间窗口内的小概率错位，权衡实现复杂度后不做进一步纠偏）。 */
+  var richTextCache = {}, richTextAttempts = {}, richTextRequestTids = {};
+  var RICH_TEXT_MAX_ATTEMPTS = 6;   // 2s 一 tick × 6 ≈ 12s 窗口等数据库追上，之后永久用简化文案兜底
+  function zuResetRichText() {
+    richTextCache = {};
+    richTextAttempts = {};
+    richTextRequestTids = {};
+  }
+  /* 每个 scan tick 对「已完成 + 有输出 + 尚无富文本 + 未超重试上限」的 turn 补发一次请求：
+   * 只靠首次完成时那一次会漏（主进程没收到/当时无窗口/查询失败），逐 tick 补发才能自愈。 */
+  function zuRequestTurnText(tid, stats) {
+    if (!tid || richTextCache[tid] || (richTextAttempts[tid] || 0) >= RICH_TEXT_MAX_ATTEMPTS) return;
+    var sid = stats && typeof stats.sessionId === "string" ? stats.sessionId : "";
+    if (!sid) return;
+    richTextRequestTids[sid] = tid;
+    var req = { action: "turn-text", sid: sid };
+    if (window.__zusagePluginRequests) window.__zusagePluginRequests.push(req);
+    else window.__zusagePluginRequests = [req];
+    richTextAttempts[tid] = (richTextAttempts[tid] || 0) + 1;
+  }
+  /* 主进程回推：非空 = 富文本到位，写缓存并立即重扫（不等下一个 2s tick）；空 = 库里还没
+   * 追到这一轮（或没有有效的提问时刻可推断），什么都不做——重试由 scanDeterministicLines
+   * 的定时扫描自然驱动，这里绝不自建重试队列（否则两个驱动源叠加会绕开 attempts 上限）。 */
+  window.__zusageDeliverTurnText = function (sid, text) {
+    if (stale() || typeof sid !== "string") return;
+    var tid = richTextRequestTids[sid];
+    if (!tid || typeof text !== "string" || !text) return;
+    richTextCache[tid] = text;
+    delete richTextAttempts[tid];
+    scanDeterministicLines();
+  };
+  /* ---------- 确定性历史行（v71）：完成的 turn 在消息流末尾插统计行 ----------
+   * 数据来自 tracker（renderer store 投影），不再要求模型自跑统计脚本（hook 已去指令）。
+   * 虚拟列表回收重挂后由扫描重建；旧消息（tracker 无记录）不补造；
+   * 同容器已有模型历史统计行（isRateLine）则跳过，避免双行。 */
+  var ZU_DET_FONT_SIZE = "0.8125rem";   // v78：宿主正文号偏大，用户要求缩小（13px）
+  var detTimer = 0;
+  /* v79：统计行在 turn 容器内的落点——用户指定：hover 工具条之前、data-state="closed"
+   * 弹出层之后（容器末尾那排工具条类名 opacity-0 … group-hover/assistant-turn:opacity-100，
+   * Tailwind 类名含 : / [ ] 特殊字符，querySelector 转义易碎 → 只按子节点 className
+   * 子串匹配）。找不到锚点（宿主改版）回退 appendChild（旧行为，容器末尾）。 */
+  function zuDetAnchor(box) {
+    try {
+      var kids = box.children, i, cls;
+      for (i = kids.length - 1; i >= 0; i--) {
+        cls = String(kids[i].className || "");
+        if (cls.indexOf("group-hover/assistant-turn") >= 0 && cls.indexOf("opacity-0") >= 0)
+          return kids[i];
+      }
+      for (i = kids.length - 1; i >= 0; i--) {
+        if (kids[i].getAttribute && kids[i].getAttribute("data-state") === "closed")
+          return kids[i].nextSibling;   // null = 已到末尾，insertBefore(node, null) 即 append
+      }
+    } catch (e) { }
+    return null;
+  }
+  function zuDetPlace(box, node) {
+    try {
+      var anchor = zuDetAnchor(box);
+      if (anchor && anchor === node.nextSibling) return;   // 已在位（React 重排兜底快速路径）
+      if (anchor) { box.insertBefore(node, anchor); return; }
+      if (node.parentElement !== box) box.appendChild(node);
+    } catch (e) { FATAL.detErr = String((e && e.stack) || e); }
+  }
+  function scanDeterministicLines() {
+    if (stale()) return;
+    try {
+      if (!state.rateLine || !TURN_STATS) {   // 开关关闭：撤下自己插的行（模型历史行不动）
+        document.querySelectorAll("[data-zusage-deterministic]").forEach(function (el) { el.remove(); });
+        return;
+      }
+      /* 两种选择器可能同时命中同一个 turn（外层 [data-v4-turn-unit] 包着内层
+       * section，二者带同一个 data-turn-id）：按 tid 去重，section 更具体，优先用它
+       * 当容器，避免同一轮被当成两个独立容器各插一条，出现重复行（真机实测过）。 */
+      var boxes = [], seen = {};
+      document.querySelectorAll("section[data-turn-id]").forEach(function (el) {
+        var t = el.getAttribute("data-turn-id");
+        if (t && !seen[t]) { seen[t] = 1; boxes.push(el); }
+      });
+      document.querySelectorAll("[data-v4-turn-unit][data-turn-id]").forEach(function (el) {
+        var t = el.getAttribute("data-turn-id");
+        if (t && !seen[t]) { seen[t] = 1; boxes.push(el); }
+      });
+      for (var i = 0; i < boxes.length; i++) {
+        var box = boxes[i];
+        var tid = box.getAttribute && box.getAttribute("data-turn-id");
+        if (!tid) continue;
+        var mine = null;
+        try { mine = box.querySelector("[data-zusage-deterministic]"); } catch (e) { }
+        if (mine) {
+          /* 已插过：重挂/数据演进后从 tracker 重建文本；观测过但记录已清（换代）、
+           * 或完成但确实零输出（无意义数字，如"耗时 939.0s"配"输出 0 tok"）则明示不可用 */
+          var again = null;
+          for (var n = 0; n < instances.length; n++) { again = instances[n].statsFor(tid); if (again) break; }
+          var againOk = !!again && again.complete && zuHasMeaningfulOutput(again);
+          var againText = againOk ? zuFinalText(again) : zuUnavailableText();
+          if (againOk) zuRequestTurnText(tid, again);   // 仍缺富文本就补发（限流见函数内）
+          var text = richTextCache[tid] || againText;
+          var line = mine.querySelector("p") || mine;
+          if ((line.textContent || "") !== text) line.textContent = text;
+          if (!line.style.fontSize) line.style.fontSize = ZU_DET_FONT_SIZE;   // 旧代节点补样式（热更间隙）
+          zuDetPlace(box, mine);   // React 重排后兜住用户指定位置（工具条之前）
+          continue;
+        }
+        var hasModel = false;
+        try {
+          box.querySelectorAll("blockquote p, blockquote, p").forEach(function (el) {
+            if (!hasModel && isRateLine(el)) hasModel = true;
+          });
+        } catch (e) { }
+        if (hasModel) continue;   // 模型历史统计行在位：不叠双行
+        var stats = null;
+        for (var k = 0; k < instances.length; k++) { stats = instances[k].statsFor(tid); if (stats) break; }
+        if (!stats || !stats.complete) continue;   // 未完成 / 旧消息（tracker 无记录）不插
+        var quote = document.createElement("blockquote");
+        quote.dataset.zusageDeterministic = "1";
+        var p = document.createElement("p");
+        p.dataset.zusageDeterministic = "1";
+        /* 样式基本交还宿主默认（模型时代贴的 Markdown 引用块就是这套渲染：彩色 ⚡、
+         * 正文亮度、引用线）；唯一例外字号（v78）：用户反馈宿主正文号太大，内联缩到
+         * 0.8125rem（13px）。必须内联——本节点长在宿主消息流 prose 容器内，bar 内部
+         * 样式表够不着，挂 head 的外来样式又会被 React 清掉（历史根因）。 */
+        p.style.fontSize = ZU_DET_FONT_SIZE;
+        var statsOk = zuHasMeaningfulOutput(stats);
+        if (statsOk) zuRequestTurnText(tid, stats);   // 先占位，向主进程要这轮的数据库富文本
+        p.textContent = richTextCache[tid] || (statsOk ? zuFinalText(stats) : zuUnavailableText());
+        quote.appendChild(p);
+        zuDetPlace(box, quote);
+      }
+    } catch (e) { FATAL.detErr = String((e && e.stack) || e); }
+  }
+  function cleanupDeterministic() {
+    clearInterval(detTimer);
+    zuResetRichText();
+    try {
+      document.querySelectorAll("[data-zusage-deterministic],[data-zusage-loading-status]").forEach(function (el) { el.remove(); });
+    } catch (e) { }
+  }
+  /* ---------- 工具动词表（v76 引入，v78 起仅悬浮条合并 chip 使用）：zuBarSpeedView
+   * 在工具执行期显示"正在读取 · 1.2s"同款状态词，数据源为桥接 tracker 的 runningTool
+   * （本轮最后一个活动行=进行中的工具调用，宿主从 tool_input_start 起算"进行中"）。
+   * v76 的消息流 loading 插槽插入（[data-zusage-loading-status]）已删，见 zuToolVerb 下方注。 */
+  var ZU_TOOL_VERBS = {
+    Read: ["正在读取", "Reading"],
+    Write: ["正在写入", "Writing"], Edit: ["正在编辑", "Editing"], ApplyPatch: ["正在编辑", "Editing"],
+    Bash: ["正在执行", "Running command"],
+    Grep: ["正在搜索", "Searching"], Glob: ["正在搜索", "Searching"],
+    WebSearch: ["正在搜索", "Searching"], web_search: ["正在搜索", "Searching"],
+    WebFetch: ["正在获取网页", "Fetching page"],
+    TodoWrite: ["正在更新待办", "Updating todos"], TodoRead: ["正在读取待办", "Reading todos"],
+    Skill: ["正在运行技能", "Running skill"],
+    ReadSessionContext: ["正在读取上下文", "Reading context"],
+    Agent: ["正在运行子智能体", "Running agent"], Task: ["正在运行子智能体", "Running agent"],
+    SendMessage: ["正在发送消息", "Sending message"],
+    TaskOutput: ["正在获取任务输出", "Fetching task output"],
+    TaskStop: ["正在停止任务", "Stopping task"],
+    CreateWorkflow: ["正在编写工作流", "Writing workflow"],
+  };
+  function zuToolVerb(name) {
+    if (name && ZU_TOOL_VERBS[name]) { var pair = ZU_TOOL_VERBS[name]; return L(pair[0], pair[1]); }
+    if (name && name.indexOf("mcp__computer-use__") === 0) return L("正在操作电脑", "Operating computer");
+    if (name && name.indexOf("mcp__") === 0)
+      return L("正在调用 " + name.slice(5).replace(/__/g, " · "), "Calling " + name.slice(5).replace(/__/g, " · "));
+    if (name && name.indexOf("js") === 0) return L("正在执行代码", "Executing code");
+    return name ? L("正在执行 " + name, "Running " + name) : L("执行中", "Working");
+  }
+  /* v78：消息流 loading 状态词（v76 的 [data-zusage-loading-status] 插槽插入）已删——
+   * 悬浮条合并 chip 在工具执行期仍显示同款动词+耗时（zuBarSpeedView），消息流内不再插节点。
+   * 清理选择器保留（根清理 + dispose）：热更/重载后把旧版本可能残留的 span 清干净。 */
+  function sharedTick() {
+    if (stale()) return;
+    scanDeterministicLines();
+  }
+  detTimer = setInterval(sharedTick, 2000);
+  sharedTick();
+
+  function disposeOverlay() {
+    if (disposed) return;
+    disposed = true;
+    clearTimeout(bootTimer);
+    clearInterval(coordinatorTimer);
+    instances.forEach(function (inst) { inst.dispose(); });
+    instances = [];
+    cleanupRateTip();
+    cleanupDeterministic();
+    window.__zusageWantSids = [];
+    window.__zusageWantSid = "";
+    if (window.__zusageDispose === disposeOverlay) {
+      delete window.__zusageDispose;
+      delete window.__zusageUpdate;
+      delete window.__zusagePluginUpdate;
+      window.__zusageOverlay = false;
+    }
+  }
+  window.__zusageDispose = disposeOverlay;
+  bootTimer = setTimeout(function () {
+    if (stale()) return;
     try { coordinator(); } catch (e) {
       FATAL.fatal = String((e && e.stack) || e);
       var b = document.getElementById("zusage-bar");
@@ -369,27 +738,37 @@
           if (!best[k] || r.top > best[k].top) best[k] = { el: el, top: r.top };
         });
         var keys = Object.keys(best);
-        if (!keys.length && !instances.length) best["auto"] = { el: null, top: 0 };   // 主文档找不到（shadow/iframe 场景）→ 0 号实例走自带 deepFind 兜底
+        if (!keys.length) { best["auto"] = { el: null, top: 0 }; keys = ["auto"]; }   // shadow/iframe 兜底
+        instances = instances.filter(function (inst) {
+          if (keys.indexOf(inst.pid) >= 0) return true;
+          inst.dispose();
+          return false;
+        });
         keys.forEach(function (k) {
           var inst = null;
           for (var i = 0; i < instances.length; i++) if (instances[i].pid === k) { inst = instances[i]; break; }
           if (!inst && instances.length < 4) inst = spawnInstance(k, nextSlot++);
           if (inst) inst.attach(best[k].el, sessIdOf(best[k].el));
         });
-        instances.forEach(function (inst) {
-          if (keys.indexOf(inst.pid) < 0) inst.attach(null, "");   // pane 关闭：条随 composer 缺失自藏，实例保留待 pane 重开复用
-        });
+        refreshWants();
         FATAL.insts = instances.map(function (a) { return a.pid + "=" + (a.getSid() ? a.getSid().slice(-8) : "-"); }).join(" | ");
       } catch (e) { FATAL.coordErr = String((e && e.stack) || e); }
     }
     tick();
-    setInterval(tick, 600);
+    coordinatorTimer = setInterval(tick, 600);
   }
 
   /* ---------- 实例工厂（v61.1）：一个 pane 一套 条/面板/气泡/tooltip/定位循环。
    * slot 0 保留 #zusage-bar/#zusage-tip 兼容 id（泵热更新按它清理），其余实例仅类名。 */
   function spawnInstance(pid, slot) {
-    var VERSION = "v70";   // v70：⚙ 面板底栏新增「反馈问题」按钮（系统默认浏览器打开 GitHub issues）   // 随提交递增（悬停 ⚙ 面板可见）；未提交的中间迭代不涨号
+    var VERSION = "v81";   // v76 loading状态词 → v77 思考动效图标 → v78 删loading状态词/统计行缩字号 → v79 统计行落点=工具条前/弹出层后 → v80 条挂输入卡片工具行下+面板迁body → v81 tooltip 改宿主 Radix 同款反色底   // 悬停 ⚙ 面板可见；本会话热修部署未走提交，版本号随部署代际递增
+    var instanceDisposed = false, heavyTimer = 0, frame = 0, themeObserver = null;
+    var globalListeners = [];
+    function listenGlobal(target, type, fn, capture) {
+      target.addEventListener(type, fn, capture);
+      globalListeners.push([target, type, fn, capture]);
+    }
+    function inactive() { return instanceDisposed || stale(); }
     /* ---------- 状态（实例级） ---------- */
     var excOn = false,    // 本 pane 会话处于"上下文超限被拒"状态（render 时按 picked 会话计算）
       excGone = false,    // 用户点 ✕ 关闭了本次气泡；超限解除后自动复位
@@ -398,14 +777,18 @@
       instSid = "",       // 本 pane 当前会话（composer 祖先链 data-session-id）
       pendingSid = "", wantedEl = null,   // 协调器派发的最新 composer/会话
       shrink = 0,         // 分级收缩（v66）：1 = 内容超卡片宽，「本轮/会话累计」缓存命中率已让位
-      fadeOn = false;     // 收缩后仍超宽：右缘渐隐（.zu-clip）
+      fadeOn = false,     // 收缩后仍超宽：右缘渐隐（.zu-clip）
+      bridge = { handle: null, turnId: "", timer: 0 },   // v71 本 pane 的 renderer store 订阅
+      liveTextCur = "", liveStatsCur = null, liveKindCur = "fallback", liveEl = null,   // v72：合并「生成速度」用
+      livePhaseCur = "", liveIconCur = "bolt";   // v77：当前 chip 阶段与图标（think=思考动效/bolt=闪电）——相位切换需整条重渲染
 
     /* ---------- DOM ---------- */
     /* 样式表挂在 bar 内部而非 head：React 可能清理 head 里的外来 style，
      * CSS 一旦失效条就退化成 static 占位元素（"输入框下方空白"的历史根因）。 */
     var style = document.createElement("style");
     style.textContent =
-      /* 胶囊条：半透明底 + 微边框。配色全量跟随客户端主题（v58）：颜色一律
+      /* 胶囊条：半透明底 + 微边框（v80 起仅 below-card 兜底形态用；in-card 形态由
+       * .zusage-root.zu-in 全部抹平）。配色全量跟随客户端主题（v58）：颜色一律
        * var(--color-*, 旧值兜底) 引用客户端语义变量（<html> 的 .dark 类翻转整套值，
        * zai-light/zai-dark 特殊主题同样自动适配）；color-mix 处加同值前置声明，
        * 不支持 color-mix 的旧引擎落到实色行不至于透明。 */
@@ -418,9 +801,13 @@
       "border:1px solid var(--color-border,rgba(255,255,255,.07));border-radius:9px;padding:2px 6px;user-select:none;" +
       "box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 4px 14px rgba(0,0,0,.38),0 1px 3px rgba(0,0,0,.28);" +
       "display:flex;align-items:center;gap:2px;white-space:nowrap;" +
-      /* 条不能 overflow:hidden：设置面板是条的子元素、展开在条外上方，裁剪会吞掉面板（v15"点设置看不到窗口"根因）。
-       * 超宽截断由 #zu-main 自己负责。 */
+      /* 条不用 overflow:hidden：超宽截断由 #zu-main 自己负责（渐隐 .zu-clip）。 */
       "z-index:50}" +
+      /* in-card 形态（v80）：条挂在输入卡片内部 group/toolbar 工具行之后自占一行，
+       * 与对话框融为一体——背景/边框/阴影/毛玻璃全抹掉（用户指定），宽度交由卡片
+       * flex-col 的 stretch 撑满内宽（min/max-width 不再写死）。 */
+      ".zusage-root.zu-in{position:static;background:none;border:0;border-radius:0;padding:1px 0 0;" +
+      "box-shadow:none;backdrop-filter:none;-webkit-backdrop-filter:none;min-width:0;max-width:none;z-index:auto}" +
       ".zu-main{overflow:hidden;min-width:0;flex:1 1 auto;display:flex;align-items:center;gap:1px;justify-content:space-between}" +
       /* 收缩兜底（v66）：分级收缩后仍装不下时右缘 26px 渐隐，替代生硬的截断 */
       ".zu-main.zu-clip{-webkit-mask-image:linear-gradient(90deg,#000 calc(100% - 26px),transparent);" +
@@ -432,6 +819,7 @@
       ".it:hover{background:var(--color-hover,rgba(255,255,255,.06))}" +
       ".sep{width:1px;height:15px;background:var(--color-border,rgba(255,255,255,.09));flex:0 0 auto;margin:0 1px}" +
       ".k{color:#7e8899}.v{color:var(--color-foreground,#e9edf4);font-weight:600}" +
+      ".zu-live{color:var(--color-foreground,#e9edf4);font-weight:600}" +
       ".pct{font-weight:700}.dim{color:var(--color-foreground-subtle,#667082)}" +
       /* 三档状态色刻意不走客户端变量（v58.1）：terminal-bright-* 是语法高亮色板，
        * 绿档在条面小字号/细进度条上发白（用户实测）；改用高对比自调档，
@@ -444,9 +832,14 @@
       "transition:background-color .12s ease-out,color .12s ease-out}" +
       ".btn:hover{color:var(--color-foreground,#e9edf4);background:var(--color-hover,rgba(255,255,255,.07))}" +
       ".btn:active{transform:scale(.96)}" +
-      ".zu-gear{flex:0 0 auto;font-size:calc(var(--ui-font-size,14px) + 3px);border-radius:6px}" +
+      /* v81：⚙ 原为 +3px（17px），比宿主 group/toolbar 行的任何文字（统一
+       * text-ui-base = var(--ui-font-size)）都大一号，改为同基准以对齐工具行观感 */
+      ".zu-gear{flex:0 0 auto;font-size:var(--ui-font-size,14px);border-radius:6px}" +
       /* 行内 SVG 线性图标（v54）：currentColor 跟随文字色，一处定义全局换色 */
       ".ico{width:12px;height:12px;flex:0 0 auto;color:var(--color-foreground-subtle,#7e8899);opacity:.85}" +
+      /* 思考态动效图标（v77）：自带配色（脑灰+紫信号），略大于常规线性图标——
+       * 12px 下 4 个脉冲节点会缩没；不撑高条面（行高由文字主导）。 */
+      ".zu-think{width:14px;height:14px;opacity:1}" +
       /* 工具错误数徽标 */
       ".eb{background:rgba(255,107,87,.14);background:color-mix(in srgb,var(--color-destructive,#ff6b57) 14%,transparent);" +
       "color:var(--color-destructive,#ff8a73);border-radius:999px;padding:0 6px;line-height:16px;font-weight:600;display:inline-flex;align-items:center;gap:2px}" +
@@ -457,7 +850,10 @@
       /* 子代理运行中呼吸灯 */
       "@keyframes zupulse{0%,100%{opacity:1}50%{opacity:.2}}" +
       ".dot{animation:zupulse 1.6s ease-in-out infinite;font-size:var(--ui-font-size,14px);line-height:1}" +
-      ".panel{position:absolute;bottom:calc(100% + 10px);left:0;background:rgba(19,22,30,.97);" +
+      /* 面板（v80 起 fixed 挂 body）：原 absolute 挂 bar、bottom:calc(100%+10px) 向上展开，
+       * 但 in-card 形态下条长在输入卡片（overflow-hidden）内部，面板会被卡片裁掉——
+       * 照 .tip/.zusage-exc 的 body+fixed 模式迁移，left/top 由 position*Panel 每帧按条矩形写。 */
+      ".panel{position:fixed;background:rgba(19,22,30,.97);" +
       "background:color-mix(in srgb,var(--color-card,#13161e) 96%,transparent);" +
       "backdrop-filter:blur(18px) saturate(1.3);-webkit-backdrop-filter:blur(18px) saturate(1.3);" +
       "border:1px solid var(--color-border,rgba(255,255,255,.09));border-radius:12px;padding:12px 14px;display:none;" +
@@ -543,26 +939,29 @@
       /* 自绘 tooltip（v31）：向上弹出（原生 title 方向不可控且会被窗口下缘遮挡），
        * 支持多 tab；white-space:pre-line 保留数据里的 \n 换行。
        * v32：fixed 挂 body —— 原 absolute 挂 bar，被页面消息流的层叠上下文盖住
-       * （diag 实证 disp=block 但不可见），挂 body 用视口坐标独立定位。 */
-      ".tip{position:fixed;background:rgba(19,22,30,.98);background:color-mix(in srgb,var(--color-background,#13161e) 98%,transparent);" +
-      "backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);" +
-      "border:1px solid var(--color-border,rgba(255,255,255,.1));border-radius:10px;padding:8px 12px;" +
+       * （diag 实证 disp=block 但不可见），挂 body 用视口坐标独立定位。
+       * v81：底色/边框/文字改宿主 Radix Tooltip 同款（bg-tooltip + border-border +
+       * text-tooltip-foreground，反色底：暗色主题白底黑字、浅色主题黑底白字），
+       * 内部次级文字用宿主 tooltip-tag 系变量；毛玻璃在实色底下无意义，删。 */
+      ".tip{position:fixed;background:var(--color-tooltip,#171717);" +
+      "border:1px solid var(--color-border,transparent);border-radius:10px;padding:8px 12px;" +
       "font-family:var(--font-mono,Consolas,'Microsoft YaHei UI',monospace);" +
-      "font-size:calc(var(--ui-font-size,14px) - 1px);line-height:1.6;color:var(--color-foreground,#c6cdd9);" +
-      "box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 10px 28px rgba(0,0,0,.5),0 2px 6px rgba(0,0,0,.3);" +
+      "font-size:calc(var(--ui-font-size,14px) - 1px);line-height:1.6;color:var(--color-tooltip-foreground,#fafafa);" +
+      "box-shadow:0 10px 28px rgba(0,0,0,.5),0 2px 6px rgba(0,0,0,.3);" +
       "white-space:pre-line;z-index:2147483646;max-width:560px;display:none;scrollbar-width:thin}" +
-      /* 结构化 tooltip 行排版（v67.1，与统计行悬停解释同款；仅状态条 .tip 作用域） */
-      ".tip .rt-h{font-weight:600;color:var(--color-foreground,#e9edf4);margin:0 0 6px}" +
+      /* 结构化 tooltip 行排版（v67.1，与统计行悬停解释同款；仅状态条 .tip 作用域）
+       * v81：前景色系改 tooltip 语境（反色底上 --color-foreground 会与底同色不可读） */
+      ".tip .rt-h{font-weight:600;color:var(--color-tooltip-foreground,#fafafa);margin:0 0 6px}" +
       ".tip .rt-row{display:flex;gap:10px;margin:3px 0}" +
-      ".tip .rt-row b{flex:0 0 auto;min-width:86px;color:var(--color-foreground,#e9edf4);font-weight:600}" +
-      ".tip .rt-row span{color:var(--color-foreground-subtle,#8791a3)}" +
-      ".tip .rt-note{margin-top:7px;padding-top:6px;border-top:1px solid var(--color-border,rgba(255,255,255,.1));color:var(--color-foreground-subtle,#8791a3)}" +
+      ".tip .rt-row b{flex:0 0 auto;min-width:86px;color:var(--color-tooltip-foreground,#fafafa);font-weight:600}" +
+      ".tip .rt-row span{color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      ".tip .rt-note{margin-top:7px;padding-top:6px;border-top:1px solid var(--color-border,transparent);color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
       ".ttabs{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:7px}" +
-      ".ttab{cursor:pointer;padding:2px 10px;border-radius:999px;background:var(--color-hover,rgba(255,255,255,.06));" +
-      "color:var(--color-foreground-subtle,#8791a3);white-space:nowrap;font-size:calc(var(--ui-font-size,14px) - 1px);" +
+      ".ttab{cursor:pointer;padding:2px 10px;border-radius:999px;background:var(--color-tooltip-tag,#262626);" +
+      "color:var(--color-tooltip-tag-foreground,#a6a6a6);white-space:nowrap;font-size:calc(var(--ui-font-size,14px) - 1px);" +
       "transition:background-color .12s ease-out,color .12s ease-out}" +
-      ".ttab:hover{color:var(--color-foreground,#e9edf4);background:rgba(255,255,255,.1);background:color-mix(in srgb,var(--color-foreground,#fff) 10%,transparent)}" +
-      ".ttab.on{background:rgba(87,199,255,.16);background:color-mix(in srgb,var(--color-brand,#5ac8ff) 16%,transparent);color:var(--color-brand,#5ac8ff)}" +
+      ".ttab:hover{color:var(--color-tooltip-foreground,#fafafa);background:color-mix(in srgb,var(--color-tooltip-foreground,#fafafa) 12%,transparent)}" +
+      ".ttab.on{background:color-mix(in srgb,var(--color-brand,#5ac8ff) 16%,transparent);color:var(--color-brand,#5ac8ff)}" +
       ".tbody{max-height:60vh;overflow:auto;scrollbar-width:thin}" +
       ".tbody::-webkit-scrollbar{width:8px}" +
       ".tbody::-webkit-scrollbar-thumb{background:var(--color-border,rgba(255,255,255,.14));border-radius:999px}" +
@@ -589,9 +988,12 @@
       /* 白色主题程度性覆盖（v58.1）：颜色已全量走客户端变量随 .dark 自动翻转，
        * 这里只兜两类 —— 程度差（浅色下阴影/内高光减重、红字光晕收掉）与
        * 三档状态色加深版（高对比自调档，见 .ok 注释）。 */
-      ".zusage-root.zu-light{box-shadow:inset 0 1px 0 rgba(255,255,255,.85),0 4px 14px rgba(15,23,42,.12),0 1px 3px rgba(15,23,42,.08)}" +
-      ".zu-light .panel{box-shadow:inset 0 1px 0 rgba(255,255,255,.9),0 12px 32px rgba(15,23,42,.14),0 2px 8px rgba(15,23,42,.08)}" +
-      ".tip.zu-light{box-shadow:inset 0 1px 0 rgba(255,255,255,.9),0 10px 28px rgba(15,23,42,.16),0 2px 6px rgba(15,23,42,.08)}" +
+      /* :not(.zu-in) 保特异性：in-card 形态（v80）自身声明 box-shadow:none 且定义在前，
+       * 同特异性的浅色阴影会反超——透明无框条上浮出一圈浅影（review 抓获） */
+      ".zusage-root.zu-light:not(.zu-in){box-shadow:inset 0 1px 0 rgba(255,255,255,.85),0 4px 14px rgba(15,23,42,.12),0 1px 3px rgba(15,23,42,.08)}" +
+      ".panel.zu-light{box-shadow:inset 0 1px 0 rgba(255,255,255,.9),0 12px 32px rgba(15,23,42,.14),0 2px 8px rgba(15,23,42,.08)}" +
+      /* v81：反色底后 tip 的 inset 白高光在浅色主题（黑底 tip）上违和，浅色只调淡外阴影 */
+      ".tip.zu-light{box-shadow:0 10px 28px rgba(15,23,42,.16),0 2px 6px rgba(15,23,42,.08)}" +
       ".zusage-exc.zu-light{box-shadow:0 12px 32px rgba(15,23,42,.14),0 4px 18px rgba(220,38,38,.1)}" +
       ".zu-light .exc{text-shadow:none}" +
       ".zu-light .ok{color:#0f9d6c}.zu-light .warm{color:#b6791a}.zu-light .hot{color:#d8482f}" +
@@ -602,7 +1004,8 @@
       ".it,.btn,.ttab,.panel label{transition:none}}";
 
     /* 结构：条撑满卡片宽后 .zu-main 占满剩余宽、条目+分隔线 space-between 均匀分布，
-     * ⚙ 落在最右缘（内容超宽时分级收缩、极限右缘渐隐 .zu-clip）；面板绝对定位向上展开 */
+     * ⚙ 落在最右缘（内容超宽时分级收缩、极限右缘渐隐 .zu-clip）；面板 fixed 挂 body，
+     * 由 position*Panel 按条矩形定位在条上方（v80 迁移，见挂载处注） */
     var bar = document.createElement("div");
     bar.className = "zusage-root";
     if (slot === 0) bar.id = "zusage-bar";
@@ -680,8 +1083,12 @@
       if (panel.style.getPropertyValue("--zu-settings-height") !== value) panel.style.setProperty("--zu-settings-height", value);
       value = br.width + "px";
       if (panel.style.width !== value) panel.style.width = value;
-      value = -bar.clientLeft + "px";
-      if (panel.style.left !== value) panel.style.left = value;
+      /* v80：面板 fixed 挂 body——视口坐标贴条上沿（原 absolute 语义 bottom:100%+10px），
+       * 左缘随条、可视区内夹紧；top 用开启后的实测面板高，避免底部悬空/重叠。 */
+      var left = Math.max(8, Math.min(Math.round(br.left), innerWidth - Math.round(br.width) - 8));
+      if (panel.style.left !== left + "px") panel.style.left = left + "px";
+      var top = Math.max(8, Math.round(br.top - panel.offsetHeight - 10));
+      if (panel.style.top !== top + "px") panel.style.top = top + "px";
       syncSettingsScroll();
     }
     panel.addEventListener("scroll", syncSettingsScroll, true);
@@ -689,11 +1096,15 @@
       if (e.key === "Escape") panel.classList.remove("open");
     });
     buildPanel();
-    bar.appendChild(panel);
+    /* v80：面板挂 body（fixed 视口坐标），不再挂 bar——条长进输入卡片（overflow-hidden）
+     * 内部后，absolute 面板会被卡片裁掉。同 .tip 挂 body 的先例；.zusage-panel 类供
+     * 全局清理与 isOwnOverlay 命中。 */
+    panel.className = "panel zu-settings zusage-panel";
+    document.body.appendChild(panel);
     /* 子代理明细面板（v49）：与设置面板同款 .panel 机制，点击条目开关，互斥打开 */
     var subPanel = document.createElement("div");
-    subPanel.className = "panel subp";
-    bar.appendChild(subPanel);
+    subPanel.className = "panel subp zusage-panel";
+    document.body.appendChild(subPanel);
     /* 自绘 tooltip：向上弹出（v45 起配空中走廊，移入点击不再被移开即隐掐断）；取代原生 title（方向不可控，在窗口底边会朝下被遮挡） */
     /* 自绘 tooltip 挂 body（fixed 视口坐标）：挂 bar 内会被消息流的层叠上下文盖住（v31 实证） */
     var tip = document.createElement("div");
@@ -711,17 +1122,11 @@
     /* ---------- 超限告警气泡（v39）：当前会话"上下文超限被拒"时自动弹出，随条定位 ---------- */
     var excBubble = document.createElement("div");
     excBubble.className = "zusage-exc";
-    /* 热更新防重：上一实例的气泡可能残留（收尾清理只删 bar/tip），先移除旧的再挂新的。
-     * 仅 0 号执行——后 spawn 的实例会删掉先 spawn 实例的气泡 DOM（多实例 v61.1）。 */
-    if (slot === 0) {
-      try {
-        document.querySelectorAll(".zusage-exc").forEach(function (el) { if (el !== excBubble) el.remove(); });
-      } catch (e) { }
-    }
     /* 文案只进 textContent/静态 innerHTML；会话 ID 是动态数据，一律走 textContent 防注入。
      * 面板语言切换时 rebuildExcBubble() 重建气泡文案。 */
     var excSid, excCopied;
     function rebuildExcBubble() {
+      if (excCopied) clearTimeout(excCopied.timer);
       excBubble.innerHTML =
       '<div class="xb-head"><span class="xb-title">' + L("⚠ 上下文超限", "⚠ Context over limit") + '</span>' +
       '<span class="xb-close" aria-label="' + L("关闭，本次不再提醒", "Close; do not remind again this session") + '">✕</span></div>' +
@@ -740,7 +1145,7 @@
       excBubble.querySelector(".xb-close").addEventListener("click", onExcClose);
     }
     function onExcSidCopy() {
-      if (stale() || !excSid.textContent) return;
+      if (inactive() || !excSid.textContent) return;
       try {
         var ta = document.createElement("textarea");
         ta.value = excSid.textContent;
@@ -755,7 +1160,7 @@
       excCopied.timer = setTimeout(function () { excCopied.style.display = "none"; }, 1500);
     }
     function onExcClose() {
-      if (stale()) return;
+      if (inactive()) return;
       excGone = true;
       syncExcBubble();
     }
@@ -777,12 +1182,16 @@
       bar.classList.toggle("zu-light", !themeDark);
       tip.classList.toggle("zu-light", !themeDark);
       excBubble.classList.toggle("zu-light", !themeDark);
+      /* v80：面板挂 body 后不在 bar 的 zu-light 作用域内，自带类（.panel.zu-light） */
+      panel.classList.toggle("zu-light", !themeDark);
+      subPanel.classList.toggle("zu-light", !themeDark);
     }
     try {
-      new MutationObserver(function () {
+      themeObserver = new MutationObserver(function () {
         var d = themeIsDark();
         if (d !== themeDark) { themeDark = d; applyTheme(); }
-      }).observe(rootEl, { attributes: true, attributeFilter: ["class"] });
+      });
+      themeObserver.observe(rootEl, { attributes: true, attributeFilter: ["class"] });
     } catch (e) { }
     applyTheme();
 
@@ -863,16 +1272,43 @@
             : L("若这是 SSH 远程会话：客户端连过的远端工作区会自动被发现并查询（v12 零配置）；没查到时核对远端机已部署 zusage.py，或在 config.json 配置 remote 段（README「远程会话」；ssh 也可写成 argv 数组，docker exec / wsl / kubectl exec 等通道都能借道）",
                 "If this is a remote SSH session: remote workspaces the client connected to are discovered and queried automatically (v12, zero config); if it's still missing, make sure zusage.py is deployed on the remote machine, or add the remote section to config.json (see README; ssh may also be an argv array, so docker exec / wsl / kubectl exec all work)")));
       }
-      if (last.tps) {   // 最近一次请求的生成速度，置顶显示；随数值三档变色
-        var tpsCls = last.tps >= 70 ? "ok" : last.tps >= 40 ? "warm" : "hot";
+      /* v73：生成速度——桥命中（本 pane 会话有 renderer 投影）时用它的估算/真实 tok/s，
+       * 否则退回原 DB 最近一段值（与 state.rateLine 开关无关：桥不可用或开关关闭时
+       * liveStatsCur 恒为空，自动走 db 分支，不影响这个本就独立于逐问速率行的指标）。
+       * zuBarSpeedView 对"刚绑定/重绑时捞到的历史存量已完成轮次"返回 null——这种情况
+       * 和"桥完全没命中"一视同仁，同样回退 DB/不渲染，不冒充"这个会话速度不可用"。
+       * 二者互斥：绝不同时渲染两枚「速度」chip。 */
+      var dbTps = last.tps || 0;
+      var speedView = liveStatsCur ? zuBarSpeedView(liveStatsCur, bridge.handle && bridge.handle.charsPerToken) : null;
+      if (speedView) {
+        liveKindCur = "live";
+        livePhaseCur = speedView.phase || "";
+        liveIconCur = speedView.phase ? "think" : "bolt";   // v77.1：运行期一律动效脑（思考/正文/工具），完成态才回闪电
+        it((speedView.phase ? zuIcoThinking() : ico('<path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/>')) +
+          '<span class="zu-live ' + speedView.cls + '">' + speedView.text + "</span>",
+          "\x01" +
+          ttH(L("生成速度", "Generation speed")) +
+          ttRow(L("生成中", "While running"), L("按文本增量算出的字符/s，除以「每 token 字符数」估算 tok/s；该比例取自本会话最近一次完成的真实轮次，随每轮刷新（首轮无样本时用粗略默认值）", "estimated from the text-delta chars/s divided by a chars-per-token ratio; the ratio is calibrated from this session's most recently completed turn and refines each turn (a rough default is used before the first sample)")) +
+          ttRow(L("完成后", "When done"), L("切换为本轮真实 tok/s：输出 tokens（含思考）÷ 模型生成时长；本轮缺口径时回退数据库最近一段值", "switches to this turn's real tok/s: output tokens (thinking incl.) ÷ model generation time; falls back to the latest DB segment when this turn's basis is missing")) +
+          ttRow(L("档位", "Bands"), L("≥70 绿 · 40–70 黄 · <40 红（仅完成态）", "≥70 green · 40–70 yellow · <40 red (completed only)")) +
+          ttNote(L("数据来自 renderer 会话状态（只读桥），实时更新，不经过本地数据库轮询；生成中的数值为字符增量估算", "Data comes from the renderer session state via the read-only bridge, updating live, independent of local database polling; running values are estimated from text deltas")));
+      } else if (dbTps) {
+        liveKindCur = "fallback";
+        livePhaseCur = "";
+        liveIconCur = "bolt";
+        var tpsCls = dbTps >= 70 ? "ok" : dbTps >= 40 ? "warm" : "hot";
         it(ico('<path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/>') +
-          '<span class="' + tpsCls + '">' + last.tps + '</span><span class="dim">t/s</span>',
+          '<span class="zu-live ' + tpsCls + '">' + dbTps + '</span><span class="dim">t/s</span>',
           "\x01" +
           ttH(L("生成速度 · 最近一段", "Generation speed · latest segment")) +
           ttRow(L("口径", "Basis"), L("输出 tokens（含思考）÷ 生成耗时", "output tokens (thinking incl.) ÷ generation time")) +
           ttRow(L("档位", "Bands"), L("≥70 绿 · 40–70 黄 · <40 红", "≥70 green · 40–70 yellow · <40 red")) +
           ttNote(L("回答期间每段完成即刷新。回复末尾的统计行是整问加权均值，两者数值不同属正常",
             "Refreshes as each segment completes. The reply-end rate line is the whole-turn weighted average, so the two legitimately differ")));
+      } else {
+        liveKindCur = "none";
+        livePhaseCur = "";
+        liveIconCur = "";
       }
       if (state.show.ctx) {
         var cw = parseInt(state.ctxOv, 10) || d.native_ctx || d.context_window || 0;
@@ -1051,6 +1487,98 @@
           cache_write: 0, active: false, list: []},
         context_window: 0, context_auto: false };
     }
+
+    /* ---------- renderer store 桥客户端（v71，实例级）：一个 pane 一个订阅 ----------
+     * 低频（2s）能力检测：API 在 + diagnostics 里有本 pane 会话的 topic → 绑定 store；
+     * 绑定后 tracker.ingest 由订阅推送驱动（实时），store 关闭/换代（getState null /
+     * 快照 sessionId 变）→ off 释放，下轮 tick 重绑。全链路失败 = 降级 DB 路径。 */
+    function bridgeDetach(handle) {
+      if (!handle || handle.dead) return;
+      handle.dead = true;
+      try { if (handle.off) handle.off(); } catch (e) { }   // 停订阅 + dispose tracker
+      try { handle.store.off(); } catch (e) { }
+      if (bridge.handle === handle) { bridge.handle = null; bridge.turnId = ""; }
+    }
+    function bridgeTick() {
+      if (inactive()) return;
+      if (!state.rateLine || !TURN_STATS) { bridgeDetach(bridge.handle); updateLive(); return; }
+      var sid = instSid || pickedSid || "";
+      if (!sid) { bridgeDetach(bridge.handle); updateLive(); return; }
+      if (bridge.handle) {
+        if (bridge.handle.sid === sid) {
+          var cur = null;
+          try { cur = bridge.handle.store.getState(); } catch (e) { }
+          var snap = cur && cur.snapshot;
+          /* 绑定健康：store 可能在工具执行期间（查阅/编辑等）很久不推新快照——
+           * 仍按本轮 2s 心跳刷新一次，让「已观察 Xs」能继续走字，而不是整段
+           * 工具执行时间里界面像冻住；updateLive 内部按文本/类名是否真变化
+           * 做了去重写入，这里多调用一次不会造成多余的 DOM 抖动。 */
+          if (snap && snap.sessionId === bridge.handle.sid) { updateLive(); return; }
+        }
+        bridgeDetach(bridge.handle);   // pane 切会话 / store 关闭或换代：释放后重绑
+      }
+      var store = zuTryBindStore(sid);
+      if (!store) { updateLive(); return; }   // 无桥 / 无匹配 session：降级（DB 路径不变），下轮再探
+      var tracker = TURN_STATS.createTracker();
+      var handle = { dead: false, sid: sid, store: store, tracker: tracker, alias: {}, off: null, charsPerToken: null };
+      var off = TURN_STATS.subscribeStore(store, tracker, function () {
+        if (inactive() || handle.dead) return;
+        var st = null;
+        try { st = store.getState(); } catch (e) { st = null; }
+        var snap = st && st.snapshot;
+        if (!snap || snap.sessionId !== sid) { bridgeDetach(handle); updateLive(); return; }   // 换代/关闭：下轮 tick 重绑
+        var rows = snap.rows && snap.rows.window;
+        if (Array.isArray(rows)) {
+          for (var i = 0; i < rows.length; i++) {
+            var r = rows[i];
+            if (r && typeof r.turnId === "string") handle.alias[r.turnId] = r.productTurnId || r.turnId;
+          }
+        }
+        bridge.turnId = zuActiveTurnId(snap);
+        updateLive();
+      });
+      if (!off) {   // store 接口不合约定：退回降级
+        try { store.off(); } catch (e) { }
+        tracker.dispose();
+        updateLive();
+        return;
+      }
+      handle.off = off;
+      bridge.handle = handle;
+      updateLive();   // subscribeStore 首次同步回调已 ingest 初始快照，这里补挂实时段
+    }
+    function updateLive() {
+      /* v73：合并「生成速度」chip 后，桥数据持续存在（生成中→完成，同一套
+       * ico+'<span class="zu-live CLS">'+TEXT 结构）时只原地改 textContent/className，
+       * 不重建条面（v33 原则）；桥「有/无」切换才会改变 chip 结构（图标出现/消失、
+       * 退回 DB 的两段式拼接），需要整条重渲染。 */
+      var h = bridge.handle;
+      var stats = (state.rateLine && h && !h.dead && bridge.turnId) ? h.tracker.get(bridge.turnId) : null;
+      if (h && stats && stats.complete && stats.outputTokens > 0 && stats.totalCharacters > 0) {
+        h.charsPerToken = stats.totalCharacters / stats.outputTokens;   // c2t 自校准：本轮真实比例供下一轮估算用
+      }
+      var wasLive = liveKindCur === "live";
+      var view = stats ? zuBarSpeedView(stats, h && h.charsPerToken) : null;
+      liveStatsCur = stats;
+      // 用 view（而非 stats）判定快速路径：stats 非空但 view 为 null（历史存量，见
+      // zuBarSpeedView）时结构要切回降级拼法，必须走下面的整条重渲染，不能原地改字。
+      // 阶段（思考↔工具↔正文）切换会更换 chip 的图标（动效脑/闪电），同样只能整条
+      // 重渲染——原地改字换不了图标。
+      var phase = view && view.phase ? view.phase : "";
+      if (view && wasLive && phase === livePhaseCur) {
+        liveTextCur = view.text;
+        if (!liveEl) { render(state.data || { session: {}, last_turn: {}, today: {}, context_window: 0 }); return; }
+        if (liveEl.textContent !== view.text) liveEl.textContent = view.text;
+        var cls = "zu-live " + view.cls;
+        if (liveEl.className !== cls) liveEl.className = cls;
+        return;
+      }
+      liveTextCur = view ? view.text : "";
+      render(state.data || { session: {}, last_turn: {}, today: {}, context_window: 0 });
+    }
+    bridge.timer = setInterval(bridgeTick, 2000);
+    bridgeTick();
+
     function render(d) {
       state.data = d;
       var pc = null, p = null;
@@ -1116,6 +1644,7 @@
       }
       var els = main.querySelectorAll(".it");
       for (var i = 0; i < els.length; i++) els[i].__tip = h.tips[i] || null;
+      liveEl = main.querySelector(".zu-live");   // v71：条面重建后实时段节点重挂（原地更新用）
       /* 数据刷新时正在悬停：接管同位置的新元素继续显示。只调位置不重画内容——
        * 数字每 1.5s 都在变，重画就是闪烁；旧文本保持到鼠标下次移动为止。 */
       if (tipFor) {
@@ -1186,8 +1715,8 @@
     /* 事件挂 document 捕获阶段（v32）：React/应用层可能在冒泡路上 stopPropagation，
      * 挂 main 的 mousemove 收不到（v31 实证：原生 title 有 hover、自绘 tip 无事件）。
      * stale() 守卫：热更新后旧实例监听器必须罢工，否则新旧两个 tip 同时工作。 */
-    document.addEventListener("mousemove", function (e) {
-      if (stale()) return;
+    listenGlobal(document, "mousemove", function (e) {
+      if (inactive()) return;
       tipStats.mv++;
       if (Date.now() - lastMoveAt < 150) return;
       lastMoveAt = Date.now();
@@ -1251,13 +1780,13 @@
      *     宽限（子上下文区域事件停摆，靠定时器兜底收回；tip/条面/走廊事件会取消它）；
      *   · 内部 leave 列外 = 横向走掉 → 立即收。 */
     function tipBoundaryHide() {
-      if (stale()) return;
+      if (inactive()) return;
       mouseInBar = false;
       if (tipFor) hideTip(true, "win-leave");
     }
-    window.addEventListener("blur", tipBoundaryHide, true);
+    listenGlobal(window, "blur", tipBoundaryHide, true);
     function tipLeaveAt(x, y) {
-      if (stale() || !tipFor) return;
+      if (inactive() || !tipFor) return;
       if (x <= 1 || x >= innerWidth - 2 || y <= 1 || y >= innerHeight - 2) {
         tipBoundaryHide();
         return;
@@ -1276,7 +1805,7 @@
         hideTip(true, "left-bar");
       }
     }
-    document.documentElement.addEventListener("mouseleave", function (e) {
+    listenGlobal(document.documentElement, "mouseleave", function (e) {
       tipLeaveAt(e.clientX, e.clientY);
     }, true);
     /* 光标离开 tooltip 本体：上行越顶/下行回条面 → 列内宽限；横向 → 立即收（分流同上） */
@@ -1284,7 +1813,7 @@
       tipLeaveAt(e.clientX, e.clientY);
     }, true);
     tip.addEventListener("mouseenter", function () {
-      if (stale()) return;
+      if (inactive()) return;
       cancelTipGrace();
     }, true);
     /* 空中走廊判定（v45）：tooltip 矩形横向 ±4px、纵向 tip 顶边到底边下方 12px
@@ -1389,6 +1918,7 @@
         /* 乐观更新勾选态，真值以主进程写 config.json 后回推的 rateLine 为准 */
         state.rateLine = t2.checked;
         scanRateLines();
+        scanDeterministicLines();   // v71：关=撤下确定性历史行，开=立即重扫补行
         pluginRequest("rate-line", t2.checked);
         return;
       }
@@ -1409,9 +1939,10 @@
       }
       renderAll(false);
     });
-    document.addEventListener("mousedown", function (e) {
-      if (panel.classList.contains("open") && !bar.contains(e.target)) panel.classList.remove("open");
-      if (subPanel.classList.contains("open") && !bar.contains(e.target)) subPanel.classList.remove("open");
+    listenGlobal(document, "mousedown", function (e) {
+      /* v80：面板挂 body 后 bar.contains 不再覆盖面板自身，点面板内部不能关 */
+      if (panel.classList.contains("open") && !bar.contains(e.target) && !panel.contains(e.target)) panel.classList.remove("open");
+      if (subPanel.classList.contains("open") && !bar.contains(e.target) && !subPanel.contains(e.target)) subPanel.classList.remove("open");
     });
 
     /* ---------- 子代理明细面板（v49）：点击条目弹出的固定面板，替代悬停 tooltip ---------- */
@@ -1504,11 +2035,13 @@
       if (!subPanel.classList.contains("open")) return;
       var item = bar.querySelector(".zu-sub");
       if (!item) return;
-      var br = bar.getBoundingClientRect(), ir = item.getBoundingClientRect();
+      var ir = item.getBoundingClientRect();
       var width = subPanel.offsetWidth;
       var left = ir.left + ir.width / 2 - width / 2;
       left = Math.max(8, Math.min(left, window.innerWidth - width - 8));
-      subPanel.style.left = Math.round(left - br.left - bar.clientLeft) + "px";
+      subPanel.style.left = Math.round(left) + "px";
+      /* v80：fixed 挂 body，top 同设置面板——条上沿留 10px 缝 */
+      subPanel.style.top = Math.max(8, Math.round(bar.getBoundingClientRect().top - subPanel.offsetHeight - 10)) + "px";
     }
     function toggleSubPanel() {
       var opening = !subPanel.classList.contains("open");
@@ -1521,14 +2054,14 @@
       }
     }
     bar.addEventListener("click", function (e) {
-      if (stale()) return;
+      if (inactive()) return;
       if (e.target && e.target.closest && e.target.closest(".zu-sub")) {
         e.stopPropagation();
         toggleSubPanel();
       }
     });
     subPanel.addEventListener("click", function (e) {
-      if (stale()) return;
+      if (inactive()) return;
       var b = e.target && e.target.closest ? e.target.closest(".ttab") : null;
       if (!b) return;
       subPanelTab = +b.getAttribute("data-i") || 0;
@@ -1689,32 +2222,24 @@
       if (extra) Object.assign(d, extra);
     }
 
-    /* 清理历史版本残留在 DOM 上的样式，恢复原状：
-     * v12-v14 内嵌形态的 textarea padding（data-zu-pad）与 v18 前位置的旧标记 */
+    /* 每实例只归还自己占用的卡片，不能清掉其它 pane 的让位边距。 */
+    var paddedCard = null, originalMargin = "";
     function releasePads() {
-      try {
-        document.querySelectorAll("[data-zu-pad],[data-zu-old-pad]").forEach(function (el) {
-          el.style.paddingBottom = el.dataset.zuPad || el.dataset.zuOldPad || "";
-          delete el.dataset.zuPad;
-          delete el.dataset.zuOldPad;
-        });
-        document.querySelectorAll("[data-zu-cardpad]").forEach(function (el) {
-          el.style.marginBottom = el.dataset.zuCardPad || "";
-          delete el.dataset.zuCardPad;
-        });
-      } catch (e) { }
+      if (!paddedCard) return;
+      paddedCard.style.marginBottom = originalMargin;
+      delete paddedCard.dataset.zuCardPad;
+      paddedCard = null;
     }
-    try { releasePads(); } catch (e) { }
-
-    /* 卡片下移让位：给视觉卡片加 margin-bottom 空出悬浮带（条在卡片正下方）。
-     * React 重渲染会重置内联样式，track() 逐帧对比补回（v14 同款机制）。 */
-    var CARD_MARGIN = "24px";   // v58 贴卡片定位回归：24px 让位带 = 条高 ~28 + 顶缝 4 - 原生底距 ~15 → 条下仅余 ~7px
+    var CARD_MARGIN = "24px";
     function ensureCardPad() {
       if (!cardCache) return;
-      try {
-        if (cardCache.dataset.zuCardPad === undefined) cardCache.dataset.zuCardPad = cardCache.style.marginBottom || "";
-        if (cardCache.style.marginBottom !== CARD_MARGIN) cardCache.style.marginBottom = CARD_MARGIN;
-      } catch (e) { }
+      if (paddedCard !== cardCache) {
+        releasePads();
+        paddedCard = cardCache;
+        originalMargin = cardCache.style.marginBottom || "";
+        cardCache.dataset.zuCardPad = originalMargin;
+      }
+      if (cardCache.style.marginBottom !== CARD_MARGIN) cardCache.style.marginBottom = CARD_MARGIN;
     }
 
     /* 从 textarea 向上找视觉卡片容器（有可见边框或背景的最近祖先）——条的锚点 + 读原生总量按钮 */
@@ -1754,22 +2279,66 @@
       return nativeCtx.val;
     }
 
+    /* ---------- v80 in-card 挂载：条挂输入卡片内部、group/toolbar 工具行之后自占一行 ----------
+     * 宿主 ChatPromptEditor 的工具行是卡片（flex-col gap-3）的最后一个子块；条作为其兄弟
+     * 节点插在后面，卡片纯自适应高度自然长高（12px 间距 + 条高），与对话框融为一体。
+     * 工具行 Tailwind 类名含 : / [ ] 特殊字符，querySelector 转义易碎 → 按直接子节点
+     * className 子串匹配（同 zuDetAnchor 套路）。找不到工具行 = below-card 兜底形态。 */
+    function toolbarRowOf(card) {
+      try {
+        var kids = card.children;
+        for (var i = kids.length - 1; i >= 0; i--) {
+          if (String(kids[i].className || "").indexOf("group/toolbar") >= 0) return kids[i];
+        }
+      } catch (e) { }
+      return null;
+    }
+    function mountInCard() {
+      var row = cardCache ? toolbarRowOf(cardCache) : null;
+      if (!row) return false;
+      try {
+        if (bar.parentElement !== cardCache) {
+          var ref = row.nextSibling;
+          if (ref && ref.parentElement === cardCache) cardCache.insertBefore(bar, ref);
+          else cardCache.appendChild(bar);
+        }
+        if (!bar.classList.contains("zu-in")) {
+          bar.classList.add("zu-in");
+          /* .zu-in 管不住内联声明：摘掉兜底形态写入的悬浮样式与锁宽 */
+          bar.style.position = ""; bar.style.zIndex = "";
+          bar.style.left = ""; bar.style.top = ""; bar.style.minWidth = ""; bar.style.maxWidth = "";
+          lastPos = [-1, -1];
+        }
+        return true;
+      } catch (e) { return false; }
+    }
+    function mountBelowCard() {   // 兜底还原：无工具行（宿主改版/异形布局）时回到旧悬浮形态
+      if (!bar.classList.contains("zu-in")) return;
+      bar.classList.remove("zu-in");
+      bar.style.position = "fixed"; bar.style.zIndex = "50";
+      document.body.appendChild(bar);
+      lastPos = [-1, -1];
+    }
+
     /* ---------- 定位：重活低频（找输入框/找卡片），逐帧只做矩形跟随 ---------- */
     var composer = null, cardCache = null, everMounted = false, lastMountDiagAt = 0;
     var curDisplay = "none", lastPos = [-1, -1], hideSince = 0;
+    /* v80：true=条挂在输入卡片内部（group/toolbar 工具行之后）；false=旧 below-card 悬浮兜底 */
+    var cardMode = false;
 
     function setComposer(el) {
-      releasePads();   // 旧卡片的让位边距先还原，新卡片马上重新加
+      releasePads();   // 旧卡片的让位边距先还原（in-card 形态不需要让位带；兜底形态由 heavy 补回）
       composer = el;
       cardCache = null;
+      cardMode = false;
       if (composer) {
         var c = cardOf(composer);
         if (c && c !== document.body) cardCache = c;
       }
-      if (cardCache) ensureCardPad();
+      if (bar.classList.contains("zu-in")) mountBelowCard();   // 换卡先回落兜底形态，heavy 同 tick 重判挂载
     }
     function heavy() {
-      if (stale()) return;
+      if (inactive()) return;
       if (pid === "auto") {
         /* 兜底模式（主文档找不到带 pane 标记的输入框，shadow/iframe 场景）：沿用原
          * 单条查找链路（findComposer 含 deepFind 穿透），会话判定走 mine/pickCurrent */
@@ -1796,8 +2365,13 @@
           cardCache = c && c !== document.body ? c : null;
         }
         if (cardCache) {
-          ensureCardPad();   // React 重渲染可能重建卡片/重置内联边距，对比后再补
+          /* v80：优先挂输入卡片内部（工具行下）；无工具行回落 below-card 兜底 + 让位带 */
+          cardMode = mountInCard();
+          if (cardMode) releasePads();
+          else { mountBelowCard(); ensureCardPad(); }   // React 重渲染可能重建卡片/重置内联边距，对比后再补
           nativeCtxVal = readNativeCtx(cardCache);
+        } else if (cardMode) {
+          mountBelowCard();
         }
       }
       if (state.data && pid === "auto") {
@@ -1813,6 +2387,9 @@
     }
     function hideBar() {
       if (curDisplay !== "none") { bar.style.display = "none"; curDisplay = "none"; }
+      /* v80：面板挂 body 不再随条隐藏，条隐时必须主动收起（否则面板悬空在已消失的条上方） */
+      panel.classList.remove("open");
+      subPanel.classList.remove("open");
       hideTip(true, "bar-hidden");   // 条面整体隐藏时 tooltip 必须跟着走（force 绕过总闸）
     }
     /* 超限气泡同步（track 每帧调）：位置贴条上沿、左缘对齐；条隐藏/超限解除/已关闭则藏。
@@ -1937,11 +2514,20 @@
     }
 
     function track() {
-      if (stale()) return;   // 旧实例罢工，把舞台让给新实例
+      if (inactive()) return;   // 旧实例罢工，把舞台让给新实例
       try {
         syncExcBubble();   // 超限气泡：显示/隐藏/贴条定位（内部自判状态，隐藏分支零开销）
         if (!composer || !composer.isConnected) { hideSince = 0; hideBar(); return; }
-        if (cardCache && cardCache.style.marginBottom !== CARD_MARGIN) ensureCardPad();   // 流式期间 React 重置内联边距时立刻补回
+        if (cardMode) {
+          /* v80 in-card 对账：React 整子树重挂（切会话 key 变化）会连外来节点一起丢，
+           * 帧率级检查补挂；卡片本身被重建时 cardCache 断连，heavy 低频重找后再挂 */
+          if (!bar.isConnected || bar.parentElement !== cardCache) {
+            cardMode = mountInCard();
+            if (!cardMode) mountBelowCard();
+          }
+        } else if (cardCache && cardCache.style.marginBottom !== CARD_MARGIN) {
+          ensureCardPad();   // 流式期间 React 重置内联边距时立刻补回（仅 below-card 兜底形态）
+        }
         var r = composer.getBoundingClientRect();
         var on = r.width > 60 && r.height > 14 && r.bottom > 0 && r.top < innerHeight &&
           !inGhostSubtree(composer) &&   // 设置页等幽灵壳（opacity-0/inert）：视觉已隐藏（v61）
@@ -1962,20 +2548,28 @@
          * 水平仍与卡片左缘对齐 */
         var anchor = cardCache || composer;
         var ar = anchor.getBoundingClientRect();
-        var left = Math.round(ar.left);
-        var top = Math.max(8, Math.min(Math.round(ar.bottom + 4), innerHeight - bar.offsetHeight - 2));
-        if (left !== lastPos[0] || top !== lastPos[1]) {
-          bar.style.left = left + "px"; bar.style.top = top + "px";
-          lastPos = [left, top];
+        if (!cardMode) {
+          /* 悬浮在输入框视觉卡片正下方（v58 定位回归）：v55-v57 改贴窗口底，新对话 hero 页
+           * 输入框垂直居中时条与输入框彻底脱钩（用户点名回退）。让位带 24px 比条高+顶缝
+           * 短 ~7px，条底落进原生底部留白、距窗口底 ~7px —— v54 的"条下 15px 空白"不复发。
+           * 水平仍与卡片左缘对齐。v80 起仅 below-card 兜底形态走这里。 */
+          var left = Math.round(ar.left);
+          var top = Math.max(8, Math.min(Math.round(ar.bottom + 4), innerHeight - bar.offsetHeight - 2));
+          if (left !== lastPos[0] || top !== lastPos[1]) {
+            bar.style.left = left + "px"; bar.style.top = top + "px";
+            lastPos = [left, top];
+          }
+          /* 宽度锁死卡片（v63 对齐，v66 收缩）：min=max-width = 卡片实测宽（border-box，
+           * 外缘含边框正好压在卡片两缘上），任何内容量下条都与会话框两缘对齐。 */
+          var minW = Math.max(60, Math.round(ar.width));
+          if (bar.style.minWidth !== minW + "px") bar.style.minWidth = minW + "px";
+          if (bar.style.maxWidth !== minW + "px") bar.style.maxWidth = minW + "px";
         }
-        /* 宽度锁死卡片（v63 对齐，v66 收缩）：min=max-width = 卡片实测宽（border-box，
-         * 外缘含边框正好压在卡片两缘上），任何内容量下条都与会话框两缘对齐。
-         * 内容超宽不撑破卡片，分级收缩：先隐藏「本轮/会话累计」的缓存命中率
-         * （核心项 tps/上下文/会话累计不动，明细仍在悬停 tooltip），迟滞 +12px/-120px
-         * 防数值刷新在阈值附近来回闪；仍装不下由 .zu-main 右缘渐隐兜底（.zu-clip）。 */
-        var minW = Math.max(60, Math.round(ar.width));
-        if (bar.style.minWidth !== minW + "px") bar.style.minWidth = minW + "px";
-        if (bar.style.maxWidth !== minW + "px") bar.style.maxWidth = minW + "px";
+        /* in-card 形态（v80）：无坐标跟随、无锁宽——宽度由卡片 flex-col 的 stretch 撑满内宽。
+         * 两种形态共用的收缩判定：内容超宽不撑破卡片，分级收缩：先隐藏「本轮/会话累计」
+         * 的缓存命中率（核心项 tps/上下文/会话累计不动，明细仍在悬停 tooltip），
+         * 迟滞 +12px/-120px 防数值刷新在阈值附近来回闪；仍装不下由 .zu-main 右缘渐隐
+         * 兜底（.zu-clip）。测量基准都是 bar 自身内容宽，形态无关。 */
         var ov = main.scrollWidth - main.clientWidth;
         var ns = shrink;
         if (!shrink && ov > 12) ns = 1;
@@ -1991,7 +2585,7 @@
           var br = bar.getBoundingClientRect(), bh = null;
           try { bh = document.elementFromPoint(br.left + br.width / 2, br.top + br.height / 2); } catch (e) { }
           FATAL.mount = {
-            version: VERSION, mode: "below-card", bodyPE: (function () { try { return getComputedStyle(document.body).pointerEvents; } catch (e) { return ""; } })(),
+            version: VERSION, mode: cardMode ? "in-card" : "below-card", bodyPE: (function () { try { return getComputedStyle(document.body).pointerEvents; } catch (e) { return ""; } })(),
             panes: diagPanes(),
             theme: themeDark ? "dark" : "light",
             /* 字体跟随（v64）实测：条面计算字体 + 客户端两个字体变量的原值（验证 var 命中） */
@@ -2045,21 +2639,44 @@
           FATAL.trackErr = String((e && e.stack) || e);
         }
       } finally {
-        requestAnimationFrame(track);   // 自调度循环：异常绝不能杀死循环（setInterval 无此问题，rAF 有）
+        if (!inactive()) frame = requestAnimationFrame(track);   // 自调度循环：异常绝不能杀死循环（setInterval 无此问题，rAF 有）
       }
     }
 
-    setInterval(heavy, 600);
+    heavyTimer = setInterval(heavy, 600);
     heavy();
-    requestAnimationFrame(track);
+    frame = requestAnimationFrame(track);
 
     syncPanel();
     if (state.data) render(state.data);   // 已有共享数据（后 spawn 的实例）直接渲染，不用零值覆盖
     else render({ session: {}, last_turn: {}, today: {}, context_window: 0 });
 
+    function dispose() {
+      if (instanceDisposed) return;
+      instanceDisposed = true;
+      clearInterval(heavyTimer);
+      clearInterval(bridge.timer);   // v71：pane 销毁即停能力检测并释放 store 订阅
+      bridgeDetach(bridge.handle);
+      cancelAnimationFrame(frame);
+      cancelTipGrace();
+      if (excCopied) clearTimeout(excCopied.timer);
+      if (themeObserver) themeObserver.disconnect();
+      globalListeners.forEach(function (binding) {
+        binding[0].removeEventListener(binding[1], binding[2], binding[3]);
+      });
+      globalListeners = [];
+      releasePads();
+      wantedEl = composer = cardCache = null;
+      bar.remove();
+      panel.remove();   // v80：面板挂 body，dispose 需单独摘除
+      subPanel.remove();
+      tip.remove();
+      excBubble.remove();
+    }
     var api = {
-      pid: pid, slot: slot,
+      pid: pid, slot: slot, dispose: dispose,
       attach: function (el, sid) {   // 协调器派发：pane 最靠下的可见输入框 + 其 data-session-id
+        if (inactive()) return;
         wantedEl = el;
         pendingSid = sid || "";
         heavy();   // 立即对账（composer 重建/pane 关闭的最快收敛路径）
@@ -2068,6 +2685,19 @@
       syncUpdate: syncUpdate,
       rebuild: function () { buildPanel(); rebuildExcBubble(); syncPanel(); },
       getSid: function () { return pickedSid || ""; },
+      /* v71 确定性历史行数据源：DOM turn id（turnId 或 productTurnId 形态）→ tracker 统计 */
+      statsFor: function (tid) {
+        var h = bridge.handle;
+        if (!h || h.dead || typeof tid !== "string") return null;
+        var s = h.tracker.get(tid);
+        if (!s) {
+          var key = h.alias[tid];
+          if (key && key !== tid) s = h.tracker.get(key);
+        }
+        return s;
+      },
+      liveEl: function () { return liveEl; },   // 测试缝：实时段节点引用
+      liveIconKind: function () { return liveIconCur; },   // 测试缝：当前 chip 图标（think/bolt/空）
     };
     instances.push(api);
     refreshWants();
