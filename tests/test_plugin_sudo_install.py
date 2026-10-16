@@ -212,8 +212,8 @@ class SudoNodeDiscoveryTests(unittest.TestCase):
                 stdout=json.dumps({"ok": True, "identity": {"record": None},
                                    "pluginRoot": str(installer.PLUGIN_ROOT.resolve())}),
                 stderr="")
-            with installer._sync_verifier(runtime):
-                pass
+            with installer._sync_verifier(runtime) as verify:
+                verify()
         self.assertEqual(run.call_args[0][0][0], str(node))
 
     def test_asar_adjacent_executable_is_preferred_over_path_node(self):
@@ -238,8 +238,8 @@ class SudoNodeDiscoveryTests(unittest.TestCase):
                 stdout=json.dumps({"ok": True, "identity": {"record": None},
                                    "pluginRoot": str(installer.PLUGIN_ROOT.resolve())}),
                 stderr="")
-            with installer._sync_verifier(runtime, target):
-                pass
+            with installer._sync_verifier(runtime, target) as verify:
+                verify()
         self.assertEqual(run.call_args[0][0][0], str(executable))
 
 

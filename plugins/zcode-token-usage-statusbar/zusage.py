@@ -1381,40 +1381,51 @@ def main(argv):
     except Exception:
         pass
     cmd = argv[0] if argv else "now"
-    if cmd == "json":
-        force_sid, routes = _parse_query(argv[1] if len(argv) > 1 else "")
-        if len(argv) > 2 and not isinstance(routes, list):
-            routes = _parse_routes(argv[2])
-        print(json.dumps(snapshot(force_sid, routes)))
-        return
-    if cmd == "serve":
-        serve()
-        return
-    con = connect()
-    if cmd == "now":
-        print(render_current(con))
-    elif cmd == "today":
-        print(render_today(con))
-    elif cmd == "days":
-        print(render_days(con, int(argv[1]) if len(argv) > 1 else 7))
-    elif cmd == "sessions":
-        print(render_sessions(con, int(argv[1]) if len(argv) > 1 else 10))
-    elif cmd == "models":
-        print(render_models(con, int(argv[1]) if len(argv) > 1 else 7))
-    elif cmd == "workspace":
-        print(render_workspace(con, argv[1] if len(argv) > 1 else ""))
-    elif cmd == "session":
-        print(render_session_detail(con, argv[1] if len(argv) > 1 else ""))
-    elif cmd == "watch":
-        sec = int(argv[1]) if len(argv) > 1 else 5
-        while True:
-            print("\x1b[2J\x1b[H", end="")
-            print(render_current(con), flush=True)
-            print(L(f"\n(每 {sec}s 刷新, Ctrl+C 退出)", f"\n(refreshes every {sec}s, Ctrl+C to quit)"), flush=True)
-            time.sleep(sec)
-    else:
-        print(__doc__)
-    con.close()
+    try:
+        if cmd == "json":
+            force_sid, routes = _parse_query(argv[1] if len(argv) > 1 else "")
+            if len(argv) > 2 and not isinstance(routes, list):
+                routes = _parse_routes(argv[2])
+            print(json.dumps(snapshot(force_sid, routes)))
+            return 0
+        if cmd == "serve":
+            serve()
+            return 0
+        con = connect()
+        if cmd == "now":
+            print(render_current(con))
+        elif cmd == "today":
+            print(render_today(con))
+        elif cmd == "days":
+            print(render_days(con, int(argv[1]) if len(argv) > 1 else 7))
+        elif cmd == "sessions":
+            print(render_sessions(con, int(argv[1]) if len(argv) > 1 else 10))
+        elif cmd == "models":
+            print(render_models(con, int(argv[1]) if len(argv) > 1 else 7))
+        elif cmd == "workspace":
+            print(render_workspace(con, argv[1] if len(argv) > 1 else ""))
+        elif cmd == "session":
+            print(render_session_detail(con, argv[1] if len(argv) > 1 else ""))
+        elif cmd == "watch":
+            sec = int(argv[1]) if len(argv) > 1 else 5
+            while True:
+                print("\x1b[2J\x1b[H", end="")
+                print(render_current(con), flush=True)
+                print(L(f"\n(每 {sec}s 刷新, Ctrl+C 退出)", f"(refreshes every {sec}s, Ctrl+C to quit)"), flush=True)
+                time.sleep(sec)
+        else:
+            print(__doc__)
+        con.close()
+    except sqlite3.OperationalError as e:
+        # 列/表变更不在 connect 的表存在性探测内（那会破坏按需裁剪的测试夹具库），
+        # 在入口统一转换成可行动提示，替代整段查询栈回溯。
+        print(L(f"查询失败：{e}", f"query failed: {e}"))
+        print(L("多半是 ZCode 升级改了用量库结构（表/列变更）。请更新本插件后再查询；"
+                "已落库的历史数据不受影响。",
+                "Most likely ZCode changed the usage DB schema in an update. "
+                "Update this plugin before querying; stored history is unaffected."))
+        return 1
+    return 0
 
 
 def render_today(con):
@@ -1428,4 +1439,4 @@ def render_today(con):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1:])
+    sys.exit(main(sys.argv[1:]))
