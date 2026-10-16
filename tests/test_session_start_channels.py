@@ -294,7 +294,7 @@ class SessionStartChannelTests(unittest.TestCase):
 
     def test_process_failure_exits_zero_and_emits_single_json_with_diagnostic(self):
         script = ("import runpy, sys; sys.path.insert(0, {!r}); import overlay_install; "
-                  "overlay_install.sync_runtime = lambda runtime: (_ for _ in ()).throw(ValueError('fixture sync rejected')); "
+                  "overlay_install.sync_runtime = lambda runtime, target_asar=None: (_ for _ in ()).throw(ValueError('fixture sync rejected')); "
                   "runpy.run_path({!r}, run_name='__main__')"
                   ).format(str(PLUGIN), str(PLUGIN / "hooks" / "session-start.py"))
         environment = dict(os.environ)

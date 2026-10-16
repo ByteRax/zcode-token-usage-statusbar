@@ -599,6 +599,29 @@ def finalize_tmp(operation="install", client_closed=None, verified=None):
 
 # ---------- 安装 / 卸载 ----------
 
+def target_writable():
+    """asar 与其所在目录都可写（/opt 等系统位置需要 root：只读目标不能再重打包）。"""
+    return os.access(ASAR, os.W_OK) and os.access(ASAR.parent, os.W_OK)
+
+
+def sudo_hint():
+    """系统位置不可写时可操作的提示：sudo 默认重置 HOME/PATH，必须显式保留，
+    否则 nvm 装的 node 与 ~/.zcode 下的运行时目录都会找错（issue #15）。
+    插件安装走 overlay_install.py，仓库根一键安装走 install.py；用当前目录实际在的那个。"""
+    print(L(f"[权限] app.asar 或所在目录不可写（Linux 上 /opt 等系统位置需要 root）：{ASAR}",
+            f"[permission] app.asar or its directory is not writable (Linux system locations like /opt need root): {ASAR}"))
+    print(L("请用 sudo 重跑，并保留当前 HOME 与 PATH（sudo 默认重置它们，会让 nvm 的 node "
+            "和 ~/.zcode 下的运行时目录定位失败）：",
+            "Re-run with sudo while keeping the current HOME and PATH (sudo resets both by default, "
+            "which hides an nvm node and mislocates the runtime dir under ~/.zcode):"))
+    here = Path(__file__).resolve().parent
+    script, cmd = next(((here / name, cmd) for name, cmd in
+                        (("overlay_install.py", "install"), ("install.py", ""))
+                        if (here / name).is_file()), (here / "install.py", ""))
+    print(L('  sudo env HOME="$HOME" PATH="$PATH" python3 "{}" {}'.format(script, cmd).rstrip(),
+            '  sudo env HOME="$HOME" PATH="$PATH" python3 "{}" {}'.format(script, cmd).rstrip()))
+
+
 def install(finalize=False, before_publish=None):
     """Serialize install/remove/finalize; optional callback precedes a new install's publication."""
     if finalize:
@@ -624,13 +647,8 @@ def _install(finalize=False, before_publish=None):
             cleanup_legacy_bak()
         return ok
     assert LOADER.exists(), L(f"loader 缺失：{LOADER}", f"loader missing: {LOADER}")
-    if not os.access(ASAR, os.W_OK) or not os.access(ASAR.parent, os.W_OK):
-        print(L(f"[权限] app.asar 或所在目录不可写（Linux 上 /opt 等系统位置需要 root）：{ASAR}",
-                f"[permission] app.asar or its directory is not writable (Linux system locations like /opt need root): {ASAR}"))
-        print(L("请用 sudo 重跑（推荐走一键安装，会自动处理目标定位与数据目录归属）：",
-                "Please re-run with sudo (the one-shot installer is recommended; it resolves the target and data-dir ownership automatically):"))
-        print(L("  sudo python install.py            # 自动探测（含 /opt/ZCode）",
-                "  sudo python install.py            # auto-detects (including /opt/ZCode)"))
+    if not target_writable():
+        sudo_hint()
         return False
     try:
         source = source_fingerprint(ASAR)  # 必须在读取待修改入口和 repack 前取得。
@@ -696,7 +714,36 @@ def _install(finalize=False, before_publish=None):
     return True
 
 
+def injected_state():
+    """True=已注入 False=未注入 None=asar 读不到；只读即可判定，不需要目标锁。"""
+    try:
+        return bool(ZUSAGE_LINE_RE.search(entry_bytes_of(ASAR)))
+    except (OSError, ValueError, AssertionError, KeyError, struct.error):
+        return None
+
+
 def remove():
+    # 系统位置（/opt 等）下普通用户拿不到 asar 锁：此时只有"确无注入"才该免 root 放行。
+    # 安装从未成功过（issue #15 的常见状态）不需要剥离任何东西，豁免标记必须能写，
+    # 否则「关闭自动安装与提醒」这件事本身也被权限卡住。
+    if not target_writable():
+        state = injected_state()
+        if state is False:
+            try:
+                _cancel_pending_install()
+            except (OSError, PendingTmpError) as e:
+                print(L(f"（未注入，但旧安装意图清理失败：{e}）",
+                        f"(not injected, but cleaning the stale install intent failed: {e})"))
+            print(L("当前 asar 未注入，无需 root 权限。", "The current asar is not injected; root is not needed."))
+            cleanup_legacy_bak()
+            return True
+        if state is None:
+            # 读都读不到：把"关闭提醒"交回给调用方，别把 optout 也一起卡住。
+            print(L("无法读取 app.asar（权限不足），无法确认注入状态。",
+                    "Cannot read app.asar (permission denied); the injection state is unknown."))
+            return False
+        sudo_hint()
+        return False
     try:
         with _target_lock():
             return _remove()
