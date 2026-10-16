@@ -7,7 +7,9 @@
   python3 token_rate.py --turn           最新一问（本次提问触发的轮次）即时速率
   python3 token_rate.py --turn --current
                                          同上，但本问尚无入库数据时输出为空（--current 守卫，
-                                         绝不把上一轮数据当作本问返回）
+                                         无身份时仅严格时间过滤，不保证轮次归属）
+  python3 token_rate.py --turn --turn-id turn_x --session sess_x
+                                         固定宿主轮次身份，不依赖提问时间状态
   python3 token_rate.py --json           JSON 输出
   python3 token_rate.py --session sess_xxx 显式指定会话（优先于下面两个环境变量；钩子下达
                                          的统计指令带此参数，防止模型迟迟才跑该命令时，
@@ -35,6 +37,8 @@ import time
 from pathlib import Path
 
 from runtime_lock import file_lock
+from usage_stats import (MIN_GEN_MS, MAX_GEN_MS, hides_reasoning, request_stats,
+                         aggregate_requests)
 
 DB_PATH = os.environ.get("ZCODE_USAGE_DB") or str(
     Path.home() / ".zcode" / "cli" / "db" / "db.sqlite")
@@ -43,10 +47,6 @@ STATE_FILE = os.environ.get("ZUSAGE_RATE_STATE_FILE") or str(
     Path.home() / ".zcode" / "zusage-rate.last-session.json")
 STATE_TTL_MS = 7 * 24 * 3600 * 1000  # 过旧的状态文件视为失效
 N = 5                 # 上轮行的统计窗口（均/峰）
-MIN_GEN_MS = 200      # 有效样本：最短生成耗时
-MAX_GEN_MS = 3_600_000  # 有效样本：最长生成耗时（1h）
-PROMPT_SKEW_MS = 3000  # 钩子冷启动（Windows 杀软扫描尤甚）写提问时刻可能晚于本轮
-                       # 首个请求 started_at，--current 守卫放宽 3 秒容差防毫秒级失配
 
 
 def valid_state_ts(value, now=None):
@@ -157,41 +157,11 @@ def scope_for(db, sid):
     return base + tail, args
 
 
-def hides_reasoning(model_id):
-    """Claude 系列不单独上报思考 token：reasoning_tokens 恒为 0，output_tokens 却已含思考，
-    且思考在 first_token_at 之前流出。按首字窗口计时会把思考期漏出分母（2026-10-15 真库：
-    claude-opus-5-5 有 35% 请求按首字窗口超过 300 tok/s），须同含思考段一样从 started_at 起算。"""
-    return "claude" in (model_id or "").lower()
-
-
 def to_item(r):
-    # 口径（2026-10-14 据真库 raw_usage_json 裁决，与 Changlan4/zcode-tps-widget 核对一致）：
-    # 1) ZCode 的 output_tokens **已包含** reasoning_tokens（provider 原生 totalTokens =
-    #    input + output 不加 reasoning），分子直接用 output_tokens，绝不能再加一次思考。
-    # 2) 思考 token 在 first_token_at **之前**流出（思考段 ttft/gap 远大于非思考段，
-    #    量级闭环 ≈ 思考 token 数 ÷ 额外 gap = 真实速率），所以含思考段的生成窗口要用
-    #    completed_at − started_at，否则思考时长被漏出分母、速率虚高。
-    tok = r["output_tokens"] or 0
-    reasoning = r["reasoning_tokens"] or 0
-    ft, ct, st = r["first_token_at"], r["completed_at"], r["started_at"]
-    has_time = isinstance(ct, int) and ct > (ft if isinstance(ft, int) else ct)
-    gen_ms = ct - ft if has_time else None
-    if ((reasoning > 0 or hides_reasoning(r["model_id"]))
-            and isinstance(st, int) and isinstance(ct, int) and ct > st):
-        gen_ms = ct - st   # 含思考段：窗口前移到 started_at，把思考期计入生成时长
-    valid = gen_ms is not None and MIN_GEN_MS <= gen_ms < MAX_GEN_MS and tok > 0
-    ttft = r["time_to_first_token_ms"]
-    return {
-        "model": r["model_id"],
-        "outputTokens": tok,
-        "reasoningTokens": reasoning,
-        "inputTokens": r["input_tokens"] or 0,
-        "cacheRead": r["cache_read_input_tokens"] or 0,
-        "ttftMs": ttft if isinstance(ttft, int) else None,
-        "genMs": gen_ms,
-        "tokPerSec": _round1(tok / gen_ms * 1000) if valid else None,
-        "completedAt": ct,
-    }
+    item = request_stats(r)
+    item.update(inputTokens=r["input_tokens"] or 0,
+                cacheRead=r["cache_read_input_tokens"] or 0)
+    return item
 
 
 def session_aggregate(db, scope_sql, args, rated):
@@ -228,7 +198,7 @@ def query_latest(session_id=None):
             items = [to_item(r) for r in rows]
             rated = [i for i in items if i["tokPerSec"] is not None]
             session = session_aggregate(db, scope_sql, args, rated)
-        latest = (rated[0] if rated else None) or (items[0] if items else None)
+        latest = items[0] if items else None
         return {"sessionId": sid, "latest": latest, "session": session, "history": items[::-1]}
     finally:
         if db is not None:
@@ -244,12 +214,9 @@ def latest_turn_id(db, sid, prompt_ts=None):
            " and turn_id is not null and turn_id != '' group by turn_id")
     args = [sid]
     if prompt_ts is not None:
-        # 容差见 PROMPT_SKEW_MS：钩子冷启动晚写提问时刻时，本轮首段 started_at 可能
-        # 略早于记录值，毫秒级失配曾让 --current 间歇性丢失 ⚡ 行。已知窄窗口：用户
-        # 3 秒内连发两条消息且本轮尚无任何入库行时，可能短暂显示上一轮速率（数据真实、
-        # 仅轮次归属过期）；排序取 min(started_at) 最大组，本轮有行时必胜出。
+        # 时间仅是旧宿主的有限兼容过滤，不证明身份；不允许向前借用旧轮。
         sql += " having min(started_at) >= ?"
-        args.append(prompt_ts - PROMPT_SKEW_MS)
+        args.append(prompt_ts)
     try:
         row = db.execute(sql + " order by min(started_at) desc, turn_id desc limit 1", args).fetchone()
     except sqlite3.OperationalError:
@@ -273,7 +240,7 @@ def last_prompt_ts(session_id=None, state=None):
     return ts if valid_state_ts(ts) else None
 
 
-def query_turn(session_id=None, current=False):
+def query_turn(session_id=None, current=False, turn_id=None):
     db = open_db()
     try:
         sid = session_id or fallback_session_id(db)
@@ -286,10 +253,11 @@ def query_turn(session_id=None, current=False):
             rated = [i for i in map(to_item, win) if i["tokPerSec"] is not None]
             session = session_aggregate(db, scope_sql, args, rated)
         prompt_ts = last_prompt_ts(sid) if current else None
-        if current and prompt_ts is None:
+        if current and turn_id is None and prompt_ts is None:
             return {"sessionId": sid, "turnId": None, "turn": None,
                     "noCurrentTurnData": True, "currentTurnUnavailableReason": "missingPromptState", "session": session}
-        turn_id = latest_turn_id(db, sid, prompt_ts)
+        identity_source = "explicitTurnId" if turn_id else ("promptTimeCompatibility" if current else "latestTurn")
+        turn_id = turn_id or latest_turn_id(db, sid, prompt_ts)
         if not turn_id or db is None:
             result = {"sessionId": sid, "turnId": turn_id, "turn": None, "session": session}
             if current:
@@ -297,28 +265,24 @@ def query_turn(session_id=None, current=False):
                 result.update(noCurrentTurnData=True,
                               currentTurnUnavailableReason="noMatchingTurn" if has_identity else "missingTurnIdentity")
             return result
-        rows = db.execute(scope_sql + " and turn_id = ? order by started_at asc, completed_at asc",
-                          args + [turn_id]).fetchall()
+        try:
+            rows = db.execute(scope_sql + " and turn_id = ? order by started_at asc, completed_at asc",
+                              args + [turn_id]).fetchall()
+        except sqlite3.OperationalError:
+            rows = []
         if not rows:
-            return {"sessionId": sid, "turnId": turn_id, "turn": None, "session": session}
+            result = {"sessionId": sid, "turnId": turn_id, "turn": None, "session": session,
+                      "turnIdentitySource": identity_source, "currentTurnIdentityVerified": False}
+            if current:
+                result.update(noCurrentTurnData=True, currentTurnUnavailableReason="noMatchingTurn")
+            return result
         items = [to_item(r) for r in rows]
-        rated = [i for i in items if i["tokPerSec"] is not None]
-        total_tok = sum(i["outputTokens"] for i in rated)   # output 已含思考，不再相加
-        gen_ms = sum(i["genMs"] for i in rated)
-        turn = {
-            "requests": len(items),
-            "rated": len(rated),
-            "ttftMs": items[0]["ttftMs"],  # 本轮第一段的首字延迟
-            "firstAt": items[0]["completedAt"],
-            "lastAt": max(i["completedAt"] for i in items),
-            "genMs": gen_ms,
-            "totalOutput": sum(i["outputTokens"] for i in items),
-            "totalReasoning": sum(i["reasoningTokens"] for i in items),
-            # 本轮即时速率：总产出 / 总纯生成时长（按段加权，排除段间工具等待）
-            "tokPerSec": _round1(total_tok / gen_ms * 1000) if gen_ms >= MIN_GEN_MS and total_tok > 0 else None,
-            "peak": _round1(max(i["tokPerSec"] for i in rated)) if rated else None,
-        }
-        return {"sessionId": sid, "turnId": turn_id, "turn": turn, "session": session}
+        turn = aggregate_requests(items)
+        turn.update(ttftMs=items[0]["ttftMs"], firstAt=items[0]["completedAt"],
+                    lastAt=max(i["completedAt"] for i in items))
+        return {"sessionId": sid, "turnId": turn_id, "turn": turn, "session": session,
+                "turnIdentitySource": identity_source,
+                "currentTurnIdentityVerified": identity_source == "explicitTurnId"}
     finally:
         if db is not None:
             db.close()
@@ -395,13 +359,13 @@ def format_line(r):
     return " · ".join(parts)
 
 
-def _session_arg(argv):
+def _value_arg(argv, name):
     """解析 --session <id> / --session=<id>；返回 None 表示命令行未显式指定。"""
     for i, a in enumerate(argv):
-        if a == "--session":
+        if a == name:
             return argv[i + 1] if i + 1 < len(argv) else None
-        if a.startswith("--session="):
-            return a[len("--session="):]
+        if a.startswith(name + "="):
+            return a[len(name) + 1:]
     return None
 
 
@@ -411,10 +375,10 @@ def main(argv):
     # 模型执行该命令的时刻可能远晚于钩子触发，其间若有并行会话提问，会改写状态文件里
     # "用户最后所处的会话"（fallback_session_id 的依据），env 变量在 Bash 工具里也不存在，
     # 没有 --session 时会错把别的会话的数据当成本问结果（2026-10-15 真机事故）。
-    sid = (_session_arg(argv) or os.environ.get("ZCODE_SESSION_ID")
+    sid = (_value_arg(argv, "--session") or os.environ.get("ZCODE_SESSION_ID")
            or os.environ.get("CLAUDE_SESSION_ID") or None)
     if "--turn" in argv:
-        r = query_turn(sid, current="--current" in argv)
+        r = query_turn(sid, current="--current" in argv, turn_id=_value_arg(argv, "--turn-id"))
         if json_out:
             print(json.dumps(r, ensure_ascii=False))
         elif r.get("turn"):

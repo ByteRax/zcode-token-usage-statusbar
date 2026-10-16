@@ -71,7 +71,7 @@ function harness(lang = 'zh', rateLine = true) {
   const sandbox = vm.createContext({ window, document, console,
     localStorage: { getItem: key => key === 'zusage3.lang' ? lang : null, setItem() {} },
     setInterval: (fn, ms) => { const id = ++next; intervals.set(id, { fn, ms }); return id; },
-    clearInterval: id => intervals.delete(id), setTimeout: () => ++next,
+    clearInterval: id => intervals.delete(id), setTimeout: () => ++next, clearTimeout() {},
   });
   // Execute the actual entire IIFE. Only expose its real shared-state/render path;
   // delayed composer discovery is outside the document-level rate tooltip tests.
@@ -123,9 +123,9 @@ test('notice styling cleans recycled nodes, detached nodes and previous injectio
   h.scan(); const previous = h.noticeStyle();
   h.inject();
   assert.equal(previous.parentElement, null);
-  assert.equal(n.strong.dataset.zusageNotice, String(h.window.__zusageGen));
-  assert.equal(h.intervals.size, 1);
-  n.strong.textContent = 'ordinary reply'; h.scan();
+    assert.equal(n.strong.dataset.zusageNotice, String(h.window.__zusageGen));
+    assert.equal(h.intervals.size, 2);   // 2s rate-line scan + 2s deterministic-line scan
+    n.strong.textContent = 'ordinary reply'; h.scan();
   assert.equal(n.strong.dataset.zusageNotice, undefined);
   const detached = h.addNotice(); h.scan(); detached.quote.remove(); h.scan();
   assert.equal(detached.strong.dataset.zusageNotice, undefined);
@@ -163,7 +163,7 @@ test('R10: reinjection rebinds existing nodes and removes old listeners, scan in
     assert.equal(h.tip().style.display, 'block');
     assert.equal(h.line.count('mouseenter'), 1); assert.equal(h.line.count('mouseleave'), 1);
     assert.equal(h.quote.count('mouseenter'), 0);
-    assert.equal(h.window.count('scroll'), 1); assert.equal(h.intervals.size, 1);
+    assert.equal(h.window.count('scroll'), 1); assert.equal(h.intervals.size, 2);
     oldTips.push(h.tip()); oldScans.push([...h.intervals.values()][0].fn);
     h.inject();
     assert.equal(oldTips.at(-1).parentElement, null);

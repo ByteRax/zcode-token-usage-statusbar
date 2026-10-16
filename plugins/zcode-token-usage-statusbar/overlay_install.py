@@ -53,7 +53,8 @@ RUNTIME_FILES = [
     "plugin-release.cjs",
     "plugin-storage.cjs",
     "release_unpack.py",
-    "runtime_lock.py",
+    "runtime_lock.py", "usage_stats.py", "turn-stats.js",
+    "token_rate.py",
 ]
 
 

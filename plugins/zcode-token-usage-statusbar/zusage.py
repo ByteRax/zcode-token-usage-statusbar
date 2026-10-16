@@ -14,6 +14,8 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from usage_stats import hides_reasoning, request_stats
+
 DB_PATH = Path.home() / ".zcode" / "cli" / "db" / "db.sqlite"
 CONFIG_PATH = Path(__file__).parent / "config.json"
 
@@ -609,20 +611,12 @@ def _light_snapshot(con, sid, cfg):
     }
 
 
-def hides_reasoning(model_id):
-    """Claude 系列不单独上报思考 token：reasoning_tokens 恒为 0，output_tokens 却已含思考，
-    且思考在 first_token_at 之前流出。按首字窗口计时会把思考期漏出分母（2026-10-15 真库：
-    claude-opus-5-5 有 35% 请求按首字窗口超过 300 tok/s），须同含思考段一样从 started_at 起算。
-    与 token_rate.hides_reasoning 同一规则。"""
-    return "claude" in (model_id or "").lower()
-
-
 def _session_snapshot(con, sid, cfg):
     """单个会话的完整快照（最新会话与 recent 列表共用一份结构）。"""
     srow = con.execute("select * from session where id=?", (sid,)).fetchone()
     u = session_usage(con, sid)
     last = con.execute(
-        """select duration_ms, coalesce(time_to_first_token_ms,0), completed_at, turn_id, model_id,
+        """select duration_ms, time_to_first_token_ms, completed_at, turn_id, model_id,
                   output_tokens, first_token_at, started_at, reasoning_tokens
            from model_usage where session_id=? and status='completed'
            order by completed_at desc limit 1""",
@@ -664,24 +658,29 @@ def _session_snapshot(con, sid, cfg):
     lr = con.execute("select max(completed_at) from model_usage where session_id=?", (sid,)).fetchone()
     active = bool(lr and lr[0] and int(time.time() * 1000) - lr[0] < SESSION_TIMEOUT_MS)
     ctx_auto = lookup_context_window(last["model_id"]) if last else None
-    # 生成速度：输出 token ÷ 生成耗时。口径与逐问速率行（token_rate.py）一致：
-    #   分子 = output_tokens（ZCode 该列已含思考 token，不另加）；
-    #   分母 = completed − first_token（首 token 之后到完成），但思考 token 在
-    #   first_token_at 之前流出（2026-10-14 真库裁决），含思考段的窗口前移到
-    #   started_at，否则思考时长被漏出分母、速率虚高；Claude 系列不单独上报思考 token，
-    #   也按含思考段计时（见 hides_reasoning）；缺 first_token_at 时退化总耗时。
-    tps = 0
-    if last and last["output_tokens"]:
-        gen_ms = None
-        if last["first_token_at"] and last["completed_at"] and last["completed_at"] > last["first_token_at"]:
-            gen_ms = last["completed_at"] - last["first_token_at"]
-            if ((last["reasoning_tokens"] or hides_reasoning(last["model_id"]))
-                    and last["started_at"] and last["completed_at"] > last["started_at"]):
-                gen_ms = last["completed_at"] - last["started_at"]
-        elif last["duration_ms"]:
-            gen_ms = last["duration_ms"]
-        if gen_ms:
-            tps = round(last["output_tokens"] / (gen_ms / 1000), 1)
+    # Shared per-request calculation: an invalid latest request never borrows an older rate.
+    rate = request_stats(last) if last else None
+    tps = rate["tokPerSec"] if rate else None
+    if tps is None and last and last["output_tokens"]:
+        # 显示层兜底（v77.3，修订 v77.2）：严格口径（request_stats）对缺 first_token_at
+        # 的行按设计不评分——v77.2 曾退化用 DB 落库的总耗时估算，把等待期当成生成期，
+        # 真库 11 token/6.173s 的尾巴请求借此显示过 1.8 t/s 这种荒谬值（2026-10-16 复核
+        # 发现：换了层皮的同一缺陷）。改为向前找最近一条严格口径本身评分通过的请求
+        # 顶上（展示用途，和逐问结算行的严格聚合互不影响）；仍找不到才留空，chip 隐藏。
+        rows = con.execute(
+            """select output_tokens, first_token_at, completed_at, started_at,
+                      reasoning_tokens, model_id, time_to_first_token_ms
+               from model_usage where session_id=? and status='completed'
+               order by completed_at desc limit 20""",
+            (sid,),
+        ).fetchall()
+        for r in rows:
+            if not r["output_tokens"]:
+                continue
+            r_rate = request_stats(r)
+            if r_rate["tokPerSec"] is not None:
+                tps = r_rate["tokPerSec"]
+                break
     sub_rows = con.execute(
         """select m.session_id, coalesce(m.agent,''), coalesce(s2.title,''), count(*),
                   coalesce(sum(m.computed_total_tokens),0),
@@ -758,6 +757,10 @@ def _session_snapshot(con, sid, cfg):
             "ttft_ms": last[1] if last else 0,
             "model": last["model_id"] if last else "",
             "tps": tps,
+            "genMs": rate["genMs"] if rate else None,
+            "ratedOutput": rate["ratedOutput"] if rate else 0,
+            "unratedOutput": rate["unratedOutput"] if rate else 0,
+            "rateUnavailableReason": rate["rateUnavailableReason"] if rate else "noRequest",
         },
         # 代码变更统计（session 表 summary_* 列，ZCode 目前未填充、全库为 NULL，有值才会显示）
         "code": {

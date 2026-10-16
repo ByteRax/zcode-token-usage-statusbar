@@ -729,7 +729,7 @@ print("bounded unclosed notes completed")
         self.assertEqual(self.calls(), [])
 
     def test_source_must_be_committed_at_head(self):
-        path = self.root / tool.PREFIX / "token_rate.py"
+        path = self.root / tool.PREFIX / "plugin_auto_update.py"
         path.write_text("uncommitted source\n")
         built = tool.build(self.root, REPO, self.base / "dirty-out")
         with self.assertRaisesRegex(tool.ReleaseError, "dirty or untracked"):

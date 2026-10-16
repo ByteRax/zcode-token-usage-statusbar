@@ -360,7 +360,8 @@ class PluginUpgradeTests(unittest.TestCase):
             context = json.loads(prompt.stdout)["hookSpecificOutput"]["additionalContext"]
             self.assertIn("用户可见·安装提醒", context)
             self.assertNotIn("请完全退出 ZCode", context)
-            self.assertIn("本轮统计指令", context)
+            self.assertIn("【内部背景·勿展示】", context)
+            self.assertNotIn("本轮统计指令", context)
         self.assertEqual(self.main("install")[0], 0)
         context = self.notice.reminder_context(self.runtime)
         self.assertIn("用户可见·重启提醒", context)
@@ -383,7 +384,8 @@ class PluginUpgradeTests(unittest.TestCase):
         self.assertEqual(prompt.returncode, 0, prompt.stderr)
         context = json.loads(prompt.stdout)["hookSpecificOutput"]["additionalContext"]
         self.assertNotIn("用户可见·", context)
-        self.assertIn("本轮统计指令", context)
+        self.assertIn("【内部背景·勿展示】", context)
+        self.assertNotIn("本轮统计指令", context)
 
     def test_client_upgrade_overwrite_preserves_explicit_disable(self):
         self.write_config({"asar_path": str(self.asar), "plugin_auto_install_overlay": False})
