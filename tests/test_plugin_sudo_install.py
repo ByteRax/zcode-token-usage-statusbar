@@ -60,8 +60,13 @@ class SudoRuntimeLocationTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve()
-        user = pwd.getpwuid(os.getuid())
-        self.user, self.home = user.pw_name, Path(user.pw_dir)
+        # 用临时家目录模拟 SUDO_USER：不依赖/不假设跑测试的真实身份（即使测试本身
+        # 以 root 跑，也不会把 pwd.getpwnam("root") 的真实 /root 当成"sudo 用户的家"）。
+        self.user = "zusage-sudo-user"
+        self.home = self.root / "home"
+        self.home.mkdir()
+        self.record = types.SimpleNamespace(pw_dir=str(self.home), pw_uid=os.getuid(),
+                                            pw_gid=os.getgid())
         # 与 issue 复现一致：sudo 清空后只剩系统默认 PATH。
         patcher = mock.patch.dict(os.environ, {"PATH": "/usr/sbin:/usr/bin:/sbin:/bin"},
                                  clear=True)
@@ -74,6 +79,7 @@ class SudoRuntimeLocationTests(unittest.TestCase):
             mock.patch.dict(os.environ, {"SUDO_USER": self.user,
                                          "HOME": str(home or self.root / "root")}),
             mock.patch.object(os, "geteuid", return_value=0),
+            mock.patch.object(pwd, "getpwnam", return_value=self.record),
         )
         for patcher in patchers:
             patcher.start()
@@ -248,6 +254,11 @@ class UnactionableVerifierErrorTests(unittest.TestCase):
         self.runtime.mkdir()
         for name in ("plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs"):
             (self.runtime / name).write_bytes(b"// fixture")
+        # 隔离宿主环境：真机若设了 ZCODE_ASAR（报错提示本身建议这么设），_sync_verifier
+        # 会去读它当兜底目标，脚本甚至可能拉起宿主真实 ZCode.app 子进程验证身份。
+        patcher = mock.patch.dict(os.environ, {}, clear=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_missing_node_message_names_the_sudo_env_fix(self):
         with mock.patch.object(installer, "_node_candidates", return_value=[]):
@@ -344,6 +355,16 @@ class ReadonlyRemoveTests(unittest.TestCase):
         self.assertIn("HOME", hint)
         self.assertIn("PATH", hint)
 
+    def test_remove_with_injection_message_suggests_remove_not_install(self):
+        """review 发现：提示命令曾写死成 install，会把想卸载的用户引导去重新安装/注入。
+        文件名本身含 "install"（overlay_install.py），断言要看末尾的子命令，不能子串匹配。"""
+        self.inject()
+        with self.unwritable():
+            _, output, errors = self.run_main("remove")
+        hint = output + errors
+        self.assertIn('" remove', hint)
+        self.assertNotIn('" install', hint)
+
     def test_remove_on_writable_target_keeps_normal_strip_path(self):
         self.inject()
         code, _, errors = self.run_main("remove")
@@ -385,6 +406,58 @@ class SudoOwnershipTests(unittest.TestCase):
                 mock.patch.object(os, "geteuid", return_value=0), \
                 mock.patch.object(installer.os, "chown", side_effect=OSError("denied")):
             installer.chown_runtime_to_user(self.runtime)   # 不抛
+
+
+class SudoHintCommandTests(unittest.TestCase):
+    """sudo_hint() 按部署形态（插件 vs 仓库根一键安装）与操作选对子命令。
+
+    review 发现：之前不管 install/remove 都写死成 install 子命令，会把想卸载的
+    用户引导去重新安装/注入；这里覆盖插件旁有 overlay_install.py 与仓库根只有
+    install.py 两种部署形态 × install/remove 两种操作，共四种组合。"""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+
+    def hint(self, operation, has_overlay_install):
+        here = self.root / ("plugin" if has_overlay_install else "repo-root")
+        here.mkdir()
+        if has_overlay_install:
+            (here / "overlay_install.py").write_bytes(b"")
+        (here / "install.py").write_bytes(b"")
+        (here / "patch_install.py").write_bytes((PLUGIN_ROOT / "patch_install.py").read_bytes())
+        pi = load_module(f"sudo_hint_fixture_{operation}_{has_overlay_install}",
+                         here / "patch_install.py")
+        pi._LANG = "zh"
+        pi.ASAR = Path("/opt/ZCode/resources/app.asar")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            pi.sudo_hint(operation)
+        return out.getvalue()
+
+    def test_plugin_deployment_install_uses_overlay_install_subcommand(self):
+        hint = self.hint("install", has_overlay_install=True)
+        self.assertIn("overlay_install.py", hint)
+        self.assertIn('" install', hint)
+        self.assertNotIn('" remove', hint)
+
+    def test_plugin_deployment_remove_uses_overlay_install_subcommand(self):
+        hint = self.hint("remove", has_overlay_install=True)
+        self.assertIn("overlay_install.py", hint)
+        self.assertIn('" remove', hint)
+        self.assertNotIn('" install', hint)
+
+    def test_repo_root_deployment_install_uses_install_py_default(self):
+        hint = self.hint("install", has_overlay_install=False)
+        self.assertIn('install.py"', hint)
+        self.assertNotIn("overlay_install.py", hint)
+        self.assertNotIn("--remove", hint)
+
+    def test_repo_root_deployment_remove_uses_install_py_remove_flag(self):
+        hint = self.hint("remove", has_overlay_install=False)
+        self.assertIn('install.py" --remove', hint)
+        self.assertNotIn("overlay_install.py", hint)
 
 
 if __name__ == "__main__":

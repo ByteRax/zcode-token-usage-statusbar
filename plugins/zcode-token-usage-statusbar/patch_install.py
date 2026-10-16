@@ -604,10 +604,12 @@ def target_writable():
     return os.access(ASAR, os.W_OK) and os.access(ASAR.parent, os.W_OK)
 
 
-def sudo_hint():
+def sudo_hint(operation="install"):
     """系统位置不可写时可操作的提示：sudo 默认重置 HOME/PATH，必须显式保留，
     否则 nvm 装的 node 与 ~/.zcode 下的运行时目录都会找错（issue #15）。
-    插件安装走 overlay_install.py，仓库根一键安装走 install.py；用当前目录实际在的那个。"""
+    插件安装走 overlay_install.py，仓库根一键安装走 install.py；用当前目录实际在的那个。
+    operation 必须和调用方实际要做的事一致：install 场景提示装，remove 场景提示卸载，
+    否则会把想卸载的用户引导去重新安装/注入（issue #15 的 review 发现）。"""
     print(L(f"[权限] app.asar 或所在目录不可写（Linux 上 /opt 等系统位置需要 root）：{ASAR}",
             f"[permission] app.asar or its directory is not writable (Linux system locations like /opt need root): {ASAR}"))
     print(L("请用 sudo 重跑，并保留当前 HOME 与 PATH（sudo 默认重置它们，会让 nvm 的 node "
@@ -615,9 +617,10 @@ def sudo_hint():
             "Re-run with sudo while keeping the current HOME and PATH (sudo resets both by default, "
             "which hides an nvm node and mislocates the runtime dir under ~/.zcode):"))
     here = Path(__file__).resolve().parent
-    script, cmd = next(((here / name, cmd) for name, cmd in
-                        (("overlay_install.py", "install"), ("install.py", ""))
-                        if (here / name).is_file()), (here / "install.py", ""))
+    args = {"install": ("overlay_install.py", "install"), "remove": ("overlay_install.py", "remove")}[operation]
+    fallback = ("install.py", "" if operation == "install" else "--remove")
+    script, cmd = next(((here / name, cmd) for name, cmd in (args, fallback)
+                        if (here / name).is_file()), (here / fallback[0], fallback[1]))
     print(L('  sudo env HOME="$HOME" PATH="$PATH" python3 "{}" {}'.format(script, cmd).rstrip(),
             '  sudo env HOME="$HOME" PATH="$PATH" python3 "{}" {}'.format(script, cmd).rstrip()))
 
@@ -739,10 +742,10 @@ def remove():
             return True
         if state is None:
             # 读都读不到：把"关闭提醒"交回给调用方，别把 optout 也一起卡住。
-            print(L("无法读取 app.asar（权限不足），无法确认注入状态。",
-                    "Cannot read app.asar (permission denied); the injection state is unknown."))
+            print(L("无法读取 app.asar（不存在或权限不足），无法确认注入状态。",
+                    "Cannot read app.asar (missing or permission denied); the injection state is unknown."))
             return False
-        sudo_hint()
+        sudo_hint("remove")
         return False
     try:
         with _target_lock():
