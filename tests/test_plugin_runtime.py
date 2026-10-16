@@ -131,6 +131,42 @@ class PluginRuntimeTests(unittest.TestCase):
         self.assertEqual(atomic.call_count, 1)
         self.assertEqual(atomic.call_args[0][0], self.runtime / "plugin-runtime.json")
 
+    def test_steady_state_sync_skips_verifier_and_record_rewrite(self):
+        self.sync()
+        self.sync()   # 记录 changed=[] 的稳态基线（首次→二次的 changed 列表不同，必不稳态）
+        record_before = (self.runtime / "plugin-runtime.json").read_bytes()
+        calls = []
+
+        @contextlib.contextmanager
+        def counting_verifier(runtime, target_asar=None):
+            def verify():
+                calls.append("verify")
+            yield verify
+
+        with mock.patch.object(installer, "_sync_verifier", counting_verifier), \
+                mock.patch.object(installer, "_atomic_write", wraps=installer._atomic_write) as atomic:
+            result, _ = self.sync()
+        self.assertEqual(result["changed"], [])
+        self.assertEqual(calls, [])   # 无写入计划时不拉起 node 验收进程
+        self.assertEqual(atomic.call_count, 0)   # 记录内容未变，不重复落盘
+        self.assertEqual((self.runtime / "plugin-runtime.json").read_bytes(), record_before)
+
+    def test_changed_file_sync_still_verifies_identity(self):
+        self.sync()
+        self.make_plugin(self.plugin, prefix="updated")
+        calls = []
+
+        @contextlib.contextmanager
+        def counting_verifier(runtime, target_asar=None):
+            def verify():
+                calls.append("verify")
+            yield verify
+
+        with mock.patch.object(installer, "_sync_verifier", counting_verifier):
+            result, _ = self.sync()
+        self.assertNotEqual(result["changed"], [])
+        self.assertTrue(calls)   # 有写入计划时写入前后仍执行验收
+
     def test_initial_migration_preserves_newer_and_equal_mtime_edits(self):
         for index, name in enumerate(("overlay.js", "zusage.py")):
             self.write_file(self.runtime / name, b"user hotfix", self.timestamp + index)
