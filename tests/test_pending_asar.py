@@ -72,12 +72,13 @@ class PendingAsarTests(unittest.TestCase):
 
     def upgrade_asar(self, entry=b"console.log('official v2');"):
         """写入"官方升级版"并强制 mtime 前移：升级模拟必须能被 _same_stamp 的 stat 级
-        检测发现，而 TEMP 所在卷的时间戳粒度可能很粗（实测某 exFAT 卷 50 次连写 49 次
-        mtime 相同），同尺寸替换会逃过检测，测试随之偶发失败。真实升级相隔分钟级不受
-        影响，这里用显式 utime 换确定性。"""
+        检测发现，而 TEMP 所在卷的写入路径时间戳可能被惰性批更新（实测某卷 50 次连写
+        49 次 mtime 相同），同尺寸替换会逃过检测，测试随之偶发失败。真实升级相隔分钟级
+        不受影响，这里用显式 utime 换确定性；余量取 2s 以覆盖最粗的 FAT32 mtime 粒度
+        （NTFS 100ns / exFAT 10ms / FAT32 2s，更小的余量在粗粒度卷上会被取整回原值）。"""
         make_asar(self.asar, entry)
         st = self.asar.stat()
-        os.utime(self.asar, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
+        os.utime(self.asar, ns=(st.st_atime_ns, st.st_mtime_ns + 2_000_000_000))
 
     def test_generation_records_source_before_repack_and_atomic_sidecar(self):
         source = self.asar.read_bytes()
