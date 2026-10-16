@@ -178,6 +178,10 @@ macOS 上若找不到 `python`，改用 `python3 install.py`。
 
 这里显示 token 用量，不是账单。套餐费用与额度仍以 ZCode 官方页面为准。
 
+**ZCode 3.15.3 之后所有数字一直是 0？**
+
+新版客户端数据层重构后不再写 `~/.zcode/cli/db/db.sqlite`（本插件的数据源），用量记录改落在 `~/.zcode/cli/rollout/model-io-sess_*.jsonl`。可运行 [`bridge/db_bridge.py`](bridge/README.md) 守护进程把数据增量同步回旧库，状态条与 `/usage` 即恢复，详见 [bridge/README.md](bridge/README.md)。
+
 [更多排查、自动更新和远程配置 →](docs/user-guide.md)
 
 ## 卸载
