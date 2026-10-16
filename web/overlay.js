@@ -541,10 +541,13 @@
    * 同容器已有模型历史统计行（isRateLine）则跳过，避免双行。 */
   var ZU_DET_FONT_SIZE = "0.8125rem";   // v78：宿主正文号偏大，用户要求缩小（13px）
   var detTimer = 0;
-  /* v79：统计行在 turn 容器内的落点——用户指定：hover 工具条之前、data-state="closed"
-   * 弹出层之后（容器末尾那排工具条类名 opacity-0 … group-hover/assistant-turn:opacity-100，
-   * Tailwind 类名含 : / [ ] 特殊字符，querySelector 转义易碎 → 只按子节点 className
-   * 子串匹配）。找不到锚点（宿主改版）回退 appendChild（旧行为，容器末尾）。 */
+  /* v79：统计行在 turn 容器内的落点——hover 工具条之前、data-state="closed" 弹出层
+   * 之后（工具条类名 opacity-0 … group-hover/assistant-turn:opacity-100，Tailwind
+   * 类名含 : / [ ] 特殊字符，querySelector 转义易碎 → 按子节点 className 子串匹配）。
+   * v82：新开会话的 turn 容器里工具条不在直接子层，嵌在 group/assistant-turn
+   * flex w-full flex-col gap-5 → flex flex-col gap-5 内容列末尾——直接子层找不到时
+   * 深度找工具条，insertBefore 落到锚点的父容器（即内容列内、工具条之上）。
+   * 都找不到（宿主改版）回退 appendChild（旧行为，容器末尾）。 */
   function zuDetAnchor(box) {
     try {
       var kids = box.children, i, cls;
@@ -552,6 +555,12 @@
         cls = String(kids[i].className || "");
         if (cls.indexOf("group-hover/assistant-turn") >= 0 && cls.indexOf("opacity-0") >= 0)
           return kids[i];
+      }
+      var deep = box.querySelectorAll("div");
+      for (var j = 0; j < deep.length; j++) {
+        cls = String(deep[j].className || "");
+        if (cls.indexOf("group-hover/assistant-turn") >= 0 && cls.indexOf("opacity-0") >= 0)
+          return deep[j];
       }
       for (i = kids.length - 1; i >= 0; i--) {
         if (kids[i].getAttribute && kids[i].getAttribute("data-state") === "closed")
@@ -564,7 +573,7 @@
     try {
       var anchor = zuDetAnchor(box);
       if (anchor && anchor === node.nextSibling) return;   // 已在位（React 重排兜底快速路径）
-      if (anchor) { box.insertBefore(node, anchor); return; }
+      if (anchor) { anchor.parentElement.insertBefore(node, anchor); return; }   // v82：深度锚点挂锚的父容器
       if (node.parentElement !== box) box.appendChild(node);
     } catch (e) { FATAL.detErr = String((e && e.stack) || e); }
   }
@@ -761,7 +770,7 @@
   /* ---------- 实例工厂（v61.1）：一个 pane 一套 条/面板/气泡/tooltip/定位循环。
    * slot 0 保留 #zusage-bar/#zusage-tip 兼容 id（泵热更新按它清理），其余实例仅类名。 */
   function spawnInstance(pid, slot) {
-    var VERSION = "v81";   // v76 loading状态词 → v77 思考动效图标 → v78 删loading状态词/统计行缩字号 → v79 统计行落点=工具条前/弹出层后 → v80 条挂输入卡片工具行下+面板迁body → v81 tooltip 改宿主 Radix 同款反色底   // 悬停 ⚙ 面板可见；本会话热修部署未走提交，版本号随部署代际递增
+    var VERSION = "v82";   // v79 统计行落点 → v80 条挂输入卡片工具行下 → v81 tooltip 宿主同款 → v82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）   // 悬停 ⚙ 面板可见；本会话热修部署未走提交，版本号随部署代际递增
     var instanceDisposed = false, heavyTimer = 0, frame = 0, themeObserver = null;
     var globalListeners = [];
     function listenGlobal(target, type, fn, capture) {

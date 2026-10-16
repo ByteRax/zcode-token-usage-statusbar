@@ -657,3 +657,34 @@ test('㉑ deterministic line lands before the hover action row and after the clo
   h.runTimers(2000);
   assert.equal(section.children.indexOf(quote) + 1, section.children.indexOf(actions), '重排后被摆回工具条之前');
 });
+
+test('㉒ new-session layout: line lands inside the nested content column, above the nested action row (v82)', () => {
+  /* 新开会话的真实结构：turn 容器直接子层没有工具条，它嵌在
+   * group/assistant-turn flex w-full flex-col gap-5 → flex flex-col gap-5 内容列末尾。
+   * v82 深度锚点：insertBefore 落在锚的父容器（内容列）内、工具条之上。 */
+  const h = harness();
+  const store = driveStreaming(h);
+  h.clock.now = 1600;
+  store.set(snap(3, [header('completedSuccess', { outputTokens: 1000, modelDurationMs: 4000, activeMs: 5000 }), text('abcdef')]));
+  const section = h.body.appendChild(new Element('section'));
+  section.dataset.turnId = 'pt1';
+  const turnRow = section.appendChild(new Element('div'));
+  turnRow.className = 'group/assistant-turn flex w-full flex-col gap-5';
+  const col = turnRow.appendChild(new Element('div'));
+  col.className = 'flex flex-col gap-5';                                      // 内容列
+  col.appendChild(new Element('div'));                                        // 正文内容
+  const actions = col.appendChild(new Element('div'));                        // 工具条嵌在内容列末尾
+  actions.className = 'flex items-center gap-1 opacity-0 transition-opacity ' +
+    'group-hover/assistant-turn:opacity-100 focus-within:opacity-100 ' +
+    'has-[[data-bot-group-delivery]]:opacity-100';
+  h.runTimers(2000);
+  const quote = h.deterministic()[0];
+  assert.equal(quote.parentElement, col, '统计行挂进内容列（flex flex-col gap-5）');
+  assert.equal(col.children[col.children.length - 2], quote, '内容列内倒数第二位');
+  assert.equal(col.children[col.children.length - 1], actions, 'hover 工具条仍在统计行之后');
+  // React 重排兜底：被挪到 section 末尾后，下一 tick 摆回内容列内工具条之前
+  section.insertBefore(quote, null);
+  h.runTimers(2000);
+  assert.equal(quote.parentElement, col, '重排后回到内容列');
+  assert.equal(col.children.indexOf(quote) + 1, col.children.indexOf(actions), '仍贴在工具条之前');
+});
