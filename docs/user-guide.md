@@ -389,6 +389,8 @@ python3 plugins/zcode-token-usage-statusbar/overlay_install.py check
 python3 patch_install.py check
 ```
 
+`patch_install.py` standalone 运行（不经 install.py/overlay_install.py 拉起）不会自动探测安装位置；非默认位置须传 `--asar <app.asar 完整路径>` 或设置环境变量 `ZCODE_ASAR`（命令行参数优先），否则会按平台默认位置猜测，猜错时报 `FileNotFoundError`。`install --finalize` 还须额外传 `--runtime <运行时目录>` 或设 `ZCODE_RUNTIME`：pending TMP 的 sidecar 记录了生成时的运行时目录，standalone 默认用脚本自身所在目录，插件安装的运行时数据目录通常不是同一个，不传会被来源授权校验拒绝；`remove`/`check` 不需要这个参数。收尾/卸载失败后的提示会给出带正确路径的完整命令，照着复制执行即可。
+
 运行目录中的 `plugin-session-start.json` 是启动钩子诊断，`plugin-update.json` 是更新状态，`diag-*.json` 是窗口诊断。没有自然启动事件记录时，手动脚本成功不能证明钩子自动执行过；空闲时窗口诊断不持续更新并不等于故障。
 
 ## 彻底卸载
