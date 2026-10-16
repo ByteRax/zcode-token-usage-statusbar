@@ -93,6 +93,9 @@ def fmt(n):
 
 
 SESSION_TIMEOUT_MS = 30 * 60 * 1000  # 最近30分钟有请求视为活跃会话
+_TPS_MIN_GEN_MS = 200          # 有效样本下限，同 token_rate.MIN_GEN_MS
+_TPS_MAX_GEN_MS = 3_600_000    # 有效样本上限（1h），同 token_rate.MAX_GEN_MS
+_TPS_LOOKBACK = 20             # first_token_at 缺失时向前找有效请求的扫描条数上限
 
 
 _AGG_TTL_MS = 2000   # 聚合短缓存：今日合计/会话池是慢变量，2s 陈旧无感；泵 1.5s 拉一次省约一半全表聚合
@@ -620,6 +623,43 @@ def hides_reasoning(model_id):
     return "claude" in (model_id or "").lower()
 
 
+def _row_gen_ms(r):
+    """按 token_rate.py 同款口径算一行 model_usage 的生成时长；first_token_at 缺失
+    或窗口非正则不可信，返回 None（该请求不参与 last.tps 计算）。"""
+    ft, ct, st = r["first_token_at"], r["completed_at"], r["started_at"]
+    if not ft or not ct or ct <= ft:
+        return None
+    gen_ms = ct - ft
+    if (r["reasoning_tokens"] or hides_reasoning(r["model_id"])) and st and ct > st:
+        gen_ms = ct - st   # 含思考段/Claude 系列：窗口前移到 started_at
+    return gen_ms
+
+
+def _last_valid_tps(con, sid, last):
+    """last.tps：状态栏置顶的"最近一次生成速度"。
+    first_token_at 缺失时不能退化用总耗时当生成时长——等待期会被当成生成期，速率严重
+    低估（2026-10-16 真库抽样：近半请求缺该时间戳，退化值里七成明显偏低，极端到 11
+    token/6.2s 算出 1.8 这种荒谬值）。缺失时向前找最近一条时间戳完整、口径有效的
+    请求代替；仍找不到则 0（chip 按既有约定隐藏，不引入"速度不可用"文案）。"""
+    if last and last["output_tokens"]:
+        gen_ms = _row_gen_ms(last)
+        if gen_ms and _TPS_MIN_GEN_MS <= gen_ms < _TPS_MAX_GEN_MS:
+            return round(last["output_tokens"] / (gen_ms / 1000), 1)
+    rows = con.execute(
+        """select output_tokens, first_token_at, completed_at, started_at, reasoning_tokens, model_id
+           from model_usage where session_id=? and status='completed'
+           order by completed_at desc limit ?""",
+        (sid, _TPS_LOOKBACK),
+    ).fetchall()
+    for r in rows:
+        if not r["output_tokens"]:
+            continue
+        gen_ms = _row_gen_ms(r)
+        if gen_ms and _TPS_MIN_GEN_MS <= gen_ms < _TPS_MAX_GEN_MS:
+            return round(r["output_tokens"] / (gen_ms / 1000), 1)
+    return 0
+
+
 def _session_snapshot(con, sid, cfg):
     """单个会话的完整快照（最新会话与 recent 列表共用一份结构）。"""
     srow = con.execute("select * from session where id=?", (sid,)).fetchone()
@@ -667,24 +707,8 @@ def _session_snapshot(con, sid, cfg):
     lr = con.execute("select max(completed_at) from model_usage where session_id=?", (sid,)).fetchone()
     active = bool(lr and lr[0] and int(time.time() * 1000) - lr[0] < SESSION_TIMEOUT_MS)
     ctx_auto = lookup_context_window(last["model_id"]) if last else None
-    # 生成速度：输出 token ÷ 生成耗时。口径与逐问速率行（token_rate.py）一致：
-    #   分子 = output_tokens（ZCode 该列已含思考 token，不另加）；
-    #   分母 = completed − first_token（首 token 之后到完成），但思考 token 在
-    #   first_token_at 之前流出（2026-10-14 真库裁决），含思考段的窗口前移到
-    #   started_at，否则思考时长被漏出分母、速率虚高；Claude 系列不单独上报思考 token，
-    #   也按含思考段计时（见 hides_reasoning）；缺 first_token_at 时退化总耗时。
-    tps = 0
-    if last and last["output_tokens"]:
-        gen_ms = None
-        if last["first_token_at"] and last["completed_at"] and last["completed_at"] > last["first_token_at"]:
-            gen_ms = last["completed_at"] - last["first_token_at"]
-            if ((last["reasoning_tokens"] or hides_reasoning(last["model_id"]))
-                    and last["started_at"] and last["completed_at"] > last["started_at"]):
-                gen_ms = last["completed_at"] - last["started_at"]
-        elif last["duration_ms"]:
-            gen_ms = last["duration_ms"]
-        if gen_ms:
-            tps = round(last["output_tokens"] / (gen_ms / 1000), 1)
+    # 生成速度：输出 token ÷ 生成耗时，置顶显示；口径细节与缺失兜底见 _last_valid_tps。
+    tps = _last_valid_tps(con, sid, last)
     sub_rows = con.execute(
         """select m.session_id, coalesce(m.agent,''), coalesce(s2.title,''), count(*),
                   coalesce(sum(m.computed_total_tokens),0),
