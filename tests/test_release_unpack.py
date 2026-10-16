@@ -19,6 +19,8 @@ import warnings
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import symlink_support  # noqa: E402
 SPEC = importlib.util.spec_from_file_location("release_unpack_test", ROOT / "release_unpack.py")
 unpacker = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(unpacker)
@@ -487,6 +489,8 @@ class ReleaseUnpackTests(unittest.TestCase):
     def test_existing_output_files_and_symlinks_are_not_touched(self):
         for kind in ("file", "directory", "symlink", "dangling"):
             with self.subTest(kind=kind):
+                if kind in ("symlink", "dangling") and not symlink_support.can_create_symlinks():
+                    self.skipTest("os.symlink requires SeCreateSymbolicLinkPrivilege on Windows")
                 if kind == "file":
                     self.output.write_bytes(b"unknown data")
                 elif kind == "directory":
@@ -509,6 +513,10 @@ class ReleaseUnpackTests(unittest.TestCase):
         self.archive.write_bytes(b"not a ZIP")
         self.refresh_manifest()
         self.assert_rejected()
+
+    @unittest.skipUnless(symlink_support.can_create_symlinks(),
+                         "os.symlink requires SeCreateSymbolicLinkPrivilege on Windows")
+    def test_input_symlink_rejected(self):
         self.pack()
         saved = self.root / "saved.zip"
         self.archive.rename(saved)

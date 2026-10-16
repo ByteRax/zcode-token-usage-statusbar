@@ -38,6 +38,11 @@ class SessionStartChannelTests(unittest.TestCase):
         environment = {"HOME": str(self.home), "USERPROFILE": str(self.home),
                        "ZUSAGE_PLUGIN_RUNTIME": str(self.runtime), "ZUSAGE_PLUGIN_ASAR": str(self.asar),
                        "ZCODE_SESSION_ID": "sess_channel_test", "PYTHONDONTWRITEBYTECODE": "1",
+                       # 子进程输出编码必须与父进程的解码一致：默认中文 Windows 上清空环境会
+                       # 丢掉全局 PYTHONUTF8，子进程按 GBK 写中文诊断、父进程读线程按
+                       # UTF-8 解码直接抛 UnicodeDecodeError（stdout 收成 None，测试炸在
+                       # json.loads(None)）。补回 UTF-8 模式保证两种 locale 的机器行为一致。
+                       "PYTHONUTF8": "1",
                        "PATH": os.environ.get("PATH", ""),
                        **{name: os.environ[name] for name in ("SystemRoot", "TEMP", "TMP")
                           if os.name == "nt" and name in os.environ}}

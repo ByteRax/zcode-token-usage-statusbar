@@ -16,6 +16,9 @@ import unittest
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
+# 兼容 `unittest discover -s tests` 与 `python -m unittest tests.test_xxx` 两种调用形态
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import symlink_support  # noqa: E402
 
 
 def make_asar(path, entry=b"console.log('official v1');"):
@@ -67,6 +70,16 @@ class PendingAsarTests(unittest.TestCase):
             new += self.pi.INJECT_LINE.encode()
         return self.pi.prepare_tmp({"/" + self.pi.ENTRY: new}, operation)
 
+    def upgrade_asar(self, entry=b"console.log('official v2');"):
+        """写入"官方升级版"并强制 mtime 前移：升级模拟必须能被 _same_stamp 的 stat 级
+        检测发现，而 TEMP 所在卷的写入路径时间戳可能被惰性批更新（实测某卷 50 次连写
+        49 次 mtime 相同），同尺寸替换会逃过检测，测试随之偶发失败。真实升级相隔分钟级
+        不受影响，这里用显式 utime 换确定性；余量取 2s 以覆盖最粗的 FAT32 mtime 粒度
+        （NTFS 100ns / exFAT 10ms / FAT32 2s，更小的余量在粗粒度卷上会被取整回原值）。"""
+        make_asar(self.asar, entry)
+        st = self.asar.stat()
+        os.utime(self.asar, ns=(st.st_atime_ns, st.st_mtime_ns + 2_000_000_000))
+
     def test_generation_records_source_before_repack_and_atomic_sidecar(self):
         source = self.asar.read_bytes()
         observations = []
@@ -93,7 +106,7 @@ class PendingAsarTests(unittest.TestCase):
         repack = self.pi.repack
         def upgrade(src, modify, dst):
             result = repack(src, modify, dst)
-            make_asar(self.asar, b"console.log('official v2');")
+            self.upgrade_asar()
             return result
         with mock.patch.object(self.pi, "repack", side_effect=upgrade), \
                 mock.patch.object(self.pi.os, "replace") as replace:
@@ -106,7 +119,7 @@ class PendingAsarTests(unittest.TestCase):
         read = self.pi.entry_bytes_of
         def upgrade(path):
             entry = read(path)
-            make_asar(self.asar, b"console.log('official v2');")
+            self.upgrade_asar()
             return entry
         with mock.patch.object(self.pi, "entry_bytes_of", side_effect=upgrade), \
                 mock.patch.object(self.pi, "repack") as repack:
@@ -123,7 +136,7 @@ class PendingAsarTests(unittest.TestCase):
 
     def test_finalize_rejects_upgrade_and_keeps_diagnostic_files(self):
         self.prepare()
-        make_asar(self.asar, b"console.log('official v2');")
+        self.upgrade_asar()
         with mock.patch.object(self.pi, "repack") as repack:
             self.assertFalse(self.pi.install(finalize=True))
         repack.assert_not_called()
@@ -172,7 +185,7 @@ class PendingAsarTests(unittest.TestCase):
         check = self.pi.self_check
         def upgrade(path, expect=True):
             result = check(path, expect=expect)
-            make_asar(self.asar, b"console.log('official v2');")
+            self.upgrade_asar()
             return result
         with mock.patch.object(self.pi, "self_check", side_effect=upgrade), \
                 mock.patch.object(self.pi.os, "replace") as replace:
@@ -249,12 +262,16 @@ class PendingAsarTests(unittest.TestCase):
             self.pi.finalize_tmp(operation=None)
         self.assertTrue(self.pi.TMP.exists())
 
-    def test_unknown_sidecar_and_symlink_tmp_are_not_taken_over(self):
+    def test_unknown_sidecar_is_not_taken_over(self):
         self.pi.TMP_META.write_text('{"user":"data"}')
         self.assertFalse(self.pi.install())
         self.assertFalse(self.pi.remove())
         self.assertEqual(self.pi.TMP_META.read_text(), '{"user":"data"}')
-        self.pi.TMP_META.unlink()
+
+    @unittest.skipUnless(symlink_support.can_create_symlinks(),
+                         "os.symlink requires SeCreateSymbolicLinkPrivilege on Windows")
+    def test_symlink_tmp_is_not_taken_over(self):
+        self.pi.TMP_META.unlink(missing_ok=True)
         user_file = self.root / "user-data"
         user_file.write_bytes(b"user content")
         self.pi.TMP.symlink_to(user_file)
@@ -322,7 +339,7 @@ class PendingAsarTests(unittest.TestCase):
         repack = self.pi.repack
         def upgrade(src, modify, dst):
             repack(src, modify, dst)
-            make_asar(self.asar, b"console.log('official v2');")
+            self.upgrade_asar()
         with mock.patch.object(self.pi, "repack", side_effect=upgrade):
             self.assertFalse(self.pi.install())
         self.assertFalse(self.pi.TMP.exists())
