@@ -1,6 +1,6 @@
-# ZCode Token 用量状态栏 · Web 版
+# ZCode Token 速度状态栏 · Web 版
 
-给**自托管 ZCode 的网页**加同一条 token 用量状态条 —— 直连页（ZCode server 自带的 web）
+给**自托管 ZCode 的网页**加同一条 token 速度状态条 —— 直连页（ZCode server 自带的 web）
 和远控页（手机远控那套官方页面）都能显示。
 
 [English](README.md) | 简体中文

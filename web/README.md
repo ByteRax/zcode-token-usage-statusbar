@@ -1,6 +1,6 @@
-# ZCode Token Usage Status Bar · Web Edition
+# ZCode Token Speed Status Bar · Web Edition
 
-The same token usage bar, for the **web pages of a self-hosted ZCode** — both the
+The same token speed bar, for the **web pages of a self-hosted ZCode** — both the
 direct web UI shipped by the ZCode server and the official remote-control page.
 
 English | [简体中文](README.zh-CN.md)

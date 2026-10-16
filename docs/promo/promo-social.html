@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="dark">
+<head>
+<meta charset="UTF-8">
+<title>ZCode Token 速度状态栏 · 社交推广图</title>
+<!--
+  小红书/微信推广图（非产品代码），4:3，独立于 promo.html（16:9 GitHub 版）。
+  不做鼠标悬停，静态渲染即可——小图信息密度要低，省掉 tooltip 展示。
+  状态条本体仍是真实 overlay.js 渲染，演示数据与 promo.html 保持一致。
+  导出：uv run --with playwright python docs/promo/shoot.py promo-social.html promo-social.png 1200 900 none
+-->
+<style>
+  :root{
+    --font-sans:"PingFang SC",-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei UI","Microsoft YaHei",sans-serif;
+    --font-mono:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,"Liberation Mono","Courier New","Microsoft YaHei UI","Microsoft YaHei","PingFang SC","Noto Sans CJK SC",monospace;
+    --ui-font-size:15px;
+    --color-background:#1c1c1c;
+    --color-foreground:#ededed;
+    --color-foreground-subtle:#a1a1a1;
+    --color-foreground-subtlest:#737373;
+    --color-border:rgba(255,255,255,.1);
+    --color-hover:rgba(255,255,255,.08);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;width:1200px;height:900px;overflow:hidden}
+  body{position:relative;background:#08090d;color:#e8ecf2;font-family:var(--font-sans);-webkit-font-smoothing:antialiased}
+
+  .pm-bg{position:absolute;inset:0;overflow:hidden;pointer-events:none}
+  .pm-grid{position:absolute;inset:0;
+    background-image:linear-gradient(rgba(255,255,255,.045) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.045) 1px,transparent 1px);
+    background-size:40px 40px;background-position:center 0;
+    -webkit-mask-image:radial-gradient(ellipse 60% 55% at 50% 16%,#000 18%,transparent 72%);
+    mask-image:radial-gradient(ellipse 60% 55% at 50% 16%,#000 18%,transparent 72%)}
+  .pm-glow{position:absolute;border-radius:50%;filter:blur(24px)}
+  .pm-glow.a{width:900px;height:420px;left:150px;top:-170px;background:radial-gradient(closest-side,rgba(87,199,255,.22),transparent)}
+  .pm-glow.b{width:700px;height:420px;left:-260px;bottom:-220px;background:radial-gradient(closest-side,rgba(62,207,142,.14),transparent)}
+  .pm-glow.c{width:640px;height:380px;right:-260px;bottom:-200px;background:radial-gradient(closest-side,rgba(87,199,255,.1),transparent)}
+
+  .pm-head{position:absolute;top:42px;left:0;right:0;text-align:center}
+  .pm-eyebrow{display:inline-flex;align-items:center;gap:7px;height:26px;padding:0 13px;border-radius:999px;
+    font-size:13px;letter-spacing:.06em;color:#a6e3ff;background:rgba(87,199,255,.08);border:1px solid rgba(87,199,255,.3)}
+  .pm-eyebrow svg{width:13px;height:13px}
+  .pm-title{margin:16px 0 0;font-size:46px;line-height:1.28;font-weight:700;letter-spacing:.01em;color:#f4f7fb}
+  .pm-grad{background:linear-gradient(90deg,#57c7ff,#3ecf8e);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .pm-slogan{margin:12px 0 0;font-size:18px;line-height:1.6;letter-spacing:.01em;color:#98a2b3}
+
+  .pm-win{position:absolute;left:90px;top:520px;width:1020px;height:234px;border-radius:14px;background:#171717;
+    border:1px solid rgba(255,255,255,.1);
+    box-shadow:0 0 0 1px rgba(0,0,0,.6),0 32px 90px rgba(0,0,0,.6),0 12px 32px rgba(0,0,0,.4)}
+  .pm-titlebar{position:relative;height:36px;display:flex;align-items:center;padding:0 15px;background:#1c1c1c;
+    border-bottom:1px solid rgba(255,255,255,.06);border-radius:14px 14px 0 0}
+  .pm-lights{display:flex;gap:8px}
+  .pm-lights i{display:block;width:12px;height:12px;border-radius:50%}
+  .pm-lights i:nth-child(1){background:#ff5f57}
+  .pm-lights i:nth-child(2){background:#febc2e}
+  .pm-lights i:nth-child(3){background:#28c840}
+  .pm-wtitle{position:absolute;left:0;right:0;text-align:center;font-size:13px;color:#8a8a8a}
+  .pm-body{position:absolute;top:36px;left:0;right:0;bottom:0;display:flex;justify-content:center;align-items:center;padding:0 24px}
+  .pm-col{width:972px;display:flex;flex-direction:column;gap:22px}
+
+  .pm-composer{flex:0 0 auto;padding:10px 12px 8px;border-radius:16px;background:#252525;border:1px solid rgba(255,255,255,.1)}
+  .pm-composer textarea{display:block;width:100%;height:30px;padding:2px 4px;resize:none;border:0;outline:0;background:transparent;
+    font-family:var(--font-sans);font-size:14px;line-height:1.6;color:#e5e5e5}
+  .pm-composer textarea::placeholder{color:#707070}
+  .pm-ctl{display:flex;align-items:center;gap:16px;height:34px;padding:0 2px;font-size:13.5px;color:#d0d0d0}
+  .pm-ctl > span{display:inline-flex;align-items:center;gap:5px}
+  .pm-ctl svg{width:16px;height:16px;flex:0 0 auto}
+  .pm-ctl svg.pm-chev{width:12px;height:12px;opacity:.65}
+  .pm-perm{color:#f0a020}
+  .pm-spacer{flex:1 1 auto}
+  .pm-send{width:30px;height:30px;justify-content:center;border-radius:9px;background:#5c5c5c;color:#f5f5f5}
+
+  /* 产品截图里的强调：条外圈一道品牌色描边光晕 */
+  #zusage-bar{box-shadow:0 0 0 1px rgba(87,199,255,.45),0 0 26px rgba(87,199,255,.22),0 4px 14px rgba(0,0,0,.4)}
+  .zusage-root .dot{animation:none!important;opacity:1!important}
+
+  .pm-feats{position:absolute;left:90px;top:266px;width:1020px;height:224px;display:grid;
+    grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:18px}
+  .pm-feat{display:flex;gap:14px;align-items:flex-start;padding:20px 22px;border-radius:14px;
+    background:rgba(255,255,255,.035);border:1px solid rgba(255,255,255,.08)}
+  .pm-feat-ic{flex:0 0 auto;width:40px;height:40px;border-radius:10px;display:flex;align-items:center;justify-content:center;
+    background:rgba(87,199,255,.12);color:#6fd8ff}
+  .pm-feat-ic svg{width:21px;height:21px}
+  .pm-feat-t{min-width:0}
+  .pm-feat-t b{display:block;font-size:19px;line-height:26px;font-weight:600;color:#eef2f7;margin-bottom:4px}
+  .pm-feat-t span{display:block;font-size:13.5px;line-height:20px;color:#9199a8}
+
+  .pm-cta{position:absolute;left:90px;right:90px;top:778px;height:66px;display:flex;align-items:center;
+    gap:16px;padding:0 22px;border-radius:14px;background:rgba(87,199,255,.07);border:1px solid rgba(87,199,255,.26)}
+  .pm-cta-ic{flex:0 0 auto;width:34px;height:34px;border-radius:9px;background:rgba(87,199,255,.16);
+    display:flex;align-items:center;justify-content:center;color:#6fd8ff}
+  .pm-cta-ic svg{width:18px;height:18px}
+  .pm-cta-t{min-width:0;flex:1 1 auto}
+  .pm-cta-t b{display:block;font-size:14.5px;line-height:20px;font-weight:600;color:#eef2f7}
+  .pm-cta-t span{display:block;margin-top:2px;font-family:var(--font-mono);font-size:12.5px;line-height:17px;color:#8fd4ff}
+  .pm-cta-tag{flex:0 0 auto;font-size:12px;color:#7e8899;white-space:nowrap}
+</style>
+</head>
+<body>
+
+<div class="pm-bg"><div class="pm-grid"></div><div class="pm-glow a"></div><div class="pm-glow b"></div><div class="pm-glow c"></div></div>
+
+<header class="pm-head">
+  <div class="pm-eyebrow">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+    ZCode 插件 · 完全免费开源
+  </div>
+  <h1 class="pm-title">ZCode 装上这条<br><span class="pm-grad">Token 速度状态栏</span></h1>
+  <p class="pm-slogan">模型快不快、token 花了多少、上下文还剩多少——一眼看清</p>
+</header>
+
+<div class="pm-win">
+  <div class="pm-titlebar">
+    <div class="pm-lights"><i></i><i></i><i></i></div>
+    <div class="pm-wtitle">ZCode</div>
+  </div>
+  <div class="pm-body">
+    <div class="pm-col">
+      <div class="pm-composer">
+        <textarea placeholder="给 ZCode 发消息…" readonly></textarea>
+        <div class="pm-ctl">
+          <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></span>
+          <span class="pm-perm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 8.3-7 10-4-1.7-7-5.5-7-10V6z"/><path d="M12 8v4M12 15.5h.01"/></svg>完全访问<svg class="pm-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></span>
+          <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>电脑操作</span>
+          <span class="pm-spacer"></span>
+          <span>GLM-5.3<svg class="pm-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></span>
+          <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 4A2.5 2.5 0 0 0 7 6.5 3 3 0 0 0 5 11.8 3 3 0 0 0 7 17a2.5 2.5 0 0 0 5 .5V5.5A2 2 0 0 0 9.5 4z"/><path d="M14.5 4A2.5 2.5 0 0 1 17 6.5a3 3 0 0 1 2 5.3 3 3 0 0 1-2 5.2 2.5 2.5 0 0 1-5 .5"/></svg>最高<svg class="pm-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></span>
+          <span class="pm-send"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M6 11l6-6 6 6"/></svg></span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<section class="pm-feats">
+  <div class="pm-feat">
+    <div class="pm-feat-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg></div>
+    <div class="pm-feat-t"><b>看速度</b><span>生成快不快、首字等多久，颜色分档一眼读</span></div>
+  </div>
+  <div class="pm-feat">
+    <div class="pm-feat-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 20v-5M12 20v-9M19 20V5"/></svg></div>
+    <div class="pm-feat-t"><b>看用量</b><span>本轮、会话累计、今日合计，不用翻设置页</span></div>
+  </div>
+  <div class="pm-feat">
+    <div class="pm-feat-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 8.3-7 10-4-1.7-7-5.5-7-10V6z"/><path d="M12 8v4M12 15.5h.01"/></svg></div>
+    <div class="pm-feat-t"><b>防超限</b><span>上下文占比变色提醒，接近上限提前知道</span></div>
+  </div>
+  <div class="pm-feat">
+    <div class="pm-feat-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3v12"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg></div>
+    <div class="pm-feat-t"><b>查子代理</b><span>后台派发的任务消耗，点一下就看明细</span></div>
+  </div>
+</section>
+
+<div class="pm-cta">
+  <div class="pm-cta-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/></svg></div>
+  <div class="pm-cta-t">
+    <b>ZCode 设置 → 插件 → 添加插件市场</b>
+    <span>github.com/ByteRax/zcode-token-usage-statusbar</span>
+  </div>
+  <div class="pm-cta-tag">MIT 开源 · 数据本地不上传</div>
+</div>
+
+<script>
+  /* 显示项全开、中文，不受本机浏览器 profile 里残留的 overlay 配置影响 */
+  try {
+    localStorage.setItem("zusage3.show", JSON.stringify({ win: 1, ctx: 1, today: 1, turn: 1, sub: 1, tools: 1 }));
+    localStorage.setItem("zusage3.lang", "zh");
+  } catch (e) { }
+
+  var NOW = Date.now();
+  var SESS = {
+    sid: "sess_promo_demo01", title: "订单列表分页改造", active: true,
+    turns: 23, requests: 187,
+    input: 1284300, output: 164200, reasoning: 96400, cache_read: 1102300, cache_write: 0,
+    total: 1448500, tool_calls: 142, retries: 0,
+    ctx: 84600, ctx_exc: 0, last_at: NOW - 4000, updated: "20:31:22",
+    context_window: 200000, context_auto: false,
+    code: { add: 1840, del: 620, files: 14 },
+    last_turn: { requests: 7, retries: 0, tool_calls: 12, tool_errors: 0,
+      input: 54200, output: 8300, reasoning: 2100, cache_read: 48900, cache_write: 2100,
+      total: 62500, duration_ms: 128000, ttft_ms: 1400 },
+    last: { duration_ms: 18400, ttft_ms: 1400, model: "glm-5.3", tps: 86 },
+    tools: { total: 142, errors: 2, list: [
+      { name: "Bash", count: 48, duration_ms: 12400, errors: 0 },
+      { name: "Read", count: 31, duration_ms: 3100, errors: 0 },
+      { name: "Edit", count: 22, duration_ms: 2200, errors: 0 },
+      { name: "Grep", count: 18, duration_ms: 1800, errors: 2 },
+      { name: "Agent", count: 12, duration_ms: 45100, errors: 0 },
+      { name: "TodoWrite", count: 11, duration_ms: 300, errors: 0 } ] },
+    sub: { requests: 34, total: 236400, input: 198200, output: 30200, cache_read: 141000,
+      reasoning: 8200, cache_write: 6100, active: true, list: [
+      { task: "梳理订单查询调用链", title: "", agent: "agentA", sid: "sess_sub_a1b2c3d4", active: true, total: 88400, requests: 12, last: NOW - 6000, input: 74200, output: 12100, cache_read: 52300, reasoning: 3100, cache_write: 1800 },
+      { task: "补充分页边界用例", title: "", agent: "agentB", sid: "sess_sub_e5f6a7b8", active: false, total: 147900, requests: 22, last: NOW - 1440000, input: 124000, output: 18100, cache_read: 88700, reasoning: 5100, cache_write: 4300 } ] }
+  };
+  var TODAY = { total: 3421800, input: 2864100, output: 557700, reasoning: 213400,
+    cache_read: 2412300, cache_write: 154900, requests: 1240, retries: 6 };
+  var PAYLOAD = { mine: SESS.sid, recent: [SESS], today: TODAY };
+
+  function feed() { if (window.__zusageUpdate) window.__zusageUpdate(PAYLOAD); }
+
+  var tries = 0;
+  var timer = setInterval(function () {
+    tries++;
+    feed();
+    var its = document.querySelectorAll("#zusage-bar .zu-main .it");
+    var bar = document.getElementById("zusage-bar");
+    if (its.length >= 7 && bar && bar.style.display === "flex") {
+      clearInterval(timer);
+      setTimeout(function () { window.__promoReady = true; }, 400);
+    } else if (tries > 60) clearInterval(timer);
+  }, 200);
+</script>
+<script src="../../overlay.js"></script>
+</body>
+</html>
