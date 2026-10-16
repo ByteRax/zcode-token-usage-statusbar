@@ -101,6 +101,7 @@ class RuntimeSyncGuardTests(unittest.TestCase):
         self.save_state()
         self.assert_rejected()
         pi = mock.Mock()
+        pi.ASAR = None   # 未解析到目标：sync 不应把 Mock 当 Path 用。
         with mock.patch.object(self.installer, "resolve_paths", return_value=(self.runtime, pi)), \
                 contextlib.redirect_stdout(io.StringIO()) as output:
             result = self.installer.run_hook()

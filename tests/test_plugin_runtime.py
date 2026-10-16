@@ -52,7 +52,7 @@ class PluginRuntimeTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         @contextlib.contextmanager
-        def fixture_verifier(runtime):
+        def fixture_verifier(runtime, target_asar=None):
             yield lambda: None
         patcher = mock.patch.object(installer, "_sync_verifier", fixture_verifier)
         patcher.start()
@@ -400,7 +400,7 @@ class PluginRuntimeTests(unittest.TestCase):
         command = ("import contextlib, importlib.util; from pathlib import Path; "
                    "s=importlib.util.spec_from_file_location('overlay_install', {!r}); "
                    "m=importlib.util.module_from_spec(s); s.loader.exec_module(m); "
-                   "m._sync_verifier=lambda runtime: contextlib.nullcontext(lambda: None); "
+                   "m._sync_verifier=lambda runtime, target_asar=None: contextlib.nullcontext(lambda: None); "
                    "m.PLUGIN_ROOT=Path({!r}); m.main()".format(str(INSTALLER_PATH), str(self.plugin)))
         result = subprocess.run([sys.executable, "-c", command, "sync"], env=environment,
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10)
@@ -941,7 +941,7 @@ from pathlib import Path
 spec = importlib.util.spec_from_file_location("process_installer", sys.argv[1])
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 @contextlib.contextmanager
-def fixture_verifier(runtime):
+def fixture_verifier(runtime, target_asar=None):
     yield lambda: None
 m._sync_verifier = fixture_verifier
 m.PLUGIN_ROOT = Path(sys.argv[2]); runtime = Path(sys.argv[3]); mode = sys.argv[4]
