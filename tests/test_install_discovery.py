@@ -52,7 +52,13 @@ class DiscoveryTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         # ZCODE_ASAR 置空（falsy）确保走枚举候选，且不影响其它环境变量。
-        env = mock.patch.dict(os.environ, {"ZCODE_ASAR": ""})
+        # LOCALAPPDATA/ProgramFiles 指到夹具目录：find_asar 的 %LOCALAPPDATA%\Programs
+        # 兜底扫描与候选展开都不受测试机真实安装影响（真装有 ZCode 时曾把
+        # assertIsNone 打成 assertIsNotNone）。非 Windows 平台多设这两个变量无害。
+        env = mock.patch.dict(os.environ, {
+            "ZCODE_ASAR": "",
+            "LOCALAPPDATA": str(self.root / "localappdata"),
+            "ProgramFiles": str(self.root / "programfiles")})
         env.start()
         self.addCleanup(env.stop)
         # 盘符扫描默认关闭，隔离 Windows 测试机上真实存在的 ZCode；盘符用例单独打开。

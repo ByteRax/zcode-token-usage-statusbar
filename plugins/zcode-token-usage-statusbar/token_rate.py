@@ -436,4 +436,11 @@ def main(argv):
 
 
 if __name__ == "__main__":
+    # Windows 默认（无全局 PYTHONUTF8）下中文输出会按区域编码（GBK 等）写管道，
+    # 逐问速率行经代理终端/对话流展示前按 UTF-8 解码——与 usage_mcp.py 同款防护。
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
     sys.exit(main(sys.argv[1:]))

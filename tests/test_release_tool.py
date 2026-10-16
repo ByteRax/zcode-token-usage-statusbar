@@ -14,6 +14,8 @@ from unittest import mock
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import symlink_support  # noqa: E402
 spec = importlib.util.spec_from_file_location("release_tool_test", ROOT / "release_tool.py")
 tool = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(tool)
@@ -245,6 +247,8 @@ class ReleaseToolTests(unittest.TestCase):
         with self.assertRaisesRegex(tool.ReleaseError, "copy drift"):
             tool.build(self.root, REPO, self.base / "drift")
 
+    @unittest.skipUnless(symlink_support.can_create_symlinks(),
+                         "os.symlink requires SeCreateSymbolicLinkPrivilege on Windows")
     def test_symlinks_anywhere_rejected(self):
         (self.root / tool.PREFIX / "hidden-config").symlink_to(self.manifest)
         with self.assertRaisesRegex(tool.ReleaseError, "symlink"):
@@ -520,6 +524,11 @@ print("bounded unclosed notes completed")
         self.notes_file.write_bytes(b"x" * (tool.MAX_MANIFEST + 1))
         with self.assertRaisesRegex(tool.ReleaseError, "oversize"):
             tool.publish(self.root, REPO, self.asset, self.manifest, notes_file=self.notes_file)
+        self.assertEqual(self.calls(), [])
+
+    @unittest.skipUnless(symlink_support.can_create_symlinks(),
+                         "os.symlink requires SeCreateSymbolicLinkPrivilege on Windows")
+    def test_notes_must_be_regular_source_file(self):
         self.notes_file.unlink()
         self.notes_file.symlink_to(self.manifest)
         with self.assertRaisesRegex(tool.ReleaseError, "regular source"):
