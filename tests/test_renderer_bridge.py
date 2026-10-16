@@ -154,6 +154,10 @@ class RendererBridgeTests(unittest.TestCase):
         # Hash all packed files without evaluating any renderer or accessing its database.
         before = asar.source_fingerprint(HOST)
         original = read(HOST)
+        if bridge.MARKER in original:
+            # Already-deployed host: strip the deployed bridge to recover the clean module.
+            prefix, suffix = original.split(bridge.BRIDGE)
+            original = prefix + suffix
         self.assertEqual(hashlib.sha256(original).hexdigest(), bridge.ASSET_SHA256)
         out = bridge.rewrite_asar(HOST, self.root / 'host-patched.asar')
         module = self.root / 'host-patched.mjs'
