@@ -457,6 +457,10 @@
   function zuUnavailableText() {
     return "⚡ " + L("本轮统计不可用", "turn stats unavailable") + "(本轮)";
   }
+  function zuIsUnavailableText(t) {   // 不比对整串：行可能是另一语言下插的
+    t = String(t || "");
+    return t.indexOf("本轮统计不可用") >= 0 || t.indexOf("turn stats unavailable") >= 0;
+  }
   /* v74：完成但零输出（如纯控制/后台轮次，无可见正文）时不编造"输出 0 token · 耗时
    * XXXs"这种无意义数字——与"记录已清"同样处理为不可用，而不是把字段值直接拼进文案。 */
   function zuHasMeaningfulOutput(stats) {
@@ -648,18 +652,37 @@
         var t = el.getAttribute("data-turn-id");
         if (t && !seen[t]) { seen[t] = 1; boxes.push(el); }
       });
+      /* v86 诊断（≥10s 一次写 __zusageDiag.det，主进程泵取回写 diag-<n>.json）：每轮容器的行类型
+       * （rich/ph/na/keep/model/none）与 tracker 视图、各 pane 的桥接快照窗口——排"历史轮不可用"类问题用 */
+      var wantDiag = Date.now() - (scanDeterministicLines.diagAt || 0) > 10000, diagTurns = wantDiag ? [] : null;
       for (var i = 0; i < boxes.length; i++) {
         var box = boxes[i];
         var tid = box.getAttribute && box.getAttribute("data-turn-id");
         if (!tid) continue;
+        var rec = diagTurns ? { tid: tid.slice(-8) } : null;
+        if (rec) diagTurns.push(rec);
         var mine = null;
         try { mine = box.querySelector("[data-zusage-deterministic]"); } catch (e) { }
         if (mine) {
           /* 已插过：重挂/数据演进后从 tracker 重建文本；观测过但记录已清（换代）、
-           * 或完成但确实零输出（无意义数字，如"耗时 939.0s"配"输出 0 tok"）则明示不可用 */
+           * 或完成但确实零输出（无意义数字，如"耗时 939.0s"配"输出 0 token"）则明示不可用 */
           var again = null;
           for (var n = 0; n < instances.length; n++) { again = instances[n].statsFor(tid); if (again) break; }
           var againOk = !!again && again.complete && zuHasMeaningfulOutput(again);
+          if (!againOk && !(again && again.observedLive)) {
+            /* v86：tracker 无记录（快照窗口滑出/store 换代/热更新换 tracker）或重绑后一步到位捞到的
+             * 历史存量轮缺 outputTokens（缺字段 ≠ 零输出）——都不据此改判"不可用"：已完成轮的数字不会
+             * 过时，保留已有占位/富文本；此前误插的"不可用"行直接撤下。仅亲历过的真实零输出轮仍明示 */
+            var keptLine = mine.querySelector("p") || mine;
+            if (richTextCache[tid]) {
+              if ((keptLine.textContent || "") !== richTextCache[tid]) keptLine.textContent = richTextCache[tid];
+              if (!keptLine.style.fontSize) keptLine.style.fontSize = ZU_DET_FONT_SIZE;
+              zuDetPlace(box, mine);
+            } else if (zuIsUnavailableText(keptLine.textContent)) mine.remove();
+            else zuDetPlace(box, mine);
+            if (rec) { rec.line = richTextCache[tid] ? "rich" : "keep"; rec.st = zuDiagStats(again); }
+            continue;
+          }
           var againText = againOk ? zuFinalText(again) : zuUnavailableText();
           if (againOk) zuRequestTurnText(tid, again);   // 仍缺富文本就补发（限流见函数内）
           var text = richTextCache[tid] || againText;
@@ -667,6 +690,7 @@
           if ((line.textContent || "") !== text) line.textContent = text;
           if (!line.style.fontSize) line.style.fontSize = ZU_DET_FONT_SIZE;   // 旧代节点补样式（热更间隙）
           zuDetPlace(box, mine);   // React 重排后兜住用户指定位置（工具条之前）
+          if (rec) { rec.line = richTextCache[tid] ? "rich" : (againOk ? "ph" : "na"); rec.st = zuDiagStats(again); }
           continue;
         }
         var hasModel = false;
@@ -675,10 +699,13 @@
             if (!hasModel && isRateLine(el)) hasModel = true;
           });
         } catch (e) { }
-        if (hasModel) continue;   // 模型历史统计行在位：不叠双行
+        if (hasModel) { if (rec) rec.line = "model"; continue; }   // 模型历史统计行在位：不叠双行
         var stats = null;
         for (var k = 0; k < instances.length; k++) { stats = instances[k].statsFor(tid); if (stats) break; }
+        if (rec) { rec.line = "none"; rec.st = zuDiagStats(stats); }
         if (!stats || !stats.complete) continue;   // 未完成 / 旧消息（tracker 无记录）不插
+        var statsOk = zuHasMeaningfulOutput(stats);
+        if (!statsOk && !stats.observedLive && !richTextCache[tid]) continue;   // v86：历史零值或缺字段不判失败；已缓存的完整统计仍可重建
         var quote = document.createElement("blockquote");
         quote.dataset.zusageDeterministic = "1";
         var p = document.createElement("p");
@@ -688,13 +715,25 @@
          * 0.8125rem（13px）。必须内联——本节点长在宿主消息流 prose 容器内，bar 内部
          * 样式表够不着，挂 head 的外来样式又会被 React 清掉（历史根因）。 */
         p.style.fontSize = ZU_DET_FONT_SIZE;
-        var statsOk = zuHasMeaningfulOutput(stats);
         if (statsOk) zuRequestTurnText(tid, stats);   // 先占位，向主进程要这轮的数据库富文本
         p.textContent = richTextCache[tid] || (statsOk ? zuFinalText(stats) : zuUnavailableText());
+        if (rec) rec.line = richTextCache[tid] ? "rich" : (statsOk ? "ph" : "na");
         quote.appendChild(p);
         zuDetPlace(box, quote);
       }
+      if (wantDiag) {
+        scanDeterministicLines.diagAt = Date.now();
+        FATAL.det = {
+          time: new Date().toISOString(), boxes: boxes.length, rich: Object.keys(richTextCache).length,
+          bridge: instances.map(function (inst) { return inst.bridgeInfo ? inst.bridgeInfo() : null; }),
+          turns: diagTurns.slice(0, 40),
+        };
+      }
     } catch (e) { FATAL.detErr = String((e && e.stack) || e); }
+  }
+  function zuDiagStats(s) {
+    return s ? { c: s.complete ? 1 : 0, live: s.observedLive ? 1 : 0, out: s.outputTokens, st: s.state,
+      sa: s.startedAt, ea: s.endedAt, mm: s.modelMs, dm: s.durationMs } : null;
   }
   function cleanupDeterministic() {
     clearInterval(detTimer);
@@ -822,7 +861,7 @@
   /* ---------- 实例工厂（v61.1）：一个 pane 一套 条/面板/气泡/tooltip/定位循环。
    * slot 0 保留 #zusage-bar/#zusage-tip 兼容 id（泵热更新按它清理），其余实例仅类名。 */
   function spawnInstance(pid, slot) {
-    var VERSION = "v85";   // v81 tooltip 宿主同款 → v82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v84 主标签页远端路由（工作台分组唯一主绑定上报 + 迟到载荷守卫，issue #30）→ v85 回答末尾统计行跟随万/亿开关 + tok→token   // 悬停 ⚙ 面板可见；本会话热修部署未走提交，版本号随部署代际递增
+    var VERSION = "v86";   // v82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v84 主标签页远端路由（工作台分组唯一主绑定上报 + 迟到载荷守卫，issue #30）→ v85 回答末尾统计行跟随万/亿开关 + tok→token → v86 历史轮 tracker 无记录（窗口滑出/换代/热更）或缺输出字段不再翻成"本轮统计不可用"，加 det 诊断   // 悬停 ⚙ 面板可见；本会话热修部署未走提交，版本号随部署代际递增
     var instanceDisposed = false, heavyTimer = 0, frame = 0, themeObserver = null;
     var globalListeners = [];
     function listenGlobal(target, type, fn, capture) {
@@ -1617,6 +1656,7 @@
       }
       handle.off = off;
       bridge.handle = handle;
+      bridge.rebinds = (bridge.rebinds || 0) + 1;   // 诊断：本 pane 实例绑定/重绑次数
       updateLive();   // subscribeStore 首次同步回调已 ingest 初始快照，这里补挂实时段
     }
     function updateLive() {
@@ -2775,6 +2815,21 @@
           if (key && key !== tid) s = h.tracker.get(key);
         }
         return s;
+      },
+      /* v86 诊断：桥接绑定状态与当前快照窗口（行数/序号/代际）——重启后历史轮可见性取决于它 */
+      bridgeInfo: function () {
+        var h = bridge.handle, info = { bound: !!(h && !h.dead), sid: h ? String(h.sid).slice(-8) : "", rebinds: bridge.rebinds || 0 };
+        if (!info.bound) return info;
+        var snap = null;
+        try { var st = h.store.getState(); snap = st && st.snapshot; } catch (e) { info.err = String(e); }
+        if (snap) {
+          info.win = snap.rows && Array.isArray(snap.rows.window) ? snap.rows.window.length : null;
+          info.seq = snap.seq;
+          info.epoch = String(snap.logEpoch).slice(0, 12);
+          info.heads = 0;
+          try { snap.rows.window.forEach(function (r) { if (r && r.kind === "turnHeader") info.heads++; }); } catch (e) { }
+        }
+        return info;
       },
       liveEl: function () { return liveEl; },   // 测试缝：实时段节点引用
       liveIconKind: function () { return liveIconCur; },   // 测试缝：当前 chip 图标（think/bolt/空）

@@ -250,6 +250,64 @@ test('⑬ delivered DB rich text replaces the placeholder line immediately, with
   assert.equal(turnRequests(h).length, 1);  // 已有富文本：不再入队
 });
 
+test('⑬b delayed DB rich text still replaces the placeholder after its tracker record slides out', () => {
+  const h = harness();
+  const store = driveStreaming(h);
+  const { line } = completeTurn(h, store);
+  assert.equal(turnRequests(h).length, 1);
+  assert.equal(turnRequests(h)[0].sid, 'sid_a');
+  store.set(snap(4, [{ rowId: 9, turnId: 't2', productTurnId: 'pt2', kind: 'turnHeader', state: 'running' }]));
+  h.runTimers(2000);
+  assert.equal(instanceOf(h).statsFor('pt1'), null);
+  assert.equal(turnRequests(h).length, 1);
+  h.window.__zusageDeliverTurnText('sid_a', RICH);
+  assert.equal(line().textContent, RICH);
+  for (let i = 0; i < 10; i++) h.runTimers(2000);
+  assert.equal(line().textContent, RICH);
+  assert.equal(turnRequests(h).length, 1);
+});
+
+test('⑬c delayed DB rich text replaces the placeholder after epoch hydration restores zero output', () => {
+  const h = harness();
+  const store = driveStreaming(h);
+  const { line } = completeTurn(h, store);
+  store.set(snap(4, [header('completedSuccess', { outputTokens: 0, modelDurationMs: 0,
+    startedAt: 1000, endedAt: 6000 }), text('abcdef')], 'sid_a', 'e2'));
+  h.runTimers(2000);
+  assert.equal(instanceOf(h).statsFor('pt1').observedLive, false);
+  assert.equal(instanceOf(h).statsFor('pt1').outputTokens, 0);
+  assert.equal(turnRequests(h).length, 1);
+  h.window.__zusageDeliverTurnText('sid_a', RICH);
+  assert.equal(line().textContent, RICH);
+  h.runTimers(2000);
+  assert.equal(line().textContent, RICH);
+  assert.equal(turnRequests(h).length, 1);
+});
+
+for (const delivery of ['before remount', 'after remount']) {
+  test(`⑬d cached DB rich text rebuilds a hydrated historical turn (${delivery})`, () => {
+    const h = harness();
+    const store = driveStreaming(h);
+    const { section } = completeTurn(h, store);
+    store.set(snap(4, [header('completedSuccess', { outputTokens: 0, modelDurationMs: 0 }), text('abcdef')], 'sid_a', 'e2'));
+    h.runTimers(2000);
+    if (delivery === 'before remount') h.window.__zusageDeliverTurnText('sid_a', RICH);
+    section.remove();
+    const remounted = h.body.appendChild(new Element('section'));
+    remounted.dataset.turnId = 'pt1';
+    h.runTimers(2000);
+    if (delivery === 'after remount') {
+      assert.equal(h.deterministic().length, 0);
+      h.window.__zusageDeliverTurnText('sid_a', RICH);
+    }
+    assert.equal(h.deterministic().length, 1);
+    assert.equal(h.deterministic()[0].querySelector('p').textContent, RICH);
+    h.runTimers(2000);
+    assert.equal(h.deterministic()[0].querySelector('p').textContent, RICH);
+    assert.equal(turnRequests(h).length, 1);
+  });
+}
+
 test('⑭ empty delivery (DB not caught up yet) keeps the placeholder and retries on the next tick', () => {
   const h = harness();
   const store = driveStreaming(h);
@@ -367,7 +425,7 @@ test('③ existing model rate line in the same turn container suppresses duplica
   assert.equal(h.deterministic().length, 1);   // 行被移除（重挂场景）且无模型行 → 插入
 });
 
-test('④ virtual-list remount rebuilds from tracker; cleared records mark unavailable and never refabricate', () => {
+test('④ virtual-list remount rebuilds from tracker; cleared records keep their line and never refabricate', () => {
   const h = harness();
   const store = driveStreaming(h);
   store.set(snap(3, [header('completedSuccess', { outputTokens: 1000, modelDurationMs: 4000, activeMs: 5000 }), text('abcdef')]));
@@ -379,11 +437,12 @@ test('④ virtual-list remount rebuilds from tracker; cleared records mark unava
   h.runTimers(2000);
   assert.equal(h.deterministic().length, 1);      // tracker 仍有记录 → 重挂重建
   assert.match(h.deterministic()[0].querySelector('p').textContent, /token\/s\(本轮\)/);
-  // 换代清空 tracker 记录：行未回收时明示不可用，而不是保留旧数字
+  // 换代清空 tracker 记录：保留已有文本——已完成轮的数字不会过时，而"不可用"在 tracker 不认识
+  // 这轮时没有信息量（v86；v74 原设计"明示不可用"在重启后首条消息/热更新场景整页误报）
   store.set(snap(4, [], 'sid_a', 'e2'));
   h.runTimers(2000);
   assert.equal(h.deterministic().length, 1);
-  assert.match(h.deterministic()[0].querySelector('p').textContent, /本轮统计不可用/);
+  assert.match(h.deterministic()[0].querySelector('p').textContent, /token\/s\(本轮\)/);
   h.deterministic()[0].remove();                  // 回收后：tracker 无记录的旧消息不补造
   h.runTimers(2000);
   assert.equal(h.deterministic().length, 0);
@@ -580,6 +639,73 @@ test('⑯ switching to a session whose latest turn finished before this binding 
   assert.equal(h.deterministic().length, 1);
   assert.equal(h.deterministic()[0].querySelector('p').textContent,
     '⚡ 250.0 token/s(本轮) · 输出 1,000 token · 耗时 5.0s');
+});
+
+/* v86：重启/切会话后桥接一步到位捞到的历史存量轮（observedLive=false）可能缺 outputTokens 等
+ * 详细字段（宿主恢复的 turnHeader 不带实时完成事件的数据）。这类轮不能被判成"本轮统计不可用"
+ * ——那是 v74 为"亲历过的真实零输出轮"准备的文案；缺字段 ≠ 零输出。真机：完全重启后历史轮
+ * 曾整页显示"本轮统计不可用(本轮)"。 */
+test('⑯b a historical turn caught at binding without output fields is skipped, not marked "unavailable"', () => {
+  const h = harness();
+  h.setPanes(['a']);
+  h.inject(); h.boot();
+  h.runTimers(600);
+  const store = makeStore(snap(1, [header('completedSuccess'), text('abcdef')]));
+  h.diagSessions.push({ key: '__base__ /fixture/ws', topic: 'conversation/sid_a', store });
+  h.runTimers(2000);
+  const stats = instanceOf(h).statsFor('pt1');
+  assert.equal(stats.complete, true);
+  assert.equal(stats.observedLive, false);
+  assert.equal(stats.outputTokens, null);
+  const section = h.body.appendChild(new Element('section'));
+  section.dataset.turnId = 'pt1';
+  h.runTimers(2000);
+  assert.equal(h.deterministic().length, 0);   // 不插行：既不编造数字，也不误报"不可用"
+  assert.equal(turnRequests(h).length, 0);     // 也不白跑一次数据库旁路查询
+});
+
+test('⑯c after a store epoch change re-projects a turn without output fields, its existing line is kept', () => {
+  const h = harness();
+  const store = driveStreaming(h);
+  const { line } = completeTurn(h, store);   // 亲历完成：占位行
+  assert.match(line().textContent, /250\.0 token\/s\(本轮\)/);
+  store.set(snap(4, [header('completedSuccess'), text('abcdef')], 'sid_a', 'e2'));   // 宿主 store 换代重投影：历史轮不再带 outputTokens
+  h.runTimers(2000);
+  assert.equal(h.deterministic().length, 1);
+  assert.match(line().textContent, /250\.0 token\/s\(本轮\)/);   // 保留已有文本，不翻成"不可用"
+});
+
+test('⑯e a turn that slid out of the snapshot window keeps its line (window slide ≠ record loss)', () => {
+  const h = harness();
+  const store = driveStreaming(h);
+  const { line } = completeTurn(h, store);
+  assert.match(line().textContent, /250\.0 token\/s\(本轮\)/);
+  // 新一轮把旧轮挤出 ≤60 行快照窗口：同 session/epoch，窗口里不再有 t1 的任何行 → tracker 删除其记录
+  store.set(snap(4, [{ rowId: 9, turnId: 't2', productTurnId: 'pt2', kind: 'turnHeader', state: 'running' }], 'sid_a', 'e1'));
+  h.runTimers(2000);
+  assert.equal(instanceOf(h).statsFor('pt1'), null);
+  assert.equal(h.deterministic().length, 1);
+  assert.match(line().textContent, /250\.0 token\/s\(本轮\)/);   // 保留：已完成轮的数字不会过时
+});
+
+test('⑯d an "unavailable" line left on a historical turn without output fields is removed', () => {
+  const h = harness();
+  h.setPanes(['a']);
+  h.inject(); h.boot();
+  h.runTimers(600);
+  const store = makeStore(snap(1, [header('completedSuccess'), text('abcdef')]));
+  h.diagSessions.push({ key: '__base__ /fixture/ws', topic: 'conversation/sid_a', store });
+  h.runTimers(2000);
+  // 修复前版本已经插进去的误报行（热更新后仍在 DOM 里）
+  const section = h.body.appendChild(new Element('section'));
+  section.dataset.turnId = 'pt1';
+  const stale = section.appendChild(new Element('blockquote'));
+  stale.dataset.zusageDeterministic = '1';
+  const p = stale.appendChild(new Element('p'));
+  p.dataset.zusageDeterministic = '1';
+  p.textContent = '⚡ 本轮统计不可用(本轮)';
+  h.runTimers(2000);
+  assert.equal(h.deterministic().length, 0);   // 撤下误报行，而不是保留或重插
 });
 
 test('⑰ a turn observed from "running" still shows its real rate normally (observedLive guard does not over-suppress)', () => {
