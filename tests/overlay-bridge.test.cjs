@@ -221,19 +221,20 @@ function completeTurn(h, store, tid = 'pt1') {
   h.runTimers(2000);
   return { section, line: () => h.deterministic()[0].querySelector('p') };
 }
-const RICH = '⚡ 82.6 tok/s(本轮) · 首字 1.4s · 输出 8,300(含 2,100 思考) tok / 生成 100.5s · 7 段 / 峰 112 · 累计 164k tok · ⏱ 20:31:22';
+const RICH = '⚡ 82.6 token/s(本轮) · 首字 1.4s · 输出 8,300(含 2,100 思考) token / 生成 100.5s · 7 段 / 峰 112 token/s · 累计 16.4万 token · ⏱ 20:31:22';
 
 test('⑫ completed turn shows the bridge placeholder and enqueues one DB rich-text request by session', () => {
   const h = harness();
   const store = driveStreaming(h);
   const { line } = completeTurn(h, store);
   // 占位：桥接能算出的简化文案（注意不是模型那行富文本）
-  assert.equal(line().textContent, '⚡ 250.0 tok/s(本轮) · 输出 1,000 tok · 耗时 5.0s');
+  assert.equal(line().textContent, '⚡ 250.0 token/s(本轮) · 输出 1,000 token · 耗时 5.0s');
   const reqs = turnRequests(h);
   assert.equal(reqs.length, 1);
   assert.equal(reqs[0].action, 'turn-text');
   assert.equal(reqs[0].sid, 'sid_a');      // 查询按 session 走 --current 推断，不带显式 turn-id
   assert.equal(reqs[0].turnId, undefined); // 数据库 turn_id 和渲染器 turnId 不是同一套标识，不能传
+  assert.equal(reqs[0].cn, 1);             // v85：万/亿开关（缺省开、中文）随请求转达给 token_rate.py
 });
 
 test('⑬ delivered DB rich text replaces the placeholder line immediately, without waiting for the next tick', () => {
@@ -255,7 +256,7 @@ test('⑭ empty delivery (DB not caught up yet) keeps the placeholder and retrie
   const { line } = completeTurn(h, store);
   const before = turnRequests(h).length;
   h.window.__zusageDeliverTurnText('sid_a', '');      // 主进程回推空串 = 库里还没这一轮/还没有有效提问时刻
-  assert.equal(line().textContent, '⚡ 250.0 tok/s(本轮) · 输出 1,000 tok · 耗时 5.0s');
+  assert.equal(line().textContent, '⚡ 250.0 token/s(本轮) · 输出 1,000 token · 耗时 5.0s');
   assert.equal(turnRequests(h).length, before);     // 交付回调本身不重复入队（重试只由扫描驱动）
   h.runTimers(2000);                                // 下一次扫描 tick：补发一次同 session 的重试
   const reqs = turnRequests(h);
@@ -345,7 +346,7 @@ test('③ completed turn swaps live text to final summary and inserts determinis
   assert.equal(lines.length, 1);
   assert.equal(lines[0].tagName, 'BLOCKQUOTE');
   assert.ok(lines[0].parentElement === section);   // 插在 turn 容器末尾
-  assert.match(lines[0].querySelector('p').textContent, /250\.0 tok\/s\(本轮\)/);
+  assert.match(lines[0].querySelector('p').textContent, /250\.0 token\/s\(本轮\)/);
   assert.match(lines[0].querySelector('p').textContent, /耗时 5\.0s/);
   assert.ok(lines[0].querySelector('p').dataset.zusageDeterministic === '1');
 });
@@ -377,7 +378,7 @@ test('④ virtual-list remount rebuilds from tracker; cleared records mark unava
   h.deterministic().forEach(el => el.remove());   // 模拟虚拟列表回收节点
   h.runTimers(2000);
   assert.equal(h.deterministic().length, 1);      // tracker 仍有记录 → 重挂重建
-  assert.match(h.deterministic()[0].querySelector('p').textContent, /tok\/s\(本轮\)/);
+  assert.match(h.deterministic()[0].querySelector('p').textContent, /token\/s\(本轮\)/);
   // 换代清空 tracker 记录：行未回收时明示不可用，而不是保留旧数字
   store.set(snap(4, [], 'sid_a', 'e2'));
   h.runTimers(2000);
@@ -578,7 +579,7 @@ test('⑯ switching to a session whose latest turn finished before this binding 
   h.runTimers(2000);
   assert.equal(h.deterministic().length, 1);
   assert.equal(h.deterministic()[0].querySelector('p').textContent,
-    '⚡ 250.0 tok/s(本轮) · 输出 1,000 tok · 耗时 5.0s');
+    '⚡ 250.0 token/s(本轮) · 输出 1,000 token · 耗时 5.0s');
 });
 
 test('⑰ a turn observed from "running" still shows its real rate normally (observedLive guard does not over-suppress)', () => {
@@ -590,7 +591,7 @@ test('⑰ a turn observed from "running" still shows its real rate normally (obs
   assert.equal(instanceOf(h).statsFor('pt1').observedLive, true);
   assert.equal(instanceOf(h).liveEl().textContent, '250.0 t/s');
   assert.equal(instanceOf(h).liveEl().className, 'zu-live ok');
-  assert.equal(line().textContent, '⚡ 250.0 tok/s(本轮) · 输出 1,000 tok · 耗时 5.0s');
+  assert.equal(line().textContent, '⚡ 250.0 token/s(本轮) · 输出 1,000 token · 耗时 5.0s');
 });
 
 /* ---------- v78：消息流 loading 插槽状态词已删（[data-zusage-loading-status]） ---------- */
@@ -628,7 +629,7 @@ test('⑳ deterministic history line renders at the reduced inline font size (v7
   const store = driveStreaming(h);
   const { line } = completeTurn(h, store);
   assert.equal(line().style.fontSize, '0.8125rem');   // 内联样式，宿主正文号不再适用
-  assert.equal(line().textContent, '⚡ 250.0 tok/s(本轮) · 输出 1,000 tok · 耗时 5.0s');
+  assert.equal(line().textContent, '⚡ 250.0 token/s(本轮) · 输出 1,000 token · 耗时 5.0s');
 });
 
 test('㉑ deterministic line lands before the hover action row and after the closed popover (v79)', () => {

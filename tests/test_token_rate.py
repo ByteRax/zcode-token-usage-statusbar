@@ -130,12 +130,23 @@ class TestTurnCurrent(RateTestBase):
         r = self.run_rate("--turn", "--current", state=self.state)
         self.assertEqual(r.returncode, 0, r.stderr)
         line = r.stdout.strip()
-        self.assertIn("153.8 tok/s(本轮)", line)
+        self.assertIn("153.8 token/s(本轮)", line)
         self.assertIn("首字 3.0s", line)
-        self.assertIn("输出 2,000(含 500 思考) tok / 生成 13.0s", line)
-        self.assertIn("2 段 / 峰 160", line)
-        self.assertIn("累计 3.5k tok", line)
+        self.assertIn("输出 2,000(含 500 思考) token / 生成 13.0s", line)
+        self.assertIn("2 段 / 峰 160 token/s", line)
+        self.assertIn("累计 3,500 token", line)   # 缺省万/亿模式：不足 1 万千分位，不再 k 缩写
         self.assertNotIn("(上轮)", line)
+
+    def test_turn_current_no_cn_units(self):
+        # --no-cn-units：渲染端万/亿开关关闭时由 inject-main 传入，退回千分位 + k 缩写
+        self.write_state({"sessionId": SID, "ts": self.t0, "promptTs": self.t0})
+        r = self.run_rate("--turn", "--current", "--no-cn-units", state=self.state)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        line = r.stdout.strip()
+        self.assertIn("153.8 token/s(本轮)", line)
+        self.assertIn("输出 2,000(含 500 思考) token / 生成 13.0s", line)
+        self.assertIn("累计 3.5k token", line)
+        self.assertNotIn("3,500", line)
 
     def test_current_guard_blocks_when_no_data_this_turn(self):
         # 守卫场景：提问时刻晚于库里全部行（纯问答轮收尾自测）→ 输出必须为空
@@ -148,7 +159,7 @@ class TestTurnCurrent(RateTestBase):
         # 不带 --current（手动排查用）则无守卫，显示最新轮
         self.write_state({"sessionId": SID, "ts": self.t0 + 60000, "promptTs": self.t0 + 60000})
         r = self.run_rate("--turn", state=self.state)
-        self.assertIn("tok/s(本轮)", r.stdout)
+        self.assertIn("token/s(本轮)", r.stdout)
 
     def test_no_state_file_fails_closed_with_explicit_reason(self):
         absent = str(Path(self.tmp.name) / "absent.json")
@@ -299,8 +310,8 @@ class TestTurnCurrent(RateTestBase):
                           "promptTs": self.t0 + 60000, "source": "prompt-submit",
                           "prompts": {SID: self.t0, "sess_other": self.t0 + 60000}})
         r = self.run_rate("--turn", "--current", state=self.state)
-        self.assertIn("tok/s(本轮)", r.stdout)
-        self.assertIn("累计 3.5k tok", r.stdout)
+        self.assertIn("token/s(本轮)", r.stdout)
+        self.assertIn("累计 3,500 token", r.stdout)
         # 对照：sess_other 自己刚提问、其入库行全部早于提问时刻 → 必须被守卫拦下（空输出）
         r2 = self.run_rate("--turn", "--current", state=self.state, sid="sess_other")
         self.assertEqual(r2.stdout, "")
@@ -318,10 +329,10 @@ class TestTurnCurrent(RateTestBase):
         r = subprocess.run([sys.executable, str(RATE), "--turn", "--current"],
                            capture_output=True, text=True, env=env, timeout=30)
         line = r.stdout.strip()
-        self.assertIn("200 tok/s(本轮)", line)
-        self.assertIn("输出 600 tok / 生成 3.0s", line)
+        self.assertIn("200 token/s(本轮)", line)
+        self.assertIn("输出 600 token / 生成 3.0s", line)
         self.assertNotIn("段 / 峰", line)
-        self.assertIn("累计 600 tok", line)
+        self.assertIn("累计 600 token", line)
 
     def test_claude_unreported_thinking_counts_from_request_start(self):
         # 回归（2026-10-15 真库同款数据）：Claude 系列 reasoning_tokens 恒为 0，但 output 已含
@@ -394,11 +405,11 @@ class TestLatestLine(RateTestBase):
         r = self.run_rate(state=self.state)
         lines = r.stdout.strip().splitlines()
         self.assertEqual(len(lines), 2)
-        self.assertIn("160 tok/s(上轮)", lines[0])  # 最近完成的 b2（含思考段窗口 5.0s）
+        self.assertIn("160 token/s(上轮)", lines[0])  # 最近完成的 b2（含思考段窗口 5.0s）
         self.assertIn("首字 2.0s", lines[0])
-        self.assertIn("输出 800(含 200 思考) tok / 生成 5.0s", lines[0])
-        self.assertIn("近4次均 148.3 / 峰 200", lines[0])
-        self.assertIn("累计 3.5k tok", lines[0])
+        self.assertIn("输出 800(含 200 思考) token / 生成 5.0s", lines[0])
+        self.assertIn("近4次均 148.3 / 峰 200 token/s", lines[0])
+        self.assertIn("累计 3.5k token", lines[0])
         self.assertIn("请求 4 次", lines[1])  # 只数 main_turn
 
     def test_empty_db_reports_none(self):
@@ -440,7 +451,7 @@ class TestPromptSubmitHook(RateTestBase):
         self.assertEqual(inner["hookEventName"], "UserPromptSubmit")
         ctx = inner["additionalContext"]
         self.assertIn("【内部背景·勿展示】上一条回复:", ctx)
-        self.assertIn("160 tok/s(上轮)", ctx)
+        self.assertIn("160 token/s(上轮)", ctx)
         # 统计行已确定性渲染（overlay.js 桥接）：不再向模型下达任何统计指令
         for banned in ("本轮统计指令", "运行一次:", "Markdown 引用块",
                        "token_rate.py", "--turn", "--current", "--session"):
@@ -616,6 +627,37 @@ runpy.run_path(sys.argv[2], run_name="__main__")
         self.assertIn(SID, st2["prompts"])
         self.assertIn("sess_second", st2["prompts"])
         self.assertGreater(st2["prompts"]["sess_second"], st2["prompts"][SID])
+
+
+class TestCnUnitsFormat(unittest.TestCase):
+    """fmt_cn / format_turn_line(cn=True)：与 overlay.js fmt()、turn-stats.js formatTokens 同规则
+    （≥1 亿用亿、≥1 万用万、至多两位小数去尾零、不足 1 万千分位）。"""
+
+    @classmethod
+    def setUpClass(cls):
+        sys.path.insert(0, str(PLUGIN))
+        import token_rate
+        cls.tr = token_rate
+
+    def test_fmt_cn_matrix(self):
+        self.assertEqual([self.tr.fmt_cn(n) for n in (0, 950, 9500, 582500, 1420000, 10**8, 123456789, 10**9)],
+                         ["0", "950", "9,500", "58.25万", "142万", "1亿", "1.23亿", "10亿"])
+
+    def test_format_turn_line_cn_switches_every_token_count(self):
+        r = {"turn": {"tokPerSec": 82.6, "ttftMs": 1400, "totalOutput": 58260, "totalReasoning": 21000,
+                      "genMs": 100500, "requests": 7, "peak": 112, "lastAt": 0},
+             "session": {"totalOutput": 1640000}}
+        plain = self.tr.format_turn_line(r, cn=False)
+        self.assertIn("⚡ 82.6 token/s(本轮)", plain)
+        self.assertIn("输出 58,260(含 21,000 思考) token / 生成 100.5s", plain)
+        self.assertIn("累计 1.6M token", plain)
+        cn = self.tr.format_turn_line(r)   # 缺省即万/亿，与渲染端开关默认开启一致
+        self.assertIn("⚡ 82.6 token/s(本轮)", cn)
+        self.assertIn("输出 5.83万(含 2.1万 思考) token / 生成 100.5s", cn)
+        self.assertIn("7 段 / 峰 112 token/s", cn)
+        self.assertIn("累计 164万 token", cn)
+        self.assertNotIn(" tok ", cn)
+        self.assertNotIn(" tok/", cn)
 
 
 if __name__ == "__main__":

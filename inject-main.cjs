@@ -685,7 +685,7 @@ async function setAnswerRateLine(enabled) {
  * 用一次性 spawn 而非常驻泵：低频（每个完成的轮次至多几次重试）、与主数据泵完全并行
  * 的旁路查询，不占用泵的 stdin 行协议。查不到（数据库还没追上/没有有效提问时刻/
  * 这一轮已被新提问越过）时回推空串，不是错误，渲染端据此限流重试。 */
-function queryTurnText(sid, wc) {
+function queryTurnText(sid, wc, plainUnits) {
   const deliver = (text) => {
     if (!wc || wc.isDestroyed()) return;
     wc.executeJavaScript("window.__zusageDeliverTurnText && window.__zusageDeliverTurnText(" +
@@ -694,8 +694,10 @@ function queryTurnText(sid, wc) {
   if (typeof sid !== "string" || !/^[A-Za-z0-9_-]{1,80}$/.test(sid)) return;
   let py;
   try {
+    /* --no-cn-units：渲染端万/亿开关（localStorage，主进程无真值）显式关闭时才传；
+       缺省（含旧渲染端不带 cn 字段）与产品默认一致，Python 侧自行用万/亿 */
     py = spawn(readCfgCached().python_path,
-      [TOKEN_RATE, "--turn", "--current", "--session", sid], { windowsHide: true });
+      [TOKEN_RATE, "--turn", "--current", "--session", sid].concat(plainUnits ? ["--no-cn-units"] : []), { windowsHide: true });
   } catch (e) { LOG("turn text spawn failed:", e.message); deliver(""); return; }
   let out = "", finished = false;
   const finish = (text) => {
@@ -738,7 +740,7 @@ async function pollPluginRequests() {
         } else if (req && req.action === "rate-line" && typeof req.enabled === "boolean") {
           setAnswerRateLine(req.enabled);
         } else if (req && req.action === "turn-text" && typeof req.sid === "string") {
-          queryTurnText(req.sid, wc);
+          queryTurnText(req.sid, wc, req.cn === 0);
         }
       }
     }

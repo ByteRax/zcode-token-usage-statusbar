@@ -131,18 +131,27 @@
     return () => { if (closed) return; closed = true; try { off(); } finally { tracker.dispose(); } };
   }
 
-  function format(stats) {
+  // cn=true 时 token 数量按万/亿显示（≥1 亿用亿、≥1 万用万，至多两位小数去尾零，数字与单位不留空格），
+  // 与 overlay.js fmt() / token_rate.py fmt_cn 同规则；不足 1 万沿用千分位。
+  function formatTokens(n, cn) {
+    if (cn && n >= 1e8) return trimFixed(n / 1e8) + '亿';
+    if (cn && n >= 1e4) return trimFixed(n / 1e4) + '万';
+    return n.toLocaleString();
+  }
+  function trimFixed(x) { return x.toFixed(2).replace(/\.?0+$/, ''); }
+
+  function format(stats, cn) {
     if (!stats) return '';
     if (!stats.complete) {
       const speed = stats.characterRate === null ? '' : ` · ${stats.characterRate.toFixed(1)} 字符/s`;
       return `⚡ 生成中 · 已观察 ${(stats.observedMs / 1000).toFixed(1)}s${speed}`;
     }
-    const speed = stats.tokenRate === null ? '速率不可用' : `${stats.tokenRate.toFixed(1)} tok/s`;
-    const output = stats.outputTokens === null ? '输出未知' : `输出 ${stats.outputTokens.toLocaleString()} tok`;
+    const speed = stats.tokenRate === null ? '速率不可用' : `${stats.tokenRate.toFixed(1)} token/s`;
+    const output = stats.outputTokens === null ? '输出未知' : `输出 ${formatTokens(stats.outputTokens, cn)} token`;
     const duration = stats.durationMs === null ? '' : ` · 耗时 ${(stats.durationMs / 1000).toFixed(1)}s`;
     const status = stats.state === 'failed' ? ' · 失败' : stats.state === 'completedInterrupted' ? ' · 已中断' : '';
     return `⚡ ${speed} · ${output}${duration}${status}`;
   }
 
-  return { createTracker, subscribeStore, format };
+  return { createTracker, subscribeStore, format, formatTokens };
 });

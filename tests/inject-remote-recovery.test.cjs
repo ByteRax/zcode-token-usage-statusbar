@@ -84,7 +84,7 @@ async function start(f, identity = A) {
   f.api.maybeSpawn(); await flush(); return wc;
 }
 const overlaySource = fs.readFileSync(path.join(__dirname, "..", "overlay.js"), "utf8");
-function renderer(wc, panes, bindings = {}, history = [A]) {
+function renderer(wc, panes, bindings = {}, history = [A], workbench = null) {
   const entries = new Map([
     ["zcode-v4-pane-layout:v2", JSON.stringify({
       root: panes.length === 1 ? { type: "leaf", paneId: "workspace-main" } : {
@@ -94,6 +94,12 @@ function renderer(wc, panes, bindings = {}, history = [A]) {
     })],
     ...history.map(identity => ["zcode-v4-last-session:v1:" + identity, "sA"]),
   ]);
+  const workbenchPayload = list => JSON.stringify({
+    version: 1, activeGroupId: list.length ? "g0" : null,
+    groups: Object.fromEntries(list.map((primaryBinding, i) => ["g" + i, { primaryBinding }])),
+    sessionIndex: {},
+  });
+  if (workbench) entries.set("zcode-v4-session-workbench-groups:v1", workbenchPayload(workbench));
   const context = vm.createContext({
     window: {}, instances: panes.map(pid => ({ pid, getSid: () => "sA" })),
     remoteCache: {}, remoteTodayCache: {},
@@ -103,6 +109,7 @@ function renderer(wc, panes, bindings = {}, history = [A]) {
   const extract = (start, end) => overlaySource.slice(overlaySource.indexOf(start), overlaySource.indexOf(end, overlaySource.indexOf(start)));
   vm.runInContext(extract("  function collectSidWs()", "  /* ---------- 回复末尾速率行") + extract("  function sessionFor(", "  window.__zusageUpdate"), context);
   context.window.__zusageUpdate = payload => { context.payload = payload; };
+  context.replaceWorkbench = list => { entries.set("zcode-v4-session-workbench-groups:v1", workbenchPayload(list)); context.refreshWants(); };
   context.refreshWants();
   wc.executeJavaScript = async js => {
     if (js.includes("var a=window.__zusageWantSids") || js.startsWith("window.__zusageUpdate")) return vm.runInContext(js, context);
@@ -110,6 +117,8 @@ function renderer(wc, panes, bindings = {}, history = [A]) {
   };
   return context;
 }
+const wbRemote = (identity = A, sessionId = "sA") => ({ workspaceScope: { workspacePath: "/p", workspaceIdentity: identity }, sessionId });
+const wbLocal = (sessionId = "sA") => ({ workspaceScope: { workspacePath: "/local" }, sessionId });
 const success = identity => ({ recent: [{ sid: "sA", workspace_identity: identity, remote: true, remote_target: "stable", requests: 3 }], not_local: ["sA"], remote_enabled: true });
 for (const [label, payload] of [["success", success(A)], ["SSH failure", { recent: [{ sid: "sA", workspace_identity: A, remote: true, remote_error: "ssh failed", remote_missing: true }], not_local: ["sA"], remote_enabled: true }], ["error", { error: "database locked" }], ["null", null]]) {
   test(`first ${label} automatically retries with a real scheduled timer`, async () => {
@@ -201,7 +210,71 @@ test("primary pane with ambiguous trusted workspace history does not inherit a s
   f.respond({ ...success(A), recent: [...success(A).recent, { sid: "sA", requests: 9 }] }); await flush();
   assert.equal(page.sessionFor(page.payload, "sA", "workspace-main").requests, 9);
 });
-test("same sid remote and local panes keep explicit empty local binding", async () => {
+test("main pane routes remote through a unique workbench primary binding (issue #30)", async () => {
+  const f = loadPump(), wc = f.addWindow(A);
+  const page = renderer(wc, ["workspace-main"], {}, [], [wbRemote(A)]);
+  f.workspace(wc, [A]); f.api.maybeSpawn(); await flush();
+  assert.equal(page.window.__zusagePaneScopes["workspace-main"].identity, A);
+  assert.deepEqual(f.lines[0].sids, []);
+  assert.deepEqual(f.lines[0].scopes, [{ sid: "sA", workspaceIdentity: A }]);
+  f.respond(success(A)); await flush();
+  assert.equal(page.payload.scope_bindings["workspace-main"], A);
+  assert.equal(page.sessionFor(page.payload, "sA", "workspace-main").requests, 3);
+});
+test("ambiguous workbench bindings (local main + remote group sharing sid) keep main local", async () => {
+  const f = loadPump(), wc = f.addWindow(A);
+  const page = renderer(wc, ["workspace-main"], {}, [], [wbLocal(), wbRemote(A)]);
+  f.workspace(wc, [A]); f.api.maybeSpawn(); await flush();
+  assert.equal(page.window.__zusagePaneScopes["workspace-main"].identity, undefined);
+  assert.deepEqual(f.lines[0].sids, ["sA"]);
+  assert.deepEqual(f.lines[0].scopes, []);
+  f.respond({ recent: [{ sid: "sA", requests: 9 }], not_local: [] }); await flush();
+  assert.equal(page.payload.scope_bindings["workspace-main"], "");
+  assert.equal(page.sessionFor(page.payload, "sA", "workspace-main").requests, 9);
+});
+test("two remote workbench primaries with the same sid keep main local", async () => {
+  const f = loadPump(), wc = f.addWindow(A);
+  const page = renderer(wc, ["workspace-main"], {}, [], [wbRemote(A), wbRemote(B)]);
+  f.workspace(wc, [A, B]); f.api.maybeSpawn(); await flush();
+  assert.deepEqual(f.lines[0].sids, ["sA"]);
+  assert.deepEqual(f.lines[0].scopes, []);
+});
+test("workbench identity outside the trusted allowlist stays local", async () => {
+  const f = loadPump(), wc = f.addWindow(B);
+  const page = renderer(wc, ["workspace-main"], {}, [], [wbRemote(A)]);
+  f.workspace(wc, [B]); f.api.maybeSpawn(); await flush();
+  assert.deepEqual(f.lines[0].sids, ["sA"]);
+  assert.deepEqual(f.lines[0].scopes, []);
+});
+test("tasks contradiction vetoes the workbench main identity", async () => {
+  const f = loadPump(), wc = f.addWindow(A);
+  renderer(wc, ["workspace-main"], {}, [], [wbRemote(A)]);
+  f.workspace(wc, [A, B]); f.tasks(wc, [B]); f.api.maybeSpawn(); await flush();
+  assert.deepEqual(f.lines[0].sids, ["sA"]);
+  assert.deepEqual(f.lines[0].scopes, []);
+});
+test("split main pane keeps its layout identity through the late-payload guard", async () => {
+  const f = loadPump(), wc = f.addWindow(A);
+  const page = renderer(wc, ["workspace-main", "right"], {
+    "workspace-main": { sessionId: "sA", workspaceScope: { workspacePath: "/p", workspaceIdentity: A } },
+  });
+  f.workspace(wc, [A]); f.api.maybeSpawn(); await flush();
+  assert.equal(page.window.__zusagePaneScopes["workspace-main"].identity, A);
+  assert.deepEqual(f.lines[0].scopes, [{ sid: "sA", workspaceIdentity: A }]);
+  f.respond(success(A)); await flush();
+  assert.equal(page.payload.scope_bindings["workspace-main"], A);
+  assert.equal(page.sessionFor(page.payload, "sA", "workspace-main").requests, 3);
+});
+test("revoked main identity discards late remote payloads via the renderer guard", async () => {
+  const f = loadPump(), wc = f.addWindow(A);
+  const page = renderer(wc, ["workspace-main"], {}, [], [wbRemote(A)]);
+  f.workspace(wc, [A]); f.api.maybeSpawn(); await flush();
+  f.respond(success(A)); await flush();
+  assert.equal(page.payload.scope_bindings["workspace-main"], A);
+  assert.equal(page.sessionFor(page.payload, "sA", "workspace-main").requests, 3);
+  page.replaceWorkbench([wbLocal()]);
+  assert.equal(page.sessionFor(page.payload, "sA", "workspace-main"), null);
+});test("same sid remote and local panes keep explicit empty local binding", async () => {
   const f = loadPump(), wc = f.addWindow(A);
   wc.page.p = { left: { sid: "sA", identity: A }, right: { sid: "sA", identity: "" } };
   f.workspace(wc, [A]); f.api.maybeSpawn(); await flush();

@@ -159,11 +159,12 @@ test('panel retains all controls, scroll position and settings-only styling', ()
   for (const key of ['ctx', 'turn', 'win', 'tools', 'today', 'sub']) {
     assert.ok(source.includes('data-k="' + key + '"'));
   }
-  for (const selector of ['zu-rate-line', 'zu-auto-update', 'zu-ctxov', 'data-update="check"', 'data-update="update"', 'name="zu-lang"', 'zu-settings-feedback']) {
+  for (const selector of ['zu-rate-line', 'zu-auto-update', 'zu-ctxov', 'zu-cn-num', 'data-update="check"', 'data-update="update"', 'name="zu-lang"', 'zu-settings-feedback']) {
     assert.ok(source.includes(selector));
   }
   assert.match(source, /\.zu-settings-body"\)\.scrollTop = scrollTop/);
   assert.match(source, /t2\.classList\.contains\("zu-ctxov"\)/);
+  assert.match(source, /t2\.classList\.contains\("zu-cn-num"\)/);
   assert.match(source, /panel\.addEventListener\("scroll", syncSettingsScroll, true\)/);
   assert.match(source, /body\.scrollTop \+= Math\.max\(1, Math\.round\(body\.clientHeight \* \.8\)\)/);
   assert.match(source, /positionSettingsPanel\(\);\s*positionSubPanel\(\);\s*everMounted = true/);
@@ -232,4 +233,120 @@ test('footer feedback click falls back to window.open when the bridge is absent'
   handler({ target: { closest: sel => sel === '[data-update]' ? { dataset: { update: 'check' } } : null } });
   assert.equal(pluginCalls, 1);
   assert.equal(opened.length, 1);
+});
+
+/* ---------- v83：万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 ---------- */
+test('万/亿 preference defaults on, honours only an explicit "0" and round-trips through persist', () => {
+  const stateSource = extract('  var LS = {', '  /* ---------- 多实例注册表');
+  function boot(stored) {
+    const store = Object.assign({}, stored);
+    const context = {
+      window: {},
+      localStorage: { getItem: k => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = v; } },
+    };
+    vm.runInNewContext(stateSource, context);
+    return { context, store };
+  }
+  assert.equal(boot({}).context.state.cnNum, 1);
+  assert.equal(boot({ 'zusage3.cnNum': '0' }).context.state.cnNum, 0);
+  assert.equal(boot({ 'zusage3.cnNum': '1' }).context.state.cnNum, 1);
+  assert.equal(boot({ 'zusage3.cnNum': 'false' }).context.state.cnNum, 1);   // 非 "0" 一律视为开启
+  const { context, store } = boot({});
+  context.state.cnNum = 0;
+  vm.runInNewContext('persist();', context);
+  assert.equal(store['zusage3.cnNum'], '0');
+  context.state.cnNum = 1;
+  vm.runInNewContext('persist();', context);
+  assert.equal(store['zusage3.cnNum'], '1');
+});
+
+test('fmt renders 万/亿 by default in Chinese and K/M/B when disabled or in English', () => {
+  const fmtSource = extract('  function cnUnits() {', '  function ls(') + extract('    function fmt(n) {', '    function sec(ms) {');
+  const context = { state: { lang: 'zh', cnNum: 1 } };
+  const fmt = vm.runInNewContext(fmtSource + '\nfmt;', context);
+  const samples = [undefined, 0, 950, 9500, 582500, 1420000, 1e8, 123456789, 999000000, 1e9, 1.5e9];
+  assert.deepEqual(samples.map(fmt),
+    ['0', '0', '950', '9500', '58.25万', '142万', '1亿', '1.23亿', '9.99亿', '10亿', '15亿']);
+  const kmb = ['0', '0', '950', '9.5K', '582.5K', '1.42M', '100.00M', '123.46M', '999.00M', '1.00B', '1.50B'];
+  context.state.cnNum = 0;
+  assert.deepEqual(samples.map(fmt), kmb);
+  context.state.cnNum = 1;
+  context.state.lang = 'en';
+  assert.deepEqual(samples.map(fmt), kmb);   // 英文界面不展示开关，也不得生效
+});
+
+test('buildPanel shows the 万/亿 toggle only in Chinese and restores its checked state', () => {
+  const buildSource = extract('    function settingRow(', '    function syncSettingsScroll() {');
+  const body = { scrollTop: 0 };
+  const cnBox = {};
+  const context = {
+    panel: {
+      innerHTML: '',
+      querySelector: selector => selector === '.zu-settings-body' ? body
+        : selector === '.zu-cn-num' ? (context.panel.innerHTML.includes('zu-cn-num') ? cnBox : null)
+        : { value: '' },
+      querySelectorAll: () => [],
+    },
+    state: { lang: 'zh', show: {}, ctxOv: '', cnNum: 1 },
+    L: (zh, en) => context.state.lang === 'en' ? en : zh,
+    syncUpdate: () => {}, syncSettingsScroll: () => {},
+  };
+  vm.runInNewContext(buildSource + '\nbuildPanel();', context);
+  assert.match(context.panel.innerHTML, /<input type="checkbox" class="zu-cn-num">/);
+  assert.match(context.panel.innerHTML, /中文单位（万\/亿）/);
+  assert.ok(context.panel.innerHTML.indexOf('zu-cn-num') > context.panel.innerHTML.indexOf('zu-ctxov'));
+  assert.ok(context.panel.innerHTML.indexOf('zu-cn-num') < context.panel.innerHTML.indexOf('zu-settings-langs'));
+  assert.equal(cnBox.checked, true);
+  context.state.cnNum = 0;
+  vm.runInNewContext('buildPanel();', context);
+  assert.equal(cnBox.checked, false);
+  context.state.lang = 'en';
+  vm.runInNewContext('buildPanel();', context);   // 英文：整行不出现，回填守卫不得因控件缺席抛错
+  assert.doesNotMatch(context.panel.innerHTML, /zu-cn-num/);
+  assert.doesNotMatch(context.panel.innerHTML, /万\/亿/);
+});
+
+test('syncPanel restores the 万/亿 toggle and tolerates its absence in English', () => {
+  const syncSource = extract('    function syncPanel() {', '    panel.addEventListener("click",');
+  const cnBox = {}, ctxov = { value: '' };
+  let present = true, updates = 0;
+  const context = {
+    panel: {
+      querySelectorAll: () => [],
+      querySelector: selector => selector === '.zu-cn-num' ? (present ? cnBox : null) : ctxov,
+    },
+    state: { show: {}, ctxOv: '128000', cnNum: 0 },
+    syncUpdate: () => { updates++; },
+  };
+  vm.runInNewContext(syncSource + '\nsyncPanel();', context);
+  assert.equal(cnBox.checked, false);
+  assert.equal(ctxov.value, '128000');
+  context.state.cnNum = 1;
+  vm.runInNewContext('syncPanel();', context);
+  assert.equal(cnBox.checked, true);
+  present = false;
+  vm.runInNewContext('syncPanel();', context);
+  assert.equal(updates, 3);
+});
+
+test('万/亿 toggle change persists and re-renders without touching display items', () => {
+  const changeSource = extract('    panel.addEventListener("change",', '    listenGlobal(document, "mousedown",');
+  let handler, saved = 0, renders = 0;
+  const context = {
+    panel: { addEventListener: (_, fn) => { handler = fn; } },
+    state: { ctxOv: '', show: { ctx: 1 }, cnNum: 1 },
+    persist: () => { saved++; }, renderAll: () => { renders++; },
+  };
+  vm.runInNewContext(changeSource, context);
+  const target = checked => ({ type: 'checkbox', checked, dataset: {}, classList: { contains: name => name === 'zu-cn-num' } });
+  handler({ target: target(false) });
+  assert.equal(context.state.cnNum, 0);
+  assert.equal(saved, 1);
+  assert.equal(renders, 1);
+  assert.deepEqual(context.state.show, { ctx: 1 });   // 必须独立分支：落入 data-k 分支会写 show[undefined]
+  handler({ target: target(true) });
+  assert.equal(context.state.cnNum, 1);
+  assert.equal(saved, 2);
+  assert.equal(renders, 2);
+  assert.deepEqual(context.state.show, { ctx: 1 });
 });

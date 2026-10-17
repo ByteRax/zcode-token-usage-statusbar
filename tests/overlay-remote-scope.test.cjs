@@ -7,9 +7,10 @@ const vm = require("node:vm");
 const source = fs.readFileSync(path.join(__dirname, "..", "overlay.js"), "utf8");
 const A = "remote:ssh:a:22:u:/p", B = "remote:ssh:b:22:u:/p";
 function extract(start, end) { return source.slice(source.indexOf(start), source.indexOf(end, source.indexOf(start))); }
-function sessionFixture() {
+function sessionFixture(mainScope) {
   const context = vm.createContext({ remoteCache: {}, remoteTodayCache: {}, Object,
     window: {}, stale: () => false, state: {}, instances: [], FATAL: {}, nativeCtxVal: 0 });
+  if (mainScope !== undefined) context.mainScopeNow = mainScope;
   vm.runInContext(extract("  function sessionFor(", "  window.__zusagePluginRequests"), context);
   const pick = (d, sid = "sA", pid = "auto") => context.sessionFor(d, sid, pid);
   pick.view = d => {
@@ -98,6 +99,57 @@ test("real pane schema and raw sid storage retain ambiguity instead of choosing 
     ["zcode-v4-last-session:v1:" + B, "sA"],
   ]);
   const ctx = { localStorage: { get length() { return entries.size; }, key: i => [...entries.keys()][i], getItem: k => entries.get(k) || null } };
-  vm.runInNewContext(extract("  function collectSidWs()", "  function refreshWants()"), ctx);
+  vm.runInNewContext(extract("  function collectSidWs()", "  function mainWorkbenchScope("), ctx);
   assert.deepEqual(Array.from(ctx.collectSidWs().sA), [A, B]);
+});
+function workbenchFixture(groups) {
+  const entries = new Map([
+    ["zcode-v4-session-workbench-groups:v1", JSON.stringify({
+      version: 1, activeGroupId: groups.length ? "g0" : null,
+      groups: Object.fromEntries(groups.map((primaryBinding, i) => ["g" + i, { primaryBinding }])),
+      sessionIndex: {},
+    })],
+  ]);
+  const ctx = { ls: (k, d) => entries.get(k) ?? d };
+  vm.runInNewContext(extract("  function mainWorkbenchScope(", "  function refreshWants()"), ctx);
+  return ctx;
+}
+const wbRemote = (identity = A, sessionId = "sA") => ({ workspaceScope: { workspacePath: "/p", workspaceIdentity: identity }, sessionId });
+const wbLocal = (sessionId = "sA") => ({ workspaceScope: { workspacePath: "/local" }, sessionId });
+test("main workbench scope resolves only a unique remote primary binding", () => {
+  assert.equal(workbenchFixture([wbRemote()]).mainWorkbenchScope("sA"), A);
+  assert.equal(workbenchFixture([wbRemote(), wbRemote()]).mainWorkbenchScope("sA"), A);   // 同 scope 重复分组不构成歧义
+  assert.equal(workbenchFixture([{ workspaceScope: A, sessionId: "sA" }]).mainWorkbenchScope("sA"), A);   // 防御：scope 退化成字符串
+  assert.equal(workbenchFixture([wbLocal()]).mainWorkbenchScope("sA"), "");               // 仅本地 scope 不路由
+  assert.equal(workbenchFixture([wbLocal(), wbRemote()]).mainWorkbenchScope("sA"), "");   // 本地+远端同 sid：多窗口共享 localStorage，歧义不猜
+  assert.equal(workbenchFixture([wbRemote(A), wbRemote(B)]).mainWorkbenchScope("sA"), "");
+  assert.equal(workbenchFixture([wbRemote(A, "other")]).mainWorkbenchScope("sA"), "");    // sid 不匹配不参与
+  assert.equal(workbenchFixture([]).mainWorkbenchScope("sA"), "");
+  assert.equal(workbenchFixture([wbRemote()]).mainWorkbenchScope(""), "");
+});
+test("main workbench scope tolerates malformed persistence", () => {
+  const payloads = [
+    "{not json",
+    "null",
+    JSON.stringify({ version: 1 }),                                                        // 缺 groups
+    JSON.stringify({ version: 1, groups: { g0: null } }),                                  // 分组损坏
+    JSON.stringify({ version: 1, groups: { g0: { primaryBinding: { workspaceScope: null, sessionId: "sA" } } } }),
+  ];
+  for (const raw of payloads) {
+    const ctx = { ls: (k, d) => k === "zcode-v4-session-workbench-groups:v1" ? raw : d };
+    vm.runInNewContext(extract("  function mainWorkbenchScope(", "  function refreshWants()"), ctx);
+    assert.equal(ctx.mainWorkbenchScope("sA"), "");
+  }
+});
+test("main pane strips late scope bindings that no longer match current workbench state", () => {
+  const recent = [
+    { sid: "sA", workspace_identity: A, remote: true, requests: 1 },
+    { sid: "sA", requests: 9 },
+  ];
+  const d = { scope_bindings: { "workspace-main": A, left: A }, recent };
+  assert.equal(sessionFixture({ sid: "sA", identity: A })(d, "sA", "workspace-main").requests, 1);
+  assert.equal(sessionFixture({ sid: "sA", identity: "" })(d, "sA", "workspace-main").requests, 9);
+  assert.equal(sessionFixture({ sid: "sB", identity: A })(d, "sA", "workspace-main").requests, 9);
+  assert.equal(sessionFixture(null)(d, "sA", "workspace-main").requests, 9);              // 夹具/首帧未刷新：按本地处理
+  assert.equal(sessionFixture({ sid: "sB", identity: A })(d, "sA", "left").requests, 1);  // 非主叶不受守卫影响
 });
