@@ -35,11 +35,11 @@ node --test tests/inject-remote-recovery.test.cjs
 
 Node 查询泵回归还覆盖首个成功/SSH 失败/error/null 响应后的实际定时续查、已有链连续错误与空响应、同 SID 切换身份免握手、同 SID 跨窗口/分栏 scope 隔离、晚加载/不可信/歧义身份默认关闭路由后由合法 IPC 恢复、配置与客户端设置变化打破去重、常驻进程错误/看门狗及单次查询只结算一次，以及彻底关闭后停止远端轮询、重新开启时恢复。不会替宿主执行真实 SSH 重连。
 
-真实宿主 schema 回归还检查单叶/分栏布局、真实 `workspace-main` 不在 `panes` 时不从历史候选推断归属、本地与远端分栏同 SID 不共享远端数据，以及空 scope fail-closed；明确绑定远端身份的 right 分栏仍自动路由。未知 main 仅显示本地匹配或 0，partial 远端 IPC 不能当作主 pane 的身份证据。
+真实宿主 schema 回归还检查单叶/分栏布局、真实 `workspace-main` 不在 `panes` 时不从历史候选推断归属、本地与远端分栏同 SID 不共享远端数据，以及空 scope fail-closed；明确绑定远端身份的 right 分栏仍自动路由。主标签页（issue #30）经渲染端工作台分组主绑定路由：唯一远端主绑定生成主叶 scope，同 SID 双归属（本地主叶分组/两台远端）、身份不在可信 workspace IPC、tasks 矛盾均保持本地，撤销归属后迟到远端载荷由渲染端守卫按本地丢弃；未知 main 仍仅显示本地匹配或 0，partial 远端 IPC 不能当作主 pane 的身份证据。
 
 文档与配置还需检查：`config.example.json` 及 Markdown 的 JSON 代码块能解析，手动多服务器例子含身份，README 本地链接/锚点有效，`README.md` 与 `README.zh-CN.md` 一致，中英文远端发布范围与限制一致。
 
-**验收边界**：夹具结果不等于 Windows/macOS 桌面、多服务器或各种 SSH 认证方式的实机验收。源码 `main` 尚未发正式 Release；真实使用需更新本机安装副本、完全退出重启，并手工在 SSH 远端部署同版本查询脚本。插件不会自动登录、解密复用宿主密码/加密私钥、安装远端脚本或替宿主自动重连 SSH；自恢复仅指统计查询链持续重试及宿主重连后续查。partial 远端 IPC 不等于当前主 pane 归属；身份未知时不推断，重开工作区或完全重启不能保证识别。桌面 JSON 链支持不代表 MCP/回答速率自动跨机，纯 CLI 无状态条 UI。
+**验收边界**：夹具结果不等于 Windows/macOS 桌面、多服务器或各种 SSH 认证方式的实机验收。源码 `main` 尚未发正式 Release；真实使用需更新本机安装副本、完全退出重启，并手工在 SSH 远端部署同版本查询脚本。插件不会自动登录、解密复用宿主密码/加密私钥、安装远端脚本或替宿主自动重连 SSH；自恢复仅指统计查询链持续重试及宿主重连后续查。partial 远端 IPC 不等于当前主 pane 归属；身份未知或归属歧义时不推断，主标签页路由未经实机验收前不能宣称生效。桌面 JSON 链支持不代表 MCP/回答速率自动跨机，纯 CLI 无状态条 UI。
 
 另覆盖宿主插件契约：市场条目的中英本地化及 Release 渠道保留、统计命令路径/会话的 POSIX 参数引用、Windows PowerShell 编码调用的字面参数、短 MCP 服务键与钩子 matcher/超时；SessionStart 两层异常路径、卸载豁免和探测权限失败、安装未完成和正常重启提示均检查有效的 `additionalContext` 通道（`test_plugin_contract.py`、`test_session_start_channels.py`）。Windows 原生 CMD/Git Bash 执行测试仅在相应环境运行，macOS 会明确跳过；编码结构校验不代表 Windows 实机验收。
 

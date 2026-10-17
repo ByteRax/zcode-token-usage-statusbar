@@ -98,8 +98,8 @@ python3 sync_plugin.py --check
 ### 窗口、分栏与远端
 
 - 状态条以本窗口/分栏 SID 为准，匹配不到的新会话显示零值，不借全局最近会话。隔离键包括 `workspaceIdentity`，同 SID 不代表同服务器数据。
-- partial 远端 IPC、历史候选、localStorage 或目标配置本身不足以证明 `workspace-main` 归属；未知主 pane 只保留本地匹配/0，不能借其它 pane 同 SID 的远端数据。
-- 远端 scope 必须有可靠当前身份。明确绑定身份的分栏可路由；重开工作区或重启只能重触发宿主事件，不能保证识别主 pane。
+- 主标签页（`workspace-main`）归属的唯一放行证据是宿主工作台分组（`zcode-v4-session-workbench-groups:v1`）的主绑定：当前主会话被恰好一个分组绑为主会话且该 scope 是 `remote:ssh:`。partial 远端 IPC、历史候选、last-session 键或目标配置本身不足以证明归属；同 SID 出现任何第二个不同归属（多窗口共享 localStorage，含本地主叶分组）、身份不在本窗口可信 workspace IPC 或与 tasks 矛盾时维持本地，不能借其它 pane 同 SID 的远端数据。撤销后迟到远端载荷由渲染端守卫按本地丢弃。
+- 远端 scope 必须有可靠当前身份。明确绑定身份的分栏与上述唯一主绑定可路由；归属未知或歧义时 fail-closed，不猜服务器。
 - 桌面 JSON 请求中的 `scopes: []` 禁止旧单通道 fallback。旧 CLI SID/逗号列表兼容行为不能扩大为桌面身份推断。
 - `remote.auto` 与 `remote.enabled` 独立；彻底关闭需两者为 false。手动目标通过 `identity`/`identities` 绑定并覆盖同身份自动目标，标签不作身份。
 - 各目标分别维护 today、错误、缓存与恢复；失败不借本地/其它目标总量，保留同身份最近成功快照并标记过期。null/error 不等于成功，也不应清空最近成功显示。

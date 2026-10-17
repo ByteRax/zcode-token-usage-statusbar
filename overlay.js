@@ -103,11 +103,20 @@
   }
   var remoteCache = {};
   var remoteTodayCache = {};
+  /* v84（issue #30）：渲染端当下读到的主叶工作台归属（refreshWants 每轮刷新）。泵推送的
+   * scope_bindings 取自上一轮收集，主叶身份刚切换/撤销时旧绑定可能随迟到的远端响应到达；
+   * sessionFor 以此做守卫，不让旧代际绑定重新点亮远端视图。 */
+  var mainScopeNow = { sid: "", identity: "" };
   function sessionFor(d, sid, pid) {
     var binding = d.scope_bindings || {};
     // 空 identity 是显式本地绑定；真实 pane 缺绑定时也不能继承同 sid 的远端。
     var identity = Object.prototype.hasOwnProperty.call(binding, pid) ? binding[pid]
       : (pid === "auto" && Object.prototype.hasOwnProperty.call(binding, sid) ? binding[sid] : "");
+    /* v84（issue #30）主叶迟到载荷守卫。typeof 兼容测试夹具按源码片段抽取运行（无模块级声明）：
+     * 夹具里 mainScopeNow 由 refreshWants 赋值成为全局；生产环境恒有模块级声明。 */
+    if (pid === "workspace-main" && identity &&
+        (typeof mainScopeNow === "undefined" || !mainScopeNow ||
+         mainScopeNow.sid !== sid || mainScopeNow.identity !== identity)) identity = "";
     var recent = d.recent || [], found = null;
     for (var i = 0; i < recent.length; i++) {
       var r = recent[i];
@@ -184,6 +193,34 @@
     } catch (e4) { }
     return map;
   }
+  /* v84（issue #30）主叶工作区身份：宿主把每个工作台分组（主标签页）的当前主绑定持久化在
+   * zcode-v4-session-workbench-groups:v1（groups[].primaryBinding = {workspaceScope, sessionId}，
+   * 切换会话即改写、关闭分组即删除，宿主每次变更同步写回 localStorage）。当前主叶 sid 恰好
+   * 只被一个分组绑为主会话且该 scope 是 remote:ssh: 时，即主标签页归属的直接证据；出现任何
+   * 第二个不同 scope（含本地主叶分组——多窗口共享同一 localStorage，同 sid 碰撞无法区分窗口）
+   * 都返回 ""，泵维持仅本地查询。泵侧仍按同窗口可信 workspace IPC 与 tasks 一致性复核。 */
+  function mainWorkbenchScope(sid) {
+    if (!sid) return "";
+    try {
+      var data = JSON.parse(ls("zcode-v4-session-workbench-groups:v1", "null"));
+      var groups = data && data.groups;
+      if (!groups || typeof groups !== "object") return "";
+      var found = "", seen = {};
+      for (var gid in groups) {
+        var pb = groups[gid] && groups[gid].primaryBinding;
+        if (!pb || pb.sessionId !== sid) continue;
+        var scope = pb.workspaceScope, key = "";
+        if (scope && typeof scope === "object") key = String(scope.workspaceIdentity || scope.workspacePath || "");
+        else if (typeof scope === "string") key = scope;
+        key = key.trim();
+        if (!key || seen[key]) continue;
+        seen[key] = 1;
+        if (found) return "";   // ≥2 个不同 scope：歧义不猜
+        found = key;
+      }
+      return found.indexOf("remote:ssh:") === 0 ? found : "";
+    } catch (e) { return ""; }
+  }
   function refreshWants() {
     /* 各 pane 会话 id 汇总给泵：__zusageWantSids（新泵按数组强制纳入快照），
      * __zusageWantSid 保底兼容旧泵单值通路（取 0 号实例的会话）；
@@ -203,10 +240,17 @@
         for (var n = 0; n < instances.length; n++) {
           var inst = instances[n], binding = layout && layout.panes && layout.panes[inst.pid];
           if (binding && binding.sessionId === inst.getSid() && binding.workspaceScope) {
-            panes[inst.pid] = { sid: inst.getSid(), identity: binding.workspaceScope.workspaceIdentity || "" };
+            var layoutIdentity = binding.workspaceScope.workspaceIdentity || "";
+            panes[inst.pid] = { sid: inst.getSid(), identity: layoutIdentity };
+            if (inst.pid === "workspace-main") mainScopeNow = { sid: inst.getSid(), identity: layoutIdentity };
           } else if (inst.pid === "workspace-main" && inst.getSid()) {
-            // 宿主主叶不进入持久化 panes；仅上报当前 DOM 会话，缺可靠工作区证据时泵拒绝远端推断。
-            panes[inst.pid] = { sid: inst.getSid() };
+            /* 宿主主叶不进入持久化 panes；上报当前 DOM 会话 + 工作台分组的唯一远端主绑定
+             * （issue #30）。缺可靠证据或归属歧义时仍只报 {sid}，泵维持仅本地查询。 */
+            var mainWs = mainWorkbenchScope(inst.getSid());
+            panes[inst.pid] = mainWs ? { sid: inst.getSid(), identity: mainWs } : { sid: inst.getSid() };
+            mainScopeNow = { sid: inst.getSid(), identity: mainWs || "" };
+          } else if (inst.pid === "workspace-main") {
+            mainScopeNow = { sid: "", identity: "" };
           }
         }
       } catch (e2) { }
@@ -778,7 +822,7 @@
   /* ---------- 实例工厂（v61.1）：一个 pane 一套 条/面板/气泡/tooltip/定位循环。
    * slot 0 保留 #zusage-bar/#zusage-tip 兼容 id（泵热更新按它清理），其余实例仅类名。 */
   function spawnInstance(pid, slot) {
-    var VERSION = "v85";   // v81 tooltip 宿主同款 → v82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v85 回答末尾统计行跟随万/亿开关 + tok→token   // 悬停 ⚙ 面板可见；本会话热修部署未走提交，版本号随部署代际递增
+    var VERSION = "v85";   // v81 tooltip 宿主同款 → v82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v84 主标签页远端路由（工作台分组唯一主绑定上报 + 迟到载荷守卫，issue #30）→ v85 回答末尾统计行跟随万/亿开关 + tok→token   // 悬停 ⚙ 面板可见；本会话热修部署未走提交，版本号随部署代际递增
     var instanceDisposed = false, heavyTimer = 0, frame = 0, themeObserver = null;
     var globalListeners = [];
     function listenGlobal(target, type, fn, capture) {
