@@ -186,7 +186,7 @@ They mainly refresh when a model request completes, not with each streamed token
 
 **Why do some replies have no rate line?**
 
-Pure Q&A and questions with no stored request data omit it rather than reuse the previous turn. Disable it with the per-answer rate toggle in ⚙.
+Pure Q&A and questions with no stored request data omit it rather than reuse the previous turn. Disable it with the per-answer rate toggle in ⚙. After a full restart, restored historical turns may lack valid output statistics. Without a retained line or full-text cache in the current overlay, those turns get neither fabricated statistics nor a misleading “turn stats unavailable” line. Older statistics stored in the message body are unaffected.
 
 **Does this show my bill or plan balance?**
 

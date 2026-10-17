@@ -102,6 +102,9 @@
       return {
         sessionId: turn.sessionId, turnId, state: header.state, complete,
         outputTokens, modelMs, durationMs,
+        // 宿主恢复的起止时刻用于诊断；缺失或非有限数保留为未知。
+        startedAt: Number.isFinite(header.startedAt) ? header.startedAt : null,
+        endedAt: Number.isFinite(header.endedAt) ? header.endedAt : null,
         toolMs: Number.isFinite(header.toolDurationMs) && header.toolDurationMs >= 0 ? header.toolDurationMs : null,
         characterRate, observedMs: Math.max(0, sampledAt - turn.observedAt),
         runningTool,   // null=没有进行中的工具（流式正文阶段/全部完成）；name 可能为空串（fallback 显示"执行中"）
