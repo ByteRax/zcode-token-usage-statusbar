@@ -303,6 +303,20 @@ def fmt_num(n):
     return f"{n:,}"
 
 
+# 万/亿单位（本问统计行缺省；渲染端「中文单位」开关关闭时经 --no-cn-units 退回千分位/k）：≥1 亿用亿、
+# ≥1 万用万，至多两位小数去尾零、数字与单位不留空格（58.25万 / 142万 / 1亿），不足 1 万沿用千分位。与 overlay.js fmt() 同规则。
+def fmt_cn(n):
+    if n >= 100_000_000:
+        return _cn_unit(n / 100_000_000) + "亿"
+    if n >= 10_000:
+        return _cn_unit(n / 10_000) + "万"
+    return fmt_num(n)
+
+
+def _cn_unit(x):
+    return f"{x:.2f}".rstrip("0").rstrip(".")
+
+
 def _hhmmss(ms):
     return time.strftime("%H:%M:%S", time.localtime(ms / 1000))
 
@@ -318,22 +332,25 @@ def _round1(x):
 
 
 # 本问统计行（回复收尾自测用）。调用方判定 turn 为空时（含 --current 守卫）不显示任何行。
-def format_turn_line(r):
+# cn 缺省 True 与渲染端「中文单位」开关默认开启一致；只有开关关闭时 inject-main 才传 --no-cn-units。
+def format_turn_line(r, cn=True):
     t = r.get("turn")
     if not t:
         return "暂无本轮请求记录"
+    num = fmt_cn if cn else fmt_num
+    big = fmt_cn if cn else fmt_compact
     parts = [
-        f"⚡ {t['tokPerSec'] if t['tokPerSec'] is not None else '-'} tok/s(本轮)",
+        f"⚡ {t['tokPerSec'] if t['tokPerSec'] is not None else '-'} token/s(本轮)",
         f"首字 {_sec(t['ttftMs'])}s",
-        f"输出 {fmt_num(t['totalOutput'])}"
-        f"{'(含 ' + fmt_num(t['totalReasoning']) + ' 思考)' if t['totalReasoning'] else ''}"
-        f" tok / 生成 {_sec(t['genMs']) if t['genMs'] > 0 else '-'}s",
+        f"输出 {num(t['totalOutput'])}"
+        f"{'(含 ' + num(t['totalReasoning']) + ' 思考)' if t['totalReasoning'] else ''}"
+        f" token / 生成 {_sec(t['genMs']) if t['genMs'] > 0 else '-'}s",
     ]
     if t["requests"] > 1:
-        parts.append(f"{t['requests']} 段 / 峰 {t['peak'] if t['peak'] is not None else '-'}")
+        parts.append(f"{t['requests']} 段 / 峰 {t['peak']} token/s" if t["peak"] is not None else f"{t['requests']} 段 / 峰 -")
     if r.get("session"):
         s = r["session"]
-        parts.append(f"累计 {fmt_compact(s['totalOutput'])} tok")
+        parts.append(f"累计 {big(s['totalOutput'])} token")
     parts.append(f"⏱ {_hhmmss(t['lastAt'])}")
     return " · ".join(parts)
 
@@ -344,17 +361,17 @@ def format_line(r):
     if not l:
         return "暂无已完成的模型请求"
     parts = [
-        f"⚡ {l['tokPerSec'] if l['tokPerSec'] is not None else '-'} tok/s(上轮)",
+        f"⚡ {l['tokPerSec'] if l['tokPerSec'] is not None else '-'} token/s(上轮)",
         f"首字 {_sec(l['ttftMs'])}s",
         f"输出 {fmt_num(l['outputTokens'])}"
         f"{'(含 ' + fmt_num(l['reasoningTokens']) + ' 思考)' if l['reasoningTokens'] else ''}"
-        f" tok / 生成 {_sec(l['genMs'])}s",
+        f" token / 生成 {_sec(l['genMs'])}s",
     ]
     s = r.get("session")
     if s:
         if s["samples"]:
-            parts.append(f"近{s['samples']}次均 {s['avg']} / 峰 {s['max']}")
-        parts.append(f"累计 {fmt_compact(s['totalOutput'])} tok")
+            parts.append(f"近{s['samples']}次均 {s['avg']} / 峰 {s['max']} token/s")
+        parts.append(f"累计 {fmt_compact(s['totalOutput'])} token")
     parts.append(f"⏱ {_hhmmss(l['completedAt'])}")
     return " · ".join(parts)
 
@@ -382,7 +399,7 @@ def main(argv):
         if json_out:
             print(json.dumps(r, ensure_ascii=False))
         elif r.get("turn"):
-            print(format_turn_line(r))
+            print(format_turn_line(r, cn="--no-cn-units" not in argv))
         # --current 且本问尚无数据：不输出任何行，调用方据此不显示统计（绝不回退到上一轮）
     else:
         r = query_latest(sid)
@@ -394,7 +411,7 @@ def main(argv):
             if s:
                 print(f"会话累计:输出 {fmt_num(s['totalOutput'])}"
                       f"{'(含 ' + fmt_num(s['totalReasoning']) + ' 思考)' if s['totalReasoning'] else ''}"
-                      f" tok · 输入 {fmt_num(s['totalInput'])} tok(其中缓存读 {fmt_num(s['totalCacheRead'])})"
+                      f" token · 输入 {fmt_num(s['totalInput'])} token(其中缓存读 {fmt_num(s['totalCacheRead'])})"
                       f" · 请求 {s['requests']} 次")
     return 0
 

@@ -8,7 +8,7 @@ A real-time speed bar for your [ZCode](https://zcode.z.ai) conversation window.
 
 English · [简体中文](README.md)
 
-Windows / macOS · Python 3.8+ · [MIT](LICENSE)
+Windows / macOS / Linux · Python 3.8+ · [MIT](LICENSE)
 
 ![ZCode Token Speed Status Bar promo](docs/promo/promo.en.png)
 
@@ -113,7 +113,7 @@ On macOS, use `python3 install.py --lang en` if `python` is unavailable.
 
 - **Hover** an item for its detailed figures.
 - **Click Sub-agents** for per-task usage.
-- **Click ⚙** to hide items, switch language or check for plugin updates.
+- **Click ⚙** to hide items, switch language, switch token counts to 万/亿 units (Chinese UI only, on by default) or check for plugin updates.
 - **Run `/usage today`** for today's usage, or `/usage week` for the past week.
 
 The plugin command's full name is `/zcode-token-usage-statusbar:usage`.

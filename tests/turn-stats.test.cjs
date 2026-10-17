@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createTracker, subscribeStore, format } = require('../turn-stats.js');
+const { createTracker, subscribeStore, format, formatTokens } = require('../turn-stats.js');
 
 function snapshot(seq, rows, sessionId = 's', logEpoch = 'e') {
   return { seq, sessionId, logEpoch, rows: { window: rows } };
@@ -44,7 +44,18 @@ test('completed summary uses final output and model duration, not characters', (
   tracker.ingest(snapshot(1, [header('completedSuccess', { outputTokens: 100, modelDurationMs: 2000, activeMs: 5000 }), text('tiny')]));
   assert.equal(tracker.get('t').tokenRate, 50);
   assert.equal(tracker.get('t').durationMs, 5000);
-  assert.match(format(tracker.get('t')), /50.0 tok\/s/);
+  assert.match(format(tracker.get('t')), /50.0 token\/s/);
+  assert.equal(format(tracker.get('t')), '⚡ 50.0 token/s · 输出 100 token · 耗时 5.0s');
+});
+
+test('format switches token counts to 万/亿 only when asked; below 1 万 keeps the thousands separator', () => {
+  const tracker = createTracker({ now: () => 0 });
+  tracker.ingest(snapshot(1, [header('completedSuccess', { outputTokens: 58200, modelDurationMs: 2000, activeMs: 5000 }), text('tiny')]));
+  assert.equal(format(tracker.get('t')), '⚡ 29100.0 token/s · 输出 58,200 token · 耗时 5.0s');
+  assert.equal(format(tracker.get('t'), true), '⚡ 29100.0 token/s · 输出 5.82万 token · 耗时 5.0s');
+  assert.deepEqual([950, 9500, 582000, 1420000, 1e8, 123456789, 1e9].map(n => formatTokens(n, true)),
+    ['950', '9,500', '58.2万', '142万', '1亿', '1.23亿', '10亿']);
+  assert.deepEqual([9500, 1420000].map(n => formatTokens(n, false)), ['9,500', '1,420,000']);
 });
 
 test('missing or too short final summary is unknown rather than fabricated', () => {

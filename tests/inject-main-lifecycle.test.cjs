@@ -170,12 +170,26 @@ test('turn-text request runs a one-shot token_rate --current query by session', 
   assert.equal(p.args[0], '/fixture/token_rate.py');
   assert.equal(p.args.slice(1).join(' '), '--turn --current --session sid_a');   // 纯文本模式，不带 --json/--turn-id
   const before15 = h.timersAt(15000);
-  p.stdout.emit('data', '⚡ 82.6 tok/s(本轮) · 首字 1.4s\n');
+  p.stdout.emit('data', '⚡ 82.6 token/s(本轮) · 首字 1.4s\n');
   p.emit('close', 0); await flush();
   assert.equal(h.deliveries.length, 1);
   assert.ok(h.deliveries[0].includes(JSON.stringify('sid_a')));
-  assert.ok(h.deliveries[0].includes(JSON.stringify('⚡ 82.6 tok/s(本轮) · 首字 1.4s')));   // trim 掉尾换行
+  assert.ok(h.deliveries[0].includes(JSON.stringify('⚡ 82.6 token/s(本轮) · 首字 1.4s')));   // trim 掉尾换行
   assert.ok(h.timersAt(15000) <= before15);   // 不再往计时器表里堆积（自己的哨兵已清）
+});
+
+/* v85：渲染端万/亿开关随 turn-text 请求转达——Python 缺省万/亿（与产品默认一致，旧渲染端不带 cn
+ * 也如此），只有显式 cn === 0 才传 --no-cn-units；其它形状一律按缺省处理 */
+test('turn-text request passes --no-cn-units only when cn === 0', async () => {
+  const h = harness(); await flush();
+  h.queue.push({ action: 'turn-text', sid: 'sid_a', cn: 0 });
+  h.poll(); await flush();
+  assert.equal(h.procs.at(-1).args.slice(1).join(' '), '--turn --current --session sid_a --no-cn-units');
+  for (const cn of [1, false, '0', undefined]) {
+    h.queue.push({ action: 'turn-text', sid: 'sid_a', cn });
+    h.poll(); await flush();
+    assert.equal(h.procs.at(-1).args.slice(1).join(' '), '--turn --current --session sid_a');
+  }
 });
 
 test('turn-text request with a suspicious sid never spawns', async () => {

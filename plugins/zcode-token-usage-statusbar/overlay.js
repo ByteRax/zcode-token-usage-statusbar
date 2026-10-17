@@ -58,17 +58,21 @@
   } catch (e) { }
 
   /* ---------- 共享状态（多实例一致）：显示项/语言/上下文覆盖/最近一次数据 ---------- */
-  var LS = { show: "zusage3.show", ctxOv: "zusage3.ctxOv", lang: "zusage3.lang" };
+  var LS = { show: "zusage3.show", ctxOv: "zusage3.ctxOv", lang: "zusage3.lang", cnNum: "zusage3.cnNum" };
   var state = {
     show: { win: 1, ctx: 1, today: 1, turn: 1, sub: 1, tools: 1 },
     ctxOv: "", data: null,
     lang: "zh", pluginUpdate: window.__zusagePluginState || null,
+    /* 万/亿单位开关：缺省开启，仅显式 "0" 关闭；只在中文界面展示并生效（英文始终 K/M/B） */
+    cnNum: 1,
     /* 逐问速率行开关：真值在运行时 config.json 的 answer_rate_line（主进程随插件状态推送
        rateLine 字段），渲染端只做展示与请求转发；缺省开启 */
     rateLine: !(window.__zusagePluginState && window.__zusagePluginState.rateLine === false),
   };
   /* ---------- i18n（v57）：L(中文, English) 内联双语文案，语言存 localStorage ---------- */
   function L(zh, en) { return state.lang === "en" ? en : zh; }
+  /* 万/亿单位是否生效：状态条 fmt()、占位统计行与 turn-text 请求共用同一判定 */
+  function cnUnits() { return state.lang !== "en" && !!state.cnNum; }
   function ls(k, d) { try { return localStorage.getItem(k) ?? d; } catch (e) { return d; } }
   function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) { } }
   try {
@@ -78,11 +82,13 @@
     }
     state.ctxOv = ls(LS.ctxOv, "");
     if (ls(LS.lang, "") === "en") state.lang = "en";
+    if (ls(LS.cnNum, "") === "0") state.cnNum = 0;
   } catch (e) { }
   function persist() {
     lsSet(LS.show, JSON.stringify(state.show));
     lsSet(LS.ctxOv, state.ctxOv);
     lsSet(LS.lang, state.lang);
+    lsSet(LS.cnNum, state.cnNum ? "1" : "0");
   }
 
   /* ---------- 多实例注册表（v61.1）：每个分屏 pane 一个条实例 ---------- */
@@ -238,7 +244,7 @@
       ".zusage-rate-tip .rt-row span{color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
       '.zusage-rate-tip .rt-note{margin-top:8px;padding-top:7px;border-top:1px solid var(--color-border,transparent);color:var(--color-tooltip-tag-foreground,#a6a6a6)}</style>' +
       '<div class="rt-h">⚡ ' + L("本问速率 · 各数值含义", "Rate line · what each figure means") + "</div>" +
-      row("tok/s", L("本问各段加权平均：总输出 ÷ 总生成时长，工具等待不计入", "weighted average of all segments: total output ÷ total generation time, tool waits excluded")) +
+      row("token/s", L("本问各段加权平均：总输出 ÷ 总生成时长，工具等待不计入", "weighted average of all segments: total output ÷ total generation time, tool waits excluded")) +
       row(L("首字", "TTFT"), L("第一段从发出请求到首个 token 的等待", "wait from request to the first token of the first segment")) +
       row(L("输出", "Output"), L("本问各段输出合计（思考 token 已含其中）", "sum of segment output (thinking tokens already included)")) +
       row(L("生成", "Gen"), L("各段生成窗口合计：含思考（含 Claude 这类不单独上报思考的模型）用 completed_at − started_at，否则用 completed_at − first_token_at；不含段间工具等待", "sum of segment generation windows: with thinking (including models such as Claude that don't report it separately) use completed_at − started_at, otherwise completed_at − first_token_at; tool waits between segments excluded")) +
@@ -297,7 +303,8 @@
   var rateBindings = [];
   function isRateLine(el) {
     var t = el.textContent || "";
-    return document.body.contains(el) && t.indexOf("tok/s(本轮)") >= 0 && t.indexOf("⚡") >= 0 &&
+    /* 「tok/s(本轮)」是 v85 前的旧标记：模型时代贴进历史的行与升级前已缓存的富文本仍带它 */
+    return document.body.contains(el) && (t.indexOf("token/s(本轮)") >= 0 || t.indexOf("tok/s(本轮)") >= 0) && t.indexOf("⚡") >= 0 &&
       !(el.tagName === "BLOCKQUOTE" && el.querySelector("p"));
   }
   function unbindRateLine(binding) {
@@ -398,15 +405,15 @@
     }
     return "";
   }
-  /* 完成态摘要：与模型统计行同款标记「tok/s(本轮)」——可被 isRateLine 识别并复用悬停解释 */
+  /* 完成态摘要：与 Python 统计行同款标记「token/s(本轮)」——可被 isRateLine 识别并复用悬停解释 */
   function zuFinalText(stats) {
-    var text = TURN_STATS.format(stats);
-    return text.indexOf("tok/s") >= 0 ? text.replace("tok/s", "tok/s(本轮)") : text + "(本轮)";
+    var text = TURN_STATS.format(stats, cnUnits());
+    return text.indexOf("token/s") >= 0 ? text.replace("token/s", "token/s(本轮)") : text + "(本轮)";
   }
   function zuUnavailableText() {
     return "⚡ " + L("本轮统计不可用", "turn stats unavailable") + "(本轮)";
   }
-  /* v74：完成但零输出（如纯控制/后台轮次，无可见正文）时不编造"输出 0 tok · 耗时
+  /* v74：完成但零输出（如纯控制/后台轮次，无可见正文）时不编造"输出 0 token · 耗时
    * XXXs"这种无意义数字——与"记录已清"同样处理为不可用，而不是把字段值直接拼进文案。 */
   function zuHasMeaningfulOutput(stats) {
     return !!stats && typeof stats.outputTokens === "number" && stats.outputTokens > 0;
@@ -519,7 +526,8 @@
     var sid = stats && typeof stats.sessionId === "string" ? stats.sessionId : "";
     if (!sid) return;
     richTextRequestTids[sid] = tid;
-    var req = { action: "turn-text", sid: sid };
+    /* cn：万/亿开关当前值；为 0 时主进程给 token_rate.py 加 --no-cn-units（Python 读不到渲染端 localStorage，缺省万/亿） */
+    var req = { action: "turn-text", sid: sid, cn: cnUnits() ? 1 : 0 };
     if (window.__zusagePluginRequests) window.__zusagePluginRequests.push(req);
     else window.__zusagePluginRequests = [req];
     richTextAttempts[tid] = (richTextAttempts[tid] || 0) + 1;
@@ -770,7 +778,7 @@
   /* ---------- 实例工厂（v61.1）：一个 pane 一套 条/面板/气泡/tooltip/定位循环。
    * slot 0 保留 #zusage-bar/#zusage-tip 兼容 id（泵热更新按它清理），其余实例仅类名。 */
   function spawnInstance(pid, slot) {
-    var VERSION = "v82";   // v79 统计行落点 → v80 条挂输入卡片工具行下 → v81 tooltip 宿主同款 → v82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）   // 悬停 ⚙ 面板可见；本会话热修部署未走提交，版本号随部署代际递增
+    var VERSION = "v85";   // v81 tooltip 宿主同款 → v82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v85 回答末尾统计行跟随万/亿开关 + tok→token   // 悬停 ⚙ 面板可见；本会话热修部署未走提交，版本号随部署代际递增
     var instanceDisposed = false, heavyTimer = 0, frame = 0, themeObserver = null;
     var globalListeners = [];
     function listenGlobal(target, type, fn, capture) {
@@ -1044,6 +1052,8 @@
       '</div></section>' +
       '<section class="zu-settings-section"><div class="cap">' + L("通用", "General") + '</div><div class="zu-settings-card">' +
       settingRow('<input type="text" class="zu-ctxov" inputmode="numeric" aria-label="' + L("上下文窗口", "Context window") + '" placeholder="' + L("自动（按模型）", "Auto (model)") + '">', L("上下文窗口", "Context window"), L("留空自动识别，优先使用客户端数值", "Leave empty to detect automatically; prefer the client value")) +
+      /* 万/亿开关只在中文界面出现（英文始终 K/M/B，见 fmt），因此文案不走 L() */
+      (state.lang === "en" ? "" : settingRow('<input type="checkbox" class="zu-cn-num">', "中文单位（万/亿）", "token 数量以万/亿显示，默认开启")) +
       '<div class="zu-settings-langs"><label><input type="radio" name="zu-lang" value="zh"><span>中文</span></label>' +
       '<label><input type="radio" name="zu-lang" value="en"><span>English</span></label></div></div></section>' +
       '<section class="zu-settings-section"><div class="cap">' + L("回答统计", "Reply statistics") + '</div><div class="zu-settings-card">' +
@@ -1068,6 +1078,8 @@
       });
       var ovInput = panel.querySelector(".zu-ctxov");
       if (ovInput) ovInput.value = state.ctxOv;
+      var cnBox = panel.querySelector(".zu-cn-num");
+      if (cnBox) cnBox.checked = !!state.cnNum;
       syncUpdate();
       panel.querySelector(".zu-settings-body").scrollTop = scrollTop;
       syncSettingsScroll();
@@ -1210,10 +1222,17 @@
     /* ---------- 渲染 ---------- */
     function fmt(n) {
       n = n || 0;
+      if (cnUnits()) {
+        if (n >= 1e8) return cnUnit(n / 1e8) + "亿";
+        if (n >= 1e4) return cnUnit(n / 1e4) + "万";
+        return String(n);
+      }
+      if (n >= 1e9) return (n / 1e9).toFixed(2) + "B";
       if (n >= 1e6) return (n / 1e6).toFixed(2) + "M";
       if (n >= 1e3) return (n / 1e3).toFixed(1) + "K";
       return String(n);
     }
+    function cnUnit(x) { return x.toFixed(2).replace(/\.?0+$/, ""); }   // 至多两位小数并去尾零：58.25万、142万、1亿（数字与单位不留空格：等宽字体下空格占满一格）
     function sec(ms) { return ms ? (ms / 1000).toFixed(1) + "s" : "–"; }
 
     /* 超限判定：最近一次"上下文超限被拒"晚于最近成功请求 = 仍处于超限状态（该请求
@@ -1882,6 +1901,8 @@
         cb.checked = !!state.show[cb.dataset.k];
       });
       panel.querySelector(".zu-ctxov").value = state.ctxOv;
+      var cnBox = panel.querySelector(".zu-cn-num");
+      if (cnBox) cnBox.checked = !!state.cnNum;
       syncUpdate();
     }
     panel.addEventListener("click", function (e) {
@@ -1929,6 +1950,12 @@
         scanRateLines();
         scanDeterministicLines();   // v71：关=撤下确定性历史行，开=立即重扫补行
         pluginRequest("rate-line", t2.checked);
+        return;
+      }
+      if (t2.classList.contains("zu-cn-num")) {
+        state.cnNum = t2.checked ? 1 : 0;
+        persist();
+        renderAll(false);
         return;
       }
       if (t2.name === "zu-lang") {

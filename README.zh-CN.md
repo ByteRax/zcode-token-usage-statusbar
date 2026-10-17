@@ -8,7 +8,7 @@
 
 简体中文 · [English](README.en.md)
 
-Windows / macOS · Python 3.8+ · [MIT](LICENSE)
+Windows / macOS / Linux · Python 3.8+ · [MIT](LICENSE)
 
 ![ZCode Token 速度状态栏宣传图](docs/promo/promo.png)
 
@@ -113,7 +113,7 @@ macOS 上若找不到 `python`，改用 `python3 install.py`。
 
 - **悬停**：查看某项的详细数据。
 - **点击子智能体**：展开各个任务的用量。
-- **点击 ⚙**：隐藏不关心的项目、切换语言，或检查插件更新。
+- **点击 ⚙**：隐藏不关心的项目、切换语言、切换 token 数量的万/亿单位（中文界面，默认开启），或检查插件更新。
 - **输入 `/usage today`**：查看今天的用量；`/usage week` 查看近一周。
 
 插件命令的完整名称是 `/zcode-token-usage-statusbar:usage`。
