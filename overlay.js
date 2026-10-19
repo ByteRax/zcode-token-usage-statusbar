@@ -1372,6 +1372,13 @@
         (d.getMinutes() < 10 ? "0" : "") + d.getMinutes() + ":" +
         (d.getSeconds() < 10 ? "0" : "") + d.getSeconds() : "?";
     }
+    function fmtStart(ms) {   // 会话时间范围用：完整日期 YYYY-MM-DD HH:MM（跨数日的会话，秒无意义）
+      if (!ms) return "?";
+      var d = new Date(ms);
+      function two(v) { return (v < 10 ? "0" : "") + v; }
+      return d.getFullYear() + "-" + two(d.getMonth() + 1) + "-" + two(d.getDate()) +
+        " " + two(d.getHours()) + ":" + two(d.getMinutes());
+    }
     function ioc(inp, out, cache, rea, cw) {   // 悬停明细行：输入/输出/缓存命中/缓存写入/思考
       return L("输入 ", "Input ") + fmt(inp) + L(" / 输出 ", " / Output ") + fmt(out) + L(" / 缓存命中 ", " / Cache read ") + fmt(cache) +
         (cw > 0 ? L(" / 缓存写入 ", " / Cache write ") + fmt(cw) : "") +
@@ -1446,6 +1453,11 @@
           ttH(L("生成速度 · 最近一段", "Generation speed · latest segment")) +
           ttRow(L("口径", "Basis"), L("输出 tokens（含思考）÷ 生成耗时", "output tokens (thinking incl.) ÷ generation time")) +
           ttRow(L("档位", "Bands"), L("≥70 绿 · 40–70 黄 · <40 红", "≥70 green · 40–70 yellow · <40 red")) +
+          ((last.startedAt || last.endedAt)
+            ? ttRow(L("时间范围", "Time span"),
+                (last.startedAt ? fmtStart(last.startedAt) : "—") + " - " +
+                (last.endedAt ? fmtStart(last.endedAt) : "—"))
+            : "") +
           ttNote(L("回答期间每段完成即刷新。回复末尾的统计行是整问加权均值，两者数值不同属正常",
             "Refreshes as each segment completes. The reply-end rate line is the whole-turn weighted average, so the two legitimately differ")));
       } else {
@@ -1493,8 +1505,18 @@
             (lt.input > 0 && lt.cache_read > 0 ? L("（命中 " + Math.round(lt.cache_read / lt.input * 100) + "%）", " (" + Math.round(lt.cache_read / lt.input * 100) + "% cached)") : "")) +
           ttRow(L("输出", "Output"), fmt(lt.output) +
             (lt.reasoning > 0 ? L("（含思考 " + fmt(lt.reasoning) + "）", " (incl. " + fmt(lt.reasoning) + " thinking)") : "")) +
+          ((typeof lt.tps === "number" && isFinite(lt.tps) && lt.tps > 0)
+            ? ttRow(L("输出速度", "Output rate"), lt.tps.toFixed(1) + " tok/s" +
+                L("（Σ有效段输出 ÷ Σ有效段生成时长，段间工具等待不计）", " (Σrated output ÷ Σrated generation time, tool waits excluded)") +
+                (lt.unrated_output > 0 ? L("；另有 " + fmt(lt.unrated_output) + " token 未参与测速", "; " + fmt(lt.unrated_output) + " tokens excluded from rate") : ""))
+            : "") +
           (lt.cache_write > 0 ? ttRow(L("缓存写入", "Cache write"), fmt(lt.cache_write)) : "") +
           ttRow(L("耗时", "Time"), L("单次 ", "request ") + sec(last.duration_ms) + L(" · 首字 ", " · TTFT ") + sec(last.ttft_ms) + L(" · 轮总 ", " · turn ") + sec(lt.duration_ms)) +
+          ((lt.started || lt.ended)
+            ? ttRow(L("时间范围", "Time span"),
+                (lt.started ? fmtStart(lt.started) : "—") + " - " +
+                (lt.ended ? fmtStart(lt.ended) : "—"))
+            : "") +
           ((lt.tool_calls || lt.retries || lt.tool_errors)
             ? ttRow(L("工具", "Tools"), (lt.tool_calls ? lt.tool_calls + L(" 次调用", " calls") : "") +
                 (lt.retries ? L(" · 重试 ", " · retries ") + lt.retries : "") +
@@ -1515,6 +1537,9 @@
           ttRow(L("规模", "Scale"), (sess.turns || 0) + L(" 轮 · ", " turns · ") + (sess.requests || 0) + L(" 次请求", " requests") +
             (sess.tool_calls ? L(" · 工具 ", " · tools ") + sess.tool_calls : "") +
             (sess.retries ? L(" · 重试 ", " · retries ") + sess.retries : "")) +
+          ttRow(L("时间范围", "Time span"),
+            (sess.started ? fmtStart(sess.started) : "—") + " - " +
+            (sess.last_at ? fmtStart(sess.last_at) : "—")) +
           (d.code && (d.code.add || d.code.del)
             ? ttRow(L("代码变更", "Code changes"), "+" + (d.code.add || 0) + " / -" + (d.code.del || 0) +
                 (d.code.files ? L("（" + d.code.files + " 文件）", " (" + d.code.files + " files)") : "")) : ""));
@@ -1545,7 +1570,12 @@
           ttRow(L("输出", "Output"), fmt(today.output) +
             (today.reasoning > 0 ? L("（含思考 " + fmt(today.reasoning) + "）", " (incl. " + fmt(today.reasoning) + " thinking)") : "")) +
           ttRow(L("请求", "Requests"), (today.requests || 0) +
-            (today.retries ? L(" 次请求 · 重试 ", " requests · retries ") + today.retries : L(" 次", " requests"))));
+            (today.retries ? L(" 次请求 · 重试 ", " requests · retries ") + today.retries : L(" 次", " requests"))) +
+          ((today.started || today.last_at)
+            ? ttRow(L("时间范围", "Time span"),
+                (today.started ? fmtStart(today.started) : "—") + " - " +
+                (today.last_at ? fmtStart(today.last_at) : "—"))
+            : ""));
       }
       if (state.show.sub && d.sub && (d.sub.total || d.sub.active)) {
         /* v50：悬停 tooltip 只放汇总 + 打开面板的提示；各子代理明细在点击弹出的
@@ -1620,10 +1650,10 @@
     function stubFor(sid) {
       return { sid: String(sid || ""), title: "", active: false, turns: 0, requests: 0,
         input: 0, output: 0, reasoning: 0, cache_read: 0, cache_write: 0, total: 0,
-        tool_calls: 0, retries: 0, ctx: 0, updated: "", last_at: 0, ctx_exc: 0,
+        tool_calls: 0, retries: 0, ctx: 0, updated: "", last_at: 0, ctx_exc: 0, started: 0,
         last_turn: {requests: 0, retries: 0, tool_calls: 0, tool_errors: 0, input: 0, output: 0,
-          reasoning: 0, cache_read: 0, cache_write: 0, total: 0, duration_ms: 0, ttft_ms: 0},
-        last: {duration_ms: 0, ttft_ms: 0, model: "", tps: 0},
+          reasoning: 0, cache_read: 0, cache_write: 0, total: 0, duration_ms: 0, ttft_ms: 0, started: 0, ended: 0},
+        last: {duration_ms: 0, ttft_ms: 0, model: "", tps: 0, startedAt: 0, endedAt: 0},
         code: {add: null, del: null, files: null},
         tools: {total: 0, errors: 0, list: []},
         sub: {requests: 0, total: 0, input: 0, output: 0, cache_read: 0, reasoning: 0,
