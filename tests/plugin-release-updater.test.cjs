@@ -499,7 +499,8 @@ for name in tool.NAMES:
     p = root / name
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_bytes(b"not executable fixture source\\n")
-plugin = {"name": tool.PLUGIN, "version": "1.1.0", "commands": "commands", "skills": "skills"}
+plugin = {"name": tool.PLUGIN, "version": "1.1.0", "commands": "commands", "skills": "skills",
+         "packageLayout": {"schemaVersion": 1, "files": list(tool.NAMES)}}
 for name in (".zcode-plugin/plugin.json", ".claude-plugin/plugin.json"):
     (root / tool.PREFIX / name).write_text(json.dumps(plugin))
 (root / "marketplace.json").write_text(json.dumps({"name": "zusage-marketplace", "plugins": [

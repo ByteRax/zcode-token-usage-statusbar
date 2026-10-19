@@ -16,5 +16,41 @@
     "zusage"
   ],
   "commands": "commands",
-  "skills": "skills"
+  "skills": "skills",
+  "packageLayout": {
+    "schemaVersion": 1,
+    "files": [
+      "LICENSE",
+      "marketplace.json",
+      "plugins/zcode-token-usage-statusbar/.claude-plugin/plugin.json",
+      "plugins/zcode-token-usage-statusbar/.mcp.json",
+      "plugins/zcode-token-usage-statusbar/.zcode-plugin/plugin.json",
+      "plugins/zcode-token-usage-statusbar/README.md",
+      "plugins/zcode-token-usage-statusbar/commands/install-overlay.md",
+      "plugins/zcode-token-usage-statusbar/commands/uninstall-overlay.md",
+      "plugins/zcode-token-usage-statusbar/commands/usage.md",
+      "plugins/zcode-token-usage-statusbar/hooks/hooks.json",
+      "plugins/zcode-token-usage-statusbar/hooks/prompt-submit.py",
+      "plugins/zcode-token-usage-statusbar/hooks/session-start.py",
+      "plugins/zcode-token-usage-statusbar/inject-main.cjs",
+      "plugins/zcode-token-usage-statusbar/install_monitor.py",
+      "plugins/zcode-token-usage-statusbar/overlay.js",
+      "plugins/zcode-token-usage-statusbar/overlay_install.py",
+      "plugins/zcode-token-usage-statusbar/patch_install.py",
+      "plugins/zcode-token-usage-statusbar/plugin-release.cjs",
+      "plugins/zcode-token-usage-statusbar/plugin-storage.cjs",
+      "plugins/zcode-token-usage-statusbar/plugin-updater.cjs",
+      "plugins/zcode-token-usage-statusbar/plugin_auto_update.py",
+      "plugins/zcode-token-usage-statusbar/release_unpack.py",
+      "plugins/zcode-token-usage-statusbar/renderer_bridge.py",
+      "plugins/zcode-token-usage-statusbar/restart_notice.py",
+      "plugins/zcode-token-usage-statusbar/runtime_lock.py",
+      "plugins/zcode-token-usage-statusbar/skills/zcode-token-usage/SKILL.md",
+      "plugins/zcode-token-usage-statusbar/token_rate.py",
+      "plugins/zcode-token-usage-statusbar/turn-stats.js",
+      "plugins/zcode-token-usage-statusbar/usage_mcp.py",
+      "plugins/zcode-token-usage-statusbar/usage_stats.py",
+      "plugins/zcode-token-usage-statusbar/zusage.py"
+    ]
+  }
 }
