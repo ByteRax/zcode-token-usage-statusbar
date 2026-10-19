@@ -7,7 +7,7 @@ const path = require("path");
 const crypto = require("crypto");
 const { execFile } = require("child_process");
 const { promisify } = require("util");
-const { createUpdater, PLUGIN_ID } = require("../plugin-updater.cjs");
+const { createUpdater, PLUGIN_ID, INTERVAL_MS, CHANNEL_RETRY_MS } = require("../plugin-updater.cjs");
 const { validateRelease, validateManifest, downloadRelease } = require("../plugin-release.cjs");
 
 const PLUGIN = "zcode-token-usage-statusbar";
@@ -111,11 +111,12 @@ function fixture(t, settings = {}, customStorage = false) {
     if (f.installErrorAfterCommit) throw new Error("fixture installer exited after commit");
     return { ok: true, diagnostics: [] };
   };
-  const prepareRelease = async (release) => {
+  const prepareRelease = async (release, onProgress) => {
     events.push("prepare");
     assert.deepEqual(release, f.release);
     if (f.prepareError) throw new Error(f.prepareError);
     const manifest = clone(validateManifest(f.manifest, release));
+    if (typeof onProgress === "function") for (const step of f.progressSteps || []) onProgress(clone(step));
     const directory = fs.mkdtempSync(path.join(dir, "prepared-")); prepared.push(directory);
     if (f.afterPrepare) await f.afterPrepare();
     return { directory, release, manifest, cleanup: () => {
@@ -544,4 +545,72 @@ print(json.dumps(tool.build(root, sys.argv[3], Path(sys.argv[2]) / "assets")))
   assert.deepEqual(f.events, ["fetch", "list", "prepare", "marketplace", "list", "install", "sync", "cleanup"]);
   assert.equal(f.syncs.length, 1);
   for (const directory of prepared) assert.equal(fs.existsSync(directory), false);
+});
+
+test("Release manual update leaves checking as soon as the version is known and publishes download, verify, install and sync progress", async (t) => {
+  const f = fixture(t);
+  f.progressSteps = [{ stage: "download", loaded: 8, total: 17 }, { stage: "download", loaded: 17, total: 17 }, { stage: "verify" }];
+  await f.updater.request({ action: "update" });
+  const phases = f.states.map((s) => s.phase);
+  const first = (phase) => phases.indexOf(phase);
+  // 修复前：checking 之后直到宿主安装器启动都没有再 publish，整个下载期面板停在「正在检查更新」。
+  assert.ok(first("checking") >= 0 && first("available") > first("checking"), phases.join(","));
+  assert.ok(first("downloading") > first("available") && first("updating") > first("downloading"), phases.join(","));
+  const progress = f.states.filter((s) => s.progress).map((s) => [s.phase, s.progress.stage, s.progress.loaded, s.progress.total]);
+  assert.deepEqual(progress[0], ["downloading", "download", 0, 17]);   // 下载开始前即推送总大小
+  assert.ok(progress.some((p) => p[0] === "downloading" && p[1] === "download" && p[2] === 17 && p[3] === 17), "download completion published");
+  assert.ok(progress.some((p) => p[0] === "downloading" && p[1] === "verify"), "verify stage published");
+  assert.ok(progress.some((p) => p[0] === "updating" && p[1] === "install"), "install stage published");
+  assert.ok(progress.some((p) => p[0] === "updating" && p[1] === "sync"), "sync stage published");
+  const done = f.updater.status();
+  assert.equal(done.phase, "updated"); assert.equal(done.progress, null); assert.equal(f.record.version, "1.1.0");
+  assertCleaned(f);
+});
+
+test("Release download byte progress is throttled but stage changes and completion always publish", async (t) => {
+  const f = fixture(t);
+  f.progressSteps = [{ stage: "download", loaded: 1, total: 17 }, { stage: "download", loaded: 2, total: 17 },
+    { stage: "download", loaded: 3, total: 17 }, { stage: "download", loaded: 17, total: 17 }, { stage: "verify" }];
+  await f.updater.request({ action: "update" });
+  // 夹具时钟固定，节流窗口内的中间字节进度不重复推送；首个回调、完成与阶段切换必须推送。
+  const loaded = f.states.filter((s) => s.progress && s.progress.stage === "download").map((s) => s.progress.loaded);
+  assert.deepEqual(loaded, [0, 1, 17]);
+});
+
+test("Release catalog mismatch is reported as channel lag to the user and retried after CHANNEL_RETRY_MS instead of INTERVAL_MS", async (t) => {
+  const f = fixture(t);
+  f.catalog.plugins[0].source.sha256 = "0".repeat(64);
+  await f.updater.request({ action: "update" });
+  const status = f.updater.status();
+  assert.equal(status.phase, "error"); assert.equal(status.progress, null);
+  assert.match(status.error, /更新渠道尚未同步到最新 Release/);
+  assert.match(status.error, /稍后会自动重试/);   // 自动更新默认开启
+  assert.doesNotMatch(status.error, /请维护者/);
+  assertNoInstall(f); assertCleaned(f);
+  assert.equal(readJson(f.stateFile).lastAttempt, 100000000 - INTERVAL_MS + CHANNEL_RETRY_MS);
+  const fetches = () => f.events.filter((e) => e === "fetch").length;
+  const before = fetches();
+  f.options.now = () => 100000000 + CHANNEL_RETRY_MS - 1;
+  await f.restart().tick();
+  assert.equal(fetches(), before, "no automatic retry before CHANNEL_RETRY_MS");
+  f.options.now = () => 100000000 + CHANNEL_RETRY_MS;
+  await f.restart().tick();
+  assert.equal(fetches(), before + 1, "automatic retry once CHANNEL_RETRY_MS elapsed");
+});
+
+test("Release catalog mismatch with automatic updates disabled tells the user to retry manually", async (t) => {
+  const f = fixture(t, { plugin_auto_update: false });
+  f.catalog.plugins[0].source.sha256 = "0".repeat(64);
+  await f.updater.request({ action: "update" });
+  assert.match(f.updater.status().error, /请稍后再点「立即更新」/);
+  assertNoInstall(f);
+});
+
+test("Release update abandoned after download returns to available without stale progress", async (t) => {
+  const f = fixture(t);
+  f.afterList = (count) => { if (count === 2) { f.record.version = "2.0.0"; f.writeRecord(); } };
+  await f.updater.request({ action: "update" });
+  const status = f.updater.status();
+  assert.equal(status.phase, "available"); assert.equal(status.progress, null);
+  assertNoInstall(f); assertCleaned(f);
 });

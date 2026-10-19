@@ -40,7 +40,7 @@ function readChannel(home, root = require("./plugin-storage.cjs").resolvePluginS
   if (!repository) throw new Error("远端自动更新仅支持已注册的 GitHub 仓库来源，不能回退开发分支");
   return { kind: "release", repository, marketplace: market };
 }
-async function fetchBytes(url, limit) {
+async function fetchBytes(url, limit, onProgress) {
   let activeRequest, activeResponse, timer, settled = false;
   return new Promise((resolve, reject) => {
     const finish = (error, bytes) => {
@@ -80,7 +80,10 @@ async function fetchBytes(url, limit) {
             if (settled) return;
             length += chunk.length;
             if (length > limit) finish(new Error("GitHub 发布资源超过大小上限"));
-            else chunks.push(chunk);
+            else {
+              chunks.push(chunk);
+              if (typeof onProgress === "function") onProgress(length, declared);
+            }
           });
           response.on("end", () => {
             if (!response.complete || (declared && declared !== length)) finish(new Error("GitHub 发布资源下载不完整"));
@@ -150,11 +153,15 @@ function unpack(command, args) {
       try { resolve(JSON.parse(stdout)); } catch (e) { reject(new Error("发布包校验器未返回有效 JSON")); }
     }));
 }
-async function downloadRelease(release, python, fetch = fetchBytes, runUnpack = unpack) {
+async function downloadRelease(release, python, fetch = fetchBytes, runUnpack = unpack, onProgress) {
+  const report = typeof onProgress === "function" ? onProgress : () => { };
   const manifestBody = await fetch(release.manifest.browser_download_url, MAX_JSON);
   const manifest = validateManifest(JSON.parse(manifestBody.toString("utf8")), release);
-  const bytes = await fetch(release.archive.browser_download_url, MAX_ASSET);
+  report({ stage: "download", loaded: 0, total: manifest.asset.size });
+  const bytes = await fetch(release.archive.browser_download_url, MAX_ASSET,
+    (loaded, total) => report({ stage: "download", loaded, total: total || manifest.asset.size }));
   if (bytes.length !== manifest.asset.size || crypto.createHash("sha256").update(bytes).digest("hex") !== manifest.asset.sha256) throw new Error("发布包下载大小或 SHA256 校验失败");
+  report({ stage: "verify" });
   const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "zusage-release-")));
   const cleanup = () => fs.rmSync(directory, { recursive: true, force: true });
   try {

@@ -10,6 +10,9 @@ const { resolvePluginStorage } = require("./plugin-storage.cjs");
 
 const PLUGIN_ID = "zcode-token-usage-statusbar@zusage-marketplace";
 const INTERVAL_MS = 24 * 60 * 60 * 1000;
+// 渠道清单与正式 Release 不一致多为发布刚完成、GitHub 内容缓存尚未刷新的几分钟窗口，
+// 自动更新按此间隔重试，而不是等满 INTERVAL_MS。
+const CHANNEL_RETRY_MS = 5 * 60 * 1000;
 
 function compareVersions(a, b) {
   const parse = (v) => /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(v || "");
@@ -242,7 +245,7 @@ function createUpdater(options) {
   const markerFile = path.join(runtime, ".plugin-restart-required");
   const saved = readState(stateFile, now());
   let state = { phase: "idle", supported: false, auto: false, currentVersion: "", latestVersion: "",
-    ...saved, restartRequired: fs.existsSync(markerFile), skipped: [], error: "", channel: "", releaseUrl: "" };
+    ...saved, restartRequired: fs.existsSync(markerFile), skipped: [], error: "", channel: "", releaseUrl: "", progress: null };
   let busy = false;
   let selectedRelease = null, selectedChannel = null;
   const channel = () => {
@@ -250,7 +253,7 @@ function createUpdater(options) {
     return { kind: source.kind, repository: source.repository || "", source: source.marketplace ? source.marketplace.source : null };
   };
   const fetchRelease = options.fetchRelease || releaseChannel.fetchBytes;
-  const prepareRelease = options.prepareRelease || ((release) => releaseChannel.downloadRelease(release, python(), fetchRelease));
+  const prepareRelease = options.prepareRelease || ((release, onProgress) => releaseChannel.downloadRelease(release, python(), fetchRelease, undefined, onProgress));
   const readReleaseCatalog = options.readReleaseCatalog || (() => {
     const root = path.join(storage(), "marketplaces");
     if (fs.existsSync(path.join(root, ".zusage-marketplace.transaction.json"))) throw new Error("官方插件市场事务尚未完成，请稍后重试");
@@ -322,7 +325,7 @@ function createUpdater(options) {
         if (!record) throw new Error("用户级插件安装记录不存在");
         state.currentVersion = record.version;
         const newer = compareVersions(state.latestVersion, record.version) > 0;
-        state.phase = newer ? "available" : "current"; state.checkedAt = now(); save();
+        state.phase = newer ? "available" : "current"; state.checkedAt = now(); save(); publish();
         if ((auto || install) && newer) {
           const overview = listOverview(await cli(["list"])); diagnostics(overview);
           const installed = (overview.installed || []).find((p) => p && p.id === PLUGIN_ID && (!p.scope || p.scope === "user"));
@@ -342,11 +345,11 @@ function createUpdater(options) {
         state.latestVersion = available.version || "";
         const newer = compareVersions(state.latestVersion, state.currentVersion) > 0;
         state.phase = newer ? "available" : "current";
-        state.checkedAt = now(); save();
+        state.checkedAt = now(); save(); publish();
         if ((auto || install) && newer && installed.enabled !== false) await installUpdate(auto);
       }
     } catch (e) {
-      state.phase = "error"; state.error = e.message;
+      state.phase = "error"; state.error = e.message; state.progress = null;
     } finally {
       if (release) await release();
       busy = false; publish();
@@ -362,8 +365,8 @@ function createUpdater(options) {
     // A CLI orphaned by parent shutdown can still be writing inventory/runtime.
     // Wait even after its version commit; normal completion clears its PID.
     if (state.pendingPid) {
-      try { process.kill(state.pendingPid, 0); state.phase = "updating"; return true; }
-      catch (e) { if (e.code !== "ESRCH") { state.phase = "updating"; return true; } }
+      try { process.kill(state.pendingPid, 0); state.phase = "updating"; state.progress = { stage: "install" }; return true; }
+      catch (e) { if (e.code !== "ESRCH") { state.phase = "updating"; state.progress = { stage: "install" }; return true; } }
       state.pendingPid = 0;
     }
     const record = installedRecord();
@@ -384,29 +387,41 @@ function createUpdater(options) {
     if (!isDeepStrictEqual(channel(), selectedChannel)) throw new Error("更新期间市场来源已变化");
     compareVersions(record.version, record.version);
     let downloaded = null;
+    // 中途放弃（插件被卸载/禁用、自动更新被关闭、版本已不再更新）时退回「发现新版本」，
+    // 不能让 downloading 阶段与进度条停在面板上。
+    const abandon = () => { state.phase = "available"; state.progress = null; };
     try {
       if (selectedRelease) {
         const currentChannel = channel();
         if (!isDeepStrictEqual(currentChannel, selectedChannel) || currentChannel.kind !== "release" || !releaseChannel.sameRepository(currentChannel.repository, selectedRelease.repository)) throw new Error("更新期间市场来源已变化");
-        downloaded = await prepareRelease(selectedRelease);
+        state.phase = "downloading"; state.progress = { stage: "download", loaded: 0, total: selectedRelease.archive.size }; publish();
+        let lastPublished = 0;
+        downloaded = await prepareRelease(selectedRelease, (progress) => {
+          state.progress = progress;
+          // 下载字节进度按 ~150ms 节流推送；阶段切换与下载完成一律立即推送。
+          const complete = progress.stage !== "download" || (progress.total && progress.loaded >= progress.total);
+          if (complete || now() - lastPublished >= 150) { lastPublished = now(); publish(); }
+        });
         releaseChannel.validateManifest(downloaded.manifest, selectedRelease);
+        state.progress = { stage: "verify" }; publish();
         const market = await cli(["marketplace", "update", "zusage-marketplace"]); diagnostics(market);
         if (!isDeepStrictEqual(channel(), currentChannel)) throw new Error("更新期间市场来源已变化");
-        releaseChannel.validateCatalog(readReleaseCatalog(), selectedRelease, downloaded.manifest);
+        try { releaseChannel.validateCatalog(readReleaseCatalog(), selectedRelease, downloaded.manifest); }
+        catch (cause) { throw channelLagError(cause); }
         record = refreshLocal();
         if (!record) throw new Error("插件已卸载，更新已取消");
-        if (auto && !state.auto) return;
-        if (compareVersions(selectedRelease.version, record.version) <= 0) return;
+        if (auto && !state.auto) { abandon(); return; }
+        if (compareVersions(selectedRelease.version, record.version) <= 0) { abandon(); return; }
         const overview = listOverview(await cli(["list"])); diagnostics(overview);
         const installed = (overview.installed || []).find((p) => p && p.id === PLUGIN_ID && (!p.scope || p.scope === "user"));
         if (!installed) throw new Error("用户插件已卸载，Release 安装已取消");
-        if (installed.enabled === false) return;
+        if (installed.enabled === false) { abandon(); return; }
         if (!isDeepStrictEqual(channel(), currentChannel)) throw new Error("更新期间市场来源已变化");
         record = refreshLocal();
         if (!record) throw new Error("插件已卸载，更新已取消");
-        if ((auto && !state.auto) || compareVersions(selectedRelease.version, record.version) <= 0) return;
+        if ((auto && !state.auto) || compareVersions(selectedRelease.version, record.version) <= 0) { abandon(); return; }
       }
-      state.phase = "updating";
+      state.phase = "updating"; state.progress = { stage: "install" };
       state.pendingSync = true; state.pendingVersion = record.version; state.pendingPid = 0;
       state.pendingRelease = selectedRelease ? { release: selectedRelease, manifest: downloaded.manifest, channel: channel() } : null;
       save(); publish();
@@ -433,6 +448,16 @@ function createUpdater(options) {
       await syncInstalled();
     } finally { if (downloaded && downloaded.cleanup) downloaded.cleanup(); }
   }
+  function channelLagError(cause) {
+    // 校验门本身不放宽（宿主按渠道清单安装，必须与已校验的 Release 一致）；只把维护者
+    // 视角的报错换成用户可操作的提示，并把下次自动重试提前到 CHANNEL_RETRY_MS。
+    console.error("[zusage-plugin] release channel mismatch:", cause.message);
+    state.lastAttempt = now() - INTERVAL_MS + CHANNEL_RETRY_MS; save();
+    const error = new Error("更新渠道尚未同步到最新 Release（GitHub 缓存可能延迟几分钟）；"
+      + (state.auto ? "稍后会自动重试" : "请稍后再点「立即更新」"));
+    error.cause = cause;
+    return error;
+  }
   function verifyReleaseCommit(record) {
     verifyCommittedRelease(record, state.pendingRelease, channel());
   }
@@ -456,6 +481,7 @@ function createUpdater(options) {
     const record = installedRecord();
     if (!record || !record.installPath) throw new Error("更新后的安装记录不存在");
     if (state.pendingRelease !== null) verifyReleaseCommit(record);
+    state.phase = "updating"; state.progress = { stage: "sync" }; publish();
     const report = await sync(record.installPath);
     if (!report || typeof report !== "object" || Array.isArray(report)) throw new Error("运行时同步没有返回有效报告");
     state.currentVersion = record.version;
@@ -465,7 +491,7 @@ function createUpdater(options) {
     clearPending();
     state.skipped = Array.isArray(report.preserved) ? report.preserved : [];
     state.restartRequired = fs.existsSync(markerFile);
-    state.phase = "updated"; state.error = "";
+    state.phase = "updated"; state.error = ""; state.progress = null;
   }
   async function request(req) {
     if (!req) return;
@@ -510,7 +536,7 @@ async function runAutoCommand(argv) {
   if (state.phase === "error") process.exitCode = 1;
 }
 
-module.exports = { createUpdater, compareVersions, INTERVAL_MS, PLUGIN_ID, runAutoCommand, updateConfig, verifyRuntimeSync, listOverview };
+module.exports = { createUpdater, compareVersions, INTERVAL_MS, CHANNEL_RETRY_MS, PLUGIN_ID, runAutoCommand, updateConfig, verifyRuntimeSync, listOverview };
 if (require.main === module) {
   const argv = process.argv.slice(2);
   if (argv[0] === "--verify-runtime-sync") {

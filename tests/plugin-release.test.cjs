@@ -268,3 +268,45 @@ test("fetch mock rejects HTTP errors, aborted or incomplete streams, oversized b
   }
   assert.equal(calls.length, before);
 });
+
+test("fetch reports cumulative byte progress per chunk only for the final 200 response", async (t) => {
+  const routes = [], calls = mockHttps(t, routes), url = "https://github.com/owner/repo/asset.zip";
+  routes.push({ status: 302, headers: { location: "https://release-assets.githubusercontent.com/fixture.zip" } },
+    { headers: { "content-length": "6" }, chunks: [Buffer.from("zi"), Buffer.from("p-"), Buffer.from("ok")] });
+  const seen = [];
+  assert.equal((await fetchBytes(url, 10, (loaded, total) => seen.push([loaded, total]))).toString(), "zip-ok");
+  assert.equal(calls.length, 2);
+  assert.deepEqual(seen, [[2, 6], [4, 6], [6, 6]]);   // 重定向响应不产生进度；declared 来自 content-length
+  routes.push({ chunks: [Buffer.from("zip")] });
+  assert.equal((await fetchBytes(url, 10)).toString(), "zip");   // 不传回调仍可用
+});
+
+test("download publishes download start, byte progress and verify stage before unpacking", async () => {
+  const f = packageFixture();
+  const fetch = async (url, limit, onProgress) => {
+    if (url === f.selected.manifest.browser_download_url) return Buffer.from(JSON.stringify(f.manifest));
+    if (onProgress) { onProgress(1, f.bytes.length); onProgress(f.bytes.length, f.bytes.length); }
+    return f.bytes;
+  };
+  const stages = [];
+  let unpacked = false;
+  const downloaded = await downloadRelease(f.selected, "python3", fetch, async (command, args) => {
+    unpacked = true; assert.deepEqual(stages[stages.length - 1], { stage: "verify" }, "verify published before unpack");
+    const output = args[args.indexOf("--output") + 1];
+    return { ok: true, marketplaceRoot: output, pluginRoot: path.join(output, "plugins", "zcode-token-usage-statusbar"), version: f.selected.version };
+  }, (progress) => stages.push(progress));
+  downloaded.cleanup();
+  assert.ok(unpacked);
+  assert.deepEqual(stages, [
+    { stage: "download", loaded: 0, total: f.bytes.length },
+    { stage: "download", loaded: 1, total: f.bytes.length },
+    { stage: "download", loaded: f.bytes.length, total: f.bytes.length },
+    { stage: "verify" },
+  ]);
+  // 回调缺省或抛错前的旧调用形态保持可用
+  const plain = await downloadRelease(f.selected, "python3", f.fetch, async (command, args) => {
+    const output = args[args.indexOf("--output") + 1];
+    return { ok: true, marketplaceRoot: output, pluginRoot: path.join(output, "plugins", "zcode-token-usage-statusbar"), version: f.selected.version };
+  });
+  plain.cleanup();
+});
