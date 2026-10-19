@@ -92,7 +92,7 @@ function harness(lang = 'zh', rateLine = true) {
   return { window, body, line, quote, intervals, inject, addNotice,
     tip: () => body.children.find(el => el.className.includes('zusage-rate-tip')),
     noticeStyle: () => body.children.find(el => el.tagName === 'STYLE' && el.textContent.includes('data-zusage-notice')),
-    scan: () => { for (const timer of [...intervals.values()]) if (timer.ms === 2000) timer.fn(); },
+    scan: () => { for (const timer of [...intervals.values()]) if (timer.ms === 500) timer.fn(); },
   };
 }
 

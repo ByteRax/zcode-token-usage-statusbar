@@ -425,7 +425,8 @@
     if (window.__zusageRateCleanup === cleanupRateTip) delete window.__zusageRateCleanup;
   }
   window.addEventListener("scroll", hideRateTip, true);   // 捕获：任意容器滚动即收
-  var rateScanTimer = setInterval(scanRateLines, 2000);
+  /* v88：扫描与心跳统一 0.5s（用户要求计时 0.5s 步进；富文本重试上限同步放大保持 ~12s 等库窗口） */
+  var rateScanTimer = setInterval(scanRateLines, 500);
   window.__zusageRateCleanup = cleanupRateTip;
   scanRateLines();
 
@@ -593,7 +594,7 @@
    * 一轮在同一 session 完成，交付结果可能被关联到新 tid 上而非发起时的旧 tid，这是
    * 一个已知的、极窄时间窗口内的小概率错位，权衡实现复杂度后不做进一步纠偏）。 */
   var richTextCache = {}, richTextAttempts = {}, richTextRequestTids = {};
-  var RICH_TEXT_MAX_ATTEMPTS = 6;   // 2s 一 tick × 6 ≈ 12s 窗口等数据库追上，之后永久用简化文案兜底
+  var RICH_TEXT_MAX_ATTEMPTS = 24;   // 0.5s 一 tick × 24 ≈ 12s 窗口等数据库追上（v88 扫描提速后按时间等价放大），之后永久用简化文案兜底
   function zuResetRichText() {
     richTextCache = {};
     richTextAttempts = {};
@@ -612,7 +613,7 @@
     else window.__zusagePluginRequests = [req];
     richTextAttempts[tid] = (richTextAttempts[tid] || 0) + 1;
   }
-  /* 主进程回推：非空 = 富文本到位，写缓存并立即重扫（不等下一个 2s tick）；空 = 库里还没
+  /* 主进程回推：非空 = 富文本到位，写缓存并立即重扫（不等下一个 0.5s tick）；空 = 库里还没
    * 追到这一轮（或没有有效的提问时刻可推断），什么都不做——重试由 scanDeterministicLines
    * 的定时扫描自然驱动，这里绝不自建重试队列（否则两个驱动源叠加会绕开 attempts 上限）。 */
   window.__zusageDeliverTurnText = function (sid, text) {
@@ -809,7 +810,7 @@
     if (stale()) return;
     scanDeterministicLines();
   }
-  detTimer = setInterval(sharedTick, 2000);
+  detTimer = setInterval(sharedTick, 500);   // v88：2s→0.5s，与速率行扫描/心跳同节奏
   sharedTick();
 
   function disposeOverlay() {
@@ -893,7 +894,7 @@
   /* ---------- 实例工厂（v61.1）：一个 pane 一套 条/面板/气泡/tooltip/定位循环。
    * slot 0 保留 #zusage-bar/#zusage-tip 兼容 id（泵热更新按它清理），其余实例仅类名。 */
   function spawnInstance(pid, slot) {
-    var VERSION = "v87";   // v82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v84 主标签页远端路由（工作台分组唯一主绑定上报 + 迟到载荷守卫，issue #30）→ v85 回答末尾统计行跟随万/亿开关 + tok→token → v86 历史轮 tracker 无记录（窗口滑出/换代/热更）或缺输出字段不再翻成"本轮统计不可用"，加 det 诊断 → v87 主叶归属增 last-session 回退（组零证据时唯一远端记录放行，issue #30 复测：单会话主标签页不建组）   // 悬停 ⚙ 面板可见；本会话热修部署未走提交，版本号随部署代际递增
+    var VERSION = "v88";   // v82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v84 主标签页远端路由（工作台分组唯一主绑定上报 + 迟到载荷守卫，issue #30）→ v85 回答末尾统计行跟随万/亿开关 + tok→token → v86 历史轮 tracker 无记录（窗口滑出/换代/热更）或缺输出字段不再翻成"本轮统计不可用"，加 det 诊断 → v87 主叶归属增 last-session 回退（组零证据时唯一远端记录放行，issue #30 复测：单会话主标签页不建组）→ v88 运行态心跳与两处扫描 tick 2s→0.5s（富文本重试 6→24 次等价放大）   // 悬停 ⚙ 面板可见；本会话热修部署未走提交，版本号随部署代际递增
     var instanceDisposed = false, heavyTimer = 0, frame = 0, themeObserver = null;
     var globalListeners = [];
     function listenGlobal(target, type, fn, capture) {
@@ -1768,7 +1769,9 @@
       liveTextCur = view ? view.text : "";
       render(state.data || { session: {}, last_turn: {}, today: {}, context_window: 0 });
     }
-    bridge.timer = setInterval(bridgeTick, 2000);
+    /* v88：运行态心跳 2s→0.5s——思考中/工具执行期宿主不推新快照，秒数只靠本定时器走字，
+     * 2s 步进观感迟滞；快速路径仅改 textContent/className，0.5s 无性能顾虑。 */
+    bridge.timer = setInterval(bridgeTick, 500);
     bridgeTick();
 
     function render(d) {
