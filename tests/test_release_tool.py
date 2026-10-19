@@ -5,6 +5,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import subprocess
 import sys
@@ -106,7 +107,8 @@ class ReleaseToolTests(unittest.TestCase):
             path.write_bytes(content)
         helper = (ROOT / "release_unpack.py").read_bytes().replace(b"\r\n", b"\n")
         (self.root / tool.PREFIX / "release_unpack.py").write_bytes(helper)
-        manifest = {"name": tool.PLUGIN, "version": "1.2.3", "commands": "commands", "skills": "skills"}
+        manifest = {"name": tool.PLUGIN, "version": "1.2.3", "commands": "commands", "skills": "skills",
+                    "packageLayout": {"schemaVersion": 1, "files": list(tool.NAMES)}}
         for name in (".zcode-plugin/plugin.json", ".claude-plugin/plugin.json"):
             (self.root / tool.PREFIX / name).write_text(json.dumps(manifest))
         market = {"name": "zusage-marketplace", "plugins": [{"name": tool.PLUGIN, "version": "1.2.3",
@@ -249,6 +251,81 @@ class ReleaseToolTests(unittest.TestCase):
         (self.root / "runtime_lock.py").write_text("drift")
         with self.assertRaisesRegex(tool.ReleaseError, "copy drift"):
             tool.build(self.root, REPO, self.base / "drift")
+
+    def test_package_layout_drift_rejected(self):
+        paths = [self.root / tool.PREFIX / name
+                 for name in (".zcode-plugin/plugin.json", ".claude-plugin/plugin.json")]
+        originals = [path.read_text() for path in paths]
+        for index, manifest in enumerate((
+            {"name": tool.PLUGIN, "version": "1.2.3", "commands": "commands", "skills": "skills"},
+            {"name": tool.PLUGIN, "version": "1.2.3", "commands": "commands", "skills": "skills",
+             "packageLayout": {"schemaVersion": 1, "files": list(tool.NAMES)[:-1]}},
+            {"name": tool.PLUGIN, "version": "1.2.3", "commands": "commands", "skills": "skills",
+             "packageLayout": {"schemaVersion": 1, "files": [*tool.NAMES, tool.PREFIX + "extra.py"]}},
+            {"name": tool.PLUGIN, "version": "1.2.3", "commands": "commands", "skills": "skills",
+             "packageLayout": {"schemaVersion": True, "files": list(tool.NAMES)}},
+        )):
+            with self.subTest(manifest=manifest.get("packageLayout")), \
+                    self.assertRaisesRegex(tool.ReleaseError, "packageLayout"):
+                for path in paths:
+                    path.write_text(json.dumps(manifest))
+                tool.build(self.root, REPO, self.base / f"layout-drift-{index}")
+        for path, original in zip(paths, originals):
+            path.write_text(original)
+
+    def test_built_zip_satisfies_legacy_unpacker_contract(self):
+        # v1.4.4/v1.5.0 曾在打包时遗漏 packageLayout 声明，导致 <=1.4.5 的在野解包器
+        # （无声明即要求文件集与自身历史清单精确相等）拒绝升级。这里冻结旧版
+        # BOOTSTRAP_FILES 与 layout_path 规则，保证新包始终能走旧版宽松分支。
+        prefix = tool.PREFIX
+        plugin_files_140 = (
+            ".claude-plugin/plugin.json", ".mcp.json", ".zcode-plugin/plugin.json", "README.md",
+            "commands/install-overlay.md", "commands/uninstall-overlay.md", "commands/usage.md",
+            "hooks/hooks.json", "hooks/prompt-submit.py", "hooks/session-start.py",
+            "inject-main.cjs", "install_monitor.py", "overlay.js", "overlay_install.py",
+            "patch_install.py", "plugin-release.cjs", "plugin-storage.cjs", "plugin-updater.cjs",
+            "plugin_auto_update.py", "release_unpack.py", "restart_notice.py", "runtime_lock.py",
+            "skills/zcode-token-usage/SKILL.md", "token_rate.py", "usage_mcp.py", "zusage.py")
+        plugin_files_145 = plugin_files_140 + ("usage_stats.py", "turn-stats.js")
+
+        def legacy_rules(plugin_files):
+            allowed = {"marketplace.json", "LICENSE"} | {prefix + name for name in plugin_files}
+            bootstrap = {"marketplace.json", "LICENSE"} | {prefix + name for name in (
+                ".zcode-plugin/plugin.json", ".claude-plugin/plugin.json", "overlay_install.py",
+                "inject-main.cjs", "overlay.js", "zusage.py", "patch_install.py", "install_monitor.py",
+                "plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs", "runtime_lock.py",
+                "release_unpack.py", "plugin_auto_update.py", "restart_notice.py",
+                *(("usage_stats.py", "turn-stats.js") if "usage_stats.py" in plugin_files else ()))}
+            return allowed, bootstrap
+
+        def legacy_layout_path(name, allowed):
+            if name in allowed:
+                return True
+            if not name.startswith(prefix):
+                return False
+            relative = name[len(prefix):]
+            if "/" not in relative:
+                return bool(re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*\.(?:py|cjs|js)", relative)
+                            and relative not in ("release_tool.py", "install.py", "sync_plugin.py"))
+            return bool(re.fullmatch(r"hooks/[A-Za-z][A-Za-z0-9_-]*\.py|commands/[A-Za-z][A-Za-z0-9_-]*\.md",
+                                     relative))
+
+        with zipfile.ZipFile(self.asset) as archive:
+            names = {info.filename for info in archive.infolist()}
+            manifest = json.loads(archive.read(prefix + ".zcode-plugin/plugin.json"))
+        layout = manifest.get("packageLayout")
+        self.assertIsNotNone(layout, "shipped manifest must declare packageLayout for legacy unpackers")
+        self.assertIs(type(layout.get("schemaVersion")), int)
+        self.assertEqual(layout["schemaVersion"], 1)
+        declared = layout["files"]
+        self.assertEqual(len(declared), len(set(declared)))
+        self.assertEqual(set(declared), names)
+        for label, plugin_files in (("v1.4.0", plugin_files_140), ("v1.4.5", plugin_files_145)):
+            with self.subTest(legacy=label):
+                allowed, bootstrap = legacy_rules(plugin_files)
+                self.assertLessEqual(bootstrap, names)
+                for name in names:
+                    self.assertTrue(legacy_layout_path(name, allowed), name)
 
     @unittest.skipUnless(symlink_support.can_create_symlinks(),
                          "os.symlink requires SeCreateSymbolicLinkPrivilege on Windows")

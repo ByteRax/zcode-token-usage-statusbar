@@ -79,6 +79,23 @@ def identities(data, expected=None):
     return version
 
 
+def require_layout(data):
+    # Older in-the-field unpackers (<= v1.4.5) treat a ZIP without a declared
+    # layout as "must exactly match my own historical file set"; any added or
+    # removed file then fails the update with "ZIP is missing required release
+    # files". Both plugin manifests must therefore always declare the full ZIP
+    # file set, kept in lockstep with NAMES.
+    manifest = json.loads(data[PREFIX + ".zcode-plugin/plugin.json"])
+    layout = manifest.get("packageLayout")
+    require(isinstance(layout, dict) and type(layout.get("schemaVersion")) is int and
+            layout["schemaVersion"] == 1 and isinstance(layout.get("files"), list) and
+            all(isinstance(name, str) for name in layout["files"]) and
+            len(layout["files"]) == len(set(layout["files"])) and
+            set(layout["files"]) == set(NAMES),
+            "plugin manifest packageLayout disagrees with packaged files; declare the full ZIP "
+            "file set in both plugin manifests (see .zcode/skills/zcode-github-release/references/release-contract.md)")
+
+
 def source_data(root, expected=None):
     plugin = root / "plugins" / PLUGIN
     require(plugin.is_dir() and not plugin.is_symlink() and not (root / "plugins").is_symlink(),
@@ -89,6 +106,7 @@ def source_data(root, expected=None):
     data = {name: read_file(root / name) for name in NAMES}
     require(sum(map(len, data.values())) <= MAX_TOTAL, "oversize source tree")
     identities(data, expected)
+    require_layout(data)
     for name in SYNC_FILES:
         require(read_file(root / name) == data[PREFIX + name], f"runtime copy drift: {name}")
     return data
@@ -180,6 +198,7 @@ def verify(asset, manifest_path, repo=None):
             data[name] = archive.read(member)
         require(set(data) == set(NAMES), "missing ZIP source")
         identities(data, version)
+        require_layout(data)
     return manifest
 
 
