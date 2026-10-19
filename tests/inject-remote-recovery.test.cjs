@@ -181,7 +181,7 @@ test("same-window different panes preserve same sid distinct scopes", async () =
   assert.deepEqual(f.lines[0].scopes.map(s => s.workspaceIdentity), [A, B]);
 });
 test("primary pane with panes:{} refuses remote inference from connected-only workspace IPC", async () => {
-  const f = loadPump(), wc = f.addWindow(A), page = renderer(wc, ["workspace-main"]);
+  const f = loadPump(), wc = f.addWindow(A), page = renderer(wc, ["workspace-main"], {}, []);
   f.workspace(wc, [A]); f.api.maybeSpawn(); await flush();
   assert.deepEqual(f.lines[0].sids, ["sA"]);
   assert.equal(f.lines[0].scopes.length, 0);
@@ -189,11 +189,29 @@ test("primary pane with panes:{} refuses remote inference from connected-only wo
   assert.equal(page.payload.scope_bindings["workspace-main"], "");
   assert.equal(page.sessionFor(page.payload, "sA", "workspace-main").requests, 9);
 });
+test("main pane routes remote through the last-session fallback without any group (issue #30)", async () => {
+  // 单会话主标签页形态：无 workbench-groups 键，唯一归属证据是 last-session A→sA（issue #30 复测）
+  const f = loadPump(), wc = f.addWindow(A), page = renderer(wc, ["workspace-main"]);
+  f.workspace(wc, [A]); f.api.maybeSpawn(); await flush();
+  assert.equal(page.window.__zusagePaneScopes["workspace-main"].identity, A);
+  assert.deepEqual(f.lines[0].sids, []);
+  assert.deepEqual(f.lines[0].scopes, [{ sid: "sA", workspaceIdentity: A }]);
+  f.respond(success(A)); await flush();
+  assert.equal(page.payload.scope_bindings["workspace-main"], A);
+  assert.equal(page.sessionFor(page.payload, "sA", "workspace-main").requests, 3);
+});
+test("tasks contradiction vetoes the last-session fallback identity", async () => {
+  const f = loadPump(), wc = f.addWindow(A);
+  renderer(wc, ["workspace-main"]);
+  f.workspace(wc, [A, B]); f.tasks(wc, [B]); f.api.maybeSpawn(); await flush();
+  assert.deepEqual(f.lines[0].sids, ["sA"]);
+  assert.deepEqual(f.lines[0].scopes, []);
+});
 test("real local main and remote right sharing sid stay isolated with remote-only workspace IPC", async () => {
   const f = loadPump(), wc = f.addWindow(A);
   const page = renderer(wc, ["workspace-main", "right"], {
     right: { sessionId: "sA", workspaceScope: { workspacePath: "/p", workspaceIdentity: A } },
-  });
+  }, []);
   // Web remote disabled: host only publishes connected remotes, not the local main workspace.
   f.workspace(wc, [A]); f.api.maybeSpawn(); await flush();
   assert.deepEqual(f.lines[0].sids, ["sA"]);

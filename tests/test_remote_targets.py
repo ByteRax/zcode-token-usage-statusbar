@@ -379,11 +379,14 @@ class ProtocolSnapshotTests(IsolatedTests):
     def test_light_local_failure_preserves_remote(self):
         cfg = {"context_window": 128000, "remote": {"targets": [{"ssh": "ssh a", "identity": A}]}}
         con = mock.Mock()
-        con.execute.return_value = []
+        class _cursor(list):          # 兼具真实 sqlite 游标两种用法：可迭代 + fetchone
+            def fetchone(self):
+                return self[0] if self else None
+        con.execute.return_value = _cursor([(0, 0)])   # 今日活动跨度（尚无请求）
         local_rows = [("local" + str(i), 10-i) for i in range(6)]
         with mock.patch.object(zusage, "connect", return_value=con), \
                 mock.patch.object(zusage, "load_config", return_value=cfg), \
-                mock.patch.object(zusage, "range_usage", return_value=(0,) * 9), \
+                mock.patch.object(zusage, "_today_usage", return_value=(0,) * 11), \
                 mock.patch.object(zusage, "_scan_session_ids", return_value=local_rows), \
                 mock.patch.object(zusage, "_session_snapshot", side_effect=lambda c, s, cfg: zusage._empty_snapshot(s, cfg)), \
                 mock.patch.object(zusage, "_light_snapshot", side_effect=sqlite3.OperationalError("light query failed")), \

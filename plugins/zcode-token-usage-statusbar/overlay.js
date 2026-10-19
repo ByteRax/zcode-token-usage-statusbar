@@ -198,28 +198,59 @@
    * 切换会话即改写、关闭分组即删除，宿主每次变更同步写回 localStorage）。当前主叶 sid 恰好
    * 只被一个分组绑为主会话且该 scope 是 remote:ssh: 时，即主标签页归属的直接证据；出现任何
    * 第二个不同 scope（含本地主叶分组——多窗口共享同一 localStorage，同 sid 碰撞无法区分窗口）
-   * 都返回 ""，泵维持仅本地查询。泵侧仍按同窗口可信 workspace IPC 与 tasks 一致性复核。 */
+   * 都返回 ""，泵维持仅本地查询。泵侧仍按同窗口可信 workspace IPC 与 tasks 一致性复核。
+   * v87（issue #30 复测）补回退：客户端 workbench group 只在 ≥2 个 session 的分屏形态存在
+   * （workbenchGroupStore 建组要求 ≥2 叶、恢复时丢弃单会话壳子），单会话主标签页永不写
+   * workbench-groups 键——该形态下宿主为每个工作区维护的会话绑定只有
+   * zcode-v4-last-session:v1:<workspaceKey>（workspaceKey=workspaceIdentity，选择会话即
+   * 同步写、回草稿即删）。组对本 sid 零证据时以 last-session 回退：恰好只被一个工作区
+   * 记录且为 remote:ssh: 才放行；组已给出绑定（唯一远端/歧义/本地）则结论以组为准不吃回退。 */
   function mainWorkbenchScope(sid) {
     if (!sid) return "";
+    var found = "", bound = false;
     try {
       var data = JSON.parse(ls("zcode-v4-session-workbench-groups:v1", "null"));
       var groups = data && data.groups;
-      if (!groups || typeof groups !== "object") return "";
-      var found = "", seen = {};
-      for (var gid in groups) {
-        var pb = groups[gid] && groups[gid].primaryBinding;
-        if (!pb || pb.sessionId !== sid) continue;
-        var scope = pb.workspaceScope, key = "";
-        if (scope && typeof scope === "object") key = String(scope.workspaceIdentity || scope.workspacePath || "");
-        else if (typeof scope === "string") key = scope;
-        key = key.trim();
-        if (!key || seen[key]) continue;
-        seen[key] = 1;
-        if (found) return "";   // ≥2 个不同 scope：歧义不猜
-        found = key;
+      if (groups && typeof groups === "object") {
+        var seen = {};
+        for (var gid in groups) {
+          var pb = groups[gid] && groups[gid].primaryBinding;
+          if (!pb || pb.sessionId !== sid) continue;
+          bound = true;
+          var scope = pb.workspaceScope, key = "";
+          if (scope && typeof scope === "object") key = String(scope.workspaceIdentity || scope.workspacePath || "");
+          else if (typeof scope === "string") key = scope;
+          key = key.trim();
+          if (!key || seen[key]) continue;
+          seen[key] = 1;
+          if (found) return "";   // ≥2 个不同 scope：歧义不猜
+          found = key;
+        }
       }
-      return found.indexOf("remote:ssh:") === 0 ? found : "";
-    } catch (e) { return ""; }
+    } catch (e) { }
+    if (bound) return found.indexOf("remote:ssh:") === 0 ? found : "";
+    return lastSessionScope(sid);
+  }
+  /* last-session 回退的归属判定：主叶 sid 被多个不同工作区（含本地）同时记录视为歧义
+   * 返回 ""，多窗口共享 localStorage 时不猜；值解析与 collectSidWs 同款防御（裸串/
+   * 带引号/{sessionId}）。泵侧 trusted/tasks 复核照旧；无证据形态的历史候选禁令不变。 */
+  function lastSessionScope(sid) {
+    var found = "";
+    try {
+      for (var i = 0; i < localStorage.length; i++) {
+        var k = localStorage.key(i);
+        if (typeof k !== "string" || k.indexOf("zcode-v4-last-session:v1:") !== 0) continue;
+        var v = localStorage.getItem(k), s = v;
+        if (v && v.charAt(0) === '"') { try { s = JSON.parse(v); } catch (e) { } }
+        else if (v && v.charAt(0) === "{") { try { s = JSON.parse(v).sessionId; } catch (e2) { } }
+        if (s !== sid) continue;
+        var wk = k.slice("zcode-v4-last-session:v1:".length).trim();
+        if (!wk) continue;
+        if (found && found !== wk) return "";   // ≥2 个不同工作区记录同一 sid：歧义不猜
+        found = wk;
+      }
+    } catch (e3) { return ""; }
+    return found.indexOf("remote:ssh:") === 0 ? found : "";
   }
   function refreshWants() {
     /* 各 pane 会话 id 汇总给泵：__zusageWantSids（新泵按数组强制纳入快照），
@@ -244,8 +275,9 @@
             panes[inst.pid] = { sid: inst.getSid(), identity: layoutIdentity };
             if (inst.pid === "workspace-main") mainScopeNow = { sid: inst.getSid(), identity: layoutIdentity };
           } else if (inst.pid === "workspace-main" && inst.getSid()) {
-            /* 宿主主叶不进入持久化 panes；上报当前 DOM 会话 + 工作台分组的唯一远端主绑定
-             * （issue #30）。缺可靠证据或归属歧义时仍只报 {sid}，泵维持仅本地查询。 */
+            /* 宿主主叶不进入持久化 panes；上报当前 DOM 会话 + 主叶归属证据（issue #30）：
+             * workbench 分组主绑定优先，组零证据时回退 last-session 唯一远端记录。
+             * 缺可靠证据或归属歧义时仍只报 {sid}，泵维持仅本地查询。 */
             var mainWs = mainWorkbenchScope(inst.getSid());
             panes[inst.pid] = mainWs ? { sid: inst.getSid(), identity: mainWs } : { sid: inst.getSid() };
             mainScopeNow = { sid: inst.getSid(), identity: mainWs || "" };
@@ -861,7 +893,7 @@
   /* ---------- 实例工厂（v61.1）：一个 pane 一套 条/面板/气泡/tooltip/定位循环。
    * slot 0 保留 #zusage-bar/#zusage-tip 兼容 id（泵热更新按它清理），其余实例仅类名。 */
   function spawnInstance(pid, slot) {
-    var VERSION = "v86";   // v82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v84 主标签页远端路由（工作台分组唯一主绑定上报 + 迟到载荷守卫，issue #30）→ v85 回答末尾统计行跟随万/亿开关 + tok→token → v86 历史轮 tracker 无记录（窗口滑出/换代/热更）或缺输出字段不再翻成"本轮统计不可用"，加 det 诊断   // 悬停 ⚙ 面板可见；本会话热修部署未走提交，版本号随部署代际递增
+    var VERSION = "v87";   // v82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v84 主标签页远端路由（工作台分组唯一主绑定上报 + 迟到载荷守卫，issue #30）→ v85 回答末尾统计行跟随万/亿开关 + tok→token → v86 历史轮 tracker 无记录（窗口滑出/换代/热更）或缺输出字段不再翻成"本轮统计不可用"，加 det 诊断 → v87 主叶归属增 last-session 回退（组零证据时唯一远端记录放行，issue #30 复测：单会话主标签页不建组）   // 悬停 ⚙ 面板可见；本会话热修部署未走提交，版本号随部署代际递增
     var instanceDisposed = false, heavyTimer = 0, frame = 0, themeObserver = null;
     var globalListeners = [];
     function listenGlobal(target, type, fn, capture) {
@@ -1340,6 +1372,13 @@
         (d.getMinutes() < 10 ? "0" : "") + d.getMinutes() + ":" +
         (d.getSeconds() < 10 ? "0" : "") + d.getSeconds() : "?";
     }
+    function fmtStart(ms) {   // 会话时间范围用：完整日期 YYYY-MM-DD HH:MM（跨数日的会话，秒无意义）
+      if (!ms) return "?";
+      var d = new Date(ms);
+      function two(v) { return (v < 10 ? "0" : "") + v; }
+      return d.getFullYear() + "-" + two(d.getMonth() + 1) + "-" + two(d.getDate()) +
+        " " + two(d.getHours()) + ":" + two(d.getMinutes());
+    }
     function ioc(inp, out, cache, rea, cw) {   // 悬停明细行：输入/输出/缓存命中/缓存写入/思考
       return L("输入 ", "Input ") + fmt(inp) + L(" / 输出 ", " / Output ") + fmt(out) + L(" / 缓存命中 ", " / Cache read ") + fmt(cache) +
         (cw > 0 ? L(" / 缓存写入 ", " / Cache write ") + fmt(cw) : "") +
@@ -1414,6 +1453,11 @@
           ttH(L("生成速度 · 最近一段", "Generation speed · latest segment")) +
           ttRow(L("口径", "Basis"), L("输出 tokens（含思考）÷ 生成耗时", "output tokens (thinking incl.) ÷ generation time")) +
           ttRow(L("档位", "Bands"), L("≥70 绿 · 40–70 黄 · <40 红", "≥70 green · 40–70 yellow · <40 red")) +
+          ((last.startedAt || last.endedAt)
+            ? ttRow(L("时间范围", "Time span"),
+                (last.startedAt ? fmtStart(last.startedAt) : "—") + " - " +
+                (last.endedAt ? fmtStart(last.endedAt) : "—"))
+            : "") +
           ttNote(L("回答期间每段完成即刷新。回复末尾的统计行是整问加权均值，两者数值不同属正常",
             "Refreshes as each segment completes. The reply-end rate line is the whole-turn weighted average, so the two legitimately differ")));
       } else {
@@ -1461,8 +1505,18 @@
             (lt.input > 0 && lt.cache_read > 0 ? L("（命中 " + Math.round(lt.cache_read / lt.input * 100) + "%）", " (" + Math.round(lt.cache_read / lt.input * 100) + "% cached)") : "")) +
           ttRow(L("输出", "Output"), fmt(lt.output) +
             (lt.reasoning > 0 ? L("（含思考 " + fmt(lt.reasoning) + "）", " (incl. " + fmt(lt.reasoning) + " thinking)") : "")) +
+          ((typeof lt.tps === "number" && isFinite(lt.tps) && lt.tps > 0)
+            ? ttRow(L("输出速度", "Output rate"), lt.tps.toFixed(1) + " tok/s" +
+                L("（Σ有效段输出 ÷ Σ有效段生成时长，段间工具等待不计）", " (Σrated output ÷ Σrated generation time, tool waits excluded)") +
+                (lt.unrated_output > 0 ? L("；另有 " + fmt(lt.unrated_output) + " token 未参与测速", "; " + fmt(lt.unrated_output) + " tokens excluded from rate") : ""))
+            : "") +
           (lt.cache_write > 0 ? ttRow(L("缓存写入", "Cache write"), fmt(lt.cache_write)) : "") +
           ttRow(L("耗时", "Time"), L("单次 ", "request ") + sec(last.duration_ms) + L(" · 首字 ", " · TTFT ") + sec(last.ttft_ms) + L(" · 轮总 ", " · turn ") + sec(lt.duration_ms)) +
+          ((lt.started || lt.ended)
+            ? ttRow(L("时间范围", "Time span"),
+                (lt.started ? fmtStart(lt.started) : "—") + " - " +
+                (lt.ended ? fmtStart(lt.ended) : "—"))
+            : "") +
           ((lt.tool_calls || lt.retries || lt.tool_errors)
             ? ttRow(L("工具", "Tools"), (lt.tool_calls ? lt.tool_calls + L(" 次调用", " calls") : "") +
                 (lt.retries ? L(" · 重试 ", " · retries ") + lt.retries : "") +
@@ -1483,6 +1537,9 @@
           ttRow(L("规模", "Scale"), (sess.turns || 0) + L(" 轮 · ", " turns · ") + (sess.requests || 0) + L(" 次请求", " requests") +
             (sess.tool_calls ? L(" · 工具 ", " · tools ") + sess.tool_calls : "") +
             (sess.retries ? L(" · 重试 ", " · retries ") + sess.retries : "")) +
+          ttRow(L("时间范围", "Time span"),
+            (sess.started ? fmtStart(sess.started) : "—") + " - " +
+            (sess.last_at ? fmtStart(sess.last_at) : "—")) +
           (d.code && (d.code.add || d.code.del)
             ? ttRow(L("代码变更", "Code changes"), "+" + (d.code.add || 0) + " / -" + (d.code.del || 0) +
                 (d.code.files ? L("（" + d.code.files + " 文件）", " (" + d.code.files + " files)") : "")) : ""));
@@ -1513,7 +1570,12 @@
           ttRow(L("输出", "Output"), fmt(today.output) +
             (today.reasoning > 0 ? L("（含思考 " + fmt(today.reasoning) + "）", " (incl. " + fmt(today.reasoning) + " thinking)") : "")) +
           ttRow(L("请求", "Requests"), (today.requests || 0) +
-            (today.retries ? L(" 次请求 · 重试 ", " requests · retries ") + today.retries : L(" 次", " requests"))));
+            (today.retries ? L(" 次请求 · 重试 ", " requests · retries ") + today.retries : L(" 次", " requests"))) +
+          ((today.started || today.last_at)
+            ? ttRow(L("时间范围", "Time span"),
+                (today.started ? fmtStart(today.started) : "—") + " - " +
+                (today.last_at ? fmtStart(today.last_at) : "—"))
+            : ""));
       }
       if (state.show.sub && d.sub && (d.sub.total || d.sub.active)) {
         /* v50：悬停 tooltip 只放汇总 + 打开面板的提示；各子代理明细在点击弹出的
@@ -1588,10 +1650,10 @@
     function stubFor(sid) {
       return { sid: String(sid || ""), title: "", active: false, turns: 0, requests: 0,
         input: 0, output: 0, reasoning: 0, cache_read: 0, cache_write: 0, total: 0,
-        tool_calls: 0, retries: 0, ctx: 0, updated: "", last_at: 0, ctx_exc: 0,
+        tool_calls: 0, retries: 0, ctx: 0, updated: "", last_at: 0, ctx_exc: 0, started: 0,
         last_turn: {requests: 0, retries: 0, tool_calls: 0, tool_errors: 0, input: 0, output: 0,
-          reasoning: 0, cache_read: 0, cache_write: 0, total: 0, duration_ms: 0, ttft_ms: 0},
-        last: {duration_ms: 0, ttft_ms: 0, model: "", tps: 0},
+          reasoning: 0, cache_read: 0, cache_write: 0, total: 0, duration_ms: 0, ttft_ms: 0, started: 0, ended: 0},
+        last: {duration_ms: 0, ttft_ms: 0, model: "", tps: 0, startedAt: 0, endedAt: 0},
         code: {add: null, del: null, files: null},
         tools: {total: 0, errors: 0, list: []},
         sub: {requests: 0, total: 0, input: 0, output: 0, cache_read: 0, reasoning: 0,

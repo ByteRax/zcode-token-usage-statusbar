@@ -159,6 +159,18 @@ def range_usage(con, start_ms, end_ms):
     ).fetchone()
 
 
+def _today_usage(con, start_ms, end_ms):
+    return con.execute(
+        """select count(*), coalesce(sum(input_tokens),0), coalesce(sum(output_tokens),0),
+                  coalesce(sum(cache_read_input_tokens),0), coalesce(sum(computed_total_tokens),0),
+                  coalesce(sum(duration_ms),0), coalesce(sum(reasoning_tokens),0),
+                  coalesce(sum(retry_count),0), coalesce(sum(cache_creation_input_tokens),0),
+                  min(started_at), max(completed_at)
+           from model_usage where status='completed' and completed_at between ? and ?""",
+        (start_ms, end_ms),
+    ).fetchone()
+
+
 def daily_usage(con, days):
     """近 N 天（含今天），按本地日聚合。返回 [(date, row), ...] 旧→新。"""
     out = []
@@ -578,6 +590,20 @@ def render_session_detail(con, prefix):
     return "\n".join(lines)
 
 
+def _session_start_ms(con, sid, srow=None):
+    """会话起点：首个已完成请求的 started_at；无请求（纯新建/纯问答）回退会话创建时间。
+    供悬浮条「会话累计」tooltip 的起始时间展示用。"""
+    r = con.execute(
+        "select min(started_at) from model_usage where session_id=? and status='completed'",
+        (sid,),
+    ).fetchone()
+    if r and r[0]:
+        return int(r[0])
+    if srow is None:
+        srow = con.execute("select time_created from session where id=?", (sid,)).fetchone()
+    return int(srow["time_created"]) if srow and srow["time_created"] else 0
+
+
 def _light_snapshot(con, sid, cfg):
     """recent 池轻量行（v8 瘦身）：两条聚合 SQL 出齐顶层计数，明细字段给空结构。
     状态条只渲染 1 个会话，recent 长尾行仅作会话切换兜底；兜底候选（force + latest +
@@ -585,7 +611,7 @@ def _light_snapshot(con, sid, cfg):
     sub.list 聚合数字置 0 而非缺失：overlay 的子代理面板/汇总按字段渲染，结构必须完整。"""
     u = session_usage(con, sid)
     srow = con.execute(
-        "select title, summary_additions, summary_deletions, summary_files, parent_id from session where id=?",
+        "select title, summary_additions, summary_deletions, summary_files, parent_id, time_created from session where id=?",
         (sid,),
     ).fetchone()
     lr = con.execute("select max(completed_at) from model_usage where session_id=?", (sid,)).fetchone()
@@ -599,17 +625,20 @@ def _light_snapshot(con, sid, cfg):
         "cache_write": u["cache_write"], "total": u["total"], "tool_calls": u["tool_calls"],
         "retries": u["retries"], "ctx": u["last_request_input"],
         "updated": (_ts(lr[0]).strftime("%H:%M:%S") if lr[0] else ""),
+        "started": _session_start_ms(con, sid, srow),
         "sub": {"requests": 0, "total": 0, "input": 0, "output": 0, "cache_read": 0,
                 "reasoning": 0, "cache_write": 0, "active": False, "list": []},
         "tools": {"total": u["tool_calls"], "errors": 0, "list": []},
         "last_turn": dict(_EMPTY_TURN),
-        "last": {"duration_ms": 0, "ttft_ms": 0, "model": "", "tps": 0},
+        "last": {"duration_ms": 0, "ttft_ms": 0, "model": "", "tps": 0, "startedAt": 0, "endedAt": 0},
         "code": {"add": (srow["summary_additions"] if srow is not None else None),
                  "del": (srow["summary_deletions"] if srow is not None else None),
                  "files": (srow["summary_files"] if srow is not None else None)},
         "ctx_exc": 0,
         "context_window": cfg["context_window"], "context_auto": False,
-        "last_at": (lr[0] if lr[0] else 0),
+        "last_at": con.execute(
+            "select max(completed_at) from model_usage where session_id=? and status='completed'", (sid,),
+        ).fetchone()[0] or 0,
         "is_sub": sid.startswith("sess_subagent"),
         "parent": (srow["parent_id"] if srow is not None else None),
     }
@@ -635,29 +664,45 @@ def _row_gen_ms(r):
     return gen_ms
 
 
-def _last_valid_tps(con, sid, last):
-    """last.tps：状态栏置顶的"最近一次生成速度"。
-    first_token_at 缺失时不能退化用总耗时当生成时长——等待期会被当成生成期，速率严重
-    低估（2026-10-16 真库抽样：近半请求缺该时间戳，退化值里七成明显偏低，极端到 11
-    token/6.2s 算出 1.8 这种荒谬值）。缺失时向前找最近一条时间戳完整、口径有效的
-    请求代替；仍找不到则 0（chip 按既有约定隐藏，不引入"速度不可用"文案）。"""
-    if last and last["output_tokens"]:
-        gen_ms = _row_gen_ms(last)
+def _rate_sample(row):
+    if row and (row["output_tokens"] or 0) > 0:
+        gen_ms = _row_gen_ms(row)
         if gen_ms and _TPS_MIN_GEN_MS <= gen_ms < _TPS_MAX_GEN_MS:
-            return round(last["output_tokens"] / (gen_ms / 1000), 1)
+            return {"tps": round(row["output_tokens"] / (gen_ms / 1000), 1),
+                    "startedAt": row["started_at"] or 0, "endedAt": row["completed_at"] or 0}
+    return None
+
+
+def _last_valid_rate(con, sid, last):
+    """最近有效生成速度及同一请求的起止；最多回查 20 条，缺有效样本时隐藏。"""
+    sample = _rate_sample(last)
+    if sample is not None:
+        return sample
     rows = con.execute(
         """select output_tokens, first_token_at, completed_at, started_at, reasoning_tokens, model_id
            from model_usage where session_id=? and status='completed'
            order by completed_at desc limit ?""",
         (sid, _TPS_LOOKBACK),
     ).fetchall()
-    for r in rows:
-        if not r["output_tokens"]:
-            continue
-        gen_ms = _row_gen_ms(r)
-        if gen_ms and _TPS_MIN_GEN_MS <= gen_ms < _TPS_MAX_GEN_MS:
-            return round(r["output_tokens"] / (gen_ms / 1000), 1)
-    return 0
+    for row in rows:
+        sample = _rate_sample(row)
+        if sample is not None:
+            return sample
+    return {"tps": 0, "startedAt": 0, "endedAt": 0}
+
+
+def _turn_rate(rows):
+    output, unrated, duration = 0, 0, 0
+    for row in rows:
+        tokens = row["output_tokens"] or 0
+        gen_ms = _row_gen_ms(row)
+        if tokens > 0 and gen_ms and _TPS_MIN_GEN_MS <= gen_ms < _TPS_MAX_GEN_MS:
+            output += tokens
+            duration += gen_ms
+        else:
+            unrated += tokens
+    return {"tps": round(output / (duration / 1000), 1) if duration else 0,
+            "rated_output": output, "unrated_output": unrated, "gen_ms": duration}
 
 
 def _session_snapshot(con, sid, cfg):
@@ -675,7 +720,8 @@ def _session_snapshot(con, sid, cfg):
     # 自带请求/重试/工具/工具错误计数与 reasoning 拆分，一轮一行。
     lt = {"requests": 0, "retries": 0, "tool_calls": 0, "tool_errors": 0, "input": 0,
           "output": 0, "reasoning": 0, "cache_read": 0, "cache_write": 0,
-          "total": 0, "duration_ms": 0, "ttft_ms": 0}
+          "total": 0, "duration_ms": 0, "ttft_ms": 0, "started": 0, "ended": 0,
+          "tps": 0, "rated_output": 0, "unrated_output": 0, "gen_ms": 0}
     if last and last["turn_id"]:
         t = con.execute(
             """select coalesce(model_request_count,0), coalesce(model_retry_count,0),
@@ -687,10 +733,19 @@ def _session_snapshot(con, sid, cfg):
                from turn_usage where session_id=? and turn_id=? and status='completed'""",
             (sid, last["turn_id"]),
         ).fetchone()
+        # 本轮起止：首个请求的 started_at / 最后完成请求的 completed_at（tooltip 时间范围用）
+        ts_row = con.execute(
+            """select min(started_at), max(completed_at) from model_usage
+               where session_id=? and turn_id=? and status='completed'""",
+            (sid, last["turn_id"]),
+        ).fetchone()
+        turn_started = (ts_row[0] or 0) if ts_row else 0
+        turn_ended = (ts_row[1] or 0) if ts_row else 0
         if t:
             lt = {"requests": t[0], "retries": t[1], "tool_calls": t[2], "tool_errors": t[3],
                   "input": t[4], "output": t[5], "reasoning": t[6], "cache_read": t[7],
-                  "cache_write": t[8], "total": t[9], "duration_ms": t[10], "ttft_ms": t[11]}
+                  "cache_write": t[8], "total": t[9], "duration_ms": t[10], "ttft_ms": t[11],
+                  "started": turn_started, "ended": turn_ended}
         else:
             # 轮进行中 turn_usage 还没落 completed 行：回退 model_usage 现场聚合，保持实时显示
             r = con.execute(
@@ -703,12 +758,17 @@ def _session_snapshot(con, sid, cfg):
             ).fetchone()
             lt = {"requests": r[0], "retries": 0, "tool_calls": 0, "tool_errors": 0,
                   "input": r[1], "output": r[2], "reasoning": r[6], "cache_read": r[5],
-                  "cache_write": r[7], "total": r[3], "duration_ms": r[4], "ttft_ms": 0}
+                  "cache_write": r[7], "total": r[3], "duration_ms": r[4], "ttft_ms": 0,
+                  "started": turn_started, "ended": turn_ended}
+        lt.update(_turn_rate(con.execute(
+            """select output_tokens, first_token_at, completed_at, started_at, reasoning_tokens, model_id
+               from model_usage where session_id=? and turn_id=? and status='completed'""",
+            (sid, last["turn_id"]),
+        ).fetchall()))
     lr = con.execute("select max(completed_at) from model_usage where session_id=?", (sid,)).fetchone()
     active = bool(lr and lr[0] and int(time.time() * 1000) - lr[0] < SESSION_TIMEOUT_MS)
     ctx_auto = lookup_context_window(last["model_id"]) if last else None
-    # 生成速度：输出 token ÷ 生成耗时，置顶显示；口径细节与缺失兜底见 _last_valid_tps。
-    tps = _last_valid_tps(con, sid, last)
+    rate = _last_valid_rate(con, sid, last)
     sub_rows = con.execute(
         """select m.session_id, coalesce(m.agent,''), coalesce(s2.title,''), count(*),
                   coalesce(sum(m.computed_total_tokens),0),
@@ -777,6 +837,7 @@ def _session_snapshot(con, sid, cfg):
         "retries": u["retries"] if u else 0,
         "ctx": u["last_request_input"] if u else 0,
         "updated": (_ts(lr[0]).strftime("%H:%M:%S") if lr and lr[0] else ""),
+        "started": _session_start_ms(con, sid, srow),
         "sub": sub,
         "tools": tools,
         "last_turn": lt,
@@ -784,7 +845,7 @@ def _session_snapshot(con, sid, cfg):
             "duration_ms": last["duration_ms"] if last else 0,
             "ttft_ms": last[1] if last else 0,
             "model": last["model_id"] if last else "",
-            "tps": tps,
+            **rate,
         },
         # 代码变更统计（session 表 summary_* 列，ZCode 目前未填充、全库为 NULL，有值才会显示）
         "code": {
@@ -801,7 +862,9 @@ def _session_snapshot(con, sid, cfg):
         ).fetchone()[0],
         "context_window": ctx_auto or cfg["context_window"],
         "context_auto": ctx_auto is not None,
-        "last_at": (lr[0] if lr and lr[0] else 0),
+        "last_at": con.execute(
+            "select max(completed_at) from model_usage where session_id=? and status='completed'", (sid,),
+        ).fetchone()[0] or 0,
         "is_sub": sid.startswith("sess_subagent"),
         "parent": (srow["parent_id"] if srow is not None else None),
     }
@@ -809,7 +872,8 @@ def _session_snapshot(con, sid, cfg):
 
 _EMPTY_TURN = {"requests": 0, "retries": 0, "tool_calls": 0, "tool_errors": 0, "input": 0,
                "output": 0, "reasoning": 0, "cache_read": 0, "cache_write": 0,
-               "total": 0, "duration_ms": 0, "ttft_ms": 0}
+               "total": 0, "duration_ms": 0, "ttft_ms": 0, "started": 0, "ended": 0,
+               "tps": 0, "rated_output": 0, "unrated_output": 0, "gen_ms": 0}
 
 
 # ---------- 远端数据源：identity 路由与目标隔离 ----------
@@ -1206,8 +1270,8 @@ def _remote_fetch(force_sids, have_local, setup, routes=None, scopes=None):
 def _empty_snapshot(sid, cfg):
     return {"sid": sid, "title": "", "active": False, "turns": 0, "requests": 0,
             "input": 0, "output": 0, "reasoning": 0, "cache_read": 0, "cache_write": 0,
-            "total": 0, "tool_calls": 0, "retries": 0, "ctx": 0, "updated": "", "last_at": 0,
-            "last_turn": dict(_EMPTY_TURN), "last": {"duration_ms": 0, "ttft_ms": 0, "model": "", "tps": 0},
+            "total": 0, "tool_calls": 0, "retries": 0, "ctx": 0, "updated": "", "last_at": 0, "started": 0,
+            "last_turn": dict(_EMPTY_TURN), "last": {"duration_ms": 0, "ttft_ms": 0, "model": "", "tps": 0, "startedAt": 0, "endedAt": 0},
             "code": {"add": None, "del": None, "files": None}, "ctx_exc": 0,
             "tools": {"total": 0, "errors": 0, "list": []},
             "sub": {"requests": 0, "total": 0, "input": 0, "output": 0, "cache_read": 0,
@@ -1246,8 +1310,10 @@ def snapshot(force_sid="", routes=None):
             if fs and re.fullmatch(r"[A-Za-z0-9_-]+", fs) and fs not in force_sids:
                 force_sids.append(fs)
         try:
-            today = _cached_agg("today", lambda: range_usage(
-                con, _epoch_ms(_day_start()), _epoch_ms(_day_start() + timedelta(days=1)))) if con else (0,) * 9
+            day = _day_start()
+            start_ms, end_ms = _epoch_ms(day), _epoch_ms(day + timedelta(days=1))
+            today = _cached_agg(("today", start_ms), lambda: _today_usage(
+                con, start_ms, end_ms)) if con else (0,) * 11
             rows = _scan_session_ids(con) if con else []
             have_local = set()
             if con and force_sids:
@@ -1260,7 +1326,7 @@ def snapshot(force_sid="", routes=None):
             local_error = str(exc)[:200]
             con.close()
             con = None
-            today, rows, have_local = (0,) * 9, [], set()
+            today, rows, have_local = (0,) * 11, [], set()
         known_sids = [s for s in force_sids if s in have_local]
         # 远端补齐（v12）：本地不存在的 force 会话按路由分组查各自远端库
         setup = _remote_setup(cfg)
@@ -1325,6 +1391,7 @@ def snapshot(force_sid="", routes=None):
                 "requests": today[0], "input": today[1], "output": today[2],
                 "cache_read": today[3], "total": today[4],
                 "reasoning": today[6], "retries": today[7], "cache_write": today[8],
+                "started": today[9] or 0, "last_at": today[10] or 0,
             },
             # 远端数据源（v12）：显示远端会话时 overlay 按其 remote_target 取对应主机的今日值；
             # dict 键=目标键。remote_error 保留首个错误（旧字段），remote_errors 按目标细分。
