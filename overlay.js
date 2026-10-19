@@ -1631,7 +1631,7 @@
       var store = zuTryBindStore(sid);
       if (!store) { updateLive(); return; }   // 无桥 / 无匹配 session：降级（DB 路径不变），下轮再探
       var tracker = TURN_STATS.createTracker();
-      var handle = { dead: false, sid: sid, store: store, tracker: tracker, alias: {}, off: null, charsPerToken: null };
+      var handle = { dead: false, sid: sid, store: store, tracker: tracker, alias: {}, off: null, charsPerToken: null, bornAt: Date.now() };
       var off = TURN_STATS.subscribeStore(store, tracker, function () {
         if (inactive() || handle.dead) return;
         var st = null;
@@ -1666,6 +1666,24 @@
        * 退回 DB 的两段式拼接），需要整条重渲染。 */
       var h = bridge.handle;
       var stats = (state.rateLine && h && !h.dead && bridge.turnId) ? h.tracker.get(bridge.turnId) : null;
+      /* v87：绑定成功但 turnHeader 还没到（新会话/TurnStarted 前的空窗口，源码证实
+       * draft 期 rows.window 为空）——桥活着就别让 chip 空着：按绑定时长合成"思考中"，
+       * turnHeader 到位后自然切换为真实统计。 */
+      if (!stats && h && !h.dead && bridge.handle && h.store) {
+        try {
+          var st0 = h.store.getState();
+          var snap0 = st0 && st0.snapshot;
+          if (snap0 && snap0.sessionId === h.sid) {
+            var rows0 = snap0.rows && snap0.rows.window;
+            if ((rows0 && rows0.length) || (snap0.control && snap0.control.phase === "running")) {
+              stats = { complete: false, characterRate: null, runningTool: null,
+                        phase: "thinking", observedMs: Math.max(0, Date.now() - (h.bornAt || Date.now())),
+                        observedLive: true, totalCharacters: 0 };
+              bridge.turnId = bridge.turnId || "";
+            }
+          }
+        } catch (e) { }
+      }
       if (h && stats && stats.complete && stats.outputTokens > 0 && stats.totalCharacters > 0) {
         h.charsPerToken = stats.totalCharacters / stats.outputTokens;   // c2t 自校准：本轮真实比例供下一轮估算用
       }

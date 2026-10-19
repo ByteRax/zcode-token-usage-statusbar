@@ -92,6 +92,8 @@
         (act.status === 'inputStreaming' || act.status === 'pendingApproval' || act.status === 'running')
         ? { name: typeof act.toolName === 'string' ? act.toolName : '',
             startedAt: Number.isFinite(act.startedAt) ? act.startedAt : null }
+        : act && act.kind === 'subagent' && act.status === 'running'
+        ? { name: 'Agent', startedAt: null }   // 子智能体行无 startedAt：只给动词，不给秒数
         : null;
       // 当前轮处于哪个阶段（按最后一个活动行的类型判定，供调用方换图标/文案）：
       // reasoning 行流式输出 = 模型在思考；toolCall 进行中 = 工具执行；assistantText = 正文流式。

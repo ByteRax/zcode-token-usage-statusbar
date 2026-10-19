@@ -15,7 +15,7 @@ import renderer_bridge as bridge
 import patch_install as asar
 
 HOST = Path('/Applications/ZCode.app/Contents/Resources/app.asar')
-MINI = b'const oE=new Map;function BYe(e){return e.workspacePath}function Nse(e){return e}export{ oE };'
+MINI = b'const pf=new Map;function Ode(e){return e.workspacePath}function hee(e){return e}export{ pf };'
 
 
 def archive(path, module=MINI, version=bridge.HOST_VERSION, extra=None):
@@ -59,7 +59,11 @@ class RendererBridgeTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.src = self.root / 'input.asar'
         archive(self.src)
-        self.pin = patch.object(bridge, 'ASSET_SHA256', hashlib.sha256(MINI).hexdigest())
+        # 多版本化后指纹在 HOST_TARGETS 表里：夹具把表整体换成 MINI 的合成目标
+        self.pin = patch.object(bridge, 'HOST_TARGETS', [dict(
+            version=bridge.HOST_VERSION, asset=bridge.ASSET,
+            sha256=hashlib.sha256(MINI).hexdigest(),
+            names=dict(bridge.NEWEST['names']))])
         self.pin.start()
         self.addCleanup(self.pin.stop)
         self.addCleanup(self.tmp.cleanup)
@@ -111,7 +115,7 @@ class RendererBridgeTests(unittest.TestCase):
     def test_integrity_tamper(self):
         raw = self.src.read_bytes().replace(b'third party bytes', b'third party BYTES')
         # Only modified nodes are integrity checked; unrelated data is copied verbatim.
-        self.src.write_bytes(raw.replace(MINI, MINI.replace(b'oE', b'OE', 1)))
+        self.src.write_bytes(raw.replace(MINI, MINI.replace(b'pf', b'PF', 1)))
         with self.assertRaisesRegex(bridge.BridgeError, 'integrity'):
             bridge.rewrite_asar(self.src, self.root / 'no.asar')
 
@@ -137,7 +141,10 @@ class RendererBridgeTests(unittest.TestCase):
             with self.assertRaisesRegex(bridge.BridgeError, 'source map'):
                 bridge.rewrite_asar(self.src, self.root / 'no.asar')
         mapped = MINI + b'\n//# sourceMappingURL=x.map'
-        with patch.object(bridge, 'ASSET_SHA256', hashlib.sha256(mapped).hexdigest()):
+        with patch.object(bridge, 'HOST_TARGETS', [dict(
+                version=bridge.HOST_VERSION, asset=bridge.ASSET,
+                sha256=hashlib.sha256(mapped).hexdigest(),
+                names=dict(bridge.NEWEST['names']))]):
             archive(self.src, mapped)
             with self.assertRaisesRegex(bridge.BridgeError, 'source map'):
                 bridge.rewrite_asar(self.src, self.root / 'no.asar')
@@ -187,16 +194,14 @@ class RendererBridgeTests(unittest.TestCase):
                     remaining -= count
         self.assertEqual(asar.source_fingerprint(HOST), before)
         text = original.decode()
-        # BYe contains template interpolation braces; use its next-function boundary.
-        key = text[text.index('function BYe(e)'):text.index('function VYe(e)')]
+        # Ode contains template interpolation braces; use its next-function boundary.
+        key = text[text.index('function Ode(e)'):text.index('function kde(e)')]
         methods = text[text.index('getState(){return this.state}'):
                        text.index('async connect(e={})', text.index('getState(){return this.state}'))]
-        imported = read(HOST, '/out/renderer/assets/parts-1PK4PulD.js').decode()
-        alias = re.search(r'export\{.*?\b(\w+) as C,', imported).group(1)
-        topic_start = imported.index('function ' + alias + '(e)')
-        topic = imported[topic_start:imported.index('function ', topic_start + 1)]
-        fixture = ('const oE = new Map();\n' + key + topic +
-                   '\nconst Nse = ' + alias + ';\nclass FixtureStore {\n' + methods +
+        # 新包 hee 为跨资产 import 别名；契约恒为 conversation/<id>，夹具内联同款实现
+        topic = 'function hee(e){return `conversation/${e}`;}'
+        fixture = ('const pf = new Map();\n' + key + topic +
+                   '\nclass FixtureStore {\n' + methods +
                    '\n}\n' + bridge.BRIDGE.decode().replace('export function', 'function'))
         script = self.root / 'fixture.cjs'
         script.write_text('const vm = require("node:vm");\nvm.runInNewContext(' +
@@ -207,7 +212,62 @@ class RendererBridgeTests(unittest.TestCase):
         self.assertIn('VM contract passed', result.stdout)
 
 
-VM_ASSERTIONS = r'''
+class EnsureDeployedTests(unittest.TestCase):
+    """插件安装链的 in-place 部署 API：真实读写临时 asar，不碰真机安装。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix='bridge-ensure-')
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.target = self.root / 'app.asar'
+        archive(self.target)
+        self.pin = patch.object(bridge, 'HOST_TARGETS', [dict(
+            version=bridge.HOST_VERSION, asset=bridge.ASSET,
+            sha256=hashlib.sha256(MINI).hexdigest(),
+            names=dict(bridge.NEWEST['names']))])
+        self.pin.start()
+        self.addCleanup(self.pin.stop)
+
+    def test_patch_present_remove_absent_lifecycle(self):
+        result = bridge.ensure_deployed(self.target)
+        self.assertEqual(result["status"], "patched")
+        self.assertEqual(result["version"], bridge.HOST_VERSION)
+        self.assertIn(".zusage.lock".replace(".zusage", "zusage"), str(list(self.root.iterdir()) or ""))  # 锁文件随 asar 命名
+        with self.target.open('rb') as stream:
+            header, base = asar.read_header(stream)
+            data = bridge._read(stream, dict(asar.iter_files(header)), base, bridge.ASSET)
+        self.assertIn(bridge.MARKER, data)
+        # 幂等：已带桥再 ensure → present，不重写
+        self.assertEqual(bridge.ensure_deployed(self.target)["status"], "present")
+        # 卸载对称清理 → removed → 还原为干净模块 → absent
+        self.assertEqual(bridge.remove_deployed(self.target)["status"], "removed")
+        with self.target.open('rb') as stream:
+            header, base = asar.read_header(stream)
+            data = bridge._read(stream, dict(asar.iter_files(header)), base, bridge.ASSET)
+        self.assertEqual(hashlib.sha256(data).hexdigest(), hashlib.sha256(MINI).hexdigest())
+        self.assertEqual(bridge.remove_deployed(self.target)["status"], "absent")
+
+    def test_unknown_version_and_unreadable_path_never_raise(self):
+        unknown = self.root / 'unknown.asar'
+        archive(unknown, version='9.9.9')
+        result = bridge.ensure_deployed(unknown)
+        self.assertEqual(result["status"], "skipped-unknown")
+        self.assertEqual(result["version"], '9.9.9')
+        self.assertEqual(bridge.ensure_deployed(self.root / 'missing.asar')["status"], "skipped-error")
+        self.assertEqual(bridge.remove_deployed(self.root / 'missing.asar')["status"], "skipped-error")
+        # 其它文件在桥旁不受影响：unknown 归档未被改写
+        self.assertEqual(bridge.remove_deployed(unknown)["status"], "skipped-unknown")
+
+    def test_asset_drift_for_pinned_version_fails_closed(self):
+        # 版本已登记但资产内容与指纹不符（宿主 build 漂移）：拒绝手术
+        drifted = self.root / 'drift.asar'
+        archive(drifted, module=MINI + b' ')
+        result = bridge.ensure_deployed(drifted)
+        self.assertEqual(result["status"], "skipped-unknown")
+        self.assertIn("hash mismatch", result["detail"])
+
+
+VM_ASSERTIONS = r''' 
 (async () => {
  const scope = {sessionId:'session',workspacePath:'/workspace with spaces',remoteSessionId:'remote'};
  const store = new FixtureStore();
@@ -216,9 +276,9 @@ VM_ASSERTIONS = r'''
  store.state = {snapshot:{sessionId:'session',seq:1,rows:[{text:'host'}]},status:'live'};
  store.state.circular = store.state;
  const session = {store,refCount:2};
- const layer = {entries:new Map([[Nse(scope.sessionId),session]]),disposed:false};
+ const layer = {entries:new Map([[hee(scope.sessionId),session]]),disposed:false};
  const entry = {layer,refCount:3,stale:false};
- oE.set(BYe(scope),entry);
+ pf.set(Ode(scope),entry);
  let rpc = 0;
  store.connect = store.close = layer.acquire = () => {rpc++;throw Error('Forbidden lifecycle');};
  const handle = getExistingConversationStore(scope);
@@ -254,28 +314,28 @@ VM_ASSERTIONS = r'''
    if(mode==='closed')store.closed=true;
    if(mode==='stale')entry.stale=true;
    if(mode==='disposed')layer.disposed=true;
-   if(mode==='replaced')oE.set(BYe(scope),{...entry});
-   if(mode==='sessionReplaced')layer.entries.set(Nse(scope.sessionId),{store});
+   if(mode==='replaced')pf.set(Ode(scope),{...entry});
+   if(mode==='sessionReplaced')layer.entries.set(hee(scope.sessionId),{store});
    if(mode==='storeReplaced')session.store={closed:false};
    assert.equal(getExistingConversationStore(scope) === null, ['closed','stale','disposed'].includes(mode));
    assert.equal(h.getState(),null);cancel();h.off();assert.equal(store.listeners.size,0);
    store.closed=false;entry.stale=false;layer.disposed=false;session.store=store;
-   oE.set(BYe(scope),entry);layer.entries.set(Nse(scope.sessionId),session);
+   pf.set(Ode(scope),entry);layer.entries.set(hee(scope.sessionId),session);
  }
  const h = getExistingConversationStore(scope);h.subscribe(()=>{calls++;});
  store.closed=true;store.setState({status:'closed'});assert.equal(store.listeners.size,0);
  assert.equal(h.getState(),null);store.closed=false;store.setState({status:'live'});
  assert.equal(entry.refCount,3);assert.equal(session.refCount,2);assert.equal(rpc,0);
  const identityScope = {...scope,workspaceIdentity:' identity '};
- oE.set(BYe(identityScope),entry);
+ pf.set(Ode(identityScope),entry);
  assert(getExistingConversationStore({...identityScope,workspacePath:'/different'}));
  assert.equal(typeof globalThis.__zusageGetExistingConversationStore,'function');
  assert.equal(typeof globalThis.__zusageConversationDiagnostics,'function');
  const diag = globalThis.__zusageConversationDiagnostics();
- assert(diag.keys.includes(BYe(scope)));
- const live = diag.sessions.find(item => item.topic === Nse(scope.sessionId));
+ assert(diag.keys.includes(Ode(scope)));
+ const live = diag.sessions.find(item => item.topic === hee(scope.sessionId));
  assert(live && live.status === 'live' && live.seq === 1);
- assert(diag.keys.includes(BYe(identityScope)));
+ assert(diag.keys.includes(Ode(identityScope)));
  await new Promise(resolve => setTimeout(resolve,0));
  console.log('VM contract passed');
 })().catch(error => { throw error; });

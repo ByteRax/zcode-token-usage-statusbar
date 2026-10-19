@@ -29,6 +29,8 @@ Windows / macOS / Linux · Python 3.8+ · [MIT](LICENSE)
 ## Quick start
 
 > ⚠️ **The floating bar does not appear immediately after its first installation. Quit ZCode completely and restart it to load the bar. Closing the window alone is not enough.**
+>
+> **If the bar disappears after updating ZCode, let the plugin restore its injection, then restart ZCode once more.** The update's automatic restart does not replace this restart after successful injection. See the [FAQ](#faq) for steps.
 
 **Using the desktop app?** Plugin installation is recommended; the one-command installer below is an alternative. Do not install both.
 **Self-hosting the web UI?** Follow the [Web edition guide](web/README.md) instead.
@@ -171,7 +173,7 @@ See the [remote session guide](docs/user-guide.md#远程会话) (Chinese) for sw
 
 - **Usage data is not uploaded**: local queries do not use the network. Enabled remote queries read remote databases through the chosen transport; see [SSH remote support](#ssh-remote-support-current-main) for prerequisites and limits. Plugin updates download code over the network.
 - **The bar modifies client files**: it is not a native ZCode feature. Removal strips only this project's injection, without reverting the client version.
-- **ZCode upgrades may remove the bar**: the plugin repairs the injection by default; quit completely and reopen after success. Use the installer as a fallback if automatic repair fails.
+- **Bar missing after a ZCode update?** Client updates may overwrite the injection. Once it is restored successfully, quit ZCode completely and restart it once more. See the FAQ below for steps.
 - **Uninstalling the plugin may leave the bar behind**: follow the removal steps below.
 
 ## FAQ
@@ -179,6 +181,16 @@ See the [remote session guide](docs/user-guide.md#远程会话) (Chinese) for sw
 **I installed the plugin. Where is the bar?**
 
 Leave the plugin enabled and start or reopen a session to trigger automatic installation/repair, then quit ZCode completely and reopen after success. If automatic installation fails, use `install-overlay` as a fallback and check permissions, config and the uninstall opt-out. Restarting alone cannot repair a bar that was not successfully installed.
+
+**Why did the bar disappear after updating ZCode?**
+
+A ZCode update may overwrite the client files modified by the plugin. The first launch after the update lets the plugin restore its injection. **After injection succeeds, quit ZCode completely and restart it once more to load the restored injection. This is required even if the update already restarted ZCode automatically.**
+
+1. Leave the plugin enabled and start or reopen a session to trigger automatic repair.
+2. If automatic installation is disabled or repair fails, enter `/install-overlay` in ZCode's chat input and follow the output to complete installation or troubleshoot.
+3. After installation or repair succeeds, **quit ZCode completely and reopen it**. Closing a window or reopening a session is not a full restart.
+
+If you used the one-command installer rather than the plugin, rerun `python install.py --lang en` from the repository directory (`python3 install.py --lang en` on macOS), then quit completely and restart after success.
 
 **Why don't the numbers change continuously?**
 

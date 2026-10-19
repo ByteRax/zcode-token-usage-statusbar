@@ -54,7 +54,7 @@ RUNTIME_FILES = [
     "plugin-storage.cjs",
     "release_unpack.py",
     "runtime_lock.py", "usage_stats.py", "turn-stats.js",
-    "token_rate.py",
+    "token_rate.py", "renderer_bridge.py",
 ]
 
 
@@ -682,6 +682,36 @@ def _install_overlay(runtime, pi):
         runtime, {"state": "pending-install", "installation": installation}))
 
 
+def ensure_renderer_bridge(pi):
+    """安装/更新后补桥：客户端官方升级会整体重写 asar，把只读桥抹掉。这里按
+    renderer_bridge 的版本+哈希指纹表门控就地重打；未知版本 fail-closed 跳过，
+    任何失败都只 stderr 记录——桥只是实时统计的增强，绝不影响安装主流程。"""
+    try:
+        from renderer_bridge import ensure_deployed
+        result = ensure_deployed(pi.ASAR)
+        if result.get("status") not in ("present",):
+            print(f"[zusage-plugin] renderer bridge: {result.get('status')} "
+                  f"(v{result.get('version')}) {result.get('detail')}", file=sys.stderr)
+        return result
+    except Exception as e:
+        print(f"[zusage-plugin] renderer bridge ensure failed（已忽略）：{e}", file=sys.stderr)
+        return {"status": "skipped-error", "detail": str(e)}
+
+
+def remove_renderer_bridge(pi):
+    """卸载对称清理：只剥本项目的桥（指纹表逐版本识别），失败不影响卸载结果。"""
+    try:
+        from renderer_bridge import remove_deployed
+        result = remove_deployed(pi.ASAR)
+        if result.get("status") not in ("absent",):
+            print(f"[zusage-plugin] renderer bridge remove: {result.get('status')} "
+                  f"(v{result.get('version')}) {result.get('detail')}", file=sys.stderr)
+        return result
+    except Exception as e:
+        print(f"[zusage-plugin] renderer bridge remove failed（已忽略）：{e}", file=sys.stderr)
+        return {"status": "skipped-error", "detail": str(e)}
+
+
 def run_hook():
     """SessionStart hook 主体：返回 hook 协议 JSON dict。任何异常都转成合法输出，
     绝不影响会话；patch_install 的人类可读输出重定向到 stderr，保证 stdout 纯 JSON。"""
@@ -702,6 +732,7 @@ def run_hook():
             return out  # 本机没有可定位的桌面客户端（远程会话等），静默
         save_runtime_config(runtime, pi)
         if st:
+            ensure_renderer_bridge(pi)   # 已注入也可能缺桥（客户端升级重写 asar）：幂等补一次
             from restart_notice import session_notice
             cold_files = {"inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs"}
             if (load_runtime_config(runtime) or {}).get("hot_reload") is False:
@@ -723,6 +754,7 @@ def run_hook():
                     else:
                         os.environ[name] = value
             if ok:
+                ensure_renderer_bridge(pi)
                 clear_markers(runtime)
                 from restart_notice import session_notice
                 session_notice(runtime, out, injected=injected_status(pi))
@@ -768,6 +800,7 @@ def main():
         clear_markers(runtime)  # 主动安装 = 重新参与提示逻辑
         ok = _install_overlay(runtime, pi)
         if ok:
+            ensure_renderer_bridge(pi)
             from restart_notice import reminder
             notice = reminder(runtime, injected=injected_status(pi))
             if notice:
@@ -777,6 +810,8 @@ def main():
         chown_runtime_to_user(runtime)
     elif cmd == "remove":
         ok = pi.remove()
+        if ok:
+            remove_renderer_bridge(pi)
         if ok and not write_marker(optout_marker(runtime)):
             print("（豁免标记写入失败，hook 可能继续提示）")
         chown_runtime_to_user(runtime)

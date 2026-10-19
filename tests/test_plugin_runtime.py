@@ -459,6 +459,60 @@ class PluginRuntimeTests(unittest.TestCase):
         self.assertFalse((self.runtime / ".plugin-overlay-optout").exists())
         self.assertFalse((self.runtime / ".plugin-overlay-nudge").exists())
 
+    def test_install_deploys_renderer_bridge_and_remove_strips_it(self):
+        bridge = mock.Mock()
+        bridge.ensure_deployed.return_value = {"status": "patched", "version": "3.16.1", "detail": ""}
+        bridge.remove_deployed.return_value = {"status": "removed", "version": "3.16.1", "detail": ""}
+        patch_install = self.patch_install_stub()
+        patch_install.install.return_value = True
+        patch_install.remove.return_value = True
+        with mock.patch.dict(sys.modules, {"renderer_bridge": bridge}), \
+                mock.patch.object(installer, "resolve_paths", return_value=(self.runtime, patch_install)):
+            with self.assertRaises(SystemExit) as exit_code:
+                self.run_main("install")
+            self.assertEqual(exit_code.exception.code, 0)
+            bridge.ensure_deployed.assert_called_once_with(patch_install.ASAR)
+            with self.assertRaises(SystemExit) as exit_code2:
+                self.run_main("remove")
+            self.assertEqual(exit_code2.exception.code, 0)
+            bridge.remove_deployed.assert_called_once_with(patch_install.ASAR)
+
+    def test_renderer_bridge_failure_never_breaks_install_or_hook(self):
+        bridge = mock.Mock()
+        bridge.ensure_deployed.side_effect = RuntimeError("bridge boom")
+        patch_install = self.patch_install_stub()
+        patch_install.install.return_value = True
+        with mock.patch.dict(sys.modules, {"renderer_bridge": bridge}), \
+                mock.patch.object(installer, "resolve_paths", return_value=(self.runtime, patch_install)):
+            with self.assertRaises(SystemExit) as exit_code:
+                self.run_main("install")
+            self.assertEqual(exit_code.exception.code, 0)   # 安装照常成功
+            bridge.ensure_deployed.assert_called_once()
+        # 已注入路径的 hook 同样不被桥故障拖垮
+        with mock.patch.dict(sys.modules, {"renderer_bridge": bridge}), \
+                mock.patch.object(installer, "resolve_paths", return_value=(self.runtime, self.patch_install_stub())), \
+                mock.patch.object(installer, "injected_status", return_value=True):
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                result = installer.run_hook()
+        self.assertTrue(result["suppressOutput"] or "hookSpecificOutput" in result)
+        self.assertEqual(output.getvalue(), "")   # stdout 协议不被污染
+        self.assertEqual(bridge.ensure_deployed.call_count, 2)
+
+    def test_hook_automatic_install_also_deploys_bridge(self):
+        bridge = mock.Mock()
+        bridge.ensure_deployed.return_value = {"status": "present", "version": "3.16.1", "detail": ""}
+        patch_install = self.patch_install_stub()
+        patch_install.install.return_value = True
+        with mock.patch.dict(sys.modules, {"renderer_bridge": bridge}), \
+                mock.patch.object(installer, "resolve_paths", return_value=(self.runtime, patch_install)), \
+                mock.patch.object(installer, "injected_status", side_effect=[False, True]), \
+                mock.patch.dict(os.environ, {"ZUSAGE_PLUGIN_AUTO_INSTALL": "1"}):
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                result = installer.run_hook()
+        self.assertIn("hookSpecificOutput", result)   # 自动安装走到了 session_notice
+        bridge.ensure_deployed.assert_called_with(patch_install.ASAR)
+
     def test_check_still_checks_asar_without_syncing(self):
         patch_install = self.patch_install_stub()
         patch_install.ASAR = self.root / "app.asar"
