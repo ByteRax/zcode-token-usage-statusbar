@@ -93,91 +93,62 @@ test("per-target today and errors never fall back to another host or local today
   assert.equal(view({ sid: "sC", remote: true }, d).today.requests, undefined);
   assert.equal(view({ sid: "sL" }, d).today.requests, 99);
 });
-test("real pane schema and raw sid storage retain ambiguity instead of choosing first", () => {
-  const entries = new Map([
-    ["zcode-v4-pane-layout:v2", JSON.stringify({ root: { type: "leaf", paneId: "split" }, panes: { split: { sessionId: "sA", workspaceScope: { workspaceIdentity: A, workspacePath: "/p" } } } })],
-    ["zcode-v4-last-session:v1:" + B, "sA"],
-  ]);
-  const ctx = { localStorage: { get length() { return entries.size; }, key: i => [...entries.keys()][i], getItem: k => entries.get(k) || null } };
-  vm.runInNewContext(extract("  function collectSidWs()", "  function mainWorkbenchScope("), ctx);
-  assert.deepEqual(Array.from(ctx.collectSidWs().sA), [A, B]);
-});
-function workbenchFixture(groups) {
-  const entries = new Map([
-    ["zcode-v4-session-workbench-groups:v1", JSON.stringify({
-      version: 1, activeGroupId: groups.length ? "g0" : null,
-      groups: Object.fromEntries(groups.map((primaryBinding, i) => ["g" + i, { primaryBinding }])),
-      sessionIndex: {},
-    })],
-  ]);
-  const ctx = { ls: (k, d) => entries.get(k) ?? d };
-  vm.runInNewContext(extract("  function mainWorkbenchScope(", "  function refreshWants()"), ctx);
-  return ctx;
-}
-const wbRemote = (identity = A, sessionId = "sA") => ({ workspaceScope: { workspacePath: "/p", workspaceIdentity: identity }, sessionId });
-const wbLocal = (sessionId = "sA") => ({ workspaceScope: { workspacePath: "/local" }, sessionId });
-test("main workbench scope resolves only a unique remote primary binding", () => {
-  assert.equal(workbenchFixture([wbRemote()]).mainWorkbenchScope("sA"), A);
-  assert.equal(workbenchFixture([wbRemote(), wbRemote()]).mainWorkbenchScope("sA"), A);   // 同 scope 重复分组不构成歧义
-  assert.equal(workbenchFixture([{ workspaceScope: A, sessionId: "sA" }]).mainWorkbenchScope("sA"), A);   // 防御：scope 退化成字符串
-  assert.equal(workbenchFixture([wbLocal()]).mainWorkbenchScope("sA"), "");               // 仅本地 scope 不路由
-  assert.equal(workbenchFixture([wbLocal(), wbRemote()]).mainWorkbenchScope("sA"), "");   // 本地+远端同 sid：多窗口共享 localStorage，歧义不猜
-  assert.equal(workbenchFixture([wbRemote(A), wbRemote(B)]).mainWorkbenchScope("sA"), "");
-  assert.equal(workbenchFixture([wbRemote(A, "other")]).mainWorkbenchScope("sA"), "");    // sid 不匹配不参与
-  assert.equal(workbenchFixture([]).mainWorkbenchScope("sA"), "");
-  assert.equal(workbenchFixture([wbRemote()]).mainWorkbenchScope(""), "");
-});
-test("main workbench scope tolerates malformed persistence", () => {
-  const payloads = [
-    "{not json",
-    "null",
-    JSON.stringify({ version: 1 }),                                                        // 缺 groups
-    JSON.stringify({ version: 1, groups: { g0: null } }),                                  // 分组损坏
-    JSON.stringify({ version: 1, groups: { g0: { primaryBinding: { workspaceScope: null, sessionId: "sA" } } } }),
-  ];
-  for (const raw of payloads) {
-    const ctx = { ls: (k, d) => k === "zcode-v4-session-workbench-groups:v1" ? raw : d };
-    vm.runInNewContext(extract("  function mainWorkbenchScope(", "  function refreshWants()"), ctx);
-    assert.equal(ctx.mainWorkbenchScope("sA"), "");
-  }
-});
-const LSKEY = "zcode-v4-last-session:v1:";
-function mainScopeFixture(entries, groups) {
-  const map = new Map(entries);
-  if (groups !== undefined) map.set("zcode-v4-session-workbench-groups:v1", typeof groups === "string" ? groups : JSON.stringify({
-    version: 1, activeGroupId: groups.length ? "g0" : null,
-    groups: Object.fromEntries(groups.map((primaryBinding, i) => ["g" + i, { primaryBinding }])),
-    sessionIndex: {},
-  }));
-  const ctx = {
-    localStorage: { get length() { return map.size; }, key: i => [...map.keys()][i], getItem: k => map.get(k) ?? null },
-    ls: (k, d) => map.get(k) ?? d,
+function scopeFixture(overrides = {}) {
+  const attrs = {
+    "data-session-id": "sA", "data-zusage-scope-version": "1", "data-zusage-pane-id": "workspace-main",
+    "data-zusage-workspace-path": "/p", "data-zusage-workspace-identity": A,
+    "data-zusage-remote-session-id": "connectionA", ...overrides,
   };
-  vm.runInNewContext(extract("  function mainWorkbenchScope(", "  function refreshWants()"), ctx);
-  return ctx;
+  const root = { isConnected: true, parentElement: null,
+    hasAttribute: k => Object.prototype.hasOwnProperty.call(attrs, k), getAttribute: k => attrs[k] ?? null };
+  const el = { isConnected: true, parentElement: root, hasAttribute: () => false };
+  const ctx = { instances: [], window: {}, localStorage: new Proxy({}, { get() { throw Error("shared storage must not be read"); } }) };
+  vm.runInNewContext(extract("  function collectSidWs()", "  /* ---------- 回复末尾速率行"), ctx);
+  return { ctx, root, el, read: () => ctx.readPaneScope(el, "sA", "workspace-main") };
 }
-test("main pane falls back to last-session when groups carry no binding for the sid", () => {
-  // 单会话主标签页形态：无 groups 键，last-session 是宿主唯一的工作区会话绑定（issue #30 复测）
-  assert.equal(mainScopeFixture([[LSKEY + A, "sA"]]).mainWorkbenchScope("sA"), A);
-  assert.equal(mainScopeFixture([[LSKEY + A, '"sA"']]).mainWorkbenchScope("sA"), A);                  // 值带引号
-  assert.equal(mainScopeFixture([[LSKEY + A, '{"sessionId":"sA"}']]).mainWorkbenchScope("sA"), A);    // 值为对象
-  // groups 键存在但只绑定其它 sid（窗口里另有分屏组）：对本 sid 仍是零证据，回退适用
-  assert.equal(mainScopeFixture([[LSKEY + A, "sA"]], [wbRemote(B, "sOther")]).mainWorkbenchScope("sA"), A);
-  // groups 键损坏：同样视为零证据
-  assert.equal(mainScopeFixture([[LSKEY + A, "sA"]], "{not json").mainWorkbenchScope("sA"), A);
-  assert.equal(mainScopeFixture([[LSKEY + "/local", "sA"]]).mainWorkbenchScope("sA"), "");             // 唯一记录是本地工作区
-  assert.equal(mainScopeFixture([[LSKEY + A, "sA"], [LSKEY + "/local", "sA"]]).mainWorkbenchScope("sA"), "");   // 本地+远端同记：歧义不猜
-  assert.equal(mainScopeFixture([[LSKEY + A, "sA"], [LSKEY + B, "sA"]]).mainWorkbenchScope("sA"), "");          // 双远端同记：歧义不猜
-  assert.equal(mainScopeFixture([[LSKEY + A, "sOther"]]).mainWorkbenchScope("sA"), "");                // 无任何记录
-  assert.equal(mainScopeFixture([], []).mainWorkbenchScope("sA"), "");                                 // 全空
-  assert.equal(mainScopeFixture([[LSKEY + A, "sA"]]).mainWorkbenchScope(""), "");                       // 空 sid 早退
+test("pane scope is read from the nearest live session node", () => {
+  const f = scopeFixture();
+  assert.equal(f.read().identity, A);
+  assert.equal(f.read().workspacePath, "/p");
+  assert.equal(f.read().remoteSessionId, "connectionA");
+  const local = scopeFixture({ "data-zusage-workspace-identity": "", "data-zusage-remote-session-id": "" });
+  assert.equal(local.read().identity, "");
+  f.root.isConnected = false; f.el.isConnected = false;
+  assert.equal(f.read(), null);
 });
-test("group binding always overrides the last-session fallback", () => {
-  const ls = [[LSKEY + A, "sA"]];
-  assert.equal(mainScopeFixture(ls, [wbRemote(A)]).mainWorkbenchScope("sA"), A);                // 组证据与回退一致
-  assert.equal(mainScopeFixture(ls, [wbLocal()]).mainWorkbenchScope("sA"), "");                 // 组绑本地：维持本地，不吃回退
-  assert.equal(mainScopeFixture(ls, [wbLocal(), wbRemote()]).mainWorkbenchScope("sA"), "");     // 组内歧义：不吃回退
-  assert.equal(mainScopeFixture(ls, [wbRemote(A), wbRemote(B)]).mainWorkbenchScope("sA"), "");
+test("missing or inconsistent node identity fails closed", () => {
+  for (const attrs of [
+    { "data-zusage-scope-version": null }, { "data-zusage-scope-version": "2" },
+    { "data-session-id": "other" }, { "data-session-id": "draft" },
+    { "data-zusage-pane-id": "right" }, { "data-zusage-workspace-path": "" },
+    { "data-zusage-workspace-identity": null }, { "data-zusage-remote-session-id": null },
+    { "data-zusage-workspace-identity": "" }, { "data-zusage-remote-session-id": "bad id" },
+    { "data-zusage-workspace-path": "/p\n" }, { "data-zusage-workspace-identity": "remote:wsl:p" },
+  ]) assert.equal(scopeFixture(attrs).read(), null, JSON.stringify(attrs));
+  const f = scopeFixture();
+  f.el.hasAttribute = k => k === "data-session-id";
+  f.el.getAttribute = () => "other";
+  assert.equal(f.read(), null);
+});
+test("current panes retain same-sid scope isolation without reading shared storage", () => {
+  const f = scopeFixture();
+  f.ctx.instances = [
+    { pid: "workspace-main", getSid: () => "sA", getScope: f.read },
+    { pid: "right", getSid: () => "sA", getScope: () => ({ sid: "sA", identity: B }) },
+    { pid: "unknown", getSid: () => "sA", getScope: () => null },
+  ];
+  f.ctx.refreshWants();
+  assert.deepEqual(Array.from(f.ctx.collectSidWs().sA), [A, B]);
+  assert.equal(f.ctx.window.__zusagePaneScopes["workspace-main"].identity, A);
+  assert.equal(f.ctx.window.__zusagePaneScopes.right.identity, B);
+  assert.equal(f.ctx.window.__zusagePaneScopes.unknown.identity, undefined);
+  f.ctx.instances = []; f.ctx.refreshWants();
+  assert.equal(f.ctx.window.__zusageWantSid, "");
+  assert.equal(f.ctx.mainScopeNow.known, false);
+});
+test("unknown current main cannot substitute a same-sid local snapshot", () => {
+  const d = { scope_bindings: { "workspace-main": "" }, recent: [{ sid: "sA", requests: 9 }] };
+  assert.equal(sessionFixture({ sid: "sA", identity: "", known: false })(d, "sA", "workspace-main"), null);
 });
 test("main pane strips late scope bindings that no longer match current workbench state", () => {
   const recent = [

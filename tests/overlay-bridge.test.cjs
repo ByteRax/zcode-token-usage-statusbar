@@ -349,7 +349,7 @@ function driveStreaming(h) {
   h.runTimers(600);           // coordinator：spawn 实例 + attach（instSid = sid_a）
   const store = makeStore(snap(1, [header('running'), text('abc')]));
   h.diagSessions.push({ key: '__base__ /fixture/ws', topic: 'conversation/sid_a', store });
-  h.runTimers(500);          // bridgeTick：能力检测 → 绑定 → 订阅首个快照（生成中）
+  h.runTimers(100);          // bridgeTick（v89 0.1s 心跳）：能力检测 → 绑定 → 订阅首个快照（生成中）
   h.clock.now = 1000;
   store.set(snap(2, [header('running'), text('abcdef')]));
   return store;
@@ -459,7 +459,7 @@ test('⑤ store generation change detaches and the next probe rebinds the replac
   const fresh = makeStore(snap(1, [header('running'), text('x')]));
   h.diagSessions.length = 0;
   h.diagSessions.push({ key: '__base__ /fixture/ws', topic: 'conversation/sid_a', store: fresh });
-  h.runTimers(500);                                     // 下轮能力检测重绑
+  h.runTimers(100);                                     // 下轮能力检测重绑（0.1s 心跳）
   assert.equal(fresh.subscribers(), 1);
   h.clock.now = 2000;
   fresh.set(snap(2, [header('running'), text('xyz')]));
@@ -493,7 +493,8 @@ test('⑦ rate-line toggle off detaches the bridge and withdraws live segment an
   const live = instanceOf(h).liveEl();
   assert.equal(live.textContent, '250.0 t/s');
   h.window.__zusagePluginUpdate({ rateLine: false });   // ⚙ 面板关闭逐问速率行
-  h.runTimers(500);                                    // 下一轮检测：detach + 撤行
+  h.runTimers(100);                                    // 下一轮检测（0.1s 心跳）：detach
+  h.runTimers(500);                                    // 扫描撤下自插历史行
   assert.equal(store.subscribers(), 0);
   assert.equal(instanceOf(h).statsFor('pt1'), null);
   // v72：桥撤下且本测试无 DB 兜底数据（last.tps 恒为 0）时，合并后的 chip 整条移除，不留空壳
@@ -560,9 +561,9 @@ test('⑪ heartbeat tick alone (no new store push) still advances the observed-s
   const h = harness();
   const store = driveStreaming(h);   // 末尾：characterRate=3，liveEl 显示 '1.5 t/s'
   assert.equal(instanceOf(h).liveEl().textContent, '1.5 t/s');
-  // 模拟工具执行期间宿主不再推送新快照：只推进时钟、只触发 bridgeTick 自身的 0.5s 心跳
+  // 模拟工具执行期间宿主不再推送新快照：只推进时钟、只触发 bridgeTick 自身的 0.1s 心跳
   h.clock.now = 3100;   // 距上个样本（t=1000）超过 2000ms 陈旧窗口，characterRate 应变为 null
-  h.runTimers(500);
+  h.runTimers(100);
   assert.equal(instanceOf(h).statsFor('pt1').characterRate, null);
   // 没有新快照也要能走字：证明心跳本身驱动了刷新，而不是只等 store 通知
   assert.equal(instanceOf(h).liveEl().textContent, '思考中…3.1s');
@@ -624,7 +625,7 @@ test('⑯ switching to a session whose latest turn finished before this binding 
   const store = makeStore(snap(1, [header('completedSuccess',
     { outputTokens: 1000, modelDurationMs: 4000, activeMs: 5000 }), text('abcdef')]));
   h.diagSessions.push({ key: '__base__ /fixture/ws', topic: 'conversation/sid_a', store });
-  h.runTimers(500);
+  h.runTimers(100);
   const stats = instanceOf(h).statsFor('pt1');
   assert.equal(stats.complete, true);
   assert.equal(stats.observedLive, false);   // 从未见过它处于未完成状态
@@ -652,7 +653,7 @@ test('⑯b a historical turn caught at binding without output fields is skipped,
   h.runTimers(600);
   const store = makeStore(snap(1, [header('completedSuccess'), text('abcdef')]));
   h.diagSessions.push({ key: '__base__ /fixture/ws', topic: 'conversation/sid_a', store });
-  h.runTimers(500);
+  h.runTimers(100);
   const stats = instanceOf(h).statsFor('pt1');
   assert.equal(stats.complete, true);
   assert.equal(stats.observedLive, false);

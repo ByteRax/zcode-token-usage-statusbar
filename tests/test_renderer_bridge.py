@@ -15,13 +15,41 @@ import renderer_bridge as bridge
 import patch_install as asar
 
 HOST = Path('/Applications/ZCode.app/Contents/Resources/app.asar')
-MINI = b'const pf=new Map;function Ode(e){return e.workspacePath}function hee(e){return e}export{ pf };'
+PANE_ANCHORS = {
+    '3.16.1': b'"data-testid":vb(VRe,e),"data-session-id":t??`draft`,',
+    '3.15.3': b'"data-testid":Oa(Mr,e),"data-session-id":t??`draft`,',
+}
+PANE_ATTRIBUTES = (b'"data-zusage-scope-version":"1","data-zusage-workspace-path":c??``,'
+                   b'"data-zusage-workspace-identity":l??``,'
+                   b'"data-zusage-remote-session-id":u??``,"data-zusage-pane-id":e,')
+
+
+def mini_for(target):
+    names = target['names']
+    return (f'const {names["registry"]}=new Map;'
+            f'function {names["key"]}(e){{return e.workspacePath}}'
+            f'function {names["topic"]}(e){{return e}}').encode() + (
+                b'function SessionPane(e,t,c,l,u){return {' + PANE_ANCHORS[target['version']] +
+                b'children:null}}export{ ' + names['registry'].encode() + b' };')
+
+
+MINI = mini_for(bridge.NEWEST)
+
+
+def patched_module(module, target):
+    anchor = PANE_ANCHORS[target['version']]
+    return module.replace(anchor, anchor + PANE_ATTRIBUTES) + bridge.bridge_code(target)
+
+
+def synthetic_target(target, module):
+    return dict(target, sha256=hashlib.sha256(module).hexdigest())
 
 
 def archive(path, module=MINI, version=bridge.HOST_VERSION, extra=None):
+    target = next((item for item in bridge.HOST_TARGETS if item['version'] == version), bridge.NEWEST)
     files = {'/package.json': json.dumps({'name': '@zcode/desktop', 'version': version,
                                         'type': 'module'}).encode(),
-             bridge.ASSET: module, '/other.txt': b'third party bytes\0\xff'}
+             target['asset']: module, '/other.txt': b'third party bytes\0\xff'}
     files.update(extra or {})
     header = {'files': {}}
     payload = b''
@@ -60,10 +88,7 @@ class RendererBridgeTests(unittest.TestCase):
         self.src = self.root / 'input.asar'
         archive(self.src)
         # 多版本化后指纹在 HOST_TARGETS 表里：夹具把表整体换成 MINI 的合成目标
-        self.pin = patch.object(bridge, 'HOST_TARGETS', [dict(
-            version=bridge.HOST_VERSION, asset=bridge.ASSET,
-            sha256=hashlib.sha256(MINI).hexdigest(),
-            names=dict(bridge.NEWEST['names']))])
+        self.pin = patch.object(bridge, 'HOST_TARGETS', [synthetic_target(bridge.NEWEST, MINI)])
         self.pin.start()
         self.addCleanup(self.pin.stop)
         self.addCleanup(self.tmp.cleanup)
@@ -71,9 +96,10 @@ class RendererBridgeTests(unittest.TestCase):
     def test_micro_roundtrip_integrity_and_other_files(self):
         before = self.src.read_bytes()
         out = bridge.rewrite_asar(self.src, self.root / 'patched.asar')
-        self.assertEqual(read(out), MINI + bridge.BRIDGE)
+        expected = patched_module(MINI, bridge.NEWEST)
+        self.assertEqual(read(out), expected)
         self.assertEqual(metadata(out)[bridge.ASSET]['integrity'],
-                         asar.compute_integrity(MINI + bridge.BRIDGE))
+                         asar.compute_integrity(expected))
         restored = bridge.rewrite_asar(out, self.root / 'restored.asar', 'remove')
         self.assertEqual(read(restored), MINI)
         self.assertEqual(self.src.read_bytes(), before)
@@ -102,15 +128,65 @@ class RendererBridgeTests(unittest.TestCase):
             self.assertFalse((self.root / 'no.asar').exists())
 
     def test_tampering_and_third_party(self):
-        data = MINI + bridge.BRIDGE
-        for tampered in [data.replace(b'const key', b'const KEY'),
-                         data.replace(MINI, MINI + b' '), data + bridge.BRIDGE]:
+        for data in [MINI + bridge.BRIDGE, patched_module(MINI, bridge.NEWEST)]:
+            for tampered in [data.replace(b'const key', b'const KEY'),
+                             data.replace(b'const pf', b'const PF'), data + bridge.BRIDGE]:
+                self.assertIsNone(bridge.target_for_module(tampered))
+                for operation in ['patch', 'remove']:
+                    with self.assertRaises(bridge.BridgeError):
+                        bridge.transform_module(tampered, operation)
+            third_party = b'\n;globalThis.thirdParty = 1;'
+            self.assertEqual(bridge.transform_module(data + third_party, 'remove'), MINI + third_party)
             with self.assertRaises(bridge.BridgeError):
-                bridge.transform_module(tampered, 'remove')
-        third_party = b'\n;globalThis.thirdParty = 1;'
-        self.assertEqual(bridge.transform_module(data + third_party, 'remove'), MINI + third_party)
+                bridge.transform_module(data + third_party, 'patch')
+
+    def test_both_versions_scope_patch_upgrade_and_roundtrip(self):
+        self.pin.stop()
+        targets = [synthetic_target(target, mini_for(target)) for target in bridge.HOST_TARGETS]
+        with patch.object(bridge, 'HOST_TARGETS', targets):
+            for target in targets:
+                with self.subTest(version=target['version']):
+                    module = mini_for(target)
+                    expected = patched_module(module, target)
+                    legacy = module + bridge.bridge_code(target)
+                    for data in [module, legacy, expected]:
+                        self.assertEqual(bridge.target_for_module(data), target)
+                        self.assertEqual(bridge.transform_module(data, 'patch'), expected)
+                        self.assertEqual(bridge.transform_module(data, 'remove'), module)
+                    self.assertEqual(expected.count(PANE_ATTRIBUTES), 1)
+                    archive(self.src, module, target['version'])
+                    out = bridge.rewrite_asar(self.src, self.root / f'{target["version"]}.asar')
+                    self.assertEqual(read(out, target['asset']), expected)
+
+    def test_scope_tamper_is_refused(self):
+        data = patched_module(MINI, bridge.NEWEST)
+        anchor = PANE_ANCHORS[bridge.HOST_VERSION]
+        for tampered in [data.replace(b'"data-zusage-scope-version":"1"',
+                                      b'"data-zusage-scope-version":"2"'),
+                         data.replace(b'"data-zusage-workspace-path":c??``',
+                                      b'"data-zusage-workspace-path":l??``'),
+                         data.replace(PANE_ATTRIBUTES, PANE_ATTRIBUTES[:-1]),
+                         data.replace(anchor + PANE_ATTRIBUTES,
+                                      anchor + PANE_ATTRIBUTES + PANE_ATTRIBUTES),
+                         data.replace(anchor, b'"data-session-id":t??`draft`,')]:
+            self.assertIsNone(bridge.target_for_module(tampered))
+            for operation in ['patch', 'remove']:
+                with self.assertRaises(bridge.BridgeError):
+                    bridge.transform_module(tampered, operation)
         with self.assertRaises(bridge.BridgeError):
-            bridge.transform_module(data + third_party, 'patch')
+            bridge.transform_module(data.replace(bridge.BRIDGE, b''), 'patch')
+
+    def test_missing_and_duplicate_anchor_fail_closed(self):
+        anchor = PANE_ANCHORS[bridge.HOST_VERSION]
+        for module in [MINI.replace(anchor, b'"data-session-id":t??`draft`,'),
+                       MINI.replace(anchor, anchor + anchor)]:
+            target = synthetic_target(bridge.NEWEST, module)
+            with patch.object(bridge, 'HOST_TARGETS', [target]):
+                for data in [module, module + bridge.BRIDGE]:
+                    self.assertIsNone(bridge.target_for_module(data))
+                    for operation in ['patch', 'remove']:
+                        with self.assertRaises(bridge.BridgeError):
+                            bridge.transform_module(data, operation)
 
     def test_integrity_tamper(self):
         raw = self.src.read_bytes().replace(b'third party bytes', b'third party BYTES')
@@ -141,30 +217,60 @@ class RendererBridgeTests(unittest.TestCase):
             with self.assertRaisesRegex(bridge.BridgeError, 'source map'):
                 bridge.rewrite_asar(self.src, self.root / 'no.asar')
         mapped = MINI + b'\n//# sourceMappingURL=x.map'
-        with patch.object(bridge, 'HOST_TARGETS', [dict(
-                version=bridge.HOST_VERSION, asset=bridge.ASSET,
-                sha256=hashlib.sha256(mapped).hexdigest(),
-                names=dict(bridge.NEWEST['names']))]):
+        with patch.object(bridge, 'HOST_TARGETS', [synthetic_target(bridge.NEWEST, mapped)]):
             archive(self.src, mapped)
             with self.assertRaisesRegex(bridge.BridgeError, 'source map'):
                 bridge.rewrite_asar(self.src, self.root / 'no.asar')
 
     @unittest.skipUnless(shutil.which('node'), 'Node required')
     def test_node_syntax(self):
-        module = self.root / 'bridge.mjs'
-        module.write_bytes(MINI + bridge.BRIDGE)
-        subprocess.run(['node', '--check', str(module)], check=True, capture_output=True)
+        self.pin.stop()
+        for target in bridge.HOST_TARGETS:
+            with self.subTest(version=target['version']):
+                pristine = mini_for(target)
+                pinned = synthetic_target(target, pristine)
+                module = self.root / f'{target["version"]}.mjs'
+                with patch.object(bridge, 'HOST_TARGETS', [pinned]):
+                    module.write_bytes(bridge.transform_module(pristine, 'patch'))
+                subprocess.run(['node', '--check', str(module)], check=True, capture_output=True)
+
+    @unittest.skipUnless(shutil.which('node'), 'Node required')
+    def test_scope_props_track_current_pane_and_clear_remote_values(self):
+        self.pin.stop()
+        assertions = r'''
+const first = SessionPane('pane-1','session-1','/workspace','remote:ssh:server','remote-1');
+assert.equal(first['data-zusage-scope-version'],'1');
+assert.equal(first['data-session-id'],'session-1');
+assert.equal(first['data-zusage-workspace-path'],'/workspace');
+assert.equal(first['data-zusage-workspace-identity'],'remote:ssh:server');
+assert.equal(first['data-zusage-remote-session-id'],'remote-1');
+assert.equal(first['data-zusage-pane-id'],'pane-1');
+const next = SessionPane('pane-2',null,null,undefined,null);
+assert.equal(next['data-session-id'],'draft');
+for (const key of ['workspace-path','workspace-identity','remote-session-id'])
+  assert.equal(next['data-zusage-' + key],'');
+assert.equal(next['data-zusage-pane-id'],'pane-2');
+'''
+        for target in bridge.HOST_TARGETS:
+            with self.subTest(version=target['version']):
+                module = mini_for(target)
+                with patch.object(bridge, 'HOST_TARGETS', [synthetic_target(target, module)]):
+                    patched = bridge.transform_module(module, 'patch')
+                text = patched.decode().replace('export function', 'function')
+                text = text.replace('export{ ' + target['names']['registry'] + ' };', '')
+                fixture = 'const vb=()=>"pane", Oa=vb, VRe=null, Mr=null;\n' + text + assertions
+                script = self.root / f'{target["version"]}-props.cjs'
+                script.write_text('const vm=require("node:vm");vm.runInNewContext(' +
+                                  json.dumps(fixture) + ',{assert:require("node:assert/strict")});')
+                result = subprocess.run(['node', str(script)], capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
 
     @unittest.skipUnless(HOST.is_file() and shutil.which('node'), 'Read-only host archive and Node required')
     def test_actual_host_archive_roundtrip_and_vm(self):
         self.pin.stop()
         # Hash all packed files without evaluating any renderer or accessing its database.
         before = asar.source_fingerprint(HOST)
-        original = read(HOST)
-        if bridge.MARKER in original:
-            # Already-deployed host: strip the deployed bridge to recover the clean module.
-            prefix, suffix = original.split(bridge.BRIDGE)
-            original = prefix + suffix
+        original = bridge.transform_module(read(HOST), 'remove')
         self.assertEqual(hashlib.sha256(original).hexdigest(), bridge.ASSET_SHA256)
         out = bridge.rewrite_asar(HOST, self.root / 'host-patched.asar')
         module = self.root / 'host-patched.mjs'
@@ -221,10 +327,7 @@ class EnsureDeployedTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.target = self.root / 'app.asar'
         archive(self.target)
-        self.pin = patch.object(bridge, 'HOST_TARGETS', [dict(
-            version=bridge.HOST_VERSION, asset=bridge.ASSET,
-            sha256=hashlib.sha256(MINI).hexdigest(),
-            names=dict(bridge.NEWEST['names']))])
+        self.pin = patch.object(bridge, 'HOST_TARGETS', [synthetic_target(bridge.NEWEST, MINI)])
         self.pin.start()
         self.addCleanup(self.pin.stop)
 
@@ -246,6 +349,62 @@ class EnsureDeployedTests(unittest.TestCase):
             data = bridge._read(stream, dict(asar.iter_files(header)), base, bridge.ASSET)
         self.assertEqual(hashlib.sha256(data).hexdigest(), hashlib.sha256(MINI).hexdigest())
         self.assertEqual(bridge.remove_deployed(self.target)["status"], "absent")
+
+    def test_upgrade_old_bridge_atomically_for_both_versions(self):
+        self.pin.stop()
+        targets = [synthetic_target(target, mini_for(target)) for target in bridge.HOST_TARGETS]
+        with patch.object(bridge, 'HOST_TARGETS', targets):
+            for target in targets:
+                with self.subTest(version=target['version']):
+                    module = mini_for(target)
+                    archive(self.target, module + bridge.bridge_code(target), target['version'])
+                    before = self.target.read_bytes()
+                    real_replace = bridge.os.replace
+
+                    def replace(stage, destination):
+                        self.assertEqual(Path(destination), self.target)
+                        self.assertEqual(self.target.read_bytes(), before)
+                        self.assertEqual(read(Path(stage), target['asset']), patched_module(module, target))
+                        real_replace(stage, destination)
+
+                    with patch.object(bridge.os, 'replace', side_effect=replace) as publish:
+                        result = bridge.ensure_deployed(self.target)
+                    self.assertEqual(result['status'], 'patched')
+                    self.assertEqual(result['version'], target['version'])
+                    publish.assert_called_once()
+                    self.assertEqual(read(self.target, target['asset']), patched_module(module, target))
+                    deployed = self.target.read_bytes()
+                    with patch.object(bridge.os, 'replace') as publish:
+                        self.assertEqual(bridge.ensure_deployed(self.target)['status'], 'present')
+                    publish.assert_not_called()
+                    self.assertEqual(self.target.read_bytes(), deployed)
+                    self.assertEqual(bridge.remove_deployed(self.target)['status'], 'removed')
+                    self.assertEqual(read(self.target, target['asset']), module)
+                    self.assertEqual(read(self.target, '/other.txt'), b'third party bytes\0\xff')
+                    self.assertFalse(list(self.root.glob('.zusage-bridge-*')))
+
+    def test_upgrade_failure_leaves_old_archive_intact(self):
+        archive(self.target, MINI + bridge.BRIDGE)
+        before = self.target.read_bytes()
+        with patch.object(bridge.os, 'replace', side_effect=OSError('publication failed')):
+            result = bridge.ensure_deployed(self.target)
+        self.assertEqual(result['status'], 'skipped-error')
+        self.assertEqual(self.target.read_bytes(), before)
+        self.assertFalse(list(self.root.glob('.zusage-bridge-*')))
+
+    def test_ensure_rejects_tampering_and_suffix_without_writes(self):
+        suffix = b'\n;globalThis.thirdParty = 1;'
+        current = patched_module(MINI, bridge.NEWEST)
+        for module in [MINI + bridge.BRIDGE + suffix, current + suffix,
+                       current.replace(b'"data-zusage-scope-version":"1"',
+                                       b'"data-zusage-scope-version":"2"'),
+                       current.replace(b'const key', b'const KEY')]:
+            archive(self.target, module)
+            before = self.target.read_bytes()
+            with patch.object(bridge.os, 'replace') as publish:
+                self.assertEqual(bridge.ensure_deployed(self.target)['status'], 'skipped-error')
+            publish.assert_not_called()
+            self.assertEqual(self.target.read_bytes(), before)
 
     def test_unknown_version_and_unreadable_path_never_raise(self):
         unknown = self.root / 'unknown.asar'
