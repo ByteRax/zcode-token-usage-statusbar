@@ -1,6 +1,6 @@
 {
   "name": "zcode-token-usage-statusbar",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "description": "ZCode token usage query via the token_usage MCP tool, /usage command, and skill (reads the local usage DB). By default auto-installs the desktop floating usage status bar (modifies app.asar; fully quit and reopen ZCode to take effect; opt-out respected). Appends a per-answer rate line (tok/s, TTFT, output tokens) at the end of each reply.",
   "author": {
     "name": "xhwxt/ByteRax"

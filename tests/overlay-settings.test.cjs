@@ -350,3 +350,80 @@ test('万/亿 toggle change persists and re-renders without touching display ite
   assert.equal(renders, 2);
   assert.deepEqual(context.state.show, { ctx: 1 });
 });
+
+/* 更新进度条（v89）：用最小 DOM 替身驱动 syncUpdate → syncProgress。 */
+function progressHarness(pluginUpdate, lang = 'zh') {
+  const syncSource = extract('    function syncUpdate() {', '    function syncPanel() {');
+  const row = () => {
+    const fill = { style: {}, classes: new Set(), classList: { toggle(name, on) { on ? this.owner.add(name) : this.owner.delete(name); } } };
+    fill.classList.owner = fill.classes;
+    const track = { attrs: {}, setAttribute(k, v) { this.attrs[k] = v; } };
+    const value = { textContent: '' };
+    return { fill, track, value, querySelector: s => s === '.zu-progress-fill' ? fill : s === '.zu-progress-track' ? track : value };
+  };
+  const rows = { download: row(), install: row() };
+  const box = { hidden: true, querySelector: s => rows[/data-progress="(\w+)"/.exec(s)[1]] };
+  const status = {}, version = {}, controls = {};
+  const context = {
+    state: { pluginUpdate, rateLine: true },
+    panel: { querySelector: s => s === '.zu-update-progress' ? box : s === '.zu-settings-version' ? version
+      : s === '.zu-update-status' ? status : (controls[s] ||= {}) },
+    L: (zh, en) => lang === 'en' ? en : zh,
+  };
+  vm.runInNewContext(syncSource + '\nsyncUpdate();', context);
+  const read = key => ({ width: rows[key].fill.style.width, active: rows[key].fill.classes.has('active'),
+    now: rows[key].track.attrs['aria-valuenow'], text: rows[key].value.textContent });
+  return { box, status, context, rows, read, rerun: () => vm.runInNewContext('syncUpdate();', context) };
+}
+const base = { supported: true, auto: true, currentVersion: '1.5.0', latestVersion: '1.5.1', channel: 'release' };
+
+test('download phase shows byte progress on the download bar and parks the install bar', () => {
+  const h = progressHarness({ ...base, phase: 'downloading', busy: true,
+    progress: { stage: 'download', loaded: 291040, total: 582080 } });
+  assert.match(h.status.textContent, /^正在下载更新…/);
+  assert.doesNotMatch(h.status.textContent, /正在检查更新/);
+  assert.equal(h.box.hidden, false);
+  assert.deepEqual(h.read('download'), { width: '50%', active: true, now: '50', text: '50% · 284 KB / 568 KB' });
+  assert.deepEqual(h.read('install'), { width: '0%', active: false, now: '0', text: '等待下载完成' });
+  assert.equal(h.context.panel.querySelector('[data-update=update]').disabled, true);   // 下载中不可重复点击
+});
+
+test('verify, install and sync stages complete the download bar and advance the install bar', () => {
+  const h = progressHarness({ ...base, phase: 'downloading', busy: true, progress: { stage: 'verify' } });
+  assert.deepEqual(h.read('download'), { width: '100%', active: false, now: '100', text: '100%' });
+  assert.deepEqual(h.read('install'), { width: '15%', active: true, now: '15', text: '校验中' });
+  h.context.state.pluginUpdate = { ...base, phase: 'updating', busy: true, progress: { stage: 'install' } };
+  h.rerun();
+  assert.match(h.status.textContent, /^正在安装更新…/);
+  assert.deepEqual(h.read('install'), { width: '55%', active: true, now: '55', text: '安装中' });
+  h.context.state.pluginUpdate = { ...base, phase: 'updating', busy: true, progress: { stage: 'sync' } };
+  h.rerun();
+  assert.deepEqual(h.read('install'), { width: '90%', active: true, now: '90', text: '同步中' });
+  assert.equal(h.box.hidden, false);
+});
+
+test('progress block hides when the main process sends no progress, after completion, on error and when unsupported', () => {
+  for (const update of [
+    { ...base, phase: 'updating', busy: true },                       // 旧版主进程：无 progress 字段
+    { ...base, phase: 'updated', progress: null },
+    { ...base, phase: 'error', error: 'boom', progress: null },
+    { ...base, phase: 'available', progress: { stage: 'download', loaded: 1, total: 2 } },   // 非进行中阶段忽略残留
+    { ...base, supported: false, phase: 'downloading', progress: { stage: 'download', loaded: 1, total: 2 } },
+    null,
+  ]) {
+    const h = progressHarness(update);
+    assert.equal(h.box.hidden, true, JSON.stringify(update));
+  }
+  const old = progressHarness({ ...base, phase: 'updating', busy: true });
+  assert.match(old.status.textContent, /^正在安装更新…/);   // 文案仍正常，只是没有进度条
+});
+
+test('progress labels and byte units localize', () => {
+  const h = progressHarness({ ...base, phase: 'downloading', busy: true,
+    progress: { stage: 'download', loaded: 1572864, total: 2097152 } }, 'en');
+  assert.match(h.status.textContent, /^Downloading update…/);
+  assert.deepEqual(h.read('download'), { width: '75%', active: true, now: '75', text: '75% · 1.5 MB / 2.0 MB' });
+  assert.equal(h.read('install').text, 'Waiting for download');
+  const unknown = progressHarness({ ...base, phase: 'downloading', busy: true, progress: { stage: 'download', loaded: 512 } });
+  assert.deepEqual(unknown.read('download'), { width: '0%', active: true, now: '0', text: '512 B' });   // 无 total 时只报已下载字节
+});

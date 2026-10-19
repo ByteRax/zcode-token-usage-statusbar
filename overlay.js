@@ -894,7 +894,7 @@
   /* ---------- 实例工厂（v61.1）：一个 pane 一套 条/面板/气泡/tooltip/定位循环。
    * slot 0 保留 #zusage-bar/#zusage-tip 兼容 id（泵热更新按它清理），其余实例仅类名。 */
   function spawnInstance(pid, slot) {
-    var VERSION = "v88";   // v82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v84 主标签页远端路由（工作台分组唯一主绑定上报 + 迟到载荷守卫，issue #30）→ v85 回答末尾统计行跟随万/亿开关 + tok→token → v86 历史轮 tracker 无记录（窗口滑出/换代/热更）或缺输出字段不再翻成"本轮统计不可用"，加 det 诊断 → v87 主叶归属增 last-session 回退（组零证据时唯一远端记录放行，issue #30 复测：单会话主标签页不建组）→ v88 运行态心跳与两处扫描 tick 2s→0.5s（富文本重试 6→24 次等价放大）   // 悬停 ⚙ 面板可见；本会话热修部署未走提交，版本号随部署代际递增
+    var VERSION = "v89";   // v82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v84 主标签页远端路由（工作台分组唯一主绑定上报 + 迟到载荷守卫，issue #30）→ v85 回答末尾统计行跟随万/亿开关 + tok→token → v86 历史轮 tracker 无记录（窗口滑出/换代/热更）或缺输出字段不再翻成"本轮统计不可用"，加 det 诊断 → v87 主叶归属增 last-session 回退（组零证据时唯一远端记录放行，issue #30 复测：单会话主标签页不建组）→ v88 运行态心跳与两处扫描 tick 2s→0.5s（富文本重试 6→24 次等价放大）→ v89 ⚙ 面板更新进度：downloading 阶段文案 + 下载（字节）/安装（校验→安装→同步）双进度条，缺 progress 的旧主进程自动隐藏   // 悬停 ⚙ 面板可见；本会话热修部署未走提交，版本号随部署代际递增
     var instanceDisposed = false, heavyTimer = 0, frame = 0, themeObserver = null;
     var globalListeners = [];
     function listenGlobal(target, type, fn, capture) {
@@ -1015,6 +1015,17 @@
       ".panel .zu-update-actions button{font:inherit;color:var(--color-foreground,#e9edf4);background:var(--color-hover,rgba(255,255,255,.07));border:1px solid var(--color-border,rgba(255,255,255,.14));border-radius:6px;padding:3px 10px;cursor:pointer}" +
       ".panel .zu-update-actions button:disabled{opacity:.5;cursor:default}" +
       ".panel .zu-update-status{overflow-wrap:anywhere;white-space:pre-line}" +
+      /* 更新进度（v89）：下载条按字节，安装条按校验/安装/同步三段推进；宿主安装器没有
+       * 字节进度，用扫光动画表示仍在活动。主进程未推送 progress（旧版 updater）时整块隐藏。 */
+      ".panel .zu-update-progress{display:flex;flex-direction:column;gap:6px;margin:6px 0 2px}" +
+      ".panel .zu-update-progress[hidden]{display:none}" +
+      ".panel .zu-progress-row{display:flex;align-items:center;gap:8px;font-size:calc(var(--ui-font-size,14px) - 1px);color:var(--color-foreground-subtle,#6f7989)}" +
+      ".panel .zu-progress-label{flex:0 0 2.5em}" +
+      ".panel .zu-progress-track{flex:1;height:6px;border-radius:999px;background:var(--color-hover,rgba(255,255,255,.08));overflow:hidden}" +
+      ".panel .zu-progress-fill{height:100%;width:0;border-radius:999px;background:var(--color-brand,#57c7ff);transition:width .2s ease}" +
+      ".panel .zu-progress-fill.active{background-image:linear-gradient(90deg,transparent 0,rgba(255,255,255,.4) 50%,transparent 100%);background-size:48px 100%;background-repeat:no-repeat;animation:zuProgressSweep 1.1s linear infinite}" +
+      ".panel .zu-progress-value{flex:0 0 auto;min-width:3em;text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}" +
+      "@keyframes zuProgressSweep{from{background-position:-48px 0}to{background-position:calc(100% + 48px) 0}}" +
       ".panel.zu-settings{box-sizing:border-box;min-width:0;max-width:none;" +
       "max-height:min(72vh,var(--zu-settings-height,72vh));padding:0;gap:0;overflow:hidden;line-height:1.5}" +
       ".zu-settings .zu-settings-head{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;gap:12px;" +
@@ -1179,6 +1190,10 @@
       settingRow('<input type="checkbox" class="zu-auto-update">', L("自动更新", "Automatic updates"), L("每 24 小时检查并安装新版，默认开启", "Check and install every 24 hours; on by default")) +
       '<div class="zu-settings-detail"><div class="zu-update-actions"><button type="button" data-update="check">' + L("检查更新", "Check for updates") + '</button><button type="button" data-update="update">' + L("立即更新", "Update now") + '</button></div>' +
       '<div class="pnote zu-update-status" role="status" aria-live="polite"></div>' +
+      '<div class="zu-update-progress" hidden>' +
+      '<div class="zu-progress-row" data-progress="download"><span class="zu-progress-label">' + L("下载", "Download") + '</span><div class="zu-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100"><div class="zu-progress-fill"></div></div><span class="zu-progress-value"></span></div>' +
+      '<div class="zu-progress-row" data-progress="install"><span class="zu-progress-label">' + L("安装", "Install") + '</span><div class="zu-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100"><div class="zu-progress-fill"></div></div><span class="zu-progress-value"></span></div>' +
+      '</div>' +
       '<div class="pnote">' + L("仅更新此插件。GitHub 来源会联网，本地目录来源只检查本地文件，不上传用量数据。", "Only this plugin is updated. GitHub sources use the network; directory sources check local files. Usage data is never uploaded.") + '</div></div></div></section>' +
       '<section class="zu-settings-section"><div class="cap">' + L("关于数据", "About the data") + '</div><div class="pnote">' +
       L("悬停状态条查看明细。数据源 ~/.zcode/cli/db/db.sqlite（只读），请求完成后才落库。", "Hover bar items for details. Data source ~/.zcode/cli/db/db.sqlite (read-only); data is written after requests complete.") + '</div></section></div>' +
@@ -2044,7 +2059,8 @@
         checking: L("正在检查更新…", "Checking for updates…"),
         available: L("发现新版本", "Update available"),
         current: L("当前已是最新版本", "Up to date"),
-        updating: L("正在更新插件…", "Updating plugin…"),
+        downloading: L("正在下载更新…", "Downloading update…"),
+        updating: L("正在安装更新…", "Installing update…"),
         updated: L("插件已更新；请重开会话以加载新版插件组件", "Plugin updated; start a new session to load the new components"),
         error: L("更新失败：", "Update failed: ") + (u && u.error || ""),
       };
@@ -2055,13 +2071,57 @@
       if (active && u.channel) text += "\n" + (u.channel === "release" ? L("更新来源：GitHub 正式 Release（校验 ZIP 与 SHA256）", "Update source: stable GitHub Release (validated ZIP and SHA256)") : L("更新来源：本地目录市场", "Update source: local directory marketplace"));
       if (active && u.releaseUrl) text += "\n" + u.releaseUrl;
       if (active && u.checkedAt) text += "\n" + L("上次检测：", "Last checked: ") + new Date(u.checkedAt).toLocaleString();
-      if (u && u.phase === "updating") text += "\n" + L("关闭自动更新仅阻止后续安装；已开始的安装会继续完成", "Turning automatic updates off stops future installs; an install already started will finish");
+      if (u && (u.phase === "updating" || u.phase === "downloading")) text += "\n" + L("关闭自动更新仅阻止后续安装；已开始的安装会继续完成", "Turning automatic updates off stops future installs; an install already started will finish");
       if (u && u.restartRequired) text += "\n" + L("主进程或关闭热更新的文件已更新，需重启 ZCode", "Restart ZCode to load main-process updates or files with hot reload disabled");
       if (u && u.skipped && u.skipped.length) text += "\n" + L("保留本地热修（未覆盖）：", "Local edits preserved (not overwritten): ") + u.skipped.join(", ");
       panel.querySelector(".zu-update-status").textContent = text;
+      syncProgress(active ? u : null);
       /* 逐问速率行开关勾选态：state.rateLine 由主进程推送（或 change 时代乐观更新） */
       var rl = panel.querySelector(".zu-rate-line");
       if (rl) rl.checked = state.rateLine;
+    }
+    /* 更新进度条（v89）。主进程 updater 在 downloading/updating 阶段推送
+     * progress = { stage: download|verify|install|sync, loaded?, total? }：
+     * 下载条在 download 阶段按字节比例，之后一律 100%；安装条没有字节口径（宿主插件管理器
+     * 不报进度），按校验→安装→同步三段推进并用扫光表示仍在活动。旧版主进程不带 progress
+     * 字段（热更新的渲染端先于主进程重启生效），此时整块隐藏，只保留原有状态文案。 */
+    var PROGRESS_STAGES = ["download", "verify", "install", "sync"];
+    function formatBytes(n) {
+      n = Math.max(0, +n || 0);
+      if (n >= 1048576) return (n / 1048576).toFixed(1) + " MB";
+      if (n >= 1024) return Math.round(n / 1024) + " KB";
+      return n + " B";
+    }
+    function setProgressBar(box, key, ratio, active, label) {
+      var row = box.querySelector('[data-progress="' + key + '"]');
+      if (!row) return;
+      var pct = Math.round(Math.min(1, Math.max(0, ratio)) * 100);
+      var fill = row.querySelector(".zu-progress-fill");
+      fill.style.width = pct + "%";
+      fill.classList.toggle("active", !!active);
+      row.querySelector(".zu-progress-track").setAttribute("aria-valuenow", String(pct));
+      row.querySelector(".zu-progress-value").textContent = label;
+    }
+    function syncProgress(u) {
+      var box = panel.querySelector(".zu-update-progress");
+      if (!box) return;
+      var p = u && u.progress;
+      var show = !!(p && typeof p.stage === "string" && (u.phase === "downloading" || u.phase === "updating"));
+      box.hidden = !show;
+      if (!show) return;
+      var idx = PROGRESS_STAGES.indexOf(p.stage);
+      var total = +p.total > 0 ? +p.total : 0, loaded = Math.max(0, +p.loaded || 0);
+      var dlRatio = idx > 0 ? 1 : (total ? loaded / total : 0);
+      var dlLabel = idx > 0 ? "100%"
+        : total ? Math.round(Math.min(1, loaded / total) * 100) + "% · " + formatBytes(loaded) + " / " + formatBytes(total)
+        : formatBytes(loaded);
+      setProgressBar(box, "download", dlRatio, idx <= 0, dlLabel);
+      var install = {
+        verify: [.15, L("校验中", "Verifying")],
+        install: [.55, L("安装中", "Installing")],
+        sync: [.9, L("同步中", "Syncing")],
+      }[p.stage] || [0, L("等待下载完成", "Waiting for download")];
+      setProgressBar(box, "install", install[0], idx > 0, install[1]);
     }
     function syncPanel() {
       panel.querySelectorAll("input[type=checkbox][data-k]").forEach(function (cb) {
