@@ -112,9 +112,22 @@
     // 空 identity 是显式本地绑定；真实 pane 缺绑定时也不能继承同 sid 的远端。
     var identity = Object.prototype.hasOwnProperty.call(binding, pid) ? binding[pid]
       : (pid === "auto" && Object.prototype.hasOwnProperty.call(binding, sid) ? binding[sid] : "");
+    var current;
+    if (pid !== "auto") {
+      current = window.__zusagePaneScopes && window.__zusagePaneScopes[pid];
+      for (var n = 0; n < instances.length; n++) {
+        if (instances[n].pid !== pid || !instances[n].getScope) continue;
+        var scope = instances[n].getScope();
+        current = scope || { sid: sid };
+        break;
+      }
+      if (current && (current.sid !== sid || !Object.prototype.hasOwnProperty.call(current, "identity") ||
+          current.identity !== identity)) return null;
+    }
+    if (!current && pid === "workspace-main" && typeof mainScopeNow !== "undefined" && mainScopeNow && mainScopeNow.known === false) return null;
     /* v84（issue #30）主叶迟到载荷守卫。typeof 兼容测试夹具按源码片段抽取运行（无模块级声明）：
      * 夹具里 mainScopeNow 由 refreshWants 赋值成为全局；生产环境恒有模块级声明。 */
-    if (pid === "workspace-main" && identity &&
+    if (!current && pid === "workspace-main" && identity &&
         (typeof mainScopeNow === "undefined" || !mainScopeNow ||
          mainScopeNow.sid !== sid || mainScopeNow.identity !== identity)) identity = "";
     var recent = d.recent || [], found = null;
@@ -157,135 +170,53 @@
     scanRateLines();
     instances.forEach(function (inst) { inst.syncUpdate(); });
   };
-  /* v12 多服务器路由：sid → workspaceIdentity（remote:ssh:host:port:user:path，重连换代不变）。
-   * 来源1 客户端 pane 布局树（本窗口各 pane 的 sessionId + workspaceScope，最新鲜）；
-   * 来源2 zcode-v4-last-session:v1:<workspaceKey> 前缀键（跨窗口历史，仅补缺）。
-   * 泵将候选与本窗可信 workspace/task IPC 做交集；歧义不猜，JSON 请求携带 identity。 */
+  /* 工作区身份来自当前会话节点；共享 localStorage 不能证明本窗口的 pane 归属。 */
   function collectSidWs() {
     var map = {};
-    function add(sid, identity) {
-      if (!sid || !identity || String(identity).indexOf("remote:ssh:") !== 0) return;
+    for (var i = 0; i < instances.length; i++) {
+      var inst = instances[i], sid = inst.getSid();
+      var scope = inst.getScope && inst.getScope();
+      if (!sid || !scope || scope.sid !== sid || scope.identity.indexOf("remote:ssh:") !== 0) continue;
       if (!map[sid]) map[sid] = [];
-      if (map[sid].indexOf(String(identity)) < 0) map[sid].push(String(identity));
+      if (map[sid].indexOf(scope.identity) < 0) map[sid].push(scope.identity);
     }
-    try {
-      var tree = JSON.parse(localStorage.getItem("zcode-v4-pane-layout:v2") || "null");
-      var panes = tree && tree.panes;
-      if (panes) for (var pid in panes) {
-        var pn = panes[pid] || {}, sc = pn.workspaceScope || {};
-        var idt = sc.workspaceIdentity, sid2 = pn.sessionId;
-        add(sid2, idt);
-      }
-    } catch (e) { }
-    try {
-      for (var i = 0; i < localStorage.length; i++) {
-        var k = localStorage.key(i);
-        if (typeof k !== "string" || k.indexOf("zcode-v4-last-session:v1:") !== 0) continue;
-        var wk = k.slice("zcode-v4-last-session:v1:".length);
-        if (wk.indexOf("remote:") !== 0) continue;
-        var v = localStorage.getItem(k), sid3 = v;
-        if (v && v.charAt(0) === '"') { try { sid3 = JSON.parse(v); } catch (e2) { } }
-        else if (v && v.charAt(0) === "{") {
-          try { sid3 = JSON.parse(v).sessionId; } catch (e3) { }
-        }
-        if (sid3 && typeof sid3 === "string") add(sid3, wk);
-      }
-    } catch (e4) { }
     return map;
   }
-  /* v84（issue #30）主叶工作区身份：宿主把每个工作台分组（主标签页）的当前主绑定持久化在
-   * zcode-v4-session-workbench-groups:v1（groups[].primaryBinding = {workspaceScope, sessionId}，
-   * 切换会话即改写、关闭分组即删除，宿主每次变更同步写回 localStorage）。当前主叶 sid 恰好
-   * 只被一个分组绑为主会话且该 scope 是 remote:ssh: 时，即主标签页归属的直接证据；出现任何
-   * 第二个不同 scope（含本地主叶分组——多窗口共享同一 localStorage，同 sid 碰撞无法区分窗口）
-   * 都返回 ""，泵维持仅本地查询。泵侧仍按同窗口可信 workspace IPC 与 tasks 一致性复核。
-   * v87（issue #30 复测）补回退：客户端 workbench group 只在 ≥2 个 session 的分屏形态存在
-   * （workbenchGroupStore 建组要求 ≥2 叶、恢复时丢弃单会话壳子），单会话主标签页永不写
-   * workbench-groups 键——该形态下宿主为每个工作区维护的会话绑定只有
-   * zcode-v4-last-session:v1:<workspaceKey>（workspaceKey=workspaceIdentity，选择会话即
-   * 同步写、回草稿即删）。组对本 sid 零证据时以 last-session 回退：恰好只被一个工作区
-   * 记录且为 remote:ssh: 才放行；组已给出绑定（唯一远端/歧义/本地）则结论以组为准不吃回退。 */
-  function mainWorkbenchScope(sid) {
-    if (!sid) return "";
-    var found = "", bound = false;
+  function readPaneScope(el, sid, pid) {
+    if (!el || !sid || sid === "draft" || !el.isConnected) return null;
     try {
-      var data = JSON.parse(ls("zcode-v4-session-workbench-groups:v1", "null"));
-      var groups = data && data.groups;
-      if (groups && typeof groups === "object") {
-        var seen = {};
-        for (var gid in groups) {
-          var pb = groups[gid] && groups[gid].primaryBinding;
-          if (!pb || pb.sessionId !== sid) continue;
-          bound = true;
-          var scope = pb.workspaceScope, key = "";
-          if (scope && typeof scope === "object") key = String(scope.workspaceIdentity || scope.workspacePath || "");
-          else if (typeof scope === "string") key = scope;
-          key = key.trim();
-          if (!key || seen[key]) continue;
-          seen[key] = 1;
-          if (found) return "";   // ≥2 个不同 scope：歧义不猜
-          found = key;
-        }
-      }
-    } catch (e) { }
-    if (bound) return found.indexOf("remote:ssh:") === 0 ? found : "";
-    return lastSessionScope(sid);
-  }
-  /* last-session 回退的归属判定：主叶 sid 被多个不同工作区（含本地）同时记录视为歧义
-   * 返回 ""，多窗口共享 localStorage 时不猜；值解析与 collectSidWs 同款防御（裸串/
-   * 带引号/{sessionId}）。泵侧 trusted/tasks 复核照旧；无证据形态的历史候选禁令不变。 */
-  function lastSessionScope(sid) {
-    var found = "";
-    try {
-      for (var i = 0; i < localStorage.length; i++) {
-        var k = localStorage.key(i);
-        if (typeof k !== "string" || k.indexOf("zcode-v4-last-session:v1:") !== 0) continue;
-        var v = localStorage.getItem(k), s = v;
-        if (v && v.charAt(0) === '"') { try { s = JSON.parse(v); } catch (e) { } }
-        else if (v && v.charAt(0) === "{") { try { s = JSON.parse(v).sessionId; } catch (e2) { } }
-        if (s !== sid) continue;
-        var wk = k.slice("zcode-v4-last-session:v1:".length).trim();
-        if (!wk) continue;
-        if (found && found !== wk) return "";   // ≥2 个不同工作区记录同一 sid：歧义不猜
-        found = wk;
-      }
-    } catch (e3) { return ""; }
-    return found.indexOf("remote:ssh:") === 0 ? found : "";
+      var root = el;
+      while (root && !(root.hasAttribute && root.hasAttribute("data-session-id"))) root = root.parentElement;
+      if (!root || root.getAttribute("data-session-id") !== sid ||
+          root.getAttribute("data-zusage-scope-version") !== "1" ||
+          root.getAttribute("data-zusage-pane-id") !== pid) return null;
+      var path = root.getAttribute("data-zusage-workspace-path");
+      var identity = root.getAttribute("data-zusage-workspace-identity");
+      var remote = root.getAttribute("data-zusage-remote-session-id");
+      if (typeof path !== "string" || !path.trim() || typeof identity !== "string" ||
+          typeof remote !== "string" || /[\x00-\x1f\x7f]/.test(path + identity + remote)) return null;
+      identity = identity.trim();
+      if (remote && (!identity || /\s/.test(remote))) return null;
+      if (identity && identity.indexOf("remote:ssh:") !== 0) return null;
+      return { sid: sid, identity: identity, workspacePath: path, remoteSessionId: remote };
+    } catch (e) { return null; }
   }
   function refreshWants() {
-    /* 各 pane 会话 id 汇总给泵：__zusageWantSids（新泵按数组强制纳入快照），
-     * __zusageWantSid 保底兼容旧泵单值通路（取 0 号实例的会话）；
-     * __zusageSidWs 供多服务器路由（v12，旧泵忽略）。 */
     try {
-      var arr = [];
+      var arr = [], panes = {};
+      mainScopeNow = { sid: "", identity: "", known: false };
       for (var i = 0; i < instances.length; i++) {
-        var s1 = instances[i].getSid();
-        if (s1 && arr.indexOf(s1) < 0) arr.push(s1);
+        var inst = instances[i], sid = inst.getSid();
+        if (!sid) continue;
+        if (arr.indexOf(sid) < 0) arr.push(sid);
+        var scope = inst.getScope && inst.getScope();
+        if (!scope || scope.sid !== sid) scope = null;
+        panes[inst.pid] = scope ? { sid: sid, identity: scope.identity } : { sid: sid };
+        if (inst.pid === "workspace-main") mainScopeNow = { sid: sid, identity: scope ? scope.identity : "", known: !!scope };
       }
       window.__zusageWantSids = arr;
-      if (arr.length) window.__zusageWantSid = arr[0];
+      window.__zusageWantSid = arr[0] || "";
       window.__zusageSidWs = collectSidWs();
-      var panes = {};
-      try {
-        var layout = JSON.parse(ls("zcode-v4-pane-layout:v2", "null"));
-        for (var n = 0; n < instances.length; n++) {
-          var inst = instances[n], binding = layout && layout.panes && layout.panes[inst.pid];
-          if (binding && binding.sessionId === inst.getSid() && binding.workspaceScope) {
-            var layoutIdentity = binding.workspaceScope.workspaceIdentity || "";
-            panes[inst.pid] = { sid: inst.getSid(), identity: layoutIdentity };
-            if (inst.pid === "workspace-main") mainScopeNow = { sid: inst.getSid(), identity: layoutIdentity };
-          } else if (inst.pid === "workspace-main" && inst.getSid()) {
-            /* 宿主主叶不进入持久化 panes；上报当前 DOM 会话 + 主叶归属证据（issue #30）：
-             * workbench 分组主绑定优先，组零证据时回退 last-session 唯一远端记录。
-             * 缺可靠证据或归属歧义时仍只报 {sid}，泵维持仅本地查询。 */
-            var mainWs = mainWorkbenchScope(inst.getSid());
-            panes[inst.pid] = mainWs ? { sid: inst.getSid(), identity: mainWs } : { sid: inst.getSid() };
-            mainScopeNow = { sid: inst.getSid(), identity: mainWs || "" };
-          } else if (inst.pid === "workspace-main") {
-            mainScopeNow = { sid: "", identity: "" };
-          }
-        }
-      } catch (e2) { }
       window.__zusagePaneScopes = panes;
     } catch (e) { }
   }
@@ -894,7 +825,7 @@
   /* ---------- 实例工厂（v61.1）：一个 pane 一套 条/面板/气泡/tooltip/定位循环。
    * slot 0 保留 #zusage-bar/#zusage-tip 兼容 id（泵热更新按它清理），其余实例仅类名。 */
   function spawnInstance(pid, slot) {
-    var VERSION = "v89";   // v82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v84 主标签页远端路由（工作台分组唯一主绑定上报 + 迟到载荷守卫，issue #30）→ v85 回答末尾统计行跟随万/亿开关 + tok→token → v86 历史轮 tracker 无记录（窗口滑出/换代/热更）或缺输出字段不再翻成"本轮统计不可用"，加 det 诊断 → v87 主叶归属增 last-session 回退（组零证据时唯一远端记录放行，issue #30 复测：单会话主标签页不建组）→ v88 运行态心跳与两处扫描 tick 2s→0.5s（富文本重试 6→24 次等价放大）→ v89 ⚙ 面板更新进度：downloading 阶段文案 + 下载（字节）/安装（校验→安装→同步）双进度条，缺 progress 的旧主进程自动隐藏   // 悬停 ⚙ 面板可见；本会话热修部署未走提交，版本号随部署代际递增
+    var VERSION = "v90";   // v82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v84 主标签页远端路由（工作台分组唯一主绑定上报 + 迟到载荷守卫，issue #30）→ v85 回答末尾统计行跟随万/亿开关 + tok→token → v86 历史轮 tracker 无记录（窗口滑出/换代/热更）或缺输出字段不再翻成"本轮统计不可用"，加 det 诊断 → v87 主叶归属增 last-session 回退（组零证据时唯一远端记录放行，issue #30 复测：单会话主标签页不建组）→ v88 运行态心跳与两处扫描 tick 2s→0.5s（富文本重试 6→24 次等价放大）→ v89 ⚙ 面板更新进度：downloading 阶段文案 + 下载（字节）/安装（校验→安装→同步）双进度条，缺 progress 的旧主进程自动隐藏 → v90 主标签页/分栏归属改按本窗会话节点身份（renderer 桥按版本/资产/锚点写 SessionPane 属性，移除 workbench-groups/last-session 共享回退）+ 心跳 0.5s→0.1s（扫描维持 0.5s）   // 悬停 ⚙ 面板可见；版本号随代际递增
     var instanceDisposed = false, heavyTimer = 0, frame = 0, themeObserver = null;
     var globalListeners = [];
     function listenGlobal(target, type, fn, capture) {
@@ -908,7 +839,7 @@
       nativeCtxVal = 0,   // 本 pane 输入框卡片上读到的原生上下文总量
       lastSub = null,     // 子代理明细面板数据源
       instSid = "",       // 本 pane 当前会话（composer 祖先链 data-session-id）
-      pendingSid = "", wantedEl = null,   // 协调器派发的最新 composer/会话
+      pendingSid = "", wantedEl = null, scopeStamp = "",   // 协调器派发的最新 composer/会话
       shrink = 0,         // 分级收缩（v66）：1 = 内容超卡片宽，「本轮/会话累计」缓存命中率已让位
       fadeOn = false,     // 收缩后仍超宽：右缘渐隐（.zu-clip）
       bridge = { handle: null, turnId: "", timer: 0 },   // v71 本 pane 的 renderer store 订阅
@@ -1784,9 +1715,9 @@
       liveTextCur = view ? view.text : "";
       render(state.data || { session: {}, last_turn: {}, today: {}, context_window: 0 });
     }
-    /* v88：运行态心跳 2s→0.5s——思考中/工具执行期宿主不推新快照，秒数只靠本定时器走字，
-     * 2s 步进观感迟滞；快速路径仅改 textContent/className，0.5s 无性能顾虑。 */
-    bridge.timer = setInterval(bridgeTick, 500);
+    /* v90：心跳 0.5s→0.1s——0.5s 秒数走字仍有可感卡顿；render 有 lastHtml 幂等守卫，
+     * 内容未变时仅字符串构建+比较、不写 DOM，10Hz 空转无性能顾虑。扫描 tick 保持 0.5s。 */
+    bridge.timer = setInterval(bridgeTick, 100);
     bridgeTick();
 
     function render(d) {
@@ -2616,9 +2547,13 @@
         } else if (composer) {
           setComposer(null);
         }
-        if (pendingSid !== instSid) {   // pane 切换了会话：立即按缓存 payload 重渲染
+        var nextScope = readPaneScope(wantedEl, pendingSid, pid);
+        var nextScopeStamp = JSON.stringify(nextScope);
+        if (pendingSid !== instSid || nextScopeStamp !== scopeStamp) {
           instSid = pendingSid;
+          scopeStamp = nextScopeStamp;
           if (state.data) render(state.data);
+          refreshWants();
         }
       }
       if (!composer && slot === 0) collectDiag();   // 一直找不到输入框的窗口：周期性写环境诊断（everMounted 门防覆盖）
@@ -2948,6 +2883,7 @@
       syncUpdate: syncUpdate,
       rebuild: function () { buildPanel(); rebuildExcBubble(); syncPanel(); },
       getSid: function () { return pickedSid || ""; },
+      getScope: function () { return inactive() ? null : readPaneScope(wantedEl, pickedSid, pid); },
       /* v71 确定性历史行数据源：DOM turn id（turnId 或 productTurnId 形态）→ tracker 统计 */
       statsFor: function (tid) {
         var h = bridge.handle;

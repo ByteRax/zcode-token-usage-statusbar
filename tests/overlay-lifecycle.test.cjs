@@ -32,8 +32,8 @@ class Element {
   querySelectorAll() { return []; }
   contains(el) { return el === this || this.children.some(e => e.contains(el)); }
   closest() { return null; }
-  hasAttribute(k) { return k === 'data-pane-id' ? !!this.pid : k === 'data-session-id' ? !!this.sid : false; }
-  getAttribute(k) { return k === 'data-pane-id' ? this.pid : k === 'data-session-id' ? this.sid : null; }
+  hasAttribute(k) { return k === 'data-pane-id' ? !!this.pid : k === 'data-session-id' ? !!this.sid : Object.prototype.hasOwnProperty.call(this.dataset, k); }
+  getAttribute(k) { return k === 'data-pane-id' ? this.pid : k === 'data-session-id' ? this.sid : this.dataset[k] ?? null; }
   getBoundingClientRect() { return { top: 600, bottom: 650, left: 20, right: 520, width: 500, height: 50 }; }
 }
 function harness() {
@@ -134,6 +134,32 @@ test('reinjection and repeated cleanup cancel old loops and leave one live gener
   h.window.__zusageDispose(); cleanup();
   assert.equal(h.timers.size, 0); assert.equal(h.frames.size, 0);
   assert.deepEqual(Array.from(h.window.__zusageWantSids), []); assert.equal(h.window.__zusageWantSid, '');
+});
+
+test('node scope changes with the same sid are reflected by the live instance immediately', () => {
+  const h = harness(), [card] = h.setPanes(['workspace-main']);
+  const composer = card.children[0], A = 'remote:ssh:a:22:u:/p', B = 'remote:ssh:b:22:u:/p';
+  Object.assign(composer.dataset, {
+    'data-zusage-scope-version': '1', 'data-zusage-pane-id': 'workspace-main',
+    'data-zusage-workspace-path': '/p', 'data-zusage-workspace-identity': A,
+    'data-zusage-remote-session-id': 'connectionA',
+  });
+  h.inject(); h.boot();
+  const inst = h.window.lifecycleTest.instances()[0];
+  assert.equal(inst.getScope().identity, A);
+  assert.equal(h.window.__zusagePaneScopes['workspace-main'].identity, A);
+  composer.dataset['data-zusage-workspace-identity'] = B;
+  composer.dataset['data-zusage-remote-session-id'] = 'connectionB';
+  assert.equal(inst.getScope().identity, B);
+  h.tick();
+  assert.equal(h.window.__zusagePaneScopes['workspace-main'].identity, B);
+  delete composer.dataset['data-zusage-scope-version'];
+  assert.equal(inst.getScope(), null);
+  h.tick();
+  assert.equal(h.window.__zusagePaneScopes['workspace-main'].identity, undefined);
+  composer.isConnected = false;
+  assert.equal(inst.getScope(), null);
+  h.window.__zusageDispose();
 });
 
 test('empty main document actually creates the auto shadow/iframe fallback instance', () => {

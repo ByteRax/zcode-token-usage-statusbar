@@ -98,8 +98,8 @@ python3 sync_plugin.py --check
 ### 窗口、分栏与远端
 
 - 状态条以本窗口/分栏 SID 为准，匹配不到的新会话显示零值，不借全局最近会话。隔离键包括 `workspaceIdentity`，同 SID 不代表同服务器数据。
-- 主标签页（`workspace-main`）归属的唯一放行证据是宿主工作台分组（`zcode-v4-session-workbench-groups:v1`）的主绑定：当前主会话被恰好一个分组绑为主会话且该 scope 是 `remote:ssh:`。partial 远端 IPC、历史候选、last-session 键或目标配置本身不足以证明归属；同 SID 出现任何第二个不同归属（多窗口共享 localStorage，含本地主叶分组）、身份不在本窗口可信 workspace IPC 或与 tasks 矛盾时维持本地，不能借其它 pane 同 SID 的远端数据。撤销后迟到远端载荷由渲染端守卫按本地丢弃。
-- 远端 scope 必须有可靠当前身份。明确绑定身份的分栏与上述唯一主绑定可路由；归属未知或歧义时 fail-closed，不猜服务器。
+- 主标签页（`workspace-main`）及各分栏的归属只取本窗口实际 SessionPane 节点：`renderer_bridge.py` 按已登记版本、原始资产 SHA256 与唯一 JSX 锚点写入 React 管理的 `data-zusage-scope-version=1`、workspacePath、workspaceIdentity、remoteSessionId、paneId，与原 `data-session-id` 同节点同步更新。共享 last-session、pane-layout、workbench-groups 与 conversation registry 保活历史不构成当前归属证据。读取须校验协议、字段、SID、paneId 与节点存活；明确本地 identity 为空可查本地，未知身份不得借同 SID 本地快照或其它 pane 远端数据。身份不在本窗可信 workspace IPC 或与 tasks 矛盾时不放行远端；当前节点改变或撤销后迟到载荷丢弃。当前登记客户端为 3.15.3/3.16.1，旧 conversation-only 补丁须升级安装并完全重启；未知版本/资产拒绝补丁，不启用共享记录回退。
+- 远端 scope 必须有可靠当前身份。明确绑定身份的分栏与上述当前节点主绑定可路由；归属未知或歧义时 fail-closed，不猜服务器。
 - 桌面 JSON 请求中的 `scopes: []` 禁止旧单通道 fallback。旧 CLI SID/逗号列表兼容行为不能扩大为桌面身份推断。
 - `remote.auto` 与 `remote.enabled` 独立；彻底关闭需两者为 false。手动目标通过 `identity`/`identities` 绑定并覆盖同身份自动目标，标签不作身份。
 - 各目标分别维护 today、错误、缓存与恢复；失败不借本地/其它目标总量，保留同身份最近成功快照并标记过期。null/error 不等于成功，也不应清空最近成功显示。

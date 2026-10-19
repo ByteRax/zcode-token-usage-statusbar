@@ -19,10 +19,14 @@ MARKER = b"/* zusage-existing-conversation-store:v1"
 HOST_TARGETS = [
     {"version": "3.16.1", "asset": "/out/renderer/assets/styles-CqgV6nRf.js",
      "sha256": "6054041f771950896c1d80bd8c32b241dde9ab414b3eb66d038ca2c578332783",
-     "names": {"key": "Ode", "topic": "hee", "registry": "pf"}},
+     "names": {"key": "Ode", "topic": "hee", "registry": "pf"},
+     "pane": {"anchor": b'"data-testid":vb(VRe,e),"data-session-id":t??`draft`,',
+              "workspacePath": "c", "workspaceIdentity": "l", "remoteSessionId": "u", "paneId": "e"}},
     {"version": "3.15.3", "asset": "/out/renderer/assets/styles-CSpM3qgc.js",
      "sha256": "e3e0496d9ba2432ca995b8fce908333c861e3ad1c3641b5751dbe06441c53ecf",
-     "names": {"key": "BYe", "topic": "Nse", "registry": "oE"}},
+     "names": {"key": "BYe", "topic": "Nse", "registry": "oE"},
+     "pane": {"anchor": b'"data-testid":Oa(Mr,e),"data-session-id":t??`draft`,',
+              "workspacePath": "c", "workspaceIdentity": "l", "remoteSessionId": "u", "paneId": "e"}},
 ]
 NEWEST = HOST_TARGETS[0]
 ASSET, HOST_VERSION, ASSET_SHA256 = NEWEST["asset"], NEWEST["version"], NEWEST["sha256"]
@@ -155,17 +159,45 @@ def bridge_code(target):
 BRIDGE = bridge_code(NEWEST)
 
 
+def pane_attributes(target):
+    pane = target["pane"]
+    return (f'"data-zusage-scope-version":"1",'
+            f'"data-zusage-workspace-path":{pane["workspacePath"]}??``,'
+            f'"data-zusage-workspace-identity":{pane["workspaceIdentity"]}??``,'
+            f'"data-zusage-remote-session-id":{pane["remoteSessionId"]}??``,'
+            f'"data-zusage-pane-id":{pane["paneId"]},').encode()
+
+
+def _original_module(data, target):
+    """仅识别精确旧桥/新桥；第三方尾缀只供 remove 保留。"""
+    prefix, suffix = data, b""
+    has_bridge = MARKER in data
+    if has_bridge:
+        bridge = bridge_code(target)
+        if data.count(MARKER) != 2 or data.count(bridge) != 1:
+            raise BridgeError("Bridge marker/content tampered")
+        prefix, suffix = data.split(bridge)
+    elif b"getExistingConversationStore" in data:
+        raise BridgeError("Export name collision")
+    anchor = target["pane"]["anchor"]
+    patched_anchor = anchor + pane_attributes(target)
+    if prefix.count(anchor) != 1:
+        raise BridgeError("Missing or duplicate SessionPane anchor")
+    if has_bridge and prefix.count(patched_anchor) == 1:
+        prefix = prefix.replace(patched_anchor, anchor, 1)
+    if _digest(prefix) != target["sha256"]:
+        raise BridgeError("Unknown or tampered original module")
+    return prefix, suffix
+
+
 def target_for_module(data):
-    """按资产内容定位目标：已打补丁的模块按桥正文反查，干净模块按 sha 反查。"""
-    if MARKER in data:
-        for target in HOST_TARGETS:
-            if data.count(bridge_code(target)) == 1:
-                return target
-        return None
-    digest = _digest(data)
+    """新/旧补丁均须还原到已登记的原始 SHA。"""
     for target in HOST_TARGETS:
-        if digest == target["sha256"]:
-            return target
+        try:
+            _original_module(data, target)
+        except BridgeError:
+            continue
+        return target
     return None
 
 
@@ -197,31 +229,19 @@ def _read(stream, nodes, base, path):
 
 
 def transform_module(data, operation):
-    """Remove only the exact bridge after an exact known original prefix.
-
-    A third-party suffix is retained on removal, but never admitted for patching.
-    目标版本按模块内容自动定位（桥正文反查 / sha 反查），未知内容 fail-closed。
-    """
+    """精确升级/移除桥和 DOM 属性；第三方尾缀仅在移除时保留。"""
     if operation not in ("patch", "remove"):
         raise BridgeError("Unknown operation")
     target = target_for_module(data)
     if target is None:
         raise BridgeError("Unknown renderer asset hash")
-    bridge = bridge_code(target)
-    if MARKER in data:
-        if data.count(MARKER) != 2 or data.count(bridge) != 1:
-            raise BridgeError("Bridge marker/content tampered")
-        prefix, suffix = data.split(bridge)
-        if _digest(prefix) != target["sha256"]:
-            raise BridgeError("Unknown or tampered original module")
-        if operation == "remove":
-            return prefix + suffix
-        if suffix:
-            raise BridgeError("Unknown patched module suffix")
-        return data  # Exact repeat is idempotent.
-    if b"getExistingConversationStore" in data:
-        raise BridgeError("Export name collision")
-    return data + bridge if operation == "patch" else data
+    original, suffix = _original_module(data, target)
+    if operation == "remove":
+        return original + suffix
+    if suffix:
+        raise BridgeError("Unknown patched module suffix")
+    anchor = target["pane"]["anchor"]
+    return original.replace(anchor, anchor + pane_attributes(target), 1) + bridge_code(target)
 
 
 def _resolve_target_from(package):
@@ -341,43 +361,43 @@ def ensure_deployed(asar_path):
     try:
         from runtime_lock import file_lock
         asar_path = Path(asar_path)
-        with asar_path.open("rb") as stream:
-            header, base = asar.read_header(stream)
-            nodes = dict(asar.iter_files(header))
-            package = json.loads(_read(stream, nodes, base, "/package.json"))
-        version = package.get("version")
-        target = next((item for item in HOST_TARGETS if item["version"] == version), None)
-        if target is None:
-            return {"status": "skipped-unknown", "version": version,
-                    "detail": "host version not pinned; add it to HOST_TARGETS first"}
-        asset_path = target["asset"]
-        with asar_path.open("rb") as stream:
-            original = _read(stream, nodes, base, asset_path)
-        if MARKER in original:
-            # 已带桥：内容校验交给 transform_module（remove 幂等语义同样成立）
-            transform_module(original, "remove")
-            return {"status": "present", "version": target["version"], "detail": "bridge already deployed"}
-        if _digest(original) != target["sha256"]:
-            return {"status": "skipped-unknown", "version": target["version"],
-                    "detail": "asset hash mismatch for pinned version (host build drift)"}
-        if b"getExistingConversationStore" in original:
-            return {"status": "skipped-error", "version": target["version"],
-                    "detail": "export name collision in pristine module"}
         with file_lock(asar_path.with_name(asar_path.name + ".zusage.lock")):
+            before = asar.source_fingerprint(asar_path)
+            with asar_path.open("rb") as stream:
+                header, base = asar.read_header(stream)
+                nodes = dict(asar.iter_files(header))
+                package = json.loads(_read(stream, nodes, base, "/package.json"))
+                if (package.get("name"), package.get("type")) != ("@zcode/desktop", "module"):
+                    raise BridgeError("Unknown host package")
+                version = package.get("version")
+                target = next((item for item in HOST_TARGETS if item["version"] == version), None)
+                if target is None:
+                    return {"status": "skipped-unknown", "version": version,
+                            "detail": "host version not pinned; add it to HOST_TARGETS first"}
+                asset_path = target["asset"]
+                original = _read(stream, nodes, base, asset_path)
+            if MARKER not in original and _digest(original) != target["sha256"]:
+                return {"status": "skipped-unknown", "version": version,
+                        "detail": "asset hash mismatch for pinned version (host build drift)"}
+            _original_module(original, target)
+            modified = transform_module(original, "patch")
+            if modified == original:
+                return {"status": "present", "version": version, "detail": "bridge already deployed"}
             fd, name = tempfile.mkstemp(prefix=".zusage-bridge-", dir=str(asar_path.parent))
             stage = Path(name)
             try:
                 with os.fdopen(fd, "wb") as dest, asar_path.open("rb") as stream:
-                    _rewrite_to(stream, base, nodes, header, asset_path, original,
-                                transform_module(original, "patch"), dest)
+                    _rewrite_to(stream, base, nodes, header, asset_path, original, modified, dest)
                     dest.flush()
                     os.fsync(dest.fileno())
+                if asar.source_fingerprint(asar_path) != before:
+                    raise BridgeError("Source archive changed")
                 os.replace(stage, asar_path)
                 stage = None
             finally:
                 if stage is not None:
                     stage.unlink(missing_ok=True)
-        return {"status": "patched", "version": target["version"], "detail": "bridge deployed"}
+        return {"status": "patched", "version": version, "detail": "bridge deployed"}
     except Exception as error:  # 安装链的旁路增强：任何异常都只报告
         return {"status": "skipped-error", "version": None, "detail": str(error)}
 

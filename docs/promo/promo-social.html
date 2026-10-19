@@ -44,7 +44,7 @@
   .pm-grad{background:linear-gradient(90deg,#57c7ff,#3ecf8e);-webkit-background-clip:text;background-clip:text;color:transparent}
   .pm-slogan{margin:12px 0 0;font-size:18px;line-height:1.6;letter-spacing:.01em;color:#98a2b3}
 
-  .pm-win{position:absolute;left:90px;top:520px;width:1020px;height:234px;border-radius:14px;background:#171717;
+  .pm-win{position:absolute;left:60px;top:520px;width:1080px;height:234px;border-radius:14px;background:#171717;
     border:1px solid rgba(255,255,255,.1);
     box-shadow:0 0 0 1px rgba(0,0,0,.6),0 32px 90px rgba(0,0,0,.6),0 12px 32px rgba(0,0,0,.4)}
   .pm-titlebar{position:relative;height:36px;display:flex;align-items:center;padding:0 15px;background:#1c1c1c;
@@ -56,7 +56,7 @@
   .pm-lights i:nth-child(3){background:#28c840}
   .pm-wtitle{position:absolute;left:0;right:0;text-align:center;font-size:13px;color:#8a8a8a}
   .pm-body{position:absolute;top:36px;left:0;right:0;bottom:0;display:flex;justify-content:center;align-items:center;padding:0 24px}
-  .pm-col{width:972px;display:flex;flex-direction:column;gap:22px}
+  .pm-col{width:1032px;display:flex;flex-direction:column;gap:22px}
 
   .pm-composer{flex:0 0 auto;padding:10px 12px 8px;border-radius:16px;background:#252525;border:1px solid rgba(255,255,255,.1)}
   .pm-composer textarea{display:block;width:100%;height:30px;padding:2px 4px;resize:none;border:0;outline:0;background:transparent;
@@ -70,11 +70,11 @@
   .pm-spacer{flex:1 1 auto}
   .pm-send{width:30px;height:30px;justify-content:center;border-radius:9px;background:#5c5c5c;color:#f5f5f5}
 
-  /* 产品截图里的强调：条外圈一道品牌色描边光晕 */
-  #zusage-bar{box-shadow:0 0 0 1px rgba(87,199,255,.45),0 0 26px rgba(87,199,255,.22),0 4px 14px rgba(0,0,0,.4)}
+  /* 不再加品牌色描边：v80 起条默认挂载在输入卡片内部（group/toolbar 工具行之后），
+     与卡片融为一体、无独立背景/边框，这是当前真实默认形态，宣传图如实展示。 */
   .zusage-root .dot{animation:none!important;opacity:1!important}
 
-  .pm-feats{position:absolute;left:90px;top:266px;width:1020px;height:224px;display:grid;
+  .pm-feats{position:absolute;left:60px;top:266px;width:1080px;height:224px;display:grid;
     grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:18px}
   .pm-feat{display:flex;gap:14px;align-items:flex-start;padding:20px 22px;border-radius:14px;
     background:rgba(255,255,255,.035);border:1px solid rgba(255,255,255,.08)}
@@ -85,7 +85,7 @@
   .pm-feat-t b{display:block;font-size:19px;line-height:26px;font-weight:600;color:#eef2f7;margin-bottom:4px}
   .pm-feat-t span{display:block;font-size:13.5px;line-height:20px;color:#9199a8}
 
-  .pm-cta{position:absolute;left:90px;right:90px;top:778px;height:66px;display:flex;align-items:center;
+  .pm-cta{position:absolute;left:60px;right:60px;top:778px;height:66px;display:flex;align-items:center;
     gap:16px;padding:0 22px;border-radius:14px;background:rgba(87,199,255,.07);border:1px solid rgba(87,199,255,.26)}
   .pm-cta-ic{flex:0 0 auto;width:34px;height:34px;border-radius:9px;background:rgba(87,199,255,.16);
     display:flex;align-items:center;justify-content:center;color:#6fd8ff}
@@ -118,7 +118,7 @@
     <div class="pm-col">
       <div class="pm-composer">
         <textarea placeholder="给 ZCode 发消息…" readonly></textarea>
-        <div class="pm-ctl">
+        <div class="pm-ctl group/toolbar">
           <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></span>
           <span class="pm-perm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 8.3-7 10-4-1.7-7-5.5-7-10V6z"/><path d="M12 8v4M12 15.5h.01"/></svg>完全访问<svg class="pm-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></span>
           <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>电脑操作</span>
