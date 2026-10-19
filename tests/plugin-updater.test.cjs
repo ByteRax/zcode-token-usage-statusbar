@@ -113,6 +113,17 @@ test("manual update rechecks then uses official installer and synchronizes insta
   assert.equal(f.updater.status().phase, "updated"); assert.equal(f.updater.status().restartRequired, true);
   assert.deepEqual(f.updater.status().skipped, ["zusage.py"]);
 });
+test("manual update on the local directory channel leaves checking as soon as the version is known, not only after install completes", async (t) => {
+  const f = fixture(t);
+  await f.updater.request({ action: "update" });
+  const phases = f.states.map((s) => s.phase);
+  const first = (phase) => phases.indexOf(phase);
+  // 本地目录市场渠道同样先 checking 再 marketplace/list 调用；旧代码只在到达 updating 前都
+  // 不再 publish，面板停在「正在检查更新」。state.phase="available" 必须先于 "updating" 发布。
+  assert.ok(first("checking") >= 0 && first("available") > first("checking"), phases.join(","));
+  assert.ok(first("updating") > first("available"), phases.join(","));
+  assert.equal(f.updater.status().phase, "updated");
+});
 test("up-to-date and older marketplace versions never install", async (t) => {
   const f = fixture(t); f.set({ version: "1.0.0" }); await f.updater.request({ action: "update" });
   f.set({ version: "0.9.0" }); await f.updater.request({ action: "update" });
