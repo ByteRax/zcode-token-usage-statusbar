@@ -26,7 +26,7 @@
       "name": "zcode-token-usage-statusbar",
       "source": {
         "path": "plugins/zcode-token-usage-statusbar",
-        "sha256": "a4d36ae6e8cccff6df1fadc227db77143083d0e6743b238e2585e8c7d812750d",
+        "sha256": "66236853cb5aae0e95097e81b919f457fd7a0c10771f91058ed3ed3d6fff030d",
         "source": "url",
         "stripRoot": false,
         "type": "zip",
