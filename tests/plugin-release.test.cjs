@@ -7,8 +7,9 @@ const os = require("os");
 const crypto = require("crypto");
 const https = require("https");
 const { EventEmitter } = require("events");
-const { githubRepository, readChannel, checkRelease, downloadRelease, validateRelease, validateManifest, validateCatalog,
-  fetchBytes, MAX_ASSET, MAX_JSON, PLUGIN_ID } = require("../plugin-release.cjs");
+const { githubRepository, gitcodeRepository, readChannel, checkRelease, gitcodeReleaseFromCatalog, validateGitcodeRelease,
+  downloadRelease, validateRelease, validateManifest, validateCatalog,
+  fetchBytes, sameAssetUrl, MAX_ASSET, MAX_JSON, PLUGIN_ID } = require("../plugin-release.cjs");
 const { compareVersions } = require("../plugin-updater.cjs");
 
 function release(version, repository = "ByteRax/zcode-token-usage-statusbar") {
@@ -112,6 +113,60 @@ test("registered directory stays local and GitHub/git repository selects release
 test("repository validation does not accept credentials, query, non-GitHub URLs or branch suffix", () => {
   assert.equal(githubRepository("git@github.com:ByteRax/project.git"), "ByteRax/project");
   for (const value of ["https://evil.com/owner/repo", "https://token@github.com/owner/repo", "owner/repo#main", "owner/repo?x=1", "../repo"]) assert.equal(githubRepository(value), null);
+});
+test("registered GitCode git source selects the gitcode release flavor; other hosts stay rejected", (t) => {
+  const selected = channel(fixture(t, { source: "git", url: "https://gitcode.com/tanranran/zcode-token-usage-statusbar.git", ref: "plugin-releases-gitcode" }));
+  assert.deepEqual({ kind: selected.kind, flavor: selected.flavor, repository: selected.repository },
+    { kind: "release", flavor: "gitcode", repository: "tanranran/zcode-token-usage-statusbar" });
+  const github = channel(fixture(t, { source: "git", url: "https://github.com/ByteRax/zcode-token-usage-statusbar.git" }));
+  assert.equal(github.flavor, "github");
+  assert.throws(() => channel(fixture(t, { source: "git", url: "https://gitlab.com/owner/repo.git" })), /GitHub\/GitCode/);
+  assert.equal(gitcodeRepository("git@gitcode.com:tanranran/project.git"), "tanranran/project");
+  for (const value of ["https://evil.com/owner/repo", "https://gitcode.com.evil.com/owner/repo", "owner/repo#main"]) assert.equal(gitcodeRepository(value), null);
+});
+test("asset URLs only match within the same release host", () => {
+  const githubUrl = "https://github.com/ByteRax/zcode-token-usage-statusbar/releases/download/v1.5.2/a.zip";
+  const gitcodeUrl = "https://gitcode.com/tanranran/zcode-token-usage-statusbar/releases/download/v1.5.2/a.zip";
+  assert.equal(sameAssetUrl(githubUrl, githubUrl), true);
+  assert.equal(sameAssetUrl(gitcodeUrl, gitcodeUrl), true);
+  assert.equal(sameAssetUrl(githubUrl, gitcodeUrl), false);
+  assert.equal(sameAssetUrl(gitcodeUrl.replace("gitcode.com", "file-cdn.gitcode.com"), gitcodeUrl), false);
+});
+test("gitcode release synthesized from the channel catalog pins repo, tag and asset names", (t) => {
+  const repo = "tanranran/zcode-token-usage-statusbar";
+  const sha256 = "a".repeat(64);
+  const catalog = { name: "zusage-marketplace", plugins: [{ name: "zcode-token-usage-statusbar", version: "1.5.2",
+    source: { source: "url", type: "zip", url: `https://gitcode.com/${repo}/releases/download/v1.5.2/zcode-token-usage-statusbar-v1.5.2.zip`,
+      sha256, path: "plugins/zcode-token-usage-statusbar", stripRoot: false } }] };
+  const selected = gitcodeReleaseFromCatalog(catalog, repo);
+  assert.equal(selected.flavor, "gitcode");
+  assert.equal(selected.version, "1.5.2");
+  assert.equal(selected.tag, "v1.5.2");
+  assert.equal(selected.archive.size, null);
+  assert.equal(selected.archive.browser_download_url, catalog.plugins[0].source.url);
+  assert.equal(selected.manifest.browser_download_url, `https://gitcode.com/${repo}/releases/download/v1.5.2/release-manifest.json`);
+  assert.equal(selected.url, `https://gitcode.com/${repo}/releases/tag/v1.5.2`);
+  const upstreamManifest = { schemaVersion: 1, repository: "ByteRax/zcode-token-usage-statusbar", version: "1.5.2",
+    tag: "v1.5.2", pluginId: PLUGIN_ID, asset: { name: "zcode-token-usage-statusbar-v1.5.2.zip", size: 603706, sha256 } };
+  validateManifest(upstreamManifest, selected);
+  validateCatalog(catalog, selected, upstreamManifest);
+  validateGitcodeRelease(selected);
+  assert.equal(validateGitcodeRelease({ ...selected, archive: { ...selected.archive, size: 3 } }), null);
+  assert.equal(validateGitcodeRelease({ ...selected, tag: "v1.5.3" }), null);
+  for (const mutate of [(entry) => { entry.version = "1.5.3"; },
+    (entry) => { entry.source.url = entry.source.url.replace("tanranran", "evil"); },
+    (entry) => { entry.source.url = entry.source.url.replace("v1.5.2", "v1.5.3"); },
+    (entry) => { entry.source.url = entry.source.url.replace("gitcode.com", "github.com"); },
+    (entry) => { entry.source.sha256 = "zz".repeat(32); },
+    (entry) => { entry.source.headers = {}; },
+    (entry) => { entry.source.stripRoot = true; },
+    (entry) => { entry.source.path = "plugins/other"; },
+    (entry) => { entry.source.source = "directory"; }]) {
+    const broken = JSON.parse(JSON.stringify(catalog));
+    mutate(broken.plugins[0]);
+    assert.throws(() => gitcodeReleaseFromCatalog(broken, repo), /GitCode 渠道清单/);
+  }
+  assert.throws(() => gitcodeReleaseFromCatalog(catalog, "ByteRax/zcode-token-usage-statusbar"), /不一致/);
 });
 test("formal release selection ignores screenshots, drafts and prereleases and compares numeric versions", async () => {
   const rows = [release("1.9.0"), { ...release("2.0.0"), draft: true }, { ...release("3.0.0"), prerelease: true },

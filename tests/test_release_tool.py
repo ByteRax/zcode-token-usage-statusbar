@@ -895,6 +895,137 @@ print("bounded unclosed notes completed")
         self.assertEqual(code, 1)
         self.assertEqual(self.calls(), [])
 
+    def gitcode_stub(self, token_sentinel, *, existing=False, zip_host="gitcode.com", fail=None):
+        # Fake GitCode API/OBS/download surface; records calls and never touches the network.
+        state = {"created": [], "puts": [], "release": None}
+        tag, git_repo = "v1.2.3", "tanranran/zcode-token-usage-statusbar"
+        zip_name, manifest_name = self.asset.name, self.manifest.name
+        files = {zip_name: self.asset.read_bytes(), manifest_name: self.manifest.read_bytes()}
+
+        def refresh():
+            state["release"] = {"tag_name": tag, "html_url": f"https://gitcode.com/{git_repo}/releases/tag/{tag}",
+                                "assets": [{"name": name, "browser_download_url":
+                                            f"https://{zip_host}/{git_repo}/releases/download/{tag}/{name}"}
+                                           for name in (zip_name, manifest_name)]}
+
+        if existing:
+            refresh()
+
+        def fake_api(path, token=None, query=None, method="GET", body=None, headers=None, timeout=120):
+            if fail:
+                raise fail
+            self.assertEqual(path.startswith("/repos/" + git_repo + "/"), True, path)
+            if path.endswith("/releases/tags/" + tag) and method == "GET":
+                return (200, json.dumps(state["release"]).encode()) if state["release"] else (404, b"{}")
+            if path.endswith("/releases") and method == "POST":
+                payload = json.loads(body)
+                self.assertEqual(payload["tag_name"], tag)
+                self.assertIn("更新说明", payload["body"])
+                state["created"].append(payload["tag_name"])
+                refresh()
+                return 201, json.dumps(state["release"]).encode()
+            if path.endswith("/upload_url") and method == "GET":
+                name = query["file_name"]
+                return 200, json.dumps({"url": f"https://obs.example.invalid/put/{name}",
+                                        "headers": {"x-obs-acl": "public-read",
+                                                    "Content-Type": "application/zip"}}).encode()
+            raise AssertionError("unexpected gitcode api call: " + path)
+
+        def fake_put(request, timeout=None):
+            url = request.full_url
+            self.assertTrue(url.startswith("https://obs.example.invalid/put/"))
+            state["puts"].append({"name": url.rsplit("/", 1)[-1], "data": request.data,
+                                  "headers": dict(request.header_items())})
+
+            class Response(contextlib.AbstractContextManager):
+                status = 200
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *args):
+                    return False
+
+            return Response()
+
+        def fake_download(url, hops, timeout=120):
+            name = url.rsplit("/", 1)[-1]
+            hops.append("https://assets.gitcode.com/example-hop")
+            return files[name], url
+
+        return state, fake_api, fake_put, fake_download
+
+    def run_gitcode_publish(self, *, approved=True, existing=False, zip_host="gitcode.com",
+                            fail=None, token="SECRET-GITCODE-TOKEN"):
+        sentinel = token
+        state, fake_api, fake_put, fake_download = self.gitcode_stub(
+            sentinel, existing=existing, zip_host=zip_host, fail=fail)
+        put_patch = mock.patch.object(tool.urllib.request, "urlopen", side_effect=fake_put)
+        with mock.patch.dict(os.environ, {"GITCODE_TOKEN": token}), \
+                mock.patch.object(tool, "gitcode_api", side_effect=fake_api), \
+                mock.patch.object(tool, "download_traced", side_effect=fake_download), \
+                put_patch:
+            plan = tool.publish(self.root, REPO, self.asset, self.manifest, approved,
+                                REPO + "/v1.2.3", notes_file=self.notes_file,
+                                gitcode_repo="tanranran/zcode-token-usage-statusbar")
+        return plan, state
+
+    def test_gitcode_mirror_creates_release_uploads_and_writes_catalog(self):
+        plan, state = self.run_gitcode_publish()
+        self.assertFalse(plan["dryRun"])
+        self.assertEqual(state["created"], ["v1.2.3"])
+        self.assertEqual(sorted(entry["name"] for entry in state["puts"]),
+                         sorted([self.asset.name, self.manifest.name]))
+        for entry in state["puts"]:
+            origin = self.asset if entry["name"] == self.asset.name else self.manifest
+            self.assertEqual(entry["data"], origin.read_bytes())
+        catalog_path = Path(plan["gitcode"]["catalog"])
+        self.assertEqual(catalog_path.resolve(),
+                         (self.base / "out" / "marketplace-release-gitcode.json").resolve())
+        catalog = json.loads(catalog_path.read_text())
+        source = catalog["plugins"][0]["source"]
+        self.assertTrue(source["url"].startswith("https://gitcode.com/tanranran/"))
+        self.assertTrue(source["url"].endswith("/" + self.asset.name))
+        self.assertEqual(source["sha256"], hashlib.sha256(self.asset.read_bytes()).hexdigest())
+        self.assertEqual(source["path"], "plugins/" + tool.PLUGIN)
+        self.assertIs(source["stripRoot"], False)
+        self.assertNotIn("SECRET-GITCODE-TOKEN", json.dumps(plan))
+
+    def test_gitcode_mirror_reuses_existing_release(self):
+        plan, state = self.run_gitcode_publish(existing=True)
+        self.assertEqual(state["created"], [])
+        self.assertEqual(len(state["puts"]), 2)
+        self.assertTrue(Path(plan["gitcode"]["catalog"]).exists())
+
+    def test_gitcode_mirror_dry_run_only_plans(self):
+        plan, state = self.run_gitcode_publish(approved=False)
+        self.assertTrue(plan["dryRun"])
+        self.assertEqual(state, {"created": [], "puts": [], "release": None})
+        self.assertIn("upload", " ".join(plan["gitcode"]["steps"]))
+        self.assertFalse(Path(self.base / "out" / "marketplace-release-gitcode.json").exists())
+
+    def test_gitcode_mirror_requires_token_before_github_publish(self):
+        with self.assertRaisesRegex(tool.ReleaseError, "GITCODE_TOKEN"), \
+                mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("GITCODE_TOKEN", None)
+            tool.publish(self.root, REPO, self.asset, self.manifest, True, REPO + "/v1.2.3",
+                         notes_file=self.notes_file,
+                         gitcode_repo="tanranran/zcode-token-usage-statusbar")
+        self.assert_no_publish()
+
+    def test_gitcode_mirror_unexpected_asset_host_fails_closed(self):
+        with self.assertRaisesRegex(tool.ReleaseError, "unexpected GitCode asset host"):
+            self.run_gitcode_publish(zip_host="obs.mirror.example.invalid")
+        catalog = self.base / "out" / "marketplace-release-gitcode.json"
+        self.assertFalse(catalog.exists())
+
+    def test_gitcode_api_errors_never_leak_token(self):
+        sentinel = "SECRET-GITCODE-TOKEN"
+        fail = tool.ReleaseError("gitcode release create -> HTTP 500")
+        with self.assertRaisesRegex(tool.ReleaseError, "HTTP 500") as caught:
+            self.run_gitcode_publish(fail=fail)
+        self.assertNotIn(sentinel, str(caught.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

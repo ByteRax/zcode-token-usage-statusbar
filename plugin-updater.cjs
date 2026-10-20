@@ -147,12 +147,28 @@ function acquireUpdateLock(runtime, python, helper) {
   });
 }
 
+// 渠道身份只比 kind/repository/source；flavor 由 source 可推导，不参与比较，
+// 这样旧版本持久化的更新意图（无 flavor 字段）在新代码下仍然等价，不会误判来源变化。
+function sameChannel(a, b) {
+  return !!a && !!b && a.kind === b.kind && (a.repository || "") === (b.repository || "") &&
+    isDeepStrictEqual(a.source === undefined ? null : a.source, b.source === undefined ? null : b.source);
+}
+function channelFlavor(channel) {
+  // 持久化意图的渠道形态：注册为 GitCode git 来源即镜像渠道，其余远端一律按 GitHub 校验。
+  return !!(channel && channel.source && channel.source.source === "git" &&
+    releaseChannel.gitcodeRepository(channel.source.url)) ? "gitcode" : "github";
+}
+
 function verifyCommittedRelease(record, expected, currentChannel) {
   const release = expected && expected.release, manifest = expected && expected.manifest;
-  if (!release || !manifest || !expected.channel || !isDeepStrictEqual(currentChannel, expected.channel)) throw new Error("Release 更新意图无效或市场来源已变化，停止运行时同步");
-  const validated = releaseChannel.validateRelease({ tag_name: release.tag, draft: false, prerelease: false,
-    assets: [release.archive, release.manifest] }, release.repository);
+  if (!release || !manifest || !expected.channel || !sameChannel(currentChannel, expected.channel)) throw new Error("Release 更新意图无效或市场来源已变化，停止运行时同步");
+  const flavor = expected.channel.flavor || channelFlavor(expected.channel);
+  const validated = flavor === "gitcode"
+    ? releaseChannel.validateGitcodeRelease(release)
+    : releaseChannel.validateRelease({ tag_name: release.tag, draft: false, prerelease: false,
+      assets: [release.archive, release.manifest] }, release.repository);
   if (!validated || validated.version !== release.version || expected.channel.kind !== "release" ||
+      flavor !== validated.flavor ||
       !releaseChannel.sameRepository(expected.channel.repository, release.repository)) throw new Error("Release 更新意图无效，停止运行时同步");
   releaseChannel.validateManifest(manifest, validated);
   if (record.version !== release.version || !record.source || !releaseChannel.sameAssetUrl(record.source.url, release.archive.browser_download_url) ||
@@ -245,12 +261,12 @@ function createUpdater(options) {
   const markerFile = path.join(runtime, ".plugin-restart-required");
   const saved = readState(stateFile, now());
   let state = { phase: "idle", supported: false, auto: false, currentVersion: "", latestVersion: "",
-    ...saved, restartRequired: fs.existsSync(markerFile), skipped: [], error: "", channel: "", releaseUrl: "", progress: null };
+    ...saved, restartRequired: fs.existsSync(markerFile), skipped: [], error: "", channel: "", channelHost: "", releaseUrl: "", progress: null };
   let busy = false;
   let selectedRelease = null, selectedChannel = null;
   const channel = () => {
     const source = options.channel ? options.channel() : releaseChannel.readChannel(home, storage());
-    return { kind: source.kind, repository: source.repository || "", source: source.marketplace ? source.marketplace.source : null };
+    return { kind: source.kind, flavor: source.flavor || "", repository: source.repository || "", source: source.marketplace ? source.marketplace.source : null };
   };
   const fetchRelease = options.fetchRelease || releaseChannel.fetchBytes;
   const prepareRelease = options.prepareRelease || ((release, onProgress) => releaseChannel.downloadRelease(release, python(), fetchRelease, undefined, onProgress));
@@ -316,9 +332,18 @@ function createUpdater(options) {
       state.lastAttempt = now();
       save();
       const source = channel();
-      state.channel = source.kind; state.releaseUrl = ""; selectedRelease = null; selectedChannel = source;
-      if (source.kind === "release") {
+      state.channel = source.kind; state.channelHost = source.kind === "release" ? (source.flavor === "gitcode" ? "gitcode" : "github") : "";
+      state.releaseUrl = ""; selectedRelease = null; selectedChannel = source;
+      if (source.kind === "release" && source.flavor === "gitcode") {
+        // GitCode 渠道：宿主从注册 ref 拉取的渠道清单是唯一版本源，不调 GitCode API。
+        const market = await cli(["marketplace", "update", "zusage-marketplace"]);
+        diagnostics(market);
+        if (!isDeepStrictEqual(channel(), source)) throw new Error("更新期间市场来源已变化");
+        selectedRelease = releaseChannel.gitcodeReleaseFromCatalog(readReleaseCatalog(), source.repository);
+      } else if (source.kind === "release") {
         selectedRelease = await releaseChannel.checkRelease(source.repository, compareVersions, fetchRelease);
+      }
+      if (selectedRelease) {
         state.releaseUrl = selectedRelease.url;
         state.latestVersion = selectedRelease.version;
         const record = installedRecord();
@@ -394,7 +419,7 @@ function createUpdater(options) {
       if (selectedRelease) {
         const currentChannel = channel();
         if (!isDeepStrictEqual(currentChannel, selectedChannel) || currentChannel.kind !== "release" || !releaseChannel.sameRepository(currentChannel.repository, selectedRelease.repository)) throw new Error("更新期间市场来源已变化");
-        state.phase = "downloading"; state.progress = { stage: "download", loaded: 0, total: selectedRelease.archive.size }; publish();
+        state.phase = "downloading"; state.progress = { stage: "download", loaded: 0, total: selectedRelease.archive.size || 0 }; publish();
         let lastPublished = 0;
         downloaded = await prepareRelease(selectedRelease, (progress) => {
           state.progress = progress;
@@ -407,7 +432,7 @@ function createUpdater(options) {
         const market = await cli(["marketplace", "update", "zusage-marketplace"]); diagnostics(market);
         if (!isDeepStrictEqual(channel(), currentChannel)) throw new Error("更新期间市场来源已变化");
         try { releaseChannel.validateCatalog(readReleaseCatalog(), selectedRelease, downloaded.manifest); }
-        catch (cause) { throw channelLagError(cause); }
+        catch (cause) { throw selectedRelease.flavor === "gitcode" ? cause : channelLagError(cause); }
         record = refreshLocal();
         if (!record) throw new Error("插件已卸载，更新已取消");
         if (auto && !state.auto) { abandon(); return; }

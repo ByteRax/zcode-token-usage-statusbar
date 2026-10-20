@@ -59,6 +59,7 @@ python3 -B release_tool.py publish --root /absolute/project --zip /new/artifact-
 - 在独立临时 clone/worktree 操作，不切换或清理脏开发工作区。先读取远端原清单，核对插件、版本与 ref，不倒退版本或覆盖不相干内容。已有分支从远端 tip 派生，新分支从已验证 tag 派生；仅提交清单。
 - 正常推送，禁止强推。之后从远端读取并核对版本、完整 ZIP URL/hash/path 与本次资产；渠道未成功时不能声称远端更新可用。
 - 新用户注册 `OWNER/REPO#plugin-releases`。已有注册不会自动切换，维护者须在原 ref 发布一致清单，或由用户明确选择迁移；不修改用户市场注册。
+- 用户要求同步 GitCode 渠道时，`publish` 追加 `--gitcode-repo tanranran/zcode-token-usage-statusbar`（需 `GITCODE_TOKEN`；见[双远程同步](../../../docs/maintaining.md#双远程同步)）：工具在 GitHub 发布验收后自动建同 tag Release、上传资产、回读校验并生成 `marketplace-release-gitcode.json`。把该清单发布为 `plugin-releases-gitcode` 分支（同一套独立 worktree 流程，双 push URL 自动同步两台主机），并回读核对版本、GitCode ZIP URL 与 hash。GitCode 渠道的 Release 创建/上传走 GitCode API，属于发布动作，须在本次授权范围内说明后执行。
 
 ## 发布后合并源码 PR
 
@@ -72,4 +73,5 @@ python3 -B release_tool.py publish --root /absolute/project --zip /new/artifact-
 ## 收尾
 
 - 分别报告打包、提交/tag/推送、Release、渠道、更新端验证及源码 PR 合并状态。未执行就明确写未执行；完整发版须给出已合并 PR 的 URL 与验证结果。
+- `fork` 双 push URL 使分支、tag 与 worktree 渠道推送同时到达 GitCode 镜像（[双远程同步](../../../docs/maintaining.md#双远程同步)）；GitCode 段失败时补配访问令牌重推即可，不据此重发或回滚 GitHub Release。要求 GitCode 渠道时报告 `--gitcode-repo` 的发布/上传/清单结果与 `plugin-releases-gitcode` 分支状态；全新 clone 的渠道推送只到 GitHub，需要镜像时显式加入推送目标。
 - 不安装或覆盖用户缓存，不自动重启客户端。发布成功不等于用户已安装。
