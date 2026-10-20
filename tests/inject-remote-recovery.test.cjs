@@ -200,6 +200,35 @@ test("primary pane with panes:{} refuses remote inference from connected-only wo
   assert.equal(page.payload.scope_bindings["workspace-main"], "");
   assert.equal(page.sessionFor(page.payload, "sA", "workspace-main"), null);
 });
+test("bridge-less local-only window shows its local snapshot (issue #40)", async () => {
+  /* 无桥 + 本窗没有任何远端证据：泵只能查本地，overlay 必须显示本地记录，
+   * 不能因身份未知走零值占位（3.16.2 未登记版本的真实场景）。 */
+  const f = loadPump(), wc = f.addWindow(null), page = renderer(wc, ["workspace-main"], {}, []);
+  f.api.maybeSpawn(); await flush();
+  assert.deepEqual(f.lines[0].sids, ["sA"]);
+  assert.equal(f.lines[0].scopes.length, 0);
+  f.respond({ recent: [{ sid: "sA", requests: 9 }], not_local: [] }); await flush();
+  assert.equal(page.payload.scope_bindings["workspace-main"], "");
+  assert.equal(page.payload.remote_evidence, false);
+  assert.equal(page.sessionFor(page.payload, "sA", "workspace-main").requests, 9);
+});
+test("remote task evidence is scoped to the pane sid (issue #40)", async () => {
+  /* 无关 sid 的远端任务不能把本地 pane 判死；同 sid 的远端任务仍 fail-closed。 */
+  const f = loadPump(), wc = f.addWindow(null, "sB");
+  const page = renderer(wc, ["workspace-main"], { "workspace-main": { sessionId: "sB" } }, []);
+  f.tasks(wc, [A]);   // 远端任务属于 sA，与 pane 的 sB 无关
+  f.api.maybeSpawn(); await flush();
+  f.respond({ recent: [{ sid: "sB", requests: 9 }], not_local: [] }); await flush();
+  assert.equal(page.payload.remote_evidence, false);
+  assert.equal(page.sessionFor(page.payload, "sB", "workspace-main").requests, 9);
+
+  const g = loadPump(), wc2 = g.addWindow(null), page2 = renderer(wc2, ["workspace-main"], {}, []);
+  g.tasks(wc2, [A]);  // 远端任务属于 sA，正是 pane 的 sid
+  g.api.maybeSpawn(); await flush();
+  g.respond({ recent: [{ sid: "sA", requests: 9 }], not_local: [] }); await flush();
+  assert.equal(page2.payload.remote_evidence, true);
+  assert.equal(page2.sessionFor(page2.payload, "sA", "workspace-main"), null);
+});
 test("other window clearing a local last-session never routes the local main remotely", async () => {
   const f = loadPump(), local = f.addWindow(A), remote = f.addWindow(A);
   const shared = new Map();
