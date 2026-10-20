@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import re
 import shutil
+import stat
 import struct
 import subprocess
 import sys
@@ -16,6 +17,7 @@ import patch_install as asar
 
 HOST = Path('/Applications/ZCode.app/Contents/Resources/app.asar')
 PANE_ANCHORS = {
+    '3.16.2': b'"data-testid":hb(WRe,e),"data-session-id":t??`draft`,',
     '3.16.1': b'"data-testid":vb(VRe,e),"data-session-id":t??`draft`,',
     '3.15.3': b'"data-testid":Oa(Mr,e),"data-session-id":t??`draft`,',
 }
@@ -34,6 +36,28 @@ def mini_for(target):
 
 
 MINI = mini_for(bridge.NEWEST)
+# 篡改用例改写最新目标的 registry 混淆名（随 NEWEST 变化，不能写死 pf）
+REGISTRY = bridge.NEWEST['names']['registry'].encode()
+
+# 自动推导的合成夹具：逐项复刻真实 bundle 的稳定形状（注册表/key/topic 绑定、
+# acquire、store 生命周期、SessionPane 参数与 testid 锚点）。
+RICH = (
+    b'import{A as zz,C as gee}from"./parts-TEST.js";'
+    b'const hf=new Map,wde=`__base__`,Tde=3e4;'
+    b'function Ede(e){let t=e.workspaceIdentity?.trim()||e.workspacePath;'
+    b'return`${e.remoteSessionId??`__base__`} ${t}`}'
+    b'class FakeStore{getState(){return this.state}async connect(e={}){this.closed=!0}}'
+    b'class FakeLayer{acquire(e){if(this.disposed)throw Error(`SessionDataLayer released`);'
+    b'let t=gee(e),n=Cde(),r=this.entries.get(t);return r}}'
+    b'function Cde(){return 1}'
+    b'function r4({paneId:e,sessionId:t,workspacePath:c,workspaceIdentity:l,remoteSessionId:u}){'
+    b'const s={key:r,layer:new FakeLayer(),refCount:1,keepWarmTimer:null,stale:!1};hf.set(r,s);'
+    b'hf.get(r);hf.delete(r);'
+    b'return{workspacePath:c,workspaceIdentity:l,remoteSessionId:u,'
+    b'"data-testid":hb(WRe,e),"data-session-id":t??`draft`,children:null}};'
+    b'export{hf};'
+)
+RICH_PARTS = {"/out/renderer/assets/parts-TEST.js": b'export const C = e => e;'}
 
 
 def patched_module(module, target):
@@ -130,7 +154,8 @@ class RendererBridgeTests(unittest.TestCase):
     def test_tampering_and_third_party(self):
         for data in [MINI + bridge.BRIDGE, patched_module(MINI, bridge.NEWEST)]:
             for tampered in [data.replace(b'const key', b'const KEY'),
-                             data.replace(b'const pf', b'const PF'), data + bridge.BRIDGE]:
+                             data.replace(b'const ' + REGISTRY, b'const ' + REGISTRY.upper()),
+                             data + bridge.BRIDGE]:
                 self.assertIsNone(bridge.target_for_module(tampered))
                 for operation in ['patch', 'remove']:
                     with self.assertRaises(bridge.BridgeError):
@@ -191,7 +216,7 @@ class RendererBridgeTests(unittest.TestCase):
     def test_integrity_tamper(self):
         raw = self.src.read_bytes().replace(b'third party bytes', b'third party BYTES')
         # Only modified nodes are integrity checked; unrelated data is copied verbatim.
-        self.src.write_bytes(raw.replace(MINI, MINI.replace(b'pf', b'PF', 1)))
+        self.src.write_bytes(raw.replace(MINI, MINI.replace(REGISTRY, REGISTRY.upper(), 1)))
         with self.assertRaisesRegex(bridge.BridgeError, 'integrity'):
             bridge.rewrite_asar(self.src, self.root / 'no.asar')
 
@@ -258,7 +283,7 @@ assert.equal(next['data-zusage-pane-id'],'pane-2');
                     patched = bridge.transform_module(module, 'patch')
                 text = patched.decode().replace('export function', 'function')
                 text = text.replace('export{ ' + target['names']['registry'] + ' };', '')
-                fixture = 'const vb=()=>"pane", Oa=vb, VRe=null, Mr=null;\n' + text + assertions
+                fixture = 'const vb=()=>"pane", Oa=vb, hb=vb, VRe=null, Mr=null, WRe=null;\n' + text + assertions
                 script = self.root / f'{target["version"]}-props.cjs'
                 script.write_text('const vm=require("node:vm");vm.runInNewContext(' +
                                   json.dumps(fixture) + ',{assert:require("node:assert/strict")});')
@@ -300,14 +325,20 @@ assert.equal(next['data-zusage-pane-id'],'pane-2');
                     remaining -= count
         self.assertEqual(asar.source_fingerprint(HOST), before)
         text = original.decode()
-        # Ode contains template interpolation braces; use its next-function boundary.
-        key = text[text.index('function Ode(e)'):text.index('function kde(e)')]
+        names = bridge.NEWEST['names']
+        # key 函数体含模板插值花括号；用下一个 function 边界截取
+        key_start = text.index(f'function {names["key"]}(e)')
+        key = text[key_start:text.index('function ', key_start + 1)]
         methods = text[text.index('getState(){return this.state}'):
                        text.index('async connect(e={})', text.index('getState(){return this.state}'))]
-        # 新包 hee 为跨资产 import 别名；契约恒为 conversation/<id>，夹具内联同款实现
-        topic = 'function hee(e){return `conversation/${e}`;}'
-        fixture = ('const pf = new Map();\n' + key + topic +
-                   '\nclass FixtureStore {\n' + methods +
+        # 新包 topic 函数为跨资产 import 别名；契约恒为 conversation/<id>，夹具内联同款实现
+        topic = f'function {names["topic"]}(e){{return `conversation/${{e}}`;}}'
+        # VM_ASSERTIONS 以 pf/Ode/hee 书写；按当前目标的混淆名起别名
+        aliases = ''.join(f'const {alias} = {real};\n' for alias, real in
+                          (('pf', names['registry']), ('Ode', names['key']), ('hee', names['topic']))
+                          if alias != real)
+        fixture = (f'const {names["registry"]} = new Map();\n' + key + topic + '\n' + aliases +
+                   'class FixtureStore {\n' + methods +
                    '\n}\n' + bridge.BRIDGE.decode().replace('export function', 'function'))
         script = self.root / 'fixture.cjs'
         script.write_text('const vm = require("node:vm");\nvm.runInNewContext(' +
@@ -316,6 +347,166 @@ assert.equal(next['data-zusage-pane-id'],'pane-2');
         result = subprocess.run(['node', str(script)], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('VM contract passed', result.stdout)
+
+    @unittest.skipUnless(HOST.is_file(), 'Read-only host archive required')
+    def test_derive_matches_pinned_host_entry(self):
+        # 自动推导必须能复现人工登记的指纹（真机 bundle 是唯一权威样本）
+        self.pin.stop()
+        pristine = bridge.transform_module(read(HOST), 'remove')
+        self.assertEqual(hashlib.sha256(pristine).hexdigest(), bridge.ASSET_SHA256)
+        derived = bridge.derive_target(bridge.HOST_VERSION, pristine, bridge.ASSET,
+                                       set(metadata(HOST)))
+        self.assertEqual(derived['version'], bridge.NEWEST['version'])
+        self.assertEqual(derived['asset'], bridge.NEWEST['asset'])
+        self.assertEqual(derived['sha256'], bridge.NEWEST['sha256'])
+        self.assertEqual(derived['names'], bridge.NEWEST['names'])
+        self.assertEqual(derived['pane'], bridge.NEWEST['pane'])
+        self.assertTrue(derived['derived'])
+        # 已补过桥的真机安装同样能推导：按指纹还原原始模块后再出条目
+        installed = bridge.derive_from_asar(HOST)
+        self.assertEqual(installed['names'], bridge.NEWEST['names'])
+        self.assertEqual(installed['pane'], bridge.NEWEST['pane'])
+        self.assertEqual(installed['sha256'], bridge.NEWEST['sha256'])
+
+
+class DeriveTests(unittest.TestCase):
+    """表外版本的严格推导与就地自动补丁（合成 asar，不碰真机安装）。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix='bridge-derive-')
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.target = self.root / 'app.asar'
+        archive(self.target, RICH, '9.9.9', RICH_PARTS)
+
+    def test_auto_patch_present_remove_cycle(self):
+        result = bridge.ensure_deployed(self.target)
+        self.assertEqual(result['status'], 'patched', result)
+        self.assertIn('auto-derived', result['detail'])
+        self.assertIn(bridge.MARKER, read(self.target))
+        self.assertEqual(bridge.ensure_deployed(self.target)['status'], 'present')
+        removed = bridge.remove_deployed(self.target)
+        self.assertEqual(removed['status'], 'removed', removed)
+        self.assertIn('auto-derived', removed['detail'])
+        self.assertEqual(read(self.target), RICH)
+        self.assertEqual(bridge.remove_deployed(self.target)['status'], 'skipped-unknown')
+
+    @unittest.skipUnless(shutil.which('node'), 'Node required')
+    def test_auto_patch_module_parses(self):
+        self.assertEqual(bridge.ensure_deployed(self.target)['status'], 'patched')
+        module = self.root / 'auto.mjs'
+        module.write_bytes(read(self.target))
+        subprocess.run(['node', '--check', str(module)], check=True, capture_output=True)
+
+    def test_strip_refuses_tampered_or_truncated_bridge(self):
+        derived = bridge.derive_target('9.9.9', RICH,
+                                       "/out/renderer/assets/styles-n-UNIiNg.js", set(RICH_PARTS))
+        patched = bridge.transform_module(RICH, 'patch', derived)
+        self.assertEqual(bridge._strip_auto_bridge(patched), RICH)
+        for name, mutate in {
+            'duplicate end marker': lambda data: data.replace(bridge.END, bridge.END + bridge.END),
+            'missing trailing newline': lambda data: data[:-1],
+            'altered pane attribute': lambda data: data.replace(
+                b'"data-zusage-pane-id":e,', b'"data-zusage-pane-id":"x",'),
+        }.items():
+            with self.subTest(name):
+                mutated = mutate(patched)
+                self.assertNotEqual(mutated, patched)
+                with self.assertRaises(bridge.BridgeError):
+                    bridge._strip_auto_bridge(mutated)
+
+    def test_remove_rechecks_source_fingerprint_before_publish(self):
+        self.assertEqual(bridge.ensure_deployed(self.target)['status'], 'patched')
+        calls = []
+
+        def drifting(path):
+            calls.append(path)
+            return {'size': len(calls)}
+
+        with patch.object(bridge.asar, 'source_fingerprint', drifting), \
+                patch.object(bridge.os, 'replace') as publish:
+            result = bridge.remove_deployed(self.target)
+        self.assertEqual(result['status'], 'skipped-error', result)
+        publish.assert_not_called()
+        self.assertIn(bridge.MARKER, self.target.read_bytes())
+
+    def test_one_bridged_among_multiple_assets_is_not_present(self):
+        multi = self.root / 'multi.asar'
+        derived = bridge.derive_target('9.9.9', RICH,
+                                       "/out/renderer/assets/styles-n-UNIiNg.js", set(RICH_PARTS))
+        archive(multi, bridge.transform_module(RICH, 'patch', derived), '9.9.9',
+                dict(RICH_PARTS, **{'/out/renderer/assets/styles-second.js': RICH}))
+        before = multi.read_bytes()
+        result = bridge.ensure_deployed(multi)
+        self.assertEqual(result['status'], 'skipped-unknown')
+        self.assertIn('unpatched derivable', result['detail'])
+        self.assertEqual(multi.read_bytes(), before)
+
+    def test_bridged_plus_unrelated_asset_stays_present(self):
+        # 无关的 styles-* chunk 不可推导时不能把幂等 present 变成每次跳过
+        multi = self.root / 'multi-unrelated.asar'
+        archive(multi, RICH, '9.9.9',
+                dict(RICH_PARTS, **{'/out/renderer/assets/styles-second.js': b'export const x=1;'}))
+        self.assertEqual(bridge.ensure_deployed(multi)['status'], 'patched')
+        self.assertEqual(bridge.ensure_deployed(multi)['status'], 'present')
+
+    def test_cli_derive_rejects_source_map_sideload(self):
+        mapped = self.root / 'mapped.asar'
+        archive(mapped, RICH, '9.9.9',
+                dict(RICH_PARTS, **{'/out/renderer/assets/styles-n-UNIiNg.js.map': b'{}'}))
+        with self.assertRaises(bridge.BridgeError):
+            bridge.derive_from_asar(mapped)
+
+    def test_derive_refuses_unverified_shapes(self):
+        asset = "/out/renderer/assets/styles-n-UNIiNg.js"
+        anchor = b'"data-testid":hb(WRe,e),"data-session-id":t??`draft`,'
+        cases = {
+            'duplicate anchor': RICH.replace(anchor, anchor + anchor),
+            'duplicate session attribute': RICH.replace(
+                b'"data-session-id":t??`draft`,', b'"data-session-id":t??`draft`,"data-session-id":t??`draft`,', 1),
+            'missing topic import': RICH.replace(b'import{A as zz,C as gee}from"./parts-TEST.js";', b''),
+            'missing store state': RICH.replace(b'getState(){return this.state}', b''),
+            'missing closed flag': RICH.replace(b'this.closed=!0', b''),
+            'source map': RICH + b'\n//# sourceMappingURL=styles-TEST.js.map',
+            'testid pane mismatch': RICH.replace(b'"data-testid":hb(WRe,e)', b'"data-testid":hb(WRe,x)'),
+            'unexpected registry entry': RICH.replace(b'stale:!1', b'stale:0'),
+            'ambiguous component params': RICH.replace(
+                b'function Cde(){return 1}',
+                b'function Cde(){return 1}function wrap({paneId:x,sessionId:y,workspacePath:z,'
+                b'workspaceIdentity:w,remoteSessionId:v}){return 0}'),
+            'non-ascii import source': RICH.replace(b'./parts-TEST.js', b'./parts-\xff.js'),
+            'already bridged': RICH + b'\n/* zusage-existing-conversation-store:v1 begin */',
+        }
+        for name, module in cases.items():
+            with self.subTest(name):
+                with self.assertRaises(bridge.BridgeError):
+                    bridge.derive_target('9.9.9', module, asset, set(RICH_PARTS))
+        # topic import 存在但目标 chunk 不在归档里：拒绝
+        with self.assertRaises(bridge.BridgeError):
+            bridge.derive_target('9.9.9', RICH, asset, set())
+
+    def test_ambiguous_renderer_assets_refuse(self):
+        ambiguous = self.root / 'ambiguous.asar'
+        clone = RICH.replace(b'"data-testid":hb(WRe,e)', b'"data-testid":zz(QQ,e)')
+        archive(ambiguous, RICH, '9.9.9',
+                dict(RICH_PARTS, **{'/out/renderer/assets/styles-second.js': clone}))
+        result = bridge.ensure_deployed(ambiguous)
+        self.assertEqual(result['status'], 'skipped-unknown')
+        self.assertIn('ambiguous', result['detail'])
+
+    def test_cli_derive_prints_pasteable_entry(self):
+        command = [sys.executable, '-B', str(Path(bridge.__file__).resolve()),
+                   'derive', str(self.target)]
+        result = subprocess.run(command, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("'version': '9.9.9'", result.stdout)
+        self.assertIn("'registry': 'hf'", result.stdout)
+        self.assertIn("b'\"data-testid\":hb(WRe,e),\"data-session-id\":t??`draft`,'", result.stdout)
+        # 已自动补过桥的归档也能推导（按标记还原）
+        self.assertEqual(bridge.ensure_deployed(self.target)['status'], 'patched')
+        after = subprocess.run(command, capture_output=True, text=True)
+        self.assertEqual(after.returncode, 0, after.stderr)
+        self.assertIn("'registry': 'hf'", after.stdout)
 
 
 class EnsureDeployedTests(unittest.TestCase):
@@ -332,9 +523,12 @@ class EnsureDeployedTests(unittest.TestCase):
         self.addCleanup(self.pin.stop)
 
     def test_patch_present_remove_absent_lifecycle(self):
+        # 就地替换不得把安装目录 asar 的权限降成 mkstemp 的 0600
+        self.target.chmod(0o644)
         result = bridge.ensure_deployed(self.target)
         self.assertEqual(result["status"], "patched")
         self.assertEqual(result["version"], bridge.HOST_VERSION)
+        self.assertEqual(stat.S_IMODE(self.target.stat().st_mode), 0o644)
         self.assertIn(".zusage.lock".replace(".zusage", "zusage"), str(list(self.root.iterdir()) or ""))  # 锁文件随 asar 命名
         with self.target.open('rb') as stream:
             header, base = asar.read_header(stream)
@@ -344,6 +538,7 @@ class EnsureDeployedTests(unittest.TestCase):
         self.assertEqual(bridge.ensure_deployed(self.target)["status"], "present")
         # 卸载对称清理 → removed → 还原为干净模块 → absent
         self.assertEqual(bridge.remove_deployed(self.target)["status"], "removed")
+        self.assertEqual(stat.S_IMODE(self.target.stat().st_mode), 0o644)
         with self.target.open('rb') as stream:
             header, base = asar.read_header(stream)
             data = bridge._read(stream, dict(asar.iter_files(header)), base, bridge.ASSET)

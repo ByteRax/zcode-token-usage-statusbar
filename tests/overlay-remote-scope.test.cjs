@@ -13,6 +13,7 @@ function sessionFixture(mainScope) {
   if (mainScope !== undefined) context.mainScopeNow = mainScope;
   vm.runInContext(extract("  function sessionFor(", "  window.__zusagePluginRequests"), context);
   const pick = (d, sid = "sA", pid = "auto") => context.sessionFor(d, sid, pid);
+  pick.ctx = context;
   pick.view = d => {
     context.window.__zusageUpdate(d);
     context.p = pick(d); context.d = d;
@@ -149,6 +150,30 @@ test("current panes retain same-sid scope isolation without reading shared stora
 test("unknown current main cannot substitute a same-sid local snapshot", () => {
   const d = { scope_bindings: { "workspace-main": "" }, recent: [{ sid: "sA", requests: 9 }] };
   assert.equal(sessionFixture({ sid: "sA", identity: "", known: false })(d, "sA", "workspace-main"), null);
+});
+test("bridge-less local pane matches the local snapshot instead of zero stubs", () => {
+  /* issue #40：无桥客户端 refreshWants 只写 {sid}；本窗确认没有任何远端证据时
+   * 渲染端应显示本地记录，而不是被身份守卫判空后走零值占位。 */
+  const pick = sessionFixture();
+  pick.ctx.window.__zusagePaneScopes = { "workspace-main": { sid: "sA" } };
+  const recent = [{ sid: "sA", workspace_identity: A, remote: true, requests: 1 },
+    { sid: "sA", requests: 9 }];
+  assert.equal(pick({ scope_bindings: { "workspace-main": "" }, remote_evidence: false, recent },
+    "sA", "workspace-main").requests, 9);
+  // 本窗有远端证据 / 泵未上报证据：仍 fail-closed，不借本地快照
+  assert.equal(pick({ scope_bindings: { "workspace-main": "" }, remote_evidence: true, recent },
+    "sA", "workspace-main"), null);
+  assert.equal(pick({ scope_bindings: { "workspace-main": "" }, recent }, "sA", "workspace-main"), null);
+  // 泵按远端绑定、渲染端却看不到身份：fail-closed
+  assert.equal(pick({ scope_bindings: { "workspace-main": A }, remote_evidence: false, recent },
+    "sA", "workspace-main"), null);
+  // 显式本地 scope 与绑定一致时照常匹配（不受远端证据影响）
+  pick.ctx.window.__zusagePaneScopes = { "workspace-main": { sid: "sA", identity: "" } };
+  assert.equal(pick({ scope_bindings: { "workspace-main": "" }, remote_evidence: true, recent },
+    "sA", "workspace-main").requests, 9);
+  // sid 不一致仍拒绝（节点身份切换的迟到载荷）
+  assert.equal(pick({ scope_bindings: { "workspace-main": "" }, remote_evidence: false, recent },
+    "sB", "workspace-main"), null);
 });
 test("main pane strips late scope bindings that no longer match current workbench state", () => {
   const recent = [

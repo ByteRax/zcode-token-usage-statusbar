@@ -121,8 +121,16 @@
         current = scope || { sid: sid };
         break;
       }
-      if (current && (current.sid !== sid || !Object.prototype.hasOwnProperty.call(current, "identity") ||
-          current.identity !== identity)) return null;
+      if (current) {
+        /* issue #40：无桥的客户端 refreshWants 只写 {sid}（拿不到身份），泵对同一
+         * pane 只能查本地；但只有本窗完全没有远端证据（remote_evidence === false）
+         * 才按本地身份匹配，否则本地会话仍会被误杀或误亮。泵绑定非空（远端）而渲染
+         * 端看不到身份时保持 fail-closed，不借同 sid 的本地快照。 */
+        var hasIdentity = Object.prototype.hasOwnProperty.call(current, "identity");
+        var currentIdentity = hasIdentity ? current.identity : "";
+        if (current.sid !== sid || currentIdentity !== identity) return null;
+        if (!hasIdentity && d.remote_evidence !== false) return null;
+      }
     }
     if (!current && pid === "workspace-main" && typeof mainScopeNow !== "undefined" && mainScopeNow && mainScopeNow.known === false) return null;
     /* v84（issue #30）主叶迟到载荷守卫。typeof 兼容测试夹具按源码片段抽取运行（无模块级声明）：

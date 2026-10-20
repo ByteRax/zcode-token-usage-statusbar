@@ -122,6 +122,8 @@ function pushOnce(wc, payload) {
   const obj = Object.assign({}, payload, {
     ...(activeSid.has(wc.id) ? { mine: activeSid.get(wc.id) || "" } : {}),
     scope_bindings: scopeBindings.get(wc.id) || {},
+    /* 未收集过按“可能有远端”处理（保守 fail-closed）；收集后无任何远端证据才是 false。 */
+    remote_evidence: remoteEvidence.get(wc.id) !== false,
   });
   /* U+2028/2029 转义：JSON.stringify 会输出裸字符，放进 executeJavaScript 字符串字面量
    * 有语法风险（zusage.py 侧 ensure_ascii 的同款考量；会话标题可能含任意文本） */
@@ -137,6 +139,9 @@ const activeSid = new Map();   // webContents.id → 会话 id 或 ""
 const windowWorkspaces = new Map();
 const windowTasks = new Map();
 const scopeBindings = new Map();
+/* 本窗是否出现过任何远端工作区/任务证据：issue #40 的无桥本地兜底只在确认
+ * “本窗只能查本地”时启用，有远端证据时 overlay 仍 fail-closed。 */
+const remoteEvidence = new Map();
 function trustedSender(e) {
   try {
     if (!e || !e.sender || e.sender.isDestroyed() || !isMainWindowState(e.sender)) return false;
@@ -151,8 +156,13 @@ try {
   // 只旁听宿主公开的单向同步，不读取凭据或 Electron 私有 handler 状态。
   ipcMain.on("zcode:sync-web-remote-control-workspaces", (e, rows) => {
     if (!trustedSender(e) || !Array.isArray(rows)) return;
-    windowWorkspaces.set(e.sender.id, rows.filter((r) => r && typeof r.workspacePath === "string")
-      .map((r) => ({ kind: r.kind, identity: typeof r.workspaceIdentity === "string" ? r.workspaceIdentity.trim() : "" })));
+    const normalized = rows.filter((r) => r && typeof r.workspacePath === "string")
+      .map((r) => ({ kind: r.kind, identity: typeof r.workspaceIdentity === "string" ? r.workspaceIdentity.trim() : "" }));
+    windowWorkspaces.set(e.sender.id, normalized);
+    /* 远端证据立即生效：不等下一轮 wants 收集，缩小“查询在途时推送旧 false”的窗口。 */
+    if (normalized.some((r) => r.kind === "remote" && r.identity.startsWith("remote:ssh:"))) {
+      remoteEvidence.set(e.sender.id, true);
+    }
     scheduleRetry(300);
   });
   ipcMain.on("zcode:sync-web-remote-control-tasks", (e, rows) => {
@@ -165,6 +175,11 @@ try {
       tasks.get(r.taskId).add(identity);
     }
     windowTasks.set(e.sender.id, tasks);
+    let remoteTask = false;
+    for (const scopes of tasks.values()) {
+      if ([...scopes].some((id) => id.startsWith("remote:ssh:"))) { remoteTask = true; break; }
+    }
+    if (remoteTask) remoteEvidence.set(e.sender.id, true);
     scheduleRetry(300);
   });
   ipcMain.on(IPC_ACTIVE_SID, (e, sid) => {
@@ -501,6 +516,7 @@ function maybeSpawn() {
   if (!wcs.length) return;
   const liveIds = new Set(wcs.map((wc) => wc.id));
   for (const id of activeSid.keys()) if (!liveIds.has(id)) activeSid.delete(id);
+  for (const id of remoteEvidence.keys()) if (!liveIds.has(id)) remoteEvidence.delete(id);
   const withTimeout = (p, ms) => {
     let timer;
     return Promise.race([p, new Promise((r) => { timer = setTimeout(() => r(""), ms); })])
@@ -564,6 +580,15 @@ function maybeSpawn() {
           }
         }
         scopeBindings.set(wc.id, bindings);
+        /* 远端任务证据只取本窗 wants 里的 sid：无关 sid 的远端任务不能把本地 pane 一并判死。 */
+        let evidence = trusted.size > 0;
+        if (!evidence && tasks) {
+          for (const sid of wants) {
+            const scopes = tasks.get(sid);
+            if (scopes && [...scopes].some((id) => id.startsWith("remote:ssh:"))) { evidence = true; break; }
+          }
+        }
+        remoteEvidence.set(wc.id, evidence);
       });
       request.sids.sort();
       request.scopes.sort((a, b) => scopeKey(a.sid, a.workspaceIdentity).localeCompare(scopeKey(b.sid, b.workspaceIdentity)));

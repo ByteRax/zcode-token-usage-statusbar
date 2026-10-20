@@ -13,6 +13,7 @@
 | `install_monitor.py` | 提醒重启、确认加载，以及受校验的待替换文件收尾 |
 | `overlay.js` | 桌面状态条、明细面板和 tooltip |
 | `inject-main.cjs` | 主进程加载器，跟踪窗口会话，监听数据库变化并推送快照 |
+| `renderer_bridge.py` | 渲染端会话节点身份桥：按版本指纹补丁，表外版本严格推导后自动补丁与回滚 |
 | `zusage.py` / `usage_mcp.py` | 查询库、CLI、快照接口和 stdio MCP 工具 |
 | `plugin-updater.cjs` / `plugin-release.cjs` | 插件更新调度与正式 GitHub Release 检测 |
 | `plugin-storage.cjs` | 跟随宿主插件存储位置，不假设固定 HOME 路径 |
@@ -59,6 +60,21 @@ node --check inject-main.cjs
 ```
 
 不要通过直接删运行目录来更新文件；同步器用可信 hash 基线保护本地热修、协调并发更新。overlay 与查询库可热更新，主进程文件仍需完全重启。
+
+## 渲染端桥与客户端升级
+
+客户端官方升级会整体替换 `app.asar`，主进程加载器与渲染端桥都会被抹掉。`SessionStart` 钩子会自动重打加载器，并对渲染端桥调用 `ensure_deployed`（已注入时也幂等补一次）。
+
+- 已登记版本按 `HOST_TARGETS` 的资产 SHA256 与混淆名精确补丁；版本已登记但资产哈希不符（宿主 build 漂移）仍 fail-closed 拒绝。
+- 表外版本先走 `derive_target` 的严格推导：唯一 `styles-*.js`、唯一 SessionPane 锚点、注册表/key/topic 绑定、组件参数与 store 形状、topic import 目标全部核验通过才补丁；任何一项缺失或重复即跳过并降级为数据库轮询，状态条其它指标不受影响。
+- 自动补丁带固定标记：表内版本按指纹还原，表外版本按标记剥离（字节还原），卸载链同样支持。
+- 维护者登记新客户端版本时，可对原始 asar 直接推导出可粘贴条目：
+
+```bash
+python3 renderer_bridge.py derive /Applications/ZCode.app/Contents/Resources/app.asar
+```
+
+补丁后需完全退出并重启客户端才生效；桥只负责分栏/主标签页身份路由，缺失时降级为数据库轮询，不借用其它窗口或历史来源。
 
 ## 测试
 
