@@ -13,6 +13,12 @@ const INTERVAL_MS = 24 * 60 * 60 * 1000;
 // 渠道清单与正式 Release 不一致多为发布刚完成、GitHub 内容缓存尚未刷新的几分钟窗口，
 // 自动更新按此间隔重试，而不是等满 INTERVAL_MS。
 const CHANNEL_RETRY_MS = 5 * 60 * 1000;
+// 源码安装（默认分支 / 本地路径清单）没有 Release 可校验。与其报渠道不一致并每 5 分钟
+// 重试，不如直接告诉用户怎么重装——这句话同时也是面板上提示的原文。
+const SOURCE_CHANNEL_HINT = "更新zcode 插件 https://github.com/ByteRax/zcode-token-usage-statusbar";
+const SOURCE_CHANNEL_ERROR = "当前插件是从源码分支安装的，面板里的自动更新只支持正式 Release 渠道。"
+  + "把这句话发给 ZCode：「" + SOURCE_CHANNEL_HINT + "」，让它帮你重装；"
+  + "也可以按文档把市场来源切到 #plugin-releases。";
 
 function compareVersions(a, b) {
   const parse = (v) => /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(v || "");
@@ -318,6 +324,11 @@ function createUpdater(options) {
       const source = channel();
       state.channel = source.kind; state.releaseUrl = ""; selectedRelease = null; selectedChannel = source;
       if (source.kind === "release") {
+        /* 清单指向仓库源码（默认分支 / 本地路径）时没有可校验的 Release。提前给可操作
+           提示，不要走完下载才抛渠道不一致，也不要进入无意义的 5 分钟重试。 */
+        let catalogKind;
+        try { catalogKind = releaseChannel.catalogChannel(readReleaseCatalog()); } catch (e) { catalogKind = "unknown"; }
+        if (catalogKind === "source") throw new Error(SOURCE_CHANNEL_ERROR);
         selectedRelease = await releaseChannel.checkRelease(source.repository, compareVersions, fetchRelease);
         state.releaseUrl = selectedRelease.url;
         state.latestVersion = selectedRelease.version;

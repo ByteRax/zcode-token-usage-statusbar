@@ -209,7 +209,8 @@ They're three separate things, and missing any one of them makes it look like "I
 **How do I update it later?**
 
 - **Plugin (stable channel)**: type `/plugin marketplace update zusage-marketplace` in ZCode, then update the plugin under **Settings → Plugin → Installed**. Or just use ⚙ → **Check for updates / Update now** — automatic updates are on by default.
-- **Local directory**: update your source first (the local marketplace never runs `git pull` for you), then run the same refresh and update steps.
+- **Local directory / source branch**: the updater in ⚙ only follows stable Releases. On a source install it reports that automatic updates aren't available — run `git pull` and reinstall, or [switch the marketplace to the stable channel](docs/user-guide.md#切换已有市场到正式渠道) (Chinese).
+- If an update won't go through, you can also send "更新zcode 插件 https://github.com/ByteRax/zcode-token-usage-statusbar" to ZCode and let it reinstall for you.
 - Start or reopen a session afterwards. If prompted about changed main-process files, quit ZCode completely and reopen it.
 
 [More installation, updates and troubleshooting →](docs/user-guide.md#插件安装) (Chinese)

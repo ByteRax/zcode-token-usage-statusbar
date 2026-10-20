@@ -128,7 +128,8 @@ python3 install.py --root /Applications/ZCode.app
 
 - **检查更新**不会安装；发现新版后可点「立即更新」。
 - **自动更新默认开启**，首次运行检查，之后按 24 小时间隔检测与安装；你显式关闭的设置会保留。
-- GitHub 来源需正式 Release 与市场清单一致；新远程安装使用 `#plugin-releases`。旧默认分支市场若未迁移仍会报告清单不一致，不会回退到开发分支。
+- GitHub 来源需正式 Release 与市场清单一致；新远程安装使用 `#plugin-releases`。源码分支或本地目录安装没有可校验的 Release，点「检查更新」会直接提示"不支持自动更新"，不会回退到开发分支取包：先 `git pull` 重装，或迁移到正式渠道。
+- 更新区固定显示一句可直接复制的重装指令：「更新zcode 插件 https://github.com/ByteRax/zcode-token-usage-statusbar」。更新失败时把它发给 ZCode，让助手帮你重装。
 - 更新代码会访问已注册来源，不上传用量数据；来源错误或网络失败会显示原因。
 - 只支持本插件的用户级安装；不会替你启用已禁用的插件。
 
