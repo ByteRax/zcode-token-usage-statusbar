@@ -1,11 +1,13 @@
-"""Offline, version-pinned renderer bridge. Never installs or loads the renderer."""
+"""Offline renderer bridge: pinned fingerprints, strict auto-derivation, marker strip."""
 import argparse
 import copy
 import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
+import stat
 import struct
 import tempfile
 
@@ -13,10 +15,18 @@ import patch_install as asar
 
 WORKTREE = Path("/Users/smzdm/Projects/AI/zcode-token-usage-statusbar")
 MARKER = b"/* zusage-existing-conversation-store:v1"
+BEGIN = b"/* zusage-existing-conversation-store:v1 begin */"
+END = b"/* zusage-existing-conversation-store:v1 end */"
 # 多版本指纹表（新→旧）：客户端官方升级会整体换渲染器资产与混淆名，这里按
-# (版本, 资产路径, 原始 sha256, 混淆名三元组) 逐版本钉死；未登记版本一律拒绝
-# （fail-closed），升级本表后才允许补丁——绝不对没验证过的 bundle 做字节手术。
+# (版本, 资产路径, 原始 sha256, 混淆名三元组) 逐版本钉死，优先于自动推导。
+# 表内版本的资产哈希漂移仍拒绝（fail-closed）；表外版本走 derive_target 的
+# 严格结构推导——任何一项不唯一/不符即拒绝，绝不对没验证过的 bundle 做字节手术。
 HOST_TARGETS = [
+    {"version": "3.16.2", "asset": "/out/renderer/assets/styles-n-UNIiNg.js",
+     "sha256": "10ea7c92c2b52a1c4006ced89a1ec2da83996605ffcd9e22190c9dc6b80f8509",
+     "names": {"key": "Ede", "topic": "gee", "registry": "hf"},
+     "pane": {"anchor": b'"data-testid":hb(WRe,e),"data-session-id":t??`draft`,',
+              "workspacePath": "c", "workspaceIdentity": "l", "remoteSessionId": "u", "paneId": "e"}},
     {"version": "3.16.1", "asset": "/out/renderer/assets/styles-CqgV6nRf.js",
      "sha256": "6054041f771950896c1d80bd8c32b241dde9ab414b3eb66d038ca2c578332783",
      "names": {"key": "Ode", "topic": "hee", "registry": "pf"},
@@ -30,6 +40,27 @@ HOST_TARGETS = [
 ]
 NEWEST = HOST_TARGETS[0]
 ASSET, HOST_VERSION, ASSET_SHA256 = NEWEST["asset"], NEWEST["version"], NEWEST["sha256"]
+# 自动推导（derive / 运行时补丁）只认与已登记版本一致的稳定代码形状：
+# 会话数据层注册表与 key 函数、acquire 里的 topic 绑定、SessionPane 的
+# testid/session-id 锚点、组件参数与 store 生命周期方法。任何一项缺失或
+# 命中多于一次即拒绝，宁可降级为 DB 轮询，也不对可疑 bundle 做字节手术。
+AUTO_ASSET_RE = re.compile(r"/out/renderer/assets/styles-[^/]+\.js")
+AUTO_NAMES = re.compile(
+    rb"([A-Za-z_$][\w$]*)=new Map,[A-Za-z_$][\w$]*=`__base__`,[A-Za-z_$][\w$]*=\d+(?:\.\d+)?(?:e\d+)?;"
+    rb"function ([A-Za-z_$][\w$]*)\(([A-Za-z_$][\w$]*)\)\{let ([A-Za-z_$][\w$]*)=\3\.workspaceIdentity\?\.trim\(\)\|\|\3\.workspacePath;"
+    rb"return`\$\{\3\.remoteSessionId\?\?`__base__`\} \$\{\4\}`\}")
+AUTO_TOPIC = re.compile(
+    rb"acquire\(e\)\{if\(this\.disposed\)throw Error\(`[^`]*`\);let t=([A-Za-z_$][\w$]*)\(e\),"
+    rb"n=[A-Za-z_$][\w$]*\(\),r=this\.entries\.get\(t\)")
+AUTO_SESSION = re.compile(rb'"data-session-id":([A-Za-z_$][\w$]*)\?\?`draft`')
+AUTO_TESTID = re.compile(rb'("data-testid":[A-Za-z_$][\w$]*\([A-Za-z_$][\w$]*,([A-Za-z_$][\w$]*)\),)$')
+AUTO_PANE_PARAM = re.compile(rb"(?:^|,)(paneId|workspacePath|workspaceIdentity|remoteSessionId):([A-Za-z_$][\w$]*)")
+AUTO_HEADER = re.compile(rb"function [A-Za-z_$][\w$]*\(\{([^{}]{0,4000}?)\}\)\{")
+AUTO_IMPORT = re.compile(rb'import\{([^}]*)\}from"([^"]+)"')
+AUTO_PANE_ATTRS = re.compile(
+    rb'"data-zusage-scope-version":"1","data-zusage-workspace-path":[A-Za-z_$][\w$]*\?\?``,'
+    rb'"data-zusage-workspace-identity":[A-Za-z_$][\w$]*\?\?``,'
+    rb'"data-zusage-remote-session-id":[A-Za-z_$][\w$]*\?\?``,"data-zusage-pane-id":[A-Za-z_$][\w$]*,')
 # 桥代码模板：标识符占位符按目标版本的混淆名实例化（__ZU_*__ 不与 JS 语法冲突）。
 BRIDGE_TEMPLATE = rb'''
 /* zusage-existing-conversation-store:v1 begin */
@@ -209,6 +240,118 @@ def _digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def _only(pattern, data, what):
+    found = pattern.findall(data)
+    if len(found) != 1:
+        raise BridgeError(f"Ambiguous {what}: {len(found)} matches")
+    return found[0]
+
+
+def derive_target(version, module, asset, asset_paths):
+    """从未登记的原始模块推导指纹（derive CLI 与运行时自动补丁共用）。
+
+    返回与人工登记条目同构的 dict（sha256 取当前模块，另带 derived 标记）；
+    任何一项校验不过都抛 BridgeError，调用方按 fail-closed 处理。
+    """
+    if MARKER in module or b"getExistingConversationStore" in module:
+        raise BridgeError("Bridge already present")
+    registry, key, _param, _local = _only(AUTO_NAMES, module, "registry/key function")
+    topic = _only(AUTO_TOPIC, module, "topic binding")
+    session = _only(AUTO_SESSION, module, "SessionPane session attribute")
+    if len({registry, key, topic, session}) != 4:
+        raise BridgeError("Minified name collision")
+    sid = module.index(b'"data-session-id":' + session + b"??`draft`")
+    testid = AUTO_TESTID.search(module[:sid])
+    if testid is None:
+        raise BridgeError("Missing SessionPane testid anchor")
+    anchor = testid.group(1) + b'"data-session-id":' + session + b"??`draft`,"
+    if module.count(anchor) != 1:
+        raise BridgeError("Missing or duplicate SessionPane anchor")
+    candidates = []
+    for header in AUTO_HEADER.finditer(module[:sid]):
+        params = {}
+        for name, var in AUTO_PANE_PARAM.findall(header.group(1)):
+            if name.decode() in params:
+                params = None
+                break
+            params[name.decode()] = var.decode()
+        if params and len(params) == 4:
+            candidates.append(params)
+    if not candidates:
+        raise BridgeError("Missing SessionPane component parameters")
+    if len(candidates) != 1:
+        raise BridgeError("Ambiguous SessionPane component parameters")
+    pane = candidates[0]
+    if len(set(pane.values())) != 4:
+        raise BridgeError("Ambiguous SessionPane parameter aliases")
+    if testid.group(2).decode() != pane["paneId"]:
+        raise BridgeError("SessionPane testid pane argument mismatch")
+    props = ("workspacePath:{workspacePath},workspaceIdentity:{workspaceIdentity},"
+             "remoteSessionId:{remoteSessionId}").format(**pane).encode()
+    if props not in module[max(0, sid - 4000):sid]:
+        raise BridgeError("SessionPane scope props not passed from parameters")
+    for method in (b"getState(){return this.state}", b"async connect(e={})"):
+        if module.count(method) != 1:
+            raise BridgeError("Unexpected session store shape")
+    if b"this.closed=!0" not in module:
+        raise BridgeError("Missing session store closed flag")
+    reg = registry + b"."
+    if module.count(reg + b"get(") < 1 or module.count(reg + b"delete(") < 1:
+        raise BridgeError("Registry map usage missing")
+    entry = (b"layer:new ", b"stale:!1", b"refCount:1")
+    if not any(all(token in module[max(0, at - 600):at] for token in entry)
+               for at in (m.start() for m in re.finditer(re.escape(reg + b"set("), module))):
+        raise BridgeError("Unexpected registry entry shape")
+    imports = []
+    for segment, source in AUTO_IMPORT.findall(module):
+        if re.search(rb"(?:^|,)[A-Za-z_$][\w$]* as " + re.escape(topic) + rb"(?:,|$)", segment):
+            imports.append(source)
+    if len(imports) != 1:
+        raise BridgeError("Topic function is not a unique module import")
+    try:
+        source = imports[0].decode("ascii")
+    except UnicodeDecodeError:
+        raise BridgeError("Non-ASCII topic import source")
+    if not source.startswith("./") or "/out/renderer/assets/" + source[2:] not in asset_paths:
+        raise BridgeError("Topic import target missing from archive")
+    if b"sourceMappingURL" in module:
+        raise BridgeError("Unverified source map layout")
+    return {"version": version, "asset": asset, "sha256": _digest(module),
+            "names": {"key": key.decode(), "topic": topic.decode(), "registry": registry.decode()},
+            "pane": dict(pane, anchor=anchor), "derived": True}
+
+
+def _verify_auto_present(data):
+    """表外版本的幂等判定：完整且唯一的桥块与属性串，否则视为不明补丁。"""
+    if data.count(BEGIN) != 1 or data.count(END) != 1 or data.count(MARKER) != 2:
+        raise BridgeError("Bridge markers tampered")
+    start, end = data.index(BEGIN), data.index(END) + len(END)
+    # 桥块总以 "\n" + BEGIN 开头、以 END + "\n" 结尾；不满足即不是本模板的补丁
+    if start < 1 or data[start - 1:start] != b"\n" or data[end:end + 1] != b"\n":
+        raise BridgeError("Bridge markers out of order or misaligned")
+    if data.count(b"export function getExistingConversationStore(scope)") != 1:
+        raise BridgeError("Bridge content tampered")
+    if len(AUTO_PANE_ATTRS.findall(data)) != 1:
+        raise BridgeError("Scope attributes tampered")
+
+
+def _strip_auto_bridge(data):
+    """表外版本的回滚路径：按模板剥离桥块与属性串，不依赖版本指纹。"""
+    _verify_auto_present(data)
+    start, end = data.index(BEGIN), data.index(END) + len(END)
+    block = data[start:end]
+    if b"__zusageGetExistingConversationStore" not in block:
+        raise BridgeError("Bridge content tampered")
+    # 两侧换行由 _verify_auto_present 保证；连换行一起剥离可精确复原原字节
+    rest = data[:start - 1] + data[end + 1:]
+    rest, removed = AUTO_PANE_ATTRS.subn(b"", rest)
+    if removed != 1:
+        raise BridgeError("Scope attributes tampered")
+    if MARKER in rest or b"getExistingConversationStore" in rest:
+        raise BridgeError("Bridge content tampered")
+    return rest
+
+
 def _read(stream, nodes, base, path):
     node = nodes.get(path)
     if not node or "offset" not in node or node.get("unpacked") or "link" in node:
@@ -228,11 +371,15 @@ def _read(stream, nodes, base, path):
     return data
 
 
-def transform_module(data, operation):
-    """精确升级/移除桥和 DOM 属性；第三方尾缀仅在移除时保留。"""
+def transform_module(data, operation, target=None):
+    """精确升级/移除桥和 DOM 属性；第三方尾缀仅在移除时保留。
+
+    target 只在调用方已完成指纹校验（自动推导或已解析命中）时显式传入。
+    """
     if operation not in ("patch", "remove"):
         raise BridgeError("Unknown operation")
-    target = target_for_module(data)
+    if target is None:
+        target = target_for_module(data)
     if target is None:
         raise BridgeError("Unknown renderer asset hash")
     original, suffix = _original_module(data, target)
@@ -354,7 +501,8 @@ def ensure_deployed(asar_path):
     与 rewrite_asar（CLI/测试，只输出到工作区/临时目录）不同，本函数就是为写
     安装目录设计的：借用 patch_install 同一把 app.asar.zusage.lock 跨进程锁，
     输出临时文件在 asar 同目录后 os.replace 原子换。任何失败都不抛出——桥只是
-    实时统计的增强，绝不影响安装/更新主流程。返回状态 dict：
+    实时统计的增强，绝不影响安装/更新主流程。表内版本严格按指纹；表外版本
+    先走 derive_target 的严格结构推导，校验不过按 fail-closed 跳过。返回状态：
       {"status": "patched"|"present"|"skipped-unknown"|"skipped-error",
        "version": <客户端版本>, "detail": <说明>}
     """
@@ -371,16 +519,56 @@ def ensure_deployed(asar_path):
                     raise BridgeError("Unknown host package")
                 version = package.get("version")
                 target = next((item for item in HOST_TARGETS if item["version"] == version), None)
-                if target is None:
-                    return {"status": "skipped-unknown", "version": version,
-                            "detail": "host version not pinned; add it to HOST_TARGETS first"}
-                asset_path = target["asset"]
-                original = _read(stream, nodes, base, asset_path)
-            if MARKER not in original and _digest(original) != target["sha256"]:
-                return {"status": "skipped-unknown", "version": version,
-                        "detail": "asset hash mismatch for pinned version (host build drift)"}
+                auto = target is None
+                if not auto:
+                    asset_path = target["asset"]
+                    original = _read(stream, nodes, base, asset_path)
+                    if MARKER not in original and _digest(original) != target["sha256"]:
+                        return {"status": "skipped-unknown", "version": version,
+                                "detail": "asset hash mismatch for pinned version (host build drift)"}
+                else:
+                    modules = {path: _read(stream, nodes, base, path) for path in
+                               sorted(path for path in nodes if AUTO_ASSET_RE.fullmatch(path))}
+                    marked = [path for path, data in modules.items() if MARKER in data]
+                    if marked:
+                        if len(marked) != 1:
+                            return {"status": "skipped-unknown", "version": version,
+                                    "detail": "bridged renderer asset is not unique"}
+                        _verify_auto_present(modules[marked[0]])
+                        # 其余资产只有在“确实可推导”时才是漏补的 live chunk；
+                        # 不可推导的无关 styles-* 不能把幂等 present 变成跳过。
+                        for path in modules:
+                            if path in marked:
+                                continue
+                            try:
+                                derive_target(version, modules[path], path, set(nodes))
+                            except BridgeError:
+                                continue
+                            return {"status": "skipped-unknown", "version": version,
+                                    "detail": "unpatched derivable renderer asset present"}
+                        return {"status": "present", "version": version,
+                                "detail": "auto-derived bridge already deployed"}
+                    derived, errors = [], []
+                    for path, data in modules.items():
+                        if b"sourceMappingURL" in data or any(
+                                sibling in nodes for sibling in (path + ".map", path[:-3] + ".map")):
+                            errors.append(f"{path}: unverified source map layout")
+                            continue
+                        try:
+                            derived.append(derive_target(version, data, path, set(nodes)))
+                        except BridgeError as error:
+                            errors.append(f"{path}: {error}")
+                    if not derived:
+                        return {"status": "skipped-unknown", "version": version,
+                                "detail": "auto-derivation refused: " +
+                                          ("; ".join(errors) or "no renderer styles asset")}
+                    if len(derived) != 1:
+                        return {"status": "skipped-unknown", "version": version,
+                                "detail": "auto-derivation ambiguous across renderer assets"}
+                    target = derived[0]
+                    asset_path, original = target["asset"], modules[target["asset"]]
             _original_module(original, target)
-            modified = transform_module(original, "patch")
+            modified = transform_module(original, "patch", target)
             if modified == original:
                 return {"status": "present", "version": version, "detail": "bridge already deployed"}
             fd, name = tempfile.mkstemp(prefix=".zusage-bridge-", dir=str(asar_path.parent))
@@ -392,38 +580,56 @@ def ensure_deployed(asar_path):
                     os.fsync(dest.fileno())
                 if asar.source_fingerprint(asar_path) != before:
                     raise BridgeError("Source archive changed")
+                os.chmod(stage, stat.S_IMODE(asar_path.stat().st_mode))
                 os.replace(stage, asar_path)
                 stage = None
             finally:
                 if stage is not None:
                     stage.unlink(missing_ok=True)
-        return {"status": "patched", "version": version, "detail": "bridge deployed"}
+        return {"status": "patched", "version": version,
+                "detail": "auto-derived bridge deployed" if auto else "bridge deployed"}
     except Exception as error:  # 安装链的旁路增强：任何异常都只报告
         return {"status": "skipped-error", "version": None, "detail": str(error)}
 
 
 def remove_deployed(asar_path):
-    """卸载链对称清理：只剥离本项目的桥（按指纹表逐版本识别），其余内容不动。
-    与 ensure_deployed 同样的锁/原子替换/不抛出约定，状态 dict 同构。"""
+    """卸载链对称清理：只剥离本项目的桥，其余内容不动。
+
+    表内版本按指纹逐版本识别；表外版本（自动推导补的桥）按模板剥离桥块与
+    属性串。与 ensure_deployed 同样的锁/原子替换/不抛出约定，状态 dict 同构：
+    所有读取与判定都在锁内，发布前复核 source fingerprint，避免用锁外旧布局写坏归档。"""
     try:
         from runtime_lock import file_lock
         asar_path = Path(asar_path)
-        with asar_path.open("rb") as stream:
-            header, base = asar.read_header(stream)
-            nodes = dict(asar.iter_files(header))
-            package = json.loads(_read(stream, nodes, base, "/package.json"))
-        version = package.get("version")
-        target = next((item for item in HOST_TARGETS if item["version"] == version), None)
-        if target is None:
-            return {"status": "skipped-unknown", "version": version,
-                    "detail": "host version not pinned; nothing to remove"}
-        asset_path = target["asset"]
-        with asar_path.open("rb") as stream:
-            original = _read(stream, nodes, base, asset_path)
-        if MARKER not in original:
-            return {"status": "absent", "version": target["version"], "detail": "no bridge present"}
-        restored = transform_module(original, "remove")
         with file_lock(asar_path.with_name(asar_path.name + ".zusage.lock")):
+            before = asar.source_fingerprint(asar_path)
+            with asar_path.open("rb") as stream:
+                header, base = asar.read_header(stream)
+                nodes = dict(asar.iter_files(header))
+                package = json.loads(_read(stream, nodes, base, "/package.json"))
+                version = package.get("version")
+                target = next((item for item in HOST_TARGETS if item["version"] == version), None)
+                auto = target is None
+                if auto:
+                    bridged = []
+                    for path in sorted(path for path in nodes if AUTO_ASSET_RE.fullmatch(path)):
+                        data = _read(stream, nodes, base, path)
+                        if MARKER in data:
+                            bridged.append((path, data))
+                    if not bridged:
+                        return {"status": "skipped-unknown", "version": version,
+                                "detail": "host version not pinned; nothing to remove"}
+                    if len(bridged) != 1:
+                        return {"status": "skipped-unknown", "version": version,
+                                "detail": "multiple bridged renderer assets"}
+                    asset_path, original = bridged[0]
+                    restored = _strip_auto_bridge(original)
+                else:
+                    asset_path = target["asset"]
+                    original = _read(stream, nodes, base, asset_path)
+                    if MARKER not in original:
+                        return {"status": "absent", "version": target["version"], "detail": "no bridge present"}
+                    restored = transform_module(original, "remove")
             fd, name = tempfile.mkstemp(prefix=".zusage-bridge-", dir=str(asar_path.parent))
             stage = Path(name)
             try:
@@ -431,12 +637,16 @@ def remove_deployed(asar_path):
                     _rewrite_to(stream, base, nodes, header, asset_path, original, restored, dest)
                     dest.flush()
                     os.fsync(dest.fileno())
+                if asar.source_fingerprint(asar_path) != before:
+                    raise BridgeError("Source archive changed")
+                os.chmod(stage, stat.S_IMODE(asar_path.stat().st_mode))
                 os.replace(stage, asar_path)
                 stage = None
             finally:
                 if stage is not None:
                     stage.unlink(missing_ok=True)
-        return {"status": "removed", "version": target["version"], "detail": "bridge removed"}
+        return {"status": "removed", "version": version,
+                "detail": "auto-derived bridge removed" if auto else "bridge removed"}
     except Exception as error:
         return {"status": "skipped-error", "version": None, "detail": str(error)}
 
@@ -475,15 +685,57 @@ def _rewrite_to(stream, base, nodes, header, asset_path, original, modified, des
     shutil.copyfileobj(stream, dest, asar.BLOCK)
 
 
+def derive_from_asar(source):
+    """CLI 推导入口：读 asar 的渲染资产并返回可粘贴的条目。
+
+    已带桥的安装也接受：先按指纹或标记还原原始模块再推导，维护者可直接对
+    真机安装运行。"""
+    with Path(source).open("rb") as stream:
+        header, base = asar.read_header(stream)
+        nodes = dict(asar.iter_files(header))
+        package = json.loads(_read(stream, nodes, base, "/package.json"))
+        if (package.get("name"), package.get("type")) != ("@zcode/desktop", "module"):
+            raise BridgeError("Unknown host package")
+        results, errors = [], []
+        for path in sorted(path for path in nodes if AUTO_ASSET_RE.fullmatch(path)):
+            data = _read(stream, nodes, base, path)
+            if b"sourceMappingURL" in data or any(
+                    sibling in nodes for sibling in (path + ".map", path[:-3] + ".map")):
+                errors.append(f"{path}: unverified source map layout")
+                continue
+            if MARKER in data:
+                try:
+                    target = target_for_module(data)
+                    data = (transform_module(data, "remove") if target is not None
+                            else _strip_auto_bridge(data))
+                except BridgeError as error:
+                    errors.append(f"{path}: {error}")
+                    continue
+            try:
+                results.append(derive_target(package.get("version"), data, path, set(nodes)))
+            except BridgeError as error:
+                errors.append(f"{path}: {error}")
+    if not results:
+        raise BridgeError("No derivable renderer asset: " + ("; ".join(errors) or "none"))
+    if len(results) != 1:
+        raise BridgeError("Ambiguous renderer assets for derivation")
+    return results[0]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("patch", "remove"))
+    parser.add_argument("operation", choices=("patch", "remove", "derive"))
     parser.add_argument("source", type=Path)
-    parser.add_argument("output", type=Path)
+    parser.add_argument("output", type=Path, nargs="?")
     args = parser.parse_args()
     try:
+        if args.operation == "derive":
+            print(repr(derive_from_asar(args.source)))
+            return
+        if args.output is None:
+            parser.error("output is required for patch/remove")
         print(rewrite_asar(args.source, args.output, args.operation))
-    except (BridgeError, OSError, KeyError, AssertionError, struct.error) as error:
+    except (BridgeError, OSError, KeyError, AssertionError, struct.error, ValueError) as error:
         parser.exit(1, f"renderer bridge refused: {error}\n")
 
 
