@@ -209,7 +209,8 @@ macOS 上要是没有 `python`，就写 `python3 install.py`。
 **以后怎么更新？**
 
 - **插件（正式渠道）**：在 ZCode 里敲 `/plugin marketplace update zusage-marketplace`，再去 **设置 → 插件 → 已安装** 更新这个插件。或者直接点 ⚙ 里的「检查更新 / 立即更新」。自动更新默认是开的。
-- **本地目录**：先自己把源码更新了（本地市场不会替你 `git pull`），再走一样的刷新和更新步骤。
+- **本地目录 / 源码分支**：⚙ 里的自动更新只认正式 Release。源码安装点它会提示"不支持自动更新"，请先 `git pull` 再重新安装，或按[切换到正式渠道](docs/user-guide.md#切换已有市场到正式渠道)迁移。
+- 更新装不上时，也可以把「更新zcode 插件 https://github.com/ByteRax/zcode-token-usage-statusbar」这句话直接发给 ZCode，让它帮你重装。
 - 更新完新建或重开会话；如果提示主进程文件变了，就完全退出再重开 ZCode。
 
 [更多安装、更新和排查 →](docs/user-guide.md#插件安装)

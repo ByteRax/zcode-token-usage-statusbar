@@ -156,6 +156,24 @@ async function assertPendingBlocked(f, expected) {
   }
 }
 
+test("a source-branch marketplace says automatic updates are unavailable instead of a channel mismatch", async (t) => {
+  const f = fixture(t, { plugin_auto_update: true });
+  /* 默认分支安装的形态：已注册市场的清单指向仓库源码，不是 Release ZIP。
+     修复前这里会走完下载、再抛「市场尚未发布与正式 Release 一致的校验下载源」，
+     并进入每 5 分钟一次、永远不会成功的重试。 */
+  writeJson(f.catalogFile, { name: MARKET, plugins: [{ name: PLUGIN, version: "1.1.0",
+    source: "./plugins/zcode-token-usage-statusbar" }] });
+  await f.updater.request({ action: "check" });
+  const state = f.updater.status();
+  assert.equal(state.phase, "error");
+  assert.match(state.error, /源码分支/);
+  assert.match(state.error, /更新zcode 插件 https:\/\/github\.com\/ByteRax\/zcode-token-usage-statusbar/);
+  assert.doesNotMatch(state.error, /渠道清单/);
+  assert.equal(f.events.includes("fetch"), false);          // 没有可校验的 Release，不去查 Release 列表
+  assert.equal(f.events.includes("prepare"), false);
+  assert.equal(f.calls.filter((args) => args[0] === "install" || args[0] === "update").length, 0);
+});
+
 test("Release check selects the newest stable package without catalog refresh, download or install", async (t) => {
   const f = fixture(t); f.setRelease("1.9.0");
   const older = clone(f.row); f.setRelease("1.10.0");
