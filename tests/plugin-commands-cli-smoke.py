@@ -31,7 +31,7 @@ def instrument_bundle(text):
         require(len(matches) == 1, "bundle 函数标签不唯一/缺失: " + label)
         match = matches[0]
         exports[label] = match.group(1)
-        init = list(re.finditer(r'([\w$]+)=J\(\(\)=>\{', text[:match.start()]))
+        init = list(re.finditer(r'([\w$]+)=[\w$]\(\(\)=>\{', text[:match.start()]))
         require(bool(init), "无法定位 bundle 惰性初始化器: " + label)
         initializer = init[-1].group(1)
         if initializer not in initializers:
@@ -295,15 +295,17 @@ def main():
                   "sessionOrModelStarted": False, "allTestCodeCopiedToTemporaryRoot": True}
         print(json.dumps(report, ensure_ascii=False, indent=2), flush=True)
         errors = document_errors()
+        catalog_errors = []
         visible = {row["name"]: row for row in probe["catalog"]}
         for name in COMMANDS:
             if name not in visible or visible[name].get("source") != "custom":
-                errors.append("protocol slash catalog 未显示 /" + name)
+                catalog_errors.append("protocol slash catalog 未显示 /" + name)
             else:
                 require(visible[name]["inputHint"].startswith("/" + name), "catalog 的 inputHint 非裸名")
         require(not any(name.startswith(PLUGIN + ":") for name in visible), "catalog 出现旧前缀名")
     require(not parent.exists(), "临时目录未自动清理")
-    require(not errors, "回归断言失败（临时目录已清理）: " + "; ".join(errors))
+    require(not catalog_errors, "命令 catalog 回归失败（真实引擎行为，优先修复）: " + "; ".join(catalog_errors))
+    require(not errors, "文档断言失配（与 catalog 行为无关，对齐文档或断言）: " + "; ".join(errors))
     print(json.dumps({"ok": True, "temporaryRootRemoved": True, "temporaryRoot": str(parent)}, ensure_ascii=False))
 
 
