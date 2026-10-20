@@ -781,6 +781,15 @@
     }
   }, 0);
 
+  /* 设置页（MCP 配置等）内的编辑框不是聊天输入框：设置视图是整页路由——
+   * section[data-settings-content-frame] > div[data-settings-panel-frame] 包着全部
+   * 设置页，里面的 JSON/环境变量文本框（MCP 表单展开「环境变量（可选）」后的
+   * rows=4 文本框）落在视口下半部，会被协调器当聊天输入框派发，条冒在设置页
+   * 底部（实测 bug）。带设置框架标记的候选一律不派发；聊天流（composer/
+   * 权限面板/批准框）不在设置框架内，行为不受影响。 */
+  function inSettingsView(el) {
+    try { return !!(el.closest && el.closest("[data-settings-content-frame],[data-settings-panel-frame]")); } catch (e) { return false; }
+  }
   function coordinator() {
     /* 协调器（v61.1）：扫描主文档里全部下半屏可见输入框，按 pane 键（data-pane-id，
      * 无属性回退 "auto"）分组派发给实例；一个 pane 一条，pane 消失对应条自藏。 */
@@ -803,6 +812,7 @@
         var best = {};
         document.querySelectorAll(SEL).forEach(function (el) {
           if (el.closest && el.closest('[role="dialog"]')) return;   // v62：弹窗内的编辑框不是聊天输入框，不派实例（issue #9）
+          if (inSettingsView(el)) return;   // 设置页（MCP 配置等）的编辑框不是聊天输入框，不派实例
           var r = el.getBoundingClientRect();
           if (!(r.width > 40 && r.height > 8 && r.bottom > 0 && r.top < innerHeight)) return;
           if (r.top < innerHeight * 0.45) return;   // 聊天输入框特征：视口下半部（排除设置页等处元素）
@@ -2287,6 +2297,7 @@
         try {
           doc.querySelectorAll(COMPOSER_SEL).forEach(function (el) {
             if (el.closest && el.closest('[role="dialog"]')) return;   // v62：弹窗内的编辑框不是聊天输入框（issue #9）
+            if (inSettingsView(el)) return;   // 设置页（MCP 配置等）的编辑框不是聊天输入框
             if (!found && visible(el) && el.getBoundingClientRect().top > innerHeight * 0.45) found = el;
             else if (found && el.getBoundingClientRect().top > found.getBoundingClientRect().top && visible(el)) found = el;
           });
@@ -2387,6 +2398,7 @@
       var best = null;
       document.querySelectorAll("textarea").forEach(function (ta) {
         if (ta.closest && ta.closest('[role="dialog"]')) return;   // v62：弹窗内的编辑框不是聊天输入框（模型配置弹窗的「推理参数映射」落在下半屏，issue #9）
+        if (inSettingsView(ta)) return;   // 设置页（MCP 配置等）的编辑框不是聊天输入框
         if (!reallyVisible(ta)) return;
         var r = ta.getBoundingClientRect();
         if (r.top < innerHeight * 0.45) return;   // 聊天输入框特征：在视口下半部（排除设置页等处元素）
@@ -2462,6 +2474,35 @@
       }
       return last;
     }
+    /* 权限确认面板内的锚点改判：composer 被面板顶掉（display:none）后，面板里的
+     * 反馈输入框是该 pane 唯一候选——它比面板卡矮得多，cardOf 的高度熔断会在到达面板卡
+     * 之前 break，落到面板内部的选项/反馈包裹层，条就冒进面板里（最初的 bug：确认时条
+     * 跑进对话框）。输入框带 data-permission-* 标记（或卡片自带的数据标记）时改判面板
+     * 视觉卡：第一个「有边框且有背景」的祖先（选项按钮只有背景无边框会跳过，rounded-2xl
+     * 面板卡二者俱全）。
+     * 普通输入框不走这条（closest 不命中），行为与 v62 完全一致。 */
+    function isCardLike(el) {
+      try {
+        var cs = getComputedStyle(el);
+        return cs.borderTopWidth !== "0px" && cs.backgroundColor !== "rgba(0, 0, 0, 0)";
+      } catch (e) { return false; }
+    }
+    function panelCardOf(el) {
+      try {
+        /* 权限面板与批准框（elicitation）同组件，卡片自带该标记（rounded-2xl 视觉卡），
+         * 直接锚卡片——选项行聚焦/填写时带底色也会被 cardOf 误判成视觉盒，锚了它条会落进卡片里 */
+        var card = el.closest("[data-elicitation-dialog-card]");
+        if (card) return card;
+        if (!el.closest('[data-permission-option-kind],[data-permission-feedback-option],[data-permission-rule-scopes]')) return null;
+      } catch (e) { return null; }
+      for (var p = el; p && p !== document.body; p = p.parentElement) {
+        if (isCardLike(p)) return p;
+      }
+      return null;
+    }
+    function anchorCardOf(el) {
+      return panelCardOf(el) || cardOf(el);
+    }
     /* 读原生 UI 的上下文总量（输入框工具行按钮的文本/aria-label，如"…总量 1,000,000"）。
      * 服务端下发、自动跟随模型，优先级高于 catalog 查表和 config fallback。 */
     var nativeCtx = { val: 0, at: 0 };
@@ -2534,7 +2575,7 @@
       cardCache = null;
       cardMode = false;
       if (composer) {
-        var c = cardOf(composer);
+        var c = anchorCardOf(composer);
         if (c && c !== document.body) cardCache = c;
       }
       if (bar.classList.contains("zu-in")) mountBelowCard();   // 换卡先回落兜底形态，heavy 同 tick 重判挂载
@@ -2567,7 +2608,7 @@
       if (!composer && slot === 0) collectDiag();   // 一直找不到输入框的窗口：周期性写环境诊断（everMounted 门防覆盖）
       if (composer) {
         if (!cardCache || !cardCache.isConnected) {
-          var c = cardOf(composer);
+          var c = anchorCardOf(composer);
           cardCache = c && c !== document.body ? c : null;
         }
         if (cardCache) {
