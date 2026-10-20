@@ -16,9 +16,12 @@ const CHANNEL_RETRY_MS = 5 * 60 * 1000;
 // 源码安装（默认分支 / 本地路径清单）没有 Release 可校验。与其报渠道不一致并每 5 分钟
 // 重试，不如直接告诉用户怎么重装——这句话同时也是面板上提示的原文。
 const SOURCE_CHANNEL_HINT = "更新zcode 插件 https://github.com/ByteRax/zcode-token-usage-statusbar";
-const SOURCE_CHANNEL_ERROR = "当前插件是从源码分支安装的，面板里的自动更新只支持正式 Release 渠道。"
+/* 清单不是 Release 下载源有两种成因：确实从源码分支安装，或刚切换市场来源、缓存还没刷新。
+   两种情况都别断言死，提示里同时给出重装口令和刷新办法。 */
+const SOURCE_CHANNEL_ERROR = "当前市场的插件清单指向仓库源码，不是正式 Release 渠道——"
+  + "要么是源码分支安装，要么是刚切换来源、市场还没刷新。面板里的自动更新只支持正式 Release 渠道。"
   + "把这句话发给 ZCode：「" + SOURCE_CHANNEL_HINT + "」，让它帮你重装；"
-  + "也可以按文档把市场来源切到 #plugin-releases。";
+  + "刚切换过来源的话，先在设置里刷新市场再试一次。";
 
 function compareVersions(a, b) {
   const parse = (v) => /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(v || "");

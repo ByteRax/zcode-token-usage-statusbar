@@ -169,6 +169,9 @@ test("a source-branch marketplace says automatic updates are unavailable instead
   assert.match(state.error, /源码分支/);
   assert.match(state.error, /更新zcode 插件 https:\/\/github\.com\/ByteRax\/zcode-token-usage-statusbar/);
   assert.doesNotMatch(state.error, /渠道清单/);
+  /* 刚切换市场来源、缓存还没刷新时也会走到这里，提示不能断言死是源码安装 */
+  assert.match(state.error, /市场还没刷新/);
+  assert.match(state.error, /刷新市场再试一次/);
   assert.equal(f.events.includes("fetch"), false);          // 没有可校验的 Release，不去查 Release 列表
   assert.equal(f.events.includes("prepare"), false);
   assert.equal(f.calls.filter((args) => args[0] === "install" || args[0] === "update").length, 0);
