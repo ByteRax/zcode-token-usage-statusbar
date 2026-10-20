@@ -66,7 +66,7 @@ Here's what each part tells you:
 | Did a tool call fail? | The **Tools** item — errors light up red, hover for per-tool timing and errors |
 | Looking through history | Type `/usage` in the chat, run `python zusage.py today` in a terminal, or call the `token_usage` MCP tool |
 
-> One honest caveat: these are **token usage** numbers, not a bill, not a plan quota, and not "how much money you have left". Pricing and quota live on ZCode's official pages.
+> These are **token usage** numbers, not a bill, not a plan quota, and not "how much money you have left". Pricing and quota live on ZCode's official pages.
 
 ## A few words worth knowing
 
@@ -237,9 +237,7 @@ If the config file or that field is missing, the default is **on**; an explicit 
 
 ## Where these numbers come from
 
-Up front: **the data is read from ZCode's local SQLite database. It isn't the model reporting on itself, and it isn't an estimated bill.** Except for the generation speed, everything refreshes when a request is written to the database.
-
-If you want the details, open this:
+The data is read from ZCode's local SQLite database. It isn't the model reporting on itself, and it isn't an estimated bill. Except for the generation speed, everything refreshes when a request is written to the database.
 
 <details>
 <summary>Open to see how each number is computed</summary>
@@ -258,7 +256,7 @@ If you want the details, open this:
 
 - **The bar's speed ≠ the per-answer rate line.** The bar shows the most recent request segment; the rate line shows the **weighted** speed of the requests already stored for this turn, and the time spent waiting on tools between segments isn't counted as generation time.
 - **Generation speed ≠ end-to-end throughput.** End-to-end time also covers waiting for the first token, thinking, and network round-trips. What's measured here is the part the model actually spent writing.
-- **Requests with thinking look slower, and that's correct.** Thinking tokens stream out before the first token, so those requests (including the Claude family) measure generation time from when the request was sent. Claude doesn't report thinking tokens separately, but its thinking still happens before the first token, so it's measured the same way — not a bug.
+- **Requests with thinking look slower, and that's correct.** Thinking tokens stream out before the first token, so those requests (including the Claude family) measure generation time from when the request was sent. Claude doesn't report thinking tokens separately, but its thinking still happens before the first token, so it's measured the same way. That's not a bug.
 - **Context usage ≠ session total.** Usage share comes from the most recent request's input, so it can drop after the conversation is compacted; the session total accumulates across the whole conversation.
 - **Thinking tokens are already inside the output** and aren't added twice; whether they're reported at all depends on the provider.
 - **The CLI and MCP `current`** means "the session that was active most recently" — it isn't guaranteed to be the window on your screen. The bar follows each window's own session.
@@ -267,7 +265,7 @@ If you want the details, open this:
 
 Also, the bar **searches backwards** for the most recent valid speed sample, which isn't necessarily the newest request. Per-question statistics check that the data belongs to the current question, but rapid successive questions still have an identification boundary.
 
-**While the model is still writing, that speed is an estimate.** During generation the t/s is **estimated** from the characters emitted so far divided by a chars-per-token ratio (that ratio is taken from this session's most recent completed turn and calibrates itself). When the turn finishes, it switches to that turn's real tok/s. Where the bridge isn't available, it falls back to the most recent segment's value from the database.
+**While the model is still writing, that speed is an estimate.** During generation the t/s is **estimated** from the characters emitted so far divided by a chars-per-token ratio (that ratio is taken from this session's most recent completed turn and calibrates itself). When the turn finishes, it switches to that turn's real tok/s. When the client's internal session state isn't available, it falls back to the most recent segment's value from the database.
 
 </details>
 
@@ -276,9 +274,9 @@ The boundaries around missing data, invalid samples and historical turns (no sta
 ## Things worth knowing
 
 - **This is not an official ZCode feature.** It's a community plugin with no connection to the ZCode team, and it works by injecting into the client's `app.asar`.
-- **Local stats are read-only.** It only reads ZCode's local SQLite database, and **usage data is never uploaded**.
+- **The local database is read-only.** Usage data is never uploaded.
 - **Plugin updates do use the network** — they download code from the source you've configured. Automatic updates are on by default; turn them off in ⚙.
-- **SSH remote queries also use the network** — they run a read-only query script on the remote host through the transport you configured. Prerequisites and limits are in [the section above](#ssh-remote-sessions).
+- **SSH remote queries also use the network** — they run a read-only query script on the remote host through the transport you configured. Prerequisites and limits are in [SSH remote sessions](#ssh-remote-sessions).
 - **Your credentials are never decrypted or reused.** Passwords, encrypted private keys and passphrases stored by ZCode are never decrypted by the plugin; set up an SSH key / agent yourself.
 - **Token usage is not billing.** There's no plan cost, no remaining quota and no billing information here.
 
