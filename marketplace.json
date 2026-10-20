@@ -26,13 +26,13 @@
       "name": "zcode-token-usage-statusbar",
       "source": {
         "path": "plugins/zcode-token-usage-statusbar",
-        "sha256": "08a4ac2a4d04372b7fd0c6853a24b667137fc63e779b8fad33518bcf0a0500e5",
+        "sha256": "d87aba5c08b33eac2288c60e02b8b9237859fc472d6eb54d62d6fbb419bde828",
         "source": "url",
         "stripRoot": false,
         "type": "zip",
-        "url": "https://github.com/ByteRax/zcode-token-usage-statusbar/releases/download/v1.5.1/zcode-token-usage-statusbar-v1.5.1.zip"
+        "url": "https://github.com/ByteRax/zcode-token-usage-statusbar/releases/download/v1.5.2/zcode-token-usage-statusbar-v1.5.2.zip"
       },
-      "version": "1.5.1"
+      "version": "1.5.2"
     }
   ]
 }
