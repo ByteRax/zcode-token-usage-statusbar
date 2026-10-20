@@ -168,3 +168,35 @@ test('empty main document actually creates the auto shadow/iframe fallback insta
   assert.equal(h.window.lifecycleTest.instances()[0].pid, 'auto');
   h.window.__zusageDispose();
 });
+
+// v91：设置是同窗口覆盖层，MCP 服务器表单的「请求头」textarea 在下半屏正常可见、
+// 不是幽灵也不在弹窗里，v61/v62 判定拦不住——必须按设置页标记（PR #44 收尾后为
+// 三层并集：settings-page testid + content/panel 双 frame）祖先排除，否则协调器
+// 派实例、条挂进表单卡片（用户实测）。
+test('settings-page form textarea is not dispatched or mounted as a chat composer', () => {
+  const marker = k => /\[data-testid="settings-page"\]|\[data-settings-(content|panel)-frame\]/.test(k);
+  // 只有设置表单编辑框（无 pane 标记）：不派发、不挂条
+  const a = harness();
+  const [layerA] = a.setPanes(['form']);
+  const taA = layerA.children[0];
+  taA.pid = undefined; taA.sid = undefined;
+  taA.closest = k => marker(k) ? layerA : null;
+  a.inject(); a.boot(); a.tick(); a.runFrame();
+  assert.deepEqual(Array.from(a.window.lifecycleTest.instances(), e => e.pid), ['auto']);
+  const barA = a.body.children.find(e => /zusage-root/.test(e.className || ''));
+  assert.ok(barA, '兜底实例的条存在');
+  assert.equal(barA.style.display, 'none', '设置表单编辑框不当聊天输入框，条保持隐藏');
+  a.window.__zusageDispose();
+  // 真 pane + 设置表单编辑框并存：pane 正常派发挂条，表单编辑框被排除
+  const b = harness();
+  const [, layerB] = b.setPanes(['workspace-main', 'form']);
+  const taB = layerB.children[0];
+  taB.pid = undefined; taB.sid = undefined;
+  taB.closest = k => marker(k) ? layerB : null;
+  b.inject(); b.boot(); b.tick(); b.runFrame();
+  assert.deepEqual(Array.from(b.window.lifecycleTest.instances(), e => e.pid), ['workspace-main']);
+  const barB = b.body.children.find(e => /zusage-root/.test(e.className || ''));
+  assert.ok(barB, 'pane 实例的条存在');
+  assert.equal(barB.style.display, 'flex', '真聊天输入框的条正常显示');
+  b.window.__zusageDispose();
+});

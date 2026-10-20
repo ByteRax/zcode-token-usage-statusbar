@@ -809,6 +809,16 @@
     }
   }, 0);
 
+  /* 设置页排除：设置是同窗口覆盖层，激活时聊天视图保持挂载、仅 opacity-0+inert
+   * 视觉遮蔽——v61 幽灵判定管的是聊天壳，不含设置层本身。MCP 服务器等设置表单的
+   * 「请求头」textarea 在视口下半屏正常可见，不是幽灵也不在弹窗里，v61/v62 两层判定
+   * 都拦不住，协调器/findComposer 会把它当聊天输入框、条挂进表单卡片（桌面端用户实测，
+   * Web 宿主与桌面共用同一 SettingsPage 组件）。三层标记并集排除（settings-page 根
+   * testid + content/panel 双 frame），与桌面端 v91 收尾后的选择器保持一致。 */
+  function inSettingsPage(el) {
+    try { return !!(el.closest && el.closest('[data-testid="settings-page"],[data-settings-content-frame],[data-settings-panel-frame]')); } catch (e) { return false; }
+  }
+
   function coordinator() {
     /* 协调器（v61.1）：扫描主文档里全部下半屏可见输入框，按 pane 键（data-pane-id，
      * 无属性回退 "auto"）分组派发给实例；一个 pane 一条，pane 消失对应条自藏。 */
@@ -831,6 +841,7 @@
         var best = {};
         document.querySelectorAll(SEL).forEach(function (el) {
           if (el.closest && el.closest('[role="dialog"]')) return;   // v62：弹窗内的编辑框不是聊天输入框，不派实例（issue #9）
+          if (inSettingsPage(el)) return;   // 设置页表单里的编辑框同理，不派实例
           var r = el.getBoundingClientRect();
           if (!(r.width > 40 && r.height > 8 && r.bottom > 0 && r.top < innerHeight)) return;
           if (r.top < innerHeight * 0.45) return;   // 聊天输入框特征：视口下半部（排除设置页等处元素）
@@ -861,7 +872,7 @@
   /* ---------- 实例工厂（v61.1）：一个 pane 一套 条/面板/气泡/tooltip/定位循环。
    * slot 0 保留 #zusage-bar/#zusage-tip 兼容 id（泵热更新按它清理），其余实例仅类名。 */
   function spawnInstance(pid, slot) {
-    var VERSION = "v86";   // v82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v84 主标签页远端路由（工作台分组唯一主绑定上报 + 迟到载荷守卫，issue #30）→ v85 回答末尾统计行跟随万/亿开关 + tok→token → v86 历史轮 tracker 无记录（窗口滑出/换代/热更）或缺输出字段不再翻成"本轮统计不可用"，加 det 诊断   // 悬停 ⚙ 面板可见；本会话热修部署未走提交，版本号随部署代际递增
+    var VERSION = "v87";   // v82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v84 主标签页远端路由（工作台分组唯一主绑定上报 + 迟到载荷守卫，issue #30）→ v85 回答末尾统计行跟随万/亿开关 + tok→token → v86 历史轮 tracker 无记录（窗口滑出/换代/热更）或缺输出字段不再翻成"本轮统计不可用"，加 det 诊断 → v87 设置页排除：协调器/findComposer/deepFind/track 按 [data-testid="settings-page"] 祖先排除设置表单编辑框（MCP「请求头」textarea 被当聊天输入框、条挂进表单卡片）   // 悬停 ⚙ 面板可见；本会话热修部署未走提交，版本号随部署代际递增
     var instanceDisposed = false, heavyTimer = 0, frame = 0, themeObserver = null;
     var globalListeners = [];
     function listenGlobal(target, type, fn, capture) {
@@ -2205,6 +2216,7 @@
         try {
           doc.querySelectorAll(COMPOSER_SEL).forEach(function (el) {
             if (el.closest && el.closest('[role="dialog"]')) return;   // v62：弹窗内的编辑框不是聊天输入框（issue #9）
+            if (inSettingsPage(el)) return;   // 设置页表单的编辑框同理（auto 兜底路径）
             if (!found && visible(el) && el.getBoundingClientRect().top > innerHeight * 0.45) found = el;
             else if (found && el.getBoundingClientRect().top > found.getBoundingClientRect().top && visible(el)) found = el;
           });
@@ -2305,6 +2317,7 @@
       var best = null;
       document.querySelectorAll("textarea").forEach(function (ta) {
         if (ta.closest && ta.closest('[role="dialog"]')) return;   // v62：弹窗内的编辑框不是聊天输入框（模型配置弹窗的「推理参数映射」落在下半屏，issue #9）
+        if (inSettingsPage(ta)) return;   // 设置页表单的编辑框（如 MCP「请求头」textarea）同理
         if (!reallyVisible(ta)) return;
         var r = ta.getBoundingClientRect();
         if (r.top < innerHeight * 0.45) return;   // 聊天输入框特征：在视口下半部（排除设置页等处元素）
@@ -2651,6 +2664,7 @@
         var r = composer.getBoundingClientRect();
         var on = r.width > 60 && r.height > 14 && r.bottom > 0 && r.top < innerHeight &&
           !inGhostSubtree(composer) &&   // 设置页等幽灵壳（opacity-0/inert）：视觉已隐藏（v61）
+          !inSettingsPage(composer) &&   // 兜底收起——已绑到设置页表单编辑框时不显示（防其它路径绑错）
           !modalOpen() &&                // v62：模态弹窗（模型配置等）打开时整体收起，弹窗内容不归条管（issue #9）
           (reallyVisible(composer, true) || coverOK(composer));
         if (!on) {
