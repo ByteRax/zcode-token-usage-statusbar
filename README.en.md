@@ -18,12 +18,17 @@ Windows / macOS · Python 3.8+ · [MIT](LICENSE)
 
 **Install it in three steps:**
 
+Send this to ZCode:
+
 ```text
-/plugin marketplace add ByteRax/zcode-token-usage-statusbar#plugin-releases
-/plugin install zcode-token-usage-statusbar@zusage-marketplace
+Install or update the ZCode plugin https://github.com/ByteRax/zcode-token-usage-statusbar, then run /install-overlay when it's done
 ```
 
-Type the first two in ZCode's chat input. After the plugin is installed, **quit ZCode completely and reopen it** (closing the window doesn't count) — the little bar shows up at the bottom. Full details in [Quick start](#quick-start).
+It installs the plugin, then runs `/install-overlay` to put the bar in place — if it doesn't run it for you, type it in the chat yourself. Then **quit ZCode completely and reopen it** (closing the window doesn't count); the little bar shows up at the bottom. Full details in [Quick start](#quick-start).
+
+> This shortcut installs source from the default branch. To follow stable Releases and get automatic updates, use the `#plugin-releases` address in Method A below.
+
+Can't reach GitHub from your network (mainland China)? The URL above probably won't load either. Both the plugin channel and the code have a synced mirror on GitCode: [gitcode.com/tanranran/zcode-token-usage-statusbar](https://gitcode.com/tanranran/zcode-token-usage-statusbar). The plugin marketplace can be registered straight from the GitCode channel — see the four install methods below.
 
 [Quick start](#quick-start) · [Where these numbers come from](#where-these-numbers-come-from) · [FAQ](#faq) · [Screenshots](docs/features.md)
 
@@ -34,8 +39,8 @@ Type the first two in ZCode's chat input. After the plugin is installed, **quit 
 A thin bar appears along the bottom of the chat window, roughly like this:
 
 ```text
-⚡ 86 t/s │ 42.3% │ 62.5k 90% 7 Σ18.4s ⏱1.4s │ 1.45M 86% 23 187 │ 142 🔴2 │ 3.42M │ 236k 🟢 │ ⚙
-   Speed     Context        This turn                Session total          Tools      Today     Sub-agents  Settings
+⚡ 86 t/s │ 62.5k 90% 7 Σ18.4s ⏱1.4s │ 1.45M 86% 23 187 │ 142 🔴2 │ 3.42M │ 236k 🟢 │ ⚙
+   Speed        This turn             Session total       Tools     Today    Sub-agents   Settings
 ```
 
 Here's what each part tells you:
@@ -60,7 +65,7 @@ Here's what each part tells you:
 | How fast is the model right now? | The **t/s** on the far left — the colour tells you at a glance |
 | How long did I wait after hitting enter? | The ⏱ number in **This turn** (that's the TTFT / time to first token) |
 | How many tokens did this turn / this conversation / today use? | The **This turn**, **Session total** and **Today** items |
-| Is this conversation going to run out of room? | **Context usage** — it changes colour as it fills up, and pops up advice if a request gets rejected |
+| Is this conversation going to run out of room? | The **context button** in the composer toolbar (ring + percentage) — it changes colour as it fills up, and pops up advice if a request gets rejected |
 | How much did the cache save me? How much was thinking? | Hover **This turn** for input, output, cache-read and thinking token detail plus the hit rate |
 | What did the model's sub-tasks cost? | The **Sub-agents** item — click it to see each sub-task separately |
 | Did a tool call fail? | The **Tools** item — errors light up red, hover for per-tool timing and errors |
@@ -145,18 +150,27 @@ Remote support covers **the bar's own data fetching** only. MCP, `/usage` and th
 
 > The first three all write into the same runtime directory — **pick one, don't stack them**. The fourth is a self-hosted Web deployment, which is a completely different thing from the desktop bar.
 
+> **Can't reach GitHub (mainland China networks)?** The repo has a synced mirror on GitCode: [`tanranran/zcode-token-usage-statusbar`](https://gitcode.com/tanranran/zcode-token-usage-statusbar). For **A. The plugin**, register the marketplace from the GitCode channel instead (command below; requires local [Git](https://git-scm.com/downloads)). For **B/C**, clone from GitCode. Whichever address you register or clone from is where update checks and downloads happen — GitHub never gets touched.
+
 #### A. The plugin (recommended)
 
-Enter these in **ZCode's chat input**, in order:
+The plain-language sentence at the top is just a shortcut for these two steps. To do it by hand, enter these in **ZCode's chat input**, in order:
 
 ```text
 /plugin marketplace add ByteRax/zcode-token-usage-statusbar#plugin-releases
 /plugin install zcode-token-usage-statusbar@zusage-marketplace
 ```
 
-You can also use the UI: **Settings → Plugin → Add marketplace**, enter `https://github.com/ByteRax/zcode-token-usage-statusbar#plugin-releases`, then find and install **ZCode Token Usage Statusbar**.
+If GitHub is unreachable from your network, swap the first line for the GitCode channel (the trailing `.git` is required; this route needs [Git](https://git-scm.com/downloads) installed):
 
-This channel installs a checksum-verified stable Release package, so it won't wander off onto a development branch.
+```text
+/plugin marketplace add https://gitcode.com/tanranran/zcode-token-usage-statusbar.git#plugin-releases-gitcode
+/plugin install zcode-token-usage-statusbar@zusage-marketplace
+```
+
+Whichever address you register is where ⚙ **Check for updates / Update now** and automatic updates fetch from: both channels serve the same checksum-verified stable Release packages, never a development branch.
+
+You can also use the UI: **Settings → Plugin → Add marketplace**, enter either channel address above, then find and install **ZCode Token Usage Statusbar**.
 
 > **Version note (2026-10-20):** The `#plugin-releases` channel currently provides [v1.5.2](https://github.com/ByteRax/zcode-token-usage-statusbar/releases/tag/v1.5.2), which already includes the automatic install/repair described above and the SSH remote support below. If you're still on the older `v1.4.1`, update as described further down first — that version defaults automatic installation to *off*, so you'd have to run `/install-overlay` by hand.
 
@@ -208,8 +222,9 @@ They're three separate things, and missing any one of them makes it look like "I
 
 **How do I update it later?**
 
-- **Plugin (stable channel)**: type `/plugin marketplace update zusage-marketplace` in ZCode, then update the plugin under **Settings → Plugin → Installed**. Or just use ⚙ → **Check for updates / Update now** — automatic updates are on by default.
+- **Plugin (stable channel)**: type `/plugin marketplace update zusage-marketplace` in ZCode, then update the plugin under **Settings → Plugin → Installed**. Or just use ⚙ → **Check for updates / Update now** — automatic updates are on by default. If you registered the GitCode channel, this whole flow — version check through download and install — runs on GitCode, and the ⚙ source line names the channel in use.
 - **Local directory / source branch**: the updater in ⚙ only follows stable Releases. On a source install it reports that automatic updates aren't available — run `git pull` and reinstall, or [switch the marketplace to the stable channel](docs/user-guide.md#切换已有市场到正式渠道) (Chinese).
+- **One-command installer**: the ⚙ **Check for updates** only works for plugin installs. Updating is two steps — `git pull` inside the clone (it pulls from wherever you cloned from, so GitCode mirror users pull from GitCode), then rerun `python install.py`.
 - If an update won't go through, you can also send "更新zcode 插件 https://github.com/ByteRax/zcode-token-usage-statusbar" to ZCode and let it reinstall for you.
 - Start or reopen a session afterwards. If prompted about changed main-process files, quit ZCode completely and reopen it.
 

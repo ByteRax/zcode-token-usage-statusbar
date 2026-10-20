@@ -8,16 +8,17 @@ const crypto = require("crypto");
 const { execFile } = require("child_process");
 const { promisify } = require("util");
 const { createUpdater, PLUGIN_ID, INTERVAL_MS, CHANNEL_RETRY_MS } = require("../plugin-updater.cjs");
-const { validateRelease, validateManifest, downloadRelease } = require("../plugin-release.cjs");
+const { validateRelease, validateManifest, downloadRelease, gitcodeReleaseFromCatalog } = require("../plugin-release.cjs");
 
 const PLUGIN = "zcode-token-usage-statusbar";
 const MARKET = "zusage-marketplace";
 const REPOSITORY = "ByteRax/" + PLUGIN;
+const GITCODE_REPOSITORY = "tanranran/" + PLUGIN;
 const clone = (value) => JSON.parse(JSON.stringify(value));
 const readJson = (file) => JSON.parse(fs.readFileSync(file, "utf8"));
 const writeJson = (file, value) => fs.writeFileSync(file, JSON.stringify(value));
 
-function fixture(t, settings = {}, customStorage = false) {
+function fixture(t, settings = {}, customStorage = false, variant = "github") {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "zusage-release-updater-")));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const home = path.join(dir, "home"), runtime = path.join(dir, "runtime");
@@ -35,7 +36,10 @@ function fixture(t, settings = {}, customStorage = false) {
   const knownFile = path.join(inventory, "known_marketplaces.json");
   const catalogFile = path.join(marketRoot, "marketplace.json");
   writeJson(configFile, { python_path: "python3", lang: "en", ...settings });
-  const source = { source: "github", repo: REPOSITORY, ref: "plugin-releases" };
+  const source = variant === "gitcode"
+    ? { source: "git", url: `https://gitcode.com/${GITCODE_REPOSITORY}.git`, ref: "plugin-releases-gitcode" }
+    : { source: "github", repo: REPOSITORY, ref: "plugin-releases" };
+  const channelRepository = variant === "gitcode" ? GITCODE_REPOSITORY : REPOSITORY;
   const record = { id: PLUGIN_ID, version: "1.0.0", scope: "user", installPath: path.join(home, "installed"),
     source: { source: "directory", path: path.join(dir, "old-package") } };
   const events = [], calls = [], syncs = [], prepared = [], states = [];
@@ -43,7 +47,19 @@ function fixture(t, settings = {}, customStorage = false) {
     source, record, events, calls, syncs, prepared, states, enabled: true, offline: false, cleanupCount: 0 };
   f.writeKnown = () => writeJson(knownFile, { version: 1, marketplaces: [{ id: MARKET, source: clone(source) }] });
   f.writeRecord = () => writeJson(recordFile, { version: 1, plugins: [record] });
-  f.channel = () => ({ kind: "release", repository: REPOSITORY, source: clone(source) });
+  f.channel = () => ({ kind: "release", flavor: variant === "gitcode" ? "gitcode" : "github",
+    repository: channelRepository, source: clone(source) });
+  f.setGitcodeRelease = (version, bytes = Buffer.from("synthetic archive"), manifest = null) => {
+    // 模拟真实镜像链：清单 repository 是打包上游（ByteRax），渠道仓库是镜像（tanranran）。
+    const sha = crypto.createHash("sha256").update(bytes).digest("hex");
+    f.manifest = manifest || { schemaVersion: 1, repository: REPOSITORY, version, tag: "v" + version,
+      pluginId: PLUGIN_ID, asset: { name: `${PLUGIN}-v${version}.zip`, size: bytes.length, sha256: sha } };
+    f.bytes = bytes;
+    f.catalog = { name: MARKET, plugins: [{ name: PLUGIN, version, source: { source: "url", type: "zip",
+      url: `https://gitcode.com/${GITCODE_REPOSITORY}/releases/download/v${version}/${PLUGIN}-v${version}.zip`,
+      sha256: f.manifest.asset.sha256, path: "plugins/" + PLUGIN, stripRoot: false } }] };
+    f.release = gitcodeReleaseFromCatalog(f.catalog, GITCODE_REPOSITORY);
+  };
   f.setRelease = (version, bytes = Buffer.from("synthetic archive"), manifest = null) => {
     const base = `https://github.com/${REPOSITORY}/releases/download/v${version}/`;
     const name = `${PLUGIN}-v${version}.zip`;
@@ -70,6 +86,11 @@ function fixture(t, settings = {}, customStorage = false) {
   };
   f.fetch = async (url, limit) => {
     events.push("fetch");
+    if (variant === "gitcode") {
+      if (url === f.release.manifest.browser_download_url) return Buffer.from(JSON.stringify(f.manifest));
+      if (url === f.release.archive.browser_download_url) return f.bytes;
+      throw new Error("unexpected gitcode download: " + url);
+    }
     assert.equal(url, `https://api.github.com/repos/${REPOSITORY}/releases?per_page=100&page=1`);
     assert.equal(limit, 4 * 1024 * 1024);
     if (f.offline) throw new Error("fixture offline");
@@ -633,5 +654,113 @@ test("Release update abandoned after download returns to available without stale
   await f.updater.request({ action: "update" });
   const status = f.updater.status();
   assert.equal(status.phase, "available"); assert.equal(status.progress, null);
+  assertNoInstall(f); assertCleaned(f);
+});
+
+test("GitCode channel checks the version from the host-refreshed catalog without any GitHub API call", async (t) => {
+  const f = fixture(t, {}, false, "gitcode");
+  f.setGitcodeRelease("1.2.0");
+  await f.updater.request({ action: "check" });
+  assert.equal(f.updater.status().phase, "available");
+  assert.equal(f.updater.status().channel, "release");
+  assert.equal(f.updater.status().channelHost, "gitcode");
+  assert.equal(f.updater.status().latestVersion, "1.2.0");
+  assert.equal(f.updater.status().releaseUrl, f.release.url);
+  assert.deepEqual(f.events, ["marketplace"]);
+  assertNoInstall(f);
+});
+
+test("GitCode channel up-to-date version never offers an install", async (t) => {
+  const f = fixture(t, {}, false, "gitcode");
+  f.record.version = "1.2.0"; f.writeRecord();
+  f.setGitcodeRelease("1.2.0");
+  await f.updater.request({ action: "check" });
+  assert.equal(f.updater.status().phase, "current");
+  assert.deepEqual(f.events, ["marketplace"]);
+  assertNoInstall(f);
+});
+
+test("GitCode channel installs through gitcode URLs with the upstream manifest identity", async (t) => {
+  const f = fixture(t, {}, false, "gitcode");
+  f.setGitcodeRelease("1.1.0");
+  await f.updater.request({ action: "update" });
+  assert.equal(f.updater.status().phase, "updated", f.updater.status().error);
+  assert.deepEqual(f.events, ["marketplace", "list", "prepare", "marketplace", "list", "install", "sync", "cleanup"]);
+  assert.equal(f.syncs.length, 1); assertCleaned(f);
+  assert.ok(f.prepared.length);
+});
+
+test("GitCode channel installs a real built ZIP via downloadRelease and unpack, keeping the upstream repository identity", async (t) => {
+  const f = fixture(t, {}, false, "gitcode");
+  const run = promisify(execFile), repositoryRoot = path.resolve(__dirname, "..");
+  const env = { HOME: f.home, USERPROFILE: f.home, TMPDIR: f.dir, PYTHONDONTWRITEBYTECODE: "1",
+    PATH: process.env.PATH, LANG: "en_US.UTF-8" };
+  const code = `
+import importlib.util, json, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("fixture_builder", Path(sys.argv[1]) / "release_tool.py")
+tool = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(tool)
+root = Path(sys.argv[2]) / "source"
+for name in tool.NAMES:
+    p = root / name
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(b"not executable fixture source\\n")
+plugin = {"name": tool.PLUGIN, "version": "1.1.0", "commands": "commands", "skills": "skills",
+         "packageLayout": {"schemaVersion": 1, "files": list(tool.NAMES)}}
+for name in (".zcode-plugin/plugin.json", ".claude-plugin/plugin.json"):
+    (root / tool.PREFIX / name).write_text(json.dumps(plugin))
+(root / "marketplace.json").write_text(json.dumps({"name": "zusage-marketplace", "plugins": [
+    {"name": tool.PLUGIN, "version": "1.1.0", "source": "./plugins/" + tool.PLUGIN}]}))
+for name in (".mcp.json", "hooks/hooks.json"):
+    (root / tool.PREFIX / name).write_text("{}")
+for name in tool.SYNC_FILES:
+    (root / name).write_bytes((root / tool.PREFIX / name).read_bytes())
+script = (Path(sys.argv[1]) / "release_tool.py").read_bytes()
+(root / "release_tool.py").write_bytes(script)
+print(json.dumps(tool.build(root, sys.argv[3], Path(sys.argv[2]) / "assets")))
+`;
+  const built = JSON.parse((await run("python3", ["-B", "-c", code, repositoryRoot, f.dir, REPOSITORY],
+    { cwd: f.dir, env, timeout: 30000 })).stdout);
+  f.setGitcodeRelease("1.1.0", fs.readFileSync(built.zip), readJson(built.manifest));
+  f.catalog = readJson(built.catalog);
+  f.catalog.plugins[0].source.url = f.release.archive.browser_download_url;
+  f.release = gitcodeReleaseFromCatalog(f.catalog, GITCODE_REPOSITORY);
+  const downloadCalls = [];
+  const prepared = [];
+  const fetch = async (url, limit) => {
+    downloadCalls.push(url);
+    const bytes = url === f.release.manifest.browser_download_url ? fs.readFileSync(built.manifest)
+      : url === f.release.archive.browser_download_url ? fs.readFileSync(built.zip) : null;
+    assert.ok(bytes, "unexpected download URL"); assert.ok(bytes.length <= limit); return bytes;
+  };
+  f.options.prepareRelease = async (release) => {
+    f.events.push("prepare");
+    const result = await downloadRelease(release, "python3", fetch, async (command, args) => {
+      assert.equal(command, "python3"); assert.equal(args[0], path.join(repositoryRoot, "release_unpack.py"));
+      return JSON.parse((await run(command, ["-B", ...args], { cwd: f.dir, env, timeout: 30000 })).stdout);
+    });
+    prepared.push(result.directory); t.after(result.cleanup);
+    const pluginManifest = readJson(path.join(result.pluginRoot, ".zcode-plugin", "plugin.json"));
+    assert.equal(pluginManifest.version, "1.1.0");
+    const cleanup = result.cleanup;
+    return { ...result, cleanup: () => { f.events.push("cleanup"); cleanup(); } };
+  };
+  const updater = f.restart(); await updater.request({ action: "update" });
+  assert.equal(updater.status().phase, "updated", updater.status().error);
+  assert.deepEqual(downloadCalls, [f.release.manifest.browser_download_url, f.release.archive.browser_download_url]);
+  assert.ok(downloadCalls.every((url) => url.startsWith("https://gitcode.com/")));
+  assert.deepEqual(f.events, ["marketplace", "list", "prepare", "marketplace", "list", "install", "sync", "cleanup"]);
+  assert.equal(f.syncs.length, 1);
+});
+
+test("GitCode channel catalog mismatch surfaces the real inconsistency instead of the GitHub lag hint", async (t) => {
+  const f = fixture(t, {}, false, "gitcode");
+  f.setGitcodeRelease("1.1.0");
+  f.manifest.asset.sha256 = "1".repeat(64);
+  await f.updater.request({ action: "update" });
+  assert.equal(f.updater.status().phase, "error");
+  assert.doesNotMatch(f.updater.status().error, /尚未同步到最新/);
+  assert.match(f.updater.status().error, /一致|清单/);
   assertNoInstall(f); assertCleaned(f);
 });

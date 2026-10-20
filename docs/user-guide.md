@@ -24,6 +24,14 @@
 2. 输入 `https://github.com/ByteRax/zcode-token-usage-statusbar#plugin-releases`，添加市场。
 3. 找到 **ZCode Token Usage Statusbar**，安装到用户范围并启用。
 
+GitHub 访问受限时，第 2 步改用 GitCode 渠道地址（结尾 `.git` 不能省，本机需装有 Git）：
+
+```text
+https://gitcode.com/tanranran/zcode-token-usage-statusbar.git#plugin-releases-gitcode
+```
+
+两条渠道提供同一份经过校验的正式 Release；注册哪个地址，之后的版本检查和下载就在哪个渠道进行，⚙ 面板的「更新来源」会显示当前渠道。
+
 此渠道从经过校验的正式 Release ZIP 安装插件，不跟随开发分支，也不需要自己下载源码。当前正式版默认自动安装/修复状态条；成功后完全退出并重开，已有显式关闭配置不会被改为开启。
 
 ### 方式二：本地目录安装
@@ -56,9 +64,11 @@ Windows 若找不到 `python3`，需在插件的 `.mcp.json` 与 `hooks/hooks.js
 
 [`plugin-releases` 分支](https://github.com/ByteRax/zcode-token-usage-statusbar/tree/plugin-releases) 的市场清单指向当前正式 Release。新用户请在添加市场界面使用 `https://github.com/ByteRax/zcode-token-usage-statusbar#plugin-releases`，具体版本以该清单为准。
 
+GitHub 访问受限时可注册 GitCode 镜像渠道 `https://gitcode.com/tanranran/zcode-token-usage-statusbar.git#plugin-releases-gitcode`：清单由同一份发布产物生成，ZIP 与 SHA256 和 GitHub Release 完全一致，版本检查、下载与安装全部在 GitCode 完成。该渠道要求本机装有 Git（宿主通过 git 拉取渠道清单）。
+
 清单指向正式 ZIP，包含 SHA256 与插件子目录；下载时核对 Release manifest、版本、包内容和清单一致性，不回退开发分支。后续正式版本仍需维护者同步发布渠道清单，单独发布 Release 不等于渠道已经更新。
 
-默认 `main` 的市场清单仍用于源码安装，本地目录也保持原用法；不要把正式渠道清单复制到自己的源码根目录。私有仓库认证下载和非 GitHub 远端自动更新目前不支持。发布操作见 [维护文档](maintaining.md#发布插件)。
+默认 `main` 的市场清单仍用于源码安装，本地目录也保持原用法；不要把正式渠道清单复制到自己的源码根目录。私有仓库认证下载和 GitHub/GitCode 之外的远端自动更新不支持。发布操作见 [维护文档](maintaining.md#发布插件)。
 
 ### 切换已有市场到正式渠道
 
@@ -70,6 +80,8 @@ Windows 若找不到 `python3`，需在插件的 `.mcp.json` 与 `hooks/hooks.js
 4. 确认正式包可读取后，按自己的偏好开启自动更新。更新涉及主进程文件时，完全退出并重开 ZCode。
 
 如果客户端版本不支持同名来源替换，可先移除旧市场注册再添加正式地址；**移除市场与卸载插件是不同操作**。不要执行卸载命令来替代来源迁移。
+
+要从 GitHub 渠道迁到 GitCode 镜像渠道（或反向），用同样步骤把来源地址换成目标渠道即可；迁移前后插件版本相同，无需重装，迁移后 ⚙ 的「更新来源」显示新渠道即成功。
 
 迁移操作须由你明确选择；本项目不会静默修改个人市场注册、删除设置或移动本地源码。
 
@@ -129,6 +141,7 @@ python3 install.py --root /Applications/ZCode.app
 - **检查更新**不会安装；发现新版后可点「立即更新」。
 - **自动更新默认开启**，首次运行检查，之后按 24 小时间隔检测与安装；你显式关闭的设置会保留。
 - GitHub 来源需正式 Release 与市场清单一致；新远程安装使用 `#plugin-releases`。源码分支或本地目录安装没有可校验的 Release，点「检查更新」会直接提示"不支持自动更新"，不会回退到开发分支取包：先 `git pull` 重装，或迁移到正式渠道。
+- GitCode 渠道的版本检查读宿主从注册 ref 拉取的渠道清单，ZIP 从 GitCode Release 资产下载并核对 SHA256；渠道清单与资产不一致时直接报错，不做自动重试。
 - 更新区固定显示一句可直接复制的重装指令：「更新zcode 插件 https://github.com/ByteRax/zcode-token-usage-statusbar」。更新失败时把它发给 ZCode，让助手帮你重装。
 - 更新代码会访问已注册来源，不上传用量数据；来源错误或网络失败会显示原因。
 - 只支持本插件的用户级安装；不会替你启用已禁用的插件。

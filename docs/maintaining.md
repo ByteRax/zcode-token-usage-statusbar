@@ -88,6 +88,16 @@ python3 sync_plugin.py --check
 
 真实 CLI 沙箱测试、交互演示与覆盖边界见 [tests/README.md](../tests/README.md)。Windows 收尾的隔离测试不等于 Windows 实机验收；手动执行钩子成功也不等于自然 SessionStart 已触发。
 
+## 双远程同步
+
+主仓库是 GitHub 的 ByteRax fork；GitCode（`tanranran/zcode-token-usage-statusbar`）是国内镜像。`fork` 远程配置了两条 push URL，`git push fork` 的任意 refspec（分支、tag、渠道分支）都会依次推送 GitHub 与 GitCode；`git fetch fork` 仍只读 GitHub。
+
+- `origin` 指向上游 xhwxt，只读；`gitcode` 远程用于单独核对镜像或在主推送被拒时恢复，日常推送不需要单独调用。
+- GitCode HTTPS 推送需要个人访问令牌：首次 `git push fork` 时按提示输入 GitCode 用户名与令牌（令牌作为密码），macOS 钥匙串随后缓存。令牌未配置的机器上 GitCode 段失败，但 GitHub 段可能已推送成功；两段都幂等，补配令牌后重推即可。改用 SSH 须先在 GitCode 登记公钥。
+- GitCode 仓库由平台导入功能初始化，分支、tag 与渠道分支和 fork 一致；不要在 GitCode 单独提交，镜像分叉会让后续推送被拒。
+- GitCode 承担两类角色：代码镜像，以及插件更新的国内渠道。更新渠道由 `plugin-releases-gitcode` 分支上的 GitCode 版渠道清单与 GitCode Release 资产构成；`release_tool.py publish --gitcode-repo …` 会在 GitHub 发布验收后自动创建/复用同 tag Release、上传 ZIP 与 manifest 并生成该清单（需 `GITCODE_TOKEN` 环境变量，令牌走 query 参数，不落盘、不进日志）。发布流程见[发布插件](#发布插件)。
+- 从本仓库 `git worktree` 建立的临时工作区共享远程配置，渠道推送同样双发；全新 clone 没有该配置，只会推 GitHub，需要镜像时把 GitCode 显式加入推送目标。
+
 ## 发布插件
 
 普通用户无需运行发布工具。
@@ -126,6 +136,16 @@ python3 release_tool.py verify --repo OWNER/REPO \
 正式发布还需明确 `--publish` 与 `--confirm OWNER/REPO/v版本号`，先上传草稿并核验下载字节，再发布。提交、tag 推送、Release 和渠道清单推送分别需要授权；默认不替用户执行。
 
 GitHub 自动更新要求已注册市场的 `marketplace.json` 指向同一个 Release ZIP/hash。维护者应将生成的 `marketplace-release.json` 作为渠道分支上的 `marketplace.json` 发布。[ByteRax 的 `plugin-releases` 渠道](https://github.com/ByteRax/zcode-token-usage-statusbar/tree/plugin-releases) 已发布 `v1.4.0` 一致清单，新用户注册 `ByteRax/zcode-token-usage-statusbar#plugin-releases`。未来发版须同步更新该清单，不能只上传 Release；不要擅自切换用户已有来源。
+
+### GitCode 更新渠道
+
+国内用户可将市场注册到 `https://gitcode.com/tanranran/zcode-token-usage-statusbar.git#plugin-releases-gitcode`（宿主按通用 git 来源拉取清单，ZIP 从 GitCode Release 资产下载并核对 SHA256）。发布时在 `publish` 追加 `--gitcode-repo tanranran/zcode-token-usage-statusbar`：
+
+1. GitHub Release 验收通过后，工具自动在 GitCode 创建（或复用）同 tag Release，正文与 GitHub 一致，上传同一字节的 ZIP 与 `release-manifest.json`，回读逐字节核对，再按真实 `browser_download_url` 生成 `marketplace-release-gitcode.json` 到资产目录。
+2. 将该清单作为 `plugin-releases-gitcode` 分支根目录的 `marketplace.json` 提交并推送（与其它分支一样经双 push URL 同步两台主机；该分支内容刻意与 `plugin-releases` 不同，指向 GitCode 资产 URL）。
+3. 回读两个渠道分支，核对版本、ZIP URL 与 hash。任一渠道未就绪都不得宣称该渠道可更新。
+
+GitCode 渠道的清单 URL 形状、下载主机白名单（`gitcode.com`/`file-cdn.gitcode.com`）与更新器校验（`plugin-release.cjs` 的 gitcode 分支）必须一起变更，并有对应测试锁定；首次接入渠道时以真实上传回读的 URL 为准。
 
 项目内的 [发布技能](../.zcode/skills/zcode-github-release/SKILL.md) 提供检查与预演流程，不全局安装，也不随插件分发。源码 manifest 提升版本不等于远端渠道或用户缓存已完成升级。
 

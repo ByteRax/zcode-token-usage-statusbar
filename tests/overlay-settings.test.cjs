@@ -83,7 +83,7 @@ test('buildPanel initializes and rebuilds controls without losing state or scrol
   let oldBody = null, syncs = 0;
   const body = { scrollTop: 0 };
   const radios = [{ value: 'zh' }, { value: 'en' }];
-  const checkboxes = ['ctx', 'turn', 'win', 'tools', 'today', 'sub'].map(k => ({ dataset: { k } }));
+  const checkboxes = ['turn', 'win', 'tools', 'today', 'sub'].map(k => ({ dataset: { k } }));
   const input = { value: '' };
   const context = {
     panel: {
@@ -91,7 +91,7 @@ test('buildPanel initializes and rebuilds controls without losing state or scrol
       querySelector: selector => selector === '.zu-settings-body' ? oldBody : input,
       querySelectorAll: selector => selector === 'input[name=zu-lang]' ? radios : checkboxes,
     },
-    state: { lang: 'zh', show: { ctx: 1, turn: 0, win: 1, tools: 1, today: 0, sub: 1 }, ctxOv: '200000' },
+    state: { lang: 'zh', show: { turn: 0, win: 1, tools: 1, today: 0, sub: 1 }, ctxOv: '200000' },
     VERSION: 'v67', L: (zh, en) => context.state.lang === 'en' ? en : zh,
     syncUpdate: () => { oldBody = body; }, syncSettingsScroll: () => { syncs++; },
   };
@@ -99,7 +99,7 @@ test('buildPanel initializes and rebuilds controls without losing state or scrol
   assert.equal(body.scrollTop, 0);
   assert.equal(input.value, '200000');
   assert.deepEqual(radios.map(r => r.checked), [true, false]);
-  assert.deepEqual(checkboxes.map(cb => cb.checked), [true, false, true, true, false, true]);
+  assert.deepEqual(checkboxes.map(cb => cb.checked), [false, true, true, false, true]);
   assert.match(context.panel.innerHTML, /状态条设置选项/);
   body.scrollTop = 250;
   context.state.lang = 'en';
@@ -107,7 +107,7 @@ test('buildPanel initializes and rebuilds controls without losing state or scrol
   assert.equal(body.scrollTop, 250);
   assert.equal(input.value, '200000');
   assert.deepEqual(radios.map(r => r.checked), [false, true]);
-  assert.deepEqual(checkboxes.map(cb => cb.checked), [true, false, true, true, false, true]);
+  assert.deepEqual(checkboxes.map(cb => cb.checked), [false, true, true, false, true]);
   assert.match(context.panel.innerHTML, /Status bar settings options/);
   assert.equal(syncs, 2);
 });
@@ -156,7 +156,7 @@ test('settings title uses the same current plugin version as the update section'
 
 test('panel retains all controls, scroll position and settings-only styling', () => {
   assert.match(source, /panel.className = "panel zu-settings"/);
-  for (const key of ['ctx', 'turn', 'win', 'tools', 'today', 'sub']) {
+  for (const key of ['turn', 'win', 'tools', 'today', 'sub']) {
     assert.ok(source.includes('data-k="' + key + '"'));
   }
   for (const selector of ['zu-rate-line', 'zu-auto-update', 'zu-ctxov', 'zu-cn-num', 'data-update="check"', 'data-update="update"', 'name="zu-lang"', 'zu-settings-feedback']) {
@@ -450,4 +450,17 @@ test('progress labels and byte units localize', () => {
   assert.equal(h.read('install').text, 'Waiting for download');
   const unknown = progressHarness({ ...base, phase: 'downloading', busy: true, progress: { stage: 'download', loaded: 512 } });
   assert.deepEqual(unknown.read('download'), { width: '0%', active: true, now: '0', text: '512 B' });   // 无 total 时只报已下载字节
+});
+
+test('update source line names the host: GitHub, GitCode or the local directory', () => {
+  const h = progressHarness({ ...base, phase: 'idle' });
+  assert.match(h.status.textContent, /更新来源：GitHub 正式 Release/);
+  h.context.state.pluginUpdate = { ...base, phase: 'idle', channelHost: 'gitcode' };
+  h.rerun();
+  assert.match(h.status.textContent, /更新来源：GitCode 正式 Release（校验 ZIP 与 SHA256）/);
+  h.context.state.pluginUpdate = { ...base, phase: 'idle', channel: 'local' };
+  h.rerun();
+  assert.match(h.status.textContent, /更新来源：本地目录市场/);
+  const en = progressHarness({ ...base, phase: 'idle', channelHost: 'gitcode' }, 'en');
+  assert.match(en.status.textContent, /stable GitCode Release/);
 });

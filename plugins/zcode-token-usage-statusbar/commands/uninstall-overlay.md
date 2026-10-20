@@ -1,6 +1,5 @@
 ---
 description: 从本机 ZCode 桌面客户端卸载悬浮用量状态条（重启客户端生效，此后 hook 不再提示）
-disable-noninteractive: true
 ---
 从本机 ZCode 桌面客户端卸载 zcode-token-usage-statusbar 的悬浮状态条。
 

@@ -25,6 +25,12 @@
  *       零值 —— 绝不回退到"别的会话"的数字（多窗口共享 localStorage 时旧启发式必错，实测）。
  *       mine 缺失（辅助窗口/旧泵）才走 localStorage 键启发式 pickCurrent。
  * 热更新：主进程 mtime 检测 + new Function 语法校验后重注入；代际守卫防旧实例打架。
+ * 原生按钮增强（v92）：输入框工具行的原生上下文按钮（chat-context-usage-trigger）
+ *       环填充改状态条 cbar 同款（r9/描边3/圆帽/四档色/超限闪烁），百分比数值挂在
+ *       trigger 按钮内（环右侧，悬停自动享受原生 hover 效果与「上下文容量」面板）——
+ *       档位口径沿用原状态条上下文格的 ctxBandOf（v93 起该格已删，口径唯一承载处）；仅注入
+ *       data-* 属性与末尾追加节点（React 不清理），React 数据更新重写 dasharray 由
+ *       render/heavy 双 reapply 兜回；cw 缺失还原原生形态。
  * 诊断：异常与挂载信息写 window.__zusageDiag，由主进程泵取回写 diag-<n>.json。 */
 (function () {
   if (window.__zusageOverlay) return;
@@ -60,7 +66,7 @@
   /* ---------- 共享状态（多实例一致）：显示项/语言/上下文覆盖/最近一次数据 ---------- */
   var LS = { show: "zusage3.show", ctxOv: "zusage3.ctxOv", lang: "zusage3.lang", cnNum: "zusage3.cnNum" };
   var state = {
-    show: { win: 1, ctx: 1, today: 1, turn: 1, sub: 1, tools: 1 },
+    show: { win: 1, turn: 1, today: 1, sub: 1, tools: 1 },
     ctxOv: "", data: null,
     lang: "zh", pluginUpdate: window.__zusagePluginState || null,
     /* 万/亿单位开关：缺省开启，仅显式 "0" 关闭；只在中文界面展示并生效（英文始终 K/M/B） */
@@ -845,7 +851,7 @@
   /* ---------- 实例工厂（v61.1）：一个 pane 一套 条/面板/气泡/tooltip/定位循环。
    * slot 0 保留 #zusage-bar/#zusage-tip 兼容 id（泵热更新按它清理），其余实例仅类名。 */
   function spawnInstance(pid, slot) {
-    var VERSION = "v92";   // v82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v84 主标签页远端路由（工作台分组唯一主绑定上报 + 迟到载荷守卫，issue #30）→ v85 回答末尾统计行跟随万/亿开关 + tok→token → v86 历史轮 tracker 无记录（窗口滑出/换代/热更）或缺输出字段不再翻成"本轮统计不可用"，加 det 诊断 → v87 主叶归属增 last-session 回退（组零证据时唯一远端记录放行，issue #30 复测：单会话主标签页不建组）→ v88 运行态心跳与两处扫描 tick 2s→0.5s（富文本重试 6→24 次等价放大）→ v89 ⚙ 面板更新进度：downloading 阶段文案 + 下载（字节）/安装（校验→安装→同步）双进度条，缺 progress 的旧主进程自动隐藏 → v90 主标签页/分栏归属改按本窗会话节点身份（renderer 桥按版本/资产/锚点写 SessionPane 属性，移除 workbench-groups/last-session 共享回退）+ 心跳 0.5s→0.1s（扫描维持 0.5s）→ v91 设置页/权限面板冒条修复（PR #44：inSettingsView 三处派发排除 + anchorCardOf 面板锚点改判）收编收尾：排除标记并集（settings-page testid + content/panel 双 frame）、track 显隐第四处防御 → v92 ⚙ 更新区固定显示可复制的重装口令（源码安装无法自动更新时引导用户发给 agent）   // 悬停 ⚙ 面板可见；版本号随代际递增
+    var VERSION = "v94";   // v82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v84 主标签页远端路由（工作台分组唯一主绑定上报 + 迟到载荷守卫，issue #30）→ v85 回答末尾统计行跟随万/亿开关 + tok→token → v86 历史轮 tracker 无记录（窗口滑出/换代/热更）或缺输出字段不再翻成"本轮统计不可用"，加 det 诊断 → v87 主叶归属增 last-session 回退（组零证据时唯一远端记录放行，issue #30 复测：单会话主标签页不建组）→ v88 运行态心跳与两处扫描 tick 2s→0.5s（富文本重试 6→24 次等价放大）→ v89 ⚙ 面板更新进度：downloading 阶段文案 + 下载（字节）/安装（校验→安装→同步）双进度条，缺 progress 的旧主进程自动隐藏 → v90 主标签页/分栏归属改按本窗会话节点身份（renderer 桥按版本/资产/锚点写 SessionPane 属性，移除 workbench-groups/last-session 共享回退）+ 心跳 0.5s→0.1s（扫描维持 0.5s）→ v91 设置页/权限面板冒条修复（PR #44：inSettingsView 三处派发排除 + anchorCardOf 面板锚点改判）收编收尾：排除标记并集（settings-page testid + content/panel 双 frame）、track 显隐第四处防御 → v92 ⚙ 更新区固定显示可复制的重装口令（源码安装无法自动更新时引导用户发给 agent）→ v93 原生上下文按钮（chat-context-usage-trigger）增强：环填充/四档色/右侧百分比镜像状态条上下文格（ctxBandOf 同源），cw 缺失还原原生形态 → v94 状态条删除「上下文容量」格（UI+tooltip，该口径由原生按钮增强承载），⚙ 面板同步去掉「上下文」开关，子代理格改始终展示（零值也显示）   // 悬停 ⚙ 面板可见；版本号随代际递增
     var instanceDisposed = false, heavyTimer = 0, frame = 0, themeObserver = null;
     var globalListeners = [];
     function listenGlobal(target, type, fn, capture) {
@@ -863,6 +869,8 @@
       shrink = 0,         // 分级收缩（v66）：1 = 内容超卡片宽，「本轮/会话累计」缓存命中率已让位
       fadeOn = false,     // 收缩后仍超宽：右缘渐隐（.zu-clip）
       bridge = { handle: null, turnId: "", timer: 0 },   // v71 本 pane 的 renderer store 订阅
+      lastBand = null,    // v92：本 pane 上下文分档（ctxBandOf 结果，原生按钮增强的数据源）
+      ctxBtnCache = null,   // v92：本实例上次增强的原生按钮（还原/对账引用，不依赖 cardCache 存活）
       liveTextCur = "", liveStatsCur = null, liveKindCur = "fallback", liveEl = null,   // v72：合并「生成速度」用
       livePhaseCur = "", liveIconCur = "bolt";   // v77：当前 chip 阶段与图标（think=思考动效/bolt=闪电）——相位切换需整条重渲染
 
@@ -928,9 +936,34 @@
       ".eb{background:rgba(255,107,87,.14);background:color-mix(in srgb,var(--color-destructive,#ff6b57) 14%,transparent);" +
       "color:var(--color-destructive,#ff8a73);border-radius:999px;padding:0 6px;line-height:16px;font-weight:600;display:inline-flex;align-items:center;gap:2px}" +
       ".eb .ico{color:inherit}" +
-      ".cbar{display:block;width:calc(var(--ui-font-size,14px) + 2px);height:calc(var(--ui-font-size,14px) + 2px);flex:0 0 auto;fill:none;stroke-width:3}" +
-      ".cbar-track{stroke:var(--color-hover,rgba(255,255,255,.1))}" +
-      ".cbar-value{stroke:currentColor}" +
+      /* v92 原生上下文按钮增强（原状态条「上下文容量」格 v93 删除，档位口径由本处承载）：四档色由 data-zusage-band 驱动 —— React
+       * 不清理非 props 的手动属性；!important 压原生 text-success/text-warning/
+       * text-foreground-subtle 变调；静态几何（r/描边/圆帽/透明度）用 CSS 覆盖
+       * presentation attribute（永远生效），动态 pathLength/dasharray 由
+       * enhanceCtxButton 写入。exc 复用 zuexc 呼吸闪烁。数值挂按钮内（环右侧）：
+       * 悬停自动享受原生 hover:bg-hover 与「上下文容量」面板，width 由固定方形放开。 */
+      "[data-testid=chat-context-usage-trigger][data-zusage-armed]{color:#3ecf8e!important;" +
+      "width:auto!important;min-width:1.75rem;padding:0 3px;gap:4px}" +
+      "[data-testid=chat-context-usage-trigger][data-zusage-armed][data-zusage-band=warm]{color:#f5b944!important}" +
+      "[data-testid=chat-context-usage-trigger][data-zusage-armed][data-zusage-band=hot]{color:#ff6b57!important}" +
+      "[data-testid=chat-context-usage-trigger][data-zusage-armed][data-zusage-band=exc]{color:var(--color-destructive,#ff2d55)!important;" +
+      "text-shadow:0 0 8px rgba(255,45,85,.5);animation:zuexc 1.1s ease-in-out infinite}" +
+      "[data-testid=chat-context-usage-trigger][data-zusage-armed]>svg:not(.animate-spin) circle{opacity:1;stroke-width:3;r:9px}" +
+      "[data-testid=chat-context-usage-trigger][data-zusage-armed]>svg:not(.animate-spin) circle:first-of-type{stroke:var(--color-hover,rgba(255,255,255,.1))}" +
+      "[data-testid=chat-context-usage-trigger][data-zusage-armed]>svg:not(.animate-spin) circle:last-of-type{stroke:currentColor;stroke-linecap:round}" +
+      ".zu-ctxpct{font-family:var(--font-mono,Consolas,'Cascadia Mono',Menlo,'Microsoft YaHei UI','Microsoft YaHei',monospace);" +
+      "font-size:var(--ui-font-size,14px);font-weight:700;font-variant-numeric:tabular-nums;line-height:1;" +
+      "display:inline-flex;align-items:center;flex:0 0 auto}" +
+      /* 浅色档（与 .zu-light 组同源深化值）：标记由 enhanceCtxButton 随 bar 主题同步到
+       * button（pct span 与环都在按钮内，同为 data-zusage-light 后代）。 */
+      "[data-zusage-light][data-zusage-band=ok]{color:#0f9d6c!important}" +
+      "[data-zusage-light][data-zusage-band=warm]{color:#b6791a!important}" +
+      "[data-zusage-light][data-zusage-band=hot]{color:#d8482f!important}" +
+      "[data-zusage-light][data-zusage-band=exc]{text-shadow:none}" +
+      "[data-zusage-light] .zu-ctxpct.ok{color:#0f9d6c}" +
+      "[data-zusage-light] .zu-ctxpct.warm{color:#b6791a}" +
+      "[data-zusage-light] .zu-ctxpct.hot{color:#d8482f}" +
+      "[data-zusage-light] .zu-ctxpct.exc{text-shadow:none}" +
       /* 子代理运行中呼吸灯 */
       "@keyframes zupulse{0%,100%{opacity:1}50%{opacity:.2}}" +
       ".dot{animation:zupulse 1.6s ease-in-out infinite;font-size:var(--ui-font-size,14px);line-height:1}" +
@@ -1126,7 +1159,6 @@
       '<button type="button" class="zu-settings-close" aria-label="' + L("关闭设置", "Close settings") + '">✕</button></div>' +
       '<div class="zu-settings-body" tabindex="0" role="region" aria-label="' + L("状态条设置选项", "Status bar settings options") + '">' +
       '<section class="zu-settings-section"><div class="cap">' + L("状态条显示", "Display items") + '</div><div class="zu-settings-card">' +
-      settingRow('<input type="checkbox" data-k="ctx">', L("上下文", "Context"), L("进度条与占用比例，颜色随用量变化", "Progress and usage percentage, colored by usage")) +
       settingRow('<input type="checkbox" data-k="turn">', L("本轮", "Current turn"), L("tokens、请求次数、耗时与首字延迟", "Tokens, requests, duration and first-token latency")) +
       settingRow('<input type="checkbox" data-k="win">', L("会话累计", "Session total"), L("当前会话的 tokens、轮数与请求次数", "Tokens, turns and requests in this session")) +
       settingRow('<input type="checkbox" data-k="tools">', L("工具调用", "Tool calls"), L("悬停查看各工具明细与错误", "Hover for per-tool details and errors")) +
@@ -1153,7 +1185,7 @@
       '<div class="zu-progress-row" data-progress="download"><span class="zu-progress-label">' + L("下载", "Download") + '</span><div class="zu-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100"><div class="zu-progress-fill"></div></div><span class="zu-progress-value"></span></div>' +
       '<div class="zu-progress-row" data-progress="install"><span class="zu-progress-label">' + L("安装", "Install") + '</span><div class="zu-progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100"><div class="zu-progress-fill"></div></div><span class="zu-progress-value"></span></div>' +
       '</div>' +
-      '<div class="pnote">' + L("仅更新此插件。GitHub 来源会联网，本地目录来源只检查本地文件，不上传用量数据。", "Only this plugin is updated. GitHub sources use the network; directory sources check local files. Usage data is never uploaded.") + '</div></div></div></section>' +
+      '<div class="pnote">' + L("仅更新此插件。GitHub/GitCode 来源会联网，本地目录来源只检查本地文件，不上传用量数据。", "Only this plugin is updated. GitHub/GitCode sources use the network; directory sources check local files. Usage data is never uploaded.") + '</div></div></div></section>' +
       '<section class="zu-settings-section"><div class="cap">' + L("关于数据", "About the data") + '</div><div class="pnote">' +
       L("悬停状态条查看明细。数据源 ~/.zcode/cli/db/db.sqlite（只读），请求完成后才落库。", "Hover bar items for details. Data source ~/.zcode/cli/db/db.sqlite (read-only); data is written after requests complete.") + '</div></section></div>' +
       '<div class="zu-settings-foot"><button type="button" class="zu-settings-scroll"></button>' +
@@ -1336,7 +1368,19 @@
       return input > 0 ? '<span class="dim">' + Math.round(cache / input * 100) + "%</span>" : "";
     }
 
-    /* 显示顺序：本轮 → 上下文 → 会话 → 工具 → 今日 → 子代理；token 后带缓存命中率。
+    /* 上下文分档口径（v93 起唯一消费方是原生按钮增强；原状态条上下文格已删）。
+     * cw 优先级：手动覆盖 > 原生按钮 aria-label 读到的总量（nativeCtxVal）> 会话 context_window。 */
+    function ctxBandOf(sess) {
+      var cw = parseInt(state.ctxOv, 10) || nativeCtxVal || (sess && sess.context_window) || 0;
+      var pct = cw ? (sess && sess.ctx || 0) / cw * 100 : 0;
+      var exc = excActive(sess);
+      /* 占比档位分两套：窗口 ≥100 万时同一百分比的绝对 token 量大，40/60 提前预警；其余维持 70/85。 */
+      var big = cw >= 1000000;
+      var cls = exc ? "exc" : pct >= (big ? 60 : 85) ? "hot" : pct >= (big ? 40 : 70) ? "warm" : "ok";
+      return { cw: cw, pct: pct, cls: cls, exc: exc, big: big };
+    }
+
+    /* 显示顺序：本轮 → 会话 → 工具 → 今日 → 子代理；token 后带缓存命中率。
      * v31：条面只放主数值；悬停改自绘 tooltip（向上弹），随渲染以 tips[]
      * 按 .it 顺序挂到元素 __tip，全部为字符串单页（{tabs:[...]} 多 tab 机制 v49 起
      * 无条目使用已删除：子代理改点击面板，tooltip 不再承载 tab 切换）。
@@ -1440,29 +1484,6 @@
         livePhaseCur = "";
         liveIconCur = "";
       }
-      if (state.show.ctx) {
-        var cw = parseInt(state.ctxOv, 10) || d.native_ctx || d.context_window || 0;
-        var pct = cw ? sess.ctx / cw * 100 : 0;
-        var exc = excActive(sess);
-        /* 占比档位分两套：窗口 ≥100 万时同一百分比的绝对 token 量大，40/60 提前预警；其余维持 70/85。 */
-        var big = cw >= 1000000;
-        var cls = exc ? "exc" : pct >= (big ? 60 : 85) ? "hot" : pct >= (big ? 40 : 70) ? "warm" : "ok";
-        var bar = cw ? '<svg class="cbar" viewBox="0 0 24 24" aria-hidden="true"><circle class="cbar-track" cx="12" cy="12" r="9"/>' +
-          '<circle class="cbar-value ' + cls + '" cx="12" cy="12" r="9" pathLength="100" stroke-dasharray="' +
-          Math.max(0, Math.min(100, pct)).toFixed(1) + ' 100" transform="rotate(-90 12 12)"/></svg>' : "";
-        it(bar + (cw ? '<span class="pct ' + cls + '">' + pct.toFixed(1) + "%</span>"
-              : '<span class="v' + (exc ? " exc" : "") + '">' + fmt(sess.ctx) + "</span>"),
-          "\x01" +
-          ttH(L("上下文容量", "Context capacity")) +
-          (cw ? ttRow(L("已用 / 窗口", "Used / window"), fmt(sess.ctx) + " / " + fmt(cw))
-              : ttRow(L("已用", "Used"), fmt(sess.ctx) + L("（窗口容量未知）", " (window capacity unknown)"))) +
-          ttRow(L("颜色档位", "Color bands"),
-            (big ? L("≤40% 绿 · 40–60% 黄 · ≥60% 红", "≤40% green · 40–60% yellow · ≥60% red")
-                 : L("<70% 绿 · 70–85% 黄 · ≥85% 红", "<70% green · 70–85% yellow · ≥85% red")) +
-            L(" · 超限=亮红闪烁", " · over-limit = flashing red")) +
-          (exc ? ttNote(L("⚠ 上下文超限：最近一次请求被拒（" + fmtTime(d.ctx_exc) + "），需压缩会话或新开会话",
-                          "⚠ Over limit: the latest request was rejected (" + fmtTime(d.ctx_exc) + ") — compress or restart the session")) : ""));
-      }
       if (state.show.turn) {
         it(ico('<path d="M23 4v6h-6"/><path d="M20.49 15A9 9 0 1 1 18.36 5.64L23 10"/>') +
           '<span class="v">' + fmt(lt.total) + "</span>" +
@@ -1552,15 +1573,17 @@
                 (today.last_at ? fmtStart(today.last_at) : "—"))
             : ""));
       }
-      if (state.show.sub && d.sub && (d.sub.total || d.sub.active)) {
-        /* v50：悬停 tooltip 只放汇总 + 打开面板的提示；各子代理明细在点击弹出的
-         * 固定面板里用页签切换（面板固定不随鼠标，页签点击没有几何问题） */
+      if (state.show.sub) {
+        /* v93：随「上下文容量」格移除改为始终展示（零值也显示，口径与其他格统一）；
+         * 无子代理时就是 0。v50：悬停 tooltip 只放汇总 + 打开面板的提示；各子代理明细
+         * 在点击弹出的固定面板里用页签切换（面板固定不随鼠标，页签点击没有几何问题）。 */
+        var sb = d.sub || { requests: 0, total: 0, input: 0, output: 0, cache_read: 0, reasoning: 0, cache_write: 0, active: false };
         it(ico('<path d="M6 3v12"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>') +
-          '<span class="v">' + fmt(d.sub.total) + "</span>" +
-          (d.sub.active ? '<span class="ok dot">●</span>' : ""),
+          '<span class="v">' + fmt(sb.total) + "</span>" +
+          (sb.active ? '<span class="ok dot">●</span>' : ""),
           L("子代理：当前会话的后台子代理消耗（独立统计，不计入会话累计）", "Sub-agents: background sub-agent usage of the current session (tracked separately, not counted in the session total)") + "\n" +
-          ioc(d.sub.input, d.sub.output, d.sub.cache_read, d.sub.reasoning, d.sub.cache_write) +
-          L("，共 ", ", ") + (d.sub.requests || 0) + L(" 次", " requests in total") + (d.sub.active ? L(" · 运行中", " · running") : "") +
+          ioc(sb.input, sb.output, sb.cache_read, sb.reasoning, sb.cache_write) +
+          L("，共 ", ", ") + (sb.requests || 0) + L(" 次", " requests in total") + (sb.active ? L(" · 运行中", " · running") : "") +
           "\n" + L("点击条目打开面板，查看每个子代理的具体消耗", "Click the item to open the panel with per-sub-agent details"), "zu-sub");
       }
       return { s: items.join('<span class="sep"></span>') || '<span class="dim">' + L("全部显示项已关闭", "All display items are off") + '</span>', tips: tips };
@@ -1778,6 +1801,7 @@
         }
       }
       excOn = excActive(p);   // 气泡的显示依据（track 每帧消费）
+      lastBand = ctxBandOf(p);   // v92：原生上下文按钮增强的数据源（与状态条上下文格同口径）
       /* v12 多服务器：remote_today/remote_errors 按目标键分组，取本会话所属主机的分片；
        * 旧格式（单目标，顶层对象即 today）兜底兼容。 */
       var myTarget = p.remote_target || "";
@@ -1825,6 +1849,7 @@
          * 下一次 mousemove 会重新判定该显示哪一项 */
       }
       if (subPanel.classList.contains("open")) buildSubPanel(view.sub);   // 面板开着：随推送实时刷新
+      enhanceCtxButton();   // v92：数据点 reapply（React 数据更新重写 dasharray 后兜回）
     }
 
 
@@ -2027,7 +2052,7 @@
       if (!active && u && u.error) text += "\n" + messages.error;
       if (active && u.currentVersion) text += "\n" + L("当前版本：", "Current version: ") + u.currentVersion;
       if (active && u.latestVersion) text += (u.channel === "release" ? L(" · Release 版本：", " · Release version: ") : L(" · 市场版本：", " · Marketplace version: ")) + u.latestVersion;
-      if (active && u.channel) text += "\n" + (u.channel === "release" ? L("更新来源：GitHub 正式 Release（校验 ZIP 与 SHA256）", "Update source: stable GitHub Release (validated ZIP and SHA256)") : L("更新来源：本地目录市场", "Update source: local directory marketplace"));
+      if (active && u.channel) text += "\n" + (u.channel === "release" ? L("更新来源：", "Update source: ") + (u.channelHost === "gitcode" ? L("GitCode 正式 Release（校验 ZIP 与 SHA256）", "stable GitCode Release (validated ZIP and SHA256)") : L("GitHub 正式 Release（校验 ZIP 与 SHA256）", "stable GitHub Release (validated ZIP and SHA256)")) : L("更新来源：本地目录市场", "Update source: local directory marketplace"));
       if (active && u.releaseUrl) text += "\n" + u.releaseUrl;
       if (active && u.checkedAt) text += "\n" + L("上次检测：", "Last checked: ") + new Date(u.checkedAt).toLocaleString();
       if (u && (u.phase === "updating" || u.phase === "downloading")) text += "\n" + L("关闭自动更新仅阻止后续安装；已开始的安装会继续完成", "Turning automatic updates off stops future installs; an install already started will finish");
@@ -2532,6 +2557,89 @@
       return nativeCtx.val;
     }
 
+    /* ---------- v92 原生上下文按钮增强（v93 起档位口径唯一承载处）：环填充与右侧百分比 ----------
+     * 按钮（chat-context-usage-trigger）与本条同 pane 同会话：数据取本实例 lastBand。
+     * 稳定性依据：React 不清理非 props 的手动 data-* 属性，也不动 wrapper 末尾追加的
+     * 节点（其 React children 只有 button）；dasharray/dashoffset 属 React 管理，宿主
+     * 数据更新瞬间会重写，由 render + heavy 双 reapply 兜回（≤600ms）。
+     * cw 缺失时还原原生形态（按钮仍承载 Coding Plan/Start Plan 面板，不动其存在性）。 */
+    var ZU_CTX_TRIGGER = '[data-testid="chat-context-usage-trigger"]';
+    var ZU_CTX_CIRC = 62.83185307179586;   // 原生环 r=10 的周长（还原原生 dashoffset 用）
+    function enhanceCtxButton() {
+      if (inactive()) return;
+      var btn = null;
+      try { btn = cardCache ? cardCache.querySelector(ZU_CTX_TRIGGER) : null; } catch (e) { }
+      if (!btn || !btn.parentElement || !lastBand || !lastBand.cw) {
+        if (ctxBtnCache) { restoreCtxButton(ctxBtnCache); ctxBtnCache = null; }
+        return;
+      }
+      ctxBtnCache = btn;
+      if (btn.getAttribute("data-zusage-armed") !== "1") btn.setAttribute("data-zusage-armed", "1");
+      if (btn.getAttribute("data-zusage-band") !== lastBand.cls) btn.setAttribute("data-zusage-band", lastBand.cls);
+      var lite = bar.classList.contains("zu-light");
+      syncCtxLite(btn, lite);
+      var svg = null;   // 排除 .animate-spin：额度重置中 spinner 保留原生转圈，期间环回原生样式
+      for (var i = 0; i < btn.children.length; i++) {
+        var k = btn.children[i];
+        if (String(k.tagName || "").toLowerCase() === "svg" && !(k.classList && k.classList.contains("animate-spin"))) { svg = k; break; }
+      }
+      if (svg) {
+        var cs = svg.querySelectorAll("circle");
+        var v = cs.length >= 2 ? cs[1] : null;
+        if (v) {
+          var da = Math.max(0, Math.min(100, lastBand.pct)).toFixed(1) + " 100";
+          if (v.getAttribute("pathLength") !== "100") v.setAttribute("pathLength", "100");
+          if (v.getAttribute("stroke-dasharray") !== da) v.setAttribute("stroke-dasharray", da);
+          if (v.getAttribute("stroke-dashoffset") !== "0") v.setAttribute("stroke-dashoffset", "0");
+          if (v.getAttribute("stroke-linecap") !== "round") v.setAttribute("stroke-linecap", "round");
+        }
+      }
+      var pctEl = null;
+      for (var j = 0; j < btn.children.length; j++) {
+        if (btn.children[j].classList && btn.children[j].classList.contains("zu-ctxpct")) { pctEl = btn.children[j]; break; }
+      }
+      if (!pctEl) {
+        pctEl = document.createElement("span");
+        pctEl.className = "zu-ctxpct";
+        btn.appendChild(pctEl);   // 挂在 trigger 按钮内：悬停数值=悬停按钮，原生 hover 效果与「上下文容量」面板自动生效
+      } else if (pctEl !== btn.children[btn.children.length - 1]) {
+        btn.appendChild(pctEl);   // React 提交（如额度重置 loading 切换的 appendChild）可能把手动节点挤离末尾，挪回环右侧
+      }
+      var txt = lastBand.pct.toFixed(1) + "%";
+      var pcls = "zu-ctxpct pct " + lastBand.cls;
+      if (pctEl.textContent !== txt) pctEl.textContent = txt;
+      if (pctEl.className !== pcls) pctEl.className = pcls;
+    }
+    function syncCtxLite(el, lite) {
+      var has = el.getAttribute && el.getAttribute("data-zusage-light");
+      if (lite && !has) el.setAttribute("data-zusage-light", "1");
+      else if (!lite && has) el.removeAttribute("data-zusage-light");
+    }
+    function restoreCtxButton(btn) {
+      if (!btn || !btn.isConnected) return;
+      btn.removeAttribute("data-zusage-armed");
+      btn.removeAttribute("data-zusage-band");
+      btn.removeAttribute("data-zusage-light");
+      for (var i = 0; i < btn.children.length; i++) {
+        if (btn.children[i].classList && btn.children[i].classList.contains("zu-ctxpct")) { btn.children[i].remove(); break; }
+      }
+      var cs = btn.querySelectorAll("circle");
+      var v = cs.length >= 2 ? cs[1] : null;
+      if (v) {
+        v.removeAttribute("pathLength");
+        v.removeAttribute("stroke-linecap");
+        /* 还原原生 dash 语义：aria-label「上下文已用 X / 总量 Y」推回 offset；拿不到就退
+         * 空环（offset=周长），React 数据更新时会写回准确值。 */
+        var ratio = 0, m = String(btn.getAttribute("aria-label") || "").match(/已用\s*([\d,，]+)\s*\/\s*总量\s*([\d,，]+)/);
+        if (m) {
+          var used = parseFloat(m[1].replace(/[,,]/g, "")), total = parseFloat(m[2].replace(/[,,]/g, ""));
+          if (used > 0 && total > 0) ratio = Math.min(Math.max(used / total, 0), 1);
+        }
+        v.setAttribute("stroke-dasharray", ZU_CTX_CIRC + " " + ZU_CTX_CIRC);
+        v.setAttribute("stroke-dashoffset", String(ZU_CTX_CIRC * (1 - ratio)));
+      }
+    }
+
     /* ---------- v80 in-card 挂载：条挂输入卡片内部、group/toolbar 工具行之后自占一行 ----------
      * 宿主 ChatPromptEditor 的工具行是卡片（flex-col gap-3）的最后一个子块；条作为其兄弟
      * 节点插在后面，卡片纯自适应高度自然长高（12px 间距 + 条高），与对话框融为一体。
@@ -2631,6 +2739,7 @@
           mountBelowCard();
         }
       }
+      enhanceCtxButton();   // v92：DOM 对账点（React 重渲染/按钮重建后兜回，幂等）
       if (state.data && pid === "auto") {
         var msid = typeof state.data.mine === "string" ? state.data.mine : null;
         var pSid;
@@ -2924,6 +3033,7 @@
       });
       globalListeners = [];
       releasePads();
+      if (ctxBtnCache) { restoreCtxButton(ctxBtnCache); ctxBtnCache = null; }   // v92：还原原生按钮形态
       wantedEl = composer = cardCache = null;
       bar.remove();
       panel.remove();   // v80：面板挂 body，dispose 需单独摘除

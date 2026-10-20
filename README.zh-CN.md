@@ -18,12 +18,17 @@ Windows / macOS · Python 3.8+ · [MIT](LICENSE)
 
 **三步装上：**
 
+把这句话发给 ZCode：
+
 ```text
-/plugin marketplace add ByteRax/zcode-token-usage-statusbar#plugin-releases
-/plugin install zcode-token-usage-statusbar@zusage-marketplace
+安装或者更新 zcode 插件 https://github.com/ByteRax/zcode-token-usage-statusbar，执行完毕后，运行命令 /install-overlay
 ```
 
-前两条在 ZCode 的对话框里敲。装完之后**完全退出并重新打开 ZCode**（关窗口不算），底部就多出那条小状态栏了。详细说明见[快速开始](#快速开始)。
+它会先把插件装好，再执行 `/install-overlay` 装上状态条——要是它没自己跑，你就在对话框里手动敲一次。然后**完全退出 ZCode 再重新打开**（关窗口不算），底部就多出那条小状态栏了。详细说明见[快速开始](#快速开始)。
+
+> 这条捷径装的是仓库默认分支的源码。想跟着正式 Release 走自动更新，用下面「方式 A」里带 `#plugin-releases` 的地址。
+
+国内网络访问 GitHub 受限？上面那句里的地址可能连不上。插件渠道和代码在 GitCode 都有同步镜像：[gitcode.com/tanranran/zcode-token-usage-statusbar](https://gitcode.com/tanranran/zcode-token-usage-statusbar)，插件市场可以直接注册 GitCode 渠道，见下面「四种装法」的说明。
 
 [快速开始](#快速开始) · [这些数字是怎么来的](#这些数字是怎么来的) · [常见问题](#常见问题) · [功能截图](docs/features.md)
 
@@ -34,8 +39,8 @@ Windows / macOS · Python 3.8+ · [MIT](LICENSE)
 对话窗口底部会多出一条窄窄的横条，大概是这样：
 
 ```text
-⚡ 86 t/s │ 42.3% │ 6.25万 90% 7次 Σ18.4s ⏱1.4s │ 144.85万 86% 23轮 187次 │ 142 🔴2 │ 342.18万 │ 23.64万 🟢 │ ⚙
-  生成速度   上下文占比            本轮（这次提问）            会话累计（这次对话）        工具调用      今日合计      子智能体      设置
+⚡ 86 t/s │ 6.25万 90% 7次 Σ18.4s ⏱1.4s │ 144.85万 86% 23轮 187次 │ 142 🔴2 │ 342.18万 │ 23.64万 🟢 │ ⚙
+  生成速度       本轮（这次提问）            会话累计（这次对话）       工具调用     今日合计    子智能体    设置
 ```
 
 每一格说的是：
@@ -60,7 +65,7 @@ Windows / macOS · Python 3.8+ · [MIT](LICENSE)
 | 模型现在快不快？ | 最左边那格 **t/s**，颜色直接告诉你快慢 |
 | 我按回车之后等了多久才出字？ | **本轮**里的 ⏱ 那个数（就是常说的 TTFT / 首字延迟） |
 | 这次提问 / 这次对话 / 今天一共用了多少 token？ | **本轮** / **会话累计** / **今日合计** 三格 |
-| 会不会聊着聊着就写不下了？ | **上下文占比**，快满了会变色，撑爆了还会弹处置建议 |
+| 会不会聊着聊着就写不下了？ | 输入框工具栏的**上下文按钮**（环形图标+百分比），快满了会变色，撑爆了还会弹处置建议 |
 | 缓存省了多少？思考花了多少？ | 悬停 **本轮**，能看到输入、输出、缓存读取、思考 token 的明细和命中率 |
 | 模型派的子任务烧了多少？ | **子智能体**那格，点开能看到每个子任务分别花了多少 |
 | 工具是不是报错了？ | **工具调用**那格，出错会亮红点，悬停能看每个工具的耗时和错误 |
@@ -145,18 +150,27 @@ MCP 工具还支持 `days:N`、`sessions:N`、`models:days`、`session:<会话ID
 
 > 前三种都往同一个运行目录里装东西，**选一个就行，别叠着来**；第四种是自托管 Web，和桌面版完全不是一回事。
 
+> **国内访问 GitHub 受限？** 仓库在 GitCode 有一份同步镜像：[`tanranran/zcode-token-usage-statusbar`](https://gitcode.com/tanranran/zcode-token-usage-statusbar)。**A. 插件** 把市场注册地址换成 GitCode 渠道就行（见下面的命令，本机要装有 Git）；**B/C** 把克隆地址换成 GitCode 的。注册或克隆的是哪个地址，之后的检查更新和下载就走哪个，不用再碰 GitHub。
+
 #### A. 插件（推荐）
 
-在 **ZCode 对话输入框**依次执行：
+开头那句自然语言指令，目的就是让 ZCode 替你走完下面两步；想自己手动来也行，在 **ZCode 对话输入框**依次执行：
 
 ```text
 /plugin marketplace add ByteRax/zcode-token-usage-statusbar#plugin-releases
 /plugin install zcode-token-usage-statusbar@zusage-marketplace
 ```
 
-也可以走界面：**设置 → 插件 → 添加插件市场**，填 `https://github.com/ByteRax/zcode-token-usage-statusbar#plugin-releases`，添加后找到 **ZCode Token Usage Statusbar** 点安装。
+GitHub 访问受限时，把第一条换成 GitCode 渠道（结尾的 `.git` 不能省；这个走法要求本机装有 [Git](https://git-scm.com/downloads)）：
 
-这条渠道装的是经过校验的正式 Release 包，不会跟着开发分支乱跑。
+```text
+/plugin marketplace add https://gitcode.com/tanranran/zcode-token-usage-statusbar.git#plugin-releases-gitcode
+/plugin install zcode-token-usage-statusbar@zusage-marketplace
+```
+
+注册的是哪个地址，之后 ⚙ 里的「检查更新 / 立即更新」和自动更新就从哪里取：两条渠道装的是同一份经过校验的正式 Release 包，不会跟着开发分支乱跑。
+
+也可以走界面：**设置 → 插件 → 添加插件市场**，填上面任意一个渠道地址，添加后找到 **ZCode Token Usage Statusbar** 点安装。
 
 > **版本说明（2026-10-20）：** `#plugin-releases` 当前正式版是 [v1.5.2](https://github.com/ByteRax/zcode-token-usage-statusbar/releases/tag/v1.5.2)，已经包含默认自动安装/修复和下面的 SSH 远端支持。还在用旧版 `v1.4.1` 的请先按下面的更新步骤升级——旧版默认是关闭自动安装的，那种情况要手动敲一次 `/install-overlay`。
 
@@ -208,8 +222,9 @@ macOS 上要是没有 `python`，就写 `python3 install.py`。
 
 **以后怎么更新？**
 
-- **插件（正式渠道）**：在 ZCode 里敲 `/plugin marketplace update zusage-marketplace`，再去 **设置 → 插件 → 已安装** 更新这个插件。或者直接点 ⚙ 里的「检查更新 / 立即更新」。自动更新默认是开的。
+- **插件（正式渠道）**：在 ZCode 里敲 `/plugin marketplace update zusage-marketplace`，再去 **设置 → 插件 → 已安装** 更新这个插件。或者直接点 ⚙ 里的「检查更新 / 立即更新」。自动更新默认是开的。注册的是 GitCode 渠道的话，这套更新从版本检查到下载安装全部走 GitCode，⚙ 的「更新来源」会写明当前渠道。
 - **本地目录 / 源码分支**：⚙ 里的自动更新只认正式 Release。源码安装点它会提示"不支持自动更新"，请先 `git pull` 再重新安装，或按[切换到正式渠道](docs/user-guide.md#切换已有市场到正式渠道)迁移。
+- **一键安装器**：⚙ 里的「检查更新」只对插件安装有效。一键安装的更新就两步：进克隆目录 `git pull`（从哪个地址克隆的就从哪里拉，GitCode 镜像用户拉的就是 GitCode），再重跑一次 `python install.py`。
 - 更新装不上时，也可以把「更新zcode 插件 https://github.com/ByteRax/zcode-token-usage-statusbar」这句话直接发给 ZCode，让它帮你重装。
 - 更新完新建或重开会话；如果提示主进程文件变了，就完全退出再重开 ZCode。
 

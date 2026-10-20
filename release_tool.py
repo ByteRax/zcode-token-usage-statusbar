@@ -11,6 +11,9 @@ import stat
 import subprocess
 import sys
 import tempfile
+import urllib.error
+import urllib.parse
+import urllib.request
 import zipfile
 
 PLUGIN = "zcode-token-usage-statusbar"
@@ -214,6 +217,56 @@ def gh_json(root, endpoint, *flags):
                           "--method", "GET", *flags))
 
 
+GITCODE_API = "https://api.gitcode.com/api/v5"
+# Asset hosts the updater may download GitCode release files from. Verified on the
+# first real mirror upload; extend only together with plugin-release.cjs fetchBytes.
+GITCODE_ASSET_HOSTS = ("gitcode.com", "raw.gitcode.com")
+
+
+def gitcode_repository(value):
+    require(isinstance(value, str) and re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9][A-Za-z0-9._-]*", value),
+        "--gitcode-repo must be explicit owner/repo")
+    return value
+
+
+def gitcode_api(path, token=None, query=None, method="GET", body=None, headers=None, timeout=120):
+    # Returns (status, body) for every HTTP outcome so callers can branch on 404;
+    # never surface full URLs on failure: the access_token rides in the query string.
+    params = dict(query or {})
+    if token:
+        params["access_token"] = token
+    url = GITCODE_API + path + ("?" + urllib.parse.urlencode(params) if params else "")
+    request = urllib.request.Request(url, data=body, method=method, headers=headers or {})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.status, response.read()
+    except urllib.error.HTTPError as error:
+        with error:
+            return error.code, error.read()
+    except (urllib.error.URLError, OSError, TimeoutError) as error:
+        detail = error.reason if isinstance(error, urllib.error.URLError) else error
+        raise ReleaseError(f"gitcode api {method} {path} failed: {detail}") from None
+
+
+class _TraceRedirects(urllib.request.HTTPRedirectHandler):
+    # Record every redirect hop so the observed host chain can be pinned in
+    # plugin-release.cjs fetchBytes; never log query strings (may carry tokens).
+    def __init__(self, hops):
+        self.hops = hops
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        self.hops.append(urllib.parse.urlsplit(newurl)._replace(query=None).geturl())
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def download_traced(url, hops, timeout=120):
+    opener = urllib.request.build_opener(_TraceRedirects(hops))
+    request = urllib.request.Request(url, headers={"User-Agent": "zusage-release-tool"})
+    with opener.open(request, timeout=timeout) as response:
+        return response.read(), response.geturl()
+
+
 def preflight(root, repo, manifest, asset):
     data = source_data(root, manifest["version"])
     with zipfile.ZipFile(asset) as archive:
@@ -261,8 +314,97 @@ def preflight(root, repo, manifest, asset):
     return head
 
 
-def publish(root, repo, asset, manifest_path, approved=False, confirm=None, notes_file=None):
+def gitcode_mirror(asset, manifest_path, manifest, notes, tag, gitcode_repo, out_dir):
+    # Mirrors an already-verified GitHub release to GitCode and derives the GitCode
+    # channel catalog from the observed asset URLs. Runs only after --publish won.
+    token = (os.environ.get("GITCODE_TOKEN") or "").strip()
+    require(token, "GITCODE_TOKEN is required for --gitcode-repo")
+    version = manifest["version"]
+
+    def asset_bytes(path):
+        return read_file(path, MAX_ASSET if path.suffix == ".zip" else MAX_MANIFEST)
+
+    status, payload = gitcode_api(f"/repos/{gitcode_repo}/releases/tags/{tag}")
+    if status == 200:
+        release = json.loads(payload)
+        require(isinstance(release, dict) and release.get("tag_name") == tag,
+                "existing GitCode release identity disagrees; refusing to reuse")
+    else:
+        require(status == 404, f"gitcode release lookup -> HTTP {status}")
+        body = json.dumps({"tag_name": tag, "name": tag, "body": notes}).encode("utf-8")
+        status, payload = gitcode_api(f"/repos/{gitcode_repo}/releases", token=token, method="POST",
+                                      body=body, headers={"Content-Type": "application/json"})
+        require(status in (200, 201), f"gitcode release create -> HTTP {status}")
+        release = json.loads(payload)
+        require(isinstance(release, dict) and release.get("tag_name") == tag,
+                "gitcode release tag disagrees after create")
+
+    for path in (asset, manifest_path):
+        status, payload = gitcode_api(f"/repos/{gitcode_repo}/releases/{tag}/upload_url", token=token,
+                                      query={"file_name": path.name})
+        require(status == 200, f"gitcode upload_url for {path.name} -> HTTP {status}")
+        ticket = json.loads(payload)
+        url, headers = ticket.get("url"), ticket.get("headers") or {}
+        require(isinstance(url, str) and url.startswith("https://") and isinstance(headers, dict),
+                "gitcode upload ticket disagrees")
+        request = urllib.request.Request(url, data=asset_bytes(path), method="PUT",
+                                         headers={str(key): str(value) for key, value in headers.items()})
+        try:
+            with urllib.request.urlopen(request, timeout=300) as response:
+                require(200 <= response.status < 300, f"gitcode asset upload -> HTTP {response.status}")
+        except urllib.error.HTTPError as error:
+            error.close()
+            raise ReleaseError(f"gitcode asset upload for {path.name} -> HTTP {error.code}") from None
+        except (urllib.error.URLError, OSError, TimeoutError) as error:
+            detail = error.reason if isinstance(error, urllib.error.URLError) else error
+            raise ReleaseError(f"gitcode asset upload for {path.name} failed: {detail}") from None
+
+    status, payload = gitcode_api(f"/repos/{gitcode_repo}/releases/tags/{tag}")
+    require(status == 200, f"gitcode release reread -> HTTP {status}")
+    release = json.loads(payload)
+    assets = release.get("assets") or []
+    require(isinstance(assets, list), "gitcode release assets disagree")
+    urls = {}
+    for path in (asset, manifest_path):
+        entry = next((a for a in assets if isinstance(a, dict) and a.get("name") == path.name), None)
+        require(isinstance(entry, dict) and isinstance(entry.get("browser_download_url"), str),
+                f"gitcode asset {path.name} missing after upload")
+        urls[path.name] = entry["browser_download_url"]
+
+    hops = []
+    for path in (asset, manifest_path):
+        url = urls[path.name]
+        require(urllib.parse.urlsplit(url).hostname in GITCODE_ASSET_HOSTS,
+                f"unexpected GitCode asset host for {path.name}; extend GITCODE_ASSET_HOSTS and "
+                "plugin-release.cjs fetchBytes together after verifying the real URL")
+        content, final = download_traced(url, hops)
+        require(content == asset_bytes(path), f"gitcode asset {path.name} bytes disagree after upload")
+        if path.suffix == ".zip":
+            require(hashlib.sha256(content).hexdigest() == manifest["asset"]["sha256"],
+                    "gitcode zip sha256 disagrees")
+            zip_url = url
+
+    with zipfile.ZipFile(asset) as archive:
+        catalog = json.loads(archive.read("marketplace.json"))
+    require(isinstance(catalog, dict) and isinstance(catalog.get("plugins"), list)
+            and len(catalog["plugins"]) == 1, "marketplace catalog shape disagrees")
+    catalog["plugins"][0]["source"] = {
+        "source": "url", "type": "zip", "url": zip_url,
+        "sha256": manifest["asset"]["sha256"], "path": "plugins/" + PLUGIN, "stripRoot": False}
+    catalog_path = out_dir / "marketplace-release-gitcode.json"
+    catalog_path.write_text(json.dumps(catalog, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return {"zipUrl": zip_url, "manifestUrl": urls[manifest_path.name],
+            "catalog": str(catalog_path.resolve()), "redirectHops": hops}
+
+
+def publish(root, repo, asset, manifest_path, approved=False, confirm=None, notes_file=None,
+            gitcode_repo=None):
     repo = repository(repo)
+    if gitcode_repo is not None:
+        gitcode_repo = gitcode_repository(gitcode_repo)
+        if approved:
+            require((os.environ.get("GITCODE_TOKEN") or "").strip(),
+                    "GITCODE_TOKEN is required for --gitcode-repo")
     require(asset.name != manifest_path.name and manifest_path.name == "release-manifest.json",
             "expected separate release-manifest.json")
     asset_input, manifest_input = str(asset.resolve()), str(manifest_path.resolve())
@@ -324,6 +466,13 @@ def publish(root, repo, asset, manifest_path, approved=False, confirm=None, note
                 "zip": asset_input, "manifest": manifest_input, "commands": commands,
                 "notesFile": str(notes_file), "notes": notes,
                 "betweenUploadAndPublish": "verify draft identity, body and downloaded asset bytes"}
+        if gitcode_repo is not None:
+            plan["gitcode"] = {
+                "repository": gitcode_repo, "tag": tag, "approved": approved,
+                "steps": ["create or reuse release with the same tag and notes",
+                          "upload the zip and release-manifest.json attachments",
+                          "reread and byte-compare both assets",
+                          f"write marketplace-release-gitcode.json next to {manifest_input}"]}
         if not approved:
             return plan
         # gh reads the owned notes snapshot, never the input file again after review.
@@ -364,6 +513,10 @@ def publish(root, repo, asset, manifest_path, approved=False, confirm=None, note
         require(isinstance(published.get("body"), str) and
                 published["body"].replace("\r\n", "\n").rstrip() == notes.replace("\r\n", "\n").rstrip(),
                 "published release body disagrees; inspect release manually")
+        if gitcode_repo is not None:
+            plan["gitcode"].update(gitcode_mirror(
+                asset, manifest_path, manifest, notes, tag, gitcode_repo,
+                Path(manifest_input).parent))
         return plan
 
 
@@ -382,6 +535,8 @@ def main(argv=None):
             p.add_argument("--manifest", type=Path, required=True)
         if command == "publish":
             p.add_argument("--notes-file", type=Path, required=True, help="UTF-8 release notes (not a placeholder)")
+            p.add_argument("--gitcode-repo", help="optional gitcode owner/repo; mirror the release "
+                                                  "and emit marketplace-release-gitcode.json (needs GITCODE_TOKEN)")
             group = p.add_mutually_exclusive_group()
             group.add_argument("--publish", action="store_true")
             group.add_argument("--dry-run", action="store_true")
@@ -395,7 +550,7 @@ def main(argv=None):
                       **verify(args.asset, args.manifest, args.repo)}
         else:
             result = publish(args.root.resolve(), args.repo, args.asset, args.manifest, args.publish, args.confirm,
-                             notes_file=args.notes_file)
+                             notes_file=args.notes_file, gitcode_repo=args.gitcode_repo)
         print(json.dumps(result, indent=2, sort_keys=True))
         return 0
     except (ReleaseError, OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile) as error:
