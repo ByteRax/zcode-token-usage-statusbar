@@ -116,6 +116,12 @@ python3 sync_plugin.py --check
 - 本地统计只读数据库，不上传用量；远端查询使用配置/宿主连接通道，插件更新另行联网下载代码，不能笼统宣称整个插件“不联网”。
 - Web 默认 loopback sidecar 向本机 ZCode 校验设备 Cookie；保留 nginx 认证、静态白名单和 systemd 只读限制，不直接暴露公网。`readonly-guard.py` 不改写已含 `mode=rw` 的 URI，不能把包装器当无条件只读安全边界。
 
+### 命令、技能与元数据
+
+- 官方插件文档不等于引擎实现：frontmatter/manifest 新增字段前，先在目标客户端版本引擎源码核对所有暴露通道（桌面 `/` 补全、终端 CLI、非交互）的实际语义再入库。实证先例：`disable-noninteractive: true` 在 3.16.2 被解析为 `disableNonInteractive` 并从桌面协议补全整体排除，而文档只写「非交互禁用」，曾致 `/install-overlay`、`/uninstall-overlay` 桌面失联。
+- 插件 `commands/*.md` 的 frontmatter 白名单仅 `description`、`argument-hint`，由 `test_command_frontmatter.py` 守护；`skills/*/SKILL.md`、`hooks/hooks.json`、`.mcp.json` 同样不加未验证字段。放宽白名单前须先补引擎语义证据并更新该测试。
+- 手敲完整命令与桌面补全是两条通道：执行路径（parse/load/expand）无字段过滤，补全缺失先查引擎 `listProtocolSlashCommands` 的过滤条件，不要先怀疑安装或重装插件。
+
 ## 6. 测试与验证
 
 在仓库根运行；没有构建、lint 或格式化脚本。基础命令：
@@ -140,7 +146,7 @@ python3 sync_plugin.py --check
 | 浮层/主桥 | `overlay-*.test.cjs`、`plugin-loader.test.cjs`、`plugin-restart-boot.test.cjs`；语法检查，布局/多窗口需桌面验收 |
 | SSH 路由 | `test_remote_targets.py`、`inject-remote-recovery.test.cjs`、`overlay-remote-scope.test.cjs`；实机身份/重连与认证另验 |
 | 安装/更新/锁/解包 | `test_install_discovery.py`、`test_plugin_sudo_install.py`、`test_pending_asar.py`、`test_config_transactions.py`、`test_runtime_sync_guard.py`、`test_release*.py` 及 `plugin-*.test.cjs`、`runtime-lock.test.cjs` |
-| 插件命令/hooks/MCP | `test_plugin_contract.py`、`test_plugin_package.py`、`test_plugin_runtime.py`、`test_session_start_channels.py`、`test_restart_notice.py`；共享文件同时同步并检查漂移 |
+| 插件命令/hooks/MCP | `test_command_frontmatter.py`、`test_plugin_contract.py`、`test_plugin_package.py`、`test_plugin_runtime.py`、`test_session_start_channels.py`、`test_restart_notice.py`；共享文件同时同步并检查漂移 |
 | Web | 下列语法检查；当前回归未覆盖 Web 端到端，需授权的旁挂/认证/浏览器验收，不能拿桌面测试替代 |
 | 文档/本地化 | 路径、相对链接/锚点、JSON 示例、双语对应与 manifest 一致性；涉及默认值/协议时加对应契约测试 |
 
@@ -154,6 +160,12 @@ node --check web/zusage-sidecar.mjs
 
 宿主真实 CLI 沙箱测试和交互演示见 [测试说明](tests/README.md)。它们使用真实 ZCode、认证和模型，可能联网/消耗 token，不属于默认纯隔离测试；测试对象必须指向自有临时 HOME、插件库存与夹具。
 真实桌面安装会改客户端文件；默认回归不得接触个人数据库、配置、真实插件库存或客户端。语法通过、手工 hook 成功、Windows 收尾夹具通过均不能替代自然 SessionStart/重启/多窗口/远端实机证据。
+
+宿主行为排查与客户端升级体检：
+
+- 查宿主行为以引擎主文件（macOS 桌面为 `/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs`）为最高证据，先 grep 数据的生产函数再追消费链；kebab-case 字段要同时搜 camelCase（如 `disable-noninteractive`→`disableNonInteractive`）。bundle 混淆符号随版本轮换，`plugin-commands-cli-smoke.py` 探测配方失配时修配方，不得退回模拟 catalog。
+- 客户端升级后按六项体检：状态条可见（桥指纹登记）、`python3 -B tests/plugin-commands-cli-smoke.py` 通过命令 catalog 断言、技能列表含 `zcode-token-usage`、MCP `token_usage` 可调、SessionStart 同步与逐问速率行出现、tooltip/设置面板正常。
+- 回归断言按域拆分、分开报错：真实行为回归（catalog、协议、打包文件集）优先于文档断言；长期红的测试等于没有测试，不得让一个失配域掩盖另一域的新回归。
 
 ## 7. 文档、本地化与已知差异
 
@@ -175,6 +187,7 @@ node --check web/zusage-sidecar.mjs
 - 正式更新必须来自已注册来源对应的正式 Release，ZIP、manifest、版本、渠道 URL/SHA256 一致；不回退开发分支，不静默切换用户市场来源，不启用被禁用插件。
 - `--publish`/`--confirm` 是工具安全门，不是用户授权的替代。提交、推送、tag、创建 Release、渠道写入均按**当前明确授权**执行，本指南不授予持续发布权限。
 - 实际目标仓库先检查 `git remote -v`，不要混用 fork/上游；源码/渠道 branch、tag、Release 必须分别确认。
+- `fork` 配置双 push URL：`git push fork` 同时推送 GitHub（ByteRax）与 GitCode 镜像（gitcode.com/tanranran/zcode-token-usage-statusbar）；`gitcode` 远程仅用于单独核对或恢复，`origin` 仍只读。GitCode 同时承载国内更新渠道：`plugin-releases-gitcode` 分支清单 + 同 tag Release 资产，由 `release_tool.py publish --gitcode-repo`（需 `GITCODE_TOKEN`）在 GitHub 发布验收后生成，见[双远程同步](docs/maintaining.md#双远程同步)。更新器的 GitHub/GitCode 双渠道校验（`plugin-release.cjs` 的 flavor 分支、`sameAssetUrl` 主机模式、`fetchBytes` 白名单）必须一起改并有测试锁定。GitCode 段推送认证（HTTPS 访问令牌）未配置时该段失败属预期，不代表 GitHub 段失败。
 - 维护文档旧 CRLF 修复步骤含破坏性重新检出命令，**不要执行**；保存已有修改，用独立工作树/新检出验证字节。也不要把安装 `--dry-run` 概括为完全无本地副作用。
 
 ## 9. 完成标准
