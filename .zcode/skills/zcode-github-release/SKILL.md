@@ -24,6 +24,7 @@ description: "仅为当前 zcode-token-usage-statusbar 项目准备、校验并�
 ## 检查与打包
 
 - 核对两份插件 manifest 与市场条目版本/name 一致。用户要求升级版本时才修改版本，不顺手修其它代码。
+- 检查 `overlay.js` 与插件副本的 `VERSION` 代际注释唯一连贯：并行工作各自递增会出现同号不同义（实证：两处 v92 各指不同功能），按时间线重排递增并保持两份一致，确保版本号唯一对应一组变更。
 - 在项目根运行 `python3 -B sync_plugin.py --check`。漂移时先检查源文件，只同步项目自己的副本。
 - 运行 Node、Python、速率回归及脚本语法检查。测试失败先修复或报告阻塞，不能继续发布。
 - 直接使用仓库根 `release_tool.py` 与同目录可信 `release_unpack.py`，本技能不保存脚本副本：
@@ -68,10 +69,11 @@ python3 -B release_tool.py publish --root /absolute/project --zip /new/artifact-
 - 合并前读取 PR 的 `headRefOid`、`baseRefName`、`files`、`mergeable` 和 `statusCheckRollup`，核对 head 包含已验收 tag 的提交且 diff 仅为本次已审查改动。检查失败、冲突、待运行检查或分支内容变化时停止并修复/重新验证，不使用 `--admin` 绕过规则。无检查时按真实状态记录，仍须具备已执行的本地测试证据。
 - 优先使用 merge commit 保留已发布提交历史：`gh pr merge NUMBER --repo OWNER/REPO --merge --match-head-commit VERIFIED_HEAD`。仓库不允许该方式时，依据仓库策略选择可用方式并核对主分支的实际文件；不要强推，不移动已发布 tag，不因合并重传资产，也不自动删除分支。
 - 合并后用 `gh pr view NUMBER --repo OWNER/REPO --json state,mergedAt,mergeCommit,url` 确认 `MERGED`；重新读取远端 base tip，验证包含 merge commit，以及已发布提交的祖先关系（merge 方式）或等价文件内容。报告 PR URL、合并 commit 和 base。合并被阻止时明确标记「Release 已发布，PR 合并未完成」，不得宣称完整发版完成。
+- `gh pr merge` 只作用于 GitHub：GitCode 镜像的 base 分支不随 PR 合并自动跟进。合并验收后 fetch 远端，把 base 分支推到 `fork`（`git push fork BASE_BRANCH`；GitHub 段通常 up-to-date，GitCode 段完成镜像同步），回读镜像 tip 确认包含 merge commit。镜像滞后不算发版失败，但收尾必须报告同步状态。
 - 保留本地其它会话改动，远端合并不要求切换或清理脏工作区。若发布后增加技能/文档等必要收尾提交，应单独测试并明确它们位于 tag 之后，只进入 PR，不写成已发布包中的功能。
 
 ## 收尾
 
-- 分别报告打包、提交/tag/推送、Release、渠道、更新端验证及源码 PR 合并状态。未执行就明确写未执行；完整发版须给出已合并 PR 的 URL 与验证结果。
+- 分别报告打包、提交/tag/推送、Release、渠道、更新端验证、源码 PR 合并及 GitCode 镜像 base 同步状态。未执行就明确写未执行；完整发版须给出已合并 PR 的 URL 与验证结果。
 - `fork` 双 push URL 使分支、tag 与 worktree 渠道推送同时到达 GitCode 镜像（[双远程同步](../../../docs/maintaining.md#双远程同步)）；GitCode 段失败时补配访问令牌重推即可，不据此重发或回滚 GitHub Release。要求 GitCode 渠道时报告 `--gitcode-repo` 的发布/上传/清单结果与 `plugin-releases-gitcode` 分支状态；全新 clone 的渠道推送只到 GitHub，需要镜像时显式加入推送目标。
 - 不安装或覆盖用户缓存，不自动重启客户端。发布成功不等于用户已安装。
