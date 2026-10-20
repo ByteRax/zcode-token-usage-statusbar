@@ -8,7 +8,7 @@ const crypto = require("crypto");
 const https = require("https");
 const { EventEmitter } = require("events");
 const { githubRepository, gitcodeRepository, readChannel, checkRelease, gitcodeReleaseFromCatalog, validateGitcodeRelease,
-  downloadRelease, validateRelease, validateManifest, validateCatalog,
+  downloadRelease, validateRelease, validateManifest, validateCatalog, catalogChannel,
   fetchBytes, sameAssetUrl, MAX_ASSET, MAX_JSON, PLUGIN_ID } = require("../plugin-release.cjs");
 const { compareVersions } = require("../plugin-updater.cjs");
 
@@ -364,4 +364,15 @@ test("download publishes download start, byte progress and verify stage before u
     return { ok: true, marketplaceRoot: output, pluginRoot: path.join(output, "plugins", "zcode-token-usage-statusbar"), version: f.selected.version };
   });
   plain.cleanup();
+});
+
+test("catalogChannel separates Release-pinned catalogs from source checkouts", () => {
+  const catalog = (source) => ({ name: "zusage-marketplace", plugins: [{ name: "zcode-token-usage-statusbar", source }] });
+  assert.equal(catalogChannel(catalog({ source: "url", type: "zip",
+    url: "https://github.com/ByteRax/zcode-token-usage-statusbar/releases/download/v1.5.2/x.zip" })), "release");
+  assert.equal(catalogChannel(catalog("./plugins/zcode-token-usage-statusbar")), "source");
+  assert.equal(catalogChannel(catalog({ source: "git", url: "https://github.com/ByteRax/zcode-token-usage-statusbar" })), "source");
+  assert.equal(catalogChannel(null), "unknown");
+  assert.equal(catalogChannel({ plugins: [] }), "unknown");
+  assert.equal(catalogChannel({ plugins: [{ name: "other", source: { source: "url", type: "zip" } }] }), "unknown");
 });

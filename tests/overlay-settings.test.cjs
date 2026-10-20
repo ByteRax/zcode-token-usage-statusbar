@@ -351,6 +351,30 @@ test('万/亿 toggle change persists and re-renders without touching display ite
   assert.deepEqual(context.state.show, { ctx: 1 });
 });
 
+test('the update section always shows a copyable reinstall prompt between the buttons and the status line', () => {
+  const buildSource = extract('    function settingRow(', '    function syncSettingsScroll() {');
+  const body = { scrollTop: 0 };
+  for (const lang of ['zh', 'en']) {
+    const context = {
+      panel: {
+        innerHTML: '',
+        querySelector: selector => selector === '.zu-settings-body' ? body : { value: '' },
+        querySelectorAll: () => [],
+      },
+      state: { lang, show: {}, ctxOv: '', cnNum: 1 },
+      L: (zh, en) => lang === 'en' ? en : zh,
+      syncUpdate: () => {}, syncSettingsScroll: () => {},
+    };
+    vm.runInNewContext(buildSource + '\nbuildPanel();', context);
+    const html = context.panel.innerHTML;
+    assert.match(html, /zu-update-fallback/);
+    /* 这句是发给 agent 的重装口令，必须逐字可复制，不随界面语言变化 */
+    assert.match(html, /<code>更新zcode 插件 https:\/\/github\.com\/ByteRax\/zcode-token-usage-statusbar<\/code>/);
+    assert.ok(html.indexOf('zu-update-fallback') > html.indexOf('zu-update-actions'));
+    assert.ok(html.indexOf('zu-update-fallback') < html.indexOf('zu-update-status'));
+  }
+});
+
 /* 更新进度条（v89）：用最小 DOM 替身驱动 syncUpdate → syncProgress。 */
 function progressHarness(pluginUpdate, lang = 'zh') {
   const syncSource = extract('    function syncUpdate() {', '    function syncPanel() {');

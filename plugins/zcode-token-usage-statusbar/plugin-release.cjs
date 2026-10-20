@@ -271,6 +271,19 @@ function validateGitcodeRelease(release) {
       page.pathname !== `/${release.repository}/releases/tag/${encodeURIComponent(release.tag)}`) return null;
   return { ...release, version: release.version };
 }
+/* 已注册市场的清单指向什么：Release 下载源，还是仓库源码（本地路径/开发分支）。
+   只用于把报错换成可操作的提示；真正的安装校验仍由 validateCatalog 把关。 */
+function catalogChannel(catalog, pluginName = "zcode-token-usage-statusbar") {
+  const entries = catalog && catalog.plugins;
+  const matches = Array.isArray(entries) ? entries.filter((p) => p && p.name === pluginName) : [];
+  const entry = matches.length === 1 ? matches[0] : null;
+  if (!entry) return "unknown";
+  const source = entry.source;
+  /* 源码清单里 source 常是相对路径字符串（如 "./plugins/zcode-token-usage-statusbar"） */
+  if (typeof source === "string") return "source";
+  if (!source || typeof source !== "object") return "unknown";
+  return source.source === "url" && source.type === "zip" ? "release" : "source";
+}
 module.exports = { sameRepository, sameAssetUrl, githubRepository, gitcodeRepository, readChannel, checkRelease, gitcodeReleaseFromCatalog, validateGitcodeRelease,
-  downloadRelease, validateRelease, validateManifest, validateCatalog,
+  downloadRelease, validateRelease, validateManifest, validateCatalog, catalogChannel,
   fetchBytes, MAX_ASSET, MAX_JSON, PLUGIN_ID };
