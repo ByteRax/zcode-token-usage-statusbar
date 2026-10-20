@@ -1,96 +1,174 @@
 <div align="center">
 
-# ZCode Token Usage Statusbar
+# ZCode Token Speed Status Bar
 
-**See model speed, token usage and remaining context at a glance.**
+**Adds a small status bar to the bottom of your ZCode chat window: how fast the model is going, how many tokens you've spent, how much context is left — all at a glance.**
 
-A [ZCode](https://zcode.z.ai) plugin that keeps generation speed (tok/s), time to first token (TTFT), token usage and context window utilization visible in your conversation. Includes usage reports, subagent details and MCP queries.
+A third-party plugin for the [ZCode](https://zcode.z.ai) desktop app (not an official ZCode feature) — listed in the marketplace as **ZCode Token Usage Statusbar**. It also ships a command-line tool and an MCP tool, so you can dig through usage history whenever you want.
+
+A ZCode plugin that keeps generation speed (tok/s), time to first token (TTFT), token usage and context window utilization visible in your conversation. Includes usage reports, subagent details and MCP queries.
 
 English · [简体中文](README.md)
 
-Windows / macOS / Linux · Python 3.8+ · [MIT](LICENSE)
+Windows / macOS · Python 3.8+ · [MIT](LICENSE)
 
 ![ZCode Token Speed Status Bar promo](docs/promo/promo.en.png)
 
 </div>
 
-[Quick start](#quick-start) · [Metrics and data semantics](#metrics-and-data-semantics) · [FAQ](#faq) · [Screenshots](docs/features.md)
-
-> An unofficial open-source project, not affiliated with the ZCode team. Local statistics read the ZCode SQLite database without uploading usage. Installing the desktop bar modifies the client's `app.asar`; plugin updates use the network.
-
-## What it does
-
-- **Check speed**: see generation speed and the wait for the first token.
-- **Track usage**: see the current turn, session and today's totals without opening Settings.
-- **Watch context**: a color-coded indicator warns as the context window fills up.
-- **Inspect details**: hover for cache and thinking tokens, click for subagent usage, and spot tool errors.
-- **Make it yours**: use ⚙ to choose visible items, switch languages and manage plugin updates.
-- **Query in chat**: use `/usage` for reports; the plugin also adds a rate line to eligible replies.
-- **Follow remote sessions**: adapt to connected SSH workspaces and route by `workspaceIdentity` across servers, with separate daily totals and errors. Failed or not-yet-found sessions keep retrying; resumed sessions and reconnects continue querying. See the remote section below.
-
-[Feature screenshots and details →](docs/features.md)
-
-## Metrics and data semantics
-
-| Metric | What it shows | How to read it |
-|---|---|---|
-| Generation speed (tok/s, Token/s) | Output tokens divided by the generation duration of a recent valid request | Updates mainly after requests are stored, rather than measuring each streamed token |
-| Time to first token (TTFT) | Time from request start to the first token | Read alongside speed to distinguish waiting from slow generation |
-| Turn / session / daily usage | Input, output and total tokens in each scope | Total = input + output; cache reads are already in input and reasoning is already in output |
-| Cache hit rate | Cache-read tokens divided by input tokens | Hover for cache and reasoning details |
-| Context utilization | Input tokens of the latest completed request divided by the context window | Not cumulative session usage; can drop after compaction |
-| Subagent usage | Consumption of child tasks associated with the main session | Expand for per-task details in multi-agent workflows |
-
-**Why can speed differ from another plugin?** Ordinary requests use the first-token-to-completion window; requests reporting reasoning tokens, and Claude requests, use the request-start-to-completion window. The reply rate line instead aggregates completed valid segments of the current question as total output divided by total generation duration. It excludes tool waits between segments and final prose not yet stored. End-to-end throughput uses a different time window and should not be compared directly.
-
-The bar searches backward for a recent valid speed sample, which may not be the latest request. Per-question statistics check the current prompt, but rapid successive prompts within the time tolerance still have identification limits. See [data semantics](docs/design-notes.md) and the [user guide](docs/user-guide.md#数据如何计算) (Chinese).
-
-## Choose an installation method
-
-| Your setup | Recommended route | What to know |
-|---|---|---|
-| ZCode desktop, stable version | Plugin marketplace below | Stable `v1.5.2` attempts automatic installation/repair; use `/install-overlay` if needed, then fully restart after success |
-| Development or current main features | Local-directory plugin / standalone installer | Update local source yourself; the stable channel does not automatically track main |
-| Usage queries without the bar | Plugin queries / CLI / MCP | Pure CLI has no bar UI; plugin users should disable automatic bar installation as described below |
-| Self-hosted ZCode Web | [Web deployment guide](web/README.md) | Separate deployment; not a direct installation on the official hosted website |
-
-Python 3.8+; query scripts use the Python standard library without extra Python packages. Desktop scripts use the client's bundled runtime; Git is needed only when cloning source. Windows / macOS are the primary desktop environments. Linux includes path and permission handling but requires validation for your distribution.
-
-## Quick start
-
-> ⚠️ **The floating bar does not appear immediately after its first installation. Quit ZCode completely and restart it to load the bar. Closing the window alone is not enough.**
->
-> **If the bar disappears after updating ZCode, let the plugin restore its injection, then restart ZCode once more.** The update's automatic restart does not replace this restart after successful injection. See the [FAQ](#faq) for steps.
-
-**Using the desktop app?** Plugin installation is recommended; the one-command installer below is an alternative. Do not install both.
-**Self-hosting the web UI?** Follow the [Web edition guide](web/README.md) instead.
-
-### Install through ZCode plugins
-
-The plugin provides **usage queries, reply rates and plugin updates**. Install [Python 3.8+](https://www.python.org/downloads/), then choose either method below.
-
-#### Method 1: remote installation (no source download needed)
-
-Enter these commands in **ZCode's chat input**, in order:
+**Install it in three steps:**
 
 ```text
 /plugin marketplace add ByteRax/zcode-token-usage-statusbar#plugin-releases
 /plugin install zcode-token-usage-statusbar@zusage-marketplace
 ```
 
-**After installation, leave the plugin enabled and start or resume a session to trigger bar installation. After success, quit ZCode completely and reopen it.** Run `/install-overlay` if automatic installation does not occur. Installing the plugin alone does not load the bar.
+Type the first two in ZCode's chat input. After the plugin is installed, **quit ZCode completely and reopen it** (closing the window doesn't count) — the little bar shows up at the bottom. Full details in [Quick start](#quick-start).
 
-Alternatively, open **Settings → Plugin → Add marketplace**, enter `https://github.com/ByteRax/zcode-token-usage-statusbar#plugin-releases`, then find and install **ZCode Token Usage Statusbar**. This channel installs verified stable Release assets, not development branch code.
+[Quick start](#quick-start) · [Where these numbers come from](#where-these-numbers-come-from) · [FAQ](#faq) · [Screenshots](docs/features.md)
 
-#### Method 2: local-directory installation
+---
+
+## What it looks like once it's installed
+
+A thin bar appears along the bottom of the chat window, roughly like this:
+
+```text
+⚡ 86 t/s │ 42.3% │ 62.5k 90% 7 Σ18.4s ⏱1.4s │ 1.45M 86% 23 187 │ 142 🔴2 │ 3.42M │ 236k 🟢 │ ⚙
+   Speed     Context        This turn                Session total          Tools      Today     Sub-agents  Settings
+```
+
+Here's what each part tells you:
+
+| The bit | In plain English |
+|---|---|
+| ⚡ **86 t/s** | How fast the model is writing. Once a turn finishes it's colour-coded: ≥70 green, 40–70 yellow, <40 red |
+| **42.3%** | How much of the model's "how much it can read at once" limit this conversation has used. It changes colour as you fill up: on a normal window it turns yellow at 70% and red at 85%; on a million-token window it turns yellow at 60%. If a request actually gets rejected for running over, advice pops up |
+| **62.5k 90% 7 Σ18.4s ⏱1.4s** | This turn: 62.5k tokens spent, 90% cache hit rate, 7 model requests, the most recent one took 18.4s, and you waited 1.4s for the first token |
+| **1.45M 86% 23 187** | The whole conversation so far: 1.45M tokens, 86% hit rate, 23 turns, 187 requests |
+| **142 🔴2** | Tools were called 142 times, 2 of them errored (small red marker) |
+| **3.42M** | Every conversation today added up: 3.42M tokens |
+| **236k 🟢** | The sub-tasks the model sent out on its own (subagents) used 236k tokens; 🟢 means one is still running |
+| **⚙** | Click for: which items to show, interface language, token unit display, update checks |
+
+**Hover any of them and you get the finer breakdown.** For the real thing, see the [feature screenshots](docs/features.md).
+
+## Where to look for the thing you want
+
+| What you're wondering | Where to find it |
+|---|---|
+| How fast is the model right now? | The **t/s** on the far left — the colour tells you at a glance |
+| How long did I wait after hitting enter? | The ⏱ number in **This turn** (that's the TTFT / time to first token) |
+| How many tokens did this turn / this conversation / today use? | The **This turn**, **Session total** and **Today** items |
+| Is this conversation going to run out of room? | **Context usage** — it changes colour as it fills up, and pops up advice if a request gets rejected |
+| How much did the cache save me? How much was thinking? | Hover **This turn** for input, output, cache-read and thinking token detail plus the hit rate |
+| What did the model's sub-tasks cost? | The **Sub-agents** item — click it to see each sub-task separately |
+| Did a tool call fail? | The **Tools** item — errors light up red, hover for per-tool timing and errors |
+| Looking through history | Type `/usage` in the chat, run `python zusage.py today` in a terminal, or call the `token_usage` MCP tool |
+
+> One honest caveat: these are **token usage** numbers, not a bill, not a plan quota, and not "how much money you have left". Pricing and quota live on ZCode's official pages.
+
+## A few words worth knowing
+
+Get these seven and the rest reads easily:
+
+| Word | In plain English |
+|---|---|
+| **token** | The model's unit of "word". Both billing and speed are measured in them. An English word is usually 1–2 tokens; a Chinese character is usually close to 1 token (it depends on the tokenizer, so treat it as a rough guide) |
+| **tok/s** | Tokens per second — how many tokens the model writes per second. Bigger is faster |
+| **TTFT / first-token latency** | Time to first token. How long you waited after pressing enter before the first character appeared |
+| **context window** | The context window — the limit on how much the model can "see" at once: your prompt, its answer, and the conversation so far. When it fills up, compact the chat or start a new one |
+| **cache** | Content that repeats doesn't have to be recomputed. More cache hits means faster and cheaper |
+| **thinking tokens** | The part where the model "thinks" before answering. It counts as output |
+| **subagent** | A "clone" the model sends out to handle a separate sub-task, with its own token cost |
+
+## Core features
+
+### The desktop status bar
+
+It sits at the bottom of the chat window and follows **the session in the window you're looking at**. Every item can be switched off on its own (see ⚙) — if it feels crowded, hide what you don't care about.
+
+### The per-answer rate line
+
+The plugin also appends a short stats line to the end of replies: generation speed, time to first token, output tokens, generation time.
+
+It is **not the same number as the bar**: the bar shows the **most recent request segment**, while the rate line shows the **weighted average of every request already stored for this turn**. It stays hidden when your current question hasn't been written to the database yet, so it never passes off the previous turn's numbers as this one's.
+
+### Queries: chat, terminal, MCP
+
+Three ways in, one local database:
+
+```text
+/usage                    # ask inside the chat
+/usage today              # today's usage
+/usage week               # the past week
+```
+
+```bash
+python zusage.py today    # ask in a terminal
+python zusage.py days 7
+python zusage.py models 7
+```
+
+```text
+token_usage(scope)        # MCP tool (stdio)
+```
+
+The MCP tool also supports `days:N`, `sessions:N`, `models:days`, `session:<session id prefix>` and `workspace:<directory keyword>`. The plugin command's full name is `/zcode-token-usage-statusbar:usage`.
+
+### SSH remote sessions
+
+If your ZCode runs on a server you reach over SSH, the bar can follow it there:
+
+- Daily totals and errors are **counted per server** — one unreachable host doesn't affect the others
+- Failed or not-yet-found sessions keep retrying with backoff, and queries continue after you resume a session, switch workspaces or reconnect SSH
+- The remote script has to be **copied over by you**, and the query transport must be **non-interactive** — the plugin will not decrypt and reuse the passwords, private keys or passphrases ZCode has stored
+
+Remote support covers **the bar's own data fetching** only. MCP, `/usage` and the per-answer rate line do **not** fetch data across machines. See the [remote session guide](docs/user-guide.md#远程会话) (Chinese).
+
+## Quick start
+
+### What you need first
+
+- **The ZCode desktop client** (Electron). Windows and macOS are the primary targets; on Linux some system paths need administrator rights, and how it looks on each distro is worth checking for yourself.
+- **Python 3.8+** (the standard library's `sqlite3` is enough). No third-party Python packages.
+- **No Node.js or npm needed** — the bar's code runs on the Node runtime that already ships inside ZCode.
+
+### Four ways to install — pick the one you need
+
+| Method | Who it's for | How |
+|---|---|---|
+| **A. The plugin (recommended)** | Almost everyone | Two `/plugin` commands in ZCode, then updates from the ⚙ panel |
+| **B. Local source directory** | People who want to change the code | Clone the repo and point "Add marketplace → Choose directory" at the repo root |
+| **C. One-command installer** | People who'd rather not install a plugin | `git clone` + `python install.py` in a terminal |
+| **D. Self-hosted Web** | People running their own ZCode server | [Deploy it separately](web/README.md) — not the same thing as the three above |
+
+> The first three all write into the same runtime directory — **pick one, don't stack them**. The fourth is a self-hosted Web deployment, which is a completely different thing from the desktop bar.
+
+#### A. The plugin (recommended)
+
+Enter these in **ZCode's chat input**, in order:
+
+```text
+/plugin marketplace add ByteRax/zcode-token-usage-statusbar#plugin-releases
+/plugin install zcode-token-usage-statusbar@zusage-marketplace
+```
+
+You can also use the UI: **Settings → Plugin → Add marketplace**, enter `https://github.com/ByteRax/zcode-token-usage-statusbar#plugin-releases`, then find and install **ZCode Token Usage Statusbar**.
+
+This channel installs a checksum-verified stable Release package, so it won't wander off onto a development branch.
+
+> **Version note (2026-10-20):** The `#plugin-releases` channel currently provides [v1.5.2](https://github.com/ByteRax/zcode-token-usage-statusbar/releases/tag/v1.5.2), which already includes the automatic install/repair described above and the SSH remote support below. If you're still on the older `v1.4.1`, update as described further down first — that version defaults automatic installation to *off*, so you'd have to run `/install-overlay` by hand.
+
+#### B. Local source directory
 
 Download or clone this repository, then:
 
-1. Open **Settings → Plugin → Add marketplace** and click **Choose directory**.
-2. Select the repository root containing `marketplace.json` (not the `plugins/` subdirectory) and add it.
+1. **Settings → Plugin → Add marketplace**, click **Choose directory**.
+2. Pick the **repository root containing `marketplace.json`** (not the `plugins/` subdirectory) and add it.
 3. Find **ZCode Token Usage Statusbar** and install it.
 
-Or enter these commands in ZCode, replacing the path with your repository directory:
+Or type this in ZCode:
 
 ```text
 /plugin marketplace add /absolute/path/to/zcode-token-usage-statusbar
@@ -98,40 +176,15 @@ Or enter these commands in ZCode, replacing the path with your repository direct
 ```
 
 <details>
-<summary>Add marketplace screenshot</summary>
+<summary>See the add-marketplace screenshot</summary>
 
 ![Add marketplace: enter the GitHub URL for remote installation or choose a directory for local installation (Chinese UI)](docs/plugin-marketplace-add.png)
 
 </details>
 
-#### Add the floating bar
+#### C. One-command installer (no plugin)
 
-> **Version note (2026-10-20):** The stable `#plugin-releases` channel currently provides [v1.5.2](https://github.com/ByteRax/zcode-token-usage-statusbar/releases/tag/v1.5.2), including default automatic installation/repair and the SSH support below. Older `v1.4.1` defaults to disabled; run `/install-overlay` if you still use it, or update as described below.
-
-After installing stable `v1.5.2` or the current main plugin, leave the plugin enabled and start or reopen a session. The plugin automatically installs/repairs the bar by default. **This modifies the client's `app.asar`; only enable it if you trust this project. After installation succeeds, quit ZCode completely and reopen it.** Closing the window alone is not enough.
-
-If automatic installation fails, use this manual fallback and follow the actual output to troubleshoot. A full restart is still required after success:
-
-```text
-/install-overlay
-```
-
-**Only want queries and reply rates?** Merge `"plugin_auto_install_overlay": false` into `~/.zcode/zcode-token-usage-statusbar/config.json` without replacing other settings, or run `/uninstall-overlay` to remove the bar and keep an uninstall opt-out that blocks automatic reinjection and installation reminders.
-
-A missing config file or key defaults to enabled; an existing explicit `false` is preserved. `ZUSAGE_PLUGIN_AUTO_INSTALL=1` / `0` takes precedence over config, but never bypasses the uninstall opt-out. Without an environment override, corrupt config or a non-boolean value does not enable automatic installation.
-
-**How do I update it later?**
-
-- **Remote installation**: enter `/plugin marketplace update zusage-marketplace` in ZCode, then update this plugin in **Settings → Plugin → Installed**.
-- **Local installation**: update your source first, then follow the same refresh and update steps. The local marketplace never runs `git pull` for you.
-- Start or reopen a session afterward. If prompted about changed main-process files, quit ZCode completely and reopen it.
-
-Use the `#plugin-releases` stable channel for remote installs; its catalog matches the asset URL, version and SHA256. Existing default-branch or local-directory registrations do not switch automatically; see the [migration guide](docs/user-guide.md#切换已有市场到正式渠道) (Chinese).
-[More installation, updates and troubleshooting →](docs/user-guide.md#插件安装) (Chinese)
-
-### One-command installer (without plugins)
-
-Install [Python](https://www.python.org/downloads/) and [Git](https://git-scm.com/downloads), then run in a terminal:
+Install [Python](https://www.python.org/downloads/) and [Git](https://git-scm.com/downloads), then in a terminal:
 
 ```bash
 git clone https://github.com/ByteRax/zcode-token-usage-statusbar.git
@@ -139,111 +192,131 @@ cd zcode-token-usage-statusbar
 python install.py --lang en
 ```
 
-On macOS, use `python3 install.py --lang en` if `python` is unavailable.
+On macOS, use `python3 install.py --lang en` if `python` isn't available.
 
-**After installation succeeds, quit ZCode completely and reopen it.** The bar appears at the bottom of a conversation window.
+The installer finds ZCode for you, copies the runtime files, installs the bar, and registers a standalone MCP server plus `/usage`. Common options: `--lang en` for English output, `--no-mcp` to install only the bar without the query tools, `--remove` to uninstall, `--dry-run` to see what it would do.
 
-## Everyday use
+### After installing, don't skip these three steps
 
-- **Hover** an item for its detailed figures.
-- **Click Sub-agents** for per-task usage.
-- **Click ⚙** to hide items, switch language, switch token counts to 万/亿 units (Chinese UI only, on by default) or check for plugin updates.
-- **Run `/usage today`** for today's usage, or `/usage week` for the past week.
+They're three separate things, and missing any one of them makes it look like "I installed it and nothing happened":
 
-The plugin command's full name is `/zcode-token-usage-statusbar:usage`.
+1. **The plugin is installed and enabled** — it shows up on the plugin page. So far ZCode has only loaded the plugin's query, rate-line and update features.
+2. **The status bar was injected** — the plugin installs or repairs the bar when you start or resume a session, and this step **modifies the client's `app.asar` file**. If the automatic install fails, `/install-overlay` is the manual fallback.
+3. **It actually loaded after a restart** — you must **quit ZCode completely and reopen it** for the bar to appear. **Closing the window doesn't count, and reopening a session doesn't either.**
 
-## SSH remote support (v1.5.2)
+> The bar modifies client files, so it's on you to decide whether you trust this project. Removal strips only what it injected; it does not roll your ZCode back.
 
-> These features are included in stable **v1.5.2**. Users of older versions must update the installed plugin copy/runtime files, complete installation or repair, then **quit ZCode completely and restart it**. Updating the repository or refreshing the marketplace alone does not update a running injection.
+**How do I update it later?**
 
-### Features and data sources
+- **Plugin (stable channel)**: type `/plugin marketplace update zusage-marketplace` in ZCode, then update the plugin under **Settings → Plugin → Installed**. Or just use ⚙ → **Check for updates / Update now** — automatic updates are on by default.
+- **Local directory**: update your source first (the local marketplace never runs `git pull` for you), then run the same refresh and update steps.
+- Start or reopen a session afterwards. If prompted about changed main-process files, quit ZCode completely and reopen it.
 
-- **Automatic connection adaptation**: derive query transports from saved SSH workspace connection settings, and identify remote sessions using the current workspace identity supplied by the host. Automatic mode queries only confirmed remote scopes; it does not probe historical servers with unknown local session IDs.
-- **Precise multi-server routing**: use the session ID together with `workspaceIdentity` to select its server. Manual targets need the matching `identity`, not just a host label. Matching IDs alone do not merge data across workspaces, windows or servers.
-- **Separate daily totals and errors**: each target keeps its own `today` and error state. A remote total is not substituted for local or another server's daily total, and a failing target should not block other sources.
-- **Continued recovery**: failed or not-yet-found sessions keep retrying with backoff rather than being permanently abandoned. After resuming a historical session, switching workspaces or reconnecting SSH, remote queries continue only when a reliable identity is available. An unconfirmed identity is not guessed.
+[More installation, updates and troubleshooting →](docs/user-guide.md#插件安装) (Chinese)
 
-**Main-pane ownership**: the main tab (`workspace-main`) and split panes route by the SID and workspace identity on their actual session nodes in this window, not shared last-session, pane-layout or workbench-group history. Selecting a session or clearing a record in another window therefore does not change this window’s binding. A renderer patch, gated by host version, asset SHA256 and a unique node anchor, keeps identity attributes aligned with host rendering; trusted workspace IPC and the task list still validate identities. Missing node identity, a protocol mismatch or an inconsistent SID never borrows data from another pane or a historical remote source: without the bridge and with no remote evidence in the window the local record with the same SID is shown; otherwise values stay zero. The identity patch registers host versions 3.15.3, 3.16.1 and 3.16.2; unknown versions are auto-derived only after strict structural checks (unique anchor, minified bindings and store shape) and fall back to database polling when those fail; fully quit and restart after installing the upgrade. Older patches and unknown builds do not fall back to shared records. This describes v1.5.2 and current main; compatibility remains subject to the version and structural checks above.
+### I only want queries — leave my client alone
 
-### Prerequisites and limits
-
-1. **Manually deploy the matching `zusage.py` on each SSH server**, by default at `~/.zcode/zcode-token-usage-statusbar/zusage.py`. The server needs Python 3.8+ and permission to read that user's ZCode database. Adapting a connection does not install the remote script; this is not a completely zero-configuration setup.
-2. The local query transport must work non-interactively. The plugin **cannot decrypt and reuse** passwords, encrypted private keys or passphrases saved by the client. Configure SSH keys/agent authentication yourself. The plugin does not automatically log in or handle authentication prompts.
-3. Remote queries include a recursion guard. Run only the query script remotely; no desktop bar installation or further remote forwarding is required there.
-4. This support covers only the **desktop bar's JSON query chain**. MCP, `/usage` and reply rate lines do not automatically fetch data across machines. Pure CLI use has no bar UI; self-hosted Web follows its separate deployment guide.
-5. Automated fixtures verify routing and recovery logic, not live acceptance on every desktop version, SSH authentication method or multi-server environment.
-
-### Switches and manual targets
-
-`remote.auto` defaults to `true` independently of the legacy single-channel switch. `remote.enabled: false` preserves manual opt-out from legacy `ssh`/unscoped fallback; it does not disable automatic identity routing. Manual `targets` with `identity`/`identities` override automatic targets for the same identity. With discovery off, explicitly set `enabled: true` to use manual targets. Merge only the needed fields and replace the sample identity with the client's actual `workspaceIdentity`:
+Add just this one field to `~/.zcode/zcode-token-usage-statusbar/config.json` (keep your existing settings):
 
 ```json
 {
-  "remote": {
-    "auto": true,
-    "enabled": false,
-    "targets": [
-      {
-        "identity": "remote:ssh:build.example.com:22:alice:/srv/build",
-        "ssh": "ssh alice@build.example.com",
-        "host_label": "build"
-      }
-    ]
-  }
+  "plugin_auto_install_overlay": false
 }
 ```
 
-Unset target `script`, `python` and `timeout_s` inherit from the top-level `remote` section (per-target timeout is bounded to 1–6 seconds). To stop all remote queries, set both `auto: false` and `enabled: false`; keep `targets` configured without executing them. `enabled: true` allows the legacy CLI `python3 zusage.py json <SID>` (SID/comma-list protocol) to use a default single-channel fallback. The desktop always sends JSON requests; `scopes: []` forbids this fallback. An unknown main pane does not borrow that channel to query remotely or guess historical identity.
+Or run `/uninstall-overlay` to take the bar back out and leave behind a marker that stops it being reinstalled. Either way you still get `/usage`, the MCP tool and the per-answer rate line — the plugin just won't touch your client files.
 
-Failures retain the last successful workspace snapshot with stale/error feedback; a first failure without cache shows zeros, never local daily totals. Null/error responses do not clear the last successful display. Remote polling defaults to 3 seconds (minimum 1 second), with continued backoff for failed/unknown sessions. Re-enabling queries and changes to config/connection settings are detected by the heartbeat (default 30 seconds, minimum 10 seconds).
+If the config file or that field is missing, the default is **on**; an explicit `false` you've already set is always respected. `ZUSAGE_PLUGIN_AUTO_INSTALL=1` / `0` takes precedence over the config, but it can't override the "don't reinstall" marker.
 
-**Recovery boundary**: the plugin does not reconnect the host's SSH connection. Recovery means continued statistics-query retries and resuming after the host reconnects. Missing trusted identity is not guessed; reopening the workspace or completely restarting does not guarantee identification of the main pane.
+## Everyday use
 
-See the [remote session guide](docs/user-guide.md#远程会话) (Chinese) for switches, identity-bearing multi-server examples and recovery troubleshooting. Merge only the needed fields and preserve your settings.
+- **Hover** an item for the finer numbers.
+- **Click Sub-agents** to see what each sub-task cost.
+- **Click ⚙** to hide items, switch language, switch token counts to 万/亿 (on by default in the Chinese UI), or check for updates.
+- **Type `/usage today`** for today's usage, `/usage week` for the past week.
 
-## Safety and caveats
+## Where these numbers come from
 
-- **Usage data is not uploaded**: local queries do not use the network. Enabled remote queries read remote databases through the chosen transport; see [SSH remote support](#ssh-remote-support-v152) for prerequisites and limits. Plugin updates download code over the network.
-- **The bar modifies client files**: it is not a native ZCode feature. Removal strips only this project's injection, without reverting the client version.
-- **Bar missing after a ZCode update?** Client updates may overwrite the injection. Once it is restored successfully, quit ZCode completely and restart it once more. See the FAQ below for steps.
-- **Uninstalling the plugin may leave the bar behind**: follow the removal steps below.
+Up front: **the data is read from ZCode's local SQLite database. It isn't the model reporting on itself, and it isn't an estimated bill.** Except for the generation speed, everything refreshes when a request is written to the database.
+
+If you want the details, open this:
+
+<details>
+<summary>Open to see how each number is computed</summary>
+
+| Item | How it's computed |
+|---|---|
+| Generation speed (tok/s) | After a turn finishes: output tokens (thinking included) ÷ model generation time |
+| Generation time | Normal requests: end time − first-token arrival. Requests with thinking: end time − request start |
+| Time to first token (TTFT) | First-token arrival − request sent |
+| Usage totals | Total = input + output. Input already includes cache reads, so cache isn't added twice |
+| Cache hit rate | Cache reads ÷ input tokens |
+| Context usage | Input tokens of the most recent successful request ÷ context window size |
+| Turn count | Counted over de-duplicated `turn_id` values |
+
+**Where it's easy to get confused:**
+
+- **The bar's speed ≠ the per-answer rate line.** The bar shows the most recent request segment; the rate line shows the **weighted** speed of the requests already stored for this turn, and the time spent waiting on tools between segments isn't counted as generation time.
+- **Generation speed ≠ end-to-end throughput.** End-to-end time also covers waiting for the first token, thinking, and network round-trips. What's measured here is the part the model actually spent writing.
+- **Requests with thinking look slower, and that's correct.** Thinking tokens stream out before the first token, so those requests (including the Claude family) measure generation time from when the request was sent. Claude doesn't report thinking tokens separately, but its thinking still happens before the first token, so it's measured the same way — not a bug.
+- **Context usage ≠ session total.** Usage share comes from the most recent request's input, so it can drop after the conversation is compacted; the session total accumulates across the whole conversation.
+- **Thinking tokens are already inside the output** and aren't added twice; whether they're reported at all depends on the provider.
+- **The CLI and MCP `current`** means "the session that was active most recently" — it isn't guaranteed to be the window on your screen. The bar follows each window's own session.
+
+**Why might the numbers differ from another plugin?** Ordinary requests use the "first token → request complete" window; requests reporting thinking tokens, and Claude requests, use "request start → request complete". The per-answer rate line is yet another measure: total output ÷ total generation time over the valid segments already stored for this question, excluding the time spent waiting on tools between segments and the final prose that hasn't been stored yet. End-to-end throughput is a different window again, so the two shouldn't be compared directly.
+
+Also, the bar **searches backwards** for the most recent valid speed sample, which isn't necessarily the newest request. Per-question statistics check that the data belongs to the current question, but rapid successive questions still have an identification boundary.
+
+**While the model is still writing, that speed is an estimate.** During generation the t/s is **estimated** from the characters emitted so far divided by a chars-per-token ratio (that ratio is taken from this session's most recent completed turn and calibrates itself). When the turn finishes, it switches to that turn's real tok/s. Where the bridge isn't available, it falls back to the most recent segment's value from the database.
+
+</details>
+
+The boundaries around missing data, invalid samples and historical turns (no statistics are ever fabricated) are documented under [Data semantics](docs/user-guide.md#数据如何计算) (Chinese).
+
+## Things worth knowing
+
+- **This is not an official ZCode feature.** It's a community plugin with no connection to the ZCode team, and it works by injecting into the client's `app.asar`.
+- **Local stats are read-only.** It only reads ZCode's local SQLite database, and **usage data is never uploaded**.
+- **Plugin updates do use the network** — they download code from the source you've configured. Automatic updates are on by default; turn them off in ⚙.
+- **SSH remote queries also use the network** — they run a read-only query script on the remote host through the transport you configured. Prerequisites and limits are in [the section above](#ssh-remote-sessions).
+- **Your credentials are never decrypted or reused.** Passwords, encrypted private keys and passphrases stored by ZCode are never decrypted by the plugin; set up an SSH key / agent yourself.
+- **Token usage is not billing.** There's no plan cost, no remaining quota and no billing information here.
 
 ## FAQ
 
-**Is this a ZCode plugin or a general-purpose LLM token monitor?**
+**Is this a ZCode plugin, or a general-purpose LLM token monitor?**
 
-It depends on ZCode session and usage data and is intended for ZCode users. CLI and MCP are query interfaces; they do not imply direct usage tracking for other AI coding clients.
+It's ZCode-specific. It reads ZCode's own session and usage data, for ZCode users. The CLI and MCP server are **query entry points** — they don't mean it can measure other AI coding clients.
 
 **Can I install the desktop bar in a browser or on an SSH server?**
 
-Install the desktop bar in your local ZCode client. Self-hosted Web needs a [separate deployment](web/README.md). SSH servers need only a matching query script and Python, without the desktop overlay. Automatic remote routing still requires non-interactive authentication and does not cover MCP, `/usage` or reply rate lines.
+No. The desktop bar only installs into the ZCode client on your own machine. A self-hosted Web setup is [deployed separately](web/README.md); an SSH remote only needs the matching query script and Python, not the desktop bar. Remote auto-routing also needs non-interactive authentication, and it doesn't cover MCP, `/usage` or the per-answer rate line.
 
+**I installed the plugin. Where's the bar?**
 
-**I installed the plugin. Where is the bar?**
+Leave the plugin enabled and **start a new session or resume one** — that triggers the automatic install/repair. Once it succeeds, quit ZCode completely and reopen it. If the automatic install fails, run `/install-overlay` by hand and check permissions, config and the "don't reinstall" marker. **A restart alone can't repair a bar that was never successfully installed.**
 
-Stable `v1.5.2` and current main attempt automatic installation/repair when a session starts or resumes. For older `v1.4.1`, or when automatic installation is disabled, run `/install-overlay`. After installation succeeds, quit ZCode completely and reopen it. If it fails, follow the command output to check permissions, config and the uninstall opt-out. Restarting alone cannot repair an installation that has not succeeded.
+**The bar vanished after I updated ZCode. Why?**
 
-**Why did the bar disappear after updating ZCode?**
+A ZCode update may overwrite the client files the plugin injected into. The first launch after the update gives the plugin a chance to restore its injection; **once that succeeds, you still have to quit ZCode completely and restart it once more** for the restored injection to load. This is required even if the update already restarted ZCode for you.
 
-A ZCode update may overwrite the client files modified by the plugin. The first launch after the update lets the plugin restore its injection. **After injection succeeds, quit ZCode completely and restart it once more to load the restored injection. This is required even if the update already restarted ZCode automatically.**
+1. Leave the plugin enabled and start or resume a session to trigger the automatic repair.
+2. If automatic installation is off, or the repair failed, type `/install-overlay` in the chat input and follow the output.
+3. Once it succeeds, **quit ZCode completely and reopen it**.
 
-1. Leave the plugin enabled and start or reopen a session to trigger automatic repair.
-2. If automatic installation is disabled or repair fails, enter `/install-overlay` in ZCode's chat input and follow the output to complete installation or troubleshoot.
-3. After installation or repair succeeds, **quit ZCode completely and reopen it**. Closing a window or reopening a session is not a full restart.
+If you used the one-command installer rather than the plugin, rerun `python install.py --lang en` from the repository directory (`python3 install.py --lang en` on macOS) and quit completely and restart after success.
 
-If you used the one-command installer rather than the plugin, rerun `python install.py --lang en` from the repository directory (`python3 install.py --lang en` on macOS), then quit completely and restart after success.
+**Why don't the numbers keep moving?**
 
-**Why don't the numbers change continuously?**
-
-They mainly refresh when a model request completes, not with each streamed token. A new session with no requests can show zeros.
+Most of them refresh when a request is written to the database, not with every streamed token. A brand-new session that hasn't sent anything yet showing zeros is normal. (The one exception is the t/s while the model is writing — that's the live estimate described under [Where these numbers come from](#where-these-numbers-come-from).)
 
 **Why do some replies have no rate line?**
 
-Pure Q&A and questions with no stored request data omit it rather than reuse the previous turn. Disable it with the per-answer rate toggle in ⚙. After a full restart, restored historical turns may lack valid output statistics. Without a retained line or full-text cache in the current overlay, those turns get neither fabricated statistics nor a misleading “turn stats unavailable” line. Older statistics stored in the message body are unaffected.
+Pure Q&A, or questions whose data hasn't been stored yet, get no line — rather than reusing the previous turn's numbers. You can turn it off with the per-answer rate toggle in ⚙. After a full restart, historical turns restored by ZCode sometimes lack valid output statistics, and those turns don't get a number made up for them; statistics written into the message body are unaffected.
 
-**Does this show my bill or plan balance?**
+**Can it show me my bill or remaining quota?**
 
-It shows token usage, not billing. Use ZCode's official pages for pricing and plan limits.
+No. It shows token usage, not billing. Use ZCode's official pages for pricing and plan limits.
 
 [More troubleshooting, automatic updates and remote setup →](docs/user-guide.md) (Chinese)
 
@@ -255,28 +328,28 @@ It shows token usage, not billing. Use ZCode's official pages for pricing and pl
 python install.py --remove
 ```
 
-**Plugin installation**: follow this order so the bar is removed along with the plugin:
+**Plugin installation**: follow this order so the bar doesn't get left behind:
 
 1. Turn off automatic updates in ⚙ and let any update already running finish.
 2. Run `/uninstall-overlay` and confirm success.
-3. Open **Settings → Plugin → Installed → ZCode Token Usage Statusbar → ⋯ → Uninstall**.
+3. **Settings → Plugin → Installed → ZCode Token Usage Statusbar → ⋯ → Uninstall**.
 4. Quit ZCode completely, reopen it and confirm the bar is gone.
 
 <details>
-<summary>Uninstall screenshot (Chinese UI)</summary>
+<summary>See the uninstall screenshot</summary>
 
 ![Uninstall in the plugin card's three-dot menu](docs/plugin-uninstall.png)
 
 </details>
 
-To remove settings, caches and the marketplace too, follow the [full cleanup guide](docs/user-guide.md#彻底卸载) (Chinese).
+Want to clear out settings, caches and the marketplace too? See the [full cleanup guide](docs/user-guide.md#彻底卸载) (Chinese).
 
 ## More documentation
 
 Detailed desktop guides are currently in Chinese.
 
-- [Feature screenshots](docs/features.md) · [Installation, configuration and troubleshooting](docs/user-guide.md)
-- [Web edition](web/README.md) · [Architecture and data semantics](docs/design-notes.md)
-- [Development and releases](docs/maintaining.md) · [Tests](tests/README.md)
+- [Feature screenshots](docs/features.md) (Chinese) · [Installation, configuration and troubleshooting](docs/user-guide.md) (Chinese)
+- [Web edition (self-hosted)](web/README.md) · [Architecture and data semantics](docs/design-notes.md) (Chinese)
+- [Development and releases](docs/maintaining.md) (Chinese) · [Tests](tests/README.md) (Chinese)
 
 [MIT License](LICENSE)
