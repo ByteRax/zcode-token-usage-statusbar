@@ -233,8 +233,6 @@ class StatusbarRateTests(unittest.TestCase):
         self.assertEqual((today["started"], today["last_at"]), (day - 5000, day + 1000))
 
 
-if __name__ == "__main__":
-    unittest.main()
 
     def test_snapshot_top_level_provider_fallback_prefers_latest_account_request(self):
         """v96 额度 chip 的会话无历史回退：顶层 provider_fallback = 全局最近完成的
@@ -257,8 +255,92 @@ if __name__ == "__main__":
                 (rid, "", prov, "m", src, "completed", at, at, 10))
         snap = zusage._session_snapshot(con, "s", {"context_window": 200000})
         self.assertEqual(snap["sid"], "s")
-        full = zusage.snapshot(force_sid="s")
-        self.assertEqual(full["provider_fallback"], "account:bigmodel-individual-coding-plan")
-        con.execute("delete from model_usage where provider_id like 'account:%'")
-        full2 = zusage.snapshot(force_sid="s")
-        self.assertEqual(full2["provider_fallback"], "")
+        def fresh_conn(with_account=True):
+            c2 = sqlite3.connect(":memory:")
+            c2.row_factory = sqlite3.Row
+            c2.executescript(SCHEMA)
+            c2.execute("insert into session (id, title) values ('s', 't')")
+            rows = [("r2", "new-provider-4", 3000)] + ([("r1", "account:bigmodel-individual-coding-plan", 2000)] if with_account else [])
+            for rid, prov, at in rows:
+                c2.execute(
+                    "insert into model_usage (id, agent, provider_id, model_id, query_source, status,"
+                    " started_at, completed_at, output_tokens) values (?,?,?,?,?,?,?,?,?)",
+                    (rid, "", prov, "m", "main_turn", "completed", at, at, 10))
+            return c2
+        with mock.patch.object(zusage, "connect", side_effect=lambda: fresh_conn(True)), \
+             mock.patch.object(zusage, "load_config", return_value={"context_window": 200000}), \
+             mock.patch.object(zusage, "_cached_agg", side_effect=lambda key, fn: fn()), \
+             mock.patch.object(zusage, "_scan_session_ids", return_value=[]), \
+             mock.patch.object(zusage, "_remote_setup", return_value=None):
+            self.assertEqual(zusage.snapshot(force_sid="s")["provider_fallback"], "account:bigmodel-individual-coding-plan")
+        with mock.patch.object(zusage, "connect", side_effect=lambda: fresh_conn(False)), \
+             mock.patch.object(zusage, "load_config", return_value={"context_window": 200000}), \
+             mock.patch.object(zusage, "_cached_agg", side_effect=lambda key, fn: fn()), \
+             mock.patch.object(zusage, "_scan_session_ids", return_value=[]), \
+             mock.patch.object(zusage, "_remote_setup", return_value=None):
+            self.assertEqual(zusage.snapshot(force_sid="s")["provider_fallback"], "")
+
+    def test_scnet_estimate_snapshot_and_local_rates(self):
+        """阶段 3 SCNet：外部快照优先（契约校验），缺失时按抵扣表×modelPatterns 估算。"""
+        import json
+        import tempfile
+        import time
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp:
+            secrets = Path(tmp) / "quota-secrets.json"
+            secrets.write_text(json.dumps({"sources": {"scnet": {
+                "enabled": True, "planCredits": 240000,
+                "modelPatterns": {"GLM-*": "GLM-5.2", "DeepSeek-V*": "DeepSeek-V4-Flash"},
+            }}}, ensure_ascii=False), encoding="utf-8")
+            snap = Path(tmp) / "scnet_official.json"
+            con = sqlite3.connect(":memory:")
+            self.addCleanup(con.close)
+            con.row_factory = sqlite3.Row
+            con.executescript(SCHEMA)
+            con.execute("insert into session (id, title) values ('s', 't')")
+            t0 = int(time.time() * 1000)
+            # GLM-5.2：(input+cacheWrite)=1_000_000 × 7543 + cacheRead=0 + output=1_000_000 × 26400 → 33943
+            con.execute(
+                "insert into model_usage (id, agent, provider_id, model_id, query_source, status,"
+                " started_at, completed_at, input_tokens, cache_read_input_tokens,"
+                " cache_creation_input_tokens, output_tokens) values (?,?,?,?,?,?,?,?,?,?,?,?)",
+                ("r1", "", "new-provider", "GLM-5.2-x", "main_turn", "completed", t0, t0,
+                 900_000, 0, 100_000, 1_000_000))
+            # DeepSeek-V4-Flash：input 1e6×1200 + output 1e6×2400 → 3600
+            con.execute(
+                "insert into model_usage (id, agent, provider_id, model_id, query_source, status,"
+                " started_at, completed_at, input_tokens, cache_read_input_tokens,"
+                " cache_creation_input_tokens, output_tokens) values (?,?,?,?,?,?,?,?,?,?,?,?)",
+                ("r2", "", "new-provider", "DeepSeek-V4-Flash", "main_turn", "completed", t0, t0,
+                 1_000_000, 0, 0, 1_000_000))
+            # 不匹配 pattern 的模型不计入
+            con.execute(
+                "insert into model_usage (id, agent, provider_id, model_id, query_source, status,"
+                " started_at, completed_at, input_tokens, output_tokens) values (?,?,?,?,?,?,?,?,?,?)",
+                ("r3", "", "new-provider", "Kimi-K3", "main_turn", "completed", t0, t0, 1_000_000, 1_000_000))
+
+            with mock.patch.object(zusage, "__file__", str(Path(tmp) / "zusage.py")):
+                # __file__ 在 mock 后指向临时目录；_scnet_* 用 Path(__file__).parent
+                est = zusage._scnet_estimate(con)
+                self.assertEqual(est["source"], "estimate")
+                self.assertAlmostEqual(est["credits_used"], 33943 + 3600, places=1)
+                self.assertEqual(est["plan_credits"], 240000)
+
+                # 外部快照（有效）：覆盖估算
+                snap.write_text(json.dumps({"used": 12345, "total": 240000, "fetchedAt": t0 - 1000}), encoding="utf-8")
+                est2 = zusage._scnet_estimate(con)
+                self.assertEqual(est2["source"], "snapshot")
+                self.assertEqual(est2["credits_used"], 12345)
+
+                # 快照过期（>24h）：弃用回落估算
+                snap.write_text(json.dumps({"used": 1, "total": 240000, "fetchedAt": t0 - 25 * 3600 * 1000}), encoding="utf-8")
+                est3 = zusage._scnet_estimate(con)
+                self.assertEqual(est3["source"], "estimate")
+
+                # 未启用 → None
+                secrets.write_text(json.dumps({"sources": {"scnet": {"enabled": False, "planCredits": 1}}}), encoding="utf-8")
+                self.assertIsNone(zusage._scnet_estimate(con))
+
+
+if __name__ == "__main__":
+    unittest.main()

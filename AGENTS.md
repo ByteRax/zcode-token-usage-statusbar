@@ -96,13 +96,14 @@ python3 sync_plugin.py --check
 - CLI/MCP `current` 选择数据库最近活跃会话，不保证是屏幕焦点；30 分钟阈值用于 active/idle 判断，不限制只选这段时间内的会话。
 - 今日、`days`、`week` 按本地自然日，`models` 从当前时刻滚动回溯；日界线查询采用闭区间，零点存在相邻日重复计入边界。改时间过滤先核对各查询，不擅自统一窗口。
 
-### 套餐额度（v96 起）
+### 套餐额度（v96 起；阶段 3 起多源化）
 
-- 额度是**账号级套餐池**口径（BigModel/Z.ai 个人编码套餐），不是单模型独享；chip/tooltip 不得出现"模型独享额度"语义。数据来自主进程 quota 字段（`quota-client.cjs` 解密宿主 OAuth 凭据直查 `bigmodel.cn|api.z.ai /api/monitor/usage/quota/limit`），与本地 token 统计是两条链，互不推导。BigModel 另随额度并行拉 `/api/biz/subscription/list` 取订阅元数据（version/productName/valid，tooltip「套餐」行；白名单字段，订单/协议号绝不保留；多条生效订阅或端点失败 → plan 置 null 整行不显示，不拖累额度状态机；zai 暂不拉）。
-- 开关真值是 config.json 的 `quota_enabled`（缺省关，只认显式 true）：主进程据此决定是否解密与联网，⚙ 勾选经 pluginRequest 写入并回推。凭据只在内存，发往的域白名单硬编码（bigmodel.cn/api.z.ai），token/请求头绝不进日志、diag 或 config；env `ZCODE_BIGMODEL_USAGE_API_KEY` 优先于宿主凭据。
-- 窗口归一化只认 unit 显式分类（3=5h、6=周；未知丢弃留痕），不能按 nextResetTime 排序代替（周期末尾周窗更早重置会标反两桶）；`percentage` 是整数已用%，有绝对量时用 currentValue/usage 自算；TIME_LIMIT(unit=5) 是内置工具期，折叠为 tooltip 行。无套餐是业务信封（"不存在coding plan"）而非 401，须停轮询。
-- 401/403 与无套餐冻结到凭据指纹变化：主进程 fs.watch credentials.json（宿主刷新 token 即解冻）；JWT exp 临期不发请求等宿主刷新。失败保留最近成功值并标 stale；解密失败/no_plan/parse_error 一律 fail-closed，绝不显示 0%。
-- 显示门控：会话首个完成的 `main_turn`（快照 `last.provider_id`，zusage 已滤辅助请求污染）出现前，chip 跟随快照顶层 `provider_fallback`（全局最近 account:* 请求，消除切模型到首请求完成之间的空窗）；会话最新请求是自定义 provider 时隐藏内置套餐额度。团队套餐显示"暂不支持"。自定义 provider 走余额探测（读宿主 provider_config.json 的 baseUrl+key：官方域名直连 DeepSeek/OpenRouter/SiliconFlow 余额端点，非官方域单轮探测 OpenAI legacy billing；hard_limit≥1e8 视为按量后付无固定池），识别不了的网关隐藏；中转 key/baseUrl 指纹变化解冻 auth_failed。SSH 远端分栏直接显示本地额度——宿主 provisioning 把桌面凭据强制同步覆盖到远端，远端会话与本地同账号（架构事实，宿主改语义需复核）。chip 挂原生上下文按钮左侧（wrapper 内前插），与 v92 按钮增强同款双 reapply/还原契约。
+- 额度是**账号级套餐池/账户余额**口径，不是单模型独享；chip/tooltip 不得出现"模型独享额度"语义。内置套餐（BigModel/Z.ai 个人档）数据来自解密宿主 OAuth 凭据直查 `bigmodel.cn|api.z.ai /api/monitor/usage/quota/limit`，BigModel 并行拉 `/api/biz/subscription/list` 取订阅元数据（version/productName/valid 白名单字段，歧义置 null）。与本地 token 统计是两条链，互不推导。
+- **多源调度器**（quota-client v3）：适配器注册表（BigModel/Z.ai/MiniMax/Kimi/CommandCode/Cline/Anthropic/DeepSeek/OpenRouter/SiliconFlow/MiMo/火山/SCNet/自定义中转）；enabled 源全量低频刷新（供 tooltip 分家列全），chip 主显跟随本 pane 会话模型归属（primary 源）。每源独立 TTL（套餐 10min/余额 15min）、epoch、退避与凭据指纹；协议 `{active, sources:{id:entry}}`，本版对 active 源字段做顶层镜像兼容（下版移除）。MiniMax 剩余%须翻转为已用%、weekly_status==3 不出周窗；Kimi remaining 制、401 回落 moonshot PAYG 余额（分→元）；Anthropic 子配额窗（seven_day_sonnet 等）丢弃；火山为 SigV4 火山变体（scope 尾 request、SK 无前缀）+ GetAFPUsage→GetCodingPlanUsage 双探测、HTTP 200 也可能带错误信封；MiMo 凭据为控制台 Cookie（userId+serviceToken 必需）。标 unverified 的适配器为源码转写（dsh/cc-switch，MIT），未经真实账号实测。
+- **凭据契约**：发现优先级 env → `~/.zcode/zcode-token-usage-statusbar/quota-secrets.json`（运行目录 0600，⚙ 面板 write-only 写入，绝不进 config.json/日志/诊断/diag）→ 自动发现（宿主 provider_config.json 的自定义供应商 key；Anthropic 另读 `~/.claude/.credentials.json`，披露已单独列明）。发 key 域白名单：各适配器官方域（bigmodel.cn、api.z.ai、api.deepseek.com、openrouter.ai、api.siliconflow.cn、api.minimaxi.com|io、api.kimi.com、api.moonshot.cn、api.commandcode.ai、api.cline.bot、api.anthropic.com、platform.xiaomimimo.com、open.volcengineapi.com）+ 用户自定义中转的本域；绝不发第三方。env `ZCODE_BIGMODEL_USAGE_API_KEY` 优先于宿主凭据。
+- **SCNet 账本估算**（无凭据）：外部快照 `scnet_official.json`（运行目录，≤16KB/24h/周期校验）优先；缺失时按官方 Credits 抵扣表（SCNET_CREDIT_RATES，转写自 dsh，发版前按官方核对）× `sources.scnet.modelPatterns`（model_id → 抵扣表键）在 zusage 侧聚合 main_turn 的 input/cacheRead/output 估算，随快照顶层 `scnet_estimate` 注入。
+- 401/403 与无套餐冻结到凭据指纹变化：主进程 fs.watch credentials.json + quota-secrets/provider_config mtime 缓存失效即解冻；JWT exp 临期不发请求。失败保留最近成功值并标 stale；解密失败/no_plan/parse_error 一律 fail-closed，绝不显示 0%。
+- 显示门控：会话首个完成的 `main_turn`（快照 `last.provider_id`，已滤辅助请求污染）出现前，chip 跟随快照顶层 `provider_fallback`（全局最近 account:* 请求）；会话最新请求是自定义 provider 时显示对应自定义源（官方域直连/中转探测）。团队套餐显示"暂不支持"。SSH 远端分栏直接显示本地额度（宿主 provisioning 同账号事实）。chip 挂原生上下文按钮左侧，与 v92 同款双 reapply/还原契约；⚙ 面板每源独立开关/凭据/立即刷新，状态中性提示（无凭据/无订阅不报红）。
 - 额度只进桌面快照链；MCP、CLI、`/usage` stdout 契约不加字段。Web 端不做（sidecar 无凭据）。
 
 ### 窗口、分栏与远端
@@ -153,7 +154,7 @@ python3 sync_plugin.py --check
 | 改动范围 | 验证选择（文件位于 `tests/`） |
 |---|---|
 | 统计/速率 | `test_token_rate.py`、`test_statusbar_rate.py`、`overlay-rate.test.cjs`；更改共享 JSON 时加入远端及插件契约回归 |
-| 套餐额度 | `quota-client.test.cjs`（解密/归一化/状态机/竞态）、`overlay-quota-chip.test.cjs`（挂载/门控/还原）；真实 monitor 响应、凭据刷新解冻与 chip 实机挂载需桌面验收 |
+| 套餐额度 | `quota-client.test.cjs`（31 用例：解密/归一化/状态机/竞态/各家适配器形状与陷阱）、`overlay-quota-chip.test.cjs`（19 用例：挂载/门控/还原/多源协议/源列表 UI）、`test_statusbar_rate.py`（provider_fallback/scnet 估算）；真实厂商响应、凭据刷新解冻与 chip 实机挂载需桌面验收，unverified 适配器待真实账号校准 |
 | 浮层/主桥 | `overlay-*.test.cjs`、`plugin-loader.test.cjs`、`plugin-restart-boot.test.cjs`；语法检查，布局/多窗口需桌面验收 |
 | SSH 路由 | `test_remote_targets.py`、`inject-remote-recovery.test.cjs`、`overlay-remote-scope.test.cjs`；实机身份/重连与认证另验 |
 | 安装/更新/锁/解包 | `test_install_discovery.py`、`test_plugin_sudo_install.py`、`test_pending_asar.py`、`test_config_transactions.py`、`test_runtime_sync_guard.py`、`test_release*.py` 及 `plugin-*.test.cjs`、`runtime-lock.test.cjs` |

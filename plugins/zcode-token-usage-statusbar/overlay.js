@@ -81,6 +81,9 @@
     /* v96 套餐额度开关：真值在 config.json 的 quota_enabled（主进程据此决定是否解密凭据
        联网查询，并随插件状态推送 quotaEnabled）；缺省关闭——读凭据联网属能力升级，须显式开启 */
     quotaEnabled: !!(window.__zusagePluginState && window.__zusagePluginState.quotaEnabled === true),
+    /* 阶段 3 多源配置列表（id/label/enabled/keyConfigured/status...，主进程 sourcesConfig 推送） */
+    quotaSources: (window.__zusagePluginState && Array.isArray(window.__zusagePluginState.quotaSources)
+      ? window.__zusagePluginState.quotaSources : []),
   };
   /* ---------- i18n（v57）：L(中文, English) 内联双语文案，语言存 localStorage ---------- */
   function L(zh, en) { return state.lang === "en" ? en : zh; }
@@ -181,8 +184,13 @@
     }
   };
   window.__zusagePluginRequests = [];
-  function pluginRequest(action, enabled) {
-    window.__zusagePluginRequests.push({ action: action, enabled: enabled });
+  function pluginRequest(action, extra) {
+    var o = { action: action };
+    if (extra !== undefined) {
+      if (extra && typeof extra === "object") Object.assign(o, extra);
+      else o.enabled = extra;   // 旧调用（action, boolean）线格式不变
+    }
+    window.__zusagePluginRequests.push(o);
   }
   /* ---------- Git 状态 chip 数据通道（v96）：主进程旁路 git 查询 → 按工作区路径缓存 ----------
    * 主进程每 10s 取各窗口 window.__zusageGitPaths 并集逐路径查询，结果推 window.__zusageGitState；
@@ -218,7 +226,8 @@
     if (stale() || JSON.stringify(state.pluginUpdate) === JSON.stringify(s)) return;
     window.__zusagePluginState = state.pluginUpdate = s;
     if (s && typeof s.rateLine === "boolean") state.rateLine = s.rateLine;
-    if (s && typeof s.quotaEnabled === "boolean") state.quotaEnabled = s.quotaEnabled;   // v95：chip 门控随主进程真值（heavy 对账点内生效）
+    if (s && typeof s.quotaEnabled === "boolean") state.quotaEnabled = s.quotaEnabled;
+    if (s && Array.isArray(s.quotaSources)) state.quotaSources = s.quotaSources;   // v95：chip 门控随主进程真值（heavy 对账点内生效）
     scanRateLines();
     instances.forEach(function (inst) { inst.syncUpdate(); });
   };
@@ -407,7 +416,29 @@
       var rs = qTime(e.resetsAt);
       return row(label, L("已用 ", "used ") + pct + (rs ? " · " + L("重置 ", "resets ") + rs : ""));
     };
-    out += winRow(L("5小时窗口", "5-hour window"), w.fiveHour) + winRow(L("本周窗口", "This week"), w.weekly);
+    out += winRow(L("5小时窗口", "5-hour window"), w.fiveHour) + winRow(L("本周窗口", "This week"), w.weekly) +
+      winRow(L("月度窗口", "Monthly"), w.monthly);
+    if (q.balance && typeof q.balance.amount === "number" && isFinite(q.balance.amount)) {
+      var balTxt = quotaBalanceText(q.balance);
+      if (q.balance.parts && q.balance.parts.length) {
+        balTxt += "（" + q.balance.parts.map(function (pp) { return esc(pp.label) + " " + pp.amount; }).join(" / ") + "）";
+      }
+      out += row(L("余额", "Balance"), esc(balTxt));
+    }
+    if (d.all && d.all.sources && typeof d.all.sources === "object") {   // 其余启用源的摘要（tooltip 分家列全）
+      var others = [];
+      for (var sid in d.all.sources) {
+        if (!Object.prototype.hasOwnProperty.call(d.all.sources, sid) || sid === d.all.active) continue;
+        var sv = d.all.sources[sid];
+        if (!sv || sv.status !== "ok") continue;
+        var sum = sv.balance && typeof sv.balance.amount === "number" ? quotaBalanceText(sv.balance)
+          : (sv.windows ? ["fiveHour", "weekly", "monthly"].map(function (k) {
+              return sv.windows[k] && typeof sv.windows[k].percent === "number" ? Math.round(sv.windows[k].percent) + "%" : null;
+            }).filter(Boolean).join(" ") : "✓");
+        others.push((d.srcLabels && d.srcLabels[sid] || sid) + " " + sum);
+      }
+      if (others.length) out += row(L("其他源", "Other sources"), esc(others.join(" · ")));
+    }
     if (q.tools && (q.tools.total != null || q.tools.used != null)) {
       var tr = qTime(q.tools.resetsAt);
       out += row(L("内置工具", "Built-in tools"), (q.tools.used == null ? "—" : q.tools.used) + " / " + (q.tools.total == null ? "—" : q.tools.total) +
@@ -443,6 +474,12 @@
     quotaTipFor = null;
   }
   function onQuotaEnter() { showQuotaTip(this); }
+  /* 余额文本（文档级：tooltip 与实例 chip 共用）。CNY→¥、USD→$，其它带代码前缀。 */
+  function quotaBalanceText(bal) {
+    var cur = String(bal.currency || "");
+    var sym = cur === "CNY" ? "¥" : cur === "USD" ? "$" : (cur ? cur + " " : "");
+    return sym + Number(bal.amount).toFixed(2);
+  }
   /* 客户端会过滤回复 HTML 的 style/class；提醒先用 Markdown 加粗，加载浮层后再着色。 */
   var noticeStyle = document.createElement("style");
   noticeStyle.textContent = '[data-zusage-notice="' + MY_GEN + '"], [data-zusage-notice="' + MY_GEN + '"] * {' +
@@ -1090,7 +1127,7 @@
       bridge = { handle: null, turnId: "", timer: 0 },   // v71 本 pane 的 renderer store 订阅
       lastBand = null,    // v92：本 pane 上下文分档（ctxBandOf 结果，原生按钮增强的数据源）
       ctxBtnCache = null,   // v92：本实例上次增强的原生按钮（还原/对账引用，不依赖 cardCache 存活）
-      lastQuota = null, quotaProvider = "", quotaModel = "", quotaFallback = "", quotaChipCache = null,   // v96：额度 chip 数据源（快照 quota + 本 pane 会话 provider/模型 + 会话无历史时的账号级回退）与节点引用
+      lastQuota = null, lastQuotaAll = null, quotaProvider = "", quotaModel = "", quotaFallback = "", quotaChipCache = null,   // v96：额度 chip 数据源（快照 quota + 本 pane 会话 provider/模型 + 会话无历史时的账号级回退）与节点引用
       cuaBtnCache = null, gitChipCache = null,   // v96：Git chip 的锚点按钮（电脑操作）与本实例的 chip 节点
       liveTextCur = "", liveStatsCur = null, liveKindCur = "fallback", liveEl = null,   // v72：合并「生成速度」用
       livePhaseCur = "", liveIconCur = "bolt";   // v77：当前 chip 阶段与图标（think=思考动效/bolt=闪电）——相位切换需整条重渲染
@@ -1223,6 +1260,15 @@
       ".zu-quota[data-zusage-light] .zu-qseg.warm{color:#b6791a}" +
       ".zu-quota[data-zusage-light] .zu-qseg.hot{color:#d8482f}" +
       ".zu-quota[data-zusage-light] .zu-qseg.exc{text-shadow:none}" +
+      /* 阶段 3 ⚙ 源列表：每源一行（开关 + 状态 + 刷新 + 凭据框），窄面板纵向堆叠 */
+      ".zu-src-row{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:6px 0;border-bottom:1px solid var(--color-border,rgba(255,255,255,.06))}" +
+      ".zu-src-row:last-child{border-bottom:none}" +
+      ".zu-src-name{display:flex;align-items:center;gap:6px;flex:0 0 auto;font-weight:600}" +
+      ".zu-src-status{flex:1 1 auto;color:var(--color-tooltip-tag-foreground,#a6a6a6);font-size:calc(var(--ui-font-size,14px) - 2px)}" +
+      ".zu-src-refresh{background:none;border:none;color:inherit;cursor:pointer;font-size:14px;line-height:1;padding:2px 4px}" +
+      ".zu-src-refresh:hover{color:var(--color-foreground,#fafafa)}" +
+      ".zu-src-fields{flex-basis:100%;display:flex;gap:6px;flex-wrap:wrap}" +
+      ".zu-src-field{flex:1 1 140px;min-width:0;background:rgba(0,0,0,.25);border:1px solid var(--color-border,rgba(255,255,255,.12));border-radius:6px;color:inherit;padding:3px 8px;font-family:var(--font-mono,monospace);font-size:calc(var(--ui-font-size,14px) - 2px)}" +
       /* 子代理运行中呼吸灯 */
       "@keyframes zupulse{0%,100%{opacity:1}50%{opacity:.2}}" +
       ".dot{animation:zupulse 1.6s ease-in-out infinite;font-size:var(--ui-font-size,14px);line-height:1}" +
@@ -1431,8 +1477,10 @@
       '</div></section>' +
       '<section class="zu-settings-section"><div class="cap">' + L("套餐额度", "Plan quota") + '</div><div class="zu-settings-card">' +
       settingRow('<input type="checkbox" class="zu-quota-enable">', L("显示套餐额度", "Show plan quota"), L("在输入框上下文按钮左侧显示当前登录账号编码套餐的已用比例与重置时间（账号级套餐池，不是单个模型独享）。默认关闭。点击 chip 立即刷新。", "Shows the signed-in account's coding-plan usage and reset time left of the context button (account-level pool, not per model). Off by default. Click the chip to refresh.")) +
-      '<div class="pnote">' + L("开启后主进程读取本机 ZCode 登录凭据（~/.zcode/v2/credentials.json）查询官方套餐接口：凭据仅在内存使用、不落盘、不进日志与诊断：内置套餐发往 bigmodel.cn / api.z.ai 官方域；自定义供应商余额用其自己的 key，只发官方域（api.deepseek.com、openrouter.ai、api.siliconflow.cn）或你配置的中转站本域。目前套餐支持 BigModel / Z.ai 个人编码套餐；团队套餐暂不支持，识别不了余额形状的中转不显示。",
-        "When on, the main process reads the local ZCode login credential (~/.zcode/v2/credentials.json) to query the official plan endpoint: it stays in memory, is sent only to bigmodel.cn / api.z.ai, and never reaches disk, logs or diagnostics. Supports BigModel / Z.ai individual coding plans; team plans and custom API providers are not supported yet.") + '</div></div></section>' +
+      '<div class="pnote">' + L("开启后主进程读取本机 ZCode 登录凭据（~/.zcode/v2/credentials.json）查询官方套餐接口：凭据仅在内存使用、不落盘、不进日志与诊断：内置套餐发往 bigmodel.cn / api.z.ai 官方域；自定义供应商余额用其自己的 key，只发其官方域（api.deepseek.com、openrouter.ai、api.siliconflow.cn、api.minimaxi.com、api.kimi.com、api.commandcode.ai、api.cline.bot、api.anthropic.com、platform.xiaomimimo.com、open.volcengineapi.com 等）或你配置的中转站本域。套餐支持 BigModel / Z.ai 个人档与多家 Token Plan/余额（见下方数据源列表）；团队套餐暂不支持，识别不了余额形状的中转不显示。",
+        "When on, the main process reads the local ZCode login credential (~/.zcode/v2/credentials.json) to query the official plan endpoint: it stays in memory, is sent only to bigmodel.cn / api.z.ai, and never reaches disk, logs or diagnostics. Supports BigModel / Z.ai individual coding plans; team plans and custom API providers are not supported yet.") + '</div>' +
+      '<div class="zu-src-list"></div>' +
+      '<div class="pnote">' + L("每个数据源独立启用、独立刷新；凭据只保存在本机 quota-secrets.json（0600），不进日志与诊断。标 * 的厂商为源码转写适配，未经真实账号实测。", "Each source has its own toggle and refresh; credentials stay in the local quota-secrets.json (0600), never in logs or diagnostics. Vendors marked * are ported from reference projects without live verification.") + '</div></div></section>' +
       '<section class="zu-settings-section"><div class="cap">' + L("插件更新", "Plugin updates") + '</div><div class="zu-settings-card">' +
       settingRow('<input type="checkbox" class="zu-auto-update">', L("自动更新", "Automatic updates"), L("每 24 小时检查并安装新版，默认开启", "Check and install every 24 hours; on by default")) +
       '<div class="zu-settings-detail"><div class="zu-update-actions"><button type="button" data-update="check">' + L("检查更新", "Check for updates") + '</button><button type="button" data-update="update">' + L("立即更新", "Update now") + '</button></div>' +
@@ -2060,7 +2108,10 @@
       lastBand = ctxBandOf(p);   // v92：原生上下文按钮增强的数据源（与状态条上下文格同口径）
       /* v96：额度 chip 数据源。quota 是账号级（主进程随快照附加）；provider/模型取本 pane
        * 会话最近完成的 main_turn——首个请求完成前 provider 为空，chip 不显示（用户决策）。 */
-      lastQuota = d.quota && typeof d.quota === "object" ? d.quota : null;
+      /* 阶段 3 多源协议：{active, sources:{id:entry}}；旧主进程平铺形状回退兼容 */
+      lastQuotaAll = d.quota && typeof d.quota === "object" ? d.quota : null;
+      lastQuota = (lastQuotaAll && lastQuotaAll.sources && lastQuotaAll.active && lastQuotaAll.sources[lastQuotaAll.active])
+        ? lastQuotaAll.sources[lastQuotaAll.active] : lastQuotaAll;
       quotaProvider = (p.last && p.last.provider_id) || "";
       quotaModel = (p.last && p.last.model) || "";
       quotaFallback = typeof d.provider_fallback === "string" ? d.provider_fallback : "";
@@ -2331,6 +2382,48 @@
       if (rl) rl.checked = state.rateLine;
       var qe = panel.querySelector(".zu-quota-enable");   // v95：勾选态由主进程推送的 quotaEnabled 决定
       if (qe) qe.checked = state.quotaEnabled;
+      syncQuotaSources();
+    }
+    var srcListSig = "";
+    var SRC_FIELD_LABELS = {
+      apiKey: L("API Key", "API Key"), cookie: L("控制台 Cookie", "Console Cookie"), token: L("Token", "Token"),
+      accessKeyId: L("AccessKeyId", "AccessKeyId"), secretAccessKey: L("SecretAccessKey", "SecretAccessKey"),
+      planCredits: L("套餐 Credits 总量", "Plan credits"), planStart: L("计费锚日 YYYY-MM-DD", "Billing anchor day"),
+    };
+    function srcStatusText(sv) {
+      var m = { ok: "✓", idle: L("待查询", "pending"), not_configured: L("未配置凭据", "credential missing"),
+        auth_failed: L("认证失效", "auth failed"), no_plan: L("无订阅", "no subscription"),
+        rate_limited: L("限流中", "rate limited"), network_error: L("查询失败", "failed"),
+        parse_error: L("响应异常", "bad response"), unsupported: L("不支持", "unsupported") };
+      return m[sv.status] || sv.status || "";
+    }
+    /* 源列表按推送状态增量重建（JSON 签名没变不重绘，避免打断正在输入的凭据框） */
+    function syncQuotaSources() {
+      var box = panel.querySelector(".zu-src-list");
+      if (!box) return;
+      var list = state.quotaSources || [];
+      var sig = JSON.stringify(list);
+      if (sig === srcListSig && box.children && box.children.length) return;
+      srcListSig = sig;
+      var html = "";
+      for (var i2 = 0; i2 < list.length; i2++) {
+        var sv = list[i2];
+        var credFields = "";
+        for (var f = 0; f < (sv.credentialFields || []).length; f++) {
+          var field = sv.credentialFields[f];
+          var isCred = field === "apiKey" || field === "cookie" || field === "token" || field === "secretAccessKey";
+          credFields += '<input type="' + (isCred ? "password" : "text") + '" class="zu-src-field" data-src="' + sv.id +
+            '" data-field="' + field + '" placeholder="' + (SRC_FIELD_LABELS[field] || field) +
+            (isCred && sv.keyConfigured ? L("（已配置，输入以更换）", " (configured)") : "") + '" autocomplete="off">';
+        }
+        html += '<div class="zu-src-row" data-src="' + sv.id + '">' +
+          '<label class="zu-src-name"><input type="checkbox" class="zu-src-enable" data-src="' + sv.id + '"' + (sv.enabled ? " checked" : "") + '>' +
+          '<span>' + sv.label + (sv.unverified ? "*" : "") + '</span></label>' +
+          '<span class="zu-src-status">' + srcStatusText(sv) + '</span>' +
+          '<button type="button" class="zu-src-refresh" data-src="' + sv.id + '" aria-label="' + L("立即刷新", "Refresh now") + '">↻</button>' +
+          '<span class="zu-src-fields">' + credFields + '</span></div>';
+      }
+      box.innerHTML = html;
     }
     /* 更新进度条（v89）。主进程 updater 在 downloading/updating 阶段推送
      * progress = { stage: download|verify|install|sync, loaded?, total? }：
@@ -2403,6 +2496,8 @@
         else window.open(issuesUrl, "_blank", "noopener");
         return;
       }
+      var srcBtn = e.target.closest && e.target.closest(".zu-src-refresh");
+      if (srcBtn) { pluginRequest("quota-src-refresh", { id: srcBtn.dataset.src }); return; }
       var button = e.target.closest && e.target.closest("[data-update]");
       if (button && !button.disabled) pluginRequest(button.dataset.update);
     });
@@ -2421,6 +2516,14 @@
       var t2 = e.target;
       if (t2.classList.contains("zu-auto-update")) {
         pluginRequest("auto", t2.checked);
+        return;
+      }
+      if (t2.classList.contains("zu-src-enable")) {
+        pluginRequest("quota-src", { id: t2.dataset.src, enabled: t2.checked });
+        return;
+      }
+      if (t2.classList.contains("zu-src-field")) {
+        if (t2.dataset.src && t2.dataset.field) pluginRequest("quota-src-key", { id: t2.dataset.src, field: t2.dataset.field, value: t2.value });
         return;
       }
       if (t2.classList.contains("zu-quota-enable")) {
@@ -2936,11 +3039,6 @@
       }
       return out;
     }
-    function quotaBalanceText(bal) {
-      var cur = String(bal.currency || "");
-      var sym = cur === "CNY" ? "¥" : cur === "USD" ? "$" : (cur ? cur + " " : "");
-      return sym + Number(bal.amount).toFixed(2);
-    }
     function quotaChipMode() {
       if (!state.quotaEnabled || !lastQuota) return null;
       /* 会话有请求历史 → 跟随本会话最近完成的请求（最新是自定义 provider 即隐藏，尊重会话内
@@ -3011,7 +3109,9 @@
       }
       if (chip.nextElementSibling !== btn) wrap.insertBefore(chip, btn);   // 位置兜回：始终紧贴按钮左侧
       syncCtxLite(chip, bar.classList.contains("zu-light"));
-      chip.__zuQ = { q: lastQuota, provider: quotaProvider, model: quotaModel, mode: mode };
+      var srcLabels = {};
+      for (var si = 0; si < state.quotaSources.length; si++) srcLabels[state.quotaSources[si].id] = state.quotaSources[si].label;
+      chip.__zuQ = { q: lastQuota, all: lastQuotaAll, srcLabels: srcLabels, provider: quotaProvider, model: quotaModel, mode: mode };
       var sig = mode.kind + "|" + (mode.stale ? 1 : 0) + "|" + mode.html;
       if (chip.__zuSig !== sig) {   // 幂等：内容没变不重建，悬停/焦点态不被打断
         chip.__zuSig = sig;

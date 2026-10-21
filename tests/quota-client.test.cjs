@@ -444,12 +444,15 @@ test("custom provider: official host (DeepSeek) hits its balance endpoint; view 
   client2.tick();
   assert.equal(calls.length, 1);
   assert.equal(calls[0].url, "https://api.deepseek.com/user/balance");
-  calls[0].d.resolve(fakeRes(200, JSON.stringify({ is_available: true, balance: "CNY 110.00" })));
+  calls[0].d.resolve(fakeRes(200, JSON.stringify({ is_available: true, balance_infos: [
+    { currency: "CNY", total_balance: "110.00", granted_balance: "0.00", topped_up_balance: "110.00" },
+  ] })));
   await flush();
   const v = client2.view();
   assert.equal(v.status, "ok");
   assert.deepEqual({ amount: v.balance.amount, currency: v.balance.currency }, { amount: 110, currency: "CNY" });
   assert.equal(v.windows, undefined);
+  assert.equal(v.balance.parts, undefined, "granted=0 不拆分（parts 字段缺省，与 0 区分）");
 });
 
 test("custom provider: OpenAI legacy gateway with a finite pool computes remaining; unlimited pool stays hidden", async () => {
@@ -477,4 +480,249 @@ test("custom provider: OpenAI legacy gateway with a finite pool computes remaini
   await flush();
   assert.equal(b.client.view().status, "unsupported");
   assert.equal(b.client.view().reason, "gateway");
+});
+
+/* ---------- 阶段 B/C 适配器专项（各家真实形状夹具 + 陷阱断言） ---------- */
+function adapterClient({ cfgEntries, secrets, env } = {}) {
+  const clock = { t: T0 };
+  const calls = [];
+  const client = Q.createQuotaClient({
+    env: Object.assign({}, ENV, env || {}),
+    now: () => clock.t,
+    credsPath: "/virtual/credentials.json",
+    secretsPath: "/virtual/quota-secrets.json",
+    readFile: (p) => {
+      if (p.endsWith("credentials.json")) { throw new Error("ENOENT"); }
+      if (p.endsWith("quota-secrets.json")) return secrets || { sources: {} };
+      return customCfgFile(cfgEntries || []);
+    },
+    customCfgPath: "/virtual/provider_config.json",
+    fetchImpl: (url) => {
+      const d = deferred();
+      calls.push({ url, d });
+      return d.promise;
+    },
+  });
+  return { client, clock, calls };
+}
+
+test("minimax: remaining% flipped to used%, weekly only when status==1, status==3 skipped", async () => {
+  const { client, calls } = adapterClient({ cfgEntries: [["mm", "https://api.minimaxi.com/v1", "sk-mm"]] });
+  client.noteProvider("mm");
+  client.tick();
+  assert.equal(calls[0].url, "https://api.minimaxi.com/v1/api/openplatform/coding_plan/remains");
+  calls[0].d.resolve(fakeRes(200, JSON.stringify({
+    base_resp: { status_code: 0, status_msg: "success" },
+    model_remains: [
+      { model_name: "video", current_interval_remaining_percent: 50 },
+      { model_name: "general", current_interval_remaining_percent: 62, end_time: 1793176110955,
+        current_weekly_status: 1, current_weekly_remaining_percent: 88, weekly_end_time: 1793262510955 },
+    ],
+  })));
+  await flush();
+  const v = client.view();
+  assert.equal(v.status, "ok");
+  assert.equal(v.windows.fiveHour.percent, 38);     // 100-62 已用%
+  assert.equal(v.windows.weekly.percent, 12);       // 100-88
+  // weekly_status==3（无周限额，remaining 恒 100）：跳过不误显
+  client.refreshSource("minimax"); void client.refresh; client.tick(true);
+  await flush();
+  const c2 = adapterClient({ cfgEntries: [["mm", "https://api.minimaxi.com/v1", "sk-mm"]] });
+  c2.client.noteProvider("mm");
+  c2.client.tick();
+  c2.calls[0].d.resolve(fakeRes(200, JSON.stringify({
+    base_resp: { status_code: 0 },
+    model_remains: [{ model_name: "general", current_interval_remaining_percent: 62, end_time: 1, current_weekly_status: 3, current_weekly_remaining_percent: 100 }],
+  })));
+  await flush();
+  assert.ok(!c2.client.view().windows.weekly, "status==3 不出周窗");
+});
+
+test("kimi: subscription shape (remaining 制) with KimiCLI UA; 401 falls back to moonshot PAYG balance", async () => {
+  const { client, calls } = adapterClient({ cfgEntries: [["kimi", "https://api.kimi.com", "sk-kimi-coding"]] });
+  client.noteProvider("kimi");
+  client.tick();
+  assert.equal(calls[0].url, "https://api.kimi.com/coding/v1/usages");
+  calls[0].d.resolve(fakeRes(200, JSON.stringify({
+    limits: [{ detail: { limit: 200, remaining: 150, resetTime: 1793176110 } }],
+    usage: { limit: 1000, remaining: 400, resetTime: 1793262510 },
+  })));
+  await flush();
+  const v = client.view();
+  assert.equal(v.status, "ok");
+  assert.equal(v.windows.fiveHour.percent, 25);   // (200-150)/200
+  assert.equal(v.windows.weekly.percent, 60);     // (1000-400)/1000
+
+  const b = adapterClient({ cfgEntries: [["kimi2", "https://api.kimi.com", "sk-payg"]] });
+  b.client.noteProvider("kimi2");
+  b.client.tick();
+  b.calls[0].d.resolve(fakeRes(401, "{}"));   // 非订阅 Key
+  await flush();
+  // 回落链：/usages 401 → /usage 也试？authish 直接 break → PAYG
+  const paygCalls = b.calls.filter((c) => c.url.indexOf("moonshot") >= 0);
+  assert.ok(paygCalls.length >= 1, "回落 moonshot 余额端点");
+  paygCalls[paygCalls.length - 1].d.resolve(fakeRes(200, JSON.stringify({ available_balance: 12345 })));
+  await flush();
+  const vb = b.client.view();
+  assert.equal(vb.status, "ok");
+  assert.equal(vb.balance.amount, 123.45, "人民币分→元");
+});
+
+test("commandcode: 4-call chain assembles windows + three-part credits balance", async () => {
+  const { client, calls } = adapterClient({ cfgEntries: [["cc", "https://api.commandcode.ai/provider", "sk-cc"]] });
+  client.noteProvider("cc");
+  client.tick();
+  const pathOf = (c) => c.url.replace("https://api.commandcode.ai", "").split("?")[0];
+  assert.equal(pathOf(calls[0]), "/alpha/whoami");
+  calls[0].d.resolve(fakeRes(200, JSON.stringify({ org: { id: "org1" } })));
+  await flush();   // 链式：orgId 到位后才发后续三连（每步后重扫 calls）
+  const byPath = () => { const m = {}; for (const c of calls) m[pathOf(c)] = c; return m; };
+  assert.ok(byPath()["/alpha/billing/credits"], "credits 已发");
+  byPath()["/alpha/billing/credits"].d.resolve(fakeRes(200, JSON.stringify({
+    credits: { monthlyCredits: 30, purchasedCredits: 50, freeCredits: 20 },
+    windowLimits: { limited: true, fiveHour: { used: 25, cap: 100, resetAt: 1793176110955 }, weekly: { used: 60, cap: 200, resetAt: 1793262510955 } },
+  })));
+  await flush();
+  byPath()["/alpha/billing/subscriptions"].d.resolve(fakeRes(200, JSON.stringify({ data: { currentPeriodStart: "2026-10-01", currentPeriodEnd: "2026-11-01", planId: "pro" } })));
+  await flush();
+  byPath()["/alpha/usage/summary"].d.resolve(fakeRes(200, JSON.stringify({ totalCost: 100 })));
+  await flush();
+  const v = client.view();
+  assert.equal(v.status, "ok");
+  assert.equal(v.windows.fiveHour.percent, 25);
+  assert.equal(v.windows.weekly.percent, 30);
+  assert.equal(v.windows.monthly.percent, 50);   // 100/(100+100)
+  assert.deepEqual(v.balance.parts.map((p) => p.label), ["月度", "购买", "免费"]);
+});
+
+test("cline: three windows from data.limits percentUsed", async () => {
+  const { client, calls } = adapterClient({ secrets: { sources: { cline: { enabled: true, apiKey: "sk-cline" } } } });
+  client.noteProvider("other");   // 配置型：primary 无关，靠 enabled 激活
+  client.tick();
+  const c = calls.find((x) => x.url.indexOf("cline.bot") >= 0);
+  assert.ok(c, "cline 源被 secrets 启用并查询");
+  c.d.resolve(fakeRes(200, JSON.stringify({ data: { limits: [
+    { type: "five_hour", percentUsed: 42 }, { type: "weekly", percentUsed: "17.5" }, { type: "monthly", percentUsed: 3 },
+  ] } })));
+  await flush();
+  const sv = client.view().sources.cline;
+  assert.equal(sv.status, "ok");
+  assert.equal(sv.windows.fiveHour.percent, 42);
+  assert.equal(sv.windows.weekly.percent, 17.5);
+});
+
+test("anthropic: env OAuth token; sub-quota windows dropped, main windows kept", async () => {
+  const { client, calls } = adapterClient({ env: { ANTHROPIC_OAUTH_TOKEN: "oauth-tok" } });
+  client.noteProvider("whatever");
+  client.tick();
+  const c = calls.find((x) => x.url.indexOf("api.anthropic.com") >= 0);
+  assert.ok(c, "anthropic 源自动激活（env 凭据）");
+  c.d.resolve(fakeRes(200, JSON.stringify({
+    five_hour: { utilization: 55, resets_at: 1793176110 },
+    seven_day: { utilization: 20, resets_at: 1793262510 },
+    seven_day_sonnet: { utilization: 99, resets_at: 1793262510 },
+  })));
+  await flush();
+  const sv = client.view().sources.anthropic;
+  assert.equal(sv.status, "ok");
+  assert.equal(sv.windows.fiveHour.percent, 55);
+  assert.equal(sv.windows.weekly.percent, 20);
+  assert.equal(sv.windows.weekly.resetsAt, 1793262510 * 1000);
+});
+
+test("deepseek: granted≠0 splits into 赠送/充值 parts", async () => {
+  const { client, calls } = adapterClient({ cfgEntries: [["ds", "https://api.deepseek.com/v1", "sk-ds"]] });
+  client.noteProvider("ds");
+  client.tick();
+  assert.equal(calls[0].url, "https://api.deepseek.com/user/balance");
+  calls[0].d.resolve(fakeRes(200, JSON.stringify({ balance_infos: [
+    { currency: "CNY", total_balance: "110.00", granted_balance: "10.00", topped_up_balance: "100.00" },
+  ] })));
+  await flush();
+  const v = client.view();
+  assert.equal(v.status, "ok");
+  assert.equal(v.balance.amount, 110);
+  assert.deepEqual(v.balance.parts, [{ label: "赠送", amount: 10 }, { label: "充值", amount: 100 }]);
+});
+
+test("mimo: cookie normalized (prefix/quotes/newlines), plan+compensation windows, balance parts, login-expired soft", async () => {
+  assert.equal(Q.normalizeMimoCookie('Cookie: "userId=741;\napi-platform_serviceToken=abc"'), "userId=741; api-platform_serviceToken=abc");
+  assert.equal(Q.normalizeMimoCookie("userId=1"), null, "缺 serviceToken 无效");
+  const { client, calls } = adapterClient({ secrets: { sources: { mimo: { enabled: true, cookie: "userId=741; serviceToken=abc" } } } });
+  client.noteProvider("x");
+  client.tick();
+  const usage = calls.find((c) => c.url.endsWith("/tokenPlan/usage"));
+  usage.d.resolve(fakeRes(200, JSON.stringify({ data: { monthUsage: { items: [
+    { name: "month_total_token", used: 40, limit: 200, percent: 0 },
+    { name: "compensation_total_token", used: 10, limit: 100, percent: 0 },
+  ] } } })));
+  await flush();   // detail/balance 与 usage 无依赖，usage 返回后并行发出
+  const det = calls.find((c) => c.url.endsWith("/tokenPlan/detail"));
+  det.d.resolve(fakeRes(200, JSON.stringify({ data: { planCode: "p", currentPeriodEnd: "2026-11-01 00:00:00", expired: false } })));
+  const bal = calls.find((c) => c.url.endsWith("/balance"));
+  bal.d.resolve(fakeRes(200, JSON.stringify({ data: { balance: "66.50", currency: "CNY", cashBalance: "60.00", giftBalance: "6.50" } })));
+  await flush();
+  const sv = client.view().sources.mimo;
+  assert.equal(sv.status, "ok");
+  assert.equal(sv.windows.monthly.percent, 20);
+  assert.equal(sv.windows.compensation.percent, 10);
+  assert.equal(sv.windows.monthly.resetsAt, "2026-11-01 00:00 +08:00");
+  assert.deepEqual(sv.balance.parts, [{ label: "充值", amount: 60 }, { label: "赠送", amount: 6.5 }]);
+});
+
+test("volcano: AFP probe empty falls back to CodingPlan; envelope error in HTTP 200 mapped to auth_failed", async () => {
+  const { client, calls } = adapterClient({ secrets: { sources: { volcano: { enabled: true, accessKeyId: "ak", secretAccessKey: "sk" } } } });
+  client.noteProvider("x");
+  client.tick();
+  const afp = calls.find((c) => c.url.indexOf("GetAFPUsage") >= 0);
+  assert.ok(afp, "先探 Agent Plan");
+  assert.ok(afp.url.indexOf("Action=GetAFPUsage&Region=cn-beijing&Version=2024-01-01") >= 0, "query 字母序");
+  afp.d.resolve(fakeRes(200, JSON.stringify({ Result: { AFPFiveHour: { Quota: 0, Used: 0 } } })));   // Quota<=0 → 未订阅
+  await flush();
+  const cp = calls.find((c) => c.url.indexOf("GetCodingPlanUsage") >= 0);
+  assert.ok(cp, "回落 Coding Plan");
+  cp.d.resolve(fakeRes(200, JSON.stringify({ Result: { QuotaUsage: [
+    { Level: "session", Percent: 70, ResetTime: 1793176110955 },
+    { Level: "weekly", Percent: 25, ResetTime: 1793262510955 },
+    { Level: "monthly", Percent: 10, ResetTime: 1793348910955 },
+  ] } })));
+  await flush();
+  const sv = client.view().sources.volcano;
+  assert.equal(sv.status, "ok");
+  assert.equal(sv.windows.fiveHour.percent, 70);
+  assert.equal(sv.windows.weekly.percent, 25);
+  assert.equal(sv.windows.monthly.percent, 10);
+  // HTTP 200 带错误信封（签名错）：auth_failed
+  const b = adapterClient({ secrets: { sources: { volcano: { enabled: true, accessKeyId: "ak", secretAccessKey: "sk" } } } });
+  b.client.noteProvider("y");
+  b.client.tick();
+  b.calls[0].d.resolve(fakeRes(200, JSON.stringify({ ResponseMetadata: { Error: { Code: "InvalidAuthorization", Message: "bad signature" } } })));
+  await flush();
+  assert.equal(b.client.view().sources.volcano.status, "auth_failed");
+});
+
+test("scnet: extras-driven ledger; missing extras soft-hides", async () => {
+  const { client, calls } = adapterClient({ secrets: { sources: { scnet: { enabled: true, planCredits: 240000 } } } });
+  client.noteProvider("x");
+  client.noteSnapshotExtras({ scnet: { source: "estimate", credits_used: 96000, plan_credits: 240000, resets_at: 1793348910955 } });
+  client.tick();
+  await flush();
+  const sv = client.view().sources.scnet;
+  assert.equal(sv.status, "ok");
+  assert.equal(sv.windows.monthly.percent, 40);
+  assert.equal(calls.length, 0, "ledger 源零网络请求");
+  client.noteSnapshotExtras({ scnet: { source: "none" } });
+  client.refreshSource("scnet");
+  await flush();
+  assert.equal(client.view().sources.scnet.status, "no_plan");
+});
+
+test("zai family skips subscription; multi-source scheduler refreshes defaultOn adapters in background", async () => {
+  const { client, calls } = adapterClient({ cfgEntries: [["z", "https://api.z.ai/api/anthropic", "sk-z"]] });
+  client.noteProvider("account:zai-pro-coding-plan");
+  client.tick();
+  // primary zai：无凭据 → not_configured；自定义 z 域名无零配置适配器命中
+  const zai = client.view().sources.zai;
+  assert.equal(zai.status, "not_configured");
+  assert.equal(calls.filter((c) => c.url.indexOf("subscription") >= 0).length, 0, "zai 不拉订阅");
 });

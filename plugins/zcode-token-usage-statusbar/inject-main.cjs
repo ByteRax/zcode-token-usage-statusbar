@@ -274,6 +274,7 @@ function handlePayload(payload) {
         (payload.last && payload.last.provider_id) || "";
       if (prov) quotaClient.noteProvider(prov);
     } catch (e) { }
+    if (payload.scnet_estimate !== undefined) quotaClient.noteSnapshotExtras({ scnet: payload.scnet_estimate });
     quotaClient.tick();
     payload = Object.assign({}, payload, { quota: quotaClient.view() });
   }
@@ -681,10 +682,13 @@ maybeSpawn();   // 启动先拉一次
 
 let pluginUpdater = null;
 let pluginRequestBusy = false;
+let lastGoodPayload = null;   // 额度结算后无需重查库即可向各窗口补推（payload 已含 quota）
+let quotaClient = null;
 function pushPluginState(wc, state) {
   if (!isMainWindowState(wc) || wc.isDestroyed()) return;
   /* rateLine / quotaEnabled 随插件状态一起推送：⚙ 面板两个开关的真值都来自 config.json */
-  const payload = { ...state, rateLine: readCfgCached().answer_rate_line !== false, quotaEnabled: quotaEnabled() };
+  const payload = { ...state, rateLine: readCfgCached().answer_rate_line !== false, quotaEnabled: quotaEnabled(),
+    quotaSources: quotaClient ? quotaClient.sourcesConfig() : [] };
   wc.executeJavaScript(`window.__zusagePluginUpdate && window.__zusagePluginUpdate(${JSON.stringify(payload)})`, true).catch(() => { });
 }
 try {
@@ -704,14 +708,14 @@ acknowledgeRestart();
  * monitor 端点 → 归一化 → 快照 quota 字段。独立模块，加载失败只少额度不拖垮主链
  * （overlay 收不到 quota 字段即隐藏 chip）。凭据只在 quota-client 进程内存流转；
  * 诊断只记 status/HTTP code/错误摘要，token 与请求头绝不进日志。 */
-let lastGoodPayload = null;   // 额度结算后无需重查库即可向各窗口补推（payload 已含 quota）
-let quotaClient = null;
 try {
   const { createQuotaClient } = require("./quota-client.cjs");
   const quotaHome = (process.env && process.env.ZCODE_DESKTOP_HOME_DIR) || app.getPath("home");
   const quotaCredsPath = path.join(quotaHome, ".zcode", "v2", "credentials.json");
+  const QUOTA_SECRETS = path.join(HERE, "quota-secrets.json");
   quotaClient = createQuotaClient({
     credsPath: quotaCredsPath,
+    secretsPath: QUOTA_SECRETS,
     log: (...a) => LOG("[quota]", ...a),
     onUpdate: () => {   // 手动刷新/解冻等结算：拿最近成功快照补推（不触发 Python 重查）
       if (!lastGoodPayload) return;
@@ -984,6 +988,8 @@ async function pollPluginRequests() {
           setAnswerRateLine(req.enabled);
         } else if (req && req.action === "quota" && typeof req.enabled === "boolean") {
           setQuotaEnabled(req.enabled);
+        } else if (req && (req.action === "quota-src" || req.action === "quota-src-key" || req.action === "quota-src-refresh")) {
+          handleQuotaSourceRequest(req);
         } else if (req && req.action === "quota-refresh") {   // ⚙/chip 手动刷新：绕过 TTL 与软冻结
           if (quotaClient && quotaEnabled()) quotaClient.refresh();
         } else if (req && req.action === "turn-text" && typeof req.sid === "string") {
