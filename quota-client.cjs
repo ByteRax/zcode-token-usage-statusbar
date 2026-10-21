@@ -1000,7 +1000,9 @@ function createQuotaClient(opts) {
       } catch (e) { /* detect 抛错按不命中 */ }
     }
     const ctx = ADAPTER_BY_ID.get("custom").detect(j, p);
-    return ctx ? { id: "custom", ctx, provider: p } : { id: "custom", ctx: null, provider: p };
+    /* custom 源按 provider 隔离（custom:<pid>）：两个不同中转的窗口各持独立状态/key，
+     * 互不覆盖、互不串显；未命中同样建独立空源（unsupported/provider）。 */
+    return { id: "custom:" + p, ctx, provider: p };
   }
 
   function settleError(st, ep, err) {
@@ -1057,7 +1059,7 @@ function createQuotaClient(opts) {
     if (!force && t < st.nextAt) return;
     const ctx = st.ctx;
     if (!ctx) {
-      if (adapter.id === "custom") {   // 无配置的自定义供应商：v96 兼容语义（unsupported/provider）
+      if (adapter.id === "custom") {   // 无配置的自定义供应商：unsupported/provider（v96 兼容语义）
         if (st.status !== "unsupported" || st.reason !== "provider") setState(st, { status: "unsupported", reason: "provider", value: null });
       } else if (st.status !== "not_configured") setState(st, { status: "not_configured", reason: "", lastError: "" });
       st.nextAt = t + NOT_CONFIGURED_RETRY_MS;
@@ -1094,7 +1096,7 @@ function createQuotaClient(opts) {
     j.secrets = readSecrets();
     const set = new Map();
     if (primaryId) {
-      const a = ADAPTER_BY_ID.get(primaryId);
+      const a = primaryId.indexOf("custom:") === 0 ? ADAPTER_BY_ID.get("custom") : ADAPTER_BY_ID.get(primaryId);
       if (a && primaryId !== "team") {
         const st = stateOf(primaryId);
         if (!st.ctx) st.ctx = primaryCtx;
@@ -1105,7 +1107,7 @@ function createQuotaClient(opts) {
       }
     }
     for (const a of ADAPTERS) {
-      if (a.id === "custom" || set.has(a.id)) continue;
+      if (a.id === "custom" || set.has(a.id)) continue;   // custom 系只在 primary 分支进入
       const secCfg = (j.secrets.sources || {})[a.id] || {};
       const enabledCfg = secCfg.enabled === true;
       if (a.defaultOn || enabledCfg) {
@@ -1132,7 +1134,7 @@ function createQuotaClient(opts) {
 
   function entryView(st) {
     const t = now();
-    const a = ADAPTER_BY_ID.get(st.id);
+    const a = st.id.indexOf("custom:") === 0 ? ADAPTER_BY_ID.get("custom") : ADAPTER_BY_ID.get(st.id);
     const ttl = a && a.kind === "balance" ? TTL_BALANCE_MS : TTL_MS;
     const v = { status: st.status, reason: st.reason, fetchedAt: st.fetchedAt,
       stale: !!(st.fetchedAt && t - st.fetchedAt > ttl), error: st.lastError };
@@ -1171,16 +1173,29 @@ function createQuotaClient(opts) {
         st.inFlight = null;
         /* custom：ctx 必须跟随本次解析结果（未命中即置 null → unsupported/provider），
          * 不得残留旧供应商的 baseUrl/key，否则会把旧网关余额当新会话主显。 */
-        st.ctx = (r.id === "custom") ? primaryCtx : (primaryCtx || st.ctx);
+        st.ctx = (r.id.indexOf("custom:") === 0) ? primaryCtx : (primaryCtx || st.ctx);
         st.nextAt = 0;
       }
       if (p) byProvider[p] = r.id || "";
     },
     credentialsChanged() {
-      for (const st of states.values()) st.nextAt = 0;   // 凭据文件变化：全部源重读指纹，变化即解冻
+      /* 唤醒"值得重评"的源：冻结态（Infinity）重评后仍由 status 短路（指纹未变不复 fetch）；
+       * not_configured 唤醒以承接 secrets/供应商配置刚启用；宿主凭据源即时重拉（token 刷新）。
+       * ok 态保持 TTL——指纹在其自然到期重查时校验，避免一次 secrets 写入全源冗余刷新。 */
+      for (const st of states.values()) {
+        if (st.nextAt === Infinity || st.status === "not_configured" || (st.cred && st.cred.source === "host")) st.nextAt = 0;
+      }
     },
-    noteSnapshotExtras(data) {   // 快照侧注入（scnet 估算等）
+    noteSnapshotExtras(data) {   // 快照侧注入（scnet 估算等）；ledger 源数据到位即解冻
+      const prevScnet = extras.scnet;
       Object.assign(extras, data || {});
+      if (data && data.scnet !== undefined && JSON.stringify(data.scnet) !== JSON.stringify(prevScnet)) {
+        const st = states.get("scnet");
+        if (st && (st.status === "no_plan" || st.status === "network_error")) {
+          st.status = "idle";
+          st.nextAt = 0;   // 估算就绪：立即重查（首次启用早于首个快照的自我冻结修复）
+        }
+      }
     },
     view() {
       const sources = {};

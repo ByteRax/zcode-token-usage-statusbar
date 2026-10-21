@@ -787,7 +787,11 @@ function writeQuotaSecrets(mutate) {
     fs.renameSync(tmp, file);
     try { fs.chmodSync(file, 0o600); } catch (e2) { /* Windows/权限失败忽略：tmp 已按 0600 创建 */ }
   } catch (e) { LOG("quota secrets write failed:", e.message); return; }
-  if (quotaClient) { quotaClient.credentialsChanged(); quotaClient.tick(); broadcastPluginState(); }
+  if (quotaClient) {
+    quotaClient.credentialsChanged();
+    if (quotaEnabled()) quotaClient.tick();   // 总开关关闭时不触发联网（与手动刷新同口径）
+  }
+  broadcastPluginState();   // 面板状态无论开关都要刷新（写入结果回显）
 }
 function handleQuotaSourceRequest(req) {
   const id = String(req.id || "");

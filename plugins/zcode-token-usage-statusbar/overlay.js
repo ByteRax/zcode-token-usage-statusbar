@@ -2118,7 +2118,7 @@
         var qsid = "";
         if (qprov.indexOf("account:") === 0) {
           qsid = qprov.indexOf("bigmodel") >= 0 ? "bigmodel" : (qprov.indexOf("zai") >= 0 ? "zai" : "");
-          if (!qsid) qsid = lastQuotaAll.active;   // 其它 account 档（如 team 变体）退 active
+          /* 未知 account 档不退 active（可能显示他窗自定义源）；team 变体由上方静态提示分支承接 */
         } else if (lastQuotaAll.byProvider && lastQuotaAll.byProvider[qprov]) {
           qsid = lastQuotaAll.byProvider[qprov];   // 自定义 provider：只认主进程显式映射
         }

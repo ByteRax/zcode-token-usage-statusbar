@@ -726,3 +726,55 @@ test("zai family skips subscription; multi-source scheduler refreshes defaultOn 
   assert.equal(zai.status, "not_configured");
   assert.equal(calls.filter((c) => c.url.indexOf("subscription") >= 0).length, 0, "zai 不拉订阅");
 });
+
+test("B2: two custom relay providers hold isolated source states (custom:<pid>)", async () => {
+  const clock = { t: T0 };
+  const calls = [];
+  const cfg = () => customCfgFile([
+    ["gw-a", "https://a.example.com/v1", "sk-a"],
+    ["gw-b", "https://b.example.com/v1", "sk-b"],
+  ]);
+  const client = Q.createQuotaClient({
+    env: Object.assign({}, ENV), now: () => clock.t,
+    credsPath: "/virtual/credentials.json", secretsPath: "/virtual/quota-secrets.json",
+    readFile: (p) => (p.endsWith("credentials.json") ? (() => { throw new Error("ENOENT"); })() : cfg()),
+    customCfgPath: "/virtual/provider_config.json",
+    fetchImpl: (url) => {
+      const d = deferred();
+      calls.push({ url, d });
+      return d.promise;
+    },
+  });
+  client.noteProvider("gw-a");
+  client.tick();
+  assert.equal(calls[0].url, "https://a.example.com/v1/dashboard/billing/subscription");
+  calls[0].d.resolve(fakeRes(200, JSON.stringify({ hard_limit_usd: 50 })));
+  await flush();
+  calls[1].d.resolve(fakeRes(200, JSON.stringify({ total_usage: 1000 })));   // a 池 $50 已用 $10 → 40
+  await flush();
+  assert.equal(client.view().balance.amount, 40);
+  // 切到 gw-b：独立源，a 的在途/状态不影响 b
+  client.noteProvider("gw-b");
+  client.tick();
+  assert.equal(calls[2].url, "https://b.example.com/v1/dashboard/billing/subscription");
+  assert.equal(client._states.get("custom:gw-a").value.balance.amount, 40, "a 状态保留");
+  calls[2].d.resolve(fakeRes(200, JSON.stringify({ hard_limit_usd: 200 })));
+  await flush();
+  calls[3].d.resolve(fakeRes(200, JSON.stringify({ total_usage: 50000 })));   // b 池 $200 已用 $500 → 透支 300？
+  await flush();
+  assert.equal(client.view().balance.amount, -300, "b 是独立数字（哪怕为负也如实展示）");
+});
+
+test("B3: scnet no_plan unfreezes when snapshot extras arrive", async () => {
+  const { client } = adapterClient({ secrets: { sources: { scnet: { enabled: true, planCredits: 240000 } } } });
+  client.noteProvider("x");
+  client.tick();
+  await flush();
+  assert.equal(client.view().sources.scnet.status, "no_plan", "extras 未到：软隐藏冻结");
+  client.noteSnapshotExtras({ scnet: { source: "estimate", credits_used: 48000, plan_credits: 240000, resets_at: null } });
+  client.tick();
+  await flush();
+  const sv = client.view().sources.scnet;
+  assert.equal(sv.status, "ok", "extras 到位即解冻重查");
+  assert.equal(sv.windows.monthly.percent, 20);
+});
