@@ -99,6 +99,12 @@ The plugin also appends a short stats line to the end of replies: generation spe
 
 It is **not the same number as the bar**: the bar shows the **most recent request segment**, while the rate line shows the **weighted average of every request already stored for this turn**. It stays hidden when your current question hasn't been written to the database yet, so it never passes off the previous turn's numbers as this one's.
 
+### Git status
+
+A Git chip also sits to the right of the Computer Use button in the composer toolbar: `⎇ branch ↑ahead ↓behind (+insertions -deletions ?untracked)` — clean worktrees show just the branch name. Hover for details (upstream, staged/unstaged/conflicts, last update), click to refresh; it also auto-refreshes every 10 seconds and after each reply. Toggle it in ⚙.
+
+It reads your local `git` directly (read-only, no network, never touches the index lock) and is a separate data chain from the token stats: local repositories only — it stays hidden for SSH remote sessions and non-git directories.
+
 ### Queries: chat, terminal, MCP
 
 Three ways in, one local database:
