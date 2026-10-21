@@ -49,6 +49,14 @@ function sameAssetUrl(actual, expected) {
   const a = parseAssetUrl(actual), b = parseAssetUrl(expected);
   return !!a && !!b && a.host === b.host && sameRepository(a.repository, b.repository) && a.path === b.path;
 }
+function readCatalog(root) {
+  // 市场缓存清单只用来识别“源码清单”这一形态；事务进行中、缺失或损坏时按未知处理，
+  // 由后续 Release 流程报出准确原因。
+  try {
+    if (fs.existsSync(path.join(root, "marketplaces", ".zusage-marketplace.transaction.json"))) return null;
+    return JSON.parse(fs.readFileSync(path.join(root, "marketplaces", "zusage-marketplace", "marketplace.json"), "utf8"));
+  } catch (e) { return null; }
+}
 function readChannel(home, root = require("./plugin-storage.cjs").resolvePluginStorage(home)) {
   const file = path.join(root, "known_marketplaces.json");
   const data = JSON.parse(fs.readFileSync(file, "utf8"));
@@ -59,14 +67,17 @@ function readChannel(home, root = require("./plugin-storage.cjs").resolvePluginS
   if (!market || !market.source || typeof market.source !== "object") throw new Error("未找到 zusage-marketplace 的注册来源");
   const source = market.source;
   if (source.source === "directory") return { kind: "local", marketplace: market };
+  // 仓库来源但清单指向源码（默认分支的 ./plugins/... 路径源）时没有可校验的 Release：
+  // 按 market 渠道交给宿主插件管理器直接更新，与本地目录来源同一条链。
+  const kind = catalogChannel(readCatalog(root)) === "source" ? "market" : "release";
   if (source.source === "git") {
     const gitcode = gitcodeRepository(source.url);
-    if (gitcode) return { kind: "release", flavor: "gitcode", repository: gitcode, marketplace: market };
+    if (gitcode) return { kind, flavor: "gitcode", repository: gitcode, marketplace: market };
   }
   const repository = source.source === "github" ? githubRepository(source.repo || source.repository)
     : source.source === "git" ? githubRepository(source.url) : null;
-  if (!repository) throw new Error("远端自动更新仅支持已注册的 GitHub/GitCode 仓库来源，不能回退开发分支");
-  return { kind: "release", flavor: "github", repository, marketplace: market };
+  if (!repository) throw new Error("远端自动更新仅支持已注册的 GitHub/GitCode 仓库来源");
+  return { kind, flavor: "github", repository, marketplace: market };
 }
 async function fetchBytes(url, limit, onProgress) {
   let activeRequest, activeResponse, timer, settled = false;
@@ -212,21 +223,9 @@ async function downloadRelease(release, python, fetch = fetchBytes, runUnpack = 
     return { directory, marketplaceRoot: output, pluginRoot: result.pluginRoot, release, manifest, cleanup };
   } catch (error) { cleanup(); throw error; }
 }
-function validateCatalog(catalog, release, manifest) {
-  const entries = catalog && catalog.plugins;
-  const matches = Array.isArray(entries) ? entries.filter((p) => p && p.name === "zcode-token-usage-statusbar") : [];
-  const entry = matches.length === 1 ? matches[0] : null;
-  const source = entry && entry.source;
-  if (!catalog || catalog.name !== "zusage-marketplace" || !entry || entry.version !== release.version ||
-      !source || typeof source !== "object" || source.source !== "url" || source.type !== "zip" ||
-      !sameAssetUrl(source.url, release.archive.browser_download_url) || source.sha256 !== manifest.asset.sha256 ||
-      source.path !== "plugins/zcode-token-usage-statusbar" || (source.stripRoot !== undefined && source.stripRoot !== false) ||
-      source.headers !== undefined) throw new Error("市场尚未发布与正式 Release 一致的校验下载源；请维护者发布 Release 渠道清单，不能回退开发分支");
-  return entry;
-}
 function gitcodeReleaseFromCatalog(catalog, repository) {
   // GitCode 渠道的版本与下载源只信任宿主刚从注册 ref 拉取的渠道清单；不调用 GitCode API。
-  // 下载 URL 与 validateCatalog 共用同一套主机模式，形状以 2026-10-20 实测为准。
+  // 下载 URL 与安装后复核（verifyCommittedRelease）共用同一套主机模式，形状以 2026-10-20 实测为准。
   if (!githubRepository(repository) || repository !== githubRepository(repository)) throw new Error("GitCode 仓库标识无效");
   const entries = catalog && catalog.plugins;
   const matches = Array.isArray(entries) ? entries.filter((p) => p && p.name === "zcode-token-usage-statusbar") : [];
@@ -272,7 +271,7 @@ function validateGitcodeRelease(release) {
   return { ...release, version: release.version };
 }
 /* 已注册市场的清单指向什么：Release 下载源，还是仓库源码（本地路径/开发分支）。
-   只用于把报错换成可操作的提示；真正的安装校验仍由 validateCatalog 把关。 */
+   readChannel 据此把源码清单的仓库来源判为 market 渠道，交给宿主插件管理器直接更新。 */
 function catalogChannel(catalog, pluginName = "zcode-token-usage-statusbar") {
   const entries = catalog && catalog.plugins;
   const matches = Array.isArray(entries) ? entries.filter((p) => p && p.name === pluginName) : [];
@@ -285,5 +284,5 @@ function catalogChannel(catalog, pluginName = "zcode-token-usage-statusbar") {
   return source.source === "url" && source.type === "zip" ? "release" : "source";
 }
 module.exports = { sameRepository, sameAssetUrl, githubRepository, gitcodeRepository, readChannel, checkRelease, gitcodeReleaseFromCatalog, validateGitcodeRelease,
-  downloadRelease, validateRelease, validateManifest, validateCatalog, catalogChannel,
+  downloadRelease, validateRelease, validateManifest, catalogChannel,
   fetchBytes, MAX_ASSET, MAX_JSON, PLUGIN_ID };

@@ -223,9 +223,8 @@ They're three separate things, and missing any one of them makes it look like "I
 **How do I update it later?**
 
 - **Plugin (stable channel)**: type `/plugin marketplace update zusage-marketplace` in ZCode, then update the plugin under **Settings → Plugin → Installed**. Or just use ⚙ → **Check for updates / Update now** — automatic updates are on by default. If you registered the GitCode channel, this whole flow — version check through download and install — runs on GitCode, and the ⚙ source line names the channel in use.
-- **Local directory / source branch**: the updater in ⚙ only follows stable Releases. On a source install it reports that automatic updates aren't available — run `git pull` and reinstall, or [switch the marketplace to the stable channel](docs/user-guide.md#切换已有市场到正式渠道) (Chinese).
+- **Local directory / source branch**: ⚙ → **Check for updates / Update now** works here too. These sources have no stable Release to verify, so the update is handed to the ZCode plugin manager, which installs straight from the marketplace catalog (effectively `marketplace update` + plugin update for you, without the release-package SHA256 check); the ⚙ source line reads "repository source" or "local directory marketplace". For verified release packages, [switch the marketplace to the stable channel](docs/user-guide.md#切换已有市场到正式渠道) (Chinese).
 - **One-command installer**: the ⚙ **Check for updates** only works for plugin installs. Updating is two steps — `git pull` inside the clone (it pulls from wherever you cloned from, so GitCode mirror users pull from GitCode), then rerun `python install.py`.
-- If an update won't go through, you can also send "更新zcode 插件 https://github.com/ByteRax/zcode-token-usage-statusbar" to ZCode and let it reinstall for you.
 - Start or reopen a session afterwards. If prompted about changed main-process files, quit ZCode completely and reopen it.
 
 [More installation, updates and troubleshooting →](docs/user-guide.md#插件安装) (Chinese)

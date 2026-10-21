@@ -184,7 +184,7 @@ node --check web/zusage-sidecar.mjs
 - 两份 `.zcode-plugin/plugin.json`、`.claude-plugin/plugin.json` 与根 `marketplace.json` 的插件身份/版本须一致；正式渠道清单是生成的 `marketplace-release.json`，不要覆盖源码市场入口。
 - `release_tool.py build` 的输出目录须尚不存在，包只含枚举分发文件；`verify` 校验身份、文件集、SHA256 与安全解包，参数示例见维护文档。
 - `publish --dry-run` 不是离线检查：仍有 GitHub 只读 preflight，要求已提交源码、本地/远端 tag 与目标提交一致、Release 不存在及非空 UTF-8 更新说明。预演不授予正式发布权限。
-- 正式更新必须来自已注册来源对应的正式 Release，ZIP、manifest、版本、渠道 URL/SHA256 一致；不回退开发分支，不静默切换用户市场来源，不启用被禁用插件。
+- 更新渠道由 `readChannel` 按注册来源**和市场缓存清单**共同判定：清单为 zip 源的 GitHub/GitCode 来源是 Release 渠道，更新来自已注册来源对应的正式 Release，ZIP、manifest、版本一致，安装后由 `verifyCommittedRelease` 复核宿主安装记录；清单为源码路径的仓库来源判为 `market` 渠道，与本地目录来源同链，由宿主插件管理器按清单直接更新，不经发布包校验。原「市场清单必须与 Release 一致」的安装前校验门（`validateCatalog`）已按维护者决定移除，不要重新加回。不静默切换用户市场来源，不启用被禁用插件。
 - `--publish`/`--confirm` 是工具安全门，不是用户授权的替代。提交、推送、tag、创建 Release、渠道写入均按**当前明确授权**执行，本指南不授予持续发布权限。
 - 实际目标仓库先检查 `git remote -v`，不要混用 fork/上游；源码/渠道 branch、tag、Release 必须分别确认。
 - `fork` 配置双 push URL：`git push fork` 同时推送 GitHub（ByteRax）与 GitCode 镜像（gitcode.com/tanranran/zcode-token-usage-statusbar）；`gitcode` 远程仅用于单独核对或恢复，`origin` 仍只读。GitCode 同时承载国内更新渠道：`plugin-releases-gitcode` 分支清单 + 同 tag Release 资产，由 `release_tool.py publish --gitcode-repo`（需 `GITCODE_TOKEN`）在 GitHub 发布验收后生成，见[双远程同步](docs/maintaining.md#双远程同步)。更新器的 GitHub/GitCode 双渠道校验（`plugin-release.cjs` 的 flavor 分支、`sameAssetUrl` 主机模式、`fetchBytes` 白名单）必须一起改并有测试锁定。GitCode 段推送认证（HTTPS 访问令牌）未配置时该段失败属预期，不代表 GitHub 段失败。

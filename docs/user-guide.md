@@ -66,7 +66,7 @@ Windows 若找不到 `python3`，需在插件的 `.mcp.json` 与 `hooks/hooks.js
 
 GitHub 访问受限时可注册 GitCode 镜像渠道 `https://gitcode.com/tanranran/zcode-token-usage-statusbar.git#plugin-releases-gitcode`：清单由同一份发布产物生成，ZIP 与 SHA256 和 GitHub Release 完全一致，版本检查、下载与安装全部在 GitCode 完成。该渠道要求本机装有 Git（宿主通过 git 拉取渠道清单）。
 
-清单指向正式 ZIP，包含 SHA256 与插件子目录；下载时核对 Release manifest、版本、包内容和清单一致性，不回退开发分支。后续正式版本仍需维护者同步发布渠道清单，单独发布 Release 不等于渠道已经更新。
+清单指向正式 ZIP，包含 SHA256 与插件子目录；下载时核对 Release manifest、版本与包内容，安装后再复核宿主安装记录与所选 Release 一致。后续正式版本仍需维护者同步发布渠道清单：Release 已发布而渠道清单尚未更新的几分钟内，宿主按旧清单安装不会前进到新版本，更新会报「插件管理器未提交新版安装记录」，稍后再点即可。
 
 默认 `main` 的市场清单仍用于源码安装，本地目录也保持原用法；不要把正式渠道清单复制到自己的源码根目录。私有仓库认证下载和 GitHub/GitCode 之外的远端自动更新不支持。发布操作见 [维护文档](maintaining.md#发布插件)。
 
@@ -140,9 +140,8 @@ python3 install.py --root /Applications/ZCode.app
 
 - **检查更新**不会安装；发现新版后可点「立即更新」。
 - **自动更新默认开启**，首次运行检查，之后按 24 小时间隔检测与安装；你显式关闭的设置会保留。
-- GitHub 来源需正式 Release 与市场清单一致；新远程安装使用 `#plugin-releases`。源码分支或本地目录安装没有可校验的 Release，点「检查更新」会直接提示"不支持自动更新"，不会回退到开发分支取包：先 `git pull` 重装，或迁移到正式渠道。
-- GitCode 渠道的版本检查读宿主从注册 ref 拉取的渠道清单，ZIP 从 GitCode Release 资产下载并核对 SHA256；渠道清单与资产不一致时直接报错，不做自动重试。
-- 更新区固定显示一句可直接复制的重装指令：「更新zcode 插件 https://github.com/ByteRax/zcode-token-usage-statusbar」。更新失败时把它发给 ZCode，让助手帮你重装。
+- GitHub/GitCode 来源按市场清单分两条链：清单指向正式 Release ZIP（`#plugin-releases` / `#plugin-releases-gitcode`）时走 Release 校验链；清单指向仓库源码（默认分支）或本地目录时没有可校验的 Release，更新交给宿主插件管理器按市场清单直接完成（`marketplace update` → 插件更新），不经过发布包 SHA256 校验，⚙ 的「更新来源」会写明「仓库源码」或「本地目录市场」。新远程安装仍建议使用 `#plugin-releases`。
+- GitCode 渠道的版本检查读宿主从注册 ref 拉取的渠道清单，ZIP 从 GitCode Release 资产下载并按 Release manifest 核对 SHA256，安装后复核安装记录与所选 Release 一致。
 - 更新代码会访问已注册来源，不上传用量数据；来源错误或网络失败会显示原因。
 - 只支持本插件的用户级安装；不会替你启用已禁用的插件。
 

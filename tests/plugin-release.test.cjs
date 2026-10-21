@@ -8,7 +8,7 @@ const crypto = require("crypto");
 const https = require("https");
 const { EventEmitter } = require("events");
 const { githubRepository, gitcodeRepository, readChannel, checkRelease, gitcodeReleaseFromCatalog, validateGitcodeRelease,
-  downloadRelease, validateRelease, validateManifest, validateCatalog, catalogChannel,
+  downloadRelease, validateRelease, validateManifest, catalogChannel,
   fetchBytes, sameAssetUrl, MAX_ASSET, MAX_JSON, PLUGIN_ID } = require("../plugin-release.cjs");
 const { compareVersions } = require("../plugin-updater.cjs");
 
@@ -67,10 +67,6 @@ test("R6 repository case is compatible but hosts tags and asset paths remain exa
   const selected = validateRelease(release("1.4.0"), "byterax/zcode-token-usage-statusbar");
   const f = packageFixture();
   validateManifest({ ...f.manifest, repository: "BYTERAX/ZCODE-TOKEN-USAGE-STATUSBAR" }, selected);
-  const entry = { name: "zcode-token-usage-statusbar", version: "1.4.0", source: { source: "url", type: "zip",
-    url: selected.archive.browser_download_url.replace("ByteRax", "byterax"), sha256: f.manifest.asset.sha256,
-    path: "plugins/zcode-token-usage-statusbar" } };
-  validateCatalog({ name: "zusage-marketplace", plugins: [entry] }, selected, f.manifest);
   for (const url of [selected.archive.browser_download_url.replace("github.com", "GITHUB.COM"),
     selected.archive.browser_download_url.replace("v1.4.0", "V1.4.0"), selected.archive.browser_download_url + "?x=1"]) {
     const row = release("1.4.0"); row.assets[0].browser_download_url = url;
@@ -149,7 +145,6 @@ test("gitcode release synthesized from the channel catalog pins repo, tag and as
   const upstreamManifest = { schemaVersion: 1, repository: "ByteRax/zcode-token-usage-statusbar", version: "1.5.2",
     tag: "v1.5.2", pluginId: PLUGIN_ID, asset: { name: "zcode-token-usage-statusbar-v1.5.2.zip", size: 603706, sha256 } };
   validateManifest(upstreamManifest, selected);
-  validateCatalog(catalog, selected, upstreamManifest);
   validateGitcodeRelease(selected);
   assert.equal(validateGitcodeRelease({ ...selected, archive: { ...selected.archive, size: 3 } }), null);
   assert.equal(validateGitcodeRelease({ ...selected, tag: "v1.5.3" }), null);
@@ -198,25 +193,10 @@ test("download verifies source manifest, asset hash and unpack result and cleans
   assert.throws(() => validateManifest({ ...manifest, repository: "attacker/repo" }, selected), /不一致/);
   await assert.rejects(downloadRelease(selected, "python3", async (url) => url.endsWith("release-manifest.json") ? Buffer.from(JSON.stringify(manifest)) : Buffer.from("bad")), /SHA256/);
 });
-test("catalog rejects duplicate targets and every release source mismatch", () => {
-  const { selected, manifest } = packageFixture();
-  const entry = { name: "zcode-token-usage-statusbar", version: selected.version, source: { source: "url", type: "zip",
-    url: selected.archive.browser_download_url, sha256: manifest.asset.sha256, path: "plugins/zcode-token-usage-statusbar" } };
-  const catalog = { name: "zusage-marketplace", plugins: [entry] };
-  assert.equal(validateCatalog(catalog, selected, manifest), entry);
-  validateCatalog({ ...catalog, plugins: [{ ...entry, source: { ...entry.source, stripRoot: false } }] }, selected, manifest);
-  const invalid = [null, { ...catalog, name: "other-market" }, { ...catalog, plugins: [] }, { ...catalog, plugins: [entry, entry] },
-    { ...catalog, plugins: [{ ...entry, version: "1.5.0" }] }, ...[
-      { source: "git" }, { type: "git" }, { url: "https://github.com/attacker/repo/releases/download/v1.4.0/asset.zip" },
-      { sha256: "0".repeat(64) }, { path: "../plugins/zcode-token-usage-statusbar" }, { path: undefined },
-      { stripRoot: true }, { stripRoot: null }, { headers: {} }, { headers: { Authorization: "fixture" } },
-    ].map((source) => ({ ...catalog, plugins: [{ ...entry, source: { ...entry.source, ...source } }] }))];
-  for (const value of invalid) assert.throws(() => validateCatalog(value, selected, manifest), /不能回退开发分支/);
-});
 test("channel rejects untrusted repositories and duplicate known marketplace identities without writing", (t) => {
   for (const source of [{ source: "github", repo: "owner/repo#main" }, { source: "git", url: "https://token@github.com/owner/repo.git" },
     { source: "git", url: "https://github.com/owner/repo.git?ref=main" }, { source: "url", url: "https://github.com/owner/repo" }]) {
-    assert.throws(() => channel(fixture(t, source)), /不能回退开发分支/);
+    assert.throws(() => channel(fixture(t, source)), /仅支持已注册的 GitHub\/GitCode 仓库来源/);
   }
   const home = fixture(t, { source: "github", repo: "ByteRax/zcode-token-usage-statusbar" });
   const file = path.join(home, ".zcode", "cli", "plugins", "known_marketplaces.json");
@@ -375,4 +355,34 @@ test("catalogChannel separates Release-pinned catalogs from source checkouts", (
   assert.equal(catalogChannel(null), "unknown");
   assert.equal(catalogChannel({ plugins: [] }), "unknown");
   assert.equal(catalogChannel({ plugins: [{ name: "other", source: { source: "url", type: "zip" } }] }), "unknown");
+});
+
+function writeCatalog(home, catalog) {
+  const dir = path.join(home, ".zcode", "cli", "plugins", "marketplaces", "zusage-marketplace");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "marketplace.json"), typeof catalog === "string" ? catalog : JSON.stringify(catalog));
+}
+test("readChannel routes repository sources whose cached catalog points at source code to the market channel", (t) => {
+  const entry = (source) => ({ name: "zusage-marketplace", plugins: [{ name: "zcode-token-usage-statusbar", version: "1.5.2", source }] });
+  const sourceCatalog = entry("./plugins/zcode-token-usage-statusbar");
+  const releaseCatalog = entry({ source: "url", type: "zip", url: "https://github.com/ByteRax/zcode-token-usage-statusbar/releases/download/v1.5.2/x.zip" });
+  const github = { source: "github", repo: "ByteRax/zcode-token-usage-statusbar" };
+  const gitcode = { source: "git", url: "https://gitcode.com/tanranran/zcode-token-usage-statusbar.git" };
+  const pick = (c) => ({ kind: c.kind, flavor: c.flavor, repository: c.repository });
+  let home = fixture(t, github); writeCatalog(home, sourceCatalog);
+  assert.deepEqual(pick(channel(home)), { kind: "market", flavor: "github", repository: "ByteRax/zcode-token-usage-statusbar" });
+  home = fixture(t, gitcode); writeCatalog(home, sourceCatalog);
+  assert.deepEqual(pick(channel(home)), { kind: "market", flavor: "gitcode", repository: "tanranran/zcode-token-usage-statusbar" });
+  // Release 清单、缓存缺失、缓存损坏、市场事务进行中：都保持 release 渠道，由后续 Release 流程报出准确原因
+  home = fixture(t, github); writeCatalog(home, releaseCatalog);
+  assert.equal(channel(home).kind, "release");
+  assert.equal(channel(fixture(t, github)).kind, "release");
+  home = fixture(t, github); writeCatalog(home, "{not json");
+  assert.equal(channel(home).kind, "release");
+  home = fixture(t, github); writeCatalog(home, sourceCatalog);
+  fs.writeFileSync(path.join(home, ".zcode", "cli", "plugins", "marketplaces", ".zusage-marketplace.transaction.json"), "{}");
+  assert.equal(channel(home).kind, "release");
+  // 本地目录来源不看清单
+  home = fixture(t, { source: "directory", path: path.join(home, "pkg") }); writeCatalog(home, sourceCatalog);
+  assert.equal(channel(home).kind, "local");
 });
