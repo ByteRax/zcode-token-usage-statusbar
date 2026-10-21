@@ -611,8 +611,9 @@ test("cline: three windows from data.limits percentUsed", async () => {
   assert.equal(sv.windows.weekly.percent, 17.5);
 });
 
-test("anthropic: env OAuth token; sub-quota windows dropped, main windows kept", async () => {
-  const { client, calls } = adapterClient({ env: { ANTHROPIC_OAUTH_TOKEN: "oauth-tok" } });
+test("anthropic: explicit enable + env OAuth token; sub-quota windows dropped, main windows kept", async () => {
+  const { client, calls } = adapterClient({ env: { ANTHROPIC_OAUTH_TOKEN: "oauth-tok" },
+    secrets: { sources: { anthropic: { enabled: true } } } });   // 读第三方应用凭据须显式启用
   client.noteProvider("whatever");
   client.tick();
   const c = calls.find((x) => x.url.indexOf("api.anthropic.com") >= 0);

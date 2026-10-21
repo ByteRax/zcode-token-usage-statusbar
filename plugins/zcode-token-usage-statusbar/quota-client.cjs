@@ -523,7 +523,9 @@ ADAPTERS.push({
 
 /* --- Anthropic Claude Pro/Max（OAuth 自动发现 ~/.claude/.credentials.json） --- */
 ADAPTERS.push({
-  id: "anthropic", label: "Anthropic", kind: "plan", defaultOn: true, unverified: true,
+  /* 显式启用（非零配置默认）：凭据自动发现读的是第三方应用 Claude Code 的凭据文件，
+   * 属跨应用读取，必须用户在 ⚙ 单独打开（披露句随面板/README）。 */
+  id: "anthropic", label: "Anthropic", kind: "plan", defaultOn: false, unverified: true,
   envKeys: ["ANTHROPIC_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"],
   detect() { return null; },
   resolveCred(j) {
@@ -1115,7 +1117,7 @@ function createQuotaClient(opts) {
         if (!st.ctx) {
           const auto = secCfg.apiKey || secCfg.cookie || secCfg.token || (a.id === "scnet" && num(secCfg.planCredits) > 0) ||
             (a.id === "anthropic") || (a.id === "volcano" && (j.env.VOLCENGINE_ACCESS_KEY_ID || secCfg.accessKeyId));
-          if (auto || a.id === "anthropic" || a.id === "scnet") st.ctx = { config: true };
+          if (auto || a.id === "scnet") st.ctx = { config: true };   // anthropic 已改显式启用：enabled+凭据可得才激活
         }
         if (st.ctx) set.set(a.id, { a, st });
         else if (a.defaultOn) {
