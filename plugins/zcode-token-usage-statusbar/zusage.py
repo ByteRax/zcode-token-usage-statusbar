@@ -5,6 +5,7 @@
 也可被 usage_mcp.py import 为查询库。
 """
 import hashlib
+import fnmatch
 import json
 import os
 import re
@@ -874,6 +875,141 @@ def _session_snapshot(con, sid, cfg):
     }
 
 
+# ---------- SCNet 超算互联网（阶段 3：外部快照优先，缺失时按官方 Credits 抵扣表本地估算） ----------
+# 抵扣表转写自 dsh-cost-meter（MIT，lib/coding-plans.js SCNET_CREDIT_RATES）；
+# 单位 = Credits / 百万 tokens，数值可能随官方调整，执行/发版前按官方最新核对。
+SCNET_CREDIT_RATES = {
+    "GLM-5.2": (7543, 189, 26400), "GLM-5.1": (8743, 175, 32057), "GLM-5": (8743, 175, 32057),
+    "DeepSeek-V4-Pro": (10286, 86, 20571), "DeepSeek-V4-Flash": (1200, 24, 2400),
+    "DeepSeek-V4-Flash-0731": (1543, 31, 3086),
+    "Kimi-K3": (34286, 343, 171429), "Kimi-K2.7-Code": (8357, 167, 34714),
+    "Kimi-K2.6": (8357, 167, 34714), "Kimi-K2.5": (5143, 103, 27000),
+    "MiniMax-M3": (3600, 72, 14400), "MiniMax-M2.7": (3600, 72, 14400),
+    "MiniMax-M2.5": (2520, 50, 10080), "Qwen3.8-max": (18514, 231, 49371),
+}
+
+
+def _scnet_source_cfg():
+    """quota-secrets.json 的 scnet 段（与 config.json 同目录）。未启用/未配 planCredits 返回 None。"""
+    try:
+        d = json.loads((Path(__file__).parent / "quota-secrets.json").read_text(encoding="utf-8"))
+        src = ((d.get("sources") or {}).get("scnet") or {})
+    except Exception:
+        return None
+    credits = src.get("planCredits")
+    if src.get("enabled") is not True or not isinstance(credits, (int, float)) or credits <= 0:
+        return None
+    return src
+
+
+def _scnet_period(src):
+    """计费周期 [start_ms, end_ms)：planStart(YYYY-MM-DD) 锚日每月同日；缺省自然月。
+    月末锚日（29/30/31）在短月按当月最后一天收敛（2 月不抛 ValueError、不早移周期）。"""
+    import calendar
+    from datetime import datetime
+
+    tz = datetime.now().astimezone()
+    anchor = None
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d"):
+        try:
+            anchor = datetime.strptime(str(src.get("planStart") or ""), fmt)
+            break
+        except Exception:
+            continue
+
+    def clamp_day(year, month, day):
+        return min(day, calendar.monthrange(year, month)[1])
+
+    def add_months(year, month, n):
+        idx = (year * 12 + (month - 1)) + n
+        return idx // 12, idx % 12 + 1
+
+    now_local = tz.replace(tzinfo=None)
+    if anchor is None:
+        y, m = now_local.year, now_local.month
+        sd = 1
+    else:
+        sd = anchor.day
+        y, m = now_local.year, now_local.month
+    # 从当前月往回找：第一个"锚日（或短月收敛日）"不晚于 now 的月即周期起始月
+    while True:
+        d = clamp_day(y, m, sd)
+        cand = datetime(y, m, d)
+        if cand <= now_local or (anchor is None and m == now_local.month and y == now_local.year):
+            start = cand
+            break
+        y, m = add_months(y, m, -1)
+    ny, nm = add_months(start.year, start.month, 1)
+    end = datetime(ny, nm, clamp_day(ny, nm, sd))
+    return int(start.timestamp() * 1000), int(end.timestamp() * 1000)
+
+
+def _scnet_snapshot(src):
+    """外部控制台额度快照：scnet_official.json（≤16KB、24h 内有效；resetsAt 缺省须落在本周期内）。"""
+    path = Path(__file__).parent / "scnet_official.json"
+    try:
+        if path.stat().st_size > 16 * 1024:
+            return None
+        d = json.loads(path.read_text(encoding="utf-8"))
+        used, total = d.get("used"), d.get("total")
+        fetched = d.get("fetchedAt") or d.get("at")
+        if not all(isinstance(v, (int, float)) and v > 0 for v in (used, total)):
+            return None
+        if not isinstance(fetched, (int, float)) or fetched < 1000 or time.time() * 1000 - fetched > 24 * 3600 * 1000:
+            return None
+        resets = d.get("resetsAt")
+        if resets is None:
+            s_ms, e_ms = _scnet_period(src)
+            if not (s_ms <= fetched < e_ms):
+                return None
+        return {"used": used, "total": total, "resetsAt": resets}
+    except Exception:
+        return None
+
+
+def _scnet_estimate(con):
+    """快照优先；无快照按抵扣表 × 本地账本估算（main_turn 的 input/cacheRead/output 分费率求和）。"""
+    if con is None:
+        return None
+    src = _scnet_source_cfg()
+    if src is None:
+        return None
+    plan_credits = float(src["planCredits"])
+    snap = _scnet_snapshot(src)
+    s_ms, e_ms = _scnet_period(src)
+    if snap is not None and snap["total"] > 0:
+        return {"source": "snapshot", "credits_used": round(float(snap["used"]), 2),
+                "plan_credits": round(float(snap["total"]), 2), "resets_at": snap["resetsAt"]}
+    patterns = src.get("modelPatterns") or {}
+    if not isinstance(patterns, dict) or not patterns:
+        return None
+    compiled = []
+    for pat, key in patterns.items():
+        rate = SCNET_CREDIT_RATES.get(str(key))
+        if rate:
+            compiled.append((re.compile(fnmatch.translate(str(pat)), re.IGNORECASE), rate))
+    if not compiled:
+        return None
+    credits = 0.0
+    try:
+        rows = con.execute(
+            """select model_id, coalesce(input_tokens,0), coalesce(cache_read_input_tokens,0),
+                      coalesce(cache_creation_input_tokens,0), coalesce(output_tokens,0)
+               from model_usage
+               where status='completed' and (query_source is null or query_source='main_turn')
+                 and completed_at>=? and completed_at<?""",
+            (s_ms, e_ms)).fetchall()
+    except Exception:
+        rows = []
+    for model_id, tin, tcache_r, tcache_w, tout in rows:
+        for rx, (r_in, r_cached, r_out) in compiled:
+            if rx.match(str(model_id or "")):
+                credits += ((tin + tcache_w) * r_in + tcache_r * r_cached + tout * r_out) / 1e6
+                break
+    return {"source": "estimate", "credits_used": round(credits, 2),
+            "plan_credits": round(plan_credits, 2), "resets_at": e_ms - 1}
+
+
 _EMPTY_TURN = {"requests": 0, "retries": 0, "tool_calls": 0, "tool_errors": 0, "input": 0,
                "output": 0, "reasoning": 0, "cache_read": 0, "cache_write": 0,
                "total": 0, "duration_ms": 0, "ttft_ms": 0, "started": 0, "ended": 0,
@@ -1408,6 +1544,18 @@ def snapshot(force_sid="", routes=None):
                 for k, rc in (setup or {}).get("targets", {}).items()
             ],
             "not_local": not_local,               # 不在本地库的 force 会话 id（issue #14 提示用）
+            # v96 额度 chip 的会话无历史回退：全局最近一个完成的套餐档请求（账号级数据，
+            # 与会话无关）。会话自身没有任何请求历史（新会话/刚切模型还没发请求）时，
+            # 渲染端用它跟随账号当前套餐档，消除"切模型到首个请求完成之间 chip 空窗"。
+            # 只取 account:*（内置套餐档）；最近请求是自定义 provider 时为空串，不回退。
+            "provider_fallback": ((con.execute(
+                """select provider_id from model_usage
+                   where status='completed' and (query_source is null or query_source='main_turn')
+                     and provider_id like 'account:%'
+                   order by completed_at desc limit 1"""
+            ).fetchone() or ("",))[0] or "") if con is not None else "",
+            # SCNet 账本估算（无凭据）：主进程注入 quota-client 的 scnet 源；未配置为 None
+            "scnet_estimate": _scnet_estimate(con),
             "remote_enabled": bool(setup),        # 是否存在可用远端目标（区分"没配"与"配了没查到"）
             "known_sids": known_sids,
             "context_window": base["context_window"],

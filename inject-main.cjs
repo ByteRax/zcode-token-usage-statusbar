@@ -274,6 +274,7 @@ function handlePayload(payload) {
         (payload.last && payload.last.provider_id) || "";
       if (prov) quotaClient.noteProvider(prov);
     } catch (e) { }
+    if (payload.scnet_estimate !== undefined) quotaClient.noteSnapshotExtras({ scnet: payload.scnet_estimate });
     quotaClient.tick();
     payload = Object.assign({}, payload, { quota: quotaClient.view() });
   }
@@ -681,10 +682,13 @@ maybeSpawn();   // 启动先拉一次
 
 let pluginUpdater = null;
 let pluginRequestBusy = false;
+let lastGoodPayload = null;   // 额度结算后无需重查库即可向各窗口补推（payload 已含 quota）
+let quotaClient = null;
 function pushPluginState(wc, state) {
   if (!isMainWindowState(wc) || wc.isDestroyed()) return;
   /* rateLine / quotaEnabled 随插件状态一起推送：⚙ 面板两个开关的真值都来自 config.json */
-  const payload = { ...state, rateLine: readCfgCached().answer_rate_line !== false, quotaEnabled: quotaEnabled() };
+  const payload = { ...state, rateLine: readCfgCached().answer_rate_line !== false, quotaEnabled: quotaEnabled(),
+    quotaSources: quotaClient ? quotaClient.sourcesConfig() : [] };
   wc.executeJavaScript(`window.__zusagePluginUpdate && window.__zusagePluginUpdate(${JSON.stringify(payload)})`, true).catch(() => { });
 }
 try {
@@ -704,14 +708,14 @@ acknowledgeRestart();
  * monitor 端点 → 归一化 → 快照 quota 字段。独立模块，加载失败只少额度不拖垮主链
  * （overlay 收不到 quota 字段即隐藏 chip）。凭据只在 quota-client 进程内存流转；
  * 诊断只记 status/HTTP code/错误摘要，token 与请求头绝不进日志。 */
-let lastGoodPayload = null;   // 额度结算后无需重查库即可向各窗口补推（payload 已含 quota）
-let quotaClient = null;
 try {
   const { createQuotaClient } = require("./quota-client.cjs");
   const quotaHome = (process.env && process.env.ZCODE_DESKTOP_HOME_DIR) || app.getPath("home");
   const quotaCredsPath = path.join(quotaHome, ".zcode", "v2", "credentials.json");
+  const QUOTA_SECRETS = path.join(HERE, "quota-secrets.json");
   quotaClient = createQuotaClient({
     credsPath: quotaCredsPath,
+    secretsPath: QUOTA_SECRETS,
     log: (...a) => LOG("[quota]", ...a),
     onUpdate: () => {   // 手动刷新/解冻等结算：拿最近成功快照补推（不触发 Python 重查）
       if (!lastGoodPayload) return;
@@ -763,6 +767,59 @@ async function setAnswerRateLine(enabled) {
     cfgCache = null;   // 写后置空，下一次 readCfgCached 立即重读（mtime 判变的双保险）
     broadcastPluginState();
   } catch (e) { LOG("answer_rate_line toggle failed:", e.message); }
+}
+/* 阶段 3 源配置：quota-secrets.json（运行目录 0600，凭据只进此文件，不进 config.json/日志/诊断）。
+ * 同目录原子替换（tmp+rename），字段白名单防任意键；写入后 credentialsChanged 解冻重读。 */
+const QUOTA_SECRET_FIELDS = new Set(["apiKey", "cookie", "token", "accessKeyId", "secretAccessKey", "baseUrl", "planCredits", "planStart", "region", "modelPatterns"]);
+function readQuotaSecrets() {
+  try {
+    const d = JSON.parse(fs.readFileSync(path.join(HERE, "quota-secrets.json"), "utf8"));
+    return d && typeof d === "object" && d.sources && typeof d.sources === "object" ? d : { sources: {} };
+  } catch (e) { return { sources: {} }; }
+}
+function writeQuotaSecrets(mutate) {
+  const d = readQuotaSecrets();
+  mutate(d.sources);
+  const file = path.join(HERE, "quota-secrets.json");
+  const tmp = file + ".tmp";
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(d, null, 2) + "\n", { mode: 0o600 });
+    fs.renameSync(tmp, file);
+    try { fs.chmodSync(file, 0o600); } catch (e2) { /* Windows/权限失败忽略：tmp 已按 0600 创建 */ }
+  } catch (e) { LOG("quota secrets write failed:", e.message); return; }
+  if (quotaClient) {
+    quotaClient.credentialsChanged();
+    if (quotaEnabled()) quotaClient.tick();   // 总开关关闭时不触发联网（与手动刷新同口径）
+  }
+  broadcastPluginState();   // 面板状态无论开关都要刷新（写入结果回显）
+}
+function handleQuotaSourceRequest(req) {
+  const id = String(req.id || "");
+  if (!id || !/^[a-z][a-z0-9-]{0,31}$/.test(id)) return;   // 源 id 白名单
+  if (req.action === "quota-src-refresh") {
+    if (quotaClient && quotaEnabled()) quotaClient.refreshSource(id);
+    return;
+  }
+  if (req.action === "quota-src" && typeof req.enabled === "boolean") {
+    writeQuotaSecrets((sec) => { sec[id] = Object.assign({}, sec[id] || {}, { enabled: req.enabled }); });
+    return;
+  }
+  if (req.action === "quota-src-key") {
+    const field = String(req.field || "");
+    if (!QUOTA_SECRET_FIELDS.has(field)) return;
+    const value = req.value == null ? "" : String(req.value).slice(0, 4096);
+    writeQuotaSecrets((sec) => {
+      sec[id] = Object.assign({}, sec[id] || {});
+      const isCred = field === "apiKey" || field === "cookie" || field === "token" || field === "secretAccessKey";
+      if (value === "" && (isCred || field === "modelPatterns")) { delete sec[id][field]; return; }
+      if (field === "planCredits") { if (value === "") delete sec[id][field]; else sec[id][field] = Number(value) || 0; }
+      else if (field === "planStart" || field === "region" || field === "baseUrl") { if (value === "") delete sec[id][field]; else sec[id][field] = value; }
+      else if (field === "modelPatterns") {
+        try { const parsed = JSON.parse(value); if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) sec[id][field] = parsed; } catch (e) { /* 非法 JSON 忽略 */ }
+      }
+      else sec[id][field] = value;
+    });
+  }
 }
 /* v96 套餐额度开关（⚙ 面板）：原子写 config.json 的 quota_enabled（缺省关）。开启即刻 tick
  * 一次（结算后经 onUpdate 补推）；关闭后 handlePayload 不再 tick/附加，chip 随之隐藏。 */
@@ -984,6 +1041,8 @@ async function pollPluginRequests() {
           setAnswerRateLine(req.enabled);
         } else if (req && req.action === "quota" && typeof req.enabled === "boolean") {
           setQuotaEnabled(req.enabled);
+        } else if (req && (req.action === "quota-src" || req.action === "quota-src-key" || req.action === "quota-src-refresh")) {
+          handleQuotaSourceRequest(req);
         } else if (req && req.action === "quota-refresh") {   // ⚙/chip 手动刷新：绕过 TTL 与软冻结
           if (quotaClient && quotaEnabled()) quotaClient.refresh();
         } else if (req && req.action === "turn-text" && typeof req.sid === "string") {

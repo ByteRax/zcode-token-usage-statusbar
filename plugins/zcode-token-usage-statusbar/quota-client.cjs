@@ -1,22 +1,20 @@
-/* v96 额度客户端（主进程，冷文件）：BigModel / Z.ai 个人编码套餐的套餐池额度查询。
- * 数据链：解密宿主 OAuth 凭据（~/.zcode/v2/credentials.json 的 enc:v1 AES-256-GCM，
- * 算法按宿主 credentialCipherProvider 语义重写）→ 裸 authorization 直查
- * {origin}/api/monitor/usage/quota/limit → 归一化窗口 → inject-main 附加进快照。
+/* 额度客户端（主进程，冷文件）v3：多厂商适配器 + 多源调度器。
+ * 阶段 3（浮层 v96 线）：BigModel/Z.ai 内置套餐（解密宿主 OAuth 凭据直查 monitor 端点）
+ * 之外，新增零配置官方域适配器（MiniMax/Kimi/CommandCode/DeepSeek/OpenRouter/SiliconFlow/
+ * Anthropic OAuth）与显式配置适配器（Cline/MiMo Cookie/火山 AK-SK/SCNet 账本）。
  *
- * 口径（P0 实测 2026-10-20 + cc-switch/dsh 交叉核对）：
- *  - limits[] 仅收 TOKENS_LIMIT/CREDIT_LIMIT（type 大小写不敏感）；窗口按 unit 显式分类
- *    （3=5 小时、6=周），不按 nextResetTime 排序代替——周期末尾周窗会先于 5h 窗重置，
- *    时间排序必把两桶标反（cc-switch issue #3036）；unit 缺失的条目兜底补位（无重置时间
- *    的优先归 5h），未知数值 unit 丢弃并留痕，绝不猜映射。
- *  - TIME_LIMIT（unit=5）是内置工具调用期（usage=总额度次数、currentValue=已用），
- *    折叠为 tools 行，不参与 chip 主数字。
- *  - percentage 是整数已用 %（服务端精度粗）；有绝对量时用 currentValue/usage 自算。
- *  - 无套餐是业务信封 {"code":500,"msg":"…不存在coding plan","success":false}，不是 401。
+ * 调度语义：enabled 源全量低频刷新（供 tooltip 分家列全），chip 主显跟随本 pane 会话的
+ * 模型归属（primary 源）。每源独立 nextAt/epoch/退避/凭据指纹；凭据只在内存，不落盘、
+ * 不进日志与诊断；诊断只记 status/HTTP code/错误摘要；key 只发各适配器声明的域。
  *
- * 凭据纪律：token 只在本模块与请求头之间流转；不落盘、不进日志/诊断/配置；
- * 诊断只记 status/HTTP code/错误摘要。401/403 与无套餐冻结到凭据指纹变化
- * （inject-main 监听 credentials.json 变化后调 credentialsChanged 解冻重试）。
- * 远端会话同账号（宿主 provisioning 把桌面凭据强制同步到远端并覆盖），无需远端查询。 */
+ * 凭据发现优先级（契约）：环境变量 → quota-secrets.json（运行目录 0600）→ 自动发现
+ * （宿主 provider_config.json 的自定义供应商 key；Anthropic 另读 ~/.claude/.credentials.json）。
+ * 源码转写声明：MiniMax/Kimi/CommandCode/Cline/MiMo/火山/SCNet 的端点与字段转写自
+ * dsh-cost-meter 与 cc-switch（MIT），其中无真实账号实测的家在适配器上标注 unverified。
+ *
+ * 输出协议：view() = { active, sources: {id: entry} }；为兼容本版浮层，active 源的
+ * 字段同时镜像到顶层（下版移除）。entry 形状与 v96 单源一致（status/windows/tools/
+ * models/level/plan/balance/stale/...），balance 扩展 parts[]（赠送/充值拆分）。 */
 "use strict";
 const crypto = require("crypto");
 const fs = require("fs");
@@ -25,47 +23,46 @@ const path = require("path");
 
 const ENC_PREFIX = "enc:v1:";
 const QUOTA_PATH = "/api/monitor/usage/quota/limit";
-const TTL_MS = 10 * 60 * 1000;            // 对齐宿主 usageEntitlementCache 的 10min
+const TTL_MS = 10 * 60 * 1000;            // 套餐窗默认（对齐宿主 usageEntitlementCache）
+const TTL_BALANCE_MS = 15 * 60 * 1000;    // 余额默认（dsh 同款）
 const FETCH_TIMEOUT_MS = 10 * 1000;
-const BODY_LIMIT = 256 * 1024;            // dsh readJsonBounded 同款上限
+const BODY_LIMIT = 256 * 1024;
 const BACKOFF_MS = [30 * 1000, 2 * 60 * 1000, 10 * 60 * 1000, 10 * 60 * 1000];
-const PARSE_BACKOFF_MS = 30 * 60 * 1000;  // 响应结构变化：长退避 + 诊断，不高频打接口
-const NOT_CONFIGURED_RETRY_MS = 60 * 1000; // 未登录：低频探测登录状态
-const EXP_SOON_MS = 2 * 60 * 1000;        // OAuth token 临期窗口
-const EXP_RETRY_MS = 5 * 60 * 1000;       // 临期不发请求，等宿主刷新后重读
+const PARSE_BACKOFF_MS = 30 * 60 * 1000;
+const NOT_CONFIGURED_RETRY_MS = 60 * 1000;
+const EXP_SOON_MS = 2 * 60 * 1000;
+const EXP_RETRY_MS = 5 * 60 * 1000;
 
-const FAMILIES = {
-  bigmodel: {
-    credKey: "oauth:bigmodel:access_token",
-    origin: "https://bigmodel.cn",
-    bearer: false,                        // bigmodel family 裸 authorization（宿主与 P0 实测一致）
-    envKeys: ["ZCODE_BIGMODEL_USAGE_API_KEY", "BIGMODEL_USAGE_API_KEY"],
-    envUrl: "ZCODE_BIGMODEL_USAGE_QUOTA_URL",
-    subPath: "/api/biz/subscription/list",   // 订阅元数据（version/productName/valid，宿主同款端点）
-  },
-  zai: {
-    credKey: "oauth:zai:access_token",
-    origin: "https://api.z.ai",
-    bearer: true,                         // zai family 套 Bearer（宿主同款；未实测，401 即冻结待核对）
-    envKeys: [],
-    envUrl: "",
-    subPath: null,                        // 订阅元数据暂只接 BigModel（用户需求）；zai 需要时再加
-  },
-};
-
+/* ---------- 基础工具 ---------- */
 function sha16(v) { return crypto.createHash("sha256").update(String(v)).digest("hex").slice(0, 16); }
+function qErr(code, message, extra) {
+  return Object.assign(new Error(message), Object.assign({ code }, extra || {}));
+}
+function clampPct(x) { return Math.max(0, Math.min(100, x)); }
+function parseRetryAfterMs(v) {
+  if (v == null) return null;
+  const sec = Number(v);
+  if (isFinite(sec) && sec >= 0) return Math.min(Math.max(sec * 1000, 30 * 1000), 10 * 60 * 1000);
+  return 60 * 1000;
+}
+function jwtExpMs(token) {
+  try {
+    const payload = String(token).split(".")[1];
+    if (!payload) return null;
+    const json = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+    return typeof json.exp === "number" && json.exp > 0 ? json.exp * 1000 : null;
+  } catch (e) { return null; }
+}
 
+/* ---------- 宿主凭据解密（enc:v1 AES-256-GCM，按宿主语义重写） ---------- */
 function deriveSecret(env) {
   const conf = env.ZCODE_CREDENTIAL_SECRET;
   if (conf) return conf;
   let username = "unknown";
-  try { username = os.userInfo().username; } catch (e) { /* 部分环境拿不到用户名 */ }
+  try { username = os.userInfo().username; } catch (e) { /* 拿不到用户名按占位 */ }
   return `zcode-credential-fallback:${os.platform()}:${os.homedir()}:${username}`;
 }
 function deriveCipherKey(env) { return crypto.createHash("sha256").update(deriveSecret(env)).digest(); }
-
-/* enc:v1:<b64url(iv)>.<b64url(tag)>.<b64url(ct)>，AES-256-GCM、IV 12B、tag 16B。
- * 非密文原样返回（宿主语义）；格式/解密失败返回 null（调用方 fail-closed，绝不猜）。 */
 function decryptValue(value, key) {
   if (typeof value !== "string" || !value.startsWith(ENC_PREFIX)) return value;
   const parts = value.slice(ENC_PREFIX.length).split(".");
@@ -84,21 +81,7 @@ function decryptValue(value, key) {
   } catch (e) { return null; }
 }
 
-/* 本地预检 JWT 过期（不校验签名，只读 exp）：临期/过期不发请求，避免白打 401。
- * 非 JWT（opaque token）返回 null，正常发请求。 */
-function jwtExpMs(token) {
-  try {
-    const payload = String(token).split(".")[1];
-    if (!payload) return null;
-    const json = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
-    return typeof json.exp === "number" && json.exp > 0 ? json.exp * 1000 : null;
-  } catch (e) { return null; }
-}
-
-function qErr(code, message, extra) {
-  return Object.assign(new Error(message), Object.assign({ code }, extra || {}));
-}
-
+/* ---------- BigModel/Z.ai monitor 归一化（v96 口径不变） ---------- */
 function isNoPlanMessage(msg) {
   const m = String(msg || "").toLowerCase();
   const compact = m.replace(/[\s_-]/g, "");
@@ -106,21 +89,6 @@ function isNoPlanMessage(msg) {
     ["不存在", "没有", "未开通", "not exist", "not found", "not have", "doesn't have", "no coding plan", "not subscribed"]
       .some((kw) => m.indexOf(kw) >= 0);
 }
-
-/* 模型 provider 段 → 查询目标。返回 null = MVP 不支持的 provider（自定义/未知，
- * chip 隐藏）；{unsupported:"team"} = 团队套餐（需 org/project 头，阶段 3）。 */
-function resolveWanted(providerId) {
-  const p = String(providerId || "");
-  if (p.indexOf("account:") !== 0) return null;
-  if (p.indexOf("team") >= 0) return { unsupported: "team" };
-  if (p.indexOf("account:bigmodel") === 0) return { family: "bigmodel" };
-  if (p.indexOf("account:zai") === 0) return { family: "zai" };
-  return null;
-}
-
-function clampPct(x) { return Math.max(0, Math.min(100, x)); }
-
-/* 已用 %：服务端 percentage 为整数精度粗，能自算时优先自算（P0：48/4000 被存成 1）。 */
 function pctOf(limit) {
   if (typeof limit.percentage === "number" && limit.percentage >= 0) {
     if (typeof limit.currentValue === "number" && typeof limit.usage === "number" &&
@@ -135,8 +103,6 @@ function pctOf(limit) {
   }
   return null;
 }
-
-/* 重置时间：数字按秒/毫秒自适应（<1e12 视为秒），≤0 视为无（0% 滚动窗）；字符串原样。 */
 function resetOf(v) {
   if (typeof v === "number" && isFinite(v)) {
     if (v <= 0) return null;
@@ -145,7 +111,6 @@ function resetOf(v) {
   if (typeof v === "string" && v) return v;
   return null;
 }
-
 function usageDetailsOf(limit) {
   const out = [];
   if (Array.isArray(limit && limit.usageDetails)) {
@@ -157,15 +122,11 @@ function usageDetailsOf(limit) {
   }
   return out;
 }
-
-/* 归一化（纯函数）：响应体 → 值 / 无套餐 / 抛错。抛错一律带 code（parse_error /
- * network_error），由 settle 决定退避。 */
 function normalizeQuotaBody(body) {
   if (!body || typeof body !== "object") throw qErr("parse_error", "non-object body");
   if (body.success === false) {
     const msg = String(body.msg || "");
     if (isNoPlanMessage(msg)) return { noPlan: true };
-    /* 其它业务错误（瞬时服务端故障居多）：短退避重试，消息摘要进诊断 */
     throw qErr("network_error", "business error: " + msg.slice(0, 80));
   }
   const data = body.data;
@@ -200,11 +161,9 @@ function normalizeQuotaBody(body) {
     const u = typeof limit.unit === "number" ? limit.unit : null;
     if (u === 3) { if (!windows.fiveHour) windows.fiveHour = entry; }
     else if (u === 6) { if (!windows.weekly) windows.weekly = entry; }
-    else if (u === null) unclassified.push(entry);       // unit 缺失：按兜底规则补位
-    else unknownUnits.push(u);                            // 未知数值 unit：丢弃留痕，绝不猜
+    else if (u === null) unclassified.push(entry);
+    else unknownUnits.push(u);
   }
-  /* unit 缺失兜底（cc-switch 同款）：无重置时间的条目优先归 5h（5h 桶在 0% 等状态
-   * 可能没有 reset），其余按重置时间升序填入仍空缺的槽位。 */
   unclassified.sort((a, b) => {
     const ra = a.resetsAt == null ? -1 : (typeof a.resetsAt === "string" ? 0 : a.resetsAt);
     const rb = b.resetsAt == null ? -1 : (typeof b.resetsAt === "string" ? 0 : b.resetsAt);
@@ -214,14 +173,8 @@ function normalizeQuotaBody(body) {
     if (!windows.fiveHour) windows.fiveHour = entry;
     else if (!windows.weekly) windows.weekly = entry;
   }
-  return {
-    level: typeof data.level === "string" ? data.level : "",
-    windows, tools, models, unknownUnits,
-  };
+  return { level: typeof data.level === "string" ? data.level : "", windows, tools, models, unknownUnits };
 }
-
-/* 订阅元数据（BigModel）：取 status=VALID 且 inCurrentPeriod=true 的条目；0 条或歧义
- * （多条生效）一律 null 不猜。白名单字段——订单号/协议号等敏感字段绝不保留。 */
 function normalizeSubscriptionPlan(body) {
   const data = body && typeof body === "object" && Array.isArray(body.data) ? body.data : null;
   if (!data) return null;
@@ -229,7 +182,7 @@ function normalizeSubscriptionPlan(body) {
   if (active.length !== 1) return null;
   const s = active[0];
   const valid = typeof s.valid === "string" ? s.valid : "";
-  const m = valid.match(/^(\d{4}-\d{2}-\d{2}).*?(\d{4}-\d{2}-\d{2})/);   // "起-止"区间，日期本身含连字符
+  const m = valid.match(/^(\d{4}-\d{2}-\d{2}).*?(\d{4}-\d{2}-\d{2})/);
   return {
     version: typeof s.version === "string" ? s.version.slice(0, 8) : "",
     productName: typeof s.productName === "string" ? s.productName.slice(0, 40) : "",
@@ -238,254 +191,1055 @@ function normalizeSubscriptionPlan(body) {
   };
 }
 
-async function readBounded(res, ctl) {
-  if (res.body && typeof res.body.getReader === "function") {
-    const reader = res.body.getReader();
-    const chunks = [];
-    let size = 0;
-    for (;;) {
-      const step = await reader.read();
-      if (step.done) break;
-      chunks.push(step.value);
-      size += step.value.length;
-      if (size > BODY_LIMIT) {
-        try { ctl.abort(); } catch (e) { }
-        throw qErr("parse_error", "response too large");
+/* ---------- 余额工具 ---------- */
+/* "CNY 110.00" / "¥110.00" / "$12.5" / 110.5 → {amount, currency}；解析不了返回 null */
+function parseCurrencyAmount(v, currencyHint) {
+  if (typeof v === "number" && isFinite(v)) return { amount: v, currency: currencyHint || "" };
+  if (typeof v !== "string") return null;
+  const m = v.trim().match(/^([A-Z]{3}|¥|\$)?\s*([\d,]+(?:\.\d+)?)$/);
+  if (!m) return null;
+  const cur = m[1] === "¥" ? "CNY" : m[1] === "$" ? "USD" : (m[1] || currencyHint || "");
+  return { amount: parseFloat(m[2].replace(/,/g, "")), currency: cur };
+}
+function num(v) {
+  if (typeof v === "number" && isFinite(v)) return v;
+  if (typeof v === "string" && /^[+-]?(\d+(\.\d+)?|\.\d+)([eE][+-]?\d+)?$/.test(v.trim())) return Number(v);
+  return null;
+}
+/* 通用窗口行收集：[{period|type, percentUsed|percent|utilization|usage_percentage, resetsAt|reset_at|resets_at|resetTime}] */
+function collectWindows(list, defs) {
+  const out = {};
+  if (!Array.isArray(list)) return out;
+  const names = new Map(defs.map((d) => (Array.isArray(d) ? [d[0], d[1]] : [d.match, d.name])));
+  for (const e of list) {
+    if (!e || typeof e !== "object") continue;
+    const key = String(e.type || e.period || e.window || "").toLowerCase().replace(/[\s_-]/g, "");
+    const name = names.get(key);
+    if (!name || out[name]) continue;
+    let pct = num(e.percentUsed);
+    if (pct == null) pct = num(e.percent);
+    if (pct == null) pct = num(e.utilization);
+    if (pct != null && e.usage_percentage != null) { /* ZenMux 0-1 已用小数 */ }
+    if (pct == null && e.usage_percentage != null) pct = e.usage_percentage <= 1 ? e.usage_percentage * 100 : e.usage_percentage;
+    if (pct == null || !isFinite(pct) || pct < 0) continue;
+    out[name] = { percent: Math.round(clampPct(pct) * 10) / 10, resetsAt: resetOf(e.resetsAt != null ? e.resetsAt : (e.resets_at != null ? e.resets_at : e.resetTime)) };
+  }
+  return out;
+}
+
+/* ---------- 宿主自定义供应商配置（provider_config.json） ---------- */
+let providerCfgCache = null;
+function resolveCustomProvider(providerId, readFile2, cfgPath) {
+  let mtime = 0;
+  try { mtime = fs.statSync(cfgPath).mtimeMs; }
+  catch (e) { mtime = -1; }   // stat 失败不短路：仍尝试读取（测试虚拟路径/权限受限场景）
+  if (mtime < 0 || !providerCfgCache || providerCfgCache.mtime !== mtime) {   // stat 失败不缓存：每次现读（避免同会话内配置已变化却读到旧值）
+    const byId = new Map();
+    try {
+      const d = readFile2(cfgPath);
+      for (const r of ((d.config || {}).providerConfigRules || {}).providerRules || []) {
+        const cfg = (r && r.config) || {};
+        const baseUrl = String(((cfg.api || {}).baseUrl) || "").replace(/\/+$/, "");
+        const apiKey = String(((cfg.access || {}).apiKey) || "");
+        if (baseUrl && apiKey && r.providerId) {
+          byId.set(String(r.providerId), { baseUrl, apiKey, name: String(r.providerName || "") });
+        }
+      }
+    } catch (e) { /* 损坏/缺失按无配置处理 */ }
+    if (mtime >= 0) providerCfgCache = { mtime, byId };
+    return byId.get(String(providerId)) || null;
+  }
+  return providerCfgCache.byId.get(String(providerId)) || null;
+}
+
+/* ---------- 适配器注册表 ----------
+ * 契约：{id, label, kind, envKeys[], defaultOn, unverified?,
+ *   detect(j, providerId) → ctx|null   （providerId 驱动的零配置发现；返回 null=不命中）
+ *   resolveCred(j, ctx) → {token|cookie|ak|sk|none, fingerprint, source} | null | {decryptFailed}
+ *   fetchOne(j, ctx, cred, ctl) → value | {noPlan:true}   （抛 qErr 分类错误）}
+ * j = {env, now, fetchImpl, readFile, secrets, customCfgPath, customProviderOf, log, http} */
+const ADAPTERS = [];
+
+/* --- BigModel / Z.ai 内置套餐（主链，v96 同款） --- */
+for (const fam of ["bigmodel", "zai"]) {
+  const conf = fam === "bigmodel"
+    ? { credKey: "oauth:bigmodel:access_token", origin: "https://bigmodel.cn", bearer: false,
+        envKeys: ["ZCODE_BIGMODEL_USAGE_API_KEY", "BIGMODEL_USAGE_API_KEY"], envUrl: "ZCODE_BIGMODEL_USAGE_QUOTA_URL", subPath: "/api/biz/subscription/list" }
+    : { credKey: "oauth:zai:access_token", origin: "https://api.z.ai", bearer: true,
+        envKeys: [], envUrl: "", subPath: null };
+  ADAPTERS.push({
+    id: fam, label: fam === "bigmodel" ? "BigModel" : "Z.ai", kind: "plan", defaultOn: false, envKeys: conf.envKeys,
+    detect(j, providerId) {
+      if (providerId.indexOf("account:") !== 0) return null;
+      if (providerId.indexOf("team") >= 0) return { team: true };
+      if (providerId.indexOf("account:" + fam) === 0) return { family: fam };
+      return null;
+    },
+    resolveCred(j, ctx) {
+      for (const k of conf.envKeys) {
+        const v = j.env[k];
+        if (v) return { token: v, fingerprint: "env:" + sha16(v), source: "env" };
+      }
+      let raw = null;
+      try { raw = j.readFile(j.credsPath); } catch (e) { return null; }
+      const enc = raw && typeof raw === "object" ? raw[conf.credKey] : null;
+      if (typeof enc !== "string" || !enc) return null;
+      const token = decryptValue(enc, deriveCipherKey(j.env));
+      if (!token) return { decryptFailed: true, fingerprint: "host:" + sha16(enc) };
+      return { token, fingerprint: "host:" + sha16(enc), source: "host" };
+    },
+    async fetchOne(j, ctx, cred, ctl) {
+      const url = (conf.envUrl && j.env[conf.envUrl]) || conf.origin + QUOTA_PATH;
+      /* 订阅元数据与额度并行（仅 bigmodel）；失败静默降级不拖累额度 */
+      const subFetch = (conf.subPath && ctx.family === "bigmodel")
+        ? j.http.maybeGetJson(conf.origin + conf.subPath, { authorization: cred.token }, ctl) : Promise.resolve(null);
+      subFetch.catch(() => { });
+      const body = await j.http.getJson(url, { authorization: (conf.bearer ? "Bearer " : "") + cred.token }, ctl);
+      const value = normalizeQuotaBody(body);
+      if (value && value.noPlan) return { noPlan: true };
+      const plan = await subFetch;
+      const sub = plan ? normalizeSubscriptionPlan(plan) : null;
+      return sub ? Object.assign({}, value, { plan: sub }) : value;
+    },
+  });
+}
+
+/* --- MiniMax Token Plan（零配置：api.minimaxi.com/.cn/.io 自定义供应商；可信域可配） --- */
+ADAPTERS.push({
+  id: "minimax", label: "MiniMax", kind: "plan", defaultOn: true, unverified: true,
+  envKeys: ["MINIMAX_API_KEY"],
+  detect(j, providerId) {
+    if (providerId.indexOf("account:") === 0) return null;
+    const cp = j.customProviderOf(providerId);
+    if (!cp) return null;
+    let host = "";
+    try { host = new URL(cp.baseUrl).hostname; } catch (e) { return null; }
+    if (host === "api.minimaxi.com" || host === "api.minimax.cn") return { domain: "https://api.minimaxi.com", key: cp.apiKey, origin: "cfg" };
+    if (host === "api.minimax.io") return { domain: "https://api.minimax.io", key: cp.apiKey, origin: "cfg" };
+    return null;
+  },
+  resolveCred(j, ctx) {
+    for (const k of this.envKeys) {
+      const v = j.env[k];
+      if (v) return { token: v, fingerprint: "env:" + sha16(v), source: "env" };
+    }
+    const sec = (j.secrets.sources || {}).minimax || {};
+    if (sec.apiKey) return { token: sec.apiKey, fingerprint: "sec:" + sha16(sec.apiKey), source: "secrets" };
+    if (ctx.key) return { token: ctx.key, fingerprint: "cfg:" + sha16(ctx.key), source: "provider_config" };
+    return null;
+  },
+  async fetchOne(j, ctx, cred, ctl) {
+    const rawDomain = ((j.secrets.sources || {}).minimax || {}).baseUrl || "";
+    let host = "";
+    try { host = rawDomain ? new URL(rawDomain).hostname : ""; } catch (e) { host = ""; }
+    const trusted = host === "api.minimaxi.com" || host === "api.minimax.cn" || host === "api.minimax.io";   // 可信查询域白名单：key 不发任意域
+    const domain = trusted ? rawDomain.replace(/\/+$/, "") : (ctx.domain || "https://api.minimaxi.com");
+    let body;
+    try {
+      body = await j.http.getJson(domain + "/v1/api/openplatform/coding_plan/remains", { authorization: "Bearer " + cred.token }, ctl);
+    } catch (e) {
+      if (e && e.code !== "parse_error") throw e;
+      body = await j.http.getJson("https://www." + (domain.indexOf(".io") >= 0 ? "minimax.io" : "minimaxi.com") + "/v1/token_plan/remains", { authorization: "Bearer " + cred.token }, ctl);   // dsh 旧端点兜底
+    }
+    const br = body && body.base_resp;
+    if (br && num(br.status_code) !== 0) throw qErr(br.status_code === 401 || br.status_code === 403 ? "auth_failed" : "parse_error", "minimax base_resp " + br.status_code);
+    const rows = Array.isArray(body && body.model_remains) ? body.model_remains : (Array.isArray(body && body.data && body.data.model_remains) ? body.data.model_remains : []);
+    const row = rows.find((r) => r && String(r.model_name || "").toLowerCase() === "general") ||
+      rows.find((r) => /^minimax-m/i.test(String((r || {}).model_name || ""))) ||
+      rows.find((r) => r && (num(r.current_interval_remaining_percent) != null || num(r.current_weekly_remaining_percent) != null));
+    if (!row) throw qErr("parse_error", "no general row");
+    const windows = {};
+    const five = num(row.current_interval_remaining_percent);
+    if (five != null) windows.fiveHour = { percent: Math.round(clampPct(100 - five) * 10) / 10, resetsAt: resetOf(row.end_time) };
+    if (num(row.current_weekly_status) === 1) {   // ==3 = 套餐无周限额（remaining 恒 100），必须跳过
+      const wk = num(row.current_weekly_remaining_percent);
+      if (wk != null) windows.weekly = { percent: Math.round(clampPct(100 - wk) * 10) / 10, resetsAt: resetOf(row.weekly_end_time) };
+    }
+    if (!Object.keys(windows).length) throw qErr("parse_error", "no minimax windows");
+    return { windows };
+  },
+});
+
+/* --- Kimi Code（订阅 usages，401/403 回落 moonshot PAYG 余额） --- */
+ADAPTERS.push({
+  id: "kimi", label: "Kimi", kind: "plan", defaultOn: true, unverified: true,
+  envKeys: ["KIMI_CODING_API_KEY", "MOONSHOT_API_KEY", "KIMI_API_KEY"],
+  detect(j, providerId) {
+    if (providerId.indexOf("account:") === 0) return null;
+    const cp = j.customProviderOf(providerId);
+    if (!cp) return null;
+    let u = "";
+    try { u = new URL(cp.baseUrl); } catch (e) { return null; }
+    if (u.hostname === "api.kimi.com" || u.hostname === "api.moonshot.cn") {
+      return { key: cp.apiKey, origin: "cfg" };
+    }
+    return null;
+  },
+  resolveCred(j, ctx) {
+    for (const k of this.envKeys) {
+      const v = j.env[k];
+      if (v) return { token: v, fingerprint: "env:" + sha16(v), source: "env" };
+    }
+    const sec = (j.secrets.sources || {}).kimi || {};
+    if (sec.apiKey) return { token: sec.apiKey, fingerprint: "sec:" + sha16(sec.apiKey), source: "secrets" };
+    if (ctx.key) return { token: ctx.key, fingerprint: "cfg:" + sha16(ctx.key), source: "provider_config" };
+    return null;
+  },
+  async fetchOne(j, ctx, cred, ctl) {
+    const headers = { authorization: "Bearer " + cred.token, "user-agent": "KimiCLI/1.6" };
+    let body = null;
+    let authish = false;
+    for (const p of ["/coding/v1/usages", "/coding/v1/usage"]) {
+      try {
+        body = await j.http.getJson("https://api.kimi.com" + p, headers, ctl);
+        break;
+      } catch (e) {
+        if (e && (e.code === "auth_failed")) { authish = true; break; }   // 该 Key 非订阅 Key/无订阅 → 回落 PAYG
+        if (e && e.code !== "network_error" && e.code !== "parse_error") throw e;
       }
     }
-    let total = 0;
-    for (const c of chunks) total += c.length;
-    const buf = Buffer.alloc(total);
-    let off = 0;
-    for (const c of chunks) { buf.set(c, off); off += c.length; }
-    return buf.toString("utf8");
-  }
-  const text = await res.text();
-  if (text.length > BODY_LIMIT) throw qErr("parse_error", "response too large");
-  return text;
-}
+    if (body && !authish) {
+      const windows = {};
+      const limits = Array.isArray(body.limits) ? body.limits : [];
+      for (const e of limits) {   // 兼容 cc-switch（detail 直挂）与 dsh（window+detail）两形状
+        if (!e || typeof e !== "object") continue;
+        const d = e.detail || e;
+        const limit = num(d.limit), remaining = num(d.remaining);
+        if (limit == null || remaining == null || limit <= 0) continue;
+        const pct = clampPct(((limit - remaining) / limit) * 100);
+        if (!windows.fiveHour) {   // cc-switch 语义：limits 各行均属 5 小时窗，取首条有效行
+          windows.fiveHour = { percent: Math.round(pct * 10) / 10, resetsAt: resetOf(d.resetTime) };
+        }
+      }
+      const u = body.usage && typeof body.usage === "object" ? body.usage : null;
+      if (u) {
+        const limit = num(u.limit), remaining = num(u.remaining);
+        if (limit != null && limit > 0 && remaining != null) {
+          windows.weekly = { percent: Math.round(clampPct(((limit - remaining) / limit) * 100) * 10) / 10, resetsAt: resetOf(u.resetTime) };
+        }
+      }
+      if (Object.keys(windows).length) return { windows };
+    }
+    /* PAYG 回落：moonshot 余额（人民币分） */
+    const bal = await j.http.getJson("https://api.moonshot.cn/v1/users/me/balance", { authorization: "Bearer " + cred.token }, ctl);
+    const raw = (bal && (bal.available_balance != null ? bal.available_balance : (bal.balance != null ? bal.balance : (bal.data && bal.data.available_balance)))) ||
+      (bal && bal.data && (bal.data.available_balance != null ? bal.data.available_balance : bal.data.balance));
+    const v = num(raw);
+    if (v == null) throw qErr("parse_error", "kimi payg shape");
+    const yuan = v >= 100 ? v / 100 : v;   // 分 → 元（≥100 视为分）
+    return { balance: { amount: Math.round(yuan * 100) / 100, currency: "CNY" }, note: "PAYG" };
+  },
+});
 
-function parseRetryAfterMs(v) {
-  if (v == null) return null;
-  const sec = Number(v);
-  if (isFinite(sec) && sec >= 0) return Math.min(Math.max(sec * 1000, 30 * 1000), 10 * 60 * 1000);
-  return 60 * 1000;
-}
+/* --- CommandCode（控制面四连；credits 三分） --- */
+ADAPTERS.push({
+  id: "commandcode", label: "CommandCode", kind: "plan", defaultOn: true, unverified: true,
+  envKeys: ["COMMANDCODE_API_KEY"],
+  detect(j, providerId) {
+    if (providerId.indexOf("account:") === 0) return null;
+    const cp = j.customProviderOf(providerId);
+    if (!cp) return null;
+    let u = "";
+    try { u = new URL(cp.baseUrl); } catch (e) { return null; }
+    if (u.hostname === "api.commandcode.ai") return { key: cp.apiKey, origin: "cfg" };
+    return null;
+  },
+  resolveCred(j, ctx) {
+    for (const k of this.envKeys) {
+      const v = j.env[k];
+      if (v) return { token: v, fingerprint: "env:" + sha16(v), source: "env" };
+    }
+    const sec = (j.secrets.sources || {}).commandcode || {};
+    if (sec.apiKey) return { token: sec.apiKey, fingerprint: "sec:" + sha16(sec.apiKey), source: "secrets" };
+    if (ctx.key) return { token: ctx.key, fingerprint: "cfg:" + sha16(ctx.key), source: "provider_config" };
+    return null;
+  },
+  async fetchOne(j, ctx, cred, ctl) {
+    const H = { authorization: "Bearer " + cred.token };
+    const who = await j.http.getJson("https://api.commandcode.ai/alpha/whoami?limits=1", H, ctl);
+    const orgId = who && who.org && who.org.id;
+    if (!orgId) throw qErr("parse_error", "no org id");
+    const cred8 = await j.http.getJson("https://api.commandcode.ai/alpha/billing/credits?orgId=" + encodeURIComponent(String(orgId)), H, ctl);
+    const c = (cred8 && (cred8.credits || cred8)) || {};
+    const wl = (cred8 && (cred8.windowLimits || (cred8.credits && cred8.credits.windowLimits))) || null;
+    const windows = {};
+    if (wl && wl.limited) {
+      for (const [k, name] of [["fiveHour", "fiveHour"], ["weekly", "weekly"]]) {
+        const w = wl[k];
+        const used = num(w && w.used), cap = num(w && w.cap);
+        if (w && cap != null && cap > 0 && used != null) {
+          windows[name] = { percent: Math.round(clampPct((used / cap) * 100) * 10) / 10, resetsAt: resetOf(w.resetAt) };
+        }
+      }
+    }
+    const subs = await j.http.getJson("https://api.commandcode.ai/alpha/billing/subscriptions?orgId=" + encodeURIComponent(String(orgId)), H, ctl);
+    const sd = (subs && (subs.data || subs)) || {};
+    const periodStart = sd.currentPeriodStart, periodEnd = sd.currentPeriodEnd;
+    let monthly = null;
+    const sum = await j.http.getJson("https://api.commandcode.ai/alpha/usage/summary?since=" + encodeURIComponent(String(periodStart || "")) + "&orgId=" + encodeURIComponent(String(orgId)), H, ctl);
+    const totalCost = num(sum && sum.totalCost);
+    const parts = [
+      ["monthly", num(c.monthlyCredits)], ["purchased", num(c.purchasedCredits)], ["free", num(c.freeCredits)],
+    ].filter(([, v]) => v != null);
+    const remainTotal = parts.reduce((a, [, v]) => a + v, 0);
+    if (totalCost != null && (totalCost > 0 || remainTotal > 0)) {
+      monthly = { percent: Math.round(clampPct((totalCost / Math.max(totalCost + remainTotal, 1e-9)) * 100) * 10) / 10, resetsAt: resetOf(periodEnd) };
+    }
+    if (monthly) windows.monthly = monthly;
+    const out = {};
+    if (Object.keys(windows).length) out.windows = windows;
+    if (parts.length) {
+      out.balance = { amount: Math.round(remainTotal * 100) / 100, currency: "CR",
+        parts: parts.map(([label, v]) => ({ label: { monthly: "月度", purchased: "购买", free: "免费" }[label] || label, amount: v })) };
+    }
+    if (!out.windows && !out.balance) throw qErr("parse_error", "commandcode empty");
+    if (sd.planId) out.plan = { version: "", productName: String(sd.planId).slice(0, 40), validStart: "", validEnd: "" };
+    return out;
+  },
+});
 
-/* ---------- 客户端实例（inject-main 每 app 一份；测试可注入 env/now/fetch/readFile） ---------- */
+/* --- Cline Pass（配置型：独立 Key；三窗口已用%） --- */
+ADAPTERS.push({
+  id: "cline", label: "Cline Pass", kind: "plan", defaultOn: false, unverified: true,
+  envKeys: ["CLINE_API_KEY"],
+  detect() { return null; },
+  resolveCred(j) {
+    for (const k of this.envKeys) {
+      const v = j.env[k];
+      if (v) return { token: v, fingerprint: "env:" + sha16(v), source: "env" };
+    }
+    const sec = (j.secrets.sources || {}).cline || {};
+    if (sec.apiKey) return { token: sec.apiKey, fingerprint: "sec:" + sha16(sec.apiKey), source: "secrets" };
+    return null;
+  },
+  async fetchOne(j, ctx, cred, ctl) {
+    const body = await j.http.getJson("https://api.cline.bot/api/v1/users/me/plan/usage-limits", { authorization: "Bearer " + cred.token }, ctl);
+    const windows = collectWindows(body && body.data && body.data.limits,
+      [["five_hour", "fiveHour"], ["fivehour", "fiveHour"], ["weekly", "weekly"], ["monthly", "monthly"]]);
+    if (!Object.keys(windows).length) throw qErr("parse_error", "cline empty");
+    return { windows };
+  },
+});
+
+/* --- Anthropic Claude Pro/Max（OAuth 自动发现 ~/.claude/.credentials.json） --- */
+ADAPTERS.push({
+  /* 显式启用（非零配置默认）：凭据自动发现读的是第三方应用 Claude Code 的凭据文件，
+   * 属跨应用读取，必须用户在 ⚙ 单独打开（披露句随面板/README）。 */
+  id: "anthropic", label: "Anthropic", kind: "plan", defaultOn: false, unverified: true,
+  envKeys: ["ANTHROPIC_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"],
+  detect() { return null; },
+  resolveCred(j) {
+    for (const k of this.envKeys) {
+      const v = j.env[k];
+      if (v) return { token: v, fingerprint: "env:" + sha16(v), source: "env" };
+    }
+    const sec = (j.secrets.sources || {}).anthropic || {};
+    if (sec.token) return { token: sec.token, fingerprint: "sec:" + sha16(sec.token), source: "secrets" };
+    try {   // 自动发现：Claude Code 凭据文件（披露已列明）
+      const p = path.join(os.homedir(), ".claude", ".credentials.json");
+      const d = j.readFile(p);
+      const tok = d && d.claudeAiOauth && d.claudeAiOauth.accessToken;
+      if (typeof tok === "string" && tok) return { token: tok, fingerprint: "claude:" + sha16(tok), source: "claude-file" };
+    } catch (e) { /* 未装 Claude Code / 文件不存在：按未配置 */ }
+    return null;
+  },
+  async fetchOne(j, ctx, cred, ctl) {
+    const body = await j.http.getJson("https://api.anthropic.com/api/oauth/usage", { authorization: "Bearer " + cred.token }, ctl);
+    const windows = {};
+    for (const [src, name] of [["five_hour", "fiveHour"], ["seven_day", "weekly"]]) {
+      const w = body && body[src];
+      if (!w || typeof w !== "object") continue;
+      let pct = num(w.utilization);
+      if (pct == null) pct = num(w.used_percentage);
+      if (pct == null || !isFinite(pct) || pct < 0) continue;
+      windows[name] = { percent: Math.round(clampPct(pct) * 10) / 10, resetsAt: resetOf(w.resets_at != null ? w.resets_at : w.reset_at) };
+    }
+    if (!Object.keys(windows).length) throw qErr("parse_error", "anthropic empty");
+    return { windows };   // 子配额窗（seven_day_sonnet 等）整体丢弃，不覆盖主窗
+  },
+});
+
+/* --- DeepSeek（官方域零配置；total/granted/topped_up 三分拆分） --- */
+ADAPTERS.push({
+  id: "deepseek", label: "DeepSeek", kind: "balance", defaultOn: true,
+  envKeys: ["DEEPSEEK_API_KEY", "DEEPSEEK_BALANCE_API_KEY"],
+  detect(j, providerId) {
+    if (providerId.indexOf("account:") === 0) return null;
+    const cp = j.customProviderOf(providerId);
+    if (!cp) return null;
+    let host = "";
+    try { host = new URL(cp.baseUrl).hostname; } catch (e) { return null; }
+    if (host === "api.deepseek.com") return { key: cp.apiKey, origin: "cfg" };
+    return null;
+  },
+  resolveCred(j, ctx) {
+    for (const k of this.envKeys) {
+      const v = j.env[k];
+      if (v) return { token: v, fingerprint: "env:" + sha16(v), source: "env" };
+    }
+    const sec = (j.secrets.sources || {}).deepseek || {};
+    if (sec.apiKey) return { token: sec.apiKey, fingerprint: "sec:" + sha16(sec.apiKey), source: "secrets" };
+    if (ctx.key) return { token: ctx.key, fingerprint: "cfg:" + sha16(ctx.key), source: "provider_config" };
+    return null;
+  },
+  async fetchOne(j, ctx, cred, ctl) {
+    const body = await j.http.getJson("https://api.deepseek.com/user/balance", { authorization: "Bearer " + cred.token }, ctl);
+    const infos = Array.isArray(body && body.balance_infos) ? body.balance_infos : [];
+    if (!infos.length) throw qErr("parse_error", "no balance_infos");
+    const parsed = infos
+      .map((x) => {
+        const total = parseCurrencyAmount(x.total_balance, x.currency);
+        const granted = parseCurrencyAmount(x.granted_balance, x.currency);
+        const topped = parseCurrencyAmount(x.topped_up_balance, x.currency);
+        if (!total || total.amount <= 0) return null;
+        return { currency: x.currency || total.currency, total, granted, topped };
+      })
+      .filter(Boolean);
+    if (!parsed.length) throw qErr("parse_error", "balance_infos unparsable");
+    const best = parsed.sort((a, b) => b.total.amount - a.total.amount)[0];
+    const out = { balance: { amount: Math.round(best.total.amount * 100) / 100, currency: best.currency || "CNY" } };
+    if (best.granted && best.granted.amount > 0) {   // 仅赠送≠0 才拆分展示
+      out.balance.parts = [
+        { label: "赠送", amount: best.granted.amount },
+        { label: "充值", amount: best.topped ? best.topped.amount : Math.max(0, best.total.amount - best.granted.amount) },
+      ];
+    }
+    return out;
+  },
+});
+
+/* --- OpenRouter credits --- */
+ADAPTERS.push({
+  id: "openrouter", label: "OpenRouter", kind: "balance", defaultOn: true,
+  envKeys: ["OPENROUTER_API_KEY"],
+  detect(j, providerId) {
+    if (providerId.indexOf("account:") === 0) return null;
+    const cp = j.customProviderOf(providerId);
+    if (!cp) return null;
+    let host = "";
+    try { host = new URL(cp.baseUrl).hostname; } catch (e) { return null; }
+    if (host === "openrouter.ai") return { key: cp.apiKey, origin: "cfg" };
+    return null;
+  },
+  resolveCred(j, ctx) {
+    for (const k of this.envKeys) {
+      const v = j.env[k];
+      if (v) return { token: v, fingerprint: "env:" + sha16(v), source: "env" };
+    }
+    const sec = (j.secrets.sources || {}).openrouter || {};
+    if (sec.apiKey) return { token: sec.apiKey, fingerprint: "sec:" + sha16(sec.apiKey), source: "secrets" };
+    if (ctx.key) return { token: ctx.key, fingerprint: "cfg:" + sha16(ctx.key), source: "provider_config" };
+    return null;
+  },
+  async fetchOne(j, ctx, cred, ctl) {
+    const body = await j.http.getJson("https://openrouter.ai/api/v1/credits", { authorization: "Bearer " + cred.token }, ctl);
+    const d = body && body.data;
+    const total = num(d && d.total_credits), used = num(d && d.total_usage);
+    if (total == null) throw qErr("parse_error", "openrouter shape");
+    return { balance: { amount: Math.round(((total || 0) - (used || 0)) * 100) / 100, currency: "USD" } };
+  },
+});
+
+/* --- SiliconFlow（端点存在 410 废弃风险，失败中性引导） --- */
+ADAPTERS.push({
+  id: "siliconflow", label: "SiliconFlow", kind: "balance", defaultOn: true,
+  envKeys: ["SILICONFLOW_API_KEY"],
+  detect(j, providerId) {
+    if (providerId.indexOf("account:") === 0) return null;
+    const cp = j.customProviderOf(providerId);
+    if (!cp) return null;
+    let host = "";
+    try { host = new URL(cp.baseUrl).hostname; } catch (e) { return null; }
+    if (host === "api.siliconflow.cn" || host === "api.siliconflow.com") return { key: cp.apiKey, origin: "cfg" };
+    return null;
+  },
+  resolveCred(j, ctx) {
+    for (const k of this.envKeys) {
+      const v = j.env[k];
+      if (v) return { token: v, fingerprint: "env:" + sha16(v), source: "env" };
+    }
+    const sec = (j.secrets.sources || {}).siliconflow || {};
+    if (sec.apiKey) return { token: sec.apiKey, fingerprint: "sec:" + sha16(sec.apiKey), source: "secrets" };
+    if (ctx.key) return { token: ctx.key, fingerprint: "cfg:" + sha16(ctx.key), source: "provider_config" };
+    return null;
+  },
+  async fetchOne(j, ctx, cred, ctl) {
+    const body = await j.http.getJson("https://api.siliconflow.cn/v1/user/info", { authorization: "Bearer " + cred.token }, ctl);
+    const d = (body && body.data) || {};
+    const v = parseCurrencyAmount(d.balance != null ? d.balance : d.totalBalance, d.currency || "CNY");
+    if (!v) throw qErr("parse_error", "siliconflow shape");
+    return { balance: { amount: Math.round(v.amount * 100) / 100, currency: v.currency || "CNY" } };
+  },
+});
+
+/* --- 小米 MiMo Token Plan（配置型：控制台 Cookie） --- */
+function normalizeMimoCookie(raw) {
+  let s = String(raw || "").trim().replace(/^Cookie:\s*/i, "").replace(/^["']|["']$/g, "").replace(/\s*\n\s*/g, "; ").replace(/;\s*;+/g, ";");
+  if (!/userId=/.test(s)) return null;
+  if (!/(api-platform_)?serviceToken=/.test(s)) return null;
+  return s;
+}
+ADAPTERS.push({
+  id: "mimo", label: "小米 MiMo", kind: "plan", defaultOn: false, unverified: true,
+  envKeys: ["MIMO_COOKIE", "XIAOMI_MIMO_COOKIE"],
+  detect() { return null; },
+  resolveCred(j) {
+    let raw = null;
+    for (const k of this.envKeys) { if (j.env[k]) { raw = j.env[k]; break; } }
+    if (!raw) raw = ((j.secrets.sources || {}).mimo || {}).cookie;
+    if (!raw) return null;
+    const cookie = normalizeMimoCookie(raw);
+    if (!cookie) return { decryptFailed: true, fingerprint: "sec:" + sha16(raw), missing: "mimoCookieFields" };
+    return { cookie, fingerprint: "sec:" + sha16(cookie), source: "secrets" };
+  },
+  async fetchOne(j, ctx, cred, ctl) {
+    const H = { cookie: cred.cookie };
+    const base = "https://platform.xiaomimimo.com/api/v1";
+    const usage = await j.http.getJson(base + "/tokenPlan/usage", H, ctl);
+    const ud = (usage && usage.data) || {};
+    const items = Array.isArray(ud.monthUsage && ud.monthUsage.items) ? ud.monthUsage.items : [];
+    const windows = {};
+    const pick = (names, name) => {
+      for (const it of items) {
+        if (!it) continue;
+        const key = String(it.name || "");
+        if (!names.some((n) => key === n)) continue;
+        const used = num(it.used), limit = num(it.limit);
+        let pct = num(it.percent);
+        if ((used != null && limit != null && limit > 0)) pct = (used / limit) * 100;
+        if (pct == null || !isFinite(pct) || pct < 0) continue;
+        if (!windows[name]) windows[name] = { percent: Math.round(clampPct(pct) * 10) / 10, resetsAt: null };
+      }
+    };
+    pick(["month_total_token", "plan_total_token"], "monthly");
+    pick(["compensation_total_token"], "compensation");
+    let out = {};
+    if (Object.keys(windows).length) out.windows = windows;
+    /* 周期截止与余额并行（均无依赖）；失败静默降级 */
+    const detP = j.http.maybeGetJson(base + "/tokenPlan/detail", H, ctl).catch(() => null);
+    const balP = j.http.maybeGetJson(base + "/balance", H, ctl).catch(() => null);
+    const det = await detP;
+    const dd = (det && det.data) || {};
+    const end = typeof dd.currentPeriodEnd === "string" ? dd.currentPeriodEnd : "";
+    if (end) {
+      const m = end.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})/);
+      if (m && out.windows && out.windows.monthly) out.windows.monthly.resetsAt = m[1] + " " + m[2] + " +08:00";
+    }
+    const bal = await balP;
+    const bd = (bal && bal.data) || {};
+    const b = parseCurrencyAmount(bd.balance != null ? bd.balance : bd.cashBalance, bd.currency || "CNY");
+    if (b) {
+      out.balance = { amount: Math.round(b.amount * 100) / 100, currency: b.currency || "CNY" };
+      const cash = parseCurrencyAmount(bd.cashBalance, bd.currency), gift = parseCurrencyAmount(bd.giftBalance, bd.currency);
+      if (cash && gift && (gift.amount > 0 || cash.amount > 0)) {
+        out.balance.parts = [{ label: "充值", amount: cash.amount || 0 }, { label: "赠送", amount: gift.amount || 0 }];
+      }
+    }
+    if (!out.windows && !out.balance) throw qErr("parse_error", "mimo empty");
+    return out;
+  },
+});
+
+/* --- 火山方舟（配置型 AK/SK；SigV4 火山变体） --- */
+function hmac(key, data) { return crypto.createHmac("sha256", key).update(data).digest(); }
+async function volcCall(http, host, action, region, ak, sk) {
+  const now = new Date();
+  const xDate = now.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");   // YYYYMMDDTHHMMSSZ
+  const query = "Action=" + action + "&Region=" + region + "&Version=2024-01-01";   // 字母序 Action<Region<Version
+  const payload = "";
+  const payloadHash = crypto.createHash("sha256").update(payload).digest("hex");
+  const headers = "host:" + host + "\nx-date:" + xDate + "\nx-content-sha256:" + payloadHash + "\ncontent-type:application/json; charset=utf-8\n";
+  const signed = "host;x-date;x-content-sha256;content-type";
+  const canonical = "POST\n/\n" + query + "\n" + headers + "\n" + signed + "\n" + payloadHash;
+  const date = xDate.slice(0, 8);
+  const scope = date + "/" + region + "/ark/request";   // 火山变体：结尾 request，非 aws4_request
+  const stringToSign = "HMAC-SHA256\n" + xDate + "\n" + scope + "\n" + crypto.createHash("sha256").update(canonical).digest("hex");
+  let k = hmac(sk, date);                       // SK 不加前缀
+  k = hmac(k, region); k = hmac(k, "ark"); k = hmac(k, "request");
+  const signature = crypto.createHmac("sha256", k).update(stringToSign).digest("hex");
+  const res = await http.post("https://" + host + "/?" + query, {
+    "x-date": xDate,
+    "x-content-sha256": payloadHash,
+    "content-type": "application/json; charset=utf-8",
+    authorization: "HMAC-SHA256 Credential=" + ak + "/" + scope + ", SignedHeaders=" + signed + ", Signature=" + signature,
+  });
+  return res;
+}
+ADAPTERS.push({
+  id: "volcano", label: "火山方舟", kind: "plan", defaultOn: false, unverified: true,
+  envKeys: ["VOLCENGINE_ACCESS_KEY_ID", "VOLCENGINE_SECRET_ACCESS_KEY"],
+  detect() { return null; },
+  resolveCred(j) {
+    const sec = (j.secrets.sources || {}).volcano || {};
+    const ak = j.env.VOLCENGINE_ACCESS_KEY_ID || sec.accessKeyId || sec.ak;
+    const sk = j.env.VOLCENGINE_SECRET_ACCESS_KEY || sec.secretAccessKey || sec.sk;
+    if (!ak || !sk) return null;
+    return { ak, sk, fingerprint: "sec:" + sha16(ak + "|" + sk), source: "secrets" };
+  },
+  async fetchOne(j, ctx, cred, ctl) {
+    const region = ((j.secrets.sources || {}).volcano || {}).region || "cn-beijing";
+    const host = "open.volcengineapi.com";
+    /* 双 plan 探测：Agent Plan（GetAFPUsage）非空即返；Quota<=0 视为未订阅回落 Coding Plan */
+    let body = null, tag = "";
+    try {
+      body = await volcCall(j.http, host, "GetAFPUsage", region, cred.ak, cred.sk);
+      tag = "Agent Plan";
+    } catch (e) {
+      if (e && e.code === "auth_failed") throw e;
+      body = null;
+    }
+    const afp = body && body.Result;
+    const windows = {};
+    if (afp && typeof afp === "object") {
+      for (const [k, name] of [["AFPFiveHour", "fiveHour"], ["AFPWeekly", "weekly"], ["AFPMonthly", "monthly"]]) {   // AFPDaily 刻意跳过（历史默认值虚高）
+        const q = num(afp[k] && afp[k].Quota), used = num(afp[k] && afp[k].Used);
+        if (q != null && q > 0 && used != null) {
+          windows[name] = { percent: Math.round(clampPct((used / q) * 100) * 10) / 10, resetsAt: resetOf(afp[k].ResetTime) };
+        }
+      }
+    }
+    if (Object.keys(windows).length) return { windows, planName: tag };
+    const cp = await volcCall(j.http, host, "GetCodingPlanUsage", region, cred.ak, cred.sk);
+    const arr = (cp && cp.Result && (cp.Result.QuotaUsage || cp.Result.Usages || cp.Result.Details)) || [];
+    for (const e of arr) {
+      if (!e || typeof e !== "object") continue;
+      const lvl = String(e.Level || e.Type || e.Period || e.Label || e.Window || "").toLowerCase().replace(/[\s_-]/g, "");
+      const name = /session|^5h|fivehour|rolling5h/.test(lvl) ? "fiveHour" : /weekly|week|7d/.test(lvl) ? "weekly" : /monthly|month/.test(lvl) ? "monthly" : null;
+      if (!name || windows[name]) continue;
+      let pct = num(e.Percent);
+      if (pct == null) pct = num(e.UsedPercent);
+      if (pct == null) pct = num(e.UsagePercent);
+      if (pct == null || pct < 0) continue;
+      windows[name] = { percent: Math.round(clampPct(pct) * 10) / 10, resetsAt: resetOf(e.ResetTime != null ? e.ResetTime : e.ResetTimestamp) };
+    }
+    if (!Object.keys(windows).length) throw qErr("parse_error", "volcano empty");
+    return { windows };
+  },
+});
+
+/* --- SCNet（账本估算，无网络；数据由 zusage 快照侧聚合注入） --- */
+ADAPTERS.push({
+  id: "scnet", label: "SCNet", kind: "ledger", defaultOn: false, unverified: true,
+  envKeys: [],
+  detect() { return null; },
+  resolveCred(j) {
+    const sec = (j.secrets.sources || {}).scnet || {};
+    if (!sec.enabled || !(num(sec.planCredits) > 0)) return null;
+    return { none: true, fingerprint: "sec:scnet:" + sha16(JSON.stringify([sec.planCredits, sec.planStart || "", sec.modelPatterns || {}])), source: "secrets" };
+  },
+  async fetchOne(j) {
+    const ex = j.extras && j.extras.scnet;
+    if (!ex || ex.source === "none" || ex.credits_used == null) return { noPlan: true };   // 快照未带估算（zusage 旧版/未配置）：软隐藏不报错
+    return {
+      windows: { monthly: { percent: Math.round(clampPct((ex.credits_used / ex.plan_credits) * 100) * 10) / 10, resetsAt: ex.resets_at || null } },
+      ledger: { used: ex.credits_used, total: ex.plan_credits, source: ex.source },
+    };
+  },
+});
+
+/* --- 自定义中转（OpenAI legacy 兼容；仅作为 primary 时探测） --- */
+ADAPTERS.push({
+  id: "custom", label: "中转站", kind: "balance", defaultOn: false,
+  envKeys: [],
+  detect(j, providerId) {
+    if (providerId.indexOf("account:") === 0) return null;
+    const cp = j.customProviderOf(providerId);
+    return cp ? { cp } : null;
+  },
+  resolveCred(j, ctx) { return { token: ctx.cp.apiKey, fingerprint: "cfg:" + sha16(ctx.cp.apiKey + "|" + ctx.cp.baseUrl), source: "provider_config" }; },
+  async fetchOne(j, ctx, cred, ctl) {
+    const cp = ctx.cp;
+    let host = "";
+    try { host = new URL(cp.baseUrl).hostname; } catch (e) { throw qErr("parse_error", "bad baseUrl"); }
+    const sub = await j.http.maybeGetJson(cp.baseUrl + "/dashboard/billing/subscription", { authorization: "Bearer " + cred.token }, ctl);
+    if (!sub) return null;   // 识别不了的网关：无可展示余额（unsupported 由调度器标注）
+    const hard = num(sub.hard_limit_usd);
+    if (hard == null || hard >= 1e8) return null;   // 按量后付无固定池
+    const usage = await j.http.maybeGetJson(cp.baseUrl + "/dashboard/billing/usage", { authorization: "Bearer " + cred.token }, ctl);
+    const used = usage && num(usage.total_usage) != null ? num(usage.total_usage) / 100 : 0;
+    return { balance: { amount: Math.round((hard - used) * 100) / 100, currency: "USD" } };
+  },
+});
+const ADAPTER_BY_ID = new Map(ADAPTERS.map((a) => [a.id, a]));
+
+/* ---------- 多源调度器 ---------- */
 function createQuotaClient(opts) {
   const o = opts || {};
   const env = o.env || process.env;
   const now = o.now || (() => Date.now());
   const fetchImpl = o.fetchImpl || (typeof fetch === "function" ? fetch : null);
   const credsPath = o.credsPath || path.join(os.homedir(), ".zcode", "v2", "credentials.json");
+  const customCfgPath = o.customCfgPath || path.join(os.homedir(), ".zcode", "v2", "provider_config.json");
+  const secretsPath = o.secretsPath || path.join(path.dirname(credsPath), "quota-secrets.json");
   const readFile = o.readFile || ((p) => JSON.parse(fs.readFileSync(p, "utf8")));
   const log = o.log || (() => {});
   const onUpdate = o.onUpdate || null;
 
-  const st = {
-    status: "idle",          // idle|ok|auth_failed|no_plan|rate_limited|network_error|parse_error|not_configured|unsupported
-    reason: "",              // unsupported 细分：team / provider
-    providerId: "",
-    value: null,             // 最近一次成功归一化结果（硬失败保留，供旧值展示）
-    fetchedAt: 0,
-    nextAt: 0,
-    backoffIdx: 0,
-    fingerprint: "",
-    epoch: 0,
-    inFlight: null,
-    ctl: null,
-    lastError: "",
+  /* quota-secrets.json：运行目录 0600（首读强制收紧权限）；损坏/缺失按空配置 */
+  let secretsMtime = -2, secrets = { sources: {} };
+  function readSecrets() {
+    let m = -1;
+    try { m = fs.statSync(secretsPath).mtimeMs; }
+    catch (e) { m = -1; }   // stat 失败不短路：仍尝试读取（测试虚拟路径/权限受限）；-1 不缓存
+    if (m !== secretsMtime) {
+      try {
+        const d = readFile(secretsPath);
+        secrets = d && typeof d === "object" && d.sources && typeof d.sources === "object" ? d : { sources: {} };
+      } catch (e) { secrets = { sources: {} }; }
+      if (m >= 0) secretsMtime = m; else return secrets;
+    }
+    return secrets;
+  }
+  const extras = {};   // 快照侧注入的账本数据（scnet 估算等）：noteSnapshotExtras 写入
+
+  /* HTTP 助手：分类错误（401/403 auth_failed、429 rate_limited、5xx/其它 network_error、
+   * JSON 解析 parse_error）；maybeGetJson 任何失败返回 null（探测/可选端点用）。 */
+  function classifyStatus(status, headers) {
+    if (status === 401 || status === 403) return qErr("auth_failed", "HTTP " + status);
+    if (status === 429) {
+      const ra = headers && typeof headers.get === "function" ? headers.get("retry-after") : null;
+      return qErr("rate_limited", "HTTP 429", { retryAfterMs: parseRetryAfterMs(ra) });
+    }
+    return qErr("network_error", "HTTP " + status);
+  }
+  async function rawFetch(url, headers, ctl, method) {
+    const res = await fetchImpl(url, {
+      method: method || "GET",
+      headers: Object.assign({ accept: "application/json", "accept-encoding": "identity" }, headers),
+      signal: ctl ? ctl.signal : undefined, redirect: "manual",
+    });
+    let text = "";
+    if (res.body && typeof res.body.getReader === "function") {
+      const reader = res.body.getReader();
+      const chunks = []; let size = 0;
+      for (;;) {
+        const step = await reader.read();
+        if (step.done) break;
+        chunks.push(step.value); size += step.value.length;
+        if (size > BODY_LIMIT) { try { ctl.abort(); } catch (e) { } throw qErr("parse_error", "response too large"); }
+      }
+      const buf = Buffer.alloc(size); let off = 0;
+      for (const c of chunks) { buf.set(c, off); off += c.length; }
+      text = buf.toString("utf8");
+    } else {
+      text = await res.text();
+      if (text.length > BODY_LIMIT) throw qErr("parse_error", "response too large");
+    }
+    return { status: res.status, headers: res.headers, text };
+  }
+  const http = {
+    async getJson(url, headers, ctl) {
+      const r = await rawFetch(url, headers, ctl);
+      if (r.status < 200 || r.status >= 300) throw classifyStatus(r.status, r.headers);
+      try { return JSON.parse(r.text); } catch (e) { throw qErr("parse_error", "invalid json"); }
+    },
+    async maybeGetJson(url, headers, ctl) {
+      try { return await http.getJson(url, headers, ctl); } catch (e) { return null; }
+    },
+    async post(url, headers, ctl) {
+      const r = await rawFetch(url, headers, ctl, "POST");
+      let json = null;
+      try { json = JSON.parse(r.text); } catch (e) { throw qErr("parse_error", "invalid json"); }
+      const meta = json && json.ResponseMetadata && json.ResponseMetadata.Error;   // 火山信封：HTTP 200 也可能带错
+      if (meta && meta.Code) {
+        const c = String(meta.Code);
+        if (/auth|signature|accessdenied|denied|unauthorized|forbidden|credential|token/i.test(c)) throw qErr("auth_failed", c.slice(0, 60));
+        throw qErr("network_error", c.slice(0, 60));
+      }
+      if (json && json.Error && json.Error.Code) {
+        const c = String(json.Error.Code);
+        if (/auth|signature|denied|unauthorized|forbidden/i.test(c)) throw qErr("auth_failed", c.slice(0, 60));
+        throw qErr("network_error", c.slice(0, 60));
+      }
+      if (r.status < 200 || r.status >= 300) throw classifyStatus(r.status, r.headers);   // 签名错常 400 非 401
+      return json;
+    },
   };
 
-  function resolveCredential(fam) {
-    for (const k of fam.envKeys) {
-      const v = env[k];
-      if (v) return { token: v, fingerprint: "env:" + sha16(v), source: "env" };
+  const j = {
+    env, now, fetchImpl, readFile, secrets: { sources: {} }, customCfgPath, log, http, extras,
+    credsPath,
+    customProviderOf: (pid) => resolveCustomProvider(pid, readFile, customCfgPath),
+  };
+
+  /* 源状态：id → st（v96 单源状态机的每源实例） */
+  const states = new Map();
+  const byProvider = {};   // providerId → 源 id（渲染端按本 pane provider 选源，多窗不串）
+  let primaryId = "";        // 本 pane 会话模型归属的源（chip 主显）
+  let primaryProvider = "";  // 最近一次 noteProvider 的原始 provider 串
+  let seq = 0;
+
+  function stateOf(id) {
+    let st = states.get(id);
+    if (!st) {
+      st = { id, status: "idle", reason: "", value: null, fetchedAt: 0, nextAt: 0, backoffIdx: 0,
+        fingerprint: "", epoch: 0, inFlight: null, ctl: null, lastError: "", ctx: null };
+      states.set(id, st);
     }
-    let raw = null;
-    try { raw = readFile(credsPath); } catch (e) { return null; }
-    const enc = raw && typeof raw === "object" ? raw[fam.credKey] : null;
-    if (typeof enc !== "string" || !enc) return null;
-    const token = decryptValue(enc, deriveCipherKey(env));
-    if (!token) return { decryptFailed: true, fingerprint: "host:" + sha16(enc) };
-    return { token, fingerprint: "host:" + sha16(enc), source: "host" };
+    return st;
+  }
+  function setState(st, fields) {
+    Object.assign(st, fields);
+    if (onUpdate) onUpdate();
   }
 
-  function setState(patch) { Object.assign(st, patch); if (onUpdate) onUpdate(); }
+  /* provider → 源 id 解析（primary 专用；custom 匹配官方域适配器优先于 generic relay） */
+  function resolvePrimary(providerId) {
+    const p = String(providerId || "");
+    if (!p) return { id: "" };
+    if (p.indexOf("account:") === 0) {
+      if (p.indexOf("team") >= 0) return { id: "team" };
+      if (p.indexOf("account:bigmodel") === 0) return { id: "bigmodel", ctx: { family: "bigmodel" } };
+      if (p.indexOf("account:zai") === 0) return { id: "zai", ctx: { family: "zai" } };
+      return { id: "" };
+    }
+    j.secrets = readSecrets();   // provider→adapter 探测前刷新配置
+    for (const a of ADAPTERS) {
+      if (a.id === "custom" || a.id === "bigmodel" || a.id === "zai") continue;
+      try {
+        const ctx = a.detect(j, p);
+        if (ctx) return { id: a.id, ctx, provider: p };
+      } catch (e) { /* detect 抛错按不命中 */ }
+    }
+    const ctx = ADAPTER_BY_ID.get("custom").detect(j, p);
+    /* custom 源按 provider 隔离（custom:<pid>）：两个不同中转的窗口各持独立状态/key，
+     * 互不覆盖、互不串显；未命中同样建独立空源（unsupported/provider）。 */
+    return { id: "custom:" + p, ctx, provider: p };
+  }
 
-  function settleError(ep, err) {
-    if (ep !== st.epoch) return;   // 代际守卫：期间 provider/凭据已切换，旧响应丢弃
+  function settleError(st, ep, err) {
+    if (ep !== st.epoch) return;   // 代际守卫：源凭据/身份已切换，旧响应丢弃
     const code = err && err.code || "network_error";
     st.lastError = String(err && err.message || code).slice(0, 120);
     st.status = code;
-    if (code === "auth_failed") st.nextAt = Infinity;            // 冻结到凭据指纹变化/手动刷新
-    else if (code === "no_plan") st.nextAt = Infinity;
+    if (code === "auth_failed" || code === "no_plan") st.nextAt = Infinity;
     else if (code === "parse_error") st.nextAt = now() + PARSE_BACKOFF_MS;
     else if (code === "rate_limited") st.nextAt = now() + (err.retryAfterMs || 60 * 1000);
     else st.nextAt = now() + BACKOFF_MS[Math.min(st.backoffIdx++, BACKOFF_MS.length - 1)];
-    log("quota settle:", code, st.lastError);
+    log("quota settle:", st.id, code, st.lastError);
     if (onUpdate) onUpdate();
   }
-  function settleOk(ep, value) {
+  function settleOk(st, ep, value) {
     if (ep !== st.epoch) return;
     st.value = value;
     st.fetchedAt = now();
     st.status = "ok";
     st.lastError = "";
     st.backoffIdx = 0;
-    st.nextAt = now() + TTL_MS;
+    const a = ADAPTER_BY_ID.get(st.id);
+    st.nextAt = now() + (a && a.kind === "balance" ? TTL_BALANCE_MS : TTL_MS);
     if (onUpdate) onUpdate();
   }
 
-  async function startFetch(wanted, fam, cred) {
+  function startFetch(adapter, st) {
     st.epoch += 1;
     const ep = st.epoch;
     const ctl = new AbortController();
     st.ctl = ctl;
     const kill = setTimeout(() => { try { ctl.abort(); } catch (e) { } }, FETCH_TIMEOUT_MS);
-    const url = (fam.envUrl && env[fam.envUrl]) || fam.origin + QUOTA_PATH;
-    const headers = {
-      authorization: (fam.bearer ? "Bearer " : "") + cred.token,
-      accept: "application/json",
-      "accept-encoding": "identity",
-    };
-    /* 订阅元数据与额度并行拉取（仅配了 subPath 的 family）；任何失败都只丢 plan 字段，
-     * 不影响额度状态机——两个端点独立演进，结构变化不互相拖累。 */
-    const subFetch = fam.subPath ? fetchSubscription(fam, cred, ctl) : Promise.resolve(null);
-    subFetch.catch(() => { });   // 额度先行返回时挂一个兜底 handler，避免未处理拒绝
-    try {
-      const res = await fetchImpl(url, { headers, signal: ctl.signal, redirect: "manual" });
-      if (res.status === 401 || res.status === 403) {
-        settleError(ep, qErr("auth_failed", "HTTP " + res.status));
-        return;
-      }
-      if (res.status === 429) {
-        const ra = res.headers && typeof res.headers.get === "function" ? res.headers.get("retry-after") : null;
-        settleError(ep, qErr("rate_limited", "HTTP 429", { retryAfterMs: parseRetryAfterMs(ra) }));
-        return;
-      }
-      if (res.status < 200 || res.status >= 300) {
-        settleError(ep, qErr("network_error", "HTTP " + res.status));
-        return;
-      }
-      const text = await readBounded(res, ctl);
-      let json;
-      try { json = JSON.parse(text); } catch (e) { settleError(ep, qErr("parse_error", "invalid json")); return; }
-      const value = normalizeQuotaBody(json);
-      if (value && value.noPlan) settleError(ep, qErr("no_plan", "no coding plan"));
-      else {
-        const plan = await subFetch;   // fetchSubscription 自身不 reject（内部全捕获）
-        settleOk(ep, plan ? Object.assign({}, value, { plan }) : value);
-      }
-    } catch (e) {
-      if (e && e.code) settleError(ep, e);
-      else settleError(ep, qErr("network_error", String(e && e.name || e && e.message || "fetch failed")));
-    } finally {
-      clearTimeout(kill);
-    }
+    const p = (async () => {
+      const value = await adapter.fetchOne(j, st.ctx, st.cred, ctl);
+      if (value && value.noPlan) { const e = qErr("no_plan", "no plan"); e.st = st; throw e; }
+      if (value == null) { const e = qErr("unsupported", "gateway"); e.st = st; throw e; }   // custom：识别不了的网关
+      settleOk(st, ep, value);
+    })()
+      .catch((e) => {
+        const target = e && e.st || st;
+        if (e && e.code === "no_plan") { if (ep === target.epoch) { target.status = "no_plan"; target.nextAt = Infinity; target.lastError = "no plan"; if (onUpdate) onUpdate(); } return; }
+        if (e && e.code === "unsupported") { if (ep === target.epoch) { target.status = "unsupported"; target.reason = "gateway"; target.value = null; target.lastError = ""; target.nextAt = now() + PARSE_BACKOFF_MS; if (onUpdate) onUpdate(); } return; }
+        settleError(target, ep, e);
+      })
+      .finally(() => { clearTimeout(kill); });
+    st.inFlight = p;
+    const q = p;
+    p.then(() => { if (st.inFlight === q) st.inFlight = null; });   // fetchOne 包装自身不 reject
   }
 
-  async function fetchSubscription(fam, cred, ctl) {
-    try {
-      const res = await fetchImpl(fam.origin + fam.subPath, {
-        headers: {
-          authorization: (fam.bearer ? "Bearer " : "") + cred.token,
-          accept: "application/json",
-          "accept-encoding": "identity",
-        },
-        signal: ctl.signal,
-        redirect: "manual",
-      });
-      if (res.status !== 200) return null;
-      const text = await readBounded(res, ctl);
-      return normalizeSubscriptionPlan(JSON.parse(text));
-    } catch (e) {
-      return null;   // 订阅失败静默降级：额度照常，tooltip 少一行
-    }
-  }
-
-  function tick(force) {
-    if (st.inFlight) return;
+  function tickSource(adapter, st, force) {
     const t = now();
+    if (st.inFlight) return;
     if (!force && t < st.nextAt) return;
-    const wanted = resolveWanted(st.providerId);
-    if (!wanted) {
-      if (st.status !== "unsupported" || st.reason !== "provider") setState({ status: "unsupported", reason: "provider" });
+    const ctx = st.ctx;
+    if (!ctx) {
+      if (adapter.id === "custom") {   // 无配置的自定义供应商：unsupported/provider（v96 兼容语义）
+        if (st.status !== "unsupported" || st.reason !== "provider") setState(st, { status: "unsupported", reason: "provider", value: null });
+      } else if (st.status !== "not_configured") setState(st, { status: "not_configured", reason: "", lastError: "" });
+      st.nextAt = t + NOT_CONFIGURED_RETRY_MS;
       return;
     }
-    if (wanted.unsupported === "team") {
-      if (st.status !== "unsupported" || st.reason !== "team") setState({ status: "unsupported", reason: "team" });
-      return;
-    }
-    const fam = FAMILIES[wanted.family];
-    const cred = resolveCredential(fam);
+    const cred = adapter.resolveCred(j, ctx);
     if (!cred) {
-      if (st.status !== "not_configured") setState({ status: "not_configured", reason: "", lastError: "" });
+      if (st.status !== "not_configured") setState(st, { status: "not_configured", reason: "", lastError: "" });
       st.nextAt = t + NOT_CONFIGURED_RETRY_MS;
       return;
     }
     if (cred.decryptFailed) {
-      /* 宿主改加密格式（如切 safeStorage）：fail-closed，只低频重探，绝不显示 0 */
-      if (st.status !== "not_configured") setState({ status: "not_configured", reason: "decrypt", lastError: "credential decrypt failed" });
+      if (st.status !== "not_configured") setState(st, { status: "not_configured", reason: "decrypt", lastError: "credential decrypt failed" });
       st.nextAt = t + NOT_CONFIGURED_RETRY_MS;
       return;
     }
     if (cred.fingerprint !== st.fingerprint) {
-      st.fingerprint = cred.fingerprint;   // 凭据变化（登录/刷新/换账号）：解冻 + 清退避
+      st.fingerprint = cred.fingerprint;
       st.backoffIdx = 0;
-      if (st.status === "auth_failed" || st.status === "no_plan") st.status = "idle";
+      if (st.status === "auth_failed" || st.status === "no_plan" || (st.status === "unsupported" && st.reason === "gateway")) st.status = "idle";
       st.nextAt = 0;
     }
-    if (!force && (st.status === "auth_failed" || st.status === "no_plan")) return;   // 冻结中（同一凭据）
-    if (cred.source === "host") {
-      const exp = jwtExpMs(cred.token);
-      if (exp && exp - t < EXP_SOON_MS) { st.nextAt = t + EXP_RETRY_MS; return; }     // 临期等宿主刷新
+    if (!force && (st.status === "auth_failed" || st.status === "no_plan")) return;
+    if (cred.source === "host" || cred.source === "env") {
+      const exp = jwtExpMs(cred.token || "");
+      if (exp && exp - t < EXP_SOON_MS) { st.nextAt = t + EXP_RETRY_MS; return; }
     }
-    st.inFlight = startFetch(wanted, fam, cred);
-    const p = st.inFlight;
-    p.then(() => { if (st.inFlight === p) st.inFlight = null; });   // startFetch 自身不 reject
+    st.cred = cred;
+    startFetch(adapter, st);
+  }
+
+  /* 活跃源集合：primary + 全部可解析的零配置适配器 + secrets 显式启用的配置适配器 */
+  function activeSet() {
+    j.secrets = readSecrets();
+    const set = new Map();
+    if (primaryId) {
+      const a = primaryId.indexOf("custom:") === 0 ? ADAPTER_BY_ID.get("custom") : ADAPTER_BY_ID.get(primaryId);
+      if (a && primaryId !== "team") {
+        const st = stateOf(primaryId);
+        if (!st.ctx) st.ctx = primaryCtx;
+        set.set(primaryId, { a, st });
+      } else if (primaryId === "team") {
+        const st = stateOf("team");
+        if (st.status !== "unsupported") setState(st, { status: "unsupported", reason: "team" });
+      }
+    }
+    for (const a of ADAPTERS) {
+      if (a.id === "custom" || set.has(a.id)) continue;   // custom 系只在 primary 分支进入
+      const secCfg = (j.secrets.sources || {})[a.id] || {};
+      const enabledCfg = secCfg.enabled === true;
+      if (a.defaultOn || enabledCfg) {
+        const st = stateOf(a.id);
+        if (!st.ctx) {
+          const auto = secCfg.apiKey || secCfg.cookie || secCfg.token || (a.id === "scnet" && num(secCfg.planCredits) > 0) ||
+            (a.id === "anthropic") || (a.id === "volcano" && (j.env.VOLCENGINE_ACCESS_KEY_ID || secCfg.accessKeyId));
+          if (auto || a.id === "scnet") st.ctx = { config: true };   // anthropic 已改显式启用：enabled+凭据可得才激活
+        }
+        if (st.ctx) set.set(a.id, { a, st });
+        else if (a.defaultOn) {
+          /* 零配置适配器但探测不到 provider：仅当 primary 是它时才标 not_configured，否则静默跳过 */
+        }
+      }
+    }
+    return set;
+  }
+
+  let primaryCtx = null;
+
+  function tick(force) {
+    for (const { a, st } of activeSet().values()) tickSource(a, st, force);
+  }
+
+  function entryView(st) {
+    const t = now();
+    const a = st.id.indexOf("custom:") === 0 ? ADAPTER_BY_ID.get("custom") : ADAPTER_BY_ID.get(st.id);
+    const ttl = a && a.kind === "balance" ? TTL_BALANCE_MS : TTL_MS;
+    const v = { status: st.status, reason: st.reason, fetchedAt: st.fetchedAt,
+      stale: !!(st.fetchedAt && t - st.fetchedAt > ttl), error: st.lastError };
+    if (st.value) {
+      v.level = st.value.level;
+      v.plan = st.value.plan || null;
+      v.balance = st.value.balance || null;
+      v.windows = st.value.windows;
+      v.tools = st.value.tools;
+      v.models = st.value.models;
+      v.ledger = st.value.ledger || null;
+    }
+    return v;
   }
 
   return {
     tick,
     refresh() { tick(true); },
+    refreshSource(id) {   // ⚙ 每家「立即刷新」：只 force 单源
+      const st = states.get(id);
+      const a = ADAPTER_BY_ID.get(id);
+      if (st && a) tickSource(a, st, true);
+    },
     noteProvider(providerId) {
       const p = String(providerId || "");
-      if (p === st.providerId) return;
-      st.providerId = p;
-      /* 换 provider 即换代：在途请求属旧额度池，响应迟到也不得覆盖新状态；
-       * 同套餐内换模型 provider 串不变，不走这里（同池零成本复用）。 */
-      st.epoch += 1;
-      if (st.ctl) { try { st.ctl.abort(); } catch (e) { } }
-      st.inFlight = null;
-      st.nextAt = 0;   // 立即重判（unsupported ↔ 支持档）
-    },
-    credentialsChanged() { st.nextAt = 0; },   // credentials.json 变化：重读指纹，变化即解冻
-    view() {
-      const t = now();
-      const v = {
-        status: st.status,
-        reason: st.reason,
-        providerId: st.providerId,
-        fetchedAt: st.fetchedAt,
-        stale: !!(st.fetchedAt && t - st.fetchedAt > TTL_MS),
-        error: st.lastError,
-      };
-      if (st.value) {
-        v.level = st.value.level;
-        v.plan = st.value.plan || null;
-        v.windows = st.value.windows;
-        v.tools = st.value.tools;
-        v.models = st.value.models;
+      if (p === primaryProvider) return;
+      primaryProvider = p;
+      if (!p) return;   // 会话无模型：保持上次 primary（配合渲染端 provider_fallback）
+      const r = resolvePrimary(p);
+      primaryId = r.id;
+      primaryCtx = r.ctx || null;
+      const st = r.id ? stateOf(r.id) : null;
+      if (st) {
+        st.epoch += 1;   // 换源换代：旧源在途响应不覆盖新源
+        if (st.ctl) { try { st.ctl.abort(); } catch (e) { } }
+        st.inFlight = null;
+        /* custom：ctx 必须跟随本次解析结果（未命中即置 null → unsupported/provider），
+         * 不得残留旧供应商的 baseUrl/key，否则会把旧网关余额当新会话主显。 */
+        st.ctx = (r.id.indexOf("custom:") === 0) ? primaryCtx : (primaryCtx || st.ctx);
+        st.nextAt = 0;
       }
-      return v;
+      if (p) byProvider[p] = r.id || "";
     },
+    credentialsChanged() {
+      /* 唤醒"值得重评"的源：冻结态（Infinity）重评后仍由 status 短路（指纹未变不复 fetch）；
+       * not_configured 唤醒以承接 secrets/供应商配置刚启用；宿主凭据源即时重拉（token 刷新）。
+       * ok 态保持 TTL——指纹在其自然到期重查时校验，避免一次 secrets 写入全源冗余刷新。 */
+      for (const st of states.values()) {
+        if (st.nextAt === Infinity || st.status === "not_configured" || (st.cred && st.cred.source === "host")) st.nextAt = 0;
+      }
+    },
+    noteSnapshotExtras(data) {   // 快照侧注入（scnet 估算等）；ledger 源数据到位即解冻
+      const prevScnet = extras.scnet;
+      Object.assign(extras, data || {});
+      if (data && data.scnet !== undefined && JSON.stringify(data.scnet) !== JSON.stringify(prevScnet)) {
+        const st = states.get("scnet");
+        if (st && (st.status === "no_plan" || st.status === "network_error")) {
+          st.status = "idle";
+          st.nextAt = 0;   // 估算就绪：立即重查（首次启用早于首个快照的自我冻结修复）
+        }
+      }
+    },
+    view() {
+      const sources = {};
+      for (const [id, st] of states) sources[id] = entryView(st);
+      const out = { active: primaryId || "", byProvider: byProvider, sources };
+      const prim = primaryId ? sources[primaryId] : null;   // 兼容镜像（本版保留，浮层迁移完成后移除）
+      if (prim) Object.assign(out, {
+        status: prim.status, reason: prim.reason, providerId: primaryProvider,
+        fetchedAt: prim.fetchedAt, stale: prim.stale, error: prim.error,
+        level: prim.level, plan: prim.plan, balance: prim.balance,
+        windows: prim.windows, tools: prim.tools, models: prim.models, ledger: prim.ledger,
+      });
+      return out;
+    },
+    sourcesConfig() {   // ⚙ 面板数据源列表（不回显凭据值）
+      j.secrets = readSecrets();
+      const list = [];
+      for (const a of ADAPTERS) {
+        if (a.id === "custom") continue;
+        const cfg = (j.secrets.sources || {})[a.id] || {};
+        const st = states.get(a.id);
+        list.push({
+          id: a.id, label: a.label, kind: a.kind, defaultOn: a.defaultOn, unverified: !!a.unverified,
+          enabled: a.defaultOn || cfg.enabled === true,
+          credentialFields: a.id === "mimo" ? ["cookie"] : a.id === "volcano" ? ["accessKeyId", "secretAccessKey"] : a.id === "scnet" ? ["planCredits", "planStart"] : a.id === "anthropic" ? ["token"] : ["apiKey"],
+          keyConfigured: !!(cfg.apiKey || cfg.cookie || cfg.token || cfg.accessKeyId || (a.id === "scnet" && num(cfg.planCredits) > 0)),
+          keySource: st && st.cred ? st.cred.source : "",
+          status: st ? st.status : "idle",
+        });
+      }
+      return list;
+    },
+    secretsPath,
     dispose() {
-      if (st.ctl) { try { st.ctl.abort(); } catch (e) { } }
-      st.inFlight = null;
+      for (const st of states.values()) {
+        if (st.ctl) { try { st.ctl.abort(); } catch (e) { } }
+        st.inFlight = null;
+      }
     },
-    _state: st,   // 测试接缝
+    get _state() { return states.get(primaryId) || states.get("custom") || {}; },   // 测试接缝兼容（v96 单源形状）
+    _states: states,
+    _adapters: ADAPTERS,
   };
 }
 
@@ -497,6 +1251,16 @@ module.exports = {
   normalizeQuotaBody,
   normalizeSubscriptionPlan,
   isNoPlanMessage,
-  resolveWanted,
+  normalizeMimoCookie,
+  parseCurrencyAmount,
+  collectWindows,
+  resolveWanted(providerId) {   // v96 兼容导出（单测在用）：内置 family 判定
+    const p = String(providerId || "");
+    if (p.indexOf("account:") !== 0) return null;
+    if (p.indexOf("team") >= 0) return { unsupported: "team" };
+    if (p.indexOf("account:bigmodel") === 0) return { family: "bigmodel" };
+    if (p.indexOf("account:zai") === 0) return { family: "zai" };
+    return null;
+  },
   TTL_MS,
 };

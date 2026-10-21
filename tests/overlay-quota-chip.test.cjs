@@ -322,7 +322,9 @@ test('settings panel exposes the config-backed quota toggle (default off) with t
   assert.doesNotMatch(source, /show: \{[^}]*quota/);   // 不是 localStorage 显示项：真值只在 config.json
   assert.match(source, /<input type="checkbox" class="zu-quota-enable">/);
   assert.match(source, /pluginRequest\("quota", t2\.checked\)/);
-  assert.match(source, /读取本机 ZCode 登录凭据（~\/\.zcode\/v2\/credentials\.json）查询官方套餐接口：凭据仅在内存使用、只发往 bigmodel\.cn \/ api\.z\.ai 官方域，不落盘、不进日志与诊断/);
+  assert.match(source, /凭据仅在内存使用、不落盘、不进日志与诊断：内置套餐发往 bigmodel\.cn \/ api\.z\.ai 官方域/);   // 阶段 3 分域披露
+  assert.match(source, /zu-src-list/);   // ⚙ 源列表容器
+  assert.match(source, /pluginRequest\("quota-src-key", \{ id: t2\.dataset\.src, field: t2\.dataset\.field, value: t2\.value \}\)/);
   assert.match(source, /\.zu-quota\{display:inline-flex;align-items:center;gap:5px;height:1\.75rem/);
   assert.match(source, /\.zu-qseg\.exc\{color:var\(--color-destructive,#ff2d55\)/);
   assert.match(source, /\.zu-qsep\{color:var\(--color-foreground-subtle/);
@@ -355,4 +357,128 @@ test('tooltip omits the subscription row when plan metadata is missing (endpoint
   assert.doesNotMatch(html, /GLM Coding Max/);
   assert.match(html, /5小时窗口/);   // 额度行不受订阅缺失影响
   assert.match(html, /套餐额度 · BigModel Max/);   // plan 缺失回退 family+档位标题
+});
+
+test('session without any request history falls back to the account-level provider_fallback', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  h.inject(); h.boot(); h.tick();
+  // 新会话/刚切模型：本会话无完成请求（provider 空），快照顶层带账号级回退
+  const out = { remote_evidence: false, today: {}, not_local: [],
+    recent: [{ sid: 'sid_main', workspace_identity: '', ctx: 63400, context_window: 200000, last_at: 1, ctx_exc: 0, last: {} }],
+    provider_fallback: 'account:bigmodel-individual-coding-plan', quota: QUOTA_OK };
+  h.window.__zusageUpdate(out);
+  const chip = h.chipOf(ui.wrap);
+  assert.ok(chip, 'fallback shows the chip before the first request lands');
+  assert.match(chip.innerHTML, /5小时 26%/);
+  // 回退指向自定义 provider（理论态）：不显示
+  const out2 = Object.assign({}, out, { provider_fallback: 'new-provider-4' });
+  h.window.__zusageUpdate(out2);
+  assert.equal(h.chipOf(ui.wrap), undefined);
+  // 无回退字段（旧主进程）：维持隐藏
+  h.window.__zusageUpdate(h.payload({ provider: '' }));
+  assert.equal(h.chipOf(ui.wrap), undefined);
+  // 会话自己的最新请求是自定义 provider：优先于回退，隐藏
+  h.window.__zusageUpdate(h.payload({ provider: 'new-provider-4', quota: QUOTA_OK }));
+  assert.equal(h.chipOf(ui.wrap), undefined, 'session-level custom provider wins over fallback');
+});
+
+test('stage-3 protocol {active, sources}: chip reads the active source entry; flat fallback kept', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  h.inject(); h.boot(); h.tick();
+  const entry = Object.assign({}, QUOTA_OK, { status: 'ok' });
+  h.window.__zusageUpdate({ remote_evidence: false, today: {}, not_local: [],
+    quota: { active: 'bigmodel', sources: { bigmodel: entry, deepseek: { status: 'ok', fetchedAt: NOW, stale: false, error: '', balance: { amount: 110, currency: 'CNY' } } } },
+    recent: [{ sid: 'sid_main', workspace_identity: '', ctx: 63400, context_window: 200000, last_at: 1, ctx_exc: 0,
+      last: { provider_id: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-Flash' } }] });
+  const chip = h.chipOf(ui.wrap);
+  assert.ok(chip, 'new-shape payload mounts chip from sources[active]');
+  assert.match(chip.innerHTML, /5小时 26%/);
+  // 平铺旧形状仍兼容
+  h.window.__zusageUpdate(h.payload({ quota: QUOTA_OK }));
+  assert.match(h.chipOf(ui.wrap).innerHTML, /5小时 26%/);
+});
+
+test('tooltip shows monthly window, balance parts split and other-source summaries', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  h.inject(); h.boot(); h.tick();
+  h.window.__zusagePluginUpdate({ quotaEnabled: true, quotaSources: [
+    { id: 'bigmodel', label: 'BigModel', enabled: true },
+    { id: 'deepseek', label: 'DeepSeek', enabled: true },
+    { id: 'scnet', label: 'SCNet', enabled: true },
+  ] });
+  h.window.__zusageUpdate({ remote_evidence: false, today: {}, not_local: [],
+    quota: {
+      active: 'bigmodel',
+      sources: {
+        bigmodel: Object.assign({}, QUOTA_OK, { windows: { fiveHour: { percent: 26, resetsAt: null }, weekly: { percent: 12, resetsAt: null }, monthly: { percent: 5, resetsAt: NOW + 86400e3 } }, balance: { amount: 110, currency: 'CNY', parts: [{ label: '赠送', amount: 10 }, { label: '充值', amount: 100 }] } }),
+        deepseek: { status: 'ok', fetchedAt: NOW, stale: false, error: '', balance: { amount: 110, currency: 'CNY' } },
+        scnet: { status: 'ok', fetchedAt: NOW, stale: false, error: '', windows: { monthly: { percent: 44, resetsAt: null } } },
+      },
+    },
+    recent: [{ sid: 'sid_main', workspace_identity: '', ctx: 63400, context_window: 200000, last_at: 1, ctx_exc: 0,
+      last: { provider_id: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-Flash' } }] });
+  const chip = h.chipOf(ui.wrap);
+  chip.listeners.get('mouseenter')[0].call(chip);
+  const html = h.tipEl().innerHTML;
+  assert.match(html, /月度窗口<\/b><span>已用 5%/);
+  assert.match(html, /余额<\/b><span>¥110\.00（赠送 10 \/ 充值 100）/);
+  assert.match(html, /其他源<\/b><span>DeepSeek ¥110\.00 · SCNet 44%/);
+});
+
+test('settings source list renders rows and emits quota-src / quota-src-key / quota-src-refresh requests', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  h.inject(); h.boot(); h.tick();
+  h.window.__zusageUpdate(h.payload({ quota: QUOTA_OK }));
+  h.window.__zusagePluginUpdate({ quotaEnabled: true, quotaSources: [
+    { id: 'minimax', label: 'MiniMax', kind: 'plan', enabled: true, unverified: true, credentialFields: ['apiKey'], keyConfigured: true, status: 'ok' },
+    { id: 'mimo', label: '小米 MiMo', kind: 'plan', enabled: false, unverified: true, credentialFields: ['cookie'], keyConfigured: false, status: 'not_configured' },
+  ] });
+  const panel = h.body.children.find(e => e.classList.contains('zu-settings'));
+  const list = panel.queries.get('.zu-src-list') || new Element();
+  // 面板构建走 buildPanel 字符串；syncQuotaSources 直接写 .zu-src-list innerHTML——用面板查询接缝拿不到
+  // 实例闭包里的真实 DOM，改从源码契约断言 + change/click 委托行为：
+  const enable = new Element('input');
+  enable.classList.add('zu-src-enable'); enable.dataset.src = 'mimo'; enable.checked = true; enable.type = 'checkbox';
+  panel.listeners.get('change')[0]({ target: enable });
+  const field = new Element('input');
+  field.classList.add('zu-src-field'); field.dataset.src = 'mimo'; field.dataset.field = 'cookie'; field.value = 'userId=1; serviceToken=abc';
+  panel.listeners.get('change')[0]({ target: field });
+  const btn = new Element('button');
+  btn.classList.add('zu-src-refresh'); btn.dataset.src = 'minimax';
+  btn.closest = (sel) => (sel === '.zu-src-refresh' ? btn : null);   // 桩类自带 closest 恒 null，必须挂在 target 上
+  panel.listeners.get('click')[0]({ target: btn });
+  const reqs = h.window.__zusagePluginRequests;
+  assert.equal(reqs.filter(r => r.action === 'quota-src').length, 1);
+  assert.equal(reqs.filter(r => r.action === 'quota-src')[0].id, 'mimo');
+  assert.equal(reqs.filter(r => r.action === 'quota-src')[0].enabled, true);
+  const keyReq = reqs.filter(r => r.action === 'quota-src-key')[0];
+  assert.equal(keyReq.id, 'mimo'); assert.equal(keyReq.field, 'cookie'); assert.equal(keyReq.value, 'userId=1; serviceToken=abc');
+  assert.equal(reqs.filter(r => r.action === 'quota-src-refresh')[0].id, 'minimax');
+  void list; void ui;
+});
+
+test('custom-provider session shows ITS source via byProvider mapping (multi-window, no cross-leak)', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  h.inject(); h.boot(); h.tick();
+  // 本 pane 会话在自定义 provider（MiniMax 官方域）；另一源的内置数据不得串显
+  h.window.__zusageUpdate({ remote_evidence: false, today: {}, not_local: [],
+    quota: {
+      active: 'bigmodel', byProvider: { 'new-provider-mm': 'minimax' },
+      sources: {
+        bigmodel: Object.assign({}, QUOTA_OK),
+        minimax: { status: 'ok', fetchedAt: NOW, stale: false, error: '', windows: { fiveHour: { percent: 42, resetsAt: null }, weekly: null } },
+      },
+    },
+    recent: [{ sid: 'sid_main', workspace_identity: '', ctx: 63400, context_window: 200000, last_at: 1, ctx_exc: 0,
+      last: { provider_id: 'new-provider-mm', model: 'MiniMax-M3' } }] });
+  const chip = h.chipOf(ui.wrap);
+  assert.ok(chip, '自定义会话按 byProvider 映射显示自己的源');
+  assert.match(chip.innerHTML, /5小时 42%/, '是 MiniMax 的 42%，不是 bigmodel 的 26%');
+  assert.doesNotMatch(chip.innerHTML, /26%/);
+  // 未映射的自定义 provider（主进程没记录）：fail-closed 隐藏
+  h.window.__zusageUpdate({ remote_evidence: false, today: {}, not_local: [],
+    quota: { active: 'bigmodel', byProvider: {}, sources: { bigmodel: Object.assign({}, QUOTA_OK) } },
+    recent: [{ sid: 'sid_main', workspace_identity: '', ctx: 63400, context_window: 200000, last_at: 1, ctx_exc: 0,
+      last: { provider_id: 'new-provider-unknown', model: 'x' } }] });
+  assert.equal(h.chipOf(ui.wrap), undefined, '未映射自定义 provider 不显示（不能证明数据归属）');
 });

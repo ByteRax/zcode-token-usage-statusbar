@@ -86,3 +86,83 @@ test("loader keeps polling controls while an update action is still awaiting the
   assert.equal(requests[1].enabled, false);
   assert.equal(sandbox.pluginRequestBusy, false);
 });
+
+test('quota source requests write quota-secrets.json atomically with whitelist and 0600', async () => {
+  const intervals = [], acknowledgements = [], windows = [];
+  const writes = [];
+  const secretsState = { json: null };
+  const path = require("path");
+  const { pathToFileURL } = require("url");
+  const resources = "/fixture/resources";
+  const status = {};
+  const makeWindow = (url, queue) => ({
+    getURL: () => url,
+    isDestroyed: () => false,
+    getType: () => "window",
+    isLoading: () => false,
+    on: () => {},
+    executeJavaScript: async (script) => {
+      if (script.includes("q.splice")) return queue.splice(0, 8);
+      if (script.includes("__zusagePluginState")) return JSON.stringify(status);
+      return "null";
+    },
+  });
+  windows.push(makeWindow(pathToFileURL(path.join(resources, "app.asar", "out", "renderer", "index.html")).href, [
+    { action: "quota-src", id: "mimo", enabled: true },
+    { action: "quota-src-key", id: "mimo", field: "cookie", value: "userId=1; serviceToken=abc" },
+    { action: "quota-src-key", id: "mimo", field: "evilField", value: "x" },          // 白名单外：忽略
+    { action: "quota-src-key", id: "../etc", field: "apiKey", value: "x" },           // 非法源 id：忽略
+    { action: "quota-src-key", id: "scnet", field: "modelPatterns", value: '{"GLM-*":"GLM-5.2"}' },
+    { action: "quota-src-key", id: "scnet", field: "planCredits", value: "240000" },
+    { action: "quota-src-refresh", id: "minimax" },
+  ]));
+  const mockFs = {
+    readFileSync: (file) => {
+      if (String(file).endsWith("quota-secrets.json")) {
+        if (secretsState.json == null) throw new Error("ENOENT");
+        return secretsState.json;
+      }
+      return String(file).endsWith("overlay.js") ? "/* overlay */" : "{}";
+    },
+    statSync: () => ({ mtimeMs: 1 }), existsSync: () => true, watch: () => ({ on: () => {} }),
+    writeFileSync: (file, data, opts) => { writes.push({ file: String(file), data: String(data), opts }); },
+    renameSync: (from, to) => {
+      const w = writes[writes.length - 1];
+      if (w && w.file === String(from)) secretsState.json = w.data;   // 原子替换语义：rename 后读得到
+    },
+    chmodSync: () => {},
+    unlinkSync: () => { throw new Error("unexpected"); },
+  };
+  const sandbox = {
+    __dirname: "/fixture/runtime", console: { error: () => {} },
+    process: { resourcesPath: resources, execPath: process.execPath, uptime: () => 1 },
+    setInterval: (fn, delay) => { intervals.push({ fn, delay }); },
+    setTimeout: () => 1, clearTimeout: () => {},
+    require: (id) => {
+      if (id === "path") return path;
+      if (id === "fs") return mockFs;
+      if (id === "url") return require("url");
+      if (id === "crypto") return require("crypto");
+      if (id === "child_process") return { spawn: () => { throw new Error("no spawn"); }, execFile: (c, a, o, cb) => { acknowledgements.push({ args: a }); cb(null); } };
+      if (id === "./plugin-updater.cjs") return { createUpdater: (o) => { o.notify(status); return { request: async () => {}, tick: async () => {}, status: () => status }; }, updateConfig: async () => {} };
+      if (id === "./quota-client.cjs") return { createQuotaClient: () => ({ tick: () => {}, view: () => ({}), refresh: () => {}, refreshSource: () => {}, noteProvider: () => {}, credentialsChanged: () => {}, noteSnapshotExtras: () => {}, sourcesConfig: () => [], dispose: () => {} }) };
+      if (id === "electron") return { app: { getPath: () => "/fixture/home", on: () => {} }, webContents: { getAllWebContents: () => windows }, ipcMain: { on: () => {} } };
+      throw new Error(id);
+    },
+  };
+  const vm = require("vm");
+  const fs = require("fs");
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, "..", "inject-main.cjs"), "utf8"), sandbox);
+  await new Promise((r) => setImmediate(r));
+  const poll = intervals.find((i) => i.delay === 1000);
+  await poll.fn();
+  const final = JSON.parse(secretsState.json);
+  assert.deepEqual(final.sources.mimo, { enabled: true, cookie: "userId=1; serviceToken=abc" });
+  assert.deepEqual(final.sources.scnet, { modelPatterns: { "GLM-*": "GLM-5.2" }, planCredits: 240000 });
+  assert.ok(!final.sources["../etc"], "非法源 id 被拒");
+  assert.ok(final.sources.mimo.cookie, "白名单字段写入");
+  assert.ok(!final.sources.mimo.evilField, "白名单外字段忽略");
+  const first = writes[0];
+  assert.equal(first.file, "/fixture/runtime/quota-secrets.json.tmp", "同目录 tmp 原子替换");
+  assert.equal(first.opts.mode, 0o600, "凭据文件 0600 创建");
+});
