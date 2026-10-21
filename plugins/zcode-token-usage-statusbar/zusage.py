@@ -903,9 +903,11 @@ def _scnet_source_cfg():
 
 
 def _scnet_period(src):
-    """计费周期 [start_ms, end_ms)：planStart(YYYY-MM-DD) 锚日每月同日；缺省自然月。"""
+    """计费周期 [start_ms, end_ms)：planStart(YYYY-MM-DD) 锚日每月同日；缺省自然月。
+    月末锚日（29/30/31）在短月按当月最后一天收敛（2 月不抛 ValueError、不早移周期）。"""
     import calendar
-    from datetime import datetime, timedelta
+    from datetime import datetime
+
     tz = datetime.now().astimezone()
     anchor = None
     for fmt in ("%Y-%m-%d", "%Y/%m/%d"):
@@ -914,31 +916,32 @@ def _scnet_period(src):
             break
         except Exception:
             continue
+
+    def clamp_day(year, month, day):
+        return min(day, calendar.monthrange(year, month)[1])
+
+    def add_months(year, month, n):
+        idx = (year * 12 + (month - 1)) + n
+        return idx // 12, idx % 12 + 1
+
     now_local = tz.replace(tzinfo=None)
     if anchor is None:
-        start = now_local.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        nxt_m, nxt_y = (now_local.month % 12) + 1, now_local.year + (1 if now_local.month == 12 else 0)
-        end = start.replace(month=nxt_m, year=nxt_y)
+        y, m = now_local.year, now_local.month
+        sd = 1
     else:
-        day = anchor.day
-        start = now_local.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        for _ in range(2):
-            try:
-                cand = start.replace(day=day)
-            except ValueError:
-                cand = start.replace(day=calendar.monthrange(start.year, start.month)[1])
-            if cand <= now_local:
-                break
-            prev_m, prev_y = ((start.month - 2) % 12) + 1, start.year - (1 if start.month == 1 else 0)
-            start = cand.replace(month=prev_m, year=prev_y)
-        nxt_m, nxt_y = (start.month % 12) + 1, start.year + (1 if start.month == 12 else 0)
-        try:
-            end = start.replace(month=nxt_m, year=nxt_y)
-        except ValueError:
-            end = start.replace(month=nxt_m, year=nxt_y, day=calendar.monthrange(nxt_y, nxt_m)[1])
-    s_ms = int(start.timestamp() * 1000)
-    e_ms = int(end.timestamp() * 1000)
-    return s_ms, e_ms
+        sd = anchor.day
+        y, m = now_local.year, now_local.month
+    # 从当前月往回找：第一个"锚日（或短月收敛日）"不晚于 now 的月即周期起始月
+    while True:
+        d = clamp_day(y, m, sd)
+        cand = datetime(y, m, d)
+        if cand <= now_local or (anchor is None and m == now_local.month and y == now_local.year):
+            start = cand
+            break
+        y, m = add_months(y, m, -1)
+    ny, nm = add_months(start.year, start.month, 1)
+    end = datetime(ny, nm, clamp_day(ny, nm, sd))
+    return int(start.timestamp() * 1000), int(end.timestamp() * 1000)
 
 
 def _scnet_snapshot(src):

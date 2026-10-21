@@ -2109,12 +2109,26 @@
       /* v96：额度 chip 数据源。quota 是账号级（主进程随快照附加）；provider/模型取本 pane
        * 会话最近完成的 main_turn——首个请求完成前 provider 为空，chip 不显示（用户决策）。 */
       /* 阶段 3 多源协议：{active, sources:{id:entry}}；旧主进程平铺形状回退兼容 */
-      lastQuotaAll = d.quota && typeof d.quota === "object" ? d.quota : null;
-      lastQuota = (lastQuotaAll && lastQuotaAll.sources && lastQuotaAll.active && lastQuotaAll.sources[lastQuotaAll.active])
-        ? lastQuotaAll.sources[lastQuotaAll.active] : lastQuotaAll;
       quotaProvider = (p.last && p.last.provider_id) || "";
       quotaModel = (p.last && p.last.model) || "";
       quotaFallback = typeof d.provider_fallback === "string" ? d.provider_fallback : "";
+      lastQuotaAll = d.quota && typeof d.quota === "object" ? d.quota : null;
+      if (lastQuotaAll && lastQuotaAll.sources) {
+        var qprov = quotaProvider || quotaFallback;
+        var qsid = "";
+        if (qprov.indexOf("account:") === 0) {
+          qsid = qprov.indexOf("bigmodel") >= 0 ? "bigmodel" : (qprov.indexOf("zai") >= 0 ? "zai" : "");
+          if (!qsid) qsid = lastQuotaAll.active;   // 其它 account 档（如 team 变体）退 active
+        } else if (lastQuotaAll.byProvider && lastQuotaAll.byProvider[qprov]) {
+          qsid = lastQuotaAll.byProvider[qprov];   // 自定义 provider：只认主进程显式映射
+        }
+        lastQuota = qsid ? (lastQuotaAll.sources[qsid] || null) : null;
+      } else if (lastQuotaAll) {
+        /* 旧主进程平铺协议：数据归属未知。内置 account 档按 family 接受（v96 语义即主进程
+         * 只查内置套餐）；自定义 provider 无法证明归属 → fail-closed 不显示。 */
+        var fp = quotaProvider || quotaFallback;
+        lastQuota = (fp.indexOf("account:") === 0 && fp.indexOf("team") < 0) ? lastQuotaAll : null;
+      } else lastQuota = null;
       /* v12 多服务器：remote_today/remote_errors 按目标键分组，取本会话所属主机的分片；
        * 旧格式（单目标，顶层对象即 today）兜底兼容。 */
       var myTarget = p.remote_target || "";
@@ -2404,6 +2418,11 @@
       var list = state.quotaSources || [];
       var sig = JSON.stringify(list);
       if (sig === srcListSig && box.children && box.children.length) return;
+      /* 正在输入凭据的源行不重建：状态推送（如别家查询完成）会翻转签名，重建会丢焦点丢内容 */
+      try {
+        var act = document.activeElement;
+        if (act && act.classList && act.classList.contains("zu-src-field") && box.contains && box.contains(act)) return;
+      } catch (e) { }
       srcListSig = sig;
       var html = "";
       for (var i2 = 0; i2 < list.length; i2++) {
@@ -3040,15 +3059,17 @@
       return out;
     }
     function quotaChipMode() {
-      if (!state.quotaEnabled || !lastQuota) return null;
-      /* 会话有请求历史 → 跟随本会话最近完成的请求（最新是自定义 provider 即隐藏，尊重会话内
-       * 选择）；会话还没有任何请求历史（新会话/刚切模型未发请求）→ 跟随快照顶层
-       * provider_fallback（账号最近套餐档），消除切模型到首请求完成之间的 chip 空窗。 */
+      if (!state.quotaEnabled) return null;
+      /* 会话有请求历史 → 跟随本会话最近完成的请求；无历史（新会话/刚切模型）→ 跟随快照
+       * 顶层 provider_fallback（账号最近套餐档），消除切模型到首请求完成的 chip 空窗。 */
       var prov = quotaProvider || quotaFallback;
-      if (prov.indexOf("account:") !== 0) return null;
-      if (prov.indexOf("team") >= 0) {
-        return { kind: "team", html: '<span class="zu-qwarn">⊘</span>', aria: L("团队套餐额度暂不支持", "Team plan quota not supported yet") };
+      if (!prov) return null;
+      if (prov.indexOf("account:") === 0 && prov.indexOf("team") >= 0) {
+        return { kind: "team", html: '<span class="zu-qwarn">⊘</span>', aria: L("团队套餐额度暂不支持", "Team plan quota not supported yet") };   // 静态提示不依赖数据
       }
+      if (!lastQuota) return null;
+      /* 按 provider 选源：内置 account:* → family 源；自定义 → byProvider 映射（主进程
+       * noteProvider 时记录），未映射的自定义退 custom 源。多窗异 provider 各取各的源。 */
       var q = lastQuota, st = q.status;
       if (st === "not_configured" || st === "unsupported") return null;
       var warn = (st !== "ok" && st !== "idle") ? '<span class="zu-qwarn">⚠</span>' : "";

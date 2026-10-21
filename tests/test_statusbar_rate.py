@@ -344,3 +344,27 @@ class StatusbarRateTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_scnet_period_month_end_anchor_safety(self):
+        """月末锚日：29/30/31 在短月按当月最后一天收敛，不抛 ValueError、不早移周期起点。"""
+        from datetime import datetime
+        with mock.patch.object(zusage, "__file__", "/tmp/zusage.py"):
+            # 锚 31：任意当前月，起始=上月收敛日（30/28），结束=本月 31 或收敛日
+            s_ms, e_ms = zusage._scnet_period({"planStart": "2026-01-31"})
+            start, end = datetime.fromtimestamp(s_ms / 1000), datetime.fromtimestamp(e_ms / 1000)
+            self.assertIn(start.day, (28, 29, 30, 31))
+            self.assertEqual((end.year, end.month), self._next_month(start.year, start.month))
+            self.assertLess(start, end)
+            # 锚 29 / 30 同理不抛
+            for anchor in ("2026-01-29", "2026-01-30", "2024-02-29"):
+                s2, e2 = zusage._scnet_period({"planStart": anchor})
+                self.assertLess(s2, e2)
+            # 自然月缺省
+            s3, e3 = zusage._scnet_period({})
+            s3d, e3d = datetime.fromtimestamp(s3 / 1000), datetime.fromtimestamp(e3 / 1000)
+            self.assertEqual(s3d.day, 1)
+            self.assertEqual(e3d.day, 1)
+
+    @staticmethod
+    def _next_month(year, month):
+        return (year + 1, 1) if month == 12 else (year, month + 1)

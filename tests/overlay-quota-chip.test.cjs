@@ -456,3 +456,29 @@ test('settings source list renders rows and emits quota-src / quota-src-key / qu
   assert.equal(reqs.filter(r => r.action === 'quota-src-refresh')[0].id, 'minimax');
   void list; void ui;
 });
+
+test('custom-provider session shows ITS source via byProvider mapping (multi-window, no cross-leak)', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  h.inject(); h.boot(); h.tick();
+  // 本 pane 会话在自定义 provider（MiniMax 官方域）；另一源的内置数据不得串显
+  h.window.__zusageUpdate({ remote_evidence: false, today: {}, not_local: [],
+    quota: {
+      active: 'bigmodel', byProvider: { 'new-provider-mm': 'minimax' },
+      sources: {
+        bigmodel: Object.assign({}, QUOTA_OK),
+        minimax: { status: 'ok', fetchedAt: NOW, stale: false, error: '', windows: { fiveHour: { percent: 42, resetsAt: null }, weekly: null } },
+      },
+    },
+    recent: [{ sid: 'sid_main', workspace_identity: '', ctx: 63400, context_window: 200000, last_at: 1, ctx_exc: 0,
+      last: { provider_id: 'new-provider-mm', model: 'MiniMax-M3' } }] });
+  const chip = h.chipOf(ui.wrap);
+  assert.ok(chip, '自定义会话按 byProvider 映射显示自己的源');
+  assert.match(chip.innerHTML, /5小时 42%/, '是 MiniMax 的 42%，不是 bigmodel 的 26%');
+  assert.doesNotMatch(chip.innerHTML, /26%/);
+  // 未映射的自定义 provider（主进程没记录）：fail-closed 隐藏
+  h.window.__zusageUpdate({ remote_evidence: false, today: {}, not_local: [],
+    quota: { active: 'bigmodel', byProvider: {}, sources: { bigmodel: Object.assign({}, QUOTA_OK) } },
+    recent: [{ sid: 'sid_main', workspace_identity: '', ctx: 63400, context_window: 200000, last_at: 1, ctx_exc: 0,
+      last: { provider_id: 'new-provider-unknown', model: 'x' } }] });
+  assert.equal(h.chipOf(ui.wrap), undefined, '未映射自定义 provider 不显示（不能证明数据归属）');
+});

@@ -329,7 +329,11 @@ ADAPTERS.push({
     return null;
   },
   async fetchOne(j, ctx, cred, ctl) {
-    const domain = ((j.secrets.sources || {}).minimax || {}).baseUrl || ctx.domain || "https://api.minimaxi.com";
+    const rawDomain = ((j.secrets.sources || {}).minimax || {}).baseUrl || "";
+    let host = "";
+    try { host = rawDomain ? new URL(rawDomain).hostname : ""; } catch (e) { host = ""; }
+    const trusted = host === "api.minimaxi.com" || host === "api.minimax.cn" || host === "api.minimax.io";   // 可信查询域白名单：key 不发任意域
+    const domain = trusted ? rawDomain.replace(/\/+$/, "") : (ctx.domain || "https://api.minimaxi.com");
     let body;
     try {
       body = await j.http.getJson(domain + "/v1/api/openplatform/coding_plan/remains", { authorization: "Bearer " + cred.token }, ctl);
@@ -823,8 +827,7 @@ ADAPTERS.push({
   },
   async fetchOne(j) {
     const ex = j.extras && j.extras.scnet;
-    if (!ex) throw qErr("network_error", "no snapshot extras");   // 快照未带估算（zusage 旧版/未配置）
-    if (ex.source === "none" || ex.credits_used == null) return { noPlan: true };
+    if (!ex || ex.source === "none" || ex.credits_used == null) return { noPlan: true };   // 快照未带估算（zusage 旧版/未配置）：软隐藏不报错
     return {
       windows: { monthly: { percent: Math.round(clampPct((ex.credits_used / ex.plan_credits) * 100) * 10) / 10, resetsAt: ex.resets_at || null } },
       ledger: { used: ex.credits_used, total: ex.plan_credits, source: ex.source },
@@ -959,6 +962,7 @@ function createQuotaClient(opts) {
 
   /* 源状态：id → st（v96 单源状态机的每源实例） */
   const states = new Map();
+  const byProvider = {};   // providerId → 源 id（渲染端按本 pane provider 选源，多窗不串）
   let primaryId = "";        // 本 pane 会话模型归属的源（chip 主显）
   let primaryProvider = "";  // 最近一次 noteProvider 的原始 provider 串
   let seq = 0;
@@ -1165,9 +1169,12 @@ function createQuotaClient(opts) {
         st.epoch += 1;   // 换源换代：旧源在途响应不覆盖新源
         if (st.ctl) { try { st.ctl.abort(); } catch (e) { } }
         st.inFlight = null;
-        st.ctx = primaryCtx || st.ctx;
+        /* custom：ctx 必须跟随本次解析结果（未命中即置 null → unsupported/provider），
+         * 不得残留旧供应商的 baseUrl/key，否则会把旧网关余额当新会话主显。 */
+        st.ctx = (r.id === "custom") ? primaryCtx : (primaryCtx || st.ctx);
         st.nextAt = 0;
       }
+      if (p) byProvider[p] = r.id || "";
     },
     credentialsChanged() {
       for (const st of states.values()) st.nextAt = 0;   // 凭据文件变化：全部源重读指纹，变化即解冻
@@ -1178,7 +1185,7 @@ function createQuotaClient(opts) {
     view() {
       const sources = {};
       for (const [id, st] of states) sources[id] = entryView(st);
-      const out = { active: primaryId || "", sources };
+      const out = { active: primaryId || "", byProvider: byProvider, sources };
       const prim = primaryId ? sources[primaryId] : null;   // 兼容镜像（本版保留，浮层迁移完成后移除）
       if (prim) Object.assign(out, {
         status: prim.status, reason: prim.reason, providerId: primaryProvider,

@@ -768,6 +768,55 @@ async function setAnswerRateLine(enabled) {
     broadcastPluginState();
   } catch (e) { LOG("answer_rate_line toggle failed:", e.message); }
 }
+/* 阶段 3 源配置：quota-secrets.json（运行目录 0600，凭据只进此文件，不进 config.json/日志/诊断）。
+ * 同目录原子替换（tmp+rename），字段白名单防任意键；写入后 credentialsChanged 解冻重读。 */
+const QUOTA_SECRET_FIELDS = new Set(["apiKey", "cookie", "token", "accessKeyId", "secretAccessKey", "baseUrl", "planCredits", "planStart", "region", "modelPatterns"]);
+function readQuotaSecrets() {
+  try {
+    const d = JSON.parse(fs.readFileSync(path.join(HERE, "quota-secrets.json"), "utf8"));
+    return d && typeof d === "object" && d.sources && typeof d.sources === "object" ? d : { sources: {} };
+  } catch (e) { return { sources: {} }; }
+}
+function writeQuotaSecrets(mutate) {
+  const d = readQuotaSecrets();
+  mutate(d.sources);
+  const file = path.join(HERE, "quota-secrets.json");
+  const tmp = file + ".tmp";
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(d, null, 2) + "\n", { mode: 0o600 });
+    fs.renameSync(tmp, file);
+    try { fs.chmodSync(file, 0o600); } catch (e2) { /* Windows/权限失败忽略：tmp 已按 0600 创建 */ }
+  } catch (e) { LOG("quota secrets write failed:", e.message); return; }
+  if (quotaClient) { quotaClient.credentialsChanged(); quotaClient.tick(); broadcastPluginState(); }
+}
+function handleQuotaSourceRequest(req) {
+  const id = String(req.id || "");
+  if (!id || !/^[a-z][a-z0-9-]{0,31}$/.test(id)) return;   // 源 id 白名单
+  if (req.action === "quota-src-refresh") {
+    if (quotaClient && quotaEnabled()) quotaClient.refreshSource(id);
+    return;
+  }
+  if (req.action === "quota-src" && typeof req.enabled === "boolean") {
+    writeQuotaSecrets((sec) => { sec[id] = Object.assign({}, sec[id] || {}, { enabled: req.enabled }); });
+    return;
+  }
+  if (req.action === "quota-src-key") {
+    const field = String(req.field || "");
+    if (!QUOTA_SECRET_FIELDS.has(field)) return;
+    const value = req.value == null ? "" : String(req.value).slice(0, 4096);
+    writeQuotaSecrets((sec) => {
+      sec[id] = Object.assign({}, sec[id] || {});
+      const isCred = field === "apiKey" || field === "cookie" || field === "token" || field === "secretAccessKey";
+      if (value === "" && (isCred || field === "modelPatterns")) { delete sec[id][field]; return; }
+      if (field === "planCredits") { if (value === "") delete sec[id][field]; else sec[id][field] = Number(value) || 0; }
+      else if (field === "planStart" || field === "region" || field === "baseUrl") { if (value === "") delete sec[id][field]; else sec[id][field] = value; }
+      else if (field === "modelPatterns") {
+        try { const parsed = JSON.parse(value); if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) sec[id][field] = parsed; } catch (e) { /* 非法 JSON 忽略 */ }
+      }
+      else sec[id][field] = value;
+    });
+  }
+}
 /* v96 套餐额度开关（⚙ 面板）：原子写 config.json 的 quota_enabled（缺省关）。开启即刻 tick
  * 一次（结算后经 onUpdate 补推）；关闭后 handlePayload 不再 tick/附加，chip 随之隐藏。 */
 async function setQuotaEnabled(enabled) {
