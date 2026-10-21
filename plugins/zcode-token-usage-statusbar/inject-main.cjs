@@ -44,8 +44,11 @@ function acknowledgeRestart() {
 }
 
 function readCfg() {
-  const c = { python_path: "python", resident: true };
+  const c = { resident: true };
   try { Object.assign(c, JSON.parse(fs.readFileSync(CONFIG, "utf8"))); } catch (e) { }
+  /* 缺省/空值统一按平台定解释器：Windows 无 python3，macOS/Linux 未必有 python；
+     三个 spawn 点直接读 python_path，归一只能在这里做 */
+  c.python_path = c.python_path || (process.platform === "win32" ? "python" : "python3");
   return c;
 }
 

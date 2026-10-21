@@ -166,7 +166,7 @@ test('turn-text request runs a one-shot token_rate --current query by session', 
   assert.equal(h.procs.length, before + 1);              // 旁路一次性 spawn，不占用常驻泵
   const p = h.procs.at(-1);
   assert.equal(p.request, undefined);                    // 未写常驻 stdin
-  assert.equal(p.bin, 'python');                         // readCfgCached().python_path 缺省
+  assert.equal(p.bin, process.platform === 'win32' ? 'python' : 'python3');   // 缺省按平台
   assert.equal(p.args[0], '/fixture/token_rate.py');
   assert.equal(p.args.slice(1).join(' '), '--turn --current --session sid_a');   // 纯文本模式，不带 --json/--turn-id
   const before15 = h.timersAt(15000);
@@ -190,6 +190,22 @@ test('turn-text request passes --no-cn-units only when cn === 0', async () => {
     h.poll(); await flush();
     assert.equal(h.procs.at(-1).args.slice(1).join(' '), '--turn --current --session sid_a');
   }
+});
+
+/* 缺省/空值归一：Windows 无 python3、macOS/Linux 未必有 python；三个 spawn 点都直接读
+ * python_path，空字符串也必须回落到平台默认，显式配置仍优先 */
+test('python_path default and empty value normalize to the platform interpreter', async () => {
+  const platformPy = process.platform === 'win32' ? 'python' : 'python3';
+  const h = harness(); await flush();
+  assert.equal(h.procs[0].bin, platformPy);              // 常驻泵缺省解释器
+  h.queue.push({ action: 'turn-text', sid: 'sid_a' }); h.poll(); await flush();
+  assert.equal(h.procs.at(-1).bin, platformPy);          // config.json 缺 python_path
+  h.setCfg({ python_path: '' });
+  h.queue.push({ action: 'turn-text', sid: 'sid_a' }); h.poll(); await flush();
+  assert.equal(h.procs.at(-1).bin, platformPy);          // 显式空值不会被 spawn 成空命令
+  h.setCfg({ python_path: '/opt/custom/python' });
+  h.queue.push({ action: 'turn-text', sid: 'sid_a' }); h.poll(); await flush();
+  assert.equal(h.procs.at(-1).bin, '/opt/custom/python');   // 显式配置优先
 });
 
 test('turn-text request with a suspicious sid never spawns', async () => {
