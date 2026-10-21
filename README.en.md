@@ -26,7 +26,7 @@ Install or update the ZCode plugin https://github.com/ByteRax/zcode-token-usage-
 
 It installs the plugin, then runs `/install-overlay` to put the bar in place — if it doesn't run it for you, type it in the chat yourself. Then **quit ZCode completely and reopen it** (closing the window doesn't count); the little bar shows up at the bottom. Full details in [Quick start](#quick-start).
 
-> This shortcut installs source from the default branch. To follow stable Releases and get automatic updates, use the `#plugin-releases` address in Method A below.
+> This shortcut installs source from the default branch. ⚙ can still check for updates there — they just don't go through the release-package SHA256 check. For verified release packages, use the `#plugin-releases` address in Method A below.
 
 Can't reach GitHub from your network (mainland China)? The URL above probably won't load either. Both the plugin channel and the code have a synced mirror on GitCode: [gitcode.com/tanranran/zcode-token-usage-statusbar](https://gitcode.com/tanranran/zcode-token-usage-statusbar). The plugin marketplace can be registered straight from the GitCode channel — see the four install methods below.
 
@@ -48,13 +48,14 @@ Here's what each part tells you:
 | The bit | In plain English |
 |---|---|
 | ⚡ **86 t/s** | How fast the model is writing. Once a turn finishes it's colour-coded: ≥70 green, 40–70 yellow, <40 red |
-| **42.3%** | How much of the model's "how much it can read at once" limit this conversation has used. It changes colour as you fill up: on a normal window it turns yellow at 70% and red at 85%; on a million-token window it turns yellow at 60%. If a request actually gets rejected for running over, advice pops up |
 | **62.5k 90% 7 Σ18.4s ⏱1.4s** | This turn: 62.5k tokens spent, 90% cache hit rate, 7 model requests, the most recent one took 18.4s, and you waited 1.4s for the first token |
 | **1.45M 86% 23 187** | The whole conversation so far: 1.45M tokens, 86% hit rate, 23 turns, 187 requests |
 | **142 🔴2** | Tools were called 142 times, 2 of them errored (small red marker) |
 | **3.42M** | Every conversation today added up: 3.42M tokens |
 | **236k 🟢** | The sub-tasks the model sent out on its own (subagents) used 236k tokens; 🟢 means one is still running |
 | **⚙** | Click for: which items to show, interface language, token unit display, update checks |
+
+Context usage doesn't take a slot on the bar — look at the **context button** in the composer toolbar (a ring icon plus a percentage). On a normal window it turns yellow at 70% and red at 85%; on a million-token window it turns yellow at 60%. If a request does get rejected for running over, advice pops up.
 
 **Hover any of them and you get the finer breakdown.** For the real thing, see the [feature screenshots](docs/features.md).
 
@@ -152,7 +153,7 @@ Remote support covers **the bar's own data fetching** only. MCP, `/usage` and th
 | **A. The plugin (recommended)** | Almost everyone | Two `/plugin` commands in ZCode, then updates from the ⚙ panel |
 | **B. Local source directory** | People who want to change the code | Clone the repo and point "Add marketplace → Choose directory" at the repo root |
 | **C. One-command installer** | People who'd rather not install a plugin | `git clone` + `python install.py` in a terminal |
-| **D. Self-hosted Web** | People running their own ZCode server | [Deploy it separately](web/README.md) — not the same thing as the three above |
+| **D. Self-hosted Web** | People running their own ZCode server | [Deploy it separately](web/README.md) |
 
 > The first three all write into the same runtime directory — **pick one, don't stack them**. The fourth is a self-hosted Web deployment, which is a completely different thing from the desktop bar.
 
@@ -271,6 +272,7 @@ The data is read from ZCode's local SQLite database. It isn't the model reportin
 | Usage totals | Total = input + output. Input already includes cache reads, so cache isn't added twice |
 | Cache hit rate | Cache reads ÷ input tokens |
 | Context usage | Input tokens of the most recent successful request ÷ context window size |
+| Git status | Local `git status` + `git diff`; never enters the database, no network |
 | Turn count | Counted over de-duplicated `turn_id` values |
 
 **Where it's easy to get confused:**
