@@ -35,7 +35,7 @@ Token 速度状态栏，装上之后输入框下面会多一条小状态条，
 
 安装也简单，三步：
 ① ZCode 设置 → 插件 → 添加插件市场，填
-   github.com/ByteRax/zcode-token-usage-statusbar
+   github.com/ByteRax/zcode-token-usage-statusbar#plugin-releases
 ② 任意对话框输入 /install-overlay
 ③ 重启 ZCode，状态条就出现了
 
@@ -47,7 +47,7 @@ Token 速度状态栏，装上之后输入框下面会多一条小状态条，
 ```
 发现一个好用的 ZCode 插件：装上之后输入框下面会显示模型生成速度、
 token 用量和上下文占比，一眼就能看明白，完全免费开源、数据不上传。
-github.com/ByteRax/zcode-token-usage-statusbar
+github.com/ByteRax/zcode-token-usage-statusbar#plugin-releases
 ```
 
 朋友圈更短版本：
@@ -55,12 +55,12 @@ github.com/ByteRax/zcode-token-usage-statusbar
 ```
 ZCode 这个状态栏插件真香⚡模型快不快、token 用了多少、上下文还剩
 多少，一条小状态条全搞定。免费开源→
-github.com/ByteRax/zcode-token-usage-statusbar
+github.com/ByteRax/zcode-token-usage-statusbar#plugin-releases
 ```
 
 ## 备注
 
-- 市场地址沿用你给的版本（不带 `#plugin-releases`），装的是开发分支源码。正式版已发布（当前 `v1.5.2`），这个地址仍能安装但不会跟随正式版更新；要切到正式渠道改用 `github.com/ByteRax/zcode-token-usage-statusbar#plugin-releases`，是否换成正式渠道地址由你定。
+- 市场地址已统一改为正式渠道 `#plugin-releases`（2026-10-21 定）：装的是经过校验的正式 Release 包，更新也跟随正式版。推广口径与仓库 README 一致。
 - 装好后新建或恢复会话，插件默认自动安装状态条；没装上再在对话框输入 `/install-overlay` 兜底，成功后完全退出并重开 ZCode 才会显示。
 - 话题标签是通用建议，没有核实当前小红书热度，发之前自己看一眼平台里相关内容用的 tag。
 - 小红书正文偏长，如果平台有字数限制可以砍掉"加分项"那段或精简三条痛点的展开文字，标题和前两段是最值得保留的部分。

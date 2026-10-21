@@ -21,12 +21,12 @@ Windows / macOS · Python 3.8+ · [MIT](LICENSE)
 Send this to ZCode:
 
 ```text
-Install or update the ZCode plugin https://github.com/ByteRax/zcode-token-usage-statusbar, then run /install-overlay when it's done
+Install or update the ZCode plugin https://github.com/ByteRax/zcode-token-usage-statusbar#plugin-releases, then run /install-overlay when it's done
 ```
 
 It installs the plugin, then runs `/install-overlay` to put the bar in place — if it doesn't run it for you, type it in the chat yourself. Then **quit ZCode completely and reopen it** (closing the window doesn't count); the little bar shows up at the bottom. Full details in [Quick start](#quick-start).
 
-> This shortcut installs source from the default branch. ⚙ can still check for updates there — they just don't go through the release-package SHA256 check. For verified release packages, use the `#plugin-releases` address in Method A below.
+> The `#plugin-releases` at the end is the stable channel: it installs a SHA256-verified Release package and auto-updates from ⚙ — the same channel as the two commands in Method A below. Don't drop it from the URL.
 
 Can't reach GitHub from your network (mainland China)? The URL above probably won't load either. Both the plugin channel and the code have a synced mirror on GitCode: [gitcode.com/tanranran/zcode-token-usage-statusbar](https://gitcode.com/tanranran/zcode-token-usage-statusbar). The plugin marketplace can be registered straight from the GitCode channel — see the four install methods below.
 
