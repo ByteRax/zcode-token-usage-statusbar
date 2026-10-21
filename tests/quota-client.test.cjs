@@ -404,3 +404,77 @@ test("client: zai family does not fetch subscription endpoint", async () => {
   assert.equal(client.view().status, "ok");
   assert.equal(client.view().plan, null);
 });
+
+/* ---------- 自定义 provider 余额（v96.2：官方域直连 + OpenAI legacy 探测） ---------- */
+function customCfgFile(entries) {
+  return { config: { providerConfigRules: { providerRules: entries.map(([id, baseUrl, apiKey, name]) => (
+    { providerId: id, providerName: name || id, config: { api: { type: "openai-chat-completions", baseUrl }, access: { type: "api-key", apiKey } } }
+  )) } } };
+}
+const CUSTOM_OK_BODY = JSON.stringify({ success: true, data: { level: "", limits: [] } });
+
+test("custom provider: official host (DeepSeek) hits its balance endpoint; view exposes balance", async () => {
+  const clock = { t: T0 };
+  const calls = [];
+  const client = Q.createQuotaClient({
+    env: Object.assign({}, ENV), now: () => clock.t,
+    credsPath: "/virtual/credentials.json", readFile: () => { throw new Error("ENOENT"); },
+    customCfgPath: "/virtual/provider_config.json",
+    fetchImpl: (url) => {
+      const d = deferred();
+      calls.push({ url, d });
+      return d.promise;
+    },
+  });
+  // readFile 被凭据路径占用：这里凭据直接抛 ENOENT 即可（自定义分支不读凭据文件），
+  // 但 resolveCustomProvider 也用同一 readFile —— 改为按路径分流。
+  void client;
+  const client2 = Q.createQuotaClient({
+    env: Object.assign({}, ENV), now: () => clock.t,
+    credsPath: "/virtual/credentials.json",
+    readFile: (p) => (p.endsWith("credentials.json") ? (() => { throw new Error("ENOENT"); })() : customCfgFile([["new-provider-4", "https://api.deepseek.com/v1", "sk-cfg-key"]])),
+    customCfgPath: "/virtual/provider_config.json",
+    fetchImpl: (url) => {
+      const d = deferred();
+      calls.push({ url, d });
+      return d.promise;
+    },
+  });
+  client2.noteProvider("new-provider-4");
+  client2.tick();
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "https://api.deepseek.com/user/balance");
+  calls[0].d.resolve(fakeRes(200, JSON.stringify({ is_available: true, balance: "CNY 110.00" })));
+  await flush();
+  const v = client2.view();
+  assert.equal(v.status, "ok");
+  assert.deepEqual({ amount: v.balance.amount, currency: v.balance.currency }, { amount: 110, currency: "CNY" });
+  assert.equal(v.windows, undefined);
+});
+
+test("custom provider: OpenAI legacy gateway with a finite pool computes remaining; unlimited pool stays hidden", async () => {
+  const mk = (hard, totalUsage) => {
+    const client = Q.createQuotaClient({
+      env: Object.assign({}, ENV), now: () => T0,
+      credsPath: "/virtual/credentials.json",
+      readFile: (p) => (p.endsWith("credentials.json") ? (() => { throw new Error("ENOENT"); })() : customCfgFile([["gw1", "https://relay.example.com/v1", "sk-relay"]])),
+      customCfgPath: "/virtual/provider_config.json",
+      fetchImpl: (url) => Promise.resolve(fakeRes(200, url.endsWith("/subscription")
+        ? JSON.stringify({ hard_limit_usd: hard })
+        : JSON.stringify({ total_usage: totalUsage }))),
+    });
+    client.noteProvider("gw1");
+    client.tick();
+    return { client };
+  };
+  const a = mk(100, 2500);                       // $100 池，已用 $25
+  await flush();
+  assert.deepEqual(
+    { a: a.client.view().balance.amount, c: a.client.view().balance.currency },
+    { a: 75, c: "USD" });
+  // 无限池（≥1e8，实测 OpenHubs 即此类）→ unsupported，chip 隐藏
+  const b = mk(100000000, 0);
+  await flush();
+  assert.equal(b.client.view().status, "unsupported");
+  assert.equal(b.client.view().reason, "gateway");
+});

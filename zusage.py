@@ -1408,6 +1408,16 @@ def snapshot(force_sid="", routes=None):
                 for k, rc in (setup or {}).get("targets", {}).items()
             ],
             "not_local": not_local,               # 不在本地库的 force 会话 id（issue #14 提示用）
+            # v96 额度 chip 的会话无历史回退：全局最近一个完成的套餐档请求（账号级数据，
+            # 与会话无关）。会话自身没有任何请求历史（新会话/刚切模型还没发请求）时，
+            # 渲染端用它跟随账号当前套餐档，消除"切模型到首个请求完成之间 chip 空窗"。
+            # 只取 account:*（内置套餐档）；最近请求是自定义 provider 时为空串，不回退。
+            "provider_fallback": (con.execute(
+                """select provider_id from model_usage
+                   where status='completed' and (query_source is null or query_source='main_turn')
+                     and provider_id like 'account:%'
+                   order by completed_at desc limit 1"""
+            ).fetchone() or ("",))[0] or "",
             "remote_enabled": bool(setup),        # 是否存在可用远端目标（区分"没配"与"配了没查到"）
             "known_sids": known_sids,
             "context_window": base["context_window"],

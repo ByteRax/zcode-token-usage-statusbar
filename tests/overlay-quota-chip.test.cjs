@@ -356,3 +356,26 @@ test('tooltip omits the subscription row when plan metadata is missing (endpoint
   assert.match(html, /5小时窗口/);   // 额度行不受订阅缺失影响
   assert.match(html, /套餐额度 · BigModel Max/);   // plan 缺失回退 family+档位标题
 });
+
+test('session without any request history falls back to the account-level provider_fallback', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  h.inject(); h.boot(); h.tick();
+  // 新会话/刚切模型：本会话无完成请求（provider 空），快照顶层带账号级回退
+  const out = { remote_evidence: false, today: {}, not_local: [],
+    recent: [{ sid: 'sid_main', workspace_identity: '', ctx: 63400, context_window: 200000, last_at: 1, ctx_exc: 0, last: {} }],
+    provider_fallback: 'account:bigmodel-individual-coding-plan', quota: QUOTA_OK };
+  h.window.__zusageUpdate(out);
+  const chip = h.chipOf(ui.wrap);
+  assert.ok(chip, 'fallback shows the chip before the first request lands');
+  assert.match(chip.innerHTML, /5小时 26%/);
+  // 回退指向自定义 provider（理论态）：不显示
+  const out2 = Object.assign({}, out, { provider_fallback: 'new-provider-4' });
+  h.window.__zusageUpdate(out2);
+  assert.equal(h.chipOf(ui.wrap), undefined);
+  // 无回退字段（旧主进程）：维持隐藏
+  h.window.__zusageUpdate(h.payload({ provider: '' }));
+  assert.equal(h.chipOf(ui.wrap), undefined);
+  // 会话自己的最新请求是自定义 provider：优先于回退，隐藏
+  h.window.__zusageUpdate(h.payload({ provider: 'new-provider-4', quota: QUOTA_OK }));
+  assert.equal(h.chipOf(ui.wrap), undefined, 'session-level custom provider wins over fallback');
+});

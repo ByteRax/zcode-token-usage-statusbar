@@ -405,13 +405,131 @@ function createQuotaClient(opts) {
     }
   }
 
+/* ---------- 自定义 provider（OpenAI 兼容中转/官方直连）的余额探测（v96.2） ----------
+ * 配置来自宿主 ~/.zcode/v2/provider_config.json（api.baseUrl + access.apiKey，明文中转 key）。
+ * 识别顺序：官方域名直连表（DeepSeek/OpenRouter/SiliconFlow 余额端点）→ 非官方域探测
+ * OpenAI legacy billing（subscription+usage，one-api 系兼容最广）。hard_limit≥1e8 视为
+ * 按量后付无固定池（实测 OpenHubs 即此类）→ 无 balance 可展示。识别不了的网关 →
+ * unsupported，chip 隐藏；探测单轮不穷举，结果随凭据指纹缓存。key 只发 detect 确认的域。 */
+const CUSTOM_BALANCE_HOSTS = [
+  { host: "api.deepseek.com", url: "https://api.deepseek.com/user/balance",
+    parse: (j) => parseCurrencyAmount(j && j.balance) },
+  { host: "api.siliconflow.cn", url: "https://api.siliconflow.cn/v1/user/info",
+    parse: (j) => parseCurrencyAmount(j && j.data && j.data.balance) },
+  { host: "openrouter.ai", url: "https://openrouter.ai/api/v1/credits",
+    parse: (j) => {
+      const d = j && j.data;
+      if (typeof (d && d.total_credits) === "number" && typeof d.total_usage === "number") {
+        return { amount: Math.round((d.total_credits - d.total_usage) * 100) / 100, currency: "USD" };
+      }
+      return null;
+    } },
+];
+
+/* "CNY 110.00" / "¥110.00" / "$12.5" → {amount, currency}；解析不了返回 null */
+function parseCurrencyAmount(v) {
+  if (typeof v !== "string") return null;
+  const m = v.trim().match(/^([A-Z]{3}|¥|\$)\s*([\d,]+(?:\.\d+)?)$/);
+  if (!m) return null;
+  const currency = m[1] === "¥" ? "CNY" : m[1] === "$" ? "USD" : m[1];
+  return { amount: parseFloat(m[2].replace(/,/g, "")), currency };
+}
+
+let providerCfgCache = null;   // {mtime, byId: Map(providerId → {baseUrl, apiKey, name})}
+function resolveCustomProvider(providerId, readFile2, cfgPath) {
+  let mtime = 0;
+  try { mtime = fs.statSync(cfgPath).mtimeMs; }
+  catch (e) { mtime = -1; }   // stat 失败不短路：仍尝试读取（测试虚拟路径/权限受限场景）
+  if (!providerCfgCache || providerCfgCache.mtime !== mtime) {
+    const byId = new Map();
+    try {
+      const d = readFile2(cfgPath);
+      for (const r of ((d.config || {}).providerConfigRules || {}).providerRules || []) {
+        const cfg = (r && r.config) || {};
+        const baseUrl = String(((cfg.api || {}).baseUrl) || "").replace(/\/+$/, "");
+        const apiKey = String(((cfg.access || {}).apiKey) || "");
+        if (baseUrl && apiKey && r.providerId) {
+          byId.set(String(r.providerId), { baseUrl, apiKey, name: String(r.providerName || "") });
+        }
+      }
+    } catch (e) { /* 损坏/读取失败按无配置处理 */ }
+    providerCfgCache = { mtime, byId };
+  }
+  return providerCfgCache.byId.get(String(providerId)) || null;
+}
+
+async function fetchCustomBalance(cp, fetchImpl, ctl) {
+  let host = "";
+  try { host = new URL(cp.baseUrl).hostname; } catch (e) { return null; }
+  const official = CUSTOM_BALANCE_HOSTS.find((h) => host === h.host || host.endsWith("." + h.host));
+  if (official) {
+    const res = await fetchImpl(official.url, {
+      headers: { authorization: "Bearer " + cp.apiKey, accept: "application/json", "accept-encoding": "identity" },
+      signal: ctl.signal, redirect: "manual",
+    });
+    if (res.status !== 200) return null;
+    const parsed = official.parse(JSON.parse(await readBounded(res, ctl)));
+    return parsed && typeof parsed.amount === "number" && isFinite(parsed.amount) ? parsed : null;
+  }
+  /* 非官方域：OpenAI legacy billing 兼容探测（一轮 subscription+usage，不做端点穷举） */
+  const sub = await fetchImpl(cp.baseUrl + "/dashboard/billing/subscription", {
+    headers: { authorization: "Bearer " + cp.apiKey, accept: "application/json", "accept-encoding": "identity" },
+    signal: ctl.signal, redirect: "manual",
+  });
+  if (sub.status !== 200) return null;
+  const subJ = JSON.parse(await readBounded(sub, ctl));
+  const hard = subJ && typeof subJ.hard_limit_usd === "number" ? subJ.hard_limit_usd : null;
+  if (hard == null || hard >= 1e8) return null;   // 无固定池（按量后付站）
+  const usage = await fetchImpl(cp.baseUrl + "/dashboard/billing/usage", {
+    headers: { authorization: "Bearer " + cp.apiKey, accept: "application/json", "accept-encoding": "identity" },
+    signal: ctl.signal, redirect: "manual",
+  });
+  if (usage.status !== 200) return null;
+  const usageJ = JSON.parse(await readBounded(usage, ctl));
+  const used = usageJ && typeof usageJ.total_usage === "number" ? usageJ.total_usage / 100 : 0;
+  return { amount: Math.round((hard - used) * 100) / 100, currency: "USD" };
+}
+
   function tick(force) {
     if (st.inFlight) return;
     const t = now();
     if (!force && t < st.nextAt) return;
     const wanted = resolveWanted(st.providerId);
     if (!wanted) {
-      if (st.status !== "unsupported" || st.reason !== "provider") setState({ status: "unsupported", reason: "provider" });
+      /* 自定义 provider：探测/直连其余额（官方域直连表 + OpenAI legacy 兼容）。
+       * 配置缺失或识别不了的网关 → unsupported，chip 隐藏（fail-closed）。 */
+      const cp = resolveCustomProvider(st.providerId, readFile,
+        o.customCfgPath || path.join(os.homedir(), ".zcode", "v2", "provider_config.json"));
+      if (!cp) {
+        if (st.status !== "unsupported" || st.reason !== "provider") setState({ status: "unsupported", reason: "provider" });
+        return;
+      }
+      const cpFp = sha16(cp.apiKey + "|" + cp.baseUrl);
+      if (cpFp !== st.fingerprint) {
+        st.fingerprint = cpFp;   // 中转 key/baseUrl 变化：解冻 + 清退避
+        st.backoffIdx = 0;
+        if (st.status === "auth_failed" || st.status === "unsupported") st.status = "idle";
+        st.nextAt = 0;
+      }
+      if (!force && (st.status === "auth_failed" || st.status === "unsupported")) return;
+      st.epoch += 1;
+      const ep = st.epoch;
+      const ctl = new AbortController();
+      st.ctl = ctl;
+      const kill = setTimeout(() => { try { ctl.abort(); } catch (e) { } }, FETCH_TIMEOUT_MS);
+      st.inFlight = fetchCustomBalance(cp, fetchImpl, ctl)
+        .then((balance) => {
+          if (ep !== st.epoch) return;
+          if (!balance) {   // 识别不了的网关/无固定池：无可展示余额
+            setState({ status: "unsupported", reason: "gateway", value: null, lastError: "" });
+            st.nextAt = now() + PARSE_BACKOFF_MS;
+            if (onUpdate) onUpdate();
+            return;
+          }
+          settleOk(ep, { custom: true, balance });
+        })
+        .catch((e) => settleError(ep, e && e.code ? e : qErr("network_error", String(e && e.message || "fetch failed"))))
+        .finally(() => { clearTimeout(kill); if (st.inFlight) st.inFlight = null; });
       return;
     }
     if (wanted.unsupported === "team") {
@@ -475,6 +593,7 @@ function createQuotaClient(opts) {
       if (st.value) {
         v.level = st.value.level;
         v.plan = st.value.plan || null;
+        v.balance = st.value.balance || null;
         v.windows = st.value.windows;
         v.tools = st.value.tools;
         v.models = st.value.models;

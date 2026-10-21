@@ -235,3 +235,30 @@ class StatusbarRateTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+    def test_snapshot_top_level_provider_fallback_prefers_latest_account_request(self):
+        """v96 额度 chip 的会话无历史回退：顶层 provider_fallback = 全局最近完成的
+        account:* 请求；最近请求全是自定义 provider 时为空串（不回退）。"""
+        con = sqlite3.connect(":memory:")
+        self.addCleanup(con.close)
+        con.row_factory = sqlite3.Row
+        con.executescript(SCHEMA)
+        con.execute("insert into session (id, title) values ('s', 't')")
+        rows = [
+            ("r1", "account:bigmodel-individual-coding-plan", "main_turn", 2000),
+            ("r2", "new-provider-4", "main_turn", 3000),
+            ("r3", "account:zai-pro-coding-plan", "subagent", 4000),   # 子代理不算
+            ("r4", "account:bigmodel-team-coding-plan", "main_turn", 1500),  # 早于 r1
+        ]
+        for rid, prov, src, at in rows:
+            con.execute(
+                "insert into model_usage (id, agent, provider_id, model_id, query_source, status,"
+                " started_at, completed_at, output_tokens) values (?,?,?,?,?,?,?,?,?)",
+                (rid, "", prov, "m", src, "completed", at, at, 10))
+        snap = zusage._session_snapshot(con, "s", {"context_window": 200000})
+        self.assertEqual(snap["sid"], "s")
+        full = zusage.snapshot(force_sid="s")
+        self.assertEqual(full["provider_fallback"], "account:bigmodel-individual-coding-plan")
+        con.execute("delete from model_usage where provider_id like 'account:%'")
+        full2 = zusage.snapshot(force_sid="s")
+        self.assertEqual(full2["provider_fallback"], "")

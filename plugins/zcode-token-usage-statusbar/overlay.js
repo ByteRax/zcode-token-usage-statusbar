@@ -1090,7 +1090,7 @@
       bridge = { handle: null, turnId: "", timer: 0 },   // v71 本 pane 的 renderer store 订阅
       lastBand = null,    // v92：本 pane 上下文分档（ctxBandOf 结果，原生按钮增强的数据源）
       ctxBtnCache = null,   // v92：本实例上次增强的原生按钮（还原/对账引用，不依赖 cardCache 存活）
-      lastQuota = null, quotaProvider = "", quotaModel = "", quotaChipCache = null,   // v96：额度 chip 数据源（快照 quota 字段 + 本 pane 会话 provider/模型）与节点引用
+      lastQuota = null, quotaProvider = "", quotaModel = "", quotaFallback = "", quotaChipCache = null,   // v96：额度 chip 数据源（快照 quota + 本 pane 会话 provider/模型 + 会话无历史时的账号级回退）与节点引用
       cuaBtnCache = null, gitChipCache = null,   // v96：Git chip 的锚点按钮（电脑操作）与本实例的 chip 节点
       liveTextCur = "", liveStatsCur = null, liveKindCur = "fallback", liveEl = null,   // v72：合并「生成速度」用
       livePhaseCur = "", liveIconCur = "bolt";   // v77：当前 chip 阶段与图标（think=思考动效/bolt=闪电）——相位切换需整条重渲染
@@ -1431,7 +1431,7 @@
       '</div></section>' +
       '<section class="zu-settings-section"><div class="cap">' + L("套餐额度", "Plan quota") + '</div><div class="zu-settings-card">' +
       settingRow('<input type="checkbox" class="zu-quota-enable">', L("显示套餐额度", "Show plan quota"), L("在输入框上下文按钮左侧显示当前登录账号编码套餐的已用比例与重置时间（账号级套餐池，不是单个模型独享）。默认关闭。点击 chip 立即刷新。", "Shows the signed-in account's coding-plan usage and reset time left of the context button (account-level pool, not per model). Off by default. Click the chip to refresh.")) +
-      '<div class="pnote">' + L("开启后主进程读取本机 ZCode 登录凭据（~/.zcode/v2/credentials.json）查询官方套餐接口：凭据仅在内存使用、只发往 bigmodel.cn / api.z.ai 官方域，不落盘、不进日志与诊断。目前支持 BigModel / Z.ai 个人编码套餐；团队套餐与自定义 API 供应商暂不支持。",
+      '<div class="pnote">' + L("开启后主进程读取本机 ZCode 登录凭据（~/.zcode/v2/credentials.json）查询官方套餐接口：凭据仅在内存使用、不落盘、不进日志与诊断：内置套餐发往 bigmodel.cn / api.z.ai 官方域；自定义供应商余额用其自己的 key，只发官方域（api.deepseek.com、openrouter.ai、api.siliconflow.cn）或你配置的中转站本域。目前套餐支持 BigModel / Z.ai 个人编码套餐；团队套餐暂不支持，识别不了余额形状的中转不显示。",
         "When on, the main process reads the local ZCode login credential (~/.zcode/v2/credentials.json) to query the official plan endpoint: it stays in memory, is sent only to bigmodel.cn / api.z.ai, and never reaches disk, logs or diagnostics. Supports BigModel / Z.ai individual coding plans; team plans and custom API providers are not supported yet.") + '</div></div></section>' +
       '<section class="zu-settings-section"><div class="cap">' + L("插件更新", "Plugin updates") + '</div><div class="zu-settings-card">' +
       settingRow('<input type="checkbox" class="zu-auto-update">', L("自动更新", "Automatic updates"), L("每 24 小时检查并安装新版，默认开启", "Check and install every 24 hours; on by default")) +
@@ -2063,6 +2063,7 @@
       lastQuota = d.quota && typeof d.quota === "object" ? d.quota : null;
       quotaProvider = (p.last && p.last.provider_id) || "";
       quotaModel = (p.last && p.last.model) || "";
+      quotaFallback = typeof d.provider_fallback === "string" ? d.provider_fallback : "";
       /* v12 多服务器：remote_today/remote_errors 按目标键分组，取本会话所属主机的分片；
        * 旧格式（单目标，顶层对象即 today）兜底兼容。 */
       var myTarget = p.remote_target || "";
@@ -2941,8 +2942,13 @@
       return sym + Number(bal.amount).toFixed(2);
     }
     function quotaChipMode() {
-      if (!state.quotaEnabled || !lastQuota || quotaProvider.indexOf("account:") !== 0) return null;
-      if (quotaProvider.indexOf("team") >= 0) {
+      if (!state.quotaEnabled || !lastQuota) return null;
+      /* 会话有请求历史 → 跟随本会话最近完成的请求（最新是自定义 provider 即隐藏，尊重会话内
+       * 选择）；会话还没有任何请求历史（新会话/刚切模型未发请求）→ 跟随快照顶层
+       * provider_fallback（账号最近套餐档），消除切模型到首请求完成之间的 chip 空窗。 */
+      var prov = quotaProvider || quotaFallback;
+      if (prov.indexOf("account:") !== 0) return null;
+      if (prov.indexOf("team") >= 0) {
         return { kind: "team", html: '<span class="zu-qwarn">⊘</span>', aria: L("团队套餐额度暂不支持", "Team plan quota not supported yet") };
       }
       var q = lastQuota, st = q.status;

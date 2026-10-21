@@ -102,7 +102,7 @@ python3 sync_plugin.py --check
 - 开关真值是 config.json 的 `quota_enabled`（缺省关，只认显式 true）：主进程据此决定是否解密与联网，⚙ 勾选经 pluginRequest 写入并回推。凭据只在内存，发往的域白名单硬编码（bigmodel.cn/api.z.ai），token/请求头绝不进日志、diag 或 config；env `ZCODE_BIGMODEL_USAGE_API_KEY` 优先于宿主凭据。
 - 窗口归一化只认 unit 显式分类（3=5h、6=周；未知丢弃留痕），不能按 nextResetTime 排序代替（周期末尾周窗更早重置会标反两桶）；`percentage` 是整数已用%，有绝对量时用 currentValue/usage 自算；TIME_LIMIT(unit=5) 是内置工具期，折叠为 tooltip 行。无套餐是业务信封（"不存在coding plan"）而非 401，须停轮询。
 - 401/403 与无套餐冻结到凭据指纹变化：主进程 fs.watch credentials.json（宿主刷新 token 即解冻）；JWT exp 临期不发请求等宿主刷新。失败保留最近成功值并标 stale；解密失败/no_plan/parse_error 一律 fail-closed，绝不显示 0%。
-- 显示门控：会话首个完成的 `main_turn`（快照 `last.provider_id`，zusage 已滤辅助请求污染）出现前 chip 不显示；团队套餐显示"暂不支持"，自定义 provider 隐藏。SSH 远端分栏直接显示本地额度——宿主 provisioning 把桌面凭据强制同步覆盖到远端，远端会话与本地同账号（架构事实，宿主改语义需复核）。chip 挂原生上下文按钮左侧（wrapper 内前插），与 v92 按钮增强同款双 reapply/还原契约。
+- 显示门控：会话首个完成的 `main_turn`（快照 `last.provider_id`，zusage 已滤辅助请求污染）出现前，chip 跟随快照顶层 `provider_fallback`（全局最近 account:* 请求，消除切模型到首请求完成之间的空窗）；会话最新请求是自定义 provider 时隐藏内置套餐额度。团队套餐显示"暂不支持"。自定义 provider 走余额探测（读宿主 provider_config.json 的 baseUrl+key：官方域名直连 DeepSeek/OpenRouter/SiliconFlow 余额端点，非官方域单轮探测 OpenAI legacy billing；hard_limit≥1e8 视为按量后付无固定池），识别不了的网关隐藏；中转 key/baseUrl 指纹变化解冻 auth_failed。SSH 远端分栏直接显示本地额度——宿主 provisioning 把桌面凭据强制同步覆盖到远端，远端会话与本地同账号（架构事实，宿主改语义需复核）。chip 挂原生上下文按钮左侧（wrapper 内前插），与 v92 按钮增强同款双 reapply/还原契约。
 - 额度只进桌面快照链；MCP、CLI、`/usage` stdout 契约不加字段。Web 端不做（sidecar 无凭据）。
 
 ### 窗口、分栏与远端
