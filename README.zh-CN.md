@@ -21,12 +21,12 @@ Windows / macOS · Python 3.8+ · [MIT](LICENSE)
 把这句话发给 ZCode：
 
 ```text
-安装或者更新 zcode 插件 https://github.com/ByteRax/zcode-token-usage-statusbar，执行完毕后，运行命令 /install-overlay
+安装或者更新 zcode 插件 https://github.com/ByteRax/zcode-token-usage-statusbar#plugin-releases，执行完毕后，运行命令 /install-overlay
 ```
 
 它会先把插件装好，再执行 `/install-overlay` 装上状态条——要是它没自己跑，你就在对话框里手动敲一次。然后**完全退出 ZCode 再重新打开**（关窗口不算），底部就多出那条小状态栏了。详细说明见[快速开始](#快速开始)。
 
-> 这条捷径装的是仓库默认分支的源码，⚙ 里照样能检查更新，只是更新不走发布包的 SHA256 校验。想用经过校验的正式 Release 包，就用下面「方式 A」里带 `#plugin-releases` 的地址。
+> 句尾的 `#plugin-releases` 是正式渠道，装的是经过 SHA256 校验的正式 Release 包，⚙ 里能自动更新——和下面「方式 A」手动敲的两条命令是同一个渠道，别把它删掉。
 
 国内网络访问 GitHub 受限？上面那句里的地址可能连不上。插件渠道和代码在 GitCode 都有同步镜像：[gitcode.com/tanranran/zcode-token-usage-statusbar](https://gitcode.com/tanranran/zcode-token-usage-statusbar)，插件市场可以直接注册 GitCode 渠道，见下面「四种装法」的说明。
 
