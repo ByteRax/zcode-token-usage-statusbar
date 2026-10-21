@@ -71,7 +71,7 @@ Here's what each part tells you:
 | Did a tool call fail? | The **Tools** item — errors light up red, hover for per-tool timing and errors |
 | Looking through history | Type `/usage` in the chat, run `python zusage.py today` in a terminal, or call the `token_usage` MCP tool |
 
-> These are **token usage** numbers, not a bill, not a plan quota, and not "how much money you have left". Pricing and quota live on ZCode's official pages.
+> These are **token usage** numbers, not a bill, and not "how much money you have left". BigModel / Z.ai individual coding-plan users can optionally enable **Plan quota** in ⚙ (off by default): a small chip appears left of the context button showing the plan pool's used percentage and reset times — account-level plan data, not per-model.
 
 ## A few words worth knowing
 
@@ -292,8 +292,8 @@ The boundaries around missing data, invalid samples and historical turns (no sta
 - **The local database is read-only.** Usage data is never uploaded.
 - **Plugin updates do use the network** — they download code from the source you've configured. Automatic updates are on by default; turn them off in ⚙.
 - **SSH remote queries also use the network** — they run a read-only query script on the remote host through the transport you configured. Prerequisites and limits are in [SSH remote sessions](#ssh-remote-sessions).
-- **Your credentials are never decrypted or reused.** Passwords, encrypted private keys and passphrases stored by ZCode are never decrypted by the plugin; set up an SSH key / agent yourself.
-- **Token usage is not billing.** There's no plan cost, no remaining quota and no billing information here.
+- **Credentials are left alone by default.** Passwords, encrypted private keys and passphrases stored by ZCode are never decrypted by the plugin; set up an SSH key / agent yourself. One exception: after you explicitly enable **Plan quota** in ⚙, the main process reads the local ZCode login credential to query the official plan endpoint (in memory only, sent solely to bigmodel.cn / api.z.ai, never written to disk, logs or diagnostics); turning it off stops that.
+- **Token usage is not billing.** Token usage only, by default; the **Plan quota** chip shows used percentages from the official plan endpoint — no cash balance or billing details.
 
 ## FAQ
 
@@ -329,7 +329,7 @@ Pure Q&A, or questions whose data hasn't been stored yet, get no line — rather
 
 **Can it show me my bill or remaining quota?**
 
-No. It shows token usage, not billing. Use ZCode's official pages for pricing and plan limits.
+Not your cash bill — there's no billing data here. Plan quota, yes: enable **Plan quota** in ⚙ for BigModel / Z.ai individual coding plans; the chip shows per-window used percentages and reset times (hover for details). Team plans and custom API providers are not supported yet.
 
 [More troubleshooting, automatic updates and remote setup →](docs/user-guide.md) (Chinese)
 

@@ -476,7 +476,7 @@ function createUpdater(options) {
   async function recordRestart(report) {
     if (report.restartRecorded === true) return;
     const changed = Array.isArray(report.changed) ? report.changed : [];
-    const cold = changed.filter((f) => f === "inject-main.cjs" || f === "plugin-updater.cjs" || f === "plugin-release.cjs" || f === "plugin-storage.cjs"
+    const cold = changed.filter((f) => f === "inject-main.cjs" || f === "plugin-updater.cjs" || f === "plugin-release.cjs" || f === "plugin-storage.cjs" || f === "quota-client.cjs"
       || ((readConfig(configFile) || {}).hot_reload === false && (f === "overlay.js" || f === "zusage.py")));
     if (!cold.length) return;
     const hashes = {};

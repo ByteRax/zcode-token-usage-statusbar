@@ -30,7 +30,7 @@ const ZUSAGE = path.join(HERE, "zusage.py");
 const TOKEN_RATE = path.join(HERE, "token_rate.py");
 const LOG = (...a) => console.error("[zusage]", ...a);
 const loadedHashes = { _loadedAt: Date.now() - process.uptime() * 1000 };
-for (const name of ["inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs", "overlay.js", "zusage.py"]) {
+for (const name of ["inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs", "quota-client.cjs", "overlay.js", "zusage.py"]) {
   try { loadedHashes[name] = createHash("sha256").update(fs.readFileSync(path.join(HERE, name))).digest("hex"); }
   catch (e) { LOG("startup fingerprint unavailable:", name, e.message); }
 }
@@ -250,6 +250,9 @@ function remoteDisabled() {
   const remote = readCfgCached().remote || {};
   return remote.auto === false && remote.enabled === false;
 }
+/* v96 额度开关真值：config.json 的 quota_enabled（缺省关）。只认显式 true——读凭据联网
+ * 属能力升级，缺字段/异常值一律按关闭处理，主进程不解密、不发请求。 */
+function quotaEnabled() { return readCfgCached().quota_enabled === true; }
 function clearRemoteRecovery() {
   remoteSids.clear();
   pendingSids.clear();
@@ -262,6 +265,18 @@ function handlePayload(payload) {
   if (disabled) clearRemoteRecovery();
   // serve 的 error 是查询失败，不是空快照；不可清掉重试状态和最后成功数据显示。
   if (!payload || typeof payload !== "object" || payload.error) return;
+  lastGoodPayload = payload;
+  /* v96 额度：按最新会话的 provider 段选数据源（账号级，模型切换不触发新查询）；
+   * tick 惰性判过期（TTL/退避/冻结都在 quota-client 内），结果附加到本次推送。 */
+  if (quotaClient && quotaEnabled()) {
+    try {
+      const prov = (payload.session && payload.session.last && payload.session.last.provider_id) ||
+        (payload.last && payload.last.provider_id) || "";
+      if (prov) quotaClient.noteProvider(prov);
+    } catch (e) { }
+    quotaClient.tick();
+    payload = Object.assign({}, payload, { quota: quotaClient.view() });
+  }
   const now = Date.now();
   const marks = new Set();
   for (const r of (payload.recent || [])) if (r && r.remote && r.sid && !r.remote_error && !r.remote_missing) {
@@ -668,8 +683,8 @@ let pluginUpdater = null;
 let pluginRequestBusy = false;
 function pushPluginState(wc, state) {
   if (!isMainWindowState(wc) || wc.isDestroyed()) return;
-  /* rateLine 随插件状态一起推送：⚙ 面板「逐问速率行」勾选态的真值来自 config.json */
-  const payload = { ...state, rateLine: readCfgCached().answer_rate_line !== false };
+  /* rateLine / quotaEnabled 随插件状态一起推送：⚙ 面板两个开关的真值都来自 config.json */
+  const payload = { ...state, rateLine: readCfgCached().answer_rate_line !== false, quotaEnabled: quotaEnabled() };
   wc.executeJavaScript(`window.__zusagePluginUpdate && window.__zusagePluginUpdate(${JSON.stringify(payload)})`, true).catch(() => { });
 }
 try {
@@ -684,6 +699,57 @@ try {
   LOG("plugin updater unavailable:", e.message);
 }
 acknowledgeRestart();
+
+/* ---------- v96 额度客户端（BigModel/Z.ai 个人编码套餐）：解密宿主 OAuth 凭据 →
+ * monitor 端点 → 归一化 → 快照 quota 字段。独立模块，加载失败只少额度不拖垮主链
+ * （overlay 收不到 quota 字段即隐藏 chip）。凭据只在 quota-client 进程内存流转；
+ * 诊断只记 status/HTTP code/错误摘要，token 与请求头绝不进日志。 */
+let lastGoodPayload = null;   // 额度结算后无需重查库即可向各窗口补推（payload 已含 quota）
+let quotaClient = null;
+try {
+  const { createQuotaClient } = require("./quota-client.cjs");
+  const quotaHome = (process.env && process.env.ZCODE_DESKTOP_HOME_DIR) || app.getPath("home");
+  const quotaCredsPath = path.join(quotaHome, ".zcode", "v2", "credentials.json");
+  quotaClient = createQuotaClient({
+    credsPath: quotaCredsPath,
+    log: (...a) => LOG("[quota]", ...a),
+    onUpdate: () => {   // 手动刷新/解冻等结算：拿最近成功快照补推（不触发 Python 重查）
+      if (!lastGoodPayload) return;
+      const withQuota = Object.assign({}, lastGoodPayload, { quota: quotaClient.view() });
+      for (const wc of webContents.getAllWebContents()) pushOnce(wc, withQuota);
+    },
+  });
+  /* credentials.json 变化（宿主刷新 token/重登）：重读指纹，变化即解冻 auth_failed/no_plan。
+   * 与 watchDb 同款：目录监听（宿主可能原子替换文件，文件级 watch 会丢）+ 300ms 去抖 + 错误重挂。 */
+  let quotaCredWatcher = null, quotaCredDebounce = 0;
+  const watchQuotaCredentials = () => {
+    if (quotaCredWatcher) return;
+    try {
+      quotaCredWatcher = fs.watch(path.dirname(quotaCredsPath), (ev, f) => {
+        if (f && f !== "credentials.json") return;
+        clearTimeout(quotaCredDebounce);
+        quotaCredDebounce = setTimeout(() => {
+          if (!quotaClient || !quotaEnabled()) return;
+          quotaClient.credentialsChanged();
+          quotaClient.tick();
+        }, 300);
+      });
+      quotaCredWatcher.on("error", () => {
+        try { quotaCredWatcher.close(); } catch (e) { }
+        quotaCredWatcher = null;
+        setTimeout(watchQuotaCredentials, 5000);
+      });
+    } catch (e) { setTimeout(watchQuotaCredentials, 5000); }
+  };
+  watchQuotaCredentials();
+  setInterval(() => {   // 兜底：not_configured 低频重探/退避到点补拉（活跃时 handlePayload 也会 tick）
+    if (hasWindows() && quotaEnabled()) quotaClient.tick();
+  }, 60000);
+} catch (e) {
+  delete loadedHashes["quota-client.cjs"];
+  LOG("quota client unavailable:", e.message);
+}
+
 /* 逐问速率行开关（⚙ 面板）：原子写运行时 config.json 的 answer_rate_line（缺省=开启）。
    prompt-submit hook 每次提问时读同一文件——开关下一问即生效，无需重启客户端。 */
 function broadcastPluginState() {
@@ -697,6 +763,17 @@ async function setAnswerRateLine(enabled) {
     cfgCache = null;   // 写后置空，下一次 readCfgCached 立即重读（mtime 判变的双保险）
     broadcastPluginState();
   } catch (e) { LOG("answer_rate_line toggle failed:", e.message); }
+}
+/* v96 套餐额度开关（⚙ 面板）：原子写 config.json 的 quota_enabled（缺省关）。开启即刻 tick
+ * 一次（结算后经 onUpdate 补推）；关闭后 handlePayload 不再 tick/附加，chip 随之隐藏。 */
+async function setQuotaEnabled(enabled) {
+  try {
+    const { updateConfig } = require("./plugin-updater.cjs");
+    await updateConfig(HERE, { quota_enabled: enabled }, readCfgCached().python_path || (process.platform === "win32" ? "python" : "python3"));
+    cfgCache = null;
+    broadcastPluginState();
+    if (enabled && quotaClient) quotaClient.tick();
+  } catch (e) { LOG("quota_enabled toggle failed:", e.message); }
 }
 /* 确定性历史行的数据库富文本（v75）：渲染端只从 turn 容器拿到 DOM turn id，
  * 桥接数据里没有首字延迟/分段/峰值/累计等字段，拼不出模型时代那行统计；这里按
@@ -767,6 +844,10 @@ async function pollPluginRequests() {
           if (pluginUpdater) pluginUpdater.request(req).catch((e) => LOG("plugin update action failed:", e.message));
         } else if (req && req.action === "rate-line" && typeof req.enabled === "boolean") {
           setAnswerRateLine(req.enabled);
+        } else if (req && req.action === "quota" && typeof req.enabled === "boolean") {
+          setQuotaEnabled(req.enabled);
+        } else if (req && req.action === "quota-refresh") {   // ⚙/chip 手动刷新：绕过 TTL 与软冻结
+          if (quotaClient && quotaEnabled()) quotaClient.refresh();
         } else if (req && req.action === "turn-text" && typeof req.sid === "string") {
           queryTurnText(req.sid, wc, req.cn === 0);
         }
@@ -817,12 +898,13 @@ if (typeof module === "object" && module && module.exports) {
   };
 }
 
-LOG("injected v12 (auto remote targets + per-sid multi-server routing, per-pane wants array, resident query mode with idle shutdown, renderer bridge probe, answer_rate_line config write, plugin request polling)");
+LOG("injected v12 (auto remote targets + per-sid multi-server routing, per-pane wants array, resident query mode with idle shutdown, renderer bridge probe, answer_rate_line config write, plugin request polling, quota entitlement client)");
 
 app.on("before-quit", () => {
   shuttingDown = true;
   clearTimeout(retryTimer);
   clearTimeout(debounceTimer);
   stopResident();
+  if (quotaClient) quotaClient.dispose();
   if (dbWatcher) { try { dbWatcher.close(); } catch (e) { } dbWatcher = null; }
 });

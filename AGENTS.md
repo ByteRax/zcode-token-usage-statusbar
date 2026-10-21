@@ -29,6 +29,7 @@
 | `install_monitor.py` | 重启提醒、加载诊断和 Windows 待替换收尾 |
 | `plugin-updater.cjs` / `plugin-release.cjs` | 宿主插件更新调度、正式 GitHub Release 与渠道校验 |
 | `plugin-storage.cjs` | 按宿主存储解析用户级插件库存/缓存，不假设固定 HOME |
+| `quota-client.cjs` | 套餐额度客户端（主进程，冷文件）：解密宿主 OAuth 凭据（`enc:v1` AES-256-GCM 重写实现）直查 BigModel/Z.ai monitor 端点，归一化窗口/退避/冻结/epoch 竞态，凭据只在内存 |
 | `runtime_lock.py` / `release_unpack.py` | 跨进程锁、配置事务/可信同步、安全 ZIP 解包 |
 | `sync_plugin.py` / `release_tool.py` | 根源码副本同步；确定性发布包构建、校验、发布预演/发布 |
 | `plugins/zcode-token-usage-statusbar/` | 两份 manifest、`.mcp.json`、命令、技能、hooks、专有安装/更新/提醒入口与共享副本 |
@@ -48,7 +49,7 @@
 ## 3. 源文件、副本与正在运行的文件
 
 - `sync_plugin.py` 的 `FILES` 是共享分发清单，根目录是源：
-  `usage_mcp.py`、`zusage.py`、`patch_install.py`、`install_monitor.py`、`inject-main.cjs`、`plugin-updater.cjs`、`plugin-release.cjs`、`plugin-storage.cjs`、`release_unpack.py`、`runtime_lock.py`、`overlay.js`。
+  `usage_mcp.py`、`zusage.py`、`patch_install.py`、`install_monitor.py`、`inject-main.cjs`、`plugin-updater.cjs`、`plugin-release.cjs`、`plugin-storage.cjs`、`quota-client.cjs`、`release_unpack.py`、`runtime_lock.py`、`overlay.js`。
 - 共享文件先改根源码，再同步插件副本；清单外的插件入口、hooks、命令、技能和 manifest **不是生成文件**，应直接维护。
 - `web/overlay.js` 是独立实现，不在插件同步清单内；不能直接复制根浮层覆盖 Web。共享语义变化要分别评估，保留 Web 的挂载、接口与布局差异。
 - 共享文件修改后在仓库根运行：
@@ -61,7 +62,7 @@ python3 sync_plugin.py --check
 - 上述命令只同步**仓库插件副本**，不更新宿主安装缓存或稳定运行目录。
 - 标准运行目录是 `~/.zcode/zcode-token-usage-statusbar/`；插件缓存由宿主管理且可能自定义。`--dev` 可让独立安装直接引用仓库，不能移动该仓库。
 - 本地市场仍依赖登记的来源目录，不自动 `git pull`；不要一概建议安装后删除 clone。
-- **插件到稳定运行目录的同步**有 hash 基线/mtime 热修保护；根 `install.py` 的运行文件复制是直接覆盖，不能承诺同等保护。首次注入、路径变化、`inject-main.cjs` 或 updater/release/storage 主进程文件变更需完全退出并重启；可热更新文件也须确认实际加载路径。
+- **插件到稳定运行目录的同步**有 hash 基线/mtime 热修保护；根 `install.py` 的运行文件复制是直接覆盖，不能承诺同等保护。首次注入、路径变化、`inject-main.cjs`、`quota-client.cjs` 或 updater/release/storage 主进程文件变更需完全退出并重启；可热更新文件也须确认实际加载路径。
 
 ## 4. 开发与兼容性约定
 
@@ -94,6 +95,15 @@ python3 sync_plugin.py --check
 - 上下文占比取最近完成请求 input / 上下文窗口，不是会话累计或历史峰值；压缩后可以回落。子代理按父子关系关联，不按派发时间最近邻猜任务名。
 - CLI/MCP `current` 选择数据库最近活跃会话，不保证是屏幕焦点；30 分钟阈值用于 active/idle 判断，不限制只选这段时间内的会话。
 - 今日、`days`、`week` 按本地自然日，`models` 从当前时刻滚动回溯；日界线查询采用闭区间，零点存在相邻日重复计入边界。改时间过滤先核对各查询，不擅自统一窗口。
+
+### 套餐额度（v96 起）
+
+- 额度是**账号级套餐池**口径（BigModel/Z.ai 个人编码套餐），不是单模型独享；chip/tooltip 不得出现"模型独享额度"语义。数据来自主进程 quota 字段（`quota-client.cjs` 解密宿主 OAuth 凭据直查 `bigmodel.cn|api.z.ai /api/monitor/usage/quota/limit`），与本地 token 统计是两条链，互不推导。BigModel 另随额度并行拉 `/api/biz/subscription/list` 取订阅元数据（version/productName/valid，tooltip「套餐」行；白名单字段，订单/协议号绝不保留；多条生效订阅或端点失败 → plan 置 null 整行不显示，不拖累额度状态机；zai 暂不拉）。
+- 开关真值是 config.json 的 `quota_enabled`（缺省关，只认显式 true）：主进程据此决定是否解密与联网，⚙ 勾选经 pluginRequest 写入并回推。凭据只在内存，发往的域白名单硬编码（bigmodel.cn/api.z.ai），token/请求头绝不进日志、diag 或 config；env `ZCODE_BIGMODEL_USAGE_API_KEY` 优先于宿主凭据。
+- 窗口归一化只认 unit 显式分类（3=5h、6=周；未知丢弃留痕），不能按 nextResetTime 排序代替（周期末尾周窗更早重置会标反两桶）；`percentage` 是整数已用%，有绝对量时用 currentValue/usage 自算；TIME_LIMIT(unit=5) 是内置工具期，折叠为 tooltip 行。无套餐是业务信封（"不存在coding plan"）而非 401，须停轮询。
+- 401/403 与无套餐冻结到凭据指纹变化：主进程 fs.watch credentials.json（宿主刷新 token 即解冻）；JWT exp 临期不发请求等宿主刷新。失败保留最近成功值并标 stale；解密失败/no_plan/parse_error 一律 fail-closed，绝不显示 0%。
+- 显示门控：会话首个完成的 `main_turn`（快照 `last.provider_id`，zusage 已滤辅助请求污染）出现前 chip 不显示；团队套餐显示"暂不支持"，自定义 provider 隐藏。SSH 远端分栏直接显示本地额度——宿主 provisioning 把桌面凭据强制同步覆盖到远端，远端会话与本地同账号（架构事实，宿主改语义需复核）。chip 挂原生上下文按钮左侧（wrapper 内前插），与 v92 按钮增强同款双 reapply/还原契约。
+- 额度只进桌面快照链；MCP、CLI、`/usage` stdout 契约不加字段。Web 端不做（sidecar 无凭据）。
 
 ### 窗口、分栏与远端
 
@@ -143,6 +153,7 @@ python3 sync_plugin.py --check
 | 改动范围 | 验证选择（文件位于 `tests/`） |
 |---|---|
 | 统计/速率 | `test_token_rate.py`、`test_statusbar_rate.py`、`overlay-rate.test.cjs`；更改共享 JSON 时加入远端及插件契约回归 |
+| 套餐额度 | `quota-client.test.cjs`（解密/归一化/状态机/竞态）、`overlay-quota-chip.test.cjs`（挂载/门控/还原）；真实 monitor 响应、凭据刷新解冻与 chip 实机挂载需桌面验收 |
 | 浮层/主桥 | `overlay-*.test.cjs`、`plugin-loader.test.cjs`、`plugin-restart-boot.test.cjs`；语法检查，布局/多窗口需桌面验收 |
 | SSH 路由 | `test_remote_targets.py`、`inject-remote-recovery.test.cjs`、`overlay-remote-scope.test.cjs`；实机身份/重连与认证另验 |
 | 安装/更新/锁/解包 | `test_install_discovery.py`、`test_plugin_sudo_install.py`、`test_pending_asar.py`、`test_config_transactions.py`、`test_runtime_sync_guard.py`、`test_release*.py` 及 `plugin-*.test.cjs`、`runtime-lock.test.cjs` |

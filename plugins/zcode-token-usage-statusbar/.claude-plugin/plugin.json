@@ -41,6 +41,7 @@
       "plugins/zcode-token-usage-statusbar/plugin-storage.cjs",
       "plugins/zcode-token-usage-statusbar/plugin-updater.cjs",
       "plugins/zcode-token-usage-statusbar/plugin_auto_update.py",
+      "plugins/zcode-token-usage-statusbar/quota-client.cjs",
       "plugins/zcode-token-usage-statusbar/release_unpack.py",
       "plugins/zcode-token-usage-statusbar/renderer_bridge.py",
       "plugins/zcode-token-usage-statusbar/restart_notice.py",
