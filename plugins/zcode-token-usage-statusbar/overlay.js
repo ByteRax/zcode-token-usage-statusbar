@@ -31,6 +31,10 @@
  *       档位口径沿用原状态条上下文格的 ctxBandOf（v93 起该格已删，口径唯一承载处）；仅注入
  *       data-* 属性与末尾追加节点（React 不清理），React 数据更新重写 dasharray 由
  *       render/heavy 双 reapply 兜回；cw 缺失还原原生形态。
+ * Git 状态 chip（v96）：挂在工具行「电脑操作」按钮（v4-composer-cua-entry）右侧，样式移植
+ *       cc-pretty-statusline 的 git 段：⎇ 分支 ↑领先 ↓落后 (+插入行 -删除行 ?未跟踪文件)。
+ *       数据由主进程旁路 git 查询按工作区路径推送（window.__zusageGitState），渲染端把各 pane
+ *       的本地路径写 window.__zusageGitPaths 供主进程取并集；远端 pane / 非仓库 / 无 git 不挂载。
  * 诊断：异常与挂载信息写 window.__zusageDiag，由主进程泵取回写 diag-<n>.json。 */
 (function () {
   if (window.__zusageOverlay) return;
@@ -48,7 +52,7 @@
    * 确定性历史行（[data-zusage-deterministic]，挂在消息流 turn 容器末尾）一并自清。
    * v80：面板（.zusage-panel）挂 body 不随条走，清理选择器单列。 */
   try {
-    document.querySelectorAll(".zusage-root,.zusage-tip-root,.zusage-exc,.zusage-rate-tip,.zusage-quota-tip,.zu-quota,.zusage-panel,[data-zusage-deterministic],[data-zusage-loading-status]").forEach(function (el) { el.remove(); });
+    document.querySelectorAll(".zusage-root,.zusage-tip-root,.zusage-exc,.zusage-rate-tip,.zusage-quota-tip,.zu-quota,.zu-git,.zusage-git-tip,.zusage-panel,[data-zusage-deterministic],[data-zusage-loading-status]").forEach(function (el) { el.remove(); });
   } catch (e) { }
 
   try {
@@ -66,7 +70,7 @@
   /* ---------- 共享状态（多实例一致）：显示项/语言/上下文覆盖/最近一次数据 ---------- */
   var LS = { show: "zusage3.show", ctxOv: "zusage3.ctxOv", lang: "zusage3.lang", cnNum: "zusage3.cnNum" };
   var state = {
-    show: { win: 1, turn: 1, today: 1, sub: 1, tools: 1 },
+    show: { win: 1, turn: 1, today: 1, sub: 1, tools: 1, git: 1 },   // git：工具行 Git 状态 chip（v96，默认开）
     ctxOv: "", data: null,
     lang: "zh", pluginUpdate: window.__zusagePluginState || null,
     /* 万/亿单位开关：缺省开启，仅显式 "0" 关闭；只在中文界面展示并生效（英文始终 K/M/B） */
@@ -180,6 +184,36 @@
   function pluginRequest(action, enabled) {
     window.__zusagePluginRequests.push({ action: action, enabled: enabled });
   }
+  /* ---------- Git 状态 chip 数据通道（v96）：主进程旁路 git 查询 → 按工作区路径缓存 ----------
+   * 主进程每 10s 取各窗口 window.__zusageGitPaths 并集逐路径查询，结果推 window.__zusageGitState；
+   * 渲染端只缓存与分发，实例按自身 scope.workspacePath 取用。失败不清空最近成功态（标 stale），
+   * 只有明确「非仓库 / 无 git」才视为无数据不挂载。 */
+  var gitStateByPath = {}, gitLastGood = {}, gitAskedAt = 0;
+  var GIT_ASK_MIN_MS = 5000;   // 快照驱动的重查节流；点击刷新与路径集变化不受限
+  function gitViewFor(p) {
+    var cur = gitStateByPath[p];
+    if (!cur) return null;
+    if (cur.ok) return { st: cur, stale: false };
+    if (cur.reason === "notrepo" || cur.reason === "nogit") return null;
+    var good = gitLastGood[p];
+    return good ? { st: good, stale: true } : null;
+  }
+  function askGitRefresh(force) {
+    var paths = window.__zusageGitPaths;
+    if (!paths || !paths.length) return;
+    var now = Date.now();
+    if (!force && now - gitAskedAt < GIT_ASK_MIN_MS) return;
+    gitAskedAt = now;
+    pluginRequest("git-refresh");
+  }
+  window.__zusageGitState = function (p, st) {
+    if (stale() || typeof p !== "string" || !st || typeof st !== "object") return;
+    gitStateByPath[p] = st;
+    if (st.ok) gitLastGood[p] = st;
+    for (var i = 0; i < instances.length; i++) {
+      try { instances[i].gitTouch(); } catch (e) { FATAL.gitErr = String((e && e.stack) || e); }
+    }
+  };
   window.__zusagePluginUpdate = function (s) {
     if (stale() || JSON.stringify(state.pluginUpdate) === JSON.stringify(s)) return;
     window.__zusagePluginState = state.pluginUpdate = s;
@@ -236,6 +270,24 @@
       window.__zusageWantSid = arr[0] || "";
       window.__zusageSidWs = collectSidWs();
       window.__zusagePaneScopes = panes;
+      publishGitPaths();
+    } catch (e) { }
+  }
+  /* v96：Git chip 关注的本地工作区路径集 → window.__zusageGitPaths（主进程每 10s 取并集查询）。
+   * identity 为空才是本地；远端 pane 不上报（主进程不替宿主跨机跑 git）；开关关闭为空集。
+   * 每次 render 都经 refreshWants 到这里：路径集变化立即请求首查，否则按快照节奏节流重查
+   * （快照到达 = 刚有请求落库，模型可能刚改过文件）。 */
+  function publishGitPaths() {
+    try {
+      var gitPaths = [];
+      if (state.show.git) for (var i = 0; i < instances.length; i++) {
+        var inst = instances[i], sid = inst.getSid();
+        var scope = sid && inst.getScope ? inst.getScope() : null;
+        if (scope && scope.sid === sid && !scope.identity && gitPaths.indexOf(scope.workspacePath) < 0) gitPaths.push(scope.workspacePath);
+      }
+      var changed = JSON.stringify(gitPaths) !== JSON.stringify(window.__zusageGitPaths || []);
+      window.__zusageGitPaths = gitPaths;
+      askGitRefresh(changed);
     } catch (e) { }
   }
 
@@ -477,6 +529,67 @@
   var rateScanTimer = setInterval(scanRateLines, 500);
   window.__zusageRateCleanup = cleanupRateTip;
   scanRateLines();
+
+  /* ---------- Git chip 的悬停说明（v96）：document 级单例，同 rateTip 套路（挂 body、内联兜底样式） ----------
+   * 内容按 chip.__zuGit（{path, st, stale}）渲染；分支名/上游/路径是用户数据，一律过 gitEsc。 */
+  var gitTip = document.createElement("div");
+  gitTip.className = "tip zusage-git-tip";
+  gitTip.style.cssText = rateTip.style.cssText;
+  document.body.appendChild(gitTip);
+  var gitTipFor = null;
+  function gitEsc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+  function gitTimeStr(ts) {   // yyyy-MM-dd HH:mm:ss（与额度 chip 的 tooltip 时间格式约定一致，用户要求带秒）
+    try {
+      var t = new Date(ts), p = function (n) { return ("0" + n).slice(-2); };
+      return t.getFullYear() + "-" + p(t.getMonth() + 1) + "-" + p(t.getDate()) + " " + p(t.getHours()) + ":" + p(t.getMinutes()) + ":" + p(t.getSeconds());
+    } catch (e) { return ""; }
+  }
+  function gitTipHTML(view) {
+    var st = view.st, row = function (label, text) { return '<div class="rt-row"><b>' + label + "</b><span>" + text + "</span></div>"; };
+    var files = function (n) { return n + L(" 个文件", n === 1 ? " file" : " files"); };
+    var up = st.upstream ? gitEsc(st.upstream) + (st.ahead > 0 ? " ↑" + st.ahead : "") + (st.behind > 0 ? " ↓" + st.behind : "") : L("无上游分支", "no upstream");
+    var when = gitTimeStr(st.ts);
+    return '<style>.zusage-git-tip .rt-h{font-weight:600;color:var(--color-tooltip-foreground,#fafafa);margin:0 0 7px}' +
+      ".zusage-git-tip .rt-row{display:flex;gap:10px;margin:3px 0}" +
+      ".zusage-git-tip .rt-row b{flex:0 0 auto;min-width:78px;color:var(--color-tooltip-foreground,#fafafa);font-weight:600}" +
+      ".zusage-git-tip .rt-row span{color:var(--color-tooltip-tag-foreground,#a6a6a6);word-break:break-all}" +
+      '.zusage-git-tip .rt-note{margin-top:8px;padding-top:7px;border-top:1px solid var(--color-border,transparent);color:var(--color-tooltip-tag-foreground,#a6a6a6)}</style>' +
+      '<div class="rt-h">⎇ ' + L("Git 状态", "Git status") + (view.stale ? " · " + L("上次查询失败，显示的是最近成功结果", "last query failed; showing the last good result") : "") + "</div>" +
+      row(L("分支", "Branch"), st.detached ? L("游离 HEAD（不在任何分支上）", "detached HEAD") : gitEsc(st.branch || "") + (st.noCommits ? L("（尚无提交）", " (no commits yet)") : "")) +
+      row(L("上游", "Upstream"), up) +
+      row(L("改动", "Changes"), "+" + st.ins + " / -" + st.del + L(" 行（工作区相对 HEAD，含已暂存）", " lines (worktree vs HEAD, staged included)")) +
+      row(L("已暂存", "Staged"), files(st.staged)) +
+      row(L("未暂存", "Unstaged"), files(st.unstaged)) +
+      row(L("未跟踪", "Untracked"), files(st.untracked)) +
+      (st.conflicts > 0 ? row(L("冲突", "Conflicts"), files(st.conflicts)) : "") +
+      row(L("目录", "Directory"), gitEsc(view.path)) +
+      (when ? row(L("更新于", "Updated"), when) : "") +
+      '<div class="rt-note">' + L("每 10 秒及每轮回复后自动刷新，点击立即刷新。只读本地仓库；远端会话不显示。⚙ 设置可关。",
+        "Refreshes every 10s and after each reply; click to refresh now. Local repositories only (read-only); hidden for remote sessions. Toggle in ⚙ settings.") + "</div>";
+  }
+  function showGitTip(chip) {
+    var view = chip && chip.__zuGit;
+    if (stale() || !view || !chip.isConnected) { hideGitTip(); return; }
+    gitTip.innerHTML = gitTipHTML(view);
+    gitTip.style.display = "block";
+    var r = chip.getBoundingClientRect(), tw = gitTip.offsetWidth, th = gitTip.offsetHeight;
+    var vw = window.innerWidth, vh = window.innerHeight;
+    var left = Math.max(8, Math.min(r.left, vw - tw - 8));
+    var top = r.top - th - 8;   // 优先弹在 chip 上方（工具行贴窗口底部）
+    if (top < 8) top = Math.min(r.bottom + 8, vh - th - 8);
+    gitTip.style.left = Math.round(left) + "px";
+    gitTip.style.top = Math.round(top) + "px";
+    gitTipFor = chip;
+  }
+  function hideGitTip() {
+    gitTip.style.display = "none";
+    gitTipFor = null;
+  }
+  /* chip 固定在 composer 工具行，消息流滚动不移动它，无需 rateTip 那样的 scroll 收起；离开/失焦即收 */
+  function cleanupGitTip() {
+    hideGitTip();
+    gitTip.remove();
+  }
 
   /* ---------- renderer 会话 store 桥（v71）：实时统计 + 确定性历史行 ----------
    * 只读桥由 renderer 侧资产注入：__zusageGetExistingConversationStore(scope) 返回
@@ -869,13 +982,16 @@
     instances.forEach(function (inst) { inst.dispose(); });
     instances = [];
     cleanupRateTip();
+    cleanupGitTip();
     cleanupDeterministic();
     window.__zusageWantSids = [];
     window.__zusageWantSid = "";
+    window.__zusageGitPaths = [];   // v96：主进程下轮 tick 读到空集即停查
     if (window.__zusageDispose === disposeOverlay) {
       delete window.__zusageDispose;
       delete window.__zusageUpdate;
       delete window.__zusagePluginUpdate;
+      delete window.__zusageGitState;
       window.__zusageOverlay = false;
     }
   }
@@ -975,6 +1091,7 @@
       lastBand = null,    // v92：本 pane 上下文分档（ctxBandOf 结果，原生按钮增强的数据源）
       ctxBtnCache = null,   // v92：本实例上次增强的原生按钮（还原/对账引用，不依赖 cardCache 存活）
       lastQuota = null, quotaProvider = "", quotaModel = "", quotaChipCache = null,   // v96：额度 chip 数据源（快照 quota 字段 + 本 pane 会话 provider/模型）与节点引用
+      cuaBtnCache = null, gitChipCache = null,   // v96：Git chip 的锚点按钮（电脑操作）与本实例的 chip 节点
       liveTextCur = "", liveStatsCur = null, liveKindCur = "fallback", liveEl = null,   // v72：合并「生成速度」用
       livePhaseCur = "", liveIconCur = "bolt";   // v77：当前 chip 阶段与图标（think=思考动效/bolt=闪电）——相位切换需整条重渲染
 
@@ -1068,6 +1185,27 @@
       "[data-zusage-light] .zu-ctxpct.warm{color:#b6791a}" +
       "[data-zusage-light] .zu-ctxpct.hot{color:#d8482f}" +
       "[data-zusage-light] .zu-ctxpct.exc{text-shadow:none}" +
+      /* v96 Git 状态 chip（工具行「电脑操作」按钮右侧）：外形对齐原生 ghost 按钮（h-7/rounded-lg/
+       * px-1.5/gap-1）；配色移植 cc-pretty-statusline 的 git 段——图标+分支名暗灰，+插入绿 /
+       * -删除红 / ?未跟踪黄，括号与 ↑↓ 随暗灰；浅色档（Catppuccin Latte 同源值）由 syncCtxLite
+       * 写在 chip 自身的 data-zusage-light 切换。 */
+      ".zu-git{display:inline-flex;align-items:center;gap:4px;height:1.75rem;padding:0 .375rem;border-radius:.5rem;" +
+      "flex:0 0 auto;box-sizing:border-box;cursor:pointer;user-select:none;white-space:nowrap;outline:none;" +
+      "font-family:var(--font-mono,Consolas,'Cascadia Mono',Menlo,'Microsoft YaHei UI','Microsoft YaHei',monospace);" +
+      "font-size:var(--ui-font-size,14px);line-height:1;font-variant-numeric:tabular-nums;color:#afafb2;transition:background-color .15s}" +
+      ".zu-git:hover,.zu-git:focus-visible{background:var(--color-hover,rgba(255,255,255,.08))}" +
+      ".zu-git>svg{width:16px;height:16px;flex:0 0 auto}" +
+      ".zu-git .zu-git-ins{color:#aae6aa}" +
+      ".zu-git .zu-git-del{color:#f09696}" +
+      ".zu-git .zu-git-unt{color:#f0e6a0}" +
+      ".zu-git.zu-stale{opacity:.55}" +
+      ".zu-git.zu-compact .zu-git-name,.zu-git.zu-compact .zu-git-ab{display:none}" +
+      "@keyframes zugitspin{to{transform:rotate(360deg)}}" +
+      ".zu-git.zu-gbusy>svg{animation:zugitspin .8s linear infinite}" +
+      ".zu-git[data-zusage-light]{color:#6c6f85}" +
+      ".zu-git[data-zusage-light] .zu-git-ins{color:#2da587}" +
+      ".zu-git[data-zusage-light] .zu-git-del{color:#d20f39}" +
+      ".zu-git[data-zusage-light] .zu-git-unt{color:#df8e1d}" +
       /* v96 套餐额度 chip（原生上下文按钮左侧，wrapper 内前插）：多窗分段样式——每个窗口
        * 一段（中文 5小时/7天，英文 5h/7d）各自按 80/95/100 上档位色；余额类型单段
        * （阶段 3 数据源接入即显示）；容器不再着色，颜色只落在分段上。 */
@@ -1280,6 +1418,7 @@
       settingRow('<input type="checkbox" data-k="tools">', L("工具调用", "Tool calls"), L("悬停查看各工具明细与错误", "Hover for per-tool details and errors")) +
       settingRow('<input type="checkbox" data-k="today">', L("今日合计", "Today's total"), L("今天所有会话的消耗", "Usage across all sessions today")) +
       settingRow('<input type="checkbox" data-k="sub">', L("子代理", "Sub-agents"), L("点击状态条上的子代理查看明细", "Click the bar item for sub-agent details")) +
+      settingRow('<input type="checkbox" data-k="git">', L("Git 状态", "Git status"), L("「电脑操作」按钮右侧显示当前分支、↑领先 ↓落后与未提交改动（+插入行 -删除行 ?未跟踪）；仅本地仓库", "Branch, ↑ahead ↓behind and uncommitted changes (+ins -del ?untracked) beside the Computer Use button; local repositories only")) +
       '</div></section>' +
       '<section class="zu-settings-section"><div class="cap">' + L("通用", "General") + '</div><div class="zu-settings-card">' +
       settingRow('<input type="text" class="zu-ctxov" inputmode="numeric" aria-label="' + L("上下文窗口", "Context window") + '" placeholder="' + L("自动（按模型）", "Auto (model)") + '">', L("上下文窗口", "Context window"), L("留空自动识别，优先使用客户端数值", "Leave empty to detect automatically; prefer the client value")) +
@@ -1973,6 +2112,7 @@
       if (subPanel.classList.contains("open")) buildSubPanel(view.sub);   // 面板开着：随推送实时刷新
       enhanceCtxButton();   // v92：数据点 reapply（React 数据更新重写 dasharray 后兜回）
       enhanceQuotaChip();   // v96：额度 chip 数据点 reapply
+      enhanceGitChip();     // v96：同点对账 Git chip（开关/会话切换/scope 变化在此收敛）
     }
 
 
@@ -2315,6 +2455,7 @@
       if (t2.type === "checkbox") {
         state.show[t2.dataset.k] = t2.checked ? 1 : 0;
         persist();
+        if (t2.dataset.k === "git") refreshWants();   // v96：开/关即时更新上报路径集（开启时顺带触发首查）
       } else if (t2.classList.contains("zu-ctxov")) {
         state.ctxOv = t2.value.trim();
         persist();
@@ -2881,6 +3022,104 @@
       quotaChipCache = null;
     }
 
+    /* ---------- v96 Git 状态 chip：挂「电脑操作」按钮（v4-composer-cua-entry）右侧 ----------
+     * 样式移植 cc-pretty-statusline 的 git 段：⎇ 分支 ↑N ↓N (+插入行 -删除行 ?未跟踪文件)。
+     * 数据：模块级 gitViewFor(scope.workspacePath)（主进程旁路查询推送）；本 pane 的 scope 为远端
+     * （identity 非空）/ 未知 / 非仓库 / 无 git 时不挂载。稳定性同 v92：自有节点插在 React children
+     * 之间（React 既不复用也不清理外来节点），位置由 render/heavy 双 reapply 兜回；内容签名幂等。 */
+    var ZU_CUA_BTN = '[data-testid="v4-composer-cua-entry"]';
+    var ZU_GIT_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+      '<line x1="6" x2="6" y1="3" y2="15"></line><circle cx="18" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle><path d="M18 9a9 9 0 0 1-9 9"></path></svg>';
+    function gitChipView() {   // null = 本 pane 当前不该显示 chip
+      if (!state.show.git) return null;
+      var scope = readPaneScope(wantedEl, pickedSid, pid);
+      if (!scope || scope.identity || !scope.workspacePath) return null;
+      var v = gitViewFor(scope.workspacePath);
+      return v ? { path: scope.workspacePath, st: v.st, stale: v.stale } : null;
+    }
+    function gitChipHtml(st) {
+      var name = st.detached || !st.branch ? "HEAD" : String(st.branch);
+      var shown = name.length > 18 ? name.slice(0, 16) + "…" : name;   // 全名进 tooltip
+      var h = ZU_GIT_ICON + '<span class="zu-git-name">' + gitEsc(shown) + "</span>";
+      var ab = (st.ahead > 0 ? "↑" + st.ahead : "") + (st.behind > 0 ? (st.ahead > 0 ? " " : "") + "↓" + st.behind : "");
+      if (ab) h += '<span class="zu-git-ab">' + ab + "</span>";
+      var d = [];
+      if (st.ins > 0) d.push('<span class="zu-git-ins">+' + st.ins + "</span>");
+      if (st.del > 0) d.push('<span class="zu-git-del">-' + st.del + "</span>");
+      if (st.untracked > 0) d.push('<span class="zu-git-unt">?' + st.untracked + "</span>");
+      if (d.length) h += '<span class="zu-git-d">(' + d.join(" ") + ")</span>";   // 干净时整段不出现（cc-pretty-statusline 语义）
+      return h;
+    }
+    function gitChipAria(st, stale) {
+      var s = L("Git 分支 ", "Git branch ") + (st.detached || !st.branch ? "HEAD" : st.branch);
+      if (st.ahead > 0) s += L("，领先 ", ", ahead ") + st.ahead;
+      if (st.behind > 0) s += L("，落后 ", ", behind ") + st.behind;
+      s += L("，改动 +", ", changes +") + (st.ins | 0) + " -" + (st.del | 0);
+      if (st.untracked > 0) s += L("，未跟踪 ", ", untracked ") + st.untracked;
+      if (stale) s += L("（数据可能过期）", " (may be stale)");
+      return s;
+    }
+    function onGitEnter() { showGitTip(this); }
+    function onGitClick(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      askGitRefresh(true);   // 主进程立即重查全部已关注路径（绕过快照节流）
+      var el = this;
+      el.classList.add("zu-gbusy");
+      setTimeout(function () { el.classList.remove("zu-gbusy"); }, 1500);
+    }
+    function enhanceGitChip() {
+      if (inactive()) { restoreGitChip(); return; }
+      var view = gitChipView();
+      if (!view) { restoreGitChip(); return; }
+      var btn = null;
+      try { btn = (cuaBtnCache && cuaBtnCache.isConnected) ? cuaBtnCache : (cardCache ? cardCache.querySelector(ZU_CUA_BTN) : null); } catch (e) { }
+      if (!btn || !btn.parentElement) { restoreGitChip(); return; }
+      cuaBtnCache = btn;
+      var wrap = btn.parentElement;
+      var chip = gitChipCache;
+      if (!chip || !chip.isConnected || chip.parentElement !== wrap) {
+        if (chip && chip.isConnected) chip.remove();
+        chip = null;
+        for (var i = 0; i < wrap.children.length; i++) {   // 复用热更/重建遗留的同类节点，避免双 chip
+          if (wrap.children[i].classList && wrap.children[i].classList.contains("zu-git")) { chip = wrap.children[i]; break; }
+        }
+        if (!chip) {
+          chip = document.createElement("span");
+          chip.className = "zu-git";
+          chip.setAttribute("role", "status");
+          chip.tabIndex = 0;
+          chip.addEventListener("mouseenter", onGitEnter);
+          chip.addEventListener("mouseleave", hideGitTip);
+          chip.addEventListener("focus", onGitEnter);
+          chip.addEventListener("blur", hideGitTip);
+          chip.addEventListener("click", onGitClick);
+        }
+        gitChipCache = chip;
+      }
+      if (btn.nextSibling !== chip) wrap.insertBefore(chip, btn.nextSibling);   // 位置兜回：始终紧贴按钮右侧（nextSibling 为 null 即追加末尾）
+      syncCtxLite(chip, bar.classList.contains("zu-light"));
+      var compact = btn.getAttribute("data-composer-compact") === "true";   // 宿主窄屏折叠：原生标签隐藏，chip 同步只留图标+计数
+      chip.__zuGit = view;
+      var html = gitChipHtml(view.st);
+      var cls = "zu-git" + (view.stale ? " zu-stale" : "") + (compact ? " zu-compact" : "");
+      var sig = cls + "|" + html + "|" + state.lang;
+      if (chip.__zuSig !== sig) {   // 幂等：内容没变不重建，悬停/焦点态不被每 1.5s 的推送打断
+        chip.__zuSig = sig;
+        var busy = chip.classList.contains("zu-gbusy");
+        chip.className = cls + (busy ? " zu-gbusy" : "");
+        chip.setAttribute("aria-label", gitChipAria(view.st, view.stale));
+        chip.innerHTML = html;
+      }
+      if (gitTipFor === chip) showGitTip(chip);   // 悬停中数据刷新：内容跟随
+    }
+    function restoreGitChip() {
+      if (!gitChipCache) return;
+      if (gitTipFor === gitChipCache) hideGitTip();
+      try { gitChipCache.remove(); } catch (e) { }
+      gitChipCache = null;
+    }
+
     /* ---------- v80 in-card 挂载：条挂输入卡片内部、group/toolbar 工具行之后自占一行 ----------
      * 宿主 ChatPromptEditor 的工具行是卡片（flex-col gap-3）的最后一个子块；条作为其兄弟
      * 节点插在后面，卡片纯自适应高度自然长高（12px 间距 + 条高），与对话框融为一体。
@@ -2982,6 +3221,7 @@
       }
       enhanceCtxButton();   // v92：DOM 对账点（React 重渲染/按钮重建后兜回，幂等）
       enhanceQuotaChip();   // v96：额度 chip DOM 对账点（按钮重建/前插节点被挤走后兜回）
+      enhanceGitChip();     // v96：同点对账（React 重建工具行后重挂/位置兜回/紧凑态切换）
       if (state.data && pid === "auto") {
         var msid = typeof state.data.mine === "string" ? state.data.mine : null;
         var pSid;
@@ -3277,6 +3517,8 @@
       releasePads();
       if (ctxBtnCache) { restoreCtxButton(ctxBtnCache); ctxBtnCache = null; }   // v92：还原原生按钮形态
       restoreQuotaChip();   // v95：摘除额度 chip（不留孤儿节点）
+      restoreGitChip();   // v96：摘掉本 pane 的 Git chip（含在显 tooltip）
+      cuaBtnCache = null;
       wantedEl = composer = cardCache = null;
       bar.remove();
       panel.remove();   // v80：面板挂 body，dispose 需单独摘除
@@ -3297,6 +3539,7 @@
       rebuild: function () { buildPanel(); rebuildExcBubble(); syncPanel(); },
       getSid: function () { return pickedSid || ""; },
       getScope: function () { return inactive() ? null : readPaneScope(wantedEl, pickedSid, pid); },
+      gitTouch: function () { if (!inactive()) enhanceGitChip(); },   // v96：主进程推送 git 状态后即时对账（不等 heavy）
       /* v71 确定性历史行数据源：DOM turn id（turnId 或 productTurnId 形态）→ tracker 统计 */
       statsFor: function (tid) {
         var h = bridge.handle;
