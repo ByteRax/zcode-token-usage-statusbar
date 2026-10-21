@@ -351,7 +351,7 @@ test('万/亿 toggle change persists and re-renders without touching display ite
   assert.deepEqual(context.state.show, { ctx: 1 });
 });
 
-test('the update section always shows a copyable reinstall prompt between the buttons and the status line', () => {
+test('the update section goes straight from the buttons to the status line without the retired reinstall prompt', () => {
   const buildSource = extract('    function settingRow(', '    function syncSettingsScroll() {');
   const body = { scrollTop: 0 };
   for (const lang of ['zh', 'en']) {
@@ -367,11 +367,9 @@ test('the update section always shows a copyable reinstall prompt between the bu
     };
     vm.runInNewContext(buildSource + '\nbuildPanel();', context);
     const html = context.panel.innerHTML;
-    assert.match(html, /zu-update-fallback/);
-    /* 这句是发给 agent 的重装口令，必须逐字可复制，不随界面语言变化 */
-    assert.match(html, /<code>更新zcode 插件 https:\/\/github\.com\/ByteRax\/zcode-token-usage-statusbar<\/code>/);
-    assert.ok(html.indexOf('zu-update-fallback') > html.indexOf('zu-update-actions'));
-    assert.ok(html.indexOf('zu-update-fallback') < html.indexOf('zu-update-status'));
+    /* v95：源码清单的仓库来源改由宿主插件管理器直接更新，v92 的重装口令提示块随之撤下 */
+    assert.doesNotMatch(html, /zu-update-fallback|更新zcode 插件|更新装不上/);
+    assert.match(html, /zu-update-actions">.*?<\/div><div class="pnote zu-update-status"/s);
   }
 });
 
@@ -400,6 +398,27 @@ function progressHarness(pluginUpdate, lang = 'zh') {
   return { box, status, context, rows, read, rerun: () => vm.runInNewContext('syncUpdate();', context) };
 }
 const base = { supported: true, auto: true, currentVersion: '1.5.0', latestVersion: '1.5.1', channel: 'release' };
+
+test('update source line names the market channel for repository-source catalogs and keeps release/local wording', () => {
+  const market = progressHarness({ ...base, phase: 'current', channel: 'market', channelHost: 'github' });
+  assert.match(market.status.textContent, /更新来源：GitHub 仓库源码（由插件管理器直接更新）/);
+  assert.match(market.status.textContent, / · 市场版本：1\.5\.1/);
+  assert.doesNotMatch(market.status.textContent, /Release/);
+  const gitcode = progressHarness({ ...base, phase: 'current', channel: 'market', channelHost: 'gitcode' }, 'en');
+  assert.match(gitcode.status.textContent, /Update source: GitCode repository source \(updated directly by the plugin manager\)/);
+  const release = progressHarness({ ...base, phase: 'current', channelHost: 'github' });
+  assert.match(release.status.textContent, /更新来源：GitHub 正式 Release（校验 ZIP 与 SHA256）/);
+  const local = progressHarness({ ...base, phase: 'current', channel: 'local' });
+  assert.match(local.status.textContent, /更新来源：本地目录市场/);
+});
+
+test('checking phase disables both buttons and announces the check in the status line', () => {
+  const h = progressHarness({ ...base, phase: 'checking', busy: true });
+  assert.match(h.status.textContent, /^正在检查更新…/);
+  assert.equal(h.context.panel.querySelector('[data-update=check]').disabled, true);
+  assert.equal(h.context.panel.querySelector('[data-update=update]').disabled, true);
+  assert.equal(h.box.hidden, true);
+});
 
 test('download phase shows byte progress on the download bar and parks the install bar', () => {
   const h = progressHarness({ ...base, phase: 'downloading', busy: true,

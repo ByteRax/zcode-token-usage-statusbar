@@ -20,7 +20,7 @@ python3 sync_plugin.py --check
 
 另覆盖真实多进程 OS 锁唯一持有者、EOF/父进程退出释放、同步交错防回滚、同版持续热修保护、安装提交后超时/孤儿安装进程协调、跨实例检查中关闭、持久重启哈希确认、相同源 mtime 的实际 loader/常驻 Python 热更新，以及 quiet/可见监控/`--finalize` 的来源/TMP 身份检查和短暂占用重试。测试只使用临时夹具，不操作真实客户端；Windows 分支测试不等同于 Windows 实机验收。
 
-另覆盖正式 GitHub Release 筛选、分页、资产来源和 SHA256、目录/远端分流、自定义 storage 与官方 CLI 一致性（普通 list --json 顶层数组与 list --available 对象包络两种真实形状）、渠道清单一致性、安装前关闭/禁用/卸载、来源/ref 变化、安装提交结果错配持续阻止同步及离线恢复。安全解包检查完整源码白名单、JSON/资源引用、路径/符号链接、真实压缩流/CRC/大小边界；发布工具共享此校验器。发布只使用临时仓库和 gh stub，真实源码 build → verify → download → unpack 有闭环回归，不执行真实发布。
+另覆盖正式 GitHub Release 筛选、分页、资产来源和 SHA256、目录/远端/源码清单三路分流、自定义 storage 与官方 CLI 一致性（普通 list --json 顶层数组与 list --available 对象包络两种真实形状）、安装前关闭/禁用/卸载、来源/ref 变化、安装提交结果错配持续阻止同步及离线恢复。安全解包检查完整源码白名单、JSON/资源引用、路径/符号链接、真实压缩流/CRC/大小边界；发布工具共享此校验器。发布只使用临时仓库和 gh stub，真实源码 build → verify → download → unpack 有闭环回归，不执行真实发布。
 
 另覆盖 R1–R14 修复：真实 Node 验收器与 SessionStart/sync/install 入口联动、活安装 PID 和错误 Release 拒绝、跨版本部分写入恢复并保护真实热修；语法失败包不能被手工/quiet/可见收尾激活，独有 TMP 暂存与发布中断可重试；所有运行时配置写入口共享锁；仓库大小写、版本化非核心文件增删、字面 argv、重定向总超时取消；实际双语 tooltip 和热更新代际清理、真实并发 hooks、本问开始时间/轮次身份与旧 schema 降级、未完成同步提示不冒称安装成功。
 
@@ -73,4 +73,4 @@ node tests/plugin-update-demo.cjs
 
 `/evidence` 是只读测试动作日志，包含调用的固定 CLI 参数、临时配置与当前状态。结束时 Ctrl+C 清理临时目录。
 
-生产环境的初次升级仍由用户在“设置 → 插件管理”完成；源码/清单更新不等同于已安装插件升级。1.4.0 的 GitHub 来源检测正式 Release 并核对发布渠道 ZIP/hash，不能回退开发分支；本地目录市场只检查本地代码，不执行 git pull。
+生产环境的初次升级仍由用户在“设置 → 插件管理”完成；源码/清单更新不等同于已安装插件升级。GitHub/GitCode 来源按市场缓存清单分流：zip 清单走正式 Release 检测与 ZIP/hash 核对；源码路径清单与本地目录市场交给宿主插件管理器按清单更新，不执行 git pull。

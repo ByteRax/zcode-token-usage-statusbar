@@ -10,18 +10,6 @@ const { resolvePluginStorage } = require("./plugin-storage.cjs");
 
 const PLUGIN_ID = "zcode-token-usage-statusbar@zusage-marketplace";
 const INTERVAL_MS = 24 * 60 * 60 * 1000;
-// 渠道清单与正式 Release 不一致多为发布刚完成、GitHub 内容缓存尚未刷新的几分钟窗口，
-// 自动更新按此间隔重试，而不是等满 INTERVAL_MS。
-const CHANNEL_RETRY_MS = 5 * 60 * 1000;
-// 源码安装（默认分支 / 本地路径清单）没有 Release 可校验。与其报渠道不一致并每 5 分钟
-// 重试，不如直接告诉用户怎么重装——这句话同时也是面板上提示的原文。
-const SOURCE_CHANNEL_HINT = "更新zcode 插件 https://github.com/ByteRax/zcode-token-usage-statusbar";
-/* 清单不是 Release 下载源有两种成因：确实从源码分支安装，或刚切换市场来源、缓存还没刷新。
-   两种情况都别断言死，提示里同时给出重装口令和刷新办法。 */
-const SOURCE_CHANNEL_ERROR = "当前市场的插件清单指向仓库源码，不是正式 Release 渠道——"
-  + "要么是源码分支安装，要么是刚切换来源、市场还没刷新。面板里的自动更新只支持正式 Release 渠道。"
-  + "把这句话发给 ZCode：「" + SOURCE_CHANNEL_HINT + "」，让它帮你重装；"
-  + "刚切换过来源的话，先在设置里刷新市场再试一次。";
 
 function compareVersions(a, b) {
   const parse = (v) => /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(v || "");
@@ -324,15 +312,17 @@ function createUpdater(options) {
     if (errors.length) throw new Error(errors.map((d) => d.message).join("; "));
   }
   async function check(auto = false, install = false) {
-    if (busy) return;
+    if (busy) { if (!auto) publish(); return; }
     refreshLocal();
     if (!state.supported) { state.phase = localError ? "error" : "unavailable"; state.error = localError; publish(); return; }
     busy = true;
+    // 手动检查要立刻有反馈：取锁、恢复待处理意图等前置步骤可能耗时数秒，不能让面板毫无动静。
+    if (!auto) { state.phase = "checking"; state.error = ""; publish(); }
     let release;
     try {
-      if (legacyLockBusy(runtime)) return;
+      if (legacyLockBusy(runtime)) { if (!auto) throw new Error("另一个更新进程仍在运行，请稍后重试"); return; }
       release = await lock();
-      if (!release || legacyLockBusy(runtime)) return;
+      if (!release || legacyLockBusy(runtime)) { if (!auto) throw new Error("另一个更新进程仍在运行，请稍后重试"); return; }
       load();
       if (state.pendingSync && await recoverPending()) return;
       refreshLocal();
@@ -341,7 +331,7 @@ function createUpdater(options) {
       state.lastAttempt = now();
       save();
       const source = channel();
-      state.channel = source.kind; state.channelHost = source.kind === "release" ? (source.flavor === "gitcode" ? "gitcode" : "github") : "";
+      state.channel = source.kind; state.channelHost = source.flavor === "gitcode" ? "gitcode" : source.flavor === "github" ? "github" : "";
       state.releaseUrl = ""; selectedRelease = null; selectedChannel = source;
       if (source.kind === "release" && source.flavor === "gitcode") {
         // GitCode 渠道：宿主从注册 ref 拉取的渠道清单是唯一版本源，不调 GitCode API。
@@ -350,11 +340,6 @@ function createUpdater(options) {
         if (!isDeepStrictEqual(channel(), source)) throw new Error("更新期间市场来源已变化");
         selectedRelease = releaseChannel.gitcodeReleaseFromCatalog(readReleaseCatalog(), source.repository);
       } else if (source.kind === "release") {
-        /* 清单指向仓库源码（默认分支 / 本地路径）时没有可校验的 Release。提前给可操作
-           提示，不要走完下载才抛渠道不一致，也不要进入无意义的 5 分钟重试。 */
-        let catalogKind;
-        try { catalogKind = releaseChannel.catalogChannel(readReleaseCatalog()); } catch (e) { catalogKind = "unknown"; }
-        if (catalogKind === "source") throw new Error(SOURCE_CHANNEL_ERROR);
         selectedRelease = await releaseChannel.checkRelease(source.repository, compareVersions, fetchRelease);
       }
       if (selectedRelease) {
@@ -445,8 +430,6 @@ function createUpdater(options) {
         state.progress = { stage: "verify" }; publish();
         const market = await cli(["marketplace", "update", "zusage-marketplace"]); diagnostics(market);
         if (!isDeepStrictEqual(channel(), currentChannel)) throw new Error("更新期间市场来源已变化");
-        try { releaseChannel.validateCatalog(readReleaseCatalog(), selectedRelease, downloaded.manifest); }
-        catch (cause) { throw selectedRelease.flavor === "gitcode" ? cause : channelLagError(cause); }
         record = refreshLocal();
         if (!record) throw new Error("插件已卸载，更新已取消");
         if (auto && !state.auto) { abandon(); return; }
@@ -486,16 +469,6 @@ function createUpdater(options) {
       if (selectedRelease) verifyReleaseCommit(committed);
       await syncInstalled();
     } finally { if (downloaded && downloaded.cleanup) downloaded.cleanup(); }
-  }
-  function channelLagError(cause) {
-    // 校验门本身不放宽（宿主按渠道清单安装，必须与已校验的 Release 一致）；只把维护者
-    // 视角的报错换成用户可操作的提示，并把下次自动重试提前到 CHANNEL_RETRY_MS。
-    console.error("[zusage-plugin] release channel mismatch:", cause.message);
-    state.lastAttempt = now() - INTERVAL_MS + CHANNEL_RETRY_MS; save();
-    const error = new Error("更新渠道尚未同步到最新 Release（GitHub 缓存可能延迟几分钟）；"
-      + (state.auto ? "稍后会自动重试" : "请稍后再点「立即更新」"));
-    error.cause = cause;
-    return error;
   }
   function verifyReleaseCommit(record) {
     verifyCommittedRelease(record, state.pendingRelease, channel());
@@ -575,7 +548,7 @@ async function runAutoCommand(argv) {
   if (state.phase === "error") process.exitCode = 1;
 }
 
-module.exports = { createUpdater, compareVersions, INTERVAL_MS, CHANNEL_RETRY_MS, PLUGIN_ID, runAutoCommand, updateConfig, verifyRuntimeSync, listOverview };
+module.exports = { createUpdater, compareVersions, INTERVAL_MS, PLUGIN_ID, runAutoCommand, updateConfig, verifyRuntimeSync, listOverview };
 if (require.main === module) {
   const argv = process.argv.slice(2);
   if (argv[0] === "--verify-runtime-sync") {

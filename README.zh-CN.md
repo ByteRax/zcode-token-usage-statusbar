@@ -223,9 +223,8 @@ macOS 上要是没有 `python`，就写 `python3 install.py`。
 **以后怎么更新？**
 
 - **插件（正式渠道）**：在 ZCode 里敲 `/plugin marketplace update zusage-marketplace`，再去 **设置 → 插件 → 已安装** 更新这个插件。或者直接点 ⚙ 里的「检查更新 / 立即更新」。自动更新默认是开的。注册的是 GitCode 渠道的话，这套更新从版本检查到下载安装全部走 GitCode，⚙ 的「更新来源」会写明当前渠道。
-- **本地目录 / 源码分支**：⚙ 里的自动更新只认正式 Release。源码安装点它会提示"不支持自动更新"，请先 `git pull` 再重新安装，或按[切换到正式渠道](docs/user-guide.md#切换已有市场到正式渠道)迁移。
+- **本地目录 / 源码分支**：⚙ 里的「检查更新 / 立即更新」同样可用。这类来源没有正式 Release 可校验，更新由 ZCode 插件管理器按市场清单直接拉取源码安装（相当于替你做了 `marketplace update` + 插件更新，不经过发布包 SHA256 校验），⚙ 的「更新来源」会写明「仓库源码」或「本地目录市场」。想走带校验的发布包，按[切换到正式渠道](docs/user-guide.md#切换已有市场到正式渠道)迁移。
 - **一键安装器**：⚙ 里的「检查更新」只对插件安装有效。一键安装的更新就两步：进克隆目录 `git pull`（从哪个地址克隆的就从哪里拉，GitCode 镜像用户拉的就是 GitCode），再重跑一次 `python install.py`。
-- 更新装不上时，也可以把「更新zcode 插件 https://github.com/ByteRax/zcode-token-usage-statusbar」这句话直接发给 ZCode，让它帮你重装。
 - 更新完新建或重开会话；如果提示主进程文件变了，就完全退出再重开 ZCode。
 
 [更多安装、更新和排查 →](docs/user-guide.md#插件安装)

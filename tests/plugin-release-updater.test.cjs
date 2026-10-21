@@ -7,7 +7,7 @@ const path = require("path");
 const crypto = require("crypto");
 const { execFile } = require("child_process");
 const { promisify } = require("util");
-const { createUpdater, PLUGIN_ID, INTERVAL_MS, CHANNEL_RETRY_MS } = require("../plugin-updater.cjs");
+const { createUpdater, PLUGIN_ID, INTERVAL_MS, verifyRuntimeSync } = require("../plugin-updater.cjs");
 const { validateRelease, validateManifest, downloadRelease, gitcodeReleaseFromCatalog } = require("../plugin-release.cjs");
 
 const PLUGIN = "zcode-token-usage-statusbar";
@@ -177,25 +177,116 @@ async function assertPendingBlocked(f, expected) {
   }
 }
 
-test("a source-branch marketplace says automatic updates are unavailable instead of a channel mismatch", async (t) => {
-  const f = fixture(t, { plugin_auto_update: true });
-  /* 默认分支安装的形态：已注册市场的清单指向仓库源码，不是 Release ZIP。
-     修复前这里会走完下载、再抛「市场尚未发布与正式 Release 一致的校验下载源」，
-     并进入每 5 分钟一次、永远不会成功的重试。 */
-  writeJson(f.catalogFile, { name: MARKET, plugins: [{ name: PLUGIN, version: "1.1.0",
-    source: "./plugins/zcode-token-usage-statusbar" }] });
+/* 默认分支安装的形态：已注册的是 GitHub 仓库来源，但市场清单里的插件条目是源码路径
+   （"./plugins/..."），没有可校验的 Release。readChannel 把它判为 market 渠道，更新走
+   宿主插件管理器自身的 marketplace update → list --available → update，不碰 Release API。 */
+function sourceCatalogFixture(t, version, settings = {}, variant = "github") {
+  const f = fixture(t, settings, false, variant);
+  const catalog = { name: MARKET, plugins: [{ name: PLUGIN, version, source: "./plugins/" + PLUGIN }] };
+  writeJson(f.catalogFile, catalog);
+  f.hostCalls = [];
+  f.options.cli = async (args) => {
+    f.hostCalls.push([...args]); f.events.push(args[0]);
+    if (args[0] === "marketplace") { assert.deepEqual(args, ["marketplace", "update", MARKET]); writeJson(f.catalogFile, catalog); return { diagnostics: [] }; }
+    if (args[0] === "list") {
+      assert.deepEqual(args, ["list", "--available"]);
+      return { installed: [{ id: PLUGIN_ID, version: f.record.version, enabled: f.enabled, scope: "user" }],
+        available: [{ id: PLUGIN_ID, version }], diagnostics: [] };
+    }
+    assert.deepEqual(args, ["update", PLUGIN_ID]);
+    const intent = readJson(f.stateFile);
+    assert.equal(intent.pendingSync, true); assert.equal(intent.pendingRelease, null);
+    f.record.version = version; f.writeRecord();
+    return { ok: true, diagnostics: [] };
+  };
+  f.updater = f.restart();
+  return f;
+}
+
+for (const variant of ["github", "gitcode"]) {
+  test(`${variant} marketplace whose catalog points at repository source updates through the host plugin manager`, async (t) => {
+    const f = sourceCatalogFixture(t, "1.1.0", { plugin_auto_update: true }, variant);
+    await f.updater.request({ action: "update" });
+    const state = f.updater.status();
+    assert.equal(state.phase, "updated", state.error);
+    assert.equal(state.channel, "market"); assert.equal(state.channelHost, variant);
+    assert.equal(state.currentVersion, "1.1.0"); assert.equal(state.latestVersion, "1.1.0");
+    assert.equal(f.events.includes("fetch"), false);            // 不查 Release 列表
+    assert.equal(f.events.includes("prepare"), false);          // 不下载发布包
+    assert.deepEqual(f.hostCalls.map((args) => args[0]), ["marketplace", "list", "update"]);
+    assert.equal(f.syncs.length, 1);
+    assert.equal(readJson(f.stateFile).pendingSync, false);
+  });
+}
+
+test("source-catalog marketplace reports up to date without installing when versions match", async (t) => {
+  const f = sourceCatalogFixture(t, "1.0.0");
   await f.updater.request({ action: "check" });
-  const state = f.updater.status();
-  assert.equal(state.phase, "error");
-  assert.match(state.error, /源码分支/);
-  assert.match(state.error, /更新zcode 插件 https:\/\/github\.com\/ByteRax\/zcode-token-usage-statusbar/);
-  assert.doesNotMatch(state.error, /渠道清单/);
-  /* 刚切换市场来源、缓存还没刷新时也会走到这里，提示不能断言死是源码安装 */
-  assert.match(state.error, /市场还没刷新/);
-  assert.match(state.error, /刷新市场再试一次/);
-  assert.equal(f.events.includes("fetch"), false);          // 没有可校验的 Release，不去查 Release 列表
-  assert.equal(f.events.includes("prepare"), false);
-  assert.equal(f.calls.filter((args) => args[0] === "install" || args[0] === "update").length, 0);
+  assert.equal(f.updater.status().phase, "current");
+  assert.equal(f.updater.status().channel, "market");
+  assertNoInstall(f);
+});
+
+test("source-catalog pending intent recovers through runtime sync after restart without demanding Release proof", async (t) => {
+  const f = sourceCatalogFixture(t, "1.1.0");
+  f.record.version = "1.1.0"; f.writeRecord();
+  writeJson(f.stateFile, { checkedAt: 100000000, lastAttempt: 100000000, pendingSync: true,
+    pendingVersion: "1.0.0", pendingPid: 0, pendingRelease: null });
+  const restored = f.restart(); await restored.tick();
+  assert.equal(restored.status().phase, "updated", restored.status().error);
+  assert.equal(f.syncs.length, 1);
+  assert.equal(readJson(f.stateFile).pendingSync, false);
+});
+
+/* SessionStart 的运行目录同步验收（overlay_install.py 调 verifyRuntimeSync）走的是另一条独立入口，
+   直接读 plugin-update.json 与宿主安装记录。源码清单的仓库来源在这里也必须按 market 放行，
+   否则 main 用户面板更新成功后，下次会话会以「缺少 Release 校验信息」拦停同步。 */
+test("verifyRuntimeSync accepts a committed market intent for a source-catalog repository marketplace but still demands Release proof for zip catalogs", (t) => {
+  const f = fixture(t);
+  fs.mkdirSync(path.join(f.record.installPath, ".zcode-plugin"), { recursive: true });
+  writeJson(path.join(f.record.installPath, ".zcode-plugin", "plugin.json"), { name: PLUGIN, version: "1.1.0" });
+  f.record.version = "1.1.0"; f.record.enabled = true; f.writeRecord();
+  writeJson(f.stateFile, { checkedAt: 1, lastAttempt: 1, pendingSync: true, pendingVersion: "1.0.0", pendingPid: 0, pendingRelease: null });
+  const run = () => verifyRuntimeSync({ runtime: f.runtime, pluginRoot: f.record.installPath, home: f.home, env: {} });
+  writeJson(f.catalogFile, { name: MARKET, plugins: [{ name: PLUGIN, version: "1.1.0", source: "./plugins/" + PLUGIN }] });
+  const accepted = run();
+  assert.equal(accepted.ok, true); assert.equal(accepted.identity.channel.kind, "market");
+  writeJson(f.catalogFile, f.catalog);   // 同一注册来源、清单换成 Release zip → 仍是 release 渠道，无 Release 证据的意图不放行
+  assert.throws(run, /缺少 Release 校验信息/);
+});
+
+test("manual check publishes checking before the update lock is taken and reports a busy lock instead of staying silent", async (t) => {
+  const f = fixture(t);
+  let seenAtLock = null;
+  f.options.acquireLock = async () => { seenAtLock = clone(f.states[f.states.length - 1]); return null; };
+  f.updater = f.restart();
+  await f.updater.request({ action: "check" });
+  assert.equal(seenAtLock.phase, "checking"); assert.equal(seenAtLock.busy, true);
+  assert.equal(f.updater.status().phase, "error");
+  assert.match(f.updater.status().error, /另一个更新进程仍在运行/);
+  assert.equal(f.updater.status().busy, false);
+  // 自动检查撞锁仍然静默，不把后台轮询的锁竞争当成错误弹给用户
+  const g = fixture(t, { plugin_auto_update: true });
+  g.options.acquireLock = async () => null;
+  g.updater = g.restart();
+  await g.updater.tick();
+  assert.equal(g.updater.status().phase, "idle");
+  assert.equal(g.states.some((s) => s.phase === "error" || s.phase === "checking"), false);
+  assert.equal(g.events.includes("fetch"), false);
+});
+
+test("manual request while another check is in flight republishes the busy state", async (t) => {
+  const f = fixture(t);
+  let releaseLock;
+  f.options.acquireLock = () => new Promise((resolve) => { releaseLock = () => resolve(() => {}); });
+  f.updater = f.restart();
+  const first = f.updater.request({ action: "check" });
+  await new Promise((resolve) => setImmediate(resolve));
+  f.states.length = 0;
+  await f.updater.request({ action: "check" });
+  assert.equal(f.states.length, 1); assert.equal(f.states[0].busy, true); assert.equal(f.states[0].phase, "checking");
+  releaseLock(); await first;
+  assert.equal(f.updater.status().busy, false);
 });
 
 test("Release check selects the newest stable package without catalog refresh, download or install", async (t) => {
@@ -282,19 +373,26 @@ for (const mode of ["manual", "auto"]) {
   });
 }
 
-for (const failure of ["download", "catalog fetch", "catalog hash", "catalog URL", "catalog transaction"]) {
+for (const failure of ["download", "catalog fetch"]) {
   test(`Release ${failure} failure never invokes the installer or sync`, async (t) => {
     const f = fixture(t);
     if (failure === "download") f.prepareError = "fixture download SHA256 failure";
     if (failure === "catalog fetch") f.marketError = "fixture catalog fetch failure";
-    if (failure === "catalog hash") f.catalog.plugins[0].source.sha256 = "0".repeat(64);
-    if (failure === "catalog URL") f.catalog.plugins[0].source.url = "https://github.com/other/repo/releases/download/v1.1.0/package.zip";
-    if (failure === "catalog transaction") writeJson(path.join(f.inventory, "marketplaces", ".zusage-marketplace.transaction.json"), {});
     await f.updater.request({ action: "update" });
     assert.equal(f.updater.status().phase, "error"); assert.equal(f.updater.status().pendingSync, false);
     assertNoInstall(f); assertCleaned(f); assert.equal(f.record.version, "1.0.0");
   });
 }
+
+test("Release install no longer gates on the marketplace catalog matching the Release; the installed record is still verified afterwards", async (t) => {
+  const f = fixture(t);
+  f.catalog.plugins[0].source.sha256 = "0".repeat(64);
+  await f.updater.request({ action: "update" });
+  assert.equal(f.calls.filter((args) => args[0] === "install").length, 1);   // 校验门已删：清单不一致也照常交给宿主安装
+  assert.equal(f.updater.status().phase, "error");
+  assert.match(f.updater.status().error, /官方安装结果与选定 Release 不一致/);   // 安装后复核仍在，不同步运行目录
+  assert.equal(f.syncs.length, 0); assertCleaned(f);
+});
 
 for (const change of ["disabled", "uninstalled", "ref", "newer inventory"]) {
   test(`Release second inventory list rechecks ${change} before installer launch`, async (t) => {
@@ -619,35 +717,6 @@ test("Release download byte progress is throttled but stage changes and completi
   assert.deepEqual(loaded, [0, 1, 17]);
 });
 
-test("Release catalog mismatch is reported as channel lag to the user and retried after CHANNEL_RETRY_MS instead of INTERVAL_MS", async (t) => {
-  const f = fixture(t);
-  f.catalog.plugins[0].source.sha256 = "0".repeat(64);
-  await f.updater.request({ action: "update" });
-  const status = f.updater.status();
-  assert.equal(status.phase, "error"); assert.equal(status.progress, null);
-  assert.match(status.error, /更新渠道尚未同步到最新 Release/);
-  assert.match(status.error, /稍后会自动重试/);   // 自动更新默认开启
-  assert.doesNotMatch(status.error, /请维护者/);
-  assertNoInstall(f); assertCleaned(f);
-  assert.equal(readJson(f.stateFile).lastAttempt, 100000000 - INTERVAL_MS + CHANNEL_RETRY_MS);
-  const fetches = () => f.events.filter((e) => e === "fetch").length;
-  const before = fetches();
-  f.options.now = () => 100000000 + CHANNEL_RETRY_MS - 1;
-  await f.restart().tick();
-  assert.equal(fetches(), before, "no automatic retry before CHANNEL_RETRY_MS");
-  f.options.now = () => 100000000 + CHANNEL_RETRY_MS;
-  await f.restart().tick();
-  assert.equal(fetches(), before + 1, "automatic retry once CHANNEL_RETRY_MS elapsed");
-});
-
-test("Release catalog mismatch with automatic updates disabled tells the user to retry manually", async (t) => {
-  const f = fixture(t, { plugin_auto_update: false });
-  f.catalog.plugins[0].source.sha256 = "0".repeat(64);
-  await f.updater.request({ action: "update" });
-  assert.match(f.updater.status().error, /请稍后再点「立即更新」/);
-  assertNoInstall(f);
-});
-
 test("Release update abandoned after download returns to available without stale progress", async (t) => {
   const f = fixture(t);
   f.afterList = (count) => { if (count === 2) { f.record.version = "2.0.0"; f.writeRecord(); } };
@@ -752,15 +821,4 @@ print(json.dumps(tool.build(root, sys.argv[3], Path(sys.argv[2]) / "assets")))
   assert.ok(downloadCalls.every((url) => url.startsWith("https://gitcode.com/")));
   assert.deepEqual(f.events, ["marketplace", "list", "prepare", "marketplace", "list", "install", "sync", "cleanup"]);
   assert.equal(f.syncs.length, 1);
-});
-
-test("GitCode channel catalog mismatch surfaces the real inconsistency instead of the GitHub lag hint", async (t) => {
-  const f = fixture(t, {}, false, "gitcode");
-  f.setGitcodeRelease("1.1.0");
-  f.manifest.asset.sha256 = "1".repeat(64);
-  await f.updater.request({ action: "update" });
-  assert.equal(f.updater.status().phase, "error");
-  assert.doesNotMatch(f.updater.status().error, /尚未同步到最新/);
-  assert.match(f.updater.status().error, /一致|清单/);
-  assertNoInstall(f); assertCleaned(f);
 });

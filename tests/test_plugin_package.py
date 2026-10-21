@@ -35,7 +35,12 @@ class PluginPackageTests(unittest.TestCase):
         self.assertIn("cb.disabled = !active;", overlay)
         self.assertIn("stable GitHub Release (validated ZIP and SHA256)", overlay)
         self.assertIn("stable GitCode Release (validated ZIP and SHA256)", overlay)
-        self.assertIn("Update source: local directory marketplace", overlay)
+        # v95：来源前缀与渠道名分开本地化，新增仓库源码（market 渠道）分支
+        self.assertIn('L("更新来源：", "Update source: ")', overlay)
+        self.assertIn('L("本地目录市场", "local directory marketplace")', overlay)
+        self.assertIn("GitHub repository source (updated directly by the plugin manager)", overlay)
+        self.assertIn("GitCode repository source (updated directly by the plugin manager)", overlay)
+        self.assertNotIn("zu-update-fallback", overlay)
         self.assertIn("Release version:", overlay)
         self.assertIn("Turning automatic updates off stops future installs; an install already started will finish", overlay)
 
