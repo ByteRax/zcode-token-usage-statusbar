@@ -67,7 +67,7 @@ python3 sync_plugin.py --check
 
 - 保持修改聚焦，沿用现有原生代码与注释密度；不为统一风格引入框架、依赖或大规模重构。
 - `.js` 浮层是注入浏览器的脚本；`.cjs` 是 CommonJS。客户端入口可能是 ESM，注入行必须动态 `import`，不能直接 `require`；Web sidecar `.mjs` 是 Node ESM，`boot.js` 是浏览器脚本。
-- Python 路径使用 `Path`/已有定位逻辑；`python`、`python3`、`python_path` 与宿主实际可执行命令要区分，插件配置当前使用 `python3`，Windows 不保证有该别名。
+- Python 路径使用 `Path`/已有定位逻辑；`python`、`python3`、`python_path` 与宿主实际可执行命令要区分，Windows 不保证有 `python3` 别名。插件 hooks.json 是 command+shell 回退链 `python3 → python → py -3`（POSIX sh 与 Windows `%ComSpec%`=cmd.exe 都支持 `||`，宿主丢弃成功 hook 的 stderr 诊断）；`.mcp.json` 仍固定 `python3`——宿主对 stdio MCP 按 `shell:false` 直接 spawn 无回退通道，macOS CLT 只有 `python3`，不能整体改名。桌面主桥 `readCfg()` 的 `python_path` 缺省与空值一律归一为平台默认（win32=`python`，其它=`python3`），三个 spawn 点直接读它；注入/安装时会把 `sys.executable` 绝对路径写回配置并在每次 SessionStart 刷新。改这两处前先对当前客户端版本引擎核对 process/command 两种 hook 类型的 schema 与展开语义。
 - 保留带空格路径、Unicode、引号与平台进程行为的测试。POSIX shell 用既有 `shlex` 引用；Windows PowerShell 的 UTF-16LE `EncodedCommand` 路径不能简化为裸引号。
 - Windows 进程查询沿用 `subprocess` argv 与相应解码，不让 Git Bash 转换 `/FI` 等开关；asar 被占用的收尾必须由宿主以外的监控进程执行，不能依赖 ZCode 自己的定时任务。
 - 配置只合并需要的键，不整体覆盖 `config.json`；保留未知键、用户显式关闭与个人路径。插件配置事务在锁内重读、合并，再同目录原子替换；损坏或非对象配置不能被默默重建。

@@ -108,6 +108,6 @@
 - `plugin_auto_update: false`：关闭插件自动更新。
 - `plugin_auto_install_overlay: false`：关闭新建/恢复会话时自动安装/修复状态条；默认开，成功后仍需完全退出并重开。
 
-Windows 若没有 `python3`，需要把 `.mcp.json` 和 `hooks/hooks.json` 中的 Python 命令改成可用的名称，再刷新安装。
+Windows 若没有 `python3`：插件 hook 命令按 `python3` → `python` → `py -3` 自动回退，无需改文件；`.mcp.json` 仍固定 `python3`（宿主对 stdio MCP 直接 spawn，没有回退通道，macOS 自带只有 `python3`），需要 MCP 工具时才手工把安装副本里的 `command` 改成可用解释器，插件自动更新可能覆盖。
 
 开发者：本包的部分文件是根源码的副本，改根文件后运行 `python3 sync_plugin.py`；在仓库查看 `docs/maintaining.md` 与 `tests/README.md` 了解开发、发布和隔离测试。

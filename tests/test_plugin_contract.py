@@ -49,9 +49,27 @@ class PluginContractTests(unittest.TestCase):
         self.assertEqual(start["hooks"][0]["timeoutMs"], 60000)
         self.assertEqual(hooks["UserPromptSubmit"][0]["hooks"][0]["timeoutMs"], 8000)
 
+    def test_hook_commands_fall_back_across_interpreters(self):
+        # 宿主对 process 型 hook 直接 spawn 裸命令名，Windows 无 python3.exe 时整个 hook 失败；
+        # command+shell 型由宿主经 /bin/sh（POSIX）或 %ComSpec%=cmd.exe（Windows）执行，
+        # || 回退链在两种 shell 里都成立，成功 hook 的 stderr 诊断引擎不外显。
+        hooks = json.loads((PLUGIN / "hooks/hooks.json").read_text(encoding="utf-8"))["hooks"]
+        for event, script in (("SessionStart", "session-start.py"),
+                              ("UserPromptSubmit", "prompt-submit.py")):
+            hook = hooks[event][0]["hooks"][0]
+            self.assertEqual(hook["type"], "command", event)
+            self.assertIs(hook["shell"], True, event)
+            self.assertEqual(hook["command"].count(" || "), 2, event)
+            for interpreter in ("python3", "python", "py -3"):
+                expected = f'{interpreter} "${{ZCODE_PLUGIN_ROOT}}/hooks/{script}"'
+                self.assertIn(expected, hook["command"], event)
+
     def test_mcp_declaration_uses_short_service_key_and_same_script(self):
         servers = json.loads((PLUGIN / ".mcp.json").read_text(encoding="utf-8"))["mcpServers"]
         self.assertEqual(list(servers), ["zusage"])
+        # 宿主对 stdio MCP 按 shell:false 直接 spawn，没有 shell 回退通道；
+        # macOS CLT 只有 python3、无 python，不能一刀切改名，Windows 需要时按用户指南手工改。
+        self.assertEqual(servers["zusage"]["command"], "python3")
         self.assertEqual(servers["zusage"]["args"], ["${ZCODE_PLUGIN_ROOT}/usage_mcp.py"])
 
     def test_prompt_hook_no_longer_injects_model_instruction(self):
