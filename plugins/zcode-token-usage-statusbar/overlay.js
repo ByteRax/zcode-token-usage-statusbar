@@ -48,7 +48,7 @@
    * 确定性历史行（[data-zusage-deterministic]，挂在消息流 turn 容器末尾）一并自清。
    * v80：面板（.zusage-panel）挂 body 不随条走，清理选择器单列。 */
   try {
-    document.querySelectorAll(".zusage-root,.zusage-tip-root,.zusage-exc,.zusage-rate-tip,.zusage-panel,[data-zusage-deterministic],[data-zusage-loading-status]").forEach(function (el) { el.remove(); });
+    document.querySelectorAll(".zusage-root,.zusage-tip-root,.zusage-exc,.zusage-rate-tip,.zusage-quota-tip,.zu-quota,.zusage-panel,[data-zusage-deterministic],[data-zusage-loading-status]").forEach(function (el) { el.remove(); });
   } catch (e) { }
 
   try {
@@ -74,6 +74,9 @@
     /* 逐问速率行开关：真值在运行时 config.json 的 answer_rate_line（主进程随插件状态推送
        rateLine 字段），渲染端只做展示与请求转发；缺省开启 */
     rateLine: !(window.__zusagePluginState && window.__zusagePluginState.rateLine === false),
+    /* v96 套餐额度开关：真值在 config.json 的 quota_enabled（主进程据此决定是否解密凭据
+       联网查询，并随插件状态推送 quotaEnabled）；缺省关闭——读凭据联网属能力升级，须显式开启 */
+    quotaEnabled: !!(window.__zusagePluginState && window.__zusagePluginState.quotaEnabled === true),
   };
   /* ---------- i18n（v57）：L(中文, English) 内联双语文案，语言存 localStorage ---------- */
   function L(zh, en) { return state.lang === "en" ? en : zh; }
@@ -181,6 +184,7 @@
     if (stale() || JSON.stringify(state.pluginUpdate) === JSON.stringify(s)) return;
     window.__zusagePluginState = state.pluginUpdate = s;
     if (s && typeof s.rateLine === "boolean") state.rateLine = s.rateLine;
+    if (s && typeof s.quotaEnabled === "boolean") state.quotaEnabled = s.quotaEnabled;   // v95：chip 门控随主进程真值（heavy 对账点内生效）
     scanRateLines();
     instances.forEach(function (inst) { inst.syncUpdate(); });
   };
@@ -292,6 +296,101 @@
     rateTip.style.display = "none";
     rateTipFor = null;
   }
+
+  /* ---------- v96 套餐额度 chip 的悬停说明：rateTip 同款 document 级独立浮层 ----------
+   * chip 挂在宿主工具栏（条外），状态条 .it 的 tooltip 事件委托覆盖不到它；mouseenter/
+   * leave 自管理，内容按 chip.__zuQ（render 时写入的最近快照）在悬停时即时生成。 */
+  var quotaTip = document.createElement("div");
+  quotaTip.className = "tip zusage-quota-tip";
+  quotaTip.style.cssText = rateTip.style.cssText;
+  document.body.appendChild(quotaTip);
+  var quotaTipFor = null;
+  function qTime(v) {   // 统一 yyyy-MM-dd HH:mm；接受毫秒数或 ISO 字符串
+    if (v == null || v === "") return "";
+    var d = typeof v === "number" ? new Date(v) : new Date(String(v));
+    if (isNaN(d.getTime())) return "";
+    var pad = function (n) { return (n < 10 ? "0" : "") + n; };
+    return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + " " + pad(d.getHours()) + ":" + pad(d.getMinutes());
+  }
+  function quotaFamilyLabel(provider) { return String(provider || "").indexOf("account:zai") === 0 ? "Z.ai" : "BigModel"; }
+  function quotaLevelLabel(level) {
+    var m = { max: "Max", pro: "Pro", lite: "Lite" };
+    return m[String(level || "").toLowerCase()] || String(level || "");
+  }
+  function quotaStatusText(st) {
+    return {
+      auth_failed: L("认证失效：重新登录 ZCode 后自动恢复", "Authentication failed: recovers after signing in to ZCode again"),
+      rate_limited: L("接口限流，稍后自动重试", "Rate limited; retrying later"),
+      network_error: L("网络错误，稍后自动重试", "Network error; retrying later"),
+      parse_error: L("接口返回格式变化，已降低查询频率", "Unexpected response format; polling slowed down"),
+      no_plan: L("当前账号未订阅编码套餐", "No coding plan on this account"),
+    }[st] || "";
+  }
+  function quotaTipHTML(d) {
+    var esc = function (s) { return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); };
+    var row = function (label, text) { return '<div class="qt-row"><b>' + label + "</b><span>" + text + "</span></div>"; };
+    var css = '<style>.zusage-quota-tip .qt-h{font-weight:600;color:var(--color-tooltip-foreground,#fafafa);margin:0 0 7px}' +
+      ".zusage-quota-tip .qt-row{display:flex;gap:10px;margin:3px 0}" +
+      ".zusage-quota-tip .qt-row b{flex:0 0 auto;min-width:78px;color:var(--color-tooltip-foreground,#fafafa);font-weight:600}" +
+      ".zusage-quota-tip .qt-row span{color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      ".zusage-quota-tip .qt-cur{color:var(--color-tooltip-foreground,#fafafa);font-weight:600}" +
+      ".zusage-quota-tip .qt-warn{color:#f5b944}" +
+      '.zusage-quota-tip .qt-note{margin-top:8px;padding-top:7px;border-top:1px solid var(--color-border,transparent);color:var(--color-tooltip-tag-foreground,#a6a6a6)}</style>';
+    if (d.mode.kind === "team") {
+      return css + '<div class="qt-h">⊘ ' + L("团队套餐额度", "Team plan quota") + "</div>" +
+        '<div class="qt-note">' + L("团队套餐需要组织/项目维度的查询，当前版本暂不支持；个人编码套餐已支持。", "Team plans need organization/project-scoped queries, which this version does not support yet; individual coding plans are supported.") + "</div>";
+    }
+    var q = d.q || {};
+    /* 标题：有订阅元数据（productName/version/valid）时拼成一行；缺失回退 family+档位 */
+    var pl = q.plan;
+    var head = (pl && (pl.productName || pl.version))
+      ? [pl.productName, pl.version].filter(Boolean).map(esc).join(" · ") +
+        (pl.validEnd ? L(" · 有效期至 ", " · valid until ") + esc(pl.validEnd) : "")
+      : quotaFamilyLabel(d.provider) + (q.level ? " " + esc(quotaLevelLabel(q.level)) : "");
+    var out = css + '<div class="qt-h">' + L("套餐额度", "Plan quota") + " · " + head + "</div>";
+    var w = q.windows || {};
+    var winRow = function (label, e) {
+      if (!e) return "";
+      var pct = typeof e.percent === "number" ? (Math.round(e.percent * 10) / 10) + "%" : "—";
+      var rs = qTime(e.resetsAt);
+      return row(label, L("已用 ", "used ") + pct + (rs ? " · " + L("重置 ", "resets ") + rs : ""));
+    };
+    out += winRow(L("5小时窗口", "5-hour window"), w.fiveHour) + winRow(L("本周窗口", "This week"), w.weekly);
+    if (q.tools && (q.tools.total != null || q.tools.used != null)) {
+      var tr = qTime(q.tools.resetsAt);
+      out += row(L("内置工具", "Built-in tools"), (q.tools.used == null ? "—" : q.tools.used) + " / " + (q.tools.total == null ? "—" : q.tools.total) +
+        L(" 次", " calls") + (tr ? " · " + L("重置 ", "resets ") + tr : ""));
+    }
+    var models = Array.isArray(q.models) ? q.models : [], cur = String(d.model || "");
+    var scope = models.length
+      ? models.map(function (m) { return String(m).toLowerCase() === cur.toLowerCase() ? '<span class="qt-cur">' + esc(m) + "</span>" : esc(m); }).join(", ")
+      : L("套餐内全部模型", "all models in the plan") + (cur ? L("（当前 ", " (current ") + '<span class="qt-cur">' + esc(cur) + "</span>" + L("）", ")") : "");
+    out += row(L("覆盖范围", "Covers"), scope);
+    var foot = (q.fetchedAt ? L("更新于 ", "updated ") + qTime(q.fetchedAt) : "") + (q.stale ? L("（已过期，等待刷新）", " (stale, refreshing)") : "");
+    var err = q.status && q.status !== "ok" && q.status !== "idle" ? quotaStatusText(q.status) : "";
+    if (err) foot += (foot ? " · " : "") + '<span class="qt-warn">⚠ ' + err + "</span>";
+    out += '<div class="qt-note">' + (foot ? foot + "<br>" : "") +
+      L("套餐池为账号级：同账号所有模型共用，不是单个模型独享。点击 chip 立即刷新。", "The pool is account-level: shared by every model on this account, not per model. Click the chip to refresh.") + "</div>";
+    return out;
+  }
+  function showQuotaTip(el) {
+    if (stale() || !el || !el.isConnected || !el.__zuQ) { hideQuotaTip(); return; }
+    quotaTip.innerHTML = quotaTipHTML(el.__zuQ);
+    quotaTip.style.display = "block";
+    var r = el.getBoundingClientRect(), tw = quotaTip.offsetWidth, th = quotaTip.offsetHeight;
+    var vw = window.innerWidth, vh = window.innerHeight;
+    var left = Math.max(8, Math.min(r.left, vw - tw - 8));
+    var top = r.top - th - 8;               // 优先弹在 chip 上方
+    if (top < 8) top = Math.min(r.bottom + 8, vh - th - 8);
+    quotaTip.style.left = Math.round(left) + "px";
+    quotaTip.style.top = Math.round(top) + "px";
+    quotaTipFor = el;
+  }
+  function hideQuotaTip() {
+    quotaTip.style.display = "none";
+    quotaTipFor = null;
+  }
+  function onQuotaEnter() { showQuotaTip(this); }
   /* 客户端会过滤回复 HTML 的 style/class；提醒先用 Markdown 加粗，加载浮层后再着色。 */
   var noticeStyle = document.createElement("style");
   noticeStyle.textContent = '[data-zusage-notice="' + MY_GEN + '"], [data-zusage-notice="' + MY_GEN + '"] * {' +
@@ -359,7 +458,6 @@
   }
   function cleanupRateTip() {
     clearInterval(rateScanTimer);
-    window.removeEventListener("scroll", hideRateTip, true);
     rateBindings.forEach(unbindRateLine);
     rateBindings = [];
     noticeNodes.forEach(clearNotice);
@@ -367,9 +465,14 @@
     noticeStyle.remove();
     hideRateTip();
     rateTip.remove();
+    hideQuotaTip();
+    quotaTip.remove();
+    window.removeEventListener("scroll", hideTipsOnScroll, true);
     if (window.__zusageRateCleanup === cleanupRateTip) delete window.__zusageRateCleanup;
   }
-  window.addEventListener("scroll", hideRateTip, true);   // 捕获：任意容器滚动即收
+  /* 捕获：任意容器滚动即收。速率行与额度 chip 两个浮层共用同一监听（保持单监听足迹） */
+  function hideTipsOnScroll() { hideRateTip(); hideQuotaTip(); }
+  window.addEventListener("scroll", hideTipsOnScroll, true);
   /* v88：扫描与心跳统一 0.5s（用户要求计时 0.5s 步进；富文本重试上限同步放大保持 ~12s 等库窗口） */
   var rateScanTimer = setInterval(scanRateLines, 500);
   window.__zusageRateCleanup = cleanupRateTip;
@@ -851,7 +954,7 @@
   /* ---------- 实例工厂（v61.1）：一个 pane 一套 条/面板/气泡/tooltip/定位循环。
    * slot 0 保留 #zusage-bar/#zusage-tip 兼容 id（泵热更新按它清理），其余实例仅类名。 */
   function spawnInstance(pid, slot) {
-    var VERSION = "v95";   // v82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v84 主标签页远端路由（工作台分组唯一主绑定上报 + 迟到载荷守卫，issue #30）→ v85 回答末尾统计行跟随万/亿开关 + tok→token → v86 历史轮 tracker 无记录（窗口滑出/换代/热更）或缺输出字段不再翻成"本轮统计不可用"，加 det 诊断 → v87 主叶归属增 last-session 回退（组零证据时唯一远端记录放行，issue #30 复测：单会话主标签页不建组）→ v88 运行态心跳与两处扫描 tick 2s→0.5s（富文本重试 6→24 次等价放大）→ v89 ⚙ 面板更新进度：downloading 阶段文案 + 下载（字节）/安装（校验→安装→同步）双进度条，缺 progress 的旧主进程自动隐藏 → v90 主标签页/分栏归属改按本窗会话节点身份（renderer 桥按版本/资产/锚点写 SessionPane 属性，移除 workbench-groups/last-session 共享回退）+ 心跳 0.5s→0.1s（扫描维持 0.5s）→ v91 设置页/权限面板冒条修复（PR #44：inSettingsView 三处派发排除 + anchorCardOf 面板锚点改判）收编收尾：排除标记并集（settings-page testid + content/panel 双 frame）、track 显隐第四处防御 → v92 ⚙ 更新区固定显示可复制的重装口令（源码安装无法自动更新时引导用户发给 agent）→ v93 原生上下文按钮（chat-context-usage-trigger）增强：环填充/四档色/右侧百分比镜像状态条上下文格（ctxBandOf 同源），cw 缺失还原原生形态 → v94 状态条删除「上下文容量」格（UI+tooltip，该口径由原生按钮增强承载），⚙ 面板同步去掉「上下文」开关，子代理格改始终展示（零值也显示）→ v95 ⚙ 更新区去掉 v92 重装口令提示块（源码清单的仓库来源改由宿主插件管理器直接更新，不再报渠道不一致），更新来源文案增「仓库源码」分支   // 悬停 ⚙ 面板可见；版本号随代际递增
+    var VERSION = "v96";   // v82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v84 主标签页远端路由（工作台分组唯一主绑定上报 + 迟到载荷守卫，issue #30）→ v85 回答末尾统计行跟随万/亿开关 + tok→token → v86 历史轮 tracker 无记录（窗口滑出/换代/热更）或缺输出字段不再翻成"本轮统计不可用"，加 det 诊断 → v87 主叶归属增 last-session 回退（组零证据时唯一远端记录放行，issue #30 复测：单会话主标签页不建组）→ v88 运行态心跳与两处扫描 tick 2s→0.5s（富文本重试 6→24 次等价放大）→ v89 ⚙ 面板更新进度：downloading 阶段文案 + 下载（字节）/安装（校验→安装→同步）双进度条，缺 progress 的旧主进程自动隐藏 → v90 主标签页/分栏归属改按本窗会话节点身份（renderer 桥按版本/资产/锚点写 SessionPane 属性，移除 workbench-groups/last-session 共享回退）+ 心跳 0.5s→0.1s（扫描维持 0.5s）→ v91 设置页/权限面板冒条修复（PR #44：inSettingsView 三处派发排除 + anchorCardOf 面板锚点改判）收编收尾：排除标记并集（settings-page testid + content/panel 双 frame）、track 显隐第四处防御 → v92 ⚙ 更新区固定显示可复制的重装口令（源码安装无法自动更新时引导用户发给 agent）→ v93 原生上下文按钮（chat-context-usage-trigger）增强：环填充/四档色/右侧百分比镜像状态条上下文格（ctxBandOf 同源），cw 缺失还原原生形态 → v94 状态条删除「上下文容量」格（UI+tooltip，该口径由原生按钮增强承载），⚙ 面板同步去掉「上下文」开关，子代理格改始终展示（零值也显示）→ v95 ⚙ 更新区去掉 v92 重装口令提示块（源码清单的仓库来源改由宿主插件管理器直接更新，不再报渠道不一致），更新来源文案增「仓库源码」分支→ v96 套餐额度 chip（默认关）：挂原生上下文按钮左侧（wrapper 内前插，与按钮增强同款双 reapply/还原），数据来自主进程 quota 字段（解密宿主 OAuth 凭据直查 monitor 端点，账号级套餐池口径），会话首个 main_turn 完成前不显示；自绘 tooltip 走 rateTip 独立浮层模式；chip 改多窗分段：每窗一段（中文 5小时/7天，英文 5h/7d）各自按 80/95/100 档位色，分隔符 |；余额类型单段渲染就绪（余额 ¥100.00，阶段 3 数据源接入即用）；去掉环形，容器不着色   // 悬停 ⚙ 面板可见；版本号随代际递增
     var instanceDisposed = false, heavyTimer = 0, frame = 0, themeObserver = null;
     var globalListeners = [];
     function listenGlobal(target, type, fn, capture) {
@@ -871,6 +974,7 @@
       bridge = { handle: null, turnId: "", timer: 0 },   // v71 本 pane 的 renderer store 订阅
       lastBand = null,    // v92：本 pane 上下文分档（ctxBandOf 结果，原生按钮增强的数据源）
       ctxBtnCache = null,   // v92：本实例上次增强的原生按钮（还原/对账引用，不依赖 cardCache 存活）
+      lastQuota = null, quotaProvider = "", quotaModel = "", quotaChipCache = null,   // v96：额度 chip 数据源（快照 quota 字段 + 本 pane 会话 provider/模型）与节点引用
       liveTextCur = "", liveStatsCur = null, liveKindCur = "fallback", liveEl = null,   // v72：合并「生成速度」用
       livePhaseCur = "", liveIconCur = "bolt";   // v77：当前 chip 阶段与图标（think=思考动效/bolt=闪电）——相位切换需整条重渲染
 
@@ -964,6 +1068,23 @@
       "[data-zusage-light] .zu-ctxpct.warm{color:#b6791a}" +
       "[data-zusage-light] .zu-ctxpct.hot{color:#d8482f}" +
       "[data-zusage-light] .zu-ctxpct.exc{text-shadow:none}" +
+      /* v96 套餐额度 chip（原生上下文按钮左侧，wrapper 内前插）：多窗分段样式——每个窗口
+       * 一段（中文 5小时/7天，英文 5h/7d）各自按 80/95/100 上档位色；余额类型单段
+       * （阶段 3 数据源接入即显示）；容器不再着色，颜色只落在分段上。 */
+      ".zu-quota{display:inline-flex;align-items:center;gap:5px;height:1.75rem;padding:0 6px;border-radius:.5rem;cursor:pointer;user-select:none;flex:0 0 auto;" +
+      "font-family:var(--font-mono,Consolas,'Cascadia Mono',Menlo,'Microsoft YaHei UI','Microsoft YaHei',monospace);font-size:calc(var(--ui-font-size,14px) - 1px);font-weight:700;font-variant-numeric:tabular-nums;line-height:1}" +
+      ".zu-quota:hover,.zu-quota:focus-visible{background:var(--color-hover,rgba(255,255,255,.08));outline:none}" +
+      ".zu-qseg{color:#3ecf8e;white-space:nowrap}" +
+      ".zu-qseg.warm{color:#f5b944}.zu-qseg.hot{color:#ff6b57}" +
+      ".zu-qseg.exc{color:var(--color-destructive,#ff2d55);text-shadow:0 0 8px rgba(255,45,85,.5);animation:zuexc 1.1s ease-in-out infinite}" +
+      ".zu-qsep{color:var(--color-foreground-subtle,rgba(255,255,255,.28));font-weight:400}" +
+      ".zu-quota.zu-qstale{opacity:.6}" +
+      ".zu-quota.zu-qbusy{animation:zupulse 1s ease-in-out infinite}" +
+      ".zu-quota .zu-qwarn{font-size:.85em;line-height:1}" +
+      ".zu-quota[data-zusage-light] .zu-qseg{color:#0f9d6c}" +
+      ".zu-quota[data-zusage-light] .zu-qseg.warm{color:#b6791a}" +
+      ".zu-quota[data-zusage-light] .zu-qseg.hot{color:#d8482f}" +
+      ".zu-quota[data-zusage-light] .zu-qseg.exc{text-shadow:none}" +
       /* 子代理运行中呼吸灯 */
       "@keyframes zupulse{0%,100%{opacity:1}50%{opacity:.2}}" +
       ".dot{animation:zupulse 1.6s ease-in-out infinite;font-size:var(--ui-font-size,14px);line-height:1}" +
@@ -1169,6 +1290,10 @@
       '<section class="zu-settings-section"><div class="cap">' + L("回答统计", "Reply statistics") + '</div><div class="zu-settings-card">' +
       settingRow('<input type="checkbox" class="zu-rate-line">', L("回答末尾追加统计行", "Append stats to each reply"), L("默认开启，下一次提问生效。包含速率（含思考）、首字延迟、输出量、生成耗时、段数峰值与会话累计。", "On by default; effective on the next prompt. Includes speed (with thinking), first-token latency, output, duration, segments/peak and session total.")) +
       '</div></section>' +
+      '<section class="zu-settings-section"><div class="cap">' + L("套餐额度", "Plan quota") + '</div><div class="zu-settings-card">' +
+      settingRow('<input type="checkbox" class="zu-quota-enable">', L("显示套餐额度", "Show plan quota"), L("在输入框上下文按钮左侧显示当前登录账号编码套餐的已用比例与重置时间（账号级套餐池，不是单个模型独享）。默认关闭。点击 chip 立即刷新。", "Shows the signed-in account's coding-plan usage and reset time left of the context button (account-level pool, not per model). Off by default. Click the chip to refresh.")) +
+      '<div class="pnote">' + L("开启后主进程读取本机 ZCode 登录凭据（~/.zcode/v2/credentials.json）查询官方套餐接口：凭据仅在内存使用、只发往 bigmodel.cn / api.z.ai 官方域，不落盘、不进日志与诊断。目前支持 BigModel / Z.ai 个人编码套餐；团队套餐与自定义 API 供应商暂不支持。",
+        "When on, the main process reads the local ZCode login credential (~/.zcode/v2/credentials.json) to query the official plan endpoint: it stays in memory, is sent only to bigmodel.cn / api.z.ai, and never reaches disk, logs or diagnostics. Supports BigModel / Z.ai individual coding plans; team plans and custom API providers are not supported yet.") + '</div></div></section>' +
       '<section class="zu-settings-section"><div class="cap">' + L("插件更新", "Plugin updates") + '</div><div class="zu-settings-card">' +
       settingRow('<input type="checkbox" class="zu-auto-update">', L("自动更新", "Automatic updates"), L("每 24 小时检查并安装新版，默认开启", "Check and install every 24 hours; on by default")) +
       '<div class="zu-settings-detail"><div class="zu-update-actions"><button type="button" data-update="check">' + L("检查更新", "Check for updates") + '</button><button type="button" data-update="update">' + L("立即更新", "Update now") + '</button></div>' +
@@ -1794,6 +1919,11 @@
       }
       excOn = excActive(p);   // 气泡的显示依据（track 每帧消费）
       lastBand = ctxBandOf(p);   // v92：原生上下文按钮增强的数据源（与状态条上下文格同口径）
+      /* v96：额度 chip 数据源。quota 是账号级（主进程随快照附加）；provider/模型取本 pane
+       * 会话最近完成的 main_turn——首个请求完成前 provider 为空，chip 不显示（用户决策）。 */
+      lastQuota = d.quota && typeof d.quota === "object" ? d.quota : null;
+      quotaProvider = (p.last && p.last.provider_id) || "";
+      quotaModel = (p.last && p.last.model) || "";
       /* v12 多服务器：remote_today/remote_errors 按目标键分组，取本会话所属主机的分片；
        * 旧格式（单目标，顶层对象即 today）兜底兼容。 */
       var myTarget = p.remote_target || "";
@@ -1842,6 +1972,7 @@
       }
       if (subPanel.classList.contains("open")) buildSubPanel(view.sub);   // 面板开着：随推送实时刷新
       enhanceCtxButton();   // v92：数据点 reapply（React 数据更新重写 dasharray 后兜回）
+      enhanceQuotaChip();   // v96：额度 chip 数据点 reapply
     }
 
 
@@ -2057,6 +2188,8 @@
       /* 逐问速率行开关勾选态：state.rateLine 由主进程推送（或 change 时代乐观更新） */
       var rl = panel.querySelector(".zu-rate-line");
       if (rl) rl.checked = state.rateLine;
+      var qe = panel.querySelector(".zu-quota-enable");   // v95：勾选态由主进程推送的 quotaEnabled 决定
+      if (qe) qe.checked = state.quotaEnabled;
     }
     /* 更新进度条（v89）。主进程 updater 在 downloading/updating 阶段推送
      * progress = { stage: download|verify|install|sync, loaded?, total? }：
@@ -2147,6 +2280,14 @@
       var t2 = e.target;
       if (t2.classList.contains("zu-auto-update")) {
         pluginRequest("auto", t2.checked);
+        return;
+      }
+      if (t2.classList.contains("zu-quota-enable")) {
+        /* v95：乐观更新，真值以主进程写 config.json 的 quota_enabled 后回推为准；关闭时
+           chip 在下一次 heavy 对账点摘除，主进程停止解密与联网 */
+        state.quotaEnabled = t2.checked;
+        pluginRequest("quota", t2.checked);
+        renderAll(false);
         return;
       }
       if (t2.classList.contains("zu-rate-line")) {
@@ -2634,6 +2775,112 @@
       }
     }
 
+    /* ---------- v96 套餐额度 chip：原生上下文按钮左侧 ----------
+     * 挂载面与按钮增强同源：wrapper（tooltip-trigger span）的 React children 只有 button，
+     * 前插的手动节点不受 reconcile 清理；双 reapply（render 数据点 + heavy 对账点）兜回位置
+     * 与内容；dispose / 关闭开关 / 无数据一律摘除。显示门控：开关开 + 本 pane 会话已有完成的
+     * main_turn（provider_id 已知）+ provider 为内置套餐档；自定义 provider 隐藏，团队档给
+     * 不支持提示。数据账号级（快照 quota 字段），同套餐换模型只换 tooltip 高亮不重查。 */
+    var ZU_QUOTA_WARM = 80, ZU_QUOTA_HOT = 95;   // 已用 % 档位（独立于上下文的 70/85）
+    function quotaBandOf(pct) { return pct >= 100 ? "exc" : pct >= ZU_QUOTA_HOT ? "hot" : pct >= ZU_QUOTA_WARM ? "warm" : "ok"; }
+    /* chip 分段：每个窗口一段（5小时/7天），各自按已用 % 上档位色；余额类型一段（阶段 3 数据源接入即用） */
+    function quotaSegs(q) {
+      var w = q && q.windows, out = [];
+      if (!w) return out;
+      var defs = [["fiveHour", "5小时", "5h"], ["weekly", "7天", "7d"]];
+      for (var i = 0; i < defs.length; i++) {
+        var e = w[defs[i][0]];
+        if (e && typeof e.percent === "number") out.push({ label: L(defs[i][1], defs[i][2]), pct: e.percent });
+      }
+      return out;
+    }
+    function quotaBalanceText(bal) {
+      var cur = String(bal.currency || "");
+      var sym = cur === "CNY" ? "¥" : cur === "USD" ? "$" : (cur ? cur + " " : "");
+      return sym + Number(bal.amount).toFixed(2);
+    }
+    function quotaChipMode() {
+      if (!state.quotaEnabled || !lastQuota || quotaProvider.indexOf("account:") !== 0) return null;
+      if (quotaProvider.indexOf("team") >= 0) {
+        return { kind: "team", html: '<span class="zu-qwarn">⊘</span>', aria: L("团队套餐额度暂不支持", "Team plan quota not supported yet") };
+      }
+      var q = lastQuota, st = q.status;
+      if (st === "not_configured" || st === "unsupported") return null;
+      var warn = (st !== "ok" && st !== "idle") ? '<span class="zu-qwarn">⚠</span>' : "";
+      var bal = q.balance;
+      if (bal && typeof bal.amount === "number" && isFinite(bal.amount)) {
+        var amt = quotaBalanceText(bal);
+        return { kind: "balance", stale: !!q.stale,
+          html: '<span class="zu-qseg ok">' + (state.lang === "en" ? "" : "余额 ") + amt + "</span>" + warn,
+          aria: L("余额 ", "Balance ") + amt };
+      }
+      var segs = quotaSegs(q);
+      if (segs.length) {
+        var html = segs.map(function (s) {
+          return '<span class="zu-qseg ' + quotaBandOf(s.pct) + '">' + s.label + " " + Math.round(s.pct) + "%</span>";
+        }).join('<span class="zu-qsep">|</span>');
+        return { kind: "value", stale: !!q.stale,
+          html: html + warn,
+          aria: L("套餐已用 ", "Plan used ") + segs.map(function (s) { return s.label + " " + Math.round(s.pct) + "%"; }).join(L("，", ", ")) };
+      }
+      if (st === "ok" || st === "idle") return null;   // 还没有可显示的窗口（首查在途/接口回空）
+      return { kind: "error", html: '<span class="zu-qwarn">⚠</span>', aria: quotaStatusText(st) || st };
+    }
+    function onQuotaClick(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      pluginRequest("quota-refresh");   // 主进程 refresh：绕过 TTL 与软冻结
+      var el = this;
+      el.classList.add("zu-qbusy");
+      setTimeout(function () { el.classList.remove("zu-qbusy"); }, 1500);
+    }
+    function enhanceQuotaChip() {
+      if (inactive()) { restoreQuotaChip(); return; }
+      var mode = quotaChipMode();
+      if (!mode) { restoreQuotaChip(); return; }
+      var btn = null;
+      try { btn = (ctxBtnCache && ctxBtnCache.isConnected) ? ctxBtnCache : (cardCache ? cardCache.querySelector(ZU_CTX_TRIGGER) : null); } catch (e) { }
+      if (!btn || !btn.parentElement) { restoreQuotaChip(); return; }
+      var wrap = btn.parentElement;
+      var chip = quotaChipCache;
+      if (!chip || !chip.isConnected || chip.parentElement !== wrap) {
+        if (chip && chip.isConnected) chip.remove();
+        chip = null;
+        for (var i = 0; i < wrap.children.length; i++) {   // 复用热更/重建遗留的同类节点，避免双 chip
+          if (wrap.children[i].classList && wrap.children[i].classList.contains("zu-quota")) { chip = wrap.children[i]; break; }
+        }
+        if (!chip) {
+          chip = document.createElement("span");
+          chip.className = "zu-quota";
+          chip.setAttribute("role", "status");
+          chip.tabIndex = 0;
+          chip.addEventListener("mouseenter", onQuotaEnter);
+          chip.addEventListener("mouseleave", hideQuotaTip);
+          chip.addEventListener("focus", onQuotaEnter);
+          chip.addEventListener("blur", hideQuotaTip);
+          chip.addEventListener("click", onQuotaClick);
+        }
+        quotaChipCache = chip;
+      }
+      if (chip.nextElementSibling !== btn) wrap.insertBefore(chip, btn);   // 位置兜回：始终紧贴按钮左侧
+      syncCtxLite(chip, bar.classList.contains("zu-light"));
+      chip.__zuQ = { q: lastQuota, provider: quotaProvider, model: quotaModel, mode: mode };
+      var sig = mode.kind + "|" + (mode.stale ? 1 : 0) + "|" + mode.html;
+      if (chip.__zuSig !== sig) {   // 幂等：内容没变不重建，悬停/焦点态不被打断
+        chip.__zuSig = sig;
+        chip.className = "zu-quota" + (mode.stale ? " zu-qstale" : "");
+        chip.setAttribute("aria-label", mode.aria);
+        chip.innerHTML = mode.html;
+      }
+      if (quotaTipFor === chip) showQuotaTip(chip);   // 悬停中数据刷新：内容跟随
+    }
+    function restoreQuotaChip() {
+      if (!quotaChipCache) return;
+      if (quotaTipFor === quotaChipCache) hideQuotaTip();
+      try { quotaChipCache.remove(); } catch (e) { }
+      quotaChipCache = null;
+    }
+
     /* ---------- v80 in-card 挂载：条挂输入卡片内部、group/toolbar 工具行之后自占一行 ----------
      * 宿主 ChatPromptEditor 的工具行是卡片（flex-col gap-3）的最后一个子块；条作为其兄弟
      * 节点插在后面，卡片纯自适应高度自然长高（12px 间距 + 条高），与对话框融为一体。
@@ -2734,6 +2981,7 @@
         }
       }
       enhanceCtxButton();   // v92：DOM 对账点（React 重渲染/按钮重建后兜回，幂等）
+      enhanceQuotaChip();   // v96：额度 chip DOM 对账点（按钮重建/前插节点被挤走后兜回）
       if (state.data && pid === "auto") {
         var msid = typeof state.data.mine === "string" ? state.data.mine : null;
         var pSid;
@@ -3028,6 +3276,7 @@
       globalListeners = [];
       releasePads();
       if (ctxBtnCache) { restoreCtxButton(ctxBtnCache); ctxBtnCache = null; }   // v92：还原原生按钮形态
+      restoreQuotaChip();   // v95：摘除额度 chip（不留孤儿节点）
       wantedEl = composer = cardCache = null;
       bar.remove();
       panel.remove();   // v80：面板挂 body，dispose 需单独摘除

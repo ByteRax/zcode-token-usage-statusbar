@@ -630,7 +630,7 @@ def _light_snapshot(con, sid, cfg):
                 "reasoning": 0, "cache_write": 0, "active": False, "list": []},
         "tools": {"total": u["tool_calls"], "errors": 0, "list": []},
         "last_turn": dict(_EMPTY_TURN),
-        "last": {"duration_ms": 0, "ttft_ms": 0, "model": "", "tps": 0, "startedAt": 0, "endedAt": 0},
+        "last": {"duration_ms": 0, "ttft_ms": 0, "model": "", "provider_id": "", "tps": 0, "startedAt": 0, "endedAt": 0},
         "code": {"add": (srow["summary_additions"] if srow is not None else None),
                  "del": (srow["summary_deletions"] if srow is not None else None),
                  "files": (srow["summary_files"] if srow is not None else None)},
@@ -711,8 +711,9 @@ def _session_snapshot(con, sid, cfg):
     u = session_usage(con, sid)
     last = con.execute(
         """select duration_ms, coalesce(time_to_first_token_ms,0), completed_at, turn_id, model_id,
-                  output_tokens, first_token_at, started_at, reasoning_tokens
+                  output_tokens, first_token_at, started_at, reasoning_tokens, provider_id
            from model_usage where session_id=? and status='completed'
+             and (query_source is null or query_source='main_turn')
            order by completed_at desc limit 1""",
         (sid,),
     ).fetchone()
@@ -845,6 +846,9 @@ def _session_snapshot(con, sid, cfg):
             "duration_ms": last["duration_ms"] if last else 0,
             "ttft_ms": last[1] if last else 0,
             "model": last["model_id"] if last else "",
+            # v94：当前模型归属（额度 chip 按 provider 段选数据源）。可选字段——远端
+            # 旧版 zusage.py 不返回它，消费端按缺省 "" 容错（last.startedAt 同款先例）。
+            "provider_id": (last["provider_id"] or "") if last else "",
             **rate,
         },
         # 代码变更统计（session 表 summary_* 列，ZCode 目前未填充、全库为 NULL，有值才会显示）
