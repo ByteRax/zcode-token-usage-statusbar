@@ -148,3 +148,37 @@ test('runningTool is recomputed from surviving rows, never stuck on a row that s
     { rowId: 7, turnId: 't', kind: 'toolCall', toolName: 'Bash', inputText: '', status: 'success' }]));
   assert.equal(tracker.get('t').runningTool, null);
 });
+
+test('running subagent row exposes childSessionId for the caller to bind the child store', () => {
+  const tracker = createTracker({ now: () => 0 });
+  tracker.ingest(snapshot(1, [header(),
+    { rowId: 4, turnId: 't', kind: 'subagent', status: 'running', childSessionId: 'sess_subagent_abc' }]));
+  const rt = tracker.get('t').runningTool;
+  assert.equal(rt.name, 'Agent');
+  assert.equal(rt.startedAt, null);
+  assert.equal(rt.childSessionId, 'sess_subagent_abc');
+  // 行上没有 childSessionId（旧投影/字段缺席）→ null，调用方按无数据降级
+  tracker.ingest(snapshot(2, [header(),
+    { rowId: 5, turnId: 't', kind: 'subagent', status: 'running' }]));
+  assert.equal(tracker.get('t').runningTool.childSessionId, null);
+  // 子智能体行结束 → runningTool 归 null（既有行为不回归）
+  tracker.ingest(snapshot(3, [header(),
+    { rowId: 6, turnId: 't', kind: 'subagent', status: 'success', childSessionId: 'sess_subagent_abc' }]));
+  assert.equal(tracker.get('t').runningTool, null);
+});
+
+test('runningSubagents lists every running subagent row for multi-slot rate estimation', () => {
+  const tracker = createTracker({ now: () => 0 });
+  const sub = (rowId, sid, status = 'running') =>
+    ({ rowId, turnId: 't', kind: 'subagent', status, childSessionId: sid });
+  tracker.ingest(snapshot(1, [header(), sub(3, 'sess_a1'), sub(5, 'sess_b2')]));
+  let all = tracker.get('t').runningSubagents;
+  assert.deepEqual(all.map(r => r.childSessionId), ['sess_a1', 'sess_b2']);   // rowId 升序稳定
+  // 部分结束：只剩未结束的；无 childSessionId 的 running 行跳过；完成态恒 []
+  tracker.ingest(snapshot(2, [header(), sub(3, 'sess_a1', 'success'), sub(5, 'sess_b2'),
+    { rowId: 7, turnId: 't', kind: 'subagent', status: 'running' }]));
+  all = tracker.get('t').runningSubagents;
+  assert.deepEqual(all.map(r => r.childSessionId), ['sess_b2']);
+  tracker.ingest(snapshot(3, [header('completedSuccess')]));
+  assert.deepEqual(tracker.get('t').runningSubagents, []);
+});

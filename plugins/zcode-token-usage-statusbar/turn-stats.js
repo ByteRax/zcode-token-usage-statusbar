@@ -93,8 +93,22 @@
         ? { name: typeof act.toolName === 'string' ? act.toolName : '',
             startedAt: Number.isFinite(act.startedAt) ? act.startedAt : null }
         : act && act.kind === 'subagent' && act.status === 'running'
-        ? { name: 'Agent', startedAt: null }   // 子智能体行无 startedAt：只给动词，不给秒数
+        ? { name: 'Agent', startedAt: null,   // 子智能体行无 startedAt：只给动词，不给秒数
+            // 行投影自带 childSessionId（宿主 subagent 行 schema）：调用方据此绑定子代理
+            // 会话 store 估算其运行期输出速率；无该字段时为 null，调用方按无数据降级。
+            childSessionId: typeof act.childSessionId === 'string' && act.childSessionId ? act.childSessionId : null }
         : null;
+      // 本轮全部运行中的子智能体行（并行派发时有多行）：runningTool 只反映最后一个
+      // 活动行，多槽位速率估算需要完整集合——按 rowId 升序稳定输出，无 childSessionId
+      // 的行无法绑定子会话 store，跳过。
+      const runningSubagents = [];
+      if (!complete) {
+        const subs = Array.from(turn.rows.values())
+          .filter(row => row.kind === 'subagent' && row.status === 'running' &&
+            typeof row.childSessionId === 'string' && row.childSessionId)
+          .sort((a, b) => a.rowId - b.rowId);
+        for (const row of subs) runningSubagents.push({ childSessionId: row.childSessionId });
+      }
       // 当前轮处于哪个阶段（按最后一个活动行的类型判定，供调用方换图标/文案）：
       // reasoning 行流式输出 = 模型在思考；toolCall 进行中 = 工具执行；assistantText = 正文流式。
       const phase = complete ? null :
@@ -110,6 +124,7 @@
         toolMs: Number.isFinite(header.toolDurationMs) && header.toolDurationMs >= 0 ? header.toolDurationMs : null,
         characterRate, observedMs: Math.max(0, sampledAt - turn.observedAt),
         runningTool,   // null=没有进行中的工具（流式正文阶段/全部完成）；name 可能为空串（fallback 显示"执行中"）
+        runningSubagents,   // 全部 running subagent 行的 childSessionId（v97 多槽位）；完成态恒 []
         phase,   // 'thinking' | 'tool' | 'writing' | null（完成态恒 null）
         totalCharacters: last ? last.characters : 0,   // 当前累计字符数：供调用方做 c2t（字符→token）自校准
         observedLive: !!turn.seenIncomplete,   // 是否亲历过"未完成→完成"：false=刚绑定/重绑时
