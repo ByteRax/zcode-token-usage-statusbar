@@ -581,33 +581,165 @@
       return t.getFullYear() + "-" + p(t.getMonth() + 1) + "-" + p(t.getDate()) + " " + p(t.getHours()) + ":" + p(t.getMinutes()) + ":" + p(t.getSeconds());
     } catch (e) { return ""; }
   }
+  /* 进行中 Git 操作的展示名（主进程 fs 探针 detectGitOp 的代码 → 双语标签；am 主栏短标签「补丁」） */
+  var GIT_OP_LABELS = { rebase: ["变基", "rebase"], merge: ["合并", "merge"], "cherry-pick": ["拣选", "cherry-pick"], revert: ["还原", "revert"], bisect: ["二分", "bisect"], am: ["补丁", "patch"] };
+  function gitOpLabel(code) { var m = GIT_OP_LABELS[code]; return m ? L(m[0], m[1]) : code; }
+  /* v96 multi：多仓库聚合口径（chip/aria/tooltip 共用）——总数、脏仓数（成功仓 changed>0 或
+   * untracked>0）、改动/未跟踪文件求和、失败仓数、任一成功仓有冲突；聚合数由渲染端算，主进程不提供。 */
+  function gitMultiAgg(st) {
+    var repos = st && Array.isArray(st.repos) ? st.repos : [];
+    /* known=已确认仓库（成功或携带旧快照的失败仓）；changed/conflict/op 只在确认数据上统计；
+     * 旧缓存（stale）里的冲突不汇总为已确认冲突，但其改动计入已知改动。 */
+    var agg = { total: repos.length, known: 0, changed: 0, conflict: 0, op: 0, failed: 0, staleAny: false, m: 0, q: 0 };
+    for (var i = 0; i < repos.length; i++) {
+      var r = repos[i];
+      if (r.err) {
+        agg.failed++;
+        if (r.stale) {
+          agg.known++; agg.staleAny = true;
+          if ((r.changed | 0) > 0 || (r.untracked | 0) > 0) agg.changed++;
+        }
+        continue;
+      }
+      agg.known++;
+      if (r.stale) agg.staleAny = true;
+      if ((r.changed | 0) > 0 || (r.untracked | 0) > 0) agg.changed++;
+      if ((r.conflicts | 0) > 0 && !r.stale) agg.conflict++;
+      if (r.op && !r.stale) agg.op++;
+      agg.m += r.changed | 0;
+      agg.q += r.untracked | 0;
+    }
+    return agg;
+  }
+  /* tooltip 行样式单/多仓共用：rt-row 补 min-width:0 允许 flex 行收缩防长仓库名溢出；
+   * zu-gname=多仓行仓库名（可收缩断行，main 前景色 600 字重），zu-gconf=冲突红，
+   * c-mod/c-unt=已跟踪变更/未跟踪（黄），c-warn=失败/过期/未知（黄），c-op=操作名（中性），
+   * zu-git-rows=多仓逐仓列表滚动容器；data-zusage-light 切浅色语义档（showGitTip 随 chip 同步）。 */
+  var GIT_TIP_CSS = '<style>.zusage-git-tip .rt-h{font-weight:600;color:var(--color-tooltip-foreground,#e6e6e6);margin:0 0 7px}' +
+    ".zusage-git-tip .rt-row{display:flex;gap:10px;margin:3px 0;min-width:0}" +
+    ".zusage-git-tip .rt-row b{flex:0 0 auto;min-width:78px;color:var(--color-tooltip-foreground,#e6e6e6);font-weight:600}" +
+    ".zusage-git-tip .rt-row span{color:var(--color-tooltip-tag-foreground,#a6a6a6);word-break:break-all}" +
+    ".zusage-git-tip b.zu-gname{flex:0 1 auto;min-width:0;word-break:break-all;font-weight:600}" +
+    ".zusage-git-tip .zu-gbr{color:var(--color-tooltip-tag-foreground,#afafb2)}" +
+    ".zusage-git-tip .c-mod,.zusage-git-tip .c-unt,.zusage-git-tip .c-warn{color:#f0e6a0}" +
+    ".zusage-git-tip .zu-gconf{color:#f09696}" +
+    ".zusage-git-tip .c-op{color:var(--color-tooltip-tag-foreground,#afafb2)}" +
+    ".zusage-git-tip .zu-gsep{opacity:.6}" +
+    ".zusage-git-tip .zu-gdiv{color:var(--color-tooltip-tag-foreground,#afafb2);opacity:.85}" +
+    ".zusage-git-tip .zu-git-rows{max-height:60vh;overflow-y:auto;overscroll-behavior:contain}" +
+    ".zusage-git-tip[data-zusage-light] .rt-h,.zusage-git-tip[data-zusage-light] .rt-row b,.zusage-git-tip[data-zusage-light] b.zu-gname{color:var(--color-tooltip-foreground,#2e3440)}" +
+    ".zusage-git-tip[data-zusage-light] .c-mod,.zusage-git-tip[data-zusage-light] .c-unt,.zusage-git-tip[data-zusage-light] .c-warn{color:#946200}" +
+    ".zusage-git-tip[data-zusage-light] .zu-gconf{color:#d20f39}" +
+    '.zusage-git-tip .rt-note{margin-top:8px;padding-top:7px;border-top:1px solid var(--color-border,transparent);color:var(--color-tooltip-tag-foreground,#afafb2)}</style>';
   function gitTipHTML(view) {
+    if (view.st.kind === "multi") return gitMultiTipHTML(view);
     var st = view.st, row = function (label, text) { return '<div class="rt-row"><b>' + label + "</b><span>" + text + "</span></div>"; };
-    var files = function (n) { return n + L(" 个文件", n === 1 ? " file" : " files"); };
-    var up = st.upstream ? gitEsc(st.upstream) + (st.ahead > 0 ? " ↑" + st.ahead : "") + (st.behind > 0 ? " ↓" + st.behind : "") : L("无上游分支", "no upstream");
+    var items = function (n) { return n + L(" 项", n === 1 ? " entry" : " entries"); };   // porcelain 条目：重命名计 1、未跟踪目录折叠计 1，不冒充文件数
+    var up = st.upstream ? gitEsc(st.upstream) + (st.ahead > 0 ? " ↑" + st.ahead : "") + (st.behind > 0 ? " ↓" + st.behind : "") : L("未设置上游分支（↑↓ 不可用）", "no upstream set (ahead/behind unavailable)");
     var when = gitTimeStr(st.ts);
-    return '<style>.zusage-git-tip .rt-h{font-weight:600;color:var(--color-tooltip-foreground,#fafafa);margin:0 0 7px}' +
-      ".zusage-git-tip .rt-row{display:flex;gap:10px;margin:3px 0}" +
-      ".zusage-git-tip .rt-row b{flex:0 0 auto;min-width:78px;color:var(--color-tooltip-foreground,#fafafa);font-weight:600}" +
-      ".zusage-git-tip .rt-row span{color:var(--color-tooltip-tag-foreground,#a6a6a6);word-break:break-all}" +
-      '.zusage-git-tip .rt-note{margin-top:8px;padding-top:7px;border-top:1px solid var(--color-border,transparent);color:var(--color-tooltip-tag-foreground,#a6a6a6)}</style>' +
-      '<div class="rt-h">⎇ ' + L("Git 状态", "Git status") + (view.stale ? " · " + L("上次查询失败，显示的是最近成功结果", "last query failed; showing the last good result") : "") + "</div>" +
-      row(L("分支", "Branch"), st.detached ? L("游离 HEAD（不在任何分支上）", "detached HEAD") : gitEsc(st.branch || "") + (st.noCommits ? L("（尚无提交）", " (no commits yet)") : "")) +
+    return GIT_TIP_CSS +
+      '<div class="rt-h">⎇ ' + L("Git 状态", "Git status") + (view.stale ? ' <span class="c-warn">' + L("· 上次查询失败，显示的是最近成功结果", "· last query failed; showing the last good result") + "</span>" : "") + "</div>" +
+      row(L("分支", "Branch"), st.detached ? L("游离 HEAD（不在任何分支上）", "detached HEAD (on no branch)") : gitEsc(st.branch || "") + (st.noCommits ? L("（尚无首次提交）", " (no initial commit yet)") : "")) +
       row(L("上游", "Upstream"), up) +
-      row(L("改动", "Changes"), "+" + st.ins + " / -" + st.del + L(" 行（工作区相对 HEAD，含已暂存）", " lines (worktree vs HEAD, staged included)")) +
-      row(L("已暂存", "Staged"), files(st.staged)) +
-      row(L("未暂存", "Unstaged"), files(st.unstaged)) +
-      row(L("未跟踪", "Untracked"), files(st.untracked)) +
-      (st.conflicts > 0 ? row(L("冲突", "Conflicts"), files(st.conflicts)) : "") +
-      row(L("目录", "Directory"), gitEsc(view.path)) +
+      row(L("已暂存", "Staged"), items(st.staged)) +
+      row(L("未暂存", "Unstaged"), items(st.unstaged)) +
+      row(L("未跟踪", "Untracked"), items(st.untracked) + L("（目录折叠计 1）", " (collapsed dirs count as 1)")) +
+      (st.conflicts > 0 ? row(L("冲突", "Conflicts"), '<span class="zu-gconf">!' + items(st.conflicts) + "</span>") : "") +
+      (st.op ? row(L("进行中操作", "Git operation"), gitEsc(gitOpLabel(st.op))) : "") +
+      row(L("改动行数", "Diff lines"), "+" + st.ins + " / -" + st.del + L(" 行（工作区相对 HEAD 的合计口径，非净差异）", " lines (worktree vs HEAD, combined—not a net diff)")) +
+      row(L("目录", "Directory"), gitEsc(st.repoPath || view.path)) +   // v96：repoPath=真实仓库绝对路径，缺省回退工作区路径
       (when ? row(L("更新于", "Updated"), when) : "") +
-      '<div class="rt-note">' + L("每 10 秒及每轮回复后自动刷新，点击立即刷新。只读本地仓库；远端会话不显示。⚙ 设置可关。",
-        "Refreshes every 10s and after each reply; click to refresh now. Local repositories only (read-only); hidden for remote sessions. Toggle in ⚙ settings.") + "</div>";
+      '<div class="rt-note">' + L("只读本地仓库，不自动 fetch（上游比较基于本地引用）；远端会话不显示。⚙ 设置可关。",
+        "Local repositories read-only, never auto-fetches (upstream compares against local refs); hidden for remote sessions. Toggle in ⚙ settings.") + "</div>";
+  }
+  /* v96 multi tooltip：概览（标题 / 有改动仓库与非零冲突·操作·失败 / 覆盖行）→ 逐仓全量列表
+   * （优先级：冲突 0 < 失败或过期 1 < 操作中 2 < 有改动 3 < 上游差异 4 < 干净 5；同级码点序，
+   * 不用 localeCompare；干净组前插分隔行，所有行都在滚动容器内可访问）→ 元信息（工作目录 /
+   * 更新时间 / 口径）。失败仓携带的旧快照标「过期」，其冲突不汇总为已确认。仓库名/分支/路径
+   * 是用户数据，一律过 gitEsc/属性转义。 */
+  function gitMultiTipHTML(view) {
+    var st = view.st, agg = gitMultiAgg(st);
+    var row = function (label, text) { return '<div class="rt-row"><b>' + label + "</b><span>" + text + "</span></div>"; };
+    var attr = function (s) { return gitEsc(s).replace(/"/g, "&quot;"); };   // title 属性需转义引号
+    var rrow = function (name, text, title) { return '<div class="rt-row"><b class="zu-gname"' + (title ? ' title="' + title + '"' : "") + ">" + name + '</b><span>' + text + "</span></div>"; };
+    var rank = function (r) {
+      if (r.err || r.stale) return 1;
+      if ((r.conflicts | 0) > 0) return 0;
+      if (r.op) return 2;
+      if ((r.changed | 0) > 0 || (r.untracked | 0) > 0) return 3;
+      if ((r.ahead | 0) > 0 || (r.behind | 0) > 0) return 4;
+      return 5;
+    };
+    var repos = (st.repos || []).slice();   // 排序不动主进程推送的原数组；与 gitMultiAgg 同款防御
+    repos.sort(function (a, b) { var ra = rank(a), rb = rank(b); return ra !== rb ? ra - rb : a.name < b.name ? -1 : a.name > b.name ? 1 : 0; });
+    var h = GIT_TIP_CSS + '<div class="rt-h">⎇ ' + L("Git 状态", "Git status") + L(" · " + agg.total + " 个仓库", " · " + agg.total + " repos") + "</div>";
+    var ov = L("有改动 <b class=\"c-mod\">" + agg.changed + "</b> 个仓库", "<b class=\"c-mod\">" + agg.changed + "</b> repos with changes");
+    if (agg.conflict > 0) ov += '<span class="zu-gsep"> · </span><span><b class="zu-gconf">!' + agg.conflict + '</b>' + L(" 个仓库冲突", " repos conflicted") + "</span>";
+    if (agg.op > 0) ov += '<span class="zu-gsep"> · </span><span><b class="c-op">' + agg.op + '</b>' + L(" 个仓库操作中", " repos mid-operation") + "</span>";
+    if (agg.failed > 0) ov += '<span class="zu-gsep"> · </span><span><b class="c-warn">' + agg.failed + '</b>' + L(" 个查询失败", " failed") + "</span>";
+    if (view.stale) ov += '<span class="zu-gsep"> · </span><span class="c-warn">' + L("上次查询失败，显示的是最近成功结果", "last query failed; showing the last good result") + "</span>";
+    h += '<div class="rt-ov">' + ov + "</div>";
+    if (agg.m > 0 || agg.q > 0) {
+      var sm = [];
+      if (agg.m > 0) sm.push(L("已跟踪变更 <b class=\"c-mod\">" + agg.m + "</b> 项", "<b class=\"c-mod\">" + agg.m + "</b> tracked-change entries"));
+      if (agg.q > 0) sm.push(L("未跟踪 <b class=\"c-unt\">" + agg.q + "</b> 项", "<b class=\"c-unt\">" + agg.q + "</b> untracked entries"));
+      h += '<div class="rt-ov">' + sm.join('<span class="zu-gsep"> · </span>') + "</div>";
+    }
+    if (agg.known < agg.total) h += '<div class="rt-ov"><span class="c-warn">' + L("已确认 " + agg.known + "/" + agg.total + " 个仓库", "Confirmed " + agg.known + "/" + agg.total + " repos") + (agg.failed ? " · " + L(agg.failed + " 个查询失败", agg.failed + " failed") : "") + "</span></div>";
+    var cleanTotal = 0, focused = 0, divDone = false, rows = "";
+    for (var i = 0; i < repos.length; i++) { if (rank(repos[i]) === 5) cleanTotal++; else focused++; }
+    for (var j = 0; j < repos.length; j++) {
+      var r = repos[j], rk = rank(r);
+      if (rk === 5 && focused > 0 && cleanTotal > 0 && !divDone) {   // 干净组分隔行（其余仓仍全部可访问）
+        rows += '<div class="rt-row zu-gdiv"><span>' + L("其余 " + cleanTotal + " 个仓库，无本地改动", cleanTotal + " more repos with no local changes") + "</span></div>";
+        divDone = true;
+      }
+      if (r.err) {
+        var msg = { notrepo: L("非 Git 仓库", "not a git repository"), nogit: L("未找到 git", "git not found"), timeout: L("超时", "timed out"), error: L("出错", "error") }[r.err] || r.err;
+        var t = '<span class="c-warn">⚠ ' + L("查询失败", "query failed") + "（" + gitEsc(msg) + "）</span>";
+        if (r.stale) {   // 携带旧快照：标注历史属性并展示上次分支与改动（旧冲突不作已确认，不在此渲染）
+          t += ' <span class="c-warn">' + L("过期；以下为上次结果", "stale; showing last good result") + "</span>";
+          if (r.branch) t += ' <span class="zu-gbr">' + gitEsc(r.branch) + "</span>";
+          if ((r.changed | 0) > 0) t += ' <span class="c-mod">' + L("改 " + r.changed + " 项", r.changed + " mod") + "</span>";
+          if ((r.untracked | 0) > 0) t += ' <span class="c-unt">' + L("新 " + r.untracked + " 项", r.untracked + " new") + "</span>";
+        }
+        rows += rrow(gitEsc(r.name), t, attr(r.path));
+        continue;
+      }
+      var seg = '<span class="zu-gbr">' + (r.detached ? L("HEAD（游离）", "HEAD (detached)") : gitEsc(r.branch || (r.noCommits ? L("初始", "init") : ""))) + (r.noCommits && !r.detached ? L("（尚无首次提交）", " (no initial commit yet)") : "") + "</span>";
+      if (r.op && !r.stale) seg += ' <span class="c-op">' + gitEsc(gitOpLabel(r.op)) + "</span>";
+      if (r.stale) seg += ' <span class="c-warn">' + L("过期", "stale") + "</span>";
+      if ((r.conflicts | 0) > 0) seg += ' <span class="zu-gconf">!' + r.conflicts + L(" 冲突", " conflicted") + "</span>";
+      if ((r.changed | 0) > 0) seg += ' <span class="c-mod">' + L("改 " + r.changed + " 项", r.changed + " mod") + "</span>";
+      if ((r.untracked | 0) > 0) seg += ' <span class="c-unt">' + L("新 " + r.untracked + " 项", r.untracked + " new") + "</span>";
+      if ((r.ahead | 0) > 0) seg += " ↑" + r.ahead;
+      if ((r.behind | 0) > 0) seg += " ↓" + r.behind;
+      rows += rrow(gitEsc(r.name), seg, attr(r.path));   // title=完整路径（宿主原生提示可访问完整值）
+    }
+    if (st.more > 0) rows += '<div class="rt-row"><span class="zu-gmore">' + L("另有 " + st.more + " 个子仓库未统计", st.more + " more repos not scanned") + "</span></div>";
+    h += '<div class="zu-git-rows">' + rows + "</div>";
+    h += row(L("工作目录", "Work dir"), gitEsc(view.path) + L("，下含 " + agg.total + " 个仓库", " · " + agg.total + " repos"));
+    var when = gitTimeStr(st.ts);
+    h += when ? row(L("更新于", "Updated"), when + L(" · 每 10 秒及每轮回复后自动刷新，点击 chip 立即刷新", " · auto-refreshes every 10s and after each reply; click chip to refresh now")) : "";
+    return h + '<div class="rt-note">' + L("口径：改=已跟踪变更条目（含增删改名与冲突文件），新=未跟踪条目（目录折叠计 1，文件与目录混合计数）。仓库列表全量展开，超出屏幕可滚动。",
+      "Units: mod = tracked-change entries (add/delete/rename/conflict), new = untracked entries (collapsed dirs count as 1). The repo list is fully expanded and scrolls when taller than the screen.") + "</div>";
   }
   function showGitTip(chip) {
     var view = chip && chip.__zuGit;
     if (stale() || !view || !chip.isConnected) { hideGitTip(); return; }
-    gitTip.innerHTML = gitTipHTML(view);
+    /* 内容签名不变就跳过重建：enhanceGitChip 每 600ms 对账、每次推送都会走到这里，
+     * 无条件重写 innerHTML 会打断滚动条拖拽并与滚轮滚动互抢（卡顿根因）；数据本身
+     * 10 秒才变一次， hover 期间几乎总是跳过。浅色档与位置每帧照常同步。 */
+    var html = gitTipHTML(view);
+    if (gitTip.__zuTipSig !== html) {
+      var keep = 0;   // 重建时保持列表滚动位置（不重置阅读位置）
+      if (gitTipFor === chip) { try { var prevRows = gitTip.querySelector(".zu-git-rows"); if (prevRows) keep = prevRows.scrollTop; } catch (e) { } }
+      gitTip.innerHTML = html;
+      gitTip.__zuTipSig = html;
+      try { var rowsEl = gitTip.querySelector(".zu-git-rows"); if (rowsEl && keep) rowsEl.scrollTop = keep; } catch (e) { }
+    }
+    if (chip.getAttribute("data-zusage-light") === "1") gitTip.setAttribute("data-zusage-light", "1");   // 语义色浅色档随 chip 主题（与内容无关，每次同步）
+    else gitTip.removeAttribute("data-zusage-light");
     gitTip.style.display = "block";
     var r = chip.getBoundingClientRect(), tw = gitTip.offsetWidth, th = gitTip.offsetHeight;
     var vw = window.innerWidth, vh = window.innerHeight;
@@ -619,11 +751,23 @@
     gitTipFor = chip;
   }
   function hideGitTip() {
+    clearTimeout(gitTipHideTimer);
     gitTip.style.display = "none";
     gitTipFor = null;
   }
+  /* 鼠标从 chip 移入 tooltip 的宽限桥：延迟收起，移入即取消（支持移入悬浮内容继续阅读）；
+   * Esc 关闭后 gitTipFor 已空，普通数据刷新不会重新弹出（只有再次悬停 chip 才会）。 */
+  var gitTipHideTimer = 0;
+  function hideGitTipSoon() { clearTimeout(gitTipHideTimer); gitTipHideTimer = setTimeout(hideGitTip, 200); }
+  function onGitTipEnter() { clearTimeout(gitTipHideTimer); }
+  function onGitKeydown(e) { if (e && e.key === "Escape") hideGitTip(); }
+  window.addEventListener("keydown", onGitKeydown, true);
+  gitTip.addEventListener("mouseenter", onGitTipEnter);
+  gitTip.addEventListener("mouseleave", hideGitTip);
   /* chip 固定在 composer 工具行，消息流滚动不移动它，无需 rateTip 那样的 scroll 收起；离开/失焦即收 */
   function cleanupGitTip() {
+    window.removeEventListener("keydown", onGitKeydown, true);
+    clearTimeout(gitTipHideTimer);
     hideGitTip();
     gitTip.remove();
   }
@@ -1235,14 +1379,28 @@
       ".zu-git .zu-git-ins{color:#aae6aa}" +
       ".zu-git .zu-git-del{color:#f09696}" +
       ".zu-git .zu-git-unt{color:#f0e6a0}" +
-      ".zu-git.zu-stale{opacity:.55}" +
+      ".zu-git-conflict{color:#f09696}" +
+      ".zu-git-warn{color:#f0e6a0}" +
+      ".zu-git-op{color:#afafb2}" +
+      ".zu-git-sep{opacity:.6}" +
       ".zu-git.zu-compact .zu-git-name,.zu-git.zu-compact .zu-git-ab{display:none}" +
+      ".zu-git.zu-compact.zu-git-multi .zu-git-d{display:none}" +   // v96 multi 紧凑：聚合计数段一并收起（单仓紧凑保留行数段）
       "@keyframes zugitspin{to{transform:rotate(360deg)}}" +
       ".zu-git.zu-gbusy>svg{animation:zugitspin .8s linear infinite}" +
       ".zu-git[data-zusage-light]{color:#6c6f85}" +
       ".zu-git[data-zusage-light] .zu-git-ins{color:#2da587}" +
       ".zu-git[data-zusage-light] .zu-git-del{color:#d20f39}" +
       ".zu-git[data-zusage-light] .zu-git-unt{color:#df8e1d}" +
+      ".zu-git[data-zusage-light] .zu-git-conflict{color:#d20f39}" +
+      ".zu-git[data-zusage-light] .zu-git-warn{color:#946200}" +
+      ".zu-git[data-zusage-light] .zu-git-op{color:#626579}" +
+      /* v96 multi：脏仓段黄（有冲突时 .zu-conflict 整段红）+ 聚合改动计数 M 黄；浅色档同源深化/加浓值 */
+      ".zu-git .zu-git-dirty{color:#f0e6a0}" +
+      ".zu-git.zu-conflict .zu-git-dirty{color:#f09696}" +
+      ".zu-git .zu-git-m{color:#f0e6a0}" +
+      ".zu-git[data-zusage-light] .zu-git-dirty{color:#df8e1d}" +
+      ".zu-git[data-zusage-light].zu-conflict .zu-git-dirty{color:#d20f39}" +
+      ".zu-git[data-zusage-light] .zu-git-m{color:#df8e1d}" +
       /* v96 套餐额度 chip（原生上下文按钮左侧，wrapper 内前插）：多窗分段样式——每个窗口
        * 一段（中文 5小时/7天，英文 5h/7d）各自按 80/95/100 上档位色；余额类型单段
        * （阶段 3 数据源接入即显示）；容器不再着色，颜色只落在分段上。 */
@@ -2396,7 +2554,7 @@
       if (rl) rl.checked = state.rateLine;
       var qe = panel.querySelector(".zu-quota-enable");   // v95：勾选态由主进程推送的 quotaEnabled 决定
       if (qe) qe.checked = state.quotaEnabled;
-      syncQuotaSources();
+      try { syncQuotaSources(); } catch (eSrc) { try { window.__zusageDiag.quotaSrcErr = String((eSrc && eSrc.stack) || eSrc); } catch (_) { } }   // 防御：多源列表渲染失败不得拖垮实例创建（实测 SRC_FIELD_LABELS 时序可致整条状态条消失）
     }
     var srcListSig = "";
     var SRC_FIELD_LABELS = {
@@ -2432,7 +2590,7 @@
           var field = sv.credentialFields[f];
           var isCred = field === "apiKey" || field === "cookie" || field === "token" || field === "secretAccessKey";
           credFields += '<input type="' + (isCred ? "password" : "text") + '" class="zu-src-field" data-src="' + sv.id +
-            '" data-field="' + field + '" placeholder="' + (SRC_FIELD_LABELS[field] || field) +
+            '" data-field="' + field + '" placeholder="' + ((SRC_FIELD_LABELS || {})[field] || field) +
             (isCred && sv.keyConfigured ? L("（已配置，输入以更换）", " (configured)") : "") + '" autocomplete="off">';
         }
         html += '<div class="zu-src-row" data-src="' + sv.id + '">' +
@@ -3131,7 +3289,7 @@
       if (chip.nextElementSibling !== btn) wrap.insertBefore(chip, btn);   // 位置兜回：始终紧贴按钮左侧
       syncCtxLite(chip, bar.classList.contains("zu-light"));
       var srcLabels = {};
-      for (var si = 0; si < state.quotaSources.length; si++) srcLabels[state.quotaSources[si].id] = state.quotaSources[si].label;
+      for (var si = 0; si < (state.quotaSources || []).length; si++) srcLabels[state.quotaSources[si].id] = state.quotaSources[si].label;
       chip.__zuQ = { q: lastQuota, all: lastQuotaAll, srcLabels: srcLabels, provider: quotaProvider, model: quotaModel, mode: mode };
       var sig = mode.kind + "|" + (mode.stale ? 1 : 0) + "|" + mode.html;
       if (chip.__zuSig !== sig) {   // 幂等：内容没变不重建，悬停/焦点态不被打断
@@ -3157,6 +3315,11 @@
     var ZU_CUA_BTN = '[data-testid="v4-composer-cua-entry"]';
     var ZU_GIT_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
       '<line x1="6" x2="6" y1="3" y2="15"></line><circle cx="18" cy="6" r="3"></circle><circle cx="6" cy="18" r="3"></circle><path d="M18 9a9 9 0 0 1-9 9"></path></svg>';
+    /* v96 multi：多仓库聚合态图标 = lucide folder-git 官方 path 数据（描边宽对齐 ZU_GIT_ICON 的 1.5） */
+    var ZU_GIT_MULTI_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+      '<circle cx="12" cy="13" r="2"></circle>' +
+      '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"></path>' +
+      '<path d="M14 13h3"></path><path d="M7 13h3"></path></svg>';
     function gitChipView() {   // null = 本 pane 当前不该显示 chip
       if (!state.show.git) return null;
       var scope = readPaneScope(wantedEl, pickedSid, pid);
@@ -3164,26 +3327,51 @@
       var v = gitViewFor(scope.workspacePath);
       return v ? { path: scope.workspacePath, st: v.st, stale: v.stale } : null;
     }
-    function gitChipHtml(st) {
-      var name = st.detached || !st.branch ? "HEAD" : String(st.branch);
+    function gitChipHtml(view) {   // view={path, st, stale}：stale 是工作区级过期标志（勿与闭包 stale() 函数混淆）
+      var st = view.st, stale = view.stale;
+      if (st.kind === "multi") {   // v96 multi：仓库数 + ·分隔语义段（已知/上次前缀、!冲突、失败、过期）；文件条目汇总在 tooltip 不上 chip
+        var agg = gitMultiAgg(st), parts = ['<span class="zu-git-name">' + agg.total + L("仓", " repos") + "</span>"];
+        var prefix = agg.failed > 0 ? L("已知", "") : (agg.staleAny || stale) ? L("上次", "last ") : "";
+        if (agg.changed > 0) parts.push('<span class="zu-git-dirty">' + prefix + agg.changed + L("改", " changed") + "</span>");   // 有改动仓库数；任一确认冲突时整段红（.zu-conflict）
+        if (agg.conflict > 0) parts.push('<span class="zu-git-conflict">!' + agg.conflict + L("冲突", " conflicted") + "</span>");   // 确认冲突的仓库数
+        if (agg.failed > 0) parts.push('<span class="zu-git-warn">' + agg.failed + L("失败", " failed") + "</span>");
+        if (stale) parts.push('<span class="zu-git-warn">' + L("过期", "stale") + "</span>");   // 过期用文字提示，不降透明度
+        return ZU_GIT_MULTI_ICON + parts.join('<span class="zu-git-sep"> · </span>');
+      }
+      var name = st.detached ? "HEAD" : st.noCommits ? L("初始", "init") : String(st.branch || "HEAD");
       var shown = name.length > 18 ? name.slice(0, 16) + "…" : name;   // 全名进 tooltip
       var h = ZU_GIT_ICON + '<span class="zu-git-name">' + gitEsc(shown) + "</span>";
       var ab = (st.ahead > 0 ? "↑" + st.ahead : "") + (st.behind > 0 ? (st.ahead > 0 ? " " : "") + "↓" + st.behind : "");
       if (ab) h += '<span class="zu-git-ab">' + ab + "</span>";
-      var d = [];
-      if (st.ins > 0) d.push('<span class="zu-git-ins">+' + st.ins + "</span>");
-      if (st.del > 0) d.push('<span class="zu-git-del">-' + st.del + "</span>");
-      if (st.untracked > 0) d.push('<span class="zu-git-unt">?' + st.untracked + "</span>");
-      if (d.length) h += '<span class="zu-git-d">(' + d.join(" ") + ")</span>";   // 干净时整段不出现（cc-pretty-statusline 语义）
+      var nums = [];
+      if (st.ins > 0) nums.push('<span class="zu-git-ins">+' + st.ins + "</span>");
+      if (st.del > 0) nums.push('<span class="zu-git-del">-' + st.del + "</span>");
+      var d = nums.join(" ") + (nums.length && st.untracked > 0 ? '<span class="zu-git-sep"> · </span>' : "") + (st.untracked > 0 ? '<span class="zu-git-unt">?' + st.untracked + "</span>" : "");
+      if (d) h += '<span class="zu-git-d">(' + d + ")</span>";   // 无任何改动时整段不出现
+      if ((st.conflicts | 0) > 0) h += ' <span class="zu-git-conflict">!' + st.conflicts + L("冲突", " conflicted") + "</span>";
+      if (st.op) h += ' <span class="zu-git-op">' + gitEsc(gitOpLabel(st.op)) + "</span>";
+      if (stale) h += ' <span class="zu-git-warn">' + L("过期", "stale") + "</span>";
       return h;
     }
     function gitChipAria(st, stale) {
-      var s = L("Git 分支 ", "Git branch ") + (st.detached || !st.branch ? "HEAD" : st.branch);
+      if (st.kind === "multi") {
+        var a = gitMultiAgg(st);
+        var ms = L("Git " + a.total + " 个仓库", "Git " + a.total + " repos");
+        if (a.changed > 0 || a.failed > 0) ms += L("，" + (a.failed > 0 ? "已知 " : "") + a.changed + " 个有改动", ", " + a.changed + " with changes");
+        if (a.conflict > 0) ms += L("，" + a.conflict + " 个仓库冲突", ", " + a.conflict + " repos conflicted");
+        if (a.op > 0) ms += L("，" + a.op + " 个操作中", ", " + a.op + " mid-operation");
+        if (a.failed > 0) ms += L("，" + a.failed + " 个查询失败", ", " + a.failed + " failed");
+        if (stale) ms += L("，数据已过期", ", data stale");
+        return ms;
+      }
+      var s = L("Git 分支 ", "Git branch ") + (st.detached ? "HEAD" : st.noCommits ? L("初始（尚无首次提交）", "init (no initial commit yet)") : st.branch);
       if (st.ahead > 0) s += L("，领先 ", ", ahead ") + st.ahead;
       if (st.behind > 0) s += L("，落后 ", ", behind ") + st.behind;
-      s += L("，改动 +", ", changes +") + (st.ins | 0) + " -" + (st.del | 0);
+      if (st.ins > 0 || st.del > 0) s += L("，改动 +", ", changes +") + (st.ins | 0) + " -" + (st.del | 0);
       if (st.untracked > 0) s += L("，未跟踪 ", ", untracked ") + st.untracked;
-      if (stale) s += L("（数据可能过期）", " (may be stale)");
+      if ((st.conflicts | 0) > 0) s += L("，! " + st.conflicts + " 个冲突文件", ", ! " + st.conflicts + " conflicted files");
+      if (st.op) s += L("，进行中操作：", ", git operation: ") + gitOpLabel(st.op);
+      if (stale) s += L("，数据已过期", ", data stale");
       return s;
     }
     function onGitEnter() { showGitTip(this); }
@@ -3217,7 +3405,7 @@
           chip.setAttribute("role", "status");
           chip.tabIndex = 0;
           chip.addEventListener("mouseenter", onGitEnter);
-          chip.addEventListener("mouseleave", hideGitTip);
+          chip.addEventListener("mouseleave", hideGitTipSoon);
           chip.addEventListener("focus", onGitEnter);
           chip.addEventListener("blur", hideGitTip);
           chip.addEventListener("click", onGitClick);
@@ -3228,8 +3416,9 @@
       syncCtxLite(chip, bar.classList.contains("zu-light"));
       var compact = btn.getAttribute("data-composer-compact") === "true";   // 宿主窄屏折叠：原生标签隐藏，chip 同步只留图标+计数
       chip.__zuGit = view;
-      var html = gitChipHtml(view.st);
-      var cls = "zu-git" + (view.stale ? " zu-stale" : "") + (compact ? " zu-compact" : "");
+      var html = gitChipHtml(view);
+      var mAgg = view.st.kind === "multi" ? gitMultiAgg(view.st) : null;
+      var cls = "zu-git" + (compact ? " zu-compact" : "") + (view.st.kind === "multi" ? " zu-git-multi" : "") + (mAgg && mAgg.conflict > 0 ? " zu-conflict" : "");   // v96：形态类（紧凑态收起份数与聚合计数段）+ 确认冲突 → 冲突段转红（类进签名保持幂等）；过期走文字徽章不降透明度
       var sig = cls + "|" + html + "|" + state.lang;
       if (chip.__zuSig !== sig) {   // 幂等：内容没变不重建，悬停/焦点态不被每 1.5s 的推送打断
         chip.__zuSig = sig;

@@ -190,8 +190,9 @@ test('timeout keeps the last good state flagged stale instead of clearing', () =
   h.window.__zusageGitState('/repo/a', { ok: false, reason: 'timeout', ts: 3 });
   const again = chipOf(ui.row);
   assert.equal(again, chip, '节点不重建');
-  assert.ok(again.classList.contains('zu-stale'));
-  assert.match(again.getAttribute('aria-label'), /数据可能过期/);
+  assert.ok(!again.classList.contains('zu-stale'), '过期不用透明度表达');
+  assert.match(again.innerHTML, /<span class="zu-git-warn">过期<\/span>/, '过期文字徽章');
+  assert.match(again.getAttribute('aria-label'), /数据已过期/);
   assert.match(again.innerHTML, /main/, '内容仍是最近成功结果');
 });
 
@@ -287,7 +288,9 @@ test('hover tooltip shows branch, upstream, counts, directory and refresh hint',
   assert.match(tip.innerHTML, /更新于/);
   assert.match(tip.innerHTML, /\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/, '时间格式 yyyy-MM-dd HH:mm:ss');
   dispatch(chip, 'mouseleave');
-  assert.equal(tip.style.display, 'none');
+  assert.equal(tip.style.display, 'block', '悬停桥：移入 tooltip 前保持显示（延迟收起）');
+  dispatch(h.window, 'keydown', { key: 'Escape' });
+  assert.equal(tip.style.display, 'none', 'Esc 关闭');
 });
 
 test('reinjection cleans the old chip and tooltip, then rebuilds', () => {
@@ -310,7 +313,11 @@ test('chip styles carry the cc-pretty-statusline palette, light variants and com
   assert.match(source, /\.zu-git\[data-zusage-light\] \.zu-git-del\{color:#d20f39\}/);
   assert.match(source, /\.zu-git\[data-zusage-light\] \.zu-git-unt\{color:#df8e1d\}/);
   assert.match(source, /\.zu-git\.zu-compact \.zu-git-name,\.zu-git\.zu-compact \.zu-git-ab\{display:none\}/);
-  assert.match(source, /\.zu-git\.zu-stale\{opacity:\.55\}/);
+  assert.match(source, /\.zu-git-conflict\{color:#f09696\}/);
+  assert.match(source, /\.zu-git-warn\{color:#f0e6a0\}/);
+  assert.match(source, /\.zu-git-op\{color:#afafb2\}/);
+  assert.match(source, /\.zu-git-sep\{opacity:\.6\}/);
+  assert.doesNotMatch(source, /\.zu-git\.zu-stale\{opacity/);
   assert.match(source, /@keyframes zugitspin/);
   assert.match(source, /data-k="git"/);
 });
