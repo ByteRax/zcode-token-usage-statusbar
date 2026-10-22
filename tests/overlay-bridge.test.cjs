@@ -566,7 +566,15 @@ test('⑪ heartbeat tick alone (no new store push) still advances the observed-s
   h.runTimers(100);
   assert.equal(instanceOf(h).statsFor('pt1').characterRate, null);
   // 没有新快照也要能走字：证明心跳本身驱动了刷新，而不是只等 store 通知
-  assert.equal(instanceOf(h).liveEl().textContent, '思考中…3.1s');
+  assert.equal(instanceOf(h).liveEl().textContent, '思考中…3s');
+  for (const [now, expected] of [
+    [59999, '59s'], [60000, '1m'], [70000, '1m:10s'],
+    [3600000, '1h'], [3610000, '1h:10s'], [3660000, '1h:1m'], [3670000, '1h:1m:10s'],
+  ]) {
+    h.clock.now = now;
+    h.runTimers(100);
+    assert.equal(instanceOf(h).liveEl().textContent, '思考中…' + expected);
+  }
   // 无可测字符流=思考态：chip 图标切到动效脑（v77：用户语义"生成中"改"思考中"）
   assert.equal(instanceOf(h).liveIconKind(), 'think');
   assert.equal(store.subscribers(), 1);   // 心跳没有误判成"店铺换代"而重新订阅/脱离
