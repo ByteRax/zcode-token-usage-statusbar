@@ -848,13 +848,22 @@
    * 时退回 DEFAULT_CHARS_PER_TOKEN 粗略估计。完成态直接用 tracker 给出的真实 tok/s。 */
   var DEFAULT_CHARS_PER_TOKEN = 2;   // 校准前的粗略估计（中英混排粗略量级），有样本后立即被取代
   /* 返回 null = 调用方应把这当成"没有可展示的桥接视图"处理（回退 DB/不渲染），
-   * 而不是当成"确定性地算出了没有速度"。 */
-  function zuBarSpeedView(stats, charsPerToken) {
+   * 而不是当成"确定性地算出了没有速度"。v97：第三参 subSum = 子代理速率桥的合计
+   * 视图（{rate, at, count}）——Agent 工具运行期优先展示**所有运行中子代理**的
+   * 估算 tok/s 之和（并行 ≥2 个时动词后缀 ×N；运行中请求未入库，DB 无数据；
+   * 3 秒未刷新即视为过期不显示），缺席时退回工具状态词 + 耗时。 */
+  function zuBarSpeedView(stats, charsPerToken, subSum) {
     if (!stats.complete) {
       // 工具执行期间优先显示与消息流同款的状态词（正在读取/正在编辑…+已耗时），
       // 让悬浮条与 toolCall 行状态对应；没有工具在跑才退回字符估算/存活心跳。
       if (stats.runningTool) {
         var verb = zuToolVerb(stats.runningTool.name);
+        if (stats.runningTool.name === "Agent" && subSum && subSum.rate != null && subSum.count > 0 &&
+            typeof subSum.at === "number" && Date.now() - subSum.at <= 3000)
+          return { cls: "dim",
+                   text: verb + (subSum.count > 1 ? " ×" + subSum.count : "") +
+                     L(" · 估 ", " · est ") + subSum.rate.toFixed(1) + L(" t/s", " t/s"),
+                   phase: "tool" };
         var st = stats.runningTool.startedAt;
         if (typeof st === "number" && st > 0 && Date.now() >= st)
           verb += " · " + ((Date.now() - st) / 1000).toFixed(1) + "s";
@@ -1139,7 +1148,7 @@
     TodoWrite: ["正在更新待办", "Updating todos"], TodoRead: ["正在读取待办", "Reading todos"],
     Skill: ["正在运行技能", "Running skill"],
     ReadSessionContext: ["正在读取上下文", "Reading context"],
-    Agent: ["正在运行子智能体", "Running agent"], Task: ["正在运行子智能体", "Running agent"],
+    Agent: ["子代理运行中", "Running agent"], Task: ["子代理运行中", "Running agent"],
     SendMessage: ["正在发送消息", "Sending message"],
     TaskOutput: ["正在获取任务输出", "Fetching task output"],
     TaskStop: ["正在停止任务", "Stopping task"],
@@ -1259,7 +1268,7 @@
   /* ---------- 实例工厂（v61.1）：一个 pane 一套 条/面板/气泡/tooltip/定位循环。
    * slot 0 保留 #zusage-bar/#zusage-tip 兼容 id（泵热更新按它清理），其余实例仅类名。 */
   function spawnInstance(pid, slot) {
-    var VERSION = "v96";   // v82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v84 主标签页远端路由（工作台分组唯一主绑定上报 + 迟到载荷守卫，issue #30）→ v85 回答末尾统计行跟随万/亿开关 + tok→token → v86 历史轮 tracker 无记录（窗口滑出/换代/热更）或缺输出字段不再翻成"本轮统计不可用"，加 det 诊断 → v87 主叶归属增 last-session 回退（组零证据时唯一远端记录放行，issue #30 复测：单会话主标签页不建组）→ v88 运行态心跳与两处扫描 tick 2s→0.5s（富文本重试 6→24 次等价放大）→ v89 ⚙ 面板更新进度：downloading 阶段文案 + 下载（字节）/安装（校验→安装→同步）双进度条，缺 progress 的旧主进程自动隐藏 → v90 主标签页/分栏归属改按本窗会话节点身份（renderer 桥按版本/资产/锚点写 SessionPane 属性，移除 workbench-groups/last-session 共享回退）+ 心跳 0.5s→0.1s（扫描维持 0.5s）→ v91 设置页/权限面板冒条修复（PR #44：inSettingsView 三处派发排除 + anchorCardOf 面板锚点改判）收编收尾：排除标记并集（settings-page testid + content/panel 双 frame）、track 显隐第四处防御 → v92 ⚙ 更新区固定显示可复制的重装口令（源码安装无法自动更新时引导用户发给 agent）→ v93 原生上下文按钮（chat-context-usage-trigger）增强：环填充/四档色/右侧百分比镜像状态条上下文格（ctxBandOf 同源），cw 缺失还原原生形态 → v94 状态条删除「上下文容量」格（UI+tooltip，该口径由原生按钮增强承载），⚙ 面板同步去掉「上下文」开关，子代理格改始终展示（零值也显示）→ v95 ⚙ 更新区去掉 v92 重装口令提示块（源码清单的仓库来源改由宿主插件管理器直接更新，不再报渠道不一致），更新来源文案增「仓库源码」分支→ v96 套餐额度 chip（默认关）：挂原生上下文按钮左侧（wrapper 内前插，与按钮增强同款双 reapply/还原），数据来自主进程 quota 字段（解密宿主 OAuth 凭据直查 monitor 端点，账号级套餐池口径），会话首个 main_turn 完成前不显示；自绘 tooltip 走 rateTip 独立浮层模式；chip 改多窗分段：每窗一段（中文 5小时/7天，英文 5h/7d）各自按 80/95/100 档位色，分隔符 |；余额类型单段渲染就绪（余额 ¥100.00，阶段 3 数据源接入即用）；去掉环形，容器不着色   // 悬停 ⚙ 面板可见；版本号随代际递增
+    var VERSION = "v97";   // v82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v84 主标签页远端路由（工作台分组唯一主绑定上报 + 迟到载荷守卫，issue #30）→ v85 回答末尾统计行跟随万/亿开关 + tok→token → v86 历史轮 tracker 无记录（窗口滑出/换代/热更）或缺输出字段不再翻成"本轮统计不可用"，加 det 诊断 → v87 主叶归属增 last-session 回退（组零证据时唯一远端记录放行，issue #30 复测：单会话主标签页不建组）→ v88 运行态心跳与两处扫描 tick 2s→0.5s（富文本重试 6→24 次等价放大）→ v89 ⚙ 面板更新进度：downloading 阶段文案 + 下载（字节）/安装（校验→安装→同步）双进度条，缺 progress 的旧主进程自动隐藏 → v90 主标签页/分栏归属改按本窗会话节点身份（renderer 桥按版本/资产/锚点写 SessionPane 属性，移除 workbench-groups/last-session 共享回退）+ 心跳 0.5s→0.1s（扫描维持 0.5s）→ v91 设置页/权限面板冒条修复（PR #44：inSettingsView 三处派发排除 + anchorCardOf 面板锚点改判）收编收尾：排除标记并集（settings-page testid + content/panel 双 frame）、track 显隐第四处防御 → v92 ⚙ 更新区固定显示可复制的重装口令（源码安装无法自动更新时引导用户发给 agent）→ v93 原生上下文按钮（chat-context-usage-trigger）增强：环填充/四档色/右侧百分比镜像状态条上下文格（ctxBandOf 同源），cw 缺失还原原生形态 → v94 状态条删除「上下文容量」格（UI+tooltip，该口径由原生按钮增强承载），⚙ 面板同步去掉「上下文」开关，子代理格改始终展示（零值也显示）→ v95 ⚙ 更新区去掉 v92 重装口令提示块（源码清单的仓库来源改由宿主插件管理器直接更新，不再报渠道不一致），更新来源文案增「仓库源码」分支→ v96 套餐额度 chip（默认关）：挂原生上下文按钮左侧（wrapper 内前插，与按钮增强同款双 reapply/还原），数据来自主进程 quota 字段（解密宿主 OAuth 凭据直查 monitor 端点，账号级套餐池口径），会话首个 main_turn 完成前不显示；自绘 tooltip 走 rateTip 独立浮层模式；chip 改多窗分段：每窗一段（中文 5小时/7天，英文 5h/7d）各自按 80/95/100 档位色，分隔符 |；余额类型单段渲染就绪（余额 ¥100.00，阶段 3 数据源接入即用）；去掉环形，容器不着色 → v97 子代理速率（T1+T2）：zusage sub 汇总加 rate_avg/每子代理 tps_avg（已完成段加权平均，口径同 _turn_rate），子代理格 tooltip/明细面板展示；Agent 运行期主 chip 附加「子代理运行中 · 估 X t/s」——turn-stats 透传 subagent 行 childSessionId，overlay 据此用同款 zuTryBindStore 绑子代理会话 store 做字符增量估算（运行中请求未入库，DB 无实时数据；150s 采样实锤零 running 行），思考文本不进 rows 时退回纯状态词；工具动词「正在运行子智能体」压成「子代理运行中」（web 同步文案）；同日多槽位化：turn-stats 暴露 runningSubagents 全集（并行时 rowId 前 8 个），每子代理独立绑定/2s 节流，主 chip 显示合计速率（并行 ≥2 时动词后缀 ×N），chip tooltip 与子代理明细面板逐个实时展示运行中估算（tooltip 随原地改字同步 __tip 重画；面板 800ms tick 原地刷新 .subrate，汇总页运行块含 DB 尚无记录的新子代理）   // 悬停 ⚙ 面板可见；版本号随代际递增
     var instanceDisposed = false, heavyTimer = 0, frame = 0, themeObserver = null;
     var globalListeners = [];
     function listenGlobal(target, type, fn, capture) {
@@ -1889,6 +1898,42 @@
     function ttH(t) { return '<div class="rt-h">' + ttEsc(t) + "</div>"; }
     function ttRow(k, v) { return '<div class="rt-row"><b>' + ttEsc(k) + '</b><span>' + ttEsc(v) + "</span></div>"; }
     function ttNote(v) { return '<div class="rt-note">' + ttEsc(v) + "</div>"; }
+    /* v97：live chip（生成速度）的 tooltip 内容——子代理速率是渲染端实时状态（不在泵
+     * 快照里），html() 整条渲染与 updateLive 原地改字两条路径都要能生成，抽出共用。
+     * 运行中的每个子代理一行（…sid4 · 估 X t/s），并行 ≥2 个时先给合计行。 */
+    function buildLiveTip(speedView) {
+      var rows =
+        ttH(L("生成速度", "Generation speed")) +
+        ttRow(L("生成中", "While running"), L("按文本增量算出的字符/s，除以「每 token 字符数」估算 tok/s；该比例取自本会话最近一次完成的真实轮次，随每轮刷新（首轮无样本时用粗略默认值）", "estimated from the text-delta chars/s divided by a chars-per-token ratio; the ratio is calibrated from this session's most recently completed turn and refines each turn (a rough default is used before the first sample)")) +
+        ttRow(L("子代理运行中", "Agent running"), L("子智能体运行期间按各自会话文本增量同款估算，主 chip 显示合计；运行中的请求未入本地库，思考文本不外显时无速率、只显示状态词", "while sub-agents run, each is estimated the same way from its own session text deltas and the bar chip shows their sum; in-flight requests are not in the local DB yet, and when thinking text is not exposed there is no rate, only the status word"));
+      if (speedView && speedView.phase === "tool") {
+        var sids = [], now = Date.now();
+        for (var sid in subRate.slots) sids.push(sid);
+        sids.sort();
+        var fresh = 0;
+        for (var i = 0; i < sids.length; i++) {
+          var sl = subRate.slots[sids[i]];
+          if (sl.rate != null && now - sl.at <= 3000) fresh++;
+        }
+        if (sids.length) {
+          if (fresh > 1) rows += ttRow(L("合计", "Sum"),
+            L("估 ", "est ") + subRate.sum.rate.toFixed(1) + L(" t/s（", " t/s (") + fresh + L(" 个）", " running)"));
+          for (var j = 0; j < sids.length; j++) {
+            var s2 = subRate.slots[sids[j]];
+            var tail = String(sids[j]).slice(-4);
+            rows += ttRow(L("子代理 …" + tail, "agent …" + tail),
+              s2.rate != null && now - s2.at <= 3000
+                ? L("估 ", "est ") + s2.rate.toFixed(1) + L(" t/s", " t/s")
+                : L("估算中…", "estimating…"));
+          }
+        }
+      }
+      rows +=
+        ttRow(L("完成后", "When done"), L("切换为本轮真实 tok/s：输出 tokens（含思考）÷ 模型生成时长；本轮缺口径时回退数据库最近一段值", "switches to this turn's real tok/s: output tokens (thinking incl.) ÷ model generation time; falls back to the latest DB segment when this turn's basis is missing")) +
+        ttRow(L("档位", "Bands"), L("≥70 绿 · 40–70 黄 · <40 红（仅完成态）", "≥70 green · 40–70 yellow · <40 red (completed only)")) +
+        ttNote(L("数据来自 renderer 会话状态（只读桥），实时更新，不经过本地数据库轮询；生成中的数值为字符增量估算", "Data comes from the renderer session state via the read-only bridge, updating live, independent of local database polling; running values are estimated from text deltas"));
+      return "\x01" + rows;
+    }
     /* 行内 SVG 线性图标（v54）：stroke 走 currentColor，颜色由 .ico 控制统一换色 */
     function ico(paths) {
       return '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + paths + "</svg>";
@@ -1928,19 +1973,14 @@
        * 和"桥完全没命中"一视同仁，同样回退 DB/不渲染，不冒充"这个会话速度不可用"。
        * 二者互斥：绝不同时渲染两枚「速度」chip。 */
       var dbTps = last.tps || 0;
-      var speedView = liveStatsCur ? zuBarSpeedView(liveStatsCur, bridge.handle && bridge.handle.charsPerToken) : null;
+      var speedView = liveStatsCur ? zuBarSpeedView(liveStatsCur, bridge.handle && bridge.handle.charsPerToken, subRate.sum) : null;
       if (speedView) {
         liveKindCur = "live";
         livePhaseCur = speedView.phase || "";
         liveIconCur = speedView.phase ? "think" : "bolt";   // v77.1：运行期一律动效脑（思考/正文/工具），完成态才回闪电
         it((speedView.phase ? zuIcoThinking() : ico('<path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/>')) +
           '<span class="zu-live ' + speedView.cls + '">' + speedView.text + "</span>",
-          "\x01" +
-          ttH(L("生成速度", "Generation speed")) +
-          ttRow(L("生成中", "While running"), L("按文本增量算出的字符/s，除以「每 token 字符数」估算 tok/s；该比例取自本会话最近一次完成的真实轮次，随每轮刷新（首轮无样本时用粗略默认值）", "estimated from the text-delta chars/s divided by a chars-per-token ratio; the ratio is calibrated from this session's most recently completed turn and refines each turn (a rough default is used before the first sample)")) +
-          ttRow(L("完成后", "When done"), L("切换为本轮真实 tok/s：输出 tokens（含思考）÷ 模型生成时长；本轮缺口径时回退数据库最近一段值", "switches to this turn's real tok/s: output tokens (thinking incl.) ÷ model generation time; falls back to the latest DB segment when this turn's basis is missing")) +
-          ttRow(L("档位", "Bands"), L("≥70 绿 · 40–70 黄 · <40 红（仅完成态）", "≥70 green · 40–70 yellow · <40 red (completed only)")) +
-          ttNote(L("数据来自 renderer 会话状态（只读桥），实时更新，不经过本地数据库轮询；生成中的数值为字符增量估算", "Data comes from the renderer session state via the read-only bridge, updating live, independent of local database polling; running values are estimated from text deltas")));
+          buildLiveTip(speedView));
       } else if (dbTps) {
         liveKindCur = "fallback";
         livePhaseCur = "";
@@ -2057,13 +2097,15 @@
         /* v93：随「上下文容量」格移除改为始终展示（零值也显示，口径与其他格统一）；
          * 无子代理时就是 0。v50：悬停 tooltip 只放汇总 + 打开面板的提示；各子代理明细
          * 在点击弹出的固定面板里用页签切换（面板固定不随鼠标，页签点击没有几何问题）。 */
-        var sb = d.sub || { requests: 0, total: 0, input: 0, output: 0, cache_read: 0, reasoning: 0, cache_write: 0, active: false };
+        var sb = d.sub || { requests: 0, total: 0, input: 0, output: 0, cache_read: 0, reasoning: 0, cache_write: 0, active: false, rate_avg: 0 };
         it(ico('<path d="M6 3v12"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>') +
           '<span class="v">' + fmt(sb.total) + "</span>" +
           (sb.active ? '<span class="ok dot">●</span>' : ""),
           L("子代理：当前会话的后台子代理消耗（独立统计，不计入会话累计）", "Sub-agents: background sub-agent usage of the current session (tracked separately, not counted in the session total)") + "\n" +
           ioc(sb.input, sb.output, sb.cache_read, sb.reasoning, sb.cache_write) +
-          L("，共 ", ", ") + (sb.requests || 0) + L(" 次", " requests in total") + (sb.active ? L(" · 运行中", " · running") : "") +
+          L("，共 ", ", ") + (sb.requests || 0) + L(" 次", " requests in total") +
+          (sb.rate_avg > 0 ? L(" · 均 ", " · avg ") + sb.rate_avg + L(" t/s（已完成段加权平均）", " t/s (weighted avg of completed segments)") : "") +
+          (sb.active ? L(" · 运行中", " · running") : "") +
           "\n" + L("点击条目打开面板，查看每个子代理的具体消耗", "Click the item to open the panel with per-sub-agent details"), "zu-sub");
       }
       return { s: items.join('<span class="sep"></span>') || '<span class="dim">' + L("全部显示项已关闭", "All display items are off") + '</span>', tips: tips };
@@ -2149,6 +2191,120 @@
       try { if (handle.off) handle.off(); } catch (e) { }   // 停订阅 + dispose tracker
       try { handle.store.off(); } catch (e) { }
       if (bridge.handle === handle) { bridge.handle = null; bridge.turnId = ""; }
+      subRateDetach();   // 主桥释放（换代/切换/世代失效）时子代理速率桥一并释放
+    }
+
+    /* ---------- 子代理运行期速率桥（v97）：主会话 rows 的 subagent 行自带
+     * childSessionId（turn-stats 的 runningSubagents 集合），据此用同一套 zuTryBindStore
+     * 为**每个**运行中的子代理绑定会话 store，字符增量 ÷ c2t 估算各自输出 tok/s；
+     * 主 chip 显示合计（Σ 有效槽位，并行 ≥2 个时动词后缀 ×N），tooltip/明细面板按
+     * 槽位逐个展示。运行中请求未入库（DB 完成才写行，150s 实测零 running 行），这是
+     * 唯一的实时来源；子代理思考文本若不进 rows（与主会话同款限制），characterRate
+     * 为 null，该槽位速率缺席。生命周期跟随主桥：主桥释放/换代即全解绑；行结束
+     * （runningSubagents 收敛）下一次 updateLive 自然解绑。
+     * 上限保护：宿主 schema 允许 64 个并行 subagent，全绑会让订阅失控——只绑
+     * rowId 最大（最新派发）的前 8 个，其余不估算（turn-stats 已按 rowId 升序给出）。 */
+    var MAX_SUB_SLOTS = 8;
+    var subRate = { slots: {}, sum: { rate: null, at: 0, count: 0 } };
+    /* 释放槽位的绑定资源但保留槽位（want/retryAt）：绑定失败/首调 detach 时等待
+     * 2s 后重试；对未绑定槽位（handle 为 null）调用也安全。 */
+    function subSlotReset(sl) {
+      if (sl.handle) sl.handle.dead = true;
+      try { if (sl.off) sl.off(); } catch (e) { }
+      try { if (sl.store) sl.store.off(); } catch (e) { }
+      if (sl.tracker) { try { sl.tracker.dispose(); } catch (e) { } }
+      sl.handle = null; sl.store = null; sl.tracker = null; sl.off = null;
+      sl.rate = null; sl.calib = null;
+      sl.retryAt = Date.now() + 2000;
+    }
+    function subSlotDetach(sid) {   // 彻底移除槽位（行结束/主桥释放）
+      var sl = subRate.slots[sid];
+      if (!sl) return;
+      subSlotReset(sl);
+      delete subRate.slots[sid];
+    }
+    function subRateDetach() {   // 全解绑（主桥释放/换代/世代失效）
+      for (var sid in subRate.slots) subSlotDetach(sid);
+      subRate.sum = { rate: null, at: 0, count: 0 };
+    }
+    /* 合计视图：Σ 3 秒内有效的槽位速率；全部无效/过期时为 {rate:null}（chip 回退状态词）。 */
+    function subRateRecompute() {
+      var now = Date.now(), sum = 0, at = 0, count = 0;
+      for (var sid in subRate.slots) {
+        var sl = subRate.slots[sid];
+        if (sl.rate != null && now - sl.at <= 3000) { sum += sl.rate; count++; if (sl.at > at) at = sl.at; }
+      }
+      subRate.sum = count ? { rate: sum, at: at, count: count } : { rate: null, at: 0, count: 0 };
+    }
+    /* 单槽位展示文案（tooltip/明细面板共用）：有效速率 →「估 X t/s」；已绑但无速率
+     * （思考期）→「估算中…」；未绑槽位 → 空串。 */
+    function subRateSlotText(sid) {
+      var sl = subRate.slots[sid];
+      if (!sl) return "";
+      var now = Date.now();
+      return sl.rate != null && now - sl.at <= 3000
+        ? L("估 ", "est ") + sl.rate.toFixed(1) + L(" t/s", " t/s")
+        : L("估算中…", "estimating…");
+    }
+    /* 每次主桥数据到达时 reconcile：不在 runningSubagents 里的槽位解绑，新出现的
+     * 尝试绑定（槽位级 2s 节流——updateLive 挂在 0.1s 心跳上，不节流会让 diag 全表
+     * 枚举跟着心跳空转）。 */
+    function subRateTick(runningSubagents) {
+      var list = [];
+      if (runningSubagents) {
+        for (var i = 0; i < runningSubagents.length && list.length < MAX_SUB_SLOTS; i++) {
+          var cs = runningSubagents[i] && runningSubagents[i].childSessionId;
+          if (cs && list.indexOf(cs) < 0) list.push(cs);
+        }
+      }
+      for (var sid in subRate.slots) if (list.indexOf(sid) < 0) subSlotDetach(sid);
+      for (var j = 0; j < list.length; j++) {
+        if (!subRate.slots[list[j]]) {
+          subRate.slots[list[j]] = { handle: null, store: null, tracker: null, off: null,
+                                     rate: null, at: 0, calib: null, retryAt: 0, want: list[j] };
+        }
+        subTryBindSlot(subRate.slots[list[j]]);
+      }
+      subRateRecompute();
+    }
+    function subTryBindSlot(sl) {
+      if (sl.handle || Date.now() < sl.retryAt) return;
+      var store = zuTryBindStore(sl.want);
+      if (!store) { sl.retryAt = Date.now() + 2000; return; }   // 注册表里还没有该 topic：2s 后再试
+      var h = { dead: false, sid: sl.want };
+      var tracker = TURN_STATS.createTracker();
+      sl.handle = h; sl.store = store; sl.tracker = tracker;
+      var offFn = TURN_STATS.subscribeStore(store, tracker, function () {
+        if (inactive() || h.dead) { subSlotReset(sl); subRateRecompute(); return; }
+        var st = null;
+        try { st = store.getState(); } catch (e) { st = null; }
+        var snap = st && st.snapshot;
+        if (!snap || snap.sessionId !== sl.want) { subSlotReset(sl); subRateRecompute(); return; }   // 关闭/换代：重置待重试
+        var tid = zuActiveTurnId(snap);
+        var stats = tid ? tracker.get(tid) : null;
+        if (stats && !stats.complete) {
+          if (stats.characterRate != null) {
+            sl.rate = stats.characterRate /
+              (sl.calib || (bridge.handle && bridge.handle.charsPerToken) || DEFAULT_CHARS_PER_TOKEN);
+            sl.at = Date.now();
+          } else {
+            sl.rate = null;   // 思考期无可测字符流：该槽位缺席合计
+          }
+        } else if (stats && stats.complete && stats.outputTokens > 0 && stats.totalCharacters > 0) {
+          sl.calib = stats.totalCharacters / stats.outputTokens;   // c2t 自校准：该子代理完成轮的真实比例
+        }
+        subRateRecompute();
+        updateLive();
+      });
+      sl.off = offFn;
+      /* subscribeStore 会同步首调一次回调：首调即 reset（换代/sessionId 不匹配）时
+       * h.dead 已置位，offFn 是悬挂订阅的解绑函数——直接判 offFn 会把它当成功绑定
+       * 写回（10Hz 重绑抖动 + 订阅泄漏，review P1）。按 h.dead 判定：显式释放 offFn
+       * （幂等，兼带 dispose tracker），subSlotReset 自带 2s 节流防心跳空转。 */
+      if (!offFn || h.dead) {
+        if (offFn) { try { offFn(); } catch (e) { } }
+        subSlotReset(sl);
+      }
     }
     function bridgeTick() {
       if (inactive()) return;
@@ -2227,8 +2383,9 @@
       if (h && stats && stats.complete && stats.outputTokens > 0 && stats.totalCharacters > 0) {
         h.charsPerToken = stats.totalCharacters / stats.outputTokens;   // c2t 自校准：本轮真实比例供下一轮估算用
       }
+      subRateTick(stats && !stats.complete ? stats.runningSubagents : null);   // 运行中子代理逐个绑/解速率桥
       var wasLive = liveKindCur === "live";
-      var view = stats ? zuBarSpeedView(stats, h && h.charsPerToken) : null;
+      var view = stats ? zuBarSpeedView(stats, h && h.charsPerToken, subRate.sum) : null;
       liveStatsCur = stats;
       // 用 view（而非 stats）判定快速路径：stats 非空但 view 为 null（历史存量，见
       // zuBarSpeedView）时结构要切回降级拼法，必须走下面的整条重渲染，不能原地改字。
@@ -2241,6 +2398,13 @@
         if (liveEl.textContent !== view.text) liveEl.textContent = view.text;
         var cls = "zu-live " + view.cls;
         if (liveEl.className !== cls) liveEl.className = cls;
+        /* v97：子代理速率是渲染端实时状态（不在泵快照里），tooltip 里的逐子代理
+         * 行随原地改字一起刷新——内容签名没变时 drawTip 幂等只调位置，不闪烁。 */
+        var tip1 = buildLiveTip(view);
+        if (liveEl.__tip !== tip1) {
+          liveEl.__tip = tip1;
+          if (tipFor === liveEl) drawTip(liveEl, true);
+        }
         return;
       }
       liveTextCur = view ? view.text : "";
@@ -2774,7 +2938,10 @@
       ver.textContent = L("独立统计 · 不计入会话累计", "Tracked separately · not counted in session total");
       head.appendChild(ver);
       subPanel.appendChild(head);
-      if (!sub || (!sub.total && !sub.active)) {
+      var runningSids = [];
+      for (var rsid in subRate.slots) runningSids.push(rsid);   // v97：运行中槽位（DB 可能还没有记录）
+      runningSids.sort();
+      if (!sub || (!sub.total && !sub.active && !runningSids.length)) {
         var empty = document.createElement("div");
         empty.className = "pnote";
         empty.textContent = L("当前会话没有子代理记录", "No sub-agent records in the current session");
@@ -2814,11 +2981,18 @@
           live.className = "sublive";
           live.textContent = L("运行中", "running");
           n.appendChild(live);
+          var est = document.createElement("span");   // v97：运行期估算速率（渲染端状态，面板 tick 原地更新）
+          est.className = "subrate dim";
+          est.setAttribute("data-sid", String(s1.sid || ""));
+          est.textContent = subRateSlotText(s1.sid);
+          n.appendChild(est);
         }
         var st = document.createElement("div");
         st.className = "substat";
         st.textContent = L("总消耗 ", "Total ") + fmt(s1.total) + L(" · ", " · ") + (s1.requests || 0) +
-          L(" 次请求", " requests") + (s1.last ? L(" · 最后活动 ", " · last activity ") + fmtTime(s1.last) : "");
+          L(" 次请求", " requests") +
+          (s1.tps_avg > 0 ? L(" · 均 ", " · avg ") + s1.tps_avg + L(" t/s", " t/s") : "") +
+          (s1.last ? L(" · 最后活动 ", " · last activity ") + fmtTime(s1.last) : "");
         var br = document.createElement("div");
         br.className = "substat dim";
         br.textContent = ioc(s1.input, s1.output, s1.cache_read, s1.reasoning, s1.cache_write);
@@ -2831,9 +3005,30 @@
         p1.className = "pnote";
         p1.textContent = ioc(sub.input, sub.output, sub.cache_read, sub.reasoning, sub.cache_write) +
           L("，共 ", ", ") + (sub.requests || 0) + L(" 次", " requests in total") +
+          (sub.rate_avg > 0 ? L(" · 均 ", " · avg ") + sub.rate_avg + L(" t/s", " t/s") : "") +
           (sub.active ? L(" · 有子代理运行中", " · sub-agent running") : "");
         body.appendChild(p1);
-        if (!list.length) {
+        /* v97：运行中子代理逐个实时估算——含 DB 还没有完成记录的新子代理（sub.list
+         * 只收录有已完成请求的会话）；数值 span 由面板 tick 原地刷新。 */
+        if (runningSids.length) {
+          var rh = document.createElement("div");
+          rh.className = "pnote";
+          rh.textContent = L("运行中估算（字符增量；主 chip 显示合计）", "Running estimates (text-delta; the bar chip shows the sum)");
+          body.appendChild(rh);
+          for (var ri = 0; ri < runningSids.length; ri++) {
+            var rl = document.createElement("div");
+            rl.className = "substat";
+            rl.textContent = L("子代理 …", "agent …") + String(runningSids[ri]).slice(-4) +
+              L(" · 运行中 · ", " · running · ");
+            var rest = document.createElement("span");
+            rest.className = "subrate";
+            rest.setAttribute("data-sid", runningSids[ri]);
+            rest.textContent = subRateSlotText(runningSids[ri]);
+            rl.appendChild(rest);
+            body.appendChild(rl);
+          }
+        }
+        if (!list.length && !runningSids.length) {
           var p2 = document.createElement("div");
           p2.className = "pnote";
           p2.textContent = L("当前会话还没有子代理记录", "No sub-agent records in the current session yet");
@@ -2858,6 +3053,20 @@
       /* v80：fixed 挂 body，top 同设置面板——条上沿留 10px 缝 */
       subPanel.style.top = Math.max(8, Math.round(bar.getBoundingClientRect().top - subPanel.offsetHeight - 10)) + "px";
     }
+    /* v97：面板打开期间 800ms 原地刷新 .subrate span（估算速率是渲染端状态，泵推送
+     * 静默期面板不会自动重建）；面板关闭/实例失效即自停，dispose 兜底清理。 */
+    var subRateTimer = 0;
+    function subRateTickPanel() {
+      if (inactive() || !subPanel.classList.contains("open")) {
+        if (subRateTimer) { clearInterval(subRateTimer); subRateTimer = 0; }
+        return;
+      }
+      var spans = subPanel.querySelectorAll(".subrate");
+      for (var i = 0; i < spans.length; i++) {
+        var txt = subRateSlotText(spans[i].getAttribute("data-sid") || "");
+        if (spans[i].textContent !== txt) spans[i].textContent = txt;
+      }
+    }
     function toggleSubPanel() {
       var opening = !subPanel.classList.contains("open");
       subPanel.classList.toggle("open", opening);
@@ -2866,6 +3075,7 @@
         buildSubPanel(lastSub);
         positionSubPanel();
         hideTip(true, "sub-open");
+        if (!subRateTimer) subRateTimer = setInterval(subRateTickPanel, 800);
       }
     }
     bar.addEventListener("click", function (e) {
@@ -3832,6 +4042,8 @@
       instanceDisposed = true;
       clearInterval(heavyTimer);
       clearInterval(bridge.timer);   // v71：pane 销毁即停能力检测并释放 store 订阅
+      clearInterval(subRateTimer);   // v97：子代理面板速率刷新定时器
+      subRateTimer = 0;
       bridgeDetach(bridge.handle);
       cancelAnimationFrame(frame);
       cancelTipGrace();

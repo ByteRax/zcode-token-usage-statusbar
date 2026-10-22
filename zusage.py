@@ -628,7 +628,7 @@ def _light_snapshot(con, sid, cfg):
         "updated": (_ts(lr[0]).strftime("%H:%M:%S") if lr[0] else ""),
         "started": _session_start_ms(con, sid, srow),
         "sub": {"requests": 0, "total": 0, "input": 0, "output": 0, "cache_read": 0,
-                "reasoning": 0, "cache_write": 0, "active": False, "list": []},
+                "reasoning": 0, "cache_write": 0, "active": False, "rate_avg": 0, "list": []},
         "tools": {"total": u["tool_calls"], "errors": 0, "list": []},
         "last_turn": dict(_EMPTY_TURN),
         "last": {"duration_ms": 0, "ttft_ms": 0, "model": "", "provider_id": "", "tps": 0, "startedAt": 0, "endedAt": 0},
@@ -704,6 +704,11 @@ def _turn_rate(rows):
             unrated += tokens
     return {"tps": round(output / (duration / 1000), 1) if duration else 0,
             "rated_output": output, "unrated_output": unrated, "gen_ms": duration}
+
+
+def _rated_tps(tokens, gen_ms):
+    """加权平均 t/s：Σ有效 output ÷ Σ有效生成窗口；窗口为 0（无有效样本）时返回 0。"""
+    return round(tokens / (gen_ms / 1000), 1) if gen_ms else 0
 
 
 def _session_snapshot(con, sid, cfg):
@@ -788,6 +793,24 @@ def _session_snapshot(con, sid, cfg):
     # 兜底只给运行中尚未出现回执的条目：prompt 前缀匹配且候选唯一才绑（同前缀多候选宁可
     # 无名，不做时间猜测——历史 part 不带 childSessionId，时间最近邻存在错位风险）。
     sub_tasks = _sub_agent_tasks(con, sid) if sub_rows else {}
+    # 子代理已完成段速率（v97）：每子会话 Σ有效 output / Σ有效生成窗口的加权平均，
+    # 口径与 _turn_rate 完全一致（first_token_at 缺失即无窗、含思考段窗口用 started_at）；
+    # 无效段不进分母。运行中的请求未入库，这里只有已完成段。
+    sub_gen = {}
+    if sub_rows:
+        for r in con.execute(
+            """select m.session_id, m.output_tokens, m.first_token_at, m.completed_at,
+                      m.started_at, m.reasoning_tokens, m.model_id
+               from model_usage m join session s2 on m.session_id = s2.id
+               where m.query_source='subagent' and s2.parent_id=? and m.status='completed'""",
+            (sid,),
+        ):
+            g = sub_gen.setdefault(r["session_id"], [0, 0])
+            tokens = r["output_tokens"] or 0
+            gen_ms = _row_gen_ms(r)
+            if tokens > 0 and gen_ms and _TPS_MIN_GEN_MS <= gen_ms < _TPS_MAX_GEN_MS:
+                g[0] += tokens
+                g[1] += gen_ms
     now_ms = int(time.time() * 1000)
     sub = {
         "requests": sum(r[3] for r in sub_rows),
@@ -798,11 +821,14 @@ def _session_snapshot(con, sid, cfg):
         "reasoning": sum(r[8] for r in sub_rows),
         "cache_write": sum(r[9] for r in sub_rows),
         "active": any(r[10] and now_ms - r[10] < 30000 for r in sub_rows),
+        "rate_avg": _rated_tps(sum(g[0] for g in sub_gen.values()),
+                               sum(g[1] for g in sub_gen.values())),
         "list": [
             {"sid": r[0], "agent": r[1], "title": r[2], "task": sub_tasks.get(r[0], ""),
              "requests": r[3], "total": r[4],
              "input": r[5], "output": r[6], "cache_read": r[7], "reasoning": r[8],
              "cache_write": r[9], "last": (r[10] or 0),
+             "tps_avg": _rated_tps(*sub_gen.get(r[0], [0, 0])),
              "active": bool(r[10] and now_ms - r[10] < 30000)}
             for r in sub_rows
         ],
@@ -1415,7 +1441,7 @@ def _empty_snapshot(sid, cfg):
             "code": {"add": None, "del": None, "files": None}, "ctx_exc": 0,
             "tools": {"total": 0, "errors": 0, "list": []},
             "sub": {"requests": 0, "total": 0, "input": 0, "output": 0, "cache_read": 0,
-                    "reasoning": 0, "cache_write": 0, "active": False, "list": []},
+                    "reasoning": 0, "cache_write": 0, "active": False, "rate_avg": 0, "list": []},
             "context_window": cfg["context_window"], "context_auto": False}
 
 

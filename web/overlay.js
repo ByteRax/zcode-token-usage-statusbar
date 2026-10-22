@@ -764,7 +764,7 @@
     TodoWrite: ["正在更新待办", "Updating todos"], TodoRead: ["正在读取待办", "Reading todos"],
     Skill: ["正在运行技能", "Running skill"],
     ReadSessionContext: ["正在读取上下文", "Reading context"],
-    Agent: ["正在运行子智能体", "Running agent"], Task: ["正在运行子智能体", "Running agent"],
+    Agent: ["子代理运行中", "Running agent"], Task: ["子代理运行中", "Running agent"],
     SendMessage: ["正在发送消息", "Sending message"],
     TaskOutput: ["正在获取任务输出", "Fetching task output"],
     TaskStop: ["正在停止任务", "Stopping task"],
@@ -880,7 +880,7 @@
   /* ---------- 实例工厂（v61.1）：一个 pane 一套 条/面板/气泡/tooltip/定位循环。
    * slot 0 保留 #zusage-bar/#zusage-tip 兼容 id（泵热更新按它清理），其余实例仅类名。 */
   function spawnInstance(pid, slot) {
-    var VERSION = "v87";   // v82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v84 主标签页远端路由（工作台分组唯一主绑定上报 + 迟到载荷守卫，issue #30）→ v85 回答末尾统计行跟随万/亿开关 + tok→token → v86 历史轮 tracker 无记录（窗口滑出/换代/热更）或缺输出字段不再翻成"本轮统计不可用"，加 det 诊断 → v87 设置页排除：协调器/findComposer/deepFind/track 按 [data-testid="settings-page"] 祖先排除设置表单编辑框（MCP「请求头」textarea 被当聊天输入框、条挂进表单卡片）   // 悬停 ⚙ 面板可见；本会话热修部署未走提交，版本号随部署代际递增
+    var VERSION = "v88";   // v82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v84 主标签页远端路由（工作台分组唯一主绑定上报 + 迟到载荷守卫，issue #30）→ v85 回答末尾统计行跟随万/亿开关 + tok→token → v86 历史轮 tracker 无记录（窗口滑出/换代/热更）或缺输出字段不再翻成"本轮统计不可用"，加 det 诊断 → v87 设置页排除：协调器/findComposer/deepFind/track 按 [data-testid="settings-page"] 祖先排除设置表单编辑框（MCP「请求头」textarea 被当聊天输入框、条挂进表单卡片）→ v88 工具动词「正在运行子智能体」压成「子代理运行中」（与桌面 v97 同文案；子代理速率估算为桌面桥专属，Web 无此链路）   // 悬停 ⚙ 面板可见；版本号随部署代际递增
     var instanceDisposed = false, heavyTimer = 0, frame = 0, themeObserver = null;
     var globalListeners = [];
     function listenGlobal(target, type, fn, capture) {

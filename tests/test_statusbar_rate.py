@@ -361,6 +361,66 @@ class StatusbarRateTests(unittest.TestCase):
             self.assertEqual(datetime.fromtimestamp(s3 / 1000).day, 1)
             self.assertEqual(datetime.fromtimestamp(e3 / 1000).day, 1)
 
+    def _sub_fixture(self):
+        """主会话 s + 两个子代理会话（v97 子代理速率夹具）：a1 三段（两有效一缺首字）、
+        b2 一段有效。生成窗口均为 completed_at − first_token_at（reasoning=0）。"""
+        con = sqlite3.connect(":memory:")
+        con.row_factory = sqlite3.Row
+        con.executescript(SCHEMA + """
+create table part (session_id text, data text, time_created integer, time_updated integer);
+""")
+        con.execute("insert into session (id, title) values ('s', 't')")
+        con.execute("insert into session (id, title, parent_id) values ('sess_subagent_a1', 'a1', 's')")
+        con.execute("insert into session (id, title, parent_id) values ('sess_subagent_b2', 'b2', 's')")
+        base = 1_000_000
+
+        def sub_row(rid, sid, started, completed, output, first_token):
+            con.execute(
+                "insert into model_usage values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (rid, sid, "turn1", "subagent", "sub-a", "account:test", "GLM-5.3", "completed",
+                 started, first_token, completed, completed - started,
+                 (completed - first_token) if first_token else None, 10, output, 0, 0, 0,
+                 output + 10, 0, 0, 0))
+        # a1: 2000tok/20s=100 + 1000tok/20s=50 → 加权 75.0；缺首字段(11tok)不进分母
+        sub_row("sa1", "sess_subagent_a1", base, base + 30000, 2000, base + 10000)
+        sub_row("sa2", "sess_subagent_a1", base + 30000, base + 50000, 1000, base + 30000)
+        sub_row("sa3", "sess_subagent_a1", base + 50000, base + 56173, 11, None)
+        # b2: 500tok/10s = 50.0，且最后完成 → list 首位
+        sub_row("sb1", "sess_subagent_b2", base + 60000, base + 70000, 500, base + 60000)
+        return con
+
+    def test_subagent_completed_segment_rate_fields(self):
+        """sub.rate_avg / list[].tps_avg = 已完成段加权平均（Σ有效 output ÷ Σ有效窗口，
+        口径与 last.tps/_turn_rate 一致）；缺首字段只排除、不污染；主会话 last 不受子代理行影响。"""
+        con = self._sub_fixture()
+        self.addCleanup(con.close)
+        snap = zusage._session_snapshot(con, "s", {"context_window": 200000})
+        sub = snap["sub"]
+        # 合计 (2000+1000+500) / (20+20+10)s = 3500/50 = 70.0
+        self.assertEqual(sub["rate_avg"], 70.0)
+        self.assertEqual(len(sub["list"]), 2)
+        by_sid = {e["sid"]: e for e in sub["list"]}
+        self.assertEqual(by_sid["sess_subagent_a1"]["tps_avg"], 75.0)
+        self.assertEqual(by_sid["sess_subagent_b2"]["tps_avg"], 50.0)
+        self.assertEqual(sub["list"][0]["sid"], "sess_subagent_b2")   # 按最后完成时间降序
+        # 主会话自身速率不掺入子代理行（session_id 隔离）
+        self.assertEqual(snap["last"]["tps"], 0)
+
+    def test_subagent_rate_zero_without_subagents(self):
+        """无子代理 / 轻量快照占位：rate_avg 恒为 0（结构完整，overlay 按字段渲染）。"""
+        con = sqlite3.connect(":memory:")
+        con.row_factory = sqlite3.Row
+        con.executescript(SCHEMA)
+        con.execute("insert into session (id, title) values ('s', 't')")
+        self._insert_row(con, "r1", "GLM-5.3", 1_000_000, 1_010_000, 441,
+                          first_token_at=1_000_000 + 10_000 - 4316)
+        snap = zusage._session_snapshot(con, "s", {"context_window": 200000})
+        self.assertEqual(snap["sub"]["rate_avg"], 0)
+        self.assertEqual(snap["sub"]["list"], [])
+        light = zusage._light_snapshot(con, "s", {"context_window": 200000})
+        self.assertEqual(light["sub"]["rate_avg"], 0)
+        self.assertEqual(light["sub"]["list"], [])
+
 
 
 if __name__ == "__main__":
