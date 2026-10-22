@@ -486,11 +486,19 @@
         return { cls: "dim", text: verb, phase: "tool" };
       }
       // 无工具且无可测字符流（首段未流出/字符停滞>2s，多数模型思考期对桥不可见，
-      // 看到的就是时间在走）：按用户语义定为"思考中"——动效脑图标 + 思考中…Xs。
-      // 秒数是本轮存活时长（首观测起算），不是精确思考时长。
-      if (stats.characterRate == null)
-        return { cls: "dim", text: L("思考中…", "thinking…") + (stats.observedMs / 1000).toFixed(1) + "s",
+      // 看到的就是时间在走）：按用户语义定为"思考中"——动效脑图标 + 本轮存活时长。
+      // 时长从首观测起算，不是精确思考时长。
+      if (stats.characterRate == null) {
+        var seconds = Math.floor(stats.observedMs / 1000);
+        var hours = Math.floor(seconds / 3600), minutes = Math.floor(seconds / 60) % 60;
+        seconds %= 60;
+        var parts = [];
+        if (hours) parts.push(hours + "h");
+        if (minutes) parts.push(minutes + "m");
+        if (seconds || !parts.length) parts.push(seconds + "s");
+        return { cls: "dim", text: L("思考中…", "thinking…") + parts.join(":"),
                  phase: "thinking" };
+      }
       var est = stats.characterRate / (charsPerToken || DEFAULT_CHARS_PER_TOKEN);
       return { cls: "dim", text: est.toFixed(1) + L(" t/s", " t/s"),
                /* phase 兜底 thinking：新轮刚开始（最后活动行还是 userInput）时
