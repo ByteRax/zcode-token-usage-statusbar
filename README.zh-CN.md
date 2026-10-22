@@ -132,13 +132,14 @@ token_usage(scope)        # MCP 工具（stdio）
 
 MCP 工具还支持 `days:N`、`sessions:N`、`models:days`、`session:<会话ID前缀>`、`workspace:<目录关键词>`。插件命令的完整名字是 `/zcode-token-usage-statusbar:usage`。
 
-### SSH 远端会话
+### SSH / WSL 远端会话
 
-如果你的 ZCode 跑在 SSH 连过去的服务器上，状态栏也能跟着过去：
+如果你的 ZCode 跑在 SSH 连过去的服务器或 WSL 发行版里，状态栏也能跟着过去：
 
 - 每台服务器的今日用量和报错**各算各的**，一台挂了不影响别的
 - 没查到或者失败了会一直退避重试；恢复会话、换工作区、SSH 重连之后接着查
-- 远端脚本要**你自己拷过去**，查询通道必须**免交互**——插件不会去解密复用 ZCode 里存的密码、私钥或口令
+- 客户端连过的 SSH、WSL、Docker 远端工作区会**自动被发现**并生成免交互查询通道（WSL/Docker 无需凭据）
+- 远端脚本要**你自己拷过去**（WSL 是拷进发行版，还要有 python3）——插件不会去解密复用 ZCode 里存的密码、私钥或口令
 
 远端只覆盖**状态栏的取数**这一条路。MCP、`/usage` 和回答末尾的速率行**不会**自动跨机器取数。详细配置见[远程会话指南](docs/user-guide.md#远程会话)。
 
@@ -303,7 +304,7 @@ macOS 上要是没有 `python`，就写 `python3 install.py`。
 - **这不是 ZCode 官方功能**，是社区做的插件，和官方团队没有关系。状态条的实现方式是往客户端 `app.asar` 里注入。
 - **本地数据库是只读的。** 用量数据不会上传。
 - **但插件更新要联网**——从你配置好的来源下载代码。自动更新默认开着，可以在 ⚙ 里关掉。
-- **用 SSH 远端查询也会联网**——经由你配好的通道在远端跑只读查询脚本。前提和限制见 [SSH 远端会话](#ssh-远端会话)。
+- **用 SSH/WSL 远端查询也会联网**——经由你配好的通道在远端跑只读查询脚本。前提和限制见 [SSH / WSL 远端会话](#ssh--wsl-远端会话)。
 - **默认不碰你的凭据。** ZCode 里存的密码、加密私钥、口令不会被插件拿去解密使用，SSH key / agent 请自己配好。唯一例外：你在 ⚙ 里显式打开「套餐额度」后，主进程读取凭据查询套餐/余额接口（仅内存使用、不落盘、不进日志与诊断），关掉即停。发往的域：bigmodel.cn / api.z.ai 官方套餐域；自定义供应商的余额查询用该供应商自己的 key，只发往其官方域（api.deepseek.com、openrouter.ai、api.siliconflow.cn、api.minimaxi.com、api.kimi.com、api.commandcode.ai、api.cline.bot、api.anthropic.com、platform.xiaomimimo.com、open.volcengineapi.com 等）或你自己配置的中转站本域，绝不发第三方。
 - **token 用量不等于账单。** 默认只有 token 用量；「套餐额度」chip 显示的是官方套餐接口的已用比例，不含现金余额与计费明细。
 

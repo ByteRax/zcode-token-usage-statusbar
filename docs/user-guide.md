@@ -218,11 +218,11 @@ Windows 对应用户目录下的 `.zcode\zcode-token-usage-statusbar\config.json
 
 > 本节远端适配与恢复功能已随正式 Release 发布。本机必须加载当前安装副本与运行文件，完成状态条安装或修复后**完全退出并重启 ZCode**；只修改仓库不会更新已安装副本，只关闭窗口不算退出。
 
-桌面连接 SSH 远端 ZCode 时，数据在远端。支持的是**桌面状态条的 JSON 查询链**，不是把所有命令都变成远端命令：MCP、`/usage` 和回答末尾速率不自动跨机，纯 CLI 没有状态条 UI，自托管 Web 仍按独立文档部署。
+桌面连接 SSH、WSL 或 Docker 远端 ZCode 时，数据在远端。支持的是**桌面状态条的 JSON 查询链**，不是把所有命令都变成远端命令：MCP、`/usage` 和回答末尾速率不自动跨机，纯 CLI 没有状态条 UI，自托管 Web 仍按独立文档部署。
 
 ### 功能清单与身份边界
 
-- **自动连接适配**：读取客户端保存的 SSH 工作区连接设置（默认 `~/.zcode/v2/setting.json` 的 `lastWorkspaceSession`），生成可用通道；结合宿主合法工作区 IPC 与本窗口会话证据取得 `workspaceIdentity`。
+- **自动连接适配**：读取客户端保存的远端工作区连接设置（默认 `~/.zcode/v2/setting.json` 的 `lastWorkspaceSession`），按条目里的 `target.kind` 生成可用通道：SSH 生成 `ssh -o BatchMode=yes …`，WSL 生成 `wsl.exe -d 发行版 [-u 用户] --exec …`，Docker 生成 `docker exec -i 容器 …`（后两类无需凭据即可免交互）；结合宿主合法工作区 IPC 与本窗口会话证据取得 `workspaceIdentity`。客户端 3.15.x 的 WSL 工作区身份是 `remote:wsl:发行版[:用户]:/路径`；3.16 起所有传输连接握手后统一升级为 `remote:server:<serverId>:/路径`（`remote:wsl:` 等只留作 legacy 别名），持久化条目里的 `target` 仍是传输级 `{kind, distro, user}`，插件按原样身份路由到对应通道，两种客户端形态都覆盖。
 - **多服务器路由**：以会话 ID 和工作区身份共同选目标，不仅凭 ID、主机标签或远端最近活跃会话猜测。自动模式只查询已确认远端 scope，不对历史服务器试探本地未知会话 ID。手动目标用 `identity` 或 `identities` 绑定工作区，可覆盖同身份的自动目标。
 - **独立 today/error**：各目标独立返回今日总量与错误，不能把某服务器的今日量混入本地或另一服务器；一台不可达不应中断其它来源查询。相同会话 ID 仍需按工作区/目标隔离。
 - **失败与未知持续重试**：查询失败、远端暂未找到会话或尚无可信身份时不会永久放弃；已知远端 scope 保持退避重试，身份未知则等待合法身份重新出现，不盲发到其它服务器。
@@ -234,7 +234,7 @@ Windows 对应用户目录下的 `.zcode\zcode-token-usage-statusbar\config.json
 
 ### 前置准备：远端脚本需手工部署
 
-每台 SSH 远端需部署与本机匹配的 `zusage.py`，默认路径 `~/.zcode/zcode-token-usage-statusbar/zusage.py`。远端需要 Python 3.8+（含标准库 `sqlite3`），并让执行脚本的用户能读取其 ZCode 数据库。示例在**本机仓库目录**执行；请替换连接地址：
+每台远端需部署与本机匹配的 `zusage.py`，默认路径 `~/.zcode/zcode-token-usage-statusbar/zusage.py`。远端需要 Python 3.8+（含标准库 `sqlite3`），并让执行脚本的用户能读取其 ZCode 数据库。SSH 示例在**本机仓库目录**执行；请替换连接地址：
 
 ```bash
 ssh user@server 'mkdir -p ~/.zcode/zcode-token-usage-statusbar'
@@ -242,9 +242,17 @@ scp zusage.py user@server:.zcode/zcode-token-usage-statusbar/zusage.py
 ssh -o BatchMode=yes user@server 'python3 ~/.zcode/zcode-token-usage-statusbar/zusage.py today'
 ```
 
+WSL 远端的脚本与数据都在发行版内部（Windows 侧 `%USERPROFILE%\.zcode` 没有远程会话数据），从 Windows 拷入发行版并验证：
+
+```powershell
+wsl.exe -d Ubuntu --exec mkdir -p ~/.zcode/zcode-token-usage-statusbar
+copy zusage.py \\wsl.localhost\Ubuntu\home\<user>\.zcode\zcode-token-usage-statusbar\zusage.py
+wsl.exe -d Ubuntu --exec python3 ~/.zcode/zcode-token-usage-statusbar/zusage.py today
+```
+
 最后一条只验证远端脚本/数据库可读，不证明桌面身份路由或所有服务器已实机验收。自定义远端安装位置时设置 `remote.script`。远端查询带递归防护，无需在远端安装桌面状态条或再次启用远端转发。
 
-本机查询通道必须免交互可用。插件**不能解密复用宿主保存的密码、加密私钥或口令**，不会自动登录或应答认证提示；请自行配置 SSH key/agent。自动生成的 SSH 通道使用 `BatchMode=yes`，不支持的凭据不会变成可用登录。自动适配不等于自动部署，不能承诺完全零配置。
+本机查询通道必须免交互可用。插件**不能解密复用宿主保存的密码、加密私钥或口令**，不会自动登录或应答认证提示；请自行配置 SSH key/agent。自动生成的 SSH 通道使用 `BatchMode=yes`，不支持的凭据不会变成可用登录；WSL/Docker 通道本身免凭据，但发行版/容器内仍需有可用的 Python 与脚本。自动适配不等于自动部署，不能承诺完全零配置。
 
 ### 自动模式与手动关闭
 
@@ -301,11 +309,18 @@ ssh -o BatchMode=yes user@server 'python3 ~/.zcode/zcode-token-usage-statusbar/z
         "ssh": ["ssh", "-i", "~/.ssh/id_ed25519", "-p", "2222", "bob@gpu.example.com"],
         "host_label": "GPU 机",
         "timeout_s": 6
+      },
+      {
+        "identities": ["remote:wsl:Ubuntu:dev:/home/dev/project", "remote:server:srv1:/home/dev/project"],
+        "ssh": ["wsl.exe", "-d", "Ubuntu", "-u", "dev", "--exec"],
+        "host_label": "WSL Ubuntu"
       }
     ]
   }
 }
 ```
+
+WSL 目标示例同时绑定两种客户端形态的身份：3.15.x 的 `remote:wsl:发行版:用户:/路径` 和 3.16 握手升级后的 `remote:server:<serverId>:/路径`（serverId 以客户端实际持久化值为准）。自动模式下这两类条目无需手配，这里示例用于手动覆盖。
 
 `targets` 在自动模式或显式 `enabled: true` 时接收；`auto: false` 且 `enabled` 非 true 为总关闭。用 `identity` 绑定一个工作区，或用 `identities` 绑定同一目标的多个工作区。目标的 `script`、`python`、`timeout_s` 未设置时继承 `remote` 顶层值。多个目标不应争抢同一身份；不带身份的多机配置不能实现精准 route。
 
@@ -326,7 +341,7 @@ ssh -o BatchMode=yes user@server 'python3 ~/.zcode/zcode-token-usage-statusbar/z
 }
 ```
 
-仅旧 CLI `python3 zusage.py json <SID>` 的 SID/逗号列表协议，在 `enabled: true` 时可使用 `remote.ssh` 或首个手动目标作为默认单通道 fallback。桌面始终发送 JSON 请求；显式 `scopes: []` 禁止 legacy fallback，即使 `enabled: true` 也不会把未知 main 借通道查成远端。桌面远端仍必须有可靠 scope，不猜历史身份。多服务器推荐上方带身份的配置。`ssh` 也可用 argv 数组指定其它免交互通道，例如 Docker `['docker', 'exec', '-i', '容器名']`、WSL `['wsl', '-d', '发行版']` 或 Kubernetes `['kubectl', 'exec', '-i', 'pod名', '--']`（写入 JSON 时改用双引号）。
+仅旧 CLI `python3 zusage.py json <SID>` 的 SID/逗号列表协议，在 `enabled: true` 时可使用 `remote.ssh` 或首个手动目标作为默认单通道 fallback。桌面始终发送 JSON 请求；显式 `scopes: []` 禁止 legacy fallback，即使 `enabled: true` 也不会把未知 main 借通道查成远端。桌面远端仍必须有可靠 scope，不猜历史身份。多服务器推荐上方带身份的配置。`ssh` 也可用 argv 数组指定其它免交互通道，例如 Docker `["docker", "exec", "-i", "容器名"]`、WSL `["wsl.exe", "-d", "发行版", "--exec"]` 或 Kubernetes `["kubectl", "exec", "-i", "pod名", "--"]`；WSL 通道建议带 `--exec`（与客户端 3.16.1 起的调用方式一致，绕开发行版默认 shell 的变量展开），不带时会经默认 shell 执行。
 
 ### 刷新、恢复与排查
 

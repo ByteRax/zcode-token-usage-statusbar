@@ -21,11 +21,31 @@ _spec.loader.exec_module(zusage)
 
 A = "remote:ssh:a:22:u:/p"
 B = "remote:ssh:b:22:u:/p"
+W = "remote:wsl:Ubuntu:dev:/p"
+SRV = "remote:server:srv1:/p"
 
 
 def entry(host, path="/p"):
     return {"kind": "remote", "workspacePath": path,
             "target": {"kind": "ssh", "host": host, "username": "u"}}
+
+
+def wsl_entry(distro="Ubuntu", user="dev", path="/p", identity=None):
+    e = {"kind": "remote", "workspacePath": path,
+         "target": {"kind": "wsl", "distro": distro}}
+    if user is not None:
+        e["target"]["user"] = user
+    if identity is not None:
+        e["workspaceIdentity"] = identity
+    return e
+
+
+def docker_entry(container="box", path="/p", identity=None):
+    e = {"kind": "remote", "workspacePath": path,
+         "target": {"kind": "docker", "container": container}}
+    if identity is not None:
+        e["workspaceIdentity"] = identity
+    return e
 
 
 def write_setting(root, payload):
@@ -97,6 +117,70 @@ class DiscoveryTests(IsolatedTests):
         path.unlink()
         self.assertEqual(zusage._auto_targets({}), [])
 
+    def test_wsl_auto_channel_user_and_exec(self):
+        write_setting(self.tmp.name, {"lastWorkspaceSession": [wsl_entry()]})
+        rows = zusage._auto_targets({})
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["ssh_argv"], ["wsl.exe", "-d", "Ubuntu", "-u", "dev", "--exec"])
+        self.assertEqual(rows[0]["identities"], [W])
+        self.assertEqual(rows[0]["host_label"], "wsl:Ubuntu")
+        # wsl --exec 无登录 shell、CWD 不可靠：自动默认脚本带 ~ 前缀；显式 remote.script 优先。
+        setup = zusage._remote_setup({})
+        self.assertEqual(setup["targets"][setup["identities"][W]]["script"],
+                         "~/.zcode/zcode-token-usage-statusbar/zusage.py")
+        setup = zusage._remote_setup({"remote": {"script": "/opt/custom/zusage.py"}})
+        self.assertEqual(setup["targets"][setup["identities"][W]]["script"], "/opt/custom/zusage.py")
+
+    def test_wsl_identity_fallbacks_match_client_algorithm(self):
+        # 条目缺 workspaceIdentity 时按客户端 buildRemoteWorkspaceIdentity 兜底；
+        # 无 user 段走 legacy 两段格式；缺 distro 归一为 default；路径反斜杠归一。
+        write_setting(self.tmp.name, {"lastWorkspaceSession": [
+            wsl_entry(user=None),
+            wsl_entry(distro="", user=None, path=r"\opt\w"),
+            wsl_entry(distro="Debian", user=None)]})
+        rows = zusage._auto_targets({})
+        self.assertEqual([r["host_label"] for r in rows], ["wsl:Debian", "wsl:Ubuntu", "wsl:default"])
+        self.assertEqual(rows[0]["ssh_argv"], ["wsl.exe", "-d", "Debian", "--exec"])
+        identities = sorted(r["identities"][0] for r in rows)
+        self.assertEqual(identities,
+                         ["remote:wsl:Debian:/p", "remote:wsl:Ubuntu:/p", "remote:wsl:default:/opt/w"])
+        back = zusage._wsl_identity("Ubuntu", "", r"\opt\w")
+        self.assertEqual(back, "remote:wsl:Ubuntu:/opt/w")
+
+    def test_wsl_316_server_identity_routes_over_wsl_channel(self):
+        # v3.16 客户端握手后把 WSL 会话身份升级为 remote:server:<id>:/p，
+        # 持久化 target 仍是传输级 wsl：身份原样采用并路由到 wsl.exe 通道。
+        write_setting(self.tmp.name, {"lastWorkspaceSession": [
+            wsl_entry(identity=SRV), wsl_entry(path="/q", identity="remote:server:srv1:/q")]})
+        rows = zusage._auto_targets({})
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["ssh_argv"], ["wsl.exe", "-d", "Ubuntu", "-u", "dev", "--exec"])
+        self.assertEqual(rows[0]["identities"], [SRV, "remote:server:srv1:/q"])
+        setup = zusage._remote_setup({})
+        for ident in rows[0]["identities"]:
+            self.assertEqual(setup["identities"][ident], setup["identities"][SRV])
+
+    def test_wsl_same_distro_different_user_split(self):
+        write_setting(self.tmp.name, {"lastWorkspaceSession": [
+            wsl_entry(user="dev"), wsl_entry(user="root")]})
+        rows = zusage._auto_targets({})
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(sorted(r["ssh_argv"][-3:] for r in rows),
+                         [["-u", "dev", "--exec"], ["-u", "root", "--exec"]])
+
+    def test_docker_auto_channel_and_server_kind_skipped(self):
+        write_setting(self.tmp.name, {"lastWorkspaceSession": [
+            docker_entry(identity="remote:docker:box:/p"),
+            {"kind": "remote", "workspacePath": "/p", "target": {"kind": "server", "url": "http://x"}},
+            {"kind": "remote", "workspacePath": "/p", "target": {"kind": "docker"}},
+            wsl_entry(distro="Debian", user=None, identity="remote:wsl:Debian:/p")]})
+        rows = zusage._auto_targets({})
+        self.assertEqual(len(rows), 2)
+        by_label = {r["host_label"]: r for r in rows}
+        self.assertEqual(by_label["docker:box"]["ssh_argv"], ["docker", "exec", "-i", "box"])
+        self.assertEqual(by_label["docker:box"]["identities"], ["remote:docker:box:/p"])
+        self.assertEqual(by_label["wsl:Debian"]["ssh_argv"], ["wsl.exe", "-d", "Debian", "--exec"])
+
 
 class SetupTests(IsolatedTests):
     def test_empty_auto_does_not_read_real_home(self):
@@ -162,6 +246,7 @@ class ExecTests(IsolatedTests):
 
     def test_generic_channels_use_env_argv_and_expand_tilde_in_python(self):
         for channel in (["docker", "exec", "-i", "box"], ["wsl", "-d", "Ubuntu"],
+                        ["wsl.exe", "-d", "Ubuntu", "-u", "dev", "--exec"],
                         ["kubectl", "exec", "-i", "pod", "--"]):
             with mock.patch.object(zusage.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, b'{}\n', b'')) as run:
                 zusage._remote_exec(["s"], self.rc(channel, script="~/space folder/zusage.py"), "key")
@@ -235,6 +320,34 @@ class FetchTests(IsolatedTests):
             self.assertEqual(row["remote_target"], "")
             zusage._remote_fetch(["s"], {"s"}, setup)
         run.assert_not_called()
+
+    def test_wsl_and_server_identities_route_without_ssh_channel(self):
+        # 3.15.x wsl 直连身份（remote:wsl:）与 3.16 升级身份（remote:server:）都按
+        # 整串路由到各自通道；未知前缀（remote:ftp:）不属于免交互白名单，stub 不查。
+        write_setting(self.tmp.name, {"lastWorkspaceSession": [
+            wsl_entry(identity=SRV), {"kind": "remote", "workspacePath": "/p",
+                                      "target": {"kind": "wsl", "distro": "Debian"},
+                                      "workspaceIdentity": "remote:wsl:Debian:/p"}]})
+        setup = zusage._remote_setup({})
+        srv_key = setup["identities"][SRV]
+        debian_key = setup["identities"]["remote:wsl:Debian:/p"]
+        self.assertNotEqual(srv_key, debian_key)
+        self.assertIn("wsl.exe", setup["targets"][srv_key]["ssh_argv"][0])
+        calls = []
+
+        def fake(sids, rc, key):
+            calls.append(key)
+            return {sids[0]: {"sid": sids[0], "requests": 7}}, {}, None
+
+        with mock.patch.object(zusage, "_remote_exec", side_effect=fake):
+            by, _, _ = zusage._remote_fetch(["s", "t"], set(), setup,
+                                            scopes=[("s", SRV), ("t", "remote:wsl:Debian:/p"),
+                                                    ("u", "remote:ftp:x:/p")])
+        self.assertEqual(by[("s", SRV)]["requests"], 7)
+        self.assertEqual(by[("t", "remote:wsl:Debian:/p")]["requests"], 7)
+        self.assertEqual(set(calls), {srv_key, debian_key})
+        self.assertTrue(by[("u", "remote:ftp:x:/p")]["remote_missing"])
+        self.assertEqual(by[("u", "remote:ftp:x:/p")]["remote_target"], "")
 
     def test_parallel_channels_one_exception_does_not_block_healthy(self):
         setup = self.setup_targets()

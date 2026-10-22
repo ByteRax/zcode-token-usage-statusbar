@@ -146,6 +146,10 @@ const windowQuotaSelections = new Map();   // webContents.id → {paneId: {sid, 
 /* 本窗是否出现过任何远端工作区/任务证据：issue #40 的无桥本地兜底只在确认
  * “本窗只能查本地”时启用，有远端证据时 overlay 仍 fail-closed。 */
 const remoteEvidence = new Map();
+/* 可信远端身份白名单：ssh（3.15.x）/ wsl、docker（直接传输）/ server（v3.16 起所有传输
+ * 连接握手后统一升级为 remote:server:<serverId>:<path>，remote:wsl: 等只留作 legacy）。
+ * 前缀只决定“是否远端”，路由键是整串身份；未知前缀仍 fail-closed 按本地处理。 */
+const REMOTE_IDENTITY_RE = /^remote:(?:ssh|wsl|docker|server):/;
 function trustedSender(e) {
   try {
     if (!e || !e.sender || e.sender.isDestroyed() || !isMainWindowState(e.sender)) return false;
@@ -164,7 +168,7 @@ try {
       .map((r) => ({ kind: r.kind, identity: typeof r.workspaceIdentity === "string" ? r.workspaceIdentity.trim() : "" }));
     windowWorkspaces.set(e.sender.id, normalized);
     /* 远端证据立即生效：不等下一轮 wants 收集，缩小“查询在途时推送旧 false”的窗口。 */
-    if (normalized.some((r) => r.kind === "remote" && r.identity.startsWith("remote:ssh:"))) {
+    if (normalized.some((r) => r.kind === "remote" && REMOTE_IDENTITY_RE.test(r.identity))) {
       remoteEvidence.set(e.sender.id, true);
     }
     scheduleRetry(300);
@@ -181,7 +185,7 @@ try {
     windowTasks.set(e.sender.id, tasks);
     let remoteTask = false;
     for (const scopes of tasks.values()) {
-      if ([...scopes].some((id) => id.startsWith("remote:ssh:"))) { remoteTask = true; break; }
+      if ([...scopes].some((id) => REMOTE_IDENTITY_RE.test(id))) { remoteTask = true; break; }
     }
     if (remoteTask) remoteEvidence.set(e.sender.id, true);
     scheduleRetry(300);
@@ -600,7 +604,7 @@ function maybeSpawn() {
         const wants = Array.isArray(parsed.s) ? parsed.s.slice() : [];
         if (activeSid.get(wc.id)) wants.push(activeSid.get(wc.id));
         const workspaces = windowWorkspaces.get(wc.id) || [];
-        const trusted = new Set(workspaces.filter((w) => w.kind === "remote" && w.identity.startsWith("remote:ssh:")).map((w) => w.identity));
+        const trusted = new Set(workspaces.filter((w) => w.kind === "remote" && REMOTE_IDENTITY_RE.test(w.identity)).map((w) => w.identity));
         const tasks = windowTasks.get(wc.id);
         const bindings = {};
         for (const [pid, pane] of Object.entries(parsed.p || {})) {
@@ -639,7 +643,7 @@ function maybeSpawn() {
         if (!evidence && tasks) {
           for (const sid of wants) {
             const scopes = tasks.get(sid);
-            if (scopes && [...scopes].some((id) => id.startsWith("remote:ssh:"))) { evidence = true; break; }
+            if (scopes && [...scopes].some((id) => REMOTE_IDENTITY_RE.test(id))) { evidence = true; break; }
           }
         }
         remoteEvidence.set(wc.id, evidence);

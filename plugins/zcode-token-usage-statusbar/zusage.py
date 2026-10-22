@@ -1124,48 +1124,104 @@ def _ssh_identity(host, port, username, path):
         str(host).strip().lower(), port, str(username).strip(), _normalize_identity_path(path))
 
 
+def _wsl_identity(distro, user, path):
+    """客户端 buildRemoteWorkspaceIdentity wsl 分支同款：
+    remote:wsl:<distro>[:<user>]:<归一路径>。user 段可选（旧版客户端无 user 格式，靠
+    路径必以 / 开头区分）；v3.16 起握手后客户端会把会话身份升级为 remote:server:，
+    但持久化条目里拿到的就是当时身份，优先原样采用，这里只兜底构造。"""
+    d = str(distro or "").strip() or "default"
+    u = str(user or "").strip()
+    if u:
+        return "remote:wsl:{}:{}:{}".format(d, u, _normalize_identity_path(path))
+    return "remote:wsl:{}:{}".format(d, _normalize_identity_path(path))
+
+
+def _docker_identity(container, path):
+    """客户端 buildRemoteWorkspaceIdentity docker 分支同款：remote:docker:<container>:<归一路径>。"""
+    return "remote:docker:{}:{}".format(str(container or "").strip(), _normalize_identity_path(path))
+
+
 def _auto_targets(cfg):
-    """客户端 setting.json → 自动 SSH 目标列表。auto:false 或递归子查询（ZUSAGE_REMOTE_CHILD=1）
-    时返回 []。同一连接（别名/密钥+主机+端口+用户）多个工作区合并为一条通道、identities 聚合；
-    纯密码凭据（passwordCredentialKey 且无密钥/别名）无法免交互，跳过。"""
+    """客户端 setting.json → 自动远端目标列表。auto:false 或递归子查询（ZUSAGE_REMOTE_CHILD=1）
+    时返回 []。ssh 按连接（别名/密钥+主机+端口+用户）合并；wsl 按（发行版+用户）、docker 按
+    容器合并为一条通道，多工作区聚合 identities；纯密码凭据（passwordCredentialKey 且无密钥/
+    别名）的 ssh 无法免交互，跳过。workspaceIdentity 一律原样采用（客户端会透传到 DOM/IPC，
+    路由按整串相等），缺失时才按同款算法兜底构造。server 类型没有免交互 exec 通道，不生成。"""
     r = cfg.get("remote")
     if isinstance(r, dict) and r.get("auto") is False:
         return []
     if os.environ.get("ZUSAGE_REMOTE_CHILD") == "1":
         return []
+    # wsl --exec / docker exec 不经登录 shell，进程 CWD 不可靠，自动通道的默认脚本
+    # 必须带 ~ 前缀（exec 端 runpy bootstrap 展开）；用户显式 remote.script 优先。
+    explicit_script = isinstance(r, dict) and bool(r.get("script"))
     merged = {}
     for e in _read_client_remote_entries():
         t = e.get("target")
-        if not isinstance(t, dict) or t.get("kind") != "ssh":
+        if not isinstance(t, dict):
             continue
-        host = str(t.get("host") or "").strip()
-        username = str(t.get("username") or "").strip()
-        if not host or not username:
+        ident = str(e.get("workspaceIdentity") or "").strip()
+        kind = t.get("kind")
+        if kind == "ssh":
+            host = str(t.get("host") or "").strip()
+            username = str(t.get("username") or "").strip()
+            if not host or not username:
+                continue
+            alias = str(t.get("sshConfigAlias") or "").strip()
+            key_path = str(t.get("privateKeyPath") or "").strip()
+            if not alias and not key_path and t.get("passwordCredentialKey"):
+                continue   # 密码认证拿不到明文，ssh 也无法免交互
+            try:
+                port = int(t.get("port") or 22)
+            except (TypeError, ValueError):
+                port = 22
+            ident = ident or _ssh_identity(host, port, username, e.get("workspacePath"))
+            ck = (kind, alias, host.lower(), port, username, key_path)
+            ent = merged.get(ck)
+            if ent is None:
+                argv = ["ssh", "-o", "BatchMode=yes"]
+                if alias:
+                    argv.append(alias)   # 别名交给用户 ssh_config 解析 host/port/密钥
+                else:
+                    if port != 22:
+                        argv += ["-p", str(port)]
+                    if key_path:
+                        argv += ["-i", key_path, "-o", "IdentitiesOnly=yes"]
+                    argv.append(f"{username}@{host}")
+                ent = {"ssh_argv": argv, "host_label": alias or host, "identities": []}
+                merged[ck] = ent
+        elif kind == "wsl":
+            distro = str(t.get("distro") or "").strip() or "default"
+            user = str(t.get("user") or "").strip()
+            ident = ident or _wsl_identity(distro, user, e.get("workspacePath"))
+            ck = (kind, distro.lower(), user.lower())
+            ent = merged.get(ck)
+            if ent is None:
+                # --exec 对齐客户端 v3.16.1 buildWslArgs：绕过发行版默认 shell 的
+                # 变量/管道展开，argv（含 runpy bootstrap 的分号引号）原样到达。
+                argv = ["wsl.exe", "-d", distro]
+                if user:
+                    argv += ["-u", user]
+                argv.append("--exec")
+                ent = {"ssh_argv": argv, "host_label": f"wsl:{distro}", "identities": []}
+                if not explicit_script:
+                    ent["script"] = "~/.zcode/zcode-token-usage-statusbar/zusage.py"
+                merged[ck] = ent
+        elif kind == "docker":
+            container = str(t.get("container") or "").strip()
+            if not container:
+                continue
+            ident = ident or _docker_identity(container, e.get("workspacePath"))
+            ck = (kind, container.lower())
+            ent = merged.get(ck)
+            if ent is None:
+                ent = {"ssh_argv": ["docker", "exec", "-i", container],
+                       "host_label": f"docker:{container}", "identities": []}
+                if not explicit_script:
+                    ent["script"] = "~/.zcode/zcode-token-usage-statusbar/zusage.py"
+                merged[ck] = ent
+        else:
             continue
-        alias = str(t.get("sshConfigAlias") or "").strip()
-        key_path = str(t.get("privateKeyPath") or "").strip()
-        if not alias and not key_path and t.get("passwordCredentialKey"):
-            continue   # 密码认证拿不到明文，ssh 也无法免交互
-        try:
-            port = int(t.get("port") or 22)
-        except (TypeError, ValueError):
-            port = 22
-        ident = str(e.get("workspaceIdentity") or "").strip() or _ssh_identity(
-            host, port, username, e.get("workspacePath"))
-        ck = (alias, host.lower(), port, username, key_path)
-        ent = merged.get(ck)
-        if ent is None:
-            argv = ["ssh", "-o", "BatchMode=yes"]
-            if alias:
-                argv.append(alias)   # 别名交给用户 ssh_config 解析 host/port/密钥
-            else:
-                if port != 22:
-                    argv += ["-p", str(port)]
-                if key_path:
-                    argv += ["-i", key_path, "-o", "IdentitiesOnly=yes"]
-                argv.append(f"{username}@{host}")
-            ent = {"ssh_argv": argv, "host_label": alias or host, "identities": []}
-            merged[ck] = ent
         if ident not in ent["identities"]:
             ent["identities"].append(ident)
     return sorted(merged.values(), key=lambda x: (x["host_label"], x["identities"]))

@@ -33,7 +33,7 @@ python3 -B -m unittest discover -s tests -p 'test_remote_targets.py'
 node --test tests/inject-remote-recovery.test.cjs
 ```
 
-这些测试使用临时客户端设置、数据库/传输夹具与隔离查询泵，不应访问真实 SSH 服务器、个人配置或真实客户端注入。覆盖自动连接适配、`auto` 与旧 `enabled` 开关独立、手动 `identity`/`identities` 绑定、多目标路由和独立 `today`/错误、失败与暂未找到会话的持续重试，以及统计查询链恢复。更新后的 JSON scope 协议与工作区身份隔离需配合全量自动回归检查，不能只凭脚本语法通过就宣称跨机验收成功。
+这些测试使用临时客户端设置、数据库/传输夹具与隔离查询泵，不应访问真实 SSH 服务器、个人配置或真实客户端注入。覆盖 SSH/WSL/Docker 自动连接适配（WSL 生成 `wsl.exe --exec` 通道、3.16 `remote:server:` 升级身份按原样路由）、`auto` 与旧 `enabled` 开关独立、手动 `identity`/`identities` 绑定、多目标路由和独立 `today`/错误、失败与暂未找到会话的持续重试，以及统计查询链恢复。更新后的 JSON scope 协议与工作区身份隔离需配合全量自动回归检查，不能只凭脚本语法通过就宣称跨机验收成功。
 
 Node 查询泵回归还覆盖首个成功/SSH 失败/error/null 响应后的实际定时续查、已有链连续错误与空响应、同 SID 切换身份免握手、同 SID 跨窗口/分栏 scope 隔离、晚加载/不可信/歧义身份默认关闭路由后由合法 IPC 恢复、配置与客户端设置变化打破去重、常驻进程错误/看门狗及单次查询只结算一次，以及彻底关闭后停止远端轮询、重新开启时恢复。不会替宿主执行真实 SSH 重连。
 
