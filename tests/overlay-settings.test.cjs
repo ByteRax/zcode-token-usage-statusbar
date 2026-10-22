@@ -376,6 +376,9 @@ test('the update section goes straight from the buttons to the status line witho
 /* 更新进度条（v89）：用最小 DOM 替身驱动 syncUpdate → syncProgress。 */
 function progressHarness(pluginUpdate, lang = 'zh') {
   const syncSource = extract('    function syncUpdate() {', '    function syncPanel() {');
+  /* issue #55 后 PROGRESS_STAGES 的 var 赋值上移到 buildPanel 定义之前（先于 buildPanel()
+   * 调用执行），切片区间里只剩函数声明；从新位置补进赋值行，切片其余不变 */
+  const stagesSource = extract('    var PROGRESS_STAGES = ', '\n');
   const row = () => {
     const fill = { style: {}, classes: new Set(), classList: { toggle(name, on) { on ? this.owner.add(name) : this.owner.delete(name); } } };
     fill.classList.owner = fill.classes;
@@ -392,7 +395,7 @@ function progressHarness(pluginUpdate, lang = 'zh') {
       : s === '.zu-update-status' ? status : (controls[s] ||= {}) },
     L: (zh, en) => lang === 'en' ? en : zh,
   };
-  vm.runInNewContext(syncSource + '\nsyncUpdate();', context);
+  vm.runInNewContext(stagesSource + '\n' + syncSource + '\nsyncUpdate();', context);
   const read = key => ({ width: rows[key].fill.style.width, active: rows[key].fill.classes.has('active'),
     now: rows[key].track.attrs['aria-valuenow'], text: rows[key].value.textContent });
   return { box, status, context, rows, read, rerun: () => vm.runInNewContext('syncUpdate();', context) };

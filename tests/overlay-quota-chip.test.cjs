@@ -482,3 +482,49 @@ test('custom-provider session shows ITS source via byProvider mapping (multi-win
       last: { provider_id: 'new-provider-unknown', model: 'x' } }] });
   assert.equal(h.chipOf(ui.wrap), undefined, '未映射自定义 provider 不显示（不能证明数据归属）');
 });
+
+/* issue #55：spawnInstance 内 buildPanel() 的调用早于同作用域 var 的赋值语句（var 只提升
+ * 声明不提升赋值）。quotaSources/pluginUpdate 在实例创建前已由主进程注入时，首轮
+ * buildPanel → syncUpdate 就会读 SRC_FIELD_LABELS / PROGRESS_STAGES——修复前前者 undefined
+ * （v1.5.2 直接 TypeError 写 coordErr，已铠甲成 placeholder 退化成原始字段名），后者在
+ * syncProgress（无 try-catch 保护）里 undefined.indexOf 抛错拖垮整条实例创建链。 */
+test('issue #55: first buildPanel sync must see SRC_FIELD_LABELS and PROGRESS_STAGES already assigned', () => {
+  // 场景 A（issue 主体）：quotaSources 先于实例创建注入 → 首轮 syncQuotaSources 读 SRC_FIELD_LABELS
+  const h = harness();
+  h.window.__zusagePluginState = { quotaEnabled: true, quotaSources: [
+    { id: 'minimax', label: 'MiniMax', kind: 'plan', enabled: true, credentialFields: ['apiKey'], keyConfigured: false, status: 'not_configured' },
+  ] };
+  h.buildComposer('workspace-main', 'sid_main');
+  h.inject(); h.boot(); h.tick();
+  assert.ok(!h.window.__zusageDiag.coordErr, '实例创建不因面板同步崩溃：' + (h.window.__zusageDiag.coordErr || ''));
+  const panel = h.body.children.find(e => e.classList.contains('zu-settings'));
+  const list = panel && panel.queries.get('.zu-src-list');
+  assert.ok(list, '源列表容器已同步');
+  assert.match(list.innerHTML, /placeholder="API Key"/, '字段标签取本地化文案');
+  assert.ok(!h.window.__zusageDiag.quotaSrcErr, 'syncQuotaSources 无异常');
+
+  // 场景 B：下载阶段创建实例 → 首轮 syncProgress 读 PROGRESS_STAGES（无 try-catch 保护，
+  // 修复前 TypeError 会经 buildPanel 冒泡到 tick 的 coordErr，面板都建不出来）
+  const h2 = harness();
+  h2.window.__zusagePluginState = { supported: true, auto: true, busy: true, phase: 'downloading',
+    progress: { stage: 'download', loaded: 10, total: 100 }, currentVersion: '1.5.2' };
+  h2.buildComposer('workspace-main', 'sid_main');
+  h2.inject(); h2.boot(); h2.tick();
+  assert.ok(!h2.window.__zusageDiag.coordErr, '下载期创建实例不崩溃：' + (h2.window.__zusageDiag.coordErr || ''));
+  assert.ok(h2.body.children.some(e => e.classList.contains('zu-settings')), '下载期面板照常创建');
+
+  // 结构锁定（根因）：spawnInstance 主流程的 buildPanel(); 调用点之前，三处 var 必须已完成赋值。
+  // var 只提升声明不提升赋值——赋值语句一旦挪回调用点之后（v1.5.2 的形态），首轮
+  // syncQuotaSources/syncProgress 就会读到 undefined。桩环境里后续 syncUpdate 会把首轮
+  // 降级值重写掉，行为断言抓不到首轮窗口，时序只能靠行序锁。
+  const lines = source.split('\n');
+  const firstCall = lines.findIndex(l => /^\s+buildPanel\(\);\s*$/.test(l));   // spawnInstance 内首个同步调用
+  assert.ok(firstCall > 0, 'buildPanel(); 调用点存在');
+  const declLine = re => lines.findIndex(l => re.test(l));
+  assert.ok(declLine(/^\s*var srcListSig = /) >= 0 && declLine(/^\s*var srcListSig = /) < firstCall,
+    'srcListSig 赋值先于 buildPanel() 调用');
+  assert.ok(declLine(/^\s*var SRC_FIELD_LABELS = /) >= 0 && declLine(/^\s*var SRC_FIELD_LABELS = /) < firstCall,
+    'SRC_FIELD_LABELS 赋值先于 buildPanel() 调用');
+  assert.ok(declLine(/^\s*var PROGRESS_STAGES = /) >= 0 && declLine(/^\s*var PROGRESS_STAGES = /) < firstCall,
+    'PROGRESS_STAGES 赋值先于 buildPanel() 调用');
+});
