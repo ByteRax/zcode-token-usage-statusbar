@@ -1103,6 +1103,53 @@ def _read_client_remote_entries():
     return entries
 
 
+def _read_client_server_history():
+    """3.16 起客户端把会话握手升级出的 remote:server:<serverId>:/路径 存活身份单独记在
+    sourceServerWorkspaceHistory，lastWorkspaceSession 持久化的仍是传输级 legacy 身份，
+    两者只共享 workspacePath。与 _read_client_remote_entries 同文件同 mtime 缓存模式；
+    解析失败返回 []，只读不写。"""
+    sig = None
+    try:
+        p = _desktop_setting_path()
+        sig = (str(p), p.stat().st_mtime_ns)
+    except OSError:
+        pass
+    if sig is None:
+        _CLIENT_STATE_CACHE["server_sig"] = None
+        _CLIENT_STATE_CACHE["server_hist"] = []
+        return []
+    if _CLIENT_STATE_CACHE.get("server_sig") == sig:
+        return _CLIENT_STATE_CACHE["server_hist"]
+    hist = []
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        raw = data.get("sourceServerWorkspaceHistory") if isinstance(data, dict) else None
+        if isinstance(raw, list):
+            hist = [e for e in raw if isinstance(e, dict)]
+    except (OSError, ValueError):
+        hist = []
+    _CLIENT_STATE_CACHE["server_sig"] = sig
+    _CLIENT_STATE_CACHE["server_hist"] = hist
+    return hist
+
+
+def _server_idents_by_path():
+    """归一路径 → 握手升级身份列表。只采 remote:server: 前缀且带 sourceServerId 的条目；
+    同一路径混入多个 sourceServerId 时无法唯一归属服务器，整路径放弃（fail-closed）。"""
+    by_path, owners = {}, {}
+    for e in _read_client_server_history():
+        ident = str(e.get("workspaceIdentity") or "").strip()
+        server = str(e.get("sourceServerId") or "").strip()
+        if not ident.startswith("remote:server:") or not server:
+            continue
+        path = _normalize_identity_path(e.get("workspacePath"))
+        idents = by_path.setdefault(path, [])
+        if ident not in idents:
+            idents.append(ident)
+        owners.setdefault(path, set()).add(server)
+    return {p: idents for p, idents in by_path.items() if len(owners[p]) == 1}
+
+
 def _normalize_identity_path(p):
     """客户端 normalizeWorkspacePathForIdentity 同款：反斜杠归一、折叠重复斜杠、去尾补头。"""
     s = str(p or "").replace("\\", "/")
@@ -1146,7 +1193,11 @@ def _auto_targets(cfg):
     时返回 []。ssh 按连接（别名/密钥+主机+端口+用户）合并；wsl 按（发行版+用户）、docker 按
     容器合并为一条通道，多工作区聚合 identities；纯密码凭据（passwordCredentialKey 且无密钥/
     别名）的 ssh 无法免交互，跳过。workspaceIdentity 一律原样采用（客户端会透传到 DOM/IPC，
-    路由按整串相等），缺失时才按同款算法兜底构造。server 类型没有免交互 exec 通道，不生成。"""
+    路由按整串相等），缺失时才按同款算法兜底构造。server 类型没有免交互 exec 通道，不生成。
+    3.16 起存活会话身份握手后升级为 remote:server:<serverId>:/路径，记在
+    sourceServerWorkspaceHistory，与 lastWorkspaceSession 只共享 workspacePath：按归一路径
+    把 server 身份并进路径匹配的传输通道，使 3.15/3.16 两种身份形态都能路由；同一路径命中
+    多条通道或多个服务器视为歧义，不并（fail-closed）。"""
     r = cfg.get("remote")
     if isinstance(r, dict) and r.get("auto") is False:
         return []
@@ -1155,6 +1206,8 @@ def _auto_targets(cfg):
     # wsl --exec / docker exec 不经登录 shell，进程 CWD 不可靠，自动通道的默认脚本
     # 必须带 ~ 前缀（exec 端 runpy bootstrap 展开）；用户显式 remote.script 优先。
     explicit_script = isinstance(r, dict) and bool(r.get("script"))
+    server_idents = _server_idents_by_path()
+    server_bound = {}
     merged = {}
     for e in _read_client_remote_entries():
         t = e.get("target")
@@ -1222,8 +1275,15 @@ def _auto_targets(cfg):
                 merged[ck] = ent
         else:
             continue
-        if ident not in ent["identities"]:
-            ent["identities"].append(ident)
+        extra = ()
+        path_key = _normalize_identity_path(e.get("workspacePath"))
+        want = server_idents.get(path_key)
+        if want:
+            if server_bound.setdefault(path_key, ck) == ck:
+                extra = want   # 同一路径只并进首条命中通道，跨通道重复视为歧义
+        for idn in (ident,) + tuple(extra):
+            if idn not in ent["identities"]:
+                ent["identities"].append(idn)
     return sorted(merged.values(), key=lambda x: (x["host_label"], x["identities"]))
 
 

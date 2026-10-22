@@ -222,7 +222,7 @@ Windows 对应用户目录下的 `.zcode\zcode-token-usage-statusbar\config.json
 
 ### 功能清单与身份边界
 
-- **自动连接适配**：读取客户端保存的远端工作区连接设置（默认 `~/.zcode/v2/setting.json` 的 `lastWorkspaceSession`），按条目里的 `target.kind` 生成可用通道：SSH 生成 `ssh -o BatchMode=yes …`，WSL 生成 `wsl.exe -d 发行版 [-u 用户] --exec …`，Docker 生成 `docker exec -i 容器 …`（后两类无需凭据即可免交互）；结合宿主合法工作区 IPC 与本窗口会话证据取得 `workspaceIdentity`。客户端 3.15.x 的 WSL 工作区身份是 `remote:wsl:发行版[:用户]:/路径`；3.16 起所有传输连接握手后统一升级为 `remote:server:<serverId>:/路径`（`remote:wsl:` 等只留作 legacy 别名），持久化条目里的 `target` 仍是传输级 `{kind, distro, user}`，插件按原样身份路由到对应通道，两种客户端形态都覆盖。
+- **自动连接适配**：读取客户端保存的远端工作区连接设置（默认 `~/.zcode/v2/setting.json` 的 `lastWorkspaceSession`），按条目里的 `target.kind` 生成可用通道：SSH 生成 `ssh -o BatchMode=yes …`，WSL 生成 `wsl.exe -d 发行版 [-u 用户] --exec …`，Docker 生成 `docker exec -i 容器 …`（后两类无需凭据即可免交互）；结合宿主合法工作区 IPC 与本窗口会话证据取得 `workspaceIdentity`。客户端 3.15.x 的 WSL 工作区身份是 `remote:wsl:发行版[:用户]:/路径`；3.16 起所有传输连接握手后统一升级为 `remote:server:<serverId>:/路径`，该身份记在 `sourceServerWorkspaceHistory`，而 `lastWorkspaceSession` 持久化的仍是传输级 legacy 身份与 `{kind, distro, user}`——插件按归一路径把 server 身份并进对应传输通道（同路径命中多个服务器或多条通道视为歧义，不并），两种客户端形态都覆盖。
 - **多服务器路由**：以会话 ID 和工作区身份共同选目标，不仅凭 ID、主机标签或远端最近活跃会话猜测。自动模式只查询已确认远端 scope，不对历史服务器试探本地未知会话 ID。手动目标用 `identity` 或 `identities` 绑定工作区，可覆盖同身份的自动目标。
 - **独立 today/error**：各目标独立返回今日总量与错误，不能把某服务器的今日量混入本地或另一服务器；一台不可达不应中断其它来源查询。相同会话 ID 仍需按工作区/目标隔离。
 - **失败与未知持续重试**：查询失败、远端暂未找到会话或尚无可信身份时不会永久放弃；已知远端 scope 保持退避重试，身份未知则等待合法身份重新出现，不盲发到其它服务器。

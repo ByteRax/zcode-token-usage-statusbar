@@ -53,6 +53,7 @@ def write_setting(root, payload):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload), encoding="utf-8")
     zusage._CLIENT_STATE_CACHE["sig"] = None
+    zusage._CLIENT_STATE_CACHE["server_sig"] = None
     return path
 
 
@@ -67,7 +68,7 @@ class IsolatedTests(unittest.TestCase):
         for patch in patches:
             patch.start()
             self.addCleanup(patch.stop)
-        zusage._CLIENT_STATE_CACHE.update(sig=None, entries=[])
+        zusage._CLIENT_STATE_CACHE.update(sig=None, entries=[], server_sig=None, server_hist=[])
         zusage._REMOTE_NEG.clear()
         zusage._AGG_CACHE.clear()
         self.addCleanup(zusage._REMOTE_NEG.clear)
@@ -180,6 +181,57 @@ class DiscoveryTests(IsolatedTests):
         self.assertEqual(by_label["docker:box"]["ssh_argv"], ["docker", "exec", "-i", "box"])
         self.assertEqual(by_label["docker:box"]["identities"], ["remote:docker:box:/p"])
         self.assertEqual(by_label["wsl:Debian"]["ssh_argv"], ["wsl.exe", "-d", "Debian", "--exec"])
+
+    def test_316_server_history_identities_join_transport_by_path(self):
+        # 3.16 客户端把握手升级后的 remote:server:<id>:/path 记在 sourceServerWorkspaceHistory，
+        # lastWorkspaceSession 投影刻意剥掉 server 形态只留传输级 legacy 身份（客户端源码
+        # workspace-settings.ts / remoteWorkspaceHistory.ts 实证）：插件按归一路径把 server
+        # 身份并进同一条传输通道，路径归一与客户端 normalizeWorkspacePathForIdentity 同款。
+        write_setting(self.tmp.name, {
+            "lastWorkspaceSession": [wsl_entry(), wsl_entry(path="/q")],
+            "sourceServerWorkspaceHistory": [
+                {"workspacePath": "/p/", "workspaceIdentity": SRV, "sourceServerId": "srv1"},
+                {"workspacePath": "/q", "workspaceIdentity": "remote:server:srv1:/q",
+                 "sourceServerId": "srv1"}]})
+        rows = zusage._auto_targets({})
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["identities"],
+                         [W, SRV, "remote:wsl:Ubuntu:dev:/q", "remote:server:srv1:/q"])
+
+    def test_server_history_failclosed_on_ambiguity(self):
+        # 同一路径混入多个 sourceServerId 无法唯一归属服务器、非 remote:server: 前缀、
+        # 路径命中多条通道：三种情况都不并，保持各自 fail-closed 行为。
+        write_setting(self.tmp.name, {
+            "lastWorkspaceSession": [wsl_entry(), wsl_entry(distro="Debian", user=None)],
+            "sourceServerWorkspaceHistory": [
+                {"workspacePath": "/p", "workspaceIdentity": "remote:server:srv1:/p",
+                 "sourceServerId": "srv1"},
+                {"workspacePath": "/p", "workspaceIdentity": "remote:server:srv2:/p",
+                 "sourceServerId": "srv2"},
+                {"workspacePath": "/q", "workspaceIdentity": "remote:wsl:Ubuntu:dev:/q",
+                 "sourceServerId": "srv1"}]})
+        rows = zusage._auto_targets({})
+        by_label = {r["host_label"]: r for r in rows}
+        self.assertEqual(by_label["wsl:Ubuntu"]["identities"], [W])
+        self.assertEqual(by_label["wsl:Debian"]["identities"], ["remote:wsl:Debian:/p"])
+        write_setting(self.tmp.name, {
+            "lastWorkspaceSession": [wsl_entry(), wsl_entry(distro="Debian", user=None)],
+            "sourceServerWorkspaceHistory": [
+                {"workspacePath": "/p", "workspaceIdentity": SRV, "sourceServerId": "srv1"}]})
+        rows = zusage._auto_targets({})
+        by_label = {r["host_label"]: r for r in rows}
+        self.assertEqual(by_label["wsl:Ubuntu"]["identities"], [W, SRV])
+        self.assertEqual(by_label["wsl:Debian"]["identities"], ["remote:wsl:Debian:/p"])
+
+    def test_server_history_binds_ssh_channel_too(self):
+        # 3.16 的 SSH 会话同样握手升级为 server 身份：路径关联对 ssh 通道一致生效。
+        write_setting(self.tmp.name, {
+            "lastWorkspaceSession": [entry("a")],
+            "sourceServerWorkspaceHistory": [
+                {"workspacePath": "/p", "workspaceIdentity": "remote:server:srv1:/p",
+                 "sourceServerId": "srv1"}]})
+        rows = zusage._auto_targets({})
+        self.assertEqual(rows[0]["identities"], [A, "remote:server:srv1:/p"])
 
 
 class SetupTests(IsolatedTests):
@@ -348,6 +400,28 @@ class FetchTests(IsolatedTests):
         self.assertEqual(set(calls), {srv_key, debian_key})
         self.assertTrue(by[("u", "remote:ftp:x:/p")]["remote_missing"])
         self.assertEqual(by[("u", "remote:ftp:x:/p")]["remote_target"], "")
+
+    def test_316_server_history_identity_routes_over_wsl_channel(self):
+        # 端到端：目标表只有 legacy 身份，窗口发来 sourceServerWorkspaceHistory 里的
+        # server 身份——修复前这正是 "remote target not configured" 的实机复现路径。
+        write_setting(self.tmp.name, {
+            "lastWorkspaceSession": [wsl_entry()],
+            "sourceServerWorkspaceHistory": [
+                {"workspacePath": "/p", "workspaceIdentity": SRV, "sourceServerId": "srv1"}]})
+        setup = zusage._remote_setup({})
+        key = setup["identities"][SRV]
+        self.assertEqual(setup["targets"][key]["ssh_argv"],
+                         ["wsl.exe", "-d", "Ubuntu", "-u", "dev", "--exec"])
+        calls = []
+
+        def fake(sids, rc, k):
+            calls.append(k)
+            return {sids[0]: {"sid": sids[0], "requests": 5}}, {}, None
+
+        with mock.patch.object(zusage, "_remote_exec", side_effect=fake):
+            by, _, _ = zusage._remote_fetch(["s"], set(), setup, scopes=[("s", SRV)])
+        self.assertEqual(calls, [key])
+        self.assertEqual(by[(("s"), SRV)]["requests"], 5)
 
     def test_parallel_channels_one_exception_does_not_block_healthy(self):
         setup = self.setup_targets()
