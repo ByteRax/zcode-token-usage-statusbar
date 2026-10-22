@@ -142,6 +142,7 @@ const activeSid = new Map();   // webContents.id → 会话 id 或 ""
 const windowWorkspaces = new Map();
 const windowTasks = new Map();
 const scopeBindings = new Map();
+const windowQuotaSelections = new Map();   // webContents.id → {paneId: {sid, providerId, modelId}}
 /* 本窗是否出现过任何远端工作区/任务证据：issue #40 的无桥本地兜底只在确认
  * “本窗只能查本地”时启用，有远端证据时 overlay 仍 fail-closed。 */
 const remoteEvidence = new Map();
@@ -260,22 +261,56 @@ function clearRemoteRecovery() {
   clearTimeout(retryTimer);
   retryTimer = 0;
 }
+function syncQuotaProviders() {
+  if (shuttingDown || !quotaClient || !quotaEnabled()) return;
+  const providers = new Set();
+  let hasSelections = false, hasWindow = false;
+  for (const wc of webContents.getAllWebContents()) {
+    if (!isMainWindowState(wc) || wc.isDestroyed()) continue;
+    hasWindow = true;
+    if (windowQuotaSelections.has(wc.id)) hasSelections = true;
+    for (const sel of Object.values(windowQuotaSelections.get(wc.id) || {})) {
+      if (sel.providerId) providers.add(sel.providerId);
+    }
+  }
+  if (hasWindow && !hasSelections && lastGoodPayload) {   // 旧渲染器未上报时，按各会话最近完成请求兼容
+    for (const row of [lastGoodPayload.session, ...(lastGoodPayload.recent || [])]) {
+      const id = row && row.last && row.last.provider_id;
+      if (id) providers.add(id);
+    }
+  }
+  quotaClient.setProviders(Array.from(providers));
+  if (hasWindow) quotaClient.tick();
+}
+function handleQuotaProviders(wc, req) {
+  const raw = req.panes;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return;
+  const entries = Object.entries(raw);
+  if (entries.length > 4) return;
+  const panes = Object.create(null);
+  const valid = (v, max) => typeof v === "string" && v.length <= max && !/[\x00-\x1f\x7f]/.test(v);
+  for (const [pid, sel] of entries) {
+    if (!/^[A-Za-z0-9_-]{1,96}$/.test(pid) || !sel || typeof sel !== "object" ||
+        !valid(sel.sid, 80) || !valid(sel.providerId, 160) || !valid(sel.modelId, 160) ||
+        (sel.sid && !/^[A-Za-z0-9_-]+$/.test(sel.sid))) return;
+    panes[pid] = { sid: sel.sid, providerId: sel.providerId, modelId: sel.modelId };
+  }
+  windowQuotaSelections.set(wc.id, panes);   // 全量替换：关 pane/导航后旧选择不会残留
+  syncQuotaProviders();
+  if (lastGoodPayload && quotaClient && quotaEnabled()) {
+    const payload = Object.assign({}, lastGoodPayload, { quota: quotaClient.view() });
+    for (const target of webContents.getAllWebContents()) pushOnce(target, payload);
+  }
+}
 function handlePayload(payload) {
   const disabled = remoteDisabled();
   if (disabled) clearRemoteRecovery();
   // serve 的 error 是查询失败，不是空快照；不可清掉重试状态和最后成功数据显示。
   if (!payload || typeof payload !== "object" || payload.error) return;
   lastGoodPayload = payload;
-  /* v96 额度：按最新会话的 provider 段选数据源（账号级，模型切换不触发新查询）；
-   * tick 惰性判过期（TTL/退避/冻结都在 quota-client 内），结果附加到本次推送。 */
   if (quotaClient && quotaEnabled()) {
-    try {
-      const prov = (payload.session && payload.session.last && payload.session.last.provider_id) ||
-        (payload.last && payload.last.provider_id) || "";
-      if (prov) quotaClient.noteProvider(prov);
-    } catch (e) { }
     if (payload.scnet_estimate !== undefined) quotaClient.noteSnapshotExtras({ scnet: payload.scnet_estimate });
-    quotaClient.tick();
+    syncQuotaProviders();
     payload = Object.assign({}, payload, { quota: quotaClient.view() });
   }
   const now = Date.now();
@@ -743,7 +778,7 @@ try {
           quotaCredDebounce = setTimeout(() => {
             if (!quotaClient || !quotaEnabled()) return;
             quotaClient.credentialsChanged();
-            quotaClient.tick();
+            syncQuotaProviders();   // 重读配置后重判 provider 绑定（内含 tick）
           }, 300);
         });
         watcher.on("error", () => {
@@ -756,7 +791,7 @@ try {
     watchQuotaCredentials();
   }
   setInterval(() => {   // 兜底：not_configured 低频重探/退避到点补拉（活跃时 handlePayload 也会 tick）
-    if (hasWindows() && quotaEnabled()) quotaClient.tick();
+    if (hasWindows() && quotaEnabled()) syncQuotaProviders();
   }, 60000);
 } catch (e) {
   delete loadedHashes["quota-client.cjs"];
@@ -844,7 +879,7 @@ async function setQuotaEnabled(enabled) {
     await updateConfig(HERE, { quota_enabled: enabled }, readCfgCached().python_path || (process.platform === "win32" ? "python" : "python3"));
     cfgCache = null;
     broadcastPluginState();
-    if (enabled && quotaClient) quotaClient.tick();
+    if (enabled && quotaClient) syncQuotaProviders();
   } catch (e) { LOG("quota_enabled toggle failed:", e.message); }
 }
 /* 确定性历史行的数据库富文本（v75）：渲染端只从 turn 容器拿到 DOM turn id，
@@ -1136,12 +1171,17 @@ async function pollPluginRequests() {
           if (pluginUpdater) pluginUpdater.request(req).catch((e) => LOG("plugin update action failed:", e.message));
         } else if (req && req.action === "rate-line" && typeof req.enabled === "boolean") {
           setAnswerRateLine(req.enabled);
+        } else if (req && req.action === "quota-providers") {
+          handleQuotaProviders(wc, req);
         } else if (req && req.action === "quota" && typeof req.enabled === "boolean") {
           setQuotaEnabled(req.enabled);
         } else if (req && (req.action === "quota-src" || req.action === "quota-src-key" || req.action === "quota-src-refresh")) {
           handleQuotaSourceRequest(req);
         } else if (req && req.action === "quota-refresh") {   // ⚙/chip 手动刷新：绕过 TTL 与软冻结
-          if (quotaClient && quotaEnabled()) quotaClient.refresh();
+          if (quotaClient && quotaEnabled()) {
+            if (typeof req.sourceId === "string" && req.sourceId.length <= 256) quotaClient.refreshSource(req.sourceId);
+            else quotaClient.refresh();
+          }
         } else if (req && req.action === "turn-text" && typeof req.sid === "string") {
           queryTurnText(req.sid, wc, req.cn === 0);
         } else if (req && req.action === "git-refresh") {   // v96：Git chip 点击 / 快照后节流：立即重查全部已关注路径
@@ -1171,6 +1211,8 @@ const hook = (wc) => {
   if (!isMainWindowState(wc)) return;
   wc.on("destroyed", () => {
     activeSid.delete(wc.id);
+    windowQuotaSelections.delete(wc.id);
+    syncQuotaProviders();
     if (!hasWindows()) {
       clearTimeout(retryTimer);
       lastHadRemote = false;
@@ -1178,6 +1220,11 @@ const hook = (wc) => {
       lastStamp = 0;
       stopResident();
     }
+  });
+  wc.on("did-start-navigation", (event, url, inPlace, isMainFrame) => {
+    if (isMainFrame === false || inPlace) return;
+    windowQuotaSelections.set(wc.id, {});
+    syncQuotaProviders();
   });
   wc.on("did-finish-load", () => injectOverlay(wc));
   if (wc.isLoading()) return;

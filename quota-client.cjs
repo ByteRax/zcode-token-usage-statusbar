@@ -175,20 +175,97 @@ function normalizeQuotaBody(body) {
   }
   return { level: typeof data.level === "string" ? data.level : "", windows, tools, models, unknownUnits };
 }
-function normalizeSubscriptionPlan(body) {
+/* 订阅周期字段语义（与宿主 bigmodelUsageQuotaMapper.pickCurrentSubscriptionExpireTime 语义对齐且更严）：
+ * - nextRenewTime：非自动续费=当前权益结束日；自动续费=下次扣费日（不是最终到期）。
+ *   接受纯日期与宿主同款日期时间（空格/T 分隔、可选秒、Z 或 ±hh:mm 偏移；无偏移按
+ *   服务端 UTC+8 解释）。
+ * - valid 区间可能超前一个计费周期（issue：年度套餐显示 2028-03-14），只有包含
+ *   "当前时刻"的区间才能作为权益边界回退；端点带时刻按精确时刻比较（续费日当天
+ *   10:00 前未来区间不算生效），仅日期端点按服务端日历日左闭右开；未来/过期/反转/
+ *   非法日历或非法时刻（25:99 等）一律整段不采信。
+ * - 仅日期的续费边界覆盖整个服务端日：续费日当天上午不清除当前权益显示；
+ *   带时刻的续费边界在时刻过后按陈旧数据处理（隐藏日期，不显示下一年）。
+ * - currentRenewTime 是当前周期起点；缺失或非法时不暴露，不用未来 valid 起点冒充。 */
+const SUB_TZ_OFFSET_MS = 8 * 3600 * 1000;   // BigModel 服务端日历 Asia/Shanghai
+function serviceDayMs(day, endExclusive) {
+  const y = Number(day.slice(0, 4)), mo = Number(day.slice(5, 7));
+  const d = Number(day.slice(8, 10)) + (endExclusive ? 1 : 0);
+  return Date.UTC(y, mo - 1, d) - SUB_TZ_OFFSET_MS;   // 服务端日的 00:00（endExclusive=次日 00:00）
+}
+/* 解析单个订阅时间值 → { day, at }；at=精确时刻 ms（值带时刻时），纯日期为 null。
+ * 形状/日历/时刻任一非法返回 null（整值拒绝）。 */
+function subscriptionTimestamp(value) {
+  if (typeof value !== "string") return null;
+  const m = value.trim().match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2}))?(Z|[+-]\d{2}:\d{2})?)?$/);
+  if (!m) return null;
+  const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3]);
+  if (mo < 1 || mo > 12 || d < 1 || d > 31) return null;
+  const dt = new Date(Date.UTC(y, mo - 1, d));
+  if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== mo - 1 || dt.getUTCDate() !== d) return null;
+  const day = m[1] + "-" + m[2] + "-" + m[3];
+  if (m[4] === undefined) return { day: day, at: null };
+  const hh = Number(m[4]), mi = Number(m[5]);
+  const ss = m[6] === undefined ? 0 : Number(m[6]);
+  if (hh > 23 || mi > 59 || ss > 59) return null;
+  let at = Date.UTC(y, mo - 1, d, hh, mi, ss);
+  if (m[7] === undefined) at -= SUB_TZ_OFFSET_MS;   // 无偏移：服务端时区
+  else if (m[7] !== "Z") {
+    const offsetMin = Number(m[7].slice(1, 3)) * 60 + Number(m[7].slice(-2));
+    if (offsetMin > 14 * 60) return null;   // ISO 上限 ±14:00；超界偏移视同非法值
+    at += (m[7][0] === "+" ? -1 : 1) * offsetMin * 60000;
+  }
+  return { day: day, at: at };
+}
+function parseValidPeriod(value, now) {
+  if (typeof value !== "string") return null;
+  /* 时刻 token 吸收时偏移必须带冒号（±hh:mm）：免冒号变体会把紧随的下一个日期
+   * （"16:28:31-2027-02-28"）误吞成偏移。 */
+  const tokens = value.match(/\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:\d{2})?)?/g);
+  if (!tokens || tokens.length < 2) return null;
+  const start = subscriptionTimestamp(tokens[0]);
+  const end = subscriptionTimestamp(tokens[tokens.length - 1]);
+  if (!start || !end || start.day > end.day) return null;
+  const startMs = start.at != null ? start.at : serviceDayMs(start.day, false);
+  const endMs = end.at != null ? end.at : serviceDayMs(end.day, false);   // 仅日期末端：日粒度右开
+  return { start: start.day, end: end.day, current: startMs <= now && now < endMs };
+}
+function normalizeSubscriptionPlan(body, nowMs) {
   const data = body && typeof body === "object" && Array.isArray(body.data) ? body.data : null;
   if (!data) return null;
   const active = data.filter((e) => e && typeof e === "object" && e.status === "VALID" && e.inCurrentPeriod === true);
   if (active.length !== 1) return null;
   const s = active[0];
-  const valid = typeof s.valid === "string" ? s.valid : "";
-  const m = valid.match(/^(\d{4}-\d{2}-\d{2}).*?(\d{4}-\d{2}-\d{2})/);
-  return {
+  const now = typeof nowMs === "number" && isFinite(nowMs) ? nowMs : Date.now();
+  const autoRenew = s.autoRenew === true || s.autoRenew === 1;
+  const nextRenew = subscriptionTimestamp(s.nextRenewTime);
+  const currentRenew = subscriptionTimestamp(s.currentRenewTime);
+  const valid = parseValidPeriod(s.valid, now);
+  const out = {
     version: typeof s.version === "string" ? s.version.slice(0, 8) : "",
     productName: typeof s.productName === "string" ? s.productName.slice(0, 40) : "",
-    validStart: m ? m[1] : "",
-    validEnd: m ? m[2] : "",
+    validStart: "",
+    validEnd: "",
   };
+  /* 续费边界时刻：带时刻按精确时刻；纯日期覆盖整个服务端日（当天上午仍属当前权益，
+   * 服务端 10:00 扣费惯例下不到时刻不清除；时刻已过=陈旧行，不采信）。 */
+  const renewBoundary = nextRenew && (nextRenew.at != null ? nextRenew.at : serviceDayMs(nextRenew.day, true)) > now
+    ? nextRenew : null;
+  if (renewBoundary && currentRenew && currentRenew.day <= renewBoundary.day) out.validStart = currentRenew.day;
+  else if (renewBoundary && valid && valid.current) out.validStart = valid.start;
+  if (renewBoundary) {
+    if (autoRenew) {
+      out.renewAt = renewBoundary.day;   // 自动续费：下次扣费日，不声称最终到期
+    } else {
+      out.validEnd = renewBoundary.day;   // 非自动续费：nextRenewTime 即当前权益结束日
+    }
+    return out;
+  }
+  if (valid && valid.current) {
+    out.validStart = valid.start;
+    if (!autoRenew) out.validEnd = valid.end;
+    else out.periodEnd = valid.end;   // 自动续费且无有效扣费日：仅记录当前周期末端
+  }
+  return out;
 }
 
 /* ---------- 余额工具 ---------- */
@@ -333,7 +410,7 @@ for (const fam of ["bigmodel", "zai"]) {
       const value = normalizeQuotaBody(body);
       if (value && value.noPlan) return { noPlan: true };
       const plan = await subFetch;
-      const sub = plan ? normalizeSubscriptionPlan(plan) : null;
+      const sub = plan ? normalizeSubscriptionPlan(plan, j.now()) : null;
       return sub ? Object.assign({}, value, { plan: sub }) : value;
     },
   });
@@ -1086,7 +1163,10 @@ function createQuotaClient(opts) {
 
   /* 源状态：id → st（v96 单源状态机的每源实例） */
   const states = new Map();
-  const byProvider = {};   // providerId → 源 id（渲染端按本 pane provider 选源，多窗不串）
+  const byProvider = {};   // providerId → 源 id（同厂商不同 provider 也隔离）
+  let wantedProviders = null;   // null 为旧渲染端单源模式；数组来自全部存活 pane 的实时选择
+
+  function adapterOf(id) { return ADAPTER_BY_ID.get(String(id).split(":")[0]); }
   let primaryId = "";        // 本 pane 会话模型归属的源（chip 主显）
   let primaryProvider = "";  // 最近一次 noteProvider 的原始 provider 串
   let seq = 0;
@@ -1148,7 +1228,7 @@ function createQuotaClient(opts) {
     st.status = "ok";
     st.lastError = "";
     st.backoffIdx = 0;
-    const a = ADAPTER_BY_ID.get(st.id);
+    const a = adapterOf(st.id);
     st.nextAt = now() + (a && a.kind === "balance" ? TTL_BALANCE_MS : TTL_MS);
     if (onUpdate) onUpdate();
   }
@@ -1230,20 +1310,29 @@ function createQuotaClient(opts) {
   function activeSet() {
     j.secrets = readSecrets();
     const set = new Map();
-    if (primaryId) {
-      const a = primaryId.indexOf("custom:") === 0 ? ADAPTER_BY_ID.get("custom") : ADAPTER_BY_ID.get(primaryId);
-      if (a && primaryId !== "team") {
-        const st = stateOf(primaryId);
-        if (!st.ctx) st.ctx = primaryCtx;
-        const cfg = (j.secrets.sources || {})[a.id] || {};
-        if (cfg.enabled !== false && (a.id !== "anthropic" || cfg.enabled === true)) set.set(primaryId, { a, st });
-      } else if (primaryId === "team") {
-        const st = stateOf("team");
-        if (st.status !== "unsupported") Object.assign(st, { status: "unsupported", reason: "team" });
+    const wanted = wantedProviders === null ? [primaryProvider] : wantedProviders;
+    for (const providerId of wanted) {
+      const id = byProvider[providerId] || "";
+      if (id === "team") {
+        const st = stateOf(id);
+        if (st.status !== "unsupported") setState(st, { status: "unsupported", reason: "team" });
+        continue;
       }
+      const a = adapterOf(id);
+      if (!a) continue;
+      const st = stateOf(id);
+      const cfg = (j.secrets.sources || {})[a.id] || {};
+      if (cfg.enabled === false) continue;
+      if (a.id === "anthropic" && cfg.enabled !== true) continue;   // anthropic 仅显式启用（终版契约）
+      set.set(id, { a, st });
     }
     for (const a of ADAPTERS) {
       if (a.id === "custom" || set.has(a.id)) continue;   // custom 系只在 primary 分支进入
+      /* 账户复合源（vendor:providerId）已入集时跳过裸厂商源：同一凭据两条状态
+       * 会重复请求同一端点（secrets 键被两者共用），账户源已覆盖该厂商。 */
+      let vendorCovered = false;
+      for (const k of set.keys()) if (k.indexOf(a.id + ":") === 0) { vendorCovered = true; break; }
+      if (vendorCovered) continue;
       const secCfg = (j.secrets.sources || {})[a.id] || {};
       const enabledCfg = secCfg.enabled === true;
       const hasEnv = a.envKeys.some((key) => !!j.env[key]);
@@ -1262,13 +1351,15 @@ function createQuotaClient(opts) {
       }
     }
     for (const [id, st] of states) {
-      const a = id.indexOf("custom:") === 0 ? ADAPTER_BY_ID.get("custom") : ADAPTER_BY_ID.get(id);
+      const a = adapterOf(id);   // 复合源 id（vendor:providerId）也须命中：禁用/撤销/解密检查不得跳过账户源
       if (!a) continue;
       const cfg = (j.secrets.sources || {})[a.id] || {};
       if (cfg.enabled === false) {
         deactivateSource(st, "disabled");
       } else if (a.id !== "custom" && !set.has(id)) {
-        deactivateSource(st, "not_configured");
+        /* 复合账户源（id 含 ":"）随 pane 离开只视为不在集合：保留 TTL 内缓存供切回即用；
+         * 禁用（enabled=false）与凭据失效（resolveCred 空）的撤销在各自分支执行。 */
+        if (id.indexOf(":") < 0) deactivateSource(st, "not_configured");
       } else if (set.has(id) && st.ctx) {
         const cred = a.resolveCred(j, st.ctx);
         if (!cred || cred.decryptFailed) {
@@ -1289,9 +1380,36 @@ function createQuotaClient(opts) {
     for (const { a, st } of activeSet().values()) tickSource(a, st, force);
   }
 
+  function rememberProvider(providerId) {
+    const r = resolvePrimary(providerId);
+    if (r.id && providerId.indexOf("account:") !== 0 && r.id.indexOf(":") < 0) {
+      r.id += ":" + providerId;
+    }
+    byProvider[providerId] = r.id || "";
+    if (!r.id || r.id === "team") return r;
+    const st = stateOf(r.id);
+    const contextStamp = sha16(JSON.stringify(r.ctx || null));
+    if (st.contextStamp !== contextStamp) {
+      st.epoch += 1;
+      if (st.ctl) st.ctl.abort();
+      st.inFlight = null;
+      st.ctx = r.ctx || null;
+      st.contextStamp = contextStamp;
+      st.value = null;
+      st.fetchedAt = 0;
+      st.status = "idle";
+      st.reason = "";
+      st.lastError = "";
+      st.fingerprint = "";
+      st.backoffIdx = 0;
+      st.nextAt = 0;
+    }
+    return r;
+  }
+
   function entryView(st) {
     const t = now();
-    const a = st.id.indexOf("custom:") === 0 ? ADAPTER_BY_ID.get("custom") : ADAPTER_BY_ID.get(st.id);
+    const a = adapterOf(st.id);
     const ttl = a && a.kind === "balance" ? TTL_BALANCE_MS : TTL_MS;
     const cfg = a ? ((j.secrets.sources || {})[a.id] || {}) : {};
     const v = { status: cfg.enabled === false ? "disabled" : st.status, reason: st.reason, fetchedAt: st.fetchedAt,
@@ -1316,54 +1434,56 @@ function createQuotaClient(opts) {
   return {
     tick,
     refresh() { tick(true); },
-    refreshSource(id) {   // ⚙ 每家「立即刷新」：只 force 单源
-      const st = states.get(id);
-      const a = ADAPTER_BY_ID.get(id);
-      if (st && a) tickSource(a, st, true);
+    refreshSource(id) {   // 厂商按钮刷新该厂商各账户；chip 的完整源 id 只刷新本账户
+      const a = adapterOf(id);
+      if (!a) return;
+      if (String(id).indexOf(":") >= 0) {
+        const st = states.get(id);
+        if (st) tickSource(a, st, true);
+      } else {
+        for (const st of states.values()) if (adapterOf(st.id) === a) tickSource(a, st, true);
+      }
     },
     noteProvider(providerId) {
       const p = String(providerId || "");
-      if (p === primaryProvider) return;
+      if (p === primaryProvider && wantedProviders === null) return;
+      wantedProviders = null;
       primaryProvider = p;
-      if (!p) return;   // 会话无模型：保持上次 primary（配合渲染端 provider_fallback）
-      const r = resolvePrimary(p);
+      if (!p) { primaryId = ""; primaryCtx = null; return; }
+      const r = rememberProvider(p);
       primaryId = r.id;
       primaryCtx = r.ctx || null;
-      const st = r.id ? stateOf(r.id) : null;
-      if (st) {
-        st.epoch += 1;   // 换源换代：旧源在途响应不覆盖新源
-        if (st.ctl) { try { st.ctl.abort(); } catch (e) { } }
+    },
+    setProviders(providerIds) {
+      const next = Array.from(new Set((Array.isArray(providerIds) ? providerIds : [])
+        .filter((p) => typeof p === "string" && p.length > 0 && p.length <= 160 && !/[\x00-\x1f\x7f]/.test(p))));
+      const ids = new Set();
+      for (const p of next) ids.add(rememberProvider(p).id);
+      for (const p of Object.keys(byProvider)) if (!next.includes(p)) delete byProvider[p];
+      if (!next.includes(primaryProvider)) primaryProvider = next[0] || "";
+      primaryId = byProvider[primaryProvider] || "";
+      primaryCtx = primaryId ? stateOf(primaryId).ctx : null;
+      wantedProviders = next;
+      for (const [id, st] of states) {
+        if (id.indexOf(":") < 0 || ids.has(id) || !st.inFlight) continue;
+        st.epoch += 1;
+        if (st.ctl) st.ctl.abort();
         st.inFlight = null;
-        /* custom：ctx 必须跟随本次解析结果（未命中即置 null → unsupported/provider），
-         * 不得残留旧供应商的 baseUrl/key，否则会把旧网关余额当新会话主显。 */
-        st.ctx = (r.id.indexOf("custom:") === 0) ? primaryCtx : (primaryCtx || st.ctx);
-        st.nextAt = 0;
       }
-      if (p) byProvider[p] = r.id || "";
     },
     credentialsChanged() {
       /* 同一 provider 的 key/baseURL 也可能被修改；重读实际配置并重判适配器，
        * 不能沿用旧 ctx 或让一次 unsupported 永久锁住后来补全的 MiniMax 规则。 */
       const registered = new Set(Object.keys(byProvider));
       if (primaryProvider) registered.add(primaryProvider);
-      for (const provider of registered) {
-        const resolved = resolvePrimary(provider);
-        const previousId = byProvider[provider] || "";
-        const previous = states.get(previousId);
-        if (resolved.id !== previousId || JSON.stringify(resolved.ctx || null) !== JSON.stringify(previous ? previous.ctx : null)) {
-          if (previous) deactivateSource(previous, "not_configured");
-          byProvider[provider] = resolved.id || "";
-          if (resolved.id) {
-            const next = stateOf(resolved.id);
-            deactivateSource(next, "idle");
-            next.ctx = resolved.ctx || null;
-            next.nextAt = 0;
-          }
-        }
-        if (provider === primaryProvider) {
-          primaryId = resolved.id;
-          primaryCtx = resolved.ctx || null;
-        }
+      /* 经 rememberProvider 重判：复合源后缀（vendor:providerId）与代际失效/状态复位
+       * 由它统一处理——直接用 resolvePrimary 裸写 byProvider 会把厂商内复合源坍缩成
+       * 裸家族源，丢账户隔离（多账户中转串显，实测）。 */
+      for (const provider of registered) rememberProvider(provider);
+      if (primaryProvider) {
+        primaryId = byProvider[primaryProvider] || "";
+        const st = primaryId ? states.get(primaryId) : null;
+        primaryCtx = st ? st.ctx : null;
       }
       activeSet();   // 总开关关闭时也撤销旧额度；只重评本地配置，不发请求/回调
       /* 唤醒"值得重评"的源：冻结态（Infinity）重评后仍由 status 短路（指纹未变不复 fetch）；
@@ -1388,7 +1508,7 @@ function createQuotaClient(opts) {
       activeSet();   // 配置撤销立即可见，不等待下一轮联网 tick
       const sources = {};
       for (const [id, st] of states) sources[id] = entryView(st);
-      const out = { active: primaryId || "", byProvider: byProvider, sources };
+      const out = { active: primaryId || "", byProvider: Object.assign({}, byProvider), sources };
       const prim = primaryId ? sources[primaryId] : null;   // 兼容镜像（本版保留，浮层迁移完成后移除）
       if (prim) Object.assign(out, {
         status: prim.status, reason: prim.reason, providerId: primaryProvider,
@@ -1405,12 +1525,14 @@ function createQuotaClient(opts) {
       for (const a of ADAPTERS) {
         if (a.id === "custom") continue;
         const cfg = (j.secrets.sources || {})[a.id] || {};
-        const st = states.get(a.id);
+        const accounts = Array.from(states.values()).filter((st) => adapterOf(st.id) === a && st.ctx);
+        const st = accounts.find((entry) => entry.status === "ok") || accounts[0] || states.get(a.id);
         list.push({
           id: a.id, label: a.label, kind: a.kind, defaultOn: a.defaultOn, unverified: !!a.unverified,
           enabled: cfg.enabled !== false && (a.defaultOn || cfg.enabled === true),
           credentialFields: a.id === "mimo" ? ["cookie"] : a.id === "volcano" ? ["accessKeyId", "secretAccessKey"] : a.id === "scnet" ? ["planCredits", "planStart"] : a.id === "anthropic" ? ["token"] : ["apiKey"],
-          keyConfigured: !!(cfg.apiKey || cfg.cookie || cfg.token || cfg.accessKeyId || (a.id === "scnet" && num(cfg.planCredits) > 0)),
+          keyConfigured: !!(cfg.apiKey || cfg.cookie || cfg.token || cfg.accessKeyId ||
+            accounts.some((entry) => !!entry.cred) || (a.id === "scnet" && num(cfg.planCredits) > 0)),
           keySource: st && st.cred ? st.cred.source : "",
           status: st ? st.status : "idle",
         });

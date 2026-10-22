@@ -64,7 +64,9 @@ test("migration: client only reads actual paths, never stale HOME copies", (t) =
     readFile(p) { seen.push(p); assert.ok(!p.startsWith(home), "stale HOME read"); return read(p); } });
   t.after(() => client.dispose());
   client.noteProvider("minimax");
-  assert.equal(client.view().active, "minimax");
+  /* 统一调度器为 provider 建独立复合源（vendor:providerId），同一厂商多账户互不串显 */
+  assert.equal(client.view().byProvider["minimax"], "minimax:minimax");
+  assert.equal(client.view().active, "minimax:minimax");
   assert.ok(seen.includes(personal));
   assert.ok(seen.includes(builtin));
 });
@@ -147,14 +149,18 @@ for (const [dir, file] of [["/", "/个人 配置.json"], ["D:\\", "D:\\个人 �
     const callbacks = new Map(), events = [];
     const paths = { credsPath: file, credsDir: dir, customCfgPath: file, customCfgDir: dir,
       builtinCfgPath: file, builtinCfgDir: dir };
-    vm.runInNewContext(snippet, {
+    /* syncQuotaProviders 是切片外的模块函数：桩为 tick。注意桩定义在 Node 域，
+     * 词法引用看不到 vm 全局，必须捕获 sandbox 对象按属性读 quotaClient。 */
+    const sandbox = {
       require() { return { resolveQuotaPaths: () => paths, createQuotaClient() { return {
         credentialsChanged() { events.push("changed"); }, tick() { events.push("tick"); },
       }; } }; },
       app: { getPath: () => "/fixture-home" }, HERE: "/fixture-runtime", path, quotaClient: null,
       fs: { watch(d, cb) { callbacks.set(d, cb); return { on() {} }; } }, LOG() {},
+      syncQuotaProviders() { try { if (sandbox.quotaClient) sandbox.quotaClient.tick(); } catch (e) { } },
       quotaEnabled: () => true, setInterval() {}, setTimeout(cb) { cb(); return 1; }, clearTimeout() {}, Set, Map,
-    });
+    };
+    vm.runInNewContext(snippet, sandbox);
     assert.equal(callbacks.size, 1, "shared directory only needs one watcher");
     const callback = callbacks.get(dir);
     callback("rename", "unrelated.json");
@@ -201,6 +207,6 @@ test("configuration update: same provider recovers when its missing base/key is 
   assert.equal(calls.length, 0);
   write(personal, doc(rule("minimax", "new-fixture-key")));
   client.credentialsChanged(); client.tick();
-  assert.equal(client.view().active, "minimax");
+  assert.equal(client.view().active, "minimax:minimax");   // 统一调度器：provider 持复合账户源（vendor:providerId）
   assert.equal(calls[0], "https://api.minimaxi.com/v1/api/openplatform/coding_plan/remains");
 });
