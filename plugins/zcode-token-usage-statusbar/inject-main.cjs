@@ -888,14 +888,19 @@ function queryTurnText(sid, wc, plainUnits) {
  * 命令：status --porcelain --branch（分支/上游/ahead-behind/各类文件计数）+ diff HEAD --shortstat
  * （工作区相对 HEAD 的插入/删除行数，含已暂存；HEAD 无效的无提交仓库退回 diff + diff --cached
  * 求和，即 cc-pretty-statusline 的原始做法）。GIT_OPTIONAL_LOCKS=0 不写 index 锁（后台轮询不与
- * 用户的 git 操作抢 index.lock），LC_ALL=C 让 shortstat 文案可解析，GIT_TERMINAL_PROMPT=0 杜绝交互。 */
+ * 用户的 git 操作抢 index.lock），LC_ALL=C 让 shortstat 文案可解析，GIT_TERMINAL_PROMPT=0 杜绝交互。
+ * 多仓聚合：workspace 自身非仓库（status 报 notrepo）时枚举直接子目录中的 git 仓库——0 仓维持
+ * notrepo（chip 隐藏）；恰 1 仓对该子仓走完整单仓管线（成功结果附 repoPath）；≥2 仓每仓只跑一条
+ * status --porcelain --branch（Promise.all 并行，不跑 diff 行数），按字母序聚合为 kind:"multi"，
+ * 上限 GIT_REPO_CAP=32，超出折叠进 more；子仓失败只在对应项记 err，不拖垮整体与其余仓。 */
 const GIT_TICK_MS = 10000, GIT_TIMEOUT_MS = 8000, GIT_MAX_BUFFER = 4 * 1024 * 1024;
 const GIT_ENV = Object.assign({}, process.env, { GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0", LC_ALL: "C" });
 const GIT_CONFLICT = new Set(["DD", "AU", "UD", "UA", "DU", "AA", "UU"]);
+const GIT_REPO_CAP = 32;   // 多仓聚合上限：父目录非仓库时最多查询 32 个直接子仓库，超出折叠进 more
 let gitTickBusy = false, gitRefreshPending = false, gitNoBinaryLogged = false;
 
 function parseGitPorcelain(text) {
-  const out = { branch: "", upstream: "", ahead: 0, behind: 0, detached: false, noCommits: false, staged: 0, unstaged: 0, untracked: 0, conflicts: 0 };
+  const out = { branch: "", upstream: "", ahead: 0, behind: 0, detached: false, noCommits: false, staged: 0, unstaged: 0, untracked: 0, conflicts: 0, changed: 0 };
   for (const raw of String(text || "").split("\n")) {
     const line = raw.replace(/\r$/, "");
     if (!line) continue;
@@ -917,6 +922,7 @@ function parseGitPorcelain(text) {
     const x = line[0], y = line[1];
     if (x === "?" && y === "?") { out.untracked++; continue; }
     if (x === "!" && y === "!") continue;   // 仅 --ignored 时出现
+    out.changed++;   // 非未跟踪/非忽略的条目行计 1：MM 部分暂存也只算一行，不与 staged/unstaged 相加重复计
     if (GIT_CONFLICT.has(x + y)) { out.conflicts++; continue; }
     if (x !== " ") out.staged++;
     if (y !== " ") out.unstaged++;
@@ -947,7 +953,10 @@ function gitFailure(r) {   // null = 成功；否则渲染端可识别的 reason
   if (/not a git repository/i.test(r.stderr)) return "notrepo";
   return "error";
 }
-async function queryGitStatus(cwd) {
+/* 单仓管线（queryGitStatus 的原有主体）：status + diff HEAD --shortstat，无提交仓库退回
+ * diff + diff --cached 求和。成功返回统一附 repoPath（渲染端 tooltip 目录行用）与 ts（成功
+ * 时刻）与 op（进行中的 Git 操作），失败形状不变。 */
+async function gitSingleStatus(cwd) {
   const st = await gitExec(cwd, ["status", "--porcelain", "--branch"]);
   const bad = gitFailure(st);
   if (bad) {
@@ -966,7 +975,80 @@ async function queryGitStatus(cwd) {
     }
   }
   if (!counts) return { ok: false, reason: gitFailure(d1) || "error", ts: Date.now() };
-  return Object.assign({ ok: true, ts: Date.now(), ins: counts.ins, del: counts.del }, parseGitPorcelain(st.stdout));
+  return Object.assign({ ok: true, ts: Date.now(), ins: counts.ins, del: counts.del, repoPath: cwd, op: detectGitOp(cwd) }, parseGitPorcelain(st.stdout));
+}
+/* 进行中的 Git 操作探测：解析 .git 目录（目录或 worktree 链接文件都认），按官方触发器文件
+ * 存在性判操作类型。纯 fs 探针零子进程；rebase-apply 目录被 rebase --apply 与 git am 共用，
+ * 以 applying 文件区分。探测不到返回空串（不代表没有操作，只代表本探测不可见）。 */
+function gitDotDir(cwd) {
+  const dot = path.join(cwd, ".git");
+  try {
+    const st = fs.statSync(dot);
+    if (st.isDirectory()) return dot;
+    const m = /^gitdir: (.+)\r?\n?$/.exec(fs.readFileSync(dot, "utf8"));
+    return m ? m[1].trim() : null;
+  } catch (e) { return null; }
+}
+function detectGitOp(cwd) {
+  const g = gitDotDir(cwd);
+  if (!g) return "";
+  const has = (p) => { try { return fs.existsSync(path.join(g, p)); } catch (e) { return false; } };
+  if (has("rebase-merge")) return "rebase";
+  if (has("rebase-apply")) return has("applying") ? "am" : "rebase";
+  if (has("MERGE_HEAD")) return "merge";
+  if (has("CHERRY_PICK_HEAD")) return "cherry-pick";
+  if (has("REVERT_HEAD")) return "revert";
+  if (has("BISECT_LOG")) return "bisect";
+  return "";
+}
+/* 父目录自身非仓库时枚举直接子目录中的 git 仓库：readdir/stat 异常返回空或跳过该项，不让异常
+ * 穿出 git tick；子项 statSync 须为目录（跟随符号链接），其下存在 .git（目录或 worktree 链接
+ * 文件都认）才算仓库。名字按 Array#sort() 默认码点序，前 GIT_REPO_CAP 个进入查询，剩余计入 more。 */
+function discoverChildRepos(parent) {
+  let names;
+  try { names = fs.readdirSync(parent); } catch (e) { return { repos: [], more: 0 }; }
+  names.sort();
+  const repos = [];
+  for (const name of names) {
+    const child = path.join(parent, name);
+    try { if (!fs.statSync(child).isDirectory()) continue; } catch (e) { continue; }
+    if (!fs.existsSync(path.join(child, ".git"))) continue;
+    repos.push({ name, path: child });
+  }
+  return { repos: repos.slice(0, GIT_REPO_CAP), more: Math.max(0, repos.length - GIT_REPO_CAP) };
+}
+/* 入口三分支：workspace 自身是仓库 → 单仓管线原样返回；status 判定 notrepo → 枚举直接子仓库
+ * 聚合（0 仓维持 notrepo 语义、恰 1 仓对该子仓走完整单仓管线、≥2 仓每仓只跑一条 status 有界
+ * 并行聚合）；nogit/timeout/error 等其余失败原样返回，不触发发现。
+ * 逐仓失败携带最近一次成功快照（stale:true 标注历史属性，渲染端不把旧冲突算已确认）；
+ * 逐仓成功附 ts（最近成功时刻），渲染端据此区分"最近尝试"与"最近成功"。 */
+const GIT_REPO_CONCURRENCY = 6;   // 有界并发：一次 tick 最多同时 6 个 git 子进程
+const gitRepoLastGood = new Map();   // repo path → 最近一次成功条目（不含 err）
+async function queryGitStatus(cwd) {
+  const first = await gitSingleStatus(cwd);
+  if (first.ok !== false || first.reason !== "notrepo") return first;
+  const found = discoverChildRepos(cwd);
+  if (!found.repos.length) return first;   // 没有任何子仓库：维持 notrepo，chip 隐藏
+  if (found.repos.length === 1) return await gitSingleStatus(found.repos[0].path);
+  const repos = found.repos.slice();   // 已按名字码点序
+  let cursor = 0;
+  const runOne = async (r) => {
+    const s = await gitExec(r.path, ["status", "--porcelain", "--branch"]);   // 多仓只跑 status，不跑 diff 行数
+    const bad = gitFailure(s);
+    if (bad) {
+      const good = gitRepoLastGood.get(r.path);
+      const entry = { name: r.name, path: r.path, err: bad, tsAttempt: Date.now() };
+      if (good) return Object.assign({ name: r.name, path: r.path, err: bad, stale: true }, good);   // 失败携带旧快照（明确标注）
+      return entry;
+    }
+    const entry = Object.assign({ name: r.name, path: r.path, ts: Date.now(), op: detectGitOp(r.path) }, parseGitPorcelain(s.stdout));
+    gitRepoLastGood.set(r.path, entry);
+    return entry;
+  };
+  const out = new Array(repos.length);
+  const worker = async () => { while (cursor < repos.length) { const i = cursor++; out[i] = await runOne(repos[i]); } };
+  await Promise.all(Array.from({ length: Math.min(GIT_REPO_CONCURRENCY, repos.length) }, worker));
+  return { ok: true, kind: "multi", ts: Date.now(), more: found.more, repos: out };
 }
 function isLocalHostPage(wc) {   // 与 pollPluginRequests 同口径：只信宿主本地 file: 页面上的渲染端全局
   try {
@@ -1094,7 +1176,7 @@ if (typeof module === "object" && module && module.exports) {
   module.exports.__zusageTest = {
     handlePayload, maybeSpawn, isRemoteSid, remoteSids, pendingSids,
     targetByIdentity: () => targetByIdentity,
-    parseGitPorcelain, parseShortstat, queryGitStatus, gitTick,
+    parseGitPorcelain, parseShortstat, queryGitStatus, gitTick, discoverChildRepos, detectGitOp,
   };
 }
 

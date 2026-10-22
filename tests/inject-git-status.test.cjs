@@ -71,7 +71,7 @@ test("parseGitPorcelain: upstream with ahead/behind, per-code counts, rename and
   const { api } = loadPump();
   const r = api.parseGitPorcelain("## main...origin/main [ahead 2, behind 1]\nM  a.py\n M b.py\n?? c.py\nR  d.txt\nDD e.py\nA  f.py\n!! ign\n");
   assert.deepEqual({ ...r }, { branch: "main", upstream: "origin/main", ahead: 2, behind: 1,
-    detached: false, noCommits: false, staged: 3, unstaged: 1, untracked: 1, conflicts: 1 });
+    detached: false, noCommits: false, staged: 3, unstaged: 1, untracked: 1, conflicts: 1, changed: 5 });
 });
 
 test("parseGitPorcelain: bare branch without upstream tracks nothing", async () => {
@@ -105,7 +105,7 @@ test("parseGitPorcelain: tolerates CRLF line endings and empty input", async () 
   const r = api.parseGitPorcelain("## main\r\nM  a\r\n?? b\r\n");
   assert.deepEqual([r.branch, r.staged, r.untracked], ["main", 1, 1]);
   assert.deepEqual({ ...api.parseGitPorcelain("") },
-    { branch: "", upstream: "", ahead: 0, behind: 0, detached: false, noCommits: false, staged: 0, unstaged: 0, untracked: 0, conflicts: 0 });
+    { branch: "", upstream: "", ahead: 0, behind: 0, detached: false, noCommits: false, staged: 0, unstaged: 0, untracked: 0, conflicts: 0, changed: 0 });
 });
 
 /* ---------- parseShortstat ---------- */
