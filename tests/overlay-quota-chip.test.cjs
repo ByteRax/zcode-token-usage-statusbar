@@ -528,3 +528,43 @@ test('issue #55: first buildPanel sync must see SRC_FIELD_LABELS and PROGRESS_ST
   assert.ok(declLine(/^\s*var PROGRESS_STAGES = /) >= 0 && declLine(/^\s*var PROGRESS_STAGES = /) < firstCall,
     'PROGRESS_STAGES 赋值先于 buildPanel() 调用');
 });
+
+
+test('sub2api subscription chip and tooltip expose daily/weekly/monthly USD limits, not a wallet balance', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  h.inject(); h.boot(); h.tick();
+  const quota = { active: 'custom:gw', byProvider: { gw: 'custom:gw' }, sources: {
+    'custom:gw': { status: 'ok', label: 'sub2api', kind: 'plan', fetchedAt: NOW, stale: false,
+      windows: { daily: { percent: 33.1, used: 33.0984, total: 100, remaining: 66.9016, currency: 'USD', resetsAt: null },
+        weekly: { percent: 18.4, used: 45.91, total: 250, remaining: 204.09, currency: 'USD', resetsAt: null },
+        monthly: { percent: 6.9, used: 69.39, total: 1000, remaining: 930.61, currency: 'USD', resetsAt: null } },
+      subscription: { name: 'Fixture plan', expiresAt: '2027-04-25T13:06:06+08:00' } },
+  } };
+  h.window.__zusageUpdate(h.payload({ provider: 'gw', model: 'gpt-fixture', quota }));
+  const chip = h.chipOf(ui.wrap);
+  assert.match(chip.innerHTML, /今日 33%.*7天 18%.*本月 7%/);
+  assert.doesNotMatch(chip.innerHTML, /余额/);
+  chip.listeners.get('mouseenter')[0].call(chip);
+  const html = h.tipEl().innerHTML;
+  assert.match(html, /套餐额度 · sub2api/);
+  assert.match(html, /每日窗口.*\$33\.10 \/ \$100\.00.*剩余 \$66\.90/);
+  assert.match(html, /本周窗口.*\$45\.91 \/ \$250\.00/);
+  assert.match(html, /月度窗口.*\$69\.39 \/ \$1000\.00/);
+  assert.match(html, /订阅截止/);
+  assert.doesNotMatch(html, /重置 /, 'expiry is not a reset timestamp');
+});
+
+
+test('sub2api key quota without windows is shown as quota, never as wallet balance', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  h.inject(); h.boot(); h.tick();
+  h.window.__zusageUpdate(h.payload({ provider: 'gw', quota: { active: 'custom:gw', byProvider: { gw: 'custom:gw' }, sources: {
+    'custom:gw': { status: 'ok', label: 'sub2api', fetchedAt: NOW, stale: false,
+      quotaSummary: { limit: 10, used: 3, remaining: 7, currency: 'USD' } },
+  } } }));
+  const chip = h.chipOf(ui.wrap);
+  assert.match(chip.innerHTML, /额度 \$7\.00/);
+  assert.doesNotMatch(chip.innerHTML, /余额/);
+  chip.listeners.get('mouseenter')[0].call(chip);
+  assert.match(h.tipEl().innerHTML, /Key 总额度.*\$3\.00 \/ \$10\.00.*剩余 \$7\.00/);
+});

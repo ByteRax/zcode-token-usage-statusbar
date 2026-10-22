@@ -741,6 +741,7 @@ test("B2: two custom relay providers hold isolated source states (custom:<pid>)"
     readFile: (p) => (p.endsWith("credentials.json") ? (() => { throw new Error("ENOENT"); })() : cfg()),
     customCfgPath: "/virtual/provider_config.json",
     fetchImpl: (url) => {
+      if (url.endsWith("/v1/usage")) return Promise.resolve(fakeRes(404, "{}"));
       const d = deferred();
       calls.push({ url, d });
       return d.promise;
@@ -748,6 +749,7 @@ test("B2: two custom relay providers hold isolated source states (custom:<pid>)"
   });
   client.noteProvider("gw-a");
   client.tick();
+  await flush();
   assert.equal(calls[0].url, "https://a.example.com/v1/dashboard/billing/subscription");
   calls[0].d.resolve(fakeRes(200, JSON.stringify({ hard_limit_usd: 50 })));
   await flush();
@@ -757,6 +759,7 @@ test("B2: two custom relay providers hold isolated source states (custom:<pid>)"
   // 切到 gw-b：独立源，a 的在途/状态不影响 b
   client.noteProvider("gw-b");
   client.tick();
+  await flush();
   assert.equal(calls[2].url, "https://b.example.com/v1/dashboard/billing/subscription");
   assert.equal(client._states.get("custom:gw-a").value.balance.amount, 40, "a 状态保留");
   calls[2].d.resolve(fakeRes(200, JSON.stringify({ hard_limit_usd: 200 })));
@@ -778,4 +781,169 @@ test("B3: scnet no_plan unfreezes when snapshot extras arrive", async () => {
   const sv = client.view().sources.scnet;
   assert.equal(sv.status, "ok", "extras 到位即解冻重查");
   assert.equal(sv.windows.monthly.percent, 20);
+});
+
+
+const SUB2API_USAGE = {
+  isValid: true, mode: 'unrestricted', unit: 'USD', remaining: 66.90158933, planName: 'Fixture subscription',
+  subscription: { daily_limit_usd: 100, daily_usage_usd: 33.09841067,
+    weekly_limit_usd: 250, weekly_usage_usd: 45.91393736,
+    monthly_limit_usd: 1000, monthly_usage_usd: 69.38740268,
+    expires_at: '2027-04-25T13:06:06.850682+08:00' },
+};
+
+test('sub2api subscription normalizes all windows without labelling daily remaining as wallet balance', () => {
+  const value = Q.normalizeSub2api(SUB2API_USAGE);
+  assert.equal(value.kind, 'plan');
+  assert.equal(value.label, 'sub2api');
+  assert.equal(value.windows.daily.percent, 33.1);
+  assert.equal(value.windows.weekly.percent, 18.4);
+  assert.equal(value.windows.monthly.percent, 6.9);
+  assert.ok(Math.abs(value.windows.daily.remaining - SUB2API_USAGE.remaining) < 1e-9);
+  assert.equal(value.windows.daily.used, 33.09841067);
+  assert.equal(value.balance, undefined);
+  assert.equal(value.windows.daily.resetsAt, null, 'no inferred reset time');
+  assert.equal(value.subscription.expiresAt, SUB2API_USAGE.subscription.expires_at);
+  assert.deepEqual(Q.normalizeSub2api({ isValid: true, mode: 'balance', unit: 'USD', remaining: 0 }),
+    { label: 'sub2api', kind: 'balance', balance: { amount: 0, currency: 'USD' } });
+  assert.equal(Q.normalizeSub2api({ remaining: 10 }), null, 'ambiguous JSON not classified');
+  assert.throws(() => Q.normalizeSub2api({ ...SUB2API_USAGE, isValid: false }), e => e.code === 'auth_failed');
+  assert.throws(() => Q.normalizeSub2api({ ...SUB2API_USAGE, subscription: {} }), e => e.code === 'parse_error');
+});
+
+test('sub2api query stays same-origin and handles configured root or /v1 prefix exactly once', async () => {
+  for (const [base, endpoint] of [
+    ['https://relay.example.com', 'https://relay.example.com/v1/usage'],
+    ['https://relay.example.com/v1/', 'https://relay.example.com/v1/usage'],
+    ['https://relay.example.com/proxy/v1', 'https://relay.example.com/proxy/v1/usage'],
+  ]) {
+    assert.equal(Q.relayQuotaUrls(base).sub2api, endpoint);
+    const { client, calls } = adapterClient({ cfgEntries: [['gw', base, 'fake-key']] });
+    client.noteProvider('gw'); client.tick();
+    assert.equal(calls[0].url, endpoint);
+    calls[0].d.resolve(fakeRes(200, JSON.stringify(SUB2API_USAGE)));
+    await flush();
+    assert.equal(calls.length, 1, 'matched protocol stops probing legacy');
+    assert.equal(client.view().windows.daily.percent, 33.1);
+    assert.equal(client.view().label, 'sub2api');
+    assert.equal(client.view().subscription.expiresAt, SUB2API_USAGE.subscription.expires_at);
+    assert.equal(client.view().balance, null);
+  }
+  assert.throws(() => Q.relayQuotaUrls('https://user:pass@relay.example.com'), e => e.code === 'parse_error');
+  assert.throws(() => Q.relayQuotaUrls('http://relay.example.com'), e => e.code === 'parse_error');
+});
+
+test('sub2api 401 and 429 are classified, not masked as unsupported with extra probes', async () => {
+  for (const [code, status] of [[401, 'auth_failed'], [429, 'rate_limited']]) {
+    const { client, calls } = adapterClient({ cfgEntries: [['gw', 'https://relay.example.com/v1', 'fake-key']] });
+    client.noteProvider('gw'); client.tick();
+    calls[0].d.resolve(fakeRes(code, '{}'));
+    await flush();
+    assert.equal(client.view().status, status);
+    assert.equal(calls.length, 1);
+  }
+});
+
+test('legacy fallback cannot turn a failed or missing usage query into a full balance', async () => {
+  const { client, calls } = adapterClient({ cfgEntries: [['gw', 'https://relay.example.com/v1', 'fake-key']] });
+  client.noteProvider('gw'); client.tick();
+  calls[0].d.resolve(fakeRes(404, '{}')); await flush();
+  calls[1].d.resolve(fakeRes(200, JSON.stringify({ hard_limit_usd: 100 }))); await flush();
+  calls[2].d.resolve(fakeRes(200, '{}')); await flush();
+  assert.equal(client.view().status, 'parse_error');
+  assert.equal(client.view().balance, undefined);
+});
+
+
+test('audited official balances accept zero, require complete totals and retain SiliconFlow region', async () => {
+  const cases = [
+    ['ds', 'https://api.deepseek.com/v1', { balance_infos: [{ currency: 'CNY', total_balance: '0', granted_balance: '0', topped_up_balance: '0' }] }, 0, 'CNY', 'https://api.deepseek.com/user/balance'],
+    ['sf-cn', 'https://api.siliconflow.cn/v1', { data: { balance: '1', chargeBalance: '9', totalBalance: '10' } }, 10, 'CNY', 'https://api.siliconflow.cn/v1/user/info'],
+    ['sf-en', 'https://api.siliconflow.com/v1', { data: { balance: '1', totalBalance: '10' } }, 10, 'USD', 'https://api.siliconflow.com/v1/user/info'],
+  ];
+  for (const [id, base, body, amount, currency, url] of cases) {
+    const { client, calls } = adapterClient({ cfgEntries: [[id, base, 'fake-key']] });
+    client.noteProvider(id); client.tick();
+    assert.equal(calls[0].url, url);
+    calls[0].d.resolve(fakeRes(200, JSON.stringify(body))); await flush();
+    assert.equal(client.view().balance.amount, amount);
+    assert.equal(client.view().balance.currency, currency);
+  }
+  const { client, calls } = adapterClient({ cfgEntries: [['sf', 'https://api.siliconflow.cn/v1', 'fake-key']] });
+  client.noteProvider('sf'); client.tick(); calls[0].d.resolve(fakeRes(410, '{}')); await flush();
+  assert.equal(client.view().status, 'unsupported');
+  assert.equal(client.view().reason, 'endpoint_retired');
+});
+
+test('OpenRouter account credits require an explicit management key, not the inference key', async () => {
+  const plain = adapterClient({ cfgEntries: [['or', 'https://openrouter.ai/api/v1', 'inference-key']] });
+  plain.client.noteProvider('or'); plain.client.tick();
+  assert.equal(plain.calls.length, 0);
+  assert.equal(plain.client.view().status, 'not_configured');
+  for (const [body, status, amount] of [
+    [{ data: { total_credits: 20, total_usage: 5 } }, 'ok', 15],
+    [{ data: { total_credits: 20 } }, 'parse_error', undefined],
+  ]) {
+    const x = adapterClient({ env: { OPENROUTER_MANAGEMENT_KEY: 'management-key' } });
+    x.client.tick();
+    assert.equal(x.calls.length, 1, 'env-only management credential activates the adapter');
+    x.calls[0].d.resolve(fakeRes(200, JSON.stringify(body))); await flush();
+    const view = x.client.view().sources.openrouter;
+    assert.equal(view.status, status);
+    if (status === 'ok') assert.equal(view.balance.amount, amount);
+    else assert.equal(view.balance, undefined, 'missing usage never becomes zero spend');
+  }
+});
+
+test('env-only credentials activate enabled vendor adapters, explicit per-source opt-out prevents requests', async () => {
+  for (const [env, id] of [
+    [{ MINIMAX_API_KEY: 'mm' }, 'minimax'], [{ KIMI_CODING_API_KEY: 'kimi' }, 'kimi'],
+    [{ DEEPSEEK_API_KEY: 'ds' }, 'deepseek'], [{ COMMANDCODE_API_KEY: 'cc' }, 'commandcode'],
+    [{ SILICONFLOW_API_KEY: 'sf' }, 'siliconflow'],
+  ]) {
+    const x = adapterClient({ env }); x.client.tick();
+    assert.equal(x.calls.length, 1, id + ' env credential reaches fetch');
+    x.client.dispose();
+  }
+  const cline = adapterClient({ env: { CLINE_API_KEY: 'cline' }, secrets: { sources: { cline: { enabled: true } } } });
+  cline.client.tick();
+  assert.equal(cline.calls.length, 1, 'explicitly enabled cline with env-only credential reaches fetch');
+  cline.client.dispose();
+  const off = adapterClient({ cfgEntries: [['ds', 'https://api.deepseek.com/v1', 'ds']],
+    env: { DEEPSEEK_API_KEY: 'env-ds' }, secrets: { sources: { deepseek: { enabled: false } } } });
+  off.client.noteProvider('ds'); off.client.tick();
+  assert.equal(off.calls.length, 0, 'primary also honors vendor opt-out');
+  assert.equal(off.client.view().status, 'disabled');
+  assert.equal(off.client.sourcesConfig().find(x => x.id === 'deepseek').enabled, false);
+});
+
+test('BigModel write-only settings key is consumed even without a host login credential', async () => {
+  const x = adapterClient({ secrets: { sources: { bigmodel: { enabled: true, apiKey: 'explicit-key' } } } });
+  x.client.noteProvider('account:bigmodel-individual-coding-plan'); x.client.tick();
+  assert.equal(x.calls.length, 2);
+  for (const c of x.calls) c.d.resolve(fakeRes(200, c.url.includes('subscription') ? SUB_OK : OK_BODY));
+  await flush();
+  assert.equal(x.client.view().status, 'ok');
+});
+
+
+test('default-on vendor activates from a saved credential, while explicit disable blocks manual refresh too', async () => {
+  const config = { sources: { deepseek: { apiKey: 'configured-key' } } };
+  const x = adapterClient({ secrets: config }); x.client.tick();
+  assert.equal(x.calls.length, 1, 'saving a default-on source key is sufficient to activate');
+  x.calls[0].d.resolve(fakeRes(200, JSON.stringify({ balance_infos: [
+    { currency: 'CNY', total_balance: '0', granted_balance: '0', topped_up_balance: '0' },
+  ] }))); await flush();
+  config.sources.deepseek.enabled = false;
+  x.client.credentialsChanged(); x.client.tick(); x.client.refreshSource('deepseek');
+  assert.equal(x.calls.length, 1, 'explicit opt-out is enforced at the request entry');
+});
+
+test('sub2api malformed subscription or unknown mode never becomes a wallet balance', () => {
+  for (const subscription of [[], '', 'invalid', 5, true]) {
+    assert.throws(() => Q.normalizeSub2api({ ...SUB2API_USAGE, subscription }), e => e.code === 'parse_error');
+  }
+  for (const mode of ['unknown', '', 'unrestricted', 'subscription', 'quota']) {
+    assert.throws(() => Q.normalizeSub2api({ isValid: true, mode, unit: 'USD', remaining: 50 }), e => e.code === 'parse_error');
+  }
 });
