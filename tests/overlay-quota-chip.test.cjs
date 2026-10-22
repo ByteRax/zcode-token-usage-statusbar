@@ -50,6 +50,10 @@ class Element {
     return this.queries.get(k);
   }
   querySelectorAll(sel) {
+    if (sel === '[data-testid="v4-model-config"]') {
+      return this.children.filter(e => e.getAttribute('data-testid') === 'v4-model-config').concat(
+        ...this.children.map(e => e.querySelectorAll(sel)));
+    }
     if (sel !== 'circle') return [];
     return this.children.filter(e => e.tagName === 'CIRCLE').concat(
       ...this.children.filter(e => e.querySelectorAll).map(e => e.querySelectorAll(sel)));
@@ -72,7 +76,7 @@ function harness({ quotaOn = true } = {}) {
     getElementById: id => body.children.find(e => e.id === id),
     querySelectorAll: selector => selector.startsWith('textarea,') ? panes : [],
     elementFromPoint: () => panes[0] || body });
-  const timers = new Map(), frames = new Map(); let id = 0;
+  const timers = new Map(), frames = new Map(), observers = []; let id = 0;
   const sandbox = vm.createContext({ window, document, console, innerHeight: 800, innerWidth: 1000,
     location: { href: 'file:///fixture' }, localStorage: { getItem: () => null, setItem() {} },
     getComputedStyle: () => ({ borderTopWidth: '1px', backgroundColor: 'black', opacity: '1', display: 'block', visibility: 'visible' }),
@@ -81,14 +85,29 @@ function harness({ quotaOn = true } = {}) {
     setInterval: (fn, ms) => { timers.set(++id, { fn, ms, interval: true }); return id; },
     clearInterval: n => timers.delete(n),
     requestAnimationFrame: fn => { frames.set(++id, fn); return id; }, cancelAnimationFrame: n => frames.delete(n),
-    MutationObserver: class { constructor(fn) { this.fn = fn; } observe() {} disconnect() {} },
+    MutationObserver: class {
+      constructor(fn) { this.fn = fn; this.connected = false; observers.push(this); }
+      observe(target, options) { this.target = target; this.options = options; this.connected = true; }
+      disconnect() { this.connected = false; }
+    },
   });
   const executable = source.replace(/\}\)\(\);\s*$/, 'window.quotaTest = { instances: function() { return instances; } };})();');
   function inject() { window.__zusageOverlay = false; vm.runInContext(executable, sandbox); }
   function tick() { for (const t of [...timers.values()]) if (t.interval && (t.ms === 600 || t.ms === 500)) t.fn(); }
   function boot() { for (const [n, t] of [...timers]) if (!t.interval && t.ms === 0) { timers.delete(n); t.fn(); } }
-  function buildComposer(pid, sid) {
-    const card = body.appendChild(new Element());
+  function buildComposer(pid, sid, { live = false, provider = '', model = '' } = {}) {
+    const pane = live ? body.appendChild(new Element()) : null;
+    if (pane) {
+      pane.setAttribute('data-testid', 'v4-session-pane-' + pid);
+      pane.sid = sid;
+    }
+    const card = (pane || body).appendChild(new Element());
+    const marker = live ? card.appendChild(new Element('span')) : null;
+    if (marker) {
+      marker.setAttribute('data-testid', 'v4-model-config');
+      marker.setAttribute('data-provider', provider);
+      marker.setAttribute('data-model', model);
+    }
     const row = card.appendChild(new Element());
     row.className = 'group/toolbar flex items-end gap-3';
     const wrap = row.appendChild(new Element('span'));
@@ -102,7 +121,7 @@ function harness({ quotaOn = true } = {}) {
     const editor = card.appendChild(new Element('textarea'));
     editor.pid = pid; editor.sid = sid;
     panes.push(editor);
-    return { card, row, wrap, btn, editor };
+    return { card, row, wrap, btn, editor, pane, marker };
   }
   function payload({ provider = 'account:bigmodel-individual-coding-plan', model = 'GLM-5.3-Flash', quota } = {}) {
     const out = { remote_evidence: false, today: {}, not_local: [],
@@ -113,7 +132,10 @@ function harness({ quotaOn = true } = {}) {
   }
   const chipOf = wrap => wrap.children.find(e => e.classList.contains('zu-quota'));
   const tipEl = () => body.children.find(e => e.className === 'tip zusage-quota-tip');
-  return { window, body, inject, tick, boot, buildComposer, payload, chipOf, tipEl };
+  function mutate(pane) {
+    for (const o of [...observers]) if (o.connected && o.target === pane) o.fn([]);
+  }
+  return { window, body, inject, tick, boot, buildComposer, payload, chipOf, tipEl, mutate, observers };
 }
 
 const NOW = Date.now();
@@ -483,50 +505,152 @@ test('custom-provider session shows ITS source via byProvider mapping (multi-win
   assert.equal(h.chipOf(ui.wrap), undefined, '未映射自定义 provider 不显示（不能证明数据归属）');
 });
 
-/* issue #55：spawnInstance 内 buildPanel() 的调用早于同作用域 var 的赋值语句（var 只提升
- * 声明不提升赋值）。quotaSources/pluginUpdate 在实例创建前已由主进程注入时，首轮
- * buildPanel → syncUpdate 就会读 SRC_FIELD_LABELS / PROGRESS_STAGES——修复前前者 undefined
- * （v1.5.2 直接 TypeError 写 coordErr，已铠甲成 placeholder 退化成原始字段名），后者在
- * syncProgress（无 try-catch 保护）里 undefined.indexOf 抛错拖垮整条实例创建链。 */
-test('issue #55: first buildPanel sync must see SRC_FIELD_LABELS and PROGRESS_STAGES already assigned', () => {
-  // 场景 A（issue 主体）：quotaSources 先于实例创建注入 → 首轮 syncQuotaSources 读 SRC_FIELD_LABELS
-  const h = harness();
-  h.window.__zusagePluginState = { quotaEnabled: true, quotaSources: [
-    { id: 'minimax', label: 'MiniMax', kind: 'plan', enabled: true, credentialFields: ['apiKey'], keyConfigured: false, status: 'not_configured' },
-  ] };
-  h.buildComposer('workspace-main', 'sid_main');
+
+function selectionQuota() {
+  return { active: 'bigmodel', byProvider: { 'new-provider-ds': 'deepseek:new-provider-ds' },
+    sources: { bigmodel: QUOTA_OK, 'deepseek:new-provider-ds': {
+      status: 'ok', label: 'DeepSeek', fetchedAt: NOW, stale: false, balance: { amount: 110, currency: 'CNY' },
+    } } };
+}
+
+test('live composer model switch changes chip before any new database request completes', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main', {
+    live: true, provider: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3',
+  });
   h.inject(); h.boot(); h.tick();
-  assert.ok(!h.window.__zusageDiag.coordErr, '实例创建不因面板同步崩溃：' + (h.window.__zusageDiag.coordErr || ''));
-  const panel = h.body.children.find(e => e.classList.contains('zu-settings'));
-  const list = panel && panel.queries.get('.zu-src-list');
-  assert.ok(list, '源列表容器已同步');
-  assert.match(list.innerHTML, /placeholder="API Key"/, '字段标签取本地化文案');
-  assert.ok(!h.window.__zusageDiag.quotaSrcErr, 'syncQuotaSources 无异常');
+  const data = h.payload({ quota: selectionQuota() });
+  h.window.__zusageUpdate(data);
+  assert.match(h.chipOf(ui.wrap).innerHTML, /5小时 26%/);
+  ui.marker.setAttribute('data-provider', 'new-provider-ds');
+  ui.marker.setAttribute('data-model', 'deepseek-flash');
+  h.mutate(ui.pane);
+  assert.equal(h.chipOf(ui.wrap).innerHTML, '<span class="zu-qseg ok">余额 ¥110.00</span>');
+  const chip = h.chipOf(ui.wrap);
+  chip.listeners.get('mouseenter')[0].call(chip);
+  assert.match(h.tipEl().innerHTML, /账户余额 · DeepSeek/);
+  assert.doesNotMatch(h.tipEl().innerHTML, /套餐额度 · BigModel/);
+  assert.doesNotMatch(h.tipEl().innerHTML, /其他源.*deepseek:new-provider-ds/, '本 pane 自己的源不进「其他源」');
+  assert.match(h.tipEl().innerHTML, /其他源.*bigmodel/, '真正的其他源（BigModel）仍列出');
+  chip.listeners.get('click')[0].call(chip, { preventDefault() {}, stopPropagation() {} });
+  const refresh = h.window.__zusagePluginRequests.filter(r => r.action === 'quota-refresh').at(-1);
+  assert.equal(refresh.sourceId, 'deepseek:new-provider-ds', 'manual refresh targets this pane account only');
+  assert.equal(data.recent[0].last.provider_id, 'account:bigmodel-individual-coding-plan', 'DB history has not changed');
+  const reqs = h.window.__zusagePluginRequests.filter(r => r.action === 'quota-providers');
+  assert.equal(reqs.length, 1, 'rapid changes replace the pending full selection snapshot');
+  assert.equal(reqs[0].panes['workspace-main'].providerId, 'new-provider-ds');
+  assert.equal(reqs[0].panes['workspace-main'].sid, 'sid_main');
+  ui.marker.setAttribute('data-provider', 'account:bigmodel-individual-coding-plan');
+  ui.marker.setAttribute('data-model', 'GLM-5.3-Flash');
+  h.mutate(ui.pane);
+  assert.match(h.chipOf(ui.wrap).innerHTML, /5小时 26%/, 'switching back reuses the matching cached pool');
+});
 
-  // 场景 B：下载阶段创建实例 → 首轮 syncProgress 读 PROGRESS_STAGES（无 try-catch 保护，
-  // 修复前 TypeError 会经 buildPanel 冒泡到 tick 的 coordErr，面板都建不出来）
-  const h2 = harness();
-  h2.window.__zusagePluginState = { supported: true, auto: true, busy: true, phase: 'downloading',
-    progress: { stage: 'download', loaded: 10, total: 100 }, currentVersion: '1.5.2' };
-  h2.buildComposer('workspace-main', 'sid_main');
-  h2.inject(); h2.boot(); h2.tick();
-  assert.ok(!h2.window.__zusageDiag.coordErr, '下载期创建实例不崩溃：' + (h2.window.__zusageDiag.coordErr || ''));
-  assert.ok(h2.body.children.some(e => e.classList.contains('zu-settings')), '下载期面板照常创建');
+test('unmapped or empty live selection immediately removes old Coding Plan instead of using fallback', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main', {
+    live: true, provider: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3',
+  });
+  h.inject(); h.boot(); h.tick();
+  const data = h.payload({ quota: selectionQuota() });
+  data.provider_fallback = 'account:bigmodel-individual-coding-plan';
+  h.window.__zusageUpdate(data);
+  ui.marker.setAttribute('data-provider', 'new-provider-unknown');
+  h.mutate(ui.pane);
+  assert.equal(h.chipOf(ui.wrap), undefined);
+  ui.marker.setAttribute('data-provider', '');
+  ui.marker.setAttribute('data-model', '');
+  h.mutate(ui.pane);
+  h.window.__zusageUpdate(data);
+  assert.equal(h.chipOf(ui.wrap), undefined, 'explicit empty does not resurrect a global account fallback');
+});
 
-  // 结构锁定（根因）：spawnInstance 主流程的 buildPanel(); 调用点之前，三处 var 必须已完成赋值。
-  // var 只提升声明不提升赋值——赋值语句一旦挪回调用点之后（v1.5.2 的形态），首轮
-  // syncQuotaSources/syncProgress 就会读到 undefined。桩环境里后续 syncUpdate 会把首轮
-  // 降级值重写掉，行为断言抓不到首轮窗口，时序只能靠行序锁。
-  const lines = source.split('\n');
-  const firstCall = lines.findIndex(l => /^\s+buildPanel\(\);\s*$/.test(l));   // spawnInstance 内首个同步调用
-  assert.ok(firstCall > 0, 'buildPanel(); 调用点存在');
-  const declLine = re => lines.findIndex(l => re.test(l));
-  assert.ok(declLine(/^\s*var srcListSig = /) >= 0 && declLine(/^\s*var srcListSig = /) < firstCall,
-    'srcListSig 赋值先于 buildPanel() 调用');
-  assert.ok(declLine(/^\s*var SRC_FIELD_LABELS = /) >= 0 && declLine(/^\s*var SRC_FIELD_LABELS = /) < firstCall,
-    'SRC_FIELD_LABELS 赋值先于 buildPanel() 调用');
-  assert.ok(declLine(/^\s*var PROGRESS_STAGES = /) >= 0 && declLine(/^\s*var PROGRESS_STAGES = /) < firstCall,
-    'PROGRESS_STAGES 赋值先于 buildPanel() 调用');
+test('two pane live selections stay independent and missing markers never read a sibling pane', () => {
+  const h = harness();
+  const a = h.buildComposer('workspace-main', 'sid_main', {
+    live: true, provider: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3',
+  });
+  const b = h.buildComposer('split-b', 'sid_b', { live: true, provider: 'new-provider-ds', model: 'deepseek-flash' });
+  h.inject(); h.boot(); h.tick();
+  const data = h.payload({ quota: selectionQuota() });
+  data.recent.push({ sid: 'sid_b', workspace_identity: '', context_window: 200000,
+    last: { provider_id: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3' } });
+  h.window.__zusageUpdate(data);
+  assert.match(h.chipOf(a.wrap).innerHTML, /5小时 26%/);
+  assert.match(h.chipOf(b.wrap).innerHTML, /余额 ¥110.00/);
+  const last = h.window.__zusagePluginRequests.filter(r => r.action === 'quota-providers').at(-1);
+  assert.equal(last.panes['workspace-main'].providerId, 'account:bigmodel-individual-coding-plan');
+  assert.equal(last.panes['split-b'].providerId, 'new-provider-ds');
+  b.marker.remove();
+  h.mutate(b.pane);
+  assert.equal(h.chipOf(b.wrap), undefined, 'missing marker on B must not borrow A or stale B selection');
+  assert.match(h.chipOf(a.wrap).innerHTML, /5小时 26%/);
+});
+
+test('session replacement and disposal invalidate live model selection observers', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main', {
+    live: true, provider: 'new-provider-ds', model: 'deepseek-flash',
+  });
+  h.inject(); h.boot(); h.tick();
+  h.window.__zusageUpdate(h.payload({ quota: selectionQuota() }));
+  assert.match(h.chipOf(ui.wrap).innerHTML, /余额 ¥110.00/);
+  ui.pane.sid = 'sid_next';
+  h.mutate(ui.pane);
+  assert.equal(h.chipOf(ui.wrap), undefined, 'session root changed before coordinator rebinding');
+  const obs = h.observers.find(o => o.target === ui.pane);
+  assert.ok(obs.connected);
+  h.window.__zusageDispose();
+  assert.equal(obs.connected, false);
+  ui.marker.setAttribute('data-provider', 'account:bigmodel-individual-coding-plan');
+  h.mutate(ui.pane);
+  assert.equal(h.chipOf(ui.wrap), undefined);
+});
+
+
+test('older host pane that never supplied a model marker keeps the completed-request fallback', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main', { live: true });
+  ui.marker.remove();
+  h.inject(); h.boot(); h.tick();
+  h.window.__zusageUpdate(h.payload({ quota: QUOTA_OK }));
+  assert.match(h.chipOf(ui.wrap).innerHTML, /5小时 26%/);
+  const snapshot = h.window.__zusagePluginRequests.filter(r => r.action === 'quota-providers').at(-1);
+  assert.equal(snapshot.panes['workspace-main'].providerId, 'account:bigmodel-individual-coding-plan');
+});
+
+
+test('older main-process custom entries without labels never use a BigModel tooltip title', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main', {
+    live: true, provider: 'new-provider-ds', model: 'deepseek-flash',
+  });
+  h.inject(); h.boot(); h.tick();
+  const quota = selectionQuota();
+  delete quota.sources['deepseek:new-provider-ds'].label;
+  h.window.__zusageUpdate(h.payload({ quota }));
+  const chip = h.chipOf(ui.wrap);
+  chip.listeners.get('mouseenter')[0].call(chip);
+  assert.match(h.tipEl().innerHTML, /账户余额 · 自定义供应商/);
+  assert.doesNotMatch(h.tipEl().innerHTML, /账户余额 · BigModel|套餐额度 · BigModel/);
+});
+
+
+test('legacy pane fallback recovers after the root SID changes ahead of coordinator rebinding', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main', { live: true });
+  ui.marker.remove();
+  h.inject(); h.boot(); h.tick();
+  h.window.__zusageUpdate(h.payload({ quota: selectionQuota() }));
+  assert.match(h.chipOf(ui.wrap).innerHTML, /5小时 26%/);
+  ui.pane.sid = 'sid_next';
+  h.mutate(ui.pane);
+  assert.equal(h.chipOf(ui.wrap), undefined, 'SID mismatch hides old session data during the transition');
+  ui.editor.sid = 'sid_next';
+  h.tick();
+  const data = h.payload({ quota: selectionQuota() });
+  data.recent.push({ sid: 'sid_next', workspace_identity: '', context_window: 200000,
+    last: { provider_id: 'new-provider-ds', model: 'deepseek-flash' } });
+  h.window.__zusageUpdate(data);
+  h.tick(); h.tick();
+  assert.match(h.chipOf(ui.wrap).innerHTML, /余额 ¥110.00/, 'new session recovers DB fallback without a live model marker');
+  const request = h.window.__zusagePluginRequests.filter(r => r.action === 'quota-providers').at(-1);
+  assert.equal(request.panes['workspace-main'].providerId, 'new-provider-ds');
+  assert.equal(request.panes['workspace-main'].sid, 'sid_next');
 });
 
 
@@ -551,6 +675,8 @@ test('sub2api subscription chip and tooltip expose daily/weekly/monthly USD limi
   assert.match(html, /本周窗口.*\$45\.91 \/ \$250\.00/);
   assert.match(html, /月度窗口.*\$69\.39 \/ \$1000\.00/);
   assert.match(html, /订阅截止/);
+  assert.doesNotMatch(html, /额度明细/, '明细拼在窗口行内，不再有独立同名行');
+  assert.match(html, /每日窗口<\/b><span>已用 33\.1% · \$33\.10 \/ \$100\.00 · 剩余 \$66\.90/);
   assert.doesNotMatch(html, /重置 /, 'expiry is not a reset timestamp');
 });
 

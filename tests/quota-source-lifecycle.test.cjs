@@ -30,7 +30,7 @@ function fixture(t, { primary = false, enabled } = {}) {
     },
     onUpdate() { updates++; client.view(); client.sourcesConfig(); },
   });
-  if (primary) client.noteProvider('or');
+  if (primary) client.noteProvider('or');   // 统一调度器：该 provider 持独立复合源 openrouter:or
   t.after(() => client.dispose());
   return { client, secrets, calls, updates: () => updates,
     advance: () => { time += 16 * 60 * 1000; } };
@@ -43,13 +43,13 @@ for (const primary of [false, true]) {
   test(`explicit disable clears value and rejects late result (primary=${primary})`, async t => {
     const x = fixture(t, { primary });
     x.client.tick(); answer(x.calls[0]); await flush();
-    assert.equal(x.client.view().sources.openrouter.balance.amount, 15);
+    assert.equal(x.client.view().sources[x.client.view().byProvider['or'] || 'openrouter'].balance.amount, 15);
     x.client.refreshSource('openrouter');
     x.secrets.sources.openrouter.enabled = false;
     x.client.credentialsChanged(); x.client.tick();
     const before = x.updates();
     answer(x.calls[1]); await flush();
-    const v = x.client.view().sources.openrouter;
+    const v = x.client.view().sources[x.client.view().byProvider['or'] || 'openrouter'];
     assert.equal(v.status, 'disabled');
     assert.equal(v.balance, undefined);
     assert.equal(v.fetchedAt, 0);
@@ -62,7 +62,7 @@ for (const primary of [false, true]) {
     x.client.credentialsChanged(); x.client.tick();
     assert.equal(x.calls.length, 3, 're-enable permits a fresh query');
     answer(x.calls[2]); await flush();
-    assert.equal(x.client.view().sources.openrouter.status, 'ok');
+    assert.equal(x.client.view().sources[x.client.view().byProvider['or'] || 'openrouter'].status, 'ok');
   });
 }
 
@@ -74,16 +74,16 @@ for (const enabled of [undefined, true]) {
     delete x.secrets.sources.openrouter.apiKey;
     x.client.credentialsChanged(); // Must revoke without tick, including when the global switch is off.
     answer(x.calls[1]); await flush();
-    assert.equal(x.client.view().sources.openrouter.status, 'not_configured');
-    assert.equal(x.client.view().sources.openrouter.balance, undefined);
-    assert.equal(x.client.view().sources.openrouter.fetchedAt, 0);
+    assert.equal(x.client.view().sources[x.client.view().byProvider['or'] || 'openrouter'].status, 'not_configured');
+    assert.equal(x.client.view().sources[x.client.view().byProvider['or'] || 'openrouter'].balance, undefined);
+    assert.equal(x.client.view().sources[x.client.view().byProvider['or'] || 'openrouter'].fetchedAt, 0);
     assert.equal(x.client.sourcesConfig().find(s => s.id === 'openrouter').keyConfigured, false);
     x.client.tick(); assert.equal(x.calls.length, 2);
     x.secrets.sources.openrouter.apiKey = 'replacement-fixture-key';
     x.client.credentialsChanged(); x.client.tick();
     assert.equal(x.calls.length, 3);
     answer(x.calls[2]); await flush();
-    assert.equal(x.client.view().sources.openrouter.balance.amount, 15);
+    assert.equal(x.client.view().sources[x.client.view().byProvider['or'] || 'openrouter'].balance.amount, 15);
   });
 }
 
@@ -92,7 +92,7 @@ test('view and settings alone revoke deleted credentials without network or call
   x.client.tick(); answer(x.calls[0]); await flush();
   const before = x.updates();
   delete x.secrets.sources.openrouter.apiKey;
-  const v = x.client.view().sources.openrouter;
+  const v = x.client.view().sources[x.client.view().byProvider['or'] || 'openrouter'];
   assert.equal(v.status, 'not_configured');
   assert.equal(v.balance, undefined);
   assert.equal(x.client.sourcesConfig().find(s => s.id === 'openrouter').status, 'not_configured');
@@ -105,7 +105,7 @@ test('network failure preserves the last successful value and stale timestamp', 
   x.client.tick(); answer(x.calls[0]); await flush();
   const fetchedAt = x.client.view().sources.openrouter.fetchedAt;
   x.advance(); x.client.tick(); answer(x.calls[1], 503); await flush();
-  const v = x.client.view().sources.openrouter;
+  const v = x.client.view().sources[x.client.view().byProvider['or'] || 'openrouter'];
   assert.equal(v.status, 'network_error');
   assert.equal(v.balance.amount, 15);
   assert.equal(v.fetchedAt, fetchedAt);

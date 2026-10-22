@@ -262,6 +262,22 @@
       return { sid: sid, identity: identity, workspacePath: path, remoteSessionId: remote };
     } catch (e) { return null; }
   }
+  var quotaSelectionsSig = "";
+  function reportQuotaSelections() {
+    if (stale()) return;
+    var panes = {};
+    for (var i = 0; i < instances.length; i++) {
+      var selection = instances[i].getQuotaSelection && instances[i].getQuotaSelection();
+      if (selection) panes[instances[i].pid] = selection;
+    }
+    var sig = JSON.stringify(panes);
+    if (sig === quotaSelectionsSig) return;
+    quotaSelectionsSig = sig;
+    FATAL.quotaSelections = { time: new Date().toISOString(), panes: panes };
+    var queue = window.__zusagePluginRequests || [];
+    for (var j = queue.length - 1; j >= 0; j--) if (queue[j].action === "quota-providers") queue.splice(j, 1);
+    pluginRequest("quota-providers", { panes: panes });
+  }
   function refreshWants() {
     try {
       var arr = [], panes = {};
@@ -402,39 +418,39 @@
         '<div class="qt-note">' + L("团队套餐需要组织/项目维度的查询，当前版本暂不支持；个人编码套餐已支持。", "Team plans need organization/project-scoped queries, which this version does not support yet; individual coding plans are supported.") + "</div>";
     }
     var q = d.q || {};
+    var isBalance = d.mode.kind === "balance";
+    var title = isBalance ? L("账户余额", "Account balance") : L("套餐额度", "Plan quota");
     /* 标题：有订阅元数据（productName/version/valid）时拼成一行；缺失回退 family+档位 */
     var pl = q.plan;
     var head = (pl && (pl.productName || pl.version))
       ? [pl.productName, pl.version].filter(Boolean).map(esc).join(" · ") +
         (pl.validEnd ? L(" · 有效期至 ", " · valid until ") + esc(pl.validEnd) : "")
-      : esc(q.label || quotaFamilyLabel(d.provider)) + (q.level ? " " + esc(quotaLevelLabel(q.level)) : "");
-    var out = css + '<div class="qt-h">' + L("套餐额度", "Plan quota") + " · " + head + "</div>";
+      : esc(q.label || (String(d.provider || "").indexOf("account:") === 0 ? quotaFamilyLabel(d.provider) : L("自定义供应商", "Custom provider"))) +
+        (q.level ? " " + esc(quotaLevelLabel(q.level)) : "");
+    var out = css + '<div class="qt-h">' + title + " · " + head + "</div>";
     var w = q.windows || {};
     var winRow = function (label, e) {
       if (!e) return "";
       var pct = typeof e.percent === "number" ? (Math.round(e.percent * 10) / 10) + "%" : "—";
       var rs = qTime(e.resetsAt);
-      var detail = L("已用 ", "used ") + pct;
-      if (typeof e.used === "number" && typeof e.total === "number" && typeof e.remaining === "number") {
-        detail += " · " + quotaBalanceText({ amount: e.used, currency: e.currency }) + " / " +
+      var detail = (e.used != null && e.total != null && e.remaining != null)
+        ? " · " + quotaBalanceText({ amount: e.used, currency: e.currency }) + " / " +
           quotaBalanceText({ amount: e.total, currency: e.currency }) + " · " + L("剩余 ", "remaining ") +
-          quotaBalanceText({ amount: e.remaining, currency: e.currency });
-      }
-      return row(label, detail + (rs ? " · " + L("重置 ", "resets ") + rs : ""));
+          quotaBalanceText({ amount: e.remaining, currency: e.currency })
+        : "";   // sub2api 等带金额明细的窗口拼进行内；BigModel 套餐窗只有百分比则不拼
+      return row(label, L("已用 ", "used ") + pct + detail + (rs ? " · " + L("重置 ", "resets ") + rs : ""));
     };
-    out += winRow(L("每日窗口", "Daily window"), w.daily) + winRow(L("5小时窗口", "5-hour window"), w.fiveHour) + winRow(L("本周窗口", "This week"), w.weekly) +
-      winRow(L("月度窗口", "Monthly"), w.monthly);
+    out += winRow(L("每日窗口", "Daily window"), w.daily) + winRow(L("5小时窗口", "5-hour window"), w.fiveHour) +
+      winRow(L("本周窗口", "This week"), w.weekly) + winRow(L("月度窗口", "Monthly"), w.monthly);
     if (q.quotaSummary) {
       var summary = q.quotaSummary;
-      out += row(L("Key 总额度", "Key quota"),
-        L("已用 ", "used ") + quotaBalanceText({ amount: summary.used, currency: summary.currency }) + " / " +
+      out += row(L("Key 总额度", "Key quota"), L("已用 ", "used ") +
+        quotaBalanceText({ amount: summary.used, currency: summary.currency }) + " / " +
         quotaBalanceText({ amount: summary.limit, currency: summary.currency }) + " · " + L("剩余 ", "remaining ") +
         quotaBalanceText({ amount: summary.remaining, currency: summary.currency }));
     }
-    if (q.subscription) {
-      if (q.subscription.name) out += row(L("订阅", "Subscription"), esc(q.subscription.name));
-      var expiry = qTime(q.subscription.expiresAt);
-      if (expiry) out += row(L("订阅截止", "Subscription ends"), expiry);
+    if (q.subscription && q.subscription.expiresAt) {
+      out += row(L("订阅截止", "Subscription ends"), esc(q.subscription.expiresAt));
     }
     if (q.balance && typeof q.balance.amount === "number" && isFinite(q.balance.amount)) {
       var balTxt = quotaBalanceText(q.balance);
@@ -450,7 +466,7 @@
         var sv = d.all.sources[sid];
         if (!sv || sv.status !== "ok") continue;
         var sum = sv.balance && typeof sv.balance.amount === "number" ? quotaBalanceText(sv.balance)
-          : (sv.windows ? ["daily", "fiveHour", "weekly", "monthly"].map(function (k) {
+          : (sv.windows ? ["fiveHour", "weekly", "monthly"].map(function (k) {
               return sv.windows[k] && typeof sv.windows[k].percent === "number" ? Math.round(sv.windows[k].percent) + "%" : null;
             }).filter(Boolean).join(" ") : "✓");
         others.push((d.srcLabels && d.srcLabels[sid] || sid) + " " + sum);
@@ -466,12 +482,15 @@
     var scope = models.length
       ? models.map(function (m) { return String(m).toLowerCase() === cur.toLowerCase() ? '<span class="qt-cur">' + esc(m) + "</span>" : esc(m); }).join(", ")
       : L("套餐内全部模型", "all models in the plan") + (cur ? L("（当前 ", " (current ") + '<span class="qt-cur">' + esc(cur) + "</span>" + L("）", ")") : "");
-    out += row(L("覆盖范围", "Covers"), scope);
+    if (isBalance) out += row(L("当前模型", "Current model"), esc(cur || "—"));
+    else out += row(L("覆盖范围", "Covers"), scope);
     var foot = (q.fetchedAt ? L("更新于 ", "updated ") + qTime(q.fetchedAt) : "") + (q.stale ? L("（已过期，等待刷新）", " (stale, refreshing)") : "");
     var err = q.status && q.status !== "ok" && q.status !== "idle" ? quotaStatusText(q.status) : "";
     if (err) foot += (foot ? " · " : "") + '<span class="qt-warn">⚠ ' + err + "</span>";
     out += '<div class="qt-note">' + (foot ? foot + "<br>" : "") +
-      L("套餐池为账号级：同账号所有模型共用，不是单个模型独享。点击 chip 立即刷新。", "The pool is account-level: shared by every model on this account, not per model. Click the chip to refresh.") + "</div>";
+      (isBalance
+        ? L("余额属于当前供应商账号或 API Key，不是单模型独享。点击 chip 立即刷新。", "Balance belongs to the provider account or API key, not one model. Click the chip to refresh.")
+        : L("套餐池为账号级：同账号所有模型共用，不是单个模型独享。点击 chip 立即刷新。", "The pool is account-level: shared by every model on this account, not per model. Click the chip to refresh.")) + "</div>";
     return out;
   }
   function showQuotaTip(el) {
@@ -1197,6 +1216,8 @@
     clearInterval(coordinatorTimer);
     instances.forEach(function (inst) { inst.dispose(); });
     instances = [];
+    quotaSelectionsSig = "";
+    pluginRequest("quota-providers", { panes: {} });
     cleanupRateTip();
     cleanupGitTip();
     cleanupDeterministic();
@@ -1276,6 +1297,7 @@
           if (inst) inst.attach(best[k].el, sessIdOf(best[k].el));
         });
         refreshWants();
+        reportQuotaSelections();
         FATAL.insts = instances.map(function (a) { return a.pid + "=" + (a.getSid() ? a.getSid().slice(-8) : "-"); }).join(" | ");
       } catch (e) { FATAL.coordErr = String((e && e.stack) || e); }
     }
@@ -1286,7 +1308,7 @@
   /* ---------- 实例工厂（v61.1）：一个 pane 一套 条/面板/气泡/tooltip/定位循环。
    * slot 0 保留 #zusage-bar/#zusage-tip 兼容 id（泵热更新按它清理），其余实例仅类名。 */
   function spawnInstance(pid, slot) {
-    var VERSION = "v97";   // v82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v84 主标签页远端路由（工作台分组唯一主绑定上报 + 迟到载荷守卫，issue #30）→ v85 回答末尾统计行跟随万/亿开关 + tok→token → v86 历史轮 tracker 无记录（窗口滑出/换代/热更）或缺输出字段不再翻成"本轮统计不可用"，加 det 诊断 → v87 主叶归属增 last-session 回退（组零证据时唯一远端记录放行，issue #30 复测：单会话主标签页不建组）→ v88 运行态心跳与两处扫描 tick 2s→0.5s（富文本重试 6→24 次等价放大）→ v89 ⚙ 面板更新进度：downloading 阶段文案 + 下载（字节）/安装（校验→安装→同步）双进度条，缺 progress 的旧主进程自动隐藏 → v90 主标签页/分栏归属改按本窗会话节点身份（renderer 桥按版本/资产/锚点写 SessionPane 属性，移除 workbench-groups/last-session 共享回退）+ 心跳 0.5s→0.1s（扫描维持 0.5s）→ v91 设置页/权限面板冒条修复（PR #44：inSettingsView 三处派发排除 + anchorCardOf 面板锚点改判）收编收尾：排除标记并集（settings-page testid + content/panel 双 frame）、track 显隐第四处防御 → v92 ⚙ 更新区固定显示可复制的重装口令（源码安装无法自动更新时引导用户发给 agent）→ v93 原生上下文按钮（chat-context-usage-trigger）增强：环填充/四档色/右侧百分比镜像状态条上下文格（ctxBandOf 同源），cw 缺失还原原生形态 → v94 状态条删除「上下文容量」格（UI+tooltip，该口径由原生按钮增强承载），⚙ 面板同步去掉「上下文」开关，子代理格改始终展示（零值也显示）→ v95 ⚙ 更新区去掉 v92 重装口令提示块（源码清单的仓库来源改由宿主插件管理器直接更新，不再报渠道不一致），更新来源文案增「仓库源码」分支→ v96 套餐额度 chip（默认关）：挂原生上下文按钮左侧（wrapper 内前插，与按钮增强同款双 reapply/还原），数据来自主进程 quota 字段（解密宿主 OAuth 凭据直查 monitor 端点，账号级套餐池口径），会话首个 main_turn 完成前不显示；自绘 tooltip 走 rateTip 独立浮层模式；chip 改多窗分段：每窗一段（中文 5小时/7天，英文 5h/7d）各自按 80/95/100 档位色，分隔符 |；余额类型单段渲染就绪（余额 ¥100.00，阶段 3 数据源接入即用）；去掉环形，容器不着色 → v97 子代理速率（T1+T2）：zusage sub 汇总加 rate_avg/每子代理 tps_avg（已完成段加权平均，口径同 _turn_rate），子代理格 tooltip/明细面板展示；Agent 运行期主 chip 附加「子代理运行中 · 估 X t/s」——turn-stats 透传 subagent 行 childSessionId，overlay 据此用同款 zuTryBindStore 绑子代理会话 store 做字符增量估算（运行中请求未入库，DB 无实时数据；150s 采样实锤零 running 行），思考文本不进 rows 时退回纯状态词；工具动词「正在运行子智能体」压成「子代理运行中」（web 同步文案）；同日多槽位化：turn-stats 暴露 runningSubagents 全集（并行时 rowId 前 8 个），每子代理独立绑定/2s 节流，主 chip 显示合计速率（并行 ≥2 时动词后缀 ×N），chip tooltip 与子代理明细面板逐个实时展示运行中估算（tooltip 随原地改字同步 __tip 重画；面板 800ms tick 原地刷新 .subrate，汇总页运行块含 DB 尚无记录的新子代理）   // 悬停 ⚙ 面板可见；版本号随代际递增
+    var VERSION = "v98";   // v82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v84 主标签页远端路由（工作台分组唯一主绑定上报 + 迟到载荷守卫，issue #30）→ v85 回答末尾统计行跟随万/亿开关 + tok→token → v86 历史轮 tracker 无记录（窗口滑出/换代/热更）或缺输出字段不再翻成"本轮统计不可用"，加 det 诊断 → v87 主叶归属增 last-session 回退（组零证据时唯一远端记录放行，issue #30 复测：单会话主标签页不建组）→ v88 运行态心跳与两处扫描 tick 2s→0.5s（富文本重试 6→24 次等价放大）→ v89 ⚙ 面板更新进度：downloading 阶段文案 + 下载（字节）/安装（校验→安装→同步）双进度条，缺 progress 的旧主进程自动隐藏 → v90 主标签页/分栏归属改按本窗会话节点身份（renderer 桥按版本/资产/锚点写 SessionPane 属性，移除 workbench-groups/last-session 共享回退）+ 心跳 0.5s→0.1s（扫描维持 0.5s）→ v91 设置页/权限面板冒条修复（PR #44：inSettingsView 三处派发排除 + anchorCardOf 面板锚点改判）收编收尾：排除标记并集（settings-page testid + content/panel 双 frame）、track 显隐第四处防御 → v92 ⚙ 更新区固定显示可复制的重装口令（源码安装无法自动更新时引导用户发给 agent）→ v93 原生上下文按钮（chat-context-usage-trigger）增强：环填充/四档色/右侧百分比镜像状态条上下文格（ctxBandOf 同源），cw 缺失还原原生形态 → v94 状态条删除「上下文容量」格（UI+tooltip，该口径由原生按钮增强承载），⚙ 面板同步去掉「上下文」开关，子代理格改始终展示（零值也显示）→ v95 ⚙ 更新区去掉 v92 重装口令提示块（源码清单的仓库来源改由宿主插件管理器直接更新，不再报渠道不一致），更新来源文案增「仓库源码」分支→ v96 套餐额度 chip（默认关）：挂原生上下文按钮左侧（wrapper 内前插，与按钮增强同款双 reapply/还原），数据来自主进程 quota 字段（解密宿主 OAuth 凭据直查 monitor 端点，账号级套餐池口径），会话首个 main_turn 完成前不显示；自绘 tooltip 走 rateTip 独立浮层模式；chip 改多窗分段：每窗一段（中文 5小时/7天，英文 5h/7d）各自按 80/95/100 档位色，分隔符 |；余额类型单段渲染就绪（余额 ¥100.00，阶段 3 数据源接入即用）；去掉环形，容器不着色 → v97 子代理速率（T1+T2）：zusage sub 汇总加 rate_avg/每子代理 tps_avg（已完成段加权平均，口径同 _turn_rate），子代理格 tooltip/明细面板展示；Agent 运行期主 chip 附加「子代理运行中 · 估 X t/s」——turn-stats 透传 subagent 行 childSessionId，overlay 据此用同款 zuTryBindStore 绑子代理会话 store 做字符增量估算（运行中请求未入库，DB 无实时数据；150s 采样实锤零 running 行），思考文本不进 rows 时退回纯状态词；工具动词「正在运行子智能体」压成「子代理运行中」（web 同步文案）；同日多槽位化：turn-stats 暴露 runningSubagents 全集（并行时 rowId 前 8 个），每子代理独立绑定/2s 节流，主 chip 显示合计速率（并行 ≥2 时动词后缀 ×N），chip tooltip 与子代理明细面板逐个实时展示运行中估算（tooltip 随原地改字同步 __tip 重画；面板 800ms tick 原地刷新 .subrate，汇总页运行块含 DB 尚无记录的新子代理） → v98 额度实时选源恢复（v4-model-config 观察 + quota-providers 全窗快照上报 + byProvider 定向刷新、空选择 fail-closed）与 sub2api 额度 UI（今日/本月窗口、窗口行内金额明细、Key 总额度、订阅截止、账户余额标题）   // 悬停 ⚙ 面板可见；版本号随代际递增
     var instanceDisposed = false, heavyTimer = 0, frame = 0, themeObserver = null;
     var globalListeners = [];
     function listenGlobal(target, type, fn, capture) {
@@ -1306,7 +1328,8 @@
       bridge = { handle: null, turnId: "", timer: 0 },   // v71 本 pane 的 renderer store 订阅
       lastBand = null,    // v92：本 pane 上下文分档（ctxBandOf 结果，原生按钮增强的数据源）
       ctxBtnCache = null,   // v92：本实例上次增强的原生按钮（还原/对账引用，不依赖 cardCache 存活）
-      lastQuota = null, lastQuotaAll = null, quotaProvider = "", quotaModel = "", quotaFallback = "", quotaChipCache = null,   // v96：额度 chip 数据源（快照 quota + 本 pane 会话 provider/模型 + 会话无历史时的账号级回退）与节点引用
+      lastQuota = null, lastQuotaAll = null, quotaProvider = "", quotaModel = "", quotaFallback = "", quotaChipCache = null,
+      quotaSourceId = "", quotaSelection = null, quotaPaneRoot = null, quotaSelectionObserver = null, quotaMarkerSeen = false,   // 当前 pane 模型选择与额度来源
       cuaBtnCache = null, gitChipCache = null,   // v96：Git chip 的锚点按钮（电脑操作）与本实例的 chip 节点
       liveTextCur = "", liveStatsCur = null, liveKindCur = "fallback", liveEl = null,   // v72：合并「生成速度」用
       livePhaseCur = "", liveIconCur = "bolt";   // v77：当前 chip 阶段与图标（think=思考动效/bolt=闪电）——相位切换需整条重渲染
@@ -2140,6 +2163,68 @@
      * 泵把它传给 zusage.py 强制纳入快照——刚开的新会话/超出 6+6 池的会话也能显示自己的数据。
      * 注意：会话标题不在可扫描的 DOM 文本节点里（顶栏标题扫描方案实测永远失败，勿回退）。 */
     var pickedSid = "", wsPrev = null, lastHtml = "";
+    function watchQuotaSelection(pane) {
+      if (pane === quotaPaneRoot) return;
+      if (quotaSelectionObserver) quotaSelectionObserver.disconnect();
+      quotaSelectionObserver = null;
+      quotaPaneRoot = pane;
+      if (!pane) return;
+      quotaSelectionObserver = new MutationObserver(function () {
+        if (inactive()) return;
+        if (readQuotaSelection() && state.data) render(state.data);
+      });
+      quotaSelectionObserver.observe(pane, { subtree: true, childList: true, attributes: true,
+        attributeFilter: ["data-provider", "data-model", "data-session-id"] });
+    }
+    function readQuotaSelection() {
+      var el = wantedEl || composer, pane = null, selection = null;
+      var sid = instSid || pickedSid || "";
+      if (el && el.isConnected) {
+        for (var parent = el; parent && parent !== document.body; parent = parent.parentElement) {
+          var tid = parent.getAttribute && parent.getAttribute("data-testid");
+          if (tid && tid.indexOf("v4-session-pane-") === 0) { pane = parent; break; }
+        }
+      }
+      watchQuotaSelection(pane);
+      if (pane) {
+        selection = { sid: sid, providerId: "", modelId: "" };
+        var paneSid = pane.getAttribute("data-session-id");
+        var paneId = pane.getAttribute("data-testid").slice("v4-session-pane-".length);
+        if (paneSid === sid && (pid === "auto" || paneId === pid)) {
+          var nodes = pane.querySelectorAll('[data-testid="v4-model-config"]');
+          var own = [];
+          for (var i = 0; i < nodes.length; i++) {
+            var owner = nodes[i].parentElement;
+            while (owner && owner !== pane) {
+              var ot = owner.getAttribute && owner.getAttribute("data-testid");
+              if (ot && ot.indexOf("v4-session-pane-") === 0) break;
+              owner = owner.parentElement;
+            }
+            if (owner === pane) own.push(nodes[i]);
+          }
+          if (own.length) quotaMarkerSeen = true;
+          if (!own.length && !quotaMarkerSeen) selection = null;
+          if (own.length === 1) {
+            var provider = own[0].getAttribute("data-provider");
+            var model = own[0].getAttribute("data-model");
+            if (typeof provider === "string" && provider.length <= 160 &&
+                typeof model === "string" && model.length <= 160 && !/[\x00-\x1f\x7f]/.test(provider + model)) {
+              selection.providerId = provider.trim();
+              selection.modelId = model.trim();
+            }
+          }
+        }
+      } else if (quotaSelection) {
+        selection = { sid: sid, providerId: "", modelId: "" };
+      }
+      if (JSON.stringify(selection) === JSON.stringify(quotaSelection)) return false;
+      quotaSelection = selection;
+      if (instances.length) reportQuotaSelections();
+      return true;
+    }
+    function effectiveQuotaProvider() {
+      return quotaSelection ? quotaSelection.providerId : (quotaProvider || quotaFallback);
+    }
     function pickCurrent(d) {
       var recent = d.recent || [];
       if (!recent.length) return null;
@@ -2464,15 +2549,16 @@
       }
       excOn = excActive(p);   // 气泡的显示依据（track 每帧消费）
       lastBand = ctxBandOf(p);   // v92：原生上下文按钮增强的数据源（与状态条上下文格同口径）
-      /* v96：额度 chip 数据源。quota 是账号级（主进程随快照附加）；provider/模型取本 pane
-       * 会话最近完成的 main_turn——首个请求完成前 provider 为空，chip 不显示（用户决策）。 */
-      /* 阶段 3 多源协议：{active, sources:{id:entry}}；旧主进程平铺形状回退兼容 */
-      quotaProvider = (p.last && p.last.provider_id) || "";
-      quotaModel = (p.last && p.last.model) || "";
+      /* 实时 pane 模型优先；没有宿主标记的旧版本才使用最近已完成请求。 */
+      readQuotaSelection();
+      quotaProvider = quotaSelection ? quotaSelection.providerId : ((p.last && p.last.provider_id) || "");
+      quotaModel = quotaSelection ? quotaSelection.modelId : ((p.last && p.last.model) || "");
       quotaFallback = typeof d.provider_fallback === "string" ? d.provider_fallback : "";
+      reportQuotaSelections();
+      quotaSourceId = "";
       lastQuotaAll = d.quota && typeof d.quota === "object" ? d.quota : null;
       if (lastQuotaAll && lastQuotaAll.sources) {
-        var qprov = quotaProvider || quotaFallback;
+        var qprov = effectiveQuotaProvider();
         var qsid = "";
         if (qprov.indexOf("account:") === 0) {
           qsid = qprov.indexOf("bigmodel") >= 0 ? "bigmodel" : (qprov.indexOf("zai") >= 0 ? "zai" : "");
@@ -2480,11 +2566,12 @@
         } else if (lastQuotaAll.byProvider && lastQuotaAll.byProvider[qprov]) {
           qsid = lastQuotaAll.byProvider[qprov];   // 自定义 provider：只认主进程显式映射
         }
+        quotaSourceId = qsid;
         lastQuota = qsid ? (lastQuotaAll.sources[qsid] || null) : null;
       } else if (lastQuotaAll) {
         /* 旧主进程平铺协议：数据归属未知。内置 account 档按 family 接受（v96 语义即主进程
          * 只查内置套餐）；自定义 provider 无法证明归属 → fail-closed 不显示。 */
-        var fp = quotaProvider || quotaFallback;
+        var fp = effectiveQuotaProvider();
         lastQuota = (fp.indexOf("account:") === 0 && fp.indexOf("team") < 0) ? lastQuotaAll : null;
       } else lastQuota = null;
       /* v12 多服务器：remote_today/remote_errors 按目标键分组，取本会话所属主机的分片；
@@ -2758,7 +2845,7 @@
     }
     function srcStatusText(sv) {
       var m = { ok: "✓", idle: L("待查询", "pending"), not_configured: L("未配置凭据", "credential missing"),
-        auth_failed: L("认证失效", "auth failed"), disabled: L("已关闭", "disabled"), no_plan: L("无订阅", "no subscription"),
+        auth_failed: L("认证失效", "auth failed"), no_plan: L("无订阅", "no subscription"),
         rate_limited: L("限流中", "rate limited"), network_error: L("查询失败", "failed"),
         parse_error: L("响应异常", "bad response"), unsupported: L("不支持", "unsupported") };
       return m[sv.status] || sv.status || "";
@@ -2784,7 +2871,7 @@
           var field = sv.credentialFields[f];
           var isCred = field === "apiKey" || field === "cookie" || field === "token" || field === "secretAccessKey";
           credFields += '<input type="' + (isCred ? "password" : "text") + '" class="zu-src-field" data-src="' + sv.id +
-            '" data-field="' + field + '" placeholder="' + (sv.id === "openrouter" && field === "apiKey" ? "Management Key" : ((SRC_FIELD_LABELS || {})[field] || field)) +
+            '" data-field="' + field + '" placeholder="' + ((SRC_FIELD_LABELS || {})[field] || field) +
             (isCred && sv.keyConfigured ? L("（已配置，输入以更换）", " (configured)") : "") + '" autocomplete="off">';
         }
         html += '<div class="zu-src-row" data-src="' + sv.id + '">' +
@@ -3459,7 +3546,7 @@
       if (!state.quotaEnabled) return null;
       /* 会话有请求历史 → 跟随本会话最近完成的请求；无历史（新会话/刚切模型）→ 跟随快照
        * 顶层 provider_fallback（账号最近套餐档），消除切模型到首请求完成的 chip 空窗。 */
-      var prov = quotaProvider || quotaFallback;
+      var prov = effectiveQuotaProvider();
       if (!prov) return null;
       if (prov.indexOf("account:") === 0 && prov.indexOf("team") >= 0) {
         return { kind: "team", html: '<span class="zu-qwarn">⊘</span>', aria: L("团队套餐额度暂不支持", "Team plan quota not supported yet") };   // 静态提示不依赖数据
@@ -3498,7 +3585,7 @@
     function onQuotaClick(e) {
       e.preventDefault();
       e.stopPropagation();
-      pluginRequest("quota-refresh");   // 主进程 refresh：绕过 TTL 与软冻结
+      pluginRequest("quota-refresh", quotaSourceId ? { sourceId: quotaSourceId } : undefined);   // 绕过 TTL 与软冻结
       var el = this;
       el.classList.add("zu-qbusy");
       setTimeout(function () { el.classList.remove("zu-qbusy"); }, 1500);
@@ -3535,7 +3622,8 @@
       syncCtxLite(chip, bar.classList.contains("zu-light"));
       var srcLabels = {};
       for (var si = 0; si < (state.quotaSources || []).length; si++) srcLabels[state.quotaSources[si].id] = state.quotaSources[si].label;
-      chip.__zuQ = { q: lastQuota, all: lastQuotaAll, srcLabels: srcLabels, provider: quotaProvider, model: quotaModel, mode: mode };
+      var all = lastQuotaAll && lastQuotaAll.sources ? Object.assign({}, lastQuotaAll, { active: quotaSourceId }) : lastQuotaAll;
+      chip.__zuQ = { q: lastQuota, all: all, srcLabels: srcLabels, provider: quotaProvider, model: quotaModel, mode: mode };
       var sig = mode.kind + "|" + (mode.stale ? 1 : 0) + "|" + mode.html;
       if (chip.__zuSig !== sig) {   // 幂等：内容没变不重建，悬停/焦点态不被打断
         chip.__zuSig = sig;
@@ -4015,6 +4103,8 @@
             barHit: bh ? bh.tagName + "." + String(bh.className).slice(0, 40) : String(bh),
             bottomGap: Math.round(innerHeight - ar.bottom),
             nativeCtx: nativeCtxVal,
+            quota: { providerId: effectiveQuotaProvider(), modelId: quotaModel, sourceId: quotaSourceId,
+              selected: !!quotaSelection, status: lastQuota ? lastQuota.status : "unavailable", chip: !!quotaChipCache },
             picked: pickedSid,
             exc: excOn ? (excGone ? "on-gone" : "on") : 0,
             href: String(location.href).slice(0, 120),
@@ -4073,6 +4163,8 @@
       cancelTipGrace();
       if (excCopied) clearTimeout(excCopied.timer);
       if (themeObserver) themeObserver.disconnect();
+      if (quotaSelectionObserver) quotaSelectionObserver.disconnect();
+      quotaSelectionObserver = null; quotaPaneRoot = null; quotaSelection = null;
       globalListeners.forEach(function (binding) {
         binding[0].removeEventListener(binding[1], binding[2], binding[3]);
       });
@@ -4101,6 +4193,12 @@
       syncUpdate: syncUpdate,
       rebuild: function () { buildPanel(); rebuildExcBubble(); syncPanel(); },
       getSid: function () { return pickedSid || ""; },
+      getQuotaSelection: function () {
+        if (inactive()) return null;
+        if (quotaSelection) return quotaSelection;
+        var sid = instSid || pickedSid || "";
+        return sid ? { sid: sid, providerId: effectiveQuotaProvider(), modelId: quotaModel } : null;
+      },
       getScope: function () { return inactive() ? null : readPaneScope(wantedEl, pickedSid, pid); },
       gitTouch: function () { if (!inactive()) enhanceGitChip(); },   // v96：主进程推送 git 状态后即时对账（不等 heavy）
       /* v71 确定性历史行数据源：DOM turn id（turnId 或 productTurnId 形态）→ tracker 统计 */

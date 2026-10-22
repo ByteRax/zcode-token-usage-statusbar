@@ -166,3 +166,78 @@ test('quota source requests write quota-secrets.json atomically with whitelist a
   assert.equal(first.file, "/fixture/runtime/quota-secrets.json.tmp", "同目录 tmp 原子替换");
   assert.equal(first.opts.mode, 0o600, "凭据文件 0600 创建");
 });
+
+
+test('live quota selections use trusted full-window snapshots and revoke on navigation or close', async () => {
+  const source = fs.readFileSync(path.join(__dirname, '..', 'inject-main.cjs'), 'utf8');
+  const intervals = [], providerSets = [], windows = [];
+  const queues = [[], [], [], []];
+  const resources = path.resolve('/fixture/resources');
+  const makeWindow = (id, url, queue) => ({
+    id, dead: false, listeners: new Map(), scripts: [],
+    getURL() { return url; }, getType: () => 'window', isDestroyed() { return this.dead; }, isLoading: () => false,
+    on(type, fn) { this.listeners.set(type, fn); },
+    async executeJavaScript(script) { this.scripts.push(script); return script.includes('q.splice') ? queue.splice(0, 8) : null; },
+  });
+  const localUrl = pathToFileURL(path.join(resources, 'app.asar', 'out', 'renderer', 'index.html')).href;
+  windows.push(makeWindow(1, localUrl, queues[0]), makeWindow(2, localUrl, queues[1]),
+    makeWindow(3, 'https://outside.example/', queues[2]),
+    makeWindow(4, pathToFileURL(path.join(resources, '..', 'outside.html')).href, queues[3]));
+  const request = (providerId, paneId = 'workspace-main') => ({ action: 'quota-providers', panes: {
+    [paneId]: { sid: 'session_fixture', providerId, modelId: 'model-fixture' },
+  } });
+  const mockFs = {
+    readFileSync: file => String(file).endsWith('config.json') ? '{"quota_enabled":true}' : '{}',
+    statSync: () => ({ mtimeMs: 1, size: 1 }), existsSync: () => true,
+    watch: () => ({ on() {}, close() {} }),
+  };
+  const sandbox = {
+    __dirname: '/fixture/runtime', console: { error() {} },
+    process: { resourcesPath: resources, execPath: process.execPath, env: {}, uptime: () => 1 },
+    setInterval: (fn, delay) => { intervals.push({ fn, delay }); },
+    setTimeout: () => 1, clearTimeout() {}, module: { exports: {} },
+    require(id) {
+      if (id === 'path') return path;
+      if (id === 'fs') return mockFs;
+      if (id === 'url') return require('url');
+      if (id === 'crypto') return require('crypto');
+      if (id === 'child_process') return { spawn() { throw Error('isolated'); }, execFile(c, a, o, cb) { cb(null); } };
+      if (id === './plugin-updater.cjs') return { createUpdater: () => ({ status: () => ({}), tick: async () => {} }) };
+      if (id === './quota-client.cjs') return { resolveQuotaPaths: () => ({ credsPath: '/fixture/home/credentials.json', credsDir: '/fixture/home', customCfgPath: '/fixture/home/provider.json', customCfgDir: '/fixture/home', builtinCfgPath: '/fixture/home/builtin.json', builtinCfgDir: '/fixture/home' }), createQuotaClient: () => ({
+        setProviders(ids) { providerSets.push(Array.from(ids).sort()); }, tick() {}, view: () => ({ sources: {}, byProvider: {} }),
+        sourcesConfig: () => [], noteSnapshotExtras() {}, dispose() {},
+      }) };
+      if (id === 'electron') return { app: { getPath: () => '/fixture/home', on() {} },
+        webContents: { getAllWebContents: () => windows }, ipcMain: { on() {} } };
+      throw Error(id);
+    },
+  };
+  vm.runInNewContext(source, sandbox);
+  await new Promise(resolve => setImmediate(resolve));
+  const poll = intervals.find(t => t.delay === 1000).fn;
+  queues[0].push(request('account:bigmodel-individual-coding-plan'));
+  queues[1].push(request('relay-b'));
+  queues[2].push(request('outside-web'));
+  queues[3].push(request('outside-file'));
+  await poll();
+  assert.deepEqual(providerSets.at(-1), ['account:bigmodel-individual-coding-plan', 'relay-b']);
+  const api = sandbox.module.exports.__zusageTest;
+  api.handlePayload({ session: { last: { provider_id: 'old-global-provider' } }, recent: [] });
+  assert.deepEqual(providerSets.at(-1), ['account:bigmodel-individual-coding-plan', 'relay-b'], 'DB global provider cannot override current pane selections');
+  queues[0].push({ action: 'quota-providers', panes: {} });
+  await poll();
+  assert.deepEqual(providerSets.at(-1), ['relay-b'], 'empty map revokes the departed window selection');
+  windows[1].listeners.get('did-start-navigation')({}, 'file:///next', false, true);
+  assert.deepEqual(providerSets.at(-1), [], 'navigating the last selected window does not revive global history');
+  queues[0].push(request('relay-a'));
+  queues[1].push(request('relay-b'));
+  await poll();
+  windows[1].dead = true;
+  windows[1].listeners.get('destroyed')();
+  assert.deepEqual(providerSets.at(-1), ['relay-a'], 'closing one window preserves only the live window provider');
+  queues[0].push(request('forged', '../escape'));
+  await poll();
+  assert.deepEqual(providerSets.at(-1), ['relay-a'], 'invalid full snapshot cannot overwrite accepted state');
+  assert.equal(queues[2].length, 1);
+  assert.equal(queues[3].length, 1, 'untrusted pages cannot submit provider lookup requests');
+});

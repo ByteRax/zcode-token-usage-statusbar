@@ -784,6 +784,86 @@ test("B3: scnet no_plan unfreezes when snapshot extras arrive", async () => {
 });
 
 
+test('live provider set schedules all panes, preserving in-flight work and cache on model changes', async () => {
+  const { client, calls } = adapterClient({ cfgEntries: [
+    ['ds-a', 'https://api.deepseek.com/v1', 'sk-a'],
+    ['ds-b', 'https://api.deepseek.com/v1', 'sk-b'],
+  ] });
+  client.setProviders(['ds-a', 'ds-b']);
+  client.tick();
+  assert.equal(calls.length, 2, 'both pane accounts are scheduled despite sharing a vendor');
+  const firstState = client._states.get('deepseek:ds-a');
+  const firstFlight = firstState.inFlight;
+  client.setProviders(['ds-b', 'ds-a', 'ds-a']);
+  client.tick();
+  assert.equal(calls.length, 2, 'same selection map is idempotent and de-duplicated');
+  assert.equal(firstState.inFlight, firstFlight, 'reconciling panes does not abort existing work');
+  const body = amount => JSON.stringify({ balance_infos: [
+    { currency: 'CNY', total_balance: String(amount), granted_balance: '0', topped_up_balance: String(amount) },
+  ] });
+  calls[0].d.resolve(fakeRes(200, body(10)));
+  calls[1].d.resolve(fakeRes(200, body(25)));
+  await flush();
+  const view = client.view();
+  assert.equal(view.sources[view.byProvider['ds-a']].balance.amount, 10);
+  assert.equal(view.sources[view.byProvider['ds-b']].balance.amount, 25, 'different API keys never share vendor state');
+  client.setProviders(['ds-a', 'ds-b']);
+  client.tick();
+  assert.equal(calls.length, 2, 'same provider, another model reuses TTL');
+  client.setProviders([]);
+  client.tick();
+  assert.deepEqual(client.view().byProvider, {}, 'closed panes remove their selection mappings');
+  client.setProviders(['ds-b']);
+  client.tick();
+  assert.equal(calls.length, 2, 'switching back reuses that account cache');
+});
+
+test('switching a live pane set drops old relay results without exposing Coding Plan as a fallback', async () => {
+  const { client, calls } = adapterClient({ cfgEntries: [
+    ['relay-a', 'https://a.example.com/v1', 'sk-a'],
+    ['relay-b', 'https://b.example.com/v1', 'sk-b'],
+  ] });
+  client.setProviders(['relay-a']);
+  client.tick();
+  const oldEpoch = client._states.get('custom:relay-a').epoch;
+  client.setProviders(['relay-b']);
+  client.tick();
+  assert.ok(client._states.get('custom:relay-a').epoch > oldEpoch, 'leaving the relay invalidates its in-flight response');
+  assert.equal(client.view().byProvider['relay-a'], undefined);
+  assert.equal(client.view().byProvider['relay-b'], 'custom:relay-b');
+  const relayBody = fakeRes(200, JSON.stringify({ hard_limit_usd: 100000000 }));
+  calls[0].d.resolve(relayBody);   // relay-a /v1/usage 探测（epoch 已失效，迟到结果被丢弃）
+  calls[1].d.resolve(relayBody);   // relay-b /v1/usage 探测：非 sub2api JSON → null → 转 legacy
+  await flush();                   // 等 legacy 回退探测入队（统一版先探 /v1/usage）
+  for (const late of calls.slice(2)) late.d.resolve(relayBody);   // legacy：hard≥1e8 判按量无固定池
+  await flush();
+  assert.equal(client.view().active, 'custom:relay-b');
+  assert.equal(client.view().sources['custom:relay-b'].status, 'unsupported');
+  assert.equal(client.view().sources['custom:relay-a'].status, 'idle', 'late failure cannot mutate the departed pool');
+});
+
+
+test('vendor settings status and manual refresh cover provider-scoped account sources', async () => {
+  const { client, calls } = adapterClient({ cfgEntries: [['ds-a', 'https://api.deepseek.com/v1', 'sk-a']] });
+  client.setProviders(['ds-a']);
+  client.tick();
+  calls[0].d.resolve(fakeRes(200, JSON.stringify({ balance_infos: [
+    { currency: 'CNY', total_balance: '10', granted_balance: '0', topped_up_balance: '10' },
+  ] })));
+  await flush();
+  const config = client.sourcesConfig().find(s => s.id === 'deepseek');
+  assert.equal(config.status, 'ok');
+  assert.equal(config.keyConfigured, true);
+  assert.equal(config.keySource, 'provider_config');
+  client.refreshSource('deepseek');
+  assert.equal(calls.length, 2, 'vendor refresh reaches its provider-specific source');
+  calls[1].d.resolve(fakeRes(200, JSON.stringify({ balance_infos: [
+    { currency: 'CNY', total_balance: '9', granted_balance: '0', topped_up_balance: '9' },
+  ] })));
+  await flush();
+  assert.equal(client.view().sources['deepseek:ds-a'].balance.amount, 9);
+});
+
 const SUB2API_USAGE = {
   isValid: true, mode: 'unrestricted', unit: 'USD', remaining: 66.90158933, planName: 'Fixture subscription',
   subscription: { daily_limit_usd: 100, daily_usage_usd: 33.09841067,
