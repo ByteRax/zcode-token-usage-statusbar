@@ -1605,6 +1605,16 @@
       '<span class="btn zu-gear">⚙</span>';
     var panel = document.createElement("div");
     panel.className = "panel zu-settings";
+    /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
+     * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
+     * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
+    var srcListSig = "";
+    var SRC_FIELD_LABELS = {
+      apiKey: L("API Key", "API Key"), cookie: L("控制台 Cookie", "Console Cookie"), token: L("Token", "Token"),
+      accessKeyId: L("AccessKeyId", "AccessKeyId"), secretAccessKey: L("SecretAccessKey", "SecretAccessKey"),
+      planCredits: L("套餐 Credits 总量", "Plan credits"), planStart: L("计费锚日 YYYY-MM-DD", "Billing anchor day"),
+    };
+    var PROGRESS_STAGES = ["download", "verify", "install", "sync"];
     function settingRow(input, title, note) {
       return '<label>' + input + '<span>' + title + '<em>' + note + '</em></span></label>';
     }
@@ -2556,12 +2566,6 @@
       if (qe) qe.checked = state.quotaEnabled;
       try { syncQuotaSources(); } catch (eSrc) { try { window.__zusageDiag.quotaSrcErr = String((eSrc && eSrc.stack) || eSrc); } catch (_) { } }   // 防御：多源列表渲染失败不得拖垮实例创建（实测 SRC_FIELD_LABELS 时序可致整条状态条消失）
     }
-    var srcListSig = "";
-    var SRC_FIELD_LABELS = {
-      apiKey: L("API Key", "API Key"), cookie: L("控制台 Cookie", "Console Cookie"), token: L("Token", "Token"),
-      accessKeyId: L("AccessKeyId", "AccessKeyId"), secretAccessKey: L("SecretAccessKey", "SecretAccessKey"),
-      planCredits: L("套餐 Credits 总量", "Plan credits"), planStart: L("计费锚日 YYYY-MM-DD", "Billing anchor day"),
-    };
     function srcStatusText(sv) {
       var m = { ok: "✓", idle: L("待查询", "pending"), not_configured: L("未配置凭据", "credential missing"),
         auth_failed: L("认证失效", "auth failed"), no_plan: L("无订阅", "no subscription"),
@@ -2607,7 +2611,6 @@
      * 下载条在 download 阶段按字节比例，之后一律 100%；安装条没有字节口径（宿主插件管理器
      * 不报进度），按校验→安装→同步三段推进并用扫光表示仍在活动。旧版主进程不带 progress
      * 字段（热更新的渲染端先于主进程重启生效），此时整块隐藏，只保留原有状态文案。 */
-    var PROGRESS_STAGES = ["download", "verify", "install", "sync"];
     function formatBytes(n) {
       n = Math.max(0, +n || 0);
       if (n >= 1048576) return (n / 1048576).toFixed(1) + " MB";
