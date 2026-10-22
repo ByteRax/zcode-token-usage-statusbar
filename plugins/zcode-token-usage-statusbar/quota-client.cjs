@@ -203,7 +203,10 @@ function parseCurrencyAmount(v, currencyHint) {
 }
 function num(v) {
   if (typeof v === "number" && isFinite(v)) return v;
-  if (typeof v === "string" && /^[+-]?(\d+(\.\d+)?|\.\d+)([eE][+-]?\d+)?$/.test(v.trim())) return Number(v);
+  if (typeof v === "string" && /^[+-]?(\d+(\.\d+)?|\.\d+)([eE][+-]?\d+)?$/.test(v.trim())) {
+    const value = Number(v);
+    return Number.isFinite(value) ? value : null;
+  }
   return null;
 }
 /* 通用窗口行收集：[{period|type, percentUsed|percent|utilization|usage_percentage, resetsAt|reset_at|resets_at|resetTime}] */
@@ -227,29 +230,59 @@ function collectWindows(list, defs) {
   return out;
 }
 
-/* ---------- 宿主自定义供应商配置（provider_config.json） ---------- */
+/* ---------- 宿主路径与供应商配置（builtin → personal） ---------- */
+function resolveQuotaPaths(opts) {
+  const o = opts || {}, env = o.env || process.env;
+  const home = o.defaultHome || os.homedir();
+  // 可独立注入 win32；非 Windows 测试/诊断也不能把 D:\\... 当 POSIX 相对路径。
+  const pathOf = (p) => o.pathImpl || (/^(?:[a-z]:[\\/]|\\\\)/i.test(p) ? path.win32 : path);
+  const absolute = (p) => {
+    if (p === "~") p = home;
+    else if (/^~[\\/]/.test(p)) p = pathOf(home).join(home, p.slice(2));
+    return pathOf(p).resolve(p);
+  };
+  const base = absolute(o.dataBaseDir || env.ZCODE_DATA_BASE_DIR || o.desktopHome || env.ZCODE_DESKTOP_HOME_DIR || home);
+  const root = pathOf(base).join(base, ".zcode", "v2");
+  const credsPath = absolute(o.credsPath || pathOf(root).join(root, "credentials.json"));
+  const customCfgPath = absolute(o.customCfgPath || env.ZCODE_PERSONAL_PROVIDER_CONFIG_FILE || pathOf(root).join(root, "provider_config.json"));
+  // Runtime builtin 文件由宿主按版本/endpoint 选择，不能扫描或猜测其它缓存副本。
+  const builtin = o.builtinCfgPath || env.ZCODE_BUILTIN_PROVIDER_CONFIG_FILE;
+  const builtinCfgPath = builtin ? absolute(builtin) : "";
+  return { credsPath, customCfgPath, builtinCfgPath,
+    credsDir: pathOf(credsPath).dirname(credsPath),
+    customCfgDir: pathOf(customCfgPath).dirname(customCfgPath),
+    builtinCfgDir: builtinCfgPath ? pathOf(builtinCfgPath).dirname(builtinCfgPath) : "" };
+}
 let providerCfgCache = null;
-function resolveCustomProvider(providerId, readFile2, cfgPath) {
-  let mtime = 0;
-  try { mtime = fs.statSync(cfgPath).mtimeMs; }
-  catch (e) { mtime = -1; }   // stat 失败不短路：仍尝试读取（测试虚拟路径/权限受限场景）
-  if (mtime < 0 || !providerCfgCache || providerCfgCache.mtime !== mtime) {   // stat 失败不缓存：每次现读（避免同会话内配置已变化却读到旧值）
-    const byId = new Map();
+function resolveCustomProvider(providerId, readFile2, cfgPath, builtinCfgPath) {
+  const paths = [builtinCfgPath, cfgPath].filter(Boolean);
+  let stamp = null;
+  try { stamp = JSON.stringify(paths.map((p) => { const s = fs.statSync(p); return [p, s.mtimeMs, s.size]; })); }
+  catch (e) { providerCfgCache = null; /* stat 失败仍现读，并撤销旧缓存，避免同时间戳重建后复活旧 key */ }
+  if (stamp !== null && providerCfgCache && providerCfgCache.stamp === stamp && providerCfgCache.readFile === readFile2) {
+    return providerCfgCache.byId.get(String(providerId)) || null;
+  }
+  const rules = new Map();
+  for (const p of paths) {
     try {
-      const d = readFile2(cfgPath);
+      const d = readFile2(p);
       for (const r of ((d.config || {}).providerConfigRules || {}).providerRules || []) {
-        const cfg = (r && r.config) || {};
-        const baseUrl = String(((cfg.api || {}).baseUrl) || "").replace(/\/+$/, "");
-        const apiKey = String(((cfg.access || {}).apiKey) || "");
-        if (baseUrl && apiKey && r.providerId) {
-          byId.set(String(r.providerId), { baseUrl, apiKey, name: String(r.providerName || "") });
-        }
+        if (!r || !r.providerId) continue;
+        const old = rules.get(String(r.providerId)) || {}, cfg = r.config || {};
+        rules.set(String(r.providerId), {
+          name: r.providerName == null ? old.name : String(r.providerName),
+          access: Object.assign({}, old.access, cfg.access),
+          api: Object.assign({}, old.api, cfg.api),
+        });
       }
     } catch (e) { /* 损坏/缺失按无配置处理 */ }
-    if (mtime >= 0) providerCfgCache = { mtime, byId };
-    return byId.get(String(providerId)) || null;
   }
-  return providerCfgCache.byId.get(String(providerId)) || null;
+  const byId = new Map();
+  for (const [id, cfg] of rules) {
+    byId.set(id, { baseUrl: String(cfg.api.baseUrl || "").replace(/\/+$/, ""), apiKey: String(cfg.access.apiKey || ""), name: cfg.name || "" });
+  }
+  if (stamp !== null) providerCfgCache = { stamp, readFile: readFile2, byId };
+  return byId.get(String(providerId)) || null;
 }
 
 /* ---------- 适配器注册表 ----------
@@ -280,6 +313,8 @@ for (const fam of ["bigmodel", "zai"]) {
         const v = j.env[k];
         if (v) return { token: v, fingerprint: "env:" + sha16(v), source: "env" };
       }
+      const configured = ((j.secrets.sources || {})[fam] || {}).apiKey;
+      if (typeof configured === "string" && configured) return { token: configured, fingerprint: "sec:" + sha16(configured), source: "secrets" };
       let raw = null;
       try { raw = j.readFile(j.credsPath); } catch (e) { return null; }
       const enc = raw && typeof raw === "object" ? raw[conf.credKey] : null;
@@ -312,6 +347,7 @@ ADAPTERS.push({
     if (providerId.indexOf("account:") === 0) return null;
     const cp = j.customProviderOf(providerId);
     if (!cp) return null;
+    if (!cp.baseUrl && providerId === "minimax") return { domain: "https://api.minimaxi.com", key: cp.apiKey, origin: "cfg" };
     let host = "";
     try { host = new URL(cp.baseUrl).hostname; } catch (e) { return null; }
     if (host === "api.minimaxi.com" || host === "api.minimax.cn") return { domain: "https://api.minimaxi.com", key: cp.apiKey, origin: "cfg" };
@@ -591,7 +627,7 @@ ADAPTERS.push({
         const total = parseCurrencyAmount(x.total_balance, x.currency);
         const granted = parseCurrencyAmount(x.granted_balance, x.currency);
         const topped = parseCurrencyAmount(x.topped_up_balance, x.currency);
-        if (!total || total.amount <= 0) return null;
+        if (!total) return null;
         return { currency: x.currency || total.currency, total, granted, topped };
       })
       .filter(Boolean);
@@ -611,7 +647,7 @@ ADAPTERS.push({
 /* --- OpenRouter credits --- */
 ADAPTERS.push({
   id: "openrouter", label: "OpenRouter", kind: "balance", defaultOn: true,
-  envKeys: ["OPENROUTER_API_KEY"],
+  envKeys: ["OPENROUTER_MANAGEMENT_KEY"],
   detect(j, providerId) {
     if (providerId.indexOf("account:") === 0) return null;
     const cp = j.customProviderOf(providerId);
@@ -628,15 +664,14 @@ ADAPTERS.push({
     }
     const sec = (j.secrets.sources || {}).openrouter || {};
     if (sec.apiKey) return { token: sec.apiKey, fingerprint: "sec:" + sha16(sec.apiKey), source: "secrets" };
-    if (ctx.key) return { token: ctx.key, fingerprint: "cfg:" + sha16(ctx.key), source: "provider_config" };
     return null;
   },
   async fetchOne(j, ctx, cred, ctl) {
     const body = await j.http.getJson("https://openrouter.ai/api/v1/credits", { authorization: "Bearer " + cred.token }, ctl);
     const d = body && body.data;
     const total = num(d && d.total_credits), used = num(d && d.total_usage);
-    if (total == null) throw qErr("parse_error", "openrouter shape");
-    return { balance: { amount: Math.round(((total || 0) - (used || 0)) * 100) / 100, currency: "USD" } };
+    if (total == null || used == null) throw qErr("parse_error", "openrouter shape");
+    return { balance: { amount: Math.round((total - used) * 100) / 100, currency: "USD" } };
   },
 });
 
@@ -650,7 +685,9 @@ ADAPTERS.push({
     if (!cp) return null;
     let host = "";
     try { host = new URL(cp.baseUrl).hostname; } catch (e) { return null; }
-    if (host === "api.siliconflow.cn" || host === "api.siliconflow.com") return { key: cp.apiKey, origin: "cfg" };
+    if (host === "api.siliconflow.cn" || host === "api.siliconflow.com") return {
+      key: cp.apiKey, origin: "cfg", apiOrigin: "https://" + host, currency: host.endsWith(".com") ? "USD" : "CNY" };
+
     return null;
   },
   resolveCred(j, ctx) {
@@ -664,9 +701,11 @@ ADAPTERS.push({
     return null;
   },
   async fetchOne(j, ctx, cred, ctl) {
-    const body = await j.http.getJson("https://api.siliconflow.cn/v1/user/info", { authorization: "Bearer " + cred.token }, ctl);
+    let body;
+    try { body = await j.http.getJson((ctx.apiOrigin || "https://api.siliconflow.cn") + "/v1/user/info", { authorization: "Bearer " + cred.token }, ctl); }
+    catch (e) { if (e && e.httpStatus === 410) throw qErr("unsupported", "siliconflow quota endpoint retired", { reason: "endpoint_retired" }); throw e; }
     const d = (body && body.data) || {};
-    const v = parseCurrencyAmount(d.balance != null ? d.balance : d.totalBalance, d.currency || "CNY");
+    const v = parseCurrencyAmount(d.totalBalance != null ? d.totalBalance : d.balance, d.currency || ctx.currency || "CNY");
     if (!v) throw qErr("parse_error", "siliconflow shape");
     return { balance: { amount: Math.round(v.amount * 100) / 100, currency: v.currency || "CNY" } };
   },
@@ -837,7 +876,83 @@ ADAPTERS.push({
   },
 });
 
-/* --- 自定义中转（OpenAI legacy 兼容；仅作为 primary 时探测） --- */
+/* sub2api 的 key 用量接口（与推理地址同源，非管理接口）。remaining 可能是最紧
+ * 订阅窗口的剩余，不一定是钱包余额：存在 subscription 时仅输出套餐窗口。 */
+function normalizeSub2api(body) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return null;
+  if (body.isValid === false) throw qErr("auth_failed", "sub2api key unavailable");
+  if (!("isValid" in body) && !("mode" in body)) return null;
+  if (body.isValid !== true || !["balance", "subscription", "unrestricted", "quota", "quota_limited"].includes(body.mode)) {
+    throw qErr("parse_error", "sub2api mode invalid");
+  }
+  const unit = body.unit == null && body.mode === "quota_limited" ? "USD" : body.unit;
+  if (!["USD", "CNY", "credits"].includes(unit)) throw qErr("parse_error", "sub2api unit invalid");
+  if (body.subscription != null && (typeof body.subscription !== "object" || Array.isArray(body.subscription))) {
+    throw qErr("parse_error", "sub2api subscription invalid");
+  }
+  const currency = unit === "credits" ? "CR" : unit;
+  if (body.mode === "quota" || body.mode === "quota_limited") {
+    const value = { label: "sub2api", kind: "plan" };
+    if (body.quota != null) {
+      const quota = body.quota;
+      const limit = num(quota.limit), used = num(quota.used), remaining = num(quota.remaining);
+      if (typeof quota !== "object" || Array.isArray(quota) || limit == null || limit <= 0 ||
+          used == null || used < 0 || remaining == null || (quota.unit != null && quota.unit !== "USD")) {
+        throw qErr("parse_error", "sub2api quota invalid");
+      }
+      value.quotaSummary = { limit, used, remaining, currency: "USD" };
+    }
+    if (body.rate_limits != null) {
+      if (!Array.isArray(body.rate_limits)) throw qErr("parse_error", "sub2api rate limits invalid");
+      const windows = {};
+      for (const entry of body.rate_limits) {
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)) throw qErr("parse_error", "sub2api rate limit invalid");
+        const key = entry.window === "5h" ? "fiveHour" : entry.window === "1d" ? "daily" : entry.window === "7d" ? "weekly" : null;
+        if (!key) continue;
+        const total = num(entry.limit), used = num(entry.used), remaining = num(entry.remaining);
+        if (total == null || total <= 0 || used == null || used < 0 || remaining == null ||
+            (entry.unit != null && entry.unit !== "USD")) throw qErr("parse_error", "sub2api rate limit invalid");
+        windows[key] = { percent: Math.round(clampPct(used / total * 100) * 10) / 10,
+          used, total, remaining, currency: "USD", resetsAt: resetOf(entry.reset_at) };
+      }
+      if (Object.keys(windows).length) value.windows = windows;
+    }
+    if (!value.quotaSummary && !value.windows) throw qErr("parse_error", "sub2api quota missing");
+    return value;
+  }
+  const sub = body.subscription;
+  if (sub && typeof sub === "object" && !Array.isArray(sub)) {
+    const windows = {};
+    for (const [period, key] of [["daily", "daily"], ["weekly", "weekly"], ["monthly", "monthly"]]) {
+      const total = num(sub[period + "_limit_usd"]);
+      const used = num(sub[period + "_usage_usd"]);
+      if (total == null || total <= 0 || used == null || used < 0) continue;
+      const reset = sub[period + "_reset_at"] || sub[period + "_resets_at"];
+      windows[key] = { percent: Math.round(clampPct(used / total * 100) * 10) / 10,
+        used: used, total: total, remaining: total - used, currency: "USD", resetsAt: resetOf(reset) };
+    }
+    if (!Object.keys(windows).length) throw qErr("parse_error", "sub2api subscription windows missing");
+    const expires = typeof sub.expires_at === "string" && Number.isFinite(Date.parse(sub.expires_at)) ? sub.expires_at : "";
+    return { label: "sub2api", kind: "plan", windows: windows,
+      subscription: { name: typeof body.planName === "string" ? body.planName.slice(0, 100) : "", expiresAt: expires } };
+  }
+  if (body.mode !== "balance" && body.mode !== "unrestricted") throw qErr("parse_error", "sub2api balance scope unknown");
+  const remaining = num(body.mode === "unrestricted" ? body.balance : body.remaining);
+  if (remaining == null) throw qErr("parse_error", "sub2api balance missing");
+  return { label: "sub2api", kind: "balance", balance: { amount: remaining, currency: currency } };
+}
+
+function relayQuotaUrls(baseUrl) {
+  let url;
+  try { url = new URL(baseUrl); } catch (e) { throw qErr("parse_error", "bad baseUrl"); }
+  if (url.protocol !== "https:" && !(url.protocol === "http:" &&
+      ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))) throw qErr("parse_error", "untrusted query scheme");
+  if (url.username || url.password) throw qErr("parse_error", "baseUrl userinfo rejected");
+  const prefix = url.pathname.replace(/\/+$/, "").replace(/\/v1$/, "");
+  return { sub2api: url.origin + prefix + "/v1/usage", legacy: url.origin + url.pathname.replace(/\/+$/, "") };
+}
+
+/* --- 自定义中转（sub2api / OpenAI legacy；仅查询配置地址的同源） --- */
 ADAPTERS.push({
   id: "custom", label: "中转站", kind: "balance", defaultOn: false,
   envKeys: [],
@@ -849,15 +964,23 @@ ADAPTERS.push({
   resolveCred(j, ctx) { return { token: ctx.cp.apiKey, fingerprint: "cfg:" + sha16(ctx.cp.apiKey + "|" + ctx.cp.baseUrl), source: "provider_config" }; },
   async fetchOne(j, ctx, cred, ctl) {
     const cp = ctx.cp;
-    let host = "";
-    try { host = new URL(cp.baseUrl).hostname; } catch (e) { throw qErr("parse_error", "bad baseUrl"); }
-    const sub = await j.http.maybeGetJson(cp.baseUrl + "/dashboard/billing/subscription", { authorization: "Bearer " + cred.token }, ctl);
+    const urls = relayQuotaUrls(cp.baseUrl);
+    const headers = { authorization: "Bearer " + cred.token };
+    let usage = null;
+    try { usage = await j.http.getJson(urls.sub2api, headers, ctl); }
+    catch (e) {
+      if (!e || (e.code !== "parse_error" && e.httpStatus !== 404 && e.httpStatus !== 405)) throw e;
+    }
+    const detected = normalizeSub2api(usage);
+    if (detected) return detected;
+    const sub = await j.http.maybeGetJson(urls.legacy + "/dashboard/billing/subscription", headers, ctl);
     if (!sub) return null;   // 识别不了的网关：无可展示余额（unsupported 由调度器标注）
     const hard = num(sub.hard_limit_usd);
     if (hard == null || hard >= 1e8) return null;   // 按量后付无固定池
-    const usage = await j.http.maybeGetJson(cp.baseUrl + "/dashboard/billing/usage", { authorization: "Bearer " + cred.token }, ctl);
-    const used = usage && num(usage.total_usage) != null ? num(usage.total_usage) / 100 : 0;
-    return { balance: { amount: Math.round((hard - used) * 100) / 100, currency: "USD" } };
+    const billed = await j.http.getJson(urls.legacy + "/dashboard/billing/usage", headers, ctl);
+    const cents = billed && num(billed.total_usage);
+    if (cents == null || cents < 0) throw qErr("parse_error", "legacy usage missing");
+    return { balance: { amount: Math.round((hard - cents / 100) * 100) / 100, currency: "USD" } };
   },
 });
 const ADAPTER_BY_ID = new Map(ADAPTERS.map((a) => [a.id, a]));
@@ -868,8 +991,7 @@ function createQuotaClient(opts) {
   const env = o.env || process.env;
   const now = o.now || (() => Date.now());
   const fetchImpl = o.fetchImpl || (typeof fetch === "function" ? fetch : null);
-  const credsPath = o.credsPath || path.join(os.homedir(), ".zcode", "v2", "credentials.json");
-  const customCfgPath = o.customCfgPath || path.join(os.homedir(), ".zcode", "v2", "provider_config.json");
+  const { credsPath, customCfgPath, builtinCfgPath } = resolveQuotaPaths(o);
   const secretsPath = o.secretsPath || path.join(path.dirname(credsPath), "quota-secrets.json");
   const readFile = o.readFile || ((p) => JSON.parse(fs.readFileSync(p, "utf8")));
   const log = o.log || (() => {});
@@ -900,7 +1022,7 @@ function createQuotaClient(opts) {
       const ra = headers && typeof headers.get === "function" ? headers.get("retry-after") : null;
       return qErr("rate_limited", "HTTP 429", { retryAfterMs: parseRetryAfterMs(ra) });
     }
-    return qErr("network_error", "HTTP " + status);
+    return qErr("network_error", "HTTP " + status, { httpStatus: status });
   }
   async function rawFetch(url, headers, ctl, method) {
     const res = await fetchImpl(url, {
@@ -959,7 +1081,7 @@ function createQuotaClient(opts) {
   const j = {
     env, now, fetchImpl, readFile, secrets: { sources: {} }, customCfgPath, log, http, extras,
     credsPath,
-    customProviderOf: (pid) => resolveCustomProvider(pid, readFile, customCfgPath),
+    customProviderOf: (pid) => resolveCustomProvider(pid, readFile, customCfgPath, builtinCfgPath),
   };
 
   /* 源状态：id → st（v96 单源状态机的每源实例） */
@@ -1046,7 +1168,7 @@ function createQuotaClient(opts) {
       .catch((e) => {
         const target = e && e.st || st;
         if (e && e.code === "no_plan") { if (ep === target.epoch) { target.status = "no_plan"; target.nextAt = Infinity; target.lastError = "no plan"; if (onUpdate) onUpdate(); } return; }
-        if (e && e.code === "unsupported") { if (ep === target.epoch) { target.status = "unsupported"; target.reason = "gateway"; target.value = null; target.lastError = ""; target.nextAt = now() + PARSE_BACKOFF_MS; if (onUpdate) onUpdate(); } return; }
+        if (e && e.code === "unsupported") { if (ep === target.epoch) { target.status = "unsupported"; target.reason = e.reason || "gateway"; target.value = null; target.lastError = ""; target.nextAt = now() + PARSE_BACKOFF_MS; if (onUpdate) onUpdate(); } return; }
         settleError(target, ep, e);
       })
       .finally(() => { clearTimeout(kill); });
@@ -1056,6 +1178,8 @@ function createQuotaClient(opts) {
   }
 
   function tickSource(adapter, st, force) {
+    j.secrets = readSecrets();
+    if (((j.secrets.sources || {})[adapter.id] || {}).enabled === false) return;
     const t = now();
     if (st.inFlight) return;
     if (!force && t < st.nextAt) return;
@@ -1093,6 +1217,15 @@ function createQuotaClient(opts) {
     startFetch(adapter, st);
   }
 
+  /* 配置撤销清展示值并换代；不通知 onUpdate，避免 view/settings 重评递归推送。 */
+  function deactivateSource(st, status) {
+    if (st.status === status && !st.value && !st.inFlight && !st.fingerprint) return;
+    st.epoch += 1;
+    if (st.ctl) { try { st.ctl.abort(); } catch (e) { } }
+    Object.assign(st, { status, reason: "", value: null, fetchedAt: 0, nextAt: 0,
+      backoffIdx: 0, fingerprint: "", cred: null, ctl: null, inFlight: null, lastError: "" });
+  }
+
   /* 活跃源集合：primary + 全部可解析的零配置适配器 + secrets 显式启用的配置适配器 */
   function activeSet() {
     j.secrets = readSecrets();
@@ -1102,27 +1235,49 @@ function createQuotaClient(opts) {
       if (a && primaryId !== "team") {
         const st = stateOf(primaryId);
         if (!st.ctx) st.ctx = primaryCtx;
-        set.set(primaryId, { a, st });
+        const cfg = (j.secrets.sources || {})[a.id] || {};
+        if (cfg.enabled !== false && (a.id !== "anthropic" || cfg.enabled === true)) set.set(primaryId, { a, st });
       } else if (primaryId === "team") {
         const st = stateOf("team");
-        if (st.status !== "unsupported") setState(st, { status: "unsupported", reason: "team" });
+        if (st.status !== "unsupported") Object.assign(st, { status: "unsupported", reason: "team" });
       }
     }
     for (const a of ADAPTERS) {
       if (a.id === "custom" || set.has(a.id)) continue;   // custom 系只在 primary 分支进入
       const secCfg = (j.secrets.sources || {})[a.id] || {};
       const enabledCfg = secCfg.enabled === true;
-      if (a.defaultOn || enabledCfg) {
+      const hasEnv = a.envKeys.some((key) => !!j.env[key]);
+      const hasConfigured = !!(secCfg.apiKey || secCfg.cookie || secCfg.token || secCfg.accessKeyId);
+      if (secCfg.enabled !== false && (enabledCfg || (a.defaultOn && (hasEnv || hasConfigured)))) {
         const st = stateOf(a.id);
         if (!st.ctx) {
-          const auto = secCfg.apiKey || secCfg.cookie || secCfg.token || (a.id === "scnet" && num(secCfg.planCredits) > 0) ||
+          const auto = hasEnv || secCfg.apiKey || secCfg.cookie || secCfg.token || (a.id === "scnet" && num(secCfg.planCredits) > 0) ||
             (a.id === "anthropic") || (a.id === "volcano" && (j.env.VOLCENGINE_ACCESS_KEY_ID || secCfg.accessKeyId));
-          if (auto || a.id === "scnet") st.ctx = { config: true };   // anthropic 已改显式启用：enabled+凭据可得才激活
+          if (auto || a.id === "scnet") st.ctx = { config: true, family: a.id };   // anthropic 已改显式启用：enabled+凭据可得才激活
         }
         if (st.ctx) set.set(a.id, { a, st });
         else if (a.defaultOn) {
           /* 零配置适配器但探测不到 provider：仅当 primary 是它时才标 not_configured，否则静默跳过 */
         }
+      }
+    }
+    for (const [id, st] of states) {
+      const a = id.indexOf("custom:") === 0 ? ADAPTER_BY_ID.get("custom") : ADAPTER_BY_ID.get(id);
+      if (!a) continue;
+      const cfg = (j.secrets.sources || {})[a.id] || {};
+      if (cfg.enabled === false) {
+        deactivateSource(st, "disabled");
+      } else if (a.id !== "custom" && !set.has(id)) {
+        deactivateSource(st, "not_configured");
+      } else if (set.has(id) && st.ctx) {
+        const cred = a.resolveCred(j, st.ctx);
+        if (!cred || cred.decryptFailed) {
+          deactivateSource(st, "not_configured");
+          if (cred && cred.decryptFailed) {
+            st.reason = "decrypt";
+            st.lastError = "credential decrypt failed";
+          }
+        } else if (st.status === "disabled") st.status = "idle";
       }
     }
     return set;
@@ -1138,8 +1293,10 @@ function createQuotaClient(opts) {
     const t = now();
     const a = st.id.indexOf("custom:") === 0 ? ADAPTER_BY_ID.get("custom") : ADAPTER_BY_ID.get(st.id);
     const ttl = a && a.kind === "balance" ? TTL_BALANCE_MS : TTL_MS;
-    const v = { status: st.status, reason: st.reason, fetchedAt: st.fetchedAt,
+    const cfg = a ? ((j.secrets.sources || {})[a.id] || {}) : {};
+    const v = { status: cfg.enabled === false ? "disabled" : st.status, reason: st.reason, fetchedAt: st.fetchedAt,
       stale: !!(st.fetchedAt && t - st.fetchedAt > ttl), error: st.lastError };
+    if (cfg.enabled === false) return v;
     if (st.value) {
       v.level = st.value.level;
       v.plan = st.value.plan || null;
@@ -1148,6 +1305,10 @@ function createQuotaClient(opts) {
       v.tools = st.value.tools;
       v.models = st.value.models;
       v.ledger = st.value.ledger || null;
+      if (st.value.label) v.label = st.value.label;
+      if (st.value.kind) v.kind = st.value.kind;
+      if (st.value.subscription) v.subscription = st.value.subscription;
+      if (st.value.quotaSummary) v.quotaSummary = st.value.quotaSummary;
     }
     return v;
   }
@@ -1181,6 +1342,30 @@ function createQuotaClient(opts) {
       if (p) byProvider[p] = r.id || "";
     },
     credentialsChanged() {
+      /* 同一 provider 的 key/baseURL 也可能被修改；重读实际配置并重判适配器，
+       * 不能沿用旧 ctx 或让一次 unsupported 永久锁住后来补全的 MiniMax 规则。 */
+      const registered = new Set(Object.keys(byProvider));
+      if (primaryProvider) registered.add(primaryProvider);
+      for (const provider of registered) {
+        const resolved = resolvePrimary(provider);
+        const previousId = byProvider[provider] || "";
+        const previous = states.get(previousId);
+        if (resolved.id !== previousId || JSON.stringify(resolved.ctx || null) !== JSON.stringify(previous ? previous.ctx : null)) {
+          if (previous) deactivateSource(previous, "not_configured");
+          byProvider[provider] = resolved.id || "";
+          if (resolved.id) {
+            const next = stateOf(resolved.id);
+            deactivateSource(next, "idle");
+            next.ctx = resolved.ctx || null;
+            next.nextAt = 0;
+          }
+        }
+        if (provider === primaryProvider) {
+          primaryId = resolved.id;
+          primaryCtx = resolved.ctx || null;
+        }
+      }
+      activeSet();   // 总开关关闭时也撤销旧额度；只重评本地配置，不发请求/回调
       /* 唤醒"值得重评"的源：冻结态（Infinity）重评后仍由 status 短路（指纹未变不复 fetch）；
        * not_configured 唤醒以承接 secrets/供应商配置刚启用；宿主凭据源即时重拉（token 刷新）。
        * ok 态保持 TTL——指纹在其自然到期重查时校验，避免一次 secrets 写入全源冗余刷新。 */
@@ -1200,6 +1385,7 @@ function createQuotaClient(opts) {
       }
     },
     view() {
+      activeSet();   // 配置撤销立即可见，不等待下一轮联网 tick
       const sources = {};
       for (const [id, st] of states) sources[id] = entryView(st);
       const out = { active: primaryId || "", byProvider: byProvider, sources };
@@ -1209,11 +1395,12 @@ function createQuotaClient(opts) {
         fetchedAt: prim.fetchedAt, stale: prim.stale, error: prim.error,
         level: prim.level, plan: prim.plan, balance: prim.balance,
         windows: prim.windows, tools: prim.tools, models: prim.models, ledger: prim.ledger,
+        label: prim.label, kind: prim.kind, subscription: prim.subscription, quotaSummary: prim.quotaSummary,
       });
       return out;
     },
     sourcesConfig() {   // ⚙ 面板数据源列表（不回显凭据值）
-      j.secrets = readSecrets();
+      activeSet();
       const list = [];
       for (const a of ADAPTERS) {
         if (a.id === "custom") continue;
@@ -1221,7 +1408,7 @@ function createQuotaClient(opts) {
         const st = states.get(a.id);
         list.push({
           id: a.id, label: a.label, kind: a.kind, defaultOn: a.defaultOn, unverified: !!a.unverified,
-          enabled: a.defaultOn || cfg.enabled === true,
+          enabled: cfg.enabled !== false && (a.defaultOn || cfg.enabled === true),
           credentialFields: a.id === "mimo" ? ["cookie"] : a.id === "volcano" ? ["accessKeyId", "secretAccessKey"] : a.id === "scnet" ? ["planCredits", "planStart"] : a.id === "anthropic" ? ["token"] : ["apiKey"],
           keyConfigured: !!(cfg.apiKey || cfg.cookie || cfg.token || cfg.accessKeyId || (a.id === "scnet" && num(cfg.planCredits) > 0)),
           keySource: st && st.cred ? st.cred.source : "",
@@ -1245,11 +1432,15 @@ function createQuotaClient(opts) {
 
 module.exports = {
   createQuotaClient,
+  resolveQuotaPaths,
+  resolveCustomProvider,
   decryptValue,
   deriveCipherKey,
   jwtExpMs,
   normalizeQuotaBody,
   normalizeSubscriptionPlan,
+  normalizeSub2api,
+  relayQuotaUrls,
   isNoPlanMessage,
   normalizeMimoCookie,
   parseCurrencyAmount,

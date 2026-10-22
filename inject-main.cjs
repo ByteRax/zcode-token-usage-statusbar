@@ -709,12 +709,11 @@ acknowledgeRestart();
  * （overlay 收不到 quota 字段即隐藏 chip）。凭据只在 quota-client 进程内存流转；
  * 诊断只记 status/HTTP code/错误摘要，token 与请求头绝不进日志。 */
 try {
-  const { createQuotaClient } = require("./quota-client.cjs");
-  const quotaHome = (process.env && process.env.ZCODE_DESKTOP_HOME_DIR) || app.getPath("home");
-  const quotaCredsPath = path.join(quotaHome, ".zcode", "v2", "credentials.json");
+  const { createQuotaClient, resolveQuotaPaths } = require("./quota-client.cjs");
+  const quotaPaths = resolveQuotaPaths({ defaultHome: app.getPath("home") });
   const QUOTA_SECRETS = path.join(HERE, "quota-secrets.json");
   quotaClient = createQuotaClient({
-    credsPath: quotaCredsPath,
+    ...quotaPaths,
     secretsPath: QUOTA_SECRETS,
     log: (...a) => LOG("[quota]", ...a),
     onUpdate: () => {   // 手动刷新/解冻等结算：拿最近成功快照补推（不触发 Python 重查）
@@ -723,29 +722,39 @@ try {
       for (const wc of webContents.getAllWebContents()) pushOnce(wc, withQuota);
     },
   });
-  /* credentials.json 变化（宿主刷新 token/重登）：重读指纹，变化即解冻 auth_failed/no_plan。
-   * 与 watchDb 同款：目录监听（宿主可能原子替换文件，文件级 watch 会丢）+ 300ms 去抖 + 错误重挂。 */
-  let quotaCredWatcher = null, quotaCredDebounce = 0;
-  const watchQuotaCredentials = () => {
-    if (quotaCredWatcher) return;
-    try {
-      quotaCredWatcher = fs.watch(path.dirname(quotaCredsPath), (ev, f) => {
-        if (f && f !== "credentials.json") return;
-        clearTimeout(quotaCredDebounce);
-        quotaCredDebounce = setTimeout(() => {
-          if (!quotaClient || !quotaEnabled()) return;
-          quotaClient.credentialsChanged();
-          quotaClient.tick();
-        }, 300);
-      });
-      quotaCredWatcher.on("error", () => {
-        try { quotaCredWatcher.close(); } catch (e) { }
-        quotaCredWatcher = null;
-        setTimeout(watchQuotaCredentials, 5000);
-      });
-    } catch (e) { setTimeout(watchQuotaCredentials, 5000); }
-  };
-  watchQuotaCredentials();
+  /* 监听实际凭据与 builtin/personal 目录（原子替换文件也能收到），配置变更重判归属并解冻。 */
+  const quotaWatchDirs = new Map();
+  for (const [file, dir] of [[quotaPaths.credsPath, quotaPaths.credsDir],
+    [quotaPaths.customCfgPath, quotaPaths.customCfgDir], [quotaPaths.builtinCfgPath, quotaPaths.builtinCfgDir]]) {
+    if (!file) continue;
+    if (!quotaWatchDirs.has(dir)) quotaWatchDirs.set(dir, new Set());
+    const filePath = /^(?:[a-z]:[\\/]|\\\\)/i.test(file) ? path.win32 : path.posix;
+    quotaWatchDirs.get(dir).add(filePath.basename(file));
+  }
+  let quotaCredDebounce = 0;
+  for (const [dir, names] of quotaWatchDirs) {
+    let watcher = null;
+    const watchQuotaCredentials = () => {
+      if (watcher) return;
+      try {
+        watcher = fs.watch(dir, (ev, f) => {
+          if (f && !names.has(String(f))) return;
+          clearTimeout(quotaCredDebounce);
+          quotaCredDebounce = setTimeout(() => {
+            if (!quotaClient || !quotaEnabled()) return;
+            quotaClient.credentialsChanged();
+            quotaClient.tick();
+          }, 300);
+        });
+        watcher.on("error", () => {
+          try { watcher.close(); } catch (e) { }
+          watcher = null;
+          setTimeout(watchQuotaCredentials, 5000);
+        });
+      } catch (e) { setTimeout(watchQuotaCredentials, 5000); }
+    };
+    watchQuotaCredentials();
+  }
   setInterval(() => {   // 兜底：not_configured 低频重探/退避到点补拉（活跃时 handlePayload 也会 tick）
     if (hasWindows() && quotaEnabled()) quotaClient.tick();
   }, 60000);
@@ -789,7 +798,13 @@ function writeQuotaSecrets(mutate) {
   } catch (e) { LOG("quota secrets write failed:", e.message); return; }
   if (quotaClient) {
     quotaClient.credentialsChanged();
-    if (quotaEnabled()) quotaClient.tick();   // 总开关关闭时不触发联网（与手动刷新同口径）
+    if (quotaEnabled()) {
+      quotaClient.tick();   // 总开关关闭时不触发联网（与手动刷新同口径）
+      if (lastGoodPayload) {
+        const withQuota = Object.assign({}, lastGoodPayload, { quota: quotaClient.view() });
+        for (const wc of webContents.getAllWebContents()) pushOnce(wc, withQuota);
+      }
+    }
   }
   broadcastPluginState();   // 面板状态无论开关都要刷新（写入结果回显）
 }

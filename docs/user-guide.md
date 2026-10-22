@@ -463,3 +463,13 @@ python3 patch_install.py check
 - 不再使用该市场时，市场页已移除它，对应缓存也已清理。
 
 不必为了卸载删除 `db.sqlite`；它是 ZCode 自己的用量与会话数据。
+
+## sub2api 与余额查询支持范围
+
+自定义供应商使用 sub2api 时，插件使用该配置的 key 在同源 `/v1/usage` 查询，无需后台管理密钥。订阅型数据展示日／周／月的用量、限额、剩余与已用比例；remaining 可能等于每日剩余，不能当充值余额。仅余额型响应才显示余额；重置时间只展示接口明确返回的字段。
+
+OpenRouter 账户余额需设置 Management Key 或 `OPENROUTER_MANAGEMENT_KEY`；普通推理 key 不代表管理权限。SiliconFlow 返回 410 时表示接口已停用，不代表余额为零。其他厂商的发现条件、凭据依赖与实测程度见[额度支持审计矩阵](quota-support-audit.md)。
+
+### 非默认 ZCode 数据目录
+
+额度查询跟随宿主的 `ZCODE_DATA_BASE_DIR`，优先采用 `ZCODE_PERSONAL_PROVIDER_CONFIG_FILE` 与 `ZCODE_BUILTIN_PROVIDER_CONFIG_FILE` 指向的实际配置；凭据读取与文件监听使用同一实际目录。迁移数据后无需复制 key 回旧 HOME。个人配置只保存 key 而继承内置 baseUrl 的 MiniMax 规则同样可识别；不会按任意模型名称猜测查询地域。主进程文件改动需完全退出并重启客户端才生效。

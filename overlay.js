@@ -407,17 +407,35 @@
     var head = (pl && (pl.productName || pl.version))
       ? [pl.productName, pl.version].filter(Boolean).map(esc).join(" · ") +
         (pl.validEnd ? L(" · 有效期至 ", " · valid until ") + esc(pl.validEnd) : "")
-      : quotaFamilyLabel(d.provider) + (q.level ? " " + esc(quotaLevelLabel(q.level)) : "");
+      : esc(q.label || quotaFamilyLabel(d.provider)) + (q.level ? " " + esc(quotaLevelLabel(q.level)) : "");
     var out = css + '<div class="qt-h">' + L("套餐额度", "Plan quota") + " · " + head + "</div>";
     var w = q.windows || {};
     var winRow = function (label, e) {
       if (!e) return "";
       var pct = typeof e.percent === "number" ? (Math.round(e.percent * 10) / 10) + "%" : "—";
       var rs = qTime(e.resetsAt);
-      return row(label, L("已用 ", "used ") + pct + (rs ? " · " + L("重置 ", "resets ") + rs : ""));
+      var detail = L("已用 ", "used ") + pct;
+      if (typeof e.used === "number" && typeof e.total === "number" && typeof e.remaining === "number") {
+        detail += " · " + quotaBalanceText({ amount: e.used, currency: e.currency }) + " / " +
+          quotaBalanceText({ amount: e.total, currency: e.currency }) + " · " + L("剩余 ", "remaining ") +
+          quotaBalanceText({ amount: e.remaining, currency: e.currency });
+      }
+      return row(label, detail + (rs ? " · " + L("重置 ", "resets ") + rs : ""));
     };
-    out += winRow(L("5小时窗口", "5-hour window"), w.fiveHour) + winRow(L("本周窗口", "This week"), w.weekly) +
+    out += winRow(L("每日窗口", "Daily window"), w.daily) + winRow(L("5小时窗口", "5-hour window"), w.fiveHour) + winRow(L("本周窗口", "This week"), w.weekly) +
       winRow(L("月度窗口", "Monthly"), w.monthly);
+    if (q.quotaSummary) {
+      var summary = q.quotaSummary;
+      out += row(L("Key 总额度", "Key quota"),
+        L("已用 ", "used ") + quotaBalanceText({ amount: summary.used, currency: summary.currency }) + " / " +
+        quotaBalanceText({ amount: summary.limit, currency: summary.currency }) + " · " + L("剩余 ", "remaining ") +
+        quotaBalanceText({ amount: summary.remaining, currency: summary.currency }));
+    }
+    if (q.subscription) {
+      if (q.subscription.name) out += row(L("订阅", "Subscription"), esc(q.subscription.name));
+      var expiry = qTime(q.subscription.expiresAt);
+      if (expiry) out += row(L("订阅截止", "Subscription ends"), expiry);
+    }
     if (q.balance && typeof q.balance.amount === "number" && isFinite(q.balance.amount)) {
       var balTxt = quotaBalanceText(q.balance);
       if (q.balance.parts && q.balance.parts.length) {
@@ -432,7 +450,7 @@
         var sv = d.all.sources[sid];
         if (!sv || sv.status !== "ok") continue;
         var sum = sv.balance && typeof sv.balance.amount === "number" ? quotaBalanceText(sv.balance)
-          : (sv.windows ? ["fiveHour", "weekly", "monthly"].map(function (k) {
+          : (sv.windows ? ["daily", "fiveHour", "weekly", "monthly"].map(function (k) {
               return sv.windows[k] && typeof sv.windows[k].percent === "number" ? Math.round(sv.windows[k].percent) + "%" : null;
             }).filter(Boolean).join(" ") : "✓");
         others.push((d.srcLabels && d.srcLabels[sid] || sid) + " " + sum);
@@ -2740,7 +2758,7 @@
     }
     function srcStatusText(sv) {
       var m = { ok: "✓", idle: L("待查询", "pending"), not_configured: L("未配置凭据", "credential missing"),
-        auth_failed: L("认证失效", "auth failed"), no_plan: L("无订阅", "no subscription"),
+        auth_failed: L("认证失效", "auth failed"), disabled: L("已关闭", "disabled"), no_plan: L("无订阅", "no subscription"),
         rate_limited: L("限流中", "rate limited"), network_error: L("查询失败", "failed"),
         parse_error: L("响应异常", "bad response"), unsupported: L("不支持", "unsupported") };
       return m[sv.status] || sv.status || "";
@@ -2766,7 +2784,7 @@
           var field = sv.credentialFields[f];
           var isCred = field === "apiKey" || field === "cookie" || field === "token" || field === "secretAccessKey";
           credFields += '<input type="' + (isCred ? "password" : "text") + '" class="zu-src-field" data-src="' + sv.id +
-            '" data-field="' + field + '" placeholder="' + ((SRC_FIELD_LABELS || {})[field] || field) +
+            '" data-field="' + field + '" placeholder="' + (sv.id === "openrouter" && field === "apiKey" ? "Management Key" : ((SRC_FIELD_LABELS || {})[field] || field)) +
             (isCred && sv.keyConfigured ? L("（已配置，输入以更换）", " (configured)") : "") + '" autocomplete="off">';
         }
         html += '<div class="zu-src-row" data-src="' + sv.id + '">' +
@@ -3430,7 +3448,7 @@
     function quotaSegs(q) {
       var w = q && q.windows, out = [];
       if (!w) return out;
-      var defs = [["fiveHour", "5小时", "5h"], ["weekly", "7天", "7d"]];
+      var defs = [["daily", "今日", "1d"], ["fiveHour", "5小时", "5h"], ["weekly", "7天", "7d"], ["monthly", "本月", "1mo"]];
       for (var i = 0; i < defs.length; i++) {
         var e = w[defs[i][0]];
         if (e && typeof e.percent === "number") out.push({ label: L(defs[i][1], defs[i][2]), pct: e.percent });
@@ -3450,7 +3468,7 @@
       /* 按 provider 选源：内置 account:* → family 源；自定义 → byProvider 映射（主进程
        * noteProvider 时记录），未映射的自定义退 custom 源。多窗异 provider 各取各的源。 */
       var q = lastQuota, st = q.status;
-      if (st === "not_configured" || st === "unsupported") return null;
+      if (st === "not_configured" || st === "unsupported" || st === "disabled") return null;
       var warn = (st !== "ok" && st !== "idle") ? '<span class="zu-qwarn">⚠</span>' : "";
       var bal = q.balance;
       if (bal && typeof bal.amount === "number" && isFinite(bal.amount)) {
@@ -3467,6 +3485,12 @@
         return { kind: "value", stale: !!q.stale,
           html: html + warn,
           aria: L("套餐已用 ", "Plan used ") + segs.map(function (s) { return s.label + " " + Math.round(s.pct) + "%"; }).join(L("，", ", ")) };
+      }
+      var summary = q.quotaSummary;
+      if (summary && typeof summary.remaining === "number" && isFinite(summary.remaining)) {
+        var left = quotaBalanceText({ amount: summary.remaining, currency: summary.currency });
+        return { kind: "quota", stale: !!q.stale, html: '<span class="zu-qseg ok">' + L("额度 ", "Quota ") + left + "</span>" + warn,
+          aria: L("Key 剩余额度 ", "Key quota remaining ") + left };
       }
       if (st === "ok" || st === "idle") return null;   // 还没有可显示的窗口（首查在途/接口回空）
       return { kind: "error", html: '<span class="zu-qwarn">⚠</span>', aria: quotaStatusText(st) || st };
