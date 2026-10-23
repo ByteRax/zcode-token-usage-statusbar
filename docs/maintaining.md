@@ -141,7 +141,7 @@ GitHub 自动更新要求已注册市场的 `marketplace.json` 指向同一个 R
 
 国内用户可将市场注册到 `https://gitcode.com/tanranran/zcode-token-usage-statusbar.git#plugin-releases-gitcode`（宿主按通用 git 来源拉取清单，ZIP 从 GitCode Release 资产下载并核对 SHA256）。发布时在 `publish` 追加 `--gitcode-repo tanranran/zcode-token-usage-statusbar`：
 
-1. GitHub Release 验收通过后，工具自动在 GitCode 创建（或复用）同 tag Release，正文与 GitHub 一致，上传同一字节的 ZIP 与 `release-manifest.json`，回读逐字节核对，再按真实 `browser_download_url` 生成 `marketplace-release-gitcode.json` 到资产目录。
+1. 前提：GitCode 镜像上已有同一个 tag 且指向发布提交。创建 Release 的请求（`tag_name`、`name`、`body`）不带 `target_commitish`，GitCode 官方 API 文档写的是不传则取默认分支的最新提交，缺 tag 时可能据此建出指向错误提交的 tag（未实测）；发布前核对镜像上的 tag（附注 tag 要看 `^{}` 行）：`git ls-remote gitcode 'refs/tags/vX.Y.Z' 'refs/tags/vX.Y.Z^{}' | tail -n 1 | cut -f1` 须等于 `git rev-parse 'vX.Y.Z^{commit}'`，细节见发布技能的「GitCode tag 闸门」。GitHub Release 验收通过后，工具自动在 GitCode 创建（或复用）同 tag Release，正文与 GitHub 一致，上传同一字节的 ZIP 与 `release-manifest.json`，回读逐字节核对，再按真实 `browser_download_url` 生成 `marketplace-release-gitcode.json` 到资产目录。
 2. 将该清单作为 `plugin-releases-gitcode` 分支根目录的 `marketplace.json` 提交并推送（与其它分支一样经双 push URL 同步两台主机；该分支内容刻意与 `plugin-releases` 不同，指向 GitCode 资产 URL）。
 3. 回读两个渠道分支，核对版本、ZIP URL 与 hash。任一渠道未就绪都不得宣称该渠道可更新。
 

@@ -1,6 +1,6 @@
 # 发布失败与回退
 
-`release_tool.py publish` 的核验失败都会停下并保留现场，不会自动清理。先汇报现状，处置由用户决定。下面这些动作各自需要用户针对**该具体动作**的明确授权，不能由「授权发版」推出：删除 Release 或 draft、移动或删除已推送的 tag、重新发布、手动转正、重推渠道清单。agent 汇报事实并说明有哪些选项，但不替用户选择、不自行执行。
+`release_tool.py publish` 的核验失败都会停下并保留现场，不会自动清理。先汇报现状，处置由用户决定。下面这些动作各自需要用户针对**该具体动作**的明确授权，不能由「授权发版」推出：删除 Release 或 draft、移动或删除已推送的 tag、重新发布、手动转正、重推渠道清单。agent 汇报事实并给出可行的做法，但不替用户选择、不自行执行；移动已推送的 tag（需要 force push）不在主动提出的做法之内，只有用户自己提出时才讨论。
 
 ## draft 残留
 
@@ -28,13 +28,13 @@
 - 不重跑（preflight 会因 Release 已存在而拒绝），也不删除重发。
 - 汇报 `gh release view vX.Y.Z --repo OWNER/REPO --json url,body,isDraft,assets` 的实际内容，明确区分「GitHub 已公开」与「GitCode 镜像失败」。前两种核验不符发生在镜像步骤之前，此时 GitCode 上还没有 Release。
 - 正文不符：按 `release-notes.md`「修订已发布说明」用 `gh release edit --notes-file` 修订。资产不符：停下，由用户决策。
-- GitCode 镜像失败：缺 `GITCODE_TOKEN` 不是原因（缺该变量时 `--publish` 在创建 draft 之前就整体失败）。能走到这一步的原因是令牌失效或权限不足（GitCode API 返回 401/403）、网络错误、资产下载主机不在白名单、回读字节不符。`release_tool.py` 没有单独重跑镜像的入口，补镜像的做法（直接调用 `gitcode_mirror`，或在 GitCode 手动建同 tag Release 并上传两个资产）由用户决定，不要为此删除 GitHub Release。
+- GitCode 镜像失败：缺 `GITCODE_TOKEN` 不是原因（缺该变量时 `--publish` 在创建 draft 之前就整体失败）。能走到这一步的原因是令牌失效或权限不足（GitCode API 返回 401/403）、网络错误、资产下载主机不在白名单、回读字节不符。`release_tool.py` 没有单独重跑镜像的入口，补镜像的做法（直接调用 `gitcode_mirror`，或在 GitCode 手动建同 tag Release 并上传两个资产）由用户决定，不要为此删除 GitHub Release；无论哪种做法，都先按 SKILL.md「预演与正式发布」里的 GitCode tag 闸门确认镜像上已有同一个 tag 且指向发布提交（创建 Release 的请求不带 `target_commitish`；GitCode 文档写的是不传则取默认分支的最新提交，缺 tag 时可能据此建出指向错误提交的 tag，未实测）。
 
 ## tag 或提交需要变更
 
 阶段 B 的闸门（本地 tag + `--dry-run`）本应拦住这类问题。万一 tag 已推送后才发现要改提交（例如相关文件未提交、行尾与 HEAD 不一致、副本漂移）：已推送的 tag 不许移动或删除。
 
-- 停下来向用户说明，给出两个选项：(a) 升版本号，用新的提交与新 tag 重来；(b) 仅当用户明确要求并授权移动该 tag（这需要 force push，见本文开头的授权要求）才可以做，agent 不主动建议这一项，更不要自行 `git tag -f` 后强推。
+- 停下来向用户说明，推荐升版本号，用新的提交与新 tag 重来。移动该 tag 需要 force push：只有用户自己明确要求并授权时才讨论和执行（见本文开头的授权要求），agent 不主动建议，更不要自行 `git tag -f` 后强推。
 - 事前预防就是阶段 B 的闸门，不要省略。
 
 ## 要求替换已发布版本
@@ -43,4 +43,4 @@
 
 1. 存快照：`gh release view vX.Y.Z --repo OWNER/REPO --json body,assets,tagName,targetCommitish,url > /tmp/release-vX.Y.Z-before.json`。
 2. 说明对已下载旧资产的用户的影响（旧 ZIP 的 SHA256 与新渠道清单会不一致）。
-3. 停止，等用户对每一步分别授权：删除 Release、移动 tag、重新发布、重推渠道清单。
+3. 停止，等用户对每一步分别授权：删除 Release、移动 tag（用户已经提出替换，才把它列为待授权的一步；agent 仍不自行 `git tag -f` 或强推）、重新发布、重推渠道清单。
