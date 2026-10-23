@@ -44,12 +44,27 @@ git show fork/plugin-releases:marketplace.json | diff - /new/artifact-directory/
 
 GitCode Release 的创建与上传属于发布动作，须在 D 阶段的授权语里点名 `--gitcode-repo` 与 GitCode 仓库，因为它和 GitHub 发布是**同一条命令**：`publish --publish` 追加 `--gitcode-repo tanranran/zcode-token-usage-statusbar`，并先设置环境变量 `GITCODE_TOKEN`（令牌走 query 参数，不落盘、不进日志）。缺该变量时 `--publish` 在创建 draft 之前就整体失败（`--dry-run` 不检查）。工具在 GitHub 发布验收后创建或复用同 tag 的 GitCode Release、上传同一字节的 ZIP 与 manifest、回读比对，并在资产目录生成 `marketplace-release-gitcode.json`。该清单形状同上，只是 `url` 指向 GitCode Release 资产；同样不上传、不入 ZIP。
 
-把该清单发布为 `plugin-releases-gitcode` 分支根目录的 `marketplace.json`（这一步属于阶段 E，须另行授权），流程同上，区别有两点：
+把该清单发布为 `plugin-releases-gitcode` 分支根目录的 `marketplace.json`（这一步属于阶段 E，须另行授权），流程同上，区别如下：
 
 - 该分支两端都可能尚不存在，先确认：`git ls-remote fork 'refs/heads/plugin-releases-gitcode'`（只读 GitHub）与 `git ls-remote gitcode 'refs/heads/plugin-releases-gitcode'`（GitCode）。都不存在时没有可派生的分支，改从已验证的正式 tag 建 worktree：`git worktree add --detach .worktrees/channel-gitcode-vX.Y.Z vX.Y.Z`，推送写 `HEAD:refs/heads/plugin-releases-gitcode`。
+- 只有一端存在（常见于此前 `git push fork` 的 GitCode 段失败）：以存在的那一端为准派生。GitHub 端有就用 `fork/plugin-releases-gitcode`；只有 GitCode 端有，先 `git fetch gitcode plugin-releases-gitcode`，再从 `gitcode/plugin-releases-gitcode` 建 worktree。之后 `git push fork HEAD:refs/heads/plugin-releases-gitcode` 会把两端补齐（两段推送都幂等）。
 - 该分支内容刻意与 `plugin-releases` 不同（指向 GitCode 资产 URL），不要互相覆盖。
 
-回读两个渠道分支，核对版本、ZIP URL 与 hash；任一渠道未就绪都不得宣称该渠道可更新。这里的 `GITCODE_TOKEN` 是 API 令牌；`git push fork` 的 GitCode 段用的是 HTTPS 凭据（钥匙串），那一段失败不代表 GitHub 段失败，补配凭据后重推即可。详见 [GitCode 更新渠道](../../../../docs/maintaining.md#gitcode-更新渠道)。
+回读两台主机上的两个渠道分支，与各自的生成清单逐字节对比；任一渠道未就绪都不得宣称该渠道可更新：
+
+```bash
+OUT=/new/artifact-directory          # build 的输出目录
+git fetch fork plugin-releases plugin-releases-gitcode      # GitHub 端
+git fetch gitcode plugin-releases plugin-releases-gitcode   # GitCode 端
+for H in fork gitcode; do
+  git show "${H}/plugin-releases:marketplace.json" | diff - "$OUT/marketplace-release.json" && echo "${H}/plugin-releases 一致"
+  git show "${H}/plugin-releases-gitcode:marketplace.json" | diff - "$OUT/marketplace-release-gitcode.json" && echo "${H}/plugin-releases-gitcode 一致"
+done
+```
+
+只授权了其中一个渠道时，去掉另一个渠道的 fetch 参数与 diff 行。`diff` 有输出或 `git show` 报错都表示那一处没有就绪，不要写成已一致。
+
+这里的 `GITCODE_TOKEN` 是 API 令牌；`git push fork` 的 GitCode 段用的是 HTTPS 凭据（钥匙串），那一段失败不代表 GitHub 段失败，补配凭据后重推即可。详见 [GitCode 更新渠道](../../../../docs/maintaining.md#gitcode-更新渠道)。
 
 ## 更新端验证
 
