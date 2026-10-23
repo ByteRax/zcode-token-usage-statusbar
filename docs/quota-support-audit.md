@@ -1,12 +1,12 @@
 # 额度支持审计矩阵
 
-审计日期：2026-10-22。范围：本仓库 main 开发线及本轮修复，不代表已发布、已安装或全部厂商已真账号验收。
+审计日期：2026-10-22（2026-10-24 增补 ZCode Start Plan 行）。范围：本仓库 main 开发线及本轮修复，不代表已发布、已安装或全部厂商已真账号验收。
 
 ## 结论与证据等级
 
 - **v1.5.2 正式版 ≠ main 开发版**；开发源码、仓库插件副本、安装缓存、稳定运行文件须分别核对，不能以源码存在推断正式版可用。
 - 原“自动支持”承诺已收窄：只对已知协议、明确凭据与可证明的账号归属适配；不是任意供应商、任意中转自动查账。
-- **BigModel、当前 BX-GPT 的 sub2api `/v1/usage` 已本机真实账号实测**。其余源码转写适配按夹具验证理解，**不是真实账号验证**；即使未标 `unverified`，也不因此升级证据等级。
+- **BigModel、当前 BX-GPT 的 sub2api `/v1/usage`、ZCode Start Plan（bigmodel 家族）已本机真实账号实测**。其余源码转写适配按夹具验证理解，**不是真实账号验证**；即使未标 `unverified`，也不因此升级证据等级。
 - **sub2api 已接入自定义中转适配路径**，同源 `/v1/usage` 命中即停止 legacy 探测；尚未发布。
 - 未新增任意域管理接口探测；自定义中转仅在配置地址同源内查询已知用量协议，不猜测管理凭据或跨域发送 key。
 
@@ -17,8 +17,8 @@
 | 对象 | 实装与缺失 | 自动凭据取得 / 额外权限 | 实测程度与解析、展示边界 |
 |---|---|---|---|
 | BigModel 个人 Coding 套餐 | monitor 额度 + 订阅元数据 | 可解密宿主 OAuth；**apiKey 模式连接**（provider `bigmodel-api[-N]`）读 `provider_config.json` 同家族 key（编码套餐 key 优先，baseUrl 须在 bigmodel.cn 域）；支持专用 env 覆盖，不需额外索取管理 key | **本机实测**；账号级套餐池；团队套餐仍不支持 |
-| Z.ai Coding | 已有 Coding monitor 适配 | 宿主 Z.ai OAuth，或 apiKey 模式（`zai-api[-N]`）provider_config 同家族 key（baseUrl 须在 z.ai 域）；与 BigModel 凭据族区分 | 源码/夹具证据，不是真账号验收；不能外推到 Start Plan |
-| Z.ai Start Plan | **未实装专用协议** | 没有已验证的自动取得和查询链 | 宿主按钮存在或 Coding 可查，不代表 Start Plan 受支持 |
+| Z.ai Coding | 已有 Coding monitor 适配 | 宿主 Z.ai OAuth，或 apiKey 模式（`zai-api[-N]`）provider_config 同家族 key（baseUrl 须在 z.ai 域）；与 BigModel 凭据族区分 | 源码/夹具证据，不是真账号验收 |
+| ZCode Start Plan（bigmodel/zai 免费档，如 1024 Dev Day 的 one_time 发放池） | **本轮新增（2026-10-24）**：`zcode.z.ai /api/v1/zcode-plan/billing/balance` 专用适配（`plans[]`/`balances[]` 归一，按 `meter=model_usage` 桶聚合为「套餐」分段——不按 period 过滤，到期语义） | 解密宿主凭据 `zcodejwttoken`（`enc:v1`；OAuth access_token 实测 401 不可用）；请求必须带 `X-Device-Mid`（读 credentials.json 同目录 telemetry-state.json / onboarding-record.json，缺失 fail-closed 不发请求）；可选 secrets 覆盖 | bigmodel 家族 Start Plan 已本机真实账号实测（HTTP 200 全链含源状态与视图，2026-10-24）；zai 家族 start-plan 同链未实测；monitor 与 subscription 端点**不含** Start Plan 数据，同账号编码套餐与 Start Plan 两池并存分源展示 |
 | MiniMax Coding | 已有 remains 适配 | env / 本机 secrets / 已知官方域供应商配置 | 源码转写、夹具验证；剩余比例转已用比例；`weekly_status == 3` 不展示周窗 |
 | Kimi Coding / Moonshot PAYG | Coding 额度；401 回落 PAYG 余额 | env / secrets / 已知官方域供应商配置 | 源码转写、夹具验证；remaining 口径与分转元须分别处理，不能假设所有 Coding key 有 PAYG 权限 |
 | CommandCode | 已有订阅与用量适配 | 专用 key，env / secrets；非通用推理 key 自动发现保证 | 源码转写、夹具验证；需匹配订阅和统计周期；组织账号带 `orgId` 查询，个人订阅（whoami `org:null`）省略 `orgId` 走用户作用域 |

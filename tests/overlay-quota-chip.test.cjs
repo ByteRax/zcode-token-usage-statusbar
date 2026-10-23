@@ -850,3 +850,58 @@ test("refresh and key buttons expose native titles; switched-off sources disable
   assert.ok(source.includes('.zu-src-refresh:disabled{opacity:.4;cursor:default}'), "disabled refresh styling");
   assert.ok(source.includes('disabled: L("已关闭", "off")'), "disabled status maps to a localized label");
 });
+
+test('zcode-start pool: chip shows a plan-pool segment; source routing prefers zcode-start over family', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  h.inject(); h.boot(); h.tick();
+  const NOW2 = Date.now();
+  h.window.__zusageUpdate(h.payload({
+    provider: 'account:bigmodel-start-plan', model: 'GLM-5.3-Flash',
+    quota: {
+      status: 'ok', providerId: 'account:bigmodel-start-plan', fetchedAt: NOW2, stale: false, error: '', level: 'Start',
+      windows: { plan: { percent: 9.3, resetsAt: NOW2 + 2 * 86400e3, expires: true } },
+      models: ['GLM-5.3-Flash', 'GLM-5.3'],
+      plan: { productName: 'ZCode 1024 Dev Day', validStart: '2026-10-23 20:09', validEnd: '2026-10-26 09:00' },
+    },
+  }));
+  const chip = h.chipOf(ui.wrap);
+  assert.ok(chip, 'chip mounted for start-plan provider');
+  assert.equal(chip.innerHTML, '<span class="zu-qseg ok">套餐 9%</span>');
+  assert.equal(chip.getAttribute('aria-label'), '套餐已用 套餐 9%');
+  chip.listeners.get('mouseenter')[0].call(chip);
+  const html = h.tipEl().innerHTML;
+  assert.match(html, /套餐额度 · ZCode 1024 Dev Day · 有效期至 2026-10-26 09:00/);
+  assert.match(html, /套餐池<\/b><span>已用 9\.3% · 到期 \d{4}-\d\d-\d\d \d\d:\d\d/);   // one_time 池用「到期」不用「重置」
+  assert.match(html, /<span class="qt-cur">GLM-5\.3-Flash<\/span>, GLM-5\.3/);
+  assert.match(html, /账号级：同账号所有模型共用/);
+  chip.listeners.get('mouseleave')[0].call(chip);
+  assert.equal(h.tipEl().style.display, 'none');
+});
+
+test('zcode-start routing: start-plan pane never displays the coding-plan family source', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  h.inject(); h.boot(); h.tick();
+  const NOW2 = Date.now();
+  h.window.__zusageUpdate(h.payload({
+    provider: 'account:bigmodel-start-plan', model: 'GLM-5.3-Flash',
+    quota: {
+      active: 'bigmodel', byProvider: { 'account:bigmodel-start-plan': 'zcode-start' },
+      sources: {
+        bigmodel: { status: 'ok', providerId: 'account:bigmodel-individual-coding-plan', fetchedAt: NOW2, stale: false, error: '', level: 'max',
+          windows: { fiveHour: { percent: 3, resetsAt: NOW2 + 3600e3, details: [] }, weekly: null }, models: [],
+          plan: { productName: 'GLM Coding Max', version: 'V1', validStart: '2026-02-28', validEnd: '2027-02-28' } },
+        'zcode-start': { status: 'ok', providerId: 'account:bigmodel-start-plan', fetchedAt: NOW2, stale: false, error: '', level: 'Start',
+          windows: { plan: { percent: 9.3, resetsAt: NOW2 + 2 * 86400e3, expires: true } }, models: ['GLM-5.3-Flash', 'GLM-5.3'],
+          plan: { productName: 'ZCode 1024 Dev Day', validStart: '2026-10-23 20:09', validEnd: '2026-10-26 09:00' } },
+      },
+    },
+  }));
+  const chip = h.chipOf(ui.wrap);
+  assert.ok(chip, 'chip mounted');
+  assert.equal(chip.innerHTML, '<span class="zu-qseg ok">套餐 9%</span>', 'shows the zcode-start pool, not bigmodel 5h');
+  chip.listeners.get('mouseenter')[0].call(chip);
+  const html = h.tipEl().innerHTML;
+  assert.match(html, /ZCode 1024 Dev Day/);
+  assert.doesNotMatch(html, /GLM Coding Max/);
+  assert.match(html, /其他源<\/b><span>bigmodel 3%/);   // 其他启用源摘要列出 bigmodel 家族（窗口百分比）
+});

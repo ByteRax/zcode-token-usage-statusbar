@@ -175,6 +175,91 @@ function normalizeQuotaBody(body) {
   }
   return { level: typeof data.level === "string" ? data.level : "", windows, tools, models, unknownUnits };
 }
+/* Start Plan（ZCode 免费档，如 1024 Dev Day）归一化：zcode.z.ai billing/balance 的
+ * plans[]（权益/订阅）+ balances[]（按模型分桶的 one_time 发放池）。过期判定与宿主
+ * 3.16.3 实测行为同款（符号随版本轮换）：status=active 但 ends_at 已过（按 server_time
+ * 时钟）就地改判过期；过期 plan 关联的桶一并过滤。只聚合 meter=model_usage 桶（当前
+ * 接口只发放模型用量）；percent 自算（原始 units，比服务端整数百分比更准）。resetsAt
+ * 语义是「到期」不是周期重置。 */
+function zcodeStartTs(v) {
+  const n = typeof v === "number" && isFinite(v) && v > 0 ? (v < 1e12 ? v * 1000 : v) : 0;
+  return n || null;
+}
+function zcodeStartStamp(ms) {   // 展示契约 yyyy-MM-dd HH:mm（本地时区，同 overlay qTime）
+  const d = new Date(ms);
+  const pad = (n) => (n < 10 ? "0" : "") + n;
+  return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + " " + pad(d.getHours()) + ":" + pad(d.getMinutes());
+}
+function normalizeZcodeStartBalance(body, nowMs) {
+  if (!body || typeof body !== "object") throw qErr("parse_error", "non-object body");
+  /* 错误信封判定（实测形状）：balance 端点失败时只带 code/msg（如 3001 parameter
+   * error），没有 success:false 字段。code 非 0/200 或 success===false 一律按业务错误
+   * 退避（network_error），未知业务码不作 no_plan 猜测——无套餐的结构信号是 code 0
+   * 且 plans 无 active 项。 */
+  if (body.success === false || (body.code !== undefined && body.code !== 0 && body.code !== 200)) {
+    throw qErr("network_error", "business error: " + String(body.msg || "").slice(0, 80));
+  }
+  const data = body.data;
+  if (!data || typeof data !== "object") throw qErr("parse_error", "missing data");
+  const serverMs = typeof data.server_time === "number" && isFinite(data.server_time) && data.server_time > 0 ? data.server_time * 1000 : null;
+  const t = serverMs || (typeof nowMs === "number" && isFinite(nowMs) ? nowMs : Date.now());
+  const plans = Array.isArray(data.plans) ? data.plans : [];
+  const activePlans = [];
+  for (const p of plans) {
+    if (!p || typeof p !== "object") continue;
+    const endMs = zcodeStartTs(p.ends_at);
+    if (String(p.status || "").toLowerCase() === "active" && endMs && endMs > t) activePlans.push(p);
+  }
+  if (!activePlans.length) return { noPlan: true };
+  activePlans.sort((a, b) => (typeof b.priority === "number" ? b.priority : -1) - (typeof a.priority === "number" ? a.priority : -1));
+  const top = activePlans[0];
+  const planIds = new Set(activePlans.map((p) => String(p.plan_id || "")));
+  const buckets = [];
+  for (const b of (Array.isArray(data.balances) ? data.balances : [])) {
+    if (!b || typeof b !== "object") continue;
+    if (String(b.meter || "") !== "model_usage") continue;
+    if (b.plan_id != null && !planIds.has(String(b.plan_id))) continue;
+    const total = typeof b.total_units === "number" && isFinite(b.total_units) && b.total_units > 0 ? b.total_units : null;
+    if (!total) continue;
+    const expiresAt = zcodeStartTs(b.expires_at);
+    if (expiresAt && expiresAt <= t) continue;   // 已到期死桶不计入聚合
+    const used = typeof b.used_units === "number" && isFinite(b.used_units) && b.used_units >= 0 ? b.used_units : 0;
+    buckets.push({
+      name: typeof b.show_name === "string" && b.show_name ? b.show_name : "",
+      used,
+      total,
+      expiresAt: expiresAt || 0,
+    });
+  }
+  buckets.sort((a, b) => b.total - a.total);
+  const sumOf = (k) => buckets.reduce((acc, x) => acc + x[k], 0);
+  let expiresMax = 0;
+  for (const x of buckets) if (x.expiresAt > expiresMax) expiresMax = x.expiresAt;
+  const models = [];
+  const seen = {};
+  for (const x of buckets) if (x.name && !seen[x.name]) { seen[x.name] = 1; models.push(x.name); }
+  const windows = { daily: null, fiveHour: null, weekly: null, monthly: null, plan: null };
+  if (buckets.length) {
+    const totalAll = sumOf("total");
+    /* 只出百分比与到期：tooltip 窗口行的金额明细是货币格式（quotaBalanceText），
+     * token 绝对量进去会变成 500000000.00；宿主 tooltip 同样只展示百分比。 */
+    windows.plan = {
+      percent: Math.round(clampPct((sumOf("used") / totalAll) * 100) * 10) / 10,   // 服务端超耗时钳 100，与其余归一化路径同款
+      resetsAt: expiresMax || null,
+      expires: true,   // one_time 发放池：到期语义，渲染端按此切「到期」文案
+    };
+  }
+  return {
+    level: "Start",
+    plan: {
+      productName: top.name && typeof top.name === "string" ? top.name : "ZCode Start Plan",
+      validStart: zcodeStartTs(top.starts_at) ? zcodeStartStamp(zcodeStartTs(top.starts_at)) : null,
+      validEnd: zcodeStartTs(top.ends_at) ? zcodeStartStamp(zcodeStartTs(top.ends_at)) : null,
+    },
+    windows,
+    models,
+  };
+}
 /* 订阅周期字段语义（与宿主 bigmodelUsageQuotaMapper.pickCurrentSubscriptionExpireTime 语义对齐且更严）：
  * - nextRenewTime：非自动续费=当前权益结束日；自动续费=下次扣费日（不是最终到期）。
  *   接受纯日期与宿主同款日期时间（空格/T 分隔、可选秒、Z 或 ±hh:mm 偏移；无偏移按
@@ -451,6 +536,55 @@ for (const fam of ["bigmodel", "zai"]) {
     },
   });
 }
+
+/* --- ZCode Start Plan（免费档发放池：zcode.z.ai 账号级权益，OAuth zcodejwttoken 零配置） ---
+ * 与 coding plan 是两条独立链：monitor/subscription 只返回编码套餐订阅，Start Plan 的
+ * 权益/额度只在 zcode-plan billing/balance（宿主 getStartPlanSnapshot 同源端点）。
+ * 鉴权必须用 zcodejwttoken（OAuth access_token 实测 401），且必须带 X-Device-Mid
+ * （缺头实测 HTTP 400 code 3001 parameter error）；app_version 参数实测可省略。
+ * bigmodel/zai 两个家族的 start-plan 走同一端点同一凭据键；zai 侧未实测真实账号。 */
+const ZCODE_START_BALANCE_URL = "https://zcode.z.ai/api/v1/zcode-plan/billing/balance";
+function zcodeStartDetectOf(providerId) {
+  return providerId.indexOf("account:bigmodel-start-plan") === 0 || providerId.indexOf("account:zai-start-plan") === 0;
+}
+function readZcodeDeviceMid(j) {   // 宿主设备号：与 credentials.json 同目录的遥测状态文件
+  const dir = path.dirname(j.credsPath);
+  for (const name of ["telemetry-state.json", "onboarding-record.json"]) {
+    let d = null;
+    try { d = j.readFile(path.join(dir, name)); } catch (e) { }
+    const v = d && typeof d === "object" ? d.deviceMid : null;
+    if (typeof v === "string" && v.trim()) return v.trim();
+  }
+  return "";
+}
+ADAPTERS.push({
+  id: "zcode-start", label: "ZCode Start Plan", kind: "plan", defaultOn: false, envKeys: [],
+  detect(j, providerId) {
+    return zcodeStartDetectOf(providerId) ? { family: "zcode-start" } : null;
+  },
+  resolveCred(j, ctx) {
+    const sec = (j.secrets.sources || {})["zcode-start"] || {};
+    const apiKey = typeof sec.apiKey === "string" && sec.apiKey.trim() ? sec.apiKey.trim() : "";
+    let token = "", source = "";
+    if (apiKey) { token = apiKey; source = "secrets"; } else {
+      let raw = null;
+      try { raw = j.readFile(j.credsPath); } catch (e) { return null; }
+      const enc = raw && typeof raw === "object" ? raw["zcodejwttoken"] : null;
+      if (typeof enc !== "string" || !enc) return null;
+      token = decryptValue(enc, deriveCipherKey(j.env));
+      if (!token) return { decryptFailed: true, fingerprint: "host:" + sha16(enc) };
+      source = "host";
+    }
+    const deviceMid = readZcodeDeviceMid(j);
+    if (!deviceMid) return null;   // 缺设备号必被服务端 3001 拒：fail-closed 不发请求
+    return { token, deviceMid, fingerprint: sha16(token + "|" + deviceMid), source };
+  },
+  async fetchOne(j, ctx, cred, ctl) {
+    const body = await j.http.getJson(ZCODE_START_BALANCE_URL,
+      { authorization: "Bearer " + cred.token, "X-Device-Mid": cred.deviceMid }, ctl);
+    return normalizeZcodeStartBalance(body, j.now());
+  },
+});
 
 /* --- MiniMax Token Plan（零配置：api.minimaxi.com/.cn/.io 自定义供应商；可信域可配） --- */
 ADAPTERS.push({
@@ -1330,6 +1464,7 @@ function createQuotaClient(opts) {
     if (!p) return { id: "" };
     if (p.indexOf("account:") === 0) {
       if (p.indexOf("team") >= 0) return { id: "team" };
+      if (zcodeStartDetectOf(p)) return { id: "zcode-start", ctx: { family: "zcode-start" } };
       if (p.indexOf("account:bigmodel") === 0) return { id: "bigmodel", ctx: { family: "bigmodel" } };
       if (p.indexOf("account:zai") === 0) return { id: "zai", ctx: { family: "zai" } };
       return { id: "" };
@@ -1708,6 +1843,7 @@ module.exports = {
   deriveCipherKey,
   jwtExpMs,
   normalizeQuotaBody,
+  normalizeZcodeStartBalance,
   normalizeSubscriptionPlan,
   normalizeSub2api,
   relayQuotaUrls,
@@ -1720,6 +1856,7 @@ module.exports = {
     if (apiKeyFamilyOf(p)) return { family: apiKeyFamilyOf(p) };
     if (p.indexOf("account:") !== 0) return null;
     if (p.indexOf("team") >= 0) return { unsupported: "team" };
+    if (zcodeStartDetectOf(p)) return { family: "zcode-start" };
     if (p.indexOf("account:bigmodel") === 0) return { family: "bigmodel" };
     if (p.indexOf("account:zai") === 0) return { family: "zai" };
     return null;
