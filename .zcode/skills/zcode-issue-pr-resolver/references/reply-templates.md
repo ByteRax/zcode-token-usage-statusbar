@@ -8,12 +8,13 @@
 
 | 情形 | 模板 |
 |---|---|
-| 修复已合入 main，`released` 报「未发版」 | A，用「未发版」版开头与「如何获取」 |
-| 修复已随正式版发布，`released` 报「已发版」 | A，用「已发版」版开头与「如何获取」，先核对渠道清单 |
-| 信息不足，需要提交者补充 | C |
-| 重复、设计如此、已在 main 修好且无需改代码 | D |
-| 外部 PR 合并 | E；它修复的 issue 下另用 A |
-| 外部 PR 不合并 | F |
+| 修复已合入 main，`released` 报「未发版」 | A，用「未发版」版的「如何获取」 |
+| 修复已随正式版发布，`released` 报「已发版」 | A，用「已发版」版的「如何获取」，先核对渠道清单 |
+| 信息不足，需要提交者补充 | B |
+| 重复、设计如此，或问题在 main 上早已修好、本次没有新增改动 | C；已修好的先 `released`，再按 A 的「如何获取」补一段 |
+| 外部 PR 合并 | D；它修复的 issue 下另用 A |
+| 外部 PR 不合并 | E |
+| 有设计分叉，需要先征询提出者 | F |
 
 ## 命令
 
@@ -26,7 +27,7 @@ gh issue view N --repo ByteRax/zcode-token-usage-statusbar --json state,comments
 gh pr comment N --repo ByteRax/zcode-token-usage-statusbar --body-file /tmp/ztus-pr-N-reply.md        # 外部 PR
 ```
 
-被合并的 PR 本身已自动关闭，无需再关；以「整合 PR」方式合入时才需要 `gh pr close N`。issue 若已随 PR 合并被自动关闭（PR 正文写了 `Fixes #N`），只发评论，不再 `close`。
+被合并的 PR 本身已自动关闭，无需再关；以「整合 PR」方式合入时才需要 `gh pr close N --repo ByteRax/zcode-token-usage-statusbar`。issue 若已随 PR 合并被自动关闭（PR 正文写了 `Fixes #N`），只发评论，不再 `close`。
 
 ## A 已修复
 
@@ -64,7 +65,7 @@ gh pr comment N --repo ByteRax/zcode-token-usage-statusbar --body-file /tmp/ztus
 
 不涉及主进程文件时删掉「注意」段；没有真实环境差异时删掉「验证范围」里的后半句，不要硬写。
 
-## C 信息不足
+## B 信息不足
 
 ```markdown
 感谢反馈。目前还无法定位，需要补充：
@@ -76,7 +77,7 @@ gh pr comment N --repo ByteRax/zcode-token-usage-statusbar --body-file /tmp/ztus
 
 追问要具体到文件路径和命令，不要写「请提供更多信息」。
 
-## D 重复、设计如此、已修好
+## C 重复、设计如此、已修好
 
 ```markdown
 感谢反馈。<理由：与 #M 是同一问题 / 已在 main 修复（提交 <SHA>，<未发版，或随 vX.Y.Z 发布>）/ 属于设计如此（依据：<AGENTS.md 条目或文档>）>。
@@ -85,7 +86,9 @@ gh pr comment N --repo ByteRax/zcode-token-usage-statusbar --body-file /tmp/ztus
 
 重复用 `--duplicate-of M` 关闭，设计如此或不计划用 `--reason "not planned"`，已修复用 `--reason completed`。
 
-## E 外部 PR 合并致谢
+「已在 main 修好」的变体：在上面的正文里写明修复提交，并补上 A 里的「如何获取」（未发版/已发版二选一，已发版先核对渠道清单）；涉及主进程冷文件时补「注意」重启那一段，验证范围按实际写。
+
+## D 外部 PR 合并致谢
 
 ```markdown
 感谢这个 PR——<点名具体价值：例如对客户端源码的逆向核对、实机验证、测试覆盖>。
@@ -99,9 +102,9 @@ gh pr comment N --repo ByteRax/zcode-token-usage-statusbar --body-file /tmp/ztus
 <验证范围与已知残留，按实际写>
 ```
 
-以「整合 PR」方式合入时，在原 PR 下写明合入的 PR 号与提交，保留其署名，然后 `gh pr close N`。
+以「整合 PR」方式合入时，在原 PR 下写明合入的 PR 号与提交，保留其署名，然后 `gh pr close N --repo ByteRax/zcode-token-usage-statusbar`。
 
-## F 外部 PR 不合并
+## E 外部 PR 不合并
 
 方向不符、有安全问题或质量不足时，说明具体原因与可行的改法，礼貌致谢后再决定关闭还是保持开放等其修改，**这一步交给用户决定**，不替用户关闭。
 
@@ -111,3 +114,15 @@ gh pr comment N --repo ByteRax/zcode-token-usage-statusbar --body-file /tmp/ztus
 ```
 
 涉及安全疑点时只陈述事实（哪一行做了什么），不做动机推测。
+
+## F 设计分叉，征询提出者
+
+需求有几种做法、取舍会影响范围时，不擅自选方案，也不合并；先在 issue 下征询，最终报告里请用户决策。
+
+```markdown
+感谢反馈。这个需求有几种做法，取舍会影响 <范围>，想先听听你的场景再动手：
+1. <方案一>：<好处 / 代价>
+2. <方案二>：<好处 / 代价>
+
+我倾向 <某方案>，理由是 <……>。你更看重哪一点？回复后我继续跟进，先保持 open。
+```

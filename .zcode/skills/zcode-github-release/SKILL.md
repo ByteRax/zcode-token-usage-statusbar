@@ -8,7 +8,7 @@ description: "仅为当前 zcode-token-usage-statusbar 项目发版：检查、�
 ## 确认项目、仓库与授权
 
 - 本技能仅供所在仓库使用。以本技能目录向上三级得到项目根目录，验证该目录与 `git rev-parse --show-toplevel` 一致，且有 `marketplace.json`、`sync_plugin.py`、`release_tool.py`、`release_unpack.py` 和 `plugins/zcode-token-usage-statusbar/`。不要在其它项目或已安装插件缓存执行发布。
-- 阅读 `AGENTS.md` §3（同步与冷文件）、§8（发布与外部操作边界）和 [开发与发布](../../../docs/maintaining.md#发布插件)。检查 `git status`、当前分支与 `git remote -v`，保留未提交及其它会话改动。
+- 阅读 `AGENTS.md` §3（同步与冷文件）、§8（发布与外部操作边界），§8 指向的 [发布链规则](../../rules/install-release.md)（§6 更新器与渠道、§7 打包与发布），以及 [开发与发布](../../../docs/maintaining.md#发布插件)。检查 `git status`、当前分支与 `git remote -v`，保留未提交及其它会话改动。
 - 发布目标 `owner/repo` 由用户在授权中点明。本项目历次发布目标都是 `fork` 远程指向的 ByteRax 仓库；`origin`（xhwxt 上游）只读，不默认选它，也不因另一仓库有权限就切换。用 `gh repo view OWNER/REPO --json viewerPermission,defaultBranchRef` 核验权限与默认分支；目标只读则报告阻塞。
 - 仅正式三段版本 `X.Y.Z`、tag `vX.Y.Z`，不将截图托管 Release 或开发分支提交当作正式版本。涨哪一位由用户决定，只在用户要求时修改版本，不顺手修其它代码。合同细节见 [发布包合同](references/release-contract.md)。
 
@@ -73,23 +73,38 @@ python3 -B release_tool.py verify --zip /new/artifact-directory/zcode-token-usag
 ## 提交与 tag（阶段 B，须授权）
 
 1. 提交本次发布需要的**全部**改动，仅暂存这些文件，不使用 `git add .`：三个 manifest 的版本号；若阶段 A 重排了 `VERSION` 台账，还有根 `overlay.js`、插件副本和断言该代际号的测试（这类改动先向用户确认）。提交信息沿用 `release: vX.Y.Z`。默认分支上需提交时先创建分支（常规路径已在 `release/vX.Y.Z`）。
-2. **推 tag 之前的闸门**。已推送的 tag 不能移动，而 preflight 的多数检查要等 tag 推送后才第一次运行，所以先在本地把它们跑出来：
+2. **推 tag 之前的闸门**。已推送的 tag 不能移动，而 preflight 的多数检查要等 tag 推送后才第一次运行，所以先在本地把它们跑出来。命令都在发布 worktree 里执行：
 
    ```bash
    git status --porcelain --untracked-files=all          # 必须为空
-   python3 -B release_tool.py build --root /abs/.worktrees/release-vX.Y.Z --repo OWNER/REPO --out "$(mktemp -d)/recheck"
-   cmp /new/artifact-directory/zcode-token-usage-statusbar-vX.Y.Z.zip <recheck 目录里的同名 ZIP>    # build 是确定性的，应逐字节一致
+   R=$(mktemp -d)
+   python3 -B release_tool.py build --root /abs/.worktrees/release-vX.Y.Z --repo OWNER/REPO --out "$R/recheck"
+   cmp /new/artifact-directory/zcode-token-usage-statusbar-vX.Y.Z.zip "$R/recheck/zcode-token-usage-statusbar-vX.Y.Z.zip" && echo "ZIP 与重新构建的一致"   # build 是确定性的
+   git ls-remote fork refs/tags/vX.Y.Z                   # 必须无输出：远端还没有这个 tag
    git tag vX.Y.Z                                        # 只打本地 tag，尚未推送
    python3 -B release_tool.py publish --root /abs/.worktrees/release-vX.Y.Z --zip /new/artifact-directory/zcode-token-usage-statusbar-vX.Y.Z.zip --manifest /new/artifact-directory/release-manifest.json --repo OWNER/REPO --notes-file /absolute/release-notes.md --dry-run
+   gh api 'repos/OWNER/REPO/releases?per_page=100' --paginate --jq '.[] | select(.tag_name=="vX.Y.Z") | .tag_name'   # 必须无输出：没有同名 Release 或 draft
    ```
 
-   预期这次 `--dry-run` **恰好**在查远端 tag 处失败（`gh api repos/OWNER/REPO/git/ref/tags/vX.Y.Z … Not Found (HTTP 404)`），这说明此前的检查（相关文件已提交且与 HEAD 逐字节一致、ZIP 等于当前源码、GitHub 远程匹配、本地 tag 指向 HEAD、gh 登录与推送权限）都通过了。更早失败（`dirty or untracked`、`ZIP is not the current repository source`、权限等）就修好、重新 build，必要时 `git tag -f vX.Y.Z`（只限尚未推送的本地 tag）再来一遍。再确认远端没有同名 Release 或 draft：`gh api 'repos/OWNER/REPO/releases?per_page=100' --paginate --jq '[.[] | select(.tag_name=="vX.Y.Z")] | length'` 应为 0。
-3. 获准后推送：常规路径 `git push fork release/vX.Y.Z vX.Y.Z`，分离路径只推 `git push fork vX.Y.Z`。工具不会创建或推送 tag，缺 tag 时 preflight 直接失败，不让 GitHub 从默认分支默默创建。`fork` 的双 push URL 会同时推到 GitCode 镜像，GitCode 段失败如实报告，不阻断 GitHub 侧。
+   预期这次 `--dry-run` **恰好**在查远端 tag 处失败（`gh api repos/OWNER/REPO/git/ref/tags/vX.Y.Z … Not Found (HTTP 404)`），这说明此前的检查（相关文件已提交且与 HEAD 逐字节一致、ZIP 等于当前源码、GitHub 远程匹配、本地 tag 指向 HEAD、gh 登录与推送权限）都通过了；`gh` 未登录或网络故障会在更早一步以别的错误停下，不会与这个 404 混淆。其它结果这样处理：
+   - 更早失败（`dirty or untracked`、`ZIP is not the current repository source`、权限等）：修好、重新 build，再来一遍。本地 tag 需要重打时，先用上面的 `git ls-remote` 确认远端没有，再 `git tag -f vX.Y.Z`。
+   - 意外**完整通过**：说明远端已经有同名 tag 且指向 HEAD，此前已推送或发布过。停下来报告，不要继续。
+   - 放弃发布（用户不授权推送，或闸门失败后放弃）：删掉这个本地 tag，`git tag -d vX.Y.Z`（仅限远端没有它的本地 tag）。
+3. 获准后推送：常规路径 `git push fork release/vX.Y.Z vX.Y.Z`，分离路径只推 `git push fork vX.Y.Z`。工具不会创建或推送 tag，缺 tag 时 preflight 直接失败，不让 GitHub 从默认分支默默创建。`fork` 的双 push URL 会同时推到 GitCode 镜像，GitCode 段失败如实报告，不阻断 GitHub 侧；但本次要镜像 GitCode Release 时，tag 必须已经到达镜像，见阶段 D 的「GitCode tag 闸门」。
 4. 万一推送后才发现要改提交，见 [发布失败与回退](references/publish-failures.md#tag-或提交需要变更)。
 
 ## 预演与正式发布（阶段 C、D）
 
-- 先对已推送的 tag 执行带 `--notes-file` 的默认预演（命令同上一节第 2 步的最后一条）。预演仍联网只读 GitHub，不授予发布权限。这次应当完整通过：检查 JSON 的 `notesFile`、`notes` 和创建命令的 `--notes-file`；说明修改后必须重新预演。报告将发布的仓库、版本、目标 commit、tag、资产、更新说明及实际预演结果；源码未提交或 tag 未就绪时报告阻塞，不把 build 成功称为已发布。
+- 先对已推送的 tag 执行带 `--notes-file` 的默认预演（就是上一节第 2 步代码块里的 `publish … --dry-run` 那条命令）。预演仍联网只读 GitHub，不授予发布权限。这次应当完整通过：检查 JSON 的 `notesFile`、`notes` 和创建命令的 `--notes-file`；说明修改后必须重新预演。报告将发布的仓库、版本、目标 commit、tag、资产、更新说明及实际预演结果；源码未提交或 tag 未就绪时报告阻塞，不把 build 成功称为已发布。
+- 执行 D 之前（即使 D 已随「完整发版」获得授权）：授权语没有点名 `--gitcode-repo` 的话，问用户一次是否同步 GitCode Release，并说明：`release_tool.py` 没有单独补镜像的入口，发布之后无法再用工具补；要同步就先确认环境变量 `GITCODE_TOKEN` 已设置（`--dry-run` 不检查它）。用户答复前不执行 D；明确答复「不同步」则只发 GitHub。
+- **GitCode tag 闸门**（仅本次带 `--gitcode-repo` 时）：工具创建 GitCode Release 时只传 tag 名、不传 `target_commitish`，镜像上缺 tag 时 GitCode 怎么处理没有验证过，所以执行 D 之前先确认镜像上已有同一个 tag（本项目的 tag 都是轻量 tag，输出只有一行）：
+
+  ```bash
+  git ls-remote gitcode 'refs/tags/vX.Y.Z'     # 输出里的 SHA
+  git rev-parse 'vX.Y.Z^{commit}'              # 必须与上一行相同
+  ```
+
+  无输出：阶段 B 推送时 GitCode 段多半失败了，不执行 D，报告用户；补好 HTTPS 凭据后用 `git push gitcode refs/tags/vX.Y.Z` 补推同一个 tag（不移动它，仍属阶段 B 已授权的推送，补推前先告知用户）。SHA 不同：镜像上已有同名却指向别处的 tag，不得移动，停下报告。
 - 仅在用户明确授权本次仓库与版本后，以同一说明再使用 `--publish --confirm OWNER/REPO/vX.Y.Z`。工具读取说明快照、建 draft、上传双资产、下载逐字节核验、检查 draft 正文并重查远端 commit，再转正式并核验正文/状态。授权语点名 `--gitcode-repo` 时同一命令会在 GitHub 验收后镜像 GitCode Release（需环境变量 `GITCODE_TOKEN`，缺失时 `--publish` 在创建 draft 之前就整体失败，见 [发布后收尾](references/post-release.md#gitcode-渠道)）。
 - 失败保留现场，不盲删重建、不自行转正：draft 残留、已公开但核验不符等情形的处置见 [发布失败与回退](references/publish-failures.md)。
 - 发布后通过 `gh release view vX.Y.Z --repo OWNER/REPO --json url,body,isDraft,isPrerelease,tagName,assets` 确认正式状态与两个资产；将 `body` 与说明比较（仅允许 CRLF 与末尾空白差异），报告真实 URL。正文缺失或不一致不是验收成功。
