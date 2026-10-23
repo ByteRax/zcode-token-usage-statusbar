@@ -683,20 +683,107 @@ def _install_overlay(runtime, pi):
         runtime, {"state": "pending-install", "installation": installation}))
 
 
-def ensure_renderer_bridge(pi):
+def ensure_renderer_bridge(pi, quiet_monitor=False):
     """安装/更新后补桥：客户端官方升级会整体重写 asar，把只读桥抹掉。这里按
     renderer_bridge 的版本+哈希指纹表门控就地重打；未知版本 fail-closed 跳过，
-    任何失败都只 stderr 记录——桥只是实时统计的增强，绝不影响安装主流程。"""
+    任何失败都不影响安装主流程。就地替换被系统拒绝（Windows 客户端运行中持有
+    asar、或目标目录只读）时不再静默：把已构建的完整包转存为待替换文件
+    （patch_install 的 TMP+monitor 链，客户端退出后自动收尾），状态交给
+    run_hook/_bridge_notice 给用户可见提示。用户 remove 待收尾时让位——自动补桥
+    绝不覆盖显式卸载意图。"""
     try:
         from renderer_bridge import ensure_deployed
         result = ensure_deployed(pi.ASAR)
-        if result.get("status") not in ("present",):
-            print(f"[zusage-plugin] renderer bridge: {result.get('status')} "
-                  f"(v{result.get('version')}) {result.get('detail')}", file=sys.stderr)
-        return result
     except Exception as e:
         print(f"[zusage-plugin] renderer bridge ensure failed（已忽略）：{e}", file=sys.stderr)
         return {"status": "skipped-error", "detail": str(e)}
+    if result.get("status") == "replace-failed":
+        stage = Path(result["stage"])
+
+        def discard_stage():
+            # 杀毒扫描短暂锁文件/ACL 有建无删时清理自身不能炸——桥绝不影响主流程
+            try:
+                stage.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+        try:
+            existing = pi.pending_operation()
+        except Exception:
+            existing = None
+        if existing == "remove":
+            discard_stage()
+            result = {"status": "skipped-error", "version": result.get("version"),
+                      "detail": "已有待收尾的卸载操作，桥补装让位"}
+        else:
+            # hook 路径（quiet_monitor）stdout 只能是 hook JSON：publish/syntax 检查行
+            # 全部重定向 stderr（与 auto-install 分支包 _install_overlay 同款）
+            redirect = contextlib.redirect_stdout(sys.stderr) if quiet_monitor else contextlib.nullcontext()
+            try:
+                with redirect:
+                    pi.publish_external_pending(stage, source=result.get("source"), operation="install")
+            except PermissionError as e:
+                discard_stage()
+                print(f"[zusage-plugin] renderer bridge pending publish failed（已忽略）：{e}", file=sys.stderr)
+                result = {"status": "skipped-error", "version": result.get("version"),
+                          "detail": f"pending publish failed: {e}", "permission": True}
+            except Exception as e:
+                discard_stage()
+                print(f"[zusage-plugin] renderer bridge pending publish failed（已忽略）：{e}", file=sys.stderr)
+                result = {"status": "skipped-error", "version": result.get("version"),
+                          "detail": f"pending publish failed: {e}"}
+            else:
+                monitor_env = {name: os.environ.get(name) for name in
+                               ("ZUSAGE_NO_MONITOR", "ZUSAGE_MONITOR_QUIET")}
+                try:
+                    if quiet_monitor:
+                        # SessionStart 场景不弹监控黑窗，systemMessage 里已说明去向
+                        os.environ["ZUSAGE_NO_MONITOR"] = "1"
+                        os.environ["ZUSAGE_MONITOR_QUIET"] = "1"
+                    with redirect:
+                        pi.launch_monitor(time.time())
+                except Exception as e:
+                    print(f"[zusage-plugin] renderer bridge monitor 启动失败（已忽略）：{e}", file=sys.stderr)
+                finally:
+                    for name, value in monitor_env.items():
+                        if value is None:
+                            os.environ.pop(name, None)
+                        else:
+                            os.environ[name] = value
+                result = {"status": "pending", "version": result.get("version"),
+                          "detail": result.get("detail")}
+    if result.get("status") not in ("present",):
+        print(f"[zusage-plugin] renderer bridge: {result.get('status')} "
+              f"(v{result.get('version')}) {result.get('detail')}", file=sys.stderr)
+    return result
+
+
+def _bridge_notice(out, result, pi):
+    """桥补装的用户可见提示（issue #67：受保护目录/客户端运行中不再静默失效）。
+    pending 提示收敛（客户端退出收尾后转 present）；权限不足在目标持续不可写期间
+    每次会话提示，与未安装时的 INSTALL_MESSAGE 同一强度。已有安装/重启提示时
+    不覆盖——桥只是增强，优先级低于主链。"""
+    if "systemMessage" in out:
+        return out
+    status = (result or {}).get("status")
+    if status == "pending":
+        from restart_notice import PREFIX, RESTART_ACTION
+        return _nudge(out, PREFIX + "逐问速率行所需的一次性客户端补丁已排定："
+                      "完全退出 ZCode（所有窗口）后会自动完成，之后重新打开即可；"
+                      "其余功能不受影响。" + RESTART_ACTION)
+    if status == "skipped-error" and result.get("permission"):
+        # Windows 上 os.access 看不见 ACL（目录恒报可写），权限判定按真实
+        # PermissionError 而不是 target_writable()，否则 Program Files 场景静默
+        from restart_notice import PREFIX
+        script = PLUGIN_ROOT / "overlay_install.py"
+        if os.name == "nt":
+            action = (f'以管理员身份打开终端，执行 python "{script}" install')
+        else:
+            action = (f'执行 sudo env HOME="$HOME" PATH="$PATH" python3 "{script}" install')
+        return _nudge(out, PREFIX + f"状态条已安装，但逐问速率行所需的客户端补丁"
+                      f"无法写入受保护目录：{pi.ASAR}。如需该功能请{action}，"
+                      f"完成后完全退出并重开 ZCode；不需要该功能可忽略本提示。")
+    return out
 
 
 def remove_renderer_bridge(pi):
@@ -733,13 +820,14 @@ def run_hook():
             return out  # 本机没有可定位的桌面客户端（远程会话等），静默
         save_runtime_config(runtime, pi)
         if st:
-            ensure_renderer_bridge(pi)   # 已注入也可能缺桥（客户端升级重写 asar）：幂等补一次
+            bridge = ensure_renderer_bridge(pi, quiet_monitor=True)   # 已注入也可能缺桥（客户端升级重写 asar）：幂等补一次
             from restart_notice import session_notice
             cold_files = {"inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs", "quota-client.cjs"}
             if (load_runtime_config(runtime) or {}).get("hot_reload") is False:
                 cold_files.update(("overlay.js", "zusage.py"))
             restart_files = [name for name in changed if name in cold_files]
-            return session_notice(runtime, out, injected=st, restart_files=restart_files)
+            out = session_notice(runtime, out, injected=st, restart_files=restart_files)
+            return _bridge_notice(out, bridge, pi)
         if auto_enabled(runtime):
             monitor_env = {name: os.environ.get(name) for name in
                            ("ZUSAGE_NO_MONITOR", "ZUSAGE_MONITOR_QUIET")}
@@ -755,10 +843,11 @@ def run_hook():
                     else:
                         os.environ[name] = value
             if ok:
-                ensure_renderer_bridge(pi)
+                bridge = ensure_renderer_bridge(pi, quiet_monitor=True)
                 clear_markers(runtime)
                 from restart_notice import session_notice
-                session_notice(runtime, out, injected=injected_status(pi))
+                out = session_notice(runtime, out, injected=injected_status(pi))
+                return _bridge_notice(out, bridge, pi)
             else:
                 from restart_notice import PREFIX
                 _nudge(out, (PREFIX + "用量状态条自动安装未完成。"
@@ -801,7 +890,9 @@ def main():
         clear_markers(runtime)  # 主动安装 = 重新参与提示逻辑
         ok = _install_overlay(runtime, pi)
         if ok:
-            ensure_renderer_bridge(pi)
+            bridge = ensure_renderer_bridge(pi)
+            if bridge.get("status") == "pending":
+                print("客户端运行中，逐问速率行补丁已排定：完全退出 ZCode 后自动完成替换。")
             from restart_notice import reminder
             notice = reminder(runtime, injected=injected_status(pi))
             if notice:

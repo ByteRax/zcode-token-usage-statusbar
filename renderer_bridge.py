@@ -10,6 +10,7 @@ import shutil
 import stat
 import struct
 import tempfile
+import time
 
 import patch_install as asar
 
@@ -495,6 +496,22 @@ def rewrite_asar(source, output, operation="patch"):
             stage.unlink(missing_ok=True)
 
 
+STALE_STAGE_SECONDS = 600
+
+
+def _sweep_stale_stages(directory):
+    """清掉早于 STALE_STAGE_SECONDS 的 .zusage-bridge-* 残留（调用方拿到
+    replace-failed 后、publish_external_pending 前崩溃的孤儿）。刚创建的
+    stage 处在移交窗口内，绝不能删。"""
+    now = time.time()
+    for stale in Path(directory).glob(".zusage-bridge-*"):
+        try:
+            if now - stale.stat().st_mtime > STALE_STAGE_SECONDS:
+                stale.unlink()
+        except OSError:
+            pass
+
+
 def ensure_deployed(asar_path):
     """插件安装/更新链专用：确认目标 asar 带桥，没有则就地补打。
 
@@ -505,11 +522,16 @@ def ensure_deployed(asar_path):
     先走 derive_target 的严格结构推导，校验不过按 fail-closed 跳过。返回状态：
       {"status": "patched"|"present"|"skipped-unknown"|"skipped-error",
        "version": <客户端版本>, "detail": <说明>}
+    例外是发布被系统拒绝（Windows 客户端运行中持有 asar 不带 FILE_SHARE_DELETE、
+    或目标目录 ACL 只读）：此时返回 replace-failed，stage 是已构建完整的带桥
+    包、source 是发布前 asar 的指纹；调用方应转存待替换链
+    （patch_install.publish_external_pending）或删除 stage，不能留在原地。
     """
     try:
         from runtime_lock import file_lock
         asar_path = Path(asar_path)
         with file_lock(asar_path.with_name(asar_path.name + ".zusage.lock")):
+            _sweep_stale_stages(asar_path.parent)
             before = asar.source_fingerprint(asar_path)
             with asar_path.open("rb") as stream:
                 header, base = asar.read_header(stream)
@@ -581,13 +603,26 @@ def ensure_deployed(asar_path):
                 if asar.source_fingerprint(asar_path) != before:
                     raise BridgeError("Source archive changed")
                 os.chmod(stage, stat.S_IMODE(asar_path.stat().st_mode))
-                os.replace(stage, asar_path)
+                try:
+                    os.replace(stage, asar_path)
+                except OSError as error:
+                    # 发布被系统拒绝（客户端占用/目录只读）：stage 是完整可发布的
+                    # 带桥包，移交给调用方转存待替换链，绝不静默丢弃（issue #67）。
+                    handover = {"status": "replace-failed", "version": version,
+                                "detail": str(error), "stage": str(stage), "source": before}
+                    stage = None   # 已移交：finally 不得清理
+                    return handover
                 stage = None
             finally:
                 if stage is not None:
                     stage.unlink(missing_ok=True)
         return {"status": "patched", "version": version,
                 "detail": "auto-derived bridge deployed" if auto else "bridge deployed"}
+    except PermissionError as error:
+        # 权限不足要单独可辨：Windows 的 os.access 看不见 ACL（目录恒报可写），
+        # 调用方只能按本标记给用户提权指引（issue #67 场景 1）
+        return {"status": "skipped-error", "version": None, "detail": str(error),
+                "permission": True}
     except Exception as error:  # 安装链的旁路增强：任何异常都只报告
         return {"status": "skipped-error", "version": None, "detail": str(error)}
 
