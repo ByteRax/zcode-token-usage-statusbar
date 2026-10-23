@@ -107,6 +107,7 @@ class QuietMonitorTests(unittest.TestCase):
         with mock.patch.dict(sys.modules, {"patch_install": self.patch}), \
                 mock.patch.object(self.monitor, "zcode_pids", return_value={"1"}), \
                 mock.patch.object(self.monitor, "wait_any_exit", side_effect=upgrade), \
+                mock.patch.object(self.patch, "self_check", return_value=True), \
                 mock.patch.object(self.patch, "finalize_tmp") as finalize:
             self.monitor.main()
         finalize.assert_not_called()
@@ -154,17 +155,44 @@ class QuietMonitorTests(unittest.TestCase):
         self.assertEqual(self.asar.read_bytes(), b"official version")
         self.assertEqual(self.tmp.read_bytes(), b"unknown package")
 
-    def test_waiting_uses_stat_only_and_retries_have_one_day_deadline(self):
+    def test_waiting_prewarms_once_and_retries_have_one_day_deadline(self):
         self.pending()
         with mock.patch.dict(sys.modules, {"patch_install": self.patch}), \
                 mock.patch.object(self.monitor, "zcode_pids", return_value={"1"}), \
                 mock.patch.object(self.monitor.time, "monotonic", side_effect=[0, 1, 2, 86400]), \
                 mock.patch.object(self.monitor.time, "sleep") as sleep, \
-                mock.patch.object(self.patch, "source_fingerprint") as hashes:
+                mock.patch.object(self.patch, "source_fingerprint", wraps=self.patch.source_fingerprint) as hashes:
             self.monitor.main()
-        # 等待只读 stat（不重 hash 大包），一天期限后停止重试；等待路径的平台分歧
+        # 等待期预校验焐热缓存（issue #72）：大包只 hash 一轮（ASAR+TMP 各一次），
+        # 后续轮询 stat 命中缓存不再重 hash；一天期限后停止重试。等待路径的平台分歧
         # （POSIX 睡眠 / Windows 句柄不可得立即返回）不影响这两个核心断言。
-        hashes.assert_not_called()
+        self.assertEqual(hashes.call_count, 2)
+
+    def test_exit_window_finalize_is_prewarmed_stat_and_rename_only(self):
+        # 回归（issue #72）：退出窗口只有数秒且新实例亚秒级重开 asar，窗口内
+        # finalize 不得再 hash 大包——哈希必须在等待期完成，进程全退后只剩 rename。
+        self.pending()
+        events = []
+        real_hash = self.patch.source_fingerprint
+        real_replace = self.patch.os.replace
+        def hash_recorder(path, *args, **kwargs):
+            events.append("hash")
+            return real_hash(path, *args, **kwargs)
+        def replace_recorder(src, dst):
+            events.append("replace")
+            return real_replace(src, dst)
+        with mock.patch.dict(sys.modules, {"patch_install": self.patch}), \
+                mock.patch.object(self.monitor, "zcode_pids", side_effect=[{"1"}] + [set()] * 6), \
+                mock.patch.object(self.monitor, "wait_any_exit"), \
+                mock.patch.object(self.monitor.time, "sleep") as sleep, \
+                mock.patch.object(self.patch, "self_check", return_value=True), \
+                mock.patch.object(self.patch, "source_fingerprint", side_effect=hash_recorder), \
+                mock.patch.object(self.patch.os, "replace", side_effect=replace_recorder):
+            self.monitor.main()
+        # 哈希全部发生在等待轮（客户端仍在跑），最后一次哈希之后才是退出窗口内的 rename。
+        self.assertEqual(events, ["hash", "hash", "replace"])
+        self.assertEqual(self.asar.read_bytes(), b"verified package")
+        self.assertFalse(self.tmp.exists())
 
     def test_changed_package_cancels_after_oserror_without_retry(self):
         self.pending()
