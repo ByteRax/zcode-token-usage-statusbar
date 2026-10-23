@@ -132,13 +132,14 @@ token_usage(scope)        # MCP tool (stdio)
 
 The MCP tool also supports `days:N`, `sessions:N`, `models:days`, `session:<session id prefix>` and `workspace:<directory keyword>`. The plugin command's full name is `/zcode-token-usage-statusbar:usage`.
 
-### SSH remote sessions
+### SSH / WSL remote sessions
 
-If your ZCode runs on a server you reach over SSH, the bar can follow it there:
+If your ZCode runs on a server you reach over SSH, or inside a WSL distro, the bar can follow it there:
 
 - Daily totals and errors are **counted per server** — one unreachable host doesn't affect the others
 - Failed or not-yet-found sessions keep retrying with backoff, and queries continue after you resume a session, switch workspaces or reconnect SSH
-- The remote script has to be **copied over by you**, and the query transport must be **non-interactive** — the plugin will not decrypt and reuse the passwords, private keys or passphrases ZCode has stored
+- SSH, WSL and Docker remote workspaces the client has connected to are **discovered automatically** and turned into non-interactive query transports (WSL/Docker need no credentials)
+- The remote script has to be **copied over by you** (into the distro for WSL, which also needs python3) — the plugin will not decrypt and reuse the passwords, private keys or passphrases ZCode has stored
 
 Remote support covers **the bar's own data fetching** only. MCP, `/usage` and the per-answer rate line do **not** fetch data across machines. See the [remote session guide](docs/user-guide.md#远程会话) (Chinese).
 
@@ -303,7 +304,7 @@ The boundaries around missing data, invalid samples and historical turns (no sta
 - **This is not an official ZCode feature.** It's a community plugin with no connection to the ZCode team, and it works by injecting into the client's `app.asar`.
 - **The local database is read-only.** Usage data is never uploaded.
 - **Plugin updates do use the network** — they download code from the source you've configured. Automatic updates are on by default; turn them off in ⚙.
-- **SSH remote queries also use the network** — they run a read-only query script on the remote host through the transport you configured. Prerequisites and limits are in [SSH remote sessions](#ssh-remote-sessions).
+- **SSH/WSL remote queries also use the network** — they run a read-only query script on the remote host through the transport you configured. Prerequisites and limits are in [SSH / WSL remote sessions](#ssh--wsl-remote-sessions).
 - **Credentials are left alone by default.** Passwords, encrypted private keys and passphrases stored by ZCode are never decrypted by the plugin; set up an SSH key / agent yourself. One exception: after you explicitly enable **Plan quota** in ⚙, credentials are read in memory to query plan/balance endpoints (never written to disk, logs or diagnostics); turning it off stops that. Destinations: bigmodel.cn / api.z.ai for coding plans; custom-provider balance lookups use that provider's own key and go only to its official domain (api.deepseek.com, openrouter.ai, api.siliconflow.cn, api.minimaxi.com, api.kimi.com, api.commandcode.ai, api.cline.bot, api.anthropic.com, platform.xiaomimimo.com, open.volcengineapi.com, opencode.ai, …) or the relay base URL you configured — never anywhere else.
 - **Token usage is not billing.** Token usage only, by default; the **Plan quota** chip shows used percentages from the official plan endpoint — no cash balance or billing details.
 

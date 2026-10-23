@@ -237,12 +237,15 @@
     for (var i = 0; i < instances.length; i++) {
       var inst = instances[i], sid = inst.getSid();
       var scope = inst.getScope && inst.getScope();
-      if (!sid || !scope || scope.sid !== sid || scope.identity.indexOf("remote:ssh:") !== 0) continue;
+      if (!sid || !scope || scope.sid !== sid || !REMOTE_IDENTITY_RE.test(scope.identity)) continue;
       if (!map[sid]) map[sid] = [];
       if (map[sid].indexOf(scope.identity) < 0) map[sid].push(scope.identity);
     }
     return map;
   }
+  /* 可信远端身份前缀白名单（与泵侧 REMOTE_IDENTITY_RE 同族）：ssh/wsl/docker/server。
+   * v3.16 客户端把所有传输连接握手后统一升级为 remote:server:，wsl/docker 是直接传输身份。 */
+  var REMOTE_IDENTITY_RE = /^remote:(?:ssh|wsl|docker|server):/;
   function readPaneScope(el, sid, pid) {
     if (!el || !sid || sid === "draft" || !el.isConnected) return null;
     try {
@@ -258,7 +261,7 @@
           typeof remote !== "string" || /[\x00-\x1f\x7f]/.test(path + identity + remote)) return null;
       identity = identity.trim();
       if (remote && (!identity || /\s/.test(remote))) return null;
-      if (identity && identity.indexOf("remote:ssh:") !== 0) return null;
+      if (identity && !REMOTE_IDENTITY_RE.test(identity)) return null;
       return { sid: sid, identity: identity, workspacePath: path, remoteSessionId: remote };
     } catch (e) { return null; }
   }
@@ -2008,8 +2011,8 @@
               + (d.remote_error ? L("查询失败 ", "query failed: ") + d.remote_error
                  : L("远端库里也没有这个会话（核对远端 zusage.py 读的库/用户与远端 ZCode 实际写入的是否一致）",
                      "the remote database does not have it either (verify the database/user the remote zusage.py reads matches what the remote ZCode writes)"))
-            : L("若这是 SSH 远程会话：客户端连过的远端工作区会自动被发现并查询（v12 零配置）；没查到时核对远端机已部署 zusage.py，或在 config.json 配置 remote 段（README「远程会话」；ssh 也可写成 argv 数组，docker exec / wsl / kubectl exec 等通道都能借道）",
-                "If this is a remote SSH session: remote workspaces the client connected to are discovered and queried automatically (v12, zero config); if it's still missing, make sure zusage.py is deployed on the remote machine, or add the remote section to config.json (see README; ssh may also be an argv array, so docker exec / wsl / kubectl exec all work)")));
+            : L("若这是 SSH/WSL 远程会话：客户端连过的远端工作区会自动被发现并查询（零配置）；没查到时核对远端已部署 zusage.py（WSL 需发行版内有 python3），或在 config.json 配置 remote 段（README「远程会话」；ssh 也可写成 argv 数组，docker exec / wsl --exec / kubectl exec 等通道都能借道）",
+                "If this is a remote SSH/WSL session: remote workspaces the client connected to are discovered and queried automatically (zero config); if it's still missing, make sure zusage.py is deployed on the remote machine (WSL needs python3 inside the distro), or add the remote section to config.json (see README; ssh may also be an argv array, so docker exec / wsl --exec / kubectl exec all work)")));
       }
       /* v73：生成速度——桥命中（本 pane 会话有 renderer 投影）时用它的估算/真实 tok/s，
        * 否则退回原 DB 最近一段值（与 state.rateLine 开关无关：桥不可用或开关关闭时

@@ -117,6 +117,23 @@ test("pane scope is read from the nearest live session node", () => {
   f.root.isConnected = false; f.el.isConnected = false;
   assert.equal(f.read(), null);
 });
+test("wsl, docker and server identities are trusted remote scopes; unknown kinds fail closed", () => {
+  // 3.15.x：wsl 直连身份；v3.16：所有传输握手后统一升级为 remote:server:<id>:/p。
+  const W = "remote:wsl:Ubuntu:dev:/p", D = "remote:docker:box:/p", S = "remote:server:srv1:/p";
+  for (const identity of [W, D, S]) {
+    const f = scopeFixture({ "data-zusage-workspace-identity": identity });
+    const scope = f.read();
+    assert.equal(scope.identity, identity, identity);
+  }
+  assert.equal(scopeFixture({ "data-zusage-workspace-identity": "remote:ftp:x:/p" }).read(), null);
+  const f = scopeFixture({ "data-zusage-workspace-identity": S });
+  f.ctx.instances = [
+    { pid: "workspace-main", getSid: () => "sA", getScope: f.read },
+    { pid: "right", getSid: () => "sA", getScope: () => ({ sid: "sA", identity: W }) },
+  ];
+  f.ctx.refreshWants();
+  assert.deepEqual(Array.from(f.ctx.collectSidWs().sA), [S, W]);
+});
 test("missing or inconsistent node identity fails closed", () => {
   for (const attrs of [
     { "data-zusage-scope-version": null }, { "data-zusage-scope-version": "2" },
@@ -124,7 +141,7 @@ test("missing or inconsistent node identity fails closed", () => {
     { "data-zusage-pane-id": "right" }, { "data-zusage-workspace-path": "" },
     { "data-zusage-workspace-identity": null }, { "data-zusage-remote-session-id": null },
     { "data-zusage-workspace-identity": "" }, { "data-zusage-remote-session-id": "bad id" },
-    { "data-zusage-workspace-path": "/p\n" }, { "data-zusage-workspace-identity": "remote:wsl:p" },
+    { "data-zusage-workspace-path": "/p\n" }, { "data-zusage-workspace-identity": "remote:ftp:p" },
   ]) assert.equal(scopeFixture(attrs).read(), null, JSON.stringify(attrs));
   const f = scopeFixture();
   f.el.hasAttribute = k => k === "data-session-id";

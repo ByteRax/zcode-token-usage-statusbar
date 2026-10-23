@@ -277,6 +277,28 @@ test("main pane routes remote through current node identity without history or g
   f.respond(success(A)); await flush();
   assert.equal(page.sessionFor(page.payload, "sA", "workspace-main").requests, 3);
 });
+test("wsl and server identities join the trusted set and route remote", async () => {
+  // 3.15.x wsl 直连（remote:wsl:）与 v3.16 握手升级（remote:server:）都必须与 ssh 同权：
+  // 进 trusted、绑定主 pane、以整串身份发起 scope 查询；未知前缀仍 fail-closed 按本地。
+  const W = "remote:wsl:Ubuntu:dev:/p", S = "remote:server:srv1:/p";
+  for (const identity of [W, S]) {
+    const f = loadPump(), wc = f.addWindow(identity);
+    const page = renderer(wc, ["workspace-main"], { "workspace-main": wbRemote(identity) }, []);
+    f.workspace(wc, [identity]); f.api.maybeSpawn(); await flush();
+    assert.equal(page.window.__zusagePaneScopes["workspace-main"].identity, identity, identity);
+    assert.deepEqual(f.lines[0].scopes, [{ sid: "sA", workspaceIdentity: identity }], identity);
+    f.respond(success(identity)); await flush();
+    assert.equal(page.sessionFor(page.payload, "sA", "workspace-main").requests, 3, identity);
+  }
+  const bad = loadPump(), badWc = bad.addWindow("remote:ftp:x:/p");
+  const badPage = renderer(badWc, ["workspace-main"], { "workspace-main": wbRemote("remote:ftp:x:/p") }, []);
+  bad.workspace(badWc, ["remote:ftp:x:/p"]); bad.api.maybeSpawn(); await flush();
+  // 双层 fail-closed：浮层拒绝未知前缀（pane scope 只留 {sid} 占位），泵不信任该身份（按本地隔离）。
+  assert.equal(badPage.window.__zusagePaneScopes["workspace-main"].sid, "sA");
+  assert.equal(badPage.window.__zusagePaneScopes["workspace-main"].identity, undefined);
+  assert.deepEqual(bad.lines[0].sids, ["sA"]);
+  assert.deepEqual(bad.lines[0].scopes, []);
+});
 test("tasks contradiction vetoes the current node identity", async () => {
   const f = loadPump(), wc = f.addWindow(A);
   renderer(wc, ["workspace-main"], { "workspace-main": wbRemote() });

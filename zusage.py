@@ -1103,6 +1103,57 @@ def _read_client_remote_entries():
     return entries
 
 
+def _read_client_server_history():
+    """3.16 起客户端把会话握手升级出的 remote:server:<serverId>:/路径 存活身份单独记在
+    sourceServerWorkspaceHistory，lastWorkspaceSession 持久化的仍是传输级 legacy 身份，
+    两者只共享 workspacePath。与 _read_client_remote_entries 同文件同 mtime 缓存模式；
+    解析失败返回 []，只读不写。"""
+    sig = None
+    try:
+        p = _desktop_setting_path()
+        sig = (str(p), p.stat().st_mtime_ns)
+    except OSError:
+        pass
+    if sig is None:
+        _CLIENT_STATE_CACHE["server_sig"] = None
+        _CLIENT_STATE_CACHE["server_hist"] = []
+        return []
+    if _CLIENT_STATE_CACHE.get("server_sig") == sig:
+        return _CLIENT_STATE_CACHE["server_hist"]
+    hist = []
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+        raw = data.get("sourceServerWorkspaceHistory") if isinstance(data, dict) else None
+        if isinstance(raw, list):
+            hist = [e for e in raw if isinstance(e, dict)]
+    except (OSError, ValueError):
+        hist = []
+    _CLIENT_STATE_CACHE["server_sig"] = sig
+    _CLIENT_STATE_CACHE["server_hist"] = hist
+    return hist
+
+
+def _server_idents_by_path():
+    """归一路径 → 握手升级身份列表。只采 remote:server: 前缀且带 sourceServerId 的条目；
+    同一路径混入多个 sourceServerId 时无法唯一归属服务器，整路径放弃（fail-closed）。"""
+    by_path, owners = {}, {}
+    for e in _read_client_server_history():
+        ident = str(e.get("workspaceIdentity") or "").strip()
+        server = str(e.get("sourceServerId") or "").strip()
+        if not ident.startswith("remote:server:") or not server:
+            continue
+        # 缺 workspacePath 的条目无法按路径与传输条目关联（客户端字段 optional），
+        # 跳过，避免与同样缺路径的传输条目在归一 "/" 上跨条目碰撞。
+        if not str(e.get("workspacePath") or "").strip():
+            continue
+        path = _normalize_identity_path(e.get("workspacePath"))
+        idents = by_path.setdefault(path, [])
+        if ident not in idents:
+            idents.append(ident)
+        owners.setdefault(path, set()).add(server)
+    return {p: idents for p, idents in by_path.items() if len(owners[p]) == 1}
+
+
 def _normalize_identity_path(p):
     """客户端 normalizeWorkspacePathForIdentity 同款：反斜杠归一、折叠重复斜杠、去尾补头。"""
     s = str(p or "").replace("\\", "/")
@@ -1124,50 +1175,131 @@ def _ssh_identity(host, port, username, path):
         str(host).strip().lower(), port, str(username).strip(), _normalize_identity_path(path))
 
 
+def _wsl_identity(distro, user, path):
+    """客户端 buildRemoteWorkspaceIdentity wsl 分支同款：
+    remote:wsl:<distro>[:<user>]:<归一路径>。user 段可选（旧版客户端无 user 格式，靠
+    路径必以 / 开头区分）；v3.16 起握手后客户端会把会话身份升级为 remote:server:，
+    但持久化条目里拿到的就是当时身份，优先原样采用，这里只兜底构造。
+    客户端固有歧义：缺省 distro 与字面 "default" 构造出同一身份（bss 的 ||"default"），
+    两者对应不同通道时路由随条目顺序漂移，客户端自身无法区分，接受。"""
+    d = str(distro or "").strip() or "default"
+    u = str(user or "").strip()
+    if u:
+        return "remote:wsl:{}:{}:{}".format(d, u, _normalize_identity_path(path))
+    return "remote:wsl:{}:{}".format(d, _normalize_identity_path(path))
+
+
+def _docker_identity(container, path):
+    """客户端 buildRemoteWorkspaceIdentity docker 分支同款：remote:docker:<container>:<归一路径>。"""
+    return "remote:docker:{}:{}".format(str(container or "").strip(), _normalize_identity_path(path))
+
+
 def _auto_targets(cfg):
-    """客户端 setting.json → 自动 SSH 目标列表。auto:false 或递归子查询（ZUSAGE_REMOTE_CHILD=1）
-    时返回 []。同一连接（别名/密钥+主机+端口+用户）多个工作区合并为一条通道、identities 聚合；
-    纯密码凭据（passwordCredentialKey 且无密钥/别名）无法免交互，跳过。"""
+    """客户端 setting.json → 自动远端目标列表。auto:false 或递归子查询（ZUSAGE_REMOTE_CHILD=1）
+    时返回 []。ssh 按连接（别名/密钥+主机+端口+用户）合并；wsl 按（发行版+用户）、docker 按
+    容器合并为一条通道，多工作区聚合 identities；纯密码凭据（passwordCredentialKey 且无密钥/
+    别名）的 ssh 无法免交互，跳过。workspaceIdentity 一律原样采用（客户端会透传到 DOM/IPC，
+    路由按整串相等），缺失时才按同款算法兜底构造。server 类型没有免交互 exec 通道，不生成。
+    3.16 起存活会话身份握手后升级为 remote:server:<serverId>:/路径，记在
+    sourceServerWorkspaceHistory，与 lastWorkspaceSession 只共享 workspacePath：按归一路径
+    把 server 身份并进路径匹配的传输通道，使 3.15/3.16 两种身份形态都能路由；同一路径命中
+    多条通道或多个服务器视为歧义，不并（fail-closed）。"""
     r = cfg.get("remote")
     if isinstance(r, dict) and r.get("auto") is False:
         return []
     if os.environ.get("ZUSAGE_REMOTE_CHILD") == "1":
         return []
+    # wsl --exec / docker exec 不经登录 shell，进程 CWD 不可靠，自动通道的默认脚本
+    # 必须带 ~ 前缀（exec 端 runpy bootstrap 展开）；用户显式 remote.script 优先。
+    explicit_script = isinstance(r, dict) and bool(r.get("script"))
+    server_idents = _server_idents_by_path()
+    path_channels = {}
     merged = {}
     for e in _read_client_remote_entries():
         t = e.get("target")
-        if not isinstance(t, dict) or t.get("kind") != "ssh":
+        if not isinstance(t, dict):
             continue
-        host = str(t.get("host") or "").strip()
-        username = str(t.get("username") or "").strip()
-        if not host or not username:
+        ident = str(e.get("workspaceIdentity") or "").strip()
+        kind = t.get("kind")
+        if kind == "ssh":
+            host = str(t.get("host") or "").strip()
+            username = str(t.get("username") or "").strip()
+            if not host or not username:
+                continue
+            alias = str(t.get("sshConfigAlias") or "").strip()
+            key_path = str(t.get("privateKeyPath") or "").strip()
+            if not alias and not key_path and t.get("passwordCredentialKey"):
+                continue   # 密码认证拿不到明文，ssh 也无法免交互
+            try:
+                port = int(t.get("port") or 22)
+            except (TypeError, ValueError):
+                port = 22
+            ident = ident or _ssh_identity(host, port, username, e.get("workspacePath"))
+            ck = (kind, alias, host.lower(), port, username, key_path)
+            ent = merged.get(ck)
+            if ent is None:
+                argv = ["ssh", "-o", "BatchMode=yes"]
+                if alias:
+                    argv.append(alias)   # 别名交给用户 ssh_config 解析 host/port/密钥
+                else:
+                    if port != 22:
+                        argv += ["-p", str(port)]
+                    if key_path:
+                        argv += ["-i", key_path, "-o", "IdentitiesOnly=yes"]
+                    argv.append(f"{username}@{host}")
+                ent = {"ssh_argv": argv, "host_label": alias or host, "identities": []}
+                merged[ck] = ent
+        elif kind == "wsl":
+            distro = str(t.get("distro") or "").strip()
+            user = str(t.get("user") or "").strip()
+            ident = ident or _wsl_identity(distro, user, e.get("workspacePath"))
+            # distro 匹配大小写不敏感能并通道；user 是 Linux 用户名、大小写敏感不能并。
+            ck = (kind, distro.lower(), user)
+            ent = merged.get(ck)
+            if ent is None:
+                # --exec 对齐客户端 v3.16.1 buildWslArgs：绕过发行版默认 shell 的
+                # 变量/管道展开，argv（含 runpy bootstrap 的分号引号）原样到达；
+                # -d/-u 仅在真值时附加（distro 缺省走默认发行版，客户端同款）。
+                argv = ["wsl.exe"]
+                if distro:
+                    argv += ["-d", distro]
+                if user:
+                    argv += ["-u", user]
+                argv.append("--exec")
+                ent = {"ssh_argv": argv, "host_label": f"wsl:{distro or 'default'}", "identities": []}
+                if not explicit_script:
+                    ent["script"] = "~/.zcode/zcode-token-usage-statusbar/zusage.py"
+                merged[ck] = ent
+        elif kind == "docker":
+            container = str(t.get("container") or "").strip()
+            if not container:
+                continue
+            ident = ident or _docker_identity(container, e.get("workspacePath"))
+            # Docker 容器名大小写敏感（与 ssh host 不同），原样作键避免不同容器误并。
+            ck = (kind, container)
+            ent = merged.get(ck)
+            if ent is None:
+                ent = {"ssh_argv": ["docker", "exec", "-i", container],
+                       "host_label": f"docker:{container}", "identities": []}
+                if not explicit_script:
+                    ent["script"] = "~/.zcode/zcode-token-usage-statusbar/zusage.py"
+                merged[ck] = ent
+        else:
             continue
-        alias = str(t.get("sshConfigAlias") or "").strip()
-        key_path = str(t.get("privateKeyPath") or "").strip()
-        if not alias and not key_path and t.get("passwordCredentialKey"):
-            continue   # 密码认证拿不到明文，ssh 也无法免交互
-        try:
-            port = int(t.get("port") or 22)
-        except (TypeError, ValueError):
-            port = 22
-        ident = str(e.get("workspaceIdentity") or "").strip() or _ssh_identity(
-            host, port, username, e.get("workspacePath"))
-        ck = (alias, host.lower(), port, username, key_path)
-        ent = merged.get(ck)
-        if ent is None:
-            argv = ["ssh", "-o", "BatchMode=yes"]
-            if alias:
-                argv.append(alias)   # 别名交给用户 ssh_config 解析 host/port/密钥
-            else:
-                if port != 22:
-                    argv += ["-p", str(port)]
-                if key_path:
-                    argv += ["-i", key_path, "-o", "IdentitiesOnly=yes"]
-                argv.append(f"{username}@{host}")
-            ent = {"ssh_argv": argv, "host_label": alias or host, "identities": []}
-            merged[ck] = ent
         if ident not in ent["identities"]:
             ent["identities"].append(ident)
+        path_key = _normalize_identity_path(e.get("workspacePath"))
+        if path_key in server_idents:
+            # 先只登记路径→通道归属，循环结束后统一并入：同一路径命中多条通道
+            # 时无法唯一归属，整路径放弃（fail-closed），不按条目顺序猜首条。
+            path_channels.setdefault(path_key, set()).add(ck)
+    for path_key, cks in path_channels.items():
+        if len(cks) != 1:
+            continue
+        ent = merged[next(iter(cks))]
+        for idn in server_idents[path_key]:
+            if idn not in ent["identities"]:
+                ent["identities"].append(idn)
     return sorted(merged.values(), key=lambda x: (x["host_label"], x["identities"]))
 
 
