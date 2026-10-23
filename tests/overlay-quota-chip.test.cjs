@@ -293,6 +293,39 @@ test('hover tooltip lists windows, built-in tools, highlights the current model 
   assert.equal(tip.style.display, 'none');
 });
 
+test('tooltip survives scroll bursts: chip is fixed in the composer toolbar, streaming auto-scroll must not dismiss it (v100)', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  h.inject(); h.boot(); h.tick();
+  h.window.__zusageUpdate(h.payload({ quota: QUOTA_OK }));
+  const chip = h.chipOf(ui.wrap);
+  chip.listeners.get('mouseenter')[0].call(chip);
+  const tip = h.tipEl();
+  assert.equal(tip.style.display, 'block');
+  const scrollers = h.window.listeners.get('scroll') || [];
+  assert.ok(scrollers.length >= 1, 'a scroll listener is registered on window');   // 夹具不记录 capture 标志；生产代码 window 级 scroll 仅此一处注册
+  for (let i = 0; i < 5; i++) scrollers.forEach(fn => fn.call(h.window, { type: 'scroll' }));   // 思考中流式输出：聊天容器连续自动滚动
+  assert.equal(tip.style.display, 'block', 'quota tooltip stays open across scroll bursts');
+  chip.listeners.get('mouseleave')[0].call(chip);
+  assert.equal(tip.style.display, 'none', 'mouseleave still dismisses it');
+  /* 速率行浮层的宿主在消息流内，滚动即收的既有契约保持；只有额度 chip 被豁免 */
+  assert.match(source, /function hideTipsOnScroll\(\) \{ hideRateTip\(\); \}/);
+});
+
+test('tooltip is swept by the 500ms scan when its chip is detached (React rebuild sends no mouseleave), not left dangling (v100)', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  h.inject(); h.boot(); h.tick();
+  h.window.__zusageUpdate(h.payload({ quota: QUOTA_OK }));
+  const chip = h.chipOf(ui.wrap);
+  chip.listeners.get('mouseenter')[0].call(chip);
+  const tip = h.tipEl();
+  assert.equal(tip.style.display, 'block');
+  chip.remove();   // 模拟宿主重建：旧 chip 随旧 wrap 丢弃
+  (h.window.listeners.get('scroll') || []).forEach(fn => fn.call(h.window, { type: 'scroll' }));
+  assert.equal(tip.style.display, 'block', 'scroll alone still never dismisses the quota tooltip (exemption holds after detach)');
+  h.tick();        // 下一个 500ms 扫描 tick（enhance 重建新 chip 后 tooltip 也不再指向旧宿主）
+  assert.equal(tip.style.display, 'none', 'dangling tooltip swept once host chip is detached');
+});
+
 test('tooltip without usage details falls back to "all models in the plan" with the current model named', () => {
   const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
   h.inject(); h.boot(); h.tick();
@@ -307,9 +340,13 @@ test('turning the toggle off and disposing both remove the chip without orphans'
   h.inject(); h.boot(); h.tick();
   h.window.__zusageUpdate(h.payload({ quota: QUOTA_OK }));
   assert.ok(h.chipOf(ui.wrap));
+  const chip = h.chipOf(ui.wrap), tip = h.tipEl();
+  chip.listeners.get('mouseenter')[0].call(chip);   // 悬停中关开关：chip 与 tooltip 一起收
+  assert.equal(tip.style.display, 'block');
   h.window.__zusagePluginUpdate({ quotaEnabled: false });   // 主进程回推：config quota_enabled 已关
   h.tick();
   assert.equal(h.chipOf(ui.wrap), undefined, 'main-process truth off → chip removed at heavy tick');
+  assert.equal(tip.style.display, 'none', 'tooltip dismissed with the chip');
   h.window.__zusagePluginUpdate({ quotaEnabled: true });
   h.tick();
   assert.ok(h.chipOf(ui.wrap), 'truth on again → chip back (lastQuota retained)');
