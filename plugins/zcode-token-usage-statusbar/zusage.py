@@ -1179,7 +1179,9 @@ def _wsl_identity(distro, user, path):
     """客户端 buildRemoteWorkspaceIdentity wsl 分支同款：
     remote:wsl:<distro>[:<user>]:<归一路径>。user 段可选（旧版客户端无 user 格式，靠
     路径必以 / 开头区分）；v3.16 起握手后客户端会把会话身份升级为 remote:server:，
-    但持久化条目里拿到的就是当时身份，优先原样采用，这里只兜底构造。"""
+    但持久化条目里拿到的就是当时身份，优先原样采用，这里只兜底构造。
+    客户端固有歧义：缺省 distro 与字面 "default" 构造出同一身份（bss 的 ||"default"），
+    两者对应不同通道时路由随条目顺序漂移，客户端自身无法区分，接受。"""
     d = str(distro or "").strip() or "default"
     u = str(user or "").strip()
     if u:
