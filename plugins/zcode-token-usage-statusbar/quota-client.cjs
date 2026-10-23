@@ -815,10 +815,18 @@ ADAPTERS.push({
   },
   async fetchOne(j, ctx, cred, ctl) {
     let body;
-    try { body = await j.http.getJson((ctx.apiOrigin || "https://api.siliconflow.cn") + "/v1/user/info", { authorization: "Bearer " + cred.token }, ctl); }
+    /* v102：secrets.baseUrl（⚙ 预设模板写入）仅在可信域白名单内生效（minimax 同款，
+     * key 不发任意域）；.com 币种随域。端点自带 currency 时仍以响应为准。 */
+    const rawBase = ((j.secrets.sources || {}).siliconflow || {}).baseUrl || "";
+    let baseHost = "";
+    try { baseHost = rawBase ? new URL(rawBase).hostname : ""; } catch (e) { baseHost = ""; }
+    const trustedBase = baseHost === "api.siliconflow.cn" || baseHost === "api.siliconflow.com";
+    const baseOrigin = trustedBase ? rawBase.replace(/\/+$/, "") : (ctx.apiOrigin || "https://api.siliconflow.cn");
+    const baseCurrency = baseHost === "api.siliconflow.com" ? "USD" : baseHost === "api.siliconflow.cn" ? "CNY" : "";
+    try { body = await j.http.getJson(baseOrigin + "/v1/user/info", { authorization: "Bearer " + cred.token }, ctl); }
     catch (e) { if (e && e.httpStatus === 410) throw qErr("unsupported", "siliconflow quota endpoint retired", { reason: "endpoint_retired" }); throw e; }
     const d = (body && body.data) || {};
-    const v = parseCurrencyAmount(d.totalBalance != null ? d.totalBalance : d.balance, d.currency || ctx.currency || "CNY");
+    const v = parseCurrencyAmount(d.totalBalance != null ? d.totalBalance : d.balance, d.currency || baseCurrency || ctx.currency || "CNY");
     if (!v) throw qErr("parse_error", "siliconflow shape");
     return { balance: { amount: Math.round(v.amount * 100) / 100, currency: v.currency || "CNY" } };
   },
@@ -1161,6 +1169,33 @@ ADAPTERS.push({
   },
 });
 const ADAPTER_BY_ID = new Map(ADAPTERS.map((a) => [a.id, a]));
+
+/* ---------- 预设模板（v102，⚙ 面板「预设模板」行） ----------
+ * CC Switch / magpie 同款「选模板只填 Key」体验：presets 为官方域变体，选中值写入
+ * secrets.sources.<id>.baseUrl（minimax 的可信域白名单机制，同款推广到 siliconflow）；
+ * keyUrl 是控制台取 Key 页。纯静态白名单数据，key 绝不进预设；未列出的源无模板行。 */
+const SOURCE_PRESETS = {
+  minimax: {
+    keyUrl: "https://platform.minimaxi.com",
+    presets: [
+      { label: "国内站", labelEn: "China", value: "https://api.minimaxi.com" },
+      { label: "国际站", labelEn: "Global", value: "https://api.minimax.io" },
+    ],
+  },
+  siliconflow: {
+    keyUrl: "https://cloud.siliconflow.cn/account/ak",
+    presets: [
+      { label: "中国站 ¥", labelEn: "China ¥", value: "https://api.siliconflow.cn" },
+      { label: "国际站 $", labelEn: "Global $", value: "https://api.siliconflow.com" },
+    ],
+  },
+  deepseek: { keyUrl: "https://platform.deepseek.com/api_keys" },
+  openrouter: { keyUrl: "https://openrouter.ai/settings/keys" },
+  kimi: { keyUrl: "https://platform.moonshot.cn/console/api-keys" },
+  anthropic: { keyUrl: "https://console.anthropic.com/settings/keys" },
+  mimo: { keyUrl: "https://platform.xiaomimimo.com" },
+  volcano: { keyUrl: "https://console.volcengine.com/ark" },
+};
 
 /* ---------- 多源调度器 ---------- */
 function createQuotaClient(opts) {
@@ -1637,7 +1672,14 @@ function createQuotaClient(opts) {
           keyConfigured: !!(cfg.apiKey || cfg.cookie || cfg.token || cfg.accessKeyId ||
             accounts.some((entry) => !!entry.cred) || (a.id === "scnet" && num(cfg.planCredits) > 0)),
           keySource: st && st.cred ? st.cred.source : "",
-          status: st ? st.status : "idle",
+          /* v104：显式关闭的源统一报 disabled（与 entryView 同口径）——原样透传 st.status 时
+           * 从未激活过的关闭源会冒充 idle，面板出现「开关已关却显示待查询」的矛盾 */
+          status: cfg.enabled === false ? "disabled" : (st ? st.status : "idle"),
+          /* v102：预设模板（静态白名单）+ 当前 baseUrl（域名非凭据，仅用于面板高亮选中模板；
+           * apiKey/cookie/token/AK/SK 照旧不回显） */
+          presets: (SOURCE_PRESETS[a.id] || {}).presets,
+          keyUrl: (SOURCE_PRESETS[a.id] || {}).keyUrl,
+          baseUrl: cfg.baseUrl || "",
         });
       }
       return list;

@@ -293,7 +293,7 @@ test('hover tooltip lists windows, built-in tools, highlights the current model 
   assert.equal(tip.style.display, 'none');
 });
 
-test('tooltip survives scroll bursts: chip is fixed in the composer toolbar, streaming auto-scroll must not dismiss it (v100)', () => {
+test('tooltip survives scroll bursts: chip is fixed in the composer toolbar, streaming auto-scroll must not dismiss it (v106)', () => {
   const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
   h.inject(); h.boot(); h.tick();
   h.window.__zusageUpdate(h.payload({ quota: QUOTA_OK }));
@@ -311,7 +311,7 @@ test('tooltip survives scroll bursts: chip is fixed in the composer toolbar, str
   assert.match(source, /function hideTipsOnScroll\(\) \{ hideRateTip\(\); \}/);
 });
 
-test('tooltip is swept by the 500ms scan when its chip is detached (React rebuild sends no mouseleave), not left dangling (v100)', () => {
+test('tooltip is swept by the 500ms scan when its chip is detached (React rebuild sends no mouseleave), not left dangling (v106)', () => {
   const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
   h.inject(); h.boot(); h.tick();
   h.window.__zusageUpdate(h.payload({ quota: QUOTA_OK }));
@@ -787,4 +787,45 @@ test('issue #68 (mutation review): family title strictly follows provider id sha
     assert.match(h.tipEl().innerHTML, new RegExp((title === '自定义供应商' ? '' : '套餐额度 · ') + title), provider);
     if (title !== '自定义供应商') assert.doesNotMatch(h.tipEl().innerHTML, /自定义供应商/, provider);
   }
+});
+/* ---------- v102 预设模板：chips 渲染契约 + baseUrl 写入 + openExternal 桥 ---------- */
+test("source rows carry preset chips, the console key link and highlight the active baseUrl", () => {
+  assert.match(source, /class="zu-src-preset/);
+  assert.match(source, /zu-src-preset[^>]*\.on/, "active preset gets the on class");
+  assert.match(source, /zu-src-keyurl/);
+  assert.match(source, /获取 Key/);
+  assert.match(source, /data-base=/);
+});
+
+test("preset chip click writes secrets baseUrl via the whitelist channel; key link opens the bridge", () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  h.inject(); h.boot(); h.tick();
+  void ui;
+  h.window.__zusagePluginUpdate({ quotaEnabled: true, quotaSources: [
+    { id: 'minimax', label: 'MiniMax', kind: 'plan', enabled: true, credentialFields: ['apiKey'], keyConfigured: true, status: 'ok' },
+  ] });
+  const panel = h.body.children.find(e => e.classList.contains('zu-settings'));
+  const preset = new Element('button');
+  preset.classList.add('zu-src-preset'); preset.dataset.src = 'minimax'; preset.dataset.base = 'https://api.minimaxi.com';
+  preset.closest = (sel) => (sel === '.zu-src-preset' ? preset : null);
+  panel.listeners.get('click')[0]({ target: preset });
+  const preq = h.window.__zusagePluginRequests.filter(r => r.action === 'quota-src-key').pop();
+  assert.equal(preq.id, 'minimax');
+  assert.equal(preq.field, 'baseUrl');
+  assert.equal(preq.value, 'https://api.minimaxi.com');
+  h.window.zcode = { openExternal: (u) => { h.window.__opened = u; } };
+  const keyBtn = new Element('button');
+  keyBtn.classList.add('zu-src-keyurl'); keyBtn.dataset.url = 'https://platform.minimaxi.com';
+  keyBtn.getAttribute = (k) => (k === 'data-url' ? 'https://platform.minimaxi.com' : null);   // 桩的 dataset 按裸键查，覆写对齐真实 DOM
+  keyBtn.closest = (sel) => (sel === '.zu-src-keyurl' ? keyBtn : null);
+  panel.listeners.get('click')[0]({ target: keyBtn });
+  assert.equal(h.window.__opened, 'https://platform.minimaxi.com');
+});
+
+test("refresh and key buttons expose native titles; switched-off sources disable refresh", () => {
+  assert.ok(source.includes('跳过缓存，立即重新查询该源'), "refresh button title");
+  assert.ok(source.includes('" title="\' + L("打开控制台获取 API Key"'), "key link title reuses the aria label");
+  assert.ok(source.includes('(sv.enabled ? "" : " disabled") + \'>↻</button>\''), "off sources render a disabled refresh");
+  assert.ok(source.includes('.zu-src-refresh:disabled{opacity:.4;cursor:default}'), "disabled refresh styling");
+  assert.ok(source.includes('disabled: L("已关闭", "off")'), "disabled status maps to a localized label");
 });

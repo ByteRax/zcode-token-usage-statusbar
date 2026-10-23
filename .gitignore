@@ -10,6 +10,7 @@ diag-*.json
 !.zcode/skills/
 .zcode/skills/*
 !.zcode/skills/zcode-github-release/
+!.zcode/skills/zcode-issue-pr-resolver/
 config.json
 .update-baseline.json
 

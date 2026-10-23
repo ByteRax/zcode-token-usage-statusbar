@@ -82,7 +82,8 @@ test('coordinator quota counts only live panes and handles more than four sequen
   h.setPanes(['e', 'f', 'g', 'h']); h.tick();
   assert.deepEqual(Array.from(h.window.lifecycleTest.instances(), e => e.pid), ['e', 'f', 'g', 'h']);
   assert.equal(h.frames.size, 4);
-  assert.equal(h.observers.filter(e => e.connected).length, 4);
+  /* v105 起每实例两个常连观察器：theme + 弹层压缩按钮的 body 观察器（4 实例 × 2）。 */
+  assert.equal(h.observers.filter(e => e.connected).length, 8);
   old.forEach(e => e.dispose());
   assert.equal(h.frames.size, 4);
   h.window.__zusageDispose();
@@ -128,7 +129,7 @@ test('reinjection and repeated cleanup cancel old loops and leave one live gener
   const h = harness(); h.setPanes(['a']); h.inject(); h.boot();
   const cleanup = h.window.__zusageDispose;
   h.inject(); h.boot(); cleanup();
-  assert.equal(h.frames.size, 1); assert.equal(h.observers.filter(e => e.connected).length, 1);
+  assert.equal(h.frames.size, 1); assert.equal(h.observers.filter(e => e.connected).length, 2);   // v105：theme + 弹层压缩按钮 body 观察器
   // 5 = coordinator(600) + heavy(600) + rateScan(2s) + deterministic scan(2s) + per-pane bridge probe(2s)
   assert.equal(h.timers.size, 5);
   h.window.__zusageDispose(); cleanup();

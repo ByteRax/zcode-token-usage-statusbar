@@ -23,6 +23,11 @@ END = b"/* zusage-existing-conversation-store:v1 end */"
 # 表内版本的资产哈希漂移仍拒绝（fail-closed）；表外版本走 derive_target 的
 # 严格结构推导——任何一项不唯一/不符即拒绝，绝不对没验证过的 bundle 做字节手术。
 HOST_TARGETS = [
+    {"version": "3.16.3", "asset": "/out/renderer/assets/styles-CQuzX8si.js",
+     "sha256": "f7eaccd11e350ff6f5dbbeecae15107f519e5b644f359bd1142b26d7f4f44115",
+     "names": {"key": "kde", "topic": "So", "registry": "hf"},
+     "pane": {"anchor": b'"data-testid":Sb(WRe,e),"data-session-id":t??`draft`,',
+              "workspacePath": "c", "workspaceIdentity": "l", "remoteSessionId": "u", "paneId": "e"}},
     {"version": "3.16.2", "asset": "/out/renderer/assets/styles-n-UNIiNg.js",
      "sha256": "10ea7c92c2b52a1c4006ced89a1ec2da83996605ffcd9e22190c9dc6b80f8509",
      "names": {"key": "Ede", "topic": "gee", "registry": "hf"},
