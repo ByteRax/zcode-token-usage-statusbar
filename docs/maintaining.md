@@ -26,7 +26,7 @@
 | `tests/` | 隔离回归、真实宿主 CLI 沙箱测试和交互演示 |
 | `web/` | 自托管网页版本，和桌面版独立部署 |
 
-插件专有入口位于包内：`overlay_install.py` 管理浮层安装；`token_rate.py` 查询逐问速率；`hooks/session-start.py` 处理会话启动；`hooks/prompt-submit.py` 记录提问与注入统计指令。
+插件专有入口位于包内：`overlay_install.py` 管理浮层安装；`token_rate.py` 查询逐问速率；`hooks/session-start.py` 处理会话启动；`hooks/prompt-submit.py` 记录提问并注入上一轮速率背景行。
 
 ## 为什么插件仍需要客户端注入
 

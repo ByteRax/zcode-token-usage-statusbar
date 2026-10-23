@@ -505,6 +505,24 @@ def cancel_pending_install():
         _cancel_pending_install()
 
 
+def _publish_pending(stage, source, operation, previous):
+    """校验 stage 后按 journal→原子发布→sidecar 的次序落成 TMP（prepare 与桥链共用）。"""
+    meta = _checked_tmp_metadata(stage, source, operation)
+    # Two files cannot be atomically published together. Persist a cancelled
+    # ownership journal first, so any interruption is safe and recoverable.
+    journal = dict(meta, operation="cancelled", publishing=True)
+    if previous is not None and TMP.exists():
+        journal["previous_tmp"] = source_fingerprint(TMP)
+    _atomic_tmp_metadata(journal)
+    _same_stamp(ASAR, source)
+    _same_stamp(stage, meta["tmp"])
+    os.replace(stage, TMP)
+    meta["tmp"] = source_fingerprint(TMP)
+    _same_stamp(ASAR, source)
+    _atomic_tmp_metadata(meta)
+    return meta
+
+
 def _prepare_tmp(modify, operation="install", source=None):
     source = source if source is not None else source_fingerprint(ASAR)
     _same_stamp(ASAR, source)
@@ -522,20 +540,7 @@ def _prepare_tmp(modify, operation="install", source=None):
             if (stage_stat.st_uid, stage_stat.st_gid) != (original_stat.st_uid, original_stat.st_gid):
                 os.chown(stage, original_stat.st_uid, original_stat.st_gid)
         os.chmod(stage, stat.S_IMODE(original_stat.st_mode))
-        meta = _checked_tmp_metadata(stage, source, operation)
-        # Two files cannot be atomically published together. Persist a cancelled
-        # ownership journal first, so any interruption is safe and recoverable.
-        journal = dict(meta, operation="cancelled", publishing=True)
-        if previous is not None and TMP.exists():
-            journal["previous_tmp"] = source_fingerprint(TMP)
-        _atomic_tmp_metadata(journal)
-        _same_stamp(ASAR, source)
-        _same_stamp(stage, meta["tmp"])
-        os.replace(stage, TMP)
-        meta["tmp"] = source_fingerprint(TMP)
-        _same_stamp(ASAR, source)
-        _atomic_tmp_metadata(meta)
-        return meta
+        return _publish_pending(stage, source, operation, previous)
     finally:
         # Only this invocation's exclusive name, never glob historical TMPs.
         stage.unlink(missing_ok=True)
@@ -545,6 +550,36 @@ def prepare_tmp(modify, operation="install", source=None):
     """Generate privately, validate, then publish; unknown historical TMPs stay."""
     with _target_lock():
         return _prepare_tmp(modify, operation, source)
+
+
+def publish_external_pending(stage, source=None, operation="install"):
+    """把外部已构建好的完整 asar 镜像发布为待替换包（renderer 桥链：ensure_deployed
+    就地替换被拒后转存）。与 prepare_tmp 同一套校验与 journal 语义；stage 一经移交，
+    成功转存或失败清理都由本函数负责，调用方不再管理该文件。已有 pending 的
+    operation 为 remove 时拒绝：自动补桥绝不覆盖用户的显式卸载意图——调用方的
+    锁外快照（pending_operation）存在 TOCTOU，以锁内判定为准（issue #67 二审）。"""
+    stage = Path(stage)
+    source = source if source is not None else source_fingerprint(ASAR)
+    with _target_lock():
+        previous = None
+        if TMP.exists() or TMP.is_symlink() or TMP_META.exists() or TMP_META.is_symlink():
+            previous = _owned_tmp_metadata()
+        try:
+            if operation == "install" and previous is not None and previous["operation"] == "remove":
+                raise PendingTmpError("pending remove in progress; install pending refused")
+            return _publish_pending(stage, source, operation, previous)
+        finally:
+            stage.unlink(missing_ok=True)
+
+
+def pending_operation():
+    """当前待替换 sidecar 的 operation（install/remove/cancelled）；无合法 sidecar
+    时返回 None。桥补装链用它让位：用户 remove 待收尾期间，自动补桥不得以
+    install pending 覆盖卸载意图。"""
+    try:
+        return _load_tmp_metadata()["operation"]
+    except PendingTmpError:
+        return None
 
 
 def pending_tmp(operation="install", verify_hash=False, verified=None):
@@ -619,18 +654,27 @@ def sudo_hint(operation="install"):
     否则 nvm 装的 node 与 ~/.zcode 下的运行时目录都会找错（issue #15）。
     插件安装走 overlay_install.py，仓库根一键安装走 install.py；用当前目录实际在的那个。
     operation 必须和调用方实际要做的事一致：install 场景提示装，remove 场景提示卸载，
-    否则会把想卸载的用户引导去重新安装/注入（issue #15 的 review 发现）。"""
-    print(L(f"[权限] app.asar 或所在目录不可写（Linux 上 /opt 等系统位置需要 root）：{ASAR}",
-            f"[permission] app.asar or its directory is not writable (Linux system locations like /opt need root): {ASAR}"))
-    print(L("请用 sudo 重跑，并保留当前 HOME 与 PATH（sudo 默认重置它们，会让 nvm 的 node "
-            "和 ~/.zcode 下的运行时目录定位失败）：",
-            "Re-run with sudo while keeping the current HOME and PATH (sudo resets both by default, "
-            "which hides an nvm node and mislocates the runtime dir under ~/.zcode):"))
+    否则会把想卸载的用户引导去重新安装/注入（issue #15 的 review 发现）。
+    Windows 没有 sudo：受保护目录（Program Files 等）的提示是以管理员身份重跑（issue #67）。"""
     here = Path(__file__).resolve().parent
     args = {"install": ("overlay_install.py", "install"), "remove": ("overlay_install.py", "remove")}[operation]
     fallback = ("install.py", "" if operation == "install" else "--remove")
     script, cmd = next(((here / name, cmd) for name, cmd in (args, fallback)
                         if (here / name).is_file()), (here / fallback[0], fallback[1]))
+    if IS_WIN:
+        print(L(f"[权限] app.asar 或其所在目录不可写（Program Files 等受保护位置需要管理员）：{ASAR}",
+                f"[permission] app.asar or its directory is not writable (protected locations like Program Files need an administrator): {ASAR}"))
+        print(L("请以管理员身份打开终端（右键终端图标，选「以管理员身份运行」），然后执行：",
+                "Open a terminal as administrator (right-click the terminal icon, choose 'Run as administrator'), then run:"))
+        print(L('  python "{}" {}'.format(script, cmd).rstrip(),
+                '  python "{}" {}'.format(script, cmd).rstrip()))
+        return
+    print(L(f"[权限] app.asar 或其所在目录不可写（Linux 上 /opt 等系统位置需要 root）：{ASAR}",
+            f"[permission] app.asar or its directory is not writable (Linux system locations like /opt need root): {ASAR}"))
+    print(L("请用 sudo 重跑，并保留当前 HOME 与 PATH（sudo 默认重置它们，会让 nvm 的 node "
+            "和 ~/.zcode 下的运行时目录定位失败）：",
+            "Re-run with sudo while keeping the current HOME and PATH (sudo resets both by default, "
+            "which hides an nvm node and mislocates the runtime dir under ~/.zcode):"))
     print(L('  sudo env HOME="$HOME" PATH="$PATH" python3 "{}" {}'.format(script, cmd).rstrip(),
             '  sudo env HOME="$HOME" PATH="$PATH" python3 "{}" {}'.format(script, cmd).rstrip()))
 

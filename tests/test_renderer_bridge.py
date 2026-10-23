@@ -583,6 +583,15 @@ class EnsureDeployedTests(unittest.TestCase):
         before = self.target.read_bytes()
         with patch.object(bridge.os, 'replace', side_effect=OSError('publication failed')):
             result = bridge.ensure_deployed(self.target)
+        # 发布被拒的新契约：stage 保留移交（issue #67），由调用方转存待替换链或清理
+        self.assertEqual(result['status'], 'replace-failed')
+        self.assertTrue(Path(result['stage']).is_file())
+        self.assertIn('publication failed', result['detail'])
+        self.assertEqual(self.target.read_bytes(), before)
+        Path(result['stage']).unlink()
+        # stage 构建或发布前的其它异常仍走 skipped-error 且不残留
+        with patch.object(bridge, '_rewrite_to', side_effect=OSError('disk error')):
+            result = bridge.ensure_deployed(self.target)
         self.assertEqual(result['status'], 'skipped-error')
         self.assertEqual(self.target.read_bytes(), before)
         self.assertFalse(list(self.root.glob('.zusage-bridge-*')))
