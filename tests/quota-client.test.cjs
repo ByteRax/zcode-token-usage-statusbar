@@ -596,14 +596,17 @@ test("commandcode: 4-call chain assembles windows + three-part credits balance",
   await flush();   // 链式：orgId 到位后才发后续三连（每步后重扫 calls）
   const byPath = () => { const m = {}; for (const c of calls) m[pathOf(c)] = c; return m; };
   assert.ok(byPath()["/alpha/billing/credits"], "credits 已发");
+  assert.ok(byPath()["/alpha/billing/credits"].url.indexOf("orgId=org1") >= 0, "组织账号 credits 带 orgId");
   byPath()["/alpha/billing/credits"].d.resolve(fakeRes(200, JSON.stringify({
     credits: { monthlyCredits: 30, purchasedCredits: 50, freeCredits: 20 },
     windowLimits: { limited: true, fiveHour: { used: 25, cap: 100, resetAt: 1793176110955 }, weekly: { used: 60, cap: 200, resetAt: 1793262510955 } },
   })));
   await flush();
   byPath()["/alpha/billing/subscriptions"].d.resolve(fakeRes(200, JSON.stringify({ data: { currentPeriodStart: "2026-10-01", currentPeriodEnd: "2026-11-01", planId: "pro" } })));
+  assert.ok(byPath()["/alpha/billing/subscriptions"].url.indexOf("orgId=org1") >= 0, "组织账号 subscriptions 带 orgId");
   await flush();
   byPath()["/alpha/usage/summary"].d.resolve(fakeRes(200, JSON.stringify({ totalCost: 100 })));
+  assert.ok(byPath()["/alpha/usage/summary"].url.indexOf("orgId=org1") >= 0, "组织账号 usage/summary 带 orgId");
   await flush();
   const v = client.view();
   assert.equal(v.status, "ok");
@@ -611,6 +614,49 @@ test("commandcode: 4-call chain assembles windows + three-part credits balance",
   assert.equal(v.windows.weekly.percent, 30);
   assert.equal(v.windows.monthly.percent, 50);   // 100/(100+100)
   assert.deepEqual(v.balance.parts.map((p) => p.label), ["月度", "购买", "免费"]);
+});
+
+test("commandcode: personal account (whoami org:null) omits orgId on all three follow-up calls", async () => {
+  const { client, calls } = adapterClient({ cfgEntries: [["ccp", "https://api.commandcode.ai/provider", "sk-cc-p"]] });
+  client.noteProvider("ccp");
+  client.tick();
+  const pathOf = (c) => c.url.replace("https://api.commandcode.ai", "").split("?")[0];
+  assert.equal(pathOf(calls[0]), "/alpha/whoami");
+  calls[0].d.resolve(fakeRes(200, JSON.stringify({ success: true, user: { id: "u1" }, org: null })));
+  await flush();
+  const byPath = () => { const m = {}; for (const c of calls) m[pathOf(c)] = c; return m; };
+  const cred = byPath()["/alpha/billing/credits"];
+  assert.ok(cred, "个人账号 credits 仍发出（不再抛 no org id）");
+  assert.ok(cred.url.indexOf("orgId=") < 0, "个人账号 credits 不带 orgId");
+  cred.d.resolve(fakeRes(200, JSON.stringify({
+    credits: { monthlyCredits: 40, purchasedCredits: 20, freeCredits: 10 },
+    windowLimits: { limited: true, fiveHour: { used: 20, cap: 125, resetAt: 1793176110955 }, weekly: { used: 90, cap: 300, resetAt: 1793262510955 } },
+  })));
+  await flush();
+  const subs = byPath()["/alpha/billing/subscriptions"];
+  assert.ok(subs.url.indexOf("orgId=") < 0, "个人账号 subscriptions 不带 orgId");
+  subs.d.resolve(fakeRes(200, JSON.stringify({ data: { currentPeriodStart: "2026-10-01", currentPeriodEnd: "2026-11-01", planId: "personal" } })));
+  await flush();
+  const sum = byPath()["/alpha/usage/summary"];
+  assert.ok(sum.url.indexOf("orgId=") < 0, "个人账号 usage/summary 不带 orgId");
+  sum.d.resolve(fakeRes(200, JSON.stringify({ totalCost: 30 })));
+  await flush();
+  const v = client.view();
+  assert.equal(v.status, "ok");
+  assert.equal(v.windows.fiveHour.percent, 16);   // 20/125
+  assert.equal(v.windows.weekly.percent, 30);     // 90/300
+  assert.equal(v.windows.monthly.percent, 30);    // 30/(30+70)
+  assert.equal(v.balance.amount, 70);
+});
+
+test("commandcode: org present without id stays parse_error, no silent scope downgrade", async () => {
+  const { client, calls } = adapterClient({ cfgEntries: [["ccb", "https://api.commandcode.ai/provider", "sk-cc-b"]] });
+  client.noteProvider("ccb");
+  client.tick();
+  calls[0].d.resolve(fakeRes(200, JSON.stringify({ org: {} })));
+  await flush();
+  assert.equal(client.view().status, "parse_error");
+  assert.equal(calls.filter((c) => c !== calls[0]).length, 0, "形状坏时不发后续三连");
 });
 
 test("cline: three windows from data.limits percentUsed", async () => {

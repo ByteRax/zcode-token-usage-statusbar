@@ -21,7 +21,7 @@
 | Z.ai Start Plan | **未实装专用协议** | 没有已验证的自动取得和查询链 | 宿主按钮存在或 Coding 可查，不代表 Start Plan 受支持 |
 | MiniMax Coding | 已有 remains 适配 | env / 本机 secrets / 已知官方域供应商配置 | 源码转写、夹具验证；剩余比例转已用比例；`weekly_status == 3` 不展示周窗 |
 | Kimi Coding / Moonshot PAYG | Coding 额度；401 回落 PAYG 余额 | env / secrets / 已知官方域供应商配置 | 源码转写、夹具验证；remaining 口径与分转元须分别处理，不能假设所有 Coding key 有 PAYG 权限 |
-| CommandCode | 已有订阅与用量适配 | 专用 key，env / secrets；非通用推理 key 自动发现保证 | 源码转写、夹具验证；需匹配订阅、组织和统计周期 |
+| CommandCode | 已有订阅与用量适配 | 专用 key，env / secrets；非通用推理 key 自动发现保证 | 源码转写、夹具验证；需匹配订阅和统计周期；组织账号带 `orgId` 查询，个人订阅（whoami `org:null`）省略 `orgId` 走用户作用域 |
 | Cline Pass | 已有用量窗口适配 | 专用 key，env / secrets | 源码转写、夹具验证；配置型源，凭据可读不等于一定激活 |
 | Anthropic Pro / Max | OAuth 用量适配；不是普通 API 计费余额 | **必须显式 opt-in**；env / secrets，或**另读 `~/.claude/.credentials.json` 的 Claude OAuth**，属跨应用读取 | 源码转写、夹具验证；不是自动复用宿主推理 key；仅支持选定主窗口，不冒充子配额完整覆盖 |
 | DeepSeek | 官方余额适配 | env / secrets / 官方域供应商 key | 夹具验证，非真账号；有效零余额处理列入本轮修复 |
