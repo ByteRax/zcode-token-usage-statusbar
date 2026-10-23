@@ -210,9 +210,10 @@ function subscriptionTimestamp(value) {
   let at = Date.UTC(y, mo - 1, d, hh, mi, ss);
   if (m[7] === undefined) at -= SUB_TZ_OFFSET_MS;   // 无偏移：服务端时区
   else if (m[7] !== "Z") {
-    const offsetMin = Number(m[7].slice(1, 3)) * 60 + Number(m[7].slice(-2));
-    if (offsetMin > 14 * 60) return null;   // ISO 上限 ±14:00；超界偏移视同非法值
-    at += (m[7][0] === "+" ? -1 : 1) * offsetMin * 60000;
+    const offsetHour = Number(m[7].slice(1, 3)), offsetMinute = Number(m[7].slice(-2));
+    // ISO 8601：分钟 00-59，小时上限 ±14:00；超界偏移视同非法值
+    if (offsetMinute > 59 || offsetHour > 14 || (offsetHour === 14 && offsetMinute > 0)) return null;
+    at += (m[7][0] === "+" ? -1 : 1) * (offsetHour * 60 + offsetMinute) * 60000;
   }
   return { day: day, at: at };
 }
@@ -1029,6 +1030,70 @@ function relayQuotaUrls(baseUrl) {
   return { sub2api: url.origin + prefix + "/v1/usage", legacy: url.origin + url.pathname.replace(/\/+$/, "") };
 }
 
+/* --- OpenCode Go（$10/月订阅；转写自 cc-switch coding_plan.rs，MIT，未真实账号实测） ---
+ * 用量端点第一方未文档化：GET https://opencode.ai/zen/go/v1/usage，只认
+ * Authorization: Bearer（与推理侧只认 x-api-key 相反）；响应
+ * {usage:{rolling|weekly|monthly:{status,percent(已用0-100),resetsAt(ISO)}}}，
+ * 端点不回金额。detect 较 cc-switch 的裸子串收严：host 精确 opencode.ai +
+ * 路径 /zen/go 或其子路径（两档预设），防外域伪装；Zen 按量版 /zen/v1 无
+ * 用量 API（cc-switch 实测 404）刻意不命中。 */
+function normalizeOpencodeGo(body) {
+  const usage = body && typeof body === "object" && !Array.isArray(body) &&
+    body.usage && typeof body.usage === "object" && !Array.isArray(body.usage) ? body.usage : null;
+  if (!usage) throw qErr("parse_error", "opencode usage shape");
+  const windows = {};
+  for (const pair of [["rolling", "fiveHour"], ["weekly", "weekly"], ["monthly", "monthly"]]) {
+    const w = usage[pair[0]] && typeof usage[pair[0]] === "object" && !Array.isArray(usage[pair[0]]) ? usage[pair[0]] : null;
+    const pct = w ? num(w.percent) : null;
+    if (pct == null || pct < 0) continue;   // 坏窗跳过不整体失败（端点上线当天改过一次形态）
+    windows[pair[1]] = {
+      percent: Math.round(clampPct(pct) * 10) / 10,   // 已用%直取（Go 语义即已用，非剩余）
+      resetsAt: pct > 0 ? resetOf(w.resetsAt) : null,   // percent=0 时 resetsAt 是 now+窗长占位值，丢弃
+    };
+  }
+  if (!Object.keys(windows).length) throw qErr("parse_error", "opencode windows missing");
+  return { label: "OpenCode Go", kind: "plan", windows: windows };
+}
+
+ADAPTERS.push({
+  id: "opencode", label: "OpenCode Go", kind: "plan", defaultOn: true, unverified: true,
+  envKeys: ["OPENCODE_API_KEY"],
+  detect(j, providerId) {
+    if (providerId.indexOf("account:") === 0) return null;
+    const cp = j.customProviderOf(providerId);
+    if (!cp) return null;
+    let u = null;
+    try { u = new URL(cp.baseUrl); } catch (e) { return null; }
+    if (u.protocol !== "https:" || u.hostname.toLowerCase() !== "opencode.ai") return null;
+    const p = u.pathname.toLowerCase().replace(/\/+$/, "");
+    if (p !== "/zen/go" && !p.startsWith("/zen/go/")) return null;   // 仅两档预设；/zen/v1 按量版与 /zen/gopher 类前缀不命中
+    return { key: cp.apiKey, origin: "cfg" };
+  },
+  resolveCred(j, ctx) {
+    for (const k of this.envKeys) {
+      const v = j.env[k];
+      if (v) return { token: v, fingerprint: "env:" + sha16(v), source: "env" };
+    }
+    const sec = (j.secrets.sources || {}).opencode || {};
+    if (sec.apiKey) return { token: sec.apiKey, fingerprint: "sec:" + sha16(sec.apiKey), source: "secrets" };
+    if (ctx.key) return { token: ctx.key, fingerprint: "cfg:" + sha16(ctx.key), source: "provider_config" };
+    return null;
+  },
+  async fetchOne(j, ctx, cred, ctl) {
+    let body;
+    try {
+      body = await j.http.getJson("https://opencode.ai/zen/go/v1/usage",
+        { authorization: "Bearer " + cred.token }, ctl);
+    } catch (e) {
+      /* 403 EntitlementError：key 本身有效（Zen/Go 共用 workspace key）但无 Go 订阅——
+       * 与 401 认证失败分开（classifyStatus 把 401/403 都归 auth_failed，此处按消息分流）。 */
+      if (e && e.httpStatus === 403) return { noPlan: true };
+      throw e;
+    }
+    return normalizeOpencodeGo(body);
+  },
+});
+
 /* --- 自定义中转（sub2api / OpenAI legacy；仅查询配置地址的同源） --- */
 ADAPTERS.push({
   id: "custom", label: "中转站", kind: "balance", defaultOn: false,
@@ -1094,7 +1159,7 @@ function createQuotaClient(opts) {
   /* HTTP 助手：分类错误（401/403 auth_failed、429 rate_limited、5xx/其它 network_error、
    * JSON 解析 parse_error）；maybeGetJson 任何失败返回 null（探测/可选端点用）。 */
   function classifyStatus(status, headers) {
-    if (status === 401 || status === 403) return qErr("auth_failed", "HTTP " + status);
+    if (status === 401 || status === 403) return qErr("auth_failed", "HTTP " + status, { httpStatus: status });
     if (status === 429) {
       const ra = headers && typeof headers.get === "function" ? headers.get("retry-after") : null;
       return qErr("rate_limited", "HTTP 429", { retryAfterMs: parseRetryAfterMs(ra) });

@@ -204,7 +204,7 @@ Windows 对应用户目录下的 `.zcode\zcode-token-usage-statusbar\config.json
 | `python_path` | Python 可执行文件；安装器会设置，无法启动 Python 时检查 |
 | `hot_reload` | 状态条脚本是否热更新 |
 | `answer_rate_line` | 插件回答末尾的速率行，默认开，下一问生效 |
-| `quota_enabled` | 套餐额度 chip（BigModel / Z.ai 个人编码套餐），默认关。建议用 ⚙ 面板开关而不是手改：开启后主进程读取凭据查询套餐/余额接口（仅内存使用、不落盘、不进日志与诊断）：内置套餐走 ZCode 登录凭据（bigmodel.cn / api.z.ai）；自定义供应商余额用其自己的 key，只发官方域（api.deepseek.com、openrouter.ai、api.siliconflow.cn、api.minimaxi.com、api.kimi.com、api.commandcode.ai、api.cline.bot、api.anthropic.com、platform.xiaomimimo.com、open.volcengineapi.com 等）或你配置的中转站本域；⚙ 面板可为各数据源（MiniMax/Kimi/Cline/Anthropic/MiMo/火山/SCNet 等）单独配置凭据与开关（保存在运行目录 quota-secrets.json，0600）。套餐额度是账号级套餐池口径，不是单模型额度；BigModel 悬停还显示套餐名/版本/有效期；团队套餐暂不支持，识别不了余额形状的中转不显示 |
+| `quota_enabled` | 套餐额度 chip（BigModel / Z.ai 个人编码套餐），默认关。建议用 ⚙ 面板开关而不是手改：开启后主进程读取凭据查询套餐/余额接口（仅内存使用、不落盘、不进日志与诊断）：内置套餐走 ZCode 登录凭据（bigmodel.cn / api.z.ai）；自定义供应商余额用其自己的 key，只发官方域（api.deepseek.com、openrouter.ai、api.siliconflow.cn、api.minimaxi.com、api.kimi.com、api.commandcode.ai、api.cline.bot、api.anthropic.com、platform.xiaomimimo.com、open.volcengineapi.com、opencode.ai 等）或你配置的中转站本域；⚙ 面板可为各数据源（MiniMax/Kimi/Cline/Anthropic/MiMo/火山/SCNet/OpenCode 等）单独配置凭据与开关（保存在运行目录 quota-secrets.json，0600）。套餐额度是账号级套餐池口径，不是单模型额度；BigModel 悬停还显示套餐名/版本与周期（自动续费显示"下次续费"，非自动续费显示"有效期至"；无法确认当前周期时不显示日期）；团队套餐暂不支持，识别不了余额形状的中转不显示 |
 | `plugin_auto_update` | 插件自动更新，默认开；损坏或非布尔配置不会启动更新 |
 | `plugin_auto_install_overlay` | 自动安装/修复客户端注入，默认开（缺配置或缺字段）；显式 false 保留，环境变量优先，卸载豁免仍阻止；无环境变量覆盖时损坏或非布尔配置不开启 |
 | `context_window` | 自动识别失败时的上下文窗口大小兜底 |
