@@ -606,9 +606,12 @@ ADAPTERS.push({
   async fetchOne(j, ctx, cred, ctl) {
     const H = { authorization: "Bearer " + cred.token };
     const who = await j.http.getJson("https://api.commandcode.ai/alpha/whoami?limits=1", H, ctl);
-    const orgId = who && who.org && who.org.id;
-    if (!orgId) throw qErr("parse_error", "no org id");
-    const cred8 = await j.http.getJson("https://api.commandcode.ai/alpha/billing/credits?orgId=" + encodeURIComponent(String(orgId)), H, ctl);
+    // 个人订阅账号 whoami 返回 org:null，省略 orgId 即用户作用域（issue #73）；组织账号仍带 orgId
+    const org = who && who.org;
+    const orgId = org && org.id ? String(org.id) : "";
+    if (org != null && !orgId) throw qErr("parse_error", "bad org shape");
+    const scope = orgId ? "?orgId=" + encodeURIComponent(orgId) : "";
+    const cred8 = await j.http.getJson("https://api.commandcode.ai/alpha/billing/credits" + scope, H, ctl);
     const c = (cred8 && (cred8.credits || cred8)) || {};
     const wl = (cred8 && (cred8.windowLimits || (cred8.credits && cred8.credits.windowLimits))) || null;
     const windows = {};
@@ -621,11 +624,11 @@ ADAPTERS.push({
         }
       }
     }
-    const subs = await j.http.getJson("https://api.commandcode.ai/alpha/billing/subscriptions?orgId=" + encodeURIComponent(String(orgId)), H, ctl);
+    const subs = await j.http.getJson("https://api.commandcode.ai/alpha/billing/subscriptions" + scope, H, ctl);
     const sd = (subs && (subs.data || subs)) || {};
     const periodStart = sd.currentPeriodStart, periodEnd = sd.currentPeriodEnd;
     let monthly = null;
-    const sum = await j.http.getJson("https://api.commandcode.ai/alpha/usage/summary?since=" + encodeURIComponent(String(periodStart || "")) + "&orgId=" + encodeURIComponent(String(orgId)), H, ctl);
+    const sum = await j.http.getJson("https://api.commandcode.ai/alpha/usage/summary?since=" + encodeURIComponent(String(periodStart || "")) + (orgId ? "&orgId=" + encodeURIComponent(orgId) : ""), H, ctl);
     const totalCost = num(sum && sum.totalCost);
     const parts = [
       ["monthly", num(c.monthlyCredits)], ["purchased", num(c.purchasedCredits)], ["free", num(c.freeCredits)],
