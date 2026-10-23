@@ -4,7 +4,7 @@
   "heartbeat_ms": 30000,
   "hot_reload": true,
   "answer_rate_line": true,
-  "quota_enabled": false,
+  "quota_enabled": true,
   "plugin_auto_update": true,
   "plugin_auto_install_overlay": true,
   "context_window": 1000000,

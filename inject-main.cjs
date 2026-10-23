@@ -255,9 +255,9 @@ function remoteDisabled() {
   const remote = readCfgCached().remote || {};
   return remote.auto === false && remote.enabled === false;
 }
-/* v96 额度开关真值：config.json 的 quota_enabled（缺省关）。只认显式 true——读凭据联网
- * 属能力升级，缺字段/异常值一律按关闭处理，主进程不解密、不发请求。 */
-function quotaEnabled() { return readCfgCached().quota_enabled === true; }
+/* 额度开关真值：config.json 的 quota_enabled（v111 起缺省开，显式 false 才关）——与
+ * answer_rate_line 同款真值方向。凭据仍只在内存、只发官方域，关闭即停解密与联网。 */
+function quotaEnabled() { return readCfgCached().quota_enabled !== false; }
 function clearRemoteRecovery() {
   remoteSids.clear();
   pendingSids.clear();
@@ -875,7 +875,7 @@ function handleQuotaSourceRequest(req) {
     });
   }
 }
-/* v96 套餐额度开关（⚙ 面板）：原子写 config.json 的 quota_enabled（缺省关）。开启即刻 tick
+/* 套餐额度开关（⚙ 面板）：原子写 config.json 的 quota_enabled（v111 起缺省开）。开启即刻 tick
  * 一次（结算后经 onUpdate 补推）；关闭后 handlePayload 不再 tick/附加，chip 随之隐藏。 */
 async function setQuotaEnabled(enabled) {
   try {
