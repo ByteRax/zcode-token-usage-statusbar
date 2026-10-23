@@ -17,7 +17,10 @@ def prompt_hook():
 
 
 class PluginContractTests(unittest.TestCase):
-    def test_marketplace_localizes_descriptions_not_plugin_manifests(self):
+    def test_marketplace_and_manifests_share_localization(self):
+        # 官方收录仓库（zai-org/zcode-plugins）validate.py 强制插件 manifest 与市场条目
+        # 逐字共享 description_i18n(en+zh-CN)；本地市场沿用同一份文本，manifest.description
+        # 保持英文（= i18n.en）。
         market = json.loads((ROOT / "marketplace.json").read_text(encoding="utf-8"))
         entry = next(item for item in market["plugins"] if item["name"] == PLUGIN.name)
         translations = entry["description_i18n"]
@@ -27,7 +30,7 @@ class PluginContractTests(unittest.TestCase):
         self.assertIn("opt-out", translations["en"])
         for directory in (".zcode-plugin", ".claude-plugin"):
             manifest = json.loads((PLUGIN / directory / "plugin.json").read_text(encoding="utf-8"))
-            self.assertNotIn("description_i18n", manifest)
+            self.assertEqual(manifest.get("description_i18n"), translations)
             self.assertEqual(translations["en"], manifest["description"])
             self.assertEqual(manifest["homepage"], manifest["repository"])
 
