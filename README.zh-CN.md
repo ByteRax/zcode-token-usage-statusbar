@@ -304,7 +304,7 @@ macOS 上要是没有 `python`，就写 `python3 install.py`。
 - **本地数据库是只读的。** 用量数据不会上传。
 - **但插件更新要联网**——从你配置好的来源下载代码。自动更新默认开着，可以在 ⚙ 里关掉。
 - **用 SSH 远端查询也会联网**——经由你配好的通道在远端跑只读查询脚本。前提和限制见 [SSH 远端会话](#ssh-远端会话)。
-- **默认不碰你的凭据。** ZCode 里存的密码、加密私钥、口令不会被插件拿去解密使用，SSH key / agent 请自己配好。唯一例外：你在 ⚙ 里显式打开「套餐额度」后，主进程读取凭据查询套餐/余额接口（仅内存使用、不落盘、不进日志与诊断），关掉即停。发往的域：bigmodel.cn / api.z.ai 官方套餐域；自定义供应商的余额查询用该供应商自己的 key，只发往其官方域（api.deepseek.com、openrouter.ai、api.siliconflow.cn、api.minimaxi.com、api.kimi.com、api.commandcode.ai、api.cline.bot、api.anthropic.com、platform.xiaomimimo.com、open.volcengineapi.com 等）或你自己配置的中转站本域，绝不发第三方。
+- **默认不碰你的凭据。** ZCode 里存的密码、加密私钥、口令不会被插件拿去解密使用，SSH key / agent 请自己配好。唯一例外：你在 ⚙ 里显式打开「套餐额度」后，主进程读取凭据查询套餐/余额接口（仅内存使用、不落盘、不进日志与诊断），关掉即停。发往的域：bigmodel.cn / api.z.ai 官方套餐域；自定义供应商的余额查询用该供应商自己的 key，只发往其官方域（api.deepseek.com、openrouter.ai、api.siliconflow.cn、api.minimaxi.com、api.kimi.com、api.commandcode.ai、api.cline.bot、api.anthropic.com、platform.xiaomimimo.com、open.volcengineapi.com、opencode.ai 等）或你自己配置的中转站本域，绝不发第三方。
 - **token 用量不等于账单。** 默认只有 token 用量；「套餐额度」chip 显示的是官方套餐接口的已用比例，不含现金余额与计费明细。
 
 ## 常见问题

@@ -31,6 +31,7 @@
 | 火山 | 签名查询，双用量接口探测 | **AK/SK**，env / secrets，须具备对应查询权限；**不是自动读取推理 API key** | 源码转写、夹具验证；签名和 HTTP 200 错误信封均需校验；尚无真账号保证 |
 | SCNet | 本地账本估算 / 外部快照输入 | 不要求在线凭据；需套餐 Credits、周期、模型映射等估算配置 | **不是官方在线额度接口**；抵扣表及本地记录覆盖影响准确性，展示必须标识估算 |
 | sub2api | **本轮新增**：同源 `/v1/usage`，识别 key 用量/余额及订阅窗口 | 配置中转地址及其推理 key；不索取后台管理 key | 当前 BX-GPT 真站查询及最终运行文件的 createQuotaClient 全链均返回 status=ok、kind=plan、日/周/月 USD 窗口；remaining 不作为钱包余额 |
+| OpenCode Go | **本轮新增**：`https://opencode.ai/zen/go/v1/usage` 三窗口（rolling→5 小时/weekly→周/monthly→月），仅百分比无金额 | env `OPENCODE_API_KEY` / secrets `sources.opencode.apiKey` / 自定义供应商 baseUrl host 为 opencode.ai 且路径以 `/zen/go` 开头（两档命中；`/zen/v1` 按量版无用量 API，刻意不命中） | 源码转写（cc-switch，MIT）、夹具验证，非真账号；403=key 有效但无 Go 订阅（no_plan）、401=auth_failed |
 | CLIProxyAPI | **无专用管理适配** | 管理 API 需要独立 **management key**，不能把推理 key 当管理权限 | 通用 OpenAI legacy 路径不等于支持其管理 API；不新增管理端探测 |
 | new-api | **无专用适配** | 用户/管理访问令牌等不能由普通推理 key 默认推定 | 部分部署兼容 legacy 不能构成 new-api 全面支持承诺 |
 | 其他自定义中转 | 已有同源 OpenAI legacy 查询尝试；非万能识别器 | 仅配置地址及其 key；不猜测额外管理凭据 | 协议或字段不匹配按 unsupported / parse_error，不用 0 伪装成功 |
@@ -40,13 +41,13 @@
 | 类别 | 审计事实 / 本轮状态 | 验收要求 |
 |---|---|---|
 | 本轮解析修复 | DeepSeek 有效 0 值、SiliconFlow 分域与 `totalBalance`、OpenRouter 缺 usage；由主智能体本轮修复，不列为最终遗留未修项 | 以最终 diff 和对应回归结果确认，不将“在修”写成“已发布” |
-| 本轮新增接入 | sub2api 由主智能体接入，旧实现不足以表达其余额及订阅响应 | 检查同源 URL、余额/订阅夹具和 chip 展示；真实站点另验 |
+| 本轮新增接入 | sub2api 由主智能体接入，旧实现不足以表达其余额及订阅响应；OpenCode Go 为源码转写新适配（cc-switch，MIT），`/zen/go` 与 `/zen/go/v1` 两档命中，`/zen/v1` 按量版无用量 API 刻意不命中 | 检查同源 URL、余额/订阅夹具和 chip 展示；OpenCode 检查三窗口/403 no_plan/401 auth_failed 夹具；真实站点与真实账号另验 |
 | env 激活缺口 | `resolveCred()` 能读 env 不代表调度器能激活；`activeSet()` 对多数源未用 env 建立上下文，配置型源还受 enabled 门控 | 本轮已修并测试：env-only 默认源、enabled+env 的 Cline、无 primary 均可取数；Anthropic 继续要求显式开启 |
 | 源开关失效 | 默认源使用 `defaultOn || enabled`，显式 false 不能覆盖默认 true；primary 分支也未统一受源开关约束 | 本轮已修：primary 与后台源均尊重显式 false，关闭态不带旧额度；夹具验证无网络请求及勾选态回显 |
 | 权限提示 | 自动发现 OpenRouter 推理 key 可能随后认证失败；管理权限要求与“发现凭据”是两件事 | 文案明确 management key，不承诺零配置成功 |
 | 字段完整性 | 缺额度、usage、余额或窗口字段不是数值 0；合法零值也不能按缺失丢弃 | **响应字段不完整不补零**；解析失败 fail-closed；旧成功值如保留须标 stale |
 | 展示归属 | chip 主显跟随当前 pane 的 provider；tooltip 可列多源，均为账号池/余额，不是单模型独享 | 源激活成功不等于 chip 必然主显；未完成请求的 fallback、切源、关闭后残留需桌面验收 |
-| 验证边界 | VM / HTTP 夹具能检验解析与状态机，不能证明真实凭据、厂商权限或客户端挂载 | 除 BigModel 与已验证的 BX-GPT/sub2api 接口外不得把夹具通过表述成真账号实测；本文件不新增该类实测声明 |
+| 验证边界 | VM / HTTP 夹具能检验解析与状态机，不能证明真实凭据、厂商权限或客户端挂载 | 除 BigModel 与已验证的 BX-GPT/sub2api 接口外不得把夹具通过表述成真账号实测；本文件不新增该类实测声明；OpenCode Go 为转写+夹具验证，未真实账号实测 |
 
 ## 核对入口
 
@@ -65,8 +66,9 @@
 - 供应商 key/baseURL 在 provider 不变时的即时失效/冻结恢复仍需完善；本轮不把一次成功查询外推成所有账号切换都已实机验证。
 - Kimi PAYG 仍继承参考项目按金额猜分/元的启发式，低余额有单位误判风险，待明确厂商响应协议后修正；MiniMax weekly status=2 的参考实现存在分歧，不能无真实样本硬改。
 - OpenRouter 改用管理密钥是权限正确性修复，不是新增零配置支持；SiliconFlow 410 为明确不可用提示，不是已恢复端点。
+- OpenCode Go 为源码转写+夹具验证，未经真实账号实测；`/zen/v1` 按量版无用量 API，刻意不在自动发现命中范围，不能声称支持按量版。
 
-本轮验证：Node 498/498、Python 517 项（516 通过、1 环境跳过），两轮只读复审问题已修；合并现有模型选择/有效期/Git 热修后的部署件定向 65/65。quota-client 为冷文件，需完全退出重开客户端。源码在独立 worktree，未提交、未推送、未发版。
+本轮验证：Node 583/583（opencode-quota 15 用例，含变异测试补齐的 detect 前缀/凭据优先级/同源换 key 解冻断言）；四路对抗复审问题已修（403 分流改结构化 httpStatus、detect 前缀收紧、注释对齐、文档数字刷新）。OpenCode Go 冻结语义与 BigModel 同款：403 判无订阅后同 key 购买订阅需 ⚙ 立即刷新或换 key 触发指纹变化。真实账号实测待做（unverified）。
 
 ## Issue #56：非默认数据目录与 key-only 规则
 
