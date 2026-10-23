@@ -1142,6 +1142,10 @@ def _server_idents_by_path():
         server = str(e.get("sourceServerId") or "").strip()
         if not ident.startswith("remote:server:") or not server:
             continue
+        # 缺 workspacePath 的条目无法按路径与传输条目关联（客户端字段 optional），
+        # 跳过，避免与同样缺路径的传输条目在归一 "/" 上跨条目碰撞。
+        if not str(e.get("workspacePath") or "").strip():
+            continue
         path = _normalize_identity_path(e.get("workspacePath"))
         idents = by_path.setdefault(path, [])
         if ident not in idents:
@@ -1207,7 +1211,7 @@ def _auto_targets(cfg):
     # 必须带 ~ 前缀（exec 端 runpy bootstrap 展开）；用户显式 remote.script 优先。
     explicit_script = isinstance(r, dict) and bool(r.get("script"))
     server_idents = _server_idents_by_path()
-    server_bound = {}
+    path_channels = {}
     merged = {}
     for e in _read_client_remote_entries():
         t = e.get("target")
@@ -1244,19 +1248,23 @@ def _auto_targets(cfg):
                 ent = {"ssh_argv": argv, "host_label": alias or host, "identities": []}
                 merged[ck] = ent
         elif kind == "wsl":
-            distro = str(t.get("distro") or "").strip() or "default"
+            distro = str(t.get("distro") or "").strip()
             user = str(t.get("user") or "").strip()
             ident = ident or _wsl_identity(distro, user, e.get("workspacePath"))
-            ck = (kind, distro.lower(), user.lower())
+            # distro 匹配大小写不敏感能并通道；user 是 Linux 用户名、大小写敏感不能并。
+            ck = (kind, distro.lower(), user)
             ent = merged.get(ck)
             if ent is None:
                 # --exec 对齐客户端 v3.16.1 buildWslArgs：绕过发行版默认 shell 的
-                # 变量/管道展开，argv（含 runpy bootstrap 的分号引号）原样到达。
-                argv = ["wsl.exe", "-d", distro]
+                # 变量/管道展开，argv（含 runpy bootstrap 的分号引号）原样到达；
+                # -d/-u 仅在真值时附加（distro 缺省走默认发行版，客户端同款）。
+                argv = ["wsl.exe"]
+                if distro:
+                    argv += ["-d", distro]
                 if user:
                     argv += ["-u", user]
                 argv.append("--exec")
-                ent = {"ssh_argv": argv, "host_label": f"wsl:{distro}", "identities": []}
+                ent = {"ssh_argv": argv, "host_label": f"wsl:{distro or 'default'}", "identities": []}
                 if not explicit_script:
                     ent["script"] = "~/.zcode/zcode-token-usage-statusbar/zusage.py"
                 merged[ck] = ent
@@ -1265,7 +1273,8 @@ def _auto_targets(cfg):
             if not container:
                 continue
             ident = ident or _docker_identity(container, e.get("workspacePath"))
-            ck = (kind, container.lower())
+            # Docker 容器名大小写敏感（与 ssh host 不同），原样作键避免不同容器误并。
+            ck = (kind, container)
             ent = merged.get(ck)
             if ent is None:
                 ent = {"ssh_argv": ["docker", "exec", "-i", container],
@@ -1275,13 +1284,18 @@ def _auto_targets(cfg):
                 merged[ck] = ent
         else:
             continue
-        extra = ()
+        if ident not in ent["identities"]:
+            ent["identities"].append(ident)
         path_key = _normalize_identity_path(e.get("workspacePath"))
-        want = server_idents.get(path_key)
-        if want:
-            if server_bound.setdefault(path_key, ck) == ck:
-                extra = want   # 同一路径只并进首条命中通道，跨通道重复视为歧义
-        for idn in (ident,) + tuple(extra):
+        if path_key in server_idents:
+            # 先只登记路径→通道归属，循环结束后统一并入：同一路径命中多条通道
+            # 时无法唯一归属，整路径放弃（fail-closed），不按条目顺序猜首条。
+            path_channels.setdefault(path_key, set()).add(ck)
+    for path_key, cks in path_channels.items():
+        if len(cks) != 1:
+            continue
+        ent = merged[next(iter(cks))]
+        for idn in server_idents[path_key]:
             if idn not in ent["identities"]:
                 ent["identities"].append(idn)
     return sorted(merged.values(), key=lambda x: (x["host_label"], x["identities"]))

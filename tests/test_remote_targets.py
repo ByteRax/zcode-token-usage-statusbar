@@ -142,6 +142,9 @@ class DiscoveryTests(IsolatedTests):
         rows = zusage._auto_targets({})
         self.assertEqual([r["host_label"] for r in rows], ["wsl:Debian", "wsl:Ubuntu", "wsl:default"])
         self.assertEqual(rows[0]["ssh_argv"], ["wsl.exe", "-d", "Debian", "--exec"])
+        # distro 缺省时客户端 buildWslArgs 不拼 -d（WSL 无 "default" 发行版，走默认发行版）；
+        # 身份兜底仍按客户端 bss 用字面 "default"。
+        self.assertEqual(rows[2]["ssh_argv"], ["wsl.exe", "--exec"])
         identities = sorted(r["identities"][0] for r in rows)
         self.assertEqual(identities,
                          ["remote:wsl:Debian:/p", "remote:wsl:Ubuntu:/p", "remote:wsl:default:/opt/w"])
@@ -195,8 +198,9 @@ class DiscoveryTests(IsolatedTests):
                  "sourceServerId": "srv1"}]})
         rows = zusage._auto_targets({})
         self.assertEqual(len(rows), 1)
+        # 条目自身身份先收齐，server 身份统一在循环后并入（顺序对路由无影响）。
         self.assertEqual(rows[0]["identities"],
-                         [W, SRV, "remote:wsl:Ubuntu:dev:/q", "remote:server:srv1:/q"])
+                         [W, "remote:wsl:Ubuntu:dev:/q", SRV, "remote:server:srv1:/q"])
 
     def test_server_history_failclosed_on_ambiguity(self):
         # 同一路径混入多个 sourceServerId 无法唯一归属服务器、非 remote:server: 前缀、
@@ -214,14 +218,45 @@ class DiscoveryTests(IsolatedTests):
         by_label = {r["host_label"]: r for r in rows}
         self.assertEqual(by_label["wsl:Ubuntu"]["identities"], [W])
         self.assertEqual(by_label["wsl:Debian"]["identities"], ["remote:wsl:Debian:/p"])
+        # 单 owner 但 /p 同时命中 Ubuntu 与 Debian 两条通道：归属歧义，两条都不并，
+        # 不按 setting.json 条目顺序猜首条（顺序会随客户端最近使用排序漂移）。
         write_setting(self.tmp.name, {
             "lastWorkspaceSession": [wsl_entry(), wsl_entry(distro="Debian", user=None)],
             "sourceServerWorkspaceHistory": [
                 {"workspacePath": "/p", "workspaceIdentity": SRV, "sourceServerId": "srv1"}]})
         rows = zusage._auto_targets({})
         by_label = {r["host_label"]: r for r in rows}
-        self.assertEqual(by_label["wsl:Ubuntu"]["identities"], [W, SRV])
+        self.assertEqual(by_label["wsl:Ubuntu"]["identities"], [W])
         self.assertEqual(by_label["wsl:Debian"]["identities"], ["remote:wsl:Debian:/p"])
+
+    def test_case_sensitive_merge_keys_split_channels(self):
+        # Docker 容器名与 WSL 用户名大小写敏感：仅大小写不同的名字是不同目标，
+        # 不能并成一条通道（否则会拿 dev 的家目录查 DEV 的库 / 进 Box 容器查 box）。
+        write_setting(self.tmp.name, {"lastWorkspaceSession": [
+            docker_entry(container="box", path="/a"),
+            docker_entry(container="Box", path="/b", identity="remote:docker:Box:/b"),
+            wsl_entry(user="dev", path="/a"),
+            wsl_entry(user="DEV", path="/b", identity="remote:wsl:Ubuntu:DEV:/b")]})
+        rows = zusage._auto_targets({})
+        self.assertEqual(len(rows), 4)
+        by_argv = {tuple(r["ssh_argv"]): r["identities"] for r in rows}
+        self.assertEqual(by_argv[("docker", "exec", "-i", "box")], ["remote:docker:box:/a"])
+        self.assertEqual(by_argv[("docker", "exec", "-i", "Box")], ["remote:docker:Box:/b"])
+        self.assertEqual(by_argv[("wsl.exe", "-d", "Ubuntu", "-u", "dev", "--exec")],
+                         ["remote:wsl:Ubuntu:dev:/a"])
+        self.assertEqual(by_argv[("wsl.exe", "-d", "Ubuntu", "-u", "DEV", "--exec")],
+                         ["remote:wsl:Ubuntu:DEV:/b"])
+
+    def test_server_history_entry_without_workspace_path_skipped(self):
+        # sourceServerWorkspaceHistory 的 workspaceIdentity/sourceServerId 均为 optional：
+        # 缺路径的条目无法按路径关联传输通道，跳过（归一 "/" 不与其它条目碰撞）。
+        write_setting(self.tmp.name, {
+            "lastWorkspaceSession": [wsl_entry()],
+            "sourceServerWorkspaceHistory": [
+                {"workspaceIdentity": SRV, "sourceServerId": "srv1"},
+                {"workspaceIdentity": "remote:server:srv2:/p", "sourceServerId": ""}]})
+        rows = zusage._auto_targets({})
+        self.assertEqual(rows[0]["identities"], [W])
 
     def test_server_history_binds_ssh_channel_too(self):
         # 3.16 的 SSH 会话同样握手升级为 server 身份：路径关联对 ssh 通道一致生效。
