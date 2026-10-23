@@ -2,9 +2,26 @@
 
 面向在本仓库修改代码的 AI 助手。全文以**当前检出源码及测试**为依据，不把本地源码、其它工作树、插件缓存或正式 Release 当成同一版本。
 
+## 0. 分层规则（path-scoped rules）
+
+宿主引擎每会话只自动加载本文件（用户级 `~/.zcode/AGENTS.md` + 从工作目录向上找到的第一个 `AGENTS.md`，各限 100KB）：**不要在子目录新建 AGENTS.md**——工作目录落在子目录的会话会只加载它而遮蔽本文件。按路径分层的细则放 `.zcode/rules/`，不会自动加载，动手前按下表先读对应文件：
+
+| 改动涉及 | 先读 |
+|---|---|
+| `quota-client.cjs`、额度 chip / ⚙ 额度源面板、`zusage.py` SCNet 估算段、`tests/quota-*` | [.zcode/rules/quota.md](.zcode/rules/quota.md) |
+| `overlay.js`、`turn-stats.js`、浮层 UI / tooltip / 展示口径 | [.zcode/rules/overlay-ui.md](.zcode/rules/overlay-ui.md) |
+| 安装 / 注入 / hooks / 更新器 / 发布链 / 运行目录部署 | [.zcode/rules/install-release.md](.zcode/rules/install-release.md) |
+| `renderer_bridge.py`、窗口分栏归属、远端路由 | [.zcode/rules/bridge-remote.md](.zcode/rules/bridge-remote.md) |
+| `tests/` 新增或修改测试、实机验收方法 | [.zcode/rules/tests.md](.zcode/rules/tests.md) |
+| git 提交 / 分支 / worktree / PR / 并行会话协作 | [.zcode/rules/repo-workflow.md](.zcode/rules/repo-workflow.md) |
+| `README*`、`docs/`、宣传图与 tour 截图 | [.zcode/rules/docs.md](.zcode/rules/docs.md) |
+| `web/` | [.zcode/rules/web.md](.zcode/rules/web.md) |
+
+规则文件只写长期约束与陷阱；PR 号、提交哈希、发版状态、用例数等易变事实不写入任何一层。本文件与规则文件冲突时以源码与测试为准，并同步修文档。
+
 ## 1. 项目定位与环境
 
-- 为 ZCode 显示模型速度、token 用量和上下文占比；数据来自本地 SQLite，不是供应商账单或套餐余额。
+- 为 ZCode 显示模型速度、token 用量、上下文占比（承载于原生上下文按钮增强，状态条无此格）、套餐额度/账户余额 chip 与 Git 状态 chip。用量统计来自本地 SQLite；套餐额度另走解密凭据直查供应商接口（见 §5），两条链互不推导。
 - 技术栈是 Python 标准库、原生 JavaScript、Electron 主进程 CommonJS，以及 Web 旁挂 HTTP 服务；不是 npm 前端工程。
 - 桌面插件是**安装与查询渠道**，不是原生状态栏扩展：最终仍向客户端 `app.asar` 注入稳定运行目录的加载器。
 - 独立安装器和插件共享注入/运行链；CLI、`/usage`、stdio MCP 可独立查询，纯 CLI 没有状态条 UI。
@@ -22,7 +39,9 @@
 | `zusage.py` | SQLite 查询库、CLI、桌面 JSON 快照、常驻 JSON 行查询与带身份的远端查询 |
 | `usage_mcp.py` | stdio JSON-RPC MCP；调用 `zusage`，提供 `token_usage(scope)` |
 | `plugins/zcode-token-usage-statusbar/token_rate.py` | 插件专有逐问速率、提问身份守卫与会话累计查询 |
-| `overlay.js` | 桌面浮层、设置、tooltip、子代理明细及已入库速率展示 |
+| `overlay.js` | 桌面浮层、设置、tooltip、子代理明细、套餐额度 chip、Git 状态 chip 及速率展示 |
+| `turn-stats.js` | 渲染进程统计行 tracker：历史轮记录、运行中子代理身份透传 |
+| `renderer_bridge.py` | 渲染桥：按客户端版本指纹（HOST_TARGETS 登记 + derive 推导）向 SessionPane 节点写 scope 身份属性 |
 | `inject-main.cjs` | 主进程加载、窗口/工作区 IPC、查询泵、文件监听、快照推送和受限写操作 |
 | `install.py` | 独立安装/卸载、运行文件、配置、独立 MCP 与 `/usage` 注册 |
 | `patch_install.py` | asar 定位、注入/移除、自检、原子替换及待替换文件 |
@@ -43,14 +62,14 @@
 - 渲染端通过宿主会话/工作区 IPC 与本项目 scope 上报维持窗口和分栏身份；查询请求为 `{sids, scopes: [{sid, workspaceIdentity}]}`，响应 `recent` 携带 `workspace_identity`。
 - 工作区/任务 IPC、活动 SID IPC 与配置/更新写操作的校验不同；不能概括全部桥接同等可信，写操作保留本地窗口验证和固定动作白名单。
 - MCP 与 CLI 使用查询库；插件 `.mcp.json` 直接启动包内 `usage_mcp.py`，不是统一 `run.py` 入口。
-- `hooks/session-start.py` 负责运行文件同步、更新/自动安装及提醒；`hooks/prompt-submit.py` 记录本会话提问时间并提供统计指令，速率查询使用包内 `token_rate.py`。
+- `hooks/session-start.py` 负责运行文件同步、更新/自动安装及提醒；`hooks/prompt-submit.py` 记录本会话提问时间并注入「上一条回复」背景行，**不再向模型下达统计指令**——逐问统计行由前端确定性渲染（依赖 renderer 桥），会话末尾经主桥 `turn-text` 通道调用包内 `token_rate.py --turn --current` 回推富文本。
 - 专有入口是 `overlay_install.py`、`plugin_auto_update.py`、`restart_notice.py` 等；改变 hook 返回值应检查宿主 CLI 契约，不以手工执行代替自然事件验收。
 
 ## 3. 源文件、副本与正在运行的文件
 
-- `sync_plugin.py` 的 `FILES` 是共享分发清单，根目录是源：
-  `usage_mcp.py`、`zusage.py`、`patch_install.py`、`install_monitor.py`、`inject-main.cjs`、`plugin-updater.cjs`、`plugin-release.cjs`、`plugin-storage.cjs`、`quota-client.cjs`、`release_unpack.py`、`runtime_lock.py`、`overlay.js`。
-- 共享文件先改根源码，再同步插件副本；清单外的插件入口、hooks、命令、技能和 manifest **不是生成文件**，应直接维护。
+- `sync_plugin.py` 的 `FILES` 是共享分发清单（根目录是源，以脚本内定义为准）：
+  `usage_mcp.py`、`zusage.py`、`patch_install.py`、`install_monitor.py`、`inject-main.cjs`、`plugin-updater.cjs`、`plugin-release.cjs`、`plugin-storage.cjs`、`quota-client.cjs`、`release_unpack.py`、`runtime_lock.py`、`usage_stats.py`、`turn-stats.js`、`overlay.js`、`token_rate.py`、`renderer_bridge.py`。
+- 共享文件先改根源码，再同步插件副本；清单外的插件入口、hooks、命令、技能和 manifest **不是生成文件**，应直接维护。新增分发文件须同步的全部登记处（不止 FILES）见 [.zcode/rules/install-release.md](.zcode/rules/install-release.md)。
 - `web/overlay.js` 是独立实现，不在插件同步清单内；不能直接复制根浮层覆盖 Web。共享语义变化要分别评估，保留 Web 的挂载、接口与布局差异。
 - 共享文件修改后在仓库根运行：
 
@@ -68,7 +87,7 @@ python3 sync_plugin.py --check
 
 - 保持修改聚焦，沿用现有原生代码与注释密度；不为统一风格引入框架、依赖或大规模重构。
 - `.js` 浮层是注入浏览器的脚本；`.cjs` 是 CommonJS。客户端入口可能是 ESM，注入行必须动态 `import`，不能直接 `require`；Web sidecar `.mjs` 是 Node ESM，`boot.js` 是浏览器脚本。
-- Python 路径使用 `Path`/已有定位逻辑；`python`、`python3`、`python_path` 与宿主实际可执行命令要区分，Windows 不保证有 `python3` 别名。插件 hooks.json 是 command+shell 回退链 `python3 → python → py -3`（POSIX sh 与 Windows `%ComSpec%`=cmd.exe 都支持 `||`，宿主丢弃成功 hook 的 stderr 诊断）；`.mcp.json` 仍固定 `python3`——宿主对 stdio MCP 按 `shell:false` 直接 spawn 无回退通道，macOS CLT 只有 `python3`，不能整体改名。桌面主桥 `readCfg()` 的 `python_path` 缺省与空值一律归一为平台默认（win32=`python`，其它=`python3`），三个 spawn 点直接读它；注入/安装时会把 `sys.executable` 绝对路径写回配置并在每次 SessionStart 刷新。改这两处前先对当前客户端版本引擎核对 process/command 两种 hook 类型的 schema 与展开语义。
+- Python 路径使用 `Path`/已有定位逻辑；`python`、`python3`、`python_path` 与宿主实际可执行命令要区分，Windows 不保证有 `python3` 别名：插件 hooks.json 是 command+shell 回退链 `python3 → python → py -3`；`.mcp.json` 仍固定 `python3`（宿主对 stdio MCP 按 `shell:false` 直接 spawn 无回退通道，macOS CLT 只有 `python3`，不能整体改名）；主桥 `readCfg()` 把 `python_path` 缺省/空值归一为平台默认（win32=`python`，其它=`python3`），注入/安装时写回 `sys.executable` 并在每次 SessionStart 刷新。改这几处前先对当前客户端版本引擎核对 process/command 两种 hook 类型的 schema 与展开语义；回退链成立的平台依据见 [.zcode/rules/install-release.md](.zcode/rules/install-release.md)。
 - 保留带空格路径、Unicode、引号与平台进程行为的测试。POSIX shell 用既有 `shlex` 引用；Windows PowerShell 的 UTF-16LE `EncodedCommand` 路径不能简化为裸引号。
 - Windows 进程查询沿用 `subprocess` argv 与相应解码，不让 Git Bash 转换 `/FI` 等开关；asar 被占用的收尾必须由宿主以外的监控进程执行，不能依赖 ZCode 自己的定时任务。
 - 配置只合并需要的键，不整体覆盖 `config.json`；保留未知键、用户显式关闭与个人路径。插件配置事务在锁内重读、合并，再同目录原子替换；损坏或非对象配置不能被默默重建。
@@ -88,28 +107,30 @@ python3 sync_plugin.py --check
 ### 统计与速率
 
 - 总 token = input + output；input 已含 cache_read，output 已含思考，不能再次相加。缓存命中率为 cache_read / input；轮数用 distinct turn_id，不依赖覆盖不全的 `turn_usage`。
-- 速度不是逐字流式读数，主要在请求完成入库后更新。普通请求生成耗时为 completed_at − first_token_at；上报思考或 Claude 请求使用 completed_at − started_at，TTFT 与生成窗口不是同一指标。
+- 速度是两态：渲染桥命中时，生成中显示按字符增量估算的 t/s（估算态不分档），该轮完成后切换为真实值（输出含思考 ÷ 生成时长，来自 renderer store）；无桥回退 DB，按请求完成入库刷新，不是逐字流式读数。普通请求生成耗时为 completed_at − first_token_at；上报思考或 Claude 请求使用 completed_at − started_at，TTFT 与生成窗口不是同一指标。
 - 状态条向前检查最近 20 条请求，取最近有效速度样本；根实现缺首字即拒绝，插件速率对思考/Claude 仍允许 started_at 回退，两者不完全同款。不能用总耗时硬算普通请求速度，也不能把无效样本视作真实 0 t/s。
 - 插件逐问速率只聚合本轮有效段，按 Σoutput / Σ生成耗时加权，段间工具等待不计；近 5 请求均值/峰值不是本轮加权值，不能互相替代。
-- `--current` 依赖本会话提问状态及 3 秒时间容差，目标是防止旧轮充数；容差内连发且新轮未入库仍有误选边界，不能宣称零歧义。尚未入库的最终正文不在采样内，首段 TTFT、有效段速率和会话累计保持各自口径。
+- `--current` 依赖本会话提问状态（promptTs）做**严格**时间过滤（`started_at >= prompt_ts`，无容差；原 3 秒容差是有意移除的 fail-closed 收紧，勿当 bug 修回）；连发且新轮未入库仍有误选边界，不能宣称零歧义。尚未入库的最终正文不在采样内，首段 TTFT、有效段速率和会话累计保持各自口径。
 - 上下文占比取最近完成请求 input / 上下文窗口，不是会话累计或历史峰值；压缩后可以回落。子代理按父子关系关联，不按派发时间最近邻猜任务名。
 - CLI/MCP `current` 选择数据库最近活跃会话，不保证是屏幕焦点；30 分钟阈值用于 active/idle 判断，不限制只选这段时间内的会话。
 - 今日、`days`、`week` 按本地自然日，`models` 从当前时刻滚动回溯；日界线查询采用闭区间，零点存在相邻日重复计入边界。改时间过滤先核对各查询，不擅自统一窗口。
+- 展示层口径（两态速度实现、万/亿单位、时间文案、tooltip 行为、重启后历史轮规则、Git 状态 chip）见 [.zcode/rules/overlay-ui.md](.zcode/rules/overlay-ui.md)。
 
-### 套餐额度（v96 起；阶段 3 起多源化）
+### 套餐额度
 
-- 额度是**账号级套餐池/账户余额**口径，不是单模型独享；chip/tooltip 不得出现"模型独享额度"语义。内置套餐（BigModel/Z.ai 个人档）数据来自解密宿主 OAuth 凭据直查 `bigmodel.cn|api.z.ai /api/monitor/usage/quota/limit`，BigModel 并行拉 `/api/biz/subscription/list` 取订阅元数据（version/productName 白名单字段，歧义置 null）。有效期语义与宿主 pickCurrentSubscriptionExpireTime 同源且更严：非自动续费 nextRenewTime=当前权益结束日；自动续费=下次扣费日（renewAt，不声称最终到期）；nextRenewTime/currentRenewTime 接受纯日期与宿主同款日期时间（空格/T、可选秒、Z 或 ±hh:mm，无偏移按 UTC+8）。valid 区间可能超前一个计费周期，端点带时刻按精确时刻比较（续费日 10:00 前未来区间不生效），仅日期端点按服务端日历日左闭右开；未来/过期/反转/非法日历或非法时刻（25:99）整段拒绝。仅日期的续费边界覆盖整个服务端日（续费日当天上午不清除）；带时刻边界已过=陈旧行，非自动续费回退已生效 valid、自动续费隐藏日期。绝不按 billingCycle 手工减年。与本地 token 统计是两条链，互不推导。
-- **多源调度器**（quota-client v3）：适配器注册表（BigModel/Z.ai/MiniMax/Kimi/CommandCode/Cline/Anthropic/DeepSeek/OpenRouter/SiliconFlow/MiMo/火山/SCNet/OpenCode/自定义中转）；enabled 源全量低频刷新（供 tooltip 分家列全），chip 主显跟随本 pane 会话模型归属（primary 源）。每源独立 TTL（套餐 10min/余额 15min）、epoch、退避与凭据指纹；协议 `{active, sources:{id:entry}}`，本版对 active 源字段做顶层镜像兼容（下版移除）。MiniMax 剩余%须翻转为已用%、weekly_status==3 不出周窗；Kimi remaining 制、401 回落 moonshot PAYG 余额（分→元）；Anthropic 子配额窗（seven_day_sonnet 等）丢弃；火山为 SigV4 火山变体（scope 尾 request、SK 无前缀）+ GetAFPUsage→GetCodingPlanUsage 双探测、HTTP 200 也可能带错误信封；MiMo 凭据为控制台 Cookie（userId+serviceToken 必需）。标 unverified 的适配器为源码转写（dsh/cc-switch，MIT），未经真实账号实测。
-- **凭据契约**：发现优先级 env → `~/.zcode/zcode-token-usage-statusbar/quota-secrets.json`（运行目录 0600，⚙ 面板 write-only 写入，绝不进 config.json/日志/诊断/diag）→ 自动发现（宿主 provider_config.json 的自定义供应商 key；Anthropic 另读 `~/.claude/.credentials.json`，披露已单独列明）。发 key 域白名单：各适配器官方域（bigmodel.cn、api.z.ai、api.deepseek.com、openrouter.ai、api.siliconflow.cn、api.minimaxi.com|io、api.kimi.com、api.moonshot.cn、api.commandcode.ai、api.cline.bot、api.anthropic.com、platform.xiaomimimo.com、open.volcengineapi.com、opencode.ai）+ 用户自定义中转的本域；绝不发第三方。env `ZCODE_BIGMODEL_USAGE_API_KEY` 优先于宿主凭据。
-- **SCNet 账本估算**（无凭据）：外部快照 `scnet_official.json`（运行目录，≤16KB/24h/周期校验）优先；缺失时按官方 Credits 抵扣表（SCNET_CREDIT_RATES，转写自 dsh，发版前按官方核对）× `sources.scnet.modelPatterns`（model_id → 抵扣表键）在 zusage 侧聚合 main_turn 的 input/cacheRead/output 估算，随快照顶层 `scnet_estimate` 注入。
-- 401/403 与无套餐冻结到凭据指纹变化：主进程 fs.watch credentials.json + quota-secrets/provider_config mtime 缓存失效即解冻；JWT exp 临期不发请求。失败保留最近成功值并标 stale；解密失败/no_plan/parse_error 一律 fail-closed，绝不显示 0%。
-- 显示门控：会话首个完成的 `main_turn`（快照 `last.provider_id`，已滤辅助请求污染）出现前，chip 跟随快照顶层 `provider_fallback`（全局最近 account:* 请求）；会话最新请求是自定义 provider 时显示对应自定义源（官方域直连/中转探测）。团队套餐显示"暂不支持"。SSH 远端分栏直接显示本地额度（宿主 provisioning 同账号事实）。chip 挂原生上下文按钮左侧，与 v92 同款双 reapply/还原契约；⚙ 面板每源独立开关/凭据/立即刷新，状态中性提示（无凭据/无订阅不报红）。
+- 额度是**账号级套餐池/账户余额**口径，不是单模型独享；chip/tooltip 不得出现"模型独享额度"语义。内置套餐（BigModel/Z.ai 个人档）数据来自解密宿主 OAuth 凭据直查 `bigmodel.cn|api.z.ai /api/monitor/usage/quota/limit`，BigModel 并行拉 `/api/biz/subscription/list` 取订阅元数据（白名单字段，歧义置 null）。有效期语义与宿主 pickCurrentSubscriptionExpireTime 同源且更严：非自动续费 nextRenewTime=当前权益结束日；自动续费=下次扣费日（renewAt，不声称最终到期）；绝不按 billingCycle 手工减年。与本地 token 统计是两条链，互不推导。
+- **多源调度器**：适配器注册表以 `quota-client.cjs` 源码为准，不在文档维护厂商清单；每源独立 TTL/epoch/退避/凭据指纹；enabled 源全量低频刷新（供 tooltip 分家列全），chip 主显跟随本 pane 会话模型归属（primary 源）；协议 `{active, byProvider, sources}`，本版对 active 源字段做顶层镜像兼容（下版移除）。新协议只加适配器，不做用户自定义解析模板/JS 解析器。
+- **凭据契约**：发现优先级 env → `quota-secrets.json`（运行目录 0600，⚙ 面板 write-only 写入）→ 自动发现（宿主 provider_config.json；Anthropic 另读 `~/.claude/.credentials.json`，披露已单独列明）。发 key 域白名单=各适配器官方域 + 用户自定义中转的本域，绝不发第三方；凭据只在内存，绝不进 config.json/日志/诊断/diag。
+- 401/403 与无套餐冻结到凭据指纹变化（fs.watch credentials.json + quota-secrets/provider_config mtime 失效即解冻）；JWT exp 临期不发请求；失败保留最近成功值并标 stale；解密失败/no_plan/parse_error 一律 fail-closed，绝不显示 0%。
+- 显示门控：会话首个完成的 `main_turn`（快照 `last.provider_id`，已滤辅助请求污染）出现前，chip 跟随快照顶层 `provider_fallback`（全局最近 account:* 请求）；会话最新请求是自定义 provider 时显示对应自定义源（官方域直连/中转探测）。团队套餐显示"暂不支持"。SSH 远端分栏直接显示本地额度（宿主 provisioning 同账号事实）。chip 挂原生上下文按钮左侧，同款双 reapply/还原契约；⚙ 面板每源独立开关/凭据/立即刷新，状态中性提示（无凭据/无订阅不报红）。
+- SCNet 无凭据账本估算走外部快照 + 抵扣表（`SCNET_CREDIT_RATES`）× modelPatterns 在 zusage 侧聚合，随快照顶层 `scnet_estimate` 注入。
 - 额度只进桌面快照链；MCP、CLI、`/usage` stdout 契约不加字段。Web 端不做（sidecar 无凭据）。
+- 窗口分类、有效期解析细则、各家适配器陷阱、自定义中转、apiKey 模式、退避阶梯、路径契约（issue #56）等见 [.zcode/rules/quota.md](.zcode/rules/quota.md)——改 `quota-client.cjs` 或额度 UI 前必读。
 
 ### 窗口、分栏与远端
 
 - 状态条以本窗口/分栏 SID 为准，匹配不到的新会话显示零值，不借全局最近会话。隔离键包括 `workspaceIdentity`，同 SID 不代表同服务器数据。
-- 主标签页（`workspace-main`）及各分栏的归属只取本窗口实际 SessionPane 节点：`renderer_bridge.py` 按已登记版本、原始资产 SHA256 与唯一 JSX 锚点写入 React 管理的 `data-zusage-scope-version=1`、workspacePath、workspaceIdentity、remoteSessionId、paneId，与原 `data-session-id` 同节点同步更新。共享 last-session、pane-layout、workbench-groups 与 conversation registry 保活历史不构成当前归属证据。读取须校验协议、字段、SID、paneId 与节点存活；明确本地 identity 为空可查本地；无桥/读不到身份且本窗无任何远端证据（`remote_evidence === false`）时按本地记录显示；有远端证据或泵绑定为远端时 fail-closed，不借同 SID 本地快照或其它 pane 远端数据（issue #40）。身份不在本窗可信 workspace IPC 或与 tasks 矛盾时不放行远端；当前节点改变或撤销后迟到载荷丢弃。当前登记客户端为 3.15.3/3.16.1/3.16.2/3.16.3；表内版本资产哈希漂移仍拒绝，表外版本先走 derive_target 严格推导（唯一锚点、注册表/key/topic 绑定、store 形状与 import 目标），校验不过拒绝补丁并降级为 DB 轮询。旧 conversation-only 补丁须升级安装并完全重启，不启用共享记录回退。
+- 主标签页（`workspace-main`）及各分栏的归属只取本窗口实际 SessionPane 节点：`renderer_bridge.py` 按已登记版本、原始资产 SHA256 与唯一 JSX 锚点写入 React 管理的 `data-zusage-scope-*` 属性（与原 `data-session-id` 同节点同步更新）。登记版本以 `renderer_bridge.py` 的 `HOST_TARGETS` 为准（不在文档写版本清单）：表内资产哈希漂移仍拒绝，表外版本走 `derive_target` 严格推导，校验不过拒绝补丁并降级 DB 轮询。共享 last-session、pane-layout、workbench-groups 与 conversation registry 保活历史不构成当前归属证据。读取须校验协议、字段、SID、paneId 与节点存活；明确本地 identity 为空可查本地；无桥/读不到身份且本窗无任何远端证据（`remote_evidence === false`）时按本地记录显示；有远端证据或泵绑定为远端时 fail-closed，不借同 SID 本地快照或其它 pane 远端数据（issue #40）。身份不在本窗可信 workspace IPC 或与 tasks 矛盾时不放行远端；当前节点改变或撤销后迟到载荷丢弃。旧 conversation-only 补丁须升级安装并完全重启，不启用共享记录回退。桥登记/推导配方/replace-failed 转待替换链细则见 [.zcode/rules/bridge-remote.md](.zcode/rules/bridge-remote.md)。
 - 远端 scope 必须有可靠当前身份。明确绑定身份的分栏与上述当前节点主绑定可路由；归属未知或歧义时 fail-closed，不猜服务器。
 - 桌面 JSON 请求中的 `scopes: []` 禁止旧单通道 fallback。旧 CLI SID/逗号列表兼容行为不能扩大为桌面身份推断。
 - `remote.auto` 与 `remote.enabled` 独立；彻底关闭需两者为 false。手动目标通过 `identity`/`identities` 绑定并覆盖同身份自动目标，标签不作身份。
@@ -154,9 +175,9 @@ python3 sync_plugin.py --check
 | 改动范围 | 验证选择（文件位于 `tests/`） |
 |---|---|
 | 统计/速率 | `test_token_rate.py`、`test_statusbar_rate.py`、`overlay-rate.test.cjs`；更改共享 JSON 时加入远端及插件契约回归 |
-| 套餐额度 | `quota-client.test.cjs`（55 用例：解密/归一化/状态机/竞态/各家适配器形状与陷阱）、`opencode-quota.test.cjs`（15 用例：OpenCode 自动发现两档命中与 /zen/v1 及前缀伪装排除/三窗口百分比/403 no_plan/401 auth_failed/凭据优先级与同源换 key 解冻）、`overlay-quota-chip.test.cjs`（30 用例：挂载/门控/还原/多源协议/源列表 UI）、`test_statusbar_rate.py`（provider_fallback/scnet 估算）；真实厂商响应、凭据刷新解冻与 chip 实机挂载需桌面验收，unverified 适配器待真实账号校准 |
+| 套餐额度 | `quota-client.test.cjs`、`opencode-quota.test.cjs`、`quota-paths.test.cjs`、`quota-provider-revoke.test.cjs`、`quota-source-lifecycle.test.cjs`、`sub2api-protocol.test.cjs`、`overlay-quota-chip.test.cjs`、`test_statusbar_rate.py`（provider_fallback/scnet 估算）；真实厂商响应、凭据刷新解冻与 chip 实机挂载需桌面验收，unverified 适配器待真实账号校准 |
 | 浮层/主桥 | `overlay-*.test.cjs`、`plugin-loader.test.cjs`、`plugin-restart-boot.test.cjs`；语法检查，布局/多窗口需桌面验收 |
-| SSH 路由 | `test_remote_targets.py`、`inject-remote-recovery.test.cjs`、`overlay-remote-scope.test.cjs`；实机身份/重连与认证另验 |
+| 桥/SSH 路由 | `test_renderer_bridge.py`、`test_bridge_pending.py`、`test_remote_targets.py`、`inject-remote-recovery.test.cjs`、`overlay-remote-scope.test.cjs`；实机身份/重连与认证另验 |
 | 安装/更新/锁/解包 | `test_install_discovery.py`、`test_plugin_sudo_install.py`、`test_pending_asar.py`、`test_config_transactions.py`、`test_runtime_sync_guard.py`、`test_release*.py` 及 `plugin-*.test.cjs`、`runtime-lock.test.cjs` |
 | 插件命令/hooks/MCP | `test_command_frontmatter.py`、`test_plugin_contract.py`、`test_plugin_package.py`、`test_plugin_runtime.py`、`test_session_start_channels.py`、`test_restart_notice.py`；共享文件同时同步并检查漂移 |
 | Web | 下列语法检查；当前回归未覆盖 Web 端到端，需授权的旁挂/认证/浏览器验收，不能拿桌面测试替代 |
@@ -175,7 +196,7 @@ node --check web/zusage-sidecar.mjs
 
 宿主行为排查与客户端升级体检：
 
-- 查宿主行为以引擎主文件（macOS 桌面为 `/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs`）为最高证据，先 grep 数据的生产函数再追消费链；kebab-case 字段要同时搜 camelCase（如 `disable-noninteractive`→`disableNonInteractive`）。bundle 混淆符号随版本轮换，`plugin-commands-cli-smoke.py` 探测配方失配时修配方，不得退回模拟 catalog。
+- 查宿主行为以引擎主文件（macOS 桌面为 `/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs`）为最高证据，先 grep 数据的生产函数再追消费链；grep bundle 必须 `LC_ALL=C grep -a`（NUL 被当 binary 会静默丢结果）；kebab-case 字段要同时搜 camelCase（如 `disable-noninteractive`→`disableNonInteractive`）。bundle 混淆符号随版本轮换，`plugin-commands-cli-smoke.py` 探测配方失配时修配方，不得退回模拟 catalog。
 - 客户端升级后按六项体检：状态条可见（桥指纹登记）、`python3 -B tests/plugin-commands-cli-smoke.py` 通过命令 catalog 断言、技能列表含 `zcode-token-usage`、MCP `token_usage` 可调、SessionStart 同步与逐问速率行出现、tooltip/设置面板正常。
 - 回归断言按域拆分、分开报错：真实行为回归（catalog、协议、打包文件集）优先于文档断言；长期红的测试等于没有测试，不得让一个失配域掩盖另一域的新回归。
 
@@ -185,21 +206,20 @@ node --check web/zusage-sidecar.mjs
 - 用户可见文案沿用现有字典/语言分支：桌面浮层独立保存 `zusage3.lang` 并跟随 `--font-mono`/`--ui-font-size`，CLI 使用配置 `lang`，Web 跟随宿主语言且布局/字体独立；不能假设共用开关。市场条目保留 `description_i18n`，不为改显示名擅改 slug、市场名、命令或配置键。
 - 配置键、默认值、协议、兼容性变更时更新 `config.example.json`、相关 README、[用户指南](docs/user-guide.md)、插件 README/命令/hooks/技能；设计或发布链变化同时检查维护/设计文档。
 - JSON 示例不得含注释，路径占位须说明替换；检查仓库相对链接、标题锚点及示例能否解析。
-- 当前文档有已知滞后：README 与用户指南的正式自动安装范围不同；README 命名空间命令说明与用户指南裸命令不同；设计笔记的“空闲零进程”、`current` 窗口及“最近一次速度”与常驻/回查实现不完全一致。
-- 安装命令文档的 `sudo python install.py` 不适用于仅含插件子树的缓存；Web 文档的 `node:sqlite` 理由和安全文档的全局“不联网”也不匹配当前实现。修改对应领域时结合源码/契约测试核对，不顺手改业务逻辑或宣称正式渠道已有 main 功能。
+- 当前文档有已知滞后（README 与用户指南的自动安装范围/命令命名差异、设计笔记「空闲零进程」与 `current` 窗口表述、`sudo python install.py` 对插件子树缓存不适用、Web 文档 `node:sqlite` 与全局「不联网」表述）：完整清单见 [.zcode/rules/docs.md](.zcode/rules/docs.md)。修改对应领域时结合源码/契约测试核对，不顺手改业务逻辑或宣称正式渠道已有 main 功能。
 
 ## 8. 发布与外部操作边界
 
-先读 [开发与发布](docs/maintaining.md#发布插件)、[仓库发布技能](.zcode/skills/zcode-github-release/SKILL.md)及其引用文档，不复制旧操作而跳过校验。
+先读 [开发与发布](docs/maintaining.md#发布插件)、[仓库发布技能](.zcode/skills/zcode-github-release/SKILL.md)及其引用文档，不复制旧操作而跳过校验；链路契约与陷阱（分发文件登记处、热/冷文件、渠道判定、更新器反馈）见 [.zcode/rules/install-release.md](.zcode/rules/install-release.md)。
 
 - 本地同步 ≠ 打包 ≠ 校验 ≠ 发布预演 ≠ 提交/tag/Release/渠道推送；源码改版、正式渠道发布、用户安装副本升级是不同步骤。
 - 两份 `.zcode-plugin/plugin.json`、`.claude-plugin/plugin.json` 与根 `marketplace.json` 的插件身份/版本须一致；正式渠道清单是生成的 `marketplace-release.json`，不要覆盖源码市场入口。
 - `release_tool.py build` 的输出目录须尚不存在，包只含枚举分发文件；`verify` 校验身份、文件集、SHA256 与安全解包，参数示例见维护文档。
 - `publish --dry-run` 不是离线检查：仍有 GitHub 只读 preflight，要求已提交源码、本地/远端 tag 与目标提交一致、Release 不存在及非空 UTF-8 更新说明。预演不授予正式发布权限。
-- 更新渠道由 `readChannel` 按注册来源**和市场缓存清单**共同判定：清单为 zip 源的 GitHub/GitCode 来源是 Release 渠道，更新来自已注册来源对应的正式 Release，ZIP、manifest、版本一致，安装后由 `verifyCommittedRelease` 复核宿主安装记录；清单为源码路径的仓库来源判为 `market` 渠道，与本地目录来源同链，由宿主插件管理器按清单直接更新，不经发布包校验。原「市场清单必须与 Release 一致」的安装前校验门（`validateCatalog`）已按维护者决定移除，不要重新加回。不静默切换用户市场来源，不启用被禁用插件。
+- 更新渠道由 `readChannel` 按注册来源**和市场缓存清单**共同判定：清单为 zip 源的 GitHub/GitCode 来源是 Release 渠道（ZIP、manifest、版本一致，安装后由 `verifyCommittedRelease` 复核宿主安装记录）；清单为源码路径的仓库来源判为 `market` 渠道，与本地目录来源同链，由宿主插件管理器按清单直接更新。原「市场清单必须与 Release 一致」的安装前校验门（`validateCatalog`）已按维护者决定移除，不要重新加回。不静默切换用户市场来源，不启用被禁用插件；渠道判定陷阱见 [.zcode/rules/install-release.md](.zcode/rules/install-release.md)。
 - `--publish`/`--confirm` 是工具安全门，不是用户授权的替代。提交、推送、tag、创建 Release、渠道写入均按**当前明确授权**执行，本指南不授予持续发布权限。
 - 实际目标仓库先检查 `git remote -v`，不要混用 fork/上游；源码/渠道 branch、tag、Release 必须分别确认。
-- `fork` 配置双 push URL：`git push fork` 同时推送 GitHub（ByteRax）与 GitCode 镜像（gitcode.com/tanranran/zcode-token-usage-statusbar）；`gitcode` 远程仅用于单独核对或恢复，`origin` 仍只读。GitCode 同时承载国内更新渠道：`plugin-releases-gitcode` 分支清单 + 同 tag Release 资产，由 `release_tool.py publish --gitcode-repo`（需 `GITCODE_TOKEN`）在 GitHub 发布验收后生成，见[双远程同步](docs/maintaining.md#双远程同步)。更新器的 GitHub/GitCode 双渠道校验（`plugin-release.cjs` 的 flavor 分支、`sameAssetUrl` 主机模式、`fetchBytes` 白名单）必须一起改并有测试锁定。GitCode 段推送认证（HTTPS 访问令牌）未配置时该段失败属预期，不代表 GitHub 段失败。
+- `fork` 配置双 push URL：`git push fork` 同时推送 GitHub（ByteRax）与 GitCode 镜像（gitcode.com/tanranran/zcode-token-usage-statusbar）；`gitcode` 远程仅用于单独核对或恢复，`origin` 仍只读。GitCode 承载国内更新渠道：`plugin-releases-gitcode` 分支清单 + 同 tag Release 资产，由 `release_tool.py publish --gitcode-repo`（需 `GITCODE_TOKEN`）在 GitHub 发布验收后生成，见[双远程同步](docs/maintaining.md#双远程同步)。更新器的双渠道校验必须一起改并有测试锁定；GitCode 段推送认证未配置时该段失败属预期，不代表 GitHub 段失败。
 - 维护文档旧 CRLF 修复步骤含破坏性重新检出命令，**不要执行**；保存已有修改，用独立工作树/新检出验证字节。也不要把安装 `--dry-run` 概括为完全无本地副作用。
 
 ## 9. 完成标准
@@ -209,12 +229,3 @@ node --check web/zusage-sidecar.mjs
 - 实际执行的检查与结果；跳过/未执行的检查及原因，不隐去失败或平台跳过。
 - 是否已同步插件副本；是否更新安装缓存/稳定运行文件；是否需要重开会话或完全重启客户端。
 - 尚存限制与需要实机验证的部分。只有相应日志、测试、加载诊断或正式渠道证据齐全，才能宣称功能正常、安装成功、远端恢复或发布完成。
-
-### 中转额度适配补充
-
-- 自定义中转先同源查询 `/v1/usage`（sub2api），baseURL 已带 `/v1` 时不重复追加；拒绝重定向、HTTP 401/429 保持分类不继续穷举。订阅按 `daily/weekly/monthly_limit_usd` 与 usage 展示窗口，remaining 可能只是日窗剩余，绝不标账户总余额；reset 只取显式字段，expiry 不当 reset。未命中才查 legacy billing，usage 缺失不得补 0。
-- OpenRouter `/credits` 要管理密钥（`OPENROUTER_MANAGEMENT_KEY`/设置 Management Key），不自动复用推理 key；DeepSeek 合法零余额可显示；SiliconFlow 按 `.cn/.com` 保持域币种、优先 totalBalance，410 标接口停用。实际支持范围见 docs/quota-support-audit.md。
-
-- apiKey 模式（issue #68）：宿主 apiKey 连接把 provider_id 记为 `bigmodel-api[-N]` / `zai-api[-N]`（非 `account:*`）。quota-client 将其按家族映射到 bigmodel/zai 适配器的复合源（`bigmodel:<providerId>`），凭据优先级 env → quota-secrets → provider_config 同家族 key（`access.type` 以 `coding-plan-api-key` 结尾者优先，其次当前 provider，其次首个非空；显式 baseUrl 不在 bigmodel.cn / z.ai 域则不采用，绝不外发）→ 宿主 OAuth；key 只在内存与请求头流转。`provider_fallback` 仍只取 `account:%`，apiKey 用户在会话首个 main_turn 完成前无回退 chip。
-
-- 路径契约（issue #56）：额度初始化统一 `resolveQuotaPaths()`，显式参数优先、采用宿主 PERSONAL/BUILTIN 路径变量及 DATA_BASE_DIR（基目录追加 `.zcode/v2`）。凭据解密派生仍是 OS homedir，不能改成数据目录。builtin→personal 按 providerId、access/api 局部字段继承，显式空 key 保留，key-only MiniMax 只对内置精确 ID 才可默认官方域；缓存失效、监听目录/文件名须与实际读取一致（Windows/根目录亦然）。
