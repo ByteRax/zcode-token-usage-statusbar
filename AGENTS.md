@@ -215,4 +215,6 @@ node --check web/zusage-sidecar.mjs
 - 自定义中转先同源查询 `/v1/usage`（sub2api），baseURL 已带 `/v1` 时不重复追加；拒绝重定向、HTTP 401/429 保持分类不继续穷举。订阅按 `daily/weekly/monthly_limit_usd` 与 usage 展示窗口，remaining 可能只是日窗剩余，绝不标账户总余额；reset 只取显式字段，expiry 不当 reset。未命中才查 legacy billing，usage 缺失不得补 0。
 - OpenRouter `/credits` 要管理密钥（`OPENROUTER_MANAGEMENT_KEY`/设置 Management Key），不自动复用推理 key；DeepSeek 合法零余额可显示；SiliconFlow 按 `.cn/.com` 保持域币种、优先 totalBalance，410 标接口停用。实际支持范围见 docs/quota-support-audit.md。
 
+- apiKey 模式（issue #68）：宿主 apiKey 连接把 provider_id 记为 `bigmodel-api[-N]` / `zai-api[-N]`（非 `account:*`）。quota-client 将其按家族映射到 bigmodel/zai 适配器的复合源（`bigmodel:<providerId>`），凭据优先级 env → quota-secrets → provider_config 同家族 key（`access.type` 以 `coding-plan-api-key` 结尾者优先，其次当前 provider，其次首个非空；显式 baseUrl 不在 bigmodel.cn / z.ai 域则不采用，绝不外发）→ 宿主 OAuth；key 只在内存与请求头流转。`provider_fallback` 仍只取 `account:%`，apiKey 用户在会话首个 main_turn 完成前无回退 chip。
+
 - 路径契约（issue #56）：额度初始化统一 `resolveQuotaPaths()`，显式参数优先、采用宿主 PERSONAL/BUILTIN 路径变量及 DATA_BASE_DIR（基目录追加 `.zcode/v2`）。凭据解密派生仍是 OS homedir，不能改成数据目录。builtin→personal 按 providerId、access/api 局部字段继承，显式空 key 保留，key-only MiniMax 只对内置精确 ID 才可默认官方域；缓存失效、监听目录/文件名须与实际读取一致（Windows/根目录亦然）。
