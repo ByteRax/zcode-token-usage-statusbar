@@ -694,3 +694,24 @@ test('sub2api key quota without windows is shown as quota, never as wallet balan
   chip.listeners.get('mouseenter')[0].call(chip);
   assert.match(h.tipEl().innerHTML, /Key 总额度.*\$3\.00 \/ \$10\.00.*剩余 \$7\.00/);
 });
+
+
+test('plan period label distinguishes auto-renew charge date from fixed expiry', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  h.inject(); h.boot(); h.tick();
+  h.window.__zusageUpdate(h.payload({ quota: Object.assign({}, QUOTA_OK, {
+    plan: { version: 'V1', productName: 'GLM Coding Max', validStart: '2026-03-14', validEnd: '', renewAt: '2027-03-14' },
+  }) }));
+  const chip = h.chipOf(ui.wrap);
+  chip.listeners.get('mouseenter')[0].call(chip);
+  assert.match(h.tipEl().innerHTML, /下次续费 2027-03-14/);
+  assert.doesNotMatch(h.tipEl().innerHTML, /有效期至/);
+  // 周期无法确认（未来 valid 被拒后全空）：只显示套餐名，不猜日期
+  h.window.__zusageUpdate(h.payload({ quota: Object.assign({}, QUOTA_OK, {
+    plan: { version: 'V1', productName: 'GLM Coding Max', validStart: '', validEnd: '' },
+  }) }));
+  const chip2 = h.chipOf(ui.wrap);
+  chip2.listeners.get('mouseenter')[0].call(chip2);
+  assert.match(h.tipEl().innerHTML, /套餐额度 · GLM Coding Max · V1/);
+  assert.doesNotMatch(h.tipEl().innerHTML, /有效期至|下次续费/);
+});

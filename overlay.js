@@ -422,9 +422,13 @@
     var title = isBalance ? L("账户余额", "Account balance") : L("套餐额度", "Plan quota");
     /* 标题：有订阅元数据（productName/version/valid）时拼成一行；缺失回退 family+档位 */
     var pl = q.plan;
+    /* 周期标签：renewAt=自动续费的下次扣费日（不是最终到期，宿主同款互斥语义）；
+     * validEnd=非自动续费的当前权益结束日；两者都缺（周期无法确认）只显示套餐名。 */
+    var periodLabel = pl && pl.renewAt
+      ? L(" · 下次续费 ", " · renews ") + esc(pl.renewAt)
+      : pl && pl.validEnd ? L(" · 有效期至 ", " · valid until ") + esc(pl.validEnd) : "";
     var head = (pl && (pl.productName || pl.version))
-      ? [pl.productName, pl.version].filter(Boolean).map(esc).join(" · ") +
-        (pl.validEnd ? L(" · 有效期至 ", " · valid until ") + esc(pl.validEnd) : "")
+      ? [pl.productName, pl.version].filter(Boolean).map(esc).join(" · ") + periodLabel
       : esc(q.label || (String(d.provider || "").indexOf("account:") === 0 ? quotaFamilyLabel(d.provider) : L("自定义供应商", "Custom provider"))) +
         (q.level ? " " + esc(quotaLevelLabel(q.level)) : "");
     var out = css + '<div class="qt-h">' + title + " · " + head + "</div>";

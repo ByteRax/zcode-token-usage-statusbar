@@ -344,7 +344,7 @@ const SUB_OK = JSON.stringify({ code: 200, success: true, data: [{
 }] });
 
 test("normalizeSubscriptionPlan: whitelist fields, valid-range parse, no-plan/ambiguity fail-closed", () => {
-  const plan = Q.normalizeSubscriptionPlan(JSON.parse(SUB_OK));
+  const plan = Q.normalizeSubscriptionPlan(JSON.parse(SUB_OK), Date.parse("2026-10-22T04:00:00Z"));
   assert.deepEqual(plan, { version: "V1", productName: "GLM Coding Max", validStart: "2026-02-28", validEnd: "2027-02-28" });
   assert.ok(!JSON.stringify(plan).includes("orderNo") && !JSON.stringify(plan).includes("agreementNo"), "敏感字段不保留");
   assert.equal(Q.normalizeSubscriptionPlan({ data: [] }), null);                       // 无生效订阅
@@ -369,6 +369,7 @@ test("client: bigmodel fetch pulls subscription in parallel; plan lands in view(
       return d.promise;
     },
   });
+  clock.t = Date.parse("2026-10-22T04:00:00Z");   // 注入时钟落在订阅周期内：日期随 j.now() 贯穿
   client.noteProvider("account:bigmodel-individual-coding-plan");
   client.tick();
   assert.equal(calls.length, 2, "额度+订阅并行");
@@ -380,12 +381,24 @@ test("client: bigmodel fetch pulls subscription in parallel; plan lands in view(
   assert.equal(v.status, "ok");
   assert.equal(v.plan.productName, "GLM Coding Max");
   assert.equal(v.plan.version, "V1");
+  assert.equal(v.plan.validStart, "2026-02-28");
+  assert.equal(v.plan.validEnd, "2027-02-28");
+
+  // 时钟越过续费日（同一陈旧行）：日期隐藏而非显示下一年
+  clock.t = Date.parse("2027-06-01T04:00:00Z");
+  client.tick();
+  assert.equal(calls.length, 4);
+  for (const c of calls.slice(2)) {
+    c.d.resolve(fakeRes(200, c.url.includes("subscription") ? SUB_OK : OK_BODY));
+  }
+  await flush();
+  assert.equal(client.view().plan.validEnd, "", "clock past renewal hides dates");
 
   // 订阅端点失败：额度照常、plan 丢弃
   clock.t += Q.TTL_MS + 1;
   client.tick();
-  assert.equal(calls.length, 4);
-  for (const c of calls.slice(2)) {
+  assert.equal(calls.length, 6);
+  for (const c of calls.slice(4)) {
     c.d.resolve(c.url.includes("subscription") ? fakeRes(404, "{}") : fakeRes(200, OK_BODY));
   }
   await flush();
@@ -1026,4 +1039,122 @@ test('sub2api malformed subscription or unknown mode never becomes a wallet bala
   for (const mode of ['unknown', '', 'unrestricted', 'subscription', 'quota']) {
     assert.throws(() => Q.normalizeSub2api({ isValid: true, mode, unit: 'USD', remaining: 50 }), e => e.code === 'parse_error');
   }
+});
+
+
+const SUBSCRIPTION_NOW = Date.parse('2026-10-22T04:00:00Z');
+function subscriptionSample(fields) {
+  return { success: true, data: [{
+    status: 'VALID', inCurrentPeriod: true, productName: 'GLM Coding Max', version: 'V1',
+    valid: '2027-03-14 10:00 ~ 2028-03-14 10:00',
+    currentRenewTime: '2026-03-14', nextRenewTime: '2027-03-14', billingCycle: 'annually',
+    autoRenew: 0, ...fields,
+  }] };
+}
+
+test('subscription expiry prefers the current renewal boundary over a future annual valid interval', () => {
+  for (const autoRenew of [false, 0]) {
+    const plan = Q.normalizeSubscriptionPlan(subscriptionSample({ autoRenew }), SUBSCRIPTION_NOW);
+    assert.equal(plan.validStart, '2026-03-14');
+    assert.equal(plan.validEnd, '2027-03-14');
+    assert.equal(plan.renewAt, undefined);
+    assert.doesNotMatch(JSON.stringify(plan), /2028-03-14/);
+    assert.equal(plan.billingCycle, undefined, 'only normalized presentation fields cross the snapshot boundary');
+  }
+});
+
+test('automatic renewal exposes the next charge date without claiming a final expiry', () => {
+  for (const autoRenew of [true, 1]) {
+    assert.deepEqual(Q.normalizeSubscriptionPlan(subscriptionSample({ autoRenew }), SUBSCRIPTION_NOW), {
+      version: 'V1', productName: 'GLM Coding Max',
+      validStart: '2026-03-14', validEnd: '', renewAt: '2027-03-14',
+    });
+  }
+});
+
+test('only a valid interval containing today may supply a missing renewal boundary', () => {
+  const current = '2026-03-14 10:00:00-2027-03-14 10:00:00';
+  for (const nextRenewTime of [undefined, '', 'not-a-date', '2027-02-30', '2026-01-01']) {
+    const plan = Q.normalizeSubscriptionPlan(subscriptionSample({ valid: current, nextRenewTime }), SUBSCRIPTION_NOW);
+    assert.equal(plan.validStart, '2026-03-14');
+    assert.equal(plan.validEnd, '2027-03-14');
+  }
+  for (const valid of [
+    '2027-03-14 10:00 ~ 2028-03-14 10:00', // future period
+    '2025-03-14 ~ 2026-03-14',             // expired period
+    '2027-03-14 ~ 2026-03-14',             // reversed
+    '2026-02-30 ~ 2027-03-14',             // invalid calendar day
+    'not-a-range',
+  ]) {
+    const plan = Q.normalizeSubscriptionPlan(subscriptionSample({ valid, nextRenewTime: '', currentRenewTime: '' }), SUBSCRIPTION_NOW);
+    assert.equal(plan.validEnd, '', 'unconfirmed valid interval cannot become the expiry');
+    assert.equal(plan.validStart, '');
+    assert.equal(plan.productName, 'GLM Coding Max');
+    assert.equal(plan.version, 'V1');
+  }
+});
+
+test('auto-renew without an explicit next charge date labels a current interval only as the current period', () => {
+  const plan = Q.normalizeSubscriptionPlan(subscriptionSample({ autoRenew: 1, nextRenewTime: '',
+    valid: '2026-03-14 10:00 ~ 2027-03-14 10:00' }), SUBSCRIPTION_NOW);
+  assert.equal(plan.validEnd, '');
+  assert.equal(plan.renewAt, undefined);
+  assert.equal(plan.periodEnd, '2027-03-14');
+});
+
+test('renewal-day morning keeps the current-period expiry instead of jumping to next year', () => {
+  const plan = Q.normalizeSubscriptionPlan(subscriptionSample({}), Date.parse('2027-03-14T09:00:00+08:00'));
+  assert.equal(plan.validEnd, '2027-03-14');
+  assert.doesNotMatch(JSON.stringify(plan), /2028-03-14/);
+});
+
+test('charged instant passed: next period genuinely current for manual; stale auto-renew hides dates', () => {
+  // 非自动续费：10:00 已过，valid 新周期（2027-03-14 10:00~2028-03-14 10:00）真实生效
+  const manual = Q.normalizeSubscriptionPlan(subscriptionSample({ nextRenewTime: '2027-03-14 10:00:00' }),
+    Date.parse('2027-03-14T11:00:00+08:00'));
+  assert.equal(manual.validStart, '2027-03-14');
+  assert.equal(manual.validEnd, '2028-03-14', 'next period really started; showing it is correct');
+  // 自动续费陈旧行（已扣费但 nextRenewTime 未更新）：不知道新扣费日，隐藏日期不猜
+  const auto = Q.normalizeSubscriptionPlan(subscriptionSample({ nextRenewTime: '2027-03-14 10:00:00', autoRenew: 1 }),
+    Date.parse('2027-03-14T11:00:00+08:00'));
+  assert.equal(auto.validEnd, '');
+  assert.equal(auto.renewAt, undefined);
+});
+
+test('legal datetime nextRenewTime keeps renewAt/expiry like the host mapper accepts', () => {
+  const cases = [
+    ['2027-03-14 10:00:00', 1, 'renewAt'],
+    ['2027-03-14T10:00:00+08:00', 1, 'renewAt'],
+    ['2027-03-14T02:00:00Z', 1, 'renewAt'],
+    ['2027-03-14 10:00', 0, 'validEnd'],
+  ];
+  for (const [nextRenewTime, autoRenew, key] of cases) {
+    const plan = Q.normalizeSubscriptionPlan(subscriptionSample({ nextRenewTime, autoRenew }), SUBSCRIPTION_NOW);
+    assert.equal(plan[key], '2027-03-14', nextRenewTime);
+  }
+});
+
+test('malformed times inside the valid interval reject the whole fallback', () => {
+  for (const valid of [
+    '2026-03-14 25:99 ~ 2027-03-14 99:99',
+    '2026-03-14 10:00 ~ 2027-03-14 25:00',
+  ]) {
+    const plan = Q.normalizeSubscriptionPlan(subscriptionSample({ valid, nextRenewTime: '', currentRenewTime: '' }), SUBSCRIPTION_NOW);
+    assert.equal(plan.validEnd, '', valid);
+    assert.equal(plan.validStart, '');
+  }
+});
+
+test('subscription dates validate the calendar, avoid year subtraction and keep the service calendar day', () => {
+  const leap = Q.normalizeSubscriptionPlan(subscriptionSample({ nextRenewTime: '2028-02-29', currentRenewTime: '2026-02-29' }), SUBSCRIPTION_NOW);
+  assert.equal(leap.validEnd, '2028-02-29', 'use the explicit boundary rather than subtracting one year');
+  assert.equal(leap.validStart, '', 'invalid calendar start is not exposed');
+  for (const nextRenewTime of ['2027-03-14 25:00', '2027-03-14junk', '2027-13-01', '2027-00-10', '2027-03-14T10:00+08:99']) {
+    const plan = Q.normalizeSubscriptionPlan(subscriptionSample({ nextRenewTime, currentRenewTime: '' }), SUBSCRIPTION_NOW);
+    assert.equal(plan.validEnd, '', nextRenewTime);
+  }
+  const day = Date.parse('2026-10-21T16:30:00Z'); // already 2026-10-22 in the BigModel service calendar
+  const future = Q.normalizeSubscriptionPlan(subscriptionSample({ nextRenewTime: '', currentRenewTime: '',
+    valid: '2026-10-21 00:00 ~ 2026-10-22 00:00' }), day);
+  assert.equal(future.validEnd, '', 'end of yesterday\'s interval is not a current entitlement');
 });
