@@ -479,6 +479,24 @@ test('settings source list renders rows and emits quota-src / quota-src-key / qu
   void list; void ui;
 });
 
+test('issue #68: apiKey-mode BigModel/Z.ai provider shows its composite source with the built-in family title', () => {
+  for (const [provider, source, title] of [['bigmodel-api-2', 'bigmodel:bigmodel-api-2', 'BigModel'], ['zai-api', 'zai:zai-api', 'Z.ai']]) {
+    const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+    h.inject(); h.boot(); h.tick();
+    const entry = Object.assign({}, QUOTA_OK, { plan: null, level: '' });
+    h.window.__zusageUpdate({ remote_evidence: false, today: {}, not_local: [],
+      quota: { active: source, byProvider: { [provider]: source }, sources: { [source]: entry } },
+      recent: [{ sid: 'sid_main', workspace_identity: '', ctx: 63400, context_window: 200000, last_at: 1, ctx_exc: 0,
+        last: { provider_id: provider, model: 'GLM-5.3' } }] });
+    const chip = h.chipOf(ui.wrap);
+    assert.ok(chip, provider + ' 应显示额度 chip');
+    assert.match(chip.innerHTML, /5小时 26%/);
+    chip.listeners.get('mouseenter')[0].call(chip);
+    assert.match(h.tipEl().innerHTML, new RegExp('套餐额度 · ' + title.replace('.', '\\.')));
+    assert.doesNotMatch(h.tipEl().innerHTML, /自定义供应商/);
+  }
+});
+
 test('custom-provider session shows ITS source via byProvider mapping (multi-window, no cross-leak)', () => {
   const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
   h.inject(); h.boot(); h.tick();
@@ -714,4 +732,22 @@ test('plan period label distinguishes auto-renew charge date from fixed expiry',
   chip2.listeners.get('mouseenter')[0].call(chip2);
   assert.match(h.tipEl().innerHTML, /套餐额度 · GLM Coding Max · V1/);
   assert.doesNotMatch(h.tipEl().innerHTML, /有效期至|下次续费/);
+});
+
+test('issue #68 (mutation review): family title strictly follows provider id shape', () => {
+  for (const [provider, source, title] of [['zai-api-3', 'zai:zai-api-3', 'Z\\.ai'], ['bigmodel-api', 'bigmodel:bigmodel-api', 'BigModel'],
+    ['zai-api-x', 'custom:zai-api-x', '自定义供应商'], ['bigmodel-apix', 'custom:bigmodel-apix', '自定义供应商']]) {
+    const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+    h.inject(); h.boot(); h.tick();
+    const entry = Object.assign({}, QUOTA_OK, { plan: null, level: '' });
+    h.window.__zusageUpdate({ remote_evidence: false, today: {}, not_local: [],
+      quota: { active: source, byProvider: { [provider]: source }, sources: { [source]: entry } },
+      recent: [{ sid: 'sid_main', workspace_identity: '', ctx: 63400, context_window: 200000, last_at: 1, ctx_exc: 0,
+        last: { provider_id: provider, model: 'GLM-5.3' } }] });
+    const chip = h.chipOf(ui.wrap);
+    assert.ok(chip, provider);
+    chip.listeners.get('mouseenter')[0].call(chip);
+    assert.match(h.tipEl().innerHTML, new RegExp((title === '自定义供应商' ? '' : '套餐额度 · ') + title), provider);
+    if (title !== '自定义供应商') assert.doesNotMatch(h.tipEl().innerHTML, /自定义供应商/, provider);
+  }
 });

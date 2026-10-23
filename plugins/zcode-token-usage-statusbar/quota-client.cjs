@@ -332,13 +332,13 @@ function resolveQuotaPaths(opts) {
     builtinCfgDir: builtinCfgPath ? pathOf(builtinCfgPath).dirname(builtinCfgPath) : "" };
 }
 let providerCfgCache = null;
-function resolveCustomProvider(providerId, readFile2, cfgPath, builtinCfgPath) {
+function loadProviderCfg(readFile2, cfgPath, builtinCfgPath) {
   const paths = [builtinCfgPath, cfgPath].filter(Boolean);
   let stamp = null;
   try { stamp = JSON.stringify(paths.map((p) => { const s = fs.statSync(p); return [p, s.mtimeMs, s.size]; })); }
   catch (e) { providerCfgCache = null; /* stat 失败仍现读，并撤销旧缓存，避免同时间戳重建后复活旧 key */ }
   if (stamp !== null && providerCfgCache && providerCfgCache.stamp === stamp && providerCfgCache.readFile === readFile2) {
-    return providerCfgCache.byId.get(String(providerId)) || null;
+    return providerCfgCache.byId;
   }
   const rules = new Map();
   for (const p of paths) {
@@ -357,10 +357,41 @@ function resolveCustomProvider(providerId, readFile2, cfgPath, builtinCfgPath) {
   }
   const byId = new Map();
   for (const [id, cfg] of rules) {
-    byId.set(id, { baseUrl: String(cfg.api.baseUrl || "").replace(/\/+$/, ""), apiKey: String(cfg.access.apiKey || ""), name: cfg.name || "" });
+    byId.set(id, { baseUrl: String(cfg.api.baseUrl || "").replace(/\/+$/, ""), apiKey: String(cfg.access.apiKey || ""), name: cfg.name || "",
+      accessType: String(cfg.access.type || "") });
   }
   if (stamp !== null) providerCfgCache = { stamp, readFile: readFile2, byId };
-  return byId.get(String(providerId)) || null;
+  return byId;
+}
+function resolveCustomProvider(providerId, readFile2, cfgPath, builtinCfgPath) {
+  const e = loadProviderCfg(readFile2, cfgPath, builtinCfgPath).get(String(providerId));
+  return e ? { baseUrl: e.baseUrl, apiKey: e.apiKey, name: e.name } : null;
+}
+
+/* apiKey 模式的 BigModel/Z.ai 连接（provider bigmodel-api[-N] / zai-api[-N]）：额度端点与 OAuth 同属账号池，
+ * 凭据取 provider_config 里同家族的 key，编码套餐 key（access.type 以 coding-plan-api-key 结尾）优先，
+ * 其次当前 provider 自身，再其次同家族首个非空 key。baseUrl 若显式配置必须落在官方域，
+ * 否则视为指向第三方中转的同名 provider，绝不把它的 key 发往官方域。 */
+const API_KEY_PROVIDER_RE = /^(bigmodel|zai)-api(?:-\d+)?$/;
+const FAMILY_HOST_RE = { bigmodel: /(^|\.)bigmodel\.cn$/i, zai: /(^|\.)z\.ai$/i };
+function apiKeyFamilyOf(providerId) {
+  const m = API_KEY_PROVIDER_RE.exec(String(providerId || ""));
+  return m ? m[1] : "";
+}
+function resolveFamilyApiKey(family, providerId, readFile2, cfgPath, builtinCfgPath) {
+  const usable = [];
+  for (const [id, e] of loadProviderCfg(readFile2, cfgPath, builtinCfgPath)) {
+    if (apiKeyFamilyOf(id) !== family || !e.apiKey) continue;
+    if (e.baseUrl) {
+      let host = "";
+      try { host = new URL(e.baseUrl).hostname; } catch (err) { continue; }
+      if (!FAMILY_HOST_RE[family].test(host)) continue;
+    }
+    usable.push({ id, key: e.apiKey, plan: /coding-plan-api-key$/.test(e.accessType) });
+  }
+  const pick = usable.find((u) => u.plan && u.id === providerId) || usable.find((u) => u.plan) ||
+    usable.find((u) => u.id === providerId) || usable[0];
+  return pick ? pick.key : "";
 }
 
 /* ---------- 适配器注册表 ----------
@@ -393,6 +424,10 @@ for (const fam of ["bigmodel", "zai"]) {
       }
       const configured = ((j.secrets.sources || {})[fam] || {}).apiKey;
       if (typeof configured === "string" && configured) return { token: configured, fingerprint: "sec:" + sha16(configured), source: "secrets" };
+      if (ctx.apiKeyProvider) {
+        const key = j.familyApiKeyOf(fam, ctx.apiKeyProvider);
+        if (key) return { token: key, fingerprint: "cfg:" + sha16(key), source: "provider_config" };
+      }
       let raw = null;
       try { raw = j.readFile(j.credsPath); } catch (e) { return null; }
       const enc = raw && typeof raw === "object" ? raw[conf.credKey] : null;
@@ -1224,6 +1259,7 @@ function createQuotaClient(opts) {
     env, now, fetchImpl, readFile, secrets: { sources: {} }, customCfgPath, log, http, extras,
     credsPath,
     customProviderOf: (pid) => resolveCustomProvider(pid, readFile, customCfgPath, builtinCfgPath),
+    familyApiKeyOf: (family, pid) => resolveFamilyApiKey(family, pid, readFile, customCfgPath, builtinCfgPath),
   };
 
   /* 源状态：id → st（v96 单源状态机的每源实例） */
@@ -1260,6 +1296,8 @@ function createQuotaClient(opts) {
       if (p.indexOf("account:zai") === 0) return { id: "zai", ctx: { family: "zai" } };
       return { id: "" };
     }
+    const keyFam = apiKeyFamilyOf(p);
+    if (keyFam) return { id: keyFam, ctx: { family: keyFam, apiKeyProvider: p }, provider: p };
     j.secrets = readSecrets();   // provider→adapter 探测前刷新配置
     for (const a of ADAPTERS) {
       if (a.id === "custom" || a.id === "bigmodel" || a.id === "zai") continue;
@@ -1634,6 +1672,7 @@ module.exports = {
   collectWindows,
   resolveWanted(providerId) {   // v96 兼容导出（单测在用）：内置 family 判定
     const p = String(providerId || "");
+    if (apiKeyFamilyOf(p)) return { family: apiKeyFamilyOf(p) };
     if (p.indexOf("account:") !== 0) return null;
     if (p.indexOf("team") >= 0) return { unsupported: "team" };
     if (p.indexOf("account:bigmodel") === 0) return { family: "bigmodel" };

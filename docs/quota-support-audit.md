@@ -16,8 +16,8 @@
 
 | 对象 | 实装与缺失 | 自动凭据取得 / 额外权限 | 实测程度与解析、展示边界 |
 |---|---|---|---|
-| BigModel 个人 Coding 套餐 | monitor 额度 + 订阅元数据 | 可解密宿主 OAuth；支持专用 env 覆盖，不需额外索取管理 key | **本机实测**；账号级套餐池；团队套餐仍不支持 |
-| Z.ai Coding | 已有 Coding monitor 适配 | 宿主 Z.ai OAuth；与 BigModel 凭据族区分 | 源码/夹具证据，不是真账号验收；不能外推到 Start Plan |
+| BigModel 个人 Coding 套餐 | monitor 额度 + 订阅元数据 | 可解密宿主 OAuth；**apiKey 模式连接**（provider `bigmodel-api[-N]`）读 `provider_config.json` 同家族 key（编码套餐 key 优先，baseUrl 须在 bigmodel.cn 域）；支持专用 env 覆盖，不需额外索取管理 key | **本机实测**；账号级套餐池；团队套餐仍不支持 |
+| Z.ai Coding | 已有 Coding monitor 适配 | 宿主 Z.ai OAuth，或 apiKey 模式（`zai-api[-N]`）provider_config 同家族 key（baseUrl 须在 z.ai 域）；与 BigModel 凭据族区分 | 源码/夹具证据，不是真账号验收；不能外推到 Start Plan |
 | Z.ai Start Plan | **未实装专用协议** | 没有已验证的自动取得和查询链 | 宿主按钮存在或 Coding 可查，不代表 Start Plan 受支持 |
 | MiniMax Coding | 已有 remains 适配 | env / 本机 secrets / 已知官方域供应商配置 | 源码转写、夹具验证；剩余比例转已用比例；`weekly_status == 3` 不展示周窗 |
 | Kimi Coding / Moonshot PAYG | Coding 额度；401 回落 PAYG 余额 | env / secrets / 已知官方域供应商配置 | 源码转写、夹具验证；remaining 口径与分转元须分别处理，不能假设所有 Coding key 有 PAYG 权限 |
