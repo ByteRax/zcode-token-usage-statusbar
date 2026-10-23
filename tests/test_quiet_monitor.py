@@ -161,11 +161,15 @@ class QuietMonitorTests(unittest.TestCase):
                 mock.patch.object(self.monitor, "zcode_pids", return_value={"1"}), \
                 mock.patch.object(self.monitor.time, "monotonic", side_effect=[0, 1, 2, 86400]), \
                 mock.patch.object(self.monitor.time, "sleep") as sleep, \
+                mock.patch.object(self.patch, "self_check", return_value=True), \
                 mock.patch.object(self.patch, "source_fingerprint", wraps=self.patch.source_fingerprint) as hashes:
             self.monitor.main()
         # 等待期预校验焐热缓存（issue #72）：大包只 hash 一轮（ASAR+TMP 各一次），
         # 后续轮询 stat 命中缓存不再重 hash；一天期限后停止重试。等待路径的平台分歧
         # （POSIX 睡眠 / Windows 句柄不可得立即返回）不影响这两个核心断言。
+        # self_check 须 mock：夹具 TMP 是非 asar 裸字节，真 self_check 会在首轮预热即抛
+        # PendingTmpError 提前取消收尾——那样第 2、3 个 monotonic 值从未消费，
+        # 「此后轮询命中缓存」与「一天期限」两段就没有真正执行过（review F1）。
         self.assertEqual(hashes.call_count, 2)
 
     def test_exit_window_finalize_is_prewarmed_stat_and_rename_only(self):
@@ -175,6 +179,14 @@ class QuietMonitorTests(unittest.TestCase):
         events = []
         real_hash = self.patch.source_fingerprint
         real_replace = self.patch.os.replace
+        pids_iter = iter([{"1"}] + [set()] * 6)
+        seen_exit = []
+        def pids_recorder():
+            pids = next(pids_iter)
+            if not pids and not seen_exit:
+                seen_exit.append(True)   # 只记首次观察到进程全退，后续 client_closed 复查不重复记
+                events.append("exit")
+            return pids
         def hash_recorder(path, *args, **kwargs):
             events.append("hash")
             return real_hash(path, *args, **kwargs)
@@ -182,17 +194,59 @@ class QuietMonitorTests(unittest.TestCase):
             events.append("replace")
             return real_replace(src, dst)
         with mock.patch.dict(sys.modules, {"patch_install": self.patch}), \
-                mock.patch.object(self.monitor, "zcode_pids", side_effect=[{"1"}] + [set()] * 6), \
+                mock.patch.object(self.monitor, "zcode_pids", side_effect=pids_recorder), \
                 mock.patch.object(self.monitor, "wait_any_exit"), \
                 mock.patch.object(self.monitor.time, "sleep") as sleep, \
                 mock.patch.object(self.patch, "self_check", return_value=True), \
                 mock.patch.object(self.patch, "source_fingerprint", side_effect=hash_recorder), \
                 mock.patch.object(self.patch.os, "replace", side_effect=replace_recorder):
             self.monitor.main()
-        # 哈希全部发生在等待轮（客户端仍在跑），最后一次哈希之后才是退出窗口内的 rename。
-        self.assertEqual(events, ["hash", "hash", "replace"])
+        # 哈希必须全部发生在等待轮（客户端仍在跑）：首次观察到进程全退（exit）之后
+        # 不得再出现 hash——若把哈希挪进退出窗口，事件序会变成 exit 在前（review F2）。
+        self.assertEqual(events, ["hash", "hash", "exit", "replace"])
         self.assertEqual(self.asar.read_bytes(), b"verified package")
         self.assertFalse(self.tmp.exists())
+
+    def test_visible_monitor_prewarms_once_during_waiting(self):
+        # 回归（issue #72 复审）：可见监控 main() 的等待轮与 quiet_finalize 同款预热；
+        # 若该路径回退为 stat-only（哈希推迟到首次 finalize），等待期 hash 数为 0，
+        # 本用例必须红——此前没有任何测试锁定 main() 这处调用（review F3）。
+        self.pending()
+        with mock.patch.dict(sys.modules, {"patch_install": self.patch}), \
+                mock.patch.object(self.monitor, "QUIET", False), \
+                mock.patch.object(sys, "argv", ["install_monitor.py", "0"]), \
+                mock.patch.object(self.monitor, "zcode_pids", side_effect=[{"1"}] * 3 + [KeyboardInterrupt]), \
+                mock.patch.object(self.monitor, "wait_any_exit"), \
+                mock.patch.object(self.monitor.time, "monotonic", side_effect=[0, 1, 2, 3]), \
+                mock.patch.object(self.monitor.time, "sleep"), \
+                mock.patch.object(self.monitor, "draw"), \
+                mock.patch.object(self.patch, "self_check", return_value=True), \
+                mock.patch.object(self.patch, "source_fingerprint", wraps=self.patch.source_fingerprint) as hashes:
+            with self.assertRaises(KeyboardInterrupt):
+                self.monitor.main()
+        # 启动采集与两轮完整等待（第三轮在进程探测处中断）中只有首轮 hash 一轮
+        # （ASAR+TMP 各一次），此后 stat 命中缓存。
+        self.assertEqual(hashes.call_count, 2)
+
+    def test_prewarm_cache_revalidates_new_sidecar_generation(self):
+        # issue #72 复审：verified 缓存键=完整 sidecar meta。新一代 sidecar（如 SessionStart
+        # 重建 TMP）必须令缓存失配并重新全量 hash+self_check，不得沿用旧世代的结论
+        # （review F4：缓存键若退化为 is None，旧缓存会跳过新世代的重校验）。
+        self.pending(b"first generation")
+        verified = {}
+        with mock.patch.object(self.patch, "self_check", return_value=True), \
+                mock.patch.object(self.patch, "source_fingerprint", wraps=self.patch.source_fingerprint) as hashes:
+            self.patch.pending_tmp(operation=None, verify_hash=True, verified=verified)
+            first_round = hashes.call_count
+        self.pending(b"second generation")
+        with mock.patch.object(self.patch, "self_check", return_value=True), \
+                mock.patch.object(self.patch, "source_fingerprint", wraps=self.patch.source_fingerprint) as hashes:
+            self.patch.pending_tmp(operation=None, verify_hash=True, verified=verified)
+            second_round = hashes.call_count
+        self.assertEqual(first_round, 2)
+        self.assertEqual(second_round, 2)   # 新世代重新全量校验，而非命中旧缓存
+        self.assertEqual(verified["metadata"]["tmp"]["sha256"],
+                         self.patch.source_fingerprint(self.tmp)["sha256"])
 
     def test_changed_package_cancels_after_oserror_without_retry(self):
         self.pending()

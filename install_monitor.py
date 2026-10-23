@@ -167,7 +167,8 @@ def quiet_finalize():
     while TMP.exists() and time.monotonic() < deadline:
         try:
             # 预校验并焐热 verified 缓存（issue #72）：每个 sidecar 世代只 hash 一次大包，
-            # 此后轮询 stat 命中缓存；退出窗口内 finalize 只剩 stat+rename（毫秒级），
+            # 此后轮询 stat 命中缓存；退出窗口内不再 hash 大包（剩余为 stat、client_closed
+            # 进程探测、可选 publish_install 与 rename 等原有毫秒~亚秒级小步骤），
             # 不再输给新实例首进程亚秒级重开 asar 的竞速。哈希失败（OSError）下轮重试。
             pi.pending_tmp(operation=None, verify_hash=True, verified=verified)
             pids = zcode_pids()
@@ -206,7 +207,7 @@ def main():
         pending = None
         if TMP.exists():
             try:
-                # 同 quiet_finalize：等待期预校验焐热缓存，退出窗口内只剩 stat+rename（issue #72）。
+                # 同 quiet_finalize：等待期预校验焐热缓存，退出窗口内不再 hash 大包（issue #72）。
                 pending = pi.pending_tmp(operation=None, verify_hash=True, verified=verified)
                 if time.monotonic() >= deadline:
                     draw([L("[!] 待替换包收尾已超过一天，停止自动重试。文件保留，请重新安装。",
