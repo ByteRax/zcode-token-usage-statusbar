@@ -4,26 +4,27 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
+// v99/v89 起：中文「X 时 X 分 X 秒」/英文「X h X m X s」，空格分隔，零段照旧省略（仅全零显示 0 秒/0 s）
 const cases = [
-  [0, '0s'],
-  [999, '0s'],
-  [1000, '1s'],
-  [3100, '3s'],
-  [59999, '59s'],
-  [60000, '1m'],
-  [60999, '1m'],
-  [61000, '1m:1s'],
-  [70000, '1m:10s'],
-  [120000, '2m'],
-  [3599999, '59m:59s'],
-  [3600000, '1h'],
-  [3600999, '1h'],
-  [3601000, '1h:1s'],
-  [3610000, '1h:10s'],
-  [3660000, '1h:1m'],
-  [3670000, '1h:1m:10s'],
-  [7200000, '2h'],
-  [90061000, '25h:1m:1s'],
+  [0, '0 秒', '0 s'],
+  [999, '0 秒', '0 s'],
+  [1000, '1 秒', '1 s'],
+  [3100, '3 秒', '3 s'],
+  [59999, '59 秒', '59 s'],
+  [60000, '1 分', '1 m'],
+  [60999, '1 分', '1 m'],
+  [61000, '1 分 1 秒', '1 m 1 s'],
+  [70000, '1 分 10 秒', '1 m 10 s'],
+  [120000, '2 分', '2 m'],
+  [3599999, '59 分 59 秒', '59 m 59 s'],
+  [3600000, '1 时', '1 h'],
+  [3600999, '1 时', '1 h'],
+  [3601000, '1 时 1 秒', '1 h 1 s'],
+  [3610000, '1 时 10 秒', '1 h 10 s'],
+  [3660000, '1 时 1 分', '1 h 1 m'],
+  [3670000, '1 时 1 分 10 秒', '1 h 1 m 10 s'],
+  [7200000, '2 时', '2 h'],
+  [90061000, '25 时 1 分 1 秒', '25 h 1 m 1 s'],
 ];
 
 for (const file of ['overlay.js', 'web/overlay.js']) {
@@ -33,13 +34,14 @@ for (const file of ['overlay.js', 'web/overlay.js']) {
   assert.ok(start >= 0 && end > start, `提取失败: ${file} zuBarSpeedView`);
 
   for (const lang of ['zh', 'en']) {
-    test(`${file}: ${lang} thinking timer uses whole h:m:s and omits zero units`, () => {
+    test(`${file}: ${lang} thinking timer localizes h/m/s units and omits zero units`, () => {
       const speedView = vm.runInNewContext(source.slice(start, end) + '\nzuBarSpeedView;', {
         L: (zh, en) => lang === 'en' ? en : zh,
       });
-      for (const [observedMs, expected] of cases) {
+      for (const [observedMs, zhExpected, enExpected] of cases) {
         const view = speedView({ complete: false, characterRate: null, observedMs });
         const prefix = lang === 'en' ? 'thinking…' : '思考中…';
+        const expected = lang === 'en' ? enExpected : zhExpected;
         assert.equal(view.text, prefix + expected, `${observedMs}ms`);
         assert.equal(view.phase, 'thinking');
         assert.equal(view.cls, 'dim');

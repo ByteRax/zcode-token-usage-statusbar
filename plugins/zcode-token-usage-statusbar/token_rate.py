@@ -321,6 +321,13 @@ def _hhmmss(ms):
     return time.strftime("%H:%M:%S", time.localtime(ms / 1000))
 
 
+def _cn_fulltime(ms):
+    """本问统计行的采样时刻：完整中文日期时间（2026 年 10 月 23 日 11 点 20 分 28 秒），数字不补零。"""
+    t = time.localtime(ms / 1000)
+    return (f"{t.tm_year} 年 {t.tm_mon} 月 {t.tm_mday} 日 "
+            f"{t.tm_hour} 点 {t.tm_min} 分 {t.tm_sec} 秒")
+
+
 def _sec(ms):
     return f"{ms / 1000:.1f}" if isinstance(ms, (int, float)) else "-"
 
@@ -351,7 +358,7 @@ def format_turn_line(r, cn=True):
     if r.get("session"):
         s = r["session"]
         parts.append(f"累计 {big(s['totalOutput'])} token")
-    parts.append(f"⏱ {_hhmmss(t['lastAt'])}")
+    parts.append(f"⏱ {_cn_fulltime(t['lastAt'])}")
     return " · ".join(parts)
 
 

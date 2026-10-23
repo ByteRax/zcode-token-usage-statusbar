@@ -566,10 +566,10 @@ test('⑪ heartbeat tick alone (no new store push) still advances the observed-s
   h.runTimers(100);
   assert.equal(instanceOf(h).statsFor('pt1').characterRate, null);
   // 没有新快照也要能走字：证明心跳本身驱动了刷新，而不是只等 store 通知
-  assert.equal(instanceOf(h).liveEl().textContent, '思考中…3s');
+  assert.equal(instanceOf(h).liveEl().textContent, '思考中…3 秒');
   for (const [now, expected] of [
-    [59999, '59s'], [60000, '1m'], [70000, '1m:10s'],
-    [3600000, '1h'], [3610000, '1h:10s'], [3660000, '1h:1m'], [3670000, '1h:1m:10s'],
+    [59999, '59 秒'], [60000, '1 分'], [70000, '1 分 10 秒'],
+    [3600000, '1 时'], [3610000, '1 时 10 秒'], [3660000, '1 时 1 分'], [3670000, '1 时 1 分 10 秒'],
   ]) {
     h.clock.now = now;
     h.runTimers(100);

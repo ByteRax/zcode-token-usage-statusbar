@@ -40,13 +40,6 @@ sha256 来自同一 Release 的 manifest，用来验证下载完整性；它不�
 }
 ```
 
-ZIP 内仍用相对源码 source，避免清单包含自身 ZIP 的 hash 形成循环。源码根的本地市场清单保持原样。
-
-正式 Release 完成后，获得渠道提交/推送授权再执行：
-1. 选定同一仓库的渠道 ref，推荐 `plugin-releases`。先检查远端 ref 与原清单；只允许更新本插件且版本递增。
-2. 在独立临时 clone/worktree 中，从远端渠道 tip 创建工作分支；新渠道则从已确认正式 tag 创建分支。不能在脏开发工作区切换或 reset。
-3. 将生成清单写为该 ref 根的 `marketplace.json`，仅暂存此文件，提交并正常推送到明确 ref。不 force、不重写既有历史；推送被拒绝则重新读取远端并停止处理，不盲目重试。
-4. 读取远端 `marketplace.json`，比较版本和完整 source 与生成文件，再检查两个正式资产。
-5. 给新用户市场来源 `OWNER/REPO#plugin-releases`。已有用户仍追踪原 ref；不会自动迁移。原 ref 若仍是开发用相对 source，更新器应报渠道不一致，不退回开发分支安装。
+ZIP 内仍用相对源码 source，避免清单包含自身 ZIP 的 hash 形成循环。源码根的本地市场清单保持原样。GitCode 版 `marketplace-release-gitcode.json` 形状相同，只是 `url` 指向 GitCode Release 资产，由 `publish --gitcode-repo` 在发布验收后生成，同样不上传、不入 ZIP。
 
 Release 资产上传成功但渠道尚未发布时，检测可以发现版本，安装会安全停止。私有仓库当前不支持认证下载；不要将 gh token、URL 凭据或自定义 headers 交给更新器。

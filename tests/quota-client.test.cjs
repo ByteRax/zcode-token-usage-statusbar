@@ -1356,3 +1356,51 @@ test("apiKey mode: raw key never appears in fingerprints or state", () => {
   for (const st of x.client._states.values()) assert.ok(!JSON.stringify({ fp: st.fingerprint, v: st.value, e: st.lastError }).includes("sk-secret-123"));
   x.client.dispose();
 });
+
+/* ---------- v102 预设模板 ---------- */
+test("sourcesConfig ships static presets, keyUrl and non-secret baseUrl", () => {
+  const { client } = adapterClient({ secrets: { sources: { minimax: { apiKey: "sk-mm", baseUrl: "https://api.minimax.io/" } } } });
+  const mm = client.sourcesConfig().find(s => s.id === "minimax");
+  assert.deepEqual(mm.presets, [
+    { label: "国内站", labelEn: "China", value: "https://api.minimaxi.com" },
+    { label: "国际站", labelEn: "Global", value: "https://api.minimax.io" },
+  ]);
+  assert.equal(mm.keyUrl, "https://platform.minimaxi.com");
+  assert.equal(mm.baseUrl, "https://api.minimax.io/");   // 域名回显（模板高亮用），非凭据
+  assert.equal(mm.apiKey, undefined, "apiKey must never reach sourcesConfig");
+  const ds = client.sourcesConfig().find(s => s.id === "deepseek");
+  assert.equal(ds.presets, undefined);
+  assert.equal(ds.keyUrl, "https://platform.deepseek.com/api_keys");
+  assert.equal(client.sourcesConfig().find(s => s.id === "custom"), undefined);
+});
+
+test("siliconflow honours the preset baseUrl only for trusted hosts and derives the currency", async () => {
+  const { client, calls } = adapterClient({
+    secrets: { sources: { siliconflow: { apiKey: "sk-sf", baseUrl: "https://api.siliconflow.com" } } },
+  });
+  client.tick();
+  assert.equal(calls[0].url, "https://api.siliconflow.com/v1/user/info");
+  calls[0].d.resolve(fakeRes(200, JSON.stringify({ data: { totalBalance: "9.5" } })));   // 响应无 currency：按域推导
+  await flush();
+  const st = client.view().sources.siliconflow;
+  assert.equal(st.balance.amount, 9.5);
+  assert.equal(st.balance.currency, "USD");
+});
+
+test("siliconflow falls back to the default origin for untrusted preset hosts", async () => {
+  const { client, calls } = adapterClient({
+    secrets: { sources: { siliconflow: { apiKey: "sk-sf", baseUrl: "https://evil.example.com" } } },
+  });
+  client.tick();
+  assert.equal(calls[0].url, "https://api.siliconflow.cn/v1/user/info");
+  calls[0].d.resolve(fakeRes(200, JSON.stringify({ data: { totalBalance: "1", currency: "CNY" } })));
+  await flush();
+  assert.equal(client.view().sources.siliconflow.status, "ok");
+});
+
+test("explicitly disabled sources report status 'disabled' instead of a fake idle", () => {
+  const { client } = adapterClient({ secrets: { sources: { deepseek: { enabled: false, apiKey: "sk-ds" } } } });
+  const ds = client.sourcesConfig().find(s => s.id === "deepseek");
+  assert.equal(ds.enabled, false);
+  assert.equal(ds.status, "disabled");   // 旧逻辑在无激活账号时会透传 idle，面板出现「开关已关却显示待查询」
+});

@@ -659,6 +659,27 @@ class TestCnUnitsFormat(unittest.TestCase):
         self.assertNotIn(" tok ", cn)
         self.assertNotIn(" tok/", cn)
 
+    def test_format_turn_line_sample_time_is_full_cn_datetime(self):
+        # ⏱ 采样时刻 = 完整中文日期时间（2026 年 10 月 23 日 11 点 20 分 28 秒），数字不补零；
+        # 上轮行（format_line）仍为 HH:MM:SS，两行格式不互相牵动。
+        last_at = int(time.mktime((2026, 10, 23, 11, 20, 28, 0, 0, -1))) * 1000
+        r = {"turn": {"tokPerSec": 82.6, "ttftMs": 1400, "totalOutput": 58260, "totalReasoning": 0,
+                      "genMs": 100500, "requests": 1, "peak": 112, "lastAt": last_at},
+             "session": None}
+        line = self.tr.format_turn_line(r)
+        self.assertTrue(line.endswith("⏱ 2026 年 10 月 23 日 11 点 20 分 28 秒"), line)
+        self.assertNotRegex(line, r"⏱ \d{2}:\d{2}:\d{2}")
+
+    def test_format_line_keeps_hhmmss_sample_time(self):
+        # 刻意保留的边界：上轮行（CLI 默认输出/hook 背景）采样时刻仍为补零 HH:MM:SS，
+        # 不随本问统计行的中文日期时间改版联动。
+        completed_at = int(time.mktime((2026, 10, 23, 11, 20, 28, 0, 0, -1))) * 1000
+        r = {"latest": {"tokPerSec": 36.6, "ttftMs": 5100, "outputTokens": 759, "reasoningTokens": 0,
+                        "genMs": 20700, "completedAt": completed_at},
+             "session": None}
+        line = self.tr.format_line(r)
+        self.assertTrue(line.endswith("⏱ 11:20:28"), line)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

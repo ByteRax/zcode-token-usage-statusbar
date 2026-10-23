@@ -17,6 +17,7 @@ import patch_install as asar
 
 HOST = Path('/Applications/ZCode.app/Contents/Resources/app.asar')
 PANE_ANCHORS = {
+    '3.16.3': b'"data-testid":Sb(WRe,e),"data-session-id":t??`draft`,',
     '3.16.2': b'"data-testid":hb(WRe,e),"data-session-id":t??`draft`,',
     '3.16.1': b'"data-testid":vb(VRe,e),"data-session-id":t??`draft`,',
     '3.15.3': b'"data-testid":Oa(Mr,e),"data-session-id":t??`draft`,',
@@ -283,7 +284,7 @@ assert.equal(next['data-zusage-pane-id'],'pane-2');
                     patched = bridge.transform_module(module, 'patch')
                 text = patched.decode().replace('export function', 'function')
                 text = text.replace('export{ ' + target['names']['registry'] + ' };', '')
-                fixture = 'const vb=()=>"pane", Oa=vb, hb=vb, VRe=null, Mr=null, WRe=null;\n' + text + assertions
+                fixture = 'const vb=()=>"pane", Oa=vb, hb=vb, Sb=vb, VRe=null, Mr=null, WRe=null;\n' + text + assertions
                 script = self.root / f'{target["version"]}-props.cjs'
                 script.write_text('const vm=require("node:vm");vm.runInNewContext(' +
                                   json.dumps(fixture) + ',{assert:require("node:assert/strict")});')
@@ -453,7 +454,7 @@ class DeriveTests(unittest.TestCase):
     def test_cli_derive_rejects_source_map_sideload(self):
         mapped = self.root / 'mapped.asar'
         archive(mapped, RICH, '9.9.9',
-                dict(RICH_PARTS, **{'/out/renderer/assets/styles-n-UNIiNg.js.map': b'{}'}))
+                dict(RICH_PARTS, **{bridge.ASSET + '.map': b'{}'}))
         with self.assertRaises(bridge.BridgeError):
             bridge.derive_from_asar(mapped)
 
