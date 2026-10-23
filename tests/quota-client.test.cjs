@@ -1285,3 +1285,74 @@ test("apiKey mode: replacing the provider key unfreezes a no_plan source; key fi
   assert.equal(quotaOnly()[1].auth, "sk-new");
   client.dispose();
 });
+
+/* ---------- 变异审查补充（issue #68） ---------- */
+const sendKey = (rules, provider, opts) => {
+  const x = apiKeyClient(Object.assign({ rules }, opts || {}));
+  x.client.noteProvider(provider); x.client.tick();
+  const a = quotaCalls(x).map((c) => c.auth);
+  x.client.dispose();
+  return a;
+};
+
+test("apiKey mode: zai-api baseUrl host gate (official ok; lookalikes and bigmodel hosts rejected)", () => {
+  const mk = (u) => [["zai-api", "api-key", "sk-z", u]];
+  assert.deepEqual(sendKey(mk("https://api.z.ai/api/coding/paas/v4"), "zai-api"), ["Bearer sk-z"]);
+  assert.deepEqual(sendKey(mk("https://z.ai"), "zai-api"), ["Bearer sk-z"]);
+  assert.deepEqual(sendKey(mk("https://evilz.ai/v1"), "zai-api"), []);          // 无左边界
+  assert.deepEqual(sendKey(mk("https://api.z.ai.evil.com/v1"), "zai-api"), []);  // 无右锚
+  assert.deepEqual(sendKey(mk("https://open.bigmodel.cn/api/paas/v4"), "zai-api"), []); // 跨家族域
+  assert.deepEqual(sendKey([["bigmodel-api", "api-key", "sk-b", "https://api.z.ai/v1"]], "bigmodel-api"), []);
+});
+
+test("apiKey mode: bigmodel host gate needs a dot boundary and parseable URL", () => {
+  const mk = (u) => [["bigmodel-api", "api-key", "sk-b", u]];
+  assert.deepEqual(sendKey(mk("https://evilbigmodel.cn/v1"), "bigmodel-api"), []);
+  assert.deepEqual(sendKey(mk("relay.example.com/v1"), "bigmodel-api"), []);        // 无 scheme：URL 抛错，fail-closed
+  assert.deepEqual(sendKey(mk("https://evil.com#.bigmodel.cn"), "bigmodel-api"), []); // 以 URL 解析的 hostname 为准
+  assert.deepEqual(sendKey(mk("https://open.bigmodel.cn:8443/v1"), "bigmodel-api"), ["sk-b"]);
+});
+
+test("apiKey mode: key selection order (own plan > any plan in config order > own plain > first plain), skips empty and third-party keys", () => {
+  const P = "zhipu-coding-plan-api-key";
+  // 两个编码套餐 key：自身的优先，否则按配置顺序取第一个
+  assert.deepEqual(sendKey([["bigmodel-api", P, "sk-p1"], ["bigmodel-api-2", P, "sk-p2"]], "bigmodel-api-2"), ["sk-p2"]);
+  assert.deepEqual(sendKey([["bigmodel-api-2", P, "sk-p2"], ["bigmodel-api-3", P, "sk-p3"], ["bigmodel-api", "api-key", "sk-x"]], "bigmodel-api"), ["sk-p2"]);
+  // 无套餐 key：自身普通 key 优先于配置里靠前的同家族普通 key
+  assert.deepEqual(sendKey([["bigmodel-api", "api-key", "sk-a"], ["bigmodel-api-2", "api-key", "sk-b"]], "bigmodel-api-2"), ["sk-b"]);
+  // 自身无可用 key（空 key / 指向第三方）：退到同家族首个可用 key
+  assert.deepEqual(sendKey([["bigmodel-api", "api-key", ""], ["bigmodel-api-2", "api-key", "sk-b"]], "bigmodel-api"), ["sk-b"]);
+  assert.deepEqual(sendKey([["bigmodel-api", "api-key", "sk-relay", "https://relay.example.com"], ["bigmodel-api-2", "api-key", "sk-b"]], "bigmodel-api"), ["sk-b"]);
+  // 空 key 不得被当作"可用"选中（否则会以空 Authorization 发请求）
+  assert.deepEqual(sendKey([["bigmodel-api", "api-key", ""]], "bigmodel-api"), []);
+  // 同家族多个普通 key，自身不在其中：取配置顺序第一个
+  assert.deepEqual(sendKey([["bigmodel-api-2", "api-key", "sk-2"], ["bigmodel-api-3", "api-key", "sk-3"]], "bigmodel-api"), ["sk-2"]);
+  // accessType 须以 coding-plan-api-key 结尾
+  assert.deepEqual(sendKey([["bigmodel-api", "api-key", "sk-a"], ["bigmodel-api-2", "coding-plan-api-key-legacy", "sk-b"]], "bigmodel-api"), ["sk-a"]);
+});
+
+test("apiKey mode: OAuth (account:*) sessions never pick provider_config keys; apiKey provider without key falls back to OAuth", () => {
+  const oauth = CRED_FILE("jwt.oauth.token");
+  const x = apiKeyClient({ rules: [["bigmodel-api-2", "zhipu-coding-plan-api-key", "sk-plan"]], creds: oauth });
+  x.client.noteProvider("account:bigmodel"); x.client.tick();
+  assert.notEqual(quotaCalls(x)[0].auth, "sk-plan");
+  x.client.dispose();
+  const y = apiKeyClient({ rules: [], creds: oauth });
+  y.client.noteProvider("bigmodel-api"); y.client.tick();
+  assert.equal(quotaCalls(y).length, 1);   // 回退宿主 OAuth（按产品决定调整本断言，但必须钉死一种行为）
+  y.client.dispose();
+});
+
+test("apiKey mode: provider id shape is strict (no bare family, no suffix, no case folding)", () => {
+  for (const p of ["bigmodel", "zai", "bigmodel-api-x", "zai-api-", "zai-apix", "BigModel-API", "bigmodel-api-2-x", "x-zai-api"]) {
+    assert.equal(Q.resolveWanted(p), null, p);
+  }
+  assert.deepEqual(Q.resolveWanted("zai-api-12"), { family: "zai" });
+});
+
+test("apiKey mode: raw key never appears in fingerprints or state", () => {
+  const x = apiKeyClient({ rules: [["bigmodel-api", "api-key", "sk-secret-123"]] });
+  x.client.noteProvider("bigmodel-api"); x.client.tick();
+  for (const st of x.client._states.values()) assert.ok(!JSON.stringify({ fp: st.fingerprint, v: st.value, e: st.lastError }).includes("sk-secret-123"));
+  x.client.dispose();
+});
