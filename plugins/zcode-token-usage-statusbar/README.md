@@ -30,7 +30,7 @@ Automatic install is on by default (missing config file or missing field = enabl
 | Hooks | `SessionStart` syncs runtime files, checks for updates, and may show a restart notice; `PromptSubmit` records the prompt timestamp and appends the per-answer rate line. |
 | MCP server | `.mcp.json` starts `usage_mcp.py` as a stdio JSON-RPC server exposing `token_usage(scope)`. It reads the local usage database only. |
 | Files written | `~/.zcode/zcode-token-usage-statusbar/` (runtime files, config, per-session state; secrets file is `0600`); a patch + backup inside the ZCode client directory (`app.asar`); overlay settings in `~/.zcode/zusage3`. Uninstalling the plugin does not delete personal config. |
-| Network | Local statistics never leave your machine (read-only SQLite). The plan-quota chip decrypts the host's stored OAuth credentials **in memory only** and calls BigModel / Z.ai usage endpoints directly to show your plan quota; credentials are never written to config, logs, or diagnostics. Plugin updates download code from the configured source. Optional SSH/WSL remote queries go through the connection channel you configured; the plugin never decrypts or reuses host passwords or key passphrases and never auto-deploys. The Git chip runs local read-only `git` queries (no fetch, no network). |
+| Network | Local statistics never leave your machine (read-only SQLite). The plan-quota chip is on by default (turn it off in ⚙): it decrypts the host's stored OAuth credentials **in memory only** and calls BigModel / Z.ai usage endpoints directly to show your plan quota; credentials are never written to config, logs, or diagnostics. Plugin updates download code from the configured source. Optional SSH/WSL remote queries go through the connection channel you configured; the plugin never decrypts or reuses host passwords or key passphrases and never auto-deploys. The Git chip runs local read-only `git` queries (no fetch, no network). |
 | Executed commands | Python scripts shipped with the plugin; `git` (read-only status queries); `ssh`/`wsl.exe` only for remote usage you configured. |
 | Third-party code | None bundled — plain Python 3.8 stdlib, plain JavaScript (Electron main-process CommonJS). MIT licensed; source at [ByteRax/zcode-token-usage-statusbar](https://github.com/ByteRax/zcode-token-usage-statusbar). |
 
@@ -41,6 +41,7 @@ Remote sessions (SSH/WSL) need a matching `zusage.py` deployed manually on each 
 - `/uninstall-overlay` — removes the status bar, keeps the opt-out marker, keeps personal config.
 - `"plugin_auto_install_overlay": false` — keep the query tools only.
 - `"answer_rate_line": false` — drop the per-answer rate line (takes effect on the next prompt).
+- `"quota_enabled": false` — stop quota queries and hide the plan-quota chip (credentials are then never read).
 - `"plugin_auto_update": false` — disable update checks.
 - Full removal: turn off auto-update, run `/uninstall-overlay`, then uninstall the plugin from ZCode settings and fully restart. **Uninstalling the plugin alone does not remove the status bar.**
 

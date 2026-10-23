@@ -69,7 +69,7 @@ Context usage doesn't take a slot on the bar — look at the **context button** 
 | Is this conversation going to run out of room? | The **context button** in the composer toolbar (ring + percentage) — it changes colour as it fills up, pops up advice if a request gets rejected, and has a **one-click compact** button inside |
 | How much did the cache save me? How much was thinking? | Hover **This turn** for input, output, cache-read and thinking token detail plus the hit rate |
 | What did the model's sub-tasks cost? How fast are they running? | The **Sub-agents** item — click for cumulative cost; while running it shows "Subagents running ×N · est X t/s" right on the bar |
-| How much plan quota / balance is left? | The **quota chip** left of the context button (enable in ⚙, off by default) — per-window used percentages and reset times |
+| How much plan quota / balance is left? | The **quota chip** left of the context button (shown by default, turn it off in ⚙) — per-window used percentages and reset times |
 | Did a tool call fail? | The **Tools** item — errors light up red, hover for per-tool timing and errors |
 | Looking through history | Type `/usage` in the chat, run `python zusage.py today` in a terminal, or call the `token_usage` MCP tool |
 
@@ -115,7 +115,7 @@ It reads your local `git` directly (read-only, no network, never touches the ind
 
 ### Plan quota and balance
 
-A **quota chip** can sit left of the context button (enable in ⚙, off by default), showing per-window used percentages and reset times of your plan pool, or your account balance. It covers more than BigModel / Z.ai:
+A **quota chip** sits left of the context button (shown by default, turn it off in ⚙), showing per-window used percentages and reset times of your plan pool, or your account balance. It covers more than BigModel / Z.ai:
 
 - **Multiple sources**: besides the built-in coding plans, a set of vendor plan/balance endpoints and sub2api-protocol relay stations are supported; the ⚙ quota panel lets you **pick a preset and paste just the Key**, with an independent toggle and refresh per source
 - **API-key connections count too**: when the host connects to BigModel / Z.ai with an API key, the quota still shows
@@ -124,7 +124,7 @@ A **quota chip** can sit left of the context button (enable in ⚙, off by defau
 
 Per-vendor support and verification status lives in the [quota support audit matrix](docs/quota-support-audit.md) — some adapters are not yet verified against real accounts, and a source whose response shape changed fails silently rather than showing wrong numbers. Team plans are not supported yet.
 
-The credential story is unchanged: the main process only reads credentials after you enable the feature, keeps them in memory, and sends them only to each vendor's official domain (or the relay base URL you configured); turning it off stops everything.
+The credential boundary: quota queries are on by default — the main process reads sign-in credentials (in memory only) and sends them only to each vendor's official domain (or the relay base URL you configured); turn off **Plan quota** in ⚙ to stop. When no usable credentials are found, the chip shows a neutral "Quota unset" hint.
 
 ### One-click context compaction
 
@@ -328,7 +328,7 @@ The boundaries around missing data, invalid samples and historical turns (no sta
 - **The local database is read-only.** Usage data is never uploaded.
 - **Plugin updates do use the network** — they download code from the source you've configured. Automatic updates are on by default; turn them off in ⚙.
 - **SSH/WSL remote queries also use the network** — they run a read-only query script on the remote host through the transport you configured. Prerequisites and limits are in [SSH / WSL remote sessions](#ssh--wsl-remote-sessions).
-- **Credentials are left alone by default.** Passwords, encrypted private keys and passphrases stored by ZCode are never decrypted by the plugin; set up an SSH key / agent yourself. One exception: after you explicitly enable **Plan quota** in ⚙, credentials are read in memory to query plan/balance endpoints (never written to disk, logs or diagnostics); turning it off stops that. Destinations: bigmodel.cn / api.z.ai for coding plans; custom-provider balance lookups use that provider's own key and go only to its official domain (api.deepseek.com, openrouter.ai, api.siliconflow.cn, api.minimaxi.com, api.kimi.com, api.commandcode.ai, api.cline.bot, api.anthropic.com, platform.xiaomimimo.com, open.volcengineapi.com, opencode.ai, …) or the relay base URL you configured — never anywhere else.
+- **Credential usage.** Passwords, encrypted private keys and passphrases stored by ZCode are never decrypted by the plugin; set up an SSH key / agent yourself. Quota queries are on by default: credentials are read in memory to query plan/balance endpoints (never written to disk, logs or diagnostics); turn off **Plan quota** in ⚙ to stop that. Destinations: bigmodel.cn / api.z.ai for coding plans, zcode.z.ai for the Start Plan free tier; custom-provider balance lookups use that provider's own key and go only to its official domain (api.deepseek.com, openrouter.ai, api.siliconflow.cn, api.minimaxi.com, api.kimi.com, api.commandcode.ai, api.cline.bot, api.anthropic.com, platform.xiaomimimo.com, open.volcengineapi.com, opencode.ai, …) or the relay base URL you configured — never anywhere else.
 - **Token usage is not billing.** Token usage only, by default; the **Plan quota** chip shows used percentages from the official plan endpoint — no cash balance or billing details.
 
 ## FAQ
@@ -365,7 +365,7 @@ Pure Q&A, or questions whose data hasn't been stored yet, get no line — rather
 
 **Can it show me my bill or remaining quota?**
 
-Not your cash bill — there's no billing data here. Plan quota and balance, yes: enable **Plan quota** in ⚙. It defaults to the BigModel / Z.ai plan pool, and the quota panel lets you add other vendors or relay stations (pick a preset, paste the Key). The chip shows per-window used percentages and reset times (hover for details); support status per vendor is in the [audit matrix](docs/quota-support-audit.md). Team plans are not supported yet.
+Not your cash bill — there's no billing data here. Plan quota and balance, yes — the chip is on by default. It defaults to the BigModel / Z.ai plan pool, and the quota panel lets you add other vendors or relay stations (pick a preset, paste the Key). The chip shows per-window used percentages and reset times (hover for details); support status per vendor is in the [audit matrix](docs/quota-support-audit.md). Team plans are not supported yet.
 
 [More troubleshooting, automatic updates and remote setup →](docs/user-guide.md) (Chinese)
 

@@ -68,8 +68,9 @@ class Element {
 function harness({ quotaOn = true } = {}) {
   const window = new Element(), body = new Element('body'), root = new Element('html');
   Object.assign(window, { innerWidth: 1000, innerHeight: 800 });
-  /* 开关真值来自主进程推送的插件状态（config.json quota_enabled），不是 localStorage */
-  if (quotaOn) window.__zusagePluginState = { quotaEnabled: true };
+  /* 开关真值来自主进程推送的插件状态（config.json quota_enabled），不是 localStorage；
+   * quotaOn:false 夹具模拟显式 false（v111 起缺省开） */
+  window.__zusagePluginState = { quotaEnabled: quotaOn ? true : false };
   let panes = [];
   const document = new Element();
   Object.assign(document, { body, documentElement: root, createElement: tag => new Element(tag),
@@ -166,7 +167,7 @@ test('display gates: toggle off, unknown provider (new session), custom provider
   const off = harness({ quotaOn: false }), u0 = off.buildComposer('workspace-main', 'sid_main');
   off.inject(); off.boot(); off.tick();
   off.window.__zusageUpdate(off.payload({ quota: QUOTA_OK }));
-  assert.equal(off.chipOf(u0.wrap), undefined, 'default off hides chip');
+  assert.equal(off.chipOf(u0.wrap), undefined, 'main-process truth off (explicit false) hides chip');
 
   const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
   h.inject(); h.boot(); h.tick();
@@ -177,9 +178,27 @@ test('display gates: toggle off, unknown provider (new session), custom provider
   h.window.__zusageUpdate(h.payload());   // 旧主进程：payload 无 quota 字段
   assert.equal(h.chipOf(ui.wrap), undefined, 'no quota field → hidden, no throw');
   h.window.__zusageUpdate(h.payload({ quota: { status: 'not_configured', fetchedAt: 0, stale: false, error: '' } }));
-  assert.equal(h.chipOf(ui.wrap), undefined, 'not_configured → hidden');
+  const ncChip = h.chipOf(ui.wrap);
+  assert.ok(ncChip, 'not_configured → neutral info chip (v111 no longer hidden)');
+  assert.match(ncChip.innerHTML, /额度 未配置/);
+  assert.equal(ncChip.getAttribute('aria-label'), '额度 未配置');
+  ncChip.listeners.get('mouseenter')[0].call(ncChip);   // info 分支 tooltip 引导去 ⚙ 配置
+  assert.match(h.tipEl().innerHTML, /额度源/);
   h.window.__zusageUpdate(h.payload({ quota: { status: 'unsupported', reason: 'provider', fetchedAt: 0, stale: false, error: '' } }));
-  assert.equal(h.chipOf(ui.wrap), undefined, 'unsupported → hidden');
+  const usChip = h.chipOf(ui.wrap);
+  assert.ok(usChip, 'unsupported → neutral info chip (v111 no longer hidden)');
+  assert.match(usChip.innerHTML, /额度 暂不支持/);
+  h.window.__zusageUpdate(h.payload({ quota: { status: 'disabled', fetchedAt: 0, stale: false, error: '' } }));
+  assert.equal(h.chipOf(ui.wrap), undefined, 'disabled (source explicitly off in ⚙) → hidden');
+});
+
+test('v111 default-on: chip shows when the initial plugin state lacks quotaEnabled', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  h.window.__zusagePluginState = {};   // 初始无该字段（主进程首推未到/字段缺省）：缺省开方向
+  h.inject(); h.boot(); h.tick();
+  h.window.__zusageUpdate(h.payload({ quota: QUOTA_OK }));
+  assert.ok(h.chipOf(ui.wrap), 'quota data arrives → chip shown without explicit quotaEnabled:true');
+  assert.match(h.chipOf(ui.wrap).innerHTML, /zu-qpct|zu-qseg/);   // 显示的是数据段，不是占位
 });
 
 test('team plan shows an explicit unsupported glyph instead of numbers', () => {
@@ -376,8 +395,10 @@ test('settings checkbox is config-backed: change emits a "quota" plugin request 
   void inst;
 });
 
-test('settings panel exposes the config-backed quota toggle (default off) with the credential disclosure', () => {
-  assert.match(source, /quotaEnabled: !!\(window\.__zusagePluginState && window\.__zusagePluginState\.quotaEnabled === true\)/);
+test('settings panel exposes the config-backed quota toggle (default on, v111) with the credential disclosure', () => {
+  assert.match(source, /quotaEnabled: !\(window\.__zusagePluginState && window\.__zusagePluginState\.quotaEnabled === false\)/);   // 缺省开，仅显式 false 关
+  const mainSrc = fs.readFileSync(path.join(__dirname, '..', 'inject-main.cjs'), 'utf8');
+  assert.match(mainSrc, /quota_enabled !== false/);   // 主进程真值同向（v111）：缺省开，显式 false 才关
   assert.doesNotMatch(source, /show: \{[^}]*quota/);   // 不是 localStorage 显示项：真值只在 config.json
   assert.match(source, /<input type="checkbox" class="zu-quota-enable">/);
   assert.match(source, /pluginRequest\("quota", t2\.checked\)/);
@@ -828,4 +849,59 @@ test("refresh and key buttons expose native titles; switched-off sources disable
   assert.ok(source.includes('(sv.enabled ? "" : " disabled") + \'>↻</button>\''), "off sources render a disabled refresh");
   assert.ok(source.includes('.zu-src-refresh:disabled{opacity:.4;cursor:default}'), "disabled refresh styling");
   assert.ok(source.includes('disabled: L("已关闭", "off")'), "disabled status maps to a localized label");
+});
+
+test('zcode-start pool: chip shows a plan-pool segment; source routing prefers zcode-start over family', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  h.inject(); h.boot(); h.tick();
+  const NOW2 = Date.now();
+  h.window.__zusageUpdate(h.payload({
+    provider: 'account:bigmodel-start-plan', model: 'GLM-5.3-Flash',
+    quota: {
+      status: 'ok', providerId: 'account:bigmodel-start-plan', fetchedAt: NOW2, stale: false, error: '', level: 'Start',
+      windows: { plan: { percent: 9.3, resetsAt: NOW2 + 2 * 86400e3, expires: true } },
+      models: ['GLM-5.3-Flash', 'GLM-5.3'],
+      plan: { productName: 'ZCode 1024 Dev Day', validStart: '2026-10-23 20:09', validEnd: '2026-10-26 09:00' },
+    },
+  }));
+  const chip = h.chipOf(ui.wrap);
+  assert.ok(chip, 'chip mounted for start-plan provider');
+  assert.equal(chip.innerHTML, '<span class="zu-qseg ok">套餐 9%</span>');
+  assert.equal(chip.getAttribute('aria-label'), '套餐已用 套餐 9%');
+  chip.listeners.get('mouseenter')[0].call(chip);
+  const html = h.tipEl().innerHTML;
+  assert.match(html, /套餐额度 · ZCode 1024 Dev Day · 有效期至 2026-10-26 09:00/);
+  assert.match(html, /套餐池<\/b><span>已用 9\.3% · 到期 \d{4}-\d\d-\d\d \d\d:\d\d/);   // one_time 池用「到期」不用「重置」
+  assert.match(html, /<span class="qt-cur">GLM-5\.3-Flash<\/span>, GLM-5\.3/);
+  assert.match(html, /账号级：同账号所有模型共用/);
+  chip.listeners.get('mouseleave')[0].call(chip);
+  assert.equal(h.tipEl().style.display, 'none');
+});
+
+test('zcode-start routing: start-plan pane never displays the coding-plan family source', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  h.inject(); h.boot(); h.tick();
+  const NOW2 = Date.now();
+  h.window.__zusageUpdate(h.payload({
+    provider: 'account:bigmodel-start-plan', model: 'GLM-5.3-Flash',
+    quota: {
+      active: 'bigmodel', byProvider: { 'account:bigmodel-start-plan': 'zcode-start' },
+      sources: {
+        bigmodel: { status: 'ok', providerId: 'account:bigmodel-individual-coding-plan', fetchedAt: NOW2, stale: false, error: '', level: 'max',
+          windows: { fiveHour: { percent: 3, resetsAt: NOW2 + 3600e3, details: [] }, weekly: null }, models: [],
+          plan: { productName: 'GLM Coding Max', version: 'V1', validStart: '2026-02-28', validEnd: '2027-02-28' } },
+        'zcode-start': { status: 'ok', providerId: 'account:bigmodel-start-plan', fetchedAt: NOW2, stale: false, error: '', level: 'Start',
+          windows: { plan: { percent: 9.3, resetsAt: NOW2 + 2 * 86400e3, expires: true } }, models: ['GLM-5.3-Flash', 'GLM-5.3'],
+          plan: { productName: 'ZCode 1024 Dev Day', validStart: '2026-10-23 20:09', validEnd: '2026-10-26 09:00' } },
+      },
+    },
+  }));
+  const chip = h.chipOf(ui.wrap);
+  assert.ok(chip, 'chip mounted');
+  assert.equal(chip.innerHTML, '<span class="zu-qseg ok">套餐 9%</span>', 'shows the zcode-start pool, not bigmodel 5h');
+  chip.listeners.get('mouseenter')[0].call(chip);
+  const html = h.tipEl().innerHTML;
+  assert.match(html, /ZCode 1024 Dev Day/);
+  assert.doesNotMatch(html, /GLM Coding Max/);
+  assert.match(html, /其他源<\/b><span>bigmodel 3%/);   // 其他启用源摘要列出 bigmodel 家族（窗口百分比）
 });
