@@ -210,9 +210,10 @@ function subscriptionTimestamp(value) {
   let at = Date.UTC(y, mo - 1, d, hh, mi, ss);
   if (m[7] === undefined) at -= SUB_TZ_OFFSET_MS;   // 无偏移：服务端时区
   else if (m[7] !== "Z") {
-    const offsetMin = Number(m[7].slice(1, 3)) * 60 + Number(m[7].slice(-2));
-    if (offsetMin > 14 * 60) return null;   // ISO 上限 ±14:00；超界偏移视同非法值
-    at += (m[7][0] === "+" ? -1 : 1) * offsetMin * 60000;
+    const offsetHour = Number(m[7].slice(1, 3)), offsetMinute = Number(m[7].slice(-2));
+    // ISO 8601：分钟 00-59，小时上限 ±14:00；超界偏移视同非法值
+    if (offsetMinute > 59 || offsetHour > 14 || (offsetHour === 14 && offsetMinute > 0)) return null;
+    at += (m[7][0] === "+" ? -1 : 1) * (offsetHour * 60 + offsetMinute) * 60000;
   }
   return { day: day, at: at };
 }
