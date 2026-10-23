@@ -66,13 +66,14 @@ Context usage doesn't take a slot on the bar — look at the **context button** 
 | How fast is the model right now? | The **t/s** on the far left — the colour tells you at a glance |
 | How long did I wait after hitting enter? | The ⏱ number in **This turn** (that's the TTFT / time to first token) |
 | How many tokens did this turn / this conversation / today use? | The **This turn**, **Session total** and **Today** items |
-| Is this conversation going to run out of room? | The **context button** in the composer toolbar (ring + percentage) — it changes colour as it fills up, and pops up advice if a request gets rejected |
+| Is this conversation going to run out of room? | The **context button** in the composer toolbar (ring + percentage) — it changes colour as it fills up, pops up advice if a request gets rejected, and has a **one-click compact** button inside |
 | How much did the cache save me? How much was thinking? | Hover **This turn** for input, output, cache-read and thinking token detail plus the hit rate |
-| What did the model's sub-tasks cost? | The **Sub-agents** item — click it to see each sub-task separately |
+| What did the model's sub-tasks cost? How fast are they running? | The **Sub-agents** item — click for cumulative cost; while running it shows "Subagents running ×N · est X t/s" right on the bar |
+| How much plan quota / balance is left? | The **quota chip** left of the context button (enable in ⚙, off by default) — per-window used percentages and reset times |
 | Did a tool call fail? | The **Tools** item — errors light up red, hover for per-tool timing and errors |
 | Looking through history | Type `/usage` in the chat, run `python zusage.py today` in a terminal, or call the `token_usage` MCP tool |
 
-> These are **token usage** numbers, not a bill, and not "how much money you have left". BigModel / Z.ai individual coding-plan users can optionally enable **Plan quota** in ⚙ (off by default): a small chip appears left of the context button showing the plan pool's used percentage and reset times — account-level plan data, not per-model.
+> Everything on the bar is **token usage**, not a bill and not "how much money you have left". For plan pools or account balance use the **quota chip** described below — that's account-level data, not per-model.
 
 ## A few words worth knowing
 
@@ -94,6 +95,8 @@ Get these seven and the rest reads easily:
 
 It sits at the bottom of the chat window and follows **the session in the window you're looking at**. Every item can be switched off on its own (see ⚙) — if it feels crowded, hide what you don't care about.
 
+While subagents are running, the **Sub-agents** item shows a live reading: with several in parallel it displays a combined "Subagents running ×3 · est 74 t/s", and hovering breaks it down per subagent. Once they finish it switches to the weighted average over completed segments. The running figure is estimated from the characters emitted so far (same estimation as the main speed while generating), not a stored value.
+
 ### The per-answer rate line
 
 The plugin also appends a short stats line to the end of replies: generation speed, time to first token, output tokens, generation time.
@@ -109,6 +112,25 @@ When the directory itself is not a git repository (and no parent directory is on
 The two forms count differently, so don't compare them side by side: the single-repo `+N -N` are **lines**, while the multi-repo `mod`/`new` figures are **file-level entry counts** (one `git status` per repository, no line counts) — `mod` sums each repository's changed file entries (a partially staged file counts once) and `new` sums untracked entries (git folds a whole untracked directory into 1). Past 32 sub-repositories only the first 32 in name order are counted (the tooltip notes how many were left out), and a repository whose query fails just gets a ⚠ row without affecting the others or the totals.
 
 It reads your local `git` directly (read-only, no network, never touches the index lock) and is a separate data chain from the token stats: local repositories only — it stays hidden for SSH remote sessions and non-git directories; the ⚙ toggle governs both forms.
+
+### Plan quota and balance
+
+A **quota chip** can sit left of the context button (enable in ⚙, off by default), showing per-window used percentages and reset times of your plan pool, or your account balance. It covers more than BigModel / Z.ai:
+
+- **Multiple sources**: besides the built-in coding plans, a set of vendor plan/balance endpoints and sub2api-protocol relay stations are supported; the ⚙ quota panel lets you **pick a preset and paste just the Key**, with an independent toggle and refresh per source
+- **API-key connections count too**: when the host connects to BigModel / Z.ai with an API key, the quota still shows
+- **SCNet ledger estimate**: without any credentials it estimates spend from the official credit rates × your actual usage
+- The chip follows the model/provider of the current session; hovering lists every enabled source, and subscription validity dates are shown
+
+Per-vendor support and verification status lives in the [quota support audit matrix](docs/quota-support-audit.md) — some adapters are not yet verified against real accounts, and a source whose response shape changed fails silently rather than showing wrong numbers. Team plans are not supported yet.
+
+The credential story is unchanged: the main process only reads credentials after you enable the feature, keeps them in memory, and sends them only to each vendor's official domain (or the relay base URL you configured); turning it off stops everything.
+
+### One-click context compaction
+
+Inside the context button's native popover there's a **Compact context** pill button: it opens a confirmation dialog and then sends `/compact` to that session, leaving whatever is in your input box untouched. With split panes it goes to the pane the button lives in.
+
+Compaction usually takes 2–4 minutes with no progress feedback — the summary isn't streamed, so it looks stuck while it's actually working. Sending a new message or stopping the session during compaction **interrupts** it; if you want it done, let it finish.
 
 ### Queries: chat, terminal, MCP
 
@@ -184,7 +206,7 @@ Whichever address you register is where ⚙ **Check for updates / Update now** a
 
 You can also use the UI: **Settings → Plugin → Add marketplace**, enter either channel address above, then find and install **ZCode Token Usage Statusbar**.
 
-> **Version note (2026-10-20):** The `#plugin-releases` channel currently provides [v1.5.2](https://github.com/ByteRax/zcode-token-usage-statusbar/releases/tag/v1.5.2), which already includes the automatic install/repair described above and the SSH remote support below. If you're still on the older `v1.4.1`, update as described further down first — that version defaults automatic installation to *off*, so you'd have to run `/install-overlay` by hand.
+> **Version note (verified 2026-10-23):** The `#plugin-releases` channel still provides [v1.5.2](https://github.com/ByteRax/zcode-token-usage-statusbar/releases/tag/v1.5.2). This README describes the main development line — **multi-source quota, sub-agent speed, one-click compact, multi-repo Git aggregation and the ⚙ section nav are not in the stable release yet** and arrive with the next Release. If you're still on the older `v1.4.1`, update as described further down first — that version defaults automatic installation to *off*, so you'd have to run `/install-overlay` by hand.
 
 #### B. Local source directory
 
@@ -259,7 +281,7 @@ If the config file or that field is missing, the default is **on**; an explicit 
 
 - **Hover** an item for the finer numbers.
 - **Click Sub-agents** to see what each sub-task cost.
-- **Click ⚙** to hide items, switch language, switch token counts to 万/亿 (on by default in the Chinese UI), or check for updates.
+- **Click ⚙** for everything: the section nav on the left (display items / reply statistics / plugin updates / quota sources), hiding items, switching language, switching token counts to 万/亿 (on by default in the Chinese UI), checking for updates.
 - **Type `/usage today`** for today's usage, `/usage week` for the past week.
 
 ## Where these numbers come from
@@ -278,6 +300,7 @@ The data is read from ZCode's local SQLite database. It isn't the model reportin
 | Cache hit rate | Cache reads ÷ input tokens |
 | Context usage | Input tokens of the most recent successful request ÷ context window size |
 | Git status | Local `git status` + `git diff`; never enters the database, no network |
+| Sub-agent speed | Weighted average over completed segments; the running figure is a character-delta estimate until it finishes |
 | Turn count | Counted over de-duplicated `turn_id` values |
 
 **Where it's easy to get confused:**
@@ -342,7 +365,7 @@ Pure Q&A, or questions whose data hasn't been stored yet, get no line — rather
 
 **Can it show me my bill or remaining quota?**
 
-Not your cash bill — there's no billing data here. Plan quota, yes: enable **Plan quota** in ⚙ for BigModel / Z.ai individual coding plans; the chip shows per-window used percentages and reset times (hover for details). Team plans and custom API providers are not supported yet.
+Not your cash bill — there's no billing data here. Plan quota and balance, yes: enable **Plan quota** in ⚙. It defaults to the BigModel / Z.ai plan pool, and the quota panel lets you add other vendors or relay stations (pick a preset, paste the Key). The chip shows per-window used percentages and reset times (hover for details); support status per vendor is in the [audit matrix](docs/quota-support-audit.md). Team plans are not supported yet.
 
 [More troubleshooting, automatic updates and remote setup →](docs/user-guide.md) (Chinese)
 
@@ -374,7 +397,7 @@ Want to clear out settings, caches and the marketplace too? See the [full cleanu
 
 Detailed desktop guides are currently in Chinese.
 
-- [Feature screenshots](docs/features.md) (Chinese) · [Installation, configuration and troubleshooting](docs/user-guide.md) (Chinese)
+- [Feature screenshots](docs/features.md) (Chinese) · [Installation, configuration and troubleshooting](docs/user-guide.md) (Chinese) · [Quota support matrix](docs/quota-support-audit.md)
 - [Web edition (self-hosted)](web/README.md) · [Architecture and data semantics](docs/design-notes.md) (Chinese)
 - [Development and releases](docs/maintaining.md) (Chinese) · [Tests](tests/README.md) (Chinese)
 
