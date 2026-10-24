@@ -454,6 +454,59 @@ create table part (session_id text, data text, time_created integer, time_update
         self.assertEqual(light["sub"]["list"], [])
 
 
+class ProviderFirstTokenWindowTests(unittest.TestCase):
+    """首块落章 provider 判定（fork z1908144712 判据收编）：_provider_first_token_covers
+    按 provider 的 ttft×reasoning 最小二乘斜率分区，含思考段的窗口随之选择——落章 provider
+    用首字窗口（不把首块前的输入预处理摊进生成耗时），推理前置/样本不足走 started_at 默认。
+    夹具互相独立，_COVERS_CACHE 必须在 setUp 重置（60s TTL 会跨测试串库）。"""
+
+    def setUp(self):
+        zusage._COVERS_CACHE.update(ts=0.0, set=frozenset())
+        self.con = sqlite3.connect(":memory:")
+        self.addCleanup(self.con.close)
+        self.con.row_factory = sqlite3.Row
+        self.con.executescript(SCHEMA)
+        self.cfg = {"context_window": 200000}
+
+    def seed(self, sid, provider, reasoning, ttft, start=1_000_000):
+        """started→首字 3s（预处理），首字→完成 5s（生成）；st 窗口 8s / ft 窗口 5s。"""
+        self.con.execute("insert or ignore into session (id, title) values (?, 't')", (sid,))
+        self.con.execute("insert into model_usage values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                         (f"{sid}-{reasoning}", sid, "turn", "main_turn", "", provider,
+                          "model-x", "completed", start, start + 3000, start + 8000,
+                          7000, ttft, 100, 500, reasoning, 0, 0, 600, 0, 0, 0))
+
+    def test_detection_and_gen_window_by_provider(self):
+        for i in range(6):
+            self.seed("sa", "prov-covers", 100 + 50 * i, 2500)          # 斜率 0：首块落章
+            self.seed("sb", "prov-before", 100 + 50 * i, 5 * (100 + 50 * i))   # 斜率 5：推理前置
+        for i in range(3):
+            self.seed("sc", "prov-few", 100 + 50 * i, 2500)             # 样本不足：不判
+        covers = zusage._provider_first_token_covers(self.con)
+        self.assertEqual(covers, frozenset({"prov-covers"}))
+        def last_row(sid):
+            return self.con.execute(
+                "select * from model_usage where session_id=? order by reasoning_tokens desc limit 1",
+                (sid,)).fetchone()
+        self.assertEqual(zusage._row_gen_ms(last_row("sa"), covers), 5000)   # 落章：首字窗口
+        self.assertEqual(zusage._row_gen_ms(last_row("sb"), covers), 8000)   # 前置：started_at 窗口
+        self.assertEqual(zusage._row_gen_ms(last_row("sc"), covers), 8000)   # 不判：默认 started_at
+
+    def test_session_snapshot_last_tps_follows_cover_set(self):
+        for i in range(6):
+            self.seed("sa", "prov-covers", 100 + 50 * i, 2500)
+        snap = zusage._session_snapshot(self.con, "sa", self.cfg)
+        self.assertEqual(snap["last"]["provider_id"], "prov-covers")
+        self.assertEqual(snap["last"]["tps"], 100.0)   # 500 tok ÷ 5.0s 首字窗口（旧口径为 62.5）
+
+    def test_cache_reset_is_required_across_databases(self):
+        # 换库后旧集合不得外溢：重置缓存是新库拿到正确判定的前提（测试与换库场景同款纪律）
+        for i in range(6):
+            self.seed("sa", "prov-covers", 100 + 50 * i, 2500)
+        self.assertEqual(zusage._provider_first_token_covers(self.con), frozenset({"prov-covers"}))
+        zusage._COVERS_CACHE.update(ts=0.0, set=frozenset())
+        self.assertEqual(zusage._provider_first_token_covers(None), frozenset())
+
 
 if __name__ == "__main__":
     unittest.main()

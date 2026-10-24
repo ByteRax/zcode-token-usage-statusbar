@@ -22,8 +22,10 @@
 速率口径（2026-10-14 据真库 raw_usage_json 与思考段时间分布裁决）：
   分子 = output_tokens（ZCode 的该列已包含思考 token，provider 原生 totalTokens
   = input + output 不另加 reasoning，不能再相加）；
-  分母 = 纯生成时长——无思考段 completed_at − first_token_at，含思考段
-  completed_at − started_at（思考 token 在 first_token_at 之前流出，窗口须前移），
+  分母 = 纯生成时长——无思考段 completed_at − first_token_at，含思考段默认
+  completed_at − started_at（思考 token 在 first_token_at 之前流出，窗口须前移）；
+  「首块即落章」provider 例外（first_token_covers：ttft 不随推理量增长的供应商，
+  思考在首字后随输出流出，首字窗口已含思考）改用 completed_at − first_token_at。
   按段累加，段间工具等待不计入。Claude 系列不单独上报思考 token（reasoning_tokens
   恒为 0）也按含思考段计时（2026-10-15 真库裁决，见 hides_reasoning）。
 """
@@ -139,11 +141,24 @@ def fallback_session_id(db):
     return row[0] if row else None
 
 
+def _has_provider_col(db):
+    """旧库可能没有 provider_id 列（见 _provider_fallback 的同款降级）：缺列时不把
+    该列选进 scope，request_stats 对缺列行按默认窗口容错，别让整条查询崩掉。"""
+    if db is None:
+        return False
+    try:
+        return any(r[1] == "provider_id" for r in db.execute("pragma table_info(model_usage)"))
+    except sqlite3.OperationalError:
+        return False
+
+
 def scope_for(db, sid):
     """有 main_turn 数据时只统计 main_turn，否则回退为该会话全部请求。"""
     cols = ("model_id, output_tokens, reasoning_tokens, input_tokens,"
             " cache_read_input_tokens, started_at, first_token_at, completed_at,"
             " time_to_first_token_ms, status")
+    if _has_provider_col(db):
+        cols += ", provider_id"
     base = f"select {cols} from model_usage where status='completed' and query_source='main_turn'"
     tail = " and session_id = ?" if sid else ""
     args = [sid] if sid else []
@@ -157,8 +172,42 @@ def scope_for(db, sid):
     return base + tail, args
 
 
-def to_item(r):
-    item = request_stats(r)
+def first_token_covers(db):
+    """「首块即落章」provider 集合（fork z1908144712 判据收编，与 zusage
+    _provider_first_token_covers 同一规则）：对该 provider 的 (reasoning_tokens,
+    time_to_first_token_ms) 做最小二乘斜率，<2.0 ms/token 说明首字时间不随推理量
+    增长——思考在首字后随输出流出，首字窗口已含思考，按 started_at 计时会把输入
+    预处理摊进生成耗时（速度偏低）。样本 <5/推理量无变化不判（走推理前置默认）。
+    本脚本一次性进程，每次调用现算（聚合 ~17ms）。"""
+    out = set()
+    if db is None:
+        return frozenset(out)
+    try:
+        rows = db.execute(
+            """select provider_id, count(*) n,
+                      sum(reasoning_tokens) sx, sum(time_to_first_token_ms) sy,
+                      sum(reasoning_tokens * time_to_first_token_ms) sxy,
+                      sum(reasoning_tokens * reasoning_tokens) sxx
+               from model_usage
+               where reasoning_tokens > 0 and time_to_first_token_ms is not null
+                 and provider_id is not null
+               group by provider_id""").fetchall()
+    except sqlite3.OperationalError:
+        return frozenset(out)   # 旧库缺列：判不出就全走既有口径
+    for r in rows:
+        n = r["n"] or 0
+        sx = r["sx"] or 0
+        denom = n * (r["sxx"] or 0) - sx * sx
+        if n < 5 or denom <= 0:
+            continue
+        slope = (n * (r["sxy"] or 0) - sx * (r["sy"] or 0)) / denom
+        if slope < 2.0:
+            out.add(r["provider_id"])
+    return frozenset(out)
+
+
+def to_item(r, covers=frozenset()):
+    item = request_stats(r, covers)
     item.update(inputTokens=r["input_tokens"] or 0,
                 cacheRead=r["cache_read_input_tokens"] or 0)
     return item
@@ -194,8 +243,9 @@ def query_latest(session_id=None):
         if db is None:
             items, rated, session = [], [], None
         else:
+            covers = first_token_covers(db)
             rows = db.execute(scope_sql + " order by completed_at desc limit ?", args + [N]).fetchall()
-            items = [to_item(r) for r in rows]
+            items = [to_item(r, covers) for r in rows]
             rated = [i for i in items if i["tokPerSec"] is not None]
             session = session_aggregate(db, scope_sql, args, rated)
         latest = items[0] if items else None
@@ -249,8 +299,9 @@ def query_turn(session_id=None, current=False, turn_id=None):
         scope_sql, args = scope_for(db, sid)
         session = None
         if db is not None:
+            covers = first_token_covers(db)
             win = db.execute(scope_sql + " order by completed_at desc limit ?", args + [N]).fetchall()
-            rated = [i for i in map(to_item, win) if i["tokPerSec"] is not None]
+            rated = [i for i in (to_item(r, covers) for r in win) if i["tokPerSec"] is not None]
             session = session_aggregate(db, scope_sql, args, rated)
         prompt_ts = last_prompt_ts(sid) if current else None
         if current and turn_id is None and prompt_ts is None:
@@ -276,7 +327,7 @@ def query_turn(session_id=None, current=False, turn_id=None):
             if current:
                 result.update(noCurrentTurnData=True, currentTurnUnavailableReason="noMatchingTurn")
             return result
-        items = [to_item(r) for r in rows]
+        items = [to_item(r, covers) for r in rows]
         turn = aggregate_requests(items)
         turn.update(ttftMs=items[0]["ttftMs"], firstAt=items[0]["completedAt"],
                     lastAt=max(i["completedAt"] for i in items))
