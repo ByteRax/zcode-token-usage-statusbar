@@ -783,6 +783,7 @@ print(json.dumps(operations))
             candidates = self.real_candidates()
         fixed.assert_called_once_with("DEFGHIJKLMNOPQRSTUVWXYZ")
         self.assertIn(Path("D:/Program Files/ZCode/resources/app.asar"), candidates)
+        self.assertIn(Path("D:/Programs/ZCode/resources/app.asar"), candidates)
         self.assertIn(Path("E:/ZCode/resources/app.asar"), candidates)
         self.assertNotIn(Path("F:/ZCode/resources/app.asar"), candidates)
 

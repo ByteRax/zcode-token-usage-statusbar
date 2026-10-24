@@ -103,9 +103,12 @@ class DiscoveryTests(unittest.TestCase):
         with mock.patch.object(installer, "fixed_drives", return_value=["D", "E"]) as fixed:
             candidates = REAL_DRIVE_CANDIDATES()
         fixed.assert_called_once_with("CDEFGHIJKLMNOPQRSTUVWXYZ")
+        # 三种布局：Program Files\ZCode（默认）、盘根 Programs\ZCode（用户自装）、盘根 ZCode。
         self.assertEqual(candidates, [r"D:\Program Files\ZCode\resources\app.asar",
+                                      r"D:\Programs\ZCode\resources\app.asar",
                                       r"D:\ZCode\resources\app.asar",
                                       r"E:\Program Files\ZCode\resources\app.asar",
+                                      r"E:\Programs\ZCode\resources\app.asar",
                                       r"E:\ZCode\resources\app.asar"])
 
     def test_fixed_drives_skip_network_removable_and_missing_drives(self):
