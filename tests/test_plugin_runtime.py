@@ -1120,7 +1120,7 @@ const sandbox = { __dirname: runtime, console: { error() {} },
     throw Error(id);
   }, onKill: () => killed++ };
 vm.createContext(sandbox); vm.runInContext(source, sandbox);
-const hot = intervals.find(i => i.ms === 2000); assert.ok(hot); hot.fn();
+const hot = intervals.find(i => i.ms === 5000); assert.ok(hot); hot.fn();
 windows.push({ getType: () => "window", isDestroyed: () => false,
   getURL: () => "file://" + runtime + "/index.html",   // 数据面门控要求宿主本地 file: 页（isLocalHostPage）
   executeJavaScript: async src => { injected.push(src); }, on() {}, isLoading: () => false });

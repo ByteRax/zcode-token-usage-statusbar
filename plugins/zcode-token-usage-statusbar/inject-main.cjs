@@ -346,8 +346,10 @@ function handlePayload(payload) {
   if (disabled) clearRemoteRecovery(); // 关闭期间返回的迟到成功快照也不能重建粘性标记。
   else lastHadRemote = keys.some((key) => isRemoteSid(key) || pendingSids.has(key));
   for (const wc of webContents.getAllWebContents()) pushOnce(wc, payload);
-  // 定位诊断：每 ~15 次拉取收集每个窗口各自的 __zusageDiag，附加泵侧证据后写 diag-<n>.json（多窗口互不覆盖）
-  if (++pushCount % 15 === 1) {
+  // 定位诊断：每 ~15 次拉取收集每个窗口各自的 __zusageDiag，附加泵侧证据后写 diag-<n>.json
+  // （多窗口互不覆盖）。config.diag 显式 false 关闭（省常驻 executeJavaScript + 同步写盘，
+  // 排障时设回 true 或删键即恢复，缺省开）。
+  if (++pushCount % 15 === 1 && readCfgCached().diag !== false) {
     let idx = 0;
     for (const wc of webContents.getAllWebContents()) {
       if (!isMainWindowState(wc) || wc.isDestroyed()) continue;
@@ -709,9 +711,12 @@ function watchDb() {
 
 /* overlay / zusage.py 热更新检查（stat mtime，开销可忽略）；config.hot_reload=false 可关闭
  * （发布/稳定形态：改文件需重启 ZCode 才生效），开关改动随下次心跳生效。
- * zusage.py 变化时重启常驻进程（serve 进程驻内存的是旧代码）；顺带 stat config mtime。 */
+ * zusage.py 变化时重启常驻进程（serve 进程驻内存的是旧代码）；顺带 stat config mtime。
+ * 间隔启动时定死（仿下方 heartbeat 注册期读配置先例）：显式 true 是开发档 2s，缺省 5s
+ * 收敛常驻 stat 开销（热更新最晚多等 3s 生效）；false 仍每次 tick 现读、即时禁用。 */
 let overlayMtimeKnown = false;
 let zusageMtime = 0;
+const hotTickMs = readCfg().hot_reload === true ? 2000 : 5000;
 setInterval(() => {
   const cfg = readCfgCached();
   if (!residentAllowed()) stopResident();
@@ -726,7 +731,7 @@ setInterval(() => {
     zusageMtime = m;
     overlayMtimeKnown = true;
   } catch (e) { }
-}, 2000);
+}, hotTickMs);
 setInterval(maybeSpawn, Math.max(10000, readCfg().heartbeat_ms | 0 || 30000));   // 兜底心跳：防文件事件丢失
 watchDb();
 maybeSpawn();   // 启动先拉一次
@@ -1234,6 +1239,9 @@ function injectOverlay(wc, reload = false) {
 
 const hook = (wc) => {
   if (!isMainWindowState(wc)) return;
+  startResident();   // 首个主窗出现即预热常驻 python：与其后 ≤1s 的 wants-eval/页面装载重叠，
+                     // 省重启后首查的串行解释器启动；pyRes 已在/无窗/不稳定时内部自拒，
+                     // 预热后无查询则随 30s 空闲自停回收（空闲零进程契约不变）。
   wc.on("destroyed", () => {
     activeSid.delete(wc.id);
     windowWorkspaces.delete(wc.id);
@@ -1276,7 +1284,7 @@ if (typeof module === "object" && module && module.exports) {
   };
 }
 
-LOG("injected v13 (dom-ready inject + snapshot warm-push after injection, auto remote targets + per-sid multi-server routing, per-pane wants array, resident query mode with idle shutdown, renderer bridge probe, answer_rate_line config write, plugin request polling, quota entitlement client, git status chip)");
+LOG("injected v14 (dom-ready inject + snapshot warm-push after injection, auto remote targets + per-sid multi-server routing, per-pane wants array, resident query mode with idle shutdown + first-window warm-up, renderer bridge probe, answer_rate_line config write, plugin request polling, quota entitlement client, git status chip, diag config switch + default 5s hot tick)");
 
 app.on("before-quit", () => {
   shuttingDown = true;
