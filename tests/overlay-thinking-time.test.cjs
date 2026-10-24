@@ -49,3 +49,28 @@ for (const file of ['overlay.js', 'web/overlay.js']) {
     });
   }
 }
+
+/* v116：思考计时锚定 turnHeader.startedAt（宿主创建 header 恒写入，重绑不清零）；
+ * 缺字段或时钟未及起点回退 observedMs。桌面与 Web 同源语义，两文件同测。 */
+test('overlay.js & web/overlay.js: thinking timer anchors to startedAt when present, falls back to observedMs', () => {
+  for (const file of ['overlay.js', 'web/overlay.js']) {
+    const source = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
+    const start = source.indexOf('  var DEFAULT_CHARS_PER_TOKEN = 2;');
+    const end = source.indexOf('  /* 思考态动效图标', start);
+    assert.ok(start >= 0 && end > start, `提取失败: ${file} zuBarSpeedView`);
+    const NOW = 36610000;   // 固定时钟，避开真实墙钟抖动
+    const speedView = vm.runInNewContext(source.slice(start, end) + '\nzuBarSpeedView;', {
+      L: (zh) => zh,
+      Date: { now: () => NOW },
+    });
+    // startedAt 存在：锚定 now-startedAt（1 时 1 分 10 秒），忽略 observedMs
+    let v = speedView({ complete: false, characterRate: null, observedMs: 3000, startedAt: NOW - 3670000 });
+    assert.equal(v.text, '思考中…1 时 1 分 10 秒', `${file} anchor`);
+    // startedAt 缺席（tracker 对非有限数归一为 null，turn-stats.js:122）：回退 observedMs
+    v = speedView({ complete: false, characterRate: null, observedMs: 999, startedAt: null });
+    assert.equal(v.text, '思考中…0 秒', `${file} fallback`);
+    // startedAt 在当前时钟之后（时钟漂移/异常）：回退 observedMs，不出负数
+    v = speedView({ complete: false, characterRate: null, observedMs: 4200, startedAt: NOW + 5000 });
+    assert.equal(v.text, '思考中…4 秒', `${file} future-startedAt fallback`);
+  }
+});
