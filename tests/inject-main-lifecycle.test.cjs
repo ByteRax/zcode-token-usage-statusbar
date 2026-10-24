@@ -5,10 +5,10 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { EventEmitter } = require('node:events');
 const source = fs.readFileSync(path.join(__dirname, '..', 'inject-main.cjs'), 'utf8');
-function harness() {
+function harness(initialCfg) {
   const timers = new Map(), intervals = [], procs = [], injected = [], deliveries = [];
   const app = new EventEmitter(); app.getPath = () => '/fixture';
-  let id = 0, cfg = {}, overlay = 'window.revision=1;', mtime = 1, reads = 0;
+  let id = 0, cfg = initialCfg || {}, overlay = 'window.revision=1;', mtime = 1, reads = 0;
   const queue = [];   // 页面 __zusagePluginRequests 的替代：测试往这里推动作，poll 取走
   const wc = new EventEmitter(); Object.assign(wc, { id: 1, getType: () => 'window', isDestroyed: () => false,
     getURL: () => 'file:///fixture/index.html', isLoading: () => false,
@@ -104,7 +104,7 @@ test('idle/config-off/no-window/quit stop resident and never schedule unconditio
     const h = harness(); await flush(); const p = h.procs[0];
     p.stdout.emit('data', '{"recent":[]}\n');
     if (mode === 'idle') h.runTimer(30000);
-    if (mode === 'config') { h.setCfg({ resident: false, hot_reload: false }); h.intervals.find(t => t.ms === 2000).fn(); }
+    if (mode === 'config') { h.setCfg({ resident: false, hot_reload: false }); h.intervals.find(t => t.ms === 5000).fn(); }
     if (mode === 'window') { h.windows.length = 0; h.wc.emit('destroyed'); assert.equal(h.evalCode('lastStamp'), 0); }
     if (mode === 'quit') h.app.emit('before-quit');
     p.emit('close', 0);
@@ -269,6 +269,38 @@ test('turn-text multibyte output split across stdout chunks is decoded intact', 
  * maybeSpawn 的去重在 wants/db mtime 均未变化时直接短路——新窗口/整页重载后若无新写入
  * 就没有下一次推送，条只能停在零值；注入成功后必须立刻喂上一帧 lastGoodPayload。
  * 无快照时（首启）不得推空数据，等启动查询接管。 */
+/* v14 收编回归：诊断收集受 config.diag 门控（缺省开，显式 false 关——关的是每 ~15 次拉取
+ * 的 executeJavaScript 取 __zusageDiag + 同步写盘，不再无条件执行）。 */
+test('diag collection honors config.diag switch (default on, explicit false off)', async () => {
+  const on = harness(); await flush();
+  on.evalCode('handlePayload({ recent: [] })');
+  assert.ok(on.injected.some(s => s.includes('window.__zusageDiag')), 'default collects diag');
+  const off = harness({ diag: false }); await flush();
+  off.evalCode('handlePayload({ recent: [] })');
+  assert.ok(!off.injected.some(s => s.includes('window.__zusageDiag')), 'diag:false skips collection');
+});
+
+/* v14 收编回归：热更新检查心跳缺省降频到 5s，显式 hot_reload: true 保持开发档 2s；
+ * false 的禁用语义仍在每次 tick 内现读（上方 config-off 用例）。 */
+test('hot tick interval defaults to 5s; explicit hot_reload keeps the 2s dev cadence', async () => {
+  const h = harness(); await flush();
+  assert.ok(h.intervals.find(t => t.ms === 5000), 'default hot tick is 5000ms');
+  assert.equal(h.intervals.filter(t => t.ms === 2000).length, 0, 'no 2s tick unless explicitly requested');
+  const dev = harness({ hot_reload: true }); await flush();
+  assert.ok(dev.intervals.find(t => t.ms === 2000), 'hot_reload:true registers the 2s dev tick');
+});
+
+/* v14 收编回归：首个主窗出现即预热常驻 python（与其后 ≤1s 的 wants-eval 重叠），无查询时
+ * 由 30s 空闲自停回收——空闲零进程契约不变。 */
+test('first main window warm-starts resident python and idle reclaims it', async () => {
+  const h = harness();
+  assert.equal(h.procs.length, 1, 'warm-up spawns the resident at module load (hook path)');
+  assert.equal(h.evalCode('busy'), false, 'warm-up does not occupy the query slot');
+  h.runTimer(30000);
+  assert.equal(h.evalCode('pyRes'), null);
+  assert.equal(h.procs[0].kills, 1, 'warm-up resident reclaimed by the 30s idle guard');
+});
+
 test('dom-ready injects the overlay and warm-pushes last snapshot after injection', async () => {
   const h = harness(); await flush();
   h.injected.length = 0;
