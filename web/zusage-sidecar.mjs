@@ -448,7 +448,10 @@ const STATIC = new Map([
   ['/zusage/overlay.js', join(HERE, 'overlay.js')],
 ]);
 
-const server = http.createServer(async (req, res) => {
+async function handleRequest(req, res) {
+  /* llhttp 会把 absolute-form 请求行（GET http://host:port/ HTTP/1.1）原样送达，
+   * new URL() 对非法端口/格式直接抛 TypeError——async handler 未捕获即 unhandled
+   * rejection，Node ≥15 默认退出进程。全部请求处理收口在这里（2026-10-24 审计修复）。 */
   const url = new URL(req.url, 'http://127.0.0.1');
   const path = url.pathname.replace(/\/+$/, '') || '/';
 
@@ -468,21 +471,32 @@ const server = http.createServer(async (req, res) => {
 
   const file = STATIC.get(path);
   if (file) {
-    if (!existsSync(file)) return send(res, 404, 'not found');
-    const st = statSync(file);
+    let st;
+    try {
+      if (!existsSync(file)) return send(res, 404, 'not found');
+      st = statSync(file);
+    } catch (e) {   // existsSync 与 stat/open 之间文件被替换/删除
+      return send(res, 404, 'not found');
+    }
     res.writeHead(200, {
       'Content-Type': MIME[extname(file)] || 'application/octet-stream',
       'Content-Length': st.size,
       // boot/pump 改动要立即生效，不缓存
       'Cache-Control': 'no-store',
     });
-    return createReadStream(file).pipe(res);
+    const stream = createReadStream(file);
+    // pipe 不转发流错误；open 竞态失败的 'error' 事件若无人接会再杀一次进程
+    stream.on('error', () => { try { res.destroy(); } catch (e) { /* 响应已断 */ } });
+    return stream.pipe(res);
   }
 
   if (path === '/zusage/snapshot') {
     if (!(await sessionOk(req))) return send(res, 401, JSON.stringify({ error: 'unauthorized' }), { 'Content-Type': MIME['.json'] });
-    const sids = (url.searchParams.get('sids') || '').slice(0, 600);
-    const mine = (url.searchParams.get('mine') || '').slice(0, 200);
+    /* 控制字符一律剥离：sids/mine 原样进常驻 python 的行协议（一行一请求一行一响应），
+     * 注入 %0A 会把一行拆成两行，让后续合法请求的 FIFO 配对错位（拿到别人的快照）。 */
+    const stripCtl = (v) => v.replace(/[\x00-\x1f\x7f]/g, '');
+    const sids = stripCtl((url.searchParams.get('sids') || '').slice(0, 600));
+    const mine = stripCtl((url.searchParams.get('mine') || '').slice(0, 200));
     try {
       const body = await getSnapshot(sids, mine);
       return send(res, 200, JSON.stringify(body), { 'Content-Type': MIME['.json'] });
@@ -495,6 +509,16 @@ const server = http.createServer(async (req, res) => {
   }
 
   return send(res, 404, 'not found');
+}
+
+const server = http.createServer((req, res) => {
+  handleRequest(req, res).catch((e) => {
+    log('请求处理异常:', e && e.message);
+    try {
+      if (!res.headersSent) send(res, 400, 'bad request');
+      else res.destroy();
+    } catch (e2) { /* 响应已不可写 */ }
+  });
 });
 
 server.listen(PORT, HOST, () => {

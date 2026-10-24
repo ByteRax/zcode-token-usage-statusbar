@@ -142,8 +142,12 @@
     let closed = false;
     const update = () => {
       if (closed) return;
-      const state = store.getState();
-      if (tracker.ingest(state && state.snapshot)) changed();
+      /* changed() 跑在宿主 store 的通知分发链上，异常会冒进宿主其它订阅者——统一兜住
+       * （调用方 overlay 侧另有 try 记录诊断，这里是不让异常出模块的最后闸）。 */
+      try {
+        const state = store.getState();
+        if (tracker.ingest(state && state.snapshot)) changed();
+      } catch (e) { /* 单次通知失败不影响后续订阅 */ }
     };
     const off = store.subscribe(update);
     if (typeof off !== 'function') { closed = true; return null; }

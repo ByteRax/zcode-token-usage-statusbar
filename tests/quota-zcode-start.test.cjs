@@ -282,3 +282,13 @@ test("zcode-start client: mixed wanted providers run both pools in parallel with
   assert.equal(v.sources["zcode-start"].status, "ok");
   client.dispose();
 });
+
+/* 2026-10-24 夜间扫描回归：server_time 秒/毫秒自适应（与 zcodeStartTs 同款）——
+ * 端点若改发毫秒，不能把所有 plan 误判过期成 no_plan。 */
+test("zcode-start normalize: server_time in milliseconds is still interpreted correctly", () => {
+  const body = JSON.parse(JSON.stringify(START_BODY));
+  body.data.server_time = 1792775513000;   // 同一时刻的毫秒形态
+  const v = Q.normalizeZcodeStartBalance(body, T0);
+  assert.equal(v.level, "Start", "毫秒 server_time 不把活 plan 判成过期");
+  assert.equal(v.windows.plan.percent, 9.3);
+});

@@ -27,6 +27,7 @@ function harness() {
   };
   const spawnRecording = (bin, args) => { const p = spawn(); p.bin = bin; p.args = args; return p; };
   const sandbox = vm.createContext({ __dirname: '/fixture', console: { error() {} },
+    Buffer,   // 主进程全局（turn-text 子进程输出按 Buffer 收集后统一解码）
     process: { uptime: () => 1, platform: process.platform, resourcesPath: '/fixture', execPath: process.execPath },
     setTimeout: (fn, ms) => { timers.set(++id, { fn, ms }); return id; }, clearTimeout: n => timers.delete(n),
     setInterval: (fn, ms) => { intervals.push({ fn, ms }); return ++id; },
@@ -170,7 +171,7 @@ test('turn-text request runs a one-shot token_rate --current query by session', 
   assert.equal(p.args[0], '/fixture/token_rate.py');
   assert.equal(p.args.slice(1).join(' '), '--turn --current --session sid_a');   // 纯文本模式，不带 --json/--turn-id
   const before15 = h.timersAt(15000);
-  p.stdout.emit('data', '⚡ 82.6 token/s(本轮) · 首字 1.4s\n');
+  p.stdout.emit('data', Buffer.from('⚡ 82.6 token/s(本轮) · 首字 1.4s\n'));   // 真实 stdout 恒发 Buffer
   p.emit('close', 0); await flush();
   assert.equal(h.deliveries.length, 1);
   assert.ok(h.deliveries[0].includes(JSON.stringify('sid_a')));
@@ -245,4 +246,21 @@ test('turn-text child error settles once with an empty result', async () => {
   assert.ok(h.timersAt(15000) <= before15);
   p.emit('close', 1); await flush();
   assert.equal(h.deliveries.length, 1);   // error 之后 close 不再结算
+});
+
+/* 2026-10-24 夜间扫描回归：turn-text 子进程输出按 Buffer 收集、close 时统一解码，
+ * 多字节字符跨 data chunk 边界不再变成替换符（曾逐 chunk 隐式 toString 截断）。 */
+test('turn-text multibyte output split across stdout chunks is decoded intact', async () => {
+  const h = harness(); await flush();
+  h.queue.push({ action: 'turn-text', sid: 'sid_a' });
+  h.poll(); await flush();
+  const p = h.procs.at(-1);
+  const text = '⚡ 输出 1.2万 token / 生成 3.5s';
+  const buf = Buffer.from(text);
+  const cut = Buffer.byteLength('⚡ ') + 1;   // 切在「输」这个多字节字符的中间
+  p.stdout.emit('data', buf.subarray(0, cut));
+  p.stdout.emit('data', buf.subarray(cut));
+  p.emit('close', 0); await flush();
+  assert.equal(h.deliveries.length, 1);
+  assert.ok(h.deliveries[0].includes(JSON.stringify(text)), 'decoded: ' + h.deliveries[0]);
 });

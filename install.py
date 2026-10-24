@@ -35,6 +35,7 @@ import argparse
 import json
 import os
 import shutil
+import stat
 import sys
 from pathlib import Path
 from runtime_lock import update_config
@@ -94,6 +95,8 @@ ZCODE_CONFIG = real_home() / ".zcode" / "cli" / "config.json"
 COMMANDS_DIR = real_home() / ".zcode" / "commands"
 MCP_NAME = "zcode-token-usage-statusbar"   # MCP server 注册名（与仓库名一致；老安装叫 token-usage/zusage，自动迁移）
 MCP_NAME_OLD = ("token-usage", "zusage")   # 历史注册名
+# Linux 兜底扫描前缀（目录名含 zcode 的候选仍须过 is_zcode_app 身份门）
+LINUX_FALLBACK_BASES = ("/opt", "/usr/lib", "/usr/local/lib")
 RUNTIME_FILES = ("inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs", "quota-client.cjs", "release_unpack.py", "runtime_lock.py", "usage_stats.py", "turn-stats.js", "overlay.js", "zusage.py", "usage_mcp.py", "token_rate.py", "renderer_bridge.py")
 
 # ZCode 安装位置候选：resources/app.asar 存在即命中（按序探测，按当前平台取组）
@@ -215,8 +218,10 @@ def find_asar():
                 if p.is_file() and is_zcode_app(p):
                     return p
     elif sys.platform.startswith("linux"):
-        # 兜底：扫 /opt、/usr/lib、/usr/local/lib 一层子目录，目录名含 zcode 即命中
-        for base in ("/opt", "/usr/lib", "/usr/local/lib"):
+        # 兜底：扫常见安装前缀一层子目录，目录名含 zcode 即候选，
+        # 但必须过 is_zcode_app：该前缀下可能有名字含 zcode 的其它 Electron 应用，
+        # 命中它们会注入错目标（与上方 Windows 兜底同款身份门）。
+        for base in LINUX_FALLBACK_BASES:
             b = Path(base)
             if not b.is_dir():
                 continue
@@ -228,7 +233,7 @@ def find_asar():
                 if "zcode" not in ch.name.lower():
                     continue
                 p = ch / "resources" / "app.asar"
-                if p.is_file():
+                if p.is_file() and is_zcode_app(p):
                     return p
     return None
 
@@ -360,6 +365,45 @@ def prepare_config(dry, dev):
     return True
 
 
+def _write_host_config_atomic(text):
+    """宿主 config.json 同目录临时文件 + os.replace 原子替换：截断写中途崩溃/断电
+    会损坏宿主 CLI 自身配置；备份只留副本不会自动恢复，原子替换消除该窗口。
+    替换后按原文件 mode 归位（umask 会让新文件偏离原权限，如 0600 被放宽）。"""
+    tmp = ZCODE_CONFIG.with_name(ZCODE_CONFIG.name + ".zusage.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    mode = None
+    try:
+        mode = stat.S_IMODE(ZCODE_CONFIG.stat().st_mode)
+    except OSError:
+        pass
+    try:
+        os.replace(tmp, ZCODE_CONFIG)
+    except OSError:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+    if mode is not None:
+        try:
+            os.chmod(ZCODE_CONFIG, mode)
+        except OSError:
+            pass
+
+
+def _string_values(obj):
+    """遍历任意 JSON 值里的全部字符串（旧 MCP 注册迁移用：不能 json.dumps 后做子串
+    匹配——反斜杠会被转义成 \\\\，Windows 路径永不命中，旧注册会残留）。"""
+    if isinstance(obj, dict):
+        for v in obj.values():
+            yield from _string_values(v)
+    elif isinstance(obj, list):
+        for v in obj:
+            yield from _string_values(v)
+    elif isinstance(obj, str):
+        yield obj
+
+
 def register_mcp(dry, dev):
     """向 ~/.zcode/cli/config.json 注册 MCP server（同名覆盖即更新指向；
     旧名 token-usage/zusage 仅当指向本工具（仓库或数据目录）时迁移删除）。"""
@@ -374,13 +418,30 @@ def register_mcp(dry, dev):
             print(L(f"[MCP] 跳过：{ZCODE_CONFIG} 不是有效 JSON（{e}），请手动注册。",
                     f"[mcp] skipped: {ZCODE_CONFIG} is not valid JSON ({e}); register manually."))
             return False
-    servers = data.setdefault("mcp", {}).setdefault("servers", {})
+        if not isinstance(data, dict):
+            print(L(f"[MCP] 跳过：{ZCODE_CONFIG} 是合法 JSON 但不是对象，拒绝改写（不做默默重建）。",
+                    f"[mcp] skipped: {ZCODE_CONFIG} is valid JSON but not an object; refusing to rewrite (no silent rebuild)."))
+            return False
+    mcp = data.get("mcp")
+    if mcp is not None and not isinstance(mcp, dict):
+        print(L(f"[MCP] 跳过：{ZCODE_CONFIG} 的 mcp 段不是对象，拒绝改写。",
+                f"[mcp] skipped: the mcp section of {ZCODE_CONFIG} is not an object; refusing to rewrite."))
+        return False
+    if mcp is None:
+        mcp = data["mcp"] = {}
+    servers = mcp.get("servers")
+    if servers is not None and not isinstance(servers, dict):
+        print(L(f"[MCP] 跳过：{ZCODE_CONFIG} 的 mcp.servers 段不是对象，拒绝改写。",
+                f"[mcp] skipped: the mcp.servers section of {ZCODE_CONFIG} is not an object; refusing to rewrite."))
+        return False
+    if servers is None:
+        servers = mcp["servers"] = {}
     servers[MCP_NAME] = entry
     ours = (str(HERE / "usage_mcp.py"), str(DATA_DIR / "usage_mcp.py"))
     removed = []
     for old_name in MCP_NAME_OLD:
         old = servers.get(old_name)
-        if isinstance(old, dict) and any(p in json.dumps(old) for p in ours):
+        if isinstance(old, dict) and any(p in s for s in _string_values(old) for p in ours):
             del servers[old_name]      # 旧注册指向本工具 → 迁移到新名字
             removed.append(old_name)
     removed_note = L(f"（同时移除旧注册 {', '.join(removed)}）", f" (also removed old registration {', '.join(removed)})") if removed else ""
@@ -390,17 +451,17 @@ def register_mcp(dry, dev):
         chown_to_user(ZCODE_CONFIG.parent)
         if ZCODE_CONFIG.is_file():
             shutil.copy2(ZCODE_CONFIG, ZCODE_CONFIG.with_suffix(".json.zusage.bak"))
-        ZCODE_CONFIG.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        _write_host_config_atomic(json.dumps(data, indent=2, ensure_ascii=False))
         chown_to_user(ZCODE_CONFIG)
     return True
 
 
 def install_command(dry):
     """复制 /usage 命令模板到 ~/.zcode/commands/usage.md。"""
-    COMMANDS_DIR.mkdir(parents=True, exist_ok=True)
     dst = COMMANDS_DIR / "usage.md"
     print(L(f"[命令] {dst}", f"[command] {dst}"))
     if not dry:
+        COMMANDS_DIR.mkdir(parents=True, exist_ok=True)   # dry-run 承诺不写任何文件（含建目录）
         shutil.copy2(HERE / "usage.command.md", dst)
         chown_to_user(COMMANDS_DIR)
         chown_to_user(dst)
@@ -414,7 +475,17 @@ def remove_mcp(dry):
         data = json.loads(ZCODE_CONFIG.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return True
-    servers = data.get("mcp", {}).get("servers", {})
+    if not isinstance(data, dict):
+        print(L(f"[MCP] 跳过：{ZCODE_CONFIG} 是合法 JSON 但不是对象，拒绝改写。",
+                f"[mcp] skipped: {ZCODE_CONFIG} is valid JSON but not an object; refusing to rewrite."))
+        return False
+    mcp = data.get("mcp")
+    servers = mcp.get("servers") if isinstance(mcp, dict) else None
+    if not isinstance(servers, dict):
+        if "mcp" in data:
+            print(L(f"[MCP] 跳过：mcp/mcp.servers 段不是对象，拒绝改写。",
+                    f"[mcp] skipped: the mcp/mcp.servers section is not an object; refusing to rewrite."))
+        return True   # 无可移除项/结构异常不阻塞卸载其余步骤
     gone = []
     for name in (MCP_NAME, *MCP_NAME_OLD):
         if name in servers:
@@ -425,7 +496,7 @@ def remove_mcp(dry):
     print(L(f"[MCP] 移除注册：{', '.join(gone)}", f"[mcp] removing registration: {', '.join(gone)}"))
     if not dry:
         shutil.copy2(ZCODE_CONFIG, ZCODE_CONFIG.with_suffix(".json.zusage.bak"))
-        ZCODE_CONFIG.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        _write_host_config_atomic(json.dumps(data, indent=2, ensure_ascii=False))
     return True
 
 

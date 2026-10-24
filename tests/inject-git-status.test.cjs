@@ -245,3 +245,89 @@ test("git refresh interval is registered at 10s", async () => {
   const h = loadPump();
   assert.ok(h.intervals.some(i => i.ms === 10000), "gitTick 10s 轮询已注册");
 });
+
+/* ---------- 2026-10-24 夜间扫描回归：IPC 门控与窗口表清理 ---------- */
+
+/* 自含 harness：同 loadPump，但暴露 ipc 与窗口数组，直接驱动宿主同步通道处理器 */
+function loadPumpIpc() {
+  const intervals = [], timers = new Map(), windows = []; let id = 0;
+  const mockFs = {
+    readFileSync: file => String(file).endsWith("config.json") ? "{}" : "",
+    statSync: () => ({ mtimeMs: 1, size: 1 }), existsSync: () => false,
+    watch: () => ({ on() {} }), writeFileSync() {},
+  };
+  const ipc = new EventEmitter();
+  const sandbox = {
+    __dirname: "/fixture/runtime", console: { error() {} },
+    Buffer,
+    process: { resourcesPath: "/fixture/resources", execPath: process.execPath, uptime: () => 1, env: {} },
+    module: { exports: {} },
+    setTimeout: (fn, ms) => { timers.set(++id, fn); return id; },
+    clearTimeout: n => timers.delete(n),
+    setInterval: (fn, ms) => { intervals.push({ fn, ms }); return intervals.length; },
+    require(name) {
+      if (name === "fs") return mockFs;
+      if (["path", "url", "crypto"].includes(name)) return require(name);
+      if (name === "electron") return { app: { getPath: () => "/fixture/home", on() {} }, webContents: { getAllWebContents: () => windows }, ipcMain: ipc };
+      if (name === "child_process") return {
+        spawn() {
+          const p = new EventEmitter(); p.stdout = new EventEmitter(); p.stderr = new EventEmitter();
+          p.stdin = new EventEmitter(); p.stdin.writable = true; p.kill = () => {}; return p;
+        },
+        execFile(cmd, args, opts, cb) { cb(null, "", ""); },
+      };
+      throw new Error(name);
+    },
+  };
+  vm.runInNewContext(source, sandbox);
+  return { api: sandbox.module.exports.__zusageTest, ipc, windows };
+}
+
+const trustedSenderFor = id => ({ id, getType: () => "window", isDestroyed: () => false,
+  getURL: () => "file:///fixture/resources/index.html" });
+
+test("active-task-session IPC is gated by trustedSender like its sibling host channels", () => {
+  const { api, ipc } = loadPumpIpc();
+  ipc.emit("zcode:sync-active-task-session", { sender: trustedSenderFor(7) }, "sid_ok");
+  assert.equal(api.ipcState().activeSid.get(7), "sid_ok", "trusted main-window file sender accepted");
+  const external = { id: 8, getType: () => "window", isDestroyed: () => false,
+    getURL: () => "https://evil.example/" };
+  ipc.emit("zcode:sync-active-task-session", { sender: external }, "sid_evil");
+  assert.equal(api.ipcState().activeSid.has(8), false, "external page cannot set the window session");
+});
+
+test("per-window maps are pruned when a window disappears", async () => {
+  const { api, ipc, windows } = loadPumpIpc();
+  const wc = trustedSenderFor(3);
+  ipc.emit("zcode:sync-web-remote-control-workspaces", { sender: wc },
+    [{ workspacePath: "/a", kind: "local", workspaceIdentity: "" }]);
+  ipc.emit("zcode:sync-web-remote-control-tasks", { sender: wc },
+    [{ taskId: "t1", workspaceKind: "local" }]);
+  assert.equal(api.ipcState().windowWorkspaces.has(3), true);
+  assert.equal(api.ipcState().windowTasks.has(3), true);
+  // 至少一个存活窗口（id 99）：maybeSpawn 才会走到修剪段；id 3 从未注册进 getAllWebContents
+  windows.push({ id: 99, getType: () => "window", isDestroyed: () => false,
+    getURL: () => "file:///fixture/resources/index.html", executeJavaScript: async () => "null" });
+  await api.maybeSpawn();
+  assert.equal(api.ipcState().windowWorkspaces.has(3), false, "workspaces pruned");
+  assert.equal(api.ipcState().windowTasks.has(3), false, "tasks pruned");
+});
+
+test("usage snapshots are never pushed into external pages (data-plane gate parity)", () => {
+  const { api, ipc, windows } = loadPumpIpc();
+  const local = { id: 21, getType: () => "window", isDestroyed: () => false,
+    getURL: () => "file:///fixture/resources/index.html", pushes: [],
+    executeJavaScript: async js => { if (js.startsWith("window.__zusageUpdate")) local.pushes.push(js); return "null"; } };
+  const external = { id: 22, getType: () => "window", isDestroyed: () => false,
+    getURL: () => "https://evil.example/", pushes: [],
+    executeJavaScript: async js => { if (js.startsWith("window.__zusageUpdate")) external.pushes.push(js); return "null"; } };
+  windows.push(local, external);
+  api.handlePayload({ recent: [] });
+  return new Promise(resolve => {
+    setTimeout(() => {
+      assert.ok(local.pushes.length >= 1, "local host page receives the snapshot");
+      assert.equal(external.pushes.length, 0, "external page must not receive usage data");
+      resolve();
+    }, 20);
+  });
+});

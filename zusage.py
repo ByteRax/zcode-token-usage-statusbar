@@ -120,8 +120,10 @@ def _scan_session_ids(con):
     最新会话与 recent 池原先各自独立做同样的全表 group by（3 次 118ms），
     合并为一次扫描并挂 2s TTL。"""
     def run():
+        # coalesce：崩溃残留的未完成行 completed_at 为 NULL，全会话皆 NULL 时
+        # max() 返回 NULL，下游 max()/sorted() 比较会 TypeError 击穿整帧快照。
         return con.execute(
-            """select session_id, max(completed_at) as m
+            """select session_id, max(coalesce(completed_at, 0)) as m
                from model_usage group by session_id""").fetchall()
     return _cached_agg("scan", run)
 
@@ -219,7 +221,7 @@ def render_current(con):
         u = session_usage(con, sess["id"])
         active = last_at and (int(time.time() * 1000) - last_at) < SESSION_TIMEOUT_MS
         mark = L("🟢 活跃", "🟢 active") if active else L("⚪ 闲置", "⚪ idle")
-        lines.append(L(f"■ 当前会话 [{mark}]  ", f"■ Current session [{mark}]  ") + sess["title"])
+        lines.append(L(f"■ 当前会话 [{mark}]  ", f"■ Current session [{mark}]  ") + (sess["title"] or ""))
         if sess["directory"]:
             lines.append(L(f"  目录: {sess['directory']}", f"  dir: {sess['directory']}"))
         lines.append(
@@ -716,7 +718,7 @@ def _session_snapshot(con, sid, cfg):
     srow = con.execute("select * from session where id=?", (sid,)).fetchone()
     u = session_usage(con, sid)
     last = con.execute(
-        """select duration_ms, coalesce(time_to_first_token_ms,0), completed_at, turn_id, model_id,
+        """select coalesce(duration_ms,0) as duration_ms, coalesce(time_to_first_token_ms,0), completed_at, turn_id, model_id,
                   output_tokens, first_token_at, started_at, reasoning_tokens, provider_id
            from model_usage where session_id=? and status='completed'
              and (query_source is null or query_source='main_turn')
@@ -851,7 +853,7 @@ def _session_snapshot(con, sid, cfg):
     }
     return {
         "sid": sid,
-        "title": srow["title"] if srow is not None else "",
+        "title": (srow["title"] if srow is not None else "") or "",
         "active": active,
         "turns": u["turns"] if u else 0,
         "requests": u["requests"] if u else 0,
@@ -1026,7 +1028,9 @@ def _scnet_estimate(con):
                  and completed_at>=? and completed_at<?""",
             (s_ms, e_ms)).fetchall()
     except Exception:
-        rows = []
+        # 聚合 SQL 失败（列漂移等）按未配置软隐藏：quota 侧 fetchOne 对缺失估算走 no_plan，
+        # 不能以 0.00 额度的"全新套餐"呈现（fail-closed 口径，与额度链"绝不显示 0%"同向）。
+        return None
     for model_id, tin, tcache_r, tcache_w, tout in rows:
         for rx, (r_in, r_cached, r_out) in compiled:
             if rx.match(str(model_id or "")):
@@ -1577,6 +1581,21 @@ def _empty_snapshot(sid, cfg):
             "context_window": cfg["context_window"], "context_auto": False}
 
 
+def _provider_fallback(con):
+    """额度 chip 的会话无历史回退（见 snapshot 内注释）；旧库列漂移时按空串降级。"""
+    if con is None:
+        return ""
+    try:
+        row = con.execute(
+            """select provider_id from model_usage
+               where status='completed' and (query_source is null or query_source='main_turn')
+                 and provider_id like 'account:%'
+               order by completed_at desc limit 1""").fetchone()
+    except sqlite3.Error:
+        return ""
+    return (row or ("",))[0] or ""
+
+
 def snapshot(force_sid="", routes=None):
     """单次快照：最新会话 + 最近 6+6 会话池 + 今日。
     force_sid：各窗口当前会话 id，逗号分隔（泵按窗口汇总上报：主进程 IPC 映射的焦点会话 +
@@ -1706,12 +1725,8 @@ def snapshot(force_sid="", routes=None):
             # 与会话无关）。会话自身没有任何请求历史（新会话/刚切模型还没发请求）时，
             # 渲染端用它跟随账号当前套餐档，消除"切模型到首个请求完成之间 chip 空窗"。
             # 只取 account:*（内置套餐档）；最近请求是自定义 provider 时为空串，不回退。
-            "provider_fallback": ((con.execute(
-                """select provider_id from model_usage
-                   where status='completed' and (query_source is null or query_source='main_turn')
-                     and provider_id like 'account:%'
-                   order by completed_at desc limit 1"""
-            ).fetchone() or ("",))[0] or "") if con is not None else "",
+            # 可选回退字段不拖垮整帧：旧库缺列时按未配置降级（与单会话降级同款口径）。
+            "provider_fallback": _provider_fallback(con),
             # SCNet 账本估算（无凭据）：主进程注入 quota-client 的 scnet 源；未配置为 None
             "scnet_estimate": _scnet_estimate(con),
             "remote_enabled": bool(setup),        # 是否存在可用远端目标（区分"没配"与"配了没查到"）
@@ -1752,6 +1767,22 @@ def serve():
         sys.stdout.flush()
 
 
+def _cli_count(argv, default):
+    """CLI 正整数参数（days/sessions/models/watch 的 N/秒）：非数字或 <1 给可读提示
+    退出，不再 ValueError traceback 或 watch 0 忙循环。缺省走 default。"""
+    if len(argv) <= 1:
+        return default
+    try:
+        v = int(argv[1])
+    except ValueError:
+        print(L(f"无效参数：{argv[1]!r} 应为正整数", f"invalid argument: {argv[1]!r} expects a positive integer"))
+        raise SystemExit(2)
+    if v < 1:
+        print(L(f"无效参数：{argv[1]!r} 应为正整数", f"invalid argument: {argv[1]!r} expects a positive integer"))
+        raise SystemExit(2)
+    return v
+
+
 def main(argv):
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -1774,17 +1805,17 @@ def main(argv):
         elif cmd == "today":
             print(render_today(con))
         elif cmd == "days":
-            print(render_days(con, int(argv[1]) if len(argv) > 1 else 7))
+            print(render_days(con, _cli_count(argv, 7)))
         elif cmd == "sessions":
-            print(render_sessions(con, int(argv[1]) if len(argv) > 1 else 10))
+            print(render_sessions(con, _cli_count(argv, 10)))
         elif cmd == "models":
-            print(render_models(con, int(argv[1]) if len(argv) > 1 else 7))
+            print(render_models(con, _cli_count(argv, 7)))
         elif cmd == "workspace":
             print(render_workspace(con, argv[1] if len(argv) > 1 else ""))
         elif cmd == "session":
             print(render_session_detail(con, argv[1] if len(argv) > 1 else ""))
         elif cmd == "watch":
-            sec = int(argv[1]) if len(argv) > 1 else 5
+            sec = _cli_count(argv, 5)
             while True:
                 print("\x1b[2J\x1b[H", end="")
                 print(render_current(con), flush=True)
@@ -1793,7 +1824,7 @@ def main(argv):
         else:
             print(__doc__)
         con.close()
-    except sqlite3.OperationalError as e:
+    except sqlite3.DatabaseError as e:
         # 列/表变更不在 connect 的表存在性探测内（那会破坏按需裁剪的测试夹具库），
         # 在入口统一转换成可行动提示，替代整段查询栈回溯。
         print(L(f"查询失败：{e}", f"query failed: {e}"))
