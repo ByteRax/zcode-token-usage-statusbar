@@ -410,3 +410,7 @@ python install.py --remove
 - [开发与发布](docs/maintaining.md) · [测试说明](tests/README.md)
 
 [MIT License](LICENSE)
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=ByteRax/zcode-token-usage-statusbar&type=Date)](https://www.star-history.com/#ByteRax/zcode-token-usage-statusbar&Date)

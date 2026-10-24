@@ -412,3 +412,7 @@ Detailed desktop guides are currently in Chinese.
 - [Development and releases](docs/maintaining.md) (Chinese) · [Tests](tests/README.md) (Chinese)
 
 [MIT License](LICENSE)
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=ByteRax/zcode-token-usage-statusbar&type=Date)](https://www.star-history.com/#ByteRax/zcode-token-usage-statusbar&Date)
