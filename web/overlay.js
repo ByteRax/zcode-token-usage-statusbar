@@ -487,9 +487,12 @@
       }
       // 无工具且无可测字符流（首段未流出/字符停滞>2s，多数模型思考期对桥不可见，
       // 看到的就是时间在走）：按用户语义定为"思考中"——动效脑图标 + 本轮存活时长。
-      // 时长从首观测起算，不是精确思考时长。
+      // v116（与桌面版同源语义）：存活时长锚定 turnHeader.startedAt，重绑不清零；
+      // 缺 startedAt 的旧形状或时钟未及起点时回退首观测起算。
       if (stats.characterRate == null) {
-        var seconds = Math.floor(stats.observedMs / 1000);
+        var t0 = Number.isFinite(stats.startedAt) && stats.startedAt > 0 ? stats.startedAt : 0;
+        var elapsedMs = t0 && Date.now() >= t0 ? Date.now() - t0 : stats.observedMs;
+        var seconds = Math.floor(elapsedMs / 1000);
         var hours = Math.floor(seconds / 3600), minutes = Math.floor(seconds / 60) % 60;
         seconds %= 60;
         // v89：计时随语言本地化——中文「1 时 2 分 3 秒」/英文「1 h 2 m 3 s」，空格分隔，零段照旧省略
@@ -882,7 +885,7 @@
   /* ---------- 实例工厂（v61.1）：一个 pane 一套 条/面板/气泡/tooltip/定位循环。
    * slot 0 保留 #zusage-bar/#zusage-tip 兼容 id（泵热更新按它清理），其余实例仅类名。 */
   function spawnInstance(pid, slot) {
-    var VERSION = "v90";   // v82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v84 主标签页远端路由（工作台分组唯一主绑定上报 + 迟到载荷守卫，issue #30）→ v85 回答末尾统计行跟随万/亿开关 + tok→token → v86 历史轮 tracker 无记录（窗口滑出/换代/热更）或缺输出字段不再翻成"本轮统计不可用"，加 det 诊断 → v87 设置页排除：协调器/findComposer/deepFind/track 按 [data-testid="settings-page"] 祖先排除设置表单编辑框（MCP「请求头」textarea 被当聊天输入框、条挂进表单卡片）→ v88 工具动词「正在运行子智能体」压成「子代理运行中」（与桌面 v97 同文案；子代理速率估算为桌面桥专属，Web 无此链路） → v89 tooltip 伪边界 leave 过滤（与桌面 v99 同款）：Chrome 悬停链收缩/重算会补发 DOM 内部的 documentElement/tip mouseleave（格内 万↔1 空隙悬停、tooltip 本体停留均可复现弹出即灭），tipLeaveAt 贴边判定后取触发时刻最深 :hover 元素甄别（事件坐标/relatedTarget 实测不可信）——仍悬停在本档具体元素上即伪 leave 一律忽略，hover 链截断到 body/iframe/空链（空档区/已进子上下文/甩出窗口）维持 v47 分流 → v90 思考中计时随语言本地化（中文「1 时 2 分 3 秒」/英文「1 h 2 m 3 s」，与桌面 v99 同文案；Web 无富文本 turn-text 链——__zusagePluginRequests 仅桌面主进程消费，本端回答末尾恒为简化占位行、无采样时刻，不受 token_rate.py 改版影响）   // 悬停 ⚙ 面板可见；版本号随部署代际递增
+    var VERSION = "v91";   // v82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v84 主标签页远端路由（工作台分组唯一主绑定上报 + 迟到载荷守卫，issue #30）→ v85 回答末尾统计行跟随万/亿开关 + tok→token → v86 历史轮 tracker 无记录（窗口滑出/换代/热更）或缺输出字段不再翻成"本轮统计不可用"，加 det 诊断 → v87 设置页排除：协调器/findComposer/deepFind/track 按 [data-testid="settings-page"] 祖先排除设置表单编辑框（MCP「请求头」textarea 被当聊天输入框、条挂进表单卡片）→ v88 工具动词「正在运行子智能体」压成「子代理运行中」（与桌面 v97 同文案；子代理速率估算为桌面桥专属，Web 无此链路） → v89 tooltip 伪边界 leave 过滤（与桌面 v99 同款）：Chrome 悬停链收缩/重算会补发 DOM 内部的 documentElement/tip mouseleave（格内 万↔1 空隙悬停、tooltip 本体停留均可复现弹出即灭），tipLeaveAt 贴边判定后取触发时刻最深 :hover 元素甄别（事件坐标/relatedTarget 实测不可信）——仍悬停在本档具体元素上即伪 leave 一律忽略，hover 链截断到 body/iframe/空链（空档区/已进子上下文/甩出窗口）维持 v47 分流 → v90 思考中计时随语言本地化（中文「1 时 2 分 3 秒」/英文「1 h 2 m 3 s」，与桌面 v99 同文案；Web 无富文本 turn-text 链——__zusagePluginRequests 仅桌面主进程消费，本端回答末尾恒为简化占位行、无采样时刻，不受 token_rate.py 改版影响）→ v91 思考计时锚定 turnHeader.startedAt（与桌面 v116 同源语义：宿主创建 header 恒写入 startedAt，重绑不清零；缺字段或时钟未及起点回退首观测起算）   // 悬停 ⚙ 面板可见；版本号随部署代际递增
     var instanceDisposed = false, heavyTimer = 0, frame = 0, themeObserver = null;
     var globalListeners = [];
     function listenGlobal(target, type, fn, capture) {

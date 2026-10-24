@@ -824,3 +824,62 @@ test('㉒ new-session layout: line lands inside the nested content column, above
   assert.equal(quote.parentElement, col, '重排后回到内容列');
   assert.equal(col.children.indexOf(quote) + 1, col.children.indexOf(actions), '仍贴在工具条之前');
 });
+
+test('㉓ v87 synthetic thinking fires only for empty-window draft or phase=running, never for sessions with rows but no header in the tail window (v116)', () => {
+  /* 宿主源码证实：wire 快照 rows.window 恒为全序尾 60 行，末轮行数超窗口的闲置
+   * 会话整窗没有 turnHeader；旧条件「行非空」让这类会话永久合成"思考中"
+   * （用户停了任务还亮着、切走切回每次重绑重新计时）。v116 收紧为：
+   * 显式 phase=running（verifier/长轮 header 滑出，轮真的活着），或显式
+   * phase=draft 且窗口为空（新会话空窗，v87 本意）；control 缺失或 phase
+   * 未知的旧形状一律不合成。子场景按判别因子正交展开，防「删掉某析取项」的
+   * 等价变异存活。 */
+  const h = harness();
+  h.setPanes(['a']);
+  h.inject(); h.boot();
+  h.runTimers(600);
+  const idleRows = [text('abcdef'),
+    { rowId: 3, turnId: 't1', productTurnId: 'pt1', kind: 'toolCall', toolName: 'Bash', inputText: '', status: 'success' }];
+  const withControl = (seq, rows, phase) =>
+    Object.assign(snap(seq, rows), phase === undefined ? {} : { control: { phase } });
+  const store = makeStore(withControl(1, idleRows, 'completedInterrupted'));
+  h.diagSessions.push({ key: '__base__ /fixture/ws', topic: 'conversation/sid_a', store });
+  h.runTimers(100);
+  assert.equal(instanceOf(h).liveEl(), null, '① 闲置：行非空 + 无 header + phase 终态 → 不合成');
+  // 行非空 + 非终态 phase（draft）→ 仍不合成：合成只认 running，行非空本身不是活性证据
+  store.set(withControl(2, idleRows, 'draft'));
+  h.runTimers(100);
+  assert.equal(instanceOf(h).liveEl(), null, '② 行非空 + draft → 不合成（杀「running||非终态」等价变异）');
+  // control 整体缺失（旧宿主形状）：不合成
+  store.set(withControl(3, idleRows, undefined));
+  h.runTimers(100);
+  assert.equal(instanceOf(h).liveEl(), null, '③ control 缺失 → 不合成（字段缺失是常态不是错误）');
+  // goal verifier 启动：只加 timelineMarker 不加 turnHeader（product-projection.ts:5136），phase=running
+  store.set(withControl(4, idleRows.concat([{ rowId: 4, kind: 'timelineMarker', lane: 'turnTailBoundary' }]), 'running'));
+  h.runTimers(100);
+  assert.match(instanceOf(h).liveEl().textContent, /^思考中…\d+ 秒$/, '④ phase=running（无 header）仍合成思考中');
+  // 新会话 draft 空窗（v87 本意）
+  store.set(withControl(5, [], 'draft'));
+  h.runTimers(100);
+  assert.match(instanceOf(h).liveEl().textContent, /^思考中…/, '⑤ draft 空窗仍合成思考中');
+  // 空窗但 phase 已终态（rewind 清空等）：三种终态都不合成
+  store.set(withControl(6, [], 'completedSuccess'));
+  h.runTimers(100);
+  assert.equal(instanceOf(h).liveEl(), null, '⑥a 空窗 + completedSuccess → 不合成');
+  store.set(withControl(7, [], 'completedInterrupted'));
+  h.runTimers(100);
+  assert.equal(instanceOf(h).liveEl(), null, '⑥b 空窗 + completedInterrupted → 不合成');
+  store.set(withControl(8, [], 'error'));
+  h.runTimers(100);
+  assert.equal(instanceOf(h).liveEl(), null, '⑥c 空窗 + error → 不合成');
+});
+
+test('㉓b thinking elapsed anchors to turnHeader.startedAt (host writes it at header creation), not first observation (v116)', () => {
+  const h = harness();
+  const store = driveStreaming(h);   // t=1000，'1.5 t/s'
+  store.set(snap(3, [header('running', { startedAt: Date.now() - 4200 }), text('abcdef')]));
+  h.clock.now = 3100;   // 字符流停滞 >2s：characterRate 失效进入思考态
+  h.runTimers(100);     // 仅心跳驱动（无新快照），同 ⑪
+  // observedMs（首观测 t=0 起算）会显示 3 秒；锚定 startedAt（4.2s 前创建）应显示 4 秒——
+  // 切走再切回重绑后计时不再从 0 重计。墙钟余量 ~800ms（构造到断言需超时 4.2s→5s 才假红）
+  assert.equal(instanceOf(h).liveEl().textContent, '思考中…4 秒');
+});
