@@ -264,3 +264,21 @@ test('turn-text multibyte output split across stdout chunks is decoded intact', 
   assert.equal(h.deliveries.length, 1);
   assert.ok(h.deliveries[0].includes(JSON.stringify(text)), 'decoded: ' + h.deliveries[0]);
 });
+
+/* v13（上游 xhwxt PR #26 同源问题）：dom-ready 即注入 + 注入完成后补推最近成功快照。
+ * maybeSpawn 的去重在 wants/db mtime 均未变化时直接短路——新窗口/整页重载后若无新写入
+ * 就没有下一次推送，条只能停在零值；注入成功后必须立刻喂上一帧 lastGoodPayload。
+ * 无快照时（首启）不得推空数据，等启动查询接管。 */
+test('dom-ready injects the overlay and warm-pushes last snapshot after injection', async () => {
+  const h = harness(); await flush();
+  h.injected.length = 0;
+  h.wc.emit('dom-ready'); await flush();
+  assert.ok(h.injected.some(s => s.includes('window.revision=1;')), 'overlay injected on dom-ready');
+  assert.ok(h.injected.some(s => s.includes('__zusagePluginUpdate')), 'plugin state still pushed');
+  assert.ok(!h.injected.some(s => s.includes('__zusageUpdate(')), 'no snapshot cached yet: no data push');
+  h.evalCode('handlePayload({ recent: [{ sid: "warm_sid", total: 9 }] })'); await flush();
+  h.injected.length = 0;
+  h.wc.emit('did-finish-load'); await flush();   // 旧兜底事件路径同样补推
+  const warm = h.injected.find(s => s.includes('__zusageUpdate('));
+  assert.ok(warm && warm.includes('warm_sid'), 'warm-push after re-injection carries last payload');
+});
