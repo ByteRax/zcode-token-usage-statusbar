@@ -201,7 +201,7 @@ function normalizeZcodeStartBalance(body, nowMs) {
   }
   const data = body.data;
   if (!data || typeof data !== "object") throw qErr("parse_error", "missing data");
-  const serverMs = typeof data.server_time === "number" && isFinite(data.server_time) && data.server_time > 0 ? data.server_time * 1000 : null;
+  const serverMs = zcodeStartTs(data.server_time);   // 秒/毫秒自适应（与 resetOf/zcodeStartTs 同款，防端点单位变化后全量误判过期）
   const t = serverMs || (typeof nowMs === "number" && isFinite(nowMs) ? nowMs : Date.now());
   const plans = Array.isArray(data.plans) ? data.plans : [];
   const activePlans = [];
@@ -672,12 +672,14 @@ ADAPTERS.push({
     const headers = { authorization: "Bearer " + cred.token, "user-agent": "KimiCLI/1.6" };
     let body = null;
     let authish = false;
+    let lastErr = null;
     for (const p of ["/coding/v1/usages", "/coding/v1/usage"]) {
       try {
         body = await j.http.getJson("https://api.kimi.com" + p, headers, ctl);
         break;
       } catch (e) {
         if (e && (e.code === "auth_failed")) { authish = true; break; }   // 该 Key 非订阅 Key/无订阅 → 回落 PAYG
+        lastErr = e;
         if (e && e.code !== "network_error" && e.code !== "parse_error") throw e;
       }
     }
@@ -703,10 +705,17 @@ ADAPTERS.push({
       }
       if (Object.keys(windows).length) return { windows };
     }
-    /* PAYG 回落：moonshot 余额（人民币分） */
+    /* PAYG 回落：moonshot 余额（人民币分）。仅订阅端点明确 401（authish）或已解析出订阅
+     * 响应但无可展示窗口时回落；两端点都瞬时失败（network/parse_error）时不得拿 PAYG
+     * 数据冒充套餐，按最后错误抛出走常规退避（2026-10-24 审计修复）。 */
+    if (!body && !authish) throw (lastErr && lastErr.code) ? lastErr : qErr("network_error", "kimi subscription unreachable");
     const bal = await j.http.getJson("https://api.moonshot.cn/v1/users/me/balance", { authorization: "Bearer " + cred.token }, ctl);
-    const raw = (bal && (bal.available_balance != null ? bal.available_balance : (bal.balance != null ? bal.balance : (bal.data && bal.data.available_balance)))) ||
-      (bal && bal.data && (bal.data.available_balance != null ? bal.data.available_balance : bal.data.balance));
+    /* 余额字段逐级判 null 取值（零余额合法，不能用 || 短路——曾把 available_balance:0
+     * 当解析失败打 30 分钟 parse_error 退避）。 */
+    const raw = bal && (bal.available_balance != null ? bal.available_balance
+      : bal.balance != null ? bal.balance
+      : (bal.data && bal.data.available_balance != null) ? bal.data.available_balance
+      : (bal.data && bal.data.balance !== undefined) ? bal.data.balance : null);
     const v = num(raw);
     if (v == null) throw qErr("parse_error", "kimi payg shape");
     const yuan = v >= 100 ? v / 100 : v;   // 分 → 元（≥100 视为分）
@@ -1410,7 +1419,7 @@ function createQuotaClient(opts) {
     async post(url, headers, ctl) {
       const r = await rawFetch(url, headers, ctl, "POST");
       let json = null;
-      try { json = JSON.parse(r.text); } catch (e) { throw qErr("parse_error", "invalid json"); }
+      try { json = JSON.parse(r.text); } catch (e) { json = null; }
       const meta = json && json.ResponseMetadata && json.ResponseMetadata.Error;   // 火山信封：HTTP 200 也可能带错
       if (meta && meta.Code) {
         const c = String(meta.Code);
@@ -1422,7 +1431,13 @@ function createQuotaClient(opts) {
         if (/auth|signature|denied|unauthorized|forbidden/i.test(c)) throw qErr("auth_failed", c.slice(0, 60));
         throw qErr("network_error", c.slice(0, 60));
       }
-      if (r.status < 200 || r.status >= 300) throw classifyStatus(r.status, r.headers);   // 签名错常 400 非 401
+      if (r.status < 200 || r.status >= 300) {
+        /* 非 2xx：body 带 JSON 错误信封的已在上面按信封分类（签名错常 400 非 401）；
+         * 剩下的（如网关 HTML 错误页）按状态分类——瞬时错误走 network_error 阶梯，
+         * 不冒充 parse_error 的 30 分钟长退避（与 getJson 的状态优先同向，2026-10-24 审计修复）。 */
+        throw classifyStatus(r.status, r.headers);
+      }
+      if (!json) throw qErr("parse_error", "invalid json");
       return json;
     },
   };

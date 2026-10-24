@@ -117,7 +117,9 @@ function isMainWindowState(wc) {
 }
 
 function pushOnce(wc, payload) {
-  if (!isMainWindowState(wc) || wc.isDestroyed() || !payload || typeof payload !== "object") return;
+  if (!isMainWindowState(wc) || wc.isDestroyed() || !isLocalHostPage(wc) || !payload || typeof payload !== "object") return;
+  /* isLocalHostPage：用量快照是数据出口，与 pollPluginRequests 的信任边界同口径——
+   * 主窗导航到外部页面后不再注入/推送（外部页不可读取本机用量与插件状态）。 */
   /* 按窗口注入 mine（本窗口焦点会话 id，可为空串 = 该窗口当前无会话）：
    * overlay 收到 mine 字段就优先显示它，不再多窗口共享同一个猜测。
    * 必须对象合并后序列化，禁止对 JSON 字符串做括号手术——v34 首版 slice 掐尾少补一个
@@ -191,7 +193,7 @@ try {
     scheduleRetry(300);
   });
   ipcMain.on(IPC_ACTIVE_SID, (e, sid) => {
-    if (!e || !e.sender || e.sender.isDestroyed()) return;
+    if (!trustedSender(e)) return;   // 同源宿主通道同款门控：非主窗口/外部页面不得改写本窗会话归属
     const s = typeof sid === "string" ? sid.trim() : "";
     const val = s && s.length <= 255 && /^[A-Za-z0-9_-]+$/.test(s) ? s : "";
     const prev = activeSid.get(e.sender.id);
@@ -575,6 +577,11 @@ function maybeSpawn() {
   const liveIds = new Set(wcs.map((wc) => wc.id));
   for (const id of activeSid.keys()) if (!liveIds.has(id)) activeSid.delete(id);
   for (const id of remoteEvidence.keys()) if (!liveIds.has(id)) remoteEvidence.delete(id);
+  /* 已销毁窗口的映射一并修剪（destroyed 回调漏注册时兜底），防长进程内按死 wc.id 无界累积 */
+  for (const id of windowWorkspaces.keys()) if (!liveIds.has(id)) windowWorkspaces.delete(id);
+  for (const id of windowTasks.keys()) if (!liveIds.has(id)) windowTasks.delete(id);
+  for (const id of scopeBindings.keys()) if (!liveIds.has(id)) scopeBindings.delete(id);
+  for (const id of windowQuotaSelections.keys()) if (!liveIds.has(id)) windowQuotaSelections.delete(id);
   const withTimeout = (p, ms) => {
     let timer;
     return Promise.race([p, new Promise((r) => { timer = setTimeout(() => r(""), ms); })])
@@ -724,7 +731,7 @@ let pluginRequestBusy = false;
 let lastGoodPayload = null;   // 额度结算后无需重查库即可向各窗口补推（payload 已含 quota）
 let quotaClient = null;
 function pushPluginState(wc, state) {
-  if (!isMainWindowState(wc) || wc.isDestroyed()) return;
+  if (!isMainWindowState(wc) || wc.isDestroyed() || !isLocalHostPage(wc)) return;
   /* rateLine / quotaEnabled 随插件状态一起推送：⚙ 面板两个开关的真值都来自 config.json */
   const payload = { ...state, rateLine: readCfgCached().answer_rate_line !== false, quotaEnabled: quotaEnabled(),
     quotaSources: quotaClient ? quotaClient.sourcesConfig() : [] };
@@ -903,7 +910,7 @@ async function setQuotaEnabled(enabled) {
  * 这一轮已被新提问越过）时回推空串，不是错误，渲染端据此限流重试。 */
 function queryTurnText(sid, wc, plainUnits) {
   const deliver = (text) => {
-    if (!wc || wc.isDestroyed()) return;
+    if (!wc || wc.isDestroyed() || !isLocalHostPage(wc)) return;
     wc.executeJavaScript("window.__zusageDeliverTurnText && window.__zusageDeliverTurnText(" +
       JSON.stringify(sid) + "," + JSON.stringify(text || "") + ")", true).catch(() => { });
   };
@@ -915,7 +922,7 @@ function queryTurnText(sid, wc, plainUnits) {
     py = spawn(readCfgCached().python_path,
       [TOKEN_RATE, "--turn", "--current", "--session", sid].concat(plainUnits ? ["--no-cn-units"] : []), { windowsHide: true });
   } catch (e) { LOG("turn text spawn failed:", e.message); deliver(""); return; }
-  let out = "", finished = false;
+  let finished = false;
   const finish = (text) => {
     if (finished) return;
     finished = true;
@@ -927,10 +934,11 @@ function queryTurnText(sid, wc, plainUnits) {
     try { py.kill(); } catch (e) { }
     finish("");
   }, 15000);
-  py.stdout.on("data", (d) => { out += d; });
+  const chunks = [];
+  py.stdout.on("data", (d) => { chunks.push(d); });   // Buffer 收集、close 时一次性解码：多字节字符跨 chunk 不截断
   py.stderr.on("data", () => { });
   py.on("error", (e) => { LOG("turn text spawn failed:", e.message); finish(""); });
-  py.on("close", () => { finish(String(out).trim()); });   // 空串 = 库里还没这一轮，不是错误
+  py.on("close", () => { finish(Buffer.concat(chunks).toString("utf8").trim()); });   // 空串 = 库里还没这一轮，不是错误
 }
 
 /* ---------- Git 状态旁路查询（v96）：工具行 Git chip 的数据源 ----------
@@ -1201,7 +1209,7 @@ setInterval(() => { if (pluginUpdater) pluginUpdater.tick().catch((e) => LOG("pl
 if (pluginUpdater) pluginUpdater.tick().catch((e) => LOG("plugin auto update:", e.message));
 
 function injectOverlay(wc, reload = false) {
-  if (!overlaySrc || !isMainWindowState(wc) || wc.isDestroyed()) return;
+  if (!overlaySrc || !isMainWindowState(wc) || wc.isDestroyed() || !isLocalHostPage(wc)) return;   // 外部页面不注入（数据面门控，同 pollPluginRequests）
   const cleanup = '(function(){if(window.__zusageDispose)window.__zusageDispose();else{document.querySelectorAll(".zusage-root,.zusage-tip-root,.zusage-exc").forEach(function(e){e.remove()});if(window.__zusageRateCleanup)window.__zusageRateCleanup()}window.__zusageOverlay=false;})();\n';
   /* turn-stats.js 先于 overlay.js 注入（IIFE 幂等，重复执行只是重挂 ZUsageTurnStats）：
    * overlay 启动即读取该全局做实时/确定性统计；overlay 缺它时自动降级为 DB 轮询路径。 */
@@ -1215,6 +1223,10 @@ const hook = (wc) => {
   if (!isMainWindowState(wc)) return;
   wc.on("destroyed", () => {
     activeSid.delete(wc.id);
+    windowWorkspaces.delete(wc.id);
+    windowTasks.delete(wc.id);
+    scopeBindings.delete(wc.id);
+    remoteEvidence.delete(wc.id);
     windowQuotaSelections.delete(wc.id);
     syncQuotaProviders();
     if (!hasWindows()) {
@@ -1243,6 +1255,7 @@ if (typeof module === "object" && module && module.exports) {
     handlePayload, maybeSpawn, isRemoteSid, remoteSids, pendingSids,
     targetByIdentity: () => targetByIdentity,
     parseGitPorcelain, parseShortstat, queryGitStatus, gitTick, discoverChildRepos, detectGitOp,
+    ipcState: () => ({ activeSid, windowWorkspaces, windowTasks, scopeBindings, remoteEvidence }),
   };
 }
 

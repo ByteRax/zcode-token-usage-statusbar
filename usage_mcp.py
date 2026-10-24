@@ -83,13 +83,20 @@ def main():
             msg = json.loads(raw)
         except json.JSONDecodeError:
             continue
+        # 一帧坏消息（batch 数组、params 非对象等）不能带崩整个 server 进程，
+        # 与坏 JSON 同样按未知帧跳过（协议只实现 initialize/tools-list/tools-call）。
+        if not isinstance(msg, dict):
+            continue
         method = msg.get("method", "")
         req_id = msg.get("id")
+        params = msg.get("params")
+        if not isinstance(params, dict):
+            params = {}
         if method == "initialize":
             reply(
                 req_id,
                 {
-                    "protocolVersion": msg.get("params", {}).get(
+                    "protocolVersion": params.get(
                         "protocolVersion", PROTOCOL_VERSION
                     ),
                     "capabilities": {"tools": {}},
@@ -99,7 +106,6 @@ def main():
         elif method == "tools/list":
             reply(req_id, {"tools": TOOLS})
         elif method == "tools/call":
-            params = msg.get("params", {})
             args = params.get("arguments") or {}
             try:
                 text = tool_token_usage(**args)

@@ -421,7 +421,8 @@ def _output_path(source, output):
         raise BridgeError("Output is a symlink")
     source, output = Path(source).resolve(), Path(output).resolve()
     roots = (WORKTREE.resolve(), Path(tempfile.gettempdir()).resolve())
-    if source == output or not any(output.is_relative_to(root) for root in roots):
+    # is_relative_to 是 3.9+ API，Python 3.8 兼容目标下用 parents 成员判定
+    if source == output or not any(output == root or root in output.parents for root in roots):
         raise BridgeError("Output must be a new worktree/temporary file, never an installation")
     # Even a copied application in the authorized roots is not an output target.
     if any(part.endswith(".app") for part in output.parts) or output.parent.name.lower() == "resources":

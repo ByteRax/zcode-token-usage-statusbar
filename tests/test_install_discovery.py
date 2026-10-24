@@ -130,3 +130,35 @@ class DiscoveryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LinuxFallbackTests(unittest.TestCase):
+    """2026-10-24 夜间扫描回归：Linux 兜底扫描必须过 is_zcode_app 身份门
+    （目录名含 zcode 的其它 Electron 应用曾可被注入错目标）。"""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        env = mock.patch.dict(os.environ, {"ZCODE_ASAR": ""})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def test_linux_fallback_requires_zcode_identity(self):
+        base = self.root / "opt"
+        foreign = base / "zcode-helper" / "resources" / "app.asar"
+        make_asar(foreign, {"package.json": json.dumps({"name": "helper-suite"}).encode(),   # 包名不含 zcode：非 ZCode 应用
+                            "out/main/index.js": b"helper;"})
+        good = base / "zcode" / "resources" / "app.asar"
+        make_asar(good, {"package.json": json.dumps({"name": "zcode-desktop"}).encode(),
+                         "out/main/index.js": b"official;"})
+        with mock.patch.object(installer, "ASAR_CANDIDATES", []), \
+                mock.patch.object(installer.sys, "platform", "linux"), \
+                mock.patch.object(installer, "LINUX_FALLBACK_BASES", [str(base)]):
+            self.assertEqual(installer.find_asar(), good, "真 ZCode 被发现")
+        with mock.patch.object(installer, "ASAR_CANDIDATES", []), \
+                mock.patch.object(installer.sys, "platform", "linux"), \
+                mock.patch.object(installer, "LINUX_FALLBACK_BASES", [str(base / "only-helper")]):
+            only = base / "only-helper" / "zcode-helper" / "resources" / "app.asar"
+            make_asar(only, {"package.json": json.dumps({"name": "helper-suite"}).encode()})
+            self.assertIsNone(installer.find_asar(), "名字含 zcode 的第三方应用不再被命中")

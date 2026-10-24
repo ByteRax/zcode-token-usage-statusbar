@@ -905,3 +905,83 @@ test('zcode-start routing: start-plan pane never displays the coding-plan family
   assert.doesNotMatch(html, /GLM Coding Max/);
   assert.match(html, /其他源<\/b><span>bigmodel 3%/);   // 其他启用源摘要列出 bigmodel 家族（窗口百分比）
 });
+
+/* ---------- 2026-10-24 夜间扫描回归：转义 / 签名幂等 / busy 类保留 ---------- */
+
+test('remote currency strings are escaped in chip and tooltip (no injection sinks)', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  h.inject(); h.boot(); h.tick();
+  const evil = '<img src=x onerror=alert(1)>';
+  h.window.__zusageUpdate(h.payload({
+    quota: {
+      status: 'ok', fetchedAt: Date.now(), stale: false, error: '', level: 'lite',
+      balance: { amount: 12.34, currency: evil },
+      models: ['GLM-5.3-Flash'],
+    },
+  }));
+  const chip = h.chipOf(ui.wrap);
+  assert.ok(chip, 'balance chip mounted');
+  assert.ok(chip.innerHTML.indexOf('&lt;img src=x onerror=alert(1)&gt; 12.34') >= 0,
+    'currency escaped in chip: ' + chip.innerHTML);
+  assert.ok(chip.innerHTML.indexOf('<img') < 0, 'no raw tag in chip');
+  assert.ok(chip.getAttribute('aria-label').indexOf('<img src=x') >= 0,
+    'aria-label keeps plain text (no entities)');
+  chip.listeners.get('mouseenter')[0].call(chip);
+  const tip = h.tipEl().innerHTML;
+  assert.ok(tip.indexOf('<img') < 0, 'no raw tag in tooltip');
+  assert.ok(tip.indexOf('&lt;img src=x') >= 0, 'currency escaped in tooltip balance row');
+});
+
+test('sub2api window amounts and quotaSummary escape their currency; parts labels not double-escaped', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  h.inject(); h.boot(); h.tick();
+  const NOW2 = Date.now();
+  h.window.__zusageUpdate(h.payload({
+    quota: {
+      status: 'ok', fetchedAt: NOW2, stale: false, error: '', level: 'lite',
+      windows: { daily: { percent: 40, used: 0.4, total: 1, remaining: 0.6, currency: '"inj"' } },
+      quotaSummary: { used: 1, limit: 10, remaining: 9, currency: 'US&L' },
+      balance: { amount: 5, currency: 'USD', parts: [{ label: 'A&B', amount: '3' }, { label: '<i>x</i>', amount: 2 }] },
+      models: [],
+    },
+  }));
+  const chip = h.chipOf(ui.wrap);
+  chip.listeners.get('mouseenter')[0].call(chip);
+  const tip = h.tipEl().innerHTML;
+  assert.ok(tip.indexOf('&quot;inj&quot;') >= 0, 'window currency escaped: ' + tip.slice(0, 400));
+  assert.ok(tip.indexOf('US&amp;L') >= 0, 'summary currency escaped');
+  assert.ok(tip.indexOf('A&amp;B') >= 0 && tip.indexOf('A&amp;amp;B') < 0,
+    'parts label escaped exactly once (was double-escaped)');
+  assert.ok(tip.indexOf('&lt;i&gt;x&lt;/i&gt;') >= 0, 'parts label tag escaped');
+  assert.ok(tip.indexOf('<i>') < 0, 'no raw tag from parts');
+});
+
+test('quotaTip rebuilds only when content changes (selection/scroll survive periodic reconciles)', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  h.inject(); h.boot(); h.tick();
+  h.window.__zusageUpdate(h.payload({ quota: QUOTA_OK }));
+  const chip = h.chipOf(ui.wrap);
+  chip.listeners.get('mouseenter')[0].call(chip);
+  const tip = h.tipEl();
+  let sets = 0, cur = tip.innerHTML;
+  Object.defineProperty(tip, 'innerHTML', {
+    get: () => cur, set: v => { sets++; cur = v; }, configurable: true,
+  });
+  chip.listeners.get('mouseenter')[0].call(chip);   // 同数据再进：签名命中，不重写
+  assert.equal(sets, 0, 'same data → no innerHTML rewrite');
+  h.window.__zusageUpdate(h.payload({ quota: withPct(45) }));
+  chip.listeners.get('mouseenter')[0].call(chip);   // 数据真变：重写一次
+  assert.equal(sets, 1, 'changed data → single rewrite');
+});
+
+test('quota chip keeps zu-qbusy across a signature change (git chip parity)', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  h.inject(); h.boot(); h.tick();
+  h.window.__zusageUpdate(h.payload({ quota: QUOTA_OK }));
+  const chip = h.chipOf(ui.wrap);
+  chip.listeners.get('click')[0].call(chip, { preventDefault() {}, stopPropagation() {} });
+  assert.ok(chip.classList.contains('zu-qbusy'), 'click adds busy pulse');
+  h.window.__zusageUpdate(h.payload({ quota: withPct(33) }));   // 推送改签名
+  assert.ok(h.chipOf(ui.wrap).classList.contains('zu-qbusy'),
+    'busy animation survives sig rewrite: ' + chip.className);
+});

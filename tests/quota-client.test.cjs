@@ -1450,3 +1450,58 @@ test("explicitly disabled sources report status 'disabled' instead of a fake idl
   assert.equal(ds.enabled, false);
   assert.equal(ds.status, "disabled");   // 旧逻辑在无激活账号时会透传 idle，面板出现「开关已关却显示待查询」
 });
+
+/* ---------- 2026-10-24 夜间扫描回归：Kimi 余额零值/回落门 + 火山 post 状态分类 ---------- */
+
+test("kimi: PAYG zero balance is a legal value, not parse_error", async () => {
+  const b = adapterClient({ cfgEntries: [["kimi0", "https://api.kimi.com", "sk-payg0"]] });
+  b.client.noteProvider("kimi0");
+  b.client.tick();
+  b.calls[0].d.resolve(fakeRes(401, "{}"));   // 非订阅 Key → PAYG 回落
+  await flush();
+  const paygCalls = b.calls.filter((c) => c.url.indexOf("moonshot") >= 0);
+  paygCalls[paygCalls.length - 1].d.resolve(fakeRes(200, JSON.stringify({ available_balance: 0 })));
+  await flush();
+  const v = b.client.view();
+  assert.equal(v.status, "ok", "零余额可显示（旧实现被 || 短路成 parse_error 30 分钟退避）");
+  assert.equal(v.balance.amount, 0);
+});
+
+test("kimi: transient subscription-endpoint failures do not masquerade as PAYG balance", async () => {
+  const b = adapterClient({ cfgEntries: [["kimi5", "https://api.kimi.com", "sk-x"]] });
+  b.client.noteProvider("kimi5");
+  b.client.tick();
+  b.calls[0].d.resolve(fakeRes(502, "bad gateway"));   // /usages 瞬时失败
+  await flush();
+  const second = b.calls.find((c) => c.url.endsWith("/coding/v1/usage"));
+  assert.ok(second, "回落尝试第二订阅端点");
+  second.d.resolve(fakeRes(500, "boom"));              // 也失败
+  await flush();
+  await flush();
+  const moonshot = b.calls.filter((c) => c.url.indexOf("moonshot") >= 0);
+  assert.equal(moonshot.length, 0, "订阅端点瞬时失败不得查 PAYG 余额冒充套餐");
+  const sv = b.client.view();
+  assert.equal(sv.status, "network_error", "按网络错误分类进入常规退避");
+});
+
+test("volcano post: non-JSON gateway error page maps to network_error, not 30-min parse_error", async () => {
+  const b = adapterClient({ secrets: { sources: { volcano: { enabled: true, accessKeyId: "ak", secretAccessKey: "sk" } } } });
+  b.client.noteProvider("volcano");
+  b.client.tick();
+  b.calls[0].d.resolve(fakeRes(502, "<html>Gateway Timeout</html>"));   // AFP 探测：瞬时失败被有意吞掉继续探 CodingPlan
+  await flush();
+  const cp = b.calls.find((c) => c.url.indexOf("GetCodingPlanUsage") >= 0);
+  cp.d.resolve(fakeRes(502, "<html>Gateway Timeout</html>"));
+  await flush();
+  const sv = b.client.view().sources.volcano;
+  assert.equal(sv.status, "network_error", "非 JSON 错误页按状态分类走阶梯退避（旧实现 parse_error 30 分钟）");
+});
+
+test("volcano post: 400 with JSON signature envelope stays auth_failed (envelope precedes status)", async () => {
+  const b = adapterClient({ secrets: { sources: { volcano: { enabled: true, accessKeyId: "bad", secretAccessKey: "bad" } } } });
+  b.client.noteProvider("volcano");
+  b.client.tick();
+  b.calls[0].d.resolve(fakeRes(400, JSON.stringify({ ResponseMetadata: { Error: { Code: "SignatureDoesNotMatch" } } })));
+  await flush();
+  assert.equal(b.client.view().sources.volcano.status, "auth_failed");
+});
