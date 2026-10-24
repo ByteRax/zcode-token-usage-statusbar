@@ -1221,6 +1221,14 @@ function injectOverlay(wc, reload = false) {
   wc.executeJavaScript((reload ? cleanup : "") + turnStatsSrc + "\n" + overlaySrc, true).then(() => {
     /* 无条件推送：updater 不可用时也要让面板拿到 rateLine 真值（缺省开） */
     pushPluginState(wc, pluginUpdater ? pluginUpdater.status() : {});
+    /* 注入即补推最近一次成功快照（v13）：maybeSpawn 的去重在 wants/db mtime 均未变化时
+     * 直接短路，新窗口/整页重载后若无新写入就没有下一次推送，条只能停在零值。overlay
+     * 装好立刻喂上一帧，数据随后由正常查询链刷新；quota 合并与 onUpdate 补推同款。 */
+    if (lastGoodPayload) {
+      const warm = (quotaClient && quotaEnabled())
+        ? Object.assign({}, lastGoodPayload, { quota: quotaClient.view() }) : lastGoodPayload;
+      pushOnce(wc, warm);
+    }
   }).catch(() => { });
 }
 
@@ -1247,6 +1255,10 @@ const hook = (wc) => {
     windowQuotaSelections.set(wc.id, {});
     syncQuotaProviders();
   });
+  /* dom-ready 即注入（v13）：did-finish-load 要等全部子资源（图片/字体/懒加载）结束才
+   * 触发，重启后条晚出现数秒；dom-ready 在 DOM 可用时到达，overlay 自带输入框轮询等待，
+   * 早注入无副作用；did-finish-load 保留兜底（SPA 内部导航后重新装载的情况）。 */
+  wc.on("dom-ready", () => injectOverlay(wc));
   wc.on("did-finish-load", () => injectOverlay(wc));
   if (wc.isLoading()) return;
   injectOverlay(wc);
@@ -1264,7 +1276,7 @@ if (typeof module === "object" && module && module.exports) {
   };
 }
 
-LOG("injected v12 (auto remote targets + per-sid multi-server routing, per-pane wants array, resident query mode with idle shutdown, renderer bridge probe, answer_rate_line config write, plugin request polling, quota entitlement client, git status chip)");
+LOG("injected v13 (dom-ready inject + snapshot warm-push after injection, auto remote targets + per-sid multi-server routing, per-pane wants array, resident query mode with idle shutdown, renderer bridge probe, answer_rate_line config write, plugin request polling, quota entitlement client, git status chip)");
 
 app.on("before-quit", () => {
   shuttingDown = true;

@@ -214,6 +214,38 @@ class StatusbarRateTests(unittest.TestCase):
                 self.assertEqual((snap["started"], snap["last_at"]), (1000, 5000))
                 self.assertEqual(snap["requests"], 1)
 
+    def test_snapshot_force_sid_deep_in_pool_gets_full_snapshot(self):
+        """上游 issue #22（xhwxt PR #24/#27 同源）：force 会话若本来就排在最近池里（插入被
+        跳过、原位保留在池内第 len(force)+3 位之后），按池内位置分层会把它误降级成轻量行
+        ——last_turn/last/tools.list 全空，条面只剩总 token。分层必须按 sid 判定：force 会话
+        恒为完整快照；池内长尾非 force 行维持轻量瘦身不变。"""
+        con = sqlite3.connect(":memory:")
+        self.addCleanup(con.close)
+        con.row_factory = sqlite3.Row
+        con.executescript(SCHEMA)
+        # 按最近活跃排序的 6 个常规会话；force 会话 force_deep 位居第 5（i=4 >= full_n=4）
+        sids = ["latest", "n1", "n2", "n3", "force_deep", "tail"]
+        for i, sid in enumerate(sids):
+            con.execute("insert into session (id,title,time_created) values (?,?,?)", (sid, "t", 100 + i))
+        for sid, rid, model in (("force_deep", "rf", "GLM-5.3"), ("n3", "r3", "GLM-4.7"), ("tail", "rt", "GLM-4.6")):
+            con.execute(
+                "insert into model_usage (id, session_id, agent, provider_id, model_id, query_source,"
+                " status, started_at, completed_at, output_tokens) values (?,?,?,?,?,?,?,?,?,?)",
+                (rid, sid, "", "account:test", model, "main_turn", "completed", 1000, 5000, 64))
+        con.execute("insert into tool_usage values ('force_deep','Read','completed',12)")
+        rows = [(sid, 1000 - i * 10) for i, sid in enumerate(sids)]
+        with mock.patch.object(zusage, "connect", return_value=con), \
+             mock.patch.object(zusage, "load_config", return_value={"context_window": 200000}), \
+             mock.patch.object(zusage, "_cached_agg", side_effect=lambda key, fn: fn()), \
+             mock.patch.object(zusage, "_scan_session_ids", return_value=rows), \
+             mock.patch.object(zusage, "_remote_setup", return_value=None):
+            rec = zusage.snapshot(force_sid="force_deep")["recent"]
+        by_sid = {row["sid"]: row for row in rec}
+        self.assertEqual(by_sid["force_deep"]["last"]["model"], "GLM-5.3")   # force 恒完整（轻量行恒空串）
+        self.assertTrue(by_sid["force_deep"]["tools"]["list"])               # 完整快照含工具明细（轻量行恒 []）
+        self.assertEqual(by_sid["n3"]["last"]["model"], "GLM-4.7")           # 池首预算内（i=3 < full_n）仍完整
+        self.assertEqual(by_sid["tail"]["last"]["model"], "")                # 长尾非 force 维持轻量瘦身
+
     def test_today_span_uses_start_of_requests_completed_today(self):
         con = sqlite3.connect(":memory:")
         con.row_factory = sqlite3.Row

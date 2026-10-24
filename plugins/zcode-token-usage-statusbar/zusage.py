@@ -1695,13 +1695,18 @@ def snapshot(force_sid="", routes=None):
                 ids.insert(0, fs)
         # recent 池瘦身（v8）：状态条只渲染 1 个会话，完整快照只给兜底候选
         # （force + latest + 最近活跃前 2），其余长尾行走轻量查询（单会话 38ms→2ms）。
+        # force 会话按 sid 判定恒为完整快照，不能只看池内位置：force 会话若本来就排在
+        # 最近池里（插入被跳过、原位保留），按 i < full_n 分层会把它误降级成轻量行——
+        # last_turn/last/tools.list 全空，正是上游 issue #22「只显示总 token、其余全空」
+        # 的成因；远端会话走同一条 json 子命令，同样中招。
+        force_set = set(force_sids)
         full_n = len(force_sids) + 3
         rec = []
         for i, sid in enumerate(ids):
             if sid == latest_sid:
                 rec.append(base)
             else:
-                rec.append(local_snapshot(sid, light=i >= full_n))
+                rec.append(local_snapshot(sid, light=i >= full_n and sid not in force_set))
         # rec 建好后把远端快照挂到池首：overlay 按 sid 匹配 mine，顺序只影响兜底展示
         rec = ([remote_by[s] for s in reversed(remote_ids)] + rec) if scopes is None else (
             [{**_empty_snapshot(sid, cfg), **row} for (sid, _), row in remote_by.items()] + rec)
