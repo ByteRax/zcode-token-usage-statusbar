@@ -70,8 +70,22 @@ TOOLS = [
 ]
 
 
+_NOTIFY = object()   # 「无 id 成员」（JSON-RPC 通知）哨兵：与显式 "id": null（仍是请求，须回 id null）区分
+
+
 def reply(req_id, result):
+    if req_id is _NOTIFY:
+        return   # 通知不回响应
     print(json.dumps({"jsonrpc": "2.0", "id": req_id, "result": result}), flush=True)
+
+
+def reply_error(req_id, code, message):
+    # 无效帧（-32700/-32600）按规范回 id=null；合法请求的错误本就带 id。
+    # 通知（合法帧无 id 成员）的分支错误由调用方先判哨兵再调，不走到这里。
+    if req_id is _NOTIFY and code not in (-32700, -32600):
+        return
+    print(json.dumps({"jsonrpc": "2.0", "id": req_id,
+                      "error": {"code": code, "message": message}}), flush=True)
 
 
 def main():
@@ -82,31 +96,45 @@ def main():
         try:
             msg = json.loads(raw)
         except json.JSONDecodeError:
+            reply_error(None, -32700, "parse error")
             continue
-        # 一帧坏消息（batch 数组、params 非对象等）不能带崩整个 server 进程，
-        # 与坏 JSON 同样按未知帧跳过（协议只实现 initialize/tools-list/tools-call）。
+        # 一帧坏消息（batch 数组、params 非对象等）不能带崩整个 server 进程；
+        # 本 server 不实现 batch，按规范回 -32600（协议只实现 initialize/ping/tools-*/call）。
         if not isinstance(msg, dict):
+            reply_error(None, -32600, "invalid request: batch is not supported")
             continue
         method = msg.get("method", "")
-        req_id = msg.get("id")
+        req_id = msg["id"] if "id" in msg else _NOTIFY   # 显式 id:null 是请求（回 id null），非通知
         params = msg.get("params")
         if not isinstance(params, dict):
             params = {}
         if method == "initialize":
+            # 只声明支持的协议版本：请求了未知版本时按规范回自身版本，不做假能力承诺
+            requested = params.get("protocolVersion")
             reply(
                 req_id,
                 {
-                    "protocolVersion": params.get(
-                        "protocolVersion", PROTOCOL_VERSION
-                    ),
+                    "protocolVersion": requested if requested == PROTOCOL_VERSION else PROTOCOL_VERSION,
                     "capabilities": {"tools": {}},
                     "serverInfo": {"name": "zcode-token-usage", "version": "1.0.0"},
                 },
             )
+        elif method == "ping":
+            reply(req_id, {})
         elif method == "tools/list":
             reply(req_id, {"tools": TOOLS})
         elif method == "tools/call":
+            name = params.get("name")
+            if name != "token_usage":
+                # 忽略 name 曾让任意工具名都执行 token_usage；未知/缺失工具名按规范报错
+                if req_id is not _NOTIFY:
+                    reply_error(req_id, -32602, f"unknown tool: {name!r}")
+                continue
             args = params.get("arguments") or {}
+            if not isinstance(args, dict):
+                if req_id is not _NOTIFY:
+                    reply_error(req_id, -32602, "arguments must be an object")
+                continue
             try:
                 text = tool_token_usage(**args)
                 reply(req_id, {"content": [{"type": "text", "text": text}], "isError": False})
@@ -126,17 +154,9 @@ def main():
                         "isError": True,
                     },
                 )
-        elif req_id is not None:
-            print(
-                json.dumps(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": req_id,
-                        "error": {"code": -32601, "message": f"unknown method {method}"},
-                    }
-                ),
-                flush=True,
-            )
+        else:
+            if req_id is not _NOTIFY:
+                reply_error(req_id, -32601, f"unknown method {method}")
 
 
 if __name__ == "__main__":

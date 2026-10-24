@@ -82,8 +82,10 @@ async function verifySessionCookie(header) {
   let ok = false;
   let reason = 'invalid';
   try {
+    // 上游（本机 ZCode）挂死时不能让全部端点跟着悬挂：校验请求限时 10s
     const r = await fetch(ZCODE_ORIGIN + '/api/server-info', {
       headers: { cookie: `zcode_device_session=${value}` },
+      signal: AbortSignal.timeout(10000),
     });
     ok = r.status === 200;
   } catch {
@@ -162,7 +164,8 @@ let child = null;
 let childGen = 0;
 let unstable = false;
 const crashStamps = [];
-let queue = Promise.resolve(); // 串行化：行协议不能并发写
+/* 并发正确性依赖「按写序逐行应答 + waiter FIFO」：python 端一行一请求一响应，
+ * 请求方在 ask() 内各自等待配对响应，不在此处另设串行化队列。 */
 
 function startChild() {
   const gen = ++childGen;
@@ -502,7 +505,8 @@ async function handleRequest(req, res) {
       return send(res, 200, JSON.stringify(body), { 'Content-Type': MIME['.json'] });
     } catch (e) {
       log('snapshot 失败:', e.message);
-      return send(res, 500, JSON.stringify({ error: String(e.message || e).slice(0, 200) }), {
+      // 客户端只见通用文案：异常细节可能带服务器路径/回溯片段，完整信息只进服务端日志
+      return send(res, 500, JSON.stringify({ error: 'snapshot failed' }), {
         'Content-Type': MIME['.json'],
       });
     }

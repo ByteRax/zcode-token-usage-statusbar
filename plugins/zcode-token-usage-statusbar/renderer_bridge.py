@@ -14,7 +14,8 @@ import time
 
 import patch_install as asar
 
-WORKTREE = Path("/Users/smzdm/Projects/AI/zcode-token-usage-statusbar")
+# CLI 输出白名单根：脚本所在目录（仓库根或插件包根——两处都是合法的源码工作区）
+WORKTREE = Path(__file__).resolve().parent
 MARKER = b"/* zusage-existing-conversation-store:v1"
 BEGIN = b"/* zusage-existing-conversation-store:v1 begin */"
 END = b"/* zusage-existing-conversation-store:v1 end */"

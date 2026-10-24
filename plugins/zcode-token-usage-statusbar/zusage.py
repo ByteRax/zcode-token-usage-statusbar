@@ -528,11 +528,19 @@ def _sub_agent_tasks(con, sid):
 
 def render_session_detail(con, prefix):
     """session:<id前缀>：会话总量 + 按模型 + 子代理明细（任务名与状态条"子智能体目录"同源）。"""
-    rows = con.execute("select id from session where id like ?", (prefix + "%",)).fetchall()
+    prefix = (prefix or "").strip()
+    if not prefix:
+        return L("session 需要一个非空 id 前缀（session:<前缀>）",
+                 "session requires a non-empty id prefix (session:<prefix>)")
+    # 真实会话 id 形如 session_<hex>，含 LIKE 通配符 _/%；不转义会把 session_ab 前缀
+    # 匹配到任意第三字符，且无 ORDER BY 时 rows[0] 可能选错会话。
+    esc_prefix = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    pattern = esc_prefix + "%"
+    rows = con.execute("select id from session where id like ? escape '\\'", (pattern,)).fetchall()
     if not rows:
         rows = con.execute(
-            "select distinct session_id from model_usage where session_id like ?",
-            (prefix + "%",)).fetchall()
+            "select distinct session_id from model_usage where session_id like ? escape '\\'",
+            (pattern,)).fetchall()
     if not rows:
         return L(f"未找到 id 前缀为 {prefix!r} 的会话",
                  f"No session found with id prefix {prefix!r}")
@@ -1496,8 +1504,11 @@ def _remote_fetch(force_sids, have_local, setup, routes=None, scopes=None):
             continue
         missing.append(s)
     if not missing and scopes is None:
+        # None 键（目标未解析）不进错误表：json.dumps 会把 None 键序列化成 "null"，
+        # overlay 按目标键匹配错误条目时挂错归属。
         errs = {resolve(s): _REMOTE_NEG[(s, resolve(s))][2] for s in force_sids
-                if (s, resolve(s)) in _REMOTE_NEG and len(_REMOTE_NEG[(s, resolve(s))]) > 2
+                if resolve(s) is not None and (s, resolve(s)) in _REMOTE_NEG
+                and len(_REMOTE_NEG[(s, resolve(s))]) > 2
                 and _REMOTE_NEG[(s, resolve(s))][2]}
         return {}, {}, errs
     groups = {}
@@ -1524,7 +1535,7 @@ def _remote_fetch(force_sids, have_local, setup, routes=None, scopes=None):
         (sid, resolve(sid)) for sid in force_sids}
     for sid, key in selected:
         cached = _REMOTE_NEG.get((sid, key))
-        if cached and now_ms - cached[0] < cached[1] and len(cached) > 2 and cached[2]:
+        if key is not None and cached and now_ms - cached[0] < cached[1] and len(cached) > 2 and cached[2]:
             errs[key] = cached[2]
     # 各目标独立执行；总预算6秒，排队目标不再启动，避免超过桌面15秒看门狗。
     deadline = time.monotonic() + 6.0
@@ -1547,7 +1558,7 @@ def _remote_fetch(force_sids, have_local, setup, routes=None, scopes=None):
         by.update(by_sid)
         if isinstance(t, dict):
             today[key] = t
-        if err:
+        if err and key is not None:
             errs[key] = err
         for s in sids:
             if s in by_sid:

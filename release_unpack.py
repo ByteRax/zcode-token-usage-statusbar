@@ -30,7 +30,7 @@ PLUGIN_FILES = (
     "usage_mcp.py", "zusage.py", "patch_install.py", "install_monitor.py",
     "inject-main.cjs", "plugin-updater.cjs", "plugin-storage.cjs", "quota-client.cjs", "runtime_lock.py", "usage_stats.py", "turn-stats.js", "overlay.js",
     "plugin-release.cjs", "release_unpack.py", "overlay_install.py", "token_rate.py", "renderer_bridge.py",
-    "plugin_auto_update.py", "renderer_bridge.py", "restart_notice.py", ".mcp.json", "README.md",
+    "plugin_auto_update.py", "restart_notice.py", ".mcp.json", "README.md",
     ".zcode-plugin/plugin.json", ".claude-plugin/plugin.json", "hooks/hooks.json",
     "hooks/session-start.py", "hooks/prompt-submit.py", "commands/usage.md",
     "commands/install-overlay.md", "commands/uninstall-overlay.md",

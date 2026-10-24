@@ -309,9 +309,10 @@ def syntax_check(asar_path: Path):
         return True
     src = entry_bytes_of(asar_path)
     env = dict(os.environ, ELECTRON_RUN_AS_NODE="1")
-    fd, name = tempfile.mkstemp(prefix=".entry-check.", suffix=".js", dir=HERE)
-    tmp_js = Path(name)
+    fd, tmp_js, r, run_err = None, None, None, ""
     try:
+        fd, name = tempfile.mkstemp(prefix=".entry-check.", suffix=".js", dir=HERE)
+        tmp_js = Path(name)
         with os.fdopen(fd, "wb") as stream:
             stream.write(src)
         # Node 恒写 UTF-8：按区域编码解码，回显里的非 ASCII（中文路径/源码行）会让 Windows
@@ -322,7 +323,8 @@ def syntax_check(asar_path: Path):
         r = None
         run_err = str(e)
     finally:
-        tmp_js.unlink(missing_ok=True)
+        if tmp_js is not None:
+            tmp_js.unlink(missing_ok=True)   # mkstemp 本身失败时无临时文件可清
     if r is None:
         print(L(f"  [check] 语法检查无法执行（{run_err}），跳过",
                 f"  [check] syntax check failed to run ({run_err}); skipped"))
@@ -412,6 +414,9 @@ def _load_tmp_metadata():
     try:
         if TMP_META.is_symlink():
             raise PendingTmpError("sidecar is a symlink")
+        # 有界读：sidecar 目录被写入已需特权，仍不无界读入内存（与 release_unpack 同策略）
+        if TMP_META.stat().st_size > 256 * 1024:
+            raise PendingTmpError("sidecar abnormally large")
         meta = json.loads(TMP_META.read_text(encoding="utf-8"))
         if (meta["version"] != 1 or meta["asar"] != str(ASAR.resolve()) or
                 meta["tmp_path"] != str(TMP.absolute()) or
@@ -850,8 +855,15 @@ def _remove():
 
 
 def check():
-    injected = bool(ZUSAGE_LINE_RE.search(entry_bytes_of(ASAR)))   # 宽松匹配任意目录的历史注入行（独立运行时 INJECT_LINE 指向仓库路径，精确匹配会误报未注入）
-    print("asar:", ASAR, ASAR.stat().st_size, "bytes")
+    # CLI 诊断入口：坏目标（缺文件/非 asar）给可读提示，不抛裸 traceback
+    try:
+        injected = bool(ZUSAGE_LINE_RE.search(entry_bytes_of(ASAR)))   # 宽松匹配任意目录的历史注入行（独立运行时 INJECT_LINE 指向仓库路径，精确匹配会误报未注入）
+        size = ASAR.stat().st_size
+    except (OSError, ValueError, KeyError, struct.error) as e:
+        print(L(f"[check] 读取 asar 失败（{e}）：{ASAR}",
+                f"[check] failed to read asar ({e}): {ASAR}"))
+        return 1
+    print("asar:", ASAR, size, "bytes")
     print(L("注入状态:", "Injection:"), L("已注入", "injected") if injected else L("未注入", "not injected"))
     print(L("遗留备份（机制已退役，成功安装/卸载后自动清理）:", "Legacy backup (retired; auto-removed on successful install/remove):"), BAK.exists())
     if injected:
@@ -927,4 +939,4 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())   # check 等子命令的失败退出码必须真正生效（曾裸 main() 恒 0）

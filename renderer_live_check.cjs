@@ -8,7 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-const WORKTREE = '/Users/smzdm/Projects/AI/zcode-token-usage-statusbar/.worktrees/event-driven-stats';
+const WORKTREE = __dirname;   // 仓库根（曾硬编码原维护者机器的 worktree，其它环境必失败）
 const HOST_ASAR = '/Applications/ZCode.app/Contents/Resources/app.asar';
 const HOST_APP = '/Applications/ZCode.app';
 const LIVE_DIR = path.join(os.tmpdir(), 'zusage-live-check');
@@ -119,7 +119,8 @@ async function main() {
     // must not contend for the real user's data locks. Login state is carried via a copy.
     const home = path.join(LIVE_DIR, 'home');
     fs.mkdirSync(path.join(home, 'Library/Application Support'), { recursive: true });
-    execFileSync('cp', ['-R', '/Users/smzdm/Library/Application Support/ZCode',
+    // 登录态取本机当前用户（曾硬编码原维护者 HOME，其它机器上必失败）
+    execFileSync('cp', ['-R', path.join(os.homedir(), 'Library/Application Support/ZCode'),
       path.join(home, 'Library/Application Support/ZCode')], { stdio: 'inherit' });
     const binary = path.join(LIVE_APP, 'Contents/MacOS/ZCode');
     log('launch', `${binary} --remote-debugging-port=${PORT} (isolated HOME ${home})`);

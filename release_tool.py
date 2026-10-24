@@ -264,7 +264,9 @@ def download_traced(url, hops, timeout=120):
     opener = urllib.request.build_opener(_TraceRedirects(hops))
     request = urllib.request.Request(url, headers={"User-Agent": "zusage-release-tool"})
     with opener.open(request, timeout=timeout) as response:
-        return response.read(), response.geturl()
+        # 有界下载（输入侧 read_file 的 MAX_ASSET 同款上限）：异常大响应先按上限截断，
+        # 后续 sha256 字节比对失败仍 fail-closed，但内存不被放大
+        return response.read(MAX_ASSET + 1), response.geturl()
 
 
 def preflight(root, repo, manifest, asset):
