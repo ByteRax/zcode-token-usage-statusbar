@@ -170,11 +170,12 @@ def asar_candidates():
                              ("LOCALAPPDATA", "ZCode"), ("ProgramFiles", "ZCode")):
         if os.environ.get(variable):
             candidates.append(Path(os.environ[variable]) / suffix / "resources/app.asar")
-    # 自定义盘符安装（如 D:\Program Files\ZCode）：逐个本地固定盘枚举两种常见布局；
-    # %ProgramFiles% 只跟系统盘走。候选仍须通过 is_zcode_asar 包身份校验。
+    # 自定义盘符安装（如 D:\Program Files\ZCode）：逐个本地固定盘枚举三种常见布局
+    # （%ProgramFiles% 只跟系统盘走；盘根 Programs/ZCode 是用户自装位置）。候选仍须通过
+    # is_zcode_asar 包身份校验。
     candidates.extend(Path(f"{letter}:/{folder}/resources/app.asar")
                       for letter in fixed_drives("DEFGHIJKLMNOPQRSTUVWXYZ")
-                      for folder in ("Program Files/ZCode", "ZCode"))
+                      for folder in ("Program Files/ZCode", "Programs/ZCode", "ZCode"))
     if os.environ.get("LOCALAPPDATA"):
         programs = Path(os.environ["LOCALAPPDATA"]) / "Programs"
         candidates.extend(sorted(programs.glob("*/resources/app.asar")))

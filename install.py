@@ -188,11 +188,11 @@ def fixed_drives(letters):
 
 
 def drive_candidates():
-    """自定义盘符安装（如 D:\\Program Files\\ZCode）：逐个本地固定盘枚举两种常见布局
-    （%ProgramFiles% 只跟系统盘走）。"""
+    """自定义盘符安装（如 D:\\Program Files\\ZCode）：逐个本地固定盘枚举三种常见布局
+    （%ProgramFiles% 只跟系统盘走；盘根 Programs\\ZCode 是不走安装器的自装位置）。"""
     return [f"{letter}:\\{folder}\\resources\\app.asar"
             for letter in fixed_drives("CDEFGHIJKLMNOPQRSTUVWXYZ")
-            for folder in (r"Program Files\ZCode", "ZCode")]
+            for folder in (r"Program Files\ZCode", r"Programs\ZCode", "ZCode")]
 
 
 def find_asar():
