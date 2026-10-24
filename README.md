@@ -28,7 +28,13 @@ Windows / macOS · Python 3.8+ · [MIT](LICENSE)
 
 > 句尾的 `#plugin-releases` 是正式渠道，装的是经过 SHA256 校验的正式 Release 包，⚙ 里能自动更新——和下面「方式 A」手动敲的两条命令是同一个渠道，别把它删掉。
 
-国内网络访问 GitHub 受限？上面那句里的地址可能连不上。插件渠道和代码在 GitCode 都有同步镜像：[gitcode.com/tanranran/zcode-token-usage-statusbar](https://gitcode.com/tanranran/zcode-token-usage-statusbar)，插件市场可以直接注册 GitCode 渠道，见下面「四种装法」的说明。
+国内网络访问 GitHub 受限？上面那句里的地址可能连不上，换成这句再发给 ZCode（结尾的 `.git` 不能省，本机要装有 [Git](https://git-scm.com/downloads)）：
+
+```text
+安装或者更新 zcode 插件 https://gitcode.com/tanranran/zcode-token-usage-statusbar.git#plugin-releases-gitcode，执行完毕后，运行命令 /install-overlay
+```
+
+插件渠道和代码在 GitCode 都有同步镜像：[gitcode.com/tanranran/zcode-token-usage-statusbar](https://gitcode.com/tanranran/zcode-token-usage-statusbar)，插件市场可以直接注册 GitCode 渠道，见下面「四种装法」的说明。
 
 [快速开始](#快速开始) · [这些数字是怎么来的](#这些数字是怎么来的) · [常见问题](#常见问题) · [功能截图](docs/features.md)
 
@@ -202,6 +208,8 @@ GitHub 访问受限时，把第一条换成 GitCode 渠道（结尾的 `.git` �
 /plugin install zcode-token-usage-statusbar@zusage-marketplace
 ```
 
+> **敲完命令先确认插件真的装上了。** 第一条命令要从注册地址克隆仓库，网络连不上时这一步会失败——失败后**可能一点痕迹都不留**，报错也未必醒目，很容易误以为已经装好。看一眼 **设置 → 插件 → 已安装**：出现 **ZCode Token Usage Statusbar** 才算第一步成功；没有的话，多半是市场注册没成，国内直连 GitHub 超时的机器直接换上面 GitCode 渠道重来一遍。逐步核对清单见[安装结果自查](docs/user-guide.md#安装结果自查)。
+
 注册的是哪个地址，之后 ⚙ 里的「检查更新 / 立即更新」和自动更新就从哪里取：两条渠道装的是同一份经过校验的正式 Release 包，不会跟着开发分支乱跑。
 
 也可以走界面：**设置 → 插件 → 添加插件市场**，填上面任意一个渠道地址，添加后找到 **ZCode Token Usage Statusbar** 点安装。
@@ -343,7 +351,9 @@ macOS 上要是没有 `python`，就写 `python3 install.py`。
 
 **我装了插件，状态条呢？**
 
-保持插件是启用的，**新建一个会话或者恢复一个会话**，会自动触发安装/修复；装成功后完全退出并重开 ZCode。自动装失败就用 `/install-overlay` 手动来一次，顺便检查权限、配置和"别再自动装"的标记。**光重启救不了一个还没装成功的状态条。**
+先看 **设置 → 插件 → 已安装** 里有没有它——完全找不到的话，说明 `/plugin install` 那步就没成功，常见形态是市场注册时 GitHub 克隆超时失败且不留痕迹（国内直连常见，没看到报错不代表成功了），换 [A. 插件](#a-插件推荐)里的 GitCode 渠道重新走一遍。
+
+插件在列表里的话：保持插件是启用的，**新建一个会话或者恢复一个会话**，会自动触发安装/修复；装成功后完全退出并重开 ZCode。自动装失败就用 `/install-overlay` 手动来一次，顺便检查权限、配置和"别再自动装"的标记。**光重启救不了一个还没装成功的状态条。**
 
 **更新 ZCode 之后，状态条怎么没了？**
 

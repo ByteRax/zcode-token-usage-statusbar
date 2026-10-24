@@ -28,7 +28,13 @@ It installs the plugin, then runs `/install-overlay` to put the bar in place —
 
 > The `#plugin-releases` at the end is the stable channel: it installs a SHA256-verified Release package and auto-updates from ⚙ — the same channel as the two commands in Method A below. Don't drop it from the URL.
 
-Can't reach GitHub from your network (mainland China)? The URL above probably won't load either. Both the plugin channel and the code have a synced mirror on GitCode: [gitcode.com/tanranran/zcode-token-usage-statusbar](https://gitcode.com/tanranran/zcode-token-usage-statusbar). The plugin marketplace can be registered straight from the GitCode channel — see the four install methods below.
+Can't reach GitHub from your network (mainland China)? The URL above probably won't load either. Send ZCode this instead (the trailing `.git` is required; this route needs local [Git](https://git-scm.com/downloads)):
+
+```text
+Install or update the ZCode plugin https://gitcode.com/tanranran/zcode-token-usage-statusbar.git#plugin-releases-gitcode, then run /install-overlay when it's done
+```
+
+Both the plugin channel and the code have a synced mirror on GitCode: [gitcode.com/tanranran/zcode-token-usage-statusbar](https://gitcode.com/tanranran/zcode-token-usage-statusbar). The plugin marketplace can be registered straight from the GitCode channel — see the four install methods below.
 
 [Quick start](#quick-start) · [Where these numbers come from](#where-these-numbers-come-from) · [FAQ](#faq) · [Screenshots](docs/features.md)
 
@@ -202,6 +208,8 @@ If GitHub is unreachable from your network, swap the first line for the GitCode 
 /plugin install zcode-token-usage-statusbar@zusage-marketplace
 ```
 
+> **After the two commands, confirm the plugin actually installed.** The first command clones the repo from the registered address; if the network can't reach it, that step fails — **possibly without leaving a single trace**, and the error may not be loud — which is easy to mistake for a success. Check **Settings → Plugin → Installed**: **ZCode Token Usage Statusbar** must appear there before anything else can happen. If it doesn't, the marketplace registration likely failed; on networks where a direct connection to GitHub times out, re-run with the GitCode channel above. Step-by-step checklist: [install verification](docs/user-guide.md#安装结果自查) (Chinese).
+
 Whichever address you register is where ⚙ **Check for updates / Update now** and automatic updates fetch from: both channels serve the same checksum-verified stable Release packages, never a development branch.
 
 You can also use the UI: **Settings → Plugin → Add marketplace**, enter either channel address above, then find and install **ZCode Token Usage Statusbar**.
@@ -343,7 +351,9 @@ No. The desktop bar only installs into the ZCode client on your own machine. A s
 
 **I installed the plugin. Where's the bar?**
 
-Leave the plugin enabled and **start a new session or resume one** — that triggers the automatic install/repair. Once it succeeds, quit ZCode completely and reopen it. If the automatic install fails, run `/install-overlay` by hand and check permissions, config and the "don't reinstall" marker. **A restart alone can't repair a bar that was never successfully installed.**
+First check **Settings → Plugin → Installed** — if it's nowhere to be found, `/plugin install` never succeeded. The most common shape: the marketplace registration timed out cloning GitHub and failed without a trace (typical where a direct connection to GitHub is blocked; no visible error doesn't mean success). Redo it with the GitCode channel from [A. The plugin](#a-the-plugin-recommended).
+
+If the plugin is listed: leave it enabled and **start a new session or resume one** — that triggers the automatic install/repair. Once it succeeds, quit ZCode completely and reopen it. If the automatic install fails, run `/install-overlay` by hand and check permissions, config and the "don't reinstall" marker. **A restart alone can't repair a bar that was never successfully installed.**
 
 **The bar vanished after I updated ZCode. Why?**
 
