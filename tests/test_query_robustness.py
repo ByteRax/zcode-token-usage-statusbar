@@ -166,17 +166,17 @@ class McpBadFrameTests(unittest.TestCase):
             '"just a string"',
             '{"jsonrpc":"2.0","id":2,"method":"initialize","params":null}',
             '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":[]}',
-            '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"arguments":{"scope":"today"}}}',
+            '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"token_usage","arguments":{"scope":"today"}}}',
             'not json at all',
         ]
         out = self._run(frames)
         self.assertIn('"id": 2', out)   # params null 的 initialize 仍正常应答
         self.assertIn('"id": 4', out)   # 合法 tools/call 正常应答
         self.assertIn("ok", out)
-        self.assertNotIn('"id": 1', out)          # 非对象帧静默跳过
-        # params 非对象的 tools/call 归一为无参调用，走错误应答而不是带崩进程
-        self.assertIn('"id": 3', out)
-        self.assertIn('"isError": true', out)
+        self.assertNotIn('"id": 1', out)          # 非对象帧按 -32600 回错（id null），不静默
+        # params 非对象归一为 {} → 无 name：按未知工具报错而不是带崩进程
+        self.assertIn('"id": 3, "error"', out)
+        self.assertIn("-32602", out)
 
 
 
@@ -211,3 +211,100 @@ class CliCountTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class McpProtocolTests(unittest.TestCase):
+    """2026-10-24 第 4 轮：JSON-RPC/MCP 规范符合性（ping/-32700/通知/未知工具/协议版本）。"""
+
+    def _run(self, frames):
+        import types
+
+        class _Stdin:
+            def __iter__(self):
+                return iter(frames)
+
+        buf = io.StringIO()
+        con = types.SimpleNamespace(close=lambda: None)
+
+        class _Err(list):
+            pass
+
+        import contextlib
+
+        with mock.patch.object(sys, "stdin", _Stdin()), redirect_stdout(buf), \
+                mock.patch.object(usage_mcp.zusage, "connect", lambda: con), \
+                mock.patch.object(usage_mcp.zusage, "render_today", lambda c: "ok"):
+            usage_mcp.main()
+        return buf.getvalue()
+
+    def test_ping_returns_empty_result(self):
+        out = self._run(['{"jsonrpc":"2.0","id":1,"method":"ping"}'])
+        self.assertIn('"id": 1, "result": {}', out)
+
+    def test_bad_json_gets_parse_error_with_null_id(self):
+        out = self._run(["{not json"])
+        self.assertIn("-32700", out)
+        self.assertIn('"id": null', out)
+
+    def test_batch_frame_gets_invalid_request(self):
+        out = self._run(["[]"])
+        self.assertIn("-32600", out)
+
+    def test_notification_gets_no_reply(self):
+        out = self._run(['{"jsonrpc":"2.0","method":"tools/list"}'])   # 无 id = 通知
+        self.assertEqual(out, "")
+
+    def test_unknown_tool_name_is_rejected(self):
+        out = self._run(['{"jsonrpc":"2.0","id":7,"method":"tools/call",'
+                         '"params":{"name":"other_tool","arguments":{"scope":"today"}}}'])
+        self.assertIn("-32602", out)
+        self.assertIn("other_tool", out)
+        self.assertNotIn("ok", out, "未知工具名不得执行 token_usage")
+
+    def test_initialize_declares_only_supported_protocol_version(self):
+        out = self._run(['{"jsonrpc":"2.0","id":2,"method":"initialize",'
+                         '"params":{"protocolVersion":"2099-01-01"}}'])
+        self.assertIn(usage_mcp.PROTOCOL_VERSION, out)
+        self.assertNotIn("2099-01-01", out)
+
+
+class SessionPrefixTests(unittest.TestCase):
+    """2026-10-24 第 4 轮：前缀含 LIKE 通配符（真实会话 id 含 _）须按字面匹配。"""
+
+    def test_underscore_prefix_matches_literal_only(self):
+        con = fixture(sqlite3.connect(":memory:"))
+        self.addCleanup(con.close)
+        for sid, title in (("session_abc123", "right"), ("sessionXabc123", "wrong")):
+            con.execute("insert into session (id, title) values (?, ?)", (sid, title))
+            con.execute("insert into model_usage (id, session_id, status, query_source, model_id,"
+                        " started_at, completed_at, input_tokens, output_tokens)"
+                        " values (?, ?, 'completed', 'main_turn', 'GLM-5.3', 100, 200, 10, 100)",
+                        ("r" + sid, sid))
+        text = zusage.render_session_detail(con, "session_ab")
+        self.assertIn("right", text)
+        self.assertNotIn("wrong", text)
+
+    def test_empty_prefix_is_rejected(self):
+        con = fixture(sqlite3.connect(":memory:"))
+        self.addCleanup(con.close)
+        self.assertIn("前缀", zusage.render_session_detail(con, "  "))
+
+
+class McpNullIdTests(unittest.TestCase):
+    """显式 "id": null 是请求不是通知（复查 MINOR）：须回 id null，不得静默。"""
+
+    def _run(self, frames):
+        import types
+
+        class _Stdin:
+            def __iter__(self):
+                return iter(frames)
+
+        buf = io.StringIO()
+        with mock.patch.object(sys, "stdin", _Stdin()), redirect_stdout(buf):
+            usage_mcp.main()
+        return buf.getvalue()
+
+    def test_explicit_null_id_request_gets_a_null_id_response(self):
+        out = self._run(['{"jsonrpc":"2.0","id":null,"method":"ping"}'])
+        self.assertIn('"id": null, "result": {}', out)

@@ -399,15 +399,17 @@ class PendingAsarTests(unittest.TestCase):
         spec.loader.exec_module(module)
         return module
 
-    def test_standalone_without_asar_guesses_default_and_crashes(self):
-        # 复现：standalone 调用在猜错的默认路径上 FileNotFoundError（check() 不捕获此异常），
-        # 与 issue 里报告的崩溃一致；默认猜测本身是否存在跟开发机是否装了 ZCode 有关，
-        # 这里直接模拟"猜测路径不是真实安装位置"这个必然场景，不依赖本机环境。
+    def test_standalone_without_asar_guesses_default_and_reports(self):
+        # issue #14 场景：standalone 在猜错的默认路径上运行 check。曾以 FileNotFoundError
+        # 裸崩（测试旧名 …and_crashes 锁的就是那个崩溃）；2026-10-24 起 check() 对坏目标
+        # 输出可读提示并以 1 退出，不再抛裸 traceback。
         fresh = self.fresh_module()
+        buf = io.StringIO()
         with mock.patch.object(fresh, "ASAR", self.root / "not-the-real-install" / "app.asar"), \
-                contextlib.redirect_stdout(io.StringIO()):
-            with self.assertRaises(FileNotFoundError):
-                fresh.main(["check"])
+                contextlib.redirect_stdout(buf):
+            rc = fresh.main(["check"])
+        self.assertEqual(rc, 1)
+        self.assertIn("读取 asar 失败", buf.getvalue())
 
     def test_standalone_asar_flag_fixes_default_path_guess(self):
         fresh = self.fresh_module()

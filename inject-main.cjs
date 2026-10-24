@@ -443,6 +443,11 @@ function startResident() {
   proc.stdout.on("data", (d) => {
     if (state.finished) return;
     state.buf += d.toString("utf8");
+    if (state.buf.length > 8 * 1024 * 1024) {   // 无 newline 的异常输出不再无界累积（超时哨兵兜底前先止血）
+      LOG("resident stdout overflow, dropping buffer");
+      state.buf = "";
+      return;
+    }
     let i;
     while ((i = state.buf.indexOf("\n")) >= 0) {
       const line = state.buf.slice(0, i);
@@ -521,7 +526,7 @@ function legacySpawn(line, done) {
   let py;
   try { py = spawn(readCfgCached().python_path, args, { windowsHide: true }); }
   catch (e) { LOG("spawn failed:", e.message); done(null); return; }
-  let out = "", finished = false;
+  let out = "", finished = false;   // out 上限 8MB：异常输出止血（15s 超时兜底前不无界累积）
   const finish = (payload) => {
     if (finished) return;
     finished = true;
@@ -533,7 +538,7 @@ function legacySpawn(line, done) {
     try { py.kill(); } catch (e) { }
     finish(null);
   }, 15000);
-  py.stdout.on("data", (d) => { out += d; });
+  py.stdout.on("data", (d) => { if (out.length < 8 * 1024 * 1024) out += d; });
   py.stderr.on("data", () => { });
   py.on("error", (e) => { LOG("spawn failed:", e.message); finish(null); });
   py.on("close", () => {

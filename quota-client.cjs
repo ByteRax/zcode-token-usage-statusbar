@@ -38,7 +38,9 @@ function sha16(v) { return crypto.createHash("sha256").update(String(v)).digest(
 function qErr(code, message, extra) {
   return Object.assign(new Error(message), Object.assign({ code }, extra || {}));
 }
-function clampPct(x) { return Math.max(0, Math.min(100, x)); }
+function clampPct(x) { return Number.isNaN(x) ? 0 : Math.max(0, Math.min(100, x)); }   // NaN→0 防御；±Infinity 按钳制方向处理（超限→100，fail-closed）
+/* 团队套餐 id 判定：词边界匹配，含 "team" 子串的普通 id（如假想的 steam-promo）不误判 */
+function isTeamProviderId(p) { return /(^|[-:])team([-:]|$)/.test(String(p || "")); }
 function parseRetryAfterMs(v) {
   if (v == null) return null;
   const sec = Number(v);
@@ -385,7 +387,7 @@ function collectWindows(list, defs) {
     let pct = num(e.percentUsed);
     if (pct == null) pct = num(e.percent);
     if (pct == null) pct = num(e.utilization);
-    if (pct != null && e.usage_percentage != null) { /* ZenMux 0-1 已用小数 */ }
+    // usage_percentage（ZenMux 0-1 已用小数）：仅在前面字段都缺失时兜底，>1 视作已是百分数
     if (pct == null && e.usage_percentage != null) pct = e.usage_percentage <= 1 ? e.usage_percentage * 100 : e.usage_percentage;
     if (pct == null || !isFinite(pct) || pct < 0) continue;
     out[name] = { percent: Math.round(clampPct(pct) * 10) / 10, resetsAt: resetOf(e.resetsAt != null ? e.resetsAt : (e.resets_at != null ? e.resets_at : e.resetTime)) };
@@ -498,7 +500,7 @@ for (const fam of ["bigmodel", "zai"]) {
     id: fam, label: fam === "bigmodel" ? "BigModel" : "Z.ai", kind: "plan", defaultOn: false, envKeys: conf.envKeys,
     detect(j, providerId) {
       if (providerId.indexOf("account:") !== 0) return null;
-      if (providerId.indexOf("team") >= 0) return { team: true };
+      if (isTeamProviderId(providerId)) return { team: true };
       if (providerId.indexOf("account:" + fam) === 0) return { family: fam };
       return null;
     },
@@ -577,7 +579,7 @@ ADAPTERS.push({
     }
     const deviceMid = readZcodeDeviceMid(j);
     if (!deviceMid) return null;   // 缺设备号必被服务端 3001 拒：fail-closed 不发请求
-    return { token, deviceMid, fingerprint: sha16(token + "|" + deviceMid), source };
+    return { token, deviceMid, fingerprint: sha16(JSON.stringify([token, deviceMid])), source };   // 定界拼接防 "|" 歧义撞指纹
   },
   async fetchOne(j, ctx, cred, ctl) {
     const body = await j.http.getJson(ZCODE_START_BALANCE_URL,
@@ -1083,7 +1085,8 @@ ADAPTERS.push({
     return { ak, sk, fingerprint: "sec:" + sha16(ak + "|" + sk), source: "secrets" };
   },
   async fetchOne(j, ctx, cred, ctl) {
-    const region = ((j.secrets.sources || {}).volcano || {}).region || "cn-beijing";
+    const rawRegion = ((j.secrets.sources || {}).volcano || {}).region;
+    const region = typeof rawRegion === "string" && /^[a-z0-9-]{2,32}$/.test(rawRegion) ? rawRegion : "cn-beijing";   // 非法 region 回默认，不让坏配置进签名串
     const host = "open.volcengineapi.com";
     /* 双 plan 探测：Agent Plan（GetAFPUsage）非空即返；Quota<=0 视为未订阅回落 Coding Plan */
     let body = null, tag = "";
@@ -1210,8 +1213,9 @@ function normalizeSub2api(body) {
 }
 
 function relayQuotaUrls(baseUrl) {
+  // 空/非法 baseUrl 是配置类不可用：按 unsupported 长退避（quota.md 契约），不是响应形状问题
   let url;
-  try { url = new URL(baseUrl); } catch (e) { throw qErr("parse_error", "bad baseUrl"); }
+  try { url = new URL(baseUrl); } catch (e) { throw qErr("unsupported", "bad baseUrl"); }
   if (url.protocol !== "https:" && !(url.protocol === "http:" &&
       ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname))) throw qErr("parse_error", "untrusted query scheme");
   if (url.username || url.password) throw qErr("parse_error", "baseUrl userinfo rejected");
@@ -1292,7 +1296,7 @@ ADAPTERS.push({
     const cp = j.customProviderOf(providerId);
     return cp ? { cp } : null;
   },
-  resolveCred(j, ctx) { return { token: ctx.cp.apiKey, fingerprint: "cfg:" + sha16(ctx.cp.apiKey + "|" + ctx.cp.baseUrl), source: "provider_config" }; },
+  resolveCred(j, ctx) { return { token: ctx.cp.apiKey, fingerprint: "cfg:" + sha16(JSON.stringify([ctx.cp.apiKey, ctx.cp.baseUrl])), source: "provider_config" }; },   // 定界拼接防 "|" 歧义撞指纹
   async fetchOne(j, ctx, cred, ctl) {
     const cp = ctx.cp;
     const urls = relayQuotaUrls(cp.baseUrl);
@@ -1478,7 +1482,7 @@ function createQuotaClient(opts) {
     const p = String(providerId || "");
     if (!p) return { id: "" };
     if (p.indexOf("account:") === 0) {
-      if (p.indexOf("team") >= 0) return { id: "team" };
+      if (isTeamProviderId(p)) return { id: "team" };
       if (zcodeStartDetectOf(p)) return { id: "zcode-start", ctx: { family: "zcode-start" } };
       if (p.indexOf("account:bigmodel") === 0) return { id: "bigmodel", ctx: { family: "bigmodel" } };
       if (p.indexOf("account:zai") === 0) return { id: "zai", ctx: { family: "zai" } };
@@ -1870,7 +1874,7 @@ module.exports = {
     const p = String(providerId || "");
     if (apiKeyFamilyOf(p)) return { family: apiKeyFamilyOf(p) };
     if (p.indexOf("account:") !== 0) return null;
-    if (p.indexOf("team") >= 0) return { unsupported: "team" };
+    if (isTeamProviderId(p)) return { unsupported: "team" };
     if (zcodeStartDetectOf(p)) return { family: "zcode-start" };
     if (p.indexOf("account:bigmodel") === 0) return { family: "bigmodel" };
     if (p.indexOf("account:zai") === 0) return { family: "zai" };

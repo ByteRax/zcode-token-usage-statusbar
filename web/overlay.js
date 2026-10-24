@@ -1417,7 +1417,7 @@
         livePhaseCur = speedView.phase || "";
         liveIconCur = speedView.phase ? "think" : "bolt";   // v77.1：运行期一律动效脑（思考/正文/工具），完成态才回闪电
         it((speedView.phase ? zuIcoThinking() : ico('<path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/>')) +
-          '<span class="zu-live ' + speedView.cls + '">' + speedView.text + "</span>",
+          '<span class="zu-live ' + speedView.cls + '">' + ttEsc(speedView.text) + "</span>",
           "\x01" +
           ttH(L("生成速度", "Generation speed")) +
           ttRow(L("生成中", "While running"), L("按文本增量算出的字符/s，除以「每 token 字符数」估算 tok/s；该比例取自本会话最近一次完成的真实轮次，随每轮刷新（首轮无样本时用粗略默认值）", "estimated from the text-delta chars/s divided by a chars-per-token ratio; the ratio is calibrated from this session's most recently completed turn and refines each turn (a rough default is used before the first sample)")) +

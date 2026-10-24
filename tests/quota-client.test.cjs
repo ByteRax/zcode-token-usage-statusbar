@@ -1505,3 +1505,19 @@ test("volcano post: 400 with JSON signature envelope stays auth_failed (envelope
   await flush();
   assert.equal(b.client.view().sources.volcano.status, "auth_failed");
 });
+
+/* ---------- 2026-10-24 第 4 轮回归：team 词边界 / 坏 baseUrl 归 unsupported ---------- */
+
+test("team detection uses word boundaries: substring-only ids are not team plans", () => {
+  assert.deepEqual(Q.resolveWanted("account:bigmodel-team-coding-plan"), { unsupported: "team" });
+  assert.deepEqual(Q.resolveWanted("account:zai-team"), { unsupported: "team" });
+  const steam = Q.resolveWanted("account:steam-promo");   // 含 "team" 子串的假想 id
+  assert.ok(!steam || !steam.unsupported || steam.unsupported !== "team",
+    "substring match must not misclassify: " + JSON.stringify(steam));
+});
+
+test("empty/invalid relay baseUrl classifies as unsupported, not parse_error", () => {
+  assert.throws(() => Q.relayQuotaUrls(""), e => e.code === "unsupported");
+  assert.throws(() => Q.relayQuotaUrls("not a url"), e => e.code === "unsupported");
+  // scheme/userinfo 安全门维持既有分类（parse_error），测试 976-977 已锁定
+});
