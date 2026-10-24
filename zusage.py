@@ -1607,12 +1607,15 @@ def _provider_fallback(con):
     return (row or ("",))[0] or ""
 
 
-def snapshot(force_sid="", routes=None):
+def snapshot(force_sid="", routes=None, serve_con=None):
     """单次快照：最新会话 + 最近 6+6 会话池 + 今日。
     force_sid：各窗口当前会话 id，逗号分隔（泵按窗口汇总上报：主进程 IPC 映射的焦点会话 +
     overlay localStorage 键兜底），全部强制纳入快照——不在 6+6 池里的会话（新开的、久远的）
     也能被各窗口找到自己的会话并显示（v32 起；v34 改为多窗口多 sid）。
-    routes：sid→目标键（泵按窗口 workspaceIdentity 路由）；未路由会话走默认目标。"""
+    routes：sid→目标键（泵按窗口 workspaceIdentity 路由）；未路由会话走默认目标。
+    serve_con：serve 常驻进程传入的复用连接（None = 自建自关，CLI/json 一次性路径）。
+    连接所有权归调用方：serve 模式下查询期出错会就地 close（调用方下次探活重建），
+    finally 不重复关闭。"""
     cfg = load_config()
     scopes = None
     if isinstance(routes, list):
@@ -1625,10 +1628,12 @@ def snapshot(force_sid="", routes=None):
                 scopes.append((sid, ident))
         force_sid = ",".join([str(force_sid)] + [s for s, _ in scopes])
         routes = {}
-    con = None
+    con = serve_con
+    owns_con = serve_con is None
     local_error = None
     try:
-        con = connect()
+        if owns_con:
+            con = connect()
     except sqlite3.Error as exc:
         local_error = str(exc)[:200]
     try:
@@ -1755,30 +1760,74 @@ def snapshot(force_sid="", routes=None):
             "recent": rec,
         }
     finally:
-        if con is not None:
+        if con is not None and owns_con:
             con.close()
 
 
 # ---------- CLI ----------
 
+_SERVE_IDLE_S = 60.0   # serve 复用连接的空闲重建阈值（测试把它调成负数即可覆盖回收分支）
+
+
 def serve():
     """常驻查询服务（v8 泵配套）：省每次 ~60-100ms 的解释器启动+模块加载费。
     stdin 每行一个请求（空行 = 无强制会话），stdout 每行一个 JSON 快照。
-    stdin EOF = 泵已退出（管道断开），随即退出——孤儿进程自清理。
-    每请求 snapshot() 内部新开 sqlite 连接：不持长读事务，WAL checkpoint 不受阻碍。"""
+    stdin EOF = 泵已退出（管道断开），随即 exit——孤儿进程自清理。
+    本地库连接跨请求复用（fork perf/only 同源收编，326MB 库实测单查询 22.6→5.4ms）：
+    全部 SELECT 走 autocommit 且游标迭代到穷尽，空闲连接不持读锁、不碍 WAL checkpoint；
+    连接在空闲超 60s 后的下一次请求前、库文件被替换（st_dev/st_ino 变化）时、
+    探活失败或查询异常后重建。json 一次性路径仍每请求开-关。"""
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
+    con = None
+    stamp = None
+    last_used = 0.0
+
+    def _drop():
+        nonlocal con
+        if con is not None:
+            try:
+                con.close()
+            except sqlite3.Error:
+                pass
+            con = None
+
     while True:
         line = sys.stdin.readline()
         if not line:
+            _drop()
             return
+        now = time.monotonic()
+        fresh = False
+        try:
+            st = os.stat(DB_PATH)
+            stamp_now = (st.st_dev, st.st_ino)
+            fresh = stamp_now == stamp
+        except OSError:
+            stamp_now = None
+        if con is not None and (not fresh or now - last_used > _SERVE_IDLE_S):
+            _drop()   # 长空闲后的旧连接/被替换的库文件：宁可重开一次也不带病复用
+        if con is not None:
+            try:
+                con.execute("select 1")
+            except sqlite3.Error:
+                _drop()   # 上一轮查询期出错被 snapshot 就地 close：探活即重建
+        if con is None:
+            try:
+                con = connect()
+                if stamp_now is not None:
+                    stamp = stamp_now
+            except sqlite3.Error:
+                con = None
         try:
             force_sid, routes = _parse_query(line.strip())
-            out = json.dumps(snapshot(force_sid, routes))
+            out = json.dumps(snapshot(force_sid, routes, serve_con=con))
         except Exception as e:
             out = json.dumps({"error": str(e)[:200]})   # 单次查询失败不杀常驻进程
+            _drop()   # 异常路径下连接状态未知：弃用，下轮重建
+        last_used = time.monotonic()
         sys.stdout.write(out + "\n")
         sys.stdout.flush()
 
