@@ -20,13 +20,20 @@ def _number(value):
             and math.isfinite(value))
 
 
-def request_stats(row):
-    """Output includes reasoning. Missing/invalid generation windows stay unrated."""
+def request_stats(row, covers=frozenset()):
+    """Output includes reasoning. Missing/invalid generation windows stay unrated.
+    Thinking rows default to the started_at window (thinking before the first token);
+    providers in `covers` stream thinking after the first token, so their thinking is
+    already inside the first-token window and the window stays first_token_at-based."""
     output = row["output_tokens"] or 0
     reasoning = row["reasoning_tokens"] or 0
     completed = row["completed_at"]
     thinking = reasoning > 0 or hides_reasoning(row["model_id"])
-    start = row["started_at"] if thinking else row["first_token_at"]
+    try:
+        pid = row["provider_id"]
+    except (KeyError, IndexError):
+        pid = None
+    start = row["started_at"] if thinking and pid not in covers else row["first_token_at"]
     duration = completed - start if _number(completed) and _number(start) and completed > start else None
     reason = None
     if duration is None:

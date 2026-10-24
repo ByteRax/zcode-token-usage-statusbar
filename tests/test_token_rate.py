@@ -44,7 +44,8 @@ create table model_usage (
   input_tokens integer not null default 0,
   output_tokens integer not null default 0,
   reasoning_tokens integer not null default 0,
-  cache_read_input_tokens integer not null default 0
+  cache_read_input_tokens integer not null default 0,
+  provider_id text
 );
 """
 
@@ -55,16 +56,16 @@ def make_db(path, rows):
     con = sqlite3.connect(path)
     con.executescript(SCHEMA)
     con.executemany(
-        "insert into model_usage values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+        "insert into model_usage values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
     con.commit()
     con.close()
 
 
-def row(rid, sid, turn, source, started, ft, ttft, completed, inp, out, rea):
+def row(rid, sid, turn, source, started, ft, ttft, completed, inp, out, rea, provider="account:fixture"):
     # 列序对应 SCHEMA：(id, session_id, turn_id, query_source, model_id, status,
-    #   started_at, first_token_at, completed_at, time_to_first_token_ms, 输入/输出/思考/缓存读)
+    #   started_at, first_token_at, completed_at, time_to_first_token_ms, 输入/输出/思考/缓存读, provider_id)
     return (rid, sid, turn, source, "test-model", "completed",
-            started, ft, completed, ttft, inp, out, rea, 0)
+            started, ft, completed, ttft, inp, out, rea, 0, provider)
 
 
 class RateTestBase(unittest.TestCase):
@@ -189,7 +190,7 @@ class TestTurnCurrent(RateTestBase):
 
     def insert_rows(self, rows):
         with contextlib.closing(sqlite3.connect(self.db)) as con, con:
-            con.executemany("insert into model_usage values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+            con.executemany("insert into model_usage values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
 
     def test_delayed_old_completion_does_not_replace_current_turn(self):
         self.write_state({"sessionId": SID, "ts": self.t0, "promptTs": self.t0})
@@ -301,7 +302,7 @@ class TestTurnCurrent(RateTestBase):
         # 但 A 的守卫必须用 A 自己的提问时刻 → A 本轮数据不被误吞（v1.3.0 修复）
         import sqlite3 as _sl
         con = _sl.connect(self.db)
-        con.execute("insert into model_usage values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        con.execute("insert into model_usage values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     row("o1", "sess_other", "turn_o", "main_turn",
                         self.t0 + 25000, self.t0 + 26000, 1000, self.t0 + 30000, 50, 900, 100))
         con.commit()
@@ -679,6 +680,123 @@ class TestCnUnitsFormat(unittest.TestCase):
              "session": None}
         line = self.tr.format_line(r)
         self.assertTrue(line.endswith("⏱ 11:20:28"), line)
+
+
+class FirstTokenCoversTests(unittest.TestCase):
+    """首块落章 provider 判定（fork z1908144712 判据收编）：ttft 不随推理量增长
+    （最小二乘斜率 <2.0 ms/token）的 provider，含思考段用首字窗口（思考在首字后随
+    输出流出，首字窗口已含思考）；推理前置（斜率 ≥2）与样本不足（<5 条/推理量无变化）
+    走 started_at 默认。fixture 中 test-model 全库仅 3 条思考行，永远不满足判定。"""
+
+    @classmethod
+    def setUpClass(cls):
+        sys.path.insert(0, str(PLUGIN))
+        import token_rate
+        cls.tr = token_rate
+        sys.path.insert(0, str(REPO))
+        import usage_stats
+        cls.us = usage_stats
+
+    def setUp(self):
+        self.con = sqlite3.connect(":memory:")
+        self.con.row_factory = sqlite3.Row
+        self.addCleanup(self.con.close)
+        self.con.executescript("""
+create table model_usage (id text primary key, session_id text, turn_id text, query_source text,
+  model_id text, status text, started_at integer, first_token_at integer, completed_at integer,
+  time_to_first_token_ms integer, input_tokens integer, output_tokens integer,
+  reasoning_tokens integer, cache_read_input_tokens integer, provider_id text)""")
+
+    def add(self, rid, provider, reasoning, ttft):
+        self.con.execute("insert into model_usage values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                         (rid, "s", "t", "main_turn", "m", "completed", 1000, 4000, 9000,
+                          ttft, 100, 500, reasoning, 0, provider))
+
+    def test_slope_detection_partitions_providers(self):
+        for i in range(6):
+            self.add(f"pa{i}", "prov-covers", 100 + 50 * i, 2500)      # 斜率 0：首块落章
+            self.add(f"pb{i}", "prov-before", 100 + 50 * i, 5 * (100 + 50 * i))   # 斜率 5：推理前置
+        for i in range(3):
+            self.add(f"pc{i}", "prov-few", 100 + 50 * i, 2500)         # 样本不足：不判
+        self.add("pd1", "prov-flat", 100, 2500)                         # 推理量无变化：不判
+        self.add("pd2", "prov-flat", 100, 2500)
+        self.add("pd3", "prov-flat", 100, 2500)
+        self.add("pd4", "prov-flat", 100, 2500)
+        self.add("pd5", "prov-flat", 100, 2500)
+        self.assertEqual(self.tr.first_token_covers(self.con), frozenset({"prov-covers"}))
+
+    def test_request_stats_window_follows_cover_set(self):
+        base = {"output_tokens": 500, "reasoning_tokens": 300, "completed_at": 9000,
+                "started_at": 1000, "first_token_at": 4000, "model_id": "glm-x",
+                "time_to_first_token_ms": 3000, "provider_id": "prov-covers"}
+        default = self.us.request_stats(base)                       # 不在集合：st 窗口 8.0s
+        self.assertEqual(default["genMs"], 8000)
+        self.assertEqual(default["tokPerSec"], 62.5)
+        covered = self.us.request_stats(base, covers=frozenset({"prov-covers"}))   # ft 窗口 5.0s
+        self.assertEqual(covered["genMs"], 5000)
+        self.assertEqual(covered["tokPerSec"], 100.0)
+        # 缺 provider_id 的行（旧调用方/手写行）：判不了归属，走默认 st 窗口
+        no_pid = dict(base)
+        del no_pid["provider_id"]
+        self.assertEqual(self.us.request_stats(no_pid, covers=frozenset({"prov-covers"}))["genMs"], 8000)
+
+    def test_to_item_passes_covers_through_to_sqlite_rows(self):
+        self.con.execute("insert into model_usage values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                         ("x", "s", "t", "main_turn", "m", "completed", 1000, 4000, 9000,
+                          3000, 100, 500, 300, 0, "prov-covers"))
+        r = self.con.execute("select * from model_usage where id='x'").fetchone()
+        self.assertEqual(self.tr.to_item(r, frozenset({"prov-covers"}))["genMs"], 5000)
+        self.assertEqual(self.tr.to_item(r)["genMs"], 8000)
+
+    def _file_db(self, rows, with_provider=True):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        db_path = str(Path(tmp.name) / "db.sqlite")
+        con = sqlite3.connect(db_path)
+        tail = ", provider_id text)" if with_provider else ")"
+        con.executescript(
+            "create table model_usage (id text primary key, session_id text, turn_id text,"
+            " query_source text, model_id text, status text, started_at integer,"
+            " first_token_at integer, completed_at integer, time_to_first_token_ms integer,"
+            " input_tokens integer, output_tokens integer, reasoning_tokens integer,"
+            " cache_read_input_tokens integer" + tail)
+        marks = "(" + ",".join("?" * (15 if with_provider else 14)) + ")"
+        con.executemany(f"insert into model_usage values {marks}", rows)
+        con.commit()
+        con.close()
+        return db_path
+
+    def _with_db(self, db_path, sid):
+        old = self.tr.DB_PATH
+        self.tr.DB_PATH = db_path
+        try:
+            return self.tr.query_latest(session_id=sid)
+        finally:
+            self.tr.DB_PATH = old
+
+    def test_old_schema_without_provider_column_still_queries(self):
+        # 旧库缺 provider_id 列（评审第一轮 MAJOR 回归）：不崩、main_turn 过滤不被
+        # 误删（非 main_turn 行再晚也不能当 latest）、含思考行按默认 st 窗口降级。
+        rows = [
+            ("title", "s", "t0", "session_title", "m", "completed", 21000, 24000, 29000, 3000, 50, 999, 0, 0),
+            ("main", "s", "t1", "main_turn", "m", "completed", 11000, 14000, 19000, 3000, 100, 500, 300, 0),
+        ]
+        out = self._with_db(self._file_db(rows, with_provider=False), "s")
+        self.assertEqual(out["latest"]["outputTokens"], 500)   # main_turn 过滤仍在
+        self.assertEqual(out["latest"]["genMs"], 8000)          # 缺列 → 默认 started_at 窗口
+
+    def test_query_latest_end_to_end_applies_cover_set(self):
+        # 端到端接线（接线变异 covers=frozenset() 的击杀用例）：落章 provider 的
+        # latest 行用首字窗口；同形状数据换成推理前置 provider 用 started_at 窗口。
+        def bulk(provider):
+            return [(f"r{i}", "s", f"t{i}", "main_turn", "m", "completed",
+                     1000 + i * 100000, 4000 + i * 100000, 8000 + i * 100000,
+                     2500 if provider == "prov-covers" else 5 * (100 + 50 * i),
+                     100, 500, 100 + 50 * i, 0, provider) for i in range(6)]
+        covered = self._with_db(self._file_db(bulk("prov-covers")), "s")
+        self.assertEqual(covered["latest"]["genMs"], 4000)   # ct−ft（首字窗口）
+        before = self._with_db(self._file_db(bulk("prov-before")), "s")
+        self.assertEqual(before["latest"]["genMs"], 7000)    # ct−st（默认窗口）
 
 
 if __name__ == "__main__":

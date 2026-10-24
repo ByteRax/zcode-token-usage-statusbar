@@ -663,50 +663,102 @@ def hides_reasoning(model_id):
     return "claude" in (model_id or "").lower()
 
 
-def _row_gen_ms(r):
+_COVERS_TTL_S = 60.0
+_COVERS_CACHE = {"ts": 0.0, "set": frozenset()}   # 首块落章 provider 集合缓存（原地更新）
+
+
+def _provider_first_token_covers(con):
+    """「首块即落章」的 provider 集合（fork z1908144712 判据收编）：这些 provider 的
+    first_token_at 就是首个流式块，思考 token 在首字之后随输出流出，首字窗口已含思考；
+    若一律从 started_at 起算，会把首块前的输入预处理（大上下文实测 8~10s）摊进生成
+    耗时，速度系统性偏低。判据：对该 provider 的 (reasoning_tokens, time_to_first_token_ms)
+    做最小二乘斜率——斜率 <2.0 ms/token（首字时间不随推理量增长）即首块落章；≥2.0 说明
+    推理在首字前完成、首字窗口漏掉推理段，沿用 started_at。样本 <5 条或推理量无变化时
+    不判（不进集合，按既有「推理前置」口径兜底）。Claude 不受影响：reasoning 恒 0 进不了
+    聚合。聚合是全表扫描（~17ms/270MB），60s TTL 缓存摊薄。测试改库后须重置 _COVERS_CACHE。"""
+    now = time.monotonic()
+    if now - _COVERS_CACHE["ts"] < _COVERS_TTL_S:
+        return _COVERS_CACHE["set"]
+    out = set()
+    if con is not None:
+        try:
+            rows = con.execute(
+                """select provider_id, count(*) n,
+                          sum(reasoning_tokens) sx, sum(time_to_first_token_ms) sy,
+                          sum(reasoning_tokens * time_to_first_token_ms) sxy,
+                          sum(reasoning_tokens * reasoning_tokens) sxx
+                   from model_usage
+                   where reasoning_tokens > 0 and time_to_first_token_ms is not null
+                     and provider_id is not null
+                   group by provider_id""").fetchall()
+            for r in rows:
+                n = r["n"] or 0
+                sx = r["sx"] or 0
+                denom = n * (r["sxx"] or 0) - sx * sx
+                if n < 5 or denom <= 0:
+                    continue
+                slope = (n * (r["sxy"] or 0) - sx * (r["sy"] or 0)) / denom
+                if slope < 2.0:
+                    out.add(r["provider_id"])
+        except sqlite3.Error:
+            out = set()   # 旧库缺列等读不了聚合：判不出就全走既有口径
+    _COVERS_CACHE.update(ts=now, set=frozenset(out))
+    return _COVERS_CACHE["set"]
+
+
+def _row_gen_ms(r, covers=frozenset()):
     """按 token_rate.py 同款口径算一行 model_usage 的生成时长；first_token_at 缺失
-    或窗口非正则不可信，返回 None（该请求不参与 last.tps 计算）。"""
+    或窗口非正则不可信，返回 None（该请求不参与 last.tps 计算）。
+    含思考段（reasoning>0）默认 completed_at − started_at（推理在首字前流出的 provider，
+    漏出分母会虚高）；provider 在 covers（首块落章，见 _provider_first_token_covers）时
+    思考已在首字窗口内，改用 completed_at − first_token_at，不把首块前的输入预处理
+    摊进生成耗时。Claude 系列恒用 started_at（hides_reasoning）。"""
     ft, ct, st = r["first_token_at"], r["completed_at"], r["started_at"]
     if not ft or not ct or ct <= ft:
         return None
     gen_ms = ct - ft
     if (r["reasoning_tokens"] or hides_reasoning(r["model_id"])) and st and ct > st:
-        gen_ms = ct - st   # 含思考段/Claude 系列：窗口前移到 started_at
+        try:
+            pid = r["provider_id"]
+        except (KeyError, IndexError):
+            pid = None
+        if pid not in covers:
+            gen_ms = ct - st   # 推理前置/Claude/判定缺证据：窗口前移到 started_at
     return gen_ms
 
 
-def _rate_sample(row):
+def _rate_sample(row, covers=frozenset()):
     if row and (row["output_tokens"] or 0) > 0:
-        gen_ms = _row_gen_ms(row)
+        gen_ms = _row_gen_ms(row, covers)
         if gen_ms and _TPS_MIN_GEN_MS <= gen_ms < _TPS_MAX_GEN_MS:
             return {"tps": round(row["output_tokens"] / (gen_ms / 1000), 1),
                     "startedAt": row["started_at"] or 0, "endedAt": row["completed_at"] or 0}
     return None
 
 
-def _last_valid_rate(con, sid, last):
+def _last_valid_rate(con, sid, last, covers=frozenset()):
     """最近有效生成速度及同一请求的起止；最多回查 20 条，缺有效样本时隐藏。"""
-    sample = _rate_sample(last)
+    sample = _rate_sample(last, covers)
     if sample is not None:
         return sample
     rows = con.execute(
-        """select output_tokens, first_token_at, completed_at, started_at, reasoning_tokens, model_id
+        """select output_tokens, first_token_at, completed_at, started_at, reasoning_tokens, model_id, provider_id
            from model_usage where session_id=? and status='completed'
            order by completed_at desc limit ?""",
         (sid, _TPS_LOOKBACK),
     ).fetchall()
     for row in rows:
-        sample = _rate_sample(row)
+        sample = _rate_sample(row, covers)
         if sample is not None:
             return sample
     return {"tps": 0, "startedAt": 0, "endedAt": 0}
 
 
-def _turn_rate(rows):
+def _turn_rate(rows, covers=frozenset()):
     output, unrated, duration = 0, 0, 0
     for row in rows:
         tokens = row["output_tokens"] or 0
-        gen_ms = _row_gen_ms(row)
+        gen_ms = _row_gen_ms(row, covers)
         if tokens > 0 and gen_ms and _TPS_MIN_GEN_MS <= gen_ms < _TPS_MAX_GEN_MS:
             output += tokens
             duration += gen_ms
@@ -733,6 +785,7 @@ def _session_snapshot(con, sid, cfg):
            order by completed_at desc limit 1""",
         (sid,),
     ).fetchone()
+    covers = _provider_first_token_covers(con)
     # 本轮数据源 = turn_usage 表的每轮完整聚合（v30 起，替代从 model_usage 手工按轮求和）：
     # 自带请求/重试/工具/工具错误计数与 reasoning 拆分，一轮一行。
     lt = {"requests": 0, "retries": 0, "tool_calls": 0, "tool_errors": 0, "input": 0,
@@ -778,14 +831,14 @@ def _session_snapshot(con, sid, cfg):
                   "cache_write": r[7], "total": r[3], "duration_ms": r[4], "ttft_ms": 0,
                   "started": turn_started, "ended": turn_ended}
         lt.update(_turn_rate(con.execute(
-            """select output_tokens, first_token_at, completed_at, started_at, reasoning_tokens, model_id
+            """select output_tokens, first_token_at, completed_at, started_at, reasoning_tokens, model_id, provider_id
                from model_usage where session_id=? and turn_id=? and status='completed'""",
             (sid, last["turn_id"]),
-        ).fetchall()))
+        ).fetchall(), covers))
     lr = con.execute("select max(completed_at) from model_usage where session_id=?", (sid,)).fetchone()
     active = bool(lr and lr[0] and int(time.time() * 1000) - lr[0] < SESSION_TIMEOUT_MS)
     ctx_auto = lookup_context_window(last["model_id"]) if last else None
-    rate = _last_valid_rate(con, sid, last)
+    rate = _last_valid_rate(con, sid, last, covers)
     sub_rows = con.execute(
         """select m.session_id, coalesce(m.agent,''), coalesce(s2.title,''), count(*),
                   coalesce(sum(m.computed_total_tokens),0),
@@ -810,14 +863,14 @@ def _session_snapshot(con, sid, cfg):
     if sub_rows:
         for r in con.execute(
             """select m.session_id, m.output_tokens, m.first_token_at, m.completed_at,
-                      m.started_at, m.reasoning_tokens, m.model_id
+                      m.started_at, m.reasoning_tokens, m.model_id, m.provider_id
                from model_usage m join session s2 on m.session_id = s2.id
                where m.query_source='subagent' and s2.parent_id=? and m.status='completed'""",
             (sid,),
         ):
             g = sub_gen.setdefault(r["session_id"], [0, 0])
             tokens = r["output_tokens"] or 0
-            gen_ms = _row_gen_ms(r)
+            gen_ms = _row_gen_ms(r, covers)
             if tokens > 0 and gen_ms and _TPS_MIN_GEN_MS <= gen_ms < _TPS_MAX_GEN_MS:
                 g[0] += tokens
                 g[1] += gen_ms

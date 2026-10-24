@@ -107,7 +107,7 @@ python3 sync_plugin.py --check
 ### 统计与速率
 
 - 总 token = input + output；input 已含 cache_read，output 已含思考，不能再次相加。缓存命中率为 cache_read / input；轮数用 distinct turn_id，不依赖覆盖不全的 `turn_usage`。
-- 速度是两态：渲染桥命中时，生成中显示按字符增量估算的 t/s（估算态不分档），该轮完成后切换为真实值（输出含思考 ÷ 生成时长，来自 renderer store）；无桥回退 DB，按请求完成入库刷新，不是逐字流式读数。普通请求生成耗时为 completed_at − first_token_at；上报思考或 Claude 请求使用 completed_at − started_at，TTFT 与生成窗口不是同一指标。
+- 速度是两态：渲染桥命中时，生成中显示按字符增量估算的 t/s（估算态不分档），该轮完成后切换为真实值（输出含思考 ÷ 生成时长，来自 renderer store）；无桥回退 DB，按请求完成入库刷新，不是逐字流式读数。普通请求生成耗时为 completed_at − first_token_at；上报思考或 Claude 请求默认 completed_at − started_at，但「首块即落章」provider（按该 provider 历史的 ttft×reasoning 最小二乘斜率 <2.0 ms/token 自动判定；样本 <5 或推理量无变化不判、走默认。zusage `_provider_first_token_covers` 与 token_rate `first_token_covers` 同一规则）思考在首字后随输出流出、首字窗口已含思考，改用 completed_at − first_token_at——一律 started_at 会把首块前的输入预处理（大上下文实测 8~10s）摊进生成耗时。TTFT 与生成窗口不是同一指标。
 - 状态条向前检查最近 20 条请求，取最近有效速度样本；根实现缺首字即拒绝，插件速率对思考/Claude 仍允许 started_at 回退，两者不完全同款。不能用总耗时硬算普通请求速度，也不能把无效样本视作真实 0 t/s。
 - 插件逐问速率只聚合本轮有效段，按 Σoutput / Σ生成耗时加权，段间工具等待不计；近 5 请求均值/峰值不是本轮加权值，不能互相替代。
 - `--current` 依赖本会话提问状态（promptTs）做**严格**时间过滤（`started_at >= prompt_ts`，无容差；原 3 秒容差是有意移除的 fail-closed 收紧，勿当 bug 修回）；连发且新轮未入库仍有误选边界，不能宣称零歧义。尚未入库的最终正文不在采样内，首段 TTFT、有效段速率和会话累计保持各自口径。
