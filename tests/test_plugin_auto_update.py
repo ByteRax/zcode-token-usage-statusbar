@@ -151,15 +151,30 @@ class PluginAutoUpdateTests(unittest.TestCase):
         self.assert_silent_skip()
         self.assertEqual((self.runtime / "plugin-update.json").read_bytes(), state)
 
+    def test_automatic_update_interval_is_exactly_one_hour(self):
+        self.assertEqual(updater.INTERVAL_MS, 3600000)
+
     def test_interval_boundary_uses_milliseconds_and_last_attempt(self):
-        for elapsed, launches in ((updater.INTERVAL_MS - 1, False),
-                                  (updater.INTERVAL_MS, True), (updater.INTERVAL_MS + 1, True)):
+        for elapsed, launches in ((3599999, False), (3600000, True), (3600001, True)):
             with self.subTest(elapsed=elapsed):
                 self.popen.reset_mock()
                 self.write_state({"lastAttempt": self.now * 1000 - elapsed,
                                   "checkedAt": self.now * 1000})
+                saved = (self.runtime / "plugin-update.json").read_bytes()
                 self.assertEqual(self.launch(), (launches, ""))
                 self.assertEqual(self.popen.call_count, int(launches))
+                self.assertEqual((self.runtime / "plugin-update.json").read_bytes(), saved)
+
+    def test_hourly_check_reuses_previous_state_without_resetting_it(self):
+        for elapsed, launches in ((1800000, False), (7200000, True)):
+            with self.subTest(elapsed=elapsed):
+                self.popen.reset_mock()
+                self.write_state({"lastAttempt": self.now * 1000 - elapsed,
+                                  "checkedAt": self.now * 1000})
+                saved = (self.runtime / "plugin-update.json").read_bytes()
+                self.assertEqual(self.launch(), (launches, ""))
+                self.assertEqual(self.popen.call_count, int(launches))
+                self.assertEqual((self.runtime / "plugin-update.json").read_bytes(), saved)
 
     def test_pending_sync_ignores_interval_only_for_literal_true(self):
         for pending, launches in ((True, True), (False, False), (1, False), ("true", False)):

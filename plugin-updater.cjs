@@ -9,7 +9,7 @@ const releaseChannel = require("./plugin-release.cjs");
 const { resolvePluginStorage } = require("./plugin-storage.cjs");
 
 const PLUGIN_ID = "zcode-token-usage-statusbar@zusage-marketplace";
-const INTERVAL_MS = 24 * 60 * 60 * 1000;
+const INTERVAL_MS = 60 * 60 * 1000;
 
 function compareVersions(a, b) {
   const parse = (v) => /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(v || "");

@@ -504,7 +504,9 @@ class PendingAsarTests(unittest.TestCase):
         other_dir.mkdir()
         fresh = self.fresh_module()
         buf = io.StringIO()
-        with contextlib.redirect_stdout(buf), mock.patch.object(fresh, "syntax_check", return_value=True):
+        with contextlib.redirect_stdout(buf), \
+                mock.patch.object(fresh, "syntax_check", return_value=True), \
+                mock.patch.object(fresh, "client_running", return_value=False):
             result = fresh.main(["install", "--finalize", "--asar", str(self.asar), "--runtime", str(other_dir)])
         self.assertFalse(result)
         self.assertIn("no longer authorized", buf.getvalue())

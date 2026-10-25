@@ -68,7 +68,7 @@ https://gitcode.com/tanranran/zcode-token-usage-statusbar.git#plugin-releases-gi
 
 配置文件不存在或缺少该字段时默认开启；已有的显式 `false` 会保留。环境变量 `ZUSAGE_PLUGIN_AUTO_INSTALL=1` / `0` 优先于配置，但不能绕过卸载豁免。未设置环境变量时，损坏配置或非布尔字段不会启用自动安装。
 
-Windows 找不到 `python3` 时插件 hook 会自动回退：hook 命令按 `python3` → `python` → `py -3` 依次尝试，无需改文件。插件的 `.mcp.json` 仍固定 `python3`——宿主对 stdio MCP 是直接 spawn，没有 shell 回退通道，而 macOS 自带命令只有 `python3`，不能整体换成 `python`；需要在 Windows 会话里使用 `token_usage` MCP 工具的用户，可手工把安装副本 `.mcp.json` 的 `command` 改成本机可用的 Python 命令，注意插件每 24 小时自动更新可能覆盖此修改，只用状态条与 `/usage` 时无需处理；只改仓库不会改变已安装副本。
+Windows 找不到 `python3` 时插件 hook 会自动回退：hook 命令按 `python3` → `python` → `py -3` 依次尝试，无需改文件。插件的 `.mcp.json` 仍固定 `python3`——宿主对 stdio MCP 是直接 spawn，没有 shell 回退通道，而 macOS 自带命令只有 `python3`，不能整体换成 `python`；需要在 Windows 会话里使用 `token_usage` MCP 工具的用户，可手工把安装副本 `.mcp.json` 的 `command` 改成本机可用的 Python 命令，注意插件每 1 小时自动检查，有新版时安装更新可能覆盖此修改，只用状态条与 `/usage` 时无需处理；只改仓库不会改变已安装副本。
 
 ### 正式 Release 渠道
 
@@ -149,7 +149,8 @@ python3 install.py --root /Applications/ZCode.app
 状态条 **⚙ → 插件更新** 还提供「检查更新」「立即更新」和「自动更新」：
 
 - **检查更新**不会安装；发现新版后可点「立即更新」。
-- **自动更新默认开启**，首次运行检查，之后按 24 小时间隔检测与安装；你显式关闭的设置会保留。
+- **自动更新默认开启**，客户端运行时按上次尝试时间间隔 1 小时检查，有新版才安装；首次运行或距上次尝试已满 1 小时，在下一次调度时检查。你显式关闭的设置会保留，手动检查不受此间隔限制。
+- 更新器属于主进程代码，检查间隔变更需加载新版更新器后生效：更新安装副本和运行文件后，完全退出并重开 ZCode。关闭或休眠期间不保证检查，恢复运行后到期补查，不保证整点执行。旧版本首次发现此更新仍按原检查间隔；运行文件因本地热修被保留时，重启也不会自动替换它。
 - GitHub/GitCode 来源按市场清单分两条链：清单指向正式 Release ZIP（`#plugin-releases` / `#plugin-releases-gitcode`）时走 Release 校验链；清单指向仓库源码（默认分支）或本地目录时没有可校验的 Release，更新交给宿主插件管理器按市场清单直接完成（`marketplace update` → 插件更新），不经过发布包 SHA256 校验，⚙ 的「更新来源」会写明「仓库源码」或「本地目录市场」。新远程安装仍建议使用 `#plugin-releases`。
 - GitCode 渠道的版本检查读宿主从注册 ref 拉取的渠道清单，ZIP 从 GitCode Release 资产下载并按 Release manifest 核对 SHA256，安装后复核安装记录与所选 Release 一致。
 - 更新代码会访问已注册来源，不上传用量数据；来源错误或网络失败会显示原因。
