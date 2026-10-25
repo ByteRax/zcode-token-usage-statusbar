@@ -19,8 +19,8 @@ OUT = HERE / OUT_NAME
 W = int(sys.argv[3]) if len(sys.argv) > 3 else 1280
 H = int(sys.argv[4]) if len(sys.argv) > 4 else 720
 SCALE = 2
-HOVER_ARG = sys.argv[5] if len(sys.argv) > 5 else "3"
-HOVER_INDEX = None if HOVER_ARG == "none" else int(HOVER_ARG)   # 条面 .it 顺序：0 速度 1 上下文 2 本轮 3 会话累计 4 工具 5 今日 6 子代理
+HOVER_ARG = sys.argv[5] if len(sys.argv) > 5 else "2"
+HOVER_INDEX = None if HOVER_ARG == "none" else int(HOVER_ARG)   # 条面 .it 顺序：0 速度 1 本轮 2 会话累计 3 工具 4 今日 5 子代理
 
 CHECK_JS = """() => {
   const R = el => { const r = el.getBoundingClientRect(); return {l: r.left, t: r.top, r: r.right, b: r.bottom, w: r.width, h: r.height}; };
@@ -114,7 +114,7 @@ CHECK_JS = """() => {
   });
   if (out.bar.b > out.win.b - 2) out.problems.push('状态条贴住/越出窗口底边');
   if (out.overflowPx > 0 || out.clipped) out.problems.push('条面内容超宽（收缩/渐隐）');
-  if (!out.items.some((t, i) => i === 2 && /%/.test(t)) || !out.items.some((t, i) => i === 3 && /%/.test(t))) out.problems.push('缓存命中率被收缩隐藏');
+  if (!out.items.some((t, i) => i === 1 && /%/.test(t)) || !out.items.some((t, i) => i === 2 && /%/.test(t))) out.problems.push('缓存命中率被收缩隐藏');
   return out;
 }"""
 

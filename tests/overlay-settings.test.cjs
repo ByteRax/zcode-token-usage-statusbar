@@ -59,12 +59,12 @@ test('settings geometry matches the bar outer width and edges only when open', (
   };
   let rect = { left: 250, top: 600, width: 800.5 };
   const context = {
-    panel, bar: { getBoundingClientRect: () => rect }, innerWidth: 1400,
+    panel, bar: { getBoundingClientRect: () => rect }, innerWidth: 1400, innerHeight: 900,
     syncSettingsScroll: () => { syncs++; },
   };
   vm.runInNewContext(positionSource + '\npositionSettingsPanel();', context);
   assert.equal(values['--zu-settings-height'], '582px');
-  assert.equal(panel.style.height, '300px');   // v101：打开瞬间按内容自然高锁定（stub 无 scrollHeight 退 offsetHeight）
+  assert.equal(panel.style.height, '582px');   // v101：打开瞬间按内容自然高锁定（stub 无 scrollHeight 退 offsetHeight）
   assert.equal(panel.style.width, '800.5px');
   assert.equal(panel.style.left, '250px');   // v80 面板挂 body：视口坐标左缘随条
   assert.equal(panel.style.top, '290px');    // 条上沿 600 − 面板高 300 − 10px 缝
@@ -74,7 +74,7 @@ test('settings geometry matches the bar outer width and edges only when open', (
   assert.equal(panel.style.width, '320px');
   assert.equal(panel.style.left, '10px');
   assert.equal(panel.style.top, '40px');
-  assert.equal(panel.style.height, '300px');   // 已锁高度 < 收紧后的上限：保持不动
+  assert.equal(panel.style.height, '332px');   // 已锁高度 < 收紧后的上限：保持不动
   assert.equal(values['--zu-settings-height'], '332px');
   panel.classList.contains = () => false;
   vm.runInNewContext('positionSettingsPanel();', context);
@@ -507,19 +507,19 @@ test('settings nav groups six sections under three captions with the active stat
   const html = buildHarness({ settingsSec: 'quota' }).panel.innerHTML;
   assert.match(html, /class="zu-settings-nav" aria-label="设置分区"/);
   for (const cap of ['>基础</div>', '>数据与统计</div>', '>维护</div>']) assert.ok(html.includes(cap), cap);
-  assert.match(html, /data-sec="quota" aria-current="page"/);
+  assert.match(html, /data-sec="quota" aria-current="page" title="套餐额度"/);
   assert.match(html, /<section class="zu-settings-section" data-sec="quota">/);
   assert.ok(html.includes('<section class="zu-settings-section" data-sec="display" hidden>'));
   assert.ok(html.includes('<section class="zu-settings-section" data-sec="about" hidden>'));
   const en = buildHarness({ settingsSec: 'quota', lang: 'en' }).panel.innerHTML;
   assert.match(en, /aria-label="Settings sections"/);
-  assert.match(en, /data-sec="quota" aria-current="page"/);
+  assert.match(en, /data-sec="quota" aria-current="page" title="Plan quota"/);
   assert.match(en, /<span class="zu-nav-label">Plan quota<\/span>/);
 });
 
 test('an unknown stored section falls back to the first section instead of a blank panel', () => {
   const html = buildHarness({ settingsSec: 'nope' }).panel.innerHTML;
-  assert.match(html, /data-sec="display" aria-current="page"/);
+  assert.match(html, /data-sec="display" aria-current="page" title="状态条显示"/);
   assert.ok(html.includes('<section class="zu-settings-section" data-sec="display">'));
   assert.ok(html.includes('<section class="zu-settings-section" data-sec="quota" hidden>'));
 });
@@ -601,6 +601,31 @@ test('narrow panels collapse the nav to an icon rail by measured width', () => {
   assert.equal(rail(undefined), false);   // 未挂载/存根环境：保持展开，不误收
 });
 
+test('settings keyboard handling supports Escape and nav arrow movement without trapping Tab', () => {
+  const source = extract('    var previousPanelFocus = null;', '    buildPanel();');
+  const buttons = [{ focus() { active = this; } }, { focus() { active = this; } }];
+  let active = buttons[0], keydown, opened = true, modal = 'true', expanded = 'true';
+  let focusTarget = null;
+  const panel = {
+    classList: { remove() { opened = false; } },
+    setAttribute(name, value) { if (name === 'aria-modal') modal = value; },
+    querySelector: () => ({ querySelectorAll: () => buttons }),
+    addEventListener(type, fn) { if (type === 'keydown') keydown = fn; },
+  };
+  const gear = { setAttribute(name, value) { if (name === 'aria-expanded') expanded = value; }, focus() { focusTarget = this; } };
+  const previousPanelFocus = null;
+  const document = { activeElement: active };
+  const context = { panel, gear, document, previousPanelFocus, closeSettings: undefined, Array, inactive: () => false,
+    syncSettingsScroll() {} };
+  vm.runInNewContext(source + '\n', context);
+  keydown({ key: 'ArrowDown', preventDefault() {}, stopPropagation() {} });
+  assert.equal(active, buttons[1]);
+  keydown({ key: 'Escape', preventDefault() {}, stopPropagation() {} });
+  assert.equal(opened, false);
+  assert.equal(modal, 'false');
+  assert.equal(expanded, 'false');
+});
+
 test('settings height locks on open and only tightens, never grows back', () => {
   const values = { };
   const panel = {
@@ -610,11 +635,11 @@ test('settings height locks on open and only tightens, never grows back', () => 
   };
   let rect = { left: 250, top: 600, width: 800.5 };
   const context = {
-    panel, bar: { getBoundingClientRect: () => rect }, innerWidth: 1400,
+    panel, bar: { getBoundingClientRect: () => rect }, innerWidth: 1400, innerHeight: 900,
     syncSettingsScroll: () => { },
   };
   vm.runInNewContext(positionSource + '\npositionSettingsPanel();', context);
-  assert.equal(panel.style.height, '520px');   // 自然高 520 < 可用 582：按内容锁定
+  assert.equal(panel.style.height, '582px');   // 自然高 520 < 可用 582：按内容锁定
   rect = { left: 10, top: 350, width: 320 };   // 可用上限收紧到 332
   vm.runInNewContext('positionSettingsPanel();', context);
   assert.equal(panel.style.height, '332px');

@@ -1549,33 +1549,38 @@ function createQuotaClient(opts) {
       .finally(() => { clearTimeout(kill); });
     st.inFlight = p;
     const q = p;
-    p.then(() => { if (st.inFlight === q) st.inFlight = null; });   // fetchOne 包装自身不 reject
+    if (onUpdate) onUpdate();
+    p.then(() => {
+      if (st.inFlight !== q) return;
+      st.inFlight = null;
+      if (onUpdate) onUpdate();
+    });   // fetchOne 包装自身不 reject
   }
 
   function tickSource(adapter, st, force) {
     j.secrets = readSecrets();
-    if (((j.secrets.sources || {})[adapter.id] || {}).enabled === false) return;
+    if (((j.secrets.sources || {})[adapter.id] || {}).enabled === false) return false;
     const t = now();
-    if (st.inFlight) return;
-    if (!force && t < st.nextAt) return;
+    if (st.inFlight) return false;
+    if (!force && t < st.nextAt) return false;
     const ctx = st.ctx;
     if (!ctx) {
       if (adapter.id === "custom") {   // 无配置的自定义供应商：unsupported/provider（v96 兼容语义）
         if (st.status !== "unsupported" || st.reason !== "provider") setState(st, { status: "unsupported", reason: "provider", value: null });
       } else if (st.status !== "not_configured") setState(st, { status: "not_configured", reason: "", lastError: "" });
       st.nextAt = t + NOT_CONFIGURED_RETRY_MS;
-      return;
+      return false;
     }
     const cred = adapter.resolveCred(j, ctx);
     if (!cred) {
       if (st.status !== "not_configured") setState(st, { status: "not_configured", reason: "", lastError: "" });
       st.nextAt = t + NOT_CONFIGURED_RETRY_MS;
-      return;
+      return false;
     }
     if (cred.decryptFailed) {
       if (st.status !== "not_configured") setState(st, { status: "not_configured", reason: "decrypt", lastError: "credential decrypt failed" });
       st.nextAt = t + NOT_CONFIGURED_RETRY_MS;
-      return;
+      return false;
     }
     if (cred.fingerprint !== st.fingerprint) {
       st.fingerprint = cred.fingerprint;
@@ -1583,13 +1588,14 @@ function createQuotaClient(opts) {
       if (st.status === "auth_failed" || st.status === "no_plan" || (st.status === "unsupported" && st.reason === "gateway")) st.status = "idle";
       st.nextAt = 0;
     }
-    if (!force && (st.status === "auth_failed" || st.status === "no_plan")) return;
+    if (!force && (st.status === "auth_failed" || st.status === "no_plan")) return false;
     if (cred.source === "host" || cred.source === "env") {
       const exp = jwtExpMs(cred.token || "");
-      if (exp && exp - t < EXP_SOON_MS) { st.nextAt = t + EXP_RETRY_MS; return; }
+      if (exp && exp - t < EXP_SOON_MS) { st.nextAt = t + EXP_RETRY_MS; return false; }
     }
     st.cred = cred;
     startFetch(adapter, st);
+    return true;
   }
 
   /* 配置撤销清展示值并换代；不通知 onUpdate，避免 view/settings 重评递归推送。 */
@@ -1672,7 +1678,9 @@ function createQuotaClient(opts) {
   let primaryCtx = null;
 
   function tick(force) {
-    for (const { a, st } of activeSet().values()) tickSource(a, st, force);
+    let started = 0;
+    for (const { a, st } of activeSet().values()) if (tickSource(a, st, force)) started++;
+    return started;
   }
 
   function rememberProvider(providerId) {
@@ -1710,6 +1718,7 @@ function createQuotaClient(opts) {
     const v = { status: cfg.enabled === false ? "disabled" : st.status, reason: st.reason, fetchedAt: st.fetchedAt,
       stale: !!(st.fetchedAt && t - st.fetchedAt > ttl), error: st.lastError };
     if (cfg.enabled === false) return v;
+    v.busy = !!st.inFlight;
     if (st.value) {
       v.level = st.value.level;
       v.plan = st.value.plan || null;
@@ -1728,16 +1737,18 @@ function createQuotaClient(opts) {
 
   return {
     tick,
-    refresh() { tick(true); },
+    refresh() { return tick(true) > 0; },
     refreshSource(id) {   // 厂商按钮刷新该厂商各账户；chip 的完整源 id 只刷新本账户
       const a = adapterOf(id);
-      if (!a) return;
+      if (!a) return false;
+      let started = false;
       if (String(id).indexOf(":") >= 0) {
         const st = states.get(id);
-        if (st) tickSource(a, st, true);
+        if (st) started = tickSource(a, st, true);
       } else {
-        for (const st of states.values()) if (adapterOf(st.id) === a) tickSource(a, st, true);
+        for (const st of states.values()) if (adapterOf(st.id) === a) started = tickSource(a, st, true) || started;
       }
+      return started;
     },
     noteProvider(providerId) {
       const p = String(providerId || "");
@@ -1832,6 +1843,8 @@ function createQuotaClient(opts) {
           /* v104：显式关闭的源统一报 disabled（与 entryView 同口径）——原样透传 st.status 时
            * 从未激活过的关闭源会冒充 idle，面板出现「开关已关却显示待查询」的矛盾 */
           status: cfg.enabled === false ? "disabled" : (st ? st.status : "idle"),
+          busy: cfg.enabled !== false && accounts.some((entry) => !!entry.inFlight),
+          fetchedAt: st ? st.fetchedAt : 0,
           /* v102：预设模板（静态白名单）+ 当前 baseUrl（域名非凭据，仅用于面板高亮选中模板；
            * apiKey/cookie/token/AK/SK 照旧不回显） */
           presets: (SOURCE_PRESETS[a.id] || {}).presets,

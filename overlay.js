@@ -203,20 +203,35 @@
     }
   };
   window.__zusagePluginRequests = [];
-  function pluginRequest(action, extra) {
+  var pluginRequestSeq = 0, pluginRequestCallbacks = {};
+  function pluginRequest(action, extra, done) {
     var o = { action: action };
     if (extra !== undefined) {
       if (extra && typeof extra === "object") Object.assign(o, extra);
-      else o.enabled = extra;   // 旧调用（action, boolean）线格式不变
+      else o.enabled = extra;
+    }
+    if (typeof done === "function") {
+      var pending = Object.keys(pluginRequestCallbacks);
+      if (pending.length >= 32) delete pluginRequestCallbacks[pending[0]];
+      o.requestId = "zusage-" + MY_GEN + "-" + (++pluginRequestSeq);
+      pluginRequestCallbacks[o.requestId] = done;
     }
     window.__zusagePluginRequests.push(o);
+    return o.requestId || "";
   }
+  window.__zusagePluginResult = function (result) {
+    if (!result || typeof result.id !== "string") return;
+    var done = pluginRequestCallbacks[result.id];
+    if (!done) return;
+    delete pluginRequestCallbacks[result.id];
+    try { done(result); } catch (e) { FATAL.pluginResultErr = "result handler failed"; }
+  };
   /* ---------- Git 状态 chip 数据通道（v96）：主进程旁路 git 查询 → 按工作区路径缓存 ----------
    * 主进程每 10s 取各窗口 window.__zusageGitPaths 并集逐路径查询，结果推 window.__zusageGitState；
    * 渲染端只缓存与分发，实例按自身 scope.workspacePath 取用。失败不清空最近成功态（标 stale），
    * 只有明确「非仓库 / 无 git」才视为无数据不挂载。 */
   var gitStateByPath = {}, gitLastGood = {}, gitAskedAt = 0;
-  var GIT_ASK_MIN_MS = 5000;   // 快照驱动的重查节流；点击刷新与路径集变化不受限
+  var GIT_ASK_MIN_MS = 5000;
   function gitViewFor(p) {
     var cur = gitStateByPath[p];
     if (!cur) return null;
@@ -435,16 +450,16 @@
       no_plan: L("当前账号未订阅编码套餐", "No coding plan on this account"),
     }[st] || "";
   }
-  function quotaTipHTML(d) {
-    var esc = function (s) { return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); };
-    var row = function (label, text) { return '<div class="qt-row"><b>' + label + "</b><span>" + text + "</span></div>"; };
-    var css = '<style>.zusage-quota-tip .qt-h{font-weight:600;color:var(--color-tooltip-foreground,#fafafa);margin:0 0 7px}' +
-      ".zusage-quota-tip .qt-row{display:flex;gap:10px;margin:3px 0}" +
-      ".zusage-quota-tip .qt-row b{flex:0 0 auto;min-width:78px;color:var(--color-tooltip-foreground,#fafafa);font-weight:600}" +
-      ".zusage-quota-tip .qt-row span{color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
-      ".zusage-quota-tip .qt-cur{color:var(--color-tooltip-foreground,#fafafa);font-weight:600}" +
-      ".zusage-quota-tip .qt-warn{color:#f5b944}" +
-      '.zusage-quota-tip .qt-note{margin-top:8px;padding-top:7px;border-top:1px solid var(--color-border,transparent);color:var(--color-tooltip-tag-foreground,#a6a6a6)}</style>';
+    function quotaTipHTML(d) {
+      var esc = function (s) { return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); };
+      var row = function (label, text) { return '<div class="rt-row"><b>' + label + "</b><span>" + text + "</span></div>"; };
+      var css = '<style>.zusage-quota-tip .qt-h{font-weight:600;color:var(--color-tooltip-foreground,#fafafa);margin:0 0 7px}' +
+        ".zusage-quota-tip .rt-row{display:flex;gap:12px;margin:4px 0;align-items:flex-start}" +
+        ".zusage-quota-tip .rt-row b{flex:0 0 86px;min-width:0;color:var(--color-tooltip-tag-foreground,#a6a6a6);font-weight:500}" +
+        ".zusage-quota-tip .rt-row span{min-width:0;color:var(--color-tooltip-foreground,#fafafa);overflow-wrap:anywhere}" +
+        ".zusage-quota-tip .qt-cur{color:var(--color-tooltip-foreground,#fafafa);font-weight:600}" +
+        ".zusage-quota-tip .qt-warn{color:#f5b944}" +
+        '.zusage-quota-tip .qt-note{margin-top:8px;padding-top:7px;border-top:1px solid var(--color-popover-border,var(--color-border,transparent));color:var(--color-tooltip-tag-foreground,#a6a6a6);overflow-wrap:anywhere}</style>';
     if (d.mode.kind === "team") {
       return css + '<div class="qt-h">⊘ ' + L("团队套餐额度", "Team plan quota") + "</div>" +
         '<div class="qt-note">' + L("团队套餐需要组织/项目维度的查询，当前版本暂不支持；个人编码套餐已支持。", "Team plans need organization/project-scoped queries, which this version does not support yet; individual coding plans are supported.") + "</div>";
@@ -530,7 +545,8 @@
       : L("套餐内全部模型", "all models in the plan") + (cur ? L("（当前 ", " (current ") + '<span class="qt-cur">' + esc(cur) + "</span>" + L("）", ")") : "");
     if (isBalance) out += row(L("当前模型", "Current model"), esc(cur || "—"));
     else out += row(L("覆盖范围", "Covers"), scope);
-    var foot = (q.fetchedAt ? L("更新于 ", "updated ") + qTime(q.fetchedAt) : "") + (q.stale ? L("（已过期，等待刷新）", " (stale, refreshing)") : "");
+      var foot = q.busy ? L("查询中…", "Querying…") : (q.fetchedAt ? L("更新于 ", "updated ") + qTime(q.fetchedAt) : "");
+      foot += q.stale ? L("（已过期，等待刷新）", " (stale, refreshing)") : "";
     var err = q.status && q.status !== "ok" && q.status !== "idle" ? quotaStatusText(q.status) : "";
     if (err) foot += (foot ? " · " : "") + '<span class="qt-warn">⚠ ' + err + "</span>";
     out += '<div class="qt-note">' + (foot ? foot + "<br>" : "") +
@@ -864,6 +880,11 @@
   function hideGitTipSoon() { clearTimeout(gitTipHideTimer); gitTipHideTimer = setTimeout(hideGitTip, 200); }
   function onGitTipEnter() { clearTimeout(gitTipHideTimer); }
   function onGitKeydown(e) { if (e && e.key === "Escape") hideGitTip(); }
+  function onRefreshKeydown(e) {
+    if (e.key === "Enter") { e.preventDefault(); this.click(); }
+    else if (e.key === " ") e.preventDefault();
+  }
+  function onRefreshKeyup(e) { if (e.key === " ") { e.preventDefault(); this.click(); } }
   window.addEventListener("keydown", onGitKeydown, true);
   gitTip.addEventListener("mouseenter", onGitTipEnter);
   gitTip.addEventListener("mouseleave", hideGitTip);
@@ -983,12 +1004,13 @@
         var seconds = Math.floor(elapsedMs / 1000);
         var hours = Math.floor(seconds / 3600), minutes = Math.floor(seconds / 60) % 60;
         seconds %= 60;
-        // v99：计时随语言本地化——中文「1 时 2 分 3 秒」/英文「1 h 2 m 3 s」，空格分隔，零段照旧省略
+        // 中文数字紧邻单位，时间段之间保留空格；不让等宽字体撑开数字与单位。
         var uh = L("时", "h"), um = L("分", "m"), us = L("秒", "s");
+        var unitGap = L("", " ");
         var parts = [];
-        if (hours) parts.push(hours + " " + uh);
-        if (minutes) parts.push(minutes + " " + um);
-        if (seconds || !parts.length) parts.push(seconds + " " + us);
+        if (hours) parts.push(hours + unitGap + uh);
+        if (minutes) parts.push(minutes + unitGap + um);
+        if (seconds || !parts.length) parts.push(seconds + unitGap + us);
         return { cls: "dim", text: L("思考中…", "thinking…") + parts.join(" "),
                  phase: "thinking" };
       }
@@ -1016,7 +1038,7 @@
    * 类名一律 zu-tk-* 前缀，防与宿主/插件其它样式互相污染；prefers-reduced-motion
    * 时停播（动画 none，信号线半透明保持可读）。 */
   function zuIcoThinking() {
-    return '<svg class="ico zu-think" viewBox="0 0 24 24" fill="none" aria-hidden="true">' +
+    return '<svg class="ico zu-think" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">' +
       '<style>' +
       '.zu-tk-brain{animation:zuTkBreathe 2.4s ease-in-out infinite}' +
       '.zu-tk-signal{stroke-dasharray:3 18;animation:zuTkFlow 2.4s linear infinite}' +
@@ -1028,19 +1050,19 @@
       '@media(prefers-reduced-motion:reduce){.zu-tk-brain,.zu-tk-signal,.zu-tk-node{animation:none}.zu-tk-signal{opacity:.7}}' +
       '</style>' +
       '<g stroke-linecap="round" stroke-linejoin="round">' +
-      '<g class="zu-tk-brain" stroke="#7e8899" stroke-width="1.5">' +
+      '<g class="zu-tk-brain" stroke="currentColor" stroke-width="1.75">' +
       '<path d="M12 5.3C12 2.2 7.5 2 6.8 5.2C4.2 4.8 2.7 7.3 3.6 9.5C1.5 11 1.6 14.1 3.8 15.4C3.1 18 5 20 7.2 19.5C8.2 22 12 21.2 12 18.5V5.3Z"/>' +
       '<path d="M12 5.3C12 2.2 16.5 2 17.2 5.2C19.8 4.8 21.3 7.3 20.4 9.5C22.5 11 22.4 14.1 20.2 15.4C20.9 18 19 20 16.8 19.5C15.8 22 12 21.2 12 18.5"/>' +
       '</g>' +
-      '<g stroke="#8171E8" stroke-width="1.2" opacity=".45">' +
+      '<g stroke="currentColor" stroke-width="1.2" opacity=".45">' +
       '<path d="M7 7.5V10L9 12V16.5M17 7.5V10L15 12V16.5M5.5 14H7L9 16.5M18.5 14H17L15 16.5"/>' +
       '</g>' +
-      '<g stroke="#A385E6" stroke-width="1.4">' +
+      '<g stroke="currentColor" stroke-width="1.4">' +
       '<path class="zu-tk-signal" d="M7 7.5V10L9 12V16.5"/>' +
       '<path class="zu-tk-signal" style="animation-delay:-1.2s" d="M15 16.5V12L17 10V7.5"/>' +
       '</g>' +
       '</g>' +
-      '<g fill="#A385E6">' +
+      '<g fill="currentColor">' +
       '<circle class="zu-tk-node" cx="7" cy="7.5" r="1.15"/>' +
       '<circle class="zu-tk-node zu-tk-n2" cx="17" cy="7.5" r="1.15"/>' +
       '<circle class="zu-tk-node zu-tk-n3" cx="9" cy="16.5" r="1.15"/>' +
@@ -1284,6 +1306,7 @@
   function disposeOverlay() {
     if (disposed) return;
     disposed = true;
+    pluginRequestCallbacks = {};
     clearTimeout(bootTimer);
     clearInterval(coordinatorTimer);
     instances.forEach(function (inst) { inst.dispose(); });
@@ -1300,6 +1323,7 @@
       delete window.__zusageDispose;
       delete window.__zusageUpdate;
       delete window.__zusagePluginUpdate;
+      delete window.__zusagePluginResult;
       delete window.__zusageGitState;
       delete window.__zusageDeliverTurnText;   // 旧代闭包经 stale() 自卫，但清理应完整（O8）
       delete window.__zusageSidWs;
@@ -1383,7 +1407,7 @@
   /* ---------- 实例工厂（v61.1）：一个 pane 一套 条/面板/气泡/tooltip/定位循环。
    * slot 0 保留 #zusage-bar/#zusage-tip 兼容 id（泵热更新按它清理），其余实例仅类名。 */
   function spawnInstance(pid, slot) {
-    var VERSION = "v117";   // v82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v84 主标签页远端路由（工作台分组唯一主绑定上报 + 迟到载荷守卫，issue #30）→ v85 回答末尾统计行跟随万/亿开关 + tok→token → v86 历史轮 tracker 无记录（窗口滑出/换代/热更）或缺输出字段不再翻成"本轮统计不可用"，加 det 诊断 → v87 主叶归属增 last-session 回退（组零证据时唯一远端记录放行，issue #30 复测：单会话主标签页不建组）→ v88 运行态心跳与两处扫描 tick 2s→0.5s（富文本重试 6→24 次等价放大）→ v89 ⚙ 面板更新进度：downloading 阶段文案 + 下载（字节）/安装（校验→安装→同步）双进度条，缺 progress 的旧主进程自动隐藏 → v90 主标签页/分栏归属改按本窗会话节点身份（renderer 桥按版本/资产/锚点写 SessionPane 属性，移除 workbench-groups/last-session 共享回退）+ 心跳 0.5s→0.1s（扫描维持 0.5s）→ v91 设置页/权限面板冒条修复（PR #44：inSettingsView 三处派发排除 + anchorCardOf 面板锚点改判）收编收尾：排除标记并集（settings-page testid + content/panel 双 frame）、track 显隐第四处防御 → v92 ⚙ 更新区固定显示可复制的重装口令（源码安装无法自动更新时引导用户发给 agent）→ v93 原生上下文按钮（chat-context-usage-trigger）增强：环填充/四档色/右侧百分比镜像状态条上下文格（ctxBandOf 同源），cw 缺失还原原生形态 → v94 状态条删除「上下文容量」格（UI+tooltip，该口径由原生按钮增强承载），⚙ 面板同步去掉「上下文」开关，子代理格改始终展示（零值也显示）→ v95 ⚙ 更新区去掉 v92 重装口令提示块（源码清单的仓库来源改由宿主插件管理器直接更新，不再报渠道不一致），更新来源文案增「仓库源码」分支→ v96 套餐额度 chip（默认关）：挂原生上下文按钮左侧（wrapper 内前插，与按钮增强同款双 reapply/还原），数据来自主进程 quota 字段（解密宿主 OAuth 凭据直查 monitor 端点，账号级套餐池口径），会话首个 main_turn 完成前不显示；自绘 tooltip 走 rateTip 独立浮层模式；chip 改多窗分段：每窗一段（中文 5小时/7天，英文 5h/7d）各自按 80/95/100 档位色，分隔符 |；余额类型单段渲染就绪（余额 ¥100.00，阶段 3 数据源接入即用）；去掉环形，容器不着色 → v97 子代理速率（T1+T2）：zusage sub 汇总加 rate_avg/每子代理 tps_avg（已完成段加权平均，口径同 _turn_rate），子代理格 tooltip/明细面板展示；Agent 运行期主 chip 附加「子代理运行中 · 估 X t/s」——turn-stats 透传 subagent 行 childSessionId，overlay 据此用同款 zuTryBindStore 绑子代理会话 store 做字符增量估算（运行中请求未入库，DB 无实时数据；150s 采样实锤零 running 行），思考文本不进 rows 时退回纯状态词；工具动词「正在运行子智能体」压成「子代理运行中」（web 同步文案）；同日多槽位化：turn-stats 暴露 runningSubagents 全集（并行时 rowId 前 8 个），每子代理独立绑定/2s 节流，主 chip 显示合计速率（并行 ≥2 时动词后缀 ×N），chip tooltip 与子代理明细面板逐个实时展示运行中估算（tooltip 随原地改字同步 __tip 重画；面板 800ms tick 原地刷新 .subrate，汇总页运行块含 DB 尚无记录的新子代理） → v98 额度实时选源恢复（v4-model-config 观察 + quota-providers 全窗快照上报 + byProvider 定向刷新、空选择 fail-closed）与 sub2api 额度 UI（今日/本月窗口、窗口行内金额明细、Key 总额度、订阅截止、账户余额标题） → v99 思考中计时随语言本地化（中文「1 时 2 分 3 秒」/英文「1 h 2 m 3 s」，空格分隔、零段照旧省略）；回答末尾行采样时刻改完整中文日期时间（⏱ 2026 年 10 月 23 日 11 点 20 分 28 秒，token_rate.py format_turn_line 同步改版） → v99b（主线并流）tooltip 伪边界 leave 过滤：Chrome 悬停链收缩/重算会补发 DOM 内部的 documentElement/tip mouseleave，tipLeaveAt 贴边判定后取触发时刻最深 :hover 元素甄别，仍悬停在本档具体元素上即伪 leave 一律忽略交回 mousemove 流（主线 v100 滚动豁免=本链 v106 同义，不另列） → v99.1（主线并流）apiKey 模式 BigModel/Z.ai（bigmodel-api[-N]/zai-api[-N]）额度 chip 标题家族判定（issue #68；数据链在 quota-client） → v100 设置面板分区导航（ZCode 设置侧栏同款：左栏三组分区导航 + 内容区单分区显隐，激活项 aria-current="page"，选择持久化 zusage3.sec；面板窄于 620px 时导航收成 icon rail） → v101 设置面板高度在打开瞬间按内容自然高锁定（切分区不再抖动，resize 只收紧不放大） → v102 额度源预设模板（CC Switch/magpie 同款选模板只填 Key：官方域变体 chip 一键写入 secrets baseUrl，minimax 可信域机制推广到 siliconflow 币种随域；deepseek/openrouter/kimi/anthropic/mimo/volcano 附控制台取 Key 链接，走 openExternal 桥） → v103 额度源列表卡片化布局（每源圆角卡片+间距，凭据框限宽 420px，长说明段落补水平边距；纯 CSS，结构行为不变） → v104 源状态文案补 disabled=已关闭映射 + 主进程对显式关闭源统一报 disabled（修「开关已关却显示待查询」矛盾）；刷新/获取 Key 按钮补 title 提示，关闭源的刷新按钮禁用 → v105 「上下文容量」弹层（hover-card-content）内压缩上下文按钮：命中率行下方全宽胶囊按钮（原生 secondary 配色全走客户端语义变量），弹层关即卸载（Radix 无 forceMount）故 body MutationObserver + heavy 对账双触发、DOM 存在性幂等（多实例安全），插入锚=「剩余额度」border-t 段前（缺则容器尾）+位置兜回；点击弹原生 AlertDialog 视格确认框（遮罩/Esc/外点关闭、Enter 确认），确认后优先走 fiber 上原生残留的 onSendCompressionCommand("/compact")（SessionPane 压缩入口，不动输入框草稿），缺失回落官方 E2E 输入桥 __zcodeLexicalInputE2E.setText + 发送键（Lexical 直写 DOM 不生效，禁用该路径；草稿非空拒绝） → v106 额度 tooltip 滚动豁免：hideTipsOnScroll 不再收 quotaTip（chip 固定 composer 工具行与 gitTip 同理），修思考中流式输出自动滚动致悬停弹出即灭；chip 随宿主重建 detach（无 mouseleave）由 scanRateLines 加 isConnected 健康检查兜底收起 → v107 压缩确认框补行为提示：压缩进行中发送新消息/停止会打断压缩（实测 16:27 新 turn 启动同秒 compact turn TURN_CANCELLED，cancelled_by_user=1；引擎对该次摘要流挂起 134s 无首 token 也不重试 retryable=0），确认框加 hint 行中性告知 → v108 压缩主通道按用户指定改为字面 "/compact" 输入提交（E2E 桥 setText+发送键；流式中 v4-stop 可见/草稿非空/发送键 disabled 三重拒绝），fiber 命令信封降兜底；hint 升级为「通常需 2-4 分钟且无进度反馈」（DB 实证：全库 compact 请求无首 token 但正常完成，72s-9.6min，14:44 同会话同模型 165s 成功先例；16:25/16:43 两次「卡住」实为 2m20s 被新消息 TURN_CANCELLED，非故障） → v109 压缩主通道按用户指定改回直接调会话发送接口（fiber onSendCompressionCommand 命令信封：不碰输入框/发送键、流式中交引擎排队，修字面输入通道在生成中被发送键禁用卡住的问题），字面 "/compact" 输入提交降兜底（三重门控仅作用于兜底） → v110 压缩提交函数改在弹框打开瞬间（弹层必存活、锚点几何可信）解析并缓存，修复确认时弹层已被 Radix 卸载、几何重解析退化为「离视口左上角最近」致多分栏把 /compact 发进错误会话（P1）；兜底字面输入通道的流式/发送键/草稿三重门控全部前置到 setText 之前（拒绝不再残留草稿）；Enter 确认限定焦点在弹框内（无焦点陷阱下防焦点外 Enter 误触发确认） → v111 额度 chip 默认展示：quota_enabled 缺省开（显式 false 才关，真值链在 inject-main）；chip 二级门控 not_configured/unsupported 从静默隐藏改中性灰提示「额度 未配置/暂不支持」（源被 ⚙ 显式关闭仍隐藏），tooltip 补 info 分支引导配置 → v112 Start Plan 免费档池（quota-client 新增 zcode-start 适配器走 zcode.z.ai billing/balance 独立链，与 coding plan 的 monitor 端点分池；选源路由与 quotaFamily 判定补 start-plan 分支修 start-plan pane 误读 GLM Coding Max 池；chip 增「套餐」分段（windows.plan，one_time 发放池聚合已用%），tooltip 套餐池行按 expires 标记切「到期」措辞） → v113 夜间审计加固：quotaBalanceText 内建转义（currency 是远程响应字符串，chip/tooltip 双 innerHTML sink；parts label/amount 单次转义修双重转义；「其他源」行标签转义归位；aria-label 走 plain 纯文本变体不读实体）→ quotaTip 补内容签名幂等 __zuTipSig（同 gitTip，悬停期间周期对账不再打断文本选择）→ 子代理明细面板数据签名幂等（滚动位置/选择不被每 1.5s 推送整面板重建重置；运行中估算仍由面板 800ms tick 原地刷新）→ 额度 chip 签名重写保留 zu-qbusy（点击刷新动画不被推送截断，同 git chip）→ ⚙ 源列表 id/label/preset/keyUrl 属性级转义 aEsc（custom:<providerId> 可含用户自定义名）→ live 速度 span 的 speedView.text 过 ttEsc（工具名是宿主/MCP 可控字符串）→ 渲染桥两处订阅回调尾部 updateLive() try 包裹（异常不冒进宿主 store 通知分发，诊断键 subLiveErr/bridgeLiveErr 记录） → v114 积压清单清扫：remoteCache/remoteTodayCache/richTextCache/richTextAttempts 上限淘汰（长会话防无界增长）；dispose 清理补 __zusageDeliverTurnText/__zusageSidWs/__zusagePaneScopes（旧代闭包自卫之外的清理完整性）；诊断 lsVals 只转储 zusage 命名空间的 localStorage 键（宿主其余键值不进 diag 文件） → v115 渲染循环省电（上游 xhwxt PR #26/#28 同源问题）：幽灵子树/遮挡命中/模态判定加 TTL 缓存（120/150ms，命中绑定元素矩形+模式），track 在 document.hidden 时整帧跳过；未采纳其 600ms↔2s 调度降频（heavy 600ms 对账是与 render 并列的 React 重写兜底契约，降频会让增强节点裸奔 2s） → v116 「思考中」卡死修复（源码复核定案）：v87 合成分支条件收紧——仅「空窗口非终态（draft 空窗，v87 本意）或 control.phase=running」才合成思考中，删除「行非空」析取项（宿主 wire 快照 rows.window 恒为全序尾 60 行，末轮超窗的闲置会话整窗无 turnHeader，旧条件使其永久点亮思考中、切回重绑重新计时）；思考计时锚定 turnHeader.startedAt（宿主创建 header 恒写入，重绑不清零，缺字段回退首观测）→ v117 悬停命中区扩到整栏（fork lliangworld b21e3cf0 同源收编）：条目空隙/分隔符按 sep 中线就近归属、尾部空隙归末位条目，⚙ 与空条面维持保持不动；防闪烁改由节流+幂等承担   // 悬停 ⚙ 面板可见；版本号随代际递增
+    var VERSION = "v118";   // v82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v84 主标签页远端路由（工作台分组唯一主绑定上报 + 迟到载荷守卫，issue #30）→ v85 回答末尾统计行跟随万/亿开关 + tok→token → v86 历史轮 tracker 无记录（窗口滑出/换代/热更）或缺输出字段不再翻成"本轮统计不可用"，加 det 诊断 → v87 主叶归属增 last-session 回退（组零证据时唯一远端记录放行，issue #30 复测：单会话主标签页不建组）→ v88 运行态心跳与两处扫描 tick 2s→0.5s（富文本重试 6→24 次等价放大）→ v89 ⚙ 面板更新进度：downloading 阶段文案 + 下载（字节）/安装（校验→安装→同步）双进度条，缺 progress 的旧主进程自动隐藏 → v90 主标签页/分栏归属改按本窗会话节点身份（renderer 桥按版本/资产/锚点写 SessionPane 属性，移除 workbench-groups/last-session 共享回退）+ 心跳 0.5s→0.1s（扫描维持 0.5s）→ v91 设置页/权限面板冒条修复（PR #44：inSettingsView 三处派发排除 + anchorCardOf 面板锚点改判）收编收尾：排除标记并集（settings-page testid + content/panel 双 frame）、track 显隐第四处防御 → v92 ⚙ 更新区固定显示可复制的重装口令（源码安装无法自动更新时引导用户发给 agent）→ v93 原生上下文按钮（chat-context-usage-trigger）增强：环填充/四档色/右侧百分比镜像状态条上下文格（ctxBandOf 同源），cw 缺失还原原生形态 → v94 状态条删除「上下文容量」格（UI+tooltip，该口径由原生按钮增强承载），⚙ 面板同步去掉「上下文」开关，子代理格改始终展示（零值也显示）→ v95 ⚙ 更新区去掉 v92 重装口令提示块（源码清单的仓库来源改由宿主插件管理器直接更新，不再报渠道不一致），更新来源文案增「仓库源码」分支→ v96 套餐额度 chip（默认关）：挂原生上下文按钮左侧（wrapper 内前插，与按钮增强同款双 reapply/还原），数据来自主进程 quota 字段（解密宿主 OAuth 凭据直查 monitor 端点，账号级套餐池口径），会话首个 main_turn 完成前不显示；自绘 tooltip 走 rateTip 独立浮层模式；chip 改多窗分段：每窗一段（中文 5小时/7天，英文 5h/7d）各自按 80/95/100 档位色，分隔符 |；余额类型单段渲染就绪（余额 ¥100.00，阶段 3 数据源接入即用）；去掉环形，容器不着色 → v97 子代理速率（T1+T2）：zusage sub 汇总加 rate_avg/每子代理 tps_avg（已完成段加权平均，口径同 _turn_rate），子代理格 tooltip/明细面板展示；Agent 运行期主 chip 附加「子代理运行中 · 估 X t/s」——turn-stats 透传 subagent 行 childSessionId，overlay 据此用同款 zuTryBindStore 绑子代理会话 store 做字符增量估算（运行中请求未入库，DB 无实时数据；150s 采样实锤零 running 行），思考文本不进 rows 时退回纯状态词；工具动词「正在运行子智能体」压成「子代理运行中」（web 同步文案）；同日多槽位化：turn-stats 暴露 runningSubagents 全集（并行时 rowId 前 8 个），每子代理独立绑定/2s 节流，主 chip 显示合计速率（并行 ≥2 时动词后缀 ×N），chip tooltip 与子代理明细面板逐个实时展示运行中估算（tooltip 随原地改字同步 __tip 重画；面板 800ms tick 原地刷新 .subrate，汇总页运行块含 DB 尚无记录的新子代理） → v98 额度实时选源恢复（v4-model-config 观察 + quota-providers 全窗快照上报 + byProvider 定向刷新、空选择 fail-closed）与 sub2api 额度 UI（今日/本月窗口、窗口行内金额明细、Key 总额度、订阅截止、账户余额标题） → v99 思考中计时随语言本地化（中文「1 时 2 分 3 秒」/英文「1 h 2 m 3 s」，空格分隔、零段照旧省略）；回答末尾行采样时刻改完整中文日期时间（⏱ 2026 年 10 月 23 日 11 点 20 分 28 秒，token_rate.py format_turn_line 同步改版） → v99b（主线并流）tooltip 伪边界 leave 过滤：Chrome 悬停链收缩/重算会补发 DOM 内部的 documentElement/tip mouseleave，tipLeaveAt 贴边判定后取触发时刻最深 :hover 元素甄别，仍悬停在本档具体元素上即伪 leave 一律忽略交回 mousemove 流（主线 v100 滚动豁免=本链 v106 同义，不另列） → v99.1（主线并流）apiKey 模式 BigModel/Z.ai（bigmodel-api[-N]/zai-api[-N]）额度 chip 标题家族判定（issue #68；数据链在 quota-client） → v100 设置面板分区导航（ZCode 设置侧栏同款：左栏三组分区导航 + 内容区单分区显隐，激活项 aria-current="page"，选择持久化 zusage3.sec；面板窄于 620px 时导航收成 icon rail） → v101 设置面板高度在打开瞬间按内容自然高锁定（切分区不再抖动，resize 只收紧不放大） → v102 额度源预设模板（CC Switch/magpie 同款选模板只填 Key：官方域变体 chip 一键写入 secrets baseUrl，minimax 可信域机制推广到 siliconflow 币种随域；deepseek/openrouter/kimi/anthropic/mimo/volcano 附控制台取 Key 链接，走 openExternal 桥） → v103 额度源列表卡片化布局（每源圆角卡片+间距，凭据框限宽 420px，长说明段落补水平边距；纯 CSS，结构行为不变） → v104 源状态文案补 disabled=已关闭映射 + 主进程对显式关闭源统一报 disabled（修「开关已关却显示待查询」矛盾）；刷新/获取 Key 按钮补 title 提示，关闭源的刷新按钮禁用 → v105 「上下文容量」弹层（hover-card-content）内压缩上下文按钮：命中率行下方全宽胶囊按钮（原生 secondary 配色全走客户端语义变量），弹层关即卸载（Radix 无 forceMount）故 body MutationObserver + heavy 对账双触发、DOM 存在性幂等（多实例安全），插入锚=「剩余额度」border-t 段前（缺则容器尾）+位置兜回；点击弹原生 AlertDialog 视格确认框（遮罩/Esc/外点关闭、Enter 确认），确认后优先走 fiber 上原生残留的 onSendCompressionCommand("/compact")（SessionPane 压缩入口，不动输入框草稿），缺失回落官方 E2E 输入桥 __zcodeLexicalInputE2E.setText + 发送键（Lexical 直写 DOM 不生效，禁用该路径；草稿非空拒绝） → v106 额度 tooltip 滚动豁免：hideTipsOnScroll 不再收 quotaTip（chip 固定 composer 工具行与 gitTip 同理），修思考中流式输出自动滚动致悬停弹出即灭；chip 随宿主重建 detach（无 mouseleave）由 scanRateLines 加 isConnected 健康检查兜底收起 → v107 压缩确认框补行为提示：压缩进行中发送新消息/停止会打断压缩（实测 16:27 新 turn 启动同秒 compact turn TURN_CANCELLED，cancelled_by_user=1；引擎对该次摘要流挂起 134s 无首 token 也不重试 retryable=0），确认框加 hint 行中性告知 → v108 压缩主通道按用户指定改为字面 "/compact" 输入提交（E2E 桥 setText+发送键；流式中 v4-stop 可见/草稿非空/发送键 disabled 三重拒绝），fiber 命令信封降兜底；hint 升级为「通常需 2-4 分钟且无进度反馈」（DB 实证：全库 compact 请求无首 token 但正常完成，72s-9.6min，14:44 同会话同模型 165s 成功先例；16:25/16:43 两次「卡住」实为 2m20s 被新消息 TURN_CANCELLED，非故障） → v109 压缩主通道按用户指定改回直接调会话发送接口（fiber onSendCompressionCommand 命令信封：不碰输入框/发送键、流式中交引擎排队，修字面输入通道在生成中被发送键禁用卡住的问题），字面 "/compact" 输入提交降兜底（三重门控仅作用于兜底） → v110 压缩提交函数改在弹框打开瞬间（弹层必存活、锚点几何可信）解析并缓存，修复确认时弹层已被 Radix 卸载、几何重解析退化为「离视口左上角最近」致多分栏把 /compact 发进错误会话（P1）；兜底字面输入通道的流式/发送键/草稿三重门控全部前置到 setText 之前（拒绝不再残留草稿）；Enter 确认限定焦点在弹框内（无焦点陷阱下防焦点外 Enter 误触发确认） → v111 额度 chip 默认展示：quota_enabled 缺省开（显式 false 才关，真值链在 inject-main）；chip 二级门控 not_configured/unsupported 从静默隐藏改中性灰提示「额度 未配置/暂不支持」（源被 ⚙ 显式关闭仍隐藏），tooltip 补 info 分支引导配置 → v112 Start Plan 免费档池（quota-client 新增 zcode-start 适配器走 zcode.z.ai billing/balance 独立链，与 coding plan 的 monitor 端点分池；选源路由与 quotaFamily 判定补 start-plan 分支修 start-plan pane 误读 GLM Coding Max 池；chip 增「套餐」分段（windows.plan，one_time 发放池聚合已用%），tooltip 套餐池行按 expires 标记切「到期」措辞） → v113 夜间审计加固：quotaBalanceText 内建转义（currency 是远程响应字符串，chip/tooltip 双 innerHTML sink；parts label/amount 单次转义修双重转义；「其他源」行标签转义归位；aria-label 走 plain 纯文本变体不读实体）→ quotaTip 补内容签名幂等 __zuTipSig（同 gitTip，悬停期间周期对账不再打断文本选择）→ 子代理明细面板数据签名幂等（滚动位置/选择不被每 1.5s 推送整面板重建重置；运行中估算仍由面板 800ms tick 原地刷新）→ 额度 chip 签名重写保留 zu-qbusy（点击刷新动画不被推送截断，同 git chip）→ ⚙ 源列表 id/label/preset/keyUrl 属性级转义 aEsc（custom:<providerId> 可含用户自定义名）→ live 速度 span 的 speedView.text 过 ttEsc（工具名是宿主/MCP 可控字符串）→ 渲染桥两处订阅回调尾部 updateLive() try 包裹（异常不冒进宿主 store 通知分发，诊断键 subLiveErr/bridgeLiveErr 记录） → v114 积压清单清扫：remoteCache/remoteTodayCache/richTextCache/richTextAttempts 上限淘汰（长会话防无界增长）；dispose 清理补 __zusageDeliverTurnText/__zusageSidWs/__zusagePaneScopes（旧代闭包自卫之外的清理完整性）；诊断 lsVals 只转储 zusage 命名空间的 localStorage 键（宿主其余键值不进 diag 文件） → v115 渲染循环省电（上游 xhwxt PR #26/#28 同源问题）：幽灵子树/遮挡命中/模态判定加 TTL 缓存（120/150ms，命中绑定元素矩形+模式），track 在 document.hidden 时整帧跳过；未采纳其 600ms↔2s 调度降频（heavy 600ms 对账是与 render 并列的 React 重写兜底契约，降频会让增强节点裸奔 2s） → v116 「思考中」卡死修复（源码复核定案）：v87 合成分支条件收紧——仅「空窗口非终态（draft 空窗，v87 本意）或 control.phase=running」才合成思考中，删除「行非空」析取项（宿主 wire 快照 rows.window 恒为全序尾 60 行，末轮超窗的闲置会话整窗无 turnHeader，旧条件使其永久点亮思考中、切回重绑重新计时）；思考计时锚定 turnHeader.startedAt（宿主创建 header 恒写入，重绑不清零，缺字段回退首观测）→ v117 悬停命中区扩到整栏（fork lliangworld b21e3cf0 同源收编）：条目空隙/分隔符按 sep 中线就近归属、尾部空隙归末位条目，⚙ 与空条面维持保持不动；防闪烁改由节流+幂等承担 → v118 无障碍与主题重构（并行会话批次）：条目可聚焦（span tabindex / zu-sub 真按钮 + aria-label）、键盘可达 tooltip（focusin/focusout + Escape 收起）、focus-visible 焦点环、SVG 图标与思考动画改 currentColor 随主题、⚙ 面板请求-回执协议（requestId + __zusagePluginResult，feedbackVersion 1）、quota 源操作错误语义、统计行开关即时重扫   // 悬停 ⚙ 面板可见；版本号随代际递增
     var instanceDisposed = false, heavyTimer = 0, frame = 0, themeObserver = null;
     var globalListeners = [];
     function listenGlobal(target, type, fn, capture) {
@@ -1405,7 +1429,7 @@
       ctxBtnCache = null,   // v92：本实例上次增强的原生按钮（还原/对账引用，不依赖 cardCache 存活）
       lastQuota = null, lastQuotaAll = null, quotaProvider = "", quotaModel = "", quotaFallback = "", quotaChipCache = null,
       quotaSourceId = "", quotaSelection = null, quotaPaneRoot = null, quotaSelectionObserver = null, quotaMarkerSeen = false,   // 当前 pane 模型选择与额度来源
-      cuaBtnCache = null, gitChipCache = null,   // v96：Git chip 的锚点按钮（电脑操作）与本实例的 chip 节点
+      cuaBtnCache = null, gitChipCache = null,   // Git chip 的锚点按钮、节点与刷新状态
       liveTextCur = "", liveStatsCur = null, liveKindCur = "fallback", liveEl = null,   // v72：合并「生成速度」用
       livePhaseCur = "", liveIconCur = "bolt";   // v77：当前 chip 阶段与图标（think=思考动效/bolt=闪电）——相位切换需整条重渲染
 
@@ -1441,13 +1465,21 @@
       "mask-image:linear-gradient(90deg,#000 calc(100% - 26px),transparent)}" +
       /* zu-main 不得带 .it class：querySelectorAll('.it') 收集 tooltip 时会把它算进第 0 位，
        * tips 全部错位一位且末项为 null —— v31"悬停只有空胶囊/内容错位"的根因 */
-      ".it{display:flex;align-items:center;gap:4px;padding:2px 6px;border-radius:6px;" +
-      "transition:background-color .12s ease-out}" +
-      ".it:hover{background:var(--color-hover,rgba(255,255,255,.06))}" +
-      ".sep{width:1px;height:15px;background:var(--color-border,rgba(255,255,255,.09));flex:0 0 auto;margin:0 1px}" +
-      ".k{color:#7e8899}.v{color:var(--color-foreground,#e9edf4);font-weight:600}" +
+      ".it{display:flex;align-items:center;gap:5px;padding:2px 7px;border:0;border-radius:7px;" +
+      "background:transparent;color:inherit;font:inherit;line-height:inherit;text-align:left;white-space:nowrap;" +
+      "transition:background-color .12s ease-out,color .12s ease-out}" +
+      ".it:hover,.it:focus-visible{background:var(--color-hover,rgba(255,255,255,.06))}" +
+      ".it:focus-visible,.zu-gear:focus-visible{outline:2px solid var(--color-input-border-focused,var(--color-brand,#57c8ff))!important;outline-offset:2px}" +
+      ".zu-gear{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;padding:0;" +
+      "border:0;background:transparent;color:var(--color-foreground-subtle,#a1a1a1);font:inherit;line-height:1;cursor:pointer}" +
+      ".zu-gear>svg{width:calc(var(--ui-font-size,14px) + 4px);height:calc(var(--ui-font-size,14px) + 4px);display:block;transform:translateY(-.5px)}" +
+      ".zu-gear:hover{color:var(--color-foreground,#e9edf4);background:var(--color-hover,rgba(255,255,255,.07))}" +
+      ".it.zu-sub{appearance:none;-webkit-appearance:none;cursor:pointer}" +
+      ".it.zu-sub:focus-visible{outline:2px solid var(--color-input-border-focused,var(--color-brand,#57c8ff))!important;outline-offset:2px}" +
+      ".sep{width:1px;height:15px;background:var(--color-border,rgba(255,255,255,.09));flex:0 0 auto;margin:0 3px}" +
+      ".k{color:var(--color-foreground-subtle,#a1a1a1)}.v{color:var(--color-foreground,#e9edf4);font-weight:600}" +
       ".zu-live{color:var(--color-foreground,#e9edf4);font-weight:600}" +
-      ".pct{font-weight:700}.dim{color:var(--color-foreground-subtle,#667082)}" +
+      ".pct{font-weight:600}.dim{color:var(--color-foreground-subtle,#a1a1a1);font-weight:400}" +
       /* 三档状态色刻意不走客户端变量（v58.1）：terminal-bright-* 是语法高亮色板，
        * 绿档在条面小字号/细进度条上发白（用户实测）；改用高对比自调档，
        * 浅色加深版在 .zu-light 组。 */
@@ -1459,14 +1491,12 @@
       "transition:background-color .12s ease-out,color .12s ease-out}" +
       ".btn:hover{color:var(--color-foreground,#e9edf4);background:var(--color-hover,rgba(255,255,255,.07))}" +
       ".btn:active{transform:scale(.96)}" +
-      /* v81：⚙ 原为 +3px（17px），比宿主 group/toolbar 行的任何文字（统一
-       * text-ui-base = var(--ui-font-size)）都大一号，改为同基准以对齐工具行观感 */
-      ".zu-gear{flex:0 0 auto;font-size:var(--ui-font-size,14px);border-radius:6px}" +
-      /* 行内 SVG 线性图标（v54）：currentColor 跟随文字色，一处定义全局换色 */
-      ".ico{width:12px;height:12px;flex:0 0 auto;color:var(--color-foreground-subtle,#7e8899);opacity:.85}" +
-      /* 思考态动效图标（v77）：自带配色（脑灰+紫信号），略大于常规线性图标——
-       * 12px 下 4 个脉冲节点会缩没；不撑高条面（行高由文字主导）。 */
-      ".zu-think{width:14px;height:14px;opacity:1}" +
+      /* 图标按宿主字号扩展；数字的可见字面略高于行盒中心，轮廓同步上移半像素作光学校正。 */
+      ".zusage-root .ico{display:block;width:calc(var(--ui-font-size,14px) + 4px);height:calc(var(--ui-font-size,14px) + 4px);" +
+      "flex:0 0 auto;align-self:center;overflow:visible;color:var(--color-foreground-subtle,#a1a1a1);opacity:1;transform:translateY(-.5px)}" +
+      ".zusage-root .it{line-height:1.3}.zusage-root .it>span:not(.eb){display:inline-flex;align-items:center;min-height:1.3em}" +
+      ".zusage-root .eb .ico{width:12px;height:12px;transform:none}" +
+      ".zusage-root .zu-think{color:var(--color-brand,#8171e8);opacity:1}" +
       /* 工具错误数徽标 */
       ".eb{background:rgba(255,107,87,.14);background:color-mix(in srgb,var(--color-destructive,#ff6b57) 14%,transparent);" +
       "color:var(--color-destructive,#ff8a73);border-radius:999px;padding:0 6px;line-height:16px;font-weight:600;display:inline-flex;align-items:center;gap:2px}" +
@@ -1508,6 +1538,7 @@
       "font-family:var(--font-mono,Consolas,'Cascadia Mono',Menlo,'Microsoft YaHei UI','Microsoft YaHei',monospace);" +
       "font-size:var(--ui-font-size,14px);line-height:1;font-variant-numeric:tabular-nums;color:#afafb2;transition:background-color .15s}" +
       ".zu-git:hover,.zu-git:focus-visible{background:var(--color-hover,rgba(255,255,255,.08))}" +
+      ".zu-git:focus-visible,.zu-quota:focus-visible{outline:2px solid var(--color-input-border-focused,var(--color-brand,#57c8ff))!important;outline-offset:2px}" +
       ".zu-git>svg{width:16px;height:16px;flex:0 0 auto}" +
       ".zu-git .zu-git-ins{color:#aae6aa}" +
       ".zu-git .zu-git-del{color:#f09696}" +
@@ -1559,12 +1590,15 @@
       ".zu-src-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px;padding:10px 12px 11px;" +
       "border:1px solid var(--color-border,rgba(255,255,255,.08));border-radius:10px}" +
       ".zu-src-name{display:flex;align-items:center;gap:8px;flex:0 0 auto;font-weight:600}" +
-      ".zu-src-status{flex:1 1 auto;min-width:0;color:var(--color-tooltip-tag-foreground,#a6a6a6);font-size:calc(var(--ui-font-size,14px) - 2px)}" +
+      ".zu-src-status{flex:1 1 auto;min-width:0;color:var(--color-foreground-subtle,#a1a1a1);font-size:calc(var(--ui-font-size,14px) - 1px)}" +
+      ".zu-src-feedback:empty{display:none}.zu-src-feedback{flex-basis:100%;min-height:1.35em;color:var(--color-foreground-subtle,#a1a1a1);font-size:calc(var(--ui-font-size,14px) - 2px);overflow-wrap:anywhere}" +
+      ".zu-feedback-error{color:var(--color-destructive,#d8482f)}" +
       ".zu-src-refresh{background:none;border:none;color:inherit;cursor:pointer;font-size:14px;line-height:1;padding:2px 4px}" +
       ".zu-src-refresh:disabled{opacity:.4;cursor:default}" +
+      ".zu-src-refresh[aria-busy=true]{animation:zupulse 1s ease-in-out infinite;cursor:progress}" +
       ".zu-src-refresh:hover{color:var(--color-foreground,#fafafa)}" +
       ".zu-src-fields{flex-basis:100%;display:flex;gap:8px;flex-wrap:wrap}" +
-      ".zu-src-field{flex:1 1 220px;max-width:420px;min-width:0;background:rgba(0,0,0,.25);border:1px solid var(--color-border,rgba(255,255,255,.12));border-radius:6px;color:inherit;padding:4px 9px;font-family:var(--font-mono,monospace);font-size:calc(var(--ui-font-size,14px) - 2px)}" +
+      ".zu-src-field{flex:1 1 220px;max-width:420px;min-width:0;background:var(--color-input,rgba(0,0,0,.25));border:1px solid var(--color-foreground-subtle,#8791a3);border-radius:6px;color:inherit;padding:4px 9px;font-family:var(--font-mono,monospace);font-size:calc(var(--ui-font-size,14px) - 2px)}" +
       /* v102 预设模板：官方域变体一键填充 chip + 控制台取 Key 链接 */
       ".zu-src-presets{flex-basis:100%;display:flex;gap:6px;flex-wrap:wrap;align-items:center}" +
       ".zu-src-preset{background:none;border:1px solid var(--color-border,rgba(255,255,255,.14));border-radius:999px;" +
@@ -1594,12 +1628,12 @@
       ".panel::-webkit-scrollbar-thumb{background:var(--color-border,rgba(255,255,255,.14));border-radius:999px}" +
       ".panel label{display:flex;align-items:flex-start;gap:8px;cursor:pointer;padding:5px 8px;margin:0 -8px;" +
       "border-radius:8px;transition:background-color .12s ease-out}" +
-      ".panel input[type=text]{width:110px;background:var(--color-input,rgba(0,0,0,.3));border:1px solid var(--color-border,rgba(255,255,255,.14));" +
+      ".panel input[type=text]{width:110px;background:var(--color-input,rgba(0,0,0,.3));border:1px solid var(--color-foreground-subtle,#8791a3);" +
       "color:var(--color-foreground,#e9edf4);border-radius:6px;padding:2px 7px;font:inherit;outline:none}" +
       ".panel input[type=text]:focus{border-color:var(--color-brand,#57c7ff);box-shadow:0 0 0 2px rgba(87,199,255,.15)}" +
       ".panel .hr{border-top:1px solid var(--color-border,rgba(255,255,255,.08));margin:5px 0}" +
       ".panel .cap{color:var(--color-foreground-subtlest,#6b7484);margin:4px 0 2px;font-size:calc(var(--ui-font-size,14px) - 2px);letter-spacing:.08em}" +
-      ".panel .phead{font-weight:700;color:var(--color-foreground,#eef2f8);font-size:calc(var(--ui-font-size,14px) + 2px);margin-bottom:5px;display:flex;align-items:center;gap:8px}" +
+      ".panel .phead{font-weight:600;color:var(--color-foreground,#eef2f8);font-size:calc(var(--ui-font-size,14px) + 2px);margin-bottom:7px;display:flex;align-items:center;gap:8px}" +
       ".panel .pver{color:var(--color-brand,#57c7ff);font-weight:400;font-size:calc(var(--ui-font-size,14px) - 2px);background:rgba(87,199,255,.12);background:color-mix(in srgb,var(--color-brand,#57c7ff) 12%,transparent);border-radius:999px;padding:1px 8px}" +
       ".panel label em{font-style:normal;color:var(--color-foreground-subtle,#6f7989);display:block}" +
       ".panel input[type=checkbox]{accent-color:var(--color-brand,#57c7ff);margin-top:3px}" +
@@ -1620,7 +1654,7 @@
       ".panel .zu-progress-value{flex:0 0 auto;min-width:3em;text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}" +
       "@keyframes zuProgressSweep{from{background-position:-48px 0}to{background-position:calc(100% + 48px) 0}}" +
       ".panel.zu-settings{box-sizing:border-box;min-width:0;max-width:none;" +
-      "max-height:min(72vh,var(--zu-settings-height,72vh));padding:0;gap:0;overflow:hidden;line-height:1.5}" +
+      "max-height:min(82vh,var(--zu-settings-height,82vh));padding:0;gap:0;overflow:hidden;line-height:1.5}" +
       ".zu-settings .zu-settings-head{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;gap:12px;" +
       "padding:14px 16px;border-bottom:1px solid var(--color-border,rgba(255,255,255,.09))}" +
       ".zu-settings .phead{margin:0;font-size:var(--ui-font-size,14px);font-weight:600}" +
@@ -1641,6 +1675,8 @@
       "background:none;font:inherit;font-size:var(--ui-font-size,14px);line-height:1.4;text-align:left;cursor:pointer;" +
       "color:var(--color-remote-foreground-muted,#8d95a5);transition:background-color .12s ease-out,color .12s ease-out}" +
       ".zu-settings .zu-navitem:hover,.zu-settings .zu-navitem[aria-current]{background:var(--color-surface-hover,rgba(255,255,255,.08));color:var(--color-foreground,#e9edf4)}" +
+      ".zu-settings .zu-navitem[aria-current]{box-shadow:none;font-weight:500}" +
+      ".zu-settings .zu-navitem:focus-visible{outline:2px solid var(--color-input-border-focused,var(--color-brand,#57c8ff))!important;outline-offset:2px}" +
       ".zu-settings .zu-nav-ic{flex:0 0 16px;display:inline-flex;align-items:center;justify-content:center;color:var(--color-foreground,#e9edf4)}" +
       ".zu-settings .zu-nav-ic svg{width:16px;height:16px;display:block}" +
       ".zu-settings .zu-nav-label{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
@@ -1650,27 +1686,33 @@
       ".zu-settings.zu-nav-icons .zu-nav-label,.zu-settings.zu-nav-icons .zu-navcap{" +
       "position:absolute;width:1px;height:1px;margin:-1px;padding:0;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}" +
       ".zu-settings .zu-settings-body{flex:1;min-width:0;min-height:0;overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable;" +
-      "padding:12px 12px 16px;scrollbar-width:thin;scrollbar-color:var(--color-foreground-subtlest,#6b7484) transparent}" +
+      "padding:16px clamp(16px,2vw,28px) 20px;scrollbar-width:thin;scrollbar-color:var(--color-foreground-subtlest,#6b7484) transparent}" +
+      ".zu-settings .zu-settings-section{width:min(100%,960px);margin:0 auto}" +
+      ".zu-settings .zu-settings-card{width:100%}" +
       ".zu-settings-body::-webkit-scrollbar{width:8px}" +
       ".zu-settings-body::-webkit-scrollbar-thumb{background:var(--color-foreground-subtlest,#6b7484);border:2px solid var(--color-card,#13161e);border-radius:999px}" +
       ".zu-settings.zu-settings-more .zu-settings-body{mask-image:linear-gradient(#000 calc(100% - 16px),transparent)}" +
       /* 分区标题（v100）：单分区视图下 cap 即该页标题，提级为前景色 + 略大字号 */
       ".zu-settings .cap{margin:0 0 8px;letter-spacing:0;color:var(--color-foreground,#e9edf4);font-weight:600;" +
       "font-size:calc(var(--ui-font-size,14px) + 1px)}" +
-      ".zu-settings .zu-settings-card{border:1px solid var(--color-border,rgba(255,255,255,.09));border-radius:12px;" +
-      "background:var(--color-surface,rgba(255,255,255,.04));overflow:hidden}" +
-      ".zu-settings label{align-items:center;gap:12px;margin:0;padding:10px 12px;border-radius:0}" +
+      ".zu-settings .zu-settings-card{border:1px solid var(--color-card-border,var(--color-border,rgba(255,255,255,.09)));border-radius:12px;" +
+      "background:var(--color-card,var(--color-surface,rgba(255,255,255,.04)));overflow:hidden}" +
+      ".zu-settings label{align-items:flex-start;gap:14px;margin:0;padding:12px 14px;border-radius:0}" +
+      ".zu-settings label>span{padding-top:1px}" +
+      ".zu-settings label>input{flex:0 0 auto;margin-top:4px}" +
+      ".zu-settings label em{max-width:72ch}" +
+      ".zu-settings .zu-settings-detail{max-width:88ch}" +
       ".zu-settings .zu-settings-card>label+label{border-top:1px solid var(--color-border,rgba(255,255,255,.09))}" +
       ".zu-settings label>span{flex:1;min-width:0;font-weight:500}" +
       ".zu-settings label em{font-weight:400;margin-top:2px;font-size:calc(var(--ui-font-size,14px) - 2px);line-height:1.5}" +
       ".zu-settings input[type=checkbox]{appearance:none;-webkit-appearance:none;order:2;position:relative;flex:0 0 28px;" +
       "width:28px;height:16px;margin:0;border:1px solid var(--color-border,rgba(255,255,255,.18));border-radius:999px;" +
-      "background:var(--color-input,rgba(255,255,255,.12));cursor:pointer}" +
+      "background:var(--color-input,rgba(255,255,255,.12));border-color:var(--color-foreground-subtle,#8791a3);cursor:pointer}" +
       ".zu-settings input[type=checkbox]::before{content:'';position:absolute;left:2px;top:2px;width:10px;height:10px;" +
       "border-radius:50%;background:var(--color-foreground-subtle,#8791a3)}" +
       ".zu-settings input[type=checkbox]:checked{background:var(--color-brand,#57c7ff);border-color:var(--color-brand,#57c7ff)}" +
       ".zu-settings input[type=checkbox]:checked::before{left:14px;background:var(--color-background,#13161e)}" +
-      ".zu-settings input:focus-visible,.zu-settings button:focus-visible{outline:2px solid var(--color-brand,#57c7ff);outline-offset:2px}" +
+      ".zu-settings input:focus-visible,.zu-settings button:focus-visible{outline:2px solid var(--color-input-border-focused,var(--color-brand,#57c7ff))!important;outline-offset:2px}" +
       ".zu-settings input:disabled{opacity:.4;cursor:default}" +
       ".zu-settings .zu-ctxov{order:2;box-sizing:border-box;width:120px;min-width:0;padding:5px 7px}" +
       ".zu-settings .zu-settings-langs{display:flex;gap:8px;padding:10px 12px}" +
@@ -1684,6 +1726,7 @@
       "font-size:calc(var(--ui-font-size,14px) - 2px);color:var(--color-brand,#57c7ff);padding:2px;cursor:pointer}" +
       ".zu-settings .zu-settings-scroll:disabled{color:var(--color-foreground-subtle,#8791a3);cursor:default}" +
       /* 反馈按钮（v70）：常驻底栏右缘，点击经 window.open 交由系统默认浏览器打开 issues */
+      ".zu-settings .zu-settings-feedback-status{flex:0 1 auto;min-width:0;color:var(--color-foreground-subtle,#a1a1a1);font-size:calc(var(--ui-font-size,14px) - 2px);overflow-wrap:anywhere}" +
       ".zu-settings .zu-settings-feedback{flex:0 0 auto;font:inherit;font-size:calc(var(--ui-font-size,14px) - 2px);" +
       "color:var(--color-foreground,#e9edf4);background:var(--color-hover,rgba(255,255,255,.07));" +
       "border:1px solid var(--color-border,rgba(255,255,255,.14));border-radius:6px;padding:3px 10px;cursor:pointer}" +
@@ -1694,6 +1737,7 @@
       ".panel.subp{width:420px;max-width:60vw;gap:8px}" +
       ".subrow{padding:8px 10px;background:var(--color-surface,rgba(255,255,255,.03));border:1px solid var(--color-border,rgba(255,255,255,.06));border-radius:8px}" +
       ".subname{font-weight:600;color:var(--color-foreground,#e9edf4);font-size:var(--ui-font-size,14px);overflow-wrap:anywhere}" +
+      ".subp .rt-row{display:grid;grid-template-columns:minmax(5em,auto) 1fr;gap:14px;margin:4px 0}.subp .rt-row b{font-weight:400;color:var(--color-foreground-subtle,#a1a1a1)}.subp .rt-row span{color:var(--color-foreground,#ededed)}.subp .phead{flex-wrap:wrap}.subp .ttab:focus-visible{outline:2px solid var(--color-brand,#a3cfff)!important;outline-offset:2px}" +
       ".substat{color:var(--color-foreground-subtle,#8791a3);margin-top:2px}" +
       ".sublive{color:#3ecf8e;font-size:calc(var(--ui-font-size,14px) - 2px);font-weight:400;background:rgba(62,207,142,.12);border-radius:999px;padding:0 7px;margin-left:7px}" +
       /* 自绘 tooltip（v31）：向上弹出（原生 title 方向不可控且会被窗口下缘遮挡），
@@ -1704,20 +1748,21 @@
        * text-tooltip-foreground，反色底：暗色主题白底黑字、浅色主题黑底白字），
        * 内部次级文字用宿主 tooltip-tag 系变量；毛玻璃在实色底下无意义，删。 */
       ".tip{position:fixed;background:var(--color-tooltip,#171717);" +
-      "border:1px solid var(--color-border,transparent);border-radius:10px;padding:8px 12px;" +
+      "border:1px solid var(--color-popover-border,var(--color-border,transparent));border-radius:10px;padding:10px 13px;" +
       "font-family:var(--font-mono,Consolas,'Microsoft YaHei UI',monospace);" +
-      "font-size:calc(var(--ui-font-size,14px) - 1px);line-height:1.6;color:var(--color-tooltip-foreground,#fafafa);" +
+      "font-size:calc(var(--ui-font-size,14px) - 1px);line-height:1.55;color:var(--color-tooltip-foreground,#fafafa);" +
       "box-shadow:0 10px 28px rgba(0,0,0,.5),0 2px 6px rgba(0,0,0,.3);" +
-      "white-space:pre-line;z-index:2147483646;max-width:560px;display:none;scrollbar-width:thin}" +
-      /* 结构化 tooltip 行排版（v67.1，与统计行悬停解释同款；仅状态条 .tip 作用域）
-       * v81：前景色系改 tooltip 语境（反色底上 --color-foreground 会与底同色不可读） */
-      ".tip .rt-h{font-weight:600;color:var(--color-tooltip-foreground,#fafafa);margin:0 0 6px}" +
-      ".tip .rt-row{display:flex;gap:10px;margin:3px 0}" +
-      ".tip .rt-row b{flex:0 0 auto;min-width:86px;color:var(--color-tooltip-foreground,#fafafa);font-weight:600}" +
-      ".tip .rt-row span{color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
-      ".tip .rt-note{margin-top:7px;padding-top:6px;border-top:1px solid var(--color-border,transparent);color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      "white-space:pre-line;z-index:2147483646;width:max-content;max-width:min(560px,calc(100vw - 24px));max-height:calc(100vh - 24px);overflow:auto;display:none;scrollbar-width:thin}" +
+      /* 结构化 tooltip：标签次于标题，数值回到高对比前景；长说明自然折行。 */
+      ".tip .rt-h{font-weight:600;color:var(--color-tooltip-foreground,#fafafa);margin:0 0 8px}" +
+      ".tip .rt-row{display:flex;gap:12px;margin:4px 0;align-items:flex-start}" +
+      ".tip .rt-row b{flex:0 0 86px;min-width:0;color:var(--color-tooltip-tag-foreground,#a6a6a6);font-weight:500}" +
+      ".tip .rt-tool{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:16px;margin:5px 0;align-items:baseline}.tip .rt-tool-name{overflow-wrap:anywhere}.tip .rt-tool>.rt-atom{text-align:right}" +
+      ".tip .rt-atom{display:inline-block;white-space:nowrap}" +
+      ".tip .rt-row span{min-width:0;color:var(--color-tooltip-foreground,#fafafa);overflow-wrap:normal}" +
+      ".tip .rt-note{margin-top:8px;padding-top:7px;border-top:1px solid var(--color-popover-border,var(--color-border,transparent));color:var(--color-tooltip-tag-foreground,#a6a6a6);overflow-wrap:anywhere}" +
       ".ttabs{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:7px}" +
-      ".ttab{cursor:pointer;padding:2px 10px;border-radius:999px;background:var(--color-tooltip-tag,#262626);" +
+      ".ttab{font:inherit;border:0;text-align:left;cursor:pointer;padding:2px 10px;border-radius:999px;background:var(--color-tooltip-tag,#262626);" +
       "color:var(--color-tooltip-tag-foreground,#a6a6a6);white-space:nowrap;font-size:calc(var(--ui-font-size,14px) - 1px);" +
       "transition:background-color .12s ease-out,color .12s ease-out}" +
       ".ttab:hover{color:var(--color-tooltip-foreground,#fafafa);background:color-mix(in srgb,var(--color-tooltip-foreground,#fafafa) 12%,transparent)}" +
@@ -1802,13 +1847,15 @@
     if (slot === 0) bar.id = "zusage-bar";
     bar.style.display = "none";   // 定位成功前不显示（避免占位）
     bar.innerHTML = '<span class="zu-main">…</span>' +
-      '<span class="btn zu-gear">⚙</span>';
+      '<button type="button" class="btn zu-gear" aria-label="' + L("打开状态条设置", "Open status bar settings") + '" aria-expanded="false" aria-haspopup="dialog">' +
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+      '<path d="M9.5 2h5l.6 2.5 1.7 1 2.5-.7 2.5 4.4-1.9 1.8v2l1.9 1.8-2.5 4.4-2.5-.7-1.7 1-.6 2.5h-5l-.6-2.5-1.7-1-2.5.7-2.5-4.4L4.1 13v-2L2.2 9.2l2.5-4.4 2.5.7 1.7-1z"/><circle cx="12" cy="12" r="3.5"/></svg></button>';
     var panel = document.createElement("div");
     panel.className = "panel zu-settings";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
-    var srcListSig = "";
+    var srcListSig = "", sourceFeedback = {};
     var SRC_FIELD_LABELS = {
       apiKey: L("API Key", "API Key"), cookie: L("控制台 Cookie", "Console Cookie"), token: L("Token", "Token"),
       accessKeyId: L("AccessKeyId", "AccessKeyId"), secretAccessKey: L("SecretAccessKey", "SecretAccessKey"),
@@ -1828,15 +1875,15 @@
       { id: "display", group: "basics", zh: "状态条显示", en: "Display items",
         icon: '<line x1="21" x2="14" y1="4" y2="4"/><line x1="10" x2="3" y1="4" y2="4"/><line x1="21" x2="12" y1="12" y2="12"/><line x1="8" x2="3" y1="12" y2="12"/><line x1="21" x2="16" y1="20" y2="20"/><line x1="12" x2="3" y1="20" y2="20"/><line x1="14" x2="14" y1="2" y2="6"/><line x1="8" x2="8" y1="10" y2="14"/><line x1="16" x2="16" y1="18" y2="22"/>' },
       { id: "general", group: "basics", zh: "通用", en: "General",
-        icon: '<path d="M14 17H5"/><path d="M19 7h-9"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/>' },
+        icon: '<path d="M4 7h4m5 0h7M4 17h9m5 0h2"/><circle cx="10.5" cy="7" r="2.5"/><circle cx="15.5" cy="17" r="2.5"/>' },
       { id: "stats", group: "data", zh: "回答统计", en: "Reply statistics",
-        icon: '<path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/>' },
+        icon: '<path d="M4 4v16h16M8 16v-4m5 4V7m5 9v-6"/>' },
       { id: "quota", group: "data", zh: "套餐额度", en: "Plan quota",
-        icon: '<path d="m12 14 4-4"/><path d="M3.34 19a10 10 0 1 1 17.32 0"/>' },
+        icon: '<path d="M4.2 18a9 9 0 1 1 15.6 0M12 13l4-4M6 18h12"/><circle cx="12" cy="13" r="1"/>' },
       { id: "update", group: "maint", zh: "插件更新", en: "Plugin updates",
         icon: '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 21H3v-5"/>' },
       { id: "about", group: "maint", zh: "关于数据", en: "About the data",
-        icon: '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>' },
+        icon: '<circle cx="12" cy="12" r="9"/><path d="M11 11h1v6m-1 0h3m-2-10v.1"/>' },
     ];
     function activeSettingsSec() {
       for (var i = 0; i < ZU_SECTIONS.length; i++) if (ZU_SECTIONS[i].id === state.settingsSec) return state.settingsSec;
@@ -1854,7 +1901,7 @@
           var it = ZU_SECTIONS[s];
           if (it.group !== grp.id) continue;
           html += '<button type="button" class="zu-navitem" data-sec="' + it.id + '"' + (it.id === active ? ' aria-current="page"' : '') +
-            '><span class="zu-nav-ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">' + it.icon + '</svg></span>' +
+            ' title="' + L(it.zh, it.en) + '"><span class="zu-nav-ic" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">' + it.icon + '</svg></span>' +
             '<span class="zu-nav-label">' + L(it.zh, it.en) + '</span></button>';
         }
         html += '</div>';
@@ -1879,13 +1926,13 @@
       settingRow('<input type="checkbox" data-k="git">', L("Git 状态", "Git status"), L("「电脑操作」按钮右侧显示当前分支、↑领先 ↓落后与未提交改动（+插入行 -删除行 ?未跟踪）；仅本地仓库", "Branch, ↑ahead ↓behind and uncommitted changes (+ins -del ?untracked) beside the Computer Use button; local repositories only")) +
       '</div></section>' +
       '<section class="zu-settings-section" data-sec="general"' + secOpen("general") + '><div class="cap">' + L("通用", "General") + '</div><div class="zu-settings-card">' +
-      settingRow('<input type="text" class="zu-ctxov" inputmode="numeric" aria-label="' + L("上下文窗口", "Context window") + '" placeholder="' + L("自动（按模型）", "Auto (model)") + '">', L("上下文窗口", "Context window"), L("留空自动识别，优先使用客户端数值", "Leave empty to detect automatically; prefer the client value")) +
+      settingRow('<input type="text" class="zu-ctxov" inputmode="numeric" aria-label="' + L("上下文窗口", "Context window") + '" placeholder="' + L("自动（按模型）", "Auto (model)") + '">', L("上下文窗口", "Context window"), L("留空自动识别，优先使用客户端数值；手动值以 token 为单位，按整数读取", "Leave empty for automatic detection, preferring the client value; manual values are read as integer tokens")) +
       /* 万/亿开关只在中文界面出现（英文始终 K/M/B，见 fmt），因此文案不走 L() */
       (state.lang === "en" ? "" : settingRow('<input type="checkbox" class="zu-cn-num">', "中文单位（万/亿）", "token 数量以万/亿显示，默认开启")) +
       '<div class="zu-settings-langs"><label><input type="radio" name="zu-lang" value="zh"><span>中文</span></label>' +
       '<label><input type="radio" name="zu-lang" value="en"><span>English</span></label></div></div></section>' +
       '<section class="zu-settings-section" data-sec="stats"' + secOpen("stats") + '><div class="cap">' + L("回答统计", "Reply statistics") + '</div><div class="zu-settings-card">' +
-      settingRow('<input type="checkbox" class="zu-rate-line">', L("回答末尾追加统计行", "Append stats to each reply"), L("默认开启，下一次提问生效。包含速率（含思考）、首字延迟、输出量、生成耗时、段数峰值与会话累计。", "On by default; effective on the next prompt. Includes speed (with thinking), first-token latency, output, duration, segments/peak and session total.")) +
+      settingRow('<input type="checkbox" class="zu-rate-line">', L("回答末尾追加统计行", "Append stats to each reply"), L("切换后立即重扫：关闭会撤下插件生成的统计行，开启会补回可用记录。下一次提问沿用该设置；历史正文和已缓存统计行不重算。", "Rescans immediately: off removes plugin-generated lines; on restores available records. Applies to the next prompt; historical text and cached statistics are not recalculated.")) +
       '</div></section>' +
       '<section class="zu-settings-section" data-sec="quota"' + secOpen("quota") + '><div class="cap">' + L("套餐额度", "Plan quota") + '</div><div class="zu-settings-card">' +
       settingRow('<input type="checkbox" class="zu-quota-enable">', L("显示套餐额度", "Show plan quota"), L("在输入框上下文按钮左侧显示当前登录账号编码套餐的已用比例与重置时间（含 Start Plan 免费档池的已用比例与到期时间；账号级套餐池，不是单个模型独享）。默认开启，关闭即停查询。点击 chip 立即刷新。", "Shows the signed-in account's coding-plan usage and reset time left of the context button (plus the Start Plan free tier's usage and expiry; account-level pool, not per model). On by default; turning it off stops the queries. Click the chip to refresh.")) +
@@ -1903,8 +1950,11 @@
       '</div>' +
       '<div class="pnote">' + L("仅更新此插件。GitHub/GitCode 来源会联网，本地目录来源只检查本地文件，不上传用量数据。", "Only this plugin is updated. GitHub/GitCode sources use the network; directory sources check local files. Usage data is never uploaded.") + '</div></div></div></section>' +
       '<section class="zu-settings-section" data-sec="about"' + secOpen("about") + '><div class="cap">' + L("关于数据", "About the data") + '</div><div class="pnote">' +
-      L("悬停状态条查看明细。数据源 ~/.zcode/cli/db/db.sqlite（只读），请求完成后才落库。", "Hover bar items for details. Data source ~/.zcode/cli/db/db.sqlite (read-only); data is written after requests complete.") + '</div></section></div></div>' +
+      L("数据库统计：只读 ~/.zcode/cli/db/db.sqlite，请求完成后入库；总 token 为输入加输出，缓存已含在输入中，思考已含在输出中。", "Database statistics: read-only ~/.zcode/cli/db/db.sqlite, written after requests complete. Total tokens = input + output; cache is included in input and thinking in output.") + '</div><div class="pnote">' +
+      L("生成速度：只读渲染器状态桥在生成时按字符增量估算，完成后切换为真实速度；桥不可用时回退数据库最近有效段。", "Generation speed: the read-only renderer bridge estimates from text deltas while running and uses actual speed after completion; without the bridge it falls back to the latest valid database segment.") + '</div><div class="pnote">' +
+      L("联网边界：额度源查询对应账号的套餐或余额接口；插件更新可联网下载代码。额度不是本地 token 统计推算值。SSH 数据查询使用已配置通道。", "Network boundaries: quota sources query account plan/balance endpoints; plugin updates can download code. Quota is not inferred from local token usage. SSH statistics use configured connections.") + '</div></section></div></div>' +
       '<div class="zu-settings-foot"><button type="button" class="zu-settings-scroll"></button>' +
+      '<span class="zu-settings-feedback-status" role="status" aria-live="polite"></span>' +
       '<button type="button" class="zu-settings-feedback">' + L("反馈问题", "Report an issue") + '</button></div>';
       panel.querySelectorAll('input[name=zu-lang]').forEach(function (r) {
         r.checked = state.lang === r.value;
@@ -1920,6 +1970,7 @@
       if (cnBox) cnBox.checked = !!state.cnNum;
       syncUpdate();
       panel.querySelector(".zu-settings-body").scrollTop = scrollTop;
+      if (panel.setAttribute) panel.setAttribute("aria-label", L("状态条设置", "Status bar settings"));
       syncSettingsScroll();
     }
     function syncSettingsScroll() {
@@ -1940,12 +1991,10 @@
       if (!panel.classList.contains("open")) return;
       var br = bar.getBoundingClientRect();
       var height = Math.max(0, Math.floor(br.top - 18));
-      /* v101：高度在打开瞬间按内容自然高锁定（scrollHeight 返回未被 max-height 截断的
-       * 完整内容高），此后切分区/内容增减都不改面板高，只随可用上限收紧不放大——
-       * 左侧导航切分区时面板高度与底边不再抖动；72vh 上限仍由 CSS max-height 兜底。 */
+      /* 打开时以视口高度提供稳定阅读区域，切页不缩放；可用空间减少时只收紧。 */
       if (!panel.style.height) {
-        var natural = panel.scrollHeight || panel.offsetHeight || 0;
-        panel.style.height = Math.max(0, Math.min(natural, height)) + "px";
+        var preferred = Math.floor((typeof innerHeight === "number" ? innerHeight : window.innerHeight) * .82);
+        panel.style.height = Math.max(0, Math.min(preferred, height)) + "px";
       } else if ((parseInt(panel.style.height, 10) || 0) > height) {
         panel.style.height = height + "px";
       }
@@ -1961,15 +2010,42 @@
       if (panel.style.top !== top + "px") panel.style.top = top + "px";
       syncSettingsScroll();
     }
+    var previousPanelFocus = null;
+    function closeSettings(restoreFocus) {
+      panel.classList.remove("open");
+      panel.setAttribute("aria-modal", "false");
+      gear.setAttribute("aria-expanded", "false");
+      if (restoreFocus !== false) {
+        var target = previousPanelFocus && previousPanelFocus.isConnected ? previousPanelFocus : gear;
+        try { target.focus(); } catch (e) { }
+      }
+      previousPanelFocus = null;
+    }
     panel.addEventListener("scroll", syncSettingsScroll, true);
     panel.addEventListener("keydown", function (e) {
-      if (e.key === "Escape") panel.classList.remove("open");
+      if (e.key === "Escape") {
+        closeSettings(true);
+        e.stopPropagation();
+      } else if (e.key === "ArrowDown" || e.key === "ArrowUp" || e.key === "Home" || e.key === "End") {
+        var nav = panel.querySelector(".zu-settings-nav");
+        var buttons = nav ? nav.querySelectorAll(".zu-navitem") : [];
+        var current = Array.prototype.indexOf.call(buttons, document.activeElement);
+        if (current < 0 || !buttons.length) return;
+        if (e.key === "Home") current = 0;
+        else if (e.key === "End") current = buttons.length - 1;
+        else current = (current + (e.key === "ArrowDown" ? 1 : buttons.length - 1)) % buttons.length;
+        e.preventDefault();
+        buttons[current].focus();
+      }
     });
     buildPanel();
     /* v80：面板挂 body（fixed 视口坐标），不再挂 bar——条长进输入卡片（overflow-hidden）
      * 内部后，absolute 面板会被卡片裁掉。同 .tip 挂 body 的先例；.zusage-panel 类供
      * 全局清理与 isOwnOverlay 命中。 */
     panel.className = "panel zu-settings zusage-panel";
+    panel.setAttribute("role", "dialog");
+    panel.setAttribute("aria-modal", "false");
+    panel.setAttribute("aria-label", L("状态条设置", "Status bar settings"));
     document.body.appendChild(panel);
     /* 子代理明细面板（v49）：与设置面板同款 .panel 机制，点击条目开关，互斥打开 */
     var subPanel = document.createElement("div");
@@ -1979,7 +2055,8 @@
     /* 自绘 tooltip 挂 body（fixed 视口坐标）：挂 bar 内会被消息流的层叠上下文盖住（v31 实证） */
     var tip = document.createElement("div");
     tip.className = "tip zusage-tip-root";
-    if (slot === 0) tip.id = "zusage-tip";
+    tip.id = slot === 0 ? "zusage-tip" : "zusage-tip-" + slot;
+    tip.setAttribute("role", "tooltip");
     tip.style.display = "none";
     document.body.appendChild(tip);
     bar.appendChild(style);           // 样式随条走，不进 head（防清理）
@@ -2134,7 +2211,10 @@
      * 回复末尾统计行 tooltip 同款；动态值一律过 ttEsc（innerHTML 安全，如工具名/错误文案） */
     function ttEsc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
     function ttH(t) { return '<div class="rt-h">' + ttEsc(t) + "</div>"; }
-    function ttRow(k, v) { return '<div class="rt-row"><b>' + ttEsc(k) + '</b><span>' + ttEsc(v) + "</span></div>"; }
+    function ttRow(k, v) {
+      var value = ttEsc(v).replace(/\b\d[\d,.]*(?:\s*(?:tok\/s|t\/s|tokens?|requests?|calls?|s|ms|次|轮|万|亿|%))(?=$|[\s，；。·（）()])/g, '<span class="rt-atom">$&</span>');
+      return '<div class="rt-row"><b>' + ttEsc(k) + '</b><span>' + value + "</span></div>";
+    }
     function ttNote(v) { return '<div class="rt-note">' + ttEsc(v) + "</div>"; }
     /* v97：live chip（生成速度）的 tooltip 内容——子代理速率是渲染端实时状态（不在泵
      * 快照里），html() 整条渲染与 updateLive 原地改字两条路径都要能生成，抽出共用。
@@ -2142,6 +2222,8 @@
     function buildLiveTip(speedView) {
       var rows =
         ttH(L("生成速度", "Generation speed")) +
+        ttRow(L("当前读数", "Current reading"), speedView ? speedView.text : "—") +
+        ttRow(L("状态", "State"), speedView && speedView.phase ? L("生成中估算", "Running estimate") : L("本轮完成 · 真实值", "Turn completed · actual")) +
         ttRow(L("生成中", "While running"), L("按文本增量算出的字符/s，除以「每 token 字符数」估算 tok/s；该比例取自本会话最近一次完成的真实轮次，随每轮刷新（首轮无样本时用粗略默认值）", "estimated from the text-delta chars/s divided by a chars-per-token ratio; the ratio is calibrated from this session's most recently completed turn and refines each turn (a rough default is used before the first sample)")) +
         ttRow(L("子代理运行中", "Agent running"), L("子智能体运行期间按各自会话文本增量同款估算，主 chip 显示合计；运行中的请求未入本地库，思考文本不外显时无速率、只显示状态词", "while sub-agents run, each is estimated the same way from its own session text deltas and the bar chip shows their sum; in-flight requests are not in the local DB yet, and when thinking text is not exposed there is no rate, only the status word"));
       if (speedView && speedView.phase === "tool") {
@@ -2174,13 +2256,20 @@
     }
     /* 行内 SVG 线性图标（v54）：stroke 走 currentColor，颜色由 .ico 控制统一换色 */
     function ico(paths) {
-      return '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + paths + "</svg>";
+      return '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + paths + "</svg>";
     }
     function html(d) {
       var sess = d.session || {}, lt = d.last_turn || {}, today = d.today || {}, last = d.last || {};
       var tls = d.tools || { total: 0, errors: 0, list: [] };
       var items = [], tips = [];
-      function it(inner, tip, cls) { items.push('<span class="it' + (cls ? " " + cls : "") + '">' + inner + "</span>"); tips.push(tip || null); }
+      function it(inner, tipContent, cls) {
+        var interactive = cls === "zu-sub";
+        items.push('<' + (interactive
+          ? 'button type="button" aria-label="' + L("打开子代理明细", "Open sub-agent details") + '"'
+          : 'span tabindex="0"') +
+          ' class="it' + (cls ? " " + cls : "") + '">' + inner + (interactive ? "</button>" : "</span>"));
+        tips.push(tipContent || null);
+      }
       if (d.remote) {   // v9：SSH 远程会话（数据取自远端机），置顶徽标标明数据源
         it(ico('<path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/>') +
           '<span class="dim">' + L("远端", "remote") + "</span>",
@@ -2215,8 +2304,10 @@
       if (speedView) {
         liveKindCur = "live";
         livePhaseCur = speedView.phase || "";
-        liveIconCur = speedView.phase ? "think" : "bolt";   // v77.1：运行期一律动效脑（思考/正文/工具），完成态才回闪电
-        it((speedView.phase ? zuIcoThinking() : ico('<path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/>')) +
+        liveIconCur = speedView.phase === "thinking" ? "think" : speedView.phase === "tool" ? "tool" : speedView.phase ? "generate" : "bolt";
+        it((speedView.phase === "thinking" ? zuIcoThinking()
+          : speedView.phase === "tool" ? ico('<path d="M14.5 2.5a6 6 0 0 0-5.6 8.1L3.3 16.2a3.2 3.2 0 0 0 4.5 4.5l5.6-5.6a6 6 0 0 0 8.1-5.6l-4.1 3-3.8-3.8 3-4.1a6 6 0 0 0-2.1-2.1z"/>')
+          : ico('<path d="M13.5 2 3.5 13.5H11L10 22l10.5-12H13l.5-8z"/>')) +
           '<span class="zu-live ' + speedView.cls + '">' + ttEsc(speedView.text) + "</span>",
           buildLiveTip(speedView));
       } else if (dbTps) {
@@ -2224,10 +2315,11 @@
         livePhaseCur = "";
         liveIconCur = "bolt";
         var tpsCls = dbTps >= 70 ? "ok" : dbTps >= 40 ? "warm" : "hot";
-        it(ico('<path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/>') +
+        it(ico('<path d="M13.5 2 3.5 13.5H11L10 22l10.5-12H13l.5-8z"/>') +
           '<span class="zu-live ' + tpsCls + '">' + dbTps + '</span><span class="dim">t/s</span>',
           "\x01" +
           ttH(L("生成速度 · 最近一段", "Generation speed · latest segment")) +
+          ttRow(L("当前读数", "Current reading"), dbTps + " t/s") +
           ttRow(L("口径", "Basis"), L("输出 tokens（含思考）÷ 生成耗时", "output tokens (thinking incl.) ÷ generation time")) +
           ttRow(L("档位", "Bands"), L("≥70 绿 · 40–70 黄 · <40 红", "≥70 green · 40–70 yellow · <40 red")) +
           ((last.startedAt || last.endedAt)
@@ -2243,13 +2335,13 @@
         liveIconCur = "";
       }
       if (state.show.turn) {
-        it(ico('<path d="M23 4v6h-6"/><path d="M20.49 15A9 9 0 1 1 18.36 5.64L23 10"/>') +
+        it(ico('<path d="M5 3.5h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-9l-6.5 4V5.5a2 2 0 0 1 1.5-2z"/><path d="M7.5 8.5h9m-9 4h6"/>') +
           '<span class="v">' + fmt(lt.total) + "</span>" +
           (shrink ? "" : cachePct(lt.cache_read, lt.input)) +   // v66 超宽时命中率让位，明细仍在悬停 tooltip
           '<span class="dim">' + (lt.requests || 0) + L("次", " req") + "</span>" +
-          ico('<path d="M6 3h12M6 21h12M8 3v3.5L12 11l4-4.5V3M8 21v-3.5L12 13l4 4.5V21"/>') +
+          ico('<circle cx="12" cy="13" r="8.5"/><path d="M9 1.5h6m-3 0v3m0 4v5l3 2m3-12 2 2"/>') +
           '<span class="dim">' + sec(last.duration_ms) + "</span>" +
-          ico('<path d="M5 20v-5M12 20v-9M19 20V5"/>') +
+          ico('<path d="M2.5 5h8m-8 7h6m-6 7h8m5-14 6 7-6 7m-5-7h11"/>') +
           '<span class="dim">' + sec(last.ttft_ms) + "</span>",
           "\x01" +
           ttH(state.lang === "en"
@@ -2260,12 +2352,12 @@
           ttRow(L("输出", "Output"), fmt(lt.output) +
             (lt.reasoning > 0 ? L("（含思考 " + fmt(lt.reasoning) + "）", " (incl. " + fmt(lt.reasoning) + " thinking)") : "")) +
           ((typeof lt.tps === "number" && isFinite(lt.tps) && lt.tps > 0)
-            ? ttRow(L("输出速度", "Output rate"), lt.tps.toFixed(1) + " tok/s" +
-                L("（Σ有效段输出 ÷ Σ有效段生成时长，段间工具等待不计）", " (Σrated output ÷ Σrated generation time, tool waits excluded)") +
-                (lt.unrated_output > 0 ? L("；另有 " + fmt(lt.unrated_output) + " token 未参与测速", "; " + fmt(lt.unrated_output) + " tokens excluded from rate") : ""))
+            ? ttRow(L("输出速度", "Output rate"), lt.tps.toFixed(1) + " tok/s")
             : "") +
           (lt.cache_write > 0 ? ttRow(L("缓存写入", "Cache write"), fmt(lt.cache_write)) : "") +
-          ttRow(L("耗时", "Time"), L("单次 ", "request ") + sec(last.duration_ms) + L(" · 首字 ", " · TTFT ") + sec(last.ttft_ms) + L(" · 轮总 ", " · turn ") + sec(lt.duration_ms)) +
+          ttRow(L("单次耗时", "Request time"), sec(last.duration_ms)) +
+          ttRow(L("首字延迟", "TTFT"), sec(last.ttft_ms)) +
+          ttRow(L("本轮总耗时", "Turn time"), sec(lt.duration_ms)) +
           ((lt.started || lt.ended)
             ? ttRow(L("时间范围", "Time span"),
                 (lt.started ? fmtStart(lt.started) : "—") + " - " +
@@ -2274,10 +2366,12 @@
           ((lt.tool_calls || lt.retries || lt.tool_errors)
             ? ttRow(L("工具", "Tools"), (lt.tool_calls ? lt.tool_calls + L(" 次调用", " calls") : "") +
                 (lt.retries ? L(" · 重试 ", " · retries ") + lt.retries : "") +
-                (lt.tool_errors ? L(" · 错误 ", " · errors ") + lt.tool_errors : "")) : ""));
+                (lt.tool_errors ? L(" · 错误 ", " · errors ") + lt.tool_errors : "")) : "") +
+          ttNote(L("速度＝Σ有效段输出 ÷ Σ有效段生成时长，段间工具等待不计。", "Rate = Σrated output ÷ Σrated generation time; tool waits excluded.") +
+            (lt.unrated_output > 0 ? L("另有 " + fmt(lt.unrated_output) + " token 未参与测速", " " + fmt(lt.unrated_output) + " tokens excluded from rate") : "")));
       }
       if (state.show.win) {
-        it(ico('<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>') +
+        it(ico('<path d="M7.5 3h12a2 2 0 0 1 2 2v10M4.5 7h12a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H8l-5.5 2V9a2 2 0 0 1 2-2z"/>') +
           '<span class="v">' + fmt(sess.total) + "</span>" +
           (shrink ? "" : cachePct(sess.cache_read, sess.input)) +   // v66 同上
           '<span class="dim">' + (sess.turns || 0) + L("轮 ", " turns · ") + (sess.requests || 0) + L("次", " req") + "</span>",
@@ -2300,10 +2394,9 @@
       }
       if (state.show.tools) {
         var toolRows = (tls.list || []).map(function (t1) {
-          return ttRow(t1.name, t1.count + L(" 次 · ", " calls · ") + sec(t1.duration_ms) +
-            (t1.errors ? L(" · 错误 ", " · errors ") + t1.errors : ""));
+          return '<div class="rt-tool"><span class="rt-tool-name">' + ttEsc(t1.name) + '</span><span class="rt-atom">' + ttEsc(t1.count + L(" 次", " calls")) + '</span><span class="rt-atom">' + (t1.duration_ms === 0 ? '0.0s' : sec(t1.duration_ms)) + (t1.errors ? ttEsc(L(" · 错误 ", " · errors ") + t1.errors) : "") + '</span></div>';
         }).join("");
-        it(ico('<path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>') +
+        it(ico('<path d="M14.5 2.5a6 6 0 0 0-5.6 8.1L3.3 16.2a3.2 3.2 0 0 0 4.5 4.5l5.6-5.6a6 6 0 0 0 8.1-5.6l-4.1 3-3.8-3.8 3-4.1a6 6 0 0 0-2.1-2.1z"/>') +
           '<span class="v">' + (tls.total || 0) + "</span>" +
           (tls.errors ? '<span class="eb">' +
             ico('<circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/>') +
@@ -2315,7 +2408,7 @@
           (toolRows || ttNote(L("无工具调用记录", "No tool calls recorded"))));
       }
       if (state.show.today) {
-        it(ico('<rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/>') +
+        it(ico('<rect x="3" y="4.5" width="18" height="17" rx="2.5"/><path d="M7.5 2.5v4m9-4v4M3 10h18m-13.5 4h2m5 0h2m-9 4h2m5 0h2"/>') +
           '<span class="v">' + fmt(today.total) + "</span>",
           "\x01" +
           ttH(L("今日合计 · 今天所有会话", "Today · all sessions")) +
@@ -2336,15 +2429,18 @@
          * 无子代理时就是 0。v50：悬停 tooltip 只放汇总 + 打开面板的提示；各子代理明细
          * 在点击弹出的固定面板里用页签切换（面板固定不随鼠标，页签点击没有几何问题）。 */
         var sb = d.sub || { requests: 0, total: 0, input: 0, output: 0, cache_read: 0, reasoning: 0, cache_write: 0, active: false, rate_avg: 0 };
-        it(ico('<path d="M6 3v12"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>') +
+        it(ico('<circle cx="5" cy="5" r="3"/><circle cx="19" cy="8" r="3"/><circle cx="5" cy="19" r="3"/><path d="M5 8v8m0-4h9a5 5 0 0 0 5-1"/>') +
           '<span class="v">' + fmt(sb.total) + "</span>" +
           (sb.active ? '<span class="ok dot">●</span>' : ""),
-          L("子代理：当前会话的后台子代理消耗（独立统计，不计入会话累计）", "Sub-agents: background sub-agent usage of the current session (tracked separately, not counted in the session total)") + "\n" +
-          ioc(sb.input, sb.output, sb.cache_read, sb.reasoning, sb.cache_write) +
-          L("，共 ", ", ") + (sb.requests || 0) + L(" 次", " requests in total") +
-          (sb.rate_avg > 0 ? L(" · 均 ", " · avg ") + sb.rate_avg + L(" t/s（已完成段加权平均）", " t/s (weighted avg of completed segments)") : "") +
-          (sb.active ? L(" · 运行中", " · running") : "") +
-          "\n" + L("点击条目打开面板，查看每个子代理的具体消耗", "Click the item to open the panel with per-sub-agent details"), "zu-sub");
+          "\x01" + ttH(L("子代理 · 当前会话", "Sub-agents · current session")) +
+          ttRow(L("输入", "Input"), fmt(sb.input)) + ttRow(L("输出", "Output"), fmt(sb.output)) +
+          ttRow(L("缓存命中", "Cache read"), fmt(sb.cache_read)) +
+          (sb.cache_write > 0 ? ttRow(L("缓存写入", "Cache write"), fmt(sb.cache_write)) : "") +
+          (sb.reasoning > 0 ? ttRow(L("思考", "Thinking"), fmt(sb.reasoning)) : "") +
+          ttRow(L("请求数", "Requests"), (sb.requests || 0) + L(" 次", " requests")) +
+          (sb.rate_avg > 0 ? ttRow(L("平均速率", "Average rate"), sb.rate_avg + " t/s") : "") +
+          ttRow(L("运行状态", "State"), sb.active ? L("运行中", "Running") : L("无运行中子代理", "No running sub-agents")) +
+          ttNote(L("独立统计，不计入会话累计。点击或按 Enter 打开每个子代理的明细。", "Tracked separately, not counted in session total. Click or press Enter for per-agent details.")), "zu-sub");
       }
       return { s: items.join('<span class="sep"></span>') || '<span class="dim">' + L("全部显示项已关闭", "All display items are off") + '</span>', tips: tips };
     }
@@ -2705,6 +2801,7 @@
         liveTextCur = view.text;
         if (!liveEl) { render(state.data || { session: {}, last_turn: {}, today: {}, context_window: 0 }); return; }
         if (liveEl.textContent !== view.text) liveEl.textContent = view.text;
+        liveIconCur = phase === "thinking" ? "think" : phase === "tool" ? "tool" : phase ? "generate" : "bolt";
         var cls = "zu-live " + view.cls;
         if (liveEl.className !== cls) liveEl.className = cls;
         /* v97：子代理速率是渲染端实时状态（不在泵快照里），tooltip 里的逐子代理
@@ -2810,9 +2907,12 @@
       var h = html(view);
       /* 内容没变就不重建 DOM：泵每 1.5s 推送一次，无条件 innerHTML 会重建条面+重启呼吸灯
        * 动画+触发 tooltip 重画 = 悬停时周期性闪烁（v33 修复）。变化时才重建。 */
+      var focusedIndex = -1;
+      if (document.activeElement && main.contains(document.activeElement)) focusedIndex = Array.prototype.indexOf.call(main.querySelectorAll(".it"), document.activeElement);
       if (h.s !== lastHtml) {
         lastHtml = h.s;
         main.innerHTML = h.s;
+        if (focusedIndex >= 0) { var nextFocus = main.querySelectorAll(".it")[focusedIndex]; if (nextFocus && nextFocus.focus) nextFocus.focus(); }
       }
       var els = main.querySelectorAll(".it");
       for (var i = 0; i < els.length; i++) els[i].__tip = h.tips[i] || null;
@@ -2846,6 +2946,7 @@
       if (!force && mouseInBar) { tipStats.lastHide = "blocked:" + (cause || "?"); return; }
       if (tipGraceTimer) { clearTimeout(tipGraceTimer); tipGraceTimer = 0; }
       if (tip.style.display !== "none") tip.style.display = "none";
+      if (tipFor && tipFor.removeAttribute) tipFor.removeAttribute("aria-describedby");
       tipFor = null;
       tipSig = "";
       tipStats.hides++;
@@ -2879,7 +2980,9 @@
       positionTip(el, keepTop);
     }
     function showTipFor(el) {
+      if (tipFor && tipFor !== el && tipFor.removeAttribute) tipFor.removeAttribute("aria-describedby");
       tipFor = el;
+      if (el.setAttribute) el.setAttribute("aria-describedby", tip.id);
       var its = main.querySelectorAll(".it");
       el.__idx = el === main ? -1 : Array.prototype.indexOf.call(its, el);
       el.__n = its.length;   // render 接管时校验条目数未变，数量变了 __idx 就不可信
@@ -2887,6 +2990,23 @@
       tipStats.last = el === main ? "main" : String(el.textContent || "").slice(0, 12);
       drawTip(el, false);
     }
+    main.addEventListener("keydown", function (e) {
+      if (e.key === "Escape") { e.preventDefault(); hideTip(true, "escape"); }
+    });
+    main.addEventListener("focusin", function (e) {
+      if (inactive() || panel.classList.contains("open")) return;
+      var item = e.target && e.target.closest ? e.target.closest(".it") : null;
+      if (!item || !main.contains(item) || !item.__tip) return;
+      mouseInBar = true;
+      cancelTipGrace();
+      if (item !== tipFor) showTipFor(item);
+    });
+    main.addEventListener("focusout", function (e) {
+      var next = e.relatedTarget;
+      if (next && main.contains(next) && next.closest && next.closest(".it")) return;
+      mouseInBar = false;
+      if (tipFor) hideTip(true, "focus-leave");
+    });
     /* v117 悬停命中区扩到整栏：条目间空隙/分隔符按 sep 中线就近归入左右条目，尾部空隙归
      * 末位条目（.zu-main 是 space-between + sep 对称 margin，sep 中线恰为相邻条目命中区的
      * 精确分界）。⚙ 在 .zu-main 之外不受影响；空条面与 __tip 缺失的兜底目标返回 null，
@@ -3068,7 +3188,7 @@
         : u.channel === "market" ? (u.channelHost === "gitcode" ? L("GitCode 仓库源码（由插件管理器直接更新）", "GitCode repository source (updated directly by the plugin manager)") : L("GitHub 仓库源码（由插件管理器直接更新）", "GitHub repository source (updated directly by the plugin manager)"))
         : L("本地目录市场", "local directory marketplace"));
       if (active && u.releaseUrl) text += "\n" + u.releaseUrl;
-      if (active && u.checkedAt) text += "\n" + L("上次检测：", "Last checked: ") + new Date(u.checkedAt).toLocaleString();
+      if (active && u.checkedAt) text += "\n" + L("上次成功检查：", "Last successful check: ") + new Date(u.checkedAt).toLocaleString(state.lang === "en" ? "en-US" : "zh-CN");
       if (u && (u.phase === "updating" || u.phase === "downloading")) text += "\n" + L("关闭自动更新仅阻止后续安装；已开始的安装会继续完成", "Turning automatic updates off stops future installs; an install already started will finish");
       if (u && u.restartRequired) text += "\n" + L("主进程或关闭热更新的文件已更新，需重启 ZCode", "Restart ZCode to load main-process updates or files with hot reload disabled");
       if (u && u.skipped && u.skipped.length) text += "\n" + L("保留本地热修（未覆盖）：", "Local edits preserved (not overwritten): ") + u.skipped.join(", ");
@@ -3082,19 +3202,38 @@
       try { syncQuotaSources(); } catch (eSrc) { try { window.__zusageDiag.quotaSrcErr = String((eSrc && eSrc.stack) || eSrc); } catch (_) { } }   // 防御：多源列表渲染失败不得拖垮实例创建（实测 SRC_FIELD_LABELS 时序可致整条状态条消失）
     }
     function srcStatusText(sv) {
-      var m = { ok: "✓", idle: L("待查询", "pending"), not_configured: L("未配置凭据", "credential missing"),
+      if (sv.busy) return L("查询中…", "Querying…");
+      var m = { ok: L("查询成功", "Query succeeded"), idle: L("待查询", "pending"), not_configured: L("未配置凭据", "credential missing"),
         disabled: L("已关闭", "off"),
         auth_failed: L("认证失效", "auth failed"), no_plan: L("无订阅", "no subscription"),
         rate_limited: L("限流中", "rate limited"), network_error: L("查询失败", "failed"),
         parse_error: L("响应异常", "bad response"), unsupported: L("不支持", "unsupported") };
       return m[sv.status] || sv.status || "";
     }
+    function showSettingsFeedback(error, pending) {
+      var node = panel.querySelector(".zu-settings-feedback-status");
+      if (!node) return;
+      node.textContent = pending ? (state.pluginUpdate && state.pluginUpdate.feedbackVersion >= 1 ? L("操作已发出，等待确认…", "Sent; awaiting confirmation…") : L("操作已发出；保存确认需重启后端", "Sent; restart the backend for save confirmation")) : error ? L("保存失败，请重试", "Save failed; try again") : L("已保存", "Saved");
+      node.classList.toggle("zu-feedback-error", !!error);
+    }
+    function showSourceFeedback(id, error, pending) {
+      sourceFeedback[id] = { error: !!error, pending: !!pending };
+      var rows = panel.querySelectorAll(".zu-src-row[data-src]");
+      for (var i = 0; i < rows.length; i++) {
+        if (rows[i].getAttribute("data-src") !== String(id)) continue;
+        var node = rows[i].querySelector(".zu-src-feedback");
+        if (!node) return;
+        node.textContent = pending ? (state.pluginUpdate && state.pluginUpdate.feedbackVersion >= 1 ? L("操作已发出，等待确认…", "Sent; awaiting confirmation…") : L("操作已发出；保存确认需重启后端", "Sent; restart the backend for save confirmation")) : error ? L("操作失败，请重试", "Action failed; try again") : L("已保存", "Saved");
+        node.classList.toggle("zu-feedback-error", !!error);
+        return;
+      }
+    }
     /* 源列表按推送状态增量重建（JSON 签名没变不重绘，避免打断正在输入的凭据框） */
     function syncQuotaSources() {
       var box = panel.querySelector(".zu-src-list");
       if (!box) return;
       var list = state.quotaSources || [];
-      var sig = JSON.stringify(list);
+      var sig = JSON.stringify([list, sourceFeedback]);
       if (sig === srcListSig && box.children && box.children.length) return;
       /* 正在输入凭据的源行不重建：状态推送（如别家查询完成）会翻转签名，重建会丢焦点丢内容 */
       try {
@@ -3124,11 +3263,13 @@
         html += '<div class="zu-src-row" data-src="' + aEsc(sv.id) + '">' +
           '<label class="zu-src-name"><input type="checkbox" class="zu-src-enable" data-src="' + aEsc(sv.id) + '"' + (sv.enabled ? " checked" : "") + '>' +
           '<span>' + aEsc(sv.label) + (sv.unverified ? "*" : "") + '</span></label>' +
-          '<span class="zu-src-status">' + srcStatusText(sv) + '</span>' +
+          '<span class="zu-src-status" role="status" aria-live="polite">' + srcStatusText(sv) + '</span>' +
           (sv.keyUrl ? '<button type="button" class="zu-src-keyurl" data-url="' + aEsc(sv.keyUrl) + '" aria-label="' + L("打开控制台获取 API Key", "Open the console to get an API key") + '" title="' + L("打开控制台获取 API Key", "Open the console to get an API key") + '">' + L("获取 Key ↗", "Get key ↗") + '</button>' : "") +
-          '<button type="button" class="zu-src-refresh" data-src="' + aEsc(sv.id) + '" aria-label="' + L("立即刷新", "Refresh now") + '" title="' + L("跳过缓存，立即重新查询该源", "Re-query this source now, skipping the cache") + '"' + (sv.enabled ? "" : " disabled") + '>↻</button>' +
+          '<button type="button" class="zu-src-refresh" data-src="' + aEsc(sv.id) + '" aria-label="' + L("立即刷新", "Refresh now") + '" title="' + L("跳过缓存，立即重新查询该源", "Re-query this source now, skipping the cache") + '"' + (sv.enabled && !sv.busy ? "" : " disabled") + ' aria-busy="' + (!!sv.busy) + '">↻</button>' +
           (chips ? '<span class="zu-src-presets">' + chips + '</span>' : "") +
-          '<span class="zu-src-fields">' + credFields + '</span></div>';
+          '<span class="zu-src-fields">' + credFields + '</span>' +
+          '<span class="zu-src-feedback' + (sourceFeedback[sv.id] && sourceFeedback[sv.id].error ? ' zu-feedback-error' : '') + '" role="status" aria-live="polite">' +
+          (sourceFeedback[sv.id] ? sourceFeedback[sv.id].pending ? (state.pluginUpdate && state.pluginUpdate.feedbackVersion >= 1 ? L("操作已发出，等待确认…", "Sent; awaiting confirmation…") : L("操作已发出；保存确认需重启后端", "Sent; restart the backend for save confirmation")) : sourceFeedback[sv.id].error ? L("操作失败，请重试", "Action failed; try again") : L("已保存", "Saved") : "") + '</span></div>';
       }
       box.innerHTML = html;
     }
@@ -3151,6 +3292,7 @@
       fill.style.width = pct + "%";
       fill.classList.toggle("active", !!active);
       row.querySelector(".zu-progress-track").setAttribute("aria-valuenow", String(pct));
+      row.querySelector(".zu-progress-track").setAttribute("aria-label", key === "download" ? L("下载进度", "Download progress") : L("安装阶段", "Installation stage"));
       row.querySelector(".zu-progress-value").textContent = label;
     }
     function syncProgress(u) {
@@ -3202,13 +3344,25 @@
         return;
       }
       if (e.target.closest && e.target.closest(".zu-settings-close")) {
-        panel.classList.remove("open");
+        closeSettings(true);
         return;
       }
       if (e.target.closest && e.target.closest(".zu-settings-scroll")) {
         var body = panel.querySelector(".zu-settings-body");
         body.scrollTop += Math.max(1, Math.round(body.clientHeight * .8));
         syncSettingsScroll();
+        return;
+      }
+      var presetBtn = e.target.closest && e.target.closest(".zu-src-preset");
+      if (presetBtn) {
+        if (presetBtn.dataset.src && presetBtn.dataset.base) pluginRequest("quota-src-key", { id: presetBtn.dataset.src, field: "baseUrl", value: presetBtn.dataset.base }, function (result) {
+          if (!inactive()) showSourceFeedback(presetBtn.dataset.src, !result.ok, false);
+        });
+        return;
+      }
+      var srcBtn = e.target.closest && e.target.closest(".zu-src-refresh");
+      if (srcBtn && !srcBtn.disabled) {
+        pluginRequest("quota-src-refresh", { id: srcBtn.dataset.src });
         return;
       }
       if (e.target.closest && e.target.closest(".zu-settings-feedback")) {
@@ -3219,6 +3373,8 @@
         else window.open(issuesUrl, "_blank", "noopener");
         return;
       }
+      var button = e.target.closest && e.target.closest("[data-update]");
+      if (button && !button.disabled) pluginRequest(button.dataset.update);
       var keyBtn = e.target.closest && e.target.closest(".zu-src-keyurl");
       if (keyBtn) {
         /* 获取 Key：走客户端 openExternal 桥（系统默认浏览器），无桥环境 window.open 兜底 */
@@ -3230,29 +3386,26 @@
         }
         return;
       }
-      var presetBtn = e.target.closest && e.target.closest(".zu-src-preset");
-      if (presetBtn) {
-        /* 预设模板（v102）：一键填充官方域变体（走 baseUrl 白名单写通道）；写成功后
-         * writeQuotaSecrets 会自动解冻重查并回推 sourcesConfig，选中态随重绘高亮 */
-        if (presetBtn.dataset.src && presetBtn.dataset.base) pluginRequest("quota-src-key", { id: presetBtn.dataset.src, field: "baseUrl", value: presetBtn.dataset.base });
-        return;
-      }
-      var srcBtn = e.target.closest && e.target.closest(".zu-src-refresh");
-      if (srcBtn) { pluginRequest("quota-src-refresh", { id: srcBtn.dataset.src }); return; }
-      var button = e.target.closest && e.target.closest("[data-update]");
-      if (button && !button.disabled) pluginRequest(button.dataset.update);
     });
     gear.addEventListener("click", function (e) {
       e.stopPropagation();
-      syncPanel();
       var opening = !panel.classList.contains("open");
-      panel.classList.toggle("open");
-      if (opening) {
-        panel.style.height = "";   // v101：重开时按当前分区内容重测高度（开着的期间高度锁死）
-        positionSettingsPanel();
-        subPanel.classList.remove("open");   // 两面板同位重叠，互斥打开（v49）
-        hideTip(true, "gear-open");   // 移向齿轮的路上可能触发过条目 tooltip，开面板时一并收掉
-      }
+      if (!opening) { closeSettings(true); return; }
+      previousPanelFocus = document.activeElement;
+      syncPanel();
+      panel.classList.add("open");
+      panel.setAttribute("aria-modal", "false");
+      gear.setAttribute("aria-expanded", "true");
+      panel.style.height = "";   // v101：重开时按当前分区内容重测高度（开着的期间高度锁死）
+      positionSettingsPanel();
+      subPanel.classList.remove("open");   // 两面板同位重叠，互斥打开（v49）
+      hideTip(true, "gear-open");   // 移向齿轮的路上可能触发过条目 tooltip，开面板时一并收掉
+      var activeNav = panel.querySelector('.zu-navitem[aria-current="page"]');
+      if (activeNav) activeNav.focus();
+    });
+    panel.addEventListener("input", function (e) {
+      var field = e.target;
+      if (field.classList && field.classList.contains("zu-src-field")) field.__zuEditVersion = (field.__zuEditVersion || 0) + 1;
     });
     panel.addEventListener("change", function (e) {
       var t2 = e.target;
@@ -3261,27 +3414,61 @@
         return;
       }
       if (t2.classList.contains("zu-src-enable")) {
-        pluginRequest("quota-src", { id: t2.dataset.src, enabled: t2.checked });
+        var sourceToggle = t2, sourceWasEnabled = !t2.checked;
+        showSourceFeedback(t2.dataset.src, false, true);
+        pluginRequest("quota-src", { id: t2.dataset.src, enabled: t2.checked }, function (result) {
+          if (inactive()) return;
+          if (!result.ok) sourceToggle.checked = sourceWasEnabled;
+          showSourceFeedback(sourceToggle.dataset.src, !result.ok, false);
+        });
         return;
       }
       if (t2.classList.contains("zu-src-field")) {
-        if (t2.dataset.src && t2.dataset.field) pluginRequest("quota-src-key", { id: t2.dataset.src, field: t2.dataset.field, value: t2.value });
+        if (t2.dataset.src && t2.dataset.field) {
+          var field = t2, editVersion = field.__zuEditVersion || 0;
+          showSourceFeedback(field.dataset.src, false, true);
+          pluginRequest("quota-src-key", { id: field.dataset.src, field: field.dataset.field, value: field.value }, function (result) {
+            if (inactive()) return;
+            if (result.ok && field.type === "password" && document.activeElement !== field && (field.__zuEditVersion || 0) === editVersion) field.value = "";
+            showSourceFeedback(field.dataset.src, !result.ok, false);
+          });
+        }
         return;
       }
       if (t2.classList.contains("zu-quota-enable")) {
         /* v95：乐观更新，真值以主进程写 config.json 的 quota_enabled 后回推为准；关闭时
            chip 在下一次 heavy 对账点摘除，主进程停止解密与联网 */
-        state.quotaEnabled = t2.checked;
-        pluginRequest("quota", t2.checked);
+        var requestedQuota = t2.checked;
+        var previousQuota = state.quotaEnabled;
+        state.quotaEnabled = requestedQuota;
+        showSettingsFeedback(false, true);
+        pluginRequest("quota", requestedQuota, function (result) {
+          if (inactive()) return;
+          if (result.ok) { showSettingsFeedback(false, false); return; }
+          state.quotaEnabled = previousQuota;
+          syncPanel();
+          showSettingsFeedback(true);
+        });
         renderAll(false);
         return;
       }
       if (t2.classList.contains("zu-rate-line")) {
         /* 乐观更新勾选态，真值以主进程写 config.json 后回推的 rateLine 为准 */
-        state.rateLine = t2.checked;
+        var requestedRateLine = t2.checked;
+        var previousRateLine = state.rateLine;
+        state.rateLine = requestedRateLine;
         scanRateLines();
         scanDeterministicLines();   // v71：关=撤下确定性历史行，开=立即重扫补行
-        pluginRequest("rate-line", t2.checked);
+        showSettingsFeedback(false, true);
+        pluginRequest("rate-line", requestedRateLine, function (result) {
+          if (inactive()) return;
+          if (result.ok) { showSettingsFeedback(false, false); return; }
+          state.rateLine = previousRateLine;
+          scanRateLines();
+          scanDeterministicLines();
+          syncPanel();
+          showSettingsFeedback(true);
+        });
         return;
       }
       if (t2.classList.contains("zu-cn-num")) {
@@ -3296,6 +3483,9 @@
         buildPanel();   // 面板自身文案随语言重建（含 radio 勾选态）
         rebuildExcBubble();
         renderAll(true);   // 条面单位与 tooltip 文案随语言刷新（含各实例面板文案重建）
+        gear.setAttribute("aria-label", L("打开状态条设置", "Open status bar settings"));
+        var languageInput = panel.querySelector('input[name="zu-lang"][value="' + state.lang + '"]');
+        if (languageInput && languageInput.focus) languageInput.focus();
         return;
       }
       if (t2.type === "checkbox") {
@@ -3310,7 +3500,10 @@
     });
     listenGlobal(document, "mousedown", function (e) {
       /* v80：面板挂 body 后 bar.contains 不再覆盖面板自身，点面板内部不能关 */
-      if (panel.classList.contains("open") && !bar.contains(e.target) && !panel.contains(e.target)) panel.classList.remove("open");
+      if (panel.classList.contains("open") && !bar.contains(e.target) && !panel.contains(e.target)) {
+        closeSettings(false);
+        previousPanelFocus = null;
+      }
       if (subPanel.classList.contains("open") && !bar.contains(e.target) && !subPanel.contains(e.target)) subPanel.classList.remove("open");
     });
 
@@ -3355,7 +3548,9 @@
         labels.push(nm.length > 12 ? nm.slice(0, 11) + "…" : nm);
       });
       labels.forEach(function (lb, i) {
-        var tb = document.createElement("span");
+        var tb = document.createElement("button");
+        tb.setAttribute("type", "button");
+        tb.setAttribute("aria-pressed", String(i === subPanelTab));
         tb.className = "ttab" + (i === subPanelTab ? " on" : "");
         tb.setAttribute("data-i", String(i));
         tb.textContent = lb;
@@ -3385,13 +3580,16 @@
         }
         var st = document.createElement("div");
         st.className = "substat";
-        st.textContent = L("总消耗 ", "Total ") + fmt(s1.total) + L(" · ", " · ") + (s1.requests || 0) +
-          L(" 次请求", " requests") +
-          (s1.tps_avg > 0 ? L(" · 均 ", " · avg ") + s1.tps_avg + L(" t/s", " t/s") : "") +
-          (s1.last ? L(" · 最后活动 ", " · last activity ") + fmtTime(s1.last) : "");
+        st.innerHTML = ttRow(L("总消耗", "Total"), fmt(s1.total)) +
+          ttRow(L("输入", "Input"), fmt(s1.input)) + ttRow(L("输出", "Output"), fmt(s1.output)) +
+          ttRow(L("缓存命中", "Cache read"), fmt(s1.cache_read)) +
+          ttRow(L("请求数", "Requests"), (s1.requests || 0) + L(" 次", " requests")) +
+          (s1.tps_avg > 0 ? ttRow(L("平均速率", "Average rate"), s1.tps_avg + " t/s") : "") +
+          (s1.last ? ttRow(L("最后活动", "Last active"), fmtTime(s1.last)) : "");
         var br = document.createElement("div");
         br.className = "substat dim";
-        br.textContent = ioc(s1.input, s1.output, s1.cache_read, s1.reasoning, s1.cache_write);
+        br.textContent = (s1.reasoning > 0 ? L("输出含思考 ", "Output includes thinking ") + fmt(s1.reasoning) : "") +
+          (s1.cache_write > 0 ? L(" · 缓存写入 ", " · cache write ") + fmt(s1.cache_write) : "");
         row.appendChild(n);
         row.appendChild(st);
         row.appendChild(br);
@@ -3399,10 +3597,11 @@
       if (subPanelTab === 0) {
         var p1 = document.createElement("div");
         p1.className = "pnote";
-        p1.textContent = ioc(sub.input, sub.output, sub.cache_read, sub.reasoning, sub.cache_write) +
-          L("，共 ", ", ") + (sub.requests || 0) + L(" 次", " requests in total") +
-          (sub.rate_avg > 0 ? L(" · 均 ", " · avg ") + sub.rate_avg + L(" t/s", " t/s") : "") +
-          (sub.active ? L(" · 有子代理运行中", " · sub-agent running") : "");
+        p1.innerHTML = ttRow(L("输入", "Input"), fmt(sub.input)) + ttRow(L("输出", "Output"), fmt(sub.output)) +
+          ttRow(L("缓存命中", "Cache read"), fmt(sub.cache_read)) +
+          ttRow(L("请求数", "Requests"), (sub.requests || 0) + L(" 次", " requests")) +
+          (sub.rate_avg > 0 ? ttRow(L("平均速率", "Average rate"), sub.rate_avg + " t/s") : "") +
+          ttRow(L("状态", "State"), sub.active ? L("子代理运行中", "Sub-agent running") : L("无运行中子代理", "No running sub-agents"));
         body.appendChild(p1);
         /* v97：运行中子代理逐个实时估算——含 DB 还没有完成记录的新子代理（sub.list
          * 只收录有已完成请求的会话）；数值 span 由面板 tick 原地刷新。 */
@@ -3463,17 +3662,28 @@
         if (spans[i].textContent !== txt) spans[i].textContent = txt;
       }
     }
+    function closeSubPanel(restoreFocus) {
+      subPanel.classList.remove("open");
+      if (subRateTimer) { clearInterval(subRateTimer); subRateTimer = 0; }
+      if (restoreFocus) { var trigger = main.querySelector(".zu-sub"); if (trigger && trigger.focus) trigger.focus(); }
+    }
     function toggleSubPanel() {
       var opening = !subPanel.classList.contains("open");
       subPanel.classList.toggle("open", opening);
       if (opening) {
-        panel.classList.remove("open");   // 与设置面板互斥
+        closeSettings(false);   // 与设置面板互斥
+        previousPanelFocus = null;
         buildSubPanel(lastSub);
         positionSubPanel();
         hideTip(true, "sub-open");
         if (!subRateTimer) subRateTimer = setInterval(subRateTickPanel, 800);
+        var first = subPanel.querySelector(".ttab");
+        if (first && first.focus) first.focus();
       }
     }
+    subPanel.addEventListener("keydown", function (e) {
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeSubPanel(true); }
+    });
     bar.addEventListener("click", function (e) {
       if (inactive()) return;
       if (e.target && e.target.closest && e.target.closest(".zu-sub")) {
@@ -3892,7 +4102,7 @@
       var bal = q.balance;
       if (bal && typeof bal.amount === "number" && isFinite(bal.amount)) {
         var amt = quotaBalanceText(bal);
-        return { kind: "balance", stale: !!q.stale,
+        return { kind: "balance", stale: !!q.stale, busy: !!q.busy,
           html: '<span class="zu-qseg ok">' + (state.lang === "en" ? "" : "余额 ") + amt + "</span>" + warn,
           aria: L("余额 ", "Balance ") + quotaBalanceText(bal, true) };
       }
@@ -3901,14 +4111,14 @@
         var html = segs.map(function (s) {
           return '<span class="zu-qseg ' + quotaBandOf(s.pct) + '">' + s.label + " " + Math.round(s.pct) + "%</span>";
         }).join('<span class="zu-qsep">|</span>');
-        return { kind: "value", stale: !!q.stale,
+        return { kind: "value", stale: !!q.stale, busy: !!q.busy,
           html: html + warn,
           aria: L("套餐已用 ", "Plan used ") + segs.map(function (s) { return s.label + " " + Math.round(s.pct) + "%"; }).join(L("，", ", ")) };
       }
       var summary = q.quotaSummary;
       if (summary && typeof summary.remaining === "number" && isFinite(summary.remaining)) {
         var left = quotaBalanceText({ amount: summary.remaining, currency: summary.currency });
-        return { kind: "quota", stale: !!q.stale, html: '<span class="zu-qseg ok">' + L("额度 ", "Quota ") + left + "</span>" + warn,
+        return { kind: "quota", stale: !!q.stale, busy: !!q.busy, html: '<span class="zu-qseg ok">' + L("额度 ", "Quota ") + left + "</span>" + warn,
           aria: L("Key 剩余额度 ", "Key quota remaining ") + quotaBalanceText({ amount: summary.remaining, currency: summary.currency }, true) };
       }
       if (st === "ok" || st === "idle") return null;   // 还没有可显示的窗口（首查在途/接口回空）
@@ -3917,10 +4127,7 @@
     function onQuotaClick(e) {
       e.preventDefault();
       e.stopPropagation();
-      pluginRequest("quota-refresh", quotaSourceId ? { sourceId: quotaSourceId } : undefined);   // 绕过 TTL 与软冻结
-      var el = this;
-      el.classList.add("zu-qbusy");
-      setTimeout(function () { el.classList.remove("zu-qbusy"); }, 1500);
+      pluginRequest("quota-refresh", quotaSourceId ? { sourceId: quotaSourceId } : undefined);
     }
     function enhanceQuotaChip() {
       if (inactive()) { restoreQuotaChip(); return; }
@@ -3940,12 +4147,15 @@
         if (!chip) {
           chip = document.createElement("span");
           chip.className = "zu-quota";
-          chip.setAttribute("role", "status");
+          chip.setAttribute("role", "button");
+          chip.setAttribute("aria-keyshortcuts", "Enter Space");
           chip.tabIndex = 0;
           chip.addEventListener("mouseenter", onQuotaEnter);
           chip.addEventListener("mouseleave", hideQuotaTip);
           chip.addEventListener("focus", onQuotaEnter);
           chip.addEventListener("blur", hideQuotaTip);
+          chip.addEventListener("keydown", onRefreshKeydown);
+          chip.addEventListener("keyup", onRefreshKeyup);
           chip.addEventListener("click", onQuotaClick);
         }
         quotaChipCache = chip;
@@ -3957,13 +4167,15 @@
       var all = lastQuotaAll && lastQuotaAll.sources ? Object.assign({}, lastQuotaAll, { active: quotaSourceId }) : lastQuotaAll;
       chip.__zuQ = { q: lastQuota, all: all, srcLabels: srcLabels, provider: quotaProvider, model: quotaModel, mode: mode };
       var sig = mode.kind + "|" + (mode.stale ? 1 : 0) + "|" + mode.html;
+      var qbusy = !!(lastQuota && lastQuota.busy);
       if (chip.__zuSig !== sig) {   // 幂等：内容没变不重建，悬停/焦点态不被打断
         chip.__zuSig = sig;
-        var qbusy = chip.classList.contains("zu-qbusy");   // 点击刷新的忙碌动画不被签名变化截断（同 git chip）
         chip.className = "zu-quota" + (mode.stale ? " zu-qstale" : "") + (qbusy ? " zu-qbusy" : "");
         chip.setAttribute("aria-label", mode.aria);
         chip.innerHTML = mode.html;
       }
+      chip.classList.toggle("zu-qbusy", qbusy);
+      chip.setAttribute("aria-busy", String(qbusy));
       if (quotaTipFor === chip) showQuotaTip(chip);   // 悬停中数据刷新：内容跟随
     }
     function restoreQuotaChip() {
@@ -4044,10 +4256,9 @@
     function onGitClick(e) {
       e.preventDefault();
       e.stopPropagation();
+      this.classList.add("zu-gbusy");
+      this.setAttribute("aria-busy", "true");
       askGitRefresh(true);   // 主进程立即重查全部已关注路径（绕过快照节流）
-      var el = this;
-      el.classList.add("zu-gbusy");
-      setTimeout(function () { el.classList.remove("zu-gbusy"); }, 1500);
     }
     function enhanceGitChip() {
       if (inactive()) { restoreGitChip(); return; }
@@ -4068,12 +4279,15 @@
         if (!chip) {
           chip = document.createElement("span");
           chip.className = "zu-git";
-          chip.setAttribute("role", "status");
+          chip.setAttribute("role", "button");
+          chip.setAttribute("aria-keyshortcuts", "Enter Space");
           chip.tabIndex = 0;
           chip.addEventListener("mouseenter", onGitEnter);
           chip.addEventListener("mouseleave", hideGitTipSoon);
           chip.addEventListener("focus", onGitEnter);
           chip.addEventListener("blur", hideGitTip);
+          chip.addEventListener("keydown", onRefreshKeydown);
+          chip.addEventListener("keyup", onRefreshKeyup);
           chip.addEventListener("click", onGitClick);
         }
         gitChipCache = chip;
@@ -4086,13 +4300,15 @@
       var mAgg = view.st.kind === "multi" ? gitMultiAgg(view.st) : null;
       var cls = "zu-git" + (compact ? " zu-compact" : "") + (view.st.kind === "multi" ? " zu-git-multi" : "") + (mAgg && mAgg.conflict > 0 ? " zu-conflict" : "");   // v96：形态类（紧凑态收起份数与聚合计数段）+ 确认冲突 → 冲突段转红（类进签名保持幂等）；过期走文字徽章不降透明度
       var sig = cls + "|" + html + "|" + state.lang;
-      if (chip.__zuSig !== sig) {   // 幂等：内容没变不重建，悬停/焦点态不被每 1.5s 的推送打断
+      var busy = chip.classList.contains("zu-gbusy");
+      if (chip.__zuSig !== sig) {   // 幂等：内容不变时不重建 chip
         chip.__zuSig = sig;
-        var busy = chip.classList.contains("zu-gbusy");
         chip.className = cls + (busy ? " zu-gbusy" : "");
         chip.setAttribute("aria-label", gitChipAria(view.st, view.stale));
         chip.innerHTML = html;
       }
+      chip.classList.toggle("zu-gbusy", busy);
+      chip.setAttribute("aria-busy", String(busy));
       if (gitTipFor === chip) showGitTip(chip);   // 悬停中数据刷新：内容跟随
     }
     function restoreGitChip() {
@@ -4438,7 +4654,7 @@
     function hideBar() {
       if (curDisplay !== "none") { bar.style.display = "none"; curDisplay = "none"; }
       /* v80：面板挂 body 不再随条隐藏，条隐时必须主动收起（否则面板悬空在已消失的条上方） */
-      panel.classList.remove("open");
+      if (panel.classList.contains("open")) closeSettings(false);
       subPanel.classList.remove("open");
       hideTip(true, "bar-hidden");   // 条面整体隐藏时 tooltip 必须跟着走（force 绕过总闸）
     }
@@ -4783,7 +4999,11 @@
         return sid ? { sid: sid, providerId: effectiveQuotaProvider(), modelId: quotaModel } : null;
       },
       getScope: function () { return inactive() ? null : readPaneScope(wantedEl, pickedSid, pid); },
-      gitTouch: function () { if (!inactive()) enhanceGitChip(); },   // v96：主进程推送 git 状态后即时对账（不等 heavy）
+      gitTouch: function () {
+        if (inactive()) return;
+        if (gitChipCache) { gitChipCache.classList.remove("zu-gbusy"); gitChipCache.setAttribute("aria-busy", "false"); }
+        enhanceGitChip();
+      },   // v96：主进程推送 git 状态后即时对账（不等 heavy）
       /* v71 确定性历史行数据源：DOM turn id（turnId 或 productTurnId 形态）→ tracker 统计 */
       statsFor: function (tid) {
         var h = bridge.handle;

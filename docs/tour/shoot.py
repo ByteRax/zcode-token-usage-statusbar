@@ -42,40 +42,43 @@ UNION_JS = """() => {
 # (文件名, URL 参数, 视口宽, 视口高, 就绪条件, 交互动作, 交互后等待出现的元素, 是否裁空白)
 JOBS = [
     ("hero.png",   "?embed=1&hero=1", 1148, 260,
-     "document.querySelectorAll('.mark').length >= 8", None, None, False),
+     "window.__tourReady === true", None, None, False),
     ("item-1.png", "?embed=1&hl=0",   640, 360,
-     "document.querySelectorAll('.it.hl').length >= 1",
-     ("hover", "#zu-main .it >> nth=0"), ".tip", True),
+     "window.__tourReady === true",
+     ("hover", ".zu-main .it >> nth=0"), "#zusage-tip", True),
     ("item-2.png", "?embed=1&hl=1",   640, 360,
-     "document.querySelectorAll('.it.hl').length >= 1",
-     ("hover", "#zu-main .it >> nth=1"), ".tip", True),
+     "window.__tourReady === true",
+     None, None, True),
     ("item-3.png", "?embed=1&hl=2",   640, 360,
-     "document.querySelectorAll('.it.hl').length >= 1",
-     ("hover", "#zu-main .it >> nth=2"), ".tip", True),
+     "window.__tourReady === true",
+     ("hover", ".zu-main .it >> nth=1"), "#zusage-tip", True),
     ("item-4.png", "?embed=1&hl=3",   640, 360,
-     "document.querySelectorAll('.it.hl').length >= 1",
-     ("hover", "#zu-main .it >> nth=3"), ".tip", True),
+     "window.__tourReady === true",
+     ("hover", ".zu-main .it >> nth=2"), "#zusage-tip", True),
     ("item-5.png", "?embed=1&hl=4",   640, 360,
-     "document.querySelectorAll('.it.hl').length >= 1",
-     ("hover", "#zu-main .it >> nth=4"), ".tip", True),
+     "window.__tourReady === true",
+     ("hover", ".zu-main .it >> nth=3"), "#zusage-tip", True),
     ("item-6.png", "?embed=1&hl=5",   640, 360,
-     "document.querySelectorAll('.it.hl').length >= 1",
-     ("hover", "#zu-main .it >> nth=5"), ".tip", True),
+     "window.__tourReady === true",
+     ("hover", ".zu-main .it >> nth=4"), "#zusage-tip", True),
     # 子代理：悬停 tooltip 只有汇总，点击弹出固定明细面板（v50 双层分工）→ 展示面板
     ("item-7.png", "?embed=1&hl=6",   640, 520,
-     "document.querySelectorAll('.it.hl').length >= 1",
+     "window.__tourReady === true",
      ("click", ".zu-sub"), ".panel.open", True),
     # ⚙：点击打开设置面板（视口加高让面板完整入镜）
     ("item-8.png", "?embed=1&hl=gear", 640, 900,
-     "document.querySelectorAll('.btn.hl').length >= 1",
-     ("click", "#zu-gear"), ".panel.open", True),
+     "window.__tourReady === true",
+     ("click", ".zu-gear"), ".panel.open", True),
 ]
 
 # 两轮：中文版出 shots/，英文版（&lang=en，弹层/条面文本替换为英文）出 shots/en/
 ROUNDS = [(OUT, ""), (OUT / "en", "&lang=en")]
 
 with sync_playwright() as p:
-    browser = p.chromium.launch()
+    try:
+        browser = p.chromium.launch()
+    except Exception:
+        browser = p.chromium.launch(channel="chrome")
     for out_dir, lang_q in ROUNDS:
       out_dir.mkdir(exist_ok=True)
       for name, q, w, h, ready, action, wait_sel, crop in JOBS:
@@ -86,8 +89,8 @@ with sync_playwright() as p:
         page.goto(BASE + q + lang_q, wait_until="load")
         try:
             page.wait_for_function(ready, timeout=15000)
-        except Exception as exc:
-            print(name, "READY TIMEOUT:", exc)
+        except Exception:
+            raise
         page.wait_for_timeout(600)
         note = ""
         if action is not None:
@@ -105,8 +108,7 @@ with sync_playwright() as p:
                     page.wait_for_selector(wait_sel, state="visible", timeout=5000)
                     note = "+" + wait_sel
                 except Exception as exc:
-                    note = "WAIT_FAIL:" + wait_sel
-                    print(name, note, exc)
+                    raise RuntimeError(name + " did not render " + wait_sel) from exc
             page.wait_for_timeout(700)   # 定位/内容渲染落定
         else:
             page.wait_for_timeout(300)

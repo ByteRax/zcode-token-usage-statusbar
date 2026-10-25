@@ -15,6 +15,8 @@ class Element {
       toggle: (k, on) => { if (on) this.classes.add(k); else this.classes.delete(k); } };
     this.textContent = ''; this.innerHTML = ''; this.attributes = []; this.isConnected = true;
   }
+  setAttribute(k, v) { this.dataset[k] = String(v); }
+  removeAttribute(k) { delete this.dataset[k]; }
   addEventListener(type, fn) { const a = this.listeners.get(type) || []; a.push(fn); this.listeners.set(type, a); }
   removeEventListener(type, fn) { this.listeners.set(type, (this.listeners.get(type) || []).filter(f => f !== fn)); }
   count() { return [...this.listeners.values()].reduce((a, b) => a + b.length, 0); }

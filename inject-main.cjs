@@ -303,6 +303,7 @@ function handleQuotaProviders(wc, req) {
   }
   windowQuotaSelections.set(wc.id, panes);   // 全量替换：关 pane/导航后旧选择不会残留
   syncQuotaProviders();
+  webContents.getAllWebContents().forEach((target) => pushPluginState(target, pluginUpdater ? pluginUpdater.status() : {}));
   if (lastGoodPayload && quotaClient && quotaEnabled()) {
     const payload = Object.assign({}, lastGoodPayload, { quota: quotaClient.view() });
     for (const target of webContents.getAllWebContents()) pushOnce(target, payload);
@@ -744,7 +745,7 @@ function pushPluginState(wc, state) {
   if (!isMainWindowState(wc) || wc.isDestroyed() || !isLocalHostPage(wc)) return;
   /* rateLine / quotaEnabled 随插件状态一起推送：⚙ 面板两个开关的真值都来自 config.json */
   const payload = { ...state, rateLine: readCfgCached().answer_rate_line !== false, quotaEnabled: quotaEnabled(),
-    quotaSources: quotaClient ? quotaClient.sourcesConfig() : [] };
+    quotaSources: quotaClient ? quotaClient.sourcesConfig() : [], feedbackVersion: 1 };
   wc.executeJavaScript(`window.__zusagePluginUpdate && window.__zusagePluginUpdate(${JSON.stringify(payload)})`, true).catch(() => { });
 }
 try {
@@ -772,7 +773,8 @@ try {
     ...quotaPaths,
     secretsPath: QUOTA_SECRETS,
     log: (...a) => LOG("[quota]", ...a),
-    onUpdate: () => {   // 手动刷新/解冻等结算：拿最近成功快照补推（不触发 Python 重查）
+    onUpdate: () => {   // 刷新开始/结算及解冻时同步源状态与最近成功快照
+      broadcastPluginState();
       if (!lastGoodPayload) return;
       const withQuota = Object.assign({}, lastGoodPayload, { quota: quotaClient.view() });
       for (const wc of webContents.getAllWebContents()) pushOnce(wc, withQuota);
@@ -825,13 +827,22 @@ function broadcastPluginState() {
   const base = pluginUpdater ? pluginUpdater.status() : {};
   webContents.getAllWebContents().forEach((wc) => pushPluginState(wc, base));
 }
-async function setAnswerRateLine(enabled) {
+function deliverPluginRequest(wc, requestId, result) {
+  if (!wc || wc.isDestroyed() || !isLocalHostPage(wc) || typeof requestId !== "string" || requestId.length > 120) return;
+  const js = "window.__zusagePluginResult && window.__zusagePluginResult(" + JSON.stringify(Object.assign({ id: requestId }, result || {})) + ")";
+  wc.executeJavaScript(js, true).catch(() => { });
+}
+async function setAnswerRateLine(enabled, wc, requestId) {
   try {
     const { updateConfig } = require("./plugin-updater.cjs");
     await updateConfig(HERE, { answer_rate_line: enabled }, readCfgCached().python_path || (process.platform === "win32" ? "python" : "python3"));
     cfgCache = null;   // 写后置空，下一次 readCfgCached 立即重读（mtime 判变的双保险）
     broadcastPluginState();
-  } catch (e) { LOG("answer_rate_line toggle failed:", e.message); }
+    deliverPluginRequest(wc, requestId, { ok: true });
+  } catch (e) {
+    LOG("answer_rate_line toggle failed:", e.message);
+    deliverPluginRequest(wc, requestId, { ok: false, error: e.message });
+  }
 }
 /* 阶段 3 源配置：quota-secrets.json（运行目录 0600，凭据只进此文件，不进 config.json/日志/诊断）。
  * 同目录原子替换（tmp+rename），字段白名单防任意键；写入后 credentialsChanged 解冻重读。 */
@@ -851,7 +862,12 @@ function writeQuotaSecrets(mutate) {
     fs.writeFileSync(tmp, JSON.stringify(d, null, 2) + "\n", { mode: 0o600 });
     fs.renameSync(tmp, file);
     try { fs.chmodSync(file, 0o600); } catch (e2) { /* Windows/权限失败忽略：tmp 已按 0600 创建 */ }
-  } catch (e) { LOG("quota secrets write failed:", e.message); return; }
+  } catch (e) {
+    try { fs.unlinkSync(tmp); } catch (_) { }
+    const error = new Error("Unable to save quota settings");
+    error.code = "quota_secrets_write_failed";
+    throw error;
+  }
   if (quotaClient) {
     quotaClient.credentialsChanged();
     if (quotaEnabled()) {
@@ -864,44 +880,59 @@ function writeQuotaSecrets(mutate) {
   }
   broadcastPluginState();   // 面板状态无论开关都要刷新（写入结果回显）
 }
-function handleQuotaSourceRequest(req) {
+function handleQuotaSourceRequest(req, wc) {
   const id = String(req.id || "");
-  if (!id || !/^[a-z][a-z0-9-]{0,31}$/.test(id)) return;   // 源 id 白名单
+  const requestId = req.requestId;
+  const respond = (result) => deliverPluginRequest(wc, requestId, result);
+  if (!id || !/^[a-z][a-z0-9-]{0,31}$/.test(id)) { respond({ ok: false, error: "invalid source" }); return; }
   if (req.action === "quota-src-refresh") {
-    if (quotaClient && quotaEnabled()) quotaClient.refreshSource(id);
+    if (!quotaClient || !quotaEnabled()) { respond({ ok: false, error: "quota refresh unavailable" }); return; }
+    if (!quotaClient.refreshSource(id)) { respond({ ok: false, error: "query already running or unavailable" }); return; }
+    respond({ ok: true, pending: true });
     return;
   }
-  if (req.action === "quota-src" && typeof req.enabled === "boolean") {
-    writeQuotaSecrets((sec) => { sec[id] = Object.assign({}, sec[id] || {}, { enabled: req.enabled }); });
-    return;
-  }
-  if (req.action === "quota-src-key") {
-    const field = String(req.field || "");
-    if (!QUOTA_SECRET_FIELDS.has(field)) return;
-    const value = req.value == null ? "" : String(req.value).slice(0, 4096);
-    writeQuotaSecrets((sec) => {
-      sec[id] = Object.assign({}, sec[id] || {});
-      const isCred = field === "apiKey" || field === "cookie" || field === "token" || field === "secretAccessKey";
-      if (value === "" && (isCred || field === "modelPatterns")) { delete sec[id][field]; return; }
-      if (field === "planCredits") { if (value === "") delete sec[id][field]; else sec[id][field] = Number(value) || 0; }
-      else if (field === "planStart" || field === "region" || field === "baseUrl") { if (value === "") delete sec[id][field]; else sec[id][field] = value; }
-      else if (field === "modelPatterns") {
-        try { const parsed = JSON.parse(value); if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) sec[id][field] = parsed; } catch (e) { /* 非法 JSON 忽略 */ }
-      }
-      else sec[id][field] = value;
-    });
+  try {
+    if (req.action === "quota-src" && typeof req.enabled === "boolean") {
+      writeQuotaSecrets((sec) => { sec[id] = Object.assign({}, sec[id] || {}, { enabled: req.enabled }); });
+      respond({ ok: true });
+      return;
+    }
+    if (req.action === "quota-src-key") {
+      const field = String(req.field || "");
+      if (!QUOTA_SECRET_FIELDS.has(field)) { respond({ ok: false, error: "invalid field" }); return; }
+      const value = req.value == null ? "" : String(req.value).slice(0, 4096);
+      writeQuotaSecrets((sec) => {
+        sec[id] = Object.assign({}, sec[id] || {});
+        const isCred = field === "apiKey" || field === "cookie" || field === "token" || field === "secretAccessKey";
+        if (value === "" && (isCred || field === "modelPatterns")) { delete sec[id][field]; return; }
+        if (field === "planCredits") { if (value === "") delete sec[id][field]; else sec[id][field] = Number(value) || 0; }
+        else if (field === "planStart" || field === "region" || field === "baseUrl") { if (value === "") delete sec[id][field]; else sec[id][field] = value; }
+        else if (field === "modelPatterns") {
+          try { const parsed = JSON.parse(value); if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) sec[id][field] = parsed; } catch (e) { /* 非法 JSON 忽略，保持字段原值 */ }
+        }
+        else sec[id][field] = value;
+      });
+      respond({ ok: true });
+    }
+  } catch (e) {
+    LOG("quota source update failed");
+    respond({ ok: false, error: "Unable to save quota settings" });
   }
 }
 /* 套餐额度开关（⚙ 面板）：原子写 config.json 的 quota_enabled（v111 起缺省开）。开启即刻 tick
  * 一次（结算后经 onUpdate 补推）；关闭后 handlePayload 不再 tick/附加，chip 随之隐藏。 */
-async function setQuotaEnabled(enabled) {
+async function setQuotaEnabled(enabled, wc, requestId) {
   try {
     const { updateConfig } = require("./plugin-updater.cjs");
     await updateConfig(HERE, { quota_enabled: enabled }, readCfgCached().python_path || (process.platform === "win32" ? "python" : "python3"));
     cfgCache = null;
     broadcastPluginState();
     if (enabled && quotaClient) syncQuotaProviders();
-  } catch (e) { LOG("quota_enabled toggle failed:", e.message); }
+    deliverPluginRequest(wc, requestId, { ok: true });
+  } catch (e) {
+    LOG("quota_enabled toggle failed:", e.message);
+    deliverPluginRequest(wc, requestId, { ok: false, error: e.message });
+  }
 }
 /* 确定性历史行的数据库富文本（v75）：渲染端只从 turn 容器拿到 DOM turn id，
  * 桥接数据里没有首字延迟/分段/峰值/累计等字段，拼不出模型时代那行统计；这里按
@@ -1147,7 +1178,7 @@ function pushGitState(wc, p, st) {
   wc.executeJavaScript(js, true).catch(() => { });
 }
 async function gitTick(fromRefresh) {
-  if (gitTickBusy) { if (fromRefresh) gitRefreshPending = true; return; }   // 在途时的手动刷新：结束后补跑一轮
+  if (gitTickBusy) { if (fromRefresh) gitRefreshPending = true; return; }
   if (shuttingDown || !hasWindows()) return;
   gitTickBusy = true;
   try {
@@ -1192,18 +1223,17 @@ async function pollPluginRequests() {
         if (req && ["auto", "check", "update"].includes(req.action)) {
           if (pluginUpdater) pluginUpdater.request(req).catch((e) => LOG("plugin update action failed:", e.message));
         } else if (req && req.action === "rate-line" && typeof req.enabled === "boolean") {
-          setAnswerRateLine(req.enabled);
+          setAnswerRateLine(req.enabled, wc, req.requestId);
         } else if (req && req.action === "quota-providers") {
           handleQuotaProviders(wc, req);
         } else if (req && req.action === "quota" && typeof req.enabled === "boolean") {
-          setQuotaEnabled(req.enabled);
+          setQuotaEnabled(req.enabled, wc, req.requestId);
         } else if (req && (req.action === "quota-src" || req.action === "quota-src-key" || req.action === "quota-src-refresh")) {
-          handleQuotaSourceRequest(req);
+          handleQuotaSourceRequest(req, wc);
         } else if (req && req.action === "quota-refresh") {   // ⚙/chip 手动刷新：绕过 TTL 与软冻结
-          if (quotaClient && quotaEnabled()) {
-            if (typeof req.sourceId === "string" && req.sourceId.length <= 256) quotaClient.refreshSource(req.sourceId);
-            else quotaClient.refresh();
-          }
+          const started = quotaClient && quotaEnabled() && (typeof req.sourceId === "string" && req.sourceId.length <= 256
+            ? quotaClient.refreshSource(req.sourceId) : quotaClient.refresh());
+          deliverPluginRequest(wc, req.requestId, started ? { ok: true, pending: true } : { ok: false, error: "quota query already running or unavailable" });
         } else if (req && req.action === "turn-text" && typeof req.sid === "string") {
           queryTurnText(req.sid, wc, req.cn === 0);
         } else if (req && req.action === "git-refresh") {   // v96：Git chip 点击 / 快照后节流：立即重查全部已关注路径
@@ -1284,7 +1314,7 @@ if (typeof module === "object" && module && module.exports) {
   };
 }
 
-LOG("injected v14 (dom-ready inject + snapshot warm-push after injection, auto remote targets + per-sid multi-server routing, per-pane wants array, resident query mode with idle shutdown + first-window warm-up, renderer bridge probe, answer_rate_line config write, plugin request polling, quota entitlement client, git status chip, diag config switch + default 5s hot tick)");
+LOG("injected v15 (dom-ready inject + snapshot warm-push after injection, auto remote targets + per-sid multi-server routing, per-pane wants array, resident query mode with idle shutdown + first-window warm-up, renderer bridge probe, answer_rate_line config write, plugin request polling, quota entitlement client, git status chip, diag config switch + default 5s hot tick, plugin request/response protocol with per-request result delivery and quota source feedback)");
 
 app.on("before-quit", () => {
   shuttingDown = true;
