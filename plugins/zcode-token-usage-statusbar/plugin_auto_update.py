@@ -8,7 +8,7 @@ import sys
 import time
 
 
-INTERVAL_MS = 24 * 60 * 60 * 1000
+INTERVAL_MS = 60 * 60 * 1000
 
 
 def start_auto_update(runtime, pi):

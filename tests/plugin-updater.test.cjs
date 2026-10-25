@@ -136,11 +136,54 @@ test("auto enable persists configuration and performs check plus install", async
   assert.equal(f.updater.status().phase, "updated");
   assert.ok(f.calls.some((c) => c[0] === "update"));
 });
-test("auto checks are throttled across ticks and loader restarts", async (t) => {
+test("automatic update interval is exactly one hour", () => {
+  assert.equal(INTERVAL_MS, 3600000);
+});
+test("auto checks are throttled for one hour across ticks and loader restarts", async (t) => {
   const f = fixture(t, { plugin_auto_update: true }); await f.updater.tick();
   const count = f.calls.length; await f.updater.tick(); assert.equal(f.calls.length, count);
   const restored = createUpdater(f.options); await restored.tick(); assert.equal(f.calls.length, count);
-  f.advance(INTERVAL_MS); await restored.tick(); assert.equal(f.calls.length, count + 2);
+  f.advance(3599999); await restored.tick(); assert.equal(f.calls.length, count);
+  f.advance(1); await restored.tick(); assert.equal(f.calls.length, count + 2);
+});
+test("hourly checks reuse saved millisecond lastAttempt rather than checkedAt", async (t) => {
+  for (const [elapsed, due] of [[3599999, false], [3600000, true], [3600001, true], [1800000, false], [7200000, true]]) {
+    await t.test(`elapsed ${elapsed}ms`, async (t) => {
+      const f = fixture(t); f.set({ version: "1.0.0" });
+      const stateFile = path.join(f.runtime, "plugin-update.json");
+      const lastAttempt = f.options.now() - elapsed;
+      const saved = JSON.stringify({ lastAttempt, checkedAt: f.options.now() });
+      fs.writeFileSync(stateFile, saved);
+      const restored = createUpdater(f.options); await restored.tick();
+      assert.equal(f.calls.length, due ? 2 : 0);
+      assert.equal(restored.status().lastAttempt, due ? f.options.now() : lastAttempt);
+      assert.equal(f.syncs.length, 0);
+      if (!due) assert.equal(fs.readFileSync(stateFile, "utf8"), saved);
+    });
+  }
+});
+test("automatic check re-reads a recent cross-instance attempt after acquiring the lock", async (t) => {
+  const f = fixture(t);
+  const stateFile = path.join(f.runtime, "plugin-update.json");
+  const recent = JSON.stringify({ lastAttempt: f.options.now() - 1800000 });
+  fs.writeFileSync(stateFile, JSON.stringify({ lastAttempt: f.options.now() - 7200000 }));
+  let released = false;
+  const u = createUpdater({ ...f.options, acquireLock: async () => {
+    fs.writeFileSync(stateFile, recent);
+    return async () => { released = true; };
+  } });
+  await u.tick();
+  assert.equal(f.calls.length, 0); assert.equal(released, true);
+  assert.equal(u.status().lastAttempt, f.options.now() - 1800000);
+  assert.equal(fs.readFileSync(stateFile, "utf8"), recent);
+});
+test("manual check bypasses the hourly interval without installing", async (t) => {
+  const f = fixture(t);
+  fs.writeFileSync(path.join(f.runtime, "plugin-update.json"), JSON.stringify({ lastAttempt: f.options.now() }));
+  await f.updater.tick(); assert.equal(f.calls.length, 0);
+  await f.updater.request({ action: "check" });
+  assert.equal(f.calls.length, 2); assert.equal(f.syncs.length, 0);
+  assert.equal(f.updater.status().phase, "available");
 });
 test("auto disable stops future checks while manual check remains usable", async (t) => {
   const f = fixture(t, { plugin_auto_update: true }); await f.updater.request({ action: "auto", enabled: false });
@@ -160,6 +203,8 @@ test("network failure is visible and automatic retries are throttled", async (t)
   const f = fixture(t, { plugin_auto_update: true }); f.set({ error: "network unavailable" }); await f.updater.tick();
   assert.equal(f.updater.status().phase, "error"); assert.match(f.updater.status().error, /network unavailable/);
   await f.updater.tick(); assert.equal(f.calls.length, 1);
+  f.advance(3599999); await f.updater.tick(); assert.equal(f.calls.length, 1);
+  f.advance(1); await f.updater.tick(); assert.equal(f.calls.length, 2);
   f.set({ error: null }); await f.updater.request({ action: "check" }); assert.equal(f.updater.status().phase, "available");
 });
 test("CLI error diagnostics are honored even on exit zero", async (t) => {
@@ -194,7 +239,7 @@ test("failed runtime sync can be retried after restart without reinstalling plug
   assert.equal(restored.status().phase, "updated"); assert.equal(restored.status().pendingSync, false);
   assert.equal(f.calls.filter((c) => c[0] === "update").length, 1);
 });
-test("pending runtime synchronization recovers offline without waiting 24 hours", async (t) => {
+test("pending runtime synchronization recovers offline without waiting an hour", async (t) => {
   const f = fixture(t, { plugin_auto_update: true });
   fs.writeFileSync(path.join(f.runtime, "plugin-update.json"), JSON.stringify({ lastAttempt: f.options.now(), pendingSync: true }));
   f.set({ error: "network unavailable" });

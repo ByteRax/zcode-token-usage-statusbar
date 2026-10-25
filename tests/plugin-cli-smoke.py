@@ -366,7 +366,7 @@ def standalone_auto_smoke(cli):
     report["standaloneAuto"] = state
     report["afterRecord"] = cli.installation("1.1.0", json_sync=True)
     stdout, _ = cli.run([updater, "--auto", "--resources", BUNDLE.parent.parent, "--runtime", runtime])
-    require(json.loads(stdout)["phase"] == "idle", "后台自动更新没有保留 24 小时限频")
+    require(json.loads(stdout)["phase"] == "idle", "后台自动更新没有保留 1 小时限频")
     require(not (runtime / "plugin-update.lock").exists(), "不应创建旧版存在性锁")
     probe = subprocess.run([sys.executable, str(runtime / "runtime_lock.py"), "--hold",
                             str(runtime / "plugin-update-v2.lock")],
