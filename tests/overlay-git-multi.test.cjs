@@ -178,7 +178,7 @@ test('multi chip base form: ▣ 15仓 · 3改 with middle-dot separators, aggreg
   assert.match(chip.innerHTML, /<span class="zu-git-dirty">3改<\/span>/);
   assert.ok(chip.innerHTML.includes(sep()), '语义段用 · 分隔');
   assert.doesNotMatch(chip.innerHTML, /zu-git-m\b|zu-git-d">\(改/, '文件条目汇总不上 chip（在 tooltip）');
-  assert.equal(chip.getAttribute('role'), 'status');
+  assert.equal(chip.getAttribute('role'), 'button');
   assert.equal(chip.tabIndex, 0);
   assert.match(chip.getAttribute('aria-label'), /Git 15 个仓库/);
   assert.match(chip.getAttribute('aria-label'), /3 个有改动/);

@@ -155,7 +155,7 @@ test('chip mounts right of the CUA button with cc-pretty-statusline styling', ()
   assert.match(chip.innerHTML, /<span class="zu-git-del">-223<\/span>/);
   assert.match(chip.innerHTML, /<span class="zu-git-unt">\?1<\/span>/);
   assert.match(chip.innerHTML, /\(\s*<span class="zu-git-ins">/, '计数段由暗灰括号包裹');
-  assert.equal(chip.getAttribute('role'), 'status');
+  assert.equal(chip.getAttribute('role'), 'button');
   assert.equal(chip.tabIndex, 0);
   assert.match(chip.getAttribute('aria-label'), /Git 分支 main/);
   assert.match(chip.getAttribute('aria-label'), /领先 2/);

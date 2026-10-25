@@ -170,7 +170,7 @@
       const speed = stats.characterRate === null ? '' : ` · ${stats.characterRate.toFixed(1)} 字符/s`;
       return `⚡ 生成中 · 已观察 ${(stats.observedMs / 1000).toFixed(1)}s${speed}`;
     }
-    const speed = stats.tokenRate === null ? '速率不可用' : `${stats.tokenRate.toFixed(1)} token/s`;
+    const speed = stats.tokenRate == null || !Number.isFinite(stats.tokenRate) ? '生成时长缺失，暂不显示速率' : `${stats.tokenRate.toFixed(1)} token/s`;
     const output = stats.outputTokens === null ? '输出未知' : `输出 ${formatTokens(stats.outputTokens, cn)} token`;
     const duration = stats.durationMs === null ? '' : ` · 耗时 ${(stats.durationMs / 1000).toFixed(1)}s`;
     const status = stats.state === 'failed' ? ' · 失败' : stats.state === 'completedInterrupted' ? ' · 已中断' : '';

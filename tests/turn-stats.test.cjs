@@ -182,3 +182,17 @@ test('runningSubagents lists every running subagent row for multi-slot rate esti
   tracker.ingest(snapshot(3, [header('completedSuccess')]));
   assert.deepEqual(tracker.get('t').runningSubagents, []);
 });
+
+
+test('completed output without model duration explains missing basis and never divides by active time', () => {
+  const tracker = createTracker({ now: () => 0 });
+  for (const [i, modelDurationMs] of [undefined, null, 0, 100, Infinity].entries()) {
+    tracker.ingest(snapshot(i + 1, [header('completedSuccess', { outputTokens: 1577, activeMs: 110200, modelDurationMs }), text('reply')]));
+    const stats = tracker.get('t');
+    assert.equal(stats.tokenRate, null);
+    const line = format(stats);
+    assert.match(line, /生成时长缺失，暂不显示速率/);
+    assert.match(line, /输出 1,577 token · 耗时 110.2s/);
+    assert.doesNotMatch(line, /速率不可用|14.3 token\/s|NaN|Infinity/);
+  }
+});

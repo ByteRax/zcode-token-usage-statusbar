@@ -168,6 +168,51 @@ test('quota source requests write quota-secrets.json atomically with whitelist a
 });
 
 
+test('quota source write failures are returned without echoing credential values', async () => {
+  const path = require('path');
+  const { pathToFileURL } = require('url');
+  const resources = '/fixture/resources';
+  const requestId = 'zusage-1-2';
+  const scripts = [], queue = [{ action: 'quota-src-key', id: 'mimo', field: 'cookie', value: 'userId=secret; serviceToken=private', requestId }];
+  const wc = {
+    getURL: () => pathToFileURL(path.join(resources, 'app.asar', 'out', 'renderer', 'index.html')).href,
+    isDestroyed: () => false, getType: () => 'window', isLoading: () => false, on() {},
+    executeJavaScript: async script => { scripts.push(script); return script.includes('q.splice') ? queue.splice(0, 8) : 'null'; },
+  };
+  const intervals = [], writes = [];
+  const mockFs = {
+    readFileSync: file => String(file).endsWith('quota-secrets.json') ? (() => { throw Error('ENOENT'); })() : '{}',
+    statSync: () => ({ mtimeMs: 1 }), existsSync: () => true, watch: () => ({ on() {} }),
+    writeFileSync: (file, data) => { writes.push([String(file), String(data)]); throw Error('disk full'); },
+    unlinkSync() {}, renameSync() {}, chmodSync() {},
+  };
+  const sandbox = {
+    __dirname: '/fixture/runtime', console: { error() {} },
+    process: { resourcesPath: resources, execPath: process.execPath, uptime: () => 1 },
+    setInterval: (fn, delay) => { intervals.push({ fn, delay }); }, setTimeout: () => 1, clearTimeout() {},
+    require(id) {
+      if (id === 'path') return path;
+      if (id === 'fs') return mockFs;
+      if (id === 'url') return require('url');
+      if (id === 'crypto') return require('crypto');
+      if (id === 'child_process') return { spawn() { throw Error('isolated'); }, execFile(c, a, o, cb) { cb(null); } };
+      if (id === './plugin-updater.cjs') return { createUpdater: () => ({ status: () => {}, tick: async () => {} }), updateConfig: async () => {} };
+      if (id === './quota-client.cjs') return { createQuotaClient: () => ({ view: () => ({}), sourcesConfig: () => [], dispose() {} }) };
+      if (id === 'electron') return { app: { getPath: () => '/fixture/home', on() {} }, webContents: { getAllWebContents: () => [wc] }, ipcMain: { on() {} } };
+      throw Error(id);
+    },
+  };
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '..', 'inject-main.cjs'), 'utf8'), sandbox);
+  await new Promise(resolve => setImmediate(resolve));
+  await intervals.find(x => x.delay === 1000).fn();
+  const resultScript = scripts.find(script => script.includes('__zusagePluginResult'));
+  assert.ok(resultScript);
+  assert.match(resultScript, /"ok":false/);
+  assert.match(resultScript, /"error":"Unable to save quota settings"/);
+  assert.doesNotMatch(resultScript, /userId=secret|serviceToken=private/);
+  assert.equal(writes.length, 1);
+});
+
 test('live quota selections use trusted full-window snapshots and revoke on navigation or close', async () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'inject-main.cjs'), 'utf8');
   const intervals = [], providerSets = [], windows = [];

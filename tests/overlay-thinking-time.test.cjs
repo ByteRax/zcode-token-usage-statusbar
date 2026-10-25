@@ -41,7 +41,7 @@ for (const file of ['overlay.js', 'web/overlay.js']) {
       for (const [observedMs, zhExpected, enExpected] of cases) {
         const view = speedView({ complete: false, characterRate: null, observedMs });
         const prefix = lang === 'en' ? 'thinking…' : '思考中…';
-        const expected = lang === 'en' ? enExpected : zhExpected;
+        const expected = lang === 'en' ? enExpected : file === 'overlay.js' ? zhExpected.replace(/(\d) /g, '$1') : zhExpected;
         assert.equal(view.text, prefix + expected, `${observedMs}ms`);
         assert.equal(view.phase, 'thinking');
         assert.equal(view.cls, 'dim');
@@ -65,12 +65,12 @@ test('overlay.js & web/overlay.js: thinking timer anchors to startedAt when pres
     });
     // startedAt 存在：锚定 now-startedAt（1 时 1 分 10 秒），忽略 observedMs
     let v = speedView({ complete: false, characterRate: null, observedMs: 3000, startedAt: NOW - 3670000 });
-    assert.equal(v.text, '思考中…1 时 1 分 10 秒', `${file} anchor`);
+    assert.equal(v.text, file === 'overlay.js' ? '思考中…1时 1分 10秒' : '思考中…1 时 1 分 10 秒', `${file} anchor`);
     // startedAt 缺席（tracker 对非有限数归一为 null，turn-stats.js:122）：回退 observedMs
     v = speedView({ complete: false, characterRate: null, observedMs: 999, startedAt: null });
-    assert.equal(v.text, '思考中…0 秒', `${file} fallback`);
+    assert.equal(v.text, file === 'overlay.js' ? '思考中…0秒' : '思考中…0 秒', `${file} fallback`);
     // startedAt 在当前时钟之后（时钟漂移/异常）：回退 observedMs，不出负数
     v = speedView({ complete: false, characterRate: null, observedMs: 4200, startedAt: NOW + 5000 });
-    assert.equal(v.text, '思考中…4 秒', `${file} future-startedAt fallback`);
+    assert.equal(v.text, file === 'overlay.js' ? '思考中…4秒' : '思考中…4 秒', `${file} future-startedAt fallback`);
   }
 });

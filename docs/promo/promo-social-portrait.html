@@ -232,7 +232,7 @@
   var TODAY = { total: 3421800, input: 2864100, output: 557700, reasoning: 213400,
     cache_read: 2412300, cache_write: 154900, requests: 1240, retries: 6 };
   var PAYLOAD = { mine: SESS.sid, recent: [SESS], today: TODAY };
-  var MARKS = ["生成速度", "上下文占比", "本轮用量", "会话累计", "工具调用", "今日合计", "子智能体"];
+  var MARKS = ["生成速度", "本轮用量", "会话累计", "工具调用", "今日合计", "子智能体"];
 
   function feed() { if (window.__zusageUpdate) window.__zusageUpdate(PAYLOAD); }
 
@@ -302,7 +302,7 @@
     feed();
     var its = document.querySelectorAll("#zusage-bar .zu-main .it");
     var bar = document.getElementById("zusage-bar");
-    if (its.length >= 7 && bar && bar.style.display === "flex") {
+    if (its.length >= 6 && bar && bar.style.display === "flex") {
       clearInterval(timer);
       setTimeout(function () { drawMarks(); drawRateNote(); window.__promoReady = true; }, 500);
     } else if (tries > 60) clearInterval(timer);

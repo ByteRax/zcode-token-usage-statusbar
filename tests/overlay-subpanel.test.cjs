@@ -86,7 +86,7 @@ test('panel is body-mounted fixed above the bar and positioned on opening and tr
       document: { createElement: () => ({ className: '', textContent: '', style: {},
         setAttribute() {}, appendChild() {} }) },
       L: (a) => a, fmt: () => '1', fmtTime: () => '12:00', ioc: () => 'i/o',
-      subRateSlotText: () => 'est', subRate: { slots: {} },
+      ttRow: (k,v) => k+': '+v, subRateSlotText: () => 'est', subRate: { slots: {} },
       subPanelTab: tab, subPanel: panel, sub, JSON,
     };
     vm.runInNewContext(buildSource + '\nbuildSubPanel(sub);', ctx);

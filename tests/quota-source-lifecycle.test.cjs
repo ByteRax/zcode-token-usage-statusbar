@@ -54,6 +54,7 @@ for (const primary of [false, true]) {
     assert.equal(v.balance, undefined);
     assert.equal(v.fetchedAt, 0);
     assert.equal(x.client.sourcesConfig().find(s => s.id === 'openrouter').status, 'disabled');
+    assert.equal(x.client.sourcesConfig().find(s => s.id === 'openrouter').busy, false);
     assert.equal(x.calls[1].options.signal.aborted, true);
     assert.equal(x.updates(), before, 'late success and view/settings never recursively notify');
     x.client.refreshSource('openrouter');
@@ -89,7 +90,10 @@ for (const enabled of [undefined, true]) {
 
 test('view and settings alone revoke deleted credentials without network or callbacks', async t => {
   const x = fixture(t, { primary: true });
-  x.client.tick(); answer(x.calls[0]); await flush();
+  x.client.tick();
+  assert.equal(x.client.sourcesConfig().find(s => s.id === 'openrouter').busy, true);
+  answer(x.calls[0]); await flush();
+  assert.equal(x.client.sourcesConfig().find(s => s.id === 'openrouter').busy, false);
   const before = x.updates();
   delete x.secrets.sources.openrouter.apiKey;
   const v = x.client.view().sources[x.client.view().byProvider['or'] || 'openrouter'];
@@ -132,4 +136,25 @@ test('writeQuotaSecrets pushes revoked quota immediately, but never fetches with
     assert.equal(pushes.length, enabled ? 1 : 0);
     if (enabled) assert.equal(pushes[0].quota.sources.openrouter.status, 'disabled');
   }
+});
+
+
+test('query busy flags cover start, duplicate guard, failure and pane revocation', async t => {
+  const x = fixture(t, { primary: true });
+  x.client.tick();
+  const id = x.client.view().byProvider.or;
+  assert.equal(x.client.view().sources[id].busy, true);
+  assert.equal(x.client.sourcesConfig().find(s => s.id === 'openrouter').busy, true);
+  x.client.refreshSource('openrouter');
+  assert.equal(x.calls.length, 1, 'same-source refresh cannot start a concurrent request');
+  answer(x.calls[0], 503); await flush();
+  assert.equal(x.client.view().sources[id].busy, false);
+  assert.equal(x.client.sourcesConfig().find(s => s.id === 'openrouter').busy, false);
+  x.client.refreshSource(id);
+  assert.equal(x.calls.length, 2);
+  x.client.setProviders([]);
+  assert.equal(x.calls[1].options.signal.aborted, true);
+  assert.equal(x.client.sourcesConfig().find(s => s.id === 'openrouter').busy, false);
+  answer(x.calls[1]); await flush();
+  assert.equal(x.client.view().sources[id].busy, false);
 });

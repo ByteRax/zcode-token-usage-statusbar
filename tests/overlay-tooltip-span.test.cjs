@@ -38,7 +38,7 @@ test('tooltip uses supplied weighted rate and complete local date ranges in both
     const turn = tips.find(tip => tip.includes(lang === 'zh' ? '本轮 ·' : 'Latest turn ·'));
     assert.match(turn, /102\.2 tok\/s/);
     assert.doesNotMatch(turn, /27\.9 tok\/s/);
-    assert.match(turn, lang === 'zh' ? /11 token 未参与测速/ : /11 tokens excluded from rate/);
+    assert.match(turn.replace(/<[^>]+>/g, ''), lang === 'zh' ? /11 token 未参与测速/ : /11 tokens excluded from rate/);
     assert.equal(tips.filter(tip => tip.includes('2026-10-19 13:42 - 2026-10-19 13:43')).length, 4);
   }
 });

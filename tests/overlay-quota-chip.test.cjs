@@ -159,7 +159,7 @@ test('chip is inserted directly left of the context button with per-window segme
   assert.equal(chip.innerHTML,
     '<span class="zu-qseg ok">5小时 26%</span><span class="zu-qsep">|</span><span class="zu-qseg ok">7天 12%</span>');
   assert.equal(chip.getAttribute('aria-label'), '套餐已用 5小时 26%，7天 12%');
-  assert.equal(chip.getAttribute('role'), 'status');
+  assert.equal(chip.getAttribute('role'), 'button');
   assert.ok(chip.listeners.get('click') && chip.listeners.get('mouseenter'));
 });
 
@@ -245,7 +245,7 @@ test('failures keep the last good value with a warning mark; no value shows the 
   assert.equal(chip.className, 'zu-quota zu-qstale');
   // ok 态但接口回空窗口：没有可显示的数字 → 不渲染空 chip
   h.window.__zusageUpdate(h.payload({ quota: Object.assign({}, QUOTA_OK, { windows: { fiveHour: null, weekly: null } }) }));
-  assert.equal(h.chipOf(ui.wrap), undefined);
+  assert.ok(!h.chipOf(ui.wrap));
 });
 
 test('react commit that displaces the chip is healed back to the button\'s left within one heavy tick', () => {
@@ -284,7 +284,7 @@ test('click requests a manual refresh through the plugin request queue', () => {
   chip.listeners.get('click')[0].call(chip, { preventDefault: () => { prevented++; }, stopPropagation: () => { prevented++; } });
   assert.equal(prevented, 2);
   assert.deepEqual(h.window.__zusagePluginRequests.filter(r => r.action === 'quota-refresh').length, 1);
-  assert.ok(chip.classList.contains('zu-qbusy'));
+  assert.equal(chip.classList.contains('zu-qbusy'), false, 'sending a request is not evidence of query start');
 });
 
 test('hover tooltip lists windows, built-in tools, highlights the current model and shows status/update time', () => {
@@ -370,7 +370,7 @@ test('turning the toggle off and disposing both remove the chip without orphans'
   h.tick();
   assert.ok(h.chipOf(ui.wrap), 'truth on again → chip back (lastQuota retained)');
   h.window.quotaTest.instances()[0].dispose();
-  assert.equal(h.chipOf(ui.wrap), undefined);
+  assert.ok(!h.chipOf(ui.wrap));
   assert.equal(ui.wrap.children.length, 1);
   assert.equal(ui.wrap.children[0], ui.btn);
 });
@@ -379,7 +379,7 @@ test('settings checkbox is config-backed: change emits a "quota" plugin request 
   const h = harness({ quotaOn: false }), ui = h.buildComposer('workspace-main', 'sid_main');
   h.inject(); h.boot(); h.tick();
   h.window.__zusageUpdate(h.payload({ quota: QUOTA_OK }));
-  assert.equal(h.chipOf(ui.wrap), undefined);
+  assert.ok(!h.chipOf(ui.wrap));
   const inst = h.window.quotaTest.instances()[0];
   const panel = h.body.children.find(e => e.classList.contains('zu-settings'));
   assert.ok(panel, 'settings panel mounted on body');
@@ -390,6 +390,7 @@ test('settings checkbox is config-backed: change emits a "quota" plugin request 
   assert.equal(reqs.length, 1);   // 跨 vm context 的对象不做 deepEqual（原型不同），按字段断言
   assert.equal(reqs[0].action, 'quota');
   assert.equal(reqs[0].enabled, true);
+  assert.match(reqs[0].requestId, /^zusage-\d+-\d+$/);
   h.tick();
   assert.ok(h.chipOf(ui.wrap), 'optimistic update shows the chip before the main process confirms');
   void inst;
@@ -401,10 +402,11 @@ test('settings panel exposes the config-backed quota toggle (default on, v111) w
   assert.match(mainSrc, /quota_enabled !== false/);   // 主进程真值同向（v111）：缺省开，显式 false 才关
   assert.doesNotMatch(source, /show: \{[^}]*quota/);   // 不是 localStorage 显示项：真值只在 config.json
   assert.match(source, /<input type="checkbox" class="zu-quota-enable">/);
-  assert.match(source, /pluginRequest\("quota", t2\.checked\)/);
+  assert.match(source, /pluginRequest\("quota", requestedQuota, function \(result\)/);
+  assert.match(source, /pluginRequest\("quota", requestedQuota, function \(result\)[\s\S]*?state\.quotaEnabled = previousQuota/);
   assert.match(source, /凭据仅在内存使用、不落盘、不进日志与诊断：内置套餐发往 bigmodel\.cn \/ api\.z\.ai 官方域/);   // 阶段 3 分域披露
   assert.match(source, /zu-src-list/);   // ⚙ 源列表容器
-  assert.match(source, /pluginRequest\("quota-src-key", \{ id: t2\.dataset\.src, field: t2\.dataset\.field, value: t2\.value \}\)/);
+  assert.match(source, /pluginRequest\("quota-src-key", \{ id: field\.dataset\.src, field: field\.dataset\.field, value: field\.value \}, function \(result\)/);
   assert.match(source, /\.zu-quota\{display:inline-flex;align-items:center;gap:5px;height:1\.75rem/);
   assert.match(source, /\.zu-qseg\.exc\{color:var\(--color-destructive,#ff2d55\)/);
   assert.match(source, /\.zu-qsep\{color:var\(--color-foreground-subtle/);
@@ -453,10 +455,10 @@ test('session without any request history falls back to the account-level provid
   // 回退指向自定义 provider（理论态）：不显示
   const out2 = Object.assign({}, out, { provider_fallback: 'new-provider-4' });
   h.window.__zusageUpdate(out2);
-  assert.equal(h.chipOf(ui.wrap), undefined);
+  assert.ok(!h.chipOf(ui.wrap));
   // 无回退字段（旧主进程）：维持隐藏
   h.window.__zusageUpdate(h.payload({ provider: '' }));
-  assert.equal(h.chipOf(ui.wrap), undefined);
+  assert.ok(!h.chipOf(ui.wrap));
   // 会话自己的最新请求是自定义 provider：优先于回退，隐藏
   h.window.__zusageUpdate(h.payload({ provider: 'new-provider-4', quota: QUOTA_OK }));
   assert.equal(h.chipOf(ui.wrap), undefined, 'session-level custom provider wins over fallback');
@@ -533,7 +535,10 @@ test('settings source list renders rows and emits quota-src / quota-src-key / qu
   assert.equal(reqs.filter(r => r.action === 'quota-src')[0].enabled, true);
   const keyReq = reqs.filter(r => r.action === 'quota-src-key')[0];
   assert.equal(keyReq.id, 'mimo'); assert.equal(keyReq.field, 'cookie'); assert.equal(keyReq.value, 'userId=1; serviceToken=abc');
-  assert.equal(reqs.filter(r => r.action === 'quota-src-refresh')[0].id, 'minimax');
+  assert.match(keyReq.requestId, /^zusage-\d+-\d+$/);
+  const refreshReq = reqs.filter(r => r.action === 'quota-src-refresh')[0];
+  assert.equal(refreshReq.id, 'minimax');
+
   void list; void ui;
 });
 
@@ -631,7 +636,7 @@ test('unmapped or empty live selection immediately removes old Coding Plan inste
   h.window.__zusageUpdate(data);
   ui.marker.setAttribute('data-provider', 'new-provider-unknown');
   h.mutate(ui.pane);
-  assert.equal(h.chipOf(ui.wrap), undefined);
+  assert.ok(!h.chipOf(ui.wrap));
   ui.marker.setAttribute('data-provider', '');
   ui.marker.setAttribute('data-model', '');
   h.mutate(ui.pane);
@@ -677,7 +682,7 @@ test('session replacement and disposal invalidate live model selection observers
   assert.equal(obs.connected, false);
   ui.marker.setAttribute('data-provider', 'account:bigmodel-individual-coding-plan');
   h.mutate(ui.pane);
-  assert.equal(h.chipOf(ui.wrap), undefined);
+  assert.ok(!h.chipOf(ui.wrap));
 });
 
 
@@ -846,7 +851,7 @@ test("preset chip click writes secrets baseUrl via the whitelist channel; key li
 test("refresh and key buttons expose native titles; switched-off sources disable refresh", () => {
   assert.ok(source.includes('跳过缓存，立即重新查询该源'), "refresh button title");
   assert.ok(source.includes('" title="\' + L("打开控制台获取 API Key"'), "key link title reuses the aria label");
-  assert.ok(source.includes('(sv.enabled ? "" : " disabled") + \'>↻</button>\''), "off sources render a disabled refresh");
+  assert.ok(source.includes('(sv.enabled ? "" : " disabled") + \' aria-busy=\' + (!!sv.busy) + \' >↻</button>\'') || /sv\.enabled && !sv\.busy \? "" : " disabled"/.test(source), "off sources render a disabled refresh");
   assert.ok(source.includes('.zu-src-refresh:disabled{opacity:.4;cursor:default}'), "disabled refresh styling");
   assert.ok(source.includes('disabled: L("已关闭", "off")'), "disabled status maps to a localized label");
 });
@@ -974,14 +979,77 @@ test('quotaTip rebuilds only when content changes (selection/scroll survive peri
   assert.equal(sets, 1, 'changed data → single rewrite');
 });
 
-test('quota chip keeps zu-qbusy across a signature change (git chip parity)', () => {
+test('quota chip busy tracks query snapshots, not a fixed animation timer', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  h.inject(); h.boot(); h.tick();
+  h.window.__zusageUpdate(h.payload({ quota: { ...QUOTA_OK, busy: true } }));
+  assert.ok(h.chipOf(ui.wrap).classList.contains('zu-qbusy'));
+  h.window.__zusageUpdate(h.payload({ quota: { ...withPct(33), busy: true } }));
+  assert.ok(h.chipOf(ui.wrap).classList.contains('zu-qbusy'));
+  h.window.__zusageUpdate(h.payload({ quota: { ...withPct(33), busy: false } }));
+  assert.equal(h.chipOf(ui.wrap).classList.contains('zu-qbusy'), false);
+  assert.equal(h.chipOf(ui.wrap).getAttribute('aria-busy'), 'false');
+});
+
+
+test('quota configuration failure returns to the previous visible switch state', () => {
   const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
   h.inject(); h.boot(); h.tick();
   h.window.__zusageUpdate(h.payload({ quota: QUOTA_OK }));
-  const chip = h.chipOf(ui.wrap);
-  chip.listeners.get('click')[0].call(chip, { preventDefault() {}, stopPropagation() {} });
-  assert.ok(chip.classList.contains('zu-qbusy'), 'click adds busy pulse');
-  h.window.__zusageUpdate(h.payload({ quota: withPct(33) }));   // 推送改签名
-  assert.ok(h.chipOf(ui.wrap).classList.contains('zu-qbusy'),
-    'busy animation survives sig rewrite: ' + chip.className);
+  const panel = h.body.children.find(e => e.classList.contains('zu-settings'));
+  const toggle = new Element('input');
+  toggle.classList.add('zu-quota-enable'); toggle.checked = false;
+  panel.listeners.get('change')[0]({ target: toggle });
+  h.tick();
+  assert.ok(!h.chipOf(ui.wrap));
+  const req = h.window.__zusagePluginRequests.findLast(r => r.action === 'quota');
+  h.window.__zusagePluginResult({ id: req.requestId, ok: false, error: 'fixture write denied' });
+  h.tick();
+  assert.ok(h.chipOf(ui.wrap), 'failed save restores the previous quota setting');
+  assert.match(panel.querySelector('.zu-settings-feedback-status').textContent, /保存失败/);
+});
+
+test('source save failure restores toggle and keeps credentials write-only', () => {
+  const h = harness(); h.buildComposer('workspace-main', 'sid_main');
+  h.inject(); h.boot(); h.tick();
+  const panel = h.body.children.find(e => e.classList.contains('zu-settings'));
+  const toggle = new Element('input');
+  toggle.classList.add('zu-src-enable'); toggle.dataset.src = 'mimo'; toggle.checked = true;
+  panel.listeners.get('change')[0]({ target: toggle });
+  const req = h.window.__zusagePluginRequests.findLast(r => r.action === 'quota-src');
+  h.window.__zusagePluginResult({ id: req.requestId, ok: false });
+  assert.equal(toggle.checked, false);
+  assert.equal(toggle.disabled, undefined, 'older main processes never leave controls disabled');
+  const field = new Element('input'); field.type = 'password'; field.classList.add('zu-src-field');
+  Object.assign(field.dataset, { src: 'mimo', field: 'cookie' }); field.value = 'fixture-secret';
+  panel.listeners.get('change')[0]({ target: field });
+  const keyReq = h.window.__zusagePluginRequests.findLast(r => r.action === 'quota-src-key');
+  h.window.__zusagePluginResult({ id: keyReq.requestId, ok: true });
+  assert.equal(field.value, '', 'successful writes clear the local password field');
+});
+
+test('refresh keyboard activation uses Enter once and Space on keyup without scrolling', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  h.inject(); h.boot(); h.tick(); h.window.__zusageUpdate(h.payload({ quota: QUOTA_OK }));
+  const chip = h.chipOf(ui.wrap); let clicks = 0, prevented = 0;
+  chip.click = () => { clicks++; };
+  const event = key => ({ key, preventDefault() { prevented++; } });
+  chip.listeners.get('keydown')[0].call(chip, event('Enter'));
+  chip.listeners.get('keydown')[0].call(chip, event(' '));
+  assert.equal(clicks, 1);
+  chip.listeners.get('keyup')[0].call(chip, event(' '));
+  assert.equal(clicks, 2); assert.equal(prevented, 3);
+});
+
+
+test('a late successful credential save does not erase newly edited input', () => {
+  const h = harness(); h.buildComposer('workspace-main', 'sid_main'); h.inject(); h.boot(); h.tick();
+  const panel = h.body.children.find(e => e.classList.contains('zu-settings'));
+  const field = new Element('input'); field.type = 'password'; field.classList.add('zu-src-field');
+  Object.assign(field.dataset, { src: 'mimo', field: 'cookie' }); field.value = 'first-fixture-key';
+  panel.listeners.get('change')[0]({ target: field });
+  const req = h.window.__zusagePluginRequests.findLast(r => r.action === 'quota-src-key');
+  field.value = 'new-fixture-key'; panel.listeners.get('input')[0]({ target: field });
+  h.window.__zusagePluginResult({ id: req.requestId, ok: true });
+  assert.equal(field.value, 'new-fixture-key');
 });

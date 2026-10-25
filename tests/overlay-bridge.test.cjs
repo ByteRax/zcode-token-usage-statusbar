@@ -566,14 +566,14 @@ test('⑪ heartbeat tick alone (no new store push) still advances the observed-s
   h.runTimers(100);
   assert.equal(instanceOf(h).statsFor('pt1').characterRate, null);
   // 没有新快照也要能走字：证明心跳本身驱动了刷新，而不是只等 store 通知
-  assert.equal(instanceOf(h).liveEl().textContent, '思考中…3 秒');
+  assert.equal(instanceOf(h).liveEl().textContent, '思考中…3秒');
   for (const [now, expected] of [
     [59999, '59 秒'], [60000, '1 分'], [70000, '1 分 10 秒'],
     [3600000, '1 时'], [3610000, '1 时 10 秒'], [3660000, '1 时 1 分'], [3670000, '1 时 1 分 10 秒'],
   ]) {
     h.clock.now = now;
     h.runTimers(100);
-    assert.equal(instanceOf(h).liveEl().textContent, '思考中…' + expected);
+    assert.equal(instanceOf(h).liveEl().textContent, '思考中…' + expected.replace(/(\d) /g, '$1'));
   }
   // 无可测字符流=思考态：chip 图标切到动效脑（v77：用户语义"生成中"改"思考中"）
   assert.equal(instanceOf(h).liveIconKind(), 'think');
@@ -595,11 +595,11 @@ test('⑫ bar chip mirrors the running toolCall state (verb + elapsed) instead o
   assert.match(instanceOf(h).liveEl().textContent, /^\d/);
 });
 
-test('⑬ running phases (writing/thinking/tool) all use the animated brain icon; only completion reverts to bolt', () => {
+test('⑬ running phases keep distinct generating, thinking and tool icons after updates', () => {
   const h = harness();
   const store = driveStreaming(h);   // 正文流式：运行期=动效脑
   const inst = instanceOf(h);
-  assert.equal(inst.liveIconKind(), 'think');
+  assert.equal(inst.liveIconKind(), 'generate');
   // 思考开始：本轮最后一个活动行变为 reasoning（思考文本流式输出，正文行仍在窗口内）
   h.clock.now = 2000;
   store.set(snap(3, [header('running'), text('abcdef'),
@@ -610,13 +610,13 @@ test('⑬ running phases (writing/thinking/tool) all use the animated brain icon
   // 工具执行期同样保持动效脑（v77.1：运行期一律脑图标）
   store.set(snap(4, [header('running'), text('abcdef'),
     { rowId: 6, turnId: 't1', productTurnId: 'pt1', kind: 'toolCall', toolName: 'Read', inputText: '', status: 'running', startedAt: Date.now() }]));
-  assert.equal(inst.liveIconKind(), 'think');
+  assert.equal(inst.liveIconKind(), 'tool');
   assert.match(inst.liveEl().textContent, /^正在读取 · \d/);
   // 思考结束回正文流式（reasoning 移出窗口，正文行继续增长）：仍为动效脑
   h.clock.now = 3000;
   store.set(snap(5, [header('running'), text('abcdefghij')]));
   assert.equal(inst.statsFor('pt1').phase, 'writing');
-  assert.equal(inst.liveIconKind(), 'think');
+  assert.equal(inst.liveIconKind(), 'generate');
   // 轮次完成：无相位，图标回落到 bolt（真实 tok/s 档位视图）
   store.set(snap(6, [header('completedSuccess', { outputTokens: 1000, modelDurationMs: 4000, activeMs: 5000 }), text('abcdefghij')]));
   assert.equal(inst.liveIconKind(), 'bolt');
@@ -856,7 +856,7 @@ test('㉓ v87 synthetic thinking fires only for empty-window draft or phase=runn
   // goal verifier 启动：只加 timelineMarker 不加 turnHeader（product-projection.ts:5136），phase=running
   store.set(withControl(4, idleRows.concat([{ rowId: 4, kind: 'timelineMarker', lane: 'turnTailBoundary' }]), 'running'));
   h.runTimers(100);
-  assert.match(instanceOf(h).liveEl().textContent, /^思考中…\d+ 秒$/, '④ phase=running（无 header）仍合成思考中');
+  assert.match(instanceOf(h).liveEl().textContent, /^思考中…\d+秒$/, '④ phase=running（无 header）仍合成思考中');
   // 新会话 draft 空窗（v87 本意）
   store.set(withControl(5, [], 'draft'));
   h.runTimers(100);
@@ -881,5 +881,5 @@ test('㉓b thinking elapsed anchors to turnHeader.startedAt (host writes it at h
   h.runTimers(100);     // 仅心跳驱动（无新快照），同 ⑪
   // observedMs（首观测 t=0 起算）会显示 3 秒；锚定 startedAt（4.2s 前创建）应显示 4 秒——
   // 切走再切回重绑后计时不再从 0 重计。墙钟余量 ~800ms（构造到断言需超时 4.2s→5s 才假红）
-  assert.equal(instanceOf(h).liveEl().textContent, '思考中…4 秒');
+  assert.equal(instanceOf(h).liveEl().textContent, '思考中…4秒');
 });

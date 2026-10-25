@@ -39,11 +39,14 @@
   body.embed .composer-card textarea::placeholder{color:#5b6474}
   /* hero 主视觉：卡片仅作 overlay 的挂靠点，视觉隐藏（v57 起条贴窗口底，构图更干净）。
      卡片宽=状态条 maxWidth 上限，须容纳英文条面（约 940px）不截断 */
-  body.embed.hero .composer-card{width:1010px;height:56px;opacity:0;pointer-events:none}
+  body.embed.hero .composer-card{width:1010px;height:88px;background:transparent;border-color:transparent;box-shadow:none}
   body.embed.hero .composer-card textarea{height:54px;padding:9px 14px 0}
   /* 特写：小窗（卡片接近满宽，给状态条 maxWidth 留足空间不裁边） */
-  body.embed.closeup .composer-card{width:636px;height:44px}
+  body.embed.closeup .composer-card{width:636px;height:88px}
   body.embed.closeup .composer-card textarea{height:42px;padding:7px 12px 0;font-size:12px}
+  .tour-toolbar{height:28px;display:flex;align-items:center;justify-content:flex-end;padding:0 12px}
+  .tour-context-wrap{display:inline-flex}.tour-context-wrap button{height:28px;display:inline-flex;align-items:center;gap:4px;background:transparent;border:0;color:inherit}
+  :root{--ui-font-size:14px;--color-background:#17191f;--color-foreground:#e9edf4;--color-foreground-subtle:#b3b9c5;--color-foreground-subtlest:#9ca5b4;--color-card:#20232b;--color-surface:#252932;--color-surface-hover:#303642;--color-border:#414958;--color-tooltip:#242830;--color-tooltip-foreground:#f4f5f7;--color-tooltip-tag-foreground:#bfc5d0;--color-brand:#87cfff}
   /* 高亮目标项：青色光圈 + 微放大；其余项压暗弹性收窄只露图标，聚焦目标 */
   .it.hl{background:rgba(87,199,255,.14)!important;
     box-shadow:0 0 0 1.5px rgba(87,199,255,.7),0 0 20px rgba(87,199,255,.35);
@@ -90,7 +93,7 @@
 <!-- ============ embed 迷你窗口模式 ============ -->
 <div id="stage-embed">
   <div class="chat-sim" id="chat-sim"></div>
-  <div class="composer-card"><textarea placeholder="给 ZCode 发消息…"></textarea></div>
+  <div class="composer-card"><textarea placeholder="给 ZCode 发消息…"></textarea><div class="group/toolbar tour-toolbar"><span class="tour-context-wrap"><button type="button" data-testid="chat-context-usage-trigger" aria-label="上下文已用 63,400 / 总量 200,000"><svg width="16" height="16" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="none"/><circle cx="12" cy="12" r="10" fill="none"/></svg></button></span></div></div>
 </div>
 
 <!-- ============ 组装排版模式 ============ -->
@@ -126,12 +129,12 @@ if (Q.print) document.documentElement.style.zoom = Q.print;
  * 开启「本轮」后条面 it 索引：0=tps 1=ctx 2=turn 3=win 4=tools 5=today 6=sub */
 var ITEMS = [
   { no: "①", hl: "0",    file: "item-1.png", name: "生成速度", desc: "最近一次请求的输出速度（token/s）。随快慢三档变色：≥70 绿、40–70 黄、&lt;40 红，模型快慢一眼可读。" },
-  { no: "②", hl: "1",    file: "item-2.png", name: "上下文容量", desc: "微进度条 + 百分比显示当前会话的上下文占比，颜色随占比从绿转黄再转红；超限被拒时亮红闪烁并弹出告警气泡。窗口大小自动识别、跟随模型。" },
+  { no: "②", hl: "1",    file: "item-2.png", name: "上下文容量", desc: "原生上下文按钮的圆环与百分比显示当前会话的上下文占比，颜色随占比从绿转黄再转红；超限被拒时亮红闪烁并弹出告警气泡。窗口大小自动识别、跟随模型。" },
   { no: "③", hl: "2",    file: "item-3.png", name: "本轮", desc: "最近一轮对话的 token 消耗、缓存命中率、请求次数、单次耗时与首字延迟。悬停可看 输入 / 输出 / 缓存命中 / 缓存写入 / 思考 的拆分。" },
   { no: "④", hl: "3",    file: "item-4.png", name: "会话累计", desc: "当前会话全部请求的总消耗与轮次统计；每个对话窗口只统计自己的数据，多窗口互不串显。悬停同样有明细拆分。" },
   { no: "⑤", hl: "4",    file: "item-5.png", name: "工具调用", desc: "会话内工具使用总次数；出现错误时右侧亮红色错误数徽标。悬停可看各工具的调用次数与耗时明细。" },
   { no: "⑥", hl: "5",    file: "item-6.png", name: "今日合计", desc: "今天所有会话的 token 总消耗，跨会话汇总，日用量一目了然。" },
-  { no: "⑦", hl: "6",    file: "item-7.png", name: "子代理", desc: "当前会话后台子代理的消耗，独立统计不计入会话累计；蓝色 ● 表示有子代理运行中。点击弹出明细面板，按页签查看每个子代理的任务名与消耗。" },
+  { no: "⑦", hl: "6",    file: "item-7.png", name: "子代理", desc: "当前会话后台子代理的消耗，独立统计不计入会话累计；绿色 ● 表示有子代理运行中。点击弹出明细面板，按页签查看每个子代理的任务名与消耗。" },
   { no: "⑧", hl: "gear", file: "item-8.png", name: "⚙ 设置面板", desc: "点击打开设置：各显示项独立开关、上下文窗口大小手动覆盖。悬停条面任意条目还会弹出明细 tooltip。" }
 ];
 
@@ -227,13 +230,14 @@ if (EMBED) {
   var tries = 0;
   var timer = setInterval(function () {
     tries++;
-    var its = document.querySelectorAll("#zu-main .it");
+    var its = document.querySelectorAll(".zu-main .it");
     var bar = document.getElementById("zusage-bar");
-    if (its.length >= 7 && bar && bar.style.display === "flex") {
+    if (its.length >= 6 && bar && bar.style.display === "flex") {
       clearInterval(timer);
       feed();
       setTimeout(function () {
         if (Q.hero === "1") drawMarks(its, bar); else applyHighlight(its);
+        window.__tourReady = true;
       }, 300);
     } else if (tries > 30) clearInterval(timer);
   }, 200);
@@ -243,11 +247,13 @@ if (EMBED) {
     document.querySelectorAll("#zusage-bar .sep").forEach(function (sp) { sp.classList.add("dim"); });
     if (Q.hl === "gear") {
       its.forEach(function (el) { el.classList.remove("dim"); el.classList.add("dim-soft"); });
-      var g = document.getElementById("zu-gear");
+      var g = document.querySelector(".zu-gear");
       if (g) g.classList.add("hl");
     } else {
       var idx = parseInt(Q.hl, 10);
-      if (its[idx]) { its[idx].classList.remove("dim"); its[idx].classList.add("hl"); }
+      if (idx > 1) idx--;
+      if (Q.hl === "1") { var ctx = document.querySelector("[data-testid=chat-context-usage-trigger]"); if (ctx) ctx.style.background = "var(--color-hover,#303642)"; }
+      else if (its[idx]) { its[idx].classList.remove("dim"); its[idx].classList.add("hl"); }
     }
   }
 
@@ -256,7 +262,9 @@ if (EMBED) {
     host.style.cssText = "position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none";
     document.body.appendChild(host);
     var nodes = Array.prototype.slice.call(its);
-    var gear = document.getElementById("zu-gear");
+    var ctx = document.querySelector("[data-testid=chat-context-usage-trigger]");
+    if (ctx) nodes.splice(1, 0, ctx);
+    var gear = document.querySelector(".zu-gear");
     if (gear) nodes.push(gear);
     var barTop = bar.getBoundingClientRect().top;
     nodes.forEach(function (el, i) {

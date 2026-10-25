@@ -37,7 +37,7 @@
   .pm-glow.b{width:780px;height:440px;left:-280px;bottom:-250px;background:radial-gradient(closest-side,rgba(62,207,142,.14),transparent)}
   .pm-glow.c{width:720px;height:420px;right:-280px;bottom:-230px;background:radial-gradient(closest-side,rgba(87,199,255,.1),transparent)}
 
-  .pm-head{position:absolute;top:28px;left:0;right:0;text-align:center}
+  .pm-head{position:absolute;top:20px;left:0;right:0;text-align:center}
   .pm-eyebrow{display:inline-flex;align-items:center;gap:7px;height:24px;padding:0 12px;border-radius:999px;
     font-size:12.5px;letter-spacing:.06em;color:#a6e3ff;background:rgba(87,199,255,.08);border:1px solid rgba(87,199,255,.3)}
   .pm-eyebrow svg{width:13px;height:13px}
@@ -46,7 +46,7 @@
   .pm-slogan{margin:9px 0 0;font-size:18.5px;line-height:1.5;letter-spacing:.02em;color:#98a2b3}
   .pm-slogan b{font-weight:600;color:#eef2f7}
 
-  .pm-win{position:absolute;left:70px;top:172px;width:1140px;height:380px;border-radius:14px;background:#171717;
+  .pm-win{position:absolute;left:70px;top:162px;width:1140px;height:390px;border-radius:14px;background:#171717;
     border:1px solid rgba(255,255,255,.1);
     box-shadow:0 0 0 1px rgba(0,0,0,.6),0 32px 90px rgba(0,0,0,.6),0 12px 32px rgba(0,0,0,.4)}
   .pm-titlebar{position:relative;height:38px;display:flex;align-items:center;padding:0 15px;background:#1c1c1c;
@@ -58,12 +58,12 @@
   .pm-lights i:nth-child(3){background:#28c840}
   .pm-wtitle{position:absolute;left:0;right:0;text-align:center;font-size:13px;color:#8a8a8a}
   .pm-body{position:absolute;top:38px;left:0;right:0;bottom:0;display:flex;justify-content:center;padding:0 0 19px}
-  .pm-col{width:1044px;display:flex;flex-direction:column}
-  .pm-chat{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;gap:14px;padding:0 4px}
+  .pm-col{width:1100px;display:flex;flex-direction:column}
+  .pm-chat{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;gap:0;padding:0 4px}
   .pm-user{align-self:flex-end;max-width:70%;padding:8px 15px;border-radius:14px;background:#2a2a2a;
     font-size:14px;line-height:1.6;color:#ececec}
-  .pm-bot{font-size:14px;line-height:1.7;color:#d4d4d4}
-  .pm-bot p{margin:0 0 9px}
+  .pm-bot{font-size:14px;line-height:1.5;color:#d4d4d4}
+  .pm-bot p{margin:0 0 3px}
   .pm-bot code{font-family:var(--font-mono);font-size:12.5px;padding:1px 5px;border-radius:5px;
     background:#252525;border:1px solid rgba(255,255,255,.08);color:#e6e6e6}
   .pm-bot blockquote{margin:0;padding:1px 0 1px 12px;border-left:3px solid #3a3a3a;
@@ -100,7 +100,7 @@
     filter:drop-shadow(0 2px 3px rgba(0,0,0,.55))}
 
   .pm-install{position:absolute;left:70px;right:70px;top:603px;height:96px;display:flex;gap:12px}
-  .pm-ihead{flex:0 0 118px;display:flex;flex-direction:column;justify-content:center;gap:3px;padding-left:2px}
+  .pm-ihead{flex:0 0 102px;display:flex;flex-direction:column;justify-content:center;gap:3px;padding-left:2px}
   .pm-ihead b{margin-bottom:4px;font-size:17px;line-height:22px;font-weight:600;color:#f1f4f8}
   .pm-ihead span{font-size:12.5px;line-height:18px;color:#8a93a3;white-space:nowrap}
   .pm-card{display:flex;align-items:center;min-width:0;padding:12px 14px;border-radius:12px;
@@ -113,7 +113,7 @@
   .pm-cbody{min-width:0}
   .pm-ct{font-size:14px;line-height:20px;color:#e8ecf2;white-space:nowrap}
   .pm-chip{display:inline-block;margin-top:6px;height:24px;padding:0 8px;border-radius:6px;background:#0d1016;
-    border:1px solid rgba(87,199,255,.28);font-family:var(--font-mono);font-size:12px;line-height:22px;color:#9fe0ff;white-space:nowrap}
+    border:1px solid rgba(87,199,255,.28);font-family:var(--font-mono);font-size:11.5px;line-height:22px;color:#9fe0ff;white-space:nowrap}
   .pm-cnote{margin-top:6px;font-size:12px;line-height:17px;color:#8a93a3;white-space:nowrap}
   .pm-cnote em{font-style:normal;color:#c3cad5}
 </style>
@@ -171,12 +171,12 @@
     <div class="pm-cnote">After adding, install <em>ZCode Token Usage Statusbar</em> from the list</div>
   </div></div></div>
   <div class="pm-card c2"><div class="pm-cin"><span class="pm-n">2</span><div class="pm-cbody">
-    <div class="pm-ct">Type in any chat box:</div>
+    <div class="pm-ct">In any chat:</div>
     <div class="pm-chip">/install-overlay</div>
   </div></div></div>
   <div class="pm-card c3"><div class="pm-cin"><span class="pm-n">3</span><div class="pm-cbody">
     <div class="pm-ct">Then restart ZCode</div>
-    <div class="pm-cnote">Quit completely, then reopen</div>
+    <div class="pm-cnote">Quit, then reopen</div>
   </div></div></div>
 </section>
 
@@ -219,7 +219,7 @@
     cache_read: 2412300, cache_write: 154900, requests: 1240, retries: 6,
     started: NOW - 7 * 3600000, last_at: NOW - 4000 };
   var PAYLOAD = { mine: SESS.sid, recent: [SESS], today: TODAY };
-  var MARKS = ["Speed", "Context", "This Turn", "Session Total", "Tool Calls", "Today", "Sub-agents"];
+  var MARKS = ["Speed", "This Turn", "Session Total", "Tool Calls", "Today", "Sub-agents"];
 
   function feed() { if (window.__zusageUpdate) window.__zusageUpdate(PAYLOAD); }
 
@@ -307,7 +307,7 @@
     feed();
     var its = document.querySelectorAll("#zusage-bar .zu-main .it");
     var bar = document.getElementById("zusage-bar");
-    if (its.length >= 7 && bar && bar.style.display === "flex") {
+    if (its.length >= 6 && bar && bar.style.display === "flex") {
       clearInterval(timer);
       setTimeout(function () { drawMarks(); window.__promoReady = true; }, 500);
     } else if (tries > 60) clearInterval(timer);

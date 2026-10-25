@@ -204,7 +204,7 @@
     feed();
     var its = document.querySelectorAll("#zusage-bar .zu-main .it");
     var bar = document.getElementById("zusage-bar");
-    if (its.length >= 7 && bar && bar.style.display === "flex") {
+    if (its.length >= 6 && bar && bar.style.display === "flex") {
       clearInterval(timer);
       setTimeout(function () { window.__promoReady = true; }, 400);
     } else if (tries > 60) clearInterval(timer);
