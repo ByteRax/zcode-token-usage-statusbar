@@ -243,7 +243,9 @@ test('anchor priority is CUA, context, mode, thought regardless of DOM order', (
   chip = chipOf(ui.row);
   assert.ok(chip); assert.equal(mode.nextSibling, chip);
   mode.remove(); h.tick();
-  assert.equal(thought.nextSibling, chipOf(ui.row));
+  chip = chipOf(ui.row);
+  assert.ok(chip, 'thought migration must keep a mounted chip');
+  assert.equal(thought.nextSibling, chip);
 });
 
 test('connected fallback yields to restored CUA and cached anchors cannot escape the current card', () => {
