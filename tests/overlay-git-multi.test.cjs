@@ -57,6 +57,10 @@ class Element {
     return this.queries.get(k);
   }
   querySelectorAll(sel) {
+    if (/^\[data-testid="[^"]+"\]$/.test(sel)) {
+      const testid = sel.slice(14, -2);
+      return this.children.flatMap(e => [ ...(e.getAttribute('data-testid') === testid ? [e] : []), ...e.querySelectorAll(sel) ]);
+    }
     if (sel !== 'circle') return [];
     return this.children.filter(e => e.tagName === 'CIRCLE').concat(
       ...this.children.filter(e => e.querySelectorAll).map(e => e.querySelectorAll(sel)));

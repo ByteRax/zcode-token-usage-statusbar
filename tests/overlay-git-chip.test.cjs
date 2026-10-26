@@ -32,17 +32,18 @@ class Element {
   removeAttribute(k) { delete this.dataset[k]; }
   addEventListener(type, fn) { const a = this.listeners.get(type) || []; a.push(fn); this.listeners.set(type, a); }
   removeEventListener(type, fn) { this.listeners.set(type, (this.listeners.get(type) || []).filter(f => f !== fn)); }
-  appendChild(el) { this.children.push(el); el.parentElement = this; return el; }
+  get nextElementSibling() { return this.nextSibling; }
+  appendChild(el) { if (el.parentElement) el.remove(); this.children.push(el); el.parentElement = this; el.isConnected = this.isConnected; return el; }
   insertBefore(el, ref) {
     if (!ref || ref.parentElement !== this) return this.appendChild(el);
-    const idx = this.children.indexOf(ref);
+    if (el === ref) return el;
     if (el.parentElement) el.remove();
-    this.children.splice(idx, 0, el); el.parentElement = this; return el;
+    this.children.splice(this.children.indexOf(ref), 0, el); el.parentElement = this; el.isConnected = this.isConnected; return el;
   }
-  remove() { if (this.parentElement) this.parentElement.children = this.parentElement.children.filter(e => e !== this); this.isConnected = false; }
+  remove() { if (this.parentElement) this.parentElement.children = this.parentElement.children.filter(e => e !== this); this.parentElement = null; this.isConnected = false; }
   querySelector(k) {
     if (k === '.zu-sr-only') return this.querySelectorAll(k)[0] || null;
-    for (const testid of ['chat-context-usage-trigger', 'v4-composer-cua-entry']) {
+    for (const testid of ['chat-context-usage-trigger', 'v4-composer-cua-entry', 'chat-mode-select-trigger', 'chat-thought-level-select-trigger']) {
       if (k === `[data-testid="${testid}"]`) {
         for (const c of this.children) {
           if (c.dataset && c.dataset['data-testid'] === testid) return c;
@@ -58,6 +59,10 @@ class Element {
   }
   matches(sel) { return sel === '.zu-sr-only' ? this.classList.contains(sel.slice(1)) : false; }
   querySelectorAll(sel) {
+    if (/^\[data-testid="[^"]+"\]$/.test(sel)) {
+      const testid = sel.slice(14, -2);
+      return this.children.flatMap(e => [ ...(e.getAttribute('data-testid') === testid ? [e] : []), ...e.querySelectorAll(sel) ]);
+    }
     if (sel === 'circle') return this.children.filter(e => e.tagName === 'CIRCLE').concat(
       ...this.children.filter(e => e.querySelectorAll).map(e => e.querySelectorAll(sel)));
     if (sel === '.zu-sr-only') return this.children.flatMap(e => [ ...(e.matches && e.matches(sel) ? [e] : []), ...(e.querySelectorAll ? e.querySelectorAll(sel) : []) ]);
@@ -67,7 +72,12 @@ class Element {
   closest() { return null; }
   hasAttribute(k) { return k === 'data-pane-id' ? !!this.pid : k === 'data-session-id' ? !!this.sid : Object.prototype.hasOwnProperty.call(this.dataset, k); }
   getAttribute(k) { return k === 'data-pane-id' ? (this.pid || null) : k === 'data-session-id' ? (this.sid || null) : (this.dataset[k] !== undefined ? this.dataset[k] : null); }
-  getBoundingClientRect() { return { top: 600, bottom: 650, left: 20, right: 520, width: 500, height: 50 }; }
+  getBoundingClientRect() {
+    for (let p = this; p; p = p.parentElement) {
+      if (p.style.display === 'none') return { top: 0, bottom: 0, left: 0, right: 0, width: 0, height: 0 };
+    }
+    return { top: 600, bottom: 650, left: 20, right: 520, width: 500, height: 50 };
+  }
 }
 
 function harness() {
@@ -82,7 +92,7 @@ function harness() {
   const timers = new Map(), frames = new Map(); let id = 0;
   const sandbox = vm.createContext({ window, document, console, innerHeight: 800, innerWidth: 1000,
     location: { href: 'file:///fixture' }, localStorage: { getItem: () => null, setItem() {} },
-    getComputedStyle: () => ({ borderTopWidth: '1px', backgroundColor: 'black', opacity: '1', display: 'block', visibility: 'visible' }),
+    getComputedStyle: el => ({ borderTopWidth: '1px', backgroundColor: 'black', opacity: '1', display: 'block', visibility: 'visible', ...el.style }),
     setTimeout: (fn, ms) => { timers.set(++id, { fn, ms, interval: false }); return id; },
     clearTimeout: n => timers.delete(n),
     setInterval: (fn, ms) => { timers.set(++id, { fn, ms, interval: true }); return id; },
@@ -179,6 +189,116 @@ test('chip mounts right of the CUA button with cc-pretty-statusline styling', ()
   assert.match(chip.getAttribute('aria-label'), /Git 分支 main/);
   assert.match(chip.getAttribute('aria-label'), /领先 2/);
   assert.deepEqual([...h.window.__zusageGitPaths], ['/repo/a'], '本地工作区路径上报主进程');
+});
+
+test('missing CUA falls back to context beside quota without nesting interactive controls', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  ui.cua.remove();
+  drive(h, ui);
+  const payload = h.payload();
+  payload.recent[0].last = { provider_id: 'account:bigmodel-individual-coding-plan' };
+  payload.quota = { status: 'not_configured', fetchedAt: 0, stale: false };
+  h.window.__zusageUpdate(payload);
+  const chip = chipOf(ui.wrap), quota = ui.wrap.children.find(e => e.classList.contains('zu-quota'));
+  assert.ok(chip, 'Git chip falls back to the context wrapper');
+  assert.ok(quota, 'quota remains mounted');
+  assert.equal(quota.nextSibling, ui.btn);
+  assert.equal(ui.btn.nextSibling, chip);
+  assert.ok(!ui.btn.contains(chip));
+  h.tick(); h.tick();
+  assert.equal(chipOf(ui.wrap), chip);
+  assert.equal(quota.nextSibling, ui.btn);
+  assert.equal(ui.btn.nextSibling, chip);
+});
+
+for (const testid of ['chat-mode-select-trigger', 'chat-thought-level-select-trigger']) {
+  test(`missing CUA and context falls back to ${testid}`, () => {
+    const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+    ui.cua.remove(); ui.wrap.remove();
+    const anchor = ui.row.appendChild(new Element(testid.includes('thought') ? 'span' : 'button'));
+    anchor.setAttribute('data-testid', testid);
+    const chip = drive(h, ui);
+    assert.ok(chip);
+    assert.equal(anchor.nextSibling, chip);
+    dispatch(chip, 'click');
+    assert.ok(h.window.__zusagePluginRequests.some(r => r.action === 'git-refresh' && r.requestId));
+    h.window.gitTest.instances()[0].dispose();
+    assert.equal(chipOf(ui.row), null);
+  });
+}
+
+test('anchor priority is CUA, context, mode, thought regardless of DOM order', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  const thought = ui.row.appendChild(new Element('span'));
+  thought.setAttribute('data-testid', 'chat-thought-level-select-trigger');
+  const mode = ui.row.appendChild(new Element('button'));
+  mode.setAttribute('data-testid', 'chat-mode-select-trigger');
+  ui.row.insertBefore(thought, ui.wrap); ui.row.insertBefore(mode, ui.wrap);
+  let chip = drive(h, ui);
+  assert.equal(ui.cua.nextSibling, chip);
+  ui.cua.remove(); h.tick();
+  chip = chipOf(ui.wrap);
+  assert.ok(chip); assert.equal(ui.btn.nextSibling, chip);
+  ui.wrap.remove(); h.tick();
+  chip = chipOf(ui.row);
+  assert.ok(chip); assert.equal(mode.nextSibling, chip);
+  mode.remove(); h.tick();
+  assert.equal(thought.nextSibling, chipOf(ui.row));
+});
+
+test('connected fallback yields to restored CUA and cached anchors cannot escape the current card', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  ui.cua.remove(); drive(h, ui);
+  assert.ok(chipOf(ui.wrap));
+  ui.row.appendChild(ui.cua); h.tick();
+  assert.equal(ui.cua.nextSibling, chipOf(ui.row));
+  assert.equal(chipOf(ui.wrap), null);
+  const otherCard = h.body.appendChild(new Element());
+  otherCard.appendChild(ui.cua); h.tick();
+  assert.equal(chipOf(otherCard), null);
+  assert.equal(ui.btn.nextSibling, chipOf(ui.wrap));
+});
+
+for (const hidden of ['inert', 'display', 'visibility']) {
+  test(`hidden ${hidden} CUA probe does not block visible context fallback`, () => {
+    const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+    const probe = ui.card.appendChild(new Element());
+    probe.appendChild(ui.cua);
+    if (hidden === 'inert') probe.inert = true;
+    else probe.style[hidden] = hidden === 'display' ? 'none' : 'hidden';
+    drive(h, ui);
+    const chip = chipOf(ui.wrap);
+    assert.ok(chip, 'visible fallback mounts despite the hidden primary');
+    assert.equal(ui.btn.nextSibling, chip);
+    assert.equal(chipOf(probe), null);
+    ui.row.appendChild(ui.cua); h.tick();
+    assert.equal(ui.cua.nextSibling, chipOf(ui.row), 'restored visible primary wins');
+  });
+}
+
+test('hidden duplicate anchor is skipped and no anchors means no Git chip', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  const probe = ui.card.appendChild(new Element()); probe.inert = true;
+  const clone = probe.appendChild(new Element('button'));
+  clone.setAttribute('data-testid', 'v4-composer-cua-entry');
+  ui.card.insertBefore(probe, ui.row);
+  const chip = drive(h, ui);
+  assert.ok(chip);
+  assert.equal(ui.cua.nextSibling, chip);
+  ui.cua.remove(); ui.wrap.remove(); h.tick();
+  assert.equal(chipOf(ui.row), null);
+  assert.equal(chipOf(probe), null);
+});
+
+test('fallbacks remain pane-local for single and multi repository data', () => {
+  const h = harness(), a = h.buildComposer('workspace-main', 'sid_main');
+  const b = h.buildComposer('pane-b', 'sid_b', { repoPath: '/repo/b' });
+  a.cua.remove(); b.cua.remove();
+  drive(h, a);
+  h.window.__zusageGitState('/repo/b', { ok: true, kind: 'multi', repos: [{ path: '/repo/b/child', ...gitState() }], failed: 0 });
+  assert.match(chipOf(a.wrap).innerHTML, /zu-git-name">main/);
+  assert.ok(chipOf(b.wrap).classList.contains('zu-git-multi'));
+  assert.notEqual(chipOf(a.wrap), chipOf(b.wrap));
 });
 
 test('clean worktree keeps the chip to branch only: no parens, no arrows', () => {
