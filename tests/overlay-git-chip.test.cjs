@@ -41,6 +41,7 @@ class Element {
   }
   remove() { if (this.parentElement) this.parentElement.children = this.parentElement.children.filter(e => e !== this); this.isConnected = false; }
   querySelector(k) {
+    if (k === '.zu-sr-only') return this.querySelectorAll(k)[0] || null;
     for (const testid of ['chat-context-usage-trigger', 'v4-composer-cua-entry']) {
       if (k === `[data-testid="${testid}"]`) {
         for (const c of this.children) {
@@ -55,10 +56,12 @@ class Element {
     if (!this.queries.has(k)) this.queries.set(k, new Element());
     return this.queries.get(k);
   }
+  matches(sel) { return sel === '.zu-sr-only' ? this.classList.contains(sel.slice(1)) : false; }
   querySelectorAll(sel) {
-    if (sel !== 'circle') return [];
-    return this.children.filter(e => e.tagName === 'CIRCLE').concat(
+    if (sel === 'circle') return this.children.filter(e => e.tagName === 'CIRCLE').concat(
       ...this.children.filter(e => e.querySelectorAll).map(e => e.querySelectorAll(sel)));
+    if (sel === '.zu-sr-only') return this.children.flatMap(e => [ ...(e.matches && e.matches(sel) ? [e] : []), ...(e.querySelectorAll ? e.querySelectorAll(sel) : []) ]);
+    return [];
   }
   contains(el) { return el === this || this.children.some(e => e.contains(el)); }
   closest() { return null; }
@@ -147,7 +150,23 @@ test('chip mounts right of the CUA button with cc-pretty-statusline styling', ()
   const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
   const chip = drive(h, ui);
   assert.ok(chip, 'chip mounted');
+  const live = ui.row.parentElement.children.find(e => e.classList.contains('zusage-root'))?.querySelector('.zu-sr-only');
+  assert.ok(live, 'a visually hidden live region is mounted inside this pane bar');
+  assert.equal(live.getAttribute('aria-live'), 'polite');
+  assert.equal(live.getAttribute('role'), 'status');
+  assert.equal(live.getAttribute('aria-atomic'), 'true');
+  assert.equal(chip.getAttribute('role'), 'button');
+  assert.equal(chip.parentElement, ui.row, 'button chip remains directly after the CUA button');
+  assert.match(live.textContent, /Git 分支 main/);
+  const before = live.textContent;
+  h.window.__zusageGitState('/repo/a', gitState({ branch: 'release', ahead: 0, behind: 0 }));
+  assert.match(live.textContent, /Git 分支 release/);
+  const changed = live.textContent;
+  h.window.__zusageGitState('/repo/a', gitState({ branch: 'release', ahead: 0, behind: 0 }));
+  assert.equal(live.textContent, changed, 'same status is not re-announced');
+  assert.notEqual(before, changed);
   assert.equal(ui.cua.nextSibling, chip, '紧贴「电脑操作」按钮右侧');
+  h.window.__zusageGitState('/repo/a', gitState());
   assert.ok(chip.innerHTML.startsWith('<svg '), 'lucide git-branch 图标打头');
   assert.match(chip.innerHTML, /<span class="zu-git-name">main<\/span>/);
   assert.match(chip.innerHTML, /<span class="zu-git-ab">↑2 ↓1<\/span>/);
@@ -269,9 +288,48 @@ test('refresh requests: first scope resolution asks once, snapshots throttle, cl
   assert.equal(asks(), 1, '路径集未变的快照重推被节流');
   h.window.__zusageGitState('/repo/a', gitState());
   const chip = chipOf(ui.row);
+  const live = ui.row.parentElement.children.find(e => e.classList.contains('zusage-root')).querySelector('.zu-sr-only');
   dispatch(chip, 'click');
   assert.equal(asks(), 2, '点击绕过节流');
   assert.ok(chip.classList.contains('zu-gbusy'));
+  assert.equal(chip.getAttribute('aria-busy'), 'true');
+  assert.equal(live.textContent, 'Git 状态查询中');
+  const request = h.window.__zusagePluginRequests.filter(r => r.action === 'git-refresh').find(r => r.requestId);
+  dispatch(chip, 'click');
+  const afterSecondClick = h.window.__zusagePluginRequests.filter(r => r.action === 'git-refresh').filter(r => r.requestId);
+  assert.equal(afterSecondClick.length, 1, 'same-pane repeat click does not enqueue another request');
+  assert.equal(afterSecondClick[0].requestId, request.requestId, 'same-pane repeat click does not replace the in-flight request');
+  assert.ok(request, '手动刷新携带请求回执 ID');
+  h.window.__zusagePluginResult({ id: request.requestId, ok: true, pending: false });
+  assert.equal(chip.getAttribute('aria-busy'), 'false');
+  assert.match(live.textContent, /Git 状态已更新：Git 分支 main/);
+});
+
+test('refresh completion for a prior composer is ignored after pane scope changes', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  const chip = drive(h, ui);
+  dispatch(chip, 'click');
+  const oldRequest = h.window.__zusagePluginRequests.filter(r => r.action === 'git-refresh').find(r => r.requestId);
+  assert.ok(oldRequest);
+  const inst = h.window.gitTest.instances()[0];
+  ui.editor.sid = 'sid_other';
+  ui.editor.setAttribute('data-session-id', 'sid_other');
+  ui.editor.setAttribute('data-zusage-workspace-path', '/repo/b');
+  const live = ui.row.parentElement.querySelector('.zu-sr-only');
+  h.window.__zusagePluginResult({ id: oldRequest.requestId, ok: true });
+  assert.equal(chip.getAttribute('aria-busy'), 'false', 'a stale scope receipt releases only the old busy state');
+  assert.doesNotMatch(live.textContent, /Git 状态已更新/);
+  inst.attach(ui.editor, 'sid_other');
+  h.window.__zusageUpdate({ remote_evidence: false, today: {}, not_local: [],
+    recent: [{ sid: 'sid_other', workspace_identity: '', ctx: 63400, context_window: 200000, last_at: 1 }] });
+  h.window.__zusageGitState('/repo/b', gitState({ branch: 'other', ahead: 0, behind: 0 }));
+  const newChip = chipOf(ui.row);
+  assert.ok(newChip, 'new workspace scope mounts its Git chip');
+  dispatch(newChip, 'click');
+  const newRequest = h.window.__zusagePluginRequests.filter(r => r.action === 'git-refresh').find(r => r.requestId && r.requestId !== oldRequest.requestId);
+  assert.ok(newRequest, 'new workspace can start a fresh request');
+  assert.equal(newChip.getAttribute('aria-busy'), 'true');
+  assert.equal(live.textContent, 'Git 状态查询中', 'new request has its own in-progress announcement');
 });
 
 test('hover tooltip shows branch, upstream, counts, directory and refresh hint', () => {

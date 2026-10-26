@@ -37,7 +37,9 @@ class Element {
     this.children.splice(idx, 0, el); el.parentElement = this; el.isConnected = true; return el;
   }
   remove() { if (this.parentElement) this.parentElement.children = this.parentElement.children.filter(e => e !== this); this.parentElement = null; this.isConnected = false; }
+  matches(sel) { return sel === '.zu-sr-only' && this.classList.contains('zu-sr-only'); }
   querySelector(k) {
+    if (k.startsWith('.')) { const all = this.querySelectorAll(k); if (all.length) return all[0]; }
     if (k === '[data-testid="chat-context-usage-trigger"]') {
       for (const c of this.children) {
         if (c.dataset && c.dataset['data-testid'] === 'chat-context-usage-trigger') return c;
@@ -54,9 +56,11 @@ class Element {
       return this.children.filter(e => e.getAttribute('data-testid') === 'v4-model-config').concat(
         ...this.children.map(e => e.querySelectorAll(sel)));
     }
-    if (sel !== 'circle') return [];
-    return this.children.filter(e => e.tagName === 'CIRCLE').concat(
+    if (sel === 'circle') return this.children.filter(e => e.tagName === 'CIRCLE').concat(
       ...this.children.filter(e => e.querySelectorAll).map(e => e.querySelectorAll(sel)));
+    if (sel === '.zu-sr-only') return this.children.filter(e => e.classList.contains('zu-sr-only')).concat(
+      ...this.children.filter(e => e.querySelectorAll).map(e => e.querySelectorAll(sel)));
+    return [];
   }
   contains(el) { return el === this || this.children.some(e => e.contains(el)); }
   closest() { return null; }
@@ -92,7 +96,7 @@ function harness({ quotaOn = true } = {}) {
       disconnect() { this.connected = false; }
     },
   });
-  const executable = source.replace(/\}\)\(\);\s*$/, 'window.quotaTest = { instances: function() { return instances; } };})();');
+  const executable = source.replace(/\}\)\(\);\s*$/, 'window.quotaTest = { instances: function() { return instances; }, state: function() { return state; } };})();');
   function inject() { window.__zusageOverlay = false; vm.runInContext(executable, sandbox); }
   function tick() { for (const t of [...timers.values()]) if (t.interval && (t.ms === 600 || t.ms === 500)) t.fn(); }
   function boot() { for (const [n, t] of [...timers]) if (!t.interval && t.ms === 0) { timers.delete(n); t.fn(); } }
@@ -132,11 +136,12 @@ function harness({ quotaOn = true } = {}) {
     return out;
   }
   const chipOf = wrap => wrap.children.find(e => e.classList.contains('zu-quota'));
+  const liveOf = root => root.children.find(e => e.classList.contains('zu-sr-only'));
   const tipEl = () => body.children.find(e => e.className === 'tip zusage-quota-tip');
   function mutate(pane) {
     for (const o of [...observers]) if (o.connected && o.target === pane) o.fn([]);
   }
-  return { window, body, inject, tick, boot, buildComposer, payload, chipOf, tipEl, mutate, observers };
+  return { window, body, inject, tick, boot, buildComposer, payload, chipOf, liveOf, tipEl, mutate, observers };
 }
 
 const NOW = Date.now();
@@ -159,6 +164,14 @@ test('chip is inserted directly left of the context button with per-window segme
   assert.equal(chip.innerHTML,
     '<span class="zu-qseg ok">5小时 26%</span><span class="zu-qsep">|</span><span class="zu-qseg ok">7天 12%</span>');
   assert.equal(chip.getAttribute('aria-label'), '套餐已用 5小时 26%，7天 12%');
+  const live = h.liveOf(h.body.children.find(e => e.className === 'zusage-root'));
+  assert.ok(live, 'a visually hidden live region is mounted inside this pane bar');
+  assert.equal(live.getAttribute('aria-live'), 'polite');
+  assert.equal(live.getAttribute('role'), 'status');
+  assert.equal(live.getAttribute('aria-atomic'), 'true');
+  assert.equal(live.parentElement.className, 'zusage-root', 'live region is scoped to its owning pane');
+  assert.equal(chip.parentElement, ui.wrap, 'button chip stays beside the native context control');
+  assert.equal(live.textContent, '套餐已用 5小时 26%，7天 12%');
   assert.equal(chip.getAttribute('role'), 'button');
   assert.ok(chip.listeners.get('click') && chip.listeners.get('mouseenter'));
 });
@@ -228,6 +241,13 @@ test('segments use quota thresholds 80/95/100; mixed windows keep their own band
   h.window.__zusageUpdate(h.payload({ quota: Object.assign({}, QUOTA_OK, { windows: { fiveHour: { percent: 96, resetsAt: null, details: [] }, weekly: { percent: 10, resetsAt: null, details: [] } } }) }));
   assert.equal(h.chipOf(ui.wrap).innerHTML,
     '<span class="zu-qseg hot">5小时 96%</span><span class="zu-qsep">|</span><span class="zu-qseg ok">7天 10%</span>');
+  assert.equal(h.liveOf(h.body.children.find(e => e.className === 'zusage-root')).textContent, '套餐已用 5小时 96%，7天 10%', 'live region announces changed values');
+  h.window.__zusageUpdate(h.payload({ quota: Object.assign({}, QUOTA_OK, { windows: { fiveHour: { percent: 96, resetsAt: null, details: [] }, weekly: { percent: 10, resetsAt: null, details: [] } } }) }));
+  assert.equal(h.liveOf(h.body.children.find(e => e.className === 'zusage-root')).textContent, '套餐已用 5小时 96%，7天 10%', 'unchanged values do not rewrite the live region');
+  h.window.__zusageUpdate(h.payload({ quota: Object.assign({}, QUOTA_OK, { busy: true, windows: { fiveHour: { percent: 96, resetsAt: null, details: [] }, weekly: { percent: 10, resetsAt: null, details: [] } } }) }));
+  assert.equal(h.liveOf(h.body.children.find(e => e.className === 'zusage-root')).textContent, '套餐额度查询中', 'busy state is announced');
+  h.window.quotaTest.instances()[0].dispose();
+  assert.equal(h.liveOf(ui.card.parentElement), undefined, 'pane disposal removes its live region with the bar');
 });
 
 test('failures keep the last good value with a warning mark; no value shows the mark alone; stale dims', () => {

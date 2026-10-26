@@ -1,7 +1,12 @@
 # -*- coding: utf-8 -*-
 import importlib.util
 import json
+import os
 from pathlib import Path
+import re
+import subprocess
+import sys
+import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -83,6 +88,76 @@ class PluginPackageTests(unittest.TestCase):
         self.assertTrue((skill / "references" / "release-contract.md").is_file())
         for name in ("release_tool.py", "release_unpack.py"):
             self.assertTrue((ROOT / name).is_file())
+
+
+class ReleaseLedgerTests(unittest.TestCase):
+    def run_check(self, root):
+        document = (ROOT / ".zcode/skills/zcode-github-release/references/pre-publish-checks.md").read_text(encoding="utf-8")
+        section = document.split("## VERSION 代际检查\n", 1)[1].split("## 升级链验证\n", 1)[0]
+        scripts = re.findall(r"(?ms)^python3 -B - <<'PY'\n(.*?)^PY$", section)
+        self.assertEqual(len(scripts), 1, "VERSION 检查必须有且只有一个 Python heredoc")
+        env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONDONTWRITEBYTECODE="1")
+        return subprocess.run([sys.executable, "-B", "-c", scripts[0]], cwd=str(root),
+                              env=env, capture_output=True, encoding="utf-8", timeout=5)
+
+    def test_documented_check_accepts_current_overlay(self):
+        result = self.run_check(ROOT)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertRegex(result.stdout, r"VERSION=v[0-9]+(?:\.[0-9]+)? 链长=[0-9]+ OK")
+        self.assertEqual(result.stderr, "")
+
+    def test_documented_check_validates_mutated_ledgers(self):
+        cases = [
+            ("numeric order", 'var VERSION = "v10"; // v9 old → v10 new', True),
+            ("hotfix order", 'var VERSION = "v100"; // v99 old → v99.1 fix → v99.2 fix → v100 new', True),
+            ("numeric hotfix order", 'var VERSION = "v99.10"; // v99.2 old → v99.10 new', True),
+            ("parenthesized label", 'var VERSION = "v99.1"; // v99（旧）→ v99.1（修复）', True),
+            ("duplicate", 'var VERSION = "v10"; // v9 old → v9 duplicate → v10 new', False),
+            ("out of order", 'var VERSION = "v10"; // v9.1 old → v9 older → v10 new', False),
+            ("wrong final label", 'var VERSION = "v10"; // v9 old', False),
+            ("empty ledger", 'var VERSION = "v10"; //', False),
+            ("missing labels", 'var VERSION = "v10"; // no entries', False),
+            ("missing first label", 'var VERSION = "v10"; // old → v10 new', False),
+            ("missing middle label", 'var VERSION = "v10"; // v9 old → missing label → v10 new', False),
+            ("missing version prefix", 'var VERSION = "v10"; // v9 old → 9.1 missing-prefix → v10 new', False),
+            ("uppercase prefix", 'var VERSION = "v10"; // v9 old → V9.1 fix → v10 new', False),
+            ("empty middle entry", 'var VERSION = "v10"; // v9 old → → v10 new', False),
+            ("missing trailing label", 'var VERSION = "v10"; // v9 old → v10 new → missing label', False),
+            ("trailing arrow", 'var VERSION = "v10"; // v9 old → v10 new →', False),
+            ("unspaced version labels", 'var VERSION = "v10"; // v9（旧）→v9.1（修复）→v10（新）', True),
+            ("description arrows", 'var VERSION = "v10"; // v9 tok→token、6→24 次 → v10 安装→同步', True),
+            ("letter suffix", 'var VERSION = "v100"; // v99 old → v99b fix → v100 new', False),
+            ("extra numeric component", 'var VERSION = "v100"; // v99 old → v99.1.2 fix → v100 new', False),
+            ("malformed label", 'var VERSION = "v100"; // v99 old → vbad fix → v100 new', False),
+            ("missing declaration", '// no VERSION declaration', False),
+            ("invalid declaration", 'var VERSION = "v99b"; // v99 old', False),
+            ("duplicate declarations", 'var VERSION = "v10"; // v10 first\nvar VERSION = "v10"; // v10 second', False),
+            ("semicolon duplicate", 'var VERSION = "v10"; // v10 first\n;var VERSION = "v9"; // v9 second', False),
+            ("block comment duplicate", 'var VERSION = "v10"; // v10 first\n/* second */ var VERSION = "v9";', False),
+            ("multi-variable duplicate", 'var VERSION = "v10"; // v10 first\nvar unused = 0, VERSION = "v9";', False),
+            ("let duplicate", 'var VERSION = "v10"; // v10 first\nfunction other() { let VERSION = "v9"; }', False),
+            ("same-line duplicate", 'var VERSION = "v10"; var VERSION = "v9"; // v9 second', False),
+            ("reassignment", 'var VERSION = "v10"; // v10 first\nVERSION = "v9";', False),
+            ("missing inline ledger", 'var VERSION = "v10";', False),
+            ("missing source", None, False),
+            ("invalid UTF-8", b"\xff", False),
+        ]
+        for name, content, valid in cases:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                if isinstance(content, bytes):
+                    (root / "overlay.js").write_bytes(content)
+                elif content is not None:
+                    (root / "overlay.js").write_text(content + "\n", encoding="utf-8")
+                result = self.run_check(root)
+                if valid:
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn(" OK", result.stdout)
+                else:
+                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn("VERSION 台账检查失败", result.stdout)
+                    self.assertNotIn(" OK", result.stdout)
+                self.assertEqual(result.stderr, "", result.stderr)
 
 
 if __name__ == "__main__":

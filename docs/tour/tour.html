@@ -40,7 +40,10 @@
   /* hero 主视觉：卡片仅作 overlay 的挂靠点，视觉隐藏（v57 起条贴窗口底，构图更干净）。
      卡片宽=状态条 maxWidth 上限，须容纳英文条面（约 940px）不截断 */
   body.embed.hero .composer-card{width:1010px;height:88px;background:transparent;border-color:transparent;box-shadow:none}
-  body.embed.hero .composer-card textarea{height:54px;padding:9px 14px 0}
+  body.embed.hero .composer-card textarea{height:54px;padding:9px 14px 0;color:transparent;caret-color:transparent;pointer-events:none}
+  body.embed.hero .composer-card textarea::placeholder{color:transparent}
+  body.embed.hero .composer-card textarea::placeholder{color:transparent}
+  .tour-model-marker{position:absolute;left:-10000px;width:1px;height:1px;overflow:hidden}
   /* 特写：小窗（卡片接近满宽，给状态条 maxWidth 留足空间不裁边） */
   body.embed.closeup .composer-card{width:636px;height:88px}
   body.embed.closeup .composer-card textarea{height:42px;padding:7px 12px 0;font-size:12px}
@@ -59,6 +62,8 @@
   /* 编号标注（hero 文档内绘制） */
   .mark{position:absolute;transform:translateX(-50%);text-align:center;
     font:600 12px/1 "Segoe UI","Microsoft YaHei UI",sans-serif;color:#57c7ff}
+  .mark.edge{display:flex;align-items:center;gap:4px;width:max-content;max-width:190px;padding:3px 7px;border:1px solid rgba(87,199,255,.55);border-radius:999px;background:#1b2230;box-shadow:0 1px 6px rgba(0,0,0,.5)}
+  .mark.edge i{flex:0 0 auto} .mark.edge span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:500 10px/1.2 "Segoe UI","Microsoft YaHei UI",sans-serif;color:#c7d6e8}
   .mark i{display:block;width:19px;height:19px;border:1.5px solid rgba(87,199,255,.75);
     border-radius:50%;font-style:normal;line-height:16px;background:#1b2230;
     box-shadow:0 1px 6px rgba(0,0,0,.5)}
@@ -93,7 +98,7 @@
 <!-- ============ embed 迷你窗口模式 ============ -->
 <div id="stage-embed">
   <div class="chat-sim" id="chat-sim"></div>
-  <div class="composer-card"><textarea placeholder="给 ZCode 发消息…"></textarea><div class="group/toolbar tour-toolbar"><span class="tour-context-wrap"><button type="button" data-testid="chat-context-usage-trigger" aria-label="上下文已用 63,400 / 总量 200,000"><svg width="16" height="16" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="none"/><circle cx="12" cy="12" r="10" fill="none"/></svg></button></span></div></div>
+  <section data-testid="v4-session-pane-workspace-main" data-session-id="sess_demo01a2b3c4d5e6"><div class="composer-card"><textarea placeholder="给 ZCode 发消息…" readonly tabindex="-1"></textarea><div class="group/toolbar tour-toolbar"><span class="tour-context-wrap"><button type="button" data-testid="chat-context-usage-trigger" aria-label="上下文已用 63,400 / 总量 200,000"><span class="tour-model-marker" data-testid="v4-model-config" data-provider="account:bigmodel-individual-coding-plan" data-model="GLM-5.3"></span><svg width="16" height="16" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="none"/><circle cx="12" cy="12" r="10" fill="none"/></svg></button></span></div></div></section>
 </div>
 
 <!-- ============ 组装排版模式 ============ -->
@@ -129,7 +134,7 @@ if (Q.print) document.documentElement.style.zoom = Q.print;
  * 开启「本轮」后条面 it 索引：0=tps 1=ctx 2=turn 3=win 4=tools 5=today 6=sub */
 var ITEMS = [
   { no: "①", hl: "0",    file: "item-1.png", name: "生成速度", desc: "最近一次请求的输出速度（token/s）。随快慢三档变色：≥70 绿、40–70 黄、&lt;40 红，模型快慢一眼可读。" },
-  { no: "②", hl: "1",    file: "item-2.png", name: "上下文容量", desc: "原生上下文按钮的圆环与百分比显示当前会话的上下文占比，颜色随占比从绿转黄再转红；超限被拒时亮红闪烁并弹出告警气泡。窗口大小自动识别、跟随模型。" },
+  { no: "②", hl: "1",    file: "item-2.png", name: "上下文占比", desc: "原生上下文按钮显示本会话上下文已用比例。圆环颜色随占比变化；超限被拒时亮红闪烁并弹出告警气泡。窗口大小自动识别、跟随模型。" },
   { no: "③", hl: "2",    file: "item-3.png", name: "本轮", desc: "最近一轮对话的 token 消耗、缓存命中率、请求次数、单次耗时与首字延迟。悬停可看 输入 / 输出 / 缓存命中 / 缓存写入 / 思考 的拆分。" },
   { no: "④", hl: "3",    file: "item-4.png", name: "会话累计", desc: "当前会话全部请求的总消耗与轮次统计；每个对话窗口只统计自己的数据，多窗口互不串显。悬停同样有明细拆分。" },
   { no: "⑤", hl: "4",    file: "item-5.png", name: "工具调用", desc: "会话内工具使用总次数；出现错误时右侧亮红色错误数徽标。悬停可看各工具的调用次数与耗时明细。" },
@@ -220,7 +225,10 @@ if (EMBED) {
       { task: Q.lang === "en" ? "Verify tooltip lifecycle regression" : "核验 tooltip 生命周期回归", title: "", agent: "agentsDS", sid: "sess_sub_e5f6a7b8", active: false, total: 61200, requests: 9,  last: NOW - 5700000,  input: 51200, output: 8400,  cache_read: 39800, reasoning: 2600, cache_write: 1200 },
       { task: Q.lang === "en" ? "Profiling and pump log analysis" : "性能取证与泵日志分析",     title: "", agent: "agentC",   sid: "sess_sub_c9d0e1f2", active: false, total: 86800, requests: 13, last: NOW - 1440000,  input: 72800, output: 9700,  cache_read: 48900, reasoning: 2500, cache_write: 3100 } ] }
   };
-  var PAYLOAD = { mine: SESS.sid, recent: [SESS], today: TODAY };
+  var PAYLOAD = {
+    mine: SESS.sid, recent: [SESS], today: TODAY,
+    quota: { status: "ok", fetchedAt: NOW, stale: false, error: "", windows: { fiveHour: { percent: 34, resetsAt: NOW + 3600000 }, weekly: { percent: 61, resetsAt: NOW + 86400000 } } },
+  };
 
   function feed() { if (window.__zusageUpdate) window.__zusageUpdate(PAYLOAD); }
   setTimeout(feed, 180);
@@ -250,10 +258,15 @@ if (EMBED) {
       var g = document.querySelector(".zu-gear");
       if (g) g.classList.add("hl");
     } else {
-      var idx = parseInt(Q.hl, 10);
-      if (idx > 1) idx--;
-      if (Q.hl === "1") { var ctx = document.querySelector("[data-testid=chat-context-usage-trigger]"); if (ctx) ctx.style.background = "var(--color-hover,#303642)"; }
-      else if (its[idx]) { its[idx].classList.remove("dim"); its[idx].classList.add("hl"); }
+      var ctx = document.querySelector("[data-testid=chat-context-usage-trigger]");
+      if (Q.hl === "1") {
+        its.forEach(function (el) { el.classList.remove("dim"); el.classList.add("dim-soft"); });
+        if (ctx) ctx.style.background = "var(--color-hover,#303642)";
+      } else {
+        var idx = parseInt(Q.hl, 10);
+        if (idx > 1) idx--;
+        if (its[idx]) { its[idx].classList.remove("dim"); its[idx].classList.add("hl"); }
+      }
     }
   }
 
@@ -261,19 +274,31 @@ if (EMBED) {
     var host = document.createElement("div");
     host.style.cssText = "position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none";
     document.body.appendChild(host);
-    var nodes = Array.prototype.slice.call(its);
-    var ctx = document.querySelector("[data-testid=chat-context-usage-trigger]");
-    if (ctx) nodes.splice(1, 0, ctx);
-    var gear = document.querySelector(".zu-gear");
-    if (gear) nodes.push(gear);
-    var barTop = bar.getBoundingClientRect().top;
-    nodes.forEach(function (el, i) {
+    var br = bar.getBoundingClientRect(), barTop = br.top;
+    var itemsByName = {};
+    ITEMS.forEach(function (item) { itemsByName[item.hl] = item; });
+    var visibleItems = Array.prototype.slice.call(its).filter(function (el) {
       var r = el.getBoundingClientRect();
+      return r.width > 36 && r.right > 0 && r.left < innerWidth;
+    });
+    var targets = [];
+    if (visibleItems.length) targets.push({ el: visibleItems[0], item: itemsByName["0"] });
+    var ctx = document.querySelector("[data-testid=chat-context-usage-trigger]");
+    var ctxRect = ctx && ctx.getBoundingClientRect();
+    if (ctxRect && ctxRect.width > 0 && ctxRect.left >= 0 && ctxRect.right <= innerWidth) targets.push({ el: ctx, item: itemsByName["1"] });
+    visibleItems.slice(1).forEach(function (el, i) { targets.push({ el: el, item: itemsByName[String(i + 2)] }); });
+    var gear = document.querySelector(".zu-gear");
+    if (gear) targets.push({ el: gear, item: itemsByName.gear });
+    var crowding = true;
+    targets.forEach(function (target, i) {
+      var r = target.el.getBoundingClientRect(), item = target.item;
       var m = document.createElement("div");
-      m.className = "mark";
-      m.innerHTML = "<i>" + (ITEMS[i] ? ITEMS[i].no : String(i + 1)) + "</i>";
-      m.style.left = (r.left + r.width / 2) + "px";
-      m.style.top = (barTop - 26) + "px";
+      var edgeLabel = crowding && item.hl !== "0" && item.hl !== "1";
+      m.className = "mark" + (edgeLabel ? " edge" : "");
+      m.innerHTML = "<i>" + item.no + "</i>" + (edgeLabel ? "<span>" + item.name + "</span>" : "");
+      var cx = edgeLabel ? innerWidth - 8 - 70 * (targets.length - i - 0.5) : r.left + r.width / 2;
+      m.style.left = Math.max(8 + m.offsetWidth / 2, Math.min(innerWidth - 8 - m.offsetWidth / 2, cx)) + "px";
+      m.style.top = Math.max(4, barTop - 28 - (i % 2) * 21) + "px";
       host.appendChild(m);
     });
   }

@@ -24,11 +24,15 @@ function boot() {
     innerWidth: 1200, innerHeight: 800,
     hitEl: null, cardCache: null, calls,
     visible: () => true,   // 切片外依赖：恒真，本测试只关心缓存行为
-    getComputedStyle: () => { calls.gcs++; return { visibility: 'visible', opacity: '1' }; },
+    getComputedStyle: el => {
+      calls.gcs++;
+      return Object.assign({ visibility: 'visible', opacity: '1', display: 'block', position: 'static', zIndex: 'auto', backgroundColor: 'transparent' }, el && el.computed);
+    },
     document: {
       body,
       hidden: false,
       querySelector: () => { calls.qs++; return null; },
+      querySelectorAll: () => { calls.qs++; return []; },
       elementFromPoint: () => { calls.efp++; return sandbox.hitEl; },
     },
   });
@@ -162,4 +166,17 @@ test('modalOpenCached skips modalOpen querySelector within TTL', () => {
   assert.equal(calls.qs, 1);
   assert.equal(sandbox.modalOpenCached(), false);   // TTL 内短路：不再查询
   assert.equal(calls.qs, 1);
+});
+
+test('hidden dialog does not suppress the bar, while a visible dialog with an overlay does', () => {
+  const { sandbox } = boot();
+  const dialog = { computed: { display: 'none' } };
+  const overlay = { getBoundingClientRect: () => ({ width: 1200, height: 800 }), computed: {
+    position: 'fixed', display: 'block', visibility: 'visible', opacity: '1', zIndex: '40', backgroundColor: 'rgba(0, 0, 0, 0.5)',
+  } };
+  sandbox.document.querySelectorAll = selector => selector === '[role="dialog"]' ? [dialog] : [];
+  sandbox.document.body.children = [overlay];
+  assert.equal(sandbox.modalOpen(), false, 'a display:none settings panel is not a modal overlay');
+  dialog.computed = { display: 'block' };
+  assert.equal(sandbox.modalOpen(), true, 'a visible dialog plus a full-screen fixed overlay is modal');
 });

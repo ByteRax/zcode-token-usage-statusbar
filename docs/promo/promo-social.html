@@ -20,6 +20,9 @@
     --color-foreground-subtlest:#737373;
     --color-border:rgba(255,255,255,.1);
     --color-hover:rgba(255,255,255,.08);
+    --color-input-border-focused:#57c7ff;
+    --color-card:#202020;
+    --color-card-border:rgba(255,255,255,.1);
   }
   *{box-sizing:border-box}
   html,body{margin:0;width:1200px;height:900px;overflow:hidden}
@@ -58,8 +61,8 @@
   .pm-body{position:absolute;top:36px;left:0;right:0;bottom:0;display:flex;justify-content:center;align-items:center;padding:0 24px}
   .pm-col{width:1032px;display:flex;flex-direction:column;gap:22px}
 
-  .pm-composer{flex:0 0 auto;padding:10px 12px 8px;border-radius:16px;background:#252525;border:1px solid rgba(255,255,255,.1)}
-  .pm-composer textarea{display:block;width:100%;height:30px;padding:2px 4px;resize:none;border:0;outline:0;background:transparent;
+  .pm-composer{position:relative;z-index:1;flex:0 0 auto;padding:10px 12px 8px;border-radius:16px;background:#252525;border:1px solid rgba(255,255,255,.1)}
+  .pm-composer textarea{position:relative;z-index:1;display:block;width:100%;height:30px;padding:2px 4px;resize:none;border:0;outline:0;background:transparent;
     font-family:var(--font-sans);font-size:14px;line-height:1.6;color:#e5e5e5}
   .pm-composer textarea::placeholder{color:#707070}
   .pm-ctl{display:flex;align-items:center;gap:16px;height:34px;padding:0 2px;font-size:13.5px;color:#d0d0d0}
@@ -67,6 +70,14 @@
   .pm-ctl svg{width:16px;height:16px;flex:0 0 auto}
   .pm-ctl svg.pm-chev{width:12px;height:12px;opacity:.65}
   .pm-perm{color:#f0a020}
+  .pm-context-wrap{display:inline-flex;align-items:center}
+  .pm-context-wrap [data-testid=chat-context-usage-trigger]{display:inline-flex;align-items:center;justify-content:center;gap:4px;width:auto;height:28px;padding:0 4px;background:transparent;border:0;color:#d0d0d0;font:inherit}
+  .pm-context-wrap [data-testid=chat-context-usage-trigger] svg{width:16px;height:16px;flex:0 0 auto}
+  .pm-context-wrap [data-testid=chat-context-usage-trigger] svg circle:first-child{stroke:rgba(255,255,255,.2)}
+  .pm-context-wrap [data-testid=chat-context-usage-trigger] svg circle:last-child{stroke:#57c7ff;stroke-linecap:round}
+  .pm-context-wrap .zu-ctxpct{font-variant-numeric:tabular-nums;font-weight:700;color:#87cfff}
+  .pm-context-wrap .zu-quota{font:600 11px/1.2 var(--font-mono);color:#3ecf8e;white-space:nowrap}
+  .pm-model-marker{position:absolute;left:-10000px;width:1px;height:1px;overflow:hidden}
   .pm-spacer{flex:1 1 auto}
   .pm-send{width:30px;height:30px;justify-content:center;border-radius:9px;background:#5c5c5c;color:#f5f5f5}
 
@@ -115,20 +126,21 @@
     <div class="pm-wtitle">ZCode</div>
   </div>
   <div class="pm-body">
-    <div class="pm-col">
-      <div class="pm-composer">
+    <section class="pm-col">
+      <div class="pm-composer" data-testid="v4-session-pane-workspace-main" data-session-id="sess_promo_demo01">
         <textarea placeholder="给 ZCode 发消息…" readonly></textarea>
         <div class="pm-ctl group/toolbar">
           <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></span>
           <span class="pm-perm"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 8.3-7 10-4-1.7-7-5.5-7-10V6z"/><path d="M12 8v4M12 15.5h.01"/></svg>完全访问<svg class="pm-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></span>
           <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>电脑操作</span>
           <span class="pm-spacer"></span>
+          <span class="pm-context-wrap"><button type="button" data-testid="chat-context-usage-trigger" aria-label="上下文已用 84,600 / 总量 200,000"><span class="pm-model-marker" data-testid="v4-model-config" data-provider="account:bigmodel-individual-coding-plan" data-model="GLM-5.3"></span><svg width="16" height="16" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" fill="none"></circle><circle cx="12" cy="12" r="9" fill="none"></circle></svg></button></span>
           <span>GLM-5.3<svg class="pm-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></span>
           <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 4A2.5 2.5 0 0 0 7 6.5 3 3 0 0 0 5 11.8 3 3 0 0 0 7 17a2.5 2.5 0 0 0 5 .5V5.5A2 2 0 0 0 9.5 4z"/><path d="M14.5 4A2.5 2.5 0 0 1 17 6.5a3 3 0 0 1 2 5.3 3 3 0 0 1-2 5.2 2.5 2.5 0 0 1-5 .5"/></svg>最高<svg class="pm-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg></span>
           <span class="pm-send"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M6 11l6-6 6 6"/></svg></span>
         </div>
       </div>
-    </div>
+    </section>
   </div>
 </div>
 
@@ -165,6 +177,7 @@
   try {
     localStorage.setItem("zusage3.show", JSON.stringify({ win: 1, ctx: 1, today: 1, turn: 1, sub: 1, tools: 1 }));
     localStorage.setItem("zusage3.lang", "zh");
+    localStorage.setItem("config.json", "");
   } catch (e) { }
 
   var NOW = Date.now();
@@ -179,7 +192,7 @@
     last_turn: { requests: 7, retries: 0, tool_calls: 12, tool_errors: 0,
       input: 54200, output: 8300, reasoning: 2100, cache_read: 48900, cache_write: 2100,
       total: 62500, duration_ms: 128000, ttft_ms: 1400 },
-    last: { duration_ms: 18400, ttft_ms: 1400, model: "glm-5.3", tps: 86 },
+    last: { duration_ms: 18400, ttft_ms: 1400, provider_id: "account:bigmodel-individual-coding-plan", model: "glm-5.3", tps: 86 },
     tools: { total: 142, errors: 2, list: [
       { name: "Bash", count: 48, duration_ms: 12400, errors: 0 },
       { name: "Read", count: 31, duration_ms: 3100, errors: 0 },
@@ -194,8 +207,12 @@
   };
   var TODAY = { total: 3421800, input: 2864100, output: 557700, reasoning: 213400,
     cache_read: 2412300, cache_write: 154900, requests: 1240, retries: 6 };
-  var PAYLOAD = { mine: SESS.sid, recent: [SESS], today: TODAY };
+  var PAYLOAD = {
+    mine: SESS.sid, recent: [SESS], today: TODAY,
+    quota: { status: "ok", fetchedAt: NOW, stale: false, error: "", windows: { fiveHour: { percent: 34, resetsAt: NOW + 3600000 }, weekly: { percent: 61, resetsAt: NOW + 86400000 } } },
+  };
 
+  window.__zusagePluginState = { quotaEnabled: true, provider_fallback: SESS.last.provider_id };
   function feed() { if (window.__zusageUpdate) window.__zusageUpdate(PAYLOAD); }
 
   var tries = 0;
