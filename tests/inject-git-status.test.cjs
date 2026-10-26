@@ -17,11 +17,12 @@ function loadPump(respond = () => ({})) {
   const mockFs = {
     readFileSync: file => String(file).endsWith("config.json") ? "{}" : "",
     statSync: file => {
-      if (file === "/fixture/repo" || file === "/fixture/repo2") return { isDirectory: () => true, mtimeMs: 1 };
+      if (["/fixture/repo", "/fixture/repo2", "/fixture/parent", "/fixture/parent/a", "/fixture/parent/b"].includes(file)) return { isDirectory: () => true, mtimeMs: 1 };
       if (["/fixture/runtime/overlay.js", "/fixture/runtime/zusage.py"].includes(file)) return { mtimeMs: 1, size: 1 };
       throw Object.assign(new Error("ENOENT: " + file), { code: "ENOENT" });
     },
-    existsSync: () => false, watch: () => ({ on() {} }), writeFileSync() {},
+    readdirSync: dir => dir === "/fixture/parent" ? ["a", "b"] : [],
+    existsSync: file => ["/fixture/parent/a/.git", "/fixture/parent/b/.git"].includes(file), watch: () => ({ on() {} }), writeFileSync() {},
   };
   const ipc = new EventEmitter();
   const sandbox = {
@@ -44,7 +45,8 @@ function loadPump(respond = () => ({})) {
           execs.push({ cmd, args, opts });
           let r = {};
           try { r = respond(args) || {}; } catch (e) { r = { error: e }; }
-          cb(r.error || null, r.stdout || "", r.stderr || "");
+          if (r.wait) r.wait.then(() => cb(r.error || null, r.stdout || "", r.stderr || ""));
+          else cb(r.error || null, r.stdout || "", r.stderr || "");
         },
       };
       throw new Error(name);
@@ -57,7 +59,7 @@ function loadPump(respond = () => ({})) {
       executeJavaScript: async js => {
         if (js.includes("__zusageGitPaths")) return JSON.stringify(wc.gitPaths);
         if (js.includes("__zusagePluginRequests")) return wc.requests.splice(0, 8);
-        if (js.startsWith("window.__zusageGitState") || js.startsWith("window.__zusageUpdate")) wc.pushes.push(js);
+        if (js.startsWith("window.__zusageGitState") || js.startsWith("window.__zusageUpdate") || js.startsWith("window.__zusagePluginResult")) wc.pushes.push(js);
         return "null";
       } };
     windows.push(wc); return wc;
@@ -225,6 +227,63 @@ test("gitTick: no wanted paths means no git processes at all", async () => {
   wc.gitPaths = [];
   await h.api.gitTick(false); await flush();
   assert.equal(h.execs.length, 0);
+});
+
+test("manual Git refresh waits for the follow-up tick when a poll is already running", async () => {
+  let releaseFirst;
+  let statusCalls = 0;
+  const h = loadPump(args => {
+    if (!args.includes("status")) return { stdout: "" };
+    statusCalls++;
+    if (statusCalls === 1) return { wait: new Promise(resolve => { releaseFirst = resolve; }), stdout: "## main\\n" };
+    return { stdout: "## main\\n" };
+  });
+  const wc = h.addWindow();
+  wc.gitPaths = ["/fixture/repo"];
+  const first = h.api.gitTick(false);
+  await flush();
+  const refresh = h.api.gitTick(true, "manual-refresh-1", wc, "/fixture/repo");
+  await flush();
+  assert.equal(wc.pushes.some(js => js.includes("manual-refresh-1")), false, "busy poll must not acknowledge before the follow-up query");
+  releaseFirst();
+  await Promise.all([first, refresh]);
+  await flush();
+  assert.equal(statusCalls, 2, "manual refresh runs a second query after the existing poll");
+  assert.ok(wc.pushes.some(js => js.includes("manual-refresh-1") && js.includes('"ok":true')));
+});
+
+test("manual Git refresh fails when its requested path is absent or query fails", async () => {
+  const noPath = loadPump(() => ({ stdout: "## main\n" }));
+  const noPathWc = noPath.addWindow();
+  await noPath.api.gitTick(true, "manual-empty", noPathWc, "/fixture/missing");
+  await flush();
+  assert.ok(noPathWc.pushes.some(js => js.includes("manual-empty") && js.includes("no paths") && js.includes('"ok":false')));
+
+  const noPaths = loadPump(() => ({ stdout: "" }));
+  const noPathsWc = noPaths.addWindow();
+  await noPaths.api.gitTick(true, "manual-no-paths", noPathsWc, "");
+  await flush();
+  assert.ok(noPathsWc.pushes.some(js => js.includes("manual-no-paths") && js.includes("no paths") && js.includes('"ok":false')));
+
+  const failed = loadPump(args => args.includes("status") ? { error: { code: 128 }, stderr: "fatal: not a git repository" } : { stdout: "" });
+  const failedWc = failed.addWindow();
+  failedWc.gitPaths = ["/fixture/repo"];
+  await failed.api.gitTick(true, "manual-failed", failedWc, "/fixture/repo");
+  await flush();
+  assert.ok(failedWc.pushes.some(js => js.includes("manual-failed") && js.includes("query failed") && js.includes('"ok":false')));
+
+  const multi = loadPump(args => {
+    const cmd = args.join(" ");
+    if (cmd.includes("status") && cmd.includes("/fixture/parent")) return { error: { code: 128 }, stderr: "fatal: not a git repository" };
+    if (cmd.includes("status") && cmd.includes("/fixture/parent/a")) return { stdout: "## main\\n" };
+    if (cmd.includes("status") && cmd.includes("/fixture/parent/b")) return { error: { killed: true } };
+    return { stdout: "" };
+  });
+  const multiWc = multi.addWindow();
+  multiWc.gitPaths = ["/fixture/parent"];
+  await multi.api.gitTick(true, "manual-multi-failed", multiWc, "/fixture/parent");
+  await flush();
+  assert.ok(multiWc.pushes.some(js => js.includes("manual-multi-failed") && js.includes("query failed") && js.includes("\"ok\":false")));
 });
 
 test("pollPluginRequests routes git-refresh to an immediate tick", async () => {
