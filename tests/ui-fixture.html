@@ -15,6 +15,8 @@ if(theme==='light'){
 if(theme==='inverse'){document.documentElement.style.setProperty('--color-tooltip','#fafafa');document.documentElement.style.setProperty('--color-tooltip-foreground','#171717');document.documentElement.style.setProperty('--color-tooltip-tag-foreground','#525252');}
 document.documentElement.style.setProperty('--ui-font-size',(Q.get('font')||14)+'px');
 for(const [k,v] of Object.entries({'zusage3.show':JSON.stringify({win:1,turn:1,tools:1,today:1,sub:1,git:1}),'zusage3.lang':Q.get('lang')||'zh','zusage3.sec':'display','zusage3.ctxOv':'','zusage3.cnNum':'1'}))localStorage.setItem(k,v);
+// Unit-test emulators have no native host overlay API; permit fixture-only composer dispatch.
+window.__zusageInSettingsView=()=>false;
 const END=new Date(2026,9,25,12,0).getTime(),START=END-4*3600000;
 window.UI_SOURCE={id:'minimax',label:'MiniMax fixture',enabled:true,status:'ok',credentialFields:['apiKey'],keyConfigured:true,keySource:'fixture',busy:false};
 window.UI_STATE={feedbackVersion:1,supported:true,currentVersion:'1.5.3',latestVersion:'1.5.3',auto:true,phase:'current',checkedAt:END,rateLine:true,quotaEnabled:true,quotaSources:[UI_SOURCE,{id:'zai',label:'Z.ai fixture',enabled:false,status:'disabled',credentialFields:['apiKey'],keyConfigured:false}]};
