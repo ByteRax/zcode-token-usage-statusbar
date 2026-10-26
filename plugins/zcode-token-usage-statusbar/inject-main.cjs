@@ -1001,6 +1001,21 @@ const GIT_ENV = Object.assign({}, process.env, { GIT_OPTIONAL_LOCKS: "0", GIT_TE
 const GIT_CONFLICT = new Set(["DD", "AU", "UD", "UA", "DU", "AA", "UU"]);
 const GIT_REPO_CAP = 32;   // 多仓聚合上限：父目录非仓库时最多查询 32 个直接子仓库，超出折叠进 more
 let gitTickBusy = false, gitRefreshPending = false, gitNoBinaryLogged = false;
+function gitRefreshResult(requestedPath, results) {
+  if (typeof requestedPath !== "string" || !requestedPath) return { ok: false, error: "no paths" };
+  if (!results || !results.has(requestedPath)) return { ok: false, error: "no paths" };
+  const status = results.get(requestedPath);
+  if (status.ok !== true || (status.kind === "multi" && status.repos.some(repo => repo.err || repo.stale))) {
+    return { ok: false, error: "query failed" };
+  }
+  return { ok: true, pending: false };
+}
+const gitRefreshWaiters = [];
+function finishGitRefreshWaiters(results) {
+  for (const [wc, requestId, requestedPath] of gitRefreshWaiters.splice(0)) {
+    pushGitRefreshResult(wc, requestId, gitRefreshResult(requestedPath, results));
+  }
+}
 
 function parseGitPorcelain(text) {
   const out = { branch: "", upstream: "", ahead: 0, behind: 0, detached: false, noCommits: false, staged: 0, unstaged: 0, untracked: 0, conflicts: 0, changed: 0 };
@@ -1177,9 +1192,21 @@ function pushGitState(wc, p, st) {
     .replace(/[\u2028\u2029]/g, (c) => c === "\u2028" ? "\\u2028" : "\\u2029");
   wc.executeJavaScript(js, true).catch(() => { });
 }
-async function gitTick(fromRefresh) {
-  if (gitTickBusy) { if (fromRefresh) gitRefreshPending = true; return; }
-  if (shuttingDown || !hasWindows()) return;
+function pushGitRefreshResult(wc, requestId, result) {
+  if (!wc || wc.isDestroyed() || typeof requestId !== "string" || requestId.length > 120) return;
+  const js = "window.__zusagePluginResult && window.__zusagePluginResult(" + JSON.stringify(Object.assign({ id: requestId }, result || {})) + ")";
+  wc.executeJavaScript(js, true).catch(() => { });
+}
+async function gitTick(fromRefresh, requestId, requestWc, requestPath) {
+  if (fromRefresh && requestId) gitRefreshWaiters.push([requestWc, requestId, requestPath || ""]);
+  if (gitTickBusy) {
+    if (fromRefresh) gitRefreshPending = true;
+    return;
+  }   // 在途时的手动刷新：结束后补跑一轮
+  if (shuttingDown || !hasWindows()) {
+    if (fromRefresh) finishGitRefreshWaiters(new Map());
+    return;
+  }
   gitTickBusy = true;
   try {
     const wants = [];   // [wc, paths]
@@ -1190,14 +1217,29 @@ async function gitTick(fromRefresh) {
     }
     const all = new Set();
     for (const [, ps] of wants) for (const p of ps) all.add(p);
+    const results = new Map();
+    const refreshPaths = new Set();
+    if (requestPath && requestWc && wants.some(([wc]) => wc === requestWc)) refreshPaths.add(requestPath);
+    for (const [, , path] of gitRefreshWaiters) if (path) refreshPaths.add(path);
+    if (!fromRefresh) for (const p of all) refreshPaths.add(p);
     await Promise.all([...all].map(async (p) => {   // 同一仓库多窗口/多 pane 只查一次，结果分发
       const st = await queryGitStatus(p);
+      results.set(p, st);
       for (const [wc, ps] of wants) if (ps.includes(p)) pushGitState(wc, p, st);
     }));
-  } catch (e) { LOG("git status tick failed:", e.message); }
-  finally {
+    if (requestId && !gitRefreshWaiters.some(([, waiterId]) => waiterId === requestId)) {
+      pushGitRefreshResult(requestWc, requestId, gitRefreshResult(requestPath, results));
+    }
+    if (!gitRefreshPending) finishGitRefreshWaiters(results);
+  } catch (e) {
+    LOG("git status tick failed:", e.message);
+    if (!gitRefreshPending) finishGitRefreshWaiters(new Map());
+  } finally {
     gitTickBusy = false;
-    if (gitRefreshPending) { gitRefreshPending = false; gitTick(true).catch(() => { }); }
+    if (gitRefreshPending) {
+      gitRefreshPending = false;
+      gitTick(true).catch(() => { });
+    }
   }
 }
 setInterval(() => { gitTick(false).catch(() => { }); }, GIT_TICK_MS);
@@ -1237,7 +1279,7 @@ async function pollPluginRequests() {
         } else if (req && req.action === "turn-text" && typeof req.sid === "string") {
           queryTurnText(req.sid, wc, req.cn === 0);
         } else if (req && req.action === "git-refresh") {   // v96：Git chip 点击 / 快照后节流：立即重查全部已关注路径
-          gitTick(true).catch(() => { });
+          gitTick(true, req.requestId, wc, req.path).catch(() => { });
         }
       }
     }
@@ -1314,7 +1356,7 @@ if (typeof module === "object" && module && module.exports) {
   };
 }
 
-LOG("injected v15 (dom-ready inject + snapshot warm-push after injection, auto remote targets + per-sid multi-server routing, per-pane wants array, resident query mode with idle shutdown + first-window warm-up, renderer bridge probe, answer_rate_line config write, plugin request polling, quota entitlement client, git status chip, diag config switch + default 5s hot tick, plugin request/response protocol with per-request result delivery and quota source feedback)");
+LOG("injected v15 (dom-ready inject + snapshot warm-push after injection, auto remote targets + per-sid multi-server routing, per-pane wants array, resident query mode with idle shutdown + first-window warm-up, renderer bridge probe, answer_rate_line config write, plugin request polling, quota entitlement client, git status chip, diag config switch + default 5s hot tick, plugin request/response protocol with per-request result delivery and quota source feedback, git refresh busy lifecycle)");
 
 app.on("before-quit", () => {
   shuttingDown = true;

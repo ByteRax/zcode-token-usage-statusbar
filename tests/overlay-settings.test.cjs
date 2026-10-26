@@ -64,7 +64,7 @@ test('settings geometry matches the bar outer width and edges only when open', (
   };
   vm.runInNewContext(positionSource + '\npositionSettingsPanel();', context);
   assert.equal(values['--zu-settings-height'], '582px');
-  assert.equal(panel.style.height, '582px');   // v101：打开瞬间按内容自然高锁定（stub 无 scrollHeight 退 offsetHeight）
+  assert.equal(panel.style.height, '582px');   // v101：打开时按内容自然高锁定（stub 无 scrollHeight 退 offsetHeight）
   assert.equal(panel.style.width, '800.5px');
   assert.equal(panel.style.left, '250px');   // v80 面板挂 body：视口坐标左缘随条
   assert.equal(panel.style.top, '290px');    // 条上沿 600 − 面板高 300 − 10px 缝
@@ -626,24 +626,25 @@ test('settings keyboard handling supports Escape and nav arrow movement without 
   assert.equal(expanded, 'false');
 });
 
-test('settings height locks on open and only tightens, never grows back', () => {
+test('settings height uses the increased viewport cap, locks on open and only tightens', () => {
   const values = { };
   const panel = {
-    offsetWidth: 420, offsetHeight: 300, scrollHeight: 520,
+    offsetWidth: 420, offsetHeight: 300, scrollHeight: 850,
     classList: { contains: () => true },
     style: { getPropertyValue: k => values[k], setProperty: (k, v) => { values[k] = v; } },
   };
-  let rect = { left: 250, top: 600, width: 800.5 };
+  let rect = { left: 250, top: 1000, width: 800.5 };
   const context = {
     panel, bar: { getBoundingClientRect: () => rect }, innerWidth: 1400, innerHeight: 900,
     syncSettingsScroll: () => { },
   };
   vm.runInNewContext(positionSource + '\npositionSettingsPanel();', context);
-  assert.equal(panel.style.height, '582px');   // 自然高 520 < 可用 582：按内容锁定
+  assert.equal(values['--zu-settings-height'], '982px');
+  assert.equal(panel.style.height, '810px');   // 视口与状态条上沿共同限制面板最大高度
   rect = { left: 10, top: 350, width: 320 };   // 可用上限收紧到 332
   vm.runInNewContext('positionSettingsPanel();', context);
   assert.equal(panel.style.height, '332px');
-  rect = { left: 10, top: 800, width: 320 };   // 上限放宽：保持已锁高度，不放大
+  rect = { left: 10, top: 1000, width: 320 };  // 上限放宽：保持已锁高度，不放大
   vm.runInNewContext('positionSettingsPanel();', context);
   assert.equal(panel.style.height, '332px');
 });

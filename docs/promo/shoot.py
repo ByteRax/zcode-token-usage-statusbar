@@ -15,7 +15,9 @@ HERE = pathlib.Path(__file__).resolve().parent
 HTML_NAME = sys.argv[1] if len(sys.argv) > 1 else "promo.html"
 OUT_NAME = sys.argv[2] if len(sys.argv) > 2 else "promo.png"
 URL = (HERE / HTML_NAME).as_uri()
-OUT = HERE / OUT_NAME
+OUT = pathlib.Path(OUT_NAME)
+if not OUT.is_absolute():
+    OUT = HERE / OUT
 W = int(sys.argv[3]) if len(sys.argv) > 3 else 1280
 H = int(sys.argv[4]) if len(sys.argv) > 4 else 720
 SCALE = 2

@@ -76,13 +76,26 @@ def check_matrix(browser):
                 page.mouse.move(tip["x"] + tip["width"] / 2, tip["y"] + tip["height"] / 2, steps=10)
                 page.wait_for_timeout(450)
                 assert page.locator("#zusage-tip").is_visible()
-                # Enter opens settings; Escape closes and returns focus.
+                # Gear Enter opens settings; nav Enter switches sections and preserves panel height.
                 page.locator(".zu-gear").focus()
                 page.keyboard.press("Enter")
                 page.locator(".zu-settings.open").wait_for(state="visible")
                 height = page.locator(".zu-settings").bounding_box()["height"]
-                page.locator('.zu-navitem[data-sec="quota"]').click()
+                quota_nav = page.locator('.zu-navitem[data-sec="quota"]')
+                quota_nav.focus()
+                page.keyboard.press("Enter")
+                assert quota_nav.get_attribute("aria-current") == "page"
                 assert page.locator(".zu-settings").bounding_box()["height"] == height
+                page.locator('.zu-navitem[data-sec="general"]').hover()
+                focus_state = quota_nav.evaluate("e=>({focused:e===document.activeElement,visible:e.matches(':focus-visible'),shadow:getComputedStyle(e).boxShadow})")
+                assert focus_state["focused"] and focus_state["visible"] and "inset" in focus_state["shadow"], focus_state
+                page.keyboard.press("Escape")
+                assert page.locator(".zu-gear").evaluate("e=>e===document.activeElement")
+                assert not page.locator(".zu-settings").evaluate("e=>e.classList.contains('open')")
+                page.locator(".zu-gear").focus()
+                page.keyboard.press("Enter")
+                page.locator(".zu-settings.open").wait_for(state="visible")
+                page.locator('.zu-navitem[data-sec="quota"]').click()
                 if width < 620:
                     assert page.locator(".zu-settings").evaluate("e=>e.classList.contains('zu-nav-icons')")
                     assert page.locator('.zu-navitem[data-sec="quota"]').get_attribute("title")

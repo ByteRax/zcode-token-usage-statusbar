@@ -12,9 +12,10 @@ device_scale_factor=2 直出 2 倍高清。
 再 python docs/tour/shoot.py，产物在 docs/tour/shots/。
 """
 from playwright.sync_api import sync_playwright
+import os
 import pathlib
 
-BASE = "http://127.0.0.1:8799/docs/tour/tour.html"
+BASE = os.environ.get("ZUSAGE_TOUR_BASE", "http://127.0.0.1:8799") + "/docs/tour/tour.html"
 OUT = pathlib.Path(__file__).parent / "shots"
 OUT.mkdir(exist_ok=True)
 
