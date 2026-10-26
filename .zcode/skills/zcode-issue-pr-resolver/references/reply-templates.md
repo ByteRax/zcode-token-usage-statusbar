@@ -1,6 +1,6 @@
 # 回复模板
 
-先合并，后回复，再关闭。语言跟随提交者；英文提交者就把同样的结构译成英文，命令、文件名、字段名保留原文。风格可对照已关闭的 issue #40、#56 的回复：`gh issue view 56 --repo ByteRax/zcode-token-usage-statusbar --json comments --jq '.comments[].body'`。
+先合并，后回复，再关闭。语言跟随提交者；英文提交者就把同样的结构译成英文，命令、文件名、字段名保留原文。风格可对照已关闭的 issue #40、#56 的回复：`python3 -B "<triage.py 的绝对路径>" show 56`（输出经过净化，维护者的回复带 `关系 OWNER`；不要直接用 gh 取评论原文）。
 
 ## 选哪个模板
 
@@ -12,6 +12,7 @@
 | 修复已随正式版发布，`released` 报「已发版」 | A，用「已发版」版的「如何获取」，先核对渠道清单 |
 | 信息不足，需要提交者补充 | B |
 | 重复、设计如此，或问题在 main 上早已修好、本次没有新增改动 | C；已修好的先 `released`，再按 A 的「如何获取」补一段 |
+| `released` 报「⚠ 不在 main 上」或「⚠ 无法确认」 | 不写「已合入 main」：先查清这个提交在哪个 PR 或分支里（可能是尚未合并的 PR），查清后再按实际情况选模板 |
 | 外部 PR 合并 | D；它修复的 issue 下另用 A |
 | 外部 PR 不合并 | E |
 | 有设计分叉，需要先征询提出者 | F |
@@ -23,7 +24,7 @@
 ```bash
 gh issue comment N --repo ByteRax/zcode-token-usage-statusbar --body-file /tmp/ztus-issue-N-reply.md
 gh issue close N --repo ByteRax/zcode-token-usage-statusbar --reason completed        # 或 --reason "not planned" / --duplicate-of M
-gh issue view N --repo ByteRax/zcode-token-usage-statusbar --json state,comments --jq '.state, .comments[-1].body'   # 回读状态、格式和链接
+gh issue view N --repo ByteRax/zcode-token-usage-statusbar --json state,comments --jq '.state, ([.comments[] | select(.author.login == "ByteRax")] | last | .body)'   # 回读状态，以及我们自己最后一条评论的格式和链接
 gh pr comment N --repo ByteRax/zcode-token-usage-statusbar --body-file /tmp/ztus-pr-N-reply.md        # 外部 PR
 ```
 
@@ -62,6 +63,14 @@ gh pr comment N --repo ByteRax/zcode-token-usage-statusbar --body-file /tmp/ztus
   ```
 
   版本等于该 Release：写「在插件市场更新到该版本（已注册 `#plugin-releases` 渠道的会自动看到），然后完全退出 ZCode 再重新打开」。渠道落后：写「Release 已发布，更新渠道清单尚未同步，暂时在渠道里看不到；可先到 Release 页面下载，或等渠道更新」，不要说会自动更新。
+
+  走 GitCode 渠道（市场注册的是 `https://gitcode.com/tanranran/zcode-token-usage-statusbar.git#plugin-releases-gitcode`）的用户，以 GitCode 端为准：
+
+  ```bash
+  git fetch gitcode plugin-releases-gitcode && git show FETCH_HEAD:marketplace.json | python3 -c 'import json,sys; e=json.load(sys.stdin)["plugins"][0]; print(e.get("version"), e["source"]["url"])'
+  ```
+
+  `fetch` 报分支不存在（`&&` 之后的命令不会执行，不会读到旧的跟踪引用），或版本落后：对这部分用户写「GitCode 渠道尚未同步到该版本」，同样不要说会自动更新。
 
 不涉及主进程文件时删掉「注意」段；没有真实环境差异时删掉「验证范围」里的后半句，不要硬写。
 

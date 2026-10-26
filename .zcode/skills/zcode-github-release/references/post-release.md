@@ -34,8 +34,7 @@ git -C .worktrees/channel-vX.Y.Z push fork HEAD:refs/heads/plugin-releases
 回读核对，渠道未成功之前不能声称远端更新可用：
 
 ```bash
-git fetch fork plugin-releases
-git show fork/plugin-releases:marketplace.json | diff - /new/artifact-directory/marketplace-release.json && echo "清单一致"
+git fetch -q fork plugin-releases && git show FETCH_HEAD:marketplace.json | diff - /new/artifact-directory/marketplace-release.json && echo "清单一致"
 ```
 
 新用户注册 `OWNER/REPO#plugin-releases`；已有注册追踪原 ref，不会自动切换，也不修改用户的市场注册。追踪源码路径清单的用户走 `market` 渠道，由宿主插件管理器按清单直接更新、不经发布包校验。
@@ -54,15 +53,15 @@ GitCode Release 的创建与上传属于发布动作，须在 D 阶段的授权�
 
 ```bash
 OUT=/new/artifact-directory          # build 的输出目录
-git fetch fork plugin-releases plugin-releases-gitcode      # GitHub 端
-git fetch gitcode plugin-releases plugin-releases-gitcode   # GitCode 端
+FAIL=0
 for H in fork gitcode; do
-  git show "${H}/plugin-releases:marketplace.json" | diff - "$OUT/marketplace-release.json" && echo "${H}/plugin-releases 一致"
-  git show "${H}/plugin-releases-gitcode:marketplace.json" | diff - "$OUT/marketplace-release-gitcode.json" && echo "${H}/plugin-releases-gitcode 一致"
+  git fetch -q "$H" plugin-releases && git show FETCH_HEAD:marketplace.json | diff - "$OUT/marketplace-release.json" && echo "${H}/plugin-releases 一致" || FAIL=1
+  git fetch -q "$H" plugin-releases-gitcode && git show FETCH_HEAD:marketplace.json | diff - "$OUT/marketplace-release-gitcode.json" && echo "${H}/plugin-releases-gitcode 一致" || FAIL=1
 done
+[ "$FAIL" = 0 ] && echo "渠道回读：两台的每个已发布渠道都一致" || { echo "渠道回读：有渠道未就绪，不得宣称该渠道可更新"; false; }
 ```
 
-只授权了其中一个渠道时，去掉另一个渠道的 fetch 参数与 diff 行。`diff` 有输出或 `git show` 报错都表示那一处没有就绪，不要写成已一致。
+每个分支单独 `fetch` 并直接读 `FETCH_HEAD`：某一端缺某个分支时只有那一行失败，不会拖垮同一条命令里的其它分支，也不会读到旧的跟踪引用；`|| FAIL=1` 把任意一行的失败汇总到最后一行，不靠数「一致」出现了几次。只授权了其中一个渠道时，去掉另一个渠道的那一行。`fetch` 报 `couldn't find remote ref`，或 `diff` 有输出，都表示那一处没有就绪，不要写成已一致。
 
 这里的 `GITCODE_TOKEN` 是 API 令牌；`git push fork` 的 GitCode 段用的是 HTTPS 凭据（钥匙串），那一段失败不代表 GitHub 段失败，补配凭据后重推即可。详见 [GitCode 更新渠道](../../../../docs/maintaining.md#gitcode-更新渠道)。
 
