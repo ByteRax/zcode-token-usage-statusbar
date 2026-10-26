@@ -29,6 +29,6 @@
 
 ## 4. 工具坑
 
-- `git push` TLS 故障（`SSL_ERROR_SYSCALL` 而 gh/curl 正常）绕法：`git -c http.version=HTTP/1.1 push`。zsh 推裸 commit 用 `"${C}:refs/heads/xxx"`（`$C:r` 会被当文件名修饰符吃掉）。
+- git 对 GitHub 的 `fetch`/`push` 偶发 `LibreSSL SSL_connect: SSL_ERROR_SYSCALL`（`gh` 偶发 `TLS handshake timeout` 同因）：本机 github.com 解析到 fake-ip（`198.18.x`，Clash Verge/mihomo 接管 DNS），流量走代理链路，握手被链路重置，属节点/路径抖动，**与 git 参数无关**——2026-10-26 交错实测：默认与 `-c http.version=HTTP/1.1` 双方都失败过、同一时间窗 curl HTTP/2 与 HTTP/1.1 各 5/5 成功（HTTP/2 真实协商成功），旧绕法「改用 HTTP/1.1」无效。处置=原样重试（失败常成簇，隔几十秒再试，当天所有失败重试后均成功）；**双推时 GitHub 段失败而 GitCode 段成功会造成两端分叉，当天必须把镜像领先的提交合回 GitHub（勿强推，见 §3 与 docs/maintaining.md「双远程同步」）**；频繁失败时在 Clash 里切换/检查节点。zsh 推裸 commit 用 `"${C}:refs/heads/xxx"`（`$C:r` 会被当文件名修饰符吃掉）。
 - 脚本化文本替换（python replace 等）必须 assert 锚点命中，静默未命中=改了等于没改；批量改码后 grep 验证命中数。
 - 提交、推送、tag、创建 Release、渠道写入均按**当前明确授权**执行；AGENTS 与规则文件不授予持续发布权限。
