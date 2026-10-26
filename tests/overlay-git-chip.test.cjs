@@ -273,6 +273,98 @@ test('composer compact mode collapses the branch name and arrows', () => {
   assert.ok(!chip.classList.contains('zu-compact'));
 });
 
+function fitFeedback(h, ui, chip, width) {
+  ui.row.clientWidth = width;
+  ui.row.getBoundingClientRect = () => ({ width });
+  const nativeWidth = 230, compactNativeWidth = 170, fullChipWidth = 210, compactChipWidth = 70;
+  ui.row.children.forEach(el => {
+    el.getBoundingClientRect = () => ({ width: el === chip ? (chip.classList.contains('zu-compact') ? compactChipWidth : fullChipWidth) : el === ui.cua ? (ui.cua.getAttribute('data-composer-compact') === 'true' ? compactNativeWidth : nativeWidth) : 0 });
+  });
+  chip.cloneNode = () => {
+    const probe = new Element('span');
+    probe.className = chip.className;
+    probe.getBoundingClientRect = () => ({ width: probe.classList.contains('zu-compact') ? compactChipWidth : fullChipWidth });
+    return probe;
+  };
+  return () => {
+    const measuredChip = chip.classList.contains('zu-compact') ? compactChipWidth : fullChipWidth;
+    ui.cua.setAttribute('data-composer-compact', String(nativeWidth + measuredChip > ui.row.clientWidth));
+    h.window.__zusageGitState('/repo/a', gitState());
+    return chip.classList.contains('zu-compact');
+  };
+}
+
+test('Git compact feedback converges at fixed width and expands after enough room returns', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  const chip = drive(h, ui);
+  const step = fitFeedback(h, ui, chip, 360);
+  const modes = Array.from({ length: 200 }, step);
+  assert.equal(modes.filter((mode, i) => i && mode !== modes[i - 1]).length, 0, 'no repeated folding at a fixed width');
+  assert.ok(modes.every(Boolean), 'compact chip remains stable even when native labels return');
+  ui.row.clientWidth = 600;
+  for (let i = 0; i < 10; i++) step();
+  assert.ok(!chip.classList.contains('zu-compact'), 'widening restores the full chip');
+  for (let i = 0; i < 200; i++) assert.equal(step(), false, 'wide layout stays expanded');
+});
+
+test('Git compact expansion reserves the full chip width and a hysteresis margin', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  const chip = drive(h, ui);
+  const step = fitFeedback(h, ui, chip, 360);
+  step();
+  ui.row.clientWidth = 450;
+  for (let i = 0; i < 20; i++) assert.equal(step(), true, 'ten free pixels cannot cover the safety margin');
+  ui.row.clientWidth = 480;
+  assert.equal(step(), false, 'full chip plus margin fits');
+});
+
+test('Git compact measures the leading budget without hiding or moving the live chip', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  const chip = drive(h, ui);
+  ui.cua.setAttribute('data-composer-compact', 'true'); h.tick();
+  ui.cua.setAttribute('data-composer-compact', 'false');
+  ui.row.clientWidth = 600;
+  ui.row.getBoundingClientRect = () => ({ width: 600 });
+  const content = new Element(), available = new Element(), trailing = new Element();
+  content.setAttribute('data-composer-leading-content', '');
+  available.setAttribute('data-composer-leading-actions', '');
+  trailing.setAttribute('data-composer-trailing-actions', '');
+  content.getBoundingClientRect = () => ({ width: 250 });
+  let budget = 300;
+  available.getBoundingClientRect = () => ({ width: budget });
+  trailing.getBoundingClientRect = () => ({ width: 100 });
+  ui.row.queries.set('[data-composer-leading-content]', content);
+  ui.row.queries.set('[data-composer-leading-actions]', available);
+  ui.row.queries.set('[data-composer-trailing-actions]', trailing);
+  chip.getBoundingClientRect = () => ({ width: 70 });
+  let fullWidth = 210;
+  chip.cloneNode = () => {
+    const probe = new Element('span');
+    probe.className = chip.className;
+    probe.getBoundingClientRect = () => ({ width: probe.classList.contains('zu-compact') ? 70 : fullWidth });
+    return probe;
+  };
+  const children = h.body.children.length;
+  h.tick();
+  assert.ok(chip.classList.contains('zu-compact'), 'outer row space cannot override the leading budget');
+  assert.equal(chip.parentElement, ui.row);
+  assert.equal(h.body.children.length, children, 'probe is removed after measurement');
+  budget = 450; h.tick();
+  assert.ok(!chip.classList.contains('zu-compact'));
+  ui.cua.setAttribute('data-composer-compact', 'true'); h.tick();
+  ui.cua.setAttribute('data-composer-compact', 'false');
+  fullWidth = 350; budget = 600; h.tick();
+  assert.ok(chip.classList.contains('zu-compact'), 'trailing controls also constrain the full layout');
+  chip.cloneNode = () => {
+    const probe = new Element('span');
+    probe.getBoundingClientRect = () => { throw new Error('unmeasurable'); };
+    return probe;
+  };
+  h.tick();
+  assert.ok(!chip.classList.contains('zu-compact'), 'unknown DOM falls back to host mode');
+  assert.equal(h.body.children.length, children);
+});
+
 test('long branch names truncate to 16 chars with ellipsis and html-escape', () => {
   const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
   const chip = drive(h, ui, gitState({ branch: '<feat/very-long-branch-name-x>' }));
