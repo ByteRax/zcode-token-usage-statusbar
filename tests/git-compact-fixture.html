@@ -1,0 +1,42 @@
+<!doctype html>
+<meta charset="utf-8"><title>Git compact feedback regression</title>
+<style>
+:root{--ui-font-size:14px;--font-mono:monospace}*{box-sizing:border-box}body{margin:24px;background:#171717;color:#eee;font:14px system-ui}button{font:inherit;color:inherit;background:#333;border:0;border-radius:6px;padding:6px;white-space:nowrap}main>button{margin:12px 8px 12px 0}.card{position:absolute;bottom:32px;left:24px;width:660px;background:#262626;border:1px solid #555;border-radius:12px;padding:12px}.card textarea{width:100%;height:60px;background:transparent;color:inherit;border:0}.group\/toolbar{display:flex;gap:12px;align-items:center;width:100%}[data-composer-leading-actions]{flex:1;min-width:0}[data-composer-leading-content]{display:flex;align-items:center;gap:8px;width:max-content}[data-composer-trailing-actions]{flex-shrink:0}[data-composer-compact=true] .label{display:none}
+</style>
+<main><h1>Git compact feedback regression</h1><p>Isolated host-fit model with real browser geometry. No account, database or installed client is used.</p><button id="boundary">Run boundary</button><button id="wide">Run wide</button><output id="result">Loading</output></main>
+<section data-pane-id="workspace-main" data-testid="v4-session-pane-workspace-main" data-session-id="session_git_fixture" data-zusage-scope-version="1" data-zusage-pane-id="workspace-main" data-zusage-workspace-identity="" data-zusage-workspace-path="/fixture" data-zusage-remote-session-id=""><div class="card"><textarea placeholder="Fixture composer"></textarea><div class="group/toolbar"><div data-composer-leading-actions><div data-composer-leading-content><button data-composer-collapse-priority="1">◇ <span class="label">完全访问</span></button><button data-testid="v4-composer-cua-entry" data-composer-collapse-priority="0">▣ <span class="label">电脑操作</span></button></div></div><div data-composer-trailing-actions><button data-testid="chat-context-usage-trigger" aria-label="上下文已用 100 / 总量 1000"><svg width="16" height="16"><circle r="6" cx="8" cy="8"/><circle r="6" cx="8" cy="8"/></svg></button></div></div></div></section>
+<script>
+window.fixtureErrors=[];window.addEventListener('error',e=>fixtureErrors.push(e.message));window.addEventListener('unhandledrejection',e=>fixtureErrors.push(String(e.reason)));
+const card=document.querySelector('.card'),row=document.querySelector('.group\\/toolbar'),result=document.querySelector('#result');
+const data={remote_evidence:false,today:{},recent:[{sid:'session_git_fixture',workspace_identity:'',ctx:100,context_window:1000,last_at:1}]};
+const git={ok:true,branch:'feature/long-branch-name',ahead:12,behind:3,ins:1234,del:567,untracked:8,staged:2,unstaged:3,ts:1};
+window.__zusageInSettingsView=()=>false;
+function fit(root){
+ const available=root.querySelector('[data-composer-leading-actions]'),content=root.querySelector('[data-composer-leading-content]'),trailing=root.querySelector('[data-composer-trailing-actions]');
+ const controls=root.querySelectorAll('[data-composer-collapse-priority]');
+ for(const c of controls)c.removeAttribute('data-composer-compact');
+ const overflow=()=>Math.max(content.getBoundingClientRect().width-available.getBoundingClientRect().width,content.getBoundingClientRect().width+trailing.getBoundingClientRect().width+12-root.getBoundingClientRect().width);
+ for(const priority of ['0','1','2','3']){if(overflow()<=0)return;for(const c of controls)if(c.dataset.composerCollapsePriority===priority)c.dataset.composerCompact='true'}
+}
+function hostFit(){
+ const probe=row.cloneNode(true);probe.inert=true;probe.style.cssText='position:absolute;visibility:hidden;pointer-events:none;width:'+row.getBoundingClientRect().width+'px';document.body.append(probe);
+ try{fit(probe);const live=row.querySelectorAll('[data-composer-collapse-priority]'),measured=probe.querySelectorAll('[data-composer-collapse-priority]');live.forEach((c,i)=>{if(measured[i].dataset.composerCompact)c.dataset.composerCompact=measured[i].dataset.composerCompact;else c.removeAttribute('data-composer-compact')})}finally{probe.remove()}
+}
+window.runFeedback=wide=>{
+ if(window.fixtureRunning)return;window.fixtureRunning=true;
+ try{
+  card.style.width='900px';for(const c of row.querySelectorAll('[data-composer-compact]'))c.removeAttribute('data-composer-compact');
+  window.__zusageGitState('/fixture',git);
+  const chip=row.querySelector('.zu-git');chip.classList.remove('zu-compact');
+  const full=row.querySelector('[data-composer-leading-content]').getBoundingClientRect().width;
+  chip.classList.add('zu-compact');const compact=row.querySelector('[data-composer-leading-content]').getBoundingClientRect().width;chip.classList.remove('zu-compact');
+  const trailing=row.querySelector('[data-composer-trailing-actions]').getBoundingClientRect().width;
+  card.style.width=(wide?900:(full+compact)/2+trailing+12+26)+'px';
+  const samples=[];for(let i=0;i<80;i++){hostFit();window.__zusageGitState('/fixture',git);samples.push({compact:chip.classList.contains('zu-compact'),native:[...row.querySelectorAll('[data-composer-collapse-priority]')].map(c=>c.dataset.composerCompact||'false').join(','),x:row.querySelector('[data-testid="v4-composer-cua-entry"]').getBoundingClientRect().x})}
+  const switches=samples.filter((v,i)=>i&&v.compact!==samples[i-1].compact).length,nativeSwitches=samples.filter((v,i)=>i&&v.native!==samples[i-1].native).length;
+  window.fixtureReport={wide,switches,nativeSwitches,last:samples.at(-1),errors:fixtureErrors,probes:document.body.querySelectorAll('body>.zu-git').length};result.textContent=JSON.stringify(fixtureReport);return fixtureReport;
+ }finally{window.fixtureRunning=false}
+};
+document.querySelector('#boundary').onclick=()=>runFeedback(false);document.querySelector('#wide').onclick=()=>runFeedback(true);
+const script=document.createElement('script');script.src=new URLSearchParams(location.search).has('baseline')?'/baseline-overlay.js':'../overlay.js';script.onload=()=>setTimeout(()=>{window.__zusageUpdate(data);window.__zusageGitState('/fixture',git);result.textContent='Ready'},700);document.head.append(script);
+</script>
