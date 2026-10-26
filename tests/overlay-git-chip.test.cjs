@@ -282,7 +282,8 @@ function fitFeedback(h, ui, chip, width) {
   });
   chip.cloneNode = () => {
     const probe = new Element('span');
-    probe.getBoundingClientRect = () => ({ width: fullChipWidth });
+    probe.className = chip.className;
+    probe.getBoundingClientRect = () => ({ width: probe.classList.contains('zu-compact') ? compactChipWidth : fullChipWidth });
     return probe;
   };
   return () => {
@@ -339,7 +340,8 @@ test('Git compact measures the leading budget without hiding or moving the live 
   let fullWidth = 210;
   chip.cloneNode = () => {
     const probe = new Element('span');
-    probe.getBoundingClientRect = () => ({ width: fullWidth });
+    probe.className = chip.className;
+    probe.getBoundingClientRect = () => ({ width: probe.classList.contains('zu-compact') ? 70 : fullWidth });
     return probe;
   };
   const children = h.body.children.length;
@@ -353,7 +355,11 @@ test('Git compact measures the leading budget without hiding or moving the live 
   ui.cua.setAttribute('data-composer-compact', 'false');
   fullWidth = 350; budget = 600; h.tick();
   assert.ok(chip.classList.contains('zu-compact'), 'trailing controls also constrain the full layout');
-  chip.cloneNode = () => { throw new Error('unmeasurable'); };
+  chip.cloneNode = () => {
+    const probe = new Element('span');
+    probe.getBoundingClientRect = () => { throw new Error('unmeasurable'); };
+    return probe;
+  };
   h.tick();
   assert.ok(!chip.classList.contains('zu-compact'), 'unknown DOM falls back to host mode');
   assert.equal(h.body.children.length, children);
