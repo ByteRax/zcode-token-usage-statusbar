@@ -4,19 +4,51 @@
 
 ## VERSION 代际检查
 
-`overlay.js` 里 `var VERSION = "vNN";` 同一行的注释是代际台账（`// vA … → vB …`，热修可用 `v99.1` 这样的小数号）。要求台账按时间线严格递增、末项等于 `VERSION`。并行线各自递增会出现「同号不同义」，热修条目也可能被插到台账最前面，发版前必须发现。根 `overlay.js` 与插件副本是否一致由 `python3 sync_plugin.py --check` 负责，这里只查根文件：
+`overlay.js` 里 `var VERSION = "vNN";` 同一行的注释是代际台账（`// vA … → vB …`，热修可用 `v99.1` 这样的小数号）。要求台账按合入时间线严格递增、末项等于 `VERSION`；标签须完整符合整数号或单层点分热修号，不接受 `v99b` 等字母后缀。格式无效、缺项、乱序或重复时检查必须返回非零退出码。台账项用 `→ vNN` 分隔；说明正文内部的箭头保持 `tok→token`、`6→24` 这类无空白格式，避免与条目分隔混淆。源码只允许一次 `VERSION` 赋值。并行线各自递增会出现「同号不同义」，热修条目也可能被插到台账最前面，发版前必须发现。根 `overlay.js` 与插件副本是否一致由 `python3 sync_plugin.py --check` 负责，这里只查根文件：
 
 ```bash
 python3 -B - <<'PY'
 import re
-line = next(l for l in open("overlay.js", encoding="utf-8") if "var VERSION =" in l)
-cur = re.search(r'VERSION = "v(\d+(?:\.\d+)?)"', line).group(1)
-items = re.findall(r'(?://\s*|→\s*)v(\d+(?:\.\d+)?)', line)
-key = lambda s: tuple(int(p) for p in s.split("."))
+
+
+def fail(reason):
+    print("VERSION 台账检查失败：" + reason)
+    raise SystemExit(1)
+
+
+try:
+    with open("overlay.js", encoding="utf-8") as source:
+        text = source.read()
+except (OSError, UnicodeError) as error:
+    fail("无法读取 overlay.js：" + str(error))
+if len(re.findall(r"\bVERSION\s*=(?!=)", text)) != 1:
+    fail("必须恰好有一次 VERSION 赋值")
+lines = [line for line in text.splitlines() if re.match(r"\s*var\s+VERSION\b", line)]
+if len(lines) != 1:
+    fail("必须恰好有一个 var VERSION 声明")
+match = re.fullmatch(r'\s*var\s+VERSION\s*=\s*"([^"]*)"\s*;\s*//\s*(.*)', lines[0])
+if not match:
+    fail("VERSION 声明须带同一行的台账注释")
+cur, ledger = match.groups()
+version = r"v[0-9]+(?:\.[0-9]+)?"
+if not re.fullmatch(version, cur):
+    fail("VERSION 格式无效：" + cur)
+if not ledger.startswith("v"):
+    fail("台账为空或缺少首项版本")
+entries = re.split(r"→(?=\s|[vV]|$)", ledger)
+items = []
+for entry in entries:
+    label = re.match(r"\s*(v[^\s（(→]*)", entry)
+    if not label or not re.fullmatch(version, label.group(1)):
+        fail("台账项缺少有效版本：" + entry.strip())
+    items.append(label.group(1))
+key = lambda item: tuple(int(part) for part in item[1:].split("."))
 bad = [(a, b) for a, b in zip(items, items[1:]) if key(a) >= key(b)]
-ok = not bad and items[-1] == cur
-why = "; ".join("v%s 之后出现 v%s" % p for p in bad[:3]) or "末项 v%s 不等于 VERSION" % items[-1]
-print("VERSION=v%s 链长=%d %s" % (cur, len(items), "OK" if ok else "不连贯: " + why))
+if bad:
+    fail("；".join("%s 之后出现 %s" % pair for pair in bad[:3]))
+if items[-1] != cur:
+    fail("末项 %s 不等于 VERSION %s" % (items[-1], cur))
+print("VERSION=%s 链长=%d OK" % (cur, len(items)))
 PY
 ```
 
