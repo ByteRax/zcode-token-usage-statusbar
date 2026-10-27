@@ -4,27 +4,28 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-// v99/v89 起：中文「X 时 X 分 X 秒」/英文「X h X m X s」，空格分隔，零段照旧省略（仅全零显示 0 秒/0 s）
+// v126/桌面·web v93 起：中文数字与单位、时间段之间全部紧邻「1时1分10秒」，零段照旧省略（仅全零显示 0秒/0s）；
+// 英文数字与单位紧邻、时段间留空格「1h 1m 10s」（v126 用户要求）
 const cases = [
-  [0, '0 秒', '0 s'],
-  [999, '0 秒', '0 s'],
-  [1000, '1 秒', '1 s'],
-  [3100, '3 秒', '3 s'],
-  [59999, '59 秒', '59 s'],
-  [60000, '1 分', '1 m'],
-  [60999, '1 分', '1 m'],
-  [61000, '1 分 1 秒', '1 m 1 s'],
-  [70000, '1 分 10 秒', '1 m 10 s'],
-  [120000, '2 分', '2 m'],
-  [3599999, '59 分 59 秒', '59 m 59 s'],
-  [3600000, '1 时', '1 h'],
-  [3600999, '1 时', '1 h'],
-  [3601000, '1 时 1 秒', '1 h 1 s'],
-  [3610000, '1 时 10 秒', '1 h 10 s'],
-  [3660000, '1 时 1 分', '1 h 1 m'],
-  [3670000, '1 时 1 分 10 秒', '1 h 1 m 10 s'],
-  [7200000, '2 时', '2 h'],
-  [90061000, '25 时 1 分 1 秒', '25 h 1 m 1 s'],
+  [0, '0 秒', '0s'],
+  [999, '0 秒', '0s'],
+  [1000, '1 秒', '1s'],
+  [3100, '3 秒', '3s'],
+  [59999, '59 秒', '59s'],
+  [60000, '1 分', '1m'],
+  [60999, '1 分', '1m'],
+  [61000, '1 分 1 秒', '1m 1s'],
+  [70000, '1 分 10 秒', '1m 10s'],
+  [120000, '2 分', '2m'],
+  [3599999, '59 分 59 秒', '59m 59s'],
+  [3600000, '1 时', '1h'],
+  [3600999, '1 时', '1h'],
+  [3601000, '1 时 1 秒', '1h 1s'],
+  [3610000, '1 时 10 秒', '1h 10s'],
+  [3660000, '1 时 1 分', '1h 1m'],
+  [3670000, '1 时 1 分 10 秒', '1h 1m 10s'],
+  [7200000, '2 时', '2h'],
+  [90061000, '25 时 1 分 1 秒', '25h 1m 1s'],
 ];
 
 for (const file of ['overlay.js', 'web/overlay.js']) {
@@ -41,7 +42,7 @@ for (const file of ['overlay.js', 'web/overlay.js']) {
       for (const [observedMs, zhExpected, enExpected] of cases) {
         const view = speedView({ complete: false, characterRate: null, observedMs });
         const prefix = lang === 'en' ? 'thinking…' : '思考中…';
-        const expected = lang === 'en' ? enExpected : file === 'overlay.js' ? zhExpected.replace(/(\d) /g, '$1') : zhExpected;
+        const expected = lang === 'en' ? enExpected : zhExpected.replace(/ /g, '');
         assert.equal(view.text, prefix + expected, `${observedMs}ms`);
         assert.equal(view.phase, 'thinking');
         assert.equal(view.cls, 'dim');
@@ -63,14 +64,14 @@ test('overlay.js & web/overlay.js: thinking timer anchors to startedAt when pres
       L: (zh) => zh,
       Date: { now: () => NOW },
     });
-    // startedAt 存在：锚定 now-startedAt（1 时 1 分 10 秒），忽略 observedMs
+    // startedAt 存在：锚定 now-startedAt（1时1分10秒），忽略 observedMs
     let v = speedView({ complete: false, characterRate: null, observedMs: 3000, startedAt: NOW - 3670000 });
-    assert.equal(v.text, file === 'overlay.js' ? '思考中…1时 1分 10秒' : '思考中…1 时 1 分 10 秒', `${file} anchor`);
+    assert.equal(v.text, '思考中…1时1分10秒', `${file} anchor`);
     // startedAt 缺席（tracker 对非有限数归一为 null，turn-stats.js:122）：回退 observedMs
     v = speedView({ complete: false, characterRate: null, observedMs: 999, startedAt: null });
-    assert.equal(v.text, file === 'overlay.js' ? '思考中…0秒' : '思考中…0 秒', `${file} fallback`);
+    assert.equal(v.text, '思考中…0秒', `${file} fallback`);
     // startedAt 在当前时钟之后（时钟漂移/异常）：回退 observedMs，不出负数
     v = speedView({ complete: false, characterRate: null, observedMs: 4200, startedAt: NOW + 5000 });
-    assert.equal(v.text, file === 'overlay.js' ? '思考中…4秒' : '思考中…4 秒', `${file} future-startedAt fallback`);
+    assert.equal(v.text, '思考中…4秒', `${file} future-startedAt fallback`);
   }
 });

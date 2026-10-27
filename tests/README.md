@@ -78,14 +78,3 @@ node tests/plugin-update-demo.cjs
 `/evidence` 是只读测试动作日志，包含调用的固定 CLI 参数、临时配置与当前状态。结束时 Ctrl+C 清理临时目录。
 
 生产环境的初次升级仍由用户在“设置 → 插件管理”完成；源码/清单更新不等同于已安装插件升级。GitHub/GitCode 来源按市场缓存清单分流：zip 清单走正式 Release 检测与 ZIP/hash 核对；源码路径清单与本地目录市场交给宿主插件管理器按清单更新，不执行 git pull。
-
-
-## 桌面 UI 隔离浏览器验收
-
-先在仓库根启动 `python3 -m http.server 8799 --bind 127.0.0.1`，再运行：
-
-```bash
-uv run --with playwright python tests/ui-browser-check.py
-```
-
-`tests/ui-fixture.html` 载入根 `overlay.js`，使用固定示例数据，不读取个人数据库、凭据或安装缓存，不请求真实供应商或更新服务。脚本以当前 `HEAD:overlay.js` 留修改前基线，再以工作树代码生成同视口对照、主题／语言／字号／窄栏矩阵、焦点和保存失败夹具，产物在 `docs/ui-review/`。该测试需要额外的开发依赖 Playwright 以及 Chromium 或本机 Chrome，不属于用户运行依赖；不得把夹具通过当作 Electron、多窗口或真实账号验证。
