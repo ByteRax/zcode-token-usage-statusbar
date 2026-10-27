@@ -18,6 +18,12 @@ notice = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(notice)
 
 
+def notice_context(runtime=None, **kwargs):
+    """reminder() 的 context 文案；无提醒时空串。"""
+    got = notice.reminder(runtime, **kwargs)
+    return got["context"] if got else ""
+
+
 class RestartNoticeTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
@@ -38,7 +44,7 @@ class RestartNoticeTests(unittest.TestCase):
         self.pending_sync()
         original = (self.runtime / notice.MARKER).read_bytes()
         with mock.patch.object(notice, "installation_status", return_value=False):
-            context = notice.reminder_context(self.runtime)
+            context = notice_context(self.runtime)
         self.assertIn("用户可见·安装提醒", context)
         self.assertIn("/install-overlay", context)
         self.assertIn("/uninstall-overlay", context)
@@ -47,7 +53,7 @@ class RestartNoticeTests(unittest.TestCase):
 
     def test_installed_complete_sync_requires_restart(self):
         self.pending_sync()
-        context = notice.reminder_context(self.runtime)
+        context = notice_context(self.runtime)
         self.assertIn("用户可见·重启提醒", context)
         self.assertIn("请完全退出 ZCode", context)
 
@@ -60,7 +66,7 @@ class RestartNoticeTests(unittest.TestCase):
                     record.unlink()
                 else:
                     record.write_text(content)
-                context = notice.reminder_context(self.runtime)
+                context = notice_context(self.runtime)
                 self.assertIn("同步尚未完成", context)
                 self.assertIn("install-overlay", context)
                 self.assertNotIn("请完全退出 ZCode", context)
@@ -69,13 +75,13 @@ class RestartNoticeTests(unittest.TestCase):
         notice.record_restart(self.runtime)
         (self.runtime / ".plugin-overlay-optout").write_text("1")
         with mock.patch.object(notice, "installation_status", side_effect=AssertionError("client probed")):
-            self.assertEqual(notice.reminder_context(self.runtime), "")
+            self.assertEqual(notice_context(self.runtime), "")
         self.assertTrue((self.runtime / notice.MARKER).exists())
 
     def test_unknown_client_does_not_request_restart(self):
         notice.record_restart(self.runtime)
         with mock.patch.object(notice, "installation_status", return_value=None):
-            self.assertEqual(notice.reminder_context(self.runtime), "")
+            self.assertEqual(notice_context(self.runtime), "")
 
     def test_session_notice_only_reads_prepublication_intent(self):
         notice.record_restart(self.runtime, {"state": "pending-install", "publishedAt": 1})
@@ -132,17 +138,17 @@ class RestartNoticeTests(unittest.TestCase):
         with runtime_lock.publish_install(self.runtime, installation):
             pass
         before = (self.runtime / notice.MARKER).read_bytes()
-        self.assertIn("用户可见·安装提醒", notice.reminder_context(self.runtime, injected=False))
+        self.assertIn("用户可见·安装提醒", notice_context(self.runtime, injected=False))
         self.assertEqual((self.runtime / notice.MARKER).read_bytes(), before)
         self.assertFalse(runtime_lock.ack_restart(self.runtime, {"_loadedAt":
             json.loads(before)["publishedAt"] + 1})["cleared"])
         remaining = (self.runtime / notice.MARKER).read_bytes()
-        self.assertIn("用户可见·重启提醒", notice.reminder_context(self.runtime, injected=True))
+        self.assertIn("用户可见·重启提醒", notice_context(self.runtime, injected=True))
         self.assertEqual((self.runtime / notice.MARKER).read_bytes(), remaining)
         hashes = json.loads(remaining)["hashes"]
         self.assertTrue(runtime_lock.ack_restart(self.runtime, dict(hashes,
             _loadedAt=json.loads(remaining)["publishedAt"] + 1))["cleared"])
-        self.assertEqual(notice.reminder_context(self.runtime, injected=True), "")
+        self.assertEqual(notice_context(self.runtime, injected=True), "")
 
     def test_publication_cas_does_not_recreate_or_certify_other_intents(self):
         import runtime_lock
@@ -219,7 +225,7 @@ class RestartNoticeTests(unittest.TestCase):
 
     def test_user_facing_restart_copy_identifies_plugin_and_explains_exit(self):
         notice.record_restart(self.runtime)
-        context = notice.reminder_context(self.runtime)
+        context = notice_context(self.runtime)
         self.assertIn("zcode-token-usage-statusbar", context)
         self.assertIn("用量状态条", context)
         self.assertIn("菜单", context)
@@ -245,13 +251,13 @@ class RestartNoticeTests(unittest.TestCase):
         self.assertIn("> **" + notice.MESSAGE + "**", command)
 
     def test_no_marker_means_no_reminder(self):
-        self.assertEqual(notice.reminder_context(self.runtime), "")
+        self.assertEqual(notice_context(self.runtime), "")
 
     def test_restart_removes_reminder(self):
         notice.record_restart(self.runtime)
-        self.assertNotEqual(notice.reminder_context(self.runtime), "")
+        self.assertNotEqual(notice_context(self.runtime), "")
         (self.runtime / notice.MARKER).unlink()
-        self.assertEqual(notice.reminder_context(self.runtime), "")
+        self.assertEqual(notice_context(self.runtime), "")
 
     def test_atomic_failure_leaves_previous_marker_unchanged(self):
         notice.record_restart(self.runtime)
@@ -281,13 +287,15 @@ class RestartNoticeTests(unittest.TestCase):
         notice.record_restart(self.runtime)
         original = (self.runtime / notice.MARKER).read_bytes()
         for _ in range(3):
-            self.assertIn("用户可见·重启提醒", notice.reminder_context(self.runtime))
+            self.assertIn("用户可见·重启提醒", notice_context(self.runtime))
             self.assertEqual((self.runtime / notice.MARKER).read_bytes(), original)
         (self.runtime / notice.MARKER).unlink()
-        self.assertEqual(notice.reminder_context(self.runtime), "")
+        self.assertEqual(notice_context(self.runtime), "")
         self.assertFalse((self.runtime / notice.MARKER).exists())
 
-    def test_prompt_hook_preserves_rate_context_and_reminds_until_loader_restart(self):
+    def test_prompt_hook_no_longer_injects_notice_channel(self):
+        # 重启/安装提醒只走 SessionStart 会话级通道（issue #108）：prompt-submit 即使
+        # marker 尚未 ack 也不再每轮注入，模型不会在每条回复第一行重复弹出提醒。
         notice.record_restart(self.runtime)
         environment = dict(os.environ, HOME=str(self.runtime.parent), USERPROFILE=str(self.runtime.parent),
                            ZUSAGE_PLUGIN_RUNTIME=str(self.runtime), ZCODE_SESSION_ID="sess_notice_test")
@@ -304,7 +312,8 @@ class RestartNoticeTests(unittest.TestCase):
             output = json.loads(result.stdout)
             self.assertEqual(set(output), {"hookSpecificOutput"})
             context = output["hookSpecificOutput"]["additionalContext"]
-            self.assertEqual("用户可见·重启提醒" in context, pending)
+            self.assertNotIn("用户可见·", context)
+            self.assertNotIn("插件提醒", context)
             self.assertIn("【内部背景·勿展示】", context)
             self.assertNotIn("本轮统计指令", context)
 

@@ -27,6 +27,12 @@ notice = importlib.util.module_from_spec(notice_spec)
 notice_spec.loader.exec_module(notice)
 
 
+def notice_context(runtime=None, **kwargs):
+    """reminder() 的 context 文案；无提醒时空串。"""
+    got = notice.reminder(runtime, **kwargs)
+    return got["context"] if got else ""
+
+
 class PluginRuntimeTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
@@ -914,7 +920,7 @@ class PluginRuntimeTests(unittest.TestCase):
                 self.sync()
         self.assertTrue((self.runtime / notice.MARKER).is_file())
         self.assertFalse((self.runtime / "inject-main.cjs").exists())
-        context = notice.reminder_context(self.runtime)
+        context = notice_context(self.runtime)
         self.assertNotIn("已成功", context)
         self.assertNotIn("已自动安装", context)
         self.assertIn("同步尚未完成", context)

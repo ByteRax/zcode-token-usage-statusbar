@@ -77,14 +77,15 @@ class PluginContractTests(unittest.TestCase):
 
     def test_prompt_hook_no_longer_injects_model_instruction(self):
         # 统计行已改为确定性渲染（overlay.js 经 renderer 只读桥插入），hook 不再要求
-        # 模型自跑 token_rate.py；但背景行 / 重启提醒 / 开关判断通道必须保留。
+        # 模型自跑 token_rate.py；背景行 / 开关判断通道保留，重启提醒改走
+        # SessionStart 会话级通道（issue #108），prompt-submit 不再注入任何提醒。
         source = (PLUGIN / "hooks/prompt-submit.py").read_text(encoding="utf-8")
         module = prompt_hook()
         self.assertFalse(hasattr(module, "turn_stats_instruction"), source[:200])
         for banned in ("本轮统计指令", "运行一次:", "Markdown 引用块", "RATE_SCRIPT",
                        "base64", "shlex"):
             self.assertNotIn(banned, source, banned)
-        for required in ("【内部背景·勿展示】", "answer_rate_line", "reminder_context",
+        for required in ("【内部背景·勿展示】", "answer_rate_line",
                          "write_session_state", "emit"):
             self.assertIn(required, source, required)
         self.assertTrue(hasattr(module, "rate_line_enabled"))

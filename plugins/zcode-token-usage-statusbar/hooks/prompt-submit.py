@@ -6,6 +6,8 @@
 速率统计行已改为确定性渲染（overlay.js 经 renderer 只读桥读取会话状态，完成的 turn
 在消息流末尾由前端插入统计行），不再向模型下达"本问统计"指令——模型零配合、零额外
 工具调用，回复末尾也不再有模型贴的统计行。
+重启/安装提醒不走本 hook：每轮注入会让模型在每条回复第一行重复弹出同一提醒
+（issue #108），改由 SessionStart 会话级通道提醒一次（restart_notice.session_notice）。
 ⚙ 面板开关：运行时 config.json 的 answer_rate_line（缺省=开启）；关闭后每次提问
 仍记录时刻（守卫数据保持新鲜），且不再注入背景行——下一问即生效，无需重启。
 输出只包含 hook 协议字段，诊断不得混入 stdout。
@@ -71,16 +73,10 @@ def main():
     except Exception:
         prev = None
     try:
-        from restart_notice import reminder_context
-        notice = reminder_context()
-    except Exception:
-        notice = ""
-    try:
-        head = (notice + "\n") if notice else ""
         if not enabled:
-            emit(head)   # 关：只留重启提醒（若有），不注入背景行、不下达统计指令
+            emit("")   # 关：不注入背景行、不下达统计指令
             return
-        emit(head + "【内部背景·勿展示】上一条回复:" + (prev or "暂无已完成的模型请求"))
+        emit("【内部背景·勿展示】上一条回复:" + (prev or "暂无已完成的模型请求"))
     except Exception:
         emit("")
 
