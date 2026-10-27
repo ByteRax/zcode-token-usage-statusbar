@@ -290,6 +290,19 @@ for (const outside of [false, true]) {
   });
 }
 
+test('legacy mode never escapes the card into an outer toolbar', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  ui.cua.remove();
+  const outer = h.body.appendChild(new Element());
+  outer.className = 'group/toolbar'; outer.appendChild(ui.card);
+  const mode = ui.card.appendChild(new Element('button'));
+  mode.setAttribute('data-testid', 'chat-mode-select-trigger');
+  drive(h, ui);
+  assert.equal(chipOf(outer), null);
+  assert.equal(chipOf(ui.card), null);
+  assert.equal(chipOf(ui.row), null);
+});
+
 test('without CUA the mode compact state converges and expands with room', () => {
   const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
   const { leading, mode } = leadingOf(ui); ui.cua.remove();
