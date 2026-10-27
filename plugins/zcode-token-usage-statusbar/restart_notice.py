@@ -50,7 +50,7 @@ def visible_context(label, detail, message):
 
 
 def reminder(runtime=None, injected=None, restart_files=()):
-    """只读判定；两个 hook 提示通道和 CLI 共用同一文案。"""
+    """只读判定；SessionStart 提示通道和 CLI 共用同一文案。"""
     runtime = Path(runtime) if runtime is not None else runtime_dir()
     marker = runtime / MARKER
     if not marker.is_file() or (runtime / ".plugin-overlay-optout").exists():
@@ -111,11 +111,6 @@ def reminder(runtime=None, injected=None, restart_files=()):
             message = (PREFIX + "用量状态条已更新，重启 ZCode 后生效。" + RESTART_ACTION +
                        " 更新文件：" + " / ".join(restart_files))
     return {"message": message, "context": visible_context(label, detail, message)}
-
-
-def reminder_context(runtime=None, injected=None):
-    notice = reminder(runtime, injected)
-    return notice["context"] if notice else ""
 
 
 def session_notice(runtime, output, injected=None, restart_files=()):

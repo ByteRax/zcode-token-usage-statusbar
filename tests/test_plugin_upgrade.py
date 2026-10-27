@@ -71,6 +71,11 @@ class PluginUpgradeTests(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
+    def notice_context(self, runtime, **kwargs):
+        """reminder() 的 context 文案；无提醒时空串。"""
+        got = self.notice.reminder(runtime, **kwargs)
+        return got["context"] if got else ""
+
     def write_asar(self, path, entry=None, name="zcode-desktop", version="1.0.0", unpacked=False):
         files = {
             "package.json": json.dumps({"name": name, "version": version}).encode("utf-8"),
@@ -358,18 +363,19 @@ class PluginUpgradeTests(unittest.TestCase):
                                     input="{}", capture_output=True, text=True, timeout=10)
             self.assertEqual(prompt.returncode, 0, prompt.stderr)
             context = json.loads(prompt.stdout)["hookSpecificOutput"]["additionalContext"]
-            self.assertIn("用户可见·安装提醒", context)
-            self.assertNotIn("请完全退出 ZCode", context)
+            # issue #108：提醒只走会话级通道，prompt-submit 在待安装状态也不注入。
+            self.assertNotIn("用户可见·", context)
+            self.assertNotIn("插件提醒", context)
             self.assertIn("【内部背景·勿展示】", context)
             self.assertNotIn("本轮统计指令", context)
         self.assertEqual(self.main("install")[0], 0)
-        context = self.notice.reminder_context(self.runtime)
+        context = self.notice_context(self.runtime)
         self.assertIn("用户可见·重启提醒", context)
         self.assertIn("完全退出 ZCode", context)
         helper = load_module("first_install_runtime_lock", PLUGIN_ROOT / "runtime_lock.py")
         marker = json.loads((self.runtime / ".plugin-restart-required").read_text())
         helper.ack_restart(self.runtime, dict(marker.get("hashes", {}), _loadedAt=marker["publishedAt"] + 1))
-        self.assertEqual(self.notice.reminder_context(self.runtime), "")
+        self.assertEqual(self.notice_context(self.runtime), "")
         self.assertEqual(self.hook()[0], {"suppressOutput": True})
 
     def test_remove_suppresses_session_and_prompt_notices_with_leftover_marker(self):
@@ -378,7 +384,7 @@ class PluginUpgradeTests(unittest.TestCase):
         self.assertEqual(self.main("remove")[0], 0)
         self.assertTrue((self.runtime / ".plugin-restart-required").exists())
         self.assertEqual(self.hook()[0], {"suppressOutput": True})
-        self.assertEqual(self.notice.reminder_context(self.runtime), "")
+        self.assertEqual(self.notice_context(self.runtime), "")
         prompt = subprocess.run([sys.executable, str(PLUGIN_ROOT / "hooks" / "prompt-submit.py")],
                                 input="{}", capture_output=True, text=True, timeout=10)
         self.assertEqual(prompt.returncode, 0, prompt.stderr)
@@ -527,7 +533,7 @@ class PluginUpgradeTests(unittest.TestCase):
         self.assertEqual(published["createdAt"], json.loads(before)["createdAt"])
         self.assertGreater(published["publishedAt"], loaded["_loadedAt"])
         self.assertFalse(runtime_lock.ack_restart(self.runtime, loaded)["cleared"])
-        self.assertIn("用户可见·重启提醒", self.notice.reminder_context(self.runtime))
+        self.assertIn("用户可见·重启提醒", self.notice_context(self.runtime))
         self.assertTrue(runtime_lock.ack_restart(self.runtime, dict(published["hashes"],
             _loadedAt=published["publishedAt"] + 1))["cleared"])
         self.assertEqual(self.hook()[0], {"suppressOutput": True})
@@ -647,7 +653,7 @@ print(json.dumps(operations))
                 self.assertEqual(published["hashes"], merged["hashes"])
                 self.assertIn("publishedAt", published)
                 start = published["publishedAt"] + 1
-                self.assertIn("用户可见·重启提醒", self.notice.reminder_context(self.runtime))
+                self.assertIn("用户可见·重启提醒", self.notice_context(self.runtime))
                 acknowledged_name = next(iter(published["hashes"]))
                 partial_loaded = {"_loadedAt": start, acknowledged_name: published["hashes"][acknowledged_name]}
                 self.assertFalse(self.ack_process(backend, partial_loaded)["cleared"])
@@ -678,11 +684,11 @@ print(json.dumps(operations))
         self.assertEqual(self.asar.read_bytes(), before)
         self.assertIn("自动安装未完成", result["systemMessage"])
         self.assertNotIn("已安装或更新", result["systemMessage"])
-        self.assertIn("用户可见·安装提醒", self.notice.reminder_context(self.runtime))
+        self.assertIn("用户可见·安装提醒", self.notice_context(self.runtime))
         self.assertEqual(json.loads((self.runtime / self.notice.MARKER).read_text())["state"],
                          "pending-install")
         self.assertEqual(self.main("install")[0], 0)  # 同一意图可由正常重试完成。
-        self.assertIn("用户可见·重启提醒", self.notice.reminder_context(self.runtime))
+        self.assertIn("用户可见·重启提醒", self.notice_context(self.runtime))
 
     def test_intent_write_failure_blocks_even_pending_tmp_publication(self):
         os.environ["ZUSAGE_PLUGIN_ASAR"] = str(self.asar)
