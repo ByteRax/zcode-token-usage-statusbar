@@ -303,7 +303,7 @@ class RestartNoticeTests(unittest.TestCase):
             if pending:
                 notice.record_restart(self.runtime)
             else:
-                (self.runtime / notice.MARKER).unlink()
+                (self.runtime / notice.MARKER).unlink(missing_ok=True)
             (self.runtime / "config.json").write_text(
                 '{}' if rate_line else '{"answer_rate_line": false}', encoding="utf-8")
             script = ("import runpy, sys; sys.path.insert(0, {!r}); import restart_notice; "

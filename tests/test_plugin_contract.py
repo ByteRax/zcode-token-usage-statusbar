@@ -82,6 +82,8 @@ class PluginContractTests(unittest.TestCase):
         source = (PLUGIN / "hooks/prompt-submit.py").read_text(encoding="utf-8")
         module = prompt_hook()
         self.assertFalse(hasattr(module, "turn_stats_instruction"), source[:200])
+        # "restart_notice" 用于捕捉 verbatim 回退：导入行会被 except 静默吞掉、行为
+        # 与修复版一致，只有源码文本契约能在那种形态下转红——不要当误报删掉。
         for banned in ("本轮统计指令", "运行一次:", "Markdown 引用块", "RATE_SCRIPT",
                        "base64", "shlex", "restart_notice"):
             self.assertNotIn(banned, source, banned)
