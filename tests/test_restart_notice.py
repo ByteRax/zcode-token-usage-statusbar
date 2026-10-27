@@ -295,13 +295,17 @@ class RestartNoticeTests(unittest.TestCase):
 
     def test_prompt_hook_no_longer_injects_notice_channel(self):
         # 重启/安装提醒只走 SessionStart 会话级通道（issue #108）：prompt-submit 即使
-        # marker 尚未 ack 也不再每轮注入，模型不会在每条回复第一行重复弹出提醒。
+        # marker 尚未 ack 也不再每轮注入，answer_rate_line 开关两分支都必须不含提醒。
         notice.record_restart(self.runtime)
         environment = dict(os.environ, HOME=str(self.runtime.parent), USERPROFILE=str(self.runtime.parent),
                            ZUSAGE_PLUGIN_RUNTIME=str(self.runtime), ZCODE_SESSION_ID="sess_notice_test")
-        for pending in (True, False):
-            if not pending:
+        for pending, rate_line in ((True, True), (False, True), (True, False), (False, False)):
+            if pending:
+                notice.record_restart(self.runtime)
+            else:
                 (self.runtime / notice.MARKER).unlink()
+            (self.runtime / "config.json").write_text(
+                '{}' if rate_line else '{"answer_rate_line": false}', encoding="utf-8")
             script = ("import runpy, sys; sys.path.insert(0, {!r}); import restart_notice; "
                       "restart_notice.installation_status = lambda runtime: True; runpy.run_path({!r}, run_name='__main__')"
                       ).format(str(PLUGIN), str(PLUGIN / "hooks" / "prompt-submit.py"))
@@ -314,8 +318,11 @@ class RestartNoticeTests(unittest.TestCase):
             context = output["hookSpecificOutput"]["additionalContext"]
             self.assertNotIn("用户可见·", context)
             self.assertNotIn("插件提醒", context)
-            self.assertIn("【内部背景·勿展示】", context)
             self.assertNotIn("本轮统计指令", context)
+            if rate_line:
+                self.assertIn("【内部背景·勿展示】", context)
+            else:
+                self.assertEqual(context, "")
 
 
 if __name__ == "__main__":

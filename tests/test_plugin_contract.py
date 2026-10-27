@@ -83,7 +83,7 @@ class PluginContractTests(unittest.TestCase):
         module = prompt_hook()
         self.assertFalse(hasattr(module, "turn_stats_instruction"), source[:200])
         for banned in ("本轮统计指令", "运行一次:", "Markdown 引用块", "RATE_SCRIPT",
-                       "base64", "shlex"):
+                       "base64", "shlex", "restart_notice"):
             self.assertNotIn(banned, source, banned)
         for required in ("【内部背景·勿展示】", "answer_rate_line",
                          "write_session_state", "emit"):
