@@ -111,13 +111,13 @@ test('enhanced ring mirrors the statusbar band and appends a percentage beside t
   h.inject(); h.boot(); h.tick();
   h.window.__zusageUpdate(h.payload());
   assert.equal(ui.btn.getAttribute('data-zusage-armed'), '1');
-  assert.equal(ui.btn.getAttribute('data-zusage-band'), 'ok');
+  assert.equal(ui.btn.getAttribute('data-zusage-band'), 'norm');   // 31.7% ≥30 → norm（indigo）
   assert.equal(ui.value.getAttribute('pathLength'), '100');
   assert.equal(ui.value.getAttribute('stroke-dasharray'), '31.7 100');
   assert.equal(ui.value.getAttribute('stroke-dashoffset'), '0');
   assert.equal(ui.value.getAttribute('stroke-linecap'), 'round');
   const pct = ui.btn.children.find(e => e.classList.contains('zu-ctxpct'));
-  assert.ok(pct && pct.textContent === '31.7%' && pct.className === 'zu-ctxpct pct ok');
+  assert.ok(pct && pct.textContent === '31.7%' && pct.className === 'zu-ctxpct pct norm');
   // 数值挂 trigger 按钮内（环右侧）：悬停数值 = 悬停按钮，原生 hover-card 与 hover 效果自动生效
   assert.equal(ui.btn.children.indexOf(pct) > ui.btn.children.indexOf(ui.svg), true);
   assert.equal(pct.listeners.size, 0);   // 不做事件截停
@@ -134,16 +134,20 @@ test('react commit that displaces the percentage is healed back to the ring\'s r
   assert.equal(ui.btn.children[ui.btn.children.length - 1], pct);
 });
 
-test('band follows the shared thresholds: normal 70/85, million window 40/60, over-limit first', () => {
+test('band follows user bands 30/50/80/90 (inclusive lower bound), compression state first', () => {
   const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
   h.inject(); h.boot(); h.tick();
-  h.window.__zusageUpdate(h.payload({ ctx: 140000 }));   // 70% of 200k
-  assert.equal(ui.btn.getAttribute('data-zusage-band'), 'warm');
-  h.window.__zusageUpdate(h.payload({ ctx: 170000 }));   // 85% of 200k
-  assert.equal(ui.btn.getAttribute('data-zusage-band'), 'hot');
-  h.window.__zusageUpdate(h.payload({ ctx: 450000, cw: 1000000 }));   // 45% of 1M
-  assert.equal(ui.btn.getAttribute('data-zusage-band'), 'warm');
-  h.window.__zusageUpdate(h.payload({ ctx: 450000, cw: 1000000, exc: 2 }));
+  h.window.__zusageUpdate(h.payload({ ctx: 59000 }));   // 29.5% of 200k
+  assert.equal(ui.btn.getAttribute('data-zusage-band'), 'calm');
+  h.window.__zusageUpdate(h.payload({ ctx: 60000 }));   // 30% 整
+  assert.equal(ui.btn.getAttribute('data-zusage-band'), 'norm');
+  h.window.__zusageUpdate(h.payload({ ctx: 100000 }));   // 50% 整
+  assert.equal(ui.btn.getAttribute('data-zusage-band'), 'mid');
+  h.window.__zusageUpdate(h.payload({ ctx: 160000 }));   // 80% 整
+  assert.equal(ui.btn.getAttribute('data-zusage-band'), 'high');
+  h.window.__zusageUpdate(h.payload({ ctx: 180000 }));   // 90% 整
+  assert.equal(ui.btn.getAttribute('data-zusage-band'), 'crit');
+  h.window.__zusageUpdate(h.payload({ ctx: 450000, cw: 1000000, exc: 2 }));   // 压缩过程态仍优先
   assert.equal(ui.btn.getAttribute('data-zusage-band'), 'exc');
 });
 
@@ -194,18 +198,23 @@ test('dispose restores the native form of its own pane button', () => {
 });
 
 test('enhancement styles exist: band colors, geometry override, pct span and light variants', () => {
-  assert.match(source, /\[data-testid=chat-context-usage-trigger\]\[data-zusage-armed\]\{color:#72c9a2!important/);   // v127 正常绿柔和化
-  assert.match(source, /\[data-zusage-armed\] \.zu-ctxpct\.ok\{color:#72c9a2\}/);   // 暗色 pct 作用域覆盖（环走 currentColor）
+  assert.match(source, /\[data-testid=chat-context-usage-trigger\]\[data-zusage-armed\]\{color:#94A3B8!important/);   // v131 calm 基色 slate-400
+  assert.match(source, /\[data-zusage-armed\]\[data-zusage-band=norm\]\{color:#818CF8!important\}/);
+  assert.match(source, /\[data-zusage-armed\]\[data-zusage-band=mid\]\{color:#A78BFA!important\}/);
   assert.match(source, /width:auto!important;min-width:1\.75rem;padding:0 3px;gap:4px\}/);
-  assert.match(source, /\[data-zusage-armed\]\[data-zusage-band=hot\]\{color:#ff6b57!important\}/);
+  assert.match(source, /\[data-zusage-armed\]\[data-zusage-band=high\]\{color:#FB923C!important\}/);
+  assert.match(source, /\[data-zusage-armed\]\[data-zusage-band=crit\]\{color:#F87171!important\}/);
   assert.match(source, /\[data-zusage-armed\]\[data-zusage-band=exc\]\{color:var\(--color-destructive,#ff2d55\)!important/);
   assert.match(source, />svg:not\(\.animate-spin\) circle\{opacity:1;stroke-width:3;r:9px\}/);
   assert.match(source, />svg:not\(\.animate-spin\) circle:first-of-type\{stroke:var\(--color-hover/);
   assert.match(source, />svg:not\(\.animate-spin\) circle:last-of-type\{stroke:currentColor;stroke-linecap:round\}/);
   assert.match(source, /\.zu-ctxpct\{font-family:var\(--font-mono/);
+  assert.match(source, /font-variant-numeric:tabular-nums/);   // 等宽数字防百分比跳动抖宽
   assert.doesNotMatch(source, /\.zu-ctxpct\{[^}]*pointer-events:none/);
   assert.doesNotMatch(source, /\.zu-ctxpct:hover/);
   assert.doesNotMatch(source, /pctEl\.addEventListener\(t, function \(e\) \{ e\.stopPropagation/);
-  assert.match(source, /\[data-zusage-light\]\[data-zusage-band=ok\]\{color:#187b58!important\}/);
-  assert.match(source, /\[data-zusage-light\] \.zu-ctxpct\.ok\{color:#187b58\}/);
+  assert.doesNotMatch(source, /\[data-zusage-armed\] \.zu-ctxpct\.ok\{color:#72c9a2\}/);   // v131 pct 与环一律继承按钮色
+  assert.match(source, /\[data-zusage-light\]\[data-zusage-armed\]\[data-zusage-band=calm\]\{color:#475569!important\}/);   // 浅色档带 armed 补特异性（0,3,0 同暗色规则，源序在后胜出）
+  assert.match(source, /\[data-zusage-light\]\[data-zusage-armed\]\[data-zusage-band=crit\]\{color:#B91C1C!important\}/);
+  assert.doesNotMatch(source, /\[data-zusage-light\]\[data-zusage-band=(?:norm|mid|high|crit)\]\{color:/);   // 旧两属性浅色规则不得回潮（会被暗色 0,3,0 恒胜）
 });

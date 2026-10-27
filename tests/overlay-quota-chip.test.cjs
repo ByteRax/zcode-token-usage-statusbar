@@ -162,7 +162,7 @@ test('chip is inserted directly left of the context button with per-window segme
   assert.equal(ui.wrap.children.indexOf(chip), ui.wrap.children.indexOf(ui.btn) - 1);
   assert.equal(chip.className, 'zu-quota');
   assert.equal(chip.innerHTML,
-    '<span class="zu-qseg ok"><span class="zu-qlabel">5小时</span> 26%</span><span class="zu-qsep">|</span><span class="zu-qseg zu-qweekly ok"><span class="zu-qlabel">7天</span> 12%</span>');
+    '<span class="zu-qseg zu-qb-calm"><span class="zu-qlabel">5小时</span> 26%</span><span class="zu-qsep">|</span><span class="zu-qseg zu-qweekly zu-qb-calm"><span class="zu-qlabel">7天</span> 12%</span>');
   assert.equal(chip.getAttribute('aria-label'), '套餐已用 5小时 26%，7天 12%');
   const live = h.liveOf(h.body.children.find(e => e.className === 'zusage-root'));
   assert.ok(live, 'a visually hidden live region is mounted inside this pane bar');
@@ -227,20 +227,24 @@ test('team plan shows an explicit unsupported glyph instead of numbers', () => {
   assert.match(h.tipEl().innerHTML, /团队套餐/);
 });
 
-test('segments use quota thresholds 80/95/100; mixed windows keep their own bands', () => {
+test('segments use user bands 30/50/80/90 (inclusive lower bound); mixed windows keep their own bands', () => {
   const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
   h.inject(); h.boot(); h.tick();
-  h.window.__zusageUpdate(h.payload({ quota: withPct(79.6) }));
-  assert.match(h.chipOf(ui.wrap).innerHTML, /zu-qseg ok"><span class="zu-qlabel">5小时<\/span> 80%<\/span>/);   // 档位按原始值判（79.6 < 80 为 ok），显示四舍五入
+  h.window.__zusageUpdate(h.payload({ quota: withPct(29.6) }));
+  assert.match(h.chipOf(ui.wrap).innerHTML, /zu-qseg zu-qb-calm"><span class="zu-qlabel">5小时<\/span> 30%<\/span>/);   // 档位按原始值判（29.6 < 30 为 calm），显示四舍五入
+  h.window.__zusageUpdate(h.payload({ quota: withPct(30) }));
+  assert.match(h.chipOf(ui.wrap).innerHTML, /zu-qseg zu-qb-norm"><span class="zu-qlabel">5小时<\/span> 30%<\/span>/);
+  h.window.__zusageUpdate(h.payload({ quota: withPct(50) }));
+  assert.match(h.chipOf(ui.wrap).innerHTML, /zu-qseg zu-qb-mid"><span class="zu-qlabel">5小时<\/span> 50%<\/span>/);
   h.window.__zusageUpdate(h.payload({ quota: withPct(80) }));
-  assert.match(h.chipOf(ui.wrap).innerHTML, /zu-qseg warm"><span class="zu-qlabel">5小时<\/span> 80%<\/span>/);
-  h.window.__zusageUpdate(h.payload({ quota: withPct(95) }));
-  assert.match(h.chipOf(ui.wrap).innerHTML, /zu-qseg hot"><span class="zu-qlabel">5小时<\/span> 95%<\/span>/);
+  assert.match(h.chipOf(ui.wrap).innerHTML, /zu-qseg zu-qb-high"><span class="zu-qlabel">5小时<\/span> 80%<\/span>/);
+  h.window.__zusageUpdate(h.payload({ quota: withPct(90) }));
+  assert.match(h.chipOf(ui.wrap).innerHTML, /zu-qseg zu-qb-crit"><span class="zu-qlabel">5小时<\/span> 90%<\/span>/);
   h.window.__zusageUpdate(h.payload({ quota: withPct(100) }));
-  assert.match(h.chipOf(ui.wrap).innerHTML, /zu-qseg exc"><span class="zu-qlabel">5小时<\/span> 100%<\/span>/);
+  assert.match(h.chipOf(ui.wrap).innerHTML, /zu-qseg zu-qb-exc"><span class="zu-qlabel">5小时<\/span> 100%<\/span>/);   // ≥100 满档呼吸闪烁（用户规格保留）
   h.window.__zusageUpdate(h.payload({ quota: Object.assign({}, QUOTA_OK, { windows: { fiveHour: { percent: 96, resetsAt: null, details: [] }, weekly: { percent: 10, resetsAt: null, details: [] } } }) }));
   assert.equal(h.chipOf(ui.wrap).innerHTML,
-    '<span class="zu-qseg hot"><span class="zu-qlabel">5小时</span> 96%</span><span class="zu-qsep">|</span><span class="zu-qseg zu-qweekly ok"><span class="zu-qlabel">7天</span> 10%</span>');
+    '<span class="zu-qseg zu-qb-crit"><span class="zu-qlabel">5小时</span> 96%</span><span class="zu-qsep">|</span><span class="zu-qseg zu-qweekly zu-qb-calm"><span class="zu-qlabel">7天</span> 10%</span>');
   assert.equal(h.liveOf(h.body.children.find(e => e.className === 'zusage-root')).textContent, '套餐已用 5小时 96%，7天 10%', 'live region announces changed values');
   h.window.__zusageUpdate(h.payload({ quota: Object.assign({}, QUOTA_OK, { windows: { fiveHour: { percent: 96, resetsAt: null, details: [] }, weekly: { percent: 10, resetsAt: null, details: [] } } }) }));
   assert.equal(h.liveOf(h.body.children.find(e => e.className === 'zusage-root')).textContent, '套餐已用 5小时 96%，7天 10%', 'unchanged values do not rewrite the live region');
@@ -428,17 +432,20 @@ test('settings panel exposes the config-backed quota toggle (default on, v111) w
   assert.match(source, /zu-src-list/);   // ⚙ 源列表容器
   assert.match(source, /pluginRequest\("quota-src-key", \{ id: field\.dataset\.src, field: field\.dataset\.field, value: field\.value \}, function \(result\)/);
   assert.match(source, /\.zu-quota\{display:inline-flex;align-items:center;gap:5px;height:1\.75rem/);
-  assert.match(source, /\.zu-qseg\.exc\{color:var\(--color-destructive,#ff2d55\)/);
+  assert.match(source, /font-variant-numeric:tabular-nums;line-height:1\}/);   // v131 chip 数字等宽防抖宽（.zu-quota 基础样式）
   assert.match(source, /\.zu-qsep\{color:var\(--color-foreground-subtle/);
-  assert.match(source, /\.zu-qseg\{color:#8abbd0;white-space:nowrap\}/);   // v127 额度正常态=柔和灰蓝（专属类，不碰全局 .ok）
-  assert.match(source, /\.zu-qseg\.zu-qweekly\{color:#b69ad8\}/);   // 7 天窗口淡紫（结构化 key；先于警示类，同特异性按源顺序被覆盖）
+  assert.match(source, /\.zu-qseg\{white-space:nowrap\}/);   // v131 基色废止：色全由五档类提供
+  assert.match(source, /\.zu-qseg\.zu-qb-calm\{color:#34D399\}\.zu-qseg\.zu-qb-norm\{color:#38BDF8\}\.zu-qseg\.zu-qb-mid\{color:#FBBF24\}/);   // 五档暗色（emerald/sky/amber 400）
+  assert.match(source, /\.zu-qseg\.zu-qb-high\{color:#FB923C\}\.zu-qseg\.zu-qb-crit\{color:#FB7185\}/);
+  assert.doesNotMatch(source, /\.zu-qseg\.zu-qweekly\{color:/);   // v131 按窗口类型着色废止（仅按百分比）
+  assert.match(source, /\.zu-qseg\.zu-qb-exc\{color:var\(--color-destructive,#ff2d55\);text-shadow:0 0 8px rgba\(255,45,85,\.5\);animation:zuexc/);   // ≥100 满档呼吸闪烁（用户规格）
+  assert.match(source, /\.zu-quota\[data-zusage-light\] \.zu-qseg\.zu-qb-exc\{text-shadow:none\}/);
   assert.match(source, /\.zu-qseg \.zu-qlabel\{font-weight:400\}/);   // 标签与数值同色成组，仅降字重
-  assert.match(source, /\.zu-quota\[data-zusage-light\] \.zu-qseg\{color:#276f86\}/);
-  assert.match(source, /\.zu-quota\[data-zusage-light\] \.zu-qseg\.zu-qweekly\{color:#76509f\}/);
-  assert.match(source, /data-zusage-armed\]\{color:#72c9a2!important/);   // 上下文正常绿柔和化（限按钮作用域）
-  assert.match(source, /\[data-zusage-armed\] \.zu-ctxpct\.ok\{color:#72c9a2\}/);
-  assert.match(source, /\[data-zusage-light\]\[data-zusage-band=ok\]\{color:#187b58!important\}/);
-  assert.match(source, /\[data-zusage-light\] \.zu-ctxpct\.ok\{color:#187b58\}/);
+  assert.match(source, /\.zu-quota\[data-zusage-light\] \.zu-qseg\.zu-qb-calm\{color:#047857\}/);   // 五档浅色（emerald/sky/amber/orange/rose 700）
+  assert.match(source, /\.zu-quota\[data-zusage-light\] \.zu-qseg\.zu-qb-crit\{color:#BE123C\}/);
+  assert.match(source, /data-zusage-armed\]\{color:#94A3B8!important/);   // 上下文 calm 基色 slate-400（限按钮作用域）
+  assert.match(source, /\[data-zusage-light\]\[data-zusage-armed\]\[data-zusage-band=calm\]\{color:#475569!important\}/);   // v132 浅色档带 armed 补特异性
+  assert.doesNotMatch(source, /\[data-zusage-armed\] \.zu-ctxpct\.ok\{color:#72c9a2\}/);   // v131 pct 与环一律继承按钮 currentColor
   assert.doesNotMatch(source, /zu-qring/);   // v96 起环形已删（分段样式）
   assert.match(source, /\.zusage-quota-tip,\.zu-quota,/);   // 代际清理选择器含 chip 与其 tooltip
 });
@@ -448,12 +455,12 @@ test('balance-type quota renders a single amount segment (stage-3 adapter contra
   h.inject(); h.boot(); h.tick();
   h.window.__zusageUpdate(h.payload({ quota: Object.assign({}, QUOTA_OK, { balance: { amount: 100, currency: 'CNY' } }) }));
   const chip = h.chipOf(ui.wrap);
-  assert.equal(chip.innerHTML, '<span class="zu-qseg ok">余额 ¥100.00</span>');
+  assert.equal(chip.innerHTML, '<span class="zu-qseg zu-qb-calm">余额 ¥100.00</span>');
   assert.equal(chip.getAttribute('aria-label'), '余额 ¥100.00');
   h.window.__zusageUpdate(h.payload({ quota: Object.assign({}, QUOTA_OK, { balance: { amount: 12.5, currency: 'USD' } }) }));
-  assert.equal(h.chipOf(ui.wrap).innerHTML, '<span class="zu-qseg ok">余额 $12.50</span>');
+  assert.equal(h.chipOf(ui.wrap).innerHTML, '<span class="zu-qseg zu-qb-calm">余额 $12.50</span>');
   h.window.__zusageUpdate(h.payload({ quota: Object.assign({}, QUOTA_OK, { balance: { amount: 3, currency: 'EUR' } }) }));
-  assert.equal(h.chipOf(ui.wrap).innerHTML, '<span class="zu-qseg ok">余额 EUR 3.00</span>');
+  assert.equal(h.chipOf(ui.wrap).innerHTML, '<span class="zu-qseg zu-qb-calm">余额 EUR 3.00</span>');
 });
 
 test('tooltip omits the subscription row when plan metadata is missing (endpoint failure degrade)', () => {
@@ -633,7 +640,7 @@ test('live composer model switch changes chip before any new database request co
   ui.marker.setAttribute('data-provider', 'new-provider-ds');
   ui.marker.setAttribute('data-model', 'deepseek-flash');
   h.mutate(ui.pane);
-  assert.equal(h.chipOf(ui.wrap).innerHTML, '<span class="zu-qseg ok">余额 ¥110.00</span>');
+  assert.equal(h.chipOf(ui.wrap).innerHTML, '<span class="zu-qseg zu-qb-calm">余额 ¥110.00</span>');
   const chip = h.chipOf(ui.wrap);
   chip.listeners.get('mouseenter')[0].call(chip);
   assert.match(h.tipEl().innerHTML, /账户余额 · DeepSeek/);
@@ -899,7 +906,7 @@ test('zcode-start pool: chip shows a plan-pool segment; source routing prefers z
   }));
   const chip = h.chipOf(ui.wrap);
   assert.ok(chip, 'chip mounted for start-plan provider');
-  assert.equal(chip.innerHTML, '<span class="zu-qseg ok"><span class="zu-qlabel">套餐</span> 9%</span>');
+  assert.equal(chip.innerHTML, '<span class="zu-qseg zu-qb-calm"><span class="zu-qlabel">套餐</span> 9%</span>');
   assert.equal(chip.getAttribute('aria-label'), '套餐已用 套餐 9%');
   chip.listeners.get('mouseenter')[0].call(chip);
   const html = h.tipEl().innerHTML;
@@ -931,7 +938,7 @@ test('zcode-start routing: start-plan pane never displays the coding-plan family
   }));
   const chip = h.chipOf(ui.wrap);
   assert.ok(chip, 'chip mounted');
-  assert.equal(chip.innerHTML, '<span class="zu-qseg ok"><span class="zu-qlabel">套餐</span> 9%</span>', 'shows the zcode-start pool, not bigmodel 5h');
+  assert.equal(chip.innerHTML, '<span class="zu-qseg zu-qb-calm"><span class="zu-qlabel">套餐</span> 9%</span>', 'shows the zcode-start pool, not bigmodel 5h');
   chip.listeners.get('mouseenter')[0].call(chip);
   const html = h.tipEl().innerHTML;
   assert.match(html, /ZCode 1024 Dev Day/);

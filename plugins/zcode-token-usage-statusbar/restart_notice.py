@@ -71,7 +71,7 @@ def reminder(runtime=None, injected=None, restart_files=()):
         hashes = data.get("hashes", {})
         if not isinstance(hashes, dict) or any(
                 name not in ("inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs",
-                             "plugin-storage.cjs", "quota-client.cjs", "overlay.js", "zusage.py")
+                             "plugin-storage.cjs", "quota-client.cjs", "model-puller.cjs", "overlay.js", "zusage.py")
                 or not isinstance(digest, str) or len(digest) != 64
                 or any(char not in "0123456789abcdef" for char in digest)
                 for name, digest in hashes.items()):

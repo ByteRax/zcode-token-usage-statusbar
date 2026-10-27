@@ -568,7 +568,7 @@ def _sync_runtime_locked(runtime, verify=lambda: None):
     result = {"changed": changed, "skipped": skipped, "preserved": preserved,
               "version": version, "plugin_root": plugin_root, "hashes": hashes,
               "restartRecorded": True}
-    cold_files = {"inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs", "quota-client.cjs"}
+    cold_files = {"inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs", "quota-client.cjs", "model-puller.cjs"}
     if (load_runtime_config(runtime) or {}).get("hot_reload") is False:
         cold_files.update(("overlay.js", "zusage.py"))
     restart_hashes = {name: hashes[name] for name in changed if name in cold_files}
@@ -823,7 +823,7 @@ def run_hook():
         if st:
             bridge = ensure_renderer_bridge(pi, quiet_monitor=True)   # 已注入也可能缺桥（客户端升级重写 asar）：幂等补一次
             from restart_notice import session_notice
-            cold_files = {"inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs", "quota-client.cjs"}
+            cold_files = {"inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs", "quota-client.cjs", "model-puller.cjs"}
             if (load_runtime_config(runtime) or {}).get("hot_reload") is False:
                 cold_files.update(("overlay.js", "zusage.py"))
             restart_files = [name for name in changed if name in cold_files]
