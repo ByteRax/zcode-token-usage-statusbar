@@ -7,6 +7,9 @@ const test = require('node:test');
 const source = fs.readFileSync(path.join(__dirname, '..', 'overlay.js'), 'utf8');
 const helpers = source.slice(source.indexOf('    function fmtStart('), source.indexOf('    function ioc(')) +
   source.slice(source.indexOf('    function ttEsc('), source.indexOf('    function stubFor('));
+// v127：DB 回退分支的档位行动态调用 tpsBand/tpsBandText——注入真实分档表（不含
+// zuBarSpeedView，它仍由各用例的桩覆盖），保证 tooltip 内容按真实档位生成。
+const bandHelpers = source.slice(source.indexOf('  var TPS_BANDS = ['), source.indexOf('  /* 返回 null = 调用方应把这当成'));
 
 function render(data, lang = 'zh', live = null) {
   const context = vm.createContext({
@@ -17,6 +20,7 @@ function render(data, lang = 'zh', live = null) {
     subRate: { rate: null, at: 0 },   // v97：html 里子代理估算桥引用（值本身被 zuBarSpeedView stub 吞掉）
     zuBarSpeedView: value => value, zuIcoThinking: () => '<svg/>',
   });
+  vm.runInContext(bandHelpers, context);
   vm.runInContext(helpers, context);
   return context.html(data).tips.filter(Boolean);
 }

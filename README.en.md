@@ -47,7 +47,7 @@ Here's what each part tells you:
 
 | The bit | In plain English |
 |---|---|
-| ⚡ **86 t/s** | How fast the model is writing (tokens per second). Once a turn finishes it's colour-coded: ≥70 green, 40–70 yellow, <40 red |
+| ⚡ **86 t/s** | How fast the model is writing (tokens per second). Colour-coded in ten speed bands: red (slow) → green (smooth) → blue (fast) → violet (very fast), with a blue-violet gradient + ✦ at ≥2000 t/s (Ultra). Live estimates are colour-coded too; hover for the current band |
 | **62.5k 90% 7 Σ18.4s ⏱1.4s** | This turn: 62.5k tokens spent, 90% cache hit rate, 7 model requests, the most recent one took 18.4s, and you waited 1.4s for the first token |
 | **1.45M 86% 23 187** | The whole conversation so far: 1.45M tokens, 86% hit rate, 23 turns, 187 requests |
 | **142 🔴2** | Tools were called 142 times, 2 of them errored (small red marker) |
