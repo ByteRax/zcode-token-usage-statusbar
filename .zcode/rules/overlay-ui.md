@@ -53,6 +53,7 @@
 
 - 数据链：渲染端 `publishGitPaths()` → 主进程 `gitTick`（10s，各窗路径并集）+ `git-refresh`（点击立即执行；快照驱动的重查有 5s 节流）→ `gitState` 推回。命令 `git -C <p> status --porcelain --branch` + `diff HEAD --shortstat`，env `GIT_OPTIONAL_LOCKS=0`、`LC_ALL=C`、`GIT_TERMINAL_PROMPT=0`；无提交仓库 `diff HEAD` 退 128 属预期。
 - 口径：notrepo/nogit/远端 pane 不挂载；失败保留 lastGood 并以文字徽章标 stale（不用透明度）；多仓只看直接子目录、不查行数、有上限、恰 1 子仓回退单仓、失败仓不拖垮聚合；`?N` 是未跟踪条目数（目录折叠计 1）；单位词走 `L()`。
+- 计数缩写（v128，用户规格 2026-10-28）：chip 与 tooltip 的行数、porcelain 条目、↑↓、冲突计数 <1万原值；≥1万 中文（`cnUnits` 判定，cnNum 关闭与英文同为 k/M/B）万/亿、英文 k/M/B。k 门槛刻意抬到 1万（9999 内原值，与 token `fmt()` 的 K≥1000 是两套口径），小写 k、至多两位小数去尾零、数字与单位紧邻。`gitNum`/`unit2` 在文件级 git 区段，不与实例内 `cnUnit` 共用（`fmt..sec` 源码切片被测试整段求值）；仓库个数（多仓「N 个仓库」等）与 aria 播报（`gitChipAria`）保持原值。
 
 ## 7. 验证
 

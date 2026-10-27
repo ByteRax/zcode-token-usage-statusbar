@@ -617,3 +617,32 @@ test('chip styles carry the cc-pretty-statusline palette, light variants and com
   assert.match(source, /@keyframes zugitspin/);
   assert.match(source, /data-k="git"/);
 });
+
+test('计数 ≥1万 缩写（v128）：中文万/亿、英文 k/M，<1万原值；aria 保持原值', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  const st = gitState({ ahead: 10000, behind: 9999, ins: 15000, del: 10000, untracked: 1000000 });
+  const chip = drive(h, ui, st);
+  assert.match(chip.innerHTML, /<span class="zu-git-ab">↑1万 ↓9999<\/span>/);
+  assert.match(chip.innerHTML, /<span class="zu-git-ins">\+1\.5万<\/span>/);
+  assert.match(chip.innerHTML, /<span class="zu-git-del">-1万<\/span>/);
+  assert.match(chip.innerHTML, /<span class="zu-git-unt">\?100万<\/span>/);
+  assert.match(chip.getAttribute('aria-label'), /改动 \+15000 -10000/, 'aria 播报保持原值');
+  h.window.gitTest.state().lang = 'en';
+  h.window.__zusageGitState('/repo/a', gitState({ ahead: 10000, behind: 9999, ins: 15000, del: 10000, untracked: 1000000 }));
+  assert.match(chip.innerHTML, /<span class="zu-git-ab">↑10k ↓9999<\/span>/);
+  assert.match(chip.innerHTML, /<span class="zu-git-ins">\+15k<\/span>/);
+  assert.match(chip.innerHTML, /<span class="zu-git-del">-10k<\/span>/);
+  assert.match(chip.innerHTML, /<span class="zu-git-unt">\?1M<\/span>/);
+});
+
+test('tooltip 行数与条目计数同规则缩写（v128）', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  const chip = drive(h, ui, gitState({ ahead: 123456, behind: 0, ins: 15000, del: 25000, untracked: 10000, staged: 25000, unstaged: 3 }));
+  dispatch(chip, 'mouseenter');
+  const tip = h.body.children.find(e => e.classList.contains('zusage-git-tip'));
+  assert.ok(tip, 'tooltip 挂载');
+  assert.match(tip.innerHTML, /\+1\.5万 \/ -2\.5万 行/);
+  assert.match(tip.innerHTML, /origin\/main ↑12\.35万/);
+  assert.match(tip.innerHTML, /<b>已暂存<\/b><span>2\.5万 项<\/span>/);
+  assert.match(tip.innerHTML, /<b>未跟踪<\/b><span>1万 项/);
+});
