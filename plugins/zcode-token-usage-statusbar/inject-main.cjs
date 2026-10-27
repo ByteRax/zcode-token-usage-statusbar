@@ -30,7 +30,7 @@ const ZUSAGE = path.join(HERE, "zusage.py");
 const TOKEN_RATE = path.join(HERE, "token_rate.py");
 const LOG = (...a) => console.error("[zusage]", ...a);
 const loadedHashes = { _loadedAt: Date.now() - process.uptime() * 1000 };
-for (const name of ["inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs", "quota-client.cjs", "overlay.js", "zusage.py"]) {
+for (const name of ["inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs", "quota-client.cjs", "model-puller.cjs", "overlay.js", "zusage.py"]) {
   try { loadedHashes[name] = createHash("sha256").update(fs.readFileSync(path.join(HERE, name))).digest("hex"); }
   catch (e) { LOG("startup fingerprint unavailable:", name, e.message); }
 }
@@ -821,6 +821,38 @@ try {
   LOG("quota client unavailable:", e.message);
 }
 
+/* ---------- v129 模型拉取：自定义供应商 /models 一键拉取并写回 provider_config.json。
+ * 独立模块独立 try：拉取失败只少该功能，不拖垮额度链与主泵。 */
+let modelPuller = null;
+try {
+  const { createModelPuller } = require("./model-puller.cjs");
+  const { resolveQuotaPaths } = require("./quota-client.cjs");
+  modelPuller = createModelPuller({
+    customCfgPath: resolveQuotaPaths({ defaultHome: app.getPath("home") }).customCfgPath,
+    log: (...a) => LOG("[model-pull]", ...a),
+  });
+} catch (e) {
+  LOG("model puller unavailable:", e.message);
+}
+function modelPullerProviderOk(v) {
+  return typeof v === "string" && v.length > 0 && v.length <= 160 && !/[\x00-\x1f\x7f]/.test(v);
+}
+function handleModelPullRequest(req, wc) {
+  const respond = (result) => deliverPluginRequest(wc, req.requestId, result);
+  if (!modelPuller) { respond({ ok: false, error: "model puller unavailable; fully restart ZCode to load it" }); return; }
+  if (req.action === "model-pull-list") { respond(modelPuller.listProviders()); return; }
+  if (!modelPullerProviderOk(req.providerId)) { respond({ ok: false, error: "invalid provider" }); return; }
+  if (req.action === "model-pull-fetch") {
+    modelPuller.fetchModels(req.providerId)
+      .then(respond)
+      .catch((e) => { LOG("model pull fetch failed:", e.message); respond({ ok: false, error: "fetch failed" }); });
+    return;
+  }
+  modelPuller.applyModels(req.providerId, Array.isArray(req.models) ? req.models : [])
+    .then(respond)
+    .catch((e) => { LOG("model pull apply failed:", e.message); respond({ ok: false, error: "apply failed" }); });
+}
+
 /* 逐问速率行开关（⚙ 面板）：原子写运行时 config.json 的 answer_rate_line（缺省=开启）。
    prompt-submit hook 每次提问时读同一文件——开关下一问即生效，无需重启客户端。 */
 function broadcastPluginState() {
@@ -1272,6 +1304,8 @@ async function pollPluginRequests() {
           setQuotaEnabled(req.enabled, wc, req.requestId);
         } else if (req && (req.action === "quota-src" || req.action === "quota-src-key" || req.action === "quota-src-refresh")) {
           handleQuotaSourceRequest(req, wc);
+        } else if (req && (req.action === "model-pull-list" || req.action === "model-pull-fetch" || req.action === "model-pull-apply")) {
+          handleModelPullRequest(req, wc);
         } else if (req && req.action === "quota-refresh") {   // ⚙/chip 手动刷新：绕过 TTL 与软冻结
           const started = quotaClient && quotaEnabled() && (typeof req.sourceId === "string" && req.sourceId.length <= 256
             ? quotaClient.refreshSource(req.sourceId) : quotaClient.refresh());

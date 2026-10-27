@@ -28,7 +28,7 @@ MAX_RATIO = 1000
 SEMVER = r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
 PLUGIN_FILES = (
     "usage_mcp.py", "zusage.py", "patch_install.py", "install_monitor.py",
-    "inject-main.cjs", "plugin-updater.cjs", "plugin-storage.cjs", "quota-client.cjs", "runtime_lock.py", "usage_stats.py", "turn-stats.js", "overlay.js",
+    "inject-main.cjs", "plugin-updater.cjs", "plugin-storage.cjs", "quota-client.cjs", "model-puller.cjs", "runtime_lock.py", "usage_stats.py", "turn-stats.js", "overlay.js",
     "plugin-release.cjs", "release_unpack.py", "overlay_install.py", "token_rate.py", "renderer_bridge.py",
     "plugin_auto_update.py", "restart_notice.py", ".mcp.json", "README.md",
     ".zcode-plugin/plugin.json", ".claude-plugin/plugin.json", "hooks/hooks.json",
