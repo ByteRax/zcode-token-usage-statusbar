@@ -219,8 +219,10 @@ test('buildLiveTip lists per-agent rows with a sum line during the tool phase', 
   const end = src.indexOf('return "\\x01" + rows;', start);
   const brace = src.indexOf('}', end);
   assert.ok(start >= 0 && end > start && brace > end, '提取失败: buildLiveTip');
+  // v127：buildLiveTip 追加了颜色对照图例——注入真实 tpsBandLegend（不含 zuBarSpeedView）
+  const bandHelpers = src.slice(src.indexOf('  var TPS_BANDS = ['), src.indexOf('  /* 返回 null = 调用方应把这当成'));
   const now = 1000000;
-  const buildTip = vm.runInNewContext(src.slice(start, brace + 1) + '\nbuildLiveTip;', {
+  const buildTip = vm.runInNewContext(bandHelpers + src.slice(start, brace + 1) + '\nbuildLiveTip;', {
     L: (zh, en) => zh,
     Date: { now: () => now },
     subRate: { slots: {

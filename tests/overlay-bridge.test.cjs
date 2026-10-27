@@ -333,11 +333,11 @@ test('⑮ bar "generation speed" chip is untouched by the rich-text overlay path
   const { line } = completeTurn(h, store);
   // 完成态 chip：紧凑 tok/s + 档位色（v73 格式，与对话内长句无关）——富文本请求/交付全程不变
   assert.equal(instanceOf(h).liveEl().textContent, '250.0 t/s');
-  assert.equal(instanceOf(h).liveEl().className, 'zu-live ok');
+  assert.equal(instanceOf(h).liveEl().className, 'zu-live zu-sky');   // 250 t/s ∈ 200–300 快速档（v127 十档）
   h.window.__zusageDeliverTurnText('sid_a', RICH);
   assert.equal(line().textContent, RICH);
   assert.equal(instanceOf(h).liveEl().textContent, '250.0 t/s');
-  assert.equal(instanceOf(h).liveEl().className, 'zu-live ok');
+  assert.equal(instanceOf(h).liveEl().className, 'zu-live zu-sky');   // 250 t/s ∈ 200–300 快速档（v127 十档）
   h.runTimers(500);
   assert.equal(instanceOf(h).liveEl().textContent, '250.0 t/s');
 });
@@ -379,7 +379,7 @@ test('② matched session binds store and live segment shows c2t-estimated tok/s
   assert.ok(live, 'live segment node mounted');
   // 本会话尚无已完成轮次校准过比例：退回默认每 token 2 字符 → 3/2 = 1.5
   assert.equal(live.textContent, '1.5 t/s');
-  assert.equal(live.className, 'zu-live dim');
+  assert.equal(live.className, 'zu-live hot');   // 估算 1.5 t/s 套低速档（v127 估算态也分档）
   // 无桥时不渲染实时段（降级现状）：见用例①，liveEl 为 null
 });
 
@@ -394,7 +394,7 @@ test('③ completed turn swaps live text to final summary and inserts determinis
   assert.equal(stats.tokenRate, 250);
   // 悬浮条 chip 完成态：紧凑真实 tok/s + 档位色（与对话内长句 zuFinalText 分开，互不影响）
   assert.equal(inst.liveEl().textContent, '250.0 t/s');
-  assert.equal(inst.liveEl().className, 'zu-live ok');
+  assert.equal(inst.liveEl().className, 'zu-live zu-sky');   // 250 t/s ∈ 200–300 快速档（v127 十档）
   // 原始 turnId 形态（DOM data-turn-id）经 alias 映射同样命中
   assert.equal(inst.statsFor('t1').tokenRate, 250);
   const section = h.body.appendChild(new Element('section'));
@@ -725,7 +725,7 @@ test('⑰ a turn observed from "running" still shows its real rate normally (obs
   // 不会被这次新增的"历史存量"过滤误伤。
   assert.equal(instanceOf(h).statsFor('pt1').observedLive, true);
   assert.equal(instanceOf(h).liveEl().textContent, '250.0 t/s');
-  assert.equal(instanceOf(h).liveEl().className, 'zu-live ok');
+  assert.equal(instanceOf(h).liveEl().className, 'zu-live zu-sky');   // 250 t/s ∈ 200–300 快速档（v127 十档）
   assert.equal(line().textContent, '⚡ 250.0 token/s(本轮) · 输出 1,000 token · 耗时 5.0s');
 });
 

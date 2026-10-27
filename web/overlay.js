@@ -472,6 +472,45 @@
    * 完成的真实轮次自校准（bridge handle 级，session/store 换代即重置）；首轮尚无样本
    * 时退回 DEFAULT_CHARS_PER_TOKEN 粗略估计。完成态直接用 tracker 给出的真实 tok/s。 */
   var DEFAULT_CHARS_PER_TOKEN = 2;   // 校准前的粗略估计（中英混排粗略量级），有样本后立即被取代
+  /* v94 tok/s 十档色（与桌面 v127 同表同语义）：按**原始速度值**分档（含下限、不含
+   * 上限），本表是阈值/类名/文案的唯一事实源，CSS 只按类给色（.zu-light 组给浅色
+   * 深化值）。150 以下沿用原三档类名与色值，150 起蓝紫系新类，≥2000 Ultra 蓝紫
+   * 渐变 + ✦ 星点（CSS ::before 生成）。无效值（负数/NaN/±Infinity）返回 null，
+   * 调用方回退各自的中性展示，绝不判成低速。 */
+  var TPS_BANDS = [
+    { lo: 2000, hi: 0,    cls: "zu-ultra",   zh: "Ultra",  en: "Ultra" },
+    { lo: 1000, hi: 2000, cls: "zu-magenta", zh: "极高速", en: "Hyper" },
+    { lo: 800,  hi: 1000, cls: "zu-purple",  zh: "超高速", en: "Extreme" },
+    { lo: 500,  hi: 800,  cls: "zu-violet",  zh: "极速",   en: "Very fast" },
+    { lo: 300,  hi: 500,  cls: "zu-azure",   zh: "高速",   en: "Rapid" },
+    { lo: 200,  hi: 300,  cls: "zu-sky",     zh: "快速",   en: "Fast" },
+    { lo: 150,  hi: 200,  cls: "zu-teal",    zh: "较快",   en: "Brisk" },
+    { lo: 70,   hi: 150,  cls: "ok",         zh: "流畅",   en: "Smooth" },
+    { lo: 40,   hi: 70,   cls: "warm",       zh: "一般",   en: "Moderate" },
+    { lo: 0,    hi: 40,   cls: "hot",        zh: "低速",   en: "Slow" }
+  ];
+  function tpsBand(v) {
+    if (typeof v !== "number" || !isFinite(v) || v < 0) return null;
+    for (var i = 0; i < TPS_BANDS.length; i++) if (v >= TPS_BANDS[i].lo) return TPS_BANDS[i];
+    return TPS_BANDS[TPS_BANDS.length - 1];
+  }
+  /* tooltip 档位行文本：名称 + 数值范围；显示值 toFixed(1) 的舍入边界（199.96→"200.0"）
+   * 以本行的原始值档位为准。 */
+  function tpsBandText(b) {
+    return L(b.zh, b.en) + " · " + (b.hi ? b.lo + "–" + b.hi : "≥" + b.lo) + L(" t/s", " t/s");
+  }
+  /* tooltip 颜色对照图例（与桌面 v127 同款）：十档「数值↔颜色」升序一览；档位类与
+   * 条面同源，tip 内直接生效。纯静态字符串无用户数据（<40 手写成 &lt;40）。 */
+  function tpsBandLegend() {
+    var out = '<div class="rt-legend"><b>' + L("颜色对照", "Colour guide") + "</b>";
+    for (var i = TPS_BANDS.length - 1; i >= 0; i--) {
+      var b = TPS_BANDS[i];
+      out += '<span class="' + b.cls + '">' +
+        (b.lo === 0 ? "&lt;40" : b.hi ? b.lo + "–" + b.hi : "≥2000 Ultra") + "</span>";
+      if (i > 0) out += '<span class="rt-lsep">·</span>';
+    }
+    return out + "</div>";
+  }
   /* 返回 null = 调用方应把这当成"没有可展示的桥接视图"处理（回退 DB/不渲染），
    * 而不是当成"确定性地算出了没有速度"。 */
   function zuBarSpeedView(stats, charsPerToken) {
@@ -507,7 +546,11 @@
                  phase: "thinking" };
       }
       var est = stats.characterRate / (charsPerToken || DEFAULT_CHARS_PER_TOKEN);
-      return { cls: "dim", text: est.toFixed(1) + L(" t/s", " t/s"),
+      /* v94（与桌面 v127 同款）：估算也按原始估算值套同一张档位表；非有限/负数
+       * 估算保持中性 dim，绝不判成低速。 */
+      var vband = tpsBand(est);
+      return { cls: vband ? vband.cls : "dim", band: vband || null,
+               text: est.toFixed(1) + L(" t/s", " t/s"),
                /* phase 兜底 thinking：新轮刚开始（最后活动行还是 userInput）时
                 * stats.phase 为 null，不兜底会让图标在这一瞬回闪电再切回脑（闪烁）。 */
                phase: stats.phase || "thinking" };
@@ -522,8 +565,11 @@
      * "这个会话坏了"，而真相只是"这一轮的详细字段暂时没有"。DB 也没有值时调用方
      * 自然整枚 chip 不渲染。 */
     if (stats.tokenRate == null || !zuHasMeaningfulOutput(stats)) return null;
-    var cls = stats.tokenRate >= 70 ? "ok" : stats.tokenRate >= 40 ? "warm" : "hot";
-    return { cls: cls, text: stats.tokenRate.toFixed(1) + L(" t/s", " t/s"), phase: null };
+    /* v94：完成态真实值按 TPS_BANDS 分档；非有限/负数（宿主字段异常）当缺口径
+     * 处理返回 null，交回调用方回退 DB 最近一段，绝不套低速档。 */
+    var band = tpsBand(stats.tokenRate);
+    if (!band) return null;
+    return { cls: band.cls, band: band, text: stats.tokenRate.toFixed(1) + L(" t/s", " t/s"), phase: null };
   }
   /* 思考态动效图标（用户提供的设计稿）：呼吸脑轮廓 + 流动信号 + 脉冲节点，纯 CSS
    * 动画内嵌在 SVG 里（样式随节点走，不依赖外部样式表，宿主清 head 也不受影响）。
@@ -887,7 +933,7 @@
   /* ---------- 实例工厂（v61.1）：一个 pane 一套 条/面板/气泡/tooltip/定位循环。
    * slot 0 保留 #zusage-bar/#zusage-tip 兼容 id（泵热更新按它清理），其余实例仅类名。 */
   function spawnInstance(pid, slot) {
-    var VERSION = "v93";   // v82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v84 主标签页远端路由（工作台分组唯一主绑定上报 + 迟到载荷守卫，issue #30）→ v85 回答末尾统计行跟随万/亿开关 + tok→token → v86 历史轮 tracker 无记录（窗口滑出/换代/热更）或缺输出字段不再翻成"本轮统计不可用"，加 det 诊断 → v87 设置页排除：协调器/findComposer/deepFind/track 按 [data-testid="settings-page"] 祖先排除设置表单编辑框（MCP「请求头」textarea 被当聊天输入框、条挂进表单卡片）→ v88 工具动词「正在运行子智能体」压成「子代理运行中」（与桌面 v97 同文案；子代理速率估算为桌面桥专属，Web 无此链路） → v89 tooltip 伪边界 leave 过滤（与桌面 v99 同款）：Chrome 悬停链收缩/重算会补发 DOM 内部的 documentElement/tip mouseleave（格内 万↔1 空隙悬停、tooltip 本体停留均可复现弹出即灭），tipLeaveAt 贴边判定后取触发时刻最深 :hover 元素甄别（事件坐标/relatedTarget 实测不可信）——仍悬停在本档具体元素上即伪 leave 一律忽略，hover 链截断到 body/iframe/空链（空档区/已进子上下文/甩出窗口）维持 v47 分流 → v90 思考中计时随语言本地化（中文「1 时 2 分 3 秒」/英文「1 h 2 m 3 s」，与桌面 v99 同文案；Web 无富文本 turn-text 链——__zusagePluginRequests 仅桌面主进程消费，本端回答末尾恒为简化占位行、无采样时刻，不受 token_rate.py 改版影响）→ v91 思考计时锚定 turnHeader.startedAt（与桌面 v116 同源语义：宿主创建 header 恒写入 startedAt，重绑不清零；缺字段或时钟未及起点回退首观测起算） → v92 思考计时中文全紧邻「7分16秒」（与桌面 v125 同款，时段间空格去除；英文「7 m 16 s」不动） → v93 思考计时英文数字与单位紧邻「7m 16s」（与桌面 v126 同款，时段间留空格）   // 悬停 ⚙ 面板可见；版本号随部署代际递增
+    var VERSION = "v94";   // v82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v84 主标签页远端路由（工作台分组唯一主绑定上报 + 迟到载荷守卫，issue #30）→ v85 回答末尾统计行跟随万/亿开关 + tok→token → v86 历史轮 tracker 无记录（窗口滑出/换代/热更）或缺输出字段不再翻成"本轮统计不可用"，加 det 诊断 → v87 设置页排除：协调器/findComposer/deepFind/track 按 [data-testid="settings-page"] 祖先排除设置表单编辑框（MCP「请求头」textarea 被当聊天输入框、条挂进表单卡片）→ v88 工具动词「正在运行子智能体」压成「子代理运行中」（与桌面 v97 同文案；子代理速率估算为桌面桥专属，Web 无此链路） → v89 tooltip 伪边界 leave 过滤（与桌面 v99 同款）：Chrome 悬停链收缩/重算会补发 DOM 内部的 documentElement/tip mouseleave（格内 万↔1 空隙悬停、tooltip 本体停留均可复现弹出即灭），tipLeaveAt 贴边判定后取触发时刻最深 :hover 元素甄别（事件坐标/relatedTarget 实测不可信）——仍悬停在本档具体元素上即伪 leave 一律忽略，hover 链截断到 body/iframe/空链（空档区/已进子上下文/甩出窗口）维持 v47 分流 → v90 思考中计时随语言本地化（中文「1 时 2 分 3 秒」/英文「1 h 2 m 3 s」，与桌面 v99 同文案；Web 无富文本 turn-text 链——__zusagePluginRequests 仅桌面主进程消费，本端回答末尾恒为简化占位行、无采样时刻，不受 token_rate.py 改版影响）→ v91 思考计时锚定 turnHeader.startedAt（与桌面 v116 同源语义：宿主创建 header 恒写入 startedAt，重绑不清零；缺字段或时钟未及起点回退首观测起算） → v92 思考计时中文全紧邻「7分16秒」（与桌面 v125 同款，时段间空格去除；英文「7 m 16 s」不动） → v93 思考计时英文数字与单位紧邻「7m 16s」（与桌面 v126 同款，时段间留空格） → v94 tok/s 速度十档色（与桌面 v127 同表同语义：TPS_BANDS 唯一事实源，原始值分档；150 起蓝紫系纯色、≥2000 Ultra 蓝紫渐变+✦ 星点，估算态与完成态同表分档，无效值中性 dim 或不渲染 chip，tooltip 档位行改动态，另加静态「颜色对照」图例（十档数值↔颜色升序一览，随主题切换））   // 悬停 ⚙ 面板可见；版本号随部署代际递增
     var instanceDisposed = false, heavyTimer = 0, frame = 0, themeObserver = null;
     var globalListeners = [];
     function listenGlobal(target, type, fn, capture) {
@@ -951,6 +997,18 @@
        * 绿档在条面小字号/细进度条上发白（用户实测）；改用高对比自调档，
        * 浅色加深版在 .zu-light 组。 */
       ".ok{color:#3ecf8e}.warm{color:#f5b944}.hot{color:#ff6b57}" +
+      /* v94 速度十档新增蓝紫系（与桌面 v127 同表同色，阈值唯一事实源 = JS TPS_BANDS）。
+       * ≥2000 Ultra：静态蓝紫渐变（background-clip:text 染字），@supports 外回退
+       * 中间站纯紫；✦ 星点用 content:"✦"/"" 生成——替代文本为空，屏幕阅读器读不到、
+       * 不占 textContent（原地改字路径零改动），静态无动画不发光。 */
+      ".zu-teal{color:#2dd4bf}.zu-sky{color:#38bdf8}.zu-azure{color:#6d9fff}" +
+      ".zu-violet{color:#9b8cff}.zu-purple{color:#bb86fc}.zu-magenta{color:#d88cff}" +
+      ".zu-ultra{color:#a78bfa}.zu-ultra::before{content:\"✦\"/\"\";margin-right:2px}" +
+      "@supports(-webkit-background-clip:text){" +
+      ".zu-ultra{background:linear-gradient(100deg,#60a5fa 0%,#a78bfa 50%,#c084fc 100%);" +
+      "-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}" +
+      ".zu-ultra::before{background:linear-gradient(100deg,#60a5fa 0%,#a78bfa 50%,#c084fc 100%);" +
+      "-webkit-background-clip:text;background-clip:text}}" +
       /* 超限=亮红呼吸闪烁（v38 定性"亮红闪烁优先于一切档位"，v54 落成动画） */
       "@keyframes zuexc{0%,100%{opacity:1}50%{opacity:.4}}" +
       ".exc{color:var(--color-destructive,#ff2d55);text-shadow:0 0 8px rgba(255,45,85,.5);animation:zuexc 1.1s ease-in-out infinite}" +
@@ -1082,6 +1140,11 @@
       ".tip .rt-row b{flex:0 0 auto;min-width:86px;color:var(--color-tooltip-foreground,#fafafa);font-weight:600}" +
       ".tip .rt-row span{color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
       ".tip .rt-note{margin-top:7px;padding-top:6px;border-top:1px solid var(--color-border,transparent);color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      /* v94 颜色对照图例（与桌面 v127 同款）：档位类与条面同源，tip 内直接生效、随 .zu-light 切浅色 */
+      ".tip .rt-legend{display:flex;flex-wrap:wrap;gap:3px 10px;margin-top:8px;padding-top:7px;" +
+      "border-top:1px solid var(--color-border,transparent);font-weight:600}" +
+      ".tip .rt-legend b{color:var(--color-tooltip-tag-foreground,#a6a6a6);font-weight:500;margin-right:2px}" +
+      ".tip .rt-lsep{color:var(--color-tooltip-tag-foreground,#a6a6a6);font-weight:400}" +
       ".ttabs{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:7px}" +
       ".ttab{cursor:pointer;padding:2px 10px;border-radius:999px;background:var(--color-tooltip-tag,#262626);" +
       "color:var(--color-tooltip-tag-foreground,#a6a6a6);white-space:nowrap;font-size:calc(var(--ui-font-size,14px) - 1px);" +
@@ -1123,6 +1186,18 @@
       ".zusage-exc.zu-light{box-shadow:0 12px 32px rgba(15,23,42,.14),0 4px 18px rgba(220,38,38,.1)}" +
       ".zu-light .exc{text-shadow:none}" +
       ".zu-light .ok{color:#0f9d6c}.zu-light .warm{color:#b6791a}.zu-light .hot{color:#d8482f}" +
+      /* v94 速度新七档浅色深化值（规格初稿；150 以下沿用既有三档实测值不动）。
+       * Ultra 浅色渐变同名覆盖（特异性更高），@supports 外回退纯紫 #6746d2。 */
+      ".zu-light .zu-teal{color:#087d74}.zu-light .zu-sky{color:#0875a8}.zu-light .zu-azure{color:#405fd0}" +
+      ".zu-light .zu-violet{color:#6249c6}.zu-light .zu-purple{color:#8042bd}.zu-light .zu-magenta{color:#9638a8}" +
+      ".zu-light .zu-ultra{color:#6746d2}" +
+      /* background 简写会把 background-clip 重置回 border-box，浅色规则特异性更高——
+       * 这里必须连带重申 clip，否则渐变整块糊在字底（截图验收抓获）。 */
+      "@supports(-webkit-background-clip:text){" +
+      ".zu-light .zu-ultra{background:linear-gradient(100deg,#3156cb 0%,#6746d2 50%,#9139bf 100%);" +
+      "-webkit-background-clip:text;background-clip:text}" +
+      ".zu-light .zu-ultra::before{background:linear-gradient(100deg,#3156cb 0%,#6746d2 50%,#9139bf 100%);" +
+      "-webkit-background-clip:text;background-clip:text}}" +
       ".zu-light .sublive{color:#0c8a63;background:rgba(15,140,102,.12)}" +
       ".zu-light .xb-copied{color:#0c8a63}" +
       /* 减少动态偏好：关闭呼吸/闪烁与悬浮过渡 */
@@ -1427,19 +1502,25 @@
           ttH(L("生成速度", "Generation speed")) +
           ttRow(L("生成中", "While running"), L("按文本增量算出的字符/s，除以「每 token 字符数」估算 tok/s；该比例取自本会话最近一次完成的真实轮次，随每轮刷新（首轮无样本时用粗略默认值）", "estimated from the text-delta chars/s divided by a chars-per-token ratio; the ratio is calibrated from this session's most recently completed turn and refines each turn (a rough default is used before the first sample)")) +
           ttRow(L("完成后", "When done"), L("切换为本轮真实 tok/s：输出 tokens（含思考）÷ 模型生成时长；本轮缺口径时回退数据库最近一段值", "switches to this turn's real tok/s: output tokens (thinking incl.) ÷ model generation time; falls back to the latest DB segment when this turn's basis is missing")) +
-          ttRow(L("档位", "Bands"), L("≥70 绿 · 40–70 黄 · <40 红（仅完成态）", "≥70 green · 40–70 yellow · <40 red (completed only)")) +
+          /* v94：档位行动态显示当前档（与桌面 v127 同款）；状态词阶段整行省略 */
+          (speedView.band ? ttRow(L("档位", "Band"), tpsBandText(speedView.band)) : "") +
+          tpsBandLegend() +
           ttNote(L("数据来自 renderer 会话状态（只读桥），实时更新，不经过本地数据库轮询；生成中的数值为字符增量估算", "Data comes from the renderer session state via the read-only bridge, updating live, independent of local database polling; running values are estimated from text deltas")));
-      } else if (dbTps) {
+      } else if (dbTps && isFinite(dbTps) && dbTps > 0) {
+        /* v94（与桌面 v127 同款）：负数/±Infinity 按无数据处理（整枚 chip 不渲染），
+         * 绝不判成低速；正有限值按 TPS_BANDS 分档，档位行动态显示。 */
         liveKindCur = "fallback";
         livePhaseCur = "";
         liveIconCur = "bolt";
-        var tpsCls = dbTps >= 70 ? "ok" : dbTps >= 40 ? "warm" : "hot";
+        var tband = tpsBand(dbTps);
         it(ico('<path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/>') +
-          '<span class="zu-live ' + tpsCls + '">' + dbTps + '</span><span class="dim">t/s</span>',
+          '<span class="zu-live ' + tband.cls + '">' + dbTps + '</span><span class="dim">t/s</span>',
           "\x01" +
           ttH(L("生成速度 · 最近一段", "Generation speed · latest segment")) +
+          ttRow(L("当前读数", "Current reading"), dbTps + " t/s") +
+          ttRow(L("档位", "Band"), tpsBandText(tband)) +
           ttRow(L("口径", "Basis"), L("输出 tokens（含思考）÷ 生成耗时", "output tokens (thinking incl.) ÷ generation time")) +
-          ttRow(L("档位", "Bands"), L("≥70 绿 · 40–70 黄 · <40 红", "≥70 green · 40–70 yellow · <40 red")) +
+          tpsBandLegend() +
           ttNote(L("回答期间每段完成即刷新。回复末尾的统计行是整问加权均值，两者数值不同属正常",
             "Refreshes as each segment completes. The reply-end rate line is the whole-turn weighted average, so the two legitimately differ")));
       } else {

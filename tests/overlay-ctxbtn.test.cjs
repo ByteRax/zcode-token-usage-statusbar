@@ -194,7 +194,8 @@ test('dispose restores the native form of its own pane button', () => {
 });
 
 test('enhancement styles exist: band colors, geometry override, pct span and light variants', () => {
-  assert.match(source, /\[data-testid=chat-context-usage-trigger\]\[data-zusage-armed\]\{color:#3ecf8e!important/);
+  assert.match(source, /\[data-testid=chat-context-usage-trigger\]\[data-zusage-armed\]\{color:#72c9a2!important/);   // v127 正常绿柔和化
+  assert.match(source, /\[data-zusage-armed\] \.zu-ctxpct\.ok\{color:#72c9a2\}/);   // 暗色 pct 作用域覆盖（环走 currentColor）
   assert.match(source, /width:auto!important;min-width:1\.75rem;padding:0 3px;gap:4px\}/);
   assert.match(source, /\[data-zusage-armed\]\[data-zusage-band=hot\]\{color:#ff6b57!important\}/);
   assert.match(source, /\[data-zusage-armed\]\[data-zusage-band=exc\]\{color:var\(--color-destructive,#ff2d55\)!important/);
@@ -205,5 +206,6 @@ test('enhancement styles exist: band colors, geometry override, pct span and lig
   assert.doesNotMatch(source, /\.zu-ctxpct\{[^}]*pointer-events:none/);
   assert.doesNotMatch(source, /\.zu-ctxpct:hover/);
   assert.doesNotMatch(source, /pctEl\.addEventListener\(t, function \(e\) \{ e\.stopPropagation/);
-  assert.match(source, /\[data-zusage-light\] \.zu-ctxpct\.ok\{color:#0f9d6c\}/);
+  assert.match(source, /\[data-zusage-light\]\[data-zusage-band=ok\]\{color:#187b58!important\}/);
+  assert.match(source, /\[data-zusage-light\] \.zu-ctxpct\.ok\{color:#187b58\}/);
 });
