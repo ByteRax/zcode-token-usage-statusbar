@@ -573,7 +573,7 @@ test('⑪ heartbeat tick alone (no new store push) still advances the observed-s
   ]) {
     h.clock.now = now;
     h.runTimers(100);
-    assert.equal(instanceOf(h).liveEl().textContent, '思考中…' + expected.replace(/(\d) /g, '$1'));
+    assert.equal(instanceOf(h).liveEl().textContent, '思考中…' + expected.replace(/ /g, ''));
   }
   // 无可测字符流=思考态：chip 图标切到动效脑（v77：用户语义"生成中"改"思考中"）
   assert.equal(instanceOf(h).liveIconKind(), 'think');
