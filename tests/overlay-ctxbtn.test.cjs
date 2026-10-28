@@ -297,6 +297,7 @@ test('both families contribute to the badge and countdown', () => {
     bigmodel: rstEntry(2 * 3600e3, 2), zai: rstEntry(5 * 3600e3, 3) }));
   const b = rst(ui.btn);
   assert.match(b.innerHTML, /<\/svg>2\+3 · /);
+  assert.match(b.innerHTML, /\d+时\d+分\d+秒/);   // 时分秒全档、精确到秒（用户规格 2026-10-28）
   assert.equal(b.className, 'zu-ctxrst zu-rst-mid zu-rst-cd');   // 全局最早 2h → 黄（阈值内带倒计时类）
   // 阈值外（>24h）不显示倒计时
   h.window.__zusageUpdate(payloadWithResets(h.payload, { bigmodel: rstEntry(25 * 3600e3, 2) }));
