@@ -8,7 +8,7 @@
 - 每次提交前先 `git fetch fork` 比对 fork/main（`git status` 快照不可靠，对方可能已提交推送）；`git add` 一律显式列文件，绝不用 `-A`/`-u`；**同一文件内的并行改动无法靠显式 add 隔离**。
 - 还原共享文件前全文读完 diff，逐行确认 100% 是自己的改动；归属按 +/- 行判断不按 hunk 头（hunk 是按行距合并的展示单位不是作者边界）；否则用精确编辑撤回自己的行，绝不 `git checkout --` 整文件（曾抹掉他人未提交改动）。误抹后以原始字节最小恢复并告知用户。
 - diff 归属拿不准的撞车解法=整文件替换不 merge：备份到仓库外并核对 sha256 → `git checkout --` 恢复 → 基于对方提交建新分支 → cp 回整文件 → 手工折入对方独有内容 → fetch 确认未再前进 → push。
-- `git stash pop` 会把无冲突文件直接放进暂存区、`git commit -m` 会扫走整个 index：分组提交前先 `git restore --staged` 不该进的路径。worktree 收尾顺序 = `git branch -f main fork/main` → checkout main → 最后 `git branch -d`（反了报 used by worktree）；更新本地 main 指针用 `git branch -f` 不 checkout。
+- `git stash pop` 会把无冲突文件直接放进暂存区、`git commit -m` 会扫走整个 index：分组提交前先 `git restore --staged` 不该进的路径。worktree 收尾顺序 = `git branch -f main fork/main` → checkout main → 最后 `git branch -d`（反了报 used by worktree）；更新本地 main 指针：没检出 main 时用 `git branch -f` 不 checkout，检出着 main 的工作区用 `git merge --ff-only fork/main`（与并行未提交改动撞路径时 git 拒绝即报告，不 stash、不 checkout）。
 - 长会话怀疑做过同类修复，先 `git worktree list` + `git branch -a` 扫残留 worktree/分支再动手。
 - `.gitattributes` 固定 LF；发现 CRLF 或他人未提交改动时先保留数据，用干净的独立工作树验证；禁止用强制 reset/clean/重新检出解决问题而丢失用户修改。
 

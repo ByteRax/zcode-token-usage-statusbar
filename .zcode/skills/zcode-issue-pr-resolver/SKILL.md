@@ -174,7 +174,7 @@ python3 -B "${ZCODE_SKILL_DIR}/scripts/triage.py" released <提交>     # 该提
    ```
 
    写法与 `.zcode/rules/repo-workflow.md` 一致。不要用 `git push fork main`：本地 main 常落后于远端（主工作区有并行改动，不能 ff）而被拒；而且用本地分支推送失败后，本地的 `fork/main` 引用可能被改写成镜像的旧位置，之后按上面的写法推送会被 GitHub 判成非快进。所以推送前后都先 `git fetch fork` 取最新 tip。回读 `git ls-remote gitcode main` 的 SHA 等于合并后的 `fork/main`；失败只在报告里写明。
-6. 本地 `main` 指针：主工作区没有检出 `main`、且 `git merge-base --is-ancestor main fork/main` 成立（本地 main 有 `fork/main` 没有的提交时，`branch -f` 会让它们只剩 reflog）时，可按 `.zcode/rules/repo-workflow.md` 用 `git branch -f main fork/main` 更新；主工作区正停在 `main` 且有并行改动（或别的 worktree 检出了 main）时**不要**动，不 ff、不 checkout，只在最终报告里说明本地 main 落后于 `fork/main`。
+6. 本地 `main` 指针：合并后把本地 main 跟进到 `fork/main`。先 `git merge-base --is-ancestor main fork/main` 确认本地 main 没有 `fork/main` 缺失的提交（有的话停下报告，`branch -f` 会把它们挤到只剩 reflog）。主工作区没检出 `main` 时按 `.zcode/rules/repo-workflow.md` 用 `git branch -f main fork/main`；检出着 `main`（主工作区或别的 worktree）时，就在检出它的那个工作区 `git merge --ff-only fork/main`——与并行未提交改动撞路径时 git 会拒绝，此时如实报告受阻文件即可，不 stash、不 checkout、不强推；ff 成功与否都不再把「本地 main 落后」当遗留事项。
 7. 清理（回到项目根执行）：`git push fork --delete fix/issue-N`，`git worktree remove .worktrees/issue-N`（有未跟踪文件会被拒绝，先看是什么，确认是自己生成的再清，不要直接 `--force`）；外部 PR 同样清理 `pr-N` 分支与 worktree。删本地分支前显式确认已在 `fork/main`：`git merge-base --is-ancestor fix/issue-N fork/main && git branch -D fix/issue-N`。
 
 ## 6. 回复、致谢、关闭
