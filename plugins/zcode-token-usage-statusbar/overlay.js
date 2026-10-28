@@ -68,13 +68,15 @@
   } catch (e) { }
 
   /* ---------- 共享状态（多实例一致）：显示项/语言/上下文覆盖/最近一次数据 ---------- */
-  var LS = { show: "zusage3.show", ctxOv: "zusage3.ctxOv", lang: "zusage3.lang", cnNum: "zusage3.cnNum", sec: "zusage3.sec" };
+  var LS = { show: "zusage3.show", ctxOv: "zusage3.ctxOv", lang: "zusage3.lang", cnNum: "zusage3.cnNum", sec: "zusage3.sec", pill: "zusage3.pill" };
   var state = {
     show: { win: 1, turn: 1, today: 1, sub: 1, tools: 1, git: 1 },   // git：工具行 Git 状态 chip（v96，默认开）
     ctxOv: "", data: null,
     lang: "zh", pluginUpdate: window.__zusagePluginState || null,
     /* 万/亿单位开关：缺省开启，仅显式 "0" 关闭；只在中文界面展示并生效（英文始终 K/M/B） */
     cnNum: 1,
+    /* 紧凑药丸形态（v125）：缺省关闭——v80 拍板的全宽 in-card 形态仍是缺省；显式 "1" 才开启 */
+    pill: 0,
     /* v99 设置面板当前分区（非法值在 buildPanel 回退首分区，不在这里校验） */
     settingsSec: "display",
     /* 逐问速率行开关：真值在运行时 config.json 的 answer_rate_line（主进程随插件状态推送
@@ -90,7 +92,7 @@
   /* ---------- i18n（v57）：L(中文, English) 内联双语文案，语言存 localStorage ---------- */
   function L(zh, en) { return state.lang === "en" ? en : zh; }
   /* 万/亿单位是否生效：状态条 fmt()、占位统计行与 turn-text 请求共用同一判定 */
-  function cnUnits() { return state.lang !== "en" && !!state.cnNum; }
+  function cnUnits() { return state.lang !== "en" && !!state.cnNum && !state.pill; }   // v125 药丸形态固定 K/M/B
   function ls(k, d) { try { return localStorage.getItem(k) ?? d; } catch (e) { return d; } }
   function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) { } }
   try {
@@ -101,6 +103,7 @@
     state.ctxOv = ls(LS.ctxOv, "");
     if (ls(LS.lang, "") === "en") state.lang = "en";
     if (ls(LS.cnNum, "") === "0") state.cnNum = 0;
+    if (ls(LS.pill, "") === "1") state.pill = 1;
     var s1 = ls(LS.sec, "");
     if (s1) state.settingsSec = s1;
   } catch (e) { }
@@ -109,6 +112,7 @@
     lsSet(LS.ctxOv, state.ctxOv);
     lsSet(LS.lang, state.lang);
     lsSet(LS.cnNum, state.cnNum ? "1" : "0");
+    lsSet(LS.pill, state.pill ? "1" : "0");
     lsSet(LS.sec, state.settingsSec);
   }
 
@@ -359,6 +363,7 @@
    * 挂 body 的 fixed 浮层，免疫消息流层叠上下文）。document 级、只此一份，不随 pane 实例走。 */
   var rateTip = document.createElement("div");
   rateTip.className = "tip zusage-rate-tip";
+  if (state.pill) rateTip.classList.add("zu-pill-skin");
   /* .tip 的类样式挂在条实例的 <style> 里（样式随条走）——本浮层是 document 级的，
    * 实例销毁/重建的间隙会失去类样式。内联关键属性兜底（值与 .tip 类一致，含主题 var），
    * 类样式在位时两者相同、不冲突；display 由 show/hide 控制。 */
@@ -416,6 +421,7 @@
    * leave 自管理，内容按 chip.__zuQ（render 时写入的最近快照）在悬停时即时生成。 */
   var quotaTip = document.createElement("div");
   quotaTip.className = "tip zusage-quota-tip";
+  if (state.pill) quotaTip.classList.add("zu-pill-skin");
   quotaTip.style.cssText = rateTip.style.cssText;
   document.body.appendChild(quotaTip);
   var quotaTipFor = null;
@@ -690,6 +696,7 @@
    * 内容按 chip.__zuGit（{path, st, stale}）渲染；分支名/上游/路径是用户数据，一律过 gitEsc。 */
   var gitTip = document.createElement("div");
   gitTip.className = "tip zusage-git-tip";
+  if (state.pill) gitTip.classList.add("zu-pill-skin");
   gitTip.style.cssText = rateTip.style.cssText;
   document.body.appendChild(gitTip);
   var gitTipFor = null;
@@ -1472,7 +1479,7 @@
   /* ---------- 实例工厂（v61.1）：一个 pane 一套 条/面板/气泡/tooltip/定位循环。
    * slot 0 保留 #zusage-bar/#zusage-tip 兼容 id（泵热更新按它清理），其余实例仅类名。 */
   function spawnInstance(pid, slot) {
-    var VERSION = "v133";   // v82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v84 主标签页远端路由（工作台分组唯一主绑定上报 + 迟到载荷守卫，issue #30）→ v85 回答末尾统计行跟随万/亿开关 + tok→token → v86 历史轮 tracker 无记录（窗口滑出/换代/热更）或缺输出字段不再翻成"本轮统计不可用"，加 det 诊断 → v87 主叶归属增 last-session 回退（组零证据时唯一远端记录放行，issue #30 复测：单会话主标签页不建组）→ v88 运行态心跳与两处扫描 tick 2s→0.5s（富文本重试 6→24 次等价放大）→ v89 ⚙ 面板更新进度：downloading 阶段文案 + 下载（字节）/安装（校验→安装→同步）双进度条，缺 progress 的旧主进程自动隐藏 → v90 主标签页/分栏归属改按本窗会话节点身份（renderer 桥按版本/资产/锚点写 SessionPane 属性，移除 workbench-groups/last-session 共享回退）+ 心跳 0.5s→0.1s（扫描维持 0.5s）→ v91 设置页/权限面板冒条修复（PR #44：inSettingsView 三处派发排除 + anchorCardOf 面板锚点改判）收编收尾：排除标记并集（settings-page testid + content/panel 双 frame）、track 显隐第四处防御 → v92 ⚙ 更新区固定显示可复制的重装口令（源码安装无法自动更新时引导用户发给 agent）→ v93 原生上下文按钮（chat-context-usage-trigger）增强：环填充/四档色/右侧百分比镜像状态条上下文格（ctxBandOf 同源），cw 缺失还原原生形态 → v94 状态条删除「上下文容量」格（UI+tooltip，该口径由原生按钮增强承载），⚙ 面板同步去掉「上下文」开关，子代理格改始终展示（零值也显示）→ v95 ⚙ 更新区去掉 v92 重装口令提示块（源码清单的仓库来源改由宿主插件管理器直接更新，不再报渠道不一致），更新来源文案增「仓库源码」分支→ v96 套餐额度 chip（默认关）：挂原生上下文按钮左侧（wrapper 内前插，与按钮增强同款双 reapply/还原），数据来自主进程 quota 字段（解密宿主 OAuth 凭据直查 monitor 端点，账号级套餐池口径），会话首个 main_turn 完成前不显示；自绘 tooltip 走 rateTip 独立浮层模式；chip 改多窗分段：每窗一段（中文 5小时/7天，英文 5h/7d）各自按 80/95/100 档位色，分隔符 |；余额类型单段渲染就绪（余额 ¥100.00，阶段 3 数据源接入即用）；去掉环形，容器不着色 → v97 子代理速率（T1+T2）：zusage sub 汇总加 rate_avg/每子代理 tps_avg（已完成段加权平均，口径同 _turn_rate），子代理格 tooltip/明细面板展示；Agent 运行期主 chip 附加「子代理运行中 · 估 X t/s」——turn-stats 透传 subagent 行 childSessionId，overlay 据此用同款 zuTryBindStore 绑子代理会话 store 做字符增量估算（运行中请求未入库，DB 无实时数据；150s 采样实锤零 running 行），思考文本不进 rows 时退回纯状态词；工具动词「正在运行子智能体」压成「子代理运行中」（web 同步文案）；同日多槽位化：turn-stats 暴露 runningSubagents 全集（并行时 rowId 前 8 个），每子代理独立绑定/2s 节流，主 chip 显示合计速率（并行 ≥2 时动词后缀 ×N），chip tooltip 与子代理明细面板逐个实时展示运行中估算（tooltip 随原地改字同步 __tip 重画；面板 800ms tick 原地刷新 .subrate，汇总页运行块含 DB 尚无记录的新子代理） → v98 额度实时选源恢复（v4-model-config 观察 + quota-providers 全窗快照上报 + byProvider 定向刷新、空选择 fail-closed）与 sub2api 额度 UI（今日/本月窗口、窗口行内金额明细、Key 总额度、订阅截止、账户余额标题） → v99（主线并流）tooltip 伪边界 leave 过滤：Chrome 悬停链收缩/重算会补发 DOM 内部的 documentElement/tip mouseleave，tipLeaveAt 贴边判定后取触发时刻最深 :hover 元素甄别，仍悬停在本档具体元素上即伪 leave 一律忽略交回 mousemove 流（主线 v100 滚动豁免=本链 v106 同义，不另列） → v99.1（主线并流）apiKey 模式 BigModel/Z.ai（bigmodel-api[-N]/zai-api[-N]）额度 chip 标题家族判定（issue #68；数据链在 quota-client） → v99.2 思考中计时随语言本地化（中文「1 时 2 分 3 秒」/英文「1 h 2 m 3 s」，空格分隔、零段照旧省略）；回答末尾行采样时刻改完整中文日期时间（⏱ 2026 年 10 月 23 日 11 点 20 分 28 秒，token_rate.py format_turn_line 同步改版） → v100 设置面板分区导航（ZCode 设置侧栏同款：左栏三组分区导航 + 内容区单分区显隐，激活项 aria-current="page"，选择持久化 zusage3.sec；面板窄于 620px 时导航收成 icon rail） → v101 设置面板高度在打开瞬间按内容自然高锁定（切分区不再抖动，resize 只收紧不放大） → v102 额度源预设模板（CC Switch/magpie 同款选模板只填 Key：官方域变体 chip 一键写入 secrets baseUrl，minimax 可信域机制推广到 siliconflow 币种随域；deepseek/openrouter/kimi/anthropic/mimo/volcano 附控制台取 Key 链接，走 openExternal 桥） → v103 额度源列表卡片化布局（每源圆角卡片+间距，凭据框限宽 420px，长说明段落补水平边距；纯 CSS，结构行为不变） → v104 源状态文案补 disabled=已关闭映射 + 主进程对显式关闭源统一报 disabled（修「开关已关却显示待查询」矛盾）；刷新/获取 Key 按钮补 title 提示，关闭源的刷新按钮禁用 → v105 「上下文容量」弹层（hover-card-content）内压缩上下文按钮：命中率行下方全宽胶囊按钮（原生 secondary 配色全走客户端语义变量），弹层关即卸载（Radix 无 forceMount）故 body MutationObserver + heavy 对账双触发、DOM 存在性幂等（多实例安全），插入锚=「剩余额度」border-t 段前（缺则容器尾）+位置兜回；点击弹原生 AlertDialog 视格确认框（遮罩/Esc/外点关闭、Enter 确认），确认后优先走 fiber 上原生残留的 onSendCompressionCommand("/compact")（SessionPane 压缩入口，不动输入框草稿），缺失回落官方 E2E 输入桥 __zcodeLexicalInputE2E.setText + 发送键（Lexical 直写 DOM 不生效，禁用该路径；草稿非空拒绝） → v106 额度 tooltip 滚动豁免：hideTipsOnScroll 不再收 quotaTip（chip 固定 composer 工具行与 gitTip 同理），修思考中流式输出自动滚动致悬停弹出即灭；chip 随宿主重建 detach（无 mouseleave）由 scanRateLines 加 isConnected 健康检查兜底收起 → v107 压缩确认框补行为提示：压缩进行中发送新消息/停止会打断压缩（实测 16:27 新 turn 启动同秒 compact turn TURN_CANCELLED，cancelled_by_user=1；引擎对该次摘要流挂起 134s 无首 token 也不重试 retryable=0），确认框加 hint 行中性告知 → v108 压缩主通道按用户指定改为字面 "/compact" 输入提交（E2E 桥 setText+发送键；流式中 v4-stop 可见/草稿非空/发送键 disabled 三重拒绝），fiber 命令信封降兜底；hint 升级为「通常需 2-4 分钟且无进度反馈」（DB 实证：全库 compact 请求无首 token 但正常完成，72s-9.6min，14:44 同会话同模型 165s 成功先例；16:25/16:43 两次「卡住」实为 2m20s 被新消息 TURN_CANCELLED，非故障） → v109 压缩主通道按用户指定改回直接调会话发送接口（fiber onSendCompressionCommand 命令信封：不碰输入框/发送键、流式中交引擎排队，修字面输入通道在生成中被发送键禁用卡住的问题），字面 "/compact" 输入提交降兜底（三重门控仅作用于兜底） → v110 压缩提交函数改在弹框打开瞬间（弹层必存活、锚点几何可信）解析并缓存，修复确认时弹层已被 Radix 卸载、几何重解析退化为「离视口左上角最近」致多分栏把 /compact 发进错误会话（P1）；兜底字面输入通道的流式/发送键/草稿三重门控全部前置到 setText 之前（拒绝不再残留草稿）；Enter 确认限定焦点在弹框内（无焦点陷阱下防焦点外 Enter 误触发确认） → v111 额度 chip 默认展示：quota_enabled 缺省开（显式 false 才关，真值链在 inject-main）；chip 二级门控 not_configured/unsupported 从静默隐藏改中性灰提示「额度 未配置/暂不支持」（源被 ⚙ 显式关闭仍隐藏），tooltip 补 info 分支引导配置 → v112 Start Plan 免费档池（quota-client 新增 zcode-start 适配器走 zcode.z.ai billing/balance 独立链，与 coding plan 的 monitor 端点分池；选源路由与 quotaFamily 判定补 start-plan 分支修 start-plan pane 误读 GLM Coding Max 池；chip 增「套餐」分段（windows.plan，one_time 发放池聚合已用%），tooltip 套餐池行按 expires 标记切「到期」措辞） → v113 夜间审计加固：quotaBalanceText 内建转义（currency 是远程响应字符串，chip/tooltip 双 innerHTML sink；parts label/amount 单次转义修双重转义；「其他源」行标签转义归位；aria-label 走 plain 纯文本变体不读实体）→quotaTip 补内容签名幂等 __zuTipSig（同 gitTip，悬停期间周期对账不再打断文本选择）→子代理明细面板数据签名幂等（滚动位置/选择不被每 1.5s 推送整面板重建重置；运行中估算仍由面板 800ms tick 原地刷新）→额度 chip 签名重写保留 zu-qbusy（点击刷新动画不被推送截断，同 git chip）→⚙ 源列表 id/label/preset/keyUrl 属性级转义 aEsc（custom:<providerId> 可含用户自定义名）→live 速度 span 的 speedView.text 过 ttEsc（工具名是宿主/MCP 可控字符串）→渲染桥两处订阅回调尾部 updateLive() try 包裹（异常不冒进宿主 store 通知分发，诊断键 subLiveErr/bridgeLiveErr 记录） → v114 积压清单清扫：remoteCache/remoteTodayCache/richTextCache/richTextAttempts 上限淘汰（长会话防无界增长）；dispose 清理补 __zusageDeliverTurnText/__zusageSidWs/__zusagePaneScopes（旧代闭包自卫之外的清理完整性）；诊断 lsVals 只转储 zusage 命名空间的 localStorage 键（宿主其余键值不进 diag 文件） → v115 渲染循环省电（上游 xhwxt PR #26/#28 同源问题）：幽灵子树/遮挡命中/模态判定加 TTL 缓存（120/150ms，命中绑定元素矩形+模式），track 在 document.hidden 时整帧跳过；未采纳其 600ms↔2s 调度降频（heavy 600ms 对账是与 render 并列的 React 重写兜底契约，降频会让增强节点裸奔 2s） → v116 「思考中」卡死修复（源码复核定案）：v87 合成分支条件收紧——仅「空窗口非终态（draft 空窗，v87 本意）或 control.phase=running」才合成思考中，删除「行非空」析取项（宿主 wire 快照 rows.window 恒为全序尾 60 行，末轮超窗的闲置会话整窗无 turnHeader，旧条件使其永久点亮思考中、切回重绑重新计时）；思考计时锚定 turnHeader.startedAt（宿主创建 header 恒写入，重绑不清零，缺字段回退首观测）→ v117 悬停命中区扩到整栏（fork lliangworld b21e3cf0 同源收编）：条目空隙/分隔符按 sep 中线就近归属、尾部空隙归末位条目，⚙ 与空条面维持保持不动；防闪烁改由节流+幂等承担 → v118 无障碍与主题重构（并行会话批次）：条目可聚焦（span tabindex / zu-sub 真按钮 + aria-label）、键盘可达 tooltip（focusin/focusout + Escape 收起）、focus-visible 焦点环、SVG 图标与思考动画改 currentColor 随主题、⚙ 面板请求-回执协议（requestId + __zusagePluginResult，feedbackVersion 1）、quota 源操作错误语义、统计行开关即时重扫 → v119 插件自动检查改为每 1 小时，更新区双语提示更新器变更需完全退出并重开 → v120 Git 手动刷新改请求-回执协议（askGitRefresh 带 path/requestId，主桥 gitTick 完成后经 __zusagePluginResult 回执、在途请求合并等待，按请求 path 校验结果）+ 状态条 aria-live sr-only 播报区（套餐额度查询中/Git 刷新状态）+ ⚙ 面板高度上限 82vh→90vh + 模态判定改按可见 dialog（display/visibility/opacity 过滤） → v121 状态条 .ico 与 ⚙ 齿轮图标盒由 calc(字号+4px) 改为等宿主字号（24 格线性图标墨迹只占盒 75–83%，18px 顶满 1.3 行盒显大，且加法常量令比例随字号漂移 1.33×→1.20×；用户实机定 1.0×，.eb .ico 12px 特例不变） → v122 Git chip 展开测量完整宽度并留 32px 迟滞余量，切断宿主 compact 反馈环（issue #100） → v123 Git chip 锚点按电脑操作→上下文→模式→思考回退，排除隐藏探针并随可见锚点迁移（issue #103） → v124 Git chip 固定左侧操作区，移除右侧上下文/思考回退 → v125 思考计时中文全紧邻「7分16秒」（时段间空格去除，用户要求；英文「7 m 16 s」不动） → v126 思考计时英文数字与单位紧邻「7m 16s」（时段间留空格，用户要求） → v127 tok/s 速度十档色（TPS_BANDS 唯一事实源，原始值分档含下限不含上限：<40 低速红 / 40–70 一般黄 / 70–150 流畅绿沿用原三档类名与实测色，150 起新增蓝紫系 zu-teal/zu-sky/zu-azure/zu-violet/zu-purple/zu-magenta，≥2000 Ultra 静态蓝紫渐变 + ✦ 星点（::before content:"✦"/"" AT 静音、@supports 外纯紫回退，浅色组同名覆盖渐变）；估算态与完成态同表分档（用户规格，原「估算态不分档」废止），无效值（负数/NaN/±∞）一律中性 dim 或回退 DB 绝不判低速，DB 回退分支负数/非有限不再渲染 chip；tooltip 档位行改动态「名称 · lo–hi t/s」消解 toFixed 舍入边界歧义，另加静态「颜色对照」图例（十档数值↔颜色升序一览，档位类与条面同源随主题切换）；额度正常态改额度蓝 #78a9ff/浅 #315fc4（.zu-qseg 专属基色，不碰全局 .ok——上下文与速度前三档仍绿），周期标签拆 zu-qlabel 子节点中性次级色常规字重（textContent/aria/tooltip 不变），quotaSegs 补 isFinite 门防 NaN/±∞ 落正常蓝；正常态再改 CCometixLine 同源柔和低饱和（用户规格）：普通窗灰蓝 #8abbd0/浅 #276f86、7 天窗按 quotaSegs 结构化 key 挂 zu-qweekly 淡紫 #b69ad8/浅 #76509f（不匹配显示文本），周期标签与数值同色成组仅标签降字重，上下文按钮正常绿改 #72c9a2/浅 #187b58（限按钮作用域，速度与全局 .ok 不动）） → v129 模型拉取分区（收编 HHQ-666/zcode-model-puller，MIT）：⚙ 基础组新分区列宿主 provider_config.json 的 API Key 型自定义供应商，经主进程拉取其 /models（候选端点探测、OpenAI data/Ollama models/顶层数组形状解析、Bearer+x-api-key 双头），弹窗勾选（已添加/新模型徽标、搜索过滤、全选/清空/仅选新、选中计数）后经 model-pull-apply 最小写回（personalModelIds+modelOrder 追加、providerModelRules 复制同供应商模板条目、同目录原子替换+滚动备份 .zusage-bak、未知键保留）；key 只在主进程内存、只发该 baseUrl 本域，不回渲染端不进日志；请求回执 20s 兜底超时（旧主进程无 action 时提示完全重启而非永久 loading） → v130 拉取算法吸收 GLQQX/zcode-model-discovery-patch 与 linguo2625469/zcode-patcher：字段别名全集（id/modelId/name/model、context_length/contextWindow/context_window/limit/limits、max_completion_tokens/max_output_tokens/maxOutputTokens/limit/limits/top_provider、payload 增 result 形状）、多模态感知（architecture.input_modalities/input_modalities/modalities.input + vision/supports_vision 布尔 ⇒ 宿主 inputFormat 稀疏能力位，缺位写实 false）、思考档位感知（supported_efforts 去重截 16 ⇒ reasoningLevel.values）、models.dev 公共目录补缺（并行拉取 5s 超时失败静默降级、id 精确→basename 唯一匹配、字段级供应商优先、key 与本机数据绝不发往目录、进程内 1h 缓存）、applyModels 按模型写实 config（contextWindow/inputFormat/optionSpecs；元数据走主进程 fetchCache 闭环、渲染端只回传 id 无法注入字段；模板带 map 表达式的 optionSpecs 整体不覆盖防 values 换名失配；无依据字段保持模板原样、不编造默认值）；弹窗行新增 ctx/out 可见小字与档位 title，分区说明补 models.dev 联网披露；review 修复：勾选表/已添加表/metaById 改 null 原型（模型 id 来自远端，__proto__ 等键静默失败丢勾选态）、实例 dispose 同步摘除模型拉取弹窗与 Esc 监听（原仅整体 dispose 摘除，pane 关闭后弹窗跨代泄漏且确认回调 inactive 早退卡保存中文案）、重开面板停在模型拉取分区时立即刷新列表、请求兜底超时 20s→25s（主进程最坏双端点 20s 防假超时）、主进程响应体 8MB 限长解析与 tmp 文件名带 pid 防双实例竞写 → v131 额度/上下文五档色（用户规格 2026-10-27）：CTX_BANDS/QUOTA_BANDS 唯一事实源（{min,cls} 有序表，bandOf 从高到低首个命中），阈值 30/50/80/90（含下限不含上限）——额度 calm/norm/mid/high/crit=emerald/sky/amber/orange/rose（暗 400/浅 700），上下文 calm/norm/mid/high/crit=slate/indigo/violet/orange/red；data-zusage-band 与 zu-qb-* CSS 双主题成对；pct span 与 SVG 环一律继承按钮 currentColor（.zu-ctxpct.ok 系独立色废止）；tabular-nums 原已覆盖 .zu-quota/.zu-ctxpct；v92 百万窗口提前预警（40/60）与 v127 额度正常态灰蓝/7 天窗淡紫（按窗口类型着色）随「仅按百分比」规格废止；额度 ≥100% 满档保留呼吸闪烁特效（zu-qb-exc，用户规格；90–99 为 crit 纯色）；压缩过程态（exc）优先档保留；余额/Key 额度段挂 calm 档色 → v132 模型拉取挂载点迁移（用户指令）：⚙ 设置分区删除（ZU_SECTIONS/section/ensureMpProviders/syncMpList/startMpFetch/mpFeedback 全撤），改挂官方「模型设置⇒自定义供应商」的「+ 添加模型」按钮左侧（锚 data-testid=model-provider-add-model-button，额度 chip 同款 enhance/restore 契约：render/heavy 双对账+位置兜回+自清选择器 .zu-mp-host）；供应商归属优先读设置页表单 http(s) Base URL 归一化匹配（唯一命中直拉），否则单供应商直用/多供应商弹 zu-mp-pick 选择列表/无供应商弹提示；按钮视觉复刻原生 secondary 视格（同页 Tailwind utility bg-secondary h-7 rounded-lg），⚡ 图标 stroke currentColor；弹窗抽通用壳 openMpShell（勾选弹窗/供应商选择/错误提示共用），apply 成功关弹窗由宿主自动刷新列表；供应商归属改主判定=当前选择的供应商（读宿主源码定案：导航项 testid=model-provider-nav-item-<nodeKey>、custom 项 nodeKey=custom:<providerId>、选中项 data-state=selected），providerId 精确匹配不受编辑草稿影响；Base URL 匹配降兜底（专用 testid model-provider-base-url-input 优先于表单启发式），弹窗对齐 HHQ 形态（⚡统计标题/搜索占位/仅选新模型计数/已选中 n 个模型/蓝实底确认钮）并自带 .zu-light 随宿主主题实时换装；review 二轮修复：上下文按钮浅色档补 data-zusage-armed 特异性（浅色主题 norm~crit 曾被暗色 0,3,0 规则恒胜）、model-puller 非 ok 响应体显式 cancel（undici 连接卫生）、宿主按钮 ml-auto（锚容器 justify-between 三子项均匀分布致按钮居中）、确认钮改固定蓝 #3B82F6/#2563EB（客户端 --color-brand 深色主题是白系，白底白字隐形）、拉取按钮仅在选中的是 custom 供应商时挂载（锚 testid 全局唯一，内置/套餐页同 testid）、拉取中按钮文本「拉取中…」+图标旋转（原透明度脉冲无感知） → v133 Git 计数缩写（用户规格 2026-10-28）：chip/tooltip 的行数·条目·↑↓·冲突计数 <1万原值，≥1万 中文（cnUnits 判定）万/亿、英文 k/M/B（k 门槛刻意抬到 1万，与 token fmt 的 K≥1000 不同，小写 k 至多两位小数去尾零紧邻）；仓库个数与 aria 播报保持原值   // 悬停 ⚙ 面板可见；版本号随代际递增
+    var VERSION = "v134";   // v82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v84 主标签页远端路由（工作台分组唯一主绑定上报 + 迟到载荷守卫，issue #30）→ v85 回答末尾统计行跟随万/亿开关 + tok→token → v86 历史轮 tracker 无记录（窗口滑出/换代/热更）或缺输出字段不再翻成"本轮统计不可用"，加 det 诊断 → v87 主叶归属增 last-session 回退（组零证据时唯一远端记录放行，issue #30 复测：单会话主标签页不建组）→ v88 运行态心跳与两处扫描 tick 2s→0.5s（富文本重试 6→24 次等价放大）→ v89 ⚙ 面板更新进度：downloading 阶段文案 + 下载（字节）/安装（校验→安装→同步）双进度条，缺 progress 的旧主进程自动隐藏 → v90 主标签页/分栏归属改按本窗会话节点身份（renderer 桥按版本/资产/锚点写 SessionPane 属性，移除 workbench-groups/last-session 共享回退）+ 心跳 0.5s→0.1s（扫描维持 0.5s）→ v91 设置页/权限面板冒条修复（PR #44：inSettingsView 三处派发排除 + anchorCardOf 面板锚点改判）收编收尾：排除标记并集（settings-page testid + content/panel 双 frame）、track 显隐第四处防御 → v92 ⚙ 更新区固定显示可复制的重装口令（源码安装无法自动更新时引导用户发给 agent）→ v93 原生上下文按钮（chat-context-usage-trigger）增强：环填充/四档色/右侧百分比镜像状态条上下文格（ctxBandOf 同源），cw 缺失还原原生形态 → v94 状态条删除「上下文容量」格（UI+tooltip，该口径由原生按钮增强承载），⚙ 面板同步去掉「上下文」开关，子代理格改始终展示（零值也显示）→ v95 ⚙ 更新区去掉 v92 重装口令提示块（源码清单的仓库来源改由宿主插件管理器直接更新，不再报渠道不一致），更新来源文案增「仓库源码」分支→ v96 套餐额度 chip（默认关）：挂原生上下文按钮左侧（wrapper 内前插，与按钮增强同款双 reapply/还原），数据来自主进程 quota 字段（解密宿主 OAuth 凭据直查 monitor 端点，账号级套餐池口径），会话首个 main_turn 完成前不显示；自绘 tooltip 走 rateTip 独立浮层模式；chip 改多窗分段：每窗一段（中文 5小时/7天，英文 5h/7d）各自按 80/95/100 档位色，分隔符 |；余额类型单段渲染就绪（余额 ¥100.00，阶段 3 数据源接入即用）；去掉环形，容器不着色 → v97 子代理速率（T1+T2）：zusage sub 汇总加 rate_avg/每子代理 tps_avg（已完成段加权平均，口径同 _turn_rate），子代理格 tooltip/明细面板展示；Agent 运行期主 chip 附加「子代理运行中 · 估 X t/s」——turn-stats 透传 subagent 行 childSessionId，overlay 据此用同款 zuTryBindStore 绑子代理会话 store 做字符增量估算（运行中请求未入库，DB 无实时数据；150s 采样实锤零 running 行），思考文本不进 rows 时退回纯状态词；工具动词「正在运行子智能体」压成「子代理运行中」（web 同步文案）；同日多槽位化：turn-stats 暴露 runningSubagents 全集（并行时 rowId 前 8 个），每子代理独立绑定/2s 节流，主 chip 显示合计速率（并行 ≥2 时动词后缀 ×N），chip tooltip 与子代理明细面板逐个实时展示运行中估算（tooltip 随原地改字同步 __tip 重画；面板 800ms tick 原地刷新 .subrate，汇总页运行块含 DB 尚无记录的新子代理） → v98 额度实时选源恢复（v4-model-config 观察 + quota-providers 全窗快照上报 + byProvider 定向刷新、空选择 fail-closed）与 sub2api 额度 UI（今日/本月窗口、窗口行内金额明细、Key 总额度、订阅截止、账户余额标题） → v99（主线并流）tooltip 伪边界 leave 过滤：Chrome 悬停链收缩/重算会补发 DOM 内部的 documentElement/tip mouseleave，tipLeaveAt 贴边判定后取触发时刻最深 :hover 元素甄别，仍悬停在本档具体元素上即伪 leave 一律忽略交回 mousemove 流（主线 v100 滚动豁免=本链 v106 同义，不另列） → v99.1（主线并流）apiKey 模式 BigModel/Z.ai（bigmodel-api[-N]/zai-api[-N]）额度 chip 标题家族判定（issue #68；数据链在 quota-client） → v99.2 思考中计时随语言本地化（中文「1 时 2 分 3 秒」/英文「1 h 2 m 3 s」，空格分隔、零段照旧省略）；回答末尾行采样时刻改完整中文日期时间（⏱ 2026 年 10 月 23 日 11 点 20 分 28 秒，token_rate.py format_turn_line 同步改版） → v100 设置面板分区导航（ZCode 设置侧栏同款：左栏三组分区导航 + 内容区单分区显隐，激活项 aria-current="page"，选择持久化 zusage3.sec；面板窄于 620px 时导航收成 icon rail） → v101 设置面板高度在打开瞬间按内容自然高锁定（切分区不再抖动，resize 只收紧不放大） → v102 额度源预设模板（CC Switch/magpie 同款选模板只填 Key：官方域变体 chip 一键写入 secrets baseUrl，minimax 可信域机制推广到 siliconflow 币种随域；deepseek/openrouter/kimi/anthropic/mimo/volcano 附控制台取 Key 链接，走 openExternal 桥） → v103 额度源列表卡片化布局（每源圆角卡片+间距，凭据框限宽 420px，长说明段落补水平边距；纯 CSS，结构行为不变） → v104 源状态文案补 disabled=已关闭映射 + 主进程对显式关闭源统一报 disabled（修「开关已关却显示待查询」矛盾）；刷新/获取 Key 按钮补 title 提示，关闭源的刷新按钮禁用 → v105 「上下文容量」弹层（hover-card-content）内压缩上下文按钮：命中率行下方全宽胶囊按钮（原生 secondary 配色全走客户端语义变量），弹层关即卸载（Radix 无 forceMount）故 body MutationObserver + heavy 对账双触发、DOM 存在性幂等（多实例安全），插入锚=「剩余额度」border-t 段前（缺则容器尾）+位置兜回；点击弹原生 AlertDialog 视格确认框（遮罩/Esc/外点关闭、Enter 确认），确认后优先走 fiber 上原生残留的 onSendCompressionCommand("/compact")（SessionPane 压缩入口，不动输入框草稿），缺失回落官方 E2E 输入桥 __zcodeLexicalInputE2E.setText + 发送键（Lexical 直写 DOM 不生效，禁用该路径；草稿非空拒绝） → v106 额度 tooltip 滚动豁免：hideTipsOnScroll 不再收 quotaTip（chip 固定 composer 工具行与 gitTip 同理），修思考中流式输出自动滚动致悬停弹出即灭；chip 随宿主重建 detach（无 mouseleave）由 scanRateLines 加 isConnected 健康检查兜底收起 → v107 压缩确认框补行为提示：压缩进行中发送新消息/停止会打断压缩（实测 16:27 新 turn 启动同秒 compact turn TURN_CANCELLED，cancelled_by_user=1；引擎对该次摘要流挂起 134s 无首 token 也不重试 retryable=0），确认框加 hint 行中性告知 → v108 压缩主通道按用户指定改为字面 "/compact" 输入提交（E2E 桥 setText+发送键；流式中 v4-stop 可见/草稿非空/发送键 disabled 三重拒绝），fiber 命令信封降兜底；hint 升级为「通常需 2-4 分钟且无进度反馈」（DB 实证：全库 compact 请求无首 token 但正常完成，72s-9.6min，14:44 同会话同模型 165s 成功先例；16:25/16:43 两次「卡住」实为 2m20s 被新消息 TURN_CANCELLED，非故障） → v109 压缩主通道按用户指定改回直接调会话发送接口（fiber onSendCompressionCommand 命令信封：不碰输入框/发送键、流式中交引擎排队，修字面输入通道在生成中被发送键禁用卡住的问题），字面 "/compact" 输入提交降兜底（三重门控仅作用于兜底） → v110 压缩提交函数改在弹框打开瞬间（弹层必存活、锚点几何可信）解析并缓存，修复确认时弹层已被 Radix 卸载、几何重解析退化为「离视口左上角最近」致多分栏把 /compact 发进错误会话（P1）；兜底字面输入通道的流式/发送键/草稿三重门控全部前置到 setText 之前（拒绝不再残留草稿）；Enter 确认限定焦点在弹框内（无焦点陷阱下防焦点外 Enter 误触发确认） → v111 额度 chip 默认展示：quota_enabled 缺省开（显式 false 才关，真值链在 inject-main）；chip 二级门控 not_configured/unsupported 从静默隐藏改中性灰提示「额度 未配置/暂不支持」（源被 ⚙ 显式关闭仍隐藏），tooltip 补 info 分支引导配置 → v112 Start Plan 免费档池（quota-client 新增 zcode-start 适配器走 zcode.z.ai billing/balance 独立链，与 coding plan 的 monitor 端点分池；选源路由与 quotaFamily 判定补 start-plan 分支修 start-plan pane 误读 GLM Coding Max 池；chip 增「套餐」分段（windows.plan，one_time 发放池聚合已用%），tooltip 套餐池行按 expires 标记切「到期」措辞） → v113 夜间审计加固：quotaBalanceText 内建转义（currency 是远程响应字符串，chip/tooltip 双 innerHTML sink；parts label/amount 单次转义修双重转义；「其他源」行标签转义归位；aria-label 走 plain 纯文本变体不读实体）→quotaTip 补内容签名幂等 __zuTipSig（同 gitTip，悬停期间周期对账不再打断文本选择）→子代理明细面板数据签名幂等（滚动位置/选择不被每 1.5s 推送整面板重建重置；运行中估算仍由面板 800ms tick 原地刷新）→额度 chip 签名重写保留 zu-qbusy（点击刷新动画不被推送截断，同 git chip）→⚙ 源列表 id/label/preset/keyUrl 属性级转义 aEsc（custom:<providerId> 可含用户自定义名）→live 速度 span 的 speedView.text 过 ttEsc（工具名是宿主/MCP 可控字符串）→渲染桥两处订阅回调尾部 updateLive() try 包裹（异常不冒进宿主 store 通知分发，诊断键 subLiveErr/bridgeLiveErr 记录） → v114 积压清单清扫：remoteCache/remoteTodayCache/richTextCache/richTextAttempts 上限淘汰（长会话防无界增长）；dispose 清理补 __zusageDeliverTurnText/__zusageSidWs/__zusagePaneScopes（旧代闭包自卫之外的清理完整性）；诊断 lsVals 只转储 zusage 命名空间的 localStorage 键（宿主其余键值不进 diag 文件） → v115 渲染循环省电（上游 xhwxt PR #26/#28 同源问题）：幽灵子树/遮挡命中/模态判定加 TTL 缓存（120/150ms，命中绑定元素矩形+模式），track 在 document.hidden 时整帧跳过；未采纳其 600ms↔2s 调度降频（heavy 600ms 对账是与 render 并列的 React 重写兜底契约，降频会让增强节点裸奔 2s） → v116 「思考中」卡死修复（源码复核定案）：v87 合成分支条件收紧——仅「空窗口非终态（draft 空窗，v87 本意）或 control.phase=running」才合成思考中，删除「行非空」析取项（宿主 wire 快照 rows.window 恒为全序尾 60 行，末轮超窗的闲置会话整窗无 turnHeader，旧条件使其永久点亮思考中、切回重绑重新计时）；思考计时锚定 turnHeader.startedAt（宿主创建 header 恒写入，重绑不清零，缺字段回退首观测）→ v117 悬停命中区扩到整栏（fork lliangworld b21e3cf0 同源收编）：条目空隙/分隔符按 sep 中线就近归属、尾部空隙归末位条目，⚙ 与空条面维持保持不动；防闪烁改由节流+幂等承担 → v118 无障碍与主题重构（并行会话批次）：条目可聚焦（span tabindex / zu-sub 真按钮 + aria-label）、键盘可达 tooltip（focusin/focusout + Escape 收起）、focus-visible 焦点环、SVG 图标与思考动画改 currentColor 随主题、⚙ 面板请求-回执协议（requestId + __zusagePluginResult，feedbackVersion 1）、quota 源操作错误语义、统计行开关即时重扫 → v119 插件自动检查改为每 1 小时，更新区双语提示更新器变更需完全退出并重开 → v120 Git 手动刷新改请求-回执协议（askGitRefresh 带 path/requestId，主桥 gitTick 完成后经 __zusagePluginResult 回执、在途请求合并等待，按请求 path 校验结果）+ 状态条 aria-live sr-only 播报区（套餐额度查询中/Git 刷新状态）+ ⚙ 面板高度上限 82vh→90vh + 模态判定改按可见 dialog（display/visibility/opacity 过滤） → v121 状态条 .ico 与 ⚙ 齿轮图标盒由 calc(字号+4px) 改为等宿主字号（24 格线性图标墨迹只占盒 75–83%，18px 顶满 1.3 行盒显大，且加法常量令比例随字号漂移 1.33×→1.20×；用户实机定 1.0×，.eb .ico 12px 特例不变） → v122 Git chip 展开测量完整宽度并留 32px 迟滞余量，切断宿主 compact 反馈环（issue #100） → v123 Git chip 锚点按电脑操作→上下文→模式→思考回退，排除隐藏探针并随可见锚点迁移（issue #103） → v124 Git chip 固定左侧操作区，移除右侧上下文/思考回退 → v125 思考计时中文全紧邻「7分16秒」（时段间空格去除，用户要求；英文「7 m 16 s」不动） → v126 思考计时英文数字与单位紧邻「7m 16s」（时段间留空格，用户要求） → v127 tok/s 速度十档色（TPS_BANDS 唯一事实源，原始值分档含下限不含上限：<40 低速红 / 40–70 一般黄 / 70–150 流畅绿沿用原三档类名与实测色，150 起新增蓝紫系 zu-teal/zu-sky/zu-azure/zu-violet/zu-purple/zu-magenta，≥2000 Ultra 静态蓝紫渐变 + ✦ 星点（::before content:"✦"/"" AT 静音、@supports 外纯紫回退，浅色组同名覆盖渐变）；估算态与完成态同表分档（用户规格，原「估算态不分档」废止），无效值（负数/NaN/±∞）一律中性 dim 或回退 DB 绝不判低速，DB 回退分支负数/非有限不再渲染 chip；tooltip 档位行改动态「名称 · lo–hi t/s」消解 toFixed 舍入边界歧义，另加静态「颜色对照」图例（十档数值↔颜色升序一览，档位类与条面同源随主题切换）；额度正常态改额度蓝 #78a9ff/浅 #315fc4（.zu-qseg 专属基色，不碰全局 .ok——上下文与速度前三档仍绿），周期标签拆 zu-qlabel 子节点中性次级色常规字重（textContent/aria/tooltip 不变），quotaSegs 补 isFinite 门防 NaN/±∞ 落正常蓝；正常态再改 CCometixLine 同源柔和低饱和（用户规格）：普通窗灰蓝 #8abbd0/浅 #276f86、7 天窗按 quotaSegs 结构化 key 挂 zu-qweekly 淡紫 #b69ad8/浅 #76509f（不匹配显示文本），周期标签与数值同色成组仅标签降字重，上下文按钮正常绿改 #72c9a2/浅 #187b58（限按钮作用域，速度与全局 .ok 不动）） → v129 模型拉取分区（收编 HHQ-666/zcode-model-puller，MIT）：⚙ 基础组新分区列宿主 provider_config.json 的 API Key 型自定义供应商，经主进程拉取其 /models（候选端点探测、OpenAI data/Ollama models/顶层数组形状解析、Bearer+x-api-key 双头），弹窗勾选（已添加/新模型徽标、搜索过滤、全选/清空/仅选新、选中计数）后经 model-pull-apply 最小写回（personalModelIds+modelOrder 追加、providerModelRules 复制同供应商模板条目、同目录原子替换+滚动备份 .zusage-bak、未知键保留）；key 只在主进程内存、只发该 baseUrl 本域，不回渲染端不进日志；请求回执 20s 兜底超时（旧主进程无 action 时提示完全重启而非永久 loading） → v130 拉取算法吸收 GLQQX/zcode-model-discovery-patch 与 linguo2625469/zcode-patcher：字段别名全集（id/modelId/name/model、context_length/contextWindow/context_window/limit/limits、max_completion_tokens/max_output_tokens/maxOutputTokens/limit/limits/top_provider、payload 增 result 形状）、多模态感知（architecture.input_modalities/input_modalities/modalities.input + vision/supports_vision 布尔 ⇒ 宿主 inputFormat 稀疏能力位，缺位写实 false）、思考档位感知（supported_efforts 去重截 16 ⇒ reasoningLevel.values）、models.dev 公共目录补缺（并行拉取 5s 超时失败静默降级、id 精确→basename 唯一匹配、字段级供应商优先、key 与本机数据绝不发往目录、进程内 1h 缓存）、applyModels 按模型写实 config（contextWindow/inputFormat/optionSpecs；元数据走主进程 fetchCache 闭环、渲染端只回传 id 无法注入字段；模板带 map 表达式的 optionSpecs 整体不覆盖防 values 换名失配；无依据字段保持模板原样、不编造默认值）；弹窗行新增 ctx/out 可见小字与档位 title，分区说明补 models.dev 联网披露；review 修复：勾选表/已添加表/metaById 改 null 原型（模型 id 来自远端，__proto__ 等键静默失败丢勾选态）、实例 dispose 同步摘除模型拉取弹窗与 Esc 监听（原仅整体 dispose 摘除，pane 关闭后弹窗跨代泄漏且确认回调 inactive 早退卡保存中文案）、重开面板停在模型拉取分区时立即刷新列表、请求兜底超时 20s→25s（主进程最坏双端点 20s 防假超时）、主进程响应体 8MB 限长解析与 tmp 文件名带 pid 防双实例竞写 → v131 额度/上下文五档色（用户规格 2026-10-27）：CTX_BANDS/QUOTA_BANDS 唯一事实源（{min,cls} 有序表，bandOf 从高到低首个命中），阈值 30/50/80/90（含下限不含上限）——额度 calm/norm/mid/high/crit=emerald/sky/amber/orange/rose（暗 400/浅 700），上下文 calm/norm/mid/high/crit=slate/indigo/violet/orange/red；data-zusage-band 与 zu-qb-* CSS 双主题成对；pct span 与 SVG 环一律继承按钮 currentColor（.zu-ctxpct.ok 系独立色废止）；tabular-nums 原已覆盖 .zu-quota/.zu-ctxpct；v92 百万窗口提前预警（40/60）与 v127 额度正常态灰蓝/7 天窗淡紫（按窗口类型着色）随「仅按百分比」规格废止；额度 ≥100% 满档保留呼吸闪烁特效（zu-qb-exc，用户规格；90–99 为 crit 纯色）；压缩过程态（exc）优先档保留；余额/Key 额度段挂 calm 档色 → v132 模型拉取挂载点迁移（用户指令）：⚙ 设置分区删除（ZU_SECTIONS/section/ensureMpProviders/syncMpList/startMpFetch/mpFeedback 全撤），改挂官方「模型设置⇒自定义供应商」的「+ 添加模型」按钮左侧（锚 data-testid=model-provider-add-model-button，额度 chip 同款 enhance/restore 契约：render/heavy 双对账+位置兜回+自清选择器 .zu-mp-host）；供应商归属优先读设置页表单 http(s) Base URL 归一化匹配（唯一命中直拉），否则单供应商直用/多供应商弹 zu-mp-pick 选择列表/无供应商弹提示；按钮视觉复刻原生 secondary 视格（同页 Tailwind utility bg-secondary h-7 rounded-lg），⚡ 图标 stroke currentColor；弹窗抽通用壳 openMpShell（勾选弹窗/供应商选择/错误提示共用），apply 成功关弹窗由宿主自动刷新列表；供应商归属改主判定=当前选择的供应商（读宿主源码定案：导航项 testid=model-provider-nav-item-<nodeKey>、custom 项 nodeKey=custom:<providerId>、选中项 data-state=selected），providerId 精确匹配不受编辑草稿影响；Base URL 匹配降兜底（专用 testid model-provider-base-url-input 优先于表单启发式），弹窗对齐 HHQ 形态（⚡统计标题/搜索占位/仅选新模型计数/已选中 n 个模型/蓝实底确认钮）并自带 .zu-light 随宿主主题实时换装；review 二轮修复：上下文按钮浅色档补 data-zusage-armed 特异性（浅色主题 norm~crit 曾被暗色 0,3,0 规则恒胜）、model-puller 非 ok 响应体显式 cancel（undici 连接卫生）、宿主按钮 ml-auto（锚容器 justify-between 三子项均匀分布致按钮居中）、确认钮改固定蓝 #3B82F6/#2563EB（客户端 --color-brand 深色主题是白系，白底白字隐形）、拉取按钮仅在选中的是 custom 供应商时挂载（锚 testid 全局唯一，内置/套餐页同 testid）、拉取中按钮文本「拉取中…」+图标旋转（原透明度脉冲无感知） → v133 Git 计数缩写（用户规格 2026-10-28）：chip/tooltip 的行数·条目·↑↓·冲突计数 <1万原值，≥1万 中文（cnUnits 判定）万/亿、英文 k/M/B（k 门槛刻意抬到 1万，与 token fmt 的 K≥1000 不同，小写 k 至多两位小数去尾零紧邻）；仓库个数与 aria 播报保持原值 → v134 紧凑药丸形态（opt-in：⚙ 通用「紧凑药丸样式」，zusage3.pill 默认关）：below-card 几何改为水平居中于输入卡 + 宽度随内容不锁卡宽 + 整套固定浅色 DSH 皮肤（白底/浅描边/#3b82f6 图标/档位色 ≥70 绿·40-70 黄·<40 红/YaHei 无衬线；tip/子代理面板/超限气泡挂 zu-pill-skin 白卡皮肤）+ 条面核心口径（缓存命中率/次数/轮数/耗时/首字收进 tooltip，cnUnits 排除 pill 固定 K/M/B）+ 额度 chip 燃烧率口径（「已过/窗口 已用%」，按用量外推窗口末剩余映射 zu-qb-calm/mid/crit 绿黄红）+ 上下文按钮 data-zusage-pill 固定 DSH 五档映射色 + 卡顿修复（药丸宽 render 缓存、render 条件写类、关毛玻璃），挂载绕过 in-card（state.pill 短路），render 对账皮肤类、applyPillMode 即时切换，多实例共享 state 经 renderAll 收敛   // 悬停 ⚙ 面板可见；版本号随代际递增
     var instanceDisposed = false, heavyTimer = 0, frame = 0, themeObserver = null;
     var globalListeners = [];
     function listenGlobal(target, type, fn, capture) {
@@ -1524,6 +1531,33 @@
        * flex-col 的 stretch 撑满内宽（min/max-width 不再写死）。 */
       ".zusage-root.zu-in{position:static;background:none;border:0;border-radius:0;padding:1px 0 0;" +
       "box-shadow:none;backdrop-filter:none;-webkit-backdrop-filter:none;min-width:0;max-width:none;z-index:auto}" +
+      /* 紧凑药丸形态（v125，默认关，⚙ 通用开启）：below-card 几何 + 水平居中 + 宽度随内容。
+       * opt-in 主题带整套固定浅色皮肤（DSH desktop 同款观感）：白底/浅描边/蓝图标/
+       * 档位色（≥70 绿 · 40-70 黄 · <40 红）/YaHei 无衬线；弹层（tip/子代理面板/超限
+       * 气泡）挂 zu-pill-skin 同套白卡皮肤。默认关，不影响任何拍板形态。 */
+      ".zusage-root.zu-pill{border-radius:14px;padding:5px 8px;gap:4px;" +
+      "background:#ffffff;border-color:#e3e6ea;color:#6b7280;" +
+      "font-family:'Microsoft YaHei UI','Microsoft YaHei','Segoe UI',sans-serif;" +
+      "backdrop-filter:none;-webkit-backdrop-filter:none;" +
+      "box-shadow:0 6px 20px rgba(15,23,42,.08),0 2px 6px rgba(15,23,42,.06)}" +
+      ".zu-pill .sep{margin:0 8px;height:14px;background:#e5e7eb}" +
+      ".zu-pill .it{padding:2px 8px}" +
+      ".zu-pill .it:hover,.zu-pill .it:focus-visible{background:#eef2f7}" +
+      ".zu-pill .k,.zu-pill .dim{color:#6b7280}" +
+      ".zu-pill .v,.zu-pill .zu-live{color:#374151}" +
+      ".zu-pill .it .ico{color:#3b82f6}" +
+      ".zu-pill .ok{color:#16a34a}.zu-pill .warm{color:#d97706}.zu-pill .hot{color:#ef4444}" +
+      ".zu-pill .zu-gear{color:#9ca3af}" +
+      ".zu-pill .zu-gear:hover{color:#3b82f6;background:#eef2f7}" +
+      /* 弹层白卡皮肤（zu-pill-skin 由 applyPillMode/创建时按 state.pill 挂）：
+       * 规则全部后置同特异性，覆盖前面 var(--color-tooltip-*) 系；档位色 .ok/.warm/.hot
+       * 是固定色不受影响，白底上仍可读。 */
+      ".zu-pill-skin{background:#ffffff;border:1px solid #e3e6ea;color:#374151;" +
+      "font-family:'Microsoft YaHei UI','Microsoft YaHei','Segoe UI',sans-serif;" +
+      "box-shadow:0 10px 28px rgba(15,23,42,.14)}" +
+      ".zu-pill-skin .rt-row b{color:#6b7280}" +
+      ".zu-pill-skin .rt-row span{color:#374151}" +
+      ".zu-pill-skin b.zu-gname{color:#374151}" +
       ".zu-main{overflow:hidden;min-width:0;flex:1 1 auto;display:flex;align-items:center;gap:1px;justify-content:space-between}" +
       /* 收缩兜底（v66）：分级收缩后仍装不下时右缘 26px 渐隐，替代生硬的截断 */
       ".zu-main.zu-clip{-webkit-mask-image:linear-gradient(90deg,#000 calc(100% - 26px),transparent);" +
@@ -1612,6 +1646,13 @@
       /* v131 pct span 与环一律继承按钮 currentColor（band 色唯一来源=上方 data-zusage-band
        * 规则），图标与文字天然同色；v127 的 .zu-ctxpct.ok/warm/hot 独立色随五档规格废止 */
       "[data-zusage-light] .zu-ctxpct.exc{text-shadow:none}" +
+      /* v134 药丸（data-zusage-pill 由 syncCtxLite 随 state.pill 写） */
+      "[data-testid=chat-context-usage-trigger][data-zusage-pill][data-zusage-band=calm]{color:#16a34a!important}" +
+      "[data-testid=chat-context-usage-trigger][data-zusage-pill][data-zusage-band=norm]{color:#16a34a!important}" +
+      "[data-testid=chat-context-usage-trigger][data-zusage-pill][data-zusage-band=mid]{color:#d97706!important}" +
+      "[data-testid=chat-context-usage-trigger][data-zusage-pill][data-zusage-band=high]{color:#d97706!important}" +
+      "[data-testid=chat-context-usage-trigger][data-zusage-pill][data-zusage-band=crit]{color:#ef4444!important}" +
+      "[data-testid=chat-context-usage-trigger][data-zusage-pill][data-zusage-band=exc]{text-shadow:none}" +
       /* v96 Git 状态 chip（工具行「电脑操作」按钮右侧）：外形对齐原生 ghost 按钮（h-7/rounded-lg/
        * px-1.5/gap-1）；配色移植 cc-pretty-statusline 的 git 段——图标+分支名暗灰，+插入绿 /
        * -删除红 / ?未跟踪黄，括号与 ↑↓ 随暗灰；浅色档（Catppuccin Latte 同源值）由 syncCtxLite
@@ -1672,6 +1713,9 @@
       ".zu-quota[data-zusage-light] .zu-qseg.zu-qb-mid{color:#B45309}" +
       ".zu-quota[data-zusage-light] .zu-qseg.zu-qb-high{color:#C2410C}" +
       ".zu-quota[data-zusage-light] .zu-qseg.zu-qb-crit{color:#BE123C}" +
+      ".zu-quota[data-zusage-pill] .zu-qseg.zu-qb-calm{color:#16a34a}" +
+      ".zu-quota[data-zusage-pill] .zu-qseg.zu-qb-mid{color:#d97706}" +
+      ".zu-quota[data-zusage-pill] .zu-qseg.zu-qb-crit{color:#ef4444}" +
       ".zu-quota[data-zusage-light] .zu-qseg.zu-qb-exc{text-shadow:none}" +
       ".zu-quota[data-zusage-light] .zu-qseg.dim{color:#8a8a8a}" +
       /* 阶段 3 ⚙ 源列表（v103 布局）：每源一张圆角小卡片（dsh QuotaCard 同款），卡片间距与
@@ -2027,6 +2071,7 @@
      * 由 position*Panel 按条矩形定位在条上方（v80 迁移，见挂载处注） */
     var bar = document.createElement("div");
     bar.className = "zusage-root";
+    if (state.pill) bar.classList.add("zu-pill");   // v125：药丸形态在重挂载前先带上皮（heavy 每 600ms 对账会补）
     if (slot === 0) bar.id = "zusage-bar";
     bar.style.display = "none";   // 定位成功前不显示（避免占位）
     bar.innerHTML = '<span class="zu-main">…</span>' +
@@ -2116,6 +2161,7 @@
       '</div></section>' +
       '<section class="zu-settings-section" data-sec="general"' + secOpen("general") + '><div class="cap">' + L("通用", "General") + '</div><div class="zu-settings-card">' +
       settingRow('<input type="text" class="zu-ctxov" inputmode="numeric" aria-label="' + L("上下文窗口", "Context window") + '" placeholder="' + L("自动（按模型）", "Auto (model)") + '">', L("上下文窗口", "Context window"), L("留空自动识别，优先使用客户端数值；手动值以 token 为单位，按整数读取", "Leave empty for automatic detection, preferring the client value; manual values are read as integer tokens")) +
+      settingRow('<input type="checkbox" class="zu-pill-mode">', L("紧凑药丸样式", "Compact pill style"), L("状态条脱离输入卡，悬浮在输入框正下方并水平居中：圆角药丸、宽度随内容收缩，配色仍跟随客户端亮暗。显示项仍由「状态条显示」开关控制。默认关闭。", "Detaches the bar from the input card into a centered rounded pill below the composer; width shrinks to content while colors keep following the client theme. Display items still follow the toggles above. Off by default.")) +
       /* 万/亿开关只在中文界面出现（英文始终 K/M/B，见 fmt），因此文案不走 L() */
       (state.lang === "en" ? "" : settingRow('<input type="checkbox" class="zu-cn-num">', "中文单位（万/亿）", "token 数量以万/亿显示，默认开启")) +
       '<div class="zu-settings-langs"><label><input type="radio" name="zu-lang" value="zh"><span>中文</span></label>' +
@@ -2158,6 +2204,8 @@
       if (ovInput) ovInput.value = state.ctxOv;
       var cnBox = panel.querySelector(".zu-cn-num");
       if (cnBox) cnBox.checked = !!state.cnNum;
+      var pillBox = panel.querySelector(".zu-pill-mode");
+      if (pillBox) pillBox.checked = !!state.pill;
       syncUpdate();
       panel.querySelector(".zu-settings-body").scrollTop = scrollTop;
       if (panel.setAttribute) panel.setAttribute("aria-label", L("状态条设置", "Status bar settings"));
@@ -2240,11 +2288,13 @@
     /* 子代理明细面板（v49）：与设置面板同款 .panel 机制，点击条目开关，互斥打开 */
     var subPanel = document.createElement("div");
     subPanel.className = "panel subp zusage-panel";
+    if (state.pill) subPanel.classList.add("zu-pill-skin");
     document.body.appendChild(subPanel);
     /* 自绘 tooltip：向上弹出（v45 起配空中走廊，移入点击不再被移开即隐掐断）；取代原生 title（方向不可控，在窗口底边会朝下被遮挡） */
     /* 自绘 tooltip 挂 body（fixed 视口坐标）：挂 bar 内会被消息流的层叠上下文盖住（v31 实证） */
     var tip = document.createElement("div");
     tip.className = "tip zusage-tip-root";
+    if (state.pill) tip.classList.add("zu-pill-skin");
     tip.id = slot === 0 ? "zusage-tip" : "zusage-tip-" + slot;
     tip.setAttribute("role", "tooltip");
     tip.style.display = "none";
@@ -2259,6 +2309,7 @@
     /* ---------- 超限告警气泡（v39）：当前会话"上下文超限被拒"时自动弹出，随条定位 ---------- */
     var excBubble = document.createElement("div");
     excBubble.className = "zusage-exc";
+    if (state.pill) excBubble.classList.add("zu-pill-skin");
     /* 文案只进 textContent/静态 innerHTML；会话 ID 是动态数据，一律走 textContent 防注入。
      * 面板语言切换时 rebuildExcBubble() 重建气泡文案。 */
     var excSid, excCopied;
@@ -2556,12 +2607,13 @@
       if (state.show.turn) {
         it(ico('<path d="M5 3.5h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-9l-6.5 4V5.5a2 2 0 0 1 1.5-2z"/><path d="M7.5 8.5h9m-9 4h6"/>') +
           '<span class="v">' + fmt(lt.total) + "</span>" +
-          (shrink ? "" : cachePct(lt.cache_read, lt.input)) +   // v66 超宽时命中率让位，明细仍在悬停 tooltip
+          (shrink || state.pill ? "" : cachePct(lt.cache_read, lt.input)) +   // v66 超宽让位；v125 药丸条面只留核心，明细在悬停 tooltip
+          (state.pill ? "" :
           '<span class="dim">' + (lt.requests || 0) + L("次", " req") + "</span>" +
           ico('<circle cx="12" cy="13" r="8.5"/><path d="M9 1.5h6m-3 0v3m0 4v5l3 2m3-12 2 2"/>') +
           '<span class="dim">' + sec(last.duration_ms) + "</span>" +
           ico('<path d="M2.5 5h8m-8 7h6m-6 7h8m5-14 6 7-6 7m-5-7h11"/>') +
-          '<span class="dim">' + sec(last.ttft_ms) + "</span>",
+          '<span class="dim">' + sec(last.ttft_ms) + "</span>"),
           "\x01" +
           ttH(state.lang === "en"
             ? "Latest turn · " + (lt.requests || 0) + " requests"
@@ -2592,8 +2644,9 @@
       if (state.show.win) {
         it(ico('<path d="M7.5 3h12a2 2 0 0 1 2 2v10M4.5 7h12a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H8l-5.5 2V9a2 2 0 0 1 2-2z"/>') +
           '<span class="v">' + fmt(sess.total) + "</span>" +
-          (shrink ? "" : cachePct(sess.cache_read, sess.input)) +   // v66 同上
-          '<span class="dim">' + (sess.turns || 0) + L("轮 ", " turns · ") + (sess.requests || 0) + L("次", " req") + "</span>",
+          (shrink || state.pill ? "" : cachePct(sess.cache_read, sess.input)) +   // v66 同上；v125 药丸只留核心
+          (state.pill ? "" :
+          '<span class="dim">' + (sess.turns || 0) + L("轮 ", " turns · ") + (sess.requests || 0) + L("次", " req") + "</span>"),
           "\x01" +
           ttH(L("会话累计 · 全部请求", "Session total · all requests")) +
           ttRow(L("输入", "Input"), fmt(sess.input) +
@@ -3042,6 +3095,12 @@
 
     function render(d) {
       state.data = d;
+      /* v125 药丸皮随 state.pill 对账：state 为多实例共享，本实例由 applyPillMode 即时切换，
+       * 其余实例经 renderAll 走到这里补齐类；挂载形态由 heavy 对账（600ms）。
+       * 有变化才写 className：render 随 payload 高频执行，无谓的属性写会放大后续重排。 */
+      var pillOn = !!state.pill;
+      if (bar.classList.contains("zu-pill") !== pillOn) bar.classList.toggle("zu-pill", pillOn);
+      if (pillOn) bar.__zuPillW = bar.offsetWidth;   // v125 缓存药丸宽：track 每帧不再读 offsetWidth 强制重排
       var pc = null, p = null;
       if (instSid) {
         /* v61.1 分屏多实例：本条显示哪个会话由 composer 祖先链的 data-session-id 决定
@@ -3861,6 +3920,8 @@
       panel.querySelector(".zu-ctxov").value = state.ctxOv;
       var cnBox = panel.querySelector(".zu-cn-num");
       if (cnBox) cnBox.checked = !!state.cnNum;
+      var pillBox = panel.querySelector(".zu-pill-mode");
+      if (pillBox) pillBox.checked = !!state.pill;
       syncUpdate();
     }
     panel.addEventListener("click", function (e) {
@@ -4012,6 +4073,15 @@
       if (t2.classList.contains("zu-cn-num")) {
         state.cnNum = t2.checked ? 1 : 0;
         persist();
+        renderAll(false);
+        return;
+      }
+      if (t2.classList.contains("zu-pill-mode")) {
+        state.pill = t2.checked ? 1 : 0;
+        persist();
+        /* 本实例立即切换挂载形态；renderAll 会带着共享的 state.pill 重渲染全部实例
+         * （其余实例的皮在各自 render 里对账，挂载形态由 heavy 600ms 对账收尾） */
+        applyPillMode();
         renderAll(false);
         return;
       }
@@ -4582,12 +4652,17 @@
       var has = el.getAttribute && el.getAttribute("data-zusage-light");
       if (lite && !has) el.setAttribute("data-zusage-light", "1");
       else if (!lite && has) el.removeAttribute("data-zusage-light");
+      /* v125 药丸：档位色固定 DSH 浅色板（CSS 见 [data-zusage-pill] 组），不随宿主亮暗 */
+      var pill = el.getAttribute && el.getAttribute("data-zusage-pill");
+      if (state.pill && !pill) el.setAttribute("data-zusage-pill", "1");
+      else if (!state.pill && pill) el.removeAttribute("data-zusage-pill");
     }
     function restoreCtxButton(btn) {
       if (!btn || !btn.isConnected) return;
       btn.removeAttribute("data-zusage-armed");
       btn.removeAttribute("data-zusage-band");
       btn.removeAttribute("data-zusage-light");
+      btn.removeAttribute("data-zusage-pill");
       for (var i = 0; i < btn.children.length; i++) {
         if (btn.children[i].classList && btn.children[i].classList.contains("zu-ctxpct")) { btn.children[i].remove(); break; }
       }
@@ -4615,6 +4690,21 @@
      * main_turn（provider_id 已知）+ provider 为内置套餐档；自定义 provider 隐藏，团队档给
      * 不支持提示。数据账号级（快照 quota 字段），同套餐换模型只换 tooltip 高亮不重查。 */
     function quotaBandOf(pct) { return bandOf(QUOTA_BANDS, pct); }
+    /* v134 药丸：额度窗口燃烧率口径——「已过/窗口 已用%」，按当前用量速率外推窗口结束时的
+     * 剩余：外推剩余 <5%（proj ≥95，快耗尽）黄 zu-qb-mid、外推 ≥100% 或已用 ≥100%（会提前
+     * 耗尽）红 zu-qb-crit、其余绿 zu-qb-calm；窗口刚重置（已过 <5%）时外推不可靠按宽裕处理。
+     * resetsAt 缺失/不可解析/窗口异常退 null（该窗回退旧口径）。仅固定长度窗口（5h/7d）使用。 */
+    function pillQuotaBurn(pct, resetsAt, windowMs, now) {
+      var t = typeof resetsAt === "number" ? resetsAt
+        : (typeof resetsAt === "string" && resetsAt ? Date.parse(resetsAt) : NaN);
+      if (!isFinite(t) || !(t > now)) return null;
+      var elapsed = windowMs - (t - now);
+      if (!(elapsed > 0) || elapsed > windowMs) return null;
+      var proj = elapsed < windowMs * 0.05 ? 0 : pct * windowMs / elapsed;
+      var band = pct >= 100 || proj >= 100 ? "zu-qb-crit" : proj >= 95 ? "zu-qb-mid" : "zu-qb-calm";
+      var used = windowMs === 604800000 ? (elapsed / 86400000).toFixed(1) + "/7d" : (elapsed / 3600000).toFixed(2) + "/5h";
+      return { label: used + " " + Math.round(pct) + "%", band: band };
+    }
     /* chip 分段：每个窗口一段（5小时/7天），各自按已用 % 上档位色；余额类型一段（阶段 3 数据源接入即用） */
     function quotaSegs(q) {
       var w = q && q.windows, out = [];
@@ -4624,7 +4714,14 @@
         var e = w[defs[i][0]];
         /* isFinite 门：NaN/±Infinity 不进分段，绝不落成正常蓝色（v127）；wkey=结构化窗口
          * 类型（defs 的键），供 7 天窗口挂 zu-qweekly 淡紫——不匹配显示文本（v127） */
-        if (e && typeof e.percent === "number" && isFinite(e.percent)) out.push({ wkey: defs[i][0], label: L(defs[i][1], defs[i][2]), pct: e.percent });
+        if (e && typeof e.percent === "number" && isFinite(e.percent)) {
+          var seg = { wkey: defs[i][0], label: L(defs[i][1], defs[i][2]), pct: e.percent };
+          if (state.pill && (defs[i][0] === "fiveHour" || defs[i][0] === "weekly")) {
+            var burn = pillQuotaBurn(e.percent, e.resetsAt, defs[i][0] === "weekly" ? 604800000 : 18000000, Date.now());
+            if (burn) { seg.label = burn.label; seg.burnBand = burn.band; seg.burn = true; }   // v134 药丸：燃烧率口径（label 已含已用%，档位=外推色）
+          }
+          out.push(seg);
+        }
       }
       return out;
     }
@@ -4660,11 +4757,11 @@
         /* v127：周期标签拆 zu-qlabel 子节点（静态 L() 文案，安全）——标签与数值同色成组、
          * 标签仅降字重；7 天窗口（结构化 key）加 zu-qweekly 淡紫。textContent 与原有
          * 完全一致，aria/tooltip 不受影响。 */
-          return '<span class="zu-qseg' + (s.wkey === "weekly" ? " zu-qweekly" : "") + ' ' + quotaBandOf(s.pct) + '"><span class="zu-qlabel">' + s.label + '</span> ' + Math.round(s.pct) + "%</span>";
+          return '<span class="zu-qseg' + (s.wkey === "weekly" && !s.burn ? " zu-qweekly" : "") + ' ' + (s.burn ? s.burnBand : quotaBandOf(s.pct)) + '"><span class="zu-qlabel">' + s.label + '</span>' + (s.burn ? "" : " " + Math.round(s.pct) + "%") + "</span>";
         }).join('<span class="zu-qsep">|</span>');
         return { kind: "value", stale: !!q.stale, busy: !!q.busy,
           html: html + warn,
-          aria: L("套餐已用 ", "Plan used ") + segs.map(function (s) { return s.label + " " + Math.round(s.pct) + "%"; }).join(L("，", ", ")) };
+          aria: L("套餐已用 ", "Plan used ") + segs.map(function (s) { return s.burn ? s.label : s.label + " " + Math.round(s.pct) + "%"; }).join(L("，", ", ")) };
       }
       var summary = q.quotaSummary;
       if (summary && typeof summary.remaining === "number" && isFinite(summary.remaining)) {
@@ -5283,6 +5380,26 @@
       document.body.appendChild(bar);
       lastPos = [-1, -1];
     }
+    /* 紧凑药丸形态（v125）切换即生效：条与弹层皮肤类就地切换，几何由下一帧 track() 重算。
+     * 药丸永不进卡（state.pill 短路 mountInCard），脱离时照旧补让位带。共享 tip 只有一份，
+     * 任一实例切换即全局一致；实例自有弹层经 renderAll/对账收敛。 */
+    function applyPillMode() {
+      bar.classList.toggle("zu-pill", !!state.pill);
+      [rateTip, quotaTip, gitTip, tip, subPanel, excBubble].forEach(function (el) {
+        el.classList.toggle("zu-pill-skin", !!state.pill);
+      });
+      lastPos = [-1, -1];
+      if (cardCache) {
+        if (state.pill) { cardMode = false; mountBelowCard(); ensureCardPad(); }
+        else {
+          cardMode = mountInCard();
+          if (cardMode) releasePads();
+          else { mountBelowCard(); ensureCardPad(); }
+        }
+      } else if (cardMode) {
+        mountBelowCard();
+      }
+    }
 
     /* ---------- 定位：重活低频（找输入框/找卡片），逐帧只做矩形跟随 ---------- */
     var composer = null, cardCache = null, everMounted = false, lastMountDiagAt = 0;
@@ -5335,8 +5452,9 @@
           cardCache = c && c !== document.body ? c : null;
         }
         if (cardCache) {
-          /* v80：优先挂输入卡片内部（工具行下）；无工具行回落 below-card 兜底 + 让位带 */
-          cardMode = mountInCard();
+          /* v80：优先挂输入卡片内部（工具行下）；无工具行回落 below-card 兜底 + 让位带。
+           * v125：药丸形态绕过 in-card（state.pill 短路），恒走 below-card 居中悬浮 */
+          cardMode = state.pill ? false : mountInCard();
           if (cardMode) releasePads();
           else { mountBelowCard(); ensureCardPad(); }   // React 重渲染可能重建卡片/重置内联边距，对比后再补
           nativeCtxVal = readNativeCtx(cardCache);
@@ -5541,6 +5659,7 @@
            * 短 ~7px，条底落进原生底部留白、距窗口底 ~7px —— v54 的"条下 15px 空白"不复发。
            * 水平仍与卡片左缘对齐。v80 起仅 below-card 兜底形态走这里。 */
           var left = Math.round(ar.left);
+          if (state.pill) left = Math.max(8, Math.round(ar.left + (ar.width - (bar.__zuPillW || bar.offsetWidth)) / 2));
           var top = Math.max(8, Math.min(Math.round(ar.bottom + 4), innerHeight - bar.offsetHeight - 2));
           if (left !== lastPos[0] || top !== lastPos[1]) {
             bar.style.left = left + "px"; bar.style.top = top + "px";
@@ -5548,9 +5667,13 @@
           }
           /* 宽度锁死卡片（v63 对齐，v66 收缩）：min=max-width = 卡片实测宽（border-box，
            * 外缘含边框正好压在卡片两缘上），任何内容量下条都与会话框两缘对齐。 */
-          var minW = Math.max(60, Math.round(ar.width));
-          if (bar.style.minWidth !== minW + "px") bar.style.minWidth = minW + "px";
-          if (bar.style.maxWidth !== minW + "px") bar.style.maxWidth = minW + "px";
+          if (state.pill) {
+            if (bar.style.minWidth || bar.style.maxWidth) { bar.style.minWidth = ""; bar.style.maxWidth = ""; }
+          } else {
+            var minW = Math.max(60, Math.round(ar.width));
+            if (bar.style.minWidth !== minW + "px") bar.style.minWidth = minW + "px";
+            if (bar.style.maxWidth !== minW + "px") bar.style.maxWidth = minW + "px";
+          }
         }
         /* in-card 形态（v80）：无坐标跟随、无锁宽——宽度由卡片 flex-col 的 stretch 撑满内宽。
          * 两种形态共用的收缩判定：内容超宽不撑破卡片，分级收缩：先隐藏「本轮/会话累计」

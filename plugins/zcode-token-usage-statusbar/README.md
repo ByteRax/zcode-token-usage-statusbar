@@ -6,7 +6,7 @@ See model speed, token usage, context size, plan quota, and Git status while you
 
 ## What you get
 
-- Floating status bar (desktop): generation speed (tok/s), per-turn / session / today token usage, cache hit rate, sub-agent breakdown, context usage, plan-quota chip, Git status chip. Tooltips show details; the ⚙ panel toggles what is shown.
+- Floating status bar (desktop): generation speed (tok/s), per-turn / session / today token usage, cache hit rate, sub-agent breakdown, context usage, plan-quota chip, Git status chip. Tooltips show details; the ⚙ panel toggles what is shown and can switch the bar to a compact centered pill under the composer (General → Compact pill style, off by default).
 - Per-answer rate line appended under each reply: tok/s, time to first token, output tokens, duration, session totals.
 - `/usage` command (today / week / models / current), the `token_usage` MCP tool, and a skill that teaches the agent how to query usage.
 
