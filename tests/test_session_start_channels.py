@@ -194,6 +194,31 @@ class SessionStartChannelTests(unittest.TestCase):
                 self.assertEqual(os.environ["ZUSAGE_NO_MONITOR"], "custom")
                 self.assertEqual(os.environ["ZUSAGE_MONITOR_QUIET"], "0")
 
+    def test_pending_install_failure_nudges_full_quit_instead_of_retry(self):
+        # issue #120：客户端运行中、待收尾包已排定的失败，重试 /install-overlay 无法
+        # 前进（只会再 repack 一次再失败）；提示必须指向「完全退出 ZCode 等自动收尾」，
+        # 并保留卸载豁免出口，不能继续引导无效重试。
+        self.install.side_effect = lambda before_publish: False
+        with mock.patch.object(self.pi, "pending_tmp", return_value={"operation": "install"}), \
+                mock.patch.object(self.pi, "client_running", return_value=True):
+            output, _ = self.invoke()
+        context = self.context(output)
+        self.assertIn("已排定", context)
+        self.assertIn("完全退出 ZCode", context)
+        self.assertNotIn("install-overlay 重试", context)
+        self.assertIn("uninstall-overlay", context)
+
+    def test_pending_without_running_client_keeps_retry_hint(self):
+        # 待收尾包有效但客户端未在跑（如杀软瞬时占用的 POSIX 场景）：重试仍然有意义，
+        # 维持原有提示。
+        self.install.side_effect = lambda before_publish: False
+        with mock.patch.object(self.pi, "pending_tmp", return_value={"operation": "install"}), \
+                mock.patch.object(self.pi, "client_running", return_value=False):
+            output, _ = self.invoke()
+        context = self.context(output)
+        self.assertIn("自动安装未完成", context)
+        self.assertIn("install-overlay", context)
+
     def test_install_exception_restores_previously_absent_monitor_flags(self):
         self.install.side_effect = OSError("fixture install denied")
         output, _ = self.invoke()

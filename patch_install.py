@@ -42,7 +42,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from runtime_lock import file_lock, publish_install
 
 IS_WIN = sys.platform == "win32"
@@ -181,12 +181,19 @@ def _spawn_detached(cmd, flags, **kwargs):
 
 def launch_monitor(epoch):
     """Windows 开新控制台窗口跑安装监控（提醒重启 + 确认生效 + .tmp 收尾）；
-    macOS/Linux 无控制台概念，后台静默跑（收尾与自动退出照常）。设 ZUSAGE_NO_MONITOR=1 可禁用。"""
+    macOS/Linux 无控制台概念，后台静默跑（收尾与自动退出照常）。设 ZUSAGE_NO_MONITOR=1 可禁用。
+    同目标已有存活监控时不再拉起（issue #120：SessionStart 每次自动安装都会走到这里，
+    不去重会随会话数线性堆积）；锁在 spawn 前释放，由监控进程自己去持有。"""
     if os.environ.get("ZUSAGE_NO_MONITOR") and not os.environ.get("ZUSAGE_MONITOR_QUIET"):
         return
     monitor = HERE / "install_monitor.py"
     if not monitor.exists():
         return
+    with monitor_instance_lock() as acquired:
+        if not acquired:
+            return   # 已有同目标监控在等：复用即可，不叠加进程
+    # 试锁成功即释放，锁的长期持有者是监控进程自己；极小竞态窗口内并发双拉起
+    # 也无害——后到的监控抢锁失败会自行退出。
     cmd = [sys.executable, str(monitor), "%.3f" % epoch, str(ASAR), str(RUNTIME)]
     try:
         if os.environ.get("ZUSAGE_MONITOR_QUIET"):
@@ -452,6 +459,47 @@ def _target_lock():
     return file_lock(ASAR.with_name(ASAR.name + ".zusage.lock"))
 
 
+def monitor_lock_path():
+    """监控实例去重锁（issue #120）：与目标锁同目录、不同名，永久保留不删。"""
+    return ASAR.with_name(ASAR.name + ".zusage.monitor.lock")
+
+
+@contextmanager
+def monitor_instance_lock():
+    """监控实例去重锁（issue #120，非阻塞独占）：yield True=持有；False=同目标已有
+    监控在跑。锁文件与目标锁同目录、不同名，永久保留不删。不用 file_lock：去重锁
+    是纯 try-lock，没有等待与超时语义，还共用它的计时器会干扰既有测试对轮询节奏
+    的断言。锁文件无法创建时按持有处理：去重是锦上添花，不能挡住收尾主职责。
+    区域锁/flock 在句柄关闭（含进程退出、被杀）时由 OS 释放，无陈锁残留。"""
+    try:
+        fd = os.open(os.fspath(monitor_lock_path()), os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError:
+        yield True
+        return
+    locked = False
+    try:
+        if os.name == "nt":
+            import msvcrt
+            if os.fstat(fd).st_size == 0:
+                os.write(fd, b"\0")
+            os.lseek(fd, 0, os.SEEK_SET)
+            try:
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                locked = True
+            except OSError:
+                pass
+        else:
+            import fcntl
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                locked = True
+            except OSError:
+                pass
+        yield locked
+    finally:
+        os.close(fd)   # 释放即关闭句柄：显式解锁与关闭之间的窗口没有意义
+
+
 def _checked_tmp_metadata(path, source, operation):
     if operation not in ("install", "remove"):
         raise PendingTmpError("invalid pending operation")
@@ -684,6 +732,20 @@ def sudo_hint(operation="install"):
             '  sudo env HOME="$HOME" PATH="$PATH" python3 "{}" {}'.format(script, cmd).rstrip()))
 
 
+def _reusable_pending_install(new_entry):
+    """磁盘已有「同来源、同运行时、入口与本次安装目标完全一致」的有效待收尾包时
+    判定可复用（issue #120）：pending_tmp 以 stat 级校验 sidecar 的 validated/runtime
+    与来源、TMP 的 stamp 未变——sidecar 发布时已做过整包 hash、自检与语法检查，
+    stamp 未变即内容未变；再比对 TMP 入口与本次将写入的 new_entry 逐字节一致。
+    最终替换仍走原有全量校验链。任何不确定（文件缺失、stamp 变化、结构异常）都
+    返回 False 走原有重打包路径：复用只是优化，不是新的信任边界。"""
+    try:
+        pending_tmp("install")
+        return entry_bytes_of(TMP) == new_entry
+    except (OSError, ValueError, AssertionError, KeyError, struct.error):
+        return False
+
+
 def install(finalize=False, before_publish=None):
     """Serialize install/remove/finalize; optional callback precedes a new install's publication."""
     if finalize:
@@ -730,15 +792,22 @@ def _install(finalize=False, before_publish=None):
     if stripped != entry:
         print(L("检测到旧注入行（可能指向旧目录），将替换为新路径。",
                 "Old injection line detected (possibly pointing at an old directory); it will be replaced with the new path."))
-    print(L("重打包（307MB，约需十几秒）...", "repacking (307MB, takes ~10-20 seconds)..."))
-    try:
-        if before_publish is not None:
-            before_publish({"asar": str(ASAR.resolve()),
-                            "entryHash": hashlib.sha256(new_entry).hexdigest()})
-        _prepare_tmp({"/" + ENTRY: new_entry}, source=source)
-    except (OSError, PendingTmpError) as e:
-        print(L(f"待替换包生成失败，未替换：{e}", f"Pending package preparation failed; not replaced: {e}"))
-        return False
+    if _reusable_pending_install(new_entry):
+        # 客户端持续运行期间每次 SessionStart 自动安装都会走到这里：直接复用磁盘上
+        # 已排定的待收尾包，不再 307MB 重打包/重写（issue #120 的写放大）。发布时的
+        # 安装意图记录（before_publish）同样不重复。后续替换/收尾照原路径进行。
+        print(L("已有有效的待收尾包（内容一致），跳过重打包。",
+                "A valid identical pending package already exists; skipping the repack."))
+    else:
+        print(L("重打包（307MB，约需十几秒）...", "repacking (307MB, takes ~10-20 seconds)..."))
+        try:
+            if before_publish is not None:
+                before_publish({"asar": str(ASAR.resolve()),
+                                "entryHash": hashlib.sha256(new_entry).hexdigest()})
+            _prepare_tmp({"/" + ENTRY: new_entry}, source=source)
+        except (OSError, PendingTmpError) as e:
+            print(L(f"待替换包生成失败，未替换：{e}", f"Pending package preparation failed; not replaced: {e}"))
+            return False
     if client_running():
         try:
             _replace_pending("install")

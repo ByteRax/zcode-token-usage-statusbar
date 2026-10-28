@@ -72,6 +72,43 @@ class QuietMonitorTests(unittest.TestCase):
             self.patch.launch_monitor(0)
         spawn.assert_not_called()
 
+    def test_monitor_lock_is_exclusive_and_released_after_use(self):
+        # issue #120：同目标的监控实例锁必须互斥，释放后可重新获取（进程退出等价释放）。
+        with self.patch.monitor_instance_lock() as first:
+            self.assertTrue(first)
+            with self.patch.monitor_instance_lock() as second:
+                self.assertFalse(second)
+        with self.patch.monitor_instance_lock() as third:
+            self.assertTrue(third)
+
+    def test_launch_monitor_skips_spawn_while_another_monitor_holds_lock(self):
+        # issue #120：同目标的存活监控已持有实例锁时，不再拉起新监控进程；
+        # 锁释放后恢复正常拉起。
+        with self.patch.monitor_instance_lock() as held:
+            self.assertTrue(held)
+            with mock.patch.dict(os.environ, {"ZUSAGE_NO_MONITOR": "1", "ZUSAGE_MONITOR_QUIET": "1"}), \
+                    mock.patch.object(self.patch.subprocess, "Popen") as spawn:
+                self.patch.launch_monitor(0)
+            spawn.assert_not_called()
+        with mock.patch.dict(os.environ, {"ZUSAGE_NO_MONITOR": "1", "ZUSAGE_MONITOR_QUIET": "1"}), \
+                mock.patch.object(self.patch.subprocess, "Popen") as spawn:
+            self.patch.launch_monitor(0)
+        self.assertEqual(spawn.call_count, 1)
+
+    def test_second_monitor_instance_exits_without_running_the_loop(self):
+        # issue #120：SessionStart 每次自动安装都会尝试拉起监控；已有实例持锁时
+        # 后来者必须立即退出，不得随会话数线性堆积，也不得碰待收尾包。
+        self.pending()
+        with self.patch.monitor_instance_lock() as held:
+            self.assertTrue(held)
+            with mock.patch.dict(sys.modules, {"patch_install": self.patch}), \
+                    mock.patch.object(self.monitor, "zcode_pids") as pids, \
+                    mock.patch.object(self.patch, "finalize_tmp") as finalize:
+                self.monitor.main()
+            pids.assert_not_called()
+            finalize.assert_not_called()
+            self.assertEqual(self.asar.read_bytes(), b"official version")
+
     def test_quiet_monitor_exits_immediately_without_pending_package(self):
         with mock.patch.dict(sys.modules, {"patch_install": self.patch}), \
                 mock.patch.object(self.monitor.time, "sleep") as sleep:
