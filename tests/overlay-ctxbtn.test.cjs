@@ -198,23 +198,23 @@ test('dispose restores the native form of its own pane button', () => {
 });
 
 test('enhancement styles exist: band colors, geometry override, pct span and light variants', () => {
-  assert.match(source, /\[data-testid=chat-context-usage-trigger\]\[data-zusage-armed\]\{color:#94A3B8!important/);   // v131 calm 基色 slate-400
-  assert.match(source, /\[data-zusage-armed\]\[data-zusage-band=norm\]\{color:#818CF8!important\}/);
-  assert.match(source, /\[data-zusage-armed\]\[data-zusage-band=mid\]\{color:#A78BFA!important\}/);
+  assert.match(source, /\[data-testid=chat-context-usage-trigger\]\[data-zusage-armed\]\{color:#3ecf8e!important/);   // calm 基色=三档绿
+  assert.match(source, /\[data-zusage-armed\]\[data-zusage-band=mid\],\[data-testid=chat-context-usage-trigger\]\[data-zusage-armed\]\[data-zusage-band=high\]\{color:#f5b944!important\}/);   // mid+high 同黄
+  assert.match(source, /\[data-zusage-armed\]\[data-zusage-band=crit\]\{color:#ff6b57!important\}/);
   assert.match(source, /width:auto!important;min-width:1\.75rem;padding:0 3px;gap:4px\}/);
-  assert.match(source, /\[data-zusage-armed\]\[data-zusage-band=high\]\{color:#FB923C!important\}/);
-  assert.match(source, /\[data-zusage-armed\]\[data-zusage-band=crit\]\{color:#F87171!important\}/);
   assert.match(source, /\[data-zusage-armed\]\[data-zusage-band=exc\]\{color:var\(--color-destructive,#ff2d55\)!important/);
   assert.match(source, />svg:not\(\.animate-spin\) circle\{opacity:1;stroke-width:3;r:9px\}/);
   assert.match(source, />svg:not\(\.animate-spin\) circle:first-of-type\{stroke:var\(--color-hover/);
   assert.match(source, />svg:not\(\.animate-spin\) circle:last-of-type\{stroke:currentColor;stroke-linecap:round\}/);
-  assert.match(source, /\.zu-ctxpct\{font-family:var\(--font-mono/);
-  assert.match(source, /font-variant-numeric:tabular-nums/);   // 等宽数字防百分比跳动抖宽
+  // v133 定稿：额度与上下文百分比两处显式同字体——14px（--ui-font-size）+ 加粗 + 等宽 +
+  // tabular-nums（用户规格 2026-10-28；不靠继承：工具栏容器字号偏小致两段不一致）
+  assert.match(source, /\.zu-ctxpct\{display:inline-flex;align-items:center;flex:0 0 auto;/);
+  assert.match(source.slice(source.indexOf('\".zu-ctxpct{'), source.indexOf('\".zu-ctxpct{') + 600), /font-size:calc\(var\(--text-ui-base,var\(--ui-font-size,14px\)\) - 1px\);font-weight:700;font-variant-numeric:tabular-nums\}/);
   assert.doesNotMatch(source, /\.zu-ctxpct\{[^}]*pointer-events:none/);
   assert.doesNotMatch(source, /\.zu-ctxpct:hover/);
   assert.doesNotMatch(source, /pctEl\.addEventListener\(t, function \(e\) \{ e\.stopPropagation/);
   assert.doesNotMatch(source, /\[data-zusage-armed\] \.zu-ctxpct\.ok\{color:#72c9a2\}/);   // v131 pct 与环一律继承按钮色
-  assert.match(source, /\[data-zusage-light\]\[data-zusage-armed\]\[data-zusage-band=calm\]\{color:#475569!important\}/);   // 浅色档带 armed 补特异性（0,3,0 同暗色规则，源序在后胜出）
-  assert.match(source, /\[data-zusage-light\]\[data-zusage-armed\]\[data-zusage-band=crit\]\{color:#B91C1C!important\}/);
+  assert.match(source, /\[data-zusage-light\]\[data-zusage-armed\]\[data-zusage-band=calm\],\[data-zusage-light\]\[data-zusage-armed\]\[data-zusage-band=norm\]\{color:#0f9d6c!important\}/);   // 浅色档带 armed 补特异性（0,3,0 同暗色规则，源序在后胜出）
+  assert.match(source, /\[data-zusage-light\]\[data-zusage-armed\]\[data-zusage-band=crit\]\{color:#d8482f!important\}/);
   assert.doesNotMatch(source, /\[data-zusage-light\]\[data-zusage-band=(?:norm|mid|high|crit)\]\{color:/);   // 旧两属性浅色规则不得回潮（会被暗色 0,3,0 恒胜）
 });
