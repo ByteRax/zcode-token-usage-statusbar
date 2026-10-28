@@ -24,7 +24,7 @@
 | CommandCode | 已有订阅与用量适配 | 专用 key，env / secrets；非通用推理 key 自动发现保证 | 源码转写、夹具验证；需匹配订阅和统计周期；组织账号带 `orgId` 查询，个人订阅（whoami `org:null`）省略 `orgId` 走用户作用域 |
 | Cline Pass | 已有用量窗口适配 | 专用 key，env / secrets | 源码转写、夹具验证；配置型源，凭据可读不等于一定激活 |
 | Anthropic Pro / Max | OAuth 用量适配；不是普通 API 计费余额 | **必须显式 opt-in**；env / secrets，或**另读 `~/.claude/.credentials.json` 的 Claude OAuth**，属跨应用读取 | 源码转写、夹具验证；不是自动复用宿主推理 key；仅支持选定主窗口，不冒充子配额完整覆盖 |
-| DeepSeek | 官方余额适配 | env / secrets / 官方域供应商 key | 夹具验证，非真账号；有效零余额处理列入本轮修复 |
+| DeepSeek | 官方余额适配（端点 `/user/balance`，字段 `is_available` + `balance_infos[]` 三分余额） | env / secrets / 官方域供应商 key（baseUrl 须为 `api.deepseek.com`，`/v1`、`/anthropic` 路径变体同域命中） | 夹具验证，非真账号；有效零余额处理列入本轮修复：`total_balance="0.00"` 与 `is_available=false` 且 `balance_infos` 为空两种形态均按合法零余额显示，`is_available` 缺失且无条目仍按 parse_error |
 | SiliconFlow | 官方用户余额适配 | env / secrets / 官方域供应商 key；国内外域须保持对应 | 夹具验证，非真账号；分域及 `totalBalance` 选择列入本轮修复，不能以赠额等单项冒充总余额 |
 | OpenRouter | `/api/v1/credits` 账户余额适配 | **需 management key，不是普通推理 key**；使用 `OPENROUTER_MANAGEMENT_KEY` 或设置中的 Management Key，不自动将推理 key 发往 `/credits` | 夹具验证，非真账号；缺 `total_usage` 不得当 0；本轮修复严格检查响应完整性 |
 | 小米 MiMo | 控制台套餐/余额协议适配 | **控制台 Cookie**，需 `userId` + `serviceToken`；env / secrets；**不是自动读取推理 API key** | 源码转写、夹具验证；Cookie 有效性、控制台协议与展示待真账号校准 |

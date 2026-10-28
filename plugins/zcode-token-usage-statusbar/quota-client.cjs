@@ -882,7 +882,12 @@ ADAPTERS.push({
   async fetchOne(j, ctx, cred, ctl) {
     const body = await j.http.getJson("https://api.deepseek.com/user/balance", { authorization: "Bearer " + cred.token }, ctl);
     const infos = Array.isArray(body && body.balance_infos) ? body.balance_infos : [];
-    if (!infos.length) throw qErr("parse_error", "no balance_infos");
+    if (!infos.length) {
+      /* is_available=false（官方语义：无余额可供调用）且无币种条目：按合法零余额显示，不判解析失败——
+       * 文档不承诺无可用余额的账户仍返回 balance_infos 条目；币种无响应证据，沿用平台缺省 CNY。 */
+      if (body && body.is_available === false) return { balance: { amount: 0, currency: "CNY" } };
+      throw qErr("parse_error", "no balance_infos");
+    }
     const parsed = infos
       .map((x) => {
         const total = parseCurrencyAmount(x.total_balance, x.currency);
