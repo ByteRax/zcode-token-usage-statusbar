@@ -162,7 +162,7 @@ test('chip is inserted directly left of the context button with per-window segme
   assert.equal(ui.wrap.children.indexOf(chip), ui.wrap.children.indexOf(ui.btn) - 1);
   assert.equal(chip.className, 'zu-quota');
   assert.equal(chip.innerHTML,
-    '<span class="zu-qseg zu-qb-calm"><span class="zu-qlabel">5小时</span> 26%</span><span class="zu-qsep">|</span><span class="zu-qseg zu-qweekly zu-qb-calm"><span class="zu-qlabel">7天</span> 12%</span>');
+    '<span class="zu-qseg zu-qb-calm"><span class="zu-qlabel">5小时</span> 26%</span><span class="zu-qsep">|</span><span class="zu-qseg zu-qb-calm"><span class="zu-qlabel">7天</span> 12%</span>');
   assert.equal(chip.getAttribute('aria-label'), '套餐已用 5小时 26%，7天 12%');
   const live = h.liveOf(h.body.children.find(e => e.className === 'zusage-root'));
   assert.ok(live, 'a visually hidden live region is mounted inside this pane bar');
@@ -244,7 +244,7 @@ test('segments use user bands 30/50/80/90 (inclusive lower bound); mixed windows
   assert.match(h.chipOf(ui.wrap).innerHTML, /zu-qseg zu-qb-exc"><span class="zu-qlabel">5小时<\/span> 100%<\/span>/);   // ≥100 满档呼吸闪烁（用户规格保留）
   h.window.__zusageUpdate(h.payload({ quota: Object.assign({}, QUOTA_OK, { windows: { fiveHour: { percent: 96, resetsAt: null, details: [] }, weekly: { percent: 10, resetsAt: null, details: [] } } }) }));
   assert.equal(h.chipOf(ui.wrap).innerHTML,
-    '<span class="zu-qseg zu-qb-crit"><span class="zu-qlabel">5小时</span> 96%</span><span class="zu-qsep">|</span><span class="zu-qseg zu-qweekly zu-qb-calm"><span class="zu-qlabel">7天</span> 10%</span>');
+    '<span class="zu-qseg zu-qb-crit"><span class="zu-qlabel">5小时</span> 96%</span><span class="zu-qsep">|</span><span class="zu-qseg zu-qb-calm"><span class="zu-qlabel">7天</span> 10%</span>');
   assert.equal(h.liveOf(h.body.children.find(e => e.className === 'zusage-root')).textContent, '套餐已用 5小时 96%，7天 10%', 'live region announces changed values');
   h.window.__zusageUpdate(h.payload({ quota: Object.assign({}, QUOTA_OK, { windows: { fiveHour: { percent: 96, resetsAt: null, details: [] }, weekly: { percent: 10, resetsAt: null, details: [] } } }) }));
   assert.equal(h.liveOf(h.body.children.find(e => e.className === 'zusage-root')).textContent, '套餐已用 5小时 96%，7天 10%', 'unchanged values do not rewrite the live region');
@@ -432,19 +432,24 @@ test('settings panel exposes the config-backed quota toggle (default on, v111) w
   assert.match(source, /zu-src-list/);   // ⚙ 源列表容器
   assert.match(source, /pluginRequest\("quota-src-key", \{ id: field\.dataset\.src, field: field\.dataset\.field, value: field\.value \}, function \(result\)/);
   assert.match(source, /\.zu-quota\{display:inline-flex;align-items:center;gap:5px;height:1\.75rem/);
-  assert.match(source, /font-variant-numeric:tabular-nums;line-height:1\}/);   // v131 chip 数字等宽防抖宽（.zu-quota 基础样式）
+  assert.match(source, /\.zu-quota\{display:inline-flex;align-items:center;gap:5px;height:1\.75rem;padding:0 6px;border-radius:\.5rem;cursor:pointer;user-select:none;flex:0 0 auto;/);   // 布局盒
+  assert.match(source.slice(source.indexOf('\".zu-quota{'), source.indexOf('\".zu-quota{') + 600), /font-size:calc\(var\(--text-ui-base,var\(--ui-font-size,14px\)\) - 1px\);font-weight:700;font-variant-numeric:tabular-nums\}/);
   assert.match(source, /\.zu-qsep\{color:var\(--color-foreground-subtle/);
-  assert.match(source, /\.zu-qseg\{white-space:nowrap\}/);   // v131 基色废止：色全由五档类提供
-  assert.match(source, /\.zu-qseg\.zu-qb-calm\{color:#34D399\}\.zu-qseg\.zu-qb-norm\{color:#38BDF8\}\.zu-qseg\.zu-qb-mid\{color:#FBBF24\}/);   // 五档暗色（emerald/sky/amber 400）
-  assert.match(source, /\.zu-qseg\.zu-qb-high\{color:#FB923C\}\.zu-qseg\.zu-qb-crit\{color:#FB7185\}/);
+  assert.match(source, /\.zu-qseg\{white-space:nowrap\}/);   // 基色废止：色全由档位类提供
+  // 三档视觉映射五档阈值（2026-10-28 用户规格）：calm+norm(<50) 绿 / mid+high(50–89) 黄 / crit(≥90) 红
+  assert.match(source, /\.zu-qseg\.zu-qb-calm,\.zu-qseg\.zu-qb-norm\{color:#3ecf8e\}/);
+  assert.match(source, /\.zu-qseg\.zu-qb-mid,\.zu-qseg\.zu-qb-high\{color:#f5b944\}/);
+  assert.match(source, /\.zu-qseg\.zu-qb-crit\{color:#ff6b57\}/);
+  assert.doesNotMatch(source, /s\.wkey/);   // zu-qweekly 按周期着色残留已清
   assert.doesNotMatch(source, /\.zu-qseg\.zu-qweekly\{color:/);   // v131 按窗口类型着色废止（仅按百分比）
   assert.match(source, /\.zu-qseg\.zu-qb-exc\{color:var\(--color-destructive,#ff2d55\);text-shadow:0 0 8px rgba\(255,45,85,\.5\);animation:zuexc/);   // ≥100 满档呼吸闪烁（用户规格）
   assert.match(source, /\.zu-quota\[data-zusage-light\] \.zu-qseg\.zu-qb-exc\{text-shadow:none\}/);
-  assert.match(source, /\.zu-qseg \.zu-qlabel\{font-weight:400\}/);   // 标签与数值同色成组，仅降字重
-  assert.match(source, /\.zu-quota\[data-zusage-light\] \.zu-qseg\.zu-qb-calm\{color:#047857\}/);   // 五档浅色（emerald/sky/amber/orange/rose 700）
-  assert.match(source, /\.zu-quota\[data-zusage-light\] \.zu-qseg\.zu-qb-crit\{color:#BE123C\}/);
-  assert.match(source, /data-zusage-armed\]\{color:#94A3B8!important/);   // 上下文 calm 基色 slate-400（限按钮作用域）
-  assert.match(source, /\[data-zusage-light\]\[data-zusage-armed\]\[data-zusage-band=calm\]\{color:#475569!important\}/);   // v132 浅色档带 armed 补特异性
+  assert.doesNotMatch(source, /\.zu-qseg \.zu-qlabel\{font-weight/);   // 标签随容器 700（偏细 → 用户规格 2026-10-28）
+  assert.match(source, /\.zu-quota\[data-zusage-light\] \.zu-qseg\.zu-qb-calm,\.zu-quota\[data-zusage-light\] \.zu-qseg\.zu-qb-norm\{color:#0f9d6c\}/);
+  assert.match(source, /\.zu-quota\[data-zusage-light\] \.zu-qseg\.zu-qb-mid,\.zu-quota\[data-zusage-light\] \.zu-qseg\.zu-qb-high\{color:#b6791a\}/);
+  assert.match(source, /\.zu-quota\[data-zusage-light\] \.zu-qseg\.zu-qb-crit\{color:#d8482f\}/);
+  assert.match(source, /data-zusage-armed\]\{color:#3ecf8e!important/);   // 上下文 calm 基色=三档绿（限按钮作用域）
+  assert.match(source, /\[data-zusage-light\]\[data-zusage-armed\]\[data-zusage-band=calm\],\[data-zusage-light\]\[data-zusage-armed\]\[data-zusage-band=norm\]\{color:#0f9d6c!important\}/);   // 浅色档带 armed 补特异性
   assert.doesNotMatch(source, /\[data-zusage-armed\] \.zu-ctxpct\.ok\{color:#72c9a2\}/);   // v131 pct 与环一律继承按钮 currentColor
   assert.doesNotMatch(source, /zu-qring/);   // v96 起环形已删（分段样式）
   assert.match(source, /\.zusage-quota-tip,\.zu-quota,/);   // 代际清理选择器含 chip 与其 tooltip
