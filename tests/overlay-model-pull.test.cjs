@@ -99,7 +99,7 @@ test("host mount contract: anchor testid, left-insert, secondary look, currentCo
   assert.match(SOURCE, /enhanceModelPuller\(\);   \/\/ v132：宿主设置页按钮 DOM 对账点/);
   assert.match(SOURCE, /if \(inactive\(\)\) \{ restoreModelPuller\(\); return; \}   \/\/ 热更后旧实例闭包不得再开弹窗/);
   // 锚 testid 全局唯一：内置/套餐页不挂按钮（选中的不是 custom 供应商即 restore）
-  assert.match(SOURCE, /if \(!detectSelectedCustomProviderId\(\)\) \{ restoreModelPuller\(\); return; \}/);
+  assert.match(SOURCE, /if \(!detectSelectedCustomProviderId\(btn\)\) \{ restoreModelPuller\(\); return; \}/);
   assert.match(SOURCE, /\.zu-mp-actions \.zu-mp-ok\{color:var\(--color-primary-foreground,#fff\);background:var\(--color-primary,#3B82F6\)/);   // 宿主原生 primary 令牌（default variant：bg-primary/text-primary-foreground）
   // 按钮 loading：拉取中切文本「拉取中…」+ 图标旋转（原透明度脉冲无感知）
   assert.match(SOURCE, /function setMpHostBusy\(btn, busy\)/);
@@ -120,11 +120,13 @@ test("host mount contract: anchor testid, left-insert, secondary look, currentCo
   assert.match(SOURCE, /已选中 " \+ n \+ " \/ " \+ models\.length \+ " 个模型/);
   assert.match(SOURCE, /确认添加并保存/);
   // 供应商归属主判定=当前选择的供应商（宿主源码定案：custom 项 nodeKey=custom:<providerId>，选中 data-state=selected）
-  assert.match(SOURCE, /function detectSelectedCustomProviderId\(\)/);
+  assert.match(SOURCE, /function detectSelectedCustomProviderId\(anchor\)/);   // 接收锚按钮：共享 nodeKey 页按详情内容（付费卡文案）区分归属
+  assert.match(SOURCE, /indexOf\("GLM Coding Max"\) >= 0/);
+  assert.match(SOURCE, /account:bigmodel-individual-coding-plan" : ""/);   // 纯 Start Plan 页返回空（不显示按钮）
   assert.match(SOURCE, /\[data-testid\^="model-provider-nav-item-"\]\[data-state="selected"\]/);
-  assert.match(SOURCE, /\^model-provider-nav-item-custom:\(\.\+\)\$/);
+  assert.ok(SOURCE.indexOf('^custom:(.+)$/.exec(nodeKey)') >= 0);   // nodeKey 已剥 testid 前缀（源码字面量断言，避免转义歧义）
   assert.match(SOURCE, /function matchProviderById\(providers, providerId\)/);
-  assert.match(SOURCE, /matchProviderById\(providers, detectSelectedCustomProviderId\(\)\)/);   // 主判定先于 Base URL 兜底
+  assert.match(SOURCE, /matchProviderById\(providers, detectSelectedCustomProviderId\(self\)\)/);   // 主判定先于 Base URL 兜底（点击路径传锚）
   assert.match(SOURCE, /\[data-testid="model-provider-base-url-input"\]/);   // Base URL 专用 testid 优先于启发式
   assert.doesNotMatch(SOURCE, /data-sec="models"/);   // ⚙ 分区已撤
   assert.doesNotMatch(SOURCE, /function (?:ensureMpProviders|syncMpList|startMpFetch)\b/);   // 旧列表逻辑仅存于台账注释

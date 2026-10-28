@@ -69,6 +69,79 @@ function createPuller(file, routes) {
 const providerCalls = (calls) => calls.filter((c) => c.url.indexOf("models.dev.test") < 0);
 
 /* ---------- 纯函数 ---------- */
+/* ---------- 套餐源（v134）：OAuth 型智谱套餐 ---------- */
+const PLAN_ID = "account:bigmodel-individual-coding-plan";
+const PLAN_CFG = {
+  config: {
+    providerConfigRules: {
+      providerRules: [
+        { providerId: PLAN_ID, config: { personalModelIds: ["GLM-5.3-FlashX"], modelOrder: ["GLM-5.3", "GLM-5.3-Flash", "GLM-5.3-FlashX"] } },
+      ],
+    },
+  },
+};
+
+function createPlanPuller(file, routes, opts) {
+  let cancelled = 0;
+  const impl = async (url, o) => {
+    if (url === MODELS_DEV_TEST_URL) return { ok: false, status: 503, body: { cancel: () => cancelled++ } };
+    const hit = routes.find((r) => r.url === url);
+    if (!hit) throw new Error("unexpected url " + url);
+    return { ok: true, status: 200, json: async () => hit.body, body: null, authHeader: o.headers.Authorization };
+  };
+  const mp = M.createModelPuller({
+    customCfgPath: file, fetchImpl: impl, modelsDevUrl: MODELS_DEV_TEST_URL,
+    credentialsPath: "/tmp/creds.json",
+    decryptValue: () => "plan-oauth-token",
+    ...opts,
+  });
+  return { mp, impl };
+}
+
+test("plan source: listed when token decrypts, hidden when it does not", async () => {
+  const file = tmpCfgPath();
+  writeCfg(file, PLAN_CFG);
+  fs.writeFileSync("/tmp/creds.json", JSON.stringify({ "oauth:bigmodel:access_token": "enc:xxx" }));
+  const { mp } = createPlanPuller(file, []);
+  const r = await mp.listProviders();
+  assert.equal(r.ok, true);
+  assert.equal(r.providers.length, 1);
+  assert.equal(r.providers[0].id, PLAN_ID);
+  assert.equal(r.providers[0].name, "BigModel Coding Plan");
+  assert.equal(r.providers[0].baseUrl, "https://open.bigmodel.cn/api/anthropic");
+  assert.deepEqual(r.providers[0].modelIds, ["GLM-5.3-FlashX", "GLM-5.3", "GLM-5.3-Flash"]);   // personalModelIds+modelOrder 合并口径
+
+  const noTok = createPlanPuller(file, [], { decryptValue: () => null });
+  assert.equal((await noTok.mp.listProviders()).providers.length, 0);
+  assert.equal((await noTok.mp.fetchModels(PLAN_ID)).error, "provider not found");
+});
+
+test("plan source: fetches anthropic models endpoint with oauth bearer and normalizes case", async () => {
+  const file = tmpCfgPath();
+  writeCfg(file, PLAN_CFG);
+  fs.writeFileSync("/tmp/creds.json", JSON.stringify({ "oauth:bigmodel:access_token": "enc:xxx" }));
+  let seenAuth = "";
+  const routes = [{
+    url: "https://open.bigmodel.cn/api/anthropic/v1/models",
+    get body() {
+      return { data: [{ id: "glm-5.3-flashx" }, { id: "glm-4.7" }, { id: "glm-5.2" }] };
+    },
+  }];
+  const { mp } = createPlanPuller(file, routes);
+  const origImpl = (await (async () => null)()) ;
+  const r = await mp.fetchModels(PLAN_ID);
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.models, ["GLM-4.7", "GLM-5.2", "GLM-5.3-FlashX"]);   // 小写端点 → 宿主官方规范大小写，排序去重
+  assert.equal(r.metaById["GLM-5.3-FlashX"], undefined);   // 套餐无元数据，纯 id 追加
+
+  const r2 = await mp.applyModels(PLAN_ID, ["GLM-5.3-FlashX", "glm-4.7"]);
+  assert.deepEqual(r2, { ok: true, added: 1 });   // FlashX 归一后命中已配置项；仅 glm-4.7→GLM-4.7 新增
+  const after = JSON.parse(fs.readFileSync(file, "utf8"));
+  const rule = after.config.providerConfigRules.providerRules[0].config;
+  assert.ok(rule.personalModelIds.includes("GLM-4.7"));
+  assert.ok(!rule.personalModelIds.includes("glm-4.7"));   // 不写小写重复项
+});
+
 test("non-ok response bodies are cancelled (undici connection hygiene)", async () => {
   const file = tmpCfgPath();
   writeCfg(file, sampleCfg());

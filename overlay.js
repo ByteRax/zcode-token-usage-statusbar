@@ -3841,12 +3841,31 @@
      * ——取选中 custom 项的 providerId 与主进程列表精确匹配，编辑草稿未保存也不影响归属。
      * 兜底链：Base URL 匹配（专用 testid model-provider-base-url-input 优先，表单启发式探测
      * 次之）→ 单供应商直用 → 多供应商弹选择。preset/套餐导航项（非 custom: 前缀）不误归属。 */
-    function detectSelectedCustomProviderId() {
+    function detectSelectedCustomProviderId(anchor) {
       try {
         var nodes = document.querySelectorAll('[data-testid^="model-provider-nav-item-"][data-state="selected"]');
         for (var i = 0; i < nodes.length; i++) {
-          var m = /^model-provider-nav-item-custom:(.+)$/.exec(nodes[i].getAttribute("data-testid") || "");
+          var nodeKey = (nodes[i].getAttribute("data-testid") || "").replace(/^model-provider-nav-item-/, "");
+          try { window.__zusageDiag.mpSel = nodeKey.slice(0, 140); } catch (e) { }   // 诊断：真实选中 nodeKey 形态
+          var m = /^custom:(.+)$/.exec(nodeKey);
           if (m) return m[1];
+          /* v134 内置套餐源：BigModel 付费套餐详情页可拉取（OAuth token 对 anthropic
+           * models 端点有效，实测 200）。实机诊断：BigModel 导航项与 Start Plan 导航项
+           * 共用 nodeKey=preset:account:bigmodel-start-plan——按详情内容区分：页内含
+           * 付费卡（GLM Coding Max）才归属付费套餐；纯 Start Plan 免费卡页（模型由
+           * 服务端随卡指定、无 models 端点实测 404）不放行不显示按钮 */
+          if (/account:bigmodel-individual-coding-plan$/.test(nodeKey)) return nodeKey.slice(nodeKey.indexOf(":") + 1);
+          if (/account:bigmodel-start-plan$/.test(nodeKey)) {
+            var container = anchor, depth = 0, hasPaidCard = false;
+            for (; container && container !== document.body && depth < 8; depth++) {
+              container = container.parentElement;
+              if (container && container.querySelector && container.querySelector('[data-testid="model-provider-enabled-switch"]')) break;
+            }
+            try {
+              hasPaidCard = !!(container && container.textContent && container.textContent.indexOf("GLM Coding Max") >= 0);
+            } catch (e) { }
+            return hasPaidCard ? "account:bigmodel-individual-coding-plan" : "";
+          }
         }
       } catch (e) { }
       return "";
@@ -3948,7 +3967,7 @@
           openMpNotice(L("未找到 API Key 型自定义供应商：先在「模型设置 → 自定义供应商」里添加一个（填写 Base URL 与 API Key）再来。", "No API-key custom provider found: add one under Model settings first (base URL + API key), then pull."));
           return;
         }
-        var provider = matchProviderById(providers, detectSelectedCustomProviderId())
+        var provider = matchProviderById(providers, detectSelectedCustomProviderId(self))
           || matchProviderByBaseUrl(providers, detectMpProviderBaseUrl(self))
           || (providers.length === 1 ? providers[0] : null);
         if (provider) startMpHostFetch(provider, self);   // busy 延续到 fetch 回调（弹窗出现/失败才解除）
@@ -3962,9 +3981,10 @@
       if (inactive()) { restoreModelPuller(); return; }
       /* 锚 testid 全局唯一：内置/套餐页（BigModel/Start Plan）的「添加模型」同款 testid，
        * 但那些供应商的模型由宿主管——只有选中的是 custom 供应商时才挂按钮 */
-      if (!detectSelectedCustomProviderId()) { restoreModelPuller(); return; }
       var btn = null;
       try { btn = document.querySelector(MP_HOST_ANCHOR); } catch (e) { }
+      if (!detectSelectedCustomProviderId(btn)) { restoreModelPuller(); return; }
+      try { window.__zusageDiag.mpAnchor = btn ? "1" : "0"; } catch (e) { }   // 诊断：锚按钮存在性
       if (!btn || !btn.parentElement) { restoreModelPuller(); return; }
       var wrap = btn.parentElement;
       var mine = mpHostBtn;
