@@ -202,6 +202,7 @@ Windows 对应用户目录下的 `.zcode\zcode-token-usage-statusbar\config.json
   "lang": "zh",
   "answer_rate_line": true,
   "quota_enabled": true,
+  "reset_badge_enabled": true,
   "plugin_auto_update": true,
   "plugin_auto_install_overlay": true,
   "context_window": 1000000
@@ -216,6 +217,7 @@ Windows 对应用户目录下的 `.zcode\zcode-token-usage-statusbar\config.json
 | `diag` | 定位诊断文件（运行目录 `diag-<n>.json`，约每 15 次拉取落盘），默认开；显式 `false` 关闭常驻诊断写入，需要排查问题时设回 `true` 或删掉该键 |
 | `answer_rate_line` | 插件回答末尾的统计行，默认开。面板切换会立即重扫：关闭撤下插件生成的行，开启补回可用记录；下一问沿用该设置，历史正文和缓存数字不重算 |
 | `quota_enabled` | 套餐额度 chip（BigModel / Z.ai 个人编码套餐、ZCode Start Plan 免费档），默认开（显式 `false` 关闭）。建议用 ⚙ 面板开关而不是手改：主进程读取凭据查询套餐/余额接口（仅内存使用、不落盘、不进日志与诊断）：内置套餐走 ZCode 登录凭据（bigmodel.cn / api.z.ai，Start Plan 走 zcode.z.ai）；自定义供应商余额用其自己的 key，只发官方域（api.deepseek.com、openrouter.ai、api.siliconflow.cn、api.minimaxi.com、api.kimi.com、api.commandcode.ai、api.cline.bot、api.anthropic.com、platform.xiaomimimo.com、open.volcengineapi.com、opencode.ai 等）或你配置的中转站本域；⚙ 面板可为各数据源（MiniMax/Kimi/Cline/Anthropic/MiMo/火山/SCNet/OpenCode 等）单独配置凭据与开关（保存在运行目录 quota-secrets.json，0600）。套餐额度是账号级套餐池口径，不是单模型额度；BigModel 悬停还显示套餐名/版本与周期（自动续费显示"下次续费"，非自动续费显示"有效期至"；无法确认当前周期时不显示日期）；Start Plan 悬停显示套餐名、套餐池已用百分比与到期时间（选中 Start Plan 档位时 chip 显示该池，不与编码套餐池混用）；团队套餐暂不支持，未配置凭据/形状不支持的源 chip 显示中性「额度 未配置／额度 暂不支持」提示 |
+| `reset_badge_enabled` | 重置卡徽标（v135：额度 chip 左侧「重置 · N」，多账号张数 `+` 连接），默认开（显式 `false` 关闭）。独立于 `quota_enabled`：关闭额度 chip 后本开关开启时主进程仍解密登录凭据、仅查询官方 `reset/status` 只读接口（zcode.z.ai，与登录凭据同域）维护徽标。悬停徽标显示每账号 5 小时卡/周卡的张数与到期时间（yyyy-MM-dd HH:mm），并列出服务端返回的近 7 天已过期记录与上次重置时间（BigModel 账号；数据由网页控制台同款列表接口提供，接口未返回时不显示）；剩余 >3 小时绿、3 小时–30 分钟黄、<30 分钟红并呼吸闪烁；剩余时间短于阈值（⚙ 面板可配，默认 24 小时）时在徽标上显示倒计时。需要 ZCode 登录态；仅 API Key 用户与团队套餐无重置卡。每 5 分钟查询一次（BigModel 账号开启列表补充后每周期并行查 status 与列表两个接口），倒计时为本地推算 |
 | `plugin_auto_update` | 插件自动更新，默认开；损坏或非布尔配置不会启动更新 |
 | `plugin_auto_install_overlay` | 自动安装/修复客户端注入，默认开（缺配置或缺字段）；显式 false 保留，环境变量优先，卸载豁免仍阻止；无环境变量覆盖时损坏或非布尔配置不开启 |
 | `context_window` | 自动识别失败时的上下文窗口大小兜底 |

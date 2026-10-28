@@ -315,7 +315,7 @@ test('syncPanel restores the 万/亿 toggle and tolerates its absence in English
   const context = {
     panel: {
       querySelectorAll: () => [],
-      querySelector: selector => selector === '.zu-cn-num' ? (present ? cnBox : null) : ctxov,
+      querySelector: selector => selector === '.zu-cn-num' ? (present ? cnBox : null) : selector === '.zu-ctxov' ? ctxov : { value: '' },   // v135：syncPanel 还会回填 .zu-rst-cdh，独立桩避免误写 ctxov
     },
     state: { show: {}, ctxOv: '128000', cnNum: 0 },
     syncUpdate: () => { updates++; },

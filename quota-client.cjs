@@ -32,6 +32,11 @@ const PARSE_BACKOFF_MS = 30 * 60 * 1000;
 const NOT_CONFIGURED_RETRY_MS = 60 * 1000;
 const EXP_SOON_MS = 2 * 60 * 1000;
 const EXP_RETRY_MS = 5 * 60 * 1000;
+/* v135 重置卡（coding plan reset opportunity）：独立只读链，不复用 sources 调度器。
+ * 与额度 monitor 是两条链——卡是账号级「立即恢复额度池」的核销机会，每张带 expire_at。 */
+const RESET_PATH = "/api/v1/coding-plan/reset/status";
+const RESET_TTL_MS = 5 * 60 * 1000;       // 对齐宿主 STATUS_POLL_INTERVAL_MS
+const RESET_PARSE_BACKOFF_MS = 15 * 60 * 1000;
 
 /* ---------- 基础工具 ---------- */
 function sha16(v) { return crypto.createHash("sha256").update(String(v)).digest("hex").slice(0, 16); }
@@ -260,6 +265,77 @@ function normalizeZcodeStartBalance(body, nowMs) {
     },
     windows,
     models,
+  };
+}
+/* ---------- 重置卡（reset opportunity）归一化 ----------
+ * 宿主 packages/services bigmodelUsageQuotaProvider 的 reset status schema 转写：
+ * 信封 { code: 0, data: { available_five_hour_resets: [{expire_at}], available_week_resets: [...],
+ * latest_*_reset_history, has_unread_history } }。只采信两个机会数组（白名单字段
+ * expire_at）；秒/毫秒自适应，保留最近七天过期及未来的记录，统计仅含严格未过期卡。
+ * 数组及其中每条正有限数字时间戳均须合法；都为空数组是合法零卡。绝不调用领取端点。 */
+function resetExpireMs(v) {
+  if (typeof v !== "number" || !isFinite(v) || v <= 0) return null;
+  return v < 1e12 ? v * 1000 : v;
+}
+function normalizeResetStatus(body, nowMs) {
+  if (!body || typeof body !== "object") throw qErr("parse_error", "non-object body");
+  if (typeof body.code !== "number" || !isFinite(body.code)) throw qErr("parse_error", "invalid reset code");
+  if (body.code !== 0 || body.success === false) throw qErr("network_error", "business error: " + String(body.msg || "").slice(0, 80));
+  const data = body.data;
+  if (!data || typeof data !== "object" || !Array.isArray(data.available_five_hour_resets) || !Array.isArray(data.available_week_resets))
+    throw qErr("parse_error", "missing reset arrays");
+  const t = typeof nowMs === "number" && isFinite(nowMs) ? nowMs : Date.now();
+  const pick = (arr) => {
+    const out = [];
+    for (const it of arr) {
+      const ms = it && typeof it === "object" ? resetExpireMs(it.expire_at) : null;
+      if (ms == null) throw qErr("parse_error", "invalid reset expire_at");
+      if (ms >= t - 7 * 24 * 60 * 60 * 1000) out.push({ expireAt: ms });
+    }
+    out.sort((a, b) => a.expireAt - b.expireAt);
+    return out;
+  };
+  const fiveHour = pick(data.available_five_hour_resets);
+  const week = pick(data.available_week_resets);
+  const valid = fiveHour.concat(week).filter((card) => card.expireAt > t);
+  return {
+    fiveHour, week,
+    count: valid.length,
+    expireAt: valid.length ? Math.min(...valid.map((card) => card.expireAt)) : 0,
+  };
+}
+/* 网页控制台的同族列表端点（bigmodel.cn /api/biz/customer-package-reset/list，实测宿主
+ * OAuth 裸 authorization 可查，与 subscription 同款头；ZCode 桌面客户端未引用此端点）。
+ * 只用于补充「未使用或近 7 天已过期」的逐卡列表与上次重置时间（status 端点没有过期历史）。
+ * 信封 code 0/200；形状不符返回 null（可选数据静默降级，绝不拖累 status 主链），不抛错。 */
+function normalizeResetList(body, nowMs) {
+  if (!body || typeof body !== "object") return null;
+  if ((body.code !== 0 && body.code !== 200) || body.success === false) return null;
+  const data = body.data;
+  if (!data || typeof data !== "object" || !Array.isArray(data.fiveHourResets) || !Array.isArray(data.weekResets)) return null;
+  const t = typeof nowMs === "number" && isFinite(nowMs) ? nowMs : Date.now();
+  /* 逐卡白名单：expireTime（服务端 UTC+8）+ grantType + available；过期超 7 天丢弃。
+   * grantType 是行首展示值（用户规格 2026-10-28），列表端点有而 status 没有。 */
+  const pickCards = (arr) => {
+    const out = [];
+    for (const it of arr) {
+      if (!it || typeof it !== "object") continue;
+      const stamp = subscriptionTimestamp(it.expireTime);
+      const ms = stamp && stamp.at != null ? stamp.at : null;
+      if (ms == null) continue;
+      const available = it.available === true;
+      if (!available && t - ms > 7 * 24 * 60 * 60 * 1000) continue;
+      out.push({ expireAt: ms, grantType: typeof it.grantType === "string" ? it.grantType.slice(0, 24) : "",
+        available });
+    }
+    out.sort((a, b) => a.expireAt - b.expireAt);
+    return out;
+  };
+  const cleanStamp = (v) => (typeof v === "string" && subscriptionTimestamp(v) ? v : null);
+  return {
+    list: { fiveHour: pickCards(data.fiveHourResets), week: pickCards(data.weekResets) },
+    lastFiveHour: cleanStamp(data.lastFiveHourResetTime),
+    lastWeek: cleanStamp(data.lastWeekResetTime),
   };
 }
 /* 订阅周期字段语义（与宿主 bigmodelUsageQuotaMapper.pickCurrentSubscriptionExpireTime 语义对齐且更严）：
@@ -1358,6 +1434,15 @@ function createQuotaClient(opts) {
   const env = o.env || process.env;
   const now = o.now || (() => Date.now());
   const fetchImpl = o.fetchImpl || (typeof fetch === "function" ? fetch : null);
+  /* v135 双门控：quota_enabled 只关额度 chip 的查询链；reset_badge_enabled 独立控制重置卡。
+   * 额度关 + 重置开时主进程仍解密凭据（仅查 reset/status 只读端点）——⚙ 面板已披露该联网语义。 */
+  const quotaOn = o.quotaEnabled || (() => true);
+  /* resetOn 缺省关：reset 链是注入侧显式启用的附加功能（inject-main 传 resetBadgeEnabled），
+   * 库内默认关保证旧宿主装配/测试夹具零改动兼容，冷热混部时也只是少徽标不报错 */
+  const resetOn = o.resetEnabled || (() => false);
+  /* resetListOn 同理缺省关：bigmodel 族并行查网页控制台列表端点补充过期卡历史
+   * （status 端点无过期历史）；请求量翻倍且属增强数据，由注入侧显式开启 */
+  const resetListOn = typeof o.resetList === "function" ? o.resetList : (o.resetList ? () => true : () => false);
   const { credsPath, customCfgPath, builtinCfgPath } = resolveQuotaPaths(o);
   const secretsPath = o.secretsPath || path.join(path.dirname(credsPath), "quota-secrets.json");
   const readFile = o.readFile || ((p) => JSON.parse(fs.readFileSync(p, "utf8")));
@@ -1684,7 +1769,10 @@ function createQuotaClient(opts) {
 
   function tick(force) {
     let started = 0;
-    for (const { a, st } of activeSet().values()) if (tickSource(a, st, force)) started++;
+    const qOn = quotaOn();
+    const set = activeSet();   // 撤销/禁用重评始终执行；额度关时只停联网查询
+    if (qOn) for (const { a, st } of set.values()) if (tickSource(a, st, force)) started++;
+    tickReset(force);
     return started;
   }
 
@@ -1738,6 +1826,136 @@ function createQuotaClient(opts) {
       if (st.value.quotaSummary) v.quotaSummary = st.value.quotaSummary;
     }
     return v;
+  }
+
+  /* ---------- v135 重置卡轮询器（独立链，账号族级） ----------
+   * 端点在 ZCode API 基址 zcode.z.ai（宿主 dn(env, `${bP}/status`) 同款，与 OAuth token
+   * 端点同源；实测 bigmodel.cn/api.z.ai 均 404 NOT_FOUND）。两族只差 X-Bigmodel-Authorization
+   * 的凭据键（oauth:bigmodel / oauth:zai），各自持 OAuth+zcodejwttoken 才查该族。
+   * apiKey-only 用户无此数据（reset 端点是宿主登录态契约）；失败保留最近成功值由 view 标
+   * stale（同额度链口径），绝不构造假数据。 */
+  const RESET_ORIGIN = "https://zcode.z.ai";
+  const RESET_LIST_ORIGIN = "https://bigmodel.cn";
+  const RESET_FAMILIES = [
+    { fam: "bigmodel", credKey: "oauth:bigmodel:access_token", listPath: "/api/biz/customer-package-reset/list?targetType=PERSONAL" },
+    { fam: "zai", credKey: "oauth:zai:access_token" },
+  ];
+  const resetStates = new Map();
+  function resetStateOf(fam) {
+    let st = resetStates.get(fam);
+    if (!st) {
+      st = { status: "idle", value: null, fetchedAt: 0, nextAt: 0, backoffIdx: 0,
+        fingerprint: "", epoch: 0, inFlight: null, ctl: null, lastError: "" };
+      resetStates.set(fam, st);
+    }
+    return st;
+  }
+  function resolveResetCred(famConf) {
+    let raw = null;
+    try { raw = j.readFile(j.credsPath); } catch (e) { return null; }
+    if (!raw || typeof raw !== "object") return null;
+    const oauthEnc = raw[famConf.credKey], jwtEnc = raw["zcodejwttoken"];
+    if (typeof oauthEnc !== "string" || !oauthEnc || typeof jwtEnc !== "string" || !jwtEnc) return null;
+    const oauth = decryptValue(oauthEnc, deriveCipherKey(j.env));
+    const jwt = decryptValue(jwtEnc, deriveCipherKey(j.env));
+    if (!oauth || !jwt) return { decryptFailed: true, fingerprint: "host:" + sha16(oauthEnc + "\n" + jwtEnc) };
+    if (!oauth.trim() || !jwt.trim()) return null;
+    return { oauth: oauth.trim(), jwt: jwt.trim(), fingerprint: sha16(JSON.stringify([oauthEnc, jwtEnc])) };
+  }
+  /* 关闭门控时清除整个独立链；view/sourcesConfig 不发回调，避免推送时递归。 */
+  function resetGateOpen() {
+    if (resetOn()) return true;
+    for (const st of resetStates.values()) {
+      st.epoch += 1;
+      if (st.ctl) { try { st.ctl.abort(); } catch (e) { } }
+    }
+    resetStates.clear();
+    return false;
+  }
+  /* 在推送前或发请求前复核凭据；身份变化时清除旧账户值并废弃在途结果。 */
+  function syncResetCredential(st, cred) {
+    const fingerprint = cred && !cred.decryptFailed && cred.oauth && cred.jwt ? cred.fingerprint : "";
+    const error = cred && cred.decryptFailed ? "credential decrypt failed" : "";
+    if (fingerprint === st.fingerprint && (fingerprint || (st.status === "not_configured" && st.lastError === error))) return false;
+    st.epoch += 1;
+    if (st.ctl) { try { st.ctl.abort(); } catch (e) { } }
+    Object.assign(st, { ctl: null, inFlight: null, value: null, fetchedAt: 0,
+      fingerprint, backoffIdx: 0, nextAt: 0, status: fingerprint ? "idle" : "not_configured", lastError: error });
+    return true;
+  }
+  function tickReset(force) {
+    if (!resetGateOpen()) return;
+    const t = now();
+    for (const famConf of RESET_FAMILIES) {
+      if (!resetGateOpen()) return;
+      const st = resetStateOf(famConf.fam);
+      let cred = resolveResetCred(famConf);
+      const changed = syncResetCredential(st, cred);
+      if (changed && onUpdate) onUpdate();
+      if (!resetGateOpen() || resetStates.get(famConf.fam) !== st) return;
+      if (!st.fingerprint || st.inFlight) continue;
+      if (changed && onUpdate) {   // 回调可能同步更换或撤销凭据
+        cred = resolveResetCred(famConf);
+        if (syncResetCredential(st, cred)) { onUpdate(); continue; }
+      }
+      if (!force && t < st.nextAt) continue;
+      if (!force && st.status === "auth_failed") continue;
+      const exp = jwtExpMs(cred.jwt);
+      if (exp && exp - t < EXP_SOON_MS) { st.nextAt = t + EXP_RETRY_MS; continue; }   // JWT 临期不发请求
+      st.epoch += 1;
+      const ep = st.epoch;
+      const ctl = new AbortController();
+      st.ctl = ctl;
+      const kill = setTimeout(() => { try { ctl.abort(); } catch (e) { } }, FETCH_TIMEOUT_MS);
+      const p = (async () => {
+        const body = await j.http.getJson(RESET_ORIGIN + RESET_PATH, {
+          authorization: /^Bearer\s/i.test(cred.jwt) ? cred.jwt : "Bearer " + cred.jwt,
+          "X-Bigmodel-Authorization": cred.oauth,   // 宿主契约：裸 token，不套 Bearer
+          "Bigmodel-Target-Type": "PERSONAL",
+        }, ctl);
+        const value = normalizeResetStatus(body, now());
+        if (famConf.listPath && resetListOn()) {
+          /* 网页控制台列表端点：补充近 7 天过期卡与上次重置时间（status 无过期历史）。
+           * 与 subscription 同款可选并行——失败/形状变化静默降级，不影响 status 主链。 */
+          const listBody = await j.http.maybeGetJson(RESET_LIST_ORIGIN + famConf.listPath,
+            { authorization: cred.oauth, "set-language": "zh" }, ctl);
+          const extra = listBody ? normalizeResetList(listBody, now()) : null;
+          if (extra) {
+            value.list = extra.list;
+            if (extra.lastFiveHour) value.lastFiveHour = extra.lastFiveHour;
+            if (extra.lastWeek) value.lastWeek = extra.lastWeek;
+          }
+        }
+        return value;
+      })().then((value) => {
+        if (!resetGateOpen() || resetStates.get(famConf.fam) !== st || ep !== st.epoch) return;
+        if (syncResetCredential(st, resolveResetCred(famConf))) { if (onUpdate) onUpdate(); return; }
+        st.value = value;
+        st.fetchedAt = now();
+        st.status = "ok";
+        st.lastError = "";
+        st.backoffIdx = 0;
+        st.nextAt = now() + RESET_TTL_MS;
+      }).catch((e) => {
+        if (!resetGateOpen() || resetStates.get(famConf.fam) !== st || ep !== st.epoch) return;
+        if (syncResetCredential(st, resolveResetCred(famConf))) { if (onUpdate) onUpdate(); return; }
+        const code = e && e.code || "network_error";
+        st.lastError = String(e && e.message || code).slice(0, 120);
+        st.status = code;
+        if (code === "auth_failed") st.nextAt = Infinity;   // 冻结到凭据指纹变化
+        else if (code === "parse_error") st.nextAt = now() + RESET_PARSE_BACKOFF_MS;
+        else if (code === "rate_limited") st.nextAt = now() + (e.retryAfterMs || 60 * 1000);
+        else st.nextAt = now() + BACKOFF_MS[Math.min(st.backoffIdx++, BACKOFF_MS.length - 1)];
+        log("quota reset:", famConf.fam, code, st.lastError);
+      }).finally(() => {
+        clearTimeout(kill);
+        if (!resetGateOpen() || resetStates.get(famConf.fam) !== st || st.inFlight !== p) return;
+        st.inFlight = null;
+        st.ctl = null;
+        if (onUpdate) onUpdate();
+      });
+      st.inFlight = p;
+    }
   }
 
   return {
@@ -1803,6 +2021,12 @@ function createQuotaClient(opts) {
       for (const st of states.values()) {
         if (st.nextAt === Infinity || st.status === "not_configured" || (st.cred && st.cred.source === "host")) st.nextAt = 0;
       }
+      if (resetGateOpen()) for (const famConf of RESET_FAMILIES) {
+        const st = resetStates.get(famConf.fam);
+        if (!st) continue;
+        if (!syncResetCredential(st, resolveResetCred(famConf)) &&
+            (st.nextAt === Infinity || st.status === "not_configured")) st.nextAt = 0;
+      }
     },
     noteSnapshotExtras(data) {   // 快照侧注入（scnet 估算等）；ledger 源数据到位即解冻
       const prevScnet = extras.scnet;
@@ -1828,9 +2052,24 @@ function createQuotaClient(opts) {
         windows: prim.windows, tools: prim.tools, models: prim.models, ledger: prim.ledger,
         label: prim.label, kind: prim.kind, subscription: prim.subscription, quotaSummary: prim.quotaSummary,
       });
+      if (resetGateOpen()) {   // v135：重置卡独立字段（关开关不暴露旧值，fail-closed）
+        const t = now(), resets = {};
+        for (const famConf of RESET_FAMILIES) {
+          const fam = famConf.fam, st = resetStates.get(fam);
+          if (!st) continue;
+          syncResetCredential(st, resolveResetCred(famConf));
+          resets[fam] = Object.assign({
+            status: st.status, fetchedAt: st.fetchedAt,
+            stale: !!(st.fetchedAt && t - st.fetchedAt > RESET_TTL_MS),
+            error: st.lastError, busy: !!st.inFlight,
+          }, st.value || {});
+        }
+        out.resets = resets;
+      }
       return out;
     },
     sourcesConfig() {   // ⚙ 面板数据源列表（不回显凭据值）
+      resetGateOpen();   // 宿主切换开关时先广播设置，及时中止关闭的 reset 链
       activeSet();
       const list = [];
       for (const a of ADAPTERS) {
@@ -1865,6 +2104,11 @@ function createQuotaClient(opts) {
         if (st.ctl) { try { st.ctl.abort(); } catch (e) { } }
         st.inFlight = null;
       }
+      for (const st of resetStates.values()) {
+        st.epoch += 1;
+        if (st.ctl) { try { st.ctl.abort(); } catch (e) { } }
+        st.inFlight = null;
+      }
     },
     get _state() { return states.get(primaryId) || states.get("custom") || {}; },   // 测试接缝兼容（v96 单源形状）
     _states: states,
@@ -1881,6 +2125,8 @@ module.exports = {
   jwtExpMs,
   normalizeQuotaBody,
   normalizeZcodeStartBalance,
+  normalizeResetStatus,
+  normalizeResetList,
   normalizeSubscriptionPlan,
   normalizeSub2api,
   relayQuotaUrls,
@@ -1899,4 +2145,5 @@ module.exports = {
     return null;
   },
   TTL_MS,
+  RESET_TTL_MS,
 };

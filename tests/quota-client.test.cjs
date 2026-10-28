@@ -1543,3 +1543,627 @@ test("empty/invalid relay baseUrl classifies as unsupported, not parse_error", (
   assert.throws(() => Q.relayQuotaUrls("not a url"), e => e.code === "unsupported");
   // scheme/userinfo 安全门维持既有分类（parse_error），测试 976-977 已锁定
 });
+
+/* ---------- v135 重置卡轮询器（独立链：reset/status 只读，绝不调 /opportunity） ---------- */
+const RESET_URL = "https://zcode.z.ai/api/v1/coding-plan/reset/status";   // 实测定案：ZCode API 基址，与 OAuth token 端点同源
+const RESET_ZAI_URL = RESET_URL;   // 两族同端点，仅 X-Bigmodel-Authorization 凭据键不同
+const RESET_BODY = JSON.stringify({ code: 0, success: true, data: {
+  available_five_hour_resets: [{ expire_at: 1793176110 }],   // 秒级
+  available_week_resets: [{ expire_at: 1793176110955 }],      // 毫秒级
+} });
+const RESET_EMPTY = JSON.stringify({ code: 0, success: true, data: { available_five_hour_resets: [], available_week_resets: [] } });
+const RESET_LIST_URL = "https://bigmodel.cn/api/biz/customer-package-reset/list?targetType=PERSONAL";
+const RESET_LIST_BODY = JSON.stringify({ code: 200, msg: "操作成功", success: true, data: {
+  customerId: 1, targetType: "PERSONAL", organizationId: null, projectId: null,
+  lastFiveHourResetTime: "2026-10-28 14:48:26", lastWeekResetTime: null,
+  fiveHourResets: [
+    { recordId: 7, grantType: "GLOBAL", expireTime: "2026-12-22 23:59:59", available: true },
+    { recordId: 6, grantType: "GLOBAL", expireTime: "2026-10-26 20:20:00", available: false },
+    { recordId: 5, grantType: "GLOBAL", expireTime: "2026-10-20 20:20:00", available: false },   // 超 7 天不采信
+  ],
+  weekResets: [],
+} });
+const RESET_CREDS = (jwt) => ({
+  "oauth:bigmodel:access_token": encryptValue("oauth.tok"),
+  "oauth:zai:access_token": encryptValue("zai.oauth.tok"),
+  zcodejwttoken: encryptValue(jwt || "zcode.jwt.tok"),
+});
+
+test("reset normalize: sec/ms adaptive, expired filtered, empty arrays legal, missing arrays parse_error", () => {
+  const v = Q.normalizeResetStatus({
+    code: 0, success: true,
+    data: { available_five_hour_resets: [{ expire_at: 1793176110 }, { expire_at: 1793176110955 }, { expire_at: 1 }],
+            available_week_resets: [{ expire_at: 1793176110 }] },
+  }, 1793176100000);
+  assert.deepEqual(v.fiveHour.map((c) => c.expireAt), [1793176110000, 1793176110955]);   // 秒→毫秒、过期卡滤除
+  assert.deepEqual(v.week.map((c) => c.expireAt), [1793176110000]);
+  assert.equal(v.count, 3);
+  assert.equal(v.expireAt, 1793176110000);   // 最早到期
+  const zero = Q.normalizeResetStatus({ code: 0, success: true, data: { available_five_hour_resets: [], available_week_resets: [] } }, 1);
+  assert.equal(zero.count, 0);
+  assert.equal(zero.expireAt, 0);
+  assert.throws(() => Q.normalizeResetStatus({ code: 0, success: true, data: {} }, 1), (e) => e.code === "parse_error");
+  assert.throws(() => Q.normalizeResetStatus(null, 1), (e) => e.code === "parse_error");
+  assert.throws(() => Q.normalizeResetStatus({ code: 0, data: { available_five_hour_resets: [] } }, 1), (e) => e.code === "parse_error");
+  assert.throws(() => Q.normalizeResetStatus({ code: 0, data: { available_five_hour_resets: [], available_week_resets: {} } }, 1), (e) => e.code === "parse_error");
+});
+
+test("reset normalize: retain seven-day history, count only valid cards, earliest across families", () => {
+  const now = 1800000000000, day = 86400000;
+  const v = Q.normalizeResetStatus({ code: 0, data: {
+    available_five_hour_resets: [now - 7 * day - 1, now - 7 * day, now, now + 5000].map(expire_at => ({ expire_at })),
+    available_week_resets: [{ expire_at: now + 1000 }, { expire_at: now - 1 }],
+  } }, now);
+  assert.deepEqual(v.fiveHour.map(c => c.expireAt), [now - 7 * day, now, now + 5000]);
+  assert.deepEqual(v.week.map(c => c.expireAt), [now - 1, now + 1000]);
+  assert.equal(v.count, 2);
+  assert.equal(v.expireAt, now + 1000);
+});
+
+test("reset normalize: numeric zero envelope and every card timestamp are required", () => {
+  const data = { available_five_hour_resets: [], available_week_resets: [] };
+  for (const code of [undefined, null, "0", NaN, Infinity]) {
+    assert.throws(() => Q.normalizeResetStatus({ code, data }, T0), (e) => e.code === "parse_error");
+  }
+  for (const code of [200, 3301, -1]) {
+    assert.throws(() => Q.normalizeResetStatus({ code, data }, T0), (e) => e.code === "network_error");
+  }
+  assert.throws(() => Q.normalizeResetStatus({ code: 0, success: false, data }, T0), (e) => e.code === "network_error");
+  assert.throws(() => Q.normalizeResetStatus({ code: 0, ...data }, T0), (e) => e.code === "parse_error");
+  for (const bad of [null, {}, { expire_at: 0 }, { expire_at: -1 }, { expire_at: "1793176110" },
+    { expire_at: NaN }, { expire_at: Infinity }, { expire_at: null }]) {
+    for (const key of ["available_five_hour_resets", "available_week_resets"]) {
+      const invalid = Object.assign({}, data, { [key]: [{ expire_at: 1793176110 }, bad] });
+      assert.throws(() => Q.normalizeResetStatus({ code: 0, data: invalid }, T0),
+        (e) => e.code === "parse_error", key + " rejects " + String(bad && bad.expire_at));
+    }
+  }
+});
+
+function makeResetClient({ creds = RESET_CREDS(), reset = true, quota = true, resetOk = true, listOk = true, resetList = false } = {}) {
+  const clock = { t: T0 };
+  const calls = [];
+  const client = Q.createQuotaClient({
+    env: Object.assign({}, ENV),
+    now: () => clock.t,
+    credsPath: "/virtual/credentials.json",
+    readFile: () => creds,
+    quotaEnabled: () => quota,
+    resetEnabled: () => reset,
+    resetList,
+    fetchImpl: (url, init) => {
+      if (url.indexOf("/api/biz/subscription/list") >= 0) return Promise.resolve(fakeRes(200, SUB_OK));
+      if (url.indexOf("/api/biz/customer-package-reset/list") >= 0) {
+        const d = deferred();
+        calls.push({ url, headers: init.headers, d });
+        d.resolve(fakeRes(200, listOk === false ? JSON.stringify({ code: 500, msg: "boom", success: false }) : RESET_LIST_BODY));
+        return d.promise;
+      }
+      if (url.indexOf("/api/v1/coding-plan/reset/status") >= 0) {
+        const d = deferred();
+        calls.push({ url, headers: init.headers, d });
+        d.resolve(fakeRes(200, resetOk ? RESET_BODY : RESET_EMPTY));
+        return d.promise;
+      }
+      const d = deferred();
+      calls.push({ url, headers: init.headers, d });
+      return d.promise;
+    },
+  });
+  return { client, clock, calls };
+}
+
+
+test("reset list normalize: per-card whitelist with grantType, 7-day expired, bad shape null", () => {
+  const t = Date.parse("2026-10-28T12:00:00+08:00");
+  const v = Q.normalizeResetList({ code: 200, success: true, data: {
+    fiveHourResets: [
+      { recordId: 7, grantType: "GLOBAL", expireTime: "2026-12-22 23:59:59", available: true },
+      { recordId: 6, grantType: "GLOBAL", expireTime: "2026-10-26 20:20:00", available: false },   // 7 天内过期：保留
+      { recordId: 5, grantType: "GLOBAL", expireTime: "2026-10-20 20:20:00", available: false },   // 超 7 天：丢弃
+      { grantType: "GLOBAL", expireTime: "garbage", available: false },                            // 非法时间：丢弃
+      { grantType: "GLOBAL", expireTime: "2026-10-27 09:00:00" },                                  // 缺 available 按未使用
+    ],
+    weekResets: [{ grantType: "WEEK", expireTime: "2026-10-27 09:00:00", available: false }],
+    lastFiveHourResetTime: "2026-10-28 14:48:26", lastWeekResetTime: null,
+  } }, t);
+  assert.deepEqual(v.list.fiveHour.map((c) => [c.expireAt, c.grantType, c.available]), [
+    [Date.parse("2026-10-26T20:20:00+08:00"), "GLOBAL", false],
+    [Date.parse("2026-10-27T09:00:00+08:00"), "GLOBAL", false],
+    [Date.parse("2026-12-22T23:59:59+08:00"), "GLOBAL", true],
+  ]);
+  assert.deepEqual(v.list.week.map((c) => [c.expireAt, c.grantType, c.available]),
+    [[Date.parse("2026-10-27T09:00:00+08:00"), "WEEK", false]]);
+  assert.equal(v.lastFiveHour, "2026-10-28 14:48:26");
+  assert.equal(v.lastWeek, null);
+  for (const bad of [null, {}, { code: 500, success: false, data: {} },
+    { code: 200, data: {} }, { code: 200, data: { fiveHourResets: [] } }]) {
+    assert.equal(Q.normalizeResetList(bad, t), null, JSON.stringify(bad));
+  }
+});
+
+test("reset list enrichment: merged into view when enabled, silent on failure, absent when gate off", async () => {
+  const on = makeResetClient({ resetList: true });
+  on.clock.t = Date.parse("2026-10-28T12:00:00+08:00");   // 夹具过期卡以该时钟判 7 天窗口（10-20 卡恰超 7 天）
+  on.client.tick();
+  await flush();
+  const big = on.client.view().resets.bigmodel;
+  assert.equal(big.status, "ok");
+  assert.deepEqual(big.list.fiveHour.map((c) => [c.grantType, c.available]), [["GLOBAL", false], ["GLOBAL", true]]);   // expireAt 升序（夹具：10-26 过期 + 12-22 可用）
+  assert.equal(big.lastFiveHour, "2026-10-28 14:48:26");
+  assert.equal(on.client.view().resets.zai.list, undefined);   // zai 族无列表端点
+  const fail = makeResetClient({ resetList: true, listOk: false });
+  fail.clock.t = on.clock.t;
+  fail.client.tick();
+  await flush();
+  assert.equal(fail.client.view().resets.bigmodel.status, "ok");   // 列表失败静默降级
+  assert.equal(fail.client.view().resets.bigmodel.list, undefined);
+  const off = makeResetClient({ resetList: false });
+  off.clock.t = on.clock.t;
+  off.client.tick();
+  await flush();
+  assert.equal(off.client.view().resets.bigmodel.list, undefined);
+  assert.ok(!off.calls.some((c) => c.url === RESET_LIST_URL), "gate off: no list request");
+});
+
+test("reset client: headers (Bearer jwt + bare X-Bigmodel-Authorization + PERSONAL), sec/ms parse, 5min TTL", async () => {
+  const { client, clock, calls } = makeResetClient({ resetList: true });
+  client.tick();
+  await flush();
+  const resetCalls = calls.filter((c) => c.url === RESET_URL);
+  assert.equal(resetCalls.length, 2);   // 两族同端点，凭据键区分
+  const bm = resetCalls.find((c) => c.headers["X-Bigmodel-Authorization"] === "oauth.tok");
+  const zai = resetCalls.find((c) => c.headers["X-Bigmodel-Authorization"] === "zai.oauth.tok");
+  assert.ok(bm && zai);
+  assert.equal(bm.headers.authorization, "Bearer zcode.jwt.tok");
+  assert.equal(bm.headers["X-Bigmodel-Authorization"], "oauth.tok");   // 裸 token，不套 Bearer
+  assert.equal(bm.headers["Bigmodel-Target-Type"], "PERSONAL");
+  const listCall = calls.find((c) => c.url === RESET_LIST_URL);
+  assert.ok(listCall, "list endpoint fetched for bigmodel family");
+  assert.equal(listCall.headers.authorization, "oauth.tok");   // 裸 OAuth，与 subscription 同款
+  let v = client.view().resets.bigmodel;
+  assert.equal(v.status, "ok");
+  assert.equal(v.count, 2);
+  assert.equal(v.expireAt, 1793176110000);
+  assert.equal(v.stale, false);
+  clock.t += Q.RESET_TTL_MS - 1;
+  client.tick();
+  await flush();
+  assert.equal(calls.filter((c) => c.url === RESET_URL).length, 2);   // TTL 内不重查（两族各一次）
+  clock.t += 2;
+  client.tick();
+  await flush();
+  assert.equal(calls.filter((c) => c.url === RESET_URL).length, 4);   // 过期重查（两族再各一次）
+});
+
+test("reset client: missing zcodejwttoken fails closed without any request", async () => {
+  const { client, calls } = makeResetClient({ creds: { "oauth:bigmodel:access_token": encryptValue("oauth.tok") } });
+  client.tick();
+  await flush();
+  assert.equal(calls.length, 0);
+  assert.equal(client.view().resets.bigmodel.status, "not_configured");
+});
+
+test("reset client: disabled gate exposes no resets field and never fetches; zai family queried too", async () => {
+  const off = makeResetClient({ reset: false });
+  off.client.tick();
+  await flush();
+  assert.equal(off.calls.length, 0);
+  assert.equal(off.client.view().resets, undefined);
+  const on = makeResetClient();
+  on.client.tick();
+  await flush();
+  const urls = on.calls.map((c) => c.url).sort();
+  assert.deepEqual(urls, [RESET_ZAI_URL, RESET_URL]);   // 两族并行（字典序）
+  assert.equal(on.client.view().resets.zai.status, "ok");
+});
+
+test("reset client: quota off + reset on queries reset only; 401 freezes to fingerprint change", async () => {
+  const credsRef = { value: RESET_CREDS() };
+  const clock = { t: T0 };
+  const calls = [];
+  const client = Q.createQuotaClient({
+    env: Object.assign({}, ENV), now: () => clock.t,
+    credsPath: "/virtual/credentials.json", readFile: () => credsRef.value,
+    quotaEnabled: () => false, resetEnabled: () => true,
+    fetchImpl: (url, init) => {
+      const d = deferred();
+      calls.push({ url, headers: init.headers, d });
+      if (url.indexOf("/api/v1/coding-plan/reset/status") >= 0) {
+        const isZai = init.headers["X-Bigmodel-Authorization"] === "zai.oauth.tok";   // 两族同端点，按凭据键区分
+        d.resolve(fakeRes(isZai ? 401 : 200, isZai ? "{}" : RESET_BODY));
+      }
+      return d.promise;
+    },
+  });
+  client.noteProvider("account:bigmodel-individual-coding-plan");
+  client.tick();
+  await flush();
+  assert.equal(calls.length, 2);   // 两族 reset 照查
+  assert.ok(calls.every((c) => c.url.indexOf("/api/v1/coding-plan/reset/status") >= 0), "quota off: only reset endpoints queried, no monitor");
+  assert.equal(client.view().sources.bigmodel.status, "idle");   // 额度条目未被查询（无数据）
+  assert.equal(client.view().sources.bigmodel.windows, undefined);
+  assert.equal(client.view().resets.bigmodel.count, 2);
+  clock.t += Q.RESET_TTL_MS + 1;
+  client.tick();   // zai 401 → 冻结
+  await flush();
+  assert.equal(client.view().resets.zai.status, "auth_failed");
+  clock.t += 60 * 60 * 1000;
+  client.tick();
+  await flush();
+  const zaiCalls = () => calls.filter((c) => c.headers["X-Bigmodel-Authorization"] === "zai.oauth.tok").length;
+  assert.equal(zaiCalls(), 1);   // 冻结不再请求
+  credsRef.value = RESET_CREDS("zcode.jwt.renewed");
+  client.credentialsChanged();
+  client.tick();
+  await flush();
+  assert.ok(zaiCalls() > 1, "credential refresh unfreezes reset chain");
+});
+
+test("reset client: credential revocation and replacement invalidate cached and in-flight data", async () => {
+  const credsRef = { value: RESET_CREDS() }, calls = [];
+  const client = Q.createQuotaClient({
+    env: Object.assign({}, ENV), now: () => T0,
+    credsPath: "/virtual/credentials.json", readFile: () => credsRef.value,
+    quotaEnabled: () => false, resetEnabled: () => true,
+    fetchImpl: (url, init) => {
+      assert.equal(url, RESET_URL);
+      assert.ok(!init.method || init.method === "GET");
+      const d = deferred(); calls.push({ d, init }); return d.promise;
+    },
+  });
+  client.tick();
+  calls[0].d.resolve(fakeRes(200, RESET_BODY));
+  await flush();
+  assert.equal(client.view().resets.bigmodel.count, 2);
+  credsRef.value = {};
+  client.credentialsChanged();
+  assert.equal(client.view().resets.bigmodel.count, undefined);
+  calls[1].d.resolve(fakeRes(200, RESET_BODY));
+  await flush();
+  assert.equal(client.view().resets.zai.count, undefined);
+  credsRef.value = RESET_CREDS("new.jwt");
+  client.tick();
+  const old = calls[2];
+  credsRef.value = RESET_CREDS("other.jwt");
+  client.credentialsChanged();
+  client.tick();
+  old.d.resolve(fakeRes(200, RESET_BODY));
+  await flush();
+  assert.equal(client.view().resets.bigmodel.count, undefined);
+  calls[4].d.resolve(fakeRes(200, RESET_EMPTY));
+  await flush();
+  assert.equal(client.view().resets.bigmodel.count, 0);
+  client.dispose();
+  calls[5].d.resolve(fakeRes(200, RESET_BODY));
+  await flush();
+  assert.equal(client.view().resets.zai.count, undefined);
+});
+
+test("reset client: failure keeps last success value and flags stale", async () => {
+  const clock = { t: T0 };
+  let fail = false;
+  const calls = [], creds = RESET_CREDS();
+  const client = Q.createQuotaClient({
+    env: Object.assign({}, ENV), now: () => clock.t,
+    credsPath: "/virtual/credentials.json", readFile: () => creds,
+    resetEnabled: () => true,
+    fetchImpl: (url) => {
+      const d = deferred();
+      calls.push({ url, d });
+      if (url.indexOf("/api/v1/coding-plan/reset/status") >= 0) d.resolve(fakeRes(fail ? 503 : 200, fail ? "boom" : RESET_BODY));
+      return d.promise;
+    },
+  });
+  client.tick();
+  await flush();
+  assert.equal(client.view().resets.bigmodel.count, 2);
+  fail = true;
+  clock.t += Q.RESET_TTL_MS + 1;
+  client.tick();
+  await flush();
+  const v = client.view().resets.bigmodel;
+  assert.equal(v.count, 2);        // 最近成功值保留
+  assert.equal(v.stale, true);     // 超 TTL 未刷新成功
+  assert.equal(v.status, "network_error");
+});
+
+/* 所有输入与请求均为虚拟夹具；fetch 故意忽略 abort，验证迟到结果不能写入。 */
+function controlledResetClient(onUpdate) {
+  const gate = { enabled: true }, creds = { value: RESET_CREDS() }, clock = { t: T0 };
+  const calls = [], updates = [];
+  let client;
+  client = Q.createQuotaClient({
+    env: Object.assign({}, ENV), now: () => clock.t, defaultHome: "/virtual",
+    credsPath: "/virtual/credentials.json", secretsPath: "/virtual/quota-secrets.json",
+    customCfgPath: "/virtual/provider_config.json", builtinCfgPath: "/virtual/builtin.json",
+    readFile: (p) => {
+      if (p === "/virtual/credentials.json") return creds.value;
+      if (p === "/virtual/quota-secrets.json") return { sources: {} };
+      throw new Error("unexpected virtual path: " + p);
+    },
+    quotaEnabled: () => false, resetEnabled: () => gate.enabled,
+    onUpdate: () => {
+      updates.push(client.view().resets);
+      if (onUpdate) onUpdate({ client, gate, creds, calls, updates });
+    },
+    fetchImpl: (url, init) => {
+      assert.equal(url, RESET_URL);
+      assert.equal(init.method, "GET");
+      const d = deferred();
+      calls.push({ d, init });
+      return d.promise;
+    },
+  });
+  return { client, gate, creds, clock, calls, updates };
+}
+
+test("reset client: subscribers observe busy false after success and failure", async (t) => {
+  const { client, calls, updates } = controlledResetClient();
+  t.after(() => client.dispose());
+  client.tick();
+  assert.equal(client.view().resets.bigmodel.busy, true);
+  calls[0].d.resolve(fakeRes(200, RESET_BODY));
+  await flush();
+  assert.equal(updates.at(-1).bigmodel.status, "ok");
+  assert.equal(updates.at(-1).bigmodel.count, 2);
+  assert.equal(updates.at(-1).bigmodel.busy, false);
+  assert.equal(updates.filter((v) => v.bigmodel && v.bigmodel.status === "ok").length, 1);
+  calls[1].d.resolve(fakeRes(503, "failed"));
+  await flush();
+  assert.equal(updates.at(-1).zai.status, "network_error");
+  assert.equal(updates.at(-1).zai.busy, false);
+});
+
+test("reset client: TTL is exactly five minutes, including boundary and busy refresh", async (t) => {
+  const { client, clock, calls } = controlledResetClient();
+  t.after(() => client.dispose());
+  assert.equal(Q.RESET_TTL_MS, 300000);
+  client.tick();
+  calls[0].d.resolve(fakeRes(200, RESET_BODY));
+  calls[1].d.resolve(fakeRes(200, RESET_EMPTY));
+  await flush();
+  clock.t += 299999;
+  client.tick();
+  assert.equal(calls.length, 2);
+  clock.t += 1;
+  client.tick();
+  assert.equal(calls.length, 4);
+  assert.equal(client.view().resets.bigmodel.busy, true);
+  assert.equal(client.view().resets.bigmodel.stale, false);
+  clock.t += 1;
+  assert.equal(client.view().resets.bigmodel.stale, true);
+});
+
+test("reset client: closing gate aborts requests and re-enable cannot expose another account's cache", async (t) => {
+  const { client, gate, creds, calls, updates } = controlledResetClient();
+  t.after(() => client.dispose());
+  client.tick();
+  calls[0].d.resolve(fakeRes(200, RESET_BODY));
+  await flush();
+  assert.equal(client.view().resets.bigmodel.count, 2);
+  assert.equal(client.view().resets.zai.busy, true);
+  gate.enabled = false;
+  client.sourcesConfig();   // 宿主关闭开关后会先广播设置状态
+  assert.equal(calls[1].init.signal.aborted, true);
+  assert.equal(client.view().resets, undefined);
+  creds.value = RESET_CREDS("another.account.jwt");
+  gate.enabled = true;
+  assert.equal(client.view().resets.bigmodel?.count, undefined);   // 首次读取早于 tick
+  client.tick();
+  assert.equal(calls.length, 4);
+  assert.equal(client.view().resets.zai.busy, true);
+  const count = updates.length;
+  calls[1].d.resolve(fakeRes(200, RESET_BODY));
+  await flush();
+  assert.equal(updates.length, count, "废弃请求不得推送或清除新请求 busy");
+  assert.equal(client.view().resets.zai.busy, true);
+  assert.equal(client.view().resets.zai.count, undefined);
+  calls[3].d.resolve(fakeRes(200, RESET_EMPTY));
+  await flush();
+  assert.equal(client.view().resets.zai.count, 0);
+  assert.equal(updates.at(-1).zai.busy, false);
+});
+
+test("reset client: a request settled after an unobserved gate closure is discarded", async (t) => {
+  const { client, gate, creds, calls, updates } = controlledResetClient();
+  t.after(() => client.dispose());
+  client.tick();
+  gate.enabled = false;   // 没有 tick/view 的关闭：结算回调自身也必须检查门控
+  calls[0].d.resolve(fakeRes(200, RESET_BODY));
+  await flush();
+  assert.equal(calls[0].init.signal.aborted, true);
+  assert.equal(calls[1].init.signal.aborted, true);
+  const n = updates.length;
+  calls[1].d.resolve(fakeRes(200, RESET_BODY));
+  await flush();
+  assert.equal(updates.length, n);
+  creds.value = RESET_CREDS("another.account.jwt");
+  gate.enabled = true;
+  assert.equal(client.view().resets.bigmodel?.count, undefined);
+  client.tick();
+  assert.equal(calls.length, 4);
+});
+
+test("reset client: completed callback changing credentials cannot clear replacement busy", async (t) => {
+  const { client, creds, calls, updates } = controlledResetClient();
+  t.after(() => client.dispose());
+  client.tick();
+  calls[0].d.resolve(fakeRes(200, RESET_BODY));
+  await flush();
+  assert.equal(updates.at(-1).bigmodel.busy, false);
+  creds.value = RESET_CREDS("new.account.jwt");
+  client.credentialsChanged();
+  assert.equal(calls[1].init.signal.aborted, true);
+  assert.equal(client.view().resets.bigmodel.count, undefined);
+  client.tick();
+  assert.equal(calls.length, 4);
+  assert.equal(client.view().resets.bigmodel.busy, true);
+  calls[1].d.resolve(fakeRes(200, RESET_BODY));
+  await flush();
+  assert.equal(client.view().resets.bigmodel.busy, true);
+  assert.equal(client.view().resets.zai.busy, true);
+  assert.equal(client.view().resets.zai.count, undefined);
+  creds.value = {};
+  client.credentialsChanged();
+  assert.equal(calls[2].init.signal.aborted, true);
+  assert.equal(calls[3].init.signal.aborted, true);
+  calls[2].d.resolve(fakeRes(200, RESET_BODY));
+  await flush();
+  assert.equal(client.view().resets.bigmodel.status, "not_configured");
+  assert.equal(client.view().resets.bigmodel.count, undefined);
+});
+
+test("reset client: credentials changed in the initial subscriber callback are never sent stale", async (t) => {
+  let changed = false;
+  const fixture = controlledResetClient(({ client, creds, updates }) => {
+    const bigmodel = updates.at(-1)?.bigmodel;
+    if (changed || !bigmodel || bigmodel.status !== "idle") return;
+    changed = true;
+    creds.value = RESET_CREDS("replacement.jwt");
+    client.credentialsChanged();
+  });
+  const { client, calls } = fixture;
+  t.after(() => client.dispose());
+  client.tick();
+  assert.equal(changed, true);
+  assert.equal(calls.length, 2);
+  assert.ok(calls.every((call) => call.init.headers.authorization === "Bearer replacement.jwt"));
+  calls[0].d.resolve(fakeRes(200, RESET_EMPTY));
+  await flush();
+  assert.equal(client.view().resets.bigmodel.count, 0);
+});
+
+test("reset client: synchronous settlement callback starts a replacement without old cleanup clearing it", async (t) => {
+  let replaced = false;
+  const fixture = controlledResetClient(({ client, creds, updates }) => {
+    const bigmodel = updates.at(-1)?.bigmodel;
+    if (replaced || !bigmodel || bigmodel.status !== "ok" || bigmodel.busy) return;
+    replaced = true;
+    creds.value = RESET_CREDS("replacement.jwt");
+    client.credentialsChanged();
+    client.tick();
+  });
+  const { client, calls, updates } = fixture;
+  t.after(() => client.dispose());
+  client.tick();
+  calls[0].d.resolve(fakeRes(200, RESET_BODY));
+  await flush();
+  assert.equal(replaced, true);
+  assert.equal(calls.length, 4);
+  assert.equal(calls[1].init.signal.aborted, true);
+  assert.equal(client.view().resets.bigmodel.busy, true);
+  assert.equal(client.view().resets.bigmodel.count, undefined);
+  const beforeLateResponse = updates.length;
+  calls[1].d.resolve(fakeRes(503, "failed"));
+  await flush();
+  assert.equal(updates.length, beforeLateResponse);
+  assert.equal(client.view().resets.zai.busy, true);
+  calls[2].d.resolve(fakeRes(200, RESET_EMPTY));
+  await flush();
+  assert.equal(client.view().resets.bigmodel.count, 0);
+  assert.equal(updates.at(-1).bigmodel.busy, false);
+});
+
+test("reset client: late cleanup cannot clear a new request started by the completed callback", async (t) => {
+  let restarted = false;
+  const fixture = controlledResetClient(({ client, updates }) => {
+    const bigmodel = updates.at(-1)?.bigmodel;
+    if (restarted || !bigmodel || bigmodel.status !== "ok" || bigmodel.busy) return;
+    restarted = true;
+    client.tick(true);
+  });
+  const { client, calls } = fixture;
+  t.after(() => client.dispose());
+  client.tick();
+  calls[0].d.resolve(fakeRes(200, RESET_BODY));
+  await flush();
+  assert.equal(restarted, true);
+  assert.equal(calls.length, 3);
+  assert.equal(client.view().resets.bigmodel.busy, true);
+  calls[2].d.resolve(fakeRes(200, RESET_EMPTY));
+  await flush();
+  assert.equal(client.view().resets.bigmodel.count, 0);
+  assert.equal(client.view().resets.bigmodel.busy, false);
+});
+
+test("reset client: view and completion revalidate changed credentials without watcher notification", async (t) => {
+  const { client, creds, calls } = controlledResetClient();
+  t.after(() => client.dispose());
+  client.tick();
+  calls[0].d.resolve(fakeRes(200, RESET_BODY));
+  await flush();
+  assert.equal(client.view().resets.bigmodel.count, 2);
+  creds.value = RESET_CREDS("replacement.jwt");
+  const view = client.view();
+  assert.equal(view.resets.bigmodel.count, undefined);
+  assert.equal(view.resets.zai.busy, false);
+  assert.equal(calls[1].init.signal.aborted, true);
+  client.tick();
+  creds.value = {};
+  calls[2].d.resolve(fakeRes(200, RESET_BODY));
+  await flush();
+  assert.equal(client.view().resets.bigmodel.status, "not_configured");
+  assert.equal(client.view().resets.bigmodel.count, undefined);
+});
+
+test("reset client: unchanged missing or invalid credentials do not emit repeated updates", (t) => {
+  const { client, creds, calls, updates } = controlledResetClient();
+  t.after(() => client.dispose());
+  creds.value = {};
+  client.tick();
+  const first = updates.length;
+  assert.equal(first, 2, "两族初次变为未配置各通知一次");
+  assert.equal(updates.at(-1).bigmodel.status, "not_configured");
+  assert.equal(updates.at(-1).zai.status, "not_configured");
+  client.tick();
+  client.tick();
+  assert.equal(updates.length, first);
+  assert.equal(calls.length, 0);
+  assert.equal(client.view().resets.bigmodel.status, "not_configured");
+  creds.value = { "oauth:bigmodel:access_token": "enc:v1:bad", zcodejwttoken: "enc:v1:bad" };
+  client.tick();
+  assert.ok(updates.length > first, "解密状态变化需要通知");
+  const second = updates.length;
+  assert.equal(client.view().resets.bigmodel.error, "credential decrypt failed");
+  client.tick();
+  assert.equal(updates.length, second);
+  creds.value = {};
+  client.tick();
+  assert.equal(client.view().resets.bigmodel.error, "");
+  assert.ok(updates.length > second, "错误消失需要通知");
+});
+
+test("reset client: business errors and invalid card timestamps never become a successful empty result", async (t) => {
+  const { client, calls, clock } = controlledResetClient();
+  t.after(() => client.dispose());
+  client.tick();
+  calls[0].d.resolve(fakeRes(200, JSON.stringify({ code: 3301, data: {
+    available_five_hour_resets: [], available_week_resets: [],
+  } })));
+  calls[1].d.resolve(fakeRes(200, JSON.stringify({ code: 0, data: {
+    available_five_hour_resets: [{ expire_at: "bad" }], available_week_resets: [],
+  } })));
+  await flush();
+  assert.equal(client.view().resets.bigmodel.status, "network_error");
+  assert.equal(client.view().resets.bigmodel.count, undefined);
+  assert.equal(client.view().resets.zai.status, "parse_error");
+  assert.equal(client.view().resets.zai.count, undefined);
+  clock.t += 30 * 1000;
+  client.tick();
+  assert.equal(calls.length, 3, "业务错误走短退避；格式错误暂不重查");
+});
+
+test("reset client: Bearer-prefixed JWT is sent once and expiry is checked", async (t) => {
+  const { client, creds, clock, calls } = controlledResetClient();
+  t.after(() => client.dispose());
+  const expired = "header." + Buffer.from(JSON.stringify({ exp: Math.floor(clock.t / 1000) + 60 })).toString("base64url") + ".sig";
+  creds.value = RESET_CREDS("Bearer " + expired);
+  client.tick();
+  assert.equal(calls.length, 0, "带 Bearer 的临期 JWT 也不得发出请求");
+  creds.value = RESET_CREDS("bearer actual.jwt.value");
+  client.tick();
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].init.headers.authorization, "bearer actual.jwt.value");
+  assert.equal(calls[0].init.headers["X-Bigmodel-Authorization"], "oauth.tok");
+});
