@@ -36,7 +36,7 @@
 - 发现优先级 env → `~/.zcode/zcode-token-usage-statusbar/quota-secrets.json`（运行目录；⚙ 面板写入路径强制 0600——tmp 以 0600 写入 + rename 后 chmodSync，Windows/权限失败忽略；外部手编文件的权限不会被收紧）→ 自动发现（宿主 `provider_config.json` 自定义供应商 key；Anthropic 另读 `~/.claude/.credentials.json`）。`ZCODE_BIGMODEL_USAGE_API_KEY` 优先于宿主凭据。zcode-start 源例外：凭据是宿主 `credentials.json` 的 `zcodejwttoken` 键（可被 secrets `sources["zcode-start"].apiKey` 覆盖），设备号 `deviceMid` 读同目录 telemetry-state.json / onboarding-record.json（取首个非空）；token 与 deviceMid 缺一即按未配置 fail-closed，不发请求。
 - 凭据只在内存；⚙ 面板 write-only 写入，下发状态 `apiKey` 恒空只回 keyConfigured/keySource；绝不进 `config.json`、日志、诊断、diag。
 - 发 key 域白名单=各适配器官方域 + 用户自定义中转的本域；绝不发第三方。
-- 路径契约：额度初始化统一 `resolveQuotaPaths()`，显式参数优先、采用宿主 PERSONAL/BUILTIN 路径变量及 DATA_BASE_DIR（基目录追加 `.zcode/v2`）；凭据解密派生仍是 OS homedir，不能改成数据目录。builtin→personal 按 providerId、access/api 局部字段继承，显式空 key 保留；key-only MiniMax 只对内置精确 ID 才可默认官方域。缓存失效、监听目录/文件名须与实际读取一致（Windows 与根目录亦然）。
+- 路径契约：额度初始化统一 `resolveQuotaPaths()`，显式参数优先、采用宿主 PERSONAL/BUILTIN 路径变量及 DATA_BASE_DIR（基目录追加 `.zcode/v2`）；凭据解密派生仍是 OS homedir，不能改成数据目录。builtin→personal 按 providerId、access/api 局部字段继承，显式空 key 保留；key-only MiniMax 只对内置精确 ID 才可默认官方域。`loadProviderCfg` 先按文件序合并 `providerConfigRules.templateRules`，provider rule 再按 `templateId` 回填模板的 baseUrl/access（模板创建的供应商个人配置不含 baseUrl）；显式 baseUrl 任何域都优先，显式空串 baseUrl 按未填回落模板域，未知 templateId 不回落。缓存失效、监听目录/文件名须与实际读取一致（Windows 与根目录亦然）。
 
 ## 5. 状态机与显示门控
 

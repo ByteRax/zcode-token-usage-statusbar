@@ -10,6 +10,10 @@ const doc = (...rules) => ({ config: { providerConfigRules: { providerRules: rul
 const rule = (providerId, apiKey, baseUrl) => ({ providerId, providerName: "MiniMax", config: {
   access: apiKey === undefined ? {} : { apiKey }, api: baseUrl === undefined ? {} : { baseUrl },
 } });
+const tdoc = (templates, rules) => ({ config: { providerConfigRules: { templateRules: templates, providerRules: rules } } });
+const tpl = (templateId, baseUrl) => ({ templateId, config: { api: { type: "openai-responses", baseUrl } } });
+const tplProvider = (providerId, templateId, apiKey, baseUrl) => ({ providerId, templateId, config: {
+  access: { type: "api-key", apiKey }, api: { type: "openai-responses", baseUrl } } });
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "quota-paths-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -80,6 +84,56 @@ test("merge: personal api={} inherits builtin base, explicit empty key stays emp
   });
   write(personal, doc(rule("minimax", "")));
   assert.equal(resolveCustomProvider("minimax", read, personal, builtin).apiKey, "");
+});
+
+test("template: provider rule inherits builtin templateRules baseUrl; explicit baseUrl wins, empty string falls back (#123)", (t) => {
+  const { root, write, read } = fixture(t);
+  const builtin = write(path.join(root, "builtin.json"), tdoc([tpl("opencode-go-responses", "https://opencode.ai/zen/go/v1")], []));
+  const personal = write(path.join(root, "personal.json"), doc(tplProvider("opencode-go-responses", "opencode-go-responses", "fixture-key", undefined)));
+  const e = resolveCustomProvider("opencode-go-responses", read, personal, builtin);
+  assert.equal(e.baseUrl, "https://opencode.ai/zen/go/v1", "个人配置无 baseUrl 回落内置模板域");
+  assert.equal(e.apiKey, "fixture-key", "key 仍取个人配置");
+  assert.equal(e.name, "");
+  write(personal, doc(tplProvider("oc-relay", "opencode-go-responses", "fixture-key", "https://relay.example.com/v1/")));
+  assert.equal(resolveCustomProvider("oc-relay", read, personal, builtin).baseUrl, "https://relay.example.com/v1",
+    "显式 baseUrl 胜过模板，中转域不被模板替换");
+  write(personal, doc(tplProvider("oc-empty", "opencode-go-responses", "fixture-key", "")));
+  assert.equal(resolveCustomProvider("oc-empty", read, personal, builtin).baseUrl, "https://opencode.ai/zen/go/v1",
+    "显式空串 baseUrl 按未填处理回落模板");
+});
+
+test("template: personal templateRules override builtin per templateId; unknown templateId behaves as before (#123)", (t) => {
+  const { root, write, read } = fixture(t);
+  const builtin = write(path.join(root, "builtin.json"), tdoc([tpl("go", "https://opencode.ai/zen/go/v1")], []));
+  const personal = write(path.join(root, "personal.json"), tdoc(
+    [tpl("go", "https://relay.example.com/zen/go")],
+    [tplProvider("p1", "go", "fixture-key", undefined), tplProvider("p2", "no-such-template", "fixture-key", undefined)]));
+  assert.equal(resolveCustomProvider("p1", read, personal, builtin).baseUrl, "https://relay.example.com/zen/go",
+    "个人文件的同名模板按文件序覆盖内置");
+  assert.equal(resolveCustomProvider("p2", read, personal, builtin).baseUrl, "", "未知 templateId 不回落，保持旧行为");
+});
+
+test("template: numeric templateId String-normalized; template access backfills omitted fields (#123)", (t) => {
+  const { root, write, read } = fixture(t);
+  const builtin = write(path.join(root, "builtin.json"), tdoc(
+    [{ templateId: 123, config: { api: { type: "openai-responses", baseUrl: "https://opencode.ai/zen/go/v1" },
+      access: { type: "coding-plan-api-key", apiKey: "tpl-key" } } }], []));
+  const personal = write(path.join(root, "personal.json"), doc(
+    { providerId: "p-num", templateId: "123", config: { access: { apiKey: "fixture-key" }, api: {} } },
+    { providerId: "p-acc", templateId: 123, config: { access: {}, api: { baseUrl: "" } } }));
+  assert.equal(resolveCustomProvider("p-num", read, personal, builtin).baseUrl, "https://opencode.ai/zen/go/v1",
+    "数字 templateId 与字符串键按 String 归一互撞");
+  assert.equal(resolveCustomProvider("p-acc", read, personal, builtin).apiKey, "tpl-key",
+    "个人缺 access 字段时模板 access 回填");
+});
+
+test("template: truthy non-array templateRules does not disable same-file providerRules (#123)", (t) => {
+  const { root, write, read } = fixture(t);
+  const personal = write(path.join(root, "personal.json"), { config: { providerConfigRules: {
+    templateRules: { oops: true },
+    providerRules: [rule("minimax", "fixture-key", "https://api.minimax.io")] } } });
+  assert.equal(resolveCustomProvider("minimax", read, personal, "").apiKey, "fixture-key",
+    "损坏的 templateRules 按无模板处理，providerRules 照常加载");
 });
 
 test("MiniMax detect: only exact built-in ID permits key-only CN default; builtin international base wins", (t) => {
