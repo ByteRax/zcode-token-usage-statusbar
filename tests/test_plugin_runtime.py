@@ -674,6 +674,8 @@ class PluginRuntimeTests(unittest.TestCase):
     def test_failed_automatic_install_repeats_actionable_context(self):
         pi = self.patch_install_stub()
         pi.install.return_value = False
+        # 通用失败（无有效待收尾包，issue #120 的判据不成立）：维持重试提示。
+        pi.pending_tmp.side_effect = Exception("no valid pending package")
         with mock.patch.object(installer, "resolve_paths", return_value=(self.runtime, pi)), \
                 mock.patch.object(installer, "injected_status", return_value=False), \
                 mock.patch.dict(os.environ, {"ZUSAGE_PLUGIN_AUTO_INSTALL": "1"}):
