@@ -199,9 +199,10 @@ class SessionStartChannelTests(unittest.TestCase):
         # 前进（只会再 repack 一次再失败）；提示必须指向「完全退出 ZCode 等自动收尾」，
         # 并保留卸载豁免出口，不能继续引导无效重试。
         self.install.side_effect = lambda before_publish: False
-        with mock.patch.object(self.pi, "pending_tmp", return_value={"operation": "install"}), \
+        with mock.patch.object(self.pi, "pending_tmp", return_value={"operation": "install"}) as pending, \
                 mock.patch.object(self.pi, "client_running", return_value=True):
             output, _ = self.invoke()
+        pending.assert_called_with("install")   # 变异 M15 补强：操作类型必须锁死为 install
         context = self.context(output)
         self.assertIn("已排定", context)
         self.assertIn("完全退出 ZCode", context)

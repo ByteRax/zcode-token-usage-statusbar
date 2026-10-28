@@ -98,16 +98,32 @@ class QuietMonitorTests(unittest.TestCase):
     def test_second_monitor_instance_exits_without_running_the_loop(self):
         # issue #120：SessionStart 每次自动安装都会尝试拉起监控；已有实例持锁时
         # 后来者必须立即退出，不得随会话数线性堆积，也不得碰待收尾包。
+        # self_check 须 mock：夹具 TMP 是非 asar 裸字节，去重守卫一旦被删（回归），
+        # 真实 self_check 会在 zcode_pids 之前抛 PendingTmpError 静默返回，可观测
+        # 状态与守卫早退完全一致，本用例会空转（review 变异 M10）。
         self.pending()
         with self.patch.monitor_instance_lock() as held:
             self.assertTrue(held)
             with mock.patch.dict(sys.modules, {"patch_install": self.patch}), \
-                    mock.patch.object(self.monitor, "zcode_pids") as pids, \
+                    mock.patch.object(self.patch, "self_check", return_value=True), \
+                    mock.patch.object(self.monitor, "zcode_pids", side_effect=[set(), set()]) as pids, \
                     mock.patch.object(self.patch, "finalize_tmp") as finalize:
                 self.monitor.main()
             pids.assert_not_called()
             finalize.assert_not_called()
             self.assertEqual(self.asar.read_bytes(), b"official version")
+
+    def test_lock_file_unavailable_degrades_to_legacy_behavior(self):
+        # 变异 M8 补强（issue #120 review）：锁文件无法创建（只读目录等）时按持有
+        # 处理——不挡收尾主职责，launch_monitor 照常拉起，与无去重的旧行为一致。
+        with mock.patch.object(self.patch.os, "open", side_effect=OSError("fixture denied")), \
+                self.patch.monitor_instance_lock() as held:
+            self.assertTrue(held)
+        with mock.patch.dict(os.environ, {"ZUSAGE_NO_MONITOR": "1", "ZUSAGE_MONITOR_QUIET": "1"}), \
+                mock.patch.object(self.patch.os, "open", side_effect=OSError("fixture denied")), \
+                mock.patch.object(self.patch.subprocess, "Popen") as spawn:
+            self.patch.launch_monitor(0)
+        self.assertEqual(spawn.call_count, 1)
 
     def test_quiet_monitor_exits_immediately_without_pending_package(self):
         with mock.patch.dict(sys.modules, {"patch_install": self.patch}), \

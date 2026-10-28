@@ -469,20 +469,27 @@ def monitor_instance_lock():
     """监控实例去重锁（issue #120，非阻塞独占）：yield True=持有；False=同目标已有
     监控在跑。锁文件与目标锁同目录、不同名，永久保留不删。不用 file_lock：去重锁
     是纯 try-lock，没有等待与超时语义，还共用它的计时器会干扰既有测试对轮询节奏
-    的断言。锁文件无法创建时按持有处理：去重是锦上添花，不能挡住收尾主职责。
-    区域锁/flock 在句柄关闭（含进程退出、被杀）时由 OS 释放，无陈锁残留。"""
+    的断言。锁文件无法创建或本体不可写（满盘等）时都按持有处理：去重是锦上添花，
+    不能挡住收尾主职责，更不能把去重失败变成安装失败。区域锁/flock 在句柄关闭
+    （含进程退出、被杀）时由 OS 释放，无陈锁残留。"""
     try:
         fd = os.open(os.fspath(monitor_lock_path()), os.O_RDWR | os.O_CREAT, 0o600)
     except OSError:
+        fd = None
+    if fd is None:
         yield True
         return
     locked = False
     try:
         if os.name == "nt":
             import msvcrt
-            if os.fstat(fd).st_size == 0:
-                os.write(fd, b"\0")
-            os.lseek(fd, 0, os.SEEK_SET)
+            try:
+                if os.fstat(fd).st_size == 0:
+                    os.write(fd, b"\0")
+                os.lseek(fd, 0, os.SEEK_SET)
+            except OSError:
+                yield True   # 锁文件本体不可用：同上退化，不让异常打断安装/收尾链
+                return
             try:
                 msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
                 locked = True
