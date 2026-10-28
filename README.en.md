@@ -22,7 +22,7 @@ Windows / macOS · Python 3.8+ · [MIT](LICENSE)
 Install or update the ZCode plugin https://github.com/ByteRax/zcode-token-usage-statusbar#plugin-releases, then run /install-overlay when it's done
 ```
 
-It installs the plugin, then runs `/install-overlay` to put the bar in place — if it doesn't run it for you, type it in the chat yourself. Then **quit ZCode completely and reopen it** (closing the window doesn't count); the little bar shows up at the bottom. The `#plugin-releases` at the end pins the officially released stable build — it auto-updates from ⚙, so don't drop it from the URL.
+Confirm the plugin is installed and enabled, then make sure `/install-overlay` succeeds — if it doesn't run for you, type it in the chat yourself. **Installing the bar modifies ZCode's `app.asar` program file**, so proceed only if you trust the project. Finally, **quit ZCode completely and reopen it** (closing the window doesn't count), then check for the bar at the bottom. The `#plugin-releases` at the end selects the officially released stable channel; don't drop it from the URL.
 
 Can't reach GitHub from your network (mainland China)? Send ZCode this instead (the trailing `.git` is required; this route needs local [Git](https://git-scm.com/downloads)):
 
@@ -47,8 +47,8 @@ Here's what each part tells you:
 
 | The bit | In plain English |
 |---|---|
-| ⚡ **86 t/s** | How fast the model is writing (tokens per second). Colour-coded in ten speed bands: red (slow) → green (smooth) → blue (fast) → violet (very fast), with a blue-violet gradient + ✦ at ≥2000 t/s (Ultra). Live estimates are colour-coded too; hover for the current band |
-| **62.5k 90% 7 Σ18.4s ⏱1.4s** | This turn: 62.5k tokens spent, 90% cache hit rate, 7 model requests, the most recent one took 18.4s, and you waited 1.4s for the first token |
+| ⚡ **86 t/s** | Generation speed in tokens per second. Colour bands range from red (slow) to violet (very fast), with a blue-violet gradient + ✦ at ≥2000 t/s (Ultra). While generating, the displayed speed is an estimate and uses the same colour bands |
+| **62.5k 90% 7 Σ18.4s ⏱1.4s** | This turn: 62.5k tokens spent, 90% cache hit rate, 7 model requests, their total duration was 18.4s, and you waited 1.4s for the first token |
 | **1.45M 86% 23 187** | The whole conversation so far: 1.45M tokens, 86% hit rate, 23 turns, 187 requests |
 | **142 🔴2** | Tools were called 142 times, 2 of them errored (small red marker) |
 | **3.42M** | Every conversation today added up: 3.42M tokens |
@@ -63,7 +63,7 @@ Context usage doesn't take a slot on the bar — look at the **context button** 
 
 | What you're wondering | Where to find it |
 |---|---|
-| How fast is the model right now? | The **t/s** on the far left — the colour tells you at a glance |
+| How fast is the model going? | The **t/s** on the far left — an estimate while generating when the renderer bridge is available, otherwise the latest valid stored speed |
 | How long did I wait after hitting enter? | The ⏱ number in **This turn** (that's the TTFT / time to first token) |
 | How many tokens did this turn / this conversation / today use? | The **This turn**, **Session total** and **Today** items |
 | Is this conversation going to run out of room? | The **context button** — it changes colour as it fills up, with one-click compact inside |
@@ -78,17 +78,17 @@ Context usage doesn't take a slot on the bar — look at the **context button** 
 ## Feature overview
 
 - **Desktop status bar** — follows **the session in the window you're looking at**; every item can be switched off on its own in ⚙.
-- **Per-answer rate line** — a short stats line appended to each reply (speed, first-token latency, output, duration). It is not the same number as the bar: tool calls split a turn into several requests, and the rate line combines the completed ones into one overall average; it stays hidden until the data lands.
+- **Per-answer rate line** — a short stats line after a reply (speed, first-token latency, output, duration), when the renderer bridge and required data are available. It differs from the bar: tool calls can split a turn into requests, and the line combines valid completed segments into a duration-weighted average; it stays hidden until the data lands. The line's labels are currently in Chinese.
 - **Git status chip** — `⎇ branch ↑↓ +N -N` in the composer toolbar keeps repo state visible at a glance; when the directory itself isn't a repository, it automatically adds up the repositories in its subdirectories (`▣ 24 repos · 6 changed`). Read-only local git, no network.
-- **Plan quota chip** — left of the context button: per-window used percentages and reset times, or account balance. Beyond the built-in BigModel / Z.ai plans, the ⚙ quota panel lets you **pick a template and paste a key** to add other providers or a custom relay; SCNet works without credentials via the official conversion table. Credentials live in memory only and are sent to the provider's official domain only. Support levels are in the [quota support matrix](docs/quota-support-audit.md) (Chinese); team plans are not supported yet.
+- **Plan quota chip** — left of the context button: plan-window used percentages and reset times, or account balance. Beyond the built-in BigModel / Z.ai plans, the ⚙ quota panel lets you select a provider template and enter a key, including for a custom relay; SCNet can be estimated without credentials using the official conversion table. Keys entered in the panel are saved locally in the runtime directory's `quota-secrets.json` (created with 0600 permissions where supported), not just kept in memory. Requests send credentials only to the adapter's allowed official domains or the configured custom relay's own domain. Support levels are in the [quota support matrix](docs/quota-support-audit.md) (Chinese); team plans are not supported yet.
 - **One-click context compaction** — the compact button in the panel the context button opens sends `/compact` to the current session without touching your draft. Compaction usually takes 2–4 minutes with no progress feedback; sending a new message interrupts it, so let it finish.
-- **Query entry points** — same local data, three ways in:
+- **Query entry points** — three ways to explore local usage:
 
-```text
-/usage today            # in the chat
-python zusage.py week   # in a terminal
-token_usage(scope)      # MCP tool
-```
+  - In ZCode chat, enter `/usage` for a report or `/usage today` for today.
+  - In a terminal, run `python zusage.py days 7` from the repository directory for the last seven days.
+  - Ask the assistant to call the `token_usage` MCP tool, for example with scope `today`. MCP is optional; you don't need it to use the bar or `/usage`.
+
+  The `current` query selects the most recently active database session, which may not be the session in the focused window.
 
 - **SSH / WSL remote sessions** — when ZCode runs on an SSH server or inside WSL, the bar's data can follow: remotes are discovered automatically, each server keeps its own stats, and failed queries keep retrying on their own. The remote machine needs the query script installed by hand. See the [remote sessions guide](docs/user-guide.md#远程会话) (Chinese).
 
@@ -120,8 +120,8 @@ The natural-language line at the top runs exactly these commands. Other routes: 
 ### After installing, don't skip these three steps
 
 1. **The plugin is installed and enabled** — you can see it in the plugin list.
-2. **The bar is installed into the client** — starting or resuming a session auto-installs it; if that fails, run `/install-overlay` by hand. This step **modifies ZCode's program files (`app.asar`)** — make sure you trust the project first.
-3. **Quit ZCode completely and reopen it** — closing the window doesn't count, and neither does reopening the session.
+2. **The bar is installed into the client** — starting or resuming a session can trigger automatic installation; if it fails or is disabled, run `/install-overlay` by hand and confirm it succeeds. This step **modifies ZCode's program files (`app.asar`)** — make sure you trust the project first. Permissions or client changes can prevent installation.
+3. **Quit ZCode completely and reopen it**, then check that the bar appears — closing the window doesn't count, and neither does reopening the session.
 
 **Updating later?** For the plugin, click "Check for updates" in ⚙ (auto-update is on by default); for the installer route, `git pull` in the clone and re-run `python install.py`. [Update & upgrade details →](docs/user-guide.md#更新与客户端升级) (Chinese)
 
@@ -135,18 +135,18 @@ Add **just** this key to `~/.zcode/zcode-token-usage-statusbar/config.json` (don
 }
 ```
 
-`/usage`, the MCP tool and the rate line keep working; the plugin stops touching client files. If the bar was already installed, run `/uninstall-overlay` once to remove it.
+`/usage` and the MCP tool remain available without installing the bar. The per-answer rate line depends on the renderer bridge and is not guaranteed without the overlay. If the bar was already installed, run `/uninstall-overlay` once and confirm removal, then fully quit and reopen ZCode; the setting alone does not remove an existing installation.
 
 ## Where these numbers come from
 
-Data is read **read-only** from ZCode's local SQLite database — not self-reported by the model, not a billing estimate. Everything except generation speed refreshes once per stored request, so it doesn't tick up character by character. While the model is still writing, the t/s shown is estimated from the characters emitted so far and switches to the real value once the turn completes. Exact formulas and the commonly-confused pairs (bar speed vs rate line, context share vs session total) are in the [data semantics guide](docs/user-guide.md#数据如何计算) (Chinese).
+Usage reports read ZCode's local SQLite database **read-only** — they are not self-reported by the model or a billing estimate. Stored request statistics update as completed requests reach the database, not character by character. When the renderer bridge is available, generation speed is estimated from text changes while the model is writing and switches to a measured value when the turn completes; without the bridge, speed falls back to the latest valid completed database request. Quota and balance come from a separate provider-query or estimate path, not from those token totals. Exact formulas and commonly confused pairs (bar speed vs rate line, context share vs session total) are in the [data semantics guide](docs/user-guide.md#数据如何计算) (Chinese).
 
 ## Things worth knowing
 
 - **This is not an official ZCode feature.** It's a community plugin; the bar works by modifying ZCode's program files (`app.asar`), and uninstall removes only what it added.
 - **The local database is read-only.** Usage data is never uploaded. Plugin updates do download code over the network (auto-update can be disabled in ⚙).
-- **Credential boundaries**: SSH passwords and private-key passphrases stored in ZCode are never decrypted or reused by the plugin; quota-query credentials live in memory only and go to the provider's official domain only, and the whole feature can be turned off in ⚙.
-- **Token usage is not a bill**: the quota chip shows used percentages from plan APIs, not cash balances or billing details.
+- **Credential boundaries**: SSH passwords and private-key passphrases stored in ZCode are not decrypted or reused by the plugin. Quota credentials entered in ⚙ are saved locally in `quota-secrets.json`; requests are restricted to the relevant provider's allowed official domains or the configured custom relay's domain. Quota sources can be disabled in ⚙.
+- **Token usage is not a bill**: the quota chip can show plan usage or an account balance, depending on the source; it does not provide a cash spending bill or billing details.
 
 ## FAQ
 
@@ -160,7 +160,7 @@ A ZCode update overwrites those modified program files. Keep the plugin enabled,
 
 **Why don't the numbers move continuously?**
 
-Data refreshes when a request completes and lands in the database, not per keystroke. A brand-new session that hasn't sent a request yet shows 0 — that's normal.
+Stored usage refreshes when a completed request lands in the database, not per character. With the renderer bridge, speed can show a text-based estimate during generation; without it, speed waits for a valid completed database sample. A brand-new session that hasn't sent a request yet shows 0 — that's normal.
 
 **Can it show how much money I spent?**
 
