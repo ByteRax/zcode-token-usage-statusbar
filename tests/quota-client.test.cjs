@@ -710,6 +710,28 @@ test("deepseek: granted≠0 splits into 赠送/充值 parts", async () => {
   assert.deepEqual(v.balance.parts, [{ label: "赠送", amount: 10 }, { label: "充值", amount: 100 }]);
 });
 
+test("deepseek: is_available=false with empty balance_infos is a legal zero balance", async () => {
+  const { client, calls } = adapterClient({ cfgEntries: [["ds", "https://api.deepseek.com/v1", "sk-ds"]] });
+  client.noteProvider("ds");
+  client.tick();
+  calls[0].d.resolve(fakeRes(200, JSON.stringify({ is_available: false, balance_infos: [] })));
+  await flush();
+  let v = client.view();
+  assert.equal(v.status, "ok");
+  assert.equal(v.balance.amount, 0);
+  assert.equal(v.balance.currency, "CNY");
+
+  // is_available 缺失且无条目：形状异常仍 parse_error，不冒充零余额
+  const { client: c2, calls: calls2 } = adapterClient({ cfgEntries: [["ds", "https://api.deepseek.com/v1", "sk-ds"]] });
+  c2.noteProvider("ds");
+  c2.tick();
+  calls2[0].d.resolve(fakeRes(200, JSON.stringify({ balance_infos: [] })));
+  await flush();
+  v = c2.view();
+  assert.equal(v.status, "parse_error");
+  assert.equal(v.balance, undefined);
+});
+
 test("mimo: cookie normalized (prefix/quotes/newlines), plan+compensation windows, balance parts, login-expired soft", async () => {
   assert.equal(Q.normalizeMimoCookie('Cookie: "userId=741;\napi-platform_serviceToken=abc"'), "userId=741; api-platform_serviceToken=abc");
   assert.equal(Q.normalizeMimoCookie("userId=1"), null, "缺 serviceToken 无效");
