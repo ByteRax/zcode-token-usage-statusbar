@@ -509,7 +509,8 @@ function loadProviderCfg(readFile2, cfgPath, builtinCfgPath) {
     try {
       const d = readFile2(p);
       const pcr = (d.config || {}).providerConfigRules || {};
-      for (const t of pcr.templateRules || []) {
+      /* Array.isArray 守卫：真值非数组的 templateRules 不能连累同文件 providerRules（基线行为） */
+      for (const t of Array.isArray(pcr.templateRules) ? pcr.templateRules : []) {
         if (!t || !t.templateId) continue;
         const old = templates.get(String(t.templateId)) || {}, cfg = t.config || {};
         templates.set(String(t.templateId), {
@@ -531,8 +532,8 @@ function loadProviderCfg(readFile2, cfgPath, builtinCfgPath) {
   }
   const byId = new Map();
   for (const [id, cfg] of rules) {
-    /* 模板创建的供应商（个人配置只存 apiKey/templateId）从内置 templateRules 回填
-     * baseUrl；显式配置仍优先，显式空串 baseUrl 按未填处理回落模板。 */
+    /* 模板创建的供应商（个人配置不含 baseUrl）从内置 templateRules 回填
+     * baseUrl/access；显式配置仍优先，显式空串 baseUrl 按未填处理回落模板。 */
     const tpl = cfg.templateId ? templates.get(cfg.templateId) : null;
     const api = Object.assign({}, tpl && tpl.api, cfg.api);
     const access = Object.assign({}, tpl && tpl.access, cfg.access);
