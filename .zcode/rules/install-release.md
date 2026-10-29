@@ -9,12 +9,12 @@
 一个文件进入分发链要同步**全部**登记处，漏任一处都会在不同阶段报错或断升级：
 - `sync_plugin.py` 的 `FILES`（根→插件副本同步）与 `release_tool.py` 的同步清单；
 - `release_unpack.py` 的 `PLUGIN_FILES`（安全解包文件集）；
-- `overlay_install.py` 的 `RUNTIME_FILES`（运行时目录同步清单：注入行指向运行目录，`inject-main.cjs` 相对 require 的每个本地模块都必须在列，否则模块静默缺失只在加载时报错；`test_plugin_package` 按此不变量守护）与 `cold_files`（决定哪些变更要求完全重启）；
+- 两份运行清单的 `RUNTIME_FILES`（`overlay_install.py` 插件链与 `install.py` 独立链各一份，都拷到稳定运行目录：注入行指向运行目录，`inject-main.cjs` 相对 require 的每个本地模块都必须在列，否则模块静默缺失只在加载时报错；`test_plugin_package` 对两份清单按此不变量守护）与 `overlay_install.py` 的 `cold_files`（决定哪些变更要求完全重启）；
 - `restart_notice.py` 的 hashes 名白名单（漏改报"提醒记录 hashes 无效"）；
 - 两份 manifest（`.zcode-plugin/plugin.json`、`.claude-plugin/plugin.json`）的 `packageLayout.files`——在野旧版解包器要求文件集精确声明，漏声明会让旧版无法升级到新版（曾两次事故），`release_tool.py build` 的 `require_layout` 会拦；
 - 相关契约测试（`tests/test_plugin_package.py`、`test_plugin_runtime.py`、`test_release*.py`）。
 
-反向也要成立：`usage_mcp.py`、`overlay_install.py`、`plugin_auto_update.py`、`restart_notice.py` 与 `hooks/` 下的入口都是从插件目录（缓存）运行的，import 的兄弟文件同样来自插件目录，**不属于** `RUNTIME_FILES`，不要为「看起来同步」把它们加进运行时目录。
+反向也要成立（仅指插件链）：`usage_mcp.py`、`overlay_install.py`、`plugin_auto_update.py`、`restart_notice.py` 与 `hooks/` 下的入口在插件链都从插件目录（缓存）运行，import 的兄弟文件同样来自插件目录，**不属于** `overlay_install.py` 的 `RUNTIME_FILES`，不要为「看起来同步」把它们加进运行时目录；`install.py` 独立链是例外——它的 `RUNTIME_FILES` 必须含 `usage_mcp.py`（独立链的 MCP 从运行目录运行）。
 
 ## 2. 注入与运行目录
 
@@ -22,7 +22,7 @@
 - asar 原子替换（mkstemp → `os.replace`）后必须 `os.chmod(stage, S_IMODE(原 asar mode))` 保留权限位，否则降成 0600（lifecycle 测试断言 0644）。
 - 参与 INJECT_LINE 字节比对/自检的 `--runtime` 路径禁止 `Path.resolve()`（macOS `/var`↔`/private/var` 符号链接会破坏字面比对），只用 expanduser/expandvars/abspath；`--asar` 可完整 resolve；standalone `install --finalize` 在自定义安装路径需同时给 `--asar` 与 `--runtime`，`install_monitor.py` 的"手动执行"提示内嵌真实路径。
 - `patch_install.client_running()` 用 `pgrep -x ZCode`，本机进程名可能是 `zcode-cli` 而漏检；它只决定走安全路径，无害，但**测试时不要靠它判断客户端是否在跑**。asar 被占用的收尾必须由宿主以外的监控进程执行，不能依赖 ZCode 自己的定时任务。
-- 热/冷清单：`overlay.js`、`turn-stats.js` 热重载（主桥 2s mtime 监听）；`zusage.py` 常驻进程由 loader 按 mtime 自动重启；`inject-main.cjs`、`quota-client.cjs`、`plugin-updater/release/storage.cjs` 是冷文件，首次注入、路径变化或这些文件变更需完全退出并重启客户端。可热更新文件也须确认实际加载路径。
+- 热/冷清单：`overlay.js`、`turn-stats.js` 热重载（主桥 2s mtime 监听）；`zusage.py` 常驻进程由 loader 按 mtime 自动重启；`inject-main.cjs`、`quota-client.cjs`、`model-puller.cjs`、`plugin-updater/release/storage.cjs` 是冷文件，首次注入、路径变化或这些文件变更需完全退出并重启客户端。可热更新文件也须确认实际加载路径。
 - 插件→运行目录同步有 hash 基线/mtime 热修保护（`preserved`）；根 `install.py` 的运行文件复制是直接覆盖，不能承诺同等保护。向运行目录覆盖任何文件前先 diff 运行目录与来源基（运行时可能领先所有工作树，直接 cp 曾静默降级）；并行会话活跃时 `sync_plugin.py` 会把他人未提交的根文件改动扫进副本与运行目录——浮层/更新器异常先排查这条路径。
 - 热修纪律：叠加部署不整体覆盖；先备份 `.pre-<原因>-<时间戳>`；原子替换（tmp 同名过 `node --check` 再 mv）；判断运行目录实际版本用 diff 根文件 + stat mtime + 备份名，**不信 diag**（diag 约每 15 次拉取才落盘，滞后数分钟；`diag-0.json` 是非活跃窗口不能当泵健康探针）。运行目录分叉早于 main 时一步三方合并会回退已合入的改动，须两步（先演进到 main 再叠修复）。
 

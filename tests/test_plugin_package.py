@@ -87,9 +87,9 @@ class PluginPackageTests(unittest.TestCase):
         # 语义同一：漏改任一处时重启记录与提醒单侧失效，钉住两处字面量一致
         src = (PLUGIN / "overlay_install.py").read_text(encoding="utf-8")
         literals = [set(re.findall(r'"([^"]+)"', block)) for block in re.findall(r"cold_files = \{([^}]+)\}", src)]
-        self.assertEqual(len(literals), 2)
-        self.assertTrue(literals[0])
-        self.assertEqual(literals[0], literals[1])
+        self.assertEqual(len(literals), 2, msg="cold_files 字面量应为恰两处（sync_runtime 与 run_hook）；结构重写后请同步更新本测试")
+        self.assertTrue(literals[0], msg="提取到的 cold_files 字面量为空")
+        self.assertEqual(literals[0], literals[1], msg="两处 cold_files 不一致：重启记录与提醒文案将单侧漏报")
 
     def test_release_skill_requires_post_release_pr_merge_and_verification(self):
         text = (ROOT / ".zcode/skills/zcode-github-release/SKILL.md").read_text(encoding="utf-8")
