@@ -112,20 +112,19 @@ token_usage(scope="session:ID前缀") # MCP：指定会话明细
 
 ### 装法
 
-推荐**插件**方式，在 ZCode 对话框依次执行：
+推荐**插件**方式：在 ZCode 里打开 **设置 → 插件 → 添加插件市场**，粘贴市场地址：
 
 ```text
-/plugin marketplace add ByteRax/zcode-token-usage-statusbar#plugin-releases
-/plugin install zcode-token-usage-statusbar@zusage-marketplace
+https://github.com/ByteRax/zcode-token-usage-statusbar#plugin-releases
 ```
 
-> **敲完先确认插件真的装上了**：看 **设置 → 插件 → 已安装** 里有没有出现 **ZCode Token Usage Statusbar**。第一条命令要联网克隆仓库，失败后可能一点痕迹都不留。国内直连 GitHub 超时的机器，把第一条换成 GitCode 渠道（结尾 `.git` 不能省）：
->
-> ```text
-> /plugin marketplace add https://gitcode.com/tanranran/zcode-token-usage-statusbar.git#plugin-releases-gitcode
-> ```
+添加后在这个市场里安装 **ZCode Token Usage Statusbar** 并启用。国内直连 GitHub 超时的机器，把地址换成 GitCode 渠道（结尾 `.git` 不能省）：
 
-开头那句自然语言指令，走的就是上面两条命令。其它装法：想自己改代码，用「**设置 → 插件 → 添加插件市场 → 选择目录**」指向仓库根目录；不想装插件，终端里 `git clone` 后跑 `python install.py` 一键安装；自托管 ZCode 服务器另有 [Web 版](web/README.zh-CN.md)。四种装法**选一个就行，别叠着来**，逐步说明见[安装指南](docs/user-guide.md#插件安装)。
+```text
+https://gitcode.com/tanranran/zcode-token-usage-statusbar.git#plugin-releases-gitcode
+```
+
+也可以把 README 开头「三步装上」那句自然语言指令发给 AI，让它替你完成市场添加与插件安装（AI 走终端命令，效果一致）。其它装法：想自己改代码，用「**设置 → 插件 → 添加插件市场 → 选择目录**」指向仓库根目录；不想装插件，终端里 `git clone` 后跑 `python install.py` 一键安装；自托管 ZCode 服务器另有 [Web 版](web/README.zh-CN.md)。四种装法**选一个就行，别叠着来**，逐步说明见[安装指南](docs/user-guide.md#插件安装)。
 
 ### 装完之后，别忘了这三步
 

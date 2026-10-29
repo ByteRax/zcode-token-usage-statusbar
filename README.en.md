@@ -105,20 +105,19 @@ Context usage doesn't take a slot on the bar — look at the **context button** 
 
 ### How to install
 
-The recommended route is the **plugin**. Run these in the ZCode chat, in order:
+The recommended route is the **plugin**: in ZCode, open **Settings → Plugins → Add marketplace** and paste the market URL:
 
 ```text
-/plugin marketplace add ByteRax/zcode-token-usage-statusbar#plugin-releases
-/plugin install zcode-token-usage-statusbar@zusage-marketplace
+https://github.com/ByteRax/zcode-token-usage-statusbar#plugin-releases
 ```
 
-> **Confirm the plugin actually installed**: check **Settings → Plugins → Installed** for **ZCode Token Usage Statusbar**. The first command clones a repository over the network and can fail without leaving a trace. On machines where direct GitHub access times out, swap the first line for the GitCode channel (the trailing `.git` is required):
->
-> ```text
-> /plugin marketplace add https://gitcode.com/tanranran/zcode-token-usage-statusbar.git#plugin-releases-gitcode
-> ```
+Then install **ZCode Token Usage Statusbar** from that market and keep it enabled. On machines where direct GitHub access times out, swap the URL for the GitCode channel (the trailing `.git` is required):
 
-The natural-language line at the top runs exactly these commands. Other routes: to hack on the code, point **Settings → Plugins → Add marketplace → Choose directory** at the repository root; to skip the plugin entirely, `git clone` and run `python install.py`; self-hosted ZCode servers have a separate [Web edition](web/README.md). Pick **one** route and stick with it — see the [installation guide](docs/user-guide.md#插件安装) (Chinese) for step-by-step details.
+```text
+https://gitcode.com/tanranran/zcode-token-usage-statusbar.git#plugin-releases-gitcode
+```
+
+You can also send the natural-language "three steps" line from the top of this README to the AI and let it add the market and install the plugin for you (it uses terminal commands; the result is identical). Other routes: to hack on the code, point **Settings → Plugins → Add marketplace → Choose directory** at the repository root; to skip the plugin entirely, `git clone` and run `python install.py`; self-hosted ZCode servers have a separate [Web edition](web/README.md). Pick **one** route and stick with it — see the [installation guide](docs/user-guide.md#插件安装) (Chinese) for step-by-step details.
 
 ### After installing, don't skip these three steps
 

@@ -17,7 +17,7 @@ See model speed, token usage, context size, plan quota, and Git status while you
 
 ## Install & first run
 
-1. Install this plugin from the marketplace and keep it enabled.
+1. Install this plugin from the marketplace and keep it enabled — in ZCode → Settings → Plugins → Add marketplace, paste `https://github.com/ByteRax/zcode-token-usage-statusbar#plugin-releases` (the officially released stable channel), then install **ZCode Token Usage Statusbar**.
 2. Open (or reopen) a session. The plugin then installs / repairs the status bar automatically. **This modifies `app.asar` — only proceed if you trust this project.**
 3. **Fully quit and reopen ZCode.**
 
