@@ -168,6 +168,30 @@ test('modalOpenCached skips modalOpen querySelector within TTL', () => {
   assert.equal(calls.qs, 1);
 });
 
+test('plugin settings dialog and large plugin panel never count as a host modal', () => {
+  const { sandbox } = boot();
+  const classes = { contains: name => name === 'zusage-panel' };
+  const ownDialog = { classList: classes, computed: { display: 'block' } };
+  const ownPanel = { classList: classes, getBoundingClientRect: () => ({ width: 1200, height: 800 }), computed: {
+    position: 'fixed', display: 'block', visibility: 'visible', opacity: '1', zIndex: '2147483647', backgroundColor: 'rgb(20, 20, 20)',
+  } };
+  const hostDialog = { computed: { display: 'block' } };
+  const hostOverlay = { getBoundingClientRect: () => ({ width: 1200, height: 800 }), computed: {
+    position: 'fixed', display: 'block', visibility: 'visible', opacity: '1', zIndex: '40', backgroundColor: 'rgba(0, 0, 0, 0.5)',
+  } };
+  let dialogs = [ownDialog];
+  sandbox.document.querySelectorAll = selector => selector === '[role="dialog"]' ? dialogs : [];
+  sandbox.document.body.children = [ownPanel];
+  assert.equal(sandbox.modalOpen(), false, 'own dialog and panel are not a host modal');
+  dialogs = [hostDialog];
+  assert.equal(sandbox.modalOpen(), false, 'own panel is not a host overlay');
+  dialogs = [ownDialog];
+  sandbox.document.body.children = [hostOverlay];
+  assert.equal(sandbox.modalOpen(), false, 'own dialog is not a host dialog');
+  dialogs = [hostDialog];
+  assert.equal(sandbox.modalOpen(), true, 'real host modal still hides the bar');
+});
+
 test('hidden dialog does not suppress the bar, while a visible dialog with an overlay does', () => {
   const { sandbox } = boot();
   const dialog = { computed: { display: 'none' } };

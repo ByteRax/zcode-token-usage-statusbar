@@ -43,6 +43,8 @@ A thin bar appears along the bottom of the chat window, roughly like this:
    Speed        This turn             Session total       Tools     Today    Sub-agents   Settings
 ```
 
+The example above shows the default style. In the desktop app, choose **Default** or **Pill** under ⚙ → General → Status bar style. The pill is centered below its composer, sized to its content and constrained in narrow windows. This option is not available on the Web. [Style and switching details →](docs/user-guide.md#状态条样式) (Chinese)
+
 Here's what each part tells you:
 
 | The bit | In plain English |

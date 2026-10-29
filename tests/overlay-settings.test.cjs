@@ -60,7 +60,7 @@ test('settings geometry matches the bar outer width and edges only when open', (
   let rect = { left: 250, top: 600, width: 800.5 };
   const context = {
     panel, bar: { getBoundingClientRect: () => rect }, innerWidth: 1400, innerHeight: 900,
-    syncSettingsScroll: () => { syncs++; },
+    state: { theme: 'default' }, syncSettingsScroll: () => { syncs++; },
   };
   vm.runInNewContext(positionSource + '\npositionSettingsPanel();', context);
   assert.equal(values['--zu-settings-height'], '582px');
@@ -88,6 +88,7 @@ test('buildPanel initializes and rebuilds controls without losing state or scrol
   const checkboxes = ['turn', 'win', 'tools', 'today', 'sub'].map(k => ({ dataset: { k } }));
   const input = { value: '' };
   const context = {
+    slot: 0,
     panel: {
       innerHTML: '',
       querySelector: selector => selector === '.zu-settings-body' ? oldBody : input,
@@ -177,6 +178,7 @@ test('feedback button sits in the footer with localized copy', () => {
   const buildSource = extract('    function settingRow(', '    function syncSettingsScroll() {');
   const body = { scrollTop: 0 };
   const context = {
+    slot: 0,
     panel: {
       innerHTML: '',
       querySelector: () => body, querySelectorAll: () => [],
@@ -282,6 +284,7 @@ test('buildPanel shows the 万/亿 toggle only in Chinese and restores its check
   const body = { scrollTop: 0 };
   const cnBox = {};
   const context = {
+    slot: 0,
     panel: {
       innerHTML: '',
       querySelector: selector => selector === '.zu-settings-body' ? body
@@ -358,6 +361,7 @@ test('the update section goes straight from the buttons to the status line witho
   const body = { scrollTop: 0 };
   for (const lang of ['zh', 'en']) {
     const context = {
+      slot: 0,
       panel: {
         innerHTML: '',
         querySelector: selector => selector === '.zu-settings-body' ? body : { value: '' },
@@ -494,6 +498,7 @@ function buildHarness(state) {
   const buildSource = extract('    function settingRow(', '    function syncSettingsScroll() {');
   const body = { scrollTop: 0 };
   const context = {
+    slot: 0,
     panel: { innerHTML: '', querySelector: () => body, querySelectorAll: () => [] },
     state: Object.assign({ lang: 'zh', show: {}, ctxOv: '' }, state),
     L: (zh, en) => context.state.lang === 'en' ? en : zh,
@@ -636,7 +641,7 @@ test('settings height uses the increased viewport cap, locks on open and only ti
   let rect = { left: 250, top: 1000, width: 800.5 };
   const context = {
     panel, bar: { getBoundingClientRect: () => rect }, innerWidth: 1400, innerHeight: 900,
-    syncSettingsScroll: () => { },
+    state: { theme: 'default' }, syncSettingsScroll: () => { },
   };
   vm.runInNewContext(positionSource + '\npositionSettingsPanel();', context);
   assert.equal(values['--zu-settings-height'], '982px');
@@ -689,6 +694,7 @@ test('buildPanel shows the full-path toggle in both languages and restores its c
   const body = { scrollTop: 0 };
   const ppBox = {};
   const context = {
+    slot: 0,
     panel: {
       innerHTML: '',
       querySelector: selector => selector === '.zu-settings-body' ? body
