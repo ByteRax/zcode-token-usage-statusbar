@@ -648,3 +648,194 @@ test('settings height uses the increased viewport cap, locks on open and only ti
   vm.runInNewContext('positionSettingsPanel();', context);
   assert.equal(panel.style.height, '332px');
 });
+
+/* ---------- v136 编辑项目弹窗完整路径（项目完整路径开关） ---------- */
+
+test('the full-path rule is stylesheet-gated by data-zusage-pp and reads the row title', () => {
+  // 规则挂在条样式表内：attr(title) 取每行各自完整路径，.truncate 限定本地行（fixedFolder 行 break-all 排除防重复）
+  // 属性值必须带引号：CSS 属性选择器的未加引号值不能是数字（[pp=1] 会被整条丢弃，Chrome 实测）
+  assert.match(source, /'\[data-zusage-pp="1"\] \[data-testid=virtual-project-root-name\]\.truncate::after\{content:attr\(title\);' \+/);
+  // 用户规格：长路径自动换行不做省略号——宿主 truncate 的 nowrap 会继承进伪元素，必须显式恢复
+  assert.ok(source.includes('"display:block;white-space:normal;word-break:break-all;" +'));
+  const ruleText = source.match(/'\[data-zusage-pp="1"\][^]*?#8791a3\)\}" \+/)[0];
+  assert.ok(!ruleText.includes('text-overflow'), 'rule must wrap, not ellipsize');
+  assert.ok(source.includes('"font-size:var(--text-ui-sm,calc(var(--ui-font-size,14px) - 2px));line-height:1.45;" +'));
+  assert.ok(source.includes('"color:var(--color-foreground-subtle,#8791a3)}" +'));
+  // testid 出现处 = 样式表字符串 2 处（v136 路径行 + v137 cursor 规则）+ v137 点击委托 closest 选择器 1 处，无 DOM 创建/观察器
+  assert.equal(source.split('virtual-project-root-name').length - 1, 3);
+});
+
+test('applyProjPath gates the path display on <html> and tolerates hostile documents', () => {
+  const ppSource = source.match(/  function applyProjPath\(\) \{[\s\S]*?\n  \}/)[0];
+  const attrs = {};
+  const document = {
+    documentElement: {
+      setAttribute: (k, v) => { attrs[k] = v; },
+      removeAttribute: k => { delete attrs[k]; },
+    },
+  };
+  const context = { state: { projPath: 1 }, document };
+  vm.runInNewContext(ppSource + '\napplyProjPath();', context);
+  assert.equal(attrs['data-zusage-pp'], '1');
+  context.state.projPath = 0;
+  vm.runInNewContext('applyProjPath();', context);
+  assert.ok(!('data-zusage-pp' in attrs));
+  const broken = { state: { projPath: 1 }, document: null };
+  vm.runInNewContext(ppSource + '\napplyProjPath();', broken);   // document 不可用时不抛
+});
+
+test('buildPanel shows the full-path toggle in both languages and restores its checked state', () => {
+  const buildSource = extract('    function settingRow(', '    function syncSettingsScroll() {');
+  const body = { scrollTop: 0 };
+  const ppBox = {};
+  const context = {
+    panel: {
+      innerHTML: '',
+      querySelector: selector => selector === '.zu-settings-body' ? body
+        : selector === '.zu-pp-enable' ? (context.panel.innerHTML.includes('zu-pp-enable') ? ppBox : null)
+        : { value: '' },
+      querySelectorAll: () => [],
+    },
+    state: { lang: 'zh', show: {}, ctxOv: '', cnNum: 1, projPath: 1 },
+    L: (zh, en) => context.state.lang === 'en' ? en : zh,
+    syncUpdate: () => {}, syncSettingsScroll: () => {},
+  };
+  vm.runInNewContext(buildSource + '\nbuildPanel();', context);
+  assert.match(context.panel.innerHTML, /<input type="checkbox" class="zu-pp-enable">/);
+  assert.match(context.panel.innerHTML, /项目完整路径/);
+  assert.ok(context.panel.innerHTML.indexOf('zu-pp-enable') > context.panel.innerHTML.indexOf('zu-cn-num'));
+  assert.ok(context.panel.innerHTML.indexOf('zu-pp-enable') < context.panel.innerHTML.indexOf('zu-settings-langs'));
+  assert.equal(ppBox.checked, true);
+  context.state.projPath = 0;
+  vm.runInNewContext('buildPanel();', context);
+  assert.equal(ppBox.checked, false);
+  context.state.lang = 'en';
+  vm.runInNewContext('buildPanel();', context);   // 英文：开关照常出现，不依赖中文单位行
+  assert.match(context.panel.innerHTML, /Full project paths/);
+  assert.equal(ppBox.checked, false);
+});
+
+test('syncPanel restores the full-path toggle and tolerates its absence', () => {
+  const syncSource = extract('    function syncPanel() {', '    panel.addEventListener("click",');
+  const ppBox = {}, ctxov = { value: '' };
+  let present = true, updates = 0;
+  const context = {
+    panel: {
+      querySelectorAll: () => [],
+      querySelector: selector => selector === '.zu-pp-enable' ? (present ? ppBox : null) : selector === '.zu-ctxov' ? ctxov : { value: '' },
+    },
+    state: { show: {}, ctxOv: '', cnNum: 1, projPath: 0 },
+    syncUpdate: () => { updates++; },
+  };
+  vm.runInNewContext(syncSource + '\nsyncPanel();', context);
+  assert.equal(ppBox.checked, false);
+  context.state.projPath = 1;
+  vm.runInNewContext('syncPanel();', context);
+  assert.equal(ppBox.checked, true);
+  present = false;
+  vm.runInNewContext('syncPanel();', context);
+  assert.equal(updates, 3);
+});
+
+test('full-path toggle persists and flips the gate without re-rendering or touching display items', () => {
+  const changeSource = extract('    panel.addEventListener("change",', '    listenGlobal(document, "mousedown",');
+  let handler, saved = 0, gates = 0, renders = 0;
+  const context = {
+    panel: { addEventListener: (_, fn) => { handler = fn; } },
+    state: { ctxOv: '', show: { ctx: 1 }, projPath: 1 },
+    persist: () => { saved++; },
+    applyProjPath: () => { gates++; },
+    renderAll: () => { renders++; },
+  };
+  vm.runInNewContext(changeSource, context);
+  const target = checked => ({ type: 'checkbox', checked, dataset: {}, classList: { contains: name => name === 'zu-pp-enable' } });
+  handler({ target: target(false) });
+  assert.equal(context.state.projPath, 0);
+  assert.equal(saved, 1);
+  assert.equal(gates, 1);
+  assert.equal(renders, 0);   // 纯 CSS 门控即时生效，无需 renderAll
+  assert.deepEqual(context.state.show, { ctx: 1 });   // 必须独立分支：落入 data-k 分支会写 show[undefined]
+  handler({ target: target(true) });
+  assert.equal(context.state.projPath, 1);
+  assert.equal(saved, 2);
+  assert.equal(gates, 2);
+});
+
+/* ---------- v137 点击源文件夹行在文件管理器中打开 ---------- */
+
+function extractProjClickBlock() {
+  const m = source.match(/  \/\* v137 点击源文件夹行[\s\S]*?\n  try \{/);
+  assert.ok(m, 'v137 block missing');
+  return m[0].replace(/\n  try \{$/, '');
+}
+
+test('projFileUrl builds file URLs for POSIX, Windows drives and UNC shares', () => {
+  const context = { state: { projPath: 1 }, window: {}, document: { querySelector: () => null }, __args: [], __out: null };
+  context.__args = ['/Users/a b/c#d?', 'C:\\work\\demo app', '\\\\srv\\share\\x', '/plain/path'];
+  vm.runInNewContext(extractProjClickBlock() + '\n__out = __args.map(projFileUrl);', context);
+  assert.deepEqual(context.__out, [
+    'file:///Users/a%20b/c%23d%3F',
+    'file:///C:/work/demo%20app',
+    'file://srv/share/x',
+    'file:///plain/path',
+  ]);
+});
+
+test('openProjFolder prefers openInFileManager then falls back over the raw path', () => {
+  const block = extractProjClickBlock();
+  const calls = (zc) => {
+    const context = { state: { projPath: 1 }, window: { zcode: zc }, document: { querySelector: () => null } };
+    vm.runInNewContext(block + '\nopenProjFolder("/a b/c");', context);
+    return zc;
+  };
+  calls({ openInFileManager: p => calls.got = ['fm', p] });
+  assert.deepEqual(calls.got, ['fm', '/a b/c']);
+  calls({ openExternalFile: p => calls.got = ['file', p] });
+  assert.deepEqual(calls.got, ['file', '/a b/c']);
+  calls({ openExternal: u => calls.got = ['ext', u] });
+  assert.deepEqual(calls.got, ['ext', 'file:///a%20b/c']);
+  const bare = { state: { projPath: 1 }, window: {}, document: { querySelector: () => null } };
+  vm.runInNewContext(block + '\nopenProjFolder("/x");', bare);   // 无桥不抛（静默忽略）
+  const broken = { state: { projPath: 1 }, window: { zcode: { openInFileManager: () => { throw new Error('x'); } } }, document: { querySelector: () => null } };
+  vm.runInNewContext(block + '\nopenProjFolder("/x");', broken);   // 桥抛错不外冒
+});
+
+test('folder-row clicks open the file manager with gates: toggle, button, remote editor and dedup', () => {
+  const block = extractProjClickBlock();
+  const make = ({ projPath = 1, remote = false } = {}) => {
+    const opened = [];
+    const ctx = vm.createContext({
+      state: { projPath },
+      window: { zcode: { openInFileManager: p => opened.push(p) } },
+      document: { querySelector: () => (remote ? {} : null) },
+      Date,
+    });
+    vm.runInContext(block, ctx);   // 去重状态（projOpenAt/projOpenPath）须在同一 context 内跨点击延续
+    const click = (button = 0, path = '/some/dir') => {
+      ctx.__b = button;
+      ctx.__t = { closest: sel => (sel === '[data-testid=virtual-project-root-name].truncate' ? { getAttribute: () => path } : null) };
+      vm.runInContext('onProjRowClick({ button: __b, target: __t });', ctx);
+    };
+    return { opened, click };
+  };
+  const t = make();
+  t.click();
+  assert.deepEqual(t.opened, ['/some/dir']);
+  t.click();                        // 500ms 内同路径（多实例重复委托）去重
+  assert.equal(t.opened.length, 1);
+  t.click(1);                       // 非左键不响应
+  assert.equal(t.opened.length, 1);
+  t.click(0, '/other/dir');         // 不同路径不受去重限制
+  assert.deepEqual(t.opened, ['/some/dir', '/other/dir']);
+  const off = make({ projPath: 0 });
+  off.click();
+  assert.deepEqual(off.opened, []);
+  const remote = make({ remote: true });
+  remote.click();
+  assert.deepEqual(remote.opened, []);   // 远程项目编辑器：路径属于远端机器
+});
+
+test('the click delegate is bound per instance with the pointer cursor gated by data-zusage-pp', () => {
+  assert.match(source, /listenGlobal\(document, "click", onProjRowClick\);/);
+  assert.match(source, /data-zusage-pp=\\"1\\"\] \[data-testid=virtual-project-root-name\]\.truncate\{cursor:pointer\}/);
+});
