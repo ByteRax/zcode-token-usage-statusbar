@@ -347,6 +347,61 @@ class RuntimeSyncGuardTests(unittest.TestCase):
                 self.sync()
         self.assertFalse((self.runtime / "overlay.js").exists())
 
+    def _catalog_pending(self):
+        """把持久化意图换成清单兜底形状（catalogSha256 标记，archive.size 为 null）。"""
+        repo = self.source["repo"]
+        base = "https://github.com/" + repo + "/releases/download/v1.1.0/"
+        sha = hashlib.sha256(b"release zip").hexdigest()
+        intent = {"flavor": "github", "version": "1.1.0", "tag": "v1.1.0", "repository": repo,
+                  "catalogSha256": sha,
+                  "archive": {"name": "zcode-token-usage-statusbar-v1.1.0.zip", "size": None,
+                              "browser_download_url": base + "zcode-token-usage-statusbar-v1.1.0.zip"},
+                  "manifest": {"name": "release-manifest.json", "browser_download_url": base + "release-manifest.json"},
+                  "url": "https://github.com/" + repo + "/releases/tag/v1.1.0"}
+        manifest = json.loads(json.dumps(self.pending["pendingRelease"]["manifest"]))
+        self.pending = {"pendingSync": True, "pendingVersion": "1.0.0", "pendingPid": 0,
+                        "pendingRelease": {"release": intent, "manifest": manifest,
+                            "channel": {"kind": "release", "repository": repo, "source": self.source.copy()}}}
+        self.save_state()
+
+    def test_migrate_fallback_without_runtime_verifier_enforces_catalog_intent(self):
+        # 运行目录 updater 过旧（无 verifyRuntimeSync 导出）时验收走内嵌 migrate 回退：
+        # 新版 release 模块下清单兜底意图必须按专用形状门放行，与 verifyRuntimeSync 同构。
+        self.use_head_runtime()
+        self._catalog_pending()
+        (self.runtime / "plugin-updater.cjs").write_text(
+            "module.exports = { compareVersions: (a, b) => {"
+            " const pa = a.split('.').map(Number), pb = b.split('.').map(Number);"
+            " for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0) ? 1 : -1; }"
+            " return 0; } };\n", encoding="utf-8")
+        with self.installer._sync_verifier(self.runtime, None) as verify:
+            self.assertIsNone(verify())   # 锚定：意图与安装记录通过兜底形状门
+            self.assertIsNone(verify())   # 复核：再次验收与锚一致，不因 catalogSha256 形状误拒
+
+    def test_migrate_fallback_rejects_catalog_intent_on_stale_release_module(self):
+        # release 模块同样过旧（无 validateGithubCatalogRelease 导出）时按旧规则拒绝：
+        # archive.size 为 null 的兜底意图过不了合成 API 行校验，保持 fail-closed。
+        self.use_head_runtime()
+        self._catalog_pending()
+        (self.runtime / "plugin-updater.cjs").write_text(
+            "module.exports = { compareVersions: (a, b) => {"
+            " const pa = a.split('.').map(Number), pb = b.split('.').map(Number);"
+            " for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0) ? 1 : -1; }"
+            " return 0; } };\n", encoding="utf-8")
+        # 旧版 readChannel 仍须供身份构建；只缺 validateGithubCatalogRelease 导出。
+        (self.runtime / "plugin-release.cjs").write_text(
+            "const fs = require('fs'), path = require('path');"
+            " module.exports = {"
+            " readChannel: (home, root) => {"
+            "  const data = JSON.parse(fs.readFileSync(path.join(root, 'known_marketplaces.json'), 'utf8'));"
+            "  return { kind: 'release', repository: 'ByteRax/zcode-token-usage-statusbar',"
+            "   marketplace: data.marketplaces.find((m) => m.id === 'zusage-marketplace') };"
+            " },"
+            " validateRelease: () => null, validateManifest: () => {} };\n", encoding="utf-8")
+        with self.installer._sync_verifier(self.runtime, None) as verify:
+            with self.assertRaisesRegex(ValueError, "Release 更新意图无效"):
+                verify()
+
 
 class IdentityDiffTests(unittest.TestCase):
     @classmethod
