@@ -17,22 +17,24 @@ import patch_install as asar
 
 HOST = Path('/Applications/ZCode.app/Contents/Resources/app.asar')
 PANE_ANCHORS = {
+    '3.17.1': b'"data-testid":Gb(aBe,e),"data-session-id":t??`draft`,',
     '3.16.3': b'"data-testid":Sb(WRe,e),"data-session-id":t??`draft`,',
     '3.16.2': b'"data-testid":hb(WRe,e),"data-session-id":t??`draft`,',
     '3.16.1': b'"data-testid":vb(VRe,e),"data-session-id":t??`draft`,',
     '3.15.3': b'"data-testid":Oa(Mr,e),"data-session-id":t??`draft`,',
 }
-PANE_ATTRIBUTES = (b'"data-zusage-scope-version":"1","data-zusage-workspace-path":c??``,'
-                   b'"data-zusage-workspace-identity":l??``,'
-                   b'"data-zusage-remote-session-id":u??``,"data-zusage-pane-id":e,')
 
 
 def mini_for(target):
     names = target['names']
+    pane = target['pane']
+    # 函数签名参数名随版本映射变化（3.17.1 起为 e,t,l,u,d），按登记条目动态生成
+    signature = ','.join(pane.get(k, 't') for k in ('paneId', 'sessionId', 'workspacePath',
+                                                    'workspaceIdentity', 'remoteSessionId'))
     return (f'const {names["registry"]}=new Map;'
             f'function {names["key"]}(e){{return e.workspacePath}}'
             f'function {names["topic"]}(e){{return e}}').encode() + (
-                b'function SessionPane(e,t,c,l,u){return {' + PANE_ANCHORS[target['version']] +
+                f'function SessionPane({signature}){{return {{'.encode() + PANE_ANCHORS[target['version']] +
                 b'children:null}}export{ ' + names['registry'].encode() + b' };')
 
 
@@ -63,7 +65,8 @@ RICH_PARTS = {"/out/renderer/assets/parts-TEST.js": b'export const C = e => e;'}
 
 def patched_module(module, target):
     anchor = PANE_ANCHORS[target['version']]
-    return module.replace(anchor, anchor + PANE_ATTRIBUTES) + bridge.bridge_code(target)
+    # 属性写入名随 target 的 pane 参数映射变化（3.17.1 起为 l/u/d/e），期望值走实现同款生成
+    return module.replace(anchor, anchor + bridge.pane_attributes(target)) + bridge.bridge_code(target)
 
 
 def synthetic_target(target, module):
@@ -179,7 +182,7 @@ class RendererBridgeTests(unittest.TestCase):
                         self.assertEqual(bridge.target_for_module(data), target)
                         self.assertEqual(bridge.transform_module(data, 'patch'), expected)
                         self.assertEqual(bridge.transform_module(data, 'remove'), module)
-                    self.assertEqual(expected.count(PANE_ATTRIBUTES), 1)
+                    self.assertEqual(expected.count(bridge.pane_attributes(target)), 1)
                     archive(self.src, module, target['version'])
                     out = bridge.rewrite_asar(self.src, self.root / f'{target["version"]}.asar')
                     self.assertEqual(read(out, target['asset']), expected)
@@ -187,13 +190,15 @@ class RendererBridgeTests(unittest.TestCase):
     def test_scope_tamper_is_refused(self):
         data = patched_module(MINI, bridge.NEWEST)
         anchor = PANE_ANCHORS[bridge.HOST_VERSION]
+        attrs = bridge.pane_attributes(bridge.NEWEST)
+        path_name = bridge.NEWEST['pane']['workspacePath'].encode()
         for tampered in [data.replace(b'"data-zusage-scope-version":"1"',
                                       b'"data-zusage-scope-version":"2"'),
-                         data.replace(b'"data-zusage-workspace-path":c??``',
-                                      b'"data-zusage-workspace-path":l??``'),
-                         data.replace(PANE_ATTRIBUTES, PANE_ATTRIBUTES[:-1]),
-                         data.replace(anchor + PANE_ATTRIBUTES,
-                                      anchor + PANE_ATTRIBUTES + PANE_ATTRIBUTES),
+                         data.replace(b'"data-zusage-workspace-path":' + path_name + b'??``',
+                                      b'"data-zusage-workspace-path":zz??``'),
+                         data.replace(attrs, attrs[:-1]),
+                         data.replace(anchor + attrs,
+                                      anchor + attrs + attrs),
                          data.replace(anchor, b'"data-session-id":t??`draft`,')]:
             self.assertIsNone(bridge.target_for_module(tampered))
             for operation in ['patch', 'remove']:
@@ -284,7 +289,7 @@ assert.equal(next['data-zusage-pane-id'],'pane-2');
                     patched = bridge.transform_module(module, 'patch')
                 text = patched.decode().replace('export function', 'function')
                 text = text.replace('export{ ' + target['names']['registry'] + ' };', '')
-                fixture = 'const vb=()=>"pane", Oa=vb, hb=vb, Sb=vb, VRe=null, Mr=null, WRe=null;\n' + text + assertions
+                fixture = 'const vb=()=>"pane", Oa=vb, hb=vb, Sb=vb, Gb=vb, VRe=null, Mr=null, WRe=null, aBe=null;\n' + text + assertions
                 script = self.root / f'{target["version"]}-props.cjs'
                 script.write_text('const vm=require("node:vm");vm.runInNewContext(' +
                                   json.dumps(fixture) + ',{assert:require("node:assert/strict")});')
