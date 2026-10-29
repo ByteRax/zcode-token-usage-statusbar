@@ -723,6 +723,18 @@ class ProtectedTargetTests(unittest.TestCase):
         # 可写目录上探针不得留残余文件。
         self.assertEqual([p.name for p in directory.iterdir()], ["app.asar"])
 
+    def test_target_writable_probe_denial_is_not_writable(self):
+        # 全平台可跑（review 二轮）：写入探针本身被拒（Windows ACL 目录的实际
+        # 检测形态，chmod 夹具在 Windows 上模拟不了）时必须判不可写；
+        # 删掉探针分支的变异在本用例下同样红。
+        asar = self.root / "probe-denied.asar"
+        make_asar(asar)
+        self.pi.set_target(asar)
+        self.pi.set_runtime(self.runtime)
+        with mock.patch.object(self.pi.tempfile, "mkstemp",
+                               side_effect=PermissionError(5, "denied")):
+            self.assertFalse(self.pi.target_writable())
+
     def test_install_on_access_lying_target_hints_instead_of_spawning_monitor(self):
         # issue #130 主链：受保护目录上已有（提权执行排定的）有效待收尾包时，复用
         # 判定命中、跳过重打包直抵 replace；os.access 谎报可写会让 replace 失败后
@@ -764,11 +776,19 @@ class ProtectedTargetTests(unittest.TestCase):
         self.assertFalse(self.pi.target_writable())
 
     def test_is_elevated_matches_identity(self):
-        self.assertEqual(self.pi.is_elevated(), os.name == "posix" and os.geteuid() == 0)
-        with mock.patch.object(self.pi.os, "geteuid", return_value=0, create=True):
-            self.assertTrue(self.pi.is_elevated())
-        with mock.patch.object(self.pi.os, "geteuid", side_effect=AttributeError, create=True):
-            self.assertFalse(self.pi.is_elevated())
+        # IS_WIN 显式压成 False 钉 POSIX 分支：真实 Windows 上 geteuid 的 patch
+        # 管不到 windll 路径，不压会在非提权 Windows 上必红（review 二轮）；
+        # Windows 分支由隔壁用例全 mock 覆盖。
+        with mock.patch.object(self.pi, "IS_WIN", False):
+            if os.name == "posix":
+                self.assertEqual(self.pi.is_elevated(), os.geteuid() == 0)
+            else:
+                # Windows 没有 geteuid：探测失败按无提权。
+                self.assertFalse(self.pi.is_elevated())
+            with mock.patch.object(self.pi.os, "geteuid", return_value=0, create=True):
+                self.assertTrue(self.pi.is_elevated())
+            with mock.patch.object(self.pi.os, "geteuid", side_effect=AttributeError, create=True):
+                self.assertFalse(self.pi.is_elevated())
 
     def test_is_elevated_windows_branch_uses_shell_check(self):
         windll = mock.Mock()
