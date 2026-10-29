@@ -60,7 +60,7 @@ class PluginPackageTests(unittest.TestCase):
         self.assertIn("runtime_lock.py", installer.RUNTIME_FILES)
         self.assertNotIn("config.json", installer.RUNTIME_FILES)
         self.assertNotIn("plugin-update.json", installer.RUNTIME_FILES)
-        for name in ("inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs", "model-puller.cjs", "release_unpack.py", "runtime_lock.py", "usage_stats.py", "turn-stats.js", "overlay.js"):
+        for name in ("inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs", "quota-client.cjs", "model-puller.cjs", "release_unpack.py", "runtime_lock.py", "usage_stats.py", "turn-stats.js", "overlay.js"):
             self.assertIn(name, installer.RUNTIME_FILES)
             self.assertEqual((ROOT / name).read_bytes(), (PLUGIN / name).read_bytes())
 
@@ -68,12 +68,28 @@ class PluginPackageTests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("plugin_installer_package_test", PLUGIN / "overlay_install.py")
         installer = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(installer)
-        main = (ROOT / "inject-main.cjs").read_text(encoding="utf-8")
-        requires = sorted(set(re.findall(r'require\("\.\/([^"]+)"\)', main)))
-        self.assertTrue(requires)
-        # inject-main.cjs 注入行指向运行时目录，其相对 require 依赖必须全数同步（issue #127）
-        missing = [name for name in requires if name not in installer.RUNTIME_FILES]
-        self.assertEqual(missing, [])
+        install_spec = importlib.util.spec_from_file_location("standalone_installer_package_test", ROOT / "install.py")
+        standalone = importlib.util.module_from_spec(install_spec)
+        install_spec.loader.exec_module(standalone)
+        self.assertTrue(re.findall(r"require\(['\"]\./", (ROOT / "inject-main.cjs").read_text(encoding="utf-8")))
+        # 注入行指向运行时目录：inject-main.cjs 及其已登记模块的相对 require 依赖（含传递）
+        # 必须全数在两份运行清单里，缺一个就是运行目录缺文件、主进程静默加载失败（issue #127）
+        for runtime_files, label in ((installer.RUNTIME_FILES, "overlay_install.py"), (standalone.RUNTIME_FILES, "install.py")):
+            missing = set()
+            for name in ("inject-main.cjs",) + tuple(f for f in runtime_files if f.endswith(".cjs")):
+                text = (ROOT / name).read_text(encoding="utf-8")
+                missing.update(dep for dep in re.findall(r"require\(['\"]\./([^'\"]+)['\"]\)", text)
+                               if dep not in runtime_files)
+            self.assertEqual(sorted(missing), [], label)
+
+    def test_cold_files_literals_agree(self):
+        # overlay_install.py 两处 cold_files（sync_runtime 写 marker 与 run_hook 组提醒文案）
+        # 语义同一：漏改任一处时重启记录与提醒单侧失效，钉住两处字面量一致
+        src = (PLUGIN / "overlay_install.py").read_text(encoding="utf-8")
+        literals = [set(re.findall(r'"([^"]+)"', block)) for block in re.findall(r"cold_files = \{([^}]+)\}", src)]
+        self.assertEqual(len(literals), 2)
+        self.assertTrue(literals[0])
+        self.assertEqual(literals[0], literals[1])
 
     def test_release_skill_requires_post_release_pr_merge_and_verification(self):
         text = (ROOT / ".zcode/skills/zcode-github-release/SKILL.md").read_text(encoding="utf-8")

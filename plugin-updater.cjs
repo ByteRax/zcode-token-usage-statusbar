@@ -206,7 +206,9 @@ function verifyRuntimeSync(options) {
   }
   if (records.length !== 1) throw new Error("同步所需用户插件安装记录不唯一");
   const record = records[0];
-  if (record.enabled === false || typeof record.installPath !== "string" || fs.realpathSync(record.installPath) !== root || record.version !== manifest.version) throw new Error("同步插件与官方安装记录不一致或已禁用");
+  if (record.enabled === false) throw new Error("同步插件已被禁用，停止运行时同步");
+  if (typeof record.installPath !== "string" || fs.realpathSync(record.installPath) !== root) throw new Error("同步插件与官方安装记录不一致：安装器须从官方安装记录指向的插件根目录（插件缓存目录）运行，而非运行时目录");
+  if (record.version !== manifest.version) throw new Error("同步插件与官方安装记录版本不一致，停止运行时同步");
   const selected = releaseChannel.readChannel(home, storage);
   const currentChannel = { kind: selected.kind, repository: selected.repository || "", source: selected.marketplace ? selected.marketplace.source : null };
   if (hasPending) {

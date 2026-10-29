@@ -14,7 +14,7 @@
 - 两份 manifest（`.zcode-plugin/plugin.json`、`.claude-plugin/plugin.json`）的 `packageLayout.files`——在野旧版解包器要求文件集精确声明，漏声明会让旧版无法升级到新版（曾两次事故），`release_tool.py build` 的 `require_layout` 会拦；
 - 相关契约测试（`tests/test_plugin_package.py`、`test_plugin_runtime.py`、`test_release*.py`）。
 
-反向也要成立：`usage_mcp.py`、`overlay_install.py`、`plugin_auto_update.py`、`restart_notice.py` 是从插件目录（缓存）运行的入口，import 的兄弟文件同样来自插件目录，**不属于** `RUNTIME_FILES`，不要为「看起来同步」把它们加进运行时目录。
+反向也要成立：`usage_mcp.py`、`overlay_install.py`、`plugin_auto_update.py`、`restart_notice.py` 与 `hooks/` 下的入口都是从插件目录（缓存）运行的，import 的兄弟文件同样来自插件目录，**不属于** `RUNTIME_FILES`，不要为「看起来同步」把它们加进运行时目录。
 
 ## 2. 注入与运行目录
 
