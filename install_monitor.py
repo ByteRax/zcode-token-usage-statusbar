@@ -180,6 +180,10 @@ def quiet_finalize():
         except pi.PendingTmpError:
             return  # 完整性/来源失效立刻取消；不删旧包，更不能回滚客户端新版。
         except OSError:
+            if not pi.target_writable():
+                # 受保护目录且本进程无提权：replace 重试注定失败（issue #130），
+                # 空转一天只会占着实例锁、挡住提权重跑重建收尾——立即退出让位。
+                return
             pass  # 文件占用等系统错误才重试，最多一天。
         time.sleep(POLL)
 
@@ -215,6 +219,7 @@ def _run():
         now = time.time()
         done = False
         pending = None
+        finalize_denied = False
         if TMP.exists():
             try:
                 # 同 quiet_finalize：等待期预校验焐热缓存，退出窗口内不再 hash 大包（issue #72）。
@@ -250,6 +255,7 @@ def _run():
                     return
                 except OSError:
                     finished = False
+                    finalize_denied = not pi.target_writable()
                 if finished:
                     lines = [L("[OK] ZCode 已退出，asar 替换完成。", "[OK] ZCode has exited; app.asar replacement finished."),
                              "",
@@ -258,6 +264,14 @@ def _run():
                         lines[-1] = L("注入已移除；重新启动 ZCode 后生效。",
                                       "Injection removed; takes effect when ZCode starts again.")
                         done = True
+                elif finalize_denied:
+                    # 受保护目录上的无提权监控重试注定失败（issue #130）：指引
+                    # 管理员重跑后退出释放实例锁，让提权重跑能立即拉起新监控。
+                    lines = [L("[!] 替换失败：对 ZCode 安装目录没有写权限（受保护目录需要管理员）。",
+                               "[!] Replacement failed: no write permission on the ZCode install directory (protected locations need an administrator)."),
+                             L("本窗口无法完成收尾，请以管理员身份重跑安装，然后完全退出 ZCode 并重新打开。",
+                               "This window cannot finalize; re-run the install as administrator, then quit ZCode completely and reopen it.")]
+                    done = True
                 else:
                     lines = [L("[!] ZCode 已退出但替换失败（文件仍被占用？）",
                                "[!] ZCode has exited but the replacement failed (file still locked?)"),
@@ -303,10 +317,17 @@ def _run():
                 lines = [L("ZCode 已重启（新实例），正在确认注入加载……",
                            "ZCode restarted (new instance); confirming injection load…")]
         el = int(now - t0)
+        if pending is not None and pi.is_elevated():
+            # 提权监控是受保护目录上唯一能收尾的进程（hook 重建不了它，issue #130）：
+            # 关窗即杀死收尾者，文案不能再说「可随时关闭」。
+            footer = L("收尾未完成前请保持本窗口开启：关闭窗口将停止自动替换，且需以管理员身份重跑安装才能重建。",
+                       "Keep this window open until finalization completes; closing it stops the automatic replacement, and re-running the install as administrator is the only way to rebuild it.")
+        else:
+            footer = L("本窗口可随时关闭，不影响安装结果。", "You can close this window at any time; the installation result is unaffected.")
         lines += ["", "-" * 52,
                   L("已等待 %02d:%02d | 每 %d 秒检测一次 | 生效后自动退出" % (el // 60, el % 60, POLL),
                     "waited %02d:%02d | checking every %ds | exits automatically once confirmed" % (el // 60, el % 60, POLL)),
-                  L("本窗口可随时关闭，不影响安装结果。", "You can close this window at any time; the installation result is unaffected.")]
+                  footer]
         draw(lines)
         if done:
             time.sleep(BYE)

@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 import contextlib
+import ctypes
 import hashlib
 import importlib.util
 import io
@@ -666,6 +667,100 @@ class PendingAsarTests(unittest.TestCase):
             make_asar(self.asar)
             self.assertEqual(self.pi.source_fingerprint(self.asar),
                              self.pi.source_fingerprint(self.asar))
+
+
+class ProtectedTargetTests(unittest.TestCase):
+    """issue #130：Windows 的 os.access 看不见 ACL（受保护目录恒报可写），可写性
+    判定必须以真实写入探针兜底；否则 hook 会在受保护目录上拉起永远无法收尾的
+    无提权 monitor，并给出「无需重试安装」的假承诺，待收尾包永久搁浅。"""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.home = self.root / "home"
+        self.home.mkdir()
+        env = mock.patch.dict(os.environ, {"HOME": str(self.home), "USERPROFILE": str(self.home),
+                                           "ZUSAGE_NO_MONITOR": "1", "ZUSAGE_MONITOR_QUIET": ""})
+        env.start()
+        self.addCleanup(env.stop)
+        spec = importlib.util.spec_from_file_location("protected_patch_test", ROOT / "patch_install.py")
+        self.pi = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.pi)
+        self.pi._LANG = "en"
+        self.runtime = self.root / "runtime"
+        self.runtime.mkdir()
+        (self.runtime / "inject-main.cjs").write_text("// fixture", encoding="utf-8")
+
+    def protected_target(self):
+        """建受保护目录夹具：目录对普通用户只读（root 无效，各用例自行 skip）。"""
+        directory = self.root / "Program Files" / "ZCode" / "resources"
+        directory.mkdir(parents=True)
+        asar = directory / "app.asar"
+        make_asar(asar)
+        os.chmod(directory, 0o555)
+        self.addCleanup(os.chmod, directory, 0o755)
+        return directory, asar
+
+    def refuse_root(self):
+        if os.name == "posix" and os.geteuid() == 0:
+            self.skipTest("root 对只读目录仍可写，无法模拟权限拒绝")
+
+    def test_target_writable_probes_real_write_when_access_lies(self):
+        # 模拟 Windows os.access 谎报可写：判定必须落到真实写入探针，不依赖 access。
+        self.refuse_root()
+        directory, asar = self.protected_target()
+        self.pi.set_target(asar)
+        self.pi.set_runtime(self.runtime)
+        with mock.patch.object(self.pi.os, "access", return_value=True):
+            self.assertFalse(self.pi.target_writable())
+        os.chmod(directory, 0o755)
+        self.assertTrue(self.pi.target_writable())
+        # 可写目录上探针不得留残余文件。
+        self.assertEqual([p.name for p in directory.iterdir()], ["app.asar"])
+
+    def test_install_on_access_lying_target_hints_instead_of_spawning_monitor(self):
+        # issue #130 主链：受保护目录上已有（提权执行排定的）有效待收尾包时，复用
+        # 判定命中、跳过重打包直抵 replace；os.access 谎报可写会让 replace 失败后
+        # 拉起无提权 monitor——它永远无法收尾，还占着实例锁挡住提权重跑重建。
+        # 锁文件按提权执行残留预建，否则 install() 在锁阶段就失败、走不到这条链。
+        self.refuse_root()
+        directory, asar = self.protected_target()
+        self.pi.set_target(asar)
+        self.pi.set_runtime(self.runtime)
+        os.chmod(directory, 0o755)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.pi.prepare_tmp({"/" + self.pi.ENTRY:
+                                 self.pi.entry_bytes_of(asar) + self.pi.INJECT_LINE.encode()})
+            with self.pi._target_lock():
+                pass
+        os.chmod(directory, 0o555)
+        with mock.patch.object(self.pi.os, "access", return_value=True), \
+                mock.patch.object(self.pi, "client_running", return_value=True), \
+                mock.patch.object(self.pi, "launch_monitor") as launch:
+            with contextlib.redirect_stdout(io.StringIO()):
+                ok = self.pi.install()
+        self.assertFalse(ok)
+        launch.assert_not_called()
+        # 待收尾包必须原样保留：提权重跑复用它，秒级重建收尾监控。
+        self.assertTrue(self.pi.TMP.exists())
+        self.assertTrue(self.pi.TMP_META.exists())
+
+    def test_is_elevated_matches_identity(self):
+        self.assertEqual(self.pi.is_elevated(), os.name == "posix" and os.geteuid() == 0)
+        with mock.patch.object(self.pi.os, "geteuid", return_value=0, create=True):
+            self.assertTrue(self.pi.is_elevated())
+        with mock.patch.object(self.pi.os, "geteuid", side_effect=AttributeError, create=True):
+            self.assertFalse(self.pi.is_elevated())
+
+    def test_is_elevated_windows_branch_uses_shell_check(self):
+        windll = mock.Mock()
+        windll.shell32.IsUserAnAdmin.return_value = 1
+        with mock.patch.object(self.pi, "IS_WIN", True), \
+                mock.patch.object(ctypes, "windll", windll, create=True):
+            self.assertTrue(self.pi.is_elevated())
+        windll.shell32.IsUserAnAdmin.return_value = 0
+        self.assertFalse(self.pi.is_elevated())
 
 
 @unittest.skipUnless(shutil.which("node"), "需要 Node 跑真实语法检查")

@@ -705,8 +705,35 @@ def finalize_tmp(operation="install", client_closed=None, verified=None):
 # ---------- 安装 / 卸载 ----------
 
 def target_writable():
-    """asar 与其所在目录都可写（/opt 等系统位置需要 root：只读目标不能再重打包）。"""
-    return os.access(ASAR, os.W_OK) and os.access(ASAR.parent, os.W_OK)
+    """asar 与其所在目录都可写（/opt 等系统位置需要 root：只读目标不能再重打包）。
+    Windows 的 os.access 看不见 ACL，对受保护目录恒报可写（issue #67/#130 实测），
+    快速判定通过后再在同目录做一次真实写入探针兜底（即建即删，判定不过会省掉
+    一次注定失败的重打包，也让 hook 场景下「无人能收尾」可被正确识别）。"""
+    if not (os.access(ASAR, os.W_OK) and os.access(ASAR.parent, os.W_OK)):
+        return False
+    try:
+        fd, name = tempfile.mkstemp(prefix=".zusage-writable-probe.", dir=ASAR.parent)
+    except OSError:
+        return False
+    os.close(fd)
+    try:
+        Path(name).unlink(missing_ok=True)
+    except OSError:
+        pass   # 已证明可写；残余探针文件无害，不为此改变判定
+    return True
+
+
+def is_elevated():
+    """本进程是否具备越过目标目录写保护的身份（Windows 管理员 / POSIX root）；
+    探测失败按无提权处理。受保护目录上提权 monitor 是唯一能收尾待替换包的进程
+    （issue #130）：hook 无提权重不了尾也重建不了它，区分两者决定提示与页脚文案。"""
+    try:
+        if IS_WIN:
+            import ctypes
+            return bool(ctypes.windll.shell32.IsUserAnAdmin())
+        return os.geteuid() == 0
+    except (AttributeError, OSError):
+        return False
 
 
 def sudo_hint(operation="install"):

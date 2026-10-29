@@ -353,6 +353,80 @@ class QuietMonitorTests(unittest.TestCase):
         sleep.assert_called_once_with(self.monitor.POLL)
         self.assertTrue(self.tmp.exists())
 
+    def test_quiet_monitor_gives_up_on_unwritable_target_after_replace_failure(self):
+        # issue #130：无提权 monitor 在受保护目录上 replace 重试注定失败（恒
+        # PermissionError），空转一天还占着实例锁、挡住提权重跑重建收尾——
+        # replace 失败且目标不可写时必须立即退出（锁随进程释放，不进入下一轮睡眠）。
+        self.pending()
+        attempts = []
+        def denied(src, dst):
+            attempts.append((src, dst))
+            raise PermissionError("protected directory")
+        with mock.patch.dict(sys.modules, {"patch_install": self.patch}), \
+                mock.patch.object(self.monitor, "zcode_pids", return_value=set()), \
+                mock.patch.object(self.patch, "target_writable", return_value=False), \
+                mock.patch.object(self.patch, "self_check", return_value=True), \
+                mock.patch.object(self.monitor.time, "sleep",
+                                  side_effect=AssertionError("unwritable target must not retry")), \
+                mock.patch.object(self.patch.os, "replace", side_effect=denied):
+            self.monitor.main()
+        self.assertEqual(len(attempts), 1)
+        self.assertTrue(self.tmp.exists())
+        with self.patch.monitor_instance_lock() as acquired:
+            self.assertTrue(acquired)   # 锁已释放：提权重跑能立即拉起新监控接管
+
+    def test_visible_monitor_reports_unwritable_target_and_stops_retrying(self):
+        # issue #130：客户端已退出但 replace 因权限失败时，「文件仍被占用？」与
+        # 继续重试都是错误导向——受保护目录上应显示管理员指引并退出（仅保留 BYE
+        # 提示停留，不再进入 POLL 重试循环）。
+        self.pending()
+        def no_retry(seconds):
+            if seconds == self.monitor.POLL:
+                raise AssertionError("unwritable target must not retry")
+        with mock.patch.dict(sys.modules, {"patch_install": self.patch}), \
+                mock.patch.object(self.monitor, "QUIET", False), \
+                mock.patch.object(sys, "argv", ["install_monitor.py", "0"]), \
+                mock.patch.object(self.monitor, "zcode_pids", return_value=set()), \
+                mock.patch.object(self.patch, "target_writable", return_value=False), \
+                mock.patch.object(self.patch, "self_check", return_value=True), \
+                mock.patch.object(self.monitor, "draw") as draw, \
+                mock.patch.object(self.monitor.time, "sleep", side_effect=no_retry), \
+                mock.patch.object(self.patch.os, "replace",
+                                  side_effect=PermissionError("protected directory")):
+            self.monitor.main()
+        output = "\n".join(draw.call_args.args[0])
+        self.assertIn("管理员", output)
+        self.assertNotIn("仍被占用", output)
+
+    def test_visible_monitor_pending_footer_warns_when_elevated(self):
+        # issue #130：提权 monitor 是受保护目录上唯一能收尾的进程，「本窗口可随时
+        # 关闭，不影响安装结果」在此不成立——关窗即杀死唯一收尾者且系统不会重建。
+        # 页脚必须按提权身份区分；非提权 monitor（hook 每次会话可重建）保留原文案。
+        self.pending()
+        def stop(_):
+            raise KeyboardInterrupt
+        for elevated in (True, False):
+            with self.subTest(elevated=elevated):
+                with mock.patch.dict(sys.modules, {"patch_install": self.patch}), \
+                        mock.patch.object(self.monitor, "QUIET", False), \
+                        mock.patch.object(sys, "argv", ["install_monitor.py", "0"]), \
+                        mock.patch.object(self.monitor, "zcode_pids", return_value={"1"}), \
+                        mock.patch.object(self.monitor, "wait_any_exit", side_effect=KeyboardInterrupt), \
+                        mock.patch.object(self.monitor.time, "monotonic", return_value=0), \
+                        mock.patch.object(self.patch, "is_elevated", return_value=elevated), \
+                        mock.patch.object(self.patch, "self_check", return_value=True), \
+                        mock.patch.object(self.monitor, "draw") as draw, \
+                        mock.patch.object(self.monitor.time, "sleep", side_effect=stop):
+                    with self.assertRaises(KeyboardInterrupt):
+                        self.monitor.main()
+                output = "\n".join(draw.call_args.args[0])
+                if elevated:
+                    self.assertNotIn("可随时关闭", output)
+                    self.assertIn("保持本窗口", output)
+                else:
+                    self.assertIn("可随时关闭", output)
+                    self.assertNotIn("保持本窗口", output)
+
     def test_visible_oserror_retries_cached_validation_until_success(self):
         self.pending()
         replace = self.patch.os.replace
