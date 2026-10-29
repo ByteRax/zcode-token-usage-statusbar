@@ -21,7 +21,7 @@ OUT.mkdir(exist_ok=True)
 
 # 内容包围盒：这些元素联合起来 + pad 边距 = 截图区域（display:none 的元素自动跳过）
 UNION_JS = """() => {
-  const sels = ['#zusage-tip', '#zusage-bar', '.composer-card', '.panel.open'];
+  const sels = ['#zusage-tip', '#zusage-bar', '.composer-card', '.panel.open', '.zusage-panel.open'];
   let top = Infinity, left = Infinity, right = -Infinity, bottom = -Infinity, found = false;
   for (const s of sels) {
     const el = document.querySelector(s);
@@ -111,6 +111,10 @@ with sync_playwright() as p:
                 except Exception as exc:
                     raise RuntimeError(name + " did not render " + wait_sel) from exc
             page.wait_for_timeout(700)   # 定位/内容渲染落定
+            if name == "item-8.png":
+                page.locator('.zu-navitem[data-sec="general"]').click()
+                page.wait_for_selector('.zu-theme-choice', state='visible', timeout=5000)
+                page.wait_for_timeout(300)
         else:
             page.wait_for_timeout(300)
         if crop:

@@ -208,7 +208,8 @@ test('补丁落到三处派发点与两处锚点，插件副本同步', () => {
   ]) assert.ok(source.includes(guard), guard);
   assert.equal(source.split('if (inSettingsView(').length - 1, 3);   // 协调器 tick / deepFind / findComposer 各一处
   assert.equal(source.split('function inSettingsView(').length - 1, 1);
-  assert.match(source, /var c = anchorCardOf\(composer\);/);
+  assert.match(source, /var c = composerCardOf\(composer\);/);
+  assert.match(source, /return anchorCardOf\(el\);/);
   assert.doesNotMatch(source, /var c = cardOf\(composer\);/);       // 旧锚点调用不得残留
   assert.equal(pluginSource, source);                               // 插件打包副本与根文件一致
 });
