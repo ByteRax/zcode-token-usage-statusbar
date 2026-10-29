@@ -401,31 +401,44 @@ class QuietMonitorTests(unittest.TestCase):
     def test_visible_monitor_pending_footer_warns_when_elevated(self):
         # issue #130：提权 monitor 是受保护目录上唯一能收尾的进程，「本窗口可随时
         # 关闭，不影响安装结果」在此不成立——关窗即杀死唯一收尾者且系统不会重建。
-        # 页脚必须按提权身份区分；非提权 monitor（hook 每次会话可重建）保留原文案。
-        self.pending()
+        # 页脚必须按提权身份区分，且警告仅限有待收尾包时（review 变异 M9：合取项
+        # `pending is not None` 若缺失，安装完成等待重启等无 pending 态也会误警告）；
+        # 非提权 monitor（hook 每次会话可重建）保留原文案。
         def stop(_):
             raise KeyboardInterrupt
+        def draw_once(with_pending, elevated):
+            if with_pending:
+                self.pending()
+            else:
+                self.tmp.unlink(missing_ok=True)   # 清掉上一轮的夹具包，确保 pending=None
+                self.patch.TMP_META.unlink(missing_ok=True)
+            with mock.patch.dict(sys.modules, {"patch_install": self.patch}), \
+                    mock.patch.object(self.monitor, "QUIET", False), \
+                    mock.patch.object(sys, "argv", ["install_monitor.py", "0"]), \
+                    mock.patch.object(self.monitor, "zcode_pids", return_value={"1"}), \
+                    mock.patch.object(self.monitor, "wait_any_exit", side_effect=KeyboardInterrupt), \
+                    mock.patch.object(self.monitor.time, "monotonic", return_value=0), \
+                    mock.patch.object(self.patch, "is_elevated", return_value=elevated), \
+                    mock.patch.object(self.patch, "self_check", return_value=True), \
+                    mock.patch.object(self.monitor, "draw") as draw, \
+                    mock.patch.object(self.monitor.time, "sleep", side_effect=stop):
+                with self.assertRaises(KeyboardInterrupt):
+                    self.monitor.main()
+            return "\n".join(draw.call_args.args[0])
         for elevated in (True, False):
-            with self.subTest(elevated=elevated):
-                with mock.patch.dict(sys.modules, {"patch_install": self.patch}), \
-                        mock.patch.object(self.monitor, "QUIET", False), \
-                        mock.patch.object(sys, "argv", ["install_monitor.py", "0"]), \
-                        mock.patch.object(self.monitor, "zcode_pids", return_value={"1"}), \
-                        mock.patch.object(self.monitor, "wait_any_exit", side_effect=KeyboardInterrupt), \
-                        mock.patch.object(self.monitor.time, "monotonic", return_value=0), \
-                        mock.patch.object(self.patch, "is_elevated", return_value=elevated), \
-                        mock.patch.object(self.patch, "self_check", return_value=True), \
-                        mock.patch.object(self.monitor, "draw") as draw, \
-                        mock.patch.object(self.monitor.time, "sleep", side_effect=stop):
-                    with self.assertRaises(KeyboardInterrupt):
-                        self.monitor.main()
-                output = "\n".join(draw.call_args.args[0])
+            with self.subTest(elevated=elevated, pending=True):
+                output = draw_once(True, elevated)
                 if elevated:
                     self.assertNotIn("可随时关闭", output)
                     self.assertIn("保持本窗口", output)
                 else:
                     self.assertIn("可随时关闭", output)
                     self.assertNotIn("保持本窗口", output)
+        for elevated in (True, False):
+            with self.subTest(elevated=elevated, pending=False):
+                output = draw_once(False, elevated)
+                self.assertIn("可随时关闭", output)
+                self.assertNotIn("保持本窗口", output)
 
     def test_visible_oserror_retries_cached_validation_until_success(self):
         self.pending()

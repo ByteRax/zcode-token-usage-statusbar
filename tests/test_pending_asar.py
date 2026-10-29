@@ -703,6 +703,10 @@ class ProtectedTargetTests(unittest.TestCase):
         return directory, asar
 
     def refuse_root(self):
+        if os.name == "nt":
+            # Windows 的 chmod 只设目录只读属性，并不阻止目录内创建文件——chmod
+            # 夹具模拟不了受保护目录；Windows ACL 场景需实机验证（issue #130）。
+            self.skipTest("POSIX chmod 夹具在 Windows 上模拟不了受保护目录")
         if os.name == "posix" and os.geteuid() == 0:
             self.skipTest("root 对只读目录仍可写，无法模拟权限拒绝")
 
@@ -746,6 +750,19 @@ class ProtectedTargetTests(unittest.TestCase):
         self.assertTrue(self.pi.TMP.exists())
         self.assertTrue(self.pi.TMP_META.exists())
 
+    def test_access_check_still_blocks_readonly_asar_in_writable_dir(self):
+        # os.access 快速判定必须保留（review 变异 M2）：目录可写但 asar 文件本身
+        # 只读时（Windows 上 asar 被设只读属性即此场景），只靠写入探针会误报可写。
+        if os.name == "posix" and os.geteuid() == 0:
+            self.skipTest("root 对只读文件仍可写，无法模拟权限拒绝")
+        asar = self.root / "readonly.asar"
+        make_asar(asar)
+        self.pi.set_target(asar)
+        self.pi.set_runtime(self.runtime)
+        os.chmod(asar, 0o444)
+        self.addCleanup(os.chmod, asar, 0o644)
+        self.assertFalse(self.pi.target_writable())
+
     def test_is_elevated_matches_identity(self):
         self.assertEqual(self.pi.is_elevated(), os.name == "posix" and os.geteuid() == 0)
         with mock.patch.object(self.pi.os, "geteuid", return_value=0, create=True):
@@ -759,8 +776,10 @@ class ProtectedTargetTests(unittest.TestCase):
         with mock.patch.object(self.pi, "IS_WIN", True), \
                 mock.patch.object(ctypes, "windll", windll, create=True):
             self.assertTrue(self.pi.is_elevated())
-        windll.shell32.IsUserAnAdmin.return_value = 0
-        self.assertFalse(self.pi.is_elevated())
+            # False 方向必须同在补丁作用域内断言：出了 with IS_WIN 已还原，
+            # 走的是 POSIX 分支，守护不到 Windows 分支（review 变异 M5）。
+            windll.shell32.IsUserAnAdmin.return_value = 0
+            self.assertFalse(self.pi.is_elevated())
 
 
 @unittest.skipUnless(shutil.which("node"), "需要 Node 跑真实语法检查")
