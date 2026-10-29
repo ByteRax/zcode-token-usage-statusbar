@@ -345,8 +345,8 @@ class PluginRuntimeTests(unittest.TestCase):
                 self.assertEqual(source.read_bytes(), (self.plugin / destination.name).read_bytes())
             elif destination.name == notice.MARKER:
                 marker = json.loads(source.read_text(encoding="utf-8"))
-                # v95 起 quota-client.cjs（额度客户端，主进程 require）同属需完全重启的冷文件
-                self.assertEqual(set(marker["hashes"]), {"inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs", "quota-client.cjs"})
+                # quota-client.cjs（v95）与 model-puller.cjs（v129，主进程 require）同属需完全重启的冷文件
+                self.assertEqual(set(marker["hashes"]), {"inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs", "quota-client.cjs", "model-puller.cjs"})
                 self.assertFalse(any((self.runtime / name).exists() for name in installer.RUNTIME_FILES))
             elif destination.name == "plugin-runtime-pending.json":
                 self.assertEqual(set(json.loads(source.read_text())["targets"]), set(installer.RUNTIME_FILES))
