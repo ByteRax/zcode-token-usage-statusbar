@@ -322,6 +322,40 @@ def _run_verifier(command, env):
                                        stderr.decode("utf-8", "replace"))
 
 
+def _identity_diff(before, after):
+    """锚定身份与当前身份的字段级差异：路径精确到键，长值截断、条目封顶，
+    让「运行时同步期间安装身份发生变化」的排查不用再猜是谁在同步窗口内改了什么。"""
+    missing = object()
+    changes = []
+
+    def brief(value):
+        if value is missing:
+            return "(无)"
+        try:
+            text = json.dumps(value, ensure_ascii=False, sort_keys=True)
+        except (TypeError, ValueError):
+            text = repr(value)
+        return text if len(text) <= 120 else text[:117] + "..."
+
+    def walk(old, new, path):
+        if isinstance(old, dict) and isinstance(new, dict):
+            for key in sorted(set(old) | set(new)):
+                walk(old.get(key, missing), new.get(key, missing),
+                     f"{path}.{key}" if path else key)
+        elif isinstance(old, list) and isinstance(new, list):
+            if old != new:
+                changes.append(f"{path}: {brief(old)} → {brief(new)}")
+        elif old is not missing or new is not missing:
+            if old != new:
+                changes.append(f"{path}: {brief(old)} → {brief(new)}")
+
+    if isinstance(before, dict) and isinstance(after, dict):
+        walk(before, after, "")
+    else:
+        changes.append(f"identity: {brief(before)} → {brief(after)}")
+    return "; ".join(changes[:8]) + (f"（共 {len(changes)} 处差异）" if len(changes) > 8 else "")
+
+
 @contextlib.contextmanager
 def _sync_verifier(runtime, target_asar=None):
     """target_asar 是本轮已解析的安装目标（resolve_paths 已做过包身份校验）。sudo 下
@@ -427,9 +461,14 @@ function migrate() {
     if (pending.pendingRelease != null) {
       const expected = pending.pendingRelease, r = expected.release, m = expected.manifest;
       if (!r || !m || !expected.channel || !isDeepStrictEqual(channel, expected.channel)) throw Error("Release 更新意图无效或市场来源已变化，停止运行时同步");
-      const validated = release.validateRelease({ tag_name: r.tag, draft: false, prerelease: false, assets: [r.archive, r.manifest] }, r.repository);
+      /* 与 updater.verifyRuntimeSync 同构：清单兜底意图（catalogSha256 标记）走专用形状门；
+         运行目录 release 模块过旧无该导出时按旧规则拒绝，保持 fail-closed。 */
+      const validated = r.catalogSha256 !== undefined && typeof release.validateGithubCatalogRelease === "function"
+        ? release.validateGithubCatalogRelease(r)
+        : release.validateRelease({ tag_name: r.tag, draft: false, prerelease: false, assets: [r.archive, r.manifest] }, r.repository);
       if (!validated || validated.version !== r.version || channel.kind !== "release" || channel.repository !== r.repository) throw Error("Release 更新意图无效，停止运行时同步");
       release.validateManifest(m, validated);
+      if (r.catalogSha256 !== undefined && m.asset.sha256 !== r.catalogSha256) throw Error("发布 manifest 与渠道清单的 SHA256 不一致，停止运行时同步");
       const source = record.source;
       if (record.version !== r.version || !source || source.url !== r.archive.browser_download_url || source.sha256 !== m.asset.sha256 || source.source !== "url" || source.type !== "zip" || source.path !== "plugins/zcode-token-usage-statusbar" || (source.stripRoot !== undefined && source.stripRoot !== false) || source.headers !== undefined) throw Error("官方安装结果与选定 Release 不一致，停止运行时同步");
     } else if (channel.kind === "release") throw Error("历史更新意图缺少 Release 校验信息，停止运行时同步");
@@ -471,7 +510,8 @@ try {
             if "identity" not in anchor:
                 anchor["identity"] = current
             elif current != anchor["identity"]:
-                raise ValueError("运行时同步期间安装身份发生变化")
+                raise ValueError("运行时同步期间安装身份发生变化（"
+                                 + _identity_diff(anchor["identity"], current) + "）")
         yield recheck
 
 

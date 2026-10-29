@@ -91,11 +91,17 @@ function fixture(t, settings = {}, customStorage = false, variant = "github") {
       if (url === f.release.archive.browser_download_url) return f.bytes;
       throw new Error("unexpected gitcode download: " + url);
     }
-    assert.equal(url, `https://api.github.com/repos/${REPOSITORY}/releases?per_page=100&page=1`);
-    assert.equal(limit, 4 * 1024 * 1024);
-    if (f.offline) throw new Error("fixture offline");
-    if (f.afterFetch) await f.afterFetch();
-    return Buffer.from(JSON.stringify(f.rows));
+    if (url.startsWith("https://api.github.com/")) {
+      assert.equal(url, `https://api.github.com/repos/${REPOSITORY}/releases?per_page=100&page=1`);
+      assert.equal(limit, 4 * 1024 * 1024);
+      if (f.offline) throw new Error("fixture offline");
+      if (f.apiLimited) { events.push("api-403"); throw new Error("Release 请求失败 (403)"); }
+      if (f.afterFetch) await f.afterFetch();
+      return Buffer.from(JSON.stringify(f.rows));
+    }
+    if (url === f.release.manifest.browser_download_url) return Buffer.from(JSON.stringify(f.manifest));
+    if (url === f.release.archive.browser_download_url) return f.bytes;
+    throw new Error("unexpected github download: " + url);
   };
   let listCount = 0;
   const cli = async (args) => {
@@ -218,6 +224,60 @@ for (const variant of ["github", "gitcode"]) {
     assert.equal(readJson(f.stateFile).pendingSync, false);
   });
 }
+
+/* GitHub API 匿名配额（60/h/IP）被共享出口耗尽时，检查退回注册 ref 的渠道清单
+   （zipball 下载桶不占配额），渠道身份与安装校验链不变；清单 sha256 全程交叉比对。 */
+test("GitHub API rate limiting falls back to the channel catalog and completes the install", async (t) => {
+  const f = fixture(t);
+  const { githubReleaseFromCatalog } = require("../plugin-release.cjs");
+  f.apiLimited = true;
+  f.release = githubReleaseFromCatalog(f.catalog, REPOSITORY);
+  await f.updater.request({ action: "check" });
+  assert.equal(f.updater.status().phase, "available", f.updater.status().error);
+  assert.equal(f.updater.status().checkedVia, "release-catalog");
+  assert.ok(f.events.includes("api-403"));
+  assert.ok(f.calls.some((args) => args[0] === "marketplace"));
+  assertNoInstall(f);
+  await f.updater.request({ action: "update" });
+  const state = f.updater.status();
+  assert.equal(state.phase, "updated", state.error);
+  assert.equal(state.checkedVia, "release-catalog");
+  const intent = readJson(f.stateFile);
+  assert.equal(intent.pendingSync, false);
+  assert.equal(intent.pendingRelease, null);
+  assert.equal(f.syncs.length, 1);
+});
+
+test("rate limit with a failing catalog fallback reports both causes and never installs", async (t) => {
+  const f = fixture(t);
+  f.apiLimited = true;
+  f.marketError = "fixture marketplace offline";
+  await f.updater.request({ action: "check" });
+  const status = f.updater.status();
+  assert.equal(status.phase, "error");
+  assert.match(status.error, /Release 请求失败 \(403\)/);
+  assert.match(status.error, /渠道清单回退也失败/);
+  assertNoInstall(f);
+});
+
+test("catalog-fallback Release intent recovers offline after restart and rejects a tampered sha256", async (t) => {
+  const f = fixture(t);
+  const { githubReleaseFromCatalog } = require("../plugin-release.cjs");
+  f.release = githubReleaseFromCatalog(f.catalog, REPOSITORY);
+  f.seedPending();
+  const restored = f.restart(); await restored.tick();
+  assert.equal(restored.status().phase, "updated", restored.status().error);
+  assert.equal(readJson(f.stateFile).pendingRelease, null);
+
+  const tampered = githubReleaseFromCatalog(f.catalog, REPOSITORY);
+  tampered.catalogSha256 = "c".repeat(64);
+  f.seedPending({ release: tampered, manifest: clone(f.manifest), channel: f.channel() });
+  const blocked = f.restart(); await blocked.tick();
+  assert.equal(blocked.status().phase, "error");
+  assert.match(blocked.status().error, /SHA256 不一致/);
+  assert.equal(readJson(f.stateFile).pendingSync, true);
+  assert.equal(f.syncs.length, 1);
+});
 
 test("source-catalog marketplace reports up to date without installing when versions match", async (t) => {
   const f = sourceCatalogFixture(t, "1.0.0");

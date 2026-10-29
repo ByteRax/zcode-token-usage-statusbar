@@ -160,14 +160,19 @@ function verifyCommittedRelease(record, expected, currentChannel) {
   const release = expected && expected.release, manifest = expected && expected.manifest;
   if (!release || !manifest || !expected.channel || !sameChannel(currentChannel, expected.channel)) throw new Error("Release 更新意图无效或市场来源已变化，停止运行时同步");
   const flavor = expected.channel.flavor || channelFlavor(expected.channel);
+  // GitHub 意图有两个来源：API 行（archive.size 有效）与清单兜底（catalogSha256 标记），
+  // 各用同源形状门复核；GitCode 意图只来自渠道清单。
   const validated = flavor === "gitcode"
     ? releaseChannel.validateGitcodeRelease(release)
-    : releaseChannel.validateRelease({ tag_name: release.tag, draft: false, prerelease: false,
-      assets: [release.archive, release.manifest] }, release.repository);
+    : release.catalogSha256 !== undefined
+      ? releaseChannel.validateGithubCatalogRelease(release)
+      : releaseChannel.validateRelease({ tag_name: release.tag, draft: false, prerelease: false,
+        assets: [release.archive, release.manifest] }, release.repository);
   if (!validated || validated.version !== release.version || expected.channel.kind !== "release" ||
       flavor !== validated.flavor ||
       !releaseChannel.sameRepository(expected.channel.repository, release.repository)) throw new Error("Release 更新意图无效，停止运行时同步");
   releaseChannel.validateManifest(manifest, validated);
+  if (release.catalogSha256 !== undefined && manifest.asset.sha256 !== release.catalogSha256) throw new Error("发布 manifest 与渠道清单的 SHA256 不一致，停止运行时同步");
   if (record.version !== release.version || !record.source || !releaseChannel.sameAssetUrl(record.source.url, release.archive.browser_download_url) ||
       record.source.sha256 !== manifest.asset.sha256 || record.source.source !== "url" || record.source.type !== "zip" ||
       record.source.path !== "plugins/zcode-token-usage-statusbar" ||
@@ -260,7 +265,7 @@ function createUpdater(options) {
   const markerFile = path.join(runtime, ".plugin-restart-required");
   const saved = readState(stateFile, now());
   let state = { phase: "idle", supported: false, auto: false, currentVersion: "", latestVersion: "",
-    ...saved, restartRequired: fs.existsSync(markerFile), skipped: [], error: "", channel: "", channelHost: "", releaseUrl: "", progress: null };
+    ...saved, restartRequired: fs.existsSync(markerFile), skipped: [], error: "", channel: "", channelHost: "", releaseUrl: "", progress: null, checkedVia: "" };
   let busy = false;
   let selectedRelease = null, selectedChannel = null;
   const channel = () => {
@@ -313,6 +318,18 @@ function createUpdater(options) {
     const errors = (data.diagnostics || []).filter((d) => d.severity === "error" && (!d.pluginId || d.pluginId === PLUGIN_ID));
     if (errors.length) throw new Error(errors.map((d) => d.message).join("; "));
   }
+  async function catalogFallback(source, cause) {
+    // GitHub API 检查失败（限流/不可达）时退回注册 ref 的渠道清单：清单刷新走 zipball
+    // 下载桶不占 API 配额，渠道身份与安装校验链都不变。兜底再失败则合并原因一起上报。
+    try {
+      const market = await cli(["marketplace", "update", "zusage-marketplace"]);
+      diagnostics(market);
+      if (!isDeepStrictEqual(channel(), source)) throw new Error("更新期间市场来源已变化");
+      return releaseChannel.githubReleaseFromCatalog(readReleaseCatalog(), source.repository);
+    } catch (error) {
+      throw new Error(String((cause && cause.message) || cause) + "；渠道清单回退也失败: " + error.message);
+    }
+  }
   async function check(auto = false, install = false) {
     if (busy) { if (!auto) publish(); return; }
     refreshLocal();
@@ -334,15 +351,25 @@ function createUpdater(options) {
       save();
       const source = channel();
       state.channel = source.kind; state.channelHost = source.flavor === "gitcode" ? "gitcode" : source.flavor === "github" ? "github" : "";
-      state.releaseUrl = ""; selectedRelease = null; selectedChannel = source;
+      state.releaseUrl = ""; selectedRelease = null; selectedChannel = source; state.checkedVia = "";
       if (source.kind === "release" && source.flavor === "gitcode") {
         // GitCode 渠道：宿主从注册 ref 拉取的渠道清单是唯一版本源，不调 GitCode API。
         const market = await cli(["marketplace", "update", "zusage-marketplace"]);
         diagnostics(market);
         if (!isDeepStrictEqual(channel(), source)) throw new Error("更新期间市场来源已变化");
         selectedRelease = releaseChannel.gitcodeReleaseFromCatalog(readReleaseCatalog(), source.repository);
+        state.checkedVia = "release-catalog";
       } else if (source.kind === "release") {
-        selectedRelease = await releaseChannel.checkRelease(source.repository, compareVersions, fetchRelease);
+        try {
+          selectedRelease = await releaseChannel.checkRelease(source.repository, compareVersions, fetchRelease);
+          state.checkedVia = "release-api";
+        } catch (error) {
+          // API 明确答复「无正式版」或分页守卫触发说明渠道健康，兜底只会绕过这些结论；
+          // 只对限流/网络类不可达失败退回渠道清单。
+          if (/不能安装开发分支|安全分页上限/.test(error.message)) throw error;
+          selectedRelease = await catalogFallback(source, error);
+          state.checkedVia = "release-catalog";
+        }
       }
       if (selectedRelease) {
         state.releaseUrl = selectedRelease.url;
@@ -359,6 +386,7 @@ function createUpdater(options) {
           if (installed.enabled !== false) await installUpdate(auto);
         }
       } else {
+        state.checkedVia = "market";
         const market = await cli(["marketplace", "update", "zusage-marketplace"]);
         diagnostics(market);
         const overview = listOverview(await cli(["list", "--available"]));
@@ -429,6 +457,9 @@ function createUpdater(options) {
           if (complete || now() - lastPublished >= 150) { lastPublished = now(); publish(); }
         });
         releaseChannel.validateManifest(downloaded.manifest, selectedRelease);
+        // 清单兜底意图：下载到的 manifest 必须与检查时的渠道清单同代同资产，防清单与
+        // Release 资产错代（API 路径由行内 size 强比对承担等价约束）。
+        if (selectedRelease.catalogSha256 !== undefined && downloaded.manifest.asset.sha256 !== selectedRelease.catalogSha256) throw new Error("发布 manifest 与渠道清单的 SHA256 不一致");
         state.progress = { stage: "verify" }; publish();
         const market = await cli(["marketplace", "update", "zusage-marketplace"]); diagnostics(market);
         if (!isDeepStrictEqual(channel(), currentChannel)) throw new Error("更新期间市场来源已变化");

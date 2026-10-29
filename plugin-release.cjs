@@ -176,6 +176,55 @@ async function checkRelease(repository, compareVersions, fetch = fetchBytes) {
   }
   throw new Error("GitHub Release 列表超过安全分页上限，无法确定最新正式版本");
 }
+function githubReleaseFromCatalog(catalog, repository) {
+  // GitHub Release 渠道的清单兜底：API 匿名配额按出口 IP 共享（代理节点常耗尽，403/429），
+  // 而清单刷新走 zipball 下载桶不受限。从注册 ref（plugin-releases 分支）的渠道清单合成
+  // 与 API 行同构的候选；清单 sha256 随 catalogSha256 保留，供下载 manifest 交叉比对。
+  if (!githubRepository(repository) || repository !== githubRepository(repository)) throw new Error("GitHub 仓库标识无效");
+  const entries = catalog && catalog.plugins;
+  const matches = Array.isArray(entries) ? entries.filter((p) => p && p.name === "zcode-token-usage-statusbar") : [];
+  const entry = matches.length === 1 ? matches[0] : null;
+  const source = entry && entry.source;
+  if (!catalog || catalog.name !== "zusage-marketplace" || !entry || typeof entry.version !== "string" ||
+      !STABLE.test(entry.version) || !source || typeof source !== "object" || source.source !== "url" ||
+      source.type !== "zip" || typeof source.url !== "string" || source.headers !== undefined ||
+      (source.stripRoot !== undefined && source.stripRoot !== false) ||
+      source.path !== "plugins/zcode-token-usage-statusbar" ||
+      typeof source.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(source.sha256)) throw new Error("GitHub 渠道清单格式无效");
+  const tag = "v" + entry.version;
+  const archiveName = `zcode-token-usage-statusbar-v${entry.version}.zip`;
+  const expectedPath = `/releases/download/${encodeURIComponent(tag)}/${encodeURIComponent(archiveName)}`;
+  const parsed = parseAssetUrl(source.url);
+  if (!parsed || parsed.host !== "github" || !sameRepository(parsed.repository, repository) ||
+      parsed.path !== expectedPath) throw new Error("GitHub 渠道清单下载源与注册仓库或版本不一致");
+  return {
+    flavor: "github", version: entry.version, tag, repository, catalogSha256: source.sha256,
+    archive: { name: archiveName, size: null, browser_download_url: source.url },
+    manifest: { name: "release-manifest.json",
+      browser_download_url: `https://github.com/${repository}/releases/download/${encodeURIComponent(tag)}/${encodeURIComponent("release-manifest.json")}` },
+    url: `https://github.com/${repository}/releases/tag/${encodeURIComponent(tag)}` };
+}
+function validateGithubCatalogRelease(release) {
+  // 安装提交后复核清单兜底意图：与 githubReleaseFromCatalog 同一形状门。
+  if (!release || release.flavor !== "github" || !githubRepository(release.repository) ||
+      release.repository !== githubRepository(release.repository) || typeof release.version !== "string" ||
+      !STABLE.test(release.version) || release.tag !== "v" + release.version ||
+      typeof release.catalogSha256 !== "string" || !/^[a-f0-9]{64}$/.test(release.catalogSha256) || !release.archive ||
+      release.archive.name !== `zcode-token-usage-statusbar-v${release.version}.zip` ||
+      release.archive.size !== null) return null;
+  const archive = parseAssetUrl(release.archive.browser_download_url);
+  const manifest = parseAssetUrl(release.manifest && release.manifest.browser_download_url);
+  const downloadPath = `/releases/download/${encodeURIComponent(release.tag)}/`;
+  let page = null;
+  try { page = new URL(release.url); } catch (e) { }
+  if (!archive || archive.host !== "github" || !sameRepository(archive.repository, release.repository) ||
+      archive.path !== downloadPath + encodeURIComponent(release.archive.name) ||
+      !manifest || manifest.host !== "github" || !sameRepository(manifest.repository, release.repository) ||
+      manifest.path !== downloadPath + encodeURIComponent("release-manifest.json") ||
+      !page || page.protocol !== "https:" || page.hostname !== "github.com" ||
+      page.pathname !== `/${release.repository}/releases/tag/${encodeURIComponent(release.tag)}`) return null;
+  return { ...release, version: release.version };
+}
 function validateManifest(manifest, release) {
   const asset = manifest && manifest.asset;
   // GitCode 渠道的合成 release 行在下载 manifest 前拿不到资产大小（archive.size 为 null），
@@ -283,6 +332,6 @@ function catalogChannel(catalog, pluginName = "zcode-token-usage-statusbar") {
   if (!source || typeof source !== "object") return "unknown";
   return source.source === "url" && source.type === "zip" ? "release" : "source";
 }
-module.exports = { sameRepository, sameAssetUrl, githubRepository, gitcodeRepository, readChannel, checkRelease, gitcodeReleaseFromCatalog, validateGitcodeRelease,
+module.exports = { sameRepository, sameAssetUrl, githubRepository, gitcodeRepository, readChannel, checkRelease, gitcodeReleaseFromCatalog, githubReleaseFromCatalog, validateGitcodeRelease, validateGithubCatalogRelease,
   downloadRelease, validateRelease, validateManifest, catalogChannel,
   fetchBytes, MAX_ASSET, MAX_JSON, PLUGIN_ID };

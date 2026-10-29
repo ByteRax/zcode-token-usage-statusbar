@@ -329,6 +329,112 @@ class RuntimeSyncGuardTests(unittest.TestCase):
         self.save_state()
         self.assertEqual(self.sync()["preserved"], [])
 
+    def test_identity_drift_between_verifies_names_changed_field(self):
+        # 只改 node 校验放行、仅改变 identity 内容的字段：pendingPid 指向 macOS pid_max
+        # 之外必死的进程，node 的活性检查放行，Python 侧 recheck 比对捕获漂移并报出字段。
+        self.use_head_runtime()
+        state_file = self.runtime / "plugin-update.json"
+        write = self.installer._atomic_write
+        def bump_pid_after_loader(dst, data, src=None):
+            write(dst, data, src)
+            if dst.name == "inject-main.cjs":
+                payload = json.loads(state_file.read_text(encoding="utf-8"))
+                payload["pendingPid"] = 987654321
+                state_file.write_text(json.dumps(payload), encoding="utf-8")
+        with mock.patch.object(self.installer, "_atomic_write", side_effect=bump_pid_after_loader):
+            with self.assertRaisesRegex(ValueError,
+                    "安装身份发生变化.*pending\\.pendingPid: 0 → 987654321"):
+                self.sync()
+        self.assertFalse((self.runtime / "overlay.js").exists())
+
+    def _catalog_pending(self):
+        """把持久化意图换成清单兜底形状（catalogSha256 标记，archive.size 为 null）。"""
+        repo = self.source["repo"]
+        base = "https://github.com/" + repo + "/releases/download/v1.1.0/"
+        sha = hashlib.sha256(b"release zip").hexdigest()
+        intent = {"flavor": "github", "version": "1.1.0", "tag": "v1.1.0", "repository": repo,
+                  "catalogSha256": sha,
+                  "archive": {"name": "zcode-token-usage-statusbar-v1.1.0.zip", "size": None,
+                              "browser_download_url": base + "zcode-token-usage-statusbar-v1.1.0.zip"},
+                  "manifest": {"name": "release-manifest.json", "browser_download_url": base + "release-manifest.json"},
+                  "url": "https://github.com/" + repo + "/releases/tag/v1.1.0"}
+        manifest = json.loads(json.dumps(self.pending["pendingRelease"]["manifest"]))
+        self.pending = {"pendingSync": True, "pendingVersion": "1.0.0", "pendingPid": 0,
+                        "pendingRelease": {"release": intent, "manifest": manifest,
+                            "channel": {"kind": "release", "repository": repo, "source": self.source.copy()}}}
+        self.save_state()
+
+    def test_migrate_fallback_without_runtime_verifier_enforces_catalog_intent(self):
+        # 运行目录 updater 过旧（无 verifyRuntimeSync 导出）时验收走内嵌 migrate 回退：
+        # 新版 release 模块下清单兜底意图必须按专用形状门放行，与 verifyRuntimeSync 同构。
+        self.use_head_runtime()
+        self._catalog_pending()
+        (self.runtime / "plugin-updater.cjs").write_text(
+            "module.exports = { compareVersions: (a, b) => {"
+            " const pa = a.split('.').map(Number), pb = b.split('.').map(Number);"
+            " for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0) ? 1 : -1; }"
+            " return 0; } };\n", encoding="utf-8")
+        with self.installer._sync_verifier(self.runtime, None) as verify:
+            self.assertIsNone(verify())   # 锚定：意图与安装记录通过兜底形状门
+            self.assertIsNone(verify())   # 复核：再次验收与锚一致，不因 catalogSha256 形状误拒
+
+    def test_migrate_fallback_rejects_catalog_intent_on_stale_release_module(self):
+        # release 模块同样过旧（无 validateGithubCatalogRelease 导出）时按旧规则拒绝：
+        # archive.size 为 null 的兜底意图过不了合成 API 行校验，保持 fail-closed。
+        self.use_head_runtime()
+        self._catalog_pending()
+        (self.runtime / "plugin-updater.cjs").write_text(
+            "module.exports = { compareVersions: (a, b) => {"
+            " const pa = a.split('.').map(Number), pb = b.split('.').map(Number);"
+            " for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0) ? 1 : -1; }"
+            " return 0; } };\n", encoding="utf-8")
+        # 旧版 readChannel 仍须供身份构建；只缺 validateGithubCatalogRelease 导出。
+        (self.runtime / "plugin-release.cjs").write_text(
+            "const fs = require('fs'), path = require('path');"
+            " module.exports = {"
+            " readChannel: (home, root) => {"
+            "  const data = JSON.parse(fs.readFileSync(path.join(root, 'known_marketplaces.json'), 'utf8'));"
+            "  return { kind: 'release', repository: 'ByteRax/zcode-token-usage-statusbar',"
+            "   marketplace: data.marketplaces.find((m) => m.id === 'zusage-marketplace') };"
+            " },"
+            " validateRelease: () => null, validateManifest: () => {} };\n", encoding="utf-8")
+        with self.installer._sync_verifier(self.runtime, None) as verify:
+            with self.assertRaisesRegex(ValueError, "Release 更新意图无效"):
+                verify()
+
+
+class IdentityDiffTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location("sync_guard_diff_installer", PLUGIN / "overlay_install.py")
+        cls.installer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.installer)
+
+    def test_equal_identities_yield_empty_diff(self):
+        identity = {"record": {"version": "1.1.0"}, "channel": None, "pending": {"pendingSync": True}}
+        self.assertEqual(self.installer._identity_diff(identity, json.loads(json.dumps(identity))), "")
+
+    def test_diff_pins_changed_added_and_removed_paths(self):
+        diff = self.installer._identity_diff
+        self.assertEqual(diff({"record": {"version": "1.1.0"}}, {"record": {"version": "1.2.0"}}),
+                         'record.version: "1.1.0" → "1.2.0"')
+        self.assertIn('record: null → {"version"', diff({"record": None}, {"record": {"version": "1.2.0"}}))
+        self.assertIn("channel: " , diff({"channel": {"kind": "release"}}, {}))
+        self.assertIn("(无)", diff({}, {"channel": {"kind": "release"}}))
+
+    def test_diff_truncates_long_values_and_caps_entries(self):
+        diff = self.installer._identity_diff
+        long_value = "x" * 200
+        text = diff({"pending": {"pendingVersion": long_value}}, {"pending": {"pendingVersion": "y"}})
+        self.assertIn("...", text)
+        self.assertLess(len(text), 200)
+        before = {f"k{i}": str(i) for i in range(12)}
+        after = {f"k{i}": str(i) + "-new" for i in range(12)}
+        summary = diff(before, after)
+        self.assertTrue(summary.startswith("k0: "))
+        self.assertEqual(summary.count(" → "), 8)
+        self.assertIn("共 12 处差异", summary)
+
 
 class RunVerifierTests(unittest.TestCase):
     def setUp(self):
