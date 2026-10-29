@@ -260,6 +260,11 @@ function remoteDisabled() {
 /* 额度开关真值：config.json 的 quota_enabled（v111 起缺省开，显式 false 才关）——与
  * answer_rate_line 同款真值方向。凭据仍只在内存、只发官方域，关闭即停解密与联网。 */
 function quotaEnabled() { return readCfgCached().quota_enabled !== false; }
+/* v135 重置卡徽标开关：config.json 的 reset_badge_enabled（缺省开，显式 false 才关）。
+ * 独立于 quota_enabled——额度 chip 关闭时本开关仍允许主进程解密凭据、仅查询
+ * reset/status 只读端点维护徽标（联网语义已在 ⚙ 面板披露）。 */
+function resetBadgeEnabled() { return readCfgCached().reset_badge_enabled !== false; }
+function quotaDataEnabled() { return quotaEnabled() || resetBadgeEnabled(); }
 function clearRemoteRecovery() {
   remoteSids.clear();
   pendingSids.clear();
@@ -268,7 +273,7 @@ function clearRemoteRecovery() {
   retryTimer = 0;
 }
 function syncQuotaProviders() {
-  if (shuttingDown || !quotaClient || !quotaEnabled()) return;
+  if (shuttingDown || !quotaClient || !quotaDataEnabled()) return;
   const providers = new Set();
   let hasSelections = false, hasWindow = false;
   for (const wc of webContents.getAllWebContents()) {
@@ -304,7 +309,7 @@ function handleQuotaProviders(wc, req) {
   windowQuotaSelections.set(wc.id, panes);   // 全量替换：关 pane/导航后旧选择不会残留
   syncQuotaProviders();
   webContents.getAllWebContents().forEach((target) => pushPluginState(target, pluginUpdater ? pluginUpdater.status() : {}));
-  if (lastGoodPayload && quotaClient && quotaEnabled()) {
+  if (lastGoodPayload && quotaClient && quotaDataEnabled()) {
     const payload = Object.assign({}, lastGoodPayload, { quota: quotaClient.view() });
     for (const target of webContents.getAllWebContents()) pushOnce(target, payload);
   }
@@ -315,7 +320,7 @@ function handlePayload(payload) {
   // serve 的 error 是查询失败，不是空快照；不可清掉重试状态和最后成功数据显示。
   if (!payload || typeof payload !== "object" || payload.error) return;
   lastGoodPayload = payload;
-  if (quotaClient && quotaEnabled()) {
+  if (quotaClient && quotaDataEnabled()) {
     if (payload.scnet_estimate !== undefined) quotaClient.noteSnapshotExtras({ scnet: payload.scnet_estimate });
     syncQuotaProviders();
     payload = Object.assign({}, payload, { quota: quotaClient.view() });
@@ -745,6 +750,7 @@ function pushPluginState(wc, state) {
   if (!isMainWindowState(wc) || wc.isDestroyed() || !isLocalHostPage(wc)) return;
   /* rateLine / quotaEnabled 随插件状态一起推送：⚙ 面板两个开关的真值都来自 config.json */
   const payload = { ...state, rateLine: readCfgCached().answer_rate_line !== false, quotaEnabled: quotaEnabled(),
+    resetBadgeEnabled: resetBadgeEnabled(),
     quotaSources: quotaClient ? quotaClient.sourcesConfig() : [], feedbackVersion: 1 };
   wc.executeJavaScript(`window.__zusagePluginUpdate && window.__zusagePluginUpdate(${JSON.stringify(payload)})`, true).catch(() => { });
 }
@@ -772,6 +778,10 @@ try {
   quotaClient = createQuotaClient({
     ...quotaPaths,
     secretsPath: QUOTA_SECRETS,
+    quotaEnabled,
+    resetEnabled: resetBadgeEnabled,
+    resetList: true,   // v135：bigmodel 族并行查网页控制台列表端点（近 7 天过期卡 + 上次重置）
+
     log: (...a) => LOG("[quota]", ...a),
     onUpdate: () => {   // 刷新开始/结算及解冻时同步源状态与最近成功快照
       broadcastPluginState();
@@ -799,7 +809,7 @@ try {
           if (f && !names.has(String(f))) return;
           clearTimeout(quotaCredDebounce);
           quotaCredDebounce = setTimeout(() => {
-            if (!quotaClient || !quotaEnabled()) return;
+            if (!quotaClient || !quotaDataEnabled()) return;
             quotaClient.credentialsChanged();
             syncQuotaProviders();   // 重读配置后重判 provider 绑定（内含 tick）
           }, 300);
@@ -814,7 +824,7 @@ try {
     watchQuotaCredentials();
   }
   setInterval(() => {   // 兜底：not_configured 低频重探/退避到点补拉（活跃时 handlePayload 也会 tick）
-    if (hasWindows() && quotaEnabled()) syncQuotaProviders();
+    if (hasWindows() && quotaDataEnabled()) syncQuotaProviders();
   }, 60000);
 } catch (e) {
   delete loadedHashes["quota-client.cjs"];
@@ -902,7 +912,7 @@ function writeQuotaSecrets(mutate) {
   }
   if (quotaClient) {
     quotaClient.credentialsChanged();
-    if (quotaEnabled()) {
+    if (quotaDataEnabled()) {
       quotaClient.tick();   // 总开关关闭时不触发联网（与手动刷新同口径）
       if (lastGoodPayload) {
         const withQuota = Object.assign({}, lastGoodPayload, { quota: quotaClient.view() });
@@ -963,6 +973,21 @@ async function setQuotaEnabled(enabled, wc, requestId) {
     deliverPluginRequest(wc, requestId, { ok: true });
   } catch (e) {
     LOG("quota_enabled toggle failed:", e.message);
+    deliverPluginRequest(wc, requestId, { ok: false, error: e.message });
+  }
+}
+/* v135 重置卡徽标开关（⚙ 面板）：原子写 config.json 的 reset_badge_enabled（缺省开）。
+ * 与 quota_enabled 独立——额度关 + 本开关开时仍解密凭据仅查 reset/status。 */
+async function setResetBadgeEnabled(enabled, wc, requestId) {
+  try {
+    const { updateConfig } = require("./plugin-updater.cjs");
+    await updateConfig(HERE, { reset_badge_enabled: enabled }, readCfgCached().python_path || (process.platform === "win32" ? "python" : "python3"));
+    cfgCache = null;
+    broadcastPluginState();
+    if (enabled && quotaClient) quotaClient.tick();
+    deliverPluginRequest(wc, requestId, { ok: true });
+  } catch (e) {
+    LOG("reset_badge_enabled toggle failed:", e.message);
     deliverPluginRequest(wc, requestId, { ok: false, error: e.message });
   }
 }
@@ -1302,6 +1327,8 @@ async function pollPluginRequests() {
           handleQuotaProviders(wc, req);
         } else if (req && req.action === "quota" && typeof req.enabled === "boolean") {
           setQuotaEnabled(req.enabled, wc, req.requestId);
+        } else if (req && req.action === "quota-reset" && typeof req.enabled === "boolean") {
+          setResetBadgeEnabled(req.enabled, wc, req.requestId);
         } else if (req && (req.action === "quota-src" || req.action === "quota-src-key" || req.action === "quota-src-refresh")) {
           handleQuotaSourceRequest(req, wc);
         } else if (req && (req.action === "model-pull-list" || req.action === "model-pull-fetch" || req.action === "model-pull-apply")) {

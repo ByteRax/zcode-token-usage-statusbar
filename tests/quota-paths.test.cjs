@@ -158,7 +158,8 @@ for (const [dir, file] of [["/", "/个人 配置.json"], ["D:\\", "D:\\个人 �
       app: { getPath: () => "/fixture-home" }, HERE: "/fixture-runtime", path, quotaClient: null,
       fs: { watch(d, cb) { callbacks.set(d, cb); return { on() {} }; } }, LOG() {},
       syncQuotaProviders() { try { if (sandbox.quotaClient) sandbox.quotaClient.tick(); } catch (e) { } },
-      quotaEnabled: () => true, setInterval() {}, setTimeout(cb) { cb(); return 1; }, clearTimeout() {}, Set, Map,
+      quotaEnabled: () => true, resetBadgeEnabled: () => true, quotaDataEnabled: () => true,   // v135：切片内 createQuotaClient 引用双门控
+      setInterval() {}, setTimeout(cb) { cb(); return 1; }, clearTimeout() {}, Set, Map,
     };
     vm.runInNewContext(snippet, sandbox);
     assert.equal(callbacks.size, 1, "shared directory only needs one watcher");
@@ -185,6 +186,7 @@ test("main bridge: initialized paths and directory watchers use shared resolutio
     require() { return { resolveQuotaPaths: () => paths, createQuotaClient(o) { clients.push(o); return {}; } }; },
     app: { getPath: () => "/fixture-home" }, HERE: "/fixture-runtime", path, quotaClient: null,
     fs: { watch(dir) { dirs.push(dir); return { on() {} }; } }, LOG() {},
+    quotaEnabled: () => true, resetBadgeEnabled: () => true, quotaDataEnabled: () => true,
     setInterval() {}, setTimeout() {}, clearTimeout() {}, Set, Map,
   });
   assert.deepEqual(dirs, [paths.credsDir, paths.customCfgDir, paths.builtinCfgDir]);

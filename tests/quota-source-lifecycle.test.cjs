@@ -125,7 +125,7 @@ test('writeQuotaSecrets pushes revoked quota immediately, but never fetches with
     const sandbox = {
       readQuotaSecrets: () => ({ sources: {} }), HERE: '/virtual/runtime',
       path: require('node:path'), fs: { writeFileSync() {}, renameSync() {}, chmodSync() {} },
-      LOG() {}, quotaEnabled: () => enabled,
+      LOG() {}, quotaEnabled: () => enabled, quotaDataEnabled: () => enabled,   // v135：writeQuotaSecrets 的补推门控改为 quota||reset 双开关
       quotaClient: { credentialsChanged: () => events.push('changed'), tick: () => events.push('tick'),
         view: () => ({ sources: { openrouter: { status: 'disabled' } } }) },
       lastGoodPayload: { fixture: true }, webContents: { getAllWebContents: () => ['window'] },

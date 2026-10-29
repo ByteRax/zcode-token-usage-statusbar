@@ -68,13 +68,15 @@
   } catch (e) { }
 
   /* ---------- 共享状态（多实例一致）：显示项/语言/上下文覆盖/最近一次数据 ---------- */
-  var LS = { show: "zusage3.show", ctxOv: "zusage3.ctxOv", lang: "zusage3.lang", cnNum: "zusage3.cnNum", sec: "zusage3.sec" };
+  var LS = { show: "zusage3.show", ctxOv: "zusage3.ctxOv", lang: "zusage3.lang", cnNum: "zusage3.cnNum", sec: "zusage3.sec", rstCdh: "zusage3.rstCdh", projPath: "zusage3.projPath" };
   var state = {
     show: { win: 1, turn: 1, today: 1, sub: 1, tools: 1, git: 1 },   // git：工具行 Git 状态 chip（v96，默认开）
     ctxOv: "", data: null,
     lang: "zh", pluginUpdate: window.__zusagePluginState || null,
     /* 万/亿单位开关：缺省开启，仅显式 "0" 关闭；只在中文界面展示并生效（英文始终 K/M/B） */
     cnNum: 1,
+    /* v136 编辑项目弹窗完整路径开关：缺省开启，仅显式 "0" 关闭；纯展示偏好存 localStorage */
+    projPath: 1,
     /* v99 设置面板当前分区（非法值在 buildPanel 回退首分区，不在这里校验） */
     settingsSec: "display",
     /* 逐问速率行开关：真值在运行时 config.json 的 answer_rate_line（主进程随插件状态推送
@@ -83,6 +85,11 @@
     /* 套餐额度开关：真值在 config.json 的 quota_enabled（主进程据此决定是否解密凭据
        联网查询，并随插件状态推送 quotaEnabled）；缺省开启，仅显式 false 关闭（v111） */
     quotaEnabled: !(window.__zusagePluginState && window.__zusagePluginState.quotaEnabled === false),
+    /* v135 重置卡徽标开关：真值在 config.json 的 reset_badge_enabled（主进程推送
+       resetBadgeEnabled）；独立于 quota_enabled（额度关时仍查询 reset/status）。缺省开启 */
+    resetBadge: !(window.__zusagePluginState && window.__zusagePluginState.resetBadgeEnabled === false),
+    /* 重置卡倒计时阈值（小时）：剩余时间短于该值才在徽标上显示倒计时；纯展示偏好存 localStorage */
+    resetCdh: 24,
     /* 阶段 3 多源配置列表（id/label/enabled/keyConfigured/status...，主进程 sourcesConfig 推送） */
     quotaSources: (window.__zusagePluginState && Array.isArray(window.__zusagePluginState.quotaSources)
       ? window.__zusagePluginState.quotaSources : []),
@@ -93,6 +100,54 @@
   function cnUnits() { return state.lang !== "en" && !!state.cnNum; }
   function ls(k, d) { try { return localStorage.getItem(k) ?? d; } catch (e) { return d; } }
   function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) { } }
+  /* v136 项目完整路径开关（纯展示）：CSS 规则在条样式表内，由 <html> 的 data-zusage-pp
+   * 门控——属性一写全文档即时生效/摘除，多实例共享同一属性天然一致；开关关闭或插件整体
+   * 移除后属性没有样式引用即无作用，不需要 dispose 清理。 */
+  function applyProjPath() {
+    try {
+      if (state.projPath) document.documentElement.setAttribute("data-zusage-pp", "1");
+      else document.documentElement.removeAttribute("data-zusage-pp");
+    } catch (e) { }
+  }
+  /* v137 点击源文件夹行 → 系统文件管理器打开该目录（mac Finder / Windows 资源管理器）：
+   * 主通道 window.zcode.openInFileManager（客户端主进程 Windows shell.openPath、macOS
+   * open <dir> 带 -a Finder 与 shell.openPath 双回退，raw path 免 URL 编码）；旧主进程
+   * 依次降级 openExternalFile → openExternal(file:)（客户端白名单放行 file:，落到同一个
+   * shell.openPath）。远程项目的编辑器带「在此设备上寻找已有项目」提示（testid
+   * virtual-project-existing 仅 remote 渲染），据此排除——远端路径在本机资源管理器无意义；
+   * fixedFolder 行（break-all）本就不在增强选择器内。多个 pane 实例会对同一次点击重复
+   * 委托，500ms 同路径去重。 */
+  function projFileUrl(p) {
+    var norm = String(p).replace(/\\/g, "/");
+    if (/^\/\//.test(norm)) return "file:" + norm.split("/").map(encodeURIComponent).join("/");
+    return "file:///" + norm.replace(/^\/+/, "").split("/").map(function (s) {
+      return /^[A-Za-z]:$/.test(s) ? s : encodeURIComponent(s);   // 盘符冒号不编码（file:///C:/…）
+    }).join("/");
+  }
+  function openProjFolder(p) {
+    try {
+      var zc = window.zcode;
+      if (zc && typeof zc.openInFileManager === "function") { zc.openInFileManager(p); return; }
+      if (zc && typeof zc.openExternalFile === "function") { zc.openExternalFile(p); return; }
+      if (zc && typeof zc.openExternal === "function") zc.openExternal(projFileUrl(p));
+    } catch (e) { }
+  }
+  var projOpenAt = 0, projOpenPath = "";
+  function onProjRowClick(e) {
+    if (!state.projPath || e.button) return;
+    var el = e.target && e.target.closest ? e.target.closest('[data-testid=virtual-project-root-name].truncate') : null;
+    if (!el || !el.getAttribute) return;
+    var p = el.getAttribute("title") || "";
+    if (!p) return;
+    try {
+      if (document.querySelector('[data-testid=virtual-project-existing]')) return;
+    } catch (e2) { }
+    var now = Date.now();
+    if (p === projOpenPath && now - projOpenAt < 500) return;
+    projOpenAt = now;
+    projOpenPath = p;
+    openProjFolder(p);
+  }
   try {
     var s0 = JSON.parse(ls(LS.show, "null"));
     if (s0 && typeof s0 === "object") {
@@ -101,14 +156,20 @@
     state.ctxOv = ls(LS.ctxOv, "");
     if (ls(LS.lang, "") === "en") state.lang = "en";
     if (ls(LS.cnNum, "") === "0") state.cnNum = 0;
+    if (ls(LS.projPath, "") === "0") state.projPath = 0;
+    var cdh0 = parseInt(ls(LS.rstCdh, ""), 10);
+    if (cdh0 >= 1 && cdh0 <= 24 * 7) state.resetCdh = cdh0;
     var s1 = ls(LS.sec, "");
     if (s1) state.settingsSec = s1;
   } catch (e) { }
+  applyProjPath();   // v136：初载即按开关挂 <html> 属性（样式随首实例出现，属性先行无作用）
   function persist() {
     lsSet(LS.show, JSON.stringify(state.show));
     lsSet(LS.ctxOv, state.ctxOv);
     lsSet(LS.lang, state.lang);
     lsSet(LS.cnNum, state.cnNum ? "1" : "0");
+    lsSet(LS.projPath, state.projPath ? "1" : "0");
+    lsSet(LS.rstCdh, String(state.resetCdh));
     lsSet(LS.sec, state.settingsSec);
   }
 
@@ -261,6 +322,7 @@
     window.__zusagePluginState = state.pluginUpdate = s;
     if (s && typeof s.rateLine === "boolean") state.rateLine = s.rateLine;
     if (s && typeof s.quotaEnabled === "boolean") state.quotaEnabled = s.quotaEnabled;
+    if (s && typeof s.resetBadgeEnabled === "boolean") state.resetBadge = s.resetBadgeEnabled;   // v135
     if (s && Array.isArray(s.quotaSources)) state.quotaSources = s.quotaSources;   // v95：chip 门控随主进程真值（heavy 对账点内生效）
     scanRateLines();
     instances.forEach(function (inst) { inst.syncUpdate(); });
@@ -426,6 +488,13 @@
     var pad = function (n) { return (n < 10 ? "0" : "") + n; };
     return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + " " + pad(d.getHours()) + ":" + pad(d.getMinutes());
   }
+  function qTimeS(v) {   // yyyy-MM-dd HH:mm:ss（重置卡 tooltip 专用：过期时刻精确到秒，其余 tooltip 不变）
+    var base = qTime(v);
+    if (!base) return "";
+    var d = typeof v === "number" ? new Date(v) : new Date(String(v));
+    var pad = function (n) { return (n < 10 ? "0" : "") + n; };
+    return base + ":" + pad(d.getSeconds());
+  }
   function quotaFamilyOf(provider) {   // 内置套餐家族：OAuth 的 account:* 与 apiKey 模式的 bigmodel-api[-N] / zai-api[-N]
     var p = String(provider || "");
     if (p.indexOf("account:bigmodel-start-plan") === 0 || p.indexOf("account:zai-start-plan") === 0) return "zcode-start";
@@ -579,6 +648,196 @@
     quotaTipFor = null;
   }
   function onQuotaEnter() { showQuotaTip(this); }
+  /* ---------- v135 重置卡徽标 tooltip：每账号分组的逐卡明细 ----------
+   * 复用 quotaTip 的浮层模式（同 .tip 样式/上方弹出/签名幂等）；滚动豁免与伪 leave
+   * 甄别与 quotaTip 同链。内容只读 el.__zuR（syncResetBadge 写入的徽标视图）。 */
+  var rstTip = document.createElement("div");
+  rstTip.className = "tip zusage-quota-tip";
+  rstTip.style.cssText = rateTip.style.cssText;
+  document.body.appendChild(rstTip);
+  /* 「如何重置」按钮：监听挂 rstTip 本体（innerHTML 签名重建不丢）；外链走客户端
+   * openExternal 桥（系统默认浏览器），无桥环境 window.open 兜底（同 ⚙ 取 Key 链接）。 */
+  var RST_HOWTO_URL = "https://bigmodel.cn/coding-plan/personal/usage";
+  rstTip.addEventListener("click", function (e) {
+    var btn = e.target && e.target.closest && e.target.closest(".rst-howto");
+    if (!btn) return;
+    e.stopPropagation();
+    var zc = window.zcode;
+    if (zc && typeof zc.openExternal === "function") zc.openExternal(RST_HOWTO_URL);
+    else window.open(RST_HOWTO_URL, "_blank", "noopener");
+  });
+  /* 徽标↔tooltip 悬停桥：徽标与 tooltip 之间有 8px 间隙，直接 mouseleave 即收会让指针
+   * 移向 tooltip（点「如何重置」）途中浮层消失。离开任一侧延迟收起，进入另一侧取消。 */
+  var RST_HIDE_DELAY_MS = 180;
+  var rstHideTimer = 0;
+  function scheduleRstHide() {
+    if (rstHideTimer) return;
+    rstHideTimer = setTimeout(function () { rstHideTimer = 0; hideRstTip(); }, RST_HIDE_DELAY_MS);
+  }
+  function cancelRstHide() {
+    if (rstHideTimer) { clearTimeout(rstHideTimer); rstHideTimer = 0; }
+  }
+  rstTip.addEventListener("mouseenter", cancelRstHide);
+  rstTip.addEventListener("mouseleave", scheduleRstHide);
+  var rstTipFor = null;
+  var RST_FAM_LABELS = { bigmodel: "BigModel", zai: "Z.ai" };
+  /* grantType 枚举的行首展示文案（服务端原值未知语义兜底显示原文；BigModel 未公布口径，
+   * GLOBAL=全局发放卡 / DIRECT=直发卡为实测推断，仅作区分展示不作计费语义宣称） */
+  var RST_GRANT_LABELS = { GLOBAL: L("全局", "Global"), DIRECT: L("直发", "Direct") };
+  function rstGrantText(v) { return RST_GRANT_LABELS[v] || v || ""; }
+  /* 徽标三档色阈值唯一事实源：resetBadgeView 判档与 tooltip 图例共用，避免文案漂移。
+   * dotCls 的色值定义在 rstTipHTML 注入的 <style>（含 .zu-light 浅色组） */
+  var RST_BANDS = [
+    { cls: "zu-rst-crit", max: 30 * 60 * 1000, dotCls: "zu-rdot-crit",
+      text: L("<30 分钟（呼吸闪烁）", "<30 min (pulsing)") },
+    { cls: "zu-rst-mid", max: 3 * 3600 * 1000, dotCls: "zu-rdot-mid",
+      text: L("30 分钟–3 小时", "30 min–3 h") },
+    { cls: "zu-rst-calm", max: Infinity, dotCls: "zu-rdot-calm",
+      text: L(">3 小时", ">3 h") },
+  ];
+  function rstTipHTML(v) {
+    var esc = function (s) { return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); };
+    /* rst-row 独立类名：rstTip 与 quotaTip 共用 zusage-quota-tip 类，<style> 是全局作用域，
+     * 复用 .rt-row 会与额度 tooltip 的两列布局互相覆盖（单行布局用户规格 2026-10-28）。 */
+    var out = '<style>.zusage-quota-tip .rst-row{margin:4px 0;color:var(--color-tooltip-foreground,#fafafa);overflow-wrap:anywhere}' +
+      ".zusage-quota-tip .rst-group{margin:6px 0 2px}" +
+      ".zusage-quota-tip .rst-group .rst-fam{color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      ".zusage-quota-tip .rst-row .rst-fam{color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      ".zusage-quota-tip .rst-row.rst-exp{color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      ".zusage-quota-tip .rst-h{font-weight:600;color:var(--color-tooltip-foreground,#fafafa);margin:0 0 7px}" +
+      ".zusage-quota-tip .rst-legend{display:flex;flex-wrap:wrap;gap:4px 14px;margin:0 0 6px;color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      ".zusage-quota-tip .rst-lg{display:inline-flex;align-items:center;gap:5px}" +
+      ".zusage-quota-tip .rst-dot{width:8px;height:8px;border-radius:50%;flex:0 0 auto}" +
+      ".zusage-quota-tip .zu-rdot-calm{background:#3ecf8e}" +
+      ".zusage-quota-tip .zu-rdot-mid{background:#f5b944}" +
+      ".zusage-quota-tip .zu-rdot-crit{background:#ff6b57}" +
+      ".zusage-quota-tip.zu-light .zu-rdot-calm{background:#0f9d6c}" +
+      ".zusage-quota-tip.zu-light .zu-rdot-mid{background:#b6791a}" +
+      ".zusage-quota-tip.zu-light .zu-rdot-crit{background:#d8482f}" +
+      '.zusage-quota-tip .rst-note{margin-top:8px;padding-top:7px;border-top:1px solid var(--color-popover-border,var(--color-border,transparent));color:var(--color-tooltip-tag-foreground,#a6a6a6);overflow-wrap:anywhere}' +
+      ".zusage-quota-tip .rst-howto{margin-left:6px;background:none;border:1px solid var(--color-border,rgba(255,255,255,.14));border-radius:999px;color:inherit;font:inherit;font-size:.85em;line-height:1.5;padding:0 9px;cursor:pointer}" +
+      ".zusage-quota-tip .rst-howto:hover{color:var(--color-tooltip-foreground,#fafafa);border-color:var(--color-border-hover,rgba(255,255,255,.24))}</style>" +
+      '<div class="rst-h">' + L("额度重置卡", "Quota reset cards") + "</div>";
+    for (var i = 0; i < v.fams.length; i++) {
+      var e = v.fams[i].entry;
+      var label = RST_FAM_LABELS[v.fams[i].fam] || v.fams[i].fam;
+      var now = Date.now();
+      /* 账号名只作组头出现一次，卡片行不再重复前缀（用户规格 2026-10-28） */
+      out += '<div class="rst-group"><span class="rst-fam">' + esc(label) + "</span></div>";
+      /* 行首展示 grantType（用户规格 2026-10-28）：列表端点每卡自带，status 端点没有——
+       * 有列表数据（bigmodel 族 resetList 开启）时整组行改由列表渲染，否则回退 status 行（无前缀） */
+      var listData = e.list && typeof e.list === "object" &&
+        (Array.isArray(e.list.fiveHour) || Array.isArray(e.list.week)) ? e.list : null;
+      if (listData) {
+        var rows = [];
+        [["fiveHour", L("5小时卡", "5-hour card")], ["week", L("周卡", "Weekly card")]].forEach(function (group) {
+          if (!Array.isArray(listData[group[0]])) return;
+          listData[group[0]].forEach(function (card) {
+            var t = card && card.expireAt;
+            if (typeof t !== "number" || !isFinite(t) || t <= now - 7 * 86400000) return;
+            rows.push({ time: t, label: group[1], expired: t <= now, grantType: card.grantType || "" });
+          });
+        });
+        rows.sort(function (a, b) { return a.expired - b.expired || a.time - b.time; });
+        if (!rows.length) out += '<div class="rst-row">' + L("暂无重置卡", "no reset cards") + "</div>";
+        rows.forEach(function (card) {
+          var prefix = rstGrantText(card.grantType);
+          if (prefix) prefix += " ";
+          out += '<div class="rst-row' + (card.expired ? " rst-exp" : "") + '">' +
+            esc(prefix + card.label + " · " + (card.expired ? L("已过期 ", "Expired ") : L("到期 ", "Expires ")) + qTimeS(card.time)) + "</div>";
+        });
+        var lastRow = [];
+        if (e.lastFiveHour) lastRow.push(L("5小时窗 ", "5-hour ") + e.lastFiveHour.slice(0, 19));
+        if (e.lastWeek) lastRow.push(L("周窗 ", "weekly ") + e.lastWeek.slice(0, 19));
+        if (lastRow.length) {
+          out += '<div class="rst-row">' + esc(L("上次重置 ", "last reset ") + lastRow.join(L("；", "; "))) + "</div>";
+        }
+      } else {
+      var cards = [];
+      [[e.fiveHour, L("5小时卡", "5-hour card")], [e.week, L("周卡", "Weekly card")]].forEach(function (group) {
+        if (!Array.isArray(group[0])) return;
+        group[0].forEach(function (card) {
+          var t = card && card.expireAt;
+          if (typeof t !== "number" || !isFinite(t) || t <= now - 7 * 86400000) return;
+          cards.push({ time: t, label: group[1], expired: t <= now });
+        });
+      });
+      /* 旧冷主进程（resetList 之前）的字段名是 history：只有近 7 天过期卡。热文件先于冷
+       * 文件部署是常态，渲染端必须兼容两种字段，否则过期行在重启前整段消失（实测）。 */
+      var legacyHist = e.history && typeof e.history === "object" ? e.history : null;
+      if (legacyHist) {
+        var seenValid = {};
+        cards.forEach(function (card) { seenValid[card.label + card.time] = 1; });
+        var legacyExpired = [];
+        [["fiveHour", L("5小时卡", "5-hour card")], ["week", L("周卡", "Weekly card")]].forEach(function (group) {
+          if (!Array.isArray(legacyHist[group[0]])) return;
+          legacyHist[group[0]].forEach(function (card) {
+            var t = card && card.expireAt;
+            if (typeof t !== "number" || !isFinite(t) || t > now || now - t > 7 * 86400000) return;
+            if (seenValid[group[1] + t]) return;
+            legacyExpired.push({ time: t, label: group[1] });
+          });
+        });
+        legacyExpired.sort(function (a, b) { return b.time - a.time; });
+        legacyExpired.forEach(function (card) {
+          cards.push({ time: card.time, label: card.label, expired: true });
+        });
+      }
+      cards.sort(function (a, b) { return a.expired - b.expired || a.time - b.time; });
+      if (!cards.length) out += '<div class="rst-row">' + L("暂无重置卡", "no reset cards") + "</div>";
+      cards.forEach(function (card) {
+        out += '<div class="rst-row' + (card.expired ? " rst-exp" : "") + '">' +
+          esc(card.label + " · " + (card.expired ? L("已过期 ", "Expired ") : L("到期 ", "Expires ")) + qTimeS(card.time)) + "</div>";
+      });
+      }
+    }
+    var footBusy = false, footStale = false, footAt = 0;
+    for (var fi2 = 0; fi2 < v.fams.length; fi2++) {
+      var fe = v.fams[fi2].entry;
+      if (fe.busy) footBusy = true;
+      if (fe.stale) footStale = true;
+      if (fe.fetchedAt > footAt) footAt = fe.fetchedAt;
+    }
+    var foot = footBusy ? L("查询中…", "Querying…") : (footAt ? L("更新于 ", "updated ") + qTime(footAt) : "");
+    if (footStale) foot += (foot ? " · " : "") + L("部分数据已过期，等待刷新", "some data stale, refreshing");
+    /* 颜色图例：色点类与徽标三档同源（RST_BANDS），浅色主题由 rstTip 的 .zu-light 组覆盖 */
+    var legend = '<div class="rst-legend">';
+    for (var li = 0; li < RST_BANDS.length; li++) {
+      legend += '<span class="rst-lg"><i class="rst-dot ' + RST_BANDS[li].dotCls + '"></i>' + esc(RST_BANDS[li].text) + "</span>";
+    }
+    legend += "</div>";
+    out += '<div class="rst-note">' + legend +
+      L("徽标颜色按最快到期卡的剩余时间变化；每 5 分钟查询一次，倒计时按本机时钟推算。", "The badge color tracks the soonest card's time left; polled every 5 minutes, countdown computed locally.") + "<br>" +
+      L("重置卡核销后立即把对应额度窗口恢复到 100%；到期未用自动作废。", "Using a card restores its quota window to 100% instantly; unused cards expire.") +
+      ' <button type="button" class="rst-howto">' + L("如何重置", "How to reset") + "</button></div>";
+    return out;
+  }
+  function showRstTip(el) {
+    if (stale() || !el || !el.isConnected || !el.__zuR) { hideRstTip(); return; }
+    var html = rstTipHTML(el.__zuR);
+    if (rstTip.__zuTipSig !== html) {
+      rstTip.innerHTML = html;
+      rstTip.__zuTipSig = html;
+    }
+    /* 图例浅色色点随宿主主题换装（每次悬停时同步；悬停中切主题属边缘态，下次悬停校正） */
+    var dark = true;
+    try { dark = document.documentElement.classList.contains("dark"); } catch (e) { }
+    rstTip.classList.toggle("zu-light", !dark);
+    rstTip.style.display = "block";
+    var r = el.getBoundingClientRect(), tw = rstTip.offsetWidth, th = rstTip.offsetHeight;
+    var vw = window.innerWidth, vh = window.innerHeight;
+    var left = Math.max(8, Math.min(r.left, vw - tw - 8));
+    var top = r.top - th - 8;
+    if (top < 8) top = Math.min(r.bottom + 8, vh - th - 8);
+    rstTip.style.left = Math.round(left) + "px";
+    rstTip.style.top = Math.round(top) + "px";
+    rstTipFor = el;
+  }
+  function hideRstTip() {
+    cancelRstHide();
+    rstTip.style.display = "none";
+    rstTipFor = null;
+  }
   /* 余额文本（文档级：tooltip 与实例 chip 共用）。CNY→¥、USD→$，其它带代码前缀。
    * currency 是远程响应字符串且本函数输出直接进 innerHTML（chip 与 tooltip 双 sink），
    * 在函数内统一转义（2026-10-24 审计：恶意/被黑中转可借 currency 注入）；amount 恒经
@@ -641,6 +900,7 @@
     /* chip 随宿主重建被替换时浏览器不发 mouseleave，tooltip 会悬挂；豁免滚动收起（v106）
      * 后此处是 detach 场景的兜底健康检查（500ms 周期，与速率行扫描共用足迹） */
     if (quotaTipFor && !quotaTipFor.isConnected) hideQuotaTip();
+    if (rstTipFor && !rstTipFor.isConnected) hideRstTip();   // v135：徽标随宿主重建 detach 的兜底收起
     scanPluginNotices();
     rateBindings = rateBindings.filter(function (binding) {
       if (state.rateLine && isRateLine(binding.el)) return true;
@@ -671,6 +931,8 @@
     rateTip.remove();
     hideQuotaTip();
     quotaTip.remove();
+    hideRstTip();
+    rstTip.remove();
     window.removeEventListener("scroll", hideTipsOnScroll, true);
     if (window.__zusageRateCleanup === cleanupRateTip) delete window.__zusageRateCleanup;
   }
@@ -1472,7 +1734,10 @@
   /* ---------- 实例工厂（v61.1）：一个 pane 一套 条/面板/气泡/tooltip/定位循环。
    * slot 0 保留 #zusage-bar/#zusage-tip 兼容 id（泵热更新按它清理），其余实例仅类名。 */
   function spawnInstance(pid, slot) {
-    var VERSION = "v134";   // v82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v84 主标签页远端路由（工作台分组唯一主绑定上报 + 迟到载荷守卫，issue #30）→ v85 回答末尾统计行跟随万/亿开关 + tok→token → v86 历史轮 tracker 无记录（窗口滑出/换代/热更）或缺输出字段不再翻成"本轮统计不可用"，加 det 诊断 → v87 主叶归属增 last-session 回退（组零证据时唯一远端记录放行，issue #30 复测：单会话主标签页不建组）→ v88 运行态心跳与两处扫描 tick 2s→0.5s（富文本重试 6→24 次等价放大）→ v89 ⚙ 面板更新进度：downloading 阶段文案 + 下载（字节）/安装（校验→安装→同步）双进度条，缺 progress 的旧主进程自动隐藏 → v90 主标签页/分栏归属改按本窗会话节点身份（renderer 桥按版本/资产/锚点写 SessionPane 属性，移除 workbench-groups/last-session 共享回退）+ 心跳 0.5s→0.1s（扫描维持 0.5s）→ v91 设置页/权限面板冒条修复（PR #44：inSettingsView 三处派发排除 + anchorCardOf 面板锚点改判）收编收尾：排除标记并集（settings-page testid + content/panel 双 frame）、track 显隐第四处防御 → v92 ⚙ 更新区固定显示可复制的重装口令（源码安装无法自动更新时引导用户发给 agent）→ v93 原生上下文按钮（chat-context-usage-trigger）增强：环填充/四档色/右侧百分比镜像状态条上下文格（ctxBandOf 同源），cw 缺失还原原生形态 → v94 状态条删除「上下文容量」格（UI+tooltip，该口径由原生按钮增强承载），⚙ 面板同步去掉「上下文」开关，子代理格改始终展示（零值也显示）→ v95 ⚙ 更新区去掉 v92 重装口令提示块（源码清单的仓库来源改由宿主插件管理器直接更新，不再报渠道不一致），更新来源文案增「仓库源码」分支→ v96 套餐额度 chip（默认关）：挂原生上下文按钮左侧（wrapper 内前插，与按钮增强同款双 reapply/还原），数据来自主进程 quota 字段（解密宿主 OAuth 凭据直查 monitor 端点，账号级套餐池口径），会话首个 main_turn 完成前不显示；自绘 tooltip 走 rateTip 独立浮层模式；chip 改多窗分段：每窗一段（中文 5小时/7天，英文 5h/7d）各自按 80/95/100 档位色，分隔符 |；余额类型单段渲染就绪（余额 ¥100.00，阶段 3 数据源接入即用）；去掉环形，容器不着色 → v97 子代理速率（T1+T2）：zusage sub 汇总加 rate_avg/每子代理 tps_avg（已完成段加权平均，口径同 _turn_rate），子代理格 tooltip/明细面板展示；Agent 运行期主 chip 附加「子代理运行中 · 估 X t/s」——turn-stats 透传 subagent 行 childSessionId，overlay 据此用同款 zuTryBindStore 绑子代理会话 store 做字符增量估算（运行中请求未入库，DB 无实时数据；150s 采样实锤零 running 行），思考文本不进 rows 时退回纯状态词；工具动词「正在运行子智能体」压成「子代理运行中」（web 同步文案）；同日多槽位化：turn-stats 暴露 runningSubagents 全集（并行时 rowId 前 8 个），每子代理独立绑定/2s 节流，主 chip 显示合计速率（并行 ≥2 时动词后缀 ×N），chip tooltip 与子代理明细面板逐个实时展示运行中估算（tooltip 随原地改字同步 __tip 重画；面板 800ms tick 原地刷新 .subrate，汇总页运行块含 DB 尚无记录的新子代理） → v98 额度实时选源恢复（v4-model-config 观察 + quota-providers 全窗快照上报 + byProvider 定向刷新、空选择 fail-closed）与 sub2api 额度 UI（今日/本月窗口、窗口行内金额明细、Key 总额度、订阅截止、账户余额标题） → v99（主线并流）tooltip 伪边界 leave 过滤：Chrome 悬停链收缩/重算会补发 DOM 内部的 documentElement/tip mouseleave，tipLeaveAt 贴边判定后取触发时刻最深 :hover 元素甄别，仍悬停在本档具体元素上即伪 leave 一律忽略交回 mousemove 流（主线 v100 滚动豁免=本链 v106 同义，不另列） → v99.1（主线并流）apiKey 模式 BigModel/Z.ai（bigmodel-api[-N]/zai-api[-N]）额度 chip 标题家族判定（issue #68；数据链在 quota-client） → v99.2 思考中计时随语言本地化（中文「1 时 2 分 3 秒」/英文「1 h 2 m 3 s」，空格分隔、零段照旧省略）；回答末尾行采样时刻改完整中文日期时间（⏱ 2026 年 10 月 23 日 11 点 20 分 28 秒，token_rate.py format_turn_line 同步改版） → v100 设置面板分区导航（ZCode 设置侧栏同款：左栏三组分区导航 + 内容区单分区显隐，激活项 aria-current="page"，选择持久化 zusage3.sec；面板窄于 620px 时导航收成 icon rail） → v101 设置面板高度在打开瞬间按内容自然高锁定（切分区不再抖动，resize 只收紧不放大） → v102 额度源预设模板（CC Switch/magpie 同款选模板只填 Key：官方域变体 chip 一键写入 secrets baseUrl，minimax 可信域机制推广到 siliconflow 币种随域；deepseek/openrouter/kimi/anthropic/mimo/volcano 附控制台取 Key 链接，走 openExternal 桥） → v103 额度源列表卡片化布局（每源圆角卡片+间距，凭据框限宽 420px，长说明段落补水平边距；纯 CSS，结构行为不变） → v104 源状态文案补 disabled=已关闭映射 + 主进程对显式关闭源统一报 disabled（修「开关已关却显示待查询」矛盾）；刷新/获取 Key 按钮补 title 提示，关闭源的刷新按钮禁用 → v105 「上下文容量」弹层（hover-card-content）内压缩上下文按钮：命中率行下方全宽胶囊按钮（原生 secondary 配色全走客户端语义变量），弹层关即卸载（Radix 无 forceMount）故 body MutationObserver + heavy 对账双触发、DOM 存在性幂等（多实例安全），插入锚=「剩余额度」border-t 段前（缺则容器尾）+位置兜回；点击弹原生 AlertDialog 视格确认框（遮罩/Esc/外点关闭、Enter 确认），确认后优先走 fiber 上原生残留的 onSendCompressionCommand("/compact")（SessionPane 压缩入口，不动输入框草稿），缺失回落官方 E2E 输入桥 __zcodeLexicalInputE2E.setText + 发送键（Lexical 直写 DOM 不生效，禁用该路径；草稿非空拒绝） → v106 额度 tooltip 滚动豁免：hideTipsOnScroll 不再收 quotaTip（chip 固定 composer 工具行与 gitTip 同理），修思考中流式输出自动滚动致悬停弹出即灭；chip 随宿主重建 detach（无 mouseleave）由 scanRateLines 加 isConnected 健康检查兜底收起 → v107 压缩确认框补行为提示：压缩进行中发送新消息/停止会打断压缩（实测 16:27 新 turn 启动同秒 compact turn TURN_CANCELLED，cancelled_by_user=1；引擎对该次摘要流挂起 134s 无首 token 也不重试 retryable=0），确认框加 hint 行中性告知 → v108 压缩主通道按用户指定改为字面 "/compact" 输入提交（E2E 桥 setText+发送键；流式中 v4-stop 可见/草稿非空/发送键 disabled 三重拒绝），fiber 命令信封降兜底；hint 升级为「通常需 2-4 分钟且无进度反馈」（DB 实证：全库 compact 请求无首 token 但正常完成，72s-9.6min，14:44 同会话同模型 165s 成功先例；16:25/16:43 两次「卡住」实为 2m20s 被新消息 TURN_CANCELLED，非故障） → v109 压缩主通道按用户指定改回直接调会话发送接口（fiber onSendCompressionCommand 命令信封：不碰输入框/发送键、流式中交引擎排队，修字面输入通道在生成中被发送键禁用卡住的问题），字面 "/compact" 输入提交降兜底（三重门控仅作用于兜底） → v110 压缩提交函数改在弹框打开瞬间（弹层必存活、锚点几何可信）解析并缓存，修复确认时弹层已被 Radix 卸载、几何重解析退化为「离视口左上角最近」致多分栏把 /compact 发进错误会话（P1）；兜底字面输入通道的流式/发送键/草稿三重门控全部前置到 setText 之前（拒绝不再残留草稿）；Enter 确认限定焦点在弹框内（无焦点陷阱下防焦点外 Enter 误触发确认） → v111 额度 chip 默认展示：quota_enabled 缺省开（显式 false 才关，真值链在 inject-main）；chip 二级门控 not_configured/unsupported 从静默隐藏改中性灰提示「额度 未配置/暂不支持」（源被 ⚙ 显式关闭仍隐藏），tooltip 补 info 分支引导配置 → v112 Start Plan 免费档池（quota-client 新增 zcode-start 适配器走 zcode.z.ai billing/balance 独立链，与 coding plan 的 monitor 端点分池；选源路由与 quotaFamily 判定补 start-plan 分支修 start-plan pane 误读 GLM Coding Max 池；chip 增「套餐」分段（windows.plan，one_time 发放池聚合已用%），tooltip 套餐池行按 expires 标记切「到期」措辞） → v113 夜间审计加固：quotaBalanceText 内建转义（currency 是远程响应字符串，chip/tooltip 双 innerHTML sink；parts label/amount 单次转义修双重转义；「其他源」行标签转义归位；aria-label 走 plain 纯文本变体不读实体）→quotaTip 补内容签名幂等 __zuTipSig（同 gitTip，悬停期间周期对账不再打断文本选择）→子代理明细面板数据签名幂等（滚动位置/选择不被每 1.5s 推送整面板重建重置；运行中估算仍由面板 800ms tick 原地刷新）→额度 chip 签名重写保留 zu-qbusy（点击刷新动画不被推送截断，同 git chip）→⚙ 源列表 id/label/preset/keyUrl 属性级转义 aEsc（custom:<providerId> 可含用户自定义名）→live 速度 span 的 speedView.text 过 ttEsc（工具名是宿主/MCP 可控字符串）→渲染桥两处订阅回调尾部 updateLive() try 包裹（异常不冒进宿主 store 通知分发，诊断键 subLiveErr/bridgeLiveErr 记录） → v114 积压清单清扫：remoteCache/remoteTodayCache/richTextCache/richTextAttempts 上限淘汰（长会话防无界增长）；dispose 清理补 __zusageDeliverTurnText/__zusageSidWs/__zusagePaneScopes（旧代闭包自卫之外的清理完整性）；诊断 lsVals 只转储 zusage 命名空间的 localStorage 键（宿主其余键值不进 diag 文件） → v115 渲染循环省电（上游 xhwxt PR #26/#28 同源问题）：幽灵子树/遮挡命中/模态判定加 TTL 缓存（120/150ms，命中绑定元素矩形+模式），track 在 document.hidden 时整帧跳过；未采纳其 600ms↔2s 调度降频（heavy 600ms 对账是与 render 并列的 React 重写兜底契约，降频会让增强节点裸奔 2s） → v116 「思考中」卡死修复（源码复核定案）：v87 合成分支条件收紧——仅「空窗口非终态（draft 空窗，v87 本意）或 control.phase=running」才合成思考中，删除「行非空」析取项（宿主 wire 快照 rows.window 恒为全序尾 60 行，末轮超窗的闲置会话整窗无 turnHeader，旧条件使其永久点亮思考中、切回重绑重新计时）；思考计时锚定 turnHeader.startedAt（宿主创建 header 恒写入，重绑不清零，缺字段回退首观测）→ v117 悬停命中区扩到整栏（fork lliangworld b21e3cf0 同源收编）：条目空隙/分隔符按 sep 中线就近归属、尾部空隙归末位条目，⚙ 与空条面维持保持不动；防闪烁改由节流+幂等承担 → v118 无障碍与主题重构（并行会话批次）：条目可聚焦（span tabindex / zu-sub 真按钮 + aria-label）、键盘可达 tooltip（focusin/focusout + Escape 收起）、focus-visible 焦点环、SVG 图标与思考动画改 currentColor 随主题、⚙ 面板请求-回执协议（requestId + __zusagePluginResult，feedbackVersion 1）、quota 源操作错误语义、统计行开关即时重扫 → v119 插件自动检查改为每 1 小时，更新区双语提示更新器变更需完全退出并重开 → v120 Git 手动刷新改请求-回执协议（askGitRefresh 带 path/requestId，主桥 gitTick 完成后经 __zusagePluginResult 回执、在途请求合并等待，按请求 path 校验结果）+ 状态条 aria-live sr-only 播报区（套餐额度查询中/Git 刷新状态）+ ⚙ 面板高度上限 82vh→90vh + 模态判定改按可见 dialog（display/visibility/opacity 过滤） → v121 状态条 .ico 与 ⚙ 齿轮图标盒由 calc(字号+4px) 改为等宿主字号（24 格线性图标墨迹只占盒 75–83%，18px 顶满 1.3 行盒显大，且加法常量令比例随字号漂移 1.33×→1.20×；用户实机定 1.0×，.eb .ico 12px 特例不变） → v122 Git chip 展开测量完整宽度并留 32px 迟滞余量，切断宿主 compact 反馈环（issue #100） → v123 Git chip 锚点按电脑操作→上下文→模式→思考回退，排除隐藏探针并随可见锚点迁移（issue #103） → v124 Git chip 固定左侧操作区，移除右侧上下文/思考回退 → v125 思考计时中文全紧邻「7分16秒」（时段间空格去除，用户要求；英文「7 m 16 s」不动） → v126 思考计时英文数字与单位紧邻「7m 16s」（时段间留空格，用户要求） → v127 tok/s 速度十档色（TPS_BANDS 唯一事实源，原始值分档含下限不含上限：<40 低速红 / 40–70 一般黄 / 70–150 流畅绿沿用原三档类名与实测色，150 起新增蓝紫系 zu-teal/zu-sky/zu-azure/zu-violet/zu-purple/zu-magenta，≥2000 Ultra 静态蓝紫渐变 + ✦ 星点（::before content:"✦"/"" AT 静音、@supports 外纯紫回退，浅色组同名覆盖渐变）；估算态与完成态同表分档（用户规格，原「估算态不分档」废止），无效值（负数/NaN/±∞）一律中性 dim 或回退 DB 绝不判低速，DB 回退分支负数/非有限不再渲染 chip；tooltip 档位行改动态「名称 · lo–hi t/s」消解 toFixed 舍入边界歧义，另加静态「颜色对照」图例（十档数值↔颜色升序一览，档位类与条面同源随主题切换）；额度正常态改额度蓝 #78a9ff/浅 #315fc4（.zu-qseg 专属基色，不碰全局 .ok——上下文与速度前三档仍绿），周期标签拆 zu-qlabel 子节点中性次级色常规字重（textContent/aria/tooltip 不变），quotaSegs 补 isFinite 门防 NaN/±∞ 落正常蓝；正常态再改 CCometixLine 同源柔和低饱和（用户规格）：普通窗灰蓝 #8abbd0/浅 #276f86、7 天窗按 quotaSegs 结构化 key 挂 zu-qweekly 淡紫 #b69ad8/浅 #76509f（不匹配显示文本），周期标签与数值同色成组仅标签降字重，上下文按钮正常绿改 #72c9a2/浅 #187b58（限按钮作用域，速度与全局 .ok 不动）） → v129 模型拉取分区（收编 HHQ-666/zcode-model-puller，MIT）：⚙ 基础组新分区列宿主 provider_config.json 的 API Key 型自定义供应商，经主进程拉取其 /models（候选端点探测、OpenAI data/Ollama models/顶层数组形状解析、Bearer+x-api-key 双头），弹窗勾选（已添加/新模型徽标、搜索过滤、全选/清空/仅选新、选中计数）后经 model-pull-apply 最小写回（personalModelIds+modelOrder 追加、providerModelRules 复制同供应商模板条目、同目录原子替换+滚动备份 .zusage-bak、未知键保留）；key 只在主进程内存、只发该 baseUrl 本域，不回渲染端不进日志；请求回执 20s 兜底超时（旧主进程无 action 时提示完全重启而非永久 loading） → v130 拉取算法吸收 GLQQX/zcode-model-discovery-patch 与 linguo2625469/zcode-patcher：字段别名全集（id/modelId/name/model、context_length/contextWindow/context_window/limit/limits、max_completion_tokens/max_output_tokens/maxOutputTokens/limit/limits/top_provider、payload 增 result 形状）、多模态感知（architecture.input_modalities/input_modalities/modalities.input + vision/supports_vision 布尔 ⇒ 宿主 inputFormat 稀疏能力位，缺位写实 false）、思考档位感知（supported_efforts 去重截 16 ⇒ reasoningLevel.values）、models.dev 公共目录补缺（并行拉取 5s 超时失败静默降级、id 精确→basename 唯一匹配、字段级供应商优先、key 与本机数据绝不发往目录、进程内 1h 缓存）、applyModels 按模型写实 config（contextWindow/inputFormat/optionSpecs；元数据走主进程 fetchCache 闭环、渲染端只回传 id 无法注入字段；模板带 map 表达式的 optionSpecs 整体不覆盖防 values 换名失配；无依据字段保持模板原样、不编造默认值）；弹窗行新增 ctx/out 可见小字与档位 title，分区说明补 models.dev 联网披露；review 修复：勾选表/已添加表/metaById 改 null 原型（模型 id 来自远端，__proto__ 等键静默失败丢勾选态）、实例 dispose 同步摘除模型拉取弹窗与 Esc 监听（原仅整体 dispose 摘除，pane 关闭后弹窗跨代泄漏且确认回调 inactive 早退卡保存中文案）、重开面板停在模型拉取分区时立即刷新列表、请求兜底超时 20s→25s（主进程最坏双端点 20s 防假超时）、主进程响应体 8MB 限长解析与 tmp 文件名带 pid 防双实例竞写 → v131 额度/上下文五档色（用户规格 2026-10-27）：CTX_BANDS/QUOTA_BANDS 唯一事实源（{min,cls} 有序表，bandOf 从高到低首个命中），阈值 30/50/80/90（含下限不含上限）——额度 calm/norm/mid/high/crit=emerald/sky/amber/orange/rose（暗 400/浅 700），上下文 calm/norm/mid/high/crit=slate/indigo/violet/orange/red；data-zusage-band 与 zu-qb-* CSS 双主题成对；pct span 与 SVG 环一律继承按钮 currentColor（.zu-ctxpct.ok 系独立色废止）；tabular-nums 原已覆盖 .zu-quota/.zu-ctxpct；v92 百万窗口提前预警（40/60）与 v127 额度正常态灰蓝/7 天窗淡紫（按窗口类型着色）随「仅按百分比」规格废止；额度 ≥100% 满档保留呼吸闪烁特效（zu-qb-exc，用户规格；90–99 为 crit 纯色）；压缩过程态（exc）优先档保留；余额/Key 额度段挂 calm 档色 → v132 模型拉取挂载点迁移（用户指令）：⚙ 设置分区删除（ZU_SECTIONS/section/ensureMpProviders/syncMpList/startMpFetch/mpFeedback 全撤），改挂官方「模型设置⇒自定义供应商」的「+ 添加模型」按钮左侧（锚 data-testid=model-provider-add-model-button，额度 chip 同款 enhance/restore 契约：render/heavy 双对账+位置兜回+自清选择器 .zu-mp-host）；供应商归属优先读设置页表单 http(s) Base URL 归一化匹配（唯一命中直拉），否则单供应商直用/多供应商弹 zu-mp-pick 选择列表/无供应商弹提示；按钮视觉复刻原生 secondary 视格（同页 Tailwind utility bg-secondary h-7 rounded-lg），⚡ 图标 stroke currentColor；弹窗抽通用壳 openMpShell（勾选弹窗/供应商选择/错误提示共用），apply 成功关弹窗由宿主自动刷新列表；供应商归属改主判定=当前选择的供应商（读宿主源码定案：导航项 testid=model-provider-nav-item-<nodeKey>、custom 项 nodeKey=custom:<providerId>、选中项 data-state=selected），providerId 精确匹配不受编辑草稿影响；Base URL 匹配降兜底（专用 testid model-provider-base-url-input 优先于表单启发式），弹窗对齐 HHQ 形态（⚡统计标题/搜索占位/仅选新模型计数/已选中 n 个模型/蓝实底确认钮）并自带 .zu-light 随宿主主题实时换装；review 二轮修复：上下文按钮浅色档补 data-zusage-armed 特异性（浅色主题 norm~crit 曾被暗色 0,3,0 规则恒胜）、model-puller 非 ok 响应体显式 cancel（undici 连接卫生）、宿主按钮 ml-auto（锚容器 justify-between 三子项均匀分布致按钮居中）、确认钮改固定蓝 #3B82F6/#2563EB（客户端 --color-brand 深色主题是白系，白底白字隐形）、拉取按钮仅在选中的是 custom 供应商时挂载（锚 testid 全局唯一，内置/套餐页同 testid）、拉取中按钮文本「拉取中…」+图标旋转（原透明度脉冲无感知） → v133 Git 计数缩写（用户规格 2026-10-28）：chip/tooltip 的行数·条目·↑↓·冲突计数 <1万原值，≥1万 中文（cnUnits 判定）万/亿、英文 k/M/B（k 门槛刻意抬到 1万，与 token fmt 的 K≥1000 不同，小写 k 至多两位小数去尾零紧邻）；仓库个数与 aria 播报保持原值 → v134 额度与上下文保留既有阈值并统一绿黄红三档视觉；统一字号为宿主基准减 1px，周期标签加粗并微调分隔符   // 悬停 ⚙ 面板可见；版本号随代际递增
+    var VERSION = "v138";   // v82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v84 主标签页远端路由（工作台分组唯一主绑定上报 + 迟到载荷守卫，issue #30）→ v85 回答末尾统计行跟随万/亿开关 + tok→token → v86 历史轮 tracker 无记录（窗口滑出/换代/热更）或缺输出字段不再翻成"本轮统计不可用"，加 det 诊断 → v87 主叶归属增 last-session 回退（组零证据时唯一远端记录放行，issue #30 复测：单会话主标签页不建组）→ v88 运行态心跳与两处扫描 tick 2s→0.5s（富文本重试 6→24 次等价放大）→ v89 ⚙ 面板更新进度：downloading 阶段文案 + 下载（字节）/安装（校验→安装→同步）双进度条，缺 progress 的旧主进程自动隐藏 → v90 主标签页/分栏归属改按本窗会话节点身份（renderer 桥按版本/资产/锚点写 SessionPane 属性，移除 workbench-groups/last-session 共享回退）+ 心跳 0.5s→0.1s（扫描维持 0.5s）→ v91 设置页/权限面板冒条修复（PR #44：inSettingsView 三处派发排除 + anchorCardOf 面板锚点改判）收编收尾：排除标记并集（settings-page testid + content/panel 双 frame）、track 显隐第四处防御 → v92 ⚙ 更新区固定显示可复制的重装口令（源码安装无法自动更新时引导用户发给 agent）→ v93 原生上下文按钮（chat-context-usage-trigger）增强：环填充/四档色/右侧百分比镜像状态条上下文格（ctxBandOf 同源），cw 缺失还原原生形态 → v94 状态条删除「上下文容量」格（UI+tooltip，该口径由原生按钮增强承载），⚙ 面板同步去掉「上下文」开关，子代理格改始终展示（零值也显示）→ v95 ⚙ 更新区去掉 v92 重装口令提示块（源码清单的仓库来源改由宿主插件管理器直接更新，不再报渠道不一致），更新来源文案增「仓库源码」分支→ v96 套餐额度 chip（默认关）：挂原生上下文按钮左侧（wrapper 内前插，与按钮增强同款双 reapply/还原），数据来自主进程 quota 字段（解密宿主 OAuth 凭据直查 monitor 端点，账号级套餐池口径），会话首个 main_turn 完成前不显示；自绘 tooltip 走 rateTip 独立浮层模式；chip 改多窗分段：每窗一段（中文 5小时/7天，英文 5h/7d）各自按 80/95/100 档位色，分隔符 |；余额类型单段渲染就绪（余额 ¥100.00，阶段 3 数据源接入即用）；去掉环形，容器不着色 → v97 子代理速率（T1+T2）：zusage sub 汇总加 rate_avg/每子代理 tps_avg（已完成段加权平均，口径同 _turn_rate），子代理格 tooltip/明细面板展示；Agent 运行期主 chip 附加「子代理运行中 · 估 X t/s」——turn-stats 透传 subagent 行 childSessionId，overlay 据此用同款 zuTryBindStore 绑子代理会话 store 做字符增量估算（运行中请求未入库，DB 无实时数据；150s 采样实锤零 running 行），思考文本不进 rows 时退回纯状态词；工具动词「正在运行子智能体」压成「子代理运行中」（web 同步文案）；同日多槽位化：turn-stats 暴露 runningSubagents 全集（并行时 rowId 前 8 个），每子代理独立绑定/2s 节流，主 chip 显示合计速率（并行 ≥2 时动词后缀 ×N），chip tooltip 与子代理明细面板逐个实时展示运行中估算（tooltip 随原地改字同步 __tip 重画；面板 800ms tick 原地刷新 .subrate，汇总页运行块含 DB 尚无记录的新子代理） → v98 额度实时选源恢复（v4-model-config 观察 + quota-providers 全窗快照上报 + byProvider 定向刷新、空选择 fail-closed）与 sub2api 额度 UI（今日/本月窗口、窗口行内金额明细、Key 总额度、订阅截止、账户余额标题） → v99（主线并流）tooltip 伪边界 leave 过滤：Chrome 悬停链收缩/重算会补发 DOM 内部的 documentElement/tip mouseleave，tipLeaveAt 贴边判定后取触发时刻最深 :hover 元素甄别，仍悬停在本档具体元素上即伪 leave 一律忽略交回 mousemove 流（主线 v100 滚动豁免=本链 v106 同义，不另列） → v99.1（主线并流）apiKey 模式 BigModel/Z.ai（bigmodel-api[-N]/zai-api[-N]）额度 chip 标题家族判定（issue #68；数据链在 quota-client） → v99.2 思考中计时随语言本地化（中文「1 时 2 分 3 秒」/英文「1 h 2 m 3 s」，空格分隔、零段照旧省略）；回答末尾行采样时刻改完整中文日期时间（⏱ 2026 年 10 月 23 日 11 点 20 分 28 秒，token_rate.py format_turn_line 同步改版） → v100 设置面板分区导航（ZCode 设置侧栏同款：左栏三组分区导航 + 内容区单分区显隐，激活项 aria-current="page"，选择持久化 zusage3.sec；面板窄于 620px 时导航收成 icon rail） → v101 设置面板高度在打开瞬间按内容自然高锁定（切分区不再抖动，resize 只收紧不放大） → v102 额度源预设模板（CC Switch/magpie 同款选模板只填 Key：官方域变体 chip 一键写入 secrets baseUrl，minimax 可信域机制推广到 siliconflow 币种随域；deepseek/openrouter/kimi/anthropic/mimo/volcano 附控制台取 Key 链接，走 openExternal 桥） → v103 额度源列表卡片化布局（每源圆角卡片+间距，凭据框限宽 420px，长说明段落补水平边距；纯 CSS，结构行为不变） → v104 源状态文案补 disabled=已关闭映射 + 主进程对显式关闭源统一报 disabled（修「开关已关却显示待查询」矛盾）；刷新/获取 Key 按钮补 title 提示，关闭源的刷新按钮禁用 → v105 「上下文容量」弹层（hover-card-content）内压缩上下文按钮：命中率行下方全宽胶囊按钮（原生 secondary 配色全走客户端语义变量），弹层关即卸载（Radix 无 forceMount）故 body MutationObserver + heavy 对账双触发、DOM 存在性幂等（多实例安全），插入锚=「剩余额度」border-t 段前（缺则容器尾）+位置兜回；点击弹原生 AlertDialog 视格确认框（遮罩/Esc/外点关闭、Enter 确认），确认后优先走 fiber 上原生残留的 onSendCompressionCommand("/compact")（SessionPane 压缩入口，不动输入框草稿），缺失回落官方 E2E 输入桥 __zcodeLexicalInputE2E.setText + 发送键（Lexical 直写 DOM 不生效，禁用该路径；草稿非空拒绝） → v106 额度 tooltip 滚动豁免：hideTipsOnScroll 不再收 quotaTip（chip 固定 composer 工具行与 gitTip 同理），修思考中流式输出自动滚动致悬停弹出即灭；chip 随宿主重建 detach（无 mouseleave）由 scanRateLines 加 isConnected 健康检查兜底收起 → v107 压缩确认框补行为提示：压缩进行中发送新消息/停止会打断压缩（实测 16:27 新 turn 启动同秒 compact turn TURN_CANCELLED，cancelled_by_user=1；引擎对该次摘要流挂起 134s 无首 token 也不重试 retryable=0），确认框加 hint 行中性告知 → v108 压缩主通道按用户指定改为字面 "/compact" 输入提交（E2E 桥 setText+发送键；流式中 v4-stop 可见/草稿非空/发送键 disabled 三重拒绝），fiber 命令信封降兜底；hint 升级为「通常需 2-4 分钟且无进度反馈」（DB 实证：全库 compact 请求无首 token 但正常完成，72s-9.6min，14:44 同会话同模型 165s 成功先例；16:25/16:43 两次「卡住」实为 2m20s 被新消息 TURN_CANCELLED，非故障） → v109 压缩主通道按用户指定改回直接调会话发送接口（fiber onSendCompressionCommand 命令信封：不碰输入框/发送键、流式中交引擎排队，修字面输入通道在生成中被发送键禁用卡住的问题），字面 "/compact" 输入提交降兜底（三重门控仅作用于兜底） → v110 压缩提交函数改在弹框打开瞬间（弹层必存活、锚点几何可信）解析并缓存，修复确认时弹层已被 Radix 卸载、几何重解析退化为「离视口左上角最近」致多分栏把 /compact 发进错误会话（P1）；兜底字面输入通道的流式/发送键/草稿三重门控全部前置到 setText 之前（拒绝不再残留草稿）；Enter 确认限定焦点在弹框内（无焦点陷阱下防焦点外 Enter 误触发确认） → v111 额度 chip 默认展示：quota_enabled 缺省开（显式 false 才关，真值链在 inject-main）；chip 二级门控 not_configured/unsupported 从静默隐藏改中性灰提示「额度 未配置/暂不支持」（源被 ⚙ 显式关闭仍隐藏），tooltip 补 info 分支引导配置 → v112 Start Plan 免费档池（quota-client 新增 zcode-start 适配器走 zcode.z.ai billing/balance 独立链，与 coding plan 的 monitor 端点分池；选源路由与 quotaFamily 判定补 start-plan 分支修 start-plan pane 误读 GLM Coding Max 池；chip 增「套餐」分段（windows.plan，one_time 发放池聚合已用%），tooltip 套餐池行按 expires 标记切「到期」措辞） → v113 夜间审计加固：quotaBalanceText 内建转义（currency 是远程响应字符串，chip/tooltip 双 innerHTML sink；parts label/amount 单次转义修双重转义；「其他源」行标签转义归位；aria-label 走 plain 纯文本变体不读实体）→quotaTip 补内容签名幂等 __zuTipSig（同 gitTip，悬停期间周期对账不再打断文本选择）→子代理明细面板数据签名幂等（滚动位置/选择不被每 1.5s 推送整面板重建重置；运行中估算仍由面板 800ms tick 原地刷新）→额度 chip 签名重写保留 zu-qbusy（点击刷新动画不被推送截断，同 git chip）→⚙ 源列表 id/label/preset/keyUrl 属性级转义 aEsc（custom:<providerId> 可含用户自定义名）→live 速度 span 的 speedView.text 过 ttEsc（工具名是宿主/MCP 可控字符串）→渲染桥两处订阅回调尾部 updateLive() try 包裹（异常不冒进宿主 store 通知分发，诊断键 subLiveErr/bridgeLiveErr 记录） → v114 积压清单清扫：remoteCache/remoteTodayCache/richTextCache/richTextAttempts 上限淘汰（长会话防无界增长）；dispose 清理补 __zusageDeliverTurnText/__zusageSidWs/__zusagePaneScopes（旧代闭包自卫之外的清理完整性）；诊断 lsVals 只转储 zusage 命名空间的 localStorage 键（宿主其余键值不进 diag 文件） → v115 渲染循环省电（上游 xhwxt PR #26/#28 同源问题）：幽灵子树/遮挡命中/模态判定加 TTL 缓存（120/150ms，命中绑定元素矩形+模式），track 在 document.hidden 时整帧跳过；未采纳其 600ms↔2s 调度降频（heavy 600ms 对账是与 render 并列的 React 重写兜底契约，降频会让增强节点裸奔 2s） → v116 「思考中」卡死修复（源码复核定案）：v87 合成分支条件收紧——仅「空窗口非终态（draft 空窗，v87 本意）或 control.phase=running」才合成思考中，删除「行非空」析取项（宿主 wire 快照 rows.window 恒为全序尾 60 行，末轮超窗的闲置会话整窗无 turnHeader，旧条件使其永久点亮思考中、切回重绑重新计时）；思考计时锚定 turnHeader.startedAt（宿主创建 header 恒写入，重绑不清零，缺字段回退首观测）→ v117 悬停命中区扩到整栏（fork lliangworld b21e3cf0 同源收编）：条目空隙/分隔符按 sep 中线就近归属、尾部空隙归末位条目，⚙ 与空条面维持保持不动；防闪烁改由节流+幂等承担 → v118 无障碍与主题重构（并行会话批次）：条目可聚焦（span tabindex / zu-sub 真按钮 + aria-label）、键盘可达 tooltip（focusin/focusout + Escape 收起）、focus-visible 焦点环、SVG 图标与思考动画改 currentColor 随主题、⚙ 面板请求-回执协议（requestId + __zusagePluginResult，feedbackVersion 1）、quota 源操作错误语义、统计行开关即时重扫 → v119 插件自动检查改为每 1 小时，更新区双语提示更新器变更需完全退出并重开 → v120 Git 手动刷新改请求-回执协议（askGitRefresh 带 path/requestId，主桥 gitTick 完成后经 __zusagePluginResult 回执、在途请求合并等待，按请求 path 校验结果）+ 状态条 aria-live sr-only 播报区（套餐额度查询中/Git 刷新状态）+ ⚙ 面板高度上限 82vh→90vh + 模态判定改按可见 dialog（display/visibility/opacity 过滤） → v121 状态条 .ico 与 ⚙ 齿轮图标盒由 calc(字号+4px) 改为等宿主字号（24 格线性图标墨迹只占盒 75–83%，18px 顶满 1.3 行盒显大，且加法常量令比例随字号漂移 1.33×→1.20×；用户实机定 1.0×，.eb .ico 12px 特例不变） → v122 Git chip 展开测量完整宽度并留 32px 迟滞余量，切断宿主 compact 反馈环（issue #100） → v123 Git chip 锚点按电脑操作→上下文→模式→思考回退，排除隐藏探针并随可见锚点迁移（issue #103） → v124 Git chip 固定左侧操作区，移除右侧上下文/思考回退 → v125 思考计时中文全紧邻「7分16秒」（时段间空格去除，用户要求；英文「7 m 16 s」不动） → v126 思考计时英文数字与单位紧邻「7m 16s」（时段间留空格，用户要求） → v127 tok/s 速度十档色（TPS_BANDS 唯一事实源，原始值分档含下限不含上限：<40 低速红 / 40–70 一般黄 / 70–150 流畅绿沿用原三档类名与实测色，150 起新增蓝紫系 zu-teal/zu-sky/zu-azure/zu-violet/zu-purple/zu-magenta，≥2000 Ultra 静态蓝紫渐变 + ✦ 星点（::before content:"✦"/"" AT 静音、@supports 外纯紫回退，浅色组同名覆盖渐变）；估算态与完成态同表分档（用户规格，原「估算态不分档」废止），无效值（负数/NaN/±∞）一律中性 dim 或回退 DB 绝不判低速，DB 回退分支负数/非有限不再渲染 chip；tooltip 档位行改动态「名称 · lo–hi t/s」消解 toFixed 舍入边界歧义，另加静态「颜色对照」图例（十档数值↔颜色升序一览，档位类与条面同源随主题切换）；额度正常态改额度蓝 #78a9ff/浅 #315fc4（.zu-qseg 专属基色，不碰全局 .ok——上下文与速度前三档仍绿），周期标签拆 zu-qlabel 子节点中性次级色常规字重（textContent/aria/tooltip 不变），quotaSegs 补 isFinite 门防 NaN/±∞ 落正常蓝；正常态再改 CCometixLine 同源柔和低饱和（用户规格）：普通窗灰蓝 #8abbd0/浅 #276f86、7 天窗按 quotaSegs 结构化 key 挂 zu-qweekly 淡紫 #b69ad8/浅 #76509f（不匹配显示文本），周期标签与数值同色成组仅标签降字重，上下文按钮正常绿改 #72c9a2/浅 #187b58（限按钮作用域，速度与全局 .ok 不动）） → v129 模型拉取分区（收编 HHQ-666/zcode-model-puller，MIT）：⚙ 基础组新分区列宿主 provider_config.json 的 API Key 型自定义供应商，经主进程拉取其 /models（候选端点探测、OpenAI data/Ollama models/顶层数组形状解析、Bearer+x-api-key 双头），弹窗勾选（已添加/新模型徽标、搜索过滤、全选/清空/仅选新、选中计数）后经 model-pull-apply 最小写回（personalModelIds+modelOrder 追加、providerModelRules 复制同供应商模板条目、同目录原子替换+滚动备份 .zusage-bak、未知键保留）；key 只在主进程内存、只发该 baseUrl 本域，不回渲染端不进日志；请求回执 20s 兜底超时（旧主进程无 action 时提示完全重启而非永久 loading） → v130 拉取算法吸收 GLQQX/zcode-model-discovery-patch 与 linguo2625469/zcode-patcher：字段别名全集（id/modelId/name/model、context_length/contextWindow/context_window/limit/limits、max_completion_tokens/max_output_tokens/maxOutputTokens/limit/limits/top_provider、payload 增 result 形状）、多模态感知（architecture.input_modalities/input_modalities/modalities.input + vision/supports_vision 布尔 ⇒ 宿主 inputFormat 稀疏能力位，缺位写实 false）、思考档位感知（supported_efforts 去重截 16 ⇒ reasoningLevel.values）、models.dev 公共目录补缺（并行拉取 5s 超时失败静默降级、id 精确→basename 唯一匹配、字段级供应商优先、key 与本机数据绝不发往目录、进程内 1h 缓存）、applyModels 按模型写实 config（contextWindow/inputFormat/optionSpecs；元数据走主进程 fetchCache 闭环、渲染端只回传 id 无法注入字段；模板带 map 表达式的 optionSpecs 整体不覆盖防 values 换名失配；无依据字段保持模板原样、不编造默认值）；弹窗行新增 ctx/out 可见小字与档位 title，分区说明补 models.dev 联网披露；review 修复：勾选表/已添加表/metaById 改 null 原型（模型 id 来自远端，__proto__ 等键静默失败丢勾选态）、实例 dispose 同步摘除模型拉取弹窗与 Esc 监听（原仅整体 dispose 摘除，pane 关闭后弹窗跨代泄漏且确认回调 inactive 早退卡保存中文案）、重开面板停在模型拉取分区时立即刷新列表、请求兜底超时 20s→25s（主进程最坏双端点 20s 防假超时）、主进程响应体 8MB 限长解析与 tmp 文件名带 pid 防双实例竞写 → v131 额度/上下文五档色（用户规格 2026-10-27）：CTX_BANDS/QUOTA_BANDS 唯一事实源（{min,cls} 有序表，bandOf 从高到低首个命中），阈值 30/50/80/90（含下限不含上限）——额度 calm/norm/mid/high/crit=emerald/sky/amber/orange/rose（暗 400/浅 700），上下文 calm/norm/mid/high/crit=slate/indigo/violet/orange/red；data-zusage-band 与 zu-qb-* CSS 双主题成对；pct span 与 SVG 环一律继承按钮 currentColor（.zu-ctxpct.ok 系独立色废止）；tabular-nums 原已覆盖 .zu-quota/.zu-ctxpct；v92 百万窗口提前预警（40/60）与 v127 额度正常态灰蓝/7 天窗淡紫（按窗口类型着色）随「仅按百分比」规格废止；额度 ≥100% 满档保留呼吸闪烁特效（zu-qb-exc，用户规格；90–99 为 crit 纯色）；压缩过程态（exc）优先档保留；余额/Key 额度段挂 calm 档色 → v132 模型拉取挂载点迁移（用户指令）：⚙ 设置分区删除（ZU_SECTIONS/section/ensureMpProviders/syncMpList/startMpFetch/mpFeedback 全撤），改挂官方「模型设置⇒自定义供应商」的「+ 添加模型」按钮左侧（锚 data-testid=model-provider-add-model-button，额度 chip 同款 enhance/restore 契约：render/heavy 双对账+位置兜回+自清选择器 .zu-mp-host）；供应商归属优先读设置页表单 http(s) Base URL 归一化匹配（唯一命中直拉），否则单供应商直用/多供应商弹 zu-mp-pick 选择列表/无供应商弹提示；按钮视觉复刻原生 secondary 视格（同页 Tailwind utility bg-secondary h-7 rounded-lg），⚡ 图标 stroke currentColor；弹窗抽通用壳 openMpShell（勾选弹窗/供应商选择/错误提示共用），apply 成功关弹窗由宿主自动刷新列表；供应商归属改主判定=当前选择的供应商（读宿主源码定案：导航项 testid=model-provider-nav-item-<nodeKey>、custom 项 nodeKey=custom:<providerId>、选中项 data-state=selected），providerId 精确匹配不受编辑草稿影响；Base URL 匹配降兜底（专用 testid model-provider-base-url-input 优先于表单启发式），弹窗对齐 HHQ 形态（⚡统计标题/搜索占位/仅选新模型计数/已选中 n 个模型/蓝实底确认钮）并自带 .zu-light 随宿主主题实时换装；review 二轮修复：上下文按钮浅色档补 data-zusage-armed 特异性（浅色主题 norm~crit 曾被暗色 0,3,0 规则恒胜）、model-puller 非 ok 响应体显式 cancel（undici 连接卫生）、宿主按钮 ml-auto（锚容器 justify-between 三子项均匀分布致按钮居中）、确认钮改固定蓝 #3B82F6/#2563EB（客户端 --color-brand 深色主题是白系，白底白字隐形）、拉取按钮仅在选中的是 custom 供应商时挂载（锚 testid 全局唯一，内置/套餐页同 testid）、拉取中按钮文本「拉取中…」+图标旋转（原透明度脉冲无感知） → v133 Git 计数缩写（用户规格 2026-10-28）：chip/tooltip 的行数·条目·↑↓·冲突计数 <1万原值，≥1万 中文（cnUnits 判定）万/亿、英文 k/M/B（k 门槛刻意抬到 1万，与 token fmt 的 K≥1000 不同，小写 k 至多两位小数去尾零紧邻）；仓库个数与 aria 播报保持原值 → v134 额度与上下文保留既有阈值并统一绿黄红三档视觉；统一字号为宿主基准减 1px，周期标签加粗并微调分隔符 → v136 编辑项目弹窗源文件夹行在名称下方显示完整路径（纯 CSS ::after attr(title)，零 DOM 注入 React 无感；.truncate 限定本地行、排除 fixedFolder break-all 全路径行防重复，多文件夹每行各取各的 title；长路径自动换行不做省略号（宿主 truncate 的 nowrap 继承进伪元素须显式 white-space:normal）；规则挂条样式表、由 <html> data-zusage-pp 门控，⚙ 通用区「项目完整路径」开关 zusage3.projPath 默认开即时生效；顺带清理未提交编辑遗留的 spawnInstance 陈旧重复块 566 行死代码并复原被覆写的 issue #55 注释） → v137 源文件夹行点击即用系统文件管理器打开该目录（用户规格 2026-10-28，mac/Win 双平台）：主通道宿主桥 openInFileManager（Windows shell.openPath / macOS open 带 Finder 与 shell 双回退，raw path 免编码），旧主进程降级 openExternalFile → openExternal(file:)（白名单含 file:）；远程项目编辑器按 virtual-project-existing 标记排除，fixedFolder 行不在选择器内；多 pane 重复委托 500ms 同路径去重，document click 监听随实例 dispose 摘除；行加 cursor:pointer → v138 重置卡倒计时改时分秒全档恒显（并行会话 rstmerge 线并流收编，用户规格 2026-10-28：精确到秒、随 600ms 对账实时逐秒跳动，rstSpanText 中文数字单位紧邻「3时05分30秒」、英文数字单位紧邻+时段间空格「3h 05m 30s」；rst tooltip 补 Escape 收起（v118 键盘可达契约）；⚙ 倒计时阈值语义不变——并流时保留 rstCdh 持久化，对方运行目录构建因旧基线缺失而误删，其 18:42 rstmerge 部署曾覆盖本项目 v136/v137 后经本线合并恢复）   // 悬停 ⚙ 面板可见；版本号随代际递增
+    /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
+     * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
+     * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
     var instanceDisposed = false, heavyTimer = 0, frame = 0, themeObserver = null;
     var globalListeners = [];
     function listenGlobal(target, type, fn, capture) {
@@ -1492,7 +1757,7 @@
       bridge = { handle: null, turnId: "", timer: 0 },   // v71 本 pane 的 renderer store 订阅
       lastBand = null,    // v92：本 pane 上下文分档（ctxBandOf 结果，原生按钮增强的数据源）
       ctxBtnCache = null,   // v92：本实例上次增强的原生按钮（还原/对账引用，不依赖 cardCache 存活）
-      lastQuota = null, lastQuotaAll = null, quotaProvider = "", quotaModel = "", quotaFallback = "", quotaChipCache = null,
+      lastQuota = null, lastQuotaAll = null, lastResets = null, quotaProvider = "", quotaModel = "", quotaFallback = "", quotaChipCache = null,
       quotaSourceId = "", quotaSelection = null, quotaPaneRoot = null, quotaSelectionObserver = null, quotaMarkerSeen = false,   // 当前 pane 模型选择与额度来源
       gitChipCache = null, gitRefreshPath = "", gitRefreshRequestId = "",   // Git chip 节点与刷新状态
       liveTextCur = "", liveStatsCur = null, liveKindCur = "fallback", liveEl = null,   // v72：合并「生成速度」用
@@ -1609,6 +1874,33 @@
       /* v131 pct span 与环一律继承按钮 currentColor（band 色唯一来源=上方 data-zusage-band
        * 规则），图标与文字天然同色；v127 的 .zu-ctxpct.ok/warm/hot 独立色随五档规格废止 */
       "[data-zusage-light] .zu-ctxpct.exc{text-shadow:none}" +
+      /* v135 重置卡徽标（.zu-ctxrst，pct 右侧）：字体与 .zu-ctxpct 同链（14px 加粗等宽
+       * tabular-nums）；三档色沿用额度三色（用户规格 2026-10-28），crit 加 zupulse 呼吸
+       * （与 .zu-quota.zu-qbusy 同动画）；浅色档由按钮 data-zusage-light 后代选择器换装 */
+      ".zu-ctxrst{display:inline-flex;align-items:center;flex:0 0 auto;white-space:nowrap;" +
+      "height:1.75rem;padding:0 6px;border-radius:.5rem;cursor:default;" +
+      "font-family:var(--font-mono,Consolas,'Cascadia Mono',Menlo,'Microsoft YaHei UI','Microsoft YaHei',monospace);font-size:calc(var(--text-ui-base,var(--ui-font-size,14px)) - 1px);font-weight:700;font-variant-numeric:tabular-nums}" +
+      ".zu-ctxrst:hover{background:var(--color-hover,rgba(255,255,255,.08))}" +   // 与额度/Git chip 同款 hover 视格（用户反馈 2026-10-28）
+      ".zu-ctxrst>svg{margin-right:3px}" +   // 图标↔数字间距（用户规格 2026-10-28 调优）
+      ".zu-ctxrst.zu-rst-calm{color:#3ecf8e}" +
+      ".zu-ctxrst.zu-rst-mid{color:#f5b944}" +
+      ".zu-ctxrst.zu-rst-crit{color:#ff6b57;animation:zupulse 1s ease-in-out infinite}" +
+      "[data-zusage-light] .zu-ctxrst.zu-rst-calm{color:#0f9d6c}" +
+      "[data-zusage-light] .zu-ctxrst.zu-rst-mid{color:#b6791a}" +
+      "[data-zusage-light] .zu-ctxrst.zu-rst-crit{color:#d8482f}" +
+      /* v136 编辑项目弹窗源文件夹完整路径（⚙ 通用区开关，纯 CSS 伪元素，零 DOM 注入）：
+       * 宿主行的 span 恒挂完整路径 title、正文只显示末段（getPathLeaf）；::after 取
+       * attr(title) 在名称下方补一行完整路径——不插任何节点，React 调和/增删文件夹/
+       * 重开弹窗都无感，无需观察器与对账。.truncate 正向限定本地行（fixedFolder 远端行
+       * 用 break-all 直接显示全路径，排除防重复）；多文件夹每行各取各的 title。宿主
+       * truncate 的 nowrap 继承进伪元素，须显式 white-space:normal 恢复换行（用户规格
+       * 2026-10-28：长路径自动换行、不做省略号）；break-all 与宿主 fixedFolder 行同款。
+       * 规则由 <html> 的 data-zusage-pp 门控（applyProjPath），关闭即整体失效。 */
+      '[data-zusage-pp="1"] [data-testid=virtual-project-root-name].truncate::after{content:attr(title);' +
+      "display:block;white-space:normal;word-break:break-all;" +
+      "font-size:var(--text-ui-sm,calc(var(--ui-font-size,14px) - 2px));line-height:1.45;" +
+      "color:var(--color-foreground-subtle,#8791a3)}" +
+      "[data-zusage-pp=\"1\"] [data-testid=virtual-project-root-name].truncate{cursor:pointer}" +   // v137：整行可点开文件管理器
       /* v96 Git 状态 chip（工具行「电脑操作」按钮右侧）：外形对齐原生 ghost 按钮（h-7/rounded-lg/
        * px-1.5/gap-1）；配色移植 cc-pretty-statusline 的 git 段——图标+分支名暗灰，+插入绿 /
        * -删除红 / ?未跟踪黄，括号与 ↑↓ 随暗灰；浅色档（Catppuccin Latte 同源值）由 syncCtxLite
@@ -2116,6 +2408,7 @@
       settingRow('<input type="text" class="zu-ctxov" inputmode="numeric" aria-label="' + L("上下文窗口", "Context window") + '" placeholder="' + L("自动（按模型）", "Auto (model)") + '">', L("上下文窗口", "Context window"), L("留空自动识别，优先使用客户端数值；手动值以 token 为单位，按整数读取", "Leave empty for automatic detection, preferring the client value; manual values are read as integer tokens")) +
       /* 万/亿开关只在中文界面出现（英文始终 K/M/B，见 fmt），因此文案不走 L() */
       (state.lang === "en" ? "" : settingRow('<input type="checkbox" class="zu-cn-num">', "中文单位（万/亿）", "token 数量以万/亿显示，默认开启")) +
+      settingRow('<input type="checkbox" class="zu-pp-enable">', L("项目完整路径", "Full project paths"), L("「编辑项目」弹窗的源文件夹在名称下方显示完整路径；长路径自动换行，多文件夹逐行显示。点击文件夹行会用系统文件管理器打开该目录（macOS Finder / Windows 资源管理器；远程项目的路径在本机无意义，不响应）。默认开启。", "Shows the full path below each folder name in the Edit Project dialog; long paths wrap, one block per folder. Click a folder row to open it in your file manager (Finder on macOS, Explorer on Windows; remote project paths are skipped). On by default.")) +
       '<div class="zu-settings-langs"><label><input type="radio" name="zu-lang" value="zh"><span>中文</span></label>' +
       '<label><input type="radio" name="zu-lang" value="en"><span>English</span></label></div></div></section>' +
       '<section class="zu-settings-section" data-sec="stats"' + secOpen("stats") + '><div class="cap">' + L("回答统计", "Reply statistics") + '</div><div class="zu-settings-card">' +
@@ -2123,6 +2416,8 @@
       '</div></section>' +
       '<section class="zu-settings-section" data-sec="quota"' + secOpen("quota") + '><div class="cap">' + L("套餐额度", "Plan quota") + '</div><div class="zu-settings-card">' +
       settingRow('<input type="checkbox" class="zu-quota-enable">', L("显示套餐额度", "Show plan quota"), L("在输入框上下文按钮左侧显示当前登录账号编码套餐的已用比例与重置时间（含 Start Plan 免费档池的已用比例与到期时间；账号级套餐池，不是单个模型独享）。默认开启，关闭即停查询。点击 chip 立即刷新。", "Shows the signed-in account's coding-plan usage and reset time left of the context button (plus the Start Plan free tier's usage and expiry; account-level pool, not per model). On by default; turning it off stops the queries. Click the chip to refresh.")) +
+      settingRow('<input type="checkbox" class="zu-rst-enable">', L("重置卡徽标", "Reset card badge"), L("在额度 chip 左侧显示账号可用的额度重置卡（次数、到期倒计时，悬停看每张卡明细）。默认开启。独立于额度开关：关闭「显示套餐额度」后，本开关开启时仍查询重置卡（仅官方 reset/status 只读接口，发往 zcode.z.ai）。需要 ZCode 登录态；仅 API Key 用户与团队套餐无重置卡。", "Shows available quota reset cards left of the quota chip (count, countdown; hover for per-card details). On by default. Independent of the quota toggle: when the quota chip is off, this keeps polling the official read-only reset/status endpoint (zcode.z.ai). Requires the ZCode sign-in; API-key-only users and team plans have no reset cards.")) +
+      settingRow('<input type="text" class="zu-rst-cdh" inputmode="numeric" aria-label="' + L("重置倒计时阈值（小时）", "Reset countdown threshold (hours)") + '">', L("倒计时阈值（小时）", "Countdown threshold (hours)"), L("重置卡剩余时间短于该值时在徽标上显示倒计时，默认 24（1–168）。", "Show a countdown on the badge when a card has less time left than this, in hours; default 24 (1–168).")) +
       '<div class="pnote">' + L("开启后主进程读取本机 ZCode 登录凭据（~/.zcode/v2/credentials.json）查询官方套餐接口：凭据仅在内存使用、不落盘、不进日志与诊断：内置套餐发往 bigmodel.cn / api.z.ai 官方域，Start Plan 免费档发往 zcode.z.ai；自定义供应商余额用其自己的 key，只发其官方域（api.deepseek.com、openrouter.ai、api.siliconflow.cn、api.minimaxi.com、api.kimi.com、api.commandcode.ai、api.cline.bot、api.anthropic.com、platform.xiaomimimo.com、open.volcengineapi.com、opencode.ai 等）或你配置的中转站本域。套餐支持 BigModel / Z.ai 个人档与多家 Token Plan/余额（见下方数据源列表）；团队套餐暂不支持，识别不了余额形状的中转不显示。启用 Anthropic 源时会读取本机 Claude Code 的登录凭据（~/.claude/.credentials.json）查询其官方用量接口，同样仅在内存使用。",
         "When on, credentials are read in memory to query plan/balance endpoints and never reach disk, logs or diagnostics: built-in plans go to bigmodel.cn / api.z.ai, the Start Plan free tier to zcode.z.ai; custom-provider lookups use that provider's own key and go only to its official domain (api.deepseek.com, openrouter.ai, api.siliconflow.cn, api.minimaxi.com, api.kimi.com, api.commandcode.ai, api.cline.bot, api.anthropic.com, platform.xiaomimimo.com, open.volcengineapi.com, opencode.ai, ...) or the relay base URL you configured — never anywhere else. Multiple Token Plan / balance vendors are supported (see the source list below); team plans are not. Enabling the Anthropic source additionally reads the local Claude Code credential (~/.claude/.credentials.json) for its official usage endpoint, in memory only.") + '</div>' +
       '<div class="zu-src-list"></div>' +
@@ -2156,6 +2451,8 @@
       if (ovInput) ovInput.value = state.ctxOv;
       var cnBox = panel.querySelector(".zu-cn-num");
       if (cnBox) cnBox.checked = !!state.cnNum;
+      var ppBox = panel.querySelector(".zu-pp-enable");
+      if (ppBox) ppBox.checked = !!state.projPath;
       syncUpdate();
       panel.querySelector(".zu-settings-body").scrollTop = scrollTop;
       if (panel.setAttribute) panel.setAttribute("aria-label", L("状态条设置", "Status bar settings"));
@@ -3077,6 +3374,7 @@
       reportQuotaSelections();
       quotaSourceId = "";
       lastQuotaAll = d.quota && typeof d.quota === "object" ? d.quota : null;
+      lastResets = lastQuotaAll && lastQuotaAll.resets && typeof lastQuotaAll.resets === "object" ? lastQuotaAll.resets : null;   // v135：重置卡独立字段（旧主进程无则 fail-closed 不渲染）
       if (lastQuotaAll && lastQuotaAll.sources) {
         var qprov = effectiveQuotaProvider();
         var qsid = "";
@@ -3417,6 +3715,8 @@
       if (rl) rl.checked = state.rateLine;
       var qe = panel.querySelector(".zu-quota-enable");   // v95：勾选态由主进程推送的 quotaEnabled 决定
       if (qe) qe.checked = state.quotaEnabled;
+      var re = panel.querySelector(".zu-rst-enable");   // v135：勾选态由主进程推送的 resetBadgeEnabled 决定
+      if (re) re.checked = state.resetBadge;
       try { syncQuotaSources(); } catch (eSrc) { try { window.__zusageDiag.quotaSrcErr = String((eSrc && eSrc.stack) || eSrc); } catch (_) { } }   // 防御：多源列表渲染失败不得拖垮实例创建（实测 SRC_FIELD_LABELS 时序可致整条状态条消失）
     }
     function srcStatusText(sv) {
@@ -3857,8 +4157,12 @@
         cb.checked = !!state.show[cb.dataset.k];
       });
       panel.querySelector(".zu-ctxov").value = state.ctxOv;
+      var rstCdhIn = panel.querySelector(".zu-rst-cdh");
+      if (rstCdhIn) rstCdhIn.value = String(state.resetCdh);
       var cnBox = panel.querySelector(".zu-cn-num");
       if (cnBox) cnBox.checked = !!state.cnNum;
+      var ppBox = panel.querySelector(".zu-pp-enable");
+      if (ppBox) ppBox.checked = !!state.projPath;
       syncUpdate();
     }
     panel.addEventListener("click", function (e) {
@@ -3988,6 +4292,22 @@
         renderAll(false);
         return;
       }
+      if (t2.classList.contains("zu-rst-enable")) {
+        /* v135：乐观更新，真值以主进程写 config.json 的 reset_badge_enabled 后回推为准 */
+        var requestedRst = t2.checked;
+        var previousRst = state.resetBadge;
+        state.resetBadge = requestedRst;
+        showSettingsFeedback(false, true);
+        pluginRequest("quota-reset", requestedRst, function (result) {
+          if (inactive()) return;
+          if (result.ok) { showSettingsFeedback(false, false); return; }
+          state.resetBadge = previousRst;
+          syncPanel();
+          showSettingsFeedback(true);
+        });
+        renderAll(false);
+        return;
+      }
       if (t2.classList.contains("zu-rate-line")) {
         /* 乐观更新勾选态，真值以主进程写 config.json 后回推的 rateLine 为准 */
         var requestedRateLine = t2.checked;
@@ -4013,6 +4333,13 @@
         renderAll(false);
         return;
       }
+      if (t2.classList.contains("zu-pp-enable")) {
+        /* v136：纯展示偏好存 localStorage；<html> 属性门控样式即时生效，无需重建 */
+        state.projPath = t2.checked ? 1 : 0;
+        persist();
+        applyProjPath();
+        return;
+      }
       if (t2.name === "zu-lang") {
         state.lang = t2.value;
         persist();
@@ -4031,6 +4358,11 @@
       } else if (t2.classList.contains("zu-ctxov")) {
         state.ctxOv = t2.value.trim();
         persist();
+      } else if (t2.classList.contains("zu-rst-cdh")) {
+        var cdh = parseInt(t2.value.trim(), 10);
+        state.resetCdh = cdh >= 1 && cdh <= 24 * 7 ? cdh : 24;   // 1–168 小时，非法回退默认 24
+        persist();
+        renderAll(false);   // 阈值即时生效：徽标倒计时随 heavy/render 对账刷新
       }
       renderAll(false);
     });
@@ -4042,6 +4374,7 @@
       }
       if (subPanel.classList.contains("open") && !bar.contains(e.target) && !subPanel.contains(e.target)) subPanel.classList.remove("open");
     });
+    listenGlobal(document, "click", onProjRowClick);   // v137：编辑项目弹窗源文件夹行点击打开文件管理器（随实例 dispose 摘除）
 
     /* ---------- 子代理明细面板（v49）：点击条目弹出的固定面板，替代悬停 tooltip ---------- */
     var subPanelTab = 0;   // 面板当前页签（0=汇总，i=第 i 个子代理）；数据刷新时保持
@@ -4575,6 +4908,96 @@
       var pcls = "zu-ctxpct pct " + lastBand.cls;
       if (pctEl.textContent !== txt) pctEl.textContent = txt;
       if (pctEl.className !== pcls) pctEl.className = pcls;
+      syncResetBadge(btn);
+    }
+    /* ---------- v135 重置卡徽标（.zu-ctxrst，工具行内额度组左侧） ----------
+     * 数据：快照 quota.resets（独立 reset 链，账号族级，与额度 chip 开关无关）。
+     * 内容：单族「重置 · N」，多族各账号张数 + 连接（重置 · 2+3）；剩余 < 阈值
+     * （state.resetCdh 小时，默认 24）追加倒计时（取全局最早到期卡）。三档色按剩余时间：
+     * >3h 绿 / 3h–30min 黄 / <30min 红+呼吸。挂载点随用户规格两次迁移：按钮内 → wrapper 内
+     * 按钮右侧 → 工具行内、wrapper（额度 chip+上下文按钮组）左侧（2026-10-28 定稿）。
+     * 工具行插入与 Git chip 同属 React 兄弟区（外来节点不复用不清理），位置由双 reapply 兜回；
+     * 卡到期但数据未刷新（expireAt<=now）按无卡处理，绝不显示过期倒计时。 */
+    function resetBadgeView() {
+      if (!state.resetBadge || !lastResets) return null;
+      /* 只信本 pane 的实时个人编码套餐选择；旧宿主无 marker 时不借历史请求或全局回退，
+       * apiKey、团队与 Start Plan 也不能证明对应个人重置卡的归属。 */
+      var provider = quotaSelection && quotaSelection.providerId;
+      if (provider !== "account:bigmodel-individual-coding-plan" &&
+          provider !== "account:zai-individual-coding-plan") return null;
+      var now = Date.now(), earliest = 0, total = 0, fams = [], counts = [];
+      ["bigmodel", "zai"].forEach(function (name) {
+        var e = lastResets[name], count = 0;
+        if (!e || typeof e !== "object") return;
+        [e.fiveHour, e.week].forEach(function (cards) {
+          if (!Array.isArray(cards)) return;
+          cards.forEach(function (card) {
+            var t = card && card.expireAt;
+            if (typeof t !== "number" || !isFinite(t) || t <= now) return;
+            count++;
+            if (!earliest || t < earliest) earliest = t;
+          });
+        });
+        if (count) { total += count; counts.push(String(count)); fams.push({ fam: name, entry: e }); }
+      });
+      if (!total) return null;
+      var rem = earliest - now;
+      var band = "zu-rst-calm";
+      for (var bi = 0; bi < RST_BANDS.length; bi++) {
+        if (rem <= RST_BANDS[bi].max) { band = RST_BANDS[bi].cls; break; }
+      }
+      var countdown = "";
+      var cdh = state.resetCdh >= 1 ? state.resetCdh : 24;
+      if (rem < cdh * 3600 * 1000) countdown = " · " + rstSpanText(rem);
+      return { fams: fams, text: counts.join("+"), countdown: countdown,
+        band: band, earliest: earliest, total: total };
+    }
+    function rstSpanText(rem) {   // 时分秒全档恒显（用户规格 2026-10-28：精确到秒、实时逐秒跳动）；中文紧邻、英文数字单位紧邻+时段间空格
+      var segGap = L("", " ");
+      var uh = L("时", "h"), um = L("分", "m"), us = L("秒", "s");
+      var total = Math.max(0, Math.floor(rem / 1000));
+      var hours = Math.floor(total / 3600), mins = Math.floor(total / 60) % 60, secs = total % 60;
+      var pad = function (n) { return (n < 10 ? "0" : "") + n; };
+      if (state.lang === "en") {
+        return [hours + uh, pad(mins) + um, pad(secs) + us].join(segGap);
+      }
+      return hours + uh + pad(mins) + um + pad(secs) + us;
+    }
+    function syncResetBadge(btn) {
+      var wrap = btn.parentElement;
+      if (!wrap || !wrap.parentElement) return;
+      var host = wrap.parentElement;   // 工具行（group/toolbar）：与 Git chip 同级的 React 兄弟插入区
+      var el = null;
+      for (var i = 0; i < host.children.length; i++) {
+        if (host.children[i].classList && host.children[i].classList.contains("zu-ctxrst")) { el = host.children[i]; break; }
+      }
+      var v = resetBadgeView();
+      if (!v) {
+        if (el) { if (rstTipFor === el) hideRstTip(); el.remove(); }
+        return;
+      }
+      if (!el) {
+        el = document.createElement("span");
+        el.className = "zu-ctxrst";
+        el.tabIndex = 0;
+        el.addEventListener("keydown", function (e) { if (e.key === "Escape") hideRstTip(); });   // v118 键盘可达契约
+        el.addEventListener("mouseenter", function () { cancelRstHide(); showRstTip(this); });
+        el.addEventListener("mouseleave", scheduleRstHide);   // 延迟收起：给指针移入 tooltip 点「如何重置」留窗口
+        el.addEventListener("focus", function () { showRstTip(this); });
+        el.addEventListener("blur", hideRstTip);
+        host.appendChild(el);
+      }
+      if (el.nextSibling !== wrap) host.insertBefore(el, wrap);   // 位置兜回：额度组（wrapper）左侧
+      var txt = v.text + v.countdown;
+      /* lucide refresh-cw：双箭头环形 = 通用「重置」视觉语言；此前卡内嵌箭头的复合图标
+       * 在 14px 下墨迹过密显糊（用户反馈 2026-10-28） */
+      var html = '<svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"></path><path d="M21 3v5h-5"></path><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"></path><path d="M8 16H3v5"></path></svg>' + txt;   // 图标↔数字间距走 .zu-ctxrst>svg margin（字面空格在 flex 里渲染不稳定）
+      if (el.__zuSig !== html) { el.innerHTML = html; el.__zuSig = html; }
+      el.setAttribute("aria-label", L("额度重置卡 ", "Quota reset cards ") + txt);
+      var cls = "zu-ctxrst " + v.band + (v.countdown ? " zu-rst-cd" : "");
+      if (el.className !== cls) el.className = cls;
+      el.__zuR = v;
+      if (rstTipFor === el) showRstTip(el);   // 悬停时随数据及到期状态刷新；内容签名不变不重建
     }
     function syncCtxLite(el, lite) {
       var has = el.getAttribute && el.getAttribute("data-zusage-light");
@@ -4588,6 +5011,17 @@
       btn.removeAttribute("data-zusage-light");
       for (var i = 0; i < btn.children.length; i++) {
         if (btn.children[i].classList && btn.children[i].classList.contains("zu-ctxpct")) { btn.children[i].remove(); break; }
+      }
+      /* 重置徽标可能随历史版本留在 wrapper 内或工具行（挂载点迁移过），两处都清 */
+      for (var scope = 0; scope < 2; scope++) {
+        var rstHost = scope === 0 ? btn.parentElement : btn.parentElement && btn.parentElement.parentElement;
+        for (var r = 0; rstHost && r < rstHost.children.length; r++) {
+          if (rstHost.children[r].classList && rstHost.children[r].classList.contains("zu-ctxrst")) {
+            if (rstTipFor === rstHost.children[r]) hideRstTip();
+            rstHost.children[r].remove();
+            break;
+          }
+        }
       }
       var cs = btn.querySelectorAll("circle");
       var v = cs.length >= 2 ? cs[1] : null;
