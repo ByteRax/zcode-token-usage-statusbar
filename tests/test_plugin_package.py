@@ -60,9 +60,20 @@ class PluginPackageTests(unittest.TestCase):
         self.assertIn("runtime_lock.py", installer.RUNTIME_FILES)
         self.assertNotIn("config.json", installer.RUNTIME_FILES)
         self.assertNotIn("plugin-update.json", installer.RUNTIME_FILES)
-        for name in ("inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs", "release_unpack.py", "runtime_lock.py", "usage_stats.py", "turn-stats.js", "overlay.js"):
+        for name in ("inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs", "model-puller.cjs", "release_unpack.py", "runtime_lock.py", "usage_stats.py", "turn-stats.js", "overlay.js"):
             self.assertIn(name, installer.RUNTIME_FILES)
             self.assertEqual((ROOT / name).read_bytes(), (PLUGIN / name).read_bytes())
+
+    def test_runtime_files_cover_inject_main_relative_requires(self):
+        spec = importlib.util.spec_from_file_location("plugin_installer_package_test", PLUGIN / "overlay_install.py")
+        installer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(installer)
+        main = (ROOT / "inject-main.cjs").read_text(encoding="utf-8")
+        requires = sorted(set(re.findall(r'require\("\.\/([^"]+)"\)', main)))
+        self.assertTrue(requires)
+        # inject-main.cjs 注入行指向运行时目录，其相对 require 依赖必须全数同步（issue #127）
+        missing = [name for name in requires if name not in installer.RUNTIME_FILES]
+        self.assertEqual(missing, [])
 
     def test_release_skill_requires_post_release_pr_merge_and_verification(self):
         text = (ROOT / ".zcode/skills/zcode-github-release/SKILL.md").read_text(encoding="utf-8")

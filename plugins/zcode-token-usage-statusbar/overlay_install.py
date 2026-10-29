@@ -42,7 +42,9 @@ PLUGIN_ROOT = Path(__file__).parent.resolve()
 if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
 from runtime_lock import file_lock, update_config
-# 会同步进运行时目录的插件副本（usage_mcp.py 不在其中：MCP 直接从插件目录跑）
+# 会同步进运行时目录的插件副本（usage_mcp.py 与 overlay_install.py 自身等插件入口
+# 不在其中：它们从插件目录跑；inject-main.cjs 的相对 require 依赖必须全数在列，
+# test_plugin_package 按此不变量守护）
 RUNTIME_FILES = [
     "inject-main.cjs",
     "overlay.js",
@@ -53,6 +55,7 @@ RUNTIME_FILES = [
     "plugin-release.cjs",
     "plugin-storage.cjs",
     "quota-client.cjs",
+    "model-puller.cjs",
     "release_unpack.py",
     "runtime_lock.py", "usage_stats.py", "turn-stats.js",
     "token_rate.py", "renderer_bridge.py",
@@ -413,7 +416,9 @@ function migrate() {
   }
   if (records.length !== 1) throw Error("同步所需用户插件安装记录不唯一");
   const record = records[0];
-  if (record.enabled === false || typeof record.installPath !== "string" || fs.realpathSync(record.installPath) !== root || record.version !== manifest.version) throw Error("同步插件与官方安装记录不一致或已禁用");
+  if (record.enabled === false) throw Error("同步插件已被禁用，停止运行时同步");
+  if (typeof record.installPath !== "string" || fs.realpathSync(record.installPath) !== root) throw Error("同步插件与官方安装记录不一致：本脚本须从官方安装记录指向的插件根目录运行（插件缓存目录），而非运行时目录");
+  if (record.version !== manifest.version) throw Error("同步插件与官方安装记录版本不一致，停止运行时同步");
   const selected = release.readChannel(os.homedir(), storage);
   const channel = { kind: selected.kind, repository: selected.repository || "", source: selected.marketplace ? selected.marketplace.source : null };
   if (hasPending) {

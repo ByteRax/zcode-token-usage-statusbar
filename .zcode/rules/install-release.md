@@ -9,10 +9,12 @@
 一个文件进入分发链要同步**全部**登记处，漏任一处都会在不同阶段报错或断升级：
 - `sync_plugin.py` 的 `FILES`（根→插件副本同步）与 `release_tool.py` 的同步清单；
 - `release_unpack.py` 的 `PLUGIN_FILES`（安全解包文件集）；
-- `overlay_install.py` 的 `cold_files`（决定哪些变更要求完全重启）；
+- `overlay_install.py` 的 `RUNTIME_FILES`（运行时目录同步清单：注入行指向运行目录，`inject-main.cjs` 相对 require 的每个本地模块都必须在列，否则模块静默缺失只在加载时报错；`test_plugin_package` 按此不变量守护）与 `cold_files`（决定哪些变更要求完全重启）；
 - `restart_notice.py` 的 hashes 名白名单（漏改报"提醒记录 hashes 无效"）；
 - 两份 manifest（`.zcode-plugin/plugin.json`、`.claude-plugin/plugin.json`）的 `packageLayout.files`——在野旧版解包器要求文件集精确声明，漏声明会让旧版无法升级到新版（曾两次事故），`release_tool.py build` 的 `require_layout` 会拦；
 - 相关契约测试（`tests/test_plugin_package.py`、`test_plugin_runtime.py`、`test_release*.py`）。
+
+反向也要成立：`usage_mcp.py`、`overlay_install.py`、`plugin_auto_update.py`、`restart_notice.py` 是从插件目录（缓存）运行的入口，import 的兄弟文件同样来自插件目录，**不属于** `RUNTIME_FILES`，不要为「看起来同步」把它们加进运行时目录。
 
 ## 2. 注入与运行目录
 
