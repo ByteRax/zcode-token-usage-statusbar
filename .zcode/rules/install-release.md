@@ -49,6 +49,7 @@
 ## 6. 更新器与渠道
 
 - 更新渠道由 `readChannel` 按注册来源**和市场缓存清单**共同判定：清单为 zip 源的 GitHub/GitCode 来源是 Release 渠道（ZIP、manifest、版本一致，安装后 `verifyCommittedRelease` 复核宿主安装记录）；清单为源码路径的仓库来源判为 `market` 渠道，与本地目录来源同链，由宿主插件管理器按清单直接更新。源码清单的 `source` 是**相对路径字符串**（`"./plugins/..."`）不是对象，判定必须识别字符串形态；`readChannel` 读的是市场缓存清单而非注册来源，刚切源缓存未刷新会暂判旧渠道。安装前校验门 `validateCatalog` 已按维护者决定移除，不要加回。不静默切换用户市场来源，不启用被禁用插件。
+- GitHub Release 渠道的 API 检查失败（限流/不可达；「无正式版，不能安装开发分支」与分页上限是渠道健康信号，**不**兜底）自动退回注册 ref 的渠道清单：`githubReleaseFromCatalog` 与 GitCode 渠道同构，渠道身份不变，清单 sha256（`catalogSha256`）与下载 manifest 交叉比对。清单兜底意图的安装复核有三处同构实现（`plugin-updater.cjs` 的 `verifyCommittedRelease`、`verifyRuntimeSync`、`overlay_install.py` 内嵌 `migrate` 回退）——新增意图形状必须三处同改且 migrate 侧要带 `typeof` 守卫（运行目录 release 模块可能过旧）。
 - `PLUGIN_ID` 写死 `zcode-token-usage-statusbar@zusage-marketplace`，同名市场恰好一条记录（注册两个同名来源直接报错）。无 alpha/预发布通道：STABLE 正则 + prerelease 硬拒（`release_tool` 断言 prerelease 为 false），`compareVersions` 支持 pre 段但候选过滤不放行。
 - 手动检查在 `busy=true` 后、取锁前立即 publish `checking`；撞锁抛"另一个更新进程仍在运行"；auto/定时 tick 路径保持静默不闪 checking。立即更新卡有 downloading 阶段与下载/安装双进度条，缺 progress 的旧主进程自动隐藏。
 - 发版后 raw.githubusercontent 按分支名有约 5 分钟 CDN 缓存：Release 渠道清单滞后=下载 zip → 按旧清单装 → 版本未前进 → 报"插件管理器未提交新版安装记录"并按短间隔重试重下；market 渠道切源缓存未刷新=一次"更新期间市场来源已变化"后自愈。诊断更新失败先对时间窗。

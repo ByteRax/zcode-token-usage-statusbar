@@ -329,6 +329,57 @@ class RuntimeSyncGuardTests(unittest.TestCase):
         self.save_state()
         self.assertEqual(self.sync()["preserved"], [])
 
+    def test_identity_drift_between_verifies_names_changed_field(self):
+        # 只改 node 校验放行、仅改变 identity 内容的字段：pendingPid 指向 macOS pid_max
+        # 之外必死的进程，node 的活性检查放行，Python 侧 recheck 比对捕获漂移并报出字段。
+        self.use_head_runtime()
+        state_file = self.runtime / "plugin-update.json"
+        write = self.installer._atomic_write
+        def bump_pid_after_loader(dst, data, src=None):
+            write(dst, data, src)
+            if dst.name == "inject-main.cjs":
+                payload = json.loads(state_file.read_text(encoding="utf-8"))
+                payload["pendingPid"] = 987654321
+                state_file.write_text(json.dumps(payload), encoding="utf-8")
+        with mock.patch.object(self.installer, "_atomic_write", side_effect=bump_pid_after_loader):
+            with self.assertRaisesRegex(ValueError,
+                    "安装身份发生变化.*pending\\.pendingPid: 0 → 987654321"):
+                self.sync()
+        self.assertFalse((self.runtime / "overlay.js").exists())
+
+
+class IdentityDiffTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location("sync_guard_diff_installer", PLUGIN / "overlay_install.py")
+        cls.installer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.installer)
+
+    def test_equal_identities_yield_empty_diff(self):
+        identity = {"record": {"version": "1.1.0"}, "channel": None, "pending": {"pendingSync": True}}
+        self.assertEqual(self.installer._identity_diff(identity, json.loads(json.dumps(identity))), "")
+
+    def test_diff_pins_changed_added_and_removed_paths(self):
+        diff = self.installer._identity_diff
+        self.assertEqual(diff({"record": {"version": "1.1.0"}}, {"record": {"version": "1.2.0"}}),
+                         'record.version: "1.1.0" → "1.2.0"')
+        self.assertIn('record: null → {"version"', diff({"record": None}, {"record": {"version": "1.2.0"}}))
+        self.assertIn("channel: " , diff({"channel": {"kind": "release"}}, {}))
+        self.assertIn("(无)", diff({}, {"channel": {"kind": "release"}}))
+
+    def test_diff_truncates_long_values_and_caps_entries(self):
+        diff = self.installer._identity_diff
+        long_value = "x" * 200
+        text = diff({"pending": {"pendingVersion": long_value}}, {"pending": {"pendingVersion": "y"}})
+        self.assertIn("...", text)
+        self.assertLess(len(text), 200)
+        before = {f"k{i}": str(i) for i in range(12)}
+        after = {f"k{i}": str(i) + "-new" for i in range(12)}
+        summary = diff(before, after)
+        self.assertTrue(summary.startswith("k0: "))
+        self.assertEqual(summary.count(" → "), 8)
+        self.assertIn("共 12 处差异", summary)
+
 
 class RunVerifierTests(unittest.TestCase):
     def setUp(self):
