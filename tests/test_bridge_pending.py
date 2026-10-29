@@ -415,6 +415,91 @@ class OverlayBridgeNoticeTests(unittest.TestCase):
         self.assertEqual(outcome["systemMessage"], "更重要的安装/重启提示")
 
 
+class PendingInstallWaitingTests(unittest.TestCase):
+    """issue #130：受保护目录（目标不可写）上 hook 既无法收尾也无法重建收尾监控，
+    「完全退出后会自动完成替换…无需重试安装」必须只在承诺可兑现时给出。"""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix="pending-waiting-")
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.installer = load_installer()
+        self.runtime = self.root / "runtime"
+        self.runtime.mkdir()
+        self.plugin = self.root / "plugin"
+        self.plugin.mkdir()
+        for name in ("patch_install.py", "renderer_bridge.py", "restart_notice.py",
+                     "install_monitor.py", "runtime_lock.py"):
+            source = ROOT / "plugins" / "zcode-token-usage-statusbar" / name
+            if source.exists():
+                (self.plugin / name).write_bytes(source.read_bytes())
+        notice_spec = importlib.util.spec_from_file_location(
+            "pending_waiting_restart_notice", str(self.plugin / "restart_notice.py"))
+        notice = importlib.util.module_from_spec(notice_spec)
+        notice_spec.loader.exec_module(notice)
+        for patcher in (mock.patch.dict(sys.modules, {"restart_notice": notice}),
+                        mock.patch.object(self.installer, "PLUGIN_ROOT", self.plugin),
+                        mock.patch.dict(os.environ, {"ZUSAGE_PLUGIN_RUNTIME": str(self.runtime)})):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def pi_stub(self, writable=True):
+        pi = mock.Mock()
+        pi.ASAR = self.root / "app.asar"
+        pi.pending_tmp.return_value = {"operation": "install"}
+        pi.client_running.return_value = True
+        pi.target_writable.return_value = writable
+        return pi
+
+    def test_writable_target_keeps_waiting_promise(self):
+        # 可写目标：hook 每次 SessionStart 都能重建收尾监控，承诺成立（issue #120 原语义）。
+        self.assertIs(self.installer._pending_install_waiting(self.pi_stub()), True)
+
+    def test_unwritable_target_revokes_waiting_promise(self):
+        # 受保护目录：hook 无提权收不了尾，提权 monitor 若已退出则无人收尾；
+        # 返回 False 引导提权重跑（恒 True 是 issue #130 的假承诺）。
+        self.assertIs(self.installer._pending_install_waiting(self.pi_stub(writable=False)), False)
+
+    def test_client_not_running_or_invalid_pending_stays_unasserted(self):
+        # 客户端不在跑时收尾可能已自行完成、pending 失效时无从判断——都不给承诺
+        # 也不引导提权，回落到原有「请重试」提示。
+        pi = self.pi_stub()
+        pi.client_running.return_value = False
+        self.assertIsNone(self.installer._pending_install_waiting(pi))
+        pi = self.pi_stub()
+        pi.pending_tmp.side_effect = ValueError("untrusted pending")
+        self.assertIsNone(self.installer._pending_install_waiting(pi))
+
+    def hook(self, writable):
+        bridge_module = mock.Mock()
+        bridge_module.ensure_deployed.return_value = {"status": "present"}
+        pi = self.pi_stub(writable=writable)
+        with mock.patch.dict(sys.modules, {"renderer_bridge": bridge_module}), \
+                mock.patch.object(self.installer, "resolve_paths", return_value=(self.runtime, pi)), \
+                mock.patch.object(self.installer, "sync_runtime", return_value={"changed": []}), \
+                mock.patch.object(self.installer, "injected_status", return_value=False), \
+                mock.patch.object(self.installer, "save_runtime_config"), \
+                mock.patch.object(self.installer, "_install_overlay", return_value=False), \
+                mock.patch.dict(os.environ, {"ZUSAGE_NO_MONITOR": "1", "ZUSAGE_MONITOR_QUIET": ""}):
+            with contextlib.redirect_stdout(io.StringIO()) as stdout, \
+                    contextlib.redirect_stderr(io.StringIO()):
+                outcome = self.installer.run_hook()
+        self.assertEqual(stdout.getvalue(), "")
+        return outcome
+
+    def test_pending_hint_keeps_no_retry_promise_on_writable_target(self):
+        outcome = self.hook(writable=True)
+        self.assertIn("无需重试安装", outcome["systemMessage"])
+
+    def test_pending_hint_on_protected_target_demands_elevated_rerun(self):
+        outcome = self.hook(writable=False)
+        message = outcome["systemMessage"]
+        self.assertNotIn("无需重试安装", message)
+        self.assertIn("管理员" if os.name == "nt" else "sudo", message)
+        self.assertIn("overlay_install.py", message)
+        self.assertIn("install", message)
+
+
 class RealHookChainTests(unittest.TestCase):
     """hook 路径 + 真实 patch_install/renderer_bridge 全链（BLOCKER 回归）：
     publish/syntax 检查的 [check] 输出不得污染 hook stdout。"""

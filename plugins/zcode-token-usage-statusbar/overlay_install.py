@@ -809,13 +809,18 @@ def remove_renderer_bridge(pi):
 def _pending_install_waiting(pi):
     """安装失败但「待收尾包已排定 + 客户端在跑」：重试 /install-overlay 无法前进
     （Windows 客户端持续运行期间只会再 repack 一次再失败），用户需要的动作是完全
-    退出客户端让监控自动收尾（issue #120）。以有效的 install 待收尾包为判据；
-    任何异常都按不成立处理，回落到原有重试提示。"""
+    退出客户端让监控自动收尾（issue #120）。返回 None=判据不成立（回落到重试提示）；
+    True=目标可写，hook 每次 SessionStart 都能重建收尾监控，「无需重试」承诺成立；
+    False=受保护目录（issue #130）：hook 无提权收不了尾，提权 monitor 若已退出则
+    无人收尾——必须引导以管理员身份重跑安装重建收尾者，不能再给「无需重试」。
+    任何异常都按不成立处理。"""
     try:
         pi.pending_tmp("install")
-        return bool(pi.client_running())
+        if not pi.client_running():
+            return None
+        return pi.target_writable()
     except Exception:
-        return False
+        return None
 
 
 def run_hook():
@@ -868,10 +873,24 @@ def run_hook():
                 return _bridge_notice(out, bridge, pi)
             else:
                 from restart_notice import PREFIX
-                if _pending_install_waiting(pi):
+                waiting = _pending_install_waiting(pi)
+                if waiting:
                     _nudge(out, PREFIX + "状态条补丁已排定：完全退出 ZCode（所有窗口）后"
                              "会自动完成替换，之后重新打开即可生效，无需重试安装。"
                              "不需要请运行 /uninstall-overlay，之后不再提示。")
+                elif waiting is False:
+                    # 受保护目录（issue #130）：「无需重试」是假承诺，提权重跑才是
+                    # 唯一解——它复用已排定的待收尾包并重建提权收尾监控，秒级完成。
+                    script = PLUGIN_ROOT / "overlay_install.py"
+                    if os.name == "nt":
+                        action = f'以管理员身份打开终端，执行 python "{script}" install'
+                    else:
+                        action = f'执行 sudo env HOME="$HOME" PATH="$PATH" python3 "{script}" install'
+                    _nudge(out, (PREFIX + "状态条补丁已排定，但 ZCode 安装在受保护目录，"
+                                 "当前身份无法完成替换，也不会自动重建收尾进程。"
+                                 f"请{action}（会复用已排定的补丁，很快），"
+                                 "然后完全退出 ZCode（所有窗口）并重新打开。"
+                                 "不需要请运行 /uninstall-overlay，之后不再提示。"))
                 else:
                     _nudge(out, (PREFIX + "用量状态条自动安装未完成。"
                                  "请运行 /install-overlay 重试；"
