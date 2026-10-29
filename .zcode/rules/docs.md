@@ -21,7 +21,7 @@
 
 ## 3. 宣传图与 tour 截图（docs/promo、docs/tour）
 
-- 产品截图一律走 HTML 布景 + 真实 `overlay.js` 渲染 + Playwright 导出（`docs/promo/shoot.py [html] [out] [w] [h] [hover序号|none]`，本机缺 chromium 时回退 `channel="chrome"`）；shoot 内置 CHECK_JS 自检，`problems:[]` 全清零是唯一验收标准（overflowPx=0、内容未被收缩隐藏等）。
+- `docs/promo/icon.webp` 是市场条目 icon 的 URL 载体（marketplace.json 经 jsdelivr `@main` 引用该路径），**路径与文件名冻结**：改名/移动/删除会让全部已分发渠道清单的图标在 CDN 缓存过期后 404；确需换图只覆盖文件内容，不换路径。
 - 布景页必须复刻真实 DOM 形态：工具行容器加宿主同款 group 类让挂载原生生效（手动伪造挂载类会被对账打回）；不留真实效果中不存在的 CSS；条面选择器与当前 overlay 的实际类名一致（旧 id 选择器静默返回 0 节点，不报错）；挂靠卡片不得用 `opacity<0.1` 隐藏（幽灵判定会不挂条），用透明背景方案。
 - 改 overlay 挂载/外观/单位/文案（万/亿、时间行、面板结构）后主动重渲染 promo 四图与 tour 全套；判断图过期不能只看 mtime，要核对选择器与条面 DOM 是否对得上（tour 的 shoot 失配是静默失败不抛错）。tour 重拍：`python3 -m http.server 8799` + `uv run --with playwright python docs/tour/shoot.py`。
 - 布局排查写一次性 Playwright inspect 脚本量 `getBoundingClientRect`，别反复截图猜参数；「先判断存在再配对」的列表用 {name,rect} 结构一起过滤（平行数组下标错位）。

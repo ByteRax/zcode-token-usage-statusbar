@@ -44,6 +44,10 @@ class PluginContractTests(unittest.TestCase):
             market = json.loads((ROOT / "marketplace.json").read_text(encoding="utf-8"))
             self.assertEqual(catalog["plugins"][0]["description_i18n"],
                              market["plugins"][0]["description_i18n"])
+            # icon 是渠道清单整体拷贝透传的展示字段（https URL 远程加载），未来生成端
+            # 加字段过滤时此断言防止图标静默丢失。
+            self.assertEqual(catalog["plugins"][0].get("icon"),
+                             market["plugins"][0].get("icon"))
 
     def test_hook_matcher_and_timeouts_match_host_contract(self):
         hooks = json.loads((PLUGIN / "hooks/hooks.json").read_text(encoding="utf-8"))["hooks"]
