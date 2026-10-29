@@ -19,6 +19,37 @@ const FETCH_TIMEOUT_MS = 10000;
 const MODELS_DEV_URL = "https://models.dev/models.json";   // 公共模型元数据目录（GLQQX 同源）
 const MODELS_DEV_TIMEOUT_MS = 3000;   // 目录是锦上添花：超时收紧，不通的网络尽早降级
 const CATALOG_GRACE_MS = 1000;        // 供应商响应后目录的额外宽限：cc-switch 拉列表不等目录，我们不拖慢主路径
+
+/* ---------- 内置套餐源（v134）：OAuth 型套餐的模型拉取 ----------
+ * 智谱 Coding Plan 是宿主内置 OAuth 供应商（account:bigmodel-individual-coding-plan），
+ * 不在 provider_config 的 api-key 规则里；凭据在宿主 credentials.json 加密存储
+ * （oauth:bigmodel:access_token），运行端点默认 Anthropic（宿主
+ * legacyZCodeConfigProviderReader 的 BIGMODEL_CODING_PLAN_ANTHROPIC_BASE_URL）。
+ * cc-switch#3471 实证：OpenAI 普通端点（/api/paas/v4）与 Coding Plan（/api/coding/paas/v4）
+ * 分离，套餐误用普通端点会 429——列模型三端点对套餐 token 均放行（实测），此处固定用与
+ * 运行协议同源的 Anthropic models 端点。写入目标=套餐 personal 规则的
+ * personalModelIds/modelOrder（宿主自身也写这两键，实测），id 按宿主官方规范大小写归一。 */
+var PLAN_SOURCES = {
+  "account:bigmodel-individual-coding-plan": {
+    name: "BigModel Coding Plan",
+    endpoint: "https://open.bigmodel.cn/api/anthropic/v1/models",
+    baseUrl: "https://open.bigmodel.cn/api/anthropic",
+    credKey: "oauth:bigmodel:access_token",
+  },
+  // ZAI 套餐（account:zai-individual-coding-plan）：宿主未定等价端点常量，待确认后接入
+};
+
+/* 宿主官方 GLM 模型规范 id（packages/shared/src/official-glm-model-id.ts）：套餐 models
+ * 端点返回小写，personal 规则用规范大小写——写入前归一，防止同模型两套写法 */
+var OFFICIAL_GLM_MODEL_IDS = [
+  "GLM-5.3", "GLM-5.3-Flash", "GLM-5.3-FlashX", "GLM-5V-Turbo", "GLM-5.2", "GLM-5.1", "GLM-5.1-Highspeed",
+  "GLM-5", "GLM-5-Turbo", "GLM-4.7", "GLM-4.7-FlashX", "GLM-4.7-Flash", "GLM-4.6",
+  "GLM-4.5-Air", "GLM-4.5", "GLM-4.6V", "GLM-4.6V-Flash", "GLM-4.6V-FlashX",
+  "GLM-4.1V-Thinking-FlashX", "GLM-4.1V-Thinking-Flash", "GLM-4-FlashX-250414",
+  "GLM-4-Flash-250414", "GLM-4V-Flash",
+];
+var OFFICIAL_GLM_BY_LOWER = new Map(OFFICIAL_GLM_MODEL_IDS.map((id) => [id.toLowerCase(), id]));
+function normalizePlanModelId(id) { return OFFICIAL_GLM_BY_LOWER.get(String(id).toLowerCase()) || id; }
 const EFFORTS_MAX = 16;      // 思考档位数上限：宿主 values 无词表校验，防网关透传巨数组
 const CATALOG_CACHE_MAX = 32;
 const RESPONSE_MAX_BYTES = 8 * 1024 * 1024;   // /models 与目录响应的解析上限（models.dev 全量约 1-2MB）
@@ -233,6 +264,8 @@ function createModelPuller(opts) {
   const log = o.log || function () { };
   const fetchImpl = o.fetchImpl || (typeof fetch === "function" ? fetch : null);
   const modelsDevUrl = o.modelsDevUrl === undefined ? MODELS_DEV_URL : String(o.modelsDevUrl);
+  const credentialsPath = String(o.credentialsPath || "");   // 宿主 OAuth 凭据（套餐源）
+  const decryptValue = typeof o.decryptValue === "function" ? o.decryptValue : null;   // 注入解密（主进程内存解密）
   let applyBusy = false;   // 读-改-写竞态闸：UI 正常路径不会并发，这里防异常路径双写互相覆盖
   let catalogCache = null;   // {at, entries}：目录全量约数百 KB，成功后进程内复用
   let catalogFailedAt = 0;   // 目录失败短缓存：不通的网络环境（代理断连）每次拉取都吃满超时不可接受
@@ -257,14 +290,31 @@ function createModelPuller(opts) {
     }
     return ids;
   }
-  /* api-key 型自定义供应商才可拉取/写入；coding-plan 型的 baseUrl/模型由宿主管 */
+  /* api-key 型自定义供应商才可拉取/写入；套餐源（PLAN_SOURCES）另行放行；
+   * coding-plan 型自定义规则的 baseUrl/模型由宿主管 */
   function isPullable(rule) {
     const cfg = (rule && rule.config) || {};
     const access = cfg.access || {}, api = cfg.api || {};
-    return access.type === "api-key" && !!api.baseUrl;
+    if (access.type === "api-key" && !!api.baseUrl) return true;
+    return !!(isPlanProvider(rule && rule.providerId) && planTokenOf(rule.providerId));
+  }
+  function isPlanProvider(providerId) {
+    return !!PLAN_SOURCES[String(providerId || "")];
+  }
+  /* 套餐 token：宿主 credentials.json 解密，只在内存流转（同额度链纪律：不落盘不进日志） */
+  function planTokenOf(providerId) {
+    const src = PLAN_SOURCES[String(providerId || "")];
+    if (!src || !credentialsPath || !decryptValue) return null;
+    try {
+      const raw = JSON.parse(fs.readFileSync(credentialsPath, "utf8"));
+      const enc = raw && typeof raw === "object" ? raw[src.credKey] : null;
+      if (typeof enc !== "string" || !enc) return null;
+      const token = decryptValue(enc);
+      return token && String(token).trim() ? String(token).trim() : null;
+    } catch (e) { return null; }
   }
   function providerView(rule) {
-    const cfg = rule.config || {};
+    const cfg = (rule && rule.config) || {};
     const access = cfg.access || {}, api = cfg.api || {};
     return {
       id: String(rule.providerId || ""),
@@ -312,11 +362,20 @@ function createModelPuller(opts) {
     if (!data) return { ok: false, error: "provider config missing or unreadable", providers: [] };
     const seen = new Set(), providers = [];
     for (const rule of rulesOf(data)) {
-      if (!rule || !rule.providerId || !isPullable(rule)) continue;
+      if (!rule || !rule.providerId || isPlanProvider(rule.providerId) || !isPullable(rule)) continue;   // 套餐源走下方追加（带名称/端点）
       const id = String(rule.providerId);
       if (seen.has(id)) continue;   // 同 id 取首条（宿主写入自身去重，防御性跳过重复项）
       seen.add(id);
       providers.push(providerView(rule));
+    }
+    /* 套餐源追加（v134）：OAuth 型套餐不在 api-key 规则里，凭据可用才列出 */
+    for (const planId of Object.keys(PLAN_SOURCES)) {
+      if (seen.has(planId) || !planTokenOf(planId)) continue;
+      const planRule = findRule(data, planId);
+      const view = providerView(planRule || { providerId: planId, config: {} });
+      view.name = view.name || PLAN_SOURCES[planId].name;
+      view.baseUrl = PLAN_SOURCES[planId].baseUrl;
+      providers.push(view);
     }
     return { ok: true, providers: providers };
   }
@@ -324,7 +383,30 @@ function createModelPuller(opts) {
   async function fetchModels(providerId) {
     const data = readProviderCfg();
     const rule = data ? findRule(data, providerId) : null;
-    if (!rule || !isPullable(rule)) return { ok: false, error: "provider not found" };
+    const planSrc = PLAN_SOURCES[String(providerId || "")];
+    if (!planSrc && (!rule || !isPullable(rule))) return { ok: false, error: "provider not found" };
+    if (planSrc) {
+      /* 套餐源：单端点（Anthropic models，与运行协议同源），Bearer 套餐 token */
+      const token = planTokenOf(providerId);
+      if (!token) return { ok: false, error: "provider not found" };
+      if (!fetchImpl) return { ok: false, error: "no network stack" };
+      try {
+        const res = await fetchImpl(planSrc.endpoint, { headers: { "Accept": "application/json", "Authorization": "Bearer " + token, "User-Agent": "ZCode" }, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+        if (!res.ok) { dropBody(res); return { ok: false, error: "HTTP " + res.status }; }
+        const body = await readJsonBounded(res, RESPONSE_MAX_BYTES);
+        const list = Array.isArray(body) ? body : asObject(body).data || asObject(body).models || asObject(body).result || null;
+        const ids = sanitizeModelIds((Array.isArray(list) ? list : [])
+          .map((item) => (typeof item === "string" ? item : asObject(item).id || asObject(item).slug || "")).filter(Boolean))
+          .map(normalizePlanModelId)
+          .filter((id, i, a) => a.indexOf(id) === i);
+        if (!ids.length) return { ok: false, error: "no models in response" };
+        ids.sort();
+        fetchCache.set(providerId, { metaById: Object.create(null) });
+        return { ok: true, models: ids, metaById: fetchCache.get(providerId).metaById, via: planSrc.endpoint };
+      } catch (e) {
+        return { ok: false, error: (e && e.name === "TimeoutError") ? "timeout" : "request failed" };
+      }
+    }
     const apiKey = String(((rule.config || {}).access || {}).apiKey || "").trim();
     const urls = candidateUrls((rule.config || {}).api.baseUrl);
     if (!fetchImpl) return { ok: false, error: "no network stack" };
@@ -452,8 +534,14 @@ function createModelPuller(opts) {
     applyBusy = true;
     try {
       const data = readProviderCfg();
+      const planSrc = PLAN_SOURCES[String(providerId || "")];
       const rule = data ? findRule(data, providerId) : null;
-      if (!rule || !isPullable(rule)) return { ok: false, error: "provider not found" };
+      if (planSrc && !rule) return { ok: false, error: "provider not found" };   // 套餐 personal 规则由宿主创建
+      if (!planSrc && (!rule || !isPullable(rule))) return { ok: false, error: "provider not found" };
+      if (planSrc) {
+        for (let i = 0; i < wanted.length; i++) wanted[i] = normalizePlanModelId(wanted[i]);
+        for (let i = wanted.length - 1; i > 0; i--) if (wanted.indexOf(wanted[i]) < i) wanted.splice(i, 1);
+      }
       const pcfg = rule.config || (rule.config = {});
       const personal = Array.isArray(pcfg.personalModelIds) ? pcfg.personalModelIds.filter((m) => typeof m === "string") : [];
       const order = Array.isArray(pcfg.modelOrder) ? pcfg.modelOrder.filter((m) => typeof m === "string") : [];

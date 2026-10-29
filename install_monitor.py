@@ -185,6 +185,16 @@ def quiet_finalize():
 
 
 def main():
+    """单实例去重（issue #120）：同一目标只保留一个监控进程，已有实例持锁时静默
+    退出——SessionStart 自动安装每次都会尝试拉起监控，不去重会随会话数线性堆积。
+    进程退出（含被杀）由 OS 释放锁，无陈锁残留。"""
+    with patch_module().monitor_instance_lock() as acquired:
+        if not acquired:
+            return
+        _run()
+
+
+def _run():
     if QUIET:
         quiet_finalize()
         return

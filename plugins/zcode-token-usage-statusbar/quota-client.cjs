@@ -503,15 +503,27 @@ function loadProviderCfg(readFile2, cfgPath, builtinCfgPath) {
   if (stamp !== null && providerCfgCache && providerCfgCache.stamp === stamp && providerCfgCache.readFile === readFile2) {
     return providerCfgCache.byId;
   }
+  const templates = new Map();
   const rules = new Map();
   for (const p of paths) {
     try {
       const d = readFile2(p);
-      for (const r of ((d.config || {}).providerConfigRules || {}).providerRules || []) {
+      const pcr = (d.config || {}).providerConfigRules || {};
+      /* Array.isArray 守卫：真值非数组的 templateRules 不能连累同文件 providerRules（基线行为） */
+      for (const t of Array.isArray(pcr.templateRules) ? pcr.templateRules : []) {
+        if (!t || !t.templateId) continue;
+        const old = templates.get(String(t.templateId)) || {}, cfg = t.config || {};
+        templates.set(String(t.templateId), {
+          access: Object.assign({}, old.access, cfg.access),
+          api: Object.assign({}, old.api, cfg.api),
+        });
+      }
+      for (const r of pcr.providerRules || []) {
         if (!r || !r.providerId) continue;
         const old = rules.get(String(r.providerId)) || {}, cfg = r.config || {};
         rules.set(String(r.providerId), {
           name: r.providerName == null ? old.name : String(r.providerName),
+          templateId: r.templateId == null ? old.templateId : String(r.templateId),
           access: Object.assign({}, old.access, cfg.access),
           api: Object.assign({}, old.api, cfg.api),
         });
@@ -520,8 +532,14 @@ function loadProviderCfg(readFile2, cfgPath, builtinCfgPath) {
   }
   const byId = new Map();
   for (const [id, cfg] of rules) {
-    byId.set(id, { baseUrl: String(cfg.api.baseUrl || "").replace(/\/+$/, ""), apiKey: String(cfg.access.apiKey || ""), name: cfg.name || "",
-      accessType: String(cfg.access.type || "") });
+    /* 模板创建的供应商（个人配置不含 baseUrl）从内置 templateRules 回填
+     * baseUrl/access；显式配置仍优先，显式空串 baseUrl 按未填处理回落模板。 */
+    const tpl = cfg.templateId ? templates.get(cfg.templateId) : null;
+    const api = Object.assign({}, tpl && tpl.api, cfg.api);
+    const access = Object.assign({}, tpl && tpl.access, cfg.access);
+    if (!api.baseUrl && tpl && tpl.api) api.baseUrl = tpl.api.baseUrl;
+    byId.set(id, { baseUrl: String(api.baseUrl || "").replace(/\/+$/, ""), apiKey: String(access.apiKey || ""), name: cfg.name || "",
+      accessType: String(access.type || "") });
   }
   if (stamp !== null) providerCfgCache = { stamp, readFile: readFile2, byId };
   return byId;

@@ -330,7 +330,10 @@ class PendingAsarTests(unittest.TestCase):
         def partial(src, modify, dst):
             Path(dst).write_bytes(b"half-written")
             raise OSError("disk full")
-        with mock.patch.object(self.pi, "repack", side_effect=partial):
+        # 关闭复用判定强制走 repack 路径（issue #120 后：内容一致的待收尾包会先被复用，
+        # 到不了 repack；重打包失败场景只剩待收尾包与目标不一致时才会发生）。
+        with mock.patch.object(self.pi, "repack", side_effect=partial), \
+                mock.patch.object(self.pi, "_reusable_pending_install", return_value=False):
             self.assertFalse(self.pi.install())
         self.assertEqual((self.pi.TMP.read_bytes(), self.pi.TMP_META.read_bytes()), before)
         self.assertTrue(self.pi.install())
@@ -596,6 +599,64 @@ class PendingAsarTests(unittest.TestCase):
         self.assertTrue(self.pi._same_fingerprint(current, dict(current, ctime_ns=5)))
         self.assertFalse(self.pi._same_fingerprint(current, {"sha256": "a"}))
         self.assertFalse(self.pi._same_fingerprint(current, None))
+
+    def test_valid_identical_pending_is_reused_without_repack_or_rewrite(self):
+        # issue #120：客户端持续运行期间每次 SessionStart 自动安装都会走到这里——磁盘上
+        # 已有同来源、同运行时、入口内容完全一致的待收尾包时必须复用（stat 级判定），
+        # 不得再整包 repack/重写 TMP，也不得重复记录安装意图；替换尝试仍走原有校验链，
+        # 运行中被拒后照常拉起监控等待退出收尾。
+        self.prepare()
+        tmp_bytes = self.pi.TMP.read_bytes()
+        meta_bytes = self.pi.TMP_META.read_bytes()
+        intent = mock.Mock()
+        with mock.patch.object(self.pi, "repack", side_effect=AssertionError("must not repack")), \
+                mock.patch.object(self.pi, "client_running", return_value=True), \
+                mock.patch.object(self.pi, "launch_monitor") as monitor, \
+                mock.patch.object(self.pi.os, "replace", side_effect=PermissionError("locked")):
+            self.assertFalse(self.pi.install(before_publish=intent))
+        self.assertEqual(self.pi.TMP.read_bytes(), tmp_bytes)
+        self.assertEqual(self.pi.TMP_META.read_bytes(), meta_bytes)
+        intent.assert_not_called()
+        monitor.assert_called_once()
+
+    def test_reused_pending_finalizes_normally_once_client_exits(self):
+        self.prepare()
+        with mock.patch.object(self.pi, "repack", side_effect=AssertionError("must not repack")), \
+                mock.patch.object(self.pi, "launch_monitor"):
+            self.assertTrue(self.pi.install())
+        self.assertFalse(self.pi.TMP.exists())
+        self.assertFalse(self.pi.TMP_META.exists())
+        self.assertIn(b";import(", self.pi.entry_bytes_of(self.asar))
+
+    def test_pending_with_divergent_content_is_rebuilt(self):
+        # 入口内容与本次安装目标不一致的待收尾包不得复用：按原路径重建并覆盖发布。
+        entry = self.pi.entry_bytes_of(self.asar)
+        stripped = self.pi.ZUSAGE_LINE_RE.sub(b"", entry)
+        self.pi.prepare_tmp({"/" + self.pi.ENTRY: stripped + b"/*divergent*/" + self.pi.INJECT_LINE.encode()})
+        real_replace = self.pi.os.replace
+        def locked_for_target(src, dst, *args, **kwargs):
+            if Path(dst) == self.pi.ASAR:
+                raise PermissionError("locked")
+            return real_replace(src, dst, *args, **kwargs)
+        with mock.patch.object(self.pi, "repack", wraps=self.pi.repack) as repack, \
+                mock.patch.object(self.pi, "client_running", return_value=True), \
+                mock.patch.object(self.pi, "launch_monitor"), \
+                mock.patch.object(self.pi.os, "replace", side_effect=locked_for_target):
+            self.assertFalse(self.pi.install())
+        repack.assert_called_once()
+        self.assertEqual(self.pi.entry_bytes_of(self.pi.TMP), stripped + self.pi.INJECT_LINE.encode())
+
+    def test_pending_becomes_stale_after_official_upgrade_and_is_rebuilt(self):
+        # 复用判定的安全底线：官方升级换了 asar（stamp 变化）后，旧待收尾包绝不能
+        # 被复用去覆盖新版，必须按新来源重建。
+        self.prepare()
+        self.upgrade_asar()
+        with mock.patch.object(self.pi, "repack", wraps=self.pi.repack) as repack, \
+                mock.patch.object(self.pi, "launch_monitor"):
+            self.assertTrue(self.pi.install())
+        repack.assert_called_once()
+        self.assertIn(b"official v2", self.pi.entry_bytes_of(self.asar))
+        self.assertIn(b";import(", self.pi.entry_bytes_of(self.asar))
 
     @unittest.skipIf(sys.platform != "win32", "Windows 过滤驱动 ctime 怪癖回归")
     def test_windows_path_and_handle_stamps_agree_on_fresh_files(self):

@@ -30,7 +30,7 @@ function customCfgFile(entries) {
     { providerId: id, providerName: id, config: { api: { type: "openai-chat-completions", baseUrl }, access: { type: "api-key", apiKey } } }
   )) } } };
 }
-function adapterClient({ cfgEntries, secrets, env, respond } = {}) {
+function adapterClient({ cfgEntries, personalCfg, builtinCfg, secrets, env, respond } = {}) {
   const clock = { t: T0 };
   const calls = [];
   const client = Q.createQuotaClient({
@@ -41,9 +41,11 @@ function adapterClient({ cfgEntries, secrets, env, respond } = {}) {
     readFile: (p) => {
       if (p.endsWith("credentials.json")) { throw new Error("ENOENT"); }
       if (p.endsWith("quota-secrets.json")) return secrets || { sources: {} };
-      return customCfgFile(cfgEntries || []);
+      if (p.endsWith("builtin.json")) return builtinCfg || { config: { providerConfigRules: {} } };
+      return personalCfg || customCfgFile(cfgEntries || []);
     },
     customCfgPath: "/virtual/provider_config.json",
+    builtinCfgPath: "/virtual/builtin.json",
     fetchImpl: (url, init) => {
       const d = deferred();
       calls.push({ url, auth: init && init.headers ? init.headers.authorization : "", d });
@@ -301,5 +303,28 @@ test("opencode: same-source secrets key rotation unfreezes auth_failed", async (
   calls[1].d.resolve(fakeRes(200, GO_BODY));
   await flush();
   assert.equal(client.view().status, "ok");
+  client.dispose();
+});
+
+test("opencode: template-created provider without personal baseUrl hits adapter via builtin templateRules (#123)", async () => {
+  const { client, calls } = adapterClient({
+    personalCfg: { config: { providerConfigRules: { providerRules: [
+      { providerId: "opencode-go-responses", templateId: "opencode-go-responses",
+        config: { api: { type: "openai-responses" }, access: { type: "api-key", apiKey: "sk-tpl" } } },
+    ] } } },
+    builtinCfg: { config: { providerConfigRules: { templateRules: [
+      { templateId: "opencode-go-responses", config: { api: { type: "openai-responses", baseUrl: "https://opencode.ai/zen/go/v1" } } },
+    ] } } },
+  });
+  client.noteProvider("opencode-go-responses");
+  client.tick();
+  assert.equal(calls[0].url, USAGE_URL, "模板回填的 baseUrl 命中 opencode 适配器");
+  assert.equal(calls[0].auth, "Bearer sk-tpl");
+  assert.equal(client.view().byProvider["opencode-go-responses"], "opencode:opencode-go-responses");
+  calls[0].d.resolve(fakeRes(200, GO_BODY));
+  await flush();
+  const v = client.view();
+  assert.equal(v.status, "ok");
+  assert.equal(v.windows.fiveHour.percent, 37);
   client.dispose();
 });

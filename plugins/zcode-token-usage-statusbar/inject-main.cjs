@@ -836,9 +836,11 @@ try {
 let modelPuller = null;
 try {
   const { createModelPuller } = require("./model-puller.cjs");
-  const { resolveQuotaPaths } = require("./quota-client.cjs");
+  const { resolveQuotaPaths, decryptValue, deriveCipherKey } = require("./quota-client.cjs");
   modelPuller = createModelPuller({
     customCfgPath: resolveQuotaPaths({ defaultHome: app.getPath("home") }).customCfgPath,
+    credentialsPath: path.join(app.getPath("home"), ".zcode", "v2", "credentials.json"),
+    decryptValue: (enc) => decryptValue(enc, deriveCipherKey(process.env)),   // 套餐源：内存解密，同额度链纪律
     log: (...a) => LOG("[model-pull]", ...a),
   });
 } catch (e) {

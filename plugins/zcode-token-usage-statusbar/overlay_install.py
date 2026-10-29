@@ -801,6 +801,18 @@ def remove_renderer_bridge(pi):
         return {"status": "skipped-error", "detail": str(e)}
 
 
+def _pending_install_waiting(pi):
+    """安装失败但「待收尾包已排定 + 客户端在跑」：重试 /install-overlay 无法前进
+    （Windows 客户端持续运行期间只会再 repack 一次再失败），用户需要的动作是完全
+    退出客户端让监控自动收尾（issue #120）。以有效的 install 待收尾包为判据；
+    任何异常都按不成立处理，回落到原有重试提示。"""
+    try:
+        pi.pending_tmp("install")
+        return bool(pi.client_running())
+    except Exception:
+        return False
+
+
 def run_hook():
     """SessionStart hook 主体：返回 hook 协议 JSON dict。任何异常都转成合法输出，
     绝不影响会话；patch_install 的人类可读输出重定向到 stderr，保证 stdout 纯 JSON。"""
@@ -851,10 +863,15 @@ def run_hook():
                 return _bridge_notice(out, bridge, pi)
             else:
                 from restart_notice import PREFIX
-                _nudge(out, (PREFIX + "用量状态条自动安装未完成。"
-                             "请运行 /install-overlay 重试；"
-                             "不需要请运行 /uninstall-overlay，之后不再提示。"
-                             "如果仍然失败，请查看客户端插件日志。"))
+                if _pending_install_waiting(pi):
+                    _nudge(out, PREFIX + "状态条补丁已排定：完全退出 ZCode（所有窗口）后"
+                             "会自动完成替换，之后重新打开即可生效，无需重试安装。"
+                             "不需要请运行 /uninstall-overlay，之后不再提示。")
+                else:
+                    _nudge(out, (PREFIX + "用量状态条自动安装未完成。"
+                                 "请运行 /install-overlay 重试；"
+                                 "不需要请运行 /uninstall-overlay，之后不再提示。"
+                                 "如果仍然失败，请查看客户端插件日志。"))
             return out
         from restart_notice import INSTALL_MESSAGE
         return _nudge(out, INSTALL_MESSAGE)
