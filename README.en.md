@@ -57,7 +57,7 @@ Here's what each part tells you:
 | **236k 🟢** | The sub-tasks the model sent out on its own (subagents) used 236k tokens; 🟢 means one is still running |
 | **⚙** | Click for: which items to show, interface language, token unit display, update checks |
 
-Context usage doesn't take a slot on the bar — look at the **context button** in the composer toolbar (a ring icon plus a percentage). It changes colour as it fills up; if a request gets rejected for running over, it tells you what to do. Clicking it opens a panel that includes a **one-click compact** button.
+Context usage doesn't take a slot on the bar — look at the **context button** in the composer toolbar (a ring icon plus a percentage). It changes colour as it fills up; if a request gets rejected for running over, it tells you what to do. Clicking it opens a panel that includes a **one-click compact** button. Prefer the native look? Turn off **Context button enhancement** under **⚙ → General**.
 
 **Hover any of them and you get the finer breakdown.** For the real thing, see the [feature screenshots](docs/features.md).
 

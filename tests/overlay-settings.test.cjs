@@ -162,7 +162,7 @@ test('panel retains all controls, scroll position and settings-only styling', ()
   for (const key of ['turn', 'win', 'tools', 'today', 'sub']) {
     assert.ok(source.includes('data-k="' + key + '"'));
   }
-  for (const selector of ['zu-rate-line', 'zu-auto-update', 'zu-ctxov', 'zu-cn-num', 'data-update="check"', 'data-update="update"', 'name="zu-lang"', 'zu-settings-feedback']) {
+  for (const selector of ['zu-rate-line', 'zu-auto-update', 'zu-ctxov', 'zu-cn-num', 'zu-ctx-enh', 'data-update="check"', 'data-update="update"', 'name="zu-lang"', 'zu-settings-feedback']) {
     assert.ok(source.includes(selector));
   }
   assert.match(source, /\.zu-settings-body"\)\.scrollTop = scrollTop/);
@@ -765,6 +765,29 @@ test('full-path toggle persists and flips the gate without re-rendering or touch
   assert.equal(context.state.projPath, 1);
   assert.equal(saved, 2);
   assert.equal(gates, 2);
+});
+
+test('context-button-enhancement toggle persists and re-renders without touching display items', () => {
+  const changeSource = extract('    panel.addEventListener("change",', '    listenGlobal(document, "mousedown",');
+  let handler, saved = 0, renders = 0;
+  const context = {
+    panel: { addEventListener: (_, fn) => { handler = fn; } },
+    state: { ctxOv: '', show: { ctx: 1 }, projPath: 1, ctxEnh: 1 },
+    persist: () => { saved++; },
+    applyProjPath: () => {},
+    renderAll: () => { renders++; },
+  };
+  vm.runInNewContext(changeSource, context);
+  const target = checked => ({ type: 'checkbox', checked, dataset: {}, classList: { contains: name => name === 'zu-ctx-enh' } });
+  handler({ target: target(false) });
+  assert.equal(context.state.ctxEnh, 0);
+  assert.equal(saved, 1);
+  assert.equal(renders, 1);   // 按钮形态切换走 render 对账（增强改写的是 DOM 属性，非纯 CSS 门控）
+  assert.deepEqual(context.state.show, { ctx: 1 });   // 独立分支：落入 data-k 分支会写 show[undefined]
+  handler({ target: target(true) });
+  assert.equal(context.state.ctxEnh, 1);
+  assert.equal(saved, 2);
+  assert.equal(renders, 2);
 });
 
 /* ---------- v137 点击源文件夹行在文件管理器中打开 ---------- */

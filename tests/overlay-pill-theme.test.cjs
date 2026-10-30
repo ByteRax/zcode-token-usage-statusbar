@@ -1885,11 +1885,37 @@ test('v146 compact theme browser behaviour (isolated fixture)', { skip: skipReas
     }
   });
 
+  await t.test('v156: an empty shell bar (hot-reload placeholder era) refills in compact and never survives the switch', async () => {
+    // 模拟热更占位/清子树后未填过的条面：compact 期 render 短路会让空壳一直存活
+    await b.evaluate(`(() => { const m = document.querySelector('#zusage-bar .zu-main'); m.innerHTML = ''; })()`);
+    await b.evaluate(`window.__zusageUpdate(${JSON.stringify(payload)})`);
+    await b.waitFor(`document.querySelector('#zusage-bar .zu-main').childElementCount > 0`,
+      'compact render did not refill an empty shell bar');
+    await choose(b, 'default', 0);
+    await b.waitFor(`(() => { const m = document.querySelector('#zusage-bar .zu-main');
+      return m.childElementCount > 0 && getComputedStyle(document.querySelector('#zusage-bar')).display === 'flex'; })()`,
+      'empty shell survived the switch to default');
+    await choose(b, 'compact', 0);
+    await b.waitFor(`getComputedStyle(document.querySelector('#zusage-bar')).display === 'none'`,
+      'round-trip back to compact failed');
+  });
+
   await t.test('switching back to default restores the bar and removes the chips', async () => {
     await choose(b, 'default', 0);
     await b.waitFor(`(() => { const bar = document.querySelector('#zusage-bar');
       return getComputedStyle(bar).display === 'flex' && !document.querySelector('.zu-tsb'); })()`,
       'bar did not come back / chip did not leave');
+    await new Promise(r => setTimeout(r, 1300));
+    console.log('AFTER-SWITCH:', JSON.stringify(await b.evaluate(`(() => {
+      return [...document.querySelectorAll('.zusage-root')].map(b => {
+        const r = b.getBoundingClientRect(), m = b.querySelector('.zu-main');
+        return { h: Math.round(r.height), w: Math.round(r.width), y: Math.round(r.top),
+          parent: b.parentElement === document.body ? 'body' : (b.parentElement.id || b.parentElement.className).slice(0, 24),
+          display: getComputedStyle(b).display, zuIn: b.classList.contains('zu-in'),
+          mainKids: m ? m.childElementCount : -1, mainText: (m ? m.textContent : '').slice(0, 30) };
+      });
+    })()`)));
+    await b.waitFor(`document.querySelectorAll('.zusage-root').length === 2`, 'bar count drifted');
     await choose(b, 'compact', 0);
     await b.waitFor(`(() => { const bar = document.querySelector('#zusage-bar');
       return getComputedStyle(bar).display === 'none' && document.querySelectorAll('.zu-tsb').length === 2; })()`,

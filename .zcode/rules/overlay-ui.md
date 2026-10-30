@@ -26,7 +26,7 @@
 
 - 三板斧：① 宿主元素上用 `data-zusage-*` 属性驱动 CSS（React 不清理非 props 属性；改 class 会被 className 整串重写抹掉）；② 静态几何用 CSS 覆盖 SVG presentation attribute；③ 动态 dasharray/pathLength 由 JS 写入并在 render 与 heavy（600ms）两处 reapply 兜住 React 重写。
 - 要继承宿主 hover-card/原生交互的手动节点必须挂进 React trigger 元素**内部**末尾（宿主 children 为单元素时末尾手动节点不进 diff）；挂 wrapper 兄弟节点不触发 hover-card。React 提交可能挤位，每次对账 `if (el !== parent.lastChild) parent.appendChild(el)` 挪回。
-- 原生上下文按钮增强（`data-testid="chat-context-usage-trigger"`）：环填充 + 四档色 `data-zusage-band` + 按钮内百分比；档位由 `ctxBandOf` 承载，随上下文窗口大小变化；数据缺失时 `restoreCtxButton` 还原原生形态。额度 chip 挂同一按钮左侧，沿用同一双 reapply/还原契约。
+- 原生上下文按钮增强（`data-testid="chat-context-usage-trigger"`）：环填充 + 四档色 `data-zusage-band` + 按钮内百分比；档位由 `ctxBandOf` 承载，随上下文窗口大小变化；数据缺失时 `restoreCtxButton` 还原原生形态。额度 chip 挂同一按钮左侧，沿用同一双 reapply/还原契约。**增强开关（v156，issue #141）**：`localStorage zusage3.ctxEnh` 缺省开、仅显式 `"0"` 关（⚙ → 通用「上下文按钮增强」，纯渲染端偏好，不进 config.json）；关闭分支在 `enhanceCtxButton` 早退前还原已增强按钮并**重跑 `syncResetBadge`**——`restoreCtxButton` 会顺带清理 `.zu-ctxrst` 徽标（两者都借按钮定位），开关只隔离增强不隔离徽标，别把「徽标与增强独立」理解成 restore 不动徽标。
 - 设置页是同窗口覆盖层：冒条排除标记必须用三层并集 `[data-testid="settings-page"], [data-settings-content-frame], [data-settings-panel-frame]`；权限面板不是 Radix dialog、渲染在 SessionPane 子树内，拦截点在 `inSettingsView` 派发处与 `track` 显隐处。新增排除调用点时注意 `tests/overlay-port-patches.test.cjs` 对源码切片的计数断言。
 - 浮层打开外链走 preload 桥 `window.zcode.openExternal(url)`（系统默认浏览器），`window.open` 会被客户端内置浏览器接管，只作兜底。
 - Radix hover-card / AlertDialog 无 forceMount、关即卸载：注入其中的 UI 必须 body `MutationObserver`（rAF 去抖）+ heavy（600ms）双触发重注入、DOM 存在性幂等（多实例安全）；插入锚用双类名指纹（如 `border-t` + `pt-2`），单类名会插错段；缺锚则容器尾 + 位置兜回。
