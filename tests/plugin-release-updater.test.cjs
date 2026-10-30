@@ -260,6 +260,37 @@ test("rate limit with a failing catalog fallback reports both causes and never i
   assertNoInstall(f);
 });
 
+/* 「无正式版」与「超分页上限」是渠道健康信号而非故障（install-release §6），checkRelease
+   抛出后必须直达用户、绝不触发渠道清单兜底——回退仅服务于 API 故障（限流/不可达）。 */
+test("a healthy no-stable-release listing must not fall back to the channel catalog", async (t) => {
+  const f = fixture(t);
+  f.rows = [{ tag_name: "v9.9.9", draft: true, prerelease: false, assets: [] }];
+  await f.updater.request({ action: "check" });
+  const status = f.updater.status();
+  assert.equal(status.phase, "error");
+  assert.match(status.error, /不能安装开发分支/);
+  assert.ok(!f.calls.some((args) => args[0] === "marketplace"), JSON.stringify(f.calls));
+  assertNoInstall(f);
+});
+
+test("a full page without a stable release must not fall back to the channel catalog", async (t) => {
+  const f = fixture(t);
+  const page = Array.from({ length: 100 }, (_, i) => ({
+    tag_name: "v9." + i + ".0", draft: false, prerelease: true, assets: [] }));
+  f.options.fetchRelease = async (url) => {
+    f.events.push("fetch");
+    assert.match(String(url), /\/releases\?per_page=100&page=(10|[1-9])$/, String(url));
+    return Buffer.from(JSON.stringify(page));
+  };
+  f.updater = f.restart();
+  await f.updater.request({ action: "check" });
+  const status = f.updater.status();
+  assert.equal(status.phase, "error");
+  assert.match(status.error, /安全分页上限/);
+  assert.ok(!f.calls.some((args) => args[0] === "marketplace"), JSON.stringify(f.calls));
+  assertNoInstall(f);
+});
+
 test("catalog-fallback Release intent recovers offline after restart and rejects a tampered sha256", async (t) => {
   const f = fixture(t);
   const { githubReleaseFromCatalog } = require("../plugin-release.cjs");
