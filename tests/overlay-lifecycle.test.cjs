@@ -230,3 +230,35 @@ test('settings-page form textarea is not dispatched or mounted as a chat compose
   assert.equal(barB.style.display, 'flex', '真聊天输入框的条正常显示');
   b.window.__zusageDispose();
 });
+
+/* ---------- issue #147：划词 side chat 面板无 data-pane-id，被 "auto" 兜底键当作
+ * 独立 pane → 同窗出现第二条状态条。窗口存在真实 pane 键时丢弃 auto 键。 ---------- */
+test('issue #147: pane-less composer (side chat) next to a real pane must not spawn an auto instance', () => {
+  const h = harness(), cards = h.setPanes(['workspace-main'], { toolbar: true });
+  h.inject(); h.boot();
+  // 划词 side chat 的 composer：不在任何 data-pane-id 容器里（直接挂 body），位置在
+  // 下半屏（top 600 ≥ innerHeight 800×0.45）且可见 → 现状会被 "auto" 键收编为第二实例
+  const side = h.body.appendChild(new Element('textarea'));
+  side.sid = 'sess_side';   // 无 data-pane-id（3.17.1 side chat 形态）：走 paneKeyOf 无属性回退
+  h.document.querySelectorAll('textarea,').push(side);   // 侧栏 composer 进入协调器扫描（document 桩返回 panes 数组）
+  h.tick();
+  const pids = () => Array.from(h.window.lifecycleTest.instances(), i => i.pid).sort();   // Array.from 转宿主 realm（VM 数组跨 realm deepStrictEqual 恒败）
+  assert.deepEqual(pids(), ['workspace-main'], 'only the real pane instance exists: ' + JSON.stringify({ pids: pids(), len: pids().length, raw: h.window.lifecycleTest.instances().map(i => ({ pid: i.pid, cls: String(i).slice(0, 40) })) }));
+  assert.equal(pids().length, 1, 'instance count is one');
+  // side chat 移除（面板收起/卸载）：实例保持，不重建
+  side.remove();
+  h.tick();
+  assert.deepEqual(pids(), ['workspace-main']);
+});
+
+test('issue #147: pane-less candidates alone still use the auto fallback (shadow/iframe era)', () => {
+  const h = harness();
+  h.inject(); h.boot();
+  const side = h.body.appendChild(new Element('textarea'));
+  side.sid = 'sess_side';   // 无 data-pane-id（3.17.1 side chat 形态）：走 paneKeyOf 无属性回退
+  h.document.querySelectorAll('textarea,').push(side);   // 进入协调器扫描
+  h.tick();
+  const pids = () => Array.from(h.window.lifecycleTest.instances(), i => i.pid).sort();   // Array.from 转宿主 realm（VM 数组跨 realm deepStrictEqual 恒败）
+  assert.ok(pids().includes('auto'), 'auto fallback keeps single-pane legacy hosts working');
+  assert.equal(pids().length, 1, 'single auto instance');
+});
