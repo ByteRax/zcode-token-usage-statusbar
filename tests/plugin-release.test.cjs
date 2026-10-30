@@ -231,6 +231,47 @@ test("download verifies source manifest, asset hash and unpack result and cleans
   assert.throws(() => validateManifest({ ...manifest, repository: "attacker/repo" }, selected), /不一致/);
   await assert.rejects(downloadRelease(selected, "python3", async (url) => url.endsWith("release-manifest.json") ? Buffer.from(JSON.stringify(manifest)) : Buffer.from("bad")), /SHA256/);
 });
+test("unpack result paths compare by resolved identity, tolerating Windows 8.3 short-name expansions", async (t) => {
+  const f = packageFixture(), parent = fs.mkdtempSync(path.join(os.tmpdir(), "zusage-release-test-"));
+  t.after(() => fs.rmSync(parent, { recursive: true, force: true }));
+  t.mock.method(os, "tmpdir", () => parent);
+  // Windows 上 os.tmpdir() 可能是 8.3 短路径，解包器返回 Path.resolve() 展开后的长路径：
+  // 两侧字符串不等但指向同一目录。用 junction/symlink 别名作为「另一字符串形态」的可移植模拟。
+  const unpackViaAlias = async (command, args) => {
+    const output = args[args.indexOf("--output") + 1];
+    fs.mkdirSync(path.join(output, "plugins", "zcode-token-usage-statusbar"), { recursive: true });
+    const alias = path.join(path.dirname(output), "marketplace-aliased");
+    fs.symlinkSync(output, alias, "junction");
+    return { ok: true, version: f.selected.version, marketplaceRoot: alias,
+      pluginRoot: path.join(alias, "plugins", "zcode-token-usage-statusbar") };
+  };
+  const downloaded = await downloadRelease(f.selected, "python3", f.fetch, unpackViaAlias);
+  assert.equal(fs.realpathSync(downloaded.pluginRoot), fs.realpathSync(path.join(downloaded.marketplaceRoot, "plugins", "zcode-token-usage-statusbar")));
+  downloaded.cleanup();
+  assert.equal(fs.existsSync(downloaded.directory), false);
+  // 归一化不得放宽校验：指向别处的解包结果即使真实存在也仍拒绝。
+  const stray = path.join(parent, "stray"); fs.mkdirSync(stray, { recursive: true });
+  await assert.rejects(downloadRelease(f.selected, "python3", f.fetch, async (command, args) => {
+    const output = args[args.indexOf("--output") + 1];
+    fs.mkdirSync(path.join(output, "plugins", "zcode-token-usage-statusbar"), { recursive: true });
+    return { ok: true, version: f.selected.version, marketplaceRoot: stray,
+      pluginRoot: path.join(stray, "plugins", "zcode-token-usage-statusbar") };
+  }), /无效/);
+  // 两侧路径都不存在时回退严格字符串比较，捏造的路径（含靠 ../ 折叠伪装期望值的写法）不得借归一化混入。
+  const expectedPlugin = (output) => path.join(output, "plugins", "zcode-token-usage-statusbar");
+  const ghosts = [
+    (output) => ({ marketplaceRoot: path.join(path.dirname(output), "ghost"),
+      pluginRoot: expectedPlugin(output) }),
+    (output) => ({ marketplaceRoot: output,
+      pluginRoot: expectedPlugin(output) + path.sep + ".." + path.sep + "zcode-token-usage-statusbar" }),
+  ];
+  for (const ghost of ghosts) {
+    await assert.rejects(downloadRelease(f.selected, "python3", f.fetch, async (command, args) => {
+      const output = args[args.indexOf("--output") + 1];
+      return { ok: true, version: f.selected.version, ...ghost(output) };
+    }), /无效/);
+  }
+});
 test("channel rejects untrusted repositories and duplicate known marketplace identities without writing", (t) => {
   for (const source of [{ source: "github", repo: "owner/repo#main" }, { source: "git", url: "https://token@github.com/owner/repo.git" },
     { source: "git", url: "https://github.com/owner/repo.git?ref=main" }, { source: "url", url: "https://github.com/owner/repo" }]) {
