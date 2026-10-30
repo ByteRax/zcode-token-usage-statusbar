@@ -132,7 +132,7 @@ class ProjectUsageAggTests(FixtureBase):
         self.assertIsNone(zusage._project_usage(con, "nope"))
         self.assertIsNone(zusage._project_usage(con, "m1"))
 
-    def test_models_top8_desc_and_more_count(self):
+    def test_models_full_list_desc_no_cap(self):
         con = self.fixture()
         self.sess(con, "m1")
         self.sess(con, "m2")
@@ -142,12 +142,12 @@ class ProjectUsageAggTests(FixtureBase):
         self.usage(con, "rx", "m2", turn="tx", total=5000, model="model-0")  # 提升总量
         p = zusage._project_usage(con, "m1", with_models=True)
         self.assertEqual([m["model"] for m in p["models"][:3]], ["model-0", "model-9", "model-8"])
-        self.assertEqual(len(p["models"]), 8)          # 截前 8
-        self.assertEqual(p["models_more"], 2)          # 共 10 个模型
+        self.assertEqual(len(p["models"]), 10)         # 全量展示（v164 去截断）
         self.assertEqual(p["models"][0]["requests"], 2)  # model-0: m1 一条 + m2 一条
+        self.assertNotIn("models_more", p)
         # 不取模型（轻量行）：字段空
         p2 = zusage._project_usage(con, "m1", with_models=False)
-        self.assertEqual((p2["models"], p2["models_more"]), ([], 0))
+        self.assertEqual(p2["models"], [])
 
     def test_session_snapshot_models_light_rows_without(self):
         con = self.fixture()

@@ -185,26 +185,19 @@ def _project_usage(con, sid, with_models=False):
                    min(m.started_at), max(m.completed_at)
             from model_usage m where m.status='completed' and m.session_id in ({qm})""",
         all_ids).fetchone()
-    models, models_more = [], 0
+    models = []
     if with_models:
-        mrows = con.execute(
+        models = [{"model": r[0] or "", "requests": r[1], "total": r[2]} for r in con.execute(
             f"""select m.model_id, count(*), coalesce(sum(m.computed_total_tokens),0)
                 from model_usage m where m.status='completed' and m.session_id in ({qm})
-                group by m.model_id order by 3 desc limit 9""", all_ids).fetchall()
-        if len(mrows) > 8:
-            models_more = con.execute(
-                f"""select count(distinct model_id) from model_usage
-                    where status='completed' and session_id in ({qm})""",
-                all_ids).fetchone()[0] - 8
-            mrows = mrows[:8]
-        models = [{"model": r[0] or "", "requests": r[1], "total": r[2]} for r in mrows]
+                group by m.model_id order by 3 desc""", all_ids).fetchall()]
     return {
         "sessions": r[0], "turns": r[1] or 0, "requests": r[2],
         "input": r[3], "output": r[4], "reasoning": r[5],
         "cache_read": r[6], "cache_write": r[7], "total": r[8],
         "tool_calls": r[9], "retries": r[10],
         "started": r[11] or 0, "last_at": r[12] or 0,
-        "models": models, "models_more": models_more,
+        "models": models,
     }
 
 
@@ -970,19 +963,12 @@ def _session_snapshot(con, sid, cfg):
             for r in tool_rows
         ],
     }
-    # 模型明细（v163）：按模型分组的 completed 用量，tooltip「会话累计/项目累计」列出。
-    # 最多 8 行 + models_more 计数；轻量行不带（_light_snapshot 无此键，与 tools 瘦身同款）。
-    model_rows = con.execute(
+    # 模型明细（v163，v164 起全量不截断）：按模型分组的 completed 用量，tooltip
+    # 「会话累计/项目累计」列出；轻量行不带（_light_snapshot 无此键，与 tools 瘦身同款）。
+    models = [{"model": r[0] or "", "requests": r[1], "total": r[2]} for r in con.execute(
         """select model_id, count(*), coalesce(sum(computed_total_tokens),0)
            from model_usage where session_id=? and status='completed'
-           group by model_id order by 3 desc limit 9""", (sid,)).fetchall()
-    models_more = 0
-    if len(model_rows) > 8:
-        models_more = con.execute(
-            """select count(distinct model_id) from model_usage
-               where session_id=? and status='completed'""", (sid,)).fetchone()[0] - 8
-        model_rows = model_rows[:8]
-    models = [{"model": r[0] or "", "requests": r[1], "total": r[2]} for r in model_rows]
+           group by model_id order by 3 desc""", (sid,)).fetchall()]
     return {
         "sid": sid,
         "title": (srow["title"] if srow is not None else "") or "",
@@ -1003,7 +989,6 @@ def _session_snapshot(con, sid, cfg):
         "sub": sub,
         "tools": tools,
         "models": models,
-        "models_more": models_more,
         "last_turn": lt,
         "last": {
             "duration_ms": last["duration_ms"] if last else 0,
