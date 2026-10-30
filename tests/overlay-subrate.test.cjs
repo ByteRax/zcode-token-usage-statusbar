@@ -9,15 +9,24 @@ const vm = require('node:vm');
 // zuToolVerb 以恒等 stub 注入——文案长度另由 ZU_TOOL_VERBS 提取断言覆盖。
 const NOW = 11000;
 
-function extractSpeedView(source, lang) {
+function extractSpeedView(source, lang, zuSkillName) {
   const start = source.indexOf('  var DEFAULT_CHARS_PER_TOKEN = 2;');
   const end = source.indexOf('  /* 思考态动效图标', start);
   assert.ok(start >= 0 && end > start, '提取失败: zuBarSpeedView');
   return vm.runInNewContext(source.slice(start, end) + '\nzuBarSpeedView;', {
     L: (zh, en) => (lang === 'en' ? en : zh),
     zuToolVerb: (name) => name,
+    zuSkillName: zuSkillName || ((t) => (t || '').slice(0, 24)),
     Date: { now: () => NOW },
   });
+}
+
+/* v158：真实 zuSkillName 提取（与 overlay 同源切片），供 Skill 分支用例注入 */
+function extractSkillName(source) {
+  const start = source.indexOf('  function zuSkillName(');
+  const end = source.indexOf('\n  }', start) + 4;   // 含收尾 '\n  }'
+  assert.ok(start >= 0 && end > start, '提取失败: zuSkillName');
+  return vm.runInNewContext(source.slice(start, end) + '\nzuSkillName;', {});
 }
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'overlay.js'), 'utf8');
@@ -239,4 +248,34 @@ test('buildLiveTip lists per-agent rows with a sum line during the tool phase', 
   // 非工具期（思考/正文）不列子代理行
   const html2 = buildTip({ phase: 'thinking' });
   assert.ok(html2.indexOf('…s_aa') < 0, '非工具期不列槽位行');
+});
+
+/* ---------- v158：Skill 运行期「技能名·执行中」 ---------- */
+test('skill tool shows the extracted skill name with executing suffix (zh/en)', () => {
+  const sk = extractSkillName(source);
+  for (const lang of ['zh', 'en']) {
+    const view = extractSpeedView(source, lang, sk);
+    const v = view({ complete: false, runningTool: { name: 'Skill', startedAt: NOW - 400,
+      inputText: '{"name":"查阅","args":{}}' }, characterRate: null, observedMs: 0, startedAt: 1000 });
+    assert.equal(v.text, lang === 'en' ? '查阅·executing 0.4s' : '查阅·执行中 0.4s');
+    assert.equal(v.phase, 'tool');
+  }
+});
+test('skill without a parsable name keeps the generic verb; long names ellipsize', () => {
+  const view = extractSpeedView(source, 'zh', extractSkillName(source));
+  const noName = view({ complete: false, runningTool: { name: 'Skill', startedAt: NOW - 400,
+    inputText: '{"args":{}}' }, characterRate: null, observedMs: 0, startedAt: 1000 });
+  assert.equal(noName.text, 'Skill 0.4s');   // zuToolVerb 恒等桩：真机为「运行技能中 0.4s」
+  const long = view({ complete: false, runningTool: { name: 'Skill', startedAt: NOW - 400,
+    inputText: '{"name":"' + 'x'.repeat(40) + '"}' }, characterRate: null, observedMs: 0, startedAt: 1000 });
+  assert.ok(long.text.startsWith('x'.repeat(24) + '…·执行中'), long.text.slice(0, 40));
+});
+test('zuSkillName extraction: JSON field, regex fallback, control-char rejection', () => {
+  const fn = extractSkillName(source);
+  assert.equal(fn('{"name":"查阅"}'), '查阅');
+  assert.equal(fn('not json {"name" : "zcode-review"} trailing'), 'zcode-review');
+  assert.equal(fn('{"name":"' + 'y'.repeat(30) + '"}'), 'y'.repeat(24) + '…');
+  assert.equal(fn('{"name":"a\\u0000b"}'), '');
+  assert.equal(fn(''), '');
+  assert.equal(fn('{"args":{}}'), '');
 });

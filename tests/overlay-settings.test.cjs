@@ -218,7 +218,7 @@ test('restart-notice wiring stays three-way bound and the main-process contract 
 
 test('panel retains all controls, scroll position and settings-only styling', () => {
   assert.match(source, /panel.className = "panel zu-settings"/);
-  for (const key of ['turn', 'win', 'tools', 'today', 'sub']) {
+  for (const key of ['turn', 'win', 'proj', 'tools', 'today', 'sub']) {
     assert.ok(source.includes('data-k="' + key + '"'));
   }
   for (const selector of ['zu-rate-line', 'zu-auto-update', 'zu-restart-notice', 'zu-ctxov', 'zu-cn-num', 'zu-ctx-enh', 'data-update="check"', 'data-update="update"', 'name="zu-lang"', 'zu-settings-feedback']) {

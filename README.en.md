@@ -39,8 +39,8 @@ Install or update the ZCode plugin https://gitcode.com/tanranran/zcode-token-usa
 A thin bar appears along the bottom of the chat window, roughly like this:
 
 ```text
-⚡ 86 t/s │ 62.5k 90% 7 Σ18.4s ⏱1.4s │ 1.45M 86% 23 187 │ 142 🔴2 │ 3.42M │ 236k 🟢 │ ⚙
-   Speed        This turn             Session total       Tools     Today    Sub-agents   Settings
+⚡ 86 t/s │ 62.5k 90% 7 Σ18.4s ⏱1.4s │ 1.45M 86% 23 187 │ 123M 88% 42 sess 890 │ 142 🔴2 │ 3.42M │ 236k 🟢 │ ⚙
+   Speed        This turn             Session total       Project total        Tools     Today    Sub-agents   Settings
 ```
 
 The example above shows the default style. In the desktop app, choose **Default**, **Pill** or **Compact** under ⚙ → General → Status bar style. The pill is centered below its composer, sized to its content and constrained in narrow windows. Compact hides the floating bar and moves the speed readout and cell summaries into the composer toolbar. On the Web, choose Default/Compact under ⚙ → General. [Style and switching details →](docs/user-guide.md#状态条样式) (Chinese)
@@ -52,6 +52,7 @@ Here's what each part tells you:
 | ⚡ **86 t/s** | Generation speed in tokens per second. Colour bands range from red (slow) to violet (very fast), with a blue-violet gradient + ✦ at ≥2000 t/s (Ultra). While generating, the displayed speed is an estimate and uses the same colour bands |
 | **62.5k 90% 7 Σ18.4s ⏱1.4s** | This turn: 62.5k tokens spent, 90% cache hit rate, 7 model requests, their total duration was 18.4s, and you waited 1.4s for the first token |
 | **1.45M 86% 23 187** | The whole conversation so far: 1.45M tokens, 86% hit rate, 23 turns, 187 requests |
+| **123M 88% 42 sess 890** | This project (same directory) across all of its sessions ever: 123M tokens, 42 sessions, 890 requests; subagent usage counts too (hover for details) |
 | **142 🔴2** | Tools were called 142 times, 2 of them errored (small red marker) |
 | **3.42M** | Every conversation today added up: 3.42M tokens |
 | **236k 🟢** | The sub-tasks the model sent out on its own (subagents) used 236k tokens; 🟢 means one is still running |
@@ -68,6 +69,7 @@ Context usage doesn't take a slot on the bar — look at the **context button** 
 | How fast is the model going? | The **t/s** on the far left — an estimate while generating when the renderer bridge is available, otherwise the latest valid stored speed |
 | How long did I wait after hitting enter? | The ⏱ number in **This turn** (that's the TTFT / time to first token) |
 | How many tokens did this turn / this conversation / today use? | The **This turn**, **Session total** and **Today** items |
+| How much has this project used across all of its sessions? | The **Project total** item (subagents incl., grouped by project directory) |
 | Is this conversation going to run out of room? | The **context button** — it changes colour as it fills up, with one-click compact inside |
 | How much did the cache save me? How much did the "thinking" cost? | Hover **This turn** for input, output, cache-read and thinking detail |
 | What did the model's sub-tasks cost? How fast are they running? | The **Sub-agents** item — while running it shows "Subagents running ×N · est X t/s" right on the bar |
