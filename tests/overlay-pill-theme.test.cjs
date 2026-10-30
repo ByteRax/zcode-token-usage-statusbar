@@ -1786,6 +1786,15 @@ test('v146 compact theme browser behaviour (isolated fixture)', { skip: skipReas
   await b.evaluate(`(() => {
     document.body.innerHTML = ${JSON.stringify(fixtureHtml)};
     localStorage.clear(); localStorage.setItem('zusage3.theme', 'compact');
+    // v147：给工具行补前导区（真实宿主有 data-composer-leading-content + cua 入口，速率 chip 挂 git chip 左侧）
+    document.querySelectorAll('[class*="group/toolbar"]').forEach(row => {
+      const lead = document.createElement('span');
+      lead.setAttribute('data-composer-leading-content', 'true');
+      const cua = document.createElement('button');
+      cua.setAttribute('data-testid', 'v4-composer-cua-entry');
+      lead.appendChild(cua);
+      row.insertBefore(lead, row.firstChild);
+    });
   })()`);
   await b.evaluate(overlay);
   await b.waitFor(`document.querySelectorAll('.zusage-root').length === 2`, 'bars did not mount');
@@ -1796,12 +1805,13 @@ test('v146 compact theme browser behaviour (isolated fixture)', { skip: skipReas
     const st = await b.evaluate(`(() => {
       const bar = document.querySelector('#zusage-bar');
       const chip = document.querySelector('.zu-tsb');
-      const row = chip && chip.closest('[class*="group/toolbar"]');
+      const lead = chip && chip.closest('[data-composer-leading-content]');
+      const cua = lead && lead.querySelector('[data-testid="v4-composer-cua-entry"]');
       const cs = getComputedStyle(bar);
       return { display: cs.display, visibility: cs.visibility, parent: bar.parentElement === document.body,
         theme: bar.getAttribute('data-zusage-theme'),
         chipText: chip.textContent, chipWeight: getComputedStyle(chip).fontWeight,
-        inRow: !!row, beforeWrap: chip.nextElementSibling && chip.nextElementSibling.querySelector('.zu-quota') !== null };
+        inLead: !!lead, afterCua: !!(cua && cua.nextElementSibling === chip) };
     })()`);
     assert.equal(st.display, 'none', JSON.stringify(st));
     assert.equal(st.visibility, 'visible', 'hidden via display, not visibility');
@@ -1809,8 +1819,8 @@ test('v146 compact theme browser behaviour (isolated fixture)', { skip: skipReas
     assert.equal(st.theme, 'compact');
     assert.match(st.chipText, /92/);
     assert.equal(st.chipWeight, '700', 'explicit bold spec (quota-chip parity)');
-    assert.equal(st.inRow, true, 'chip is inside the composer toolbar row');
-    assert.equal(st.beforeWrap, true, 'chip sits left of the quota group');
+    assert.equal(st.inLead, true, 'chip is inside the leading content group (git chip home)');
+    assert.equal(st.afterCua, true, 'git absent -> chip takes the git anchor slot after the cua button');
   });
 
   await t.test('tooltip shows summaries + settings entry; button opens the panel', async () => {

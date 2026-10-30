@@ -33,6 +33,7 @@ class Element {
   removeEventListener(type, fn) { this.listeners.set(type, (this.listeners.get(type) || []).filter(f => f !== fn)); }
   appendChild(el) { this.children.push(el); el.parentElement = this; el.isConnected = true; return el; }
   insertBefore(el, ref) {
+    if (el === ref) return el;   // 自插=已就位（真实 DOM 为 no-op；桩走 remove+splice 会把条目塞回两次）
     if (!ref || ref.parentElement !== this) return this.appendChild(el);
     if (el.parentElement) el.remove();
     const idx = this.children.indexOf(ref);
@@ -59,6 +60,13 @@ class Element {
     if (sel === '.zu-sr-only') return this.children.filter(e => e.classList.contains('zu-sr-only')).concat(
       ...this.children.filter(e => e.querySelectorAll).map(e => e.querySelectorAll(sel)));
     if (sel === '.it' || sel === '.zu-sub') return [];
+    const m = /^\[(data-[a-z-]+|data-testid)(?:="([^"]*)")?\]$/.exec(sel);
+    if (m) {   // gitMount 的前导区发现依赖属性选择器（v147 速率 chip 同源）
+      const key = m[1], val = m[2];
+      const hit = e => (val === undefined ? e.getAttribute(key) !== null : e.getAttribute(key) === val);
+      return this.children.filter(hit).concat(
+        ...this.children.filter(e => e.querySelectorAll).map(e => e.querySelectorAll(sel)));
+    }
     return [];
   }
   contains(el) { return el === this || this.children.some(e => e.contains(el)); }
@@ -98,10 +106,17 @@ function harness({ theme = 'compact', show } = {}) {
   function inject() { window.__zusageOverlay = false; vm.runInContext(executable, sandbox); }
   function tick() { for (const t of [...timers.values()]) if (t.interval && (t.ms === 600 || t.ms === 500)) t.fn(); }
   function boot() { for (const [n, t] of [...timers]) if (!t.interval && t.ms === 0) { timers.delete(n); t.fn(); } }
-  function buildComposer(pid, sid) {
+  function buildComposer(pid, sid, { leading = true } = {}) {
     const card = body.appendChild(new Element());
     const row = card.appendChild(new Element());
     row.className = 'group/toolbar flex items-end gap-3';
+    let leadWrap = null, cua = null;
+    if (leading) {   // v147：速率 chip 挂前导区（git chip 同款发现面）
+      leadWrap = row.appendChild(new Element('span'));
+      leadWrap.setAttribute('data-composer-leading-content', 'true');
+      cua = leadWrap.appendChild(new Element('button'));
+      cua.setAttribute('data-testid', 'v4-composer-cua-entry');
+    }
     const wrap = row.appendChild(new Element('span'));
     wrap.className = 'inline-flex shrink-0';
     const btn = wrap.appendChild(new Element('button'));
@@ -113,7 +128,7 @@ function harness({ theme = 'compact', show } = {}) {
     const editor = card.appendChild(new Element('textarea'));
     editor.pid = pid; editor.sid = sid;
     panes.push(editor);
-    return { card, row, wrap, btn, editor };
+    return { card, row, wrap, btn, editor, leadWrap, cua };
   }
   function payload({ tps } = {}) {
     const last = { provider_id: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-Flash' };
@@ -122,24 +137,52 @@ function harness({ theme = 'compact', show } = {}) {
       recent: [{ sid: 'sid_main', workspace_identity: '', ctx: 63400, context_window: 200000, last_at: 1, ctx_exc: 0,
         last_turn: { total: 5200, requests: 2 }, last }] };
   }
-  const chipOf = row => row.children.find(e => e.classList.contains('zu-tsb'));
+  const chipOf = root => {
+    const scan = e => {
+      if (e.classList && e.classList.contains('zu-tsb')) return e;
+      for (const c of e.children || []) { const hit = scan(c); if (hit) return hit; }
+      return null;
+    };
+    return scan(root);
+  };
   const barEl = () => body.children.find(e => /zusage-root/.test(e.className || ''));
   const tipEl = () => body.children.find(e => e.classList.contains('zusage-tps-tip'));
   const panelEl = () => body.children.find(e => e.classList.contains('zu-settings'));
   return { window, body, store, inject, tick, boot, buildComposer, payload, chipOf, barEl, tipEl, panelEl };
 }
 
-test('compact theme: tps chip mounts in the toolbar left of the quota group with DB fallback value and band class', () => {
+test('compact theme: tps chip mounts in the leading area, taking the git slot (after cua) when git is absent', () => {
   const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
   h.inject(); h.boot(); h.tick();
   h.window.__zusageUpdate(h.payload({ tps: 87.3 }));
   const chip = h.chipOf(ui.row);
-  assert.ok(chip, 'chip mounted into the toolbar row');
-  assert.equal(chip.parentElement, ui.row, 'chip lives in the toolbar row (host), not the button wrapper');
-  assert.equal(chip.nextElementSibling, ui.wrap, 'chip sits immediately left of the quota group wrapper');
+  assert.ok(chip, 'chip mounted');
+  assert.equal(chip.parentElement, ui.leadWrap, 'chip lives in the leading content group (git chip home)');
+  assert.equal(ui.cua.nextElementSibling, chip, 'git absent -> chip takes the git anchor slot right after the cua button');
   assert.equal(chip.innerHTML, '<span class="zu-live ok">87.3 t/s</span>', 'DB fallback renders value + unit with the 70-150 band class');
   assert.equal(chip.getAttribute('aria-label'), '生成速度 87.3 t/s');
   assert.ok(chip.tabIndex === 0, 'keyboard reachable');
+});
+
+test('git chip present: rate re-anchors before it ([cua][rate][git]); trailing fallback without leading content', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  h.inject(); h.boot(); h.tick();
+  h.window.__zusageUpdate(h.payload({ tps: 87.3 }));
+  const fakeGit = new Element('span');
+  fakeGit.className = 'zu-git';
+  ui.leadWrap.appendChild(fakeGit);   // git chip 后到：占锚位相邻（enhanceGitChip 的容忍规则）
+  h.tick();
+  const chip = h.chipOf(ui.row);
+  assert.equal(chip.nextElementSibling, fakeGit, 'rate sits immediately before the git chip');
+  assert.equal(ui.leadWrap.children.indexOf(ui.cua), 0, 'cua stays first');
+  // 回退：无前导区（异形布局）→ 尾随区重置卡/额度组左侧（v146 原位）
+  const fb = harness(), u1 = fb.buildComposer('workspace-main', 'sid_main', { leading: false });
+  fb.inject(); fb.boot(); fb.tick();
+  fb.window.__zusageUpdate(fb.payload({ tps: 87.3 }));
+  const fchip = fb.chipOf(u1.row);
+  assert.ok(fchip, 'fallback chip mounted');
+  assert.equal(fchip.parentElement, u1.row, 'fallback host is the toolbar row');
+  assert.equal(fchip.nextElementSibling, u1.wrap, 'fallback anchors left of the quota group wrapper');
 });
 
 test('no valid sample hides the chip (user decision); non-compact themes never mount it', () => {
@@ -147,12 +190,12 @@ test('no valid sample hides the chip (user decision); non-compact themes never m
   none.inject(); none.boot(); none.tick();
   none.window.__zusageUpdate(none.payload({}));
   none.tick();
-  assert.equal(none.chipOf(u0.row), undefined, 'no tps -> no chip (settings entry gap accepted)');
+  assert.equal(none.chipOf(u0.row), null, 'no tps -> no chip (settings entry gap accepted)');
   const def = harness({ theme: 'default' }), u1 = def.buildComposer('workspace-main', 'sid_main');
   def.inject(); def.boot(); def.tick();
   def.window.__zusageUpdate(def.payload({ tps: 87.3 }));
   def.tick();
-  assert.equal(def.chipOf(u1.row), undefined, 'rate chip is compact-mode only');
+  assert.equal(def.chipOf(u1.row), null, 'rate chip is compact-mode only');
 });
 
 test('content is signature-idempotent, re-anchors after being displaced, and updates on new data', () => {
@@ -165,12 +208,13 @@ test('content is signature-idempotent, re-anchors after being displaced, and upd
   h.tick();
   assert.ok(chip.innerHTML.includes('<!--hover-state-->'), 'same signature leaves the DOM untouched');
   assert.equal(h.chipOf(ui.row), chip, 'no duplicate chip');
-  // React 挤位：把 chip 挪到行尾，heavy 对账兜回 wrapper 左侧
-  ui.row.children.splice(ui.row.children.indexOf(chip), 1);
-  ui.row.appendChild(chip);
+  // React 挤位：速率 chip 被挪到前导区末尾，heavy 对账兜回锚位（cua-entry 之后）
+  const spacer = new Element('span');
+  ui.leadWrap.insertBefore(spacer, ui.cua.nextElementSibling);   // [cua][spacer][...]
+  ui.leadWrap.appendChild(chip);   // 挤到末尾
   h.tick();
   chip = h.chipOf(ui.row);
-  assert.equal(chip.nextElementSibling, ui.wrap, 'displaced chip is moved back');
+  assert.equal(chip.nextElementSibling, spacer, 'displaced chip is moved back right after the cua anchor');
   // 数据变化：签名变化重建内容
   h.window.__zusageUpdate(h.payload({ tps: 12.5 }));
   chip = h.chipOf(ui.row);
@@ -223,11 +267,11 @@ test('dispose removes the chip; switching theme to default via setBarTheme remov
   const chip = h.chipOf(ui.row);
   assert.ok(chip, 'chip mounted');
   h.window.tpsTest.setBarTheme('default');
-  assert.equal(h.chipOf(ui.row), undefined, 'leaving compact removes the rate chip immediately');
+  assert.equal(h.chipOf(ui.row), null, 'leaving compact removes the rate chip immediately');
   h.window.tpsTest.setBarTheme('compact');
   h.tick();
   const again = h.chipOf(ui.row);
   assert.ok(again && again !== undefined, 're-entering compact re-mounts');
   h.window.tpsTest.instances()[0].dispose();
-  assert.equal(h.chipOf(ui.row), undefined, 'dispose cleans up the chip');
+  assert.equal(h.chipOf(ui.row), null, 'dispose cleans up the chip');
 });
