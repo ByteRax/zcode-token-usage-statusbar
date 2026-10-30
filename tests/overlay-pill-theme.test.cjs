@@ -1775,3 +1775,140 @@ test('pill layout safety browser regressions (isolated fixture)', { skip: skipRe
     assert.equal(sixteen.padding, 16, JSON.stringify({ before, zero, sixteen }));
   });
 });
+
+test('v146 compact theme browser behaviour (isolated fixture)', { skip: skipReason, timeout: 90000 }, async t => {
+  const b = await startBrowser(t);
+  // 精简模式装载（reset() 的可见等待不适用：条本就 display:none）
+  await b.call('Emulation.setDeviceMetricsOverride', { width: 1200, height: 900, deviceScaleFactor: 1, mobile: false });
+  const token = Math.random().toString(36).slice(2);
+  await b.call('Page.navigate', { url: b.url + '?case=' + token });
+  await b.waitFor(`document.readyState === "complete" && location.search === '?case=${token}'`);
+  await b.evaluate(`(() => {
+    document.body.innerHTML = ${JSON.stringify(fixtureHtml)};
+    localStorage.clear(); localStorage.setItem('zusage3.theme', 'compact');
+    // v147：给工具行补前导区（真实宿主有 data-composer-leading-content + cua 入口，速率 chip 挂 git chip 左侧）
+    document.querySelectorAll('[class*="group/toolbar"]').forEach(row => {
+      const lead = document.createElement('span');
+      lead.setAttribute('data-composer-leading-content', 'true');
+      lead.style.display = 'flex';
+      lead.style.alignItems = 'center';
+      lead.style.gap = '4px';
+      lead.style.whiteSpace = 'nowrap';
+      const cua = document.createElement('button');
+      cua.setAttribute('data-testid', 'v4-composer-cua-entry');
+      lead.appendChild(cua);
+      row.insertBefore(lead, row.firstChild);
+    });
+    // v149：补 renderer 桥同款 scope 属性（readPaneScope 依赖；缺了 git chip 永不挂载）
+    [['a', '/repo/a'], ['b', '/repo/b']].forEach(([pid, path]) => {
+      const pane = document.getElementById('pane-' + pid);
+      pane.setAttribute('data-zusage-scope-version', '1');
+      pane.setAttribute('data-zusage-pane-id', pid);
+      pane.setAttribute('data-zusage-workspace-path', path);
+      pane.setAttribute('data-zusage-workspace-identity', '');
+      pane.setAttribute('data-zusage-remote-session-id', '');
+    });
+  })()`);
+  await b.evaluate(overlay);
+  await b.waitFor(`document.querySelectorAll('.zusage-root').length === 2`, 'bars did not mount');
+  await b.evaluate(`window.__zusageUpdate(${JSON.stringify(payload)})`);
+  await b.waitFor(`document.querySelectorAll('.zu-tsb').length === 2`, 'tps chips did not mount');
+
+  await t.test('bar is hidden but alive on body; rate chip lives in the toolbar', async () => {
+    const st = await b.evaluate(`(() => {
+      const bar = document.querySelector('#zusage-bar');
+      const chip = document.querySelector('.zu-tsb');
+      const lead = chip && chip.closest('[data-composer-leading-content]');
+      const cua = lead && lead.querySelector('[data-testid="v4-composer-cua-entry"]');
+      const cs = getComputedStyle(bar);
+      return { display: cs.display, visibility: cs.visibility, parent: bar.parentElement === document.body,
+        theme: bar.getAttribute('data-zusage-theme'),
+        chipText: chip.textContent, chipWeight: getComputedStyle(chip).fontWeight,
+        inLead: !!lead, afterCua: !!(cua && cua.nextElementSibling === chip) };
+    })()`);
+    assert.equal(st.display, 'none', JSON.stringify(st));
+    assert.equal(st.visibility, 'visible', 'hidden via display, not visibility');
+    assert.equal(st.parent, true, 'bar is detached from the card onto body');
+    assert.equal(st.theme, 'compact');
+    assert.match(st.chipText, /92/);
+    assert.equal(st.chipWeight, '700', 'explicit bold spec (quota-chip parity)');
+    assert.equal(st.inLead, true, 'chip is inside the leading content group (git chip home)');
+    assert.equal(st.afterCua, true, 'git absent -> chip takes the git anchor slot after the cua button');
+  });
+
+  await t.test('tooltip shows summaries + settings entry; button opens the panel', async () => {
+    await b.evaluate(`(() => {
+      const chip = document.querySelector('.zu-tsb');
+      chip.dispatchEvent(new Event('mouseenter'));
+    })()`);
+    await b.waitFor(`(() => { const t = document.querySelector('.zusage-tps-tip'); return t && t.style.display === 'block' && t.textContent.includes('状态条摘要'); })()`,
+      'tps tooltip did not show');
+    const content = await b.evaluate(`(() => { const t = document.querySelector('.zusage-tps-tip');
+      return { hasLegend: t.textContent.includes('颜色对照'), hasSettings: !!t.querySelector('.tps-cfg'),
+        hasTurn: t.textContent.includes('本轮'), hasToday: t.textContent.includes('今日合计') }; })()`);
+    assert.equal(content.hasLegend, true);
+    assert.equal(content.hasTurn, true);
+    assert.equal(content.hasToday, true);
+    await b.evaluate(`document.querySelector('.zusage-tps-tip .tps-cfg').click()`);
+    await b.waitFor(`[...document.querySelectorAll('.zu-settings')].some(p => p.classList.contains('open'))`,
+      'settings panel did not open from the tooltip button');
+    const theme = await themes(b);
+    assert.deepEqual(theme, ['compact', 'compact']);
+  });
+
+  await t.test('real git chip coexists with the rate chip: mounts after it and holds position across frames', async () => {
+    await b.evaluate(`(() => {
+      const st = path => ({ ok: true, ts: Date.now(), branch: 'main', ins: 3, del: 1, staged: 0, unstaged: 2,
+        untracked: 0, conflicts: 0, changed: 2, repoPath: path, op: null, upstream: null, ahead: 1, behind: 0,
+        detached: false, noCommits: false });
+      window.__zusageGitState('/repo/a', st('/repo/a'));
+      window.__zusageGitState('/repo/b', st('/repo/b'));
+    })()`);
+    await b.waitFor(`document.querySelectorAll('.zu-git').length === 2`, 'git chips did not mount beside the rate chips');
+    // v149 修正：chips 在工具行（条外），从 .zu-tsb 本体读相邻关系，而非 .zusage-root 内部
+    const geo = await b.evaluate(`(() => {
+      const read = () => [...document.querySelectorAll('.zu-tsb')].map(t => {
+        const g = t.nextElementSibling;
+        if (!g || !g.classList.contains('zu-git')) return null;
+        const r1 = t.getBoundingClientRect(), r2 = g.getBoundingClientRect();
+        const pane = t.closest('.pane');
+        return { pane: pane ? pane.id : '?', tr: r1.left, tw: r1.width, gr: r2.left, gw: r2.width,
+          doc: !!(t.compareDocumentPosition(g) & Node.DOCUMENT_POSITION_FOLLOWING) };
+      }).filter(Boolean);
+      read(); return new Promise(res => { let n = 0; const step = () => { n++; const snap = read();
+        if (n >= 12) res(snap); else requestAnimationFrame(step); }; requestAnimationFrame(step); });
+    })()`);
+    assert.equal(geo.length, 2, 'both rate chips sit immediately before a git chip across frames');
+    for (const [i, m] of geo.entries()) {
+      assert.ok(m.tr < m.gr, `pair ${i}: rate is left of git (${JSON.stringify(m)})`);
+      console.log('PAIR:', JSON.stringify(m));
+    }
+  });
+
+  await t.test('v156: an empty shell bar (hot-reload placeholder era) refills in compact and never survives the switch', async () => {
+    // 模拟热更占位/清子树后未填过的条面：compact 期 render 短路会让空壳一直存活
+    await b.evaluate(`(() => { const m = document.querySelector('#zusage-bar .zu-main'); m.innerHTML = ''; })()`);
+    await b.evaluate(`window.__zusageUpdate(${JSON.stringify(payload)})`);
+    await b.waitFor(`document.querySelector('#zusage-bar .zu-main').childElementCount > 0`,
+      'compact render did not refill an empty shell bar');
+    await choose(b, 'default', 0);
+    await b.waitFor(`(() => { const m = document.querySelector('#zusage-bar .zu-main');
+      return m.childElementCount > 0 && getComputedStyle(document.querySelector('#zusage-bar')).display === 'flex'; })()`,
+      'empty shell survived the switch to default');
+    await choose(b, 'compact', 0);
+    await b.waitFor(`getComputedStyle(document.querySelector('#zusage-bar')).display === 'none'`,
+      'round-trip back to compact failed');
+  });
+
+  await t.test('switching back to default restores the bar and removes the chips', async () => {
+    await choose(b, 'default', 0);
+    await b.waitFor(`(() => { const bar = document.querySelector('#zusage-bar');
+      return getComputedStyle(bar).display === 'flex' && !document.querySelector('.zu-tsb'); })()`,
+      'bar did not come back / chip did not leave');
+    await b.waitFor(`document.querySelectorAll('.zusage-root').length === 2`, 'bar count drifted');
+    await choose(b, 'compact', 0);
+    await b.waitFor(`(() => { const bar = document.querySelector('#zusage-bar');
+      return getComputedStyle(bar).display === 'none' && document.querySelectorAll('.zu-tsb').length === 2; })()`,
+      'compact round-trip failed');
+  });
+});
