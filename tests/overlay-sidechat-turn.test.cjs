@@ -36,8 +36,9 @@ test('owner 不明或同根歧义不借其他 tracker，嵌套时选择最内层
   assert.equal(c.detOwnerOf(box), null);
 });
 
-test('侧聊包括远端同 sid/tid 不请求或消费主视图缓存', () => {
-  const c = setup(), main = instance('main', null, null, 'same-sid'), side = instance('selection-side-chat:remote', null);
+test('远端侧聊不请求或消费本地富文本', () => {
+  const c = setup(), main = instance('main', null, null, 'same-sid'), side = instance('selection-side-chat:remote', null, null, 'same-sid');
+  side.scope = { sid: 'same-sid', identity: 'remote:ssh:host', workspacePath: '/r', remoteSessionId: 'host' };
   c.instances.push(main, side);
   const stats = { sessionId: 'same-sid' };
   c.zuRequestTurnText(main, 'same-tid', stats);
@@ -45,11 +46,30 @@ test('侧聊包括远端同 sid/tid 不请求或消费主视图缓存', () => {
   const req = c.window.__zusagePluginRequests[0];
   c.window.__zusageDeliverTurnText('same-sid', 'main rich', req.unitEpoch);
   assert.equal(c.richTextCache[c.zuRichKey(main, 'same-tid')], 'main rich');
-  assert.equal(c.zuRichKey(side, 'same-tid'), '');
+  assert.equal(c.zuRichKey(side, 'same-tid'), '', 'remote side chat never queries local DB');
   assert.equal(c.richTextCache[c.zuRichKey(side, 'same-tid')], undefined);
   c.zuRequestTurnText(side, 'same-tid', stats);
   c.zuFlushRichTextWants();
   assert.equal(c.window.__zusagePluginRequests.length, 1);
+});
+
+test('本地侧聊与主分栏同规则请求富文本，缓存按实例隔离互不串用', () => {
+  const c = setup(), main = instance('main', null, null, 'same-sid'), side = instance('selection-side-chat:%2Fp:p:c', null, null, 'same-sid');
+  c.instances.push(main, side);
+  const stats = { sessionId: 'same-sid' };
+  c.zuRequestTurnText(main, 'same-tid', stats);
+  c.zuFlushRichTextWants();
+  const mainReq = c.window.__zusagePluginRequests[0];
+  assert.equal(mainReq.sid, 'same-sid');
+  c.zuRequestTurnText(side, 'same-tid', stats);
+  c.zuFlushRichTextWants();
+  // 同 SID 只有一个活跃轮目标：flush 后 pending 归最后一次收集（侧聊），主分栏的
+  // 在途响应被代际拒绝，两侧缓存各自独立。
+  const sideReq = c.window.__zusagePluginRequests.at(-1);
+  assert.notEqual(mainReq.unitEpoch, sideReq.unitEpoch);
+  c.window.__zusageDeliverTurnText('same-sid', 'side rich', sideReq.unitEpoch);
+  assert.equal(c.richTextCache[c.zuRichKey(side, 'same-tid')], 'side rich');
+  assert.equal(c.richTextCache[c.zuRichKey(main, 'same-tid')], undefined);
 });
 
 test('相同 sid 不同主实例或轮次拒绝迟到响应并隔离缓存', () => {
