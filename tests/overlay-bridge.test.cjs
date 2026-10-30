@@ -587,7 +587,7 @@ test('⑫ bar chip mirrors the running toolCall state (verb + elapsed) instead o
   // 工具开始执行（本轮最后一个活动行变为 running 的 toolCall）：悬浮条切到宿主同款动词
   store.set(snap(3, [header('running'), text('abcdef'),
     { rowId: 5, turnId: 't1', productTurnId: 'pt1', kind: 'toolCall', toolName: 'Edit', inputText: '{}', status: 'running', startedAt: Date.now() - 4200 }]));
-  assert.match(instanceOf(h).liveEl().textContent, /^正在编辑 4\.\d+s$/);   // v151：计时去中点（用户规格）
+  assert.match(instanceOf(h).liveEl().textContent, /^编辑中 4\.\d+s$/);   // v151 计时去中点 + v154 动词「X中」体例（用户规格）
   // 工具完成、回到正文流式：恢复估算速度（与 toolCall 行状态再次对应）
   h.clock.now = 4000;
   store.set(snap(4, [header('running'), text('abcdefghij'),
