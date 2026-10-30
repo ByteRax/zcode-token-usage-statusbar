@@ -587,7 +587,7 @@ test('⑫ bar chip mirrors the running toolCall state (verb + elapsed) instead o
   // 工具开始执行（本轮最后一个活动行变为 running 的 toolCall）：悬浮条切到宿主同款动词
   store.set(snap(3, [header('running'), text('abcdef'),
     { rowId: 5, turnId: 't1', productTurnId: 'pt1', kind: 'toolCall', toolName: 'Edit', inputText: '{}', status: 'running', startedAt: Date.now() - 4200 }]));
-  assert.match(instanceOf(h).liveEl().textContent, /^正在编辑 · 4\.\d+s$/);
+  assert.match(instanceOf(h).liveEl().textContent, /^正在编辑 4\.\d+s$/);   // v151：计时去中点（用户规格）
   // 工具完成、回到正文流式：恢复估算速度（与 toolCall 行状态再次对应）
   h.clock.now = 4000;
   store.set(snap(4, [header('running'), text('abcdefghij'),
@@ -611,7 +611,7 @@ test('⑬ running phases keep distinct generating, thinking and tool icons after
   store.set(snap(4, [header('running'), text('abcdef'),
     { rowId: 6, turnId: 't1', productTurnId: 'pt1', kind: 'toolCall', toolName: 'Read', inputText: '', status: 'running', startedAt: Date.now() }]));
   assert.equal(inst.liveIconKind(), 'tool');
-  assert.match(inst.liveEl().textContent, /^正在读取 · \d/);
+  assert.match(inst.liveEl().textContent, /^正在读取 \d/);   // v151：计时去中点
   // 思考结束回正文流式（reasoning 移出窗口，正文行继续增长）：仍为动效脑
   h.clock.now = 3000;
   store.set(snap(5, [header('running'), text('abcdefghij')]));
