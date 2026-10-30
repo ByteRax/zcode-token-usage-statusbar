@@ -85,6 +85,7 @@ test('v159 project total cell: beside session total, sub-agent note, bilingual',
   assert.match(strip(zh), /GLM-5\.3\s*6000 token · 40次/);
   assert.match(strip(zh), /gpt-6\.1-sol\s*700 token · 5次/);
   assert.doesNotMatch(strip(zh), /另有/);   // v164 全量展示不折叠
+  assert.match(zh, /rt-models/);            // v165 模型块表格化对齐
   assert.match(zh, /rt-pin/);               // 时间范围行吸底
   assert.match(zh, /2026-10-19 13:42 - 2026-10-19 13:43/);
   const en = render(data, 'en', null, { proj: true }).find(tip => tip.includes('Project total · all requests'));
