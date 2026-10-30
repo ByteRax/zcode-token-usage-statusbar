@@ -50,7 +50,7 @@ function harness(ls = { getItem: () => null, setItem() {} }) {
   const timers = new Map(), frames = new Map(), observers = []; let id = 0;
   const sandbox = vm.createContext({ window, document, console, innerHeight: 800, innerWidth: 1000,
     location: { href: 'file:///fixture' }, localStorage: ls,
-    getComputedStyle: () => ({ borderTopWidth: '1px', backgroundColor: 'black', opacity: '1', display: 'block', visibility: 'visible' }),
+    getComputedStyle: el => ({ borderTopWidth: '1px', backgroundColor: 'black', opacity: el.style.opacity ?? '1', display: el.style.display ?? 'block', visibility: el.style.visibility ?? 'visible' }),
     setTimeout: (fn, ms) => { timers.set(++id, { fn, ms, interval: false }); return id; },
     clearTimeout: n => timers.delete(n),
     setInterval: (fn, ms) => { timers.set(++id, { fn, ms, interval: true }); return id; },
@@ -261,4 +261,133 @@ test('issue #147: pane-less candidates alone still use the auto fallback (shadow
   const pids = () => Array.from(h.window.lifecycleTest.instances(), i => i.pid).sort();   // Array.from 转宿主 realm（VM 数组跨 realm deepStrictEqual 恒败）
   assert.ok(pids().includes('auto'), 'auto fallback keeps single-pane legacy hosts working');
   assert.equal(pids().length, 1, 'single auto instance');
+});
+
+/* ---------- v174：辅助对话按宿主 tabId 独立成键（issue #147 守卫保留，配额 4+1） ---------- */
+function sidePaneFixture(h, tabId, sid, opts = {}) {
+  const rootEl = h.body.appendChild(new Element());
+  rootEl.setAttribute('data-testid', 'v4-session-pane-' + tabId);
+  rootEl.sid = sid;
+  if (opts.bridge) {
+    rootEl.setAttribute('data-zusage-scope-version', '1');
+    rootEl.setAttribute('data-zusage-pane-id', tabId);
+    rootEl.setAttribute('data-zusage-workspace-path', '/p');
+    rootEl.setAttribute('data-zusage-workspace-identity', '');
+    rootEl.setAttribute('data-zusage-remote-session-id', '');
+  }
+  const ta = rootEl.appendChild(new Element('textarea'));
+  ta.setAttribute('data-testid', 'v4-composer-input');
+  // sid 只放会话根（sessIdOf/readPaneScope 都取最近 data-session-id 祖先）：textarea 自带
+  // sid 会把根判定短路到自身，桥属性就读不到了（真实宿主 data-session-id 在 SessionPane 根上）
+  h.document.querySelectorAll('textarea,').push(ta);
+  return { rootEl, ta };
+}
+
+test('v174: side chat composer keyed by host tab id spawns its own instance beside a real pane', () => {
+  const h = harness(), cards = h.setPanes(['workspace-main'], { toolbar: true });
+  h.inject(); h.boot();
+  const TAB = 'selection-side-chat:%2Fp:parent:child';
+  const side = sidePaneFixture(h, TAB, 'sess_child', { bridge: true });
+  h.tick();
+  const pids = () => Array.from(h.window.lifecycleTest.instances(), i => i.pid);
+  assert.ok(pids().indexOf(TAB) >= 0, 'side chat instance keyed by host tab id: ' + JSON.stringify(pids()));
+  assert.ok(pids().indexOf('workspace-main') >= 0, 'main pane instance untouched');
+  const inst = h.window.lifecycleTest.instances().find(i => i.pid === TAB);
+  assert.ok(inst.getScope(), 'bridge scope readable on the side chat root');
+  assert.equal(inst.getScope().sid, 'sess_child');
+  assert.equal(inst.getScope().workspacePath, '/p');
+  assert.equal(inst.getScope().identity, '', 'local side chat binds an empty identity');
+  assert.equal(h.window.__zusagePaneScopes[TAB].sid, 'sess_child', 'side chat scope reported to the pump');
+  // 面板关闭（composer 撤出扫描）：实例撤销，主分栏不动
+  const scanList = h.document.querySelectorAll('textarea,');
+  scanList.splice(scanList.indexOf(side.ta), 1);
+  side.rootEl.remove();
+  h.tick();
+  assert.deepEqual(pids(), ['workspace-main']);
+});
+
+test('v174: side chat without bridge attrs still keys by the host testid', () => {
+  const h = harness(), cards = h.setPanes(['workspace-main'], { toolbar: true });
+  h.inject(); h.boot();
+  const TAB = 'selection-side-chat:%2Fp:p2:c2';
+  sidePaneFixture(h, TAB, 'sess_child2', {});
+  h.tick();
+  const pids = () => Array.from(h.window.lifecycleTest.instances(), i => i.pid);
+  assert.ok(pids().indexOf(TAB) >= 0, JSON.stringify(pids()));
+  assert.ok(pids().indexOf('workspace-main') >= 0);
+  h.window.__zusageDispose();
+});
+
+test('v174: four main splits plus one side chat all get instances (quota 4+1)', () => {
+  const h = harness(), cards = h.setPanes(['a', 'b', 'c', 'd'], { toolbar: true });
+  h.inject(); h.boot();
+  sidePaneFixture(h, 'selection-side-chat:%2Fp:p3:c3', 'sess_child3', { bridge: true });
+  h.tick();
+  let pids = Array.from(h.window.lifecycleTest.instances(), i => i.pid);
+  assert.equal(pids.length, 5, JSON.stringify(pids));
+  assert.ok(pids.indexOf('selection-side-chat:%2Fp:p3:c3') >= 0);
+  const extra = h.body.appendChild(new Element('textarea'));
+  extra.pid = 'e'; extra.sid = 'sid_e';
+  h.document.querySelectorAll('textarea,').push(extra);
+  h.tick();
+  assert.equal(h.window.lifecycleTest.instances().length, 5, 'main quota still caps at 4');
+  h.window.__zusageDispose();
+});
+
+test('side chat before four mains, including nested side chat, keeps independent quotas', () => {
+  const h = harness(), cards = h.setPanes(['a', 'b', 'c', 'd']);
+  cards[0].pid = 'a'; // 侧聊实际嵌套在带 pane-id 的主分栏下
+  const tab = 'selection-side-chat:first';
+  const side = sidePaneFixture(h, tab, 'child');
+  cards[0].appendChild(side.rootEl);
+  const scan = h.document.querySelectorAll('textarea,');
+  scan.unshift(scan.pop());
+  h.inject(); h.boot();
+  assert.deepEqual(Array.from(h.window.lifecycleTest.instances(), i => i.pid).sort(), [tab, 'a', 'b', 'c', 'd'].sort());
+  h.window.__zusageDispose();
+});
+
+test('existing three mains and side do not block a fourth main', () => {
+  const h = harness(); h.setPanes(['a', 'b', 'c']);
+  const tab = 'selection-side-chat:existing'; sidePaneFixture(h, tab, 'child');
+  h.inject(); h.boot();
+  const extra = h.body.appendChild(new Element('textarea')); extra.pid = 'd'; extra.sid = 'sid_d';
+  h.document.querySelectorAll('textarea,').push(extra); h.tick();
+  assert.deepEqual(Array.from(h.window.lifecycleTest.instances(), i => i.pid).sort(), [tab, 'a', 'b', 'c', 'd'].sort());
+  h.window.__zusageDispose();
+});
+
+test('pane-less native main coexists with side while unknown candidate is discarded', () => {
+  const h = harness(), [card] = h.setPanes(['main']);
+  const main = card.children[0]; main.pid = undefined; main.setAttribute('data-testid', 'v4-composer-input');
+  const tab = 'selection-side-chat:legacy'; sidePaneFixture(h, tab, 'child');
+  h.inject(); h.boot();
+  assert.deepEqual(Array.from(h.window.lifecycleTest.instances(), i => i.pid).sort(), ['auto', tab].sort());
+  h.window.__zusageDispose();
+});
+
+test('side visibility switching admits only one and disposes old instance idempotently', () => {
+  const h = harness(); h.setPanes(['a']);
+  const first = sidePaneFixture(h, 'selection-side-chat:one', 'one');
+  const second = sidePaneFixture(h, 'selection-side-chat:two', 'two');
+  second.rootEl.style.display = 'none'; h.inject(); h.boot();
+  const old = h.window.lifecycleTest.instances().find(i => i.pid === 'selection-side-chat:one');
+  assert.ok(old);
+  first.rootEl.style.display = 'none'; second.rootEl.style.display = 'block'; h.tick();
+  assert.deepEqual(Array.from(h.window.lifecycleTest.instances(), i => i.pid).sort(), ['a', 'selection-side-chat:two'].sort());
+  old.dispose(); assert.equal(h.frames.size, 2);
+  first.rootEl.style.display = 'block'; h.tick();
+  assert.equal(h.window.lifecycleTest.instances().filter(i => i.pid.startsWith('selection-side-chat:')).length, 1);
+  h.window.__zusageDispose(); assert.equal(h.frames.size, 0); assert.equal(h.timers.size, 0);
+});
+
+test('v174: unknown pane-less candidates are still dropped next to real panes (guard intact)', () => {
+  const h = harness(), cards = h.setPanes(['workspace-main'], { toolbar: true });
+  h.inject(); h.boot();
+  const mystery = h.body.appendChild(new Element('textarea'));
+  mystery.sid = 'sess_mystery';   // 无 pane 标记、也无辅助对话标记
+  h.document.querySelectorAll('textarea,').push(mystery);
+  h.tick();
+  assert.deepEqual(Array.from(h.window.lifecycleTest.instances(), i => i.pid), ['workspace-main']);
+  h.window.__zusageDispose();
 });

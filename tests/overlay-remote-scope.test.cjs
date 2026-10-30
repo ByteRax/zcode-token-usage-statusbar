@@ -192,6 +192,29 @@ test("bridge-less local pane matches the local snapshot instead of zero stubs", 
   assert.equal(pick({ scope_bindings: { "workspace-main": "" }, remote_evidence: false, recent },
     "sB", "workspace-main"), null);
 });
+test("side chat reads local recent only with its own current explicit local scope", () => {
+  const pick = sessionFixture(), pid = "selection-side-chat:tab";
+  const local = { sid: "sA", identity: "", remoteSessionId: "", workspacePath: "/p" };
+  const d = { scope_bindings: { [pid]: "" }, remote_evidence: false, recent: [{ sid: "sA", requests: 9 }] };
+  pick.ctx.window.__zusagePaneScopes = { [pid]: local };
+  assert.equal(pick(d, "sA", pid), null); // 缓存的 pane scope 不能代替当前实例
+  let scope = null;
+  pick.ctx.instances = [{ pid, getScope: () => scope }];
+  assert.equal(pick(d, "sA", pid), null);
+  scope = { sid: "sA" };
+  assert.equal(pick(d, "sA", pid), null);
+  scope = local;
+  assert.equal(pick(d, "sA", pid).requests, 9);
+  assert.equal(pick({ ...d, scope_bindings: { [pid]: A } }, "sA", pid), null);
+  for (const invalid of [
+    { ...local, sid: "sB" }, { ...local, identity: A, remoteSessionId: "connectionA" },
+    { ...local, remoteSessionId: "connectionA" }, { ...local, identity: undefined },
+    { ...local, remoteSessionId: undefined }, null,
+  ]) {
+    scope = invalid;
+    assert.equal(pick(d, "sA", pid), null);
+  }
+});
 test("main pane strips late scope bindings that no longer match current workbench state", () => {
   const recent = [
     { sid: "sA", workspace_identity: A, remote: true, requests: 1 },
