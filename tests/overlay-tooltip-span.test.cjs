@@ -43,7 +43,8 @@ test('tooltip uses supplied weighted rate and complete local date ranges in both
     assert.match(turn, /102\.2 tok\/s/);
     assert.doesNotMatch(turn, /27\.9 tok\/s/);
     assert.match(turn.replace(/<[^>]+>/g, ''), lang === 'zh' ? /11 token 未参与测速/ : /11 tokens excluded from rate/);
-    assert.equal(tips.filter(tip => tip.includes('2026-10-19 13:42 - 2026-10-19 13:43')).length, 4);
+    // v166：会话累计/项目累计精确到秒，其余三格保持到分
+    assert.equal(tips.filter(tip => tip.includes('2026-10-19 13:42 - 2026-10-19 13:43')).length, 3);
   }
 });
 
@@ -87,7 +88,7 @@ test('v159 project total cell: beside session total, sub-agent note, bilingual',
   assert.doesNotMatch(strip(zh), /另有/);   // v164 全量展示不折叠
   assert.match(zh, /rt-models/);            // v165 模型块表格化对齐
   assert.match(zh, /rt-pin/);               // 时间范围行吸底
-  assert.match(zh, /2026-10-19 13:42 - 2026-10-19 13:43/);
+  assert.match(zh, /2026-10-19 13:42:00 - 2026-10-19 13:43:00/);   // v166 精确到秒
   const en = render(data, 'en', null, { proj: true }).find(tip => tip.includes('Project total · all requests'));
   assert.match(strip(en), /Total\s*6700/);
   assert.match(strip(en), /3 sessions · 12 turns · 45 requests/);
@@ -102,6 +103,7 @@ test('v163 session total tooltip lists per-model rows from snapshot models', () 
   const strip = s => s.replace(/<[^>]+>/g, '');
   assert.match(strip(zh), /总和\s*1250300/);
   assert.match(zh, /rt-pin/);
+  assert.match(zh, /2026-10-19 13:42:00 - 2026-10-19 13:43:00/);   // v166 精确到秒
   assert.match(strip(zh), /GLM-5\.3\s*1200000 token · 180次/);
   assert.match(strip(zh), /未知模型\s*300 token · 7次/);
   // 无 models 字段（轻量行/旧快照）不显示模型行也不报错
