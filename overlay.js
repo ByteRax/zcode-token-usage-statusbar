@@ -93,7 +93,7 @@
     /* v135 重置卡徽标开关：真值在 config.json 的 reset_badge_enabled（主进程推送
        resetBadgeEnabled）；独立于 quota_enabled（额度关时仍查询 reset/status）。缺省开启 */
     resetBadge: !(window.__zusagePluginState && window.__zusagePluginState.resetBadgeEnabled === false),
-    /* v156 重启提醒开关（issue #139）：真值在 config.json 的 restart_notice（主进程推送
+    /* v159 重启提醒开关（issue #139）：真值在 config.json 的 restart_notice（主进程推送
        restartNotice）；只静默会话内提醒条，CLI 与故障提示不受控。缺省开启 */
     restartNotice: !(window.__zusagePluginState && window.__zusagePluginState.restartNotice === false),
     /* 重置卡倒计时阈值（小时）：剩余时间短于该值才在徽标上显示倒计时；纯展示偏好存 localStorage */
@@ -354,7 +354,7 @@
     if (s && typeof s.rateLine === "boolean") state.rateLine = s.rateLine;
     if (s && typeof s.quotaEnabled === "boolean") state.quotaEnabled = s.quotaEnabled;
     if (s && typeof s.resetBadgeEnabled === "boolean") state.resetBadge = s.resetBadgeEnabled;   // v135
-    if (s && typeof s.restartNotice === "boolean") state.restartNotice = s.restartNotice;   // v156（issue #139）
+    if (s && typeof s.restartNotice === "boolean") state.restartNotice = s.restartNotice;   // v159（issue #139）
     if (s && Array.isArray(s.quotaSources)) state.quotaSources = s.quotaSources;   // v95：chip 门控随主进程真值（heavy 对账点内生效）
     scanRateLines();
     instances.forEach(function (inst) { inst.syncUpdate(); });
