@@ -1790,10 +1790,23 @@ test('v146 compact theme browser behaviour (isolated fixture)', { skip: skipReas
     document.querySelectorAll('[class*="group/toolbar"]').forEach(row => {
       const lead = document.createElement('span');
       lead.setAttribute('data-composer-leading-content', 'true');
+      lead.style.display = 'flex';
+      lead.style.alignItems = 'center';
+      lead.style.gap = '4px';
+      lead.style.whiteSpace = 'nowrap';
       const cua = document.createElement('button');
       cua.setAttribute('data-testid', 'v4-composer-cua-entry');
       lead.appendChild(cua);
       row.insertBefore(lead, row.firstChild);
+    });
+    // v149：补 renderer 桥同款 scope 属性（readPaneScope 依赖；缺了 git chip 永不挂载）
+    [['a', '/repo/a'], ['b', '/repo/b']].forEach(([pid, path]) => {
+      const pane = document.getElementById('pane-' + pid);
+      pane.setAttribute('data-zusage-scope-version', '1');
+      pane.setAttribute('data-zusage-pane-id', pid);
+      pane.setAttribute('data-zusage-workspace-path', path);
+      pane.setAttribute('data-zusage-workspace-identity', '');
+      pane.setAttribute('data-zusage-remote-session-id', '');
     });
   })()`);
   await b.evaluate(overlay);
@@ -1841,6 +1854,35 @@ test('v146 compact theme browser behaviour (isolated fixture)', { skip: skipReas
       'settings panel did not open from the tooltip button');
     const theme = await themes(b);
     assert.deepEqual(theme, ['compact', 'compact']);
+  });
+
+  await t.test('real git chip coexists with the rate chip: mounts after it and holds position across frames', async () => {
+    await b.evaluate(`(() => {
+      const st = path => ({ ok: true, ts: Date.now(), branch: 'main', ins: 3, del: 1, staged: 0, unstaged: 2,
+        untracked: 0, conflicts: 0, changed: 2, repoPath: path, op: null, upstream: null, ahead: 1, behind: 0,
+        detached: false, noCommits: false });
+      window.__zusageGitState('/repo/a', st('/repo/a'));
+      window.__zusageGitState('/repo/b', st('/repo/b'));
+    })()`);
+    await b.waitFor(`document.querySelectorAll('.zu-git').length === 2`, 'git chips did not mount beside the rate chips');
+    // v149 修正：chips 在工具行（条外），从 .zu-tsb 本体读相邻关系，而非 .zusage-root 内部
+    const geo = await b.evaluate(`(() => {
+      const read = () => [...document.querySelectorAll('.zu-tsb')].map(t => {
+        const g = t.nextElementSibling;
+        if (!g || !g.classList.contains('zu-git')) return null;
+        const r1 = t.getBoundingClientRect(), r2 = g.getBoundingClientRect();
+        const pane = t.closest('.pane');
+        return { pane: pane ? pane.id : '?', tr: r1.left, tw: r1.width, gr: r2.left, gw: r2.width,
+          doc: !!(t.compareDocumentPosition(g) & Node.DOCUMENT_POSITION_FOLLOWING) };
+      }).filter(Boolean);
+      read(); return new Promise(res => { let n = 0; const step = () => { n++; const snap = read();
+        if (n >= 12) res(snap); else requestAnimationFrame(step); }; requestAnimationFrame(step); });
+    })()`);
+    assert.equal(geo.length, 2, 'both rate chips sit immediately before a git chip across frames');
+    for (const [i, m] of geo.entries()) {
+      assert.ok(m.tr < m.gr, `pair ${i}: rate is left of git (${JSON.stringify(m)})`);
+      console.log('PAIR:', JSON.stringify(m));
+    }
   });
 
   await t.test('switching back to default restores the bar and removes the chips', async () => {
