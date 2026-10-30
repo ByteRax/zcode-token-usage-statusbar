@@ -267,8 +267,13 @@ async function downloadRelease(release, python, fetch = fetchBytes, runUnpack = 
     const result = await runUnpack(python, [path.join(__dirname, "release_unpack.py"), "--archive", archive,
       "--manifest", info, "--repository", release.flavor === "gitcode" ? manifest.repository : release.repository,
       "--version", release.version, "--output", output]);
-    if (!result || result.ok !== true || result.version !== release.version || result.marketplaceRoot !== output ||
-        result.pluginRoot !== path.join(output, "plugins", "zcode-token-usage-statusbar")) throw new Error("发布包校验或解压结果无效");
+    // 解包器返回 Path.resolve() 后的真实路径；Windows 上 os.tmpdir() 可能是 8.3 短路径
+    // （fs.realpathSync 不展开短名），两侧字符串不等但指向同一目录，须按真实路径归一后再比。
+    // 解析失败回退原值，退回严格字符串比较，不放宽校验。
+    const canonical = (value) => { try { return fs.realpathSync.native(value); } catch (e) { return value; } };
+    if (!result || result.ok !== true || result.version !== release.version ||
+        canonical(result.marketplaceRoot) !== canonical(output) ||
+        canonical(result.pluginRoot) !== canonical(path.join(output, "plugins", "zcode-token-usage-statusbar"))) throw new Error("发布包校验或解压结果无效");
     return { directory, marketplaceRoot: output, pluginRoot: result.pluginRoot, release, manifest, cleanup };
   } catch (error) { cleanup(); throw error; }
 }
