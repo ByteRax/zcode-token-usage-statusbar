@@ -1032,9 +1032,12 @@ test('v174 side chat binds the registry entry whose key matches its verified sco
   const lines = rootEl.collect('[data-zusage-deterministic]', []).filter(el => el.tagName === 'BLOCKQUOTE');
   assert.equal(lines.length, 1, 'placeholder line inserted inside the side chat root');
   assert.equal(lines[0].querySelector('p').textContent, '⚡ 250.0 token/s(本轮) · 输出 1,000 token · 耗时 5.0s');
-  // 侧聊只显示可信 renderer 占位，不请求数据库富文本。
+  // v175：本地侧聊与主分栏同规则——活跃轮请求 DB 富文本（身份/代际防护照旧）。
   const reqs = (h.window.__zusagePluginRequests || []).filter(r => r && r.action === 'turn-text' && r.sid === 'sess_side');
-  assert.equal(reqs.length, 0);
+  assert.equal(reqs.length, 1);
+  assert.equal(reqs[0].turnId, undefined);
+  assert.equal(reqs[0].cn, 1);
+  assert.equal(reqs[0].forceKmb, false);
 });
 
 test('v174 side chat without a scope-matching registry entry stays unbound (DB fallback)', () => {
