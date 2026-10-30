@@ -174,7 +174,8 @@ test('restart-notice flows through the real plugin-update bridge into the toggle
       addEventListener: (_, fn) => { context.__changeHandler = fn; },
     },
     L: (zh) => zh, scanRateLines: () => {}, instances: [], stale: () => false, window: {},
-    inactive: () => false, syncPanel: () => {},
+    inactive: () => false,
+    syncPanel: () => { context.__syncPanelCalls = (context.__syncPanelCalls || 0) + 1; },   // 失败回退靠它重写复选框视觉（三轮 review）
     pluginRequest: (action, enabled, done) => { requested = [action, enabled]; respond = done; },
   };
   // 走真实 __zusagePluginUpdate 拷贝行 → state.restartNotice → syncUpdate 回显；
@@ -195,6 +196,7 @@ test('restart-notice flows through the real plugin-update bridge into the toggle
   respond({ ok: false });
   assert.equal(state.restartNotice, true);    // 失败回退到点击前的真值
   assert.match(feedbackNode.textContent, /保存失败/);
+  assert.equal(context.__syncPanelCalls, 1);  // 回退分支调 syncPanel 重写复选框视觉（删之测试即红）
   context.__changeHandler({ target: { classList: { contains: name => name === 'zu-restart-notice' }, checked: false } });
   respond({ ok: true });
   assert.equal(state.restartNotice, false);   // 成功路径保持乐观值
