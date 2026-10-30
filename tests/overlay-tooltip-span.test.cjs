@@ -73,6 +73,8 @@ test('v159 project total cell: beside session total, sub-agent note, bilingual',
     sessions: 3, turns: 12, requests: 45, input: 6000, output: 700, reasoning: 200,
     cache_read: 5000, cache_write: 30, total: 6700, tool_calls: 9, retries: 2,
     started: data.session.started, last_at: data.session.last_at,
+    models: [{ model: 'GLM-5.3', requests: 40, total: 6000 }, { model: 'gpt-6.1-sol', requests: 5, total: 700 }],
+    models_more: 2,
   };
   const zh = render(data, 'zh', null, { proj: true }).find(tip => tip.includes('项目累计 · 全部请求'));
   const strip = s => s.replace(/<[^>]+>/g, '');
@@ -80,10 +82,26 @@ test('v159 project total cell: beside session total, sub-agent note, bilingual',
   assert.match(strip(zh), /含子代理/);
   assert.match(strip(zh), /命中 83%/);
   assert.match(strip(zh), /缓存写入/);
+  assert.match(strip(zh), /GLM-5\.3\s*6000 token · 40次/);
+  assert.match(strip(zh), /gpt-6\.1-sol\s*700 token · 5次/);
+  assert.match(strip(zh), /另有 2 个模型/);
   assert.match(zh, /2026-10-19 13:42 - 2026-10-19 13:43/);
   const en = render(data, 'en', null, { proj: true }).find(tip => tip.includes('Project total · all requests'));
   assert.match(strip(en), /3 sessions · 12 turns · 45 requests/);
   assert.match(strip(en), /incl\. sub-agents/);
+  assert.match(strip(en), /2 more models/);
+});
+
+test('v163 session total tooltip lists per-model rows from snapshot models', () => {
+  const data = fixture();
+  data.session.models = [{ model: 'GLM-5.3', requests: 180, total: 1200000 }, { model: '', requests: 7, total: 300 }];
+  const zh = render(data, 'zh').find(tip => tip.includes('会话累计 · 全部请求'));
+  const strip = s => s.replace(/<[^>]+>/g, '');
+  assert.match(strip(zh), /GLM-5\.3\s*1200000 token · 180次/);
+  assert.match(strip(zh), /未知模型\s*300 token · 7次/);
+  // 无 models 字段（轻量行/旧快照）不显示模型行也不报错
+  const bare = render(fixture(), 'zh').find(tip => tip.includes('会话累计 · 全部请求'));
+  assert.doesNotMatch(bare, /未知模型/);
 });
 
 test('v159 project cell hidden without toggle or without snapshot field', () => {
