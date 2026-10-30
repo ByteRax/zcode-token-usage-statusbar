@@ -139,7 +139,7 @@ function header(state, extra = {}) {
 function text(value) { return { rowId: 2, turnId: 't1', productTurnId: 'pt1', kind: 'assistantText', text: value }; }
 
 /* harness(withBridge)：完整跑 turn-stats.js + overlay.js（VM 同上下文，注入序与线上一致）。 */
-function harness(withBridge = true) {
+function harness(withBridge = true, bootLs = {}) {
   const window = new Element('window');
   Object.assign(window, { innerWidth: 1000, innerHeight: 800 });
   const body = new Element('body'), root = new Element('html');
@@ -171,7 +171,7 @@ function harness(withBridge = true) {
   const sandbox = vm.createContext({
     window, document, console, innerHeight: 800, innerWidth: 1000,
     location: { href: 'file:///fixture' },
-    localStorage: { getItem: () => null, setItem() {} },
+    localStorage: { getItem: k => (k in bootLs ? bootLs[k] : null), setItem() {} },
     performance: { now: () => clock.now },
     getComputedStyle: () => ({ borderTopWidth: '1px', backgroundColor: 'black', opacity: '1', display: 'block', visibility: 'visible', pointerEvents: 'auto' }),
     setTimeout: (fn, ms) => { timers.set(++id, { fn, ms }); return id; },
@@ -212,10 +212,23 @@ function instanceOf(h) { return h.window.bridgeTest.instances()[0]; }
 function turnRequests(h) {
   return (h.window.__zusagePluginRequests || []).filter(r => r && r.action === 'turn-text');
 }
+function toggleForceKmb(h, checked) {
+  const panels = [];
+  function visit(el) {
+    if (el.listeners.has('change')) panels.push(el);
+    for (const child of el.children) visit(child);
+  }
+  visit(h.body);
+  const target = new Element('input');
+  target.classList.add('zu-force-kmb');
+  target.checked = checked;
+  for (const panel of panels) for (const fn of panel.listeners.get('change')) fn({ target });
+  assert.ok(panels.length, 'settings change listener is mounted');
+}
 /* 完成一轮 + 挂上 turn 容器 + 跑一次 0.5s 扫描：返回该容器的统计行 <p> */
-function completeTurn(h, store, tid = 'pt1') {
+function completeTurn(h, store, tid = 'pt1', outputTokens = 1000) {
   h.clock.now = 1600;
-  store.set(snap(3, [header('completedSuccess', { outputTokens: 1000, modelDurationMs: 4000, activeMs: 5000 }), text('abcdef')]));
+  store.set(snap(3, [header('completedSuccess', { outputTokens, modelDurationMs: 4000, activeMs: 5000 }), text('abcdef')]));
   const section = h.body.appendChild(new Element('section'));
   section.dataset.turnId = tid;
   h.runTimers(500);
@@ -234,7 +247,68 @@ test('⑫ completed turn shows the bridge placeholder and enqueues one DB rich-t
   assert.equal(reqs[0].action, 'turn-text');
   assert.equal(reqs[0].sid, 'sid_a');      // 查询按 session 走 --current 推断，不带显式 turn-id
   assert.equal(reqs[0].turnId, undefined); // 数据库 turn_id 和渲染器 turnId 不是同一套标识，不能传
-  assert.equal(reqs[0].cn, 1);             // v85：万/亿开关（缺省开、中文）随请求转达给 token_rate.py
+  assert.equal(reqs[0].cn, 1);             // 万/亿开关随请求转达给 token_rate.py
+  assert.equal(reqs[0].forceKmb, false);
+});
+
+test('force K/M/B formats the placeholder and sends an independent boolean request field', () => {
+  for (const [stored, outputTokens, expected, cn, forceKmb] of [
+    [{}, 58250, '5.83万', 1, false],
+    [{ 'zusage3.forceKmb': '1' }, 999, '999', 1, true],
+    [{ 'zusage3.forceKmb': '1' }, 58250, '58.3K', 1, true],
+    [{ 'zusage3.forceKmb': '1' }, 1250000, '1.25M', 1, true],
+    [{ 'zusage3.forceKmb': '1' }, 1250000000, '1.25B', 1, true],
+    [{ 'zusage3.cnNum': '0' }, 58250, '58,250', 0, false],
+    [{ 'zusage3.lang': 'en' }, 58250, '58,250', 0, false],
+    [{ 'zusage3.cnNum': '0', 'zusage3.forceKmb': '1' }, 58250, '58.3K', 0, true],
+    [{ 'zusage3.lang': 'en', 'zusage3.forceKmb': '1' }, 58250, '58.3K', 0, true],
+  ]) {
+    const h = harness(true, stored);
+    const store = driveStreaming(h);
+    const { line } = completeTurn(h, store, 'pt1', outputTokens);
+    assert.ok(line().textContent.includes(`输出 ${expected} token`), line().textContent);
+    const reqs = turnRequests(h);
+    assert.equal(reqs.length, 1);
+    assert.equal(reqs[0].cn, cn);
+    assert.equal(reqs[0].forceKmb, forceKmb);
+  }
+});
+
+for (const initial of [false, true]) {
+  test(`force KMB toggle ${initial ? 'off' : 'on'} rejects in-flight and legacy responses`, () => {
+    const h = harness(true, initial ? { 'zusage3.forceKmb': '1' } : {});
+    const { line } = completeTurn(h, driveStreaming(h), 'pt1', 58250);
+    const old = turnRequests(h)[0];
+    toggleForceKmb(h, !initial);
+    h.window.__zusageDeliverTurnText('sid_a', 'stale', old.unitEpoch);
+    h.window.__zusageDeliverTurnText('sid_a', 'legacy stale');
+    assert.notEqual(line().textContent, 'stale');
+    assert.notEqual(line().textContent, 'legacy stale');
+    h.runTimers(500);
+    const current = turnRequests(h).at(-1);
+    assert.equal(current.forceKmb, !initial);
+    assert.notEqual(current.unitEpoch, old.unitEpoch);
+    h.window.__zusageDeliverTurnText('sid_a', 'fresh', current.unitEpoch);
+    assert.equal(line().textContent, 'fresh');
+    h.window.__zusageDeliverTurnText('sid_a', 'late old', old.unitEpoch);
+    h.window.__zusageDeliverTurnText('sid_a', 'late same', current.unitEpoch);
+    assert.equal(line().textContent, 'fresh');
+    toggleForceKmb(h, initial);
+    h.runTimers(500);
+    assert.equal(line().textContent, 'fresh');
+  });
+}
+
+test('tagged response from a previous overlay generation is rejected after reinjection', () => {
+  const h = harness();
+  const store = driveStreaming(h);
+  completeTurn(h, store);
+  const old = turnRequests(h)[0];
+  h.inject(); h.boot(); h.runTimers(600); h.runTimers(100); h.runTimers(500);
+  const current = turnRequests(h).at(-1);
+  assert.notEqual(current.unitEpoch, old.unitEpoch);
+  h.window.__zusageDeliverTurnText('sid_a', 'stale generation', old.unitEpoch);
+  assert.notEqual(h.deterministic()[0].querySelector('p').textContent, 'stale generation');
 });
 
 test('⑬ delivered DB rich text replaces the placeholder line immediately, without waiting for the next tick', () => {

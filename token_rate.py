@@ -354,6 +354,17 @@ def fmt_num(n):
     return f"{n:,}"
 
 
+def fmt_kmb(n):
+    # 在原始 token 数上做半数进位，避免浮点缩放及 Python 偶数舍入差异。
+    if n >= 1_000_000_000:
+        return f"{(n + 5_000_000) // 10_000_000 / 100:.2f}B"
+    if n >= 1_000_000:
+        return f"{(n + 5_000) // 10_000 / 100:.2f}M"
+    if n >= 1000:
+        return f"{(n + 50) // 100 / 10:.1f}K"
+    return str(n)
+
+
 # 万/亿单位（本问统计行缺省；渲染端「中文单位」开关关闭时经 --no-cn-units 退回千分位/k）：≥1 亿用亿、
 # ≥1 万用万，至多两位小数去尾零、数字与单位不留空格（58.25万 / 142万 / 1亿），不足 1 万沿用千分位。与 overlay.js fmt() 同规则。
 def fmt_cn(n):
@@ -391,12 +402,12 @@ def _round1(x):
 
 # 本问统计行（回复收尾自测用）。调用方判定 turn 为空时（含 --current 守卫）不显示任何行。
 # cn 缺省 True 与渲染端「中文单位」开关默认开启一致；只有开关关闭时 inject-main 才传 --no-cn-units。
-def format_turn_line(r, cn=True):
+def format_turn_line(r, cn=True, force_kmb=False):
     t = r.get("turn")
     if not t:
         return "暂无本轮请求记录"
-    num = fmt_cn if cn else fmt_num
-    big = fmt_cn if cn else fmt_compact
+    num = fmt_kmb if force_kmb else (fmt_cn if cn else fmt_num)
+    big = fmt_kmb if force_kmb else (fmt_cn if cn else fmt_compact)
     parts = [
         f"⚡ {t['tokPerSec'] if t['tokPerSec'] is not None else '-'} token/s(本轮)",
         f"首字 {_sec(t['ttftMs'])}s",
@@ -457,7 +468,7 @@ def main(argv):
         if json_out:
             print(json.dumps(r, ensure_ascii=False))
         elif r.get("turn"):
-            print(format_turn_line(r, cn="--no-cn-units" not in argv))
+            print(format_turn_line(r, cn="--no-cn-units" not in argv, force_kmb="--force-kmb" in argv))
         # --current 且本问尚无数据：不输出任何行，调用方据此不显示统计（绝不回退到上一轮）
     else:
         r = query_latest(sid)

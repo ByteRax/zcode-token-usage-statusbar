@@ -149,6 +149,14 @@ class TestTurnCurrent(RateTestBase):
         self.assertIn("累计 3.5k token", line)
         self.assertNotIn("3,500", line)
 
+    def test_turn_current_force_kmb_overrides_both_unit_modes(self):
+        self.write_state({"sessionId": SID, "ts": self.t0, "promptTs": self.t0})
+        for flags in (("--force-kmb",), ("--no-cn-units", "--force-kmb")):
+            r = self.run_rate("--turn", "--current", *flags, state=self.state)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertIn("输出 2.0K(含 500 思考)", r.stdout)
+            self.assertIn("累计 3.5K token", r.stdout)
+
     def test_current_guard_blocks_when_no_data_this_turn(self):
         # 守卫场景：提问时刻晚于库里全部行（纯问答轮收尾自测）→ 输出必须为空
         self.write_state({"sessionId": SID, "ts": self.t0 + 60000, "promptTs": self.t0 + 60000})
@@ -659,6 +667,31 @@ class TestCnUnitsFormat(unittest.TestCase):
         self.assertIn("累计 164万 token", cn)
         self.assertNotIn(" tok ", cn)
         self.assertNotIn(" tok/", cn)
+
+    def test_force_kmb_formats_all_token_fields_without_changing_counts(self):
+        self.assertEqual([self.tr.fmt_kmb(n) for n in (999, 1000, 9500, 1000000, 123456789, 10**9)],
+                         ["999", "1.0K", "9.5K", "1.00M", "123.46M", "1.00B"])
+        r = {"turn": {"tokPerSec": 82.6, "ttftMs": 1400, "totalOutput": 58260, "totalReasoning": 21000,
+                      "genMs": 100500, "requests": 7, "peak": 112, "lastAt": 0},
+             "session": {"totalOutput": 1000000000}}
+        for cn in (True, False):
+            line = self.tr.format_turn_line(r, cn=cn, force_kmb=True)
+            self.assertIn("输出 58.3K(含 21.0K 思考)", line)
+            self.assertIn("累计 1.00B token", line)
+            self.assertIn("7 段 / 峰 112 token/s", line)
+
+    def test_root_force_kmb_half_boundaries(self):
+        # 同步前直接验证根源码；插件副本由集成步骤统一同步。
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("root_token_rate", REPO / "token_rate.py")
+        root_rate = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(root_rate)
+        values = (1249, 1250, 1251, 1124999, 1125000, 1125001,
+                  1124999999, 1125000000, 1125000001)
+        expected = ["1.2K", "1.3K", "1.3K", "1.12M", "1.13M", "1.13M",
+                    "1.12B", "1.13B", "1.13B"]
+        self.assertEqual([root_rate.fmt_kmb(n) for n in values], expected)
+        self.assertEqual(root_rate.fmt_num(1250), "1,250")
 
     def test_format_turn_line_sample_time_is_full_cn_datetime(self):
         # ⏱ 采样时刻 = 完整中文日期时间（2026 年 10 月 23 日 11 点 20 分 28 秒），数字不补零；

@@ -405,19 +405,60 @@ test('万/亿 preference defaults on, honours only an explicit "0" and round-tri
   assert.equal(store['zusage3.cnNum'], '1');
 });
 
+test('强制 K/M/B defaults off, honours only an explicit "1" and persists via its own key', () => {
+  const stateSource = extract('  var LS = {', '  /* ---------- 多实例注册表');
+  function boot(stored) {
+    const store = Object.assign({}, stored);
+    const context = {
+      window: {},
+      localStorage: { getItem: k => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = v; } },
+    };
+    vm.runInNewContext(stateSource, context);
+    return { context, store };
+  }
+  assert.equal(boot({}).context.state.forceKmb, 0);
+  assert.equal(boot({ 'zusage3.forceKmb': '1' }).context.state.forceKmb, 1);
+  assert.equal(boot({ 'zusage3.forceKmb': '0' }).context.state.forceKmb, 0);
+  assert.equal(boot({ 'zusage3.forceKmb': 'weird' }).context.state.forceKmb, 0);   // 仅显式 "1" 开启
+  const { context, store } = boot({});
+  context.state.forceKmb = 1;
+  vm.runInNewContext('persist();', context);
+  assert.equal('zusage3.forceKmb' in store, false);   // 独立持久化：persist 批量写不含该键（同主题键，防多窗口旧快照覆盖）
+});
+
 test('fmt renders 万/亿 by default in Chinese and K/M/B when disabled or in English', () => {
-  const fmtSource = extract('  function cnUnits() {', '  function ls(') + extract('    function fmt(n) {', '    function sec(ms) {');
+  const fmtSource = extract('  function cnUnits() {', '  function ls(') + extract('    function fmt(n', '    function sec(ms) {');
   const context = { state: { lang: 'zh', cnNum: 1 } };
   const fmt = vm.runInNewContext(fmtSource + '\nfmt;', context);
   const samples = [undefined, 0, 950, 9500, 582500, 1420000, 1e8, 123456789, 999000000, 1e9, 1.5e9];
-  assert.deepEqual(samples.map(fmt),
+  assert.deepEqual(samples.map(n => fmt(n)),
     ['0', '0', '950', '9500', '58.25万', '142万', '1亿', '1.23亿', '9.99亿', '10亿', '15亿']);
   const kmb = ['0', '0', '950', '9.5K', '582.5K', '1.42M', '100.00M', '123.46M', '999.00M', '1.00B', '1.50B'];
   context.state.cnNum = 0;
-  assert.deepEqual(samples.map(fmt), kmb);
+  assert.deepEqual(samples.map(n => fmt(n)), kmb);
   context.state.cnNum = 1;
   context.state.lang = 'en';
-  assert.deepEqual(samples.map(fmt), kmb);   // 英文界面不展示开关，也不得生效
+  assert.deepEqual(samples.map(n => fmt(n)), kmb);   // 英文界面不展示开关，也不得生效
+  context.state.lang = 'zh';
+  context.state.forceKmb = 1;
+  assert.deepEqual(samples.map(n => fmt(n)), kmb);   // v173：强制 K/M/B 覆盖中文界面与万/亿开关
+  delete context.state.forceKmb;
+  assert.deepEqual(samples.map(n => fmt(n)), ['0', '0', '950', '9500', '58.25万', '142万', '1亿', '1.23亿', '9.99亿', '10亿', '15亿']);
+});
+
+test('force KMB rounds token half boundaries up without changing count or default modes', () => {
+  const fmtSource = extract('  function cnUnits() {', '  function ls(') + extract('    function fmt(n', '    function sec(ms) {');
+  const context = { state: { lang: 'zh', cnNum: 1, forceKmb: 1 } };
+  const fmt = vm.runInNewContext(fmtSource + '\nfmt;', context);
+  const values = [1249, 1250, 1251, 1124999, 1125000, 1125001, 1124999999, 1125000000, 1125000001];
+  const expected = ['1.2K', '1.3K', '1.3K', '1.12M', '1.13M', '1.13M', '1.12B', '1.13B', '1.13B'];
+  assert.deepEqual(values.map(n => fmt(n)), expected);
+  assert.equal(fmt(1250, true), '1250');
+  context.state.forceKmb = 0;
+  assert.equal(fmt(1250), '1250');
+  context.state.cnNum = 0;
+  assert.equal(fmt(1250), '1.3K');
+  assert.equal(fmt(1125000), '1.13M');
 });
 
 test('buildPanel shows the 万/亿 toggle only in Chinese and restores its checked state', () => {
@@ -452,27 +493,100 @@ test('buildPanel shows the 万/亿 toggle only in Chinese and restores its check
   assert.doesNotMatch(context.panel.innerHTML, /万\/亿/);
 });
 
+test('buildPanel generates the force-units toggle in both languages and restores its state', () => {
+  const buildSource = extract('    function settingRow(', '    function syncSettingsScroll() {');
+  for (const lang of ['zh', 'en']) {
+    const box = {}, body = { scrollTop: 0 };
+    const context = {
+      slot: 0,
+      panel: {
+        innerHTML: '',
+        querySelector: selector => selector === '.zu-settings-body' ? body
+          : selector === '.zu-force-kmb' ? (context.panel.innerHTML.includes('zu-force-kmb') ? box : null)
+          : { value: '' },
+        querySelectorAll: () => [],
+      },
+      state: { lang, show: {}, ctxOv: '', cnNum: 1, forceKmb: 0 },
+      L: (zh, en) => lang === 'en' ? en : zh,
+      syncUpdate: () => {}, syncSettingsScroll: () => {},
+    };
+    vm.runInNewContext(buildSource + '\nbuildPanel();', context);
+    assert.match(context.panel.innerHTML, /<input type="checkbox" class="zu-force-kmb">/);
+    assert.ok(context.panel.innerHTML.includes(lang === 'en' ? 'Force K/M/B units' : '强制 K/M/B 单位'));
+    assert.equal(box.checked, false);
+    context.state.forceKmb = 1;
+    vm.runInNewContext('buildPanel();', context);
+    assert.equal(box.checked, true);
+  }
+});
+
+test('force-units change persists its own key and reloads without changing other preferences', () => {
+  const stateSource = extract('  var LS = {', '  /* ---------- 多实例注册表');
+  const changeSource = extract('    panel.addEventListener("change",', '    listenGlobal(document, "mousedown",');
+  const store = { 'zusage3.cnNum': '1' };
+  let handler, renders = 0;
+  const context = {
+    window: {}, localStorage: { getItem: k => store[k] ?? null, setItem: (k, v) => { store[k] = String(v); } },
+    panel: { addEventListener: (_, fn) => { handler = fn; } },
+    richTextUnitEpoch: 0, richTextAttempts: {},
+    renderAll: () => { renders++; },
+  };
+  vm.runInNewContext(stateSource + changeSource, context);
+  const target = checked => ({ type: 'checkbox', checked, dataset: {}, classList: { contains: name => name === 'zu-force-kmb' } });
+  for (const checked of [true, false]) {
+    handler({ target: target(checked) });
+    assert.equal(store['zusage3.forceKmb'], checked ? '1' : '0');
+    assert.equal(context.state.forceKmb, Number(checked));
+    assert.equal(context.state.cnNum, 1);
+    const reloaded = { window: {}, localStorage: context.localStorage };
+    vm.runInNewContext(stateSource, reloaded);
+    assert.equal(reloaded.state.forceKmb, Number(checked));
+    assert.equal(reloaded.state.cnNum, 1);
+  }
+  assert.equal(renders, 2);
+});
+
+test('force-units affects tokens but not countFmt in either language', () => {
+  const fmtSource = extract('  function cnUnits() {', '  function ls(') + extract('    function fmt(n', '    function sec(ms) {');
+  const context = { state: { lang: 'zh', cnNum: 1, forceKmb: 0 } };
+  const { fmt, countFmt } = vm.runInNewContext(fmtSource + '\n({ fmt, countFmt });', context);
+  for (const lang of ['zh', 'en']) {
+    for (const cnNum of [0, 1]) {
+      context.state.lang = lang;
+      context.state.cnNum = cnNum;
+      context.state.forceKmb = 0;
+      const baseline = [9500, 582500, 1e9].map(countFmt);
+      context.state.forceKmb = 1;
+      assert.deepEqual([9500, 582500, 1e9].map(countFmt), baseline);
+      assert.deepEqual([9500, 582500, 1e9].map(n => fmt(n)), ['9.5K', '582.5K', '1.00B']);
+    }
+  }
+});
+
 test('syncPanel restores the 万/亿 toggle and tolerates its absence in English', () => {
   const syncSource = extract('    function syncPanel() {', '    panel.addEventListener("click",');
-  const cnBox = {}, ctxov = { value: '' };
+  const cnBox = {}, kmbBox = {}, ctxov = { value: '' };
   let present = true, updates = 0;
   const context = {
     panel: {
       querySelectorAll: () => [],
-      querySelector: selector => selector === '.zu-cn-num' ? (present ? cnBox : null) : selector === '.zu-ctxov' ? ctxov : { value: '' },   // v135：syncPanel 还会回填 .zu-rst-cdh，独立桩避免误写 ctxov
+      querySelector: selector => selector === '.zu-cn-num' ? (present ? cnBox : null) : selector === '.zu-force-kmb' ? (present ? kmbBox : null) : selector === '.zu-ctxov' ? ctxov : { value: '' },   // v135：syncPanel 还会回填 .zu-rst-cdh，独立桩避免误写 ctxov
     },
-    state: { show: {}, ctxOv: '128000', cnNum: 0 },
+    state: { show: {}, ctxOv: '128000', cnNum: 0, forceKmb: 0 },
     syncUpdate: () => { updates++; },
   };
   vm.runInNewContext(syncSource + '\nsyncPanel();', context);
   assert.equal(cnBox.checked, false);
+  assert.equal(kmbBox.checked, false);
   assert.equal(ctxov.value, '128000');
   context.state.cnNum = 1;
+  context.state.forceKmb = 1;
   vm.runInNewContext('syncPanel();', context);
   assert.equal(cnBox.checked, true);
+  assert.equal(kmbBox.checked, true);
   present = false;
   vm.runInNewContext('syncPanel();', context);
-  assert.equal(updates, 3);
+  assert.equal(updates, 3);   // v173：force-kmb 缺席时由 if 守卫跳过，不误写 ctxov
 });
 
 test('万/亿 toggle change persists and re-renders without touching display items', () => {
