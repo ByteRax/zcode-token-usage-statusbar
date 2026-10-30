@@ -20,7 +20,7 @@ class Element {
   addEventListener(type, fn) { const a = this.listeners.get(type) || []; a.push(fn); this.listeners.set(type, a); }
   removeEventListener(type, fn) { this.listeners.set(type, (this.listeners.get(type) || []).filter(f => f !== fn)); }
   count() { return [...this.listeners.values()].reduce((a, b) => a + b.length, 0); }
-  appendChild(el) { this.children.push(el); el.parentElement = this; return el; }
+  appendChild(el) { this.children.push(el); el.parentElement = this; el.isConnected = true; return el; }
   insertBefore(el, ref) {   // v80 in-card 挂载依赖；ref 不属于本节点时按真实 DOM 语义退化为 append
     if (!ref || ref.parentElement !== this) return this.appendChild(el);
     const idx = this.children.indexOf(ref);
@@ -38,7 +38,7 @@ class Element {
   getAttribute(k) { return k === 'data-pane-id' ? this.pid : k === 'data-session-id' ? this.sid : this.dataset[k] ?? null; }
   getBoundingClientRect() { return { top: 600, bottom: 650, left: 20, right: 520, width: 500, height: 50 }; }
 }
-function harness() {
+function harness(ls = { getItem: () => null, setItem() {} }) {
   const window = new Element(), body = new Element('body'), root = new Element('html');
   Object.assign(window, { innerWidth: 1000, innerHeight: 800 });
   let panes = [];
@@ -49,7 +49,7 @@ function harness() {
     elementFromPoint: () => panes[0] || body });
   const timers = new Map(), frames = new Map(), observers = []; let id = 0;
   const sandbox = vm.createContext({ window, document, console, innerHeight: 800, innerWidth: 1000,
-    location: { href: 'file:///fixture' }, localStorage: { getItem: () => null, setItem() {} },
+    location: { href: 'file:///fixture' }, localStorage: ls,
     getComputedStyle: () => ({ borderTopWidth: '1px', backgroundColor: 'black', opacity: '1', display: 'block', visibility: 'visible' }),
     setTimeout: (fn, ms) => { timers.set(++id, { fn, ms, interval: false }); return id; },
     clearTimeout: n => timers.delete(n),
@@ -58,7 +58,7 @@ function harness() {
     requestAnimationFrame: fn => { frames.set(++id, fn); return id; }, cancelAnimationFrame: n => frames.delete(n),
     MutationObserver: class { constructor(fn) { this.fn = fn; this.connected = false; observers.push(this); } observe() { this.connected = true; } disconnect() { this.connected = false; } },
   });
-  const executable = source.replace(/\}\)\(\);\s*$/, 'window.lifecycleTest = { instances: function() { return instances; } };})();');
+  const executable = source.replace(/\}\)\(\);\s*$/, 'window.lifecycleTest = { instances: function() { return instances; }, setBarTheme: function(t) { setBarTheme(t); } };})();');
   function inject() { window.__zusageOverlay = false; vm.runInContext(executable, sandbox); }
   function tick() { for (const t of [...timers.values()]) if (t.interval && t.ms === 600) t.fn(); }
   function boot() { for (const [n, t] of [...timers]) if (!t.interval && t.ms === 0) { timers.delete(n); t.fn(); } }
@@ -101,6 +101,33 @@ test('padding release touches only the owning card and dispose restores original
   h.window.lifecycleTest.instances()[0].dispose();
   assert.equal(cards[0].style.marginBottom, 'apx'); assert.equal(cards[1].style.marginBottom, '24px');
   h.window.__zusageDispose(); assert.equal(cards[1].style.marginBottom, 'bpx');
+});
+
+test('v146 compact theme: bar hides on body, heavy keeps it alive, no pads; leaving remounts in-card', () => {
+  const store = new Map([['zusage3.theme', 'compact']]);
+  const h = harness({ getItem: k => store.get(k) ?? null, setItem: (k, v) => store.set(k, v) });
+  const cards = h.setPanes(['a', 'b'], { toolbar: true }); h.inject(); h.boot();
+  const barA = h.document.body.children.find(e => /zusage-root/.test(e.className || ''));
+  assert.ok(barA, 'bar stays mounted');
+  assert.ok(barA.classList.contains('zu-compact'), 'compact class marks the theme');
+  assert.equal(barA.getAttribute('data-zusage-theme'), 'compact');
+  assert.equal(barA.style.display, 'none', 'bar is permanently hidden in compact mode');
+  assert.equal(barA.parentElement, h.document.body, 'bar lives on body, detached from the card');
+  assert.equal(cards[0].style.marginBottom, 'apx', 'no card pad in compact mode');
+  // React 清子树场景：条被移除后 heavy（600ms）必须补挂回 body（<style> 随条，丢了 chip 样式全灭）
+  barA.remove();
+  h.tick();
+  assert.equal(barA.parentElement, h.document.body);
+  assert.equal(barA.isConnected, true);
+  assert.equal(barA.style.display, 'none');
+  // 切回默认：立即重挂工具行之后（in-card），track 帧恢复 flex 显示
+  h.window.lifecycleTest.setBarTheme('default');
+  const [barInCard] = cards[0].children.filter(e => /zusage-root/.test(e.className || ''));
+  assert.ok(barInCard, 'bar is back inside the card');
+  assert.ok(barInCard.classList.contains('zu-in'));
+  assert.equal(store.get('zusage3.theme'), 'default', 'theme choice persisted');
+  h.runFrame();
+  assert.equal(barInCard.style.display, 'flex', 'track frame restores visibility');
 });
 
 test('v80 in-card mount: bar lands inside the card after the toolbar row, no pad, no fixed styles', () => {

@@ -17,6 +17,8 @@ function position({ itemLeft = 800, itemWidth = 80, panelWidth = 420, panelHeigh
   const style = {};
   const context = {
     window: { innerWidth: viewportWidth },
+    state: { theme: 'default' },   // v146：精简模式锚 chip 的分支不触达（default 走条面格）
+    tpsChipCache: null,
     subPanel: { classList: { contains: () => open }, offsetWidth: panelWidth, offsetHeight: panelHeight, style },
     bar: {
       getBoundingClientRect: () => ({ top: barTop }),

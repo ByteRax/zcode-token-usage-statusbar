@@ -43,7 +43,7 @@ A thin bar appears along the bottom of the chat window, roughly like this:
    Speed        This turn             Session total       Tools     Today    Sub-agents   Settings
 ```
 
-The example above shows the default style. In the desktop app, choose **Default** or **Pill** under ⚙ → General → Status bar style. The pill is centered below its composer, sized to its content and constrained in narrow windows. This option is not available on the Web. [Style and switching details →](docs/user-guide.md#状态条样式) (Chinese)
+The example above shows the default style. In the desktop app, choose **Default**, **Pill** or **Compact** under ⚙ → General → Status bar style. The pill is centered below its composer, sized to its content and constrained in narrow windows. Compact hides the floating bar and moves the speed readout and cell summaries into the composer toolbar. On the Web, choose Default/Compact under ⚙ → General. [Style and switching details →](docs/user-guide.md#状态条样式) (Chinese)
 
 Here's what each part tells you:
 
@@ -57,7 +57,7 @@ Here's what each part tells you:
 | **236k 🟢** | The sub-tasks the model sent out on its own (subagents) used 236k tokens; 🟢 means one is still running |
 | **⚙** | Click for: which items to show, interface language, token unit display, update checks |
 
-Context usage doesn't take a slot on the bar — look at the **context button** in the composer toolbar (a ring icon plus a percentage). It changes colour as it fills up; if a request gets rejected for running over, it tells you what to do. Clicking it opens a panel that includes a **one-click compact** button.
+Context usage doesn't take a slot on the bar — look at the **context button** in the composer toolbar (a ring icon plus a percentage). It changes colour as it fills up; if a request gets rejected for running over, it tells you what to do. Clicking it opens a panel that includes a **one-click compact** button. Prefer the native look? Turn off **Context button enhancement** under **⚙ → General**.
 
 **Hover any of them and you get the finer breakdown.** For the real thing, see the [feature screenshots](docs/features.md).
 

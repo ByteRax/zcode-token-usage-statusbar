@@ -44,7 +44,7 @@ for (const lang of ['zh', 'en']) {
   test(`${lang}: stale subSum (>3s) falls back to verb + elapsed`, () => {
     const view = speedView({ complete: false, runningTool: agentTool, characterRate: null, observedMs: 0 }, null,
       { rate: 45.16, at: NOW - 4000, count: 1 });
-    assert.equal(view.text, 'Agent · 10.0s');
+    assert.equal(view.text, 'Agent 10.0s');
   });
 
   test(`${lang}: subagent-row form (no startedAt, no subSum) shows verb only`, () => {
@@ -56,13 +56,13 @@ for (const lang of ['zh', 'en']) {
   test(`${lang}: null-rate subSum falls back like absence`, () => {
     const view = speedView({ complete: false, runningTool: agentTool, characterRate: null, observedMs: 0 }, null,
       { rate: null, at: NOW - 100, count: 0 });
-    assert.equal(view.text, 'Agent · 10.0s');
+    assert.equal(view.text, 'Agent 10.0s');
   });
 
   test(`${lang}: non-agent tools ignore subSum entirely`, () => {
     const view = speedView({ complete: false, runningTool: { name: 'Read', startedAt: 1000 }, characterRate: null, observedMs: 0 },
       null, fresh);
-    assert.equal(view.text, 'Read · 10.0s');
+    assert.equal(view.text, 'Read 10.0s');
   });
 }
 

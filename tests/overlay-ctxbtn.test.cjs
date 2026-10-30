@@ -76,7 +76,7 @@ class Element {
   getBoundingClientRect() { return { top: 600, bottom: 650, left: 20, right: 520, width: 500, height: 50 }; }
 }
 
-function harness({ clock } = {}) {
+function harness({ clock, ls } = {}) {
   const window = new Element(), body = new Element('body'), root = new Element('html');
   Object.assign(window, { innerWidth: 1000, innerHeight: 800 });
   let panes = [];
@@ -88,7 +88,7 @@ function harness({ clock } = {}) {
   const timers = new Map(), frames = new Map(), observers = []; let id = 0;
   class FixtureDate extends Date { static now() { return clock ? clock.now : Date.now(); } }
   const sandbox = vm.createContext({ window, document, console, Date: FixtureDate, innerHeight: 800, innerWidth: 1000,
-    location: { href: 'file:///fixture' }, localStorage: { getItem: () => null, setItem() {} },
+    location: { href: 'file:///fixture' }, localStorage: { getItem: k => (ls && k in ls ? ls[k] : null), setItem() {} },
     getComputedStyle: () => ({ borderTopWidth: '1px', backgroundColor: 'black', opacity: '1', display: 'block', visibility: 'visible' }),
     setTimeout: (fn, ms) => { timers.set(++id, { fn, ms, interval: false }); return id; },
     clearTimeout: n => timers.delete(n),
@@ -103,6 +103,11 @@ function harness({ clock } = {}) {
   });
   const executable = source.replace(/\}\)\(\);\s*$/, 'window.ctxBtnTest = { instances: function() { return instances; } };})();');
   function inject() { window.__zusageOverlay = false; vm.runInContext(executable, sandbox); }
+  function firePanelChange(target) {   // ⚙ 面板 change 委托真实路径（panel 挂 body，class "panel zu-settings"）
+    const panel = body.children.find(e => e.classList && e.classList.contains('zu-settings'));
+    assert.ok(panel, 'settings panel mounted');
+    for (const fn of (panel.listeners.get('change') || [])) fn({ target });
+  }
   function tick() { for (const t of [...timers.values()]) if (t.interval && (t.ms === 600 || t.ms === 500)) t.fn(); }
   function boot() { for (const [n, t] of [...timers]) if (!t.interval && t.ms === 0) { timers.delete(n); t.fn(); } }
   function runTimeouts() { for (const [n, t] of [...timers]) if (!t.interval) { timers.delete(n); t.fn(); } }
@@ -137,7 +142,7 @@ function harness({ clock } = {}) {
     return { remote_evidence: false, today: {}, not_local: [],
       recent: [{ sid: 'sid_main', workspace_identity: '', ctx, context_window: cw, last_at: 1, ctx_exc: exc }] };
   }
-  return { window, body, document, inject, tick, boot, runTimeouts, mutate, buildComposer, payload };
+  return { window, body, document, inject, tick, boot, runTimeouts, mutate, buildComposer, payload, firePanelChange };
 }
 
 test('enhanced ring mirrors the statusbar band and appends a percentage beside the button', () => {
@@ -218,6 +223,56 @@ test('unknown capacity restores the native ring and removes the percentage', () 
   assert.equal(ui.btn.children.find(e => e.classList.contains('zu-ctxpct')), undefined);
   assert.equal(ui.value.getAttribute('stroke-dasharray'), '62.83185307179586 62.83185307179586');
   assert.equal(ui.value.getAttribute('stroke-dashoffset'), String(62.83185307179586 * (1 - 63400 / 200000)));
+  assert.equal(ui.value.getAttribute('pathLength'), null);
+});
+
+/* ---------- v156 上下文按钮增强开关（issue #141，localStorage zusage3.ctxEnh 缺省开） ---------- */
+test('enhancement toggle off (zusage3.ctxEnh=0) never touches the native button', () => {
+  const h = harness({ ls: { 'zusage3.ctxEnh': '0' } }), ui = h.buildComposer('workspace-main', 'sid_main');
+  h.inject(); h.boot(); h.tick();
+  h.window.__zusageUpdate(h.payload());
+  h.tick();
+  assert.equal(ui.btn.getAttribute('data-zusage-armed'), null);
+  assert.equal(ui.btn.getAttribute('data-zusage-band'), null);
+  assert.equal(ui.btn.children.find(e => e.classList.contains('zu-ctxpct')), undefined);
+  assert.equal(ui.value.getAttribute('pathLength'), null);
+  assert.equal(ui.value.getAttribute('stroke-dasharray'), null);   // 环属性完全不动（宿主原生语义）
+});
+
+test('runtime off via the panel toggle restores the ring and keeps the reset badge', () => {
+  const ls = {}; const h = harness({ ls }), ui = resetComposer(h);
+  h.inject(); h.boot(); h.tick();
+  h.window.__zusageUpdate(payloadWithResets(h.payload, { bigmodel: rstEntry(25 * 3600e3, 2) }));
+  assert.equal(ui.btn.getAttribute('data-zusage-armed'), '1');
+  assert.ok(rst(ui.btn), 'badge mounts while enhanced');
+  const toggle = { checked: false, type: 'checkbox', dataset: {}, classList: { contains: n => n === 'zu-ctx-enh' } };
+  h.firePanelChange(toggle);   // 真实 change 委托：state.ctxEnh=0 → persist → renderAll
+  assert.equal(ui.btn.getAttribute('data-zusage-armed'), null);
+  assert.equal(ui.btn.getAttribute('data-zusage-band'), null);
+  assert.equal(ui.btn.children.find(e => e.classList.contains('zu-ctxpct')), undefined);
+  assert.equal(ui.value.getAttribute('pathLength'), null);
+  assert.equal(ui.value.getAttribute('stroke-dasharray'), '62.83185307179586 62.83185307179586');
+  assert.equal(ui.value.getAttribute('stroke-dashoffset'), String(62.83185307179586 * (1 - 63400 / 200000)));
+  // 徽标仅借按钮定位，还原后继续维护（restore 清掉的徽标立即重挂）
+  const b = rst(ui.btn);
+  assert.ok(b, 'reset badge survives turning enhancement off');
+  assert.match(b.innerHTML, /<\/svg>2$/);
+  assert.equal(b.className, 'zu-ctxrst zu-rst-calm');
+  toggle.checked = true;
+  h.firePanelChange(toggle);   // 再开启：增强恢复
+  assert.equal(ui.btn.getAttribute('data-zusage-armed'), '1');
+  assert.equal(ui.value.getAttribute('stroke-dasharray'), '31.7 100');
+  assert.ok(ui.btn.children.find(e => e.classList.contains('zu-ctxpct')));
+});
+
+test('reset badge still mounts when enhancement is disabled from startup', () => {
+  const h = harness({ ls: { 'zusage3.ctxEnh': '0' } }), ui = resetComposer(h);
+  h.inject(); h.boot(); h.tick();
+  h.window.__zusageUpdate(payloadWithResets(h.payload, { bigmodel: rstEntry(25 * 3600e3, 2) }));
+  assert.equal(ui.btn.getAttribute('data-zusage-armed'), null);
+  const b = rst(ui.btn);
+  assert.ok(b, 'badge exists without enhancement');
+  assert.equal(b.className, 'zu-ctxrst zu-rst-calm');
   assert.equal(ui.value.getAttribute('pathLength'), null);
 });
 

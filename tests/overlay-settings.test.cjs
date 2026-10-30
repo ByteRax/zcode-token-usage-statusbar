@@ -221,7 +221,7 @@ test('panel retains all controls, scroll position and settings-only styling', ()
   for (const key of ['turn', 'win', 'tools', 'today', 'sub']) {
     assert.ok(source.includes('data-k="' + key + '"'));
   }
-  for (const selector of ['zu-rate-line', 'zu-auto-update', 'zu-restart-notice', 'zu-ctxov', 'zu-cn-num', 'data-update="check"', 'data-update="update"', 'name="zu-lang"', 'zu-settings-feedback']) {
+  for (const selector of ['zu-rate-line', 'zu-auto-update', 'zu-restart-notice', 'zu-ctxov', 'zu-cn-num', 'zu-ctx-enh', 'data-update="check"', 'data-update="update"', 'name="zu-lang"', 'zu-settings-feedback']) {
     assert.ok(source.includes(selector));
   }
   assert.match(source, /\.zu-settings-body"\)\.scrollTop = scrollTop/);
@@ -826,6 +826,29 @@ test('full-path toggle persists and flips the gate without re-rendering or touch
   assert.equal(gates, 2);
 });
 
+test('context-button-enhancement toggle persists and re-renders without touching display items', () => {
+  const changeSource = extract('    panel.addEventListener("change",', '    listenGlobal(document, "mousedown",');
+  let handler, saved = 0, renders = 0;
+  const context = {
+    panel: { addEventListener: (_, fn) => { handler = fn; } },
+    state: { ctxOv: '', show: { ctx: 1 }, projPath: 1, ctxEnh: 1 },
+    persist: () => { saved++; },
+    applyProjPath: () => {},
+    renderAll: () => { renders++; },
+  };
+  vm.runInNewContext(changeSource, context);
+  const target = checked => ({ type: 'checkbox', checked, dataset: {}, classList: { contains: name => name === 'zu-ctx-enh' } });
+  handler({ target: target(false) });
+  assert.equal(context.state.ctxEnh, 0);
+  assert.equal(saved, 1);
+  assert.equal(renders, 1);   // 按钮形态切换走 render 对账（增强改写的是 DOM 属性，非纯 CSS 门控）
+  assert.deepEqual(context.state.show, { ctx: 1 });   // 独立分支：落入 data-k 分支会写 show[undefined]
+  handler({ target: target(true) });
+  assert.equal(context.state.ctxEnh, 1);
+  assert.equal(saved, 2);
+  assert.equal(renders, 2);
+});
+
 /* ---------- v137 点击源文件夹行在文件管理器中打开 ---------- */
 
 function extractProjClickBlock() {
@@ -903,4 +926,39 @@ test('folder-row clicks open the file manager with gates: toggle, button, remote
 test('the click delegate is bound per instance with the pointer cursor gated by data-zusage-pp', () => {
   assert.match(source, /listenGlobal\(document, "click", onProjRowClick\);/);
   assert.match(source, /data-zusage-pp=\\"1\\"\] \[data-testid=virtual-project-root-name\]\.truncate\{cursor:pointer\}/);
+});
+
+/* ---------- v146：状态条样式第三档 compact（zusage3.theme 读取与归一持久化） ---------- */
+test('compact theme: stored value is read on boot, normalized on write, and persisted via setBarTheme', () => {
+  const stateSource = extract('  var LS = {', '  /* ---------- 多实例注册表');
+  const themeFnSource = extract('  function setBarTheme(', '  var remoteCache = {};');
+  function boot(stored) {
+    const store = Object.assign({}, stored);
+    const context = {
+      window: {},
+      localStorage: { getItem: k => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = v; } },
+    };
+    vm.runInNewContext(stateSource, context);
+    return { context, store };
+  }
+  assert.equal(boot({}).context.state.theme, 'default');
+  assert.equal(boot({ 'zusage3.theme': 'compact' }).context.state.theme, 'compact');
+  assert.equal(boot({ 'zusage3.theme': 'pill' }).context.state.theme, 'pill');
+  assert.equal(boot({ 'zusage3.theme': 'bogus' }).context.state.theme, 'default');   // 非法值回退 default
+  const store = {};
+  const applied = [];
+  const ctx = {
+    state: { theme: 'default' }, LS: { theme: 'zusage3.theme' },
+    lsSet: (k, v) => { store[k] = v; },
+    instances: [{ applyBarTheme: () => applied.push(1) }],
+  };
+  vm.runInNewContext(themeFnSource + '\nsetBarTheme("compact");', ctx);
+  assert.equal(ctx.state.theme, 'compact');
+  assert.equal(store['zusage3.theme'], 'compact');
+  assert.equal(applied.length, 1, 'every instance reapplies the theme');
+  vm.runInNewContext('setBarTheme("weird");', ctx);
+  assert.equal(ctx.state.theme, 'default');
+  assert.equal(store['zusage3.theme'], 'default');
+  vm.runInNewContext('setBarTheme("pill");', ctx);
+  assert.equal(ctx.state.theme, 'pill');
 });
