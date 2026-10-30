@@ -62,7 +62,7 @@
 - 渲染端通过宿主会话/工作区 IPC 与本项目 scope 上报维持窗口和分栏身份；查询请求为 `{sids, scopes: [{sid, workspaceIdentity}]}`，响应 `recent` 携带 `workspace_identity`。
 - 工作区/任务 IPC、活动 SID IPC 与配置/更新写操作的校验不同；不能概括全部桥接同等可信，写操作保留本地窗口验证和固定动作白名单。
 - MCP 与 CLI 使用查询库；插件 `.mcp.json` 直接启动包内 `usage_mcp.py`，不是统一 `run.py` 入口。
-- `hooks/session-start.py` 负责运行文件同步、更新/自动安装及提醒；`hooks/prompt-submit.py` 记录本会话提问时间并注入「上一条回复」背景行，**不再向模型下达统计指令**——逐问统计行由前端确定性渲染（依赖 renderer 桥），会话末尾经主桥 `turn-text` 通道调用包内 `token_rate.py --turn --current` 回推富文本。
+- `hooks/session-start.py` 负责运行文件同步、更新/自动安装（恒开）与故障提示；正常安装/待重启不再注入会话文字，由 ⚙ 齿轮红点承载（v172）；`hooks/prompt-submit.py` 记录本会话提问时间并注入「上一条回复」背景行，**不再向模型下达统计指令**——逐问统计行由前端确定性渲染（依赖 renderer 桥），会话末尾经主桥 `turn-text` 通道调用包内 `token_rate.py --turn --current` 回推富文本。
 - 专有入口是 `overlay_install.py`、`plugin_auto_update.py`、`restart_notice.py` 等；改变 hook 返回值应检查宿主 CLI 契约，不以手工执行代替自然事件验收。
 
 ## 3. 源文件、副本与正在运行的文件
@@ -108,8 +108,8 @@ python3 sync_plugin.py --check
 - Windows 进程查询沿用 `subprocess` argv 与相应解码，不让 Git Bash 转换 `/FI` 等开关；asar 被占用的收尾必须由宿主以外的监控进程执行，不能依赖 ZCode 自己的定时任务。
 - 配置只合并需要的键，不整体覆盖 `config.json`；保留未知键、用户显式关闭与个人路径。插件配置事务在锁内重读、合并，再同目录原子替换；损坏或非对象配置不能被默默重建。
 - `config.example.json` 是模板，不可原样执行占位的 Python/SSH 路径。缺字段默认值、非布尔异常值与显式 `false` 不能混为一谈，各开关应读相应实现。
-- 自动安装：缺文件/缺字段默认开启，显式 `false` 保留；`ZUSAGE_PLUGIN_AUTO_INSTALL=1/0` 优先配置，但不能越过 `.plugin-overlay-optout`，无环境覆盖时异常配置不开启。
-- `plugin_auto_update` 与自动安装是独立开关；损坏或非布尔更新配置不能启动自动更新。
+- 自动安装恒开（v172 移除 `plugin_auto_install_overlay` 与 `ZUSAGE_PLUGIN_AUTO_INSTALL`，遗留值只保留不消费）：SessionStart 未注入即自动装，仅 `.plugin-overlay-optout` 能豁免；失败只给故障 `_nudge`。`plugin_auto_update` 是独立开关；损坏或非布尔更新配置不能启动自动更新。
+- 会话内重启/安装提醒文字已取消（v172）：待重启/待更新由 ⚙ 齿轮红点承载（`plugin-updater.cjs` 推送 `restartRequired`/`markerAt` 代际，overlay 消费）；`restart_notice` 显式 `false` 关红点；`reminder()` 只服务 `/install-overlay` 命令行反馈与故障 `_nudge`。⚙ 更新页有「重启 ZCode」按钮（主进程 `relaunch` 白名单动作，浮层二次确认）。
 - CLI 普通报表、JSON 快照、hook JSON、MCP stdio 各有输出契约：机器协议的 stdout 不夹日志、安装提示或调试文本；诊断走已有 stderr/诊断文件路径。
 - 常驻查询是一请求一行 JSON 的协议；MCP 是 JSON-RPC，不可混用两者消息形状。增字段需兼容生产者、消费者与测试夹具。
 - 维护要求：新增定时器、文件/IPC/DOM 监听器、子进程要有明确归属，验证热更新、导航、窗口关闭后的停用，不能声称当前已有完整全局 dispose。

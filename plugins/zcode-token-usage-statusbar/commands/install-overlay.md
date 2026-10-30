@@ -21,9 +21,9 @@ description: 自动安装失败时手动安装/更新本机 ZCode 悬浮用量�
 
 补充说明（用户问起时再展开，不必每次输出）：
 
-- 卸载：`/uninstall-overlay`（留下卸载豁免，阻止自动重注入与安装提醒）。
-- 自动安装/修复默认开启：配置文件不存在或缺少 `plugin_auto_install_overlay` 字段时启用，已有的显式 `false` 会保留；环境变量 `ZUSAGE_PLUGIN_AUTO_INSTALL=1` / `0` 优先于配置，但不能绕过卸载豁免。未设置环境变量时，损坏配置或非布尔字段不开启。自动安装会修改 `app.asar`，成功后仍需完全退出并重开；失败时才使用本命令兜底，仅重启无法修复尚未成功安装的状态条。
-- 只需要查询与回答速率时，在 `~/.zcode/zcode-token-usage-statusbar/config.json` 中合并 `"plugin_auto_install_overlay": false`（保留其它设置），或执行卸载命令豁免。
+- 卸载：`/uninstall-overlay`（留下卸载豁免，阻止自动重注入与提示）。
+- 自动安装/修复始终开启（旧配置 `plugin_auto_install_overlay` 与环境变量 `ZUSAGE_PLUGIN_AUTO_INSTALL` 已不再读取），只有卸载豁免能阻止。自动安装会修改 `app.asar`，成功后仍需完全退出并重开；失败时才使用本命令兜底，仅重启无法修复尚未成功安装的状态条。
+- 待重启/待更新由状态条 ⚙ 齿轮红点提醒（点进 ⚙ 面板「插件更新」分区后消失，该分区有「重启 ZCode」按钮）；会话内不再注入文字提醒（自动安装失败的故障提示除外），本命令的命令行提醒输出保留。
 - 该安装只影响桌面客户端；SSH 远程会话、Web 版与本插件无关。
 
 用户附加要求：$ARGUMENTS

@@ -138,15 +138,7 @@ https://gitcode.com/tanranran/zcode-token-usage-statusbar.git#plugin-releases-gi
 
 ### 我只想查用量，不想让它动我的客户端
 
-在 `~/.zcode/zcode-token-usage-statusbar/config.json` 里**只加**这一项（别覆盖已有设置）：
-
-```json
-{
-  "plugin_auto_install_overlay": false
-}
-```
-
-这样可关闭自动注入，仍可使用 `/usage` 和 MCP 查询；回答末尾的速率行依赖浮层及渲染桥，禁用浮层后不能保证显示。状态条已经装过的，先运行 `/uninstall-overlay` 并确认移除成功，再完全退出重开；手动安装仍会修改客户端文件。
+运行 `/uninstall-overlay` 移除状态条并写入卸载豁免标记（自动安装始终开启且不再提供配置开关，只有卸载豁免能阻止重注入）。`/usage` 和 MCP 查询仍可用；回答末尾的速率行依赖浮层及渲染桥，移除浮层后不能保证显示。确认移除成功后完全退出重开。
 
 ## 这些数字是怎么来的
 

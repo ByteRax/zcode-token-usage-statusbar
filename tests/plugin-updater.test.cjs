@@ -325,6 +325,23 @@ test("pending intent exists before installer commits and failed committed CLI re
   assert.equal(u.status().phase, "updated"); assert.equal(f.syncs.length, 1);
   assert.equal(JSON.parse(fs.readFileSync(stateFile)).pendingSync, false);
 });
+test("markerAt tracks the restart marker mtime as the badge fingerprint generation (v172)", (t) => {
+  const f = fixture(t);
+  assert.equal(f.updater.status().markerAt, 0);   // 无 marker：代际 0，红点无待办
+  const marker = path.join(f.runtime, ".plugin-restart-required");
+  fs.writeFileSync(marker, JSON.stringify({ state: "pending-sync", createdAt: 1 }));
+  const first = createUpdater(f.options);
+  assert.equal(first.status().restartRequired, true);
+  assert.equal(first.status().markerAt, fs.statSync(marker).mtimeMs);
+  fs.utimesSync(marker, new Date(), new Date(1000));   // mtime 变化 = 新代际：已读过的红点据此重现
+  const second = createUpdater(f.options);
+  assert.equal(second.status().markerAt, 1000);
+  assert.notEqual(second.status().markerAt, first.status().markerAt);
+  fs.unlinkSync(marker);
+  const cleared = createUpdater(f.options);
+  assert.equal(cleared.status().restartRequired, false);
+  assert.equal(cleared.status().markerAt, 0);
+});
 test("persistent restart marker survives updater restart and throttled background tick", async (t) => {
   const f = fixture(t); f.set({ changed: ["plugin-updater.cjs"] });
   await f.updater.request({ action: "update" });

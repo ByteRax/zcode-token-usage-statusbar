@@ -29,21 +29,21 @@
 ## 3. 配置与开关
 
 - 配置只合并需要的键，不整体覆盖 `config.json`；保留未知键、用户显式关闭与个人路径。插件配置事务在锁内重读、合并，再同目录原子替换；损坏或非对象配置不能被默默重建。`config.example.json` 是模板，不可原样执行占位路径。
-- 缺字段默认值、非布尔异常值与显式 `false` 不能混为一谈。自动安装：缺文件/缺字段默认开启，显式 `false` 保留；`ZUSAGE_PLUGIN_AUTO_INSTALL=1/0` 优先配置但不能越过 `.plugin-overlay-optout`，无环境覆盖时异常配置不开启。`plugin_auto_update` 与自动安装独立；损坏或非布尔更新配置不启动自动更新。`restart_notice`（issue #139）只门控 `session_notice` 的会话内提醒通道：显式 `false` 才静默，缺省/损坏/非布尔保持提醒，CLI 输出与 `_nudge` 故障提示不受控。
+- 缺字段默认值、非布尔异常值与显式 `false` 不能混为一谈。自动安装恒开（v172 移除 `plugin_auto_install_overlay`/`ZUSAGE_PLUGIN_AUTO_INSTALL`，遗留值只保留不消费），仅 `.plugin-overlay-optout` 能豁免。`plugin_auto_update` 独立；损坏或非布尔更新配置不启动自动更新。`restart_notice`（issue #139 起）自 v172 改为控制 ⚙ 齿轮红点（主进程推送 `restartNotice` 布尔，overlay 消费）：显式 `false` 才关红点，缺省/损坏/非布尔保持开启；不再门控任何文字输出。
 - 主桥 `readCfg()` 的 `python_path` 缺省与空值归一为平台默认（win32=`python`，其它=`python3`），三个 spawn 点直接读它。
 
 ## 4. hooks 契约
 
 - `hooks.json` 是 command+shell 回退链 `python3 → python → py -3`（POSIX sh 与 Windows `%ComSpec%` 都支持 `||`，宿主丢弃成功 hook 的 stderr）；`.mcp.json` 固定 `python3`（stdio MCP 按 `shell:false` 直接 spawn 无回退，macOS CLT 只有 `python3`）。python.org 安装器从不建 `python3.exe`；Store 桩是 PATH 真实文件、存在性检查全过，只有执行能区分（退出码 49、广告走 stderr）。
 - SessionStart `matcher` 必须 `startup|resume`（引擎只派发这两种；桌面重启=恢复原会话 `source=resume`）。`timeoutMs=60000` 不得收紧：asar 重打包是磁盘密集操作，中断可经 pending 标记恢复。
-- SessionStart 输出：`systemMessage`/`suppressOutput` 引擎无消费者，用户可见提醒必须走 `additionalContext`（`restart_notice.py` 双键同写是有意设计）。hook 在远端会话（SSH/WSL 时在远端主机执行、无 asar）必须静默 no-op；拿不到交互 sudo 只能报告不硬试。
+- SessionStart 输出：`systemMessage`/`suppressOutput` 引擎无消费者，用户可见提示必须走 `additionalContext`（`_nudge`/自检失败分支双键同写是有意设计；v172 起正常安装/待重启路径不再输出，仅剩故障提示）。hook 在远端会话（SSH/WSL 时在远端主机执行、无 asar）必须静默 no-op；拿不到交互 sudo 只能报告不硬试。
 - 自然触发证据：`__pycache__/*.pyc` 是安装期编译产物不算执行证据；可靠证据=运行目录被创建/更新 + `plugin-session-start.json` 的 source/pluginRoot/result。手动执行 hook 不等于自然事件验收。
 - 引擎已核实事实：命令名=文件名、无 `/插件名:` 前缀；`allowed-tools`/`model` 字段只解析展示无运行时效果；`${user_config.*}` 仅注入 MCP 声明；MCP 工具全名 `mcp__plugin_<插件名>_<服务键>__<工具名>`；插件体系无 Uninstall hook（注入孤儿靠 `/uninstall-overlay` 兜底）。Python→Node 全量迁移已评估并否决（hooks 无 env 字段、锁无 Node 等价物、远端链必须留 Python），勿重启整轮调研。
 
 ## 5. sudo 与卸载
 
 - sudo 提示必须保留目标用户 HOME/PATH 与用户产物归属：node 候选顺序 PATH → `SUDO_USER` 的 `~/.nvm/versions/node/*/bin/node` 按版本降序 → 系统位置；装完归还运行目录归属。remove 目标只读时先只读判定，确无注入则写豁免标记免 root 放行；提示按部署形态与操作区分。
-- 卸载只移除本项目注入，不用旧 asar 备份回滚客户端版本；未注入时移除可成功，但读不到目标不能假装已卸载。GUI 卸载只清组件注销 + 缓存副本 + installed_plugins 条目，**不碰** asar 注入行/运行目录/市场注册（known_marketplaces + marketplaces 克隆）；彻底卸载顺序=`/uninstall-overlay` + 重启 → GUI 卸载 → 移除市场与克隆 → 删运行目录。`.plugin-overlay-optout` 阻止自动重注入与安装提醒，但不关闭运行文件同步/插件更新。
+- 卸载只移除本项目注入，不用旧 asar 备份回滚客户端版本；未注入时移除可成功，但读不到目标不能假装已卸载。GUI 卸载只清组件注销 + 缓存副本 + installed_plugins 条目，**不碰** asar 注入行/运行目录/市场注册（known_marketplaces + marketplaces 克隆）；彻底卸载顺序=`/uninstall-overlay` + 重启 → GUI 卸载 → 移除市场与克隆 → 删运行目录。`.plugin-overlay-optout` 阻止自动安装重注入与全部提示（v172 起无「安装提醒」类目，optout 是唯一静默出口），但不关闭运行文件同步/插件更新。
 - 自动安装/修复可能受权限、事件触发、宿主结构影响，成功后仍需重启；不替用户重启，不用强制提权掩盖失败。
 
 ## 6. 更新器与渠道

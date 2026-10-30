@@ -1359,6 +1359,16 @@ async function pollPluginRequests() {
           queryTurnText(req.sid, wc, req.cn === 0);
         } else if (req && req.action === "git-refresh") {   // v96：Git chip 点击 / 快照后节流：立即重查全部已关注路径
           gitTick(true, req.requestId, wc, req.path).catch(() => { });
+        } else if (req && req.action === "relaunch") {   // v172：⚙ 更新页「重启 ZCode」按钮（浮层已二次确认）
+          if (pluginUpdater && pluginUpdater.status().busy) {   // 更新进行中拒绝重启：quit 会打断下载/安装
+            deliverPluginRequest(wc, req.requestId, { ok: false, error: "update in progress" });
+          } else {
+            // 回执先送达，延迟 quit 让 executeJavaScript 完成；quit 走 before-quit 清理钩子
+            deliverPluginRequest(wc, req.requestId, { ok: true });
+            setTimeout(() => {
+              try { app.relaunch(); app.quit(); } catch (e) { LOG("relaunch failed:", e.message); }
+            }, 300);
+          }
         }
       }
     }

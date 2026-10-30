@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
-"""重新注入后的会话提醒；标记由客户端 loader 成功加载时清除。"""
+"""重新注入后的待重启记录；标记由客户端 loader 成功加载时清除。
+
+会话内文字提醒已取消，待重启/待更新由状态条齿轮红点承载（overlay.js 读
+plugin-updater 推送的 restartRequired）；本模块的 reminder() 仅供
+/install-overlay 命令行反馈与 _nudge 故障提示共用文案。"""
 import hashlib
 import json
 import os
@@ -111,28 +115,3 @@ def reminder(runtime=None, injected=None, restart_files=()):
             message = (PREFIX + "用量状态条已更新，重启 ZCode 后生效。" + RESTART_ACTION +
                        " 更新文件：" + " / ".join(restart_files))
     return {"message": message, "context": visible_context(label, detail, message)}
-
-
-def notice_enabled(runtime):
-    """config.json 的 restart_notice 显式 false 才关闭（issue #139）；缺省、损坏或
-    非布尔异常值一律保持提醒开启——静默只来自用户明确选择，不来自配置损坏。"""
-    try:
-        from overlay_install import load_runtime_config
-        return (load_runtime_config(runtime) or {}).get("restart_notice") is not False
-    except Exception:
-        return True
-
-
-def session_notice(runtime, output, injected=None, restart_files=()):
-    """仅展示仍待确认的记录；安装成功后不得重新记录已被 ack 的意图。
-    restart_notice=false 时整个提示条通道静默（issue #139）：会话内不再注入
-    重启/安装提醒；/install-overlay 命令行输出与自动安装失败、桥补装的
-    _nudge 故障提示不受此开关控制。"""
-    if not notice_enabled(runtime):
-        return output
-    notice = reminder(runtime, injected, restart_files)
-    if notice:
-        output["systemMessage"] = notice["message"]
-        output["hookSpecificOutput"] = {
-            "hookEventName": "SessionStart", "additionalContext": notice["context"]}
-    return output

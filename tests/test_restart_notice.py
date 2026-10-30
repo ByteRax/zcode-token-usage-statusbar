@@ -83,21 +83,17 @@ class RestartNoticeTests(unittest.TestCase):
         with mock.patch.object(notice, "installation_status", return_value=None):
             self.assertEqual(notice_context(self.runtime), "")
 
-    def test_session_notice_only_reads_prepublication_intent(self):
+    def test_reminder_only_reads_prepublication_intent(self):
         notice.record_restart(self.runtime, {"state": "pending-install", "publishedAt": 1})
         marker = self.runtime / notice.MARKER
         before = (marker.read_bytes(), marker.stat().st_mtime_ns)
-        output = notice.session_notice(self.runtime, {"suppressOutput": True})
-        self.assertEqual(set(output), {"suppressOutput", "systemMessage", "hookSpecificOutput"})
-        context = output["hookSpecificOutput"]
-        self.assertEqual(context["hookEventName"], "SessionStart")
-        self.assertEqual(set(context), {"hookEventName", "additionalContext"})
-        self.assertIn("第一行", context["additionalContext"])
-        self.assertIn("所有窗口", context["additionalContext"])
-        self.assertIn("重开会话无效", context["additionalContext"])
+        got = notice.reminder(self.runtime)
+        self.assertIn("第一行", got["context"])
+        self.assertIn("所有窗口", got["context"])
+        self.assertIn("重开会话无效", got["context"])
         self.assertGreater(json.loads(marker.read_text())["createdAt"], 0)
         self.assertEqual((marker.read_bytes(), marker.stat().st_mtime_ns), before)
-        self.assertIn("> **" + output["systemMessage"] + "**", context["additionalContext"])
+        self.assertIn("> **" + got["message"] + "**", got["context"])
 
     def test_corrupt_marker_is_conservative_and_read_only(self):
         notice.record_restart(self.runtime)
@@ -111,23 +107,21 @@ class RestartNoticeTests(unittest.TestCase):
                 with self.subTest(journal=journal, content=content):
                     marker.write_text(content)
                     before = {p.name: (p.read_bytes(), p.stat().st_mtime_ns) for p in self.runtime.iterdir()}
-                    output = notice.session_notice(self.runtime, {"suppressOutput": True}, injected=True)
-                    self.assertIn("install-overlay", output["systemMessage"])
-                    self.assertNotIn("请完全退出 ZCode", output["systemMessage"])
-                    self.assertIn("> **" + output["systemMessage"] + "**",
-                                  output["hookSpecificOutput"]["additionalContext"])
+                    got = notice.reminder(self.runtime, injected=True)
+                    self.assertIn("install-overlay", got["message"])
+                    self.assertNotIn("请完全退出 ZCode", got["message"])
+                    self.assertIn("> **" + got["message"] + "**", got["context"])
                     self.assertEqual(before, {p.name: (p.read_bytes(), p.stat().st_mtime_ns)
                                               for p in self.runtime.iterdir()})
 
-    def test_session_notice_does_not_rebuild_acknowledged_marker(self):
+    def test_reminder_does_not_rebuild_acknowledged_marker(self):
         import runtime_lock
         notice.record_restart(self.runtime, {"state": "pending-install", "installation": {"asar": "fixture", "entryHash": "a" * 64}})
         with runtime_lock.publish_install(self.runtime, {"asar": "fixture", "entryHash": "a" * 64}):
             pass
         marker = json.loads((self.runtime / notice.MARKER).read_text())
         self.assertTrue(runtime_lock.ack_restart(self.runtime, {"_loadedAt": marker["publishedAt"] + 1})["cleared"])
-        self.assertEqual(notice.session_notice(self.runtime, {"suppressOutput": True}, injected=True),
-                         {"suppressOutput": True})
+        self.assertIsNone(notice.reminder(self.runtime, injected=True))
         self.assertFalse((self.runtime / notice.MARKER).exists())
 
     def test_pending_install_uses_actual_injection_and_keeps_partial_ack(self):
@@ -324,41 +318,13 @@ class RestartNoticeTests(unittest.TestCase):
             else:
                 self.assertEqual(context, "")
 
-    def test_session_notice_off_switch_suppresses_reminders(self):
-        # issue #139：config.json 的 restart_notice=false 时 SessionStart 不再注入
-        # 重启/安装提醒（提示条通道整体静默），且不探测客户端。
+    def test_notice_switch_no_longer_gates_reminder_copy(self):
+        # v172：会话内文字提醒已取消，restart_notice 开关改为控制状态条红点（overlay
+        # 消费主进程推送的 restartNotice 布尔）；reminder() 供 /install-overlay 命令行
+        # 反馈与故障 _nudge 共用文案，不再读开关——显式 false 也照常给出。
         self.pending_sync()
         (self.runtime / "config.json").write_text('{"restart_notice": false}', encoding="utf-8")
-        with mock.patch.object(notice, "installation_status",
-                               side_effect=AssertionError("client probed with notices off")):
-            output = notice.session_notice(self.runtime, {"suppressOutput": True})
-        self.assertEqual(output, {"suppressOutput": True})
-        # 开关只作用于会话内提醒通道：CLI（/install-overlay 后打印）仍给出同一文案。
         self.assertIn("请完全退出 ZCode", notice_context(self.runtime))
-
-    def test_notice_switch_defaults_keep_notices_on(self):
-        # 缺省（无配置文件）、损坏配置、非布尔异常值都不静默——静默只来自显式 false。
-        self.pending_sync()
-        for content in (None, "{bad", "[]", '{"restart_notice": "false"}', '{"restart_notice": 0}'):
-            with self.subTest(content=content):
-                path = self.runtime / "config.json"
-                if content is None:
-                    path.unlink(missing_ok=True)
-                else:
-                    path.write_text(content, encoding="utf-8")
-                output = notice.session_notice(self.runtime, {"suppressOutput": True})
-                self.assertIn("hookSpecificOutput", output)
-                self.assertIn("用户可见·重启提醒", output["hookSpecificOutput"]["additionalContext"])
-
-    def test_notice_enabled_fail_open_when_bridge_module_missing(self):
-        # overlay_install 不可导入（import 失败）时保持提醒开启且不抛——
-        # SessionStart hook 绝不能因开关探测炸掉；静默只来自显式 false。
-        self.pending_sync()
-        with mock.patch.dict(sys.modules, {"overlay_install": None}):
-            self.assertTrue(notice.notice_enabled(self.runtime))
-            output = notice.session_notice(self.runtime, {"suppressOutput": True})
-        self.assertIn("hookSpecificOutput", output)
-        self.assertIn("用户可见·重启提醒", output["hookSpecificOutput"]["additionalContext"])
 
 
 if __name__ == "__main__":

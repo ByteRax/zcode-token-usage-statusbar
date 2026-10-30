@@ -134,12 +134,16 @@ test('context-window changes persist through the actual delegated handler', () =
 });
 
 test('settings title uses the same current plugin version as the update section', () => {
-  const syncSource = extract('    function syncUpdate() {', '    function syncPanel() {');
+  const syncSource = extract('    function updFingerprint(u) {', '    function syncPanel() {');
   const version = {}, status = {};
   const controls = {};
+  const relaunch = { disabled: false, classList: { toggle: () => {} } };
   const context = {
     state: { pluginUpdate: { supported: true, auto: true, phase: 'available', currentVersion: '1.2.3', latestVersion: '1.4.0' }, rateLine: true },
-    panel: { querySelector: selector => selector === '.zu-settings-version' ? version : selector === '.zu-update-status' ? status : (controls[selector] ||= {}) },
+    panel: { querySelector: selector => selector === '.zu-settings-version' ? version : selector === '.zu-update-status' ? status : selector === '[data-update=relaunch]' ? relaunch : (controls[selector] ||= { style: {} }) },
+    gear: { querySelector: () => null },
+    LS: { updSeen: 'zusage3.updSeen' },
+    localStorage: { getItem: () => null, setItem: () => {} },
     L: (zh, en) => zh,
   };
   vm.runInNewContext(syncSource + '\nsyncUpdate();', context);
@@ -159,12 +163,12 @@ test('settings title uses the same current plugin version as the update section'
 
 test('restart-notice flows through the real plugin-update bridge into the toggle', () => {
   const bridgeSource = extract('  window.__zusagePluginUpdate = function (s) {', '  /* 工作区身份来自当前会话节点');
-  const syncSource = extract('    function syncUpdate() {', '    function syncPanel() {');
+  const syncSource = extract('    function updFingerprint(u) {', '    function syncPanel() {');
   const changeSource = extract('    panel.addEventListener("change",', '    listenGlobal(document, "mousedown",');
   let requested = null, respond = null;
   const rn = { checked: true };
   const feedbackNode = { textContent: '', classList: { toggle: () => {} } };   // showSettingsFeedback 是片段内真实定义，断言其真实文案
-  const stub = () => ({ textContent: '', hidden: true, disabled: false, classList: { toggle: () => {} } });
+  const stub = () => ({ textContent: '', hidden: true, disabled: false, style: {}, classList: { toggle: () => {} } });
   const state = { pluginUpdate: null, rateLine: true, quotaEnabled: true, resetBadge: true, restartNotice: true };
   const context = {
     state,
@@ -173,6 +177,9 @@ test('restart-notice flows through the real plugin-update bridge into the toggle
         : selector === '.zu-settings-feedback-status' ? feedbackNode : stub(),
       addEventListener: (_, fn) => { context.__changeHandler = fn; },
     },
+    gear: { querySelector: () => null },
+    LS: { updSeen: 'zusage3.updSeen' },
+    localStorage: { getItem: () => null, setItem: () => {} },
     L: (zh) => zh, scanRateLines: () => {}, instances: [], stale: () => false, window: {},
     inactive: () => false,
     syncPanel: () => { context.__syncPanelCalls = (context.__syncPanelCalls || 0) + 1; },   // 失败回退靠它重写复选框视觉（三轮 review）
@@ -214,6 +221,81 @@ test('restart-notice wiring stays three-way bound and the main-process contract 
   assert.ok(im.includes('req.action === "restart-notice" && typeof req.enabled === "boolean"'));   // 分发含布尔守卫
   assert.ok(im.includes('updateConfig(HERE, { restart_notice: enabled }'));         // 写入键名与 Python 侧一致
   assert.match(im, /cfgCache = null;\s*\n\s*broadcastPluginState\(\);\s*\n\s*deliverPluginRequest\(wc, requestId, \{ ok: true \}\);/);   // 写后置缓存并广播回推
+});
+
+test('update badge dots follow fingerprints, the seen marker and the notice switch (v172)', () => {
+  const syncSource = extract('    function updFingerprint(u) {', '    function syncPanel() {');
+  const store = {};
+  const gearDot = { style: {} };
+  const navDot = { style: {} };
+  const relaunch = { disabled: false, classes: {} };
+  relaunch.classList = { toggle(n, on) { relaunch.classes[n] = on; } };
+  const controls = {};
+  const state = { restartNotice: true, rateLine: true };
+  const context = {
+    state,
+    gear: { querySelector: sel => sel === '.zu-gear-dot' ? gearDot : null },
+    panel: { querySelector: sel => sel === '.zu-navitem[data-sec="update"] .zu-nav-dot' ? navDot
+      : sel === '[data-update=relaunch]' ? relaunch : (controls[sel] ||= { style: {} }) },
+    LS: { updSeen: 'zusage3.updSeen' },
+    localStorage: { getItem: k => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = String(v); } },
+    L: (zh) => zh,
+  };
+  vm.runInNewContext(syncSource + '\nsyncUpdate();', context);
+  assert.equal(gearDot.style.display, 'none');   // 无待办不亮
+  state.pluginUpdate = { supported: true, restartRequired: true, markerAt: 171.5, phase: 'idle' };
+  vm.runInNewContext('syncUpdate();', context);
+  assert.equal(gearDot.style.display, 'block');
+  assert.equal(navDot.style.display, 'block');
+  assert.equal(relaunch.classes['zu-rr-armed'], true);   // 待重启时重启按钮高亮
+  // 点进「插件更新」分区（nav click 委托 ackUpdateDots）写入同一指纹后红点消失
+  store['zusage3.updSeen'] = '171.5';
+  vm.runInNewContext('syncUpdate();', context);
+  assert.equal(gearDot.style.display, 'none');
+  // 新 marker（mtime 变化）= 新代际：红点重现，不会被旧已读屏蔽
+  state.pluginUpdate = { ...state.pluginUpdate, markerAt: 999 };
+  vm.runInNewContext('syncUpdate();', context);
+  assert.equal(gearDot.style.display, 'block');
+  // 有新版（无 marker）也亮，latestVersion 为代际；重启按钮不因待更新高亮
+  state.pluginUpdate = { supported: true, restartRequired: false, phase: 'available', latestVersion: '1.6.0' };
+  vm.runInNewContext('syncUpdate();', context);
+  assert.equal(gearDot.style.display, 'block');
+  assert.equal(relaunch.classes['zu-rr-armed'], false);
+  // 旧主进程缺 markerAt：以 "?" 代际亮一次，已读后不再复亮
+  state.pluginUpdate = { supported: true, restartRequired: true, phase: 'idle' };
+  store['zusage3.updSeen'] = '?';
+  vm.runInNewContext('syncUpdate();', context);
+  assert.equal(gearDot.style.display, 'none');
+  // restartNotice=false：任何待办都不亮（面板开关关闭红点通道）
+  state.restartNotice = false;
+  state.pluginUpdate = { supported: true, restartRequired: true, markerAt: 5, phase: 'available', latestVersion: '9' };
+  vm.runInNewContext('syncUpdate();', context);
+  assert.equal(gearDot.style.display, 'none');
+  assert.equal(navDot.style.display, 'none');
+  // 更新忙时重启按钮禁用；插件状态缺失时仍可点（重启不依赖更新器）
+  state.restartNotice = true;
+  state.pluginUpdate = { supported: true, busy: true, phase: 'updating', restartRequired: false };
+  vm.runInNewContext('syncUpdate();', context);
+  assert.equal(relaunch.disabled, true);
+  state.pluginUpdate = null;
+  vm.runInNewContext('syncUpdate();', context);
+  assert.equal(relaunch.disabled, false);
+});
+
+test('v172 relaunch wiring: badge elements, ack on section click and two-step confirm literals', () => {
+  assert.ok(source.includes('<span class="zu-gear-dot" aria-hidden="true"></span>'));   // 齿轮红点元素
+  assert.ok(source.includes("(it.id === \"update\" ? '<span class=\"zu-nav-dot\" aria-hidden=\"true\"></span>' : '')"));   // 导航红点
+  assert.ok(source.includes('if (state.settingsSec === "update") ackUpdateDots();'));   // 点进分区即已读
+  assert.ok(source.includes("localStorage.setItem(LS.updSeen, fp)"));                   // 已读指纹持久化
+  assert.match(source, /data-update="relaunch"/);                                       // 重启按钮
+  assert.ok(source.includes('button.textContent = L("再次点击确认重启", "Click again to confirm restart")'));   // 二次确认文案
+  assert.ok(source.includes('pluginRequest("relaunch", undefined,'));
+  const im = fs.readFileSync(path.join(__dirname, '..', 'inject-main.cjs'), 'utf8');
+  assert.ok(im.includes('req.action === "relaunch"'));   // 主进程白名单分支
+  assert.match(im, /app\.relaunch\(\);\s*\n?\s*app\.quit\(\);/);   // quit 走 before-quit 清理
+  const updater = fs.readFileSync(path.join(__dirname, '..', 'plugin-updater.cjs'), 'utf8');
+  assert.match(updater, /markerAt: 0/);                  // 状态初始含红点代际
+  assert.match(updater, /state\.markerAt = state\.restartRequired \? markerMtime\(\) : 0;/);   // 与 restartRequired 同步刷新
 });
 
 test('panel retains all controls, scroll position and settings-only styling', () => {
@@ -440,7 +522,7 @@ test('the update section goes straight from the buttons to the status line witho
 
 /* 更新进度条（v89）：用最小 DOM 替身驱动 syncUpdate → syncProgress。 */
 function progressHarness(pluginUpdate, lang = 'zh') {
-  const syncSource = extract('    function syncUpdate() {', '    function syncPanel() {');
+  const syncSource = extract('    function updFingerprint(u) {', '    function syncPanel() {');
   /* issue #55 后 PROGRESS_STAGES 的 var 赋值上移到 buildPanel 定义之前（先于 buildPanel()
    * 调用执行），切片区间里只剩函数声明；从新位置补进赋值行，切片其余不变 */
   const stagesSource = extract('    var PROGRESS_STAGES = ', '\n');
@@ -454,16 +536,21 @@ function progressHarness(pluginUpdate, lang = 'zh') {
   const rows = { download: row(), install: row() };
   const box = { hidden: true, querySelector: s => rows[/data-progress="(\w+)"/.exec(s)[1]] };
   const status = {}, version = {}, controls = {};
+  const relaunch = { disabled: false, classList: { toggle: () => {} } };
+  const gearDot = { style: {} };
   const context = {
-    state: { pluginUpdate, rateLine: true },
+    state: { pluginUpdate, rateLine: true, restartNotice: true },
     panel: { querySelector: s => s === '.zu-update-progress' ? box : s === '.zu-settings-version' ? version
-      : s === '.zu-update-status' ? status : (controls[s] ||= {}) },
+      : s === '.zu-update-status' ? status : s === '[data-update=relaunch]' ? relaunch : (controls[s] ||= { style: {} }) },
+    gear: { querySelector: () => gearDot },
+    LS: { updSeen: 'zusage3.updSeen' },
+    localStorage: { getItem: () => null, setItem: () => {} },
     L: (zh, en) => lang === 'en' ? en : zh,
   };
   vm.runInNewContext(stagesSource + '\n' + syncSource + '\nsyncUpdate();', context);
   const read = key => ({ width: rows[key].fill.style.width, active: rows[key].fill.classes.has('active'),
     now: rows[key].track.attrs['aria-valuenow'], text: rows[key].value.textContent });
-  return { box, status, context, rows, read, rerun: () => vm.runInNewContext('syncUpdate();', context) };
+  return { box, status, context, rows, read, gearDot, relaunch, rerun: () => vm.runInNewContext('syncUpdate();', context) };
 }
 const base = { supported: true, auto: true, currentVersion: '1.5.0', latestVersion: '1.5.1', channel: 'release' };
 
@@ -961,4 +1048,37 @@ test('compact theme: stored value is read on boot, normalized on write, and pers
   assert.equal(store['zusage3.theme'], 'default');
   vm.runInNewContext('setBarTheme("pill");', ctx);
   assert.equal(ctx.state.theme, 'pill');
+});
+
+test('relaunch two-step confirm state machine executes for real (v172)', () => {
+  const clickSource = extract('    panel.addEventListener("click",', '    gear.addEventListener("click",');
+  const button = { dataset: { update: "relaunch", armed: "" }, disabled: false, textContent: "重启 ZCode",
+    classList: { add() {}, remove() {} } };
+  const requested = [];
+  let timeoutFn = null;
+  const context = {
+    state: { pluginUpdate: { restartRequired: true }, settingsSec: "update" },
+    panel: { querySelector: () => null, addEventListener: (_, fn) => { context.__click = fn; } },
+    L: (zh) => zh,
+    pluginRequest: (action) => { requested.push(action); },
+    setTimeout: (fn) => { timeoutFn = fn; return 1; },
+    clearTimeout: () => { timeoutFn = null; },
+  };
+  vm.runInNewContext(clickSource, context);
+  assert.equal(typeof context.__click, "function");
+  const hit = () => ({ closest: sel => sel === "[data-update]" ? button : null });
+  context.__click({ target: hit() });   // 首点：进入确认态，不发请求
+  assert.equal(button.dataset.armed, "1");
+  assert.equal(button.textContent, "再次点击确认重启");
+  assert.deepEqual(requested, []);
+  assert.ok(typeof timeoutFn === "function", "确认态有 5s 超时兜底");
+  context.__click({ target: hit() });   // 二点：发送 relaunch 并立即恢复文案（旧主进程无回执也不卡）
+  assert.deepEqual(requested, ["relaunch"]);
+  assert.equal(button.dataset.armed, "0");
+  assert.equal(button.textContent, "重启 ZCode");
+  context.__click({ target: hit() });   // 再次进入确认态
+  assert.equal(button.dataset.armed, "1");
+  timeoutFn();                           // 5s 超时：还原文案与 armed
+  assert.equal(button.dataset.armed, "0");
+  assert.equal(button.textContent, "重启 ZCode");
 });

@@ -263,9 +263,14 @@ function createUpdater(options) {
   };
   const bundle = path.join(resourcesPath, "glm", "zcode.cjs");
   const markerFile = path.join(runtime, ".plugin-restart-required");
+  // marker 的 mtime 作红点代际：不存在/读取失败为 0（overlay 用它区分「新待办」与「已查看」）
+  const markerMtime = () => {
+    try { return fs.statSync(markerFile).mtimeMs || 0; } catch (e) { return 0; }
+  };
   const saved = readState(stateFile, now());
   let state = { phase: "idle", supported: false, auto: false, currentVersion: "", latestVersion: "",
-    ...saved, restartRequired: fs.existsSync(markerFile), skipped: [], error: "", channel: "", channelHost: "", releaseUrl: "", progress: null, checkedVia: "" };
+    ...saved, restartRequired: fs.existsSync(markerFile), markerAt: 0, skipped: [], error: "", channel: "", channelHost: "", releaseUrl: "", progress: null, checkedVia: "" };
+  state.markerAt = state.restartRequired ? markerMtime() : 0;
   let busy = false;
   let selectedRelease = null, selectedChannel = null;
   const channel = () => {
@@ -306,9 +311,14 @@ function createUpdater(options) {
     state.supported = !!(record && record.installPath && (options.cli || fs.existsSync(bundle)));
     state.currentVersion = record && record.version || "";
     state.restartRequired = fs.existsSync(markerFile);
+    state.markerAt = state.restartRequired ? markerMtime() : 0;
     return record;
   }
-  function publish() { state.restartRequired = fs.existsSync(markerFile); notify({ ...state, busy }); }
+  function publish() {
+    state.restartRequired = fs.existsSync(markerFile);
+    state.markerAt = state.restartRequired ? markerMtime() : 0;
+    notify({ ...state, busy });
+  }
   function load() { Object.assign(state, readState(stateFile, now())); }
   function save() {
     writeJson(stateFile, { checkedAt: state.checkedAt, lastAttempt: state.lastAttempt,
@@ -536,6 +546,7 @@ function createUpdater(options) {
     clearPending();
     state.skipped = Array.isArray(report.preserved) ? report.preserved : [];
     state.restartRequired = fs.existsSync(markerFile);
+    state.markerAt = state.restartRequired ? markerMtime() : 0;
     state.phase = "updated"; state.error = ""; state.progress = null;
   }
   async function request(req) {

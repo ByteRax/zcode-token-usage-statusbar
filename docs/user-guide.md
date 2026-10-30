@@ -64,9 +64,7 @@ https://gitcode.com/tanranran/zcode-token-usage-statusbar.git#plugin-releases-gi
 /install-overlay
 ```
 
-只需要查询工具与回答速率时，在 `~/.zcode/zcode-token-usage-statusbar/config.json` 中合并 `"plugin_auto_install_overlay": false`（保留其它设置），或运行 `/uninstall-overlay` 移除状态条并保留卸载豁免，阻止自动重注入与安装提醒。
-
-配置文件不存在或缺少该字段时默认开启；已有的显式 `false` 会保留。环境变量 `ZUSAGE_PLUGIN_AUTO_INSTALL=1` / `0` 优先于配置，但不能绕过卸载豁免。未设置环境变量时，损坏配置或非布尔字段不会启用自动安装。
+自动安装始终开启：新建或恢复会话时只要状态条未注入就会自动安装/修复，不再提供开关（旧配置里的 `plugin_auto_install_overlay` 与环境变量 `ZUSAGE_PLUGIN_AUTO_INSTALL` 已不被读取）。只需要查询工具与回答速率时，运行 `/uninstall-overlay` 移除状态条并保留卸载豁免，阻止自动重注入与提示。
 
 Windows 找不到 `python3` 时插件 hook 会自动回退：hook 命令按 `python3` → `python` → `py -3` 依次尝试，无需改文件。插件的 `.mcp.json` 仍固定 `python3`——宿主对 stdio MCP 是直接 spawn，没有 shell 回退通道，而 macOS 自带命令只有 `python3`，不能整体换成 `python`；需要在 Windows 会话里使用 `token_usage` MCP 工具的用户，可手工把安装副本 `.mcp.json` 的 `command` 改成本机可用的 Python 命令，注意插件每 1 小时自动检查，有新版时安装更新可能覆盖此修改，只用状态条与 `/usage` 时无需处理；只改仓库不会改变已安装副本。
 
@@ -162,19 +160,11 @@ python3 install.py --root /Applications/ZCode.app
 
 客户端升级可能覆盖 `app.asar`。插件默认在新建或恢复会话时自动修复，成功后仍需完全退出并重开 ZCode；自动修复失败时，再运行 `install-overlay` 或 `python install.py` 兜底。
 
-只需要查询、不希望自动修改客户端时，在已有运行配置中设置：
-
-```json
-{
-  "plugin_auto_install_overlay": false
-}
-```
-
-只合并这一项，不要覆盖其它设置。它**默认开启**，缺配置文件或缺字段时启用，已有的显式 `false` 会保留；损坏或非布尔配置不会启用自动安装（环境变量另有设置时以其为准）。`ZUSAGE_PLUGIN_AUTO_INSTALL=1` / `0` 优先于配置，但不能绕过卸载豁免。它与 `plugin_auto_update` 是两个独立开关：关闭插件更新并不会关闭客户端自动安装/修复。
+自动修复始终开启（旧配置里的 `plugin_auto_install_overlay` 键与 `ZUSAGE_PLUGIN_AUTO_INSTALL` 环境变量已不被读取）。只想查询、不希望自动修改客户端时，运行 `/uninstall-overlay` 写入卸载豁免。它独立于 `plugin_auto_update`：关闭插件更新并不会关闭客户端自动安装/修复。
 
 自动修复不会直接调用斜杠命令，而是在启动钩子中执行同一个安装器；`SessionStart` 覆盖新建和恢复会话（`startup|resume`），清空后新会话走 `startup`，不依赖独立 `clear` 事件。宿主 schema 接受 `clear`，但当前没有独立事件派发。
 
-自动修复后仍需完全退出并再次启动 ZCode。插件会在会话启动时请求助手给出一次重启提醒（不在每轮回复中重复），不会自行重启；不想看到这类提醒可在 ⚙ 面板或配置中设置 `restart_notice: false`。插件未启用、启动钩子没触发、无写入权限或客户端结构不兼容时，自动修复不能保证成功。
+自动修复后仍需完全退出并再次启动 ZCode。待重启/有新版本时，状态条 ⚙ 齿轮与 ⚙ 面板「插件更新」项会显示红点，点进「插件更新」分区后消失；也可以在该分区直接点「重启 ZCode」按钮（需再次点击确认）。插件不会自行重启，也不再在会话中注入文字提醒（自动安装失败的故障提示除外）；不想看到红点可在 ⚙ 面板或配置中设置 `restart_notice: false`。插件未启用、启动钩子没触发、无写入权限或客户端结构不兼容时，自动修复不能保证成功。
 
 卸载产生的 `.plugin-overlay-optout` 会阻止重注入；删除它表示恢复参与自动安装/提示，而不是立即执行安装。
 
@@ -205,7 +195,6 @@ Windows 对应用户目录下的 `.zcode\zcode-token-usage-statusbar\config.json
   "quota_enabled": true,
   "reset_badge_enabled": true,
   "plugin_auto_update": true,
-  "plugin_auto_install_overlay": true,
   "context_window": 1000000
 }
 ```
@@ -217,11 +206,10 @@ Windows 对应用户目录下的 `.zcode\zcode-token-usage-statusbar\config.json
 | `hot_reload` | 状态条脚本热更新：缺省开（约 5 秒检查一次）；显式 `true` 加速到 2 秒（开发改脚本时用），`false` 完全关闭（改文件需重启 ZCode 才生效）；检查间隔在启动时读取，改动需重启 |
 | `diag` | 定位诊断文件（运行目录 `diag-<n>.json`，约每 15 次拉取落盘），默认开；显式 `false` 关闭常驻诊断写入，需要排查问题时设回 `true` 或删掉该键 |
 | `answer_rate_line` | 插件回答末尾的统计行，默认开。面板切换会立即重扫：关闭撤下插件生成的行，开启补回可用记录；下一问沿用该设置，历史正文和缓存数字不重算 |
-| `restart_notice` | 更新/安装后的会话内提醒条（「请完全退出 ZCode」引用块），默认开；显式 `false` 关闭后，插件不再在每个新会话注入重启与安装提醒（⚙ 面板「插件更新 → 更新后提醒重启」同一开关，下一个新会话生效）。关闭的只是会话内提醒条：`/install-overlay` 的命令行输出、自动安装失败与补丁待收尾的故障提示仍会给出；显式 `true` 以外的异常值同样不静默 |
+| `restart_notice` | 更新/待重启的红点提醒，默认开：状态条 ⚙ 齿轮与 ⚙ 面板「插件更新」项显示红点，点进「插件更新」分区后消失（⚙ 面板「更新后在状态条显示红点提醒」同一开关）。显式 `false` 关闭红点；`/install-overlay` 的命令行输出、自动安装失败的故障提示不受它控制，异常值视为开启 |
 | `quota_enabled` | 套餐额度 chip（BigModel / Z.ai 个人编码套餐、ZCode Start Plan 免费档），默认开（显式 `false` 关闭）。建议用 ⚙ 面板开关而不是手改：主进程读取凭据查询套餐/余额接口（仅内存使用、不落盘、不进日志与诊断）：内置套餐走 ZCode 登录凭据（bigmodel.cn / api.z.ai，Start Plan 走 zcode.z.ai）；自定义供应商余额用其自己的 key，只发官方域（api.deepseek.com、openrouter.ai、api.siliconflow.cn、api.minimaxi.com、api.kimi.com、api.commandcode.ai、api.cline.bot、api.anthropic.com、platform.xiaomimimo.com、open.volcengineapi.com、opencode.ai 等）或你配置的中转站本域；⚙ 面板可为各数据源（MiniMax/Kimi/Cline/Anthropic/MiMo/火山/SCNet/OpenCode 等）单独配置凭据与开关（保存在运行目录 quota-secrets.json，0600）。套餐额度是账号级套餐池口径，不是单模型额度；BigModel 悬停还显示套餐名/版本与周期（自动续费显示"下次续费"，非自动续费显示"有效期至"；无法确认当前周期时不显示日期）；Start Plan 悬停显示套餐名、套餐池已用百分比与到期时间（选中 Start Plan 档位时 chip 显示该池，不与编码套餐池混用）；团队套餐暂不支持，未配置凭据/形状不支持的源 chip 显示中性「额度 未配置／额度 暂不支持」提示 |
 | `reset_badge_enabled` | 重置卡徽标（v135：额度 chip 左侧「重置 · N」，多账号张数 `+` 连接），默认开（显式 `false` 关闭）。独立于 `quota_enabled`：关闭额度 chip 后本开关开启时主进程仍解密登录凭据、仅查询官方 `reset/status` 只读接口（zcode.z.ai，与登录凭据同域）维护徽标。悬停徽标显示每账号 5 小时卡/周卡的张数与到期时间（yyyy-MM-dd HH:mm），并列出服务端返回的近 7 天已过期记录与上次重置时间（BigModel 账号；数据由网页控制台同款列表接口提供，接口未返回时不显示）；剩余 >3 小时绿、3 小时–30 分钟黄、<30 分钟红并呼吸闪烁；剩余时间短于阈值（⚙ 面板可配，默认 24 小时）时在徽标上显示倒计时。需要 ZCode 登录态；仅 API Key 用户与团队套餐无重置卡。每 5 分钟查询一次（BigModel 账号开启列表补充后每周期并行查 status 与列表两个接口），倒计时为本地推算 |
 | `plugin_auto_update` | 插件自动更新，默认开；损坏或非布尔配置不会启动更新 |
-| `plugin_auto_install_overlay` | 自动安装/修复客户端注入，默认开（缺配置或缺字段）；显式 false 保留，环境变量优先，卸载豁免仍阻止；无环境变量覆盖时损坏或非布尔配置不开启 |
 | `context_window` | 自动识别失败时的上下文窗口大小兜底 |
 | `resident` | 使用常驻 Python 查询进程，默认开 |
 | `activity_min_ms` | 活跃期最小查询间隔，默认 1500ms |

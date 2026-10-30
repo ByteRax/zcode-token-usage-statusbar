@@ -21,13 +21,13 @@
 2. 新建或重新打开会话，插件会自动安装 / 修复状态条。**这一步会修改 `app.asar`，请确认信任此项目。**
 3. **完全退出并重开 ZCode。**
 
-自动安装默认开启（配置文件不存在或缺字段视为开启）。`~/.zcode/zcode-token-usage-statusbar/config.json` 中已有的显式 `"plugin_auto_install_overlay": false` 会保留；环境变量 `ZUSAGE_PLUGIN_AUTO_INSTALL=1/0` 优先于配置；`/uninstall-overlay` 会留下卸载豁免标记阻止自动重注入。未设置环境变量时，损坏配置或非布尔字段**不会**触发自动安装。自动安装失败时执行 `/install-overlay` 按输出排查，成功后仍需完全重启。
+自动安装始终开启（旧配置 `plugin_auto_install_overlay` 与环境变量 `ZUSAGE_PLUGIN_AUTO_INSTALL` 已不再读取）；`/uninstall-overlay` 会留下卸载豁免标记，是阻止自动重注入的唯一出口。待重启/有新版本时状态条 ⚙ 齿轮显示红点（点进 ⚙ 面板「插件更新」分区后消失），也可在该分区直接点「重启 ZCode」；不再注入会话内文字提醒（自动安装失败时的故障提示除外）。自动安装失败时执行 `/install-overlay` 按输出排查，成功后仍需完全重启。
 
 ## 工作原理与副作用
 
 | 方面 | 行为 |
 |---|---|
-| Hook | `SessionStart` 同步运行文件、检查更新、必要时给出重启提醒；`PromptSubmit` 记录提问时间戳并追加逐问速率行。 |
+| Hook | `SessionStart` 同步运行文件、检查更新、未注入时自动安装；`PromptSubmit` 记录提问时间戳并追加逐问速率行。 |
 | MCP 服务 | `.mcp.json` 以 stdio JSON-RPC 启动 `usage_mcp.py`，提供 `token_usage(scope)` 工具，只读本地用量数据库。 |
 | 文件写入 | `~/.zcode/zcode-token-usage-statusbar/`（运行文件、配置、会话状态；凭据文件权限 `0600`）；ZCode 客户端目录内的补丁与备份（`app.asar`）；`~/.zcode/zusage3` 中的浮层设置。卸载插件不删除个人配置。 |
 | 网络 | 本地统计绝不出本机（只读 SQLite）。套餐额度 chip 默认开启（⚙ 面板可关）：在**内存中**解密宿主持有的 OAuth 凭据，直连 BigModel / Z.ai 用量端点展示套餐额度；凭据绝不写入配置、日志或诊断。插件更新会从已配置来源下载代码。可选的 SSH/WSL 远端查询走你自行配置的连接通道；插件不解密复用宿主密码或私钥口令，也不自动部署。Git chip 只在本机只读执行 `git` 查询（不 fetch、不联网）。 |
@@ -39,9 +39,9 @@ SSH/WSL 远端会话需要在每台远端手工部署同版本 `zusage.py`；远
 ## 关闭或移除
 
 - `/uninstall-overlay`——移除状态条，保留卸载豁免标记，保留个人配置。
-- `"plugin_auto_install_overlay": false`——只保留查询工具。
+- `/uninstall-overlay` 之外没有关闭自动安装的开关（恒开）；只保留查询工具请用它。
 - `"answer_rate_line": false`——关闭逐问速率行（下一问生效）。
-- `"restart_notice": false`——关闭更新/安装后的会话内重启提醒条（⚙ → 插件更新；命令行输出与故障提示不受影响）。
+- `"restart_notice": false`——关闭更新/待重启的红点提醒（状态条 ⚙ 与「插件更新」项；命令行输出与故障提示不受影响）。
 - `"quota_enabled": false`——停止套餐额度查询并隐藏额度 chip（此后不再读取凭据）。
 - `"plugin_auto_update": false`——关闭更新检查。
 - 彻底移除：先关自动更新，执行 `/uninstall-overlay`，再在 ZCode 设置里卸载插件并完全重启。**只卸载插件不会移除状态条。**

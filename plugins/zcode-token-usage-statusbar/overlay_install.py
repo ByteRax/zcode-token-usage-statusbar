@@ -18,12 +18,10 @@ sync_plugin.py 生成的副本；本脚本把副本同步进稳定运行时目�
 测试接缝（环境变量）：ZUSAGE_PLUGIN_RUNTIME / ZUSAGE_PLUGIN_ASAR 可把运行时目录和
 目标 asar 指到别处（自测用临时副本，不碰真机）。
 
-自动安装开关（默认开，SessionStart hook 自动执行安装/修复）：
-  运行时目录 config.json 写 "plugin_auto_install_overlay": false 可关闭；
-  配置损坏或字段不是布尔值时不自动安装，环境变量 ZUSAGE_PLUGIN_AUTO_INSTALL 优先。
-
-提示豁免：运行时目录写 .plugin-overlay-optout 后 hook 永久静默（remove 自动写入）；
-未安装时每次 SessionStart 都提示；旧 .plugin-overlay-nudge 不再阻止提示，安装成功后清除。
+自动安装（始终开启，SessionStart hook 自动执行安装/修复）：未注入时 hook 直接
+安装，不再有开关；安装失败才有故障提示。不想安装用 /uninstall-overlay
+（remove 写 .plugin-overlay-optout 豁免标记，hook 永久静默，不重注入不提示）；
+旧 .plugin-overlay-nudge 不再阻止提示，安装成功后清除。
 """
 import contextlib
 import hashlib
@@ -674,14 +672,6 @@ def save_runtime_config(runtime, pi):
     return True
 
 
-def auto_enabled(runtime):
-    v = os.environ.get("ZUSAGE_PLUGIN_AUTO_INSTALL")
-    if v is not None:
-        return v.strip().lower() in ("1", "true", "yes", "on")
-    config = load_runtime_config(runtime)
-    return config is not None and config.get("plugin_auto_install_overlay", True) is True
-
-
 def write_marker(marker):
     try:
         marker.parent.mkdir(parents=True, exist_ok=True)
@@ -783,7 +773,7 @@ def ensure_renderer_bridge(pi, quiet_monitor=False):
                                ("ZUSAGE_NO_MONITOR", "ZUSAGE_MONITOR_QUIET")}
                 try:
                     if quiet_monitor:
-                        # SessionStart 场景不弹监控黑窗，systemMessage 里已说明去向
+                        # SessionStart 场景不弹监控黑窗；pending 不再发会话文字（v172），收尾由监控在客户端退出后自动完成
                         os.environ["ZUSAGE_NO_MONITOR"] = "1"
                         os.environ["ZUSAGE_MONITOR_QUIET"] = "1"
                     with redirect:
@@ -805,18 +795,12 @@ def ensure_renderer_bridge(pi, quiet_monitor=False):
 
 
 def _bridge_notice(out, result, pi):
-    """桥补装的用户可见提示（issue #67：受保护目录/客户端运行中不再静默失效）。
-    pending 提示收敛（客户端退出收尾后转 present）；权限不足在目标持续不可写期间
-    每次会话提示，与未安装时的 INSTALL_MESSAGE 同一强度。已有安装/重启提示时
-    不覆盖——桥只是增强，优先级低于主链。"""
+    """桥补装的用户可见提示（issue #67：受保护目录不再静默失效）。pending 收敛
+    由监控在客户端退出后自动完成，不再发文字提醒；权限不足在目标持续不可写期间
+    每次会话提示（故障提示保留）。已有提示时不覆盖——桥只是增强，优先级低于主链。"""
     if "systemMessage" in out:
         return out
     status = (result or {}).get("status")
-    if status == "pending":
-        from restart_notice import PREFIX, RESTART_ACTION
-        return _nudge(out, PREFIX + "逐问速率行所需的一次性客户端补丁已排定："
-                      "完全退出 ZCode（所有窗口）后会自动完成，之后重新打开即可；"
-                      "其余功能不受影响。" + RESTART_ACTION)
     if status == "skipped-error" and result.get("permission"):
         # Windows 上 os.access 看不见 ACL（目录恒报可写），权限判定按真实
         # PermissionError 而不是 target_writable()，否则 Program Files 场景静默
@@ -870,7 +854,7 @@ def run_hook():
     runtime = Path(os.environ.get("ZUSAGE_PLUGIN_RUNTIME") or default_runtime())
     try:
         runtime, pi = resolve_paths()
-        changed = sync_runtime(runtime, pi.ASAR)["changed"]
+        sync_runtime(runtime, pi.ASAR)
         try:
             from plugin_auto_update import start_auto_update
             start_auto_update(runtime, pi)
@@ -884,61 +868,50 @@ def run_hook():
         save_runtime_config(runtime, pi)
         if st:
             bridge = ensure_renderer_bridge(pi, quiet_monitor=True)   # 已注入也可能缺桥（客户端升级重写 asar）：幂等补一次
-            from restart_notice import session_notice
-            cold_files = {"inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs", "quota-client.cjs", "model-puller.cjs"}
-            if (load_runtime_config(runtime) or {}).get("hot_reload") is False:
-                cold_files.update(("overlay.js", "zusage.py"))
-            restart_files = [name for name in changed if name in cold_files]
-            out = session_notice(runtime, out, injected=st, restart_files=restart_files)
-            return _bridge_notice(out, bridge, pi)
-        if auto_enabled(runtime):
-            monitor_env = {name: os.environ.get(name) for name in
-                           ("ZUSAGE_NO_MONITOR", "ZUSAGE_MONITOR_QUIET")}
-            try:
-                os.environ["ZUSAGE_NO_MONITOR"] = "1"
-                os.environ["ZUSAGE_MONITOR_QUIET"] = "1"  # 无窗口后台收尾
-                with contextlib.redirect_stdout(sys.stderr):
-                    ok = _install_overlay(runtime, pi)
-            finally:
-                for name, value in monitor_env.items():
-                    if value is None:
-                        os.environ.pop(name, None)
-                    else:
-                        os.environ[name] = value
-            if ok:
-                bridge = ensure_renderer_bridge(pi, quiet_monitor=True)
-                clear_markers(runtime)
-                from restart_notice import session_notice
-                out = session_notice(runtime, out, injected=injected_status(pi))
-                return _bridge_notice(out, bridge, pi)
-            else:
-                from restart_notice import PREFIX
-                waiting = _pending_install_waiting(pi)
-                if waiting:
-                    _nudge(out, PREFIX + "状态条补丁已排定：完全退出 ZCode（所有窗口）后"
-                             "会自动完成替换，之后重新打开即可生效，无需重试安装。"
-                             "不需要请运行 /uninstall-overlay，之后不再提示。")
-                elif waiting is False:
-                    # 受保护目录（issue #130）：「无需重试」是假承诺，提权重跑才是
-                    # 唯一解——它复用已排定的待收尾包并重建提权收尾监控，秒级完成。
-                    script = PLUGIN_ROOT / "overlay_install.py"
-                    if os.name == "nt":
-                        action = f'以管理员身份打开终端，执行 python "{script}" install'
-                    else:
-                        action = f'执行 sudo env HOME="$HOME" PATH="$PATH" python3 "{script}" install'
-                    _nudge(out, (PREFIX + "状态条补丁已排定，但 ZCode 安装在受保护目录，"
-                                 "当前身份无法完成替换，也不会自动重建收尾进程。"
-                                 f"请{action}（会复用已排定的补丁，很快），"
-                                 "然后完全退出 ZCode（所有窗口）并重新打开。"
-                                 "不需要请运行 /uninstall-overlay，之后不再提示。"))
+            return _bridge_notice(out, bridge, pi)   # 待重启提醒由状态条齿轮红点承载，不再注入会话文字
+        # 未注入：自动安装始终开启，失败只保留故障提示（补丁排定/受保护目录/请重试）
+        monitor_env = {name: os.environ.get(name) for name in
+                       ("ZUSAGE_NO_MONITOR", "ZUSAGE_MONITOR_QUIET")}
+        try:
+            os.environ["ZUSAGE_NO_MONITOR"] = "1"
+            os.environ["ZUSAGE_MONITOR_QUIET"] = "1"  # 无窗口后台收尾
+            with contextlib.redirect_stdout(sys.stderr):
+                ok = _install_overlay(runtime, pi)
+        finally:
+            for name, value in monitor_env.items():
+                if value is None:
+                    os.environ.pop(name, None)
                 else:
-                    _nudge(out, (PREFIX + "用量状态条自动安装未完成。"
-                                 "请运行 /install-overlay 重试；"
-                                 "不需要请运行 /uninstall-overlay，之后不再提示。"
-                                 "如果仍然失败，请查看客户端插件日志。"))
-            return out
-        from restart_notice import INSTALL_MESSAGE
-        return _nudge(out, INSTALL_MESSAGE)
+                    os.environ[name] = value
+        if ok:
+            bridge = ensure_renderer_bridge(pi, quiet_monitor=True)
+            clear_markers(runtime)
+            return _bridge_notice(out, bridge, pi)
+        from restart_notice import PREFIX
+        waiting = _pending_install_waiting(pi)
+        if waiting:
+            _nudge(out, PREFIX + "状态条补丁已排定：完全退出 ZCode（所有窗口）后"
+                     "会自动完成替换，之后重新打开即可生效，无需重试安装。"
+                     "不需要请运行 /uninstall-overlay，之后不再提示。")
+        elif waiting is False:
+            # 受保护目录（issue #130）：「无需重试」是假承诺，提权重跑才是
+            # 唯一解——它复用已排定的待收尾包并重建提权收尾监控，秒级完成。
+            script = PLUGIN_ROOT / "overlay_install.py"
+            if os.name == "nt":
+                action = f'以管理员身份打开终端，执行 python "{script}" install'
+            else:
+                action = f'执行 sudo env HOME="$HOME" PATH="$PATH" python3 "{script}" install'
+            _nudge(out, (PREFIX + "状态条补丁已排定，但 ZCode 安装在受保护目录，"
+                         "当前身份无法完成替换，也不会自动重建收尾进程。"
+                         f"请{action}（会复用已排定的补丁，很快），"
+                         "然后完全退出 ZCode（所有窗口）并重新打开。"
+                         "不需要请运行 /uninstall-overlay，之后不再提示。"))
+        else:
+            _nudge(out, (PREFIX + "用量状态条自动安装未完成。"
+                         "请运行 /install-overlay 重试；"
+                         "不需要请运行 /uninstall-overlay，之后不再提示。"
+                         "如果仍然失败，请查看客户端插件日志。"))
+        return out
     except Exception as e:  # noqa: BLE001 — hook 绝不能抛
         message = f"zusage 插件自检失败（已忽略）：{e}"
         if optout_marker(runtime).exists():
@@ -994,8 +967,7 @@ def main():
         print(f"runtime: {runtime}")
         print(f"asar:    {pi.ASAR}")
         print("injected:", {True: "是", False: "否", None: "asar 不可读"}[st])
-        print(f"auto install: {auto_enabled(runtime)}"
-              f"（config.json 的 plugin_auto_install_overlay 或环境变量 ZUSAGE_PLUGIN_AUTO_INSTALL）")
+        print("auto install: 始终开启（未注入时 hook 自动安装；/uninstall-overlay 可豁免）")
         print(f"optout: {optout_marker(runtime).exists()}  nudge: {nudge_marker(runtime).exists()}")
         with contextlib.redirect_stdout(sys.stdout):
             pi.check()

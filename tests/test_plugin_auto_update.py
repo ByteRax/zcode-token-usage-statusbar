@@ -116,7 +116,7 @@ class PluginAutoUpdateTests(unittest.TestCase):
         config.mkdir()
         self.assert_silent_skip()
 
-    def test_auto_install_environment_and_config_cannot_override_disabled_updates(self):
+    def test_legacy_auto_install_env_cannot_override_disabled_updates(self):
         with mock.patch.dict(os.environ, {"ZUSAGE_PLUGIN_AUTO_INSTALL": "1"}):
             self.write_config({"plugin_auto_update": False, "plugin_auto_install_overlay": True})
             self.assert_silent_skip()

@@ -147,36 +147,38 @@ class SessionStartChannelTests(unittest.TestCase):
         self.assertIn("fixture diagnostic denied", errors)
         self.assertFalse((self.runtime / "plugin-session-start.json").exists())
 
-    def test_uninstalled_nudge_repeats_context_and_preserves_disabled_config(self):
-        self.config.write_text('{"plugin_auto_install_overlay": false, "plugin_auto_update": false, '
+    def test_uninstalled_attempts_auto_install_and_preserves_config(self):
+        # v172：自动安装不再有开关——未注入时 hook 一律尝试安装，失败走重试提示；
+        # 用户其余配置与旧 nudge 标记不被触碰。
+        self.config.write_text('{"plugin_auto_update": false, '
                                '"python_path": "custom", "other": 7}', encoding="utf-8")
         legacy = self.runtime / ".plugin-overlay-nudge"
         legacy.write_text("1", encoding="utf-8")
         for _ in range(2):
             output, _ = self.invoke()
-            self.assertIn("用户可见·安装提醒", self.context(output))
+            self.assertIn("自动安装未完成", self.context(output))
             self.assertIn("install-overlay", self.context(output))
-            self.assertNotIn("请完全退出 ZCode", self.context(output))
-        self.install.assert_not_called()
+        self.assertEqual(self.install.call_count, 2)
         config = json.loads(self.config.read_text(encoding="utf-8"))
-        self.assertIs(config["plugin_auto_install_overlay"], False)
         self.assertIs(config["plugin_auto_update"], False)
         self.assertEqual(config["python_path"], "custom")
         self.assertEqual(config["other"], 7)
         self.assertEqual(config["asar_path"], str(self.asar))
         self.assertEqual(legacy.read_text(encoding="utf-8"), "1")
 
-    def test_corrupt_or_nonboolean_config_keeps_nudge_without_auto_install(self):
+    def test_corrupt_config_still_attempts_auto_install(self):
+        # v172：损坏/异常配置不再静默跳过安装尝试（旧行为「损坏→不装」随开关一起移除）；
+        # 损坏配置保持原样不重建，合法配置只合并所需键。
         for raw in ("{broken", "null", '{"plugin_auto_install_overlay": "false"}'):
             with self.subTest(raw=raw):
                 self.config.write_text(raw, encoding="utf-8")
                 output, _ = self.invoke()
-                self.assertIn("用户可见·安装提醒", self.context(output))
+                self.assertIn("自动安装未完成", self.context(output))
+                self.install.assert_called()
                 if raw in ("{broken", "null"):
                     self.assertEqual(self.config.read_text(encoding="utf-8"), raw)
                 else:
                     self.assertEqual(json.loads(self.config.read_text())["plugin_auto_install_overlay"], "false")
-        self.install.assert_not_called()
 
     def test_unfinished_auto_install_nudge_restores_monitor_flags_and_redirects_logs(self):
         def unfinished(before_publish):
@@ -227,20 +229,21 @@ class SessionStartChannelTests(unittest.TestCase):
         self.assertNotIn("ZUSAGE_NO_MONITOR", os.environ)
         self.assertNotIn("ZUSAGE_MONITOR_QUIET", os.environ)
 
-    def test_installed_restart_notice_reaches_context_and_does_not_mutate_marker(self):
+    def test_installed_no_session_text_notice_and_marker_untouched(self):
+        # v172：已注入时不再注入重启提醒文字——待重启由状态条齿轮红点承载（overlay 消费
+        # pluginUpdate.restartRequired）；marker 只读不动，等新进程 loader ack。
         self.make_asar(injected=True)
         self.notice.record_restart(self.runtime)
         marker = self.runtime / self.notice.MARKER
         before = (marker.read_bytes(), marker.stat().st_mtime_ns)
         self.sync.return_value = {"changed": ["inject-main.cjs"]}
         output, _ = self.invoke()
-        self.assertIn("用户可见·重启提醒", self.context(output))
-        self.assertIn("inject-main.cjs", self.context(output))
-        self.assertIn("请完全退出 ZCode", self.context(output))
+        self.assertEqual(output, {"suppressOutput": True})
         self.assertEqual((marker.read_bytes(), marker.stat().st_mtime_ns), before)
         self.install.assert_not_called()
 
-    def test_successful_auto_install_reaches_restart_context(self):
+    def test_successful_auto_install_stays_silent(self):
+        # v172：自动安装成功同样不注入文字（红点由 marker → restartRequired 推送驱动）。
         def install(before_publish):
             import runtime_lock
             installation = {"asar": str(self.asar), "entryHash": "a" * 64}
@@ -251,18 +254,16 @@ class SessionStartChannelTests(unittest.TestCase):
             return True
         self.install.side_effect = install
         output, errors = self.invoke()
-        self.assertIn("用户可见·重启提醒", self.context(output))
-        self.assertIn("请完全退出 ZCode", self.context(output))
+        self.assertEqual(output, {"suppressOutput": True})
         self.assertIn("fixture installed", errors)
 
-    def test_incomplete_restart_record_uses_install_context(self):
+    def test_incomplete_restart_record_stays_silent_in_session(self):
+        # v172：已注入时记录不可验证也不注入文字；修复文案只由 /install-overlay CLI 反馈。
         self.make_asar(injected=True)
         self.notice.record_restart(self.runtime, {"state": "pending-sync", "hashes": {"inject-main.cjs": "a" * 64}})
         (self.runtime / "plugin-runtime-pending.json").write_text("{}", encoding="utf-8")
         output, _ = self.invoke()
-        self.assertIn("用户可见·安装提醒", self.context(output))
-        self.assertIn("同步尚未完成", self.context(output))
-        self.assertNotIn("请完全退出 ZCode", self.context(output))
+        self.assertEqual(output, {"suppressOutput": True})
 
     def test_no_marker_or_unreadable_client_stays_silent(self):
         for readable in (True, False):
@@ -314,12 +315,13 @@ class SessionStartChannelTests(unittest.TestCase):
         self.assertEqual(output, {"suppressOutput": True})
         self.assertIn("fixture entry denied", errors)
 
-    def test_background_update_failure_is_stderr_only_and_keeps_restart_context(self):
+    def test_background_update_failure_is_stderr_only(self):
+        # v172：已注入时后台更新失败只走 stderr 诊断，不再有会话内重启提醒文字。
         self.make_asar(injected=True)
         self.notice.record_restart(self.runtime)
         self.updater.start_auto_update.side_effect = OSError("fixture updater denied")
         output, errors = self.invoke()
-        self.assertIn("用户可见·重启提醒", self.context(output))
+        self.assertEqual(output, {"suppressOutput": True})
         self.assertIn("后台更新启动失败（已忽略）", errors)
         self.assertIn("fixture updater denied", errors)
 

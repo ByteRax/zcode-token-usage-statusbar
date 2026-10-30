@@ -21,13 +21,13 @@ See model speed, token usage, context size, plan quota, and Git status while you
 2. Open (or reopen) a session. The plugin then installs / repairs the status bar automatically. **This modifies `app.asar` — only proceed if you trust this project.**
 3. **Fully quit and reopen ZCode.**
 
-Automatic install is on by default (missing config file or missing field = enabled). An explicit `"plugin_auto_install_overlay": false` in `~/.zcode/zcode-token-usage-statusbar/config.json` is preserved; `ZUSAGE_PLUGIN_AUTO_INSTALL=1/0` overrides the config; `/uninstall-overlay` leaves an opt-out marker that blocks re-injection. With no environment override, a corrupted or non-boolean config does **not** enable auto-install. If automatic install fails, run `/install-overlay` and follow its output; a full restart is still required.
+Auto-install is always on (the legacy `plugin_auto_install_overlay` config key and `ZUSAGE_PLUGIN_AUTO_INSTALL` env var are no longer read); `/uninstall-overlay` leaves an opt-out marker — the only way to block re-injection. When a restart is pending or a new version is available, the status-bar gear shows a red dot (cleared by opening the ⚙ "Plugin updates" section, which also offers a "Restart ZCode" button); no in-session text notices are injected anymore (failure guidance excepted). If automatic install fails, run `/install-overlay` and follow its output; a full restart is still required.
 
 ## How it works & side effects
 
 | Area | Behavior |
 |---|---|
-| Hooks | `SessionStart` syncs runtime files, checks for updates, and may show a restart notice; `PromptSubmit` records the prompt timestamp and appends the per-answer rate line. |
+| Hooks | `SessionStart` syncs runtime files, checks for updates, and auto-installs when not injected; `PromptSubmit` records the prompt timestamp and appends the per-answer rate line. |
 | MCP server | `.mcp.json` starts `usage_mcp.py` as a stdio JSON-RPC server exposing `token_usage(scope)`. It reads the local usage database only. |
 | Files written | `~/.zcode/zcode-token-usage-statusbar/` (runtime files, config, per-session state; secrets file is `0600`); a patch + backup inside the ZCode client directory (`app.asar`); overlay settings in `~/.zcode/zusage3`. Uninstalling the plugin does not delete personal config. |
 | Network | Local statistics never leave your machine (read-only SQLite). The plan-quota chip is on by default (turn it off in ⚙): it decrypts the host's stored OAuth credentials **in memory only** and calls BigModel / Z.ai usage endpoints directly to show your plan quota; credentials are never written to config, logs, or diagnostics. Plugin updates download code from the configured source. Optional SSH/WSL remote queries go through the connection channel you configured; the plugin never decrypts or reuses host passwords or key passphrases and never auto-deploys. The Git chip runs local read-only `git` queries (no fetch, no network). |
@@ -39,9 +39,9 @@ Remote sessions (SSH/WSL) need a matching `zusage.py` deployed manually on each 
 ## Turn off or remove
 
 - `/uninstall-overlay` — removes the status bar, keeps the opt-out marker, keeps personal config.
-- `"plugin_auto_install_overlay": false` — keep the query tools only.
+- There is no switch to disable auto-install (always on); use `/uninstall-overlay` to keep the query tools only.
 - `"answer_rate_line": false` — drop the per-answer rate line (takes effect on the next prompt).
-- `"restart_notice": false` — stop the in-session restart/install notice banner after updates or installs (⚙ → Plugin updates; command-line output and failure guidance are unaffected).
+- `"restart_notice": false` — stop the update/pending-restart red badge on the status-bar gear and the "Plugin updates" entry (command-line output and failure guidance are unaffected).
 - `"quota_enabled": false` — stop quota queries and hide the plan-quota chip (credentials are then never read).
 - `"plugin_auto_update": false` — disable update checks.
 - Full removal: turn off auto-update, run `/uninstall-overlay`, then uninstall the plugin from ZCode settings and fully restart. **Uninstalling the plugin alone does not remove the status bar.**
