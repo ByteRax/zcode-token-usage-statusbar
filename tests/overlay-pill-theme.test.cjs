@@ -414,7 +414,8 @@ test('dual theme browser behaviour (isolated fixture)', { skip: skipReason, time
       const card = document.querySelector('#card-a'), bar = document.querySelector('.zusage-root');
       const c = card.getBoundingClientRect(), r = bar.getBoundingClientRect();
       return { cardBottom: c.bottom, barTop: r.top, barBottom: r.bottom, barHeight: r.height,
-        margin: parseFloat(getComputedStyle(card).marginBottom), viewportBottom: innerHeight };
+        margin: parseFloat(getComputedStyle(card).marginBottom), viewportBottom: innerHeight,
+        visibility: getComputedStyle(bar).visibility };
     })()`);
     const expectedMargin = m => Math.ceil(m.barHeight);
     const normal = await measure();
@@ -423,6 +424,9 @@ test('dual theme browser behaviour (isolated fixture)', { skip: skipReason, time
       assert.ok(Math.abs(m.barTop - m.cardBottom - 8) <= 1, JSON.stringify(m));
       assert.ok(Math.abs(m.viewportBottom - m.barBottom - 8) <= 1, JSON.stringify(m));
       assert.ok(Math.abs(m.margin - expectedMargin(m)) <= 1, JSON.stringify(m));
+      // A hidden bar keeps its layout rect, so the gap assertions above pass
+      // even when pillUnsafe wrongly hides the pill — lock actual visibility.
+      assert.equal(m.visibility, 'visible', JSON.stringify(m));
     };
     assertGaps(normal);
     // Larger UI fonts change the bar height and the spacer follows it.
@@ -1525,7 +1529,8 @@ test('pill layout safety browser regressions (isolated fixture)', { skip: skipRe
         const visible = !!bar && bar.isConnected && style.display !== 'none' && style.visibility !== 'hidden' &&
           Number(style.opacity) > 0 && r.right > r.left && r.bottom > r.top;
         samples.push({ at: Math.round(performance.now() - start), margin: parseFloat(getComputedStyle(card).marginBottom),
-          card: c, bar: r, visible, gapAbove: visible ? r.top - c.bottom : null,
+          card: c, bar: r, visible, visibility: style.visibility, display: style.display,
+          gapAbove: visible ? r.top - c.bottom : null,
           gapBelow: visible ? innerHeight - r.bottom : null,
           covered: controls.filter(el => visible && overlap(r, rect(el))).map(el => el.id || el.tagName),
           barHits: controls.map(el => { const r = rect(el), hit = document.elementFromPoint((r.left + r.right) / 2, (r.top + r.bottom) / 2);
@@ -1551,6 +1556,20 @@ test('pill layout safety browser regressions (isolated fixture)', { skip: skipRe
     if (samples.some(s => s.visible && (s.bar.top < 0 || s.bar.bottom > 900))) problems.push('visible pill leaves the viewport');
     if (clicks.tool !== 1 || clicks.send !== 1) problems.push('real pointer click did not reach both controls');
     assert.deepEqual(problems, [], JSON.stringify({ before, problems, clicks, ...observed }));
+    // Unsafe layouts must degrade to the designed "safe hide" (visibility,
+    // element stays mounted and can come back), not display:none disappearance.
+    const lastBar = await b.evaluate(`(() => { const bar = document.querySelector('#zusage-bar');
+      return { connected: !!bar && bar.isConnected, display: bar && getComputedStyle(bar).display,
+        visibility: bar && getComputedStyle(bar).visibility }; })()`);
+    assert.ok(lastBar.connected && lastBar.display !== 'none', JSON.stringify(lastBar));
+    assert.equal(lastBar.visibility, 'hidden', JSON.stringify(lastBar));
+    // Switching back to the default theme must fully restore the bar even after
+    // pillUnsafe hid it (visibility is a pill-only state; regression used to
+    // leave the bar permanently invisible).
+    await choose(b, 'default');
+    await b.waitFor(`(() => { const bar = document.querySelector('#zusage-bar'); const s = bar && getComputedStyle(bar);
+      return bar && bar.isConnected && s.display !== 'none' && s.visibility === 'visible'; })()`,
+      'bar did not become visible again after leaving pill theme');
   });
 
   await t.test('stacked pane shells contain each pill and leave the lower controls clickable', async () => {
@@ -1680,6 +1699,46 @@ test('pill layout safety browser regressions (isolated fixture)', { skip: skipRe
         .every(s => s.count === 2 && s.connected.every(Boolean) && s.positions.every(p => p.visible)), JSON.stringify({ before, ...observed }));
     });
   }
+
+  await t.test('ghosted upper composer (inert/opacity-0) is not promoted to an instance', async () => {
+    // v143 added a candidate pre-filter (opacity:0/inert composers are not
+    // promoted) to stop mount/unmount flapping; lock it with a real fixture —
+    // without it a composer hidden by the host ghost shell spawns a bar anyway.
+    await b.call('Emulation.setDeviceMetricsOverride', { width: 1200, height: 900, deviceScaleFactor: 1, mobile: false });
+    const token = Math.random().toString(36).slice(2);
+    await b.call('Page.navigate', { url: b.url + '?case=' + token });
+    await b.waitFor(`document.readyState === "complete" && location.search === '?case=${token}'`);
+    const fixture = await b.evaluate(`(() => {
+      document.body.innerHTML = ${JSON.stringify(fixtureHtml)};
+      localStorage.clear(); localStorage.setItem('zusage3.theme', 'pill');
+      const upper = document.querySelector('#pane-a');
+      upper.setAttribute('data-testid', 'v4-pane-shell-top');
+      Object.assign(upper.style, { position: 'fixed', top: '0px', bottom: 'auto', left: '50px', height: '530px',
+        display: 'flex', flexDirection: 'column', justifyContent: 'end' });
+      const input = upper.querySelector('textarea');
+      input.setAttribute('inert', '');
+      input.style.opacity = '0';
+      window.__ghostEvents = [];
+      window.__ghostObserver = new MutationObserver(records => {
+        for (const record of records) for (const [kind, nodes] of [['added', record.addedNodes], ['removed', record.removedNodes]]) {
+          for (const node of nodes) if (node.nodeType === 1 && node.classList.contains('zusage-root'))
+            window.__ghostEvents.push({ kind, id: node.id, at: Math.round(performance.now()) });
+        }
+      });
+      window.__ghostObserver.observe(document.body, { childList: true, subtree: true });
+      return { upperInert: input.inert, upperOpacity: getComputedStyle(input).opacity };
+    })()`);
+    assert.equal(fixture.upperInert, true, JSON.stringify(fixture));
+    assert.equal(fixture.upperOpacity, '0', JSON.stringify(fixture));
+    await b.evaluate(overlay);
+    await delay(1600);
+    const observed = await b.evaluate(`({ events: window.__ghostEvents,
+      bars: [...document.querySelectorAll('.zusage-root')].map(bar => ({ id: bar.id, display: getComputedStyle(bar).display })) })`);
+    // Only the lower (visible) pane may be promoted; the ghosted composer must
+    // not spawn an instance at any point (no add/remove flapping either).
+    assert.equal(observed.bars.length, 1, JSON.stringify(observed));
+    assert.deepEqual(observed.events.map(event => event.kind), ['added'], JSON.stringify(observed));
+  });
 
   await t.test('zero-margin bottom dock keeps both 8px gaps after padding changes from 0 to 16', async () => {
     await reset(b, { stored: 'default' });
