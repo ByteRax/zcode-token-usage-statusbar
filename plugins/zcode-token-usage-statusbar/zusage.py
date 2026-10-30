@@ -150,12 +150,13 @@ def session_usage(con, sid):
     }
 
 
-def _project_usage(con, sid):
+def _project_usage(con, sid, with_models=False):
     """项目累计（v159）：当前会话所属项目（session.project_id，与宿主 --continue 同一
     项目身份）下全部会话的 completed 用量聚合，口径与 session_usage 一致；子代理会话
     （parent_id 指向本项目主会话）计入。worktree 等不同目录 project_id 不同，天然不混。
     sessions/turns 取实际参与消耗的会话与轮（session_id+turn_id 组合去重）；会话不在
-    本地库或无 project_id 时返回 None（渲染端判空不渲染该格）。"""
+    本地库或无 project_id 时返回 None（渲染端判空不渲染该格）。
+    with_models（v163）：附按模型明细（top 8 + models_more），轻量行不取。"""
     prow = con.execute(
         "select project_id from session where id=?", (sid,)).fetchone()
     if not prow or not prow[0]:   # 位置取值：con 可能没有 row_factory（远端链复用连接）
@@ -184,12 +185,19 @@ def _project_usage(con, sid):
                    min(m.started_at), max(m.completed_at)
             from model_usage m where m.status='completed' and m.session_id in ({qm})""",
         all_ids).fetchone()
+    models = []
+    if with_models:
+        models = [{"model": r[0] or "", "requests": r[1], "total": r[2]} for r in con.execute(
+            f"""select m.model_id, count(*), coalesce(sum(m.computed_total_tokens),0)
+                from model_usage m where m.status='completed' and m.session_id in ({qm})
+                group by m.model_id order by 3 desc""", all_ids).fetchall()]
     return {
         "sessions": r[0], "turns": r[1] or 0, "requests": r[2],
         "input": r[3], "output": r[4], "reasoning": r[5],
         "cache_read": r[6], "cache_write": r[7], "total": r[8],
         "tool_calls": r[9], "retries": r[10],
         "started": r[11] or 0, "last_at": r[12] or 0,
+        "models": models,
     }
 
 
@@ -955,6 +963,12 @@ def _session_snapshot(con, sid, cfg):
             for r in tool_rows
         ],
     }
+    # 模型明细（v163，v164 起全量不截断）：按模型分组的 completed 用量，tooltip
+    # 「会话累计/项目累计」列出；轻量行不带（_light_snapshot 无此键，与 tools 瘦身同款）。
+    models = [{"model": r[0] or "", "requests": r[1], "total": r[2]} for r in con.execute(
+        """select model_id, count(*), coalesce(sum(computed_total_tokens),0)
+           from model_usage where session_id=? and status='completed'
+           group by model_id order by 3 desc""", (sid,)).fetchall()]
     return {
         "sid": sid,
         "title": (srow["title"] if srow is not None else "") or "",
@@ -974,6 +988,7 @@ def _session_snapshot(con, sid, cfg):
         "started": _session_start_ms(con, sid, srow),
         "sub": sub,
         "tools": tools,
+        "models": models,
         "last_turn": lt,
         "last": {
             "duration_ms": last["duration_ms"] if last else 0,
@@ -1820,7 +1835,8 @@ def snapshot(force_sid="", routes=None, serve_con=None):
                     continue
                 if psid not in proj_cache:
                     try:
-                        proj_cache[psid] = _project_usage(con, psid)
+                        # 模型明细跟随行粒度：轻量行不带（与 _light_snapshot 无 models 键同款）
+                        proj_cache[psid] = _project_usage(con, psid, with_models="models" in row)
                     except sqlite3.Error:
                         proj_cache[psid] = None
                 if proj_cache[psid]:

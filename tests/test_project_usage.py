@@ -76,14 +76,14 @@ class FixtureBase(unittest.TestCase):
             " values (?,?,?,?,?,?)", (sid, "t", parent, project, directory, 100))
 
     def usage(self, con, rid, sid, turn="t1", started=1000, completed=2000, total=100,
-              status="completed"):
+              status="completed", model="GLM-5.3"):
         con.execute(
             "insert into model_usage (id, session_id, turn_id, query_source, provider_id,"
             " model_id, status, started_at, first_token_at, completed_at, input_tokens,"
             " output_tokens, reasoning_tokens, cache_read_input_tokens,"
             " cache_creation_input_tokens, computed_total_tokens, tool_call_count, retry_count)"
             " values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (rid, sid, turn, "main_turn", "account:test", "GLM-5.3", status, started,
+            (rid, sid, turn, "main_turn", "account:test", model, status, started,
              started + 10, completed, 60, 30, 5, 40, 2, total, 1, 0))
 
 
@@ -132,6 +132,34 @@ class ProjectUsageAggTests(FixtureBase):
         self.assertIsNone(zusage._project_usage(con, "nope"))
         self.assertIsNone(zusage._project_usage(con, "m1"))
 
+    def test_models_full_list_desc_no_cap(self):
+        con = self.fixture()
+        self.sess(con, "m1")
+        self.sess(con, "m2")
+        for i in range(10):   # 10 个模型：m1 5 个、m2 5 个，总量互不相同
+            self.usage(con, f"r{i}", "m1" if i % 2 == 0 else "m2",
+                       turn=f"t{i}", total=100 * (i + 1), model=f"model-{i}")
+        self.usage(con, "rx", "m2", turn="tx", total=5000, model="model-0")  # 提升总量
+        p = zusage._project_usage(con, "m1", with_models=True)
+        self.assertEqual([m["model"] for m in p["models"][:3]], ["model-0", "model-9", "model-8"])
+        self.assertEqual(len(p["models"]), 10)         # 全量展示（v164 去截断）
+        self.assertEqual(p["models"][0]["requests"], 2)  # model-0: m1 一条 + m2 一条
+        self.assertNotIn("models_more", p)
+        # 不取模型（轻量行）：字段空
+        p2 = zusage._project_usage(con, "m1", with_models=False)
+        self.assertEqual(p2["models"], [])
+
+    def test_session_snapshot_models_light_rows_without(self):
+        con = self.fixture()
+        self.sess(con, "m1")
+        self.usage(con, "r1", "m1", total=100, model="GLM-5.3")
+        self.usage(con, "r2", "m1", turn="t2", total=50, model="gpt-6.1-sol")
+        full = zusage._session_snapshot(con, "m1", {"context_window": 200000})
+        self.assertEqual([m["model"] for m in full["models"]], ["GLM-5.3", "gpt-6.1-sol"])
+        self.assertEqual(full["models"][0]["total"], 100)
+        light = zusage._light_snapshot(con, "m1", {"context_window": 200000})
+        self.assertNotIn("models", light)
+
 
 class ProjectSnapshotInjectTests(FixtureBase):
     def snapshot_with(self, con, force_sid):
@@ -161,6 +189,9 @@ class ProjectSnapshotInjectTests(FixtureBase):
         by_sid = {r["sid"]: r for r in snap["recent"]}
         self.assertEqual(by_sid["m2"]["project"]["total"], 150)
         self.assertEqual(by_sid["w1"]["project"]["total"], 999)
+        # 完整行的项目聚合带模型明细；会话快照同样带
+        self.assertEqual(by_sid["m2"]["project"]["models"][0]["model"], "GLM-5.3")
+        self.assertEqual(snap["session"]["models"][0]["model"], "GLM-5.3")
 
     def test_snapshot_not_local_force_sid_has_no_project(self):
         con = self.fixture()
