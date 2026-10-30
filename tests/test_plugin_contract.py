@@ -27,7 +27,11 @@ class PluginContractTests(unittest.TestCase):
         self.assertEqual(translations["zh-CN"], entry["description"])
         self.assertIn("app.asar", translations["en"])
         self.assertIn("quit", translations["en"])
-        self.assertIn("opt-out", translations["en"])
+        # v172 起自动安装恒开、旧开关不读：英文文案必须表达 always-on 与卸载豁免，
+        # 不得再出现「By default / opt-out respected」的旧开关语义（review 2026-10-31）。
+        self.assertIn("always on", translations["en"])
+        self.assertIn("/uninstall-overlay", translations["en"])
+        self.assertNotIn("opt-out", translations["en"])
         for directory in (".zcode-plugin", ".claude-plugin"):
             manifest = json.loads((PLUGIN / directory / "plugin.json").read_text(encoding="utf-8"))
             self.assertEqual(manifest.get("description_i18n"), translations)

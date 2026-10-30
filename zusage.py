@@ -115,6 +115,49 @@ def _cached_agg(key, fn):
     return val
 
 
+_PROJ_CACHE = {}
+
+
+def _db_cache_key(con):
+    """v177：项目累计缓存的库身份键——文件库取 (path, dev, ino)，同路径换文件（删除重建/
+    被替换）键随 stat 变化；内存库（:memory:，测试夹具）返回 None 不做跨调用缓存。
+    sqlite3.Connection 不支持弱引用，连接级缓存不可行；按文件身份跨连接共享是安全的
+    （同一文件即同一数据库，TTL 2s 约束陈旧度）。"""
+    try:
+        for row in con.execute("pragma database_list").fetchall():
+            if row[1] == "main":
+                path = row[2]
+                break
+        else:
+            return None
+    except sqlite3.Error:
+        return None
+    if not path:
+        return None
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (path, st.st_dev, st.st_ino)
+
+
+def _cached_project(dbkey, key, fn):
+    """v177：_project_usage 专用缓存，键挂库文件身份 + (project_id, with_models)——常驻泵
+    跨请求复用连接时吃到 2s TTL 的跨帧免重扫（实测无缓存大库单项目聚合 ~40ms，池内多行
+    一帧可达数百 ms）。独立于 _AGG_CACHE：项目键随使用增长，混进共享缓存会把它顶过上限
+    触发整体 clear、连带丢掉 scan/today 热条目。"""
+    now = int(time.time() * 1000)
+    full = (dbkey, key)
+    hit = _PROJ_CACHE.get(full)
+    if hit and now - hit[0] < _AGG_TTL_MS:
+        return hit[1]
+    val = fn()
+    if len(_PROJ_CACHE) > 64:
+        _PROJ_CACHE.clear()   # 保险防膨胀：清空只损失缓存，不损正确性
+    _PROJ_CACHE[full] = (now, val)
+    return val
+
+
 def _scan_session_ids(con):
     """全库 session_id → max(completed_at) 一次分组扫描（731MB 库 ~55ms）。
     最新会话与 recent 池原先各自独立做同样的全表 group by（3 次 118ms），
@@ -152,53 +195,92 @@ def session_usage(con, sid):
 
 def _project_usage(con, sid, with_models=False):
     """项目累计（v159）：当前会话所属项目（session.project_id，与宿主 --continue 同一
-    项目身份）下全部会话的 completed 用量聚合，口径与 session_usage 一致；子代理会话
-    （parent_id 指向本项目主会话）计入。worktree 等不同目录 project_id 不同，天然不混。
+    项目身份）下全部会话的 completed 用量聚合，口径与 session_usage 一致；计入主会话与
+    其全部派生会话（parent_id 指向主会话的子代理、辅助对话、Fork 等——比「仅子代理」宽，
+    都是本项目的真实消耗）。worktree 等不同目录 project_id 不同，天然不混。
     sessions/turns 取实际参与消耗的会话与轮（session_id+turn_id 组合去重）；会话不在
     本地库或无 project_id 时返回 None（渲染端判空不渲染该格）。
-    with_models（v163）：附按模型明细（top 8 + models_more），轻量行不取。"""
+    with_models（v163）：附按模型明细（v164 起全量降序），轻量行不取。
+    v177：按库文件身份 + (project_id, with_models) 挂 2s TTL 缓存（同帧同项目多会话共享、
+    常驻泵跨帧免重扫；内存库不缓存）；聚合 IN 分片 500/批（老 SQLite <3.32 变量上限 999，
+    大项目会话数可超）。分片按 session_id 切——同一会话只落一片，distinct 计数与求和跨片
+    直接累加不重不漏，min/max 取跨片极值。"""
     prow = con.execute(
         "select project_id from session where id=?", (sid,)).fetchone()
     if not prow or not prow[0]:   # 位置取值：con 可能没有 row_factory（远端链复用连接）
         return None
-    mains = [r[0] for r in con.execute(
-        """select id from session where project_id=?
-           and parent_id is null and substr(id,1,?)!='sess_subagent'""",
-        (prow[0], _SUB_PREFIX_LEN))]
-    all_ids = list(mains)
-    if mains:
-        qm = ",".join("?" * len(mains))
-        all_ids += [r[0] for r in con.execute(
-            f"select id from session where parent_id in ({qm})", mains)]
-    if not all_ids:
-        return None
-    qm = ",".join("?" * len(all_ids))
-    r = con.execute(
-        f"""select count(distinct m.session_id),
-                   count(distinct m.session_id||'/'||coalesce(m.turn_id,'')), count(*),
-                   coalesce(sum(m.input_tokens),0), coalesce(sum(m.output_tokens),0),
-                   coalesce(sum(m.reasoning_tokens),0),
-                   coalesce(sum(m.cache_read_input_tokens),0),
-                   coalesce(sum(m.cache_creation_input_tokens),0),
-                   coalesce(sum(m.computed_total_tokens),0),
-                   coalesce(sum(m.tool_call_count),0), coalesce(sum(m.retry_count),0),
-                   min(m.started_at), max(m.completed_at)
-            from model_usage m where m.status='completed' and m.session_id in ({qm})""",
-        all_ids).fetchone()
-    models = []
-    if with_models:
-        models = [{"model": r[0] or "", "requests": r[1], "total": r[2]} for r in con.execute(
-            f"""select m.model_id, count(*), coalesce(sum(m.computed_total_tokens),0)
-                from model_usage m where m.status='completed' and m.session_id in ({qm})
-                group by m.model_id order by 3 desc""", all_ids).fetchall()]
-    return {
-        "sessions": r[0], "turns": r[1] or 0, "requests": r[2],
-        "input": r[3], "output": r[4], "reasoning": r[5],
-        "cache_read": r[6], "cache_write": r[7], "total": r[8],
-        "tool_calls": r[9], "retries": r[10],
-        "started": r[11] or 0, "last_at": r[12] or 0,
-        "models": models,
-    }
+
+    def run():
+        mains = [r[0] for r in con.execute(
+            """select id from session where project_id=?
+               and parent_id is null and substr(id,1,?)!='sess_subagent'""",
+            (prow[0], _SUB_PREFIX_LEN))]
+        all_ids = list(mains)
+        for i in range(0, len(mains), 500):
+            part = mains[i:i + 500]
+            qm = ",".join("?" * len(part))
+            all_ids += [r[0] for r in con.execute(
+                f"select id from session where parent_id in ({qm})", part)]
+        if not all_ids:
+            return None
+        sessions = turns = requests = input_t = output_t = reasoning = 0
+        cache_read = cache_write = total = tool_calls = retries = 0
+        started = last_at = None
+        models_acc = {}
+        for i in range(0, len(all_ids), 500):
+            part = all_ids[i:i + 500]
+            qm = ",".join("?" * len(part))
+            r = con.execute(
+                f"""select count(distinct m.session_id),
+                           count(distinct m.session_id||'/'||coalesce(m.turn_id,'')), count(*),
+                           coalesce(sum(m.input_tokens),0), coalesce(sum(m.output_tokens),0),
+                           coalesce(sum(m.reasoning_tokens),0),
+                           coalesce(sum(m.cache_read_input_tokens),0),
+                           coalesce(sum(m.cache_creation_input_tokens),0),
+                           coalesce(sum(m.computed_total_tokens),0),
+                           coalesce(sum(m.tool_call_count),0), coalesce(sum(m.retry_count),0),
+                           min(m.started_at), max(m.completed_at)
+                    from model_usage m where m.status='completed' and m.session_id in ({qm})""",
+                part).fetchone()
+            sessions += r[0]
+            turns += r[1] or 0
+            requests += r[2]
+            input_t += r[3]
+            output_t += r[4]
+            reasoning += r[5]
+            cache_read += r[6]
+            cache_write += r[7]
+            total += r[8]
+            tool_calls += r[9]
+            retries += r[10]
+            if r[11] is not None and (started is None or r[11] < started):
+                started = r[11]
+            if r[12] is not None and (last_at is None or r[12] > last_at):
+                last_at = r[12]
+            if with_models:
+                for mm in con.execute(
+                    f"""select m.model_id, count(*), coalesce(sum(m.computed_total_tokens),0)
+                        from model_usage m where m.status='completed' and m.session_id in ({qm})
+                        group by m.model_id""", part).fetchall():
+                    acc = models_acc.setdefault(mm[0] or "", [0, 0])
+                    acc[0] += mm[1]
+                    acc[1] += mm[2]
+        models = [{"model": k, "requests": v[0], "total": v[1]}
+                  for k, v in models_acc.items()]
+        models.sort(key=lambda m: -m["total"])
+        return {
+            "sessions": sessions, "turns": turns, "requests": requests,
+            "input": input_t, "output": output_t, "reasoning": reasoning,
+            "cache_read": cache_read, "cache_write": cache_write, "total": total,
+            "tool_calls": tool_calls, "retries": retries,
+            "started": started or 0, "last_at": last_at or 0,
+            "models": models,
+        }
+
+    dbkey = _db_cache_key(con)
+    if dbkey is None:   # 内存库（database_list 的 file 列为空的连接）：不缓存，就地聚合
+        return run()
+    return _cached_project(dbkey, (prow[0], bool(with_models)), run)
 
 
 def range_usage(con, start_ms, end_ms):

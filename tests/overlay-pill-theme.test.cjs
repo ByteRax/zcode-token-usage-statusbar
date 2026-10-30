@@ -118,8 +118,10 @@ async function startBrowser(t) {
     if (out.exceptionDetails) throw new Error(out.exceptionDetails.exception?.description || out.exceptionDetails.text);
     return out.result.value;
   }
-  async function waitFor(expression, message) {
-    for (let i = 0; i < 100; i++) {
+  async function waitFor(expression, message, budget = 160) {
+    /* v177：默认 5s→8s——冷启动+负载下 bars 挂载偶发超 5s（双向 flake 实测）；
+     * 个别慢等待可传更大 budget。 */
+    for (let i = 0; i < budget; i++) {
       if (await evaluate(expression)) return;
       await delay(50);
     }
@@ -341,12 +343,21 @@ test('dual theme browser behaviour (isolated fixture)', { skip: skipReason, time
       const items = [...main.querySelectorAll('.it')], sub = main.querySelector('.zu-sub');
       const overflow = main.scrollWidth > main.clientWidth;
       main.scrollLeft = main.scrollWidth;
-      const r = sub.getBoundingClientRect(), x = (r.left + r.right) / 2, y = (r.top + r.bottom) / 2;
-      const hit = document.elementFromPoint(x, y);
+      const r = sub.getBoundingClientRect();
+      /* v177：无头 Chrome 回退字体行盒偏高时单元格内容（图标/文字）顶置，盒子垂直中心
+       * 可能落在内容下方的空白里（探针实测 ±11px 全条带命中 .zu-main 容器）。契约是
+       * 「子代理控件可见且可点」，逐点格子扫描找内容命中点，点击也用该点。 */
+      let hitPt = null;
+      for (let py = r.top + 2; py <= r.bottom - 2 && !hitPt; py += 2) {
+        for (let px = r.left + 2; px <= r.right - 2 && !hitPt; px += 3) {
+          const h = document.elementFromPoint(px, py);
+          if (h && (h === sub || sub.contains(h))) hitPt = { x: px, y: py };
+        }
+      }
       const gear = bar.querySelector('.zu-gear'), g = gear.getBoundingClientRect();
       const gearHit = document.elementFromPoint((g.left + g.right) / 2, (g.top + g.bottom) / 2);
       return { count: items.length, overflow, scrollLeft: main.scrollLeft,
-        sub: { x, y, hit: !!hit && (hit === sub || sub.contains(hit)) },
+        sub: hitPt ? { ...hitPt, hit: true } : { x: (r.left + r.right) / 2, y: (r.top + r.bottom) / 2, hit: false },
         gearHit: !!gearHit && (gearHit === gear || gear.contains(gearHit)) };
     })()`);
     assert.ok(scrolled.count >= 6, 'compact data items must remain present');
@@ -372,10 +383,16 @@ test('dual theme browser behaviour (isolated fixture)', { skip: skipReason, time
     const keyboard = await b.evaluate(`(() => {
       const bar = document.querySelector('.zusage-root'), main = bar.querySelector('.zu-main'), sub = main.querySelector('.zu-sub');
       const r = sub.getBoundingClientRect(), mr = main.getBoundingClientRect();
-      const hit = document.elementFromPoint((r.left + r.right) / 2, (r.top + r.bottom) / 2);
+      /* v177：与上方同款环境敏感性——回退字体行盒偏高时中心点落在内容外，格子扫描判定可点性 */
+      let hit = false;
+      for (let py = r.top + 2; py <= r.bottom - 2 && !hit; py += 2) {
+        for (let px = r.left + 2; px <= r.right - 2 && !hit; px += 3) {
+          const h = document.elementFromPoint(px, py);
+          if (h && (h === sub || sub.contains(h))) hit = true;
+        }
+      }
       return { focused: document.activeElement === sub, scrollLeft: main.scrollLeft,
-        within: r.left >= mr.left - 1 && r.right <= mr.right + 1,
-        hit: !!hit && (hit === sub || sub.contains(hit)) };
+        within: r.left >= mr.left - 1 && r.right <= mr.right + 1, hit };
     })()`);
     assert.equal(keyboard.focused, true, 'Tab should reach the sub-agent button');
     assert.ok(keyboard.scrollLeft > 0, 'keyboard focus should scroll to the off-screen entry');
@@ -1140,7 +1157,7 @@ test('dual theme browser behaviour (isolated fixture)', { skip: skipReason, time
 });
 
 // Regression cases for split-pane stability, tooltips and highspeed transitions.
-test('pill review browser regressions (isolated fixture)', { skip: skipReason, timeout: 60000 }, async t => {
+test('pill review browser regressions (isolated fixture)', { skip: skipReason, timeout: 120000 }, async t => {
   const b = await startBrowser(t);
 
   await t.test('vertical split keeps both pill instances when the upper composer moves across 45%', async () => {

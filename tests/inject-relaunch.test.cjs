@@ -18,7 +18,7 @@ assert.ok(slice.includes('req.action === "relaunch"'), "relaunch 分支必须在
 const RESOURCES = path.join(path.sep, "client", "resources");
 const HOST_URL = pathToFileURL(path.join(RESOURCES, "app", "out", "main", "index.js")).href;
 
-function runPoll(requests, url = HOST_URL, main = true) {
+function runPoll(requests, url = HOST_URL, main = true, updater = null) {
   const calls = { relaunch: 0, quit: 0, deliveries: [], executed: 0 };
   const app = {
     relaunch: () => { calls.relaunch++; },
@@ -36,7 +36,7 @@ function runPoll(requests, url = HOST_URL, main = true) {
     webContents: { getAllWebContents: () => [wc] },
     isMainWindowState: () => main,
     deliverPluginRequest: (w, requestId, result) => calls.deliveries.push({ requestId, result: { ...result } }),   // 浅拷贝出宿主 realm 对象供 deepStrictEqual
-    app, LOG: () => {}, pluginRequestBusy: false, pluginUpdater: null,
+    app, LOG: () => {}, pluginRequestBusy: false, pluginUpdater: updater,
     setTimeout, clearTimeout,   // relaunch 分支延迟 quit 用（沙箱无全局定时器）
   });
   return { calls, settle: () => new Promise((resolve) => setTimeout(resolve, 450)) };
@@ -61,4 +61,14 @@ test("relaunch is ignored for URLs outside the host resources tree or non-main w
     assert.deepEqual([calls.relaunch, calls.quit], [0, 0], label);
     assert.equal(calls.executed, 0, label + "：不读请求队列");
   }
+});
+
+test("relaunch is rejected with ok:false while an update is in progress (v177 coverage gap)", async () => {
+  // 更新进行中 quit 会打断下载/安装：必须只回执拒绝，不 relaunch 不 quit
+  const { calls, settle } = runPoll([{ action: "relaunch", requestId: "zusage-relaunch-busy" }], HOST_URL, true, {
+    status: () => ({ busy: true }),
+  });
+  await settle();
+  assert.deepEqual(calls.deliveries, [{ requestId: "zusage-relaunch-busy", result: { ok: false, error: "update in progress" } }]);
+  assert.deepEqual([calls.relaunch, calls.quit], [0, 0]);
 });

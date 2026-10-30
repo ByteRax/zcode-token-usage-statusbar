@@ -219,6 +219,7 @@ def _run():
         now = time.time()
         done = False
         pending = None
+        finished = False
         finalize_denied = False
         if TMP.exists():
             try:
@@ -317,7 +318,10 @@ def _run():
                 lines = [L("ZCode 已重启（新实例），正在确认注入加载……",
                            "ZCode restarted (new instance); confirming injection load…")]
         el = int(now - t0)
-        if pending is not None and pi.is_elevated():
+        # issue #130 页脚只在「提权且收尾仍未落定」时警示：done 终屏（成功/finalize_denied）
+        # 与 finished/finalize_denied 当轮终屏上，收尾已不可被关窗打断——照搬会让成功屏
+        # 同时出现「请保持本窗口开启」的自相矛盾文案（review 2026-10-31）。
+        if pending is not None and pi.is_elevated() and not done and not finished and not finalize_denied:
             # 提权监控是受保护目录上唯一能收尾的进程（hook 重建不了它，issue #130）：
             # 关窗即杀死收尾者，文案不能再说「可随时关闭」。
             footer = L("收尾未完成前请保持本窗口开启：关闭窗口将停止自动替换，且需以管理员身份重跑安装才能重建。",

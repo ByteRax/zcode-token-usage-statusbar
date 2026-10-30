@@ -42,7 +42,7 @@
    * 确定性历史行（[data-zusage-deterministic]，挂在消息流 turn 容器末尾）一并自清。
    * v80：面板（.zusage-panel）挂 body 不随条走，清理选择器单列。 */
   try {
-    document.querySelectorAll(".zusage-root,.zusage-tip-root,.zusage-exc,.zusage-rate-tip,.zusage-panel,[data-zusage-deterministic],[data-zusage-loading-status]").forEach(function (el) { el.remove(); });
+    document.querySelectorAll(".zusage-root,.zusage-tip-root,.zusage-exc,.zusage-rate-tip,.zusage-panel,.zu-tsb,.zu-ctxb,[data-zusage-deterministic],[data-zusage-loading-status]").forEach(function (el) { el.remove(); });
   } catch (e) { }
 
   try {
@@ -943,7 +943,7 @@
   /* ---------- 实例工厂（v61.1）：一个 pane 一套 条/面板/气泡/tooltip/定位循环。
    * slot 0 保留 #zusage-bar/#zusage-tip 兼容 id（泵热更新按它清理），其余实例仅类名。 */
   function spawnInstance(pid, slot) {
-    var VERSION = "v102";   // v102 审查修复批（桌面 v155 同款）：子面板 chip 优先锚/面板周期跟随/悬停不重建/跨代采纳统一挂装+focus blur/归属校验v101 工具动词全面改「X中」体例（桌面 v154 同款）v100 工具执行状态词定稿（桌面 v153 同款）：工作中 → 执行中v99 工具动词 Read「正在读取」→「读取中」（桌面 v152 同款）v98 工具状态词改版（桌面 v151 同款）：Bash「正在执行」→「工作中」、未知工具回退同改、工具计时去中点v97 精简速率 tooltip 摘要行单位 tok→token（桌面 v149 同款）v96 精简速率 tooltip「打开设置」按钮右对齐（桌面 v148 同款）：footer 合并为单行 flex，说明文本占剩余宽、按钮推至最右v95 精简模式（theme 两档 default/compact，与桌面 v146 同期落地、独立实现）：条永久隐藏保留 DOM（heavy 保条对抗 React 清子树、面板/子面板改锚输入卡与 chip）；生成速度 .zu-tsb 与上下文容量 .zu-ctxb 挂工具行 trailing-actions 左侧（锚缺失退行尾、位置每拍兜回、签名幂等、无有效样本不渲染）；tooltip 复用实例自绘 tip（document mousemove 增 chip 分支接住条外悬停）= 速度读数+状态条摘要（逐格开关继续生效、子代理行点击开明细）+「打开设置」按钮；设置面板通用区新增样式 radiov82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v84 主标签页远端路由（工作台分组唯一主绑定上报 + 迟到载荷守卫，issue #30）→ v85 回答末尾统计行跟随万/亿开关 + tok→token → v86 历史轮 tracker 无记录（窗口滑出/换代/热更）或缺输出字段不再翻成"本轮统计不可用"，加 det 诊断 → v87 设置页排除：协调器/findComposer/deepFind/track 按 [data-testid="settings-page"] 祖先排除设置表单编辑框（MCP「请求头」textarea 被当聊天输入框、条挂进表单卡片）→ v88 工具动词「正在运行子智能体」压成「子代理运行中」（与桌面 v97 同文案；子代理速率估算为桌面桥专属，Web 无此链路） → v89 tooltip 伪边界 leave 过滤（与桌面 v99 同款）：Chrome 悬停链收缩/重算会补发 DOM 内部的 documentElement/tip mouseleave（格内 万↔1 空隙悬停、tooltip 本体停留均可复现弹出即灭），tipLeaveAt 贴边判定后取触发时刻最深 :hover 元素甄别（事件坐标/relatedTarget 实测不可信）——仍悬停在本档具体元素上即伪 leave 一律忽略，hover 链截断到 body/iframe/空链（空档区/已进子上下文/甩出窗口）维持 v47 分流 → v90 思考中计时随语言本地化（中文「1 时 2 分 3 秒」/英文「1 h 2 m 3 s」，与桌面 v99 同文案；Web 无富文本 turn-text 链——__zusagePluginRequests 仅桌面主进程消费，本端回答末尾恒为简化占位行、无采样时刻，不受 token_rate.py 改版影响）→ v91 思考计时锚定 turnHeader.startedAt（与桌面 v116 同源语义：宿主创建 header 恒写入 startedAt，重绑不清零；缺字段或时钟未及起点回退首观测起算） → v92 思考计时中文全紧邻「7分16秒」（与桌面 v125 同款，时段间空格去除；英文「7 m 16 s」不动） → v93 思考计时英文数字与单位紧邻「7m 16s」（与桌面 v126 同款，时段间留空格） → v94 tok/s 速度十档色（与桌面 v127 同表同语义：TPS_BANDS 唯一事实源，原始值分档；150 起蓝紫系纯色、≥2000 Ultra 蓝紫渐变+✦ 星点，估算态与完成态同表分档，无效值中性 dim 或不渲染 chip，tooltip 档位行改动态，另加静态「颜色对照」图例（十档数值↔颜色升序一览，随主题切换））   // 悬停 ⚙ 面板可见；版本号随部署代际递增
+    var VERSION = "v103";   // v103 review 修复批（桌面 v177 同批）：精简下速率 chip 被摘除后子代理明细面板保持原位（不再回落隐藏条内全零 .zu-sub 抢锚钉视口左上角）；启动自清选择器补 .zu-tsb/.zu-ctxb（对齐桌面 v155 批）v102 审查修复批（桌面 v155 同款）：子面板 chip 优先锚/面板周期跟随/悬停不重建/跨代采纳统一挂装+focus blur/归属校验v101 工具动词全面改「X中」体例（桌面 v154 同款）v100 工具执行状态词定稿（桌面 v153 同款）：工作中 → 执行中v99 工具动词 Read「正在读取」→「读取中」（桌面 v152 同款）v98 工具状态词改版（桌面 v151 同款）：Bash「正在执行」→「工作中」、未知工具回退同改、工具计时去中点v97 精简速率 tooltip 摘要行单位 tok→token（桌面 v149 同款）v96 精简速率 tooltip「打开设置」按钮右对齐（桌面 v148 同款）：footer 合并为单行 flex，说明文本占剩余宽、按钮推至最右v95 精简模式（theme 两档 default/compact，与桌面 v146 同期落地、独立实现）：条永久隐藏保留 DOM（heavy 保条对抗 React 清子树、面板/子面板改锚输入卡与 chip）；生成速度 .zu-tsb 与上下文容量 .zu-ctxb 挂工具行 trailing-actions 左侧（锚缺失退行尾、位置每拍兜回、签名幂等、无有效样本不渲染）；tooltip 复用实例自绘 tip（document mousemove 增 chip 分支接住条外悬停）= 速度读数+状态条摘要（逐格开关继续生效、子代理行点击开明细）+「打开设置」按钮；设置面板通用区新增样式 radiov82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v84 主标签页远端路由（工作台分组唯一主绑定上报 + 迟到载荷守卫，issue #30）→ v85 回答末尾统计行跟随万/亿开关 + tok→token → v86 历史轮 tracker 无记录（窗口滑出/换代/热更）或缺输出字段不再翻成"本轮统计不可用"，加 det 诊断 → v87 设置页排除：协调器/findComposer/deepFind/track 按 [data-testid="settings-page"] 祖先排除设置表单编辑框（MCP「请求头」textarea 被当聊天输入框、条挂进表单卡片）→ v88 工具动词「正在运行子智能体」压成「子代理运行中」（与桌面 v97 同文案；子代理速率估算为桌面桥专属，Web 无此链路） → v89 tooltip 伪边界 leave 过滤（与桌面 v99 同款）：Chrome 悬停链收缩/重算会补发 DOM 内部的 documentElement/tip mouseleave（格内 万↔1 空隙悬停、tooltip 本体停留均可复现弹出即灭），tipLeaveAt 贴边判定后取触发时刻最深 :hover 元素甄别（事件坐标/relatedTarget 实测不可信）——仍悬停在本档具体元素上即伪 leave 一律忽略，hover 链截断到 body/iframe/空链（空档区/已进子上下文/甩出窗口）维持 v47 分流 → v90 思考中计时随语言本地化（中文「1 时 2 分 3 秒」/英文「1 h 2 m 3 s」，与桌面 v99 同文案；Web 无富文本 turn-text 链——__zusagePluginRequests 仅桌面主进程消费，本端回答末尾恒为简化占位行、无采样时刻，不受 token_rate.py 改版影响）→ v91 思考计时锚定 turnHeader.startedAt（与桌面 v116 同源语义：宿主创建 header 恒写入 startedAt，重绑不清零；缺字段或时钟未及起点回退首观测起算） → v92 思考计时中文全紧邻「7分16秒」（与桌面 v125 同款，时段间空格去除；英文「7 m 16 s」不动） → v93 思考计时英文数字与单位紧邻「7m 16s」（与桌面 v126 同款，时段间留空格） → v94 tok/s 速度十档色（与桌面 v127 同表同语义：TPS_BANDS 唯一事实源，原始值分档；150 起蓝紫系纯色、≥2000 Ultra 蓝紫渐变+✦ 星点，估算态与完成态同表分档，无效值中性 dim 或不渲染 chip，tooltip 档位行改动态，另加静态「颜色对照」图例（十档数值↔颜色升序一览，随主题切换））   // 悬停 ⚙ 面板可见；版本号随部署代际递增
     var instanceDisposed = false, heavyTimer = 0, frame = 0, themeObserver = null;
     var globalListeners = [];
     function listenGlobal(target, type, fn, capture) {
@@ -2357,8 +2357,16 @@
     }
     function positionSubPanel() {
       if (!subPanel.classList.contains("open")) return;
-      /* v101：compact 下隐藏条里的 .zu-sub 仍在 DOM（rect 全零）会抢锚把面板钉到左上角——chip 优先 */
-      var item = state.theme === "compact" && tpsChipCache && tpsChipCache.isConnected ? tpsChipCache : bar.querySelector(".zu-sub");
+      /* v101：compact 下隐藏条里的 .zu-sub 仍在 DOM（rect 全零）会抢锚把面板钉到左上角——chip 优先。
+       * v103：chip 已被摘除（会话切到无速率样本）时面板保持原位不重定位——回落到隐藏条内的
+       * .zu-sub 同样是全零矩形，会把开着面板钉到视口左上角（与桌面 v177 同批修复）。 */
+      var item = null;
+      if (state.theme === "compact") {
+        if (!(tpsChipCache && tpsChipCache.isConnected)) return;
+        item = tpsChipCache;
+      } else {
+        item = bar.querySelector(".zu-sub");
+      }
       if (!item) return;
       var ir = item.getBoundingClientRect();
       var width = subPanel.offsetWidth;

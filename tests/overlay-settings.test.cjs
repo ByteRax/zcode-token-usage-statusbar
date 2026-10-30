@@ -266,6 +266,24 @@ test('update badge dots follow fingerprints, the seen marker and the notice swit
   store['zusage3.updSeen'] = '?';
   vm.runInNewContext('syncUpdate();', context);
   assert.equal(gearDot.style.display, 'none');
+  // v177 分量级比较：已读指纹含「待重启|版本」两分量，装完后 auto check 把 phase 推回
+  // current，latestVersion 分量退出指纹——整体等值比较会失配误复亮；seen 覆盖全部分量则不复亮
+  store['zusage3.updSeen'] = '171.5|1.5.8';
+  state.pluginUpdate = { supported: true, restartRequired: true, markerAt: 171.5, phase: 'current' };
+  vm.runInNewContext('syncUpdate();', context);
+  assert.equal(gearDot.style.display, 'none', 'v177: a component exiting the fingerprint must not re-light');
+  state.pluginUpdate = { supported: true, restartRequired: true, markerAt: 171.5, phase: 'available', latestVersion: '1.5.9' };
+  vm.runInNewContext('syncUpdate();', context);
+  assert.equal(gearDot.style.display, 'block', 'v177: a new fingerprint component re-lights');
+  // v177：ack 幂等早退前先收敛本窗口红点（漏收 storage 事件的窗口靠它自愈），且不冲掉更富的已读指纹
+  gearDot.style.display = 'block';
+  navDot.style.display = 'block';
+  store['zusage3.updSeen'] = '?|9';
+  state.pluginUpdate = { supported: true, restartRequired: true, markerAt: 9, phase: 'current' };
+  vm.runInNewContext('ackUpdateDots();', context);
+  assert.equal(gearDot.style.display, 'none', 'v177: covered ack still converges the local dot');
+  assert.equal(navDot.style.display, 'none', 'v177: covered ack converges the nav dot too');
+  assert.equal(store['zusage3.updSeen'], '?|9', 'v177: covered ack keeps the richer seen fingerprint');
   // restartNotice=false：任何待办都不亮（面板开关关闭红点通道）
   state.restartNotice = false;
   state.pluginUpdate = { supported: true, restartRequired: true, markerAt: 5, phase: 'available', latestVersion: '9' };
@@ -595,6 +613,7 @@ test('万/亿 toggle change persists and re-renders without touching display ite
   const context = {
     panel: { addEventListener: (_, fn) => { handler = fn; } },
     state: { ctxOv: '', show: { ctx: 1 }, cnNum: 1 },
+    richTextUnitEpoch: 7, richTextAttempts: { t1: 2 },   // v177：epoch 守卫与 forceKmb 同款
     persist: () => { saved++; }, renderAll: () => { renders++; },
   };
   vm.runInNewContext(changeSource, context);
@@ -603,12 +622,38 @@ test('万/亿 toggle change persists and re-renders without touching display ite
   assert.equal(context.state.cnNum, 0);
   assert.equal(saved, 1);
   assert.equal(renders, 1);
+  assert.equal(context.richTextUnitEpoch, 8, 'v177: in-flight old-unit turn-text replies are rejected via epoch bump');
+  assert.equal(Object.keys(context.richTextAttempts).length, 0, 'v177: retry budget reset with the epoch');
   assert.deepEqual(context.state.show, { ctx: 1 });   // 必须独立分支：落入 data-k 分支会写 show[undefined]
   handler({ target: target(true) });
   assert.equal(context.state.cnNum, 1);
   assert.equal(saved, 2);
   assert.equal(renders, 2);
+  assert.equal(context.richTextUnitEpoch, 9, 'v177: opposite direction bumps again');
   assert.deepEqual(context.state.show, { ctx: 1 });
+});
+
+test('language toggle bumps the rich-text unit epoch too (v177: third unit switch)', () => {
+  // cnUnits() 依赖 state.lang：zh↔en 翻转 turn-text 的 cn 分量，在途旧单位回复必须被拒
+  const changeSource = extract('    panel.addEventListener("change",', '    listenGlobal(document, "mousedown",');
+  let handler;
+  const context = {
+    panel: { addEventListener: (_, fn) => { handler = fn; }, querySelector: () => ({ focus() {} }) },
+    state: { lang: 'zh', ctxOv: '', show: {}, cnNum: 1 },
+    richTextUnitEpoch: 3, richTextAttempts: { t9: 1 },
+    persist() {}, buildPanel() {}, rebuildExcBubble() {}, renderAll() {},
+    gear: { setAttribute() {} },
+    L: (zh) => zh,
+  };
+  vm.runInNewContext(changeSource, context);
+  handler({ target: { name: 'zu-lang', value: 'en', type: 'radio', classList: { contains: () => false } } });
+  assert.equal(context.state.lang, 'en');
+  assert.equal(context.richTextUnitEpoch, 4, 'zh→en flips the cn component of turn-text requests');
+  assert.equal(Object.keys(context.richTextAttempts).length, 0);
+  handler({ target: { name: 'zu-lang', value: 'en', type: 'radio', classList: { contains: () => false } } });   // 同语言重复触发：不换代号
+  assert.equal(context.richTextUnitEpoch, 4);
+  handler({ target: { name: 'zu-lang', value: 'zh', type: 'radio', classList: { contains: () => false } } });
+  assert.equal(context.richTextUnitEpoch, 5, 'en→zh bumps again');
 });
 
 test('the update section goes straight from the buttons to the status line without the retired reinstall prompt', () => {
@@ -1164,19 +1209,21 @@ test('compact theme: stored value is read on boot, normalized on write, and pers
   assert.equal(ctx.state.theme, 'pill');
 });
 
-test('relaunch two-step confirm state machine executes for real (v172)', () => {
-  const clickSource = extract('    panel.addEventListener("click",', '    gear.addEventListener("click",');
+test('relaunch two-step confirm state machine executes for real (v172, v177 ack timeout)', () => {
+  const clickSource = extract('    var relaunchAckTimer = 0;', '    gear.addEventListener("click",');
   const button = { dataset: { update: "relaunch", armed: "" }, disabled: false, textContent: "重启 ZCode",
     classList: { add() {}, remove() {} } };
+  const statusEl = { textContent: "" };
   const requested = [];
-  let timeoutFn = null;
+  let sendReceipt = null;
+  const timers = [];
   const context = {
     state: { pluginUpdate: { restartRequired: true }, settingsSec: "update" },
-    panel: { querySelector: () => null, addEventListener: (_, fn) => { context.__click = fn; } },
+    panel: { querySelector: () => statusEl, addEventListener: (_, fn) => { context.__click = fn; } },
     L: (zh) => zh,
-    pluginRequest: (action) => { requested.push(action); },
-    setTimeout: (fn) => { timeoutFn = fn; return 1; },
-    clearTimeout: () => { timeoutFn = null; },
+    pluginRequest: (action, payload, cb) => { requested.push(action); sendReceipt = cb; },
+    setTimeout: (fn) => { timers.push(fn); return timers.length; },
+    clearTimeout: (n) => { timers[n - 1] = null; },
   };
   vm.runInNewContext(clickSource, context);
   assert.equal(typeof context.__click, "function");
@@ -1185,14 +1232,28 @@ test('relaunch two-step confirm state machine executes for real (v172)', () => {
   assert.equal(button.dataset.armed, "1");
   assert.equal(button.textContent, "再次点击确认重启");
   assert.deepEqual(requested, []);
-  assert.ok(typeof timeoutFn === "function", "确认态有 5s 超时兜底");
+  assert.equal(timers.length, 1, "确认态有 5s 超时兜底");
   context.__click({ target: hit() });   // 二点：发送 relaunch 并立即恢复文案（旧主进程无回执也不卡）
   assert.deepEqual(requested, ["relaunch"]);
   assert.equal(button.dataset.armed, "0");
   assert.equal(button.textContent, "重启 ZCode");
+  assert.equal(timers.length, 2, "v177：发出后挂 4s 回执超时");
+  assert.equal(statusEl.textContent, "", "有回执前不误报");
+  // v177：无回执路径（旧主进程 splice 后静默丢弃）——超时明确提示手动完全退出
+  timers[1]();
+  assert.match(statusEl.textContent, /旧版|manually/);
+  // 正常主进程 300ms 内回 ok：清掉超时（timers[1] 已置 null，再触发不再改写状态）
+  timers[1] = null;
+  assert.equal(typeof sendReceipt, "function");
+  statusEl.textContent = "";
+  sendReceipt({ ok: true });
+  assert.equal(statusEl.textContent, "", "ok 回执不改写状态区");
+  sendReceipt({ ok: false, error: "update in progress" });
+  assert.match(statusEl.textContent, /重启请求失败/);
   context.__click({ target: hit() });   // 再次进入确认态
   assert.equal(button.dataset.armed, "1");
-  timeoutFn();                           // 5s 超时：还原文案与 armed
+  assert.equal(timers.length, 3);
+  timers[2]();                           // 5s 超时：还原文案与 armed
   assert.equal(button.dataset.armed, "0");
   assert.equal(button.textContent, "重启 ZCode");
 });

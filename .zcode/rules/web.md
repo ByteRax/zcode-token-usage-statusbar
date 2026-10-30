@@ -10,6 +10,7 @@ Web 是单独部署方案，与桌面链独立；不是 npm 前端工程。
 - Web 有独立的 `remote:ssh:` 身份白名单（多服务器路由，sid → workspaceIdentity）。
 - **精简模式（v95，与桌面 v146 同期、独立实现）**：`zusage3.theme` 为 Web 首个主题键，仅 `default`/`compact` 两档（无药丸），非法值回退 default；设置面板通用区用 `.zu-settings-langs` 同款视觉放 radio。条永久 `display:none` 保留 DOM（样式/自绘 tip 基建随条），`heavy()` 保条、`track()` 早退；`.zu-tsb` 速率与 `.zu-ctxb` 上下文 chip 挂 `group/toolbar` 的 `[data-composer-trailing-actions]` 左侧（锚缺失退行尾，位置每拍兜回，无有效速率样本不渲染）。chips 在条外：悬停由 document mousemove 的 chip 分支接进**实例自绘 tip**（摘要行受逐格开关控制、子代理行点击开明细、「打开设置」按钮走齿轮开启分支）；面板/子面板精简下锚输入卡/chip。Web 无 git/额度/重置卡链（sidecar 无凭据），精简模式不扩这些边界。
 - Web 无 `turn-text` 消费链（sidecar 只 spawn `readonly-guard.py`）：回答末尾恒为简化占位行、无 ⏱ 采样时刻——改桌面统计行格式不得声称 Web 同步变化。
+- **与桌面的已知显示差异（截至 web v103）**：桌面 v158/v160 的 Skill「技能名·执行中」状态词与状态词流光未移植 Web（Web tracker 无 `inputText` 投影，移植需先动 tracker）；桌面 v168/v170 的计数万/亿口径 Web 未跟进——格面/tooltip/精简摘要计数保持原值，只有 token 数走 `fmt`。属刻意暂缓而非遗漏，同步前先按共享语义变化分别评估两边。
 - 用户可见文案跟随宿主语言；同样引用 `--font-mono`/`--ui-font-size` 令牌（带硬编码回退），但布局与显示项配置和桌面独立。
 
 ## 2. 部署契约

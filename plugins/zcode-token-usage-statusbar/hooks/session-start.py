@@ -3,7 +3,8 @@
 """SessionStart hook：stdin 收 hook 入参 JSON，stdout 只输出 hook 协议 JSON。
 
 职责（由 overlay_install.run_hook 承担，见其 docstring）：
-  同步运行时文件（热更新）；已注入则按需提醒重启，未注入则按开关自动安装或每次提示安装。
+  同步运行时文件（热更新）；未注入即自动安装（恒开，v172 起无开关）；待重启/待更新
+  不再注入会话文字，由 ⚙ 齿轮红点承载（plugin-updater 推送 markerAt 代际）。
 任何异常都转成合法 JSON 输出，绝不抛出、绝不影响会话。
 """
 import json

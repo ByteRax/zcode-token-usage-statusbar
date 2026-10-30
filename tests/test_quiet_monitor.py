@@ -440,6 +440,55 @@ class QuietMonitorTests(unittest.TestCase):
                 self.assertIn("可随时关闭", output)
                 self.assertNotIn("保持本窗口", output)
 
+    def test_visible_monitor_footer_is_benign_once_finalize_finished(self):
+        # review 2026-10-31：提权 monitor 完成 asar 替换后的成功屏上，「收尾未完成前请
+        # 保持本窗口开启」是自相矛盾文案——收尾已落定，关窗不再影响结果。
+        self.pending()
+        draws = []
+        def stop(_):
+            raise KeyboardInterrupt
+        with mock.patch.dict(sys.modules, {"patch_install": self.patch}), \
+                mock.patch.object(self.monitor, "QUIET", False), \
+                mock.patch.object(sys, "argv", ["install_monitor.py", "0"]), \
+                mock.patch.object(self.monitor, "zcode_pids", return_value=set()), \
+                mock.patch.object(self.patch, "is_elevated", return_value=True), \
+                mock.patch.object(self.patch, "self_check", return_value=True), \
+                mock.patch.object(self.monitor, "draw", side_effect=lambda lines: draws.append("\n".join(lines))), \
+                mock.patch.object(self.monitor.time, "sleep", side_effect=stop):
+            with self.assertRaises(KeyboardInterrupt):
+                self.monitor.main()
+        self.assertTrue(draws, "at least one frame drawn")
+        output = draws[-1]
+        self.assertIn("替换完成", output)
+        self.assertIn("可随时关闭", output)
+        self.assertNotIn("保持本窗口", output)
+
+    def test_visible_monitor_footer_is_benign_when_finalize_denied(self):
+        # finalize_denied 终屏的指引是「以管理员身份重跑安装」：本窗口已确定无法收尾，
+        # 「保持本窗口开启」在此既矛盾又错误（关窗不会停止任何东西）。
+        self.pending()
+        draws = []
+        def stop(_):
+            raise KeyboardInterrupt
+        with mock.patch.dict(sys.modules, {"patch_install": self.patch}), \
+                mock.patch.object(self.monitor, "QUIET", False), \
+                mock.patch.object(sys, "argv", ["install_monitor.py", "0"]), \
+                mock.patch.object(self.monitor, "zcode_pids", return_value=set()), \
+                mock.patch.object(self.patch, "is_elevated", return_value=True), \
+                mock.patch.object(self.patch, "target_writable", return_value=False), \
+                mock.patch.object(self.patch, "self_check", return_value=True), \
+                mock.patch.object(self.patch.os, "replace",
+                                  side_effect=PermissionError("protected directory")), \
+                mock.patch.object(self.monitor, "draw", side_effect=lambda lines: draws.append("\n".join(lines))), \
+                mock.patch.object(self.monitor.time, "sleep", side_effect=stop):
+            with self.assertRaises(KeyboardInterrupt):
+                self.monitor.main()
+        self.assertTrue(draws, "at least one frame drawn")
+        output = draws[-1]
+        self.assertIn("管理员", output)
+        self.assertIn("可随时关闭", output)
+        self.assertNotIn("保持本窗口", output)
+
     def test_visible_oserror_retries_cached_validation_until_success(self):
         self.pending()
         replace = self.patch.os.replace
