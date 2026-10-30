@@ -269,7 +269,8 @@ async function downloadRelease(release, python, fetch = fetchBytes, runUnpack = 
       "--version", release.version, "--output", output]);
     // 解包器返回 Path.resolve() 后的真实路径；Windows 上 os.tmpdir() 可能是 8.3 短路径
     // （fs.realpathSync 不展开短名），两侧字符串不等但指向同一目录，须按真实路径归一后再比。
-    // 解析失败回退原值，退回严格字符串比较，不放宽校验。
+    // 校验锚点语义由此是「同一真实目录」，不再是字符串形态；解析失败回退原值，
+    // 退回严格字符串比较，不放宽校验。
     const canonical = (value) => { try { return fs.realpathSync.native(value); } catch (e) { return value; } };
     if (!result || result.ok !== true || result.version !== release.version ||
         canonical(result.marketplaceRoot) !== canonical(output) ||

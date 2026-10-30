@@ -257,6 +257,20 @@ test("unpack result paths compare by resolved identity, tolerating Windows 8.3 s
     return { ok: true, version: f.selected.version, marketplaceRoot: stray,
       pluginRoot: path.join(stray, "plugins", "zcode-token-usage-statusbar") };
   }), /无效/);
+  // 两侧路径都不存在时回退严格字符串比较，捏造的路径（含靠 ../ 折叠伪装期望值的写法）不得借归一化混入。
+  const expectedPlugin = (output) => path.join(output, "plugins", "zcode-token-usage-statusbar");
+  const ghosts = [
+    (output) => ({ marketplaceRoot: path.join(path.dirname(output), "ghost"),
+      pluginRoot: expectedPlugin(output) }),
+    (output) => ({ marketplaceRoot: output,
+      pluginRoot: expectedPlugin(output) + path.sep + ".." + path.sep + "zcode-token-usage-statusbar" }),
+  ];
+  for (const ghost of ghosts) {
+    await assert.rejects(downloadRelease(f.selected, "python3", f.fetch, async (command, args) => {
+      const output = args[args.indexOf("--output") + 1];
+      return { ok: true, version: f.selected.version, ...ghost(output) };
+    }), /无效/);
+  }
 });
 test("channel rejects untrusted repositories and duplicate known marketplace identities without writing", (t) => {
   for (const source of [{ source: "github", repo: "owner/repo#main" }, { source: "git", url: "https://token@github.com/owner/repo.git" },
