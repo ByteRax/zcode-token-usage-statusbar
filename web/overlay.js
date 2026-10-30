@@ -943,7 +943,7 @@
   /* ---------- 实例工厂（v61.1）：一个 pane 一套 条/面板/气泡/tooltip/定位循环。
    * slot 0 保留 #zusage-bar/#zusage-tip 兼容 id（泵热更新按它清理），其余实例仅类名。 */
   function spawnInstance(pid, slot) {
-    var VERSION = "v96";   // v96 精简速率 tooltip「打开设置」按钮右对齐（桌面 v148 同款）：footer 合并为单行 flex，说明文本占剩余宽、按钮推至最右v95 精简模式（theme 两档 default/compact，与桌面 v146 同期落地、独立实现）：条永久隐藏保留 DOM（heavy 保条对抗 React 清子树、面板/子面板改锚输入卡与 chip）；生成速度 .zu-tsb 与上下文容量 .zu-ctxb 挂工具行 trailing-actions 左侧（锚缺失退行尾、位置每拍兜回、签名幂等、无有效样本不渲染）；tooltip 复用实例自绘 tip（document mousemove 增 chip 分支接住条外悬停）= 速度读数+状态条摘要（逐格开关继续生效、子代理行点击开明细）+「打开设置」按钮；设置面板通用区新增样式 radiov82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v84 主标签页远端路由（工作台分组唯一主绑定上报 + 迟到载荷守卫，issue #30）→ v85 回答末尾统计行跟随万/亿开关 + tok→token → v86 历史轮 tracker 无记录（窗口滑出/换代/热更）或缺输出字段不再翻成"本轮统计不可用"，加 det 诊断 → v87 设置页排除：协调器/findComposer/deepFind/track 按 [data-testid="settings-page"] 祖先排除设置表单编辑框（MCP「请求头」textarea 被当聊天输入框、条挂进表单卡片）→ v88 工具动词「正在运行子智能体」压成「子代理运行中」（与桌面 v97 同文案；子代理速率估算为桌面桥专属，Web 无此链路） → v89 tooltip 伪边界 leave 过滤（与桌面 v99 同款）：Chrome 悬停链收缩/重算会补发 DOM 内部的 documentElement/tip mouseleave（格内 万↔1 空隙悬停、tooltip 本体停留均可复现弹出即灭），tipLeaveAt 贴边判定后取触发时刻最深 :hover 元素甄别（事件坐标/relatedTarget 实测不可信）——仍悬停在本档具体元素上即伪 leave 一律忽略，hover 链截断到 body/iframe/空链（空档区/已进子上下文/甩出窗口）维持 v47 分流 → v90 思考中计时随语言本地化（中文「1 时 2 分 3 秒」/英文「1 h 2 m 3 s」，与桌面 v99 同文案；Web 无富文本 turn-text 链——__zusagePluginRequests 仅桌面主进程消费，本端回答末尾恒为简化占位行、无采样时刻，不受 token_rate.py 改版影响）→ v91 思考计时锚定 turnHeader.startedAt（与桌面 v116 同源语义：宿主创建 header 恒写入 startedAt，重绑不清零；缺字段或时钟未及起点回退首观测起算） → v92 思考计时中文全紧邻「7分16秒」（与桌面 v125 同款，时段间空格去除；英文「7 m 16 s」不动） → v93 思考计时英文数字与单位紧邻「7m 16s」（与桌面 v126 同款，时段间留空格） → v94 tok/s 速度十档色（与桌面 v127 同表同语义：TPS_BANDS 唯一事实源，原始值分档；150 起蓝紫系纯色、≥2000 Ultra 蓝紫渐变+✦ 星点，估算态与完成态同表分档，无效值中性 dim 或不渲染 chip，tooltip 档位行改动态，另加静态「颜色对照」图例（十档数值↔颜色升序一览，随主题切换））   // 悬停 ⚙ 面板可见；版本号随部署代际递增
+    var VERSION = "v97";   // v97 精简速率 tooltip 摘要行单位 tok→token（桌面 v149 同款）v96 精简速率 tooltip「打开设置」按钮右对齐（桌面 v148 同款）：footer 合并为单行 flex，说明文本占剩余宽、按钮推至最右v95 精简模式（theme 两档 default/compact，与桌面 v146 同期落地、独立实现）：条永久隐藏保留 DOM（heavy 保条对抗 React 清子树、面板/子面板改锚输入卡与 chip）；生成速度 .zu-tsb 与上下文容量 .zu-ctxb 挂工具行 trailing-actions 左侧（锚缺失退行尾、位置每拍兜回、签名幂等、无有效样本不渲染）；tooltip 复用实例自绘 tip（document mousemove 增 chip 分支接住条外悬停）= 速度读数+状态条摘要（逐格开关继续生效、子代理行点击开明细）+「打开设置」按钮；设置面板通用区新增样式 radiov82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v84 主标签页远端路由（工作台分组唯一主绑定上报 + 迟到载荷守卫，issue #30）→ v85 回答末尾统计行跟随万/亿开关 + tok→token → v86 历史轮 tracker 无记录（窗口滑出/换代/热更）或缺输出字段不再翻成"本轮统计不可用"，加 det 诊断 → v87 设置页排除：协调器/findComposer/deepFind/track 按 [data-testid="settings-page"] 祖先排除设置表单编辑框（MCP「请求头」textarea 被当聊天输入框、条挂进表单卡片）→ v88 工具动词「正在运行子智能体」压成「子代理运行中」（与桌面 v97 同文案；子代理速率估算为桌面桥专属，Web 无此链路） → v89 tooltip 伪边界 leave 过滤（与桌面 v99 同款）：Chrome 悬停链收缩/重算会补发 DOM 内部的 documentElement/tip mouseleave（格内 万↔1 空隙悬停、tooltip 本体停留均可复现弹出即灭），tipLeaveAt 贴边判定后取触发时刻最深 :hover 元素甄别（事件坐标/relatedTarget 实测不可信）——仍悬停在本档具体元素上即伪 leave 一律忽略，hover 链截断到 body/iframe/空链（空档区/已进子上下文/甩出窗口）维持 v47 分流 → v90 思考中计时随语言本地化（中文「1 时 2 分 3 秒」/英文「1 h 2 m 3 s」，与桌面 v99 同文案；Web 无富文本 turn-text 链——__zusagePluginRequests 仅桌面主进程消费，本端回答末尾恒为简化占位行、无采样时刻，不受 token_rate.py 改版影响）→ v91 思考计时锚定 turnHeader.startedAt（与桌面 v116 同源语义：宿主创建 header 恒写入 startedAt，重绑不清零；缺字段或时钟未及起点回退首观测起算） → v92 思考计时中文全紧邻「7分16秒」（与桌面 v125 同款，时段间空格去除；英文「7 m 16 s」不动） → v93 思考计时英文数字与单位紧邻「7m 16s」（与桌面 v126 同款，时段间留空格） → v94 tok/s 速度十档色（与桌面 v127 同表同语义：TPS_BANDS 唯一事实源，原始值分档；150 起蓝紫系纯色、≥2000 Ultra 蓝紫渐变+✦ 星点，估算态与完成态同表分档，无效值中性 dim 或不渲染 chip，tooltip 档位行改动态，另加静态「颜色对照」图例（十档数值↔颜色升序一览，随主题切换））   // 悬停 ⚙ 面板可见；版本号随部署代际递增
     var instanceDisposed = false, heavyTimer = 0, frame = 0, themeObserver = null;
     var globalListeners = [];
     function listenGlobal(target, type, fn, capture) {
@@ -2432,22 +2432,22 @@
       }
       out += ttH(L("状态条摘要", "Bar summary"));
       if (state.show.turn) {
-        out += ttRow(L("本轮", "Latest turn"), fmt(lt.total) + L(" tok · ", " tok · ") + (lt.requests || 0) + L("次", " req"));
+        out += ttRow(L("本轮", "Latest turn"), fmt(lt.total) + L(" token · ", " token · ") + (lt.requests || 0) + L("次", " req"));
       }
       if (state.show.win) {
-        out += ttRow(L("会话累计", "Session"), fmt(sess.total) + L(" tok · ", " tok · ") + (sess.requests || 0) + L("次", " req"));
+        out += ttRow(L("会话累计", "Session"), fmt(sess.total) + L(" token · ", " token · ") + (sess.requests || 0) + L("次", " req"));
       }
       if (state.show.tools) {
         var tls = view.tools || { total: 0, errors: 0 };
         out += ttRow(L("工具调用", "Tool calls"), (tls.total || 0) + (tls.errors ? L("（错误 ", " (errors ") + tls.errors + "）" : ""));
       }
       if (state.show.today) {
-        out += ttRow(L("今日合计", "Today"), fmt(today.total) + L(" tok · ", " tok · ") + (today.requests || 0) + L("次", " req"));
+        out += ttRow(L("今日合计", "Today"), fmt(today.total) + L(" token · ", " token · ") + (today.requests || 0) + L("次", " req"));
       }
       if (state.show.sub) {
         var sa = view.sub || { total: 0, active: false };
         out += '<div class="rt-row tps-subrow"><b>' + L("子代理", "Sub-agents") + '</b><span>' +
-          ttEsc(fmt(sa.total || 0) + L(" tok", " tok") + (sa.active ? L(" · 运行中", " · running") : "") + L(" · 点击查看明细", " · click for details")) + "</span></div>";
+          ttEsc(fmt(sa.total || 0) + L(" token", " token") + (sa.active ? L(" · 运行中", " · running") : "") + L(" · 点击查看明细", " · click for details")) + "</span></div>";
       }
       out += tpsBandLegend() +
         '<div class="rt-note tps-note"><span class="tps-note-t">' + L("精简模式：状态条已收进工具行，悬停各图标查看明细。", "Compact mode: the status bar lives in the toolbar — hover the chips for details.") +
