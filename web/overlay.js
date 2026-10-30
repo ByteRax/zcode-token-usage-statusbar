@@ -525,13 +525,13 @@
    * 而不是当成"确定性地算出了没有速度"。 */
   function zuBarSpeedView(stats, charsPerToken) {
     if (!stats.complete) {
-      // 工具执行期间优先显示与消息流同款的状态词（正在读取/正在编辑…+已耗时），
+      // 工具执行期间优先显示与消息流同款的状态词（读取中/编辑中…+已耗时），
       // 让悬浮条与 toolCall 行状态对应；没有工具在跑才退回字符估算/存活心跳。
       if (stats.runningTool) {
         var verb = zuToolVerb(stats.runningTool.name);
         var st = stats.runningTool.startedAt;
         if (typeof st === "number" && st > 0 && Date.now() >= st)
-          verb += " " + ((Date.now() - st) / 1000).toFixed(1) + "s";   // v151：用户规格去中点（工作中 45.2s）
+          verb += " " + ((Date.now() - st) / 1000).toFixed(1) + "s";   // v151 去中点 + v153 执行中（用户规格）
         return { cls: "dim", text: verb, phase: "tool" };
       }
       // 无工具且无可测字符流（首段未流出/字符停滞>2s，多数模型思考期对桥不可见，
@@ -943,7 +943,7 @@
   /* ---------- 实例工厂（v61.1）：一个 pane 一套 条/面板/气泡/tooltip/定位循环。
    * slot 0 保留 #zusage-bar/#zusage-tip 兼容 id（泵热更新按它清理），其余实例仅类名。 */
   function spawnInstance(pid, slot) {
-    var VERSION = "v101";   // v101 工具动词全面改「X中」体例（桌面 v154 同款）v100 工具执行状态词定稿（桌面 v153 同款）：工作中 → 执行中v99 工具动词 Read「正在读取」→「读取中」（桌面 v152 同款）v98 工具状态词改版（桌面 v151 同款）：Bash「正在执行」→「工作中」、未知工具回退同改、工具计时去中点v97 精简速率 tooltip 摘要行单位 tok→token（桌面 v149 同款）v96 精简速率 tooltip「打开设置」按钮右对齐（桌面 v148 同款）：footer 合并为单行 flex，说明文本占剩余宽、按钮推至最右v95 精简模式（theme 两档 default/compact，与桌面 v146 同期落地、独立实现）：条永久隐藏保留 DOM（heavy 保条对抗 React 清子树、面板/子面板改锚输入卡与 chip）；生成速度 .zu-tsb 与上下文容量 .zu-ctxb 挂工具行 trailing-actions 左侧（锚缺失退行尾、位置每拍兜回、签名幂等、无有效样本不渲染）；tooltip 复用实例自绘 tip（document mousemove 增 chip 分支接住条外悬停）= 速度读数+状态条摘要（逐格开关继续生效、子代理行点击开明细）+「打开设置」按钮；设置面板通用区新增样式 radiov82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v84 主标签页远端路由（工作台分组唯一主绑定上报 + 迟到载荷守卫，issue #30）→ v85 回答末尾统计行跟随万/亿开关 + tok→token → v86 历史轮 tracker 无记录（窗口滑出/换代/热更）或缺输出字段不再翻成"本轮统计不可用"，加 det 诊断 → v87 设置页排除：协调器/findComposer/deepFind/track 按 [data-testid="settings-page"] 祖先排除设置表单编辑框（MCP「请求头」textarea 被当聊天输入框、条挂进表单卡片）→ v88 工具动词「正在运行子智能体」压成「子代理运行中」（与桌面 v97 同文案；子代理速率估算为桌面桥专属，Web 无此链路） → v89 tooltip 伪边界 leave 过滤（与桌面 v99 同款）：Chrome 悬停链收缩/重算会补发 DOM 内部的 documentElement/tip mouseleave（格内 万↔1 空隙悬停、tooltip 本体停留均可复现弹出即灭），tipLeaveAt 贴边判定后取触发时刻最深 :hover 元素甄别（事件坐标/relatedTarget 实测不可信）——仍悬停在本档具体元素上即伪 leave 一律忽略，hover 链截断到 body/iframe/空链（空档区/已进子上下文/甩出窗口）维持 v47 分流 → v90 思考中计时随语言本地化（中文「1 时 2 分 3 秒」/英文「1 h 2 m 3 s」，与桌面 v99 同文案；Web 无富文本 turn-text 链——__zusagePluginRequests 仅桌面主进程消费，本端回答末尾恒为简化占位行、无采样时刻，不受 token_rate.py 改版影响）→ v91 思考计时锚定 turnHeader.startedAt（与桌面 v116 同源语义：宿主创建 header 恒写入 startedAt，重绑不清零；缺字段或时钟未及起点回退首观测起算） → v92 思考计时中文全紧邻「7分16秒」（与桌面 v125 同款，时段间空格去除；英文「7 m 16 s」不动） → v93 思考计时英文数字与单位紧邻「7m 16s」（与桌面 v126 同款，时段间留空格） → v94 tok/s 速度十档色（与桌面 v127 同表同语义：TPS_BANDS 唯一事实源，原始值分档；150 起蓝紫系纯色、≥2000 Ultra 蓝紫渐变+✦ 星点，估算态与完成态同表分档，无效值中性 dim 或不渲染 chip，tooltip 档位行改动态，另加静态「颜色对照」图例（十档数值↔颜色升序一览，随主题切换））   // 悬停 ⚙ 面板可见；版本号随部署代际递增
+    var VERSION = "v102";   // v102 审查修复批（桌面 v155 同款）：子面板 chip 优先锚/面板周期跟随/悬停不重建/跨代采纳统一挂装+focus blur/归属校验v101 工具动词全面改「X中」体例（桌面 v154 同款）v100 工具执行状态词定稿（桌面 v153 同款）：工作中 → 执行中v99 工具动词 Read「正在读取」→「读取中」（桌面 v152 同款）v98 工具状态词改版（桌面 v151 同款）：Bash「正在执行」→「工作中」、未知工具回退同改、工具计时去中点v97 精简速率 tooltip 摘要行单位 tok→token（桌面 v149 同款）v96 精简速率 tooltip「打开设置」按钮右对齐（桌面 v148 同款）：footer 合并为单行 flex，说明文本占剩余宽、按钮推至最右v95 精简模式（theme 两档 default/compact，与桌面 v146 同期落地、独立实现）：条永久隐藏保留 DOM（heavy 保条对抗 React 清子树、面板/子面板改锚输入卡与 chip）；生成速度 .zu-tsb 与上下文容量 .zu-ctxb 挂工具行 trailing-actions 左侧（锚缺失退行尾、位置每拍兜回、签名幂等、无有效样本不渲染）；tooltip 复用实例自绘 tip（document mousemove 增 chip 分支接住条外悬停）= 速度读数+状态条摘要（逐格开关继续生效、子代理行点击开明细）+「打开设置」按钮；设置面板通用区新增样式 radiov82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v84 主标签页远端路由（工作台分组唯一主绑定上报 + 迟到载荷守卫，issue #30）→ v85 回答末尾统计行跟随万/亿开关 + tok→token → v86 历史轮 tracker 无记录（窗口滑出/换代/热更）或缺输出字段不再翻成"本轮统计不可用"，加 det 诊断 → v87 设置页排除：协调器/findComposer/deepFind/track 按 [data-testid="settings-page"] 祖先排除设置表单编辑框（MCP「请求头」textarea 被当聊天输入框、条挂进表单卡片）→ v88 工具动词「正在运行子智能体」压成「子代理运行中」（与桌面 v97 同文案；子代理速率估算为桌面桥专属，Web 无此链路） → v89 tooltip 伪边界 leave 过滤（与桌面 v99 同款）：Chrome 悬停链收缩/重算会补发 DOM 内部的 documentElement/tip mouseleave（格内 万↔1 空隙悬停、tooltip 本体停留均可复现弹出即灭），tipLeaveAt 贴边判定后取触发时刻最深 :hover 元素甄别（事件坐标/relatedTarget 实测不可信）——仍悬停在本档具体元素上即伪 leave 一律忽略，hover 链截断到 body/iframe/空链（空档区/已进子上下文/甩出窗口）维持 v47 分流 → v90 思考中计时随语言本地化（中文「1 时 2 分 3 秒」/英文「1 h 2 m 3 s」，与桌面 v99 同文案；Web 无富文本 turn-text 链——__zusagePluginRequests 仅桌面主进程消费，本端回答末尾恒为简化占位行、无采样时刻，不受 token_rate.py 改版影响）→ v91 思考计时锚定 turnHeader.startedAt（与桌面 v116 同源语义：宿主创建 header 恒写入 startedAt，重绑不清零；缺字段或时钟未及起点回退首观测起算） → v92 思考计时中文全紧邻「7分16秒」（与桌面 v125 同款，时段间空格去除；英文「7 m 16 s」不动） → v93 思考计时英文数字与单位紧邻「7m 16s」（与桌面 v126 同款，时段间留空格） → v94 tok/s 速度十档色（与桌面 v127 同表同语义：TPS_BANDS 唯一事实源，原始值分档；150 起蓝紫系纯色、≥2000 Ultra 蓝紫渐变+✦ 星点，估算态与完成态同表分档，无效值中性 dim 或不渲染 chip，tooltip 档位行改动态，另加静态「颜色对照」图例（十档数值↔颜色升序一览，随主题切换））   // 悬停 ⚙ 面板可见；版本号随部署代际递增
     var instanceDisposed = false, heavyTimer = 0, frame = 0, themeObserver = null;
     var globalListeners = [];
     function listenGlobal(target, type, fn, capture) {
@@ -1996,6 +1996,7 @@
         return;
       }
       var chipEl = t.closest ? t.closest(".zu-tsb,.zu-ctxb") : null;
+      if (chipEl && chipEl !== tpsChipCache && chipEl !== ctxChipCache) chipEl = null;   // v101：只接本实例的 chips（多实例各自 handler，别人的不抢）
       if (chipEl) {
         /* v95 精简模式：工具行 chips 在条外（宿主工具行），悬停由这里接进同一实例 tip；
          * 离开 chips 后走下方"条外"分支自然收起，移向 tip 上方的缝由走廊/宽限兜住 */
@@ -2356,8 +2357,8 @@
     }
     function positionSubPanel() {
       if (!subPanel.classList.contains("open")) return;
-      var item = bar.querySelector(".zu-sub");
-      if (!item && state.theme === "compact" && tpsChipCache && tpsChipCache.isConnected) item = tpsChipCache;   // v95：精简模式贴速率 chip（条面格不存在）
+      /* v101：compact 下隐藏条里的 .zu-sub 仍在 DOM（rect 全零）会抢锚把面板钉到左上角——chip 优先 */
+      var item = state.theme === "compact" && tpsChipCache && tpsChipCache.isConnected ? tpsChipCache : bar.querySelector(".zu-sub");
       if (!item) return;
       var ir = item.getBoundingClientRect();
       var width = subPanel.offsetWidth;
@@ -2466,8 +2467,14 @@
           chip = document.createElement("span");
           chip.className = cls;
           chip.tabIndex = 0;
-          chip.addEventListener("keydown", function (e) { if (e.key === "Escape") hideTip(true, "chip-esc"); });
           row.appendChild(chip);
+        }
+        /* v101：新建与跨代采纳统一挂装（__zuWired 防重）；补 focus/blur 对齐桌面键盘可达契约 */
+        if (!chip.__zuWired) {
+          chip.__zuWired = true;
+          chip.addEventListener("keydown", function (e) { if (e.key === "Escape") hideTip(true, "chip-esc"); });
+          chip.addEventListener("focus", function () { if (!inactive()) { tipFor = chip; tipStats.shows++; drawTip(chip, false); } });
+          chip.addEventListener("blur", function () { if (!inactive() && tipFor === chip) hideTip(true, "chip-blur"); });
         }
       }
       return chip;
@@ -2490,7 +2497,9 @@
         chip.setAttribute("aria-label", L("生成速度 ", "Generation speed ") + txt);
       }
       chip.__tip = "\x01" + tpsChipTipHTML(v);
-      if (tipFor === chip) drawTip(chip, true);   // 悬停中随快照刷新（drawTip 签名幂等）
+      if (tipFor === chip) {   // v101：悬停中内容变化不重建（重建会让 tooltip 内点击丢失），只跟随位置
+        if (tipSig === chip.__tip) drawTip(chip, true); else positionTip(chip, true);
+      }
     }
     function syncCtxChip() {
       if (state.theme !== "compact" || !state.show.ctx || inactive()) { restoreCtxChip(); return; }
@@ -2521,7 +2530,9 @@
       chip.__tip = "\x01" + ttH(L("上下文容量", "Context capacity")) +
         (cw ? ttRow(L("已用 / 窗口", "Used / window"), fmt(sess.ctx) + " / " + fmt(cw))
             : ttRow(L("已用", "Used"), fmt(sess.ctx) + L("（窗口容量未知）", " (window capacity unknown)")));
-      if (tipFor === chip) drawTip(chip, true);
+      if (tipFor === chip) {
+        if (tipSig === chip.__tip) drawTip(chip, true); else positionTip(chip, true);
+      }
     }
     function restoreTpsChip() {
       if (!tpsChipCache) return;
@@ -3037,6 +3048,8 @@
           /* v95 精简模式：条已 display:none，几何/显隐/收缩全部停用（超限气泡由
            * syncExcBubble 的 curDisplay 门自兜隐藏）；帧循环经 finally 自续。 */
           everMounted = true;
+          positionSettingsPanel();   // v101：compact 早退前补两面板的周期跟随（内部 open 门，关闭零开销）
+          positionSubPanel();
           return;
         }
         if (cardMode) {

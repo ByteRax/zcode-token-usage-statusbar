@@ -240,6 +240,8 @@ test('tooltip: speed rows + bar summary gated by per-cell toggles + legend + set
   // 逐格开关继续生效（用户拍板）：关掉「本轮」后摘要行消失
   h.window.tpsTest.state().show.turn = 0;
   h.window.__zusageUpdate(h.payload({ tps: 87.3 }));
+  chip.listeners.get('mouseleave')[0].call(chip);   // v155 悬停冻结：需真正收起（延迟收起窗口过后的重进）才按新签名重建
+  chip.listeners.get('blur')[0].call(chip);         // blur 走立即隐藏路径
   chip.listeners.get('mouseenter')[0].call(chip);
   assert.ok(!tip.innerHTML.includes('本轮'), 'turn row disappears with the cell toggle');
   // 「打开设置」按钮：走 chip.__zuOpen 开设置面板
