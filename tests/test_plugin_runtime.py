@@ -513,11 +513,10 @@ class PluginRuntimeTests(unittest.TestCase):
         patch_install.install.return_value = True
         with mock.patch.dict(sys.modules, {"renderer_bridge": bridge}), \
                 mock.patch.object(installer, "resolve_paths", return_value=(self.runtime, patch_install)), \
-                mock.patch.object(installer, "injected_status", side_effect=[False, True]), \
-                mock.patch.dict(os.environ, {"ZUSAGE_PLUGIN_AUTO_INSTALL": "1"}):
+                mock.patch.object(installer, "injected_status", side_effect=[False, True]):
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 result = installer.run_hook()
-        self.assertIn("hookSpecificOutput", result)   # 自动安装走到了 session_notice
+        self.assertNotIn("systemMessage", result)   # v172 安装成功不再注入会话文字（红点承载）
         bridge.ensure_deployed.assert_called_with(patch_install.ASAR)
 
     def test_check_still_checks_asar_without_syncing(self):
@@ -548,13 +547,10 @@ class PluginRuntimeTests(unittest.TestCase):
                 result = installer.run_hook()
                 unchanged = installer.run_hook()
         self.assertTrue(result["suppressOutput"])
-        self.assertIn("inject-main.cjs", result["systemMessage"])
-        self.assertIn("plugin-updater.cjs", result["systemMessage"])
-        self.assertIn("重启 ZCode", result["systemMessage"])
-        self.assertEqual(result["hookSpecificOutput"]["hookEventName"], "SessionStart")
+        # v172：已注入无会话文字——冷文件变更记入 marker，红点由 restartRequired 推送承载
+        self.assertNotIn("systemMessage", result)
         self.assertTrue((self.runtime / ".plugin-restart-required").is_file())
-        self.assertIn("用户可见·重启提醒", unchanged["hookSpecificOutput"]["additionalContext"])
-        self.assertEqual(unchanged["systemMessage"], notice.MESSAGE)
+        self.assertEqual(unchanged, {"suppressOutput": True})
         self.assertEqual(output.getvalue(), "")
 
     def test_hook_updater_only_update_requests_restart(self):
@@ -567,11 +563,8 @@ class PluginRuntimeTests(unittest.TestCase):
                 contextlib.redirect_stdout(output):
             result = installer.run_hook()
         self.assertEqual(self.record()["changed"], ["plugin-updater.cjs"])
-        self.assertIn("plugin-updater.cjs", result["systemMessage"])
-        self.assertIn("zcode-token-usage-statusbar 插件提醒", result["systemMessage"])
-        self.assertIn("用量状态条已更新", result["systemMessage"])
-        self.assertIn("重启 ZCode", result["systemMessage"])
-        self.assertNotIn("inject-main.cjs", result["systemMessage"])
+        self.assertNotIn("systemMessage", result)   # v172：变更已记入 marker 等待红点，无会话文字
+        self.assertTrue((self.runtime / ".plugin-restart-required").is_file())
         self.assertEqual(output.getvalue(), "")
 
     def test_hook_hot_update_does_not_request_restart(self):
@@ -601,10 +594,9 @@ class PluginRuntimeTests(unittest.TestCase):
         output, errors = io.StringIO(), io.StringIO()
         with mock.patch.object(installer, "resolve_paths", return_value=(self.runtime, patch_install)), \
                 mock.patch.object(installer, "injected_status", side_effect=[False, True]), \
-                mock.patch.dict(os.environ, {"ZUSAGE_PLUGIN_AUTO_INSTALL": "1"}), \
                 contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
             result = installer.run_hook()
-        self.assertIn("用量状态条已安装或更新", result["systemMessage"])
+        self.assertNotIn("systemMessage", result)   # v172 安装成功不再注入会话文字
         self.assertEqual(output.getvalue(), "")
         self.assertIn("human-readable install log", errors.getvalue())
 
@@ -629,7 +621,7 @@ class PluginRuntimeTests(unittest.TestCase):
                     patch_install.install.side_effect = install_overlay
                     # 清空环境时仍须给 hook 保留可解析的家目录（Windows 的 Path.home()
                     # 依赖 USERPROFILE，缺失会 RuntimeError）与系统关键变量。
-                    environment = dict(previous, ZUSAGE_PLUGIN_AUTO_INSTALL="1",
+                    environment = dict(previous,
                                        HOME=str(self.root), USERPROFILE=str(self.root),
                                        ZUSAGE_PLUGIN_RUNTIME=str(self.runtime),
                                        **{name: os.environ[name] for name in
@@ -642,7 +634,10 @@ class PluginRuntimeTests(unittest.TestCase):
                         result = installer.run_hook()
                         for name in ("ZUSAGE_NO_MONITOR", "ZUSAGE_MONITOR_QUIET"):
                             self.assertEqual(os.environ.get(name), previous.get(name))
-                    self.assertIn("自检失败" if fail else "用量状态条已安装或更新", result["systemMessage"])
+                    if fail:
+                        self.assertIn("自检失败", result["systemMessage"])
+                    else:
+                        self.assertNotIn("systemMessage", result)   # v172 成功安装无会话文字
 
     def test_hook_optout_and_record_failure_are_preserved(self):
         self.write_file(self.runtime / ".plugin-overlay-optout", b"1")
@@ -655,21 +650,21 @@ class PluginRuntimeTests(unittest.TestCase):
         patch_install.install.assert_not_called()
         self.assertEqual(result, {"suppressOutput": True})
 
-    def test_uninstalled_hook_repeats_visible_install_notice_despite_legacy_nudge(self):
+    def test_uninstalled_hook_installs_despite_legacy_nudge(self):
+        # v172：自动安装恒开——旧 .plugin-overlay-nudge 与遗留 env 都不再有任何语义；
+        # 未注入时 hook 每次都尝试安装，通用失败维持重试提示。
         self.write_file(self.runtime / ".plugin-overlay-nudge", b"1")
         pi = self.patch_install_stub()
+        pi.install.return_value = False
+        pi.pending_tmp.side_effect = Exception("no valid pending package")
         with mock.patch.object(installer, "resolve_paths", return_value=(self.runtime, pi)), \
-                mock.patch.object(installer, "injected_status", return_value=False), \
-                mock.patch.dict(os.environ, {"ZUSAGE_PLUGIN_AUTO_INSTALL": "0"}):
+                mock.patch.object(installer, "injected_status", return_value=False):
             for _ in range(3):
                 result = installer.run_hook()
-                self.assertIn("/install-overlay", result["systemMessage"])
-                self.assertIn("/uninstall-overlay", result["systemMessage"])
-                self.assertIn("还没有安装好", result["systemMessage"])
-                self.assertNotIn("默认不自动安装", result["systemMessage"])
-                self.assertIn("用户可见·安装提醒", result["hookSpecificOutput"]["additionalContext"])
+                self.assertIn("自动安装未完成", result["systemMessage"])
+                self.assertIn("install-overlay", result["hookSpecificOutput"]["additionalContext"])
                 self.assertNotIn("请完全退出 ZCode", result["systemMessage"])
-        pi.install.assert_not_called()
+        self.assertEqual(pi.install.call_count, 3)
 
     def test_failed_automatic_install_repeats_actionable_context(self):
         pi = self.patch_install_stub()
@@ -677,15 +672,14 @@ class PluginRuntimeTests(unittest.TestCase):
         # 通用失败（无有效待收尾包，issue #120 的判据不成立）：维持重试提示。
         pi.pending_tmp.side_effect = Exception("no valid pending package")
         with mock.patch.object(installer, "resolve_paths", return_value=(self.runtime, pi)), \
-                mock.patch.object(installer, "injected_status", return_value=False), \
-                mock.patch.dict(os.environ, {"ZUSAGE_PLUGIN_AUTO_INSTALL": "1"}):
+                mock.patch.object(installer, "injected_status", return_value=False):
             for _ in range(2):
                 result = installer.run_hook()
                 self.assertIn("自动安装未完成", result["systemMessage"])
                 self.assertNotIn("只出现一次", result["systemMessage"])
                 self.assertIn("install-overlay", result["hookSpecificOutput"]["additionalContext"])
 
-    def test_optout_suppresses_session_notice_even_with_existing_injection(self):
+    def test_optout_suppresses_hook_output_even_with_existing_injection(self):
         self.write_file(self.runtime / ".plugin-overlay-optout", b"1")
         with mock.patch.object(installer, "resolve_paths", return_value=(self.runtime, self.patch_install_stub())), \
                 mock.patch.object(installer, "injected_status", return_value=True):
@@ -733,9 +727,9 @@ class PluginRuntimeTests(unittest.TestCase):
         self.assertEqual(set(marker["hashes"]), {"overlay.js", "zusage.py"})
         for name, digest in marker["hashes"].items():
             self.assertEqual(digest, self.digest(self.runtime / name))
-        self.assertIn("overlay.js", output["systemMessage"])
-        self.assertIn("zusage.py", output["systemMessage"])
-        self.assertIn("用户可见·重启提醒", unchanged["hookSpecificOutput"]["additionalContext"])
+        # v172：hot_reload 关闭的变更同样只记 marker（红点承载），无会话文字
+        self.assertNotIn("systemMessage", output)
+        self.assertEqual(unchanged, {"suppressOutput": True})
         self.assertTrue(self.record()["restartRecorded"])
 
     def test_tool_only_update_with_hot_reload_disabled_does_not_create_marker(self):
@@ -928,36 +922,6 @@ class PluginRuntimeTests(unittest.TestCase):
         self.assertIn("同步尚未完成", context)
         json.loads(json.dumps({"hookSpecificOutput": {"additionalContext": context}}, ensure_ascii=False))
 
-    def test_auto_install_defaults_on_only_for_missing_valid_configuration(self):
-        with mock.patch.dict(os.environ, {}, clear=True):
-            self.assertTrue(installer.auto_enabled(self.runtime))
-            self.runtime.mkdir()
-            for content in ('{}', '{"lang": "en"}'):
-                (self.runtime / "config.json").write_text(content, encoding="utf-8")
-                self.assertTrue(installer.auto_enabled(self.runtime))
-            for content in ('{bad', '[]', 'null', '"text"'):
-                (self.runtime / "config.json").write_text(content, encoding="utf-8")
-                self.assertFalse(installer.auto_enabled(self.runtime))
-            with mock.patch.object(installer.Path, "read_text", side_effect=PermissionError("denied")):
-                self.assertFalse(installer.auto_enabled(self.runtime))
-            os.environ["ZUSAGE_PLUGIN_AUTO_INSTALL"] = "1"
-            self.assertTrue(installer.auto_enabled(self.runtime))
-
-    def test_auto_install_config_requires_literal_true_and_environment_remains_explicit(self):
-        self.runtime.mkdir()
-        with mock.patch.dict(os.environ, {}, clear=True):
-            for value in (False, "false", "true", 1, 0, None, [], {}):
-                with self.subTest(value=value):
-                    (self.runtime / "config.json").write_text(
-                        json.dumps({"plugin_auto_install_overlay": value}), encoding="utf-8")
-                    self.assertFalse(installer.auto_enabled(self.runtime))
-            (self.runtime / "config.json").write_text('{"plugin_auto_install_overlay": true}', encoding="utf-8")
-            self.assertTrue(installer.auto_enabled(self.runtime))
-            for value, expected in (("1", True), ("true", True), ("YES", True), ("on", True),
-                                    ("false", False), ("0", False), ("", False)):
-                os.environ["ZUSAGE_PLUGIN_AUTO_INSTALL"] = value
-                self.assertIs(installer.auto_enabled(self.runtime), expected)
-
     def test_explicit_install_with_existing_injection_retains_target_hash_marker(self):
         self.sync()
         (self.runtime / notice.MARKER).unlink()
@@ -999,16 +963,17 @@ class PluginRuntimeTests(unittest.TestCase):
                 contextlib.redirect_stderr(io.StringIO()):
             result = installer.run_hook()
             self.assertEqual(self.record()["preserved"], ["inject-main.cjs"])
-            self.assertIn("install-overlay", result["systemMessage"])
-            self.assertNotIn("请完全退出 ZCode", result["systemMessage"])
-            self.assertIn("> **" + result["systemMessage"] + "**",
-                          result["hookSpecificOutput"]["additionalContext"])
+            self.assertEqual(result, {"suppressOutput": True})   # v172 已注入 hook 不再注入文字
             with mock.patch.object(sys, "argv", ["overlay_install.py", "install"]), \
                     contextlib.redirect_stdout(output):
                 with self.assertRaises(SystemExit) as exited:
                     installer.main()
         self.assertEqual(exited.exception.code, 0)
-        self.assertEqual(output.getvalue().strip(), result["systemMessage"])
+        cli_notice = notice_context(self.runtime, injected=True)
+        self.assertIn("install-overlay", cli_notice)
+        self.assertNotIn("请完全退出 ZCode", cli_notice)
+        # CLI stdout 打印的是 message 本体（模型可见 context 由 reminder()["context"] 承载）
+        self.assertEqual(output.getvalue().strip(), notice.reminder(self.runtime, injected=True)["message"])
         self.assertNotIn("已安装或更新", output.getvalue())
 
     def test_optout_errors_are_stderr_only_without_probe_or_config_write(self):

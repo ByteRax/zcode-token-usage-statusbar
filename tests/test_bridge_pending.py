@@ -233,7 +233,6 @@ class OverlayBridgeNoticeTests(unittest.TestCase):
             "bridge_pending_restart_notice", str(self.plugin / "restart_notice.py"))
         notice = importlib.util.module_from_spec(notice_spec)
         notice_spec.loader.exec_module(notice)
-        self.notice = notice
         for name, module in (("restart_notice", notice),):
             patcher = mock.patch.dict(sys.modules, {name: module})
             patcher.start()
@@ -365,11 +364,11 @@ class OverlayBridgeNoticeTests(unittest.TestCase):
                 outcome = self.installer.run_hook()
         return outcome, stdout.getvalue()
 
-    def test_run_hook_reports_pending_and_permission_but_not_other_errors(self):
+    def test_run_hook_reports_permission_but_not_pending_or_other_errors(self):
+        # v172：桥 pending（客户端退出后监控自动收尾）不再发会话文字；权限不足仍提示。
         pending = {"status": "pending", "version": "3.16.2", "detail": ""}
         outcome, stdout = self.hook_output(pending)
-        self.assertIn("hookSpecificOutput", outcome)
-        self.assertIn("退出 ZCode", outcome["systemMessage"])
+        self.assertNotIn("systemMessage", outcome)
         self.assertEqual(stdout, "")
         # 权限不足按真实 PermissionError 标记判定（Windows 的 os.access 看不见 ACL，
         # target_writable() 恒 True 的 Program Files 场景也必须提示）
@@ -396,23 +395,18 @@ class OverlayBridgeNoticeTests(unittest.TestCase):
         self.assertIn("overlay_install.py", outcome["systemMessage"])
         self.assertNotIn("sudo", outcome["systemMessage"])
 
-    def test_run_hook_does_not_override_primary_install_notice(self):
-        bridge_module = mock.Mock()
-        bridge_module.ensure_deployed.return_value = {"status": "pending", "version": "3.16.2", "detail": ""}
+    def test_bridge_notice_never_overrides_primary_notice(self):
+        # 桥只是增强：主链（自动安装失败的 _nudge 等）已有提示时不覆盖；
+        # v172 起已注入分支无 session_notice 主链，此约束直接落在 _bridge_notice 语义上。
         pi = self.pi_stub()
         primary = {"suppressOutput": True, "systemMessage": "更重要的安装/重启提示",
                    "hookSpecificOutput": {"hookEventName": "SessionStart",
                                           "additionalContext": "primary"}}
-        with mock.patch.dict(sys.modules, {"renderer_bridge": bridge_module}), \
-                mock.patch.object(self.installer, "resolve_paths", return_value=(self.runtime, pi)), \
-                mock.patch.object(self.installer, "sync_runtime", return_value={"changed": []}), \
-                mock.patch.object(self.installer, "injected_status", return_value=True), \
-                mock.patch.object(self.installer, "save_runtime_config"), \
-                mock.patch.object(self.notice, "session_notice", return_value=primary), \
-                self.ensure_quiet_env():
-            with contextlib.redirect_stdout(io.StringIO()):
-                outcome = self.installer.run_hook()
+        outcome = self.installer._bridge_notice(primary, {"status": "pending"}, pi)
         self.assertEqual(outcome["systemMessage"], "更重要的安装/重启提示")
+        denied = {"status": "skipped-error", "version": None, "detail": "denied", "permission": True}
+        self.assertEqual(self.installer._bridge_notice(primary, denied, pi)["systemMessage"],
+                         "更重要的安装/重启提示")
 
 
 class PendingInstallWaitingTests(unittest.TestCase):
@@ -566,7 +560,9 @@ class RealHookChainTests(unittest.TestCase):
             with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(io.StringIO()):
                 outcome = self.installer.run_hook()
         self.assertEqual(stdout.getvalue(), "", "hook stdout 只能是 hook JSON")
-        self.assertIn("退出 ZCode", outcome.get("systemMessage", ""))
+        # v172：桥 pending 不再发会话文字（客户端退出后监控自动收尾）；
+        # 待收尾包与监控拉起行为不变。
+        self.assertNotIn("systemMessage", outcome)
         self.assertTrue(self.pi.TMP.is_file())
         self.assertEqual(self.pi.pending_tmp(operation="install")["operation"], "install")
         self.pi.launch_monitor.assert_called_once()

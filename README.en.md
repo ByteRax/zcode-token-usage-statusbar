@@ -131,15 +131,7 @@ You can also send the natural-language "three steps" line from the top of this R
 
 ### I only want queries — leave my client alone
 
-Add **just** this key to `~/.zcode/zcode-token-usage-statusbar/config.json` (don't overwrite existing settings):
-
-```json
-{
-  "plugin_auto_install_overlay": false
-}
-```
-
-`/usage` and the MCP tool remain available without installing the bar. The per-answer rate line depends on the renderer bridge and is not guaranteed without the overlay. If the bar was already installed, run `/uninstall-overlay` once and confirm removal, then fully quit and reopen ZCode; the setting alone does not remove an existing installation.
+Run `/uninstall-overlay` to remove the bar and write the opt-out marker (auto-install is always on and no longer has a config switch; only the opt-out marker blocks re-injection). `/usage` and the MCP tool remain available. The per-answer rate line depends on the renderer bridge and is not guaranteed without the overlay. Confirm removal, then fully quit and reopen ZCode.
 
 ## Where these numbers come from
 

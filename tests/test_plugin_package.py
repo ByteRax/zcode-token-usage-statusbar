@@ -32,7 +32,7 @@ class PluginPackageTests(unittest.TestCase):
     def test_default_update_setting_and_bilingual_panel_copy_agree(self):
         config = json.loads((ROOT / "config.example.json").read_text(encoding="utf-8"))
         self.assertIs(config["plugin_auto_update"], True)
-        self.assertIs(config["plugin_auto_install_overlay"], True)
+        self.assertNotIn("plugin_auto_install_overlay", config)   # v172：自动安装恒开，开关已移除
         overlay = (ROOT / "overlay.js").read_text(encoding="utf-8")
         self.assertIn("每 1 小时检查并安装新版，默认开启", overlay)
         self.assertIn("Check and install every hour; on by default", overlay)
@@ -83,13 +83,12 @@ class PluginPackageTests(unittest.TestCase):
             self.assertEqual(sorted(missing), [], label)
 
     def test_cold_files_literals_agree(self):
-        # overlay_install.py 两处 cold_files（sync_runtime 写 marker 与 run_hook 组提醒文案）
-        # 语义同一：漏改任一处时重启记录与提醒单侧失效，钉住两处字面量一致
+        # v172：run_hook 的 cold_files 提醒清单随会话内文字提醒一起移除，只剩 sync_runtime
+        # 一处（写 marker 用）；将来若新增提醒清单，须恢复「两处字面量一致」断言
         src = (PLUGIN / "overlay_install.py").read_text(encoding="utf-8")
-        literals = [set(re.findall(r'"([^"]+)"', block)) for block in re.findall(r"cold_files = \{([^}]+)\}", src)]
-        self.assertEqual(len(literals), 2, msg="cold_files 字面量应为恰两处（sync_runtime 与 run_hook）；结构重写后请同步更新本测试")
+        literals = re.findall(r"cold_files = \{([^}]+)\}", src)
+        self.assertEqual(len(literals), 1, msg="cold_files 字面量应恰一处（sync_runtime 写 marker）；文字提醒清单已随 v172 移除")
         self.assertTrue(literals[0], msg="提取到的 cold_files 字面量为空")
-        self.assertEqual(literals[0], literals[1], msg="两处 cold_files 不一致：重启记录与提醒文案将单侧漏报")
 
     def test_release_skill_requires_post_release_pr_merge_and_verification(self):
         text = (ROOT / ".zcode/skills/zcode-github-release/SKILL.md").read_text(encoding="utf-8")
