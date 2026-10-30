@@ -41,6 +41,7 @@ SSH/WSL 远端会话需要在每台远端手工部署同版本 `zusage.py`；远
 - `/uninstall-overlay`——移除状态条，保留卸载豁免标记，保留个人配置。
 - `"plugin_auto_install_overlay": false`——只保留查询工具。
 - `"answer_rate_line": false`——关闭逐问速率行（下一问生效）。
+- `"restart_notice": false`——关闭更新/安装后的会话内重启提醒条（⚙ → 插件更新；命令行输出与故障提示不受影响）。
 - `"quota_enabled": false`——停止套餐额度查询并隐藏额度 chip（此后不再读取凭据）。
 - `"plugin_auto_update": false`——关闭更新检查。
 - 彻底移除：先关自动更新，执行 `/uninstall-overlay`，再在 ZCode 设置里卸载插件并完全重启。**只卸载插件不会移除状态条。**

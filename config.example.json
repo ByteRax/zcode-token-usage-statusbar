@@ -4,6 +4,7 @@
   "heartbeat_ms": 30000,
   "diag": true,
   "answer_rate_line": true,
+  "restart_notice": true,
   "quota_enabled": true,
   "reset_badge_enabled": true,
   "plugin_auto_update": true,
