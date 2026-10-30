@@ -9,6 +9,7 @@ turns 按 session_id+turn_id 组合去重，worktree（不同 directory→projec
 """
 import importlib.util
 import sqlite3
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -132,6 +133,54 @@ class ProjectUsageAggTests(FixtureBase):
         self.assertIsNone(zusage._project_usage(con, "nope"))
         self.assertIsNone(zusage._project_usage(con, "m1"))
 
+    def test_large_project_in_clause_chunked(self):
+        # v177：老 SQLite（<3.32）IN 变量上限 999——大项目会话数可超，聚合按 500/批分片；
+        # 分片按 session_id 切，distinct 计数/求和跨片直接累加不重不漏。
+        con = self.fixture()
+        for i in range(600):
+            sid = f"m{i:03d}"
+            self.sess(con, sid)
+            # 总量按模型分层（15>10）：跨片合并后的降序有确定序，平局序非契约不锁
+            self.usage(con, f"r{i}", sid, turn="t1", total=10 + (i % 2) * 5,
+                       model="model-a" if i % 2 else "model-b")
+        p = zusage._project_usage(con, "m000")
+        self.assertEqual(p["sessions"], 600)
+        self.assertEqual(p["turns"], 600)
+        self.assertEqual(p["requests"], 600)
+        self.assertEqual(p["total"], 7500)   # 300×10 + 300×15
+        pm = zusage._project_usage(con, "m000", with_models=True)
+        self.assertEqual(len(pm["models"]), 2)   # 跨片按模型合并（每片 2 行 → 合并后仍 2）
+        self.assertEqual([m["requests"] for m in pm["models"]], [300, 300])
+        self.assertEqual([m["model"] for m in pm["models"]], ["model-a", "model-b"])   # 总量降序（model-a=300×15）
+
+    def test_file_db_ttl_cache(self):
+        # v177：缓存挂库文件身份（内存库不缓存）——命中省重扫（大库单项目聚合 ~40ms/次）、
+        # TTL 过期重算、不同库文件天然隔离。
+        with tempfile.TemporaryDirectory() as td:
+            dbpath = str(Path(td) / "db.sqlite")
+            con = sqlite3.connect(dbpath)
+            self.addCleanup(con.close)
+            con.row_factory = sqlite3.Row
+            con.executescript(SCHEMA)
+            self.sess(con, "m1")
+            self.usage(con, "r1", "m1", total=100)
+            p1 = zusage._project_usage(con, "m1")
+            self.assertEqual(p1["total"], 100)
+            full = (zusage._db_cache_key(con), ("proj_repo", False))
+            self.assertIn(full, zusage._PROJ_CACHE)
+            self.usage(con, "r2", "m1", turn="t2", total=200)
+            self.assertEqual(zusage._project_usage(con, "m1")["total"], 100, "TTL 内命中旧值")
+            ts, val = zusage._PROJ_CACHE[full]
+            zusage._PROJ_CACHE[full] = (ts - zusage._AGG_TTL_MS - 1, val)
+            self.assertEqual(zusage._project_usage(con, "m1")["total"], 300, "TTL 过期重算")
+            # 内存库不缓存：同一数据每次就地聚合
+            mem = self.fixture()
+            self.sess(mem, "m1")
+            self.usage(mem, "r1", "m1", total=42)
+            self.assertIsNone(zusage._db_cache_key(mem))
+            self.assertEqual(zusage._project_usage(mem, "m1")["total"], 42)
+            self.assertNotIn(zusage._db_cache_key(mem), zusage._PROJ_CACHE)
+
     def test_models_full_list_desc_no_cap(self):
         con = self.fixture()
         self.sess(con, "m1")
@@ -162,7 +211,7 @@ class ProjectUsageAggTests(FixtureBase):
 
 
 class ProjectSnapshotInjectTests(FixtureBase):
-    def snapshot_with(self, con, force_sid):
+    def snapshot_with(self, con, force_sid, routes=None):
         proxy = mock.Mock(wraps=con)
         proxy.close = mock.Mock()
         with mock.patch.object(zusage, "connect", return_value=proxy), \
@@ -171,7 +220,7 @@ class ProjectSnapshotInjectTests(FixtureBase):
              mock.patch.object(zusage, "_day_start", return_value=zusage._day_start()), \
              mock.patch.object(zusage, "_scan_session_ids", return_value=self.scan_rows), \
              mock.patch.object(zusage, "_remote_setup", return_value=None):
-            return zusage.snapshot(force_sid=force_sid)
+            return zusage.snapshot(force_sid=force_sid, routes=routes)
 
     def test_snapshot_injects_project_into_local_pool_rows(self):
         con = self.fixture()
@@ -214,6 +263,26 @@ class ProjectSnapshotInjectTests(FixtureBase):
         self.assertNotIn("project", snap["session"])
         for row in snap["recent"]:
             self.assertNotIn("project", row)
+
+    def test_snapshot_scopes_local_rows_carry_project(self):
+        # v177：scopes（泵按窗口 workspaceIdentity 上报）插入的本地行经 {...row} 展开
+        # 同样携带 project 注入；远端身份行不注入。空身份不进 scopes（构建处 ident
+        # 真值过滤），这里用非空非 remote 的手动绑定身份驱动插入路径。
+        con = self.fixture()
+        self.sess(con, "m1")
+        self.sess(con, "m2")
+        self.usage(con, "r1", "m1", turn="t1", total=100, completed=3000)
+        self.usage(con, "r2", "m2", turn="t1", total=50)
+        self.scan_rows = [("m1", 3000), ("m2", 2000)]
+        routes = [{"sid": "m1", "workspaceIdentity": "ws-manual-a"},
+                  {"sid": "ghost", "workspaceIdentity": "remote:ssh:host"}]
+        snap = self.snapshot_with(con, "m1", routes=routes)
+        scoped = [r for r in snap["recent"] if r.get("workspace_identity") == "ws-manual-a"]
+        self.assertEqual(len(scoped), 1)
+        self.assertEqual(scoped[0]["sid"], "m1")
+        self.assertEqual(scoped[0]["project"]["total"], 150)   # 项目累计=m1+m2 全项目
+        ghost = next(r for r in snap["recent"] if r["sid"] == "ghost")
+        self.assertNotIn("project", ghost)
 
 
 if __name__ == "__main__":

@@ -130,6 +130,54 @@ test('v146 compact theme: bar hides on body, heavy keeps it alive, no pads; leav
   assert.equal(barInCard.style.display, 'flex', 'track frame restores visibility');
 });
 
+/* v177：v169 双条去重的抑制不被 track 每帧复显打穿——heavy（600ms）锁 dupSuppress 并隐藏，
+ * 此前 track 帧无条件复显 flex，次帧起双条永久并存（Windows 最小化/还原场景失效）。 */
+test('v177 dedup: track frames cannot re-show a bar suppressed by a smaller-slot rival', () => {
+  const h = harness(), cards = h.setPanes(['a', 'b'], { toolbar: true }); h.inject(); h.boot();
+  const barB = cards[1].children.find(e => /zusage-root/.test(e.className || ''));
+  assert.ok(barB, 'instance b bar mounted in card');
+  assert.equal(barB.getAttribute('data-zusage-slot'), '1', 'harness sanity: bar b owns slot 1');
+  // 桩 elementFromPoint 恒返 panes[0]（composer b 会被判"被盖"→ track 永远隐藏）：
+  // 命中点指向 composer 本体，让可见性判定走通
+  const paneB = cards[1].children.find(e => e.tagName === 'TEXTAREA');
+  h.document.elementFromPoint = () => paneB;
+  h.tick();
+  h.runFrame();
+  assert.equal(barB.style.display, 'flex', 'track frame shows the bar before any rival');
+  // 同卡对手（slot 更小、可见）：heavy 让位隐藏
+  const rival = cards[1].appendChild(new Element('div'));
+  rival.className = 'zusage-root';
+  rival.setAttribute('data-zusage-slot', '0');
+  cards[1].querySelectorAll = (sel) => sel === '.zusage-root' && rival.isConnected ? [rival] : [];
+  h.tick();
+  assert.equal(barB.style.display, 'none', 'heavy hides the higher-slot bar');
+  h.runFrame();
+  assert.equal(barB.style.display, 'none', 'track frame must not re-show while suppressed');
+  h.tick(); h.runFrame();
+  assert.equal(barB.style.display, 'none', 'suppression persists across heavy+track cycles');
+  // 对手退场：heavy 解除抑制，下一帧复显
+  rival.remove();
+  h.tick(); h.runFrame();
+  assert.equal(barB.style.display, 'flex', 'bar re-shows after the rival disappears');
+});
+
+/* v177：setComposer 落在宿主「composer 已挂、data-session-id 未写」窗口期时 detRootEl
+ * 为 null 且元素引用不变不再重进 setComposer——heavy 按拍补算让 det 统计行归属链自愈。 */
+test('v177: detRoot self-heals when the host writes data-session-id after composer mount', () => {
+  const h = harness(), cards = h.setPanes(['workspace-main'], { toolbar: true });
+  h.inject(); h.boot();
+  const TAB = 'selection-side-chat:%2Fp:late:sid';
+  const side = sidePaneFixture(h, TAB, null, {});   // 先无 sid：命中窗口期
+  h.tick();
+  const inst = h.window.lifecycleTest.instances().find(i => i.pid === TAB);
+  assert.ok(inst, 'side chat instance spawned without a session root yet');
+  assert.equal(inst.detRoot(), null, 'no session root inside the window');
+  side.rootEl.sid = 'sess_late';   // 宿主补写 data-session-id
+  h.tick();
+  assert.equal(inst.detRoot(), side.rootEl, 'heavy recompute picks up the late session root');
+  h.window.__zusageDispose();
+});
+
 test('v80 in-card mount: bar lands inside the card after the toolbar row, no pad, no fixed styles', () => {
   const h = harness(), cards = h.setPanes(['a', 'b'], { toolbar: true }); h.inject(); h.boot();
   const [barA] = cards[0].children.filter(e => /zusage-root/.test(e.className || ''));
@@ -243,7 +291,7 @@ test('issue #147: pane-less composer (side chat) next to a real pane must not sp
   h.document.querySelectorAll('textarea,').push(side);   // 侧栏 composer 进入协调器扫描（document 桩返回 panes 数组）
   h.tick();
   const pids = () => Array.from(h.window.lifecycleTest.instances(), i => i.pid).sort();   // Array.from 转宿主 realm（VM 数组跨 realm deepStrictEqual 恒败）
-  assert.deepEqual(pids(), ['workspace-main'], 'only the real pane instance exists: ' + JSON.stringify({ pids: pids(), len: pids().length, raw: h.window.lifecycleTest.instances().map(i => ({ pid: i.pid, cls: String(i).slice(0, 40) })) }));
+  assert.deepEqual(pids(), ['workspace-main'], 'only the real pane instance exists: ' + JSON.stringify({ pids: pids(), len: pids().length, raw: h.window.lifecycleTest.instances().map(i => ({ pid: i.pid, api: Object.keys(i).slice(0, 6).join(',') })) }));
   assert.equal(pids().length, 1, 'instance count is one');
   // side chat 移除（面板收起/卸载）：实例保持，不重建
   side.remove();

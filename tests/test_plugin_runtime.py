@@ -516,7 +516,7 @@ class PluginRuntimeTests(unittest.TestCase):
                 mock.patch.object(installer, "injected_status", side_effect=[False, True]):
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 result = installer.run_hook()
-        self.assertNotIn("systemMessage", result)   # v172 安装成功不再注入会话文字（红点承载）
+        self.assertEqual(result, {"suppressOutput": True})   # v172 安装成功不再注入会话文字（红点承载）；精确锁形防夹带键
         bridge.ensure_deployed.assert_called_with(patch_install.ASAR)
 
     def test_check_still_checks_asar_without_syncing(self):
@@ -596,7 +596,7 @@ class PluginRuntimeTests(unittest.TestCase):
                 mock.patch.object(installer, "injected_status", side_effect=[False, True]), \
                 contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
             result = installer.run_hook()
-        self.assertNotIn("systemMessage", result)   # v172 安装成功不再注入会话文字
+        self.assertEqual(result, {"suppressOutput": True})   # v172 安装成功不再注入会话文字；精确锁形防夹带键
         self.assertEqual(output.getvalue(), "")
         self.assertIn("human-readable install log", errors.getvalue())
 

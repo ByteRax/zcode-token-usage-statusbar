@@ -889,7 +889,8 @@ async function setAnswerRateLine(enabled, wc, requestId) {
   }
 }
 /* 重启提醒开关（⚙ 面板，issue #139）：原子写运行时 config.json 的 restart_notice（缺省=开启）。
-   SessionStart hook 每次会话启动读同一文件——下一个新会话即生效，无需重启客户端。 */
+   v172 起该键只门控 ⚙ 红点（不再有任何会话文字出口）：写回后 broadcastPluginState() 即时生效，
+   无需等新会话。 */
 async function setRestartNotice(enabled, wc, requestId) {
   try {
     const { updateConfig } = require("./plugin-updater.cjs");

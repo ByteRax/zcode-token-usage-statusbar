@@ -83,10 +83,21 @@ test('compact plumbing: bar keep-alive in heavy, early return in track, panel an
   assert.match(source, /if \(state\.theme === "compact"\) \{\s*\n\s*\/\* v95 精简模式：条常驻 body/);
   assert.match(source, /if \(state\.theme === "compact"\) \{ syncTpsChip\(\); return; \}/);
   assert.match(source, /v95：精简模式条 rect 为 0，几何\/宽度改锚输入卡/);
-  assert.match(source, /state\.theme === "compact" && tpsChipCache && tpsChipCache\.isConnected/);
+  // v103：chip 被摘除时子面板保持原位——不回落隐藏条内全零 .zu-sub（与桌面 v177 同款）
+  assert.match(source, /if \(!\(tpsChipCache && tpsChipCache\.isConnected\)\) return;/);
   // dispose 摘除 chips，全局清理选择器覆盖 tooltip（.tip .zusage-* 链）
   assert.match(source, /restoreTpsChip\(\);   \/\/ v95：摘除精简模式速率 chip/);
   assert.match(source, /restoreCtxChip\(\);   \/\/ v95：摘除上下文 chip/);
+  // v103：启动自清选择器覆盖精简 chips（对齐桌面 v155 批）
+  assert.match(source, /\.zusage-panel,\.zu-tsb,\.zu-ctxb,\[data-zusage-deterministic\]/);
+});
+
+test('v103 chip wiring: unified mount with keyboard focus/blur and hover freeze', () => {
+  assert.match(source, /if \(!chip\.__zuWired\) \{/);
+  assert.match(source, /chip\.addEventListener\("focus"/);
+  assert.match(source, /chip\.addEventListener\("blur"/);
+  // 悬停冻结：同签名且已显示时只改位置不重画（原地改字不闪烁）
+  assert.match(source, /if \(tipSig === chip\.__tip\) drawTip\(chip, true\); else positionTip\(chip, true\);/);
 });
 
 test('chip styles: explicit font spec (quota-chip parity) and hover hit area', () => {

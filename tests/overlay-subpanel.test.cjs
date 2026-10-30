@@ -13,12 +13,12 @@ const positionSource = source.slice(start, end);
 /* v80：面板 fixed 挂 body，left 为视口坐标（条目水平居中后夹紧视口），
  * top = 条上沿 − 面板高 − 10px 缝。 */
 function position({ itemLeft = 800, itemWidth = 80, panelWidth = 420, panelHeight = 200,
-  viewportWidth = 1200, barTop = 600, open = true, missing = false } = {}) {
+  viewportWidth = 1200, barTop = 600, open = true, missing = false, theme = 'default', chip = null } = {}) {
   const style = {};
   const context = {
     window: { innerWidth: viewportWidth },
-    state: { theme: 'default' },   // v146：精简模式锚 chip 的分支不触达（default 走条面格）
-    tpsChipCache: null,
+    state: { theme },   // v146：精简模式锚 chip 的分支不触达（default 走条面格）
+    tpsChipCache: chip,
     subPanel: { classList: { contains: () => open }, offsetWidth: panelWidth, offsetHeight: panelHeight, style },
     bar: {
       getBoundingClientRect: () => ({ top: barTop }),
@@ -55,6 +55,22 @@ test('panel follows a moved item and a different panel width', () => {
 test('closed panels and missing sub-agent items are not repositioned', () => {
   assert.deepEqual(position({ open: false }).style, {});
   assert.deepEqual(position({ missing: true }).style, {});
+});
+
+/* v177：精简下速率 chip 被摘除（会话切到无速率样本）时不得回落隐藏条内的 .zu-sub——
+ * 那是全零矩形，会把开着面板钉到视口左上角；面板保持打开时的最后位置。 */
+test('v177 compact: a missing or disconnected rate chip leaves the open panel in place', () => {
+  assert.deepEqual(position({ theme: 'compact', chip: null }).style, {});
+  assert.deepEqual(position({ theme: 'compact', chip: { isConnected: false } }).style, {});
+});
+
+test('v177 compact: a connected rate chip anchors the panel above itself', () => {
+  const { style } = position({
+    theme: 'compact',
+    chip: { isConnected: true, getBoundingClientRect: () => ({ left: 800, width: 80, top: 500 }) },
+  });
+  assert.equal(style.left, '630px');   // 同条面格：chip 水平居中
+  assert.equal(style.top, '290px');    // 500 − 200 − 10
 });
 
 test('panel is body-mounted fixed above the bar and positioned on opening and tracking', () => {
