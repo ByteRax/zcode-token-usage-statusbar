@@ -611,7 +611,7 @@ test('⑬ running phases keep distinct generating, thinking and tool icons after
   store.set(snap(4, [header('running'), text('abcdef'),
     { rowId: 6, turnId: 't1', productTurnId: 'pt1', kind: 'toolCall', toolName: 'Read', inputText: '', status: 'running', startedAt: Date.now() }]));
   assert.equal(inst.liveIconKind(), 'tool');
-  assert.match(inst.liveEl().textContent, /^正在读取 \d/);   // v151：计时去中点
+  assert.match(inst.liveEl().textContent, /^读取中 \d/);   // v151 计时去中点 + v152 读取中（用户规格）
   // 思考结束回正文流式（reasoning 移出窗口，正文行继续增长）：仍为动效脑
   h.clock.now = 3000;
   store.set(snap(5, [header('running'), text('abcdefghij')]));
