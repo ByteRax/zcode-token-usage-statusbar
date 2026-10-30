@@ -1775,3 +1775,72 @@ test('pill layout safety browser regressions (isolated fixture)', { skip: skipRe
     assert.equal(sixteen.padding, 16, JSON.stringify({ before, zero, sixteen }));
   });
 });
+
+test('v146 compact theme browser behaviour (isolated fixture)', { skip: skipReason, timeout: 90000 }, async t => {
+  const b = await startBrowser(t);
+  // 精简模式装载（reset() 的可见等待不适用：条本就 display:none）
+  await b.call('Emulation.setDeviceMetricsOverride', { width: 1200, height: 900, deviceScaleFactor: 1, mobile: false });
+  const token = Math.random().toString(36).slice(2);
+  await b.call('Page.navigate', { url: b.url + '?case=' + token });
+  await b.waitFor(`document.readyState === "complete" && location.search === '?case=${token}'`);
+  await b.evaluate(`(() => {
+    document.body.innerHTML = ${JSON.stringify(fixtureHtml)};
+    localStorage.clear(); localStorage.setItem('zusage3.theme', 'compact');
+  })()`);
+  await b.evaluate(overlay);
+  await b.waitFor(`document.querySelectorAll('.zusage-root').length === 2`, 'bars did not mount');
+  await b.evaluate(`window.__zusageUpdate(${JSON.stringify(payload)})`);
+  await b.waitFor(`document.querySelectorAll('.zu-tsb').length === 2`, 'tps chips did not mount');
+
+  await t.test('bar is hidden but alive on body; rate chip lives in the toolbar', async () => {
+    const st = await b.evaluate(`(() => {
+      const bar = document.querySelector('#zusage-bar');
+      const chip = document.querySelector('.zu-tsb');
+      const row = chip && chip.closest('[class*="group/toolbar"]');
+      const cs = getComputedStyle(bar);
+      return { display: cs.display, visibility: cs.visibility, parent: bar.parentElement === document.body,
+        theme: bar.getAttribute('data-zusage-theme'),
+        chipText: chip.textContent, chipWeight: getComputedStyle(chip).fontWeight,
+        inRow: !!row, beforeWrap: chip.nextElementSibling && chip.nextElementSibling.querySelector('.zu-quota') !== null };
+    })()`);
+    assert.equal(st.display, 'none', JSON.stringify(st));
+    assert.equal(st.visibility, 'visible', 'hidden via display, not visibility');
+    assert.equal(st.parent, true, 'bar is detached from the card onto body');
+    assert.equal(st.theme, 'compact');
+    assert.match(st.chipText, /92/);
+    assert.equal(st.chipWeight, '700', 'explicit bold spec (quota-chip parity)');
+    assert.equal(st.inRow, true, 'chip is inside the composer toolbar row');
+    assert.equal(st.beforeWrap, true, 'chip sits left of the quota group');
+  });
+
+  await t.test('tooltip shows summaries + settings entry; button opens the panel', async () => {
+    await b.evaluate(`(() => {
+      const chip = document.querySelector('.zu-tsb');
+      chip.dispatchEvent(new Event('mouseenter'));
+    })()`);
+    await b.waitFor(`(() => { const t = document.querySelector('.zusage-tps-tip'); return t && t.style.display === 'block' && t.textContent.includes('状态条摘要'); })()`,
+      'tps tooltip did not show');
+    const content = await b.evaluate(`(() => { const t = document.querySelector('.zusage-tps-tip');
+      return { hasLegend: t.textContent.includes('颜色对照'), hasSettings: !!t.querySelector('.tps-cfg'),
+        hasTurn: t.textContent.includes('本轮'), hasToday: t.textContent.includes('今日合计') }; })()`);
+    assert.equal(content.hasLegend, true);
+    assert.equal(content.hasTurn, true);
+    assert.equal(content.hasToday, true);
+    await b.evaluate(`document.querySelector('.zusage-tps-tip .tps-cfg').click()`);
+    await b.waitFor(`[...document.querySelectorAll('.zu-settings')].some(p => p.classList.contains('open'))`,
+      'settings panel did not open from the tooltip button');
+    const theme = await themes(b);
+    assert.deepEqual(theme, ['compact', 'compact']);
+  });
+
+  await t.test('switching back to default restores the bar and removes the chips', async () => {
+    await choose(b, 'default', 0);
+    await b.waitFor(`(() => { const bar = document.querySelector('#zusage-bar');
+      return getComputedStyle(bar).display === 'flex' && !document.querySelector('.zu-tsb'); })()`,
+      'bar did not come back / chip did not leave');
+    await choose(b, 'compact', 0);
+    await b.waitFor(`(() => { const bar = document.querySelector('#zusage-bar');
+      return getComputedStyle(bar).display === 'none' && document.querySelectorAll('.zu-tsb').length === 2; })()`,
+      'compact round-trip failed');
+  });
+});

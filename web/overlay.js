@@ -58,13 +58,15 @@
   } catch (e) { }
 
   /* ---------- 共享状态（多实例一致）：显示项/语言/上下文覆盖/最近一次数据 ---------- */
-  var LS = { show: "zusage3.show", ctxOv: "zusage3.ctxOv", lang: "zusage3.lang", cnNum: "zusage3.cnNum" };
+  var LS = { show: "zusage3.show", ctxOv: "zusage3.ctxOv", lang: "zusage3.lang", cnNum: "zusage3.cnNum", theme: "zusage3.theme" };
   var state = {
     show: { win: 1, ctx: 1, today: 1, turn: 1, sub: 1, tools: 1 },
     ctxOv: "", data: null,
     lang: "zh", pluginUpdate: window.__zusagePluginState || null,
     /* 万/亿单位开关：缺省开启，仅显式 "0" 关闭；只在中文界面展示并生效（英文始终 K/M/B） */
     cnNum: 1,
+    /* v95 精简模式（theme 第三档桌面版同款，Web 仅 默认/精简 两档、无药丸）：缺省 default */
+    theme: "default",
     /* 逐问速率行开关：真值在运行时 config.json 的 answer_rate_line（主进程随插件状态推送
        rateLine 字段），渲染端只做展示与请求转发；缺省开启 */
     rateLine: !(window.__zusagePluginState && window.__zusagePluginState.rateLine === false),
@@ -83,12 +85,14 @@
     state.ctxOv = ls(LS.ctxOv, "");
     if (ls(LS.lang, "") === "en") state.lang = "en";
     if (ls(LS.cnNum, "") === "0") state.cnNum = 0;
+    if (ls(LS.theme, "") === "compact") state.theme = "compact";   // v95：精简档（Web 无药丸）
   } catch (e) { }
   function persist() {
     lsSet(LS.show, JSON.stringify(state.show));
     lsSet(LS.ctxOv, state.ctxOv);
     lsSet(LS.lang, state.lang);
     lsSet(LS.cnNum, state.cnNum ? "1" : "0");
+    lsSet(LS.theme, state.theme);
   }
 
   /* ---------- 多实例注册表（v61.1）：每个分屏 pane 一个条实例 ---------- */
@@ -100,6 +104,12 @@
       if (rebuildPanels) instances[i].rebuild();   // 语言切换等文案重建（各实例面板独立 DOM）
       if (state.data) instances[i].render(state.data);
     }
+  }
+  /* v95 精简模式主题切换（面板 radio 同窗即时生效）：非法值回退 default */
+  function setBarTheme(theme) {
+    state.theme = theme === "compact" ? "compact" : "default";
+    lsSet(LS.theme, state.theme);
+    for (var i = 0; i < instances.length; i++) instances[i].applyBarTheme();
   }
   var remoteCache = {};
   var remoteTodayCache = {};
@@ -933,7 +943,7 @@
   /* ---------- 实例工厂（v61.1）：一个 pane 一套 条/面板/气泡/tooltip/定位循环。
    * slot 0 保留 #zusage-bar/#zusage-tip 兼容 id（泵热更新按它清理），其余实例仅类名。 */
   function spawnInstance(pid, slot) {
-    var VERSION = "v94";   // v82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v84 主标签页远端路由（工作台分组唯一主绑定上报 + 迟到载荷守卫，issue #30）→ v85 回答末尾统计行跟随万/亿开关 + tok→token → v86 历史轮 tracker 无记录（窗口滑出/换代/热更）或缺输出字段不再翻成"本轮统计不可用"，加 det 诊断 → v87 设置页排除：协调器/findComposer/deepFind/track 按 [data-testid="settings-page"] 祖先排除设置表单编辑框（MCP「请求头」textarea 被当聊天输入框、条挂进表单卡片）→ v88 工具动词「正在运行子智能体」压成「子代理运行中」（与桌面 v97 同文案；子代理速率估算为桌面桥专属，Web 无此链路） → v89 tooltip 伪边界 leave 过滤（与桌面 v99 同款）：Chrome 悬停链收缩/重算会补发 DOM 内部的 documentElement/tip mouseleave（格内 万↔1 空隙悬停、tooltip 本体停留均可复现弹出即灭），tipLeaveAt 贴边判定后取触发时刻最深 :hover 元素甄别（事件坐标/relatedTarget 实测不可信）——仍悬停在本档具体元素上即伪 leave 一律忽略，hover 链截断到 body/iframe/空链（空档区/已进子上下文/甩出窗口）维持 v47 分流 → v90 思考中计时随语言本地化（中文「1 时 2 分 3 秒」/英文「1 h 2 m 3 s」，与桌面 v99 同文案；Web 无富文本 turn-text 链——__zusagePluginRequests 仅桌面主进程消费，本端回答末尾恒为简化占位行、无采样时刻，不受 token_rate.py 改版影响）→ v91 思考计时锚定 turnHeader.startedAt（与桌面 v116 同源语义：宿主创建 header 恒写入 startedAt，重绑不清零；缺字段或时钟未及起点回退首观测起算） → v92 思考计时中文全紧邻「7分16秒」（与桌面 v125 同款，时段间空格去除；英文「7 m 16 s」不动） → v93 思考计时英文数字与单位紧邻「7m 16s」（与桌面 v126 同款，时段间留空格） → v94 tok/s 速度十档色（与桌面 v127 同表同语义：TPS_BANDS 唯一事实源，原始值分档；150 起蓝紫系纯色、≥2000 Ultra 蓝紫渐变+✦ 星点，估算态与完成态同表分档，无效值中性 dim 或不渲染 chip，tooltip 档位行改动态，另加静态「颜色对照」图例（十档数值↔颜色升序一览，随主题切换））   // 悬停 ⚙ 面板可见；版本号随部署代际递增
+    var VERSION = "v95";   // v95 精简模式（theme 两档 default/compact，与桌面 v146 同期落地、独立实现）：条永久隐藏保留 DOM（heavy 保条对抗 React 清子树、面板/子面板改锚输入卡与 chip）；生成速度 .zu-tsb 与上下文容量 .zu-ctxb 挂工具行 trailing-actions 左侧（锚缺失退行尾、位置每拍兜回、签名幂等、无有效样本不渲染）；tooltip 复用实例自绘 tip（document mousemove 增 chip 分支接住条外悬停）= 速度读数+状态条摘要（逐格开关继续生效、子代理行点击开明细）+「打开设置」按钮；设置面板通用区新增样式 radiov82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v84 主标签页远端路由（工作台分组唯一主绑定上报 + 迟到载荷守卫，issue #30）→ v85 回答末尾统计行跟随万/亿开关 + tok→token → v86 历史轮 tracker 无记录（窗口滑出/换代/热更）或缺输出字段不再翻成"本轮统计不可用"，加 det 诊断 → v87 设置页排除：协调器/findComposer/deepFind/track 按 [data-testid="settings-page"] 祖先排除设置表单编辑框（MCP「请求头」textarea 被当聊天输入框、条挂进表单卡片）→ v88 工具动词「正在运行子智能体」压成「子代理运行中」（与桌面 v97 同文案；子代理速率估算为桌面桥专属，Web 无此链路） → v89 tooltip 伪边界 leave 过滤（与桌面 v99 同款）：Chrome 悬停链收缩/重算会补发 DOM 内部的 documentElement/tip mouseleave（格内 万↔1 空隙悬停、tooltip 本体停留均可复现弹出即灭），tipLeaveAt 贴边判定后取触发时刻最深 :hover 元素甄别（事件坐标/relatedTarget 实测不可信）——仍悬停在本档具体元素上即伪 leave 一律忽略，hover 链截断到 body/iframe/空链（空档区/已进子上下文/甩出窗口）维持 v47 分流 → v90 思考中计时随语言本地化（中文「1 时 2 分 3 秒」/英文「1 h 2 m 3 s」，与桌面 v99 同文案；Web 无富文本 turn-text 链——__zusagePluginRequests 仅桌面主进程消费，本端回答末尾恒为简化占位行、无采样时刻，不受 token_rate.py 改版影响）→ v91 思考计时锚定 turnHeader.startedAt（与桌面 v116 同源语义：宿主创建 header 恒写入 startedAt，重绑不清零；缺字段或时钟未及起点回退首观测起算） → v92 思考计时中文全紧邻「7分16秒」（与桌面 v125 同款，时段间空格去除；英文「7 m 16 s」不动） → v93 思考计时英文数字与单位紧邻「7m 16s」（与桌面 v126 同款，时段间留空格） → v94 tok/s 速度十档色（与桌面 v127 同表同语义：TPS_BANDS 唯一事实源，原始值分档；150 起蓝紫系纯色、≥2000 Ultra 蓝紫渐变+✦ 星点，估算态与完成态同表分档，无效值中性 dim 或不渲染 chip，tooltip 档位行改动态，另加静态「颜色对照」图例（十档数值↔颜色升序一览，随主题切换））   // 悬停 ⚙ 面板可见；版本号随部署代际递增
     var instanceDisposed = false, heavyTimer = 0, frame = 0, themeObserver = null;
     var globalListeners = [];
     function listenGlobal(target, type, fn, capture) {
@@ -1019,6 +1029,17 @@
       /* v81：⚙ 原为 +3px（17px），比宿主 group/toolbar 行的任何文字（统一
        * text-ui-base = var(--ui-font-size)）都大一号，改为同基准以对齐工具行观感 */
       ".zu-gear{flex:0 0 auto;font-size:var(--ui-font-size,14px);border-radius:6px}" +
+      /* v95 精简模式工具行 chips（速率 .zu-tsb / 上下文 .zu-ctxb）：字体显式规格与桌面
+       * 同源（--text-ui-base-1px + 700 + 等宽 + tabular-nums）；速率色档复用全局
+       * .ok/.warm/.hot 与 TPS 十档类，环形/百分比复用条面 .cbar/.pct 样式。 */
+      ".zu-tsb,.zu-ctxb{display:inline-flex;align-items:center;gap:5px;height:1.75rem;padding:0 6px;border-radius:.5rem;cursor:pointer;user-select:none;flex:0 0 auto;" +
+      "font-family:var(--font-mono,Consolas,'Cascadia Mono',Menlo,'Microsoft YaHei UI','Microsoft YaHei',monospace);font-size:calc(var(--text-ui-base,var(--ui-font-size,14px)) - 1px);font-weight:700;font-variant-numeric:tabular-nums}" +
+      ".zu-tsb:hover,.zu-tsb:focus-visible,.zu-ctxb:hover,.zu-ctxb:focus-visible{background:var(--color-hover,rgba(255,255,255,.08));outline:none}" +
+      ".zu-ctxb .cbar{width:14px;height:14px}" +
+      ".tip .tps-cfg{margin-left:6px;background:none;border:1px solid var(--color-border,rgba(255,255,255,.14));border-radius:999px;color:inherit;font:inherit;font-size:.85em;line-height:1.5;padding:0 9px;cursor:pointer}" +
+      ".tip .tps-cfg:hover{color:var(--color-foreground,#e9edf4);border-color:var(--color-border-hover,rgba(255,255,255,.24))}" +
+      ".tip .rt-row.tps-subrow{cursor:pointer}" +
+      ".tip .rt-row.tps-subrow:hover span{color:var(--color-foreground,#e9edf4);text-decoration:underline}" +
       /* 行内 SVG 线性图标（v54）：currentColor 跟随文字色，一处定义全局换色 */
       ".ico{width:12px;height:12px;flex:0 0 auto;color:var(--color-foreground-subtle,#7e8899);opacity:.85}" +
       /* 思考态动效图标（v77）：自带配色（脑灰+紫信号），略大于常规线性图标——
@@ -1235,6 +1256,10 @@
       settingRow('<input type="checkbox" data-k="sub">', L("子代理", "Sub-agents"), L("点击状态条上的子代理查看明细", "Click the bar item for sub-agent details")) +
       '</div></section>' +
       '<section class="zu-settings-section"><div class="cap">' + L("通用", "General") + '</div><div class="zu-settings-card">' +
+      '<div class="zu-settings-langs" role="radiogroup" aria-label="' + L("状态条样式", "Status bar style") + '">' +
+      '<label><input type="radio" class="zu-theme-choice" name="zu-theme-' + slot + '" value="default"><span>' + L("默认样式", "Default") + '</span></label>' +
+      '<label><input type="radio" class="zu-theme-choice" name="zu-theme-' + slot + '" value="compact"><span>' + L("精简模式", "Compact") + '</span></label></div>' +
+      '<div class="pnote">' + L("精简：隐藏悬浮条，生成速度与上下文容量移到输入框工具行（发送按钮左侧），悬停速率可看各格摘要并打开本设置。", "Compact: hides the floating bar; generation speed and context move into the composer toolbar (left of the send button) — hover the speed chip for cell summaries and a shortcut to these settings.") + '</div>' +
       settingRow('<input type="text" class="zu-ctxov" inputmode="numeric" aria-label="' + L("上下文窗口", "Context window") + '" placeholder="' + L("自动（按模型）", "Auto (model)") + '">', L("上下文窗口", "Context window"), L("留空自动识别，优先使用客户端数值", "Leave empty to detect automatically; prefer the client value")) +
       /* 万/亿开关只在中文界面出现（英文始终 K/M/B，见 fmt），因此文案不走 L() */
       (state.lang === "en" ? "" : settingRow('<input type="checkbox" class="zu-cn-num">', "中文单位（万/亿）", "token 数量以万/亿显示，默认开启")) +
@@ -1254,6 +1279,10 @@
       '<button type="button" class="zu-settings-feedback">' + L("反馈问题", "Report an issue") + '</button></div>';
       panel.querySelectorAll('input[name=zu-lang]').forEach(function (r) {
         r.checked = state.lang === r.value;
+      });
+      /* v95：精简模式 radio 回填（语言切换重建面板后勾选态不丢） */
+      panel.querySelectorAll(".zu-theme-choice").forEach(function (r) {
+        r.checked = state.theme === r.value;
       });
       /* 重建后回填全部控件状态（语言切换路径不走 syncPanel）：checkbox 按 state.show、
          上下文窗口输入框按 state.ctxOv——否则切语言后勾选态清空、首次点击语义反转 */
@@ -1283,16 +1312,21 @@
     function positionSettingsPanel() {
       if (!panel.classList.contains("open")) return;
       var br = bar.getBoundingClientRect();
-      var height = Math.max(0, Math.floor(br.top - 18));
+      /* v95：精简模式条 rect 为 0，几何/宽度改锚输入卡（无卡片时给可用宽兜底） */
+      var anchorCard = (state.theme === "compact" && cardCache && cardCache.isConnected) ? cardCache : null;
+      var ar = anchorCard ? anchorCard.getBoundingClientRect() : br;
+      var height = Math.max(0, Math.floor(ar.top - 18));
       var value = height + "px";
       if (panel.style.getPropertyValue("--zu-settings-height") !== value) panel.style.setProperty("--zu-settings-height", value);
-      value = br.width + "px";
+      var panelWidth = anchorCard ? Math.min(ar.width, Math.max(0, innerWidth - 16))
+        : (br.width || Math.min(560, Math.max(0, innerWidth - 16)));
+      value = panelWidth + "px";
       if (panel.style.width !== value) panel.style.width = value;
       /* v80：面板 fixed 挂 body——视口坐标贴条上沿（原 absolute 语义 bottom:100%+10px），
        * 左缘随条、可视区内夹紧；top 用开启后的实测面板高，避免底部悬空/重叠。 */
-      var left = Math.max(8, Math.min(Math.round(br.left), innerWidth - Math.round(br.width) - 8));
+      var left = Math.max(8, Math.min(Math.round(ar.left), innerWidth - Math.round(panelWidth) - 8));
       if (panel.style.left !== left + "px") panel.style.left = left + "px";
-      var top = Math.max(8, Math.round(br.top - panel.offsetHeight - 10));
+      var top = Math.max(8, Math.round(ar.top - panel.offsetHeight - 10));
       if (panel.style.top !== top + "px") panel.style.top = top + "px";
       syncSettingsScroll();
     }
@@ -1779,6 +1813,7 @@
       var wasLive = liveKindCur === "live";
       var view = stats ? zuBarSpeedView(stats, h && h.charsPerToken) : null;
       liveStatsCur = stats;
+      if (state.theme === "compact") { syncTpsChip(); return; }   // v95：精简模式速率走工具行 chip（2s 心跳跟随，条面不重建）
       // 用 view（而非 stats）判定快速路径：stats 非空但 view 为 null（历史存量，见
       // zuBarSpeedView）时结构要切回降级拼法，必须走下面的整条重渲染，不能原地改字。
       // 阶段（思考↔工具↔正文）切换会更换 chip 的图标（动效脑/闪电），同样只能整条
@@ -1853,7 +1888,16 @@
         sub: p.sub || {requests: 0, total: 0, input: 0, output: 0, cache_read: 0, active: false, list: []},
       };
       lastSub = view.sub;   // 子代理明细面板的数据源（开关面板/数据推送刷新用）
+      lastView = view;   // v95：精简模式 chips 的 tooltip 摘要数据源
       refreshWants();
+      if (state.theme === "compact") {
+        /* v95 精简模式：不重建条面（条已 display:none）；chips 在此随快照刷新
+         * （上下文 chip 跟随逐格开关 state.show.ctx，速率 chip 跟随 last.tps）。 */
+        if (subPanel.classList.contains("open")) buildSubPanel(view.sub);
+        syncTpsChip();
+        syncCtxChip();
+        return;
+      }
       var h = html(view);
       /* 内容没变就不重建 DOM：泵每 1.5s 推送一次，无条件 innerHTML 会重建条面+重启呼吸灯
        * 动画+触发 tooltip 重画 = 悬停时周期性闪烁（v33 修复）。变化时才重建。 */
@@ -1947,6 +1991,16 @@
          * 这分支若不清掉它，鼠标在面板里它就永不消失。 */
         mouseInBar = true;
         if (tipFor) hideTip(true, "panel-hover");
+        return;
+      }
+      var chipEl = t.closest ? t.closest(".zu-tsb,.zu-ctxb") : null;
+      if (chipEl) {
+        /* v95 精简模式：工具行 chips 在条外（宿主工具行），悬停由这里接进同一实例 tip；
+         * 离开 chips 后走下方"条外"分支自然收起，移向 tip 上方的缝由走廊/宽限兜住 */
+        mouseInBar = true;
+        cancelTipGrace();
+        if (panel.classList.contains("open")) return;
+        if (chipEl !== tipFor) { tipFor = chipEl; tipStats.shows++; drawTip(chipEl, false); }
         return;
       }
       if (!bar.contains(t)) {
@@ -2050,6 +2104,24 @@
       if (inactive()) return;
       cancelTipGrace();
     }, true);
+    /* v95 精简模式：tip 内「打开设置」/子代理明细行点击（内容随签名重建，委托挂 tip 本体） */
+    tip.addEventListener("click", function (e) {
+      if (inactive() || !tipFor) return;
+      if (e.target && e.target.closest && e.target.closest(".tps-cfg")) {
+        e.stopPropagation();
+        hideTip(true, "chip-cfg");
+        syncPanel();
+        panel.classList.add("open");
+        positionSettingsPanel();
+        subPanel.classList.remove("open");   // 两面板同位重叠，互斥打开
+        return;
+      }
+      if (e.target && e.target.closest && e.target.closest(".tps-subrow")) {
+        e.stopPropagation();
+        hideTip(true, "chip-sub");
+        toggleSubPanel();
+      }
+    }, true);
     /* 空中走廊判定（v45）：tooltip 矩形横向 ±4px、纵向 tip 顶边到底边下方 12px
      * （覆盖条面顶边到 tooltip 底边的 8px 悬空缝）。只在 tipFor 存在时被调用。 */
     function inTipCorridor(x, y) {
@@ -2109,6 +2181,9 @@
       panel.querySelector(".zu-ctxov").value = state.ctxOv;
       var cnBox = panel.querySelector(".zu-cn-num");
       if (cnBox) cnBox.checked = !!state.cnNum;
+      panel.querySelectorAll(".zu-theme-choice").forEach(function (r) {
+        r.checked = state.theme === r.value;
+      });
       syncUpdate();
     }
     panel.addEventListener("click", function (e) {
@@ -2146,6 +2221,10 @@
     });
     panel.addEventListener("change", function (e) {
       var t2 = e.target;
+      if (t2.classList.contains("zu-theme-choice")) {
+        if (t2.checked) setBarTheme(t2.value);   // v95：精简/默认切换，同窗实例即时生效
+        return;
+      }
       if (t2.classList.contains("zu-auto-update")) {
         pluginRequest("auto", t2.checked);
         return;
@@ -2276,6 +2355,7 @@
     function positionSubPanel() {
       if (!subPanel.classList.contains("open")) return;
       var item = bar.querySelector(".zu-sub");
+      if (!item && state.theme === "compact" && tpsChipCache && tpsChipCache.isConnected) item = tpsChipCache;   // v95：精简模式贴速率 chip（条面格不存在）
       if (!item) return;
       var ir = item.getBoundingClientRect();
       var width = subPanel.offsetWidth;
@@ -2283,7 +2363,8 @@
       left = Math.max(8, Math.min(left, window.innerWidth - width - 8));
       subPanel.style.left = Math.round(left) + "px";
       /* v80：fixed 挂 body，top 同设置面板——条上沿留 10px 缝 */
-      subPanel.style.top = Math.max(8, Math.round(bar.getBoundingClientRect().top - subPanel.offsetHeight - 10)) + "px";
+      var anchorTop = state.theme === "compact" ? ir.top : bar.getBoundingClientRect().top;   // v95：精简下锚 chip 上沿（条 rect 为 0）
+      subPanel.style.top = Math.max(8, Math.round(anchorTop - subPanel.offsetHeight - 10)) + "px";
     }
     function toggleSubPanel() {
       var opening = !subPanel.classList.contains("open");
@@ -2302,6 +2383,156 @@
         toggleSubPanel();
       }
     });
+    /* ---------- v95 精简模式工具行 chips：.zu-tsb 速率 + .zu-ctxb 上下文容量 ----------
+     * 挂宿主 group/toolbar 工具行、data-composer-trailing-actions 组左侧（Web 与桌面共用
+     * composer DOM；锚缺失时退行尾，位置每拍兜回）。tooltip 复用本实例自绘 tip（chips 在
+     * 条外，由 document mousemove 的 chip 分支接管悬停）。「打开设置」/子代理明细经 tip
+     * 内点击委托分别走齿轮开启分支与 toggleSubPanel。无有效速率样本不渲染（同桌面口径）。 */
+    function trailingAnchorOf(row) {
+      try {
+        var el = row.querySelector("[data-composer-trailing-actions]");
+        if (el) return el;
+      } catch (e) { }
+      return null;   // insertBefore(el, null) = 追加到行尾（兜底）
+    }
+    function toolbarAnchorRow() {
+      var row = cardCache ? toolbarRowOf(cardCache) : null;
+      return row && row.isConnected ? row : null;
+    }
+    function tpsChipData() {
+      var sv = liveStatsCur ? zuBarSpeedView(liveStatsCur, bridge.handle && bridge.handle.charsPerToken) : null;
+      if (sv) {
+        liveKindCur = "live";
+        livePhaseCur = sv.phase || "";
+        return { kind: "live", sv: sv };
+      }
+      var dbTps = lastView && lastView.last ? lastView.last.tps : 0;
+      if (dbTps && isFinite(dbTps) && dbTps > 0) {
+        liveKindCur = "fallback";
+        livePhaseCur = "";
+        return { kind: "fallback", dbTps: dbTps, band: tpsBand(dbTps) };
+      }
+      liveKindCur = "none";
+      livePhaseCur = "";
+      return null;
+    }
+    function tpsChipTipHTML(v) {
+      var view = lastView || {};
+      var sess = view.session || {}, lt = view.last_turn || {}, today = view.today || {};
+      /* 状态条摘要（逐格开关继续生效：关掉的格不出行）；子代理行点击开明细面板 */
+      var out = ttH(v.kind === "live" ? L("生成速度", "Generation speed") : L("生成速度 · 最近一段", "Generation speed · latest segment")) +
+        ttRow(L("当前读数", "Current reading"), v.kind === "live" ? v.sv.text : v.dbTps + " t/s");
+      if (v.kind === "live") {
+        out += ttRow(L("状态", "State"), v.sv.phase ? L("生成中估算", "Running estimate") : L("本轮完成 · 真实值", "Turn completed · actual"));
+      } else {
+        out += ttRow(L("档位", "Band"), tpsBandText(v.band)) +
+          ttRow(L("口径", "Basis"), L("输出 tokens（含思考）÷ 生成耗时", "output tokens (thinking incl.) ÷ generation time"));
+      }
+      out += ttH(L("状态条摘要", "Bar summary"));
+      if (state.show.turn) {
+        out += ttRow(L("本轮", "Latest turn"), fmt(lt.total) + L(" tok · ", " tok · ") + (lt.requests || 0) + L("次", " req"));
+      }
+      if (state.show.win) {
+        out += ttRow(L("会话累计", "Session"), fmt(sess.total) + L(" tok · ", " tok · ") + (sess.requests || 0) + L("次", " req"));
+      }
+      if (state.show.tools) {
+        var tls = view.tools || { total: 0, errors: 0 };
+        out += ttRow(L("工具调用", "Tool calls"), (tls.total || 0) + (tls.errors ? L("（错误 ", " (errors ") + tls.errors + "）" : ""));
+      }
+      if (state.show.today) {
+        out += ttRow(L("今日合计", "Today"), fmt(today.total) + L(" tok · ", " tok · ") + (today.requests || 0) + L("次", " req"));
+      }
+      if (state.show.sub) {
+        var sa = view.sub || { total: 0, active: false };
+        out += '<div class="rt-row tps-subrow"><b>' + L("子代理", "Sub-agents") + '</b><span>' +
+          ttEsc(fmt(sa.total || 0) + L(" tok", " tok") + (sa.active ? L(" · 运行中", " · running") : "") + L(" · 点击查看明细", " · click for details")) + "</span></div>";
+      }
+      out += tpsBandLegend() +
+        ttNote(L("精简模式：状态条已收进工具行，悬停各图标查看明细。", "Compact mode: the status bar lives in the toolbar — hover the chips for details.")) +
+        '<div class="rt-note"><button type="button" class="tps-cfg">' + L("打开设置", "Open settings") + "</button></div>";
+      return out;
+    }
+    function adoptChip(row, cls, cache) {
+      var chip = cache;
+      if (!chip || !chip.isConnected || chip.parentElement !== row) {
+        if (chip && chip.isConnected) chip.remove();
+        chip = null;
+        for (var i = 0; i < row.children.length; i++) {   // 复用热更/重建遗留节点防双 chip
+          if (String(row.children[i].className || "").indexOf(cls) >= 0) { chip = row.children[i]; break; }
+        }
+        if (!chip) {
+          chip = document.createElement("span");
+          chip.className = cls;
+          chip.tabIndex = 0;
+          chip.addEventListener("keydown", function (e) { if (e.key === "Escape") hideTip(true, "chip-esc"); });
+          row.appendChild(chip);
+        }
+      }
+      return chip;
+    }
+    function syncTpsChip() {
+      if (state.theme !== "compact" || inactive()) { restoreTpsChip(); return; }
+      var v = tpsChipData();
+      var row = toolbarAnchorRow();
+      if (!v || !row) { restoreTpsChip(); return; }
+      var chip = adoptChip(row, "zu-tsb", tpsChipCache);
+      tpsChipCache = chip;
+      var anchor = (ctxChipCache && ctxChipCache.isConnected && ctxChipCache.parentElement === row) ? ctxChipCache : trailingAnchorOf(row);
+      if (chip.nextElementSibling !== anchor) row.insertBefore(chip, anchor);   // 位置兜回：上下文 chip 左侧/行尾
+      var txt = v.kind === "live" ? v.sv.text : v.dbTps + " t/s";
+      var cls = "zu-live " + (v.kind === "live" ? v.sv.cls : v.band.cls);
+      var sig = v.kind + "|" + cls + "|" + txt;
+      if (chip.__zuSig !== sig) {   // 幂等：内容没变不重建
+        chip.__zuSig = sig;
+        chip.innerHTML = '<span class="' + cls + '">' + ttEsc(txt) + "</span>";
+        chip.setAttribute("aria-label", L("生成速度 ", "Generation speed ") + txt);
+      }
+      chip.__tip = "\x01" + tpsChipTipHTML(v);
+      if (tipFor === chip) drawTip(chip, true);   // 悬停中随快照刷新（drawTip 签名幂等）
+    }
+    function syncCtxChip() {
+      if (state.theme !== "compact" || !state.show.ctx || inactive()) { restoreCtxChip(); return; }
+      var view = lastView;
+      var row = toolbarAnchorRow();
+      if (!view || !row) { restoreCtxChip(); return; }
+      var sess = view.session || {};
+      var cw = parseInt(state.ctxOv, 10) || view.native_ctx || view.context_window || 0;
+      var pct = cw ? sess.ctx / cw * 100 : 0;
+      var exc = excActive(sess);
+      var big = cw >= 1000000;
+      var cls = exc ? "exc" : pct >= (big ? 60 : 85) ? "hot" : pct >= (big ? 40 : 70) ? "warm" : "ok";
+      var chip = adoptChip(row, "zu-ctxb", ctxChipCache);
+      ctxChipCache = chip;
+      var anchor = trailingAnchorOf(row);
+      if (chip.nextElementSibling !== anchor) row.insertBefore(chip, anchor);   // 位置兜回：行尾（速率 chip 再兜到它左侧）
+      var label = cw ? pct.toFixed(1) + "%" : fmt(sess.ctx);
+      if (chip.__zuSig !== cls + "|" + label) {
+        chip.__zuSig = cls + "|" + label;
+        chip.innerHTML = cw
+          ? '<svg class="cbar" viewBox="0 0 24 24" aria-hidden="true"><circle class="cbar-track" cx="12" cy="12" r="9"/>' +
+            '<circle class="cbar-value ' + cls + '" cx="12" cy="12" r="9" pathLength="100" stroke-dasharray="' +
+            Math.max(0, Math.min(100, pct)).toFixed(1) + ' 100" transform="rotate(-90 12 12)"/></svg>' +
+            '<span class="pct ' + cls + '">' + pct.toFixed(1) + "%</span>"
+          : '<span class="v' + (exc ? " exc" : "") + '">' + fmt(sess.ctx) + "</span>";
+        chip.setAttribute("aria-label", L("上下文容量 ", "Context capacity ") + label);
+      }
+      chip.__tip = "\x01" + ttH(L("上下文容量", "Context capacity")) +
+        (cw ? ttRow(L("已用 / 窗口", "Used / window"), fmt(sess.ctx) + " / " + fmt(cw))
+            : ttRow(L("已用", "Used"), fmt(sess.ctx) + L("（窗口容量未知）", " (window capacity unknown)")));
+      if (tipFor === chip) drawTip(chip, true);
+    }
+    function restoreTpsChip() {
+      if (!tpsChipCache) return;
+      if (tipFor === tpsChipCache) hideTip(true, "chip-restore");
+      try { tpsChipCache.remove(); } catch (e) { }
+      tpsChipCache = null;
+    }
+    function restoreCtxChip() {
+      if (!ctxChipCache) return;
+      if (tipFor === ctxChipCache) hideTip(true, "chip-restore");
+      try { ctxChipCache.remove(); } catch (e) { }
+      ctxChipCache = null;
+    }
     subPanel.addEventListener("click", function (e) {
       if (inactive()) return;
       var b = e.target && e.target.closest ? e.target.closest(".ttab") : null;
@@ -2569,6 +2800,32 @@
     var curDisplay = "none", lastPos = [-1, -1], hideSince = 0;
     /* v80：true=条挂在输入卡片内部（group/toolbar 工具行之后）；false=旧 below-card 悬浮兜底 */
     var cardMode = false;
+    /* v95 精简模式：工具行速率/上下文 chip 缓存 + 最近一次会话视图（tooltip 摘要数据源） */
+    var tpsChipCache = null, ctxChipCache = null, lastView = null;
+
+    /* v95 精简模式主题应用：条永久隐藏（display:none）但保留 DOM——样式表/自绘 tip 基建
+     * 随条存活（<style> 作用域全局，隐藏不影响 chips 生效）；条挪到 body 脱离卡片，React
+     * 清卡片子树时不牵连（heavy 每拍补挂）。离开精简档：摘 chips、由 heavy/track 恢复挂载。 */
+    function applyBarTheme() {
+      var compact = state.theme === "compact";
+      bar.setAttribute("data-zusage-theme", state.theme);
+      panel.querySelectorAll(".zu-theme-choice").forEach(function (r) { r.checked = state.theme === r.value; });
+      if (compact) {
+        cardMode = false;
+        if (!bar.isConnected || bar.parentElement !== document.body) document.body.appendChild(bar);
+        bar.classList.remove("zu-in");
+        bar.style.position = ""; bar.style.zIndex = "";
+        bar.style.left = ""; bar.style.top = ""; bar.style.minWidth = ""; bar.style.maxWidth = "";
+        lastPos = [-1, -1];
+        if (curDisplay !== "none") { bar.style.display = "none"; curDisplay = "none"; }
+        releasePads();
+        hideTip(true, "compact-theme");
+      } else {
+        restoreTpsChip();
+        restoreCtxChip();
+      }
+    }
+    applyBarTheme();   // v95：初载按 localStorage 精简档隐藏条（须在 curDisplay/tipStats 赋值之后；其余主题无操作）
 
     function setComposer(el) {
       releasePads();   // 旧卡片的让位边距先还原（in-card 形态不需要让位带；兜底形态由 heavy 补回）
@@ -2603,12 +2860,22 @@
         }
       }
       if (!composer && slot === 0) collectDiag();   // 一直找不到输入框的窗口：周期性写环境诊断（everMounted 门防覆盖）
+      if (state.theme === "compact") {
+        /* v95 精简模式：条常驻 body 且 display:none——挂载/几何/让位带全部停用。唯一职责
+         * 是保条存活（chip 样式 <style> 与 tip 基建随条，React 清 body 子树时补挂）。 */
+        if (!bar.isConnected || bar.parentElement !== document.body) document.body.appendChild(bar);
+        if (curDisplay !== "none") { bar.style.display = "none"; curDisplay = "none"; }
+        releasePads();
+        cardMode = false;
+      }
       if (composer) {
         if (!cardCache || !cardCache.isConnected) {
           var c = cardOf(composer);
           cardCache = c && c !== document.body ? c : null;
         }
-        if (cardCache) {
+        if (state.theme === "compact") {
+          if (cardCache) nativeCtxVal = readNativeCtx(cardCache);   // v95：上下文窗口自动识别的备源照常刷新
+        } else if (cardCache) {
           /* v80：优先挂输入卡片内部（工具行下）；无工具行回落 below-card 兜底 + 让位带 */
           cardMode = mountInCard();
           if (cardMode) releasePads();
@@ -2618,6 +2885,8 @@
           mountBelowCard();
         }
       }
+      syncTpsChip();   // v95：速率 chip 对账点（React 重建工具行/位置挤走后兜回；非精简主题内部门控摘除）
+      syncCtxChip();   // v95：上下文 chip 对账点（跟随逐格开关 state.show.ctx）
       if (state.data && pid === "auto") {
         var msid = typeof state.data.mine === "string" ? state.data.mine : null;
         var pSid;
@@ -2762,6 +3031,12 @@
       try {
         syncExcBubble();   // 超限气泡：显示/隐藏/贴条定位（内部自判状态，隐藏分支零开销）
         if (!composer || !composer.isConnected) { hideSince = 0; hideBar(); return; }
+        if (state.theme === "compact") {
+          /* v95 精简模式：条已 display:none，几何/显隐/收缩全部停用（超限气泡由
+           * syncExcBubble 的 curDisplay 门自兜隐藏）；帧循环经 finally 自续。 */
+          everMounted = true;
+          return;
+        }
         if (cardMode) {
           /* v80 in-card 对账：React 整子树重挂（切会话 key 变化）会连外来节点一起丢，
            * 帧率级检查补挂；卡片本身被重建时 cardCache 断连，heavy 低频重找后再挂 */
@@ -2911,6 +3186,8 @@
       });
       globalListeners = [];
       releasePads();
+      restoreTpsChip();   // v95：摘除精简模式速率 chip（不留孤儿节点）
+      restoreCtxChip();   // v95：摘除上下文 chip
       wantedEl = composer = cardCache = null;
       bar.remove();
       panel.remove();   // v80：面板挂 body，dispose 需单独摘除
@@ -2920,6 +3197,7 @@
     }
     var api = {
       pid: pid, slot: slot, dispose: dispose,
+      applyBarTheme: applyBarTheme,   // v95：主题切换（setBarTheme 遍历调用）
       attach: function (el, sid) {   // 协调器派发：pane 最靠下的可见输入框 + 其 data-session-id
         if (inactive()) return;
         wantedEl = el;

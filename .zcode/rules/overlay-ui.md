@@ -16,7 +16,8 @@
 
 - 默认状态条优先挂输入卡片工具行之后，找不到工具行时才回退到 body 级 `position: fixed`；样式挂条内 `<style>`。药丸样式固定在所属输入卡片下方、按内容定宽并居中。几何避开输入框中心点命中检测，避免自遮挡闪烁；面板和 tooltip 挂 body。
 - 默认样式卡内随卡片拉伸，悬浮回退锁定卡片实测宽；超宽时先隐藏「本轮」「会话累计」的缓存命中率（tooltip 仍可见），再以右缘渐隐兜底。药丸样式以输入卡及视口宽度约束，窄时条面横向滚动，聚焦条目应滚入可视区域；条面不换行。Web 宽度策略独立。
-- ⚙ 通用的「状态条样式」持久化为 `zusage3.theme`（`default` / `pill`，缺省与非法值回退 `default`），主题切换只写该键，同窗实例同步。药丸表面跟随所属输入卡的圆角、边框、背景以及 Highspeed/焦点状态；不改变数字单位、额度口径或工具栏 chip。
+- ⚙ 通用的「状态条样式」持久化为 `zusage3.theme`（`default` / `pill` / `compact`，缺省与非法值回退 `default`），主题切换只写该键，同窗实例同步。药丸表面跟随所属输入卡的圆角、边框、背景以及 Highspeed/焦点状态；不改变数字单位、额度口径或工具栏 chip。
+- **精简模式（compact，v146）**：条永久 `display:none` 但**保留 DOM**——chip 样式 `<style>` 与 ariaLive 都挂条内（`<style>` 隐藏仍全局生效），`heavy()` 每拍保条回 body 对抗 React 清子树（条丢=chip 样式全灭），`render()` 跳过条面重建但数据解析与 enhance 照跑；`track()` 早退只留诊断（`FATAL.mount.mode="compact"`）。速率 chip `.zu-tsb` 挂工具行（重置卡/额度组 wrapper 左侧），内容与条面速度 chip 同源，**无有效样本不渲染（用户拍板）**——代价是新会话首次请求前无设置入口；隐藏格数据收进速率 chip tooltip 的「状态条摘要」行（逐格开关 `state.show.*` 继续生效、子代理行点击开明细）+「打开设置」按钮（镜像齿轮开启分支）。已知限制：条隐藏后 ariaLive 不播报（`display:none` 后代），chip 仍有 aria-label。面板/子面板在精简下几何改锚输入卡/chip（条 rect 为 0）。
 - 字体一律引用宿主令牌：字号 `calc(var(--ui-font-size, 14px) ± Npx)`，字族 `var(--font-mono, <旧硬编码栈>)`，用 font longhand 不用简写；`--ui-font-size` 由宿主设置页运行时写在 `html` 内联样式。配色走宿主 `--color-*` 变量自动适配亮暗，引用前确认令牌存在。**例外（2026-10-28 用户规格定稿）**：额度 chip `.zu-quota` 与上下文百分比 `.zu-ctxpct` 两处**显式同字体**：`calc(var(--text-ui-base,var(--ui-font-size,14px)) - 1px)` + 加粗 + `var(--font-mono,…)` + tabular-nums（宿主默认基准 14px 时为 13px）——不靠继承（工具栏容器字号偏小、与带 `text-ui-base` 的按钮不等值，实测两段字号不一致），`.pct` 半加粗废止。其余条目（git chip、⚙ 面板等）仍走宿主令牌。
 - 幽灵判定 `inGhostSubtree` 只管聊天壳：宿主用 `opacity-0 + inert` 保持聊天视图挂载，`opacity < 0.1` 的祖先会被判死不挂条，布景/演示页不能用 opacity 隐藏挂靠卡片。
 - ⚙ 设置面板结构（用户拍板）：ZCode 设置侧栏同款——左栏三组分区导航 + 右侧单分区显隐，激活项 `aria-current="page"`，选择持久化 `zusage3.sec`，面板窄于 620px 时导航收成 icon rail；高度在打开瞬间按内容自然高锁定，此后只收紧不放大（切分区不抖动，留白是预期）。配色全走宿主 `--color-*` 语义变量。

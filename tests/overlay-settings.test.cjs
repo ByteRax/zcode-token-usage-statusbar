@@ -845,3 +845,38 @@ test('the click delegate is bound per instance with the pointer cursor gated by 
   assert.match(source, /listenGlobal\(document, "click", onProjRowClick\);/);
   assert.match(source, /data-zusage-pp=\\"1\\"\] \[data-testid=virtual-project-root-name\]\.truncate\{cursor:pointer\}/);
 });
+
+/* ---------- v146：状态条样式第三档 compact（zusage3.theme 读取与归一持久化） ---------- */
+test('compact theme: stored value is read on boot, normalized on write, and persisted via setBarTheme', () => {
+  const stateSource = extract('  var LS = {', '  /* ---------- 多实例注册表');
+  const themeFnSource = extract('  function setBarTheme(', '  var remoteCache = {};');
+  function boot(stored) {
+    const store = Object.assign({}, stored);
+    const context = {
+      window: {},
+      localStorage: { getItem: k => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = v; } },
+    };
+    vm.runInNewContext(stateSource, context);
+    return { context, store };
+  }
+  assert.equal(boot({}).context.state.theme, 'default');
+  assert.equal(boot({ 'zusage3.theme': 'compact' }).context.state.theme, 'compact');
+  assert.equal(boot({ 'zusage3.theme': 'pill' }).context.state.theme, 'pill');
+  assert.equal(boot({ 'zusage3.theme': 'bogus' }).context.state.theme, 'default');   // 非法值回退 default
+  const store = {};
+  const applied = [];
+  const ctx = {
+    state: { theme: 'default' }, LS: { theme: 'zusage3.theme' },
+    lsSet: (k, v) => { store[k] = v; },
+    instances: [{ applyBarTheme: () => applied.push(1) }],
+  };
+  vm.runInNewContext(themeFnSource + '\nsetBarTheme("compact");', ctx);
+  assert.equal(ctx.state.theme, 'compact');
+  assert.equal(store['zusage3.theme'], 'compact');
+  assert.equal(applied.length, 1, 'every instance reapplies the theme');
+  vm.runInNewContext('setBarTheme("weird");', ctx);
+  assert.equal(ctx.state.theme, 'default');
+  assert.equal(store['zusage3.theme'], 'default');
+  vm.runInNewContext('setBarTheme("pill");', ctx);
+  assert.equal(ctx.state.theme, 'pill');
+});
