@@ -158,16 +158,16 @@ def _project_usage(con, sid):
     本地库或无 project_id 时返回 None（渲染端判空不渲染该格）。"""
     prow = con.execute(
         "select project_id from session where id=?", (sid,)).fetchone()
-    if not prow or not prow["project_id"]:
+    if not prow or not prow[0]:   # 位置取值：con 可能没有 row_factory（远端链复用连接）
         return None
-    mains = [r["id"] for r in con.execute(
+    mains = [r[0] for r in con.execute(
         """select id from session where project_id=?
            and parent_id is null and substr(id,1,?)!='sess_subagent'""",
-        (prow["project_id"], _SUB_PREFIX_LEN))]
+        (prow[0], _SUB_PREFIX_LEN))]
     all_ids = list(mains)
     if mains:
         qm = ",".join("?" * len(mains))
-        all_ids += [r["id"] for r in con.execute(
+        all_ids += [r[0] for r in con.execute(
             f"select id from session where parent_id in ({qm})", mains)]
     if not all_ids:
         return None
