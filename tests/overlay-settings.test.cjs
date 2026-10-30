@@ -157,29 +157,47 @@ test('settings title uses the same current plugin version as the update section'
   assert.doesNotMatch(status.textContent, /当前版本：/);
 });
 
-test('restart-notice toggle reflects pushed truth and posts through the delegated handler', () => {
+test('restart-notice flows through the real plugin-update bridge into the toggle', () => {
+  const bridgeSource = extract('  window.__zusagePluginUpdate = function (s) {', '  /* 工作区身份来自当前会话节点');
   const syncSource = extract('    function syncUpdate() {', '    function syncPanel() {');
   const changeSource = extract('    panel.addEventListener("change",', '    listenGlobal(document, "mousedown",');
-  let handler, requested = null;
+  let requested = null;
   const rn = { checked: true };
   const stub = () => ({ textContent: '', hidden: true, disabled: false });
-  const syncContext = {
-    state: { pluginUpdate: { supported: true, auto: true, phase: 'idle' }, restartNotice: false },
-    panel: { querySelector: selector => selector === '.zu-restart-notice' ? rn : stub() },
-    L: (zh) => zh,
-  };
-  vm.runInNewContext(syncSource + '\nsyncUpdate();', syncContext);
-  assert.equal(rn.checked, false);   // 主进程推送 restartNotice=false：回显关闭
-  syncContext.state.restartNotice = undefined;
-  vm.runInNewContext('syncUpdate();', syncContext);
-  assert.equal(rn.checked, true);   // 缺省/异常值回显开启（与 Python 端 is not False 同向）
-  vm.runInNewContext(changeSource, {
-    panel: { addEventListener: (_, fn) => { handler = fn; } },
-    state: {},
+  const state = { pluginUpdate: null, rateLine: true, quotaEnabled: true, resetBadge: true, restartNotice: true };
+  const context = {
+    state,
+    panel: {
+      querySelector: selector => selector === '.zu-restart-notice' ? rn : stub(),
+      addEventListener: (_, fn) => { context.__changeHandler = fn; },
+    },
+    L: (zh) => zh, scanRateLines: () => {}, instances: [], stale: () => false, window: {},
     pluginRequest: (action, enabled) => { requested = [action, enabled]; },
-  });
-  handler({ target: { classList: { contains: name => name === 'zu-restart-notice' }, checked: false } });
+  };
+  // 走真实 __zusagePluginUpdate 拷贝行 → state.restartNotice → syncUpdate 回显；
+  // 直接喂 state.restartNotice 的 stub 会锁住不存在的数据路径（第一轮 review 抓过）。
+  vm.runInNewContext(bridgeSource + syncSource + changeSource
+    + '\nwindow.__zusagePluginUpdate({restartNotice: false, rateLine: true, quotaEnabled: true, resetBadgeEnabled: true});'
+    + '\nsyncUpdate();', context);
+  assert.equal(state.restartNotice, false);   // 主进程推送 restartNotice=false：拷贝进 state
+  assert.equal(rn.checked, false);            // 回显关闭
+  vm.runInNewContext('window.__zusagePluginUpdate({restartNotice: true, rateLine: true, quotaEnabled: true, resetBadgeEnabled: true});'
+    + '\nsyncUpdate();', context);
+  assert.equal(rn.checked, true);             // 缺省/异常值回显开启（与 Python 端 is not False 同向）
+  context.__changeHandler({ target: { classList: { contains: name => name === 'zu-restart-notice' }, checked: false } });
   assert.deepEqual(requested, ['restart-notice', false]);
+});
+
+test('restart-notice wiring stays three-way bound and the main-process contract holds', () => {
+  // 渲染 class、回显查询、change 委托三方共用同一 class 名：改坏任意一处开关即死且
+  // 行为测试的按字面量 stub 感知不到（变异审查：仅改渲染 class 时 42 例全绿）。
+  assert.ok(source.includes('class="zu-restart-notice"'));            // 渲染
+  assert.ok(source.includes('querySelector(".zu-restart-notice")'));  // 回显
+  assert.ok(source.includes('contains("zu-restart-notice")'));        // change 委托
+  const im = fs.readFileSync(path.join(__dirname, '..', 'inject-main.cjs'), 'utf8');
+  assert.match(im, /restartNotice: readCfgCached\(\)\.restart_notice !== false/);   // 推送真值方向（缺省开）
+  assert.ok(im.includes('req.action === "restart-notice"'));                        // 受限写动作分发
+  assert.ok(im.includes('updateConfig(HERE, { restart_notice: enabled }'));         // 写入键名与 Python 侧一致
 });
 
 test('panel retains all controls, scroll position and settings-only styling', () => {

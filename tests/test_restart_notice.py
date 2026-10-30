@@ -350,6 +350,16 @@ class RestartNoticeTests(unittest.TestCase):
                 self.assertIn("hookSpecificOutput", output)
                 self.assertIn("用户可见·重启提醒", output["hookSpecificOutput"]["additionalContext"])
 
+    def test_notice_enabled_fail_open_when_bridge_module_missing(self):
+        # overlay_install 不可导入（import 失败）时保持提醒开启且不抛——
+        # SessionStart hook 绝不能因开关探测炸掉；静默只来自显式 false。
+        self.pending_sync()
+        with mock.patch.dict(sys.modules, {"overlay_install": None}):
+            self.assertTrue(notice.notice_enabled(self.runtime))
+            output = notice.session_notice(self.runtime, {"suppressOutput": True})
+        self.assertIn("hookSpecificOutput", output)
+        self.assertIn("用户可见·重启提醒", output["hookSpecificOutput"]["additionalContext"])
+
 
 if __name__ == "__main__":
     unittest.main()
