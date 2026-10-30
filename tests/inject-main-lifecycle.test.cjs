@@ -193,6 +193,36 @@ test('turn-text request passes --no-cn-units only when cn === 0', async () => {
   }
 });
 
+test('turn-text echoes only a valid unit epoch on success and timeout', async () => {
+  const h = harness(); await flush();
+  for (const [epoch, expected] of [['42:3', '"42:3"'], [undefined, 'null'], ['1:2);evil()', 'null'], ['1'.repeat(16) + ':0', 'null'], [42, 'null']]) {
+    h.queue.push({ action: 'turn-text', sid: 'sid_a', unitEpoch: epoch });
+    h.poll(); await flush();
+    const p = h.procs.at(-1);
+    p.stdout.emit('data', Buffer.from('ok'));
+    p.emit('close', 0); await flush();
+    assert.ok(h.deliveries.at(-1).endsWith(',"ok",' + expected + ')'));
+  }
+  h.queue.push({ action: 'turn-text', sid: 'sid_a', unitEpoch: '42:4' });
+  h.poll(); await flush();
+  h.runLastTimer(15000); await flush();
+  assert.ok(h.deliveries.at(-1).endsWith(',"","42:4")'));
+});
+
+test('turn-text passes force KMB only for explicit true, independently of cn', async () => {
+  const h = harness(); await flush();
+  for (const cn of [0, 1, undefined]) {
+    h.queue.push({ action: 'turn-text', sid: 'sid_a', cn, forceKmb: true });
+    h.poll(); await flush();
+    assert.deepEqual([...h.procs.at(-1).args.slice(1)], ['--turn', '--current', '--session', 'sid_a', ...(cn === 0 ? ['--no-cn-units'] : []), '--force-kmb']);
+  }
+  for (const forceKmb of [false, 1, 'true', undefined]) {
+    h.queue.push({ action: 'turn-text', sid: 'sid_a', forceKmb });
+    h.poll(); await flush();
+    assert.equal(h.procs.at(-1).args.includes('--force-kmb'), false);
+  }
+});
+
 /* 缺省/空值归一：Windows 无 python3、macOS/Linux 未必有 python；三个 spawn 点都直接读
  * python_path，空字符串也必须回落到平台默认，显式配置仍优先 */
 test('python_path default and empty value normalize to the platform interpreter', async () => {

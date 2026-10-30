@@ -58,6 +58,21 @@ test('format switches token counts to 万/亿 only when asked; below 1 万 keeps
   assert.deepEqual([9500, 1420000].map(n => formatTokens(n, false)), ['9,500', '1,420,000']);
 });
 
+test('force KMB overrides cn for completed output without changing legacy formatting', () => {
+  const values = [999, 1000, 9500, 1000000, 123456789, 1e9];
+  assert.deepEqual(values.map(n => formatTokens(n, true, true)), ['999', '1.0K', '9.5K', '1.00M', '123.46M', '1.00B']);
+  assert.equal(formatTokens(9500, false), '9,500');
+  const stats = { complete: true, tokenRate: 5, outputTokens: 9500, durationMs: null, state: 'completedSuccess' };
+  for (const cn of [true, false]) assert.match(format(stats, cn, true), /输出 9\.5K token/);
+});
+
+test('force KMB rounds half boundaries up at each scale', () => {
+  const values = [1249, 1250, 1251, 1124999, 1125000, 1125001, 1124999999, 1125000000, 1125000001];
+  const expected = ['1.2K', '1.3K', '1.3K', '1.12M', '1.13M', '1.13M', '1.12B', '1.13B', '1.13B'];
+  for (const cn of [true, false]) assert.deepEqual(values.map(n => formatTokens(n, cn, true)), expected);
+  assert.equal(formatTokens(1250, false), '1,250');
+});
+
 test('missing or too short final summary is unknown rather than fabricated', () => {
   const tracker = createTracker({ now: () => 0 });
   tracker.ingest(snapshot(1, [header('failed')]));

@@ -15,7 +15,7 @@ function render(data, lang = 'zh', live = null, show = null) {
   const context = vm.createContext({
     state: { lang, show: { turn: true, win: true, today: true, ...(show || {}) } },
     L: (zh, en) => lang === 'en' ? en : zh,
-    fmt: value => String(value || 0), sec: value => String(value || 0),
+    fmt: value => String(value || 0), countFmt: value => String(value || 0), sec: value => String(value || 0),
     cachePct: () => '', shrink: false, liveStatsCur: live, bridge: { handle: null },
     subRate: { rate: null, at: 0 },   // v97：html 里子代理估算桥引用（值本身被 zuBarSpeedView stub 吞掉）
     zuBarSpeedView: value => value, zuIcoThinking: () => '<svg/>',

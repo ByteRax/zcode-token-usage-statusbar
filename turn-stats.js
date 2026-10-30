@@ -160,21 +160,28 @@
 
   // cn=true 时 token 数量按万/亿显示（≥1 亿用亿、≥1 万用万，至多两位小数去尾零，数字与单位不留空格），
   // 与 overlay.js fmt() / token_rate.py fmt_cn 同规则；不足 1 万沿用千分位。
-  function formatTokens(n, cn) {
+  function formatTokens(n, cn, forceKmb) {
+    if (forceKmb) {
+      // 对原始 token 数按显示精度四舍五入，避免缩放后浮点半数偏差。
+      if (n >= 1e9) return (Math.round(n / 1e7) / 100).toFixed(2) + 'B';
+      if (n >= 1e6) return (Math.round(n / 1e4) / 100).toFixed(2) + 'M';
+      if (n >= 1e3) return (Math.round(n / 100) / 10).toFixed(1) + 'K';
+      return String(n);
+    }
     if (cn && n >= 1e8) return trimFixed(n / 1e8) + '亿';
     if (cn && n >= 1e4) return trimFixed(n / 1e4) + '万';
     return n.toLocaleString();
   }
   function trimFixed(x) { return x.toFixed(2).replace(/\.?0+$/, ''); }
 
-  function format(stats, cn) {
+  function format(stats, cn, forceKmb) {
     if (!stats) return '';
     if (!stats.complete) {
       const speed = stats.characterRate === null ? '' : ` · ${stats.characterRate.toFixed(1)} 字符/s`;
       return `⚡ 生成中 · 已观察 ${(stats.observedMs / 1000).toFixed(1)}s${speed}`;
     }
     const speed = stats.tokenRate == null || !Number.isFinite(stats.tokenRate) ? '生成时长缺失，暂不显示速率' : `${stats.tokenRate.toFixed(1)} token/s`;
-    const output = stats.outputTokens === null ? '输出未知' : `输出 ${formatTokens(stats.outputTokens, cn)} token`;
+    const output = stats.outputTokens === null ? '输出未知' : `输出 ${formatTokens(stats.outputTokens, cn, forceKmb)} token`;
     const duration = stats.durationMs === null ? '' : ` · 耗时 ${(stats.durationMs / 1000).toFixed(1)}s`;
     const status = stats.state === 'failed' ? ' · 失败' : stats.state === 'completedInterrupted' ? ' · 已中断' : '';
     return `⚡ ${speed} · ${output}${duration}${status}`;

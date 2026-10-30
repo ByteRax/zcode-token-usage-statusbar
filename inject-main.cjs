@@ -1022,11 +1022,11 @@ async function setResetBadgeEnabled(enabled, wc, requestId) {
  * 用一次性 spawn 而非常驻泵：低频（每个完成的轮次至多几次重试）、与主数据泵完全并行
  * 的旁路查询，不占用泵的 stdin 行协议。查不到（数据库还没追上/没有有效提问时刻/
  * 这一轮已被新提问越过）时回推空串，不是错误，渲染端据此限流重试。 */
-function queryTurnText(sid, wc, plainUnits) {
+function queryTurnText(sid, wc, plainUnits, forceKmb, unitEpoch) {
   const deliver = (text) => {
     if (!wc || wc.isDestroyed() || !isLocalHostPage(wc)) return;
     wc.executeJavaScript("window.__zusageDeliverTurnText && window.__zusageDeliverTurnText(" +
-      JSON.stringify(sid) + "," + JSON.stringify(text || "") + ")", true).catch(() => { });
+      JSON.stringify(sid) + "," + JSON.stringify(text || "") + "," + JSON.stringify(typeof unitEpoch === "string" && /^\d{1,15}:\d{1,15}$/.test(unitEpoch) ? unitEpoch : null) + ")", true).catch(() => { });
   };
   if (typeof sid !== "string" || !/^[A-Za-z0-9_-]{1,80}$/.test(sid)) return;
   let py;
@@ -1034,7 +1034,7 @@ function queryTurnText(sid, wc, plainUnits) {
     /* --no-cn-units：渲染端万/亿开关（localStorage，主进程无真值）显式关闭时才传；
        缺省（含旧渲染端不带 cn 字段）与产品默认一致，Python 侧自行用万/亿 */
     py = spawn(readCfgCached().python_path,
-      [TOKEN_RATE, "--turn", "--current", "--session", sid].concat(plainUnits ? ["--no-cn-units"] : []), { windowsHide: true });
+      [TOKEN_RATE, "--turn", "--current", "--session", sid].concat(plainUnits ? ["--no-cn-units"] : [], forceKmb ? ["--force-kmb"] : []), { windowsHide: true });
   } catch (e) { LOG("turn text spawn failed:", e.message); deliver(""); return; }
   let finished = false;
   const finish = (text) => {
@@ -1356,7 +1356,7 @@ async function pollPluginRequests() {
             ? quotaClient.refreshSource(req.sourceId) : quotaClient.refresh());
           deliverPluginRequest(wc, req.requestId, started ? { ok: true, pending: true } : { ok: false, error: "quota query already running or unavailable" });
         } else if (req && req.action === "turn-text" && typeof req.sid === "string") {
-          queryTurnText(req.sid, wc, req.cn === 0);
+          queryTurnText(req.sid, wc, req.cn === 0, req.forceKmb === true, req.unitEpoch);
         } else if (req && req.action === "git-refresh") {   // v96：Git chip 点击 / 快照后节流：立即重查全部已关注路径
           gitTick(true, req.requestId, wc, req.path).catch(() => { });
         } else if (req && req.action === "relaunch") {   // v172：⚙ 更新页「重启 ZCode」按钮（浮层已二次确认）
