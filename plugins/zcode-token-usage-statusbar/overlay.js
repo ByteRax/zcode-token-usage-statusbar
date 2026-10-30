@@ -3804,7 +3804,7 @@
       var cb = panel.querySelector(".zu-auto-update");
       cb.checked = !!(u && u.auto);
       cb.disabled = !active;
-      /* 重启提醒开关真值不依赖更新器可用性（主进程无条件推送 restartNotice，缺省开） */
+      /* 重启提醒开关真值不依赖更新器可用性（主进程无条件推送 restartNotice，缺省开；change 时代乐观更新） */
       var rn = panel.querySelector(".zu-restart-notice");
       if (rn) rn.checked = state.restartNotice !== false;
       panel.querySelector('[data-update=check]').disabled = !active || !!u.busy;
@@ -4408,7 +4408,17 @@
         return;
       }
       if (t2.classList.contains("zu-restart-notice")) {
-        pluginRequest("restart-notice", t2.checked);
+        /* 乐观更新勾选态，真值以主进程写 config.json 后回推的 restartNotice 为准 */
+        var requestedNotice = t2.checked, previousNotice = state.restartNotice;
+        state.restartNotice = requestedNotice;
+        showSettingsFeedback(false, true);
+        pluginRequest("restart-notice", requestedNotice, function (result) {
+          if (inactive()) return;
+          if (result.ok) { showSettingsFeedback(false, false); return; }
+          state.restartNotice = previousNotice;
+          syncPanel();
+          showSettingsFeedback(true);
+        });
         return;
       }
       if (t2.classList.contains("zu-src-enable")) {

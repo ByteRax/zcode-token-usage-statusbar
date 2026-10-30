@@ -161,31 +161,44 @@ test('restart-notice flows through the real plugin-update bridge into the toggle
   const bridgeSource = extract('  window.__zusagePluginUpdate = function (s) {', '  /* 工作区身份来自当前会话节点');
   const syncSource = extract('    function syncUpdate() {', '    function syncPanel() {');
   const changeSource = extract('    panel.addEventListener("change",', '    listenGlobal(document, "mousedown",');
-  let requested = null;
+  let requested = null, respond = null;
   const rn = { checked: true };
-  const stub = () => ({ textContent: '', hidden: true, disabled: false });
+  const feedbackNode = { textContent: '', classList: { toggle: () => {} } };   // showSettingsFeedback 是片段内真实定义，断言其真实文案
+  const stub = () => ({ textContent: '', hidden: true, disabled: false, classList: { toggle: () => {} } });
   const state = { pluginUpdate: null, rateLine: true, quotaEnabled: true, resetBadge: true, restartNotice: true };
   const context = {
     state,
     panel: {
-      querySelector: selector => selector === '.zu-restart-notice' ? rn : stub(),
+      querySelector: selector => selector === '.zu-restart-notice' ? rn
+        : selector === '.zu-settings-feedback-status' ? feedbackNode : stub(),
       addEventListener: (_, fn) => { context.__changeHandler = fn; },
     },
     L: (zh) => zh, scanRateLines: () => {}, instances: [], stale: () => false, window: {},
-    pluginRequest: (action, enabled) => { requested = [action, enabled]; },
+    inactive: () => false, syncPanel: () => {},
+    pluginRequest: (action, enabled, done) => { requested = [action, enabled]; respond = done; },
   };
   // 走真实 __zusagePluginUpdate 拷贝行 → state.restartNotice → syncUpdate 回显；
   // 直接喂 state.restartNotice 的 stub 会锁住不存在的数据路径（第一轮 review 抓过）。
   vm.runInNewContext(bridgeSource + syncSource + changeSource
-    + '\nwindow.__zusagePluginUpdate({restartNotice: false, rateLine: true, quotaEnabled: true, resetBadgeEnabled: true});'
+    + '\nwindow.__zusagePluginUpdate({restartNotice: false, rateLine: true, quotaEnabled: true, resetBadgeEnabled: true, feedbackVersion: 1});'
     + '\nsyncUpdate();', context);
   assert.equal(state.restartNotice, false);   // 主进程推送 restartNotice=false：拷贝进 state
   assert.equal(rn.checked, false);            // 回显关闭
-  vm.runInNewContext('window.__zusagePluginUpdate({restartNotice: true, rateLine: true, quotaEnabled: true, resetBadgeEnabled: true});'
+  vm.runInNewContext('window.__zusagePluginUpdate({restartNotice: true, rateLine: true, quotaEnabled: true, resetBadgeEnabled: true, feedbackVersion: 1});'
     + '\nsyncUpdate();', context);
   assert.equal(rn.checked, true);             // 缺省/异常值回显开启（与 Python 端 is not False 同向）
+  // change 走 zu-rate-line 同款乐观更新 + 回执回退契约：写失败时还原勾选并提示，不静默撒谎。
   context.__changeHandler({ target: { classList: { contains: name => name === 'zu-restart-notice' }, checked: false } });
   assert.deepEqual(requested, ['restart-notice', false]);
+  assert.equal(state.restartNotice, false);   // 乐观更新已落 state
+  assert.match(feedbackNode.textContent, /等待确认/);
+  respond({ ok: false });
+  assert.equal(state.restartNotice, true);    // 失败回退到点击前的真值
+  assert.match(feedbackNode.textContent, /保存失败/);
+  context.__changeHandler({ target: { classList: { contains: name => name === 'zu-restart-notice' }, checked: false } });
+  respond({ ok: true });
+  assert.equal(state.restartNotice, false);   // 成功路径保持乐观值
+  assert.equal(feedbackNode.textContent, '已保存');
 });
 
 test('restart-notice wiring stays three-way bound and the main-process contract holds', () => {
@@ -196,8 +209,9 @@ test('restart-notice wiring stays three-way bound and the main-process contract 
   assert.ok(source.includes('contains("zu-restart-notice")'));        // change 委托
   const im = fs.readFileSync(path.join(__dirname, '..', 'inject-main.cjs'), 'utf8');
   assert.match(im, /restartNotice: readCfgCached\(\)\.restart_notice !== false/);   // 推送真值方向（缺省开）
-  assert.ok(im.includes('req.action === "restart-notice"'));                        // 受限写动作分发
+  assert.ok(im.includes('req.action === "restart-notice" && typeof req.enabled === "boolean"'));   // 分发含布尔守卫
   assert.ok(im.includes('updateConfig(HERE, { restart_notice: enabled }'));         // 写入键名与 Python 侧一致
+  assert.match(im, /cfgCache = null;\s*\n\s*broadcastPluginState\(\);\s*\n\s*deliverPluginRequest\(wc, requestId, \{ ok: true \}\);/);   // 写后置缓存并广播回推
 });
 
 test('panel retains all controls, scroll position and settings-only styling', () => {
