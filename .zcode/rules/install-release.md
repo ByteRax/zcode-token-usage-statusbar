@@ -29,7 +29,7 @@
 ## 3. 配置与开关
 
 - 配置只合并需要的键，不整体覆盖 `config.json`；保留未知键、用户显式关闭与个人路径。插件配置事务在锁内重读、合并，再同目录原子替换；损坏或非对象配置不能被默默重建。`config.example.json` 是模板，不可原样执行占位路径。
-- 缺字段默认值、非布尔异常值与显式 `false` 不能混为一谈。自动安装：缺文件/缺字段默认开启，显式 `false` 保留；`ZUSAGE_PLUGIN_AUTO_INSTALL=1/0` 优先配置但不能越过 `.plugin-overlay-optout`，无环境覆盖时异常配置不开启。`plugin_auto_update` 与自动安装独立；损坏或非布尔更新配置不启动自动更新。
+- 缺字段默认值、非布尔异常值与显式 `false` 不能混为一谈。自动安装：缺文件/缺字段默认开启，显式 `false` 保留；`ZUSAGE_PLUGIN_AUTO_INSTALL=1/0` 优先配置但不能越过 `.plugin-overlay-optout`，无环境覆盖时异常配置不开启。`plugin_auto_update` 与自动安装独立；损坏或非布尔更新配置不启动自动更新。`restart_notice`（issue #139）只门控 `session_notice` 的会话内提醒通道：显式 `false` 才静默，缺省/损坏/非布尔保持提醒，CLI 输出与 `_nudge` 故障提示不受控。
 - 主桥 `readCfg()` 的 `python_path` 缺省与空值归一为平台默认（win32=`python`，其它=`python3`），三个 spawn 点直接读它。
 
 ## 4. hooks 契约

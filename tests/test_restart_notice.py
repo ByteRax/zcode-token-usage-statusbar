@@ -324,6 +324,42 @@ class RestartNoticeTests(unittest.TestCase):
             else:
                 self.assertEqual(context, "")
 
+    def test_session_notice_off_switch_suppresses_reminders(self):
+        # issue #139：config.json 的 restart_notice=false 时 SessionStart 不再注入
+        # 重启/安装提醒（提示条通道整体静默），且不探测客户端。
+        self.pending_sync()
+        (self.runtime / "config.json").write_text('{"restart_notice": false}', encoding="utf-8")
+        with mock.patch.object(notice, "installation_status",
+                               side_effect=AssertionError("client probed with notices off")):
+            output = notice.session_notice(self.runtime, {"suppressOutput": True})
+        self.assertEqual(output, {"suppressOutput": True})
+        # 开关只作用于会话内提醒通道：CLI（/install-overlay 后打印）仍给出同一文案。
+        self.assertIn("请完全退出 ZCode", notice_context(self.runtime))
+
+    def test_notice_switch_defaults_keep_notices_on(self):
+        # 缺省（无配置文件）、损坏配置、非布尔异常值都不静默——静默只来自显式 false。
+        self.pending_sync()
+        for content in (None, "{bad", "[]", '{"restart_notice": "false"}', '{"restart_notice": 0}'):
+            with self.subTest(content=content):
+                path = self.runtime / "config.json"
+                if content is None:
+                    path.unlink(missing_ok=True)
+                else:
+                    path.write_text(content, encoding="utf-8")
+                output = notice.session_notice(self.runtime, {"suppressOutput": True})
+                self.assertIn("hookSpecificOutput", output)
+                self.assertIn("用户可见·重启提醒", output["hookSpecificOutput"]["additionalContext"])
+
+    def test_notice_enabled_fail_open_when_bridge_module_missing(self):
+        # overlay_install 不可导入（import 失败）时保持提醒开启且不抛——
+        # SessionStart hook 绝不能因开关探测炸掉；静默只来自显式 false。
+        self.pending_sync()
+        with mock.patch.dict(sys.modules, {"overlay_install": None}):
+            self.assertTrue(notice.notice_enabled(self.runtime))
+            output = notice.session_notice(self.runtime, {"suppressOutput": True})
+        self.assertIn("hookSpecificOutput", output)
+        self.assertIn("用户可见·重启提醒", output["hookSpecificOutput"]["additionalContext"])
+
 
 if __name__ == "__main__":
     unittest.main()
