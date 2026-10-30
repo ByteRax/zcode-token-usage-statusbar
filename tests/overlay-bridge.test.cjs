@@ -114,6 +114,11 @@ class Element {
     return name.startsWith('data-') && camel(name.replace(/^data-/, '')) in this.dataset;
   }
   closest() { return null; }
+  get isConnected() {   // v174：沿父链判定（readPaneScope/attach 的存活校验依赖）；根由 harness 标记
+    let p = this;
+    while (p && p.parentElement) p = p.parentElement;
+    return !!(p && p.__zuConnectedRoot);
+  }
   getBoundingClientRect() { return { top: 600, bottom: 650, left: 20, right: 520, width: 500, height: 50 }; }
 }
 
@@ -143,6 +148,7 @@ function harness(withBridge = true, bootLs = {}) {
   const window = new Element('window');
   Object.assign(window, { innerWidth: 1000, innerHeight: 800 });
   const body = new Element('body'), root = new Element('html');
+  body.__zuConnectedRoot = true;   // isConnected 父链判定的根标记
   const document = new Element('document');
   Object.assign(document, {
     body, documentElement: root,
@@ -158,9 +164,14 @@ function harness(withBridge = true, bootLs = {}) {
   if (withBridge) {
     window.__zusageConversationDiagnostics = () => ({ keys: diagSessions.map(s => s.key), sessions: diagSessions });
     window.__zusageGetExistingConversationStore = scope => {
-      if (!scope || typeof scope.sessionId !== 'string' || !scope.workspacePath) return null;
+      // v174：与真实桥同语义——按 (remote, workspace) key 解析，同 sid 多 workspace 时
+      // 不返回错误条目（key = "<remoteSessionId||__base__> <workspaceIdentity||workspacePath>"）
+      if (!scope || typeof scope.sessionId !== 'string') return null;
+      const ws = (typeof scope.workspaceIdentity === 'string' && scope.workspaceIdentity.trim()) || scope.workspacePath;
+      if (!ws) return null;
       bindCalls += 1;
-      const entry = diagSessions.find(s => s.topic === 'conversation/' + scope.sessionId);
+      const remote = scope.remoteSessionId || '__base__';
+      const entry = diagSessions.find(s => s.topic === 'conversation/' + scope.sessionId && s.key === remote + ' ' + ws);
       return entry && entry.store || null;
     };
   }
@@ -197,7 +208,9 @@ function harness(withBridge = true, bootLs = {}) {
   }
   return {
     window, body, timers, frames, inject, boot, runTimers, setPanes, clock,
+    pane: () => panes[0].parentElement,
     diagSessions, bindCalls: () => bindCalls,
+    panesPush: el => { panes.push(el); },   // v174：辅助对话 composer 进入协调器扫描
     deterministic: () => body.collect('[data-zusage-deterministic]', [])
       .filter(el => el.tagName === 'BLOCKQUOTE'),   // 行容器（内部 p 同带标记，随父计数）
   };
@@ -229,7 +242,7 @@ function toggleForceKmb(h, checked) {
 function completeTurn(h, store, tid = 'pt1', outputTokens = 1000) {
   h.clock.now = 1600;
   store.set(snap(3, [header('completedSuccess', { outputTokens, modelDurationMs: 4000, activeMs: 5000 }), text('abcdef')]));
-  const section = h.body.appendChild(new Element('section'));
+  const section = h.pane().appendChild(new Element('section'));
   section.dataset.turnId = tid;
   h.runTimers(500);
   return { section, line: () => h.deterministic()[0].querySelector('p') };
@@ -238,7 +251,7 @@ const RICH = '⚡ 82.6 token/s(本轮) · 首字 1.4s · 输出 8,300(含 2,100 
 
 test('⑫ completed turn shows the bridge placeholder and enqueues one DB rich-text request by session', () => {
   const h = harness();
-  const store = driveStreaming(h);
+  const store = driveLocalStreaming(h);
   const { line } = completeTurn(h, store);
   // 占位：桥接能算出的简化文案（注意不是模型那行富文本）
   assert.equal(line().textContent, '⚡ 250.0 token/s(本轮) · 输出 1,000 token · 耗时 5.0s');
@@ -264,7 +277,7 @@ test('force K/M/B formats the placeholder and sends an independent boolean reque
     [{ 'zusage3.lang': 'en', 'zusage3.forceKmb': '1' }, 58250, '58.3K', 0, true],
   ]) {
     const h = harness(true, stored);
-    const store = driveStreaming(h);
+    const store = driveLocalStreaming(h);
     const { line } = completeTurn(h, store, 'pt1', outputTokens);
     assert.ok(line().textContent.includes(`输出 ${expected} token`), line().textContent);
     const reqs = turnRequests(h);
@@ -277,7 +290,7 @@ test('force K/M/B formats the placeholder and sends an independent boolean reque
 for (const initial of [false, true]) {
   test(`force KMB toggle ${initial ? 'off' : 'on'} rejects in-flight and legacy responses`, () => {
     const h = harness(true, initial ? { 'zusage3.forceKmb': '1' } : {});
-    const { line } = completeTurn(h, driveStreaming(h), 'pt1', 58250);
+    const { line } = completeTurn(h, driveLocalStreaming(h), 'pt1', 58250);
     const old = turnRequests(h)[0];
     toggleForceKmb(h, !initial);
     h.window.__zusageDeliverTurnText('sid_a', 'stale', old.unitEpoch);
@@ -301,10 +314,12 @@ for (const initial of [false, true]) {
 
 test('tagged response from a previous overlay generation is rejected after reinjection', () => {
   const h = harness();
-  const store = driveStreaming(h);
+  const store = driveLocalStreaming(h);
   completeTurn(h, store);
   const old = turnRequests(h)[0];
-  h.inject(); h.boot(); h.runTimers(600); h.runTimers(100); h.runTimers(500);
+  h.inject(); h.boot(); h.runTimers(600); h.runTimers(100);
+  h.window.__zusageUpdate({ remote_evidence: false, scope_bindings: {}, recent: [] });
+  h.runTimers(500);
   const current = turnRequests(h).at(-1);
   assert.notEqual(current.unitEpoch, old.unitEpoch);
   h.window.__zusageDeliverTurnText('sid_a', 'stale generation', old.unitEpoch);
@@ -313,7 +328,7 @@ test('tagged response from a previous overlay generation is rejected after reinj
 
 test('⑬ delivered DB rich text replaces the placeholder line immediately, without waiting for the next tick', () => {
   const h = harness();
-  const store = driveStreaming(h);
+  const store = driveLocalStreaming(h);
   const { line } = completeTurn(h, store);
   assert.equal(turnRequests(h)[0].sid, 'sid_a');
   h.window.__zusageDeliverTurnText('sid_a', RICH);   // 交付按 sid 关联，不是 turnId
@@ -326,7 +341,7 @@ test('⑬ delivered DB rich text replaces the placeholder line immediately, with
 
 test('⑬b delayed DB rich text still replaces the placeholder after its tracker record slides out', () => {
   const h = harness();
-  const store = driveStreaming(h);
+  const store = driveLocalStreaming(h);
   const { line } = completeTurn(h, store);
   assert.equal(turnRequests(h).length, 1);
   assert.equal(turnRequests(h)[0].sid, 'sid_a');
@@ -343,7 +358,7 @@ test('⑬b delayed DB rich text still replaces the placeholder after its tracker
 
 test('⑬c delayed DB rich text replaces the placeholder after epoch hydration restores zero output', () => {
   const h = harness();
-  const store = driveStreaming(h);
+  const store = driveLocalStreaming(h);
   const { line } = completeTurn(h, store);
   store.set(snap(4, [header('completedSuccess', { outputTokens: 0, modelDurationMs: 0,
     startedAt: 1000, endedAt: 6000 }), text('abcdef')], 'sid_a', 'e2'));
@@ -361,13 +376,13 @@ test('⑬c delayed DB rich text replaces the placeholder after epoch hydration r
 for (const delivery of ['before remount', 'after remount']) {
   test(`⑬d cached DB rich text rebuilds a hydrated historical turn (${delivery})`, () => {
     const h = harness();
-    const store = driveStreaming(h);
+    const store = driveLocalStreaming(h);
     const { section } = completeTurn(h, store);
     store.set(snap(4, [header('completedSuccess', { outputTokens: 0, modelDurationMs: 0 }), text('abcdef')], 'sid_a', 'e2'));
     h.runTimers(500);
     if (delivery === 'before remount') h.window.__zusageDeliverTurnText('sid_a', RICH);
     section.remove();
-    const remounted = h.body.appendChild(new Element('section'));
+    const remounted = h.pane().appendChild(new Element('section'));
     remounted.dataset.turnId = 'pt1';
     h.runTimers(500);
     if (delivery === 'after remount') {
@@ -384,7 +399,7 @@ for (const delivery of ['before remount', 'after remount']) {
 
 test('⑭ empty delivery (DB not caught up yet) keeps the placeholder and retries on the next tick', () => {
   const h = harness();
-  const store = driveStreaming(h);
+  const store = driveLocalStreaming(h);
   const { line } = completeTurn(h, store);
   const before = turnRequests(h).length;
   h.window.__zusageDeliverTurnText('sid_a', '');      // 主进程回推空串 = 库里还没这一轮/还没有有效提问时刻
@@ -402,7 +417,7 @@ test('⑭ empty delivery (DB not caught up yet) keeps the placeholder and retrie
 
 test('⑮ bar "generation speed" chip is untouched by the rich-text overlay path', () => {
   const h = harness();
-  const store = driveStreaming(h);
+  const store = driveLocalStreaming(h);
   assert.equal(instanceOf(h).liveEl().textContent, '1.5 t/s');   // 生成中：估算态
   const { line } = completeTurn(h, store);
   // 完成态 chip：紧凑 tok/s + 档位色（v73 格式，与对话内长句无关）——富文本请求/交付全程不变
@@ -415,6 +430,12 @@ test('⑮ bar "generation speed" chip is untouched by the rich-text overlay path
   h.runTimers(500);
   assert.equal(instanceOf(h).liveEl().textContent, '250.0 t/s');
 });
+
+function driveLocalStreaming(h) {
+  const store = driveStreaming(h);
+  h.window.__zusageUpdate({ remote_evidence: false, scope_bindings: {}, recent: [] });
+  return store;
+}
 
 /* 绑定并驱动到"生成中"的公共序列：pane a → 桥命中 → 流式快照推进。 */
 function driveStreaming(h) {
@@ -429,12 +450,26 @@ function driveStreaming(h) {
   return store;
 }
 
+test('main chat without remote evidence does not request or accept rich text', () => {
+  const h = harness();
+  const store = driveStreaming(h);
+  completeTurn(h, store);
+  assert.equal(h.deterministic().length, 1, 'renderer placeholder remains available');
+  assert.equal(turnRequests(h).length, 0);
+  h.window.__zusageDeliverTurnText('sid_a', RICH);
+  h.window.__zusageUpdate({ scope_bindings: {}, recent: [] });
+  h.runTimers(500);
+  assert.equal(turnRequests(h).length, 0);
+  h.window.__zusageDeliverTurnText('sid_a', RICH);
+  assert.notEqual(h.deterministic()[0].querySelector('p').textContent, RICH);
+});
+
 test('① bridge API absent degrades to DB path: no binding, no live segment, no deterministic line', () => {
   const h = harness(false);
   h.setPanes(['a']); h.inject(); h.boot(); h.runTimers(600); h.runTimers(500); h.runTimers(500);
   assert.equal(h.bindCalls(), 0);
   assert.equal(instanceOf(h).statsFor('pt1'), null);
-  const section = h.body.appendChild(new Element('section'));
+  const section = h.pane().appendChild(new Element('section'));
   section.dataset.turnId = 'pt1';
   h.runTimers(500);
   assert.equal(h.deterministic().length, 0);
@@ -471,7 +506,7 @@ test('③ completed turn swaps live text to final summary and inserts determinis
   assert.equal(inst.liveEl().className, 'zu-live zu-sky');   // 250 t/s ∈ 200–300 快速档（v127 十档）
   // 原始 turnId 形态（DOM data-turn-id）经 alias 映射同样命中
   assert.equal(inst.statsFor('t1').tokenRate, 250);
-  const section = h.body.appendChild(new Element('section'));
+  const section = h.pane().appendChild(new Element('section'));
   section.dataset.turnId = 't1';
   h.runTimers(500);
   const lines = h.deterministic();
@@ -487,7 +522,7 @@ test('③ existing model rate line in the same turn container suppresses duplica
   const h = harness();
   const store = driveStreaming(h);
   store.set(snap(3, [header('completedSuccess', { outputTokens: 1000, modelDurationMs: 4000, activeMs: 5000 }), text('abcdef')]));
-  const section = h.body.appendChild(new Element('section'));
+  const section = h.pane().appendChild(new Element('section'));
   section.dataset.turnId = 'pt1';
   const quote = section.appendChild(new Element('blockquote'));
   const p = quote.appendChild(new Element('p'));
@@ -503,7 +538,7 @@ test('④ virtual-list remount rebuilds from tracker; cleared records keep their
   const h = harness();
   const store = driveStreaming(h);
   store.set(snap(3, [header('completedSuccess', { outputTokens: 1000, modelDurationMs: 4000, activeMs: 5000 }), text('abcdef')]));
-  const section = h.body.appendChild(new Element('section'));
+  const section = h.pane().appendChild(new Element('section'));
   section.dataset.turnId = 'pt1';
   h.runTimers(500);
   assert.equal(h.deterministic().length, 1);
@@ -544,7 +579,7 @@ test('⑥ dispose releases store subscriptions, removes deterministic nodes and 
   const h = harness();
   const store = driveStreaming(h);
   store.set(snap(3, [header('completedSuccess', { outputTokens: 1000, modelDurationMs: 4000, activeMs: 5000 }), text('abcdef')]));
-  const section = h.body.appendChild(new Element('section'));
+  const section = h.pane().appendChild(new Element('section'));
   section.dataset.turnId = 'pt1';
   h.runTimers(500);
   assert.equal(h.deterministic().length, 1);
@@ -560,7 +595,7 @@ test('⑦ rate-line toggle off detaches the bridge and withdraws live segment an
   const h = harness();
   const store = driveStreaming(h);
   store.set(snap(3, [header('completedSuccess', { outputTokens: 1000, modelDurationMs: 4000, activeMs: 5000 }), text('abcdef')]));
-  const section = h.body.appendChild(new Element('section'));
+  const section = h.pane().appendChild(new Element('section'));
   section.dataset.turnId = 'pt1';
   h.runTimers(500);
   assert.equal(h.deterministic().length, 1);
@@ -605,7 +640,7 @@ test('⑨ nested [data-v4-turn-unit] wrapping a section with the same turn-id in
   const store = driveStreaming(h);
   store.set(snap(3, [header('completedSuccess', { outputTokens: 1000, modelDurationMs: 4000, activeMs: 5000 }), text('abcdef')]));
   // 真机 DOM 形态：外层 [data-v4-turn-unit] 包一个同 tid 的内层 section（均能单独命中原选择器）
-  const outer = h.body.appendChild(new Element('div'));
+  const outer = h.pane().appendChild(new Element('div'));
   outer.dataset.v4TurnUnit = 'true';
   outer.dataset.turnId = 'pt1';
   const section = outer.appendChild(new Element('section'));
@@ -621,7 +656,7 @@ test('⑩ completed turn with zero output shows unavailable instead of a meaning
   const store = driveStreaming(h);
   // 完成但零输出（如纯控制/后台轮次）：真机曾出现"输出 0 tok · 耗时 939.0s"这类无意义数字
   store.set(snap(3, [header('completedSuccess', { outputTokens: 0, modelDurationMs: 1000, activeMs: 939000 })]));
-  const section = h.body.appendChild(new Element('section'));
+  const section = h.pane().appendChild(new Element('section'));
   section.dataset.turnId = 'pt1';
   h.runTimers(500);
   assert.equal(h.deterministic().length, 1);
@@ -716,7 +751,7 @@ test('⑯ switching to a session whose latest turn finished before this binding 
   assert.equal(instanceOf(h).liveEl(), null);
   // 对话内历史行不受这个限制：只要完成且有输出，仍然正常展示统计——
   // 用户滚回这条老消息时，期望看到的是数据，不是因为"桥是不是亲历的"而消失
-  const section = h.body.appendChild(new Element('section'));
+  const section = h.pane().appendChild(new Element('section'));
   section.dataset.turnId = 'pt1';
   h.runTimers(500);
   assert.equal(h.deterministic().length, 1);
@@ -740,7 +775,7 @@ test('⑯b a historical turn caught at binding without output fields is skipped,
   assert.equal(stats.complete, true);
   assert.equal(stats.observedLive, false);
   assert.equal(stats.outputTokens, null);
-  const section = h.body.appendChild(new Element('section'));
+  const section = h.pane().appendChild(new Element('section'));
   section.dataset.turnId = 'pt1';
   h.runTimers(500);
   assert.equal(h.deterministic().length, 0);   // 不插行：既不编造数字，也不误报"不可用"
@@ -780,7 +815,7 @@ test('⑯d an "unavailable" line left on a historical turn without output fields
   h.diagSessions.push({ key: '__base__ /fixture/ws', topic: 'conversation/sid_a', store });
   h.runTimers(500);
   // 修复前版本已经插进去的误报行（热更新后仍在 DOM 里）
-  const section = h.body.appendChild(new Element('section'));
+  const section = h.pane().appendChild(new Element('section'));
   section.dataset.turnId = 'pt1';
   const stale = section.appendChild(new Element('blockquote'));
   stale.dataset.zusageDeterministic = '1';
@@ -812,7 +847,7 @@ function toolRow(status, extra = {}) {
 test('⑱ tool running in the message flow never inserts a status word (v78 removed the feature)', () => {
   const h = harness();
   const store = driveStreaming(h);
-  const section = h.body.appendChild(new Element('section'));
+  const section = h.pane().appendChild(new Element('section'));
   section.dataset.turnId = 'pt1';
   const slot = section.appendChild(new Element('div'));
   slot.setAttribute('data-zcode-chat-loading-slot', 'true');
@@ -846,7 +881,7 @@ test('㉑ deterministic line lands before the hover action row and after the clo
   const store = driveStreaming(h);
   h.clock.now = 1600;
   store.set(snap(3, [header('completedSuccess', { outputTokens: 1000, modelDurationMs: 4000, activeMs: 5000 }), text('abcdef')]));
-  const section = h.body.appendChild(new Element('section'));
+  const section = h.pane().appendChild(new Element('section'));
   section.dataset.turnId = 'pt1';
   section.appendChild(new Element('div'));                                   // 正文内容
   const popover = section.appendChild(new Element('div'));
@@ -876,7 +911,7 @@ test('㉒ new-session layout: line lands inside the nested content column, above
   const store = driveStreaming(h);
   h.clock.now = 1600;
   store.set(snap(3, [header('completedSuccess', { outputTokens: 1000, modelDurationMs: 4000, activeMs: 5000 }), text('abcdef')]));
-  const section = h.body.appendChild(new Element('section'));
+  const section = h.pane().appendChild(new Element('section'));
   section.dataset.turnId = 'pt1';
   const turnRow = section.appendChild(new Element('div'));
   turnRow.className = 'group/assistant-turn flex w-full flex-col gap-5';
@@ -956,4 +991,187 @@ test('㉓b thinking elapsed anchors to turnHeader.startedAt (host writes it at h
   // observedMs（首观测 t=0 起算）会显示 3 秒；锚定 startedAt（4.2s 前创建）应显示 4 秒——
   // 切走再切回重绑后计时不再从 0 重计。墙钟余量 ~800ms（构造到断言需超时 4.2s→5s 才假红）
   assert.equal(instanceOf(h).liveEl().textContent, '思考中…4秒');
+});
+
+/* ---------- v174：辅助对话实例——桥 scope 精确绑定 / 确定性行归属 / 富文本门控 ---------- */
+function sidePaneFixture(h, { tabId, sid, ws = '/p' }) {
+  const rootEl = h.body.appendChild(new Element('div'));
+  rootEl.setAttribute('data-testid', 'v4-session-pane-' + tabId);
+  rootEl.setAttribute('data-zusage-scope-version', '1');
+  rootEl.setAttribute('data-zusage-pane-id', tabId);
+  rootEl.setAttribute('data-zusage-workspace-path', ws);
+  rootEl.setAttribute('data-zusage-workspace-identity', '');
+  rootEl.setAttribute('data-zusage-remote-session-id', '');
+  rootEl.setAttribute('data-session-id', sid);
+  const ta = rootEl.appendChild(new Element('textarea'));
+  ta.setAttribute('data-testid', 'v4-composer-input');
+  h.panesPush(ta);
+  return { rootEl, ta };
+}
+
+test('v174 side chat binds the registry entry whose key matches its verified scope, not the first same-sid entry', () => {
+  const h = harness(true);
+  h.setPanes(['main']); h.inject(); h.boot(); h.runTimers(600);
+  const TAB = 'selection-side-chat:%2Fp:p:c';
+  const { rootEl } = sidePaneFixture(h, { tabId: TAB, sid: 'sess_side' });
+  const storeB = makeStore(snap(1, [header('running'), text('xyz')], 'sess_side'));
+  const storeDecoy = makeStore(snap(9, [header('running'), text('decoy')], 'sess_side'));
+  // decoy 在前：同 sid 的另一 workspace 条目不能被“首个命中”选中
+  h.diagSessions.push({ key: '__base__ /other', topic: 'conversation/sess_side', store: storeDecoy });
+  h.diagSessions.push({ key: '__base__ /p', topic: 'conversation/sess_side', store: storeB });
+  h.runTimers(600);   // coordinator：spawn + attach
+  h.runTimers(100);   // bridgeTick：scope 匹配绑定
+  const inst = h.window.bridgeTest.instances().find(i => i.pid === TAB);
+  assert.ok(inst, 'side chat instance spawned');
+  assert.ok(inst.bridgeInfo().bound, 'bound via the scope-matched entry');
+  h.clock.now = 1600;
+  storeB.set(snap(3, [header('completedSuccess', { outputTokens: 1000, modelDurationMs: 4000, activeMs: 5000 }), text('abcdef')], 'sess_side'));
+  const section = rootEl.appendChild(new Element('section'));
+  section.dataset.turnId = 'pt1';
+  h.runTimers(500);
+  const lines = rootEl.collect('[data-zusage-deterministic]', []).filter(el => el.tagName === 'BLOCKQUOTE');
+  assert.equal(lines.length, 1, 'placeholder line inserted inside the side chat root');
+  assert.equal(lines[0].querySelector('p').textContent, '⚡ 250.0 token/s(本轮) · 输出 1,000 token · 耗时 5.0s');
+  // 侧聊只显示可信 renderer 占位，不请求数据库富文本。
+  const reqs = (h.window.__zusagePluginRequests || []).filter(r => r && r.action === 'turn-text' && r.sid === 'sess_side');
+  assert.equal(reqs.length, 0);
+});
+
+test('v174 side chat without a scope-matching registry entry stays unbound (DB fallback)', () => {
+  const h = harness(true);
+  h.setPanes(['main']); h.inject(); h.boot(); h.runTimers(600);
+  const TAB = 'selection-side-chat:%2Fq:q:c';
+  const { rootEl } = sidePaneFixture(h, { tabId: TAB, sid: 'sess_iso', ws: '/q' });
+  // registry 只有别的 workspace 的同 sid 条目：不匹配 → 不绑定
+  h.diagSessions.push({ key: '__base__ /other', topic: 'conversation/sess_iso', store: makeStore(snap(1, [header('running')], 'sess_iso')) });
+  h.runTimers(600); h.runTimers(100);
+  const inst = h.window.bridgeTest.instances().find(i => i.pid === TAB);
+  assert.ok(inst, 'side chat instance spawned');
+  assert.equal(inst.bridgeInfo().bound, false, 'no cross-workspace binding');
+  h.clock.now = 1600;
+  const section = rootEl.appendChild(new Element('section'));
+  section.dataset.turnId = 'pt_iso';
+  h.runTimers(500);
+  assert.equal(h.deterministic().length, 0, 'no tracker stats → no deterministic line (DB path only)');
+});
+
+test('side chat rejects remote, missing and ambiguous scope', () => {
+  for (const mode of ['identity', 'remote', 'missing', 'duplicate']) {
+    const h = harness(true);
+    h.setPanes(['main']); h.inject(); h.boot(); h.runTimers(600);
+    const TAB = 'selection-side-chat:test:' + mode;
+    const { rootEl } = sidePaneFixture(h, { tabId: TAB, sid: 'sess_side' });
+    if (mode === 'identity') rootEl.setAttribute('data-zusage-workspace-identity', 'remote:ssh:host');
+    if (mode === 'remote') {
+      rootEl.setAttribute('data-zusage-workspace-identity', 'remote:ssh:host');
+      rootEl.setAttribute('data-zusage-remote-session-id', 'remote-id');
+    }
+    if (mode === 'missing') delete rootEl.dataset.zusageWorkspaceIdentity;
+    const store = makeStore(snap(1, [header('running')], 'sess_side'));
+    h.diagSessions.push({ key: '__base__ /p', topic: 'conversation/sess_side', store });
+    if (mode === 'duplicate') h.diagSessions.push({ key: '__base__ /p', topic: 'conversation/sess_side', store });
+    h.runTimers(600); h.runTimers(100);
+    const inst = h.window.bridgeTest.instances().find(i => i.pid === TAB);
+    assert.ok(inst, mode);
+    assert.equal(inst.bridgeInfo().bound, false, mode);
+    assert.equal(store.subscribers(), 0, mode);
+  }
+});
+
+test('side chat same sid scope change invalidates old callback and rebinds only the new local workspace', () => {
+  const h = harness(true);
+  h.setPanes(['main']); h.inject(); h.boot(); h.runTimers(600);
+  const TAB = 'selection-side-chat:scope-change';
+  const { rootEl } = sidePaneFixture(h, { tabId: TAB, sid: 'sess_side' });
+  const oldStore = makeStore(snap(1, [header('running')], 'sess_side'));
+  const newStore = makeStore(snap(1, [header('running')], 'sess_side'));
+  let late;
+  const subscribe = oldStore.subscribe;
+  oldStore.subscribe = function (fn) { late = fn; return subscribe.call(this, fn); };
+  h.diagSessions.push({ key: '__base__ /p', topic: 'conversation/sess_side', store: oldStore });
+  h.diagSessions.push({ key: '__base__ /new', topic: 'conversation/sess_side', store: newStore });
+  h.runTimers(600); h.runTimers(100);
+  const inst = h.window.bridgeTest.instances().find(i => i.pid === TAB);
+  assert.equal(oldStore.subscribers(), 1);
+  rootEl.setAttribute('data-zusage-workspace-path', '/new');
+  oldStore.state = snap(2, [header('running'), text('late')], 'sess_side');
+  late(); // scope changed before next heartbeat
+  assert.equal(oldStore.subscribers(), 0, 'late notification detaches before heartbeat');
+  h.runTimers(100);
+  assert.equal(oldStore.subscribers(), 0);
+  assert.equal(newStore.subscribers(), 1);
+  assert.equal(inst.bridgeInfo().bound, true);
+  late(); // already detached notification must not disturb the new binding
+  assert.equal(newStore.subscribers(), 1);
+  rootEl.setAttribute('data-zusage-workspace-identity', 'remote:ssh:host');
+  h.runTimers(100);
+  assert.equal(newStore.subscribers(), 0);
+  assert.equal(inst.bridgeInfo().bound, false);
+});
+
+test('side chat scope change blocks stale tracker during scan before heartbeat', () => {
+  const h = harness(true);
+  h.setPanes(['main']); h.inject(); h.boot(); h.runTimers(600);
+  const TAB = 'selection-side-chat:scan-race';
+  const { rootEl } = sidePaneFixture(h, { tabId: TAB, sid: 'sess_side' });
+  const store = makeStore(snap(1, [header('running'), text('a')], 'sess_side'));
+  h.diagSessions.push({ key: '__base__ /p', topic: 'conversation/sess_side', store });
+  h.runTimers(600); h.runTimers(100);
+  const inst = h.window.bridgeTest.instances().find(i => i.pid === TAB);
+  store.set(snap(2, [header('completedSuccess', { outputTokens: 1000, modelDurationMs: 4000, activeMs: 5000 }), text('abc')], 'sess_side'));
+  assert.ok(inst.statsFor('pt1'));
+  rootEl.setAttribute('data-zusage-workspace-path', '/new');
+  const section = rootEl.appendChild(new Element('section'));
+  section.dataset.turnId = 'pt1';
+  h.runTimers(500); // scan only, no bridge heartbeat or store callback
+  assert.equal(rootEl.collect('[data-zusage-deterministic]', []).length, 0);
+  assert.equal(inst.statsFor('pt1'), null);
+  assert.equal(store.subscribers(), 0);
+});
+
+test('side chat scope change during synchronous subscription does not leak a binding', () => {
+  const h = harness(true);
+  h.setPanes(['main']); h.inject(); h.boot(); h.runTimers(600);
+  const TAB = 'selection-side-chat:subscribe-race';
+  const { rootEl } = sidePaneFixture(h, { tabId: TAB, sid: 'sess_side' });
+  const store = makeStore(snap(1, [header('running')], 'sess_side'));
+  const subscribe = store.subscribe;
+  store.subscribe = function (fn) {
+    const off = subscribe.call(this, fn);
+    rootEl.setAttribute('data-zusage-workspace-identity', 'remote:ssh:host');
+    return off;
+  };
+  h.diagSessions.push({ key: '__base__ /p', topic: 'conversation/sess_side', store });
+  h.runTimers(600); h.runTimers(100);
+  const inst = h.window.bridgeTest.instances().find(i => i.pid === TAB);
+  assert.equal(store.subscribers(), 0);
+  assert.equal(inst.bridgeInfo().bound, false);
+});
+
+test('v174 deterministic lines scope by owner: same turn id in main and side chat does not cross', () => {
+  const h = harness(true);
+  h.setPanes(['main']);
+  const mainPane = h.body.children[0].children[0];   // setPanes：card > pane wrapper(dataset.sessionId) > textarea
+  h.inject(); h.boot(); h.runTimers(600);
+  const TAB = 'selection-side-chat:%2Fp:p:c2';
+  const { rootEl } = sidePaneFixture(h, { tabId: TAB, sid: 'sess_side' });
+  const storeMain = makeStore(snap(1, [header('running'), text('a')], 'sid_main'));
+  const storeSide = makeStore(snap(1, [header('running'), text('b')], 'sess_side'));
+  h.diagSessions.push({ key: '__base__ /fixture/ws', topic: 'conversation/sid_main', store: storeMain });
+  h.diagSessions.push({ key: '__base__ /p', topic: 'conversation/sess_side', store: storeSide });
+  h.runTimers(600); h.runTimers(100);
+  h.clock.now = 1600;
+  storeMain.set(snap(3, [header('completedSuccess', { outputTokens: 1000, modelDurationMs: 4000, activeMs: 5000 }), text('abcdef')], 'sid_main'));
+  storeSide.set(snap(3, [header('completedSuccess', { outputTokens: 5000, modelDurationMs: 4000, activeMs: 5000 }), text('abcdef')], 'sess_side'));
+  const mainSection = mainPane.appendChild(new Element('section'));
+  mainSection.dataset.turnId = 'pt1';   // 两个会话同名 turn id
+  const sideSection = rootEl.appendChild(new Element('section'));
+  sideSection.dataset.turnId = 'pt1';
+  h.runTimers(500);
+  const mainLine = mainPane.collect('[data-zusage-deterministic]', []).filter(el => el.tagName === 'BLOCKQUOTE');
+  const sideLine = rootEl.collect('[data-zusage-deterministic]', []).filter(el => el.tagName === 'BLOCKQUOTE');
+  assert.equal(mainLine.length, 1, 'main view has its line');
+  assert.equal(sideLine.length, 1, 'side chat view has its own line (owner+tid dedupe)');
+  assert.ok(mainLine[0].querySelector('p').textContent.includes('输出 1,000 token'), mainLine[0].querySelector('p').textContent);
+  assert.ok(sideLine[0].querySelector('p').textContent.includes('输出 5,000 token'), sideLine[0].querySelector('p').textContent);
 });
