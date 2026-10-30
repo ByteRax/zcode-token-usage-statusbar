@@ -1905,16 +1905,6 @@ test('v146 compact theme browser behaviour (isolated fixture)', { skip: skipReas
     await b.waitFor(`(() => { const bar = document.querySelector('#zusage-bar');
       return getComputedStyle(bar).display === 'flex' && !document.querySelector('.zu-tsb'); })()`,
       'bar did not come back / chip did not leave');
-    await new Promise(r => setTimeout(r, 1300));
-    console.log('AFTER-SWITCH:', JSON.stringify(await b.evaluate(`(() => {
-      return [...document.querySelectorAll('.zusage-root')].map(b => {
-        const r = b.getBoundingClientRect(), m = b.querySelector('.zu-main');
-        return { h: Math.round(r.height), w: Math.round(r.width), y: Math.round(r.top),
-          parent: b.parentElement === document.body ? 'body' : (b.parentElement.id || b.parentElement.className).slice(0, 24),
-          display: getComputedStyle(b).display, zuIn: b.classList.contains('zu-in'),
-          mainKids: m ? m.childElementCount : -1, mainText: (m ? m.textContent : '').slice(0, 30) };
-      });
-    })()`)));
     await b.waitFor(`document.querySelectorAll('.zusage-root').length === 2`, 'bar count drifted');
     await choose(b, 'compact', 0);
     await b.waitFor(`(() => { const bar = document.querySelector('#zusage-bar');
