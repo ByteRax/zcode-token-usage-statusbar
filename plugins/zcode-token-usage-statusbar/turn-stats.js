@@ -91,7 +91,10 @@
       const runningTool = act && act.kind === 'toolCall' && typeof act.status === 'string' &&
         (act.status === 'inputStreaming' || act.status === 'pendingApproval' || act.status === 'running')
         ? { name: typeof act.toolName === 'string' ? act.toolName : '',
-            startedAt: Number.isFinite(act.startedAt) ? act.startedAt : null }
+            startedAt: Number.isFinite(act.startedAt) ? act.startedAt : null,
+            // v7：Skill 工具透出截断的输入串——调用方（overlay）从中提取技能名显示
+            // 「技能名·执行中」；仅内存投影，不落日志。160 字上限防超长输入。
+            inputText: typeof act.inputText === 'string' ? act.inputText.slice(0, 160) : '' }
         : act && act.kind === 'subagent' && act.status === 'running'
         ? { name: 'Agent', startedAt: null,   // 子智能体行无 startedAt：只给动词，不给秒数
             // 行投影自带 childSessionId（宿主 subagent 行 schema）：调用方据此绑定子代理

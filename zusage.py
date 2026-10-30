@@ -150,6 +150,49 @@ def session_usage(con, sid):
     }
 
 
+def _project_usage(con, sid):
+    """项目累计（v159）：当前会话所属项目（session.project_id，与宿主 --continue 同一
+    项目身份）下全部会话的 completed 用量聚合，口径与 session_usage 一致；子代理会话
+    （parent_id 指向本项目主会话）计入。worktree 等不同目录 project_id 不同，天然不混。
+    sessions/turns 取实际参与消耗的会话与轮（session_id+turn_id 组合去重）；会话不在
+    本地库或无 project_id 时返回 None（渲染端判空不渲染该格）。"""
+    prow = con.execute(
+        "select project_id from session where id=?", (sid,)).fetchone()
+    if not prow or not prow["project_id"]:
+        return None
+    mains = [r["id"] for r in con.execute(
+        """select id from session where project_id=?
+           and parent_id is null and substr(id,1,?)!='sess_subagent'""",
+        (prow["project_id"], _SUB_PREFIX_LEN))]
+    all_ids = list(mains)
+    if mains:
+        qm = ",".join("?" * len(mains))
+        all_ids += [r["id"] for r in con.execute(
+            f"select id from session where parent_id in ({qm})", mains)]
+    if not all_ids:
+        return None
+    qm = ",".join("?" * len(all_ids))
+    r = con.execute(
+        f"""select count(distinct m.session_id),
+                   count(distinct m.session_id||'/'||coalesce(m.turn_id,'')), count(*),
+                   coalesce(sum(m.input_tokens),0), coalesce(sum(m.output_tokens),0),
+                   coalesce(sum(m.reasoning_tokens),0),
+                   coalesce(sum(m.cache_read_input_tokens),0),
+                   coalesce(sum(m.cache_creation_input_tokens),0),
+                   coalesce(sum(m.computed_total_tokens),0),
+                   coalesce(sum(m.tool_call_count),0), coalesce(sum(m.retry_count),0),
+                   min(m.started_at), max(m.completed_at)
+            from model_usage m where m.status='completed' and m.session_id in ({qm})""",
+        all_ids).fetchone()
+    return {
+        "sessions": r[0], "turns": r[1] or 0, "requests": r[2],
+        "input": r[3], "output": r[4], "reasoning": r[5],
+        "cache_read": r[6], "cache_write": r[7], "total": r[8],
+        "tool_calls": r[9], "retries": r[10],
+        "started": r[11] or 0, "last_at": r[12] or 0,
+    }
+
+
 def range_usage(con, start_ms, end_ms):
     # 末尾三列（reasoning/retry/cache_write）是 v30/v31 追加，CLI 老代码按索引 0-4 取值不受影响
     return con.execute(
@@ -1765,6 +1808,23 @@ def snapshot(force_sid="", routes=None, serve_con=None):
                 rec.append(base)
             else:
                 rec.append(local_snapshot(sid, light=i >= full_n and sid not in force_set))
+        # 项目累计（v159）：为池内本地行注入所属项目全部会话的聚合，overlay 在
+        # 「会话累计」右侧渲染「项目累计」格。latest 行与顶层 base 是同一对象，
+        # 顶层 session 键自动获得；scopes 插入的本地行经 {...row} 展开同样携带。
+        # 可选增强字段：任何失败按无字段降级，不拖垮整帧（同 provider_fallback 口径）。
+        if con is not None:
+            proj_cache = {}
+            for row in rec:
+                psid = row.get("sid")
+                if not psid or row.get("remote") or "project" in row:
+                    continue
+                if psid not in proj_cache:
+                    try:
+                        proj_cache[psid] = _project_usage(con, psid)
+                    except sqlite3.Error:
+                        proj_cache[psid] = None
+                if proj_cache[psid]:
+                    row["project"] = proj_cache[psid]
         # rec 建好后把远端快照挂到池首：overlay 按 sid 匹配 mine，顺序只影响兜底展示
         rec = ([remote_by[s] for s in reversed(remote_ids)] + rec) if scopes is None else (
             [{**_empty_snapshot(sid, cfg), **row} for (sid, _), row in remote_by.items()] + rec)

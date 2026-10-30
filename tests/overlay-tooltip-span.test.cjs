@@ -11,9 +11,9 @@ const helpers = source.slice(source.indexOf('    function fmtStart('), source.in
 // zuBarSpeedView，它仍由各用例的桩覆盖），保证 tooltip 内容按真实档位生成。
 const bandHelpers = source.slice(source.indexOf('  var TPS_BANDS = ['), source.indexOf('  /* 返回 null = 调用方应把这当成'));
 
-function render(data, lang = 'zh', live = null) {
+function render(data, lang = 'zh', live = null, show = null) {
   const context = vm.createContext({
-    state: { lang, show: { turn: true, win: true, today: true } },
+    state: { lang, show: { turn: true, win: true, today: true, ...(show || {}) } },
     L: (zh, en) => lang === 'en' ? en : zh,
     fmt: value => String(value || 0), sec: value => String(value || 0),
     cachePct: () => '', shrink: false, liveStatsCur: live, bridge: { handle: null },
@@ -65,4 +65,30 @@ test('missing endpoints remain unavailable and live speed does not borrow a DB s
   const live = render(data, 'zh', { phase: 'writing', text: '12 t/s', cls: 'dim' })[0];
   assert.match(live, /renderer/);
   assert.doesNotMatch(live, /2026-10-19|生成速度 · 最近一段/);
+});
+
+test('v159 project total cell: beside session total, sub-agent note, bilingual', () => {
+  const data = fixture();
+  data.session.project = {
+    sessions: 3, turns: 12, requests: 45, input: 6000, output: 700, reasoning: 200,
+    cache_read: 5000, cache_write: 30, total: 6700, tool_calls: 9, retries: 2,
+    started: data.session.started, last_at: data.session.last_at,
+  };
+  const zh = render(data, 'zh', null, { proj: true }).find(tip => tip.includes('项目累计 · 全部请求'));
+  const strip = s => s.replace(/<[^>]+>/g, '');
+  assert.match(strip(zh), /3 会话 · 12 轮 · 45 次请求/);
+  assert.match(strip(zh), /含子代理/);
+  assert.match(strip(zh), /命中 83%/);
+  assert.match(strip(zh), /缓存写入/);
+  assert.match(zh, /2026-10-19 13:42 - 2026-10-19 13:43/);
+  const en = render(data, 'en', null, { proj: true }).find(tip => tip.includes('Project total · all requests'));
+  assert.match(strip(en), /3 sessions · 12 turns · 45 requests/);
+  assert.match(strip(en), /incl\. sub-agents/);
+});
+
+test('v159 project cell hidden without toggle or without snapshot field', () => {
+  const data = fixture();
+  data.session.project = { sessions: 3, requests: 45, total: 6700 };
+  assert.equal(render(data, 'zh', null, {}).find(tip => tip.includes('项目累计')), undefined);
+  assert.equal(render(fixture(), 'zh', null, { proj: true }).find(tip => tip.includes('项目累计')), undefined);
 });

@@ -130,12 +130,12 @@ function harness({ theme = 'compact', show } = {}) {
     panes.push(editor);
     return { card, row, wrap, btn, editor, leadWrap, cua };
   }
-  function payload({ tps } = {}) {
+  function payload({ tps, project } = {}) {
     const last = { provider_id: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-Flash' };
     if (tps !== undefined) last.tps = tps;
     return { remote_evidence: false, today: { total: 12000, requests: 4 }, not_local: [],
       recent: [{ sid: 'sid_main', workspace_identity: '', ctx: 63400, context_window: 200000, last_at: 1, ctx_exc: 0,
-        last_turn: { total: 5200, requests: 2 }, last }] };
+        last_turn: { total: 5200, requests: 2 }, last, ...(project ? { project } : {}) }] };
   }
   const chipOf = root => {
     const scan = e => {
@@ -237,6 +237,14 @@ test('tooltip: speed rows + bar summary gated by per-cell toggles + legend + set
   assert.ok(tip.innerHTML.includes('颜色对照'), 'band legend');
   assert.ok(tip.innerHTML.includes('打开设置'), 'settings entry button');
   assert.ok(tip.innerHTML.includes('子代理'), 'sub-agent row');
+  // v159 项目累计摘要行：无 project 字段不出现，有字段才出现（含子代理口径）
+  assert.ok(!tip.innerHTML.includes('项目累计'), 'no project summary row without project data');
+  h.window.__zusageUpdate(h.payload({ tps: 87.3, project: { sessions: 3, requests: 45, total: 6700 } }));
+  chip.listeners.get('mouseleave')[0].call(chip);   // v155 悬停冻结：需真正收起（延迟收起窗口过后的重进）才按新签名重建
+  chip.listeners.get('blur')[0].call(chip);         // blur 走立即隐藏路径
+  chip.listeners.get('mouseenter')[0].call(chip);
+  assert.ok(tip.innerHTML.includes('项目累计'), 'project summary row with snapshot field');
+  assert.ok(tip.innerHTML.includes('3会话 · 45次'), 'project row shows sessions and requests');
   // 逐格开关继续生效（用户拍板）：关掉「本轮」后摘要行消失
   h.window.tpsTest.state().show.turn = 0;
   h.window.__zusageUpdate(h.payload({ tps: 87.3 }));
@@ -244,6 +252,13 @@ test('tooltip: speed rows + bar summary gated by per-cell toggles + legend + set
   chip.listeners.get('blur')[0].call(chip);         // blur 走立即隐藏路径
   chip.listeners.get('mouseenter')[0].call(chip);
   assert.ok(!tip.innerHTML.includes('本轮'), 'turn row disappears with the cell toggle');
+  // 关掉「项目累计」后摘要行同样消失
+  h.window.tpsTest.state().show.proj = 0;
+  h.window.__zusageUpdate(h.payload({ tps: 87.3, project: { sessions: 3, requests: 45, total: 6700 } }));
+  chip.listeners.get('mouseleave')[0].call(chip);
+  chip.listeners.get('blur')[0].call(chip);
+  chip.listeners.get('mouseenter')[0].call(chip);
+  assert.ok(!tip.innerHTML.includes('项目累计'), 'project row disappears with the cell toggle');
   // 「打开设置」按钮：走 chip.__zuOpen 开设置面板
   const bar = h.barEl();
   const gear = bar.querySelector('.zu-gear');
