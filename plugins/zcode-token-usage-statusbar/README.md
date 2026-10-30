@@ -41,6 +41,7 @@ Remote sessions (SSH/WSL) need a matching `zusage.py` deployed manually on each 
 - `/uninstall-overlay` — removes the status bar, keeps the opt-out marker, keeps personal config.
 - `"plugin_auto_install_overlay": false` — keep the query tools only.
 - `"answer_rate_line": false` — drop the per-answer rate line (takes effect on the next prompt).
+- `"restart_notice": false` — stop the in-session restart/install notice banner after updates (⚙ → Plugin updates; command-line output and failure guidance are unaffected).
 - `"quota_enabled": false` — stop quota queries and hide the plan-quota chip (credentials are then never read).
 - `"plugin_auto_update": false` — disable update checks.
 - Full removal: turn off auto-update, run `/uninstall-overlay`, then uninstall the plugin from ZCode settings and fully restart. **Uninstalling the plugin alone does not remove the status bar.**

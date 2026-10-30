@@ -157,12 +157,37 @@ test('settings title uses the same current plugin version as the update section'
   assert.doesNotMatch(status.textContent, /当前版本：/);
 });
 
+test('restart-notice toggle reflects pushed truth and posts through the delegated handler', () => {
+  const syncSource = extract('    function syncUpdate() {', '    function syncPanel() {');
+  const changeSource = extract('    panel.addEventListener("change",', '    listenGlobal(document, "mousedown",');
+  let handler, requested = null;
+  const rn = { checked: true };
+  const stub = () => ({ textContent: '', hidden: true, disabled: false });
+  const syncContext = {
+    state: { pluginUpdate: { supported: true, auto: true, phase: 'idle' }, restartNotice: false },
+    panel: { querySelector: selector => selector === '.zu-restart-notice' ? rn : stub() },
+    L: (zh) => zh,
+  };
+  vm.runInNewContext(syncSource + '\nsyncUpdate();', syncContext);
+  assert.equal(rn.checked, false);   // 主进程推送 restartNotice=false：回显关闭
+  syncContext.state.restartNotice = undefined;
+  vm.runInNewContext('syncUpdate();', syncContext);
+  assert.equal(rn.checked, true);   // 缺省/异常值回显开启（与 Python 端 is not False 同向）
+  vm.runInNewContext(changeSource, {
+    panel: { addEventListener: (_, fn) => { handler = fn; } },
+    state: {},
+    pluginRequest: (action, enabled) => { requested = [action, enabled]; },
+  });
+  handler({ target: { classList: { contains: name => name === 'zu-restart-notice' }, checked: false } });
+  assert.deepEqual(requested, ['restart-notice', false]);
+});
+
 test('panel retains all controls, scroll position and settings-only styling', () => {
   assert.match(source, /panel.className = "panel zu-settings"/);
   for (const key of ['turn', 'win', 'tools', 'today', 'sub']) {
     assert.ok(source.includes('data-k="' + key + '"'));
   }
-  for (const selector of ['zu-rate-line', 'zu-auto-update', 'zu-ctxov', 'zu-cn-num', 'data-update="check"', 'data-update="update"', 'name="zu-lang"', 'zu-settings-feedback']) {
+  for (const selector of ['zu-rate-line', 'zu-auto-update', 'zu-restart-notice', 'zu-ctxov', 'zu-cn-num', 'data-update="check"', 'data-update="update"', 'name="zu-lang"', 'zu-settings-feedback']) {
     assert.ok(source.includes(selector));
   }
   assert.match(source, /\.zu-settings-body"\)\.scrollTop = scrollTop/);

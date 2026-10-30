@@ -748,9 +748,9 @@ let lastGoodPayload = null;   // 额度结算后无需重查库即可向各窗�
 let quotaClient = null;
 function pushPluginState(wc, state) {
   if (!isMainWindowState(wc) || wc.isDestroyed() || !isLocalHostPage(wc)) return;
-  /* rateLine / quotaEnabled 随插件状态一起推送：⚙ 面板两个开关的真值都来自 config.json */
+  /* rateLine / quotaEnabled / restartNotice 随插件状态一起推送：⚙ 面板开关的真值都来自 config.json */
   const payload = { ...state, rateLine: readCfgCached().answer_rate_line !== false, quotaEnabled: quotaEnabled(),
-    resetBadgeEnabled: resetBadgeEnabled(),
+    resetBadgeEnabled: resetBadgeEnabled(), restartNotice: readCfgCached().restart_notice !== false,
     quotaSources: quotaClient ? quotaClient.sourcesConfig() : [], feedbackVersion: 1 };
   wc.executeJavaScript(`window.__zusagePluginUpdate && window.__zusagePluginUpdate(${JSON.stringify(payload)})`, true).catch(() => { });
 }
@@ -885,6 +885,20 @@ async function setAnswerRateLine(enabled, wc, requestId) {
     deliverPluginRequest(wc, requestId, { ok: true });
   } catch (e) {
     LOG("answer_rate_line toggle failed:", e.message);
+    deliverPluginRequest(wc, requestId, { ok: false, error: e.message });
+  }
+}
+/* 重启提醒开关（⚙ 面板，issue #139）：原子写运行时 config.json 的 restart_notice（缺省=开启）。
+   SessionStart hook 每次会话启动读同一文件——下一个新会话即生效，无需重启客户端。 */
+async function setRestartNotice(enabled, wc, requestId) {
+  try {
+    const { updateConfig } = require("./plugin-updater.cjs");
+    await updateConfig(HERE, { restart_notice: enabled }, readCfgCached().python_path || (process.platform === "win32" ? "python" : "python3"));
+    cfgCache = null;
+    broadcastPluginState();
+    deliverPluginRequest(wc, requestId, { ok: true });
+  } catch (e) {
+    LOG("restart_notice toggle failed:", e.message);
     deliverPluginRequest(wc, requestId, { ok: false, error: e.message });
   }
 }
@@ -1325,6 +1339,8 @@ async function pollPluginRequests() {
           if (pluginUpdater) pluginUpdater.request(req).catch((e) => LOG("plugin update action failed:", e.message));
         } else if (req && req.action === "rate-line" && typeof req.enabled === "boolean") {
           setAnswerRateLine(req.enabled, wc, req.requestId);
+        } else if (req && req.action === "restart-notice" && typeof req.enabled === "boolean") {
+          setRestartNotice(req.enabled, wc, req.requestId);
         } else if (req && req.action === "quota-providers") {
           handleQuotaProviders(wc, req);
         } else if (req && req.action === "quota" && typeof req.enabled === "boolean") {
