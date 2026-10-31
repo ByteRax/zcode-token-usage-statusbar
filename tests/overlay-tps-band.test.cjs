@@ -135,3 +135,38 @@ for (const file of FILES) {
     });
   }
 }
+
+// v181（PR #157）：完成态主数字改会话加权平均（第 4 参 sessAvg，桌面快照 avg_tps），
+// 「均」前缀 + 按均值分档，最近一轮真实值放 latest 供 tooltip 展开；
+// 缺席/非正数回退原完成态。web/overlay.js 是独立实现，不消费该参数。
+for (const lang of ['zh', 'en']) {
+  const desktop = extract('overlay.js', lang).api;
+  const web = extract('web/overlay.js', lang).api;
+  const stats = { complete: true, observedLive: true, outputTokens: 100, tokenRate: 49.9 };
+  const prefix = lang === 'en' ? 'avg ' : '均';
+
+  test(`overlay/${lang}: 完成态主数字=会话均，按均值分档，最近一轮进 latest`, () => {
+    const view = desktop.zuBarSpeedView(stats, 2, null, 85.5);
+    assert.equal(view.text, `${prefix}85.5 t/s`);
+    assert.equal(view.cls, 'ok');          // 85.5 落 ok 档，而非最近一轮 49.9 的 warm 档
+    assert.equal(view.latest, 49.9);
+    assert.equal(view.phase, null);
+    const whole = desktop.zuBarSpeedView(stats, 2, null, 85);
+    assert.equal(whole.text, `${prefix}85 t/s`);   // 整数不带 .0
+  });
+
+  test(`overlay/${lang}: 会话均缺席/非正数回退原完成态行为`, () => {
+    for (const avg of [undefined, null, 0, -5, NaN, Infinity]) {
+      const view = desktop.zuBarSpeedView(stats, 2, null, avg);
+      assert.equal(view.text, '49.9 t/s');
+      assert.equal(view.latest, undefined);
+      assert.equal(view.cls, 'warm');
+    }
+  });
+
+  test(`web/${lang}: 不消费 sessAvg，完成态仍显示最近一轮真实值`, () => {
+    const view = web.zuBarSpeedView(stats, 2, null, 85.5);
+    assert.equal(view.text, '49.9 t/s');
+    assert.equal(view.cls, 'warm');
+  });
+}

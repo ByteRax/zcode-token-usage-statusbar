@@ -142,15 +142,16 @@ test('notice styling clears when a tracked paragraph leaves its quote or assista
   assert.equal(recycled.strong.dataset.zusageNotice, undefined);
 });
 
-test('R9: actual bilingual rate tooltip HTML has seven populated rows and correct thinking basis', () => {
+test('R9: actual bilingual rate tooltip HTML has eight populated rows and correct thinking basis', () => {
   for (const lang of ['zh', 'en']) {
     const h = harness(lang); h.line.dispatch('mouseenter');
     const html = h.tip().innerHTML;
     assert.equal(h.tip().style.display, 'block');
     assert.doesNotMatch(html, /undefined/);
-    assert.equal((html.match(/class="rt-row"/g) || []).length, 7);
+    assert.equal((html.match(/class="rt-row"/g) || []).length, 8);   // v181：帮助表新增「会话均」行
     const texts = [...html.matchAll(/<span>(.*?)<\/span>/g)].map(match => match[1]);
-    assert.equal(texts.length, 7); assert.ok(texts.every(Boolean));
+    assert.equal(texts.length, 8); assert.ok(texts.every(Boolean));
+    assert.match(html, lang === 'en' ? /Session avg/ : /会话均/);
     assert.match(html, lang === 'en' ? /thinking tokens already included/ : /思考 token 已含其中/);
     assert.match(html, lang === 'en' ? /thinking.*started_at/ : /思考.*started_at/);
   }
