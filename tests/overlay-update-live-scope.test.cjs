@@ -15,13 +15,13 @@ function extractUpdateLive() {
   return source.slice(start, end) + '\nupdateLive;';
 }
 
-function runUpdateLive({ lastAvg, payloadAvg }) {
+function runUpdateLive({ lastAvg, payloadAvg, noLastView }) {
   const seen = {};
   const sandbox = {
     L: (zh) => zh,
     Date: { now: () => 1000 },
     state: { rateLine: true, theme: 'compact', data: { session: { avg_tps: payloadAvg } } },
-    lastView: { session: { avg_tps: lastAvg } },
+    lastView: noLastView ? undefined : { session: { avg_tps: lastAvg } },
     bridge: { turnId: 'turn_x', timer: null,
       handle: { dead: false, charsPerToken: 2, tracker: { get: () => ({ complete: true }) } } },
     sideHandleValid: () => true,
@@ -45,4 +45,5 @@ test('updateLive 对缺席/非正数/非有限会话均回退 0', () => {
   for (const v of [undefined, null, 0, -5, NaN, Infinity]) {
     assert.equal(runUpdateLive({ lastAvg: v, payloadAvg: 999 })[3], 0, String(v));
   }
+  assert.equal(runUpdateLive({ noLastView: true, payloadAvg: 999 })[3], 0, 'lastView null 时不抛错并回退 0');
 });
