@@ -18,6 +18,10 @@ function extract(start, end) {
  * 与 hover 阈值行（acInfoText）在实例闭包里同层，切片拼进同一沙箱即可互调 */
 const helpers = extract("    /* ---------- v179 自动压缩阈值（⚙ 面板渲染与提交的单一出口） ---------- */", "    function srcStatusText(sv) {");
 const infoText = extract("    /* v179 阈值行文案", "    function syncCompactBtn() {");
+/* v191 token 数走 fmt()：单位转换三件套一并入沙箱（cnUnits/cnUnit 与 fmt 同一事实源） */
+const unitSrc = extract("  function cnUnits()", "  function ls(");
+const fmtSrc = extract("    function fmt(n, count) {", "    function countFmt(");
+const cnUnitSrc = extract("    function cnUnit(x)", "    function sec(");
 
 function makePanel() {
   const fields = new Map();
@@ -127,7 +131,7 @@ function runInfoText({ state, label } = {}) {
     nearestByRect: () => (label == null ? null : { getAttribute: () => label }),
   };
   /* acInfoText 依赖 acModeOf/acTargetTokens（同实例闭包）：helpers 块一并入沙箱 */
-  vm.runInNewContext(helpers + "\n" + infoText + "\nacInfoText", sandbox);
+  vm.runInNewContext(unitSrc + "\n" + fmtSrc + "\n" + cnUnitSrc + "\n" + helpers + "\n" + infoText + "\nacInfoText", sandbox);
   return sandbox.acInfoText;
 }
 
@@ -143,14 +147,27 @@ test("acInfoText：默认/禁用/百分比模式文案（aria 总量 → 标称�
   assert.match(f({ enabled: true, state: "applied", config: { enabled: false } })({}), /已禁用/);
   const pct = f({ enabled: true, state: "applied", config: { enabled: true, thresholdPercent: 70 } })({});
   assert.match(pct, /~63%/);
-  assert.match(pct, /125,300 token/);
+  assert.match(pct, /125.3K token/);   // 沙箱 state 无 lang/cnNum → fmt 走 K 档
 });
 
 test("acInfoText：解析不到总量时 tokens 模式给绝对值，percent/buffer 不硬算", () => {
   const f = (ep) => runInfoText({ state: { enginePatch: ep }, label: null });
-  assert.match(f({ enabled: true, state: "applied", config: { enabled: true, thresholdTokens: 125300 } })({}), /自动压缩阈值 125,300 token/);
+  assert.match(f({ enabled: true, state: "applied", config: { enabled: true, thresholdTokens: 125300 } })({}), /自动压缩阈值 125.3K token/);
   assert.doesNotMatch(f({ enabled: true, state: "applied", config: { enabled: true, thresholdTokens: 125300 } })({}), /%/);
   assert.match(f({ enabled: true, state: "applied", config: { enabled: true, thresholdPercent: 70 } })({}), /自定义阈值/);   // 无窗口不硬算百分比
+});
+
+test("v191：阈值 token 数走 fmt()（中文万/亿与强制 KMB 同一转换链）", () => {
+  const zh = runInfoText({
+    state: { enginePatch: { enabled: true, state: "applied", config: { enabled: true, thresholdPercent: 70 } }, lang: "zh", cnNum: 1 },
+    label: "上下文已用 63,400 / 总量 200,000",
+  });
+  assert.match(zh({}), /~63%（12.53万 token）$/);   // 至多两位小数去尾零，数字与单位不留空格
+  const kmb = runInfoText({
+    state: { enginePatch: { enabled: true, state: "applied", config: { enabled: true, thresholdTokens: 125300 } }, lang: "zh", cnNum: 1, forceKmb: 1 },
+    label: null,
+  });
+  assert.match(kmb({}), /自动压缩阈值 125.3K token/);   // 强制 KMB 开关同样由 fmt() 承接
 });
 
 test("v190：注入开关关闭（或主进程未加载）时数值行整行隐藏", () => {
