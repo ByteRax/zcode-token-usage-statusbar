@@ -18,6 +18,10 @@ function extract(start, end) {
  * 与 hover 阈值行（acInfoText）在实例闭包里同层，切片拼进同一沙箱即可互调 */
 const helpers = extract("    /* ---------- v179 自动压缩阈值（⚙ 面板渲染与提交的单一出口） ---------- */", "    function srcStatusText(sv) {");
 const infoText = extract("    /* v179 阈值行文案", "    function syncCompactBtn() {");
+/* v191 token 数走 fmt()：单位转换三件套一并入沙箱（cnUnits/cnUnit 与 fmt 同一事实源） */
+const unitSrc = extract("  function cnUnits()", "  function ls(");
+const fmtSrc = extract("    function fmt(n, count) {", "    function countFmt(");
+const cnUnitSrc = extract("    function cnUnit(x)", "    function sec(");
 
 function makePanel() {
   const fields = new Map();
@@ -112,7 +116,7 @@ test("低阈值警告：目标低于当前用量才触发（200K 窗、85% 现�
 test("acTargetTokens：三种模式换算与近似基准（21K 预留）", () => {
   const { sandbox } = runHelpers();
   const r = (mc, cw) => Math.round(sandbox.acTargetTokens(mc, cw));   // 浮点噪声：生产消费端各自 floor/round
-  assert.equal(r({ mode: "percent", value: "70" }, 200000), 125300);
+  assert.equal(r({ mode: "percent", value: "70" }, 200000), 140000);   // v194：总窗口口径 70%×200,000（未触 eff 钳）
   assert.equal(r({ mode: "tokens", value: "120000" }, 200000), 120000);
   assert.equal(r({ mode: "buffer", value: "5000" }, 200000), 200000 - 21000 - 5000);
   assert.equal(sandbox.acTargetTokens({ mode: "default", value: "" }, 200000), null);
@@ -127,7 +131,7 @@ function runInfoText({ state, label } = {}) {
     nearestByRect: () => (label == null ? null : { getAttribute: () => label }),
   };
   /* acInfoText 依赖 acModeOf/acTargetTokens（同实例闭包）：helpers 块一并入沙箱 */
-  vm.runInNewContext(helpers + "\n" + infoText + "\nacInfoText", sandbox);
+  vm.runInNewContext(unitSrc + "\n" + fmtSrc + "\n" + cnUnitSrc + "\n" + helpers + "\n" + infoText + "\nacInfoText", sandbox);
   return sandbox.acInfoText;
 }
 
@@ -142,15 +146,58 @@ test("acInfoText：默认/禁用/百分比模式文案（aria 总量 → 标称�
   assert.match(f({ enabled: true, state: "applied" })({}), /跟随引擎默认/);
   assert.match(f({ enabled: true, state: "applied", config: { enabled: false } })({}), /已禁用/);
   const pct = f({ enabled: true, state: "applied", config: { enabled: true, thresholdPercent: 70 } })({});
-  assert.match(pct, /~63%/);
-  assert.match(pct, /125,300 token/);
+  assert.match(pct, /~70%/);
+  assert.match(pct, /140.0K token/);   // 沙箱 state 无 lang/cnNum → fmt 走 K 档；70%×200,000=140,000
 });
 
 test("acInfoText：解析不到总量时 tokens 模式给绝对值，percent/buffer 不硬算", () => {
   const f = (ep) => runInfoText({ state: { enginePatch: ep }, label: null });
-  assert.match(f({ enabled: true, state: "applied", config: { enabled: true, thresholdTokens: 125300 } })({}), /自动压缩阈值 125,300 token/);
+  assert.match(f({ enabled: true, state: "applied", config: { enabled: true, thresholdTokens: 125300 } })({}), /自动压缩阈值 125.3K token/);
   assert.doesNotMatch(f({ enabled: true, state: "applied", config: { enabled: true, thresholdTokens: 125300 } })({}), /%/);
   assert.match(f({ enabled: true, state: "applied", config: { enabled: true, thresholdPercent: 70 } })({}), /自定义阈值/);   // 无窗口不硬算百分比
+});
+
+test("v191：阈值 token 数走 fmt()（中文万/亿与强制 KMB 同一转换链）", () => {
+  const zh = runInfoText({
+    state: { enginePatch: { enabled: true, state: "applied", config: { enabled: true, thresholdPercent: 70 } }, lang: "zh", cnNum: 1 },
+    label: "上下文已用 63,400 / 总量 200,000",
+  });
+  assert.match(zh({}), /~70%（14万 token）$/);   // 至多两位小数去尾零，数字与单位不留空格；设置值=显示值（v194 同口径）
+  const clamped = runInfoText({
+    state: { enginePatch: { enabled: true, state: "applied", config: { enabled: true, thresholdPercent: 99 } }, lang: "zh", cnNum: 1 },
+    label: "上下文已用 63,400 / 总量 200,000",
+  });
+  assert.match(clamped({}), /~90%（17.9万 token）/);   // 99%×200,000=198,000 超有效窗口 179,000 → 钳在 eff
+  const kmb = runInfoText({
+    state: { enginePatch: { enabled: true, state: "applied", config: { enabled: true, thresholdTokens: 125300 } }, lang: "zh", cnNum: 1, forceKmb: 1 },
+    label: null,
+  });
+  assert.match(kmb({}), /自动压缩阈值 125.3K token/);   // 强制 KMB 开关同样由 fmt() 承接
+});
+
+test("v194：数值行 30-99 实时校验与提交拒绝", () => {
+  const cfg = { enabled: true, state: "applied", config: { enabled: true, thresholdPercent: 91 } };
+  const bad = runHelpers({ state: { enginePatch: cfg } });
+  bad.sandbox.document.activeElement = bad.node(".zu-ac-value");   // 模拟输入中：非焦点时 sync 会用配置值覆写
+  bad.node(".zu-ac-value").value = "999";
+  bad.sandbox.syncAutoCompactInputs();
+  assert.match(bad.node(".zu-ac-status").textContent, /30-99/);
+  assert.equal(bad.node(".zu-ac-status").classes.has("zu-ac-warn"), true);
+  const ok = runHelpers({ state: { enginePatch: cfg } });
+  ok.node(".zu-ac-value").value = "91";
+  ok.sandbox.syncAutoCompactInputs();
+  assert.doesNotMatch(ok.node(".zu-ac-status").textContent, /30-99/);
+  /* 提交拒绝：越界值不发起 pluginRequest，合法值原样通过 */
+  let sent = null;
+  const refusal = runHelpers({ state: { enginePatch: cfg } });
+  refusal.sandbox.pluginRequest = (action, payload) => { sent = { action, payload }; };
+  refusal.sandbox.showSettingsFeedback = () => { };
+  refusal.node(".zu-ac-value").value = "999";
+  refusal.sandbox.sendAutoCompactConfig();
+  assert.equal(sent, null, "越界值不发起请求");
+  refusal.node(".zu-ac-value").value = "50";
+  refusal.sandbox.sendAutoCompactConfig();
+  assert.ok(sent && sent.payload.value === 50, "合法值正常提交");
 });
 
 test("v190：注入开关关闭（或主进程未加载）时数值行整行隐藏", () => {
@@ -166,11 +213,13 @@ test("v190：注入开关关闭（或主进程未加载）时数值行整行隐�
 });
 
 test("源码契约：设置控件、动作路由与状态种子齐备", () => {
-  for (const needle of ["zu-ac-enable", "zu-ac-value", "zu-ac-status",
+  for (const needle of ["zu-ac-enable", "zu-ac-value", "zu-ac-status", "zu-ac-hint",
     'pluginRequest("autocompact-patch"', "autocompact-config", "sendAutoCompactConfig"]) {
     assert.ok(source.includes(needle), "overlay.js 缺少 " + needle);
   }
   assert.ok(!source.includes("zu-ac-mode"), "v188：模式下拉已移除（只留百分比）");
+  assert.match(source, /\.zu-ac-info\{display:flex;align-items:baseline;justify-content:space-between/);   // v192 两端对齐，「调整」居右
+  assert.doesNotMatch(source, /\.zu-ac-info\{[^}]*margin/);   // v193 行上禁止任何 margin 声明（:where() 零权重的 space-y-3 会被类名权重压掉，间距必须整段交给容器）
   assert.match(source, /enginePatch: \(window\.__zusagePluginState && window\.__zusagePluginState\.enginePatch\) \|\| null/);   // 状态种子
   assert.match(source, /if \(s && s\.enginePatch && typeof s\.enginePatch === "object"\) state\.enginePatch = s\.enginePatch/);   // v172 纪律：__zusagePluginUpdate 拷贝行
   assert.match(source, /syncAutoCompactInputs\(\);\s*$/m);   // syncPanel 对账
@@ -194,9 +243,9 @@ test("sendAutoCompactConfig：留空提交 default，有值提交 percent；失�
   sandbox.sendAutoCompactConfig();
   assert.equal(JSON.stringify(requests[requests.length - 1]), '{"action":"autocompact-config","extra":{"mode":"percent","value":85}}', "有值=percent");
   assert.equal(node(".zu-ac-value").value, "85", "成功回执后显示主进程归一值");
-  // 失败回执：数值回滚为主进程现值
+  // 失败回执：数值回滚为主进程现值（v194 起越界值在客户端已被拒，此处用合法值走服务端拒绝）
   sandbox.pluginRequest = (action, extra, done) => { done({ ok: false, error: "invalid value for percent" }); };
-  node(".zu-ac-value").value = "5";
+  node(".zu-ac-value").value = "50";
   sandbox.sendAutoCompactConfig();
   assert.equal(node(".zu-ac-value").value, "85", "失败回滚为主进程现值");
 });

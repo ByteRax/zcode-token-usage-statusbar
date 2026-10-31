@@ -9,7 +9,7 @@ const path = require("path");
 const vm = require("vm");
 
 const ep = require("../engine-patch.cjs");
-const { createEnginePatcher, ENGINE_TARGETS, PROLOGUE, PROLOGUE_PREFIX, ANCHOR, REPLACEMENT, MARK, insertPrologue, resolveEnginePath } = ep;
+const { createEnginePatcher, ENGINE_TARGETS, PROLOGUE, PROLOGUE_V1, PROLOGUE_PREFIX, ANCHOR, REPLACEMENT, MARK, insertPrologue, resolveEnginePath, buildPatchedSource } = ep;
 
 function sha256hex(buf) { return require("crypto").createHash("sha256").update(buf).digest("hex"); }
 
@@ -139,6 +139,34 @@ test("ensure refuses bundles without leading strict directive", () => {
   } finally { s.cleanup(); }
 });
 
+test("ensure migrates an engine patched with the legacy prologue in place (v194 formula swap)", () => {
+  const s = setup();
+  try {
+    registerTarget(s.original);
+    /* v193 及以前的装机形态：旧版 prologue + 同一替换体 */
+    const legacy = buildPatchedSource(s.original.toString("utf8"), { anchor: ANCHOR, replacement: REPLACEMENT, prologue: PROLOGUE_V1 });
+    assert.ok(legacy && !legacy.error);
+    fs.writeFileSync(s.enginePath, legacy.output);
+    assert.equal(s.patcher.ensure(), "applied");
+    const after = fs.readFileSync(s.enginePath, "utf8");
+    assert.ok(after.includes(PROLOGUE), "hook 本体已换装新版");
+    assert.ok(!after.includes(PROLOGUE_V1), "旧本体不残留");
+    assert.ok(after.includes(REPLACEMENT), "锚点替换体保持不变");
+    assert.equal(s.patcher.ensure(), "applied", "迁移后幂等");
+  } finally { s.cleanup(); }
+});
+
+test("restore handles an engine patched with the legacy prologue", () => {
+  const s = setup();
+  try {
+    registerTarget(s.original);
+    const legacy = buildPatchedSource(s.original.toString("utf8"), { anchor: ANCHOR, replacement: REPLACEMENT, prologue: PROLOGUE_V1 });
+    fs.writeFileSync(s.enginePath, legacy.output);
+    assert.equal(s.patcher.restore(), "off");
+    assert.deepEqual(fs.readFileSync(s.enginePath), s.original, "旧本体装机也能还原到原版字节");
+  } finally { s.cleanup(); }
+});
+
 test("restore round-trips to the exact original bytes and clears the sentinel", () => {
   const s = setup();
   try {
@@ -196,9 +224,11 @@ test("writeConfig normalizes modes, rejects invalid input, and writes atomically
     assert.deepEqual(s.patcher.writeConfig("default"), { enabled: true });
     assert.deepEqual(s.patcher.writeConfig("disabled"), { enabled: false });
     assert.deepEqual(s.patcher.writeConfig("percent", 70.4), { enabled: true, thresholdPercent: 70 });
+    assert.deepEqual(s.patcher.writeConfig("percent", 30), { enabled: true, thresholdPercent: 30 });
+    assert.deepEqual(s.patcher.writeConfig("percent", 99), { enabled: true, thresholdPercent: 99 });
     assert.deepEqual(s.patcher.writeConfig("tokens", 120000), { enabled: true, thresholdTokens: 120000 });
     assert.deepEqual(s.patcher.writeConfig("buffer", 5000), { enabled: true, bufferTokens: 5000 });
-    for (const [mode, value] of [["percent", 5], ["percent", 120], ["tokens", 999], ["buffer", -1], ["evil", 1]]) {
+    for (const [mode, value] of [["percent", 29], ["percent", 120], ["tokens", 999], ["buffer", -1], ["evil", 1]]) {   // v194：百分比下限 30
       assert.throws(() => s.patcher.writeConfig(mode, value), undefined, mode + " " + value + " 应拒绝");
     }
     assert.deepEqual(s.patcher.readConfig(), { enabled: true, bufferTokens: 5000 });
@@ -249,17 +279,19 @@ test("hook: missing/corrupt/no-override config falls back to engine default", ()
   } finally { env.cleanup(); }
 });
 
-test("hook: percent semantics with clamps (10..99) and effective-window base", () => {
+test("hook: percent semantics with clamps (30..99) on the nominal-window base (v194)", () => {
   const env = hookEnv();
   try {
     const hook = runHook(env.root);
-    const EFF = 179000;
+    const EFF = 179000;   // 200,000 标称 − 21,000 预留
     env.write({ thresholdPercent: 70 });
-    assert.equal(hook(EFF), Math.floor(EFF * 0.7), "70% × effective");
+    assert.equal(hook(EFF), 140000, "70% × 标称窗口 200,000（WYSIWYG：原生按钮 70% 处触发）");
     env.write({ thresholdPercent: 5 });
-    assert.equal(hook(EFF), Math.floor(EFF * 0.1), "下限钳到 10%");
+    assert.equal(hook(EFF), 60000, "下限钳到 30%（× 标称）");
     env.write({ thresholdPercent: 120 });
-    assert.equal(hook(EFF), Math.floor(EFF * 0.99), "上限钳到 99%");
+    assert.equal(hook(EFF), EFF, "99% × 标称 = 198,000 超有效窗口 → 钳在 eff");
+    env.write({ thresholdPercent: 85 });
+    assert.equal(hook(EFF), 170000, "85% × 标称 = 170,000 < eff，不触钳");
   } finally { env.cleanup(); }
 });
 
@@ -296,8 +328,8 @@ test("hook: mtime cache picks up rewrites without restart", () => {
     const hook = runHook(env.root);
     const EFF = 179000;
     env.write({ thresholdPercent: 60 });
-    assert.equal(hook(EFF), Math.floor(EFF * 0.6));
+    assert.equal(hook(EFF), 120000);
     env.write({ thresholdPercent: 85 });
-    assert.equal(hook(EFF), Math.floor(EFF * 0.85), "改 JSON 下轮决策生效");
+    assert.equal(hook(EFF), 170000, "改 JSON 下轮决策生效");
   } finally { env.cleanup(); }
 });
