@@ -780,7 +780,7 @@ try {
   enginePatcher = createEnginePatcher({
     runtime: HERE,
     resourcesPath: process.resourcesPath,
-    isEnabled: () => readCfgCached().auto_compact_patch === true,
+    isEnabled: () => readCfgCached().auto_compact_patch !== false,   // v188：缺省开（验收反馈），显式 false 关闭
     log: (...a) => LOG("[engine-patch]", ...a),
   });
   enginePatcher.syncStartup();
@@ -1029,7 +1029,7 @@ async function setResetBadgeEnabled(enabled, wc, requestId) {
     deliverPluginRequest(wc, requestId, { ok: false, error: e.message });
   }
 }
-/* v179 自动压缩阈值开关（⚙ 面板）：写 config.json 的 auto_compact_patch（缺省关），
+/* v179 自动压缩阈值开关（⚙ 面板）：写 config.json 的 auto_compact_patch（v188 起缺省开，显式 false 关闭），
  * 并即时打补丁/还原引擎——引擎子进程下次 spawn 起用，无需改 asar。 */
 async function setAutoCompactPatch(enabled, wc, requestId) {
   try {

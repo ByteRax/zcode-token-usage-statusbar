@@ -70,16 +70,18 @@ test("状态行覆盖补丁全生命周期文案", () => {
   assert.match(bad.node(".zu-ac-status").textContent, /engine sha abc/);
 });
 
-test("输入控件随主进程真值回写（焦点中不回写）", () => {
+test("数值框随主进程真值回写：percent 显示值，其它模式显示空（留空=跟随默认）", () => {
   const focused = runHelpers({ state: { enginePatch: { enabled: true, state: "applied", config: { enabled: true, thresholdPercent: 70 } } } });
-  focused.node(".zu-ac-mode").value = "default";
-  focused.sandbox.document.activeElement = focused.node(".zu-ac-mode");
+  focused.node(".zu-ac-value").value = "999";
+  focused.sandbox.document.activeElement = focused.node(".zu-ac-value");
   focused.sandbox.syncAutoCompactInputs();
-  assert.equal(focused.node(".zu-ac-mode").value, "default", "选择中的控件不被覆盖");
-  const idle = runHelpers({ state: { enginePatch: { enabled: true, state: "applied", config: { enabled: true, thresholdTokens: 120000 } } } });
+  assert.equal(focused.node(".zu-ac-value").value, "999", "编辑中的数值不被覆盖");
+  const idle = runHelpers({ state: { enginePatch: { enabled: true, state: "applied", config: { enabled: true, thresholdPercent: 70 } } } });
   idle.sandbox.syncAutoCompactInputs();
-  assert.equal(idle.node(".zu-ac-mode").value, "tokens");
-  assert.equal(idle.node(".zu-ac-value").value, "120000");
+  assert.equal(idle.node(".zu-ac-value").value, "70");
+  const legacy = runHelpers({ state: { enginePatch: { enabled: true, state: "applied", config: { enabled: true, thresholdTokens: 120000 } } } });
+  legacy.sandbox.syncAutoCompactInputs();
+  assert.equal(legacy.node(".zu-ac-value").value, "", "v188 起 tokens 旧配置不在 UI 回显（留空=跟随默认）");
 });
 
 test("低阈值警告：目标低于当前用量才触发（200K 窗、85% 现值 vs 70% 目标）", () => {
@@ -151,11 +153,37 @@ test("acInfoText：解析不到总量时 tokens 模式给绝对值，percent/buf
 });
 
 test("源码契约：设置控件、动作路由与状态种子齐备", () => {
-  for (const needle of ["zu-ac-enable", 'class="zu-ac-mode"', "zu-ac-value", "zu-ac-status",
+  for (const needle of ["zu-ac-enable", "zu-ac-value", "zu-ac-status",
     'pluginRequest("autocompact-patch"', "autocompact-config", "sendAutoCompactConfig"]) {
     assert.ok(source.includes(needle), "overlay.js 缺少 " + needle);
   }
+  assert.ok(!source.includes("zu-ac-mode"), "v188：模式下拉已移除（只留百分比）");
   assert.match(source, /enginePatch: \(window\.__zusagePluginState && window\.__zusagePluginState\.enginePatch\) \|\| null/);   // 状态种子
   assert.match(source, /if \(s && s\.enginePatch && typeof s\.enginePatch === "object"\) state\.enginePatch = s\.enginePatch/);   // v172 纪律：__zusagePluginUpdate 拷贝行
   assert.match(source, /syncAutoCompactInputs\(\);\s*$/m);   // syncPanel 对账
+});
+
+test("sendAutoCompactConfig：留空提交 default，有值提交 percent；失败回执后回写主进程真值", () => {
+  const requests = [];
+  const { sandbox, node } = runHelpers({ state: { enginePatch: { enabled: true, state: "applied", config: { enabled: true, thresholdPercent: 70 } } } });
+  sandbox.pluginRequest = (action, extra, done) => {
+    requests.push({ action, extra });
+    done({ ok: true, config: extra.mode === "default" ? { enabled: true } : { enabled: true, thresholdPercent: Number(extra.value) } });
+    return "req-1";
+  };
+  sandbox.showSettingsFeedback = () => { };
+  sandbox.inactive = () => false;
+  node(".zu-ac-value").value = "";
+  sandbox.sendAutoCompactConfig();
+  assert.equal(JSON.stringify(requests[requests.length - 1]), '{"action":"autocompact-config","extra":{"mode":"default"}}', "留空=default（value undefined 不上线）");
+  assert.equal(node(".zu-ac-value").value, "");
+  node(".zu-ac-value").value = "85";
+  sandbox.sendAutoCompactConfig();
+  assert.equal(JSON.stringify(requests[requests.length - 1]), '{"action":"autocompact-config","extra":{"mode":"percent","value":85}}', "有值=percent");
+  assert.equal(node(".zu-ac-value").value, "85", "成功回执后显示主进程归一值");
+  // 失败回执：数值回滚为主进程现值
+  sandbox.pluginRequest = (action, extra, done) => { done({ ok: false, error: "invalid value for percent" }); };
+  node(".zu-ac-value").value = "5";
+  sandbox.sendAutoCompactConfig();
+  assert.equal(node(".zu-ac-value").value, "85", "失败回滚为主进程现值");
 });

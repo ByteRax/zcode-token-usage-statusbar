@@ -7,7 +7,7 @@
   "restart_notice": true,
   "quota_enabled": true,
   "reset_badge_enabled": true,
-  "auto_compact_patch": false,
+  "auto_compact_patch": true,
   "plugin_auto_update": true,
   "context_window": 1000000,
   "lang": "zh",

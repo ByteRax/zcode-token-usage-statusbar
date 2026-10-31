@@ -43,7 +43,7 @@ Remote sessions (SSH/WSL) need a matching `zusage.py` deployed manually on each 
 - `"answer_rate_line": false` — drop the per-answer rate line (takes effect on the next prompt).
 - `"restart_notice": false` — stop the update/pending-restart red badge on the status-bar gear and the "Plugin updates" entry (command-line output and failure guidance are unaffected).
 - `"quota_enabled": false` — stop quota queries and hide the plan-quota chip (credentials are then never read).
-- `"auto_compact_patch": true` — enable the auto-compact threshold injection (⚙ switch recommended; off by default). Patches the client engine (allow-listed per build) to make the auto-compact trigger configurable; turning it off restores the engine bytes. Desktop client only; the terminal CLI is unaffected.
+- `"auto_compact_patch": false` — turn off the auto-compact context threshold injection (on by default since v188; the ⚙ switch is preferred). Patches the client engine (allow-listed per build) so the auto-compact trigger becomes a configurable percentage; turning it off restores the engine bytes. Desktop client only; the terminal CLI is unaffected.
 - `"plugin_auto_update": false` — disable update checks.
 - Full removal: turn off auto-update, run `/uninstall-overlay`, then uninstall the plugin from ZCode settings and fully restart. **Uninstalling the plugin alone does not remove the status bar.**
 
