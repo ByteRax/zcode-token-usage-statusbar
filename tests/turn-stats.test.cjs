@@ -164,6 +164,75 @@ test('runningTool is recomputed from surviving rows, never stuck on a row that s
   assert.equal(tracker.get('t').runningTool, null);
 });
 
+test('runningGroup reports ≥2 consecutive same-kind rows ending at the running row, anchored to the first (v187 restore of v181)', () => {
+  const tracker = createTracker({ now: () => 0 });
+  // 只读行连续 ≥2（success+running 同类）→ explore，startedAt 锚定组首行供计时
+  tracker.ingest(snapshot(1, [header(),
+    { rowId: 4, turnId: 't', kind: 'toolCall', toolName: 'Read', inputText: '{}', status: 'success', startedAt: 100 },
+    { rowId: 5, turnId: 't', kind: 'toolCall', toolName: 'Grep', inputText: '{}', status: 'running', startedAt: 300 }]));
+  assert.deepEqual(tracker.get('t').runningGroup, { kind: 'explore', startedAt: 100 });
+  // 单行运行不成组
+  tracker.ingest(snapshot(2, [header(),
+    { rowId: 6, turnId: 't', kind: 'toolCall', toolName: 'Read', inputText: '{}', status: 'running', startedAt: 500 }]));
+  assert.equal(tracker.get('t').runningGroup, null);
+  // shell 命令文本分类：两条写命令连续 → terminal（写优先于只读判定）
+  tracker.ingest(snapshot(3, [header(),
+    { rowId: 7, turnId: 't', kind: 'toolCall', toolName: 'Bash', inputText: '{"command":"rm -rf /tmp/x"}', status: 'success', startedAt: 600 },
+    { rowId: 8, turnId: 't', kind: 'toolCall', toolName: 'Bash', inputText: '{"command":"touch /tmp/y"}', status: 'running', startedAt: 700 }]));
+  assert.deepEqual(tracker.get('t').runningGroup, { kind: 'terminal', startedAt: 600 });
+  // 半截 JSON → defer 透明：不入组也不打断所在组（explore→defer→explore 仍成组）
+  tracker.ingest(snapshot(4, [header(),
+    { rowId: 9, turnId: 't', kind: 'toolCall', toolName: 'Read', inputText: '{}', status: 'success', startedAt: 800 },
+    { rowId: 10, turnId: 't', kind: 'toolCall', toolName: 'Bash', inputText: '{"command":', status: 'running', startedAt: 900 }]));
+  assert.equal(tracker.get('t').runningGroup, null);   // defer 后仅 1 个 explore → 不成组
+  tracker.ingest(snapshot(5, [header(),
+    { rowId: 11, turnId: 't', kind: 'toolCall', toolName: 'Read', inputText: '{}', status: 'success', startedAt: 800 },
+    { rowId: 12, turnId: 't', kind: 'toolCall', toolName: 'Bash', inputText: '{"command":', status: 'success', startedAt: 850 },
+    { rowId: 13, turnId: 't', kind: 'toolCall', toolName: 'Glob', inputText: '{}', status: 'running', startedAt: 900 }]));
+  assert.deepEqual(tracker.get('t').runningGroup, { kind: 'explore', startedAt: 800 });
+  // 完成态恒 null；正文行打断连续组
+  tracker.ingest(snapshot(6, [header('completedSuccess', { outputTokens: 1, modelDurationMs: 500 })]));
+  assert.equal(tracker.get('t').runningGroup, null);
+  tracker.ingest(snapshot(7, [header(),
+    { rowId: 14, turnId: 't', kind: 'toolCall', toolName: 'Read', inputText: '{}', status: 'success', startedAt: 1000 },
+    { rowId: 15, turnId: 't', kind: 'assistantText', text: 'between' },
+    { rowId: 16, turnId: 't', kind: 'toolCall', toolName: 'Grep', inputText: '{}', status: 'running', startedAt: 1100 }]));
+  assert.equal(tracker.get('t').runningGroup, null);
+  // 完成态守卫：完成快照窗口仍带连续工具行时仍须 null（complete 守卫本身不可省）
+  tracker.ingest(snapshot(8, [header('completedSuccess', { outputTokens: 1, modelDurationMs: 500 }),
+    { rowId: 17, turnId: 't', kind: 'toolCall', toolName: 'Read', inputText: '{}', status: 'success', startedAt: 1200 },
+    { rowId: 18, turnId: 't', kind: 'toolCall', toolName: 'Grep', inputText: '{}', status: 'success', startedAt: 1300 }]));
+  assert.equal(tracker.get('t').runningGroup, null);
+  // 非 groupClassify 命中的工具行（TodoWrite/Skill 等）是组边界：打断连续计数
+  tracker.ingest(snapshot(9, [header(),
+    { rowId: 19, turnId: 't', kind: 'toolCall', toolName: 'Read', inputText: '{}', status: 'success', startedAt: 1400 },
+    { rowId: 20, turnId: 't', kind: 'toolCall', toolName: 'TodoWrite', inputText: '{}', status: 'success', startedAt: 1450 },
+    { rowId: 21, turnId: 't', kind: 'toolCall', toolName: 'Grep', inputText: '{}', status: 'running', startedAt: 1500 }]));
+  assert.equal(tracker.get('t').runningGroup, null);
+  // defer 另两路径同样透明：空命令文本（!cands）与仅分隔符的命令（!segs）都不入组不打断——
+  // 夹在 terminal 行之间验证（变异成 explore 会打断 terminal 连续组而变红）
+  tracker.ingest(snapshot(10, [header(),
+    { rowId: 22, turnId: 't', kind: 'toolCall', toolName: 'Bash', inputText: '{"command":"touch /tmp/a"}', status: 'success', startedAt: 1600 },
+    { rowId: 23, turnId: 't', kind: 'toolCall', toolName: 'Bash', inputText: '', status: 'success', startedAt: 1650 },
+    { rowId: 24, turnId: 't', kind: 'toolCall', toolName: 'Bash', inputText: '{"command":"mkdir /tmp/b"}', status: 'running', startedAt: 1700 }]));
+  assert.deepEqual(tracker.get('t').runningGroup, { kind: 'terminal', startedAt: 1600 });
+  tracker.ingest(snapshot(11, [header(),
+    { rowId: 25, turnId: 't', kind: 'toolCall', toolName: 'Bash', inputText: '{"command":"rm /tmp/a"}', status: 'success', startedAt: 1800 },
+    { rowId: 26, turnId: 't', kind: 'toolCall', toolName: 'Bash', inputText: '{"command":";;;"}', status: 'success', startedAt: 1850 },
+    { rowId: 27, turnId: 't', kind: 'toolCall', toolName: 'Bash', inputText: '{"command":"mkdir /tmp/c"}', status: 'running', startedAt: 1900 }]));
+  assert.deepEqual(tracker.get('t').runningGroup, { kind: 'terminal', startedAt: 1800 });
+  // defer 不冒充 terminal（守卫整体删除的观测点）：尾部场景「写命令 + defer 行运行」必须 null——
+  // 若 !cands/!segs 守卫被删并穿透到末行 return 'terminal'，这里会产出虚假 terminal 组
+  tracker.ingest(snapshot(12, [header(),
+    { rowId: 28, turnId: 't', kind: 'toolCall', toolName: 'Bash', inputText: '{"command":"touch /tmp/d"}', status: 'success', startedAt: 2000 },
+    { rowId: 29, turnId: 't', kind: 'toolCall', toolName: 'Bash', inputText: '', status: 'running', startedAt: 2100 }]));
+  assert.equal(tracker.get('t').runningGroup, null);
+  tracker.ingest(snapshot(13, [header(),
+    { rowId: 30, turnId: 't', kind: 'toolCall', toolName: 'Bash', inputText: '{"command":"rm /tmp/d"}', status: 'success', startedAt: 2200 },
+    { rowId: 31, turnId: 't', kind: 'toolCall', toolName: 'Bash', inputText: '{"command":";;;"}', status: 'running', startedAt: 2300 }]));
+  assert.equal(tracker.get('t').runningGroup, null);
+});
+
 test('running subagent row exposes childSessionId for the caller to bind the child store', () => {
   const tracker = createTracker({ now: () => 0 });
   tracker.ingest(snapshot(1, [header(),
