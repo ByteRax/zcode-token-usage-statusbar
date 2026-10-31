@@ -6281,7 +6281,8 @@
       var m = t.match(/已用\s*([\d,，]+)\s*\/\s*总量\s*([\d,，]+)/) ||
               t.match(/usage\s*([\d,，]+)\s*of\s*([\d,，]+)/i);
       if (!m) return null;
-      var used = parseFloat(m[1].replace(/[,,]/g, "")), total = parseFloat(m[2].replace(/[,,]/g, ""));
+      /* 剥离类与匹配类同含全角逗号：match 认了 strip 不认会静默截断成错值（review 2026-10-31） */
+      var used = parseFloat(m[1].replace(/[,，]/g, "")), total = parseFloat(m[2].replace(/[,，]/g, ""));
       if (!isFinite(used) || !isFinite(total) || used < 0 || total <= 0) return null;
       return { used: used, total: total, pct: Math.min(Math.max(used / total, 0), 1) * 100 };
     }

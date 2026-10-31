@@ -260,6 +260,23 @@ test('native mirroring keeps the compression-state band priority (exc)', () => {
   assert.equal(ui.value.getAttribute('stroke-dasharray'), '1.2 100');   // 环口径跟原生，档位 exc 优先
 });
 
+test('parse boundaries: 0/0 falls back, >total clamps, case tolerance', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main',
+    { ariaLabel: '上下文已用 0 / 总量 0' });
+  h.inject(); h.boot(); h.tick();
+  h.window.__zusageUpdate(h.payload());
+  assert.equal(ui.value.getAttribute('stroke-dasharray'), '31.7 100');   // 0/0 → DB 兜底，不得显示 NaN%
+  ui.btn.setAttribute('aria-label', '上下文已用 250,000 / 总量 200,000');
+  h.tick();
+  assert.equal(ui.btn.children.find(e => e.classList.contains('zu-ctxpct')).textContent, '100.0%');   // 超总量截断
+  ui.btn.setAttribute('aria-label', 'Context Usage 100,000 of 200,000');   // 大小写容错
+  h.tick();
+  assert.equal(ui.value.getAttribute('stroke-dasharray'), '50.0 100');
+  ui.btn.setAttribute('aria-label', '上下文已用 2，400 / 总量 200，000');   // 全角逗号：剥离与匹配同权
+  h.tick();
+  assert.equal(ui.value.getAttribute('stroke-dasharray'), '1.2 100');
+});
+
 test('native label rescues the enhancement when the DB lacks a context window', () => {
   const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
   h.inject(); h.boot(); h.tick();
