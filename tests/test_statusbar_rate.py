@@ -511,7 +511,11 @@ class ProviderFirstTokenWindowTests(unittest.TestCase):
 class SessionAvgTpsTests(unittest.TestCase):
     """v181（PR #157）：快照新增 avg_tps——全会话已完成 main_turn 段加权平均
     （Σ有效输出 ÷ Σ生成窗口，_row_gen_ms 同款窗口口径；辅助源与子代理行不计；
-    无有效样本返回 0，消费端据此回退原行为）。"""
+    无有效样本返回 0，消费端据此回退原行为）。夹具互相独立，_COVERS_CACHE 在 setUp
+    重置（60s TTL 会跨测试串库，纪律同 ProviderFirstTokenWindowTests）。"""
+
+    def setUp(self):
+        zusage._COVERS_CACHE.update(ts=0.0, set=frozenset())
 
     def snap_avg(self, rows, sid="s"):
         con = sqlite3.connect(":memory:")
@@ -558,6 +562,21 @@ class SessionAvgTpsTests(unittest.TestCase):
         self.assertEqual(self.snap_avg([self.row("f1", 1_000_000, 1_001_000, 1_002_000,
                                                   1000, status="failed")]), 0)
         self.assertEqual(self.snap_avg([]), 0)
+
+    def test_avg_tps_follows_cover_set_window(self):
+        # 落章 provider（斜率 0）含思考段按首字窗口计入会话均：每行 500 tok / 5s → 100.0；
+        # covers 丢失时窗口前移 started_at（8s）→ 62.5，系统性偏低——回归由此锁定
+        con = sqlite3.connect(":memory:")
+        self.addCleanup(con.close)
+        con.row_factory = sqlite3.Row
+        con.executescript(SCHEMA)
+        con.execute("insert into session (id, title) values ('s', 't')")
+        for i in range(6):
+            con.execute("insert into model_usage values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (f"c{i}", "s", "t", "main_turn", "", "prov-covers", "model-x", "completed",
+                         1_000_000 + 1000 * i, 1_000_000 + 1000 * i + 3000, 1_000_000 + 1000 * i + 8000,
+                         7000, 2500, 10, 500, 100 + 50 * i, 0, 0, 510, 0, 0, 0))
+        self.assertEqual(zusage._session_snapshot(con, "s", {"context_window": 200000})["avg_tps"], 100.0)
 
     def test_light_and_empty_snapshots_carry_zero_avg(self):
         con = sqlite3.connect(":memory:")

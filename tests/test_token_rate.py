@@ -431,6 +431,11 @@ class TestSessionAverage(RateTestBase):
         cli = self.run_rate().stdout
         self.assertNotIn("会话均", cli)
         self.assertNotIn("平均", cli)
+        # --turn 富文本行同样不出现「会话均 None」（v181 补修锁定 format_turn_line 守卫）
+        self.write_state({"sessionId": SID, "ts": self.t0, "promptTs": self.t0})
+        r = self.run_rate("--turn", "--current", state=self.state)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("会话均", r.stdout)
 
     def test_turn_line_puts_session_avg_before_cumulative(self):
         self.write_state({"sessionId": SID, "ts": self.t0, "promptTs": self.t0})
@@ -459,6 +464,22 @@ class TestSessionAverage(RateTestBase):
         data = json.loads(self.run_rate("--json").stdout)
         self.assertEqual(data["session"]["sessionAvg"], 145.8)
         self.assertEqual(data["session"]["requests"], 4)
+
+    def test_session_avg_follows_cover_set_window(self):
+        # 落章 provider（ttft 不随推理量增长，斜率 0）含思考段按首字窗口计入会话均：
+        # 每行 500 tok / 5s 窗口 → 100.0；covers 丢失时窗口前移 started_at（8s）→ 62.5
+        con = sqlite3.connect(self.db)
+        con.execute("delete from model_usage")
+        con.executemany(
+            "insert into model_usage values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            [(f"c{i}", SID, "turn_c", "main_turn", "test-model", "completed",
+              self.t0 + 1000 * i, self.t0 + 1000 * i + 3000, self.t0 + 1000 * i + 8000,
+              2500, 10, 500, 100 + 50 * i, 0, "account:cov")
+             for i in range(6)])
+        con.commit()
+        con.close()
+        data = json.loads(self.run_rate("--json").stdout)
+        self.assertEqual(data["session"]["sessionAvg"], 100.0)
 
 
 class TestLatestLine(RateTestBase):

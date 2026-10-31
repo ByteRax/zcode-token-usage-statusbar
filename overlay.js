@@ -3303,7 +3303,7 @@
           ttH(sessAvg ? L("生成速度 · 会话平均", "Generation speed · session average")
                       : L("生成速度 · 最近一段", "Generation speed · latest segment")) +
           ttRow(L("当前读数", "Current reading"), mainTps + " t/s") +
-          (sessAvg ? ttRow(L("最近一段", "Latest segment"), dbTps + " t/s") : "") +
+          (sessAvg && dbTps > 0 ? ttRow(L("最近一段", "Latest segment"), dbTps + " t/s") : "") +
           ttRow(L("档位", "Band"), tpsBandText(tband)) +
           ttRow(L("口径", "Basis"), L(sessAvg
             ? "会话全部已完成请求：Σ输出（含思考）÷ Σ生成耗时，工具等待不计，不含子代理"
@@ -3844,8 +3844,10 @@
       subRateTick(stats && !stats.complete ? stats.runningSubagents : null);   // 运行中子代理逐个绑/解速率桥
       var wasLive = liveKindCur === "live";
       var view = stats ? zuBarSpeedView(stats, h && h.charsPerToken, subRate.sum,
-        (state.data && state.data.session && typeof state.data.session.avg_tps === "number" &&
-         isFinite(state.data.session.avg_tps) && state.data.session.avg_tps > 0) ? state.data.session.avg_tps : 0) : null;
+        /* 本 pane 会话行（render 缓存），不取 payload 顶层 session——那是全局最近活跃
+         * 会话，多窗/分栏下会把别的会话的会话均串进本格（v181 补修）。 */
+        (lastView && lastView.session && typeof lastView.session.avg_tps === "number" &&
+         isFinite(lastView.session.avg_tps) && lastView.session.avg_tps > 0) ? lastView.session.avg_tps : 0) : null;
       liveStatsCur = stats;
       if (state.theme === "compact") { syncTpsChip(); return; }   // v146：精简模式速率走工具行 chip（10Hz 心跳原地跟随，条面不重建）
       // 用 view（而非 stats）判定快速路径：stats 非空但 view 为 null（历史存量，见
@@ -6087,7 +6089,7 @@
         }
       } else {
         out += tpsRowHtml(L("档位", "Band"), tpsBandText(v.band));
-        if (v.sessAvg) {
+        if (v.sessAvg && v.dbTps > 0) {
           out += tpsRowHtml(L("最近一段", "Latest segment"), v.dbTps + " t/s");
         }
         out += tpsRowHtml(L("口径", "Basis"), L(v.sessAvg
@@ -6096,7 +6098,7 @@
           v.sessAvg
           ? "all completed requests of this session: Σoutput (thinking incl.) ÷ Σgeneration time, tool waits excluded, sub-agents excluded"
           : "output tokens (thinking incl.) ÷ generation time"));
-        if (last.startedAt || last.endedAt) {
+        if (!v.sessAvg && (last.startedAt || last.endedAt)) {   // 时间范围只对「最近一段」标题有意义（v181 补修）
           out += tpsRowHtml(L("时间范围", "Time span"),
             (last.startedAt ? fmtStart(last.startedAt) : "—") + " - " + (last.endedAt ? fmtStart(last.endedAt) : "—"));
         }
@@ -6209,7 +6211,8 @@
       else misplaced = (afterNode ? afterNode.nextElementSibling !== chip : host.lastElementChild !== chip);   // 锚位语义同 git 兜回（下一元素已是自己=就位，不得自插）
       if (misplaced) host.insertBefore(chip, insBefore ? insBefore : (afterNode ? afterNode.nextElementSibling : null));
       var txt = v.kind === "live" ? v.sv.text
-        : (v.sessAvg ? L("均", "avg ") + v.sessAvg + L(" t/s · 近", " t/s · last ") + v.dbTps : v.dbTps + " t/s");
+        : (v.sessAvg ? L("均", "avg ") + v.sessAvg +
+           (v.dbTps > 0 ? L(" t/s · 近", " t/s · last ") + v.dbTps : " t/s") : v.dbTps + " t/s");
       var cls = "zu-live " + (v.kind === "live" ? v.sv.cls + (v.sv.word ? " zu-shimmer" : "") : v.band.cls);
       var sig = v.kind + "|" + cls + "|" + txt;
       if (chip.__zuSig !== sig) {   // 幂等：内容没变不重建，悬停/焦点态不被打断

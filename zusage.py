@@ -921,20 +921,15 @@ def _session_snapshot(con, sid, cfg):
     ).fetchone()
     covers = _provider_first_token_covers(con)
     # 会话平均生成速度：全会话已完成 main_turn 段的加权平均——Σ有效输出 ÷ Σ有效生成窗口
-    # （_row_gen_ms 同款口径，无效段不进分母；子代理不计）。状态栏完成态主数字（平均为主，
+    # （_turn_rate 同款口径：_row_gen_ms 窗口 + 200ms–1h 有效段过滤，无效段不进分母；
+    # 子代理与辅助 query_source 行不计）。状态栏完成态主数字（平均为主，
     # 最近一段退到 tooltip）；与子代理 rate_avg 同构。
-    sess_gen = [0, 0]
-    for row in con.execute(
+    sess_avg = _turn_rate(con.execute(
         """select output_tokens, first_token_at, completed_at, started_at, reasoning_tokens, model_id, provider_id
            from model_usage where session_id=? and status='completed'
              and (query_source is null or query_source='main_turn')""",
         (sid,),
-    ):
-        toks = row["output_tokens"] or 0
-        gen_ms = _row_gen_ms(row, covers)
-        if toks > 0 and gen_ms and _TPS_MIN_GEN_MS <= gen_ms < _TPS_MAX_GEN_MS:
-            sess_gen[0] += toks
-            sess_gen[1] += gen_ms
+    ).fetchall(), covers)["tps"]
     # 本轮数据源 = turn_usage 表的每轮完整聚合（v30 起，替代从 model_usage 手工按轮求和）：
     # 自带请求/重试/工具/工具错误计数与 reasoning 拆分，一轮一行。
     lt = {"requests": 0, "retries": 0, "tool_calls": 0, "tool_errors": 0, "input": 0,
@@ -1084,7 +1079,7 @@ def _session_snapshot(con, sid, cfg):
         "ctx": u["last_request_input"] if u else 0,
         "updated": (_ts(lr[0]).strftime("%H:%M:%S") if lr and lr[0] else ""),
         "started": _session_start_ms(con, sid, srow),
-        "avg_tps": _rated_tps(*sess_gen),
+        "avg_tps": sess_avg,
         "sub": sub,
         "tools": tools,
         "models": models,
