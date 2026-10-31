@@ -23,7 +23,8 @@ function makePanel() {
   const fields = new Map();
   const node = (key) => {
     if (!fields.has(key)) {
-      fields.set(key, { value: "", textContent: "", classes: new Set(), classList: { toggle: (k, on) => { if (on) fields.get(key).classes.add(k); else fields.get(key).classes.delete(k); } } });
+      fields.set(key, { value: "", textContent: "", hidden: undefined, closest: () => fields.get(key).__row || null, classes: new Set(), classList: { toggle: (k, on) => { if (on) fields.get(key).classes.add(k); else fields.get(key).classes.delete(k); } } });
+      fields.get(key).__row = { hidden: undefined };   // closest("label") 返回所在行桩（v190 hidden 断言用）
     }
     return fields.get(key);
   };
@@ -150,6 +151,18 @@ test("acInfoText：解析不到总量时 tokens 模式给绝对值，percent/buf
   assert.match(f({ enabled: true, state: "applied", config: { enabled: true, thresholdTokens: 125300 } })({}), /自动压缩阈值 125,300 token/);
   assert.doesNotMatch(f({ enabled: true, state: "applied", config: { enabled: true, thresholdTokens: 125300 } })({}), /%/);
   assert.match(f({ enabled: true, state: "applied", config: { enabled: true, thresholdPercent: 70 } })({}), /自定义阈值/);   // 无窗口不硬算百分比
+});
+
+test("v190：注入开关关闭（或主进程未加载）时数值行整行隐藏", () => {
+  const off = runHelpers({ state: { enginePatch: { enabled: false, state: "off" } } });
+  off.sandbox.syncAutoCompactInputs();
+  assert.equal(off.fields.get(".zu-ac-value").__row.hidden, true, "开关关 → 数值行隐藏");
+  const none = runHelpers({});
+  none.sandbox.syncAutoCompactInputs();
+  assert.equal(none.fields.get(".zu-ac-value").__row.hidden, true, "主进程未加载 → 隐藏");
+  const on = runHelpers({ state: { enginePatch: { enabled: true, state: "applied", config: { enabled: true, thresholdPercent: 70 } } } });
+  on.sandbox.syncAutoCompactInputs();
+  assert.equal(on.fields.get(".zu-ac-value").__row.hidden, false, "开启 → 显示");
 });
 
 test("源码契约：设置控件、动作路由与状态种子齐备", () => {
