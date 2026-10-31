@@ -526,18 +526,41 @@ test('v179 阈值行：补丁生效时钉在按钮之后，推送变化原地改
   assert.ok(btn);
   const info = ui.body.children.find(e => e.classList.contains('zu-ac-info'));
   assert.ok(info, 'info row mounted');
-  assert.equal(ui.body.children.indexOf(info), ui.body.children.indexOf(btn) + 1, '钉在压缩按钮之后');
-  assert.match(info.textContent, /自动压缩 ~63%/);          // (200000−21000)×70% = 125,300 → 62.65% ≈ 63%
-  assert.match(info.textContent, /125,300 token/);
+  assert.equal(ui.body.children.indexOf(info), ui.body.children.indexOf(btn) - 1, 'v189：钉在压缩按钮上方');
+  const infoText = info.children.find(e => e.classList && e.classList.contains('zu-ac-text'));
+  assert.ok(infoText, '文本 span 存在');
+  assert.match(infoText.textContent, /自动压缩 ~63%/);      // (200000−21000)×70% = 125,300 → 62.65% ≈ 63%
+  assert.match(infoText.textContent, /125,300 token/);
+  const link = info.children.find(e => e.classList && e.classList.contains('zu-ac-link'));
+  assert.ok(link, '下划线「调整」链接存在');
+  assert.equal(link.textContent, '调整');
   h.tick();
   assert.equal(ui.body.children.find(e => e.classList.contains('zu-ac-info')), info, '幂等：同一颗行不被重建');
+  assert.equal(info.children.find(e => e.classList && e.classList.contains('zu-ac-link')), link, '链接不被重建（文本单独更新）');
   h.window.__zusagePluginUpdate({ enginePatch: { enabled: true, state: 'applied', build: '3.17.1', config: { enabled: false } } });
   h.tick();
   assert.equal(ui.body.children.find(e => e.classList.contains('zu-ac-info')), info, '原地更新不重建');
-  assert.match(info.textContent, /已禁用/);
+  assert.match(info.children.find(e => e.classList && e.classList.contains('zu-ac-text')).textContent, /已禁用/);
+  assert.equal(info.children.find(e => e.classList && e.classList.contains('zu-ac-link')), link, '原地更新后链接仍在');
   h.window.__zusagePluginUpdate({ enginePatch: { enabled: true, state: 'unsupported_build', build: null } });
   h.tick();
   assert.ok(!ui.body.children.find(e => e.classList.contains('zu-ac-info')), '补丁未生效即摘除');
+});
+
+test('v189「调整」链接：点击打开 ⚙ 面板（复用 gear 路径），重复点击不炸', () => {
+  const h = harness();
+  h.buildComposer('workspace-main', 'sid_main');
+  const ui = h.buildHoverCard({ withBorderT: true });
+  h.window.__zusagePluginState.enginePatch = { enabled: true, state: 'applied', build: '3.17.1', config: { enabled: true, thresholdPercent: 70 } };
+  h.inject(); h.boot(); h.tick();
+  const info = ui.body.children.find(e => e.classList.contains('zu-ac-info'));
+  const link = info.children.find(e => e.classList.contains('zu-ac-link'));
+  link.dispatch('click');
+  const panel = h.body.children.find(e => e.classList.contains('zu-settings'));
+  assert.ok(panel, '设置面板元素存在');
+  assert.equal(panel.classList.contains('open'), true, '点击后面板打开（gear 路径）');
+  link.dispatch('click');   // 面板已开时重复点击：不重复走打开分支，不应抛错
+  assert.equal(panel.classList.contains('open'), true);
 });
 
 test('v179 阈值行：enginePatch 缺失（旧主进程）不渲染', () => {
