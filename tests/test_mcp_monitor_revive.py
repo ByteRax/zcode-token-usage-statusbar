@@ -119,7 +119,7 @@ class ReviveMonitorTests(unittest.TestCase):
         self.pending()
         stdout = io.StringIO()
         with mock.patch.dict(sys.modules, {"patch_install": self.patch}), \
-                mock.patch.dict(os.environ, {"ZUSAGE_MONITOR_QUIET": ""}), \
+                mock.patch.dict(os.environ, {"ZUSAGE_MONITOR_QUIET": "", "ZUSAGE_NO_MONITOR": ""}), \
                 mock.patch.object(self.usage_mcp, "__file__", str(self.runtime / "usage_mcp.py")), \
                 mock.patch.object(self.patch.subprocess, "Popen", side_effect=OSError("boom")), \
                 contextlib.redirect_stdout(stdout):

@@ -809,6 +809,44 @@ class ProtectedTargetTests(unittest.TestCase):
 
 
 @unittest.skipUnless(shutil.which("node"), "需要 Node 跑真实语法检查")
+class CliExitCodeTests(unittest.TestCase):
+    """issue #163 review：`sys.exit(main())` 把 bool 直接当退出码——True→1（失败）、
+    False→0（成功）正好颠倒。手动收尾命令（install --finalize）的脚本化判断全靠
+    退出码，成功失败颠倒会让人误判收尾结果。"""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.home = self.root / "home"
+        self.home.mkdir()
+        env = mock.patch.dict(os.environ, {"HOME": str(self.home), "USERPROFILE": str(self.home),
+                                           "ZUSAGE_NO_MONITOR": "1", "ZUSAGE_MONITOR_QUIET": ""})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def run_cli(self, *argv):
+        return subprocess.run(
+            [sys.executable, "-B", str(ROOT / "patch_install.py"), *argv],
+            capture_output=True, env=dict(os.environ), timeout=60)
+
+    def test_check_exit_code_distinguishes_success_and_failure(self):
+        asar = self.root / "app.asar"
+        make_asar(asar)
+        ok = self.run_cli("check", "--asar", str(asar))
+        self.assertEqual(ok.returncode, 0, ok.stderr.decode("utf-8", "replace"))
+        bad = self.run_cli("check", "--asar", str(self.root / "missing.asar"))
+        self.assertEqual(bad.returncode, 1, bad.stdout.decode("utf-8", "replace"))
+
+    def test_finalize_exit_code_is_zero_only_on_success(self):
+        # install --finalize 无 pending 时优雅失败（False）：退出码必须是 1 而不是 0。
+        asar = self.root / "app.asar"
+        make_asar(asar)
+        denied = self.run_cli("install", "--finalize", "--asar", str(asar),
+                              "--runtime", str(self.root / "runtime"))
+        self.assertEqual(denied.returncode, 1, denied.stdout.decode("utf-8", "replace"))
+
+
 class SyntaxCheckTests(unittest.TestCase):
     def test_failure_diagnostic_survives_non_utf8_locale(self):
         # Node 恒写 UTF-8：语法错误回显的源码行/路径含非 ASCII 时，按区域编码解码会让 Windows
