@@ -446,6 +446,7 @@ class PendingAsarTests(unittest.TestCase):
         # 回归：client_running 时原子替换因文件占用失败，提示里的 "手动执行" 命令必须
         # 带上当前真实目标，standalone 复制执行才不会落到默认猜测路径；还要带 --runtime，
         # 否则 install --finalize 会被 sidecar 来源授权校验拒绝（见下面两条端到端用例）。
+        # issue #163：脚本本身也要指向运行目录副本——clone 被删后裸文件名无处可解析。
         buf = io.StringIO()
         with mock.patch.object(self.pi, "client_running", return_value=True), \
                 mock.patch.object(self.pi, "_replace_pending", side_effect=PermissionError("locked")), \
@@ -455,6 +456,9 @@ class PendingAsarTests(unittest.TestCase):
         output = buf.getvalue()
         self.assertIn(f'--asar "{self.asar.resolve()}"', output)
         self.assertIn(f'--runtime "{self.pi.RUNTIME}"', output)
+        tool = self.pi.RUNTIME / "patch_install.py"
+        self.assertIn(f'python "{tool}"', output)
+        self.assertIn("Keep it open", output)   # 夹具 _LANG="en"（setUp）
 
     def test_remove_failure_hint_includes_asar_path(self):
         self.pi.install()   # 先注入，_remove() 才会走到 _replace_pending

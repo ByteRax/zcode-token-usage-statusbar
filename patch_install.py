@@ -856,10 +856,11 @@ def _install(finalize=False, before_publish=None):
             print(L(f"待替换包已失效，未替换：{e}", f"Pending package invalidated; not replaced: {e}"))
             return False
         except OSError as e:
+            tool = RUNTIME / "patch_install.py"
             print(L(f"\n运行中替换失败（{e}）。已弹出监控窗口：完全退出 ZCode 后会自动完成替换，",
                     f"\nReplacement while running failed ({e}). A monitor window has opened: it finishes the replacement once ZCode quits completely,"))
-            print(L(f'或之后手动执行：python patch_install.py install --finalize --asar "{ASAR}" --runtime "{RUNTIME}"',
-                    f'or run manually afterwards: python patch_install.py install --finalize --asar "{ASAR}" --runtime "{RUNTIME}"'))
+            print(L(f"请勿关闭该窗口；若已关闭，可手动执行：python \"{tool}\" install --finalize --asar \"{ASAR}\" --runtime \"{RUNTIME}\"",
+                    f"Keep it open; if it was closed already, run manually: python \"{tool}\" install --finalize --asar \"{ASAR}\" --runtime \"{RUNTIME}\""))
             launch_monitor(time.time())
             return False
     try:

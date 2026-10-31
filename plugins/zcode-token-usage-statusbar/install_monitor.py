@@ -274,10 +274,11 @@ def _run():
                                "This window cannot finalize; re-run the install as administrator, then quit ZCode completely and reopen it.")]
                     done = True
                 else:
+                    tool = RUNTIME_DIR / "patch_install.py"
                     lines = [L("[!] ZCode 已退出但替换失败（文件仍被占用？）",
                                "[!] ZCode has exited but the replacement failed (file still locked?)"),
                              L("稍后自动重试；也可手动执行：", "Will retry automatically; you can also run manually:"),
-                             "  python patch_install.py "
+                             "  python \"" + str(tool) + "\" "
                              + (f'remove --asar "{ASAR}"' if pending["operation"] == "remove"
                                 else f'install --finalize --asar "{ASAR}" --runtime "{RUNTIME_DIR}"')]
             else:
@@ -307,25 +308,29 @@ def _run():
                          "", L("本窗口即将自动关闭。", "This window will close automatically.")]
                 done = True
             elif now - new_since > CONFIRM_WAIT:
+                tool = RUNTIME_DIR / "patch_install.py"
                 lines = [L("[?] ZCode 已重启，但 %d 秒内未检测到注入加载。" % CONFIRM_WAIT,
                            "[?] ZCode restarted, but no injection load detected within %ds." % CONFIRM_WAIT),
                          L("若 ZCode 刚升级过，asar 会被官方版本覆盖，",
                            "If ZCode was just upgraded, app.asar was overwritten by the official build —"),
-                         L(f'请重新运行：python patch_install.py install --asar "{ASAR}"',
-                           f'please re-run: python patch_install.py install --asar "{ASAR}"'),
+                         L(f'请重新运行：python "{tool}" install --asar "{ASAR}"',
+                           f'please re-run: python "{tool}" install --asar "{ASAR}"'),
                          L("（继续检测中，diag 一更新即确认）", "(still watching; will confirm as soon as diag updates)")]
             else:
                 lines = [L("ZCode 已重启（新实例），正在确认注入加载……",
                            "ZCode restarted (new instance); confirming injection load…")]
         el = int(now - t0)
-        # issue #130 页脚只在「提权且收尾仍未落定」时警示：done 终屏（成功/finalize_denied）
-        # 与 finished/finalize_denied 当轮终屏上，收尾已不可被关窗打断——照搬会让成功屏
-        # 同时出现「请保持本窗口开启」的自相矛盾文案（review 2026-10-31）。
+        # 收尾未落定（done 终屏与 finished/finalize_denied 当轮终屏除外）时不能说
+        # 「可随时关闭」：关窗即杀死收尾者。提权监控是受保护目录上唯一能收尾的进程
+        # （hook 重建不了它，issue #130），重建门槛是管理员重跑；非提权场景插件链
+        # 下次会话可自动重建、独立链需重跑安装或手动收尾（issue #163），门槛低但
+        # pending 仍会搁浅到那时——同样要警示。
         if pending is not None and pi.is_elevated() and not done and not finished and not finalize_denied:
-            # 提权监控是受保护目录上唯一能收尾的进程（hook 重建不了它，issue #130）：
-            # 关窗即杀死收尾者，文案不能再说「可随时关闭」。
             footer = L("收尾未完成前请保持本窗口开启：关闭窗口将停止自动替换，且需以管理员身份重跑安装才能重建。",
                        "Keep this window open until finalization completes; closing it stops the automatic replacement, and re-running the install as administrator is the only way to rebuild it.")
+        elif pending is not None and not done and not finished and not finalize_denied:
+            footer = L("收尾未完成前请保持本窗口开启：关闭窗口将停止自动替换，重新运行安装即可重建监控。",
+                       "Keep this window open until finalization completes; closing it stops the automatic replacement. Re-run the install to bring the monitor back.")
         else:
             footer = L("本窗口可随时关闭，不影响安装结果。", "You can close this window at any time; the installation result is unaffected.")
         lines += ["", "-" * 52,
