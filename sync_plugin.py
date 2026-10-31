@@ -28,6 +28,7 @@ FILES = [
     "plugin-storage.cjs",
     "quota-client.cjs",
     "model-puller.cjs",
+    "engine-patch.cjs",
     "release_unpack.py",
     "runtime_lock.py", "usage_stats.py", "turn-stats.js",
     "overlay.js", "token_rate.py", "renderer_bridge.py",

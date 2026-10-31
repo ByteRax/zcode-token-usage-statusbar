@@ -97,7 +97,7 @@ MCP_NAME = "zcode-token-usage-statusbar"   # MCP server 注册名（与仓库名
 MCP_NAME_OLD = ("token-usage", "zusage")   # 历史注册名
 # Linux 兜底扫描前缀（目录名含 zcode 的候选仍须过 is_zcode_app 身份门）
 LINUX_FALLBACK_BASES = ("/opt", "/usr/lib", "/usr/local/lib")
-RUNTIME_FILES = ("inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs", "quota-client.cjs", "model-puller.cjs", "release_unpack.py", "runtime_lock.py", "usage_stats.py", "turn-stats.js", "overlay.js", "zusage.py", "usage_mcp.py", "token_rate.py", "renderer_bridge.py")
+RUNTIME_FILES = ("inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs", "quota-client.cjs", "model-puller.cjs", "engine-patch.cjs", "release_unpack.py", "runtime_lock.py", "usage_stats.py", "turn-stats.js", "overlay.js", "zusage.py", "usage_mcp.py", "token_rate.py", "renderer_bridge.py")
 
 # ZCode 安装位置候选：resources/app.asar 存在即命中（按序探测，按当前平台取组）
 if sys.platform == "darwin":
