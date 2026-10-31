@@ -49,7 +49,7 @@ Here's what each part tells you:
 
 | The bit | In plain English |
 |---|---|
-| ⚡ **86 t/s** | Generation speed in tokens per second. Colour bands range from red (slow) to violet (very fast), with a blue-violet gradient + ✦ at ≥2000 t/s (Ultra). While generating, the displayed speed is an estimate and uses the same colour bands |
+| ⚡ **86 t/s** | Generation speed in tokens per second. Colour bands range from red (slow) to violet (very fast), with a blue-violet gradient + ✦ at ≥2000 t/s (Ultra). While generating, the displayed speed is an estimate; once a turn completes it switches to the session's weighted-average speed (prefixed with "avg"; the latest-turn reading moves into the tooltip), using the same colour bands |
 | **62.5k 90% 7 Σ18.4s ⏱1.4s** | This turn: 62.5k tokens spent, 90% cache hit rate, 7 model requests, their total duration was 18.4s, and you waited 1.4s for the first token |
 | **1.45M 86% 23 187** | The whole conversation so far: 1.45M tokens, 86% hit rate, 23 turns, 187 requests |
 | **123M 88% 42 sess 890** | This project (same directory) across all of its sessions ever: 123M tokens, 42 sessions, 890 requests; subagent usage counts too (hover for details) |
@@ -136,7 +136,7 @@ Run `/uninstall-overlay` to remove the bar and write the opt-out marker (auto-in
 
 ## Where these numbers come from
 
-Usage reports read ZCode's local SQLite database **read-only** — they are not self-reported by the model or a billing estimate. Stored request statistics update as completed requests reach the database, not character by character. When the renderer bridge is available, generation speed is estimated from text changes while the model is writing and switches to a measured value when the turn completes; without the bridge, speed falls back to the latest valid completed database request. Quota and balance come from a separate provider-query or estimate path, not from those token totals. Exact formulas and commonly confused pairs (bar speed vs rate line, context share vs session total) are in the [data semantics guide](docs/user-guide.md#数据如何计算) (Chinese).
+Usage reports read ZCode's local SQLite database **read-only** — they are not self-reported by the model or a billing estimate. Stored request statistics update as completed requests reach the database, not character by character. When the renderer bridge is available, generation speed is estimated from text changes while the model is writing and switches to the session's weighted average once the turn completes (the measured per-turn value moves into the tooltip); without the bridge, speed falls back to the latest valid completed database request. Quota and balance come from a separate provider-query or estimate path, not from those token totals. Exact formulas and commonly confused pairs (bar speed vs rate line, context share vs session total) are in the [data semantics guide](docs/user-guide.md#数据如何计算) (Chinese).
 
 ## Things worth knowing
 

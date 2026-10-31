@@ -409,6 +409,58 @@ class TestTurnCurrent(RateTestBase):
         self.assertEqual(data["turn"]["totalOutput"], 2000)   # turn_b，不是并行会话的 999
 
 
+class TestSessionAverage(RateTestBase):
+    """v181（PR #157）：会话均 = 全会话加权平均（Σ可评分输出 ÷ Σ生成窗口），
+    与「近N次均」的算术平均互补；无可评分段时为 None，两处展示自动隐藏。"""
+
+    def test_session_avg_is_whole_session_weighted_mean(self):
+        # a1 1000/5s + a2 500/6s(含思考窗) + b1 1200/8s(含思考窗) + b2 800/5s(含思考窗)
+        # = 3500 tok / 24 s = 145.8；算术平均 148.3 是另一口径，两者并存不互替
+        data = json.loads(self.run_rate("--json").stdout)
+        self.assertEqual(data["session"]["sessionAvg"], 145.8)
+        self.assertEqual(data["session"]["avg"], 148.3)
+
+    def test_session_avg_hidden_when_no_rated_rows(self):
+        # 无思考段窗口依赖首字；思考段再掐 started_at——两处都掐才全部不可评
+        con = sqlite3.connect(self.db)
+        con.execute("update model_usage set first_token_at = null, reasoning_tokens = 0")
+        con.commit()
+        con.close()
+        data = json.loads(self.run_rate("--json").stdout)
+        self.assertIsNone(data["session"]["sessionAvg"])
+        cli = self.run_rate().stdout
+        self.assertNotIn("会话均", cli)
+        self.assertNotIn("平均", cli)
+
+    def test_turn_line_puts_session_avg_before_cumulative(self):
+        self.write_state({"sessionId": SID, "ts": self.t0, "promptTs": self.t0})
+        r = self.run_rate("--turn", "--current", state=self.state)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        line = r.stdout.strip()
+        self.assertIn("会话均 145.8 token/s · 累计 3,500 token", line)
+
+    def test_cli_cumulative_line_appends_weighted_average(self):
+        out = self.run_rate().stdout
+        self.assertIn("会话均 145.8 token/s · 累计 3.5k token", out)   # 上轮行（format_line）
+        self.assertIn("· 平均 145.8 token/s", out)                     # 会话累计行（CLI）
+
+    def test_aux_and_subagent_rows_never_enter_session_avg(self):
+        con = sqlite3.connect(self.db)
+        con.executemany(
+            "insert into model_usage values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            [  # 同会话的辅助/子代理源行：scope 过滤，不进分母
+                ("x1", SID, "turn_x", "session_title", "test-model", "completed",
+                 self.t0, self.t0 + 1000, self.t0 + 11000, 1000, 10, 99999, 0, 0, "account:fixture"),
+                ("x2", "sess_sub_y", "turn_y", "subagent", "test-model", "completed",
+                 self.t0, self.t0 + 1000, self.t0 + 11000, 1000, 10, 99999, 0, 0, "account:fixture"),
+            ])
+        con.commit()
+        con.close()
+        data = json.loads(self.run_rate("--json").stdout)
+        self.assertEqual(data["session"]["sessionAvg"], 145.8)
+        self.assertEqual(data["session"]["requests"], 4)
+
+
 class TestLatestLine(RateTestBase):
     def test_default_output_is_prev_round(self):
         r = self.run_rate(state=self.state)

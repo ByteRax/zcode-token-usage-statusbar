@@ -508,5 +508,70 @@ class ProviderFirstTokenWindowTests(unittest.TestCase):
         self.assertEqual(zusage._provider_first_token_covers(None), frozenset())
 
 
+class SessionAvgTpsTests(unittest.TestCase):
+    """v181（PR #157）：快照新增 avg_tps——全会话已完成 main_turn 段加权平均
+    （Σ有效输出 ÷ Σ生成窗口，_row_gen_ms 同款窗口口径；辅助源与子代理行不计；
+    无有效样本返回 0，消费端据此回退原行为）。"""
+
+    def snap_avg(self, rows, sid="s"):
+        con = sqlite3.connect(":memory:")
+        self.addCleanup(con.close)
+        con.row_factory = sqlite3.Row
+        con.executescript(SCHEMA)
+        con.execute("insert into session (id, title) values (?, 't')", (sid,))
+        for r in rows:
+            con.execute("insert into model_usage values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", r)
+        return zusage._session_snapshot(con, sid, {"context_window": 200000})["avg_tps"]
+
+    def row(self, rid, start, ft, completed, output, reasoning=0, source="main_turn",
+            status="completed", model="GLM-5.3"):
+        return (rid, "s", "t", source, "", "account:test", model, status, start, ft,
+                completed, completed - start, ft - start if ft else None,
+                10, output, reasoning, 0, 0, output + 10, 0, 0, 0)
+
+    def test_weighted_mean_over_whole_session(self):
+        # r1 无思考：窗口 = completed − ft = 5000ms，1000 tok → 200 t/s
+        # r2 上报思考：窗口 = completed − started = 8000ms，240 tok → 30 t/s
+        # 会话均 = 1240 / 13 s = 95.4（算术平均 115.0 不是这个口径）
+        rows = [self.row("r1", 1_000_000, 1_002_000, 1_007_000, 1000),
+                self.row("r2", 1_010_000, 1_012_000, 1_018_000, 240, reasoning=100)]
+        self.assertEqual(self.snap_avg(rows), 95.4)
+
+    def test_window_and_status_filters_match_last_tps_discipline(self):
+        base = [self.row("r1", 1_000_000, 1_002_000, 1_007_000, 1000)]
+        self.assertEqual(self.snap_avg(base), 200.0)
+        # failed 行、缺首字行、窗口 <200ms 的碎段都不进分母
+        extra = base + [
+            self.row("f1", 1_010_000, 1_011_000, 1_012_000, 5000, status="failed"),
+            self.row("n1", 1_020_000, None, 1_028_000, 5000),
+            self.row("t1", 1_030_000, 1_030_900, 1_031_000, 5000),   # 100ms 碎段，无效
+        ]
+        self.assertEqual(self.snap_avg(extra), 200.0)
+
+    def test_aux_and_subagent_sources_excluded(self):
+        rows = [self.row("r1", 1_000_000, 1_002_000, 1_007_000, 1000),
+                self.row("x1", 1_010_000, 1_012_000, 1_017_000, 99999, source="session_title"),
+                self.row("x2", 1_020_000, 1_022_000, 1_027_000, 99999, source="subagent")]
+        self.assertEqual(self.snap_avg(rows), 200.0)
+
+    def test_no_completed_rows_yields_zero(self):
+        self.assertEqual(self.snap_avg([self.row("f1", 1_000_000, 1_001_000, 1_002_000,
+                                                  1000, status="failed")]), 0)
+        self.assertEqual(self.snap_avg([]), 0)
+
+    def test_light_and_empty_snapshots_carry_zero_avg(self):
+        con = sqlite3.connect(":memory:")
+        self.addCleanup(con.close)
+        con.row_factory = sqlite3.Row
+        con.executescript(SCHEMA)
+        con.execute("insert into session (id, title) values ('s', 't')")
+        con.execute("insert into model_usage values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    ("r1", "s", "t", "main_turn", "", "account:test", "GLM-5.3", "completed",
+                     1_000_000, 1_002_000, 1_007_000, 7000, 2000, 10, 1000, 0, 0, 0, 1010, 0, 0, 0))
+        self.assertEqual(zusage._light_snapshot(con, "s", {"context_window": 200000})["avg_tps"], 0)
+        self.assertEqual(zusage._empty_snapshot("s", {"context_window": 200000})["avg_tps"], 0)
+
+
+
 if __name__ == "__main__":
     unittest.main()

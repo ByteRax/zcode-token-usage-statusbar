@@ -28,6 +28,8 @@
   思考在首字后随输出流出，首字窗口已含思考）改用 completed_at − first_token_at。
   按段累加，段间工具等待不计入。Claude 系列不单独上报思考 token（reasoning_tokens
   恒为 0）也按含思考段计时（2026-10-15 真库裁决，见 hides_reasoning）。
+  会话均 = 全会话加权平均（Σ可评分段输出 ÷ Σ生成窗口，aggregate_requests 同款），
+  与「近N次均」的算术平均互补：长段权重自然，不被碎片小段拉偏（2026-10-30 增加）。
 """
 import json
 import math
@@ -213,20 +215,25 @@ def to_item(r, covers=frozenset()):
     return item
 
 
-def session_aggregate(db, scope_sql, args, rated):
-    """会话累计用独立 SUM（不受窗口限制）；均/峰由已评分窗口计算。"""
+def session_aggregate(db, scope_sql, args, rated, covers=frozenset()):
+    """会话累计用独立 SUM（不受窗口限制）；均/峰由已评分窗口计算。
+    sessionAvg = 全会话加权平均：把 scope 内全部行过一遍 request_stats 后交给
+    aggregate_requests（Σ可评分输出 ÷ Σ生成窗口），长段权重自然；「近N次均」是
+    算术平均，两者互补。全会话行数即会话请求量（几百行毫秒级），一次性进程可接受。"""
     if db is None:
         return None
     row = db.execute(
         f"select count(*), coalesce(sum(output_tokens),0), coalesce(sum(reasoning_tokens),0),"
         f" coalesce(sum(input_tokens),0), coalesce(sum(cache_read_input_tokens),0)"
         f" from ({scope_sql})", args).fetchone()
+    whole = aggregate_requests(to_item(r, covers) for r in db.execute(scope_sql, args))
     return {
         "samples": len(rated),
         "requests": row[0],
         "avg": _round1(sum(i["tokPerSec"] for i in rated) / len(rated)) if rated else None,
         "max": max(i["tokPerSec"] for i in rated) if rated else None,
         "min": min(i["tokPerSec"] for i in rated) if rated else None,
+        "sessionAvg": whole["tokPerSec"],
         "totalOutput": row[1],
         "totalReasoning": row[2],
         "totalInput": row[3],
@@ -247,7 +254,7 @@ def query_latest(session_id=None):
             rows = db.execute(scope_sql + " order by completed_at desc limit ?", args + [N]).fetchall()
             items = [to_item(r, covers) for r in rows]
             rated = [i for i in items if i["tokPerSec"] is not None]
-            session = session_aggregate(db, scope_sql, args, rated)
+            session = session_aggregate(db, scope_sql, args, rated, covers)
         latest = items[0] if items else None
         return {"sessionId": sid, "latest": latest, "session": session, "history": items[::-1]}
     finally:
@@ -302,7 +309,7 @@ def query_turn(session_id=None, current=False, turn_id=None):
             covers = first_token_covers(db)
             win = db.execute(scope_sql + " order by completed_at desc limit ?", args + [N]).fetchall()
             rated = [i for i in (to_item(r, covers) for r in win) if i["tokPerSec"] is not None]
-            session = session_aggregate(db, scope_sql, args, rated)
+            session = session_aggregate(db, scope_sql, args, rated, covers)
         prompt_ts = last_prompt_ts(sid) if current else None
         if current and turn_id is None and prompt_ts is None:
             return {"sessionId": sid, "turnId": None, "turn": None,
@@ -419,6 +426,8 @@ def format_turn_line(r, cn=True, force_kmb=False):
         parts.append(f"{t['requests']} 段 / 峰 {t['peak']} token/s" if t["peak"] is not None else f"{t['requests']} 段 / 峰 -")
     if r.get("session"):
         s = r["session"]
+        if s.get("sessionAvg") is not None:
+            parts.append(f"会话均 {s['sessionAvg']} token/s")
         parts.append(f"累计 {big(s['totalOutput'])} token")
     parts.append(f"⏱ {_cn_fulltime(t['lastAt'])}")
     return " · ".join(parts)
@@ -440,6 +449,8 @@ def format_line(r):
     if s:
         if s["samples"]:
             parts.append(f"近{s['samples']}次均 {s['avg']} / 峰 {s['max']} token/s")
+        if s.get("sessionAvg") is not None:
+            parts.append(f"会话均 {s['sessionAvg']} token/s")
         parts.append(f"累计 {fmt_compact(s['totalOutput'])} token")
     parts.append(f"⏱ {_hhmmss(l['completedAt'])}")
     return " · ".join(parts)
@@ -481,7 +492,8 @@ def main(argv):
                 print(f"会话累计:输出 {fmt_num(s['totalOutput'])}"
                       f"{'(含 ' + fmt_num(s['totalReasoning']) + ' 思考)' if s['totalReasoning'] else ''}"
                       f" token · 输入 {fmt_num(s['totalInput'])} token(其中缓存读 {fmt_num(s['totalCacheRead'])})"
-                      f" · 请求 {s['requests']} 次")
+                      f" · 请求 {s['requests']} 次"
+                      f"{' · 平均 ' + str(s['sessionAvg']) + ' token/s' if s.get('sessionAvg') is not None else ''}")
     return 0
 
 
