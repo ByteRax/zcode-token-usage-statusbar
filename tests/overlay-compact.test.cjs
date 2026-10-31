@@ -89,7 +89,7 @@ class Element {
   }
 }
 
-function harness({ lang = 'zh' } = {}) {
+function harness({ lang = 'zh', ls = null } = {}) {
   const window = new Element(), body = new Element('body'), root = new Element('html');
   Object.assign(window, { innerWidth: 1000, innerHeight: 800 });
   window.__zusagePluginState = { quotaEnabled: true };
@@ -118,7 +118,7 @@ function harness({ lang = 'zh' } = {}) {
   const timers = new Map(), frames = new Map(), observers = []; let id = 0;
   const sandbox = vm.createContext({ window, document, console, innerHeight: 800, innerWidth: 1000,
     location: { href: 'file:///fixture' },
-    localStorage: { getItem: k => (k === 'zusage3.lang' && lang === 'en' ? 'en' : null), setItem() {} },
+    localStorage: { getItem: k => (k === 'zusage3.lang' && lang === 'en' ? 'en' : (ls && ls[k] != null ? ls[k] : null)), setItem() {} },
     getComputedStyle: () => ({ borderTopWidth: '1px', backgroundColor: 'black', opacity: '1', display: 'block', visibility: 'visible' }),
     setTimeout: (fn, ms) => { timers.set(++id, { fn, ms, interval: false }); return id; },
     clearTimeout: n => timers.delete(n),
@@ -131,7 +131,7 @@ function harness({ lang = 'zh' } = {}) {
       disconnect() { this.connected = false; }
     },
   });
-  const executable = source.replace(/\}\)\(\);\s*$/, 'window.compactTest = { instances: function() { return instances; } };})();');
+  const executable = source.replace(/\}\)\(\);\s*$/, 'window.compactTest = { instances: function() { return instances; }, state: function() { return state; } };})();');
   function inject() { window.__zusageOverlay = false; vm.runInContext(executable, sandbox); }
   function tick() { for (const t of [...timers.values()]) if (t.interval && (t.ms === 600 || t.ms === 500)) t.fn(); }
   function boot() { for (const [n, t] of [...timers]) if (!t.interval && t.ms === 0) { timers.delete(n); t.fn(); } }
@@ -577,4 +577,79 @@ test('v179 阈值行：enginePatch 缺失（旧主进程）不渲染', () => {
   assert.ok(h.compactBtnOf(ui.body));
   assert.ok(!ui.body.children.find(e => e.classList.contains('zu-ac-info')));
   assert.ok(!ui.body.children.find(e => e.classList.contains('zu-ac-hint')));
+});
+
+/* ---------- v200 压缩按钮开关（issue #174）：zusage3.ctxCpt 缺省开仅显式 "0" 关 ---------- */
+
+test('v200 开关关闭（zusage3.ctxCpt="0"）：弹层不注入压缩按钮，阈值行顶到「剩余额度」段上方', () => {
+  const h = harness({ ls: { 'zusage3.ctxCpt': '0' } });
+  h.buildComposer('workspace-main', 'sid_main');
+  const ui = h.buildHoverCard({ withBorderT: true });
+  h.window.__zusagePluginState.enginePatch = { enabled: true, state: 'applied', build: '3.17.1', config: { enabled: true, thresholdPercent: 70 } };
+  h.inject(); h.boot(); h.tick();
+  assert.equal(h.compactBtnOf(ui.body), undefined, '按钮不注入');
+  const info = ui.body.children.find(e => e.classList.contains('zu-ac-info'));
+  const hint = ui.body.children.find(e => e.classList.contains('zu-ac-hint'));
+  assert.ok(info && hint, '阈值行/说明行不受本开关影响（v179 独立生命周期）');
+  assert.equal(ui.body.children.indexOf(info), ui.body.children.indexOf(ui.borderT) - 2, '阈值行顶到「剩余额度」段上方');
+  assert.equal(ui.body.children.indexOf(hint), ui.body.children.indexOf(ui.borderT) - 1);
+  h.tick();
+  assert.equal(h.compactBtnOf(ui.body), undefined, '幂等：继续对账按钮不再出现');
+});
+
+test('v200 运行期切换：按钮挂载中关掉即摘除补位，重开即原位重挂', () => {
+  const h = harness();
+  h.buildComposer('workspace-main', 'sid_main');
+  const ui = h.buildHoverCard({ withBorderT: true });
+  h.window.__zusagePluginState.enginePatch = { enabled: true, state: 'applied', build: '3.17.1', config: { enabled: true, thresholdPercent: 70 } };
+  h.inject(); h.boot(); h.tick();
+  const btn = h.compactBtnOf(ui.body);
+  assert.ok(btn, '前置：开关缺省开，按钮已挂载');
+  const info = ui.body.children.find(e => e.classList.contains('zu-ac-info'));
+  assert.equal(ui.body.children.indexOf(info), ui.body.children.indexOf(btn) - 2, '前置：阈值行+说明行钉在按钮上方');
+  h.window.compactTest.state().ctxCpt = 0;
+  h.tick();
+  assert.equal(h.compactBtnOf(ui.body), undefined, '关闭：按钮摘除');
+  assert.equal(ui.body.children.indexOf(info), ui.body.children.indexOf(ui.borderT) - 2, '阈值行顶到按钮原位');
+  const hint = ui.body.children.find(e => e.classList.contains('zu-ac-hint'));
+  assert.equal(ui.body.children.indexOf(hint), ui.body.children.indexOf(ui.borderT) - 1, '说明行随阈值行补位');
+  h.window.compactTest.state().ctxCpt = 1;
+  h.tick();
+  const btn2 = h.compactBtnOf(ui.body);
+  assert.ok(btn2, '重开：按钮重挂');
+  assert.equal(ui.body.children.indexOf(btn2), ui.body.children.indexOf(ui.borderT) - 1, '重挂位置：「剩余额度」段上方');
+  const info2 = ui.body.children.find(e => e.classList.contains('zu-ac-info'));
+  assert.equal(ui.body.children.indexOf(info2), ui.body.children.indexOf(btn2) - 2, '阈值行回到按钮上方');
+});
+
+test('v200 开关关闭且无阈值行：弹层仅摘按钮，无残留', () => {
+  const h = harness({ ls: { 'zusage3.ctxCpt': '0' } });
+  h.buildComposer('workspace-main', 'sid_main');
+  const ui = h.buildHoverCard({ withBorderT: true });
+  h.inject(); h.boot(); h.tick();
+  assert.equal(h.compactBtnOf(ui.body), undefined);
+  assert.ok(!ui.body.children.find(e => e.classList && String(e.className).indexOf('zu-') === 0), '无任何插件节点残留');
+});
+
+test('v200 ⚙ 开关全链路（真实面板 change）：关掉即摘按钮，开着确认框时兜底收起', () => {
+  const h = harness();
+  h.buildComposer('workspace-main', 'sid_main');
+  const ui = h.buildHoverCard({ withBorderT: true });
+  h.inject(); h.boot(); h.tick();
+  assert.ok(h.compactBtnOf(ui.body), '前置：按钮已挂载');
+  const panel = h.body.children.find(e => e.classList.contains('zu-settings'));
+  const box = panel.querySelector('.zu-cpt-btn');
+  box.classList.add('zu-cpt-btn');   // 惰性桩 classList 为空：补类名让 change 分支可命中
+  box.checked = false;
+  panel.dispatch('change', { target: box });
+  assert.equal(h.window.compactTest.state().ctxCpt, 0, 'state 落账');
+  assert.equal(h.compactBtnOf(ui.body), undefined, 'change 分支直调 syncCompactBtn：按钮即时摘除');
+  h.window.compactTest.state().ctxCpt = 1;
+  h.tick();
+  h.compactBtnOf(ui.body).dispatch('click');
+  assert.ok(h.dlgEl(), '前置：确认框已打开');
+  box.checked = false;
+  panel.dispatch('change', { target: box });
+  assert.equal(h.dlgEl(), undefined, '兜底收起确认框（正常被遮罩挡住进不到设置）');
+  assert.equal(h.window.compactTest.state().ctxCpt, 0);
 });

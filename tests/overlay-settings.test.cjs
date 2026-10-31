@@ -321,7 +321,7 @@ test('panel retains all controls, scroll position and settings-only styling', ()
   for (const key of ['turn', 'win', 'proj', 'tools', 'today', 'sub']) {
     assert.ok(source.includes('data-k="' + key + '"'));
   }
-  for (const selector of ['zu-rate-line', 'zu-auto-update', 'zu-restart-notice', 'zu-ctxov', 'zu-cn-num', 'zu-ctx-enh', 'data-update="check"', 'data-update="update"', 'name="zu-lang"', 'zu-settings-feedback']) {
+  for (const selector of ['zu-rate-line', 'zu-auto-update', 'zu-restart-notice', 'zu-ctxov', 'zu-cn-num', 'zu-ctx-enh', 'zu-cpt-btn', 'data-update="check"', 'data-update="update"', 'name="zu-lang"', 'zu-settings-feedback']) {
     assert.ok(source.includes(selector));
   }
   assert.match(source, /\.zu-settings-body"\)\.scrollTop = scrollTop/);
@@ -1093,6 +1093,37 @@ test('context-button-enhancement toggle persists and re-renders without touching
   assert.equal(context.state.ctxEnh, 1);
   assert.equal(saved, 2);
   assert.equal(renders, 2);
+});
+
+test('compact-context-button toggle persists and re-syncs the popup, closing a stray dialog', () => {
+  const changeSource = extract('    panel.addEventListener("change",', '    listenGlobal(document, "mousedown",');
+  let handler, saved = 0, syncs = 0, closed = 0;
+  const context = {
+    panel: { addEventListener: (_, fn) => { handler = fn; } },
+    state: { ctxOv: '', show: { ctx: 1 }, projPath: 1, ctxEnh: 1, ctxCpt: 1 },
+    persist: () => { saved++; },
+    applyProjPath: () => {},
+    renderAll: () => {},
+    compactDlg: null,
+    closeCompactDlg: () => { closed++; },
+    syncCompactBtn: () => { syncs++; },
+  };
+  vm.runInNewContext(changeSource, context);
+  const target = checked => ({ type: 'checkbox', checked, dataset: {}, classList: { contains: name => name === 'zu-cpt-btn' } });
+  handler({ target: target(false) });
+  assert.equal(context.state.ctxCpt, 0);
+  assert.equal(saved, 1);
+  assert.equal(syncs, 1, '摘除弹层内按钮走同一 syncCompactBtn 对账');
+  assert.equal(closed, 0, '确认框不存在时不触发关闭');
+  assert.deepEqual(context.state.show, { ctx: 1 });   // 独立分支：不落入 data-k 写 show[undefined]
+  context.compactDlg = {};   // 兜底：确认框开着时关闭开关（实际被遮罩挡住进不到设置）
+  handler({ target: target(false) });
+  assert.equal(closed, 1, '开着确认框时兜底收起');
+  handler({ target: target(true) });
+  assert.equal(context.state.ctxCpt, 1);
+  assert.equal(saved, 3);
+  assert.equal(syncs, 3);
+  assert.equal(closed, 1, '开启方向不触发关闭');
 });
 
 /* ---------- v137 点击源文件夹行在文件管理器中打开 ---------- */
