@@ -60,7 +60,7 @@ Here's what each part tells you:
 | **142 🔴2** | Tools were called 142 times, 2 of them errored (small red marker) |
 | **3.42M** | Every conversation today added up: 3.42M tokens |
 | **236k 🟢** | The sub-tasks the model sent out on its own (subagents) used 236k tokens; 🟢 means one is still running |
-| **⚙** | Click for: which items to show, interface language, token unit display, update checks |
+| **⚙** | Click for: which items to show, interface language, token unit display, update checks, release notes |
 
 Context usage doesn't take a slot on the bar — look at the **context button** in the composer toolbar (a ring icon plus a percentage). It changes colour as it fills up; if a request gets rejected for running over, it tells you what to do. Clicking it opens a panel that includes a **one-click compact** button (not needed? Turn off **Compact context button** under **⚙ → General**). Prefer the native look? Turn off **Context button enhancement** under **⚙ → General**. The compact-button switch is available on the development branch.
 

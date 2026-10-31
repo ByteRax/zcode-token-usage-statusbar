@@ -867,6 +867,18 @@ try {
 } catch (e) {
   LOG("model puller unavailable:", e.message);
 }
+
+/* ---------- v202 更新日志：⚙ 更新页按需拉取当前 Release 渠道的发布说明。独立 try：
+ * 拉取/缓存失败只少日志卡片，不拖垮更新链。渲染进程只传 version/force，flavor 与
+ * repository 一律取自主进程读到的注册渠道，绝不接收页面提供的地址。缓存落运行目录
+ * plugin-notes-cache.json（身份键 flavor|repo|version，TTL 1h，非发布素材不进分发链）。 */
+let releaseNotes = null;
+try {
+  const { createNotesService, createNotesCache } = require("./plugin-release.cjs");
+  releaseNotes = createNotesService({ cache: createNotesCache({ file: path.join(HERE, "plugin-notes-cache.json") }) });
+} catch (e) {
+  LOG("release notes unavailable:", e.message);
+}
 function modelPullerProviderOk(v) {
   return typeof v === "string" && v.length > 0 && v.length <= 160 && !/[\x00-\x1f\x7f]/.test(v);
 }
@@ -884,6 +896,29 @@ function handleModelPullRequest(req, wc) {
   modelPuller.applyModels(req.providerId, Array.isArray(req.models) ? req.models : [])
     .then(respond)
     .catch((e) => { LOG("model pull apply failed:", e.message); respond({ ok: false, error: "apply failed" }); });
+}
+
+/* 渠道门控：仅 Release 渠道（GitHub/GitCode 正式发布）代拉日志；market/local 没有可验证的
+ * Release 对应关系，一律回 unsupported-channel，由浮层显示空状态而不是猜测内容。 */
+async function handleReleaseNotesRequest(req, wc) {
+  const respond = (result) => deliverPluginRequest(wc, req.requestId, result);
+  try {
+    if (!releaseNotes) { respond({ ok: false, reason: "unsupported" }); return; }
+    let channel = null;
+    try { channel = require("./plugin-release.cjs").readChannel(app.getPath("home")); } catch (e) { channel = null; }
+    if (!channel || channel.kind !== "release") { respond({ ok: false, reason: "unsupported-channel" }); return; }
+    const flavor = channel.flavor === "gitcode" ? "gitcode" : "github";
+    const repository = channel.repository || "";
+    if (req.action === "release-notes-list") {
+      respond(await releaseNotes.getList({ flavor, repository, force: req.force === true }));
+      return;
+    }
+    const version = typeof req.version === "string" ? req.version.slice(0, 32) : "";
+    respond(await releaseNotes.getNotes({ flavor, repository, version, force: req.force === true }));
+  } catch (e) {
+    LOG("release notes request failed:", e.message);
+    respond({ ok: false, reason: "error", message: String((e && e.message) || e).slice(0, 300) });
+  }
 }
 
 /* 逐问速率行开关（⚙ 面板）：原子写运行时 config.json 的 answer_rate_line（缺省=开启）。
@@ -1405,6 +1440,8 @@ async function pollPluginRequests() {
           handleQuotaSourceRequest(req, wc);
         } else if (req && (req.action === "model-pull-list" || req.action === "model-pull-fetch" || req.action === "model-pull-apply")) {
           handleModelPullRequest(req, wc);
+        } else if (req && (req.action === "release-notes" || req.action === "release-notes-list")) {   // v202 ⚙ 更新日志：按需拉取当前 Release 渠道的发布说明
+          handleReleaseNotesRequest(req, wc);
         } else if (req && req.action === "quota-refresh") {   // ⚙/chip 手动刷新：绕过 TTL 与软冻结
           const started = quotaClient && quotaEnabled() && (typeof req.sourceId === "string" && req.sourceId.length <= 256
             ? quotaClient.refreshSource(req.sourceId) : quotaClient.refresh());

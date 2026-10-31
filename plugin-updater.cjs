@@ -85,10 +85,24 @@ function readState(file, currentTime) {
   const timestamp = (v) => Number.isSafeInteger(v) && v >= 0 && v <= currentTime ? v : 0;
   let pendingVersion = "";
   try { if (typeof saved.pendingVersion === "string") { compareVersions(saved.pendingVersion, saved.pendingVersion); pendingVersion = saved.pendingVersion; } } catch (e) { }
+  // lastFailure：上次安装失败的目标身份（版本 + 语义化校验 + 渠道）。损坏即丢弃，
+  // 绝不让坏记录冒充「已安装」或「已成功」——它只供更新日志卡片标注失败目标。
+  let lastFailure = null;
+  if (saved.lastFailure && typeof saved.lastFailure === "object" && !Array.isArray(saved.lastFailure)) {
+    const f = saved.lastFailure;
+    try {
+      if (typeof f.version === "string" && compareVersions(f.version, f.version) === 0 &&
+          Number.isSafeInteger(f.at) && f.at > 0 && f.at <= currentTime &&
+          (f.channel === "release" || f.channel === "market")) {
+        lastFailure = { version: f.version, at: f.at, channel: f.channel };
+      }
+    } catch (e) { }
+  }
   return { checkedAt: timestamp(saved.checkedAt), lastAttempt: timestamp(saved.lastAttempt),
     pendingSync: saved.pendingSync === true, pendingVersion,
     pendingPid: Number.isSafeInteger(saved.pendingPid) && saved.pendingPid > 0 ? saved.pendingPid : 0,
-    pendingRelease: saved.pendingRelease === undefined || saved.pendingRelease === null ? null : saved.pendingRelease };
+    pendingRelease: saved.pendingRelease === undefined || saved.pendingRelease === null ? null : saved.pendingRelease,
+    lastFailure };
 }
 function legacyLockBusy(runtime) {
   // An already-running wx updater cannot honor v2 locks. Respect its live owner,
@@ -267,10 +281,20 @@ function createUpdater(options) {
   const markerMtime = () => {
     try { return fs.statSync(markerFile).mtimeMs || 0; } catch (e) { return 0; }
   };
+  // marker.version 记录本次实际写入运行目录的新版本（syncInstalled 先更新 currentVersion 再 record_restart），
+  // 是「已安装待重启」的唯一可靠目标身份；损坏/缺失返回空串，由浮层明确说明无法匹配。
+  const markerVersion = () => {
+    let value = null;
+    try { value = JSON.parse(fs.readFileSync(markerFile, "utf8")); } catch (e) { return ""; }
+    const version = value && typeof value === "object" && typeof value.version === "string" ? value.version : "";
+    try { if (version) { compareVersions(version, version); return version; } } catch (e) { }
+    return "";
+  };
   const saved = readState(stateFile, now());
   let state = { phase: "idle", supported: false, auto: false, currentVersion: "", latestVersion: "",
-    ...saved, restartRequired: fs.existsSync(markerFile), markerAt: 0, skipped: [], error: "", channel: "", channelHost: "", releaseUrl: "", progress: null, checkedVia: "" };
+    ...saved, restartRequired: fs.existsSync(markerFile), markerAt: 0, skipped: [], error: "", channel: "", channelHost: "", channelRepo: "", releaseUrl: "", progress: null, checkedVia: "", markerVersion: "" };
   state.markerAt = state.restartRequired ? markerMtime() : 0;
+  state.markerVersion = state.restartRequired ? markerVersion() : "";
   let busy = false;
   let selectedRelease = null, selectedChannel = null;
   const channel = () => {
@@ -312,17 +336,19 @@ function createUpdater(options) {
     state.currentVersion = record && record.version || "";
     state.restartRequired = fs.existsSync(markerFile);
     state.markerAt = state.restartRequired ? markerMtime() : 0;
+    state.markerVersion = state.restartRequired ? markerVersion() : "";
     return record;
   }
   function publish() {
     state.restartRequired = fs.existsSync(markerFile);
     state.markerAt = state.restartRequired ? markerMtime() : 0;
+    state.markerVersion = state.restartRequired ? markerVersion() : "";
     notify({ ...state, busy });
   }
   function load() { Object.assign(state, readState(stateFile, now())); }
   function save() {
     writeJson(stateFile, { checkedAt: state.checkedAt, lastAttempt: state.lastAttempt,
-      pendingSync: state.pendingSync, pendingVersion: state.pendingVersion, pendingPid: state.pendingPid, pendingRelease: state.pendingRelease });
+      pendingSync: state.pendingSync, pendingVersion: state.pendingVersion, pendingPid: state.pendingPid, pendingRelease: state.pendingRelease, lastFailure: state.lastFailure || null });
   }
   function diagnostics(data) {
     const errors = (data.diagnostics || []).filter((d) => d.severity === "error" && (!d.pluginId || d.pluginId === PLUGIN_ID));
@@ -361,6 +387,7 @@ function createUpdater(options) {
       save();
       const source = channel();
       state.channel = source.kind; state.channelHost = source.flavor === "gitcode" ? "gitcode" : source.flavor === "github" ? "github" : "";
+      state.channelRepo = source.repository || "";   // 更新日志卡片按渠道仓库构造 Release 页链接（market/local 为空）
       state.releaseUrl = ""; selectedRelease = null; selectedChannel = source; state.checkedVia = "";
       if (source.kind === "release" && source.flavor === "gitcode") {
         // GitCode 渠道：宿主从注册 ref 拉取的渠道清单是唯一版本源，不调 GitCode API。
@@ -387,6 +414,7 @@ function createUpdater(options) {
         const record = installedRecord();
         if (!record) throw new Error("用户级插件安装记录不存在");
         state.currentVersion = record.version;
+        maybeClearFailure();
         const newer = compareVersions(state.latestVersion, record.version) > 0;
         state.phase = newer ? "available" : "current"; state.checkedAt = now(); save(); publish();
         if ((auto || install) && newer) {
@@ -407,6 +435,7 @@ function createUpdater(options) {
         if (!installed || !available) throw new Error("未找到已安装插件或市场中的插件，请检查市场来源");
         state.currentVersion = installed.version || "";
         state.latestVersion = available.version || "";
+        maybeClearFailure();
         const newer = compareVersions(state.latestVersion, state.currentVersion) > 0;
         state.phase = newer ? "available" : "current";
         state.checkedAt = now(); save(); publish();
@@ -414,6 +443,7 @@ function createUpdater(options) {
       }
     } catch (e) {
       state.phase = "error"; state.error = e.message; state.progress = null;
+      maybeClearFailure();   // 检查失败也不能让已过时的失败标注残留（当前版本已追上目标时）
     } finally {
       if (release) await release();
       busy = false; publish();
@@ -422,6 +452,23 @@ function createUpdater(options) {
   function clearPending() {
     state.pendingSync = false; state.pendingVersion = ""; state.pendingPid = 0; state.pendingRelease = null;
     save();
+  }
+  function recordInstallFailure() {
+    // 安装失败保留目标身份（plugin-update.json 的 lastFailure），「更新日志」卡片据此明确
+    // 标注该版本未安装成功；成功路径由 syncInstalled 清除。卸载/禁用/来源切换类取消
+    // （cancelError）不经过这里——那不是目标版本的安装失败。
+    const version = selectedRelease ? selectedRelease.version : state.latestVersion;
+    if (!version) return;
+    try {
+      compareVersions(version, version);
+      state.lastFailure = { version, at: now(), channel: selectedRelease ? "release" : "market" };
+    } catch (e) { }
+  }
+  const cancelError = (message) => Object.assign(new Error(message), { cancel: true });
+  function maybeClearFailure() {
+    // 当前版本已追上失败目标（如后来手动装成功）：失败标注已过时，随下一次检查一并清除。
+    if (!state.lastFailure || !state.currentVersion) return;
+    try { if (compareVersions(state.currentVersion, state.lastFailure.version) >= 0) state.lastFailure = null; } catch (e) { }
   }
   async function recoverPending() {
     // Legacy pendingSync meant an acknowledged CLI commit. New intents are saved
@@ -446,9 +493,9 @@ function createUpdater(options) {
   }
   async function installUpdate(auto) {
     let record = refreshLocal();
-    if (!record) throw new Error("插件已卸载，更新已取消");
+    if (!record) throw cancelError("插件已卸载，更新已取消");
     if (auto && !state.auto) return;
-    if (!isDeepStrictEqual(channel(), selectedChannel)) throw new Error("更新期间市场来源已变化");
+    if (!isDeepStrictEqual(channel(), selectedChannel)) throw cancelError("更新期间市场来源已变化");
     compareVersions(record.version, record.version);
     let downloaded = null;
     // 中途放弃（插件被卸载/禁用、自动更新被关闭、版本已不再更新）时退回「发现新版本」，
@@ -457,7 +504,7 @@ function createUpdater(options) {
     try {
       if (selectedRelease) {
         const currentChannel = channel();
-        if (!isDeepStrictEqual(currentChannel, selectedChannel) || currentChannel.kind !== "release" || !releaseChannel.sameRepository(currentChannel.repository, selectedRelease.repository)) throw new Error("更新期间市场来源已变化");
+        if (!isDeepStrictEqual(currentChannel, selectedChannel) || currentChannel.kind !== "release" || !releaseChannel.sameRepository(currentChannel.repository, selectedRelease.repository)) throw cancelError("更新期间市场来源已变化");
         state.phase = "downloading"; state.progress = { stage: "download", loaded: 0, total: selectedRelease.archive.size || 0 }; publish();
         let lastPublished = 0;
         downloaded = await prepareRelease(selectedRelease, (progress) => {
@@ -472,18 +519,18 @@ function createUpdater(options) {
         if (selectedRelease.catalogSha256 !== undefined && downloaded.manifest.asset.sha256 !== selectedRelease.catalogSha256) throw new Error("发布 manifest 与渠道清单的 SHA256 不一致");
         state.progress = { stage: "verify" }; publish();
         const market = await cli(["marketplace", "update", "zusage-marketplace"]); diagnostics(market);
-        if (!isDeepStrictEqual(channel(), currentChannel)) throw new Error("更新期间市场来源已变化");
+        if (!isDeepStrictEqual(channel(), currentChannel)) throw cancelError("更新期间市场来源已变化");
         record = refreshLocal();
-        if (!record) throw new Error("插件已卸载，更新已取消");
+        if (!record) throw cancelError("插件已卸载，更新已取消");
         if (auto && !state.auto) { abandon(); return; }
         if (compareVersions(selectedRelease.version, record.version) <= 0) { abandon(); return; }
         const overview = listOverview(await cli(["list"])); diagnostics(overview);
         const installed = (overview.installed || []).find((p) => p && p.id === PLUGIN_ID && (!p.scope || p.scope === "user"));
-        if (!installed) throw new Error("用户插件已卸载，Release 安装已取消");
+        if (!installed) throw cancelError("用户插件已卸载，Release 安装已取消");
         if (installed.enabled === false) { abandon(); return; }
-        if (!isDeepStrictEqual(channel(), currentChannel)) throw new Error("更新期间市场来源已变化");
+        if (!isDeepStrictEqual(channel(), currentChannel)) throw cancelError("更新期间市场来源已变化");
         record = refreshLocal();
-        if (!record) throw new Error("插件已卸载，更新已取消");
+        if (!record) throw cancelError("插件已卸载，更新已取消");
         if ((auto && !state.auto) || compareVersions(selectedRelease.version, record.version) <= 0) { abandon(); return; }
       }
       state.phase = "updating"; state.progress = { stage: "install" };
@@ -511,7 +558,8 @@ function createUpdater(options) {
       }
       if (selectedRelease) verifyReleaseCommit(committed);
       await syncInstalled();
-    } finally { if (downloaded && downloaded.cleanup) downloaded.cleanup(); }
+    } catch (e) { if (!e || e.cancel !== true) recordInstallFailure(); save(); throw e; }   // 失败身份立即落盘（clearPending 已先写过一次）；取消类不误标失败
+    finally { if (downloaded && downloaded.cleanup) downloaded.cleanup(); }
   }
   function verifyReleaseCommit(record) {
     verifyCommittedRelease(record, state.pendingRelease, channel());
@@ -543,6 +591,7 @@ function createUpdater(options) {
     // Current packages persist the marker themselves. This also covers old
     // packages' changed reports, before clearing durable pending coordination.
     await recordRestart(report);
+    state.lastFailure = null;   // 安装成功：失败目标标注随 pending 一并清除（一次落盘）
     clearPending();
     state.skipped = Array.isArray(report.preserved) ? report.preserved : [];
     state.restartRequired = fs.existsSync(markerFile);

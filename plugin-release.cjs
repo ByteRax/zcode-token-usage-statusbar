@@ -79,7 +79,9 @@ function readChannel(home, root = require("./plugin-storage.cjs").resolvePluginS
   if (!repository) throw new Error("远端自动更新仅支持已注册的 GitHub/GitCode 仓库来源");
   return { kind, flavor: "github", repository, marketplace: market };
 }
-async function fetchBytes(url, limit, onProgress) {
+/* allowedHosts：更新日志拉取传 NOTES_API_HOSTS，把只读 API 域与资产下载域分开维护；
+ * 省略时保持原有资产下载白名单，不放宽任何既有调用面。 */
+async function fetchBytes(url, limit, onProgress, allowedHosts) {
   let activeRequest, activeResponse, timer, settled = false;
   return new Promise((resolve, reject) => {
     const finish = (error, bytes) => {
@@ -95,7 +97,7 @@ async function fetchBytes(url, limit, onProgress) {
       try {
         const parsed = new URL(target);
         const allowed = parsed.protocol === "https:" && !parsed.username && !parsed.password && !parsed.port &&
-          DOWNLOAD_HOSTS.includes(parsed.hostname);
+          (allowedHosts || DOWNLOAD_HOSTS).includes(parsed.hostname);
         if (!allowed) throw new Error("拒绝非 GitHub/GitCode HTTPS 更新地址");
         const request = https.get(parsed, { headers: { "User-Agent": "zcode-token-usage-statusbar-release-updater",
           "Accept": parsed.hostname === "api.github.com" ? "application/vnd.github+json" : "application/octet-stream",
@@ -111,7 +113,11 @@ async function fetchBytes(url, limit, onProgress) {
             catch (error) { finish(error); }
             return;
           }
-          if (response.statusCode !== 200) { finish(new Error(`Release 请求失败 (${response.statusCode})`)); return; }
+          if (response.statusCode !== 200) {
+            const statusError = new Error(`Release 请求失败 (${response.statusCode})`);
+            statusError.status = response.statusCode;   // 更新日志按 404/403/429 分类（缺失/限流），其余消费方只读 message
+            finish(statusError); return;
+          }
           const declared = Number(response.headers["content-length"] || 0);
           if (!Number.isSafeInteger(declared) || declared < 0 || declared > limit) { finish(new Error("发布资源超过大小上限")); return; }
           const chunks = []; let length = 0;
@@ -338,6 +344,205 @@ function catalogChannel(catalog, pluginName = "zcode-token-usage-statusbar") {
   if (!source || typeof source !== "object") return "unknown";
   return source.source === "url" && source.type === "zip" ? "release" : "source";
 }
+/* ---------- 更新日志（⚙ 更新页「更新日志」卡片的数据源）----------
+ * Release 正文只存在于 GitHub/GitCode 的 Release 里（发版时 --notes-file 写入），
+ * 检查链路不保留 body；这里按需单拉：URL 一律由本模块按已验证来源构造，渲染进程
+ * 只允许传 flavor/repository/version。主机白名单独立于资产下载白名单（NOTES_API_HOSTS），
+ * 匿名 GET，不携带任何凭据。 */
+
+const NOTES_MAX_JSON = 256 * 1024;
+const NOTES_LIST_MAX_JSON = 1024 * 1024;
+const NOTES_LIST_MAX = 20;   // 历史版本一次最多取 20 条，不做全量扫描
+const NOTES_API_HOSTS = {
+  github: { repo: githubRepository, api: "api.github.com", origin: "https://github.com" },
+  gitcode: { repo: gitcodeRepository, api: "api.gitcode.com", origin: "https://gitcode.com" },
+};
+
+function notesTag(version) {
+  return typeof version === "string" && STABLE.test(version) ? "v" + version : null;
+}
+/* GitCode v5 API 与 Gitee 同构：tag 端点 2026-11-01 匿名实测 200（published_at 恒空，
+ * 用 created_at；列表默认升序，需显式 direction=desc）。 */
+function notesHost(flavor, repository) {
+  const host = NOTES_API_HOSTS[flavor];
+  if (!host) return null;
+  const repo = host.repo(repository);
+  return repo && repo === repository ? { host, repo } : null;
+}
+function notesRow(row, flavor, repo, tag) {
+  if (!row || typeof row !== "object" || typeof row.tag_name !== "string" || row.tag_name !== tag ||
+      typeof row.body !== "string" || !row.body.trim()) return null;
+  const host = NOTES_API_HOSTS[flavor];
+  const name = typeof row.name === "string" && row.name.trim() ? row.name.trim().slice(0, 200) : tag;
+  const publishedAt = typeof row.published_at === "string" && row.published_at ? row.published_at
+    : typeof row.created_at === "string" ? row.created_at : "";
+  return { flavor, repository: repo, version: tag.slice(1), tag, name,
+    body: row.body, publishedAt, prerelease: row.prerelease === true,
+    url: `${host.origin}/${repo}/releases/tag/${encodeURIComponent(tag)}` };
+}
+function classifyNotesStatus(code) {
+  return code === 404 || code === 422 ? "missing" : code === 403 || code === 429 ? "rate-limited" : "error";
+}
+/* 更新日志专用取回器：只放行两个只读 API 域，与资产下载白名单（DOWNLOAD_HOSTS）分开维护 */
+function notesFetch(url, limit) {
+  return fetchBytes(url, limit, undefined, Object.values(NOTES_API_HOSTS).map((h) => h.api));
+}
+async function fetchReleaseNotes(options) {
+  const { flavor, repository, version, fetch = notesFetch, limit = NOTES_MAX_JSON } = options || {};
+  const found = notesHost(flavor, repository);
+  const tag = notesTag(version);
+  if (!found || !tag) return { ok: false, reason: "unsupported" };
+  const { host, repo } = found;
+  let body;
+  try { body = await fetch(`https://${host.api}/repos/${repo}/releases/tags/${encodeURIComponent(tag)}`, limit); }
+  catch (error) {
+    if (error && typeof error.status === "number") return { ok: false, reason: classifyNotesStatus(error.status) };
+    return { ok: false, reason: "network", message: String((error && error.message) || error).slice(0, 300) };
+  }
+  let row;
+  try { row = JSON.parse(body.toString("utf8")); }
+  catch (e) { return { ok: false, reason: "error", message: "更新日志响应不是有效 JSON" }; }
+  const notes = notesRow(row, flavor, repo, tag);
+  return notes ? { ok: true, notes } : { ok: false, reason: "missing" };
+}
+async function fetchReleaseNotesList(options) {
+  const { flavor, repository, fetch = notesFetch } = options || {};
+  const found = notesHost(flavor, repository);
+  if (!found) return { ok: false, reason: "unsupported" };
+  const { host, repo } = found;
+  let body;
+  try { body = await fetch(`https://${host.api}/repos/${repo}/releases?per_page=100&page=1&direction=desc`, NOTES_LIST_MAX_JSON); }
+  catch (error) {
+    if (error && typeof error.status === "number") return { ok: false, reason: classifyNotesStatus(error.status) };
+    return { ok: false, reason: "network", message: String((error && error.message) || error).slice(0, 300) };
+  }
+  let rows;
+  try { rows = JSON.parse(body.toString("utf8")); }
+  catch (e) { return { ok: false, reason: "error", message: "更新日志列表响应不是有效 JSON" }; }
+  if (!Array.isArray(rows)) return { ok: false, reason: "error", message: "更新日志列表格式无效" };
+  // 只保留本项目命名惯例（v+稳定语义版）的条目；prerelease 与更新器候选过滤同规则不放行。
+  const seen = new Set(), picked = [];
+  for (const row of rows) {
+    if (!row || typeof row.tag_name !== "string" || row.prerelease === true) continue;
+    const tag = notesTag(row.tag_name.startsWith("v") ? row.tag_name.slice(1) : "");
+    if (!tag || seen.has(tag)) continue;
+    seen.add(tag);
+    picked.push({ flavor, repository: repo, version: tag.slice(1), tag,
+      name: typeof row.name === "string" && row.name.trim() ? row.name.trim().slice(0, 200) : tag,
+      publishedAt: typeof row.published_at === "string" && row.published_at ? row.published_at
+        : typeof row.created_at === "string" ? row.created_at : "",
+      prerelease: row.prerelease === true,
+      url: `${host.origin}/${repo}/releases/tag/${encodeURIComponent(tag)}` });
+  }
+  picked.sort((a, b) => {
+    const av = a.version.split(".").map(Number), bv = b.version.split(".").map(Number);
+    for (let i = 0; i < 3; i++) { if (av[i] !== bv[i]) return bv[i] - av[i]; }
+    return 0;
+  });
+  return { ok: true, releases: picked.slice(0, NOTES_LIST_MAX) };
+}
+function createNotesCache(options) {
+  const { file, now = Date.now, ttlMs = 60 * 60 * 1000, maxEntries = 24, maxBodyChars = 64 * 1024 } = options || {};
+  let entries = null;   // 惰性加载；损坏文件按空缓存处理，下次写入重建，绝不抛错拖垮更新页
+  const validNotes = (notes) => {
+    // 与 put 同一形状门复用于加载：篡改/损坏的缓存条目按缺失处理，超大 body 与
+    // 越界时间戳（会让 Date 构造抛 RangeError）都不进渲染链。
+    if (!notes || typeof notes !== "object") return false;
+    if (notes.body !== undefined && (typeof notes.body !== "string" || notes.body.length > maxBodyChars)) return false;
+    if (notes.releases !== undefined && !Array.isArray(notes.releases)) return false;
+    return true;
+  };
+  const load = () => {
+    if (entries) return entries;
+    entries = {};
+    try {
+      const data = JSON.parse(fs.readFileSync(file, "utf8"));
+      const rows = data && typeof data === "object" && !Array.isArray(data) ? data.entries : null;
+      if (rows && typeof rows === "object" && !Array.isArray(rows)) {
+        for (const key of Object.keys(rows)) {
+          const value = rows[key];
+          if (typeof key === "string" && key.length <= 400 && value && typeof value === "object" &&
+              typeof value.fetchedAt === "number" && Number.isSafeInteger(value.fetchedAt) &&
+              value.fetchedAt >= 0 && value.fetchedAt <= 8.64e15 && validNotes(value.notes)) entries[key] = value;
+        }
+      }
+    } catch (e) { if (e.code !== "ENOENT") entries = {}; }
+    return entries;
+  };
+  const persist = () => {
+    const tmp = `${file}.${process.pid}.tmp`;
+    try {
+      fs.writeFileSync(tmp, JSON.stringify({ version: 1, entries }, null, 2));
+      fs.renameSync(tmp, file);
+    } catch (e) { try { fs.unlinkSync(tmp); } catch (_) { } }   // 缓存写失败只少磁盘命中，内存仍有
+  };
+  return {
+    key: (flavor, repository, slot) => `${flavor}|${repository}|${slot || ""}`.slice(0, 400),
+    get(key) {
+      const row = load()[key];
+      return row && row.notes ? row : null;
+    },
+    fresh(key) {
+      const row = this.get(key);
+      return !!row && now() - row.fetchedAt >= 0 && now() - row.fetchedAt < ttlMs;
+    },
+    put(key, notes) {
+      const rows = load();
+      const trimmed = notes && typeof notes.body === "string" && notes.body.length > maxBodyChars
+        ? { ...notes, body: notes.body.slice(0, maxBodyChars), truncated: true } : notes;
+      rows[key] = { notes: trimmed, fetchedAt: now() };
+      const keys = Object.keys(rows);
+      if (keys.length > maxEntries) {
+        keys.sort((a, b) => (rows[a].fetchedAt || 0) - (rows[b].fetchedAt || 0));
+        for (const k of keys.slice(0, keys.length - maxEntries)) delete rows[k];
+      }
+      persist();
+      return trimmed;   // 返回截断后的载荷：新鲜拉取与缓存命中两条路径的正文上限一致
+    },
+  };
+}
+function createNotesService(options) {
+  const { fetch = notesFetch, cache } = options || {};
+  const inflight = new Map();   // 同一身份的并发请求去重：第二次调用复用同一次网络往返
+  /* 统一返回形状：成功 = { ok, <notes 字段平铺 | releases>, fromCache?, cachedAt?, stale? }；
+   * 失败 = { ok:false, reason, message? }。缓存只存载荷本体（ok 包装不落盘），键带
+   * n:/list 命名空间——version 不经 STABLE 校验就进键名，也不能与列表键碰撞。 */
+  async function serve(key, refresh) {
+    if (cache && !refresh.fresh && cache.fresh(key)) {
+      const row = cache.get(key);
+      if (row) return { ...row.notes, ok: true, fromCache: true, cachedAt: row.fetchedAt };
+    }
+    const pending = inflight.get(key);
+    if (pending) return pending;
+    const job = (async () => {
+      const result = await refresh.run();
+      const payload = result.ok ? (result.notes || { releases: result.releases }) : null;
+      if (result.ok && cache) return { ...cache.put(key, payload), ok: true };   // put 返回截断后的载荷：两条路径正文上限一致
+      if (result.ok) return { ...payload, ok: true };
+      if (cache && !refresh.fresh) {
+        const row = cache.get(key);
+        // 拉取失败但有过期缓存：退回旧值并标 stale，保证限流/离线时仍可读已见过的日志
+        if (row) return { ...row.notes, ok: true, fromCache: true, cachedAt: row.fetchedAt, stale: true };
+      }
+      return result;
+    })();
+    inflight.set(key, job);
+    try { return await job; } finally { inflight.delete(key); }
+  }
+  return {
+    getNotes(params) {
+      const { flavor, repository, version, force } = params || {};
+      const key = cache ? cache.key(flavor, repository, "n:" + (version || "")) : "n:" + flavor + "|" + repository + "|" + version;
+      return serve(key, { fresh: force === true, run: () => fetchReleaseNotes({ flavor, repository, version, fetch }) });
+    },
+    getList(params) {
+      const { flavor, repository, force } = params || {};
+      const key = cache ? cache.key(flavor, repository, "list") : "list:" + flavor + "|" + repository;
+      return serve(key, { fresh: force === true, run: () => fetchReleaseNotesList({ flavor, repository, fetch }) });
+    },
+  };
+}
+
 module.exports = { sameRepository, sameAssetUrl, githubRepository, gitcodeRepository, readChannel, checkRelease, gitcodeReleaseFromCatalog, githubReleaseFromCatalog, validateGitcodeRelease, validateGithubCatalogRelease,
   downloadRelease, validateRelease, validateManifest, catalogChannel,
-  fetchBytes, MAX_ASSET, MAX_JSON, PLUGIN_ID };
+  fetchBytes, fetchReleaseNotes, fetchReleaseNotesList, createNotesCache, createNotesService, notesTag, NOTES_API_HOSTS, NOTES_MAX_JSON, NOTES_LIST_MAX_JSON, NOTES_LIST_MAX, MAX_ASSET, MAX_JSON, PLUGIN_ID };

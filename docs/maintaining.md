@@ -15,7 +15,7 @@
 | `inject-main.cjs` | 主进程加载器，跟踪窗口会话，监听数据库变化并推送快照 |
 | `renderer_bridge.py` | 渲染端会话节点身份桥：按版本指纹补丁，表外版本严格推导后自动补丁与回滚 |
 | `zusage.py` / `usage_mcp.py` | 查询库、CLI、快照接口和 stdio MCP 工具 |
-| `plugin-updater.cjs` / `plugin-release.cjs` | 插件更新调度与正式 GitHub Release 检测 |
+| `plugin-updater.cjs` / `plugin-release.cjs` | 插件更新调度、正式 GitHub Release 检测与更新日志拉取/缓存（`plugin-notes-cache.json`，非发布素材） |
 | `plugin-storage.cjs` | 跟随宿主插件存储位置，不假设固定 HOME 路径 |
 | `runtime_lock.py` / `release_unpack.py` | 跨进程锁、可信同步与受限安全解包 |
 | `marketplace.json` | 本地源码市场入口 |
