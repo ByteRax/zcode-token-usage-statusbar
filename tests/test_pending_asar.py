@@ -808,11 +808,11 @@ class ProtectedTargetTests(unittest.TestCase):
             self.assertFalse(self.pi.is_elevated())
 
 
-@unittest.skipUnless(shutil.which("node"), "需要 Node 跑真实语法检查")
 class CliExitCodeTests(unittest.TestCase):
     """issue #163 review：`sys.exit(main())` 把 bool 直接当退出码——True→1（失败）、
     False→0（成功）正好颠倒。手动收尾命令（install --finalize）的脚本化判断全靠
-    退出码，成功失败颠倒会让人误判收尾结果。"""
+    退出码，成功失败颠倒会让人误判收尾结果。（夹具全是未注入 asar：check 不触发
+    syntax_check、finalize 失败路径到不了 node，无 Node 环境也能运行。）"""
 
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
@@ -847,6 +847,7 @@ class CliExitCodeTests(unittest.TestCase):
         self.assertEqual(denied.returncode, 1, denied.stdout.decode("utf-8", "replace"))
 
 
+@unittest.skipUnless(shutil.which("node"), "需要 Node 跑真实语法检查")
 class SyntaxCheckTests(unittest.TestCase):
     def test_failure_diagnostic_survives_non_utf8_locale(self):
         # Node 恒写 UTF-8：语法错误回显的源码行/路径含非 ASCII 时，按区域编码解码会让 Windows
