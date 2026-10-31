@@ -97,7 +97,10 @@ MCP_NAME = "zcode-token-usage-statusbar"   # MCP server 注册名（与仓库名
 MCP_NAME_OLD = ("token-usage", "zusage")   # 历史注册名
 # Linux 兜底扫描前缀（目录名含 zcode 的候选仍须过 is_zcode_app 身份门）
 LINUX_FALLBACK_BASES = ("/opt", "/usr/lib", "/usr/local/lib")
-RUNTIME_FILES = ("inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs", "quota-client.cjs", "model-puller.cjs", "engine-patch.cjs", "release_unpack.py", "runtime_lock.py", "usage_stats.py", "turn-stats.js", "overlay.js", "zusage.py", "usage_mcp.py", "token_rate.py", "renderer_bridge.py")
+# patch_install.py / install_monitor.py 一并进运行目录：待替换包的手动收尾命令
+# （install --finalize）只依赖运行目录内这套脚本，clone 被删/移动后仍可执行（issue #163；
+# 插件链 RUNTIME_FILES 早已同款在列）。
+RUNTIME_FILES = ("inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs", "quota-client.cjs", "model-puller.cjs", "engine-patch.cjs", "release_unpack.py", "runtime_lock.py", "usage_stats.py", "turn-stats.js", "overlay.js", "zusage.py", "usage_mcp.py", "token_rate.py", "renderer_bridge.py", "patch_install.py", "install_monitor.py")
 
 # ZCode 安装位置候选：resources/app.asar 存在即命中（按序探测，按当前平台取组）
 if sys.platform == "darwin":
@@ -304,7 +307,7 @@ def chown_to_user(path):
 
 
 def copy_runtime(dry):
-    """复制运行时四件套到数据目录（无条件覆盖：overlay 的 mtime 变化会让泵 2 秒内热重载）。"""
+    """复制运行时清单（RUNTIME_FILES）到数据目录（无条件覆盖：overlay 的 mtime 变化会让泵 2 秒内热重载）。"""
     for name in RUNTIME_FILES:
         src = HERE / name
         assert src.is_file(), L(f"缺少运行时文件：{src}", f"Missing runtime file: {src}")
@@ -613,8 +616,12 @@ def main():
         ok = pi.install()
         remember_asar(asar, args.dev)   # 无论注入是否收尾成功都记住（卸载/收尾要用）
     if not ok:
-        print(L("asar 注入未完成，MCP/命令部分仍会继续（可稍后单独重跑 patch_install.py install）。",
-                "asar injection did not finish; MCP/command parts will continue (re-run patch_install.py install later on its own)."))
+        # 收尾/重试命令指向运行目录副本并带上本次目标：clone 被删/移动后提示仍可执行
+        # （issue #163；--dev 时运行目录即本仓库，同一文件），standalone 不读 config
+        # 里记住的 asar_path，非默认安装位置必须显式给 --asar。
+        tool = HERE / "patch_install.py" if args.dev else DATA_DIR / "patch_install.py"
+        print(L(f'asar 注入未完成，MCP/命令部分仍会继续（可稍后重跑：python "{tool}" install --asar "{asar}"）。',
+                f'asar injection did not finish; MCP/command parts will continue (re-run later: python "{tool}" install --asar "{asar}").'))
     if not args.no_mcp:
         register_mcp(args.dry_run, args.dev)
         install_command(args.dry_run)

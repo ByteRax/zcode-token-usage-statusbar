@@ -82,6 +82,18 @@ class PluginPackageTests(unittest.TestCase):
                                if dep not in runtime_files)
             self.assertEqual(sorted(missing), [], label)
 
+    def test_standalone_runtime_files_cover_finalize_toolchain(self):
+        # issue #163：待替换包的手动收尾命令（install --finalize）只依赖运行目录内的
+        # 这套脚本；独立安装链的运行清单缺任一个，clone 被删/移动后失败提示里的命令
+        # 就再也无法执行，pending 永久搁浅、状态条永不出现。插件链（overlay_install）
+        # 早已同款在列，独立链不得再回退。
+        install_spec = importlib.util.spec_from_file_location("standalone_finalize_toolchain_test", ROOT / "install.py")
+        standalone = importlib.util.module_from_spec(install_spec)
+        install_spec.loader.exec_module(standalone)
+        for name in ("patch_install.py", "install_monitor.py", "runtime_lock.py"):
+            self.assertIn(name, standalone.RUNTIME_FILES)
+            self.assertTrue((ROOT / name).is_file())
+
     def test_cold_files_literals_agree(self):
         # v172：run_hook 的 cold_files 提醒清单随会话内文字提醒一起移除，只剩 sync_runtime
         # 一处（写 marker 用）；将来若新增提醒清单，须恢复「两处字面量一致」断言

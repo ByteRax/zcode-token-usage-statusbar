@@ -55,6 +55,9 @@ class QuietMonitorTests(unittest.TestCase):
         with mock.patch.dict(os.environ, env), mock.patch.object(self.patch.subprocess, "Popen") as spawn:
             self.patch.launch_monitor(0)
         self.assertEqual(spawn.call_count, 1)
+        # cmd[1] 必须指向同目录 install_monitor.py（issue #163 review 加固：兄弟不变式
+        # 由 RUNTIME_FILES 清单与 copy_runtime 同目录复制保证，此处断言防改名/换目录回归）
+        self.assertTrue(spawn.call_args.args[0][1].endswith("install_monitor.py"))
         kwargs = spawn.call_args.kwargs
         self.assertEqual(kwargs["stdout"], self.patch.subprocess.DEVNULL)
         self.assertEqual(kwargs["stdin"], self.patch.subprocess.DEVNULL)
@@ -401,9 +404,10 @@ class QuietMonitorTests(unittest.TestCase):
     def test_visible_monitor_pending_footer_warns_when_elevated(self):
         # issue #130：提权 monitor 是受保护目录上唯一能收尾的进程，「本窗口可随时
         # 关闭，不影响安装结果」在此不成立——关窗即杀死唯一收尾者且系统不会重建。
-        # 页脚必须按提权身份区分，且警告仅限有待收尾包时（review 变异 M9：合取项
-        # `pending is not None` 若缺失，安装完成等待重启等无 pending 态也会误警告）；
-        # 非提权 monitor（hook 每次会话可重建）保留原文案。
+        # issue #163：非提权同样不能保留原文案——独立链没有 SessionStart hook，
+        # 关窗后 pending 无人收尾会永久搁浅（插件链也要等下次会话才重建）。页脚
+        # 按提权身份区分重建门槛，且警告仅限有待收尾包时（review 变异 M9：合取项
+        # `pending is not None` 若缺失，安装完成等待重启等无 pending 态也会误警告）。
         def stop(_):
             raise KeyboardInterrupt
         def draw_once(with_pending, elevated):
@@ -428,12 +432,13 @@ class QuietMonitorTests(unittest.TestCase):
         for elevated in (True, False):
             with self.subTest(elevated=elevated, pending=True):
                 output = draw_once(True, elevated)
+                self.assertNotIn("可随时关闭", output)
+                self.assertIn("保持本窗口", output)
                 if elevated:
-                    self.assertNotIn("可随时关闭", output)
-                    self.assertIn("保持本窗口", output)
+                    self.assertIn("管理员", output)
                 else:
-                    self.assertIn("可随时关闭", output)
-                    self.assertNotIn("保持本窗口", output)
+                    self.assertIn("重新运行安装", output)
+                    self.assertNotIn("管理员", output)
         for elevated in (True, False):
             with self.subTest(elevated=elevated, pending=False):
                 output = draw_once(False, elevated)
@@ -586,6 +591,7 @@ class QuietMonitorTests(unittest.TestCase):
         # 回归（issue #14 同款根因，复审后追加 --runtime）：窗口模式"也可手动执行"提示若不带
         # --asar/--runtime，standalone 跑该命令会用默认猜测路径、且会被 sidecar 来源授权
         # 校验拒绝；patch_install.py 自身三处同文案已有专门测试，这里补窗口监控拼接的这处。
+        # issue #163：脚本还要指向运行目录副本，clone 删除后裸文件名无处可解析。
         self.tmp.write_bytes(b"pending")
         def stop(_):
             raise KeyboardInterrupt
@@ -601,8 +607,32 @@ class QuietMonitorTests(unittest.TestCase):
                 self.monitor.main()
         lines = draw.call_args.args[0]
         output = "\n".join(lines)
+        tool = self.monitor.RUNTIME_DIR / "patch_install.py"
         self.assertIn(f'--asar "{self.asar}"', output)
         self.assertIn(f'--runtime "{self.patch.RUNTIME}"', output)
+        self.assertIn(f'python "{tool}"', output)
+
+    def test_visible_monitor_upgrade_hint_points_at_runtime_copy(self):
+        # issue #163 review（变异 M9 守护）：「已重启但未检测到注入加载」的请重新运行
+        # 提示同样要指向运行目录副本，裸文件名在 clone 删除后无法执行。
+        # 进程序列：启动采集 {"1"}（旧实例），随后新实例 {"2"}（与采集不相交）；
+        # 时间序列：t0=100 → 轮1 now=100（记 new_since，显示「正在确认」）→ 轮2 now=221
+        # （超过 CONFIRM_WAIT=120，进入升级提示分支）；sleep 首次放行、二次中断收帧。
+        with mock.patch.dict(sys.modules, {"patch_install": self.patch}), \
+                mock.patch.object(self.monitor, "QUIET", False), \
+                mock.patch.object(sys, "argv", ["install_monitor.py", "0"]), \
+                mock.patch.object(self.monitor, "patch_module", return_value=self.patch), \
+                mock.patch.object(self.monitor, "zcode_pids", side_effect=[{"1"}, {"2"}, {"2"}]), \
+                mock.patch.object(self.monitor.time, "time", side_effect=[100, 100, 221]), \
+                mock.patch.object(self.monitor, "draw") as draw, \
+                mock.patch.object(self.monitor.time, "sleep", side_effect=[None, KeyboardInterrupt()]):
+            with self.assertRaises(KeyboardInterrupt):
+                self.monitor.main()
+        output = "\n".join(draw.call_args.args[0])
+        tool = self.monitor.RUNTIME_DIR / "patch_install.py"
+        self.assertIn("请重新运行", output)
+        self.assertIn(f'python "{tool}"', output)
+        self.assertNotIn('python patch_install.py', output)
 
     def test_visible_monitor_remove_fallback_hint_has_no_runtime_flag(self):
         # remove 不走来源授权的 runtime 校验，提示不该带这个用不上的参数。

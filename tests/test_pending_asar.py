@@ -446,6 +446,7 @@ class PendingAsarTests(unittest.TestCase):
         # 回归：client_running 时原子替换因文件占用失败，提示里的 "手动执行" 命令必须
         # 带上当前真实目标，standalone 复制执行才不会落到默认猜测路径；还要带 --runtime，
         # 否则 install --finalize 会被 sidecar 来源授权校验拒绝（见下面两条端到端用例）。
+        # issue #163：脚本本身也要指向运行目录副本——clone 被删后裸文件名无处可解析。
         buf = io.StringIO()
         with mock.patch.object(self.pi, "client_running", return_value=True), \
                 mock.patch.object(self.pi, "_replace_pending", side_effect=PermissionError("locked")), \
@@ -455,6 +456,9 @@ class PendingAsarTests(unittest.TestCase):
         output = buf.getvalue()
         self.assertIn(f'--asar "{self.asar.resolve()}"', output)
         self.assertIn(f'--runtime "{self.pi.RUNTIME}"', output)
+        tool = self.pi.RUNTIME / "patch_install.py"
+        self.assertIn(f'python "{tool}"', output)
+        self.assertIn("Keep it open", output)   # 夹具 _LANG="en"（setUp）
 
     def test_remove_failure_hint_includes_asar_path(self):
         self.pi.install()   # 先注入，_remove() 才会走到 _replace_pending
@@ -465,6 +469,8 @@ class PendingAsarTests(unittest.TestCase):
         output = buf.getvalue()
         self.assertIn(f'--asar "{self.asar.resolve()}"', output)
         self.assertNotIn("--runtime", output)   # remove 不走来源授权的 runtime 校验，不需要
+        tool = self.pi.RUNTIME / "patch_install.py"   # issue #163：脚本同款指向运行目录副本
+        self.assertIn(f'python "{tool}"', output)
 
     def test_check_pending_tmp_hint_includes_asar_path(self):
         self.prepare()
@@ -800,6 +806,45 @@ class ProtectedTargetTests(unittest.TestCase):
             # 走的是 POSIX 分支，守护不到 Windows 分支（review 变异 M5）。
             windll.shell32.IsUserAnAdmin.return_value = 0
             self.assertFalse(self.pi.is_elevated())
+
+
+class CliExitCodeTests(unittest.TestCase):
+    """issue #163 review：`sys.exit(main())` 把 bool 直接当退出码——True→1（失败）、
+    False→0（成功）正好颠倒。手动收尾命令（install --finalize）的脚本化判断全靠
+    退出码，成功失败颠倒会让人误判收尾结果。（夹具全是未注入 asar：check 不触发
+    syntax_check、finalize 失败路径到不了 node，无 Node 环境也能运行。）"""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.home = self.root / "home"
+        self.home.mkdir()
+        env = mock.patch.dict(os.environ, {"HOME": str(self.home), "USERPROFILE": str(self.home),
+                                           "ZUSAGE_NO_MONITOR": "1", "ZUSAGE_MONITOR_QUIET": ""})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def run_cli(self, *argv):
+        return subprocess.run(
+            [sys.executable, "-B", str(ROOT / "patch_install.py"), *argv],
+            capture_output=True, env=dict(os.environ), timeout=60)
+
+    def test_check_exit_code_distinguishes_success_and_failure(self):
+        asar = self.root / "app.asar"
+        make_asar(asar)
+        ok = self.run_cli("check", "--asar", str(asar))
+        self.assertEqual(ok.returncode, 0, ok.stderr.decode("utf-8", "replace"))
+        bad = self.run_cli("check", "--asar", str(self.root / "missing.asar"))
+        self.assertEqual(bad.returncode, 1, bad.stdout.decode("utf-8", "replace"))
+
+    def test_finalize_exit_code_is_zero_only_on_success(self):
+        # install --finalize 无 pending 时优雅失败（False）：退出码必须是 1 而不是 0。
+        asar = self.root / "app.asar"
+        make_asar(asar)
+        denied = self.run_cli("install", "--finalize", "--asar", str(asar),
+                              "--runtime", str(self.root / "runtime"))
+        self.assertEqual(denied.returncode, 1, denied.stdout.decode("utf-8", "replace"))
 
 
 @unittest.skipUnless(shutil.which("node"), "需要 Node 跑真实语法检查")

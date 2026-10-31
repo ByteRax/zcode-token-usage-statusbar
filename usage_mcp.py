@@ -3,10 +3,19 @@
 
 提供工具 token_usage(scope)：current(默认)/today/days:N/sessions[:N]/models[:days]/session:<id前缀>/workspace:<目录关键词>。
 协议仅实现 initialize / tools/list / tools/call；调试信息只走 stderr。
+
+启动时附带一项安装链补救（issue #163）：待替换 asar 包（客户端运行中安装遗留）的
+唯一收尾者是安装监控进程，被提前关闭后独立安装链没有 SessionStart hook 重建它，
+pending 会永久搁浅、状态条永不出现。MCP 进程由宿主随会话启动拉起，是独立链唯一
+的会话级入口——检测到有效待收尾包且无存活监控时，静默重新拉起（无窗口，等客户端
+退出后自动完成替换）。任何失败都不影响查询服务。
 """
+import contextlib
 import json
+import os
 import sqlite3
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -15,6 +24,37 @@ import zusage  # noqa: E402
 PROTOCOL_VERSION = "2024-11-05"
 
 L = zusage.L   # 输出语言与 CLI 同源（config.json 的 "lang"）
+
+
+def revive_finalize_monitor():
+    """待收尾包监控的尽力复活：config 所在目录即运行目录（独立链=数据目录，
+    插件链 config 不在插件目录、回退标准数据目录，--dev=仓库目录），与待收尾包
+    sidecar 记录的运行时目录一致，收尾来源授权才能通过。诊断走 stderr，绝不碰
+    stdout（stdio 协议通道）。"""
+    try:
+        cfg_path = Path(__file__).parent / "config.json"
+        if not cfg_path.is_file():
+            cfg_path = Path.home() / ".zcode" / "zcode-token-usage-statusbar" / "config.json"
+        asar = json.loads(cfg_path.read_text(encoding="utf-8")).get("asar_path")
+        if not isinstance(asar, str) or not asar:
+            return   # 无安装目标记录（未完成过安装）：无事可做
+        import patch_install as pi   # 与本脚本同目录（运行清单/插件目录都携带）
+        pi.set_target(asar)
+        pi.set_runtime(cfg_path.parent)
+        # cancelled 的 journal（卸载撤销/发布中断遗留）不是待收尾包：拉起只会得到
+        # 一个被来源授权立即拒绝退出的监控进程，等下次 install 清理即可。
+        if pi.pending_operation() not in ("install", "remove"):
+            return
+        with pi.monitor_instance_lock() as acquired:
+            if not acquired:
+                return   # 已有监控在收尾：不叠加进程（与 launch_monitor 内部去重同款前置）
+        # 试锁成功即释放，锁的长期持有者是监控进程自己；探测与拉起间的极小竞态由
+        # launch_monitor 的去重兜底（后到的监控抢锁失败会自行退出）。
+        os.environ["ZUSAGE_MONITOR_QUIET"] = "1"   # 无窗口静默收尾；不弹窗打断查询
+        with contextlib.redirect_stdout(sys.stderr):   # launch_monitor 的失败提示只许走 stderr
+            pi.launch_monitor(time.time())
+    except Exception as e:  # noqa: BLE001
+        print(f"[zusage] monitor revive skipped: {e}", file=sys.stderr)
 
 
 def tool_token_usage(scope: str = "current") -> str:
@@ -165,4 +205,5 @@ if __name__ == "__main__":
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
+    revive_finalize_monitor()
     main()

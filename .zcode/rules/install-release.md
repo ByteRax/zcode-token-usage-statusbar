@@ -20,6 +20,7 @@
 
 - 插件缓存按版本号换目录，而 asar 注入行是绝对 `file://` URI——所以 loader 必须先复制到稳定运行目录再对该目录注入，此后升级只需同步文件即可热更。注入/安装时把 `sys.executable` 绝对路径写回配置 `python_path`，每次 SessionStart 刷新。
 - asar 原子替换（mkstemp → `os.replace`）后必须 `os.chmod(stage, S_IMODE(原 asar mode))` 保留权限位，否则降成 0600（lifecycle 测试断言 0644）。
+- 待收尾包（pending TMP）的常驻收尾者是 `install_monitor.py`；窗口被关闭后由两个补救入口重建：插件链 SessionStart hook 的自动安装，以及 `usage_mcp.py` 进程启动时的 `revive_finalize_monitor()`（独立链无 hook，MCP 是其唯一会话级入口；config 所在目录即运行目录，收尾来源授权以此对齐 sidecar）。两份运行清单的 `RUNTIME_FILES` 都必须携带 `patch_install.py`/`install_monitor.py`/`runtime_lock.py`——失败提示里的手动收尾命令只依赖运行目录内这套脚本，缺任一个，clone 删除后命令即不可执行（issue #163；`test_standalone_runtime_files_cover_finalize_toolchain` 守护）。
 - 参与 INJECT_LINE 字节比对/自检的 `--runtime` 路径禁止 `Path.resolve()`（macOS `/var`↔`/private/var` 符号链接会破坏字面比对），只用 expanduser/expandvars/abspath；`--asar` 可完整 resolve；standalone `install --finalize` 在自定义安装路径需同时给 `--asar` 与 `--runtime`，`install_monitor.py` 的"手动执行"提示内嵌真实路径。
 - `patch_install.client_running()` 用 `pgrep -x ZCode`，本机进程名可能是 `zcode-cli` 而漏检；它只决定走安全路径，无害，但**测试时不要靠它判断客户端是否在跑**。asar 被占用的收尾必须由宿主以外的监控进程执行，不能依赖 ZCode 自己的定时任务。
 - 热/冷清单：`overlay.js`、`turn-stats.js` 热重载（主桥 2s mtime 监听）；`zusage.py` 常驻进程由 loader 按 mtime 自动重启；`inject-main.cjs`、`quota-client.cjs`、`model-puller.cjs`、`plugin-updater/release/storage.cjs` 是冷文件，首次注入、路径变化或这些文件变更需完全退出并重启客户端。可热更新文件也须确认实际加载路径。

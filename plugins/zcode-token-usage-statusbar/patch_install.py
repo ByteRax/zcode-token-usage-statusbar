@@ -856,10 +856,11 @@ def _install(finalize=False, before_publish=None):
             print(L(f"待替换包已失效，未替换：{e}", f"Pending package invalidated; not replaced: {e}"))
             return False
         except OSError as e:
+            tool = RUNTIME / "patch_install.py"
             print(L(f"\n运行中替换失败（{e}）。已弹出监控窗口：完全退出 ZCode 后会自动完成替换，",
                     f"\nReplacement while running failed ({e}). A monitor window has opened: it finishes the replacement once ZCode quits completely,"))
-            print(L(f'或之后手动执行：python patch_install.py install --finalize --asar "{ASAR}" --runtime "{RUNTIME}"',
-                    f'or run manually afterwards: python patch_install.py install --finalize --asar "{ASAR}" --runtime "{RUNTIME}"'))
+            print(L(f"请勿关闭该窗口；若已关闭，可手动执行：python \"{tool}\" install --finalize --asar \"{ASAR}\" --runtime \"{RUNTIME}\"",
+                    f"Keep it open; if it was closed already, run manually: python \"{tool}\" install --finalize --asar \"{ASAR}\" --runtime \"{RUNTIME}\""))
             launch_monitor(time.time())
             return False
     try:
@@ -946,8 +947,9 @@ def _remove():
         print(L(f"卸载待替换包已失效，未替换：{e}", f"Remove pending package invalidated; not replaced: {e}"))
         return False
     except OSError as e:
-        print(L(f'\n替换失败（{e}）。请完全退出 ZCode 后重跑 python patch_install.py remove --asar "{ASAR}"，',
-                f'\nReplacement failed ({e}). Quit ZCode completely and re-run python patch_install.py remove --asar "{ASAR}", '))
+        tool = RUNTIME / "patch_install.py"
+        print(L(f'\n替换失败（{e}）。请完全退出 ZCode 后重跑 python "{tool}" remove --asar "{ASAR}"，',
+                f'\nReplacement failed ({e}). Quit ZCode completely and re-run python "{tool}" remove --asar "{ASAR}", '))
         print(L("待替换文件保留；不要手动 move/mv 覆盖可能已升级的 app.asar。",
                 "Pending files kept; do not manually move/mv over a possibly upgraded app.asar."))
         return False
@@ -1042,4 +1044,7 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    sys.exit(main())   # check 等子命令的失败退出码必须真正生效（曾裸 main() 恒 0）
+    # check 等子命令的失败退出码必须真正生效（曾裸 main() 恒 0）；bool 返回值不能直接
+    # sys.exit——True 会被当成退出码 1（失败），False 变 0（成功），成功失败颠倒。
+    result = main()
+    sys.exit(0 if result is True or result is None else (result or 1))
