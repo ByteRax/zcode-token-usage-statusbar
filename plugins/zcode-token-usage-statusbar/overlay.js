@@ -1412,7 +1412,7 @@
    * 视图（{rate, at, count}）——Agent 工具运行期优先展示**所有运行中子代理**的
    * 估算 tok/s 之和（并行 ≥2 个时动词后缀 ×N；运行中请求未入库，DB 无数据；
    * 3 秒未刷新即视为过期不显示），缺席时退回工具状态词 + 耗时。 */
-  function zuBarSpeedView(stats, charsPerToken, subSum) {
+  function zuBarSpeedView(stats, charsPerToken, subSum, sessAvg) {
     if (!stats.complete) {
       // 工具执行期间优先显示与消息流同款的状态词（读取中/编辑中…+已耗时），
       // 让悬浮条与 toolCall 行状态对应；没有工具在跑才退回字符估算/存活心跳。
@@ -1482,6 +1482,16 @@
      * 处理返回 null，交回调用方回退 DB 最近一段，绝不套低速档。 */
     var band = tpsBand(stats.tokenRate);
     if (!band) return null;
+    /* 会话平均为主（用户拍板）：完成态主数字改会话加权平均（zusage.py 快照 avg_tps，
+     * 覆盖本轮真实值），最近一轮真实值放 latest 供 tooltip 展开。avg 缺席
+     * （旧远端快照/轻量行给 0）时行为不变。 */
+    var avg = (typeof sessAvg === "number" && isFinite(sessAvg) && sessAvg > 0) ? sessAvg : 0;
+    if (avg) {
+      var aband = tpsBand(avg) || band;
+      return { cls: aband.cls, band: aband,
+               text: L("均", "avg ") + (avg % 1 ? avg.toFixed(1) : String(avg)) + L(" t/s", " t/s"),
+               phase: null, latest: stats.tokenRate };
+    }
     return { cls: band.cls, band: band, text: stats.tokenRate.toFixed(1) + L(" t/s", " t/s"), phase: null };
   }
   /* 思考态动效图标（用户提供的设计稿）：呼吸脑轮廓 + 流动信号 + 脉冲节点，纯 CSS
@@ -3160,7 +3170,10 @@
       var rows =
         ttH(L("生成速度", "Generation speed")) +
         ttRow(L("当前读数", "Current reading"), speedView ? speedView.text : "—") +
-        ttRow(L("状态", "State"), speedView && speedView.phase ? L("生成中估算", "Running estimate") : L("本轮完成 · 真实值", "Turn completed · actual")) +
+        ttRow(L("状态", "State"), speedView && speedView.phase ? L("生成中估算", "Running estimate")
+          : (typeof (speedView && speedView.latest) === "number" ? L("会话平均 · 加权", "Session average · weighted") : L("本轮完成 · 真实值", "Turn completed · actual"))) +
+        (speedView && typeof speedView.latest === "number"
+          ? ttRow(L("最近一轮", "Latest turn"), speedView.latest.toFixed(1) + L(" t/s", " t/s")) : "") +
         ttRow(L("生成中", "While running"), L("按文本增量算出的字符/s，除以「每 token 字符数」估算 tok/s；该比例取自本会话最近一次完成的真实轮次，随每轮刷新（首轮无样本时用粗略默认值）", "estimated from the text-delta chars/s divided by a chars-per-token ratio; the ratio is calibrated from this session's most recently completed turn and refines each turn (a rough default is used before the first sample)")) +
         ttRow(L("子代理运行中", "Agent running"), L("子智能体运行期间按各自会话文本增量同款估算，主 chip 显示合计；运行中的请求未入本地库，思考文本不外显时无速率、只显示状态词", "while sub-agents run, each is estimated the same way from its own session text deltas and the bar chip shows their sum; in-flight requests are not in the local DB yet, and when thinking text is not exposed there is no rate, only the status word"));
       if (speedView && speedView.phase === "tool") {
@@ -3241,7 +3254,8 @@
        * 和"桥完全没命中"一视同仁，同样回退 DB/不渲染，不冒充"这个会话速度不可用"。
        * 二者互斥：绝不同时渲染两枚「速度」chip。 */
       var dbTps = last.tps || 0;
-      var speedView = liveStatsCur ? zuBarSpeedView(liveStatsCur, bridge.handle && bridge.handle.charsPerToken, subRate.sum) : null;
+      var sessAvg = (sess && typeof sess.avg_tps === "number" && isFinite(sess.avg_tps) && sess.avg_tps > 0) ? sess.avg_tps : 0;
+      var speedView = liveStatsCur ? zuBarSpeedView(liveStatsCur, bridge.handle && bridge.handle.charsPerToken, subRate.sum, sessAvg) : null;
       if (speedView) {
         liveKindCur = "live";
         livePhaseCur = speedView.phase || "";
@@ -3251,21 +3265,32 @@
           : ico('<path d="M13.5 2 3.5 13.5H11L10 22l10.5-12H13l.5-8z"/>')) +
           '<span class="zu-live ' + speedView.cls + (speedView.word ? " zu-shimmer" : "") + '">' + ttEsc(speedView.text) + "</span>",
           buildLiveTip(speedView));
-      } else if (dbTps && isFinite(dbTps) && dbTps > 0) {
+      } else if ((sessAvg || dbTps) && isFinite(sessAvg || dbTps) && (sessAvg || dbTps) > 0) {
         /* v127：负数/±Infinity 是异常数据，按无数据处理（整枚 chip 不渲染，与
-         * NaN/0 一致），绝不判成低速；正有限值按 TPS_BANDS 分档，档位行动态显示。 */
+         * NaN/0 一致），绝不判成低速；正有限值按 TPS_BANDS 分档，档位行动态显示。
+         * 有会话平均时主数字 = 会话平均（与桥完成态同口径），最近一段退到 tooltip。 */
         liveKindCur = "fallback";
         livePhaseCur = "";
         liveIconCur = "bolt";
-        var tband = tpsBand(dbTps);
+        var mainTps = sessAvg || dbTps;
+        var tband = tpsBand(mainTps);
         it(ico('<path d="M13.5 2 3.5 13.5H11L10 22l10.5-12H13l.5-8z"/>') +
-          '<span class="zu-live ' + tband.cls + '">' + dbTps + '</span><span class="dim">t/s</span>',
+          (sessAvg ? '<span class="dim">' + L("均", "avg ") + '</span>' : "") +
+          '<span class="zu-live ' + tband.cls + '">' + (mainTps % 1 ? mainTps.toFixed(1) : String(mainTps)) + '</span><span class="dim">t/s</span>' +
+          (sessAvg && dbTps > 0 ? '<span class="dim"> · ' + L("近", "last ") + dbTps + '</span>' : ""),
           "\x01" +
-          ttH(L("生成速度 · 最近一段", "Generation speed · latest segment")) +
-          ttRow(L("当前读数", "Current reading"), dbTps + " t/s") +
+          ttH(sessAvg ? L("生成速度 · 会话平均", "Generation speed · session average")
+                      : L("生成速度 · 最近一段", "Generation speed · latest segment")) +
+          ttRow(L("当前读数", "Current reading"), mainTps + " t/s") +
+          (sessAvg ? ttRow(L("最近一段", "Latest segment"), dbTps + " t/s") : "") +
           ttRow(L("档位", "Band"), tpsBandText(tband)) +
-          ttRow(L("口径", "Basis"), L("输出 tokens（含思考）÷ 生成耗时", "output tokens (thinking incl.) ÷ generation time")) +
-          ((last.startedAt || last.endedAt)
+          ttRow(L("口径", "Basis"), L(sessAvg
+            ? "会话全部已完成请求：Σ输出（含思考）÷ Σ生成耗时，工具等待不计，不含子代理"
+            : "输出 tokens（含思考）÷ 生成耗时",
+            sessAvg
+            ? "all completed requests of this session: Σoutput (thinking incl.) ÷ Σgeneration time, tool waits excluded, sub-agents excluded"
+            : "output tokens (thinking incl.) ÷ generation time")) +
+          (!sessAvg && (last.startedAt || last.endedAt)
             ? ttRowPin(L("时间范围", "Time span"),
                 (last.startedAt ? fmtStart(last.startedAt) : "—") + " - " +
                 (last.endedAt ? fmtStart(last.endedAt) : "—"))
@@ -3797,7 +3822,9 @@
       }
       subRateTick(stats && !stats.complete ? stats.runningSubagents : null);   // 运行中子代理逐个绑/解速率桥
       var wasLive = liveKindCur === "live";
-      var view = stats ? zuBarSpeedView(stats, h && h.charsPerToken, subRate.sum) : null;
+      var view = stats ? zuBarSpeedView(stats, h && h.charsPerToken, subRate.sum,
+        (state.data && state.data.session && typeof state.data.session.avg_tps === "number" &&
+         isFinite(state.data.session.avg_tps) && state.data.session.avg_tps > 0) ? state.data.session.avg_tps : 0) : null;
       liveStatsCur = stats;
       if (state.theme === "compact") { syncTpsChip(); return; }   // v146：精简模式速率走工具行 chip（10Hz 心跳原地跟随，条面不重建）
       // 用 view（而非 stats）判定快速路径：stats 非空但 view 为 null（历史存量，见
@@ -5885,17 +5912,19 @@
      * 速度 chip 同源（zuBarSpeedView 桥两态 / tpsBand DB 回退），无有效样本不渲染
      * （与条面口径一致：用户拍板「无数据隐藏」，代价是新会话首次请求前无设置入口）。 */
     function tpsChipView() {
-      var sv = liveStatsCur ? zuBarSpeedView(liveStatsCur, bridge.handle && bridge.handle.charsPerToken, subRate.sum) : null;
+      var cAvg = (lastView && lastView.session && typeof lastView.session.avg_tps === "number" &&
+                  isFinite(lastView.session.avg_tps) && lastView.session.avg_tps > 0) ? lastView.session.avg_tps : 0;
+      var sv = liveStatsCur ? zuBarSpeedView(liveStatsCur, bridge.handle && bridge.handle.charsPerToken, subRate.sum, cAvg) : null;
       if (sv) {
         liveKindCur = "live";
         livePhaseCur = sv.phase || "";
         return { kind: "live", sv: sv };
       }
       var dbTps = lastView && lastView.last ? lastView.last.tps : 0;
-      if (dbTps && isFinite(dbTps) && dbTps > 0) {
+      if ((cAvg || dbTps) && isFinite(cAvg || dbTps) && (cAvg || dbTps) > 0) {
         liveKindCur = "fallback";
         livePhaseCur = "";
-        return { kind: "fallback", dbTps: dbTps, band: tpsBand(dbTps) };
+        return { kind: "fallback", dbTps: dbTps, sessAvg: cAvg, band: tpsBand(cAvg || dbTps) };
       }
       liveKindCur = "none";
       livePhaseCur = "";
@@ -5922,16 +5951,30 @@
         ".zusage-tps-tip .tps-cfg{flex:0 0 auto;margin-left:auto;background:none;border:1px solid var(--color-border,rgba(255,255,255,.14));border-radius:999px;color:inherit;font:inherit;font-size:.85em;line-height:1.5;padding:0 9px;cursor:pointer}" +
         ".zusage-tps-tip .tps-cfg:hover{color:var(--color-tooltip-foreground,#fafafa);border-color:var(--color-border-hover,rgba(255,255,255,.24))}" +
         "</style>";
-      out += '<div class="tps-h">' + (v.kind === "live" ? L("生成速度", "Generation speed") : L("生成速度 · 最近一段", "Generation speed · latest segment")) + "</div>";
-      out += tpsRowHtml(L("当前读数", "Current reading"), v.kind === "live" ? v.sv.text : v.dbTps + " t/s");
+      out += '<div class="tps-h">' + (v.kind === "live" ? L("生成速度", "Generation speed")
+        : (v.sessAvg ? L("生成速度 · 会话平均", "Generation speed · session average") : L("生成速度 · 最近一段", "Generation speed · latest segment"))) + "</div>";
+      out += tpsRowHtml(L("当前读数", "Current reading"), v.kind === "live" ? v.sv.text
+        : (v.sessAvg || v.dbTps) + " t/s");
       if (v.kind === "live") {
-        out += tpsRowHtml(L("状态", "State"), v.sv.phase ? L("生成中估算", "Running estimate") : L("本轮完成 · 真实值", "Turn completed · actual"));
+        out += tpsRowHtml(L("状态", "State"), v.sv.phase ? L("生成中估算", "Running estimate")
+          : (typeof v.sv.latest === "number" ? L("会话平均 · 加权", "Session average · weighted") : L("本轮完成 · 真实值", "Turn completed · actual")));
+        if (typeof v.sv.latest === "number") {
+          out += tpsRowHtml(L("最近一轮", "Latest turn"), v.sv.latest.toFixed(1) + " t/s");
+        }
         if (v.sv.phase === "tool" && subRate.sum && typeof subRate.sum.rate === "number") {
           out += tpsRowHtml(L("子代理合计", "Sub-agent sum"), L("估 ", "est ") + subRate.sum.rate.toFixed(1) + " t/s");
         }
       } else {
         out += tpsRowHtml(L("档位", "Band"), tpsBandText(v.band));
-        out += tpsRowHtml(L("口径", "Basis"), L("输出 tokens（含思考）÷ 生成耗时", "output tokens (thinking incl.) ÷ generation time"));
+        if (v.sessAvg) {
+          out += tpsRowHtml(L("最近一段", "Latest segment"), v.dbTps + " t/s");
+        }
+        out += tpsRowHtml(L("口径", "Basis"), L(v.sessAvg
+          ? "会话全部已完成请求：Σ输出（含思考）÷ Σ生成耗时，工具等待不计，不含子代理"
+          : "输出 tokens（含思考）÷ 生成耗时",
+          v.sessAvg
+          ? "all completed requests of this session: Σoutput (thinking incl.) ÷ Σgeneration time, tool waits excluded, sub-agents excluded"
+          : "output tokens (thinking incl.) ÷ generation time"));
         if (last.startedAt || last.endedAt) {
           out += tpsRowHtml(L("时间范围", "Time span"),
             (last.startedAt ? fmtStart(last.startedAt) : "—") + " - " + (last.endedAt ? fmtStart(last.endedAt) : "—"));
@@ -6044,7 +6087,8 @@
       if (insBefore) misplaced = chip.nextElementSibling !== insBefore;
       else misplaced = (afterNode ? afterNode.nextElementSibling !== chip : host.lastElementChild !== chip);   // 锚位语义同 git 兜回（下一元素已是自己=就位，不得自插）
       if (misplaced) host.insertBefore(chip, insBefore ? insBefore : (afterNode ? afterNode.nextElementSibling : null));
-      var txt = v.kind === "live" ? v.sv.text : v.dbTps + " t/s";
+      var txt = v.kind === "live" ? v.sv.text
+        : (v.sessAvg ? L("均", "avg ") + v.sessAvg + L(" t/s · 近", " t/s · last ") + v.dbTps : v.dbTps + " t/s");
       var cls = "zu-live " + (v.kind === "live" ? v.sv.cls + (v.sv.word ? " zu-shimmer" : "") : v.band.cls);
       var sig = v.kind + "|" + cls + "|" + txt;
       if (chip.__zuSig !== sig) {   // 幂等：内容没变不重建，悬停/焦点态不被打断
