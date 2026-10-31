@@ -128,7 +128,7 @@ python3 sync_plugin.py --check
 - 插件逐问速率只聚合本轮有效段，按 Σoutput / Σ生成耗时加权，段间工具等待不计；近 5 请求均值/峰值不是本轮加权值，不能互相替代。
 - 会话均（v181/PR #157）= 全会话已完成 main_turn 段的加权平均（Σ有效输出 ÷ Σ生成窗口）：速率行「会话均」/CLI「平均」/`--json` `session.sessionAvg`（token_rate，scope 过滤同会话累计）与快照 `avg_tps`（zusage，`_row_gen_ms` 同窗口口径）两处同源；与「近N次均」算术平均并存不互替；辅助 query_source 与子代理行不计；无可评分段时速率行隐藏、快照为 0，消费端回退原读数。
 - `--current` 依赖本会话提问状态（promptTs）做**严格**时间过滤（`started_at >= prompt_ts`，无容差；原 3 秒容差是有意移除的 fail-closed 收紧，勿当 bug 修回）；连发且新轮未入库仍有误选边界，不能宣称零歧义。尚未入库的最终正文不在采样内，首段 TTFT、有效段速率和会话累计保持各自口径。
-- 上下文占比取最近完成请求 input / 上下文窗口，不是会话累计或历史峰值；压缩后可以回落。子代理按父子关系关联，不按派发时间最近邻猜任务名。
+- 上下文占比取最近完成请求 input / 上下文窗口，不是会话累计或历史峰值；压缩后可以回落。原生上下文按钮增强的**显示层**优先镜像原生 aria-label 已用/总量（宿主 taskUsage store，与悬停面板同源、压缩后立即回落，issue #172），解析不出才回退 DB 口径；ctxOv/nativeCtxVal 的窗口优先级只作用于 DB 兜底路径与 acWarningText。子代理按父子关系关联，不按派发时间最近邻猜任务名。
 - CLI/MCP `current` 选择数据库最近活跃会话，不保证是屏幕焦点；30 分钟阈值用于 active/idle 判断，不限制只选这段时间内的会话。
 - 今日、`days`、`week` 按本地自然日，`models` 从当前时刻滚动回溯；日界线查询采用闭区间，零点存在相邻日重复计入边界。改时间过滤先核对各查询，不擅自统一窗口。
 - 展示层口径（两态速度实现、万/亿单位、时间文案、tooltip 行为、重启后历史轮规则、Git 状态 chip）见 [.zcode/rules/overlay-ui.md](.zcode/rules/overlay-ui.md)。
