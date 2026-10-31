@@ -125,7 +125,7 @@ You can also send the natural-language "three steps" line from the top of this R
 ### After installing, don't skip these three steps
 
 1. **The plugin is installed and enabled** — you can see it in the plugin list.
-2. **The bar is installed into the client** — starting or resuming a session can trigger automatic installation; if it fails or is disabled, run `/install-overlay` by hand and confirm it succeeds. This step **modifies ZCode's program files (`app.asar`)** — make sure you trust the project first. Permissions or client changes can prevent installation.
+2. **The bar is installed into the client** — starting or resuming a session runs the automatic install/repair (always on, no config switch; a session already open at install time won't re-trigger); if it fails, run `/install-overlay` by hand and confirm it succeeds. This step **modifies ZCode's program files (`app.asar`)** — make sure you trust the project first. Permissions or client changes can prevent installation.
 3. **Quit ZCode completely and reopen it**, then check that the bar appears — closing the window doesn't count, and neither does reopening the session.
 
 **Updating later?** For the plugin, click "Check for updates" in ⚙ (auto-update is on by default); for the installer route, `git pull` in the clone and re-run `python install.py`. [Update & upgrade details →](docs/user-guide.md#更新与客户端升级) (Chinese)
