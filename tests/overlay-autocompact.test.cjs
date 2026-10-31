@@ -213,7 +213,7 @@ test("v190：注入开关关闭（或主进程未加载）时数值行整行隐�
 });
 
 test("源码契约：设置控件、动作路由与状态种子齐备", () => {
-  for (const needle of ["zu-ac-enable", "zu-ac-value", "zu-ac-status",
+  for (const needle of ["zu-ac-enable", "zu-ac-value", "zu-ac-status", "zu-ac-hint",
     'pluginRequest("autocompact-patch"', "autocompact-config", "sendAutoCompactConfig"]) {
     assert.ok(source.includes(needle), "overlay.js 缺少 " + needle);
   }

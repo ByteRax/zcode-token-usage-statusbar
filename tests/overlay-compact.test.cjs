@@ -508,7 +508,7 @@ test('英文语言：按钮与弹框文案走 en 分支', () => {
 });
 
 test('源码契约：冷启动清扫与新类名/观察器接线齐备', () => {
-  assert.match(source, /\.zu-compact-btn,\.zu-ac-info,\.zu-compact-dlg/);   // 冷启动清扫选择器（v179 阈值行同 swept）
+  assert.match(source, /\.zu-compact-btn,\.zu-ac-info,\.zu-ac-hint,\.zu-compact-dlg/);   // 冷启动清扫选择器（v179 阈值行/v195 说明行同 swept）
   assert.match(source, /hcObserver\.observe\(document\.body/);
   assert.match(source, /syncCompactBtn\(\);\s*\/\/ v105/);   // heavy 对账点
   assert.match(source, /onSendCompressionCommand/);
@@ -526,7 +526,11 @@ test('v179 阈值行：补丁生效时钉在按钮之后，推送变化原地改
   assert.ok(btn);
   const info = ui.body.children.find(e => e.classList.contains('zu-ac-info'));
   assert.ok(info, 'info row mounted');
-  assert.equal(ui.body.children.indexOf(info), ui.body.children.indexOf(btn) - 1, 'v189：钉在压缩按钮上方');
+  const hint = ui.body.children.find(e => e.classList.contains('zu-ac-hint'));
+  assert.ok(hint, 'v195 新手说明行挂载');
+  assert.equal(ui.body.children.indexOf(info), ui.body.children.indexOf(hint) - 1, '说明行紧随阈值行');
+  assert.equal(ui.body.children.indexOf(hint), ui.body.children.indexOf(btn) - 1, '说明行钉在压缩按钮上方');
+  assert.match(hint.textContent, /按窗口总量计算/);
   const infoText = info.children.find(e => e.classList && e.classList.contains('zu-ac-text'));
   assert.ok(infoText, '文本 span 存在');
   assert.match(infoText.textContent, /自动压缩 ~70%/);      // v194 总窗口口径：200,000×70% = 140,000 → 70%（设置值=显示值）
@@ -536,6 +540,7 @@ test('v179 阈值行：补丁生效时钉在按钮之后，推送变化原地改
   assert.equal(link.textContent, '调整');
   h.tick();
   assert.equal(ui.body.children.find(e => e.classList.contains('zu-ac-info')), info, '幂等：同一颗行不被重建');
+  assert.equal(ui.body.children.find(e => e.classList.contains('zu-ac-hint')), hint, '说明行不被重建');
   assert.equal(info.children.find(e => e.classList && e.classList.contains('zu-ac-link')), link, '链接不被重建（文本单独更新）');
   h.window.__zusagePluginUpdate({ enginePatch: { enabled: true, state: 'applied', build: '3.17.1', config: { enabled: false } } });
   h.tick();
@@ -545,6 +550,7 @@ test('v179 阈值行：补丁生效时钉在按钮之后，推送变化原地改
   h.window.__zusagePluginUpdate({ enginePatch: { enabled: true, state: 'unsupported_build', build: null } });
   h.tick();
   assert.ok(!ui.body.children.find(e => e.classList.contains('zu-ac-info')), '补丁未生效即摘除');
+  assert.ok(!ui.body.children.find(e => e.classList.contains('zu-ac-hint')), '说明行随阈值行一并摘除');
 });
 
 test('v189「调整」链接：点击打开 ⚙ 面板（复用 gear 路径），重复点击不炸', () => {
@@ -570,4 +576,5 @@ test('v179 阈值行：enginePatch 缺失（旧主进程）不渲染', () => {
   h.inject(); h.boot(); h.tick();
   assert.ok(h.compactBtnOf(ui.body));
   assert.ok(!ui.body.children.find(e => e.classList.contains('zu-ac-info')));
+  assert.ok(!ui.body.children.find(e => e.classList.contains('zu-ac-hint')));
 });
