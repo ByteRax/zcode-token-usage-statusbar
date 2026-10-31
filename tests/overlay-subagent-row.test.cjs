@@ -386,7 +386,7 @@ test('source contracts: updateLive hook, scan cleanup, delegation listener, CSS 
   assert.match(source, /if \(subTipFor && !subTipFor\.isConnected\) hideSubTip\(\);/, 'scanRateLines detach 兜底收起');
   assert.ok(source.includes('e.target.closest(".zu-subrate")'), 'document 委托悬停（免逐 chip 监听）');
   assert.match(source, /"\.zu-subrate\{flex:0 0 auto;white-space:nowrap;cursor:help/, 'chip 样式入注入块');
-  assert.match(source, /var VERSION = "v182";/);   // v180/v181/v182 由并行线与台账顺延（2026-10-31）   // v181 工具组状态词（查阅/终端·执行中）；v180 review 批：截断方向/diag 提级/dispose 摘 chip（2026-10-31）
+  assert.match(source, /var VERSION = "v185";/);   // 台账顺延：v180(重启守卫)/v181-v182(并行在途)占用后我方条目编 v183-v185（2026-10-31）   // v180/v181/v182 由并行线与台账顺延（2026-10-31）   // v181 工具组状态词（查阅/终端·执行中）；v180 review 批：截断方向/diag 提级/dispose 摘 chip（2026-10-31）
   // v179/v180 review P1：调用侧形状锁——showSubTip 以数据包调 buildTip（v178 回归即红）
   assert.ok(source.includes('el.__zuT.buildTip(el.__zuT)'), 'tooltip 数据包调用约定');
   assert.ok(source.includes("runningSubagents.length - 1"), '截断从尾部取（最新派发优先）');
