@@ -1218,7 +1218,7 @@ test('relaunch two-step confirm state machine executes for real (v172, v177 ack 
   let sendReceipt = null;
   const timers = [];
   const context = {
-    state: { pluginUpdate: { restartRequired: true }, settingsSec: "update" },
+    state: { pluginUpdate: { restartRequired: true, relaunchSupported: true }, settingsSec: "update" },
     panel: { querySelector: () => statusEl, addEventListener: (_, fn) => { context.__click = fn; } },
     L: (zh) => zh,
     pluginRequest: (action, payload, cb) => { requested.push(action); sendReceipt = cb; },
@@ -1250,10 +1250,66 @@ test('relaunch two-step confirm state machine executes for real (v172, v177 ack 
   assert.equal(statusEl.textContent, "", "ok 回执不改写状态区");
   sendReceipt({ ok: false, error: "update in progress" });
   assert.match(statusEl.textContent, /重启请求失败/);
+  statusEl.textContent = "";
+  sendReceipt({ ok: false, error: "unknown action: relaunch" });
+  assert.match(statusEl.textContent, /旧版本/, "v180 issue #158：未知动作回执=明确的旧主进程指引");
+  statusEl.textContent = "";
+  sendReceipt({ ok: false, error: "unknown-protocol mist" });
+  assert.match(statusEl.textContent, /重启请求失败/);
+  assert.doesNotMatch(statusEl.textContent, /旧版本/, "仅 unknown action: 前缀才映射为旧主进程指引");
   context.__click({ target: hit() });   // 再次进入确认态
   assert.equal(button.dataset.armed, "1");
   assert.equal(timers.length, 3);
   timers[2]();                           // 5s 超时：还原文案与 armed
   assert.equal(button.dataset.armed, "0");
   assert.equal(button.textContent, "重启 ZCode");
+});
+
+test('relaunch button downgrades to a manual-restart hint while the main process predates the capability marker (v180, issue #158)', () => {
+  const syncSource = extract('    function updFingerprint(u) {', '    function syncPanel() {');
+  const status = {};
+  const relaunch = { hidden: false, disabled: false, classes: {} };
+  relaunch.classList = { toggle() {} };
+  const context = {
+    state: { pluginUpdate: { supported: true, phase: 'idle', restartRequired: true, markerAt: 42 } },   // 旧主进程：无 relaunchSupported
+    panel: { querySelector: selector => selector === '.zu-update-status' ? status : selector === '[data-update=relaunch]' ? relaunch : { style: {} } },
+    gear: { querySelector: () => null },
+    LS: { updSeen: 'zusage3.updSeen' },
+    localStorage: { getItem: () => null, setItem: () => {} },
+    L: (zh) => zh,
+  };
+  vm.runInNewContext(syncSource + '\nsyncUpdate();', context);
+  assert.equal(relaunch.hidden, true, '旧主进程上按钮必然无效：隐藏');
+  assert.equal(relaunch.disabled, true);
+  assert.match(status.textContent, /旧版本/);
+  context.state.pluginUpdate = { supported: true, phase: 'idle', restartRequired: true, markerAt: 43, relaunchSupported: true };
+  vm.runInNewContext('syncUpdate();', context);
+  assert.equal(relaunch.hidden, false, '能力标记到位后按钮恢复');
+  assert.equal(relaunch.disabled, false);
+  assert.doesNotMatch(status.textContent, /旧版本/);
+});
+
+test('relaunch click refuses to fire and explains while the capability marker is missing (v180, issue #158)', () => {
+  const clickSource = extract('    var relaunchAckTimer = 0;', '    gear.addEventListener("click",');
+  const button = { dataset: { update: "relaunch", armed: "" }, disabled: false, textContent: "重启 ZCode",
+    classList: { add() {}, remove() {} } };
+  const statusEl = { textContent: "" };
+  const requested = [];
+  const timers = [];
+  const context = {
+    state: { pluginUpdate: { restartRequired: true } },   // 首推前的渲染窗口：缺 relaunchSupported
+    panel: { querySelector: () => statusEl, addEventListener: (_, fn) => { context.__click = fn; } },
+    L: (zh) => zh,
+    pluginRequest: (action) => { requested.push(action); },
+    setTimeout: (fn) => { timers.push(fn); return timers.length; },
+    clearTimeout: (n) => { timers[n - 1] = null; },
+  };
+  vm.runInNewContext(clickSource, context);
+  const hit = () => ({ closest: sel => sel === "[data-update]" ? button : null });
+  context.__click({ target: hit() });   // 首点即拦截：不进入确认态、不发请求
+  assert.deepEqual(requested, [], '主进程缺能力标记时不得发出 relaunch');
+  assert.equal(button.dataset.armed, "0");
+  assert.equal(button.textContent, "重启 ZCode");
+  assert.match(statusEl.textContent, /旧版本/);
+  assert.equal(timers.length, 0, '不挂确认态/回执超时定时器');
 });
