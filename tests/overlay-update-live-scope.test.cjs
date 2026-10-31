@@ -27,6 +27,7 @@ function runUpdateLive({ lastAvg, payloadAvg, noLastView }) {
     sideHandleValid: () => true,
     bridgeDetach: () => {},
     subRateTick: () => {},
+    renderSubAgentRows: () => {},   // v185 并行线：Agent 行内速率 chip 渲染通道
     subRate: { sum: null },
     zuBarSpeedView: (...args) => { seen.args = args; return null; },
     syncTpsChip: () => {},
