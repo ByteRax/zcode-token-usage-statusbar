@@ -753,7 +753,8 @@ function pushPluginState(wc, state) {
   /* rateLine / quotaEnabled / restartNotice / enginePatch 随插件状态一起推送：⚙ 面板开关的真值都来自 config.json */
   const payload = { ...state, rateLine: readCfgCached().answer_rate_line !== false, quotaEnabled: quotaEnabled(),
     resetBadgeEnabled: resetBadgeEnabled(), restartNotice: readCfgCached().restart_notice !== false,
-    quotaSources: quotaClient ? quotaClient.sourcesConfig() : [], enginePatch: enginePatcher ? enginePatcher.status() : null, feedbackVersion: 1 };
+    quotaSources: quotaClient ? quotaClient.sourcesConfig() : [], enginePatch: enginePatcher ? enginePatcher.status() : null, feedbackVersion: 1,
+    relaunchSupported: true };   // v180 issue #158：能力标记与下方 relaunch 分支同文件（inject-main），缺标记=旧主进程必然没有该动作分支
   wc.executeJavaScript(`window.__zusagePluginUpdate && window.__zusagePluginUpdate(${JSON.stringify(payload)})`, true).catch(() => { });
 }
 try {
@@ -1422,6 +1423,9 @@ async function pollPluginRequests() {
               try { app.relaunch(); app.quit(); } catch (e) { LOG("relaunch failed:", e.message); }
             }, 300);
           }
+        } else if (req && typeof req.requestId === "string") {   // v180 issue #158：白名单外动作兜底回执——
+          // 浮层热更/主进程冷加载的版本错位窗口里，未知动作不再静默丢弃，浮层据此给出「主进程是旧版本」的明确指引
+          deliverPluginRequest(wc, req.requestId, { ok: false, error: "unknown action: " + String(req.action).slice(0, 60) });
         }
       }
     }
