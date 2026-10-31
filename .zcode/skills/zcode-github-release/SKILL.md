@@ -1,6 +1,6 @@
 ---
 name: zcode-github-release
-description: "仅为当前 zcode-token-usage-statusbar 项目发版：检查、打包、校验并发布 GitHub 正式 Release，发布验收后更新 plugin-releases / GitCode 渠道清单、创建并合并源码 PR，或补充/修订已发布 Release 的更新说明。用户说「发版」「发布新版本」「创建 GitHub Release」「发布预演」「更新渠道清单」「补合并发布 PR」「改 Release 说明」时使用。默认只做只读检查与本地打包；提交、打 tag、发布、渠道推送须明确授权，完整发版包含同一目标仓库的源码 PR 合并。"
+description: "仅为当前 zcode-token-usage-statusbar 项目发版：检查、打包、校验并发布 GitHub 正式 Release，发布验收后更新 plugin-releases / GitCode 渠道清单、创建并合并源码 PR，或补充/修订已发布 Release 的更新说明，并核对插件内更新日志的版本身份、渠道正文与兼容交付。用户说「发版」「发布新版本」「创建 GitHub Release」「发布预演」「更新渠道清单」「补合并发布 PR」「改 Release 说明」时使用。默认只做只读检查与本地打包；提交、打 tag、发布、渠道推送须明确授权，完整发版包含同一目标仓库的源码 PR 合并。"
 ---
 
 # 当前项目的 GitHub 正式 Release
@@ -24,7 +24,7 @@ description: "仅为当前 zcode-token-usage-statusbar 项目发版：检查、�
 | F | 源码 PR 创建与合并、GitCode 镜像 base 同步 | 用户明确授权完整发版时已包含 |
 
 - 「授权完整发版」= B + D + F，其中 D 默认只含 GitHub；GitCode Release 镜像只在授权语点名 `--gitcode-repo` 时执行；E 不在其内，须另行点名。「仅发 Release」= B + D。创建/迁移技能本身不是发布授权。
-- 新发布按以下顺序：确认目标提交与 PR 合并目标 → 在干净 worktree 检查/打包/升级链验证 → 起草说明 → 提交并过推 tag 闸门后推送（B）→ 带说明预演（C）→ 授权发布（D）→ 验收正文与资产 → 完成已授权的渠道更新并做更新端验证（E）→ 创建并合并源码 PR → 验收合并结果 → 同步 GitCode 镜像（F）。仅修订已有说明时跳到「修订已发布说明」，不重新发布或合并 PR。
+- 新发布按以下顺序：确认目标提交与 PR 合并目标 → 在干净 worktree 核对日志消费者与来源，准备已有合同要求的随包日志 → 检查/打包/升级链验证 → 完成外置发布说明 → 提交并过推 tag 闸门后推送（B）→ 带说明预演（C）→ 授权发布（D）→ 验收正文与资产 → 完成已授权的渠道更新并做更新端验证（E）→ 创建并合并源码 PR → 验收合并结果 → 同步 GitCode 镜像（F）。仅修订已有说明时跳到「修订已发布说明」，不重新发布或合并 PR。
 - 用户只要求预演而 tag 尚未就绪：停在 A，报告「预演未执行；预期阻塞项：版本改动未提交、缺本地/远端 tag」，附 build/verify/升级链结果和待授权的 B 动作清单（要提交的文件、tag 名、推送目标）；不要为跑通预演自行打 tag 或推送。
 - 完整正式发版默认包含发布后源码 PR 的创建与合并。确认本次发布授权时一并说明：合并到同一发布仓库的默认分支（通过 `gh repo view OWNER/REPO --json defaultBranchRef` 核实），仅包含已审查的本次发布提交；用户指定其它 base 时以其要求为准。用户明确授权完整发版后，不在发布成功后再次询问这项收尾；仅预演、仅 Release、仅修改说明或用户明确禁止合并时不执行，也不延伸到上游仓库。
 - 未经用户针对**该具体动作**的明确授权，禁止 force push、移动或删除已推送的 tag、覆盖或删除已有 Release；「授权发版」不蕴含这些。
@@ -44,6 +44,7 @@ git worktree add --detach .worktrees/release-vX.Y.Z <目标提交>              
 
 ## 检查与打包（阶段 A）
 
+- **打包前**读取 [更新日志交付](references/update-log-delivery.md)，核对目标提交的日志消费者与来源合同；若已支持随包日志，先完成日志内容、版本关联和副本同步再 build。仅外置 Release 正文可在验证结果齐备后定稿，不能据此在 build 后再补包内文件。
 - 核对两份插件 manifest 与市场条目版本/name 一致。
 - `overlay.js` 的 `VERSION` 代际台账、升级链验证、重启要求判定，命令都在 [发布前检查](references/pre-publish-checks.md)；并行工作各自递增会出现同号不同义或乱序（实证：两处 v92 各指不同功能；热修 `v99.1` 被插到台账最前面），发现就按时间线重排。
 - 在发布 worktree 根运行，测试失败先修复或报告阻塞，不能继续发布：
@@ -67,6 +68,8 @@ python3 -B release_tool.py verify --zip /new/artifact-directory/zcode-token-usag
 - **升级链验证**：build 之后、发布之前，用历史 tag 里的 `release_unpack.py` 校验新 ZIP，任何一版拒绝或取不到都不得发布。
 
 ## 生成更新说明
+
+先执行 [更新日志交付](references/update-log-delivery.md) 的消费者能力检查与来源映射：以目标提交中实际实现为准，未实现日志 UI 时只准备 Release 正文，不将设计计划写成已发布功能；已实现时检查其数据合同与适用回归。日志必须对应准确仓库、渠道和版本/提交，不用 latest 或同版本号猜测源码对应关系。不要为此擅自新增包内文件、第三个资产或修改发布 schema。
 
 按 [更新说明规范](references/release-notes.md) 核实范围、撰写面向用户的 Markdown（含重启要求等必写项）。未发布的渠道、未安装的客户端、仅夹具验证的平台必须如实区分。使用 Write 保存为新的 UTF-8 `release-notes.md`，放在独立资产目录或临时目录，不混入 ZIP 或修改用户现有文件；拒绝空正文和仅项目名/版本的一行占位，发布工具不会自动编造说明。
 
@@ -110,12 +113,12 @@ python3 -B release_tool.py verify --zip /new/artifact-directory/zcode-token-usag
   第 1 条与 `--gitcode-repo` 指向的仓库不符：停下报告，不改 remote 配置、不补推。第 2 条的 stderr 有报错（远程缺失、网络或认证问题）：这是「无法核对」，不是「镜像缺 tag」，不执行 D、不补推，报告用户。第 2 条干净地输出为空（命令成功，镜像上确实没有这个 tag）：阶段 B 推送时 GitCode 段多半失败了，不执行 D，报告用户；补好 HTTPS 凭据后，**优先重跑阶段 B 步骤 3 的 `git push fork …`**（两段推送都幂等，只补缺的一端，不移动 tag）——前提是阶段 B 的推送在本次流程里已获授权；B 不在本次授权范围（例如只授权了 D，tag 是用户自己或更早的会话推的）时，先问用户、等答复再推。只有重跑也补不上、必须直接 `git push gitcode refs/tags/vX.Y.Z` 时，才要求阶段 B 的授权语点名过 `gitcode`，没点名就先问用户、等答复再推。SHA 不同：镜像上已有同名却指向别处的 tag，不得移动，停下报告。
 - 仅在用户明确授权本次仓库与版本后，以同一说明再使用 `--publish --confirm OWNER/REPO/vX.Y.Z`。工具读取说明快照、建 draft、上传双资产、下载逐字节核验、检查 draft 正文并重查远端 commit，再转正式并核验正文/状态。授权语点名 `--gitcode-repo` 时同一命令会在 GitHub 验收后镜像 GitCode Release（需环境变量 `GITCODE_TOKEN`，缺失时 `--publish` 在创建 draft 之前就整体失败，见 [发布后收尾](references/post-release.md#gitcode-渠道)）。
 - 失败保留现场，不盲删重建、不自行转正：draft 残留、已公开但核验不符等情形的处置见 [发布失败与回退](references/publish-failures.md)。
-- 发布后通过 `gh release view vX.Y.Z --repo OWNER/REPO --json url,body,isDraft,isPrerelease,tagName,assets` 确认正式状态与两个资产；将 `body` 与说明比较（仅允许 CRLF 与末尾空白差异），报告真实 URL。正文缺失或不一致不是验收成功。
+- 发布后通过 `gh release view vX.Y.Z --repo OWNER/REPO --json url,body,isDraft,isPrerelease,tagName,assets` 确认正式状态与两个资产；将 `body` 与说明比较（仅允许 CRLF 与末尾空白差异），报告真实 URL。正文缺失或不一致不是验收成功。GitCode 镜像已授权时，还须按 [更新日志交付](references/update-log-delivery.md#5-发布前与发布后验证) 单独回读同 tag 的正文与提交；镜像工具资产验收不能代替正文验收。日志未就绪的渠道暂停清单推进，已完成的其它渠道分别报告。
 - 用户要求替换已发布版本时，按 [发布失败与回退](references/publish-failures.md#要求替换已发布版本) 存快照后停止，逐步取得授权。
 
 ## 修订已发布说明
 
-用户明确要求补充/修订指定 Release 的说明即授权该正文编辑，不代表允许修改版本、tag、资产、渠道或其它 Release。流程（快照 → 按已发布 tag 的提交撰写 → `gh release edit --notes-file` → 回读比较）见 [更新说明规范](references/release-notes.md#修订已发布说明)；不要调用 `release_tool.py publish`，不要删除、重建或重传资产。
+用户明确要求补充/修订指定 Release 的说明即授权该正文编辑，不代表允许修改版本、tag、资产、渠道或其它 Release。流程（快照 → 按已发布 tag 的提交撰写 → `gh release edit --notes-file` → 回读比较）见 [更新说明规范](references/release-notes.md#修订已发布说明)；不要调用 `release_tool.py publish`，不要删除、重建或重传资产。另按 [更新日志交付](references/update-log-delivery.md#6-修订与最终报告) 检查镜像、包内快照和缓存差异；只同步已授权的正文目的地，不因修订 GitHub 正文默认获得 GitCode 写权限。
 
 ## 发布更新渠道清单（阶段 E）
 
@@ -135,7 +138,9 @@ python3 -B release_tool.py verify --zip /new/artifact-directory/zcode-token-usag
 
 ## 收尾
 
+- 按 [更新日志交付](references/update-log-delivery.md#6-修订与最终报告) 分来源报告准确版本、正文来源与验收状态，区分「发布正文就绪」「渠道可更新」「插件内展示已验证」。消费者未实现或无真实宿主时明确标记不适用/未验证，不把发布成功称为日志功能已上线。
 - 分别报告打包、升级链验证、提交/tag/推送、Release、渠道、更新端验证、源码 PR 合并及 GitCode 镜像 base 同步状态。未执行就明确写未执行；完整发版须给出已合并 PR 的 URL 与验证结果。
 - GitCode 段推送失败时，先看原因：凭据问题就补配凭据重推（重推范围不得超出本次已授权的动作，授权口径见阶段 D 的 GitCode tag 闸门）；被拒原因是非快进（镜像比 GitHub 多出提交、两边分叉）时不重推、不强推，报告现状请用户处理。都不据此重发或回滚 GitHub Release；要求 GitCode 渠道时报告 `--gitcode-repo` 的发布/上传/清单结果与 `plugin-releases-gitcode` 分支状态。全新 clone 没有双 push 配置，渠道推送只到 GitHub，需要镜像时显式加入推送目标（[双远程同步](../../../docs/maintaining.md#双远程同步)）。
 - 回到项目根清理本次临时 worktree：`git worktree remove .worktrees/release-vX.Y.Z`（以及渠道 worktree）；删前确认发布提交已在远端或 tag 上，有未跟踪文件会被拒绝，先看是什么，不要直接 `--force`。不自动删除 `release/vX.Y.Z` 分支，是否清理由用户决定。
 - 不安装或覆盖用户缓存，不自动重启客户端。发布成功不等于用户已安装。
+

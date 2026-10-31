@@ -2,6 +2,8 @@
 
 目录：[核实范围](#核实范围) · [必写项](#必写项) · [正文模板](#正文模板) · [风格](#风格) · [发布工具合同](#发布工具合同) · [修订已发布说明](#修订已发布说明)
 
+同时执行 [更新日志交付](update-log-delivery.md)：先检查目标提交的日志消费者，再核对版本身份、来源、包合同与各渠道正文。客户端功能未实现时只交付 Release 正文，不把计划写成已上线能力。
+
 ## 核实范围
 
 - 上界是本次目标 commit/tag，下界是上一正式 Release 的 tag：只选已发布、非 draft、非 prerelease 的 `vX.Y.Z`，排除 `screenshots-*` 等素材 tag，并确认它是目标提交的祖先（`git merge-base --is-ancestor PREV TARGET`）。
@@ -32,22 +34,22 @@ gh pr view N --repo OWNER/REPO --json title,body,mergedAt    # 读 PR 正文（�
 
 ## 正文模板
 
-按实际内容增删章节，不保留空标题；通常控制在 5–12 条用户可理解的要点。
+按实际内容增删章节，不保留空标题；通常控制在 5–12 条用户可理解的要点。开头摘要应简洁；升级注意先于长功能列表，便于插件卡片预览。保留完整正文，不假定客户端按固定标题截取。
 
 ```markdown
 ## 本次发布
 
 [版本定位与核实的变化范围；首发说明比较基线。]
 
+### 安装与升级注意
+- [优先说明重启、破坏性变化、配置迁移与兼容要求；不要只藏在长正文末尾。]
+- [ZIP/manifest 用途；区分正式 Release、更新渠道与已安装状态。]
+
 ### 新增
 - [具体能力、入口与默认行为。]
 
 ### 修复与改进
 - [用户遇到的问题及本版变化；合并同一主题的相关提交。]
-
-### 安装与升级注意
-- [ZIP/manifest 用途、重启条件、兼容要求。]
-- [区分正式 Release、更新渠道与已安装状态；尚未执行的动作明确写出。]
 
 ### 验证
 - [实际执行的测试与结果；区分夹具覆盖和平台实机验收。]
@@ -74,5 +76,7 @@ gh pr view N --repo OWNER/REPO --json title,body,mergedAt    # 读 PR 正文（�
 
 1. 保存快照：`gh release view vX.Y.Z --repo OWNER/REPO --json body,isDraft,isPrerelease,tagName,targetCommitish,assets > /tmp/release-vX.Y.Z-before.json`，记下 tag commit 和资产 ID/名称/大小/digest。
 2. 已有实质说明时保留有效内容，只补充或修正本次范围。依据已发布 tag 的提交撰写，不能把 tag 之后的提交写成本版功能。
-3. 执行 `gh release edit vX.Y.Z --repo OWNER/REPO --notes-file /absolute/release-notes.md`。
+3. 编辑前再次回读正文并与快照比对；若他人已修改，保留双方有效内容、重新核实，不直接覆盖。执行 `gh release edit vX.Y.Z --repo OWNER/REPO --notes-file /absolute/release-notes.md`。
 4. 重新读取 Release，比较正文、正式状态、tag commit 和资产元数据。只有正文按预期变化、其余项不变才算成功。
+5. 按 [修订与最终报告](update-log-delivery.md#6-修订与最终报告) 分别检查已授权的镜像正文及客户端刷新能力。GitHub 正文已修改不等于 GitCode、包内日志或已有缓存同时改变；不得通过覆盖发布资产或删除用户缓存掩盖差异。
+
