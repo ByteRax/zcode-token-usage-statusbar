@@ -189,7 +189,7 @@ test("源码契约：设置控件、动作路由与状态种子齐备", () => {
   }
   assert.ok(!source.includes("zu-ac-mode"), "v188：模式下拉已移除（只留百分比）");
   assert.match(source, /\.zu-ac-info\{display:flex;align-items:baseline;justify-content:space-between/);   // v192 两端对齐，「调整」居右
-  assert.doesNotMatch(source, /\.zu-ac-info\{[^}]*margin:\s*[1-9]/);   // v192 行不加自加外距（间距由宿主 space-y-3 节奏承载）
+  assert.doesNotMatch(source, /\.zu-ac-info\{[^}]*margin/);   // v193 行上禁止任何 margin 声明（:where() 零权重的 space-y-3 会被类名权重压掉，间距必须整段交给容器）
   assert.match(source, /enginePatch: \(window\.__zusagePluginState && window\.__zusagePluginState\.enginePatch\) \|\| null/);   // 状态种子
   assert.match(source, /if \(s && s\.enginePatch && typeof s\.enginePatch === "object"\) state\.enginePatch = s\.enginePatch/);   // v172 纪律：__zusagePluginUpdate 拷贝行
   assert.match(source, /syncAutoCompactInputs\(\);\s*$/m);   // syncPanel 对账
