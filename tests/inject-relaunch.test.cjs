@@ -72,3 +72,38 @@ test("relaunch is rejected with ok:false while an update is in progress (v177 co
   assert.deepEqual(calls.deliveries, [{ requestId: "zusage-relaunch-busy", result: { ok: false, error: "update in progress" } }]);
   assert.deepEqual([calls.relaunch, calls.quit], [0, 0]);
 });
+
+test("unknown action gets an ok:false fallback receipt instead of silence (v180, issue #158)", async () => {
+  // 浮层/主进程版本错位窗口：白名单外动作 splice 后必须回执，浮层才能给出「主进程是旧版」指引
+  const { calls, settle } = runPoll([
+    { action: "time-travel", requestId: "zusage-future-1" },
+    { action: "x".repeat(200), requestId: "zusage-future-2" },   // 超长 action 截断回显
+    { action: "no-id-action" },   // 无 requestId：保持静默（无处投递）
+  ]);
+  await settle();
+  assert.deepEqual(calls.deliveries, [
+    { requestId: "zusage-future-1", result: { ok: false, error: "unknown action: time-travel" } },
+    { requestId: "zusage-future-2", result: { ok: false, error: "unknown action: " + "x".repeat(60) } },
+  ]);
+  assert.deepEqual([calls.relaunch, calls.quit], [0, 0]);
+});
+
+test("pushPluginState pushes the relaunchSupported capability flag (v180, issue #158)", () => {
+  // 行为级：真实执行 pushPluginState，捕获推送的 payload 断言标记在列（与 relaunch 分支同文件=缺标记必无该分支）
+  const psA = source.indexOf("function pushPluginState(wc, state) {");
+  const psB = source.indexOf("\ntry {", psA);
+  assert.ok(psA >= 0 && psB > psA, "pushPluginState 切片锚点失配：结构重写后请同步更新本测试");
+  const pushed = [];
+  const wc = { isDestroyed: () => false, executeJavaScript: (js) => { pushed.push(js); return Promise.resolve(); } };
+  vm.runInNewContext(source.slice(psA, psB) + "\npushPluginState(wc, { supported: true, restartRequired: true });", {
+    wc,
+    isMainWindowState: () => true, isLocalHostPage: () => true,
+    readCfgCached: () => ({ answer_rate_line: true, restart_notice: true }),
+    quotaEnabled: () => true, resetBadgeEnabled: () => true,
+    quotaClient: null, enginePatcher: null,
+  });
+  assert.equal(pushed.length, 1);
+  const payload = JSON.parse(pushed[0].slice(pushed[0].indexOf("(") + 1, -1));
+  assert.equal(payload.relaunchSupported, true, "pushPluginState 必须携带 relaunchSupported 能力标记（issue #158 契约）");
+  assert.equal(payload.restartRequired, true, "推送不得丢弃更新器状态字段");
+});

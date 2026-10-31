@@ -60,6 +60,7 @@ function harness(lang = 'zh', rateLine = true) {
   const notices = [];
   const document = {
     body, createElement: tag => new Element(tag),
+    addEventListener() {}, removeEventListener() {},   // v176 模块级委托悬停（真实 DOM 有，桩 no-op）
     querySelectorAll(selector) {
       if (selector === 'blockquote strong') return notices;
       if (selector === 'blockquote p, blockquote, p') return [line, quote];

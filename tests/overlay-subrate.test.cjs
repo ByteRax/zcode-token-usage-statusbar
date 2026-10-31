@@ -106,7 +106,8 @@ function extractSubRateBridge() {
 
 // 多槽位沙箱：每个 sid 一个独立 store（可各自配置快照 sessionId 与 tracker stats），
 // zuTryBindStore 计数以验证节流；TURN_STATS stub 复刻 subscribeStore 同步首调行为。
-function makeSandbox({ stores = {}, stats = null, c2t = 2 } = {}) {
+function makeSandbox({ stores = {}, stats = null, c2t = 2, paneScope = null, acquireStore = null } = {}) {
+  const win = acquireStore ? { __zusageAcquireConversationStore: acquireStore } : {};   // 桥 v2 探针共用
   const state = { bindCalls: 0, unsubscribed: 0, disposed: 0, updates: 0 };
   const sandboxStores = {};
   for (const sid of Object.keys(stores).length ? Object.keys(stores) : []) {
@@ -118,7 +119,9 @@ function makeSandbox({ stores = {}, stats = null, c2t = 2 } = {}) {
     };
   }
   const tracker = { ingest() {}, get: (tid) => (stores[tid] && stores[tid].stats) || stats, dispose() { state.disposed++; } };
+  const diagObj = {};   // v180：SUBRATE_DIAG 提到模块级，切片外声明——沙箱内预接同一对象
   const sandbox = vm.createContext({
+    SUBRATE_DIAG: diagObj,
     TURN_STATS: {
       createTracker: () => tracker,
       subscribeStore: (st, tr, cb) => {   // 复刻真实行为：注册后同步首调一次
@@ -142,14 +145,29 @@ function makeSandbox({ stores = {}, stats = null, c2t = 2 } = {}) {
     DEFAULT_CHARS_PER_TOKEN: 2,
     updateLive: () => { state.updates++; },
     Date: { now: () => BRIDGE_NOW },
+    FATAL: { subRate: diagObj },                 // v179：与 SUBRATE_DIAG 同对象（模拟模块级首挂）
+    readPaneScope: () => paneScope,              // v179：acquire 降级取 pane scope——null 即走 noStore
+    // v180：zuAcquireSubStore 在模块层（切片外）——沙箱内置同 guards 镜像桩
+    zuAcquireSubStore: (sid, scope) => {
+      if (typeof sid !== 'string' || sid.indexOf('sess_subagent_') !== 0) return null;
+      const acquire = win.__zusageAcquireConversationStore;
+      if (typeof acquire !== 'function' || !scope || scope.remoteSessionId) return null;
+      const out = { sessionId: sid };
+      if (scope.workspacePath) out.workspacePath = scope.workspacePath;
+      if (scope.identity) out.workspaceIdentity = scope.identity;
+      if (!out.workspacePath && !out.workspaceIdentity) return null;
+      try { return acquire(out) || null; } catch (e) { return null; }
+    },
+    wantedEl: null, pickedSid: '', instSid: '', pid: '',
+    window: win,   // v179：无 __zusageAcquireConversationStore ⇒ acqFn=0（桥 v1 沙箱）
   });
   const [tick, detachAll, subRate, slotText] = vm.runInContext(extractSubRateBridge(), sandbox);
-  return { tick, detachAll, subRate, slotText, state };
+  return { tick, detachAll, subRate, slotText, state, sandbox };
 }
 
 test('subRateTick: healthy slots feed per-agent rates and the summed view', () => {
   const running = [{ childSessionId: 'sess_a' }, { childSessionId: 'sess_b' }];
-  const { tick, subRate, slotText, state } = makeSandbox({
+  const { tick, subRate, slotText, state, sandbox } = makeSandbox({
     stores: {
       sess_a: { stats: { complete: false, characterRate: 90 } },    // 90/2 = 45
       sess_b: { stats: { complete: false, characterRate: 30 } },    // 30/2 = 15
@@ -165,6 +183,11 @@ test('subRateTick: healthy slots feed per-agent rates and the summed view', () =
   assert.equal(slotText('sess_a').includes('45.0'), true);
   tick(running);   // 同集合：幂等不重绑
   assert.equal(state.bindCalls, 2);
+  // v179 定位诊断：FATAL.subRate 原地记录槽位分布（acqFn=0 为桥 v1 沙箱）
+  assert.deepEqual({ ...sandbox.FATAL.subRate, t: 0 },
+    { want: 2, bound: 2, rate: 2, think: 0, calib: 0, noStore: 0, acqFn: 0, t: 0 });
+  assert.equal(subRate.slots.sess_a.st, 'rate');
+  assert.equal(subRate.slots.sess_b.st, 'rate');
 });
 
 test('subRateTick: converging the running set detaches finished agents and recomputes the sum', () => {
@@ -208,7 +231,7 @@ test('subRateTick: first-callback mismatch resets the slot with 2s backoff, not 
 });
 
 test('subRateTick: unbindable topic keeps a throttled slot without binding', () => {
-  const { tick, subRate, state } = makeSandbox({ stores: { sess_a: { stats: { complete: false, characterRate: 90 } } } });
+  const { tick, subRate, state, sandbox } = makeSandbox({ stores: { sess_a: { stats: { complete: false, characterRate: 90 } } } });
   tick([{ childSessionId: 'sess_a' }, { childSessionId: 'missing' }]);   // missing 无 store
   assert.equal(state.bindCalls, 2);   // 两个都尝试过一次
   assert.ok(!subRate.slots.missing.handle);
@@ -217,6 +240,51 @@ test('subRateTick: unbindable topic keeps a throttled slot without binding', () 
   assert.equal(state.bindCalls, 2, '节流窗口内不再重试枚举');
   assert.equal(subRate.sum.rate, 45);
   assert.equal(subRate.sum.count, 1);
+  // v180 review：诊断按 handle 判绑定——未绑定槽位入 noStore 桶，acqFn=0（桥 v1 沙箱）
+  assert.deepEqual({ ...sandbox.FATAL.subRate, t: 0 },
+    { want: 2, bound: 1, rate: 1, think: 0, calib: 0, noStore: 1, acqFn: 0, t: 0 });
+});
+
+test('subRateTick: acquire fallback binds unregistered background subagents (v179)', () => {
+  let acquireCalls = 0, offs = 0;
+  const seen = [];
+  const acquired = {
+    getState: () => ({ snapshot: { sessionId: 'sess_subagent_bg' } }),
+    subscribe: () => () => {},
+    off: () => { offs++; },
+  };
+  const { tick, subRate, state, sandbox } = makeSandbox({
+    // sess_subagent_bg 不在 stores ⇒ zuTryBindStore 必然 null（模拟注册表无现成 topic）
+    stats: { complete: false, characterRate: 80 },   // tracker.get 兜底：80/2 = 40
+    paneScope: { sid: 'sid_main', identity: '', workspacePath: '/w', remoteSessionId: '' },
+    acquireStore: (scope) => {
+      acquireCalls++;
+      seen.push({ sessionId: scope.sessionId, workspacePath: scope.workspacePath,
+                  workspaceIdentity: scope.workspaceIdentity });
+      return acquired;
+    },
+  });
+  tick([{ childSessionId: 'sess_subagent_bg' }]);
+  assert.ok(acquireCalls >= 1, 'existing 缺席时尝试 acquire');
+  assert.deepEqual(seen[0], { sessionId: 'sess_subagent_bg', workspacePath: '/w', workspaceIdentity: undefined });   // 空 identity 不进 scope
+  assert.equal(subRate.slots['sess_subagent_bg'].st, 'rate', 'acquire 到的 store 出速率');
+  assert.equal(subRate.slots['sess_subagent_bg'].rate, 40);
+  assert.equal(sandbox.FATAL.subRate.acqFn, 1);
+  assert.equal(sandbox.FATAL.subRate.noStore, 0);
+  tick(null);   // 槽位收敛 → 解绑 → subSlotReset → store.off 即租约归还
+  assert.ok(offs >= 1, 'acquire 包装 store 的 off 被调（租约归还）');
+  assert.equal(subRate.slots['sess_subagent_bg'], undefined, '槽位彻底移除');
+});
+
+test('subRateTick: remote scope never attempts acquire', () => {
+  let acquireCalls = 0;
+  const { tick, subRate } = makeSandbox({
+    paneScope: { sid: 'sid_main', identity: 'ident', workspacePath: '/w', remoteSessionId: 'r1' },
+    acquireStore: () => { acquireCalls++; return null; },
+  });
+  tick([{ childSessionId: 'sess_subagent_r' }]);
+  assert.equal(acquireCalls, 0, '远端会话的子代理不尝试本地 acquire');
+  assert.equal(subRate.slots['sess_subagent_r'].st, 'noStore');
 });
 
 
@@ -279,3 +347,4 @@ test('zuSkillName extraction: JSON field, regex fallback, control-char rejection
   assert.equal(fn(''), '');
   assert.equal(fn('{"args":{}}'), '');
 });
+

@@ -16,9 +16,15 @@ import patch_install as asar
 
 # CLI 输出白名单根：脚本所在目录（仓库根或插件包根——两处都是合法的源码工作区）
 WORKTREE = Path(__file__).resolve().parent
-MARKER = b"/* zusage-existing-conversation-store:v1"
-BEGIN = b"/* zusage-existing-conversation-store:v1 begin */"
-END = b"/* zusage-existing-conversation-store:v1 end */"
+BRIDGE_ID = b"/* zusage-existing-conversation-store"
+BRIDGE_GEN = b"v2"   # v2：+acquireSubagentConversationStore（后台子代理运行期估算）
+# MARKER 取各代公共前缀：v1 补丁的升级剥离（_original_module 按标记对剥）与
+# ensure_deployed 的“是否已带桥”判定都只认前缀，不锁死代数。
+MARKER = BRIDGE_ID + b":v"
+BEGIN = BRIDGE_ID + b":" + BRIDGE_GEN + b" begin */"
+END = BRIDGE_ID + b":" + BRIDGE_GEN + b" end */"
+_BRIDGE_BEGIN_RE = re.compile(re.escape(BRIDGE_ID) + rb":v\d+ begin \*/")
+_BRIDGE_END_RE = re.compile(re.escape(BRIDGE_ID) + rb":v\d+ end \*/")
 # 多版本指纹表（新→旧）：客户端官方升级会整体换渲染器资产与混淆名，这里按
 # (版本, 资产路径, 原始 sha256, 混淆名三元组) 逐版本钉死，优先于自动推导。
 # 表内版本的资产哈希漂移仍拒绝（fail-closed）；表外版本走 derive_target 的
@@ -73,8 +79,8 @@ AUTO_PANE_ATTRS = re.compile(
     rb'"data-zusage-scope-version":"1","data-zusage-workspace-path":[A-Za-z_$][\w$]*\?\?``,'
     rb'"data-zusage-workspace-identity":[A-Za-z_$][\w$]*\?\?``,'
     rb'"data-zusage-remote-session-id":[A-Za-z_$][\w$]*\?\?``,"data-zusage-pane-id":[A-Za-z_$][\w$]*,')
-# 桥代码模板：标识符占位符按目标版本的混淆名实例化（__ZU_*__ 不与 JS 语法冲突）。
-BRIDGE_TEMPLATE = rb'''
+# v1 遗留模板（升级剥离时校验桥块必须属于已知代，防桥块内容篡改）
+BRIDGE_TEMPLATE_V1 = rb'''
 /* zusage-existing-conversation-store:v1 begin */
 export function getExistingConversationStore(scope) {
   const fields = ["sessionId", "workspacePath", "workspaceIdentity", "remoteSessionId"];
@@ -191,9 +197,180 @@ if (typeof globalThis === "object" && globalThis !== null) {
 /* zusage-existing-conversation-store:v1 end */
 '''
 
-def bridge_code(target):
+
+# 桥代码模板：标识符占位符按目标版本的混淆名实例化（__ZU_*__ 不与 JS 语法冲突）。
+BRIDGE_TEMPLATE = rb'''
+/* zusage-existing-conversation-store:v2 begin */
+// Only consumer reads allocate copies. Never freeze a host-owned object.
+function zuSnapshot(value, seen = new WeakMap()) {
+  if (value === null || typeof value !== "object") {
+    if (typeof value === "function" || typeof value === "symbol")
+      throw new TypeError("Unsupported snapshot value");
+    return value;
+  }
+  if (seen.has(value)) return seen.get(value);
+  const proto = Object.getPrototypeOf(value);
+  if (!Array.isArray(value) && proto !== Object.prototype && proto !== null)
+    throw new TypeError("Unsupported snapshot object");
+  const result = Array.isArray(value) ? [] : Object.create(null);
+  seen.set(value, result);
+  for (const key of Reflect.ownKeys(value)) {
+    if (Array.isArray(value) && key === "length") continue;
+    const d = Object.getOwnPropertyDescriptor(value, key);
+    if (!("value" in d)) throw new TypeError("Unsupported snapshot accessor");
+    Object.defineProperty(result, key, {
+      value: zuSnapshot(d.value, seen), enumerable: d.enumerable,
+      writable: false, configurable: false
+    });
+  }
+  if (Array.isArray(value)) result.length = value.length;
+  return Object.freeze(result);
+}
+/* Shared store wrapper (existing + acquire): a false current() self-stops;
+ * release returns the acquire lease (null for existing). off unsubscribes
+ * first, then releases; re-acquire inside the host keep-warm window is a
+ * warm refcount reuse. */
+function zuWrapStore(store, current, release) {
+  let stopped = false;
+  const cancellations = new Set();
+  const off = () => {
+    if (stopped) return;
+    stopped = true;
+    for (const cancel of [...cancellations]) cancel();
+    try { release?.(); } catch (_) {}
+  };
+  const active = () => {
+    if (stopped) return false;
+    if (current()) return true;
+    off();
+    return false;
+  };
+  return Object.freeze({
+    getState: () => active() ? zuSnapshot(store.getState()) : null,
+    subscribe: callback => {
+      if (typeof callback !== "function") throw new TypeError("Invalid callback");
+      if (!active()) return () => {};
+      let cancelled = false;
+      const cancel = () => {
+        if (cancelled) return;
+        cancelled = true;
+        cancellations.delete(cancel);
+        try { unsubscribe(); } catch (_) {}
+      };
+      const unsubscribe = store.subscribe(() => {
+        if (cancelled || !active()) return;
+        try {
+          const result = callback();
+          if (result && typeof result.then === "function")
+            Promise.resolve(result).catch(() => {});
+        } catch (_) {}
+      });
+      cancellations.add(cancel);
+      return cancel;
+    },
+    off
+  });
+}
+export function getExistingConversationStore(scope) {
+  const fields = ["sessionId", "workspacePath", "workspaceIdentity", "remoteSessionId"];
+  if (!scope || typeof scope !== "object" || Array.isArray(scope))
+    throw new TypeError("Invalid conversation scope");
+  const descriptors = Object.getOwnPropertyDescriptors(scope);
+  if (Reflect.ownKeys(descriptors).some(key => !fields.includes(key)))
+    throw new TypeError("Unknown conversation scope field");
+  const checked = Object.create(null);
+  for (const key of fields) {
+    const d = descriptors[key];
+    if (!d) continue;
+    if (!("value" in d) || typeof d.value !== "string" ||
+        !d.value.trim() || /[\x00-\x1f\x7f]/.test(d.value))
+      throw new TypeError("Invalid conversation scope field");
+    if ((key === "sessionId" || key === "remoteSessionId") && /\s/.test(d.value))
+      throw new TypeError("Invalid conversation identifier");
+    if (key === "remoteSessionId" && d.value === "__base__")
+      throw new TypeError("Reserved remote identifier");
+    checked[key] = d.value;
+  }
+  if (!checked.sessionId || !checked.workspacePath)
+    throw new TypeError("Missing conversation scope field");
+  const key = __ZU_KEY_FN__(checked), topic = __ZU_TOPIC_FN__(checked.sessionId);
+  const entry = __ZU_REGISTRY__.get(key), layer = entry?.layer;
+  const session = layer?.entries.get(topic), store = session?.store;
+  const current = () => !!store && __ZU_REGISTRY__.get(key) === entry && !entry.stale &&
+    !layer.disposed && layer.entries.get(topic) === session &&
+    session.store === store && !store.closed;
+  if (!current()) return null;
+  return zuWrapStore(store, current, null);
+}
+/* v2: restricted acquire for background running subagents (same
+ * SessionDataLayer.acquire path as the drilldown output preview; the
+ * directory pane never subscribes, so background subagents had no ready
+ * store - the root cause of missing live estimates). Only sess_subagent_
+ * prefix + local __base__ key; lease refcount is host-owned, wrapper off
+ * releases. All misses/failures return null (never throw) so the caller
+ * retries in 2s; never spins up a runtime for arbitrary sessions. */
+export function acquireSubagentConversationStore(scope) {
+  const fields = ["sessionId", "workspacePath", "workspaceIdentity"];
+  if (!scope || typeof scope !== "object" || Array.isArray(scope))
+    throw new TypeError("Invalid conversation scope");
+  const descriptors = Object.getOwnPropertyDescriptors(scope);
+  if (Reflect.ownKeys(descriptors).some(key => !fields.includes(key)))
+    throw new TypeError("Unknown conversation scope field");
+  const checked = Object.create(null);
+  for (const key of fields) {
+    const d = descriptors[key];
+    if (!d) continue;
+    if (!("value" in d) || typeof d.value !== "string" ||
+        !d.value.trim() || /[\x00-\x1f\x7f]/.test(d.value))
+      throw new TypeError("Invalid conversation scope field");
+    if (key === "sessionId" && /\s/.test(d.value))
+      throw new TypeError("Invalid conversation scope field");
+    checked[key] = d.value;
+  }
+  if (!checked.sessionId || !checked.sessionId.startsWith("sess_subagent_")) return null;
+  const key = __ZU_KEY_FN__(checked);
+  if (typeof key !== "string" || !key.startsWith("__base__ ")) return null;
+  const entry = __ZU_REGISTRY__.get(key), layer = entry?.layer;
+  if (!entry || entry.stale || !layer || layer.disposed ||
+      typeof layer.acquire !== "function") return null;
+  const topic = __ZU_TOPIC_FN__(checked.sessionId);
+  let lease = null;
+  try { lease = layer.acquire(checked.sessionId); } catch (_) { return null; }
+  const store = lease && lease.store;
+  if (!store || store.closed) {
+    try { lease?.release(); } catch (_) {}
+    return null;
+  }
+  const current = () => !!store && !store.closed && __ZU_REGISTRY__.get(key) === entry &&
+    !entry.stale && !layer.disposed && layer.entries.get(topic)?.store === store;
+  return zuWrapStore(store, current, () => lease.release());
+}
+if (typeof globalThis === "object" && globalThis !== null) {
+  globalThis.__zusageGetExistingConversationStore = getExistingConversationStore;
+  globalThis.__zusageAcquireConversationStore = acquireSubagentConversationStore;
+  // Read-only acceptance diagnostics: enumerate live registry keys/topics for verification.
+  globalThis.__zusageConversationDiagnostics = function () {
+    const keys = [], sessions = [];
+    for (const [key, entry] of __ZU_REGISTRY__) {
+      keys.push(key);
+      const layer = entry && entry.layer;
+      if (!layer || layer.disposed || entry.stale) continue;
+      for (const [topic, session] of layer.entries) {
+        const store = session && session.store;
+        const state = store && !store.closed && store.getState();
+        sessions.push({ key, topic, status: state ? (state.status || "unknown") : "unavailable",
+          seq: state && state.snapshot ? state.snapshot.seq : null });
+      }
+    }
+    return { keys, sessions };
+  };
+}
+/* zusage-existing-conversation-store:v2 end */
+'''
+
+def bridge_code(target, template=None):
     names = target["names"]
-    return (BRIDGE_TEMPLATE
+    return ((template or BRIDGE_TEMPLATE)
             .replace(b"__ZU_KEY_FN__", names["key"].encode())
             .replace(b"__ZU_TOPIC_FN__", names["topic"].encode())
             .replace(b"__ZU_REGISTRY__", names["registry"].encode()))
@@ -212,16 +389,33 @@ def pane_attributes(target):
 
 
 def _original_module(data, target):
-    """仅识别精确旧桥/新桥；第三方尾缀只供 remove 保留。"""
-    prefix, suffix = data, b""
-    has_bridge = MARKER in data
-    if has_bridge:
-        bridge = bridge_code(target)
-        if data.count(MARKER) != 2 or data.count(bridge) != 1:
+    """按标记对剥离任意代桥（v1 补丁由此自动升级到当前模板），剥后前缀以
+    SHA256 指纹校验原样；第三方尾缀只供 remove 保留。桥块两侧换行随模板写入
+    （transform 恒以 "\\n"+BEGIN 前置、END+"\\n" 收尾），剥离时一并吃掉才能
+    字节级复原。"""
+    m_begin, m_end = _BRIDGE_BEGIN_RE.search(data), _BRIDGE_END_RE.search(data)
+    if m_begin or m_end:
+        if (not m_begin or not m_end or m_end.start() < m_begin.start() or
+                len(_BRIDGE_BEGIN_RE.findall(data)) != 1 or
+                len(_BRIDGE_END_RE.findall(data)) != 1 or
+                data[m_begin.start() - 1:m_begin.start()] != b"\n" or
+                data[m_end.end():m_end.end() + 1] not in (b"\n", b"")):
             raise BridgeError("Bridge marker/content tampered")
-        prefix, suffix = data.split(bridge)
-    elif b"getExistingConversationStore" in data:
-        raise BridgeError("Export name collision")
+        # 桥块内容必须属于已知代（当前模板或 v1 遗留）：剥前缀只保原样，桥块内
+        # 容的篡改靠这里拦截（与旧整块匹配同强度）。模板以 \n 包裹桥块（写入时
+        # 与前后文分隔），比对时按同形还原。
+        block = data[m_begin.start():m_end.end()]
+        wrapped = b"\n" + block + b"\n"
+        if wrapped not in (bridge_code(target), bridge_code(target, BRIDGE_TEMPLATE_V1)):
+            raise BridgeError("Bridge marker/content tampered")
+        has_bridge = True
+        prefix = data[:m_begin.start() - 1]
+        suffix = data[m_end.end() + 1:] if data[m_end.end():m_end.end() + 1] else b""
+    else:
+        has_bridge = False
+        prefix, suffix = data, b""
+        if b"getExistingConversationStore" in data or b"acquireSubagentConversationStore" in data:
+            raise BridgeError("Export name collision")
     anchor = target["pane"]["anchor"]
     patched_anchor = anchor + pane_attributes(target)
     if prefix.count(anchor) != 1:

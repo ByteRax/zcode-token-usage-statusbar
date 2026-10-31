@@ -705,6 +705,48 @@ VM_ASSERTIONS = r'''
  const live = diag.sessions.find(item => item.topic === hee(scope.sessionId));
  assert(live && live.status === 'live' && live.seq === 1);
  assert(diag.keys.includes(Ode(identityScope)));
+ /* v2 acquire：仅 sess_subagent_ 前缀 + 本地键；非子代理 id 与白名单外字段拒绝；
+  * 主 layer 的 acquire 被 Forbidden 替身占据时按失败返回 null 不抛（此时该键
+  * 仍是主 entry）。成功路径另装 childLayer：lease off 归还、包装器停机；
+  * childLayer.entries 兼带主会话条目，保持其后 diag 断言可查。 */
+ assert.equal(typeof globalThis.__zusageAcquireConversationStore,'function');
+ assert.equal(acquireSubagentConversationStore({sessionId:'session',workspacePath:'/workspace with spaces'}),null);
+ assert.equal(acquireSubagentConversationStore({sessionId:'sess_subagent_x',workspacePath:'/workspace with spaces'}),null);
+ assert.throws(() => acquireSubagentConversationStore({sessionId:'sess_subagent_x',workspacePath:'/workspace with spaces',remoteSessionId:'remote'}), /scope/);
+ const leaseStore = new FixtureStore();
+ leaseStore.state = {snapshot:{sessionId:'sess_subagent_c',seq:1,rows:[]},status:'live'};
+ leaseStore.listeners = new Set(); leaseStore.liveDeltaListeners = new Set();
+ leaseStore.modelTransitionListeners = new Set(); leaseStore.closed = false;
+ let released = 0;
+ const childEntries = new Map([[hee(scope.sessionId),session]]);
+ const childLayer = {entries:childEntries,disposed:false,
+   acquire(sid){const le={store:leaseStore,refCount:1,keepWarmTimer:null};childEntries.set(hee(sid),le);le.refCount++;return {sessionId:sid,store:leaseStore,release(){released++;le.refCount--;}};}};
+ const childScope = {sessionId:'sess_subagent_c',workspacePath:'/workspace with spaces'};
+ const childEntry = {layer:childLayer,stale:false};
+ pf.set(Ode(childScope),childEntry);
+ const childHandle = acquireSubagentConversationStore(childScope);
+ assert(childHandle);
+ assert.equal(childHandle.getState().snapshot.sessionId,'sess_subagent_c');
+ const childOff = childHandle.subscribe(() => {});
+ childOff(); childHandle.off();
+ assert.equal(released,1);
+ assert.equal(childHandle.getState(),null);
+ /* v180 review：fail-closed 变体——stale/disposed/acquire 非函数/store 已闭全走 null */
+ childEntry.stale = true;
+ assert.equal(acquireSubagentConversationStore(childScope),null);
+ childEntry.stale = false;
+ childLayer.disposed = true;
+ assert.equal(acquireSubagentConversationStore(childScope),null);
+ childLayer.disposed = false;
+ const savedAcquire = childLayer.acquire;
+ childLayer.acquire = null;
+ assert.equal(acquireSubagentConversationStore(childScope),null);
+ childLayer.acquire = savedAcquire;
+ leaseStore.closed = true;
+ assert.equal(acquireSubagentConversationStore(childScope),null);
+ leaseStore.closed = false;
+ const diag2 = globalThis.__zusageConversationDiagnostics();
+ assert(diag2.sessions.find(item => item.topic === hee(scope.sessionId)).status === 'live');
  await new Promise(resolve => setTimeout(resolve,0));
  console.log('VM contract passed');
 })().catch(error => { throw error; });
