@@ -70,13 +70,13 @@ Context usage doesn't take a slot on the bar — look at the **context button** 
 
 | What you're wondering | Where to find it |
 |---|---|
-| How fast is the model going? | The **t/s** on the far left — an estimate while generating when the renderer bridge is available, after completion, a session average on `main` or the latest valid speed in v1.5.7 |
+| How fast is the model going? | The **t/s** on the far left — an estimate while generating when the renderer bridge is available; after completion, a session average on `main` or the latest valid speed in v1.5.7 |
 | How long did I wait after hitting enter? | The ⏱ number in **This turn** (that's the TTFT / time to first token) |
 | How many tokens did this turn / this conversation / today use? | The **This turn**, **Session total** and **Today** items |
 | How much has this project used across all of its sessions? | The **Project total** item (subagents incl., grouped by project directory) |
 | Is this conversation going to run out of room? | The **context button** — it changes colour as it fills up, with one-click compact inside |
 | How much did the cache save me? How much did the "thinking" cost? | Hover **This turn** for input, output, cache-read and thinking detail |
-| What did the model's sub-tasks cost? How fast are they running? | The **Sub-agents** item — running counts and estimated speed are shown when available; the inline speed indicator is development-only |
+| What did the model's sub-tasks cost? How fast are they running? | The **Sub-agents** item — running counts and an estimated speed while agents are running (already in v1.5.7, embedded in the status word; the development branch restyles it as a separate rate chip you can toggle off, backfilled with the real value once it finishes) |
 | How much plan quota / balance is left? | The **quota chip** left of the context button |
 | Did a tool call fail? | The **Tools** item — errors light up red |
 | Looking through history | Type `/usage` in the chat, run `python zusage.py` in a terminal, or call the `token_usage` MCP tool |
