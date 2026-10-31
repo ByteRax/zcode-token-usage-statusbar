@@ -30,7 +30,7 @@ const ZUSAGE = path.join(HERE, "zusage.py");
 const TOKEN_RATE = path.join(HERE, "token_rate.py");
 const LOG = (...a) => console.error("[zusage]", ...a);
 const loadedHashes = { _loadedAt: Date.now() - process.uptime() * 1000 };
-for (const name of ["inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs", "quota-client.cjs", "model-puller.cjs", "overlay.js", "zusage.py"]) {
+for (const name of ["inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs", "quota-client.cjs", "model-puller.cjs", "engine-patch.cjs", "overlay.js", "zusage.py"]) {
   try { loadedHashes[name] = createHash("sha256").update(fs.readFileSync(path.join(HERE, name))).digest("hex"); }
   catch (e) { LOG("startup fingerprint unavailable:", name, e.message); }
 }
@@ -372,6 +372,7 @@ function handlePayload(payload) {
                 activeMap: Array.from(activeSid.entries()).slice(0, 12),
                 wants: lastWants,
               };
+              obj.enginePatch = enginePatcher ? enginePatcher.status() : null;
               fs.writeFileSync(file, JSON.stringify(obj));
             } catch (e2) {
               try { fs.writeFileSync(file, s); } catch (e) { }
@@ -743,15 +744,16 @@ watchDb();
 maybeSpawn();   // 启动先拉一次
 
 let pluginUpdater = null;
+let enginePatcher = null;   // v179：声明前置——updater createUpdater 同步 notify→pushPluginState 会读它（TDZ）
 let pluginRequestBusy = false;
 let lastGoodPayload = null;   // 额度结算后无需重查库即可向各窗口补推（payload 已含 quota）
 let quotaClient = null;
 function pushPluginState(wc, state) {
   if (!isMainWindowState(wc) || wc.isDestroyed() || !isLocalHostPage(wc)) return;
-  /* rateLine / quotaEnabled / restartNotice 随插件状态一起推送：⚙ 面板开关的真值都来自 config.json */
+  /* rateLine / quotaEnabled / restartNotice / enginePatch 随插件状态一起推送：⚙ 面板开关的真值都来自 config.json */
   const payload = { ...state, rateLine: readCfgCached().answer_rate_line !== false, quotaEnabled: quotaEnabled(),
     resetBadgeEnabled: resetBadgeEnabled(), restartNotice: readCfgCached().restart_notice !== false,
-    quotaSources: quotaClient ? quotaClient.sourcesConfig() : [], feedbackVersion: 1 };
+    quotaSources: quotaClient ? quotaClient.sourcesConfig() : [], enginePatch: enginePatcher ? enginePatcher.status() : null, feedbackVersion: 1 };
   wc.executeJavaScript(`window.__zusagePluginUpdate && window.__zusagePluginUpdate(${JSON.stringify(payload)})`, true).catch(() => { });
 }
 try {
@@ -766,6 +768,24 @@ try {
   LOG("plugin updater unavailable:", e.message);
 }
 acknowledgeRestart();
+
+/* ---------- v179 自动压缩阈值引擎补丁：默认关。开启后启动时按 ENGINE_TARGETS 的
+ * SHA256 白名单给 <resources>/glm/zcode.cjs 打阈值改道补丁（fail-open/fail-closed
+ * 语义详见 engine-patch.cjs 头注）。补丁冷生效（引擎子进程下次 spawn 起用，已运行
+ * 会话保持旧阈值）；阈值数值走 autocompact.json 热生效（引擎每轮决策读该文件）。
+ * 关闭开关=还原引擎字节。加载失败只少该功能，不拖垮主链。 */
+try {
+  const { createEnginePatcher } = require("./engine-patch.cjs");
+  enginePatcher = createEnginePatcher({
+    runtime: HERE,
+    resourcesPath: process.resourcesPath,
+    isEnabled: () => readCfgCached().auto_compact_patch === true,
+    log: (...a) => LOG("[engine-patch]", ...a),
+  });
+  enginePatcher.syncStartup();
+} catch (e) {
+  LOG("engine patcher unavailable:", e.message);
+}
 
 /* ---------- v96 额度客户端（BigModel/Z.ai 个人编码套餐）：解密宿主 OAuth 凭据 →
  * monitor 端点 → 归一化 → 快照 quota 字段。独立模块，加载失败只少额度不拖垮主链
@@ -1006,6 +1026,34 @@ async function setResetBadgeEnabled(enabled, wc, requestId) {
   } catch (e) {
     LOG("reset_badge_enabled toggle failed:", e.message);
     deliverPluginRequest(wc, requestId, { ok: false, error: e.message });
+  }
+}
+/* v179 自动压缩阈值开关（⚙ 面板）：写 config.json 的 auto_compact_patch（缺省关），
+ * 并即时打补丁/还原引擎——引擎子进程下次 spawn 起用，无需改 asar。 */
+async function setAutoCompactPatch(enabled, wc, requestId) {
+  try {
+    const { updateConfig } = require("./plugin-updater.cjs");
+    await updateConfig(HERE, { auto_compact_patch: enabled }, readCfgCached().python_path || (process.platform === "win32" ? "python" : "python3"));
+    cfgCache = null;
+    if (enginePatcher) { if (enabled) enginePatcher.ensure(); else enginePatcher.restore(); }
+    broadcastPluginState();
+    deliverPluginRequest(wc, requestId, { ok: true, enginePatch: enginePatcher ? enginePatcher.status() : null });
+  } catch (e) {
+    LOG("auto_compact_patch toggle failed:", e.message);
+    deliverPluginRequest(wc, requestId, { ok: false, error: e.message });
+  }
+}
+/* v179 阈值数值（⚙ 面板）：白名单归一后写运行目录 autocompact.json。引擎 hook
+ * 每轮决策读该文件——写完下一轮即生效，无需重启。 */
+function handleAutoCompactConfig(req, wc) {
+  const respond = (result) => deliverPluginRequest(wc, req.requestId, result);
+  if (!enginePatcher) { respond({ ok: false, error: "engine patcher unavailable; fully restart ZCode to load it" }); return; }
+  try {
+    const config = enginePatcher.writeConfig(String(req.mode || ""), req.value);
+    broadcastPluginState();
+    respond({ ok: true, config });
+  } catch (e) {
+    respond({ ok: false, error: e.message });
   }
 }
 /* 确定性历史行的数据库富文本（v75）：渲染端只从 turn 容器拿到 DOM turn id，
@@ -1348,6 +1396,10 @@ async function pollPluginRequests() {
           setQuotaEnabled(req.enabled, wc, req.requestId);
         } else if (req && req.action === "quota-reset" && typeof req.enabled === "boolean") {
           setResetBadgeEnabled(req.enabled, wc, req.requestId);
+        } else if (req && req.action === "autocompact-patch" && typeof req.enabled === "boolean") {
+          setAutoCompactPatch(req.enabled, wc, req.requestId);
+        } else if (req && req.action === "autocompact-config") {
+          handleAutoCompactConfig(req, wc);
         } else if (req && (req.action === "quota-src" || req.action === "quota-src-key" || req.action === "quota-src-refresh")) {
           handleQuotaSourceRequest(req, wc);
         } else if (req && (req.action === "model-pull-list" || req.action === "model-pull-fetch" || req.action === "model-pull-apply")) {

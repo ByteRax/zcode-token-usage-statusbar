@@ -508,10 +508,43 @@ test('英文语言：按钮与弹框文案走 en 分支', () => {
 });
 
 test('源码契约：冷启动清扫与新类名/观察器接线齐备', () => {
-  assert.match(source, /\.zu-compact-btn,\.zu-compact-dlg/);   // 冷启动清扫选择器
+  assert.match(source, /\.zu-compact-btn,\.zu-ac-info,\.zu-compact-dlg/);   // 冷启动清扫选择器（v179 阈值行同 swept）
   assert.match(source, /hcObserver\.observe\(document\.body/);
   assert.match(source, /syncCompactBtn\(\);\s*\/\/ v105/);   // heavy 对账点
   assert.match(source, /onSendCompressionCommand/);
   assert.match(source, /__zcodeLexicalInputE2E/);
   assert.match(source, /data-e2e-lexical-bridge/);
+});
+
+test('v179 阈值行：补丁生效时钉在按钮之后，推送变化原地改字，未生效即摘除', () => {
+  const h = harness();
+  h.buildComposer('workspace-main', 'sid_main');
+  const ui = h.buildHoverCard({ withBorderT: true });
+  h.window.__zusagePluginState.enginePatch = { enabled: true, state: 'applied', build: '3.17.1', config: { enabled: true, thresholdPercent: 70 } };
+  h.inject(); h.boot(); h.tick();
+  const btn = h.compactBtnOf(ui.body);
+  assert.ok(btn);
+  const info = ui.body.children.find(e => e.classList.contains('zu-ac-info'));
+  assert.ok(info, 'info row mounted');
+  assert.equal(ui.body.children.indexOf(info), ui.body.children.indexOf(btn) + 1, '钉在压缩按钮之后');
+  assert.match(info.textContent, /自动压缩 ~63%/);          // (200000−21000)×70% = 125,300 → 62.65% ≈ 63%
+  assert.match(info.textContent, /125,300 token/);
+  h.tick();
+  assert.equal(ui.body.children.find(e => e.classList.contains('zu-ac-info')), info, '幂等：同一颗行不被重建');
+  h.window.__zusagePluginUpdate({ enginePatch: { enabled: true, state: 'applied', build: '3.17.1', config: { enabled: false } } });
+  h.tick();
+  assert.equal(ui.body.children.find(e => e.classList.contains('zu-ac-info')), info, '原地更新不重建');
+  assert.match(info.textContent, /已禁用/);
+  h.window.__zusagePluginUpdate({ enginePatch: { enabled: true, state: 'unsupported_build', build: null } });
+  h.tick();
+  assert.ok(!ui.body.children.find(e => e.classList.contains('zu-ac-info')), '补丁未生效即摘除');
+});
+
+test('v179 阈值行：enginePatch 缺失（旧主进程）不渲染', () => {
+  const h = harness();
+  h.buildComposer('workspace-main', 'sid_main');
+  const ui = h.buildHoverCard({ withBorderT: true });
+  h.inject(); h.boot(); h.tick();
+  assert.ok(h.compactBtnOf(ui.body));
+  assert.ok(!ui.body.children.find(e => e.classList.contains('zu-ac-info')));
 });
