@@ -73,6 +73,33 @@ for (const lang of ['zh', 'en']) {
       null, fresh);
     assert.equal(view.text, 'Read 10.0s');
   });
+
+  // v187 补回 v181 工具组状态词：运行行落在 ≥2 连续同类组尾时状态词跟随组标签
+  // （数据由 turn-stats runningGroupOf 提供），计时锚定组首行 startedAt。
+  test(`${lang}: running group tail overrides the per-tool verb, timing anchored to the group head`, () => {
+    const view = speedView({ complete: false, runningTool: { name: 'Read', startedAt: 10000 },
+      runningGroup: { kind: 'explore', startedAt: 8000 }, characterRate: null, observedMs: 0 });
+    assert.equal(view.text, lang === 'en' ? 'Explore·executing 3.0s' : '查阅·执行中 3.0s');
+    assert.equal(view.phase, 'tool');
+    assert.equal(view.cls, 'dim');
+  });
+
+  test(`${lang}: terminal group label and per-group startedAt anchoring`, () => {
+    const view = speedView({ complete: false, runningTool: { name: 'Bash', startedAt: 10900 },
+      runningGroup: { kind: 'terminal', startedAt: 10000 }, characterRate: null, observedMs: 0 });
+    assert.equal(view.text, lang === 'en' ? 'Terminal·executing 1.0s' : '终端·执行中 1.0s');
+  });
+
+  test(`${lang}: group without startedAt falls back to the running row's startedAt`, () => {
+    const view = speedView({ complete: false, runningTool: { name: 'Read', startedAt: 10000 },
+      runningGroup: { kind: 'explore', startedAt: null }, characterRate: null, observedMs: 0 });
+    assert.equal(view.text, lang === 'en' ? 'Explore·executing 1.0s' : '查阅·执行中 1.0s');
+  });
+
+  test(`${lang}: absent runningGroup keeps the legacy per-tool verb (old tracker compat)`, () => {
+    const view = speedView({ complete: false, runningTool: { name: 'Read', startedAt: 10000 }, characterRate: null, observedMs: 0 });
+    assert.equal(view.text, 'Read 1.0s');
+  });
 }
 
 // 工具动词契约：「正在运行子智能体」压成「子代理运行中」（v97），桌面与 Web 同文案。

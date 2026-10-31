@@ -118,6 +118,7 @@
         act && act.kind === 'reasoning' ? 'thinking' :
         runningTool ? 'tool' :
         act && act.kind === 'assistantText' ? 'writing' : null;
+      const runningGroup = runningGroupOf(turn, act, complete);
       return {
         sessionId: turn.sessionId, turnId, state: header.state, complete,
         outputTokens, modelMs, durationMs,
@@ -127,6 +128,7 @@
         toolMs: Number.isFinite(header.toolDurationMs) && header.toolDurationMs >= 0 ? header.toolDurationMs : null,
         characterRate, observedMs: Math.max(0, sampledAt - turn.observedAt),
         runningTool,   // null=没有进行中的工具（流式正文阶段/全部完成）；name 可能为空串（fallback 显示"执行中"）
+        runningGroup,   // v187 补回 v181：null=运行行不在 ≥2 连续同类组尾（含子代理/完成态）；{kind:'explore'|'terminal', startedAt}
         runningSubagents,   // 全部 running subagent 行的 childSessionId（v97 多槽位）；完成态恒 []
         phase,   // 'thinking' | 'tool' | 'writing' | null（完成态恒 null）
         totalCharacters: last ? last.characters : 0,   // 当前累计字符数：供调用方做 c2t（字符→token）自校准
@@ -138,6 +140,70 @@
     }
 
     return { ingest, get, clear() { turns.clear(); epoch = null; sequence = -1; }, dispose() { disposed = true; turns.clear(); } };
+  }
+
+  // ---------- 工具组近似（v181 特性，v187 补回——PR #161 合并时遗漏本块）：宿主把当前运行段尾部
+  // **连续 ≥2** 的只读工具行在 UI 层合成「查阅」组（exploreGroup），连续 ≥2 的非只读 shell 合成
+  // 「终端」组（executeGroup）——组标题是渲染层合成的（chat.toolCall.explore/executeGroup.label），
+  // 行数据里没有。状态条 chip 要在组执行期显示「查阅·执行中」而不是逐工具动词，只能按宿主同源
+  // 规则在行流上复刻（分类正则与宿主 exploreToolCall.ts/toolIdentity.ts 同文，漂移时一起跟）：
+  // - 只读家族按工具名（Read/Grep/Glob/WebSearch/WebFetch/Explore…前缀根匹配，同宿主 family 表）；
+  // - shell 家族（Bash 等）按命令文本：全部命令只读 → explore；含写命令/写重定向 → terminal；
+  //   命令未到/解析不出（流式半截 JSON）→ defer 透明（宿主 shouldDeferUnclassifiedShellToolCall
+  //   同款：不加入也不打断所在组）；有命令但不中只读正则 → terminal（宿主 isExecuteToolCall）；
+  // - 其余工具行（Skill/TodoWrite/MCP…）与正文/思考/子代理行一律组边界。
+  // 已知近似：宿主另按 kind/title/input 多源推导家族、并剔除隐藏 reasoning 行；chip 是状态
+  // 摘要不是协议消费，这类差异可接受。
+  const GROUP_EXPLORE_TOOL_RE = /^(?:read|view|open|cat|head|tail|read_file|search|grep|find|fetch|web_search|web_fetch|webfetch|query|lookup|glob|list|ls|dir|tree|explore|inspect)(?:_|$)/i;
+  const GROUP_SHELL_TOOL_RE = /^(?:execute|run|exec|bash|shell|command|terminal)(?:_|$)/i;
+  const GROUP_READ_RE = /\b(rg|grep|find|ls|cat|head|tail|wc|stat|pwd|which|readlink|tree|sed\s+-n|get-childitem|gci|dir|get-content|gc|type|select-string|sls|get-location|test-path|resolve-path)\b|^git\s+(status|log|show|diff)\b/i;
+  const GROUP_WRITE_RE = /\b(sed\s+-i|perl\s+-pi|tee|mv|cp|rm|mkdir|rmdir|touch|truncate|chmod|chown|remove-item|del|erase|set-content|add-content|clear-content|out-file|new-item|move-item|copy-item|rename-item|set-item)\b|^git\s+(add|commit|rm|mv|checkout|switch|restore|reset|clean|revert|cherry-pick|merge|rebase)\b/i;
+  const GROUP_REDIRECT_RE = /(^|[^\d<])>>?\s*\S|&>\s*\S/i;
+
+  function groupClassify(row) {
+    if (!row || row.kind !== 'toolCall' || typeof row.toolName !== 'string') return null;
+    if (GROUP_EXPLORE_TOOL_RE.test(row.toolName)) return 'explore';
+    if (!GROUP_SHELL_TOOL_RE.test(row.toolName)) return null;
+    // 命令收集与宿主 extractToolCommands 同集（command/cmd/script/parsed_cmd；argv 数组取 -lc 后串）。
+    let src = row.input && typeof row.input === 'object' ? row.input : null;
+    if (!src && typeof row.inputText === 'string' && row.inputText.trim()) {
+      try { src = JSON.parse(row.inputText); } catch (e) { return 'defer'; }   // 半截 JSON：透明
+    }
+    const cands = [];
+    if (typeof src === 'string') cands.push(src);
+    else if (Array.isArray(src)) {
+      if (src.every(x => typeof x === 'string')) {
+        const i = src.indexOf('-lc');
+        cands.push(i >= 0 && typeof src[i + 1] === 'string' ? src[i + 1] : src.join(' '));
+      }
+    } else if (src && typeof src === 'object') {
+      for (const k of ['command', 'cmd', 'script', 'parsed_cmd'])
+        if (typeof src[k] === 'string' && src[k].trim()) cands.push(src[k].trim());
+    }
+    if (!cands.length) return 'defer';
+    const segs = [];
+    for (const c of cands) for (const s of String(c).split(/&&|\|\||;/g)) { const t = s.trim(); if (t) segs.push(t); }
+    if (!segs.length) return 'defer';
+    for (const s of segs) if (GROUP_WRITE_RE.test(s) || GROUP_REDIRECT_RE.test(s)) return 'terminal';
+    for (const s of segs) if (GROUP_READ_RE.test(s)) return 'explore';
+    return 'terminal';
+  }
+
+  // 运行行（及紧邻的透明行）落在 ≥2 连续同类组尾部才上报组；startedAt 锚定组首行，
+  // 供 chip「查阅·执行中 Xs」从组头起算。组首行滑出快照窗口时按窗口内首行起算（仅影响计时）。
+  function runningGroupOf(turn, act, complete) {
+    if (complete || !act || act.kind !== 'toolCall') return null;
+    const ordered = Array.from(turn.rows.values()).sort((a, b) => a.rowId - b.rowId);
+    let run = null;
+    for (const row of ordered) {
+      if (row.rowId > act.rowId) break;
+      if (row.kind !== 'toolCall') { run = null; continue; }
+      const k = groupClassify(row);
+      if (k === 'defer') continue;
+      if (run && run.kind === k) run.len += 1;
+      else run = k ? { kind: k, firstAt: Number.isFinite(row.startedAt) ? row.startedAt : null, len: 1 } : null;
+    }
+    return run && run.len >= 2 ? { kind: run.kind, startedAt: run.firstAt } : null;
   }
 
   function subscribeStore(store, tracker, changed) {
