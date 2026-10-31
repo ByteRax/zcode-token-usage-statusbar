@@ -14,6 +14,8 @@ Windows / macOS · Python 3.8+ · [MIT](LICENSE)
 
 ![ZCode Token Speed Status Bar promo](docs/promo/promo.en.png)
 
+Promotional image with staged UI and demonstration data; the actual interface varies by version and configuration.
+
 </div>
 
 **Install it in three steps:** send this to ZCode:
@@ -30,7 +32,9 @@ Can't reach GitHub from your network (mainland China)? Send ZCode this instead (
 Install or update the ZCode plugin https://gitcode.com/tanranran/zcode-token-usage-statusbar.git#plugin-releases-gitcode, then run /install-overlay when it's done
 ```
 
-[Quick start](#quick-start) · [FAQ](#faq) · [Screenshots](docs/features.md)
+[Quick start](#quick-start) · [FAQ](#faq) · [Feature illustrations](docs/features.md)
+
+> This page describes the `main` branch, which can include unreleased changes. The [GitHub Release](https://github.com/ByteRax/zcode-token-usage-statusbar/releases) for your installed version is authoritative for the stable channel. Features marked development-only are unavailable or behave differently in v1.5.7.
 
 ---
 
@@ -49,30 +53,30 @@ Here's what each part tells you:
 
 | The bit | In plain English |
 |---|---|
-| ⚡ **86 t/s** | Generation speed in tokens per second. Colour bands range from red (slow) to violet (very fast), with a blue-violet gradient + ✦ at ≥2000 t/s (Ultra). While generating, the displayed speed is an estimate; once a turn completes it switches to the session's weighted-average speed (prefixed with "avg"; the latest-turn reading moves into the tooltip), using the same colour bands |
+| ⚡ **86 t/s** | Generation speed in tokens per second. With the renderer bridge, generation speed is a text-based estimate while generating and is not assigned a speed band. On `main`, the completed value is the session weighted average, with the latest valid reading in the tooltip; v1.5.7 shows the latest valid speed |
 | **62.5k 90% 7 Σ18.4s ⏱1.4s** | This turn: 62.5k tokens spent, 90% cache hit rate, 7 model requests, their total duration was 18.4s, and you waited 1.4s for the first token |
-| **1.45M 86% 23 187** | The whole conversation so far: 1.45M tokens, 86% hit rate, 23 turns, 187 requests |
-| **123M 88% 42 sess 890** | This project (same directory) across all of its sessions ever: 123M tokens, 42 sessions, 890 requests; subagent usage counts too (hover for details) |
+| **1.45M 86% 23 187** | Main-session total, excluding subagents: 1.45M tokens, 86% hit rate, 23 turns, 187 requests |
+| **123M 88% 42 sess 890** | Completed requests for this project: 123M tokens, 42 sessions, 890 requests, including subagents. Hidden for remote sessions or when project identity is unavailable (hover for details) |
 | **142 🔴2** | Tools were called 142 times, 2 of them errored (small red marker) |
 | **3.42M** | Every conversation today added up: 3.42M tokens |
 | **236k 🟢** | The sub-tasks the model sent out on its own (subagents) used 236k tokens; 🟢 means one is still running |
 | **⚙** | Click for: which items to show, interface language, token unit display, update checks |
 
-Context usage doesn't take a slot on the bar — look at the **context button** in the composer toolbar (a ring icon plus a percentage). It changes colour as it fills up; if a request gets rejected for running over, it tells you what to do. Clicking it opens a panel that includes a **one-click compact** button (not needed? Turn off **Compact context button** under **⚙ → General**). Prefer the native look? Turn off **Context button enhancement** under **⚙ → General**.
+Context usage doesn't take a slot on the bar — look at the **context button** in the composer toolbar (a ring icon plus a percentage). It changes colour as it fills up; if a request gets rejected for running over, it tells you what to do. Clicking it opens a panel that includes a **one-click compact** button (not needed? Turn off **Compact context button** under **⚙ → General**). Prefer the native look? Turn off **Context button enhancement** under **⚙ → General**. The compact-button switch is available on the development branch.
 
-**Hover any of them and you get the finer breakdown.** For the real thing, see the [feature screenshots](docs/features.md).
+**Hover any of them and you get the finer breakdown.** See the [feature illustrations](docs/features.md); they may differ from the current version.
 
 ## Where to look for the thing you want
 
 | What you're wondering | Where to find it |
 |---|---|
-| How fast is the model going? | The **t/s** on the far left — an estimate while generating when the renderer bridge is available, otherwise the latest valid stored speed |
+| How fast is the model going? | The **t/s** on the far left — an estimate while generating when the renderer bridge is available, after completion, a session average on `main` or the latest valid speed in v1.5.7 |
 | How long did I wait after hitting enter? | The ⏱ number in **This turn** (that's the TTFT / time to first token) |
 | How many tokens did this turn / this conversation / today use? | The **This turn**, **Session total** and **Today** items |
 | How much has this project used across all of its sessions? | The **Project total** item (subagents incl., grouped by project directory) |
 | Is this conversation going to run out of room? | The **context button** — it changes colour as it fills up, with one-click compact inside |
 | How much did the cache save me? How much did the "thinking" cost? | Hover **This turn** for input, output, cache-read and thinking detail |
-| What did the model's sub-tasks cost? How fast are they running? | The **Sub-agents** item — while running it shows "Subagents running ×N · est X t/s" right on the bar |
+| What did the model's sub-tasks cost? How fast are they running? | The **Sub-agents** item — running counts and estimated speed are shown when available; the inline speed indicator is development-only |
 | How much plan quota / balance is left? | The **quota chip** left of the context button |
 | Did a tool call fail? | The **Tools** item — errors light up red |
 | Looking through history | Type `/usage` in the chat, run `python zusage.py` in a terminal, or call the `token_usage` MCP tool |
@@ -86,8 +90,8 @@ Context usage doesn't take a slot on the bar — look at the **context button** 
 - **Git status chip** — `⎇ branch ↑↓ +N -N` in the composer toolbar keeps repo state visible at a glance; when the directory itself isn't a repository, it automatically adds up the repositories in its subdirectories (`▣ 24 repos · 6 changed`). Read-only local git, no network.
 - **Plan quota chip** — left of the context button: plan-window used percentages and reset times, or account balance. Beyond the built-in BigModel / Z.ai plans, the ⚙ quota panel lets you select a provider template and enter a key, including for a custom relay; SCNet can be estimated without credentials using the official conversion table. Keys entered in the panel are saved locally in the runtime directory's `quota-secrets.json` (created with 0600 permissions where supported), not just kept in memory. Requests send credentials only to the adapter's allowed official domains or the configured custom relay's own domain. Support levels are in the [quota support matrix](docs/quota-support-audit.md) (Chinese); team plans are not supported yet.
 - **Reset-card badge** — a `reset · N` tag left of the quota chip (counts from multiple accounts joined with `+`), shown when the account holds available quota reset cards. It shows a countdown when time is running short and escalates in color as expiry nears (>3h green / 3h–30min yellow / <30min red with a pulse); hover for per-card (5-hour/weekly) counts and expiry times. On by default; toggle or adjust the countdown threshold in the ⚙ quota panel. Requires the ZCode sign-in; API-key-only users and team plans have no reset cards.
-- **One-click context compaction** — the compact button in the panel the context button opens sends `/compact` to the current session without touching your draft. Compaction usually takes 2–4 minutes with no progress feedback; sending a new message interrupts it, so let it finish.
-- **Auto-compact context threshold injection (on by default)** — the engine's built-in auto-compact trigger is fixed (around 83% of a 200K window). With the ⚙ switch on, the plugin patches the client engine (allow-listed per engine build) so the trigger becomes a configurable percentage of the window (leave empty to follow the engine default). Values apply from the next decision round, and the context-button panel shows the effective compaction line; turning the switch off restores the engine bytes. Only the desktop client's built-in engine is affected (the terminal CLI is not); if a new client build isn't supported yet, ⚙ says so and waits for a plugin update.
+- **One-click context compaction** — the compact button in the panel the context button opens sends `/compact` to the current session without touching your draft. Compaction time varies and there is no progress feedback; sending a new message interrupts it, so let it finish.
+- **Auto-compact context threshold injection (development only, on by default)** — the engine's built-in auto-compact trigger is fixed (around 83% of a 200K window). With the ⚙ switch on, the plugin patches the client engine (allow-listed per engine build) so the trigger becomes a configurable percentage of the window (leave empty to follow the engine default). Threshold changes apply from the next decision round; loading the patch itself requires a new session or a restart so a new engine process picks it up. The context-button panel shows the effective compaction line; turning the switch off restores the engine bytes. Only the desktop client's built-in engine is affected (the terminal CLI is not); if a new client build isn't supported yet, ⚙ says so and waits for a plugin update.
 - **Query entry points** — three ways to explore local usage:
 
   - In ZCode chat, enter `/usage` for a report or `/usage today` for today.
@@ -103,7 +107,7 @@ Context usage doesn't take a slot on the bar — look at the **context button** 
 ### What you need first
 
 - The **ZCode desktop app** (Windows / macOS are the primary targets; on Linux some paths need admin rights — verify on your distro).
-- **Python 3.8+** — the standard library is enough, no third-party packages.
+- **Python 3.8+** with the standard-library `sqlite3` module — the standard library is enough, no third-party packages.
 - No Node.js or npm needed — the bar runs inside ZCode's bundled Node runtime.
 
 ### How to install
@@ -120,7 +124,7 @@ Then install **ZCode Token Usage Statusbar** from that market and keep it enable
 https://gitcode.com/tanranran/zcode-token-usage-statusbar.git#plugin-releases-gitcode
 ```
 
-You can also send the natural-language "three steps" line from the top of this README to the AI and let it add the market and install the plugin for you (it uses terminal commands; the result is identical). Other routes: to hack on the code, point **Settings → Plugins → Add marketplace → Choose directory** at the repository root; to skip the plugin entirely, `git clone` and run `python install.py`; self-hosted ZCode servers have a separate [Web edition](web/README.md). Pick **one** route and stick with it — see the [installation guide](docs/user-guide.md#插件安装) (Chinese) for step-by-step details.
+You can also send the natural-language "three steps" line from the top of this README to the AI and let it add the market and install the plugin for you (it uses terminal commands; the result is identical). Other routes: to hack on the code, point **Settings → Plugins → Add marketplace → Choose directory** at the repository root; to skip the plugin entirely, `git clone` and run `python install.py`; self-hosted ZCode servers have a separately deployed [Web edition](web/README.md), which cannot be installed on the officially hosted website. Pick **one** route and stick with it — see the [installation guide](docs/user-guide.md#插件安装) (Chinese) for step-by-step details.
 
 ### After installing, don't skip these three steps
 
@@ -136,13 +140,13 @@ Run `/uninstall-overlay` to remove the bar and write the opt-out marker (auto-in
 
 ## Where these numbers come from
 
-Usage reports read ZCode's local SQLite database **read-only** — they are not self-reported by the model or a billing estimate. Stored request statistics update as completed requests reach the database, not character by character. When the renderer bridge is available, generation speed is estimated from text changes while the model is writing and switches to the session's weighted average once the turn completes (the measured per-turn value moves into the tooltip); without the bridge, speed falls back to the latest valid completed database request. Quota and balance come from a separate provider-query or estimate path, not from those token totals. Exact formulas and commonly confused pairs (bar speed vs rate line, context share vs session total) are in the [data semantics guide](docs/user-guide.md#数据如何计算) (Chinese).
+Usage reports query ZCode's local SQLite database, not a billing estimate. The query first opens it read-only and falls back to a regular connection if that fails. Stored request statistics update as completed requests reach the database, not character by character. When the renderer bridge is available, generation speed is estimated from text changes while the model is writing and switches to the session's weighted average once the turn completes (the measured per-turn value moves into the tooltip); without the bridge, completed database samples are used. The session-average display is a `main`-branch change; v1.5.7 displays the latest valid speed. Quota and balance come from a separate provider-query or estimate path, not from those token totals. Exact formulas and commonly confused pairs (bar speed vs rate line, context share vs session total) are in the [data semantics guide](docs/user-guide.md#数据如何计算) (Chinese).
 
 ## Things worth knowing
 
 - **This is not an official ZCode feature.** It's a community plugin; the bar works by modifying ZCode's program files (`app.asar`), and uninstall removes only what it added.
-- **The local database is read-only.** Usage data is never uploaded. Plugin updates do download code over the network (auto-update can be disabled in ⚙).
-- **Credential boundaries**: SSH passwords and private-key passphrases stored in ZCode are not decrypted or reused by the plugin. Quota credentials entered in ⚙ are saved locally in `quota-secrets.json`; requests are restricted to the relevant provider's allowed official domains or the configured custom relay's domain. Quota sources can be disabled in ⚙.
+- **Data and network access**: local usage queries use SQLite. Plugin updates download code over the network (auto-update can be disabled in ⚙); configured SSH / WSL sessions query their remote environment. Quota and reset-card features also contact their respective services.
+- **Credential boundaries**: SSH passwords and private-key passphrases stored in ZCode are not decrypted or reused by the plugin. Quota credentials entered in ⚙ are saved locally in `quota-secrets.json`; requests are restricted to the relevant provider's allowed official domains or the configured custom relay's domain. Quota sources can be disabled in ⚙. The reset-card switch is independent; disable both to stop those queries. Anthropic requires explicit opt-in and may read `~/.claude/.credentials.json`.
 - **Token usage is not a bill**: the quota chip can show plan usage or an account balance, depending on the source; it does not provide a cash spending bill or billing details.
 
 ## FAQ
@@ -157,7 +161,7 @@ A ZCode update overwrites those modified program files. Keep the plugin enabled,
 
 **Why don't the numbers move continuously?**
 
-Stored usage refreshes when a completed request lands in the database, not per character. With the renderer bridge, speed can show a text-based estimate during generation; without it, speed waits for a valid completed database sample. A brand-new session that hasn't sent a request yet shows 0 — that's normal.
+Stored usage refreshes when a completed request lands in the database, not per character. With the renderer bridge, speed can show a text-based estimate during generation; without it, speed waits for a valid completed database sample. A new session may not yet have a valid sample.
 
 **Can it show how much money I spent?**
 
