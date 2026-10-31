@@ -1,6 +1,6 @@
 {
   "name": "zusage-marketplace",
-  "description": "zcode-token-usage-statusbar 插件市场：ZCode token 用量查询（MCP / 命令 / 技能）与默认自动安装/修复桌面悬浮状态条（修改 app.asar，成功后需完全退出并重开）。",
+  "description": "zcode-token-usage-statusbar 插件市场：ZCode token 用量查询（MCP / 命令 / 技能）与自动安装/修复桌面悬浮状态条（始终开启，修改 app.asar，成功后需完全退出并重开）。",
   "owner": {
     "name": "xhwxt/ByteRax",
     "url": "https://github.com/ByteRax"

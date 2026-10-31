@@ -223,7 +223,7 @@ node --check web/zusage-sidecar.mjs
 - 用户可见文案沿用现有字典/语言分支：桌面浮层独立保存 `zusage3.lang` 并跟随 `--font-mono`/`--ui-font-size`，CLI 使用配置 `lang`，Web 跟随宿主语言且布局/字体独立；不能假设共用开关。市场条目保留 `description_i18n`，不为改显示名擅改 slug、市场名、命令或配置键。
 - 配置键、默认值、协议、兼容性变更时更新 `config.example.json`、相关 README、[用户指南](docs/user-guide.md)、插件 README/命令/hooks/技能；设计或发布链变化同时检查维护/设计文档。
 - JSON 示例不得含注释，路径占位须说明替换；检查仓库相对链接、标题锚点及示例能否解析。
-- 当前文档有已知滞后（README 与用户指南的自动安装范围/命令命名差异、设计笔记「空闲零进程」与 `current` 窗口表述、`sudo python install.py` 对插件子树缓存不适用、Web 文档 `node:sqlite` 与全局「不联网」表述）：完整清单见 [.zcode/rules/docs.md](.zcode/rules/docs.md)。修改对应领域时结合源码/契约测试核对，不顺手改业务逻辑或宣称正式渠道已有 main 功能。
+- 当前文档有已知滞后（README 与用户指南的命令命名差异、设计笔记「空闲零进程」与 `current` 窗口表述、`sudo python install.py` 对插件子树缓存不适用、Web 文档 `node:sqlite` 与全局「不联网」表述）：完整清单见 [.zcode/rules/docs.md](.zcode/rules/docs.md)。修改对应领域时结合源码/契约测试核对，不顺手改业务逻辑或宣称正式渠道已有 main 功能。
 
 ## 8. 发布与外部操作边界
 
