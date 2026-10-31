@@ -174,7 +174,8 @@ test('react commit that displaces the percentage is healed back to the ring\'s r
 });
 
 test('band follows user bands 30/50/80/90 (inclusive lower bound), compression state first', () => {
-  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  // fallback 标签走 DB 兜底路径，专测 ctxBandOf 分档表边界（原生镜像分档另有用例）
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main', { ariaLabel: '剩余额度' });
   h.inject(); h.boot(); h.tick();
   h.window.__zusageUpdate(h.payload({ ctx: 59000 }));   // 29.5% of 200k
   assert.equal(ui.btn.getAttribute('data-zusage-band'), 'calm');
@@ -211,8 +212,65 @@ test('react rewrite of dasharray is healed by the heavy reconcile within one tic
   assert.equal(ui.value.getAttribute('stroke-dasharray'), '31.7 100');
 });
 
-test('unknown capacity restores the native ring and removes the percentage', () => {
+/* ---------- issue #172：压缩上下文后徽标必须跟随原生 aria-label 立即刷新 ----------
+ * 宿主 taskUsage store（悬停面板同源）压缩后立即回落，React 只更新按钮 aria-label；
+ * DB 快照要等下一条请求完成才有新值 → 原生 label 可解析时显示层优先镜像原生占比。 */
+test('issue #172: compaction refreshes ring+pct from the native label without a new DB row', () => {
   const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  h.inject(); h.boot(); h.tick();
+  h.window.__zusageUpdate(h.payload());
+  assert.equal(ui.value.getAttribute('stroke-dasharray'), '31.7 100');
+  // 用户点【压缩上下文】：宿主立即回落到 1.2%，React 只更新 aria-label（DB 无新完成请求）
+  ui.btn.setAttribute('aria-label', '上下文已用 2,400 / 总量 200,000');
+  h.tick();   // heavy 对账（≤600ms）刷新，不依赖 __zusageUpdate 快照推送
+  assert.equal(ui.value.getAttribute('stroke-dasharray'), '1.2 100');
+  const pct = ui.btn.children.find(e => e.classList.contains('zu-ctxpct'));
+  assert.equal(pct.textContent, '1.2%');
+  assert.equal(pct.className, 'zu-ctxpct pct calm');   // 分档同表重算：1.2% → calm
+});
+
+test('English aria-label (Context usage X of Y) mirrors the same way', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main',
+    { ariaLabel: 'Context usage 100,000 of 200,000' });
+  h.inject(); h.boot(); h.tick();
+  h.window.__zusageUpdate(h.payload());   // DB 口径 31.7%，原生镜像 50%
+  assert.equal(ui.value.getAttribute('stroke-dasharray'), '50.0 100');
+  const pct = ui.btn.children.find(e => e.classList.contains('zu-ctxpct'));
+  assert.equal(pct.textContent, '50.0%');
+  assert.equal(pct.className, 'zu-ctxpct pct mid');
+});
+
+test('aria-label without usage data falls back to the DB-derived band', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main',
+    { ariaLabel: '剩余额度' });
+  h.inject(); h.boot(); h.tick();
+  h.window.__zusageUpdate(h.payload());
+  assert.equal(ui.value.getAttribute('stroke-dasharray'), '31.7 100');
+  const pct = ui.btn.children.find(e => e.classList.contains('zu-ctxpct'));
+  assert.equal(pct.textContent, '31.7%');
+  assert.equal(pct.className, 'zu-ctxpct pct norm');
+});
+
+test('native mirroring keeps the compression-state band priority (exc)', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main',
+    { ariaLabel: '上下文已用 2,400 / 总量 200,000' });
+  h.inject(); h.boot(); h.tick();
+  h.window.__zusageUpdate(h.payload({ ctx: 63400, cw: 200000, exc: 2 }));
+  assert.equal(ui.btn.getAttribute('data-zusage-band'), 'exc');
+  assert.equal(ui.value.getAttribute('stroke-dasharray'), '1.2 100');   // 环口径跟原生，档位 exc 优先
+});
+
+test('native label rescues the enhancement when the DB lacks a context window', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  h.inject(); h.boot(); h.tick();
+  h.window.__zusageUpdate(h.payload({ ctx: 63400, cw: 0 }));
+  h.tick();
+  assert.equal(ui.btn.getAttribute('data-zusage-armed'), '1');
+  assert.equal(ui.value.getAttribute('stroke-dasharray'), '31.7 100');   // 镜像原生 self-consistent 占比
+});
+
+test('unknown capacity restores the native ring and removes the percentage', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main', { ariaLabel: '剩余额度' });
   h.inject(); h.boot(); h.tick();
   h.window.__zusageUpdate(h.payload());
   assert.ok(ui.btn.getAttribute('data-zusage-armed'));
@@ -222,8 +280,18 @@ test('unknown capacity restores the native ring and removes the percentage', () 
   assert.equal(ui.btn.getAttribute('data-zusage-band'), null);
   assert.equal(ui.btn.children.find(e => e.classList.contains('zu-ctxpct')), undefined);
   assert.equal(ui.value.getAttribute('stroke-dasharray'), '62.83185307179586 62.83185307179586');
-  assert.equal(ui.value.getAttribute('stroke-dashoffset'), String(62.83185307179586 * (1 - 63400 / 200000)));
+  assert.equal(ui.value.getAttribute('stroke-dashoffset'), String(62.83185307179586));   // 无已用数据退空环
   assert.equal(ui.value.getAttribute('pathLength'), null);
+});
+
+test('dispose restore derives the native dashoffset from an English aria-label', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main',
+    { ariaLabel: 'Context usage 100,000 of 200,000' });
+  h.inject(); h.boot(); h.tick();
+  h.window.__zusageUpdate(h.payload());
+  assert.equal(ui.btn.getAttribute('data-zusage-armed'), '1');
+  h.window.ctxBtnTest.instances()[0].dispose();
+  assert.equal(ui.value.getAttribute('stroke-dashoffset'), String(62.83185307179586 * (1 - 0.5)));
 });
 
 /* ---------- v156 上下文按钮增强开关（issue #141，localStorage zusage3.ctxEnh 缺省开） ---------- */
@@ -313,8 +381,9 @@ test('enhancement styles exist: band colors, geometry override, pct span and lig
 });
 
 /* ---------- v135 重置卡徽标（.zu-ctxrst） ---------- */
-function resetComposer(h, provider = 'account:bigmodel-individual-coding-plan') {
-  return h.buildComposer('workspace-main', 'sid_main', { live: true, provider });
+function resetComposer(h, provider = 'account:bigmodel-individual-coding-plan', ariaLabel) {
+  return h.buildComposer('workspace-main', 'sid_main',
+    Object.assign({ live: true, provider }, ariaLabel ? { ariaLabel } : {}));
 }
 function rstEntry(expireInMs, count = 2) {
   return { status: "ok", count, expireAt: Date.now() + expireInMs,
@@ -394,7 +463,7 @@ test('badge follows the independent resetBadgeEnabled gate, not the quota chip f
 });
 
 test('unknown capacity restores the native form including the reset badge', () => {
-  const h = harness(), ui = resetComposer(h);
+  const h = harness(), ui = resetComposer(h, 'account:bigmodel-individual-coding-plan', '剩余额度');
   h.inject(); h.boot(); h.tick();
   h.window.__zusageUpdate(payloadWithResets(h.payload, { bigmodel: rstEntry(3600e3) }));
   assert.ok(rst(ui.btn));
