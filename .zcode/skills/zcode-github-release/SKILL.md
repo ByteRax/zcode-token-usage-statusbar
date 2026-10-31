@@ -143,4 +143,3 @@ python3 -B release_tool.py verify --zip /new/artifact-directory/zcode-token-usag
 - GitCode 段推送失败时，先看原因：凭据问题就补配凭据重推（重推范围不得超出本次已授权的动作，授权口径见阶段 D 的 GitCode tag 闸门）；被拒原因是非快进（镜像比 GitHub 多出提交、两边分叉）时不重推、不强推，报告现状请用户处理。都不据此重发或回滚 GitHub Release；要求 GitCode 渠道时报告 `--gitcode-repo` 的发布/上传/清单结果与 `plugin-releases-gitcode` 分支状态。全新 clone 没有双 push 配置，渠道推送只到 GitHub，需要镜像时显式加入推送目标（[双远程同步](../../../docs/maintaining.md#双远程同步)）。
 - 回到项目根清理本次临时 worktree：`git worktree remove .worktrees/release-vX.Y.Z`（以及渠道 worktree）；删前确认发布提交已在远端或 tag 上，有未跟踪文件会被拒绝，先看是什么，不要直接 `--force`。不自动删除 `release/vX.Y.Z` 分支，是否清理由用户决定。
 - 不安装或覆盖用户缓存，不自动重启客户端。发布成功不等于用户已安装。
-

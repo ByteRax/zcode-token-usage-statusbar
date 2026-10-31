@@ -79,4 +79,3 @@ gh pr view N --repo OWNER/REPO --json title,body,mergedAt    # 读 PR 正文（�
 3. 编辑前再次回读正文并与快照比对；若他人已修改，保留双方有效内容、重新核实，不直接覆盖。执行 `gh release edit vX.Y.Z --repo OWNER/REPO --notes-file /absolute/release-notes.md`。
 4. 重新读取 Release，比较正文、正式状态、tag commit 和资产元数据。只有正文按预期变化、其余项不变才算成功。
 5. 按 [修订与最终报告](update-log-delivery.md#6-修订与最终报告) 分别检查已授权的镜像正文及客户端刷新能力。GitHub 正文已修改不等于 GitCode、包内日志或已有缓存同时改变；不得通过覆盖发布资产或删除用户缓存掩盖差异。
-

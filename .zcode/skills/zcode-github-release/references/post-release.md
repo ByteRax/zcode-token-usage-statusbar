@@ -82,4 +82,3 @@ shasum -a 256 "$OUT"/*.zip      # 应等于渠道清单的 source.sha256
 ## 清理
 
 `git worktree remove .worktrees/channel-vX.Y.Z`（以及 `channel-gitcode-vX.Y.Z`）；推送与回读都成功后再清。
-
