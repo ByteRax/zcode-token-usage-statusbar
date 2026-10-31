@@ -54,6 +54,7 @@ RUNTIME_FILES = [
     "plugin-storage.cjs",
     "quota-client.cjs",
     "model-puller.cjs",
+    "engine-patch.cjs",
     "release_unpack.py",
     "runtime_lock.py", "usage_stats.py", "turn-stats.js",
     "token_rate.py", "renderer_bridge.py",
@@ -611,7 +612,7 @@ def _sync_runtime_locked(runtime, verify=lambda: None):
     result = {"changed": changed, "skipped": skipped, "preserved": preserved,
               "version": version, "plugin_root": plugin_root, "hashes": hashes,
               "restartRecorded": True}
-    cold_files = {"inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs", "quota-client.cjs", "model-puller.cjs"}
+    cold_files = {"inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs", "quota-client.cjs", "model-puller.cjs", "engine-patch.cjs"}
     if (load_runtime_config(runtime) or {}).get("hot_reload") is False:
         cold_files.update(("overlay.js", "zusage.py"))
     restart_hashes = {name: hashes[name] for name in changed if name in cold_files}

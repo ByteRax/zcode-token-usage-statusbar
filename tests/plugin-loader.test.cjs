@@ -58,7 +58,7 @@ test("loader consumes only fixed update actions from trusted local windows and p
     [path.join("/fixture/runtime", "runtime_lock.py"), "--ack-restart", "/fixture/runtime"]);
   const loaded = JSON.parse(ack.args[3]);
   assert.ok(loaded._loadedAt > 0);
-  for (const name of ["inject-main.cjs", "plugin-updater.cjs", "overlay.js", "zusage.py"]) assert.match(loaded[name], /^[a-f0-9]{64}$/);
+  for (const name of ["inject-main.cjs", "plugin-updater.cjs", "engine-patch.cjs", "overlay.js", "zusage.py"]) assert.match(loaded[name], /^[a-f0-9]{64}$/);
   assert.equal(ack.options.windowsHide, true);
   assert.deepEqual(requests.map((r) => r.action), ["check", "auto"]);
   assert.ok(scripts.some((s) => s.includes("window.__zusagePluginUpdate")));
