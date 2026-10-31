@@ -55,6 +55,9 @@ class QuietMonitorTests(unittest.TestCase):
         with mock.patch.dict(os.environ, env), mock.patch.object(self.patch.subprocess, "Popen") as spawn:
             self.patch.launch_monitor(0)
         self.assertEqual(spawn.call_count, 1)
+        # cmd[1] 必须指向同目录 install_monitor.py（issue #163 review 加固：兄弟不变式
+        # 由 RUNTIME_FILES 清单与 copy_runtime 同目录复制保证，此处断言防改名/换目录回归）
+        self.assertTrue(spawn.call_args.args[0][1].endswith("install_monitor.py"))
         kwargs = spawn.call_args.kwargs
         self.assertEqual(kwargs["stdout"], self.patch.subprocess.DEVNULL)
         self.assertEqual(kwargs["stdin"], self.patch.subprocess.DEVNULL)
@@ -608,6 +611,28 @@ class QuietMonitorTests(unittest.TestCase):
         self.assertIn(f'--asar "{self.asar}"', output)
         self.assertIn(f'--runtime "{self.patch.RUNTIME}"', output)
         self.assertIn(f'python "{tool}"', output)
+
+    def test_visible_monitor_upgrade_hint_points_at_runtime_copy(self):
+        # issue #163 review（变异 M9 守护）：「已重启但未检测到注入加载」的请重新运行
+        # 提示同样要指向运行目录副本，裸文件名在 clone 删除后无法执行。
+        # 进程序列：启动采集 {"1"}（旧实例），随后新实例 {"2"}（与采集不相交）；
+        # 时间序列：t0=100 → 轮1 now=100（记 new_since，显示「正在确认」）→ 轮2 now=221
+        # （超过 CONFIRM_WAIT=120，进入升级提示分支）；sleep 首次放行、二次中断收帧。
+        with mock.patch.dict(sys.modules, {"patch_install": self.patch}), \
+                mock.patch.object(self.monitor, "QUIET", False), \
+                mock.patch.object(sys, "argv", ["install_monitor.py", "0"]), \
+                mock.patch.object(self.monitor, "patch_module", return_value=self.patch), \
+                mock.patch.object(self.monitor, "zcode_pids", side_effect=[{"1"}, {"2"}, {"2"}]), \
+                mock.patch.object(self.monitor.time, "time", side_effect=[100, 100, 221]), \
+                mock.patch.object(self.monitor, "draw") as draw, \
+                mock.patch.object(self.monitor.time, "sleep", side_effect=[None, KeyboardInterrupt()]):
+            with self.assertRaises(KeyboardInterrupt):
+                self.monitor.main()
+        output = "\n".join(draw.call_args.args[0])
+        tool = self.monitor.RUNTIME_DIR / "patch_install.py"
+        self.assertIn("请重新运行", output)
+        self.assertIn(f'python "{tool}"', output)
+        self.assertNotIn('python patch_install.py', output)
 
     def test_visible_monitor_remove_fallback_hint_has_no_runtime_flag(self):
         # remove 不走来源授权的 runtime 校验，提示不该带这个用不上的参数。

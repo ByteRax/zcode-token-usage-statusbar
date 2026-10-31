@@ -2,6 +2,7 @@
 """issue #163：usage_mcp 启动时复活待收尾包监控（独立链无 SessionStart hook，
 monitor 被关闭后 pending 永久搁浅——MCP 进程由宿主随会话启动拉起，是独立链
 唯一的会话级补救入口）。夹具与 test_quiet_monitor 同款：临时 asar + 真 sidecar。"""
+import contextlib
 import importlib.util
 import io
 import json
@@ -64,11 +65,17 @@ class ReviveMonitorTests(unittest.TestCase):
             captured["quiet"] = os.environ.get("ZUSAGE_MONITOR_QUIET")
 
         with mock.patch.dict(sys.modules, {"patch_install": self.patch}), \
-                mock.patch.dict(os.environ, {}), \
+                mock.patch.dict(os.environ, {"ZUSAGE_MONITOR_QUIET": ""}), \
                 mock.patch.object(self.usage_mcp, "__file__", str(usage_mcp_dir / "usage_mcp.py")), \
                 mock.patch.object(self.patch, "launch_monitor", side_effect=launch) as launch_mock:
             self.usage_mcp.revive_finalize_monitor()
         return launch_mock, captured
+
+    def cancel_pending(self):
+        """把待收尾 sidecar 翻成 cancelled（optout/remove 撤销后的遗留 journal）。"""
+        meta = json.loads(self.asar.with_name("app.asar.zusage.tmp.json").read_text(encoding="utf-8"))
+        meta["operation"] = "cancelled"
+        self.asar.with_name("app.asar.zusage.tmp.json").write_text(json.dumps(meta), encoding="utf-8")
 
     def test_pending_without_monitor_is_revived_quietly(self):
         # 独立链形态：usage_mcp 与 config 同在运行目录，revive 以该目录为 RUNTIME。
@@ -95,6 +102,29 @@ class ReviveMonitorTests(unittest.TestCase):
         self.write_config(self.runtime)
         launch, _ = self.revive(self.runtime)
         launch.assert_not_called()
+
+    def test_cancelled_journal_is_not_a_pending_package(self):
+        # review 2026-10-31：cancelled 的 journal（卸载撤销/发布中断遗留）不是待收尾
+        # 包——拉起只会得到一个被来源授权立即拒绝退出的监控进程，每次会话白拉一个。
+        self.write_config(self.runtime)
+        self.pending()
+        self.cancel_pending()
+        launch, _ = self.revive(self.runtime)
+        launch.assert_not_called()
+
+    def test_launch_failure_hint_never_reaches_stdout(self):
+        # launch_monitor 的启动失败提示（OSError 分支）若落进 stdout 会污染 stdio
+        # JSON-RPC 通道；revive 必须把它重定向到 stderr。
+        self.write_config(self.runtime)
+        self.pending()
+        stdout = io.StringIO()
+        with mock.patch.dict(sys.modules, {"patch_install": self.patch}), \
+                mock.patch.dict(os.environ, {"ZUSAGE_MONITOR_QUIET": ""}), \
+                mock.patch.object(self.usage_mcp, "__file__", str(self.runtime / "usage_mcp.py")), \
+                mock.patch.object(self.patch.subprocess, "Popen", side_effect=OSError("boom")), \
+                contextlib.redirect_stdout(stdout):
+            self.usage_mcp.revive_finalize_monitor()
+        self.assertEqual(stdout.getvalue(), "")   # stdout 协议通道零污染
 
     def test_missing_config_or_asar_record_skips_revive(self):
         for describe, setup in (("no config file", lambda: None),

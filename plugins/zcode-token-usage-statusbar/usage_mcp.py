@@ -10,6 +10,7 @@ pending 会永久搁浅、状态条永不出现。MCP 进程由宿主随会话�
 的会话级入口——检测到有效待收尾包且无存活监控时，静默重新拉起（无窗口，等客户端
 退出后自动完成替换）。任何失败都不影响查询服务。
 """
+import contextlib
 import json
 import os
 import sqlite3
@@ -40,15 +41,18 @@ def revive_finalize_monitor():
         import patch_install as pi   # 与本脚本同目录（运行清单/插件目录都携带）
         pi.set_target(asar)
         pi.set_runtime(cfg_path.parent)
-        if pi.pending_operation() is None:
-            return   # 无有效待收尾包（sidecar 不可信的交给下次 install 清理，查询链不动它）
+        # cancelled 的 journal（卸载撤销/发布中断遗留）不是待收尾包：拉起只会得到
+        # 一个被来源授权立即拒绝退出的监控进程，等下次 install 清理即可。
+        if pi.pending_operation() not in ("install", "remove"):
+            return
         with pi.monitor_instance_lock() as acquired:
             if not acquired:
                 return   # 已有监控在收尾：不叠加进程（与 launch_monitor 内部去重同款前置）
         # 试锁成功即释放，锁的长期持有者是监控进程自己；探测与拉起间的极小竞态由
         # launch_monitor 的去重兜底（后到的监控抢锁失败会自行退出）。
         os.environ["ZUSAGE_MONITOR_QUIET"] = "1"   # 无窗口静默收尾；不弹窗打断查询
-        pi.launch_monitor(time.time())
+        with contextlib.redirect_stdout(sys.stderr):   # launch_monitor 的失败提示只许走 stderr
+            pi.launch_monitor(time.time())
     except Exception as e:  # noqa: BLE001
         print(f"[zusage] monitor revive skipped: {e}", file=sys.stderr)
 

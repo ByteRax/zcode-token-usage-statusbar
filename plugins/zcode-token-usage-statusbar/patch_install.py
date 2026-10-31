@@ -947,8 +947,9 @@ def _remove():
         print(L(f"卸载待替换包已失效，未替换：{e}", f"Remove pending package invalidated; not replaced: {e}"))
         return False
     except OSError as e:
-        print(L(f'\n替换失败（{e}）。请完全退出 ZCode 后重跑 python patch_install.py remove --asar "{ASAR}"，',
-                f'\nReplacement failed ({e}). Quit ZCode completely and re-run python patch_install.py remove --asar "{ASAR}", '))
+        tool = RUNTIME / "patch_install.py"
+        print(L(f'\n替换失败（{e}）。请完全退出 ZCode 后重跑 python "{tool}" remove --asar "{ASAR}"，',
+                f'\nReplacement failed ({e}). Quit ZCode completely and re-run python "{tool}" remove --asar "{ASAR}", '))
         print(L("待替换文件保留；不要手动 move/mv 覆盖可能已升级的 app.asar。",
                 "Pending files kept; do not manually move/mv over a possibly upgraded app.asar."))
         return False
