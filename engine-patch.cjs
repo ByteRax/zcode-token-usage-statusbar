@@ -25,8 +25,10 @@ const SENTINEL = "engine-patch.json";
 const ANCHOR = "n=ake(e.bufferTokens)??DBo;return Math.max(0,t-n)";
 const REPLACEMENT = "n=ake(e.bufferTokens)??DBo;return (globalThis." + MARK + "&&globalThis." + MARK + "(t,n))??Math.max(0,t-n)";
 
-/* hook 本体：插入引擎文件头。优先级 enabled:false > thresholdPercent(10-99)
- * > thresholdTokens(>=1000) > bufferTokens(>=0)；任何形式换算出的阈值统一地板
+/* hook 本体：插入引擎文件头。优先级 enabled:false > thresholdPercent(30-99，
+ * v194 起总窗口口径：引擎判定只认扣除输出预留后的有效窗口 eff，按 eff+21K 近似
+ * 还原标称窗口计算并钳在 eff 内——设置 91 即原生按钮 91% 处触发) >
+ * thresholdTokens(>=1000) > bufferTokens(>=0)；任何形式换算出的阈值统一地板
  * 1% effective——阈值被压到 0 会让每轮都触发压缩、rapid-refill 熔断中断用户 turn。
  * statSync 每轮决策一次 + mtime 缓存，改 JSON 下一轮即生效。 */
 const PROLOGUE = PROLOGUE_PREFIX + "\n;(function(){try{var _zf=require(\"fs\"),_zp=require(\"path\"),_zh=require(\"os\").homedir();" +
@@ -36,11 +38,20 @@ const PROLOGUE = PROLOGUE_PREFIX + "\n;(function(){try{var _zf=require(\"fs\"),_
   "_zc.bad=!_zc.v||typeof _zc.v!==\"object\"||Array.isArray(_zc.v);}catch(e2){_zc.bad=true;}}" +
   "if(_zc.bad||!_zc.v)return;var c=_zc.v,t;" +
   "if(c.enabled===false)return Number.MAX_SAFE_INTEGER;" +
-  "if(isFinite(c.thresholdPercent))t=Math.floor(eff*(Math.min(99,Math.max(10,c.thresholdPercent))/100));" +
+  "if(isFinite(c.thresholdPercent))t=Math.min(eff,Math.floor((eff+21000)*(Math.min(99,Math.max(30,c.thresholdPercent))/100)));" +
   "else if(isFinite(c.thresholdTokens))t=Math.min(eff,Math.max(1000,c.thresholdTokens));" +
   "else if(isFinite(c.bufferTokens))t=eff-Math.min(Math.max(0,c.bufferTokens),Math.max(0,eff-1));" +
   "else return;" +
   "return Math.max(t,Math.floor(eff*0.01));}catch(e){}};}catch(e){}})();\n";
+
+/* v194 前的 hook 本体（eff×pct 口径）：仅供已打补丁引擎的原位迁移与还原匹配。
+ * 由新串程序化推导并守卫漂移——将来再改 prologue 时按同款模式滚动 legacy。 */
+const PROLOGUE_V1 = (() => {
+  const NEW_SEG = "t=Math.min(eff,Math.floor((eff+21000)*(Math.min(99,Math.max(30,c.thresholdPercent))/100)));";
+  const OLD_SEG = "t=Math.floor(eff*(Math.min(99,Math.max(10,c.thresholdPercent))/100));";
+  if (!PROLOGUE.includes(NEW_SEG)) throw new Error("prologue percent segment drifted; roll PROLOGUE_V1 forward");
+  return PROLOGUE.replace(NEW_SEG, OLD_SEG);
+})();
 
 /* 登记表：客户端升级后引擎字节变化，必须实测新 SHA 并在此补条目（renderer_bridge
  * HOST_TARGETS 同款维护模型）；表外版本拒绝补丁并明示，绝不盲打。 */
@@ -138,8 +149,22 @@ function createEnginePatcher(opts) {
     // 已含 prologue 的文件按替换体内容识别（字节级精确，外来补丁不会误配）。
     if (text.includes(PROLOGUE_PREFIX)) {
       const t2 = ENGINE_TARGETS.find((t) => text.includes(t.replacement));
-      if (t2) return set("applied", null, { build: t2.build });
-      return set("error", "patched_inconsistent");
+      if (!t2) return set("error", "patched_inconsistent");
+      if (text.includes(t2.prologue)) return set("applied", null, { build: t2.build });
+      /* 旧版 hook 本体在位（v194 前 eff×pct 口径）：原位换装新 prologue——锚点替换体
+       * 两版相同无需重打；旧串逐字节匹配，匹配不到=外来/半截补丁不接手。 */
+      if (!text.includes(PROLOGUE_V1)) return set("error", "patched_inconsistent");
+      try { atomicWrite(enginePath, Buffer.from(text.replace(PROLOGUE_V1, t2.prologue), "utf8")); } catch (e) {
+        const busy = e && (e.code === "EBUSY" || e.code === "EPERM" || e.code === "EACCES");
+        return set(busy ? "busy" : "error", e.message);
+      }
+      try {
+        const after = fs.readFileSync(enginePath, "utf8");
+        if (!after.includes(t2.prologue) || after.includes(PROLOGUE_V1)) return set("error", "verify_failed");
+      } catch (e) { return set("error", e.message); }
+      writeSentinel({ patched: true, build: t2.build });
+      log("patch prologue migrated: " + t2.build);
+      return set("applied", null, { build: t2.build });
     }
     const target = ENGINE_TARGETS.find((t) => t.engineSha256 === sha);
     if (!target) return set("unsupported_build", "engine sha " + sha.slice(0, 12) + " not in ENGINE_TARGETS");
@@ -184,9 +209,10 @@ function createEnginePatcher(opts) {
       return set("off");   // 引擎本就干净（可能被客户端更新整体替换）
     }
     const target = ENGINE_TARGETS.find((t) => t.engineSha256 === st.engineSha256)
-      || ENGINE_TARGETS.find((t) => text.includes(t.replacement) && text.includes(t.prologue));
+      || ENGINE_TARGETS.find((t) => text.includes(t.replacement) && (text.includes(t.prologue) || text.includes(PROLOGUE_V1)));
     if (!target) return set("error", "restore_pattern_missing");
-    let out = text.replace("\n" + target.prologue, "").replace(target.replacement, target.anchor);
+    const pro = text.includes(target.prologue) ? target.prologue : PROLOGUE_V1;   // v194 前装机的旧本体也能还原
+    let out = text.replace("\n" + pro, "").replace(target.replacement, target.anchor);
     if (out.includes(MARK)) return set("error", "restore_incomplete");
     try { atomicWrite(enginePath, Buffer.from(out, "utf8")); } catch (e) {
       const busy = e && (e.code === "EBUSY" || e.code === "EPERM" || e.code === "EACCES");
@@ -215,7 +241,7 @@ function createEnginePatcher(opts) {
     else if (mode === "disabled") out = { enabled: false };
     else if (mode === "percent" || mode === "tokens" || mode === "buffer") {
       const n = Math.round(Number(value));
-      const ok = isFinite(n) && (mode === "percent" ? n >= 10 && n <= 99 : mode === "tokens" ? n >= 1000 : n >= 0);
+      const ok = isFinite(n) && (mode === "percent" ? n >= 30 && n <= 99 : mode === "tokens" ? n >= 1000 : n >= 0);   // v194：30-99
       if (!ok) throw new Error("invalid value for " + mode);
       out = mode === "percent" ? { enabled: true, thresholdPercent: n }
         : mode === "tokens" ? { enabled: true, thresholdTokens: n }
@@ -242,4 +268,4 @@ function createEnginePatcher(opts) {
   return { ensure, restore, syncStartup, writeConfig, readConfig, status, configPath };
 }
 
-module.exports = { createEnginePatcher, ENGINE_TARGETS, PROLOGUE, PROLOGUE_PREFIX, ANCHOR, REPLACEMENT, MARK, resolveEnginePath, insertPrologue, buildPatchedSource };
+module.exports = { createEnginePatcher, ENGINE_TARGETS, PROLOGUE, PROLOGUE_V1, PROLOGUE_PREFIX, ANCHOR, REPLACEMENT, MARK, resolveEnginePath, insertPrologue, buildPatchedSource };

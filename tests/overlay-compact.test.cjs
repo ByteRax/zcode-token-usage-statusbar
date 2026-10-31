@@ -529,8 +529,8 @@ test('v179 阈值行：补丁生效时钉在按钮之后，推送变化原地改
   assert.equal(ui.body.children.indexOf(info), ui.body.children.indexOf(btn) - 1, 'v189：钉在压缩按钮上方');
   const infoText = info.children.find(e => e.classList && e.classList.contains('zu-ac-text'));
   assert.ok(infoText, '文本 span 存在');
-  assert.match(infoText.textContent, /自动压缩 ~63%/);      // (200000−21000)×70% = 125,300 → 62.65% ≈ 63%
-  assert.match(infoText.textContent, /12.53万 token/);   // v191 token 数走 fmt()（默认中文万单位，至多两位小数）
+  assert.match(infoText.textContent, /自动压缩 ~70%/);      // v194 总窗口口径：200,000×70% = 140,000 → 70%（设置值=显示值）
+  assert.match(infoText.textContent, /14万 token/);   // token 数走 fmt()（默认中文万单位，至多两位小数）
   const link = info.children.find(e => e.classList && e.classList.contains('zu-ac-link'));
   assert.ok(link, '下划线「调整」链接存在');
   assert.equal(link.textContent, '调整');
