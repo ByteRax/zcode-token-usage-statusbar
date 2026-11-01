@@ -3016,7 +3016,7 @@
       '<section class="zu-settings-section" data-sec="about"' + secOpen("about") + '><div class="cap">' + L("关于数据", "About the data") + '</div><div class="pnote">' +
       L("数据库统计：只读 ~/.zcode/cli/db/db.sqlite，请求完成后入库；总 token 为输入加输出，缓存已含在输入中，思考已含在输出中。", "Database statistics: read-only ~/.zcode/cli/db/db.sqlite, written after requests complete. Total tokens = input + output; cache is included in input and thinking in output.") + '</div><div class="pnote">' +
       L("生成速度：只读渲染器状态桥在生成时按字符增量估算，完成后切换为真实速度；桥不可用时回退数据库最近有效段。", "Generation speed: the read-only renderer bridge estimates from text deltas while running and uses actual speed after completion; without the bridge it falls back to the latest valid database segment.") + '</div><div class="pnote">' +
-      L("联网边界：额度源查询对应账号的套餐或余额接口；插件更新可联网下载代码与读取当前渠道的发布日志。额度不是本地 token 统计推算值。SSH 数据查询使用已配置通道。", "Network boundaries: quota sources query account plan/balance endpoints; plugin updates can download code and read the current channel's release notes. Quota is not inferred from local token usage. SSH statistics use configured connections.") + '</div></section></div></div>' +
+      L("联网边界：额度源查询对应账号的套餐或余额接口；插件更新可联网下载代码与读取发布日志（源码渠道为注册仓库的同号 Release 参考）。额度不是本地 token 统计推算值。SSH 数据查询使用已配置通道。", "Network boundaries: quota sources query account plan/balance endpoints; plugin updates can download code and read release notes (source channels read the registered repo's same-version release as reference). Quota is not inferred from local token usage. SSH statistics use configured connections.") + '</div></section></div></div>' +
       '<div class="zu-settings-foot"><button type="button" class="zu-settings-scroll"></button>' +
       '<span class="zu-settings-feedback-status" role="status" aria-live="polite"></span>' +
       '<button type="button" class="zu-settings-feedback">' + L("反馈问题", "Report an issue") + '</button></div>';
@@ -4865,10 +4865,11 @@
      * 按注册 Release 渠道代拉 GitHub/GitCode 发布说明并缓存；渲染进程只传 version/force） ---------- */
     /* 状态变量必须在早期 buildPanel()（issue #55 时序）之前赋值：var 只提升声明不提升初始值，
      * 曾实测 buildPanel→syncUpdate→syncNotes 在赋值前执行把 notesSel 读成 undefined。 */
-    /* 渠道：仅 Release 渠道（GitHub/GitCode 正式发布）有可验证的版本↔日志对应关系 */
+    /* 渠道：Release 渠道取本渠道 Release（verified）；market（源码）渠道取注册仓库的
+     * 同号 Release 作参考正文（verified:false，浮层标注未核实）；本地目录无仓库身份，离线。 */
     function notesChannelOf(u) {
-      if (!u || u.channel !== "release") return null;
-      return { flavor: u.channelHost === "gitcode" ? "gitcode" : "github" };
+      if (!u || !u.channel || u.channel === "local") return null;
+      return { flavor: u.channelHost === "gitcode" ? "gitcode" : "github", verified: u.channel === "release" };
     }
     /* 默认日志选择（唯一依据是主进程推送的可靠状态，不猜）：
      * 待重启=已装完成（markerVersion 实际写入运行目录的版本，退 pendingRelease 目标）→
@@ -5147,24 +5148,17 @@
       var emptyKey = "";
       if (!target) emptyKey = !u || !u.supported ? "inactive" : "nomatch";
       else if (target.unknown) emptyKey = "unknown";   // 待重启但版本身份无法确定：明示，不冒充
-      else if (!ch && u && u.channel === "market") emptyKey = "market";
-      else if (!ch && u && u.channel === "local") emptyKey = "local";
+      else if (!ch && u && u.channel === "local") emptyKey = "local";   // 本地目录：无仓库身份，不联网
       if (emptyKey) {
         notesBodySig = ""; body.innerHTML = ""; body.setAttribute("aria-busy", "false");
         badge.textContent = ""; badge.style.display = "none";
-        meta.textContent = emptyKey === "market" ? L("源码渠道没有可核实的 Release 对应关系，不显示在线日志。", "Market sources have no verifiable release mapping; online notes are hidden.")
-          : emptyKey === "local" ? L("本地目录来源不联网，暂无更新日志。", "Directory sources stay offline; no release notes.")
+        meta.textContent = emptyKey === "local" ? L("本地目录来源不联网，暂无更新日志。", "Directory sources stay offline; no release notes.")
           : emptyKey === "unknown" ? L("已安装待重启，但无法确定本次安装的版本，暂不显示更新日志。", "Waiting for restart, but the installed version can't be determined; notes are hidden.")
           : L("尚未检查或没有可靠的版本身份；检查更新后这里会显示对应版本的日志。", "No reliable version identity yet; run a check to see matching notes.");
         histBtn.hidden = true; histPanel.hidden = true;
         backBtn.hidden = true;
-        var refUrl = emptyKey === "market" && u.channelRepo ? notesReleasePageUrl(u.channelHost === "gitcode" ? "gitcode" : "github", u.channelRepo, "") : "";
         toggle.hidden = true; retry.hidden = true;
-        if (refUrl) {
-          link.hidden = false; link.setAttribute("data-href", refUrl);
-          link.textContent = L("参考：发布页（未核实与本渠道一致）", "Reference: releases page (parity unverified)");
-          link.setAttribute("data-href-ref", "1");
-        } else { link.hidden = true; link.removeAttribute("data-href"); link.removeAttribute("data-href-ref"); }
+        link.hidden = true; link.removeAttribute("data-href");
         return;
       }
       /* Release 渠道：按 target 拉取并渲染 */
@@ -5182,13 +5176,20 @@
       badge.style.display = "";
       badge.textContent = notesStatusBadge(status) + " · v" + target.version;
       badge.classList.toggle("zu-notes-warn", status === "failed");
+      /* 未核实标注：market（源码）渠道展示的是注册仓库的同号 Release，不冒充本渠道已核实内容 */
+      var unverified = (ch ? ch.verified === false : notesLoadedVersion === target.version &&
+        !!(notesResult && notesResult.verified === false));
       var srcLabel = ch ? (ch.flavor === "gitcode" ? "GitCode" : "GitHub")
         : notesHostLabel(notesLoadedVersion === target.version ? notesResult : null);
-      meta.textContent = notesLoadedVersion === target.version && notesResult && notesResult.cachedAt
+      var metaText = notesLoadedVersion === target.version && notesResult && notesResult.cachedAt
         ? (srcLabel ? L("来源：", "Source: ") + srcLabel : "") +
           (notesResult.stale ? L(" · 正在显示缓存，最近获取：", " · showing cache, fetched: ") : L(" · 缓存于：", " · cached: ")) + (isFinite(notesResult.cachedAt) ? notesFmtDate(new Date(Math.min(notesResult.cachedAt, 8.64e15)).toISOString()) : "")
         : loading ? L("正在加载更新日志…", "Loading release notes…")
         : srcLabel ? L("来源：", "Source: ") + srcLabel + (ch && ch.flavor === "gitcode" && u.channelRepo ? " · " + u.channelRepo : "") : "";
+      if (unverified && notesLoadedVersion === target.version && notesResult) {
+        metaText += (metaText ? " " : "") + L("· 参考：同号 Release，未核实与本渠道一致", "· reference: same-version release, parity with this source unverified");
+      }
+      meta.textContent = metaText;
       var notesProved = notesLoadedVersion === target.version &&
         ((notesResult && typeof notesResult.url === "string") || (notesError && notesError.reason === "missing"));
       histBtn.hidden = !(ch || notesProved);   // 渠道已知或已被回复证实为 Release 渠道才提供历史版本
@@ -5200,7 +5201,10 @@
       var pageUrl = ch ? notesReleasePageUrl(ch.flavor, u.channelRepo, target.version) : "";
       if (!pageUrl && notesProved && notesResult && typeof notesResult.url === "string" &&
           notesResult.url.length <= 600 && /^https:\/\/(github|gitcode)\.com\//.test(notesResult.url)) pageUrl = notesResult.url;
-      if (pageUrl) { link.hidden = false; link.setAttribute("data-href", pageUrl); link.textContent = L("完整发布说明", "Full release notes"); link.removeAttribute("data-href-ref"); }
+      if (pageUrl) {
+        link.hidden = false; link.setAttribute("data-href", pageUrl);
+        link.textContent = unverified ? L("参考：发布页（未核实与本渠道一致）", "Reference: releases page (parity unverified)") : L("完整发布说明", "Full release notes");
+      }
       else { link.hidden = true; link.removeAttribute("data-href"); }
       retry.hidden = !(notesError && notesLoadedVersion === target.version && ["rate-limited", "network", "error"].indexOf(notesError.reason) >= 0);
       /* 正文：签名幂等——内容没变不重建，保滚动位置与焦点 */

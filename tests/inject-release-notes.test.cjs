@@ -31,8 +31,8 @@ function runHandler(req, { channel = null, service = null, noService = false } =
   return { wait: (ms = 30) => new Promise((r) => setTimeout(r, ms)), deliveries };
 }
 
-test("release notes handler refuses non-release channels before any fetch", async () => {
-  for (const channel of [null, { kind: "local" }, { kind: "market", flavor: "github", repository: "a/b" }]) {
+test("release notes handler refuses local and unknown channels before any fetch", async () => {
+  for (const channel of [null, { kind: "local" }]) {
     let fetched = 0;
     const r = runHandler({ action: "release-notes", version: "1.5.7", requestId: "r1" },
       { channel, service: { getNotes: async () => { fetched++; return { ok: true }; }, getList: async () => ({ ok: true }) } });
@@ -110,4 +110,19 @@ test("pollPluginRequests routes the two release-notes actions and keeps the unkn
   ], handled);
   await new Promise((r) => setTimeout(r, 80));
   assert.deepEqual(handled, [{ action: "release-notes", version: "1.5.7" }, { action: "release-notes-list", version: undefined }]);   // 白名单外动作不分发
+});
+
+test("market channel passes the gate and the reply carries verified:false; release channel verified:true", async () => {
+  const seen = [];
+  const service = { async getNotes(p) { seen.push({ ...p }); return { ok: true, tag: "v1.0.0", body: "b" }; }, async getList(p) { return { ok: true, releases: [] }; } };
+  const market = runHandler({ action: "release-notes", version: "1.0.0", requestId: "m1" },
+    { channel: { kind: "market", flavor: "github", repository: "a/b" }, service });
+  await market.wait();
+  assert.deepEqual(seen, [{ flavor: "github", repository: "a/b", version: "1.0.0", force: false }]);
+  assert.equal(market.deliveries[0].result.verified, false);   // 源码渠道：同号 Release 参考正文
+  assert.equal(market.deliveries[0].result.ok, true);
+  const release = runHandler({ action: "release-notes", version: "1.0.0", requestId: "m2" },
+    { channel: { kind: "release", flavor: "github", repository: "a/b" }, service });
+  await release.wait();
+  assert.equal(release.deliveries[0].result.verified, true);
 });

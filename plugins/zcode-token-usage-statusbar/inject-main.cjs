@@ -898,23 +898,28 @@ function handleModelPullRequest(req, wc) {
     .catch((e) => { LOG("model pull apply failed:", e.message); respond({ ok: false, error: "apply failed" }); });
 }
 
-/* 渠道门控：仅 Release 渠道（GitHub/GitCode 正式发布）代拉日志；market/local 没有可验证的
- * Release 对应关系，一律回 unsupported-channel，由浮层显示空状态而不是猜测内容。 */
+/* 渠道门控：Release 渠道取本渠道 Release；market（源码）渠道取注册仓库的同号 Release，
+ * 响应带 verified:false 由浮层标注「参考/未核实」；local 无仓库身份回 unsupported-channel。 */
 async function handleReleaseNotesRequest(req, wc) {
   const respond = (result) => deliverPluginRequest(wc, req.requestId, result);
   try {
     if (!releaseNotes) { respond({ ok: false, reason: "unsupported" }); return; }
     let channel = null;
     try { channel = require("./plugin-release.cjs").readChannel(app.getPath("home")); } catch (e) { channel = null; }
-    if (!channel || channel.kind !== "release") { respond({ ok: false, reason: "unsupported-channel" }); return; }
+    // release 渠道取本渠道 Release；market（源码）渠道取注册仓库的**同号 Release** 作参考正文
+    // （响应带 verified:false，浮层据此标注「未核实与本渠道一致」）；local 无仓库身份仍拒绝。
+    if (!channel || channel.kind === "local" || !channel.repository) { respond({ ok: false, reason: "unsupported-channel" }); return; }
     const flavor = channel.flavor === "gitcode" ? "gitcode" : "github";
     const repository = channel.repository || "";
+    const verified = channel.kind === "release";
     if (req.action === "release-notes-list") {
-      respond(await releaseNotes.getList({ flavor, repository, force: req.force === true }));
+      const result = await releaseNotes.getList({ flavor, repository, force: req.force === true });
+      respond(result.ok ? { ...result, verified } : result);
       return;
     }
     const version = typeof req.version === "string" ? req.version.slice(0, 32) : "";
-    respond(await releaseNotes.getNotes({ flavor, repository, version, force: req.force === true }));
+    const result = await releaseNotes.getNotes({ flavor, repository, version, force: req.force === true });
+    respond(result.ok ? { ...result, verified } : result);
   } catch (e) {
     LOG("release notes request failed:", e.message);
     respond({ ok: false, reason: "error", message: String((e && e.message) || e).slice(0, 300) });

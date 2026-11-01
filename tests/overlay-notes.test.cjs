@@ -84,11 +84,11 @@ test("notesDefaultTarget picks the version strictly from reliable state", () => 
   assert.equal(d(releaseUpdate({ phase: "idle", latestVersion: "", currentVersion: "" })), null);
 });
 
-test("notesChannelOf only trusts the release channel", () => {
+test("notesChannelOf flags verified release channels, passes market as reference", () => {
   const ctx = makeContext();
-  assert.deepEqual(json(ctx.notesChannelOf(releaseUpdate())), { flavor: "github" });
-  assert.deepEqual(json(ctx.notesChannelOf(releaseUpdate({ channelHost: "gitcode" }))), { flavor: "gitcode" });
-  assert.equal(ctx.notesChannelOf(releaseUpdate({ channel: "market" })), null);
+  assert.deepEqual(json(ctx.notesChannelOf(releaseUpdate())), { flavor: "github", verified: true });
+  assert.deepEqual(json(ctx.notesChannelOf(releaseUpdate({ channelHost: "gitcode" }))), { flavor: "gitcode", verified: true });
+  assert.deepEqual(json(ctx.notesChannelOf(releaseUpdate({ channel: "market" }))), { flavor: "github", verified: false });   // 源码渠道：同号 Release 参考正文
   assert.equal(ctx.notesChannelOf(releaseUpdate({ channel: "local" })), null);
   assert.equal(ctx.notesChannelOf(null), null);
 });
@@ -194,13 +194,17 @@ test("syncNotes prefers installed-pending-restart and failure targets with hones
   assert.equal(failed.__bySel[".zu-notes-badge"].classList.contains("zu-notes-warn"), true);
 });
 
-test("syncNotes degrades to empty states for market, local and unknown identities", () => {
+test("market channel shows the same-version release as labeled reference content", () => {
   const market = makeContext({ pluginUpdate: releaseUpdate({ channel: "market", channelHost: "github", latestVersion: "1.5.7" }) });
   market.syncNotes();
-  assert.equal(market.__sent.length, 0);   // 源码渠道不联网
-  assert.match(market.__bySel[".zu-notes-meta"].textContent, /源码渠道/);
-  assert.equal(market.__bySel[".zu-notes-history-btn"].hidden, true);
-  assert.equal(market.__bySel[".zu-notes-link"].getAttribute("data-href"), "https://github.com/ByteRax/zcode-token-usage-statusbar/releases");   // 参考链接由用户主动打开
+  assert.deepEqual(json(market.__sent), [{ action: "release-notes", extra: { version: "1.5.7", force: false } }]);   // 源码渠道拉同号 Release
+  market.__dones[0]({ ok: true, tag: "v1.5.7", version: "1.5.7", body: "## 内容\n\n- 条目", cachedAt: 1730000000000,
+    url: "https://github.com/ByteRax/zcode-token-usage-statusbar/releases/tag/v1.5.7", verified: false });
+  assert.match(market.__bySel[".zu-notes-meta"].textContent, /参考：同号 Release/);   // 不冒充本渠道已核实内容
+  assert.match(market.__bySel[".zu-notes-meta"].textContent, /GitHub/);
+  assert.equal(market.__bySel[".zu-notes-link"].getAttribute("data-href"), "https://github.com/ByteRax/zcode-token-usage-statusbar/releases/tag/v1.5.7");
+  assert.match(market.__bySel[".zu-notes-link"].textContent, /未核实/);
+  assert.equal(market.__bySel[".zu-notes-history-btn"].hidden, false);
 
   const local = makeContext({ pluginUpdate: releaseUpdate({ channel: "local", channelRepo: "" }) });
   local.syncNotes();
@@ -270,10 +274,13 @@ test("review hardening: ReDoS input renders fast, rebuilt DOM refills, gitcode m
   ctx.__bySel[".zu-notes-body"].innerHTML = "";   // 模拟面板 innerHTML 重建
   ctx.syncNotes();
   assert.match(ctx.__bySel[".zu-notes-body"].innerHTML, /内容/);
-  // 3) GitCode market 来源的参考链接指向 gitcode 域
+  // 3) GitCode market 来源：拉取流 + 参考标注，链接指向 gitcode 域 tag 页
   const gc = makeContext({ pluginUpdate: releaseUpdate({ channel: "market", channelHost: "gitcode", channelRepo: "tanranran/zcode-token-usage-statusbar", latestVersion: "1.5.7" }) });
   gc.syncNotes();
-  assert.equal(gc.__bySel[".zu-notes-link"].getAttribute("data-href"), "https://gitcode.com/tanranran/zcode-token-usage-statusbar/releases");
+  gc.__dones[0]({ ok: true, tag: "v1.5.7", version: "1.5.7", body: "x", cachedAt: 1,
+    url: "https://gitcode.com/tanranran/zcode-token-usage-statusbar/releases/tag/v1.5.7", verified: false });
+  assert.equal(gc.__bySel[".zu-notes-link"].getAttribute("data-href"), "https://gitcode.com/tanranran/zcode-token-usage-statusbar/releases/tag/v1.5.7");
+  assert.match(gc.__bySel[".zu-notes-meta"].textContent, /参考/);
   // 4) 粘性选择被默认追上时按真实状态显示、返回入口消失
   const st = makeContext({ pluginUpdate: releaseUpdate() });
   st.syncNotes();
