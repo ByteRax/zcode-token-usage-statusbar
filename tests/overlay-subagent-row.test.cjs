@@ -86,6 +86,7 @@ function extractRender(lang) {
     fmt: n => String(Math.round(n)),
     sec: ms => (ms ? (ms / 1000).toFixed(1) + 's' : '–'),
     fmtStart: () => '2026-10-31 10:00',
+    fmtStartS: () => '2026-10-31 10:00:05',
     zuActiveTurnId: snap => (snap && snap.activeTid) || '',
     DEFAULT_CHARS_PER_TOKEN: 2,
     bridge: { handle: { charsPerToken: 4 } },
@@ -358,16 +359,32 @@ for (const lang of ['zh', 'en']) {
     const { ctx, fn } = extractRender(lang);
     const p = makePane('sess_subagent_a', '');
     ctx.composer = p.composer;
-    ctx.lastSub = { list: [{ sid: 'sess_subagent_a', tps_avg: 88.44, task: 'Review <script>alert(1)</script>', agent: 'general-purpose', output: 4350, requests: 6, last: NOW }] };
+    ctx.lastSub = { list: [{ sid: 'sess_subagent_a', tps_avg: 88.44, task: 'Review <script>alert(1)</script>', agent: 'general-purpose', input: 12000, output: 4350, requests: 6, started: NOW - 480000, last: NOW }] };
     fn.render();
     const html = fn.tip(chipOf(p.row).__zuT);
     assert.match(html, /Review &lt;script&gt;/, '动态名转义');
     assert.ok(!html.includes('<script>'));
     assert.match(html, /general-purpose/);
     assert.match(html, new RegExp('<b>' + (lang === 'en' ? 'Average rate' : '平均速率') + '</b><span>88.4 t/s'));
+    assert.match(html, new RegExp('<b>' + (lang === 'en' ? 'Input' : '输入') + '</b><span>12000 token'), '输入行在输出行之上');
+    const inputAt = html.indexOf((lang === 'en' ? 'Input' : '输入') + '</b>');
+    const outputAt = html.indexOf((lang === 'en' ? 'Output' : '输出') + '</b>');
+    assert.ok(inputAt > -1 && inputAt < outputAt, '输入行先于输出行');
     assert.match(html, /4350 token/);
     assert.match(html, new RegExp((lang === 'en' ? 'Requests' : '请求数') + '</b><span>6'));
-    assert.match(html, /2026-10-31 10:00/);
+    assert.match(html, new RegExp('<b>' + (lang === 'en' ? 'Time span' : '起始时间') + '</b><span>2026-10-31 10:00:05 - 2026-10-31 10:00:05'), '起始-结束范围行（到秒）');
+    assert.ok(!html.includes('最后活动') && !html.includes('Last active'), '最后活动行已移除');
+  });
+
+  test(`${lang}: real tooltip without started (old snapshot) renders em-dash start side`, () => {
+    const { ctx, fn } = extractRender(lang);
+    const p = makePane('sess_subagent_a', '');
+    ctx.composer = p.composer;
+    ctx.lastSub = { list: [{ sid: 'sess_subagent_a', tps_avg: 88.44, task: 'T', agent: 'general-purpose', output: 4350, requests: 6, last: NOW }] };
+    fn.render();
+    const html = fn.tip(chipOf(p.row).__zuT);
+    assert.match(html, new RegExp('<b>' + (lang === 'en' ? 'Time span' : '起始时间') + '</b><span>— - 2026-10-31 10:00:05'), '缺 started 只缺省起始侧');
+    assert.ok(!html.includes('Input</b>') && !html.includes('输入</b>'), '缺 input 不渲染输入行');
   });
 }
 
@@ -386,7 +403,7 @@ test('source contracts: updateLive hook, scan cleanup, delegation listener, CSS 
   assert.match(source, /if \(subTipFor && !subTipFor\.isConnected\) hideSubTip\(\);/, 'scanRateLines detach 兜底收起');
   assert.ok(source.includes('e.target.closest(".zu-subrate")'), 'document 委托悬停（免逐 chip 监听）');
   assert.match(source, /"\.zu-subrate\{flex:0 0 auto;white-space:nowrap;cursor:help/, 'chip 样式入注入块');
-  assert.match(source, /var VERSION = "v206";/);   // v202 = ⚙ 更新页「更新日志」卡片（v201 之后再顺延；v201 撞号注释见 overlay.js 版本链）
+  assert.match(source, /var VERSION = "v207";/);   // v207 = 子代理行内速率 tooltip「输入」行 +「起始时间」范围行（v206 之后再顺延）
   // v179/v180 review P1：调用侧形状锁——showSubTip 以数据包调 buildTip（v178 回归即红）
   assert.ok(source.includes('el.__zuT.buildTip(el.__zuT)'), 'tooltip 数据包调用约定');
   assert.ok(source.includes("runningSubagents.length - 1"), '截断从尾部取（最新派发优先）');

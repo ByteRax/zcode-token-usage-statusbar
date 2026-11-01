@@ -435,6 +435,10 @@ create table part (session_id text, data text, time_created integer, time_update
         self.assertEqual(by_sid["sess_subagent_a1"]["tps_avg"], 75.0)
         self.assertEqual(by_sid["sess_subagent_b2"]["tps_avg"], 50.0)
         self.assertEqual(sub["list"][0]["sid"], "sess_subagent_b2")   # 按最后完成时间降序
+        # started = 该子代理首个已完成请求 started_at（口径同四格时间范围行「起」）
+        self.assertEqual(by_sid["sess_subagent_a1"]["started"], 1_000_000)
+        self.assertEqual(by_sid["sess_subagent_b2"]["started"], 1_060_000)
+        self.assertEqual(by_sid["sess_subagent_a1"]["last"], 1_056_173)
         # 主会话自身速率不掺入子代理行（session_id 隔离）
         self.assertEqual(snap["last"]["tps"], 0)
 
