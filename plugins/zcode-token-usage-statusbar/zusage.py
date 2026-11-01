@@ -988,7 +988,8 @@ def _session_snapshot(con, sid, cfg):
                   coalesce(sum(m.computed_total_tokens),0),
                   coalesce(sum(m.input_tokens),0), coalesce(sum(m.output_tokens),0),
                   coalesce(sum(m.cache_read_input_tokens),0), coalesce(sum(m.reasoning_tokens),0),
-                  coalesce(sum(m.cache_creation_input_tokens),0), max(m.completed_at), s2.time_created
+                  coalesce(sum(m.cache_creation_input_tokens),0), max(m.completed_at), s2.time_created,
+                  min(m.started_at)
            from model_usage m join session s2 on m.session_id = s2.id
            where m.query_source='subagent' and s2.parent_id=? and m.status='completed'
            group by m.session_id order by max(m.completed_at) desc""",
@@ -1035,6 +1036,7 @@ def _session_snapshot(con, sid, cfg):
              "requests": r[3], "total": r[4],
              "input": r[5], "output": r[6], "cache_read": r[7], "reasoning": r[8],
              "cache_write": r[9], "last": (r[10] or 0),
+             "started": (r[12] or 0),
              "tps_avg": _rated_tps(*sub_gen.get(r[0], [0, 0])),
              "active": bool(r[10] and now_ms - r[10] < 30000)}
             for r in sub_rows
