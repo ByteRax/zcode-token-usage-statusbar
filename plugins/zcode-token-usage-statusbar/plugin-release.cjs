@@ -542,6 +542,7 @@ function createNotesService(options) {
     if (primary.flavor === "gitcode") return result;   // gitcode 形态本身就在镜像域上，没有第二跳
     const mirror = await runner({ flavor: "gitcode", repository: NOTES_GITCODE_MIRROR });
     if (mirror.ok) return { ...mirror, mirror: true };   // 镜像命中：缓存仍按原身份键存放（同项目同号内容）
+    if (mirror.reason === "missing") return { ...mirror, mirror: true };   // 镜像确认同号无 Release：比主源限流更准确，如实显示缺失
     return result;
   };
   return {

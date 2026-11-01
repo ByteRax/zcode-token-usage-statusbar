@@ -272,6 +272,21 @@ test("github rate-limited notes fall back to the official GitCode mirror", async
   assert.deepEqual(hosts2, ["api.github.com"]);
 });
 
+test("mirror 404 is authoritative: missing beats the primary rate limit", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "zusage-notes-404-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const service = createNotesService({
+    fetch: async (url) => {
+      if (new URL(url).hostname === "api.github.com") throw Object.assign(new Error("Release 请求失败 (403)"), { status: 403 });
+      throw Object.assign(new Error("Release 请求失败 (404)"), { status: 404 });   // 镜像确认该版本从未发布
+    },
+  });
+  const r = await service.getNotes({ flavor: "github", repository: "ByteRax/zcode-token-usage-statusbar", version: "1.5.9" });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, "missing");   // 显示「此版本暂无更新日志」而非误导性的限流重试
+  assert.equal(r.mirror, true);
+});
+
 test("both sides rate-limited keeps the honest rate-limited state", async () => {
   const rateLimited = Object.assign(new Error("Release 请求失败 (429)"), { status: 429 });
   const service = createNotesService({ fetch: async () => { throw rateLimited; } });
