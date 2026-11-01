@@ -757,6 +757,9 @@ function pushPluginState(wc, state) {
     relaunchSupported: true };   // v180 issue #158：能力标记与下方 relaunch 分支同文件（inject-main），缺标记=旧主进程必然没有该动作分支
   wc.executeJavaScript(`window.__zusagePluginUpdate && window.__zusagePluginUpdate(${JSON.stringify(payload)})`, true).catch(() => { });
 }
+/* ack 必须先于更新器初始化：createUpdater 会在创建瞬间快照 marker 状态并作为首帧
+ * 推送——若 ack 后跑，已清除的「待重启」会在重启后的第一分钟被误报（实测 2026-11-01）。 */
+acknowledgeRestart();
 try {
   const { createUpdater } = require("./plugin-updater.cjs");
   pluginUpdater = createUpdater({ runtime: HERE, home: app.getPath("home"),
@@ -768,7 +771,6 @@ try {
   delete loadedHashes["plugin-storage.cjs"];
   LOG("plugin updater unavailable:", e.message);
 }
-acknowledgeRestart();
 
 /* ---------- v179 自动压缩阈值引擎补丁：默认关。开启后启动时按 ENGINE_TARGETS 的
  * SHA256 白名单给 <resources>/glm/zcode.cjs 打阈值改道补丁（fail-open/fail-closed
