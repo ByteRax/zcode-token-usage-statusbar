@@ -4894,6 +4894,10 @@
       if (u.phase === "updated" && u.latestVersion) return { version: u.latestVersion, status: "current" };   // 热文件已重载，无待重启
       if (u.phase === "available" && u.latestVersion) return { version: u.latestVersion, status: "available" };
       if (u.phase === "current" && u.currentVersion) return { version: u.currentVersion, status: "current" };
+      /* 未触发检查更新（idle/检查失败等）：当前已装版本就是可靠身份，直接展示它的日志；
+       * 该版本无 Release 时如实提示，可转历史版本。渠道未知也发起拉取——主进程按注册
+       * 渠道门控，market/local 会被拒绝且不产生任何网络请求。 */
+      if (u.currentVersion) return { version: u.currentVersion, status: "current" };
       return null;
     }
     function notesPickTarget(u) {
@@ -4921,6 +4925,12 @@
       return typeof version === "string" && /^\d+\.\d+\.\d+$/.test(version)
         ? base + repository + "/releases/tag/v" + version
         : base + repository + "/releases";
+    }
+    /* 渠道未知（未检查过）时从已验证回复的发布页 URL 推导来源标签 */
+    function notesHostLabel(notes) {
+      var url = notes && notes.url;
+      return /^https:\/\/github\.com\//.test(String(url || "")) ? "GitHub"
+        : /^https:\/\/gitcode\.com\//.test(String(url || "")) ? "GitCode" : "";
     }
     function notesFmtDate(iso) {
       var t = Date.parse(String(iso || ""));
@@ -5131,19 +5141,21 @@
       var ch = notesChannelOf(u);
       var pick = notesPickTarget(u);
       var def = pick.def, target = pick.target;
-      /* 空状态：非 Release 渠道不联网（market 有注册仓库时给明确标注的参考链接）；身份无法确定时明示，不冒充 */
+      /* 空状态：渠道明确为 market/local 时不联网（market 有注册仓库时给明确标注的参考链接）；
+       * 版本身份缺失时明示，不冒充。渠道未知但有当前版本时不再空转——走下方正常流程，
+       * 由主进程渠道门控裁决（本地/源码渠道会被拒绝且零网络开销）。 */
       var emptyKey = "";
-      if (!ch) emptyKey = u && u.channel === "market" ? "market" : u && u.channel === "local" ? "local" : "idle";
-      else if (!target) emptyKey = "nomatch";
-      else if (target.unknown) emptyKey = "unknown";
+      if (!target) emptyKey = !u || !u.supported ? "inactive" : "nomatch";
+      else if (target.unknown) emptyKey = "unknown";   // 待重启但版本身份无法确定：明示，不冒充
+      else if (!ch && u && u.channel === "market") emptyKey = "market";
+      else if (!ch && u && u.channel === "local") emptyKey = "local";
       if (emptyKey) {
         notesBodySig = ""; body.innerHTML = ""; body.setAttribute("aria-busy", "false");
         badge.textContent = ""; badge.style.display = "none";
         meta.textContent = emptyKey === "market" ? L("源码渠道没有可核实的 Release 对应关系，不显示在线日志。", "Market sources have no verifiable release mapping; online notes are hidden.")
           : emptyKey === "local" ? L("本地目录来源不联网，暂无更新日志。", "Directory sources stay offline; no release notes.")
           : emptyKey === "unknown" ? L("已安装待重启，但无法确定本次安装的版本，暂不显示更新日志。", "Waiting for restart, but the installed version can't be determined; notes are hidden.")
-          : emptyKey === "nomatch" ? L("尚未检查或没有可靠的版本身份；检查更新后这里会显示对应版本的日志。", "No reliable version identity yet; run a check to see matching notes.")
-          : L("检查更新后，这里会显示对应版本的更新日志。", "Run a check to see the release notes for the matching version.");
+          : L("尚未检查或没有可靠的版本身份；检查更新后这里会显示对应版本的日志。", "No reliable version identity yet; run a check to see matching notes.");
         histBtn.hidden = true; histPanel.hidden = true;
         backBtn.hidden = true;
         var refUrl = emptyKey === "market" && u.channelRepo ? notesReleasePageUrl(u.channelHost === "gitcode" ? "gitcode" : "github", u.channelRepo, "") : "";
@@ -5170,18 +5182,24 @@
       badge.style.display = "";
       badge.textContent = notesStatusBadge(status) + " · v" + target.version;
       badge.classList.toggle("zu-notes-warn", status === "failed");
+      var srcLabel = ch ? (ch.flavor === "gitcode" ? "GitCode" : "GitHub")
+        : notesHostLabel(notesLoadedVersion === target.version ? notesResult : null);
       meta.textContent = notesLoadedVersion === target.version && notesResult && notesResult.cachedAt
-        ? L("来源：", "Source: ") + (ch.flavor === "gitcode" ? "GitCode" : "GitHub") +
+        ? (srcLabel ? L("来源：", "Source: ") + srcLabel : "") +
           (notesResult.stale ? L(" · 正在显示缓存，最近获取：", " · showing cache, fetched: ") : L(" · 缓存于：", " · cached: ")) + (isFinite(notesResult.cachedAt) ? notesFmtDate(new Date(Math.min(notesResult.cachedAt, 8.64e15)).toISOString()) : "")
         : loading ? L("正在加载更新日志…", "Loading release notes…")
-        : L("来源：", "Source: ") + (ch.flavor === "gitcode" ? "GitCode" : "GitHub") + (ch.flavor === "gitcode" && u.channelRepo ? " · " + u.channelRepo : "");
-      histBtn.hidden = false;
+        : srcLabel ? L("来源：", "Source: ") + srcLabel + (ch && ch.flavor === "gitcode" && u.channelRepo ? " · " + u.channelRepo : "") : "";
+      var notesProved = notesLoadedVersion === target.version &&
+        ((notesResult && typeof notesResult.url === "string") || (notesError && notesError.reason === "missing"));
+      histBtn.hidden = !(ch || notesProved);   // 渠道已知或已被回复证实为 Release 渠道才提供历史版本
       /* 粘性选择的返回入口：默认目标存在且与当前不同时可见；安装状态变化时由此轻量收敛 */
       var backVisible = !!(notesSel.explicit && def && def.version && def.version !== target.version);
       backBtn.hidden = !backVisible;
       if (backVisible) backBtn.textContent = L("返回默认版本 v", "Back to v") + def.version;
       if (histPanel.hidden) notesHistorySig = "";   // 收起后下次展开强制重绘（状态可能已变）；开合只由用户点击驱动
-      var pageUrl = notesReleasePageUrl(ch.flavor, u.channelRepo, target.version);
+      var pageUrl = ch ? notesReleasePageUrl(ch.flavor, u.channelRepo, target.version) : "";
+      if (!pageUrl && notesProved && notesResult && typeof notesResult.url === "string" &&
+          notesResult.url.length <= 600 && /^https:\/\/(github|gitcode)\.com\//.test(notesResult.url)) pageUrl = notesResult.url;
       if (pageUrl) { link.hidden = false; link.setAttribute("data-href", pageUrl); link.textContent = L("完整发布说明", "Full release notes"); link.removeAttribute("data-href-ref"); }
       else { link.hidden = true; link.removeAttribute("data-href"); }
       retry.hidden = !(notesError && notesLoadedVersion === target.version && ["rate-limited", "network", "error"].indexOf(notesError.reason) >= 0);

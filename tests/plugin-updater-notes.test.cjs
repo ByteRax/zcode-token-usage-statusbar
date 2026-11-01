@@ -169,3 +169,17 @@ test("uninstall-type cancellations are not recorded as install failures", async 
   assert.equal(u.status().lastFailure, null);   // 卸载类取消 ≠ 目标版本安装失败
   assert.equal(JSON.parse(fs.readFileSync(path.join(runtime, "plugin-update.json"), "utf8")).lastFailure, null);
 });
+
+test("channel identity is published at idle without any check", (t) => {
+  const gh = fixture(t, { marketSource: { id: "zusage-marketplace", source: { source: "github", repo: "ByteRax/zcode-token-usage-statusbar" } } });
+  const gs = gh.updater.status();
+  assert.equal(gs.phase, "idle");
+  assert.equal(gs.channel, "release");   // 渠道是注册来源的既成事实，不需要等检查
+  assert.equal(gs.channelHost, "github");
+  assert.equal(gs.channelRepo, "ByteRax/zcode-token-usage-statusbar");
+  const dir = fixture(t);
+  const ds = dir.updater.status();
+  assert.equal(ds.phase, "idle");
+  assert.equal(ds.channel, "local");
+  assert.equal(ds.channelRepo, "");
+});

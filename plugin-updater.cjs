@@ -337,6 +337,16 @@ function createUpdater(options) {
     state.restartRequired = fs.existsSync(markerFile);
     state.markerAt = state.restartRequired ? markerMtime() : 0;
     state.markerVersion = state.restartRequired ? markerVersion() : "";
+    // 渠道身份是注册来源的既成事实，不必等检查：未检查时也随状态发布，供「更新日志」
+    // 卡片的选择与来源展示使用（读取失败保持空串，由浮层按未知渠道降级）。
+    try {
+      const source = channel();
+      state.channel = source.kind;
+      state.channelHost = source.flavor === "gitcode" ? "gitcode" : source.flavor === "github" ? "github" : "";
+      state.channelRepo = source.repository || "";
+    } catch (e) {
+      state.channel = ""; state.channelHost = ""; state.channelRepo = "";
+    }
     return record;
   }
   function publish() {

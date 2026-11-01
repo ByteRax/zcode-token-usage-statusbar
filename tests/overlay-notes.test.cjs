@@ -334,3 +334,41 @@ test("history selection re-renders aria-current immediately", () => {
   assert.match(hist.innerHTML, /data-version="1\.5\.6" aria-current="true"/);   // 选中迁移即时反映
   assert.ok(!/data-version="1\.5\.7" aria-current/.test(hist.innerHTML));
 });
+
+test("idle without a check shows the current installed version's notes (user rule)", () => {
+  const d = makeContext().notesDefaultTarget;
+  assert.deepEqual(json(d({ supported: true, phase: "idle", currentVersion: "1.5.9", channel: "", latestVersion: "" })),
+    { version: "1.5.9", status: "current" });   // 未触发检查更新：当前已装版本即目标
+  assert.equal(d({ supported: true, phase: "idle", currentVersion: "", channel: "" }), null);
+});
+
+test("syncNotes fetches current-version notes before any check and derives source from the verified reply", () => {
+  const ctx = makeContext({ pluginUpdate: { supported: true, phase: "idle", currentVersion: "1.5.9", latestVersion: "",
+    channel: "", channelHost: "", channelRepo: "", restartRequired: false, markerVersion: "" } });
+  ctx.syncNotes();
+  assert.deepEqual(json(ctx.__sent), [{ action: "release-notes", extra: { version: "1.5.9", force: false } }]);   // 渠道未知也发起，由主进程门控
+  ctx.__dones[0]({ ok: true, tag: "v1.5.9", version: "1.5.9", name: "v1.5.9", body: "## 内容\n\n- 条目",
+    url: "https://github.com/ByteRax/zcode-token-usage-statusbar/releases/tag/v1.5.9", cachedAt: 1730000000000 });
+  assert.match(ctx.__bySel[".zu-notes-badge"].textContent, /当前版本/);
+  assert.match(ctx.__bySel[".zu-notes-badge"].textContent, /1\.5\.9/);
+  assert.match(ctx.__bySel[".zu-notes-meta"].textContent, /GitHub/);   // 来源从已验证回复 URL 推导
+  assert.equal(ctx.__bySel[".zu-notes-link"].getAttribute("data-href"), "https://github.com/ByteRax/zcode-token-usage-statusbar/releases/tag/v1.5.9");
+  assert.equal(ctx.__bySel[".zu-notes-history-btn"].hidden, false);   // 回复证实为 Release 渠道
+});
+
+test("unsupported-channel and missing replies keep honest states at idle", () => {
+  const ctx = makeContext({ pluginUpdate: { supported: true, phase: "idle", currentVersion: "1.5.9", latestVersion: "",
+    channel: "", channelHost: "", channelRepo: "", restartRequired: false, markerVersion: "" } });
+  ctx.syncNotes();
+  ctx.__dones[0]({ ok: false, reason: "unsupported-channel" });
+  assert.match(ctx.__bySel[".zu-notes-body"].innerHTML, /当前来源暂不支持在线日志/);
+  assert.equal(ctx.__bySel[".zu-notes-history-btn"].hidden, true);   // 未证实是 Release 渠道，不提供历史
+  assert.equal(ctx.__bySel[".zu-notes-link"].hidden, true);
+
+  const ctx2 = makeContext({ pluginUpdate: { supported: true, phase: "idle", currentVersion: "1.5.9", latestVersion: "",
+    channel: "", channelHost: "", channelRepo: "", restartRequired: false, markerVersion: "" } });
+  ctx2.syncNotes();
+  ctx2.__dones[0]({ ok: false, reason: "missing" });
+  assert.match(ctx2.__bySel[".zu-notes-body"].innerHTML, /此版本暂无更新日志/);
+  assert.equal(ctx2.__bySel[".zu-notes-history-btn"].hidden, false);   // missing 恰好证实是 Release 渠道：可转历史版本
+});
