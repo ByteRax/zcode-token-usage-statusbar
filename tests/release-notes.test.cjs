@@ -237,3 +237,45 @@ test("cache load rejects oversized bodies and out-of-range timestamps", (t) => {
   assert.equal(reloaded.get("github|a/b|n:9.9.8"), null);   // 越界时间戳拒绝
   assert.equal(reloaded.get("github|a/b|n:1.0.0").notes.body, "ok");   // 合法条目保留
 });
+
+test("github rate-limited notes fall back to the official GitCode mirror", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "zusage-notes-mirror-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const hosts = [];
+  const rateLimited = Object.assign(new Error("Release 请求失败 (403)"), { status: 403 });
+  const service = createNotesService({
+    fetch: async (url) => {
+      hosts.push(new URL(url).hostname);
+      if (new URL(url).hostname === "api.github.com") throw rateLimited;   // 主源限流
+      return Buffer.from(JSON.stringify({ ...GITHUB_ROW, body: "镜像正文" }));
+    },
+  });
+  const r = await service.getNotes({ flavor: "github", repository: "ByteRax/zcode-token-usage-statusbar", version: "1.5.7" });
+  assert.equal(r.ok, true);
+  assert.equal(r.mirror, true);   // 镜像回退标记（浮层据此标注实际来源）
+  assert.equal(r.body, "镜像正文");
+  assert.deepEqual(hosts, ["api.github.com", "api.gitcode.com"]);
+  assert.equal(new URL(r.url).hostname, "gitcode.com");
+  // 无镜像可供回退的形态不跳：gitcode 渠道限流保持限流（不得反向跳 github）
+  const hostsGc = [];
+  const gcService = createNotesService({
+    fetch: async (url) => { hostsGc.push(new URL(url).hostname); throw Object.assign(new Error("Release 请求失败 (429)"), { status: 429 }); },
+  });
+  const gc = await gcService.getNotes({ flavor: "gitcode", repository: "tanranran/zcode-token-usage-statusbar", version: "1.5.7" });
+  assert.equal(gc.ok, false); assert.equal(gc.reason, "rate-limited");
+  assert.deepEqual(hostsGc, ["api.gitcode.com"]);   // 只有 gitcode 一跳
+  // 主源成功时不触发镜像
+  const hosts2 = [];
+  const ok = createNotesService({ fetch: async (url) => { hosts2.push(new URL(url).hostname); return Buffer.from(JSON.stringify(GITHUB_ROW)); } });
+  const good = await ok.getNotes({ flavor: "github", repository: "ByteRax/zcode-token-usage-statusbar", version: "1.5.7" });
+  assert.equal(good.ok, true); assert.equal(good.mirror, undefined);
+  assert.deepEqual(hosts2, ["api.github.com"]);
+});
+
+test("both sides rate-limited keeps the honest rate-limited state", async () => {
+  const rateLimited = Object.assign(new Error("Release 请求失败 (429)"), { status: 429 });
+  const service = createNotesService({ fetch: async () => { throw rateLimited; } });
+  const r = await service.getNotes({ flavor: "github", repository: "ByteRax/zcode-token-usage-statusbar", version: "1.5.7" });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, "rate-limited");   // 双侧失败不虚报，浮层仍可重试
+});

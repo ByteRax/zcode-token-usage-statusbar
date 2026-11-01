@@ -379,3 +379,15 @@ test("unsupported-channel and missing replies keep honest states at idle", () =>
   assert.match(ctx2.__bySel[".zu-notes-body"].innerHTML, /此版本暂无更新日志/);
   assert.equal(ctx2.__bySel[".zu-notes-history-btn"].hidden, false);   // missing 恰好证实是 Release 渠道：可转历史版本
 });
+
+test("mirror fallback replies label the actual source and point the link at the mirror page", () => {
+  const ctx = makeContext({ pluginUpdate: releaseUpdate() });   // verified github 渠道
+  ctx.syncNotes();
+  ctx.__dones[0]({ ok: true, tag: "v1.5.7", version: "1.5.7", body: "## x\n\n- a", cachedAt: 1730000000000, mirror: true,
+    url: "https://gitcode.com/tanranran/zcode-token-usage-statusbar/releases/tag/v1.5.7" });
+  assert.match(ctx.__bySel[".zu-notes-meta"].textContent, /GitCode 镜像/);
+  assert.match(ctx.__bySel[".zu-notes-meta"].textContent, /限流回退/);
+  assert.equal(ctx.__bySel[".zu-notes-link"].getAttribute("data-href"),
+    "https://gitcode.com/tanranran/zcode-token-usage-statusbar/releases/tag/v1.5.7");   // 链接指向实际来源
+  assert.equal(ctx.__bySel[".zu-notes-badge"].classList.contains("zu-notes-warn"), false);   // verified 渠道不因镜像回退变成参考态
+});

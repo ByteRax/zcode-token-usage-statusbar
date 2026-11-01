@@ -353,6 +353,9 @@ function catalogChannel(catalog, pluginName = "zcode-token-usage-statusbar") {
 const NOTES_MAX_JSON = 256 * 1024;
 const NOTES_LIST_MAX_JSON = 1024 * 1024;
 const NOTES_LIST_MAX = 20;   // 历史版本一次最多取 20 条，不做全量扫描
+// 官方 GitCode 镜像（与 release_tool.py publish --gitcode-repo 的发布目标一致，正文双写同源）：
+// GitHub API 匿名配额按出口 IP 共享、限流/不可达常见，notes 拉取失败时回退镜像取同号正文。
+const NOTES_GITCODE_MIRROR = "tanranran/zcode-token-usage-statusbar";
 const NOTES_API_HOSTS = {
   github: { repo: githubRepository, api: "api.github.com", origin: "https://github.com" },
   gitcode: { repo: gitcodeRepository, api: "api.gitcode.com", origin: "https://gitcode.com" },
@@ -517,6 +520,7 @@ function createNotesService(options) {
     const job = (async () => {
       const result = await refresh.run();
       const payload = result.ok ? (result.notes || { releases: result.releases }) : null;
+      if (result.ok && result.mirror && payload) payload.mirror = true;   // 镜像回退标记落进载荷：缓存命中后仍可标注实际来源
       if (result.ok && cache) return { ...cache.put(key, payload), ok: true };   // put 返回截断后的载荷：两条路径正文上限一致
       if (result.ok) return { ...payload, ok: true };
       if (cache && !refresh.fresh) {
@@ -529,16 +533,33 @@ function createNotesService(options) {
     inflight.set(key, job);
     try { return await job; } finally { inflight.delete(key); }
   }
+  /* GitHub 匿名配额按出口 IP 共享，限流（403/429）与代理不可达常见——与更新检查的
+   * 清单回退同哲学：失败时退官方 GitCode 镜像取同号内容，结果带 mirror:true 供
+   * 浮层标注来源。仅 github 形态回退（gitcode 渠道本身不受此限）。 */
+  const notesFallback = (primary, runner) => async () => {
+    const result = await runner();
+    if (result.ok || (result.reason !== "rate-limited" && result.reason !== "network")) return result;
+    if (primary.flavor === "gitcode") return result;   // gitcode 形态本身就在镜像域上，没有第二跳
+    const mirror = await runner({ flavor: "gitcode", repository: NOTES_GITCODE_MIRROR });
+    if (mirror.ok) return { ...mirror, mirror: true };   // 镜像命中：缓存仍按原身份键存放（同项目同号内容）
+    return result;
+  };
   return {
     getNotes(params) {
       const { flavor, repository, version, force } = params || {};
       const key = cache ? cache.key(flavor, repository, "n:" + (version || "")) : "n:" + flavor + "|" + repository + "|" + version;
-      return serve(key, { fresh: force === true, run: () => fetchReleaseNotes({ flavor, repository, version, fetch }) });
+      return serve(key, { fresh: force === true,
+        run: notesFallback({ flavor, repository }, (override) => fetchReleaseNotes(override
+          ? { ...override, version, fetch }
+          : { flavor, repository, version, fetch })) });
     },
     getList(params) {
       const { flavor, repository, force } = params || {};
       const key = cache ? cache.key(flavor, repository, "list") : "list:" + flavor + "|" + repository;
-      return serve(key, { fresh: force === true, run: () => fetchReleaseNotesList({ flavor, repository, fetch }) });
+      return serve(key, { fresh: force === true,
+        run: notesFallback({ flavor, repository }, (override) => fetchReleaseNotesList(override
+          ? { ...override, fetch }
+          : { flavor, repository, fetch })) });
     },
   };
 }
