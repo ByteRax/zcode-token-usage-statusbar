@@ -54,6 +54,7 @@
 - `PLUGIN_ID` 写死 `zcode-token-usage-statusbar@zusage-marketplace`，同名市场恰好一条记录（注册两个同名来源直接报错）。无 alpha/预发布通道：STABLE 正则 + prerelease 硬拒（`release_tool` 断言 prerelease 为 false），`compareVersions` 支持 pre 段但候选过滤不放行。
 - 手动检查在 `busy=true` 后、取锁前立即 publish `checking`；撞锁抛"另一个更新进程仍在运行"；auto/定时 tick 路径保持静默不闪 checking。立即更新卡有 downloading 阶段与下载/安装双进度条，缺 progress 的旧主进程自动隐藏。
 - 发版后 raw.githubusercontent 按分支名有约 5 分钟 CDN 缓存：Release 渠道清单滞后=下载 zip → 按旧清单装 → 版本未前进 → 报"插件管理器未提交新版安装记录"并按短间隔重试重下；market 渠道切源缓存未刷新=一次"更新期间市场来源已变化"后自愈。诊断更新失败先对时间窗。
+- 更新日志（v202）：`plugin-release.cjs` 的 `fetchBytes` 第 4 参 `allowedHosts`——日志拉取经 `notesFetch` 只放行 `api.github.com`/`api.gitcode.com`（`NOTES_API_HOSTS`），与资产下载白名单（`DOWNLOAD_HOSTS`，由 `RELEASE_HOSTS` 展开）分开维护，放宽任一须连同测试；日志走 `release-notes`/`release-notes-list` 两个插件请求动作，flavor/repository 一律由主进程 `readChannel` 决定（渲染进程只传 version/force，market/local 渠道回 unsupported-channel 不联网）；缓存 `plugin-notes-cache.json` 落运行目录（TTL 1h、24 条上限、损坏按空重建），非发布素材不进分发链；安装失败目标持久化为 `plugin-update.json` 的 `lastFailure`（成功即清，当前版本追上亦清）。GitCode 匿名 release API（v5、`direction=desc`、`published_at` 恒空用 `created_at`）2026-11-01 实测可用。
 - GitCode 双渠道校验（`plugin-release.cjs` 的 flavor 分支、`sameAssetUrl` 主机模式、`fetchBytes` 白名单）必须一起改并有测试锁定；gitcode flavor 的 `validateManifest` 放松 `manifest.repository`（上游而非镜像）；清单不一致 gitcode 直接报错。模拟渠道链路的测试不能用插件 `fetchBytes` 拉 raw.githubusercontent（白名单不含，真实链路由宿主 CLI 拉）。
 - 配置/更新/安装锁跨 Python 与 Node；OS advisory 锁文件永久保留，不通过删锁文件解锁。更新租约/所有者与旧锁恢复是另一层协议，不把冲突当成功，也不删运行目录绕过并发或热修保护。
 
