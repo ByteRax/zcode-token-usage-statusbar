@@ -44,6 +44,14 @@ async function bootLoader(t, markerHashes, createdAt, installation = {}) {
   return { root, marker, hashes };
 }
 
+test("acknowledgeRestart runs before updater init: the first pushed state is already post-ack", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "inject-main.cjs"), "utf8");
+  const ack = source.indexOf("acknowledgeRestart();");
+  const init = source.indexOf("pluginUpdater = createUpdater({");
+  assert.ok(ack >= 0, "acknowledgeRestart 调用缺失");
+  assert.ok(init > ack, "ack 必须先于 createUpdater——否则重启后第一分钟会推送过期的「待重启」状态（实测 2026-11-01）");
+});
+
 test("real startup fingerprint acknowledgement clears only deployed matching hashes", async (t) => {
   const boot = await bootLoader(t);
   assert.equal(fs.existsSync(boot.marker), false);

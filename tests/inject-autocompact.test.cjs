@@ -57,7 +57,8 @@ test("autocompact-config dispatches mode/value passthrough", async () => {
 
 function pushStateSlice() {
   const a = source.indexOf("function pushPluginState(wc, state) {");
-  const b = source.indexOf("try {", a);
+  // v206 起 ack 前置到更新器初始化之前：切片止于 ack 注释，避免把 ack 调用圈进沙箱
+  const b = source.indexOf("/* ack 必须先于更新器初始化", a);
   assert.ok(a >= 0 && b > a, "pushPluginState 切片锚点失配");
   return source.slice(a, b);
 }

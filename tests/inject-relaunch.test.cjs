@@ -91,7 +91,8 @@ test("unknown action gets an ok:false fallback receipt instead of silence (v180,
 test("pushPluginState pushes the relaunchSupported capability flag (v180, issue #158)", () => {
   // 行为级：真实执行 pushPluginState，捕获推送的 payload 断言标记在列（与 relaunch 分支同文件=缺标记必无该分支）
   const psA = source.indexOf("function pushPluginState(wc, state) {");
-  const psB = source.indexOf("\ntry {", psA);
+  // v206 起 ack 前置到更新器初始化之前，pushPluginState 与 try 块之间插入了 ack 调用：切片止于 ack 注释
+  const psB = source.indexOf("\n/* ack 必须先于更新器初始化", psA);
   assert.ok(psA >= 0 && psB > psA, "pushPluginState 切片锚点失配：结构重写后请同步更新本测试");
   const pushed = [];
   const wc = { isDestroyed: () => false, executeJavaScript: (js) => { pushed.push(js); return Promise.resolve(); } };
