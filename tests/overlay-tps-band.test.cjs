@@ -101,8 +101,18 @@ for (const file of FILES) {
         idx = at;
       }
       for (const cls of LADDER) assert.ok(legend.includes(`class="${cls}"`), `图例缺档位类 ${cls}`);
-      assert.ok(legend.includes('rt-lsep'), '分隔符缺失');
-      assert.ok(source.includes('.rt-legend{'), '图例 CSS 缺失');
+      if (file === 'overlay.js') {
+        // v215 桌面版：图例网格化（范围文字原色 + 色点辅助 + 当前档位描边；旧 · 分隔点移除）
+        assert.doesNotMatch(legend, /rt-lsep/, 'v215 旧 · 分隔点已移除');
+        assert.ok(legend.includes('zu-legend-grid'), 'v215 图例网格容器缺失');
+        assert.ok(legend.includes('zu-legend-dot'), 'v215 色点缺失');
+        assert.ok(legend.includes('zu-legend-item cur') === false, '无参调用不应有当前档位描边');
+        assert.ok(source.includes('.zu-legend-grid{'), 'v215 图例网格 CSS 缺失');
+      } else {
+        // web 版本次不改版：保留旧行内分隔符形态
+        assert.ok(legend.includes('rt-lsep'), 'web 分隔符缺失');
+        assert.ok(source.includes('.rt-legend{'), 'web 图例 CSS 缺失');
+      }
     });
 
     test(`${file}/${lang}: TPS_BANDS 表完整性与半开区间口径`, () => {

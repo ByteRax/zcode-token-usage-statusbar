@@ -377,7 +377,7 @@ test('panel retains all controls, scroll position and settings-only styling', ()
   assert.match(source, /t2\.classList\.contains\("zu-cn-num"\)/);
   assert.match(source, /panel\.addEventListener\("scroll", syncSettingsScroll, true\)/);
   assert.match(source, /body\.scrollTop \+= Math\.max\(1, Math\.round\(body\.clientHeight \* \.8\)\)/);
-  assert.match(source, /positionSettingsPanel\(\);\s*positionSubPanel\(\);\s*everMounted = true/);
+  assert.match(source, /positionSettingsPanel\(\);\s*positionSubPop\(\);\s*everMounted = true/);
 });
 
 const ISSUES_URL = 'https://github.com/ByteRax/zcode-token-usage-statusbar/issues';

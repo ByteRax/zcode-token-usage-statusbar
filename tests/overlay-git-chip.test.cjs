@@ -612,7 +612,7 @@ test('chip styles carry the cc-pretty-statusline palette, light variants and com
   assert.match(source, /\.zu-git-conflict\{color:#f09696\}/);
   assert.match(source, /\.zu-git-warn\{color:#f0e6a0\}/);
   assert.match(source, /\.zu-git-op\{color:#afafb2\}/);
-  assert.match(source, /\.zu-git-sep\{opacity:\.6\}/);
+  assert.match(source, /\.zu-git-sep\{opacity:\.6;padding:0 2px\}/);   // v212 间距收紧：纯点+2px 内边距（字面空格废止）
   assert.doesNotMatch(source, /\.zu-git\.zu-stale\{opacity/);
   assert.match(source, /@keyframes zugitspin/);
   assert.match(source, /data-k="git"/);

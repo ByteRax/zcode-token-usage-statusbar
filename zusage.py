@@ -21,6 +21,11 @@ from pathlib import Path
 DB_PATH = Path.home() / ".zcode" / "cli" / "db" / "db.sqlite"
 CONFIG_PATH = Path(__file__).parent / "config.json"
 
+try:
+    import token_pricing as _pricing
+except ImportError:   # 旧运行目录未部署新文件：预估费用整特性降级，快照无 cost/fx 字段
+    _pricing = None
+
 
 def load_config():
     cfg = {"context_window": 128000, "poll_ms": 2000}
@@ -227,6 +232,7 @@ def _project_usage(con, sid, with_models=False):
         cache_read = cache_write = total = tool_calls = retries = 0
         started = last_at = None
         models_acc = {}
+        cost_groups = []   # v202 预估费用分组（与 with_models 无关恒产出，轻量行项目格同款）
         for i in range(0, len(all_ids), 500):
             part = all_ids[i:i + 500]
             qm = ",".join("?" * len(part))
@@ -257,16 +263,37 @@ def _project_usage(con, sid, with_models=False):
                 started = r[11]
             if r[12] is not None and (last_at is None or r[12] > last_at):
                 last_at = r[12]
-            if with_models:
-                for mm in con.execute(
-                    f"""select m.model_id, count(*), coalesce(sum(m.computed_total_tokens),0)
-                        from model_usage m where m.status='completed' and m.session_id in ({qm})
-                        group by m.model_id""", part).fetchall():
+            # v202：模型分组查询从 with_models 分支提为恒跑（费用与模型明细同源一条 SQL），
+            # 聚合到 (model_id, provider_id)——同模型不同 provider 牌价不同，费用分组计；
+            # models_acc 仍只在 with_models 时累积（轻量行项目聚合不带 models，v163 契约不变）
+            for mm in con.execute(
+                f"""select m.model_id, m.provider_id, count(*),
+                           coalesce(sum(m.computed_total_tokens),0),
+                           coalesce(sum(m.input_tokens),0), coalesce(sum(m.output_tokens),0),
+                           coalesce(sum(m.cache_read_input_tokens),0),
+                           coalesce(sum(m.cache_creation_input_tokens),0)
+                    from model_usage m where m.status='completed' and m.session_id in ({qm})
+                    group by m.model_id, m.provider_id""", part).fetchall():
+                if with_models:
                     acc = models_acc.setdefault(mm[0] or "", [0, 0])
-                    acc[0] += mm[1]
-                    acc[1] += mm[2]
+                    acc[0] += mm[2]
+                    acc[1] += mm[3]
+                cost_groups.append((mm[0] or "", mm[1] or "", mm[4], mm[5], mm[6], mm[7]))
         models = [{"model": k, "requests": v[0], "total": v[1]}
                   for k, v in models_acc.items()]
+        if _pricing is not None:
+            try:
+                proj_cost, per_cost = _pricing.merge_model_costs(cost_groups)
+                prov_of = {}
+                for model, prov, *_ in cost_groups:
+                    prov_of.setdefault(model, prov)
+                for m in models:
+                    m["cost_usd"] = per_cost.get(m["model"], 0.0)
+                    m["rates"] = _model_rates(m["model"], prov_of.get(m["model"], "")).get("rates")
+            except Exception:
+                proj_cost = None   # 费用失败不拖垮项目聚合（可选增强字段口径）
+        else:
+            proj_cost = None
         models.sort(key=lambda m: -m["total"])
         return {
             "sessions": sessions, "turns": turns, "requests": requests,
@@ -275,6 +302,8 @@ def _project_usage(con, sid, with_models=False):
             "tool_calls": tool_calls, "retries": retries,
             "started": started or 0, "last_at": last_at or 0,
             "models": models,
+            # None（价表模块缺失）→ JSON null，消费端按缺字段口径隐藏
+            "cost_usd": proj_cost,
         }
 
     dbkey = _db_cache_key(con)
@@ -613,6 +642,24 @@ def _prompt_matches(title, prompt):
 _TASK_CACHE = {}
 
 
+def _sub_item(con, r, sub_tasks, sub_gen):
+    """sub.list 单项（v217 统一浮层任务页）：基础聚合 + 可选每任务模型明细/费用。
+    模型明细按子会话 id 分组查询（与 _session_models_cost 同构口径）；价表缺失
+    或分组为空时字段省略，消费端按缺省处理不造零值。"""
+    item = {"sid": r[0], "agent": r[1], "title": r[2], "task": sub_tasks.get(r[0], ""),
+            "requests": r[3], "total": r[4],
+            "input": r[5], "output": r[6], "cache_read": r[7], "reasoning": r[8],
+            "cache_write": r[9], "last": (r[10] or 0), "started": (r[12] or 0),
+            "tps_avg": _rated_tps(*sub_gen.get(r[0], [0, 0])),
+            "active": bool(r[10] and int(time.time() * 1000) - r[10] < 30000)}
+    m1, c1 = _scope_models_cost(con, "session_id=?", (r[0],))
+    if c1 is not None:
+        item["cost_usd"] = c1
+    if m1:
+        item["models"] = m1
+    return item
+
+
 def _sub_agent_tasks(con, sid):
     stamp = con.execute(
         "select count(*), coalesce(max(time_updated),0) from part where session_id=?", (sid,)
@@ -748,6 +795,113 @@ def _session_start_ms(con, sid, srow=None):
     return int(srow["time_created"]) if srow and srow["time_created"] else 0
 
 
+def _model_cost_groups(con, where, args):
+    """completed 行按 (model_id, provider_id) 聚合的 token 分项分组（费用计算输入）。
+    同模型经不同 provider 计费价不同，故聚合到二元组；展示层再按 model_id 合并。"""
+    rows = con.execute(
+        f"""select model_id, provider_id, coalesce(sum(input_tokens),0),
+                   coalesce(sum(output_tokens),0), coalesce(sum(cache_read_input_tokens),0),
+                   coalesce(sum(cache_creation_input_tokens),0)
+            from model_usage where status='completed' and {where} group by model_id, provider_id""",
+        args,
+    ).fetchall()
+    return [(r[0] or "", r[1] or "", r[2], r[3], r[4], r[5]) for r in rows]
+
+
+def _session_models_cost(con, sid):
+    """模型明细 + 会话预估费用（v202）：单条 GROUP BY 查询同时产出计数/总量/费用。
+    返回 (models 列表（按 total 降序，价表模块可用时带 cost_usd）, 会话总费用或 None)。
+    价表模块缺失（旧运行目录未部署 token_pricing.py）时退回 v163 结构、总费用 None。"""
+    acc = {}
+    groups = []
+    for r in con.execute(
+        """select model_id, provider_id, count(*), coalesce(sum(computed_total_tokens),0),
+                  coalesce(sum(input_tokens),0), coalesce(sum(output_tokens),0),
+                  coalesce(sum(cache_read_input_tokens),0), coalesce(sum(cache_creation_input_tokens),0)
+           from model_usage where session_id=? and status='completed'
+           group by model_id, provider_id""", (sid,)).fetchall():
+        model = r[0] or ""
+        a = acc.setdefault(model, [0, 0])
+        a[0] += r[2]
+        a[1] += r[3]
+        groups.append((model, r[1] or "", r[4], r[5], r[6], r[7]))
+    models = [{"model": k, "requests": v[0], "total": v[1]} for k, v in acc.items()]
+    if _pricing is None:
+        models.sort(key=lambda m: -m["total"])
+        return models, None
+    total, per = _pricing.merge_model_costs(groups)
+    prov_of = {}
+    for model, prov, *_ in groups:
+        prov_of.setdefault(model, prov)
+    for m in models:
+        m["cost_usd"] = per.get(m["model"], 0.0)
+        m["rates"] = _model_rates(m["model"], prov_of.get(m["model"], "")).get("rates")
+    models.sort(key=lambda m: -m["total"])
+    return models, total
+
+
+def _model_rates(model_id, provider_id):
+    """当前模型牌价（预估费用说明气泡展示）：价目表命中条目四价 + 命中键。
+    可选增强字段：模块缺失/查询任何失败返回 {}（字段省略，消费端隐藏该行）。"""
+    if _pricing is None:
+        return {}
+    try:
+        rates, key, _ = _pricing.lookup_full(model_id or "", provider_id or "")
+        return {"rates": {"input": rates["input"], "output": rates["output"],
+                          "cache_read": rates["cache_read"], "cache_write": rates["cache_write"],
+                          "key": key}}
+    except Exception:
+        return {}
+
+
+def _scope_models_cost(con, where, args):
+    """按范围（本轮/今日）产出 (models 明细, 费用总额)，结构与 _session_models_cost 一致。
+    v202：本轮/今日 tooltip 的模型明细块（rt-models）与费用行共用这一条分组查询。"""
+    if _pricing is None:
+        return None, None
+    try:
+        rows = con.execute(
+            f"""select model_id, provider_id, count(*), coalesce(sum(computed_total_tokens),0),
+                       coalesce(sum(input_tokens),0), coalesce(sum(output_tokens),0),
+                       coalesce(sum(cache_read_input_tokens),0), coalesce(sum(cache_creation_input_tokens),0)
+                from model_usage where status='completed' and {where} group by model_id, provider_id""",
+            args,
+        ).fetchall()
+    except Exception:
+        return None, None
+    acc = {}
+    groups = []
+    for r in rows:
+        model = r[0] or ""
+        a = acc.setdefault(model, [0, 0])
+        a[0] += r[2]
+        a[1] += r[3]
+        groups.append((model, r[1] or "", r[4], r[5], r[6], r[7]))
+    try:
+        total, per = _pricing.merge_model_costs(groups)
+    except Exception:
+        return None, None
+    prov_of = {}
+    for model, prov, *_ in groups:
+        prov_of.setdefault(model, prov)
+    models = [{"model": k, "requests": v[0], "total": v[1], "cost_usd": per.get(k, 0.0),
+               "rates": _model_rates(k, prov_of.get(k, "")).get("rates")}
+              for k, v in acc.items()]
+    models.sort(key=lambda m: -m["total"])
+    return models, total
+
+
+def _scope_cost(con, where, args):
+    """指定范围（本轮/今日）的预估费用总额。可选增强字段：模块缺失或查询/计价任何
+    失败都返回 None（字段省略），不拖垮快照（同 provider_fallback 口径）。"""
+    if _pricing is None:
+        return None
+    try:
+        return _pricing.merge_model_costs(_model_cost_groups(con, where, args))[0]
+    except Exception:
+        return None
+
+
 def _light_snapshot(con, sid, cfg):
     """recent 池轻量行（v8 瘦身）：两条聚合 SQL 出齐顶层计数，明细字段给空结构。
     状态条只渲染 1 个会话，recent 长尾行仅作会话切换兜底；兜底候选（force + latest +
@@ -768,6 +922,8 @@ def _light_snapshot(con, sid, cfg):
         "output": u["output"], "reasoning": u["reasoning"], "cache_read": u["cache_read"],
         "cache_write": u["cache_write"], "total": u["total"], "tool_calls": u["tool_calls"],
         "retries": u["retries"], "ctx": u["last_request_input"],
+        # v202 预估费用（可选增强字段，旧快照消费端按缺字段容错；模块缺失时省略）
+        **({"cost_usd": _scope_cost(con, "session_id=?", (sid,))} if _pricing is not None else {}),
         "updated": (_ts(lr[0]).strftime("%H:%M:%S") if lr[0] else ""),
         "started": _session_start_ms(con, sid, srow),
         "avg_tps": 0,
@@ -934,7 +1090,8 @@ def _session_snapshot(con, sid, cfg):
     # 自带请求/重试/工具/工具错误计数与 reasoning 拆分，一轮一行。
     lt = {"requests": 0, "retries": 0, "tool_calls": 0, "tool_errors": 0, "input": 0,
           "output": 0, "reasoning": 0, "cache_read": 0, "cache_write": 0,
-          "total": 0, "duration_ms": 0, "ttft_ms": 0, "started": 0, "ended": 0,
+          "total": 0, "duration_ms": 0, "ttft_ms": 0, "avg_duration_ms": 0, "avg_ttft_ms": 0,
+          "started": 0, "ended": 0,
           "tps": 0, "rated_output": 0, "unrated_output": 0, "gen_ms": 0}
     if last and last["turn_id"]:
         t = con.execute(
@@ -974,11 +1131,30 @@ def _session_snapshot(con, sid, cfg):
                   "input": r[1], "output": r[2], "reasoning": r[6], "cache_read": r[5],
                   "cache_write": r[7], "total": r[3], "duration_ms": r[4], "ttft_ms": 0,
                   "started": turn_started, "ended": turn_ended}
+        # 本轮平均耗时/平均首字延迟（v211 用户规格）：对 model_usage 该轮已完成 main_turn 行
+        # 直接求均值——turn_usage 的 ttft_ms 聚合列实测既非 Σ 也非 μ（宿主口径不明），不可依赖；
+        # >0 过滤无效样本（缺首字/零耗时行不进均值，同测速无效段哲学）
+        av = con.execute(
+            """select avg(case when duration_ms > 0 then duration_ms end),
+                      avg(case when time_to_first_token_ms > 0 then time_to_first_token_ms end)
+               from model_usage where session_id=? and turn_id=? and status='completed'
+                 and (query_source is null or query_source='main_turn')""",
+            (sid, last["turn_id"]),
+        ).fetchone()
+        lt["avg_duration_ms"] = round(av[0] or 0)
+        lt["avg_ttft_ms"] = round(av[1] or 0)
         lt.update(_turn_rate(con.execute(
             """select output_tokens, first_token_at, completed_at, started_at, reasoning_tokens, model_id, provider_id
                from model_usage where session_id=? and turn_id=? and status='completed'""",
             (sid, last["turn_id"]),
         ).fetchall(), covers))
+        # v202 本轮预估费用：按轮内 model_usage 行（turn_usage 无模型维度）计价
+        turn_models, turn_cost = _scope_models_cost(
+            con, "session_id=? and turn_id=?", (sid, last["turn_id"]))
+        if turn_cost is not None:
+            lt["cost_usd"] = turn_cost
+        if turn_models:
+            lt["models"] = turn_models   # v202：本轮 tooltip 模型明细块（与项目累计同构）
     lr = con.execute("select max(completed_at) from model_usage where session_id=?", (sid,)).fetchone()
     active = bool(lr and lr[0] and int(time.time() * 1000) - lr[0] < SESSION_TIMEOUT_MS)
     ctx_auto = lookup_context_window(last["model_id"]) if last else None
@@ -1020,6 +1196,8 @@ def _session_snapshot(con, sid, cfg):
                 g[0] += tokens
                 g[1] += gen_ms
     now_ms = int(time.time() * 1000)
+    sub_models, sub_cost = _scope_models_cost(
+        con, "query_source='subagent' and session_id in (select id from session where parent_id=?)", (sid,))
     sub = {
         "requests": sum(r[3] for r in sub_rows),
         "total": sum(r[4] for r in sub_rows),
@@ -1031,14 +1209,11 @@ def _session_snapshot(con, sid, cfg):
         "active": any(r[10] and now_ms - r[10] < 30000 for r in sub_rows),
         "rate_avg": _rated_tps(sum(g[0] for g in sub_gen.values()),
                                sum(g[1] for g in sub_gen.values())),
+        # v202 子代理群的预估费用与模型明细（可选增强字段，缺失省略）
+        **({"cost_usd": sub_cost} if sub_cost is not None else {}),
+        **({"models": sub_models} if sub_models else {}),
         "list": [
-            {"sid": r[0], "agent": r[1], "title": r[2], "task": sub_tasks.get(r[0], ""),
-             "requests": r[3], "total": r[4],
-             "input": r[5], "output": r[6], "cache_read": r[7], "reasoning": r[8],
-             "cache_write": r[9], "last": (r[10] or 0),
-             "started": (r[12] or 0),
-             "tps_avg": _rated_tps(*sub_gen.get(r[0], [0, 0])),
-             "active": bool(r[10] and now_ms - r[10] < 30000)}
+            _sub_item(con, r, sub_tasks, sub_gen)
             for r in sub_rows
         ],
     }
@@ -1060,10 +1235,8 @@ def _session_snapshot(con, sid, cfg):
     }
     # 模型明细（v163，v164 起全量不截断）：按模型分组的 completed 用量，tooltip
     # 「会话累计/项目累计」列出；轻量行不带（_light_snapshot 无此键，与 tools 瘦身同款）。
-    models = [{"model": r[0] or "", "requests": r[1], "total": r[2]} for r in con.execute(
-        """select model_id, count(*), coalesce(sum(computed_total_tokens),0)
-           from model_usage where session_id=? and status='completed'
-           group by model_id order by 3 desc""", (sid,)).fetchall()]
+    # v202 起同一条 GROUP BY (model_id, provider_id) 查询顺带产出预估费用。
+    models, sess_cost = _session_models_cost(con, sid)
     return {
         "sid": sid,
         "title": (srow["title"] if srow is not None else "") or "",
@@ -1079,6 +1252,8 @@ def _session_snapshot(con, sid, cfg):
         "tool_calls": u["tool_calls"] if u else 0,
         "retries": u["retries"] if u else 0,
         "ctx": u["last_request_input"] if u else 0,
+        # v202 预估费用（USD 原值，展示层乘快照 fx 汇率；模块缺失时字段省略）
+        **({"cost_usd": sess_cost} if sess_cost is not None else {}),
         "updated": (_ts(lr[0]).strftime("%H:%M:%S") if lr and lr[0] else ""),
         "started": _session_start_ms(con, sid, srow),
         "avg_tps": sess_avg,
@@ -1093,6 +1268,9 @@ def _session_snapshot(con, sid, cfg):
             # v94：当前模型归属（额度 chip 按 provider 段选数据源）。可选字段——远端
             # 旧版 zusage.py 不返回它，消费端按缺省 "" 容错（last.startedAt 同款先例）。
             "provider_id": (last["provider_id"] or "") if last else "",
+            # v202 当前模型牌价（预估费用说明气泡展示用）：价目表命中条目的四价与键。
+            # 可选增强字段：模块缺失/查询失败省略，消费端按缺字段隐藏该行。
+            **(_model_rates(last["model_id"], last["provider_id"] or "") if last else {}),
             **rate,
         },
         # 代码变更统计（session 表 summary_* 列，ZCode 目前未填充、全库为 NULL，有值才会显示）
@@ -1257,7 +1435,8 @@ def _scnet_estimate(con):
 
 _EMPTY_TURN = {"requests": 0, "retries": 0, "tool_calls": 0, "tool_errors": 0, "input": 0,
                "output": 0, "reasoning": 0, "cache_read": 0, "cache_write": 0,
-               "total": 0, "duration_ms": 0, "ttft_ms": 0, "started": 0, "ended": 0,
+               "total": 0, "duration_ms": 0, "ttft_ms": 0, "avg_duration_ms": 0, "avg_ttft_ms": 0,
+               "started": 0, "ended": 0,
                "tps": 0, "rated_output": 0, "unrated_output": 0, "gen_ms": 0}
 
 
@@ -1824,6 +2003,11 @@ def snapshot(force_sid="", routes=None, serve_con=None):
     连接所有权归调用方：serve 模式下查询期出错会就地 close（调用方下次探活重建），
     finally 不重复关闭。"""
     cfg = load_config()
+    if _pricing is not None:
+        try:
+            _pricing.configure(cfg)   # 定位 pricing-cache.json（config.json 同目录优先）
+        except Exception:
+            pass
     scopes = None
     if isinstance(routes, list):
         scopes = []
@@ -1854,6 +2038,13 @@ def snapshot(force_sid="", routes=None, serve_con=None):
             start_ms, end_ms = _epoch_ms(day), _epoch_ms(day + timedelta(days=1))
             today = _cached_agg(("today", start_ms), lambda: _today_usage(
                 con, start_ms, end_ms)) if con else (0,) * 11
+            # v202 今日预估费用+模型明细：同一条分组查询产出，2s 短缓存同 today
+            def _today_detail():
+                models, cost = _scope_models_cost(
+                    con, "completed_at between ? and ?", (start_ms, end_ms))
+                return {"cost": cost, "models": models if models else []}
+            today_detail = _cached_agg(("todaydetail", start_ms), _today_detail) if con else None
+            today_cost = today_detail["cost"] if today_detail else None
             rows = _scan_session_ids(con) if con else []
             have_local = set()
             if con and force_sids:
@@ -1955,6 +2146,9 @@ def snapshot(force_sid="", routes=None, serve_con=None):
                 "cache_read": today[3], "total": today[4],
                 "reasoning": today[6], "retries": today[7], "cache_write": today[8],
                 "started": today[9] or 0, "last_at": today[10] or 0,
+                # v202 预估费用+模型明细（可选增强字段；价表模块缺失时省略）
+                **({"cost_usd": today_cost} if today_cost is not None else {}),
+                **({"models": today_detail["models"]} if today_detail and today_detail["models"] else {}),
             },
             # 远端数据源（v12）：显示远端会话时 overlay 按其 remote_target 取对应主机的今日值；
             # dict 键=目标键。remote_error 保留首个错误（旧字段），remote_errors 按目标细分。
@@ -1975,6 +2169,9 @@ def snapshot(force_sid="", routes=None, serve_con=None):
             "provider_fallback": _provider_fallback(con),
             # SCNet 账本估算（无凭据）：主进程注入 quota-client 的 scnet 源；未配置为 None
             "scnet_estimate": _scnet_estimate(con),
+            # v202 预估费用汇率视图（USD→CNY，供展示层换算 ¥）：None=无有效汇率，
+            # 展示层诚实降级 USD 原值，不编造汇率。与额度/SCNet 链互不推导。
+            "fx": (_pricing.fx_view() if _pricing is not None else None),
             "remote_enabled": bool(setup),        # 是否存在可用远端目标（区分"没配"与"配了没查到"）
             "known_sids": known_sids,
             "context_window": base["context_window"],
@@ -2006,6 +2203,13 @@ def serve():
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
+    # v202 价表/汇率 12h 定时同步（daemon 线程随本进程退出终止）；一次性 json 路径不启动。
+    # 同步失败静默保留旧值，不拖垮快照链。
+    if _pricing is not None:
+        try:
+            _pricing.start_refresh(load_config())
+        except Exception:
+            pass
     con = None
     stamp = None
     last_used = 0.0

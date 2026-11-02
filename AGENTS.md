@@ -39,7 +39,8 @@
 | `zusage.py` | SQLite 查询库、CLI、桌面 JSON 快照、常驻 JSON 行查询与带身份的远端查询 |
 | `usage_mcp.py` | stdio JSON-RPC MCP；调用 `zusage`，提供 `token_usage(scope)` |
 | `plugins/zcode-token-usage-statusbar/token_rate.py` | 插件专有逐问速率、提问身份守卫与会话累计查询 |
-| `overlay.js` | 桌面浮层、设置、tooltip、子代理明细、套餐额度 chip、Git 状态 chip、更新日志卡片及速率展示 |
+| `token_pricing.py` | 模型单价表（models.dev 内置 326 条 + 12h 运行时同步）与预估费用计算（本库口径：input 已含 cache，output 已含思考）；快照 `cost_usd`/`fx` 生产方 |
+| `overlay.js` | 桌面浮层、设置、tooltip、子代理明细、套餐额度 chip、Git 状态 chip 及速率展示 |
 | `turn-stats.js` | 渲染进程统计行 tracker：历史轮记录、运行中子代理身份透传 |
 | `renderer_bridge.py` | 渲染桥：按客户端版本指纹（HOST_TARGETS 登记 + derive 推导）向 SessionPane 节点写 scope 身份属性 |
 | `inject-main.cjs` | 主进程加载、窗口/工作区 IPC、查询泵、文件监听、快照推送和受限写操作 |
@@ -68,7 +69,7 @@
 ## 3. 源文件、副本与正在运行的文件
 
 - `sync_plugin.py` 的 `FILES` 是共享分发清单（根目录是源，以脚本内定义为准）：
-  `usage_mcp.py`、`zusage.py`、`patch_install.py`、`install_monitor.py`、`inject-main.cjs`、`plugin-updater.cjs`、`plugin-release.cjs`、`plugin-storage.cjs`、`quota-client.cjs`、`release_unpack.py`、`runtime_lock.py`、`usage_stats.py`、`turn-stats.js`、`overlay.js`、`token_rate.py`、`renderer_bridge.py`。
+  `usage_mcp.py`、`zusage.py`、`patch_install.py`、`install_monitor.py`、`inject-main.cjs`、`plugin-updater.cjs`、`plugin-release.cjs`、`plugin-storage.cjs`、`quota-client.cjs`、`release_unpack.py`、`runtime_lock.py`、`usage_stats.py`、`turn-stats.js`、`overlay.js`、`token_rate.py`、`renderer_bridge.py`、`token_pricing.py`。
 - 共享文件先改根源码，再同步插件副本；清单外的插件入口、hooks、命令、技能和 manifest **不是生成文件**，应直接维护。新增分发文件须同步的全部登记处（不止 FILES）见 [.zcode/rules/install-release.md](.zcode/rules/install-release.md)。
 - `web/overlay.js` 是独立实现，不在插件同步清单内；不能直接复制根浮层覆盖 Web。共享语义变化要分别评估，保留 Web 的挂载、接口与布局差异。
 - 共享文件修改后在仓库根运行：
@@ -162,7 +163,7 @@ python3 sync_plugin.py --check
 - 插件卸载浮层保留 `.plugin-overlay-optout` 阻止自动重注入和安装提醒，但不关闭运行文件同步/插件更新；仅卸载宿主插件也不保证旧主进程引用/浮层消失。
 - 自动安装/修复可能受权限、事件触发、宿主结构影响；成功后仍需重启。不替用户自行重启，不用强制提权掩盖失败；sudo 提示必须保留目标用户 HOME/PATH 和用户产物归属。
 - 配置、数据库、诊断、本地热修不是发布素材；可信同步保护用户改动，解包保留路径穿越、链接、重复项和文件集限制。
-- 本地统计只读数据库，不上传用量；远端查询使用配置/宿主连接通道，插件更新另行联网下载代码，不能笼统宣称整个插件“不联网”。
+- 本地统计只读数据库，不上传用量；预估费用链每 12 小时匿名下载 models.dev 牌价与 er-api/exchangerate.fun 汇率（后者仅作默认源失败兜底，显式配置 `pricing.fx.url` 时不启用；`pricing.fetch: false` 可关，`pricing-cache.json` 落运行目录）；远端查询使用配置/宿主连接通道，插件更新另行联网下载代码，不能笼统宣称整个插件“不联网”。
 - Web 默认 loopback sidecar 向本机 ZCode 校验设备 Cookie；保留 nginx 认证、静态白名单和 systemd 只读限制，不直接暴露公网。`readonly-guard.py` 不改写已含 `mode=rw` 的 URI，不能把包装器当无条件只读安全边界。
 
 ### 命令、技能与元数据
@@ -191,7 +192,7 @@ python3 sync_plugin.py --check
 
 | 改动范围 | 验证选择（文件位于 `tests/`） |
 |---|---|
-| 统计/速率 | `test_token_rate.py`、`test_statusbar_rate.py`、`overlay-rate.test.cjs`；更改共享 JSON 时加入远端及插件契约回归 |
+| 统计/速率 | `test_token_rate.py`、`test_statusbar_rate.py`、`test_statusbar_cost.py`、`test_token_pricing.py`、`overlay-rate.test.cjs`、`overlay-cost-tip.test.cjs`；更改共享 JSON 时加入远端及插件契约回归 |
 | 套餐额度 | `quota-client.test.cjs`、`opencode-quota.test.cjs`、`quota-paths.test.cjs`、`quota-provider-revoke.test.cjs`、`quota-source-lifecycle.test.cjs`、`sub2api-protocol.test.cjs`、`overlay-quota-chip.test.cjs`、`test_statusbar_rate.py`（provider_fallback/scnet 估算）；真实厂商响应、凭据刷新解冻与 chip 实机挂载需桌面验收，unverified 适配器待真实账号校准 |
 | 浮层/主桥 | `overlay-*.test.cjs`、`plugin-loader.test.cjs`、`plugin-restart-boot.test.cjs`；语法检查，布局/多窗口需桌面验收 |
 | 桥/SSH 路由 | `test_renderer_bridge.py`、`test_bridge_pending.py`、`test_remote_targets.py`、`inject-remote-recovery.test.cjs`、`overlay-remote-scope.test.cjs`；实机身份/重连与认证另验 |

@@ -10,6 +10,13 @@
   "auto_compact_patch": true,
   "plugin_auto_update": true,
   "context_window": 1000000,
+  "pricing": {
+    "fetch": true,
+    "url": "https://models.dev/api.json",
+    "fx": {
+      "url": "https://open.er-api.com/v6/latest/USD"
+    }
+  },
   "lang": "zh",
   "remote": {
     "auto": true,

@@ -319,15 +319,22 @@ test('subRateTick: remote scope never attempts acquire', () => {
 // 并行 ≥2 个有效槽位时先给合计行；思考期槽位显示「估算中…」。
 test('buildLiveTip lists per-agent rows with a sum line during the tool phase', () => {
   const src = source;
-  const start = src.indexOf('    function ttEsc(');
-  const end = src.indexOf('return "\\x01" + rows;', start);
-  const brace = src.indexOf('}', end);
-  assert.ok(start >= 0 && end > start && brace > end, '提取失败: buildLiveTip');
-  // v127：buildLiveTip 追加了颜色对照图例——注入真实 tpsBandLegend（不含 zuBarSpeedView）
+  // v215：buildLiveTip 重构为统计卡——切片含 speedCardHTML + tpsBandLegend（模块级依赖）
+  const tpsStart = src.indexOf('  /* v215 速度统计卡公共构造');
+  const tpsLegendStart = src.indexOf('  function tpsBandLegend(curCls) {');
+  const tpsLegendEnd = src.indexOf('\n  }', tpsLegendStart);
+  assert.ok(tpsStart >= 0 && tpsLegendStart > tpsStart && tpsLegendEnd > tpsLegendStart, '提取失败: speedCardHTML/tpsBandLegend');
+  const cardHelpers = src.slice(tpsStart, tpsLegendEnd + 4);
   const bandHelpers = src.slice(src.indexOf('  var TPS_BANDS = ['), src.indexOf('  /* 返回 null = 调用方应把这当成'));
+  const blStart = src.indexOf('    function buildLiveTip(speedView) {');
+  const blEnd = src.indexOf("      function escHtml(s)", blStart);
+  const blClose = src.indexOf('\n    }', blEnd);
+  assert.ok(blStart >= 0 && blEnd > blStart && blClose > blEnd, '提取失败: buildLiveTip');
   const now = 1000000;
-  const buildTip = vm.runInNewContext(bandHelpers + src.slice(start, brace + 1) + '\nbuildLiveTip;', {
+  const buildTip = vm.runInNewContext(bandHelpers + cardHelpers + '\n' + src.slice(blStart, blClose + 6) + '\nbuildLiveTip;', {
     L: (zh, en) => zh,
+    /* v218：buildLiveTip 右格改读泵快照最近一段（lastView.last.tps）——沙箱注入空 lastView */
+    lastView: null,
     Date: { now: () => now },
     subRate: { slots: {
       sess_aa: { rate: 45.16, at: now - 100 },          // 有效
@@ -336,10 +343,13 @@ test('buildLiveTip lists per-agent rows with a sum line during the tool phase', 
     }, sum: { rate: 60.2, at: now - 100, count: 2 } },
   });
   const html = buildTip({ phase: 'tool' });
+  console.error('BLT-TAIL:', html.slice(-500));
   assert.ok(html.indexOf('合计') >= 0 && html.indexOf('60.2') >= 0, '合计行（2 个有效槽位）');
   assert.ok(html.indexOf('…s_aa') >= 0 && html.indexOf('45.2') >= 0, '槽位 aa 的实时值');
   assert.ok(html.indexOf('…s_bb') >= 0 && html.indexOf('15.0') >= 0, '槽位 bb 的实时值');
   assert.ok(html.indexOf('…s_cc') >= 0 && html.indexOf('估算中…') >= 0, '思考期槽位降级文案');
+  // v215 统计卡形态：槽位行在 zu-stat-note 内
+  assert.match(html, /zu-stat-note[^]*?合计 估 60\.2 t\/s（2 个）/);
   // 非工具期（思考/正文）不列子代理行
   const html2 = buildTip({ phase: 'thinking' });
   assert.ok(html2.indexOf('…s_aa') < 0, '非工具期不列槽位行');

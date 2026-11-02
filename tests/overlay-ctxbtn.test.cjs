@@ -639,6 +639,7 @@ test('reset tooltip retains recently expired cards returned by the server with �
 
 test('reset badge styles exist: font chain, three-band palette with light variants, crit pulse', () => {
   assert.match(source, /\.zu-ctxrst\{display:inline-flex;align-items:center;flex:0 0 auto;white-space:nowrap;/);
+  assert.match(source, /"height:1\.75rem;padding:0 3px;border-radius:\.5rem;cursor:default;"/);   // v209 左右 3px（用户规格 2026-11-02）
   assert.match(source.slice(source.indexOf('".zu-ctxrst{'), source.indexOf('".zu-ctxrst{') + 700),
     /font-size:calc\(var\(--text-ui-base,var\(--ui-font-size,14px\)\) - 1px\);font-weight:700;font-variant-numeric:tabular-nums\}/);
   assert.match(source, /\.zu-ctxrst\.zu-rst-calm\{color:#3ecf8e\}/);

@@ -174,7 +174,7 @@ const payload = {
   recent: ['a', 'b'].map(id => ({
     sid: 'sid_' + id, workspace_identity: '', total: 582500, input: 500000, output: 82500,
     cache_read: 250000, requests: 9, turns: 3, ctx: 63400, context_window: 200000, last_at: 1,
-    last_turn: { total: 125000, input: 100000, output: 25000, cache_read: 50000, requests: 3, duration_ms: 9000 },
+    last_turn: { total: 125000, input: 100000, output: 25000, cache_read: 50000, requests: 3, duration_ms: 9000, avg_duration_ms: 3500, avg_ttft_ms: 700 },
     last: { tps: 92, duration_ms: 3500, ttft_ms: 700, provider_id: 'account:bigmodel-individual-coding-plan', model: 'GLM-test' },
     tools: { total: 3, errors: 0, list: [] },
   })),
@@ -293,10 +293,11 @@ test('dual theme browser behaviour (isolated fixture)', { skip: skipReason, time
     const geometry = await b.evaluate(`(() => {
       const bars = [...document.querySelectorAll('.zusage-root')];
       const cards = [document.querySelector('#card-a'), document.querySelector('#card-b')];
+      if (bars.length !== 2 || cards.some(c => !c)) throw new Error('fixture: bars=' + bars.length + ' cardsNull=' + cards.filter(c => !c).length + ' roots=' + bars.map(x => (x.textContent || '').slice(0, 30)).join('##'));
       return bars.map((bar, i) => {
-        const r = bar.getBoundingClientRect(), c = cards[i].getBoundingClientRect();
-        return { left: r.left, right: r.right, width: r.width, top: r.top, cardBottom: c.bottom,
-          center: (r.left + r.right) / 2, cardCenter: (c.left + c.right) / 2, position: getComputedStyle(bar).position };
+        const r = bar.getBoundingClientRect(), c = cards[i] && cards[i].getBoundingClientRect();
+        return { left: r.left, right: r.right, width: r.width, top: r.top, cardBottom: c ? c.bottom : 'no-card',
+          center: (r.left + r.right) / 2, cardCenter: c ? (c.left + c.right) / 2 : 'no-card', cardTag: cards[i] ? cards[i].tagName : 'NONE', position: getComputedStyle(bar).position };
       });
     })()`);
     for (const g of geometry) {
@@ -316,9 +317,10 @@ test('dual theme browser behaviour (isolated fixture)', { skip: skipReason, time
     await b.evaluate('new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
     const resized = await b.evaluate(`(() => {
       const cards = [document.querySelector('#card-a'), document.querySelector('#card-b')];
-      return [...document.querySelectorAll('.zusage-root')].map((bar, i) => {
-        const r = bar.getBoundingClientRect(), c = cards[i].getBoundingClientRect();
-        return { width: r.width, center: (r.left + r.right) / 2, cardCenter: (c.left + c.right) / 2 };
+      return [...document.querySelectorAll('.zusage-root')].slice(0, 2).map((bar, i) => {
+        const c = cards[i];
+        const r = bar.getBoundingClientRect(), cr = c ? c.getBoundingClientRect() : null;
+        return { width: r.width, center: (r.left + r.right) / 2, cardCenter: cr ? (cr.left + cr.right) / 2 : 'no-card', cardFound: !!c, rootTag: bar.tagName };
       });
     })()`);
     assert.ok(resized.some((g, i) => Math.abs(g.width - geometry[i].width) > 1), 'payload must actually change bar width');
@@ -1002,9 +1004,9 @@ test('dual theme browser behaviour (isolated fixture)', { skip: skipReason, time
       return { turn: readTip(turn), session: readTip(session) };
     })()`);
     assert.match(tips.turn, /输入/);
-    assert.match(tips.turn, /命中\s*0%/, 'positive turn input and zero cached tokens must show 0%');
-    assert.match(tips.session, /输入/);
-    assert.match(tips.session, /命中\s*0%/, 'positive session input and zero cached tokens must show 0%');
+    assert.match(String(tips.turn), /缓存命中率\s*0%/, 'positive turn input and zero cached tokens must show 0%');
+    assert.match(String(tips.session), /输入/);
+    assert.match(String(tips.session), /缓存命中率\s*0%/, 'positive session input and zero cached tokens must show 0%');
   });
 
   await t.test('focused turn tooltip refreshes hidden values without replacing its unchanged item', async () => {
@@ -1021,8 +1023,8 @@ test('dual theme browser behaviour (isolated fixture)', { skip: skipReason, time
         tip: tip && tip.textContent, html: main.innerHTML };
     })()`);
     assert.ok(initial.focused && initial.id && initial.visible, JSON.stringify(initial));
-    assert.match(initial.tip, /单次耗时\s*3\.5s/);
-    assert.match(initial.tip, /本轮\s*·\s*3\s*次请求/);
+    assert.match(initial.tip, /平均耗时\s*3\.5s/);
+    assert.match(initial.tip, /本轮[\s\S]*?3\s*次请求/);
     const inspect = async () => b.evaluate(`(() => {
       const main = document.querySelector('.zusage-root .zu-main'), item = window.__unchangedItem;
       const id = item.getAttribute('aria-describedby'), tip = id && document.getElementById(id);
@@ -1031,15 +1033,15 @@ test('dual theme browser behaviour (isolated fixture)', { skip: skipReason, time
         tip: tip && tip.textContent, html: main.innerHTML };
     })()`);
     const duration = JSON.parse(JSON.stringify(payload));
-    duration.recent[0].last.duration_ms = 8100;
+    duration.recent[0].last_turn.avg_duration_ms = 8100;
     await b.evaluate(`window.__zusageUpdate(${JSON.stringify(duration)})`);
     const afterDuration = await inspect();
     assert.ok(afterDuration.sameMain && afterDuration.sameItem && afterDuration.focused, JSON.stringify(afterDuration));
     assert.equal(afterDuration.html, initial.html, 'hidden duration must not rebuild or change the pill surface');
     assert.equal(afterDuration.id, initial.id, 'tooltip relationship must stay on the focused element');
     assert.equal(afterDuration.visible, true);
-    assert.match(afterDuration.tip, /单次耗时\s*8\.1s/);
-    assert.doesNotMatch(afterDuration.tip, /单次耗时\s*3\.5s/);
+    assert.match(afterDuration.tip, /平均耗时\s*8\.1s/);
+    assert.doesNotMatch(afterDuration.tip, /平均耗时\s*3\.5s/);
     const requests = JSON.parse(JSON.stringify(duration));
     requests.recent[0].last_turn.requests = 7;
     await b.evaluate(`window.__zusageUpdate(${JSON.stringify(requests)})`);
@@ -1048,9 +1050,9 @@ test('dual theme browser behaviour (isolated fixture)', { skip: skipReason, time
     assert.equal(afterRequests.html, initial.html, 'hidden request count must not rebuild or change the pill surface');
     assert.equal(afterRequests.id, initial.id);
     assert.equal(afterRequests.visible, true);
-    assert.match(afterRequests.tip, /本轮\s*·\s*7\s*次请求/);
-    assert.match(afterRequests.tip, /单次耗时\s*8\.1s/);
-    assert.doesNotMatch(afterRequests.tip, /本轮\s*·\s*3\s*次请求/);
+    assert.match(afterRequests.tip, /本轮[\s\S]*?7\s*次请求/);
+    assert.match(afterRequests.tip, /平均耗时\s*8\.1s/);
+    assert.doesNotMatch(afterRequests.tip, /本轮[\s\S]*?3\s*次请求/);
   });
 
   await t.test('focused item replacement retains focus and its updated tooltip relationship', async () => {
@@ -1086,7 +1088,7 @@ test('dual theme browser behaviour (isolated fixture)', { skip: skipReason, time
     assert.equal(after.focused, true, 'focus should follow the replacement item');
     assert.ok(after.id && after.visible, JSON.stringify(after));
     assert.match(after.tip, /20万/, 'replacement tooltip must reflect the updated input');
-    assert.match(after.tip, /命中\s*25%/, 'replacement tooltip must reflect updated cache ratio');
+    assert.match(after.tip, /缓存命中率\s*25%/, 'replacement tooltip must reflect updated cache ratio');
   });
 
   await t.test('compact display keeps values, detail tooltip, units and quota across round trip', async () => {
@@ -1114,7 +1116,7 @@ test('dual theme browser behaviour (isolated fixture)', { skip: skipReason, time
     const normal = await inspect();
     assert.match(normal.visible, /12\.5万/);
     assert.match(normal.tip, /本轮/);
-    assert.match(normal.tip, /首字延迟/);
+    assert.match(normal.tip, /平均延迟/);
     assert.match(normal.quota, /26%/);
     assert.match(normal.total, /58\.25万/);
     await choose(b, 'pill');
@@ -1222,8 +1224,8 @@ test('pill review browser regressions (isolated fixture)', { skip: skipReason, t
   });
 
   for (const change of [
-    { name: 'duration', path: 'last', key: 'duration_ms', value: 8100, old: /单次耗时\s*3\.5s/, updated: /单次耗时\s*8\.1s/ },
-    { name: 'request count', path: 'last_turn', key: 'requests', value: 7, old: /本轮\s*·\s*3\s*次请求/, updated: /本轮\s*·\s*7\s*次请求/ },
+    { name: 'duration', path: 'last_turn', key: 'avg_duration_ms', value: 8100, old: /平均耗时\s*3\.5s/, updated: /平均耗时\s*8\.1s/ },
+    { name: 'request count', path: 'last_turn', key: 'requests', value: 7, old: /本轮[\s\S]*?3\s*次请求/, updated: /本轮[\s\S]*?7\s*次请求/ },
   ]) {
     await t.test(`hovered turn tooltip refreshes hidden ${change.name} without pointer movement`, async () => {
       await reset(b, { stored: 'pill' });
@@ -1335,7 +1337,8 @@ test('pill review browser regressions (isolated fixture)', { skip: skipReason, t
       assert.match(text, total === 230000 ? /20万/ : /30万/);
     }
     const selected = await b.evaluate(`(() => {
-      const tip = document.querySelector('.zusage-tip-root'), el = tip.querySelector('.rt-row span');
+      const tip = document.querySelector('.zusage-tip-root');
+      const el = tip.querySelector('.rt-models .rt-row span') || tip.querySelector('.zu-stat-v') || tip.querySelector('.zu-stat-time span');
       const range = document.createRange(); range.selectNodeContents(el);
       const selection = getSelection(); selection.removeAllRanges(); selection.addRange(range);
       return selection.toString();
