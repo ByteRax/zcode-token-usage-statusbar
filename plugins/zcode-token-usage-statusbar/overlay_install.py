@@ -891,8 +891,12 @@ def run_hook():
         from restart_notice import PREFIX
         waiting = _pending_install_waiting(pi)
         if waiting:
-            _nudge(out, PREFIX + "状态条补丁已排定：完全退出 ZCode（所有窗口）后"
+            # issue #185：「所有窗口」常被理解成「关掉窗口即退出」，Windows 客户端
+            # 驻留托盘/后台时收尾永远等不到空档——点名关窗不等于退出与核对办法。
+            _nudge(out, PREFIX + "状态条补丁已排定：完全退出 ZCode 后"
                      "会自动完成替换，之后重新打开即可生效，无需重试安装。"
+                     "注意关闭窗口不等于退出：若关窗后仍未替换，说明 ZCode 仍驻留托盘/后台，"
+                     "请从托盘图标退出，或在任务管理器中确认没有 ZCode 进程残留。"
                      "不需要请运行 /uninstall-overlay，之后不再提示。")
         elif waiting is False:
             # 受保护目录（issue #130）：「无需重试」是假承诺，提权重跑才是
