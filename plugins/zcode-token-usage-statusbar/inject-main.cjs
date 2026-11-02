@@ -723,6 +723,7 @@ function watchDb() {
  * 收敛常驻 stat 开销（热更新最晚多等 3s 生效）；false 仍每次 tick 现读、即时禁用。 */
 let overlayMtimeKnown = false;
 let zusageMtime = 0;
+let pricingMtime = 0;
 const hotTickMs = readCfg().hot_reload === true ? 2000 : 5000;
 setInterval(() => {
   const cfg = readCfgCached();
@@ -736,6 +737,17 @@ setInterval(() => {
       killResidentForUpgrade();
     }
     zusageMtime = m;
+    // v202：token_pricing.py 被 zusage.py import（常驻进程驻内存旧代码），同款热重启
+    try {
+      const pm = fs.statSync(path.join(path.dirname(ZUSAGE), "token_pricing.py")).mtimeMs;
+      if (overlayMtimeKnown && pricingMtime !== 0 && pm !== pricingMtime && pyRes) {
+        LOG("token_pricing.py changed, restarting resident python");
+        killResidentForUpgrade();
+      }
+      pricingMtime = pm;
+    } catch (e2) {
+      pricingMtime = 0;   // 文件未部署（旧运行目录）：随 zusage.py 重启自然加载
+    }
     overlayMtimeKnown = true;
   } catch (e) { }
 }, hotTickMs);

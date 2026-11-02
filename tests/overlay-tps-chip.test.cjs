@@ -269,12 +269,12 @@ test('tooltip: speed rows + bar summary gated by per-cell toggles + legend + set
   const panel = h.panelEl();
   assert.ok(panel && panel.classList.contains('open'), 'settings panel opened from the tooltip');
   assert.equal(gear.getAttribute('aria-expanded'), 'true');
-  // 子代理摘要行点击开明细面板（toggleSubPanel）
+  // 子代理摘要行点击开统一浮层（v217：__zuOpenSub → subPopShow pinned）
   const subFake = { closest: sel => (sel === '.tps-subrow' ? { __isSub: true } : null) };
   chip.listeners.get('mouseenter')[0].call(chip);
   tip.listeners.get('click')[0]({ target: subFake, stopPropagation() {} });
-  const subp = h.body.children.find(e => e.classList.contains('subp'));
-  assert.ok(subp && subp.classList.contains('open'), 'sub-agent details panel opened from the tooltip row');
+  const subp = h.body.children.find(e => e.classList.contains('zu-sub-pop'));
+  assert.ok(subp && subp.classList.contains('open'), 'unified sub popover opened from the tooltip row');
 });
 
 test('dispose removes the chip; switching theme to default via setBarTheme removes it too', () => {
@@ -307,8 +307,8 @@ test('session avg + dbTps>0: chip 带「近」尾缀；tooltip 有「最近一�
   assert.equal(chip.innerHTML, '<span class="zu-live ok">均85.5 t/s · 近42</span>');
   chip.listeners.get('mouseenter')[0].call(chip);
   const tip = h.tipEl().innerHTML;
-  assert.ok(tip.includes('生成速度 · 会话平均'), 'session-avg header');
-  assert.ok(tip.includes('最近一段') && tip.includes('42 t/s'), 'latest-segment row when dbTps>0');
+  assert.ok(tip.includes('zu-stat-scope">会话平均<'), 'session-avg scope tag');
+  assert.ok(tip.includes('最近一段') && /42 <small>t\/s<\/small>/.test(tip), 'latest-segment row when dbTps>0');
   assert.ok(!tip.includes('时间范围'), 'time span suppressed under session-avg header');
 });
 

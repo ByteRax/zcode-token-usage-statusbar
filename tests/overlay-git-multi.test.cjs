@@ -170,7 +170,7 @@ function drive(h, ui, st = gitState()) {
   if (st !== null) h.window.__zusageGitState('/repo/a', st);
   return chipOf(ui.row);
 }
-function sep() { return '<span class="zu-git-sep"> · </span>'; }
+function sep() { return '<span class="zu-git-sep">·</span>'; }   // v212 纯点+CSS 内边距（字面空格废止）
 
 test('multi chip base form: ▣ 15仓 · 3改 with middle-dot separators, aggregates in aria', () => {
   const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
@@ -448,7 +448,7 @@ test('multi chip styles: semantic palette, light variants, scroll container, no 
   assert.match(source, /\.zu-git-conflict\{color:#f09696\}/);
   assert.match(source, /\.zu-git-warn\{color:#f0e6a0\}/);
   assert.match(source, /\.zu-git-op\{color:#afafb2\}/);
-  assert.match(source, /\.zu-git-sep\{opacity:\.6\}/);
+  assert.match(source, /\.zu-git-sep\{opacity:\.6;padding:0 2px\}/);   // v212 间距收紧：纯点+2px 内边距（字面空格废止）
   assert.match(source, /\.zu-git\[data-zusage-light\] \.zu-git-conflict\{color:#d20f39\}/);
   assert.match(source, /\.zu-git\[data-zusage-light\] \.zu-git-warn\{color:#946200\}/);
   assert.match(source, /\.zu-git\.zu-compact \.zu-git-name,\.zu-git\.zu-compact \.zu-git-ab\{display:none\}/);

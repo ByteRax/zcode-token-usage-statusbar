@@ -49,6 +49,7 @@
       "plugins/zcode-token-usage-statusbar/restart_notice.py",
       "plugins/zcode-token-usage-statusbar/runtime_lock.py",
       "plugins/zcode-token-usage-statusbar/skills/zcode-token-usage/SKILL.md",
+      "plugins/zcode-token-usage-statusbar/token_pricing.py",
       "plugins/zcode-token-usage-statusbar/token_rate.py",
       "plugins/zcode-token-usage-statusbar/turn-stats.js",
       "plugins/zcode-token-usage-statusbar/usage_mcp.py",

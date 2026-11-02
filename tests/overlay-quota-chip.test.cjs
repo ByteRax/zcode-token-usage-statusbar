@@ -432,7 +432,10 @@ test('settings panel exposes the config-backed quota toggle (default on, v111) w
   assert.match(source, /zu-src-list/);   // ⚙ 源列表容器
   assert.match(source, /pluginRequest\("quota-src-key", \{ id: field\.dataset\.src, field: field\.dataset\.field, value: field\.value \}, function \(result\)/);
   assert.match(source, /\.zu-quota\{display:inline-flex;align-items:center;gap:5px;height:1\.75rem/);
-  assert.match(source, /\.zu-quota\{display:inline-flex;align-items:center;gap:5px;height:1\.75rem;padding:0 6px;border-radius:\.5rem;cursor:pointer;user-select:none;flex:0 0 auto;/);   // 布局盒
+  assert.match(source, /\.zu-quota\{display:inline-flex;align-items:center;gap:5px;height:1\.75rem;padding:0 3px;border-radius:\.5rem;cursor:pointer;user-select:none;flex:0 0 auto;/);   // 布局盒（v209 左右 3px，用户规格 2026-11-02）
+  assert.match(source, /"\[data-testid=chat-model-select-trigger\]\{padding-left:4px!important\}"/);   // v209 模型触发按钮左内边距减半（文本态）
+  assert.match(source, /"\[data-composer-model-icon=true\] \[data-testid=chat-model-select-trigger\]\{padding-left:3px!important\}"/);   // 图标态 6px→3px
+  assert.doesNotMatch(source.slice(source.indexOf('".zu-tsb{'), source.indexOf('".zu-tsb{') + 200), /padding:0 3px/);   // .zu-tsb 不随动（仍 6px）
   assert.match(source.slice(source.indexOf('\".zu-quota{'), source.indexOf('\".zu-quota{') + 600), /font-size:calc\(var\(--text-ui-base,var\(--ui-font-size,14px\)\) - 1px\);font-weight:700;font-variant-numeric:tabular-nums\}/);
   assert.match(source, /\.zu-qsep\{color:var\(--color-foreground-subtle/);
   assert.match(source, /\.zu-qseg\{white-space:nowrap\}/);   // 基色废止：色全由档位类提供
