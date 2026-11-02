@@ -109,7 +109,7 @@ python3 sync_plugin.py --check
 - 配置只合并需要的键，不整体覆盖 `config.json`；保留未知键、用户显式关闭与个人路径。插件配置事务在锁内重读、合并，再同目录原子替换；损坏或非对象配置不能被默默重建。
 - `config.example.json` 是模板，不可原样执行占位的 Python/SSH 路径。缺字段默认值、非布尔异常值与显式 `false` 不能混为一谈，各开关应读相应实现。
 - 自动安装恒开（v172 移除 `plugin_auto_install_overlay` 与 `ZUSAGE_PLUGIN_AUTO_INSTALL`，遗留值只保留不消费）：SessionStart 未注入即自动装，仅 `.plugin-overlay-optout` 能豁免；失败只给故障 `_nudge`。`plugin_auto_update` 是独立开关；损坏或非布尔更新配置不能启动自动更新。
-- 会话内重启/安装提醒文字已取消（v172）：待重启/待更新由 ⚙ 齿轮红点承载（`plugin-updater.cjs` 推送 `restartRequired`/`markerAt` 代际，overlay 消费）；`restart_notice` 显式 `false` 关红点；`reminder()` 只服务 `/install-overlay` 命令行反馈与故障 `_nudge`。⚙ 更新页有「重启 ZCode」按钮（主进程 `relaunch` 白名单动作，浮层二次确认）。
+- 会话内重启/安装提醒文字已取消（v172）：待重启由 ⚙ 齿轮红点承载（`plugin-updater.cjs` 推送 `restartRequired`/`markerAt` 代际，overlay 消费；v208 起红点仅待重启驱动——发现新版未安装、更新成功且已热重载均不亮，分量级已读比较保留以兼容旧 seen 串）；带待重启红点点 ⚙ 直接落「插件更新」分区（激活即 ack），设置页该分区有「已更新成功，点击重启 ZCode 即可生效」提示条（旧主进程降级回文字指引）；`restart_notice` 显式 `false` 关红点；`reminder()` 只服务 `/install-overlay` 命令行反馈与故障 `_nudge`。⚙ 更新页有「重启 ZCode」按钮（主进程 `relaunch` 白名单动作，浮层二次确认）。
 - CLI 普通报表、JSON 快照、hook JSON、MCP stdio 各有输出契约：机器协议的 stdout 不夹日志、安装提示或调试文本；诊断走已有 stderr/诊断文件路径。
 - 常驻查询是一请求一行 JSON 的协议；MCP 是 JSON-RPC，不可混用两者消息形状。增字段需兼容生产者、消费者与测试夹具。
 - 维护要求：新增定时器、文件/IPC/DOM 监听器、子进程要有明确归属，验证热更新、导航、窗口关闭后的停用，不能声称当前已有完整全局 dispose。
