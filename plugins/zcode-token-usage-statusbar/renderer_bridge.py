@@ -30,6 +30,11 @@ _BRIDGE_END_RE = re.compile(re.escape(BRIDGE_ID) + rb":v\d+ end \*/")
 # 表内版本的资产哈希漂移仍拒绝（fail-closed）；表外版本走 derive_target 的
 # 严格结构推导——任何一项不唯一/不符即拒绝，绝不对没验证过的 bundle 做字节手术。
 HOST_TARGETS = [
+    {"version": "3.17.2", "asset": "/out/renderer/assets/styles-Dv5E6Odo.js",
+     "sha256": "a0fa280cfbc3e132336c1b1fc9fc98caf4b73b57d588804cb661e3286645b625",
+     "names": {"key": "eme", "topic": "kee", "registry": "Jp"},
+     "pane": {"anchor": b'"data-testid":Fx(hVe,e),"data-session-id":t??`draft`,',
+              "workspacePath": "l", "workspaceIdentity": "u", "remoteSessionId": "d", "paneId": "e"}},
     {"version": "3.17.1", "asset": "/out/renderer/assets/styles-C9n_FfEX.js",
      "sha256": "256d47bf5db876d1833adee53e439c15dd3193c51118c37d33cf8a937472c51b",
      "names": {"key": "Kfe", "topic": "Aee", "registry": "np"},
