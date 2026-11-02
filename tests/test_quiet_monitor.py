@@ -735,6 +735,18 @@ class PendingWaitPanelTests(unittest.TestCase):
         self.assertIn("早于补丁排定", output)
         self.assertIn("托盘", output)
         self.assertIn("任务管理器", output)
+        # 时间值本身也要锁（review 变异：%H:%M:%S 改成 %M:%H 时分颠倒不红）。
+        self.assertIn(time.strftime("%H:%M:%S", time.localtime(self.epoch - 3600)), output)
+        self.assertIn(time.strftime("%H:%M:%S", time.localtime(self.epoch)), output)
+
+    def test_pending_panel_uses_earliest_process_not_latest(self):
+        # 「最早」语义：混合早晚夹具必须取最早值（min 被换成 max 会落进中性分支、
+        # 显示排定之后的晚进程时刻——那批进程根本不是收尾要等的目标）。
+        output = self.draw_pending(self.monitor, {"101", "102"},
+                                   {"101": self.epoch - 3600, "102": self.epoch + 60})
+        self.assertIn("早于补丁排定", output)
+        self.assertIn(time.strftime("%H:%M:%S", time.localtime(self.epoch - 3600)), output)
+        self.assertNotIn(time.strftime("%H:%M:%S", time.localtime(self.epoch + 60)), output)
 
     def test_pending_panel_english_copy(self):
         output = self.draw_pending(self.en_monitor(), {"101"},
@@ -792,12 +804,15 @@ class PendingWaitPanelTests(unittest.TestCase):
                                   "102": 13400000006.0 - 11644473600})
 
     def test_zcode_pid_starts_parses_ps_lstart(self):
+        # 显式钉住 posix 分支：Windows 宿主上不钉会落到 nt 分支（fake 无 timeout
+        # 形参直接 TypeError），本仓库的 Python 回归在 Windows 也要保持双平台绿。
         calls = []
         def fake_run(argv, capture_output=None, env=None):
             calls.append((list(argv), env))
             return types.SimpleNamespace(stdout=b"  101 Mon Nov  3 10:19:58 2026\n  102 Sun Nov  2 09:00:00 2026\n")
         fake = types.SimpleNamespace(run=fake_run, TimeoutExpired=subprocess.TimeoutExpired)
-        with mock.patch.object(self.monitor, "subprocess", fake):
+        with mock.patch.object(self.monitor, "os", types.SimpleNamespace(name="posix", environ=os.environ)), \
+                mock.patch.object(self.monitor, "subprocess", fake):
             starts = self.monitor.zcode_pid_starts({"102", "101"})
         self.assertEqual(starts["101"], time.mktime(time.strptime("Mon Nov  3 10:19:58 2026", "%a %b %d %H:%M:%S %Y")))
         self.assertEqual(starts["102"], time.mktime(time.strptime("Sun Nov  2 09:00:00 2026", "%a %b %d %H:%M:%S %Y")))
@@ -811,6 +826,14 @@ class PendingWaitPanelTests(unittest.TestCase):
             raise OSError("detection command unavailable")
         fake = types.SimpleNamespace(run=boom, TimeoutExpired=subprocess.TimeoutExpired)
         with mock.patch.object(self.monitor, "subprocess", fake):
+            self.assertIsNone(self.monitor.zcode_pid_starts({"101"}))
+        # PowerShell 挂死到 timeout=20 也必须返回 None，不能让未捕获异常杀死整个
+        # 收尾监控进程（受保护目录场景 hook 重建不了它，issue #130）。
+        def hang(*args, **kwargs):
+            raise subprocess.TimeoutExpired(cmd="powershell", timeout=20)
+        hung = types.SimpleNamespace(run=hang, TimeoutExpired=subprocess.TimeoutExpired)
+        with mock.patch.object(self.monitor, "os", types.SimpleNamespace(name="nt")), \
+                mock.patch.object(self.monitor, "subprocess", hung):
             self.assertIsNone(self.monitor.zcode_pid_starts({"101"}))
         garbage = types.SimpleNamespace(
             run=lambda *args, **kwargs: types.SimpleNamespace(stdout=b"nonsense\n"),

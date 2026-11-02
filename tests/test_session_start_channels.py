@@ -208,6 +208,10 @@ class SessionStartChannelTests(unittest.TestCase):
         context = self.context(output)
         self.assertIn("已排定", context)
         self.assertIn("完全退出 ZCode", context)
+        # issue #185：关窗常被当成退出，Windows 驻留托盘/后台时收尾等不到空档，
+        # nudge 必须点名「关窗不等于退出」并给出核对办法。
+        self.assertIn("关闭窗口不等于退出", context)
+        self.assertIn("任务管理器", context)
         self.assertNotIn("install-overlay 重试", context)
         self.assertIn("uninstall-overlay", context)
 
