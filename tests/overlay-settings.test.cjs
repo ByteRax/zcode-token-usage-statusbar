@@ -256,25 +256,30 @@ test('update badge dots follow fingerprints, the seen marker and the notice swit
   state.pluginUpdate = { ...state.pluginUpdate, markerAt: 999 };
   vm.runInNewContext('syncUpdate();', context);
   assert.equal(gearDot.style.display, 'block');
-  // 有新版（无 marker）也亮，latestVersion 为代际；重启按钮不因待更新高亮
+  // v208：红点仅承载待重启——有新版未安装（available）与更新成功无需重启（updated）都不亮
   state.pluginUpdate = { supported: true, restartRequired: false, phase: 'available', latestVersion: '1.6.0' };
   vm.runInNewContext('syncUpdate();', context);
-  assert.equal(gearDot.style.display, 'block');
+  assert.equal(gearDot.style.display, 'none', 'v208: available must not light the dot');
+  assert.equal(navDot.style.display, 'none');
   assert.equal(relaunch.classes['zu-rr-armed'], false);
+  state.pluginUpdate = { supported: true, restartRequired: false, phase: 'updated', latestVersion: '1.6.0' };
+  vm.runInNewContext('syncUpdate();', context);
+  assert.equal(gearDot.style.display, 'none', 'v208: hot-reloaded update must not light the dot');
+  assert.equal(navDot.style.display, 'none');
   // 旧主进程缺 markerAt：以 "?" 代际亮一次，已读后不再复亮
   state.pluginUpdate = { supported: true, restartRequired: true, phase: 'idle' };
   store['zusage3.updSeen'] = '?';
   vm.runInNewContext('syncUpdate();', context);
   assert.equal(gearDot.style.display, 'none');
-  // v177 分量级比较：已读指纹含「待重启|版本」两分量，装完后 auto check 把 phase 推回
-  // current，latestVersion 分量退出指纹——整体等值比较会失配误复亮；seen 覆盖全部分量则不复亮
+  // v177 分量级比较保留：旧版写入的「代际|版本」已读串仍能覆盖 v208 的单分量（代际）指纹
   store['zusage3.updSeen'] = '171.5|1.5.8';
   state.pluginUpdate = { supported: true, restartRequired: true, markerAt: 171.5, phase: 'current' };
   vm.runInNewContext('syncUpdate();', context);
-  assert.equal(gearDot.style.display, 'none', 'v177: a component exiting the fingerprint must not re-light');
-  state.pluginUpdate = { supported: true, restartRequired: true, markerAt: 171.5, phase: 'available', latestVersion: '1.5.9' };
+  assert.equal(gearDot.style.display, 'none', 'v177: a covered marker must not re-light');
+  // 新 marker 代际才复亮
+  state.pluginUpdate = { supported: true, restartRequired: true, markerAt: 171.6, phase: 'available', latestVersion: '1.5.9' };
   vm.runInNewContext('syncUpdate();', context);
-  assert.equal(gearDot.style.display, 'block', 'v177: a new fingerprint component re-lights');
+  assert.equal(gearDot.style.display, 'block', 'v208: a fresh marker generation re-lights');
   // v177：ack 幂等早退前先收敛本窗口红点（漏收 storage 事件的窗口靠它自愈），且不冲掉更富的已读指纹
   gearDot.style.display = 'block';
   navDot.style.display = 'block';
@@ -290,6 +295,45 @@ test('update badge dots follow fingerprints, the seen marker and the notice swit
   vm.runInNewContext('syncUpdate();', context);
   assert.equal(gearDot.style.display, 'none');
   assert.equal(navDot.style.display, 'none');
+  // v208 已更新待重启提示条：需重启+主进程支持 → 显示；旧主进程/无需重启 → 隐藏（旧主进程保留文字指引）
+  state.restartNotice = true;
+  const banner = { hidden: true, textContent: '', style: {} };
+  context.panel.querySelector = sel => sel === '.zu-upd-banner' ? banner
+    : sel === '.zu-navitem[data-sec="update"] .zu-nav-dot' ? navDot
+    : sel === '[data-update=relaunch]' ? relaunch : (controls[sel] ||= { style: {} });
+  state.pluginUpdate = { supported: true, restartRequired: true, markerAt: 5, phase: 'updated', relaunchSupported: true };
+  vm.runInNewContext('syncUpdate();', context);
+  assert.equal(banner.hidden, false, 'v208: banner shows while a restart is pending');
+  assert.equal(banner.textContent, '已更新成功，点击重启 ZCode 即可生效');
+  state.pluginUpdate = { supported: true, restartRequired: true, markerAt: 5, phase: 'updated' };   // relaunchSupported 缺失 = 旧主进程
+  vm.runInNewContext('syncUpdate();', context);
+  assert.equal(banner.hidden, true, 'v208: banner hidden for legacy main process');
+  assert.match(context.panel.querySelector('.zu-update-status').textContent, /需重启 ZCode/);
+  state.pluginUpdate = { supported: true, restartRequired: false, phase: 'updated', relaunchSupported: true };
+  vm.runInNewContext('syncUpdate();', context);
+  assert.equal(banner.hidden, true, 'v208: banner hidden without a pending restart');
+  // v208 齿轮跳转前置：红点亮时 gear click 走 activateSettingsSec("update")，激活即 ack
+  const sections = [
+    { getAttribute: () => 'display', hidden: true },
+    { getAttribute: () => 'update', hidden: false },
+  ];
+  const navs = [
+    { getAttribute: () => 'display', dataset: {}, setAttribute() {}, removeAttribute() {} },
+    { getAttribute: () => 'update', dataset: {}, aria: null, setAttribute(k, v) { this[k] = v; }, removeAttribute(k) { this[k] = null; } },
+  ];
+  context.panel.querySelectorAll = sel => sel === '.zu-settings-section[data-sec]' ? sections : sel === '.zu-navitem' ? navs : [];
+  context.state.settingsSec = 'display';
+  context.persist = () => {};
+  context.activeSettingsSec = () => context.state.settingsSec;
+  context.syncSettingsScroll = () => {};
+  state.pluginUpdate = { supported: true, restartRequired: true, markerAt: 77, phase: 'updated', relaunchSupported: true };
+  delete store['zusage3.updSeen'];
+  vm.runInNewContext('activateSettingsSec("update");', context);
+  assert.equal(context.state.settingsSec, 'update');
+  assert.equal(store['zusage3.updSeen'], '77', 'v208: activating the update section acks the dot');
+  assert.equal(navs[1]['aria-current'], 'page');
+  assert.equal(sections[0].hidden, true);
+  assert.equal(sections[1].hidden, false);
   // 更新忙时重启按钮禁用；插件状态缺失时仍可点（重启不依赖更新器）
   state.restartNotice = true;
   state.pluginUpdate = { supported: true, busy: true, phase: 'updating', restartRequired: false };
@@ -305,6 +349,10 @@ test('v172 relaunch wiring: badge elements, ack on section click and two-step co
   assert.ok(source.includes("(it.id === \"update\" ? '<span class=\"zu-nav-dot\" aria-hidden=\"true\"></span>' : '')"));   // 导航红点
   assert.ok(source.includes('if (state.settingsSec === "update") ackUpdateDots();'));   // 点进分区即已读
   assert.ok(source.includes("localStorage.setItem(LS.updSeen, fp)"));                   // 已读指纹持久化
+  assert.ok(source.includes('<div class="zu-upd-banner" hidden></div>'));               // v208 待重启提示条元素
+  assert.ok(source.includes('else if (updDotOn()) activateSettingsSec("update");'));    // v208 带红点开面板直接落「插件更新」分区
+  assert.ok(source.includes('L("已更新成功，点击重启 ZCode 即可生效", "Update installed — click Restart ZCode to apply")'));   // v208 提示条文案
+  assert.match(source, /function updFingerprint\(u\) \{\s*\n\s*if \(!u \|\| !u\.restartRequired\) return "";/);   // v208 指纹仅待重启分量
   assert.match(source, /data-update="relaunch"/);                                       // 重启按钮
   assert.ok(source.includes('button.textContent = L("再次点击确认重启", "Click again to confirm restart")'));   // 二次确认文案
   assert.ok(source.includes('pluginRequest("relaunch", undefined,'));
@@ -835,7 +883,8 @@ test('an unknown stored section falls back to the first section instead of a bla
 });
 
 test('nav clicks switch the visible section through the delegated handler, persist and reset scroll', () => {
-  const clickSource = extract('    panel.addEventListener("click",', '    gear.addEventListener("click"');
+  const clickSource = extract('    function updFingerprint(u) {', '    function syncPanel() {')   // v208 含 handler 委托的 activateSettingsSec
+    + '\n' + extract('    panel.addEventListener("click",', '    gear.addEventListener("click"');
   let handler;
   const ids = ['display', 'general', 'stats', 'quota', 'update', 'about'];
   const mk = id => ({
