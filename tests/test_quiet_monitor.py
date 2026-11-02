@@ -794,7 +794,9 @@ class PendingWaitPanelTests(unittest.TestCase):
         self.assertEqual(starts.call_count, 2)
 
     def test_zcode_pid_starts_parses_powershell_filetime(self):
+        calls = []
         def fake_run(argv, capture_output=None, timeout=None):
+            calls.append((list(argv), timeout))
             return types.SimpleNamespace(stdout=b"101|134000000000000000\r\n102|134000000060000000\r\n")
         fake = types.SimpleNamespace(run=fake_run, TimeoutExpired=subprocess.TimeoutExpired)
         with mock.patch.object(self.monitor, "os", types.SimpleNamespace(name="nt")), \
@@ -802,6 +804,13 @@ class PendingWaitPanelTests(unittest.TestCase):
             starts = self.monitor.zcode_pid_starts({"101", "102"})
         self.assertEqual(starts, {"101": 13400000000.0 - 11644473600,
                                   "102": 13400000006.0 - 11644473600})
+        # 命令形状（review 复审补强）：timeout 缺了挂死的 PowerShell 会无限阻塞
+        # 收尾监控（issue #130 场景 hook 重建不了它）；进程名口径须与 zcode_pids
+        # 的 tasklist "IMAGENAME eq ZCode.exe" 一致。
+        argv, timeout = calls[0]
+        self.assertEqual(timeout, 20)
+        self.assertIn("-NoProfile", argv)
+        self.assertIn("Get-Process ZCode", " ".join(argv))
 
     def test_zcode_pid_starts_parses_ps_lstart(self):
         # 显式钉住 posix 分支：Windows 宿主上不钉会落到 nt 分支（fake 无 timeout
