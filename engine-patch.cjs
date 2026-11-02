@@ -19,11 +19,15 @@ const MARK = "__zusageAutoCompactThreshold";
 const PROLOGUE_PREFIX = "/* zcode-token-usage-statusbar v179 auto-compact threshold hook */";
 const BACKUP_PREFIX = ".pre-acthreshold-";
 const SENTINEL = "engine-patch.json";
-/* 锚点/replacement 与已装 3.17.1 bundle 逐字节核对（bufferTokens 全 bundle 唯一）。
+/* 锚点/replacement 与已装 bundle 逐字节核对（bufferTokens 全 bundle 唯一）。
  * `??Math.max(0,t-n)` 兜底必须有：hook 存在但返回空（配置缺失/损坏）时若直接返回
  * undefined，阈值判定会恒 false——那等于永远不压缩而不是回默认。 */
-const ANCHOR = "n=ake(e.bufferTokens)??DBo;return Math.max(0,t-n)";
-const REPLACEMENT = "n=ake(e.bufferTokens)??DBo;return (globalThis." + MARK + "&&globalThis." + MARK + "(t,n))??Math.max(0,t-n)";
+const anchorFor = (fn, dflt) => "n=" + fn + "(e.bufferTokens)??" + dflt + ";return Math.max(0,t-n)";
+const replacementFor = (fn, dflt) => "n=" + fn + "(e.bufferTokens)??" + dflt +
+  ";return (globalThis." + MARK + "&&globalThis." + MARK + "(t,n))??Math.max(0,t-n)";
+/* 最新登记版本的锚点对；旧版本符号轮换见 ENGINE_TARGETS 各条目。 */
+const ANCHOR = anchorFor("cke", "jBo");
+const REPLACEMENT = replacementFor("cke", "jBo");
 
 /* hook 本体：插入引擎文件头。优先级 enabled:false > thresholdPercent(30-99，
  * v194 起总窗口口径：引擎判定只认扣除输出预留后的有效窗口 eff，按 eff+21K 近似
@@ -57,10 +61,17 @@ const PROLOGUE_V1 = (() => {
  * HOST_TARGETS 同款维护模型）；表外版本拒绝补丁并明示，绝不盲打。 */
 const ENGINE_TARGETS = [
   {
-    build: "3.17.1",
-    engineSha256: "9afd565a104d660259e6bdeeaa5cb8abc74a908559e21aa3c5f6a06f2a9da6c6",
+    build: "3.17.2",
+    engineSha256: "d9afd58d694f98a5279bf548cdc7646413c125762e86730605a6071f9e0346d6",
     anchor: ANCHOR,
     replacement: REPLACEMENT,
+    prologue: PROLOGUE,
+  },
+  {
+    build: "3.17.1",
+    engineSha256: "9afd565a104d660259e6bdeeaa5cb8abc74a908559e21aa3c5f6a06f2a9da6c6",
+    anchor: anchorFor("ake", "DBo"),
+    replacement: replacementFor("ake", "DBo"),
     prologue: PROLOGUE,
   },
 ];
