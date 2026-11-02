@@ -5,8 +5,10 @@ import contextlib
 import ctypes
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
+import time
 import types
 import unittest
 from unittest import mock
@@ -667,6 +669,190 @@ class QuietMonitorTests(unittest.TestCase):
                 self.monitor.main()
         output = "\n".join(draw.call_args.args[0])
         self.assertIn(f'--asar "{self.asar}"', output)
+
+
+class PendingWaitPanelTests(unittest.TestCase):
+    """issue #185：Windows 关窗后客户端驻留托盘/后台，pending 收尾等不到进程全退的
+    空档。等待画面要点名「关窗不等于退出」并显示最早进程启动时刻与补丁排定的先后；
+    进程启动时间探测只在 PID 集合变化时查询（PowerShell 冷启动慢）。"""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.home = self.root / "home"
+        self.home.mkdir()
+        home = mock.patch.dict(os.environ, {"HOME": str(self.home), "USERPROFILE": str(self.home)})
+        home.start()
+        self.addCleanup(home.stop)
+        self.asar = self.root / "app.asar"
+        self.asar.write_bytes(b"official version")
+        self.tmp = self.root / "app.asar.zusage.tmp"
+        self.runtime = self.root / "runtime"
+        self.runtime.mkdir()
+        self.epoch = 1740000000.0
+        with mock.patch.object(sys, "argv", ["install_monitor.py", str(int(self.epoch)), str(self.asar), str(self.runtime)]), \
+                mock.patch.dict(os.environ, {"ZUSAGE_MONITOR_QUIET": "1"}):
+            self.monitor = module("pid_starts_monitor_test", ROOT / "install_monitor.py")
+        self.patch = module("pid_starts_patch_test", ROOT / "patch_install.py")
+        self.patch.set_target(self.asar)
+        self.patch.set_runtime(self.runtime)
+
+    def en_monitor(self):
+        (self.runtime / "config.json").write_text('{"lang": "en"}', encoding="utf-8")
+        with mock.patch.object(sys, "argv", ["install_monitor.py", str(int(self.epoch)), str(self.asar), str(self.runtime)]):
+            return module("pid_starts_monitor_en", ROOT / "install_monitor.py")
+
+    def pending(self, data=b"verified package", operation="install"):
+        source = self.patch.source_fingerprint(self.asar)
+        self.tmp.write_bytes(data)
+        with mock.patch.object(self.patch, "self_check", return_value=True), \
+                mock.patch.object(self.patch, "syntax_check", return_value=True):
+            self.patch.write_tmp_metadata(source, operation)
+
+    def draw_pending(self, monitor, pids, starts):
+        self.pending()
+        with mock.patch.dict(sys.modules, {"patch_install": self.patch}), \
+                mock.patch.object(sys, "argv", ["install_monitor.py", str(int(self.epoch)), str(self.asar), str(self.runtime)]), \
+                mock.patch.object(monitor, "QUIET", False), \
+                mock.patch.object(monitor, "zcode_pids", return_value=pids), \
+                mock.patch.object(monitor, "zcode_pid_starts", return_value=starts), \
+                mock.patch.object(monitor, "wait_any_exit", side_effect=KeyboardInterrupt), \
+                mock.patch.object(monitor.time, "monotonic", return_value=0), \
+                mock.patch.object(self.patch, "is_elevated", return_value=False), \
+                mock.patch.object(self.patch, "self_check", return_value=True), \
+                mock.patch.object(monitor, "draw") as draw:
+            with self.assertRaises(KeyboardInterrupt):
+                monitor.main()
+        return "\n".join(draw.call_args.args[0])
+
+    def test_pending_panel_names_window_quit_and_shows_oldest_process(self):
+        output = self.draw_pending(self.monitor, {"101", "102"},
+                                   {"101": self.epoch - 3600, "102": self.epoch - 60})
+        self.assertIn("当前 ZCode 进程数：2", output)
+        self.assertIn("关闭窗口不等于退出", output)
+        self.assertIn("最早进程", output)
+        self.assertIn("早于补丁排定", output)
+        self.assertIn("托盘", output)
+        self.assertIn("任务管理器", output)
+        # 时间值本身也要锁（review 变异：%H:%M:%S 改成 %M:%H 时分颠倒不红）。
+        self.assertIn(time.strftime("%H:%M:%S", time.localtime(self.epoch - 3600)), output)
+        self.assertIn(time.strftime("%H:%M:%S", time.localtime(self.epoch)), output)
+
+    def test_pending_panel_uses_earliest_process_not_latest(self):
+        # 「最早」语义：混合早晚夹具必须取最早值（min 被换成 max 会落进中性分支、
+        # 显示排定之后的晚进程时刻——那批进程根本不是收尾要等的目标）。
+        output = self.draw_pending(self.monitor, {"101", "102"},
+                                   {"101": self.epoch - 3600, "102": self.epoch + 60})
+        self.assertIn("早于补丁排定", output)
+        self.assertIn(time.strftime("%H:%M:%S", time.localtime(self.epoch - 3600)), output)
+        self.assertNotIn(time.strftime("%H:%M:%S", time.localtime(self.epoch + 60)), output)
+
+    def test_pending_panel_english_copy(self):
+        output = self.draw_pending(self.en_monitor(), {"101"},
+                                   {"101": self.epoch - 3600})
+        self.assertIn("closing the window is not quitting", output)
+        self.assertIn("before the patch was scheduled", output)
+        self.assertIn("tray", output)
+
+    def test_pending_panel_oldest_not_before_epoch_is_neutral(self):
+        # 最早进程不早于补丁排定（排定后旧进程曾全退、又开了新进程）：
+        # 只客观并列两个时刻，不得误报「早于」。
+        output = self.draw_pending(self.monitor, {"101"}, {"101": self.epoch + 60})
+        self.assertIn("最早进程", output)
+        self.assertIn("补丁排定", output)
+        self.assertNotIn("早于补丁排定", output)
+
+    def test_pending_panel_without_process_starts_still_hints_tray(self):
+        # 启动时间探测不可用（命令缺失等）时只隐去该行，托盘指引仍在。
+        output = self.draw_pending(self.monitor, {"101", "102"}, None)
+        self.assertNotIn("最早进程", output)
+        self.assertIn("托盘", output)
+
+    def test_pid_starts_queried_only_when_pid_set_changes(self):
+        # 集合不变不重查：PowerShell 冷启动可达数秒，逐轮轮询调用会拖慢画面刷新。
+        # zcode_pids 第一跳被 pids0 启动采集吃掉，故给 4 个值跑 3 帧。
+        self.pending()
+        draws = []
+        with mock.patch.dict(sys.modules, {"patch_install": self.patch}), \
+                mock.patch.object(sys, "argv", ["install_monitor.py", str(int(self.epoch)), str(self.asar), str(self.runtime)]), \
+                mock.patch.object(self.monitor, "QUIET", False), \
+                mock.patch.object(self.monitor, "zcode_pids",
+                                  side_effect=[{"101"}, {"101"}, {"101"}, {"102"}]), \
+                mock.patch.object(self.monitor, "zcode_pid_starts",
+                                  return_value={"101": self.epoch - 60}) as starts, \
+                mock.patch.object(self.monitor, "wait_any_exit",
+                                  side_effect=[None, None, KeyboardInterrupt]), \
+                mock.patch.object(self.monitor.time, "monotonic", return_value=0), \
+                mock.patch.object(self.patch, "is_elevated", return_value=False), \
+                mock.patch.object(self.patch, "self_check", return_value=True), \
+                mock.patch.object(self.monitor, "draw",
+                                  side_effect=lambda lines: draws.append("\n".join(lines))):
+            with self.assertRaises(KeyboardInterrupt):
+                self.monitor.main()
+        self.assertTrue(draws, "at least one frame drawn")
+        self.assertEqual(starts.call_count, 2)
+
+    def test_zcode_pid_starts_parses_powershell_filetime(self):
+        calls = []
+        def fake_run(argv, capture_output=None, timeout=None):
+            calls.append((list(argv), timeout))
+            return types.SimpleNamespace(stdout=b"101|134000000000000000\r\n102|134000000060000000\r\n")
+        fake = types.SimpleNamespace(run=fake_run, TimeoutExpired=subprocess.TimeoutExpired)
+        with mock.patch.object(self.monitor, "os", types.SimpleNamespace(name="nt")), \
+                mock.patch.object(self.monitor, "subprocess", fake):
+            starts = self.monitor.zcode_pid_starts({"101", "102"})
+        self.assertEqual(starts, {"101": 13400000000.0 - 11644473600,
+                                  "102": 13400000006.0 - 11644473600})
+        # 命令形状（review 复审补强）：timeout 缺了挂死的 PowerShell 会无限阻塞
+        # 收尾监控（issue #130 场景 hook 重建不了它）；进程名口径须与 zcode_pids
+        # 的 tasklist "IMAGENAME eq ZCode.exe" 一致。
+        argv, timeout = calls[0]
+        self.assertEqual(timeout, 20)
+        self.assertIn("-NoProfile", argv)
+        self.assertIn("Get-Process ZCode", " ".join(argv))
+
+    def test_zcode_pid_starts_parses_ps_lstart(self):
+        # 显式钉住 posix 分支：Windows 宿主上不钉会落到 nt 分支（fake 无 timeout
+        # 形参直接 TypeError），本仓库的 Python 回归在 Windows 也要保持双平台绿。
+        calls = []
+        def fake_run(argv, capture_output=None, env=None):
+            calls.append((list(argv), env))
+            return types.SimpleNamespace(stdout=b"  101 Mon Nov  3 10:19:58 2026\n  102 Sun Nov  2 09:00:00 2026\n")
+        fake = types.SimpleNamespace(run=fake_run, TimeoutExpired=subprocess.TimeoutExpired)
+        with mock.patch.object(self.monitor, "os", types.SimpleNamespace(name="posix", environ=os.environ)), \
+                mock.patch.object(self.monitor, "subprocess", fake):
+            starts = self.monitor.zcode_pid_starts({"102", "101"})
+        self.assertEqual(starts["101"], time.mktime(time.strptime("Mon Nov  3 10:19:58 2026", "%a %b %d %H:%M:%S %Y")))
+        self.assertEqual(starts["102"], time.mktime(time.strptime("Sun Nov  2 09:00:00 2026", "%a %b %d %H:%M:%S %Y")))
+        argv, env = calls[0]
+        self.assertIn("-p", argv)
+        self.assertIn("101,102", argv)
+        self.assertEqual(env["LC_ALL"], "C")
+
+    def test_zcode_pid_starts_unavailable_or_garbage_returns_none(self):
+        def boom(*args, **kwargs):
+            raise OSError("detection command unavailable")
+        fake = types.SimpleNamespace(run=boom, TimeoutExpired=subprocess.TimeoutExpired)
+        with mock.patch.object(self.monitor, "subprocess", fake):
+            self.assertIsNone(self.monitor.zcode_pid_starts({"101"}))
+        # PowerShell 挂死到 timeout=20 也必须返回 None，不能让未捕获异常杀死整个
+        # 收尾监控进程（受保护目录场景 hook 重建不了它，issue #130）。
+        def hang(*args, **kwargs):
+            raise subprocess.TimeoutExpired(cmd="powershell", timeout=20)
+        hung = types.SimpleNamespace(run=hang, TimeoutExpired=subprocess.TimeoutExpired)
+        with mock.patch.object(self.monitor, "os", types.SimpleNamespace(name="nt")), \
+                mock.patch.object(self.monitor, "subprocess", hung):
+            self.assertIsNone(self.monitor.zcode_pid_starts({"101"}))
+        garbage = types.SimpleNamespace(
+            run=lambda *args, **kwargs: types.SimpleNamespace(stdout=b"nonsense\n"),
+            TimeoutExpired=subprocess.TimeoutExpired)
+        with mock.patch.object(self.monitor, "subprocess", garbage):
+            self.assertIsNone(self.monitor.zcode_pid_starts({"101"}))
+        stub = mock.Mock()
+        with mock.patch.object(self.monitor, "subprocess", stub):
+            self.assertEqual(self.monitor.zcode_pid_starts(set()), {})
+            stub.run.assert_not_called()
 
 
 class WaitAnyExitTests(unittest.TestCase):
