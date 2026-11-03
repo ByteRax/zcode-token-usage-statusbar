@@ -337,8 +337,10 @@ class PendingAsarTests(unittest.TestCase):
         self.assertFalse(orphan.exists())
 
     def test_fresh_stage_survives_next_prepare(self):
-        """移交窗口保护：早于阈值的新 stage 绝不删除——它可能是刚崩溃进程的包，
-        也可能是桥链 publish_external_pending 的在途 stage（同前缀族）。"""
+        """移交窗口保护：早于阈值的新 stage 绝不删除——它可能是刚崩溃进程的
+        未移交包。桥链在途 stage 前缀（.zusage-bridge-*）本就不匹配本 glob，
+        阈值保护的是本链自己的在途窗口；在途 pending 对（TMP/TMP_META）由
+        test_sweep_never_touches_pending_pair_even_when_stale 单独守护。"""
         fresh = self.root / (self.pi.TMP.name + ".fresh123.stage")
         fresh.write_bytes(b"fresh")
         self.prepare()
@@ -358,6 +360,19 @@ class PendingAsarTests(unittest.TestCase):
             self.pi.publish_external_pending(garbage)
         self.assertFalse(orphan.exists())
         self.assertFalse(garbage.exists())
+
+    def test_sweep_never_touches_pending_pair_even_when_stale(self):
+        """glob 误放宽到无 .stage 后缀时最危险的误删面是在途 pending 对：
+        sidecar app.asar.zusage.tmp.json 无 .stage 后缀、真实场景会老化超阈值
+        （用户长时间不重启），必须永不被清扫。只 age sidecar——TMP 本体的
+        mtime_ns 参与 sidecar 内容指纹，age 它会让 _owned_tmp_metadata 抛
+        「no longer belongs to its sidecar」假红。"""
+        self.prepare()
+        old = time.time() - self.pi.STALE_STAGE_SECONDS - 60
+        os.utime(self.pi.TMP_META, (old, old))
+        self.prepare()
+        self.assertTrue(self.pi.TMP_META.exists(), "在途 pending 元数据不得被清扫")
+        self.assertTrue(self.pi.TMP.exists())
 
     def test_partial_repack_preserves_previous_owned_pending_pair(self):
         self.prepare()
