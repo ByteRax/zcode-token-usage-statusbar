@@ -445,7 +445,7 @@ python zusage.py watch
 | 说已更新但没有变化 | 确认安装的是缓存副本而非仅改了仓库；按提示重开会话或重启 |
 | 卸载后又有目录 | 确认插件、自动更新和旧主进程已停止，再删除目录 |
 
-在仓库目录可运行状态检查（不修改注入；已注入时可能生成临时语法检查文件并调用客户端可执行文件）。Windows 上 `python3` 可能是 Microsoft Store 存根会静默失败，依次改用 `python`、`py -3`；macOS/Linux 用 `python3`。本节与「彻底卸载」的手动命令同：
+在仓库目录可运行状态检查（不修改注入；已注入时可能生成临时语法检查文件并调用客户端可执行文件）。Windows 上 `python3` 可能是 Microsoft Store 存根会静默失败，依次改用 `python`、`py -3`；macOS/Linux 用 `python3`。「彻底卸载」一节的手动命令同理：
 
 ```bash
 python3 plugins/zcode-token-usage-statusbar/overlay_install.py check
