@@ -525,4 +525,4 @@ OpenRouter 账户余额需设置 Management Key 或 `OPENROUTER_MANAGEMENT_KEY`�
 
 ### 非默认 ZCode 数据目录
 
-额度查询跟随宿主的 `ZCODE_DATA_BASE_DIR`，优先采用 `ZCODE_PERSONAL_PROVIDER_CONFIG_FILE` 与 `ZCODE_BUILTIN_PROVIDER_CONFIG_FILE` 指向的实际配置；凭据读取与文件监听使用同一实际目录。迁移数据后无需复制 key 回旧 HOME。个人配置只保存 key 而继承内置 baseUrl 的 MiniMax 规则同样可识别；不会按任意模型名称猜测查询地域。主进程文件改动需完全退出并重启客户端才生效。
+额度查询跟随宿主数据目录（桌面端优先读 `<home>/.zcode/v2/setting.json` 的 `dataBaseDir`，`ZCODE_DATA_BASE_DIR` 环境变量仅作回落），优先采用 `ZCODE_PERSONAL_PROVIDER_CONFIG_FILE` 与 `ZCODE_BUILTIN_PROVIDER_CONFIG_FILE` 指向的实际配置；凭据读取与文件监听使用同一实际目录。迁移数据后无需复制 key 回旧 HOME。个人配置只保存 key 而继承内置 baseUrl 的 MiniMax 规则同样可识别；不会按任意模型名称猜测查询地域。运行期改 dataBaseDir 与主进程文件改动一样需完全退出并重启客户端才生效。

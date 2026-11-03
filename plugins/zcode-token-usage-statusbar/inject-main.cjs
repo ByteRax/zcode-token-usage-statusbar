@@ -803,13 +803,46 @@ try {
   LOG("engine patcher unavailable:", e.message);
 }
 
+/* ---------- v229 宿主路径解析（额度 / 模型拉取共用，issue #205）：主进程 env 没有
+ * ZCODE_*（宿主只注入 CLI 子进程），数据目录迁移（setting.json dataBaseDir）后
+ * ~/.zcode/v2 下读不到 provider_config/credentials。与宿主 bootstrap 同源解析：
+ * setting.json 恒在 <home>/.zcode/v2（不跟随迁移，desktopDataBaseDirBootstrap.ts），
+ * dataBaseDir 只采纳绝对路径（宿主对相对值无稳定基准）且优先于 ZCODE_DATA_BASE_DIR
+ * env（同宿主 setDataBaseDir > env）；builtin 模板回落打包副本
+ * resources/config/provider/zcode-builtin.json（模板创建供应商 baseUrl 的唯一来源），
+ * 宿主显式指定 ZCODE_BUILTIN_PROVIDER_CONFIG_FILE 时让位。运行期迁移与其它冷路径
+ * 一样需完全重启生效。 */
+function resolveHostQuotaPaths() {
+  const env = process.env || {};
+  const home = env.ZCODE_DESKTOP_HOME_DIR || app.getPath("home");
+  let dataBaseDir = "";
+  try {   // 缺文件静默（默认用户恒走此路）；损坏只丢该字段并留一条诊断，不拖垮额度链
+    const file = path.join(home, ".zcode", "v2", "setting.json");
+    if (fs.existsSync(file)) {
+      const s = JSON.parse(fs.readFileSync(file, "utf8").replace(/^\uFEFF/, ""));
+      const v = String((s && typeof s === "object" && s.dataBaseDir) || "").trim();
+      if (v && (/^(?:[a-z]:[\\/]|\\\\)/i.test(v) || v.startsWith("/"))) dataBaseDir = v;
+    }
+  } catch (e) { LOG("[quota] setting.json unreadable:", e && e.message); }
+  let bundled = "";
+  try {
+    if (!env.ZCODE_BUILTIN_PROVIDER_CONFIG_FILE) {
+      const p = path.join(process.resourcesPath || "", "config", "provider", "zcode-builtin.json");
+      if (fs.existsSync(p)) bundled = p;
+    }
+  } catch (e) { }
+  const { resolveQuotaPaths } = require("./quota-client.cjs");
+  return resolveQuotaPaths({ env, defaultHome: home,
+    dataBaseDir: dataBaseDir || undefined, builtinCfgPath: bundled || undefined });
+}
+
 /* ---------- v96 额度客户端（BigModel/Z.ai 个人编码套餐）：解密宿主 OAuth 凭据 →
  * monitor 端点 → 归一化 → 快照 quota 字段。独立模块，加载失败只少额度不拖垮主链
  * （overlay 收不到 quota 字段即隐藏 chip）。凭据只在 quota-client 进程内存流转；
  * 诊断只记 status/HTTP code/错误摘要，token 与请求头绝不进日志。 */
 try {
-  const { createQuotaClient, resolveQuotaPaths } = require("./quota-client.cjs");
-  const quotaPaths = resolveQuotaPaths({ defaultHome: app.getPath("home") });
+  const { createQuotaClient } = require("./quota-client.cjs");
+  const quotaPaths = resolveHostQuotaPaths();
   const QUOTA_SECRETS = path.join(HERE, "quota-secrets.json");
   quotaClient = createQuotaClient({
     ...quotaPaths,
@@ -872,10 +905,11 @@ try {
 let modelPuller = null;
 try {
   const { createModelPuller } = require("./model-puller.cjs");
-  const { resolveQuotaPaths, decryptValue, deriveCipherKey } = require("./quota-client.cjs");
+  const { decryptValue, deriveCipherKey } = require("./quota-client.cjs");
+  const pullPaths = resolveHostQuotaPaths();
   modelPuller = createModelPuller({
-    customCfgPath: resolveQuotaPaths({ defaultHome: app.getPath("home") }).customCfgPath,
-    credentialsPath: path.join(app.getPath("home"), ".zcode", "v2", "credentials.json"),
+    customCfgPath: pullPaths.customCfgPath,
+    credentialsPath: pullPaths.credsPath,   // v229：迁移后 ~/.zcode/v2/credentials.json 是宿主不读的死目录（issue #205）
     decryptValue: (enc) => decryptValue(enc, deriveCipherKey(process.env)),   // 套餐源：内存解密，同额度链纪律
     log: (...a) => LOG("[model-pull]", ...a),
   });

@@ -74,6 +74,7 @@
 ## Issue #56：非默认数据目录与 key-only 规则
 
 - 路径优先级：显式调用参数 → 宿主 `ZCODE_PERSONAL_PROVIDER_CONFIG_FILE` / `ZCODE_BUILTIN_PROVIDER_CONFIG_FILE` → `ZCODE_DATA_BASE_DIR/.zcode/v2` → 历史 desktopHome / OS HOME。凭据与监听目录采用同一解析结果，不再读迁移前 HOME 的陈旧副本。AES 密钥派生仍用 OS HOME，不因数据目录迁移而改变。
+- 桌面主进程 env 没有 `ZCODE_*`（宿主只注入 CLI 子进程），注入侧由 `inject-main.cjs` 的 `resolveHostQuotaPaths()` 补齐（issue #205）：读 `<home>/.zcode/v2/setting.json` 的 `dataBaseDir`（setting.json 不跟随迁移，只采纳绝对路径，优先于 `ZCODE_DATA_BASE_DIR` env），builtin 回落打包副本 `resources/config/provider/zcode-builtin.json`；额度与 model-puller 共用，模板创建供应商（personal 配置只有 `templateId`）因此能回填 baseUrl。运行期改 dataBaseDir 需完全重启。
 - builtin 与 personal 供应商配置按 providerId 合并，access/api 字段逐层继承，个人显式空 key 不复活内置 key；key-only 规则保留。只有精确内置 `minimax` ID 可使用国内默认域，国际 builtin 域优先，不能按供应商名称或模型名猜域。
 - 配置缓存包含两文件路径、mtime 和 size；删除/无法 stat 时撤销缓存。配置变更重新判断全部已登记 provider 的归属、撤销旧凭据及迟到响应，非焦点窗格也不能继续展示旧额度。
 - 读配置和监听位置已用 Windows 中文、空格、根目录、迁移 HOME 陈旧副本、同时间戳文件重建夹具验证；不等价于在反馈者 Windows 设备上实测。
