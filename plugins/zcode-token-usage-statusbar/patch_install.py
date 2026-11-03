@@ -583,9 +583,28 @@ def _publish_pending(stage, source, operation, previous):
     return meta
 
 
+STALE_STAGE_SECONDS = 600
+
+
+def _sweep_stale_stages(directory):
+    """清掉早于 STALE_STAGE_SECONDS 的本链孤儿 stage（app.asar.zusage.tmp.*.stage，
+    issue #191：重打包进程中途被杀时 finally 不执行，单次最高约 375MB 残留无人
+    清扫，可反复累积；桥链 _sweep_stale_stages 只认 .zusage-bridge-* 前缀，覆盖
+    不到这里）。调用方必须已持有 _target_lock——stage 只在锁内创建，锁内看到的
+    老 stage 必然无主；600s 阈值与桥链同策略，覆盖崩溃后立刻重跑的移交窗口。"""
+    now = time.time()
+    for stale in Path(directory).glob(TMP.name + ".*.stage"):
+        try:
+            if now - stale.stat().st_mtime > STALE_STAGE_SECONDS:
+                stale.unlink()
+        except OSError:
+            pass
+
+
 def _prepare_tmp(modify, operation="install", source=None):
     source = source if source is not None else source_fingerprint(ASAR)
     _same_stamp(ASAR, source)
+    _sweep_stale_stages(TMP.parent)
     previous = None
     if TMP.exists() or TMP.is_symlink() or TMP_META.exists() or TMP_META.is_symlink():
         previous = _owned_tmp_metadata()
@@ -621,6 +640,7 @@ def publish_external_pending(stage, source=None, operation="install"):
     stage = Path(stage)
     source = source if source is not None else source_fingerprint(ASAR)
     with _target_lock():
+        _sweep_stale_stages(TMP.parent)
         previous = None
         if TMP.exists() or TMP.is_symlink() or TMP_META.exists() or TMP_META.is_symlink():
             previous = _owned_tmp_metadata()

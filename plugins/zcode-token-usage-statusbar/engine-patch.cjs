@@ -124,13 +124,15 @@ function createEnginePatcher(opts) {
   const configPath = path.join(opts.runtime, "autocompact.json");
   const sentinelPath = path.join(opts.runtime, SENTINEL);
   // st 缓存最近一次真实执行结果，status() 只读它——pushPluginState 高频调用零读盘
-  const st = { enabled: false, state: "off", build: null, engineSha256: null, lastError: null };
+  const st = { enabled: false, state: "off", build: null, engineSha256: null, drifted: null, lastError: null };
 
   const set = (state, lastError, extra) => {
     st.state = state;
     st.lastError = lastError || null;
     if (extra) for (const k of Object.keys(extra)) st[k] = extra[k];
     if (state === "off" || state === "unsupported_build" || state === "engine_missing") st.build = extra && extra.build || null;
+    // drifted 只在 unsupported_build 下有意义（issue #191），其它状态一律清掉防跨调用残留
+    st.drifted = state === "unsupported_build" && extra && extra.drifted || null;
     if (lastError) log(state + ": " + lastError);
     return state;
   };
@@ -178,7 +180,15 @@ function createEnginePatcher(opts) {
       return set("applied", null, { build: t2.build });
     }
     const target = ENGINE_TARGETS.find((t) => t.engineSha256 === sha);
-    if (!target) return set("unsupported_build", "engine sha " + sha.slice(0, 12) + " not in ENGINE_TARGETS");
+    if (!target) {
+      /* issue #191：桌面 build 仍在登记表（如 3.17.2.9661 匹配 3.17.2）而引擎 sha 脱钩，
+       * =引擎文件被供应商/CLI 侧单独热更，与"全新桌面版本"区分开供 ⚙ 面板明示。
+       * 前缀匹配按点分界，"3.17.20" 不得误配 "3.17.2"。fail-closed 不变，仅附注。 */
+      const dv = typeof opts.appVersion === "string" ? opts.appVersion : "";
+      const drift = ENGINE_TARGETS.find((t) => t.build && (dv === t.build || dv.startsWith(t.build + ".")));
+      return set("unsupported_build", "engine sha " + sha.slice(0, 12) + " not in ENGINE_TARGETS",
+        { drifted: drift ? drift.build : null });
+    }
     if (text.includes(PROLOGUE_PREFIX)) {
       // 幂等：本补丁两处编辑同一次写盘，prologue 在而替换体不在=外来/半打补丁，不接手
       if (text.includes(target.replacement)) return set("applied", null, { build: target.build });
@@ -273,7 +283,7 @@ function createEnginePatcher(opts) {
   }
 
   function status() {
-    return { enabled: st.enabled, state: st.state, build: st.build, engineSha256: st.engineSha256, config: readConfigCached(), configPath, lastError: st.lastError };
+    return { enabled: st.enabled, state: st.state, build: st.build, engineSha256: st.engineSha256, drifted: st.drifted, config: readConfigCached(), configPath, lastError: st.lastError };
   }
 
   return { ensure, restore, syncStartup, writeConfig, readConfig, status, configPath };
