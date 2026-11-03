@@ -295,8 +295,8 @@ test('dispose removes the chip; switching theme to default via setBarTheme remov
 
 // v181 补修锁定：会话均下 chip 面文本与 tooltip 的 dbTps 门；v222 起「时间范围」行
 // 反转为会话均下展示（会话累计口径，与会话累计 tooltip 同源同款）。
-// v226：chip 面去「· 近X」尾缀（用户规格）——最近一段只在 tooltip，dbTps 不再上 chip 面。
-test('session avg + dbTps>0: chip 只显会话均（v226 去「近」尾缀）；tooltip 有「最近一段」与会话口径「时间范围」行', () => {
+// v228：chip 面去「· 近X」尾缀（用户规格）——最近一段只在 tooltip，dbTps 不再上 chip 面。
+test('session avg + dbTps>0: chip 只显会话均（v228 去「近」尾缀）；tooltip 有「最近一段」与会话口径「时间范围」行', () => {
   const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
   h.inject(); h.boot(); h.tick();
   const p = h.payload({ tps: 42 });
