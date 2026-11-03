@@ -335,6 +335,8 @@ test('buildLiveTip lists per-agent rows with a sum line during the tool phase', 
     L: (zh, en) => zh,
     /* v218：buildLiveTip 右格改读泵快照最近一段（lastView.last.tps）——沙箱注入空 lastView */
     lastView: null,
+    /* v222：buildLiveTip 时间范围行读 speedSpan（实例级助手）——沙箱注入同形桩 */
+    speedSpan: (started, ended) => started ? { start: 'S', end: ended ? 'E' : '' } : null,
     Date: { now: () => now },
     subRate: { slots: {
       sess_aa: { rate: 45.16, at: now - 100 },          // 有效

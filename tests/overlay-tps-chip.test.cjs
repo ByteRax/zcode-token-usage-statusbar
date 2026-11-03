@@ -293,15 +293,19 @@ test('dispose removes the chip; switching theme to default via setBarTheme remov
   assert.equal(h.chipOf(ui.row), null, 'dispose cleans up the chip');
 });
 
-// v181 补修锁定：会话均下 chip 面文本与 tooltip 的 dbTps 门、时间范围抑制。
+// v181 补修锁定：会话均下 chip 面文本与 tooltip 的 dbTps 门；v222 起「时间范围」行
+// 反转为会话均下展示（会话累计口径，与会话累计 tooltip 同源同款）。
 // 注意 zh 文案无尾随空格：L("均")+85.5+L(" t/s · 近")+42 → "均85.5 t/s · 近42"（无结尾 " t/s"）。
-test('session avg + dbTps>0: chip 带「近」尾缀；tooltip 有「最近一段」行、无「时间范围」行', () => {
+test('session avg + dbTps>0: chip 带「近」尾缀；tooltip 有「最近一段」与会话口径「时间范围」行', () => {
   const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
   h.inject(); h.boot(); h.tick();
   const p = h.payload({ tps: 42 });
   p.recent[0].avg_tps = 85.5;
   p.recent[0].last.startedAt = 1000;
   p.recent[0].last.endedAt = 2000;
+  const t0 = new Date(2026, 10, 3, 12, 0, 0).getTime(), t1 = new Date(2026, 10, 3, 12, 30, 0).getTime();
+  p.recent[0].started = t0;
+  p.recent[0].last_at = t1;   // 覆盖夹具的 last_at:1：会话范围行按真实时刻断言
   h.window.__zusageUpdate(p);
   const chip = h.chipOf(ui.row);
   assert.equal(chip.innerHTML, '<span class="zu-live ok">均85.5 t/s · 近42</span>');
@@ -309,13 +313,15 @@ test('session avg + dbTps>0: chip 带「近」尾缀；tooltip 有「最近一�
   const tip = h.tipEl().innerHTML;
   assert.ok(tip.includes('zu-stat-scope">会话平均<'), 'session-avg scope tag');
   assert.ok(tip.includes('最近一段') && /42 <small>t\/s<\/small>/.test(tip), 'latest-segment row when dbTps>0');
-  assert.ok(!tip.includes('时间范围'), 'time span suppressed under session-avg header');
+  assert.ok(tip.includes('时间范围'), 'time span row present under session-avg (v222)');
+  assert.ok(tip.includes('2026-11-03 12:00:00 — 2026-11-03 12:30:00'), 'session range = session window, not the last segment');
+  assert.ok(!tip.includes('1970-'), 'segment range (epoch 1000/2000) must not leak into session-avg span');
 });
 
-test('session avg + dbTps=0: chip 无「近」尾缀；tooltip 无「最近一段」/「时间范围」行', () => {
+test('session avg + dbTps=0: chip 无「近」尾缀；tooltip 无「最近一段」；会话起点缺失时无「时间范围」行', () => {
   const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
   h.inject(); h.boot(); h.tick();
-  const p = h.payload({});              // last.tps 缺席 → dbTps 0
+  const p = h.payload({});              // last.tps 缺席 → dbTps 0；started 缺席 → 无时间范围行
   p.recent[0].avg_tps = 85.5;
   h.window.__zusageUpdate(p);
   const chip = h.chipOf(ui.row);
@@ -323,5 +329,20 @@ test('session avg + dbTps=0: chip 无「近」尾缀；tooltip 无「最近一�
   chip.listeners.get('mouseenter')[0].call(chip);
   const tip = h.tipEl().innerHTML;
   assert.ok(!tip.includes('最近一段'), 'no latest-segment row without dbTps');
-  assert.ok(!tip.includes('时间范围'), 'no time-span row');
+  assert.ok(!tip.includes('时间范围'), 'no time-span row without a session start (half span suppressed)');
+});
+
+test('session avg + dbTps=0 + 会话起点在：无「最近一段」，「时间范围」行为会话口径（v222）', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  h.inject(); h.boot(); h.tick();
+  const p = h.payload({});
+  p.recent[0].avg_tps = 85.5;
+  p.recent[0].started = new Date(2026, 10, 3, 8, 5, 0).getTime();
+  p.recent[0].last_at = new Date(2026, 10, 3, 9, 6, 0).getTime();
+  h.window.__zusageUpdate(p);
+  const chip = h.chipOf(ui.row);
+  chip.listeners.get('mouseenter')[0].call(chip);
+  const tip = h.tipEl().innerHTML;
+  assert.ok(!tip.includes('最近一段'), 'no latest-segment row without dbTps');
+  assert.ok(tip.includes('2026-11-03 08:05:00 — 2026-11-03 09:06:00'), 'session span renders independently of dbTps');
 });
