@@ -30,6 +30,7 @@ Electron fuses: EmbeddedAsarIntegrityValidation=0（已实测），改动 asar �
 ZCode、确认注入加载后自动退出；运行中替换失败（.tmp 待替换）时还会在 ZCode 退出后
 自动完成替换 —— 该收尾职责已由监控窗口承担，旧的 schtasks 计划任务方案废弃。
 """
+import base64
 import hashlib
 import json
 import os
@@ -173,21 +174,69 @@ def client_running():
 def _spawn_detached(cmd, flags, **kwargs):
     """Windows：优先带 CREATE_BREAKAWAY_FROM_JOB 拉起，让监控脱离父进程的 Job 对象——
     从 agent/工具会话里跑安装时，会话清理会整树杀掉子进程，监控等不到客户端退出就被杀，
-    收尾只能寄望下次 SessionStart 重试。Job 不允许 breakaway 时降级为普通创建。"""
+    收尾只能寄望下次 SessionStart 重试。Job 不允许 breakaway 时降级为普通创建，并留
+    一行 stderr 线索（降级后的监控大概率活不过宿主回收，见 issue #208；静默场景的
+    存活兜底由 launch_monitor 的 WMI 通道承担，这里只是最后一级回退）。"""
     if not IS_WIN:
         return None
     breakaway = getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0)
     try:
         return subprocess.Popen(cmd, creationflags=flags | breakaway, **kwargs)
-    except OSError:
+    except OSError as e:
+        print(L(f"（breakaway 被拒（{e}）：监控留在父进程 Job 内，会随宿主回收被杀，"
+                f"可能收不了尾，见 issue #208）",
+                f"(breakaway denied ({e}): the monitor stays inside the parent job and "
+                f"will be killed with it; finalization may strand, see issue #208)"),
+              file=sys.stderr)
         return subprocess.Popen(cmd, creationflags=flags, **kwargs)
+
+
+WMI_TIMEOUT = 15   # powershell 冷启动 + CIM 创建的富余上限（秒）
+
+
+def _wmi_interpreter():
+    """WMI 创建没有创建标志位可用：静默监控必须用无控制台的 pythonw.exe，缺失时
+    返回 None——不用 python.exe 顶替（会在交互会话闪现控制台窗，行为不能劣化，
+    宁可跳过 WMI 走树内回退）。"""
+    pythonw = Path(sys.executable).with_name("pythonw.exe")
+    return str(pythonw) if pythonw.is_file() else None
+
+
+def _spawn_via_wmi(cmd):
+    """Windows 脱离式拉起：经 WMI Win32_Process.Create 创建监控（父进程是 WmiPrvSE，
+    天然不在调用方的进程树/Job 内，宿主回收与会话清理都杀不到它）。插件宿主与
+    agent/工具会话的 Job 常不允许 breakaway，树内监控实测只活几分钟，等不到
+    「客户端完全退出」的收尾窗口（issue #208）。WMI 创建的进程不继承调用方环境，
+    静默开关由监控的 --quiet 参数传达；返回新进程 PID，任何失败返回 None
+    （调用方回退 _spawn_detached 树内拉起）。powershell -EncodedCommand 承载
+    UTF-16LE base64 脚本，避开 argv→PS 字符串→argv 的三层引号嵌套。"""
+    try:
+        command_line = subprocess.list2cmdline([str(part) for part in cmd])
+        script = ("$r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create "
+                  "-Arguments @{ CommandLine = '%s' }; "
+                  "if ($r.ReturnValue -ne 0) { exit 1 }; [int]$r.ProcessId"
+                  % command_line.replace("'", "''"))
+        encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+        result = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+            capture_output=True, timeout=WMI_TIMEOUT)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        return int(result.stdout.decode("ascii", "replace").strip())
+    except ValueError:
+        return None
 
 
 def launch_monitor(epoch):
     """Windows 开新控制台窗口跑安装监控（提醒重启 + 确认生效 + .tmp 收尾）；
     macOS/Linux 无控制台概念，后台静默跑（收尾与自动退出照常）。设 ZUSAGE_NO_MONITOR=1 可禁用。
     同目标已有存活监控时不再拉起（issue #120：SessionStart 每次自动安装都会走到这里，
-    不去重会随会话数线性堆积）；锁在 spawn 前释放，由监控进程自己去持有。"""
+    不去重会随会话数线性堆积）；锁在 spawn 前释放，由监控进程自己去持有。
+    返回值：Windows 静默 WMI 通道返回新进程 PID，其余返回 Popen 对象或 None
+    （调用方均不消费返回值；PID 仅供诊断输出用）。"""
     if os.environ.get("ZUSAGE_NO_MONITOR") and not os.environ.get("ZUSAGE_MONITOR_QUIET"):
         return
     monitor = HERE / "install_monitor.py"
@@ -202,6 +251,19 @@ def launch_monitor(epoch):
     try:
         if os.environ.get("ZUSAGE_MONITOR_QUIET"):
             if IS_WIN:
+                # 静默收尾必须活得过会话清理：优先 WMI 脱离式拉起（issue #208）；
+                # 设 ZUSAGE_MONITOR_NO_WMI=1 可禁用（排查/测试出口）。WMI 创建不
+                # 继承本进程环境、也没有创建标志位，解释器须换同目录 pythonw.exe
+                #（无控制台；缺失时跳过 WMI 走树内回退——用 python.exe 会在交互
+                # 会话闪现控制台窗，行为不能劣化），静默开关走 --quiet 参数。
+                if not os.environ.get("ZUSAGE_MONITOR_NO_WMI"):
+                    interpreter = _wmi_interpreter()
+                    if interpreter:
+                        pid = _spawn_via_wmi(
+                            [interpreter, str(monitor), "%.3f" % epoch,
+                             str(ASAR), str(RUNTIME), "--quiet"])
+                        if pid is not None:
+                            return pid
                 return _spawn_detached(cmd, subprocess.CREATE_NO_WINDOW, cwd=str(HERE),
                                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                        stderr=subprocess.DEVNULL)
