@@ -201,17 +201,19 @@ for (const [dir, file] of [["/", "/个人 配置.json"], ["D:\\", "D:\\个人 �
     const start = source.indexOf('  const { createQuotaClient }');
     const snippet = source.slice(start, source.indexOf('\n} catch (e) {', start));
     const callbacks = new Map(), events = [];
+    let legacyCalls = 0;
     const paths = { credsPath: file, credsDir: dir, customCfgPath: file, customCfgDir: dir,
       builtinCfgPath: file, builtinCfgDir: dir };
     /* require 桩返回旧解析哨兵：额度块必须消费 resolveHostQuotaPaths() 的结果，
-     * 回退成块内 resolveQuotaPaths({ defaultHome }) 会拿到哨兵目录而红（issue #205）。 */
+     * 回退成块内 resolveQuotaPaths({ defaultHome }) 会拿到哨兵目录而红（issue #205）；
+     * 调用计数哨兵零消费断言保证两桩去重后锁定仍不静默失效。 */
     const legacyPaths = { credsPath: "/legacy-home/credentials.json", credsDir: "/legacy-home",
       customCfgPath: "/legacy-home/provider_config.json", customCfgDir: "/legacy-home",
       builtinCfgPath: "", builtinCfgDir: "" };
     /* syncQuotaProviders 是切片外的模块函数：桩为 tick。注意桩定义在 Node 域，
      * 词法引用看不到 vm 全局，必须捕获 sandbox 对象按属性读 quotaClient。 */
     const sandbox = {
-      require() { return { resolveQuotaPaths: () => legacyPaths, createQuotaClient() { return {
+      require() { return { resolveQuotaPaths: () => { legacyCalls++; return legacyPaths; }, createQuotaClient() { return {
         credentialsChanged() { events.push("changed"); }, tick() { events.push("tick"); },
       }; } }; },
       resolveHostQuotaPaths: () => paths,
@@ -222,6 +224,7 @@ for (const [dir, file] of [["/", "/个人 配置.json"], ["D:\\", "D:\\个人 �
       setInterval() {}, setTimeout(cb) { cb(); return 1; }, clearTimeout() {}, Set, Map,
     };
     vm.runInNewContext(snippet, sandbox);
+    assert.equal(legacyCalls, 0, "块内不得回落 require 的 resolveQuotaPaths");
     assert.ok(callbacks.has(dir), "监听目录来自共享解析，而非旧 HOME 哨兵");
     assert.equal(callbacks.size, 1, "shared directory only needs one watcher");
     const callback = callbacks.get(dir);
@@ -240,15 +243,17 @@ test("main bridge: initialized paths and directory watchers use shared resolutio
   const end = source.indexOf('\n} catch (e) {', start);
   const snippet = source.slice(start, end);
   const dirs = [], clients = [];
+  let legacyCalls = 0;
   const paths = { credsPath: "D:\\数据 空间\\credentials.json", credsDir: "D:\\数据 空间",
     customCfgPath: "E:\\个人\\personal.json", customCfgDir: "E:\\个人",
     builtinCfgPath: "F:\\内置\\builtin.json", builtinCfgDir: "F:\\内置" };
   vm.runInNewContext(snippet, {
     /* require 桩返回旧解析哨兵：初始化路径若回退成块内 resolveQuotaPaths({ defaultHome })
-     * 会拿到哨兵目录，dirs/clients 断言即红（issue #205 接线锁定）。 */
-    require() { return { resolveQuotaPaths: () => ({ credsPath: "/legacy-home/credentials.json",
+     * 会拿到哨兵目录，dirs/clients 断言即红（issue #205 接线锁定）；调用计数断言保证
+     * 两桩被去重成同一对象后锁定仍不静默失效。 */
+    require() { return { resolveQuotaPaths: () => { legacyCalls++; return { credsPath: "/legacy-home/credentials.json",
       credsDir: "/legacy-home", customCfgPath: "/legacy-home/provider_config.json",
-      customCfgDir: "/legacy-home", builtinCfgPath: "", builtinCfgDir: "" }),
+      customCfgDir: "/legacy-home", builtinCfgPath: "", builtinCfgDir: "" }; },
       createQuotaClient(o) { clients.push(o); return {}; } }; },
     resolveHostQuotaPaths: () => paths,
     app: { getPath: () => "/fixture-home" }, HERE: "/fixture-runtime", path, quotaClient: null,
@@ -256,6 +261,7 @@ test("main bridge: initialized paths and directory watchers use shared resolutio
     quotaEnabled: () => true, resetBadgeEnabled: () => true, quotaDataEnabled: () => true,
     setInterval() {}, setTimeout() {}, clearTimeout() {}, Set, Map,
   });
+  assert.equal(legacyCalls, 0, "块内不得回落 require 的 resolveQuotaPaths");
   assert.deepEqual(dirs, [paths.credsDir, paths.customCfgDir, paths.builtinCfgDir]);
   assert.equal(clients[0].credsPath, paths.credsPath);
   assert.equal(clients[0].customCfgPath, paths.customCfgPath);
