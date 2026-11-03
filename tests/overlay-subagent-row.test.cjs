@@ -403,7 +403,7 @@ test('source contracts: updateLive hook, scan cleanup, delegation listener, CSS 
   assert.match(source, /if \(subTipFor && !subTipFor\.isConnected\) hideSubTip\(\);/, 'scanRateLines detach 兜底收起');
   assert.ok(source.includes('e.target.closest(".zu-subrate")'), 'document 委托悬停（免逐 chip 监听）');
   assert.match(source, /"\.zu-subrate\{flex:0 0 auto;white-space:nowrap;cursor:help/, 'chip 样式入注入块');
-  assert.match(source, /var VERSION = "v219";/);   // v219 = ⚙「状态条样式」移入「状态条显示」分区卡首；v217 = 子代理统一浮层；v215/v215.1 = 六统计卡统计卡化 + 速度卡去费用行；v218 = 速度卡三修；前代 v213 = 格序调整：今日合计提前到会话累计之后（用户规格 2026-11-02）；v212 = Git chip 分隔符间距收紧；v211 = 本轮 tooltip 平均耗时/平均延迟 + 格面移除时长/首字段；v210 = 时间范围行全部精确到秒；v209 = 额度 chip/重置卡徽标内边距 3px + 模型触发按钮左内边距减半；v203 = v201（issue #172 上下文按钮镜像 aria-label）+ v200（issue #174 压缩按钮开关）撞号顺延（同内容 fork/main 台账重排 v204–v208）
+  assert.match(source, /var VERSION = "v222";/);   // v222 = 速度卡 tooltip 补「时间范围」行（会话均/桥态=会话累计口径，最近一段回退态=段范围）；v219 = ⚙「状态条样式」移入「状态条显示」分区卡首（PR #194）；   // v219 = ⚙「状态条样式」移入「状态条显示」分区卡首；v217 = 子代理统一浮层；v215/v215.1 = 六统计卡统计卡化 + 速度卡去费用行；v218 = 速度卡三修；前代 v213 = 格序调整：今日合计提前到会话累计之后（用户规格 2026-11-02）；v212 = Git chip 分隔符间距收紧；v211 = 本轮 tooltip 平均耗时/平均延迟 + 格面移除时长/首字段；v210 = 时间范围行全部精确到秒；v209 = 额度 chip/重置卡徽标内边距 3px + 模型触发按钮左内边距减半；v203 = v201（issue #172 上下文按钮镜像 aria-label）+ v200（issue #174 压缩按钮开关）撞号顺延（同内容 fork/main 台账重排 v204–v208）
   // v179/v180 review P1：调用侧形状锁——showSubTip 以数据包调 buildTip（v178 回归即红）
   assert.ok(source.includes('el.__zuT.buildTip(el.__zuT)'), 'tooltip 数据包调用约定');
   assert.ok(source.includes("runningSubagents.length - 1"), '截断从尾部取（最新派发优先）');
