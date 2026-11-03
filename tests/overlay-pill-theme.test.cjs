@@ -284,6 +284,62 @@ test('dual theme browser behaviour (isolated fixture)', { skip: skipReason, time
     assert.deepEqual(await themes(b), ['default', 'default']);
   });
 
+  await t.test('all six cells off auto-switches to compact and restores the source theme (v226)', async () => {
+    const uncheckSix = `(() => {
+      const panel = document.querySelector('.zu-settings');
+      for (const k of ['turn', 'win', 'proj', 'tools', 'today', 'sub']) {
+        const cb = panel.querySelector('input[type=checkbox][data-k="' + k + '"]');
+        if (!cb.checked) throw new Error(k + ' should start checked');
+        cb.click();
+      }
+    })()`;
+    const recheckTurn = `document.querySelector('.zu-settings input[type=checkbox][data-k="turn"]').click()`;
+
+    await reset(b);
+    await b.evaluate(uncheckSix);
+    assert.deepEqual(await themes(b), ['compact', 'compact']);
+    assert.equal(await b.evaluate(`localStorage.getItem('zusage3.theme')`), 'compact');
+    assert.equal(await b.evaluate(`localStorage.getItem('zusage3.autoCompact')`), 'default');
+    assert.ok(await b.evaluate(`[...document.querySelectorAll('.zusage-root')].every(x => getComputedStyle(x).display === 'none')`), '条随精简档隐藏');
+    assert.equal(await b.evaluate(`getComputedStyle(document.querySelector('.zu-just-block')).display`), 'none', '对齐设置块随档隐藏');
+    await b.evaluate(recheckTurn);
+    assert.deepEqual(await themes(b), ['default', 'default']);
+    assert.equal(await b.evaluate(`localStorage.getItem('zusage3.autoCompact')`), '', '恢复后标记清除');
+
+    await reset(b);
+    await choose(b, 'pill');
+    await b.evaluate(uncheckSix);
+    assert.deepEqual(await themes(b), ['compact', 'compact']);
+    assert.equal(await b.evaluate(`localStorage.getItem('zusage3.autoCompact')`), 'pill', '药丸来源被记录');
+    await b.evaluate(recheckTurn);
+    assert.deepEqual(await themes(b), ['pill', 'pill'], '重开格子恢复药丸');
+  });
+
+  await t.test('horizontal alignment: three choices, default-theme-only, right packs via first-child auto margin (v226)', async () => {
+    await reset(b);
+    const firstMargin = `getComputedStyle(document.querySelector('.zusage-root .zu-main').firstElementChild).marginLeft`;
+    const betweenMargin = await b.evaluate(firstMargin);
+    assert.equal(await b.evaluate(`getComputedStyle(document.querySelector('.zusage-root .zu-main')).justifyContent`), 'space-between', '缺省均分');
+    await b.evaluate(`document.querySelector('.zu-settings .zu-just-choice[value="start"]').click()`);
+    assert.equal(await b.evaluate(`localStorage.getItem('zusage3.barJust')`), 'start');
+    assert.equal(await b.evaluate(`getComputedStyle(document.querySelector('.zusage-root .zu-main')).justifyContent`), 'flex-start');
+    await choose(b, 'pill');
+    assert.equal(await b.evaluate(`getComputedStyle(document.querySelector('.zu-just-block')).display`), 'none', '药丸档隐藏设置块');
+    await choose(b, 'default');
+    assert.notEqual(await b.evaluate(`getComputedStyle(document.querySelector('.zu-just-block')).display`), 'none', '切回默认设置块重现');
+    await b.evaluate(`document.querySelector('.zu-settings .zu-just-choice[value="end"]').click()`);
+    /* 夹具默认载荷下条面可能超宽（无自由空间时 auto margin 按规范归 0，溢出态三种对齐视觉等价——
+     * 这正是居右不用字面 flex-end 要保的溢出方向正确性）；flex-basis 强制 2000px 制造自由空间，
+     * 摆脱字体度量差异做确定性断言（width 会被 flex:1 1 auto 收缩吃掉，必须动 flex） */
+    await b.evaluate(`document.querySelector('.zusage-root .zu-main').style.flex = '0 0 2000px'`);
+    const endMargin = await b.evaluate(firstMargin);
+    await b.evaluate(`document.querySelector('.zusage-root .zu-main').style.flex = ''`);
+    assert.notEqual(endMargin, betweenMargin, '居右=首格 margin-left:auto 右聚拢');
+    await b.evaluate(`document.querySelector('.zu-settings .zu-just-choice[value="between"]').click()`);
+    assert.equal(await b.evaluate(firstMargin), betweenMargin, '回均分后恢复原分布');
+    assert.equal(await b.evaluate(`localStorage.getItem('zusage3.barJust')`), 'between');
+  });
+
   await t.test('pill follows each card, fits the viewport, and leaves settings clickable', async () => {
     await reset(b, { stored: 'pill' });
     // Give content enough room to grow instead of immediately saturating card max-width.
