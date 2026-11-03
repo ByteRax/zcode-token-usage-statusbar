@@ -203,10 +203,15 @@ for (const [dir, file] of [["/", "/个人 配置.json"], ["D:\\", "D:\\个人 �
     const callbacks = new Map(), events = [];
     const paths = { credsPath: file, credsDir: dir, customCfgPath: file, customCfgDir: dir,
       builtinCfgPath: file, builtinCfgDir: dir };
+    /* require 桩返回旧解析哨兵：额度块必须消费 resolveHostQuotaPaths() 的结果，
+     * 回退成块内 resolveQuotaPaths({ defaultHome }) 会拿到哨兵目录而红（issue #205）。 */
+    const legacyPaths = { credsPath: "/legacy-home/credentials.json", credsDir: "/legacy-home",
+      customCfgPath: "/legacy-home/provider_config.json", customCfgDir: "/legacy-home",
+      builtinCfgPath: "", builtinCfgDir: "" };
     /* syncQuotaProviders 是切片外的模块函数：桩为 tick。注意桩定义在 Node 域，
      * 词法引用看不到 vm 全局，必须捕获 sandbox 对象按属性读 quotaClient。 */
     const sandbox = {
-      require() { return { resolveQuotaPaths: () => paths, createQuotaClient() { return {
+      require() { return { resolveQuotaPaths: () => legacyPaths, createQuotaClient() { return {
         credentialsChanged() { events.push("changed"); }, tick() { events.push("tick"); },
       }; } }; },
       resolveHostQuotaPaths: () => paths,
@@ -217,6 +222,7 @@ for (const [dir, file] of [["/", "/个人 配置.json"], ["D:\\", "D:\\个人 �
       setInterval() {}, setTimeout(cb) { cb(); return 1; }, clearTimeout() {}, Set, Map,
     };
     vm.runInNewContext(snippet, sandbox);
+    assert.ok(callbacks.has(dir), "监听目录来自共享解析，而非旧 HOME 哨兵");
     assert.equal(callbacks.size, 1, "shared directory only needs one watcher");
     const callback = callbacks.get(dir);
     callback("rename", "unrelated.json");
@@ -238,7 +244,12 @@ test("main bridge: initialized paths and directory watchers use shared resolutio
     customCfgPath: "E:\\个人\\personal.json", customCfgDir: "E:\\个人",
     builtinCfgPath: "F:\\内置\\builtin.json", builtinCfgDir: "F:\\内置" };
   vm.runInNewContext(snippet, {
-    require() { return { resolveQuotaPaths: () => paths, createQuotaClient(o) { clients.push(o); return {}; } }; },
+    /* require 桩返回旧解析哨兵：初始化路径若回退成块内 resolveQuotaPaths({ defaultHome })
+     * 会拿到哨兵目录，dirs/clients 断言即红（issue #205 接线锁定）。 */
+    require() { return { resolveQuotaPaths: () => ({ credsPath: "/legacy-home/credentials.json",
+      credsDir: "/legacy-home", customCfgPath: "/legacy-home/provider_config.json",
+      customCfgDir: "/legacy-home", builtinCfgPath: "", builtinCfgDir: "" }),
+      createQuotaClient(o) { clients.push(o); return {}; } }; },
     resolveHostQuotaPaths: () => paths,
     app: { getPath: () => "/fixture-home" }, HERE: "/fixture-runtime", path, quotaClient: null,
     fs: { watch(dir) { dirs.push(dir); return { on() {} }; } }, LOG() {},
@@ -273,7 +284,7 @@ test("main bridge: quota paths follow setting.json dataBaseDir and bundled built
   const { root } = fixture(t);
   const home = path.join(root, "home");
   fs.mkdirSync(path.join(home, ".zcode", "v2"), { recursive: true });
-  fs.writeFileSync(path.join(home, ".zcode", "v2", "setting.json"), JSON.stringify({ dataBaseDir: "D:\\迁移 数据" }));
+  fs.writeFileSync(path.join(home, ".zcode", "v2", "setting.json"), JSON.stringify({ dataBaseDir: "  D:\\迁移 数据  " }));
   const bundled = path.join(root, "resources", "config", "provider", "zcode-builtin.json");
   fs.mkdirSync(path.dirname(bundled), { recursive: true });
   fs.writeFileSync(bundled, "{}");
@@ -305,6 +316,10 @@ test("main bridge: setting.json precedence over env; relative or broken dataBase
   assert.equal(p.credsPath, path.join(home, ".zcode", "v2", "credentials.json"));
   assert.equal(p.builtinCfgPath, bundled);
   assert.equal(logs.length, 0);
+  /* UNC 网络路径按绝对路径采纳（Windows 目录选择器可返回此形态）。 */
+  fs.writeFileSync(settings, JSON.stringify({ dataBaseDir: "\\\\server\\share\\数据" }));
+  p = run({});
+  assert.equal(p.credsPath, "\\\\server\\share\\数据\\.zcode\\v2\\credentials.json", "UNC 前缀照常采纳");
   fs.unlinkSync(settings);
   p = run({});
   assert.equal(p.credsPath, path.join(home, ".zcode", "v2", "credentials.json"), "缺文件静默，不记诊断");
@@ -324,6 +339,10 @@ test("main bridge: setting.json precedence over env; relative or broken dataBase
   p = run({ ZCODE_DATA_BASE_DIR: "/env-base", ZCODE_BUILTIN_PROVIDER_CONFIG_FILE: "/env/builtin.json" });
   assert.equal(p.credsPath, "/env-base/.zcode/v2/credentials.json", "无 setting.json 时 env 照常生效");
   assert.equal(p.builtinCfgPath, "/env/builtin.json");
+  /* 打包副本缺失（如便携版裁剪）不得把不存在的路径当 builtin 交给监听与解析。 */
+  fs.rmSync(bundled);
+  p = run({});
+  assert.equal(p.builtinCfgPath, "", "打包副本缺失回落空 builtinCfgPath");
 });
 
 test("main bridge: model puller shares quota path resolution incl. migrated credentials (issue #205)", () => {
