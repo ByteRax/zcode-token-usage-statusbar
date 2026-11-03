@@ -47,7 +47,7 @@ A thin bar appears along the bottom of the chat window, roughly like this:
    Speed        This turn             Session total       Project total        Tools     Today    Sub-agents   Settings
 ```
 
-The example above shows the default style. In the desktop app, choose **Default**, **Pill** or **Compact** under ⚙ → General → Status bar style. The pill is centered below its composer, sized to its content and constrained in narrow windows. Compact hides the floating bar and moves the speed readout and cell summaries into the composer toolbar. On the Web, choose Default/Compact under ⚙ → General. [Style and switching details →](docs/user-guide.md#状态条样式) (Chinese)
+The example above shows the default style. In the desktop app, choose **Default**, **Pill** or **Compact** under ⚙ → Display items → Status bar style. The pill is centered below its composer, sized to its content and constrained in narrow windows. Compact hides the floating bar and moves the speed readout and cell summaries into the composer toolbar. On the Web, choose Default/Compact under ⚙ → General. [Style and switching details →](docs/user-guide.md#状态条样式) (Chinese)
 
 Here's what each part tells you:
 
