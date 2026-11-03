@@ -1430,7 +1430,7 @@ test('pill review browser regressions (isolated fixture)', { skip: skipReason, t
     };
     await click(`window.__highspeedBar.querySelector('.zu-gear')`);
     await b.waitFor(`document.querySelectorAll('.zu-settings')[1].classList.contains('open')`, 'highspeed settings did not open');
-    await click(`document.querySelectorAll('.zu-settings')[1].querySelector('.zu-navitem[data-sec="general"]')`);
+    await click(`document.querySelectorAll('.zu-settings')[1].querySelector('.zu-navitem[data-sec="display"]')`);
     await click(`document.querySelectorAll('.zu-settings')[1].querySelector('.zu-theme-choice[value="default"]')`);
     await b.waitFor(`window.__highspeedBar.dataset.zusageTheme === 'default'`, 'real theme selection did not switch to default');
     await b.call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27 });
