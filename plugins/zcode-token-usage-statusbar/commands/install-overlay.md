@@ -7,7 +7,8 @@ description: 自动安装失败时手动安装/更新本机 ZCode 悬浮用量�
 
     python3 "<插件根目录>/overlay_install.py" install
 
-Windows 上 `python3` 可能是 Microsoft Store 存根（静默失败），依次改用 `python`、`py -3`；macOS/Linux 用 `python3`。安装器自己打印的手动命令已带真实解释器绝对路径，照抄最稳。
+Windows 上 `python3` 可能是 Microsoft Store 存根（静默失败），依次改用 `python`、`py -3`；macOS/Linux 用 `python3`。安装器（patch_install/monitor）打印的手动命令已带真实解释器绝对路径，照抄最稳。
+
 结果处理（按以下优先级，不能仅凭退出码为 0 判断需要重启）：
 
 - 失败、待收尾或输出安装/更新尚未完成、记录无法确认的提醒：优先转述实际输出，不得宣称安装成功或仅重启即可修复。
