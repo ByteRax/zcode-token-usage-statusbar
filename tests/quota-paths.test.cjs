@@ -198,7 +198,7 @@ test("cache: deleting then recreating personal config with the same mtime/size n
 for (const [dir, file] of [["/", "/个人 配置.json"], ["D:\\", "D:\\个人 配置.json"]]) {
   test(`main bridge: root-directory watch callback accepts actual filename (${dir})`, () => {
     const source = fs.readFileSync(path.join(__dirname, "../inject-main.cjs"), "utf8");
-    const start = source.indexOf('  const { createQuotaClient, resolveQuotaPaths }');
+    const start = source.indexOf('  const { createQuotaClient }');
     const snippet = source.slice(start, source.indexOf('\n} catch (e) {', start));
     const callbacks = new Map(), events = [];
     const paths = { credsPath: file, credsDir: dir, customCfgPath: file, customCfgDir: dir,
@@ -209,6 +209,7 @@ for (const [dir, file] of [["/", "/个人 配置.json"], ["D:\\", "D:\\个人 �
       require() { return { resolveQuotaPaths: () => paths, createQuotaClient() { return {
         credentialsChanged() { events.push("changed"); }, tick() { events.push("tick"); },
       }; } }; },
+      resolveHostQuotaPaths: () => paths,
       app: { getPath: () => "/fixture-home" }, HERE: "/fixture-runtime", path, quotaClient: null,
       fs: { watch(d, cb) { callbacks.set(d, cb); return { on() {} }; } }, LOG() {},
       syncQuotaProviders() { try { if (sandbox.quotaClient) sandbox.quotaClient.tick(); } catch (e) { } },
@@ -229,7 +230,7 @@ for (const [dir, file] of [["/", "/个人 配置.json"], ["D:\\", "D:\\个人 �
 
 test("main bridge: initialized paths and directory watchers use shared resolution; runtime secrets stay HERE", () => {
   const source = fs.readFileSync(path.join(__dirname, "../inject-main.cjs"), "utf8");
-  const start = source.indexOf('  const { createQuotaClient, resolveQuotaPaths }');
+  const start = source.indexOf('  const { createQuotaClient }');
   const end = source.indexOf('\n} catch (e) {', start);
   const snippet = source.slice(start, end);
   const dirs = [], clients = [];
@@ -238,6 +239,7 @@ test("main bridge: initialized paths and directory watchers use shared resolutio
     builtinCfgPath: "F:\\内置\\builtin.json", builtinCfgDir: "F:\\内置" };
   vm.runInNewContext(snippet, {
     require() { return { resolveQuotaPaths: () => paths, createQuotaClient(o) { clients.push(o); return {}; } }; },
+    resolveHostQuotaPaths: () => paths,
     app: { getPath: () => "/fixture-home" }, HERE: "/fixture-runtime", path, quotaClient: null,
     fs: { watch(dir) { dirs.push(dir); return { on() {} }; } }, LOG() {},
     quotaEnabled: () => true, resetBadgeEnabled: () => true, quotaDataEnabled: () => true,
@@ -247,6 +249,102 @@ test("main bridge: initialized paths and directory watchers use shared resolutio
   assert.equal(clients[0].credsPath, paths.credsPath);
   assert.equal(clients[0].customCfgPath, paths.customCfgPath);
   assert.equal(clients[0].secretsPath, "/fixture-runtime/quota-secrets.json");
+});
+
+/* ---------- issue #205：主进程 env 没有 ZCODE_*（宿主只注入 CLI 子进程），数据目录
+ * 迁移后 ~/.zcode/v2 下读不到 provider_config/credentials，模板创建供应商拿不到
+ * builtin baseUrl → 额度 chip 判 unsupported。resolveHostQuotaPaths 与宿主 bootstrap
+ * 同源：读 <home>/.zcode/v2/setting.json 的 dataBaseDir，builtin 回落打包副本。 ---------- */
+function hostPathsSnippet() {
+  const source = fs.readFileSync(path.join(__dirname, "../inject-main.cjs"), "utf8");
+  const start = source.indexOf("/* ---------- v229 宿主路径解析");
+  assert.ok(start > 0, "v229 宿主路径解析段存在");
+  return source.slice(start, source.indexOf("\n/* ---------- v96 额度客户端", start));
+}
+function runHostPaths({ home, resources, env = {} }) {
+  return vm.runInNewContext(hostPathsSnippet() + "\nresolveHostQuotaPaths()", {
+    require() { return { resolveQuotaPaths }; },
+    app: { getPath: () => home }, path, fs, LOG() {},
+    process: { env, resourcesPath: resources },
+  });
+}
+
+test("main bridge: quota paths follow setting.json dataBaseDir and bundled builtin templates (issue #205)", (t) => {
+  const { root } = fixture(t);
+  const home = path.join(root, "home");
+  fs.mkdirSync(path.join(home, ".zcode", "v2"), { recursive: true });
+  fs.writeFileSync(path.join(home, ".zcode", "v2", "setting.json"), JSON.stringify({ dataBaseDir: "D:\\迁移 数据" }));
+  const bundled = path.join(root, "resources", "config", "provider", "zcode-builtin.json");
+  fs.mkdirSync(path.dirname(bundled), { recursive: true });
+  fs.writeFileSync(bundled, "{}");
+  const p = runHostPaths({ home, resources: path.join(root, "resources") });
+  assert.equal(p.customCfgPath, "D:\\迁移 数据\\.zcode\\v2\\provider_config.json", "win32 迁移目录按 dataBaseDir 解析");
+  assert.equal(p.credsPath, "D:\\迁移 数据\\.zcode\\v2\\credentials.json");
+  assert.equal(p.customCfgDir, "D:\\迁移 数据\\.zcode\\v2");
+  assert.equal(p.builtinCfgPath, bundled, "builtin 回落打包副本");
+});
+
+test("main bridge: setting.json precedence over env; relative or broken dataBaseDir ignored (issue #205)", (t) => {
+  const { root } = fixture(t);
+  const home = path.join(root, "home");
+  const settings = path.join(home, ".zcode", "v2", "setting.json");
+  const resources = path.join(root, "resources");
+  const bundled = path.join(resources, "config", "provider", "zcode-builtin.json");
+  fs.mkdirSync(path.dirname(bundled), { recursive: true });
+  fs.writeFileSync(bundled, "{}");
+  const logs = [];
+  const run = (env) => vm.runInNewContext(hostPathsSnippet() + "\nresolveHostQuotaPaths()", {
+    require() { return { resolveQuotaPaths }; },
+    app: { getPath: () => home }, path, fs, LOG: (...a) => logs.push(a.join(" ")),
+    process: { env, resourcesPath: resources },
+  });
+  /* 相对路径宿主侧无稳定基准，不采纳；缺 setting.json 静默回落 home，builtin 仍取打包副本。 */
+  fs.mkdirSync(path.dirname(settings), { recursive: true });
+  fs.writeFileSync(settings, JSON.stringify({ dataBaseDir: "zcode-data" }));
+  let p = run({});
+  assert.equal(p.credsPath, path.join(home, ".zcode", "v2", "credentials.json"));
+  assert.equal(p.builtinCfgPath, bundled);
+  assert.equal(logs.length, 0);
+  fs.unlinkSync(settings);
+  p = run({});
+  assert.equal(p.credsPath, path.join(home, ".zcode", "v2", "credentials.json"), "缺文件静默，不记诊断");
+  /* 损坏 JSON 只丢该字段并留一条诊断；BOM 前缀可解析。 */
+  fs.writeFileSync(settings, "\uFEFF{ broken");
+  p = run({});
+  assert.equal(p.credsPath, path.join(home, ".zcode", "v2", "credentials.json"));
+  assert.equal(logs.length, 1, "损坏 setting.json 记一条诊断");
+  fs.writeFileSync(settings, "\uFEFF" + JSON.stringify({ dataBaseDir: path.join(root, "数据 目录") }));
+  p = run({});
+  assert.equal(p.credsPath, path.join(root, "数据 目录", ".zcode", "v2", "credentials.json"), "BOM 前缀照常采纳");
+  /* 宿主 bootstrap 优先级：setting.json > ZCODE_DATA_BASE_DIR env；env 显式指定 builtin 时让位。 */
+  p = run({ ZCODE_DATA_BASE_DIR: "/env-base", ZCODE_BUILTIN_PROVIDER_CONFIG_FILE: "/env/builtin.json" });
+  assert.equal(p.credsPath, path.join(root, "数据 目录", ".zcode", "v2", "credentials.json"), "setting.json 优先于 env（同宿主 setDataBaseDir > env）");
+  assert.equal(p.builtinCfgPath, "/env/builtin.json", "env 显式 builtin 优先于打包副本");
+  fs.unlinkSync(settings);
+  p = run({ ZCODE_DATA_BASE_DIR: "/env-base", ZCODE_BUILTIN_PROVIDER_CONFIG_FILE: "/env/builtin.json" });
+  assert.equal(p.credsPath, "/env-base/.zcode/v2/credentials.json", "无 setting.json 时 env 照常生效");
+  assert.equal(p.builtinCfgPath, "/env/builtin.json");
+});
+
+test("main bridge: model puller shares quota path resolution incl. migrated credentials (issue #205)", () => {
+  const source = fs.readFileSync(path.join(__dirname, "../inject-main.cjs"), "utf8");
+  const start = source.indexOf("/* ---------- v129 模型拉取");
+  const snippet = source.slice(start, source.indexOf("\n} catch (e) {", start)) + "\n} catch (e) {}";
+  const paths = { credsPath: "D:\\数据 空间\\.zcode\\v2\\credentials.json",
+    customCfgPath: "D:\\数据 空间\\.zcode\\v2\\provider_config.json",
+    builtinCfgPath: "E:\\res\\zcode-builtin.json" };
+  const opts = [];
+  vm.runInNewContext(snippet, {
+    require(id) {
+      if (id === "./model-puller.cjs") return { createModelPuller: (o) => { opts.push(o); return {}; } };
+      if (id === "./quota-client.cjs") return { decryptValue: () => null, deriveCipherKey: () => null };
+      throw new Error(id);
+    },
+    resolveHostQuotaPaths: () => paths, LOG() {},
+  });
+  assert.equal(opts.length, 1);
+  assert.equal(opts[0].customCfgPath, paths.customCfgPath);
+  assert.equal(opts[0].credentialsPath, paths.credsPath, "credentials 不再硬编码 ~/.zcode/v2 死目录");
 });
 
 
