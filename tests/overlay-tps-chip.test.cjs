@@ -295,8 +295,8 @@ test('dispose removes the chip; switching theme to default via setBarTheme remov
 
 // v181 补修锁定：会话均下 chip 面文本与 tooltip 的 dbTps 门；v222 起「时间范围」行
 // 反转为会话均下展示（会话累计口径，与会话累计 tooltip 同源同款）。
-// 注意 zh 文案无尾随空格：L("均")+85.5+L(" t/s · 近")+42 → "均85.5 t/s · 近42"（无结尾 " t/s"）。
-test('session avg + dbTps>0: chip 带「近」尾缀；tooltip 有「最近一段」与会话口径「时间范围」行', () => {
+// v226：chip 面去「· 近X」尾缀（用户规格）——最近一段只在 tooltip，dbTps 不再上 chip 面。
+test('session avg + dbTps>0: chip 只显会话均（v226 去「近」尾缀）；tooltip 有「最近一段」与会话口径「时间范围」行', () => {
   const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
   h.inject(); h.boot(); h.tick();
   const p = h.payload({ tps: 42 });
@@ -308,7 +308,7 @@ test('session avg + dbTps>0: chip 带「近」尾缀；tooltip 有「最近一�
   p.recent[0].last_at = t1;   // 覆盖夹具的 last_at:1：会话范围行按真实时刻断言
   h.window.__zusageUpdate(p);
   const chip = h.chipOf(ui.row);
-  assert.equal(chip.innerHTML, '<span class="zu-live ok">均85.5 t/s · 近42</span>');
+  assert.equal(chip.innerHTML, '<span class="zu-live ok">均85.5 t/s</span>');
   chip.listeners.get('mouseenter')[0].call(chip);
   const tip = h.tipEl().innerHTML;
   assert.ok(tip.includes('zu-stat-scope">会话平均<'), 'session-avg scope tag');
@@ -318,7 +318,7 @@ test('session avg + dbTps>0: chip 带「近」尾缀；tooltip 有「最近一�
   assert.ok(!tip.includes('1970-'), 'segment range (epoch 1000/2000) must not leak into session-avg span');
 });
 
-test('session avg + dbTps=0: chip 无「近」尾缀；tooltip 无「最近一段」；会话起点缺失时无「时间范围」行', () => {
+test('session avg + dbTps=0: chip 只显会话均；tooltip 无「最近一段」；会话起点缺失时无「时间范围」行', () => {
   const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
   h.inject(); h.boot(); h.tick();
   const p = h.payload({});              // last.tps 缺席 → dbTps 0；started 缺席 → 无时间范围行
