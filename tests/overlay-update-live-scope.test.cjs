@@ -48,3 +48,53 @@ test('updateLive 对缺席/非正数/非有限会话均回退 0', () => {
   }
   assert.equal(runUpdateLive({ noLastView: true, payloadAvg: 999 })[3], 0, 'lastView null 时不抛错并回退 0');
 });
+
+/* v224 锁定：快速路径的新 tip 串必须写回 .it 格元素（__tip 宿主与 drawTip 读取都在格上）。
+ * v218 曾写到格内 .zu-live span——条件每 tick 命中、drawTip 重画的仍是整条渲染时挂在
+ * 格上的旧串，悬停中「当前读数」冻结在最后一次整条渲染的值（chip 已跳动、tooltip 停在
+ * 「思考中…2秒」）。 */
+function runFastPath({ tipForOnCell = true, sameTip = false } = {}) {
+  const calls = { draw: [], render: 0 };
+  const builtTip = sameTip ? 'TIP:233.6 t/s' : 'TIP:思考中…2秒';   // sameTip=格上已是新签名（不构成变化）
+  const cell = { __tip: builtTip };
+  const liveEl = { textContent: '', className: '', closest: sel => (sel === '.it' ? cell : null) };
+  const view = { cls: 'zu-sky', text: '233.6 t/s', phase: 'generate', band: {} };
+  const sandbox = {
+    L: (zh) => zh,
+    Date: { now: () => 1000 },
+    state: { rateLine: true, theme: 'default', data: {} },
+    lastView: null,
+    bridge: { turnId: 'turn_x', timer: null,
+      handle: { dead: false, charsPerToken: 2, tracker: { get: () => ({ complete: false }) } } },
+    sideHandleValid: () => true,
+    bridgeDetach: () => {},
+    subRateTick: () => {},
+    renderSubAgentRows: () => {},
+    subRate: { sum: null },
+    zuBarSpeedView: () => view,
+    buildLiveTip: v => (sameTip ? 'TIP:233.6 t/s' : 'TIP:' + v.text),
+    syncTpsChip: () => {},
+    liveKindCur: 'live', livePhaseCur: 'generate', liveStatsCur: null,
+    liveTextCur: '', liveIconCur: '',
+    liveEl, tipFor: tipForOnCell ? cell : { __tip: 'OTHER' },
+    drawTip: (...args) => calls.draw.push(args),
+    render: () => { calls.render++; },
+  };
+  vm.runInNewContext(extractUpdateLive(), sandbox)();
+  return { calls, cell, liveEl };
+}
+
+test('updateLive 快速路径把新 tip 串写回 .it 格元素并重画（v224）', () => {
+  const r = runFastPath();
+  assert.equal(r.cell.__tip, 'TIP:233.6 t/s');   // 宿主是格元素：drawTip(tipFor) 读的就是它
+  assert.deepEqual(r.calls.draw, [[r.cell, true]]);
+  assert.equal(r.liveEl.__tip, undefined);       // 回归锁：不得再写格内 .zu-live span
+  assert.equal(r.calls.render, 0);               // 快速路径不整条重渲染
+});
+
+test('updateLive 快速路径未悬停本格时仍保持 __tip 新鲜但不重画；签名不变不重复重画', () => {
+  const r = runFastPath({ tipForOnCell: false });
+  assert.equal(r.cell.__tip, 'TIP:233.6 t/s');
+  assert.deepEqual(r.calls.draw, []);
+  assert.deepEqual(runFastPath({ sameTip: true }).calls.draw, []);
+});
