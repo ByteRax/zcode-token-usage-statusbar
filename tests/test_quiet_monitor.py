@@ -612,7 +612,7 @@ class QuietMonitorTests(unittest.TestCase):
         tool = self.monitor.RUNTIME_DIR / "patch_install.py"
         self.assertIn(f'--asar "{self.asar}"', output)
         self.assertIn(f'--runtime "{self.patch.RUNTIME}"', output)
-        self.assertIn(f'python "{tool}"', output)
+        self.assertIn(f'"{sys.executable}" "{tool}"', output)
 
     def test_visible_monitor_upgrade_hint_points_at_runtime_copy(self):
         # issue #163 review（变异 M9 守护）：「已重启但未检测到注入加载」的请重新运行
@@ -633,7 +633,7 @@ class QuietMonitorTests(unittest.TestCase):
         output = "\n".join(draw.call_args.args[0])
         tool = self.monitor.RUNTIME_DIR / "patch_install.py"
         self.assertIn("请重新运行", output)
-        self.assertIn(f'python "{tool}"', output)
+        self.assertIn(f'"{sys.executable}" "{tool}"', output)
         self.assertNotIn('python patch_install.py', output)
 
     def test_visible_monitor_remove_fallback_hint_has_no_runtime_flag(self):

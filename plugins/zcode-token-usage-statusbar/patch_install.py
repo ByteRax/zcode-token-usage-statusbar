@@ -47,6 +47,10 @@ from runtime_lock import file_lock, publish_install
 
 IS_WIN = sys.platform == "win32"
 IS_MAC = sys.platform == "darwin"
+# 手动命令模板里的解释器：用当前正在跑的真实解释器绝对路径，不猜 python/python3
+# 别名——Windows 上 python3 可能是 Microsoft Store 存根（静默失败），python 也可能
+# 被禁用；能走到提示这一步说明本解释器一定可用（用户反馈 2026-11-03）。
+PYEXE = sys.executable or "python"
 
 if IS_WIN:
     ASAR_DEFAULT = Path(r"D:\ZCode\resources\app.asar")
@@ -773,8 +777,8 @@ def sudo_hint(operation="install"):
                 f"[permission] app.asar or its directory is not writable (protected locations like Program Files need an administrator): {ASAR}"))
         print(L("请以管理员身份打开终端（右键终端图标，选「以管理员身份运行」），然后执行：",
                 "Open a terminal as administrator (right-click the terminal icon, choose 'Run as administrator'), then run:"))
-        print(L('  python "{}" {}'.format(script, cmd).rstrip(),
-                '  python "{}" {}'.format(script, cmd).rstrip()))
+        print(L('  "{}" "{}" {}'.format(PYEXE, script, cmd).rstrip(),
+                '  "{}" "{}" {}'.format(PYEXE, script, cmd).rstrip()))
         return
     print(L(f"[权限] app.asar 或其所在目录不可写（Linux 上 /opt 等系统位置需要 root）：{ASAR}",
             f"[permission] app.asar or its directory is not writable (Linux system locations like /opt need root): {ASAR}"))
@@ -879,8 +883,8 @@ def _install(finalize=False, before_publish=None):
             tool = RUNTIME / "patch_install.py"
             print(L(f"\n运行中替换失败（{e}）。已弹出监控窗口：完全退出 ZCode 后会自动完成替换，",
                     f"\nReplacement while running failed ({e}). A monitor window has opened: it finishes the replacement once ZCode quits completely,"))
-            print(L(f"请勿关闭该窗口；若已关闭，可手动执行：python \"{tool}\" install --finalize --asar \"{ASAR}\" --runtime \"{RUNTIME}\"",
-                    f"Keep it open; if it was closed already, run manually: python \"{tool}\" install --finalize --asar \"{ASAR}\" --runtime \"{RUNTIME}\""))
+            print(L(f"请勿关闭该窗口；若已关闭，可手动执行：\"{PYEXE}\" \"{tool}\" install --finalize --asar \"{ASAR}\" --runtime \"{RUNTIME}\"",
+                    f"Keep it open; if it was closed already, run manually: \"{PYEXE}\" \"{tool}\" install --finalize --asar \"{ASAR}\" --runtime \"{RUNTIME}\""))
             launch_monitor(time.time())
             return False
     try:
@@ -968,8 +972,8 @@ def _remove():
         return False
     except OSError as e:
         tool = RUNTIME / "patch_install.py"
-        print(L(f'\n替换失败（{e}）。请完全退出 ZCode 后重跑 python "{tool}" remove --asar "{ASAR}"，',
-                f'\nReplacement failed ({e}). Quit ZCode completely and re-run python "{tool}" remove --asar "{ASAR}", '))
+        print(L(f'\n替换失败（{e}）。请完全退出 ZCode 后重跑 "{PYEXE}" "{tool}" remove --asar "{ASAR}"，',
+                f'\nReplacement failed ({e}). Quit ZCode completely and re-run "{PYEXE}" "{tool}" remove --asar "{ASAR}", '))
         print(L("待替换文件保留；不要手动 move/mv 覆盖可能已升级的 app.asar。",
                 "Pending files kept; do not manually move/mv over a possibly upgraded app.asar."))
         return False

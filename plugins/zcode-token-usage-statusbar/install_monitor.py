@@ -26,6 +26,9 @@ from pathlib import Path
 HERE = Path(__file__).parent.resolve()
 IS_MAC = sys.platform == "darwin"
 IS_LINUX = sys.platform.startswith("linux")
+# 手动命令模板里的解释器：用当前真实解释器绝对路径，不猜 python/python3 别名
+# （Windows 上 python3 可能是 Microsoft Store 存根会静默失败；用户反馈 2026-11-03）
+PYEXE = sys.executable or "python"
 # 缺省仅兜底（patch_install.py 拉起时必传 argv[2]）：按平台取常见安装位置
 ASAR = Path(sys.argv[2]) if len(sys.argv) > 2 else (
     Path("/Applications/ZCode.app/Contents/Resources/app.asar") if IS_MAC
@@ -324,7 +327,7 @@ def _run():
                     lines = [L("[!] ZCode 已退出但替换失败（文件仍被占用？）",
                                "[!] ZCode has exited but the replacement failed (file still locked?)"),
                              L("稍后自动重试；也可手动执行：", "Will retry automatically; you can also run manually:"),
-                             "  python \"" + str(tool) + "\" "
+                             "  \"" + PYEXE + "\" \"" + str(tool) + "\" "
                              + (f'remove --asar "{ASAR}"' if pending["operation"] == "remove"
                                 else f'install --finalize --asar "{ASAR}" --runtime "{RUNTIME_DIR}"')]
             else:
@@ -377,8 +380,8 @@ def _run():
                            "[?] ZCode restarted, but no injection load detected within %ds." % CONFIRM_WAIT),
                          L("若 ZCode 刚升级过，asar 会被官方版本覆盖，",
                            "If ZCode was just upgraded, app.asar was overwritten by the official build —"),
-                         L(f'请重新运行：python "{tool}" install --asar "{ASAR}"',
-                           f'please re-run: python "{tool}" install --asar "{ASAR}"'),
+                         L(f'请重新运行："{PYEXE}" "{tool}" install --asar "{ASAR}"',
+                           f'please re-run: "{PYEXE}" "{tool}" install --asar "{ASAR}"'),
                          L("（继续检测中，diag 一更新即确认）", "(still watching; will confirm as soon as diag updates)")]
             else:
                 lines = [L("ZCode 已重启（新实例），正在确认注入加载……",

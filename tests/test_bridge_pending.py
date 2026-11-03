@@ -593,6 +593,7 @@ class SudoHintWindowsTests(unittest.TestCase):
         self.assertIn("administrator", text.lower())
         self.assertIn("overlay_install.py", text)
         self.assertIn("install", text)
+        self.assertIn(f'"{sys.executable}"', text)   # 解释器用真实绝对路径，不裸 python
 
     def test_posix_hint_keeps_sudo_with_home_path(self):
         self.pi.IS_WIN = False

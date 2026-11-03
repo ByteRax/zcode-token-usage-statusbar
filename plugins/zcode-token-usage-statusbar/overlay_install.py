@@ -37,6 +37,9 @@ import time
 from pathlib import Path
 
 PLUGIN_ROOT = Path(__file__).parent.resolve()
+# 手动命令模板里的解释器：用当前真实解释器绝对路径，不猜 python/python3 别名
+# （Windows 上 python3 可能是 Microsoft Store 存根会静默失败；用户反馈 2026-11-03）
+PYEXE = sys.executable or "python"
 if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
 from runtime_lock import file_lock, update_config
@@ -808,7 +811,7 @@ def _bridge_notice(out, result, pi):
         from restart_notice import PREFIX
         script = PLUGIN_ROOT / "overlay_install.py"
         if os.name == "nt":
-            action = (f'以管理员身份打开终端，执行 python "{script}" install')
+            action = (f'以管理员身份打开终端，执行 "{PYEXE}" "{script}" install')
         else:
             action = (f'执行 sudo env HOME="$HOME" PATH="$PATH" python3 "{script}" install')
         return _nudge(out, PREFIX + f"状态条已安装，但逐问速率行所需的客户端补丁"
@@ -903,7 +906,7 @@ def run_hook():
             # 唯一解——它复用已排定的待收尾包并重建提权收尾监控，秒级完成。
             script = PLUGIN_ROOT / "overlay_install.py"
             if os.name == "nt":
-                action = f'以管理员身份打开终端，执行 python "{script}" install'
+                action = f'以管理员身份打开终端，执行 "{PYEXE}" "{script}" install'
             else:
                 action = f'执行 sudo env HOME="$HOME" PATH="$PATH" python3 "{script}" install'
             _nudge(out, (PREFIX + "状态条补丁已排定，但 ZCode 安装在受保护目录，"
