@@ -30,7 +30,8 @@ function harness(initialCfg) {
     Buffer,   // 主进程全局（turn-text 子进程输出按 Buffer 收集后统一解码）
     process: { uptime: () => 1, platform: process.platform, resourcesPath: '/fixture', execPath: process.execPath },
     setTimeout: (fn, ms) => { timers.set(++id, { fn, ms }); return id; }, clearTimeout: n => timers.delete(n),
-    setInterval: (fn, ms) => { intervals.push({ fn, ms }); return ++id; },
+    setInterval: (fn, ms) => { const intervalId = ++id; intervals.push({ fn, ms, id: intervalId }); return intervalId; },
+    clearInterval: n => { const i = intervals.findIndex(t => t.id === n); if (i >= 0) intervals.splice(i, 1); },
     require(name) {
       if (name === 'fs') return {
         readFileSync: p => p.endsWith('config.json') ? JSON.stringify(cfg) : p.endsWith('overlay.js') ? (reads++, overlay) : '',
@@ -106,7 +107,13 @@ test('idle/config-off/no-window/quit stop resident and never schedule unconditio
     if (mode === 'idle') h.runTimer(30000);
     if (mode === 'config') { h.setCfg({ resident: false, hot_reload: false }); h.intervals.find(t => t.ms === 5000).fn(); }
     if (mode === 'window') { h.windows.length = 0; h.wc.emit('destroyed'); assert.equal(h.evalCode('lastStamp'), 0); }
-    if (mode === 'quit') h.app.emit('before-quit');
+    if (mode === 'quit') {
+      // pending zip 60s 兜底轮询必须随 before-quit 注销；quota 段另有恒在的 60s
+      // 兜底（dispose 由模块内部处理），只能按数量差断言
+      const before = h.intervals.filter(t => t.ms === 60000).length;
+      h.app.emit('before-quit');
+      assert.equal(h.intervals.filter(t => t.ms === 60000).length, before - 1, mode);
+    }
     p.emit('close', 0);
     assert.equal(h.evalCode('pyRes'), null, mode); assert.equal(p.kills, 1, mode);
     assert.equal([...h.timers.values()].filter(t => t.ms === 0).length, 0, mode);

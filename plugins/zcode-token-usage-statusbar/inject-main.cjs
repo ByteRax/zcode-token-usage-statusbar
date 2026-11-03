@@ -883,6 +883,96 @@ try {
   LOG("model puller unavailable:", e.message);
 }
 
+/* ---------- v228 pending 更新包预注入（macOS）：ZCode 桌面自更新是 Squirrel.Mac 整包
+ * 替换——更新 zip 下载到 ~/Library/Caches/<updaterCacheDirName>/pending/，sha512 只在
+ * 下载完成时校验一次，安装前宿主不再复验 zip 内容（getValidCachedUpdateFile 只比对
+ * update-info.json 与 manifest 的元数据）。在这里抢先把 zip 内 app.asar 补上注入行
+ * （pending_zip_patch.py，表内版本顺带打渲染桥），更新重启即生效，省掉 SessionStart
+ * 重注入后的第二次重启。Windows 走 NSIS 安装器且安装包带 Authenticode 验签，不适用。
+ * 空闲零成本：无候选 zip 时不 spawn；失败退避防 60s 兜底轮询反复打。 */
+let pendingZipWatcher = null;
+let pendingZipTimer = null;
+let pendingZipDebounce = 0;
+let pendingZipBusy = false;
+let pendingZipFails = 0;
+let pendingZipLastFailAt = 0;
+function updaterCacheDirName() {
+  try {
+    const yml = fs.readFileSync(path.join(process.resourcesPath, "app-update.yml"), "utf8");
+    const m = yml.match(/^updaterCacheDirName:\s*(.+?)\s*$/m);
+    if (m) return m[1].replace(/^["']|["']$/g, "");
+  } catch (e) { }
+  return "@zcodedesktop-updater";   // 官方 app-update.yml 实测值；读不到时兜底
+}
+function pendingZipDir() {
+  return path.join(app.getPath("home"), "Library", "Caches", updaterCacheDirName(), "pending");
+}
+function pendingZipCandidate() {
+  const infoFile = path.join(pendingZipDir(), "update-info.json");
+  let info = null;
+  try { info = JSON.parse(fs.readFileSync(infoFile, "utf8")); } catch (e) { return null; }
+  let names = [];
+  try { names = fs.readdirSync(pendingZipDir()); } catch (e) { return null; }
+  for (const name of names) {
+    const m = /^ZCode-(\d+(?:\.\d+){1,3})-mac-(?:arm64|x64)\.zip$/.exec(name);
+    if (!m || (info.fileName && info.fileName !== name)) continue;
+    const have = String(app.getVersion() || "").split(".").map((n) => parseInt(n, 10) || 0);
+    const next = m[1].split(".").map((n) => parseInt(n, 10) || 0);
+    let newer = false;
+    for (let i = 0; i < Math.max(have.length, next.length); i++) {
+      const d = (next[i] || 0) - (have[i] || 0);
+      if (d) { newer = d > 0; break; }
+    }
+    if (!newer) continue;   // 只补未来版本：当前版本的残留缓存留给差量下载用
+    return path.join(pendingZipDir(), name);
+  }
+  return null;
+}
+function patchPendingZip() {
+  if (pendingZipBusy || shuttingDown) return;
+  if (process.platform !== "darwin" || readCfgCached().pending_zip_patch === false) return;
+  if (pendingZipFails >= 3 && Date.now() - pendingZipLastFailAt < 600000) return;   // 失败退避 10 分钟
+  const zip = pendingZipCandidate();
+  if (!zip) return;
+  const resourcesAsar = path.join(process.resourcesPath, "app.asar");
+  if (!fs.existsSync(resourcesAsar)) return;
+  pendingZipBusy = true;
+  const py = spawn(readCfgCached().python_path,
+    [path.join(HERE, "pending_zip_patch.py"), "--zip", zip, "--asar", resourcesAsar, "--runtime", HERE],
+    { windowsHide: true, timeout: 900000 });   // 看门狗：300MB zip 慢盘余量取 15 分钟，卡死不再占住 in-flight
+  let out = "";
+  py.stdout.on("data", (d) => { out += d; if (out.length > 4000) out = out.slice(-4000); });
+  py.stderr.on("data", (d) => { out += d; if (out.length > 4000) out = out.slice(-4000); });
+  py.on("error", (e) => {
+    pendingZipBusy = false; pendingZipFails++; pendingZipLastFailAt = Date.now();
+    LOG("pending zip patch spawn failed:", e.message);
+  });
+  py.on("close", (code) => {
+    pendingZipBusy = false;
+    if (code === 0) { pendingZipFails = 0; LOG("pending update zip patched:", path.basename(zip)); return; }
+    pendingZipFails++; pendingZipLastFailAt = Date.now();
+    LOG("pending zip patch failed (exit " + code + "):", out.trim().slice(-400));
+  });
+}
+{
+  if (process.platform === "darwin" && readCfg().pending_zip_patch !== false) {
+    /* 不设启动检查 timer：上会话留下的待装包由首次 60s 兜底轮询覆盖（Squirrel 取包
+     * 要等用户点击，不差这几十秒），也避免与常驻泵的 15000ms 超时哨兵同值——
+     * inject-main-lifecycle 测试按 ms 值区分 timer。 */
+    pendingZipTimer = setInterval(patchPendingZip, 60000);   // 兜底轮询：fs.watch 事件不保证送达
+    try {
+      pendingZipWatcher = fs.watch(pendingZipDir(), () => {
+        clearTimeout(pendingZipDebounce);
+        pendingZipDebounce = setTimeout(patchPendingZip, 3000);   // 下载完成（zip+json 落盘）的去抖
+      });
+      pendingZipWatcher.on("error", () => {
+        try { pendingZipWatcher.close(); } catch (e) { }
+        pendingZipWatcher = null;   // 缓存目录被清后由 60s 兜底轮询接管
+      });
+    } catch (e) { /* 目录尚不存在：等 60s 兜底轮询 */ }
+  }
+}
+
 /* ---------- v202 更新日志：⚙ 更新页按需拉取当前 Release 渠道的发布说明。独立 try：
  * 拉取/缓存失败只少日志卡片，不拖垮更新链。渲染进程只传 version/force，flavor 与
  * repository 一律取自主进程读到的注册渠道，绝不接收页面提供的地址。缓存落运行目录
@@ -1565,7 +1655,10 @@ app.on("before-quit", () => {
   shuttingDown = true;
   clearTimeout(retryTimer);
   clearTimeout(debounceTimer);
+  clearTimeout(pendingZipDebounce);
   stopResident();
   if (quotaClient) quotaClient.dispose();
   if (dbWatcher) { try { dbWatcher.close(); } catch (e) { } dbWatcher = null; }
+  if (pendingZipWatcher) { try { pendingZipWatcher.close(); } catch (e) { } pendingZipWatcher = null; }
+  if (pendingZipTimer) { clearInterval(pendingZipTimer); pendingZipTimer = null; }
 });
