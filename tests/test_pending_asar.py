@@ -13,6 +13,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest import mock
 
@@ -324,6 +325,39 @@ class PendingAsarTests(unittest.TestCase):
         self.assertFalse(self.pi.TMP_META.exists())
         self.assertEqual(list(self.root.glob(self.pi.TMP.name + ".*.stage")), [])
         self.assertTrue(self.pi.install())
+
+    def test_stale_orphan_stage_is_swept_by_next_prepare(self):
+        """issue #191：重打包进程被杀（hook 超时等）时 finally 不执行，泄漏的孤儿
+        stage（单次最高约 375MB）由下一次锁内入口按 600s 阈值清扫。"""
+        orphan = self.root / (self.pi.TMP.name + ".k7h8e75u.stage")
+        orphan.write_bytes(b"orphan")
+        old = time.time() - self.pi.STALE_STAGE_SECONDS - 60
+        os.utime(orphan, (old, old))
+        self.prepare()
+        self.assertFalse(orphan.exists())
+
+    def test_fresh_stage_survives_next_prepare(self):
+        """移交窗口保护：早于阈值的新 stage 绝不删除——它可能是刚崩溃进程的包，
+        也可能是桥链 publish_external_pending 的在途 stage（同前缀族）。"""
+        fresh = self.root / (self.pi.TMP.name + ".fresh123.stage")
+        fresh.write_bytes(b"fresh")
+        self.prepare()
+        self.assertTrue(fresh.exists())
+        fresh.unlink()
+
+    def test_stale_orphan_stage_is_swept_even_when_publish_is_rejected(self):
+        """publish_external_pending 的校验失败路径同样先清扫：桥链转存被拒（如
+        pending remove 让位、包体损坏）不能跳过孤儿清理。"""
+        orphan = self.root / (self.pi.TMP.name + ".orphan.stage")
+        orphan.write_bytes(b"orphan")
+        old = time.time() - self.pi.STALE_STAGE_SECONDS - 60
+        os.utime(orphan, (old, old))
+        garbage = self.root / ".zusage-bridge-garbage.stage"
+        garbage.write_bytes(b"not an asar")
+        with self.assertRaises(self.pi.PendingTmpError):
+            self.pi.publish_external_pending(garbage)
+        self.assertFalse(orphan.exists())
+        self.assertFalse(garbage.exists())
 
     def test_partial_repack_preserves_previous_owned_pending_pair(self):
         self.prepare()
