@@ -8,7 +8,7 @@ argument-hint: [today|week|days:N|sessions|models|session:<id前缀>|workspace:<
 
 1. 优先调用 MCP 工具 `token_usage`（本插件 zcode-token-usage-statusbar 提供的 stdio server）。
 2. 若该工具不可用（未启用/未注册），退回用 Bash 直接跑 CLI，插件根目录即本命令文件所在目录的上一级：
-   `python3 "<插件根目录>/zusage.py" <子命令>`
+   `python3 "<插件根目录>/zusage.py" <子命令>`（Windows 上 `python3` 可能是 Microsoft Store 存根会静默失败，依次改用 `python`、`py -3`；macOS/Linux 用 `python3`）
 
 参数规则（$ARGUMENTS），括号内为 CLI 子命令对照：
 

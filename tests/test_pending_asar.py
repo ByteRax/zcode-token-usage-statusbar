@@ -506,7 +506,7 @@ class PendingAsarTests(unittest.TestCase):
         self.assertIn(f'--asar "{self.asar.resolve()}"', output)
         self.assertIn(f'--runtime "{self.pi.RUNTIME}"', output)
         tool = self.pi.RUNTIME / "patch_install.py"
-        self.assertIn(f'python "{tool}"', output)
+        self.assertIn(f'"{sys.executable}" "{tool}"', output)
         self.assertIn("Keep it open", output)   # 夹具 _LANG="en"（setUp）
 
     def test_remove_failure_hint_includes_asar_path(self):
@@ -519,7 +519,7 @@ class PendingAsarTests(unittest.TestCase):
         self.assertIn(f'--asar "{self.asar.resolve()}"', output)
         self.assertNotIn("--runtime", output)   # remove 不走来源授权的 runtime 校验，不需要
         tool = self.pi.RUNTIME / "patch_install.py"   # issue #163：脚本同款指向运行目录副本
-        self.assertIn(f'python "{tool}"', output)
+        self.assertIn(f'"{sys.executable}" "{tool}"', output)
 
     def test_check_pending_tmp_hint_includes_asar_path(self):
         self.prepare()
