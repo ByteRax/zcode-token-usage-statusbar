@@ -3,7 +3,7 @@
 对 docs/tour/tour.html 的每个迷你窗口（真实 overlay.js 渲染）独立截图：
   hero 主视觉 1 张（聊天流 + 完整状态条 + 编号标注）
   item-1~6 真实悬停弹出 tooltip 明细
-  item-7 点击子代理条目弹出明细面板
+  item-7 悬停子代理条目弹出 v217 统一浮层
   item-8 点击 ⚙ 弹出设置面板
 全部交互走 Playwright 真实鼠标输入（CDP）。特写图按"内容包围盒"自动裁切
 （tooltip/状态条/卡片/面板的联合区域 + 14px 边距），去掉上方空白。
@@ -62,10 +62,11 @@ JOBS = [
     ("item-6.png", "?embed=1&hl=5",   640, 360,
      "window.__tourReady === true",
      ("hover", ".zu-main .it >> nth=4"), "#zusage-tip", True),
-    # 子代理：悬停 tooltip 只有汇总，点击弹出固定明细面板（v50 双层分工）→ 展示面板
+    # 子代理：v217 统一浮层（.zu-sub-pop）悬停预览与点击固定同貌——取悬停路径更稳
+    # （点击会先被自己触发的预览面板盖住条目而失靶）
     ("item-7.png", "?embed=1&hl=6",   640, 520,
      "window.__tourReady === true",
-     ("click", ".zu-sub"), ".panel.open", True),
+     ("hover", ".zu-sub"), ".zu-sub-pop.open", True),
     # ⚙：点击打开设置面板（视口加高让面板完整入镜）
     ("item-8.png", "?embed=1&hl=gear", 640, 900,
      "window.__tourReady === true",
@@ -112,7 +113,7 @@ with sync_playwright() as p:
                     raise RuntimeError(name + " did not render " + wait_sel) from exc
             page.wait_for_timeout(700)   # 定位/内容渲染落定
             if name == "item-8.png":
-                page.locator('.zu-navitem[data-sec="general"]').click()
+                page.locator('.zu-navitem[data-sec="display"]').click()   # v219：状态条样式移入「状态条显示」分区
                 page.wait_for_selector('.zu-theme-choice', state='visible', timeout=5000)
                 page.wait_for_timeout(300)
         else:
