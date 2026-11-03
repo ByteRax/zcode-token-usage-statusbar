@@ -38,6 +38,7 @@
       "plugins/zcode-token-usage-statusbar/overlay.js",
       "plugins/zcode-token-usage-statusbar/overlay_install.py",
       "plugins/zcode-token-usage-statusbar/patch_install.py",
+      "plugins/zcode-token-usage-statusbar/pending_zip_patch.py",
       "plugins/zcode-token-usage-statusbar/plugin-release.cjs",
       "plugins/zcode-token-usage-statusbar/plugin-storage.cjs",
       "plugins/zcode-token-usage-statusbar/plugin-updater.cjs",

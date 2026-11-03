@@ -100,7 +100,7 @@ LINUX_FALLBACK_BASES = ("/opt", "/usr/lib", "/usr/local/lib")
 # patch_install.py / install_monitor.py 一并进运行目录：待替换包的手动收尾命令
 # （install --finalize）只依赖运行目录内这套脚本，clone 被删/移动后仍可执行（issue #163；
 # 插件链 RUNTIME_FILES 早已同款在列）。
-RUNTIME_FILES = ("inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs", "quota-client.cjs", "model-puller.cjs", "engine-patch.cjs", "release_unpack.py", "runtime_lock.py", "usage_stats.py", "turn-stats.js", "overlay.js", "zusage.py", "usage_mcp.py", "token_rate.py", "renderer_bridge.py", "token_pricing.py", "patch_install.py", "install_monitor.py")
+RUNTIME_FILES = ("inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs", "quota-client.cjs", "model-puller.cjs", "engine-patch.cjs", "release_unpack.py", "runtime_lock.py", "usage_stats.py", "turn-stats.js", "overlay.js", "zusage.py", "usage_mcp.py", "token_rate.py", "renderer_bridge.py", "token_pricing.py", "patch_install.py", "install_monitor.py", "pending_zip_patch.py")
 
 # ZCode 安装位置候选：resources/app.asar 存在即命中（按序探测，按当前平台取组）
 if sys.platform == "darwin":
