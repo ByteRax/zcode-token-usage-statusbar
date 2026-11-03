@@ -794,6 +794,7 @@ try {
   enginePatcher = createEnginePatcher({
     runtime: HERE,
     resourcesPath: process.resourcesPath,
+    appVersion: app.getVersion(),   // issue #191：引擎 sha 漂移时按桌面 build 判"引擎被单独热更"
     isEnabled: () => readCfgCached().auto_compact_patch !== false,   // v188：缺省开（验收反馈），显式 false 关闭
     log: (...a) => LOG("[engine-patch]", ...a),
   });

@@ -75,6 +75,28 @@ test("状态行覆盖补丁全生命周期文案", () => {
   assert.match(bad.node(".zu-ac-status").textContent, /engine sha abc/);
 });
 
+test("issue #191：引擎被单独热更（drifted）时状态行明示热更与 sha，不再拼 lastError 后缀", () => {
+  const drift = runHelpers({ state: { enginePatch: { enabled: true, state: "unsupported_build", drifted: "3.17.2",
+    engineSha256: "395307aba9b5" + "a".repeat(52),
+    lastError: "engine sha 395307aba9b5 not in ENGINE_TARGETS" } } });
+  drift.sandbox.syncAutoCompactInputs();
+  const t = drift.node(".zu-ac-status").textContent;
+  assert.match(t, /已被单独热更/);
+  assert.match(t, /395307aba9b5/);
+  assert.doesNotMatch(t, /ENGINE_TARGETS/, "sha 已内嵌，lastError 后缀不再重复拼接");
+  // 旧主进程无 drifted 字段：保持原通用文案与 lastError 后缀（向后兼容）
+  const generic = runHelpers({ state: { enginePatch: { enabled: true, state: "unsupported_build",
+    engineSha256: "ffff", lastError: "engine sha ffff not in ENGINE_TARGETS" } } });
+  generic.sandbox.syncAutoCompactInputs();
+  const g = generic.node(".zu-ac-status").textContent;
+  assert.match(g, /支持名单/);
+  assert.match(g, /engine sha ffff/);
+  // engineSha256 缺失的极端情况：仍明示热更，只是没有 sha 括注
+  const nosha = runHelpers({ state: { enginePatch: { enabled: true, state: "unsupported_build", drifted: "3.17.2" } } });
+  nosha.sandbox.syncAutoCompactInputs();
+  assert.match(nosha.node(".zu-ac-status").textContent, /已被单独热更/);
+});
+
 test("数值框随主进程真值回写：percent 显示值，其它模式显示空（留空=跟随默认）", () => {
   const focused = runHelpers({ state: { enginePatch: { enabled: true, state: "applied", config: { enabled: true, thresholdPercent: 70 } } } });
   focused.node(".zu-ac-value").value = "999";

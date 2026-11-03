@@ -35,6 +35,7 @@ function setup(opts = {}) {
   let enabled = opts.enabled !== false;
   const patcher = createEnginePatcher({
     runtime, resourcesPath: resources,
+    appVersion: opts.appVersion,
     isEnabled: () => enabled,
     log: () => { },
   });
@@ -93,6 +94,53 @@ test("ensure refuses engines whose sha is not in ENGINE_TARGETS (fail-closed, by
     assert.equal(s.patcher.ensure(), "unsupported_build");
     assert.deepEqual(fs.readFileSync(s.enginePath), s.original);
     assert.match(s.patcher.status().lastError, /not in ENGINE_TARGETS/);
+  } finally { s.cleanup(); }
+});
+
+/* issue #191：桌面 build 仍在登记表而引擎 sha 脱钩 = 引擎文件被供应商/CLI 侧单独
+ * 热更。drifted 只是给 ⚙ 面板的附注，fail-closed 判定本身不变（仍 unsupported_build）。 */
+test("unsupported_build 附 drifted：桌面 build 已登记而引擎 sha 不同（引擎被单独热更）", () => {
+  const s = setup({ fixture: Buffer.from(makeFixture().toString("utf8") + "/* drift-a */\n"), appVersion: "3.17.2.9661" });
+  try {
+    // 只登记 build 号（sha 用无关字节）：drifted 的前提是引擎 sha 不在表内
+    const t = registerTarget(Buffer.from("drift-a-marker-unrelated"));
+    t.build = "3.17.2";
+    assert.equal(s.patcher.ensure(), "unsupported_build");
+    assert.equal(s.patcher.status().drifted, "3.17.2");
+    assert.match(s.patcher.status().lastError, /not in ENGINE_TARGETS/);
+  } finally { s.cleanup(); }
+});
+
+test("unsupported_build 不附 drifted：桌面 build 本身不在登记表（全新版本）", () => {
+  const s = setup({ fixture: Buffer.from(makeFixture().toString("utf8") + "/* drift-b */\n"), appVersion: "3.18.0.1" });
+  try {
+    const t = registerTarget(Buffer.from("drift-b-marker-unrelated"));
+    t.build = "3.17.2";
+    assert.equal(s.patcher.ensure(), "unsupported_build");
+    assert.equal(s.patcher.status().drifted, null);
+  } finally { s.cleanup(); }
+});
+
+test("build 前缀匹配按点分界：3.17.20 不误配 3.17.2", () => {
+  const s = setup({ fixture: Buffer.from(makeFixture().toString("utf8") + "/* drift-c */\n"), appVersion: "3.17.20.1" });
+  try {
+    const t = registerTarget(Buffer.from("drift-c-marker-unrelated"));
+    t.build = "3.17.2";
+    assert.equal(s.patcher.ensure(), "unsupported_build");
+    assert.equal(s.patcher.status().drifted, null);
+  } finally { s.cleanup(); }
+});
+
+test("drifted 不跨调用残留：状态离开 unsupported_build 即清空", () => {
+  const s = setup({ fixture: Buffer.from(makeFixture().toString("utf8") + "/* drift-d */\n"), appVersion: "3.17.2.9661" });
+  try {
+    const driftBuild = registerTarget(Buffer.from("drift-marker-unrelated-bytes"));
+    driftBuild.build = "3.17.2";
+    assert.equal(s.patcher.ensure(), "unsupported_build");
+    assert.equal(s.patcher.status().drifted, "3.17.2");
+    registerTarget(fs.readFileSync(s.enginePath));   // 引擎字节登记后可正常打补丁
+    assert.equal(s.patcher.ensure(), "applied");
+    assert.equal(s.patcher.status().drifted, null);
   } finally { s.cleanup(); }
 });
 
