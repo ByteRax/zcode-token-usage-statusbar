@@ -1289,6 +1289,102 @@ test('compact theme: stored value is read on boot, normalized on write, and pers
   assert.equal(ctx.state.theme, 'pill');
 });
 
+/* ---------- v225：六格全关自动转精简（边缘触发/来源主题恢复/手动接管解除） ---------- */
+test('auto compact: flipping the sixth cell off is the only edge that switches, and the source theme is restored on re-enable', () => {
+  const themeFnSource = extract('  function setBarTheme(', '  var remoteCache = {};');
+  const store = {};
+  const mkCtx = theme => {
+    const state = {
+      theme, barJust: 'between',
+      show: { win: 1, turn: 1, today: 1, sub: 1, tools: 1, git: 1, proj: 1, subRate: 1 },
+    };
+    const ctx = {
+      state,
+      LS: { theme: 'zusage3.theme', autoCompact: 'zusage3.autoCompact', barJust: 'zusage3.barJust' },
+      ls: k => (k in store ? store[k] : null),
+      lsSet: (k, v) => { store[k] = v; },
+      instances: [{ applyBarTheme() {} }],
+    };
+    vm.runInNewContext(themeFnSource, ctx);
+    return ctx;
+  };
+  const flip = (ctx, k, on) => { ctx.state.show[k] = on ? 1 : 0; ctx.autoCompactOnShow(k, on); };
+
+  // default 来源：关到第五格不切，第六格那一拍才切（边缘触发）；标记记录来源主题
+  let ctx = mkCtx('default');
+  for (const k of ['turn', 'win', 'proj', 'tools', 'today']) flip(ctx, k, false);
+  assert.equal(ctx.state.theme, 'default');
+  flip(ctx, 'git', false);   // 非六键（工具行 chip）：不参与判定
+  assert.equal(ctx.state.theme, 'default');
+  assert.ok(!('zusage3.autoCompact' in store), '未切档不写标记');
+  flip(ctx, 'sub', false);
+  assert.equal(ctx.state.theme, 'compact');
+  assert.equal(store['zusage3.autoCompact'], 'default');
+  flip(ctx, 'win', true);   // 重开任一格恢复来源主题并清标记
+  assert.equal(ctx.state.theme, 'default');
+  assert.equal(store['zusage3.autoCompact'], '');
+
+  // pill 来源：切进 compact 后重开格子恢复回 pill
+  ctx = mkCtx('pill');
+  for (const k of ['turn', 'win', 'proj', 'tools', 'today', 'sub']) flip(ctx, k, false);
+  assert.equal(ctx.state.theme, 'compact');
+  assert.equal(store['zusage3.autoCompact'], 'pill');
+  flip(ctx, 'proj', true);
+  assert.equal(ctx.state.theme, 'pill');
+  assert.equal(store['zusage3.autoCompact'], '');
+
+  // 手动精简（无标记）：开关格子不发生自动切档
+  ctx = mkCtx('compact');
+  for (const k of ['turn', 'win', 'proj', 'tools', 'today', 'sub']) flip(ctx, k, false);
+  assert.equal(ctx.state.theme, 'compact');
+  assert.equal(store['zusage3.autoCompact'] || '', '', '手动精简不写标记');
+  flip(ctx, 'turn', true);
+  assert.equal(ctx.state.theme, 'compact', '无标记不自动恢复');
+
+  // 残留标记防御清理：主题已被手动改走时，重开格子只清标记不切档
+  ctx = mkCtx('default');
+  store['zusage3.autoCompact'] = 'pill';
+  flip(ctx, 'win', true);
+  assert.equal(ctx.state.theme, 'default');
+  assert.equal(store['zusage3.autoCompact'], '');
+});
+
+/* ---------- v225：默认样式水平对齐（归一持久化 + 全实例重挂 + 面板接线） ---------- */
+test('setBarJust normalizes, persists and reapplies; panel wiring ships the three-choice block', () => {
+  const themeFnSource = extract('  function setBarTheme(', '  var remoteCache = {};');
+  const store = {};
+  const applied = [];
+  const ctx = {
+    state: { theme: 'default', barJust: 'between' },
+    LS: { theme: 'zusage3.theme', autoCompact: 'zusage3.autoCompact', barJust: 'zusage3.barJust' },
+    ls: k => (k in store ? store[k] : null),
+    lsSet: (k, v) => { store[k] = v; },
+    instances: [{ applyBarTheme: () => applied.push(1) }],
+  };
+  vm.runInNewContext(themeFnSource, ctx);
+  ctx.setBarJust('end');
+  assert.equal(ctx.state.barJust, 'end');
+  assert.equal(store['zusage3.barJust'], 'end');
+  assert.equal(applied.length, 1, '每次设置都全实例重挂');
+  ctx.setBarJust('weird');
+  assert.equal(ctx.state.barJust, 'between', '非法值回退均分');
+  assert.equal(store['zusage3.barJust'], 'between');
+  ctx.setBarJust('start');
+  assert.equal(ctx.state.barJust, 'start');
+
+  // 面板接线：三选项 radio + 仅默认档可见的设置块 + change 委托分支 + 自动切档挂点
+  assert.equal((source.match(/class="zu-just-choice"/g) || []).length, 3, '三个对齐选项');
+  assert.ok(source.includes('zu-just-block'), '对齐设置块容器');
+  assert.ok(source.includes(`' style="display:none"'`), '非默认档内联隐藏');
+  assert.ok(source.includes('contains("zu-just-choice")'), 'change 委托分支');
+  assert.ok(source.includes('autoCompactOnShow(t2.dataset.k, !!t2.checked)'), 'checkbox 分支挂自动切档');
+  assert.ok(source.includes('lsSet(LS.autoCompact, "");   // v226：手动改档即解除'), '手动改档清标记（仅标记存在时写）');
+  assert.ok(source.includes('".zusage-root.zu-just-start .zu-main{justify-content:flex-start}"'), '居左规则');
+  assert.ok(source.includes('".zusage-root.zu-just-end .zu-main > :first-child{margin-left:auto}"'), '居右 auto-margin 规则');
+  assert.ok(source.includes('zu-just-start", just === "start"'), 'applyBarTheme 挂类');
+  assert.ok(source.includes('justBlock.style.display = state.theme === "default" ? "" : "none"'), 'applyBarTheme 同步设置块显隐');
+});
+
 test('relaunch two-step confirm state machine executes for real (v172, v177 ack timeout)', () => {
   const clickSource = extract('    var relaunchAckTimer = 0;', '    gear.addEventListener("click",');
   const button = { dataset: { update: "relaunch", armed: "" }, disabled: false, textContent: "重启 ZCode",
