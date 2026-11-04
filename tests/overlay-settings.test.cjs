@@ -1409,21 +1409,27 @@ test('relaunch two-step confirm state machine executes for real (v172, v177 ack 
   assert.equal(button.textContent, "再次点击确认重启");
   assert.deepEqual(requested, []);
   assert.equal(timers.length, 1, "确认态有 5s 超时兜底");
-  context.__click({ target: hit() });   // 二点：发送 relaunch 并立即恢复文案（旧主进程无回执也不卡）
+  context.__click({ target: hit() });   // 二点：发送 relaunch 并立即进入「正在重启」态（v244：退出等待可达数十秒，不伪装无反应）
   assert.deepEqual(requested, ["relaunch"]);
   assert.equal(button.dataset.armed, "0");
-  assert.equal(button.textContent, "重启 ZCode");
+  assert.equal(button.textContent, "正在重启…");
+  assert.equal(button.disabled, true, "发送后禁用防重复点击");
+  assert.equal(button.dataset.sent, "1", "syncUpdate 状态推送据此保持禁用与提示");
   assert.equal(timers.length, 2, "v177：发出后挂 4s 回执超时");
-  assert.equal(statusEl.textContent, "", "有回执前不误报");
+  assert.match(statusEl.textContent, /已发出重启请求/, "v244：发送即写预期文案（等待会话/扩展子进程退出）");
   // v177：无回执路径（旧主进程 splice 后静默丢弃）——超时明确提示手动完全退出
   timers[1]();
+  assert.equal(button.dataset.sent, "");
+  assert.equal(button.disabled, false);
+  assert.equal(button.textContent, "重启 ZCode");
   assert.match(statusEl.textContent, /旧版|manually/);
   // 正常主进程 300ms 内回 ok：清掉超时（timers[1] 已置 null，再触发不再改写状态）
   timers[1] = null;
   assert.equal(typeof sendReceipt, "function");
   statusEl.textContent = "";
   sendReceipt({ ok: true });
-  assert.equal(statusEl.textContent, "", "ok 回执不改写状态区");
+  assert.equal(statusEl.textContent, "", "ok 回执不改写状态区（预期文案发送时已写）");
+  assert.equal(timers.length, 2, "v244：4s 超时已还原（sent 清空）后，迟到 ok 不再挂 90s 仍存活兜底");
   sendReceipt({ ok: false, error: "update in progress" });
   assert.match(statusEl.textContent, /重启请求失败/);
   statusEl.textContent = "";
@@ -1439,6 +1445,42 @@ test('relaunch two-step confirm state machine executes for real (v172, v177 ack 
   timers[2]();                           // 5s 超时：还原文案与 armed
   assert.equal(button.dataset.armed, "0");
   assert.equal(button.textContent, "重启 ZCode");
+});
+
+test('v244 relaunch ok receipt keeps the restarting state and the 90s still-alive fallback restores it', () => {
+  const clickSource = extract('    var relaunchAckTimer = 0;', '    gear.addEventListener("click",');
+  const button = { dataset: { update: "relaunch", armed: "" }, disabled: false, textContent: "重启 ZCode",
+    classList: { add() {}, remove() {} } };
+  const statusEl = { textContent: "" };
+  let sendReceipt = null;
+  const timers = [];
+  const context = {
+    state: { pluginUpdate: { restartRequired: true, relaunchSupported: true }, settingsSec: "update" },
+    panel: { querySelector: () => statusEl, addEventListener: (_, fn) => { context.__click = fn; } },
+    L: (zh) => zh,
+    pluginRequest: (action, payload, cb) => { sendReceipt = cb; },
+    setTimeout: (fn) => { timers.push(fn); return timers.length; },
+    clearTimeout: (n) => { timers[n - 1] = null; },
+  };
+  vm.runInNewContext(clickSource, context);
+  const hit = () => ({ closest: sel => sel === "[data-update]" ? button : null });
+  context.__click({ target: hit() });   // 首点确认
+  context.__click({ target: hit() });   // 二点发送：进入「正在重启」态
+  assert.equal(button.dataset.sent, "1");
+  assert.equal(timers.length, 2);
+  statusEl.textContent = "";
+  sendReceipt({ ok: true });            // 回执在 4s 超时前到达：保持「正在重启」态并挂 90s 仍存活兜底
+  assert.equal(button.textContent, "正在重启…", "ok 回执不还原按钮，等待期维持禁用");
+  assert.equal(button.disabled, true);
+  assert.equal(button.dataset.sent, "1");
+  assert.equal(statusEl.textContent, "", "ok 回执不改写状态区");
+  assert.equal(timers[1], null, "ok 回执必须撤销 4s 回执超时——否则正常重启路径 4s 后误报旧主进程");
+  assert.equal(timers.length, 3, "挂 90s 仍存活兜底");
+  timers[2]();                          // 90s 仍存活：quit 被会话/扩展阻止——还原并指引
+  assert.equal(button.dataset.sent, "");
+  assert.equal(button.disabled, false);
+  assert.equal(button.textContent, "重启 ZCode");
+  assert.match(statusEl.textContent, /仍未退出|has not exited/);
 });
 
 test('relaunch button downgrades to a manual-restart hint while the main process predates the capability marker (v180, issue #158)', () => {
@@ -1463,6 +1505,28 @@ test('relaunch button downgrades to a manual-restart hint while the main process
   assert.equal(relaunch.hidden, false, '能力标记到位后按钮恢复');
   assert.equal(relaunch.disabled, false);
   assert.doesNotMatch(status.textContent, /旧版本/);
+});
+
+test('v244 syncUpdate keeps the restarting state across state pushes while the request is in flight', () => {
+  const syncSource = extract('    function updFingerprint(u) {', '    function syncPanel() {');
+  const status = {};
+  const relaunch = { hidden: false, disabled: false, dataset: { sent: '1' }, classes: {} };
+  relaunch.classList = { toggle() {} };
+  const context = {
+    state: { pluginUpdate: { supported: true, phase: 'idle', restartRequired: false, markerAt: 42, relaunchSupported: true } },
+    panel: { querySelector: selector => selector === '.zu-update-status' ? status : selector === '[data-update=relaunch]' ? relaunch : { style: {} } },
+    gear: { querySelector: () => null },
+    LS: { updSeen: 'zusage3.updSeen' },
+    localStorage: { getItem: () => null, setItem: () => {} },
+    L: (zh) => zh,
+  };
+  vm.runInNewContext(syncSource + '\nsyncUpdate();', context);
+  assert.equal(relaunch.disabled, true, '状态推送重建时必须保持「正在重启」禁用态（否则等待期可重复点击）');
+  assert.match(status.textContent, /已发出重启请求/, '状态行重建时必须重放预期文案');
+  relaunch.dataset.sent = '';
+  vm.runInNewContext('syncUpdate();', context);
+  assert.equal(relaunch.disabled, false, '还原路径清空 sent 后恢复可点');
+  assert.doesNotMatch(status.textContent, /已发出重启请求/, '还原后预期文案不再追加');
 });
 
 test('relaunch click refuses to fire and explains while the capability marker is missing (v180, issue #158)', () => {
