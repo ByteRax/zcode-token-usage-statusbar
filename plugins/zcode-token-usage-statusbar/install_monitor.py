@@ -70,6 +70,7 @@ def zcode_pids():
             r = subprocess.run(
                 ["tasklist", "/FI", "IMAGENAME eq ZCode.exe", "/FO", "CSV", "/NH"],
                 capture_output=True,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),   # issue #221：静默监控无控制台，探测会弹终端窗
             )
         except OSError:
             return None
@@ -102,7 +103,8 @@ def zcode_pid_starts(pids):
                 ["powershell", "-NoProfile", "-Command",
                  "Get-Process ZCode -ErrorAction SilentlyContinue | ForEach-Object { "
                  "try { '{0}|{1}' -f $_.Id, $_.StartTime.ToFileTime() } catch {} }"],
-                capture_output=True, timeout=20)
+                capture_output=True, timeout=20,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))   # issue #221
         except (OSError, subprocess.TimeoutExpired):
             return None
         starts = {}
