@@ -81,6 +81,13 @@ function readChannel(home, root = require("./plugin-storage.cjs").resolvePluginS
 }
 /* allowedHosts：更新日志拉取传 NOTES_API_HOSTS，把只读 API 域与资产下载域分开维护；
  * 省略时保持原有资产下载白名单，不放宽任何既有调用面。 */
+/* API 域要 JSON：GitCode v5 对 octet-stream 明确 400（Invalid Accept header，
+ * 2026-11-04 实测；vnd.github+json 在两家 API 均可用，资产域保持 octet-stream）。 */
+function releaseAcceptHeader(hostname) {
+  return hostname === "api.github.com" ? "application/vnd.github+json"
+    : hostname === "api.gitcode.com" ? "application/json"
+    : "application/octet-stream";
+}
 async function fetchBytes(url, limit, onProgress, allowedHosts) {
   let activeRequest, activeResponse, timer, settled = false;
   return new Promise((resolve, reject) => {
@@ -100,7 +107,7 @@ async function fetchBytes(url, limit, onProgress, allowedHosts) {
           (allowedHosts || DOWNLOAD_HOSTS).includes(parsed.hostname);
         if (!allowed) throw new Error("拒绝非 GitHub/GitCode HTTPS 更新地址");
         const request = https.get(parsed, { headers: { "User-Agent": "zcode-token-usage-statusbar-release-updater",
-          "Accept": parsed.hostname === "api.github.com" ? "application/vnd.github+json" : "application/octet-stream",
+          "Accept": releaseAcceptHeader(parsed.hostname),
           "X-GitHub-Api-Version": "2022-11-28" } }, (response) => {
           if (settled) { response.destroy(); return; }
           activeResponse = response;
@@ -357,15 +364,17 @@ const NOTES_LIST_MAX = 20;   // 历史版本一次最多取 20 条，不做全�
 // GitHub API 匿名配额按出口 IP 共享、限流/不可达常见，notes 拉取失败时回退镜像取同号正文。
 const NOTES_GITCODE_MIRROR = "tanranran/zcode-token-usage-statusbar";
 const NOTES_API_HOSTS = {
-  github: { repo: githubRepository, api: "api.github.com", origin: "https://github.com" },
-  gitcode: { repo: gitcodeRepository, api: "api.gitcode.com", origin: "https://gitcode.com" },
+  github: { repo: githubRepository, api: "api.github.com", base: "https://api.github.com", origin: "https://github.com" },
+  gitcode: { repo: gitcodeRepository, api: "api.gitcode.com", base: "https://api.gitcode.com/api/v5", origin: "https://gitcode.com" },
 };
 
 function notesTag(version) {
   return typeof version === "string" && STABLE.test(version) ? "v" + version : null;
 }
-/* GitCode v5 API 与 Gitee 同构：tag 端点 2026-11-01 匿名实测 200（published_at 恒空，
- * 用 created_at；列表默认升序，需显式 direction=desc）。 */
+/* GitCode v5 API 与 Gitee 同构：REST 路径在 /api/v5 前缀下——裸 api.gitcode.com/repos/...
+ * 返回 404（2026-11-04 匿名实测；v1.5.9–v1.5.10 缺前缀，GitCode 渠道更新日志被整体误判
+ * 为 missing）。published_at 恒空，用 created_at；列表默认升序，需显式 direction=desc
+ * （代码内仍按版本号重排，不依赖该参数）。 */
 function notesHost(flavor, repository) {
   const host = NOTES_API_HOSTS[flavor];
   if (!host) return null;
@@ -397,7 +406,7 @@ async function fetchReleaseNotes(options) {
   if (!found || !tag) return { ok: false, reason: "unsupported" };
   const { host, repo } = found;
   let body;
-  try { body = await fetch(`https://${host.api}/repos/${repo}/releases/tags/${encodeURIComponent(tag)}`, limit); }
+  try { body = await fetch(`${host.base}/repos/${repo}/releases/tags/${encodeURIComponent(tag)}`, limit); }
   catch (error) {
     if (error && typeof error.status === "number") return { ok: false, reason: classifyNotesStatus(error.status) };
     return { ok: false, reason: "network", message: String((error && error.message) || error).slice(0, 300) };
@@ -414,7 +423,7 @@ async function fetchReleaseNotesList(options) {
   if (!found) return { ok: false, reason: "unsupported" };
   const { host, repo } = found;
   let body;
-  try { body = await fetch(`https://${host.api}/repos/${repo}/releases?per_page=100&page=1&direction=desc`, NOTES_LIST_MAX_JSON); }
+  try { body = await fetch(`${host.base}/repos/${repo}/releases?per_page=100&page=1&direction=desc`, NOTES_LIST_MAX_JSON); }
   catch (error) {
     if (error && typeof error.status === "number") return { ok: false, reason: classifyNotesStatus(error.status) };
     return { ok: false, reason: "network", message: String((error && error.message) || error).slice(0, 300) };
@@ -567,4 +576,4 @@ function createNotesService(options) {
 
 module.exports = { sameRepository, sameAssetUrl, githubRepository, gitcodeRepository, readChannel, checkRelease, gitcodeReleaseFromCatalog, githubReleaseFromCatalog, validateGitcodeRelease, validateGithubCatalogRelease,
   downloadRelease, validateRelease, validateManifest, catalogChannel,
-  fetchBytes, fetchReleaseNotes, fetchReleaseNotesList, createNotesCache, createNotesService, notesTag, NOTES_API_HOSTS, NOTES_MAX_JSON, NOTES_LIST_MAX_JSON, NOTES_LIST_MAX, MAX_ASSET, MAX_JSON, PLUGIN_ID };
+  fetchBytes, fetchReleaseNotes, fetchReleaseNotesList, createNotesCache, createNotesService, notesTag, releaseAcceptHeader, NOTES_API_HOSTS, NOTES_MAX_JSON, NOTES_LIST_MAX_JSON, NOTES_LIST_MAX, MAX_ASSET, MAX_JSON, PLUGIN_ID };
