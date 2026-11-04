@@ -28,7 +28,8 @@ const CATALOG_GRACE_MS = 1000;        // 供应商响应后目录的额外宽限
  * cc-switch#3471 实证：OpenAI 普通端点（/api/paas/v4）与 Coding Plan（/api/coding/paas/v4）
  * 分离，套餐误用普通端点会 429——列模型三端点对套餐 token 均放行（实测），此处固定用与
  * 运行协议同源的 Anthropic models 端点。写入目标=套餐 personal 规则的
- * personalModelIds/modelOrder（宿主自身也写这两键，实测），id 按宿主官方规范大小写归一。 */
+ * personalModelIds/modelOrder（宿主自身也写这两键，实测）；全新环境宿主尚未创建该规则时
+ * （首次官方保存才隐式创建）按同构骨架自建（issue #226），id 按宿主官方规范大小写归一。 */
 var PLAN_SOURCES = {
   "account:bigmodel-individual-coding-plan": {
     name: "BigModel Coding Plan",
@@ -279,7 +280,10 @@ function createModelPuller(opts) {
     } catch (e) { return null; }
   }
   function rulesOf(data) {
-    return (((data || {}).config || {}).providerConfigRules || {}).providerRules || [];
+    /* 非数组（损坏/手改）一律按空处理：findRule/listProviders 的 for-of 不能被
+     * truthy 非可迭代值炸掉，损坏结构走各调用方的 fail-closed 拒绝路径 */
+    const rules = (((data || {}).config || {}).providerConfigRules || {}).providerRules;
+    return Array.isArray(rules) ? rules : [];
   }
   function declaredModelIds(pcfg) {
     const ids = [];
@@ -535,9 +539,20 @@ function createModelPuller(opts) {
     try {
       const data = readProviderCfg();
       const planSrc = PLAN_SOURCES[String(providerId || "")];
-      const rule = data ? findRule(data, providerId) : null;
-      if (planSrc && !rule) return { ok: false, error: "provider not found" };   // 套餐 personal 规则由宿主创建
+      let rule = data ? findRule(data, providerId) : null;
       if (!planSrc && (!rule || !isPullable(rule))) return { ok: false, error: "provider not found" };
+      if (planSrc && !rule) {
+        /* issue #226：全新环境宿主尚未创建套餐 personal 规则（首次官方保存才隐式创建），
+         * 自建与宿主 addPersonalModel 同构的最小条目 {providerId, config}——宿主 rule schema
+         * 是 strict 且 account: 供应商禁止 config.access（superRefine），绝不多写字段；
+         * providerRules 不是文件内数组（结构缺口过大）仍拒绝，不代宿主搭骨架。
+         * 宿主对整份文件 strict 校验、任一条目非法即整体降级，写入形状必须严格同构。 */
+        const list = data && data.config && data.config.providerConfigRules
+          ? data.config.providerConfigRules.providerRules : null;
+        if (!Array.isArray(list)) return { ok: false, error: "provider not found" };
+        rule = { providerId: providerId, config: {} };
+        list.push(rule);
+      }
       if (planSrc) {
         for (let i = 0; i < wanted.length; i++) wanted[i] = normalizePlanModelId(wanted[i]);
         for (let i = wanted.length - 1; i > 0; i--) if (wanted.indexOf(wanted[i]) < i) wanted.splice(i, 1);
@@ -570,6 +585,12 @@ function createModelPuller(opts) {
           for (const mid of adding) {
             const entry = JSON.parse(JSON.stringify(template));
             rules.push({ modelId: mid, providerId: providerId, config: entryWithMeta(entry, cache ? cache.metaById[mid] : null) });
+          }
+        } else if (planSrc) {
+          /* 无兄弟模板：按宿主 addPersonalModel 的最小骨架写实 {enabled:true}（issue #226；
+           * 条目 schema strict，config 经 sparseShape 接受最小布尔） */
+          for (const mid of adding) {
+            rules.push({ modelId: mid, providerId: providerId, config: { enabled: true } });
           }
         }
       }

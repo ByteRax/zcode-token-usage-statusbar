@@ -142,6 +142,86 @@ test("plan source: fetches anthropic models endpoint with oauth bearer and norma
   assert.ok(!rule.personalModelIds.includes("glm-4.7"));   // 不写小写重复项
 });
 
+test("plan source: applyModels bootstraps personal rule on fresh env (issue #226)", async () => {
+  const file = tmpCfgPath();
+  /* 全新环境：宿主初始 encode 的形状（schemaVersion + 空规则两容器），从未手动保存过模型；
+   * 预置一条无关 api-key 规则，断言自建是追加不是替换 */
+  writeCfg(file, {
+    schemaVersion: 1,
+    config: {
+      providerConfigRules: {
+        providerRules: [
+          { providerId: "custom-relay", config: { access: { type: "api-key", apiKey: "sk-1" }, api: { baseUrl: "https://relay.example.com" } } },
+        ],
+      },
+      modelConfigRules: { providerModelRules: [], manualProviderModelRules: [] },
+    },
+  });
+  fs.writeFileSync("/tmp/creds.json", JSON.stringify({ "oauth:bigmodel:access_token": "enc:xxx" }));
+  const { mp } = createPlanPuller(file, []);
+  const r = await mp.applyModels(PLAN_ID, ["GLM-5.3-FlashX", "glm-5.3"]);
+  assert.deepEqual(r, { ok: true, added: 2 });
+  const after = JSON.parse(fs.readFileSync(file, "utf8"));
+  const rules = after.config.providerConfigRules.providerRules;
+  assert.equal(rules.length, 2);
+  assert.deepEqual(rules[0], {   // 无关规则原样保留
+    providerId: "custom-relay",
+    config: { access: { type: "api-key", apiKey: "sk-1" }, api: { baseUrl: "https://relay.example.com" } },
+  });
+  const rule = rules[1];
+  /* 严格同构：无 providerName/enabled/access 等多余键（宿主 strict schema + superRefine） */
+  assert.deepEqual(rule, {
+    providerId: PLAN_ID,
+    config: { personalModelIds: ["GLM-5.3-FlashX", "GLM-5.3"], modelOrder: ["GLM-5.3-FlashX", "GLM-5.3"] },
+  });
+  assert.deepEqual(after.config.modelConfigRules.providerModelRules, [
+    { modelId: "GLM-5.3-FlashX", providerId: PLAN_ID, config: { enabled: true } },   // 宿主 addPersonalModel 最小骨架
+    { modelId: "GLM-5.3", providerId: PLAN_ID, config: { enabled: true } },
+  ]);
+  assert.deepEqual(after.config.modelConfigRules.manualProviderModelRules, []);
+  assert.equal(after.schemaVersion, 1);   // 宿主版本键原样保留
+});
+
+test("plan source: applyModels refuses when providerRules is not an in-file array (no host skeleton rebuild)", async () => {
+  const file = tmpCfgPath();
+  writeCfg(file, { schemaVersion: 1, config: {} });   // providerConfigRules 缺失：结构缺口过大
+  fs.writeFileSync("/tmp/creds.json", JSON.stringify({ "oauth:bigmodel:access_token": "enc:xxx" }));
+  const { mp } = createPlanPuller(file, []);
+  assert.equal((await mp.applyModels(PLAN_ID, ["GLM-5.3"])).error, "provider not found");
+  const after = JSON.parse(fs.readFileSync(file, "utf8"));
+  assert.deepEqual(after.config, {});   // 未动文件结构
+
+  const nonArray = tmpCfgPath();   // providerRules 存在但非数组：同一守卫拒绝
+  writeCfg(nonArray, { schemaVersion: 1, config: { providerConfigRules: { providerRules: {} } } });
+  const mpNA = M.createModelPuller({
+    customCfgPath: nonArray, fetchImpl: async () => null, modelsDevUrl: MODELS_DEV_TEST_URL,
+    credentialsPath: "/tmp/creds.json", decryptValue: () => "plan-oauth-token",
+  });
+  assert.equal((await mpNA.applyModels(PLAN_ID, ["GLM-5.3"])).error, "provider not found");
+  assert.deepEqual(JSON.parse(fs.readFileSync(nonArray, "utf8")).config.providerConfigRules, { providerRules: {} });
+
+  const missing = tmpCfgPath();   // 文件不存在：不代宿主创建 provider_config.json
+  fs.writeFileSync("/tmp/creds.json", JSON.stringify({ "oauth:bigmodel:access_token": "enc:xxx" }));
+  const mp2 = M.createModelPuller({
+    customCfgPath: missing, fetchImpl: async () => null, modelsDevUrl: MODELS_DEV_TEST_URL,
+    credentialsPath: "/tmp/creds.json", decryptValue: () => "plan-oauth-token",
+  });
+  assert.equal((await mp2.applyModels(PLAN_ID, ["GLM-5.3"])).error, "provider not found");
+  assert.equal(fs.existsSync(missing), false);
+});
+
+test("plan source: applyModels without modelConfigRules writes only id lists", async () => {
+  const file = tmpCfgPath();
+  writeCfg(file, { schemaVersion: 1, config: { providerConfigRules: { providerRules: [] } } });
+  fs.writeFileSync("/tmp/creds.json", JSON.stringify({ "oauth:bigmodel:access_token": "enc:xxx" }));
+  const { mp } = createPlanPuller(file, []);
+  const r = await mp.applyModels(PLAN_ID, ["GLM-5.3"]);
+  assert.deepEqual(r, { ok: true, added: 1 });
+  const after = JSON.parse(fs.readFileSync(file, "utf8"));
+  assert.equal(after.config.modelConfigRules, undefined);   // 不越权创建规则容器，只写 id 列表
+  assert.deepEqual(after.config.providerConfigRules.providerRules[0].config, { personalModelIds: ["GLM-5.3"], modelOrder: ["GLM-5.3"] });
+});
+
 test("non-ok response bodies are cancelled (undici connection hygiene)", async () => {
   const file = tmpCfgPath();
   writeCfg(file, sampleCfg());
