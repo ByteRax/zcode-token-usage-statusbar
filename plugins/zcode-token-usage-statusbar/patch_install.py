@@ -162,6 +162,7 @@ def client_running():
             out = subprocess.run(
                 ["tasklist", "/FI", "IMAGENAME eq ZCode.exe"],
                 capture_output=True, text=True, encoding="gbk", errors="replace",
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),   # issue #221：无控制台宿主里探测会弹终端窗
             ).stdout
             return "ZCode.exe" in out
         # macOS/Linux：pgrep 精确匹配主进程名；误判"未运行"在 POSIX 上也无害
@@ -221,7 +222,8 @@ def _spawn_via_wmi(cmd):
         encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
         result = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
-            capture_output=True, timeout=WMI_TIMEOUT)
+            capture_output=True, timeout=WMI_TIMEOUT,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))   # issue #221
     except (OSError, ValueError, subprocess.SubprocessError):
         return None
     if result.returncode != 0:

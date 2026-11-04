@@ -436,6 +436,51 @@ class QuietMonitorTests(unittest.TestCase):
         self.assertIn("exit 1", script)
         self.assertIn("$r.ProcessId", script)
 
+    def test_windows_client_running_probe_hides_console(self):
+        # issue #221：hook 由无控制台宿主拉起时，tasklist 这类控制台程序会被分配
+        # 可见新终端（Windows Terminal 弹空白标签）——SessionStart 每次都走的高频主源。
+        flags = {"CREATE_NO_WINDOW": 0x08000000}
+        probe = mock.Mock(return_value=mock.Mock(returncode=0, stdout="INFO: No tasks are running"))
+        with mock.patch.object(self.patch, "IS_WIN", True), \
+                mock.patch.multiple(self.patch.subprocess, create=True, **flags), \
+                mock.patch.object(self.patch.subprocess, "run", probe):
+            self.assertFalse(self.patch.client_running())
+        self.assertEqual(probe.call_args.kwargs["creationflags"], 0x08000000)
+
+    def test_windows_wmi_powershell_probe_hides_console(self):
+        # issue #221：WMI 拉起通道本身经 powershell -EncodedCommand，同样会弹窗。
+        flags = {"CREATE_NO_WINDOW": 0x08000000}
+        probe = mock.Mock(return_value=mock.Mock(returncode=0, stdout=b"4321"))
+        with mock.patch.multiple(self.patch.subprocess, create=True, **flags), \
+                mock.patch.object(self.patch.subprocess, "run", probe):
+            self.assertEqual(self.patch._spawn_via_wmi(["pythonw", "monitor.py"]), 4321)
+        self.assertEqual(probe.call_args.kwargs["creationflags"], 0x08000000)
+
+    def test_windows_monitor_tasklist_probe_hides_console(self):
+        # issue #221：静默监控（WMI pythonw / CREATE_NO_WINDOW 拉起，无控制台）
+        # 每 10s 轮询 zcode_pids——不加标志就是「无限弹黑框」的第二来源。
+        flags = {"CREATE_NO_WINDOW": 0x08000000}
+        probe = mock.Mock(return_value=mock.Mock(returncode=0, stdout=b""))
+        with mock.patch.object(os, "name", "nt"), \
+                mock.patch.multiple(self.monitor.subprocess, create=True, **flags), \
+                mock.patch.object(self.monitor.subprocess, "run", probe):
+            self.assertEqual(self.monitor.zcode_pids(), set())
+        self.assertEqual(probe.call_args.kwargs["creationflags"], 0x08000000)
+
+    def test_windows_monitor_pid_starts_probe_hides_console(self):
+        # issue #221：PowerShell Get-Process 探测同_tasklist；可见监控窗口的子进程
+        # 继承控制台不受影响，加标志只是堵住无控制台调用路径（防御未来静默复用）。
+        flags = {"CREATE_NO_WINDOW": 0x08000000}
+        filetime = int((time.time() + 11644473600) * 10000000)
+        probe = mock.Mock(return_value=mock.Mock(returncode=0,
+                                                 stdout=f"123|{filetime}\n".encode("ascii")))
+        with mock.patch.object(os, "name", "nt"), \
+                mock.patch.multiple(self.monitor.subprocess, create=True, **flags), \
+                mock.patch.object(self.monitor.subprocess, "run", probe):
+            starts = self.monitor.zcode_pid_starts({"123"})
+        self.assertEqual(probe.call_args.kwargs["creationflags"], 0x08000000)
+        self.assertEqual(list(starts), ["123"])
+
     def test_wmi_interpreter_probe(self):
         # pythonw.exe 探测本体：命中同目录文件返回其路径；缺失返回 None（绝不回退
         # python.exe，WMI 无标志位会闪控制台窗）；sys.executable 为空（嵌入式场景）
@@ -958,7 +1003,7 @@ class PendingWaitPanelTests(unittest.TestCase):
 
     def test_zcode_pid_starts_parses_powershell_filetime(self):
         calls = []
-        def fake_run(argv, capture_output=None, timeout=None):
+        def fake_run(argv, capture_output=None, timeout=None, creationflags=None):
             calls.append((list(argv), timeout))
             return types.SimpleNamespace(stdout=b"101|134000000000000000\r\n102|134000000060000000\r\n")
         fake = types.SimpleNamespace(run=fake_run, TimeoutExpired=subprocess.TimeoutExpired)
