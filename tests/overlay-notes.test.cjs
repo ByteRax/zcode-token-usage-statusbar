@@ -274,12 +274,12 @@ test("review hardening: ReDoS input renders fast, rebuilt DOM refills, gitcode m
   ctx.__bySel[".zu-notes-body"].innerHTML = "";   // 模拟面板 innerHTML 重建
   ctx.syncNotes();
   assert.match(ctx.__bySel[".zu-notes-body"].innerHTML, /内容/);
-  // 3) GitCode market 来源：拉取流 + 参考标注，链接指向 gitcode 域 tag 页
+  // 3) GitCode market 来源：拉取流 + 参考标注，链接落到 gitcode 列表页（tag 深链页是平台 bug 页不可达）
   const gc = makeContext({ pluginUpdate: releaseUpdate({ channel: "market", channelHost: "gitcode", channelRepo: "tanranran/zcode-token-usage-statusbar", latestVersion: "1.5.7" }) });
   gc.syncNotes();
   gc.__dones[0]({ ok: true, tag: "v1.5.7", version: "1.5.7", body: "x", cachedAt: 1,
     url: "https://gitcode.com/tanranran/zcode-token-usage-statusbar/releases/tag/v1.5.7", verified: false });
-  assert.equal(gc.__bySel[".zu-notes-link"].getAttribute("data-href"), "https://gitcode.com/tanranran/zcode-token-usage-statusbar/releases/tag/v1.5.7");
+  assert.equal(gc.__bySel[".zu-notes-link"].getAttribute("data-href"), "https://gitcode.com/tanranran/zcode-token-usage-statusbar/releases");
   assert.match(gc.__bySel[".zu-notes-meta"].textContent, /参考/);
   // 4) 粘性选择被默认追上时按真实状态显示、返回入口消失
   const st = makeContext({ pluginUpdate: releaseUpdate() });
@@ -380,7 +380,7 @@ test("unsupported-channel and missing replies keep honest states at idle", () =>
   assert.equal(ctx2.__bySel[".zu-notes-history-btn"].hidden, false);   // missing 恰好证实是 Release 渠道：可转历史版本
 });
 
-test("mirror fallback replies label the actual source and point the link at the mirror page", () => {
+test("mirror fallback replies label the actual source and point the link at the reachable mirror releases page", () => {
   const ctx = makeContext({ pluginUpdate: releaseUpdate() });   // verified github 渠道
   ctx.syncNotes();
   ctx.__dones[0]({ ok: true, tag: "v1.5.7", version: "1.5.7", body: "## x\n\n- a", cachedAt: 1730000000000, mirror: true,
@@ -388,6 +388,6 @@ test("mirror fallback replies label the actual source and point the link at the 
   assert.match(ctx.__bySel[".zu-notes-meta"].textContent, /GitCode 镜像/);
   assert.match(ctx.__bySel[".zu-notes-meta"].textContent, /限流回退/);
   assert.equal(ctx.__bySel[".zu-notes-link"].getAttribute("data-href"),
-    "https://gitcode.com/tanranran/zcode-token-usage-statusbar/releases/tag/v1.5.7");   // 链接指向实际来源
+    "https://gitcode.com/tanranran/zcode-token-usage-statusbar/releases");   // 来源域的 tag 深链页不可达，落到列表页
   assert.equal(ctx.__bySel[".zu-notes-badge"].classList.contains("zu-notes-warn"), false);   // verified 渠道不因镜像回退变成参考态
 });
