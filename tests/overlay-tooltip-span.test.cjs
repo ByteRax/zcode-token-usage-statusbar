@@ -21,6 +21,8 @@ function render(data, lang = 'zh', live = null, show = null) {
     zuBarSpeedView: value => value, zuIcoThinking: () => '<svg/>',
     /* v218：buildLiveTip 右格改读泵快照最近一段（lastView.last.tps）——切片注入 */
     lastView: { last: { tps: 102.2 } },
+    /* v232：html() 读写实例闭包的速度柱状图悬停状态——切片沙箱按初值注入同形种子 */
+    speedChartHover: -1, speedTipSess: '', speedTipRebuild: null,
     FXQ_ICON: '<svg class="tip-fxq"></svg>',   // v214 模块级常量不在切片内，行为测试用桩
   });
   vm.runInContext(bandHelpers, context);

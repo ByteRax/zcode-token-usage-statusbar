@@ -280,3 +280,17 @@ test('completed output without model duration explains missing basis and never d
     assert.doesNotMatch(line, /速率不可用|14.3 token\/s|NaN|Infinity/);
   }
 });
+
+test('isCompact flags turns containing a compact timelineMarker (header executionKind stays agent on real hosts)', () => {
+  const tracker = createTracker({ now: () => 0 });
+  tracker.ingest(snapshot(1, [header('completedSuccess', { outputTokens: 0 }),
+    { rowId: 3, turnId: 't', kind: 'timelineMarker', marker: { type: 'compact', status: 'success' } }]));
+  assert.equal(tracker.get('t').isCompact, true);
+  // 模型切换 marker 不是压缩轮（v238 实测普通轮可带 modelChange 类 timelineMarker）
+  tracker.ingest(snapshot(2, [header('completedSuccess', { outputTokens: 0 }),
+    { rowId: 3, turnId: 't', kind: 'timelineMarker', marker: { type: 'modelChange' } }]));
+  assert.equal(tracker.get('t').isCompact, false);
+  // 无 marker 行的普通轮
+  tracker.ingest(snapshot(3, [header('completedSuccess', { outputTokens: 12 })]));
+  assert.equal(tracker.get('t').isCompact, false);
+});

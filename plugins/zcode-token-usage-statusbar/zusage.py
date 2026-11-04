@@ -102,6 +102,7 @@ SESSION_TIMEOUT_MS = 30 * 60 * 1000  # 最近30分钟有请求视为活跃会话
 _TPS_MIN_GEN_MS = 200          # 有效样本下限，同 token_rate.MIN_GEN_MS
 _TPS_MAX_GEN_MS = 3_600_000    # 有效样本上限（1h），同 token_rate.MAX_GEN_MS
 _TPS_LOOKBACK = 20             # first_token_at 缺失时向前找有效请求的扫描条数上限
+_SPEED_SEGS_MAX = 10           # 速度柱状图分段上限（v240 用户规格：17→10）
 
 
 _AGG_TTL_MS = 2000   # 聚合短缓存：今日合计/会话池是慢变量，2s 陈旧无感；泵 1.5s 拉一次省约一半全表聚合
@@ -206,14 +207,18 @@ def _project_usage(con, sid, with_models=False):
     sessions/turns 取实际参与消耗的会话与轮（session_id+turn_id 组合去重）；会话不在
     本地库或无 project_id 时返回 None（渲染端判空不渲染该格）。
     with_models（v163）：附按模型明细（v164 起全量降序），轻量行不取。
+    name（v229）：启动目录末段作项目名（正反斜杠归一；缺失/根目录为空串，渲染端判空不渲染）。
     v177：按库文件身份 + (project_id, with_models) 挂 2s TTL 缓存（同帧同项目多会话共享、
     常驻泵跨帧免重扫；内存库不缓存）；聚合 IN 分片 500/批（老 SQLite <3.32 变量上限 999，
     大项目会话数可超）。分片按 session_id 切——同一会话只落一片，distinct 计数与求和跨片
     直接累加不重不漏，min/max 取跨片极值。"""
     prow = con.execute(
-        "select project_id from session where id=?", (sid,)).fetchone()
+        "select project_id, directory from session where id=?", (sid,)).fetchone()
     if not prow or not prow[0]:   # 位置取值：con 可能没有 row_factory（远端链复用连接）
         return None
+    # v229：项目名=启动目录末段（正反斜杠归一后取末段，Windows 路径在 POSIX 解析也正确）
+    pdir = (prow[1] or "").replace("\\", "/").rstrip("/")
+    pname = pdir.rsplit("/", 1)[-1] if pdir else ""
 
     def run():
         mains = [r[0] for r in con.execute(
@@ -301,6 +306,7 @@ def _project_usage(con, sid, with_models=False):
             "cache_read": cache_read, "cache_write": cache_write, "total": total,
             "tool_calls": tool_calls, "retries": retries,
             "started": started or 0, "last_at": last_at or 0,
+            "name": pname,
             "models": models,
             # None（价表模块缺失）→ JSON null，消费端按缺字段口径隐藏
             "cost_usd": proj_cost,
@@ -927,6 +933,7 @@ def _light_snapshot(con, sid, cfg):
         "updated": (_ts(lr[0]).strftime("%H:%M:%S") if lr[0] else ""),
         "started": _session_start_ms(con, sid, srow),
         "avg_tps": 0,
+        "speed_segs": [],
         "sub": {"requests": 0, "total": 0, "input": 0, "output": 0, "cache_read": 0,
                 "reasoning": 0, "cache_write": 0, "active": False, "rate_avg": 0, "list": []},
         "tools": {"total": u["tool_calls"], "errors": 0, "list": []},
@@ -1027,7 +1034,7 @@ def _rate_sample(row, covers=frozenset()):
 
 
 def _last_valid_rate(con, sid, last, covers=frozenset()):
-    """最近有效生成速度及同一请求的起止；最多回查 20 条，缺有效样本时隐藏。"""
+    """最近有效生成速度及同一请求的起止；最多回查 3 倍扫描窗（60 条），缺有效样本时隐藏。"""
     sample = _rate_sample(last, covers)
     if sample is not None:
         return sample
@@ -1035,7 +1042,7 @@ def _last_valid_rate(con, sid, last, covers=frozenset()):
         """select output_tokens, first_token_at, completed_at, started_at, reasoning_tokens, model_id, provider_id
            from model_usage where session_id=? and status='completed'
            order by completed_at desc limit ?""",
-        (sid, _TPS_LOOKBACK),
+        (sid, _TPS_LOOKBACK * 3),
     ).fetchall()
     for row in rows:
         sample = _rate_sample(row, covers)
@@ -1061,6 +1068,30 @@ def _turn_rate(rows, covers=frozenset()):
 def _rated_tps(tokens, gen_ms):
     """加权平均 t/s：Σ有效 output ÷ Σ有效生成窗口；窗口为 0（无有效样本）时返回 0。"""
     return round(tokens / (gen_ms / 1000), 1) if gen_ms else 0
+
+
+def _speed_segments(con, sid, covers=frozenset()):
+    """当前会话最近 ≤10 条（可跨天）已完成 main_turn 有效速度段（速度 tooltip 柱状图）：avg_tps 同款
+    口径（_row_gen_ms 窗口 + 200ms–1h 有效段过滤，辅助 query_source 与子代理行不计）。
+    v 保留原始浮点不 round（柱高与档位判断用原始值，显示层才取一位小数），t 为完成
+    时间毫秒；最多向前扫描 3 倍行数凑满 10 条有效段，按完成时间升序返回。"""
+    rows = con.execute(
+        """select output_tokens, first_token_at, completed_at, started_at, reasoning_tokens, model_id, provider_id
+           from model_usage where session_id=? and status='completed'
+             and (query_source is null or query_source='main_turn')
+           order by completed_at desc, rowid desc limit ?""",
+        (sid, _SPEED_SEGS_MAX * 3),
+    ).fetchall()
+    out = []
+    for row in rows:
+        tokens = row["output_tokens"] or 0
+        gen_ms = _row_gen_ms(row, covers)
+        if tokens > 0 and gen_ms and _TPS_MIN_GEN_MS <= gen_ms < _TPS_MAX_GEN_MS:
+            out.append({"v": tokens / (gen_ms / 1000), "t": row["completed_at"] or 0})
+            if len(out) >= _SPEED_SEGS_MAX:
+                break
+    out.reverse()
+    return out
 
 
 def _session_snapshot(con, sid, cfg):
@@ -1257,6 +1288,7 @@ def _session_snapshot(con, sid, cfg):
         "updated": (_ts(lr[0]).strftime("%H:%M:%S") if lr and lr[0] else ""),
         "started": _session_start_ms(con, sid, srow),
         "avg_tps": sess_avg,
+        "speed_segs": _speed_segments(con, sid, covers),
         "sub": sub,
         "tools": tools,
         "models": models,
@@ -1970,6 +2002,7 @@ def _empty_snapshot(sid, cfg):
     return {"sid": sid, "title": "", "active": False, "turns": 0, "requests": 0,
             "input": 0, "output": 0, "reasoning": 0, "cache_read": 0, "cache_write": 0,
             "total": 0, "tool_calls": 0, "retries": 0, "ctx": 0, "updated": "", "last_at": 0, "started": 0, "avg_tps": 0,
+            "speed_segs": [],
             "last_turn": dict(_EMPTY_TURN), "last": {"duration_ms": 0, "ttft_ms": 0, "model": "", "tps": 0, "startedAt": 0, "endedAt": 0},
             "code": {"add": None, "del": None, "files": None}, "ctx_exc": 0,
             "tools": {"total": 0, "errors": 0, "list": []},

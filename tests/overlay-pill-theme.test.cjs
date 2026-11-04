@@ -426,11 +426,11 @@ test('dual theme browser behaviour (isolated fixture)', { skip: skipReason, time
     await b.call('Input.dispatchMouseEvent', { type: 'mouseMoved', ...sub });
     await b.call('Input.dispatchMouseEvent', { type: 'mousePressed', ...sub, button: 'left', clickCount: 1 });
     await b.call('Input.dispatchMouseEvent', { type: 'mouseReleased', ...sub, button: 'left', clickCount: 1 });
-    assert.equal(await b.evaluate(`document.querySelector('.subp').classList.contains('open')`), true, 'sub-agent control must remain clickable');
+    assert.equal(await b.evaluate(`document.querySelector('.zu-sub-pop').classList.contains('open')`), true, 'sub-agent control must remain clickable');
     // Real Tab navigation should scroll the off-screen button back into view.
     await b.evaluate(`(() => {
       const bar = document.querySelector('.zusage-root'), main = bar.querySelector('.zu-main');
-      document.querySelector('.subp').classList.remove('open');
+      document.querySelector('.zu-sub-pop').classList.remove('open');
       main.scrollLeft = 0;
       const items = main.querySelectorAll('.it');
       items[items.length - 2].focus();
@@ -1849,6 +1849,66 @@ test('pill layout safety browser regressions (isolated fixture)', { skip: skipRe
     }
     assert.equal(zero.padding, 0, JSON.stringify({ before, zero, sixteen }));
     assert.equal(sixteen.padding, 16, JSON.stringify({ before, zero, sixteen }));
+  });
+
+  // v232 速度柱状图：真实鼠标悬停柱体切换信息卡/cur、离开回落最新段；键盘聚焦切卡
+  // 且悬停/推送期间焦点不被整卡重建销毁（事件链此前零覆盖，删除全链测试仍绿的教训）。
+  await t.test('v232 speed chart: real-mouse bar hover swaps the card and focus survives rebuilds', async () => {
+    await reset(b, {});
+    await b.evaluate(`(() => {
+      const p = ${JSON.stringify(payload)};
+      const row = (p.recent || [])[0];
+      const t0 = new Date(2026, 10, 3, 13, 40).getTime();
+      row.avg_tps = 130.3;
+      row.speed_segs = Array.from({ length: 10 }, (_, i) => ({ v: 100 + i * 2, t: t0 + i * 60000 }));
+      window.__zusageUpdate(p);
+    })()`);
+    await b.waitFor(`!!document.querySelector('.zusage-root .zu-main .it')`, 'bar cells missing');
+    const cell = await b.evaluate(`(() => {
+      const r = document.querySelector('.zusage-root .zu-main .it').getBoundingClientRect();
+      return { x: r.x + r.width * 0.4, y: r.y + r.height * 0.6 };
+    })()`);
+    await b.call('Input.dispatchMouseEvent', { type: 'mouseMoved', x: cell.x, y: cell.y });
+    await b.waitFor(`document.getElementById('zusage-tip') && getComputedStyle(document.getElementById('zusage-tip')).display === 'block'`, 'speed tip did not open');
+    await b.waitFor(`!!document.querySelector('#zusage-tip .zu-sc-col')`, 'chart missing in speed tip');
+    // v240/v242 基本面:柱数=10、默认无卡无 cur、表头文案;相邻读数/时间标签不重叠(真实 DOM 几何)
+    assert.equal(await b.evaluate(`document.querySelectorAll('#zusage-tip .zu-sc-col').length`), 10, 'must render exactly 10 bars');
+    assert.equal(await b.evaluate(`document.querySelector('#zusage-tip .zu-sc-card') === null && document.querySelector('#zusage-tip .zu-sc-col.cur') === null`), true, 'default state must have no info card and no cur');
+    assert.equal(await b.evaluate(`document.querySelector('#zusage-tip .zu-sc-title').textContent`), '最近 10 段');
+    const noOverlap = await b.evaluate(`(() => {
+      const cols = [...document.querySelectorAll('#zusage-tip .zu-sc-col')];
+      const groups = [cols.map(c => c.querySelector('.zu-sc-val')),
+        cols.map(c => c.querySelectorAll('.zu-sc-x b')[0]),
+        cols.map(c => c.querySelectorAll('.zu-sc-x b')[1])];
+      for (const g of groups) {
+        const rs = g.filter(Boolean).map(el => el.getBoundingClientRect());
+        rs.sort((p, q) => p.left - q.left);
+        for (let i = 1; i < rs.length; i++) if (rs[i].left < rs[i - 1].right - 0.5) return false;
+      }
+      return true;
+    })()`);
+    assert.equal(noOverlap, true, 'adjacent readings/time labels must not overlap');
+    const bar = await b.evaluate(`(() => {
+      const r = document.querySelectorAll('#zusage-tip .zu-sc-col')[2].getBoundingClientRect();
+      return { x: r.x + r.width / 2, y: r.y + r.height * 0.5 };
+    })()`);
+    await b.call('Input.dispatchMouseEvent', { type: 'mouseMoved', x: bar.x, y: bar.y });
+    await b.waitFor(`document.querySelector('#zusage-tip .zu-sc-card-k').textContent.indexOf('第 3 段') === 0`, 'info card did not switch to seg 3');
+    const curAt = await b.evaluate(`[...document.querySelectorAll('#zusage-tip .zu-sc-col')].findIndex(c => c.classList.contains('cur'))`);
+    assert.equal(curAt, 2, 'cur must move to the hovered bar');
+    await b.call('Input.dispatchMouseEvent', { type: 'mouseMoved', x: cell.x, y: cell.y });
+    await b.waitFor(`!document.querySelector('#zusage-tip .zu-sc-card')`, 'v240: info card must disappear when leaving the chart');
+    // 键盘聚焦第 5 根：信息卡切换，焦点保持在柱上
+    await b.evaluate(`document.querySelectorAll('#zusage-tip .zu-sc-col')[4].focus()`);
+    await b.waitFor(`document.querySelector('#zusage-tip .zu-sc-card-k').textContent.indexOf('第 5 段') === 0`, 'focus did not switch the info card');
+    const focusKept = await b.evaluate(`document.activeElement && document.activeElement.getAttribute && document.activeElement.getAttribute('data-i')`);
+    assert.equal(focusKept, '4', 'focused bar must keep focus');
+    // 聚焦期间新快照推送（render 接管 speedFollow 焦点守卫）：整卡不重建、焦点不丢
+    await b.evaluate(`window.__zusageUpdate(${JSON.stringify(payload)})`);
+    await delay(150);
+    const focusKept2 = await b.evaluate(`document.activeElement && document.activeElement.getAttribute && document.activeElement.getAttribute('data-i')`);
+    assert.equal(focusKept2, '4', 'snapshot push while focused must not destroy focus');
+    await b.call('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 5, y: 5 });
   });
 });
 

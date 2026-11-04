@@ -121,6 +121,17 @@
       const runningGroup = runningGroupOf(turn, act, complete);
       return {
         sessionId: turn.sessionId, turnId, state: header.state, complete,
+        // 压缩轮（v238）：轮内带 compact 类 timelineMarker。实测宿主投影里压缩轮 =
+        // turnHeader + timelineMarker（marker.type='compact'），header.executionKind 恒
+        // 'agent' 不能用；调用方据此不把无正文的压缩完成轮误报成「本轮统计不可用」。
+        isCompact: Array.from(turn.rows.values()).some(r => r.kind === 'timelineMarker' &&
+          r.marker && r.marker.type === 'compact'),
+        // 诊断：轮内现存行的 kind 去重集合——普通轮也可能带 timelineMarker（模型切换），
+        // 排"压缩/控制轮为何不可用"类问题时对照行构成与 marker 内容。
+        kinds: Array.from(new Set(Array.from(turn.rows.values()).map(r => r.kind))).sort(),
+        tmr: Array.from(turn.rows.values()).filter(r => r.kind === 'timelineMarker').map(r => {
+          try { return JSON.stringify(r.marker === undefined ? r : r.marker).slice(0, 120); } catch (e) { return '?'; }
+        }),
         outputTokens, modelMs, durationMs,
         // 宿主恢复的起止时刻用于诊断；缺失或非有限数保留为未知。
         startedAt: Number.isFinite(header.startedAt) ? header.startedAt : null,

@@ -111,6 +111,24 @@ class ProjectUsageAggTests(FixtureBase):
         # 从子代理会话查询也归属同一项目（project_id 随父复制）
         self.assertEqual(zusage._project_usage(con, "sess_subagent_x")["total"], 400)
 
+    def test_project_name_from_startup_directory(self):
+        # v229：name=启动目录末段（正反斜杠归一，Windows 路径 POSIX 解析也正确）；
+        # 目录缺失/根目录为空串——渲染端判空不渲染，不显假名。
+        con = self.fixture()
+        self.sess(con, "m1")
+        self.sess(con, "w1", project="proj_repo_worktrees-x", directory="/repo/.worktrees/x")
+        self.usage(con, "r1", "m1")
+        self.assertEqual(zusage._project_usage(con, "m1")["name"], "repo")
+        self.assertEqual(zusage._project_usage(con, "w1")["name"], "x")
+        win = self.fixture()
+        self.sess(win, "m1", directory="C:\\repo\\my-proj")
+        self.usage(win, "r1", "m1")
+        self.assertEqual(zusage._project_usage(win, "m1")["name"], "my-proj")
+        bare = self.fixture()
+        self.sess(bare, "m1", directory=None)
+        self.usage(bare, "r1", "m1")
+        self.assertEqual(zusage._project_usage(bare, "m1")["name"], "")
+
     def test_turn_id_reuse_counts_per_session(self):
         con = self.fixture()
         self.sess(con, "m1")

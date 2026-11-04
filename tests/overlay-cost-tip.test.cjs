@@ -216,6 +216,18 @@ test('无 fx 汇率时诚实降级 $ 原值，脚注标 USD', () => {
   assert.doesNotMatch(tips[1], /价格来源/);
 });
 
+test('会话累计标题拼接会话名（v230）：title 渲染 zu-st-name、空白压缩单空格；旧快照缺字段不渲染', () => {
+  const h = harness(); setup(h);
+  const p = h.payload({});
+  p.recent[0].title = '  修复\n登录页   空白与超长的会话标题应当被省略号截断而不撑破卡片布局  ';
+  h.window.__zusageUpdate(p);
+  assert.match(h.tips()[1],
+    /zu-stat-title zu-tt-name">会话累计<span class="zu-st-name">修复 登录页 空白与超长的会话标题应当被省略号截断而不撑破卡片布局<\/span>/);
+  const h2 = harness(); setup(h2);
+  h2.window.__zusageUpdate(h2.payload({}));   // 夹具 row 无 title（旧快照形态）：整段不渲染
+  assert.doesNotMatch(h2.tips()[1], /zu-st-name/);
+});
+
 test('旧快照（无 cost_usd/fx 字段）不显费用行，不显假 0', () => {
   const h = harness(); setup(h);
   h.window.__zusageUpdate(h.payload({ withCost: false, todayCost: null }));
@@ -325,10 +337,10 @@ test('速度 tooltip：宽度帽收窄标记（:has 640）+ 预估费用行与�
   const tips = h.tips();
   assert.match(tips[0], /zu-stat-tip--speed/);
   assert.match(tips[0], /zu-stat-scope">会话平均</);
-  assert.match(tips[0], /zu-speed-main ok">130\.3 <small>t\/s<\/small>/);   // 会话均读数档位色
+  assert.match(tips[0], /zu-sl-val ok">130\.3<\/span><small class="zu-sl-unit">t\/s<\/small>/);   // v235 会话均读数档位色（结构化左卡）
   assert.match(tips[0], /zu-legend-item cur[^]*?70–150/);   // 当前档位描边（图例项=色点+范围数字）
   assert.doesNotMatch(tips[0], /rt-lsep/);   // 旧 · 分隔点已移除
-  assert.match(tips[0], /\.zusage-tip-root:has\(\.zu-stat-tip--speed\)\{max-width:min\(760px/);   // v215 速度卡宽帽
+  assert.match(tips[0], /\.zusage-tip-root:has\(\.zu-stat-tip--speed\)\{max-width:min\(860px/);   // v236 速度卡宽帽（v232 760→860；v236 860→1040：17 柱不横滚）
   assert.doesNotMatch(tips[0], /zu-speedcap/);   // 旧 640 隐藏标记已废除
   assert.doesNotMatch(tips[0], /预估费用/);   // v215.1 用户规格：速度卡不含费用行与模型明细
   assert.doesNotMatch(tips[0], /rt-models/);
