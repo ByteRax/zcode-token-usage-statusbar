@@ -445,7 +445,7 @@ class QuietMonitorTests(unittest.TestCase):
                 mock.patch.multiple(self.patch.subprocess, create=True, **flags), \
                 mock.patch.object(self.patch.subprocess, "run", probe):
             self.assertFalse(self.patch.client_running())
-        self.assertEqual(probe.call_args.kwargs["creationflags"] & 0x08000000, 0x08000000)
+        self.assertEqual(probe.call_args.kwargs["creationflags"], 0x08000000)
 
     def test_windows_wmi_powershell_probe_hides_console(self):
         # issue #221：WMI 拉起通道本身经 powershell -EncodedCommand，同样会弹窗。
@@ -454,7 +454,7 @@ class QuietMonitorTests(unittest.TestCase):
         with mock.patch.multiple(self.patch.subprocess, create=True, **flags), \
                 mock.patch.object(self.patch.subprocess, "run", probe):
             self.assertEqual(self.patch._spawn_via_wmi(["pythonw", "monitor.py"]), 4321)
-        self.assertEqual(probe.call_args.kwargs["creationflags"] & 0x08000000, 0x08000000)
+        self.assertEqual(probe.call_args.kwargs["creationflags"], 0x08000000)
 
     def test_windows_monitor_tasklist_probe_hides_console(self):
         # issue #221：静默监控（WMI pythonw / CREATE_NO_WINDOW 拉起，无控制台）
@@ -465,7 +465,7 @@ class QuietMonitorTests(unittest.TestCase):
                 mock.patch.multiple(self.monitor.subprocess, create=True, **flags), \
                 mock.patch.object(self.monitor.subprocess, "run", probe):
             self.assertEqual(self.monitor.zcode_pids(), set())
-        self.assertEqual(probe.call_args.kwargs["creationflags"] & 0x08000000, 0x08000000)
+        self.assertEqual(probe.call_args.kwargs["creationflags"], 0x08000000)
 
     def test_windows_monitor_pid_starts_probe_hides_console(self):
         # issue #221：PowerShell Get-Process 探测同_tasklist；可见监控窗口的子进程
@@ -478,7 +478,7 @@ class QuietMonitorTests(unittest.TestCase):
                 mock.patch.multiple(self.monitor.subprocess, create=True, **flags), \
                 mock.patch.object(self.monitor.subprocess, "run", probe):
             starts = self.monitor.zcode_pid_starts({"123"})
-        self.assertEqual(probe.call_args.kwargs["creationflags"] & 0x08000000, 0x08000000)
+        self.assertEqual(probe.call_args.kwargs["creationflags"], 0x08000000)
         self.assertEqual(list(starts), ["123"])
 
     def test_wmi_interpreter_probe(self):
