@@ -19,7 +19,7 @@ const RESOURCES = path.join(path.sep, "client", "resources");
 const HOST_URL = pathToFileURL(path.join(RESOURCES, "app", "out", "main", "index.js")).href;
 
 function runPoll(requests, url = HOST_URL, main = true, updater = null) {
-  const calls = { relaunch: 0, quit: 0, deliveries: [], executed: 0 };
+  const calls = { relaunch: 0, quit: 0, deliveries: [], executed: 0, hides: 0 };
   const app = {
     relaunch: () => { calls.relaunch++; },
     quit: () => { calls.quit++; },
@@ -29,6 +29,7 @@ function runPoll(requests, url = HOST_URL, main = true, updater = null) {
     getURL: () => url,
     executeJavaScript: async () => { calls.executed++; return requests; },
   };
+  const win = { isVisible: () => true, hide: () => { calls.hides++; } };   // v245：quit 前 hide 全部窗口
   vm.runInNewContext(slice + "\npollPluginRequests();", {
     path, console: { log: () => {} },
     process: { platform: process.platform, resourcesPath: RESOURCES },
@@ -37,6 +38,7 @@ function runPoll(requests, url = HOST_URL, main = true, updater = null) {
     isMainWindowState: () => main,
     deliverPluginRequest: (w, requestId, result) => calls.deliveries.push({ requestId, result: { ...result } }),   // 浅拷贝出宿主 realm 对象供 deepStrictEqual
     app, LOG: () => {}, pluginRequestBusy: false, pluginUpdater: updater,
+    BrowserWindow: { getAllWindows: () => [win] },
     setTimeout, clearTimeout,   // relaunch 分支延迟 quit 用（沙箱无全局定时器）
   });
   return { calls, settle: () => new Promise((resolve) => setTimeout(resolve, 450)) };
@@ -47,6 +49,76 @@ test("relaunch action replies ok then relaunches via quit (before-quit cleanup p
   await settle();
   assert.deepEqual(calls.deliveries, [{ requestId: "zusage-relaunch-1", result: { ok: true } }]);   // 回执先送达
   assert.deepEqual([calls.relaunch, calls.quit], [1, 1]);   // 再 relaunch 标记 + quit（清理钩子自然执行）
+  assert.equal(calls.hides, 1, "v245：quit 前 hide 窗口——退出屏障期间窗口全程可见是宿主行为，感知退出应即时");
+});
+
+test("800ms hard fallback quits even when the renderer never settles the receipt delivery", async () => {
+  // v244 review：渲染端卡死（executeJavaScript 投递永不结算）时，回执快路径不触发——
+  // 800ms 硬兜底必须独立完成 hide + relaunch + quit，不能让「点了重启」静默失效。
+  const dA = source.indexOf("function deliverPluginRequest");
+  const dB = source.indexOf("\n}", dA) + 2;
+  const deliverSrc = source.slice(dA, dB);
+  assert.ok(deliverSrc.includes("executeJavaScript"), "deliverPluginRequest 切片锚点失配：结构重写后请同步更新本测试");
+  const calls = { relaunch: 0, quit: 0, hides: 0 };
+  const app = { relaunch: () => { calls.relaunch++; }, quit: () => { calls.quit++; } };
+  const win = { visible: true, isVisible() { return this.visible; }, hide() { this.visible = false; calls.hides++; } };
+  const deliveryCalls = [];
+  const wc = {
+    isDestroyed: () => false,
+    getURL: () => HOST_URL,
+    executeJavaScript: (js) => {
+      if (String(js).startsWith("(function(){var q=window.__zusagePluginRequests")) {
+        return Promise.resolve([{ action: "relaunch", requestId: "zusage-stall-1" }]);
+      }
+      deliveryCalls.push(String(js));
+      return new Promise(() => { });   // 渲染端卡死：回执投递永不结算
+    },
+  };
+  vm.runInNewContext(slice + "\n" + deliverSrc + "\npollPluginRequests();", {
+    path, console: { log: () => { } },
+    process: { platform: process.platform, resourcesPath: RESOURCES },
+    fileURLToPath: require("url").fileURLToPath,
+    webContents: { getAllWebContents: () => [wc] },
+    isMainWindowState: () => true,
+    isLocalHostPage: () => true,
+    app, LOG: () => { }, pluginRequestBusy: false, pluginUpdater: null,
+    BrowserWindow: { getAllWindows: () => [win] },
+    setTimeout, clearTimeout,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 1100));   // 越过 800ms 兜底
+  assert.equal(deliveryCalls.length, 1, "投递确实发出过（卡死的是渲染端执行，不是没发）");
+  assert.deepEqual([calls.relaunch, calls.quit], [1, 1], "投递永不结算时 800ms 硬兜底必须退出");
+  assert.equal(calls.hides, 1, "硬兜底路径同样先 hide 窗口");
+});
+
+test("hide is rolled back when relaunch/quit throws synchronously", async () => {
+  // v245 review：quit 同步失败不能留下「窗口消失、进程还在」的永久态——catch 分支必须恢复可见性
+  const calls = { relaunch: 0, quit: 0, hides: 0, shows: 0, deliveries: [] };
+  const app = {
+    relaunch: () => { calls.relaunch++; throw new Error("boom"); },
+    quit: () => { calls.quit++; },
+  };
+  const win = { visible: true, isVisible() { return this.visible; }, hide() { this.visible = false; calls.hides++; }, show() { this.visible = true; calls.shows++; } };
+  const wc = {
+    isDestroyed: () => false,
+    getURL: () => HOST_URL,
+    executeJavaScript: async () => [{ action: "relaunch", requestId: "zusage-throw-1" }],
+  };
+  vm.runInNewContext(slice + "\npollPluginRequests();", {
+    path, console: { log: () => { } },
+    process: { platform: process.platform, resourcesPath: RESOURCES },
+    fileURLToPath: require("url").fileURLToPath,
+    webContents: { getAllWebContents: () => [wc] },
+    isMainWindowState: () => true,
+    deliverPluginRequest: (w, requestId, result) => calls.deliveries.push(result),
+    app, LOG: () => { }, pluginRequestBusy: false, pluginUpdater: null,
+    BrowserWindow: { getAllWindows: () => [win] },
+    setTimeout, clearTimeout,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 450));
+  assert.equal(calls.hides, 1);
+  assert.equal(calls.shows, 1, "relaunch/quit 同步 throw 后必须 unhide 全部窗口");
+  assert.equal(win.visible, true);
 });
 
 test("relaunch is ignored for URLs outside the host resources tree or non-main windows", async () => {

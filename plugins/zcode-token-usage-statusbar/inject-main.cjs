@@ -1072,9 +1072,11 @@ function broadcastPluginState() {
   webContents.getAllWebContents().forEach((wc) => pushPluginState(wc, base));
 }
 function deliverPluginRequest(wc, requestId, result) {
-  if (!wc || wc.isDestroyed() || !isLocalHostPage(wc) || typeof requestId !== "string" || requestId.length > 120) return;
+  /* v244：返回已处理的 promise（true=渲染端已执行回调），relaunch 分支据此在回执送达后尽快 quit；
+   * 其余调用方忽略返回值，行为不变。 */
+  if (!wc || wc.isDestroyed() || !isLocalHostPage(wc) || typeof requestId !== "string" || requestId.length > 120) return Promise.resolve(false);
   const js = "window.__zusagePluginResult && window.__zusagePluginResult(" + JSON.stringify(Object.assign({ id: requestId }, result || {})) + ")";
-  wc.executeJavaScript(js, true).catch(() => { });
+  return wc.executeJavaScript(js, true).then(() => true).catch(() => false);
 }
 async function setAnswerRateLine(enabled, wc, requestId) {
   try {
@@ -1598,11 +1600,46 @@ async function pollPluginRequests() {
           if (pluginUpdater && pluginUpdater.status().busy) {   // 更新进行中拒绝重启：quit 会打断下载/安装
             deliverPluginRequest(wc, req.requestId, { ok: false, error: "update in progress" });
           } else {
-            // 回执先送达，延迟 quit 让 executeJavaScript 完成；quit 走 before-quit 清理钩子
-            deliverPluginRequest(wc, req.requestId, { ok: true });
-            setTimeout(() => {
-              try { app.relaunch(); app.quit(); } catch (e) { LOG("relaunch failed:", e.message); }
-            }, 300);
+            // v244：回执送达（executeJavaScript 已在渲染端执行回调）后 30ms 即退出，替代固定 300ms——
+            // 真正的等待在宿主 app.quit 优雅退出链（关窗+逐个终止会话/扩展子进程），插件侧不再叠加固定延迟；
+            // 渲染端无响应时 800ms 硬兜底也必须退出。quit 走 before-quit 清理钩子。
+            let quitArmed = false;
+            /* v245 review 修复：quit 同步失败或被拦截时不能让窗口消失、进程还活着——
+             * 恢复全部窗口可见性（渲染端 90s 还原兜底此时才对用户可见）。 */
+            const unhideWindows = () => {
+              try {
+                for (const win of BrowserWindow.getAllWindows()) {
+                  try { if (!win.isVisible()) win.show(); } catch (e2) { }
+                }
+              } catch (e2) { LOG("relaunch unhide windows failed:", e2.message); }
+            };
+            const quitNow = () => {
+              if (quitArmed) return;
+              quitArmed = true;
+              /* v245：宿主退出屏障（prepareAppQuit 等 host 子进程树回收，macOS 7.5s 强杀/9s 上限）
+               * 期间窗口全程可见——先隐藏全部窗口给出「立即退出」的视觉反馈，清理链后台照常，
+               * relaunch 后由宿主重建窗口。 */
+              try {
+                for (const win of BrowserWindow.getAllWindows()) {
+                  try { if (win.isVisible()) win.hide(); } catch (e2) { }
+                }
+              } catch (e2) { LOG("relaunch hide windows failed:", e2.message); }
+              try { app.relaunch(); app.quit(); } catch (e) {
+                LOG("relaunch failed:", e.message);
+                unhideWindows();
+              }
+            };
+            const quitFallback = setTimeout(quitNow, 800);
+            /* v245 review 修复：屏障有硬上限（9s），15s 后进程仍在=quit 未发生——恢复窗口可见性；
+             * unref 确保哨兵绝不拖住退出（正常路径随进程消亡，测试中不延滞事件循环）。 */
+            const unhideSentinel = setTimeout(() => {
+              if (!app.isQuitting && quitArmed) unhideWindows();   // 宿主未暴露 isQuitting 时恒真值兜回 unhide
+            }, 15000);
+            if (unhideSentinel && typeof unhideSentinel.unref === "function") unhideSentinel.unref();
+            Promise.resolve(deliverPluginRequest(wc, req.requestId, { ok: true })).then(() => {
+              clearTimeout(quitFallback);
+              setTimeout(quitNow, 30);
+            });
           }
         } else if (req && typeof req.requestId === "string") {   // v180 issue #158：白名单外动作兜底回执——
           // 浮层热更/主进程冷加载的版本错位窗口里，未知动作不再静默丢弃，浮层据此给出「主进程是旧版本」的明确指引
