@@ -64,7 +64,7 @@ test('14 segments render as 14 bars with one-decimal top labels and latest highl
   const tip = speedTip(render(fixture(segs(17))));
   assert.ok(tip, 'speed tip renders');
   const chart = chartOf(tip);
-  assert.match(chart, /最近 10 段/);
+  assert.match(chart, /最近 10 轮/);
   assert.match(chart, /按完成顺序 · 从旧到新/);
   assert.match(chart, /单位：t\/s/);
   assert.equal((chart.match(/class="zu-sc-col/g) || []).length, 10, '柱数=10');
@@ -84,23 +84,22 @@ test('14 segments render as 14 bars with one-decimal top labels and latest highl
   assert.equal((chart.replace(/aria-label="[^"]*"/g, "").match(/t\/s/g) || []).length, 1);
 });
 
-test('x axis shows MM-DD HH:mm labels from real completion times, first and last kept', () => {
+test('x axis shows MM-DD HH:mm labels on every shown column, first and last kept', () => {
   const tip = speedTip(render(fixture(segs(17))));
   const chart = chartOf(tip);
-  // 同日去重：首标签渲染完整日期+时间，同日后续标签仅渲染 HH:mm；跨日首标签恢复显示新日期
-  assert.equal((chart.match(/<b>11-03<\/b>/g) || []).length, 1);
+  // v250（用户规格）：每个显示标签都带月日两行，不再同日去重
+  assert.equal((chart.match(/<b>11-03<\/b>/g) || []).length, 10);
   assert.match(chart, /<b>11-03<\/b><b>13:47<\/b>/);
-  assert.match(chart, /<span class="zu-sc-x"><b>13:56<\/b><\/span>/);
-  assert.doesNotMatch(chart, /2026/);            // 不显示年份
-  assert.doesNotMatch(chart, /\d\d:\d\d:\d\d/);  // 不显示秒
+  assert.match(chart, /<span class="zu-sc-x"><b>11-03<\/b><b>13:56<\/b><\/span>/);
+  assert.doesNotMatch(chart, /2026/);            // X 轴不显示年份（悬停卡除外）
 });
 
 test('cap at 10 keeps the most recent segments in completion order', () => {
   const tip = speedTip(render(fixture(segs(25))));
   const chart = chartOf(tip);
   assert.equal((chart.match(/class="zu-sc-col/g) || []).length, 10);
-  // 最旧 15 段被滚出：第 1 柱 = 原第 16 段（v=130，13:55）
-  assert.match(chart, /aria-label="第 1 段，130\.0 t\/s，11-03 13:55/);
+  // 最旧 15 轮被滚出：第 1 柱 = 原第 16 轮（v=130，13:55）
+  assert.match(chart, /aria-label="第 1 轮，130\.0 t\/s，11-03 13:55/);
   assert.doesNotMatch(chart, /100\.0/);
 });
 
@@ -118,11 +117,11 @@ test('invalid readings are dropped and identical segments deduped', () => {
   ];
   const tip = speedTip(render(fixture(raw)));
   const chart = chartOf(tip);
-  assert.match(chart, /最近 3 段/);
+  assert.match(chart, /最近 3 轮/);
   assert.equal((chart.match(/class="zu-sc-col/g) || []).length, 3);
-  assert.match(chart, /aria-label="第 1 段，100\.0 t\/s，11-03 13:40/);
-  assert.match(chart, /aria-label="第 2 段，130\.0 t\/s，11-03 13:45/);
-  assert.match(chart, /aria-label="第 3 段，140\.0 t\/s，11-03 13:46/);
+  assert.match(chart, /aria-label="第 1 轮，100\.0 t\/s，11-03 13:40/);
+  assert.match(chart, /aria-label="第 2 轮，130\.0 t\/s，11-03 13:45/);
+  assert.match(chart, /aria-label="第 3 轮，140\.0 t\/s，11-03 13:46/);
 });
 
 test('4-digit readings switch to horizontal-scroll wide mode with ultra band bar', () => {
@@ -144,7 +143,7 @@ test('band classes follow the raw value per bar (unrounded), incl. ultra gradien
   assert.match(chart, /zu-sc-bar ok" style="height:/);     // 70–150 流畅绿
   assert.match(chart, /zu-sc-bar zu-sky" style="height:/); // 200–300 快速
   // 档位按原始值判断：30.04 显示 "30.0" 仍落 <40 档（不是四舍五入后再分档）
-  assert.match(chart, /aria-label="第 1 段，30\.0 t\/s[^]*?低速/);
+  assert.match(chart, /aria-label="第 1 轮，30\.0 t\/s[^]*?低速/);
 });
 
 test('old snapshots without speed_segs keep the structured hero without chart', () => {
@@ -164,11 +163,11 @@ test('chart layout swaps in leftNote caption and drops the redundant sub KPI', (
   const tip = speedTip(render(fixture(segs(6))));
   assert.match(tip, /zu-speed-body/);
   assert.match(tip, /zu-speed-left/);
-  assert.match(tip, /zu-sl-note">会话加权平均</);   // v235：leftNote 由结构化 noteText 承接
-  assert.match(tip, /最近 6 段/);
+  assert.match(tip, /zu-sl-note">会话加权平均</);
+  assert.match(tip, /最近 6 轮/);
   assert.doesNotMatch(tip, /zu-speed-sub/);   // 最近一段读数由最新柱承载
   // 统计口径与刷新说明
-  assert.match(tip, /最近 10 段：每个已完成有效分段的真实速度/);
+  assert.match(tip, /最近 10 轮：每轮（一次提问的全部模型请求）按 Σ有效输出 ÷ Σ生成耗时加权的真实速度/);
   assert.doesNotMatch(tip, /柱顶数字保留一位小数/);   // v239：设计图口径无此句
   assert.doesNotMatch(tip, /每段完成后更新/);   // v233 删该脚注
   // v241/v242 左卡与结构契约
@@ -187,13 +186,13 @@ test('hover index is baked into the string and the fallback tip is rebuildable',
   // v240：默认未悬停 → 无 cur、无信息卡；悬停后 cur 编进串
   let tip = vm.runInContext('speedTipRebuild()', context);
   assert.doesNotMatch(chartOf(tip), /zu-sc-col[^"]* cur"|zu-sc-card/);
-  // 悬停第 3 根（下标 2）→ cur 迁移、信息卡切第 3 段
+  // 悬停第 3 根（下标 2）→ cur 迁移、信息卡切第 3 轮
   context.speedChartHover = 2;
   tip = vm.runInContext('speedTipRebuild()', context);
   const chart = chartOf(tip);
   assert.equal((chart.match(/zu-sc-col cur"/g) || []).length, 1, 'cur 唯一');
   assert.match(chart, /class="zu-sc-col cur" role="img" tabindex="0" data-i="2"/);
-  assert.match(chart, /第 3 段 · 11-03 13:42/);
+  assert.match(chart, /第 3 轮 · 2026-11-03 13:42:00/);
   assert.match(chart, /104\.0/);
   assert.doesNotMatch(chart, /zu-sc-col latest cur"/);
 });
@@ -209,15 +208,19 @@ test('info card renders only while hovering/focusing a bar (v236)', () => {
   ctx2.html(fixture(segs(6)));
   ctx2.speedChartHover = 5;
   const hovered = vm.runInContext('speedTipRebuild()', ctx2);
-  assert.match(hovered, /zu-sc-card-k">第 6 段 · 11-03 13:45/);
+  assert.match(hovered, /zu-sc-card-k">第 6 轮 · 2026-11-03 13:45:00/);
   assert.match(hovered, /zu-sc-card-v ok">110\.0 t\/s<i>（最新）<\/i></, '悬停最新段带（最新）角标');
+  // {v,t} 旧形态：无轮明细行（模型/Token/请求·费用整组省略）
+  assert.doesNotMatch(hovered, /zu-sc-card-m/);
   ctx2.speedChartHover = 2;   // 非最新段：角标让位档位名
   const hovered2 = vm.runInContext('speedTipRebuild()', ctx2);
   assert.match(hovered2, /zu-sc-card-v ok">104\.0 t\/s<i>流畅<\/i></);
   // 信息卡不拦截指针（pointer-events:none 是 CSS 契约，VM 只能锁源码规则存在）
   assert.match(source, /\.zu-sc-card\{[^}]*pointer-events:none/);
-  // 柱体可键盘聚焦，aria-label 携带段号/读数/时间/档位
-  assert.match(tip, /tabindex="0" data-i="0" aria-label="第 1 段，100\.0 t\/s，11-03 13:40[^]*?流畅/);
+  // v250 柱宽契约：柱白=0.8×pitch−12=旧白（pitch−15）×0.8，任意列宽恒精确收紧 20%
+  assert.match(source, /\.zu-sc-bar\{[^}]*max-width:calc\(20% \+ 12px\)/);
+  // 柱体可键盘聚焦，aria-label 携带轮号/读数/时间/档位
+  assert.match(tip, /tabindex="0" data-i="0" aria-label="第 1 轮，100\.0 t\/s，11-03 13:40[^]*?流畅/);
 });
 
 test('bilingual labels follow the instance language', () => {
@@ -227,7 +230,7 @@ test('bilingual labels follow the instance language', () => {
   assert.match(chart, /completion order · old → new/);
   assert.match(chart, /unit: t\/s/);
   assert.match(tip, /Weighted average/);
-  assert.match(chart, /aria-label="Seg 1，114.0 t\/s，11-03 13:47[^]*?Smooth/);
+  assert.match(chart, /aria-label="Turn 1，114.0 t\/s，11-03 13:47[^]*?Smooth/);
 });
 
 test('speed_segs from the session row reach the chart through the full fallback path', () => {
@@ -235,7 +238,7 @@ test('speed_segs from the session row reach the chart through the full fallback 
   data.session.avg_tps = 0;   // 无会话均：主读数回退最近一段，图表照常
   const tip = speedTip(render(data));
   assert.match(tip, /zu-speed-chart/);
-  assert.match(tip, /最近 3 段/);
+  assert.match(tip, /最近 3 轮/);
   assert.match(tip, /zu-sl-val ok">102\.2<\/span><small class="zu-sl-unit">t\/s<\/small>/);
   assert.match(tip, /zu-sl-note">最近一段 · 实际值</);   // v235：noteText 随主读数口径切换
 });
@@ -300,10 +303,10 @@ test('speedCardHTML tiers the main reading by estimated width (fit2/fit3)', () =
 test('single segment renders one bar that is both latest and cur with its label', () => {
   const tip = speedTip(render(fixture(segs(1))));
   const chart = chartOf(tip);
-  assert.match(chart, /最近 1 段/);
+  assert.match(chart, /最近 1 轮/);
   assert.equal((chart.match(/class="zu-sc-col/g) || []).length, 1);
   assert.match(chart, /zu-sc-col latest"/);   // 单柱=最新段（v240 未悬停无 cur）
-  assert.match(chart, /aria-label="第 1 段，100\.0 t\/s，11-03 13:40/);
+  assert.match(chart, /aria-label="第 1 轮，100\.0 t\/s，11-03 13:40/);
   assert.match(chart, /<b>11-03<\/b><b>13:40<\/b>/);   // xEvery=1：唯一柱带时间标签
 });
 
@@ -332,19 +335,28 @@ test('buildLiveTip renders the chart from lastView.session.speed_segs and suppre
     Date,   // 图表 tParts 要 new Date(t)（子代理槽位空、freshness 不依赖 now 桩）
     subRate: { slots: {}, sum: { rate: null, at: 0, count: 0 } },
     zuIcoThinking: () => '<svg/>',
+    state: { cost: 1 },   // v250：opts 携带费用门控与明细格式化回调
+    fmt: v => String(v || 0), countFmt: v => String(v || 0), fmtMoney: usd => '$' + usd.toFixed(2),
   };
   const buildTip = vm.runInNewContext(
     bandHelpers + '\n' + source.slice(blStart, blClose + 6) + '\nbuildLiveTip;', sandbox);
   const view = { cls: 'ok', text: '130.3 t/s', phase: null, band: null };
   const html = buildTip(view);
   assert.match(html, /zu-speed-chart/);
-  assert.match(html, /最近 6 段/);
+  assert.match(html, /最近 6 轮/);
   assert.doesNotMatch(html, /zu-speed-sub/);   // sub 右格由最新柱承载（v218 行为仅旧快照保留）
-  assert.match(html, /最近 10 段：每个已完成有效分段的真实速度/);
+  assert.match(html, /最近 10 轮：每轮（一次提问的全部模型请求）按 Σ有效输出 ÷ Σ生成耗时加权的真实速度/);
   assert.doesNotMatch(html, /每段完成后更新/);   // v233 删该脚注
   // 会话切换重置悬停：悬停第 3 根后 sid 变为 sb → 悬停回未悬停（v236：无信息卡、无 cur）
   sandbox.speedChartHover = 2;
-  assert.match(buildTip(view), /zu-sc-card-k">第 3 段 · 11-03 13:42/);
+  assert.match(buildTip(view), /zu-sc-card-k">第 3 轮 · 2026-11-03 13:42:00/);
+  // v250：桥接态（buildLiveTip 主站点）同样透传轮明细回调——主站点 fmt 三回调整体删除即红
+  sandbox.lastView.session.speed_segs = segs(6).map((sg, i) =>
+    Object.assign({}, sg, i === 2 ? { m: 'glm-5.3', i: 102000, o: 21000, n: 3, c: 0.85 } : {}));
+  const withMeta = buildTip(view);
+  assert.match(withMeta, /zu-sc-card-m" title="glm-5\.3">模型 glm-5\.3</);
+  assert.match(withMeta, /Token 123000（输入 102000 · 输出 21000）</);
+  assert.match(withMeta, /请求 3 次 · 预估 \$0\.85</);
   sandbox.lastView.session.sid = 'sb';
   const after = buildTip(view);
   assert.doesNotMatch(after, /zu-sc-card/);   // v240：悬停重置回未悬停（无信息卡）
@@ -389,15 +401,73 @@ test('scale ladder adds 6/7.5 steps so a 250 t/s reading no longer jumps to a 40
   assert.doesNotMatch(chart, /height:62\.5%/);
 });
 
-test('x axis repeats the date only on the first shown label of each day (v246 cross-day)', () => {
+test('x axis shows the date on every shown label across day boundaries (v250)', () => {
   const t0 = new Date(2026, 10, 3, 23, 57).getTime();
   const cross = [
     { v: 100, t: t0 }, { v: 110, t: t0 + 60000 }, { v: 120, t: t0 + 120000 },
     { v: 130, t: new Date(2026, 10, 4, 0, 0).getTime() },
   ];
   const chart = chartOf(speedTip(render(fixture(cross))));
-  assert.equal((chart.match(/<b>11-03<\/b>/g) || []).length, 1, '首柱显当日日期，同日后续只显 HH:mm');
-  assert.equal((chart.match(/<b>11-04<\/b>/g) || []).length, 1, '跨日首柱恢复日期行');
+  assert.equal((chart.match(/<b>11-03<\/b>/g) || []).length, 3, '同日各柱都带月日（v250 同日去重废止）');
+  assert.equal((chart.match(/<b>11-04<\/b>/g) || []).length, 1, '跨日柱显新日期');
   assert.match(chart, /<span class="zu-sc-x"><b>11-04<\/b><b>00:00<\/b><\/span>/);
-  assert.match(chart, /<span class="zu-sc-x"><b>23:58<\/b><\/span>/);
+  assert.match(chart, /<span class="zu-sc-x"><b>11-03<\/b><b>23:58<\/b><\/span>/);
+});
+
+// v250 悬停卡轮明细：模型/Token 用量（含输入·输出拆分）/请求次数/预估费用逐行判空渲染，
+// 时间全格式；明细行数参与 CARD_H 校准（悬停净空随之收紧）
+test('hover card renders per-turn details (model/tokens/requests/cost) with full timestamp', () => {
+  const meta = { m: 'glm-5.3-flashx', i: 102000, o: 21000, n: 3, c: 0.85 };
+  const raw = segs(6).map((s2, i) => Object.assign({ m: null }, s2, i === 2 ? meta : {}));
+  const ctx2 = makeCtx('zh');
+  vm.runInContext(bandHelpers, ctx2);
+  vm.runInContext(helpers, ctx2);
+  ctx2.html(fixture(raw));
+  ctx2.speedChartHover = 2;
+  const chart = chartOf(vm.runInContext('speedTipRebuild()', ctx2));
+  assert.match(chart, /zu-sc-card-k">第 3 轮 · 2026-11-03 13:42:00/);
+  assert.match(chart, /class="zu-sc-card-m" title="glm-5\.3-flashx">模型 glm-5\.3-flashx</);
+  // title 属性转义契约：模型名含引号/尖括号时不破坏属性边界（对抗性断言）
+  const xss = segs(6).map((sg, i) => Object.assign({}, sg, i === 2 ? { m: '"><x>evil' } : {}));
+  const ctx3 = makeCtx('zh');
+  vm.runInContext(bandHelpers, ctx3);
+  vm.runInContext(helpers, ctx3);
+  ctx3.html(fixture(xss));
+  ctx3.speedChartHover = 2;
+  const chart3 = chartOf(vm.runInContext('speedTipRebuild()', ctx3));
+  assert.match(chart3, /title="&quot;&gt;&lt;x&gt;evil"/, 'title 内引号/尖括号已实体化');
+  assert.doesNotMatch(chart3, /title="[^"]*<x>/, 'title 内无原始尖括号');
+  // 模型名 200 字符封顶：超长名整行省略（speedSegsOf 校验）
+  const long = segs(6).map((sg, i) => Object.assign({}, sg, i === 2 ? { m: "x".repeat(201) } : {}));
+  const ctx4 = makeCtx('zh');
+  vm.runInContext(bandHelpers, ctx4);
+  vm.runInContext(helpers, ctx4);
+  ctx4.html(fixture(long));
+  ctx4.speedChartHover = 2;
+  assert.doesNotMatch(chartOf(vm.runInContext('speedTipRebuild()', ctx4)), /模型 x{20}/, '超长模型名整行省略');
+  assert.match(chart, /zu-sc-card-m" title="Token 123000（输入 102000 · 输出 21000）">Token 123000（输入 102000 · 输出 21000）</);
+  assert.match(chart, /zu-sc-card-m" title="请求 3 次 · 预估 \$0\.85">请求 3 次 · 预估 \$0\.85</);
+  // 其余轮无明细（m=null 缺字段）：悬停它们不产生明细行
+  ctx2.speedChartHover = 1;
+  assert.doesNotMatch(chartOf(vm.runInContext('speedTipRebuild()', ctx2)), /zu-sc-card-m/);
+  // 明细行数参与悬停净空校准：flat 150×10 全轮带 3 行明细 → CARD_H 36+3×14=78 →
+  // capIn=(160-78-16)/160 → need=363.6 → yMax=375（阶梯 75×5，无明细时 250）；柱高 40%
+  const flat = Array.from({ length: 10 }, (_, i) => Object.assign({ v: 150, t: new Date(2026, 10, 3, 13, 40 + i).getTime() }, meta));
+  const hoveredChart = chartOf(speedTip(render(fixture(flat), 'zh', 9)));
+  assert.match(hoveredChart, /<i class="top" style="bottom:calc\(100% - 13px\)">375<\/i>/);
+  assert.match(hoveredChart, /style="height:40%"/);
+});
+
+test('cost line in the hover card follows the state.cost gate (fmtMoney withheld)', () => {
+  const meta = { m: 'glm-5.3', i: 1000, o: 500, n: 2, c: 0.5 };
+  const raw = segs(3).map((s2, i) => Object.assign({}, s2, i === 1 ? meta : {}));
+  const context = makeCtx('zh');
+  context.state.cost = 0;   // ⚙ 费用显示关：调用点不传 fmtMoney → 明细行无预估费用
+  vm.runInContext(bandHelpers, context);
+  vm.runInContext(helpers, context);
+  context.html(fixture(raw));
+  context.speedChartHover = 1;
+  const chart = chartOf(vm.runInContext('speedTipRebuild()', context));
+  assert.match(chart, /zu-sc-card-m[^>]*>请求 2 次</);
+  assert.doesNotMatch(chart, /预估/);
 });

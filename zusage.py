@@ -1071,25 +1071,88 @@ def _rated_tps(tokens, gen_ms):
 
 
 def _speed_segments(con, sid, covers=frozenset()):
-    """当前会话最近 ≤10 条（可跨天）已完成 main_turn 有效速度段（速度 tooltip 柱状图）：avg_tps 同款
-    口径（_row_gen_ms 窗口 + 200ms–1h 有效段过滤，辅助 query_source 与子代理行不计）。
-    v 保留原始浮点不 round（柱高与档位判断用原始值，显示层才取一位小数），t 为完成
-    时间毫秒；最多向前扫描 3 倍行数凑满 10 条有效段，按完成时间升序返回。"""
-    rows = con.execute(
-        """select output_tokens, first_token_at, completed_at, started_at, reasoning_tokens, model_id, provider_id
-           from model_usage where session_id=? and status='completed'
+    """当前会话最近 ≤10 轮（可跨天）已完成 main_turn 有效速度段（速度 tooltip 柱状图）。
+    v250 起按轮（turn_id）聚合：一次提问的全部模型请求合并为一柱——v = 轮内有效行
+    Σoutput ÷ Σ生成窗口（_row_gen_ms 窗口 + 200ms–1h 过滤，辅助 query_source 与子代理
+    行不计，与回答末尾逐问口径同源）；v 保留原始浮点不 round（柱高与档位判断用原始
+    值，显示层才取一位小数）。随段携带悬停卡明细：m=轮内最大输出有效行的模型、
+    i/o=轮内已完成行输入/输出合计、n=轮内已完成请求数、c=轮预估费用 USD（价表模块
+    缺失或计价失败省略字段）。t 为轮内最后完成时间毫秒；先取最近 3×10 个轮窗口再取
+    行，无效轮顺延补位，按轮完成时间升序返回。"""
+    windows = con.execute(
+        """select turn_id, max(completed_at) from model_usage
+           where session_id=? and status='completed'
              and (query_source is null or query_source='main_turn')
-           order by completed_at desc, rowid desc limit ?""",
+           group by turn_id order by 2 desc, turn_id limit ?""",
         (sid, _SPEED_SEGS_MAX * 3),
     ).fetchall()
+    if not windows:
+        return []
+    ids = [w[0] for w in windows if w[0] is not None]
+    groups = {}
+    if ids:
+        marks = ",".join("?" * len(ids))
+        for row in con.execute(
+            f"""select turn_id, output_tokens, input_tokens, cache_read_input_tokens,
+                       cache_creation_input_tokens, first_token_at, completed_at, started_at,
+                       reasoning_tokens, model_id, provider_id
+                from model_usage where session_id=? and status='completed'
+                  and (query_source is null or query_source='main_turn') and turn_id in ({marks})""",
+            (sid, *ids),
+        ):
+            groups.setdefault(row["turn_id"], []).append(row)
+    if any(w[0] is None for w in windows):
+        # turn_id 缺失的旧行归并为一组（SQLite group by 同样把 NULL 归为一类）
+        for row in con.execute(
+            """select turn_id, output_tokens, input_tokens, cache_read_input_tokens,
+                      cache_creation_input_tokens, first_token_at, completed_at, started_at,
+                      reasoning_tokens, model_id, provider_id
+               from model_usage where session_id=? and status='completed'
+                 and (query_source is null or query_source='main_turn') and turn_id is null
+               order by completed_at desc, rowid desc limit 500""",
+            (sid,),
+        ):
+            groups.setdefault(None, []).append(row)   # 防御上限 500 行（取最近）：turn_id 缺失的存量超长会话截断聚合（n/i/o 为截断内合计，t 仍为全组最后完成）
     out = []
-    for row in rows:
-        tokens = row["output_tokens"] or 0
-        gen_ms = _row_gen_ms(row, covers)
-        if tokens > 0 and gen_ms and _TPS_MIN_GEN_MS <= gen_ms < _TPS_MAX_GEN_MS:
-            out.append({"v": tokens / (gen_ms / 1000), "t": row["completed_at"] or 0})
-            if len(out) >= _SPEED_SEGS_MAX:
-                break
+    for tid, _ in windows:
+        rows = groups.get(tid)
+        if not rows:
+            continue
+        valid_out = valid_ms = 0
+        best_out, best_model = -1.0, ""
+        tin = tout = 0
+        cost_groups = {}
+        for row in rows:
+            tokens = row["output_tokens"] or 0
+            tin += row["input_tokens"] or 0
+            tout += tokens
+            key = (row["model_id"] or "", row["provider_id"] or "")
+            acc = cost_groups.setdefault(key, [0, 0, 0, 0])
+            acc[0] += row["input_tokens"] or 0
+            acc[1] += tokens
+            acc[2] += row["cache_read_input_tokens"] or 0
+            acc[3] += row["cache_creation_input_tokens"] or 0
+            gen_ms = _row_gen_ms(row, covers)
+            if tokens > 0 and gen_ms and _TPS_MIN_GEN_MS <= gen_ms < _TPS_MAX_GEN_MS:
+                valid_out += tokens
+                valid_ms += gen_ms
+                if tokens > best_out:
+                    best_out, best_model = tokens, row["model_id"] or ""
+        if not valid_ms:
+            continue
+        seg = {"v": valid_out / (valid_ms / 1000), "t": max(r["completed_at"] or 0 for r in rows)}
+        if best_model:
+            seg["m"] = best_model
+        seg["i"], seg["o"], seg["n"] = tin, tout, len(rows)
+        if _pricing is not None:
+            try:
+                seg["c"] = _pricing.merge_model_costs(
+                    [(k[0], k[1], g[0], g[1], g[2], g[3]) for k, g in cost_groups.items()])[0]
+            except Exception:
+                pass   # 计价失败省略费用字段，不拖垮快照（同 _scope_cost 口径）
+        out.append(seg)
+        if len(out) >= _SPEED_SEGS_MAX:
+            break
     out.reverse()
     return out
 

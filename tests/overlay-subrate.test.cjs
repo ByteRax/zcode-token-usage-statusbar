@@ -343,6 +343,9 @@ test('buildLiveTip lists per-agent rows with a sum line during the tool phase', 
     /* v222：buildLiveTip 时间范围行读 speedSpan（实例级助手）——沙箱注入同形桩 */
     speedSpan: (started, ended) => started ? { start: 'S', end: ended ? 'E' : '' } : null,
     Date: { now: () => now },
+    /* v250：opts 组装携带 state.cost 门控与明细格式化回调——切片沙箱补同形桩 */
+    state: { cost: 0 },
+    fmt: v => String(v || 0), countFmt: v => String(v || 0), fmtMoney: usd => '$' + usd.toFixed(2),
     subRate: { slots: {
       sess_aa: { rate: 45.16, at: now - 100 },          // 有效
       sess_bb: { rate: 15.04, at: now - 100 },          // 有效
