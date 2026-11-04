@@ -30,6 +30,8 @@ function makeHandler(ctxExtra = {}) {
     subPopScheduleHide: () => {},
     cancelTipGrace: () => {},
     hideTip: () => {},
+    hoverCancel: () => {},   // v247：节流前分支作废在途的 1 秒停留计时
+    hoverSchedule: () => {},
     lastMoveAt: 0,
     mouseInBar: true,
     tipStats: { mv: 0, corridor: 0, grace: 0 },
@@ -43,7 +45,7 @@ function makeHandler(ctxExtra = {}) {
     showTipFor: () => {},
     drawTip: () => {},
     tipSig: '',
-    state: { theme: 'default' },
+    state: { theme: 'default', tipClick: 0 },
     subPopMode: 'closed',
     subPopSuppressAt: 0,
     fxTip: { style: { display: 'none' }, closest: () => null, contains: () => false },
@@ -82,6 +84,14 @@ test('fxTip 显示中：指针进入气泡本体/子元素视同仍在 tooltip �
   handler({ target: child, clientX: 500, clientY: 210 });
   assert.deepEqual(calls.hide, []);
   assert.equal(calls.cancelGrace, 2);
+});
+
+test('v247：保活分支同时作废在途的 1 秒停留计时（气泡不是激活目标）', () => {
+  let cancels = 0;
+  const fxTip = { style: { display: 'block' }, closest: () => null, contains: () => false };
+  const handler = makeHandler({ fxTip, hoverCancel: () => { cancels++; } });
+  handler({ target: fxTip, clientX: 500, clientY: 200 });
+  assert.equal(cancels, 1);
 });
 
 test('保活分支先于 150ms 节流：节流窗口内进入气泡也立即生效（停在气泡里不动不熄灭）', () => {

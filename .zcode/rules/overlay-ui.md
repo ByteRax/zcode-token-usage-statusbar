@@ -41,6 +41,7 @@
 - 监听预算：浮层 tooltip 共用**单个** scroll 监听，新增浮层不得再加 scroll/resize 监听；每个 tooltip 有解绑路径。
 - 凡「周期对账 + innerHTML 重写」的浮层（gitTip/quotaTip/chip）必须走内容签名幂等（`__zuTipSig`/`__zuSig`，签名不变跳过重建），否则滚动拖拽被打断；数据真变时保留 scrollTop 后一次性重建。
 - 自绘 tooltip 走 rateTip 同款独立浮层模式；标题与 ⚙ 面板开关标签是两套措辞，文档按两套区分。
+- **激活方式（v247）**：`zusage3.tipClick` 缺省关=鼠标停留 `HOVER_OPEN_DELAY_MS`（1000ms）才打开统计卡/子代理 preview，仅显式 `"1"` 开=点击打开；⚙ 通用分区「点击激活悬浮窗口」，两处回填（buildPanel 尾部 + syncPanel）必须齐。排程置于 document mousemove 的 150ms 节流**之前**（快速滑入后静止，唯一一次事件被节流吞掉也不能永不打开），按命中元素 `hoverKey` 去重续期；到点 `hoverCheck` 用当前 `hoverX/hoverY` 的 `elementFromPoint` 重新命中（抗 render 每 1.5s 重建 `.it`）并复核 `inactive()`/`mouseInBar`/`:hover` 最深元素/面板与浮层状态，取消统一落 `hideTip` 与 dispose。点击模式由 `bar.click` 接管 `.it`，用 `focusTipAt` 避开「focusin 先即时打开、click 紧接着按 re-click 关闭」的首击抵消；键盘 focusin 两模式都即时打开，不套延迟。fxTip、速度柱状图信息卡、6 个工具栏 chip 与宿主原生 hover-card 不在此链内，别误接。
 
 ## 5. 展示口径（写文档、解释浮层的唯一依据）
 
