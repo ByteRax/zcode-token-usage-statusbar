@@ -6,7 +6,7 @@
 
 A third-party plugin for the [ZCode](https://zcode.z.ai) desktop app (not an official ZCode feature) — listed in the marketplace as **ZCode Token Usage Statusbar**. It also ships a command-line tool and an MCP tool for digging through usage history — if you don't know what MCP is, you can safely ignore that part.
 
-A ZCode plugin that keeps generation speed (tok/s), time to first token (TTFT), token usage and context window utilization visible in your conversation. Includes usage reports, subagent details and MCP queries.
+A ZCode plugin that keeps generation speed (t/s), time to first token (TTFT), token usage and context window utilization visible in your conversation. Includes usage reports, subagent details and MCP queries.
 
 English · [简体中文](README.md)
 

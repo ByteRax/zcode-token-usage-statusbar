@@ -80,16 +80,17 @@ test('zero-rect entry falls back to the bar anchor; a detached entry closes the 
     panel.querySelectorAll = () => [];
     return panel;
   }
-  function runBuild(panel, sub, sel) {
+  function runBuild(panel, sub, sel, over) {
     const ctx = {
       subPopSel: sel || '', subPopMode: 'pinned', subPopSig: panel.__zuSig || '',
       subPanel: panel, subRate: { slots: {} }, state: { cost: 1 },
       pickedSid: 'sid_main', subPopSess: 'sid_main',
       L: (a) => a, ttEsc: (a) => String(a), escAttr: (a) => String(a),
-      fmt: () => '1', countFmt: () => '1', fmtMoney: () => '¥1', fmtTime: () => '12:00',
+      fmt: () => '1', countFmt: () => '1', fmtMoney: () => '¥1', fmtTime: () => '12:00', fmtStartS: () => '2026-01-01 00:00:00',
       tpsBand: () => null, FXQ_ICON: '<svg class="tip-fxq"></svg>',
       subPopIco: () => '<svg></svg>',
       subRateSlotText: () => 'est', JSON,
+      ...(over || {}),
     };
     ctx.subPopSel = (panel.__zuSel = sel !== undefined ? sel : (panel.__zuSel || ''));
     ctx.sub = sub;
@@ -127,5 +128,28 @@ test('zero-rect entry falls back to the bar anchor; a detached entry closes the 
     assert.ok(html.includes('tip-fxq" data-model="glm-x"'), 'per-model ? icon carries data-model');
     assert.ok(!html.includes('查看子代理明细'), 'old CTA removed');
     assert.ok(!html.includes('Enter'), 'no Enter keycap');
+  });
+
+  test('v246 summary KPI sub-lines carry hit rate / incl-thinking / cache-write', () => {
+    const sub = { total: 100, active: false, requests: 3, cost_usd: 0.5, rate_avg: 90,
+      input: 60, output: 30, cache_read: 40, cache_write: 5, reasoning: 6, models: [] };
+    const panel = makePanel();
+    runBuild(panel, sub, '');
+    const html = panel.__html;
+    assert.ok(html.includes('缓存命中率'), '输入行副行=命中率（回退 token 尾注即红）');
+    assert.ok(html.includes('67%'), '命中率 40/60=67% 进副行');
+    assert.ok(html.includes('含思考'), '输出行副行=含思考');
+    assert.ok(!/<span class="u">(?:token|次|req)<\/span>/.test(html), 'KPI 第三参单位（token/次）已退役');
+  });
+
+  test('v246 detail view folds the average rate into the KPI band with an inline t/s unit', () => {
+    const sub = { total: 100, active: false, requests: 3, cost_usd: 0.5, models: [],
+      list: [{ task: 'probe', title: 't', agent: 'zcode-gen', sid: 'sess_subagent_abcd1234',
+        input: 60, output: 30, cache_read: 40, cache_write: 5, reasoning: 6, requests: 1, tps_avg: 88, last: 123 }] };
+    const panel = makePanel();
+    runBuild(panel, sub, 'sess_subagent_abcd1234', { tpsBand: () => ({ cls: 'tps-fast', zh: '快', en: 'fast' }) });
+    const html = panel.__html;
+    assert.ok(/tps-fast[^<]*<\/span><small>t\/s<\/small>/.test(html), '平均速率档色值内联 t/s 单位');
+    assert.equal((html.match(/平均速率/g) || []).length, 1, '明细页速率仅 KPI 一处（独立速率行已删）');
   });
 }
