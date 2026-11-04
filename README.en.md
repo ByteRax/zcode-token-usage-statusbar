@@ -64,7 +64,7 @@ Here's what each part tells you:
 
 Context usage doesn't take a slot on the bar — look at the **context button** in the composer toolbar (a ring icon plus a percentage). It changes colour as it fills up; if a request gets rejected for running over, it tells you what to do. Clicking it opens a panel that includes a **one-click compact** button (not needed? Turn off **Compact context button** under **⚙ → General**). Prefer the native look? Turn off **Context button enhancement** under **⚙ → General**. The compact-button switch is available on the development branch.
 
-**Rest the pointer on a bar cell for about a second and you get the finer breakdown** (passing over no longer pops it up and covers what's underneath). Alternatively turn on **Click to open popups** under **⚙ → General** so a cell opens on click. The sub-agent panel follows the same rule; the toolbar chips and the host's native context-usage popup are unaffected by this switch. See the [feature illustrations](docs/features.md); they may differ from the current version.
+**Hovering a bar cell immediately shows the finer breakdown**; to avoid accidental popups while passing over, turn on **Click to open popups** under **⚙ → General** and cells then open on click (click the same cell again, press Escape or move off the bar to close). The sub-agent panel follows the same rule; the toolbar chips and the host's native context-usage popup are unaffected by this switch. See the [feature illustrations](docs/features.md); they may differ from the current version.
 
 ## Where to look for the thing you want
 
