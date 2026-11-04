@@ -4,7 +4,7 @@ const assert = require("node:assert/strict");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { createUpdater, compareVersions, INTERVAL_MS, PLUGIN_ID, listOverview } = require("../plugin-updater.cjs");
+const { cliExecutable, createUpdater, compareVersions, INTERVAL_MS, PLUGIN_ID, listOverview } = require("../plugin-updater.cjs");
 
 function fixture(t, settings = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "zusage-update-test-"));
@@ -442,4 +442,52 @@ test("missing Python helper errors are visible and do not leave updater busy", a
   const f = fixture(t, { python_path: path.join(os.tmpdir(), "missing-zusage-python") });
   await f.updater.tick(); assert.equal(f.updater.status().phase, "error"); assert.equal(f.updater.status().busy, false);
   assert.equal(f.calls.length, 0);
+});
+test("macOS CLI child prefers the LSUIElement Helper bundle and falls back when absent", (t) => {
+  // 主 bundle 二进制以 Foreground 登记 LaunchServices，检查更新会在 Dock 闪现「zcode-cli」图标；
+  // 更新器必须换用 Helper bundle（LSUIElement，登记 UIElement 不进 Dock），缺失时回退主二进制。
+  // 显式传 platform 使非 darwin 分支在 darwin 机器上同样被断言。
+  const appDir = fs.mkdtempSync(path.join(os.tmpdir(), "zusage-cli-exec-"));
+  t.after(() => fs.rmSync(appDir, { recursive: true, force: true }));
+  const main = path.join(appDir, "ZCode.app", "Contents", "MacOS", "ZCode");
+  const helper = path.join(appDir, "ZCode.app", "Contents", "Frameworks", "ZCode Helper.app", "Contents", "MacOS", "ZCode Helper");
+  fs.mkdirSync(path.dirname(helper), { recursive: true });
+  assert.equal(cliExecutable(main, "win32"), main);    // 非 macOS 一律维持调用方二进制
+  assert.equal(cliExecutable(main, "linux"), main);
+  assert.equal(cliExecutable(main, "darwin"), main);   // Helper 未就位：回退主二进制，更新链不中断
+  fs.writeFileSync(helper, ""); fs.chmodSync(helper, 0o755);
+  assert.equal(cliExecutable(main, "darwin"), helper); // Helper 就位：Dock 不再闪图标
+  fs.chmodSync(helper, 0o644);
+  assert.equal(cliExecutable(main, "darwin"), main);   // 不可执行：回退，宁可闪图标不可更新失败
+  fs.rmSync(helper); fs.mkdirSync(helper);
+  assert.equal(cliExecutable(main, "darwin"), main);   // Helper 位置是目录：同样回退
+  assert.equal(cliExecutable("/usr/local/bin/node", "darwin"), "/usr/local/bin/node");   // 非 bundle 路径不动
+});
+test("createUpdater spawns the Helper bundle for its CLI children on macOS", async (t) => {
+  // 端到端锁定生产接线：不注入 options.cli 时，默认 cli() 必须以 Helper 路径 spawn（而非主二进制），
+  // 防止 createUpdater 内的接线被回退后测试仍全绿。子进程桩把自己被 exec 的路径追加到 probe 供断言。
+  if (process.platform !== "darwin") return;
+  const f = fixture(t);
+  const appDir = fs.mkdtempSync(path.join(os.tmpdir(), "zusage-cli-spawn-"));
+  t.after(() => fs.rmSync(appDir, { recursive: true, force: true }));
+  const probe = path.join(appDir, "probe.log");
+  const writeStub = (rel) => {
+    const file = path.join(appDir, rel);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, "#!/bin/sh\nprintf '{\"diagnostics\":[]}'\nprintf '%s\\n' \"$0\" >> \"" + probe + "\"\n");
+    fs.chmodSync(file, 0o755);
+    return file;
+  };
+  // 桩必须摆出真实 bundle 形状：<App>.app/Contents/{MacOS/ZCode, Frameworks/ZCode Helper.app/...}
+  const main = writeStub(path.join("ZCode.app", "Contents", "MacOS", "ZCode"));
+  const helper = writeStub(path.join("ZCode.app", "Contents", "Frameworks", "ZCode Helper.app", "Contents", "MacOS", "ZCode Helper"));
+  // resourcesPath 下需有真实 bundle 文件，否则 supported=false 会直接短路 check，轮不到 cli() spawn
+  fs.mkdirSync(path.join(path.dirname(f.runtime), "glm"), { recursive: true });
+  fs.writeFileSync(path.join(path.dirname(f.runtime), "glm", "zcode.cjs"), "");
+  const { cli, ...withoutCli } = f.options;
+  const u = createUpdater({ ...withoutCli, executable: main });
+  await u.request({ action: "check" });
+  const spawned = fs.readFileSync(probe, "utf8").trim().split("\n");
+  assert.ok(spawned.length >= 1, "CLI 子进程应至少被拉起一次");
+  for (const line of spawned) assert.equal(line, helper, "CLI 子进程必须以 Helper bundle 运行");
 });

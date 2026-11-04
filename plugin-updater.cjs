@@ -11,6 +11,22 @@ const { resolvePluginStorage } = require("./plugin-storage.cjs");
 const PLUGIN_ID = "zcode-token-usage-statusbar@zusage-marketplace";
 const INTERVAL_MS = 60 * 60 * 1000;
 
+function cliExecutable(executable, platform = process.platform) {
+  // 仅 macOS 换用 Helper bundle：主 bundle 二进制启动即以 LaunchServices Foreground 登记，
+  // 检查更新拉起的 CLI 会让 Dock 闪现「zcode-cli」图标；Helper 带 LSUIElement，登记 UIElement
+  // 不进 Dock（宿主自身 CLI 同链）。其余平台或结构不符回退调用方二进制，更新链不受影响。
+  if (platform !== "darwin") return executable;
+  const helper = path.join(path.dirname(path.dirname(executable)),
+    "Frameworks", "ZCode Helper.app", "Contents", "MacOS", "ZCode Helper");
+  try {
+    if (fs.statSync(helper).isFile()) {
+      fs.accessSync(helper, fs.constants.X_OK);   // 不可执行时回退，宁可闪图标不可更新失败
+      return helper;
+    }
+  } catch (e) { }
+  return executable;
+}
+
 function compareVersions(a, b) {
   const parse = (v) => /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/.exec(v || "");
   const aa = parse(a), bb = parse(b);
@@ -311,7 +327,7 @@ function createUpdater(options) {
   const python = () => process.env.ZUSAGE_PLUGIN_PYTHON || (readConfig(configFile) || {}).python_path || (process.platform === "win32" ? "python" : "python3");
   const helper = path.join(__dirname, "runtime_lock.py");
   const lock = options.acquireLock || (() => acquireUpdateLock(runtime, python(), helper));
-  const cli = options.cli || ((args, onSpawn) => runFile(executable, [bundle, "plugins", ...args, "--json"], {
+  const cli = options.cli || ((args, onSpawn) => runFile(cliExecutable(executable), [bundle, "plugins", ...args, "--json"], {
     cwd: home, env: { ...environment, HOME: home, USERPROFILE: home, ELECTRON_RUN_AS_NODE: "1", ZCODE_STORAGE_DIR: path.dirname(storage()) }, windowsHide: true,
     timeout: 120000, maxBuffer: 4 * 1024 * 1024,
   }, undefined, onSpawn));
@@ -651,7 +667,7 @@ async function runAutoCommand(argv) {
   if (state.phase === "error") process.exitCode = 1;
 }
 
-module.exports = { createUpdater, compareVersions, INTERVAL_MS, PLUGIN_ID, runAutoCommand, updateConfig, verifyRuntimeSync, listOverview };
+module.exports = { cliExecutable, createUpdater, compareVersions, INTERVAL_MS, PLUGIN_ID, runAutoCommand, updateConfig, verifyRuntimeSync, listOverview };
 if (require.main === module) {
   const argv = process.argv.slice(2);
   if (argv[0] === "--verify-runtime-sync") {
