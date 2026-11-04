@@ -4,7 +4,7 @@ const assert = require("node:assert/strict");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { fetchBytes, fetchReleaseNotes, fetchReleaseNotesList, createNotesCache, createNotesService, notesTag } = require("../plugin-release.cjs");
+const { fetchBytes, fetchReleaseNotes, fetchReleaseNotesList, createNotesCache, createNotesService, notesTag, releaseAcceptHeader, NOTES_API_HOSTS } = require("../plugin-release.cjs");
 
 const GITHUB_ROW = {
   tag_name: "v1.5.7", name: "v1.5.7", prerelease: false, draft: false,
@@ -41,9 +41,43 @@ test("fetchReleaseNotes uses the GitCode API host and falls back to created_at",
   const row = { ...GITHUB_ROW, published_at: null };
   const result = await fetchReleaseNotes({ flavor: "gitcode", repository: "tanranran/zcode-token-usage-statusbar", version: "1.5.7", fetch: notesFetchOk(row, capture) });
   assert.equal(result.ok, true);
-  assert.equal(capture[0].url, "https://api.gitcode.com/repos/tanranran/zcode-token-usage-statusbar/releases/tags/v1.5.7");
+  assert.equal(capture[0].url, "https://api.gitcode.com/api/v5/repos/tanranran/zcode-token-usage-statusbar/releases/tags/v1.5.7");
   assert.equal(result.notes.publishedAt, "2026-10-30T11:00:00Z");
   assert.equal(result.notes.url, "https://gitcode.com/tanranran/zcode-token-usage-statusbar/releases/tag/v1.5.7");
+});
+
+test("fetchReleaseNotes accepts the real GitCode v5 response shape", async () => {
+  const row = {   // 2026-11-04 实测 api.gitcode.com/api/v5 响应形态：无 draft 键、release_status='none'、published_at 缺失
+    tag_name: "v1.5.10", name: "v1.5.10", prerelease: false, release_status: "none",
+    created_at: "2026-11-03T02:43:33+08:00", target_commitish: "ba4f6af6",
+    body: "## 本次发布\n\nv1.5.10 新增预估费用、统计卡改版和子代理统一浮层。",
+  };
+  const result = await fetchReleaseNotes({ flavor: "gitcode", repository: "tanranran/zcode-token-usage-statusbar", version: "1.5.10", fetch: notesFetchOk(row) });
+  assert.equal(result.ok, true);
+  assert.equal(result.notes.publishedAt, "2026-11-03T02:43:33+08:00");   // published_at 缺失回落 created_at
+  assert.equal(result.notes.prerelease, false);
+  assert.equal(result.notes.url, "https://gitcode.com/tanranran/zcode-token-usage-statusbar/releases/tag/v1.5.10");
+});
+
+test("GitCode list endpoint keeps the /api/v5 prefix and API hosts stay path-free", async () => {
+  const capture = [];
+  const result = await fetchReleaseNotesList({ flavor: "gitcode", repository: "tanranran/zcode-token-usage-statusbar", fetch: notesFetchOk([], capture) });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.releases, []);   // 空列表不报错
+  assert.equal(capture[0].url, "https://api.gitcode.com/api/v5/repos/tanranran/zcode-token-usage-statusbar/releases?per_page=100&page=1&direction=desc");
+  // api 字段必须是无路径的裸主机名：fetchBytes 白名单按 URL.hostname 比对，混入路径会静默全拒
+  for (const [flavor, host] of Object.entries(NOTES_API_HOSTS)) {
+    assert.ok(!host.api.includes("/"), `${flavor} api 不得含路径：${host.api}`);
+    assert.equal(new URL(`https://${host.api}/`).hostname, host.api);
+  }
+});
+
+test("release Accept header is JSON for API hosts and octet-stream for asset hosts", () => {
+  assert.equal(releaseAcceptHeader("api.github.com"), "application/vnd.github+json");
+  assert.equal(releaseAcceptHeader("api.gitcode.com"), "application/json");   // GitCode v5 对 octet-stream 400
+  for (const asset of ["github.com", "gitcode.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com", "file-cdn.gitcode.com"]) {
+    assert.equal(releaseAcceptHeader(asset), "application/octet-stream", asset);
+  }
 });
 
 test("fetchReleaseNotes rejects unverified flavors, repositories and versions before any request", async () => {
@@ -87,8 +121,10 @@ test("fetchReleaseNotesList keeps only stable v-tags, sorts numerically desc and
   for (let i = 1; i <= 25; i++) rows.push({ tag_name: "v1.0." + i, name: "v1.0." + i, body: "x", created_at: "2026-01-01T00:00:00Z" });
   rows.unshift({ tag_name: "nightly-build", body: "x" }, { tag_name: "v2.0.0-beta.1", body: "x" },
     { tag_name: "v3.0.0", prerelease: true, body: "x" });   // prerelease 不进历史列表（与更新器候选过滤同规则）
-  const result = await fetchReleaseNotesList({ flavor: "github", repository: "a/b", fetch: notesFetchOk(rows) });
+  const capture = [];
+  const result = await fetchReleaseNotesList({ flavor: "github", repository: "a/b", fetch: notesFetchOk(rows, capture) });
   assert.equal(result.ok, true);
+  assert.equal(capture[0].url, "https://api.github.com/repos/a/b/releases?per_page=100&page=1&direction=desc");
   assert.equal(result.releases.length, 20);
   assert.equal(result.releases[0].version, "1.0.25");   // 数值降序，不是字符串排序
   assert.equal(result.releases[1].version, "1.0.24");
