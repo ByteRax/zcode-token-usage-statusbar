@@ -45,9 +45,8 @@ test('tooltip uses supplied weighted rate and complete local date ranges in both
   for (const lang of ['zh', 'en']) {
     const tips = render(fixture(), lang);
     const turn = tips.find(tip => tip.includes('zu-stat-tip--turn'));
-    assert.match(turn, /102\.2 <small>tok\/s<\/small>/);
-    assert.doesNotMatch(turn, /27\.9 tok\/s/);
-    assert.doesNotMatch(turn, /27\.9 tok\/s/);
+    assert.match(turn, /102\.2 <small>t\/s<\/small>/);
+    assert.doesNotMatch(turn, /27\.9 (?:tok|t)\/s/);
     assert.match(turn.replace(/<[^>]+>/g, ''), lang === 'zh' ? /11 token 未参与测速/ : /11 tokens excluded from rate/);
     // v210：全部时间范围行精确到秒（v166 先行会话/项目累计，本轮/今日合计/速率最近一段跟进；
     // 本用例未开 proj 开关，项目累计 tip 不渲染，共 4 处）
@@ -144,4 +143,25 @@ test('v159 project cell hidden without toggle or without snapshot field', () => 
   data.session.project = { sessions: 3, requests: 45, total: 6700 };
   assert.equal(render(data, 'zh', null, {}).find(tip => tip.includes('项目累计')), undefined);
   assert.equal(render(fixture(), 'zh', null, { proj: true }).find(tip => tip.includes('项目累计')), undefined);
+});
+
+test('v246 turn/today cards lead with total tokens and the tools table dims sub-0.1s durations', () => {
+  const data = fixture();
+  Object.assign(data.last_turn, { total: 752, input: 300, cache_read: 250 });
+  Object.assign(data.today, { total: 900, input: 600, cache_read: 450, output: 300, reasoning: 50, retries: 1, requests: 5 });
+  data.tools = { total: 3, errors: 0, list: [
+    { name: 'Bash', count: 2, duration_ms: 20, errors: 0 },
+    { name: 'Read', count: 1, duration_ms: 1500, errors: 0 },
+  ] };
+  const strip = s => s.replace(/<[^>]+>/g, '');
+  const turn = render(data).find(tip => tip.includes('zu-stat-tip--turn'));
+  assert.match(strip(turn), /总用量\s*752/, '本轮首格=总用量（回退「请求次数」即红）');
+  assert.match(turn, /缓存命中率 83%/, '本轮输入行副行=命中率');
+  assert.doesNotMatch(strip(turn), /请求次数/);   // 请求次数只在标题徽标，不再占 KPI 首格
+  const today = render(data).find(tip => tip.includes('zu-stat-tip--today'));
+  assert.match(strip(today), /总用量\s*900/, '今日首格=总用量');
+  assert.match(today, /缓存命中率 75%/, '今日命中率并入 grid3 输入列副行');
+  const tools = render(data, 'zh', null, { tools: true }).find(tip => tip.includes('zu-stat-tip--tools'));
+  assert.match(tools, /<td class="dim0">&lt;0\.1s<\/td>/, '工具表 <50ms 显「<0.1s」并弱化');
+  assert.match(tools, /<td>1500<\/td>/, '正常耗时不带弱化');
 });

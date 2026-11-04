@@ -1483,6 +1483,30 @@ test('v244 relaunch ok receipt keeps the restarting state and the 90s still-aliv
   assert.match(statusEl.textContent, /仍未退出|has not exited/);
 });
 
+test('v244 syncUpdate keeps the restarting state across state pushes (sent flag contract)', () => {
+  // 重启等待期任何 broadcastPluginState（quota/更新器/配置回推）都会重跑 syncUpdate：
+  // dataset.sent=1 时必须保持禁用并在状态行追加预期文案；还原（sent 清空）后解除
+  const syncSource = extract('    function updFingerprint(u) {', '    function syncPanel() {');
+  const relaunch = { disabled: false, dataset: { sent: '1' }, classes: {} };
+  relaunch.classList = { toggle(n, on) { relaunch.classes[n] = on; } };
+  const controls = {};
+  const context = {
+    state: { restartNotice: true, rateLine: true, pluginUpdate: { relaunchSupported: true, restartRequired: true, markerAt: 5, phase: 'idle' } },
+    gear: { querySelector: sel => sel === '.zu-gear-dot' ? { style: {} } : null },
+    panel: { querySelector: sel => sel === '[data-update=relaunch]' ? relaunch : (controls[sel] ||= { style: {} }) },
+    LS: { updSeen: 'zusage3.updSeen' },
+    localStorage: { getItem: () => '5', setItem: () => {} },
+    L: (zh) => zh,
+  };
+  vm.runInNewContext(syncSource + '\nsyncUpdate();', context);
+  assert.equal(relaunch.disabled, true, 'sent=1：状态推送不得重新启用重启按钮（变异 M4：删 relaunchSent || 即红）');
+  assert.match(controls['.zu-update-status'].textContent, /已发出重启请求/, 'sent=1：状态行追加预期文案');
+  relaunch.dataset.sent = '';
+  vm.runInNewContext('syncUpdate();', context);
+  assert.equal(relaunch.disabled, false, 'sent 清空：按钮恢复可点');
+  assert.doesNotMatch(controls['.zu-update-status'].textContent, /已发出重启请求/, '还原后状态行不再追加预期文案');
+});
+
 test('relaunch button downgrades to a manual-restart hint while the main process predates the capability marker (v180, issue #158)', () => {
   const syncSource = extract('    function updFingerprint(u) {', '    function syncPanel() {');
   const status = {};

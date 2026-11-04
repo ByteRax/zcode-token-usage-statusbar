@@ -1631,7 +1631,9 @@ async function pollPluginRequests() {
             };
             const quitFallback = setTimeout(quitNow, 800);
             /* v245 review 修复：屏障有硬上限（9s），15s 后进程仍在=quit 未发生——恢复窗口可见性；
-             * unref 确保哨兵绝不拖住退出（正常路径随进程消亡，测试中不延滞事件循环）。 */
+             * unref 确保哨兵绝不拖住退出（正常路径随进程消亡，测试中不延滞事件循环）。
+             * app.isQuitting 非 Electron 内建（宿主不设置）→ 条件恒真兜回 unhide；此时 relaunch
+             * 标记已留存，用户随后手动退出会被宿主转成重启——与待重启语义一致，属已知取舍。 */
             const unhideSentinel = setTimeout(() => {
               if (!app.isQuitting && quitArmed) unhideWindows();   // 宿主未暴露 isQuitting 时恒真值兜回 unhide
             }, 15000);

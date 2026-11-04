@@ -26,8 +26,10 @@ function makeCtx(lang = 'zh') {
   });
 }
 
-function render(data, lang = 'zh') {
+function render(data, lang = 'zh', hover = -1) {
   const context = makeCtx(lang);
+  context.speedChartHover = hover;   // v232：html() 读写实例闭包的悬停态，切片按种子注入
+  if (hover >= 0) context.speedTipSess = (data.session && data.session.sid) || 'sid_main';   // 会话归属守卫：不匹配会被重置回未悬停
   vm.runInContext(bandHelpers, context);
   vm.runInContext(helpers, context);
   return context.html(data).tips.filter(Boolean);
@@ -85,10 +87,10 @@ test('14 segments render as 14 bars with one-decimal top labels and latest highl
 test('x axis shows MM-DD HH:mm labels from real completion times, first and last kept', () => {
   const tip = speedTip(render(fixture(segs(17))));
   const chart = chartOf(tip);
-  // v240：10 柱 pitch≈50 > 阈值 44 → 全部 10 个两行标签；首标签=第 1 段 13:47、末标签=第 10 段 13:56
-  assert.equal((chart.match(/<b>11-03<\/b>/g) || []).length, 10);
+  // 同日去重：首标签渲染完整日期+时间，同日后续标签仅渲染 HH:mm；跨日首标签恢复显示新日期
+  assert.equal((chart.match(/<b>11-03<\/b>/g) || []).length, 1);
   assert.match(chart, /<b>11-03<\/b><b>13:47<\/b>/);
-  assert.match(chart, /<b>11-03<\/b><b>13:56<\/b>/);
+  assert.match(chart, /<span class="zu-sc-x"><b>13:56<\/b><\/span>/);
   assert.doesNotMatch(chart, /2026/);            // 不显示年份
   assert.doesNotMatch(chart, /\d\d:\d\d:\d\d/);  // 不显示秒
 });
@@ -358,4 +360,44 @@ test('buildLiveTip renders the chart from lastView.session.speed_segs and suppre
   const toolTip = buildTip({ cls: 'dim', text: '子代理运行中 ×2 · 估 268.1 t/s', phase: 'tool', band: null });
   assert.match(toolTip, /zu-speed-main[^"]*zu-speed-fit3/);
   assert.doesNotMatch(toolTip, /子代理运行中[^<]*<small>/);
+});
+
+test('unhovered bars size to reading clearance only, hovering restores the card clearance (v246)', () => {
+  const flat = Array.from({ length: 10 }, (_, i) => ({ v: 150, t: new Date(2026, 10, 3, 13, 40 + i).getTime() }));
+  const chart = chartOf(speedTip(render(fixture(flat))));
+  // 未悬停不渲染信息卡：need=maxV/capOut=166.7 → yMax=200 → 75%；
+  // 旧式恒按卡预留 spanMax/capIn=222 → yMax=400 → 37.5%（M7：删 hoverIdx 条件即红）
+  assert.doesNotMatch(chart, /zu-sc-card/);
+  assert.match(chart, /<i class="top" style="bottom:calc\(100% - 13px\)">200<\/i>/);
+  assert.match(chart, /style="height:75%"/);
+  assert.doesNotMatch(chart, /height:37\.5%/);
+  const hovered = chartOf(speedTip(render(fixture(flat), 'zh', 9)));
+  // 悬停：信息卡回归，spanMax/capIn 约束随之回归 → need=222.2 → yMax=250（div5）→ 60%
+  assert.match(hovered, /zu-sc-card/);
+  assert.match(hovered, /<i class="top" style="bottom:calc\(100% - 13px\)">250<\/i>/);
+  assert.match(hovered, /style="height:60%"/);
+  assert.doesNotMatch(hovered, /height:75%/);
+});
+
+test('scale ladder adds 6/7.5 steps so a 250 t/s reading no longer jumps to a 400 top tick (v246)', () => {
+  const flat = Array.from({ length: 10 }, (_, i) => ({ v: 250, t: new Date(2026, 10, 3, 13, 40 + i).getTime() }));
+  const chart = chartOf(speedTip(render(fixture(flat))));
+  // need=277.8：旧阶梯 [1,2,2.5,5] 在 250 之上只能跳 yMax=400（顶刻度翻倍、柱高 62.5%）；
+  // 新阶梯 mant 6 → st=60 → yMax=300 → 83.3%（M5：mant 删 6/7.5 即红）
+  assert.match(chart, /<i class="top" style="bottom:calc\(100% - 13px\)">300<\/i>/);
+  assert.match(chart, /style="height:83\.3%"/);
+  assert.doesNotMatch(chart, /height:62\.5%/);
+});
+
+test('x axis repeats the date only on the first shown label of each day (v246 cross-day)', () => {
+  const t0 = new Date(2026, 10, 3, 23, 57).getTime();
+  const cross = [
+    { v: 100, t: t0 }, { v: 110, t: t0 + 60000 }, { v: 120, t: t0 + 120000 },
+    { v: 130, t: new Date(2026, 10, 4, 0, 0).getTime() },
+  ];
+  const chart = chartOf(speedTip(render(fixture(cross))));
+  assert.equal((chart.match(/<b>11-03<\/b>/g) || []).length, 1, '首柱显当日日期，同日后续只显 HH:mm');
+  assert.equal((chart.match(/<b>11-04<\/b>/g) || []).length, 1, '跨日首柱恢复日期行');
+  assert.match(chart, /<span class="zu-sc-x"><b>11-04<\/b><b>00:00<\/b><\/span>/);
+  assert.match(chart, /<span class="zu-sc-x"><b>23:58<\/b><\/span>/);
 });
