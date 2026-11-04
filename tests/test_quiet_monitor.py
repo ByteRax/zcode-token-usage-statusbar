@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import base64
 import importlib.util
 import io
 import contextlib
@@ -54,7 +55,10 @@ class QuietMonitorTests(unittest.TestCase):
 
     def test_quiet_monitor_launches_without_console_and_with_no_monitor_flag(self):
         env = {"ZUSAGE_NO_MONITOR": "1", "ZUSAGE_MONITOR_QUIET": "1"}
-        with mock.patch.dict(os.environ, env), mock.patch.object(self.patch.subprocess, "Popen") as spawn:
+        # WMI 通道按不可用处理：Windows 上避免真实拉起进程（POSIX 本就不走该分支）
+        with mock.patch.dict(os.environ, env), \
+                mock.patch.object(self.patch, "_spawn_via_wmi", return_value=None), \
+                mock.patch.object(self.patch.subprocess, "Popen") as spawn:
             self.patch.launch_monitor(0)
         self.assertEqual(spawn.call_count, 1)
         # cmd[1] 必须指向同目录 install_monitor.py（issue #163 review 加固：兄弟不变式
@@ -92,10 +96,12 @@ class QuietMonitorTests(unittest.TestCase):
         with self.patch.monitor_instance_lock() as held:
             self.assertTrue(held)
             with mock.patch.dict(os.environ, {"ZUSAGE_NO_MONITOR": "1", "ZUSAGE_MONITOR_QUIET": "1"}), \
+                    mock.patch.object(self.patch, "_spawn_via_wmi", return_value=None), \
                     mock.patch.object(self.patch.subprocess, "Popen") as spawn:
                 self.patch.launch_monitor(0)
             spawn.assert_not_called()
         with mock.patch.dict(os.environ, {"ZUSAGE_NO_MONITOR": "1", "ZUSAGE_MONITOR_QUIET": "1"}), \
+                mock.patch.object(self.patch, "_spawn_via_wmi", return_value=None), \
                 mock.patch.object(self.patch.subprocess, "Popen") as spawn:
             self.patch.launch_monitor(0)
         self.assertEqual(spawn.call_count, 1)
@@ -125,6 +131,7 @@ class QuietMonitorTests(unittest.TestCase):
                 self.patch.monitor_instance_lock() as held:
             self.assertTrue(held)
         with mock.patch.dict(os.environ, {"ZUSAGE_NO_MONITOR": "1", "ZUSAGE_MONITOR_QUIET": "1"}), \
+                mock.patch.object(self.patch, "_spawn_via_wmi", return_value=None), \
                 mock.patch.object(self.patch.os, "open", side_effect=OSError("fixture denied")), \
                 mock.patch.object(self.patch.subprocess, "Popen") as spawn:
             self.patch.launch_monitor(0)
@@ -322,12 +329,13 @@ class QuietMonitorTests(unittest.TestCase):
 
     def test_windows_quiet_launch_uses_no_window_flag(self):
         flags = {"CREATE_NO_WINDOW": 0x08000000, "CREATE_BREAKAWAY_FROM_JOB": 0x01000000}
+        # WMI 通道不可用时的树内回退：无窗口 + 优先尝试脱离 Job（会话清理不连带杀掉收尾监控）
         with mock.patch.dict(os.environ, {"ZUSAGE_NO_MONITOR": "1", "ZUSAGE_MONITOR_QUIET": "1"}), \
                 mock.patch.object(self.patch, "IS_WIN", True), \
+                mock.patch.object(self.patch, "_spawn_via_wmi", return_value=None), \
                 mock.patch.multiple(self.patch.subprocess, create=True, **flags), \
                 mock.patch.object(self.patch.subprocess, "Popen") as spawn:
             self.patch.launch_monitor(0)
-        # 无窗口 + 优先尝试脱离 Job（会话清理不连带杀掉收尾监控）
         self.assertEqual(spawn.call_count, 1)
         self.assertEqual(spawn.call_args.kwargs["creationflags"], 0x08000000 | 0x01000000)
         self.assertFalse(spawn.call_args.kwargs.get("start_new_session"))
@@ -336,14 +344,169 @@ class QuietMonitorTests(unittest.TestCase):
         flags = {"CREATE_NO_WINDOW": 0x08000000, "CREATE_BREAKAWAY_FROM_JOB": 0x01000000}
         with mock.patch.dict(os.environ, {"ZUSAGE_NO_MONITOR": "1", "ZUSAGE_MONITOR_QUIET": "1"}), \
                 mock.patch.object(self.patch, "IS_WIN", True), \
+                mock.patch.object(self.patch, "_spawn_via_wmi", return_value=None), \
                 mock.patch.multiple(self.patch.subprocess, create=True, **flags), \
                 mock.patch.object(self.patch.subprocess, "Popen",
                                   side_effect=[OSError("job object does not allow breakaway"),
-                                               mock.DEFAULT]) as spawn:
+                                               mock.DEFAULT]) as spawn, \
+                contextlib.redirect_stderr(io.StringIO()) as err:
             self.patch.launch_monitor(0)
         self.assertEqual(spawn.call_count, 2)
         self.assertEqual(spawn.call_args_list[0].kwargs["creationflags"], 0x08000000 | 0x01000000)
         self.assertEqual(spawn.call_args_list[1].kwargs["creationflags"], 0x08000000)
+        # 降级不能静默（issue #208 修复建议 1）：留痕只许走 stderr。
+        # 关键词取两语言文案共有的 "issue #208"——fixture 异常消息含 "breakaway"，
+        # 用它断言会靠 {e} 插值蒙混过关，锁不住实现文案。
+        self.assertIn("issue #208", err.getvalue())
+
+    def test_windows_quiet_launch_prefers_wmi_detached_spawn(self):
+        # issue #208：hook/插件宿主场景的 Job 常拒绝 breakaway，树内监控活不过宿主
+        # 回收——静默收尾优先经 WMI（父进程 WmiPrvSE）脱离调用方进程树拉起。
+        flags = {"CREATE_NO_WINDOW": 0x08000000, "CREATE_BREAKAWAY_FROM_JOB": 0x01000000}
+        with mock.patch.dict(os.environ, {"ZUSAGE_NO_MONITOR": "1", "ZUSAGE_MONITOR_QUIET": "1"}), \
+                mock.patch.object(self.patch, "IS_WIN", True), \
+                mock.patch.object(self.patch, "_wmi_interpreter", return_value=r"C:\Py\pythonw.exe"), \
+                mock.patch.object(self.patch, "_spawn_via_wmi", return_value=4321) as wmi, \
+                mock.patch.multiple(self.patch.subprocess, create=True, **flags), \
+                mock.patch.object(self.patch.subprocess, "Popen") as spawn:
+            result = self.patch.launch_monitor(1.5)
+        self.assertEqual(result, 4321)
+        wmi.assert_called_once()
+        wmi_cmd = wmi.call_args.args[0]
+        self.assertEqual(wmi_cmd[0], r"C:\Py\pythonw.exe")   # WMI 无创建标志位：必须 pythonw
+        # cmd[1] 同目录不变式与树内通道一致（issue #163）
+        self.assertTrue(wmi_cmd[1].endswith("install_monitor.py"))
+        self.assertEqual(wmi_cmd[2], "1.500")
+        self.assertEqual(wmi_cmd[3], str(self.patch.ASAR))
+        self.assertEqual(wmi_cmd[4], str(self.patch.RUNTIME))
+        self.assertEqual(wmi_cmd[5], "--quiet")   # WMI 不继承环境：静默开关随命令行传达
+        spawn.assert_not_called()
+
+    def test_windows_wmi_channel_disabled_by_env(self):
+        # ZUSAGE_MONITOR_NO_WMI=1：排查/测试出口，直接走树内拉起。
+        # _wmi_interpreter 必须显式桩为可用：否则 POSIX 上真实探测返回 None、门体
+        # 根本执行不到，NO_WMI 出口被删也不会红。
+        flags = {"CREATE_NO_WINDOW": 0x08000000, "CREATE_BREAKAWAY_FROM_JOB": 0x01000000}
+        env = {"ZUSAGE_NO_MONITOR": "1", "ZUSAGE_MONITOR_QUIET": "1", "ZUSAGE_MONITOR_NO_WMI": "1"}
+        with mock.patch.dict(os.environ, env), \
+                mock.patch.object(self.patch, "IS_WIN", True), \
+                mock.patch.object(self.patch, "_wmi_interpreter", return_value=r"C:\Py\pythonw.exe"), \
+                mock.patch.object(self.patch, "_spawn_via_wmi") as wmi, \
+                mock.patch.multiple(self.patch.subprocess, create=True, **flags), \
+                mock.patch.object(self.patch.subprocess, "Popen") as spawn:
+            self.patch.launch_monitor(0)
+        wmi.assert_not_called()
+        self.assertEqual(spawn.call_count, 1)
+
+    def test_windows_wmi_skipped_without_pythonw(self):
+        # 无 pythonw.exe（venv 等）不得用 python.exe 顶替：WMI 创建没有标志位可用，
+        # 会在交互会话闪现控制台窗——宁缺毋滥，跳过 WMI 走树内回退。
+        flags = {"CREATE_NO_WINDOW": 0x08000000, "CREATE_BREAKAWAY_FROM_JOB": 0x01000000}
+        with mock.patch.dict(os.environ, {"ZUSAGE_NO_MONITOR": "1", "ZUSAGE_MONITOR_QUIET": "1"}), \
+                mock.patch.object(self.patch, "IS_WIN", True), \
+                mock.patch.object(self.patch, "_wmi_interpreter", return_value=None), \
+                mock.patch.object(self.patch, "_spawn_via_wmi") as wmi, \
+                mock.patch.multiple(self.patch.subprocess, create=True, **flags), \
+                mock.patch.object(self.patch.subprocess, "Popen") as spawn:
+            self.patch.launch_monitor(0)
+        wmi.assert_not_called()
+        self.assertEqual(spawn.call_count, 1)
+
+    def test_wmi_spawn_encodes_full_command_line(self):
+        # -EncodedCommand 承载 UTF-16LE base64：命令行经 list2cmdline 整体嵌入
+        # PS 单引号串（内嵌单引号翻倍），任何失败不得抛出。
+        cmd = ["C:/Program Bin/pythonw.exe", str(ROOT / "install_monitor.py"), "1.5",
+               r"D:\a b\app.asar", r"C:\rt x'q", "--quiet"]
+        with mock.patch.object(self.patch.subprocess, "run") as run:
+            run.return_value = mock.Mock(returncode=0, stdout=b"4321")
+            pid = self.patch._spawn_via_wmi(cmd)
+        self.assertEqual(pid, 4321)
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[:4], ["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand"])
+        # 同步阻塞在 hook 进程内：必须有超时，且输出必须被捕获（不污染协议 stdout）
+        self.assertEqual(run.call_args.kwargs["timeout"], self.patch.WMI_TIMEOUT)
+        self.assertTrue(run.call_args.kwargs["capture_output"])
+        script = base64.b64decode(argv[4]).decode("utf-16-le")
+        expected = subprocess.list2cmdline(cmd)
+        self.assertIn(expected.replace("'", "''"), script)
+        self.assertIn("Win32_Process", script)
+        # 创建失败必须在 PS 侧退出非零（缺了它 [int]$null 求值为 0，会被当成功
+        # PID 返回，回退链被绕过——issue #208 的「无人收尾」以假成功复现）
+        self.assertIn("ReturnValue -ne 0", script)
+        self.assertIn("exit 1", script)
+        self.assertIn("$r.ProcessId", script)
+
+    def test_wmi_interpreter_probe(self):
+        # pythonw.exe 探测本体：命中同目录文件返回其路径；缺失返回 None（绝不回退
+        # python.exe，WMI 无标志位会闪控制台窗）；sys.executable 为空（嵌入式场景）
+        # 不抛异常、直接 None。
+        with tempfile.TemporaryDirectory() as td:
+            exe = Path(td) / "python.exe"
+            pythonw = Path(td) / "pythonw.exe"
+            pythonw.write_bytes(b"")
+            with mock.patch.object(sys, "executable", str(exe)):
+                self.assertEqual(self.patch._wmi_interpreter(), str(pythonw))
+            pythonw.unlink()
+            with mock.patch.object(sys, "executable", str(exe)):
+                self.assertIsNone(self.patch._wmi_interpreter())
+            with mock.patch.object(sys, "executable", ""):
+                self.assertIsNone(self.patch._wmi_interpreter())
+
+    def test_wmi_spawn_failure_modes_return_none(self):
+        cmd = ["pythonw", "install_monitor.py", "0", "a", "b", "--quiet"]
+        with mock.patch.object(self.patch.subprocess, "run",
+                               return_value=mock.Mock(returncode=1, stdout=b"")):
+            self.assertIsNone(self.patch._spawn_via_wmi(cmd))
+        with mock.patch.object(self.patch.subprocess, "run", side_effect=OSError("no powershell")):
+            self.assertIsNone(self.patch._spawn_via_wmi(cmd))
+        with mock.patch.object(self.patch.subprocess, "run",
+                               side_effect=subprocess.TimeoutExpired(cmd=["powershell"], timeout=15)):
+            self.assertIsNone(self.patch._spawn_via_wmi(cmd))
+        # 含 surrogate 的路径在 encode("utf-16-le") 抛 UnicodeEncodeError（ValueError 子类）：
+        # 逃逸会击穿 launch_monitor 的 OSError 兜底，必须在此转 None 走树内回退
+        with mock.patch.object(self.patch.subprocess, "run", side_effect=ValueError("encoding")):
+            self.assertIsNone(self.patch._spawn_via_wmi(cmd))
+        with mock.patch.object(self.patch.subprocess, "run",
+                               return_value=mock.Mock(returncode=0, stdout=b"not-a-pid")):
+            self.assertIsNone(self.patch._spawn_via_wmi(cmd))
+
+    def test_monitor_quiet_flag_parses_without_env(self):
+        # WMI 拉起不继承调用方环境：--quiet 必须独立等效于 ZUSAGE_MONITOR_QUIET=1，
+        # 且不影响位置参数（epoch/asar/runtime）的解析。
+        argv = ["install_monitor.py", "0", str(self.asar), str(self.runtime), "--quiet"]
+        with mock.patch.object(sys, "argv", argv), \
+                mock.patch.dict(os.environ, {"ZUSAGE_MONITOR_QUIET": ""}):
+            flagged = module("quiet_flag_test", ROOT / "install_monitor.py")
+        self.assertTrue(flagged.QUIET)
+        self.assertEqual(flagged.ASAR, self.asar)
+        self.assertEqual(flagged.RUNTIME_DIR, self.runtime)
+        with mock.patch.object(sys, "argv", argv[:-1]), \
+                mock.patch.dict(os.environ, {"ZUSAGE_MONITOR_QUIET": ""}):
+            plain = module("quiet_noflag_test", ROOT / "install_monitor.py")
+        self.assertFalse(plain.QUIET)
+
+    @unittest.skipIf(os.name != "nt", "WMI 实机拉起仅在 Windows 验证")
+    def test_windows_wmi_spawn_real_monitor_exits_cleanly(self):
+        # 行为级实机验证：真实 WMI 创建 pythonw 监控（无待收尾包 → quiet_finalize
+        # 立即返回），进程应干净退出——证明脱离式通道 + --quiet + 导入链完整可用。
+        interpreter = self.patch._wmi_interpreter()
+        if interpreter is None:
+            self.skipTest("pythonw.exe 不可用")
+        pid = self.patch._spawn_via_wmi(
+            [interpreter, str(ROOT / "install_monitor.py"), "0", str(self.asar), str(self.runtime), "--quiet"])
+        self.assertIsNotNone(pid)
+        kernel32 = ctypes.windll.kernel32
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        handle = kernel32.OpenProcess(0x00100001, False, pid)   # SYNCHRONIZE | PROCESS_TERMINATE
+        self.assertTrue(handle, "WMI 返回的 PID 不可等待")
+        try:
+            kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+            if kernel32.WaitForSingleObject(handle, 30000) != 0:   # WAIT_OBJECT_0
+                # 监控不在测试进程树内（父进程 WmiPrvSE）：超时先终止再失败，不留孤儿
+                kernel32.TerminateProcess(ctypes.c_void_p(handle), 1)
+                self.fail("监控未在 30s 内干净退出")
+        finally:
+            kernel32.CloseHandle(ctypes.c_void_p(handle))
 
     def test_oserror_retry_stops_at_one_day_deadline(self):
         self.pending()

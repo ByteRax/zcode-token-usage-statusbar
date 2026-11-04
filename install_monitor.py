@@ -39,6 +39,11 @@ TMP = ASAR.with_name("app.asar.zusage.tmp")
 POLL = 10            # 检测间隔（秒）
 CONFIRM_WAIT = 120   # 重启后等 diag 确认的超时（秒）
 BYE = 8              # 成功提示停留秒数
+# WMI 拉起（issue #208：launch_monitor 的脱离式通道）不继承调用方环境，静默开关由
+# 尾部 --quiet 参数传达，等效于 ZUSAGE_MONITOR_QUIET=1；位置参数 epoch/asar/runtime
+# 的索引不受影响（标志固定排在位置参数之后）。
+if "--quiet" in sys.argv[1:]:
+    os.environ["ZUSAGE_MONITOR_QUIET"] = "1"
 QUIET = os.environ.get("ZUSAGE_MONITOR_QUIET") == "1"
 
 
