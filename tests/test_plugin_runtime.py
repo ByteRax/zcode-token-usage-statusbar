@@ -639,6 +639,91 @@ class PluginRuntimeTests(unittest.TestCase):
                     else:
                         self.assertNotIn("systemMessage", result)   # v172 成功安装无会话文字
 
+    def lock_stub(self, acquired):
+        @contextlib.contextmanager
+        def lock():
+            yield acquired
+        return lock
+
+    def revive_fixture(self, patch_install, injected=True, bridge_status="present"):
+        with mock.patch.object(installer, "resolve_paths", return_value=(self.runtime, patch_install)), \
+                mock.patch.object(installer, "injected_status", return_value=injected), \
+                mock.patch.object(installer, "ensure_renderer_bridge",
+                                  return_value={"status": bridge_status}), \
+                mock.patch.dict(os.environ, {"ZUSAGE_MONITOR_QUIET": ""}), \
+                contextlib.redirect_stderr(io.StringIO()) as errors:
+            result = installer.run_hook()
+        return result, errors.getvalue()
+
+    def test_hook_revives_orphan_pending_when_no_monitor_watches(self):
+        # issue #228 自愈：合法 pending + 实例锁空闲 = 孤儿（publish 后旧监控让位退出、
+        # 新监控被去重跳过未拉起），SessionStart 必须补拉静默监控接管收尾。
+        patch_install = self.patch_install_stub()
+        patch_install.pending_operation.return_value = "install"
+        patch_install.monitor_instance_lock.side_effect = self.lock_stub(True)
+        patch_install.target_writable.return_value = True
+        captured = {}
+        def launch(epoch):
+            captured["quiet"] = os.environ.get("ZUSAGE_MONITOR_QUIET")
+        patch_install.launch_monitor.side_effect = launch
+        with mock.patch.object(installer, "resolve_paths", return_value=(self.runtime, patch_install)), \
+                mock.patch.object(installer, "injected_status", return_value=True), \
+                mock.patch.object(installer, "ensure_renderer_bridge", return_value={"status": "present"}), \
+                mock.patch.dict(os.environ, {"ZUSAGE_MONITOR_QUIET": ""}), \
+                contextlib.redirect_stderr(io.StringIO()):
+            result = installer.run_hook()
+            self.assertEqual(os.environ.get("ZUSAGE_MONITOR_QUIET"), "")   # 开关用完即还原
+        self.assertEqual(patch_install.launch_monitor.call_count, 1)
+        self.assertEqual(captured["quiet"], "1")   # SessionStart 静默接管，不弹监控黑窗
+        self.assertEqual(result, {"suppressOutput": True})
+
+    def test_hook_revive_skips_when_a_monitor_already_watches(self):
+        # 已有监控在值守（实例锁被持有）：不叠加进程。
+        patch_install = self.patch_install_stub()
+        patch_install.pending_operation.return_value = "install"
+        patch_install.monitor_instance_lock.side_effect = self.lock_stub(False)
+        result, _ = self.revive_fixture(patch_install)
+        patch_install.launch_monitor.assert_not_called()
+        self.assertEqual(result, {"suppressOutput": True})
+
+    def test_hook_skips_revive_on_the_fresh_publish_path(self):
+        # 本轮刚 publish（status=pending）的链路已自带 launch：自愈不在 publish 当轮
+        # 重复拉起——新监控（WMI 通道秒级）尚未持锁时会被锁空闲探测误判成孤儿。
+        patch_install = self.patch_install_stub()
+        patch_install.pending_operation.return_value = "install"
+        patch_install.monitor_instance_lock.side_effect = self.lock_stub(True)
+        patch_install.target_writable.return_value = True
+        result, _ = self.revive_fixture(patch_install, bridge_status="pending")
+        patch_install.launch_monitor.assert_not_called()
+        self.assertEqual(result, {"suppressOutput": True})
+
+    def test_hook_revive_skips_without_legal_pending_operation(self):
+        for op in (None, "cancelled"):
+            with self.subTest(operation=op):
+                patch_install = self.patch_install_stub()
+                patch_install.pending_operation.return_value = op
+                patch_install.monitor_instance_lock.side_effect = self.lock_stub(True)
+                patch_install.target_writable.return_value = True
+                self.revive_fixture(patch_install)
+                patch_install.launch_monitor.assert_not_called()
+
+    def test_hook_revive_skips_on_unwritable_target(self):
+        # issue #130：受保护目录上 hook 无提权收不了尾，补拉只会得到立即退出的监控
+        # ——该场景由提权重跑链负责，不自愈。
+        patch_install = self.patch_install_stub()
+        patch_install.pending_operation.return_value = "install"
+        patch_install.monitor_instance_lock.side_effect = self.lock_stub(True)
+        patch_install.target_writable.return_value = False
+        self.revive_fixture(patch_install)
+        patch_install.launch_monitor.assert_not_called()
+
+    def test_hook_revive_failure_never_breaks_hook_output(self):
+        patch_install = self.patch_install_stub()
+        patch_install.pending_operation.side_effect = RuntimeError("probe boom")
+        result, errors = self.revive_fixture(patch_install)
+        self.assertEqual(result, {"suppressOutput": True})
+        self.assertIn("probe boom", errors)
+
     def test_hook_optout_and_record_failure_are_preserved(self):
         self.write_file(self.runtime / ".plugin-overlay-optout", b"1")
         patch_install = self.patch_install_stub()
@@ -1200,6 +1285,87 @@ class SessionStartDiagnosticTests(unittest.TestCase):
         self.assertIn("diagnostic denied", errors)
         self.assertEqual(list(self.runtime.iterdir()), [])
         self.assertEqual(list(self.home.iterdir()), [])
+
+
+class OrphanPendingReviveTests(unittest.TestCase):
+    """issue #228 自愈检查的真实链路形态：真 sidecar + 真实例锁 + 桩拉起。
+    判据与 usage_mcp.revive_finalize_monitor 同款（合法 pending + 锁空闲），
+    这里锁的是 _revive_orphan_pending 对真实锁/sidecar 语义的契约。"""
+
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.home = self.root / "home"
+        self.home.mkdir()
+        home = mock.patch.dict(os.environ, {"HOME": str(self.home), "USERPROFILE": str(self.home)})
+        home.start()
+        self.addCleanup(home.stop)
+        self.asar = self.root / "app.asar"
+        self.asar.write_bytes(b"official version")
+        self.tmp = self.asar.with_name("app.asar.zusage.tmp")
+        self.runtime = self.root / "runtime"
+        self.runtime.mkdir()
+        spec = importlib.util.spec_from_file_location(
+            "revive_patch_test", Path(__file__).resolve().parents[1] / "patch_install.py")
+        self.patch = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.patch)
+        self.patch.set_target(self.asar)
+        self.patch.set_runtime(self.runtime)
+
+    def write_pending(self, operation="install"):
+        source = self.patch.source_fingerprint(self.asar)
+        self.tmp.write_bytes(b"pending package")
+        with mock.patch.object(self.patch, "self_check", return_value=True), \
+                mock.patch.object(self.patch, "syntax_check", return_value=True):
+            self.patch.write_tmp_metadata(source, operation)
+
+    def revive(self):
+        captured = {}
+        def launch(epoch):
+            captured["quiet"] = os.environ.get("ZUSAGE_MONITOR_QUIET")
+        with mock.patch.dict(os.environ, {"ZUSAGE_MONITOR_QUIET": ""}), \
+                mock.patch.object(self.patch, "launch_monitor", side_effect=launch) as launch_mock:
+            installer._revive_orphan_pending(self.patch)
+            captured["after"] = os.environ.get("ZUSAGE_MONITOR_QUIET")   # patch.dict 还原前取样
+        return launch_mock, captured
+
+    def test_orphan_pending_with_free_lock_is_revived_quietly(self):
+        self.write_pending()
+        launch, captured = self.revive()
+        self.assertEqual(launch.call_count, 1)
+        self.assertEqual(captured["quiet"], "1")   # 静默接管，SessionStart 不弹监控黑窗
+        self.assertEqual(captured["after"], "")   # 开关用完即还原
+
+    def test_held_monitor_lock_is_not_revived(self):
+        # 已有监控存活（实例锁被持有）：不叠加进程。
+        self.write_pending()
+        with self.patch.monitor_instance_lock() as acquired:
+            self.assertTrue(acquired)
+            launch, _ = self.revive()
+        launch.assert_not_called()
+
+    def test_cancelled_journal_is_not_revived(self):
+        # 落定 cancelled（remove 撤销/中断遗留）不是待收尾包；发布中 journal 同样被
+        # pending_operation 判为 cancelled 而跳过——由发布方自己的 launch 链负责。
+        self.write_pending()
+        meta = json.loads(self.tmp.with_name(self.tmp.name + ".json").read_text(encoding="utf-8"))
+        meta["operation"] = "cancelled"
+        self.tmp.with_name(self.tmp.name + ".json").write_text(json.dumps(meta), encoding="utf-8")
+        launch, _ = self.revive()
+        launch.assert_not_called()
+
+    def test_revive_launch_failure_never_pollutes_stdout(self):
+        # launch_monitor 的 spawn 失败回退 print 走 stdout：revive 必须把 launch 整体
+        # 重定向到 stderr，hook 协议 stdout 零污染（issue #228 review 补强）。
+        self.write_pending()
+        stdout = io.StringIO()
+        with mock.patch.dict(os.environ, {"ZUSAGE_MONITOR_QUIET": ""}), \
+                mock.patch.object(self.patch, "launch_monitor",
+                                  side_effect=lambda epoch: print("monitor launch failed")), \
+                contextlib.redirect_stdout(stdout):
+            installer._revive_orphan_pending(self.patch)
+        self.assertEqual(stdout.getvalue(), "")
 
 
 if __name__ == "__main__":

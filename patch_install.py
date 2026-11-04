@@ -432,6 +432,14 @@ class PendingTmpError(ValueError):
     """来源/身份不可信：立即取消收尾，保留文件供诊断，不按文件占用重试。"""
 
 
+class PendingTmpBusy(PendingTmpError):
+    """发布中 journal 的瞬时态（issue #228）：监控重试续守而非取消让位。_publish_pending
+    先写 cancelled+publishing journal、全量 hash 大包后才落终版 sidecar——这个秒级
+    窗口里轮询的旧监控若按 cancelled 退出让位，而 launch_monitor 的去重又认定
+    「已有监控在等」不拉新监控，交接就断裂成孤儿 pending（之后重启不再替换）。子类化
+    保持既有 except PendingTmpError 全部语义，监控循环按需先行捕获。"""
+
+
 # Windows 的 st_ctime 是创建时间：内容修改不会改变它（没有防篡改价值），且杀软过滤
 # 驱动下同一路径 lstat 与打开句柄 fstat 读到的 ctime_ns 可能恒不一致（NTFS 实测，
 # size/mtime/dev/ino 均相同），纳入比对会让每次 source_fingerprint 都误报
@@ -735,7 +743,11 @@ def pending_operation():
 def pending_tmp(operation="install", verify_hash=False, verified=None):
     """校验来源及 TMP；verified 是单次监控的缓存，stat/sidecar 不变才复用 hash。"""
     meta = _load_tmp_metadata()
-    if (meta["operation"] == "cancelled" or meta.get("validated") is not True or
+    if meta["operation"] == "cancelled":
+        if meta.get("publishing") is True:
+            raise PendingTmpBusy("pending publish in progress")   # 瞬时态：重试待新世代落定
+        raise PendingTmpError("pending operation/runtime is no longer authorized")
+    if (meta.get("validated") is not True or
             (operation is not None and meta["operation"] != operation) or
             (meta["operation"] == "install" and meta["runtime"] != str(RUNTIME.resolve()))):
         raise PendingTmpError("pending operation/runtime is no longer authorized")

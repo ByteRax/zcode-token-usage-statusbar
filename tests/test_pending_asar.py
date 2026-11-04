@@ -220,6 +220,47 @@ class PendingAsarTests(unittest.TestCase):
             self.pi.finalize_tmp()
         self.assertNotIn(b"inject-main.cjs", self.pi.entry_bytes_of(self.asar))
 
+    def capture_publish_journal(self):
+        """真实 _publish_pending 的 journal 中间态：拦截 _atomic_tmp_metadata 抓到
+        cancelled+publishing 形态；发布照常完成后返回 (journal, 终版 meta)。"""
+        seen = []
+        real = self.pi._atomic_tmp_metadata
+        def observe(meta):
+            seen.append(dict(meta))
+            return real(meta)
+        with mock.patch.object(self.pi, "_atomic_tmp_metadata", side_effect=observe):
+            self.prepare()
+        self.assertEqual(len(seen), 2)
+        journal, final = seen
+        self.assertEqual(journal["operation"], "cancelled")
+        self.assertTrue(journal.get("publishing"))
+        return journal, final
+
+    def test_publishing_journal_is_transient_busy_not_hard_cancel(self):
+        # issue #228：publish 的 journal 窗口（cancelled+publishing，期间要全量 hash
+        # 大包，可达秒级）恰逢监控轮询时，读到的不是「来源失效」而是发布进行中的
+        # 瞬时态——监控必须重试续守到新世代，而不是退出让位。退出让位 + launch_monitor
+        # 去重跳过新拉起 = 孤儿 pending，之后重启不再替换（拖 N 轮重启）。
+        journal, final = self.capture_publish_journal()
+        self.pi._atomic_tmp_metadata(journal)
+        with self.assertRaises(self.pi.PendingTmpBusy) as ctx:
+            self.pi.pending_tmp(operation=None)
+        self.assertIsInstance(ctx.exception, self.pi.PendingTmpError)   # 既有 except PendingTmpError 语义不变
+        self.assertEqual(self.pi.pending_operation(), "cancelled")   # 复活/让位判定读到的仍是 cancelled
+        self.pi._atomic_tmp_metadata(final)
+        self.pi.pending_tmp(operation=None)   # 发布完成：不再 Busy（不抛即通过）
+
+    def test_settled_cancelled_sidecar_stays_hard_cancel(self):
+        # 落定的 cancelled（remove 撤销/旧版中断遗留，无 publishing 标记）不是瞬时态：
+        # 维持硬取消语义，绝不按可重试处理。
+        self.prepare()
+        meta = json.loads(self.pi.TMP_META.read_text())
+        meta["operation"] = "cancelled"
+        self.pi._atomic_tmp_metadata(meta)
+        with self.assertRaises(self.pi.PendingTmpError) as ctx:
+            self.pi.pending_tmp(operation=None)
+        self.assertNotIsInstance(ctx.exception, self.pi.PendingTmpBusy)
+
     def test_remove_on_injected_target_replaces_only_with_remove_package(self):
         make_asar(self.asar, b"official;" + self.pi.INJECT_LINE.encode())
         self.prepare()
