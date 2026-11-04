@@ -342,7 +342,10 @@ class QuietMonitorTests(unittest.TestCase):
         self.write_sidecar(meta)
 
     def flip_back_to_install(self):
-        meta = self.sidecar()
+        try:
+            meta = self.sidecar()
+        except FileNotFoundError:
+            return   # 收尾已完成、sidecar 已删（完成路径的 sleep 复用本夹具时）
         meta.pop("publishing", None)
         meta["operation"] = "install"
         self.write_sidecar(meta)
@@ -385,7 +388,64 @@ class QuietMonitorTests(unittest.TestCase):
             with self.assertRaises(KeyboardInterrupt):
                 self.monitor.main()
         self.assertTrue(screens)
+        self.assertIn("正在发布", screens[0])   # 首屏即「发布中」等待，而非「请重启」/「失效」
         self.assertNotIn("失效", "\n".join(screens))
+
+    def test_visible_monitor_finalize_phase_busy_keeps_waiting(self):
+        # 预检通过后、收尾前 sidecar 翻成发布中 journal（并发 publish 的亚秒窗口）：
+        # 收尾本轮让位，但不画「替换失败/已失效」误导屏（其手动指引同样会被 Busy
+        # 拒绝），下轮按「发布中」等待屏续守到发布完成再收尾（issue #228 review 补强）。
+        self.pending()
+        screens = []
+        finalize_calls = []
+        real_finalize = self.monitor.finalize_tmp
+        def finalize_once(verified=None):
+            finalize_calls.append(True)
+            if len(finalize_calls) == 1:
+                self.flip_to_publishing_journal()
+                raise self.patch.PendingTmpBusy("pending publish in progress")
+            return real_finalize(verified=verified)
+        with mock.patch.dict(sys.modules, {"patch_install": self.patch}), \
+                mock.patch.object(self.monitor, "QUIET", False), \
+                mock.patch.object(sys, "argv", ["install_monitor.py", "0"]), \
+                mock.patch.object(self.monitor, "draw",
+                                  side_effect=lambda lines: screens.append("\n".join(lines))), \
+                mock.patch.object(self.monitor, "zcode_pids",
+                                  side_effect=[{"1"}, {"1"}] + [set()] * 6 + [KeyboardInterrupt]), \
+                mock.patch.object(self.monitor, "wait_any_exit"), \
+                mock.patch.object(self.monitor.time, "monotonic", side_effect=[0, 1, 2, 3, 4, 5, 6]), \
+                mock.patch.object(self.monitor.time, "sleep",
+                                  side_effect=lambda *_args: self.flip_back_to_install()), \
+                mock.patch.object(self.monitor, "finalize_tmp", side_effect=finalize_once), \
+                mock.patch.object(self.patch, "self_check", return_value=True):
+            with self.assertRaises(KeyboardInterrupt):
+                self.monitor.main()
+        joined = "\n".join(screens)
+        self.assertNotIn("失效", joined)
+        self.assertNotIn("占用", joined)   # 不误报「替换失败（文件仍被占用？）」终屏
+        self.assertIn("正在发布", joined)
+        self.assertEqual(len(finalize_calls), 2)   # 发布完成后收尾重试成功
+        self.assertEqual(self.asar.read_bytes(), b"verified package")
+
+    def test_visible_monitor_publishing_journal_respects_one_day_deadline(self):
+        # 发布方死在 journal 写后遗留的卡死 pending（发布中进程被杀/os.replace 被占用）：
+        # 窗口模式 Busy 轮同样受一天期限约束，不无限值守持锁（issue #228 review 补强）。
+        self.pending()
+        self.flip_to_publishing_journal()
+        screens = []
+        with mock.patch.dict(sys.modules, {"patch_install": self.patch}), \
+                mock.patch.object(self.monitor, "QUIET", False), \
+                mock.patch.object(sys, "argv", ["install_monitor.py", "0"]), \
+                mock.patch.object(self.monitor, "draw",
+                                  side_effect=lambda lines: screens.append("\n".join(lines))), \
+                mock.patch.object(self.monitor, "zcode_pids", side_effect=[{"1"}, {"1"}]), \
+                mock.patch.object(self.monitor.time, "monotonic", side_effect=[0, 86401]), \
+                mock.patch.object(self.monitor.time, "sleep"), \
+                mock.patch.object(self.patch, "self_check", return_value=True):
+            self.monitor.main()
+        joined = "\n".join(screens)
+        self.assertIn("超过一天", joined)
+        self.assertNotIn("失效", joined)
 
     def test_windows_quiet_launch_uses_no_window_flag(self):
         flags = {"CREATE_NO_WINDOW": 0x08000000, "CREATE_BREAKAWAY_FROM_JOB": 0x01000000}

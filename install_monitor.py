@@ -291,6 +291,12 @@ def _run():
                     return
             except pi.PendingTmpBusy:
                 # 发布中 journal（issue #228）：本轮不收尾不取消，下轮读到新世代继续值守。
+                # deadline 在此同样生效：发布方死在 journal 写后（375MB 重 hash 窗口被杀、
+                # os.replace 被占用）遗留的卡死 journal，不能让可见监控无限值守持锁。
+                if time.monotonic() >= deadline:
+                    draw([L("[!] 待替换包收尾已超过一天，停止自动重试。文件保留，请重新安装。",
+                            "[!] Pending finalization timed out after one day; files kept. Re-run install.")])
+                    return
                 publishing = True
             except pi.PendingTmpError as e:
                 draw([L(f"[!] 待替换包来源/身份失效，取消收尾，文件保留：{e}",
@@ -314,7 +320,11 @@ def _run():
                 try:
                     finished = finalize_tmp(verified=verified)
                 except pi.PendingTmpBusy:
-                    finished = False   # 发布中 journal（issue #228）：本轮不收尾，下轮重试
+                    # 预检后、收尾前 sidecar 翻成发布中 journal（并发 publish 的亚秒
+                    # 窗口）：本轮不画「替换失败」误导屏（其手动指引同样会被 Busy
+                    # 拒绝），下轮按 publishing 等待屏续守（issue #228）。
+                    publishing = True
+                    continue
                 except pi.PendingTmpError as e:
                     draw([L(f"[!] 待替换包已失效，取消收尾，文件保留：{e}",
                             f"[!] Pending package invalid; finalization cancelled, files kept: {e}")])

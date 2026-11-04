@@ -1355,6 +1355,18 @@ class OrphanPendingReviveTests(unittest.TestCase):
         launch, _ = self.revive()
         launch.assert_not_called()
 
+    def test_revive_launch_failure_never_pollutes_stdout(self):
+        # launch_monitor 的 spawn 失败回退 print 走 stdout：revive 必须把 launch 整体
+        # 重定向到 stderr，hook 协议 stdout 零污染（issue #228 review 补强）。
+        self.write_pending()
+        stdout = io.StringIO()
+        with mock.patch.dict(os.environ, {"ZUSAGE_MONITOR_QUIET": ""}), \
+                mock.patch.object(self.patch, "launch_monitor",
+                                  side_effect=lambda epoch: print("monitor launch failed")), \
+                contextlib.redirect_stdout(stdout):
+            installer._revive_orphan_pending(self.patch)
+        self.assertEqual(stdout.getvalue(), "")
+
 
 if __name__ == "__main__":
     unittest.main()

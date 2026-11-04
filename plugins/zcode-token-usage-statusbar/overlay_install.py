@@ -859,7 +859,8 @@ def _revive_orphan_pending(pi):
     等下一次恰好重走 publish+拉起链。SessionStart 在 publish 之外常态检查一次：
     合法 pending 且实例锁空闲即孤儿，补拉静默监控接管收尾。已有监控值守（锁被持有）
     不动作；受保护目录（issue #130）无提权收不了尾，交提权重跑链。任何异常只进
-    stderr，绝不影响 hook 主流程。判据与 usage_mcp.revive_finalize_monitor 同款。"""
+    stderr，绝不影响 hook 主流程。判据与 usage_mcp.revive_finalize_monitor 同款，
+    并多一道目标可写前置（hook 场景须守住 issue #130 边界）。"""
     try:
         if pi.pending_operation() not in ("install", "remove"):
             return   # 无合法 sidecar（含发布中 journal/撤销遗留）：无事可做
