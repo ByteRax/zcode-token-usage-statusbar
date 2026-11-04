@@ -354,8 +354,10 @@ class QuietMonitorTests(unittest.TestCase):
         self.assertEqual(spawn.call_count, 2)
         self.assertEqual(spawn.call_args_list[0].kwargs["creationflags"], 0x08000000 | 0x01000000)
         self.assertEqual(spawn.call_args_list[1].kwargs["creationflags"], 0x08000000)
-        # 降级不能静默（issue #208 修复建议 1）：留痕只许走 stderr
-        self.assertIn("breakaway", err.getvalue())
+        # 降级不能静默（issue #208 修复建议 1）：留痕只许走 stderr。
+        # 关键词取两语言文案共有的 "issue #208"——fixture 异常消息含 "breakaway"，
+        # 用它断言会靠 {e} 插值蒙混过关，锁不住实现文案。
+        self.assertIn("issue #208", err.getvalue())
 
     def test_windows_quiet_launch_prefers_wmi_detached_spawn(self):
         # issue #208：hook/插件宿主场景的 Job 常拒绝 breakaway，树内监控活不过宿主
@@ -459,6 +461,10 @@ class QuietMonitorTests(unittest.TestCase):
             self.assertIsNone(self.patch._spawn_via_wmi(cmd))
         with mock.patch.object(self.patch.subprocess, "run",
                                side_effect=subprocess.TimeoutExpired(cmd=["powershell"], timeout=15)):
+            self.assertIsNone(self.patch._spawn_via_wmi(cmd))
+        # 含 surrogate 的路径在 encode("utf-16-le") 抛 UnicodeEncodeError（ValueError 子类）：
+        # 逃逸会击穿 launch_monitor 的 OSError 兜底，必须在此转 None 走树内回退
+        with mock.patch.object(self.patch.subprocess, "run", side_effect=ValueError("encoding")):
             self.assertIsNone(self.patch._spawn_via_wmi(cmd))
         with mock.patch.object(self.patch.subprocess, "run",
                                return_value=mock.Mock(returncode=0, stdout=b"not-a-pid")):
