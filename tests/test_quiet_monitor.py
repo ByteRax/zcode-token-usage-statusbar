@@ -348,11 +348,14 @@ class QuietMonitorTests(unittest.TestCase):
                 mock.patch.multiple(self.patch.subprocess, create=True, **flags), \
                 mock.patch.object(self.patch.subprocess, "Popen",
                                   side_effect=[OSError("job object does not allow breakaway"),
-                                               mock.DEFAULT]) as spawn:
+                                               mock.DEFAULT]) as spawn, \
+                contextlib.redirect_stderr(io.StringIO()) as err:
             self.patch.launch_monitor(0)
         self.assertEqual(spawn.call_count, 2)
         self.assertEqual(spawn.call_args_list[0].kwargs["creationflags"], 0x08000000 | 0x01000000)
         self.assertEqual(spawn.call_args_list[1].kwargs["creationflags"], 0x08000000)
+        # 降级不能静默（issue #208 修复建议 1）：留痕只许走 stderr
+        self.assertIn("breakaway", err.getvalue())
 
     def test_windows_quiet_launch_prefers_wmi_detached_spawn(self):
         # issue #208：hook/插件宿主场景的 Job 常拒绝 breakaway，树内监控活不过宿主
@@ -378,11 +381,14 @@ class QuietMonitorTests(unittest.TestCase):
         spawn.assert_not_called()
 
     def test_windows_wmi_channel_disabled_by_env(self):
-        # ZUSAGE_MONITOR_NO_WMI=1：排查/测试出口，直接走树内拉起
+        # ZUSAGE_MONITOR_NO_WMI=1：排查/测试出口，直接走树内拉起。
+        # _wmi_interpreter 必须显式桩为可用：否则 POSIX 上真实探测返回 None、门体
+        # 根本执行不到，NO_WMI 出口被删也不会红。
         flags = {"CREATE_NO_WINDOW": 0x08000000, "CREATE_BREAKAWAY_FROM_JOB": 0x01000000}
         env = {"ZUSAGE_NO_MONITOR": "1", "ZUSAGE_MONITOR_QUIET": "1", "ZUSAGE_MONITOR_NO_WMI": "1"}
         with mock.patch.dict(os.environ, env), \
                 mock.patch.object(self.patch, "IS_WIN", True), \
+                mock.patch.object(self.patch, "_wmi_interpreter", return_value=r"C:\Py\pythonw.exe"), \
                 mock.patch.object(self.patch, "_spawn_via_wmi") as wmi, \
                 mock.patch.multiple(self.patch.subprocess, create=True, **flags), \
                 mock.patch.object(self.patch.subprocess, "Popen") as spawn:
@@ -415,11 +421,34 @@ class QuietMonitorTests(unittest.TestCase):
         self.assertEqual(pid, 4321)
         argv = run.call_args.args[0]
         self.assertEqual(argv[:4], ["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand"])
+        # 同步阻塞在 hook 进程内：必须有超时，且输出必须被捕获（不污染协议 stdout）
+        self.assertEqual(run.call_args.kwargs["timeout"], self.patch.WMI_TIMEOUT)
+        self.assertTrue(run.call_args.kwargs["capture_output"])
         script = base64.b64decode(argv[4]).decode("utf-16-le")
         expected = subprocess.list2cmdline(cmd)
         self.assertIn(expected.replace("'", "''"), script)
         self.assertIn("Win32_Process", script)
+        # 创建失败必须在 PS 侧退出非零（缺了它 [int]$null 求值为 0，会被当成功
+        # PID 返回，回退链被绕过——issue #208 的「无人收尾」以假成功复现）
+        self.assertIn("ReturnValue -ne 0", script)
+        self.assertIn("exit 1", script)
         self.assertIn("$r.ProcessId", script)
+
+    def test_wmi_interpreter_probe(self):
+        # pythonw.exe 探测本体：命中同目录文件返回其路径；缺失返回 None（绝不回退
+        # python.exe，WMI 无标志位会闪控制台窗）；sys.executable 为空（嵌入式场景）
+        # 不抛异常、直接 None。
+        with tempfile.TemporaryDirectory() as td:
+            exe = Path(td) / "python.exe"
+            pythonw = Path(td) / "pythonw.exe"
+            pythonw.write_bytes(b"")
+            with mock.patch.object(sys, "executable", str(exe)):
+                self.assertEqual(self.patch._wmi_interpreter(), str(pythonw))
+            pythonw.unlink()
+            with mock.patch.object(sys, "executable", str(exe)):
+                self.assertIsNone(self.patch._wmi_interpreter())
+            with mock.patch.object(sys, "executable", ""):
+                self.assertIsNone(self.patch._wmi_interpreter())
 
     def test_wmi_spawn_failure_modes_return_none(self):
         cmd = ["pythonw", "install_monitor.py", "0", "a", "b", "--quiet"]
@@ -462,11 +491,14 @@ class QuietMonitorTests(unittest.TestCase):
         self.assertIsNotNone(pid)
         kernel32 = ctypes.windll.kernel32
         kernel32.OpenProcess.restype = ctypes.c_void_p
-        handle = kernel32.OpenProcess(0x00100000, False, pid)   # SYNCHRONIZE
+        handle = kernel32.OpenProcess(0x00100001, False, pid)   # SYNCHRONIZE | PROCESS_TERMINATE
         self.assertTrue(handle, "WMI 返回的 PID 不可等待")
         try:
             kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint]
-            self.assertEqual(kernel32.WaitForSingleObject(handle, 30000), 0)   # WAIT_OBJECT_0
+            if kernel32.WaitForSingleObject(handle, 30000) != 0:   # WAIT_OBJECT_0
+                # 监控不在测试进程树内（父进程 WmiPrvSE）：超时先终止再失败，不留孤儿
+                kernel32.TerminateProcess(ctypes.c_void_p(handle), 1)
+                self.fail("监控未在 30s 内干净退出")
         finally:
             kernel32.CloseHandle(ctypes.c_void_p(handle))
 

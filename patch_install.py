@@ -198,6 +198,8 @@ def _wmi_interpreter():
     """WMI 创建没有创建标志位可用：静默监控必须用无控制台的 pythonw.exe，缺失时
     返回 None——不用 python.exe 顶替（会在交互会话闪现控制台窗，行为不能劣化，
     宁可跳过 WMI 走树内回退）。"""
+    if not sys.executable:   # 嵌入式场景可能为空：Path("").with_name 会抛 ValueError
+        return None
     pythonw = Path(sys.executable).with_name("pythonw.exe")
     return str(pythonw) if pythonw.is_file() else None
 
@@ -236,7 +238,7 @@ def launch_monitor(epoch):
     同目标已有存活监控时不再拉起（issue #120：SessionStart 每次自动安装都会走到这里，
     不去重会随会话数线性堆积）；锁在 spawn 前释放，由监控进程自己去持有。
     返回值：Windows 静默 WMI 通道返回新进程 PID，其余返回 Popen 对象或 None
-    （调用方均不消费返回值；PID 仅供诊断输出用）。"""
+    （当前调用方均不消费返回值；PID 供测试断言与排查用）。"""
     if os.environ.get("ZUSAGE_NO_MONITOR") and not os.environ.get("ZUSAGE_MONITOR_QUIET"):
         return
     monitor = HERE / "install_monitor.py"
