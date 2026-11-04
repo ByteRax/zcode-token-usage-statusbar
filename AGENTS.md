@@ -193,7 +193,7 @@ python3 sync_plugin.py --check
 
 | 改动范围 | 验证选择（文件位于 `tests/`） |
 |---|---|
-| 统计/速率 | `test_token_rate.py`、`test_statusbar_rate.py`、`test_statusbar_cost.py`、`test_token_pricing.py`、`overlay-rate.test.cjs`、`overlay-cost-tip.test.cjs`；更改共享 JSON 时加入远端及插件契约回归 |
+| 统计/速率 | `test_token_rate.py`、`test_statusbar_rate.py`、`test_statusbar_cost.py`、`test_token_pricing.py`、`overlay-rate.test.cjs`、`overlay-cost-tip.test.cjs`、`overlay-speed-chart.test.cjs`；更改共享 JSON 时加入远端及插件契约回归 |
 | 套餐额度 | `quota-client.test.cjs`、`opencode-quota.test.cjs`、`quota-paths.test.cjs`、`quota-provider-revoke.test.cjs`、`quota-source-lifecycle.test.cjs`、`sub2api-protocol.test.cjs`、`overlay-quota-chip.test.cjs`、`test_statusbar_rate.py`（provider_fallback/scnet 估算）；真实厂商响应、凭据刷新解冻与 chip 实机挂载需桌面验收，unverified 适配器待真实账号校准 |
 | 浮层/主桥 | `overlay-*.test.cjs`、`plugin-loader.test.cjs`、`plugin-restart-boot.test.cjs`；语法检查，布局/多窗口需桌面验收 |
 | 桥/SSH 路由 | `test_renderer_bridge.py`、`test_bridge_pending.py`、`test_remote_targets.py`、`inject-remote-recovery.test.cjs`、`overlay-remote-scope.test.cjs`；实机身份/重连与认证另验 |

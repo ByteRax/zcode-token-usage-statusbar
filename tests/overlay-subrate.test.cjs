@@ -17,15 +17,18 @@ function extractSpeedView(source, lang, zuSkillName) {
     L: (zh, en) => (lang === 'en' ? en : zh),
     zuToolVerb: (name) => name,
     zuSkillName: zuSkillName || ((t) => (t || '').slice(0, 24)),
+    zuSkillBaseName: zuSkillName || ((t) => (t || '')),   // v235：zuBarSpeedView Skill 分支取全名再自行截断
     Date: { now: () => NOW },
   });
 }
 
-/* v158：真实 zuSkillName 提取（与 overlay 同源切片），供 Skill 分支用例注入 */
+/* v158：真实 zuSkillName 提取（与 overlay 同源切片，v235 起连带其依赖的
+ * zuSkillBaseName 全名函数），供 Skill 分支用例注入 */
 function extractSkillName(source) {
-  const start = source.indexOf('  function zuSkillName(');
-  const end = source.indexOf('\n  }', start) + 4;   // 含收尾 '\n  }'
-  assert.ok(start >= 0 && end > start, '提取失败: zuSkillName');
+  const start = source.indexOf('  function zuSkillBaseName(');
+  const nameStart = source.indexOf('  function zuSkillName(');
+  const end = source.indexOf('\n  }', nameStart) + 4;   // 含 zuSkillName 收尾 '\n  }'
+  assert.ok(start >= 0 && nameStart > start && end > nameStart, '提取失败: zuSkillName/zuSkillBaseName');
   return vm.runInNewContext(source.slice(start, end) + '\nzuSkillName;', {});
 }
 
@@ -321,7 +324,7 @@ test('buildLiveTip lists per-agent rows with a sum line during the tool phase', 
   const src = source;
   // v215：buildLiveTip 重构为统计卡——切片含 speedCardHTML + tpsBandLegend（模块级依赖）
   const tpsStart = src.indexOf('  /* v215 速度统计卡公共构造');
-  const tpsLegendStart = src.indexOf('  function tpsBandLegend(curCls) {');
+  const tpsLegendStart = src.indexOf('  function tpsBandLegend(curCls, inline) {');
   const tpsLegendEnd = src.indexOf('\n  }', tpsLegendStart);
   assert.ok(tpsStart >= 0 && tpsLegendStart > tpsStart && tpsLegendEnd > tpsLegendStart, '提取失败: speedCardHTML/tpsBandLegend');
   const cardHelpers = src.slice(tpsStart, tpsLegendEnd + 4);
@@ -335,6 +338,8 @@ test('buildLiveTip lists per-agent rows with a sum line during the tool phase', 
     L: (zh, en) => zh,
     /* v218：buildLiveTip 右格改读泵快照最近一段（lastView.last.tps）——沙箱注入空 lastView */
     lastView: null,
+    /* v232：buildLiveTip 读写实例闭包的柱状图悬停状态——切片沙箱按初值注入同形种子 */
+    speedChartHover: -1, speedTipSess: '', speedTipRebuild: null,
     /* v222：buildLiveTip 时间范围行读 speedSpan（实例级助手）——沙箱注入同形桩 */
     speedSpan: (started, ended) => started ? { start: 'S', end: ended ? 'E' : '' } : null,
     Date: { now: () => now },

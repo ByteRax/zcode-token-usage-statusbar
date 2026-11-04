@@ -154,6 +154,7 @@ function harness({ costLS = null, kmbLS = null, lang = 'zh' } = {}) {
       row.project = { sessions: 2, turns: 5, requests: 9, input: 50000, output: 6000, reasoning: 400,
         cache_read: 40000, cache_write: 200, total: 56000, tool_calls: 2, retries: 1,
         started: NOW - 120000, last_at: NOW - 1000, cost_usd: 3,             // ¥21.30
+        name: 'zcode-token-usage-statusbar',
         models: [{ model: 'GLM-5.3', requests: 8, total: 3000, cost_usd: 3 }] };
     }
     const out = { remote_evidence: false, not_local: [], recent: [row], last: row.last,
@@ -322,12 +323,24 @@ test('气泡上下文：项目卡 KPI ? 显示计价范围（N 个模型）；�
   assert.doesNotMatch(fx.innerHTML, /计价范围/);
 });
 
+test('标题拼接项目名（v229）：pj.name 渲染 zu-pj-pname；旧快照缺字段不渲染不报错', () => {
+  const h = harness(); setup(h);
+  withProjectModels(h, [{ model: 'k', requests: 1, total: 10, cost_usd: 0 }]);
+  assert.match(h.drawProjectTip(),
+    /zu-pj-title zu-tt-name">项目累计<span class="zu-pj-pname">zcode-token-usage-statusbar<\/span><\/div>/);
+  const h2 = harness(); setup(h2);
+  const p = h2.payload({ withCost: true });
+  delete p.recent[0].project.name;   // 旧快照/远端旧行无 name：整段不渲染
+  h2.window.__zusageUpdate(p);
+  assert.doesNotMatch(h2.drawProjectTip(), /zu-pj-pname/);
+});
+
 test('双语：en 标题/范围/按钮走 L() 同链；Escape keydown 委托已挂', () => {
   const h = harness(); setup(h);
   h.window.costTest.state().lang = 'en';
   withProjectModels(h, Array.from({ length: 8 }, (_, i) => ({ model: 'm' + i, requests: 1, total: 50 - i, cost_usd: 0 })));
   const html = h.drawProjectTip();
-  assert.match(html, /zu-pj-title">Project total</);
+  assert.match(html, /zu-pj-title zu-tt-name">Project total</);
   assert.match(html, /zu-pj-scope">All requests</);
   assert.match(html, /Show all 8 models/);
   assert.ok(h.tipRoot().listeners.get('keydown'), 'Escape handler wired on tip');

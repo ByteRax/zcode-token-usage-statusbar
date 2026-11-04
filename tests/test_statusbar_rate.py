@@ -595,6 +595,111 @@ class SessionAvgTpsTests(unittest.TestCase):
         self.assertEqual(zusage._empty_snapshot("s", {"context_window": 200000})["avg_tps"], 0)
 
 
+class SpeedSegmentsTests(unittest.TestCase):
+    """速度 tooltip 柱状图数据源：session 快照行新增 speed_segs——最近 ≤20 条已完成
+    main_turn 有效速度段（avg_tps 同款口径：_row_gen_ms 窗口 + 200ms–1h 过滤，辅助源
+    与子代理行不计）。v 保留原始浮点（柱高与档位按原始值判断，显示层才取一位小数），
+    t = 完成时间毫秒，按完成时间升序；轻量/空行给 []（结构完整，消费端 Array.isArray 守卫）。"""
+
+    def setUp(self):
+        zusage._COVERS_CACHE.update(ts=0.0, set=frozenset())
+
+    def snap(self, rows, sid="s"):
+        con = sqlite3.connect(":memory:")
+        self.addCleanup(con.close)
+        con.row_factory = sqlite3.Row
+        con.executescript(SCHEMA)
+        con.execute("insert into session (id, title) values (?, 't')", (sid,))
+        for r in rows:
+            con.execute("insert into model_usage values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", r)
+        return zusage._session_snapshot(con, sid, {"context_window": 200000})
+
+    def segs(self, rows, sid="s"):
+        return self.snap(rows, sid)["speed_segs"]
+
+    def row(self, rid, start, ft, completed, output, reasoning=0, source="main_turn",
+            status="completed", model="GLM-5.3"):
+        return (rid, "s", "t", source, "", "account:test", model, status, start, ft,
+                completed, completed - start, ft - start if ft else None,
+                10, output, reasoning, 0, 0, output + 10, 0, 0, 0)
+
+    def test_segments_ascending_with_raw_values(self):
+        # r1 无思考：窗口 5000ms → 200 t/s；r2 上报思考：started 窗口 8000ms → 30 t/s
+        segs = self.segs([self.row("r1", 1_000_000, 1_002_000, 1_007_000, 1000),
+                          self.row("r2", 1_010_000, 1_012_000, 1_018_000, 240, reasoning=100)])
+        self.assertEqual([round(s["v"], 6) for s in segs], [200.0, 30.0])
+        self.assertEqual([s["t"] for s in segs], [1_007_000, 1_018_000])
+
+    def test_values_are_not_rounded(self):
+        # 2333ms 窗口 → 428.633... 保留原始浮点（round 后的 428.6 会破坏「档位按原始值判断」）
+        v = self.segs([self.row("r1", 0, 1_000, 3_333, 1000)])[0]["v"]
+        self.assertNotEqual(v, round(v, 1))
+        self.assertAlmostEqual(v, 1000 / 2.333, places=6)
+
+    def test_window_and_source_filters_match_avg_tps_discipline(self):
+        valid = self.row("r1", 1_000_000, 1_002_000, 1_007_000, 1000)   # 200 t/s
+        segs = self.segs([valid,
+                          self.row("f1", 1_010_000, 1_011_000, 1_012_000, 5000, status="failed"),
+                          self.row("n1", 1_020_000, None, 1_028_000, 5000),          # 缺首字
+                          self.row("t1", 1_030_000, 1_030_900, 1_031_000, 5000),     # 100ms 碎段
+                          self.row("x1", 1_040_000, 1_042_000, 1_047_000, 99999, source="session_title"),
+                          self.row("x2", 1_050_000, 1_052_000, 1_057_000, 99999, source="subagent")])
+        self.assertEqual(len(segs), 1)
+        self.assertEqual(round(segs[0]["v"], 6), 200.0)
+
+    def test_cap_ten_keeps_most_recent(self):
+        rows = [self.row(f"r{i:02d}", 1_000_000 + 10_000 * i, 1_000_000 + 10_000 * i + 2_000,
+                         1_000_000 + 10_000 * i + 7_000, 1000 + i) for i in range(25)]
+        segs = self.segs(rows)
+        self.assertEqual(len(segs), 10)
+        self.assertEqual(segs[0]["t"], 1_000_000 + 10_000 * 15 + 7_000)   # 最旧 15 段被滚出
+        self.assertEqual(segs[-1]["t"], 1_000_000 + 10_000 * 24 + 7_000)
+        self.assertTrue(all(segs[i]["t"] < segs[i + 1]["t"] for i in range(9)))
+
+    def test_scan_fills_through_invalid_tail(self):
+        # 最近 12 行 completed 但 Python 侧无效（缺 first_token_at）：它们占掉 SQL LIMIT
+        # 窗口前 12 席，3 倍扫描窗（30）必须从更早的 25 条有效段里凑满最近 10 条
+        # （review 变异：扫描窗退化为 20 时只剩 8 条有效，本用例必须红——无效行必须是 completed 且
+        # 位于最新端，failed 行会在 SQL 层被排除、占不到窗口）
+        rows = [self.row(f"n{i}", 3_000_000 + 10_000 * i, None, 3_000_000 + 10_000 * i + 5_000, 5000)
+                for i in range(12)]
+        rows += [self.row(f"r{i:02d}", 2_000_000 + 10_000 * i, 2_000_000 + 10_000 * i + 2_000,
+                          2_000_000 + 10_000 * i + 7_000, 1000 + i) for i in range(25)]
+        segs = self.segs(rows)
+        self.assertEqual(len(segs), 10)
+        self.assertTrue(all(s["t"] < 3_000_000 for s in segs))   # 无效尾段一个不进
+        self.assertEqual(segs[-1]["t"], 2_000_000 + 10_000 * 24 + 7_000)
+        self.assertEqual(segs[0]["t"], 2_000_000 + 10_000 * 15 + 7_000)   # 最旧 15 段被滚出
+
+    def test_covered_provider_window_applies_to_values(self):
+        # 落章 provider（斜率 0）含思考段按首字窗口：每段 500 tok ÷ 5s → 100.0
+        con = sqlite3.connect(":memory:")
+        self.addCleanup(con.close)
+        con.row_factory = sqlite3.Row
+        con.executescript(SCHEMA)
+        con.execute("insert into session (id, title) values ('s', 't')")
+        for i in range(6):
+            con.execute("insert into model_usage values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (f"c{i}", "s", "t", "main_turn", "", "prov-covers", "model-x", "completed",
+                         1_000_000 + 1000 * i, 1_000_000 + 1000 * i + 3000, 1_000_000 + 1000 * i + 8000,
+                         7000, 2500, 10, 500, 100 + 50 * i, 0, 0, 510, 0, 0, 0))
+        zusage._COVERS_CACHE.update(ts=0.0, set=frozenset())
+        segs = zusage._session_snapshot(con, "s", {"context_window": 200000})["speed_segs"]
+        self.assertEqual([round(s["v"], 1) for s in segs], [100.0] * 6)
+
+    def test_light_and_empty_snapshots_carry_empty_list(self):
+        con = sqlite3.connect(":memory:")
+        self.addCleanup(con.close)
+        con.row_factory = sqlite3.Row
+        con.executescript(SCHEMA)
+        con.execute("insert into session (id, title) values ('s', 't')")
+        con.execute("insert into model_usage values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    ("r1", "s", "t", "main_turn", "", "account:test", "GLM-5.3", "completed",
+                     1_000_000, 1_002_000, 1_007_000, 7000, 2000, 10, 1000, 0, 0, 0, 1010, 0, 0, 0))
+        self.assertEqual(zusage._light_snapshot(con, "s", {"context_window": 200000})["speed_segs"], [])
+        self.assertEqual(zusage._empty_snapshot("s", {"context_window": 200000})["speed_segs"], [])
+
+
 
 if __name__ == "__main__":
     unittest.main()

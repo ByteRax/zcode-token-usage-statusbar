@@ -1621,44 +1621,158 @@
    * CSS 规则在 tip 内直接生效，浅色主题由 tip 自身的 .zu-light 组切换；ultra 档连带
    * ✦ 与渐变。纯静态字符串无用户数据，不需转义（<40 手写成 &lt;40）。 */
   /* v215 速度统计卡公共构造（三条路径共用）：scope 标签 + 双读数 hero（主读数档位色）
-   * + 档位标签 + 颜色对照网格（当前档位描边）+ 统计口径 + 底部说明。 */
+   * + 档位标签 + 颜色对照网格（当前档位描边）+ 统计口径 + 底部说明。
+   * v232：o.segs（speedSegsOf 规整后的分段）非空时切「左读数卡 + 右柱状图」布局，
+   * 左卡由 o.leftNote 承载口径短语（v235 起由 o.status.noteText 承接,现无调用方传入,钩子保留）；无 segs（旧快照/远端旧版）整块保持 v215 原布局。 */
   function speedCardHTML(o) {
     function esc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+    /* v233 估宽分级（v235 阈值随左卡 300→250px 重算；结构化 status 模板下本分级
+     * 当前无生效路径——fit 类 CSS 仅 .zu-speed-left 作用域而 legacy hero 不在其内，
+     * 为 o.main 无 status 组合预留）：剥掉 o.main 的 HTML 标签后按字符估宽（CJK/全角 1em、其余 0.6em，
+     * 空白不计量），≤6.0em 默认单行大字（ui+22，容量 222/36≈6.2em），≤9.0em 加
+     * zu-speed-fit2（缩号允换行），更长加 zu-speed-fit3（再缩号 + break-word）。分级类
+     * 与 mainCls 并存，CSS 只在 .zu-speed-left 作用域生效。 */
+    function mainFitCls(s) {
+      var text = String(s == null ? "" : s).replace(/<[^>]*>/g, "");
+      var w = 0;
+      for (var i = 0; i < text.length; i++) {
+        if (/\s/.test(text[i])) continue;
+        w += /[\u2e80-\ua4cf\uf900-\ufaff\ufe30-\ufe4f\uff00-\uffef]/.test(text[i]) ? 1 : 0.6;
+      }
+      return w <= 6.0 ? "" : (w <= 9.0 ? " zu-speed-fit2" : " zu-speed-fit3");
+    }
     var hero = '<div class="zu-stat-kpi"><div class="zu-stat-k">' + esc(L("当前读数", "Current reading")) + '</div>' +
-      '<div class="zu-speed-main' + (o.mainCls ? " " + o.mainCls : "") + '">' + o.main + (o.noUnit ? "" : ' <small>t/s</small>') + '</div>' +
+      '<div class="zu-speed-main' + (o.mainCls ? " " + o.mainCls : "") + mainFitCls(o.main) + '">' + o.main + (o.noUnit ? "" : ' <small>t/s</small>') + '</div>' +
       (o.bandTag ? '<div class="zu-speed-bandtag"><b class="' + (o.mainCls || "") + '" style="font-weight:600">' + esc(o.bandTag) + '</b></div>' : '') +
       '</div>';
     if (o.subLabel) {
       hero += '<div class="zu-stat-kpi"><div class="zu-stat-k">' + esc(o.subLabel) + '</div>' +
         '<div class="zu-speed-sub">' + o.sub + ' <small>t/s</small></div></div>';
     }
+    /* v235 结构化左卡（o.status = zuBarSpeedView 的结构化字段）：状态/名称/数值/计时/
+     * 辅助/档位六个独立节点，不再把整句状态词塞进大字号读数；数值型（估算/会话均/
+     * 本轮真实）走档位色，工具/Skill/思考/子代理态保持中性 dim 语义。o.status 缺席
+     * （精简 chip 摘要等旧调用方）保持 o.main 拼装路径不变。 */
+    function escAttr2(s) { return esc(s).replace(/"/g, "&quot;"); }
+    function speedLeftHTML(st, subLine, segs) {
+      /* v239（设计图）：状态标题前恒有 lucide 线性图标——完成=圆环对勾、估算=闪电、工具=齿轮、
+       * 工具组=层叠、Skill=代码、子代理=多人；思考沿用状态机注入的脑动效（iconHTML）。
+       * 内联自包含（本函数在 bandHelpers 切片内运行，不得引用外层图标函数）。 */
+      var icoPaths = {
+        avg: '<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>',
+        real: '<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>',
+        estimate: '<path d="M13 2 3 14h9l-1 8 10-12h-9l1-8z"/>',
+        tool: '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>',
+        toolgroup: '<path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/>',
+        skill: '<path d="m18 16 4-4-4-4"/><path d="m6 8-4 4 4 4"/><path d="m14.5 4-5 16"/>',
+        subagent: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>'
+      };
+      var bcls = (st.kind === "avg" || st.kind === "real" || st.kind === "estimate") && st.band ? " " + st.band.cls : "";
+      var icon = st.iconHTML || (icoPaths[st.kind]
+        ? '<svg class="ico' + bcls + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + icoPaths[st.kind] + '</svg>' : "");
+      var numeric = st.kind === "avg" || st.kind === "real" || st.kind === "estimate";
+      var count = st.kind === "subagent" && st.activeCount > 1
+        ? ' <span class="zu-sl-count">×' + esc(st.activeCount) + "</span>" : "";
+      /* v241（设计图八态复刻）：标题行=图标+状态标题（工具=动词、工具组=「查阅·执行中」、Skill=技能名·执行中
+       * 两行省略 title 全名、子代理=标题+×N、思考/生成/完成=状态词）；主读数行=计时或数值，估算前缀「估」、
+       * 会话均前缀「均」为小号灰字（不并入大字）；档位胶囊仅估算/会话均两态；底部说明行取 noteText。 */
+      var isTimer = st.kind === "tool" || st.kind === "toolgroup" || st.kind === "skill" || st.kind === "thinking";
+      var title = st.statusText, titleFull = "";
+      if (st.kind === "tool" && st.nameText) title = st.nameText;
+      else if (st.kind === "toolgroup" && st.nameText) title = st.nameText + L("·执行中", "·executing");
+      else if (st.kind === "skill" && st.nameText) {
+        title = st.nameText + L("·执行中", "·executing");
+        if (st.nameFull && st.nameFull !== st.nameText) titleFull = st.nameFull + L("·执行中", "·executing");
+      } else if (st.kind === "thinking") title = st.statusText + "...";
+      var inner = '<div class="zu-sl-status' + (st.kind === "skill" ? " zu-sl-status--wrap" : "") + '">' + icon +
+        '<span' + (bcls ? ' class="zu-sl-title ' + bcls.trim() + '"' : ' class="zu-sl-title"') +
+        (titleFull || (st.kind === "tool" && st.nameText) ? ' title="' + escAttr2(titleFull || title) + '"' : "") + '>' + esc(title) + '</span>' + count + '</div>';
+      /* v242:有效速度值与非计时态同门判定(subagent 也走数值分支)——0/非有限不产空读数 */
+      var sv = isTimer ? null : st.speedValue;
+      var hasV = typeof sv === "number" && isFinite(sv) && sv > 0;
+      if (numeric && hasV) inner += '<div class="zu-sl-k">' + esc(L("当前读数", "Current reading")) + '</div>';
+      var mainBlock = "";
+      if (isTimer) {
+        if (st.elapsedText)
+          mainBlock = '<div class="zu-sl-main"><span class="zu-sl-val">' + esc(st.elapsedText) + '</span></div>';
+      } else {
+        if (hasV) {
+          var valCls = st.band ? " " + st.band.cls : "";
+          var pre = st.kind === "subagent" ? L("估", "est") : (st.kind === "avg" ? L("均", "avg") : "");
+          var txt = sv % 1 ? sv.toFixed(1) : String(sv);
+          mainBlock = '<div class="zu-sl-main">' + (pre ? '<small class="zu-sl-pre">' + esc(pre) + '</small>' : "") +
+            '<span class="zu-sl-val' + (st.kind === "subagent" ? " dim" : valCls) + '">' + txt +
+            '</span><small class="zu-sl-unit">t/s</small></div>';
+        } else if (st.kind === "subagent") {
+          mainBlock = '<div class="zu-sl-main"><span class="zu-sl-estdim">' + esc(L("估算中…", "estimating…")) + '</span></div>';
+        }
+      }
+      inner += '<div class="zu-sl-body">' + mainBlock;
+      /* v242:胶囊仅估算/会话均两态(设计图「完成态·无会话均」无胶囊);real 数值仍吃档位色 */
+      if (st.band && st.kind !== "real")
+        inner += '<div class="zu-speed-bandtag"><b class="' + st.band.cls + '" style="font-weight:600">' + esc(tpsBandText(st.band)) + '</b></div>';
+      if (subLine) inner += '<div class="zu-sl-note">' + esc(subLine) + '</div>';   // v235：无图表时保留「最近一段」读数（v218 语义）
+      if (st.noteText) inner += '<div class="zu-sl-note">' + esc(st.noteText) + '</div>';
+      inner += '</div>';
+      if (segs && segs.length) {
+        /* v240：左卡下半区「最近 N 段」概览（峰值/最低/最新，取自右侧同一组真实分段），填补留白 */
+        var mx = segs[0].v, mn = segs[0].v;
+        for (var si = 1; si < segs.length; si++) { if (segs[si].v > mx) mx = segs[si].v; if (segs[si].v < mn) mn = segs[si].v; }
+        var lastV = segs[segs.length - 1].v;
+        function sc(lb, val) {
+          var bd = tpsBand(val);
+          return '<span class="zu-sl-stat"><i>' + esc(lb) + '</i><b' + (bd ? ' class="' + bd.cls + '"' : "") + '>' + val.toFixed(1) + '</b></span>';
+        }
+        inner += '<div class="zu-sl-stats">' + sc(L("峰值", "Peak"), mx) + sc(L("最低", "Low"), mn) + sc(L("最新", "Latest"), lastV) + '</div>';
+      }
+      return inner;
+    }
+    var chart = speedChartHTML(o.segs, o.segsHover);
+    var leftInner = o.status ? speedLeftHTML(o.status,
+        (!chart && o.subLabel && o.sub) ? o.subLabel + " " + o.sub + " t/s" : "", chart ? o.segs : null) :
+      hero + (o.leftNote ? '<div class="zu-speed-note">' + esc(o.leftNote) + '</div>' : "");
+    var body = chart
+      ? '<div class="zu-speed-body"><div class="zu-speed-left">' + leftInner + '</div>' + chart + '</div>'
+      : (o.status
+        ? '<div class="zu-speed-hero"><div class="zu-stat-kpi">' + leftInner + '</div></div>'
+        : '<div class="zu-speed-hero">' + hero + '</div>');
     var basis = '';
-    if (o.basisTitle) {
+    var timeRow = (o.timeStart || o.timeEnd)
+      ? '<div class="zu-pj-time"><b>' + esc(L("时间范围", "Time span")) + '</b><span>' +
+        (o.timeStart ? esc(o.timeStart) : "—") + " — " + (o.timeEnd ? esc(o.timeEnd) : "—") + '</span></div>'
+      : '';
+    if (o.basisTitle && chart) {
+      /* v239（设计图）：「统计口径」左标题 + 右侧各段以竖线分隔横排，时间范围同卡下一行（无脚注） */
+      var bparts = "";
+      var bts = o.basisText || [];
+      for (var bj = 0; bj < bts.length; bj++) bparts += '<span>' + esc(bts[bj]) + '</span>';
+      basis = '<div class="zu-basis"><div class="zu-legend-title">' + esc(o.basisTitle) + '</div><div class="zu-basis-v">' + bparts + timeRow + '</div></div>';
+      timeRow = "";
+    } else if (o.basisTitle) {
       basis = '<div class="zu-legend-head" style="margin-top:16px"><div class="zu-legend-title">' + esc(o.basisTitle) + '</div></div>';
       for (var bi = 0; bi < o.basisText.length; bi++) {
         basis += '<div class="zu-stat-note">' + esc(o.basisText[bi]) + '</div>';
       }
     }
     var foot = '';
-    for (var fi = 0; o.foot && fi < o.foot.length; fi++) {
+    for (var fi = 0; !chart && o.foot && fi < o.foot.length; fi++) {
       foot += '<div class="zu-stat-note">' + esc(o.foot[fi]) + '</div>';
     }
-    var timeRow = (o.timeStart || o.timeEnd)
-      ? '<div class="zu-pj-time"><b>' + esc(L("时间范围", "Time span")) + '</b><span>' +
-        (o.timeStart ? esc(o.timeStart) : "—") + " — " + (o.timeEnd ? esc(o.timeEnd) : "—") + '</span></div>'
-      : '';
     return '<div class="zu-stat-tip zu-stat-tip--speed">' +
-      '<style>.zusage-tip-root:has(.zu-stat-tip--speed){max-width:min(760px,calc(100vw - 24px))!important}</style>' +
+      '<style>.zusage-tip-root:has(.zu-stat-tip--speed){max-width:min(860px,calc(100vw - 24px))!important}</style>' +
       '<div class="zu-stat-head"><div class="zu-stat-title">' + esc(L("生成速度", "Generation speed")) + '</div>' +
       (o.scope ? '<div class="zu-stat-scope">' + esc(o.scope) + '</div>' : "") + '</div>' +
-      '<div class="zu-speed-hero">' + hero + '</div>' +
-      (o.legend === false ? "" : tpsBandLegend(o.curCls)) +
+      body +
+      (o.legend === false ? "" : tpsBandLegend(o.curCls, !!chart)) +
       basis + timeRow + foot + '</div>';
   }
-  function tpsBandLegend(curCls) {
+  function tpsBandLegend(curCls, inline) {
     /* v215：两行五列网格（窄窗口重排）；范围文字保持原档位类着色（色点仅辅助，
      * 继承同一 currentColor），当前档位轻描边；当前档位按主读数真实档位判定。 */
-    var out = '<div class="zu-legend-head"><div class="zu-legend-title">' + L("颜色对照", "Colour guide") + '</div><div class="zu-legend-unit">t/s</div></div>' +
+    /* v239（设计图）：带图表的速度卡图例改「左标题 + 右侧单行 10 档横排」（窄窗 wrap），无「t/s」单位角标 */
+    var out = inline
+      ? '<div class="zu-legend-row"><div class="zu-legend-title">' + L("颜色对照", "Colour guide") + '</div><div class="zu-legend-grid zu-legend-inline">'
+      : '<div class="zu-legend-head"><div class="zu-legend-title">' + L("颜色对照", "Colour guide") + '</div><div class="zu-legend-unit">t/s</div></div>' +
       '<div class="zu-legend-grid">';
     for (var i = TPS_BANDS.length - 1; i >= 0; i--) {
       var b = TPS_BANDS[i];
@@ -1666,7 +1780,137 @@
       out += '<span class="zu-legend-item' + (isCur ? " cur" : "") + '"><span class="' + b.cls + ' zu-legend-dot dot-c"></span><b class="' + b.cls + '">' +
         (b.lo === 0 ? "&lt;40" : b.hi ? b.lo + "–" + b.hi : "≥2000 Ultra") + "</b></span>";
     }
-    return out + "</div>";
+    return out + (inline ? "</div></div>" : "</div>");
+  }
+  /* v232 速度柱状图数据规整：快照 sess.speed_segs（当前会话最近 ≤10 条有效 main_turn 段，
+   * Python 侧 avg_tps 同款口径产出 {v: 原始 t/s, t: 完成时间 ms} 升序）。渲染端只做
+   * 防御：无该键（旧远端快照/旧冷主进程）返回 null = 不画图（与 avg_tps 缺省同哲学）；
+   * 有效段过滤非有限/非正值，同刻同值去重，升序截最近 10（v240：17→10）。不改快照原数组。 */
+  function speedSegsOf(sess) {
+    var raw = sess && sess.speed_segs;
+    if (!raw || typeof raw.length !== "number") return null;
+    var out = [], seen = {};
+    for (var i = 0; i < raw.length; i++) {
+      var s = raw[i];
+      var v = s && typeof s.v === "number" ? s.v : NaN;
+      var t = s && typeof s.t === "number" ? s.t : 0;
+      if (!isFinite(v) || v <= 0 || !isFinite(t) || t <= 0) continue;
+      var key = t + "@" + Math.round(v * 100);
+      if (seen[key]) continue;
+      seen[key] = 1;
+      out.push({ v: v, t: t });
+    }
+    out.sort(function (a, b) { return a.t - b.t || a.v - b.v; });
+    return out.length > 10 ? out.slice(out.length - 10) : out;
+  }
+  /* v232 最近 N 段竖向柱状图（现 10 段;纯字符串构造，随 speedCardHTML 走同一条签名幂等重建
+   * 链；悬停段下标由实例闭包经 o.segsHover 传入，编进串里 → 数据刷新整卡重建时高亮
+   * 与信息卡自愈）。X 轴=分段真实完成时间（本地时区 MM-DD HH:mm，稀疏显示、首末恒
+   * 留）；柱顶读数恒一位小数、与柱高水平居中；Y 轴 0 起整洁刻度，且按「信息卡横向
+   * 覆盖最右侧约一半柱」的约束迭代刻度，保证最高柱的柱顶读数不会被信息卡压住。
+   * 段值 ≥1000 t/s（读数 6 字符）时挂 wide 类：图表横滚，读数永不挤压重叠。 */
+  function speedChartHTML(segs, hoverIdx) {
+    if (!segs || !segs.length) return "";
+    var n = segs.length, i, s;
+    if (!(hoverIdx >= 0 && hoverIdx < n)) hoverIdx = -1;   // v240：信息卡仅悬停/聚焦柱体时展示（用户再次拍板，撤销 v239 常驻）
+    function esc2(x) { return String(x).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
+    function two(v) { return (v < 10 ? "0" : "") + v; }
+    function tParts(t) {
+      var d = new Date(t);
+      return [two(d.getMonth() + 1) + "-" + two(d.getDate()), two(d.getHours()) + ":" + two(d.getMinutes())];
+    }
+    var maxV = 0, maxLen = 3;
+    for (i = 0; i < n; i++) {
+      if (segs[i].v > maxV) maxV = segs[i].v;
+      var len = segs[i].v.toFixed(1).length;
+      if (len > maxLen) maxLen = len;
+    }
+    /* Y 轴：整洁刻度（1/2/2.5/5 ×10^k 阶梯，4 分割；跨档过粗时退 5 分割避免刻度
+     * 跳档）。约束：信息卡（固定字号，高约 32px、横向盖住最右 ~30% 柱）span 内柱的
+     * 柱顶读数必须完整落在卡下方 → 卡span内柱高上限 (H-卡高-读数行)/H，其余柱
+     * (H-读数行)/H；取满足约束的最小 yMax。读数行 16px = 10px 固定字高 + 4px 间距；
+     * 几何全固定字号，不随宿主字号漂移。 */
+    var H = 160, CARD_H = 36, LBL = 16;   // v242:36=卡体实高 ~35.6px（k 行 12+值行 15.6+padding 6+边框 2）向上取整——34 时引线顶端被卡盖住 1.6px
+    var capIn = (H - CARD_H - LBL) / H, capOut = (H - LBL) / H;
+    /* v242:信息卡实宽上限 ~210px,窄窗 plot min-width 340 时占比可达 62%——旧 0.3 假设
+     * 会让卡盖住 span 外柱的读数;按最坏一半取 span(宽窗略保守,仅刻度更从容) */
+    var spanFrom = Math.max(0, n - Math.ceil(n * 0.5)), spanMax = 0;
+    for (i = spanFrom; i < n; i++) if (segs[i].v > spanMax) spanMax = segs[i].v;
+    var need = Math.max(maxV, spanMax / capIn, maxV / capOut);
+    var yMax = 0, step = 0, div = 4;
+    for (var K = 0; K <= 6 && !yMax; K++) {
+      var mant = [1, 2, 2.5, 5];
+      for (var kk = 0; kk < mant.length; kk++) {
+        var st = mant[kk] * Math.pow(10, K);
+        if (st * 4 >= need) { yMax = st * 4; step = st; div = 4; break; }
+        if (st * 5 >= need) { yMax = st * 5; step = st; div = 5; break; }
+      }
+    }
+    if (!yMax) { step = Math.pow(10, Math.ceil(Math.log(Math.max(maxV, 1)) / Math.LN10)); yMax = step * 4; div = 4; }
+    var ticks = [];
+    for (i = 0; i <= div; i++) ticks.push(step * i);
+    /* X 轴稀疏守卫：列距不足 44px/标签时隔列显示（首末恒显示；末 2 柱相邻都会命中
+     * 时弃 n-2 保 n-1）。v240 起 n≤10、满宽 pitch≈50>44 恒全显,此公式仅作未来段数
+     * 上调或窄窗再缩时的护栏;wide（≥1000 t/s）由 plot 420 横滚兜底。 */
+    var xEvery = Math.max(1, Math.ceil(44 / Math.max(500 / n, 1)));
+    var wide = maxLen >= 6;
+    function xShown(i2) {
+      if (i2 === n - 1) return true;
+      if (i2 === n - 2 && (n - 1) % xEvery !== 0) return false;
+      return i2 % xEvery === 0;
+    }
+    var cols = "";
+    for (i = 0; i < n; i++) {
+      s = segs[i];
+      var band = tpsBand(s.v);
+      var isLast = i === n - 1, isCur = i === hoverIdx;
+      var hPct = Math.max(1.2, Math.round(s.v / yMax * 1000) / 10);
+      var tp = tParts(s.t);
+      var segNo = L("第 " + (i + 1) + " 段", "Seg " + (i + 1));
+      var bandTxt = band ? tpsBandText(band) : "";
+      cols += '<div class="zu-sc-col' + (isLast ? " latest" : "") + (isCur ? " cur" : "") +
+        '" role="img" tabindex="0" data-i="' + i + '" aria-label="' + esc2(segNo + "，" + s.v.toFixed(1) + " t/s，" +
+          tp[0] + " " + tp[1] + (bandTxt ? "，" + bandTxt : "")) + '">' +
+        '<span class="zu-sc-vz"><span class="zu-sc-val' + (isLast ? " latest" : "") + '">' + s.v.toFixed(1) + '</span>' +
+        '<i class="zu-sc-bar' + (band ? " " + band.cls : "") + '" style="height:' + hPct + '%"></i></span>' +
+        '<span class="zu-sc-x">' + (xShown(i) ? "<b>" + tp[0] + "</b><b>" + tp[1] + "</b>" : "") + '</span>' +
+        '</div>';
+    }
+    /* v240：信息卡仅悬停/聚焦柱体时渲染（v239 常驻卡已被用户撤销），悬停最新段时带
+     * 「（最新）」角标；卡下方一条虚线竖线连到该柱读数（仅该柱落在卡横向覆盖范围内时画，
+     * 范围外的柱与卡无几何关联，不画悬空线）。 */
+    var card = "";
+    if (hoverIdx >= 0) {
+    var hv = segs[hoverIdx], htp = tParts(hv.t), hband = tpsBand(hv.v), hLatest = hoverIdx === n - 1;
+    var hTag = hLatest ? L("（最新）", " (latest)") : (hband ? L(hband.zh, hband.en) : "");
+    card = '<div class="zu-sc-card"><div class="zu-sc-card-k">' + esc2(L("第 " + (hoverIdx + 1) + " 段", "Seg " + (hoverIdx + 1)) +
+      " · " + htp[0] + " " + htp[1]) + '</div><div class="zu-sc-card-v' + (hband ? " " + hband.cls : "") + '">' +
+      hv.v.toFixed(1) + L(" t/s", " t/s") + (hTag ? '<i>' + esc2(hTag) + '</i>' : "") + '</div></div>';
+    if (hoverIdx >= spanFrom) {
+      var lblTop = Math.round(H * (1 - Math.max(1.2, Math.round(hv.v / yMax * 1000) / 10) / 100)) - LBL;
+      if (lblTop - CARD_H >= 3)
+        card += '<i class="zu-sc-lead' + (hband ? " " + hband.cls : "") + '" style="left:' +
+          (Math.round((hoverIdx + 0.5) / n * 10000) / 100) + '%;top:' + CARD_H + 'px;height:' + (lblTop - CARD_H) + 'px"></i>';
+    }
+    }
+    var grid = "";
+    for (i = 0; i < ticks.length; i++) {
+      var pct = Math.round(ticks[i] / yMax * 1000) / 10;
+      grid += '<i style="bottom:' + pct + '%"' + (ticks[i] ? "" : ' data-base="1"') + '></i>';
+    }
+    var gutter = "";
+    for (i = 0; i < ticks.length; i++) {
+      /* 最高档刻度数字挂到线内侧（wrap 纵向裁切，线外侧上半会被剪） */
+      gutter += '<i' + (i === ticks.length - 1 ? ' class="top" style="bottom:calc(100% - 13px)' :
+        ' style="bottom:' + (Math.round(ticks[i] / yMax * 1000) / 10) + '%') + '">' + ticks[i] + '</i>';
+    }
+    return '<div class="zu-speed-chart"><div class="zu-sc-head"><span class="zu-sc-title">' +
+      esc2(L("最近 " + n + " 段", "Last " + n)) + '</span><span class="zu-sc-sub">' +
+      esc2(L("按完成顺序 · 从旧到新", "completion order · old → new")) + '</span>' +
+      '<span class="zu-sc-unit">' + esc2(L("单位：t/s", "unit: t/s")) + '</span></div>' +
+      '<div class="zu-sc-wrap' + (wide ? " wide" : "") + '"><div class="zu-sc-plot">' +
+      '<span class="zu-sc-gutter">' + gutter + '</span><span class="zu-sc-grid">' + grid + '</span>' +
+      '<span class="zu-sc-bars">' + cols + '</span>' + card + '</div></div></div>';
   }
   /* 返回 null = 调用方应把这当成"没有可展示的桥接视图"处理（回退 DB/不渲染），
    * 而不是当成"确定性地算出了没有速度"。v97：第三参 subSum = 子代理速率桥的合计
@@ -1674,6 +1918,10 @@
    * 估算 tok/s 之和（并行 ≥2 个时动词后缀 ×N；运行中请求未入库，DB 无数据；
    * 3 秒未刷新即视为过期不显示），缺席时退回工具状态词 + 耗时。 */
   function zuBarSpeedView(stats, charsPerToken, subSum, sessAvg) {
+    /* v235：除原有 text/cls/phase/band/latest/word 外，追加结构化字段供 tooltip 左卡
+     * 分层渲染（kind/statusText/nameText/nameFull/elapsedText/speedValue/
+     * speedIsEstimated/speedSource/activeCount/noteText）——状态判断仍全部来自本
+     * 状态机，消费端不得解析 text 文案反推状态；原有字段语义与拼装逐字保留。 */
     if (!stats.complete) {
       // 工具执行期间优先显示与消息流同款的状态词（读取中/编辑中…+已耗时），
       // 让悬浮条与 toolCall 行状态对应；没有工具在跑才退回字符估算/存活心跳。
@@ -1681,28 +1929,56 @@
         var verb = zuToolVerb(stats.runningTool.name);
         /* v158：Skill 运行期显示「技能名·执行中」（如「查阅·执行中」），名字取不到时
          * 保持「运行技能中」；计时后缀照旧。 */
+        var skFull = "", skName = "";
         if (stats.runningTool.name === "Skill" && typeof stats.runningTool.inputText === "string") {
-          var sk = zuSkillName(stats.runningTool.inputText);
-          if (sk) verb = sk + L("·执行中", "·executing");
+          skFull = zuSkillBaseName(stats.runningTool.inputText);   // v235：全名供左卡 title/两行展示
+          skName = skFull;
+          if (skName.length > 24) skName = skName.slice(0, 24) + "…";
+          if (skName) verb = skName + L("·执行中", "·executing");
         }
         if (stats.runningTool.name === "Agent" && subSum && subSum.rate != null && subSum.count > 0 &&
             typeof subSum.at === "number" && Date.now() - subSum.at <= 3000)
           return { cls: "dim",
                    text: verb + (subSum.count > 1 ? " ×" + subSum.count : "") +
                      L(" · 估 ", " · est ") + subSum.rate.toFixed(1) + L(" t/s", " t/s"),
-                   phase: "tool" };
+                   phase: "tool",
+                   kind: "subagent", statusText: L("子代理运行中", "Sub-agents running"),
+                   activeCount: subSum.count, speedValue: subSum.rate,
+                   speedIsEstimated: true, speedSource: "subagent",
+                   noteText: L(subSum.count + " 个子代理合计（估算）", subSum.count + " sub-agent(s) combined (est.)") };
         /* v181（v187 补回，PR #161 合并时遗漏消费分支）：宿主把当前段尾部连续 ≥2 的只读工具行
          * 合成「查阅」组、非只读 shell 合成「终端」组（顶栏「查阅 · 正在执行」同源，组标题是
          * 渲染层合成的）——运行行落在组尾时状态词跟随组标签而不是逐工具动词，与消息流一致；
          * 计时锚定组首行 startedAt（组从首行起算），缺失回退运行行起点。数据由 turn-stats 的
          * runningGroupOf 提供（Skill 行本身是组边界，与上面的技能名分支互斥不冲突）。 */
         var grp = stats.runningGroup;
-        if (grp && grp.kind === "explore") verb = L("查阅·执行中", "Explore·executing");
-        else if (grp && grp.kind === "terminal") verb = L("终端·执行中", "Terminal·executing");
+        var grpKind = "";
+        if (grp && grp.kind === "explore") { verb = L("查阅·执行中", "Explore·executing"); grpKind = "explore"; }
+        else if (grp && grp.kind === "terminal") { verb = L("终端·执行中", "Terminal·executing"); grpKind = "terminal"; }
         var st = grp && grp.startedAt != null ? grp.startedAt : stats.runningTool.startedAt;
-        if (typeof st === "number" && st > 0 && Date.now() >= st)
-          verb += " " + ((Date.now() - st) / 1000).toFixed(1) + "s";   // v151 去中点 + v153 执行中（用户规格）
-        return { cls: "dim", text: verb, phase: "tool", word: true };   // v159：纯状态词带流光（宿主 zcode-loading-label 同款）
+        var elapsed = "";
+        if (typeof st === "number" && st > 0 && Date.now() >= st) {
+          elapsed = ((Date.now() - st) / 1000).toFixed(1) + "s";   // v151 去中点 + v153 执行中（用户规格）
+          verb += " " + elapsed;
+        }
+        var base = { cls: "dim", text: verb, phase: "tool", word: true };   // v159：纯状态词带流光（宿主 zcode-loading-label 同款）
+        if (grpKind)
+          return Object.assign(base, { kind: "toolgroup",
+            statusText: L("工具组执行中", "Tool group running"),
+            nameText: grpKind === "explore" ? L("查阅", "Explore") : L("终端", "Terminal"),
+            elapsedText: elapsed,
+            noteText: L("工具组 · 正在执行", "Tool group · executing") });
+        if (skName)
+          return Object.assign(base, { kind: "skill",
+            statusText: L("Skill 执行中", "Executing skill"),
+            nameText: skName, nameFull: skFull, elapsedText: elapsed,
+            noteText: L("Skill · 正在执行", "Skill · executing") });
+        base.kind = "tool";
+        base.statusText = L("工具执行中", "Tool running");
+        base.nameText = zuToolVerb(stats.runningTool.name);
+        base.elapsedText = elapsed;
+        base.noteText = L("工具 · 正在执行", "Tool · executing");
+        return base;
       }
       // 无工具且无可测字符流（首段未流出/字符停滞>2s，多数模型思考期对桥不可见，
       // 看到的就是时间在走）：按用户语义定为"思考中"——动效脑图标 + 本轮存活时长。
@@ -1723,8 +1999,12 @@
         if (hours) parts.push(hours + uh);
         if (minutes) parts.push(minutes + um);
         if (seconds || !parts.length) parts.push(seconds + us);
-        return { cls: "dim", text: L("思考中…", "thinking…") + parts.join(segGap),
-                 phase: "thinking", word: true };
+        var thinkText = parts.join(segGap);
+        return { cls: "dim", text: L("思考中…", "thinking…") + thinkText,
+                 phase: "thinking", word: true,
+                 kind: "thinking", statusText: L("思考中", "Thinking"),
+                 elapsedText: thinkText,
+                 noteText: L("生成尚未开始", "Generation not started") };
       }
       var est = stats.characterRate / (charsPerToken || DEFAULT_CHARS_PER_TOKEN);
       /* v127：估算也按原始估算值套同一张档位表（任务规格：估算态与完成态都分档；
@@ -1735,7 +2015,10 @@
                text: est.toFixed(1) + L(" t/s", " t/s"),
                /* phase 兜底 thinking：新轮刚开始（最后活动行还是 userInput）时
                 * stats.phase 为 null，不兜底会让图标在这一瞬回闪电再切回脑（闪烁）。 */
-               phase: stats.phase || "thinking" };
+               phase: stats.phase || "thinking",
+               kind: "estimate", statusText: L("生成中（估算）", "Generating (est.)"),
+               speedValue: est, speedIsEstimated: true, speedSource: "estimate",
+               noteText: L("按进度估算", "Estimated from progress") };
     }
     /* 切换/重新绑定到一个会话时，桥接首次订阅就可能直接捞到一个老早之前已完成的
      * 轮次（这次 ingest 从未见过它处于未完成状态）。这种"历史存量"不是我们亲历的
@@ -1759,9 +2042,15 @@
       var aband = tpsBand(avg) || band;
       return { cls: aband.cls, band: aband,
                text: L("均", "avg ") + (avg % 1 ? avg.toFixed(1) : String(avg)) + L(" t/s", " t/s"),
-               phase: null, latest: stats.tokenRate };
+               phase: null, latest: stats.tokenRate,
+               kind: "avg", statusText: L("生成完成", "Generation complete"),
+               speedValue: avg, speedIsEstimated: false, speedSource: "avg",
+               noteText: L("会话加权平均", "Weighted average") };
     }
-    return { cls: band.cls, band: band, text: stats.tokenRate.toFixed(1) + L(" t/s", " t/s"), phase: null };
+    return { cls: band.cls, band: band, text: stats.tokenRate.toFixed(1) + L(" t/s", " t/s"), phase: null,
+             kind: "real", statusText: L("生成完成", "Generation complete"),
+             speedValue: stats.tokenRate, speedIsEstimated: false, speedSource: "real",
+             noteText: L("本轮实际速度", "Actual speed this turn") };
   }
   /* 思考态动效图标（用户提供的设计稿）：呼吸脑轮廓 + 流动信号 + 脉冲节点，纯 CSS
    * 动画内嵌在 SVG 里（样式随节点走，不依赖外部样式表，宿主清 head 也不受影响）。
@@ -2145,13 +2434,18 @@
   /* v158：Skill 工具从输入串提取技能显示名（宿主 inputText 是 JSON，name 字段为技能
    * 请求名）——状态词显示「技能名·执行中」；解析失败/超限返回空回退「运行技能中」。
    * 名字来自宿主数据，渲染前经 ttEsc（chip innerHTML 与 aria 双 sink）。 */
-  function zuSkillName(inputText) {
+  function zuSkillBaseName(inputText) {
     if (!inputText) return "";
     var name = "";
     try { var parsed = JSON.parse(inputText); if (parsed && typeof parsed.name === "string") name = parsed.name; } catch (e) { }
     if (!name) { var m = /"name"\s*:\s*"([^"]{1,80})"/.exec(inputText); if (m) name = m[1]; }
     name = String(name).trim();
     if (!name || /[\x00-\x1f]/.test(name)) return "";
+    return name;
+  }
+  function zuSkillName(inputText) {
+    var name = zuSkillBaseName(inputText);
+    if (!name) return "";
     if (name.length > 24) name = name.slice(0, 24) + "…";
     return name;
   }
@@ -2340,7 +2634,7 @@
   /* ---------- 实例工厂（v61.1）：一个 pane 一套 条/面板/气泡/tooltip/定位循环。
    * slot 0 保留 #zusage-bar/#zusage-tip 兼容 id（泵热更新按它清理），其余实例仅类名。 */
   function spawnInstance(pid, slot) {
-    var VERSION = "v230";   // v82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v84 主标签页远端路由（工作台分组唯一主绑定上报 + 迟到载荷守卫，issue #30）→ v85 回答末尾统计行跟随万/亿开关 + tok→token → v86 历史轮 tracker 无记录（窗口滑出/换代/热更）或缺输出字段不再翻成"本轮统计不可用"，加 det 诊断 → v87 主叶归属增 last-session 回退（组零证据时唯一远端记录放行，issue #30 复测：单会话主标签页不建组）→ v88 运行态心跳与两处扫描 tick 2s→0.5s（富文本重试 6→24 次等价放大）→ v89 ⚙ 面板更新进度：downloading 阶段文案 + 下载（字节）/安装（校验→安装→同步）双进度条，缺 progress 的旧主进程自动隐藏 → v90 主标签页/分栏归属改按本窗会话节点身份（renderer 桥按版本/资产/锚点写 SessionPane 属性，移除 workbench-groups/last-session 共享回退）+ 心跳 0.5s→0.1s（扫描维持 0.5s）→ v91 设置页/权限面板冒条修复（PR #44：inSettingsView 三处派发排除 + anchorCardOf 面板锚点改判）收编收尾：排除标记并集（settings-page testid + content/panel 双 frame）、track 显隐第四处防御 → v92 ⚙ 更新区固定显示可复制的重装口令（源码安装无法自动更新时引导用户发给 agent）→ v93 原生上下文按钮（chat-context-usage-trigger）增强：环填充/四档色/右侧百分比镜像状态条上下文格（ctxBandOf 同源），cw 缺失还原原生形态 → v94 状态条删除「上下文容量」格（UI+tooltip，该口径由原生按钮增强承载），⚙ 面板同步去掉「上下文」开关，子代理格改始终展示（零值也显示）→ v95 ⚙ 更新区去掉 v92 重装口令提示块（源码清单的仓库来源改由宿主插件管理器直接更新，不再报渠道不一致），更新来源文案增「仓库源码」分支→ v96 套餐额度 chip（默认关）：挂原生上下文按钮左侧（wrapper 内前插，与按钮增强同款双 reapply/还原），数据来自主进程 quota 字段（解密宿主 OAuth 凭据直查 monitor 端点，账号级套餐池口径），会话首个 main_turn 完成前不显示；自绘 tooltip 走 rateTip 独立浮层模式；chip 改多窗分段：每窗一段（中文 5小时/7天，英文 5h/7d）各自按 80/95/100 档位色，分隔符 |；余额类型单段渲染就绪（余额 ¥100.00，阶段 3 数据源接入即用）；去掉环形，容器不着色 → v97 子代理速率（T1+T2）：zusage sub 汇总加 rate_avg/每子代理 tps_avg（已完成段加权平均，口径同 _turn_rate），子代理格 tooltip/明细面板展示；Agent 运行期主 chip 附加「子代理运行中 · 估 X t/s」——turn-stats 透传 subagent 行 childSessionId，overlay 据此用同款 zuTryBindStore 绑子代理会话 store 做字符增量估算（运行中请求未入库，DB 无实时数据；150s 采样实锤零 running 行），思考文本不进 rows 时退回纯状态词；工具动词「正在运行子智能体」压成「子代理运行中」（web 同步文案）；同日多槽位化：turn-stats 暴露 runningSubagents 全集（并行时 rowId 前 8 个），每子代理独立绑定/2s 节流，主 chip 显示合计速率（并行 ≥2 时动词后缀 ×N），chip tooltip 与子代理明细面板逐个实时展示运行中估算（tooltip 随原地改字同步 __tip 重画；面板 800ms tick 原地刷新 .subrate，汇总页运行块含 DB 尚无记录的新子代理） → v98 额度实时选源恢复（v4-model-config 观察 + quota-providers 全窗快照上报 + byProvider 定向刷新、空选择 fail-closed）与 sub2api 额度 UI（今日/本月窗口、窗口行内金额明细、Key 总额度、订阅截止、账户余额标题） → v99（主线并流）tooltip 伪边界 leave 过滤：Chrome 悬停链收缩/重算会补发 DOM 内部的 documentElement/tip mouseleave，tipLeaveAt 贴边判定后取触发时刻最深 :hover 元素甄别，仍悬停在本档具体元素上即伪 leave 一律忽略交回 mousemove 流（主线 v100 滚动豁免=本链 v106 同义，不另列） → v99.1（主线并流）apiKey 模式 BigModel/Z.ai（bigmodel-api[-N]/zai-api[-N]）额度 chip 标题家族判定（issue #68；数据链在 quota-client） → v99.2 思考中计时随语言本地化（中文「1 时 2 分 3 秒」/英文「1 h 2 m 3 s」，空格分隔、零段照旧省略）；回答末尾行采样时刻改完整中文日期时间（⏱ 2026 年 10 月 23 日 11 点 20 分 28 秒，token_rate.py format_turn_line 同步改版） → v100 设置面板分区导航（ZCode 设置侧栏同款：左栏三组分区导航 + 内容区单分区显隐，激活项 aria-current="page"，选择持久化 zusage3.sec；面板窄于 620px 时导航收成 icon rail） → v101 设置面板高度在打开瞬间按内容自然高锁定（切分区不再抖动，resize 只收紧不放大） → v102 额度源预设模板（CC Switch/magpie 同款选模板只填 Key：官方域变体 chip 一键写入 secrets baseUrl，minimax 可信域机制推广到 siliconflow 币种随域；deepseek/openrouter/kimi/anthropic/mimo/volcano 附控制台取 Key 链接，走 openExternal 桥） → v103 额度源列表卡片化布局（每源圆角卡片+间距，凭据框限宽 420px，长说明段落补水平边距；纯 CSS，结构行为不变） → v104 源状态文案补 disabled=已关闭映射 + 主进程对显式关闭源统一报 disabled（修「开关已关却显示待查询」矛盾）；刷新/获取 Key 按钮补 title 提示，关闭源的刷新按钮禁用 → v105 「上下文容量」弹层（hover-card-content）内压缩上下文按钮：命中率行下方全宽胶囊按钮（原生 secondary 配色全走客户端语义变量），弹层关即卸载（Radix 无 forceMount）故 body MutationObserver + heavy 对账双触发、DOM 存在性幂等（多实例安全），插入锚=「剩余额度」border-t 段前（缺则容器尾）+位置兜回；点击弹原生 AlertDialog 视格确认框（遮罩/Esc/外点关闭、Enter 确认），确认后优先走 fiber 上原生残留的 onSendCompressionCommand("/compact")（SessionPane 压缩入口，不动输入框草稿），缺失回落官方 E2E 输入桥 __zcodeLexicalInputE2E.setText + 发送键（Lexical 直写 DOM 不生效，禁用该路径；草稿非空拒绝） → v106 额度 tooltip 滚动豁免：hideTipsOnScroll 不再收 quotaTip（chip 固定 composer 工具行与 gitTip 同理），修思考中流式输出自动滚动致悬停弹出即灭；chip 随宿主重建 detach（无 mouseleave）由 scanRateLines 加 isConnected 健康检查兜底收起 → v107 压缩确认框补行为提示：压缩进行中发送新消息/停止会打断压缩（实测 16:27 新 turn 启动同秒 compact turn TURN_CANCELLED，cancelled_by_user=1；引擎对该次摘要流挂起 134s 无首 token 也不重试 retryable=0），确认框加 hint 行中性告知 → v108 压缩主通道按用户指定改为字面 "/compact" 输入提交（E2E 桥 setText+发送键；流式中 v4-stop 可见/草稿非空/发送键 disabled 三重拒绝），fiber 命令信封降兜底；hint 升级为「通常需 2-4 分钟且无进度反馈」（DB 实证：全库 compact 请求无首 token 但正常完成，72s-9.6min，14:44 同会话同模型 165s 成功先例；16:25/16:43 两次「卡住」实为 2m20s 被新消息 TURN_CANCELLED，非故障） → v109 压缩主通道按用户指定改回直接调会话发送接口（fiber onSendCompressionCommand 命令信封：不碰输入框/发送键、流式中交引擎排队，修字面输入通道在生成中被发送键禁用卡住的问题），字面 "/compact" 输入提交降兜底（三重门控仅作用于兜底） → v110 压缩提交函数改在弹框打开瞬间（弹层必存活、锚点几何可信）解析并缓存，修复确认时弹层已被 Radix 卸载、几何重解析退化为「离视口左上角最近」致多分栏把 /compact 发进错误会话（P1）；兜底字面输入通道的流式/发送键/草稿三重门控全部前置到 setText 之前（拒绝不再残留草稿）；Enter 确认限定焦点在弹框内（无焦点陷阱下防焦点外 Enter 误触发确认） → v111 额度 chip 默认展示：quota_enabled 缺省开（显式 false 才关，真值链在 inject-main）；chip 二级门控 not_configured/unsupported 从静默隐藏改中性灰提示「额度 未配置/暂不支持」（源被 ⚙ 显式关闭仍隐藏），tooltip 补 info 分支引导配置 → v112 Start Plan 免费档池（quota-client 新增 zcode-start 适配器走 zcode.z.ai billing/balance 独立链，与 coding plan 的 monitor 端点分池；选源路由与 quotaFamily 判定补 start-plan 分支修 start-plan pane 误读 GLM Coding Max 池；chip 增「套餐」分段（windows.plan，one_time 发放池聚合已用%），tooltip 套餐池行按 expires 标记切「到期」措辞） → v113 夜间审计加固：quotaBalanceText 内建转义（currency 是远程响应字符串，chip/tooltip 双 innerHTML sink；parts label/amount 单次转义修双重转义；「其他源」行标签转义归位；aria-label 走 plain 纯文本变体不读实体）→quotaTip 补内容签名幂等 __zuTipSig（同 gitTip，悬停期间周期对账不再打断文本选择）→子代理明细面板数据签名幂等（滚动位置/选择不被每 1.5s 推送整面板重建重置；运行中估算仍由面板 800ms tick 原地刷新）→额度 chip 签名重写保留 zu-qbusy（点击刷新动画不被推送截断，同 git chip）→⚙ 源列表 id/label/preset/keyUrl 属性级转义 aEsc（custom:<providerId> 可含用户自定义名）→live 速度 span 的 speedView.text 过 ttEsc（工具名是宿主/MCP 可控字符串）→渲染桥两处订阅回调尾部 updateLive() try 包裹（异常不冒进宿主 store 通知分发，诊断键 subLiveErr/bridgeLiveErr 记录） → v114 积压清单清扫：remoteCache/remoteTodayCache/richTextCache/richTextAttempts 上限淘汰（长会话防无界增长）；dispose 清理补 __zusageDeliverTurnText/__zusageSidWs/__zusagePaneScopes（旧代闭包自卫之外的清理完整性）；诊断 lsVals 只转储 zusage 命名空间的 localStorage 键（宿主其余键值不进 diag 文件） → v115 渲染循环省电（上游 xhwxt PR #26/#28 同源问题）：幽灵子树/遮挡命中/模态判定加 TTL 缓存（120/150ms，命中绑定元素矩形+模式），track 在 document.hidden 时整帧跳过；未采纳其 600ms↔2s 调度降频（heavy 600ms 对账是与 render 并列的 React 重写兜底契约，降频会让增强节点裸奔 2s） → v116 「思考中」卡死修复（源码复核定案）：v87 合成分支条件收紧——仅「空窗口非终态（draft 空窗，v87 本意）或 control.phase=running」才合成思考中，删除「行非空」析取项（宿主 wire 快照 rows.window 恒为全序尾 60 行，末轮超窗的闲置会话整窗无 turnHeader，旧条件使其永久点亮思考中、切回重绑重新计时）；思考计时锚定 turnHeader.startedAt（宿主创建 header 恒写入，重绑不清零，缺字段回退首观测）→ v117 悬停命中区扩到整栏（fork lliangworld b21e3cf0 同源收编）：条目空隙/分隔符按 sep 中线就近归属、尾部空隙归末位条目，⚙ 与空条面维持保持不动；防闪烁改由节流+幂等承担 → v118 无障碍与主题重构（并行会话批次）：条目可聚焦（span tabindex / zu-sub 真按钮 + aria-label）、键盘可达 tooltip（focusin/focusout + Escape 收起）、focus-visible 焦点环、SVG 图标与思考动画改 currentColor 随主题、⚙ 面板请求-回执协议（requestId + __zusagePluginResult，feedbackVersion 1）、quota 源操作错误语义、统计行开关即时重扫 → v119 插件自动检查改为每 1 小时，更新区双语提示更新器变更需完全退出并重开 → v120 Git 手动刷新改请求-回执协议（askGitRefresh 带 path/requestId，主桥 gitTick 完成后经 __zusagePluginResult 回执、在途请求合并等待，按请求 path 校验结果）+ 状态条 aria-live sr-only 播报区（套餐额度查询中/Git 刷新状态）+ ⚙ 面板高度上限 82vh→90vh + 模态判定改按可见 dialog（display/visibility/opacity 过滤） → v121 状态条 .ico 与 ⚙ 齿轮图标盒由 calc(字号+4px) 改为等宿主字号（24 格线性图标墨迹只占盒 75–83%，18px 顶满 1.3 行盒显大，且加法常量令比例随字号漂移 1.33×→1.20×；用户实机定 1.0×，.eb .ico 12px 特例不变） → v122 Git chip 展开测量完整宽度并留 32px 迟滞余量，切断宿主 compact 反馈环（issue #100） → v123 Git chip 锚点按电脑操作→上下文→模式→思考回退，排除隐藏探针并随可见锚点迁移（issue #103） → v124 Git chip 固定左侧操作区，移除右侧上下文/思考回退 → v125 思考计时中文全紧邻「7分16秒」（时段间空格去除，用户要求；英文「7 m 16 s」不动） → v126 思考计时英文数字与单位紧邻「7m 16s」（时段间留空格，用户要求） → v127 tok/s 速度十档色（TPS_BANDS 唯一事实源，原始值分档含下限不含上限：<40 低速红 / 40–70 一般黄 / 70–150 流畅绿沿用原三档类名与实测色，150 起新增蓝紫系 zu-teal/zu-sky/zu-azure/zu-violet/zu-purple/zu-magenta，≥2000 Ultra 静态蓝紫渐变 + ✦ 星点（::before content:"✦"/"" AT 静音、@supports 外纯紫回退，浅色组同名覆盖渐变）；估算态与完成态同表分档（用户规格，原「估算态不分档」废止），无效值（负数/NaN/±∞）一律中性 dim 或回退 DB 绝不判低速，DB 回退分支负数/非有限不再渲染 chip；tooltip 档位行改动态「名称 · lo–hi t/s」消解 toFixed 舍入边界歧义，另加静态「颜色对照」图例（十档数值↔颜色升序一览，档位类与条面同源随主题切换）；额度正常态改额度蓝 #78a9ff/浅 #315fc4（.zu-qseg 专属基色，不碰全局 .ok——上下文与速度前三档仍绿），周期标签拆 zu-qlabel 子节点中性次级色常规字重（textContent/aria/tooltip 不变），quotaSegs 补 isFinite 门防 NaN/±∞ 落正常蓝；正常态再改 CCometixLine 同源柔和低饱和（用户规格）：普通窗灰蓝 #8abbd0/浅 #276f86、7 天窗按 quotaSegs 结构化 key 挂 zu-qweekly 淡紫 #b69ad8/浅 #76509f（不匹配显示文本），周期标签与数值同色成组仅标签降字重，上下文按钮正常绿改 #72c9a2/浅 #187b58（限按钮作用域，速度与全局 .ok 不动）） → v129 模型拉取分区（收编 HHQ-666/zcode-model-puller，MIT）：⚙ 基础组新分区列宿主 provider_config.json 的 API Key 型自定义供应商，经主进程拉取其 /models（候选端点探测、OpenAI data/Ollama models/顶层数组形状解析、Bearer+x-api-key 双头），弹窗勾选（已添加/新模型徽标、搜索过滤、全选/清空/仅选新、选中计数）后经 model-pull-apply 最小写回（personalModelIds+modelOrder 追加、providerModelRules 复制同供应商模板条目、同目录原子替换+滚动备份 .zusage-bak、未知键保留）；key 只在主进程内存、只发该 baseUrl 本域，不回渲染端不进日志；请求回执 20s 兜底超时（旧主进程无 action 时提示完全重启而非永久 loading） → v130 拉取算法吸收 GLQQX/zcode-model-discovery-patch 与 linguo2625469/zcode-patcher：字段别名全集（id/modelId/name/model、context_length/contextWindow/context_window/limit/limits、max_completion_tokens/max_output_tokens/maxOutputTokens/limit/limits/top_provider、payload 增 result 形状）、多模态感知（architecture.input_modalities/input_modalities/modalities.input + vision/supports_vision 布尔 ⇒ 宿主 inputFormat 稀疏能力位，缺位写实 false）、思考档位感知（supported_efforts 去重截 16 ⇒ reasoningLevel.values）、models.dev 公共目录补缺（并行拉取 5s 超时失败静默降级、id 精确→basename 唯一匹配、字段级供应商优先、key 与本机数据绝不发往目录、进程内 1h 缓存）、applyModels 按模型写实 config（contextWindow/inputFormat/optionSpecs；元数据走主进程 fetchCache 闭环、渲染端只回传 id 无法注入字段；模板带 map 表达式的 optionSpecs 整体不覆盖防 values 换名失配；无依据字段保持模板原样、不编造默认值）；弹窗行新增 ctx/out 可见小字与档位 title，分区说明补 models.dev 联网披露；review 修复：勾选表/已添加表/metaById 改 null 原型（模型 id 来自远端，__proto__ 等键静默失败丢勾选态）、实例 dispose 同步摘除模型拉取弹窗与 Esc 监听（原仅整体 dispose 摘除，pane 关闭后弹窗跨代泄漏且确认回调 inactive 早退卡保存中文案）、重开面板停在模型拉取分区时立即刷新列表、请求兜底超时 20s→25s（主进程最坏双端点 20s 防假超时）、主进程响应体 8MB 限长解析与 tmp 文件名带 pid 防双实例竞写 → v131 额度/上下文五档色（用户规格 2026-10-27）：CTX_BANDS/QUOTA_BANDS 唯一事实源（{min,cls} 有序表，bandOf 从高到低首个命中），阈值 30/50/80/90（含下限不含上限）——额度 calm/norm/mid/high/crit=emerald/sky/amber/orange/rose（暗 400/浅 700），上下文 calm/norm/mid/high/crit=slate/indigo/violet/orange/red；data-zusage-band 与 zu-qb-* CSS 双主题成对；pct span 与 SVG 环一律继承按钮 currentColor（.zu-ctxpct.ok 系独立色废止）；tabular-nums 原已覆盖 .zu-quota/.zu-ctxpct；v92 百万窗口提前预警（40/60）与 v127 额度正常态灰蓝/7 天窗淡紫（按窗口类型着色）随「仅按百分比」规格废止；额度 ≥100% 满档保留呼吸闪烁特效（zu-qb-exc，用户规格；90–99 为 crit 纯色）；压缩过程态（exc）优先档保留；余额/Key 额度段挂 calm 档色 → v132 模型拉取挂载点迁移（用户指令）：⚙ 设置分区删除（ZU_SECTIONS/section/ensureMpProviders/syncMpList/startMpFetch/mpFeedback 全撤），改挂官方「模型设置⇒自定义供应商」的「+ 添加模型」按钮左侧（锚 data-testid=model-provider-add-model-button，额度 chip 同款 enhance/restore 契约：render/heavy 双对账+位置兜回+自清选择器 .zu-mp-host）；供应商归属优先读设置页表单 http(s) Base URL 归一化匹配（唯一命中直拉），否则单供应商直用/多供应商弹 zu-mp-pick 选择列表/无供应商弹提示；按钮视觉复刻原生 secondary 视格（同页 Tailwind utility bg-secondary h-7 rounded-lg），⚡ 图标 stroke currentColor；弹窗抽通用壳 openMpShell（勾选弹窗/供应商选择/错误提示共用），apply 成功关弹窗由宿主自动刷新列表；供应商归属改主判定=当前选择的供应商（读宿主源码定案：导航项 testid=model-provider-nav-item-<nodeKey>、custom 项 nodeKey=custom:<providerId>、选中项 data-state=selected），providerId 精确匹配不受编辑草稿影响；Base URL 匹配降兜底（专用 testid model-provider-base-url-input 优先于表单启发式），弹窗对齐 HHQ 形态（⚡统计标题/搜索占位/仅选新模型计数/已选中 n 个模型/蓝实底确认钮）并自带 .zu-light 随宿主主题实时换装；review 二轮修复：上下文按钮浅色档补 data-zusage-armed 特异性（浅色主题 norm~crit 曾被暗色 0,3,0 规则恒胜）、model-puller 非 ok 响应体显式 cancel（undici 连接卫生）、宿主按钮 ml-auto（锚容器 justify-between 三子项均匀分布致按钮居中）、确认钮改固定蓝 #3B82F6/#2563EB（客户端 --color-brand 深色主题是白系，白底白字隐形）、拉取按钮仅在选中的是 custom 供应商时挂载（锚 testid 全局唯一，内置/套餐页同 testid）、拉取中按钮文本「拉取中…」+图标旋转（原透明度脉冲无感知） → v133 Git 计数缩写（用户规格 2026-10-28）：chip/tooltip 的行数·条目·↑↓·冲突计数 <1万原值，≥1万 中文（cnUnits 判定）万/亿、英文 k/M/B（k 门槛刻意抬到 1万，与 token fmt 的 K≥1000 不同，小写 k 至多两位小数去尾零紧邻）；仓库个数与 aria 播报保持原值 → v134 额度与上下文保留既有阈值并统一绿黄红三档视觉；统一字号为宿主基准减 1px，周期标签加粗并微调分隔符 → v136 编辑项目弹窗源文件夹行在名称下方显示完整路径（纯 CSS ::after attr(title)，零 DOM 注入 React 无感；.truncate 限定本地行、排除 fixedFolder break-all 全路径行防重复，多文件夹每行各取各的 title；长路径自动换行不做省略号（宿主 truncate 的 nowrap 继承进伪元素须显式 white-space:normal）；规则挂条样式表、由 <html> data-zusage-pp 门控，⚙ 通用区「项目完整路径」开关 zusage3.projPath 默认开即时生效；顺带清理未提交编辑遗留的 spawnInstance 陈旧重复块 566 行死代码并复原被覆写的 issue #55 注释） → v137 源文件夹行点击即用系统文件管理器打开该目录（用户规格 2026-10-28，mac/Win 双平台）：主通道宿主桥 openInFileManager（Windows shell.openPath / macOS open 带 Finder 与 shell 双回退，raw path 免编码），旧主进程降级 openExternalFile、openExternal(file:)（白名单含 file:）；远程项目编辑器按 virtual-project-existing 标记排除，fixedFolder 行不在选择器内；多 pane 重复委托 500ms 同路径去重，document click 监听随实例 dispose 摘除；行加 cursor:pointer → v138 重置卡倒计时改时分秒全档恒显（并行会话 rstmerge 线并流收编，用户规格 2026-10-28：精确到秒、随 600ms 对账实时逐秒跳动，rstSpanText 中文数字单位紧邻「3时05分30秒」、英文数字单位紧邻+时段间空格「3h 05m 30s」；rst tooltip 补 Escape 收起（v118 键盘可达契约）；⚙ 倒计时阈值语义不变——并流时保留 rstCdh 持久化，对方运行目录构建因旧基线缺失而误删，其 18:42 rstmerge 部署曾覆盖本项目 v136/v137 后经本线合并恢复） → v139 合并 fork/main v1.5.5 线（PR #121 重置卡徽标、#122 倒计时秒级、#123 templateRules 回填、安装修复与 v1.5.5 发版）时收编遗漏的 model-puller 套餐源判定（4e431cc：detectSelectedCustomProviderId 带 anchor，BigModel 付费套餐详情页按 GLM Coding Max 付费卡区分放行、Start Plan 免费卡页不放行；挂载门控 btn 先查 + mpAnchor 诊断）——本项目快照缺该段曾致 overlay-model-pull 挂载契约测试红；overlay 版本线自此与对方 v136 撞号线并流，按合入顺序顺延 → v140 收口审查修复：openProjFolder 对 invoke 通道（openInFileManager/openExternalFile）挂空 catch——旧主进程无 handler 时异步 reject 会刷 unhandled rejection；review-fix-merge 流程产物 → v141 ⚙ 更新区在 API 限流且渠道清单兜底也失败时引导 GitCode 镜像口令（清单兜底本体在 plugin-updater/plugin-release 主进程链） → v142 ⚙ 通用「状态条样式」双主题 opt-in（zusage3.theme 独立持久化，默认关=现状）：药丸形态=所属输入卡下方居中、内容定宽，.zu-pill 经 --zu-pill-* 逐项拷贝所属视觉表面（Highspeed 外壳优先）计算样式，随宿主主题/hover/focus/Highspeed 实时跟随——pillSurface 统一取色/定位/让位锚点，body 子树 MutationObserver + 祖先属性观察捕捉外壳原位增删与搬移（不依赖 600ms 对账），80ms 过渡采样按目标计数、表面搬离自动停止；条面精简：缓存命中率/请求次数/轮数/耗时/首字收进 tooltip（0 命中也显示 0%），窄窗 .zu-main 横向滚动 + focusin 滚入可视区、切回默认复位 scrollLeft，不触发默认态收缩/渐隐；⚙ 面板宽度在药丸下跟随所属卡（不再跨分栏），主题 radio 按实例分组 name 防多面板互斥；数据重建先绑 __tip 再恢复焦点，aria-describedby/tooltip 不丢；modalOpen 豁免 zusage-panel 自有面板（修设置面板被误判宿主模态整条收起） → v143 药丸收口审查（review-fix-merge）：8px 双间距按宿主实测几何收敛——adjustPillBottom 沿所属 pane/dock 实测矩形补足让位并带 floor/不增长护栏，无法让位的绝对定位布局 visibility 安全隐藏（无每帧显隐抖动）；pillMarginTarget 落在 .chat-composer-input-surface，Highspeed 退出后默认卡重解析（composerCardOf 优先原生 data-testid 输入框）、宿主 margin 变更原值+优先级还原；悬停 tooltip 在 pill 下实时刷新隐藏明细并保留选区/滚动，焦点恢复区分 Escape 关闭与悬停接管；modalOpen 纳入 alertdialog；协调器候选补可见性过滤且已绑定输入框豁免 45% 阈值（上下分栏不再反复挂卸）；表面祖先观察改快照重建防泄漏 → v144 ⚙ radio 对齐修复：.zu-settings-langs/.zu-theme-options 的 label 显式声明 flex+align-items:center+gap:6px——原 label 继承 .panel label 的 flex-start 顶对齐（gap 14px），radio 圆钮相对文字中线偏上约 4.5px；新规则 (0,2,1) 特异性覆盖 (0,1,1) 基础规则，实测居中 delta=0 → v145 切回默认主题补还原 bar.style.visibility（pillUnsafe 安全隐藏是 pill 专属态，写入点仅 track 的 pill 分支；此前 pill 隐藏态下切回默认条永久不可见，十路评审 P1） → v146 精简模式（theme 第三档 compact）：条永久隐藏但保留 DOM（<style>/ariaLive 随条存活、heavy 保条对抗 React 清子树）；生成速度改挂工具行 .zu-tsb（重置卡左侧，挂载/位置兜回/签名幂等照重置卡同款），内容=zuBarSpeedView 桥两态或 tpsBand DB 回退、无有效样本不渲染（用户拍板）；tooltip=速度读数+状态条摘要（本轮/会话/工具/今日/子代理，逐格开关继续生效、子代理行点击开明细）+tpsBandLegend+「打开设置」按钮（镜像齿轮开启分支，面板精简下贴输入卡定位）；updateLive 10Hz 心跳原地跟随；非精简主题 syncTpsChip 门控摘除；诊断 mode=compact → v147 精简模式速率 chip 挪前导区（用户规格）：git chip 左侧——git 在时插其前、git 不在时占其锚位（cua-entry 后方/前导区末尾），两侧位置兜回收敛为 [锚][速率][git]（git 兜回容忍速率占相邻位防逐拍拉锯）；前导区发现失败回落尾随区（重置卡/额度组左侧） → v148 精简速率 tooltip「打开设置」按钮右对齐（用户规格）：footer 改 flex 布局，说明文本 tps-note-t 占据剩余宽度、按钮 margin-left:auto 推至最右，长文本换行不断布局 → v149 精简速率 tooltip 摘要行单位 tok→token（用户规格，与回答末尾统计行的 token 措辞对齐） → v150 修复精简模式 git chip 永不挂载（用户报告）：v147 的 git 兜回容忍条款（速率占锚位时不挪）误拦首次挂载——速率 chip 常驻锚位时 enhanceGitChip 每拍判"已就位"跳过插入；改为 chip 未连入 DOM 时无条件首挂（落速率后再由速率兜回收敛 [锚][速率][git]），容忍只用于已挂载的位置保持 → v151 工具状态词改版（用户规格）：Bash 动词「正在执行」→「工作中」，未知工具回退同改（正在执行 X→工作中 X）；工具计时分隔去中点（正在读取 · 4.3s→正在读取 4.3s 一并生效） → v152 工具动词 Read「正在读取」→「读取中」（用户规格） → v153 工具执行状态词定稿（用户规格）：Bash 与未知工具回退「工作中」→「执行中」（无名词回退英文 Working→Executing 对齐） → v154 工具动词全面改「X中」体例（用户规格）：写入中/编辑中/搜索中/获取网页中/更新待办中/读取待办中/运行技能中/读取上下文中/发送消息中/获取任务输出中/停止任务中/编写工作流中（Read 读取中、Bash 执行中、Agent 子代理运行中此前已改；英文标签不变） → v155 审查修复批（review-fix）：①compact 下 positionSubPanel 被隐藏条僵尸 .zu-sub 抢锚（零矩形把明细面板钉左上角）——chip 优先锚；②速率 tooltip 内容含秒表，悬停中 10Hz 整片重建吃掉「打开设置」/子代理行点击——显示中内容变化冻结只跟位置；③track compact 早退补两面板周期跟随；④自清选择器补 .zu-tsb、跨代采纳 chip 统一挂装（__zuWired 防重）修复热更后悬停/键盘失效；⑤closeSettings 焦点归还校验 offsetParent（compact 下不落隐藏 gear）；⑥enhanceGitChip 重复 var slotNode 清理。Web 同批：①③⑤（mousemove chips 归属校验只接本实例）+chip focus/blur 键盘可达对齐桌面 → v156 上下文按钮增强开关（issue #141）：⚙ 通用区新增「上下文按钮增强」checkbox（localStorage zusage3.ctxEnh，缺省开、仅显式 "0" 关），关闭走 enhanceCtxButton 关闭分支还原原生环/百分比且重置卡徽标继续维护（restore 顺带清徽标后立即重挂） → v157 修复精简→默认切换残留空壳细线（用户报告）：compact 期 render 短路会让空壳条面（热更占位/清子树后未填过）因签名相等一直存活、切回默认露出细线数十秒；①离开精简立即恢复 display（compactHid 区分初载 none，初载不提前露条保 pill 定位契约）；②离开精简强制条面重建一次（lastHtml 清空）；③compact 短路加 main.children.length 门——空壳先补一次完整渲染（条隐藏不可见）；④render 公共尾部补 syncTpsChip（短路/直通两路都经）→ v158 并流 fork/main cmdkW 线（PR #140，原线 v146 与主线 v146 精简模式撞号按合入顺序顺延）：宿主命令中心（⌘K 搜索弹框）加宽加高开关（⚙ 通用区，zusage3.cmdkW 缺省开）：条样式表规则 max-width:max(32rem,80vw)!important（原生上限=宿主 quickPickDialogClassName 的 max-w-lg=512px，弹框基础类自带 w-full 窄窗本就满宽，故小窗保持原样）与高度同规格（弹框根 max(90dvh,calc(100dvh-6rem)) 不低于原生上限，cmdk 列表 440px 硬顶放宽为 max(440px,calc(90dvh-15rem)) 小窗保底），<html> data-zusage-cmdk 属性门控（applyCmdkW，与 v136 projPath 同款），:has(>[data-slot=command][cmdk-root]) 只命中 cmdk 弹框——命令中心/任务搜索/快捷指令共用该样式常量一并放宽，设置页等普通 Dialog 不受影响 → v159 重启提醒开关（issue #139）：⚙ 插件更新区新增「更新后提醒重启」复选框（zu-restart-notice），经主桥 restart-notice 动作原子写运行时 config.json 的 restart_notice（缺省开、显式 false 才关、异常值不静默）；session-start hook 的 session_notice 读同一键，关闭后每个新会话不再注入 🔴 重启/安装提醒引用块（/install-overlay 命令行输出与自动安装失败、桥补装的故障提示不受控）——工作流模式多会话不再被逐会话植入提醒  → v160 Skill 运行期状态词显示「技能名·执行中」（用户规格，如「查阅·执行中」+计时）：turn-stats runningTool 透出截 160 字的 inputText，overlay 端 zuSkillName 提取 JSON name 字段（正则兜底、控制字符拒绝、超 24 字省略号截断），取不到回退「运行技能中」→ v161 状态条新增「项目累计」格：会话累计右侧渲染本项目（session.project_id）全部会话聚合（含子代理，口径同 session_usage；远端/不在本地库无字段不渲染），⚙ 状态条显示加「项目累计」开关（show.proj，默认开），精简摘要加同款行 → v162 状态词流光（用户规格）：速率 chip 纯状态词态（思考中…/工具动词/技能名·执行中）复刻宿主 .zcode-loading-label 同款流光——subtle→foreground→subtle 渐变 background-clip:text、1.4s 横向扫光、reduced-motion 停用；类名/关键帧自有命名（zu-shimmer/zu-loading-shimmer）不依赖宿主全局类；带 t/s 数值的估算/真实/DB 回退态不含 → v163 会话累计/项目累计 tooltip 增按模型明细行（top 8 按总量降序 + 「另有 N 个模型」，轻量行无 models 字段不显示）→ v164 tooltip 收口（用户规格）：模型明细全量展示去「另有」折叠、总和行置顶、键列自适应宽不换行、时间范围行 sticky 吸底（rt-pin，五个 tooltip 统一）→ v165 模型明细表格化对齐（rt-models display:table，整块共享最宽键列，token/次数列纵向对齐）→ v166 会话累计/项目累计时间范围精确到秒（fmtStartS，用户规格；其余三格保持到分）→ v167 模型行去 rt-atom（Chromium 表格内在宽度在 inline-block 边界断行致数值折行，真实浏览器实测）+ 带 rt-models 的 tooltip 宽度帽放宽 860px（zu-tip-wide，取最宽一行）→ v168 格面计数改 fmt 万/亿口径（用户规格：≥1万 N.NN万、≥1亿 N.NN亿；本轮次/会话轮次/项目会话次/工具总数四处，tooltip 与精简摘要保持原值）→ v169 同容器双条去重（Windows 用户报告：最小化/还原窗口来回切出现两根状态条）——宿主窗口状态切换可能短暂保留旧视图副本/重建编辑框，协调器瞬态出现两实例两根条落进同一张卡；heavy 对账每拍扫描：同卡可见 .zusage-root >1 或两根 body 兜底条矩形重叠过半时，data-zusage-slot 大者 hideBar 让位（对手消失经 track 自动复显；拆分窗格各卡各条不受影响） → v170 tooltip 计数同口径（用户规格）：各 tooltip 标题/规模/工具/请求行与模型行、精简摘要行的次数/轮数/会话数全部走 fmt；子代理明细面板保持原值 → v171 修 issue #147（社区 @Mc-GrowlR 报告并给出方案，Windows 10 + ZCode 3.17.1）：划词 side chat 面板容器无 data-pane-id，被协调器 auto 兜底键当作独立 pane，同窗出现第二条状态条（Radix presence 常驻挂载，面板收起后幽灵 composer 仍持续命中扫描）；窗口存在真实 pane 键时丢弃 auto 键——老宿主全部候选均为 auto（单键）单实例行为不变、shadow/iframe 空文档兜底不受影响 → v172 待重启/待更新改由 ⚙ 齿轮红点提醒（restartNotice 开关改为控制红点；会话内文字重启提醒取消，plugin-updater 推送 markerAt 作红点代际，点进「插件更新」分区记为已查看）+ ⚙ 更新页「重启 ZCode」按钮（二次确认，主进程 relaunch 动作）+ 移除自动安装开关（hook 未注入一律自动装，auto_enabled/INSTALL_MESSAGE 会话出口删除）   // 悬停 ⚙ 面板可见；版本号随代际递增 → v173 强制 K/M/B 单位开关 → v174 辅助对话独立状态条（宿主 tabId 成键 + 实例配额 4+1、桥 scope 精确绑定、确定性统计行按会话根归属）→ v175 辅助对话回答末尾富文本与主分栏同规则（显式本地 scope + isCurrentTurn 活跃轮限定 + --current 的 promptTs 守卫；修宿主 modelDurationMs 只累计高速供应商致占位行永久「生成时长缺失」；富文本收集后统一发起、同 SID 只追活跃轮且 epoch 粘滞防多轮搅动） → v177 review 修复批（10-agent 全量 review 闭环）：双条去重抑制不再被 track 每帧复显打穿（v169 Windows 双条场景实际失效的根因，复显前查 dupSuppress、heavy 每拍重评估解除）；精简下速率 chip 被摘除后子代理明细面板保持原位（不再回落隐藏条内全零 .zu-sub 抢锚钉视口左上角，web v103 同款）；精简短路块恢复 syncTpsChip 数据点 reapply（2976478 挪公共尾部后短路 return 到不了、与 git chip 不对称）；relaunch 无回执 4s 提示主进程可能是旧版需手动完全退出（旧 pollPluginRequests 白名单外动作静默丢弃）；待办红点指纹改分量级比较（更新装完后 latestVersion 分量退出不再误复亮）且 ack 幂等早退前先收敛本窗口红点；cnNum 切换补富文本 unitEpoch 在途竞态守卫（同 forceKmb）；detRootEl 落在宿主 data-session-id 写入窗口期时 heavy 按拍补算自愈；精简说明文案对齐 v147 挂载位（前导区 Git 左侧）→ v179 自动压缩阈值注入：⚙ 开关+模式+数值+状态行（enginePatch 随插件状态回推，__zusagePluginState 种子+拷贝行同 v172 纪律），主进程 engine-patch.cjs 按引擎 SHA256 白名单对 glm/zcode.cjs 打阈值改道补丁（锚点唯一性+use strict 指令位校验 fail-closed，hook 缺席/返回空双兜回 fail-open），阈值 autocompact.json 由引擎 hook 每轮决策 mtime 缓存读取——数值热生效、补丁冷生效（已运行 agent 子进程下个 spawn 起用）；ctx 按钮 hover 面板加「自动压缩 ~X%」行（acInfoText 按标称窗口口径，21K 预留近似还原）；关闭开关=按当前内容反向还原引擎字节；阈值任何形式钳 1% effective 地板防连环压缩→rapid-refill 熔断→ v180 重启按钮错位守卫（issue #158）：主进程 pushPluginState 携带 relaunchSupported 能力标记（与 relaunch 分支同文件、天然同步），浮层缺标记时隐藏按钮并显示「完全退出后重开」指引（syncUpdate + 点击守卫双处）；主进程 pollPluginRequests 白名单外动作兜底回执 unknown action，重启回执明确区分「主进程是旧版本」 → v183 子代理行内实时速率 chip（v4 Agent 行 testid 后缀即 childSessionId、与 v97 槽位键同源：运行期读槽位估算、完成后读泵快照 sub.list 真实加权速率；TPS 十档色；悬停 tooltip） → v184 ⚙ 新增「子代理行内速率」开关（state.show.subRate，zusage3.show 整包持久、默认开；只门控行内展示） → v185 实机修复批+review 修复批：后台子代理在宿主注册表无现成 store（运行期估算自 v97 起从未真正工作）→桥 v2 acquire 访问器按已验证 scope 解析子会话租约（仅 sess_subagent_ 前缀+本地）；tooltip 构建器改收数据包（buildTip(el.__zuT) 约定）；截断改从尾部取（保最新派发 8 个）；SUBRATE_DIAG 提模块级；诊断按 handle 判绑定；实例 dispose 摘行内 chip→ v186 本会话平均 token/s（PR #157 收编）：状态栏完成态主数字改会话加权平均（zusage avg_tps：Σ有效输出÷Σ生成窗口，main_turn 段、不含子代理），「均」前缀+按均值分档，最近一段/最近一轮退 tooltip；速率行/CLI 加「会话均」，精简 chip 同步；updateLive 会话归属取本 pane 行（lastView.session），缺席回退原行为→ v187 补回 v181 工具组状态词（PR #161 合并时 turn-stats runningGroupOf 块与 overlay 消费分支遗漏入库，仅存于运行目录热修副本）：turn-stats 复刻宿主 exploreGroup/executeGroup 合成规则（≥2 连续同类行成组、半截 JSON defer 透明、startedAt 锚定组首行），运行行落组尾时状态词显「查阅·执行中/终端·执行中」替代逐工具动词，计时从组头起算 → v188 自动压缩阈值注入按验收反馈简化：开关默认开（主进程 auto_compact_patch 缺省开、显式 false 关）；UI 只留百分比数值（留空=跟随引擎默认），模式下拉移除（引擎层 enabled:false/tokens/buffer 协议保留兼容，配置文件手写仍生效）；标题改「自动压缩上下文阈值注入/压缩上下文阈值数值」；状态行补 14px 水平内边距与 label 文本对齐 → v189 hover 面板阈值信息行移到「压缩上下文」按钮上方并追加下划线「调整」链接：点击复用 gear.click 完整路径打开 ⚙、切「通用」分区、scrollIntoView(nearest) 定位阈值数值行并高亮 3 秒（.zu-ac-flash，计时器实例级归属 dispose 清理）；info 结构改首文本节点+常驻链接（整行 textContent 覆盖会抹掉链接） → v190 三处验收微调：hover 阈值行 text-align:left（与卡内其它行对齐）；高亮改琥珀左条+淡底（--color-brand 在宿主主题是白色系，outline 描边观感像输入框焦点）；⚙ 注入开关关闭或主进程未加载时数值行整行 hidden → v191 hover 阈值行 token 数改走 fmt()：万/亿/K·M·B 与状态条、tooltip 同一转换链（跟随中文单位开关与强制 KMB 开关，中文至多两位小数去尾零） → v192 hover 阈值行布局：去掉自加 6px 下边距（间距交给宿主 space-y-3 的 12px 节奏，与「平均缓存命中率」行 pt-3 距分割线一致）；行改 flex 两端对齐，「调整」链接居右 → v193 修 v192 贴按钮：宿主 space-y-3 是 Tailwind v4 :where() 零权重 margin-bottom，行上自写 margin 会按类名权重压掉它（v190 的 6px 显挤、v192 的 margin:0 贴紧同因）——删掉 margin 声明整段回落容器原生 12px 节奏 → v194 阈值百分比改总窗口口径+数值行 30-99 校验：设置 91=原生按钮走到 91% 触发、hover 显示 91%（旧口径按扣除 21K 输出预留后的有效窗口算，设置值与显示差约 2 个点被判为割裂）；引擎 hook 以 eff+21K 近似还原标称窗口并钳在 eff 内，writeConfig 白名单收紧 30-99，已打补丁引擎下次启动按 PROLOGUE_V1 原位换装新 hook；⚙ 数值超范围实时提示并拒绝提交 → v195 hover 卡新增新手说明行：阈值行下方小字（.zu-ac-hint，随行同生命周期）解释口径与后果——「按窗口总量计算（与顶部百分比同口径）；走到该比例时客户端会自动压缩较早的对话内容以腾出空间」；margin-top 收紧 space-y 间距（space-y v4 只写 margin-bottom，top 无冲突） → v196 「调整」失灵诊断面包屑（下版移除）：openAcThresholdSettings 在 enter/after-gear/+150ms/row 各点写 __zusageDiag.acOpen（面板态、gear 可见性、条 display、分区、代际），closeSettings 写 acClose 调用者栈；v197 实证 acOpen 为空=点击未到达处理函数 → v198 修「调整」失灵：链接监听改 pointerdown（宿主疑似 mousedown 即关 hover 卡、click 到来前链接已被摘）+ 行级 click 兜底 + 捕获期点击写 localStorage 并在说明行回显（命中标绿/落空标红，诊断下版移除） → v199 清理 v196-v198 诊断：acOpen/acClose/acClick 面包屑、localStorage 回显、命中/落空着色全摘；保留 v198 修复本体（pointerdown 主监听 + 行级 click 委托兜底），实机验收=电脑操作点击「调整」面板弹出且阈值行琥珀高亮 → v200 上下文按钮增强显示层优先镜像原生 aria-label 已用/总量（宿主 taskUsage，压缩后立即回落；issue #172 曾停在 DB 最近完成请求旧值 16.4%），解析不出回退 lastBand DB 口径（ctxOv/nativeCtxVal 优先级只作用兜底），exc 过程态档位仍优先，还原路径共用同一解析器（英文 UI restore 顺带修对） → v201 合流：v200 撞号顺延（v200 已被并行线 issue #174 压缩按钮开关占用，8e6e1c0 先合入） → v202 预估费用行：四格 tooltip（本轮/会话/项目/今日）按 models.dev 官方牌价估算费用（token_pricing.py 内置表 326 条 + serve 内 12h 同步 models.dev 与 er-api 汇率，pricing-cache.json 落盘），快照加 cost_usd（USD）与 fx，展示层 ×汇率显 ¥（无汇率降级 $），会话/项目模型明细行尾加各模型费用，「价格来源 models.dev」脚注可点（openExternal），费用行尾空心问号图标悬停弹说明小气泡（价格来源/计算公式/汇率来源三行，fxTip 独立浮层 + mouseover/out 委托 + 180ms 悬停桥，主 tip 收起/重建时同步收），汇率源主源失败兜底 exchangerate.fun（自定义 fx.url 不启用），⚙ 通用区开关默认开，本库口径：裸输入=input−cache_read−cache_creation 全价、缓存分价、output 已含思考不另计 → v203 红点仅承载待重启（发现新版未安装、更新成功且已热重载均不亮；分量级已读比较保留以兼容旧 seen 串）+ ⚙ 带待重启红点点击直接落「插件更新」分区（激活即 ack）+ 设置页新增「已更新成功，点击重启 ZCode 即可生效」提示条（旧主进程降级回原文字指引），分区切换提取 activateSettingsSec 单一出口 → v209 额度 chip .zu-quota 与重置卡徽标 .zu-ctxrst 左右内边距 6px→3px + 模型选择触发按钮（chat-model-select-trigger）左内边距减半：文本态 8→4px、图标态 6→3px（!important 压宿主 group 变体）（用户规格 2026-11-02） → v210 时间范围行全部精确到秒（v166 会话/项目累计先行的 fmtStartS 扩展到本轮/今日合计与速率 tooltip 最近一段；fmtStart 仅剩「最后活动」行）（用户规格 2026-11-02） → v211 本轮 tooltip「单次耗时/首字延迟」改「平均耗时/平均延迟」（zusage 快照 last_turn 新增 avg_duration_ms/avg_ttft_ms，对 model_usage 该轮已完成 main_turn 行 >0 样本求均值；turn_usage.ttft_ms 聚合列实测口径不明不可依赖，旧快照缺字段整行不渲染）+ 本轮格面移除时长/首字两段（耗时只在 tooltip），精简摘要「本轮」行时长随同改平均（用户规格 2026-11-02） → v212 Git chip 分隔符 .zu-git-sep 间距收紧：字面「 · 」改纯点+左右 2px 内边距（多仓段与 ?N 未跟踪段两处同源；用户规格 2026-11-02） → v213 状态条格序调整：今日合计提前到会话累计之后（速度→本轮→会话→今日→项目→工具→子代理→⚙），速率 tooltip「状态条摘要」行序随同对齐（用户规格 2026-11-02） → v214 项目累计统计卡改版：tooltip 重构为「标题+统计范围（全部请求·含子代理）、总用量/请求次数/预估费用三 KPI（费用旁统一说明问号）、输入(命中率)/输出(含思考)/缓存写入明细、会话·轮·工具·重试规模行、模型四列表格（默认 6 项可展开全部，排序对副本）、时间范围（em dash）」，作用域 .zu-project-tip + :has 样式（不动共享 .tip/.rt-* 规则），展开态实例级归属键（sid:started）局部更新不重建整卡，触发项 zu-pj-item 标记，卡片内 Escape 关闭并归还焦点，focusout 进卡片不误关，positionTip 钳底边，费用全链复用 v202（0 有效/缺失 —/开关关整格收） → v215 六统计卡统计卡化：本轮/会话累计/今日合计/子代理四格 tooltip 统一 zu-stat-tip 视觉体系（速度统计卡公共构造：scope 标签+双读数 hero 主读数档位色、两行五列网格窄窗重排、速度卡宽帽 760px :has 作用域；明细面板内模型行问号图标弹费用说明气泡，复用 fxTip 单例同款委托）（用户规格 2026-11-02） → v215.1 速度卡去费用行与模型明细（用户规格：速度 tooltip 只留读数与时间范围，费用唯一承接处=各卡明细面板与 fxTip 气泡） → v217 子代理统一浮层：.zu-sub-pop 双栏单组件替代「悬停五段卡 tooltip+点击独立明细面板」两套旧 UI（preview/pinned 状态机：悬停预览、首次点击固定、面板内操作转固定、Escape/关闭/外点统一收且焦点归还+500ms 悬停抑制；选中按 sid 维护、运行中未入库槽位进导航、签名幂等重建保滚动、会话切换即关、入口断连即关；任务页 _sub_item 逐任务模型用量表/预估费用/平均速率档色行/最后活动全格式时间，zusage sub.list 单项同步扩展；精简入口 chip.__zuOpenSub 归一指向同一浮层）（实机验收 2026-11-03） → v218 速度卡三修（实机反馈）：悬停冻结 updateLive tipFor 判定改 contains（旧恒 false 致悬停中 tooltip 不冻结）；右格「最近一段」改读 lastView.last.tps（zuBarSpeedView 无 latest 字段恒缺）；图例 ≥2000 Ultra 改渐变圆点并禁 ✦ 伪元素（星点破形） → v219 ⚙「状态条样式」（默认/药丸/精简单选+精简说明行）从「通用」分区移入「状态条显示」分区卡首，纯分区归属调整，控件与持久化行为不变 → v222 速度卡 tooltip 补「时间范围」行（用户规格，参考四格 tooltip 同款式）：主数字为会话均/桥态取会话累计口径（started→last_at，与会话累计 tooltip 同源），「最近一段」回退态保持段范围；起点缺失整行不渲染（半程范围无意义）；三处 speedCardHTML 调用点（桥态 buildLiveTip/DB 回退/精简 chip）同批生效 → v223 ⚙ 面板关闭按钮命中区外扩（原并行线编号 v220，合入顺延；::after inset:-6px、hover 反馈同步，约 20×24px→32×36px）：按钮四周 head 空白点击原本无反应，用户实测「悬停 × 上点不动、不灵敏」；CDP 真实点击定责为命中区过小（事件链与面板几何均无缺陷），纯命中区修复，不改布局与视觉 → v224 速度卡悬停实时刷新二次修复（实机反馈）：v218 只改了 tipFor 判定，新 tip 串仍写到格内 .zu-live span，而 __tip 宿主与 drawTip 读取都在 .it 格元素上——条件每 tick 命中、重画的仍是整条渲染时的旧串，悬停中「当前读数」冻结在最后一次整条渲染的值（chip 已跳动、tooltip 停在「思考中…2秒」）；改写回格元素（liveEl.closest(".it")），悬停中每 tick 跟手重画，未悬停也保持新鲜 → v225（v224 并行线 PR #198 先合入，本线顺延）⚙ 自动压缩状态行区分「引擎被单独热更」（issue #191）：桌面 build 已登记而引擎 sha 脱钩时明示热更事实与漂移 sha 前 12 位（引擎补丁新增 drifted 字段，主进程传入 appVersion 按点分界前缀匹配登记表），替代误导性的"版本不在支持名单"；lastError 后缀此时与 sha 重复不再拼接；fail-closed 判定不变 → v226 ⚙ 两项（用户需求 2026-11-03；v226 已被并行线自动压缩状态行占用，顺延）：①六格显示开关（本轮/会话累计/项目累计/工具调用/今日合计/子代理）全部关闭时样式自动转精简（边缘触发只在「变得全关」那一拍切档，zusage3.autoCompact 记录来源主题 default|pill，重开任一格恢复、面板手动改档即解除；药丸来源同样触发）②默认样式新增「水平对齐」三选一（zusage3.barJust：均分 space-between 缺省不挂类/居左 flex-start/居右——居右不用字面 flex-end，LTR 下 start 侧溢出不可滚动也不计入 scrollWidth 会废掉收缩检测与 .zu-clip 渐隐，改首格 margin-left:auto 等效右聚拢、溢出方向与兜底不变；设置块仅默认档显示，applyBarTheme 随档显隐并同步条上 zu-just-* 类） → v227 预估费用说明气泡悬停保活（fxTip 是 body 级独立浮层、挂在主 tip 之外：指针从 ? 图标移入气泡被文档 mousemove「条外」分支按 left-bar 强制收主 tip、hideTip 同步收气泡，v202 起悬停说明气泡即灭；子代理浮层路径同被 preview-leave 倒计时收走面板。mousemove 处理器节流前新增分支：fxTip 显示中且目标在气泡内视同仍在 tooltip 上——保住主 tip 与气泡、取消越顶宽限与子代理面板延迟关闭，离开气泡回落原判定） → v228 速度 chip 完成态去「· 近X」尾缀（用户规格；编号顺延避让已合并的 v226(PR #200)与 v227(PR #202 fx-tip-keepalive)）：条面格与精简 chip 同批去掉 dbTps 尾缀，主数字只显会话均（或最近一段）；「最近一段」读数保留在 tooltip 右格不受影响 → v230 压缩轮不再显示「本轮统计不可用」（编号顺延：原 v238 号，v229 已由并行合入的 PR #207 占用、v231 起由并行未合线自占）：上下文压缩（手动/自动同链）是 query_source='compact' 的辅助轮（DB 有完整数字且已计入今日/会话累计，但消息流无正文、header 零输出），旧逻辑按 v74 零输出明示规则误插误导占位——实测压缩轮投影=turnHeader+timelineMarker(marker.type='compact') 而 header.executionKind 恒 'agent'（ek 探针证伪初版假设），turn-stats get() 以 isCompact 识别，overlay 对压缩完成轮不新插/撤下已插行（宿主「上下文已压缩」提示已承载语义）；kinds/tmr 为 det 诊断字段；v74 真实零输出轮行为不变
+    var VERSION = "v242";   // v82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v84 主标签页远端路由（工作台分组唯一主绑定上报 + 迟到载荷守卫，issue #30）→ v85 回答末尾统计行跟随万/亿开关 + tok→token → v86 历史轮 tracker 无记录（窗口滑出/换代/热更）或缺输出字段不再翻成"本轮统计不可用"，加 det 诊断 → v87 主叶归属增 last-session 回退（组零证据时唯一远端记录放行，issue #30 复测：单会话主标签页不建组）→ v88 运行态心跳与两处扫描 tick 2s→0.5s（富文本重试 6→24 次等价放大）→ v89 ⚙ 面板更新进度：downloading 阶段文案 + 下载（字节）/安装（校验→安装→同步）双进度条，缺 progress 的旧主进程自动隐藏 → v90 主标签页/分栏归属改按本窗会话节点身份（renderer 桥按版本/资产/锚点写 SessionPane 属性，移除 workbench-groups/last-session 共享回退）+ 心跳 0.5s→0.1s（扫描维持 0.5s）→ v91 设置页/权限面板冒条修复（PR #44：inSettingsView 三处派发排除 + anchorCardOf 面板锚点改判）收编收尾：排除标记并集（settings-page testid + content/panel 双 frame）、track 显隐第四处防御 → v92 ⚙ 更新区固定显示可复制的重装口令（源码安装无法自动更新时引导用户发给 agent）→ v93 原生上下文按钮（chat-context-usage-trigger）增强：环填充/四档色/右侧百分比镜像状态条上下文格（ctxBandOf 同源），cw 缺失还原原生形态 → v94 状态条删除「上下文容量」格（UI+tooltip，该口径由原生按钮增强承载），⚙ 面板同步去掉「上下文」开关，子代理格改始终展示（零值也显示）→ v95 ⚙ 更新区去掉 v92 重装口令提示块（源码清单的仓库来源改由宿主插件管理器直接更新，不再报渠道不一致），更新来源文案增「仓库源码」分支→ v96 套餐额度 chip（默认关）：挂原生上下文按钮左侧（wrapper 内前插，与按钮增强同款双 reapply/还原），数据来自主进程 quota 字段（解密宿主 OAuth 凭据直查 monitor 端点，账号级套餐池口径），会话首个 main_turn 完成前不显示；自绘 tooltip 走 rateTip 独立浮层模式；chip 改多窗分段：每窗一段（中文 5小时/7天，英文 5h/7d）各自按 80/95/100 档位色，分隔符 |；余额类型单段渲染就绪（余额 ¥100.00，阶段 3 数据源接入即用）；去掉环形，容器不着色 → v97 子代理速率（T1+T2）：zusage sub 汇总加 rate_avg/每子代理 tps_avg（已完成段加权平均，口径同 _turn_rate），子代理格 tooltip/明细面板展示；Agent 运行期主 chip 附加「子代理运行中 · 估 X t/s」——turn-stats 透传 subagent 行 childSessionId，overlay 据此用同款 zuTryBindStore 绑子代理会话 store 做字符增量估算（运行中请求未入库，DB 无实时数据；150s 采样实锤零 running 行），思考文本不进 rows 时退回纯状态词；工具动词「正在运行子智能体」压成「子代理运行中」（web 同步文案）；同日多槽位化：turn-stats 暴露 runningSubagents 全集（并行时 rowId 前 8 个），每子代理独立绑定/2s 节流，主 chip 显示合计速率（并行 ≥2 时动词后缀 ×N），chip tooltip 与子代理明细面板逐个实时展示运行中估算（tooltip 随原地改字同步 __tip 重画；面板 800ms tick 原地刷新 .subrate，汇总页运行块含 DB 尚无记录的新子代理） → v98 额度实时选源恢复（v4-model-config 观察 + quota-providers 全窗快照上报 + byProvider 定向刷新、空选择 fail-closed）与 sub2api 额度 UI（今日/本月窗口、窗口行内金额明细、Key 总额度、订阅截止、账户余额标题） → v99（主线并流）tooltip 伪边界 leave 过滤：Chrome 悬停链收缩/重算会补发 DOM 内部的 documentElement/tip mouseleave，tipLeaveAt 贴边判定后取触发时刻最深 :hover 元素甄别，仍悬停在本档具体元素上即伪 leave 一律忽略交回 mousemove 流（主线 v100 滚动豁免=本链 v106 同义，不另列） → v99.1（主线并流）apiKey 模式 BigModel/Z.ai（bigmodel-api[-N]/zai-api[-N]）额度 chip 标题家族判定（issue #68；数据链在 quota-client） → v99.2 思考中计时随语言本地化（中文「1 时 2 分 3 秒」/英文「1 h 2 m 3 s」，空格分隔、零段照旧省略）；回答末尾行采样时刻改完整中文日期时间（⏱ 2026 年 10 月 23 日 11 点 20 分 28 秒，token_rate.py format_turn_line 同步改版） → v100 设置面板分区导航（ZCode 设置侧栏同款：左栏三组分区导航 + 内容区单分区显隐，激活项 aria-current="page"，选择持久化 zusage3.sec；面板窄于 620px 时导航收成 icon rail） → v101 设置面板高度在打开瞬间按内容自然高锁定（切分区不再抖动，resize 只收紧不放大） → v102 额度源预设模板（CC Switch/magpie 同款选模板只填 Key：官方域变体 chip 一键写入 secrets baseUrl，minimax 可信域机制推广到 siliconflow 币种随域；deepseek/openrouter/kimi/anthropic/mimo/volcano 附控制台取 Key 链接，走 openExternal 桥） → v103 额度源列表卡片化布局（每源圆角卡片+间距，凭据框限宽 420px，长说明段落补水平边距；纯 CSS，结构行为不变） → v104 源状态文案补 disabled=已关闭映射 + 主进程对显式关闭源统一报 disabled（修「开关已关却显示待查询」矛盾）；刷新/获取 Key 按钮补 title 提示，关闭源的刷新按钮禁用 → v105 「上下文容量」弹层（hover-card-content）内压缩上下文按钮：命中率行下方全宽胶囊按钮（原生 secondary 配色全走客户端语义变量），弹层关即卸载（Radix 无 forceMount）故 body MutationObserver + heavy 对账双触发、DOM 存在性幂等（多实例安全），插入锚=「剩余额度」border-t 段前（缺则容器尾）+位置兜回；点击弹原生 AlertDialog 视格确认框（遮罩/Esc/外点关闭、Enter 确认），确认后优先走 fiber 上原生残留的 onSendCompressionCommand("/compact")（SessionPane 压缩入口，不动输入框草稿），缺失回落官方 E2E 输入桥 __zcodeLexicalInputE2E.setText + 发送键（Lexical 直写 DOM 不生效，禁用该路径；草稿非空拒绝） → v106 额度 tooltip 滚动豁免：hideTipsOnScroll 不再收 quotaTip（chip 固定 composer 工具行与 gitTip 同理），修思考中流式输出自动滚动致悬停弹出即灭；chip 随宿主重建 detach（无 mouseleave）由 scanRateLines 加 isConnected 健康检查兜底收起 → v107 压缩确认框补行为提示：压缩进行中发送新消息/停止会打断压缩（实测 16:27 新 turn 启动同秒 compact turn TURN_CANCELLED，cancelled_by_user=1；引擎对该次摘要流挂起 134s 无首 token 也不重试 retryable=0），确认框加 hint 行中性告知 → v108 压缩主通道按用户指定改为字面 "/compact" 输入提交（E2E 桥 setText+发送键；流式中 v4-stop 可见/草稿非空/发送键 disabled 三重拒绝），fiber 命令信封降兜底；hint 升级为「通常需 2-4 分钟且无进度反馈」（DB 实证：全库 compact 请求无首 token 但正常完成，72s-9.6min，14:44 同会话同模型 165s 成功先例；16:25/16:43 两次「卡住」实为 2m20s 被新消息 TURN_CANCELLED，非故障） → v109 压缩主通道按用户指定改回直接调会话发送接口（fiber onSendCompressionCommand 命令信封：不碰输入框/发送键、流式中交引擎排队，修字面输入通道在生成中被发送键禁用卡住的问题），字面 "/compact" 输入提交降兜底（三重门控仅作用于兜底） → v110 压缩提交函数改在弹框打开瞬间（弹层必存活、锚点几何可信）解析并缓存，修复确认时弹层已被 Radix 卸载、几何重解析退化为「离视口左上角最近」致多分栏把 /compact 发进错误会话（P1）；兜底字面输入通道的流式/发送键/草稿三重门控全部前置到 setText 之前（拒绝不再残留草稿）；Enter 确认限定焦点在弹框内（无焦点陷阱下防焦点外 Enter 误触发确认） → v111 额度 chip 默认展示：quota_enabled 缺省开（显式 false 才关，真值链在 inject-main）；chip 二级门控 not_configured/unsupported 从静默隐藏改中性灰提示「额度 未配置/暂不支持」（源被 ⚙ 显式关闭仍隐藏），tooltip 补 info 分支引导配置 → v112 Start Plan 免费档池（quota-client 新增 zcode-start 适配器走 zcode.z.ai billing/balance 独立链，与 coding plan 的 monitor 端点分池；选源路由与 quotaFamily 判定补 start-plan 分支修 start-plan pane 误读 GLM Coding Max 池；chip 增「套餐」分段（windows.plan，one_time 发放池聚合已用%），tooltip 套餐池行按 expires 标记切「到期」措辞） → v113 夜间审计加固：quotaBalanceText 内建转义（currency 是远程响应字符串，chip/tooltip 双 innerHTML sink；parts label/amount 单次转义修双重转义；「其他源」行标签转义归位；aria-label 走 plain 纯文本变体不读实体）→quotaTip 补内容签名幂等 __zuTipSig（同 gitTip，悬停期间周期对账不再打断文本选择）→子代理明细面板数据签名幂等（滚动位置/选择不被每 1.5s 推送整面板重建重置；运行中估算仍由面板 800ms tick 原地刷新）→额度 chip 签名重写保留 zu-qbusy（点击刷新动画不被推送截断，同 git chip）→⚙ 源列表 id/label/preset/keyUrl 属性级转义 aEsc（custom:<providerId> 可含用户自定义名）→live 速度 span 的 speedView.text 过 ttEsc（工具名是宿主/MCP 可控字符串）→渲染桥两处订阅回调尾部 updateLive() try 包裹（异常不冒进宿主 store 通知分发，诊断键 subLiveErr/bridgeLiveErr 记录） → v114 积压清单清扫：remoteCache/remoteTodayCache/richTextCache/richTextAttempts 上限淘汰（长会话防无界增长）；dispose 清理补 __zusageDeliverTurnText/__zusageSidWs/__zusagePaneScopes（旧代闭包自卫之外的清理完整性）；诊断 lsVals 只转储 zusage 命名空间的 localStorage 键（宿主其余键值不进 diag 文件） → v115 渲染循环省电（上游 xhwxt PR #26/#28 同源问题）：幽灵子树/遮挡命中/模态判定加 TTL 缓存（120/150ms，命中绑定元素矩形+模式），track 在 document.hidden 时整帧跳过；未采纳其 600ms↔2s 调度降频（heavy 600ms 对账是与 render 并列的 React 重写兜底契约，降频会让增强节点裸奔 2s） → v116 「思考中」卡死修复（源码复核定案）：v87 合成分支条件收紧——仅「空窗口非终态（draft 空窗，v87 本意）或 control.phase=running」才合成思考中，删除「行非空」析取项（宿主 wire 快照 rows.window 恒为全序尾 60 行，末轮超窗的闲置会话整窗无 turnHeader，旧条件使其永久点亮思考中、切回重绑重新计时）；思考计时锚定 turnHeader.startedAt（宿主创建 header 恒写入，重绑不清零，缺字段回退首观测）→ v117 悬停命中区扩到整栏（fork lliangworld b21e3cf0 同源收编）：条目空隙/分隔符按 sep 中线就近归属、尾部空隙归末位条目，⚙ 与空条面维持保持不动；防闪烁改由节流+幂等承担 → v118 无障碍与主题重构（并行会话批次）：条目可聚焦（span tabindex / zu-sub 真按钮 + aria-label）、键盘可达 tooltip（focusin/focusout + Escape 收起）、focus-visible 焦点环、SVG 图标与思考动画改 currentColor 随主题、⚙ 面板请求-回执协议（requestId + __zusagePluginResult，feedbackVersion 1）、quota 源操作错误语义、统计行开关即时重扫 → v119 插件自动检查改为每 1 小时，更新区双语提示更新器变更需完全退出并重开 → v120 Git 手动刷新改请求-回执协议（askGitRefresh 带 path/requestId，主桥 gitTick 完成后经 __zusagePluginResult 回执、在途请求合并等待，按请求 path 校验结果）+ 状态条 aria-live sr-only 播报区（套餐额度查询中/Git 刷新状态）+ ⚙ 面板高度上限 82vh→90vh + 模态判定改按可见 dialog（display/visibility/opacity 过滤） → v121 状态条 .ico 与 ⚙ 齿轮图标盒由 calc(字号+4px) 改为等宿主字号（24 格线性图标墨迹只占盒 75–83%，18px 顶满 1.3 行盒显大，且加法常量令比例随字号漂移 1.33×→1.20×；用户实机定 1.0×，.eb .ico 12px 特例不变） → v122 Git chip 展开测量完整宽度并留 32px 迟滞余量，切断宿主 compact 反馈环（issue #100） → v123 Git chip 锚点按电脑操作→上下文→模式→思考回退，排除隐藏探针并随可见锚点迁移（issue #103） → v124 Git chip 固定左侧操作区，移除右侧上下文/思考回退 → v125 思考计时中文全紧邻「7分16秒」（时段间空格去除，用户要求；英文「7 m 16 s」不动） → v126 思考计时英文数字与单位紧邻「7m 16s」（时段间留空格，用户要求） → v127 tok/s 速度十档色（TPS_BANDS 唯一事实源，原始值分档含下限不含上限：<40 低速红 / 40–70 一般黄 / 70–150 流畅绿沿用原三档类名与实测色，150 起新增蓝紫系 zu-teal/zu-sky/zu-azure/zu-violet/zu-purple/zu-magenta，≥2000 Ultra 静态蓝紫渐变 + ✦ 星点（::before content:"✦"/"" AT 静音、@supports 外纯紫回退，浅色组同名覆盖渐变）；估算态与完成态同表分档（用户规格，原「估算态不分档」废止），无效值（负数/NaN/±∞）一律中性 dim 或回退 DB 绝不判低速，DB 回退分支负数/非有限不再渲染 chip；tooltip 档位行改动态「名称 · lo–hi t/s」消解 toFixed 舍入边界歧义，另加静态「颜色对照」图例（十档数值↔颜色升序一览，档位类与条面同源随主题切换）；额度正常态改额度蓝 #78a9ff/浅 #315fc4（.zu-qseg 专属基色，不碰全局 .ok——上下文与速度前三档仍绿），周期标签拆 zu-qlabel 子节点中性次级色常规字重（textContent/aria/tooltip 不变），quotaSegs 补 isFinite 门防 NaN/±∞ 落正常蓝；正常态再改 CCometixLine 同源柔和低饱和（用户规格）：普通窗灰蓝 #8abbd0/浅 #276f86、7 天窗按 quotaSegs 结构化 key 挂 zu-qweekly 淡紫 #b69ad8/浅 #76509f（不匹配显示文本），周期标签与数值同色成组仅标签降字重，上下文按钮正常绿改 #72c9a2/浅 #187b58（限按钮作用域，速度与全局 .ok 不动）） → v129 模型拉取分区（收编 HHQ-666/zcode-model-puller，MIT）：⚙ 基础组新分区列宿主 provider_config.json 的 API Key 型自定义供应商，经主进程拉取其 /models（候选端点探测、OpenAI data/Ollama models/顶层数组形状解析、Bearer+x-api-key 双头），弹窗勾选（已添加/新模型徽标、搜索过滤、全选/清空/仅选新、选中计数）后经 model-pull-apply 最小写回（personalModelIds+modelOrder 追加、providerModelRules 复制同供应商模板条目、同目录原子替换+滚动备份 .zusage-bak、未知键保留）；key 只在主进程内存、只发该 baseUrl 本域，不回渲染端不进日志；请求回执 20s 兜底超时（旧主进程无 action 时提示完全重启而非永久 loading） → v130 拉取算法吸收 GLQQX/zcode-model-discovery-patch 与 linguo2625469/zcode-patcher：字段别名全集（id/modelId/name/model、context_length/contextWindow/context_window/limit/limits、max_completion_tokens/max_output_tokens/maxOutputTokens/limit/limits/top_provider、payload 增 result 形状）、多模态感知（architecture.input_modalities/input_modalities/modalities.input + vision/supports_vision 布尔 ⇒ 宿主 inputFormat 稀疏能力位，缺位写实 false）、思考档位感知（supported_efforts 去重截 16 ⇒ reasoningLevel.values）、models.dev 公共目录补缺（并行拉取 5s 超时失败静默降级、id 精确→basename 唯一匹配、字段级供应商优先、key 与本机数据绝不发往目录、进程内 1h 缓存）、applyModels 按模型写实 config（contextWindow/inputFormat/optionSpecs；元数据走主进程 fetchCache 闭环、渲染端只回传 id 无法注入字段；模板带 map 表达式的 optionSpecs 整体不覆盖防 values 换名失配；无依据字段保持模板原样、不编造默认值）；弹窗行新增 ctx/out 可见小字与档位 title，分区说明补 models.dev 联网披露；review 修复：勾选表/已添加表/metaById 改 null 原型（模型 id 来自远端，__proto__ 等键静默失败丢勾选态）、实例 dispose 同步摘除模型拉取弹窗与 Esc 监听（原仅整体 dispose 摘除，pane 关闭后弹窗跨代泄漏且确认回调 inactive 早退卡保存中文案）、重开面板停在模型拉取分区时立即刷新列表、请求兜底超时 20s→25s（主进程最坏双端点 20s 防假超时）、主进程响应体 8MB 限长解析与 tmp 文件名带 pid 防双实例竞写 → v131 额度/上下文五档色（用户规格 2026-10-27）：CTX_BANDS/QUOTA_BANDS 唯一事实源（{min,cls} 有序表，bandOf 从高到低首个命中），阈值 30/50/80/90（含下限不含上限）——额度 calm/norm/mid/high/crit=emerald/sky/amber/orange/rose（暗 400/浅 700），上下文 calm/norm/mid/high/crit=slate/indigo/violet/orange/red；data-zusage-band 与 zu-qb-* CSS 双主题成对；pct span 与 SVG 环一律继承按钮 currentColor（.zu-ctxpct.ok 系独立色废止）；tabular-nums 原已覆盖 .zu-quota/.zu-ctxpct；v92 百万窗口提前预警（40/60）与 v127 额度正常态灰蓝/7 天窗淡紫（按窗口类型着色）随「仅按百分比」规格废止；额度 ≥100% 满档保留呼吸闪烁特效（zu-qb-exc，用户规格；90–99 为 crit 纯色）；压缩过程态（exc）优先档保留；余额/Key 额度段挂 calm 档色 → v132 模型拉取挂载点迁移（用户指令）：⚙ 设置分区删除（ZU_SECTIONS/section/ensureMpProviders/syncMpList/startMpFetch/mpFeedback 全撤），改挂官方「模型设置⇒自定义供应商」的「+ 添加模型」按钮左侧（锚 data-testid=model-provider-add-model-button，额度 chip 同款 enhance/restore 契约：render/heavy 双对账+位置兜回+自清选择器 .zu-mp-host）；供应商归属优先读设置页表单 http(s) Base URL 归一化匹配（唯一命中直拉），否则单供应商直用/多供应商弹 zu-mp-pick 选择列表/无供应商弹提示；按钮视觉复刻原生 secondary 视格（同页 Tailwind utility bg-secondary h-7 rounded-lg），⚡ 图标 stroke currentColor；弹窗抽通用壳 openMpShell（勾选弹窗/供应商选择/错误提示共用），apply 成功关弹窗由宿主自动刷新列表；供应商归属改主判定=当前选择的供应商（读宿主源码定案：导航项 testid=model-provider-nav-item-<nodeKey>、custom 项 nodeKey=custom:<providerId>、选中项 data-state=selected），providerId 精确匹配不受编辑草稿影响；Base URL 匹配降兜底（专用 testid model-provider-base-url-input 优先于表单启发式），弹窗对齐 HHQ 形态（⚡统计标题/搜索占位/仅选新模型计数/已选中 n 个模型/蓝实底确认钮）并自带 .zu-light 随宿主主题实时换装；review 二轮修复：上下文按钮浅色档补 data-zusage-armed 特异性（浅色主题 norm~crit 曾被暗色 0,3,0 规则恒胜）、model-puller 非 ok 响应体显式 cancel（undici 连接卫生）、宿主按钮 ml-auto（锚容器 justify-between 三子项均匀分布致按钮居中）、确认钮改固定蓝 #3B82F6/#2563EB（客户端 --color-brand 深色主题是白系，白底白字隐形）、拉取按钮仅在选中的是 custom 供应商时挂载（锚 testid 全局唯一，内置/套餐页同 testid）、拉取中按钮文本「拉取中…」+图标旋转（原透明度脉冲无感知） → v133 Git 计数缩写（用户规格 2026-10-28）：chip/tooltip 的行数·条目·↑↓·冲突计数 <1万原值，≥1万 中文（cnUnits 判定）万/亿、英文 k/M/B（k 门槛刻意抬到 1万，与 token fmt 的 K≥1000 不同，小写 k 至多两位小数去尾零紧邻）；仓库个数与 aria 播报保持原值 → v134 额度与上下文保留既有阈值并统一绿黄红三档视觉；统一字号为宿主基准减 1px，周期标签加粗并微调分隔符 → v136 编辑项目弹窗源文件夹行在名称下方显示完整路径（纯 CSS ::after attr(title)，零 DOM 注入 React 无感；.truncate 限定本地行、排除 fixedFolder break-all 全路径行防重复，多文件夹每行各取各的 title；长路径自动换行不做省略号（宿主 truncate 的 nowrap 继承进伪元素须显式 white-space:normal）；规则挂条样式表、由 <html> data-zusage-pp 门控，⚙ 通用区「项目完整路径」开关 zusage3.projPath 默认开即时生效；顺带清理未提交编辑遗留的 spawnInstance 陈旧重复块 566 行死代码并复原被覆写的 issue #55 注释） → v137 源文件夹行点击即用系统文件管理器打开该目录（用户规格 2026-10-28，mac/Win 双平台）：主通道宿主桥 openInFileManager（Windows shell.openPath / macOS open 带 Finder 与 shell 双回退，raw path 免编码），旧主进程降级 openExternalFile、openExternal(file:)（白名单含 file:）；远程项目编辑器按 virtual-project-existing 标记排除，fixedFolder 行不在选择器内；多 pane 重复委托 500ms 同路径去重，document click 监听随实例 dispose 摘除；行加 cursor:pointer → v138 重置卡倒计时改时分秒全档恒显（并行会话 rstmerge 线并流收编，用户规格 2026-10-28：精确到秒、随 600ms 对账实时逐秒跳动，rstSpanText 中文数字单位紧邻「3时05分30秒」、英文数字单位紧邻+时段间空格「3h 05m 30s」；rst tooltip 补 Escape 收起（v118 键盘可达契约）；⚙ 倒计时阈值语义不变——并流时保留 rstCdh 持久化，对方运行目录构建因旧基线缺失而误删，其 18:42 rstmerge 部署曾覆盖本项目 v136/v137 后经本线合并恢复） → v139 合并 fork/main v1.5.5 线（PR #121 重置卡徽标、#122 倒计时秒级、#123 templateRules 回填、安装修复与 v1.5.5 发版）时收编遗漏的 model-puller 套餐源判定（4e431cc：detectSelectedCustomProviderId 带 anchor，BigModel 付费套餐详情页按 GLM Coding Max 付费卡区分放行、Start Plan 免费卡页不放行；挂载门控 btn 先查 + mpAnchor 诊断）——本项目快照缺该段曾致 overlay-model-pull 挂载契约测试红；overlay 版本线自此与对方 v136 撞号线并流，按合入顺序顺延 → v140 收口审查修复：openProjFolder 对 invoke 通道（openInFileManager/openExternalFile）挂空 catch——旧主进程无 handler 时异步 reject 会刷 unhandled rejection；review-fix-merge 流程产物 → v141 ⚙ 更新区在 API 限流且渠道清单兜底也失败时引导 GitCode 镜像口令（清单兜底本体在 plugin-updater/plugin-release 主进程链） → v142 ⚙ 通用「状态条样式」双主题 opt-in（zusage3.theme 独立持久化，默认关=现状）：药丸形态=所属输入卡下方居中、内容定宽，.zu-pill 经 --zu-pill-* 逐项拷贝所属视觉表面（Highspeed 外壳优先）计算样式，随宿主主题/hover/focus/Highspeed 实时跟随——pillSurface 统一取色/定位/让位锚点，body 子树 MutationObserver + 祖先属性观察捕捉外壳原位增删与搬移（不依赖 600ms 对账），80ms 过渡采样按目标计数、表面搬离自动停止；条面精简：缓存命中率/请求次数/轮数/耗时/首字收进 tooltip（0 命中也显示 0%），窄窗 .zu-main 横向滚动 + focusin 滚入可视区、切回默认复位 scrollLeft，不触发默认态收缩/渐隐；⚙ 面板宽度在药丸下跟随所属卡（不再跨分栏），主题 radio 按实例分组 name 防多面板互斥；数据重建先绑 __tip 再恢复焦点，aria-describedby/tooltip 不丢；modalOpen 豁免 zusage-panel 自有面板（修设置面板被误判宿主模态整条收起） → v143 药丸收口审查（review-fix-merge）：8px 双间距按宿主实测几何收敛——adjustPillBottom 沿所属 pane/dock 实测矩形补足让位并带 floor/不增长护栏，无法让位的绝对定位布局 visibility 安全隐藏（无每帧显隐抖动）；pillMarginTarget 落在 .chat-composer-input-surface，Highspeed 退出后默认卡重解析（composerCardOf 优先原生 data-testid 输入框）、宿主 margin 变更原值+优先级还原；悬停 tooltip 在 pill 下实时刷新隐藏明细并保留选区/滚动，焦点恢复区分 Escape 关闭与悬停接管；modalOpen 纳入 alertdialog；协调器候选补可见性过滤且已绑定输入框豁免 45% 阈值（上下分栏不再反复挂卸）；表面祖先观察改快照重建防泄漏 → v144 ⚙ radio 对齐修复：.zu-settings-langs/.zu-theme-options 的 label 显式声明 flex+align-items:center+gap:6px——原 label 继承 .panel label 的 flex-start 顶对齐（gap 14px），radio 圆钮相对文字中线偏上约 4.5px；新规则 (0,2,1) 特异性覆盖 (0,1,1) 基础规则，实测居中 delta=0 → v145 切回默认主题补还原 bar.style.visibility（pillUnsafe 安全隐藏是 pill 专属态，写入点仅 track 的 pill 分支；此前 pill 隐藏态下切回默认条永久不可见，十路评审 P1） → v146 精简模式（theme 第三档 compact）：条永久隐藏但保留 DOM（<style>/ariaLive 随条存活、heavy 保条对抗 React 清子树）；生成速度改挂工具行 .zu-tsb（重置卡左侧，挂载/位置兜回/签名幂等照重置卡同款），内容=zuBarSpeedView 桥两态或 tpsBand DB 回退、无有效样本不渲染（用户拍板）；tooltip=速度读数+状态条摘要（本轮/会话/工具/今日/子代理，逐格开关继续生效、子代理行点击开明细）+tpsBandLegend+「打开设置」按钮（镜像齿轮开启分支，面板精简下贴输入卡定位）；updateLive 10Hz 心跳原地跟随；非精简主题 syncTpsChip 门控摘除；诊断 mode=compact → v147 精简模式速率 chip 挪前导区（用户规格）：git chip 左侧——git 在时插其前、git 不在时占其锚位（cua-entry 后方/前导区末尾），两侧位置兜回收敛为 [锚][速率][git]（git 兜回容忍速率占相邻位防逐拍拉锯）；前导区发现失败回落尾随区（重置卡/额度组左侧） → v148 精简速率 tooltip「打开设置」按钮右对齐（用户规格）：footer 改 flex 布局，说明文本 tps-note-t 占据剩余宽度、按钮 margin-left:auto 推至最右，长文本换行不断布局 → v149 精简速率 tooltip 摘要行单位 tok→token（用户规格，与回答末尾统计行的 token 措辞对齐） → v150 修复精简模式 git chip 永不挂载（用户报告）：v147 的 git 兜回容忍条款（速率占锚位时不挪）误拦首次挂载——速率 chip 常驻锚位时 enhanceGitChip 每拍判"已就位"跳过插入；改为 chip 未连入 DOM 时无条件首挂（落速率后再由速率兜回收敛 [锚][速率][git]），容忍只用于已挂载的位置保持 → v151 工具状态词改版（用户规格）：Bash 动词「正在执行」→「工作中」，未知工具回退同改（正在执行 X→工作中 X）；工具计时分隔去中点（正在读取 · 4.3s→正在读取 4.3s 一并生效） → v152 工具动词 Read「正在读取」→「读取中」（用户规格） → v153 工具执行状态词定稿（用户规格）：Bash 与未知工具回退「工作中」→「执行中」（无名词回退英文 Working→Executing 对齐） → v154 工具动词全面改「X中」体例（用户规格）：写入中/编辑中/搜索中/获取网页中/更新待办中/读取待办中/运行技能中/读取上下文中/发送消息中/获取任务输出中/停止任务中/编写工作流中（Read 读取中、Bash 执行中、Agent 子代理运行中此前已改；英文标签不变） → v155 审查修复批（review-fix）：①compact 下 positionSubPanel 被隐藏条僵尸 .zu-sub 抢锚（零矩形把明细面板钉左上角）——chip 优先锚；②速率 tooltip 内容含秒表，悬停中 10Hz 整片重建吃掉「打开设置」/子代理行点击——显示中内容变化冻结只跟位置；③track compact 早退补两面板周期跟随；④自清选择器补 .zu-tsb、跨代采纳 chip 统一挂装（__zuWired 防重）修复热更后悬停/键盘失效；⑤closeSettings 焦点归还校验 offsetParent（compact 下不落隐藏 gear）；⑥enhanceGitChip 重复 var slotNode 清理。Web 同批：①③⑤（mousemove chips 归属校验只接本实例）+chip focus/blur 键盘可达对齐桌面 → v156 上下文按钮增强开关（issue #141）：⚙ 通用区新增「上下文按钮增强」checkbox（localStorage zusage3.ctxEnh，缺省开、仅显式 "0" 关），关闭走 enhanceCtxButton 关闭分支还原原生环/百分比且重置卡徽标继续维护（restore 顺带清徽标后立即重挂） → v157 修复精简→默认切换残留空壳细线（用户报告）：compact 期 render 短路会让空壳条面（热更占位/清子树后未填过）因签名相等一直存活、切回默认露出细线数十秒；①离开精简立即恢复 display（compactHid 区分初载 none，初载不提前露条保 pill 定位契约）；②离开精简强制条面重建一次（lastHtml 清空）；③compact 短路加 main.children.length 门——空壳先补一次完整渲染（条隐藏不可见）；④render 公共尾部补 syncTpsChip（短路/直通两路都经）→ v158 并流 fork/main cmdkW 线（PR #140，原线 v146 与主线 v146 精简模式撞号按合入顺序顺延）：宿主命令中心（⌘K 搜索弹框）加宽加高开关（⚙ 通用区，zusage3.cmdkW 缺省开）：条样式表规则 max-width:max(32rem,80vw)!important（原生上限=宿主 quickPickDialogClassName 的 max-w-lg=512px，弹框基础类自带 w-full 窄窗本就满宽，故小窗保持原样）与高度同规格（弹框根 max(90dvh,calc(100dvh-6rem)) 不低于原生上限，cmdk 列表 440px 硬顶放宽为 max(440px,calc(90dvh-15rem)) 小窗保底），<html> data-zusage-cmdk 属性门控（applyCmdkW，与 v136 projPath 同款），:has(>[data-slot=command][cmdk-root]) 只命中 cmdk 弹框——命令中心/任务搜索/快捷指令共用该样式常量一并放宽，设置页等普通 Dialog 不受影响 → v159 重启提醒开关（issue #139）：⚙ 插件更新区新增「更新后提醒重启」复选框（zu-restart-notice），经主桥 restart-notice 动作原子写运行时 config.json 的 restart_notice（缺省开、显式 false 才关、异常值不静默）；session-start hook 的 session_notice 读同一键，关闭后每个新会话不再注入 🔴 重启/安装提醒引用块（/install-overlay 命令行输出与自动安装失败、桥补装的故障提示不受控）——工作流模式多会话不再被逐会话植入提醒  → v160 Skill 运行期状态词显示「技能名·执行中」（用户规格，如「查阅·执行中」+计时）：turn-stats runningTool 透出截 160 字的 inputText，overlay 端 zuSkillName 提取 JSON name 字段（正则兜底、控制字符拒绝、超 24 字省略号截断），取不到回退「运行技能中」→ v161 状态条新增「项目累计」格：会话累计右侧渲染本项目（session.project_id）全部会话聚合（含子代理，口径同 session_usage；远端/不在本地库无字段不渲染），⚙ 状态条显示加「项目累计」开关（show.proj，默认开），精简摘要加同款行 → v162 状态词流光（用户规格）：速率 chip 纯状态词态（思考中…/工具动词/技能名·执行中）复刻宿主 .zcode-loading-label 同款流光——subtle→foreground→subtle 渐变 background-clip:text、1.4s 横向扫光、reduced-motion 停用；类名/关键帧自有命名（zu-shimmer/zu-loading-shimmer）不依赖宿主全局类；带 t/s 数值的估算/真实/DB 回退态不含 → v163 会话累计/项目累计 tooltip 增按模型明细行（top 8 按总量降序 + 「另有 N 个模型」，轻量行无 models 字段不显示）→ v164 tooltip 收口（用户规格）：模型明细全量展示去「另有」折叠、总和行置顶、键列自适应宽不换行、时间范围行 sticky 吸底（rt-pin，五个 tooltip 统一）→ v165 模型明细表格化对齐（rt-models display:table，整块共享最宽键列，token/次数列纵向对齐）→ v166 会话累计/项目累计时间范围精确到秒（fmtStartS，用户规格；其余三格保持到分）→ v167 模型行去 rt-atom（Chromium 表格内在宽度在 inline-block 边界断行致数值折行，真实浏览器实测）+ 带 rt-models 的 tooltip 宽度帽放宽 860px（zu-tip-wide，取最宽一行）→ v168 格面计数改 fmt 万/亿口径（用户规格：≥1万 N.NN万、≥1亿 N.NN亿；本轮次/会话轮次/项目会话次/工具总数四处，tooltip 与精简摘要保持原值）→ v169 同容器双条去重（Windows 用户报告：最小化/还原窗口来回切出现两根状态条）——宿主窗口状态切换可能短暂保留旧视图副本/重建编辑框，协调器瞬态出现两实例两根条落进同一张卡；heavy 对账每拍扫描：同卡可见 .zusage-root >1 或两根 body 兜底条矩形重叠过半时，data-zusage-slot 大者 hideBar 让位（对手消失经 track 自动复显；拆分窗格各卡各条不受影响） → v170 tooltip 计数同口径（用户规格）：各 tooltip 标题/规模/工具/请求行与模型行、精简摘要行的次数/轮数/会话数全部走 fmt；子代理明细面板保持原值 → v171 修 issue #147（社区 @Mc-GrowlR 报告并给出方案，Windows 10 + ZCode 3.17.1）：划词 side chat 面板容器无 data-pane-id，被协调器 auto 兜底键当作独立 pane，同窗出现第二条状态条（Radix presence 常驻挂载，面板收起后幽灵 composer 仍持续命中扫描）；窗口存在真实 pane 键时丢弃 auto 键——老宿主全部候选均为 auto（单键）单实例行为不变、shadow/iframe 空文档兜底不受影响 → v172 待重启/待更新改由 ⚙ 齿轮红点提醒（restartNotice 开关改为控制红点；会话内文字重启提醒取消，plugin-updater 推送 markerAt 作红点代际，点进「插件更新」分区记为已查看）+ ⚙ 更新页「重启 ZCode」按钮（二次确认，主进程 relaunch 动作）+ 移除自动安装开关（hook 未注入一律自动装，auto_enabled/INSTALL_MESSAGE 会话出口删除）   // 悬停 ⚙ 面板可见；版本号随代际递增 → v173 强制 K/M/B 单位开关 → v174 辅助对话独立状态条（宿主 tabId 成键 + 实例配额 4+1、桥 scope 精确绑定、确定性统计行按会话根归属）→ v175 辅助对话回答末尾富文本与主分栏同规则（显式本地 scope + isCurrentTurn 活跃轮限定 + --current 的 promptTs 守卫；修宿主 modelDurationMs 只累计高速供应商致占位行永久「生成时长缺失」；富文本收集后统一发起、同 SID 只追活跃轮且 epoch 粘滞防多轮搅动） → v177 review 修复批（10-agent 全量 review 闭环）：双条去重抑制不再被 track 每帧复显打穿（v169 Windows 双条场景实际失效的根因，复显前查 dupSuppress、heavy 每拍重评估解除）；精简下速率 chip 被摘除后子代理明细面板保持原位（不再回落隐藏条内全零 .zu-sub 抢锚钉视口左上角，web v103 同款）；精简短路块恢复 syncTpsChip 数据点 reapply（2976478 挪公共尾部后短路 return 到不了、与 git chip 不对称）；relaunch 无回执 4s 提示主进程可能是旧版需手动完全退出（旧 pollPluginRequests 白名单外动作静默丢弃）；待办红点指纹改分量级比较（更新装完后 latestVersion 分量退出不再误复亮）且 ack 幂等早退前先收敛本窗口红点；cnNum 切换补富文本 unitEpoch 在途竞态守卫（同 forceKmb）；detRootEl 落在宿主 data-session-id 写入窗口期时 heavy 按拍补算自愈；精简说明文案对齐 v147 挂载位（前导区 Git 左侧）→ v179 自动压缩阈值注入：⚙ 开关+模式+数值+状态行（enginePatch 随插件状态回推，__zusagePluginState 种子+拷贝行同 v172 纪律），主进程 engine-patch.cjs 按引擎 SHA256 白名单对 glm/zcode.cjs 打阈值改道补丁（锚点唯一性+use strict 指令位校验 fail-closed，hook 缺席/返回空双兜回 fail-open），阈值 autocompact.json 由引擎 hook 每轮决策 mtime 缓存读取——数值热生效、补丁冷生效（已运行 agent 子进程下个 spawn 起用）；ctx 按钮 hover 面板加「自动压缩 ~X%」行（acInfoText 按标称窗口口径，21K 预留近似还原）；关闭开关=按当前内容反向还原引擎字节；阈值任何形式钳 1% effective 地板防连环压缩→rapid-refill 熔断→ v180 重启按钮错位守卫（issue #158）：主进程 pushPluginState 携带 relaunchSupported 能力标记（与 relaunch 分支同文件、天然同步），浮层缺标记时隐藏按钮并显示「完全退出后重开」指引（syncUpdate + 点击守卫双处）；主进程 pollPluginRequests 白名单外动作兜底回执 unknown action，重启回执明确区分「主进程是旧版本」 → v183 子代理行内实时速率 chip（v4 Agent 行 testid 后缀即 childSessionId、与 v97 槽位键同源：运行期读槽位估算、完成后读泵快照 sub.list 真实加权速率；TPS 十档色；悬停 tooltip） → v184 ⚙ 新增「子代理行内速率」开关（state.show.subRate，zusage3.show 整包持久、默认开；只门控行内展示） → v185 实机修复批+review 修复批：后台子代理在宿主注册表无现成 store（运行期估算自 v97 起从未真正工作）→桥 v2 acquire 访问器按已验证 scope 解析子会话租约（仅 sess_subagent_ 前缀+本地）；tooltip 构建器改收数据包（buildTip(el.__zuT) 约定）；截断改从尾部取（保最新派发 8 个）；SUBRATE_DIAG 提模块级；诊断按 handle 判绑定；实例 dispose 摘行内 chip→ v186 本会话平均 token/s（PR #157 收编）：状态栏完成态主数字改会话加权平均（zusage avg_tps：Σ有效输出÷Σ生成窗口，main_turn 段、不含子代理），「均」前缀+按均值分档，最近一段/最近一轮退 tooltip；速率行/CLI 加「会话均」，精简 chip 同步；updateLive 会话归属取本 pane 行（lastView.session），缺席回退原行为→ v187 补回 v181 工具组状态词（PR #161 合并时 turn-stats runningGroupOf 块与 overlay 消费分支遗漏入库，仅存于运行目录热修副本）：turn-stats 复刻宿主 exploreGroup/executeGroup 合成规则（≥2 连续同类行成组、半截 JSON defer 透明、startedAt 锚定组首行），运行行落组尾时状态词显「查阅·执行中/终端·执行中」替代逐工具动词，计时从组头起算 → v188 自动压缩阈值注入按验收反馈简化：开关默认开（主进程 auto_compact_patch 缺省开、显式 false 关）；UI 只留百分比数值（留空=跟随引擎默认），模式下拉移除（引擎层 enabled:false/tokens/buffer 协议保留兼容，配置文件手写仍生效）；标题改「自动压缩上下文阈值注入/压缩上下文阈值数值」；状态行补 14px 水平内边距与 label 文本对齐 → v189 hover 面板阈值信息行移到「压缩上下文」按钮上方并追加下划线「调整」链接：点击复用 gear.click 完整路径打开 ⚙、切「通用」分区、scrollIntoView(nearest) 定位阈值数值行并高亮 3 秒（.zu-ac-flash，计时器实例级归属 dispose 清理）；info 结构改首文本节点+常驻链接（整行 textContent 覆盖会抹掉链接） → v190 三处验收微调：hover 阈值行 text-align:left（与卡内其它行对齐）；高亮改琥珀左条+淡底（--color-brand 在宿主主题是白色系，outline 描边观感像输入框焦点）；⚙ 注入开关关闭或主进程未加载时数值行整行 hidden → v191 hover 阈值行 token 数改走 fmt()：万/亿/K·M·B 与状态条、tooltip 同一转换链（跟随中文单位开关与强制 KMB 开关，中文至多两位小数去尾零） → v192 hover 阈值行布局：去掉自加 6px 下边距（间距交给宿主 space-y-3 的 12px 节奏，与「平均缓存命中率」行 pt-3 距分割线一致）；行改 flex 两端对齐，「调整」链接居右 → v193 修 v192 贴按钮：宿主 space-y-3 是 Tailwind v4 :where() 零权重 margin-bottom，行上自写 margin 会按类名权重压掉它（v190 的 6px 显挤、v192 的 margin:0 贴紧同因）——删掉 margin 声明整段回落容器原生 12px 节奏 → v194 阈值百分比改总窗口口径+数值行 30-99 校验：设置 91=原生按钮走到 91% 触发、hover 显示 91%（旧口径按扣除 21K 输出预留后的有效窗口算，设置值与显示差约 2 个点被判为割裂）；引擎 hook 以 eff+21K 近似还原标称窗口并钳在 eff 内，writeConfig 白名单收紧 30-99，已打补丁引擎下次启动按 PROLOGUE_V1 原位换装新 hook；⚙ 数值超范围实时提示并拒绝提交 → v195 hover 卡新增新手说明行：阈值行下方小字（.zu-ac-hint，随行同生命周期）解释口径与后果——「按窗口总量计算（与顶部百分比同口径）；走到该比例时客户端会自动压缩较早的对话内容以腾出空间」；margin-top 收紧 space-y 间距（space-y v4 只写 margin-bottom，top 无冲突） → v196 「调整」失灵诊断面包屑（下版移除）：openAcThresholdSettings 在 enter/after-gear/+150ms/row 各点写 __zusageDiag.acOpen（面板态、gear 可见性、条 display、分区、代际），closeSettings 写 acClose 调用者栈；v197 实证 acOpen 为空=点击未到达处理函数 → v198 修「调整」失灵：链接监听改 pointerdown（宿主疑似 mousedown 即关 hover 卡、click 到来前链接已被摘）+ 行级 click 兜底 + 捕获期点击写 localStorage 并在说明行回显（命中标绿/落空标红，诊断下版移除） → v199 清理 v196-v198 诊断：acOpen/acClose/acClick 面包屑、localStorage 回显、命中/落空着色全摘；保留 v198 修复本体（pointerdown 主监听 + 行级 click 委托兜底），实机验收=电脑操作点击「调整」面板弹出且阈值行琥珀高亮 → v200 上下文按钮增强显示层优先镜像原生 aria-label 已用/总量（宿主 taskUsage，压缩后立即回落；issue #172 曾停在 DB 最近完成请求旧值 16.4%），解析不出回退 lastBand DB 口径（ctxOv/nativeCtxVal 优先级只作用兜底），exc 过程态档位仍优先，还原路径共用同一解析器（英文 UI restore 顺带修对） → v201 合流：v200 撞号顺延（v200 已被并行线 issue #174 压缩按钮开关占用，8e6e1c0 先合入） → v202 预估费用行：四格 tooltip（本轮/会话/项目/今日）按 models.dev 官方牌价估算费用（token_pricing.py 内置表 326 条 + serve 内 12h 同步 models.dev 与 er-api 汇率，pricing-cache.json 落盘），快照加 cost_usd（USD）与 fx，展示层 ×汇率显 ¥（无汇率降级 $），会话/项目模型明细行尾加各模型费用，「价格来源 models.dev」脚注可点（openExternal），费用行尾空心问号图标悬停弹说明小气泡（价格来源/计算公式/汇率来源三行，fxTip 独立浮层 + mouseover/out 委托 + 180ms 悬停桥，主 tip 收起/重建时同步收），汇率源主源失败兜底 exchangerate.fun（自定义 fx.url 不启用），⚙ 通用区开关默认开，本库口径：裸输入=input−cache_read−cache_creation 全价、缓存分价、output 已含思考不另计 → v203 红点仅承载待重启（发现新版未安装、更新成功且已热重载均不亮；分量级已读比较保留以兼容旧 seen 串）+ ⚙ 带待重启红点点击直接落「插件更新」分区（激活即 ack）+ 设置页新增「已更新成功，点击重启 ZCode 即可生效」提示条（旧主进程降级回原文字指引），分区切换提取 activateSettingsSec 单一出口 → v209 额度 chip .zu-quota 与重置卡徽标 .zu-ctxrst 左右内边距 6px→3px + 模型选择触发按钮（chat-model-select-trigger）左内边距减半：文本态 8→4px、图标态 6→3px（!important 压宿主 group 变体）（用户规格 2026-11-02） → v210 时间范围行全部精确到秒（v166 会话/项目累计先行的 fmtStartS 扩展到本轮/今日合计与速率 tooltip 最近一段；fmtStart 仅剩「最后活动」行）（用户规格 2026-11-02） → v211 本轮 tooltip「单次耗时/首字延迟」改「平均耗时/平均延迟」（zusage 快照 last_turn 新增 avg_duration_ms/avg_ttft_ms，对 model_usage 该轮已完成 main_turn 行 >0 样本求均值；turn_usage.ttft_ms 聚合列实测口径不明不可依赖，旧快照缺字段整行不渲染）+ 本轮格面移除时长/首字两段（耗时只在 tooltip），精简摘要「本轮」行时长随同改平均（用户规格 2026-11-02） → v212 Git chip 分隔符 .zu-git-sep 间距收紧：字面「 · 」改纯点+左右 2px 内边距（多仓段与 ?N 未跟踪段两处同源；用户规格 2026-11-02） → v213 状态条格序调整：今日合计提前到会话累计之后（速度→本轮→会话→今日→项目→工具→子代理→⚙），速率 tooltip「状态条摘要」行序随同对齐（用户规格 2026-11-02） → v214 项目累计统计卡改版：tooltip 重构为「标题+统计范围（全部请求·含子代理）、总用量/请求次数/预估费用三 KPI（费用旁统一说明问号）、输入(命中率)/输出(含思考)/缓存写入明细、会话·轮·工具·重试规模行、模型四列表格（默认 6 项可展开全部，排序对副本）、时间范围（em dash）」，作用域 .zu-project-tip + :has 样式（不动共享 .tip/.rt-* 规则），展开态实例级归属键（sid:started）局部更新不重建整卡，触发项 zu-pj-item 标记，卡片内 Escape 关闭并归还焦点，focusout 进卡片不误关，positionTip 钳底边，费用全链复用 v202（0 有效/缺失 —/开关关整格收） → v215 六统计卡统计卡化：本轮/会话累计/今日合计/子代理四格 tooltip 统一 zu-stat-tip 视觉体系（速度统计卡公共构造：scope 标签+双读数 hero 主读数档位色、两行五列网格窄窗重排、速度卡宽帽 760px :has 作用域；明细面板内模型行问号图标弹费用说明气泡，复用 fxTip 单例同款委托）（用户规格 2026-11-02） → v215.1 速度卡去费用行与模型明细（用户规格：速度 tooltip 只留读数与时间范围，费用唯一承接处=各卡明细面板与 fxTip 气泡） → v217 子代理统一浮层：.zu-sub-pop 双栏单组件替代「悬停五段卡 tooltip+点击独立明细面板」两套旧 UI（preview/pinned 状态机：悬停预览、首次点击固定、面板内操作转固定、Escape/关闭/外点统一收且焦点归还+500ms 悬停抑制；选中按 sid 维护、运行中未入库槽位进导航、签名幂等重建保滚动、会话切换即关、入口断连即关；任务页 _sub_item 逐任务模型用量表/预估费用/平均速率档色行/最后活动全格式时间，zusage sub.list 单项同步扩展；精简入口 chip.__zuOpenSub 归一指向同一浮层）（实机验收 2026-11-03） → v218 速度卡三修（实机反馈）：悬停冻结 updateLive tipFor 判定改 contains（旧恒 false 致悬停中 tooltip 不冻结）；右格「最近一段」改读 lastView.last.tps（zuBarSpeedView 无 latest 字段恒缺）；图例 ≥2000 Ultra 改渐变圆点并禁 ✦ 伪元素（星点破形） → v219 ⚙「状态条样式」（默认/药丸/精简单选+精简说明行）从「通用」分区移入「状态条显示」分区卡首，纯分区归属调整，控件与持久化行为不变 → v222 速度卡 tooltip 补「时间范围」行（用户规格，参考四格 tooltip 同款式）：主数字为会话均/桥态取会话累计口径（started→last_at，与会话累计 tooltip 同源），「最近一段」回退态保持段范围；起点缺失整行不渲染（半程范围无意义）；三处 speedCardHTML 调用点（桥态 buildLiveTip/DB 回退/精简 chip）同批生效 → v223 ⚙ 面板关闭按钮命中区外扩（原并行线编号 v220，合入顺延；::after inset:-6px、hover 反馈同步，约 20×24px→32×36px）：按钮四周 head 空白点击原本无反应，用户实测「悬停 × 上点不动、不灵敏」；CDP 真实点击定责为命中区过小（事件链与面板几何均无缺陷），纯命中区修复，不改布局与视觉 → v224 速度卡悬停实时刷新二次修复（实机反馈）：v218 只改了 tipFor 判定，新 tip 串仍写到格内 .zu-live span，而 __tip 宿主与 drawTip 读取都在 .it 格元素上——条件每 tick 命中、重画的仍是整条渲染时的旧串，悬停中「当前读数」冻结在最后一次整条渲染的值（chip 已跳动、tooltip 停在「思考中…2秒」）；改写回格元素（liveEl.closest(".it")），悬停中每 tick 跟手重画，未悬停也保持新鲜 → v225（v224 并行线 PR #198 先合入，本线顺延）⚙ 自动压缩状态行区分「引擎被单独热更」（issue #191）：桌面 build 已登记而引擎 sha 脱钩时明示热更事实与漂移 sha 前 12 位（引擎补丁新增 drifted 字段，主进程传入 appVersion 按点分界前缀匹配登记表），替代误导性的"版本不在支持名单"；lastError 后缀此时与 sha 重复不再拼接；fail-closed 判定不变 → v226 ⚙ 两项（用户需求 2026-11-03；v226 已被并行线自动压缩状态行占用，顺延）：①六格显示开关（本轮/会话累计/项目累计/工具调用/今日合计/子代理）全部关闭时样式自动转精简（边缘触发只在「变得全关」那一拍切档，zusage3.autoCompact 记录来源主题 default|pill，重开任一格恢复、面板手动改档即解除；药丸来源同样触发）②默认样式新增「水平对齐」三选一（zusage3.barJust：均分 space-between 缺省不挂类/居左 flex-start/居右——居右不用字面 flex-end，LTR 下 start 侧溢出不可滚动也不计入 scrollWidth 会废掉收缩检测与 .zu-clip 渐隐，改首格 margin-left:auto 等效右聚拢、溢出方向与兜底不变；设置块仅默认档显示，applyBarTheme 随档显隐并同步条上 zu-just-* 类） → v227 预估费用说明气泡悬停保活（fxTip 是 body 级独立浮层、挂在主 tip 之外：指针从 ? 图标移入气泡被文档 mousemove「条外」分支按 left-bar 强制收主 tip、hideTip 同步收气泡，v202 起悬停说明气泡即灭；子代理浮层路径同被 preview-leave 倒计时收走面板。mousemove 处理器节流前新增分支：fxTip 显示中且目标在气泡内视同仍在 tooltip 上——保住主 tip 与气泡、取消越顶宽限与子代理面板延迟关闭，离开气泡回落原判定） → v228 速度 chip 完成态去「· 近X」尾缀（用户规格；编号顺延避让已合并的 v226(PR #200)与 v227(PR #202 fx-tip-keepalive)）：条面格与精简 chip 同批去掉 dbTps 尾缀，主数字只显会话均（或最近一段）；「最近一段」读数保留在 tooltip 右格不受影响 → v230 压缩轮不再显示「本轮统计不可用」（编号顺延：原 v238 号，v229 已由并行合入的 PR #207 占用、v231 起由并行未合线自占）：上下文压缩（手动/自动同链）是 query_source='compact' 的辅助轮（DB 有完整数字且已计入今日/会话累计，但消息流无正文、header 零输出），旧逻辑按 v74 零输出明示规则误插误导占位——实测压缩轮投影=turnHeader+timelineMarker(marker.type='compact') 而 header.executionKind 恒 'agent'（ek 探针证伪初版假设），turn-stats get() 以 isCompact 识别，overlay 对压缩完成轮不新插/撤下已插行（宿主「上下文已压缩」提示已承载语义）；kinds/tmr 为 det 诊断字段；v74 真实零输出轮行为不变 → v231 统计卡标题拼接名称与垂直居中（用户规格三轮迭代一并入库；编号顺延避让并行已合入的 v229(PR #207, issue #205)——v228 后 overlay 台账实际未占用，按共享代际台账撞号声明让号）：①项目累计卡拼项目名——zusage _project_usage 附 name=启动目录末段（正反斜杠归一，缺目录/旧快照判空不渲染），.zu-pj-pname 字号颜色同规模行 .zu-pj-scale；②会话累计卡拼会话名——快照行 title 三处本就产出，纯渲染端：statHead 加可选第三参仅会话累计卡传、/\s+/g 压空白、缺 title 判空不渲染，.zu-st-name 360px 省略号；③名称与标题垂直居中——标题容器带名称时切 .zu-tt-name（display:flex;align-items:center），行内 baseline/bottom 对齐会被 18px 大字 descent 拖得视觉偏低（实机指认），flex 子项自动块化、省略号仍成立 → v232 速度 tooltip「最近 20 段」柱状图：zusage 快照 session 行新增 speed_segs=最近 ≤20 条已完成 main_turn 有效速度段（_row_gen_ms 窗口与 avg_tps 同款口径、辅助源/子代理/碎段不计，v 保留原始浮点供档位与柱高按原始值判断；speedCardHTML 带 segs 时切「左读数卡+右图表」布局——左卡=当前读数/档位胶囊/加权平均说明，「最近一段」右格由最新柱承载，无 segs 的旧快照/远端旧版保持 v215 原布局），柱顶读数恒一位小数与柱同轴心、最新段加粗，Y 轴 0 起整洁刻度并按「信息卡横向覆盖最右约 1/3 柱」约束迭代刻度保证最高柱读数不被压住，X 轴=分段真实完成时间本地时区 MM-DD HH:mm 稀疏显示、首末恒留，最新段描边高亮+「最新」徽标，柱体颜色沿用 TPS_BANDS 档位类（ultra 渐变深浅主题显式 border-box 覆盖防 clip:text 裁没），段值 ≥1000 t/s（读数 6 字符）或窄窗口（plot min-width+横滚）保读数永不重叠；柱级悬停/键盘焦点弹信息卡——tip 本体委托 + 实例闭包存悬停段下标经 speedTipRebuild 编进串（签名幂等重建不丢状态、离开回落最新段、会话切换重置），render 接管对速度格补 drawTip 使打开中随快照跟手（焦点/选区在 tip 内时跳过），图表横滚位置跨重建保留；精简 chip tooltip 不带图表 → v233 速度卡三删+读数自适应（用户规格）：①删「统计会话全部已完成请求：工具等待不计，不含子代理。」口径行（DB 回退与精简摘要两处，Σ输出÷Σ生成耗时等其余口径保留）；②删柱状图「最新」徽标（最新段描边与加粗读数保留，plot 高 200→184）；③删「每段完成后更新；不足 20 段时显示实际数量。」脚注（live/回退两处）；④左卡「当前读数」估宽分级自适应（超长状态词降字号+允许换行，不再被 156px 左卡裁切；分级实现见同批改动） → v234 柱状图 20 段→14 段、释放空间给左卡（用户规格）：zusage 新常量 _SPEED_SEGS_MAX=14（与 last.tps 回查的 _TPS_LOOKBACK 分离，扫描窗 42 行凑 14 条有效段）+ speedSegsOf 渲染端截 14 + 两处口径行「最近 20 段：…」改 14；左卡 156→300px（内宽 278），主数字删 +12px 覆盖回基础 ui+22 大字，估宽分级阈值重算 ≤7.5/≤11.5、fit2 +6→+10px；plot min-width 600→420（pitch≥30）、wide 780→560、xEvery 估算基数 620→460/最小标签距 44→30（14 柱满宽全显时间标签） → v235 速度 tooltip 多状态结构化重构（用户设计图规格）：zuBarSpeedView 追加结构化字段 kind/statusText/nameText/nameFull/elapsedText/speedValue/speedIsEstimated/speedSource/activeCount/noteText（八类 tool/toolgroup/skill/subagent/thinking/estimate/avg/real，text/cls/phase/band/latest 逐字保留、状态判断不解析文案）；speedCardHTML 新增 o.status 分层左卡模板（zu-sl-status 状态标题+子代理 ×N 徽标 / zu-sl-name 名称两行省略+title 全名 / zu-sl-main 主数值或计时 / zu-sl-unit / zu-sl-note 辅助），数值型走档位色、工具/Skill/思考/子代理保持 dim，o.main 拼装路径为精简 chip 等旧调用方保留；子代理估速前缀 ≈、无效估速显「估算中…」不补 0；buildLiveTip/fallback 传结构化状态，scope 标签按真实状态映射（工具执行中/工具组执行中/Skill 执行中/子代理运行中/思考中/生成中估算/会话平均/本轮真实速度），思考态左卡内嵌脑动效图标；柱状图 14→17 段（_SPEED_SEGS_MAX=17、渲染端截 17、口径行改 17），plot min-width 420→500/wide 560→680/xEvery 基数 460→500/最小标签距 30→29 配平左卡 300→250px → v236 速度 tooltip 三修（用户实机反馈）：①信息卡改为悬停/键盘聚焦柱体时才渲染（默认不再常驻最新段上方，cur 高亮随之仅悬停态、latest 描边保留）；②X 轴时间标签最小距 29→44（17 柱 pitch≈29 必隔列、间距 ×2，修复标签拥挤）；③非 wide 图表删 plot min-width（随容器压缩+稀疏标签兜底），任何窗口宽度不出横向滚动条（wide ≥1000 t/s 保留横滚），速度卡宽帽 860→1040 → v237 修时间标签裁半（用户实机截图）：v236 的 border-box 配平让 X 轴行内容区只剩 20px、两行时间（25px）被 wrap 的 overflow-y:hidden 裁掉半行——X 行 24→29px（4 padding+25 两行）、plot 高 184→189，列配平随之 160+29 → v239 速度 tooltip 100% 复刻设计图（用户拍板以设计图为准，撤销 v233 删口径/v236 悬停才显卡）：信息卡恒在（默认最新段带「（最新）」+虚线引线连柱，悬停切段）、左卡状态图标+「当前读数」标签+档位色状态标题、颜色对照单行横排、统计口径左标题右分段+时间范围同卡、带图表时不渲染脚注 → v240 柱状图 17→10 段（zusage _SPEED_SEGS_MAX=10、渲染端截 10、口径文案同改）、柱宽 max-width 22→15px（-30%）、信息卡恢复仅悬停/聚焦才显示（撤销 v239 常驻）、左卡下半区加「峰值/最低/最新」概览填空、速度卡宽帽 1040→860、plot min-width 500→340 → v241 速度 tooltip 按设计图复刻：柱状图取当前会话最近 10 次（可跨天）、左卡标题行/主读数/说明行文案按设计图对齐（工具组「查阅」、Skill「执行中」、说明行统一「X · 正在执行」）、前缀「估/均」小号灰字、主体区垂直居中填空 → v242 速度 tooltip review 修复批（十 subagent 审查）：focusout/mouseout relatedTarget 守卫修 Tab 跨柱焦点断裂与双重建闪烁、render 接管 pill 主题补焦点守卫、wide 横滚复活（plot 420）、spanFrom 收严最坏一半 + CARD_H 36（实高 35.6 校准）、real 去档位胶囊、skill 标题统一无空格「·执行中」、工具组 statusText 回归完整短语、liveScopeMap real/estimate 用词对齐、「当前读数」标签与有效数值同门（修 subagent 数值误杀回归）、左卡 border-box 250/双规则合并/padding 12、标题档位色与单行省略、浅色 ultra 图例圆点 clip 修正、hero :has 单列、柱 role=img、17 段/常驻卡/帽 1040 等过期注释清理、测试补八态直调/概览三格/前缀/（最新）角标/图例行/几何不重叠断言
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
@@ -2370,6 +2664,7 @@
       liveTextCur = "", liveStatsCur = null, liveKindCur = "fallback", liveEl = null,   // v72：合并「生成速度」用
       livePhaseCur = "", liveIconCur = "bolt",   // v77：当前 chip 阶段与图标（think=思考动效/bolt=闪电）——相位切换需整条重渲染
       tpsChipCache = null, lastView = null,   // v146：精简模式工具行速率 chip 与最近一次 render 会话视图（chip tooltip 摘要数据源）
+      speedChartHover = -1, speedTipSess = "", speedTipRebuild = null,   // v232 速度柱状图：悬停段下标（-1=最新段）/归属会话守卫/tip 重建闭包
       compactHid = false;   // v156：display:none 是否由精简模式设置（区分初载 none，避免切档前提前露条）
 
     /* ---------- DOM ---------- */
@@ -3020,6 +3315,11 @@
       ".zu-pj-dsub{font-size:calc(var(--ui-font-size,14px) - 2px);color:var(--color-tooltip-tag-foreground,#a6a6a6);margin-top:2px}" +
       ".zu-pj-hit{color:#4ade80;font-weight:600}" +
       ".zu-pj-scale{margin-top:14px;font-size:calc(var(--ui-font-size,14px) - 1px);color:var(--color-tooltip-tag-foreground,#a6a6a6);display:flex;flex-wrap:wrap;column-gap:8px}" +
+      /* v229：标题旁项目名，字号/颜色同规模行（.zu-pj-scale）；父级 .zu-pj-title 的 700/.5px 须显式还原。
+         v230.1 垂直居中：标题容器带名称时切 flex（.zu-tt-name），名称为 flex 子项中心对齐——
+         行内 baseline/bottom 对齐会被 18px 大字的 descent 拖得视觉偏低（用户实机指认） */
+      ".zu-tt-name{display:flex;align-items:center}" +
+      ".zu-pj-pname{font-size:calc(var(--ui-font-size,14px) - 1px);font-weight:400;letter-spacing:normal;color:var(--color-tooltip-tag-foreground,#a6a6a6);margin-left:8px}" +
       ".zu-pj-mhead{display:flex;align-items:baseline;justify-content:space-between;margin:9px 0 4px}" +
       ".zu-pj-mtitle{font-size:calc(var(--ui-font-size,14px) + 2px);font-weight:700}" +
       ".zu-pj-morder{font-size:calc(var(--ui-font-size,14px) - 2px);color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
@@ -3066,6 +3366,9 @@
       ".zu-stat-dsub{font-size:calc(var(--ui-font-size,14px) - 2px);color:var(--color-tooltip-tag-foreground,#a6a6a6);margin-top:2px}" +
       ".zu-stat-dsub .hit{color:#4ade80;font-weight:600}" +
       ".zu-stat-scale{margin-top:7px;font-size:calc(var(--ui-font-size,14px) - 1px);color:var(--color-tooltip-tag-foreground,#a6a6a6);display:flex;flex-wrap:wrap;column-gap:8px}" +
+      /* v230：会话累计标题旁会话名，字号/颜色同规模行（.zu-stat-scale）；v230.1 垂直居中走
+         .zu-tt-name 容器 flex；ellipsis 仍需块级盒（flex 子项自动块化，省略号成立） */
+      ".zu-st-name{font-size:calc(var(--ui-font-size,14px) - 1px);font-weight:400;letter-spacing:normal;color:var(--color-tooltip-tag-foreground,#a6a6a6);margin-left:8px;max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
       ".zu-stat-note{font-size:calc(var(--ui-font-size,14px) - 2px);color:var(--color-tooltip-tag-foreground,#a6a6a6);margin-top:6px}" +
       ".zu-stat-time{display:flex;flex-wrap:wrap;gap:4px 10px;margin-top:14px;padding-top:12px;border-top:1px solid var(--color-popover-border,rgba(255,255,255,.12));font-size:calc(var(--ui-font-size,14px) - 2px);color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
       ".zu-light .zu-stat-time{border-top-color:rgba(0,0,0,.12)}" +
@@ -3084,6 +3387,7 @@
       ".zu-stat-table td.dim0{color:var(--color-tooltip-tag-foreground,#a6a6a6);opacity:.7}" +
       ".zu-stat-more{display:block;margin:10px auto 0;background:none;border:0;color:var(--color-brand,#a3cfff);font:inherit;font-size:var(--ui-font-size,14px);cursor:pointer;padding:4px 12px;border-radius:8px}" +
       ".zu-stat-more:hover{text-decoration:underline}" +
+      ".zu-speed-hero:has(.zu-sl-body){grid-template-columns:1fr}" +
       ".zu-speed-hero{display:grid;grid-template-columns:1fr 1fr;gap:0 9px;background:rgba(255,255,255,.045);border-radius:8px;padding:8px 9px}" +
       ".zu-light .zu-speed-hero{background:rgba(0,0,0,.045)}" +
       ".zu-speed-hero .zu-stat-kpi + .zu-stat-kpi{border-left:1px solid var(--color-popover-border,rgba(255,255,255,.12));padding-left:9px}" +
@@ -3106,6 +3410,102 @@
       ".zu-legend-item .dot-c{background:currentColor}" +
       ".zu-legend-dot.zu-ultra{background:linear-gradient(100deg,#60a5fa 0%,#a78bfa 50%,#c084fc 100%)}" +
       ".zu-legend-dot.zu-ultra::before{content:none}" +
+      /* v232 速度柱状图：左读数卡 + 右「最近 10 段」图表。柱体颜色走档位类 currentColor
+       * （与图例色点同套路），其余配色全走语义令牌（浅色自动适配）；plot min-width +
+       * 横滚保证窄窗口下柱顶读数永不挤压重叠。 */
+      ".zu-speed-body{display:flex;gap:10px;align-items:stretch}" +
+      /* v242:合并 v232 基座与 v239 边框规则;border-box 下 250px=外观盒(内容 220),padding 12 让左卡总高贴近图表列 ~217px */
+      ".zu-speed-left{flex:0 0 250px;min-width:0;box-sizing:border-box;display:flex;flex-direction:column;justify-content:flex-start;background:rgba(255,255,255,.045);border:1px solid var(--color-popover-border,rgba(255,255,255,.12));border-radius:12px;padding:12px;overflow:hidden}" +
+      ".zu-light .zu-speed-left{background:rgba(0,0,0,.045)}" +
+      /* v233 主读数估宽分级：fit2 中长状态词缩号并允许换行；fit3 更长再缩 + break-word。
+       * 只挂左卡作用域，legacy hero（无图表旧快照）维持原 nowrap 大字不动。 */
+      ".zu-speed-left .zu-speed-fit2{font-size:calc(var(--ui-font-size,14px) + 10px);white-space:normal;line-height:1.25}" +
+      /* v235 结构化左卡分层节点：状态标题/名称/主数值/单位/辅助说明各自独立，
+       * 数值型走档位色（st.band），工具/Skill/思考/子代理保持中性 dim 语义 */
+      ".zu-sl-status{display:flex;align-items:center;gap:6px;font-size:calc(var(--ui-font-size,14px) - 1px);color:var(--color-foreground-subtle,#8791a3);min-width:0}" +
+      ".zu-sl-status .ico{width:20px;height:20px;flex:0 0 auto}" +
+      ".zu-sl-count{flex:0 0 auto;font-size:calc(var(--ui-font-size,14px) - 4px);font-weight:700;line-height:1.5;border:1px solid currentColor;border-radius:999px;padding:0 6px}" +
+      ".zu-sl-main{margin-top:8px;font-family:var(--font-mono,Consolas,'Cascadia Mono',Menlo,'Microsoft YaHei UI',monospace);font-variant-numeric:tabular-nums;font-size:calc(var(--ui-font-size,14px) + 22px);font-weight:700;line-height:1.1;white-space:nowrap}" +
+      ".zu-sl-unit{font-size:calc(var(--ui-font-size,14px) + 4px);font-weight:600;color:var(--color-tooltip-tag-foreground,#a6a6a6);margin-left:4px}" +
+      ".zu-sl-val.dim,.zu-sl-estdim{color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      ".zu-sl-note{margin-top:8px;font-size:calc(var(--ui-font-size,14px) - 2px);color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      ".zu-speed-left .zu-speed-fit3{font-size:calc(var(--ui-font-size,14px) - 1px);white-space:normal;line-height:1.3;word-break:break-word}" +
+      ".zu-speed-note{margin-top:8px;font-size:calc(var(--ui-font-size,14px) - 2px);color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      ".zu-speed-left .zu-speed-bandtag{font-size:calc(var(--ui-font-size,14px) - 3px);padding:2px 8px;white-space:nowrap}" +
+      ".zu-speed-chart{flex:1 1 auto;min-width:0;position:relative}" +
+      /* v239（设计图复刻）：左卡深色玻璃卡 + 状态图标/当前读数标签；信息卡虚线引线；图例/口径行布局 */
+      ".zu-sl-stats{padding-top:10px;display:flex;gap:6px;border-top:1px solid var(--color-border,rgba(255,255,255,.1))}" +
+      ".zu-sl-stat{flex:1 1 0;min-width:0;display:flex;flex-direction:column;gap:2px}" +
+      ".zu-sl-stat i{font-style:normal;font-size:calc(var(--ui-font-size,14px) - 3px);color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      ".zu-sl-stat b{font-family:var(--font-mono,Consolas,Menlo,monospace);font-variant-numeric:tabular-nums;font-size:calc(var(--ui-font-size,14px) + 1px);font-weight:700}" +
+      ".zu-sl-status span{min-width:0}" +
+      /* v241：标题 15px 加粗；Skill 长名两行省略；主体区在剩余高度内垂直居中（填空旷），前缀「估/均」小号灰字 */
+      /* v242:标题色不设 color——无档态继承 .zu-sl-status 中性灰,数值态由档位类直接着色(ultra 走渐变字) */
+      ".zu-sl-title{font-weight:600;font-size:calc(var(--ui-font-size,14px) + 1px);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}" +
+      ".zu-sl-status--wrap .zu-sl-title{font-size:calc(var(--ui-font-size,14px) - 1px);line-height:1.3;overflow-wrap:anywhere;white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}" +
+      ".zu-sl-body{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;justify-content:center;align-items:flex-start}" +
+      ".zu-sl-body .zu-sl-main{margin-top:0}" +
+      ".zu-sl-pre{font-size:calc(var(--ui-font-size,14px) + 4px);font-weight:600;color:var(--color-tooltip-tag-foreground,#a6a6a6);margin-right:6px}" +
+            ".zu-sl-k{margin-top:4px;font-size:calc(var(--ui-font-size,14px) - 2px);color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      ".zu-sc-lead{position:absolute;width:0;border-left:1px dashed currentColor;opacity:.7;pointer-events:none;transform:translateX(-.5px)}" +
+      ".zu-legend-row{display:flex;align-items:center;gap:16px;margin:14px 0 4px;padding-top:10px;border-top:1px solid var(--color-popover-border,rgba(255,255,255,.12))}" +
+      ".zu-legend-row .zu-legend-title{flex:0 0 auto}" +
+      ".zu-legend-grid.zu-legend-inline{display:flex;flex-wrap:wrap;flex:1 1 auto;justify-content:space-between;gap:6px 2px}" +
+      ".zu-legend-inline .zu-legend-item{gap:5px;padding:3px 5px}" +
+      ".zu-legend-inline .zu-legend-item b{font-size:calc(var(--ui-font-size,14px) - 2px);letter-spacing:-.2px}" +
+      ".zu-basis{display:flex;align-items:flex-start;gap:16px;margin-top:8px;padding-top:10px;border-top:1px solid var(--color-popover-border,rgba(255,255,255,.12))}" +
+      ".zu-basis .zu-legend-title{flex:0 0 auto}" +
+      ".zu-basis-v{flex:1 1 auto;min-width:0;display:flex;flex-wrap:wrap;gap:4px 0;font-size:calc(var(--ui-font-size,14px) - 2px);color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      ".zu-basis-v>span+span{margin-left:12px;padding-left:12px;border-left:1px solid var(--color-popover-border,rgba(255,255,255,.16))}" +
+      ".zu-basis-v .zu-pj-time{flex:0 0 100%;margin-top:4px;padding-top:0;border-top:0}" +
+      ".zu-sc-head{display:flex;align-items:baseline;gap:8px;margin:0 0 6px 30px}" +
+      ".zu-sc-title{font-weight:700;font-size:calc(var(--ui-font-size,14px) + 1px);white-space:nowrap}" +
+      ".zu-sc-sub{color:var(--color-tooltip-tag-foreground,#a6a6a6);font-size:calc(var(--ui-font-size,14px) - 3px);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}" +
+      ".zu-sc-unit{margin-left:auto;flex:0 0 auto;color:var(--color-tooltip-tag-foreground,#a6a6a6);font-size:calc(var(--ui-font-size,14px) - 3px)}" +
+      ".zu-sc-wrap{overflow-x:auto;overflow-y:hidden}" +
+      ".zu-sc-wrap::-webkit-scrollbar{height:8px}" +
+      ".zu-sc-wrap::-webkit-scrollbar-thumb{background:var(--color-border,rgba(255,255,255,.14));border-radius:999px}" +
+      /* v236：非 wide 图表不设 min-width——随容器压缩、靠稀疏时间标签兜底，任何窗口
+       * 宽度都不出横向滚动条（用户规格）；wide（≥1000 t/s 读数 6 字符）保留横滚 */
+      /* plot 高 = 160 柱区 + 29 X 轴（v237：border-box 下 X 行须 29px 才装得下两行时间，
+       * 否则第二行被 wrap 的 overflow-y:hidden 裁半）；柱区/网格/沟槽顶锚 160px——列内容
+       * 恰好填满 189，任何 flex-shrink 都会把柱区压短、柱体悬空离基线（实测教训），vz 显式 shrink:0 */
+      /* v240/v242：帽 860（chart≈560）满宽无横滚；plot min-width 340 仅窄窗兜底——pitch<44
+       * 阈值时公式会隔列显标签;wide(≥1000 t/s)加宽 420 横滚,读数 6 字符不挤压 */
+      ".zu-sc-plot{position:relative;height:189px;margin-left:30px;min-width:340px}" +
+      /* v242:wide(≥1000 t/s 读数 6 字符)横滚兜底加宽——340 下 pitch 34 时相邻读数间隙仅 1-3px */
+      ".zu-sc-wrap.wide .zu-sc-plot{min-width:420px}" +
+      ".zu-sc-grid{position:absolute;top:0;left:0;right:0;height:160px}" +
+      ".zu-sc-grid i{position:absolute;left:0;right:0;border-top:1px dashed var(--color-border,rgba(255,255,255,.1))}" +
+      ".zu-sc-grid i[data-base]{border-top:1px solid var(--color-border,rgba(255,255,255,.16))}" +
+      ".zu-sc-gutter{position:absolute;left:-30px;top:0;height:160px;width:26px}" +
+      ".zu-sc-gutter i{position:absolute;right:5px;transform:translateY(50%);font-style:normal;font-variant-numeric:tabular-nums;font-size:10px;line-height:1;color:var(--color-tooltip-tag-foreground,#a6a6a6);white-space:nowrap}" +
+      ".zu-sc-gutter i.top{transform:none}" +
+      /* bars 容器占满 plot 189（列内容 vz160+x29 恰好填满、零压缩），
+       * grid/gutter 才是顶锚 160 的柱区——两者高度角色不能对调 */
+      ".zu-sc-bars{position:absolute;inset:0;display:flex;align-items:stretch}" +
+      /* 列内盒全部 border-box + 固定 flex-basis：160+24 恰好 184、零 flex-shrink——
+       * content-box 下溢出的分数压缩会在各列产生 ±2px 取整差（柱底不齐，实测） */
+      ".zu-sc-col,.zu-sc-col *{box-sizing:border-box}" +
+      ".zu-sc-col{flex:1 1 0;min-width:0;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;outline:none}" +
+      ".zu-sc-vz{display:flex;flex-direction:column;justify-content:flex-end;align-items:center;width:100%;height:160px;flex:0 0 160px}" +
+      ".zu-sc-val{font-variant-numeric:tabular-nums;font-size:10px;line-height:1.2;letter-spacing:-.1px;color:var(--color-foreground,#e9edf4);margin-bottom:4px;white-space:nowrap}" +
+      ".zu-sc-val.latest{font-weight:700}" +
+      ".zu-sc-bar{display:block;width:100%;max-width:15px;min-height:2px;border-radius:2.5px 2.5px 0 0;background:currentColor}" +
+      ".zu-sc-bar.zu-ultra{background:linear-gradient(100deg,#60a5fa 0%,#a78bfa 50%,#c084fc 100%)}" +
+      ".zu-sc-bar.zu-ultra::before{content:none}" +
+      ".zu-sc-col.latest .zu-sc-bar{box-shadow:0 0 0 1px currentColor}" +
+      ".zu-sc-col.cur .zu-sc-bar{box-shadow:0 0 0 1.3px currentColor,0 0 9px -2px currentColor}" +
+      ".zu-sc-col:focus-visible .zu-sc-bar{box-shadow:0 0 0 1.5px var(--color-brand,#a3cfff),0 0 9px -2px var(--color-brand,#a3cfff)}" +
+      ".zu-sc-x{height:29px;padding-top:4px;flex:0 0 29px;display:flex;flex-direction:column;align-items:center;gap:1px;font-variant-numeric:tabular-nums;font-size:10px;line-height:1.25;color:var(--color-tooltip-tag-foreground,#a6a6a6);white-space:nowrap}" +
+      /* 信息卡挂 plot 内（top:0 相对柱区顶）：横滚时随内容滚动，盖住的列永远受
+       * span capIn 约束（挂图表视口右缘会盖住滚动窗内的无约束高柱，review 实测） */
+      ".zu-sc-card{position:absolute;top:0;right:0;z-index:2;pointer-events:none;background:var(--color-popover,#1c212b);border:1px solid var(--color-popover-border,rgba(255,255,255,.16));border-radius:8px;padding:3px 8px;box-shadow:0 4px 14px rgba(0,0,0,.35);max-width:210px}" +
+      ".zu-light .zu-sc-card{box-shadow:0 4px 14px rgba(15,23,42,.16)}" +
+      /* 卡片字号固定 px：几何是 Y 轴约束的输入（CARD_H=36，v242 校准实高 35.6px），不随宿主字号漂移 */
+      ".zu-sc-card-k{font-size:10px;line-height:1.2;color:var(--color-tooltip-tag-foreground,#a6a6a6);white-space:nowrap}" +
+      ".zu-sc-card-v{font-variant-numeric:tabular-nums;font-size:13px;font-weight:700;line-height:1.2;white-space:nowrap}" +
+      ".zu-sc-card-v i{font-style:normal;font-size:10px;font-weight:600;margin-left:5px;opacity:.9}" +
       ".tbody::-webkit-scrollbar{width:8px}" +
       ".tbody::-webkit-scrollbar-thumb{background:var(--color-border,rgba(255,255,255,.14));border-radius:999px}" +
       /* 超限告警气泡（v39）：挂 body 的独立浮层（与 .tip 同套路，免受条面重建影响），
@@ -3153,6 +3553,12 @@
       ".zu-light .zu-teal{color:#087d74}.zu-light .zu-sky{color:#0875a8}.zu-light .zu-azure{color:#405fd0}" +
       ".zu-light .zu-violet{color:#6249c6}.zu-light .zu-purple{color:#8042bd}.zu-light .zu-magenta{color:#9638a8}" +
       ".zu-light .zu-ultra{color:#6746d2}" +
+      /* v232 柱体 Ultra 浅色渐变：特异性 (0,3,0) 压过上面 (0,2,0) 的 clip:text 组——
+       * 柱体是无文字的盒子，被 text 裁剪会整根隐形（图例圆点同款教训）。 */
+      ".zu-light .zu-sc-bar.zu-ultra{background:linear-gradient(100deg,#3156cb 0%,#6746d2 50%,#9139bf 100%);-webkit-background-clip:border-box;background-clip:border-box}" +
+      /* v242:图例 ultra 圆点同款修正——下方 @supports 的 .zu-light .zu-ultra (0,2,0) 靠后,
+       * 会把 (0,2,0) 圆点渐变裁到 text 上(9px 空盒=隐形),须 (0,3,0) 压回 border-box */
+      ".zu-light .zu-legend-dot.zu-ultra{background:linear-gradient(100deg,#3156cb 0%,#6746d2 50%,#9139bf 100%);-webkit-background-clip:border-box;background-clip:border-box}" +
       /* background 简写会把 background-clip 重置回 border-box，浅色规则特异性更高——
        * 这里必须连带重申 clip，否则渐变整块糊在字底（截图验收抓获）。 */
       "@supports(-webkit-background-clip:text){" +
@@ -3593,6 +3999,49 @@
       if (to && (to === fxTip || (fxTip.contains && fxTip.contains(to)))) return;
       scheduleFxHide();
     });
+    /* v232 速度柱状图悬停/键盘焦点：委托挂 tip 本体（innerHTML 重建不丢，tip.remove()
+     * 随实例消亡、无需进 dispose）。悬停段下标存实例闭包，经 speedTipRebuild 整卡重编
+     * （cur 类与信息卡随串自愈 → 数据刷新整卡重建不丢悬停状态）；v240 起 -1/离开=不显示信息卡。 */
+    function zuSpeedChartPick(idx) {
+      if (idx === speedChartHover) return;
+      var hadFocus = tip.contains(document.activeElement) &&
+        document.activeElement.closest && document.activeElement.closest(".zu-sc-col");
+      speedChartHover = idx;
+      if (tipFor && typeof speedTipRebuild === "function") {
+        var t2 = speedTipRebuild();
+        if (t2 && tipFor.__tip !== undefined) {
+          tipFor.__tip = t2;
+          drawTip(tipFor, true);
+          /* innerHTML 重建会销毁聚焦的柱节点（焦点落 body、Tab 序断裂）——归位 */
+          if (hadFocus && idx >= 0) {
+            var nu2 = tip.querySelector('.zu-sc-col[data-i="' + idx + '"]');
+            if (nu2 && nu2.focus) nu2.focus();
+          }
+        }
+      }
+    }
+    tip.addEventListener("mouseover", function (e) {
+      var col = e.target && e.target.closest && e.target.closest(".zu-sc-col");
+      if (col) zuSpeedChartPick(parseInt(col.getAttribute("data-i"), 10) || 0);
+    });
+    tip.addEventListener("mouseout", function (e) {
+      var col = e.target && e.target.closest && e.target.closest(".zu-sc-col");
+      if (!col) return;
+      var to = e.relatedTarget;
+      /* v242:移入另一根柱时同样交给 mouseover 切段,避免 out(-1)→in(B) 双重整卡重建闪烁 */
+      if (to && to.closest && to.closest(".zu-sc-col")) return;
+      zuSpeedChartPick(-1);
+    });
+    tip.addEventListener("focusin", function (e) {
+      var col = e.target && e.target.closest && e.target.closest(".zu-sc-col");
+      if (col) zuSpeedChartPick(parseInt(col.getAttribute("data-i"), 10) || 0);
+    });
+    tip.addEventListener("focusout", function (e) {
+      var col = e.target && e.target.closest && e.target.closest(".zu-sc-col");
+      /* v242:relatedTarget 落在另一根柱上时不得收卡重建——focusout 先于 focusin,
+       * 此处重建会销毁即将接收焦点的目标柱(焦点跌落 body、Tab 序断裂) */
+      if (col && !(e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest(".zu-sc-col"))) zuSpeedChartPick(-1);
+    });
     bar.appendChild(style);           // 样式随条走，不进 head（防清理）
     /* 内联兜底：即使样式表意外失效，定位行为也不退化。
      * z-index 50：压得过聊天列表/输入框外层容器（Tailwind z-20），又不盖权限菜单等弹层（实测值）。 */
@@ -3870,7 +4319,8 @@
       var showCost = !!state.cost;   // ⚙ 开关关：KPI 预估费用格与表头费用列不渲染
       var costV = (typeof pj.cost_usd === "number" && isFinite(pj.cost_usd)) ? fmtMoney(pj.cost_usd) : "—";
       return '<div class="zu-project-tip" data-key="' + escAttr(ownerKey) + '">' +
-        '<div class="zu-pj-head"><div class="zu-pj-title">' + ttEsc(L("项目累计", "Project total")) + '</div>' +
+        '<div class="zu-pj-head"><div class="zu-pj-title' + (pj.name ? " zu-tt-name" : "") + '">' + ttEsc(L("项目累计", "Project total")) +
+        (pj.name ? '<span class="zu-pj-pname">' + ttEsc(pj.name) + '</span>' : "") + '</div>' +
         '<div class="zu-pj-range"><span class="zu-pj-scope">' + ttEsc(L("全部请求", "All requests")) + '</span>' +
         '<span class="zu-pj-sub">' + ttEsc(L("含子代理", "incl. sub-agents")) + '</span></div></div>' +
         '<div class="zu-pj-kpis">' +
@@ -3925,8 +4375,10 @@
       if (typeof positionTip === "function" && tipFor) positionTip(tipFor, true);
     }
     /* v215 统计卡公共片段（六卡共用）：head/KPI/明细/规模/表格/时间。数据全部真实字段。 */
-    function statHead(title, scope) {
-      return '<div class="zu-stat-head"><div class="zu-stat-title">' + ttEsc(title) + '</div>' +
+    function statHead(title, scope, name) {
+      /* v230.1 名称与标题垂直居中：带名称时标题容器切 flex，名称作为子项中心对齐 */
+      return '<div class="zu-stat-head"><div class="zu-stat-title' + (name ? " zu-tt-name" : "") + '">' + ttEsc(title) +
+        (name || "") + '</div>' +
         (scope ? '<div class="zu-stat-scope">' + ttEsc(scope) + '</div>' : "") + '</div>';
     }
     function statKpi(k, vHtml, extraCls) {
@@ -3962,19 +4414,25 @@
      * 运行中的每个子代理一行（…sid4 · 估 X t/s），并行 ≥2 个时先给合计行。 */
     function buildLiveTip(speedView) {
       /* v215 速度统计卡 live 态：scope=生成中估算；主读数=状态词/估算值（speedView.cls
-       * 档位色）；sub=最近一轮真实值。保留子代理槽位明细与两侧口径说明（各自真实口径）。 */
+       * 档位色）；sub=最近一轮真实值。保留子代理槽位明细与两侧口径说明（各自真实口径）。
+       * v232：快照带 speed_segs 时右列改画「最近 17 段」柱状图（最近一段由最新柱承载，
+       * sub 右格只在无图表的旧快照回退布局保留），柱级悬停/焦点经 speedTipRebuild 重建。 */
       var isTool = speedView && speedView.phase === "tool";
       var isThink = speedView && speedView.phase === "thinking";
       var mainText = speedView ? speedView.text : "—";
       var mainCls = speedView && speedView.cls ? speedView.cls : "";
       var noUnit = isTool || isThink || !speedView || typeof speedView.rate !== "number";
+      var segs = speedSegsOf(lastView && lastView.session);
+      var hasChart = !!(segs && segs.length);
+      var segSess = (lastView && lastView.session && lastView.session.sid) || "";
+      if (speedTipSess !== segSess) { speedTipSess = segSess; speedChartHover = -1; }   // 会话切换：v240 起回未悬停（无信息卡）
       /* v218 修复：zuBarSpeedView 从不返回 latest 字段，右格恒缺（用户实测「缺少最近
        * 一段的生成速度」）。改取泵快照最近一段真实值（last.tps，与 fallback 完成态
-       * 右格同口径、同文案「最近一段」）。 */
+       * 右格同口径、同文案「最近一段」）。v232：有图表时该读数由最新柱承载。 */
       var subLabel = "", subVal = "";
       var dbTps3 = (lastView && lastView.last && typeof lastView.last.tps === "number" &&
         isFinite(lastView.last.tps) && lastView.last.tps > 0) ? lastView.last.tps : 0;
-      if (dbTps3) {
+      if (dbTps3 && !hasChart) {
         subLabel = L("最近一段", "Latest segment");
         subVal = (dbTps3 % 1 ? dbTps3.toFixed(1) : String(dbTps3));
       }
@@ -3989,44 +4447,85 @@
         basisText.push(L("子智能体运行期间按各自会话文本增量同款估算，主 chip 显示合计；运行中的请求未入本地库，思考文本不外显时无速率、只显示状态词",
           "while sub-agents run, each is estimated the same way from its own session text deltas and the bar chip shows their sum; in-flight requests are not in the local DB yet, and when thinking text is not exposed there is no rate, only the status word"));
       } else {
-        basisText.push(L("本轮完成 · 真实值：输出 tokens（含思考）÷ 模型生成时长；本轮缺口径时回退数据库最近一段值",
+        basisText.push(speedView && speedView.kind === "avg"
+          ? L("Σ输出（含思考）÷ 生成耗时", "Σoutput (thinking incl.) ÷ generation time")
+          : L("本轮完成 · 真实值：输出 tokens（含思考）÷ 模型生成时长；本轮缺口径时回退数据库最近一段值",
           "Turn completed · actual: output tokens (thinking incl.) ÷ model generation time; falls back to the latest DB segment when this turn's basis is missing"));
       }
-      var extra = "";
-      if (isTool) {
-        var sids = [], now = Date.now();
-        for (var sid in subRate.slots) sids.push(sid);
-        sids.sort();
-        var fresh = 0;
-        for (var i = 0; i < sids.length; i++) {
-          var sl = subRate.slots[sids[i]];
-          if (sl.rate != null && now - sl.at <= 3000) fresh++;
-        }
-        if (sids.length) {
-          if (fresh > 1) extra += '<div class="zu-stat-note">' + escHtml(L("合计 估 ", "Sum est ") + subRate.sum.rate.toFixed(1) + L(" t/s（", " t/s (") + fresh + L(" 个）", " running)")) + '</div>';
-          for (var j = 0; j < sids.length; j++) {
-            var s2 = subRate.slots[sids[j]];
-            var tail = String(sids[j]).slice(-4);
-            extra += '<div class="zu-stat-note">' + escHtml(L("子代理 …" + tail + " ", "agent …" + tail + " ") +
-              (s2.rate != null && now - s2.at <= 3000 ? L("估 ", "est ") + s2.rate.toFixed(1) + L(" t/s", " t/s") : L("估算中…", "estimating…"))) + '</div>';
+      if (hasChart) {
+        basisText.push(L("最近 10 段：每个已完成有效分段的真实速度，按完成顺序从旧到新展示；工具等待不计，不含子代理。",
+          "Last 10 segments: real speed of each completed rated segment, oldest → newest; tool waits excluded, sub-agents excluded."));
+      }
+      function extraHtml() {
+        var out = "";
+        if (isTool) {
+          var sids = [], now = Date.now();
+          for (var sid in subRate.slots) sids.push(sid);
+          sids.sort();
+          var fresh = 0;
+          for (var i = 0; i < sids.length; i++) {
+            var sl = subRate.slots[sids[i]];
+            if (sl.rate != null && now - sl.at <= 3000) fresh++;
+          }
+          if (sids.length) {
+            if (fresh > 1) out += '<div class="zu-stat-note">' + escHtml(L("合计 估 ", "Sum est ") + subRate.sum.rate.toFixed(1) + L(" t/s（", " t/s (") + fresh + L(" 个）", " running)")) + '</div>';
+            for (var j = 0; j < sids.length; j++) {
+              var s2 = subRate.slots[sids[j]];
+              var tail = String(sids[j]).slice(-4);
+              out += '<div class="zu-stat-note">' + escHtml(L("子代理 …" + tail + " ", "agent …" + tail + " ") +
+                (s2.rate != null && now - s2.at <= 3000 ? L("估 ", "est ") + s2.rate.toFixed(1) + L(" t/s", " t/s") : L("估算中…", "estimating…"))) + '</div>';
+            }
           }
         }
+        return out;
       }
-      return '\x01' + speedCardHTML({
-          scope: speedView && speedView.phase ? L("生成中估算", "Running estimate") : L("本轮完成 · 真实值", "Turn completed · actual"),
-          main: mainText,
-          mainCls: mainCls,
-          noUnit: noUnit,
-          subLabel: subLabel,
-          sub: subVal,
-          bandTag: speedView && speedView.band ? tpsBandText(speedView.band) : "",
-          curCls: speedView && speedView.band ? speedView.cls : "",
-          basisTitle: L("统计口径", "Basis"),
-          basisText: basisText,
-          timeStart: liveSpan ? liveSpan.start : "",
-          timeEnd: liveSpan ? liveSpan.end : "",
-          foot: [L("数据来自 renderer 会话状态（只读桥），实时更新，不经过本地数据库轮询；生成中的数值为字符增量估算", "Data comes from the renderer session state via the read-only bridge, updating live, independent of local database polling; running values are estimated from text deltas")]
-        }).replace('<div class="zu-stat-tip zu-stat-tip--speed">', '<div class="zu-stat-tip zu-stat-tip--speed">') + extra + '</div>';
+      var foot = [L("数据来自 renderer 会话状态（只读桥），实时更新，不经过本地数据库轮询；生成中的数值为字符增量估算", "Data comes from the renderer session state via the read-only bridge, updating live, independent of local database polling; running values are estimated from text deltas")];
+      /* v235：结构化状态直传（zuBarSpeedView 的 kind/statusText/…），思考态注入脑图标；
+       * scope 标签按真实状态映射，不再一律写「生成中估算」——完成态标会话平均/本轮
+       * 真实速度，工具/组/Skill/子代理/思考各归其位。 */
+      var liveScopeMap = {
+        tool: L("工具执行中", "Tool running"),
+        toolgroup: L("工具组执行中", "Tool group running"),
+        skill: L("Skill 执行中", "Skill running"),
+        subagent: L("子代理运行中", "Sub-agents running"),
+        thinking: L("思考中", "Thinking"),
+        estimate: L("生成中（估算）", "Generating (est.)"),
+        avg: L("会话平均", "Session average"),
+        real: L("本轮实际速度", "Actual speed this turn")
+      };
+      var liveScope = speedView && speedView.kind && liveScopeMap[speedView.kind]
+        ? liveScopeMap[speedView.kind]
+        : (speedView && speedView.phase ? L("生成中估算", "Running estimate") : L("本轮完成 · 真实值", "Turn completed · actual"));
+      var liveStatus = null;
+      if (speedView && speedView.kind) {
+        liveStatus = speedView;
+        if (speedView.kind === "thinking") liveStatus.iconHTML = zuIcoThinking();
+      }
+      var opts = {
+        scope: liveScope,
+        status: liveStatus,
+        main: mainText,
+        mainCls: mainCls,
+        noUnit: noUnit,
+        subLabel: subLabel,
+        sub: subVal,
+        bandTag: speedView && speedView.band ? tpsBandText(speedView.band) : "",
+        curCls: speedView && speedView.band ? speedView.cls : "",
+        basisTitle: L("统计口径", "Basis"),
+        basisText: basisText,
+        timeStart: liveSpan ? liveSpan.start : "",
+        timeEnd: liveSpan ? liveSpan.end : "",
+        foot: foot,
+        segs: segs,
+        segsHover: speedChartHover
+      };
+      /* v232：柱级悬停/焦点改悬停段下标后经此闭包整卡重建（串里已带 cur/信息卡状态，
+       * 与 updateLive 每写回 __tip 的链路同源；下一 tick 的 buildLiveTip 会覆盖闭包）。 */
+      speedTipRebuild = function () {
+        opts.segsHover = speedChartHover;
+        return '\x01' + speedCardHTML(opts) + extraHtml() + '</div>';
+      };
+      return speedTipRebuild();
       function escHtml(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
     }
     /* 行内 SVG 线性图标（v54）：stroke 走 currentColor，颜色由 .ico 控制统一换色 */
@@ -4096,28 +4595,50 @@
         var mainTps = sessAvg || dbTps;
         var tband = tpsBand(mainTps);
         var speedTm = sessAvg ? speedSpan(sess.started, sess.last_at) : speedSpan(last.startedAt, last.endedAt);   // v222 时间范围行
+        /* v232：最近 17 段柱状图（快照 speed_segs，Python 侧 avg_tps 同款口径）。
+         * 会话切换重置悬停段；有图表时「最近一段」右格由最新柱承载。 */
+        var fbSegs = speedSegsOf(sess);
+        var fbHasChart = !!(fbSegs && fbSegs.length);
+        var fbSess = sess.sid || "";
+        if (speedTipSess !== fbSess) { speedTipSess = fbSess; speedChartHover = -1; }
+        var fbBasis = sessAvg
+          ? [L("Σ输出（含思考）÷ 生成耗时", "Σoutput (thinking incl.) ÷ generation time")]
+          : [L("输出 tokens（含思考）÷ 生成耗时", "output tokens (thinking incl.) ÷ generation time")];
+        if (fbHasChart) {
+          fbBasis.push(L("最近 10 段：每个已完成有效分段的真实速度，按完成顺序从旧到新展示；工具等待不计，不含子代理。",
+            "Last 10 segments: real speed of each completed rated segment, oldest → newest; tool waits excluded, sub-agents excluded."));
+        }
+        var fbFoot = [L("每段完成后刷新：回复末尾为整问加权均值，数值不同属正常。", "Refreshes as each segment completes: the reply-end line is the whole-turn weighted average and legitimately differs.")];
+        var fbOpts = {
+          scope: sessAvg ? L("会话平均", "Session average") : L("最近一段", "Latest segment"),
+          status: { kind: sessAvg ? "avg" : "real",
+            statusText: L("生成完成", "Generation complete"),
+            speedValue: mainTps, speedIsEstimated: false,
+            speedSource: sessAvg ? "avg" : "real", band: tband,
+            noteText: sessAvg ? L("会话加权平均", "Weighted average")
+              : L("最近一段 · 实际值", "Latest segment · actual") },
+          main: (mainTps % 1 ? mainTps.toFixed(1) : String(mainTps)),
+          mainCls: tband.cls,
+          subLabel: (!fbHasChart && sessAvg && dbTps > 0) ? L("最近一段", "Latest segment") : "",
+          sub: (!fbHasChart && sessAvg && dbTps > 0) ? (dbTps % 1 ? dbTps.toFixed(1) : String(dbTps)) : "",
+          bandTag: tpsBandText(tband),
+          curCls: tband.cls,
+          basisTitle: L("统计口径", "Basis"),
+          basisText: fbBasis,
+          foot: fbFoot,
+          timeStart: speedTm ? speedTm.start : "",
+          timeEnd: speedTm ? speedTm.end : "",
+          segs: fbSegs,
+          segsHover: speedChartHover
+        };
+        speedTipRebuild = function () {
+          fbOpts.segsHover = speedChartHover;
+          return "\x01" + speedCardHTML(fbOpts);
+        };
         it(ico('<path d="M13.5 2 3.5 13.5H11L10 22l10.5-12H13l.5-8z"/>') +
           (sessAvg ? '<span class="dim">' + L("均", "avg ") + '</span>' : "") +
           '<span class="zu-live ' + tband.cls + '">' + (mainTps % 1 ? mainTps.toFixed(1) : String(mainTps)) + '</span><span class="dim">t/s</span>',   /* v226：去「· 近X」尾缀（用户规格），最近一段只在 tooltip */
-          "\x01" +
-          speedCardHTML({
-            scope: sessAvg ? L("会话平均", "Session average") : L("最近一段", "Latest segment"),
-            main: (mainTps % 1 ? mainTps.toFixed(1) : String(mainTps)),
-            mainCls: tband.cls,
-            subLabel: (sessAvg && dbTps > 0) ? L("最近一段", "Latest segment") : "",
-            sub: (sessAvg && dbTps > 0) ? (dbTps % 1 ? dbTps.toFixed(1) : String(dbTps)) : "",
-            bandTag: tpsBandText(tband),
-            curCls: tband.cls,
-            basisTitle: L("统计口径", "Basis"),
-            basisText: sessAvg
-              ? [L("Σ输出（含思考）÷ Σ生成耗时", "Σoutput (thinking incl.) ÷ Σgeneration time"),
-                 L("统计会话全部已完成请求：工具等待不计，不含子代理。", "All completed requests of this session: tool waits excluded, sub-agents excluded.")]
-              : [L("输出 tokens（含思考）÷ 生成耗时", "output tokens (thinking incl.) ÷ generation time")],
-            foot: [L("每段完成后刷新：回复末尾为整问加权均值，数值不同属正常。", "Refreshes as each segment completes: the reply-end line is the whole-turn weighted average and legitimately differs.")],
-            timeStart: speedTm ? speedTm.start : "",
-            timeEnd: speedTm ? speedTm.end : ""
-          }) +
-          '');
+          speedTipRebuild());
       } else {
         liveKindCur = "none";
         livePhaseCur = "";
@@ -4180,7 +4701,8 @@
             '<span class="dim">' + countFmt(sess.turns || 0) + L("轮 ", " turns · ") + countFmt(sess.requests || 0) + L("次", " req") + "</span>"),
           "\x01" +
           '<div class="zu-stat-tip zu-stat-tip--session">' +
-          statHead(L("会话累计", "Session total"), L("全部请求", "All requests")) +
+          statHead(L("会话累计", "Session total"), L("全部请求", "All requests"),
+            ((sess.title || "").trim() ? '<span class="zu-st-name">' + ttEsc(String(sess.title).replace(/\s+/g, " ").trim()) + '</span>' : "")) +
           '<div class="zu-stat-kpis">' +
             statKpi(L("总用量", "Total tokens"), ttEsc(fmt(sess.total || 0))) +
             statKpi(L("请求次数", "Requests"), ttEsc(countFmt(sess.requests || 0))) +
@@ -5012,9 +5534,14 @@
            * drawTip 读 tipFor.__tip）——v218 只改了 tipFor 判定，新串仍写到格内
            * .zu-live span：条件每 tick 命中、重画的却始终是整条渲染时挂在格上的旧串，
            * 悬停中「当前读数」冻结在最后一次整条渲染的值（实测 chip 已跳动、tooltip
-           * 还停在「思考中…2秒」）。改写回格元素：悬停中每 tick 跟手，未悬停也新鲜。 */
+           * 还停在「思考中…2秒」）。改写回格元素：悬停中每 tick 跟手，未悬停也新鲜。
+           * v232：键盘焦点在柱状图柱上时只保鲜 __tip 不重画（innerHTML 换掉聚焦柱会
+           * 丢焦点），焦点移出后下一 tick 恢复跟手；ownerDocument 取 activeElement，
+           * 不引用全局 document（updateLive 切片沙箱无 document）。 */
           liveCell.__tip = tip1;
-          if (tipFor === liveCell) drawTip(liveCell, true);
+          var aeDoc = liveCell.ownerDocument;
+          var ae = aeDoc ? aeDoc.activeElement : null;
+          if (tipFor === liveCell && !(ae && ae.closest && ae.closest(".zu-sc-col"))) drawTip(liveCell, true);
         }
         return;
       }
@@ -5166,7 +5693,14 @@
           tipFor = nu;
           if (nu !== main) { nu.__idx = Array.prototype.indexOf.call(els, nu); nu.__n = els.length; }
           if (nu.setAttribute) nu.setAttribute("aria-describedby", tip.id);
-          if (state.theme === "pill" || document.activeElement === nu) drawTip(nu, true);
+          /* v232：速度卡在悬停中随快照跟手（新段完成即重画柱状图；悬停段下标编在串里，
+           * 重建不丢高亮）。焦点/选择在 tip 内时跳过防打断——drawTip 自带签名幂等与
+           * 选区守卫，内容没变不会真重建。 */
+          var focusInTip = tip.contains(document.activeElement);
+          var speedFollow = !!(nu.__tip.indexOf && nu.__tip.indexOf("zu-stat-tip--speed") > 0) && !focusInTip;
+          /* v242:pill 主题同样受「焦点在 tip 内跳过重绘」守卫——此前无条件 drawTip,
+           * 键盘聚焦柱体时一次快照推送就把焦点打回 body(v224 修的是悬停链,此处补齐焦点链) */
+          if (!focusInTip && (state.theme === "pill" || document.activeElement === nu || speedFollow)) drawTip(nu, true);
           else positionTip(nu, true);
         } else hideTip(false, "render-orphan");
         /* 接管失败（条目结构变化）也受总闸保护：鼠标仍在条上时保持旧 tooltip，
@@ -5227,6 +5761,8 @@
       if (keepTop && selection && !selection.isCollapsed && selection.anchorNode && selection.focusNode &&
           tip.contains(selection.anchorNode) && tip.contains(selection.focusNode)) { positionTip(el, true); return; }
       var oldBody = tip.querySelector ? tip.querySelector(".tbody") : null, oldScroll = keepTop && oldBody ? oldBody.scrollTop : 0;
+      var oldChartL = 0;
+      if (keepTop && oldBody) { var oc = oldBody.querySelector(".zu-sc-wrap"); oldChartL = oc ? oc.scrollLeft : 0; }
       tipSig = t;
       hideFxTip();   // innerHTML 重建会换掉 ? 图标节点，旧气泡悬挂无依附——先收
       tip.innerHTML = '<div class="tbody"></div>';
@@ -5235,6 +5771,8 @@
       if (t.charCodeAt(0) === 1) tip.firstChild.innerHTML = t.slice(1);   // \x01 前缀 = 结构化 HTML（v67.1）
       else tip.firstChild.textContent = t;
       tip.firstChild.scrollTop = oldScroll;
+      var nc = tip.querySelector(".zu-sc-wrap");
+      if (nc && oldChartL) nc.scrollLeft = oldChartL;   // v232：速度图表横滚位置跨重建保留
       tip.style.display = "block";
       positionTip(el, keepTop);
     }
@@ -5255,12 +5793,16 @@
     main.addEventListener("focusin", function (e) {
       if (inactive() || restoringFocus || panel.classList.contains("open")) return;
       var item = e.target && e.target.closest ? e.target.closest(".it") : null;
-      if (!item || !main.contains(item) || !item.__tip) return;
-      if (state.theme === "pill") {
+      if (!item || !main.contains(item)) return;
+      /* v232 顺带修 v217 回归：.zu-sub 走统一浮层后 __tip 恒 null，滚入判定若被
+       * __tip 早退拦截，药丸窄条下子代理入口键盘聚焦不再滚入可视区（pill 夹具实测
+       * scrollLeft 恒 0）。滚入只依赖条目矩形，提到 __tip 早退之前。 */
+      if (state.theme === "pill" && (item.__tip || item.classList.contains("zu-sub"))) {
         var ir = item.getBoundingClientRect(), mr = main.getBoundingClientRect();
         if (ir.left < mr.left) main.scrollLeft -= mr.left - ir.left;
         else if (ir.right > mr.right) main.scrollLeft += ir.right - mr.right;
       }
+      if (!item.__tip) return;   // v217：无 tooltip 的入口（.zu-sub）不进通用 tooltip 链
       mouseInBar = true;
       cancelTipGrace();
       if (item !== tipFor) showTipFor(item);
@@ -7905,8 +8447,7 @@
         basisText: v.kind === "live"
           ? [L("按文本增量算出的字符/s，除以「每 token 字符数」估算 tok/s；比例取自本会话最近完成的真实轮次。", "chars/s from text deltas divided by a chars-per-token ratio calibrated from this session's latest completed turn.")]
           : (v.sessAvg
-            ? [L("Σ输出（含思考）÷ Σ生成耗时", "Σoutput (thinking incl.) ÷ Σgeneration time"),
-               L("统计会话全部已完成请求：工具等待不计，不含子代理。", "All completed requests of this session: tool waits excluded, sub-agents excluded.")]
+            ? [L("Σ输出（含思考）÷ 生成耗时", "Σoutput (thinking incl.) ÷ generation time")]
             : [L("输出 tokens（含思考）÷ 生成耗时", "output tokens (thinking incl.) ÷ generation time")])
       });
       /* 状态条摘要（用户拍板：隐藏格数据收进速率 tooltip）：逐格开关继续生效——
