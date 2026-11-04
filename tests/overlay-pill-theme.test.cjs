@@ -1874,7 +1874,7 @@ test('pill layout safety browser regressions (isolated fixture)', { skip: skipRe
     // v240/v242 基本面:柱数=10、默认无卡无 cur、表头文案;相邻读数/时间标签不重叠(真实 DOM 几何)
     assert.equal(await b.evaluate(`document.querySelectorAll('#zusage-tip .zu-sc-col').length`), 10, 'must render exactly 10 bars');
     assert.equal(await b.evaluate(`document.querySelector('#zusage-tip .zu-sc-card') === null && document.querySelector('#zusage-tip .zu-sc-col.cur') === null`), true, 'default state must have no info card and no cur');
-    assert.equal(await b.evaluate(`document.querySelector('#zusage-tip .zu-sc-title').textContent`), '最近 10 段');
+    assert.equal(await b.evaluate(`document.querySelector('#zusage-tip .zu-sc-title').textContent`), '最近 10 轮');
     const noOverlap = await b.evaluate(`(() => {
       const cols = [...document.querySelectorAll('#zusage-tip .zu-sc-col')];
       const groups = [cols.map(c => c.querySelector('.zu-sc-val')),
@@ -1893,14 +1893,14 @@ test('pill layout safety browser regressions (isolated fixture)', { skip: skipRe
       return { x: r.x + r.width / 2, y: r.y + r.height * 0.5 };
     })()`);
     await b.call('Input.dispatchMouseEvent', { type: 'mouseMoved', x: bar.x, y: bar.y });
-    await b.waitFor(`document.querySelector('#zusage-tip .zu-sc-card-k').textContent.indexOf('第 3 段') === 0`, 'info card did not switch to seg 3');
+    await b.waitFor(`document.querySelector('#zusage-tip .zu-sc-card-k').textContent.indexOf('第 3 轮') === 0`, 'info card did not switch to seg 3');
     const curAt = await b.evaluate(`[...document.querySelectorAll('#zusage-tip .zu-sc-col')].findIndex(c => c.classList.contains('cur'))`);
     assert.equal(curAt, 2, 'cur must move to the hovered bar');
     await b.call('Input.dispatchMouseEvent', { type: 'mouseMoved', x: cell.x, y: cell.y });
     await b.waitFor(`!document.querySelector('#zusage-tip .zu-sc-card')`, 'v240: info card must disappear when leaving the chart');
     // 键盘聚焦第 5 根：信息卡切换，焦点保持在柱上
     await b.evaluate(`document.querySelectorAll('#zusage-tip .zu-sc-col')[4].focus()`);
-    await b.waitFor(`document.querySelector('#zusage-tip .zu-sc-card-k').textContent.indexOf('第 5 段') === 0`, 'focus did not switch the info card');
+    await b.waitFor(`document.querySelector('#zusage-tip .zu-sc-card-k').textContent.indexOf('第 5 轮') === 0`, 'focus did not switch the info card');
     const focusKept = await b.evaluate(`document.activeElement && document.activeElement.getAttribute && document.activeElement.getAttribute('data-i')`);
     assert.equal(focusKept, '4', 'focused bar must keep focus');
     // 聚焦期间新快照推送（render 接管 speedFollow 焦点守卫）：整卡不重建、焦点不丢

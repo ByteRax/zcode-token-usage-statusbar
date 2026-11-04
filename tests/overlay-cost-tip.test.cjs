@@ -137,7 +137,8 @@ function harness({ costLS = null } = {}) {
       last_turn: { requests: 2, retries: 0, tool_calls: 0, tool_errors: 0, input: 5000, output: 800,
         reasoning: 100, cache_read: 4200, cache_write: 60, total: 5800, duration_ms: 4000, ttft_ms: 300,
         started: NOW - 50000, ended: NOW - 46000, tps: 100, rated_output: 800, unrated_output: 0, gen_ms: 3000,
-        models: [{ model: 'GLM-5.3-FlashX', requests: 2, total: 5800, cost_usd: 0.5 }] } };
+        models: [{ model: 'GLM-5.3-FlashX', requests: 2, total: 5800, cost_usd: 0.5,
+          rates: { input: 0.29879, output: 1.04577, cache_read: 0.08516, cache_write: 0, key: 'glm-5.3-flashx' } }] } };
     if (withCost) {
       row.cost_usd = 1;                                  // ¥7.10
       row.last_turn.cost_usd = 0.5;                      // ¥3.55
@@ -158,16 +159,20 @@ function harness({ costLS = null } = {}) {
         reasoning: 500, retries: 1, cache_write: 300, started: NOW - 60000, last_at: NOW - 1000 } };
     if (withCost && todayCost !== null) {
       out.today.cost_usd = todayCost;
-      out.today.models = [{ model: 'GLM-5.3-FlashX', requests: 40, total: 98000, cost_usd: todayCost }];
+      out.today.models = [{ model: 'GLM-5.3-FlashX', requests: 40, total: 98000, cost_usd: todayCost,
+        rates: { input: 0.29879, output: 1.04577, cache_read: 0.08516, cache_write: 0, key: 'glm-5.3-flashx' } }];
     }
     if (fx !== null) out.fx = fx;
     return out;
   }
   const tipRoot = () => body.children.find(e => e.className === 'tip zusage-tip-root');
   const fxTipEl = () => body.children.find(e => e.className === 'tip zusage-quota-tip zusage-fx-tip');
-  function hoverFxq(h, enter = true) {
+  function hoverFxq(h, enter = true, attrs = null) {
     const tip = tipRoot();
-    const icon = { closest: sel => sel === '.tip-fxq' ? { getBoundingClientRect: () => ({ top: 100, bottom: 120, left: 30, right: 50 }) } : null };
+    /* v248：icon 目标带 getAttribute（真实链路从渲染出的 data-* 属性取模型上下文） */
+    const target = { getBoundingClientRect: () => ({ top: 100, bottom: 120, left: 30, right: 50 }),
+      getAttribute: k => (attrs && Object.prototype.hasOwnProperty.call(attrs, k)) ? String(attrs[k]) : null };
+    const icon = { closest: sel => sel === '.tip-fxq' ? target : null };
     const evts = tip.listeners.get(enter ? 'mouseover' : 'mouseout');
     evts[0]({ target: icon, relatedTarget: null });
   }
@@ -181,6 +186,17 @@ function setup(h) {
 }
 
 const ALL_TIPS_HAS_COST = /预估费用<\/b><span>/;
+
+/* v248：从渲染出的 tooltip HTML 提取 KPI 费用问号 icon 的 data-* 属性（escAttr 转义还原），
+ * 喂给 hoverFxq 走真实委托链（icon 属性 → 分派 → fxTipHTML） */
+const unescAttr = s => s.replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+function fxqAttrs(tipHtml, label = '预估费用') {
+  const m = tipHtml.match(new RegExp(label + '<svg class="tip-fxq"([^>]*)>'));
+  if (!m) throw new Error('fxq icon not found after ' + label);
+  const attrs = {};
+  for (const [, k, v] of m[1].matchAll(/(data-[\w-]+)="([^"]*)"/g)) attrs[k] = unescAttr(v);
+  return attrs;
+}
 
 test('四格 tooltip 显示 ¥ 费用行、模型明细费用与可点来源脚注（fx 生效）', () => {
   const h = harness(); setup(h);
@@ -270,7 +286,7 @@ test('紧凑摘要（速率 chip tooltip）四行带费用尾注 + 来源行', (
   assert.match(html, /今日合计<\/span><span class="tps-v">[^]*?· ¥14\.20/);
 });
 
-test('四格费用行带空心问号 icon；悬停弹说明气泡（价格来源/公式/汇率来源，源随快照）', () => {
+test('四格费用行带空心问号 icon；KPI 问号随卡携带模型上下文（v248）：单模型显该模型四价、多模型显计价范围，不借全局 last', () => {
   const h = harness(); setup(h);
   h.window.__zusageUpdate(h.payload({}));
   const costKpis = h.tips().filter(t2 => t2 && t2.indexOf('预估费用<svg class="tip-fxq"') >= 0);
@@ -279,28 +295,49 @@ test('四格费用行带空心问号 icon；悬停弹说明气泡（价格来源
   const fx = h.fxTipEl();
   assert.ok(fx, 'fxTip mounted on body');
   assert.notEqual(fx.style.display, 'block');   // 初始未显示（cssText 继承路径下 display 可能未显式赋值）
-  h.hoverFxq(h);
+  // 会话累计 KPI（夹具 2 模型）→ 计价范围行；绝不出现快照根部 last 的 GLM-5.3-FlashX
+  //（回归：hy4 会话的气泡曾显示全局最近会话的 GLM-5.3-FlashX 牌价）
+  h.hoverFxq(h, true, fxqAttrs(h.tips()[1]));
   assert.equal(fx.style.display, 'block');
-  const html = fx.innerHTML;
+  let html = fx.innerHTML;
   assert.match(html, /预估费用说明/);
-  assert.match(html, /当前模型<\/b><span>GLM-5\.3-FlashX/);
+  assert.match(html, /计价范围<\/b><span>本会话的全部 2 个模型，按各自模型价格分别计价/);
+  assert.doesNotMatch(html, /当前模型|GLM-5\.3-FlashX/);
+  // 今日合计 KPI（夹具单模型带四价）→ 该模型四价行（label 为「模型」，不再称「当前模型」）
+  h.hoverFxq(h, true, fxqAttrs(h.tips()[2]));
+  html = fx.innerHTML;
+  assert.match(html, /模型<\/b><span>GLM-5\.3-FlashX/);
   assert.match(html, /输入 ¥2\.12 · 输出 ¥7\.42 · 缓存读 ¥0\.60 · 缓存写 ¥0\.00（¥\/百万 token，按实时汇率折算）/);
+  // 本轮 KPI（单模型）同上
+  h.hoverFxq(h, true, fxqAttrs(h.tips()[0]));
+  html = fx.innerHTML;
+  assert.match(html, /模型<\/b><span>GLM-5\.3-FlashX/);
+  // 明细行 icon（data-model 无 data-mcount）仍为该行模型四价
+  h.hoverFxq(h, true, { 'data-model': 'hy4', 'data-rates': '{"input":1,"output":2,"cache_read":0.5,"cache_write":0}' });
+  html = fx.innerHTML;
+  assert.match(html, /模型<\/b><span>hy4/);
+  assert.match(html, /输入 ¥7\.10 · 输出 ¥14\.20 · 缓存读 ¥3\.55 · 缓存写 ¥0\.00/);
+  // 无上下文（旧快照/轻量行形态）：不显模型行，来源/公式/汇率行完整 —— 不再借 last 兜底
+  h.hoverFxq(h, true, null);
+  html = fx.innerHTML;
+  assert.doesNotMatch(html, /当前模型|模型<\/b>/);
   assert.match(html, /价格来源<\/b><span><span class="fx-link"[^>]*data-url="https:\/\/models\.dev\/"[^>]*>models\.dev<\/span> 三方 AI 模型数据库/);
   assert.match(html, /计算公式<\/b><span>按每个模型的模型价格分开算/);
   assert.match(html, /汇率来源<\/b><span><span class="fx-link"[^>]*data-url="https:\/\/test"[^>]*>test<\/span> 实时汇率 · \$1 = ¥7\.1/);   // source 随快照 fx.source（夹具为 test）
   // 幂等：重复悬停不重建
   const sig = fx.__zuTipSig;
-  h.hoverFxq(h);
+  h.hoverFxq(h, true, null);
   assert.equal(fx.__zuTipSig, sig);
   // mouseout → 180ms 后收起
   h.hoverFxq(h, false);
   assert.equal(fx.style.display, 'block');   // 宽限期仍在
 });
 
-test('无 fx 时气泡汇率来源行标「未获取到有效汇率」；mouseout 宽限期后收起', () => {
+test('无 fx 时气泡汇率来源行标「未获取到有效汇率」；USD 原价与宽限期收起不变', () => {
   const h = harness(); setup(h);
   h.window.__zusageUpdate(h.payload({ fx: null }));
-  h.hoverFxq(h);
+  const rates = { input: 0.29879, output: 1.04577, cache_read: 0.08516, cache_write: 0 };
+  h.hoverFxq(h, true, { 'data-model': 'GLM-5.3-FlashX', 'data-rates': JSON.stringify(rates) });
   const fx = h.fxTipEl();
   assert.match(fx.innerHTML, /暂无汇率，费用按 USD 原值显示/);
   assert.match(fx.innerHTML, /输入 \$0\.2988 · 输出 \$1\.0458 · 缓存读 \$0\.0852 · 缓存写 \$0（USD\/百万 token）/);

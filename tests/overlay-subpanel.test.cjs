@@ -88,6 +88,7 @@ test('zero-rect entry falls back to the bar anchor; a detached entry closes the 
       L: (a) => a, ttEsc: (a) => String(a), escAttr: (a) => String(a),
       fmt: () => '1', countFmt: () => '1', fmtMoney: () => '¥1', fmtTime: () => '12:00', fmtStartS: () => '2026-01-01 00:00:00',
       tpsBand: () => null, FXQ_ICON: '<svg class="tip-fxq"></svg>',
+      fxqIcon: (models, scope) => '<svg class="tip-fxq" data-mcount="' + (models ? models.length : 0) + '" data-mscope="' + scope + '"></svg>',   // v248：KPI 问号随卡携带模型上下文（实例闭包函数，切片外桩）
       subPopIco: () => '<svg></svg>',
       subRateSlotText: () => 'est', JSON,
       ...(over || {}),
@@ -124,6 +125,7 @@ test('zero-rect entry falls back to the bar anchor; a detached entry closes the 
     const html = panel.__html;
     assert.ok(html.includes('zu-sp-kpis3'), 'primary KPI band');
     assert.ok(html.includes('预估费用'), 'cost KPI present');
+    assert.ok(html.includes('预估费用<svg class="tip-fxq" data-mcount="1" data-mscope="子代理累计"'), 'v248 KPI ? icon carries card model context');
     assert.ok(html.includes('zu-sp-models'), 'model table present');
     assert.ok(html.includes('tip-fxq" data-model="glm-x"'), 'per-model ? icon carries data-model');
     assert.ok(!html.includes('查看子代理明细'), 'old CTA removed');

@@ -596,10 +596,13 @@ class SessionAvgTpsTests(unittest.TestCase):
 
 
 class SpeedSegmentsTests(unittest.TestCase):
-    """速度 tooltip 柱状图数据源：session 快照行新增 speed_segs——最近 ≤20 条已完成
-    main_turn 有效速度段（avg_tps 同款口径：_row_gen_ms 窗口 + 200ms–1h 过滤，辅助源
-    与子代理行不计）。v 保留原始浮点（柱高与档位按原始值判断，显示层才取一位小数），
-    t = 完成时间毫秒，按完成时间升序；轻量/空行给 []（结构完整，消费端 Array.isArray 守卫）。"""
+    """速度 tooltip 柱状图数据源：session 快照行 speed_segs——v250 起按轮（turn_id）聚合，
+    最近 ≤10 轮已完成 main_turn 有效速度段（一次提问的全部请求合并为一柱）。轮速度 =
+    轮内有效行 Σoutput ÷ Σ生成窗口（avg_tps/逐问同款口径：_row_gen_ms 窗口 + 200ms–1h
+    过滤，辅助源与子代理行不计）。v 保留原始浮点（柱高与档位按原始值判断，显示层才
+    取一位小数），t = 轮内最后完成时间毫秒，按轮完成时间升序；随段携带悬停卡明细
+    m/i/o/n/c（m=轮内最大输出有效行模型、i/o=已完成行输入/输出合计、n=已完成请求数、
+    c=轮预估费用 USD，价表模块缺失/计价失败省略）；轻量/空行给 []（结构完整）。"""
 
     def setUp(self):
         zusage._COVERS_CACHE.update(ts=0.0, set=frozenset())
@@ -618,61 +621,85 @@ class SpeedSegmentsTests(unittest.TestCase):
         return self.snap(rows, sid)["speed_segs"]
 
     def row(self, rid, start, ft, completed, output, reasoning=0, source="main_turn",
-            status="completed", model="GLM-5.3"):
-        return (rid, "s", "t", source, "", "account:test", model, status, start, ft,
+            status="completed", model="GLM-5.3", turn="t", provider="account:test"):
+        return (rid, "s", turn, source, "", provider, model, status, start, ft,
                 completed, completed - start, ft - start if ft else None,
                 10, output, reasoning, 0, 0, output + 10, 0, 0, 0)
 
     def test_segments_ascending_with_raw_values(self):
         # r1 无思考：窗口 5000ms → 200 t/s；r2 上报思考：started 窗口 8000ms → 30 t/s
-        segs = self.segs([self.row("r1", 1_000_000, 1_002_000, 1_007_000, 1000),
-                          self.row("r2", 1_010_000, 1_012_000, 1_018_000, 240, reasoning=100)])
+        segs = self.segs([self.row("r1", 1_000_000, 1_002_000, 1_007_000, 1000, turn="t1"),
+                          self.row("r2", 1_010_000, 1_012_000, 1_018_000, 240, reasoning=100, turn="t2")])
         self.assertEqual([round(s["v"], 6) for s in segs], [200.0, 30.0])
         self.assertEqual([s["t"] for s in segs], [1_007_000, 1_018_000])
+        # 轮级明细随段携带：模型、输入/输出合计、请求数
+        self.assertEqual([s.get("m") for s in segs], ["GLM-5.3", "GLM-5.3"])
+        self.assertEqual([(s["i"], s["o"], s["n"]) for s in segs], [(10, 1000, 1), (10, 240, 1)])
 
     def test_values_are_not_rounded(self):
         # 2333ms 窗口 → 428.633... 保留原始浮点（round 后的 428.6 会破坏「档位按原始值判断」）
-        v = self.segs([self.row("r1", 0, 1_000, 3_333, 1000)])[0]["v"]
+        v = self.segs([self.row("r1", 0, 1_000, 3_333, 1000, turn="t1")])[0]["v"]
         self.assertNotEqual(v, round(v, 1))
         self.assertAlmostEqual(v, 1000 / 2.333, places=6)
 
+    def test_turn_aggregates_all_requests_of_one_question(self):
+        # 同一轮两次请求（一次无思考 5s 窗口 + 一次上报思考 started 窗口 8s）合并为一柱：
+        # v = (1000+240)/(5+8)；碎段（100ms）与缺首字行不进速度分母但计入 n/i/o 与完成时间
+        segs = self.segs([self.row("r1", 1_000_000, 1_002_000, 1_007_000, 1000, turn="t1"),
+                          self.row("r2", 1_010_000, 1_012_000, 1_018_000, 240, reasoning=100, turn="t1"),
+                          self.row("g1", 1_019_000, 1_019_100, 1_019_200, 5000, turn="t1"),
+                          self.row("n1", 1_020_000, None, 1_028_000, 5000, turn="t1")])
+        self.assertEqual(len(segs), 1)
+        seg = segs[0]
+        self.assertAlmostEqual(seg["v"], 1240 / 13.0, places=6)
+        self.assertEqual(seg["t"], 1_028_000)   # 轮内最后完成（含无效碎段）
+        self.assertEqual(seg["m"], "GLM-5.3")   # 有效行中最大输出行的模型
+        self.assertEqual((seg["i"], seg["o"], seg["n"]), (40, 11240, 4))
+
+    def test_turn_with_only_invalid_rows_is_dropped(self):
+        segs = self.segs([self.row("r1", 1_000_000, 1_002_000, 1_007_000, 1000, turn="ok"),
+                          self.row("b1", 1_010_000, None, 1_018_000, 5000, turn="bad"),
+                          self.row("b2", 1_020_000, 1_020_500, 1_020_600, 5000, turn="bad")])
+        self.assertEqual(len(segs), 1)
+        self.assertEqual(segs[0]["t"], 1_007_000)
+
     def test_window_and_source_filters_match_avg_tps_discipline(self):
-        valid = self.row("r1", 1_000_000, 1_002_000, 1_007_000, 1000)   # 200 t/s
+        valid = self.row("r1", 1_000_000, 1_002_000, 1_007_000, 1000, turn="t1")   # 200 t/s
         segs = self.segs([valid,
-                          self.row("f1", 1_010_000, 1_011_000, 1_012_000, 5000, status="failed"),
-                          self.row("n1", 1_020_000, None, 1_028_000, 5000),          # 缺首字
-                          self.row("t1", 1_030_000, 1_030_900, 1_031_000, 5000),     # 100ms 碎段
-                          self.row("x1", 1_040_000, 1_042_000, 1_047_000, 99999, source="session_title"),
-                          self.row("x2", 1_050_000, 1_052_000, 1_057_000, 99999, source="subagent")])
+                          self.row("f1", 1_010_000, 1_011_000, 1_012_000, 5000, status="failed", turn="t2"),
+                          self.row("n1", 1_020_000, None, 1_028_000, 5000, turn="t3"),          # 缺首字
+                          self.row("t1", 1_030_000, 1_030_900, 1_031_000, 5000, turn="t4"),     # 100ms 碎段
+                          self.row("x1", 1_040_000, 1_042_000, 1_047_000, 99999, source="session_title", turn="t5"),
+                          self.row("x2", 1_050_000, 1_052_000, 1_057_000, 99999, source="subagent", turn="t6")])
         self.assertEqual(len(segs), 1)
         self.assertEqual(round(segs[0]["v"], 6), 200.0)
 
     def test_cap_ten_keeps_most_recent(self):
         rows = [self.row(f"r{i:02d}", 1_000_000 + 10_000 * i, 1_000_000 + 10_000 * i + 2_000,
-                         1_000_000 + 10_000 * i + 7_000, 1000 + i) for i in range(25)]
+                         1_000_000 + 10_000 * i + 7_000, 1000 + i, turn=f"t{i:02d}") for i in range(25)]
         segs = self.segs(rows)
         self.assertEqual(len(segs), 10)
-        self.assertEqual(segs[0]["t"], 1_000_000 + 10_000 * 15 + 7_000)   # 最旧 15 段被滚出
+        self.assertEqual(segs[0]["t"], 1_000_000 + 10_000 * 15 + 7_000)   # 最旧 15 轮被滚出
         self.assertEqual(segs[-1]["t"], 1_000_000 + 10_000 * 24 + 7_000)
         self.assertTrue(all(segs[i]["t"] < segs[i + 1]["t"] for i in range(9)))
 
     def test_scan_fills_through_invalid_tail(self):
-        # 最近 12 行 completed 但 Python 侧无效（缺 first_token_at）：它们占掉 SQL LIMIT
-        # 窗口前 12 席，3 倍扫描窗（30）必须从更早的 25 条有效段里凑满最近 10 条
-        # （review 变异：扫描窗退化为 20 时只剩 8 条有效，本用例必须红——无效行必须是 completed 且
+        # 最近 12 轮 completed 但 Python 侧无效（缺 first_token_at）：它们占掉轮窗口前 12 席，
+        # 3 倍扫描窗（30 轮）必须从更早的 25 个有效轮里凑满最近 10 轮
+        # （review 变异：扫描窗退化为 20 时只剩 8 轮有效，本用例必须红——无效轮必须是 completed 且
         # 位于最新端，failed 行会在 SQL 层被排除、占不到窗口）
-        rows = [self.row(f"n{i}", 3_000_000 + 10_000 * i, None, 3_000_000 + 10_000 * i + 5_000, 5000)
-                for i in range(12)]
+        rows = [self.row(f"n{i}", 3_000_000 + 10_000 * i, None, 3_000_000 + 10_000 * i + 5_000, 5000,
+                         turn=f"n{i}") for i in range(12)]
         rows += [self.row(f"r{i:02d}", 2_000_000 + 10_000 * i, 2_000_000 + 10_000 * i + 2_000,
-                          2_000_000 + 10_000 * i + 7_000, 1000 + i) for i in range(25)]
+                          2_000_000 + 10_000 * i + 7_000, 1000 + i, turn=f"t{i:02d}") for i in range(25)]
         segs = self.segs(rows)
         self.assertEqual(len(segs), 10)
-        self.assertTrue(all(s["t"] < 3_000_000 for s in segs))   # 无效尾段一个不进
+        self.assertTrue(all(s["t"] < 3_000_000 for s in segs))   # 无效尾轮一个不进
         self.assertEqual(segs[-1]["t"], 2_000_000 + 10_000 * 24 + 7_000)
-        self.assertEqual(segs[0]["t"], 2_000_000 + 10_000 * 15 + 7_000)   # 最旧 15 段被滚出
+        self.assertEqual(segs[0]["t"], 2_000_000 + 10_000 * 15 + 7_000)   # 最旧 15 轮被滚出
 
     def test_covered_provider_window_applies_to_values(self):
-        # 落章 provider（斜率 0）含思考段按首字窗口：每段 500 tok ÷ 5s → 100.0
+        # 落章 provider（斜率 0）含思考段按首字窗口：每轮 500 tok ÷ 5s → 100.0
         con = sqlite3.connect(":memory:")
         self.addCleanup(con.close)
         con.row_factory = sqlite3.Row
@@ -680,12 +707,72 @@ class SpeedSegmentsTests(unittest.TestCase):
         con.execute("insert into session (id, title) values ('s', 't')")
         for i in range(6):
             con.execute("insert into model_usage values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                        (f"c{i}", "s", "t", "main_turn", "", "prov-covers", "model-x", "completed",
+                        (f"c{i}", "s", f"w{i}", "main_turn", "", "prov-covers", "model-x", "completed",
                          1_000_000 + 1000 * i, 1_000_000 + 1000 * i + 3000, 1_000_000 + 1000 * i + 8000,
                          7000, 2500, 10, 500, 100 + 50 * i, 0, 0, 510, 0, 0, 0))
         zusage._COVERS_CACHE.update(ts=0.0, set=frozenset())
         segs = zusage._session_snapshot(con, "s", {"context_window": 200000})["speed_segs"]
         self.assertEqual([round(s["v"], 1) for s in segs], [100.0] * 6)
+
+    def test_null_turn_id_rows_group_as_one_segment(self):
+        segs = self.segs([self.row("r1", 1_000_000, 1_002_000, 1_007_000, 1000, turn=None),
+                          self.row("r2", 1_010_000, 1_012_000, 1_018_000, 1000, turn=None)])
+        self.assertEqual(len(segs), 1)
+        self.assertEqual((segs[0]["t"], segs[0]["n"]), (1_018_000, 2))
+
+    def test_cost_field_follows_pricing_module(self):
+        # 价表模块在：c 为非负数值（未知模型计 0 亦合法）；模块缺失：c 省略不显假 0
+        segs = self.segs([self.row("r1", 1_000_000, 1_002_000, 1_007_000, 1000, turn="t1")])
+        if zusage._pricing is None:
+            self.assertNotIn("c", segs[0])
+        else:
+            self.assertIsInstance(segs[0].get("c"), float)
+            self.assertGreaterEqual(segs[0]["c"], 0.0)
+        with mock.patch.object(zusage, "_pricing", None):
+            segs = self.segs([self.row("r1", 1_000_000, 1_002_000, 1_007_000, 1000, turn="t1")])
+        self.assertNotIn("c", segs[0])
+
+    def test_cost_is_provider_sensitive_with_numeric_anchor(self):
+        # 同模型不同 provider 牌价不同（glm-4.5-air 在 account:bigmodel-* 提示下与其它 provider 价目不同），
+        # c 必须按 (model, provider) 消歧取价——provider 维度静默丢失（变异 a5b）在此即红
+        if zusage._pricing is None:
+            self.skipTest("token_pricing 模块缺失")
+        rows = [self.row("r1", 1_000_000, 1_002_000, 1_007_000, 1000, turn="t1",
+                         model="glm-4.5-air", provider="account:bigmodel-individual-coding-plan"),
+                self.row("r2", 1_010_000, 1_012_000, 1_018_000, 1000, turn="t2",
+                         model="glm-4.5-air", provider="other-provider")]
+        segs = self.segs(rows)
+        ref_bigmodel, _ = zusage._pricing.merge_model_costs(
+            [("glm-4.5-air", "account:bigmodel-individual-coding-plan", 10, 1000, 0, 0)])
+        ref_other, _ = zusage._pricing.merge_model_costs(
+            [("glm-4.5-air", "other-provider", 10, 1000, 0, 0)])
+        self.assertNotEqual(ref_bigmodel, ref_other, "双 provider 参考价应不同（内置表漂移时先改本锚）")
+        self.assertAlmostEqual(segs[0]["c"], ref_bigmodel, places=6)
+        self.assertAlmostEqual(segs[1]["c"], ref_other, places=6)
+
+    def test_turn_window_order_deterministic_on_tied_completion(self):
+        # 两轮 max(completed_at) 同毫秒时轮次序由 turn_id 次级排序键决定（渲染端「第 N 轮」编号稳定）
+        rows = [self.row("rB", 1_000_000, 1_002_000, 1_007_000, 1000, turn="tB"),
+                self.row("rA", 1_010_000, 1_012_000, 1_017_000, 1000, turn="tA")]
+        con = sqlite3.connect(":memory:")
+        self.addCleanup(con.close)
+        con.row_factory = sqlite3.Row
+        con.executescript(SCHEMA)
+        con.execute("insert into session (id, title) values ('s', 't')")
+        for r in rows:
+            con.execute("insert into model_usage values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", r)
+        segs = zusage._speed_segments(con, "s")
+        self.assertEqual([s_["t"] for s_ in segs], [1_007_000, 1_017_000])   # 按轮完成时间升序，tB 在前
+        keys = con.execute(
+            """select turn_id from model_usage where session_id='s' group by turn_id
+               order by max(completed_at) desc, turn_id""").fetchall()
+        self.assertEqual([k[0] for k in keys], ["tA", "tB"])   # 并列不存在时 tiebreak 不改变结果
+        # 构造同毫秒并列：直接以窗口查询断言确定性
+        con.execute("update model_usage set completed_at=1_017_000 where rowid in (1, 2)")
+        keys = con.execute(
+            """select turn_id from model_usage where session_id='s' group by turn_id
+               order by max(completed_at) desc, turn_id""").fetchall()
+        self.assertEqual([k[0] for k in keys], ["tA", "tB"], "同毫秒并列按 turn_id 升序")
 
     def test_light_and_empty_snapshots_carry_empty_list(self):
         con = sqlite3.connect(":memory:")
