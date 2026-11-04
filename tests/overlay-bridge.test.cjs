@@ -666,6 +666,46 @@ test('⑩ completed turn with zero output shows unavailable instead of a meaning
   assert.equal(instanceOf(h).liveEl(), null);
 });
 
+test('⑩b compact auxiliary turn (timelineMarker type=compact) never shows the unavailable placeholder', () => {
+  const h = harness();
+  h.setPanes(['a']); h.inject(); h.boot(); h.runTimers(600);
+  // v230 实测真机投影：压缩轮 = turnHeader + timelineMarker(marker.type='compact')，
+  // header 无 outputTokens、executionKind 恒 'agent'（不可用作信号）
+  const marker = extra => ({ rowId: 3, turnId: 't1', productTurnId: 'pt1', kind: 'timelineMarker',
+    marker: { type: 'compact', origin: 'manual', status: 'success' }, ...extra });
+  const store = makeStore(snap(1, [header('running')]));   // 压缩轮无正文行
+  h.diagSessions.push({ key: '__base__ /fixture/ws', topic: 'conversation/sid_a', store });
+  h.runTimers(100);
+  // 无压缩标记的零输出完成轮（v74 纯控制轮）：仍明示——行为不变
+  h.clock.now = 1600;
+  store.set(snap(2, [header('completedSuccess', { outputTokens: 0, activeMs: 56000 })]));
+  const section = h.pane().appendChild(new Element('section'));
+  section.dataset.turnId = 'pt1';
+  h.runTimers(500);
+  assert.equal(h.deterministic().length, 1);
+  assert.equal(h.deterministic()[0].querySelector('p').textContent, '⚡ 本轮统计不可用(本轮)');
+  // 投影出现压缩 marker（v230）：撤下误插的误导行（消耗已计入累计，宿主
+  // 「上下文已压缩」提示已承载语义），后续扫描不重插
+  h.clock.now = 2000;
+  store.set(snap(3, [header('completedSuccess', { outputTokens: 0, activeMs: 56000 }), marker()]));
+  h.runTimers(500);
+  assert.equal(h.deterministic().length, 0);
+  h.runTimers(500);
+  assert.equal(h.deterministic().length, 0);
+  // 模型切换 marker 不是压缩轮：不撤（撤下只认 marker.type=compact）
+  h.clock.now = 2800;
+  store.set(snap(4, [header('completedSuccess', { outputTokens: 0, activeMs: 56000 }),
+    { rowId: 3, turnId: 't1', productTurnId: 'pt1', kind: 'timelineMarker', marker: { type: 'modelChange' } }]));
+  h.runTimers(500);
+  assert.equal(h.deterministic().length, 1);
+  // 压缩轮带输出数字（未来形态）：照常显示真实统计（不过度抑制）
+  h.clock.now = 3200;
+  store.set(snap(5, [header('completedSuccess', { outputTokens: 1000, modelDurationMs: 4000, activeMs: 5000 }), marker()]));
+  h.runTimers(500);
+  assert.equal(h.deterministic().length, 1);
+  assert.match(h.deterministic()[0].querySelector('p').textContent, /token\/s\(本轮\)/);
+});
+
 test('⑪ heartbeat tick alone (no new store push) still advances the observed-seconds display during a stall', () => {
   const h = harness();
   const store = driveStreaming(h);   // 末尾：characterRate=3，liveEl 显示 '1.5 t/s'
