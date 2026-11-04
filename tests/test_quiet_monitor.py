@@ -4,6 +4,7 @@ import importlib.util
 import io
 import contextlib
 import ctypes
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -326,6 +327,65 @@ class QuietMonitorTests(unittest.TestCase):
         replace.assert_called_once()
         sleep.assert_called_once()
         self.assertEqual(self.asar.read_bytes(), b"official version")
+
+    def sidecar(self):
+        return json.loads(self.tmp.with_name(self.tmp.name + ".json").read_text(encoding="utf-8"))
+
+    def write_sidecar(self, meta):
+        self.tmp.with_name(self.tmp.name + ".json").write_text(json.dumps(meta), encoding="utf-8")
+
+    def flip_to_publishing_journal(self):
+        # _publish_pending 的 journal 中间态（issue #228）：cancelled+publishing=True
+        meta = self.sidecar()
+        meta["operation"] = "cancelled"
+        meta["publishing"] = True
+        self.write_sidecar(meta)
+
+    def flip_back_to_install(self):
+        meta = self.sidecar()
+        meta.pop("publishing", None)
+        meta["operation"] = "install"
+        self.write_sidecar(meta)
+
+    def test_quiet_monitor_rides_through_publishing_journal_window(self):
+        # issue #228：补桥链 publish 的 journal 窗口（cancelled+publishing，期间要全量
+        # hash 大包，秒级以上）恰逢轮询时，监控读到的是瞬时态，应重试续守到新世代并
+        # 照常收尾，而不是按「来源失效」退出让位——退出后 launch_monitor 的去重认定
+        # 「已有监控在等」不再拉新监控，pending 成孤儿，之后每次「完全退出」都不再
+        # 触发替换（报告案例拖了 3 轮重启）。
+        self.pending()
+        self.flip_to_publishing_journal()
+        with mock.patch.dict(sys.modules, {"patch_install": self.patch}), \
+                mock.patch.object(self.monitor, "zcode_pids", side_effect=[{"1"}] + [set()] * 8), \
+                mock.patch.object(self.monitor, "wait_any_exit"), \
+                mock.patch.object(self.monitor.time, "sleep",
+                                  side_effect=lambda *_args: self.flip_back_to_install()), \
+                mock.patch.object(self.patch, "self_check", return_value=True):
+            self.monitor.main()
+        self.assertEqual(self.asar.read_bytes(), b"verified package")
+        self.assertFalse(self.tmp.exists())
+
+    def test_visible_monitor_survives_publishing_journal_window(self):
+        # 同上，窗口模式：journal 窗口画「发布中」等待屏继续值守，绝不画「取消收尾」
+        # 终屏退出。
+        self.pending()
+        self.flip_to_publishing_journal()
+        screens = []
+        with mock.patch.dict(sys.modules, {"patch_install": self.patch}), \
+                mock.patch.object(self.monitor, "QUIET", False), \
+                mock.patch.object(sys, "argv", ["install_monitor.py", "0"]), \
+                mock.patch.object(self.monitor, "draw",
+                                  side_effect=lambda lines: screens.append("\n".join(lines))), \
+                mock.patch.object(self.monitor, "zcode_pids", side_effect=[{"1"}, {"1"}, KeyboardInterrupt]), \
+                mock.patch.object(self.monitor, "wait_any_exit"), \
+                mock.patch.object(self.monitor.time, "monotonic", side_effect=[0, 1, 2, 3, 4]), \
+                mock.patch.object(self.monitor.time, "sleep",
+                                  side_effect=lambda *_args: self.flip_back_to_install()), \
+                mock.patch.object(self.patch, "self_check", return_value=True):
+            with self.assertRaises(KeyboardInterrupt):
+                self.monitor.main()
+        self.assertTrue(screens)
+        self.assertNotIn("失效", "\n".join(screens))
 
     def test_windows_quiet_launch_uses_no_window_flag(self):
         flags = {"CREATE_NO_WINDOW": 0x08000000, "CREATE_BREAKAWAY_FROM_JOB": 0x01000000}

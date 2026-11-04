@@ -852,6 +852,40 @@ def _pending_install_waiting(pi):
         return None
 
 
+def _revive_orphan_pending(pi):
+    """孤儿待收尾包自愈（issue #228）：publish 后 launch_monitor 的去重检查（锁被
+    持有→复用）与旧监控世代失效退出（PendingTmpError 让位）之间存在交接竞态——旧监控
+    退出、新监控未拉起时 pending 成孤儿，之后任何「完全退出」都不再触发替换，只能
+    等下一次恰好重走 publish+拉起链。SessionStart 在 publish 之外常态检查一次：
+    合法 pending 且实例锁空闲即孤儿，补拉静默监控接管收尾。已有监控值守（锁被持有）
+    不动作；受保护目录（issue #130）无提权收不了尾，交提权重跑链。任何异常只进
+    stderr，绝不影响 hook 主流程。判据与 usage_mcp.revive_finalize_monitor 同款。"""
+    try:
+        if pi.pending_operation() not in ("install", "remove"):
+            return   # 无合法 sidecar（含发布中 journal/撤销遗留）：无事可做
+        with pi.monitor_instance_lock() as acquired:
+            if not acquired:
+                return   # 已有监控在值守：不叠加进程
+        # 试锁成功即释放，锁的长期持有者是监控进程自己；探测与拉起间的极小竞态由
+        # launch_monitor 的去重兜底（后到的监控抢锁失败会自行退出）。调用方（run_hook）
+        # 在本轮刚 publish 的链路（status=pending）上不调用本函数：publish 已自带
+        # launch，新监控（WMI 通道秒级）尚未持锁时会被这里重复拉起。
+        if not pi.target_writable():
+            return   # 受保护目录：无提权监控收不了尾（issue #130），由提权重跑链处理
+        previous = os.environ.get("ZUSAGE_MONITOR_QUIET")
+        try:
+            os.environ["ZUSAGE_MONITOR_QUIET"] = "1"   # 静默收尾；SessionStart 不弹监控黑窗
+            with contextlib.redirect_stdout(sys.stderr):
+                pi.launch_monitor(time.time())
+        finally:
+            if previous is None:
+                os.environ.pop("ZUSAGE_MONITOR_QUIET", None)
+            else:
+                os.environ["ZUSAGE_MONITOR_QUIET"] = previous
+    except Exception as e:  # noqa: BLE001
+        print(f"[zusage-plugin] 孤儿待收尾包监控复活失败（已忽略）：{e}", file=sys.stderr)
+
+
 def run_hook():
     """SessionStart hook 主体：返回 hook 协议 JSON dict。任何异常都转成合法输出，
     绝不影响会话；patch_install 的人类可读输出重定向到 stderr，保证 stdout 纯 JSON。"""
@@ -873,6 +907,11 @@ def run_hook():
         save_runtime_config(runtime, pi)
         if st:
             bridge = ensure_renderer_bridge(pi, quiet_monitor=True)   # 已注入也可能缺桥（客户端升级重写 asar）：幂等补一次
+            if bridge.get("status") != "pending":
+                # 本轮刚 publish 的链路已自带 launch（去重放行的旧监控靠 PendingTmpBusy
+                # 续守新世代，issue #228）：自愈只兜其余情形（含 launch 失败的下轮补拉），
+                # 不在 publish 当轮重复拉起。
+                _revive_orphan_pending(pi)
             return _bridge_notice(out, bridge, pi)   # 待重启提醒由状态条齿轮红点承载，不再注入会话文字
         # 未注入：自动安装始终开启，失败只保留故障提示（补丁排定/受保护目录/请重试）
         monitor_env = {name: os.environ.get(name) for name in

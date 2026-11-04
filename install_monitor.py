@@ -231,6 +231,9 @@ def quiet_finalize():
             if pids:   # 客户端在跑：事件驱动等任一进程退出，立即复查（见 wait_any_exit）
                 wait_any_exit(pids, POLL)
                 continue
+        except pi.PendingTmpBusy:
+            pass  # 发布中 journal（issue #228）：瞬时态，下轮读到新世代继续值守；此处
+                  # 退出让位 + launch_monitor 去重跳过新拉起 = 孤儿 pending。
         except pi.PendingTmpError:
             return  # 完整性/来源失效立刻取消；不删旧包，更不能回滚客户端新版。
         except OSError:
@@ -277,6 +280,7 @@ def _run():
         pending = None
         finished = False
         finalize_denied = False
+        publishing = False
         if TMP.exists():
             try:
                 # 同 quiet_finalize：等待期预校验焐热缓存，退出窗口内不再 hash 大包（issue #72）。
@@ -285,6 +289,9 @@ def _run():
                     draw([L("[!] 待替换包收尾已超过一天，停止自动重试。文件保留，请重新安装。",
                             "[!] Pending finalization timed out after one day; files kept. Re-run install.")])
                     return
+            except pi.PendingTmpBusy:
+                # 发布中 journal（issue #228）：本轮不收尾不取消，下轮读到新世代继续值守。
+                publishing = True
             except pi.PendingTmpError as e:
                 draw([L(f"[!] 待替换包来源/身份失效，取消收尾，文件保留：{e}",
                         f"[!] Pending source/identity invalid; finalization cancelled, files kept: {e}"),
@@ -306,6 +313,8 @@ def _run():
             if not pids:
                 try:
                     finished = finalize_tmp(verified=verified)
+                except pi.PendingTmpBusy:
+                    finished = False   # 发布中 journal（issue #228）：本轮不收尾，下轮重试
                 except pi.PendingTmpError as e:
                     draw([L(f"[!] 待替换包已失效，取消收尾，文件保留：{e}",
                             f"[!] Pending package invalid; finalization cancelled, files kept: {e}")])
@@ -361,6 +370,10 @@ def _run():
                                        "The oldest process started at %s (patch scheduled at %s)." % (oldest, sched)))
                 lines.append(L("若已关闭所有窗口仍未替换，说明 ZCode 仍驻留托盘/后台：请从托盘图标退出，或在任务管理器中确认没有 ZCode 进程残留。",
                                "If all windows are closed but the replacement is still pending, ZCode is still resident in the tray/background: quit it from the tray icon, or use Task Manager to confirm no ZCode processes remain."))
+        elif publishing:
+            # 发布中 journal（issue #228）：等待发布完成，不误报「取消收尾」或「请重启」。
+            lines = [L("[等待] 待替换包正在发布，稍候自动恢复值守……",
+                       "[waiting] The pending package is being published; the watch resumes shortly…")]
         elif not pids:
             lines = [L("ZCode 未运行。启动 ZCode 后悬浮条即生效。",
                        "ZCode is not running. The floating bar activates once you start ZCode.")]
