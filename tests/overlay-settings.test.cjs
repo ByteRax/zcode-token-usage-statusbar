@@ -1474,6 +1474,7 @@ test('v244 relaunch ok receipt keeps the restarting state and the 90s still-aliv
   assert.equal(button.disabled, true);
   assert.equal(button.dataset.sent, "1");
   assert.equal(statusEl.textContent, "", "ok 回执不改写状态区");
+  assert.equal(timers[1], null, "ok 回执必须撤销 4s 回执超时——否则正常重启路径 4s 后误报旧主进程");
   assert.equal(timers.length, 3, "挂 90s 仍存活兜底");
   timers[2]();                          // 90s 仍存活：quit 被会话/扩展阻止——还原并指引
   assert.equal(button.dataset.sent, "");
@@ -1528,6 +1529,28 @@ test('relaunch button downgrades to a manual-restart hint while the main process
   assert.equal(relaunch.hidden, false, '能力标记到位后按钮恢复');
   assert.equal(relaunch.disabled, false);
   assert.doesNotMatch(status.textContent, /旧版本/);
+});
+
+test('v244 syncUpdate keeps the restarting state across state pushes while the request is in flight', () => {
+  const syncSource = extract('    function updFingerprint(u) {', '    function syncPanel() {');
+  const status = {};
+  const relaunch = { hidden: false, disabled: false, dataset: { sent: '1' }, classes: {} };
+  relaunch.classList = { toggle() {} };
+  const context = {
+    state: { pluginUpdate: { supported: true, phase: 'idle', restartRequired: false, markerAt: 42, relaunchSupported: true } },
+    panel: { querySelector: selector => selector === '.zu-update-status' ? status : selector === '[data-update=relaunch]' ? relaunch : { style: {} } },
+    gear: { querySelector: () => null },
+    LS: { updSeen: 'zusage3.updSeen' },
+    localStorage: { getItem: () => null, setItem: () => {} },
+    L: (zh) => zh,
+  };
+  vm.runInNewContext(syncSource + '\nsyncUpdate();', context);
+  assert.equal(relaunch.disabled, true, '状态推送重建时必须保持「正在重启」禁用态（否则等待期可重复点击）');
+  assert.match(status.textContent, /已发出重启请求/, '状态行重建时必须重放预期文案');
+  relaunch.dataset.sent = '';
+  vm.runInNewContext('syncUpdate();', context);
+  assert.equal(relaunch.disabled, false, '还原路径清空 sent 后恢复可点');
+  assert.doesNotMatch(status.textContent, /已发出重启请求/, '还原后预期文案不再追加');
 });
 
 test('relaunch click refuses to fire and explains while the capability marker is missing (v180, issue #158)', () => {
