@@ -669,7 +669,7 @@ test('⑩ completed turn with zero output shows unavailable instead of a meaning
 test('⑩b compact auxiliary turn (timelineMarker type=compact) never shows the unavailable placeholder', () => {
   const h = harness();
   h.setPanes(['a']); h.inject(); h.boot(); h.runTimers(600);
-  // v238 实测真机投影：压缩轮 = turnHeader + timelineMarker(marker.type='compact')，
+  // v230 实测真机投影：压缩轮 = turnHeader + timelineMarker(marker.type='compact')，
   // header 无 outputTokens、executionKind 恒 'agent'（不可用作信号）
   const marker = extra => ({ rowId: 3, turnId: 't1', productTurnId: 'pt1', kind: 'timelineMarker',
     marker: { type: 'compact', origin: 'manual', status: 'success' }, ...extra });
@@ -684,7 +684,7 @@ test('⑩b compact auxiliary turn (timelineMarker type=compact) never shows the 
   h.runTimers(500);
   assert.equal(h.deterministic().length, 1);
   assert.equal(h.deterministic()[0].querySelector('p').textContent, '⚡ 本轮统计不可用(本轮)');
-  // 投影出现压缩 marker（v238）：撤下误插的误导行（消耗已计入累计，宿主
+  // 投影出现压缩 marker（v230）：撤下误插的误导行（消耗已计入累计，宿主
   // 「上下文已压缩」提示已承载语义），后续扫描不重插
   h.clock.now = 2000;
   store.set(snap(3, [header('completedSuccess', { outputTokens: 0, activeMs: 56000 }), marker()]));

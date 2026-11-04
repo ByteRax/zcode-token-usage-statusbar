@@ -121,7 +121,7 @@
       const runningGroup = runningGroupOf(turn, act, complete);
       return {
         sessionId: turn.sessionId, turnId, state: header.state, complete,
-        // 压缩轮（v238）：轮内带 compact 类 timelineMarker。实测宿主投影里压缩轮 =
+        // 压缩轮（v230）：轮内带 compact 类 timelineMarker。实测宿主投影里压缩轮 =
         // turnHeader + timelineMarker（marker.type='compact'），header.executionKind 恒
         // 'agent' 不能用；调用方据此不把无正文的压缩完成轮误报成「本轮统计不可用」。
         isCompact: Array.from(turn.rows.values()).some(r => r.kind === 'timelineMarker' &&

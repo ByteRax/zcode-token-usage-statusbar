@@ -286,7 +286,7 @@ test('isCompact flags turns containing a compact timelineMarker (header executio
   tracker.ingest(snapshot(1, [header('completedSuccess', { outputTokens: 0 }),
     { rowId: 3, turnId: 't', kind: 'timelineMarker', marker: { type: 'compact', status: 'success' } }]));
   assert.equal(tracker.get('t').isCompact, true);
-  // 模型切换 marker 不是压缩轮（v238 实测普通轮可带 modelChange 类 timelineMarker）
+  // 模型切换 marker 不是压缩轮（v230 实测普通轮可带 modelChange 类 timelineMarker）
   tracker.ingest(snapshot(2, [header('completedSuccess', { outputTokens: 0 }),
     { rowId: 3, turnId: 't', kind: 'timelineMarker', marker: { type: 'modelChange' } }]));
   assert.equal(tracker.get('t').isCompact, false);
