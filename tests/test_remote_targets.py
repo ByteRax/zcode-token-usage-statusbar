@@ -343,6 +343,17 @@ class ExecTests(IsolatedTests):
             self.assertIn("-c", args)
             self.assertIn("~/space folder/zusage.py", args)
 
+    def test_remote_exec_hides_console(self):
+        # issue #227：无控制台宿主（注入泵 windowsHide 拉起的 serve）里每次 SSH
+        # 远程查询都会给 ssh 新分配可见控制台；路径平台无关，POSIX 取 0 与不传等价。
+        flags = {"CREATE_NO_WINDOW": 0x08000000}
+        probe = mock.Mock(return_value=subprocess.CompletedProcess([], 0, b'{"recent":[]}\n', b''))
+        with mock.patch.multiple(zusage.subprocess, create=True, **flags), \
+                mock.patch.object(zusage.subprocess, "run", probe):
+            by, today, err = zusage._remote_exec(["s"], self.rc(), "key")
+        self.assertEqual(probe.call_args.kwargs["creationflags"], 0x08000000)
+        self.assertIsNone(err)
+
     def test_missing_script_or_python_and_error_payload(self):
         for result in (subprocess.CompletedProcess([], 2, b'', b"python3: can't open file: missing zusage.py"),
                        subprocess.CompletedProcess([], 127, b'', b'python3: not found'),

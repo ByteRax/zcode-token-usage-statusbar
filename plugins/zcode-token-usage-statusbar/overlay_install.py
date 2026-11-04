@@ -297,14 +297,16 @@ def _run_verifier(command, env):
     Windows 上之后还会不限时地读完输出管道，子孙若继承了管道就永远等不到 EOF。
     收尾总耗时有界（taskkill 3 秒、回收 2 秒），叠加后仍在更新器 30 秒时限内。"""
     process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
-                               start_new_session=os.name != "nt")
+                               start_new_session=os.name != "nt",
+                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))   # issue #227：GUI 候选（ZCode.exe）不受影响，回退控制台子系统 node.exe 时不再弹终端窗；POSIX 取 0 等价
     try:
         stdout, stderr = process.communicate(timeout=VERIFY_TIMEOUT)
     except subprocess.TimeoutExpired:
         if os.name == "nt":
             try:
                 subprocess.run(["taskkill", "/T", "/F", "/PID", str(process.pid)],
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3,
+                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))   # issue #227
             except (OSError, subprocess.SubprocessError):
                 pass
             process.kill()

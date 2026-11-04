@@ -481,6 +481,43 @@ class QuietMonitorTests(unittest.TestCase):
         self.assertEqual(probe.call_args.kwargs["creationflags"], 0x08000000)
         self.assertEqual(list(starts), ["123"])
 
+    def _overlay_install_module(self):
+        return module("quiet_overlay_install_test",
+                      ROOT / "plugins" / "zcode-token-usage-statusbar" / "overlay_install.py")
+
+    def test_windows_verifier_timeout_taskkill_hides_console(self):
+        # issue #227：验收器挂起超时后的 taskkill 收尾在无控制台宿主里同样会
+        # 分配新控制台弹空白终端标签（与 #221 同机制，仅超时路径才走到，低频）。
+        overlay = self._overlay_install_module()
+        flags = {"CREATE_NO_WINDOW": 0x08000000}
+        process = mock.Mock(pid=4321, returncode=1)
+        process.communicate.side_effect = [subprocess.TimeoutExpired(["node"], 10), (b"", b"")]
+        probe = mock.Mock(return_value=mock.Mock(returncode=0))
+        with mock.patch.object(os, "name", "nt"), \
+                mock.patch.object(overlay.subprocess, "Popen", return_value=process), \
+                mock.patch.multiple(overlay.subprocess, create=True, **flags), \
+                mock.patch.object(overlay.subprocess, "run", probe):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                overlay._run_verifier(["node", "-e", "1"], {})
+        self.assertEqual(probe.call_args.args[0][:2], ["taskkill", "/T"])
+        self.assertEqual(probe.call_args.kwargs["creationflags"], 0x08000000)
+
+    def test_verifier_popen_hides_console_for_console_fallback_candidates(self):
+        # issue #227 边界：_node_candidates 首选 GUI 子系统的 ZCode.exe 不受影响，
+        # 但启动失败会回退 PATH 上的 node.exe（控制台子系统）——无控制台宿主里
+        # 同步验收本身就会弹窗；标志对 GUI 候选与 POSIX 均无副作用，一并覆盖。
+        overlay = self._overlay_install_module()
+        flags = {"CREATE_NO_WINDOW": 0x08000000}
+        process = mock.Mock(returncode=0)
+        process.communicate.return_value = (b"ok", b"")
+        with mock.patch.object(os, "name", "nt"), \
+                mock.patch.object(overlay.subprocess, "Popen", return_value=process) as popen, \
+                mock.patch.multiple(overlay.subprocess, create=True, **flags):
+            result = overlay._run_verifier(["node", "-e", "1"], {})
+        self.assertEqual(popen.call_args.kwargs["creationflags"], 0x08000000)
+        self.assertFalse(popen.call_args.kwargs["start_new_session"])
+        self.assertEqual(result.stdout, "ok")
+
     def test_wmi_interpreter_probe(self):
         # pythonw.exe 探测本体：命中同目录文件返回其路径；缺失返回 None（绝不回退
         # python.exe，WMI 无标志位会闪控制台窗）；sys.executable 为空（嵌入式场景）
