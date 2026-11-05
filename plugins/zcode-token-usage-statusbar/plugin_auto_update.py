@@ -51,6 +51,11 @@ def start_auto_update(runtime, pi):
                 or (sys.platform != "win32" and not os.access(executable, os.X_OK))):
             print("[zusage-plugin] 自动更新未启动：找不到有效的 ZCode 可执行文件。", file=sys.stderr)
             return False
+        # darwin 换 LSUIElement Helper 后台拉起，Dock 不闪主二进制图标（issue #238）；
+        # 旧缓存 pi 模块缺该函数时按原二进制执行，自动更新不因此失败。
+        swap = getattr(pi, "ui_element_exe_for", None)
+        if swap is not None:
+            executable = swap(executable)
         bundle = asar.parent / "glm" / "zcode.cjs"
         if not bundle.is_file():
             print(f"[zusage-plugin] 自动更新未启动：ZCode CLI bundle 不存在：{bundle}", file=sys.stderr)

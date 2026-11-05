@@ -145,6 +145,20 @@ def zcode_exe_for(asar_path):
     return None
 
 
+def ui_element_exe_for(exe_path):
+    """darwin 后台拉起换 LSUIElement 的 Helper（plugin-updater.cjs cliExecutable 同款）：
+    主 bundle 二进制即使带 ELECTRON_RUN_AS_NODE，部分客户端版本仍会向 LaunchServices
+    登记 Foreground 应用，Dock 闪现「zcode」图标（issue #238）；Helper 登记 UIElement
+    不进 Dock。Helper 缺失/不可执行/结构不符时原样返回——宁可闪图标不可更新/自检失败。"""
+    if not IS_MAC or not exe_path:
+        return exe_path
+    helper = (Path(exe_path).parent.parent / "Frameworks" / "ZCode Helper.app"
+              / "Contents" / "MacOS" / "ZCode Helper")
+    if helper.is_file() and os.access(helper, os.X_OK):
+        return helper
+    return exe_path
+
+
 def set_target(asar_path):
     """改指目标安装位置（BAK/TMP/ZCODE_EXE 随动）。ZCODE_EXE 只用于语法自检，缺了自动跳过。"""
     global ASAR, BAK, TMP, TMP_META, ZCODE_EXE
@@ -379,7 +393,7 @@ def self_check(asar_path: Path, expect=True):
 def syntax_check(asar_path: Path):
     """用 ZCode 自身当 node（ELECTRON_RUN_AS_NODE）对入口做语法检查；
     找不到/无法运行 ZCode 可执行文件时跳过（自检是锦上添花，不应挡安装）。"""
-    exe = ZCODE_EXE
+    exe = ui_element_exe_for(ZCODE_EXE)
     if not exe or not exe.is_file():
         print(L("  [check] 未找到 ZCode 可执行文件，跳过语法检查",
                 "  [check] ZCode executable not found; syntax check skipped"))
