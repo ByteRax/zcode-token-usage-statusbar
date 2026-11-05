@@ -269,6 +269,20 @@ class PluginAutoUpdateTests(unittest.TestCase):
                 self.assertIn("可执行文件", errors)
                 self.popen.assert_not_called()
 
+    def test_spawn_swaps_to_ui_element_helper(self):
+        helper = self.asar.parent.parent / "Frameworks" / "ZCode Helper.app" / \
+            "Contents" / "MacOS" / "ZCode Helper"
+        self.pi.ui_element_exe_for = mock.Mock(return_value=helper)
+        self.assertEqual(self.launch(), (True, ""))
+        self.pi.ui_element_exe_for.assert_called_once_with(self.executable)
+        self.assertEqual(self.popen.call_args.args[0][0], str(helper))
+
+    def test_old_pi_without_swap_keeps_original_binary(self):
+        # 模拟旧缓存 pi 模块缺 ui_element_exe_for：按原二进制拉起，自动更新不因此失败。
+        self.assertFalse(hasattr(self.pi, "ui_element_exe_for"))
+        self.assertEqual(self.launch(), (True, ""))
+        self.assertEqual(self.popen.call_args.args[0][0], str(self.executable))
+
     @unittest.skipIf(os.name == "nt",
                      "Windows 的 chmod 不区分可执行位，os.access(X_OK) 恒真；仅 POSIX 有此拒绝路径")
     def test_posix_non_executable_file_is_rejected(self):
