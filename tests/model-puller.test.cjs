@@ -66,7 +66,7 @@ function createPuller(file, routes) {
   const mp = M.createModelPuller({ customCfgPath: file, fetchImpl: impl, modelsDevUrl: MODELS_DEV_TEST_URL });
   return { mp, calls };
 }
-const providerCalls = (calls) => calls.filter((c) => c.url.indexOf("models.dev.test") < 0);
+const providerCalls = (calls) => calls.filter((c) => c.url.indexOf("models.dev") < 0);   // 含默认 api.json 档位目录（#236 按需拉取）
 
 /* ---------- 纯函数 ---------- */
 /* ---------- 套餐源（v134）：OAuth 型智谱套餐 ---------- */
@@ -376,6 +376,29 @@ test("inputFormatFrom: modalities map to sparse host bits; vision bool fallback;
   assert.equal(M.inputFormatFrom(undefined, undefined), null);
 });
 
+test("extractModelMeta: efforts sorted by strength ladder; unknown words keep order at tail (#236)", () => {
+  /* 宿主默认档=values 末项、辅助调用取首项：写入前必须按强度梯排序，供应商/目录原始顺序不可信 */
+  assert.deepEqual(M.extractModelMeta({ id: "x", supported_efforts: ["high", "none", "low"] }).efforts, ["none", "low", "high"]);
+  assert.deepEqual(M.extractModelMeta({ id: "x", supported_efforts: ["max", "off"] }).efforts, ["off", "max"]);
+  assert.deepEqual(M.extractModelMeta({ id: "x", supported_efforts: ["mega", "medium", "beta"] }).efforts, ["medium", "mega", "beta"]);
+  assert.deepEqual(M.extractModelMeta({ id: "x", supported_efforts: ["High", "low", "HIGH"] }).efforts, ["low", "High", "HIGH"]);   // 梯子按小写判级，去重仍大小写敏感
+});
+
+test("extractModelMeta: GitHub Copilot capabilities aliases (#236 实测格式)", () => {
+  const m = M.extractModelMeta({
+    id: "copilot-x",
+    capabilities: {
+      supports: { reasoning_effort: ["medium", "low", "high"], vision: true },
+      limits: { max_context_window_tokens: 200000, max_output_tokens: 16384 },
+    },
+  });
+  assert.deepEqual(m.efforts, ["low", "medium", "high"]);
+  assert.equal(m.contextWindow, 200000);
+  assert.equal(m.maxOutputTokens, 16384);
+  assert.equal(m.vision, true);
+  assert.equal(M.extractModelMeta({ id: "n", capabilities: {} }).contextWindow, 0);
+});
+
 /* ---------- listProviders ---------- */
 test("listProviders: only api-key providers with baseUrl; modelIds merged; no apiKey in output", () => {
   const file = tmpCfgPath();
@@ -671,4 +694,350 @@ test("applyModels: preserves original file mode (posix)", { skip: process.platfo
   await mp.applyModels("custom-relay", ["mode-check"]);
   const mode = fs.statSync(file).mode & 0o777;
   assert.equal(mode, 0o600);
+});
+
+/* ---------- issue #236：拉取时同步写实提供商侧模型配置 ---------- */
+
+const FRESH_CFG = () => ({
+  schemaVersion: 1,
+  config: {
+    providerConfigRules: {
+      providerRules: [
+        { providerId: "fresh-relay", config: { access: { type: "api-key", apiKey: "sk-fresh" }, api: { baseUrl: "https://fresh.example.com" } } },
+      ],
+    },
+    modelConfigRules: { providerModelRules: [], manualProviderModelRules: [] },
+  },
+});
+
+test("applyModels: fresh api-key provider with zero siblings writes minimal skeleton plus evidenced meta (#236)", async () => {
+  const file = tmpCfgPath();
+  writeCfg(file, FRESH_CFG());
+  const { mp } = createPuller(file, [
+    { url: MODELS_DEV_TEST_URL, body: {} },
+    { url: "https://fresh.example.com/v1/models", body: { data: [{ id: "new-1", context_length: 262144, architecture: { input_modalities: ["text", "image"] }, supported_efforts: ["high", "low"] }] } },
+  ]);
+  await mp.fetchModels("fresh-relay");
+  const r = await mp.applyModels("fresh-relay", ["new-1"]);
+  assert.deepEqual(r, { ok: true, added: 1 });
+  const after = JSON.parse(fs.readFileSync(file, "utf8"));
+  const entry = after.config.modelConfigRules.providerModelRules[0];
+  /* 最小骨架同构宿主 addPersonalModel；有据字段直接写实——稀疏个人规则字段级覆盖内置，
+   * map 继承宿主 apiType catch-all（选中档位原样透传），绝不生成 map */
+  assert.deepEqual(entry, {
+    modelId: "new-1", providerId: "fresh-relay",
+    config: {
+      enabled: true,
+      properties: { contextWindow: 262144, inputFormat: { supportsImage: true, supportsVideo: false, supportsAudio: false, supportsPdf: false } },
+      optionSpecs: { reasoningLevel: { values: ["low", "high"] } },
+    },
+  });
+  assert.deepEqual(after.config.modelConfigRules.manualProviderModelRules, []);   // 红线：手动规则容器绝不写入
+});
+
+test("applyModels: fresh api-key provider with bare string list writes only enabled skeleton (#236)", async () => {
+  const file = tmpCfgPath();
+  writeCfg(file, FRESH_CFG());
+  const { mp } = createPuller(file, [
+    { url: MODELS_DEV_TEST_URL, body: {} },
+    { url: "https://fresh.example.com/v1/models", body: { data: ["plain-1"] } },
+  ]);
+  await mp.fetchModels("fresh-relay");
+  const r = await mp.applyModels("fresh-relay", ["plain-1"]);
+  assert.deepEqual(r, { ok: true, added: 1 });
+  const after = JSON.parse(fs.readFileSync(file, "utf8"));
+  const entry = after.config.modelConfigRules.providerModelRules[0];
+  assert.deepEqual(entry.config, { enabled: true });   // 无据不写：骨架即全部
+});
+
+test("api.json efforts catalog: on-demand background fetch, merged from cache on next pull (#236)", async () => {
+  const file = tmpCfgPath();
+  writeCfg(file, sampleCfg());
+  let apiCalls = 0;
+  const impl = async (url) => {
+    if (url === "https://models.dev/api.json") {
+      apiCalls++;
+      return {
+        ok: true, status: 200, body: null,
+        json: async () => ({
+          p1: { models: {
+            "glm-5.2": { reasoning_options: [{ type: "effort", values: ["max", "medium", "high"] }] },
+          } },
+          p2: { models: {
+            "ok-model": { reasoning_options: [{ type: "effort", values: ["medium", "low"] }, { type: "effort", values: [null, "high"] }, { type: "budget_tokens", min: 1, max: 8 }] },
+          } },
+        }),
+      };
+    }
+    if (url === MODELS_DEV_TEST_URL) return { ok: true, status: 200, json: async () => ({}) };
+    if (url === "https://relay.example.com/v1/models") return { ok: true, status: 200, body: null, json: async () => ({ data: ["glm-5.2", "ok-model"] }) };
+    throw new Error("unexpected url " + url);
+  };
+  const mp = M.createModelPuller({ customCfgPath: file, fetchImpl: impl, modelsDevUrl: MODELS_DEV_TEST_URL });
+  const r = await mp.fetchModels("custom-relay");
+  assert.equal(r.ok, true);
+  assert.equal(r.metaById["glm-5.2"], undefined);   // 首轮：目录未就绪，按需触发后台拉取不阻塞
+  assert.equal(r.effortsFetching, true);   // #236：触发后台补拉时渲染端据此显示「档位补拉中」
+  let merged = false;
+  for (let i = 0; i < 50 && !merged; i++) {   // 等后台目录落地（stub 全微任务链，2ms 轮询足够）
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    const probe = await mp.fetchModels("custom-relay");
+    if (probe.metaById["ok-model"] && probe.metaById["ok-model"].efforts.length) {
+      merged = true;
+      assert.deepEqual(probe.metaById["ok-model"].efforts, ["low", "medium", "high"]);   // 多 option 合并 + null 过滤 + 梯子排序
+      assert.equal(probe.metaById["glm-5.2"].efforts.join("/"), "medium/high/max");
+    }
+  }
+  assert.ok(merged, "api catalog efforts never merged");
+  const callsAfter = apiCalls;
+  await mp.fetchModels("custom-relay");
+  assert.equal(apiCalls, callsAfter);   // 缓存 1h：后续拉取不再打网络
+  assert.equal(apiCalls, 1);
+});
+
+test("api.json efforts catalog: toggle-only and cross-provider ambiguous entries are skipped (#236)", async () => {
+  const file = tmpCfgPath();
+  writeCfg(file, sampleCfg());
+  const impl = async (url) => {
+    if (url === "https://models.dev/api.json") {
+      return {
+        ok: true, status: 200, body: null,
+        json: async () => ({
+          p1: { models: { "t-only": { reasoning_options: [{ type: "toggle" }] }, "dup-model": { reasoning_options: [{ type: "effort", values: ["low"] }] } } },
+          p2: { models: { "dup-model": { reasoning_options: [{ type: "effort", values: ["high"] }] } } },
+        }),
+      };
+    }
+    if (url === MODELS_DEV_TEST_URL) return { ok: true, status: 200, json: async () => ({}) };
+    return { ok: true, status: 200, body: null, json: async () => ({ data: ["t-only", "dup-model"] }) };
+  };
+  const mp = M.createModelPuller({ customCfgPath: file, fetchImpl: impl, modelsDevUrl: MODELS_DEV_TEST_URL });
+  await mp.fetchModels("custom-relay");
+  for (let i = 0; i < 50; i++) await new Promise((resolve) => setTimeout(resolve, 2));   // 等缓存落地
+  const r = await mp.fetchModels("custom-relay");
+  assert.equal(r.ok, true);
+  assert.equal(r.metaById["t-only"], undefined);    // toggle=内置默认两档已覆盖，不采纳
+  assert.equal(r.metaById["dup-model"], undefined);   // 跨 provider 歧义：宁缺毋滥
+});
+
+test("api.json efforts catalog: empty modelsDevApiUrl disables the source entirely", async () => {
+  const file = tmpCfgPath();
+  writeCfg(file, sampleCfg());
+  let apiCalls = 0;
+  const impl = async (url) => {
+    if (url === "https://models.dev/api.json") { apiCalls++; throw new Error("must not fetch"); }
+    if (url === MODELS_DEV_TEST_URL) return { ok: true, status: 200, json: async () => ({}) };
+    return { ok: true, status: 200, body: null, json: async () => ({ data: ["m1"] }) };
+  };
+  const mp = M.createModelPuller({ customCfgPath: file, fetchImpl: impl, modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "" });
+  const r = await mp.fetchModels("custom-relay");
+  assert.equal(r.ok, true);
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(apiCalls, 0);
+});
+
+test("plan source: catalog fills GLM meta within grace; apply writes evidenced fields (#236)", async () => {
+  const file = tmpCfgPath();
+  writeCfg(file, {
+    config: {
+      providerConfigRules: { providerRules: [{ providerId: PLAN_ID, config: { personalModelIds: [], modelOrder: [] } }] },
+      modelConfigRules: { providerModelRules: [], manualProviderModelRules: [] },
+    },
+  });
+  fs.writeFileSync("/tmp/creds.json", JSON.stringify({ "oauth:bigmodel:access_token": "enc:xxx" }));
+  const impl = async (url) => {
+    if (url === "https://open.bigmodel.cn/api/anthropic/v1/models") {
+      return { ok: true, status: 200, body: null, json: async () => ({ data: [{ id: "glm-5.2" }] }) };
+    }
+    if (url === MODELS_DEV_TEST_URL) {
+      return { ok: true, status: 200, body: null, json: async () => ({ "zhipuai/glm-5.2": { id: "glm-5.2", limit: { context: 200000, output: 32000 }, architecture: { input_modalities: ["text", "image"] } } }) };
+    }
+    throw new Error("unexpected url " + url);
+  };
+  const mp = M.createModelPuller({
+    customCfgPath: file, fetchImpl: impl, modelsDevUrl: MODELS_DEV_TEST_URL,
+    credentialsPath: "/tmp/creds.json", decryptValue: () => "plan-oauth-token",
+  });
+  const r = await mp.fetchModels(PLAN_ID);
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.metaById["GLM-5.2"], { contextWindow: 200000, maxOutputTokens: 32000, inputFormat: { supportsImage: true, supportsVideo: false, supportsAudio: false, supportsPdf: false } });
+  const r2 = await mp.applyModels(PLAN_ID, ["GLM-5.2"]);
+  assert.deepEqual(r2, { ok: true, added: 1 });
+  const after = JSON.parse(fs.readFileSync(file, "utf8"));
+  const entry = after.config.modelConfigRules.providerModelRules.find((x) => x.modelId === "GLM-5.2");
+  assert.deepEqual(entry.config, {
+    enabled: true,
+    properties: { contextWindow: 200000, inputFormat: { supportsImage: true, supportsVideo: false, supportsAudio: false, supportsPdf: false } },
+    optionSpecs: { maxOutputTokens: { max: 32000 } },
+  });
+});
+
+/* ---------- #236 缓存落盘与 24h 刷新 ---------- */
+
+const API_STUB_URL = "https://models.dev/api.json";   // 默认 modelsDevApiUrl
+
+function apiIndexPayload() {
+  return {
+    p1: { models: {
+      "glm-5.2": { reasoning_options: [{ type: "effort", values: ["max", "high"] }] },
+      "solo-model": { reasoning_options: [{ type: "effort", values: ["low", "medium", "high"] }] },
+    } },
+    pa: { models: { "dup-model": { reasoning_options: [{ type: "effort", values: ["low"] }] } } },
+    pb: { models: { "dup-model": { reasoning_options: [{ type: "effort", values: ["high"] }] } } },
+  };
+}
+
+test("api.json efforts cache: persists lightweight index; fresh process uses it with zero network (#236)", async () => {
+  const file = tmpCfgPath();
+  writeCfg(file, sampleCfg());
+  const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "zusage-mp-cache-"));
+  const cacheFile = path.join(cacheDir, "model-efforts-cache.json");
+  let apiCalls = 0;
+  const listing = { ok: true, status: 200, body: null, json: async () => ({ data: ["glm-5.2", "dup-model", "solo-model"] }) };
+  const mp1 = M.createModelPuller({
+    customCfgPath: file, modelsDevUrl: MODELS_DEV_TEST_URL, cachePath: cacheFile,
+    fetchImpl: async (url) => {
+      if (url === API_STUB_URL) { apiCalls++; return { ok: true, status: 200, body: null, json: async () => apiIndexPayload() }; }
+      if (url === MODELS_DEV_TEST_URL) return { ok: true, status: 200, json: async () => ({}) };
+      return listing;
+    },
+  });
+  const r1 = await mp1.fetchModels("custom-relay");
+  assert.equal(r1.effortsFetching, true);   // 首轮无索引：触发后台下载
+  for (let i = 0; i < 50 && apiCalls < 1; i++) await new Promise((resolve) => setTimeout(resolve, 2));
+  await new Promise((resolve) => setTimeout(resolve, 10));   // 等解析+落盘链走完
+  assert.equal(apiCalls, 1);
+  const saved = JSON.parse(fs.readFileSync(cacheFile, "utf8"));
+  assert.equal(saved.v, 1);
+  assert.ok(saved.at > 0);
+  assert.deepEqual(saved.e["glm-5.2"], ["high", "max"]);   // 索引按小写归一 + 梯排序
+  assert.deepEqual(saved.e["solo-model"], ["low", "medium", "high"]);
+  assert.equal(saved.e["dup-model"], null);   // 跨 provider 歧义：落盘为 null 永不采纳
+  assert.ok(saved.b && typeof saved.b === "object");
+
+  /* 冷启动（模拟重启）：全新实例、api URL 一律拒绝，档位纯来自缓存文件 */
+  const mp2 = M.createModelPuller({
+    customCfgPath: file, modelsDevUrl: MODELS_DEV_TEST_URL, cachePath: cacheFile,
+    fetchImpl: async (url) => {
+      if (url === API_STUB_URL) { apiCalls++; throw new Error("must not fetch"); }
+      if (url === MODELS_DEV_TEST_URL) return { ok: true, status: 200, json: async () => ({}) };
+      return listing;
+    },
+  });
+  const r2 = await mp2.fetchModels("custom-relay");
+  assert.equal(r2.effortsFetching, undefined);   // 索引新鲜：不触发刷新
+  assert.deepEqual(r2.metaById["glm-5.2"].efforts, ["high", "max"]);
+  assert.deepEqual(r2.metaById["solo-model"].efforts, ["low", "medium", "high"]);
+  assert.equal(r2.metaById["dup-model"], undefined);   // 歧义键不采纳
+  assert.equal(apiCalls, 1);   // 全程零下载
+});
+
+test("api.json efforts cache: index older than 24h still merges and triggers one refresh (#236)", async () => {
+  const file = tmpCfgPath();
+  writeCfg(file, sampleCfg());
+  const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "zusage-mp-stale-"));
+  const cacheFile = path.join(cacheDir, "model-efforts-cache.json");
+  fs.writeFileSync(cacheFile, JSON.stringify({ v: 1, at: Date.now() - 25 * 3600 * 1000, e: { "glm-5.2": ["high", "max"] }, b: {} }));
+  let apiCalls = 0;
+  const mp = M.createModelPuller({
+    customCfgPath: file, modelsDevUrl: MODELS_DEV_TEST_URL, cachePath: cacheFile,
+    fetchImpl: async (url) => {
+      if (url === API_STUB_URL) { apiCalls++; return { ok: true, status: 200, body: null, json: async () => apiIndexPayload() }; }
+      if (url === MODELS_DEV_TEST_URL) return { ok: true, status: 200, json: async () => ({}) };
+      return { ok: true, status: 200, body: null, json: async () => ({ data: ["glm-5.2"] }) };
+    },
+  });
+  const r = await mp.fetchModels("custom-relay");
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.metaById["glm-5.2"].efforts, ["high", "max"]);   // stale-while-revalidate：旧索引先顶上
+  assert.equal(r.effortsFetching, true);   // 同时触发后台刷新
+  for (let i = 0; i < 50 && apiCalls < 1; i++) await new Promise((resolve) => setTimeout(resolve, 2));
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(apiCalls, 1);
+  const savedAt = JSON.parse(fs.readFileSync(cacheFile, "utf8")).at;
+  assert.ok(savedAt > Date.now() - 60 * 1000);   // 刷新后文件时间戳已重置
+  const r2 = await mp.fetchModels("custom-relay");
+  assert.equal(r2.effortsFetching, undefined);   // 新索引 24h 内不再刷新
+  assert.equal(apiCalls, 1);
+});
+
+test("api.json efforts cache: corrupt cache file is ignored and re-downloaded (#236)", async () => {
+  const file = tmpCfgPath();
+  writeCfg(file, sampleCfg());
+  const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "zusage-mp-bad-"));
+  const cacheFile = path.join(cacheDir, "model-efforts-cache.json");
+  fs.writeFileSync(cacheFile, "{broken");
+  let apiCalls = 0;
+  const mp = M.createModelPuller({
+    customCfgPath: file, modelsDevUrl: MODELS_DEV_TEST_URL, cachePath: cacheFile,
+    fetchImpl: async (url) => {
+      if (url === API_STUB_URL) { apiCalls++; return { ok: true, status: 200, body: null, json: async () => apiIndexPayload() }; }
+      if (url === MODELS_DEV_TEST_URL) return { ok: true, status: 200, json: async () => ({}) };
+      return { ok: true, status: 200, body: null, json: async () => ({ data: ["glm-5.2"] }) };
+    },
+  });
+  const r = await mp.fetchModels("custom-relay");
+  assert.equal(r.effortsFetching, true);
+  for (let i = 0; i < 50 && apiCalls < 1; i++) await new Promise((resolve) => setTimeout(resolve, 2));
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(apiCalls, 1);
+  const saved = JSON.parse(fs.readFileSync(cacheFile, "utf8"));   // 损坏文件被有效索引覆盖
+  assert.deepEqual(saved.e["glm-5.2"], ["high", "max"]);
+});
+
+test("api.json efforts cache: basename fallback via index when mid absent (#236)", () => {
+  const entries = M.apiCatalogEntries({ p1: { models: { "glm-5.2": { reasoning_options: [{ type: "effort", values: ["low", "max"] }] } } } });
+  const index = M.buildEffortsIndex(entries);
+  assert.deepEqual(index.e["glm-5.2"], ["low", "max"]);
+  assert.deepEqual(index.b["glm-5.2"], ["low", "max"]);
+});
+
+test("api.json efforts cache: malformed key shapes fail closed to empty cache and re-download (#236)", async () => {
+  const file = tmpCfgPath();
+  writeCfg(file, sampleCfg());
+  const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "zusage-mp-shape-"));
+  const cacheFile = path.join(cacheDir, "model-efforts-cache.json");
+  /* 字符串/数字冒充词表：穿透到 values 会写坏宿主 provider_config 规则（整份配置解析失败） */
+  fs.writeFileSync(cacheFile, JSON.stringify({ v: 1, at: Date.now(), e: { "glm-x": "high" }, b: {} }));
+  let apiCalls = 0;
+  const mp = M.createModelPuller({
+    customCfgPath: file, modelsDevUrl: MODELS_DEV_TEST_URL, cachePath: cacheFile,
+    fetchImpl: async (url) => {
+      if (url === API_STUB_URL) { apiCalls++; return { ok: true, status: 200, body: null, json: async () => apiIndexPayload() }; }
+      if (url === MODELS_DEV_TEST_URL) return { ok: true, status: 200, json: async () => ({}) };
+      return { ok: true, status: 200, body: null, json: async () => ({ data: ["glm-5.2"] }) };
+    },
+  });
+  const r = await mp.fetchModels("custom-relay");
+  assert.equal(r.ok, true);
+  assert.equal(r.effortsFetching, true);   // 非法形状=空缓存：走重新下载
+  for (let i = 0; i < 50 && apiCalls < 1; i++) await new Promise((resolve) => setTimeout(resolve, 2));
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(apiCalls, 1);
+  const saved = JSON.parse(fs.readFileSync(cacheFile, "utf8"));   // 非法文件被合法索引覆盖
+  assert.deepEqual(saved.e["glm-5.2"], ["high", "max"]);
+  assert.equal("glm-x" in saved.e, false);
+});
+
+test("api.json efforts cache: prototype-named model ids stay fail-closed through the file-loaded index (#236)", async () => {
+  const file = tmpCfgPath();
+  writeCfg(file, sampleCfg());
+  const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "zusage-mp-proto-"));
+  const cacheFile = path.join(cacheDir, "model-efforts-cache.json");
+  /* b.constructor 为 JSON.parse 的自有 null 键（合法形状）；e/b 均无 toString/hasOwnProperty 自有键 */
+  fs.writeFileSync(cacheFile, JSON.stringify({ v: 1, at: Date.now(), e: { "glm-5.2": ["high", "max"] }, b: { constructor: null } }));
+  const mp = M.createModelPuller({
+    customCfgPath: file, modelsDevUrl: MODELS_DEV_TEST_URL, cachePath: cacheFile,
+    fetchImpl: async (url) => {
+      if (url === API_STUB_URL) throw new Error("must not fetch");
+      if (url === MODELS_DEV_TEST_URL) return { ok: true, status: 200, json: async () => ({}) };
+      return { ok: true, status: 200, body: null, json: async () => ({ data: ["constructor", "toString", "hasOwnProperty", "glm-5.2"] }) };
+    },
+  });
+  const r = await mp.fetchModels("custom-relay");   // 锁定双保险回归：sanitize 重建 null 原型图后删单守卫行为中性，守卫+null 原型双删须被本用例捕获
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.metaById["glm-5.2"].efforts, ["high", "max"]);   // 合法键正常命中
+  assert.equal(r.metaById["constructor"], undefined);   // 原型名不穿透（fail-closed 宁缺毋滥）
+  assert.equal(r.metaById["toString"], undefined);
+  assert.equal(r.metaById["hasOwnProperty"], undefined);
 });

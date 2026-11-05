@@ -911,6 +911,7 @@ try {
     customCfgPath: pullPaths.customCfgPath,
     credentialsPath: pullPaths.credsPath,   // v229：迁移后 ~/.zcode/v2/credentials.json 是宿主不读的死目录（issue #205）
     decryptValue: (enc) => decryptValue(enc, deriveCipherKey(process.env)),   // 套餐源：内存解密，同额度链纪律
+    cachePath: path.join(__dirname, "model-efforts-cache.json"),   // #236：档位索引落运行目录（pricing-cache.json 同款先例），跨重启复用
     log: (...a) => LOG("[model-pull]", ...a),
   });
 } catch (e) {

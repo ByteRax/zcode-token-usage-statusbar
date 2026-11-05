@@ -5,6 +5,11 @@
  * providerModelRules config（contextWindow/inputFormat/reasoningLevel/maxOutputTokens，
  * 字段名对照宿主 packages/shared/src/model-config.ts 的 strict zod schema；模板已有
  * 自洽结构（带 map 表达式）时不覆盖，无据可依的字段保持模板原样）。
+ * issue #236：零兄弟 api-key 供应商首拉也写每模型最小骨架 {enabled:true}+有据元数据（稀疏
+ * 个人规则字段级覆盖内置，map 继承宿主 apiType catch-all；绝不生成 map、绝不写
+ * manualProviderModelRules）；档位按强度梯排序（宿主默认档=values 末项）；GitHub Copilot
+ * capabilities 别名；models.dev api.json 档位目录（reasoning_options→effort 词表）只在缺
+ * 档位证据时后台拉取补缺；套餐源接目录补缺。
  * 只读写宿主 customCfgPath（~/.zcode/v2/provider_config.json）；key 只在主进程内存中用于
  * 该 baseUrl 本域请求，绝不返回渲染端、不进日志。写入是读-改-同目录原子替换，保留未知键；
  * 写前滚动备份 .zusage-bak（单文件覆盖，不堆积）。拉取耗时对齐 cc-switch：目录只在供应商完成后
@@ -19,6 +24,9 @@ const FETCH_TIMEOUT_MS = 10000;
 const MODELS_DEV_URL = "https://models.dev/models.json";   // 公共模型元数据目录（GLQQX 同源）
 const MODELS_DEV_TIMEOUT_MS = 3000;   // 目录是锦上添花：超时收紧，不通的网络尽早降级
 const CATALOG_GRACE_MS = 1000;        // 供应商响应后目录的额外宽限：cc-switch 拉列表不等目录，我们不拖慢主路径
+const MODELS_DEV_API_URL = "https://models.dev/api.json";   // 档位目录（#236）：models.json 无 effort 词表（实测 0/608），api.json 才有（约 6MB）
+const MODELS_DEV_API_TIMEOUT_MS = 8000;   // 大体量只走后台：超时不阻塞任何用户路径
+const API_CACHE_MAX_AGE_MS = 24 * 3600 * 1000;   // 档位索引缓存生命周期：≥24h 触发一次后台刷新（stale-while-revalidate）
 
 /* ---------- 内置套餐源（v134）：OAuth 型套餐的模型拉取 ----------
  * 智谱 Coding Plan 是宿主内置 OAuth 供应商（account:bigmodel-individual-coding-plan），
@@ -94,10 +102,24 @@ function rawInputModalities(src) {
     || modalityList(asObject(src.modalities).input);
 }
 function rawVisionFlag(src) {
-  for (const v of [src.vision, src.supports_vision, asObject(src.architecture).vision]) {
+  for (const v of [src.vision, src.supports_vision, asObject(src.architecture).vision, asObject(asObject(src.capabilities).supports).vision]) {
     if (typeof v === "boolean") return v;
   }
   return undefined;
+}
+/* 思考档位排序：宿主把 values.at(-1) 当默认最高档、辅助调用取 values[0] 当最低档，供应商
+ * 与目录的原始顺序都不可信——按已知强度梯排序（issue #236）；未知词保持原始相对顺序排尾 */
+const EFFORT_LADDER = ["off", "disabled", "none", "minimal", "low", "medium", "high", "xhigh", "max"];
+function effortListFrom(raw) {
+  const seen = [];
+  for (const item of Array.isArray(raw) ? raw : []) {
+    if (typeof item !== "string") continue;
+    const v = item.trim();
+    if (v && !seen.includes(v)) seen.push(v);
+  }
+  const rank = (v) => { const i = EFFORT_LADDER.indexOf(v.toLowerCase()); return i < 0 ? EFFORT_LADDER.length : i; };
+  const ranked = seen.slice().sort((a, b) => rank(a) - rank(b));
+  return ranked.length > EFFORTS_MAX ? ranked.slice(ranked.length - EFFORTS_MAX) : ranked;   // 超限截尾保最强档（宿主默认档=values.at(-1)）
 }
 /* 从 /models 条目提取可信元数据；字符串条目只有 id。字段缺失一律 undefined，由调用方
  * 用目录补缺——绝不编造默认值（zcode-patcher 的假 1M/128k 模板会误导用户，不采用）。 */
@@ -123,16 +145,18 @@ function extractModelMeta(item) {
   const src = asObject(item);
   const rawId = rawModelId(src);
   const id = typeof rawId === "string" ? rawId.trim() : "";
+  const capLimits = asObject(asObject(src.capabilities).limits);
   const ctx = firstPositive(src.context_length, src.contextWindow, src.context_window,
-    asObject(src.limit).context, asObject(src.limits).context);
+    asObject(src.limit).context, asObject(src.limits).context, capLimits.max_context_window_tokens);
   const out = firstPositive(src.max_completion_tokens, src.max_output_tokens, src.maxOutputTokens,
     asObject(src.limit).output, asObject(src.limits).output,
-    asObject(src.top_provider).max_completion_tokens);
+    asObject(src.top_provider).max_completion_tokens, capLimits.max_output_tokens);
   const modalities = rawInputModalities(src);
   const vision = rawVisionFlag(src);
-  const efforts = (Array.isArray(src.supported_efforts) ? src.supported_efforts : [])
-    .filter((x) => typeof x === "string" && x.trim()).map((x) => x.trim())
-    .filter((x, i, a) => a.indexOf(x) === i).slice(0, EFFORTS_MAX);
+  /* supported_efforts（聚合网关实测）+ capabilities.supports.reasoning_effort（GitHub Copilot
+   * /models 实测）：都是 wire effort 词表，归一并按强度梯排序，绝不从布尔能力推导档位 */
+  const efforts = effortListFrom([].concat(Array.isArray(src.supported_efforts) ? src.supported_efforts : [],
+    asObject(asObject(src.capabilities).supports).reasoning_effort));
   return { id, contextWindow: ctx, maxOutputTokens: out, modalities, vision, efforts };
 }
 
@@ -164,6 +188,69 @@ function matchCatalogEntry(entries, id) {
   if (!basename) return null;
   const byBase = entries.filter((e) => e.basename === basename);
   return byBase.length === 1 ? byBase[0] : null;
+}
+
+/* api.json 是 {provider:{models:{mid:{...}}}} 嵌套：摊平为与 models.json 同形条目；
+ * identity 含 "provider/mid" 与裸 mid，跨 provider 同名由 matchCatalogEntry 歧义守卫放弃 */
+function apiCatalogEntries(payload) {
+  const out = [];
+  const provs = asObject(payload);
+  for (const pid of Object.keys(provs)) {
+    const models = asObject(asObject(provs[pid]).models);
+    for (const mid of Object.keys(models)) {
+      const model = asObject(models[mid]);
+      const m = String(mid).trim();
+      if (!Object.keys(model).length || !m) continue;
+      out.push({ identities: [(pid + "/" + m).toLowerCase(), m.toLowerCase()], basename: canonicalBasename(m), model: model });
+    }
+  }
+  return out;
+}
+/* api.json reasoning_options：仅 effort 档位词表可映射宿主 values——toggle 等于内置默认
+ * 两档、budget_tokens 无法用 values 表达，均不采纳；值即 wire effort 词表，过滤非字符串 */
+function catalogEffortsOf(model) {
+  const opts = asObject(model).reasoning_options;
+  if (!Array.isArray(opts)) return [];
+  const vals = [];
+  for (const opt of opts) {
+    const o = asObject(opt);
+    if (o.type === "effort" && Array.isArray(o.values)) {
+      for (const v of o.values) vals.push(v);   // 逐个 push：目录响应可控边界外不用 spread（巨数组 RangeError 风险）
+    }
+  }
+  return effortListFrom(vals);
+}
+/* 从 api 目录条目构建轻量档位索引：identity（含 "provider/mid" 复合键）与 basename 各一份，
+ * 唯一命中存词表、多义存 null（与 matchCatalogEntry 宁缺毋滥同语义）；无词表条目仍参与
+ * 多义计数（同名模型存在于多 provider 时整体放弃，不从单侧取值） */
+function buildEffortsIndex(entries) {
+  const eCnt = Object.create(null), eVal = Object.create(null);
+  const bCnt = Object.create(null), bVal = Object.create(null);
+  for (const entry of entries) {
+    const values = catalogEffortsOf(entry.model);
+    for (const key of entry.identities) {
+      eCnt[key] = (eCnt[key] || 0) + 1;
+      if (values.length) eVal[key] = values;
+    }
+    if (entry.basename) {
+      bCnt[entry.basename] = (bCnt[entry.basename] || 0) + 1;
+      if (values.length) bVal[entry.basename] = values;
+    }
+  }
+  const e = Object.create(null), b = Object.create(null);
+  for (const key of Object.keys(eCnt)) e[key] = eCnt[key] > 1 ? null : (eVal[key] || null);
+  for (const key of Object.keys(bCnt)) b[key] = bCnt[key] > 1 ? null : (bVal[key] || null);
+  return { e: e, b: b };
+}
+/* 索引查询：mid 精确（含复合键）唯一→词表、多义→null（不回退 basename，与
+ * matchCatalogEntry 歧义守卫同款）；无精确键才回退 basename 唯一命中 */
+function apiEffortsFor(index, id) {
+  const norm = String(id == null ? "" : id).trim().toLowerCase();
+  if (!norm) return null;
+  if (Object.prototype.hasOwnProperty.call(index.e, norm)) return index.e[norm];
+  const base = canonicalBasename(norm);
+  if (base && Object.prototype.hasOwnProperty.call(index.b, base)) return index.b[base];
+  return null;
 }
 
 /* 模态/视觉布尔 → 宿主 inputFormat 稀疏位（支持与否都写实；text 是缺省前提不写）。
@@ -265,11 +352,16 @@ function createModelPuller(opts) {
   const log = o.log || function () { };
   const fetchImpl = o.fetchImpl || (typeof fetch === "function" ? fetch : null);
   const modelsDevUrl = o.modelsDevUrl === undefined ? MODELS_DEV_URL : String(o.modelsDevUrl);
+  const modelsDevApiUrl = o.modelsDevApiUrl === undefined ? MODELS_DEV_API_URL : String(o.modelsDevApiUrl);
+  const cachePath = String(o.cachePath || "");   // 档位索引落盘路径（运行目录，inject-main 传入）；空=仅内存（测试）
   const credentialsPath = String(o.credentialsPath || "");   // 宿主 OAuth 凭据（套餐源）
   const decryptValue = typeof o.decryptValue === "function" ? o.decryptValue : null;   // 注入解密（主进程内存解密）
   let applyBusy = false;   // 读-改-写竞态闸：UI 正常路径不会并发，这里防异常路径双写互相覆盖
   let catalogCache = null;   // {at, entries}：目录全量约数百 KB，成功后进程内复用
   let catalogFailedAt = 0;   // 目录失败短缓存：不通的网络环境（代理断连）每次拉取都吃满超时不可接受
+  let apiCatalogCache = null;   // {at, index}：api.json 档位索引（#236），文件缓存的进程内副本
+  let apiCatalogFailedAt = 0;
+  let apiCatalogPending = null;   // 在途拉取 promise：防重复触发
   const fetchCache = new Map();   // providerId → {metaById}：applyModels 只收 id（写入字段不受渲染端注入），metaById 仅供弹窗展示
 
   function readProviderCfg() {
@@ -361,6 +453,87 @@ function createModelPuller(opts) {
     });
   }
 
+  /* api.json 档位目录（#236）：下载后只落「模型 id → 档位词表」轻量索引（原文约 6MB，
+   * 索引数百 KB，运行目录 cachePath 原子写），进程内存是文件缓存的副本——单一 24h 生命周期：
+   * 索引 <24h 直接用（跨重启生效），≥24h 先用旧索引合并再后台刷新（stale-while-revalidate，
+   * 一天最多一次下载）；从不阻塞本轮弹窗、从不等待下载完成（cc-switch 拉列表不等目录的同一取舍）。 */
+  function loadEffortsCacheFile() {
+    if (!cachePath) return null;
+    try {
+      const d = JSON.parse(fs.readFileSync(cachePath, "utf8"));
+      if (!d || typeof d !== "object" || typeof d.at !== "number" || !d.e || typeof d.e !== "object" || !d.b || typeof d.b !== "object") return null;
+      /* 逐键形状校验 + 重建 null 原型映射：缓存文件可被外部损坏/篡改，字符串冒充词表一旦
+       * 穿透会写进宿主 provider_config 规则令整份配置解析失败——任一键非法按空缓存重建 */
+      const sanitize = (raw) => {
+        const out = Object.create(null);
+        for (const key of Object.keys(raw)) {
+          const v = raw[key];
+          if (v === null) { out[key] = null; continue; }
+          if (!Array.isArray(v) || !v.length || v.length > EFFORTS_MAX) return null;
+          const vals = [];
+          for (const item of v) {
+            if (typeof item !== "string" || !item.trim()) return null;
+            vals.push(item);
+          }
+          out[key] = vals;
+        }
+        return out;
+      };
+      const e = sanitize(d.e), b = sanitize(d.b);
+      if (!e || !b) return null;
+      return { at: d.at, index: { e: e, b: b } };
+    } catch (err) { return null; }
+  }
+  function saveEffortsCacheFile(index) {
+    if (!cachePath) return;
+    const tmp = cachePath + ".zusage-tmp-" + process.pid;   // 同目录临时文件 + 原子替换：双实例并发最后写者赢
+    try {
+      fs.writeFileSync(tmp, JSON.stringify({ v: 1, at: Date.now(), e: index.e, b: index.b }));
+      fs.renameSync(tmp, cachePath);
+    } catch (e) {
+      /* 缓存落盘失败静默：非关键路径；清掉半写 tmp 防残留 */
+      try { fs.unlinkSync(tmp); } catch (e2) { }
+    }
+  }
+  function ensureApiCatalogBackground() {
+    if (!fetchImpl || !modelsDevApiUrl) return false;
+    const now = Date.now();
+    if (apiCatalogPending) return true;   // 在途刷新：并发的第二个供应商弹窗同样显示补拉态
+    if (apiCatalogFailedAt && now - apiCatalogFailedAt < 600000) return false;
+    const current = apiCatalogCache || loadEffortsCacheFile();
+    if (current && now - current.at < API_CACHE_MAX_AGE_MS) return false;
+    apiCatalogPending = fetchJson(modelsDevApiUrl, { "Accept": "application/json" }, MODELS_DEV_API_TIMEOUT_MS).then((payload) => {
+      apiCatalogPending = null;
+      const entries = payload ? apiCatalogEntries(payload) : [];
+      if (entries.length) {
+        apiCatalogCache = { at: Date.now(), index: buildEffortsIndex(entries) };
+        saveEffortsCacheFile(apiCatalogCache.index);
+      } else {
+        apiCatalogFailedAt = Date.now();
+      }
+    });
+    return true;
+  }
+  /* 缺档位证据的模型：索引（内存→文件，任意新鲜度）就地补，供应商/主目录证据优先只补缺；
+   * 索引缺位或 ≥24h 时触发后台刷新。返回是否触发刷新，供 fetchModels 带 effortsFetching
+   * 让渲染端把「未获取配置」换成「档位补拉中」。 */
+  function fillEffortsFromApiCatalog(metaById, ids) {
+    const cached = apiCatalogCache || loadEffortsCacheFile();
+    if (cached) apiCatalogCache = cached;   // 文件索引回填进程内副本
+    if (cached) {
+      for (let i = 0; i < ids.length; i++) {
+        const id = ids[i], m = metaById[id];
+        if (m && m.efforts && m.efforts.length) continue;
+        const values = apiEffortsFor(cached.index, id);
+        if (!values || !values.length) continue;
+        if (m) m.efforts = values.slice();
+        else metaById[id] = { efforts: values.slice() };
+      }
+    }
+    const stale = !cached || Date.now() - cached.at >= API_CACHE_MAX_AGE_MS;
+    return stale ? ensureApiCatalogBackground() : false;
+  }
+
   function listProviders() {
     const data = readProviderCfg();
     if (!data) return { ok: false, error: "provider config missing or unreadable", providers: [] };
@@ -389,13 +562,21 @@ function createModelPuller(opts) {
     const rule = data ? findRule(data, providerId) : null;
     const planSrc = PLAN_SOURCES[String(providerId || "")];
     if (!planSrc && (!rule || !isPullable(rule))) return { ok: false, error: "provider not found" };
+    let planToken = null;
+    if (planSrc) {
+      planToken = planTokenOf(providerId);
+      if (!planToken) return { ok: false, error: "provider not found" };
+    }
+    if (!fetchImpl) return { ok: false, error: "no network stack" };
+    /* 目录与供应商请求并行（#236 起套餐源也接目录）；目录只在供应商完成后最多宽限
+     * CATALOG_GRACE_MS——它是行内小字的锦上添花，绝不拖慢弹窗（cc-switch 拉列表不等目录，同款取舍）。
+     * 早退分支（供应商无效/无凭据/无网络栈）先于目录请求返回，不白打 models.dev。 */
+    const catalogPromise = loadCatalog();
+    const catalogGrace = new Promise((resolve) => setTimeout(resolve, CATALOG_GRACE_MS));
     if (planSrc) {
       /* 套餐源：单端点（Anthropic models，与运行协议同源），Bearer 套餐 token */
-      const token = planTokenOf(providerId);
-      if (!token) return { ok: false, error: "provider not found" };
-      if (!fetchImpl) return { ok: false, error: "no network stack" };
       try {
-        const res = await fetchImpl(planSrc.endpoint, { headers: { "Accept": "application/json", "Authorization": "Bearer " + token, "User-Agent": "ZCode" }, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+        const res = await fetchImpl(planSrc.endpoint, { headers: { "Accept": "application/json", "Authorization": "Bearer " + planToken, "User-Agent": "ZCode" }, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
         if (!res.ok) { dropBody(res); return { ok: false, error: "HTTP " + res.status }; }
         const body = await readJsonBounded(res, RESPONSE_MAX_BYTES);
         const list = Array.isArray(body) ? body : asObject(body).data || asObject(body).models || asObject(body).result || null;
@@ -405,21 +586,27 @@ function createModelPuller(opts) {
           .filter((id, i, a) => a.indexOf(id) === i);
         if (!ids.length) return { ok: false, error: "no models in response" };
         ids.sort();
-        fetchCache.set(providerId, { metaById: Object.create(null) });
-        return { ok: true, models: ids, metaById: fetchCache.get(providerId).metaById, via: planSrc.endpoint };
+        const entries = await Promise.race([catalogPromise, catalogGrace.then(() => (catalogCache ? catalogCache.entries : []))]);
+        const metaById = Object.create(null);   // null 原型：模型 id 来自远端，"__proto__" 等键必须可写
+        if (entries && entries.length) {
+          for (const mid of ids) {
+            const hit = matchCatalogEntry(entries, mid);
+            if (!hit) continue;
+            const meta = mergedMeta({ id: mid, contextWindow: 0, maxOutputTokens: 0, modalities: null, vision: undefined, efforts: [] }, hit.model);
+            if (Object.keys(meta).length) metaById[mid] = meta;
+          }
+        }
+        const fetching = fillEffortsFromApiCatalog(metaById, ids);   // #236：GLM 档位词表来自 api 目录（按需）
+        fetchCache.set(providerId, { metaById: metaById });
+        return { ok: true, models: ids, metaById: metaById, via: planSrc.endpoint, effortsFetching: fetching || undefined };
       } catch (e) {
         return { ok: false, error: (e && e.name === "TimeoutError") ? "timeout" : "request failed" };
       }
     }
     const apiKey = String(((rule.config || {}).access || {}).apiKey || "").trim();
     const urls = candidateUrls((rule.config || {}).api.baseUrl);
-    if (!fetchImpl) return { ok: false, error: "no network stack" };
     const headers = { "Accept": "application/json", "User-Agent": "ZCode" };
     if (apiKey) { headers["Authorization"] = "Bearer " + apiKey; headers["x-api-key"] = apiKey; }
-    /* 目录与供应商请求并行；目录只在供应商完成后最多宽限 CATALOG_GRACE_MS——它是行内
-     * 小字的锦上添花，绝不拖慢弹窗（cc-switch 拉列表不等目录，同款取舍） */
-    const catalogPromise = loadCatalog();
-    const catalogGrace = new Promise((resolve) => setTimeout(resolve, CATALOG_GRACE_MS));
     let lastError = "no candidate endpoint succeeded";
     let items = null, via = "";
     for (const url of urls) {
@@ -458,9 +645,10 @@ function createModelPuller(opts) {
     }
     if (!ids.length) return { ok: false, error: "no models in response" };
     ids.sort();
+    const fetching = fillEffortsFromApiCatalog(metaById, ids);   // #236：缺档位证据时按需补/后台拉 api 目录
     fetchCache.set(providerId, { metaById: metaById });
     if (fetchCache.size > CATALOG_CACHE_MAX) fetchCache.delete(fetchCache.keys().next().value);
-    return { ok: true, models: ids, metaById: metaById, via: via };
+    return { ok: true, models: ids, metaById: metaById, via: via, effortsFetching: fetching || undefined };
   }
 
   function writeProviderCfg(data) {
@@ -522,7 +710,7 @@ function createModelPuller(opts) {
           ? specs.maxOutputTokens : (specs.maxOutputTokens = {});
         if (typeof limit.map !== "string") limit.max = meta.maxOutputTokens;   // 带 map 的自洽结构不动
       }
-      if (meta.efforts) {
+      if (meta.efforts && meta.efforts.length) {
         const level = specs.reasoningLevel && typeof specs.reasoningLevel === "object"
           ? specs.reasoningLevel : (specs.reasoningLevel = {});
         if (typeof level.map !== "string") level.values = meta.efforts.slice();
@@ -586,11 +774,15 @@ function createModelPuller(opts) {
             const entry = JSON.parse(JSON.stringify(template));
             rules.push({ modelId: mid, providerId: providerId, config: entryWithMeta(entry, cache ? cache.metaById[mid] : null) });
           }
-        } else if (planSrc) {
+        } else {
           /* 无兄弟模板：按宿主 addPersonalModel 的最小骨架写实 {enabled:true}（issue #226；
-           * 条目 schema strict，config 经 sparseShape 接受最小布尔） */
+           * 条目 schema strict，config 经 sparseShape 接受最小布尔）。issue #236：api-key
+           * 供应商首拉同样走这里，有据元数据（contextWindow/inputFormat/档位/输出上限）
+           * 直接写实——稀疏个人规则字段级覆盖内置，map 继承宿主 apiType catch-all；
+           * 绝不生成 map，绝不写 manualProviderModelRules */
+          const cache = fetchCache.get(providerId);
           for (const mid of adding) {
-            rules.push({ modelId: mid, providerId: providerId, config: { enabled: true } });
+            rules.push({ modelId: mid, providerId: providerId, config: entryWithMeta({ enabled: true }, cache ? cache.metaById[mid] : null) });
           }
         }
       }
@@ -617,5 +809,5 @@ function parseModelsPayload(data) {
 module.exports = {
   createModelPuller, sanitizeModelIds, parseModelsPayload, candidateUrls,
   extractModelMeta, catalogEntries, matchCatalogEntry, inputFormatFrom, canonicalBasename,
-  endsWithVersionSegment, rawModelId,
+  endsWithVersionSegment, rawModelId, apiCatalogEntries, buildEffortsIndex,
 };

@@ -41,10 +41,15 @@ test("mEsc escapes all HTML-sensitive characters", () => {
   assert.equal(mp.mEsc("plain-id.v1"), "plain-id.v1");
 });
 
-test("mpMetaParts: ctx/out visible, reasoning in title, empty yields null", () => {
+test("mpMetaParts: ctx/out visible, reasoning in title; missing meta yields neutral hint (#236)", () => {
   const mp = loadMpHelpers("zh");
-  assert.deepEqual(mp.mpMetaParts(null), null);
-  assert.deepEqual(mp.mpMetaParts({}), null);
+  const hint = mp.mpMetaParts(null);
+  assert.equal(hint.visible, "未获取配置");   // #236：无元数据不再静默，中性提示不报红
+  assert.ok(hint.title.indexOf("默认") >= 0);
+  assert.equal(mp.mpMetaParts({}).visible, "未获取配置");   // 空元数据同款（无任何证据）
+  const fetching = mp.mpMetaParts(null, true);   // #236：目录后台补拉中给「档位补拉中」状态
+  assert.equal(fetching.visible, "档位补拉中…");
+  assert.ok(fetching.title.indexOf("重新拉取") >= 0);
   const full = mp.mpMetaParts({ contextWindow: 262144, maxOutputTokens: 32000, efforts: ["off", "high"] });
   assert.equal(full.visible, "上下文 262k · 输出 32k");
   assert.equal(full.title, "ctx 262k · out 32k · 思考档位 off/high");
@@ -61,6 +66,19 @@ test("mpMetaParts: english wording follows lang", () => {
   const full = mp.mpMetaParts({ contextWindow: 262144, maxOutputTokens: 32000 });
   assert.equal(full.visible, "ctx 262k · out 32k");
   assert.equal(full.title, "ctx 262k · out 32k");
+  assert.equal(mp.mpMetaParts(null).visible, "no config fetched");   // #236 中性提示双语
+  assert.equal(mp.mpMetaParts(null, true).visible, "efforts pulling…");   // 补拉中状态双语
+});
+
+/* ---------- #236 弹窗披露 ---------- */
+
+test("model pull modal discloses append-only and default-keep semantics (#236)", () => {
+  assert.match(SOURCE, /仅新增写入/);
+  assert.match(SOURCE, /不会被覆盖/);
+  assert.match(SOURCE, /保持 ZCode 默认值/);
+  assert.match(SOURCE, /class="zu-mp-note"/);   // 脚注复用中性提示样式（不改 CSS）
+  assert.match(SOURCE, /档位目录正在后台补拉/);   // 目录补拉状态脚注（#236 缓存与进度）
+  assert.match(SOURCE, /effortsFetching/);   // 状态标志从 fetch 回调透传进弹窗
 });
 
 /* ---------- v132 宿主设置页挂载契约 ---------- */
