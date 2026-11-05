@@ -202,25 +202,48 @@ test('四格 tooltip 显示 ¥ 费用行、模型明细费用与可点来源脚�
   const h = harness(); setup(h);
   h.window.__zusageUpdate(h.payload({}));
   const tips = h.tips();
-  // 本轮（tips[0]，v215 卡）：KPI 费用 + 明细块费用
+  // 本轮（tips[0]，v215 卡）：KPI 费用 + 模型明细表格（v253 改项目卡式四列表，行式 rt-models 退役）
   assert.match(tips[0], /预估费用<svg class="tip-fxq"[^]*?zu-stat-v">¥3\.55<\/div>/);
-  assert.match(tips[0], /GLM-5\.3-FlashX<\/b><span>5800 token · 2次 · ¥3\.55<svg class="tip-fxq"/);   // 本轮明细块
-  assert.match(tips[0], /rt-models/);
+  assert.match(tips[0], /zu-pj-mhead[^]*?模型明细[^]*?zu-stat-table/);
+  assert.match(tips[0], /<td class="zu-pj-mname" title="GLM-5\.3-FlashX">GLM-5\.3-FlashX<\/td><td>5800<\/td><td>2<\/td><td>¥3\.55<\/td>/);
+  assert.doesNotMatch(tips[0], /rt-models/);
   assert.doesNotMatch(tips[0], /价格来源/);   // 底部来源脚注已移除（信息收进气泡）
   // 会话累计（tips[1]，v215 卡）：KPI 费用 + 模型表格行费用
   assert.match(tips[1], /zu-stat-tip--session/);
   assert.match(tips[1], /预估费用<svg class="tip-fxq"[^]*?zu-stat-v">¥7\.10<\/div>/);
   assert.match(tips[1], /<td class="zu-pj-mname" title="GLM-5\.3">GLM-5\.3<\/td><td>1000<\/td><td>3<\/td><td>¥2\.84<\/td>/);
   assert.match(tips[1], /<td class="zu-pj-mname" title="claude-opus-5-5">claude-opus-5-5<\/td><td>2000<\/td><td>1<\/td><td>¥4\.26<\/td>/);
-  // 今日合计（tips[2]，v215 卡）：KPI 费用
+  // 今日合计（tips[2]，v215 卡）：KPI 费用 + 模型明细表格（v253）
   assert.match(tips[2], /输入用量/);
   assert.match(tips[2], /预估费用<svg class="tip-fxq"[^]*?zu-stat-v">¥14\.20<\/div>/);
+  assert.match(tips[2], /zu-pj-mhead[^]*?模型明细[^]*?zu-stat-table/);
+  assert.match(tips[2], /<td class="zu-pj-mname" title="GLM-5\.3-FlashX">GLM-5\.3-FlashX<\/td><td>9\.8万<\/td><td>40<\/td><td>¥14\.20<\/td>/);
   assert.doesNotMatch(tips[2], /价格来源/);
   // 项目累计（tips[3]，v214 统计卡）
   assert.match(tips[3], /zu-project-tip" data-key="sid_main:/);
   assert.match(tips[3], /<td class="zu-pj-mname" title="GLM-5\.3">GLM-5\.3<\/td><td>3000<\/td><td>8<\/td><td>¥21\.30<\/td>/);
   // 子代理格（tips[5]，v217）：__tip 置空——汇总/费用迁入统一浮层（.zu-sub-pop），不走通用 tooltip
   assert.equal(tips[5], null);
+});
+
+test('v253 本轮/今日模型明细表：多模型按 Token 用量降序渲染、缺价模型显 "—" 不显假 0', () => {
+  const h = harness(); setup(h);
+  const p = h.payload({});
+  p.today.models = [{ model: 'claude-opus-5-5', requests: 5, total: 3000 },   // 升序输入：渲染层必须重排；缺 cost_usd 显 "—"
+    { model: 'GLM-5.3-FlashX', requests: 40, total: 98000, cost_usd: 2,
+      rates: { input: 0.29879, output: 1.04577, cache_read: 0.08516, cache_write: 0, key: 'glm-5.3-flashx' } }];
+  p.recent[0].last_turn.models = [{ model: 'GLM-5.3-FlashX', requests: 1, total: 1800, cost_usd: 0.5 },
+    { model: 'claude-opus-5-5', requests: 1, total: 4000 }];   // 升序输入，验证渲染层降序（4000 行先）
+  h.window.__zusageUpdate(p);
+  const tips = h.tips();
+  // 今日：渲染重排后 9.8万 行在前、3000 行在后；缺价模型费用 "—"
+  assert.match(tips[2], /¥14\.20<\/td><\/tr><tr><td class="zu-pj-mname" title="claude-opus-5-5">claude-opus-5-5<\/td><td>3000<\/td><td>5<\/td><td>—<\/td><\/tr>/);
+  // 本轮：升序输入（1800 在前、4000 在后）渲染为降序（4000 行先），各自费用 — / ¥3.55
+  assert.match(tips[0], /<td class="zu-pj-mname" title="claude-opus-5-5">claude-opus-5-5<\/td><td>4000<\/td><td>1<\/td><td>—<\/td><\/tr><tr><td class="zu-pj-mname" title="GLM-5\.3-FlashX">GLM-5\.3-FlashX<\/td><td>1800<\/td><td>1<\/td><td>¥3\.55<\/td><\/tr>/);
+  // 空数组：整块不渲染（含表格骨架也不出）
+  p.today.models = [];
+  h.window.__zusageUpdate(p);
+  assert.doesNotMatch(h.tips()[2], /zu-stat-table|模型明细/);
 });
 
 test('无 fx 汇率时诚实降级 $ 原值，脚注标 USD', () => {
@@ -249,6 +272,8 @@ test('旧快照（无 cost_usd/fx 字段）不显费用行，不显假 0', () =>
   h.window.__zusageUpdate(h.payload({ withCost: false, todayCost: null }));
   // v217：子代理格 tip 为 null（统一浮层承接），遍历时跳过
   for (const t of h.tips()) { if (!t) continue; assert.doesNotMatch(t, /预估费用<svg|预估费用<\/b>/); }   // KPI 标签也随项目卡骨架存在——只禁 KPI/行费用形态
+  // v253 review：today.models 未注入（旧快照形态）→ 今日模型明细整块不渲染（空态守卫）
+  assert.doesNotMatch(h.tips()[2], /模型明细|zu-pj-mhead/);
 });
 
 test('⚙ 开关关闭（zusage3.cost=0）后四格均无费用行与脚注', () => {
@@ -262,6 +287,12 @@ test('⚙ 开关关闭（zusage3.cost=0）后四格均无费用行与脚注', ()
   }
   assert.doesNotMatch(h.tips()[3], /预估费用/);   // 项目卡 KPI 格与表格费用列整体不渲染
   assert.match(h.tips()[3], /<th>[^<]*<\/th><\/tr><\/thead>/);   // 表头收为三列
+  // v253 review：本轮/今日模型表头精确锚定三列（含 </thead> 收尾，4 列表头失配），
+  // 且行内无费用 td（表头/行门控对称，双向锁死）
+  assert.match(h.tips()[0], /<thead><tr><th>模型<\/th><th>Token 用量 ↓<\/th><th>请求次数<\/th><\/tr><\/thead>/);
+  assert.match(h.tips()[2], /<thead><tr><th>模型<\/th><th>Token 用量 ↓<\/th><th>请求次数<\/th><\/tr><\/thead>/);
+  assert.doesNotMatch(h.tips()[0], /<td>¥/);
+  assert.doesNotMatch(h.tips()[2], /<td>¥/);
 });
 
 test('底部「价格来源…汇率…」脚注已从四格与紧凑摘要移除（信息收进气泡）', () => {
