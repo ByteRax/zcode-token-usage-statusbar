@@ -9,6 +9,9 @@ import tempfile
 import unittest
 from unittest import mock
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 import patch_install
 
 
@@ -48,6 +51,13 @@ class UiElementExecutableTests(unittest.TestCase):
         loose.chmod(0o755)
         with mock.patch.object(patch_install, "IS_MAC", True):
             self.assertEqual(patch_install.ui_element_exe_for(loose), loose)
+
+    def test_missing_exe_still_swaps_to_existing_helper(self):
+        # 与 cliExecutable 同契：不校验原二进制自身（升级覆盖窗口 ZCODE_EXE 可能暂缺），
+        # 只看 Helper 是否可用——可用即继续检查，而不是整段跳过。
+        self.exe.unlink()
+        with mock.patch.object(patch_install, "IS_MAC", True):
+            self.assertEqual(patch_install.ui_element_exe_for(self.exe), self.helper)
 
     @unittest.skipIf(os.name == "nt",
                      "Windows 的 chmod 不区分可执行位，os.access(X_OK) 恒真；仅 POSIX 可造不可执行 Helper")

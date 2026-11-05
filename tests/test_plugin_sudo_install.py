@@ -278,6 +278,34 @@ class SudoNodeDiscoveryTests(unittest.TestCase):
                 verify()
         self.assertEqual(run.call_args[0][0][0], str(helper))
 
+    def test_verifier_without_swap_keeps_original_binary(self):
+        """patch_install 缺 ui_element_exe_for（旧缓存模块）时按原二进制验收，同步不失败。"""
+        bundle = self.root / "opt" / "ZCode"
+        target = bundle / "resources" / "app.asar"
+        write_asar(target)
+        executable = bundle / "MacOS" / "ZCode"
+        executable.parent.mkdir(parents=True, exist_ok=True)
+        executable.write_bytes(b"#!/bin/sh\n")
+        executable.chmod(0o755)
+        runtime = self.root / "runtime"
+        runtime.mkdir()
+        for name in ("plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs"):
+            (runtime / name).write_bytes(b"// fixture")
+        with mock.patch.object(sys, "platform", "darwin"), \
+                mock.patch.object(installer, "load_patch_install",
+                                  return_value=types.SimpleNamespace()), \
+                mock.patch.object(installer, "_node_candidates",
+                                  return_value=[Path("/path/bin/node")]), \
+                mock.patch.object(installer, "_run_verifier") as run:
+            run.return_value = types.SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps({"ok": True, "identity": {"record": None},
+                                   "pluginRoot": str(installer.PLUGIN_ROOT.resolve())}),
+                stderr="")
+            with installer._sync_verifier(runtime, target) as verify:
+                verify()
+        self.assertEqual(run.call_args[0][0][0], str(executable))
+
 
 class UnactionableVerifierErrorTests(unittest.TestCase):
     """找不到 node/ZCode 时，报错必须是可操作的中文提示，而不是裸的 ValueError。"""
