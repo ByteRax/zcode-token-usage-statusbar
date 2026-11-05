@@ -366,10 +366,12 @@ test("main bridge: model puller shares quota path resolution incl. migrated cred
       throw new Error(id);
     },
     resolveHostQuotaPaths: () => paths, LOG() {},
+    path: require("path"), __dirname: "/runtime",   // #236：cachePath 用 path.join(__dirname, …)
   });
   assert.equal(opts.length, 1);
   assert.equal(opts[0].customCfgPath, paths.customCfgPath);
   assert.equal(opts[0].credentialsPath, paths.credsPath, "credentials 不再硬编码 ~/.zcode/v2 死目录");
+  assert.equal(opts[0].cachePath, require("path").join("/runtime", "model-efforts-cache.json"), "档位索引缓存落运行目录（#236）");
 });
 
 
