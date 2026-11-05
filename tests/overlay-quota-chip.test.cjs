@@ -69,7 +69,7 @@ class Element {
   getBoundingClientRect() { return { top: 600, bottom: 650, left: 20, right: 520, width: 500, height: 50 }; }
 }
 
-function harness({ quotaOn = true } = {}) {
+function harness({ quotaOn = true, prefs = {} } = {}) {
   const window = new Element(), body = new Element('body'), root = new Element('html');
   Object.assign(window, { innerWidth: 1000, innerHeight: 800 });
   /* 开关真值来自主进程推送的插件状态（config.json quota_enabled），不是 localStorage；
@@ -82,8 +82,12 @@ function harness({ quotaOn = true } = {}) {
     querySelectorAll: selector => selector.startsWith('textarea,') ? panes : [],
     elementFromPoint: () => panes[0] || body });
   const timers = new Map(), frames = new Map(), observers = []; let id = 0;
+  /* v251：localStorage 桩改 map 承载，prefs 可预种子渲染端展示偏好（如 zusage3.quotaRemain）；
+   * 空表行为与旧桩一致（getItem 缺失返回 null） */
+  const lsStore = new Map(Object.entries(prefs));
   const sandbox = vm.createContext({ window, document, console, innerHeight: 800, innerWidth: 1000,
-    location: { href: 'file:///fixture' }, localStorage: { getItem: () => null, setItem() {} },
+    location: { href: 'file:///fixture' },
+    localStorage: { getItem: k => (lsStore.has(k) ? lsStore.get(k) : null), setItem: (k, v) => { lsStore.set(String(k), String(v)); } },
     getComputedStyle: () => ({ borderTopWidth: '1px', backgroundColor: 'black', opacity: '1', display: 'block', visibility: 'visible' }),
     setTimeout: (fn, ms) => { timers.set(++id, { fn, ms, interval: false }); return id; },
     clearTimeout: n => timers.delete(n),
@@ -141,7 +145,7 @@ function harness({ quotaOn = true } = {}) {
   function mutate(pane) {
     for (const o of [...observers]) if (o.connected && o.target === pane) o.fn([]);
   }
-  return { window, body, inject, tick, boot, buildComposer, payload, chipOf, liveOf, tipEl, mutate, observers };
+  return { window, body, inject, tick, boot, buildComposer, payload, chipOf, liveOf, tipEl, mutate, observers, lsStore };
 }
 
 const NOW = Date.now();
@@ -1095,4 +1099,88 @@ test('a late successful credential save does not erase newly edited input', () =
   field.value = 'new-fixture-key'; panel.listeners.get('input')[0]({ target: field });
   h.window.__zusagePluginResult({ id: req.requestId, ok: true });
   assert.equal(field.value, 'new-fixture-key');
+});
+
+test('v251 remaining caliber: chip numbers show 100−used, band color still judged on used (incl. exc)', () => {
+  const h = harness({ prefs: { 'zusage3.quotaRemain': '1' } }), ui = h.buildComposer('workspace-main', 'sid_main');
+  h.inject(); h.boot(); h.tick();
+  h.window.__zusageUpdate(h.payload({ quota: QUOTA_OK }));
+  const chip = h.chipOf(ui.wrap);
+  assert.ok(chip, 'chip mounted');
+  assert.equal(chip.innerHTML,
+    '<span class="zu-qseg zu-qb-calm"><span class="zu-qlabel">5小时</span> 74%</span><span class="zu-qsep">|</span><span class="zu-qseg zu-qb-calm"><span class="zu-qlabel">7天</span> 88%</span>');
+  assert.equal(chip.getAttribute('aria-label'), '套餐剩余 5小时 74%，7天 88%');
+  h.window.__zusageUpdate(h.payload({ quota: withPct(95) }));
+  assert.equal(h.chipOf(ui.wrap).innerHTML,
+    '<span class="zu-qseg zu-qb-crit"><span class="zu-qlabel">5小时</span> 5%</span>',
+    'used 95% → crit color stays on the remaining 5% segment');
+  h.window.__zusageUpdate(h.payload({ quota: withPct(100) }));
+  assert.equal(h.chipOf(ui.wrap).innerHTML,
+    '<span class="zu-qseg zu-qb-exc"><span class="zu-qlabel">5小时</span> 0%</span>',
+    'used 100% → exc band, remaining clamps to 0%');
+  h.window.__zusageUpdate(h.payload({ quota: withPct(120) }));
+  assert.equal(h.chipOf(ui.wrap).innerHTML,
+    '<span class="zu-qseg zu-qb-exc"><span class="zu-qlabel">5小时</span> 0%</span>',
+    'over-limit used 120% (dirty backend data) → remaining still clamps to 0%, never negative');
+  h.window.__zusageUpdate(h.payload({ quota: withPct(-5) }));
+  assert.equal(h.chipOf(ui.wrap).innerHTML,
+    '<span class="zu-qseg zu-qb-calm"><span class="zu-qlabel">5小时</span> 100%</span>',
+    'negative used −5% (dirty backend data) → remaining clamps to 100%, never over');
+});
+
+test('v251 remaining caliber: tooltip window rows and key-quota row lead with remaining', () => {
+  const h = harness({ prefs: { 'zusage3.quotaRemain': '1' } }), ui = h.buildComposer('workspace-main', 'sid_main');
+  h.inject(); h.boot(); h.tick();
+  const q = Object.assign({}, QUOTA_OK, { quotaSummary: { used: 12, limit: 100, remaining: 88, currency: 'USD' } });
+  h.window.__zusageUpdate(h.payload({ quota: q }));
+  const chip = h.chipOf(ui.wrap);
+  chip.listeners.get('mouseenter')[0].call(chip);
+  const html = h.tipEl().innerHTML;
+  assert.match(html, /5小时窗口<\/b><span>剩余 74%/);
+  assert.match(html, /本周窗口<\/b><span>剩余 88%/);
+  assert.match(html, /Key 总额度<\/b><span>剩余 \$88\.00 \/ \$100\.00 · 已用 \$12\.00/);
+});
+
+test('v251 remaining caliber: absolute-value window rows swap used/remaining order, totals unchanged', () => {
+  const h = harness({ prefs: { 'zusage3.quotaRemain': '1' } }), ui = h.buildComposer('workspace-main', 'sid_main');
+  h.inject(); h.boot(); h.tick();
+  const quota = { active: 'custom:gw', byProvider: { gw: 'custom:gw' }, sources: {
+    'custom:gw': { status: 'ok', label: 'sub2api', kind: 'plan', fetchedAt: NOW, stale: false,
+      windows: { daily: { percent: 33.1, used: 33.0984, total: 100, remaining: 66.9016, currency: 'USD', resetsAt: null } } },
+    'custom:other': { status: 'ok', label: 'other-relay', kind: 'plan', fetchedAt: NOW, stale: false,
+      windows: { weekly: { percent: 20, resetsAt: null } } } } };
+  h.window.__zusageUpdate(h.payload({ provider: 'gw', model: 'gpt-fixture', quota }));
+  const chip = h.chipOf(ui.wrap);
+  assert.match(chip.innerHTML, /今日<\/span> 67%/);
+  chip.listeners.get('mouseenter')[0].call(chip);
+  const html = h.tipEl().innerHTML;
+  assert.match(html, /每日窗口<\/b><span>剩余 66\.9% · \$66\.90 \/ \$100\.00 · 已用 \$33\.10/);
+  assert.match(html, /其他源<\/b><span>custom:other 80%/, 'non-active source summary follows the remaining caliber too (20% used → 80%)');
+  assert.doesNotMatch(html, /已用 33\.1%/);
+});
+
+test('v251 quota remaining toggle: panel checkbox persists the pref and re-renders the chip both ways', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  h.inject(); h.boot(); h.tick();
+  h.window.__zusageUpdate(h.payload({ quota: QUOTA_OK }));
+  assert.match(h.chipOf(ui.wrap).innerHTML, /26%/);
+  assert.match(source, /<input type="checkbox" class="zu-quota-remain">/);
+  const panel = h.body.children.find(e => e.classList.contains('zu-settings'));
+  assert.ok(panel, 'settings panel mounted on body');
+  const box = new Element('input');
+  box.classList.add('zu-quota-remain'); box.checked = true;
+  panel.listeners.get('change')[0]({ target: box });
+  assert.equal(h.window.quotaTest.state().quotaRemain, 1, 'optimistic state update');
+  assert.equal(h.lsStore.get('zusage3.quotaRemain'), '1', 'persisted to localStorage');
+  const chipHtml = h.chipOf(ui.wrap).innerHTML;
+  assert.match(chipHtml, /74%/, 'chip re-rendered in remaining caliber');
+  assert.doesNotMatch(chipHtml, /\b26%/);
+  box.checked = false;
+  panel.listeners.get('change')[0]({ target: box });
+  assert.equal(h.lsStore.get('zusage3.quotaRemain'), '0');
+  assert.match(h.chipOf(ui.wrap).innerHTML, /\b26%/, 'toggling back restores the used caliber');
+  /* 两处回填（buildPanel+syncPanel）目前无 DOM 行为断言通道（harness innerHTML 是字符串，
+   * 面板 checkbox 不入 stub 查询树），以源码双落点计数锁存在性——删任一处回填此断言即红 */
+  assert.equal((source.match(/qrBox\.checked = !!state\.quotaRemain/g) || []).length, 2,
+    'both buildPanel and syncPanel restore the checkbox state');
 });
