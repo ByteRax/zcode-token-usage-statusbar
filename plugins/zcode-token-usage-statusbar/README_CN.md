@@ -13,7 +13,7 @@
 ## 环境要求
 
 - Python **3.8+**，仅标准库，无需安装任何 pip 包。
-- Hook 命令按 `python3` → `python` → `py -3` 自动回退（兼容 Windows）。stdio MCP 服务固定使用 `python3`；若机器 PATH 里没有 `python3`，可把安装副本 `.mcp.json` 的 `command` 改成可用解释器（MCP 工具是可选的，命令与 Hook 不依赖它）。
+- Hook 命令按 `python3` → `python` → `py -3` 自动回退（兼容 Windows）。stdio MCP 服务经 `node` 启动包内 `mcp-launch.cjs`（桌面 ZCode 3.17.1 起给 MCP 子进程 PATH 末尾追加 Electron Node 回退 shim；更旧桌面版或无此机制的宿主需本机装有 Node），由它按同一顺序实测探测解释器并透传 stdio 给 `usage_mcp.py`——任何平台都无需手工改 `.mcp.json`（issue #234）。MCP 工具是可选的，命令与 Hook 不依赖它。
 
 ## 安装与首次运行
 

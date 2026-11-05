@@ -84,10 +84,18 @@ class PluginContractTests(unittest.TestCase):
     def test_mcp_declaration_uses_short_service_key_and_same_script(self):
         servers = json.loads((PLUGIN / ".mcp.json").read_text(encoding="utf-8"))["mcpServers"]
         self.assertEqual(list(servers), ["zusage"])
-        # 宿主对 stdio MCP 按 shell:false 直接 spawn，没有 shell 回退通道；
-        # macOS CLT 只有 python3、无 python，不能一刀切改名，Windows 需要时按用户指南手工改。
-        self.assertEqual(servers["zusage"]["command"], "python3")
-        self.assertEqual(servers["zusage"]["args"], ["${ZCODE_PLUGIN_ROOT}/usage_mcp.py"])
+        # 宿主对 stdio MCP 按 shell:false 直接 spawn，单命令没有 hooks 那样的回退通道，
+        # 而 Windows 无 python3、macOS CLT 无 python。command 固定为 node（宿主给 MCP
+        # 子进程 PATH 末尾追加 Electron Node fallback shim，未装 Node 也能解析），
+        # 由 mcp-launch.cjs 按 hooks 同款顺序 python3 → python → py -3 探测解释器
+        # 并透传 stdio（issue #234）。
+        self.assertEqual(servers["zusage"]["command"], "node")
+        self.assertEqual(
+            servers["zusage"]["args"],
+            ["${ZCODE_PLUGIN_ROOT}/mcp-launch.cjs", "${ZCODE_PLUGIN_ROOT}/usage_mcp.py"],
+        )
+        self.assertEqual(servers["zusage"]["type"], "stdio")
+        self.assertIs(servers["zusage"]["enabled"], True)
 
     def test_prompt_hook_no_longer_injects_model_instruction(self):
         # 统计行已改为确定性渲染（overlay.js 经 renderer 只读桥插入），hook 不再要求

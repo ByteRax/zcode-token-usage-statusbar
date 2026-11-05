@@ -35,6 +35,7 @@
       "plugins/zcode-token-usage-statusbar/hooks/session-start.py",
       "plugins/zcode-token-usage-statusbar/inject-main.cjs",
       "plugins/zcode-token-usage-statusbar/install_monitor.py",
+      "plugins/zcode-token-usage-statusbar/mcp-launch.cjs",
       "plugins/zcode-token-usage-statusbar/overlay.js",
       "plugins/zcode-token-usage-statusbar/overlay_install.py",
       "plugins/zcode-token-usage-statusbar/patch_install.py",

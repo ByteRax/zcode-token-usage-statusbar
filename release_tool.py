@@ -24,7 +24,7 @@ MAX_FILE = 8 * 1024 * 1024
 MAX_ASSET = 16 * 1024 * 1024
 MAX_MANIFEST = 256 * 1024
 MAX_TOTAL = 64 * 1024 * 1024
-SYNC_FILES = ("usage_mcp.py", "zusage.py", "patch_install.py", "install_monitor.py",
+SYNC_FILES = ("usage_mcp.py", "mcp-launch.cjs", "zusage.py", "patch_install.py", "install_monitor.py",
               "inject-main.cjs", "plugin-updater.cjs", "runtime_lock.py", "usage_stats.py", "turn-stats.js", "overlay.js",
               "plugin-release.cjs", "plugin-storage.cjs", "quota-client.cjs", "model-puller.cjs", "engine-patch.cjs", "release_unpack.py", "token_rate.py", "renderer_bridge.py", "token_pricing.py",
               "pending_zip_patch.py")

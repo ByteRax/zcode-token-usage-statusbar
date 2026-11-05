@@ -63,14 +63,14 @@
 - 桌面入口以绝对 `file://` 动态 `import` 引入 `inject-main.cjs`；主桥调用 Python，监听数据库及 WAL 变化，按窗口推送快照给 `overlay.js`。
 - 渲染端通过宿主会话/工作区 IPC 与本项目 scope 上报维持窗口和分栏身份；查询请求为 `{sids, scopes: [{sid, workspaceIdentity}]}`，响应 `recent` 携带 `workspace_identity`。
 - 工作区/任务 IPC、活动 SID IPC 与配置/更新写操作的校验不同；不能概括全部桥接同等可信，写操作保留本地窗口验证和固定动作白名单。
-- MCP 与 CLI 使用查询库；插件 `.mcp.json` 直接启动包内 `usage_mcp.py`，不是统一 `run.py` 入口。
+- MCP 与 CLI 使用查询库；插件 `.mcp.json` 经 `node` 启动包内 `mcp-launch.cjs` 拉起 `usage_mcp.py`，不是统一 `run.py` 入口。
 - `hooks/session-start.py` 负责运行文件同步、更新/自动安装（恒开）与故障提示；正常安装/待重启不再注入会话文字，由 ⚙ 齿轮红点承载（v172）；`hooks/prompt-submit.py` 记录本会话提问时间并注入「上一条回复」背景行，**不再向模型下达统计指令**——逐问统计行由前端确定性渲染（依赖 renderer 桥），会话末尾经主桥 `turn-text` 通道调用包内 `token_rate.py --turn --current` 回推富文本。
 - 专有入口是 `overlay_install.py`、`plugin_auto_update.py`、`restart_notice.py` 等；改变 hook 返回值应检查宿主 CLI 契约，不以手工执行代替自然事件验收。
 
 ## 3. 源文件、副本与正在运行的文件
 
 - `sync_plugin.py` 的 `FILES` 是共享分发清单（根目录是源，以脚本内定义为准）：
-  `usage_mcp.py`、`zusage.py`、`patch_install.py`、`install_monitor.py`、`inject-main.cjs`、`plugin-updater.cjs`、`plugin-release.cjs`、`plugin-storage.cjs`、`quota-client.cjs`、`release_unpack.py`、`runtime_lock.py`、`usage_stats.py`、`turn-stats.js`、`overlay.js`、`token_rate.py`、`renderer_bridge.py`、`token_pricing.py`、`pending_zip_patch.py`。
+  `usage_mcp.py`、`mcp-launch.cjs`、`zusage.py`、`patch_install.py`、`install_monitor.py`、`inject-main.cjs`、`plugin-updater.cjs`、`plugin-release.cjs`、`plugin-storage.cjs`、`quota-client.cjs`、`model-puller.cjs`、`engine-patch.cjs`、`release_unpack.py`、`runtime_lock.py`、`usage_stats.py`、`turn-stats.js`、`overlay.js`、`token_rate.py`、`renderer_bridge.py`、`token_pricing.py`、`pending_zip_patch.py`。
 - 共享文件先改根源码，再同步插件副本；清单外的插件入口、hooks、命令、技能和 manifest **不是生成文件**，应直接维护。新增分发文件须同步的全部登记处（不止 FILES）见 [.zcode/rules/install-release.md](.zcode/rules/install-release.md)。
 - `web/overlay.js` 是独立实现，不在插件同步清单内；不能直接复制根浮层覆盖 Web。共享语义变化要分别评估，保留 Web 的挂载、接口与布局差异。
 - 共享文件修改后在仓库根运行：
@@ -105,7 +105,7 @@ python3 sync_plugin.py --check
 
 - 保持修改聚焦，沿用现有原生代码与注释密度；不为统一风格引入框架、依赖或大规模重构。
 - `.js` 浮层是注入浏览器的脚本；`.cjs` 是 CommonJS。客户端入口可能是 ESM，注入行必须动态 `import`，不能直接 `require`；Web sidecar `.mjs` 是 Node ESM，`boot.js` 是浏览器脚本。
-- Python 路径使用 `Path`/已有定位逻辑；`python`、`python3`、`python_path` 与宿主实际可执行命令要区分，Windows 不保证有 `python3` 别名：插件 hooks.json 是 command+shell 回退链 `python3 → python → py -3`；`.mcp.json` 仍固定 `python3`（宿主对 stdio MCP 按 `shell:false` 直接 spawn 无回退通道，macOS CLT 只有 `python3`，不能整体改名）；主桥 `readCfg()` 把 `python_path` 缺省/空值归一为平台默认（win32=`python`，其它=`python3`），注入/安装时写回 `sys.executable` 并在每次 SessionStart 刷新。改这几处前先对当前客户端版本引擎核对 process/command 两种 hook 类型的 schema 与展开语义；回退链成立的平台依据见 [.zcode/rules/install-release.md](.zcode/rules/install-release.md)。
+- Python 路径使用 `Path`/已有定位逻辑；`python`、`python3`、`python_path` 与宿主实际可执行命令要区分，Windows 不保证有 `python3` 别名：插件 hooks.json 是 command+shell 回退链 `python3 → python → py -3`；`.mcp.json` 以 `node` 启动 `mcp-launch.cjs`（宿主对 stdio MCP 按 `shell:false` 经 cross-spawn 直接拉起，单命令无 shell 回退通道；但宿主给 MCP 子进程 PATH 末尾追加 Electron Node fallback shim，未装 Node 也能解析 `node`），由 launcher 按 hooks 同款顺序实测探测解释器并透传 stdio，不能改回裸 `python3`/`python` 单命令；主桥 `readCfg()` 把 `python_path` 缺省/空值归一为平台默认（win32=`python`，其它=`python3`），注入/安装时写回 `sys.executable` 并在每次 SessionStart 刷新。改这几处前先对当前客户端版本引擎核对 process/command 两种 hook 类型的 schema 与展开语义；回退链成立的平台依据见 [.zcode/rules/install-release.md](.zcode/rules/install-release.md)。
 - 保留带空格路径、Unicode、引号与平台进程行为的测试。POSIX shell 用既有 `shlex` 引用；Windows PowerShell 的 UTF-16LE `EncodedCommand` 路径不能简化为裸引号。
 - Windows 进程查询沿用 `subprocess` argv 与相应解码，不让 Git Bash 转换 `/FI` 等开关；asar 被占用的收尾必须由宿主以外的监控进程执行，不能依赖 ZCode 自己的定时任务。
 - 配置只合并需要的键，不整体覆盖 `config.json`；保留未知键、用户显式关闭与个人路径。插件配置事务在锁内重读、合并，再同目录原子替换；损坏或非对象配置不能被默默重建。

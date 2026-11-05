@@ -16,9 +16,12 @@ from pathlib import Path
 ROOT = Path(__file__).parent.resolve()
 PLUGIN = ROOT / "plugins" / "zcode-token-usage-statusbar"
 
-# 插件包需要的根文件：除 usage_mcp.py 外也会同步进运行时目录
+# 插件包需要的根文件：mcp-launch.cjs 与 usage_mcp.py 在插件链都从插件目录运行，
+# 不进插件链运行时目录（usage_mcp.py 随 install.py 独立链装进运行目录是例外）；
+# 其余也会同步进运行时目录
 FILES = [
     "usage_mcp.py",
+    "mcp-launch.cjs",
     "zusage.py",
     "patch_install.py",
     "install_monitor.py",
