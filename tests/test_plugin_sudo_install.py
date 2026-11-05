@@ -26,6 +26,11 @@ spec = importlib.util.spec_from_file_location("sudo_install_overlay", str(INSTAL
 installer = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(installer)
 
+REPO_ROOT = PLUGIN_ROOT.parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+import patch_install
+
 
 def load_module(name, path):
     module_spec = importlib.util.spec_from_file_location(name, str(path))
@@ -241,6 +246,37 @@ class SudoNodeDiscoveryTests(unittest.TestCase):
             with installer._sync_verifier(runtime, target) as verify:
                 verify()
         self.assertEqual(run.call_args[0][0][0], str(executable))
+
+    def test_darwin_verifier_swaps_to_ui_element_helper(self):
+        """darwin 验收器把 asar 旁主二进制换成 LSUIElement Helper，Dock 不闪图标（issue #238）。"""
+        bundle = self.root / "opt" / "ZCode"
+        target = bundle / "resources" / "app.asar"
+        write_asar(target)
+        executable = bundle / "MacOS" / "ZCode"
+        helper = (bundle / "Frameworks" / "ZCode Helper.app" /
+                  "Contents" / "MacOS" / "ZCode Helper")
+        for path in (executable, helper):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"#!/bin/sh\n")
+            path.chmod(0o755)   # ui_element_exe_for 真跑 X_OK 校验，夹具必须可执行
+        runtime = self.root / "runtime"
+        runtime.mkdir()
+        for name in ("plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs"):
+            (runtime / name).write_bytes(b"// fixture")
+        with mock.patch.object(sys, "platform", "darwin"), \
+                mock.patch.object(patch_install, "IS_MAC", True), \
+                mock.patch.object(installer, "load_patch_install", return_value=patch_install), \
+                mock.patch.object(installer, "_node_candidates",
+                                  return_value=[Path("/path/bin/node")]), \
+                mock.patch.object(installer, "_run_verifier") as run:
+            run.return_value = types.SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps({"ok": True, "identity": {"record": None},
+                                   "pluginRoot": str(installer.PLUGIN_ROOT.resolve())}),
+                stderr="")
+            with installer._sync_verifier(runtime, target) as verify:
+                verify()
+        self.assertEqual(run.call_args[0][0][0], str(helper))
 
 
 class UnactionableVerifierErrorTests(unittest.TestCase):

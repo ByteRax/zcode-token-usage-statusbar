@@ -386,6 +386,11 @@ def _sync_verifier(runtime, target_asar=None):
         candidates = ([target.parent.parent / "MacOS" / "ZCode"] if sys.platform == "darwin"
                       else [target.parent.parent / ("ZCode.exe" if sys.platform == "win32" else "zcode")])
         executable = next((str(item) for item in candidates if item.is_file()), None)
+        # darwin 换 LSUIElement Helper 验收，Dock 不闪主二进制图标（issue #238）；
+        # patch_install 缺该函数时按原二进制，下面的启动失败回退链不变。
+        swap = getattr(load_patch_install(), "ui_element_exe_for", None)
+        if swap is not None:
+            executable = swap(executable)
     # asar 旁的同名可执行文件可能是外部应用/损坏文件（文件名不是身份依据）：
     # 启动失败（OSError/WinError 216）或启动后挂起超时，都回退 Node 再试。
     launch_candidates = list(dict.fromkeys(str(item) for item in

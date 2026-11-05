@@ -36,6 +36,12 @@ class UiElementExecutableTests(unittest.TestCase):
         with mock.patch.object(patch_install, "IS_MAC", True):
             self.assertEqual(patch_install.ui_element_exe_for(self.exe), self.exe)
 
+    def test_helper_path_being_directory_falls_back(self):
+        self.helper.unlink()
+        self.helper.mkdir()
+        with mock.patch.object(patch_install, "IS_MAC", True):
+            self.assertEqual(patch_install.ui_element_exe_for(self.exe), self.exe)
+
     def test_loose_binary_without_bundle_layout_ignored(self):
         loose = self.root / "zcode-cli"
         loose.write_bytes(b"#!/bin/fixture")
@@ -76,6 +82,16 @@ class UiElementExecutableTests(unittest.TestCase):
         self.assertEqual(argv[0], [str(self.helper), "--check", mock.ANY])
         self.assertEqual(kwargs["env"]["ELECTRON_RUN_AS_NODE"], "1")
         self.assertIn("exit=0", output.getvalue())
+
+    def test_syntax_check_skips_when_zcode_exe_missing(self):
+        run = mock.Mock()
+        with mock.patch.object(patch_install, "IS_MAC", True), \
+                mock.patch.object(patch_install, "ZCODE_EXE", None), \
+                mock.patch.object(patch_install.subprocess, "run", run):
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                self.assertTrue(patch_install.syntax_check(self.root / "app.asar"))
+        run.assert_not_called()
 
 
 if __name__ == "__main__":
