@@ -47,6 +47,7 @@
 - 源预设模板 `SOURCE_PRESETS`（主进程静态表，随 sourcesConfig 推送 presets/keyUrl/baseUrl，apiKey 照旧不回显）：⚙ 面板"选模板只填 Key"，官方域变体 chip 一键写入 secrets 的 baseUrl；siliconflow 币种随域（`.cn` CNY / `.com` USD，响应自带 currency 仍优先）；控制台取 Key 链接走 `openExternal` 桥。key-only（无 baseUrl）源也应激活。
 - 显示门控：会话首个完成的 `main_turn`（快照 `last.provider_id`，已滤辅助请求污染）出现前，chip 跟随快照顶层 `provider_fallback`（全局最近 account:* 请求）；会话最新请求是自定义 provider 时显示对应自定义源。团队套餐显示"暂不支持"。SSH 远端分栏直接显示本地额度（宿主 provisioning 同账号事实）。
 - chip 挂原生上下文按钮（`data-testid="chat-context-usage-trigger"`）左侧，与原生按钮增强同款 render + heavy 双 reapply/还原契约（见 [overlay-ui.md](overlay-ui.md)）；⚙ 面板每源独立开关/凭据/立即刷新，状态中性提示（无凭据/无订阅不报红）；chip/tooltip 不得出现"模型独享额度"语义；时间统一 `yyyy-MM-dd HH:mm`。
+- 显示口径切换（v251）：`zusage3.quotaRemain`（localStorage 纯渲染偏好，缺省关=已用%，⚙「显示剩余额度」开启）切换后 chip 面分段数字与 aria、tooltip 窗口行/Key 总额度行/其他源摘要行按剩余% 打头（`quotaRemainPct`=100−已用，同一窗口池补数，钳 [0,100] 后展示——chip 面与其他源摘要行取整，tooltip 窗口行保留 1 位小数），绝对值行（含 Key 总额度行）内已用/剩余明细互换顺序、总额度位不变；**档位色恒按已用原始值判定，不随口径反转**（剩余越少越红的语义不变）；余额/Key 剩余额度单段与 team/info/error 形态不受影响。补数只对同一窗口成立，不得跨窗口或与绝对余额混算；旧渲染端读新快照/新渲染端读旧快照行为均不变（该开关不进快照与主进程协议）。
 
 ## 6. SCNet 账本估算（无凭据）
 
