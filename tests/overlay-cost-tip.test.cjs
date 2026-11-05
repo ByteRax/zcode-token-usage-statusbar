@@ -202,19 +202,22 @@ test('四格 tooltip 显示 ¥ 费用行、模型明细费用与可点来源脚�
   const h = harness(); setup(h);
   h.window.__zusageUpdate(h.payload({}));
   const tips = h.tips();
-  // 本轮（tips[0]，v215 卡）：KPI 费用 + 明细块费用
+  // 本轮（tips[0]，v215 卡）：KPI 费用 + 模型明细表格（v253 改项目卡式四列表，行式 rt-models 退役）
   assert.match(tips[0], /预估费用<svg class="tip-fxq"[^]*?zu-stat-v">¥3\.55<\/div>/);
-  assert.match(tips[0], /GLM-5\.3-FlashX<\/b><span>5800 token · 2次 · ¥3\.55<svg class="tip-fxq"/);   // 本轮明细块
-  assert.match(tips[0], /rt-models/);
+  assert.match(tips[0], /zu-pj-mhead[^]*?模型明细[^]*?zu-stat-table/);
+  assert.match(tips[0], /<td class="zu-pj-mname" title="GLM-5\.3-FlashX">GLM-5\.3-FlashX<\/td><td>5800<\/td><td>2<\/td><td>¥3\.55<\/td>/);
+  assert.doesNotMatch(tips[0], /rt-models/);
   assert.doesNotMatch(tips[0], /价格来源/);   // 底部来源脚注已移除（信息收进气泡）
   // 会话累计（tips[1]，v215 卡）：KPI 费用 + 模型表格行费用
   assert.match(tips[1], /zu-stat-tip--session/);
   assert.match(tips[1], /预估费用<svg class="tip-fxq"[^]*?zu-stat-v">¥7\.10<\/div>/);
   assert.match(tips[1], /<td class="zu-pj-mname" title="GLM-5\.3">GLM-5\.3<\/td><td>1000<\/td><td>3<\/td><td>¥2\.84<\/td>/);
   assert.match(tips[1], /<td class="zu-pj-mname" title="claude-opus-5-5">claude-opus-5-5<\/td><td>2000<\/td><td>1<\/td><td>¥4\.26<\/td>/);
-  // 今日合计（tips[2]，v215 卡）：KPI 费用
+  // 今日合计（tips[2]，v215 卡）：KPI 费用 + 模型明细表格（v253）
   assert.match(tips[2], /输入用量/);
   assert.match(tips[2], /预估费用<svg class="tip-fxq"[^]*?zu-stat-v">¥14\.20<\/div>/);
+  assert.match(tips[2], /zu-pj-mhead[^]*?模型明细[^]*?zu-stat-table/);
+  assert.match(tips[2], /<td class="zu-pj-mname" title="GLM-5\.3-FlashX">GLM-5\.3-FlashX<\/td><td>9\.8万<\/td><td>40<\/td><td>¥14\.20<\/td>/);
   assert.doesNotMatch(tips[2], /价格来源/);
   // 项目累计（tips[3]，v214 统计卡）
   assert.match(tips[3], /zu-project-tip" data-key="sid_main:/);
@@ -262,6 +265,8 @@ test('⚙ 开关关闭（zusage3.cost=0）后四格均无费用行与脚注', ()
   }
   assert.doesNotMatch(h.tips()[3], /预估费用/);   // 项目卡 KPI 格与表格费用列整体不渲染
   assert.match(h.tips()[3], /<th>[^<]*<\/th><\/tr><\/thead>/);   // 表头收为三列
+  assert.match(h.tips()[0], /<th>[^<]*<\/th><th>[^<]*<\/th><th>[^<]*<\/th><\/tr><\/thead>/);   // v253 本轮模型表头同收三列
+  assert.match(h.tips()[2], /<th>[^<]*<\/th><th>[^<]*<\/th><th>[^<]*<\/th><\/tr><\/thead>/);   // 今日合计同
 });
 
 test('底部「价格来源…汇率…」脚注已从四格与紧凑摘要移除（信息收进气泡）', () => {

@@ -47,7 +47,7 @@ test('tooltip uses supplied weighted rate and complete local date ranges in both
     const turn = tips.find(tip => tip.includes('zu-stat-tip--turn'));
     assert.match(turn, /102\.2 <small>t\/s<\/small>/);
     assert.doesNotMatch(turn, /27\.9 (?:tok|t)\/s/);
-    assert.match(turn.replace(/<[^>]+>/g, ''), lang === 'zh' ? /11 token 未参与测速/ : /11 tokens excluded from rate/);
+    assert.doesNotMatch(turn.replace(/<[^>]+>/g, ''), /未参与测速|excluded from rate/);   // v253 口径行已删（unrated_output 字段照旧生产，仅不再展示）
     // v210：全部时间范围行精确到秒（v166 先行会话/项目累计，本轮/今日合计/速率最近一段跟进；
     // 本用例未开 proj 开关，项目累计 tip 不渲染，共 4 处）
     assert.equal(tips.filter(tip => tip.includes('2026-10-19 13:42:00 — 2026-10-19 13:43:00')).length, 4);
