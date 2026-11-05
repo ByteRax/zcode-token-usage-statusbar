@@ -66,7 +66,7 @@ https://gitcode.com/tanranran/zcode-token-usage-statusbar.git#plugin-releases-gi
 
 自动安装始终开启：新建或恢复会话时只要状态条未注入就会自动安装/修复，不再提供开关（旧配置里的 `plugin_auto_install_overlay` 与环境变量 `ZUSAGE_PLUGIN_AUTO_INSTALL` 已不被读取）。只需要查询工具与回答速率时，运行 `/uninstall-overlay` 移除状态条并保留卸载豁免，阻止自动重注入与提示。
 
-Windows 找不到 `python3` 时插件 hook 会自动回退：hook 命令按 `python3` → `python` → `py -3` 依次尝试，无需改文件。插件的 `.mcp.json` 仍固定 `python3`——宿主对 stdio MCP 是直接 spawn，没有 shell 回退通道，而 macOS 自带命令只有 `python3`，不能整体换成 `python`；需要在 Windows 会话里使用 `token_usage` MCP 工具的用户，可手工把安装副本 `.mcp.json` 的 `command` 改成本机可用的 Python 命令，注意插件每 1 小时自动检查，有新版时安装更新可能覆盖此修改，只用状态条与 `/usage` 时无需处理；只改仓库不会改变已安装副本。
+Windows 找不到 `python3` 时插件 hook 会自动回退：hook 命令按 `python3` → `python` → `py -3` 依次尝试，无需改文件。stdio MCP 同样自动适配：`.mcp.json` 以 `node` 启动包内 `mcp-launch.cjs`（桌面 ZCode 3.17.1 起给 stdio MCP 子进程的 PATH 末尾追加 Electron Node 的回退 shim，未装 Node 的机器也能解析 `node`；更旧的桌面版或其它无此机制的宿主需要本机装有 Node），由它按同一顺序 `python3` → `python` → `py -3` 实测探测解释器后拉起 `usage_mcp.py` 并透传 stdio——macOS 无 `python`、Windows 无 `python3`、Microsoft Store 的 `python` 占位桩（只有执行才能与真实安装区分）都由探测排除，任何平台都无需手工改文件。三个候选全部不可用时 MCP 连接失败并在错误详情里提示安装 Python 3.8+；只用状态条与 `/usage` 时不受影响。
 
 ### 正式 Release 渠道
 

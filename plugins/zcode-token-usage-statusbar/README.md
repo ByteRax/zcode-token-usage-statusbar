@@ -13,7 +13,7 @@ See model speed, token usage, context size, plan quota, and Git status while you
 ## Requirements
 
 - Python **3.8+** with the standard library only — no pip packages.
-- Hook commands fall back `python3` → `python` → `py -3` (Windows friendly). The stdio MCP server is fixed to `python3`; if your machine has no `python3` on PATH, edit `command` in the installed copy's `.mcp.json` to your interpreter (the MCP tool is optional; commands and hooks work without it).
+- Hook commands fall back `python3` → `python` → `py -3` (Windows friendly). The stdio MCP server starts `mcp-launch.cjs` via `node` (ZCode desktop 3.17.1+ appends an Electron Node fallback shim to the MCP subprocess PATH; older desktop builds or hosts without that mechanism need a real `node` on PATH), which probes the same interpreter order and pipes stdio through to `usage_mcp.py` — no manual `.mcp.json` edits on any platform (issue #234). The MCP tool is optional; commands and hooks work without it.
 
 ## Install & first run
 
