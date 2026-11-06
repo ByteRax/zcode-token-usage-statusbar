@@ -20,6 +20,39 @@ def _number(value):
             and math.isfinite(value))
 
 
+def query_first_token_covers(con):
+    """「首块即落章」provider 集合（zusage._provider_first_token_covers 与
+    token_rate.first_token_covers 共用单一事实源）：对该 provider 的
+    (reasoning_tokens, time_to_first_token_ms) 做最小二乘斜率，<2.0 ms/token 说明
+    首字时间不随推理量增长——思考在首字后随输出流出，首字窗口已含思考；样本 <5
+    或推理量无变化不判（走 started_at 推理前置默认）。"""
+    if con is None:
+        return frozenset()
+    try:
+        rows = con.execute(
+            """select provider_id, count(*) n,
+                      sum(reasoning_tokens) sx, sum(time_to_first_token_ms) sy,
+                      sum(reasoning_tokens * time_to_first_token_ms) sxy,
+                      sum(reasoning_tokens * reasoning_tokens) sxx
+               from model_usage
+               where reasoning_tokens > 0 and time_to_first_token_ms is not null
+                 and provider_id is not null
+               group by provider_id""").fetchall()
+    except Exception:
+        return frozenset()
+    out = set()
+    for r in rows:
+        n = r[1] or 0
+        sx = r[2] or 0
+        denom = n * (r[5] or 0) - sx * sx
+        if n < 5 or denom <= 0:
+            continue
+        slope = (n * (r[4] or 0) - sx * (r[3] or 0)) / denom
+        if slope < 2.0:
+            out.add(r[0])
+    return frozenset(out)
+
+
 def request_stats(row, covers=frozenset()):
     """Output includes reasoning. Missing/invalid generation windows stay unrated.
     Thinking rows default to the started_at window (thinking before the first token);

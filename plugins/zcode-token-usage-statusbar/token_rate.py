@@ -41,8 +41,12 @@ import time
 from pathlib import Path
 
 from runtime_lock import file_lock
-from usage_stats import (MIN_GEN_MS, MAX_GEN_MS, hides_reasoning, request_stats,
-                         aggregate_requests)
+from usage_stats import (MIN_GEN_MS, MAX_GEN_MS, hides_reasoning,
+                         request_stats, aggregate_requests, round1 as _round1)
+try:
+    from usage_stats import query_first_token_covers
+except ImportError:
+    query_first_token_covers = None
 
 DB_PATH = os.environ.get("ZCODE_USAGE_DB") or str(
     Path.home() / ".zcode" / "cli" / "db" / "db.sqlite")
@@ -175,37 +179,12 @@ def scope_for(db, sid):
 
 
 def first_token_covers(db):
-    """「首块即落章」provider 集合（fork z1908144712 判据收编，与 zusage
-    _provider_first_token_covers 同一规则）：对该 provider 的 (reasoning_tokens,
-    time_to_first_token_ms) 做最小二乘斜率，<2.0 ms/token 说明首字时间不随推理量
-    增长——思考在首字后随输出流出，首字窗口已含思考，按 started_at 计时会把输入
-    预处理摊进生成耗时（速度偏低）。样本 <5/推理量无变化不判（走推理前置默认）。
-    本脚本一次性进程，每次调用现算（聚合 ~17ms）。"""
-    out = set()
-    if db is None:
-        return frozenset(out)
-    try:
-        rows = db.execute(
-            """select provider_id, count(*) n,
-                      sum(reasoning_tokens) sx, sum(time_to_first_token_ms) sy,
-                      sum(reasoning_tokens * time_to_first_token_ms) sxy,
-                      sum(reasoning_tokens * reasoning_tokens) sxx
-               from model_usage
-               where reasoning_tokens > 0 and time_to_first_token_ms is not null
-                 and provider_id is not null
-               group by provider_id""").fetchall()
-    except sqlite3.OperationalError:
-        return frozenset(out)   # 旧库缺列：判不出就全走既有口径
-    for r in rows:
-        n = r["n"] or 0
-        sx = r["sx"] or 0
-        denom = n * (r["sxx"] or 0) - sx * sx
-        if n < 5 or denom <= 0:
-            continue
-        slope = (n * (r["sxy"] or 0) - sx * (r["sy"] or 0)) / denom
-        if slope < 2.0:
-            out.add(r["provider_id"])
-    return frozenset(out)
+    """「首块即落章」provider 集合（委派 usage_stats.query_first_token_covers，与
+    zusage._provider_first_token_covers 同源；若运行目录 usage_stats.py 因热修保留为
+    旧版则回退为空集合，绝不因 ImportError 中断逐问速率）。"""
+    if query_first_token_covers is None:
+        return frozenset()
+    return query_first_token_covers(db)
 
 
 def to_item(r, covers=frozenset()):
@@ -401,10 +380,7 @@ def _sec(ms):
     return f"{ms / 1000:.1f}" if isinstance(ms, (int, float)) else "-"
 
 
-def _round1(x):
-    """一位小数；整数值去掉 .0（JS Math.round 的显示口径：400 而非 400.0）。"""
-    r = round(x, 1)
-    return int(r) if r == int(r) else r
+# _round1 已由 usage_stats.round1 导入
 
 
 # 本问统计行（回复收尾自测用）。调用方判定 turn 为空时（含 --current 守卫）不显示任何行。

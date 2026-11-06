@@ -26,6 +26,19 @@ try:
 except ImportError:   # 旧运行目录未部署新文件：预估费用整特性降级，快照无 cost/fx 字段
     _pricing = None
 
+try:
+    from usage_stats import (
+        MIN_GEN_MS as _TPS_MIN_GEN_MS,
+        MAX_GEN_MS as _TPS_MAX_GEN_MS,
+        hides_reasoning as _shared_hides_reasoning,
+        query_first_token_covers as _query_first_token_covers,
+    )
+except ImportError:   # 远端单文件直跑等无 usage_stats.py 场景：本模块内联兜底
+    _TPS_MIN_GEN_MS = 200
+    _TPS_MAX_GEN_MS = 3_600_000
+    _shared_hides_reasoning = None
+    _query_first_token_covers = None
+
 
 def load_config():
     cfg = {"context_window": 128000, "poll_ms": 2000}
@@ -99,8 +112,7 @@ def fmt(n):
 
 
 SESSION_TIMEOUT_MS = 30 * 60 * 1000  # 最近30分钟有请求视为活跃会话
-_TPS_MIN_GEN_MS = 200          # 有效样本下限，同 token_rate.MIN_GEN_MS
-_TPS_MAX_GEN_MS = 3_600_000    # 有效样本上限（1h），同 token_rate.MAX_GEN_MS
+# _TPS_MIN_GEN_MS / _TPS_MAX_GEN_MS 已从 usage_stats 导入（远端单文件直跑带内联兜底）
 _TPS_LOOKBACK = 20             # first_token_at 缺失时向前找有效请求的扫描条数上限
 _SPEED_SEGS_MAX = 10           # 速度柱状图分段上限（v240 用户规格：17→10）
 # v253 速度 Tooltip 范围/时间/维度筛选：一次有界扫描出统一轮表（真实库），渲染端据此
@@ -981,7 +993,9 @@ def hides_reasoning(model_id):
     """Claude 系列不单独上报思考 token：reasoning_tokens 恒为 0，output_tokens 却已含思考，
     且思考在 first_token_at 之前流出。按首字窗口计时会把思考期漏出分母（2026-10-15 真库：
     claude-opus-5-5 有 35% 请求按首字窗口超过 300 tok/s），须同含思考段一样从 started_at 起算。
-    与 token_rate.hides_reasoning 同一规则。"""
+    与 usage_stats.hides_reasoning 同源（支持远端单文件直跑兜底）。"""
+    if _shared_hides_reasoning is not None:
+        return _shared_hides_reasoning(model_id)
     return "claude" in (model_id or "").lower()
 
 
@@ -990,41 +1004,40 @@ _COVERS_CACHE = {"ts": 0.0, "set": frozenset()}   # 首块落章 provider 集合
 
 
 def _provider_first_token_covers(con):
-    """「首块即落章」的 provider 集合（fork z1908144712 判据收编）：这些 provider 的
-    first_token_at 就是首个流式块，思考 token 在首字之后随输出流出，首字窗口已含思考；
-    若一律从 started_at 起算，会把首块前的输入预处理（大上下文实测 8~10s）摊进生成
-    耗时，速度系统性偏低。判据：对该 provider 的 (reasoning_tokens, time_to_first_token_ms)
-    做最小二乘斜率——斜率 <2.0 ms/token（首字时间不随推理量增长）即首块落章；≥2.0 说明
-    推理在首字前完成、首字窗口漏掉推理段，沿用 started_at。样本 <5 条或推理量无变化时
-    不判（不进集合，按既有「推理前置」口径兜底）。Claude 不受影响：reasoning 恒 0 进不了
-    聚合。聚合是全表扫描（~17ms/270MB），60s TTL 缓存摊薄。测试改库后须重置 _COVERS_CACHE。"""
+    """「首块即落章」的 provider 集合（底层计算委派 usage_stats.query_first_token_covers，
+    与 token_rate.first_token_covers 同源；常驻进程加 60s TTL 缓存摊薄全表扫描）。
+    测试改库后须重置 _COVERS_CACHE（ts=0.0 表示未缓存）。"""
     now = time.monotonic()
-    if now - _COVERS_CACHE["ts"] < _COVERS_TTL_S:
+    if _COVERS_CACHE["ts"] > 0.0 and now - _COVERS_CACHE["ts"] < _COVERS_TTL_S:
         return _COVERS_CACHE["set"]
-    out = set()
-    if con is not None:
-        try:
-            rows = con.execute(
-                """select provider_id, count(*) n,
-                          sum(reasoning_tokens) sx, sum(time_to_first_token_ms) sy,
-                          sum(reasoning_tokens * time_to_first_token_ms) sxy,
-                          sum(reasoning_tokens * reasoning_tokens) sxx
-                   from model_usage
-                   where reasoning_tokens > 0 and time_to_first_token_ms is not null
-                     and provider_id is not null
-                   group by provider_id""").fetchall()
-            for r in rows:
-                n = r["n"] or 0
-                sx = r["sx"] or 0
-                denom = n * (r["sxx"] or 0) - sx * sx
-                if n < 5 or denom <= 0:
-                    continue
-                slope = (n * (r["sxy"] or 0) - sx * (r["sy"] or 0)) / denom
-                if slope < 2.0:
-                    out.add(r["provider_id"])
-        except sqlite3.Error:
-            out = set()   # 旧库缺列等读不了聚合：判不出就全走既有口径
-    _COVERS_CACHE.update(ts=now, set=frozenset(out))
+    if _query_first_token_covers is not None:
+        res = _query_first_token_covers(con)
+    else:
+        out = set()
+        if con is not None:
+            try:
+                rows = con.execute(
+                    """select provider_id, count(*) n,
+                              sum(reasoning_tokens) sx, sum(time_to_first_token_ms) sy,
+                              sum(reasoning_tokens * time_to_first_token_ms) sxy,
+                              sum(reasoning_tokens * reasoning_tokens) sxx
+                       from model_usage
+                       where reasoning_tokens > 0 and time_to_first_token_ms is not null
+                         and provider_id is not null
+                       group by provider_id""").fetchall()
+                for r in rows:
+                    n = r[1] or 0
+                    sx = r[2] or 0
+                    denom = n * (r[5] or 0) - sx * sx
+                    if n < 5 or denom <= 0:
+                        continue
+                    slope = (n * (r[4] or 0) - sx * (r[3] or 0)) / denom
+                    if slope < 2.0:
+                        out.add(r[0])
+            except sqlite3.Error:
+                out = set()
+        res = frozenset(out)
+    _COVERS_CACHE.update(ts=now, set=res)
     return _COVERS_CACHE["set"]
 
 
