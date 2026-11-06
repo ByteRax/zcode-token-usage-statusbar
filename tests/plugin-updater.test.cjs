@@ -514,3 +514,32 @@ test("createUpdater spawns the Helper bundle for its CLI children on macOS", asy
   assert.ok(spawned.length >= 1, "CLI 子进程应至少被拉起一次");
   for (const line of spawned) assert.equal(line, helper, "CLI 子进程必须以 Helper bundle 运行");
 });
+test("onRuntimeSynced runs after busy is released and initialState preserves post-update state across hot-swap", async (t) => {
+  const f = fixture(t);
+  f.set({ changed: ["plugin-updater.cjs"], skipped: ["zusage.py"] });
+  const marker = path.join(f.runtime, ".plugin-restart-required");
+  let busyInsideHook = null, replacement = null;
+  const published = [];
+  let currentUpdater = null;
+  const u = createUpdater({
+    ...f.options,
+    notify: (s) => published.push(s),
+    onRuntimeSynced: async () => {
+      busyInsideHook = currentUpdater.status().busy;
+      fs.unlinkSync(marker);   // 模拟 hotReloadMainModules + acknowledgeRestart 当场清掉 marker
+      replacement = createUpdater({ ...f.options, initialState: currentUpdater.status() });
+    },
+  });
+  currentUpdater = u;
+  published.length = 0;
+  await u.request({ action: "update" });
+  assert.equal(busyInsideHook, false, "onRuntimeSynced 必须在 busy=false 释放后调用，以便 updater 自身可当场热换");
+  assert.equal(u.status().restartRequired, false, "marker 在 onRuntimeSynced 中被销账后，终态不得再报告 restartRequired=true");
+  assert.equal(published.some((s) => s.restartRequired === true), false, "全过程不得向 UI 推送任何一帧 restartRequired=true（零红点闪烁）");
+  assert.ok(replacement, "模拟热换重建的新 updater 实例应已创建");
+  assert.equal(replacement.status().phase, "updated", "initialState 应保留刚完成的 updated 阶段");
+  assert.equal(replacement.status().latestVersion, "1.1.0");
+  assert.deepEqual(replacement.status().skipped, ["zusage.py"]);
+  assert.equal(replacement.status().restartRequired, false);
+});
+

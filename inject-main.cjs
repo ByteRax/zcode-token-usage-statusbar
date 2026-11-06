@@ -36,15 +36,21 @@ for (const name of ["inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs
 }
 function acknowledgeRestart(done) {
   const helper = path.join(HERE, "runtime_lock.py");
-  if (!fs.existsSync(helper)) { if (typeof done === "function") done(); return; }
-  execFile(readCfg().python_path || (process.platform === "win32" ? "python" : "python3"),
-    [helper, "--ack-restart", HERE, JSON.stringify(loadedHashes)],
-    { windowsHide: true, timeout: 15000, maxBuffer: 65536 },
-    (error) => {
-      if (error) LOG("restart acknowledgement failed:", error.message);
-      // v258：可选回调——热替换完成后等销账落定再广播状态（红点即时撤下）。
-      if (typeof done === "function") { try { done(); } catch (e) { LOG("restart ack callback failed:", e.message); } }
-    });
+  const finish = () => {
+    if (typeof done === "function") { try { done(); } catch (e) { LOG("restart ack callback failed:", e.message); } }
+  };
+  if (!fs.existsSync(helper)) { finish(); return Promise.resolve(); }
+  return new Promise((resolve) => {
+    execFile(readCfg().python_path || (process.platform === "win32" ? "python" : "python3"),
+      [helper, "--ack-restart", HERE, JSON.stringify(loadedHashes)],
+      { windowsHide: true, timeout: 15000, maxBuffer: 65536 },
+      (error) => {
+        if (error) LOG("restart acknowledgement failed:", error.message);
+        // v258：可选回调——热替换完成后等销账落定再广播状态（红点即时撤下）。
+        finish();
+        resolve();
+      });
+  });
 }
 
 function readCfg() {
@@ -781,13 +787,14 @@ acknowledgeRestart();
  * 同一套装配代码重建实例；require 失败时模块级变量保留旧实例，行为与首装失败一致。 */
 function initPluginUpdater() {
   try {
+    const prevState = pluginUpdater && typeof pluginUpdater.status === "function" ? pluginUpdater.status() : null;
     const { createUpdater } = require("./plugin-updater.cjs");
     pluginUpdater = createUpdater({ runtime: HERE, home: app.getPath("home"),
       resourcesPath: process.resourcesPath, executable: process.execPath,
+      initialState: prevState,
       notify: (state) => webContents.getAllWebContents().forEach((wc) => pushPluginState(wc, state)),
-      /* v258：安装同步落盘后先把变更模块热换进内存并销账 marker，再让 syncInstalled
-       * 读 restartRequired——已热加载的模块不再要求重启，⚙ 红点零闪烁（G3）。
-       * 更新器 busy 在途时热换自动顺延下一 tick（见 hotReloadMainModulesOnce）。 */
+      /* v258：安装同步落盘且 busy 释放后先把变更模块热换进内存并销账 marker，再让更新器
+       * 发布终态——已热加载的模块不再要求重启，⚙ 红点零闪烁（G3）。 */
       onRuntimeSynced: async () => { await hotReloadMainModules(); },
     });
     return pluginUpdater;
@@ -1186,11 +1193,16 @@ function hotReloadMainModulesOnce() {
     return Promise.resolve(false);
   }
   const hotAt = Date.now();
+  const prevHot = Object.assign({}, loadedHashes._hotLoadedAt);
+  for (const key of Object.keys(prevHot)) {
+    if (!failed.includes(key)) prevHot[key] = hotAt;   // 多轮热换：刷新既有已热加载条目的证据戳，使其跨过合并 marker 的 createdAt
+  }
   for (const name of succeeded) {
     hotModuleMtimes[name] = mtimes[name];
     try { loadedHashes[name] = createHash("sha256").update(sources[name]).digest("hex"); } catch (e) { }
-    loadedHashes._hotLoadedAt = Object.assign({}, loadedHashes._hotLoadedAt, { [name]: hotAt });
+    prevHot[name] = hotAt;
   }
+  loadedHashes._hotLoadedAt = prevHot;
   LOG("hot reloaded main modules:", succeeded.join(", ") + (failed.length ? "（失败保留待重启: " + failed.join(", ") + "）" : ""));
   if (failed.length) {
     // 部分失败：不销账（marker 原样保留，重启兜底仍在），只广播让 UI 用上已换入的模块
@@ -1199,13 +1211,12 @@ function hotReloadMainModulesOnce() {
   }
   // 销账先行完成再广播：runtime_lock ack_restart 凭 _hotLoadedAt+digest 清除已热加载
   // 条目的 marker；noteRuntimeAcked（新更新器）同步撤下红点，旧更新器自然衰减到下轮。
-  acknowledgeRestart(() => {
+  return acknowledgeRestart(() => {
     if (pluginUpdater && typeof pluginUpdater.noteRuntimeAcked === "function") {
       try { pluginUpdater.noteRuntimeAcked(); } catch (e) { }
     }
     broadcastPluginState();
-  });
-  return Promise.resolve(true);
+  }).then(() => true);
 }
 function modelPullerProviderOk(v) {
   return typeof v === "string" && v.length > 0 && v.length <= 160 && !/[\x00-\x1f\x7f]/.test(v);

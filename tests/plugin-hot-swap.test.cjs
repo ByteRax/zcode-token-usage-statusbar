@@ -64,12 +64,16 @@ function harness() {
       if (id === "crypto") return require("crypto");
       if (id === "child_process") return {
         spawn: () => { throw new Error("Query must not run"); },
-        execFile: (command, args, options, callback) => { acks.push({ command, args }); callback(null); },
+        execFile: (command, args, options, callback) => {
+          acks.push({ command, args });
+          if (typeof sandbox.__asyncAckHook === "function") sandbox.__asyncAckHook(() => callback(null));
+          else callback(null);
+        },
       };
       if (id === "./plugin-updater.cjs") return { createUpdater: (opts) => {
         if (fails.updater) throw new Error("updater assembly failed");
         capturedUpdaterOpts = opts; updaterInstances += 1; opts.notify({});
-        return { request: async () => {}, tick: async () => {}, status: () => ({ busy: updaterBusy }), noteRuntimeAcked: () => {} };
+        return { request: async () => {}, tick: async () => {}, status: () => ({ busy: updaterBusy, phase: "updated", latestVersion: "1.9.0" }), noteRuntimeAcked: () => {} };
       } };
       if (id === "./engine-patch.cjs") return { createEnginePatcher: () => {
         if (fails.engine) throw new Error("engine assembly failed");
@@ -259,3 +263,32 @@ test("no mtime change is a no-op without touching instances", async () => {
   assert.equal(h.acks.length, before);
   assert.equal(h.counters.quota, 1);
 });
+
+test("hotReloadMainModules waits for asynchronous acknowledgeRestart before resolving and refreshes prior _hotLoadedAt timestamps", async () => {
+  const h = harness();
+  h.mtimes["quota-client.cjs"] = 2000;
+  h.contents[MOD("quota-client.cjs")] = "module.exports = { v: 10 };";
+  let releaseAck = null, ackSettled = false;
+  h.sandbox.__asyncAckHook = (cb) => { releaseAck = () => { ackSettled = true; cb(); }; };
+  let resolved = false;
+  const pending = h.seam.hotReloadMainModules().then((v) => { resolved = true; return v; });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(resolved, false, "hotReloadMainModules must wait for --ack-restart execFile completion");
+  assert.equal(typeof releaseAck, "function");
+  releaseAck();
+  assert.equal(await pending, true);
+  assert.equal(ackSettled, true);
+  const firstHotAt = h.seam.hotModuleState().hashes._hotLoadedAt["quota-client.cjs"];
+  assert.equal(typeof firstHotAt, "number");
+  await new Promise((r) => setTimeout(r, 5));
+  h.sandbox.__asyncAckHook = null;
+  h.mtimes["plugin-updater.cjs"] = 3000;
+  h.contents[MOD("plugin-updater.cjs")] = "module.exports = { v: 11 };";
+  assert.equal(await h.seam.hotReloadMainModules(), true);
+  const secondState = h.seam.hotModuleState().hashes._hotLoadedAt;
+  assert.equal(secondState["quota-client.cjs"], secondState["plugin-updater.cjs"], "prior hot-loaded entries refresh to current round timestamp");
+  assert.ok(secondState["quota-client.cjs"] >= firstHotAt);
+  assert.equal(h.state.updaterOpts.initialState.phase, "updated", "initPluginUpdater forwards previous updater status as initialState");
+  assert.equal(h.state.updaterOpts.initialState.latestVersion, "1.9.0");
+});
+
