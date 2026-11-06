@@ -792,13 +792,15 @@ test('v280 P1: fixed tooltip width + stable chart column (width stops tracking c
   assert.match(html,
     /width:min\(800px,calc\(100vw - 24px\)\)!important;max-width:min\(800px,calc\(100vw - 24px\)\)!important;box-sizing:border-box/,
     'tooltip width is pinned at 800 (v283), not content-driven');
-  // v283：两条链路 V2 卡左缘对齐宿主 dock
-  assert.match(source, /if \(tpsTip\.querySelector\("\.zu-sv-root"\)\) \{\n      var spdDock = document\.querySelector\("\.conversation-bottom-dock-transition"\);/,
-    'compact chain aligns card left edge to the dock');
-  assert.match(source, /tip\.__zuDockLeft = \(spdDock && spdDock\.getBoundingClientRect\) \?/,
-    'full tip resolves the dock anchor on content change');
-  assert.match(source, /if \(tip\.__zuDockLeft != null\) \{\n        left = Math\.max\(8, Math\.min\(tip\.__zuDockLeft, Math\.max\(8, innerWidth - tr\.width - 8\)\)\);\n      \}/,
-    'positionTip consumes the dock anchor every frame');
+  // v284：V2 卡左缘对齐锚元素（.it 速度格）左缘——positionTip 消费 __zuAlignLeft
+  assert.match(source, /tip\.__zuAlignLeft = !!tip\.querySelector\("\.zu-sv-root"\);/,
+    'full tip marks V2 content for left alignment');
+  assert.match(source, /if \(tip\.__zuAlignLeft\) \{\n        left = Math\.max\(8, Math\.min\(ar\.left, Math\.max\(8, innerWidth - tr\.width - 8\)\)\);\n      \}/,
+    'positionTip left-aligns the V2 card to the anchor cell');
+  const codeNoLedger = source.split('\n').filter(l => !l.includes('var VERSION =')).join('\n');
+  assert.doesNotMatch(codeNoLedger, /conversation-bottom-dock-transition/,
+    'v283 host-class dependency removed (did not apply on real host; ledger text exempt)');
+  assert.doesNotMatch(codeNoLedger, /__zuDockLeft/, 'dock machinery fully removed');
   // 右图表列：flex:1 1 0 + min-width:0（列宽只由 tip 定宽决定）
   assert.match(source, /\.zu-sv-root \.zu-speed-chart\{flex:1 1 0;min-width:0;max-width:100%\}/);
   // 滚动容器：定宽 + 保留横向滚动（不允许用关 overflow 修裁剪）
@@ -912,7 +914,6 @@ test('v282: legend popup width cap 800 and dock-aligned left edge', () => {
   assert.match(source, /\.zu-sv-legend-tip\{max-width:min\(800px,calc\(100vw - 24px\)\)/, 'width cap 800');
   const show = source.slice(source.indexOf('  function spdLegendTipShow(btn) {'),
     source.indexOf('  spdLegendTip.addEventListener("mouseenter"'));
-  assert.match(show, /conversation-bottom-dock-transition/, 'left edge aligns to the host bottom dock');
-  assert.match(show, /dock && dock\.getBoundingClientRect/, 'graceful fallback when the dock is absent');
+  assert.match(show, /btn\.closest\("\.zusage-tip-root, \.zusage-tps-tip"\)/, 'left edge aligns to the main tooltip box (v284)');
   assert.match(show, /Math\.min\(Math\.max\(m, left\), Math\.max\(m, vw - m - lr\.width\)\)/, 'right-edge clamp still applies');
 });
