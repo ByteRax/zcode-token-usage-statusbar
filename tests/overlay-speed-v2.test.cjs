@@ -618,47 +618,30 @@ test('empty state carries the longer-range hint (§4.2)', () => {
 
 // v275：快速来回切 Tab 的 rAF 合并——同步重编风暴（用户实报「卡死」）与
 // pointermove 保活（mousemove 节流盲区让 mouseInBar 停留 false）。
-test('rapid tab ping-pong coalesces rebuilds into one rAF frame (v275)', () => {
+test('rapid tab ping-pong stays synchronous (v276: rAF coalescing reverted for occluded windows)', () => {
   const ctx = makeCtx();
-  // mock rAF：手动 flush，记录排队次数
-  ctx.requestAnimationFrame = function (fn) { ctx.__rafQueue.push(fn); return ctx.__rafQueue.length; };
-  ctx.cancelAnimationFrame = function () {};
-  const st = vm.runInContext(`(() => {
+  const rst = vm.runInContext(`(() => {
     const calls = { draw: 0 };
     let speedSel = { range: "recent", period: "recent", dim: "time", focus: "" };
-    let speedChartHover = -1, speedInteractAt = 0, speedRebuildPending = 0;
+    let speedChartHover = -1, speedInteractAt = 0;
     const tipFor = { __tip: null };
-    const tip = { innerHTML: "" };
-    function drawTip(el) { calls.draw++; el && (el.__tip = tip.__tip = speedTipRebuild(speedChartHover, speedSel)); }
-    const speedTipRebuild = (ch, cs) => "\\u0001" + speedCardV2HTML({ speedHistory: ${JSON.stringify(fixture())},
+    function speedRebuildNow() { drawTip(tipFor, true); }   // v276：同步重编（源码同款）
+    function drawTip(el) { calls.draw++; el && (el.__tip = speedTipRebuild(speedChartHover, speedSel)); }
+    const speedTipRebuild = (ch, cs) => "\u0001" + speedCardV2HTML({ speedHistory: ${JSON.stringify(fixture())},
       sel: Object.assign({ sid: "sess_main" }, cs), live: null, segsHover: ch,
       fmtTok: String, fmtCnt: String, fmtMoney: u => "¥" + u.toFixed(2) });
     ${tabFn}
-    function scheduleSpeedRebuild() {
-      if (speedRebuildPending) return;
-      if (typeof requestAnimationFrame !== "function") { speedRebuildNow(); return; }
-      speedRebuildPending = requestAnimationFrame(function () { speedRebuildPending = 0; speedRebuildNow(); });
-    }
-    function speedRebuildNow() {
-      if (tipFor && typeof speedTipRebuild === "function") {
-        tipFor.__tip = speedTipRebuild(speedChartHover, speedSel);
-        drawTip(tipFor, true);
-      }
-    }
     const activate = (grp, val) => {
       const node = { closest: sel => sel === ".zu-sv-tab" ? { getAttribute: k => k === "data-sv-group" ? grp : val } : null };
       speedTabActivate({ target: node, stopPropagation: () => {} });
     };
-    // 快速来回连点 6 次：同帧只应排一个重编任务
     activate("range", "project"); activate("range", "all");
     activate("range", "session"); activate("period", "week");
     activate("period", "month"); activate("range", "recent");
-    const queued = __rafQueue.length;
-    __rafQueue.splice(0).forEach(fn => fn());   // flush 一帧
-    return { queued, draws: calls.draw, sel: speedSel };
-  })()`, Object.assign(ctx, { __rafQueue: [] }));
-  assert.equal(st.queued, 1, '6 rapid switches coalesce into ONE rebuild task');
-  assert.equal(st.draws, 1, 'one innerHTML rebuild per frame');
-  assert.equal(st.sel.range, 'recent', 'last state wins');
-  assert.equal(st.sel.period, 'month', 'period switch not lost');
+    return { draws: calls.draw, sel: speedSel };
+  })()`, ctx);
+  // 被遮挡窗口 rAF 冻结会让异步重编永不执行（用户实报卡死），同步落地是唯一可靠路径
+  assert.equal(rst.draws, 6, 'every switch lands synchronously');
+  assert.equal(rst.sel.range, 'recent', 'last state wins');
+  assert.equal(rst.sel.period, 'month', 'period switch not lost');
 });
