@@ -264,5 +264,234 @@
     return `⚡ ${speed} · ${output}${duration}${status}`;
   }
 
-  return { createTracker, subscribeStore, format, formatTokens };
+  /* ---------- v258：运行时合成桥（renderer_bridge.py BRIDGE_TEMPLATE v2 的免混淆名同契约实现） ----------
+   * 静态桥由 renderer_bridge.py 按版本混淆名打进宿主 asar；客户端升级到 HOST_TARGETS 表外
+   * 版本、桥未部署或 Windows 运行期替换被拒时，由本模块在渲染端自行合成同契约的三个只读
+   * 访问器（__zusageGetExistingConversationStore / __zusageAcquireConversationStore /
+   * __zusageConversationDiagnostics）。宿主 SessionDataLayer 注册表 Map 无法按混淆名定位
+   * （名字随版本轮换），靠一次性 Map.prototype 探针按条目形状捕获；捕获后立即还原原型方法
+   * （零常驻开销）。key/topic 公式按 renderer_bridge.py AUTO_NAMES 钉死的宿主形状
+   * （`${remote??"__base__"} ${workspaceIdentity?.trim()||workspacePath}` / `conversation/<sid>`，
+   * 跨版本稳定；宿主若改公式则合成桥静默失配降级 DB，不崩溃）。overlay 每个心跳 tick 重新
+   * 探测全局，迟到安装无需重启即被采用。 */
+  let zuRegistry = null;   // 捕获的宿主注册表（installRuntimeBridge 注入或探针捕获）
+  const ZU_SCOPE_FIELDS_GET = ["sessionId", "workspacePath", "workspaceIdentity", "remoteSessionId"];
+  const ZU_SCOPE_FIELDS_ACQUIRE = ["sessionId", "workspacePath", "workspaceIdentity"];
+  function zuKeyOf(scope) {
+    return `${scope.remoteSessionId ?? "__base__"} ${scope.workspaceIdentity?.trim() || scope.workspacePath}`;
+  }
+  function zuTopicOf(sessionId) { return "conversation/" + sessionId; }
+  function zuSnapshot(value, seen = new WeakMap()) {
+    if (value === null || typeof value !== "object") {
+      if (typeof value === "function" || typeof value === "symbol")
+        throw new TypeError("Unsupported snapshot value");
+      return value;
+    }
+    if (seen.has(value)) return seen.get(value);
+    const proto = Object.getPrototypeOf(value);
+    if (!Array.isArray(value) && proto !== Object.prototype && proto !== null)
+      throw new TypeError("Unsupported snapshot object");
+    const result = Array.isArray(value) ? [] : Object.create(null);
+    seen.set(value, result);
+    for (const key of Reflect.ownKeys(value)) {
+      if (Array.isArray(value) && key === "length") continue;
+      const d = Object.getOwnPropertyDescriptor(value, key);
+      if (!("value" in d)) throw new TypeError("Unsupported snapshot accessor");
+      Object.defineProperty(result, key, {
+        value: zuSnapshot(d.value, seen), enumerable: d.enumerable,
+        writable: false, configurable: false
+      });
+    }
+    if (Array.isArray(value)) result.length = value.length;
+    return Object.freeze(result);
+  }
+  function zuWrapStore(store, current, release) {
+    let stopped = false;
+    const cancellations = new Set();
+    const off = () => {
+      if (stopped) return;
+      stopped = true;
+      for (const cancel of [...cancellations]) cancel();
+      try { release?.(); } catch (_) {}
+    };
+    const active = () => {
+      if (stopped) return false;
+      if (current()) return true;
+      off();
+      return false;
+    };
+    return Object.freeze({
+      getState: () => active() ? zuSnapshot(store.getState()) : null,
+      subscribe: callback => {
+        if (typeof callback !== "function") throw new TypeError("Invalid callback");
+        if (!active()) return () => {};
+        let cancelled = false;
+        const cancel = () => {
+          if (cancelled) return;
+          cancelled = true;
+          cancellations.delete(cancel);
+          try { unsubscribe(); } catch (_) {}
+        };
+        const unsubscribe = store.subscribe(() => {
+          if (cancelled || !active()) return;
+          try {
+            const result = callback();
+            if (result && typeof result.then === "function")
+              Promise.resolve(result).catch(() => {});
+          } catch (_) {}
+        });
+        cancellations.add(cancel);
+        return cancel;
+      },
+      off
+    });
+  }
+  function zuCheckedScope(scope, fields, noWhitespace) {
+    if (!scope || typeof scope !== "object" || Array.isArray(scope))
+      throw new TypeError("Invalid conversation scope");
+    const descriptors = Object.getOwnPropertyDescriptors(scope);
+    if (Reflect.ownKeys(descriptors).some(key => !fields.includes(key)))
+      throw new TypeError("Unknown conversation scope field");
+    const checked = Object.create(null);
+    for (const key of fields) {
+      const d = descriptors[key];
+      if (!d) continue;
+      if (!("value" in d) || typeof d.value !== "string" ||
+          !d.value.trim() || /[\x00-\x1f\x7f]/.test(d.value))
+        throw new TypeError("Invalid conversation scope field");
+      if (noWhitespace.includes(key) && /\s/.test(d.value))
+        throw new TypeError("Invalid conversation identifier");
+      if (key === "remoteSessionId" && d.value === "__base__")
+        throw new TypeError("Reserved remote identifier");
+      checked[key] = d.value;
+    }
+    return checked;
+  }
+  function zuGetExistingConversationStore(scope) {
+    const checked = zuCheckedScope(scope, ZU_SCOPE_FIELDS_GET, ["sessionId", "remoteSessionId"]);
+    if (!checked.sessionId || !checked.workspacePath)
+      throw new TypeError("Missing conversation scope field");
+    const key = zuKeyOf(checked), topic = zuTopicOf(checked.sessionId);
+    const entry = zuRegistry.get(key), layer = entry?.layer;
+    const session = layer?.entries.get(topic), store = session?.store;
+    const current = () => !!store && zuRegistry.get(key) === entry && !entry.stale &&
+      !layer.disposed && layer.entries.get(topic) === session &&
+      session.store === store && !store.closed;
+    if (!current()) return null;
+    return zuWrapStore(store, current, null);
+  }
+  /* 受限 acquire：仅 sess_subagent_ 前缀 + __base__ 本地键；租约 refcount 由宿主持有，
+   * 包装层 off() 时 release。scope 校验与 get 同规（非法 throw TypeError）；其余所有
+   * miss/失败返回 null（绝不 throw），调用方按 2s 重试。 */
+  function zuAcquireConversationStore(scope) {
+    const checked = zuCheckedScope(scope, ZU_SCOPE_FIELDS_ACQUIRE, ["sessionId"]);
+    if (!checked.sessionId || !checked.sessionId.startsWith("sess_subagent_")) return null;
+    const key = zuKeyOf(checked);
+    if (typeof key !== "string" || !key.startsWith("__base__ ")) return null;
+    const entry = zuRegistry.get(key), layer = entry?.layer;
+    if (!entry || entry.stale || !layer || layer.disposed ||
+        typeof layer.acquire !== "function") return null;
+    const topic = zuTopicOf(checked.sessionId);
+    let lease = null;
+    try { lease = layer.acquire(checked.sessionId); } catch (_) { return null; }
+    const store = lease && lease.store;
+    if (!store || store.closed) {
+      try { lease?.release(); } catch (_) {}
+      return null;
+    }
+    const current = () => !!store && !store.closed && zuRegistry.get(key) === entry &&
+      !entry.stale && !layer.disposed && layer.entries.get(topic)?.store === store;
+    return zuWrapStore(store, current, () => lease.release());
+  }
+  function zuConversationDiagnostics() {
+    const keys = [], sessions = [];
+    for (const [key, entry] of zuRegistry) {
+      keys.push(key);
+      const layer = entry && entry.layer;
+      if (!layer || layer.disposed || entry.stale) continue;
+      for (const [topic, session] of layer.entries) {
+        const store = session && session.store;
+        const state = store && !store.closed && store.getState();
+        sessions.push({ key, topic, status: state ? (state.status || "unknown") : "unavailable",
+          seq: state && state.snapshot ? state.snapshot.seq : null });
+      }
+    }
+    return { keys, sessions };
+  }
+  function zuInstallBridgeGlobals() {
+    if (!zuRegistry) return;
+    const g = typeof globalThis === "object" && globalThis ? globalThis : null;
+    if (!g) return;
+    g.__zusageGetExistingConversationStore = zuGetExistingConversationStore;
+    g.__zusageAcquireConversationStore = zuAcquireConversationStore;
+    g.__zusageConversationDiagnostics = zuConversationDiagnostics;
+    if (typeof window === "object" && window && window !== g) {   // vm 沙箱里 window 与 globalThis 分离；真实渲染端二者同一
+      window.__zusageGetExistingConversationStore = zuGetExistingConversationStore;
+      window.__zusageAcquireConversationStore = zuAcquireConversationStore;
+      window.__zusageConversationDiagnostics = zuConversationDiagnostics;
+    }
+  }
+  /* 一次性探针：key 形如 `<remote> <workspace>`（首段无空白）且条目带 layer.entries/acquire、
+   * stale/refCount 形状即认定是宿主注册表，当场捕获 this 并还原原生方法（try/finally 保证
+   * 原调用返回值与异常完全不变）。Node 直 require（单元测试）无 window，不布防。 */
+  let zuOrigMapGet = null, zuOrigMapSet = null;
+  const ZU_REGISTRY_KEY_RE = /^(?:__base__|[^\s]+) \S/;
+  function zuEntryLooksReal(entry) {
+    return !!(entry && typeof entry === "object" && entry.layer &&
+      entry.layer.entries instanceof Map && typeof entry.layer.acquire === "function" &&
+      typeof entry.stale === "boolean" && typeof entry.refCount === "number");
+  }
+  function zuRestoreMapProto() {
+    try {
+      if (zuOrigMapGet) Map.prototype.get = zuOrigMapGet;
+      if (zuOrigMapSet) Map.prototype.set = zuOrigMapSet;
+    } catch (e) { }
+    zuOrigMapGet = null;
+    zuOrigMapSet = null;
+  }
+  function zuCaptureRegistry(map, key, entry) {
+    if (zuRegistry || zuOrigMapSet === null || !(map instanceof Map) ||
+        typeof key !== "string" || !ZU_REGISTRY_KEY_RE.test(key) || !zuEntryLooksReal(entry)) return;
+    zuRegistry = map;
+    zuRestoreMapProto();
+    zuInstallBridgeGlobals();
+  }
+  function zuArmRegistryProbe() {
+    if (zuRegistry || zuOrigMapGet || typeof Map !== "function" ||
+        typeof Map.prototype.get !== "function" || typeof Map.prototype.set !== "function") return;
+    try {
+      zuOrigMapGet = Map.prototype.get;
+      zuOrigMapSet = Map.prototype.set;
+      Map.prototype.set = function (k, v) {
+        const orig = zuOrigMapSet;   // 捕获会就地还原本体方法并置空引用，闭包内先固定本次原函数
+        try { zuCaptureRegistry(this, k, v); } catch (e) { }
+        return orig.call(this, k, v);
+      };
+      Map.prototype.get = function (k) {
+        const orig = zuOrigMapGet;
+        let result;
+        try {
+          result = orig.call(this, k);
+        } finally {
+          try { if (result) zuCaptureRegistry(this, k, result); } catch (e) { }
+        }
+        return result;
+      };
+      if (typeof globalThis === "object" && globalThis) globalThis.__zusageRegistryHooked = true;
+    } catch (e) { zuRestoreMapProto(); }
+  }
+  /* 测试/运维注入口：已知宿主注册表时直接注入（跳过探针）。重复安装/二次捕获一律拒绝。 */
+  function installRuntimeBridge(registryMap) {
+    if (!(registryMap instanceof Map) || zuRegistry) return false;
+    zuRegistry = registryMap;
+    zuRestoreMapProto();
+    zuInstallBridgeGlobals();
+    return true;
+  }
+  if (typeof globalThis.__zusageGetExistingConversationStore !== "function" &&
+      typeof window !== "undefined" && window && window.document) {
+    zuArmRegistryProbe();   // 静态桥缺席（表外版本/未部署）才布防；先注入的静态桥直接短路
+  }
+
+  return { createTracker, subscribeStore, format, formatTokens, installRuntimeBridge };
 });
