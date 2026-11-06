@@ -271,13 +271,16 @@ class ProjectSlugCollisionTests(FixtureBase):
         self.assertEqual(zusage._project_usage(con, "m1")["total"], 100)
 
     def test_no_anchor_keeps_legacy_full_scope(self):
-        # 当前会话 directory 缺失（旧库形态）：无锚点不过滤，保持原全量口径
+        # 当前会话 directory 缺失（旧库形态）：无锚点不过滤，保持原全量口径；
+        # 有目录的对端不得被空锚点误剔（钉住 `not pkey or …` 短路豁免）
         con = self.fixture()
         self.sess(con, "m1", directory=None)
         self.sess(con, "m2", directory=None)
+        self.sess(con, "m3", directory="/repo")
         self.usage(con, "r1", "m1", total=100)
         self.usage(con, "r2", "m2", total=500)
-        self.assertEqual(zusage._project_usage(con, "m1")["total"], 600)
+        self.usage(con, "r3", "m3", total=1000)
+        self.assertEqual(zusage._project_usage(con, "m1")["total"], 1600)
 
     def test_file_db_cache_key_includes_directory(self):
         # 同 project_id 两个碰撞项目先后查询：TTL 内第二查不得命中甲的缓存值（键含目录）

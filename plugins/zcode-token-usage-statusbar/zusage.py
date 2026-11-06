@@ -148,7 +148,7 @@ def _db_cache_key(con):
 
 
 def _cached_project(dbkey, key, fn):
-    """v177：_project_usage 专用缓存，键挂库文件身份 + (project_id, with_models)——常驻泵
+    """v177：_project_usage 专用缓存，键挂库文件身份 + (project_id, 目录键, with_models)——常驻泵
     跨请求复用连接时吃到 2s TTL 的跨帧免重扫（实测无缓存大库单项目聚合 ~40ms，池内多行
     一帧可达数百 ms）。独立于 _AGG_CACHE：项目键随使用增长，混进共享缓存会把它顶过上限
     触发整体 clear、连带丢掉 scan/today 热条目。"""
