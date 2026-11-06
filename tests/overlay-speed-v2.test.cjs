@@ -263,7 +263,10 @@ test('V2 header is a single row (title left, dual tab groups right); stats time 
   assert.match(body, /zu-sc-head[^]*?zu-sv-range/, 'range sits in the chart title bar');
   assert.match(body, /zu-sv-range" title="\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} – /,
     'hover shows full YYYY-MM-DD HH:mm:ss range');
-  assert.match(html, /单位：t\/s/);
+  assert.match(html, /zu-sc-unit">t\/s<\//, 'lightweight unit badge without 单位： prefix (v285)');
+  assert.match(html, /zu-sv-legend-btn[^>]*aria-label="查看速度档位说明"/, 'dedicated bands entry label (v285)');
+  assert.match(html, /<circle cx="10" cy="10" r="8\.15"/, 'speed-bands SVG ring (v285)');
+  assert.equal((html.match(/<path d="M(6\.35|10|13\.65) 13\.2V/g) || []).length, 3, 'three ascending speed bars');
   assert.ok(body.indexOf('zu-sc-unit') >= 0 && body.indexOf('zu-sc-unit') < body.indexOf('zu-sv-range'),
     'unit follows the chart title; range is the far-right element');
   // v281：底部常驻图例移除，改图表标题栏问号按钮 + 浮层（.zu-sv-li 移入浮层内容构建器）
@@ -322,9 +325,9 @@ test('bilingual labels follow the instance language', () => {
     live: null, segsHover: -1, fmtTok: String, fmtCnt: String, fmtMoney: String };
   const html = vm.runInContext('speedCardV2HTML(__o)', ctx);
   assert.match(html, /Generation speed/);
-  assert.match(html, /Speed bands/, 'legend button label (v281)');
+  assert.match(html, /View speed bands/, 'en legend entry label (v285)');
   assert.match(html, /Scope|Time/);
-  assert.match(html, /unit: t\/s/);
+  assert.match(html, /zu-sc-unit">t\/s<\//, 'unit badge is language-neutral (v285)');
   assert.match(html, /No rated turns|hourly average speed/);
 });
 
@@ -916,4 +919,19 @@ test('v282: legend popup width cap 800 and dock-aligned left edge', () => {
     source.indexOf('  spdLegendTip.addEventListener("mouseenter"'));
   assert.match(show, /btn\.closest\("\.zusage-tip-root, \.zusage-tps-tip"\)/, 'left edge aligns to the main tooltip box (v284)');
   assert.match(show, /Math\.min\(Math\.max\(m, left\), Math\.max\(m, vw - m - lr\.width\)\)/, 'right-edge clamp still applies');
+});
+
+test('v285: chart title bar — weight 600 title, t/s badge, speed-bands SVG entry', () => {
+  assert.match(source, /\.zu-sv-chart \.zu-sc-title\{font-weight:600;font-size:calc\(var\(--ui-font-size,14px\) \+ 2px\);line-height:1\.3\}/,
+    'title weight 600 at ~16px (V2 scope only, V1 untouched)');
+  assert.match(source, /\.zu-sv-chart \.zu-sc-unit\{margin-left:9px;background:rgba\(255,255,255,\.05\)/, 'unit badge styling');
+  assert.match(source, /\.zu-light \.zu-sv-chart \.zu-sc-unit\{background:rgba\(0,0,0,\.05\)\}/, 'light variant');
+  // B1（review）：26px/4px 并入基础规则单点声明（重复规则会被同特异性后声明覆盖成假绿）
+  assert.match(source, /"\.zu-sv-legend-btn\{appearance:none;[^}]*width:26px;height:26px;padding:0;margin-left:4px;[^}]*align-self:center/,
+    '26px hit area declared once in the base rule (no cascade shadowing)');
+  assert.equal((source.match(/\.zu-sv-legend-btn\{appearance:none;/g) || []).length, 1,
+    'single declaration site for the legend button');
+  assert.match(source, /\.zu-sv-legend-btn svg\{width:18px;height:18px\}/, '18px icon centered in 26px hit area');
+  // V1 旧图共享类不受影响：.zu-sc-title 基础规则仍为 700/+1
+  assert.match(source, /"\.zu-sc-title\{font-weight:700;font-size:calc\(var\(--ui-font-size,14px\) \+ 1px\)/);
 });
