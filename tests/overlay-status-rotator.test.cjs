@@ -168,9 +168,10 @@ function makeFakeElement(tag = 'div') {
   return el;
 }
 
-function makeRotatorEnv(lang = 'zh', savedCfg = null) {
+function makeRotatorEnv(lang = 'zh', savedCfg = null, legacyCfg = null) {
   const storage = {};
-  if (savedCfg) storage['zusage3.rotator'] = JSON.stringify(savedCfg);
+  if (savedCfg) storage['zusage3.rotator2'] = JSON.stringify(savedCfg);
+  if (legacyCfg) storage['zusage3.rotator'] = JSON.stringify(legacyCfg);   // 求值前预置，loadRotatorConfig 真实读到
   const body = makeFakeElement('body');
   const docEl = makeFakeElement('html');
   docEl.classList.add('dark');
@@ -486,6 +487,7 @@ test('live preview card: last card of the section, follows every setting, self-c
   const stage = makeFakeElement('div'); stage.className = 'zu-rot-prev-stage';
   const strip = makeFakeElement('div'); strip.className = 'zu-rot-pack-preview'; strip.hidden = true;
   panel.appendChild(stage); panel.appendChild(strip);
+  panel.classList.add('open');   // 真实面板打开态：closeSettings 只摘 .open，节点常挂 body
   env.state.settingsSec = 'rotator';   // 分区可见性事实源（activateSettingsSec 单一出口维护）
   window.__pvPanel = panel;
   vm.runInContext('zuRotatorSyncPanel(window.__pvPanel)', ctx);
@@ -511,7 +513,28 @@ test('live preview card: last card of the section, follows every setting, self-c
   assert.ok(stage.querySelector('.zu-rotator-active-label').textContent.length >= 1, 'fallback phrase still shows when every pack is unchecked');
   assert.ok(strip.hidden, 'pack sample strip stays hidden (no pin buttons anymore)');
 
-  // 面板关闭（元素脱离 DOM）→ 预览定时器下一拍自清
+  // 真实关闭模型：closeSettings 只摘 .open（节点常挂）→ tick 每拍跳过、label 冻结，定时器由 closeSettings/切分区清除
+  panel.classList.remove('open');
+  advanceNow(200);
+  const frozenLabel = stage.querySelector('.zu-rotator-active-label').textContent;
+  iv65[iv65.length - 1].fn();
+  advanceNow(200);
+  iv65[iv65.length - 1].fn();
+  assert.equal(stage.querySelector('.zu-rotator-active-label').textContent, frozenLabel, 'closed panel (no .open) freezes the preview');
+
+  // getClientRects 空列表=display:none → 跳过；非空/方法缺失 → 推进（offsetParent 不可用于 fixed 面板后代）
+  panel.classList.add('open');
+  panel.getClientRects = () => [];
+  advanceNow(200);
+  iv65[iv65.length - 1].fn();
+  assert.equal(stage.querySelector('.zu-rotator-active-label').textContent, frozenLabel, 'empty getClientRects hides the preview');
+  panel.getClientRects = () => [{}];
+  advanceNow(400);
+  iv65[iv65.length - 1].fn();
+  assert.notEqual(stage.querySelector('.zu-rotator-active-label').textContent, frozenLabel, 'non-empty getClientRects resumes the preview');
+  delete panel.getClientRects;
+
+  // 面板脱离 DOM → 预览定时器下一拍自清
   panel.remove();
   advanceNow(100);
   iv65[iv65.length - 1].fn();
@@ -519,4 +542,157 @@ test('live preview card: last card of the section, follows every setting, self-c
 
   window.__zusageRotatorDispose();
   assert.equal(timers.size, 0, 'dispose clears every rotator timer');
+});
+
+test('appearance theme 「无」 disables gradient and whale rainbow; colorful themes restore rainbow', () => {
+  const { ctx, window } = makeRotatorEnv('zh');
+  const api = window.__zusageStatusRotator;
+
+  const html = vm.runInContext('zuRotatorSectionHtml(true)', ctx);
+  assert.match(html, /<option value="none">无<\/option>/, 'none theme is the first dropdown option');
+
+  vm.runInContext('applyAppearanceThemePreset("none"); updateRotatorStylesheet()', ctx);   // 真实链路：变更尾部重生成样式表
+  const cfgNone = JSON.parse(JSON.stringify(vm.runInContext('rotatorCfg', ctx)));
+  assert.equal(cfgNone.appearance.theme, 'none');
+  assert.equal(cfgNone.appearance.gradient.enabled, false, 'flowing gradient off');
+  assert.equal(cfgNone.whaleTailRainbow, false, 'whale tail rainbow fill off');
+  assert.equal(cfgNone.appearance.glow, false, 'no glow');
+  assert.equal(cfgNone.appearance.animation, 'none', 'no animation');
+
+  // 样式表：渐变关 → 标签规则不带 background-image 渐变与 zuRotFlow 动画
+  const cssNone = vm.runInContext('rotatorStyleEl.textContent', ctx);
+  assert.ok(!cssNone.includes('animation:zuRotFlow'), 'no flow animation applied when gradient disabled (static keyframes definition is unconditional)');
+  assert.ok(cssNone.includes('.zu-whale-tail path{fill:currentColor!important}'), 'whale tail falls back to currentColor');
+
+  // 彩色主题反向恢复炫彩
+  vm.runInContext('applyAppearanceThemePreset("neon"); updateRotatorStylesheet()', ctx);
+  const cfgNeon = JSON.parse(JSON.stringify(vm.runInContext('rotatorCfg', ctx)));
+  assert.equal(cfgNeon.appearance.gradient.enabled, true, 'colorful theme re-enables gradient');
+  assert.equal(cfgNeon.whaleTailRainbow, true, 'colorful theme restores rainbow fill');
+  assert.ok(vm.runInContext('rotatorStyleEl.textContent', ctx).includes('zuRotFlow'), 'flow rule back for colorful theme');
+});
+
+test('rotator defaults follow the 2026-11-06 user spec; v2 storage key ignores the legacy one', () => {
+  const { ctx, storage } = makeRotatorEnv('zh');
+  const cfg = JSON.parse(JSON.stringify(vm.runInContext('rotatorCfg', ctx)));
+  assert.equal(cfg.enabled, true, 'rotator on');
+  assert.equal(cfg.labelSource, 'phrases', 'phrase packs as source');
+  assert.equal(cfg.whaleTail, true, 'whale tail icon on');
+  assert.equal(cfg.whaleTailRainbow, false, 'rainbow fill off (「无」theme semantics)');
+  assert.equal(cfg.whaleTailMotion.action, 'random', 'random tail motion');
+  assert.equal(cfg.whaleTailMotion.speedMode, 'tps', 'tps-scaled tail speed');
+  assert.equal(cfg.whaleTailMotion.toolSwitchEnabled, true, 'tool switch on');
+  assert.equal(cfg.appearance.theme, 'none', 'none theme by default (2026-11-06 晚二次改定)');
+  assert.equal(cfg.appearance.animation, 'none', 'no animation by default');
+  assert.equal(cfg.appearance.glow, false, 'no glow by default');
+  assert.equal(cfg.appearance.gradient.enabled, false, 'no flowing gradient by default');
+  assert.equal(cfg.enabledPacks.length, 14, 'all 14 packs enabled by default');
+  assert.equal(cfg.enabledPacks.slice().sort().join(','), vm.runInContext('ZU_ROTATOR_PACK_META.map(function (m) { return m.id; })', ctx).sort().join(','), 'every pack id enabled');
+  assert.equal('zusage3.rotator' in storage, false, 'legacy v1 key untouched on fresh load');
+
+  // 旧键内容不再被读取（求值前预置才有真实读路径）；新键保存值照常生效
+  const legacy = makeRotatorEnv('zh', null, { appearance: { theme: 'glitch' } });
+  assert.equal(vm.runInContext('rotatorCfg.appearance.theme', legacy.ctx), 'none', 'legacy v1 key is ignored');
+  const saved = makeRotatorEnv('zh', { appearance: { theme: 'none' } });
+  assert.equal(vm.runInContext('rotatorCfg.appearance.theme', saved.ctx), 'none', 'v2 saved config honored');
+});
+
+test('「换一条」 button is fully removed from the rotator settings (user spec)', () => {
+  const { ctx, window } = makeRotatorEnv('zh');
+  const html = vm.runInContext('zuRotatorSectionHtml(true)', ctx);
+  assert.doesNotMatch(html, /zu-rot-next-btn/, 'no next-phrase button in card 1');
+  assert.ok(!rotatorSlice.includes('zu-rot-next-btn'), 'no button handler branch in the slice');
+  assert.ok(rotatorSlice.includes('forceNextRotatorPhrase'), 'phrase picking internals stay (phase change/interval still rotate)');
+});
+
+test('preview keeps the whale animating in host-label mode and the fixed Hz input is wired', () => {
+  const env = makeRotatorEnv('zh');
+  const { ctx, window, timers, advanceNow } = env;
+  const api = window.__zusageStatusRotator;
+
+  const html = vm.runInContext('zuRotatorSectionHtml(true)', ctx);
+  assert.ok(html.includes('zu-rot-fixedhz'), 'fixed Hz input rendered');
+  assert.ok(!html.includes('另套流光主题') && !html.includes('wears the same flowing theme'), 'enable row copy no longer claims speed-cell theming');
+
+  const panel = makeFakeElement('div');
+  const stage = makeFakeElement('div'); stage.className = 'zu-rot-prev-stage';
+  panel.appendChild(stage);
+  panel.classList.add('open');
+  env.state.settingsSec = 'rotator';
+  window.__pvPanel = panel;
+  vm.runInContext('zuRotatorSyncPanel(window.__pvPanel)', ctx);
+
+  // host 文案模式：鲸鱼照常摆动（回归 MAJOR-1）
+  api.setConfig({ labelSource: 'host', typeSpeedMs: 0, whaleTailMotion: { enabled: true, action: 'twist', speedMode: 'fixed', fixedSpeedHz: 1 } });
+  const pathEl = stage.querySelector('.zu-whale-tail path');
+  const d1 = pathEl.getAttribute('d');
+  advanceNow(200);
+  vm.runInContext('rotPreviewTick()', ctx);   // 首拍初始化 lastFrameAt（steps=0，不推进）
+  advanceNow(200);
+  vm.runInContext('rotPreviewTick()', ctx);   // 第二拍按 elapsed 补帧
+  const d2 = pathEl.getAttribute('d');
+  assert.notEqual(d2, d1, 'whale tail keeps advancing while labelSource=host');
+  assert.equal(stage.querySelector('.zu-rotator-active-label').textContent, '工作中...', 'host label shown');
+
+  // fixedHz 数字输入 → change 委托写入配置
+  const input = makeFakeElement('input');
+  input.className = 'zu-rot-num zu-rot-fixedhz';
+  input.value = '2';
+  window.__hzInput = input;   // 跨 realm：元素经 window 引用传入 VM
+  vm.runInContext('zuRotatorPanelChange({ target: window.__hzInput }, window.__pvPanel)', ctx);
+  const cfg = api.getConfig();
+  assert.equal(cfg.whaleTailMotion.fixedSpeedHz, 2, 'fixed Hz change handler writes the config');
+  assert.equal(cfg.whaleTailMotion.speedMode, 'fixed', 'speed mode unchanged by Hz input');
+
+  // theme 白名单：手改 LS 脏值回落默认
+  const dirty = makeRotatorEnv('zh', { appearance: { theme: 'bogus-theme' } });
+  assert.equal(vm.runInContext('rotatorCfg.appearance.theme', dirty.ctx), 'none', 'invalid saved theme falls back to default');
+});
+
+test('host label snapshot survives multi-beat typing (regression: snapshot degraded every typing beat)', () => {
+  const env = makeRotatorEnv('zh');
+  const { ctx, window, body, timers, advanceNow } = env;
+  const api = window.__zusageStatusRotator;
+  const { label } = buildChatRow(body, '正在思考...');
+
+  api.setConfig({ enabled: true, typeSpeedMs: 28, whaleTail: false });
+  const ivs = [...timers.values()].filter(t => t.interval && t.ms === 65);
+  const tick = ivs[ivs.length - 1].fn;
+
+  // 多拍打字：快照必须始终是宿主原文案，不得退化为部分打字文本
+  for (let i = 0; i < 6; i++) { advanceNow(150); tick(); }
+  assert.equal(label.getAttribute('data-zu-host-label'), '正在思考...', `snapshot intact across typing beats, got "${label.getAttribute('data-zu-host-label')}"`);
+  assert.ok(label.textContent.length > 1, 'typing is actually progressing');
+
+  // 关闭轮播 → 还原宿主原文案（非残句）
+  api.setConfig({ enabled: false });
+  assert.equal(label.textContent, '正在思考...', 'restore writes the original host text, not a degraded snapshot');
+});
+
+test('panel claim follows real open order: closed syncPanel does not claim, .open before syncPanel does', () => {
+  const env = makeRotatorEnv('zh');
+  const { ctx, window, body, timers, advanceNow } = env;
+  const api = window.__zusageStatusRotator;
+  buildChatRow(body);
+
+  // 关闭态 syncPanel（buildPanel 预构建路径）：不得认领
+  const panel = makeFakeElement('div');
+  const stage = makeFakeElement('div'); stage.className = 'zu-rot-prev-stage';
+  panel.appendChild(stage);
+  env.state.settingsSec = 'rotator';
+  window.__pvPanel2 = panel;
+  vm.runInContext('zuRotatorSyncPanel(window.__pvPanel2)', ctx);
+  assert.equal(vm.runInContext('rotPreview.panelEl === window.__pvPanel2', ctx), false, 'closed panel is not claimed');
+
+  // 真实打开顺序：先 .open 后 syncPanel → 认领并出词
+  panel.classList.add('open');
+  vm.runInContext('zuRotatorSyncPanel(window.__pvPanel2)', ctx);
+  assert.equal(vm.runInContext('rotPreview.panelEl === window.__pvPanel2', ctx), true, 'open panel is claimed');
+  const ivs = [...timers.values()].filter(t => t.interval && t.ms === 65);
+  advanceNow(500);
+  ivs[ivs.length - 1].fn();
+  const lbl = stage.querySelector('.zu-rotator-active-label');
+  assert.ok(lbl && lbl.textContent !== '…', `first-open preview picks a phrase, got "${lbl && lbl.textContent}"`);
+
+  window.__zusageRotatorDispose();
 });

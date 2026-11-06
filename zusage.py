@@ -156,7 +156,7 @@ def _db_cache_key(con):
 
 
 def _cached_project(dbkey, key, fn):
-    """v177：_project_usage 专用缓存，键挂库文件身份 + (project_id, with_models)——常驻泵
+    """v177：_project_usage 专用缓存，键挂库文件身份 + (project_id, 目录键, with_models)——常驻泵
     跨请求复用连接时吃到 2s TTL 的跨帧免重扫（实测无缓存大库单项目聚合 ~40ms，池内多行
     一帧可达数百 ms）。独立于 _AGG_CACHE：项目键随使用增长，混进共享缓存会把它顶过上限
     触发整体 clear、连带丢掉 scan/today 热条目。"""
@@ -207,19 +207,30 @@ def session_usage(con, sid):
     }
 
 
+def _norm_path_key(d):
+    """目录归一化键：正反斜杠统一、去尾分隔、小写（Windows 不区分大小写，宿主 slug 亦
+    小写化）。空串=缺失/根目录（issue #248 聚合过滤锚点，与 v229 项目名共用归一前段）。"""
+    return (d or "").replace("\\", "/").rstrip("/").lower()
+
+
 def _project_usage(con, sid, with_models=False):
     """项目累计（v159）：当前会话所属项目（session.project_id，与宿主 --continue 同一
     项目身份）下全部会话的 completed 用量聚合，口径与 session_usage 一致；计入主会话与
     其全部派生会话（parent_id 指向主会话的子代理、辅助对话、Fork 等——比「仅子代理」宽，
-    都是本项目的真实消耗）。worktree 等不同目录 project_id 不同，天然不混。
+    都是本项目的真实消耗）。
+    issue #248：宿主 project_id slug 剥非 ASCII（纯中文目录名整段被剥），同父目录多个
+    中文项目坍缩共享父目录 project_id。主会话追加归一化目录等值过滤（_norm_path_key），
+    碰撞时只统计同目录会话；派生会话经 parent_id 随主会话自动正确。同 project_id 本应
+    同目录（worktree 等不同目录 project_id 不同），正常项目数值不变；当前会话 directory
+    缺失（锚点为空）时不过滤，保持原全量口径。
     sessions/turns 取实际参与消耗的会话与轮（session_id+turn_id 组合去重）；会话不在
     本地库或无 project_id 时返回 None（渲染端判空不渲染该格）。
     with_models（v163）：附按模型明细（v164 起全量降序），轻量行不取。
     name（v229）：启动目录末段作项目名（正反斜杠归一；缺失/根目录为空串，渲染端判空不渲染）。
-    v177：按库文件身份 + (project_id, with_models) 挂 2s TTL 缓存（同帧同项目多会话共享、
-    常驻泵跨帧免重扫；内存库不缓存）；聚合 IN 分片 500/批（老 SQLite <3.32 变量上限 999，
-    大项目会话数可超）。分片按 session_id 切——同一会话只落一片，distinct 计数与求和跨片
-    直接累加不重不漏，min/max 取跨片极值。"""
+    v177：按库文件身份 + (project_id, 目录键, with_models) 挂 2s TTL 缓存（同帧同项目
+    多会话共享、常驻泵跨帧免重扫；内存库不缓存）；聚合 IN 分片 500/批（老 SQLite <3.32
+    变量上限 999，大项目会话数可超）。分片按 session_id 切——同一会话只落一片，distinct
+    计数与求和跨片直接累加不重不漏，min/max 取跨片极值。"""
     prow = con.execute(
         "select project_id, directory from session where id=?", (sid,)).fetchone()
     if not prow or not prow[0]:   # 位置取值：con 可能没有 row_factory（远端链复用连接）
@@ -227,12 +238,17 @@ def _project_usage(con, sid, with_models=False):
     # v229：项目名=启动目录末段（正反斜杠归一后取末段，Windows 路径在 POSIX 解析也正确）
     pdir = (prow[1] or "").replace("\\", "/").rstrip("/")
     pname = pdir.rsplit("/", 1)[-1] if pdir else ""
+    pkey = _norm_path_key(pdir)
 
     def run():
-        mains = [r[0] for r in con.execute(
-            """select id from session where project_id=?
+        # issue #248：目录过滤在 Python 侧做（尾分隔/大小写归一无法可靠下推 SQL）；
+        # 一次取回 id+directory，量级=项目主会话数。锚点为空（pkey=""）不过滤。
+        rows = con.execute(
+            """select id, directory from session where project_id=?
                and parent_id is null and substr(id,1,?)!='sess_subagent'""",
-            (prow[0], _SUB_PREFIX_LEN))]
+            (prow[0], _SUB_PREFIX_LEN)).fetchall()
+        mains = [r[0] for r in rows
+                 if not pkey or _norm_path_key(r[1]) == pkey]
         all_ids = list(mains)
         for i in range(0, len(mains), 500):
             part = mains[i:i + 500]
@@ -323,7 +339,8 @@ def _project_usage(con, sid, with_models=False):
     dbkey = _db_cache_key(con)
     if dbkey is None:   # 内存库（database_list 的 file 列为空的连接）：不缓存，就地聚合
         return run()
-    return _cached_project(dbkey, (prow[0], bool(with_models)), run)
+    # 缓存键带 pkey：同 project_id 的碰撞项目（issue #248）各自目录结果不同，不得互串
+    return _cached_project(dbkey, (prow[0], pkey, bool(with_models)), run)
 
 
 def range_usage(con, start_ms, end_ms):

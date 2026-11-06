@@ -51,7 +51,7 @@ userData）。
 
 overlay 的 composer 锚点扫描要求 `textarea/[contenteditable]/[role=textbox]/.ProseMirror`
 等（`COMPOSER_SEL`）。占位 composer **必须包含 `<textarea>`**，且带
-`data-session-id`（会话归属）与 `.conversation-bottom-dock-transition`（v282/283 dock
+`data-session-id`（会话归属）与 `.conversation-bottom-dock-transition`（v283/283 dock
 对齐锚）才有完整几何。宿主语义变量（`--color-tooltip/--color-popover/...`）在浅色场景
 由 harness 页按浅色值补齐——生产由 ZCode `<html>` 提供。
 
@@ -99,7 +99,7 @@ tip，B1 教训）」「当前档高亮随夹具变化」这类契约用**测量
 - 基础 10 场景：recent16 深浅/en/窄窗、today 稀疏+聚焦、完整时间轴、项目×近7天、
   单日单柱、全库×本月、柱 hover 五字段卡；
 - 链 G（几何）：5 Tab × 1~30 桶宽度稳定性（tipW 恒定）+ 首柱/末柱/滚后末柱 hover；
-- 链 L（v281/v282）：档位说明浮层开/关/浅色/窄窗 + 柱体互斥 + dock/.it 对齐。
+- 链 L（v282/v283）：档位说明浮层开/关/浅色/窄窗 + 柱体互斥 + dock/.it 对齐。
 
 每步 `runChain` 依次：场景注入 → 整卡装配 → （可选）真实点击 Tab/聚焦切换/滚动 →
 （可选）柱 hover → `__zuDiag` 测量 → `capturePage` 截图。断言在链外由日志脚本判定，

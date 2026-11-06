@@ -263,14 +263,14 @@ test('V2 header is a single row (title left, dual tab groups right); stats time 
   assert.match(body, /zu-sc-head[^]*?zu-sv-range/, 'range sits in the chart title bar');
   assert.match(body, /zu-sv-range" title="\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} – /,
     'hover shows full YYYY-MM-DD HH:mm:ss range');
-  assert.match(html, /zu-sc-unit">t\/s<\//, 'lightweight unit badge without 单位： prefix (v285)');
-  assert.match(html, /zu-sv-legend-btn[^>]*aria-label="查看速度档位说明"/, 'dedicated bands entry label (v285)');
-  assert.match(html, /<circle cx="10" cy="10" r="8\.15"/, 'speed-bands SVG ring (v285)');
+  assert.match(html, /zu-sc-unit">t\/s<\//, 'lightweight unit badge without 单位： prefix (v286)');
+  assert.match(html, /zu-sv-legend-btn[^>]*aria-label="查看速度档位说明"/, 'dedicated bands entry label (v286)');
+  assert.match(html, /<circle cx="10" cy="10" r="8\.15"/, 'speed-bands SVG ring (v286)');
   assert.equal((html.match(/<path d="M(6\.35|10|13\.65) 13\.2V/g) || []).length, 3, 'three ascending speed bars');
   assert.ok(body.indexOf('zu-sc-unit') >= 0 && body.indexOf('zu-sc-unit') < body.indexOf('zu-sv-range'),
     'unit follows the chart title; range is the far-right element');
-  // v281：底部常驻图例移除，改图表标题栏问号按钮 + 浮层（.zu-sv-li 移入浮层内容构建器）
-  assert.doesNotMatch(html, /zu-sv-legend"|zu-sv-legend-t|zu-sv-legend-items/, 'persistent bottom legend removed (v281)');
+  // v282：底部常驻图例移除，改图表标题栏问号按钮 + 浮层（.zu-sv-li 移入浮层内容构建器）
+  assert.doesNotMatch(html, /zu-sv-legend"|zu-sv-legend-t|zu-sv-legend-items/, 'persistent bottom legend removed (v282)');
   assert.doesNotMatch(html, /zu-sv-li[ "]/, 'band chips live in the popup builder now');
   assert.match(html, /zu-sv-legend-btn/, 'question button sits in the chart head');
   assert.match(html, /data-sv-band="/, 'button carries the current band for the popup highlight');
@@ -325,9 +325,9 @@ test('bilingual labels follow the instance language', () => {
     live: null, segsHover: -1, fmtTok: String, fmtCnt: String, fmtMoney: String };
   const html = vm.runInContext('speedCardV2HTML(__o)', ctx);
   assert.match(html, /Generation speed/);
-  assert.match(html, /View speed bands/, 'en legend entry label (v285)');
+  assert.match(html, /View speed bands/, 'en legend entry label (v286)');
   assert.match(html, /Scope|Time/);
-  assert.match(html, /zu-sc-unit">t\/s<\//, 'unit badge is language-neutral (v285)');
+  assert.match(html, /zu-sc-unit">t\/s<\//, 'unit badge is language-neutral (v286)');
   assert.match(html, /No rated turns|hourly average speed/);
 });
 
@@ -363,10 +363,10 @@ test('rebuild closure reads explicit current hover and sel (no instance-symbol d
   assert.equal(typeof rebuild, 'function');
   const a = vm.runInContext('__rb(-1, __sel)', Object.assign(ctx, { __rb: rebuild }));
   assert.match(a, /zu-sv-root/);
-  assert.doesNotMatch(a, /zu-sv-card/);              // 未悬停无卡（v280 起卡经 SPD_PORTAL 侧信道，不进整卡 HTML）
+  assert.doesNotMatch(a, /zu-sv-card/);              // 未悬停无卡（v281 起卡经 SPD_PORTAL 侧信道，不进整卡 HTML）
   assert.equal(vm.runInContext('SPD_PORTAL', ctx), '', 'no hover: portal channel empty');
   const b = vm.runInContext('__rb(2, __sel)', Object.assign(ctx, { __rb: rebuild }));
-  assert.doesNotMatch(b, /zu-sv-card/);              // 整卡 HTML 不含信息卡（v280 Portal 化）
+  assert.doesNotMatch(b, /zu-sv-card/);              // 整卡 HTML 不含信息卡（v281 Portal 化）
   const portal = vm.runInContext('SPD_PORTAL', ctx); // 传当前 hover：侧信道产出五字段卡
   assert.match(portal, /zu-sv-card/);
   assert.match(portal, /zu-sv-crow/);
@@ -522,7 +522,7 @@ test('x-axis labels: HH:mm with MM/DD on cross-day first bar, sparse but day bar
     sel: { range: "session", period: "recent", dim: "time", sid: "sess_main" },
     live: null, segsHover: 1, fmtTok: String, fmtCnt: String, fmtMoney: u => "¥" + u.toFixed(2) })`
     .replace('ctx.__h', JSON.stringify(fixture())), ctx);
-  assert.doesNotMatch(html, /zu-sv-card/, 'hover card lives in the portal, not the card HTML (v280)');
+  assert.doesNotMatch(html, /zu-sv-card/, 'hover card lives in the portal, not the card HTML (v281)');
   assert.match(vm.runInContext('SPD_PORTAL', ctx), /zu-sv-card/, 'portal channel carries the hovered bar card');
   assert.match(html, /aria-label="11\/05 09:00，/, 'cross-day bar aria carries the day');
 });
@@ -764,7 +764,7 @@ test('stats-time compact format follows §5.4: no year within same month, years 
   assert.equal(r.crossYear, '2025/12/31 23:00 – 2026/01/02 01:00', 'cross-year: year on both ends');
 });
 
-test('V2 card root carries the selection key; both rebuild paths preserve h-scroll per key (v279)', () => {
+test('V2 card root carries the selection key; both rebuild paths preserve h-scroll per key (v281)', () => {
   const ctx = makeCtx();
   ctx.__h = fixture();
   const o = { speedHistory: ctx.__h, sel: { range: 'project', period: 'week', dim: 'time', sid: 'sess_main' },
@@ -783,10 +783,10 @@ test('V2 card root carries the selection key; both rebuild paths preserve h-scro
     source.indexOf('    function showTipFor(el) {'));
   assert.match(drawFn, /oldChartKey/, 'drawTip carries the old selection key');
   assert.match(drawFn, /oldChartL = oc\.scrollLeft;\n        \}\n      \}/,
-    'capture no longer gated on keepTop (v279 reopen path)');
+    'capture no longer gated on keepTop (v281 reopen path)');
 });
 
-test('v280 P1: fixed tooltip width + stable chart column (width stops tracking content)', () => {
+test('v281 P1: fixed tooltip width + stable chart column (width stops tracking content)', () => {
   const ctx = makeCtx(); ctx.__h = fixture();
   ctx.__o = { speedHistory: ctx.__h, sel: { range: 'recent', period: 'recent', dim: 'time', sid: 'sess_main' },
     live: null, segsHover: -1, fmtTok: String, fmtCnt: String, fmtMoney: u => '¥' + u.toFixed(2) };
@@ -794,15 +794,15 @@ test('v280 P1: fixed tooltip width + stable chart column (width stops tracking c
   // tip 定宽：width 与 max-width 同值 !important（不再只钳 max-width 让内容反向撑缩）
   assert.match(html,
     /width:min\(800px,calc\(100vw - 24px\)\)!important;max-width:min\(800px,calc\(100vw - 24px\)\)!important;box-sizing:border-box/,
-    'tooltip width is pinned at 800 (v283), not content-driven');
-  // v284：V2 卡左缘对齐锚元素（.it 速度格）左缘——positionTip 消费 __zuAlignLeft
+    'tooltip width is pinned at 800 (v284), not content-driven');
+  // v285：V2 卡左缘对齐锚元素（.it 速度格）左缘——positionTip 消费 __zuAlignLeft
   assert.match(source, /tip\.__zuAlignLeft = !!tip\.querySelector\("\.zu-sv-root"\);/,
     'full tip marks V2 content for left alignment');
   assert.match(source, /if \(tip\.__zuAlignLeft\) \{\n        left = Math\.max\(8, Math\.min\(ar\.left, Math\.max\(8, innerWidth - tr\.width - 8\)\)\);\n      \}/,
     'positionTip left-aligns the V2 card to the anchor cell');
   const codeNoLedger = source.split('\n').filter(l => !l.includes('var VERSION =')).join('\n');
   assert.doesNotMatch(codeNoLedger, /conversation-bottom-dock-transition/,
-    'v283 host-class dependency removed (did not apply on real host; ledger text exempt)');
+    'v284 host-class dependency removed (did not apply on real host; ledger text exempt)');
   assert.doesNotMatch(codeNoLedger, /__zuDockLeft/, 'dock machinery fully removed');
   // 右图表列：flex:1 1 0 + min-width:0（列宽只由 tip 定宽决定）
   assert.match(source, /\.zu-sv-root \.zu-speed-chart\{flex:1 1 0;min-width:0;max-width:100%\}/);
@@ -810,7 +810,7 @@ test('v280 P1: fixed tooltip width + stable chart column (width stops tracking c
   assert.match(source, /\.zu-sv-chart \.zu-sc-wrap\{overflow-x:auto;overflow-y:hidden;width:100%;min-width:0;max-width:100%\}/);
 });
 
-test('v280 P0: hover card portal — body-level singleton, viewport-aware placement, lifecycle hooks', () => {
+test('v281 P0: hover card portal — body-level singleton, viewport-aware placement, lifecycle hooks', () => {
   // Portal 单例：pointer-events none、与 tooltip 同层 z-index、类名进 boot 清理链
   assert.match(source, /var spdHoverPortal = document\.createElement\("div"\);\n  spdHoverPortal\.className = "zusage-quota-tip zu-sv-portal";/);
   assert.match(source, /spdHoverPortal\.style\.cssText = "position:fixed;display:none;z-index:2147483646;pointer-events:none;";/);
@@ -855,13 +855,13 @@ test('v280 P0: hover card portal — body-level singleton, viewport-aware placem
   assert.match(source, /spdHoverPortal\.setAttribute\("role", "tooltip"\)/);
   // 两条重建链路都接了 sync
   assert.match(source, /spdHoverPortalSync\(tpsTip, el\.__zuT \? el\.__zuT\.speedHover : -1\)/);
-  assert.match(source, /spdHoverPortalSync\(tip, idx\); +\/\* v280/);
+  assert.match(source, /spdHoverPortalSync\(tip, idx\); +\/\* v281/);
   // 横向滚动 capture 相重定位（两条链路）
   assert.match(source, /tpsTip\.addEventListener\("scroll", function \(\) \{\n    if \(tpsTipFor && tpsTipFor\.__zuT\) spdHoverPortalPlace\(tpsTip, tpsTipFor\.__zuT\.speedHover\);\n  \}, true\)/);
   assert.match(source, /tip\.addEventListener\("scroll", function \(\) \{\n      if \(tipFor\) spdHoverPortalPlace\(tip, speedChartHover\);\n    \}, true\)/);
 });
 
-test('v281: tabs drop the saturated blue selection for a hover-aligned low-contrast style', () => {
+test('v282: tabs drop the saturated blue selection for a hover-aligned low-contrast style', () => {
   assert.doesNotMatch(source, /\.zu-sv-tab\.on\{background:rgba\(87,200,255/, 'blue selection removed');
   assert.match(source, /\.zu-sv-tab\.on\{background:rgba\(255,255,255,\.07\);color:var\(--color-foreground,#e9edf4\);box-shadow:inset 0 0 0 1px rgba\(255,255,255,\.08\)\}/);
   assert.match(source, /\.zu-light \.zu-sv-tab\.on\{background:rgba\(0,0,0,\.06\)/, 'light theme variant');
@@ -872,7 +872,7 @@ test('v281: tabs drop the saturated blue selection for a hover-aligned low-contr
   assert.match(source, /\.zu-sv-tab\{appearance:none;border:0;background:transparent;[^}]*font-weight:600/);
 });
 
-test('v281: legend popup — hover/focus opens, mutual exclusion, escape, full lifecycle', () => {
+test('v282: legend popup — hover/focus opens, mutual exclusion, escape, full lifecycle', () => {
   // 模块单例 + 复用 boot 清理类 + role
   assert.match(source, /var spdLegendTip = document\.createElement\("div"\);\n  spdLegendTip\.className = "tip zusage-quota-tip zu-sv-legend-tip";/);
   assert.match(source, /spdLegendTip\.setAttribute\("role", "tooltip"\)/);
@@ -886,7 +886,7 @@ test('v281: legend popup — hover/focus opens, mutual exclusion, escape, full l
   assert.equal((source.match(/spdLegendTipShow\(lb\)/g) || []).length, 4, 'tpsTip + full tip, hover + focus');
   assert.equal((source.match(/spdLegendTipScheduleHide\(\);/g) || []).length, 4, 'scheduled hides wired (mouseout/focusout both hosts)');
   // 互斥反向：Portal 显示时收档位说明
-  assert.match(source, /spdLegendTipHide\(\); {2,3}\/\/ v281 互斥/, 'portal show closes legend popup');
+  assert.match(source, /spdLegendTipHide\(\); {2,3}\/\/ v28\d 互斥/, 'portal show closes legend popup');
   // Escape 行为语义（MAJOR-1 review）：全量 tip 链并入 v254 既存 keydown——legend 分支
   // 必须先于 fxTip 分支与 hideTip(true,"escape")，且独立 dead 监听已删。
   // 注意：两侧断言均锚「代码形状」而非注释文案。
@@ -903,7 +903,7 @@ test('v281: legend popup — hover/focus opens, mutual exclusion, escape, full l
     'compact chain keeps its own escape listener');
   // 生命周期：主 tooltip 收起与 dispose 链
   assert.match(source, /function hideTpsTip\(\) \{[^}]*spdLegendTipHide\(\)/, 'compact tip close hides legend popup');
-  assert.match(source, /spdHoverPortalHide\(\); {2,3}\/\* v280：Portal 随 tooltip 收起[^]*?spdLegendTipHide\(\); +\/\* v281/, 'full tip close hides legend popup');
+  assert.match(source, /spdHoverPortalHide\(\); {2,3}\/\* v281：Portal 随 tooltip 收起[^]*?spdLegendTipHide\(\); +\/\* v282/, 'full tip close hides legend popup');
   assert.match(source, /spdLegendTip\.remove\(\); {2,5}\/\/ v281：档位说明浮层同链清理/, 'dispose chain removes legend popup');
   // 内容构建器：升序 + 当前档来自 data-sv-band
   const build = source.slice(source.indexOf('  function spdLegendCardHTML(curCls) {'),
@@ -913,15 +913,15 @@ test('v281: legend popup — hover/focus opens, mutual exclusion, escape, full l
   assert.match(build, /b\.cls === curCls/, 'highlight by band cls');
 });
 
-test('v282: legend popup width cap 800 and dock-aligned left edge', () => {
+test('v283: legend popup width cap 800 and dock-aligned left edge', () => {
   assert.match(source, /\.zu-sv-legend-tip\{max-width:min\(800px,calc\(100vw - 24px\)\)/, 'width cap 800');
   const show = source.slice(source.indexOf('  function spdLegendTipShow(btn) {'),
     source.indexOf('  spdLegendTip.addEventListener("mouseenter"'));
-  assert.match(show, /btn\.closest\("\.zusage-tip-root, \.zusage-tps-tip"\)/, 'left edge aligns to the main tooltip box (v284)');
+  assert.match(show, /btn\.closest\("\.zusage-tip-root, \.zusage-tps-tip"\)/, 'left edge aligns to the main tooltip box (v285)');
   assert.match(show, /Math\.min\(Math\.max\(m, left\), Math\.max\(m, vw - m - lr\.width\)\)/, 'right-edge clamp still applies');
 });
 
-test('v285: chart title bar — weight 600 title, t/s badge, speed-bands SVG entry', () => {
+test('v286: chart title bar — weight 600 title, t/s badge, speed-bands SVG entry', () => {
   assert.match(source, /\.zu-sv-chart \.zu-sc-title\{font-weight:600;font-size:calc\(var\(--ui-font-size,14px\) \+ 2px\);line-height:1\.3\}/,
     'title weight 600 at ~16px (V2 scope only, V1 untouched)');
   assert.match(source, /\.zu-sv-chart \.zu-sc-unit\{margin-left:9px;background:rgba\(255,255,255,\.05\)/, 'unit badge styling');
