@@ -294,6 +294,31 @@ test("transient empty marketplace CLI output is retried and the update still com
   assert.equal(JSON.parse(fs.readFileSync(path.join(f.runtime, "plugin-update.json"), "utf8")).lastError, null);
 });
 
+test("Release check success clears a persisted lastError (issue #247)", async (t) => {
+  const f = fixture(t);
+  f.setRelease("1.1.0");
+  // 预置一次历史失败：market 渠道路径不会经过，验证的是 Release 分支的清除点
+  writeJson(f.stateFile, { checkedAt: 1, lastAttempt: 1, lastError: { message: "历史失败", at: 1 } });
+  await f.updater.request({ action: "check" });
+  assert.equal(f.updater.status().phase, "available");
+  assert.equal(f.updater.status().lastError, null);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(f.runtime, "plugin-update.json"), "utf8")).lastError, null);
+});
+
+test("cancelled install (channel changed mid-flight) records no lastError or lastFailure", async (t) => {
+  const f = fixture(t);
+  f.setRelease("1.1.0");
+  f.afterPrepare = () => { f.source.ref = "changed-before-install"; f.writeKnown(); };
+  await f.updater.request({ action: "update" });
+  assert.equal(f.updater.status().phase, "error");   // 取消也走 error 相位提示来源变化
+  assert.match(f.updater.status().error, /更新期间市场来源已变化/);
+  const saved = JSON.parse(fs.readFileSync(path.join(f.runtime, "plugin-update.json"), "utf8"));
+  assert.equal(saved.lastError, null);   // 取消类不算失败，不落盘
+  assert.equal(saved.lastFailure, null);
+  assert.equal(f.calls.filter((args) => args[0] === "install").length, 0);
+  assertCleaned(f);
+});
+
 /* 「无正式版」与「超分页上限」是渠道健康信号而非故障（install-release §6），checkRelease
    抛出后必须直达用户、绝不触发渠道清单兜底——回退仅服务于 API 故障（限流/不可达）。 */
 test("a healthy no-stable-release listing must not fall back to the channel catalog", async (t) => {

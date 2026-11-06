@@ -241,7 +241,30 @@ test("network failure is visible, marketplace refresh retries three times, and l
 test("CLI error diagnostics are honored even on exit zero", async (t) => {
   const f = fixture(t); const u = createUpdater({ ...f.options,
     cli: async () => ({ diagnostics: [{ severity: "error", message: "market missing" }] }) });
-  await u.request({ action: "check" }); assert.equal(u.status().phase, "error"); assert.match(u.status().error, /market missing/);
+  await u.request({ action: "check" }); assert.equal(u.status().phase, "error");
+  // 重试计入：三次尝试的末次错误保留（不是首错，也不是裸错误）
+  assert.match(u.status().error, /市场清单刷新连续 3 次失败.*market missing/);
+});
+test("lastError drops future timestamps and truncates oversized messages", async (t) => {
+  const f = fixture(t); const stateFile = path.join(f.runtime, "plugin-update.json");
+  fs.writeFileSync(stateFile, JSON.stringify({ checkedAt: 100000000, lastAttempt: 100000000,
+    lastError: { message: "x".repeat(600), at: 100000000 + 86400000 } }));   // 未来时间戳 + 超长消息
+  const restored = createUpdater(f.options);
+  assert.equal(restored.status().lastError, null);   // 「损坏即丢弃」含时序非法值
+  f.set({ error: "y".repeat(600) });
+  await f.updater.request({ action: "check" });
+  const saved = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+  assert.equal(saved.lastError.message.length, 500);   // 写侧截断
+});
+test("three failed refresh attempts keep the LAST error message, not the first", async (t) => {
+  const f = fixture(t); let seq = 0;
+  const u = createUpdater({ ...f.options, cli: async () => {
+    seq += 1;
+    throw new Error("SEQ-" + seq);
+  } });
+  await u.request({ action: "check" });
+  assert.match(u.status().error, /SEQ-3/);
+  assert.doesNotMatch(u.status().error, /SEQ-1/);
 });
 test("market install failure persists both lastFailure and lastError with the same cause", async (t) => {
   const f = fixture(t);
@@ -281,6 +304,56 @@ test("auto command accepts --force and rejects unknown flags (issue #247)", asyn
   await assert.doesNotReject(() => runAutoCommand(["--auto", "--force", "--resources", dir, "--runtime", runtime]));
   await assert.rejects(() => runAutoCommand(["--auto", "--bogus", "x"]), /无效自动更新参数/);
   await assert.rejects(() => runAutoCommand(["--auto"]), /缺少客户端或运行时目录/);
+});
+test("runAutoCommand wires --force through to the updater tick despite a fresh lastAttempt (issue #247)", async (t) => {
+  // 端到端接线：解析出 --force（前一组测试）≠ 传到 tick(force)。用可执行的假
+  // zcode.cjs 走真实 createUpdater/runFile 进程边界，记录 CLI 是否被调用。
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "zusage-auto-wire-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const runtime = path.join(dir, "runtime"), resources = path.join(dir, "resources");
+  const inventory = path.join(dir, ".zcode", "cli", "plugins");
+  fs.mkdirSync(runtime); fs.mkdirSync(path.join(resources, "glm"), { recursive: true }); fs.mkdirSync(inventory, { recursive: true });
+  const callsLog = path.join(dir, "cli-calls.log");
+  fs.writeFileSync(path.join(resources, "glm", "zcode.cjs"), `
+    const fs = require("fs");
+    const args = process.argv.slice(2);
+    fs.appendFileSync(${JSON.stringify(callsLog)}, args.join(" ") + "\\n");
+    if (args[0] === "plugins" && args[1] === "marketplace") process.stdout.write(JSON.stringify({ diagnostics: [] }));
+    else if (args[0] === "plugins" && args[1] === "list") {
+      if (args.includes("--available")) process.stdout.write(JSON.stringify({ installed: [
+        { id: ${JSON.stringify(PLUGIN_ID)}, version: "1.0.0", enabled: true }],
+        available: [{ id: ${JSON.stringify(PLUGIN_ID)}, version: "1.1.0" }], diagnostics: [] }));
+      else process.stdout.write(JSON.stringify([{ id: ${JSON.stringify(PLUGIN_ID)}, version: "1.0.0", enabled: true, diagnostics: [] }]));
+    } else process.stdout.write(JSON.stringify({ ok: true, diagnostics: [] }));
+  `);
+  fs.writeFileSync(path.join(inventory, "installed_plugins.json"), JSON.stringify({ version: 1, plugins: [
+    { id: PLUGIN_ID, version: "1.0.0", scope: "user", installPath: path.join(dir, "installed") }] }));
+  fs.writeFileSync(path.join(inventory, "known_marketplaces.json"), JSON.stringify({ marketplaces: [
+    { id: "zusage-marketplace", source: { source: "directory", path: dir } }] }));
+  fs.writeFileSync(path.join(runtime, "config.json"), JSON.stringify({ python_path: "python3", plugin_auto_update: true }));
+  const run = async (argv) => {
+    // 10 分钟前的 lastAttempt：普通 tick 应被 1h 限频挡住，--force 必须绕过
+    fs.writeFileSync(path.join(runtime, "plugin-update.json"),
+      JSON.stringify({ lastAttempt: Date.now() - 10 * 60 * 1000 }));
+    // runAutoCommand 固定 home: os.homedir()：临时改 HOME/USERPROFILE 指向夹具目录，
+    // 绝不允许测试触碰真实用户插件存储（posix os.homedir() 每次读 env，无缓存）。
+    const realHome = process.env.HOME, realProfile = process.env.USERPROFILE;
+    process.env.HOME = dir; process.env.USERPROFILE = dir;
+    try {
+      await runAutoCommand(["--auto", ...argv, "--resources", resources, "--runtime", runtime]);
+    } finally {
+      if (realHome === undefined) delete process.env.HOME; else process.env.HOME = realHome;
+      if (realProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = realProfile;
+    }
+    const log = fs.existsSync(callsLog) ? fs.readFileSync(callsLog, "utf8") : "";
+    fs.rmSync(callsLog, { force: true });
+    return log;
+  };
+  assert.equal(await run([]), "");   // 无 --force：限频生效，零 CLI 调用
+  const forced = await run(["--force"]);
+  assert.match(forced, /plugins marketplace update zusage-marketplace/);   // --force 接线到 tick(force)：检查确实发生
+  assert.equal(process.exitCode, 1);   // 假 CLI 不提交新版 → 错误终态的退出码契约，测试有意驱动
+  process.exitCode = 0;
 });
 test("invalid config is never overwritten", async (t) => {
   const f = fixture(t); fs.writeFileSync(f.configFile, "{bad JSON");

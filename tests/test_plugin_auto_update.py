@@ -168,6 +168,17 @@ class PluginAutoUpdateTests(unittest.TestCase):
         self.assert_silent_skip()
         self.assertEqual((self.runtime / "plugin-update.json").read_bytes(), state)
 
+    def test_force_bypasses_the_python_side_hour_throttle(self):
+        # issue #247 review M1：1h 内的 lastAttempt 会在这里把更新静默挡回去，
+        # --force 根本到不了 Node——force 必须与 Node 侧同款豁免限频。
+        self.write_state({"lastAttempt": self.now * 1000 - 1000})   # 1 秒前：普通启动被限频
+        self.assert_silent_skip()
+        self.popen.reset_mock()
+        self.assertEqual(self.launch_force(), (True, ""))
+        self.popen.assert_called_once()
+        args, _ = self.popen.call_args
+        self.assertIn("--force", args[0])
+
     def test_automatic_update_interval_is_exactly_one_hour(self):
         self.assertEqual(updater.INTERVAL_MS, 3600000)
 

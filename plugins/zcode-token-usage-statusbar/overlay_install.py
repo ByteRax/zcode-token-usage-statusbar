@@ -939,12 +939,28 @@ def _host_registered(version):
         return True
 
 
+def _auto_update_disabled(runtime):
+    """用户是否显式关闭了插件自动更新（缺省/损坏视为开启，与 plugin_auto_update 同口径）。"""
+    try:
+        cfg = json.loads((runtime / "config.json").read_text(encoding="utf-8"))
+        return isinstance(cfg, dict) and cfg.get("plugin_auto_update") is False
+    except Exception:
+        return False
+
+
 def _compat_notice_line(runtime, host_version):
     """未登记宿主版本的用户可见说明（拼进既有故障提示之后，或单独成条）。带上
     最近一次自动更新失败原因，让「检查过了、什么都没发生」变成可行动的信息
-    （issue #247：市场清单被宿主 CLI 静默刷新失败卡住四天无人知晓）。"""
-    line = (f"当前插件 v{_plugin_version() or '?'} 未登记适配 ZCode {host_version}："
-            "已触发插件自动更新，升级到新版并重启 ZCode 后状态条才会恢复。")
+    （issue #247：市场清单被宿主 CLI 静默刷新失败卡住四天无人知晓）。显式关闭
+    自动更新时如实说明，不谎称「已触发」。"""
+    version = _plugin_version() or "?"
+    if _auto_update_disabled(runtime):
+        line = (f"当前插件 v{version} 未登记适配 ZCode {host_version}："
+                "请升级插件（⚙ → 插件更新手动检查，自动更新已被显式关闭），"
+                "升级并重启 ZCode 后状态条才会恢复。")
+    else:
+        line = (f"当前插件 v{version} 未登记适配 ZCode {host_version}："
+                "已触发插件自动更新，升级到新版并重启 ZCode 后状态条才会恢复。")
     try:
         state = json.loads((runtime / "plugin-update.json").read_text(encoding="utf-8"))
         error = state.get("lastError") if isinstance(state, dict) else None

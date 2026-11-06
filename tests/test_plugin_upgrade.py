@@ -811,7 +811,44 @@ print(json.dumps(operations))
             {"lastError": {"message": "市场清单刷新连续 3 次失败: x", "at": 1}}), encoding="utf-8")
         line = self.installer._compat_notice_line(self.runtime, "9.9.9")
         self.assertIn("当前插件 v1.0.0 未登记适配 ZCode 9.9.9", line)
+        self.assertIn("已触发插件自动更新", line)
         self.assertIn("最近一次自动更新失败：市场清单刷新连续 3 次失败: x", line)
+
+    def test_compat_notice_guides_manual_check_when_auto_update_disabled(self):
+        # issue #247 review：显式关闭自动更新时不得谎称「已触发」
+        self.runtime.mkdir(parents=True, exist_ok=True)
+        (self.runtime / "config.json").write_text(json.dumps({"plugin_auto_update": False}), encoding="utf-8")
+        line = self.installer._compat_notice_line(self.runtime, "9.9.9")
+        self.assertIn("未登记适配 ZCode 9.9.9", line)
+        self.assertIn("自动更新已被显式关闭", line)
+        self.assertNotIn("已触发插件自动更新", line)
+
+    def test_compat_notice_refires_after_the_plugin_version_changes(self):
+        # 去重粒度是 宿主版本 × 已装版本：同宿主换插件版本必须重新提示
+        self.write_config({"asar_path": str(self.asar)})
+        self.write_asar(self.asar, version="9.9.9")
+        self.assertEqual(self.main("install")[0], 0)
+        marker_file = self.runtime / ".plugin-compat-notice.json"
+        marker_file.write_text(json.dumps({"hostBuild": "9.9.9", "pluginVersion": "0.0.9"}), encoding="utf-8")
+        with mock.patch.object(self.installer, "ensure_renderer_bridge",
+                               return_value={"status": "skipped-unknown", "version": "9.9.9"}), \
+                mock.patch.object(self.installer, "_host_registered", return_value=False):
+            output, _ = self.hook()
+        self.assertIn("未登记适配 ZCode 9.9.9", output["systemMessage"])
+        self.assertEqual(json.loads(marker_file.read_text(encoding="utf-8")),
+                         {"hostBuild": "9.9.9", "pluginVersion": "1.0.0"})
+
+    def test_fresh_install_on_unregistered_host_names_the_gap_instead_of_silence(self):
+        # issue #247 review：自动安装刚成功但桥按未知版本跳过——不能静默交差
+        self.write_config({"asar_path": str(self.asar)})
+        self.write_asar(self.asar, version="9.9.9")
+        with mock.patch.object(self.installer, "ensure_renderer_bridge",
+                               return_value={"status": "skipped-unknown", "version": "9.9.9"}), \
+                mock.patch.object(self.installer, "_host_registered", return_value=False):
+            output, _ = self.hook()
+        self.assertIn("未登记适配 ZCode 9.9.9", output["systemMessage"])
+        self.assertTrue(self.installer.LAST_DIAG["injected"])
+        self.assertEqual(self.installer.LAST_DIAG["bridge"], "skipped-unknown")
 
     def test_run_hook_publishes_host_diagnostic_for_session_start_record(self):
         # LAST_DIAG 是 session-start.py 写入 plugin-session-start.json 的诊断来源；

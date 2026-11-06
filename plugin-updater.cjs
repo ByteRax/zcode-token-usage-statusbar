@@ -687,6 +687,7 @@ function createUpdater(options) {
     await recordRestart(report);
     runtimeSyncNeeded = fs.existsSync(markerFile);
     state.lastFailure = null;   // 安装成功：失败目标标注随 pending 一并清除（一次落盘）
+    state.lastError = null;   // 同上：恢复路径成功不让旧失败消息残留在「已更新」状态旁（issue #247 review）
     clearPending();
     state.skipped = Array.isArray(report.preserved) ? report.preserved : [];
     state.restartRequired = fs.existsSync(markerFile);

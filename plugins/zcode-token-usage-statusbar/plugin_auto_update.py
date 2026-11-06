@@ -42,8 +42,10 @@ def start_auto_update(runtime, pi, force=False):
         if isinstance(state, dict) and state.get("pendingSync") is not True:
             last_attempt = state.get("lastAttempt")
             # Node 的 Date.now() 以毫秒记录；损坏字段不阻止新的尝试。
+            # force（兼容性触发）与 Node 侧同款豁免 1h 限频：在这里被挡住，
+            # --force 根本到不了更新器（issue #247 review M1）。
             elapsed = time.time() * 1000 - last_attempt if type(last_attempt) in (int, float) else None
-            if (elapsed is not None and 0 < last_attempt < float("inf")
+            if (not force and elapsed is not None and 0 < last_attempt < float("inf")
                     and 0 <= elapsed < INTERVAL_MS):
                 return False
 
