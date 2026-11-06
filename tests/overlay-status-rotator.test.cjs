@@ -77,12 +77,12 @@ function makeFakeElement(tag = 'div') {
         }
       }
       if (innerHTMLVal.includes('zu-rotator-active-label')) {
-        const re = /<span class="zu-rotator-active-label">([^<]*)<\/span>/g;
+        const re = /<span class="([^"]*zu-rotator-active-label[^"]*)">([^<]*)<\/span>/g;
         let m2;
         while ((m2 = re.exec(innerHTMLVal))) {
           const lbl = makeFakeElement('span');
-          lbl.className = 'zu-rotator-active-label';
-          lbl.textContent = m2[1];
+          lbl.className = m2[1];
+          lbl.textContent = m2[2];
           el.appendChild(lbl);
         }
       }
@@ -392,7 +392,7 @@ test('chat mount replaces the label, hides the host elapsed clock in phrases mod
   assert.equal(chatRow.hasAttribute('data-zusage-rotator-slot'), false);
 });
 
-test('speed cell wears the flow theme only — no rotator pill, no whale svg, native icon intact (user spec #2)', () => {
+test('speed cell is fully native — no rotator pill, no whale svg, no flow theme (user revert 2026-11-06)', () => {
   const { ctx, window, body } = makeRotatorEnv('zh');
   const api = window.__zusageStatusRotator;
   buildChatRow(body);   // 激活轮播
@@ -402,13 +402,17 @@ test('speed cell wears the flow theme only — no rotator pill, no whale svg, na
   assert.equal(barMain.querySelector('.zu-rotator-bar'), null, 'rotator pill never injected into the bar');
   assert.equal(barMain.querySelector('.zu-whale-tail-wrap'), null, 'whale svg never injected into the bar');
   assert.equal(ico.style.display, '', 'native lightning icon untouched');
-  assert.equal(speedIt.classList.contains('zu-flow-num'), true, 'speed .it carries the flow class when gradient is on');
+  // 用户改定（2026-11-06 晚）：速度格不跟随轮播设置——无 zu-flow-num 类、无流光 CSS、档位色保持
+  assert.equal(speedIt.classList.contains('zu-flow-num'), false, 'speed .it never carries the flow class');
+  assert.ok(!rotatorSlice.includes('syncBarAppearance'), 'bar appearance sync removed');
+  assert.ok(!rotatorSlice.includes('.zu-main .it.zu-flow-num .zu-live{'), 'flow CSS on speed cell removed');
+  const css = vm.runInContext('rotatorStyleEl.textContent', ctx);
+  assert.ok(!css.includes('zu-flow-num') && !css.includes('zuRotIcoFlow'), 'no speed-cell flow CSS in the rotator stylesheet');
+  assert.ok(css.includes('.zu-main .it.zu-flow-num .zu-live{') === false, 'flow-num gradient rules gone');
+  assert.ok(css.includes(".zu-settings-section[data-sec='rotator'] .zu-rot-prev-fix{position:sticky;bottom:0"), 'preview bar pinned to the bottom of the settings scroll area');
 
   api.setConfig({ enabled: false });
-  assert.equal(speedIt.classList.contains('zu-flow-num'), false, 'flow class removed when rotator disabled');
-
-  api.setConfig({ enabled: true, appearance: { gradient: { enabled: false } } });
-  assert.equal(speedIt.classList.contains('zu-flow-num'), false, 'flow class follows gradient.enabled');
+  assert.equal(speedIt.classList.contains('zu-flow-num'), false, 'still no flow class when rotator disabled');
 
   // 旧版本遗留注入节点的清理路径仍然可用
   const legacy = makeFakeElement('span');
@@ -451,20 +455,68 @@ test('danmaku engine is fully removed; settings render pack counts and themeable
   assert.match(html, /zu-rot-whaletail/);
   assert.match(html, /zu-rot-tail-action/);
   assert.doesNotMatch(html, /zu-rot-dm/, 'no danmaku controls');
+  assert.doesNotMatch(html, /zu-rot-title-enable/, 'no window-title rotation switch (removed)');
+  assert.ok(!rotatorSlice.includes('syncRotatorWindowTitle'), 'window-title engine fully removed');
   assert.doesNotMatch(html, /zu-rot-mount/, 'no mount selector (bar mount removed)');
   assert.doesNotMatch(html, /zu-rot-bar-always/, 'no bar-always switch');
-  assert.match(html, /zu-rot-pack-preview/, 'preview container rendered');
-  assert.match(html, /zu-rot-pack-prev/, 'per-pack preview buttons rendered');
+  assert.match(html, /zu-rot-pack-preview/, 'preview container rendered (kept hidden)');
   assert.match(html, /<small>[1-9]/, 'pack phrase counts are real numbers now (were all 0)');
+  assert.doesNotMatch(html, /zu-rot-pack-prev"/, 'per-pack preview buttons removed (container name is a prefix, quote-bound the match)');
+  assert.doesNotMatch(html, /zu-rot-prev-info/, 'preview info line removed');
+  assert.doesNotMatch(html, /zu-rot-prev-next/, 'next-phrase button removed (auto-rotation only)');
+});
 
-  const pv = vm.runInContext('zuRotPackPreviewHtml("deepseek")', ctx);
-  assert.ok(pv.includes('DeepSeek'), 'preview carries the localized pack title');
-  assert.match(pv, /zu-rotator-active-label/, 'preview phrases wear the themed shimmer label');
-  const stripped = pv
-    .replace(/<b>/g, '').replace(/<\/b>/g, '')
-    .replace(/<span class="zu-rot-pv-phase">/g, '')
-    .replace(/<span class="zu-rotator-active-label">/g, '')
-    .replace(/<\/span>/g, '');
-  assert.ok(!/[<>]/.test(stripped), 'no unescaped angle brackets outside the known wrapper tags');
-  assert.equal(vm.runInContext('zuRotPackPreviewHtml("no-such-pack")', ctx), '', 'unknown pack yields empty preview');
+test('live preview card: last card of the section, follows every setting, self-cleans its timer', () => {
+  const env = makeRotatorEnv('zh');
+  const { ctx, window, timers, advanceNow } = env;
+  const api = window.__zusageStatusRotator;
+
+  const html = vm.runInContext('zuRotatorSectionHtml(true)', ctx);
+  assert.ok(html.indexOf('zu-rot-prev-stage') > html.indexOf('zu-rot-custom-long'), 'preview card is the last card of the rotator section');
+  assert.ok(html.indexOf('zu-rot-prev-fix') < html.indexOf('zu-rot-prev-stage'), 'sticky wrapper encloses the preview card');
+  assert.ok(html.indexOf('zu-rot-pack-grid') < html.indexOf('zu-rot-prev-stage'), 'pack card precedes the bottom preview card');
+  assert.equal(html.split('zu-rot-pack-preview').length - 1, 1, 'exactly one preview container, hosted by the bottom card');
+  assert.ok(!html.includes('<100KB'), 'whale card title no longer carries the size suffix');
+  // 用户 keep-list：钉底卡只保留 stage（鲸鱼+短语）与隐藏定点容器，无按钮/信息行/标题
+  const fixIdx = html.indexOf('zu-rot-prev-fix');
+  assert.ok(fixIdx >= 0 && html.slice(fixIdx, html.indexOf('</section>')).indexOf('zu-rot-prev-next') < 0, 'no button inside the pinned preview card');
+
+  // 构造带 stage/info 的假面板并接线（面板打开路径）
+  const panel = makeFakeElement('div');
+  const stage = makeFakeElement('div'); stage.className = 'zu-rot-prev-stage';
+  const strip = makeFakeElement('div'); strip.className = 'zu-rot-pack-preview'; strip.hidden = true;
+  panel.appendChild(stage); panel.appendChild(strip);
+  env.state.settingsSec = 'rotator';   // 分区可见性事实源（activateSettingsSec 单一出口维护）
+  window.__pvPanel = panel;
+  vm.runInContext('zuRotatorSyncPanel(window.__pvPanel)', ctx);
+
+  const iv65 = [...timers.values()].filter(t => t.interval && t.ms === 65);
+  assert.equal(iv65.length, 2, 'preview timer joins the module rotator timer while the panel is open');
+
+  advanceNow(1000);
+  iv65[iv65.length - 1].fn();   // 预览 tick：立即取第一条短语（来自开启的词包池）
+  const label = stage.querySelector('.zu-rotator-active-label');
+  assert.ok(label && label.textContent.length >= 1 && label.textContent !== '…', `preview label shows an enabled-pack phrase, got "${label && label.textContent}"`);
+  assert.ok(stage.querySelector('.zu-whale-tail path'), 'whale shown in preview while whaleTail is on');
+
+  // 联动：关闭鲸鱼（走真实变更尾部）→ 预览重建为无鲸鱼
+  api.setConfig({ whaleTail: false });
+  assert.equal(stage.querySelector('.zu-whale-tail'), null, 'preview rebuilds without whale after the change tail');
+  api.setConfig({ whaleTail: true });
+
+  // 词包勾选变化联动：全部停用 → 词池只剩兜底句（仍出词，不空白）
+  vm.runInContext('rotatorCfg.enabledPacks = []; rotPreview.raw = ""; rotPreview.pickAt = 0;', ctx);
+  advanceNow(200);
+  iv65[iv65.length - 1].fn();
+  assert.ok(stage.querySelector('.zu-rotator-active-label').textContent.length >= 1, 'fallback phrase still shows when every pack is unchecked');
+  assert.ok(strip.hidden, 'pack sample strip stays hidden (no pin buttons anymore)');
+
+  // 面板关闭（元素脱离 DOM）→ 预览定时器下一拍自清
+  panel.remove();
+  advanceNow(100);
+  iv65[iv65.length - 1].fn();
+  assert.equal([...timers.values()].filter(t => t.interval && t.ms === 65).length, 1, 'preview timer self-clears when the panel detaches');
+
+  window.__zusageRotatorDispose();
+  assert.equal(timers.size, 0, 'dispose clears every rotator timer');
 });

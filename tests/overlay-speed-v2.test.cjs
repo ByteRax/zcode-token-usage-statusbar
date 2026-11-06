@@ -266,8 +266,19 @@ test('V2 header is a single row (title left, dual tab groups right); stats time 
   assert.match(html, /单位：t\/s/);
   assert.ok(body.indexOf('zu-sc-unit') >= 0 && body.indexOf('zu-sc-unit') < body.indexOf('zu-sv-range'),
     'unit follows the chart title; range is the far-right element');
-  assert.match(html, /zu-sv-legend/);
-  assert.equal((html.match(/zu-sv-li/g) || []).length, 10, 'ten bands');
+  // v281：底部常驻图例移除，改图表标题栏问号按钮 + 浮层（.zu-sv-li 移入浮层内容构建器）
+  assert.doesNotMatch(html, /zu-sv-legend"|zu-sv-legend-t|zu-sv-legend-items/, 'persistent bottom legend removed (v281)');
+  assert.doesNotMatch(html, /zu-sv-li[ "]/, 'band chips live in the popup builder now');
+  assert.match(html, /zu-sv-legend-btn/, 'question button sits in the chart head');
+  assert.match(html, /data-sv-band="/, 'button carries the current band for the popup highlight');
+  const lg = vm.runInContext('spdLegendCardHTML(tpsBand(138.4).cls)', ctx);
+  assert.equal((lg.match(/zu-sv-li[ "]/g) || []).length, 10, 'ten bands in the popup');
+  assert.ok(lg.indexOf('&lt;40') >= 0 && lg.indexOf('&lt;40') < lg.indexOf('70–150') &&
+    lg.indexOf('70–150') < lg.indexOf('✦ ≥2000'), 'ascending order');
+  assert.equal((lg.match(/zu-sv-li cur/g) || []).length, 1, 'exactly one highlighted band');
+  assert.match(lg, /70–150/, '138.4 t/s highlights 70–150');
+  assert.doesNotMatch(vm.runInContext('spdLegendCardHTML("")', ctx), /zu-sv-li cur/, 'no speed: no highlight');
+  assert.match(lg, /档位说明/, 'popup title');
   assert.doesNotMatch(html, /zu-basis|统计口径|均值参考|zu-pj-time/);
   assert.doesNotMatch(html, /zu-sc-lead|zu-sc-new/);
 });
@@ -311,6 +322,7 @@ test('bilingual labels follow the instance language', () => {
     live: null, segsHover: -1, fmtTok: String, fmtCnt: String, fmtMoney: String };
   const html = vm.runInContext('speedCardV2HTML(__o)', ctx);
   assert.match(html, /Generation speed/);
+  assert.match(html, /Speed bands/, 'legend button label (v281)');
   assert.match(html, /Scope|Time/);
   assert.match(html, /unit: t\/s/);
   assert.match(html, /No rated turns|hourly average speed/);
@@ -835,4 +847,56 @@ test('v280 P0: hover card portal — body-level singleton, viewport-aware placem
   // 横向滚动 capture 相重定位（两条链路）
   assert.match(source, /tpsTip\.addEventListener\("scroll", function \(\) \{\n    if \(tpsTipFor && tpsTipFor\.__zuT\) spdHoverPortalPlace\(tpsTip, tpsTipFor\.__zuT\.speedHover\);\n  \}, true\)/);
   assert.match(source, /tip\.addEventListener\("scroll", function \(\) \{\n      if \(tipFor\) spdHoverPortalPlace\(tip, speedChartHover\);\n    \}, true\)/);
+});
+
+test('v281: tabs drop the saturated blue selection for a hover-aligned low-contrast style', () => {
+  assert.doesNotMatch(source, /\.zu-sv-tab\.on\{background:rgba\(87,200,255/, 'blue selection removed');
+  assert.match(source, /\.zu-sv-tab\.on\{background:rgba\(255,255,255,\.07\);color:var\(--color-foreground,#e9edf4\);box-shadow:inset 0 0 0 1px rgba\(255,255,255,\.08\)\}/);
+  assert.match(source, /\.zu-light \.zu-sv-tab\.on\{background:rgba\(0,0,0,\.06\)/, 'light theme variant');
+  assert.match(source, /\.zu-sv-tab\.on:hover\{background:rgba\(255,255,255,\.09\)\}/, 'selected+hover only a slight lift');
+  // 两组 Tab 同一套规则（无第二个 on 规则分支）
+  assert.equal((source.match(/"\.zu-sv-tab\.on\{background:/g) || []).length, 1, 'single selection rule for both groups');
+  // 字重恒 600 未回退（v263 防选中加宽跳动）
+  assert.match(source, /\.zu-sv-tab\{appearance:none;border:0;background:transparent;[^}]*font-weight:600/);
+});
+
+test('v281: legend popup — hover/focus opens, mutual exclusion, escape, full lifecycle', () => {
+  // 模块单例 + 复用 boot 清理类 + role
+  assert.match(source, /var spdLegendTip = document\.createElement\("div"\);\n  spdLegendTip\.className = "tip zusage-quota-tip zu-sv-legend-tip";/);
+  assert.match(source, /spdLegendTip\.setAttribute\("role", "tooltip"\)/);
+  assert.match(source, /spdLegendTip\.style\.cssText = "position:fixed;display:none;z-index:2147483646;";/);
+  // 显示即移尾（B1 同款，不挂内容变化条件）
+  const show = source.slice(source.indexOf('  function spdLegendTipShow(btn) {'),
+    source.indexOf('  spdLegendTip.addEventListener("mouseenter"'));
+  assert.match(show, /lastElementChild !== spdLegendTip/, 'move-to-end on every show');
+  assert.match(show, /spdHoverPortalHide\(\);/, 'bar-hover portal closes when legend opens');
+  // 两条宿主链路都接了 hover/focus 打开
+  assert.equal((source.match(/spdLegendTipShow\(lb\)/g) || []).length, 4, 'tpsTip + full tip, hover + focus');
+  assert.equal((source.match(/spdLegendTipScheduleHide\(\);/g) || []).length, 4, 'scheduled hides wired (mouseout/focusout both hosts)');
+  // 互斥反向：Portal 显示时收档位说明
+  assert.match(source, /spdLegendTipHide\(\); {2,3}\/\/ v281 互斥/, 'portal show closes legend popup');
+  // Escape 行为语义（MAJOR-1 review）：全量 tip 链并入 v254 既存 keydown——legend 分支
+  // 必须先于 fxTip 分支与 hideTip(true,"escape")，且独立 dead 监听已删。
+  // 注意：两侧断言均锚「代码形状」而非注释文案。
+  const escStart = source.indexOf('    /* 项目卡内部 Escape：先收档位说明浮层');
+  const escEnd = source.indexOf('restoringFocus = true;');
+  const fullEsc = source.slice(escStart, escEnd);
+  assert.ok(fullEsc.includes('spdLegendTip.style.display === "block"') &&
+    fullEsc.indexOf('spdLegendTipHide()') < fullEsc.indexOf('hideFxTip()') &&
+    fullEsc.indexOf('hideFxTip()') < fullEsc.indexOf('hideTip(true, "escape")'),
+    'escape precedence: legend, fxTip, then close tip');
+  assert.ok(!/tip\.addEventListener\("keydown", function \(e\) \{\n      if \(e\.key === "Escape" && spdLegendTip/.test(source),
+    'no dead standalone escape listener on the full tip');
+  assert.ok(/tpsTip\.addEventListener\("keydown"[\s\S]{0,300}spdLegendTip\.style\.display === "block"/.test(source),
+    'compact chain keeps its own escape listener');
+  // 生命周期：主 tooltip 收起与 dispose 链
+  assert.match(source, /function hideTpsTip\(\) \{[^}]*spdLegendTipHide\(\)/, 'compact tip close hides legend popup');
+  assert.match(source, /spdHoverPortalHide\(\); {2,3}\/\* v280：Portal 随 tooltip 收起[^]*?spdLegendTipHide\(\); +\/\* v281/, 'full tip close hides legend popup');
+  assert.match(source, /spdLegendTip\.remove\(\); {2,5}\/\/ v281：档位说明浮层同链清理/, 'dispose chain removes legend popup');
+  // 内容构建器：升序 + 当前档来自 data-sv-band
+  const build = source.slice(source.indexOf('  function spdLegendCardHTML(curCls) {'),
+    source.indexOf('  /* 纯函数桥：三处 speedTipRebuild 调用共用。'));
+  assert.match(build, /for \(var i = TPS_BANDS\.length - 1; i >= 0; i--\)/,
+    'descending storage looped backwards = ascending display (single source)');
+  assert.match(build, /b\.cls === curCls/, 'highlight by band cls');
 });
