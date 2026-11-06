@@ -552,3 +552,59 @@ test('press-keepalive window: any force hide within 1.2s of a tip press is downg
   assert.match(s, /if \(force && cause !== "win-leave" && cause !== "escape" &&\n          typeof lastTipDownAt !== "undefined" && lastTipDownAt &&\n          Date\.now\(\) - lastTipDownAt < 1200\) force = false;/);
   assert.match(s, /if \(typeof lastTipDownAt !== "undefined" && lastTipDownAt &&\n          Date\.now\(\) - lastTipDownAt < 1200\) return;/, 'focusout short-circuit in window');
 });
+
+// ---------- v274 完整规格补齐：布局引擎/数值稀疏/横滚/单点与空态说明 ----------
+test('spdChartLayout centralizes density-driven params (§5.1)', () => {
+  const ctx = makeCtx();
+  const L = n => vm.runInContext('spdChartLayout(' + n + ')', ctx);
+  assert.deepEqual([L(1).spacerW, L(8).spacerW, L(24).spacerW], [240, 252, 732]);
+  assert.equal(L(1).xEvery, 1); assert.equal(L(16).xEvery, 3);
+  assert.equal(L(8).valEvery, 1); assert.equal(L(16).valEvery, 2);
+  assert.equal(L(1).single, true); assert.equal(L(6).single, false);
+});
+
+test('bar value labels thin out for n>8, first/last/hovered always shown (§4.7)', () => {
+  const ctx = makeCtx(); ctx.__h = fixture();
+  // 构造 12 个有效小时桶（当天 00:00–11:00，超出 n<=8 全显阈值；12>3 不触发聚焦）
+  const h = fixture();
+  const dayStart = new Date(2026, 10, 5, 0, 0, 0).getTime();
+  const turns = [];
+  for (let i = 0; i < 12; i++) turns.push({ s: 0, t: i ? HOUR : dayStart, b: dayStart + i * HOUR - 60000,
+    out: 300, ms: 1000, i: 500, o: 300, n: 1, msl: [[0, 300]] });
+  h.turns = turns;
+  ctx.__h = h;
+  const an = analyze(ctx, { range: 'all', period: 'today', dim: 'time' });
+  // 完整模式：00:00..14:00 全桶保留（15 桶 >16 上限不截、12 有效 + 3 空桶），不丢桶
+  assert.equal(an.items.length, 15, 'full-timeline keeps all elapsed hour buckets');
+  assert.ok(an.items.filter(x => !x.empty).length === 12, '12 real buckets intact');
+  ctx.__o = { fmtTok: String, fmtCnt: String, fmtMoney: u => '¥' + u.toFixed(2) };
+  ctx.__an = an;
+  const html = vm.runInContext('spdChartHTML(__an, -1, __o)', ctx);
+  const vals = (html.match(/zu-sc-val">[\d.]+</g) || []).length;
+  assert.ok(vals >= 4 && vals <= 7, 'value labels thinned to ~n/2, got ' + vals);
+  assert.match(html, /zu-sc-col[^"]*latest/, 'latest bar carries the soft outline class');
+  // 悬停柱恒显数值：hover 第 1 柱（非稀疏采样位）
+  const h2 = vm.runInContext('spdChartHTML(__an, 1, __o)', ctx);
+  assert.ok((h2.match(/zu-sc-val">[\d.]+</g) || []).length >= vals, 'hovered bar value forced on');
+});
+
+test('single/two-bucket coverage appends the no-trend note (§4.3)', () => {
+  const ctx = makeCtx(); ctx.__h = fixture();
+  const cov1 = analyze(ctx, { range: 'session', period: 'week', dim: 'time' });
+  if (cov1.real.length === 1) assert.match(cov1.cov, /暂无足够数据观察趋势/);
+  // 今天聚焦模式：cov 含小时覆盖
+  const ct = analyze(ctx, { range: 'all', period: 'today', dim: 'time' });
+  assert.match(ct.cov, /小时/, 'today coverage counts hours');
+  assert.ok(ct.focus && ct.focus.canToggle, 'today exposes the focus toggle');
+});
+
+test('empty state carries the longer-range hint (§4.2)', () => {
+  const ctx = makeCtx();
+  ctx.__h = { sid: 'x', source: 'local', sids: ['x'], snames: ['x'], pids: [['p', 'p']],
+    mnames: ['m'], turns: [] };
+  const html = vm.runInContext(`speedCardV2HTML({ speedHistory: ${JSON.stringify(ctx.__h)},
+    sel: { range: 'session', period: 'week', dim: 'time', sid: 'x' },
+    live: null, segsHover: -1, fmtTok: String, fmtCnt: String, fmtMoney: null })`, ctx);
+  assert.match(html, /尝试选择更长时间范围/, 'empty state suggests a longer range');
+  assert.match(html, /zu-sv-empty-hint/);
+});
