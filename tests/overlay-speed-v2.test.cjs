@@ -176,18 +176,15 @@ test('period buckets: today hourly, 7 days daily, month daily, long history mont
   assert.equal(unit('all', 'all'), 'year');
 });
 
-test('dimension: project offers time/session, all offers time/project, invalid dim auto-resets', () => {
+test('project range = current project (proj_a, 5 turns), always time dimension (v272)', () => {
   const ctx = makeCtx();
   ctx.__h = fixture();
-  const pa = analyze(ctx, { range: 'project', period: 'all', dim: 'session' });
-  assert.equal(pa.dim, 'session');
-  assert.equal(pa.items.length, 2, 'two sessions in project A');
-  assert.ok(pa.items.every(x => x.label && x.a && x.b));
-  const aa = analyze(ctx, { range: 'all', period: 'all', dim: 'project' });
-  assert.equal(aa.dim, 'project');
-  assert.equal(aa.items.length, 2, 'project A + project B');
-  const bad = analyze(ctx, { range: 'recent', period: 'all', dim: 'project' });
-  assert.equal(bad.dim, 'time', 'dimension not applicable to range falls back to time');
+  const pd = analyze(ctx, { range: 'project', period: 'all' });
+  assert.equal(pd.dim, 'time');
+  assert.equal(pd.overall.turns, 5, 'proj_a: main + proj2 turns only');
+  assert.match(pd.title, /当前项目/);
+  assert.ok(!source.includes('zu-sv-dimsel'), 'dimension select removed from UI');
+  assert.ok(!source.includes('SPD_DIMS'), 'SPD_DIMS table removed');
 });
 
 test('remote identity fails closed: all-history downgrades to local session with a notice', () => {
@@ -251,7 +248,7 @@ test('V2 card has two tab rows, time pill, 16-bar chart, ten-band legend and no 
   assert.match(html, /zu-sv-range/);
   assert.equal((html.match(/data-sv-group="range"/g) || []).length, 5, '4 range tabs + row');
   assert.equal((html.match(/data-sv-group="period"/g) || []).length, 6, '5 period tabs + row');
-  assert.match(html, /zu-sv-dimsel/);
+  assert.doesNotMatch(html, /zu-sv-dimsel/, 'dimension select removed (v272)');
   assert.match(html, /单位：t\/s/);
   assert.match(html, /zu-sv-legend/);
   assert.equal((html.match(/zu-sv-li/g) || []).length, 10, 'ten bands');
@@ -268,11 +265,13 @@ test('live status is a note, not the history card title; estimate stays separate
     return vm.runInContext('speedCardV2HTML(__o)', ctx);
   };
   const plain = mk(null);
-  assert.match(plain, /当前筛选 · 历史统计/);
+  assert.match(plain, /历史统计/);
+  assert.doesNotMatch(plain, /不含进行中请求/, 'wording removed per user spec (v273)');
   assert.match(plain, /平均速度/);
   const busy = mk({ statusText: '工具执行中', speedValue: 88.8, kind: 'estimate' });
   assert.doesNotMatch(busy, /zu-sl-title">工具执行中/, 'live status must not be the card title');
-  assert.match(busy, /工具执行中/, 'live status shown as its own note');
+  assert.doesNotMatch(busy, /Σ有效输出/, 'formula line removed in v263');
+  assert.match(busy, /zu-sl-sub">工具执行中/, 'live status as lightweight header badge (v273)');
   assert.match(busy, /生成中估 88\.8 t\/s/);
   assert.match(busy, /平均速度/);
 });
@@ -308,24 +307,17 @@ test('range isolation: session/project/all keep disjoint turn sets (no stale dat
   assert.equal(s.overall.turns, 3);
   assert.equal(p.overall.turns, 5);
   assert.equal(a.overall.turns, 6);
-  assert.ok(a.overall.out >= p.overall.out && p.overall.out >= s.overall.out);
-  // 切换范围不带上一范围的旧值：三者的 Σout 严格递增
   assert.ok(s.overall.out < p.overall.out && p.overall.out < a.overall.out);
 });
 
-test('dimension matrix: allowed dims per range and illegal combos reset to time', () => {
+test('dimension switch removed: dim is always time regardless of requested dim (v272)', () => {
   const ctx = makeCtx(); ctx.__h = fixture();
-  const cases = [
-    ['recent', 'time', 'time'], ['recent', 'session', 'time'], ['recent', 'project', 'time'],
-    ['session', 'time', 'time'], ['session', 'session', 'time'],
-    ['project', 'time', 'time'], ['project', 'session', 'session'], ['project', 'project', 'time'],
-    ['all', 'time', 'time'], ['all', 'project', 'project'], ['all', 'session', 'time'],
-  ];
-  for (const [range, dim, want] of cases) {
-    const an = analyze(ctx, { range, period: 'all', dim });
-    assert.equal(an.dim, want, range + '×' + dim);
-    const expectDims = range === 'project' ? 'time,session' : range === 'all' ? 'time,project' : 'time';
-    assert.equal(an.dims.join(','), expectDims, range + ' dims');
+  for (const range of ['recent', 'session', 'project', 'all']) {
+    for (const dim of ['time', 'session', 'project']) {
+      const an = analyze(ctx, { range, period: 'all', dim });
+      assert.equal(an.dim, 'time', range + ' always time');
+      assert.equal(an.dims.join(','), 'time', range + ' dims');
+    }
   }
 });
 
@@ -342,10 +334,12 @@ test('rebuild closure reads explicit current hover and sel (no instance-symbol d
   assert.match(b, /zu-sv-card-anchor/);              // 传当前 hover 即出现五字段卡
   assert.match(b, /zu-sv-crow/);
   // 筛选态是同一对象引用：改属性后闭包立即生效，不依赖重新赋值
-  sel.range = 'project'; sel.period = 'all'; sel.dim = 'session';
+  sel.range = 'project'; sel.period = 'all';
   const c = vm.runInContext('__rb(0, __sel)', Object.assign(ctx, { __rb: rebuild }));
-  assert.match(c, /按会话比较/);
+  assert.match(c, /当前项目/);
   assert.match(c, /data-sv-val="project" aria-pressed="true"/);
+  // 时间胶囊 v270 带年
+  assert.match(c, /\d{4}\/\d{2}\/\d{2}/, 'range pill carries year');
 });
 
 test('partial cost is marked, missing cost shows unavailable, cost-off hides the estimate', () => {
@@ -379,4 +373,182 @@ test('today buckets cover 00:00 to current hour and cap at 16 bars', () => {
   assert.equal(an.items.length, 15, '00:00..14:00 = 15 hourly buckets');
   assert.ok(an.items.filter(x => x.empty).length >= 10, 'no-data hours are empty');
   assert.ok(an.items.every(x => x.empty || x.v > 0));
+});
+
+// ---------- v263 行为级：Tab 点击竞态与交互冻结 ----------
+// 用户实报「范围/时间 Tab 点击无效」：生成中 updateLive 每 100ms 重编整卡（tipSig 每 tick
+// 变化），mousedown 命中的按钮在 mouseup 前被 innerHTML 替换，click 落到共同祖先、
+// closest(".zu-sv-tab") 为 null。v263 把 Tab 切换提前到 pointerdown（重建窗口前同步生效）。
+// 切片取 speedTabActivate 函数本体（含 stopPropagation/重建调用），不跑整 IIFE。
+const tabFn = source.slice(source.indexOf('    function speedTabActivate(e) {'),
+  source.indexOf('      return true;\n    }\n    /* 任何按下交互') + '      return true;\n    }\n'.length);
+
+function makeTabCtx() {
+  const ctx = makeCtx();
+  // 实例闭包符号 + 可观测桩：drawTip 记录调用，tipFor.__tip 承接重建串
+  const st = vm.runInContext(`(() => {
+    const calls = { draw: [], stop: 0 };
+    let speedSel = { range: "recent", period: "recent", dim: "time" };
+    let speedChartHover = -1, speedInteractAt = 0;
+    const tipFor = { __tip: null };
+    const tip = { innerHTML: "" };
+    function drawTip(el, keepTop) { calls.draw.push([el === tipFor, keepTop]); tip.innerHTML = String(el.__tip || ""); }
+    const speedTipRebuild = (curHover, curSel) => {
+      const out = speedCardV2HTML({ speedHistory: ${JSON.stringify(fixture())},
+        sel: Object.assign({ sid: "sess_main" }, curSel), live: null, segsHover: curHover,
+        fmtTok: String, fmtCnt: String, fmtMoney: u => "¥" + u.toFixed(2) });
+      return "\\u0001" + out;
+    };
+    ${tabFn}
+    return { calls, get speedSel() { return speedSel; }, set speedSel(v) { speedSel = v; },
+      get speedChartHover() { return speedChartHover; }, set speedChartHover(v) { speedChartHover = v; },
+      get speedInteractAt() { return speedInteractAt; }, set speedInteractAt(v) { speedInteractAt = v; },
+      tipFor, tip, drawTip, speedTipRebuild, speedTabActivate };
+  })()`, ctx);
+  ctx.__st = st;
+  return ctx;
+}
+
+function fakeTab(group, val) {
+  return { closest: () => null, getAttribute: k => (k === "data-sv-group" ? group : k === "data-sv-val" ? val : null) };
+}
+function tabNode(group, val) {
+  const node = fakeTab(group, val);
+  node.closest = sel => sel === ".zu-sv-tab" ? node : null;
+  return node;
+}
+function fire(st, type, target) {
+  const e = { target, stopPropagation: () => { st.calls.stop++; }, preventDefault: () => {} };
+  st.speedTabActivate(e);
+  return e;
+}
+
+test('pointerdown tab activation lands before any innerHTML rebuild (v263 root-cause contract)', () => {
+  const ctx = makeTabCtx();
+  const st = ctx.__st;
+  fire(st, "pointerdown", tabNode("range", "project"));
+  assert.equal(st.speedSel.range, "project");
+  assert.equal(st.speedChartHover, -1);
+  assert.ok(st.speedInteractAt > 0, "interaction freeze armed");
+  assert.ok(st.tipFor.__tip && st.tipFor.__tip.charCodeAt(0) === 1, "rebuild string installed");
+  assert.match(st.tip.innerHTML, /data-sv-val="project" aria-pressed="true"/);
+  // 竞态契约：pointerdown 之后不再有 click（重建吞掉），切换也必须已经生效——
+  // 修复前等价实现只挂 click，这条序列下 speedSel 永远不会变（回归即红）。
+  assert.equal(st.calls.draw.length, 1);
+  assert.equal(st.calls.draw[0][0], true, 'drawTip ran on the live cell');
+  assert.equal(st.calls.draw[0][1], true, 'keepTop preserved');
+});
+
+test('click-only fallback stays idempotent and refuses invalid tabs', () => {
+  const ctx = makeTabCtx();
+  const st = ctx.__st;
+  fire(st, "click", tabNode("period", "week"));
+  assert.equal(st.speedSel.period, "week");
+  const draws = st.calls.draw.length;
+  fire(st, "click", tabNode("period", "week"));   // 同值重按：幂等不炸
+  assert.equal(st.speedSel.period, "week");
+  assert.ok(st.calls.draw.length >= draws);
+  const before = st.speedSel.range;
+  fire(st, "click", tabNode("range", "bogus"));   // 非法值拒绝
+  assert.equal(st.speedSel.range, before);
+  const sel2 = { closest: () => null };           // 非 Tab 目标不误触
+  fire(st, "click", sel2);
+  assert.equal(st.speedSel.range, before);
+});
+
+test('cross-tab range switches keep dim at time (v272, no dimension feature)', () => {
+  const ctx = makeTabCtx();
+  const st = ctx.__st;
+  for (const r of ["project", "all", "recent", "session"]) {
+    fire(st, "pointerdown", tabNode("range", r));
+    assert.equal(st.speedSel.range, r, 'range switched to ' + r);
+    assert.equal(st.speedSel.dim, "time", 'dim stays time on ' + r);
+  }
+});
+
+test('x-axis labels: HH:mm with MM/DD on cross-day first bar, sparse but day bars forced', () => {
+  const ctx = makeCtx();
+  ctx.__h = fixture();
+  const an = analyze(ctx, { range: 'session', period: 'recent', dim: 'time' });
+  const withDay = an.items.filter(x => x.dayLabel);
+  assert.ok(withDay.length >= 1, 'cross-day bar carries a day label');
+  assert.match(withDay[0].dayLabel, /^\d{2}\/\d{2}$/);
+  assert.ok(an.items.every(x => /^\d{2}:\d{2}$/.test(x.label)), 'time labels stay HH:mm');
+  const html = vm.runInContext(`speedCardV2HTML({ speedHistory: ctx.__h,
+    sel: { range: "session", period: "recent", dim: "time", sid: "sess_main" },
+    live: null, segsHover: 1, fmtTok: String, fmtCnt: String, fmtMoney: u => "¥" + u.toFixed(2) })`
+    .replace('ctx.__h', JSON.stringify(fixture())), ctx);
+  assert.match(html, /zu-sv-card/, 'hover card renders while a bar is hovered');
+  assert.match(html, /aria-label="11\/05 09:00，/, 'cross-day bar aria carries the day');
+});
+
+test('left card: history-only wording, no formula line, soft selected tab and ultra star', () => {
+  const ctx = makeCtx();
+  ctx.__h = fixture();
+  const html = vm.runInContext(`speedCardV2HTML({ speedHistory: ${JSON.stringify(fixture())},
+    sel: { range: "session", period: "recent", dim: "time", sid: "sess_main" },
+    live: { statusText: "工具执行中", speedValue: 88.8, kind: "estimate" },
+    segsHover: -1, fmtTok: String, fmtCnt: String, fmtMoney: u => "¥" + u.toFixed(2) })`, ctx);
+  assert.match(html, /历史统计/);
+  assert.doesNotMatch(html, /Σ有效输出/, 'formula line removed (VIS-002)');
+  assert.doesNotMatch(html, /当前筛选/, 'old title wording gone (VIS-009)');
+  assert.match(html, /生成中估 88\.8/, 'live estimate stays a note');
+  assert.doesNotMatch(html, /zu-sv-tab\.on\{background:var\(--color-brand/, 'no solid brand fill (VIS-001)');
+  assert.doesNotMatch(html, /≥2000 Ultra/, 'ultra text label replaced by star (VIS-007)');
+});
+
+// v263 第二根因：tip 内控件点击 → 重编 innerHTML → 被点按钮 detach → 焦点跌落 body
+// → focusout（relatedTarget=null）曾无条件 hideTip(true,"focus-leave") 强制关 tooltip，
+// 切换生效了用户也看不见。鼠标悬停中（mouseInBar）必须降级非 force 交总闸拦截。
+const focusOutFn = source.slice(source.indexOf('    main.addEventListener("focusout"'),
+  source.indexOf('    /* v117 悬停命中区扩到整栏'));
+test('focus-out from a rebuilt tab keeps the tooltip while the pointer stays on the bar (v263)', () => {
+  // 切片是 addEventListener 调用，提取其中的 handler 供直接派发
+  const ctx = makeCtx();
+  const st = vm.runInContext(`(() => {
+    const calls = { hide: [] };
+    let mouseInBar = true;
+    const tipFor = { id: "cell" };
+    const tip = { contains: () => false };
+    const main = { contains: () => false, addEventListener: (type, fn) => { mainFocusOutHandler = fn; } };
+    function hideTip(force, cause) { calls.hide.push([force, cause]); }
+    ${focusOutFn}
+    mainFocusOutHandler({ relatedTarget: null });   // 焦点跌落 body（按钮被重编 detach）
+    mouseInBar = false;
+    mainFocusOutHandler({ relatedTarget: null });   // 纯键盘/鼠标已离场：维持强制关
+    return { calls };
+  })()`, ctx);
+  assert.deepEqual(Array.from(st.calls.hide[0]), [false, "focus-leave"], 'pointer on bar: downgraded, total-gate decides');
+  assert.deepEqual(Array.from(st.calls.hide[1]), [true, "focus-leave"], 'no pointer: force close kept');
+});
+
+// v268 跨代际粘性：serve 空闲回收/重启窗口的帧缺 speed_history，新代际粘性（模块级）
+// 为空即闪回旧版整卡。粘性写 window.__zusageSpdSticky、四消费点 lastSpeedHistory 兜底。
+test('sticky turn-table survives generation reload via window.__zusageSpdSticky (v268)', () => {
+  const src = source;
+  // 1) 粘性初始化继承 window 缓存（新实例/新代际直接拿到上一代的轮表）
+  assert.match(src, /var lastSpeedHistory = \(typeof window !== "undefined" && window\.__zusageSpdSticky\) \|\| null;/);
+  // 2) 帧带轮表时写回 window（热重载不丢）
+  assert.match(src, /try \{ window\.__zusageSpdSticky = lastSpeedHistory; \} catch \(_\) \{ \}/);
+  // 3) 三个 V2 消费点全部粘性兜底（buildLiveTip v2h / html(d) / tpsTip 数据包）
+  assert.ok(src.includes('(typeof lastSpeedHistory !== "undefined" && lastSpeedHistory) || null'), 'buildLiveTip v2h sticky fallback (typeof-guarded)');
+  assert.ok(src.includes('spdRebuildOr(d.speed_history ||'), 'html(d) sticky fallback arg');
+  assert.ok((src.match(/typeof lastSpeedHistory !== "undefined" && lastSpeedHistory/g) || []).length >= 3, 'three consumer sites typeof-guarded');
+  assert.ok(src.includes('speedHistory: (state.data && state.data.speed_history) || (prevT && prevT.speedHistory) ||'), 'tpsTip data package head');
+  assert.ok(src.includes('(typeof lastSpeedHistory !== "undefined" && lastSpeedHistory) || null,'), 'tpsTip data package sticky fallback');
+  // 4) 行为级：spdRebuildOr 对「缺失帧 + 有粘性」的组合——兜底逻辑在调用点，
+  //    这里锁 spdRebuildOr 对真空值仍回 null（fb 分支契约不因兜底而消失）
+  const ctx = makeCtx();
+  const fn = vm.runInContext('spdRebuildOr(undefined, {range:"recent",period:"recent",dim:"time"}, -1, null, {})', ctx);
+  assert.equal(fn, null);
+});
+
+// v271 点击任意位置关闭根治：tip 内按压后 1.2s 硬保活窗——hideTip 对非
+// win-leave/escape 的 force 一律降级交总闸；focusout 在窗内直接不关。
+test('press-keepalive window: any force hide within 1.2s of a tip press is downgraded (v271)', () => {
+  const s = source;
+  assert.ok(s.includes('var lastTipDownAt = 0;'), 'press timestamp state');
+  assert.ok(s.includes('lastTipDownAt = Date.now();'), 'pointerdown stamps the window');
+  assert.match(s, /if \(force && cause !== "win-leave" && cause !== "escape" &&\n          typeof lastTipDownAt !== "undefined" && lastTipDownAt &&\n          Date\.now\(\) - lastTipDownAt < 1200\) force = false;/);
+  assert.match(s, /if \(typeof lastTipDownAt !== "undefined" && lastTipDownAt &&\n          Date\.now\(\) - lastTipDownAt < 1200\) return;/, 'focusout short-circuit in window');
 });

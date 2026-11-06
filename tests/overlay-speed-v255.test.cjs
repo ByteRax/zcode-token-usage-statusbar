@@ -72,11 +72,11 @@ test('compact tps chip tip routes to the V2 card when history is present', () =>
     'V2 生成成功时直接返回整卡，不追加旧状态条摘要');
 });
 
-test('tpsTip has V2 tab / dimension / bar hover delegation without extra global listeners', () => {
+test('tpsTip has V2 tab / bar hover delegation without extra global listeners (v272: dimension removed)', () => {
   const block = source.slice(source.indexOf('  var tpsTip = document.createElement("div");'),
     source.indexOf('  var TPS_HIDE_DELAY_MS'));
   assert.match(block, /\.zu-sv-tab/);
-  assert.match(block, /\.zu-sv-dimsel/);
+  assert.doesNotMatch(block, /\.zu-sv-dimsel/, 'dimension select removed (v272)');
   assert.match(block, /\.zu-sc-col/);
   assert.match(block, /function tpsSpeedPick/);
 });
