@@ -168,7 +168,7 @@ python3 -B "${ZCODE_SKILL_DIR}/scripts/triage.py" released <提交>     # 该提
    ```bash
    # --match-head-commit 只钉 head，不钉 base 和 PR 正文：合并前一刻再读一次 base，并且和合并写在同一条 shell 命令里
    # （分成两次执行，中间会多出几秒到十几秒的窗口，作者可以趁机把 base 改成渠道分支）
-   # --match-head-commit 只认 40 位完整 SHA：PR 页面/gh 输出里的短 SHA 会 GraphQL 报错，用 git rev-parse 取全 SHA
+   # --match-head-commit 只认 40 位完整 SHA：短 SHA 会被服务端 OID 匹配拒绝（报错文本随 gh/GitHub 服务端变化），用 git rev-parse 取全 SHA
    [ "$(gh pr view N --repo ByteRax/zcode-token-usage-statusbar --json baseRefName,headRefOid --jq '"\(.baseRefName) \(.headRefOid)"')" = "main <被审 SHA>" ] \
      && gh pr merge N --repo ByteRax/zcode-token-usage-statusbar --merge --match-head-commit <被审 SHA> \
           --subject "Merge pull request #N" --body ""

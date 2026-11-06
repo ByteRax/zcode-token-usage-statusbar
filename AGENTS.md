@@ -98,7 +98,7 @@ python3 sync_plugin.py --check
 2. **核实当前加载位置。** 以目标客户端实际加载的 `inject-main.cjs` 路径为准，结合 asar 入口引用与当前进程启动信息核实，不默认仓库、插件缓存和稳定运行目录是同一份。`--dev` 已直接加载本次修改的源码目录时无需重复复制。尊重显式 `hot_reload:false`，不为触发热更擅自改配置。
 3. **安全部署本次改动。** 写入前比较运行文件、来源基与本次修改，保留运行目录热修和其它会话改动，禁止整目录覆盖或借重装绕过保护。`overlay_install.py sync` 是全名单可信同步、没有单文件参数，仅在来源身份匹配且所有待同步差异均属本次已验证范围时使用。需要选择性开发部署时，按 [.zcode/rules/install-release.md](.zcode/rules/install-release.md) 先备份为 `.pre-<原因>-<时间戳>`，只将已确认可安全更新的文件经同目录临时文件、语法检查后原子替换；内容变化须确保 mtime 也变化。出现 `preserved`、来源身份不符、运行目录领先或并行写入冲突时，停止相关文件部署并说明，不强制覆盖。
 4. **按生效类型触发。**
-   - `overlay.js`、`turn-stats.js`：部署到实际加载目录后，由主桥每 2 秒检查 mtime，任一变化即整体重注入，不刷新页面或重启客户端冒充热重载。
+   - `overlay.js`、`turn-stats.js`：部署到实际加载目录后，由主桥按 mtime 轮询检查（`hot_reload` 显式 `true` 时 2 秒、缺省 5 秒、显式 `false` 关闭），任一变化即整体重注入，不刷新页面或重启客户端冒充热重载。
    - `zusage.py`：同一轮询发现变化后自动重启已有常驻 Python；未启动常驻进程时，下一次启动读取新代码。
    - 六个子模块 `quota-client.cjs`、`model-puller.cjs`、`plugin-updater.cjs`、`plugin-release.cjs`、`plugin-storage.cjs`、`engine-patch.cjs`：部署后由 loader `hotReloadMainModules` 在同一 mtime 轮询内热换（语法预检→dispose→清 require.cache→按依赖方向重建→`_hotLoadedAt`→ack 自动销账 marker），零重启生效；旧版 loader（未含热换循环）上仍需完全重启。`inject-main.cjs` 自身与首次注入、加载路径、asar 桥补丁变化：不能热重载，只记录并报告待完全重启，不自行退出或重启 ZCode。关闭热重载（`hot_reload:false`）时上述文件一律回退为重启生效。
    - 其它 Python 工具按下一次相关调用／新进程生效；MCP 已导入的模块需重启对应 MCP 进程，不能把文件同步或下一次工具调用当作重新载入。

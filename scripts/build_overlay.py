@@ -31,6 +31,12 @@ def list_parts(src_dir=SRC_DIR):
 
 
 def assemble_bytes(src_dir=SRC_DIR):
+    strays = sorted(p.name for p in Path(src_dir).glob("*.js") if p.is_file() and not PART_RE.match(p.name))
+    if strays:
+        raise ValueError(
+            f"{src_dir} 下存在不匹配分片命名 [0-9][0-9]-*.js 的 .js 文件"
+            f"（不会参与拼接，为防静默丢片请改名或移除）: {', '.join(strays)}"
+        )
     parts = list_parts(src_dir)
     if not parts:
         raise FileNotFoundError(f"未找到任何 overlay 模块源码: {src_dir}")
@@ -39,13 +45,20 @@ def assemble_bytes(src_dir=SRC_DIR):
         data = part.read_bytes()
         if not data:
             raise ValueError(f"overlay 模块源码为空: {part.name}")
-        data.decode("utf-8")  # 校验合法 UTF-8
+        try:
+            data.decode("utf-8")  # 校验合法 UTF-8
+        except UnicodeDecodeError as exc:
+            raise ValueError(f"分片非 UTF-8: {part.name}: {exc}") from None
         chunks.append(data)
     return b"".join(chunks), parts
 
 
 def main(argv=None, root=ROOT):
     argv = sys.argv[1:] if argv is None else list(argv)
+    unknown = [a for a in argv if a != "--check"]
+    if unknown:
+        print(f"build_overlay: 未知参数 {' '.join(unknown)}（仅支持 --check）", file=sys.stderr)
+        return 2
     check_only = "--check" in argv
     root = Path(root).resolve()
     src_dir = root / "src" / "overlay"

@@ -149,7 +149,7 @@ GitCode 渠道的清单 URL 形状、下载主机白名单（`gitcode.com`/`file
 
 ### 官方插件市场
 
-本插件已收录进官方市场 `zai-org/zcode-plugins`（`external_plugins/` + 根 marketplace.json 注册；官方 validate.py 硬校验 manifest 与市场条目的 `description_i18n` 逐字一致）。官方渠道不由本项目 Release 自动更新：每次升版都要向该仓库再提一个收录 PR（同步插件目录→validate→提交），是与 GitHub/GitCode 并行的第三条发布线；发版收尾清单应包含它，未提 PR 前不宣称官方渠道已更新。
+收录 PR `zai-org/zcode-plugins#119` 已提交（2026-11-07 核对仍 OPEN，合并前官方清单无本插件条目——**合并前不得宣称官方市场已收录**；合并后本句改回完成态表述，且每次核对以 `gh api` 回读实态）。收录目标形态：`external_plugins/` + 根 marketplace.json 注册；官方 validate.py 硬校验 manifest 与市场条目的 `description_i18n` 逐字一致。官方渠道不由本项目 Release 自动更新：收录合并后每次升版都要向该仓库再提一个收录 PR（未合并期间升版更新 #119 本身）（同步插件目录→validate→提交），是与 GitHub/GitCode 并行的第三条发布线；发版收尾清单应包含它，未提 PR 前不宣称官方渠道已更新。
 
 项目内的 [发布技能](../.zcode/skills/zcode-github-release/SKILL.md) 提供检查与预演流程，不全局安装，也不随插件分发。源码 manifest 提升版本不等于远端渠道或用户缓存已完成升级。
 
