@@ -348,10 +348,13 @@ test('rebuild closure reads explicit current hover and sel (no instance-symbol d
   assert.equal(typeof rebuild, 'function');
   const a = vm.runInContext('__rb(-1, __sel)', Object.assign(ctx, { __rb: rebuild }));
   assert.match(a, /zu-sv-root/);
-  assert.doesNotMatch(a, /zu-sv-card-anchor/);       // 未悬停无卡
+  assert.doesNotMatch(a, /zu-sv-card/);              // 未悬停无卡（v280 起卡经 SPD_PORTAL 侧信道，不进整卡 HTML）
+  assert.equal(vm.runInContext('SPD_PORTAL', ctx), '', 'no hover: portal channel empty');
   const b = vm.runInContext('__rb(2, __sel)', Object.assign(ctx, { __rb: rebuild }));
-  assert.match(b, /zu-sv-card-anchor/);              // 传当前 hover 即出现五字段卡
-  assert.match(b, /zu-sv-crow/);
+  assert.doesNotMatch(b, /zu-sv-card/);              // 整卡 HTML 不含信息卡（v280 Portal 化）
+  const portal = vm.runInContext('SPD_PORTAL', ctx); // 传当前 hover：侧信道产出五字段卡
+  assert.match(portal, /zu-sv-card/);
+  assert.match(portal, /zu-sv-crow/);
   // 筛选态是同一对象引用：改属性后闭包立即生效，不依赖重新赋值
   sel.range = 'project'; sel.period = 'all';
   const c = vm.runInContext('__rb(0, __sel)', Object.assign(ctx, { __rb: rebuild }));
@@ -504,7 +507,8 @@ test('x-axis labels: HH:mm with MM/DD on cross-day first bar, sparse but day bar
     sel: { range: "session", period: "recent", dim: "time", sid: "sess_main" },
     live: null, segsHover: 1, fmtTok: String, fmtCnt: String, fmtMoney: u => "¥" + u.toFixed(2) })`
     .replace('ctx.__h', JSON.stringify(fixture())), ctx);
-  assert.match(html, /zu-sv-card/, 'hover card renders while a bar is hovered');
+  assert.doesNotMatch(html, /zu-sv-card/, 'hover card lives in the portal, not the card HTML (v280)');
+  assert.match(vm.runInContext('SPD_PORTAL', ctx), /zu-sv-card/, 'portal channel carries the hovered bar card');
   assert.match(html, /aria-label="11\/05 09:00，/, 'cross-day bar aria carries the day');
 });
 
@@ -765,4 +769,70 @@ test('V2 card root carries the selection key; both rebuild paths preserve h-scro
   assert.match(drawFn, /oldChartKey/, 'drawTip carries the old selection key');
   assert.match(drawFn, /oldChartL = oc\.scrollLeft;\n        \}\n      \}/,
     'capture no longer gated on keepTop (v279 reopen path)');
+});
+
+test('v280 P1: fixed tooltip width + stable chart column (width stops tracking content)', () => {
+  const ctx = makeCtx(); ctx.__h = fixture();
+  ctx.__o = { speedHistory: ctx.__h, sel: { range: 'recent', period: 'recent', dim: 'time', sid: 'sess_main' },
+    live: null, segsHover: -1, fmtTok: String, fmtCnt: String, fmtMoney: u => '¥' + u.toFixed(2) };
+  const html = vm.runInContext('speedCardV2HTML(__o)', ctx);
+  // tip 定宽：width 与 max-width 同值 !important（不再只钳 max-width 让内容反向撑缩）
+  assert.match(html,
+    /width:min\(960px,calc\(100vw - 24px\)\)!important;max-width:min\(960px,calc\(100vw - 24px\)\)!important;box-sizing:border-box/,
+    'tooltip width is pinned, not content-driven');
+  // 右图表列：flex:1 1 0 + min-width:0（列宽只由 tip 定宽决定）
+  assert.match(source, /\.zu-sv-root \.zu-speed-chart\{flex:1 1 0;min-width:0;max-width:100%\}/);
+  // 滚动容器：定宽 + 保留横向滚动（不允许用关 overflow 修裁剪）
+  assert.match(source, /\.zu-sv-chart \.zu-sc-wrap\{overflow-x:auto;overflow-y:hidden;width:100%;min-width:0;max-width:100%\}/);
+});
+
+test('v280 P0: hover card portal — body-level singleton, viewport-aware placement, lifecycle hooks', () => {
+  // Portal 单例：pointer-events none、与 tooltip 同层 z-index、类名进 boot 清理链
+  assert.match(source, /var spdHoverPortal = document\.createElement\("div"\);\n  spdHoverPortal\.className = "zusage-quota-tip zu-sv-portal";/);
+  assert.match(source, /spdHoverPortal\.style\.cssText = "position:fixed;display:none;z-index:2147483646;pointer-events:none;";/);
+  // 定位：渲染后量真实尺寸（不假设固定宽高），右上→翻左→钳边，柱滚出 wrap 视口即收
+  const place = source.slice(source.indexOf('  function spdHoverPortalPlace(tipEl, idx) {'),
+    source.indexOf('  function spdHoverPortalSync(tipEl, idx) {'));
+  assert.match(place, /getBoundingClientRect/, 'placement measures real rects');
+  assert.match(place, /cr\.right \+ 6/, 'default: right of the bar');
+  assert.match(place, /cr\.left - pr\.width - 6/, 'flip left when right side runs out');
+  assert.match(place, /zu-sc-wrap/, 'hide when the bar scrolls out of the chart viewport');
+  // 生命周期：收起路径全联动，不留孤儿 Portal
+  assert.match(source, /spdHoverPortalSync\(tip, speedChartHover\);/, 'tab switch invalidates the old card via empty channel');
+  assert.match(source, /function hideTpsTip\(\) \{[^}]*spdHoverPortalHide\(\)/, 'compact tip close hides portal');
+  // dispose/热更：Portal 进 cleanupRateTip 同链清理（boot 自清旧代 + __zusageDispose 摘除）
+  assert.match(source, /hideFxTip\(\);\n    fxTip\.remove\(\);[^]*?spdHoverPortalHide\(\);\n    spdHoverPortal\.remove\(\);/,
+    'portal removed by the dispose chain');
+  // 侧信道纪律：消费即清，跨帧不串
+  const sync = source.slice(source.indexOf('  function spdHoverPortalSync(tipEl, idx) {'),
+    source.indexOf('  /* v176：子代理行内速率 chip'));
+  assert.match(sync, /SPD_PORTAL = "";/, 'channel consumed-and-cleared');
+  // B1（review）：显示时幂等 appendChild 移到 body 末尾——实例 tip 晚于 Portal 挂载，
+  // 同 z 层按树序后者在上，不移尾会被全量 tip 整片盖住（fxTip 1296 行同款实测先例）
+  // M-2（review 二轮）：移尾必须在缓存分支之外——同内容 re-show 遇分屏晚挂 tip 也要移尾
+  assert.ok(sync.indexOf('__zuHtml !== html') < sync.indexOf('lastElementChild !== spdHoverPortal') &&
+    sync.indexOf('lastElementChild !== spdHoverPortal') < sync.indexOf('style.display = "block"'),
+    'move-to-end runs on every show, outside the content-change branch');
+  assert.match(sync, /document\.body\.appendChild\(spdHoverPortal\);/, 'portal moved to body end on show (layering)');
+  assert.match(sync, /spdHoverPortal\.__zuHtml !== html/, 'same-content resync only repositions (no 10Hz innerHTML)');
+  // m2（review）：frozen=悬停中心跳冻结，新信道与冻结图错位必须丢弃
+  assert.match(source, /if \(frozen\) SPD_PORTAL = "";/, 'frozen path discards the fresh channel');
+  // m1（review）：滚出即收后滚回恢复（交叠判定先行，可视区外不做显隐 churn）
+  assert.ok(place.indexOf('.zu-sc-wrap') < place.indexOf('style.display !== "block"'),
+    'overlap gate runs before the restore branch');
+  assert.match(place, /spdHoverPortal\.__zuHtml/, 'restore reuses the cached card');
+  // M1（review）：hideTip 的 Portal 收起必须在按压保活 blocked-return 之后
+  const hideTip = source.slice(source.indexOf('    function hideTip(force, cause) {'),
+    source.indexOf('    function hideTip(force, cause) {') + 900);
+  const blocked = hideTip.indexOf('blocked:');
+  const portalHide = hideTip.indexOf('spdHoverPortalHide()');
+  assert.ok(blocked >= 0 && portalHide > blocked, 'portal hide comes after the press-keepalive early return');
+  // 无障碍：body 级游离节点挂 role
+  assert.match(source, /spdHoverPortal\.setAttribute\("role", "tooltip"\)/);
+  // 两条重建链路都接了 sync
+  assert.match(source, /spdHoverPortalSync\(tpsTip, el\.__zuT \? el\.__zuT\.speedHover : -1\)/);
+  assert.match(source, /spdHoverPortalSync\(tip, idx\); +\/\* v280/);
+  // 横向滚动 capture 相重定位（两条链路）
+  assert.match(source, /tpsTip\.addEventListener\("scroll", function \(\) \{\n    if \(tpsTipFor && tpsTipFor\.__zuT\) spdHoverPortalPlace\(tpsTip, tpsTipFor\.__zuT\.speedHover\);\n  \}, true\)/);
+  assert.match(source, /tip\.addEventListener\("scroll", function \(\) \{\n      if \(tipFor\) spdHoverPortalPlace\(tip, speedChartHover\);\n    \}, true\)/);
 });

@@ -5,7 +5,7 @@ const vm = require('node:vm');
 const test = require('node:test');
 
 const source = fs.readFileSync(path.join(__dirname, '..', 'overlay.js'), 'utf8');
-const startIdx = source.indexOf('  /* ==================== Status Rotator & Whale Tail & Danmaku Engine (v268) ====================');
+const startIdx = source.indexOf('  /* ==================== Status Rotator & Whale Tail (v268 移植；后按用户规格收敛) ====================');
 const endIdx = source.indexOf('  /* 设置页（MCP 配置等）内的编辑框不是聊天输入框');
 assert.ok(startIdx > 0 && endIdx > startIdx, 'Status Rotator block exists in overlay.js');
 const rotatorSlice = source.slice(startIdx, endIdx);
@@ -24,6 +24,7 @@ function makeFakeElement(tag = 'div') {
     parentElement: null,
     isConnected: true,
     checked: false,
+    hidden: false,
     value: '',
     title: '',
     style: new Proxy(styleProps, {
@@ -75,18 +76,15 @@ function makeFakeElement(tag = 'div') {
           el.appendChild(wrap);
         }
       }
-      if (innerHTMLVal.includes('zu-rotator-sep')) {
-        const sep = makeFakeElement('span');
-        sep.className = 'zu-rotator-sep dim';
-        sep.textContent = '·';
-        el.appendChild(sep);
-      }
       if (innerHTMLVal.includes('zu-rotator-active-label')) {
-        const lbl = makeFakeElement('span');
-        lbl.className = 'zu-rotator-active-label';
-        const m2 = /<span class="zu-rotator-active-label">([^<]*)<\/span>/.exec(innerHTMLVal);
-        if (m2) lbl.textContent = m2[1];
-        el.appendChild(lbl);
+        const re = /<span class="zu-rotator-active-label">([^<]*)<\/span>/g;
+        let m2;
+        while ((m2 = re.exec(innerHTMLVal))) {
+          const lbl = makeFakeElement('span');
+          lbl.className = 'zu-rotator-active-label';
+          lbl.textContent = m2[1];
+          el.appendChild(lbl);
+        }
       }
     },
     get firstChild() { return children[0] || null; },
@@ -170,11 +168,18 @@ function makeFakeElement(tag = 'div') {
   return el;
 }
 
-function makeRotatorEnv(lang = 'zh') {
+function makeRotatorEnv(lang = 'zh', savedCfg = null) {
   const storage = {};
+  if (savedCfg) storage['zusage3.rotator'] = JSON.stringify(savedCfg);
   const body = makeFakeElement('body');
   const docEl = makeFakeElement('html');
   docEl.classList.add('dark');
+
+  let NOW = 1700000000000;
+  class FakeDate extends Date {
+    constructor(...args) { super(args.length === 0 ? NOW : args[0]); }
+    static now() { return NOW; }
+  }
 
   const document = {
     title: 'ZCode Host Title',
@@ -190,6 +195,8 @@ function makeRotatorEnv(lang = 'zh') {
   };
   const state = { lang, data: { session: { model: 'DeepSeek-V3' } } };
   const instances = [];
+  const timers = new Map();
+  let tid = 0;
   const ctx = vm.createContext({
     window,
     document,
@@ -202,16 +209,36 @@ function makeRotatorEnv(lang = 'zh') {
     lsSet: (k, v) => { storage[k] = String(v); },
     stale: () => false,
     zuToolVerb: name => (name === 'Bash' ? '执行命令' : name),
-    activeSettingsSec: () => 'rotator',
-    settingRow: (ctrl, title, desc) => `<div class="row">${ctrl}<b>${title}</b><span>${desc}</span></div>`,
-    setInterval: () => 1,
-    clearInterval: () => {},
-    setTimeout: () => 1,
-    clearTimeout: () => {},
-    Date, Math, JSON, Number, String, Array, Object, RegExp, Infinity, isFinite, parseInt, parseFloat
+    setInterval: (fn, ms) => { timers.set(++tid, { fn, ms, interval: true }); return tid; },
+    clearInterval: n => timers.delete(n),
+    setTimeout: (fn, ms) => { timers.set(++tid, { fn, ms, interval: false }); return tid; },
+    clearTimeout: n => timers.delete(n),
+    Date: FakeDate, Math, JSON, Number, String, Array, Object, RegExp, Infinity, isFinite, parseInt, parseFloat
   });
   vm.runInContext(rotatorSlice, ctx);
-  return { ctx, window, document, body, storage, state, instances };
+  return {
+    ctx, window, document, body, storage, state, instances, timers,
+    advanceNow: ms => { NOW += ms; },
+    now: () => NOW
+  };
+}
+
+function buildChatRow(body, labelText = '工作中...') {
+  const chatRow = makeFakeElement('div');
+  chatRow.setAttribute('data-testid', 'chat-loading');
+  const pixelGrid = makeFakeElement('span');
+  pixelGrid.className = 'grid';
+  const label = makeFakeElement('span');
+  label.className = 'zcode-loading-label';
+  label.textContent = labelText;
+  const clock = makeFakeElement('span');
+  clock.className = 'font-mono tabular-nums';
+  clock.textContent = '12.3s';
+  chatRow.appendChild(pixelGrid);
+  chatRow.appendChild(label);
+  chatRow.appendChild(clock);
+  body.appendChild(chatRow);
+  return { chatRow, pixelGrid, label, clock };
 }
 
 function buildFakeSpeedBar(body) {
@@ -222,9 +249,6 @@ function buildFakeSpeedBar(body) {
   speedIt.setAttribute('tabindex', '0');
   const ico = makeFakeElement('svg');
   ico.className = 'ico';
-  const dimAvg = makeFakeElement('span');
-  dimAvg.className = 'dim';
-  dimAvg.textContent = '均';
   const live = makeFakeElement('span');
   live.className = 'zu-live ok';
   live.textContent = '144.1';
@@ -232,7 +256,6 @@ function buildFakeSpeedBar(body) {
   dimUnit.className = 'dim';
   dimUnit.textContent = 't/s';
   speedIt.appendChild(ico);
-  speedIt.appendChild(dimAvg);
   speedIt.appendChild(live);
   speedIt.appendChild(dimUnit);
   barMain.appendChild(speedIt);
@@ -299,108 +322,149 @@ test('custom phrase line parser and 17 live placeholders format accurately', () 
   );
 });
 
-test('merges whale tail and rotator label directly into the speed .it cell and restores native lightning icon on unmount', () => {
+test('builtin pack pool flows through the id map (regression: packs were indexed as an object and never reached the pool)', () => {
+  const { ctx } = makeRotatorEnv('zh');
+  const pool = vm.runInContext('getMergedPhrasePool("running", "zh", new Date())', ctx);
+  assert.ok(pool.length >= 50, `default packs feed the pool, got ${pool.length}`);
+  assert.ok(pool.every(p => p.pack !== 'fallback'), 'builtin phrases present, not just the fallback line');
+  const poolLong = vm.runInContext('getMergedPhrasePool("long", "en", new Date())', ctx);
+  assert.ok(poolLong.length > 0 && poolLong.every(p => p.pack !== 'fallback'), 'en long pool populated');
+
+  // 保存过词包选择：旧版 `id in 数组` 恒 false 把选择清空，现在必须保留合法 id、丢弃未知 id
+  const env2 = makeRotatorEnv('zh', { enabledPacks: ['deepseek', 'bogus-pack'], mountTarget: 'bar' });
+  assert.deepEqual(vm.runInContext('rotatorCfg.enabledPacks.slice()', env2.ctx), ['deepseek']);
+  assert.equal(vm.runInContext('rotatorCfg.mountTarget', env2.ctx), undefined, 'bar mount config is gone');
+});
+
+test('65ms rotator timer drives the typewriter past the first character (regression: stuck at 「长」)', () => {
+  const env = makeRotatorEnv('zh');
+  const { ctx, window, body, timers, advanceNow } = env;
+
+  const ivs = [...timers.values()].filter(t => t.interval && t.ms === 65);
+  assert.equal(ivs.length, 1, 'module-level ensureRotatorTimer schedules exactly one 65ms interval');
+
+  buildChatRow(body);
+  api_typeZero(ctx);
+  advanceNow(1000);
+  ivs[0].fn();
+  const label = body.querySelector('.zcode-loading-label');
+  const first = label.textContent;
+  assert.equal(first.length, 1, `starts typing at character 1, got "${first}"`);
+
+  advanceNow(400);
+  ivs[0].fn();
+  const later = label.textContent;
+  assert.ok(later.length > first.length, `typewriter advances across interval ticks, got "${later}"`);
+
+  window.__zusageRotatorDispose();
+  assert.equal(timers.size, 0, 'dispose clears the rotator interval');
+});
+
+function api_typeZero(ctx) {
+  // typeSpeedMs=0 → 整句立即可见；这里保持 28ms 打字机以便验证逐字推进
+  vm.runInContext('rotatorCfg.typeSpeedMs = 28; rotatorRuntime.turnStartedAt = 0;', ctx);
+}
+
+test('chat mount replaces the label, hides the host elapsed clock in phrases mode, restores everything on disable', () => {
   const { ctx, window, body } = makeRotatorEnv('zh');
   const api = window.__zusageStatusRotator;
+  const { chatRow, pixelGrid, label, clock } = buildChatRow(body, '工作中...');
 
-  // Create fake host chat-loading row + native clock + pixel grid
-  const chatRow = makeFakeElement('div');
-  chatRow.setAttribute('data-testid', 'chat-loading');
-  const pixelGrid = makeFakeElement('span');
-  pixelGrid.className = 'grid';
-  const label = makeFakeElement('span');
-  label.className = 'zcode-loading-label';
-  label.textContent = '原生思考中...';
-  const clock = makeFakeElement('span');
-  clock.className = 'font-mono tabular-nums';
-  clock.textContent = '12.3s';
-  chatRow.appendChild(pixelGrid);
-  chatRow.appendChild(label);
-  chatRow.appendChild(clock);
-  body.appendChild(chatRow);
+  api.setConfig({ enabled: true, whaleTail: true, typeSpeedMs: 0 });
+  assert.equal(chatRow.getAttribute('data-zusage-rotator-slot'), '1');
+  assert.equal(label.getAttribute('data-zu-host-label'), '工作中...');
+  assert.notEqual(label.textContent, '工作中...');
+  assert.equal(pixelGrid.style.display, 'none', 'pixel grid hidden while whale tail is on');
+  assert.equal(clock.style.display, 'none', 'host elapsed clock hidden while phrases embed {elapsed}');
 
-  // Create fake status bar .zu-main with speed .it cell
+  // host 文案模式：耗时格照常显示
+  api.setConfig({ labelSource: 'host' });
+  assert.equal(label.textContent, '工作中...');
+  assert.equal(clock.style.display, '', 'host mode keeps the native clock visible');
+
+  // 关闭还原
+  api.setConfig({ enabled: false });
+  assert.equal(label.textContent, '工作中...');
+  assert.equal(label.hasAttribute('data-zu-host-label'), false);
+  assert.equal(pixelGrid.style.display, '', 'pixel grid restored');
+  assert.equal(clock.style.display, '', 'clock restored');
+  assert.equal(chatRow.querySelector('.zu-whale-tail-wrap'), null, 'whale tail removed');
+  assert.equal(chatRow.hasAttribute('data-zusage-rotator-slot'), false);
+});
+
+test('speed cell wears the flow theme only — no rotator pill, no whale svg, native icon intact (user spec #2)', () => {
+  const { ctx, window, body } = makeRotatorEnv('zh');
+  const api = window.__zusageStatusRotator;
+  buildChatRow(body);   // 激活轮播
   const { barMain, speedIt, ico } = buildFakeSpeedBar(body);
 
-  // 1) Default mountTarget = "both"
-  api.setConfig({ enabled: true, mountTarget: 'both', typeSpeedMs: 0, whaleTail: true });
-  vm.runInContext('rotatorMasterTick()', ctx);
+  api.setConfig({ enabled: true, whaleTail: true, typeSpeedMs: 0 });
+  assert.equal(barMain.querySelector('.zu-rotator-bar'), null, 'rotator pill never injected into the bar');
+  assert.equal(barMain.querySelector('.zu-whale-tail-wrap'), null, 'whale svg never injected into the bar');
+  assert.equal(ico.style.display, '', 'native lightning icon untouched');
+  assert.equal(speedIt.classList.contains('zu-flow-num'), true, 'speed .it carries the flow class when gradient is on');
 
-  assert.equal(chatRow.getAttribute('data-zusage-rotator-slot'), '1');
-  assert.equal(label.getAttribute('data-zu-host-label'), '原生思考中...');
-  assert.notEqual(label.textContent, '原生思考中...');
-  assert.equal(pixelGrid.style.display, 'none', 'native pixel grid hidden while whaleTail is on');
-  assert.ok(chatRow.querySelector('.zu-whale-tail-wrap'), 'whale tail mounted in chat loading row');
-  assert.equal(clock.textContent, '12.3s', 'native elapsed clock untouched');
+  api.setConfig({ enabled: false });
+  assert.equal(speedIt.classList.contains('zu-flow-num'), false, 'flow class removed when rotator disabled');
 
-  // Verify merged into speedIt (<span tabindex="0" class="it">)
-  const mergedTail = speedIt.querySelector('.zu-whale-tail-wrap');
-  const mergedBar = speedIt.querySelector('.zu-rotator-bar');
-  assert.ok(mergedTail, 'whale tail mounted directly inside speed .it cell');
-  assert.equal(mergedTail.parentElement, speedIt, 'whale tail is direct child of speed .it');
-  assert.equal(speedIt.firstChild, mergedTail, 'whale tail sits at the start of speed .it');
-  assert.equal(ico.style.display, 'none', 'native lightning svg.ico is hidden while whale tail is shown');
-  assert.equal(mergedTail.querySelector('.zu-whale-tail').getAttribute('viewBox'), '20 40 300 240', 'whale tail uses unclipped viewBox="20 40 300 240"');
-  assert.ok(mergedBar, 'rotator bar label mounted directly inside speed .it cell');
-  assert.equal(mergedBar.parentElement, speedIt, 'rotator bar is direct child of speed .it');
+  api.setConfig({ enabled: true, appearance: { gradient: { enabled: false } } });
+  assert.equal(speedIt.classList.contains('zu-flow-num'), false, 'flow class follows gradient.enabled');
 
-  // 2) Switch to mountTarget = "bar" -> chat row restored, merged speed .it remains
-  api.setConfig({ mountTarget: 'bar', barAlwaysShow: true });
-  assert.equal(label.textContent, '原生思考中...', 'host label restored when switching to bar-only');
-  assert.equal(pixelGrid.style.display, '', 'pixel grid restored');
-  assert.equal(chatRow.querySelector('.zu-whale-tail-wrap'), null);
-  assert.ok(speedIt.querySelector('.zu-rotator-bar'), 'merged bar pill still present inside speed .it');
-  assert.ok(speedIt.querySelector('.zu-whale-tail-wrap'), 'merged whale tail still present inside speed .it');
-
-  // 3) Switch to mountTarget = "chat" -> merged bar elements removed and lightning icon restored
-  api.setConfig({ mountTarget: 'chat' });
-  assert.equal(barMain.querySelector('.zu-rotator-bar'), null, 'bar pill removed in chat-only mode');
-  assert.equal(speedIt.querySelector('.zu-whale-tail-wrap'), null, 'whale tail removed from speed .it in chat-only mode');
-  assert.equal(ico.style.display, '', 'native lightning svg.ico restored when bar rotator unmounts');
-  assert.ok(chatRow.querySelector('.zu-whale-tail-wrap'), 'whale tail back in chat row');
+  // 旧版本遗留注入节点的清理路径仍然可用
+  const legacy = makeFakeElement('span');
+  legacy.className = 'zu-rotator-bar';
+  speedIt.appendChild(legacy);
+  speedIt.classList.add('zu-it-rotator', 'zu-flow-num');
+  vm.runInContext('restoreBarSpeedCell(document.querySelector(".zu-main"))', ctx);
+  assert.equal(speedIt.querySelector('.zu-rotator-bar'), null, 'legacy bar pill cleaned');
+  assert.equal(speedIt.classList.contains('zu-it-rotator'), false, 'legacy .it class cleaned');
+  assert.equal(speedIt.classList.contains('zu-flow-num'), false, 'flow class cleaned');
 });
 
-test('idle barAlwaysShow mode advances typewriter across ticks without resetting to first character', () => {
-  const { ctx, window, body } = makeRotatorEnv('zh');
+test('whale tail advances by elapsed frames, not one step per call', () => {
+  const { ctx, window, body, advanceNow } = makeRotatorEnv('zh');
   const api = window.__zusageStatusRotator;
-
-  // No chat-loading element in DOM -> idle state (ctx.active === false)
-  const { speedIt } = buildFakeSpeedBar(body);
-
+  buildChatRow(body);
   api.setConfig({
-    enabled: true,
-    mountTarget: 'bar',
-    barAlwaysShow: true,
-    typeSpeedMs: 1,
-    whaleTail: true
+    enabled: true, whaleTail: true, typeSpeedMs: 0,
+    whaleTailMotion: { enabled: true, action: 'twist', speedMode: 'fixed', fixedSpeedHz: 1 }
   });
-
-  // api.setConfig already triggers an initial rotatorMasterTick()
-  const firstLabel = speedIt.querySelector('.zu-rotator-active-label').textContent;
-  assert.equal(firstLabel.length, 1, 'starts typing at character 1');
-
-  // Advance clock and run subsequent ticks
-  vm.runInContext('rotatorRuntime.lastTypeTime = 0; rotatorMasterTick()', ctx);
-  vm.runInContext('rotatorRuntime.lastTypeTime = 0; rotatorMasterTick()', ctx);
-  vm.runInContext('rotatorRuntime.lastTypeTime = 0; rotatorMasterTick()', ctx);
-
-  const laterLabel = speedIt.querySelector('.zu-rotator-active-label').textContent;
-  assert.ok(laterLabel.length > firstLabel.length, `expected typewriter to progress past 1 char in idle mode, got "${laterLabel}"`);
+  // twist 150 帧 @1Hz → 帧间隔 max(12, round(1000/150))=12ms
+  vm.runInContext('currentWhaleTailPath(Date.now(), 0)', ctx);   // 初始化 lastTailStepAt
+  assert.equal(vm.runInContext('rotatorRuntime.tailFrameIndex', ctx), 0);
+  advanceNow(120);
+  vm.runInContext('currentWhaleTailPath(Date.now(), 0)', ctx);
+  assert.equal(vm.runInContext('rotatorRuntime.tailFrameIndex', ctx), 10, '120ms elapsed → 10 frames at 12ms interval');
 });
 
-test('danmaku engine fires items and settings section renders all controls', () => {
+test('danmaku engine is fully removed; settings render pack counts and themeable previews instead', () => {
   const { ctx, window } = makeRotatorEnv('zh');
   const api = window.__zusageStatusRotator;
 
-  api.setConfig({ danmaku: { enabled: true, maxConcurrent: 5, pauseBehindMask: false, clickCopy: true } });
-  const ok = api.sendDanmaku('测试弹幕 666', 'running');
-  assert.equal(ok, true);
+  assert.equal(api.sendDanmaku, undefined, 'sendDanmaku removed from the public api');
+  assert.ok(!rotatorSlice.includes('sendRotatorDanmaku'), 'no danmaku engine in the rotator slice');
+  assert.ok(!rotatorSlice.includes('zu-dm-item'), 'no danmaku DOM/CSS in the rotator slice');
 
   assert.ok(source.includes('zuRotatorSectionHtml(secOpen("rotator") === "")'), 'buildPanel wires zuRotatorSectionHtml');
   const html = vm.runInContext('zuRotatorSectionHtml(true)', ctx);
   assert.match(html, /data-sec="rotator"/);
-  assert.match(html, /zu-rot-mount/);
   assert.match(html, /zu-rot-whaletail/);
   assert.match(html, /zu-rot-tail-action/);
-  assert.match(html, /zu-rot-dm-enable/);
+  assert.doesNotMatch(html, /zu-rot-dm/, 'no danmaku controls');
+  assert.doesNotMatch(html, /zu-rot-mount/, 'no mount selector (bar mount removed)');
+  assert.doesNotMatch(html, /zu-rot-bar-always/, 'no bar-always switch');
+  assert.match(html, /zu-rot-pack-preview/, 'preview container rendered');
+  assert.match(html, /zu-rot-pack-prev/, 'per-pack preview buttons rendered');
+  assert.match(html, /<small>[1-9]/, 'pack phrase counts are real numbers now (were all 0)');
+
+  const pv = vm.runInContext('zuRotPackPreviewHtml("deepseek")', ctx);
+  assert.ok(pv.includes('DeepSeek'), 'preview carries the localized pack title');
+  assert.match(pv, /zu-rotator-active-label/, 'preview phrases wear the themed shimmer label');
+  const stripped = pv
+    .replace(/<b>/g, '').replace(/<\/b>/g, '')
+    .replace(/<span class="zu-rot-pv-phase">/g, '')
+    .replace(/<span class="zu-rotator-active-label">/g, '')
+    .replace(/<\/span>/g, '');
+  assert.ok(!/[<>]/.test(stripped), 'no unescaped angle brackets outside the known wrapper tags');
+  assert.equal(vm.runInContext('zuRotPackPreviewHtml("no-such-pack")', ctx), '', 'unknown pack yields empty preview');
 });

@@ -28,6 +28,9 @@ class Element extends Target {
     this.tagName = tag.toUpperCase(); this.children = []; this.dataset = {};
     this.style = { cursor: '', display: 'none' }; this.className = ''; this.textContent = '';
     this.innerHTML = ''; this.offsetWidth = 420; this.offsetHeight = 240;
+    // v280：模块级 Portal/浮层创建路径会用到 setAttribute / classList（补夹具纪律）
+    this.setAttribute = (k, v) => { this.dataset[k] = v; };
+    this.classList = { toggle() {}, add() {}, remove() {} };
   }
   appendChild(el) { this.children.push(el); el.parentElement = this; return el; }
   remove() {
@@ -71,7 +74,9 @@ function harness(lang = 'zh', rateLine = true) {
   const intervals = new Map(); let next = 0;
   const sandbox = vm.createContext({ window, document, console,
     localStorage: { getItem: key => key === 'zusage3.lang' ? lang : null, setItem() {} },
-    setInterval: (fn, ms) => { const id = ++next; intervals.set(id, { fn, ms }); return id; },
+    setInterval: (fn, ms) => { const id = ++next; intervals.set(id, { fn, ms });
+      if (ms === 65) console.error('NEW65 gen' + window.__zusageGen, String(new Error().stack).split('\n').slice(2, 4).join(' | ').slice(0, 220));
+      return id; },
     clearInterval: id => intervals.delete(id), setTimeout: () => ++next, clearTimeout() {},
   });
   // Execute the actual entire IIFE. Only expose its real shared-state/render path;
@@ -125,7 +130,7 @@ test('notice styling cleans recycled nodes, detached nodes and previous injectio
   h.inject();
   assert.equal(previous.parentElement, null);
     assert.equal(n.strong.dataset.zusageNotice, String(h.window.__zusageGen));
-    assert.equal(h.intervals.size, 2);   // 2s rate-line scan + 2s deterministic-line scan
+    assert.equal(h.intervals.size, 3);   // 2s rate-line scan + 2s deterministic-line scan + 65ms rotator 帧驱动
     n.strong.textContent = 'ordinary reply'; h.scan();
   assert.equal(n.strong.dataset.zusageNotice, undefined);
   const detached = h.addNotice(); h.scan(); detached.quote.remove(); h.scan();
@@ -165,7 +170,7 @@ test('R10: reinjection rebinds existing nodes and removes old listeners, scan in
     assert.equal(h.tip().style.display, 'block');
     assert.equal(h.line.count('mouseenter'), 1); assert.equal(h.line.count('mouseleave'), 1);
     assert.equal(h.quote.count('mouseenter'), 0);
-    assert.equal(h.window.count('scroll'), 1); assert.equal(h.intervals.size, 2);
+    assert.equal(h.window.count('scroll'), 1); assert.equal(h.intervals.size, 3);
     oldTips.push(h.tip()); oldScans.push([...h.intervals.values()][0].fn);
     h.inject();
     assert.equal(oldTips.at(-1).parentElement, null);
