@@ -30,6 +30,9 @@ class Element {
     return el;
   }
   remove() { if (this.parentElement) this.parentElement.children = this.parentElement.children.filter(e => e !== this); this.isConnected = false; }
+  // v280：模块级 Portal（spdHoverPortal）创建路径用到 setAttribute / classList（补夹具纪律）
+  setAttribute(k, v) { this.dataset[k] = v; }
+  classList = { toggle() {}, add() {}, remove() {} };
   querySelector(k) { if (!this.queries.has(k)) this.queries.set(k, new Element()); return this.queries.get(k); }
   querySelectorAll() { return []; }
   contains(el) { return el === this || this.children.some(e => e.contains(el)); }
@@ -207,8 +210,8 @@ test('reinjection and repeated cleanup cancel old loops and leave one live gener
   const cleanup = h.window.__zusageDispose;
   h.inject(); h.boot(); cleanup();
   assert.equal(h.frames.size, 1); assert.equal(h.observers.filter(e => e.connected).length, 2);   // v105：theme + 弹层压缩按钮 body 观察器
-  // 5 = coordinator(600) + heavy(600) + rateScan(2s) + deterministic scan(2s) + per-pane bridge probe(2s)
-  assert.equal(h.timers.size, 5);
+  // 6 = coordinator(600) + heavy(600) + rateScan(2s) + deterministic scan(2s) + per-pane bridge probe(2s) + rotator(65ms)
+  assert.equal(h.timers.size, 6);
   h.window.__zusageDispose(); cleanup();
   assert.equal(h.timers.size, 0); assert.equal(h.frames.size, 0);
   assert.deepEqual(Array.from(h.window.__zusageWantSids), []); assert.equal(h.window.__zusageWantSid, '');

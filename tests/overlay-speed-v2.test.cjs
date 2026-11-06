@@ -237,7 +237,7 @@ test('text escaping: model/session names cannot break out of card attributes', (
   assert.match(card, /&quot;&gt;&lt;b&gt;x&lt;\/b&gt;/);
 });
 
-test('V2 card has two tab rows, time pill, 16-bar chart, ten-band legend and no legacy basis/footnote', () => {
+test('V2 header is a single row (title left, dual tab groups right); stats time lives in chart head; legend intact (v278)', () => {
   const ctx = makeCtx();
   ctx.__h = fixture();
   const o = { speedHistory: ctx.__h, sel: { range: 'project', period: 'week', dim: 'time', sid: 'sess_main' },
@@ -245,13 +245,43 @@ test('V2 card has two tab rows, time pill, 16-bar chart, ten-band legend and no 
   ctx.__o = o;
   const html = vm.runInContext('speedCardV2HTML(__o)', ctx);
   assert.match(html, /生成速度/);
-  assert.match(html, /zu-sv-range/);
   assert.equal((html.match(/data-sv-group="range"/g) || []).length, 5, '4 range tabs + row');
   assert.equal((html.match(/data-sv-group="period"/g) || []).length, 6, '5 period tabs + row');
   assert.doesNotMatch(html, /zu-sv-dimsel/, 'dimension select removed (v272)');
-  assert.match(html, /单位：t\/s/);
-  assert.match(html, /zu-sv-legend/);
-  assert.equal((html.match(/zu-sv-li/g) || []).length, 10, 'ten bands');
+  // 单行 Header：标题与双 Tab 组同容器（范围在前、时间在后），旧独立筛选行删除
+  const bodyStart = html.indexOf('zu-speed-body');
+  assert.ok(bodyStart > 0, 'body marker present');
+  const head = html.slice(0, bodyStart);
+  const body = html.slice(bodyStart);
+  assert.match(head, /zu-sv-head[^]*zu-sv-title">生成速度/, 'title inside the header row');
+  assert.match(head, /zu-sv-head[^]*data-sv-group="range"[^]*data-sv-group="period"/,
+    'scope group before period group, both inside the header');
+  assert.equal((html.match(/zu-sv-filter/g) || []).length, 1, 'standalone filter row removed (v278)');
+  assert.doesNotMatch(head, /zu-sv-range/, 'no time capsule in the header (v278)');
+  // 统计时间：唯一 .zu-sv-range 位于图表标题栏右端，title 挂完整格式区间
+  assert.equal((html.match(/zu-sv-range/g) || []).length, 1, 'single range element, in chart head only');
+  assert.match(body, /zu-sc-head[^]*?zu-sv-range/, 'range sits in the chart title bar');
+  assert.match(body, /zu-sv-range" title="\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} – /,
+    'hover shows full YYYY-MM-DD HH:mm:ss range');
+  assert.match(html, /zu-sc-unit">t\/s<\//, 'lightweight unit badge without 单位： prefix (v286)');
+  assert.match(html, /zu-sv-legend-btn[^>]*aria-label="查看速度档位说明"/, 'dedicated bands entry label (v286)');
+  assert.match(html, /<circle cx="10" cy="10" r="8\.15"/, 'speed-bands SVG ring (v286)');
+  assert.equal((html.match(/<path d="M(6\.35|10|13\.65) 13\.2V/g) || []).length, 3, 'three ascending speed bars');
+  assert.ok(body.indexOf('zu-sc-unit') >= 0 && body.indexOf('zu-sc-unit') < body.indexOf('zu-sv-range'),
+    'unit follows the chart title; range is the far-right element');
+  // v282：底部常驻图例移除，改图表标题栏问号按钮 + 浮层（.zu-sv-li 移入浮层内容构建器）
+  assert.doesNotMatch(html, /zu-sv-legend"|zu-sv-legend-t|zu-sv-legend-items/, 'persistent bottom legend removed (v282)');
+  assert.doesNotMatch(html, /zu-sv-li[ "]/, 'band chips live in the popup builder now');
+  assert.match(html, /zu-sv-legend-btn/, 'question button sits in the chart head');
+  assert.match(html, /data-sv-band="/, 'button carries the current band for the popup highlight');
+  const lg = vm.runInContext('spdLegendCardHTML(tpsBand(138.4).cls)', ctx);
+  assert.equal((lg.match(/zu-sv-li[ "]/g) || []).length, 10, 'ten bands in the popup');
+  assert.ok(lg.indexOf('&lt;40') >= 0 && lg.indexOf('&lt;40') < lg.indexOf('70–150') &&
+    lg.indexOf('70–150') < lg.indexOf('✦ ≥2000'), 'ascending order');
+  assert.equal((lg.match(/zu-sv-li cur/g) || []).length, 1, 'exactly one highlighted band');
+  assert.match(lg, /70–150/, '138.4 t/s highlights 70–150');
+  assert.doesNotMatch(vm.runInContext('spdLegendCardHTML("")', ctx), /zu-sv-li cur/, 'no speed: no highlight');
+  assert.match(lg, /档位说明/, 'popup title');
   assert.doesNotMatch(html, /zu-basis|统计口径|均值参考|zu-pj-time/);
   assert.doesNotMatch(html, /zu-sc-lead|zu-sc-new/);
 });
@@ -268,6 +298,9 @@ test('live status is a note, not the history card title; estimate stays separate
   assert.match(plain, /历史统计/);
   assert.doesNotMatch(plain, /不含进行中请求/, 'wording removed per user spec (v273)');
   assert.match(plain, /平均速度/);
+  assert.match(plain, /zu-sl-title">平均速度<\/span><span class="zu-sl-hist">历史统计/,
+    'v278 title layer: 平均速度 as card title + small history tag');
+  assert.doesNotMatch(plain, /zu-sl-k[ "]/, '.zu-sl-k label row removed (v278)');
   const busy = mk({ statusText: '工具执行中', speedValue: 88.8, kind: 'estimate' });
   assert.doesNotMatch(busy, /zu-sl-title">工具执行中/, 'live status must not be the card title');
   assert.doesNotMatch(busy, /Σ有效输出/, 'formula line removed in v263');
@@ -292,8 +325,9 @@ test('bilingual labels follow the instance language', () => {
     live: null, segsHover: -1, fmtTok: String, fmtCnt: String, fmtMoney: String };
   const html = vm.runInContext('speedCardV2HTML(__o)', ctx);
   assert.match(html, /Generation speed/);
+  assert.match(html, /View speed bands/, 'en legend entry label (v286)');
   assert.match(html, /Scope|Time/);
-  assert.match(html, /unit: t\/s/);
+  assert.match(html, /zu-sc-unit">t\/s<\//, 'unit badge is language-neutral (v286)');
   assert.match(html, /No rated turns|hourly average speed/);
 });
 
@@ -329,10 +363,13 @@ test('rebuild closure reads explicit current hover and sel (no instance-symbol d
   assert.equal(typeof rebuild, 'function');
   const a = vm.runInContext('__rb(-1, __sel)', Object.assign(ctx, { __rb: rebuild }));
   assert.match(a, /zu-sv-root/);
-  assert.doesNotMatch(a, /zu-sv-card-anchor/);       // 未悬停无卡
+  assert.doesNotMatch(a, /zu-sv-card/);              // 未悬停无卡（v281 起卡经 SPD_PORTAL 侧信道，不进整卡 HTML）
+  assert.equal(vm.runInContext('SPD_PORTAL', ctx), '', 'no hover: portal channel empty');
   const b = vm.runInContext('__rb(2, __sel)', Object.assign(ctx, { __rb: rebuild }));
-  assert.match(b, /zu-sv-card-anchor/);              // 传当前 hover 即出现五字段卡
-  assert.match(b, /zu-sv-crow/);
+  assert.doesNotMatch(b, /zu-sv-card/);              // 整卡 HTML 不含信息卡（v281 Portal 化）
+  const portal = vm.runInContext('SPD_PORTAL', ctx); // 传当前 hover：侧信道产出五字段卡
+  assert.match(portal, /zu-sv-card/);
+  assert.match(portal, /zu-sv-crow/);
   // 筛选态是同一对象引用：改属性后闭包立即生效，不依赖重新赋值
   sel.range = 'project'; sel.period = 'all';
   const c = vm.runInContext('__rb(0, __sel)', Object.assign(ctx, { __rb: rebuild }));
@@ -485,7 +522,8 @@ test('x-axis labels: HH:mm with MM/DD on cross-day first bar, sparse but day bar
     sel: { range: "session", period: "recent", dim: "time", sid: "sess_main" },
     live: null, segsHover: 1, fmtTok: String, fmtCnt: String, fmtMoney: u => "¥" + u.toFixed(2) })`
     .replace('ctx.__h', JSON.stringify(fixture())), ctx);
-  assert.match(html, /zu-sv-card/, 'hover card renders while a bar is hovered');
+  assert.doesNotMatch(html, /zu-sv-card/, 'hover card lives in the portal, not the card HTML (v281)');
+  assert.match(vm.runInContext('SPD_PORTAL', ctx), /zu-sv-card/, 'portal channel carries the hovered bar card');
   assert.match(html, /aria-label="11\/05 09:00，/, 'cross-day bar aria carries the day');
 });
 
@@ -683,4 +721,217 @@ test('win-leave downgrades to a cancellable 400ms grace instead of force-hide (v
   assert.equal(rst.fired.length, 1, 'grace expiry fires once');
   assert.equal(rst.fired[0][0], true);
   assert.match(rst.fired[0][1], /win-leave:edge/);
+});
+
+test('chart head carries the stats time at the far end with full-format hover title (v278 §5)', () => {
+  const ctx = makeCtx(); ctx.__h = fixture();
+  const an = analyze(ctx, { range: 'session', period: 'recent', dim: 'time' });
+  ctx.__an = an;
+  ctx.__o = { fmtTok: String, fmtCnt: String, fmtMoney: u => '¥' + u.toFixed(2) };
+  const html = vm.runInContext('spdChartHTML(__an, -1, __o)', ctx);
+  assert.match(html, /zu-sc-head[^]*zu-sv-range/, 'range rendered inside the chart title bar');
+  assert.match(html, /zu-sv-range" title="\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} – /,
+    'hover title carries the full YYYY-MM-DD HH:mm:ss range');
+  assert.ok(html.indexOf('zu-sc-unit') >= 0 && html.indexOf('zu-sc-unit') < html.indexOf('zu-sv-range'),
+    'unit sits next to the chart title; stats time is the far-right element');
+});
+
+test('v278 CSS: header wraps as a unit, filter right-aligned, stats time pill-free', () => {
+  const css = source.slice(source.indexOf('.zu-sv-head{display:flex'),
+    source.indexOf('/* v232 速度柱状图：左读数卡'));
+  assert.match(css, /\.zu-sv-head\{[^}]*flex-wrap:wrap/, 'narrow-width header degrades by wrapping (§4.2)');
+  assert.match(css, /\.zu-sv-filter\{[^}]*margin-left:auto/, 'dual tab groups right-aligned as one block');
+  assert.match(css, /\.zu-sv-filter\{[^}]*justify-content:flex-end/, 'wrapped tab row stays right-aligned');
+  assert.doesNotMatch(css, /\.zu-sv-range\{[^}]*border-radius:999px/, 'capsule pill styling removed (v278)');
+  assert.match(css, /\.zu-sv-range\{[^}]*margin-left:auto/, 'range pushed to the chart-head far end');
+  assert.match(css, /\.zu-sv-root \.zu-sl-hist\{/, 'history tag class styled');
+});
+
+test('stats-time compact format follows §5.4: no year within same month, years across months (v278)', () => {
+  const ctx = makeCtx();
+  const r = vm.runInContext(`(() => {
+    const T = (y, mo, d, h, m) => new Date(y, mo, d, h, m).getTime();
+    return {
+      sameDay: spdRangeText(T(2026, 10, 6, 15, 26), T(2026, 10, 6, 18, 7)),
+      sameMonth: spdRangeText(T(2026, 10, 5, 16, 33), T(2026, 10, 6, 17, 29)),
+      crossMonth: spdRangeText(T(2026, 9, 31, 16, 33), T(2026, 10, 6, 17, 29)),
+      crossYear: spdRangeText(T(2025, 11, 31, 23, 0), T(2026, 0, 2, 1, 0))
+    };
+  })()`, ctx);
+  assert.equal(r.sameDay, '11/06 15:26 – 18:07', 'same day: no year');
+  assert.equal(r.sameMonth, '11/05 16:33 – 11/06 17:29', 'same-month cross-day: no year on either end');
+  assert.equal(r.crossMonth, '2026/10/31 16:33 – 2026/11/06 17:29', 'cross-month: year on both ends');
+  assert.equal(r.crossYear, '2025/12/31 23:00 – 2026/01/02 01:00', 'cross-year: year on both ends');
+});
+
+test('V2 card root carries the selection key; both rebuild paths preserve h-scroll per key (v281)', () => {
+  const ctx = makeCtx();
+  ctx.__h = fixture();
+  const o = { speedHistory: ctx.__h, sel: { range: 'project', period: 'week', dim: 'time', sid: 'sess_main' },
+    live: null, segsHover: -1, fmtTok: String, fmtCnt: String, fmtMoney: u => '¥' + u.toFixed(2) };
+  ctx.__o = o;
+  const html = vm.runInContext('speedCardV2HTML(__o)', ctx);
+  assert.match(html, /zu-sv-root" data-sv-key="project\|week"/, 'root carries range|period key');
+  // tpsTip 重编分支：捕获旧 DOM 横滚 + 同键回填（结构锁，行为由 drawTip v232 同款机制佐证）
+  const showFn = source.slice(source.indexOf('  function showTpsTip(el) {'),
+    source.indexOf('  function hideTpsTip() {'));
+  assert.match(showFn, /zu-sc-wrap[\s\S]*zu-sv-root[\s\S]*data-sv-key[\s\S]*scrollLeft/,
+    'showTpsTip captures scrollLeft with the selection key before rebuild');
+  assert.match(showFn, /scrollLeft = st0\.x/, 'restore only when key matches');
+  // 全量 tip：横滚保留扩展到重开路径（keepTop 不再是捕获前提）+ 同键守卫
+  const drawFn = source.slice(source.indexOf('    function drawTip(el, keepTop) {'),
+    source.indexOf('    function showTipFor(el) {'));
+  assert.match(drawFn, /oldChartKey/, 'drawTip carries the old selection key');
+  assert.match(drawFn, /oldChartL = oc\.scrollLeft;\n        \}\n      \}/,
+    'capture no longer gated on keepTop (v281 reopen path)');
+});
+
+test('v281 P1: fixed tooltip width + stable chart column (width stops tracking content)', () => {
+  const ctx = makeCtx(); ctx.__h = fixture();
+  ctx.__o = { speedHistory: ctx.__h, sel: { range: 'recent', period: 'recent', dim: 'time', sid: 'sess_main' },
+    live: null, segsHover: -1, fmtTok: String, fmtCnt: String, fmtMoney: u => '¥' + u.toFixed(2) };
+  const html = vm.runInContext('speedCardV2HTML(__o)', ctx);
+  // tip 定宽：width 与 max-width 同值 !important（不再只钳 max-width 让内容反向撑缩）
+  assert.match(html,
+    /width:min\(800px,calc\(100vw - 24px\)\)!important;max-width:min\(800px,calc\(100vw - 24px\)\)!important;box-sizing:border-box/,
+    'tooltip width is pinned at 800 (v284), not content-driven');
+  // v285：V2 卡左缘对齐锚元素（.it 速度格）左缘——positionTip 消费 __zuAlignLeft
+  assert.match(source, /tip\.__zuAlignLeft = !!tip\.querySelector\("\.zu-sv-root"\);/,
+    'full tip marks V2 content for left alignment');
+  assert.match(source, /if \(tip\.__zuAlignLeft\) \{\n        left = Math\.max\(8, Math\.min\(ar\.left, Math\.max\(8, innerWidth - tr\.width - 8\)\)\);\n      \}/,
+    'positionTip left-aligns the V2 card to the anchor cell');
+  const codeNoLedger = source.split('\n').filter(l => !l.includes('var VERSION =')).join('\n');
+  assert.doesNotMatch(codeNoLedger, /conversation-bottom-dock-transition/,
+    'v284 host-class dependency removed (did not apply on real host; ledger text exempt)');
+  assert.doesNotMatch(codeNoLedger, /__zuDockLeft/, 'dock machinery fully removed');
+  // 右图表列：flex:1 1 0 + min-width:0（列宽只由 tip 定宽决定）
+  assert.match(source, /\.zu-sv-root \.zu-speed-chart\{flex:1 1 0;min-width:0;max-width:100%\}/);
+  // 滚动容器：定宽 + 保留横向滚动（不允许用关 overflow 修裁剪）
+  assert.match(source, /\.zu-sv-chart \.zu-sc-wrap\{overflow-x:auto;overflow-y:hidden;width:100%;min-width:0;max-width:100%\}/);
+});
+
+test('v281 P0: hover card portal — body-level singleton, viewport-aware placement, lifecycle hooks', () => {
+  // Portal 单例：pointer-events none、与 tooltip 同层 z-index、类名进 boot 清理链
+  assert.match(source, /var spdHoverPortal = document\.createElement\("div"\);\n  spdHoverPortal\.className = "zusage-quota-tip zu-sv-portal";/);
+  assert.match(source, /spdHoverPortal\.style\.cssText = "position:fixed;display:none;z-index:2147483646;pointer-events:none;";/);
+  // 定位：渲染后量真实尺寸（不假设固定宽高），右上→翻左→钳边，柱滚出 wrap 视口即收
+  const place = source.slice(source.indexOf('  function spdHoverPortalPlace(tipEl, idx) {'),
+    source.indexOf('  function spdHoverPortalSync(tipEl, idx) {'));
+  assert.match(place, /getBoundingClientRect/, 'placement measures real rects');
+  assert.match(place, /cr\.right \+ 6/, 'default: right of the bar');
+  assert.match(place, /cr\.left - pr\.width - 6/, 'flip left when right side runs out');
+  assert.match(place, /zu-sc-wrap/, 'hide when the bar scrolls out of the chart viewport');
+  // 生命周期：收起路径全联动，不留孤儿 Portal
+  assert.match(source, /spdHoverPortalSync\(tip, speedChartHover\);/, 'tab switch invalidates the old card via empty channel');
+  assert.match(source, /function hideTpsTip\(\) \{[^}]*spdHoverPortalHide\(\)/, 'compact tip close hides portal');
+  // dispose/热更：Portal 进 cleanupRateTip 同链清理（boot 自清旧代 + __zusageDispose 摘除）
+  assert.match(source, /hideFxTip\(\);\n    fxTip\.remove\(\);[^]*?spdHoverPortalHide\(\);\n    spdHoverPortal\.remove\(\);/,
+    'portal removed by the dispose chain');
+  // 侧信道纪律：消费即清，跨帧不串
+  const sync = source.slice(source.indexOf('  function spdHoverPortalSync(tipEl, idx) {'),
+    source.indexOf('  /* v176：子代理行内速率 chip'));
+  assert.match(sync, /SPD_PORTAL = "";/, 'channel consumed-and-cleared');
+  // B1（review）：显示时幂等 appendChild 移到 body 末尾——实例 tip 晚于 Portal 挂载，
+  // 同 z 层按树序后者在上，不移尾会被全量 tip 整片盖住（fxTip 1296 行同款实测先例）
+  // M-2（review 二轮）：移尾必须在缓存分支之外——同内容 re-show 遇分屏晚挂 tip 也要移尾
+  assert.ok(sync.indexOf('__zuHtml !== html') < sync.indexOf('lastElementChild !== spdHoverPortal') &&
+    sync.indexOf('lastElementChild !== spdHoverPortal') < sync.indexOf('style.display = "block"'),
+    'move-to-end runs on every show, outside the content-change branch');
+  assert.match(sync, /document\.body\.appendChild\(spdHoverPortal\);/, 'portal moved to body end on show (layering)');
+  assert.match(sync, /spdHoverPortal\.__zuHtml !== html/, 'same-content resync only repositions (no 10Hz innerHTML)');
+  // m2（review）：frozen=悬停中心跳冻结，新信道与冻结图错位必须丢弃
+  assert.match(source, /if \(frozen\) SPD_PORTAL = "";/, 'frozen path discards the fresh channel');
+  // m1（review）：滚出即收后滚回恢复（交叠判定先行，可视区外不做显隐 churn）
+  assert.ok(place.indexOf('.zu-sc-wrap') < place.indexOf('style.display !== "block"'),
+    'overlap gate runs before the restore branch');
+  assert.match(place, /spdHoverPortal\.__zuHtml/, 'restore reuses the cached card');
+  // M1（review）：hideTip 的 Portal 收起必须在按压保活 blocked-return 之后
+  const hideTip = source.slice(source.indexOf('    function hideTip(force, cause) {'),
+    source.indexOf('    function hideTip(force, cause) {') + 900);
+  const blocked = hideTip.indexOf('blocked:');
+  const portalHide = hideTip.indexOf('spdHoverPortalHide()');
+  assert.ok(blocked >= 0 && portalHide > blocked, 'portal hide comes after the press-keepalive early return');
+  // 无障碍：body 级游离节点挂 role
+  assert.match(source, /spdHoverPortal\.setAttribute\("role", "tooltip"\)/);
+  // 两条重建链路都接了 sync
+  assert.match(source, /spdHoverPortalSync\(tpsTip, el\.__zuT \? el\.__zuT\.speedHover : -1\)/);
+  assert.match(source, /spdHoverPortalSync\(tip, idx\); +\/\* v281/);
+  // 横向滚动 capture 相重定位（两条链路）
+  assert.match(source, /tpsTip\.addEventListener\("scroll", function \(\) \{\n    if \(tpsTipFor && tpsTipFor\.__zuT\) spdHoverPortalPlace\(tpsTip, tpsTipFor\.__zuT\.speedHover\);\n  \}, true\)/);
+  assert.match(source, /tip\.addEventListener\("scroll", function \(\) \{\n      if \(tipFor\) spdHoverPortalPlace\(tip, speedChartHover\);\n    \}, true\)/);
+});
+
+test('v282: tabs drop the saturated blue selection for a hover-aligned low-contrast style', () => {
+  assert.doesNotMatch(source, /\.zu-sv-tab\.on\{background:rgba\(87,200,255/, 'blue selection removed');
+  assert.match(source, /\.zu-sv-tab\.on\{background:rgba\(255,255,255,\.07\);color:var\(--color-foreground,#e9edf4\);box-shadow:inset 0 0 0 1px rgba\(255,255,255,\.08\)\}/);
+  assert.match(source, /\.zu-light \.zu-sv-tab\.on\{background:rgba\(0,0,0,\.06\)/, 'light theme variant');
+  assert.match(source, /\.zu-sv-tab\.on:hover\{background:rgba\(255,255,255,\.09\)\}/, 'selected+hover only a slight lift');
+  // 两组 Tab 同一套规则（无第二个 on 规则分支）
+  assert.equal((source.match(/"\.zu-sv-tab\.on\{background:/g) || []).length, 1, 'single selection rule for both groups');
+  // 字重恒 600 未回退（v263 防选中加宽跳动）
+  assert.match(source, /\.zu-sv-tab\{appearance:none;border:0;background:transparent;[^}]*font-weight:600/);
+});
+
+test('v282: legend popup — hover/focus opens, mutual exclusion, escape, full lifecycle', () => {
+  // 模块单例 + 复用 boot 清理类 + role
+  assert.match(source, /var spdLegendTip = document\.createElement\("div"\);\n  spdLegendTip\.className = "tip zusage-quota-tip zu-sv-legend-tip";/);
+  assert.match(source, /spdLegendTip\.setAttribute\("role", "tooltip"\)/);
+  assert.match(source, /spdLegendTip\.style\.cssText = "position:fixed;display:none;z-index:2147483646;";/);
+  // 显示即移尾（B1 同款，不挂内容变化条件）
+  const show = source.slice(source.indexOf('  function spdLegendTipShow(btn) {'),
+    source.indexOf('  spdLegendTip.addEventListener("mouseenter"'));
+  assert.match(show, /lastElementChild !== spdLegendTip/, 'move-to-end on every show');
+  assert.match(show, /spdHoverPortalHide\(\);/, 'bar-hover portal closes when legend opens');
+  // 两条宿主链路都接了 hover/focus 打开
+  assert.equal((source.match(/spdLegendTipShow\(lb\)/g) || []).length, 4, 'tpsTip + full tip, hover + focus');
+  assert.equal((source.match(/spdLegendTipScheduleHide\(\);/g) || []).length, 4, 'scheduled hides wired (mouseout/focusout both hosts)');
+  // 互斥反向：Portal 显示时收档位说明
+  assert.match(source, /spdLegendTipHide\(\); {2,3}\/\/ v28\d 互斥/, 'portal show closes legend popup');
+  // Escape 行为语义（MAJOR-1 review）：全量 tip 链并入 v254 既存 keydown——legend 分支
+  // 必须先于 fxTip 分支与 hideTip(true,"escape")，且独立 dead 监听已删。
+  // 注意：两侧断言均锚「代码形状」而非注释文案。
+  const escStart = source.indexOf('    /* 项目卡内部 Escape：先收档位说明浮层');
+  const escEnd = source.indexOf('restoringFocus = true;');
+  const fullEsc = source.slice(escStart, escEnd);
+  assert.ok(fullEsc.includes('spdLegendTip.style.display === "block"') &&
+    fullEsc.indexOf('spdLegendTipHide()') < fullEsc.indexOf('hideFxTip()') &&
+    fullEsc.indexOf('hideFxTip()') < fullEsc.indexOf('hideTip(true, "escape")'),
+    'escape precedence: legend, fxTip, then close tip');
+  assert.ok(!/tip\.addEventListener\("keydown", function \(e\) \{\n      if \(e\.key === "Escape" && spdLegendTip/.test(source),
+    'no dead standalone escape listener on the full tip');
+  assert.ok(/tpsTip\.addEventListener\("keydown"[\s\S]{0,300}spdLegendTip\.style\.display === "block"/.test(source),
+    'compact chain keeps its own escape listener');
+  // 生命周期：主 tooltip 收起与 dispose 链
+  assert.match(source, /function hideTpsTip\(\) \{[^}]*spdLegendTipHide\(\)/, 'compact tip close hides legend popup');
+  assert.match(source, /spdHoverPortalHide\(\); {2,3}\/\* v281：Portal 随 tooltip 收起[^]*?spdLegendTipHide\(\); +\/\* v282/, 'full tip close hides legend popup');
+  assert.match(source, /spdLegendTip\.remove\(\); {2,5}\/\/ v281：档位说明浮层同链清理/, 'dispose chain removes legend popup');
+  // 内容构建器：升序 + 当前档来自 data-sv-band
+  const build = source.slice(source.indexOf('  function spdLegendCardHTML(curCls) {'),
+    source.indexOf('  /* 纯函数桥：三处 speedTipRebuild 调用共用。'));
+  assert.match(build, /for \(var i = TPS_BANDS\.length - 1; i >= 0; i--\)/,
+    'descending storage looped backwards = ascending display (single source)');
+  assert.match(build, /b\.cls === curCls/, 'highlight by band cls');
+});
+
+test('v283: legend popup width cap 800 and dock-aligned left edge', () => {
+  assert.match(source, /\.zu-sv-legend-tip\{max-width:min\(800px,calc\(100vw - 24px\)\)/, 'width cap 800');
+  const show = source.slice(source.indexOf('  function spdLegendTipShow(btn) {'),
+    source.indexOf('  spdLegendTip.addEventListener("mouseenter"'));
+  assert.match(show, /btn\.closest\("\.zusage-tip-root, \.zusage-tps-tip"\)/, 'left edge aligns to the main tooltip box (v285)');
+  assert.match(show, /Math\.min\(Math\.max\(m, left\), Math\.max\(m, vw - m - lr\.width\)\)/, 'right-edge clamp still applies');
+});
+
+test('v286: chart title bar — weight 600 title, t/s badge, speed-bands SVG entry', () => {
+  assert.match(source, /\.zu-sv-chart \.zu-sc-title\{font-weight:600;font-size:calc\(var\(--ui-font-size,14px\) \+ 2px\);line-height:1\.3\}/,
+    'title weight 600 at ~16px (V2 scope only, V1 untouched)');
+  assert.match(source, /\.zu-sv-chart \.zu-sc-unit\{margin-left:9px;background:rgba\(255,255,255,\.05\)/, 'unit badge styling');
+  assert.match(source, /\.zu-light \.zu-sv-chart \.zu-sc-unit\{background:rgba\(0,0,0,\.05\)\}/, 'light variant');
+  // B1（review）：26px/4px 并入基础规则单点声明（重复规则会被同特异性后声明覆盖成假绿）
+  assert.match(source, /"\.zu-sv-legend-btn\{appearance:none;[^}]*width:26px;height:26px;padding:0;margin-left:4px;[^}]*align-self:center/,
+    '26px hit area declared once in the base rule (no cascade shadowing)');
+  assert.equal((source.match(/\.zu-sv-legend-btn\{appearance:none;/g) || []).length, 1,
+    'single declaration site for the legend button');
+  assert.match(source, /\.zu-sv-legend-btn svg\{width:18px;height:18px\}/, '18px icon centered in 26px hit area');
+  // V1 旧图共享类不受影响：.zu-sc-title 基础规则仍为 700/+1
+  assert.match(source, /"\.zu-sc-title\{font-weight:700;font-size:calc\(var\(--ui-font-size,14px\) \+ 1px\)/);
 });
