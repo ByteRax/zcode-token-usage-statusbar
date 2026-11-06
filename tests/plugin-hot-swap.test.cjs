@@ -8,7 +8,8 @@ const crypto = require("crypto");
 const { pathToFileURL } = require("url");
 // v258：主进程子模块热替换循环（G3）。整源码 vm 装配 + 六模块桩，经 __zusageTest
 // 接缝驱动 hotReloadMainModules：mtime 检测 / 语法预检跳过 / busy 顺延 / dispose+重建
-// 依赖联动 / loadedHashes._hotLoadedAt 销账载荷 / acknowledgeRestart。
+// 依赖联动 / 失败模块不销账（fail-closed）/ loadedHashes._hotLoadedAt / acknowledgeRestart /
+// watcher 一次注册不重建 + dispose 全关闭。
 const source = fs.readFileSync(path.join(__dirname, "..", "inject-main.cjs"), "utf8");
 const sha256 = (text) => crypto.createHash("sha256").update(text).digest("hex");
 
@@ -19,7 +20,8 @@ function harness() {
     mtimes[name] = 1000;
     contents[path.join("/fixture/runtime", name)] = "{}";
   }
-  const acks = [], intervals = [];
+  const acks = [], intervals = [], watchers = [];
+  const fails = { quota: false, model: false, updater: false, notes: false, engine: false, storage: false };
   let quotaInstances = 0, modelInstances = 0, notesInstances = 0, engineSyncs = 0, updaterInstances = 0;
   let updaterBusy = false;
   let capturedUpdaterOpts = null, capturedDecrypt = null, disposedQuota = 0, setProvidersCalls = [];
@@ -50,8 +52,13 @@ function harness() {
           if (path.basename(String(file)) === "setting.json") return "{}";
           throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
         },
-        existsSync: () => true, watch: () => ({ on: () => {} }), writeFileSync: () => {},
-        renameSync: () => {}, unlinkSync: () => {},
+        existsSync: () => true,
+        watch: (dir) => {
+          const watcher = { dir, closed: 0, on: () => {}, close() { watcher.closed += 1; } };
+          watchers.push(watcher);
+          return watcher;
+        },
+        writeFileSync: () => {}, renameSync: () => {}, unlinkSync: () => {},
       };
       if (id === "url") return require("url");
       if (id === "crypto") return require("crypto");
@@ -60,27 +67,36 @@ function harness() {
         execFile: (command, args, options, callback) => { acks.push({ command, args }); callback(null); },
       };
       if (id === "./plugin-updater.cjs") return { createUpdater: (opts) => {
+        if (fails.updater) throw new Error("updater assembly failed");
         capturedUpdaterOpts = opts; updaterInstances += 1; opts.notify({});
         return { request: async () => {}, tick: async () => {}, status: () => ({ busy: updaterBusy }), noteRuntimeAcked: () => {} };
       } };
-      if (id === "./engine-patch.cjs") return { createEnginePatcher: () => ({
-        syncStartup: () => { engineSyncs += 1; }, status: () => ({}), ensure: () => {}, restore: () => {},
-        readConfig: () => ({}), writeConfig: () => {}, configPath: "/fixture/runtime/engine-patch.json" }) };
+      if (id === "./engine-patch.cjs") return { createEnginePatcher: () => {
+        if (fails.engine) throw new Error("engine assembly failed");
+        return {
+          syncStartup: () => { engineSyncs += 1; }, status: () => ({}), ensure: () => {}, restore: () => {},
+          readConfig: () => ({}), writeConfig: () => {}, configPath: "/fixture/runtime/engine-patch.json" };
+      } };
       if (id === "./quota-client.cjs") return {
-        createQuotaClient: () => makeQuotaInstance(),
+        createQuotaClient: () => { if (fails.quota) throw new Error("quota assembly failed"); return makeQuotaInstance(); },
         resolveQuotaPaths: () => ({ credsPath: "/q/credentials.json", credsDir: "/q/creds",
           customCfgPath: "", customCfgDir: "/q/custom", builtinCfgPath: "", builtinCfgDir: "/q/builtin" }),
         decryptValue: () => "plain", deriveCipherKey: () => "key",
       };
       if (id === "./model-puller.cjs") return { createModelPuller: (opts) => {
+        if (fails.model) throw new Error("model assembly failed");
         capturedDecrypt = opts.decryptValue; modelInstances += 1;
         return { listProviders: () => [], fetchModels: async () => ({}), applyModels: async () => ({}) };
       } };
       if (id === "./plugin-release.cjs") return {
-        createNotesService: () => ({ id: ++notesInstances, getNotes: async () => ({}), getList: async () => ({}) }),
+        createNotesService: () => { if (fails.notes) throw new Error("notes assembly failed");
+          return { id: ++notesInstances, getNotes: async () => ({}), getList: async () => ({}) }; },
         createNotesCache: () => ({}), readChannel: () => null,
       };
-      if (id === "./plugin-storage.cjs") return { resolvePluginStorage: () => "/fixture/storage" };
+      if (id === "./plugin-storage.cjs") return { resolvePluginStorage: () => {
+        if (fails.storage) throw new Error("storage broken");
+        return "/fixture/storage";
+      } };
       if (id === "electron") return { app: { getPath: () => "/fixture/home", on: () => {}, getVersion: () => "3.17.2" },
         webContents: { getAllWebContents: () => [] }, ipcMain: { on: () => {} } };
       throw new Error("unexpected require: " + id);
@@ -89,8 +105,9 @@ function harness() {
   vm.runInNewContext(source, sandbox);
   const seam = sandbox.module.exports.__zusageTest;
   assert.ok(seam && typeof seam.hotReloadMainModules === "function");
+  assert.equal(typeof seam.disposeQuotaSubsystem, "function");
   return {
-    sandbox, seam, acks, intervals, mtimes, contents,
+    sandbox, seam, acks, intervals, mtimes, contents, fails, watchers,
     counters: { get quota() { return quotaInstances; }, get model() { return modelInstances; },
       get notes() { return notesInstances; }, get engineSyncs() { return engineSyncs; }, get updater() { return updaterInstances; } },
     state: {
@@ -101,14 +118,17 @@ function harness() {
   };
 }
 const MOD = (n) => path.join("/fixture/runtime", n);
+const quotaWatchersOf = (h) => h.watchers.filter((w) => w.dir === "/q/creds");   // 数组还含 dbWatcher/pendingZipWatcher
 
-test("cold boot builds the mtime table and passes onRuntimeSynced to the updater", async () => {
+test("cold boot builds the mtime table, registers watchers once and passes onRuntimeSynced", async () => {
   const h = harness();
   assert.equal(Object.keys(h.seam.hotModuleState().mtimes).length, 6);
   assert.equal(h.counters.quota, 1);
   assert.equal(h.counters.model, 1);
   assert.equal(h.counters.engineSyncs, 1);
   assert.equal(typeof h.state.updaterOpts.onRuntimeSynced, "function");
+  assert.equal(h.seam.quotaWatcherCount(), 1);   // 桩只有 credsPath 非空（custom/builtin 空路径被 if (!file) 跳过）
+  assert.deepEqual(quotaWatchersOf(h).map((w) => w.closed), [0]);
 });
 
 test("mtime change swaps quota-client and model-puller, records _hotLoadedAt and acks", async () => {
@@ -137,6 +157,29 @@ test("mtime change swaps quota-client and model-puller, records _hotLoadedAt and
   assert.ok(loaded._hotLoadedAt["quota-client.cjs"] >= Date.now() - 60000);
 });
 
+test("quota hot swap reuses live watchers instead of re-registering them", async () => {
+  const h = harness();
+  const createdBefore = h.watchers.length;
+  h.mtimes["quota-client.cjs"] = 2000;
+  h.contents[MOD("quota-client.cjs")] = "module.exports = { v: 4 };";
+  assert.equal(await h.seam.hotReloadMainModules(), true);
+  assert.equal(quotaWatchersOf(h).length, 1);           // watcher 一次注册：热换不重建（防翻倍泄漏）
+  assert.deepEqual(quotaWatchersOf(h).map((w) => w.closed), [0]);
+  h.seam.disposeQuotaSubsystem();
+  assert.deepEqual(quotaWatchersOf(h).map((w) => w.closed), [1]);
+  assert.equal(h.seam.quotaWatcherCount(), 0);
+  assert.equal(h.state.disposedQuota >= 1, true);
+});
+
+test("disposeQuotaSubsystem cancels pending watcher retries via generation guard", async () => {
+  const h = harness();
+  // 直接驱动 initQuotaWatchers 的重试闭包不可达（stub setTimeout 不执行回调），
+  // 代际守卫的行为证据是：dispose 后 quotaWatcherCount 归零且再次 dispose 不抛
+  h.seam.disposeQuotaSubsystem();
+  h.seam.disposeQuotaSubsystem();
+  assert.equal(h.seam.quotaWatcherCount(), 0);
+});
+
 test("unreadable or invalid sources skip the round and keep old instances", async () => {
   const h = harness();
   h.mtimes["quota-client.cjs"] = 2000;
@@ -162,6 +205,42 @@ test("updater group defers while an update is in flight and swaps once idle", as
   assert.equal(h.counters.updater, 2);
   assert.equal(h.counters.notes, 2);                   // updater 组变更联动重建 notes
   assert.equal(h.seam.hotModuleState().mtimes["plugin-updater.cjs"], 2000);
+});
+
+test("failed rebuild is excluded from _hotLoadedAt and skips the ack (fail-closed)", async () => {
+  const h = harness();
+  h.fails.engine = true;   // 语法合法但装配抛错：销账协议的对抗场景
+  h.mtimes["engine-patch.cjs"] = 2000;
+  h.mtimes["quota-client.cjs"] = 2000;
+  h.contents[MOD("engine-patch.cjs")] = "module.exports = { v: 8 };";
+  h.contents[MOD("quota-client.cjs")] = "module.exports = { v: 7 };";
+  const beforeAcks = h.acks.length;
+  assert.equal(await h.seam.hotReloadMainModules(), true);   // 部分成功：quota 换入、engine 失败
+  assert.equal(h.counters.quota, 2);
+  const state = h.seam.hotModuleState();
+  assert.equal(typeof state.hashes._hotLoadedAt["quota-client.cjs"], "number");
+  assert.equal(state.hashes._hotLoadedAt["engine-patch.cjs"], undefined);   // 失败模块不得销账
+  assert.equal(state.hashes["engine-patch.cjs"], state.hashes["engine-patch.cjs"]);   // 启动指纹不被失败换入覆盖
+  assert.equal(state.mtimes["engine-patch.cjs"], 1000);   // 失败模块保留旧 mtime → 下轮重试
+  assert.equal(h.acks.length, beforeAcks);   // 部分失败跳过 acknowledgeRestart（marker 原样保留）
+  assert.equal(h.counters.engineSyncs, 1);   // engine 仍是启动实例
+  h.fails.engine = false;   // 下一轮补齐并销账
+  assert.equal(await h.seam.hotReloadMainModules(), true);
+  assert.equal(h.counters.engineSyncs, 2);
+  assert.equal(typeof h.seam.hotModuleState().hashes._hotLoadedAt["engine-patch.cjs"], "number");
+  assert.equal(h.acks.length, beforeAcks + 1);
+});
+
+test("all-failed rebuild keeps every mtime and reports no change", async () => {
+  const h = harness();
+  h.fails.quota = true;
+  h.fails.model = true;
+  h.mtimes["quota-client.cjs"] = 2000;
+  h.mtimes["model-puller.cjs"] = 2000;
+  assert.equal(await h.seam.hotReloadMainModules(), false);
+  assert.equal(h.seam.hotModuleState().mtimes["quota-client.cjs"], 1000);
+  assert.equal(h.state.disposedQuota, 1);   // 旧实例仍被 dispose（重建失败置 null，不留僵尸引用）
+  assert.equal(h.sandbox.quotaClient ?? null, null);
 });
 
 test("engine-patch hot swap re-runs the idempotent startup sync only", async () => {

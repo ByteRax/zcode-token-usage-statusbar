@@ -459,6 +459,7 @@
   function zuArmRegistryProbe() {
     if (zuRegistry || zuOrigMapGet || typeof Map !== "function" ||
         typeof Map.prototype.get !== "function" || typeof Map.prototype.set !== "function") return;
+    if (typeof globalThis.__zusageRegistryHooked !== "undefined") return;   // 上代实例已布防（钩子闭包仍有效）：重注入不叠层
     try {
       zuOrigMapGet = Map.prototype.get;
       zuOrigMapSet = Map.prototype.set;

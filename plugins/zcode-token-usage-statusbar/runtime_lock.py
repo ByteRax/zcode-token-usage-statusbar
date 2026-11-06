@@ -193,7 +193,7 @@ def ack_restart(runtime, loaded):
                         hot_stamp = hot_loaded.get(hot_key)
                         if (hot_key == "inject-main.cjs" or loaded.get(hot_key) != hot_digest
                                 or not isinstance(hot_stamp, (int, float)) or isinstance(hot_stamp, bool)
-                                or hot_stamp < created_at * 1000):
+                                or hot_stamp != hot_stamp or hot_stamp < created_at * 1000):   # != 自身过滤 NaN（json.loads 会放行）
                             hot_cleared = False
                             break
             if not hot_cleared:

@@ -92,8 +92,9 @@ test("fiber-derived scope passes the same validation matrix as static attributes
   const local = read({ workspacePath: "/w", paneId: "workspace-main" });
   assert.equal(local.identity, "");
   assert.equal(local.remoteSessionId, "");
-  // draft 与 sid 不匹配在 fiber 分支同样拒绝
+  // draft 与 sid 不匹配在 fiber 分支同样拒绝；root 属性本身就是 draft 时 draft 守卫独立生效
   assert.equal(ctx.readFiberPaneScope(paneEl({ fiber: frame({ ...PANE_PROPS }) }), "draft", "workspace-main"), null);
+  assert.equal(ctx.readFiberPaneScope(paneEl({ sid: "draft", fiber: frame({ ...PANE_PROPS }) }), "draft", "workspace-main"), null);
   assert.equal(ctx.readFiberPaneScope(paneEl({ sid: "sB", fiber: frame({ ...PANE_PROPS }) }), "sA", "workspace-main"), null);
   // 无 fiber 键 / fiber 非对象：安全 null 不抛
   assert.equal(ctx.readFiberPaneScope(paneEl({}), "sA", "workspace-main"), null);
@@ -194,4 +195,9 @@ test("sidePaneKeyOf falls back to fiber only when both host testid and bridge at
   mainRoot["__reactFiber$1"] = frame({ workspacePath: "/w", paneId: "workspace-main" });
   const mainChild = Object.assign(attrNode({}), { parentElement: mainRoot });
   assert.equal(ctx.sidePaneKeyOf(mainChild), "");
+  // 中间节点带 tabId props 但不是会话根（无 data-session-id）：门控挡住，不认作侧聊
+  const midRoot = Object.assign(attrNode({}), { parentElement: ctx.document.body });
+  midRoot["__reactFiber$1"] = frame({ tabId });
+  const midChild = Object.assign(attrNode({}), { parentElement: midRoot });
+  assert.equal(ctx.sidePaneKeyOf(midChild), "");
 });

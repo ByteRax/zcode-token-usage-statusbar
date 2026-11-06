@@ -113,6 +113,29 @@ test("manual update rechecks then uses official installer and synchronizes insta
   assert.equal(f.updater.status().phase, "updated"); assert.equal(f.updater.status().restartRequired, true);
   assert.deepEqual(f.updater.status().skipped, ["zusage.py"]);
 });
+test("runtime sync callback fires once when a marker is present and cannot fail the update", async (t) => {
+  const f = fixture(t); f.set({ changed: ["quota-client.cjs"] });
+  let synced = 0, boom = false;
+  const u = createUpdater({ ...f.options, onRuntimeSynced: async () => { synced += 1; if (boom) throw new Error("hot swap failed"); } });
+  await u.request({ action: "update" });
+  assert.equal(synced, 1);   // 冷变更写了 marker：宿主热换钩子被 await
+  assert.equal(u.status().phase, "updated");
+  assert.equal(u.status().restartRequired, true);   // fixture 不销账：红点保持（真实链路由 onRuntimeSynced 清除）
+  boom = true;
+  f.set({ version: "1.2.0" });   // 追平后 check 会判 current 跳过安装：二轮给新版本再触发
+  await u.request({ action: "update" });
+  assert.equal(synced, 2);   // 二轮更新再次触发
+  assert.equal(u.status().phase, "updated");   // 回调抛异常被吞，更新链不受损
+});
+test("runtime sync callback is skipped when no cold marker was written", async (t) => {
+  const f = fixture(t); f.set({ changed: [] });
+  let synced = 0;
+  const u = createUpdater({ ...f.options, onRuntimeSynced: async () => { synced += 1; } });
+  await u.request({ action: "update" });
+  assert.equal(f.syncs.length, 1);
+  assert.equal(synced, 0);   // 无冷变更无 marker：不触发热换扫描（避免无谓 ack 子进程）
+  assert.equal(u.status().phase, "updated");
+});
 test("manual update on the local directory channel leaves checking as soon as the version is known, not only after install completes", async (t) => {
   const f = fixture(t);
   await f.updater.request({ action: "update" });

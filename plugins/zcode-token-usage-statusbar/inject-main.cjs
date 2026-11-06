@@ -790,11 +790,14 @@ function initPluginUpdater() {
        * 更新器 busy 在途时热换自动顺延下一 tick（见 hotReloadMainModulesOnce）。 */
       onRuntimeSynced: async () => { await hotReloadMainModules(); },
     });
+    return pluginUpdater;
   } catch (e) {
+    pluginUpdater = null;
     delete loadedHashes["plugin-updater.cjs"];
     delete loadedHashes["plugin-release.cjs"];
     delete loadedHashes["plugin-storage.cjs"];
     LOG("plugin updater unavailable:", e.message);
+    return null;
   }
 }
 initPluginUpdater();
@@ -815,8 +818,11 @@ function initEnginePatcher() {
       log: (...a) => LOG("[engine-patch]", ...a),
     });
     enginePatcher.syncStartup();   // 幂等：已 applied 且引擎未变时只重读字节设状态，不重复写盘
+    return enginePatcher;
   } catch (e) {
+    enginePatcher = null;
     LOG("engine patcher unavailable:", e.message);
+    return null;
   }
 }
 initEnginePatcher();
@@ -869,6 +875,7 @@ const QUOTA_SECRETS = path.join(HERE, "quota-secrets.json");
 let quotaWatchers = [];   // 全部凭据目录 fs.watch 句柄
 let quotaCredDebounce = 0;
 let quotaInited = false;
+let quotaWatchGeneration = 0;   // disposeQuotaSubsystem 递增：让在途的 5s 重试定时器不再复活 watcher
 function createQuotaClientInstance() {
   try {
     const { createQuotaClient } = require("./quota-client.cjs");
@@ -890,6 +897,7 @@ function createQuotaClientInstance() {
     });
     return quotaPaths;
   } catch (e) {
+    quotaClient = null;   // 热换路径旧实例已 dispose：不留僵尸引用（冷启动本就是 null）
     delete loadedHashes["quota-client.cjs"];
     LOG("quota client unavailable:", e.message);
     return null;
@@ -897,6 +905,10 @@ function createQuotaClientInstance() {
 }
 function initQuotaWatchers(quotaPaths) {
   /* 监听实际凭据与 builtin/personal 目录（原子替换文件也能收到），配置变更重判归属并解冻。 */
+  const generation = quotaWatchGeneration;
+  const retryWatch = (watchQuotaCredentials) => setTimeout(() => {
+    if (generation === quotaWatchGeneration) watchQuotaCredentials();
+  }, 5000);
   const quotaWatchDirs = new Map();
   for (const [file, dir] of [[quotaPaths.credsPath, quotaPaths.credsDir],
     [quotaPaths.customCfgPath, quotaPaths.customCfgDir], [quotaPaths.builtinCfgPath, quotaPaths.builtinCfgDir]]) {
@@ -920,10 +932,10 @@ function initQuotaWatchers(quotaPaths) {
         watcher.on("error", () => {
           quotaWatchers = quotaWatchers.filter((w) => w !== watcher);
           try { watcher.close(); } catch (e) { }
-          setTimeout(watchQuotaCredentials, 5000);
+          retryWatch(watchQuotaCredentials);
         });
         quotaWatchers.push(watcher);
-      } catch (e) { setTimeout(watchQuotaCredentials, 5000); }
+      } catch (e) { retryWatch(watchQuotaCredentials); }
     };
     watchQuotaCredentials();
   }
@@ -938,6 +950,7 @@ function initQuotaSubsystem() {
   if (quotaPaths) initQuotaWatchers(quotaPaths);
 }
 function disposeQuotaSubsystem() {
+  quotaWatchGeneration += 1;   // 取消在途 watcher 重试定时器（退出瞬间触发不再重建）
   clearTimeout(quotaCredDebounce);
   for (const watcher of quotaWatchers) { try { watcher.close(); } catch (e) { } }
   quotaWatchers = [];
@@ -962,8 +975,11 @@ function initModelPuller() {
       cachePath: path.join(__dirname, "model-efforts-cache.json"),   // #236：档位索引落运行目录（pricing-cache.json 同款先例），跨重启复用
       log: (...a) => LOG("[model-pull]", ...a),
     });
+    return modelPuller;
   } catch (e) {
+    modelPuller = null;
     LOG("model puller unavailable:", e.message);
+    return null;
   }
 }
 initModelPuller();
@@ -1067,8 +1083,11 @@ function initReleaseNotes() {
   try {
     const { createNotesService, createNotesCache } = require("./plugin-release.cjs");
     releaseNotes = createNotesService({ cache: createNotesCache({ file: path.join(HERE, "plugin-notes-cache.json") }) });
+    return releaseNotes;
   } catch (e) {
+    releaseNotes = null;
     LOG("release notes unavailable:", e.message);
+    return null;
   }
 }
 initReleaseNotes();
@@ -1135,30 +1154,47 @@ function hotReloadMainModulesOnce() {
     return Promise.resolve(false);
   }
   const purge = (name) => { try { delete require.cache[require.resolve("./" + name)]; } catch (e) { } };
-  const swap = (names, rebuild) => {
-    for (const name of names) purge(name);
-    rebuild();
-  };
+  const ok = {};   // 模块名 -> 重建是否成功：销账与 mtime 只认成功换入者（防「语法过、装配炸」被销账成已加载）
   if (changed.includes("quota-client.cjs")) {
     if (quotaClient) { try { quotaClient.dispose(); } catch (e) { } }   // watcher 保留（回调现读模块级变量）
-    swap(["quota-client.cjs"], () => createQuotaClientInstance());
-    swap(["model-puller.cjs"], () => initModelPuller());   // 联动重建：decryptValue 注入须跟随新 quota-client
-    syncQuotaProviders();   // 新实例从零起步：立即重建 provider 绑定并触发首轮查询
+    purge("quota-client.cjs");
+    ok["quota-client.cjs"] = !!createQuotaClientInstance();
+    purge("model-puller.cjs");
+    ok["model-puller.cjs"] = !!initModelPuller();   // 联动重建：decryptValue 注入须跟随新 quota-client
+    if (ok["quota-client.cjs"]) syncQuotaProviders();   // 新实例从零起步：立即重建 provider 绑定并触发首轮查询
   } else if (changed.includes("model-puller.cjs")) {
-    swap(["model-puller.cjs"], () => initModelPuller());
+    purge("model-puller.cjs");
+    ok["model-puller.cjs"] = !!initModelPuller();
   }
-  if (changed.includes("engine-patch.cjs")) swap(["engine-patch.cjs"], () => initEnginePatcher());
+  if (changed.includes("engine-patch.cjs")) {
+    purge("engine-patch.cjs");
+    ok["engine-patch.cjs"] = !!initEnginePatcher();
+  }
   const updaterGroup = changed.filter((n) => n === "plugin-updater.cjs" || n === "plugin-release.cjs" || n === "plugin-storage.cjs");
   if (updaterGroup.length) {
-    swap(updaterGroup, () => { initReleaseNotes(); initPluginUpdater(); });
+    for (const name of updaterGroup) purge(name);
+    ok["plugin-release.cjs"] = !!initReleaseNotes();
+    ok["plugin-updater.cjs"] = !!initPluginUpdater();   // updater 顶层捕获 release/storage 导出：实例重建才算换入
+    if (updaterGroup.includes("plugin-storage.cjs")) ok["plugin-storage.cjs"] = ok["plugin-updater.cjs"];
+  }
+  const succeeded = changed.filter((name) => ok[name]);
+  const failed = changed.filter((name) => !ok[name]);
+  if (!succeeded.length) {
+    LOG("hot reload failed, keeping old instances:", failed.join(", "));   // mtime 保留旧值：下轮重试
+    return Promise.resolve(false);
   }
   const hotAt = Date.now();
-  for (const name of changed) {
+  for (const name of succeeded) {
     hotModuleMtimes[name] = mtimes[name];
     try { loadedHashes[name] = createHash("sha256").update(sources[name]).digest("hex"); } catch (e) { }
     loadedHashes._hotLoadedAt = Object.assign({}, loadedHashes._hotLoadedAt, { [name]: hotAt });
   }
-  LOG("hot reloaded main modules:", changed.join(", "));
+  LOG("hot reloaded main modules:", succeeded.join(", ") + (failed.length ? "（失败保留待重启: " + failed.join(", ") + "）" : ""));
+  if (failed.length) {
+    // 部分失败：不销账（marker 原样保留，重启兜底仍在），只广播让 UI 用上已换入的模块
+    broadcastPluginState();
+    return Promise.resolve(true);
+  }
   // 销账先行完成再广播：runtime_lock ack_restart 凭 _hotLoadedAt+digest 清除已热加载
   // 条目的 marker；noteRuntimeAcked（新更新器）同步撤下红点，旧更新器自然衰减到下轮。
   acknowledgeRestart(() => {
@@ -1871,6 +1907,8 @@ if (typeof module === "object" && module && module.exports) {
     parseGitPorcelain, parseShortstat, queryGitStatus, gitTick, discoverChildRepos, detectGitOp,
     ipcState: () => ({ activeSid, windowWorkspaces, windowTasks, scopeBindings, remoteEvidence }),
     hotReloadMainModules,   // v258：热替换循环测试入口
+    disposeQuotaSubsystem,   // v258：退出清理测试入口（watcher 关闭断言）
+    quotaWatcherCount: () => quotaWatchers.length,
     hotModuleState: () => ({ mtimes: { ...hotModuleMtimes }, busy: hotMainBusy, hashes: { ...loadedHashes } }),
   };
 }

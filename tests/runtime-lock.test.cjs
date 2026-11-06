@@ -231,6 +231,18 @@ test("partial or weak hot evidence keeps the marker byte-identical", async (t) =
   assert.equal((await markerCommand(f.runtime, "--ack-restart", weird)).cleared, false);
   assert.equal(fs.readFileSync(marker, "utf8"), before);
 });
+test("stale hot stamps keep the marker even without loader entries", async (t) => {
+  const f = fixture(t); const marker = path.join(f.runtime, ".plugin-restart-required");
+  const loadedAt = Date.now() - 5000;
+  await markerCommand(f.runtime, "--record-restart", { hashes: { "quota-client.cjs": "qc1", "model-puller.cjs": "mp1" } });
+  const before = fs.readFileSync(marker, "utf8");
+  const createdAt = JSON.parse(before).createdAt;
+  // 全部条目都可热换（无 inject-main 条目短路）：一个过期戳即整单保留
+  const loaded = { _loadedAt: loadedAt, "quota-client.cjs": "qc1", "model-puller.cjs": "mp1",
+    _hotLoadedAt: { "quota-client.cjs": (createdAt - 1) * 1000, "model-puller.cjs": Date.now() } };
+  assert.equal((await markerCommand(f.runtime, "--ack-restart", loaded)).cleared, false);
+  assert.equal(fs.readFileSync(marker, "utf8"), before);
+});
 test("published pending-install still requires a post-publication process start", async (t) => {
   const f = fixture(t); const marker = path.join(f.runtime, ".plugin-restart-required");
   const now = Date.now();
