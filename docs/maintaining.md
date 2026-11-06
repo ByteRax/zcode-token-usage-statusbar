@@ -147,6 +147,10 @@ GitHub 自动更新要求已注册市场的 `marketplace.json` 指向同一个 R
 
 GitCode 渠道的清单 URL 形状、下载主机白名单（`gitcode.com`/`file-cdn.gitcode.com`）与更新器校验（`plugin-release.cjs` 的 gitcode 分支）必须一起变更，并有对应测试锁定；首次接入渠道时以真实上传回读的 URL 为准。
 
+### 官方插件市场
+
+本插件已收录进官方市场 `zai-org/zcode-plugins`（`external_plugins/` + 根 marketplace.json 注册；官方 validate.py 硬校验 manifest 与市场条目的 `description_i18n` 逐字一致）。官方渠道不由本项目 Release 自动更新：每次升版都要向该仓库再提一个收录 PR（同步插件目录→validate→提交），是与 GitHub/GitCode 并行的第三条发布线；发版收尾清单应包含它，未提 PR 前不宣称官方渠道已更新。
+
 项目内的 [发布技能](../.zcode/skills/zcode-github-release/SKILL.md) 提供检查与预演流程，不全局安装，也不随插件分发。源码 manifest 提升版本不等于远端渠道或用户缓存已完成升级。
 
 ## 数据与性能

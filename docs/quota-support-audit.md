@@ -33,8 +33,9 @@
 | SCNet | 本地账本估算 / 外部快照输入 | 不要求在线凭据；需套餐 Credits、周期、模型映射等估算配置 | **不是官方在线额度接口**；抵扣表及本地记录覆盖影响准确性，展示必须标识估算 |
 | sub2api | **本轮新增**：同源 `/v1/usage`，识别 key 用量/余额及订阅窗口 | 配置中转地址及其推理 key；不索取后台管理 key | 当前 BX-GPT 真站查询及最终运行文件的 createQuotaClient 全链均返回 status=ok、kind=plan、日/周/月 USD 窗口；remaining 不作为钱包余额 |
 | OpenCode Go | **本轮新增**：`https://opencode.ai/zen/go/v1/usage` 三窗口（rolling→5 小时/weekly→周/monthly→月），仅百分比无金额 | env `OPENCODE_API_KEY` / secrets `sources.opencode.apiKey` / 自定义供应商 baseUrl host 为 opencode.ai 且路径以 `/zen/go` 开头（两档命中；`/zen/v1` 按量版无用量 API，刻意不命中） | 源码转写（cc-switch，MIT）、夹具验证，非真账号；403=key 有效但无 Go 订阅（no_plan）、401=auth_failed |
-| CLIProxyAPI | **无专用管理适配** | 管理 API 需要独立 **management key**，不能把推理 key 当管理权限 | 通用 OpenAI legacy 路径不等于支持其管理 API；不新增管理端探测 |
+| CLIProxyAPI | **无专用管理适配** | 管理 API 需要独立 **management key**，不能把推理 key 当管理权限 | 通用 OpenAI legacy 路径不等于支持其管理 API；不新增管理端探测——管理端**连续 5 次认证失败封禁 30 分钟**，识别（无密钥 GET `/v0/management/auth-files` 返回 401 missing management key）后一次补密钥或停手，绝不重试穷举 |
 | new-api | **无专用适配** | 用户/管理访问令牌等不能由普通推理 key 默认推定 | 部分部署兼容 legacy 不能构成 new-api 全面支持承诺 |
+| OpenHubs Pulse | **无适配，不排入** | 无 API key 通道：走 openhubs.zhidemai.com 聚合接口，浏览器 PKCE+Cookie 会话（客户端内无 Authorization/api_key）；会话 idle/absolute 双过期且无刷新令牌 | 适配需用户提供网页登录态 Cookie（比 key 敏感），与 env→secrets→provider_config 凭据契约不匹配 |
 | 其他自定义中转 | 已有同源 OpenAI legacy 查询尝试；非万能识别器 | 仅配置地址及其 key；不猜测额外管理凭据 | 协议或字段不匹配按 unsupported / parse_error，不用 0 伪装成功 |
 
 ## 解析、激活与展示问题

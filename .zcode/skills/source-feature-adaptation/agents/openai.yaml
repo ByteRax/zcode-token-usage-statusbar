@@ -1,0 +1,3 @@
+interface:
+  display_name: "Source Feature Adaptation"
+  short_description: "多 Subagent 并行研究参考源码、移植功能、隔离实现并验证"

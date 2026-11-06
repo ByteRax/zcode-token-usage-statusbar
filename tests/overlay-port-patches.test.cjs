@@ -8,12 +8,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const source = fs.readFileSync(path.join(__dirname, '..', 'overlay.js'), 'utf8');
+const { readOverlaySource, sliceOverlay } = require('./helpers/overlay-extract.cjs');
+
+const source = readOverlaySource('overlay.js');
 const pluginSource = fs.readFileSync(path.join(__dirname, '..', 'plugins', 'zcode-token-usage-statusbar', 'overlay.js'), 'utf8');
 function extract(start, end) {
-  const a = source.indexOf(start), b = source.indexOf(end, a);
-  assert.ok(a >= 0 && b > a, `提取失败: ${start}`);
-  return source.slice(a, b);
+  return sliceOverlay(start, end);
 }
 
 /* ---------- 最小 DOM 替身：closest 只按属性存在性匹配（本测试用到的选择器均如此） ---------- */

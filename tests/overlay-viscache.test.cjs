@@ -8,14 +8,9 @@ const vm = require('node:vm');
  * reallyVisible(hitSelf) / coverOK(cardHitOK) 在同一矩形+模式下 120~150ms 内复用结果，
  * 元素矩形一变立即重算。行为级断言：elementFromPoint / getComputedStyle 只在未命中时发生。
  * 切片纪律：visible 在切片外，桩为恒真；coverOK 片段引用实例级 cardCache，桩为 null。 */
-const source = fs.readFileSync(path.join(__dirname, '..', 'overlay.js'), 'utf8');
-function slice(from, to) {
-  const a = source.indexOf(from), b = source.indexOf(to);
-  assert.ok(a > 0 && b > a, 'slice markers: ' + from);
-  return source.slice(a, b);
-}
-const visFns = slice('    function isOwnOverlay(el) {', '    function findComposer() {');
-const coverFns = slice('    function coverOK(el) {', '    /* 隐藏态诊断');
+const { getNamedSlice } = require('./helpers/overlay-extract.cjs');
+const visFns = getNamedSlice('visCache');
+const coverFns = getNamedSlice('coverCache');
 
 function boot() {
   const calls = { gcs: 0, efp: 0, qs: 0 };

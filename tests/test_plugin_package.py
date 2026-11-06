@@ -102,6 +102,22 @@ class PluginPackageTests(unittest.TestCase):
         self.assertEqual(len(literals), 1, msg="cold_files 字面量应恰一处（sync_runtime 写 marker）；文字提醒清单已随 v172 移除")
         self.assertTrue(literals[0], msg="提取到的 cold_files 字面量为空")
 
+    def test_six_distribution_manifests_agree_with_sync_plugin(self):
+        sync_spec = importlib.util.spec_from_file_location("sync_plugin_manifest_test", ROOT / "sync_plugin.py")
+        sync_mod = importlib.util.module_from_spec(sync_spec)
+        sync_spec.loader.exec_module(sync_mod)
+        self.assertEqual(sync_mod.check_manifests(ROOT), [])
+
+    def test_modular_overlay_sources_assemble_byte_identically(self):
+        build_spec = importlib.util.spec_from_file_location("build_overlay_test", ROOT / "scripts" / "build_overlay.py")
+        build_mod = importlib.util.module_from_spec(build_spec)
+        build_spec.loader.exec_module(build_mod)
+        assembled, parts = build_mod.assemble_bytes(ROOT / "src" / "overlay")
+        self.assertGreaterEqual(len(parts), 10)
+        self.assertEqual(assembled, (ROOT / "overlay.js").read_bytes())
+        self.assertEqual(assembled, (PLUGIN / "overlay.js").read_bytes())
+        self.assertEqual(build_mod.main(["--check"], root=ROOT), 0)
+
     def test_release_skill_requires_post_release_pr_merge_and_verification(self):
         text = (ROOT / ".zcode/skills/zcode-github-release/SKILL.md").read_text(encoding="utf-8")
         section = text.split("## 发布后合并源码 PR\n", 1)[1].split("## 收尾\n", 1)[0]

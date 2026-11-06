@@ -13,13 +13,13 @@ const FILES = ['overlay.js', 'web/overlay.js'];
 const LADDER = ['hot', 'warm', 'ok', 'zu-teal', 'zu-sky', 'zu-azure', 'zu-violet', 'zu-purple', 'zu-magenta', 'zu-ultra'];
 const BOUNDS = [40, 70, 150, 200, 300, 500, 800, 1000, 2000];
 
+const { readOverlaySource, getNamedSlice } = require('./helpers/overlay-extract.cjs');
+
 function extract(file, lang) {
-  const source = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
-  const start = source.indexOf('  function zuHasMeaningfulOutput');
-  const end = source.indexOf('  /* 思考态动效图标', start);
-  assert.ok(start >= 0 && end > start, `提取失败: ${file} 速度分档区`);
+  const source = readOverlaySource(file);
+  const block = getNamedSlice('tpsBands', { file });
   const api = vm.runInNewContext(
-    source.slice(start, end) + '\n({ zuBarSpeedView, tpsBand, tpsBandText, tpsBandLegend, TPS_BANDS });', {
+    block + '\n({ zuBarSpeedView, tpsBand, tpsBandText, tpsBandLegend, TPS_BANDS });', {
       L: (zh, en) => (lang === 'en' ? en : zh),
       zuToolVerb: (name) => name,
       Date: { now: () => 11000 },

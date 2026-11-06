@@ -23,7 +23,7 @@
 
 ```bash
 gh issue comment N --repo ByteRax/zcode-token-usage-statusbar --body-file /tmp/ztus-issue-N-reply.md
-gh issue close N --repo ByteRax/zcode-token-usage-statusbar --reason completed        # 或 --reason "not planned" / --duplicate-of M
+gh issue close N --repo ByteRax/zcode-token-usage-statusbar --reason completed        # 或 --reason "not planned" / --duplicate-of M。close 子命令没有 --comment-file，硬传静默失效（退出码 0、评论未发、issue 已关）——评论必须走上一行 comment --body-file，两步分开
 gh issue view N --repo ByteRax/zcode-token-usage-statusbar --json state,comments --jq '.state, ([.comments[] | select(.author.login == "ByteRax")] | last | .body)'   # 回读状态，以及我们自己最后一条评论的格式和链接
 gh pr comment N --repo ByteRax/zcode-token-usage-statusbar --body-file /tmp/ztus-pr-N-reply.md        # 外部 PR
 ```

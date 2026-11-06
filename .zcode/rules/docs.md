@@ -24,11 +24,12 @@
 - 产品截图一律走 HTML 布景 + 真实 `overlay.js` 渲染 + Playwright 导出（`docs/promo/shoot.py [html] [out] [w] [h] [hover序号|none]`，本机缺 chromium 时回退 `channel="chrome"`）；shoot 内置 CHECK_JS 自检，`problems:[]` 全清零是唯一验收标准（overflowPx=0、内容未被收缩隐藏等）。
 - `docs/promo/icon.webp` 是市场条目 icon 的 URL 载体（marketplace.json 经 jsdelivr `@main` 引用该路径），**路径与文件名冻结**：改名/移动/删除会让全部已分发渠道清单的图标在 CDN 缓存过期后 404；确需换图只覆盖文件内容，不换路径。
 - 布景页必须复刻真实 DOM 形态：工具行容器加宿主同款 group 类让挂载原生生效（手动伪造挂载类会被对账打回）；不留真实效果中不存在的 CSS；条面选择器与当前 overlay 的实际类名一致（旧 id 选择器静默返回 0 节点，不报错）；挂靠卡片不得用 `opacity<0.1` 隐藏（幽灵判定会不挂条），用透明背景方案。
-- 改 overlay 挂载/外观/单位/文案（万/亿、时间行、面板结构）后主动重渲染 promo 四图与 tour 全套；判断图过期不能只看 mtime，要核对选择器与条面 DOM 是否对得上（tour 的 shoot 失配是静默失败不抛错）。tour 重拍：`python3 -m http.server 8799` + `uv run --with playwright python docs/tour/shoot.py`。
+- 改 overlay 挂载/外观/单位/文案（万/亿、时间行、面板结构）后主动重渲染 promo 四图与 tour 全套；判断图过期不能只看 mtime，要核对选择器与条面 DOM 是否对得上（tour 的 shoot 失配是静默失败不抛错）。tour 重拍：`python3 -m http.server 8799` + `uv run --with playwright python docs/tour/shoot.py`。shoot 的等待选择器点名具体节点（如 `#zusage-tip`）：泛类名 `.tip` 会先匹配到 `display:none` 的隐藏 tooltip，item 全部 WAIT_FAIL 超时（截图仍出、却没等到真正目标）。
 - 布局排查写一次性 Playwright inspect 脚本量 `getBoundingClientRect`，别反复截图猜参数；「先判断存在再配对」的列表用 {name,rect} 结构一起过滤（平行数组下标错位）。
 - 窄窗触发的收缩+渐隐是真实行为不是回归；宣传图不得展示降级态，文案变宽（英文/万/亿）须重排布景宽度。`#poster` 区块不进任何已发布图片。社交文案在 `docs/promo/social-copy.md`；市场地址/插件名各图保持一致。
 
-## 4. 已知文档滞后（改到对应领域时核对）
+## 4. 文档核对要点（改到对应领域时核对）
 
-- README 命名空间命令说明与用户指南裸命令不同；设计笔记的「空闲零进程」、`current` 窗口及「最近一次速度」与实现不完全一致。
-- Web 文档的 `node:sqlite` 理由与当前实现不匹配。核对时结合源码/契约测试，不顺手改业务逻辑或宣称正式渠道已有 main 功能。
+- 命令说明统一使用裸命令（`/usage`、`/install-overlay`、`/uninstall-overlay`），宿主同时支持 `zcode-token-usage-statusbar:` 命名空间前缀；根 `usage.command.md` 与插件 `commands/usage.md` 保持取数顺序与回退说明同步。
+- `docs/design-notes.md` 的速度两态口径（完成态会话均 `avg_tps`、最近一轮进 Tooltip）、`scope=current`（选数据库最近活跃会话，30 分钟仅判 active/idle）及常驻 `zusage.py serve` 进程表述须与源码一致。
+- Web 文档的 Node 要求须说明旁挂服务通过 `readonly-guard.py` 拉起常驻 Python `zusage.py`（不使用 `node:sqlite`）；网络说明须区分本地 SQLite 只读统计与额度/重置卡、预估费用价表汇率同步、插件更新/更新日志及远端 SSH/WSL 查询，不笼统宣称全局“不联网”。核对时结合源码/契约测试，不顺手改业务逻辑或宣称正式渠道已有 main 功能。

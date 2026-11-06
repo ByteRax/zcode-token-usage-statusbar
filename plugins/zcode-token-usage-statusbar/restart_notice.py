@@ -53,6 +53,13 @@ def visible_context(label, detail, message):
             "\n提醒之后继续回答用户当前问题；不要自行退出或重启客户端。")
 
 
+RESTART_HASH_FILES = (
+    "inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs",
+    "plugin-storage.cjs", "quota-client.cjs", "model-puller.cjs",
+    "engine-patch.cjs", "overlay.js", "zusage.py",
+)
+
+
 def reminder(runtime=None, injected=None, restart_files=()):
     """只读判定；SessionStart 提示通道和 CLI 共用同一文案。"""
     runtime = Path(runtime) if runtime is not None else runtime_dir()
@@ -74,8 +81,7 @@ def reminder(runtime=None, injected=None, restart_files=()):
             raise ValueError("提醒记录形状或状态无效")
         hashes = data.get("hashes", {})
         if not isinstance(hashes, dict) or any(
-                name not in ("inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs",
-                             "plugin-storage.cjs", "quota-client.cjs", "model-puller.cjs", "engine-patch.cjs", "overlay.js", "zusage.py")
+                name not in RESTART_HASH_FILES
                 or not isinstance(digest, str) or len(digest) != 64
                 or any(char not in "0123456789abcdef" for char in digest)
                 for name, digest in hashes.items()):

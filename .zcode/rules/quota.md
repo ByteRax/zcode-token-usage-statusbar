@@ -17,7 +17,7 @@
 ## 2. 多源调度器与适配器
 
 - 适配器注册表以 `quota-client.cjs` 源码为准，不在文档里维护厂商清单；新增适配器必须同步发 key 域白名单与 `docs/quota-support-audit.md`。
-- 适配器契约三段：`detect(j, providerId)`（纯函数、按 baseUrl 域名命中官方域，返回 null=不命中）→ `resolveCred` → `fetchOne`（内部调用 normalize* 工具函数归一化响应）。识别结果缓存，baseUrl 变化才重探；全部不命中才落 generic custom。
+- 适配器契约三段：`detect(j, providerId)`（纯函数、按 baseUrl 域名命中官方域，返回 null=不命中）→ `resolveCred` → `fetchOne`（内部调用 normalize* 工具函数归一化响应）。识别结果缓存，baseUrl 变化才重探；全部不命中才落 generic custom。env `ANTHROPIC_BASE_URL`+`ANTHROPIC_API_KEY` 直连接入不产生 provider_config 条目：该类会话额度无源可映射（unsupported/无源）是刻意 fail-closed 不猜 env 身份（API key 无法证明归属厂商），非 detect 缺口——排查「baseUrl 是官方域却显示暂不支持」先确认接入方式（DeepSeek 官方教程教的正是 env 接法）；builtin 同 providerId 字段级 merge 也可能使实际生效 baseUrl 与 ⚙ 面板显示值不一致。
 - apiKey 模式（宿主 apiKey 连接）：provider_id 形如 `bigmodel-api[-N]` / `zai-api[-N]`（非 `account:*`），按家族映射到 bigmodel/zai 适配器的复合源（`bigmodel:<providerId>`）；凭据优先级 env → quota-secrets → provider_config 同家族 key（`access.type` 以 `coding-plan-api-key` 结尾者优先，其次当前 provider，其次首个非空；显式 baseUrl 不在 bigmodel.cn / z.ai 域则不采用，绝不外发）→ 宿主 OAuth；key 只在内存与请求头流转。`provider_fallback` 仍只取 `account:%`，apiKey 用户在会话首个 main_turn 完成前无回退 chip。
 - **不做**用户自定义 request/extractor 模板或用户 JS 解析器（主进程执行用户脚本的攻击面 + 与 key 域白名单冲突）；新协议只走加适配器（dsh / cc-switch 等 MIT 源码转写）。标 `unverified` 的适配器未经真实账号实测，不在文档中宣称已验证。
 - enabled 源全量低频刷新（供 tooltip 分家列全），chip 主显跟随本 pane 会话模型归属（primary 源）。每源独立 TTL（套餐 `TTL_MS` 10 分钟 / 余额 `TTL_BALANCE_MS` 15 分钟）、epoch、退避与凭据指纹；源状态按源 id 分桶（家族 id 或 `family:<providerId>` 复合源 id），key 指纹是状态内字段（用于退避复位与冻结解冻），模型不入键。
@@ -37,6 +37,7 @@
 - 凭据只在内存；⚙ 面板 write-only 写入，下发状态 `apiKey` 恒空只回 keyConfigured/keySource；绝不进 `config.json`、日志、诊断、diag。
 - 发 key 域白名单=各适配器官方域 + 用户自定义中转的本域；绝不发第三方。
 - 路径契约：额度初始化统一 `resolveQuotaPaths()`，显式参数优先、采用宿主 PERSONAL/BUILTIN 路径变量及 DATA_BASE_DIR（基目录追加 `.zcode/v2`）；凭据解密派生仍是 OS homedir，不能改成数据目录。主进程 env 没有 `ZCODE_*`（宿主只注入 CLI 子进程），注入侧统一走 `inject-main.cjs` 的 `resolveHostQuotaPaths()`（额度与 model-puller 共用）：按宿主 bootstrap 同源读 `<home>/.zcode/v2/setting.json` 的 `dataBaseDir`（setting.json 本身不跟随迁移；只采纳绝对路径，优先级同宿主 `setDataBaseDir() > env`），builtin 回落打包副本 `resources/config/provider/zcode-builtin.json`、宿主显式 `ZCODE_BUILTIN_PROVIDER_CONFIG_FILE` 时让位；运行期迁移需完全重启。builtin→personal 按 providerId、access/api 局部字段继承，显式空 key 保留；key-only MiniMax 只对内置精确 ID 才可默认官方域。`loadProviderCfg` 先按文件序合并 `providerConfigRules.templateRules`，provider rule 再按 `templateId` 回填模板的 baseUrl/access（模板创建的供应商个人配置不含 baseUrl）；显式 baseUrl 任何域都优先，显式空串 baseUrl 按未填回落模板域，未知 templateId 不回落。缓存失效、监听目录/文件名须与实际读取一致（Windows 与根目录亦然）。
+- model-puller 写回宿主的红线：**绝不写 `manualProviderModelRules`**（完整形态 schema+resolve 会清空内置叶子，稀疏写入=模型不可执行）；个人 `providerModelRules` values-only 合法（map 继承内置 apiType catch-all 透传），默认档=`values.at(-1)`、辅助调用=`values[0]`，写前必须按强度梯排序（off<disabled<none<minimal<low<medium<high<xhigh<max，未知词保序排尾）。6MB api.json 档位目录无定时器/无启动预取，只在「⚡ 拉取模型」路径按三道闸按需拉（任一缺档位证据→索引就地合并零下载→索引缺位或 ≥24h 才后台拉）；缓存文件逐键形状校验不可省——字符串冒充词表穿透会令宿主整份 provider_config 解析失败。
 
 ## 5. 状态机与显示门控
 

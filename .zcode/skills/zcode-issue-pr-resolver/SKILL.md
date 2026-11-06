@@ -42,7 +42,7 @@ description: "处理本项目（ByteRax/zcode-token-usage-statusbar）的 GitHub
    ```
 
 5. 清点已有成果：`triage.py show N` 末尾的「在途成果检查」列出名称含「issue/pr/fix + 编号」的 worktree/分支（★，附未提交改动、领先与落后 `fork/main` 的提交数，`?` 表示 git 查询失败），以及提到该编号的 open PR。**以下一律视为他人（含并行会话）的成果，不接手**：任何名称命中该编号的 worktree/分支，**即使刚建、还没有改动或提交**（对方可能正处在复现阶段）；本地有未提交改动或领先 `fork/main` 的提交（不论是否已推送）；**同仓库**分支的 open PR（含 draft）指向该编号。遇到就不另起炉灶重做、不重复开 PR：该项跳过并记入最终报告，其余 open 项照常处理。**用户只是贴出该 issue 或 PR 的链接/编号，不算点名接手**；要用户明确说「接手」「继续做」或指定那个 worktree/PR 才动。外部 fork 的 open PR 另当别论：它用 `Fixes/Closes/Resolves/Refs #N` 或分支名声称修复本 issue（脚本标「声称修复」）时，不另开 PR，该 PR 本身按 §3 处理（审查后发现修不了或不合并，就回到本 issue 按 §2 自己修，最终报告里说明为什么没合那个 PR——「声称修复」只决定先看谁的方案，不锁定处理方式）；只是提到编号的外部 PR 不影响本项处理。脚本认不出描述性命名的并行分支（如 `fix/quota-tip-...`），要对照同一处列出的全部 worktree 自己看一眼。只有用户说明它已废弃、或 `git worktree list` 显示其目录已不存在（prunable）时，才用新分支名（如 `fix/issue-N-b`）另建 worktree，并在报告里说明；不要去 ff 或复用别人的空壳。
-6. 基线：需要改代码时，在新 worktree 里先跑一遍全套测试（命令见 §2，约两分钟，会撞上 Bash 工具默认的 120 秒超时：用后台运行、把工具超时调到 600000 毫秒，或拆给并行验证 subagent 同轮分流跑 Node 与 Python 测试），记下失败集合。有些用例依赖本机已安装的客户端（如 `test_renderer_bridge` 读取真实 `app.asar`，客户端版本一变就红），个别用例还会偶发失败。之后只比较「新增失败」；单个失败先单独重跑一次，仍红才算数，**重跑转绿的偶发失败也要在报告里披露**（用例名与出现次数）。基线里的失败要逐个列进最终报告，并说明在 `fork/main` 同环境下同样复现。外部 PR 的基线在 `fork/main` 的干净 worktree 上跑，不在 PR 代码上。多个议题同批处理时，同一时刻的 `fork/main` 基线只需测一次并共享给各议题 subagent。
+6. 基线：需要改代码时，在新 worktree 里先跑一遍全套测试（命令见 §2，约两分钟，会撞上 Bash 工具默认的 120 秒超时：用后台运行、把工具超时调到 600000 毫秒，或拆给并行验证 subagent 同轮分流跑 Node 与 Python 测试），记下失败集合。有些用例依赖本机已安装的客户端（如 `test_renderer_bridge` 读取真实 `app.asar`，客户端版本一变就红），个别用例还会偶发失败。之后只比较「新增失败」；单个失败先单独重跑一次，仍红才算数，**重跑转绿的偶发失败也要在报告里披露**（用例名与出现次数）。基线里的失败要逐个列进最终报告，并说明在 `fork/main` 同环境下同样复现。外部 PR 的基线在 `fork/main` 的干净 worktree 上跑，不在 PR 代码上。多个议题同批处理时，同一时刻的 `fork/main` 基线只需测一次并共享给各议题 subagent。基线进行中不要并发编辑同一工作树（unittest discover 启动后仍逐模块 import，撞中间态文件报假失败）；活跃工作树后台串行跑全量基线会读到中途修改出假红，真基线在干净检出单独跑。
 
 ## 1. 采集与分类
 
@@ -168,6 +168,7 @@ python3 -B "${ZCODE_SKILL_DIR}/scripts/triage.py" released <提交>     # 该提
    ```bash
    # --match-head-commit 只钉 head，不钉 base 和 PR 正文：合并前一刻再读一次 base，并且和合并写在同一条 shell 命令里
    # （分成两次执行，中间会多出几秒到十几秒的窗口，作者可以趁机把 base 改成渠道分支）
+   # --match-head-commit 只认 40 位完整 SHA：PR 页面/gh 输出里的短 SHA 会 GraphQL 报错，用 git rev-parse 取全 SHA
    [ "$(gh pr view N --repo ByteRax/zcode-token-usage-statusbar --json baseRefName,headRefOid --jq '"\(.baseRefName) \(.headRefOid)"')" = "main <被审 SHA>" ] \
      && gh pr merge N --repo ByteRax/zcode-token-usage-statusbar --merge --match-head-commit <被审 SHA> \
           --subject "Merge pull request #N" --body ""

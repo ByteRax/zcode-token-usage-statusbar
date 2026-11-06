@@ -97,7 +97,7 @@ curl -s localhost:3033/zusage/health               # {"ok":true}
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
-Requirements: Python 3.8+ (no third-party packages), Node 22.19+ / 24+ (uses `node:sqlite`).
+Requirements: Python 3.8+ (no third-party packages, includes stdlib `sqlite3`), Node 20+ / 22+ / 24+ (runs `zusage-sidecar.mjs`, which spawns a resident Python `zusage.py` process wrapped by `readonly-guard.py`; does not use `node:sqlite`).
 
 ## Why `readonly-guard.py` exists
 

@@ -1,0 +1,78 @@
+{
+  "target": "current-workspace",
+  "base_ref": "<verified-target-commit>",
+  "tasks": [
+    {
+      "id": "research-reference",
+      "phase": "research",
+      "mode": "read",
+      "depends_on": [],
+      "writes": [],
+      "objective": "Trace source feature from entry to tests",
+      "acceptance": "Evidence backed call graph and edge cases"
+    },
+    {
+      "id": "inspect-target",
+      "phase": "research",
+      "mode": "read",
+      "depends_on": [],
+      "writes": [],
+      "objective": "Identify target integration points",
+      "acceptance": "Paths, reusable APIs, baseline risks"
+    },
+    {
+      "id": "contract",
+      "phase": "integrate",
+      "mode": "read",
+      "depends_on": ["research-reference", "inspect-target"],
+      "writes": [],
+      "objective": "Coordinator freezes interfaces and acceptance criteria",
+      "acceptance": "Shared types and ownership agreed"
+    },
+    {
+      "id": "implement-core",
+      "phase": "implement",
+      "mode": "write",
+      "depends_on": ["contract"],
+      "writes": ["src/feature/core/"],
+      "objective": "Implement core feature logic",
+      "acceptance": "Core behaviors verified"
+    },
+    {
+      "id": "implement-ui",
+      "phase": "implement",
+      "mode": "write",
+      "depends_on": ["contract"],
+      "writes": ["src/feature/ui/"],
+      "objective": "Implement UI against frozen contract",
+      "acceptance": "Expected interactions and states"
+    },
+    {
+      "id": "write-tests",
+      "phase": "implement",
+      "mode": "write",
+      "depends_on": ["contract"],
+      "writes": ["tests/feature/"],
+      "objective": "Implement meaningful behavior tests",
+      "acceptance": "Normal and boundary cases represented"
+    },
+    {
+      "id": "final-integration",
+      "phase": "integrate",
+      "mode": "write",
+      "depends_on": ["implement-core", "implement-ui", "write-tests"],
+      "writes": ["src/feature/index.ts", "package.json"],
+      "objective": "Coordinator integrates all changes and runs checks",
+      "acceptance": "Integrated build and relevant tests pass"
+    },
+    {
+      "id": "review-final",
+      "phase": "review",
+      "mode": "read",
+      "depends_on": ["final-integration"],
+      "writes": [],
+      "objective": "Independent review on final integrated diff",
+      "acceptance": "No unaddressed critical findings"
+    }
+  ]
+}

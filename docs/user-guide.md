@@ -159,7 +159,7 @@ python3 install.py --root /Applications/ZCode.app
 
 ### ZCode 升级后状态条消失
 
-客户端升级可能覆盖 `app.asar`。插件默认在新建或恢复会话时自动修复，成功后仍需完全退出并重开 ZCode；自动修复失败时，再运行 `install-overlay` 或 `python install.py` 兜底。
+客户端升级可能覆盖 `app.asar`。插件默认在新建或恢复会话时自动修复，成功后仍需完全退出并重开 ZCode；自动修复失败时，再运行 `/install-overlay` 或 `python install.py` 兜底。
 
 若当前安装的插件版本尚未登记适配新的客户端版本，会话启动会明确提示「未登记适配 ZCode x.y.z」并立即（不受 1 小时间隔限制）尝试升级插件（自动更新开启时；显式关闭时提示改为引导手动检查），升级到适配版本后状态条才会恢复；同一客户端版本 × 已装版本的这条提示只出现一次。已登记版本之外的渲染桥缺席仍由运行时兜底承载，不重复打扰。
 
@@ -405,7 +405,7 @@ WSL 目标示例同时绑定两种客户端形态的身份：3.15.x 的 `remote:
 
 ### 对话内查询
 
-一键安装和插件都使用裸名 `/usage`（不加插件名前缀）：
+一键安装和插件在对话内都可直接使用裸命令名 `/usage`（插件命令 `/install-overlay`、`/uninstall-overlay` 同理；宿主命令目录同时支持带插件命名空间前缀的 `/zcode-token-usage-statusbar:usage` 等写法）：
 
 ```text
 /usage

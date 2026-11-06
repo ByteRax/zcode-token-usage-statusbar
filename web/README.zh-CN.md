@@ -92,7 +92,7 @@ curl -s localhost:3033/zusage/health                    # {"ok":true}
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
-前提：Python 3.8+（零第三方依赖）、Node 22.19+ / 24+（用到 `node:sqlite`）。
+前提：Python 3.8+（零第三方依赖，含标准库 `sqlite3`）、Node 20+ / 22+ / 24+（运行 `zusage-sidecar.mjs`，由其拉起经 `readonly-guard.py` 包装的常驻 Python `zusage.py` 进程，不依赖 `node:sqlite`）。
 
 ## 为什么需要 readonly-guard.py
 
