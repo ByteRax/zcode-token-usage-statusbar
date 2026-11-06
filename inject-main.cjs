@@ -29,6 +29,11 @@ const TURN_STATS = path.join(HERE, "turn-stats.js");
 const ZUSAGE = path.join(HERE, "zusage.py");
 const TOKEN_RATE = path.join(HERE, "token_rate.py");
 const LOG = (...a) => console.error("[zusage]", ...a);
+/* CDP 调试口：正式包宿主仅 !app.isPackaged 开 9229（宿主 index.ts），这里 ready 前强制补开。
+ * 注入行是入口尾部浮动 import，loader 顶层先于 app ready 执行（Electron 45 实证 LOADER-TOP
+ * isReady=false 且 /json/version 可达）；端口被占（如同跑开发实例）时静默放弃绑定，不影响启动。 */
+try { app.commandLine.appendSwitch("remote-debugging-port", "9229"); }
+catch (e) { LOG("cdp remote-debugging-port switch failed:", e.message); }
 const loadedHashes = { _loadedAt: Date.now() - process.uptime() * 1000 };
 for (const name of ["inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs", "quota-client.cjs", "model-puller.cjs", "engine-patch.cjs", "overlay.js", "zusage.py"]) {
   try { loadedHashes[name] = createHash("sha256").update(fs.readFileSync(path.join(HERE, name))).digest("hex"); }
