@@ -201,7 +201,9 @@ def main():
 
 if __name__ == "__main__":
     try:
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        # newline="\n"：Windows 文本模式默认把 \n 翻译成 \r\n，JSON-RPC 帧尾必须保持 LF
+        # （launcher 字节透传，宿主按行分帧；\r 虽是合法 JSON 空白，统一 LF 不给分帧实现留歧义）
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace", newline="\n")
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass

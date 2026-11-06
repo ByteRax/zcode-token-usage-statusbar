@@ -307,6 +307,8 @@ test('main spawn 失败（error 事件）时诊断并以 127 退出', () => {
 
 // stub 锁不住真实管道行为：本机有可用 Python 时才跑这一条（按环境跳过需报告）；
 // timeout 防止极端环境下真实管道挂起拖死整个套件。
+// fixture 用 buffer 读写字节：文本模式 stdout 在 Windows 会把 \n 翻译成 \r\n，
+// 字节透传才与 launcher 的契约（原样透传）同口径，任何平台断言一致。
 test('端到端：launcher 真实拉起 Python 并透传 stdin/stdout', { skip: pickInterpreter() === undefined ? '本机无可用 Python 解释器' : false, timeout: 15000 }, async (t) => {
   const fs = require('node:fs');
   const os = require('node:os');
@@ -314,7 +316,7 @@ test('端到端：launcher 真实拉起 Python 并透传 stdin/stdout', { skip: 
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-launch-e2e-'));
   t.after(() => { fs.rmSync(tmp, { recursive: true, force: true }); });
   const script = path.join(tmp, 'echo.py');
-  fs.writeFileSync(script, 'import sys\nsys.stdout.write(sys.stdin.readline())\n');
+  fs.writeFileSync(script, 'import sys\nsys.stdout.buffer.write(sys.stdin.buffer.readline())\n');
   const launcher = path.join(__dirname, '..', 'mcp-launch.cjs');
   const child = spawn(process.execPath, [launcher, script], { stdio: ['pipe', 'pipe', 'pipe'] });
   const chunks = [];
@@ -324,4 +326,28 @@ test('端到端：launcher 真实拉起 Python 并透传 stdin/stdout', { skip: 
   const code = await closed;
   assert.equal(code, 0);
   assert.equal(Buffer.concat(chunks).toString(), 'ping-through\n');
+});
+
+// usage_mcp.py 帧尾回归：JSON-RPC 帧只允许 LF 结尾（Windows 文本模式翻译成 CRLF 会
+// 给宿主分帧留歧义）。json.dumps(ensure_ascii) 转义一切控制字符，stdout 出现原始 CR
+// 字节只可能来自 newline 翻译——全帧禁 CR 是最强断言。
+test('端到端：usage_mcp.py 真实帧尾为 LF，stdout 不含 CR（Windows 回归）', { skip: pickInterpreter() === undefined ? '本机无可用 Python 解释器' : false, timeout: 15000 }, async (t) => {
+  const { spawn } = require('node:child_process');
+  const launcher = path.join(__dirname, '..', 'mcp-launch.cjs');
+  const script = path.join(__dirname, '..', 'usage_mcp.py');
+  const child = spawn(process.execPath, [launcher, script], { stdio: ['pipe', 'pipe', 'pipe'] });
+  const chunks = [];
+  child.stdout.on('data', (chunk) => chunks.push(chunk));
+  const closed = new Promise((resolve) => child.on('close', resolve));
+  child.stdin.end(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize',
+    params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'lf-regression', version: '0' } } }) + '\n');
+  const code = await closed;
+  assert.equal(code, 0);
+  const out = Buffer.concat(chunks);
+  assert.ok(out.length > 0, 'initialize 无响应帧');
+  assert.equal(out[out.length - 1], 0x0a, '帧尾必须是 LF');
+  assert.equal(out.includes(0x0d), false, 'stdout 不允许出现 CR 字节（Windows newline 翻译回归）');
+  const parsed = JSON.parse(out.toString('utf8').trim());
+  assert.equal(parsed.id, 1);
+  assert.equal(parsed.result.serverInfo.name, 'zcode-token-usage');
 });
