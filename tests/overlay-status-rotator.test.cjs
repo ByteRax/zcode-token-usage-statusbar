@@ -37,7 +37,7 @@ function makeFakeElement(tag = 'div') {
       }
     }),
     classList: {
-      add: (... list) => list.forEach(c => c && classes.add(c)),
+      add: (...list) => list.forEach(c => c && classes.add(c)),
       remove: (...list) => list.forEach(c => classes.delete(c)),
       contains: c => classes.has(c),
       toggle: (c, force) => {
@@ -58,23 +58,35 @@ function makeFakeElement(tag = 'div') {
       innerHTMLVal = String(v == null ? '' : v);
       children.length = 0;
       if (innerHTMLVal.includes('zu-whale-tail')) {
-        const wrap = makeFakeElement('span');
-        wrap.className = 'zu-whale-tail-wrap';
         const svg = makeFakeElement('svg');
         svg.className = 'zu-whale-tail';
+        const vb = /viewBox="([^"]*)"/.exec(innerHTMLVal);
+        if (vb) svg.setAttribute('viewBox', vb[1]);
         const pathEl = makeFakeElement('path');
         const m = /<path d="([^"]*)"/.exec(innerHTMLVal);
         if (m) pathEl.setAttribute('d', m[1]);
         svg.appendChild(pathEl);
-        wrap.appendChild(svg);
-        children.push(wrap);
+        if (el.classList.contains('zu-whale-tail-wrap')) {
+          el.appendChild(svg);
+        } else {
+          const wrap = makeFakeElement('span');
+          wrap.className = 'zu-whale-tail-wrap';
+          wrap.appendChild(svg);
+          el.appendChild(wrap);
+        }
+      }
+      if (innerHTMLVal.includes('zu-rotator-sep')) {
+        const sep = makeFakeElement('span');
+        sep.className = 'zu-rotator-sep dim';
+        sep.textContent = '·';
+        el.appendChild(sep);
       }
       if (innerHTMLVal.includes('zu-rotator-active-label')) {
         const lbl = makeFakeElement('span');
         lbl.className = 'zu-rotator-active-label';
         const m2 = /<span class="zu-rotator-active-label">([^<]*)<\/span>/.exec(innerHTMLVal);
         if (m2) lbl.textContent = m2[1];
-        children.push(lbl);
+        el.appendChild(lbl);
       }
     },
     get firstChild() { return children[0] || null; },
@@ -85,13 +97,23 @@ function makeFakeElement(tag = 'div') {
     removeAttribute(k) { delete attrs[k]; },
     appendChild(child) {
       if (!child) return null;
+      if (child.parentElement) {
+        const oldIdx = child.parentElement.children.indexOf(child);
+        if (oldIdx >= 0) child.parentElement.children.splice(oldIdx, 1);
+      }
       child.parentElement = el;
+      child.isConnected = true;
       children.push(child);
       return child;
     },
     insertBefore(child, ref) {
       if (!child) return null;
+      if (child.parentElement) {
+        const oldIdx = child.parentElement.children.indexOf(child);
+        if (oldIdx >= 0) child.parentElement.children.splice(oldIdx, 1);
+      }
       child.parentElement = el;
+      child.isConnected = true;
       const idx = children.indexOf(ref);
       if (idx >= 0) children.splice(idx, 0, child);
       else children.unshift(child);
@@ -104,6 +126,14 @@ function makeFakeElement(tag = 'div') {
         if (idx >= 0) el.parentElement.children.splice(idx, 1);
       }
     },
+    closest(sel) {
+      let cur = el;
+      while (cur) {
+        if (sel.startsWith('.') && cur.classList && cur.classList.contains(sel.slice(1))) return cur;
+        cur = cur.parentElement;
+      }
+      return null;
+    },
     addEventListener(type, fn) { (listeners[type] || (listeners[type] = [])).push(fn); },
     dispatchEvent(type, ev = {}) {
       (listeners[type] || []).forEach(fn => fn(ev));
@@ -115,6 +145,7 @@ function makeFakeElement(tag = 'div') {
         s = s.trim();
         if (s === 'path') return node.tagName === 'PATH';
         if (s === 'span.grid') return node.tagName === 'SPAN' && node.classList.contains('grid');
+        if (s === 'svg.ico') return node.tagName === 'SVG' && node.classList.contains('ico');
         if (s === '.zu-whale-tail path') return node.tagName === 'PATH';
         if (s === '.zusage-root .zu-main') return node.classList.contains('zu-main');
         if (s === '[data-testid="chat-loading"]') return node.getAttribute('data-testid') === 'chat-loading';
@@ -183,6 +214,32 @@ function makeRotatorEnv(lang = 'zh') {
   return { ctx, window, document, body, storage, state, instances };
 }
 
+function buildFakeSpeedBar(body) {
+  const barMain = makeFakeElement('div');
+  barMain.className = 'zu-main';
+  const speedIt = makeFakeElement('span');
+  speedIt.className = 'it';
+  speedIt.setAttribute('tabindex', '0');
+  const ico = makeFakeElement('svg');
+  ico.className = 'ico';
+  const dimAvg = makeFakeElement('span');
+  dimAvg.className = 'dim';
+  dimAvg.textContent = '均';
+  const live = makeFakeElement('span');
+  live.className = 'zu-live ok';
+  live.textContent = '144.1';
+  const dimUnit = makeFakeElement('span');
+  dimUnit.className = 'dim';
+  dimUnit.textContent = 't/s';
+  speedIt.appendChild(ico);
+  speedIt.appendChild(dimAvg);
+  speedIt.appendChild(live);
+  speedIt.appendChild(dimUnit);
+  barMain.appendChild(speedIt);
+  body.appendChild(barMain);
+  return { barMain, speedIt, ico, live };
+}
+
 test('compressed whale tail SVG dataset stays strictly under 100 KB and decodes 150 frames for all 4 poses', () => {
   const { window } = makeRotatorEnv();
   const api = window.__zusageStatusRotator;
@@ -242,7 +299,7 @@ test('custom phrase line parser and 17 live placeholders format accurately', () 
   );
 });
 
-test('mountTarget supports chat only, bar only, and both simultaneously with clean host restoration', () => {
+test('merges whale tail and rotator label directly into the speed .it cell and restores native lightning icon on unmount', () => {
   const { ctx, window, body } = makeRotatorEnv('zh');
   const api = window.__zusageStatusRotator;
 
@@ -262,10 +319,8 @@ test('mountTarget supports chat only, bar only, and both simultaneously with cle
   chatRow.appendChild(clock);
   body.appendChild(chatRow);
 
-  // Create fake status bar .zu-main
-  const barMain = makeFakeElement('div');
-  barMain.className = 'zu-main';
-  body.appendChild(barMain);
+  // Create fake status bar .zu-main with speed .it cell
+  const { barMain, speedIt, ico } = buildFakeSpeedBar(body);
 
   // 1) Default mountTarget = "both"
   api.setConfig({ enabled: true, mountTarget: 'both', typeSpeedMs: 0, whaleTail: true });
@@ -277,19 +332,60 @@ test('mountTarget supports chat only, bar only, and both simultaneously with cle
   assert.equal(pixelGrid.style.display, 'none', 'native pixel grid hidden while whaleTail is on');
   assert.ok(chatRow.querySelector('.zu-whale-tail-wrap'), 'whale tail mounted in chat loading row');
   assert.equal(clock.textContent, '12.3s', 'native elapsed clock untouched');
-  assert.ok(barMain.querySelector('.zu-rotator-bar'), 'rotator pill mounted in status bar');
 
-  // 2) Switch to mountTarget = "bar" -> chat row restored, bar remains
-  api.setConfig({ mountTarget: 'bar' });
+  // Verify merged into speedIt (<span tabindex="0" class="it">)
+  const mergedTail = speedIt.querySelector('.zu-whale-tail-wrap');
+  const mergedBar = speedIt.querySelector('.zu-rotator-bar');
+  assert.ok(mergedTail, 'whale tail mounted directly inside speed .it cell');
+  assert.equal(mergedTail.parentElement, speedIt, 'whale tail is direct child of speed .it');
+  assert.equal(speedIt.firstChild, mergedTail, 'whale tail sits at the start of speed .it');
+  assert.equal(ico.style.display, 'none', 'native lightning svg.ico is hidden while whale tail is shown');
+  assert.equal(mergedTail.querySelector('.zu-whale-tail').getAttribute('viewBox'), '20 40 300 240', 'whale tail uses unclipped viewBox="20 40 300 240"');
+  assert.ok(mergedBar, 'rotator bar label mounted directly inside speed .it cell');
+  assert.equal(mergedBar.parentElement, speedIt, 'rotator bar is direct child of speed .it');
+
+  // 2) Switch to mountTarget = "bar" -> chat row restored, merged speed .it remains
+  api.setConfig({ mountTarget: 'bar', barAlwaysShow: true });
   assert.equal(label.textContent, '原生思考中...', 'host label restored when switching to bar-only');
   assert.equal(pixelGrid.style.display, '', 'pixel grid restored');
   assert.equal(chatRow.querySelector('.zu-whale-tail-wrap'), null);
-  assert.ok(barMain.querySelector('.zu-rotator-bar'), 'bar pill still present');
+  assert.ok(speedIt.querySelector('.zu-rotator-bar'), 'merged bar pill still present inside speed .it');
+  assert.ok(speedIt.querySelector('.zu-whale-tail-wrap'), 'merged whale tail still present inside speed .it');
 
-  // 3) Switch to mountTarget = "chat" -> bar pill removed, chat row active
+  // 3) Switch to mountTarget = "chat" -> merged bar elements removed and lightning icon restored
   api.setConfig({ mountTarget: 'chat' });
   assert.equal(barMain.querySelector('.zu-rotator-bar'), null, 'bar pill removed in chat-only mode');
+  assert.equal(speedIt.querySelector('.zu-whale-tail-wrap'), null, 'whale tail removed from speed .it in chat-only mode');
+  assert.equal(ico.style.display, '', 'native lightning svg.ico restored when bar rotator unmounts');
   assert.ok(chatRow.querySelector('.zu-whale-tail-wrap'), 'whale tail back in chat row');
+});
+
+test('idle barAlwaysShow mode advances typewriter across ticks without resetting to first character', () => {
+  const { ctx, window, body } = makeRotatorEnv('zh');
+  const api = window.__zusageStatusRotator;
+
+  // No chat-loading element in DOM -> idle state (ctx.active === false)
+  const { speedIt } = buildFakeSpeedBar(body);
+
+  api.setConfig({
+    enabled: true,
+    mountTarget: 'bar',
+    barAlwaysShow: true,
+    typeSpeedMs: 1,
+    whaleTail: true
+  });
+
+  // api.setConfig already triggers an initial rotatorMasterTick()
+  const firstLabel = speedIt.querySelector('.zu-rotator-active-label').textContent;
+  assert.equal(firstLabel.length, 1, 'starts typing at character 1');
+
+  // Advance clock and run subsequent ticks
+  vm.runInContext('rotatorRuntime.lastTypeTime = 0; rotatorMasterTick()', ctx);
+  vm.runInContext('rotatorRuntime.lastTypeTime = 0; rotatorMasterTick()', ctx);
+  vm.runInContext('rotatorRuntime.lastTypeTime = 0; rotatorMasterTick()', ctx);
+
+  const laterLabel = speedIt.querySelector('.zu-rotator-active-label').textContent;
+  assert.ok(laterLabel.length > firstLabel.length, `expected typewriter to progress past 1 char in idle mode, got "${laterLabel}"`);
 });
 
 test('danmaku engine fires items and settings section renders all controls', () => {

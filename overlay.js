@@ -3263,9 +3263,11 @@
 
 
 
+
+
   /* ==================== Status Rotator & Whale Tail & Danmaku Engine (v268) ====================
    * 移植自 dsh-status-rotator (Phase 1–4 完整实现)：
-   * 1. 挂载位置支持三选一：chat（消息流 loading 行）、bar（状态条内轮播格）、both（同时开启）。
+   * 1. 挂载位置支持三选一：chat（消息流 loading 行）、bar（合并进状态条速度 .it 格）、both（同时开启）。
    * 2. DeepSeek 小鲸鱼摇尾巴 SVG 帧动画（wag/sway/twist/official 四种 150 帧姿态 + 6 帧轮廓桥接过渡），
    *    经浮点 RDP (eps=0.85) + Base32 VLQ 差分编码压缩至 ~75.9KB（严格 <100KB）。
    * 3. 14 个内置双语词包（1533 条短语）、自定义短语（支持 文案|权重|when:...|rarity:... 语法）、
@@ -3558,10 +3560,12 @@
 
   /* ---------- 默认配置与归一化 ---------- */
   function defaultRotatorConfig() {
+    var inHostApp = false;
+    try { inHostApp = !!(typeof window !== "undefined" && window.zcode); } catch (e) { }
     return {
       enabled: true,
       mountTarget: "both", // "both" | "chat" | "bar"
-      barAlwaysShow: false,
+      barAlwaysShow: inHostApp,
       labelSource: "phrases", // "phrases" | "host"
       intervalMs: 3500,
       typeSpeedMs: 28,
@@ -3654,7 +3658,9 @@
       if (!raw || typeof raw !== "object") return base;
       if (typeof raw.enabled === "boolean") base.enabled = raw.enabled;
       if (raw.mountTarget === "chat" || raw.mountTarget === "bar" || raw.mountTarget === "both") base.mountTarget = raw.mountTarget;
-      if (typeof raw.barAlwaysShow === "boolean") base.barAlwaysShow = raw.barAlwaysShow;
+      if (typeof raw.barIdleShow === "boolean") base.barAlwaysShow = raw.barIdleShow;
+      else if (raw.barAlwaysShow === true) base.barAlwaysShow = true;
+      else if (raw.barAlwaysShow === false && !(typeof window !== "undefined" && window.zcode)) base.barAlwaysShow = false;
       if (raw.labelSource === "phrases" || raw.labelSource === "host") base.labelSource = raw.labelSource;
       base.intervalMs = Math.round(clampNum(raw.intervalMs, 500, 60000, base.intervalMs));
       base.typeSpeedMs = Math.round(clampNum(raw.typeSpeedMs, 0, 200, base.typeSpeedMs));
@@ -3751,6 +3757,7 @@
 
   var rotatorCfg = loadRotatorConfig();
   function saveRotatorConfig() {
+    rotatorCfg.barIdleShow = !!rotatorCfg.barAlwaysShow;
     lsSet(ZU_ROTATOR_LS_KEY, JSON.stringify(rotatorCfg));
   }
 
@@ -4077,11 +4084,12 @@
       "@keyframes zuRotSpin{to{transform:rotate(360deg)}}" +
       "@keyframes zuRotBarPulse{0%,100%{transform:scaleY(.45);opacity:.55}50%{transform:scaleY(1);opacity:1}}" +
       "@keyframes zuDanmakuScroll{from{transform:translate3d(0,0,0)}to{transform:translate3d(var(--zu-dm-dist,-1400px),0,0)}}" +
-      ".zu-rotator-active-label{" + fontRule + weightRule + glowRule + gradCss + "transition:opacity .15s ease}" +
-      ".zu-rotator-bar{display:inline-flex;align-items:center;gap:5px;padding:2px 7px;border-radius:7px;cursor:pointer;max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
-      ".zu-rotator-bar:hover{background:var(--color-hover,rgba(255,255,255,.06))}" +
-      ".zu-whale-tail-wrap{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;flex:0 0 16px;vertical-align:middle}" +
-      ".zu-whale-tail{width:16px;height:16px;display:block;overflow:visible}" +
+      ".zu-rotator-active-label{display:inline-block;max-width:210px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom;" + fontRule + weightRule + glowRule + gradCss + "transition:opacity .15s ease}" +
+      ".zu-it-rotator{min-width:0}" +
+      ".zu-rotator-bar{display:inline-flex;align-items:center;gap:4px;padding:0;margin:0;cursor:pointer;max-width:230px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle}" +
+      ".zu-rotator-sep{margin:0 1px;opacity:.65;flex:0 0 auto}" +
+      ".zu-whale-tail-wrap{display:inline-flex;align-items:center;justify-content:center;width:18px;height:15px;flex:0 0 18px;vertical-align:middle;cursor:pointer}" +
+      ".zu-whale-tail{width:18px;height:15px;display:block;overflow:visible}" +
       (rotatorCfg.whaleTailRainbow
         ? ".zu-whale-tail path{fill:url(#zu-whale-tail-grad)!important}"
         : ".zu-whale-tail path{fill:currentColor!important}") +
@@ -4341,7 +4349,7 @@
   function whaleTailSvgHtml(pathD) {
     var colors = resolveRotatorGradientColors();
     return '<span class="zu-whale-tail-wrap" aria-hidden="true">' +
-      '<svg class="zu-whale-tail" viewBox="0 0 300 240" xmlns="http://www.w3.org/2000/svg">' +
+      '<svg class="zu-whale-tail" viewBox="20 40 300 240" xmlns="http://www.w3.org/2000/svg">' +
       '<defs><linearGradient id="zu-whale-tail-grad" x1="0%" y1="0%" x2="100%" y2="100%">' +
       '<stop offset="0%" stop-color="' + (colors[0] || "#38bdf8") + '"/>' +
       '<stop offset="50%" stop-color="' + (colors[1] || "#a78bfa") + '"/>' +
@@ -4425,6 +4433,18 @@
     } catch (e) { }
   }
 
+  function restoreBarSpeedCell(mainEl) {
+    if (!mainEl) return;
+    try {
+      mainEl.querySelectorAll(".zu-rotator-bar,.zu-whale-tail-wrap,.zu-rot-spinner-ring,.zu-rot-spinner-bar").forEach(function (el) { el.remove(); });
+      mainEl.querySelectorAll(".it").forEach(function (itEl) {
+        itEl.classList.remove("zu-it-rotator");
+        var ico = itEl.querySelector("svg.ico,.ico");
+        if (ico && ico.style && ico.style.display === "none") ico.style.display = "";
+      });
+    } catch (e) { }
+  }
+
   function syncBarMountSurface(active, displayStr, tailPath) {
     var wantBar = rotatorCfg.enabled && (rotatorCfg.mountTarget === "bar" || rotatorCfg.mountTarget === "both");
     var showInBar = wantBar && (active || rotatorCfg.barAlwaysShow);
@@ -4432,32 +4452,73 @@
       var bars = document.querySelectorAll(".zusage-root .zu-main");
       for (var i = 0; i < bars.length; i++) {
         var mainEl = bars[i];
-        var pill = mainEl.querySelector(".zu-rotator-bar");
         if (!showInBar) {
-          if (pill) pill.remove();
+          restoreBarSpeedCell(mainEl);
           continue;
         }
+        // Clean up any legacy standalone .zu-rotator-bar directly under .zu-main
+        for (var cIdx = mainEl.children.length - 1; cIdx >= 0; cIdx--) {
+          var ch = mainEl.children[cIdx];
+          if (ch && ch.classList && ch.classList.contains("zu-rotator-bar") && !ch.classList.contains("it")) {
+            ch.remove();
+          }
+        }
+        var liveSpan = mainEl.querySelector(".zu-live");
+        var speedIt = liveSpan ? (liveSpan.closest ? liveSpan.closest(".it") : liveSpan.parentElement) : mainEl.querySelector(".it");
+        var hostEl = speedIt || mainEl;
+        if (speedIt) speedIt.classList.add("zu-it-rotator");
+
+        // 1. Merge Whale Tail SVG (or spinner) into the leading icon slot of speed .it cell
+        var nativeIco = speedIt ? speedIt.querySelector("svg.ico,.ico") : null;
+        var existingTail = hostEl.querySelector(".zu-whale-tail-wrap");
+        if (rotatorCfg.whaleTail) {
+          if (nativeIco && nativeIco.style) nativeIco.style.display = "none";
+          if (!existingTail) {
+            var tempTail = document.createElement("div");
+            tempTail.innerHTML = whaleTailSvgHtml(tailPath);
+            existingTail = tempTail.firstChild;
+            if (existingTail) {
+              existingTail.title = L("点击切换下一条轮播语", "Click for next rotating status phrase");
+              existingTail.addEventListener("click", function (ev) {
+                if (!state.tipClick) ev.stopPropagation();
+                forceNextRotatorPhrase();
+                rotatorMasterTick();
+              });
+              hostEl.insertBefore(existingTail, hostEl.firstChild);
+            }
+          } else {
+            var tPath = existingTail.querySelector("path");
+            if (tPath && tPath.getAttribute("d") !== tailPath) tPath.setAttribute("d", tailPath);
+          }
+        } else {
+          if (existingTail) existingTail.remove();
+          if (nativeIco && nativeIco.style && nativeIco.style.display === "none") nativeIco.style.display = "";
+        }
+
+        // 2. Merge .zu-rotator-bar phrase label inside the same speed .it cell
+        var pill = hostEl.querySelector(".zu-rotator-bar");
         if (!pill) {
           pill = document.createElement("span");
           pill.className = "zu-rotator-bar";
           pill.title = L("点击切换下一条轮播语", "Click for next rotating status phrase");
           pill.addEventListener("click", function (ev) {
-            ev.stopPropagation();
+            if (!state.tipClick) ev.stopPropagation();
             forceNextRotatorPhrase();
+            rotatorMasterTick();
           });
-          mainEl.insertBefore(pill, mainEl.firstChild);
+          hostEl.appendChild(pill);
         }
         var textToRender = displayStr || (rotatorRuntime.displayedText) || L("状态轮播就绪", "Status rotator ready");
-        var iconHtml = rotatorCfg.whaleTail ? whaleTailSvgHtml(tailPath) : spinnerHtml();
-        var nextInner = iconHtml + '<span class="zu-rotator-active-label">' +
-          String(textToRender).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") + '</span>';
-        var tailPathEl = pill.querySelector(".zu-whale-tail path");
+        var hasSpeedContent = !!(liveSpan && speedIt);
+        var sepHtml = hasSpeedContent ? '<span class="zu-rotator-sep dim">·</span>' : '';
+        var spinPrefix = (!rotatorCfg.whaleTail) ? spinnerHtml() : '';
         var labelEl = pill.querySelector(".zu-rotator-active-label");
-        if (rotatorCfg.whaleTail && tailPathEl && labelEl) {
-          if (tailPathEl.getAttribute("d") !== tailPath) tailPathEl.setAttribute("d", tailPath);
+        var sepEl = pill.querySelector(".zu-rotator-sep");
+        if (labelEl && (!!sepEl === hasSpeedContent)) {
           if (labelEl.textContent !== textToRender) labelEl.textContent = textToRender;
         } else {
-          pill.innerHTML = nextInner;
+          pill.innerHTML = sepHtml + spinPrefix + '<span class="zu-rotator-active-label">' +
+            String(textToRender).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") + '</span>';
         }
       }
     } catch (e) { }
@@ -4487,7 +4548,7 @@
     try { domChatLoading = document.querySelector('[data-testid="chat-loading"]'); } catch (e) { }
     var isRunning = !!(activeStats && !activeStats.complete) || !!domChatLoading;
     var startedAt = (activeStats && activeStats.startedAt) || (rotatorRuntime.turnStartedAt) || nowMs;
-    if (isRunning && !rotatorRuntime.active) {
+    if (isRunning && !rotatorRuntime.turnStartedAt) {
       rotatorRuntime.turnStartedAt = (activeStats && activeStats.startedAt) || nowMs;
       startedAt = rotatorRuntime.turnStartedAt;
     } else if (!isRunning) {
@@ -4495,7 +4556,8 @@
     }
     var elapsedMs = isRunning ? Math.max(0, nowMs - startedAt) : 0;
     var phase = "running";
-    if (elapsedMs >= (rotatorCfg.longAfterMs || 30000)) phase = "long";
+    if (!isRunning) phase = "running";
+    else if (elapsedMs >= (rotatorCfg.longAfterMs || 30000)) phase = "long";
     else if ((activeStats && activeStats.phase === "thinking" && !activeStats.runningTool && !activeStats.characterRate) || elapsedMs < 15000) phase = "thinking";
 
     var tps = 0;
@@ -4503,6 +4565,8 @@
       tps = activeStats.characterRate / 2;
     } else if (sess && typeof sess.avg_tps === "number" && sess.avg_tps > 0) {
       tps = sess.avg_tps;
+    } else if (state.data && Array.isArray(state.data.recent) && state.data.recent[0] && state.data.recent[0].avg_tps > 0) {
+      tps = state.data.recent[0].avg_tps;
     }
     var runningToolName = activeStats && activeStats.runningTool && activeStats.runningTool.name ? activeStats.runningTool.name : "";
     var runningToolVerb = runningToolName ? zuToolVerb(runningToolName) : "";
@@ -4554,8 +4618,10 @@
     try {
       ensureRotatorStyleMounted();
       var ctx = collectRotatorLiveContext();
+      var wantBar = rotatorCfg.enabled && (rotatorCfg.mountTarget === "bar" || rotatorCfg.mountTarget === "both");
+      var effectiveActive = !!(ctx.active || (wantBar && rotatorCfg.barAlwaysShow));
       var wasActive = rotatorRuntime.active;
-      rotatorRuntime.active = ctx.active;
+      rotatorRuntime.active = effectiveActive;
 
       if (rotatorCfg.danmaku && rotatorCfg.danmaku.pauseBehindMask && danmakuLayer) {
         danmakuLayer.setAttribute("data-paused", isFullscreenMaskActive() ? "1" : "0");
@@ -4577,7 +4643,7 @@
         rotatorRuntime.lastToolName = "";
       }
 
-      if (ctx.active || rotatorCfg.barAlwaysShow) {
+      if (effectiveActive) {
         var phaseChanged = ctx.phase !== rotatorRuntime.lastPhase;
         rotatorRuntime.lastPhase = ctx.phase;
         if (!wasActive || phaseChanged || !rotatorRuntime.rawPhrase || (ctx.nowMs - rotatorRuntime.lastPickAt >= rotatorCfg.intervalMs)) {
@@ -4641,11 +4707,11 @@
         '<div class="zu-rot-inline-row">' +
           '<span>' + L("轮播挂载位置", "Mount target") + '</span>' +
           '<select class="zu-rot-select zu-rot-mount">' +
-            '<option value="both">' + L("同时开启（消息流 + 状态条）", "Both (Chat loading + Status bar)") + '</option>' +
+            '<option value="both">' + L("同时开启（消息流 + 状态条速度格）", "Both (Chat loading + Status bar speed cell)") + '</option>' +
             '<option value="chat">' + L("仅消息流 Loading 行", "Chat loading row only") + '</option>' +
-            '<option value="bar">' + L("仅状态条内轮播格", "Status bar cell only") + '</option>' +
+            '<option value="bar">' + L("仅状态条速度格合并展示", "Status bar speed cell only") + '</option>' +
           '</select>' +
-          '<label><input type="checkbox" class="zu-rot-bar-always"> ' + L("状态条常驻预览", "Always show in bar") + '</label>' +
+          '<label><input type="checkbox" class="zu-rot-bar-always"> ' + L("状态条常驻轮播", "Always show in bar") + '</label>' +
         '</div>' +
         '<div class="zu-rot-inline-row">' +
           '<span>' + L("文案来源", "Label source") + '</span>' +
@@ -4663,7 +4729,7 @@
 
       '<div class="cap">' + L("DeepSeek 小鲸鱼摇尾巴 SVG 帧动画（<100KB 压缩引擎）", "DeepSeek Whale Tail SVG Animation (<100KB)") + '</div>' +
       '<div class="zu-settings-card">' +
-        settingRow('<input type="checkbox" class="zu-rot-whaletail">', L("显示小鲸鱼尾巴图标", "Show whale tail SVG icon"), L("替换原生加载像素点并在状态条轮播格前展示 DeepSeek 小鲸鱼尾巴 SVG 动画（150 帧流畅循环 + 6 帧轮廓桥接过渡，体积压缩至 ~75KB）。", "Replaces the loading indicator with the 150-frame DeepSeek whale tail SVG animation (~75KB compressed with 6-frame contour morphing).")) +
+        settingRow('<input type="checkbox" class="zu-rot-whaletail">', L("显示小鲸鱼尾巴图标", "Show whale tail SVG icon"), L("替换原生加载像素点与状态条速度格闪电图标为 DeepSeek 小鲸鱼尾巴 SVG 动画（150 帧流畅循环 + 6 帧轮廓桥接过渡，体积压缩至 ~75KB）。", "Replaces the loading indicator and status bar speed icon with the 150-frame DeepSeek whale tail SVG animation (~75KB compressed with 6-frame contour morphing).")) +
         settingRow('<input type="checkbox" class="zu-rot-whalerainbow">', L("尾巴炫彩流光填充", "Rainbow gradient fill on whale tail"), L("开启后小鲸鱼尾巴跟随流光渐变色；关闭后跟随当前文字颜色。", "Fills the whale tail with the active flowing gradient; off uses currentColor.")) +
         '<div class="zu-rot-inline-row">' +
           '<span>' + L("摆尾动作", "Tail motion") + '</span>' +
@@ -4879,10 +4945,13 @@
 
   function zuRotatorDisposeAll() {
     restoreAllChatLoadingRows();
+    try {
+      document.querySelectorAll(".zusage-root .zu-main").forEach(restoreBarSpeedCell);
+    } catch (e) { }
     try { if (rotatorStyleEl && rotatorStyleEl.remove) rotatorStyleEl.remove(); } catch (e) { }
     try { if (danmakuLayer && danmakuLayer.remove) danmakuLayer.remove(); danmakuLayer = null; } catch (e) { }
     try {
-      document.querySelectorAll(".zu-rotator-bar,.zu-rotator-danmaku,.zu-rotator-style").forEach(function (el) { el.remove(); });
+      document.querySelectorAll(".zu-rotator-bar,.zu-whale-tail-wrap,.zu-rotator-danmaku,.zu-rotator-style").forEach(function (el) { el.remove(); });
     } catch (e) { }
     activeDanmakus.forEach(function (d) { clearTimeout(d.timer); });
     activeDanmakus = [];
@@ -8432,6 +8501,7 @@
         if (!restoreFocusTip && previousTip) tipFor = previousTip;
       }
       liveEl = main.querySelector(".zu-live");   // v71：条面重建后实时段节点重挂（原地更新用）
+      if (didRebuild && typeof rotatorMasterTick === "function") rotatorMasterTick();
       /* 数据刷新时正在悬停：接管同位置的新元素继续显示。只调位置不重画内容——
        * 数字每 1.5s 都在变，重画就是闪烁；旧文本保持到鼠标下次移动为止。 */
       if (tipFor) {
