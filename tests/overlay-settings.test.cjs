@@ -161,6 +161,32 @@ test('settings title uses the same current plugin version as the update section'
   assert.doesNotMatch(status.textContent, /当前版本：/);
 });
 
+test('persisted lastError shows outside the error phase and hides during it (issue #247)', () => {
+  const syncSource = extract('    function updFingerprint(u) {', '    function syncPanel() {');
+  const status = {};
+  const controls = {};
+  const relaunch = { disabled: false, classList: { toggle: () => {} } };
+  const context = {
+    state: { pluginUpdate: { supported: true, auto: true, phase: 'available', currentVersion: '1.2.3', latestVersion: '1.4.0',
+      lastError: { message: '市场清单刷新连续 3 次失败: x', at: 1762348800000 } }, rateLine: true },
+    panel: { querySelector: selector => selector === '.zu-update-status' ? status : selector === '[data-update=relaunch]' ? relaunch : (controls[selector] ||= { style: {}, hidden: true }) },
+    gear: { querySelector: () => null },
+    LS: { updSeen: 'zusage3.updSeen' },
+    localStorage: { getItem: () => null, setItem: () => {} },
+    L: (zh, en) => zh,
+  };
+  vm.runInNewContext(syncSource + '\nsyncUpdate();', context);
+  assert.match(status.textContent, /上次更新失败：市场清单刷新连续 3 次失败: x（/);   // 消息 + 时间括注
+  context.state.pluginUpdate.phase = 'error';
+  context.state.pluginUpdate.error = '当次错误';
+  vm.runInNewContext('syncUpdate();', context);
+  assert.match(status.textContent, /更新失败：当次错误/);   // error 相位展示当次原因
+  assert.doesNotMatch(status.textContent, /上次更新失败：/);   // 历史行不重复
+  context.state.pluginUpdate = { supported: true, phase: 'current', currentVersion: '1.2.3' };
+  vm.runInNewContext('syncUpdate();', context);
+  assert.doesNotMatch(status.textContent, /上次更新失败：/);   // 无 lastError 不显示
+});
+
 test('restart-notice flows through the real plugin-update bridge into the toggle', () => {
   const bridgeSource = extract('  window.__zusagePluginUpdate = function (s) {', '  /* 工作区身份来自当前会话节点');
   const syncSource = extract('    function updFingerprint(u) {', '    function syncPanel() {');

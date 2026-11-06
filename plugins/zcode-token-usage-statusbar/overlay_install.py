@@ -716,12 +716,12 @@ def chown_runtime_to_user(runtime):
             pass
 
 
-def _nudge(output, message):
+def _nudge(output, message, label="安装提醒", detail="状态条安装尚未完成。"):
     from restart_notice import visible_context
     output["systemMessage"] = message
     output["hookSpecificOutput"] = {
         "hookEventName": "SessionStart",
-        "additionalContext": visible_context("安装提醒", "状态条安装尚未完成。", message)}
+        "additionalContext": visible_context(label, detail, message)}
     return output
 
 
@@ -900,22 +900,136 @@ def _revive_orphan_pending(pi):
         print(f"[zusage-plugin] 孤儿待收尾包监控复活失败（已忽略）：{e}", file=sys.stderr)
 
 
+def _plugin_version():
+    """本插件副本的版本号（hook 从宿主管理的插件缓存目录运行，即「已装版本」）。"""
+    try:
+        manifest = json.loads((PLUGIN_ROOT / ".zcode-plugin" / "plugin.json").read_text(encoding="utf-8"))
+        version = manifest.get("version") if isinstance(manifest, dict) else None
+        return version if isinstance(version, str) and version else ""
+    except Exception:
+        return ""
+
+
+def _host_build(pi):
+    """宿主客户端版本（asar 内 package.json）。读取失败返回 None：探测失败不改变
+    既有行为，兼容性提示与强制更新都只建立在确凿读取之上。"""
+    if pi.ASAR is None:
+        return None
+    try:
+        with open(pi.ASAR, "rb") as stream:
+            header, base = pi.read_header(stream)
+            node = dict(pi.iter_files(header)).get("/package.json")
+            if not node:
+                return None
+            stream.seek(base + int(node["offset"]))
+            package = json.loads(stream.read(node["size"]).decode("utf-8"))
+        version = package.get("version") if isinstance(package, dict) else None
+        return version if isinstance(version, str) and version else None
+    except Exception:
+        return None
+
+
+def _host_registered(version):
+    """宿主版本是否登记在本插件渲染桥适配表（HOST_TARGETS）。表读取失败按已登记
+    处理：提示与强制更新都建立在「确凿未登记」之上，不做悲观误报。"""
+    try:
+        from renderer_bridge import HOST_TARGETS
+        return any(item.get("version") == version for item in HOST_TARGETS)
+    except Exception:
+        return True
+
+
+def _auto_update_disabled(runtime):
+    """插件自动更新是否不会拉起——口径与拉起层逐值一致（plugin_auto_update.py）：
+    非 True 值（0/"false"/null 等）与损坏 config 都不拉起，提示不得谎称「已触发」；
+    仅缺文件视为缺省开启。"""
+    try:
+        cfg = json.loads((runtime / "config.json").read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return False   # 缺省开启（与 start_auto_update 的 cfg={} 同款）
+    except Exception:
+        return True    # 损坏 config 主链不拉起（plugin_auto_update.py except → return False）
+    return not (isinstance(cfg, dict) and cfg.get("plugin_auto_update", True) is True)
+
+
+def _compat_notice_line(runtime, host_version):
+    """未登记宿主版本的用户可见说明（拼进既有故障提示之后，或单独成条）。带上
+    最近一次自动更新失败原因，让「检查过了、什么都没发生」变成可行动的信息
+    （issue #247：市场清单被宿主 CLI 静默刷新失败卡住四天无人知晓）。显式关闭
+    自动更新时如实说明，不谎称「已触发」。"""
+    version = _plugin_version() or "?"
+    if _auto_update_disabled(runtime):
+        line = (f"当前插件 v{version} 未登记适配 ZCode {host_version}："
+                "请升级插件（⚙ → 插件更新手动检查，自动更新已被显式关闭），"
+                "升级并重启 ZCode 后状态条才会恢复。")
+    else:
+        line = (f"当前插件 v{version} 未登记适配 ZCode {host_version}："
+                "已触发插件自动更新，升级到新版并重启 ZCode 后状态条才会恢复。")
+    try:
+        state = json.loads((runtime / "plugin-update.json").read_text(encoding="utf-8"))
+        error = state.get("lastError") if isinstance(state, dict) else None
+        if isinstance(error, dict) and isinstance(error.get("message"), str) and error["message"]:
+            line += f"最近一次自动更新失败：{error['message'][:200]}"
+    except Exception:
+        pass
+    return line
+
+
+def _notify_compat_once(runtime, pi, out, host_version):
+    """已注入（或刚装好）但渲染桥按未知版本跳过（skipped-unknown）时的去重提示：
+    同一宿主版本 × 已装版本只提示一次——状态条仍有运行时动态桥 + DB 轮询兜底，
+    反复提示是打扰；宿主升级或插件换版后重新提示。同时再拉一次强制更新（run_hook
+    开头那次不带桥结果；双拉由更新锁串行化，代价是一次检查）。任何失败只进 stderr，
+    绝不影响 hook 主流程。"""
+    try:
+        from plugin_auto_update import start_auto_update
+        from restart_notice import PREFIX
+        marker = {"hostBuild": host_version, "pluginVersion": _plugin_version()}
+        marker_file = runtime / ".plugin-compat-notice.json"
+        try:
+            previous = json.loads(marker_file.read_text(encoding="utf-8"))
+        except Exception:
+            previous = None
+        start_auto_update(runtime, pi, force=True)
+        if previous == marker:
+            return
+        try:
+            marker_file.write_text(json.dumps(marker, ensure_ascii=False), encoding="utf-8")
+        except OSError:
+            pass
+        _nudge(out, PREFIX + _compat_notice_line(runtime, host_version),
+               label="兼容性提醒", detail="当前插件版本未登记适配此 ZCode 版本。")
+    except Exception as e:  # noqa: BLE001
+        print(f"[zusage-plugin] 兼容性提示失败（已忽略）：{e}", file=sys.stderr)
+
+
+LAST_DIAG = None   # 最近一次 run_hook 的兼容性诊断；session-start.py 读走记入 plugin-session-start.json
+
+
 def run_hook():
     """SessionStart hook 主体：返回 hook 协议 JSON dict。任何异常都转成合法输出，
     绝不影响会话；patch_install 的人类可读输出重定向到 stderr，保证 stdout 纯 JSON。"""
+    global LAST_DIAG
+    LAST_DIAG = None
     out = {"suppressOutput": True}
     runtime = Path(os.environ.get("ZUSAGE_PLUGIN_RUNTIME") or default_runtime())
     try:
         runtime, pi = resolve_paths()
         sync_runtime(runtime, pi.ASAR)
+        st = injected_status(pi)
+        # 兼容性预判（issue #247）：已装版本未登记适配当前宿主 build 时，未注入分支的
+        # 自动更新绕过 1h 限频立即升级——只重装旧版永远修不好状态条。optout 不豁免
+        # 更新（既有契约），故预判在 optout 检查之前。
+        host_version = _host_build(pi)
+        unregistered = host_version is not None and not _host_registered(host_version)
+        LAST_DIAG = {"hostBuild": host_version, "pluginVersion": _plugin_version(), "injected": st}
         try:
             from plugin_auto_update import start_auto_update
-            start_auto_update(runtime, pi)
+            start_auto_update(runtime, pi, force=unregistered and st is False)
         except Exception as e:
             print(f"[zusage-plugin] 后台更新启动失败（已忽略）：{e}", file=sys.stderr)
         if optout_marker(runtime).exists():
             return out
-        st = injected_status(pi)
         if st is None:
             return out  # 本机没有可定位的桌面客户端（远程会话等），静默
         save_runtime_config(runtime, pi)
@@ -926,6 +1040,9 @@ def run_hook():
                 # 续守新世代，issue #228）：自愈只兜其余情形（含 launch 失败的下轮补拉），
                 # 不在 publish 当轮重复拉起。
                 _revive_orphan_pending(pi)
+            LAST_DIAG["bridge"] = bridge.get("status")
+            if unregistered and bridge.get("status") == "skipped-unknown":
+                _notify_compat_once(runtime, pi, out, host_version)
             return _bridge_notice(out, bridge, pi, quiet_hook=True)   # 待重启提醒由状态条齿轮红点承载，不再注入会话文字；桥缺席由运行时动态桥兜底（v258）
         # 未注入：自动安装始终开启，失败只保留故障提示（补丁排定/受保护目录/请重试）
         monitor_env = {name: os.environ.get(name) for name in
@@ -944,8 +1061,15 @@ def run_hook():
         if ok:
             bridge = ensure_renderer_bridge(pi, quiet_monitor=True)
             clear_markers(runtime)
+            LAST_DIAG["bridge"] = bridge.get("status")
+            LAST_DIAG["injected"] = True   # 自动安装刚成功：诊断按安装后的真实状态记录
+            if unregistered and bridge.get("status") == "skipped-unknown":
+                _notify_compat_once(runtime, pi, out, host_version)   # 装上了也带不动此宿主：明确说明，不静默（issue #247）
             return _bridge_notice(out, bridge, pi, quiet_hook=True)   # 自动安装刚成功（注入行在位）：同上，桥缺席静默交给运行时兜底
         from restart_notice import PREFIX
+        # 未登记适配当前宿主时，三条故障提示都补上兼容性说明与最近失败原因：
+        # 反复「已排定」至少要讲清为什么排定也修不好（issue #247）。
+        compat_tail = ("\n" + _compat_notice_line(runtime, host_version)) if unregistered else ""
         waiting = _pending_install_waiting(pi)
         if waiting:
             # issue #185：「所有窗口」常被理解成「关掉窗口即退出」，Windows 客户端
@@ -954,7 +1078,7 @@ def run_hook():
                      "会自动完成替换，之后重新打开即可生效，无需重试安装。"
                      "注意关闭窗口不等于退出：若关窗后仍未替换，说明 ZCode 仍驻留托盘/后台，"
                      "请从托盘图标退出，或在任务管理器中确认没有 ZCode 进程残留。"
-                     "不需要请运行 /uninstall-overlay，之后不再提示。")
+                     "不需要请运行 /uninstall-overlay，之后不再提示。" + compat_tail)
         elif waiting is False:
             # 受保护目录（issue #130）：「无需重试」是假承诺，提权重跑才是
             # 唯一解——它复用已排定的待收尾包并重建提权收尾监控，秒级完成。
@@ -967,12 +1091,12 @@ def run_hook():
                          "当前身份无法完成替换，也不会自动重建收尾进程。"
                          f"请{action}（会复用已排定的补丁，很快），"
                          "然后完全退出 ZCode（所有窗口）并重新打开。"
-                         "不需要请运行 /uninstall-overlay，之后不再提示。"))
+                         "不需要请运行 /uninstall-overlay，之后不再提示。" + compat_tail))
         else:
             _nudge(out, (PREFIX + "用量状态条自动安装未完成。"
                          "请运行 /install-overlay 重试；"
                          "不需要请运行 /uninstall-overlay，之后不再提示。"
-                         "如果仍然失败，请查看客户端插件日志。"))
+                         "如果仍然失败，请查看客户端插件日志。" + compat_tail))
         return out
     except Exception as e:  # noqa: BLE001 — hook 绝不能抛
         message = f"zusage 插件自检失败（已忽略）：{e}"

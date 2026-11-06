@@ -11,8 +11,11 @@ import time
 INTERVAL_MS = 60 * 60 * 1000
 
 
-def start_auto_update(runtime, pi):
-    """默认后台检查更新，保留显式关闭；最终限频与跨进程锁由 Node 负责。"""
+def start_auto_update(runtime, pi, force=False):
+    """默认后台检查更新，保留显式关闭；最终限频与跨进程锁由 Node 负责。
+
+    force：已装插件版本未登记适配当前宿主 build 时由 run_hook 传入，绕过 1h 限频
+    立即尝试升级（issue #247）；自动更新开关等其余门控仍由本模块与 Node 侧生效。"""
     try:
         runtime = Path(runtime)
         cfg = json.loads((runtime / "config.json").read_text(encoding="utf-8"))
@@ -39,8 +42,10 @@ def start_auto_update(runtime, pi):
         if isinstance(state, dict) and state.get("pendingSync") is not True:
             last_attempt = state.get("lastAttempt")
             # Node 的 Date.now() 以毫秒记录；损坏字段不阻止新的尝试。
+            # force（兼容性触发）与 Node 侧同款豁免 1h 限频：在这里被挡住，
+            # --force 根本到不了更新器（issue #247 review M1）。
             elapsed = time.time() * 1000 - last_attempt if type(last_attempt) in (int, float) else None
-            if (elapsed is not None and 0 < last_attempt < float("inf")
+            if (not force and elapsed is not None and 0 < last_attempt < float("inf")
                     and 0 <= elapsed < INTERVAL_MS):
                 return False
 
@@ -73,7 +78,7 @@ def start_auto_update(runtime, pi):
                   if sys.platform == "win32" else {"start_new_session": True})
         subprocess.Popen(
             [str(executable), str(loader), "--auto", "--resources", str(asar.parent),
-             "--runtime", str(runtime)],
+             "--runtime", str(runtime)] + (["--force"] if force else []),
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             cwd=str(Path.home()), env=env, shell=False, **detach)
         return True
