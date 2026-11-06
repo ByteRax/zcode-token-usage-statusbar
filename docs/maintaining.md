@@ -59,7 +59,7 @@ node --check overlay.js
 node --check inject-main.cjs
 ```
 
-不要通过直接删运行目录来更新文件；同步器用可信 hash 基线保护本地热修、协调并发更新。overlay 与查询库可热更新，主进程文件仍需完全重启。
+不要通过直接删运行目录来更新文件；同步器用可信 hash 基线保护本地热修、协调并发更新。overlay、查询库与主进程插件模块（六个 .cjs 子模块）可热更新（子模块经 loader 热换循环），仅客户端注入壳 `inject-main.cjs` 仍需完全重启。
 
 ## 渲染端桥与客户端升级
 
