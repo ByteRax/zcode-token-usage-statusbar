@@ -645,3 +645,42 @@ test('rapid tab ping-pong stays synchronous (v276: rAF coalescing reverted for o
   assert.equal(rst.sel.range, 'recent', 'last state wins');
   assert.equal(rst.sel.period, 'month', 'period switch not lost');
 });
+
+// v277 win-leave 降级可取消宽限：hideSeq 铁证「点击 tab 自动关闭」= win-leave
+// （合成 mouseleave/瞬态 blur 与真离开在触发点不可分）。立即 force 关打死正常交互，
+// 改 400ms 可取消宽限（真离开半秒后收，指针落回即取消）。
+test('win-leave downgrades to a cancellable 400ms grace instead of force-hide (v277)', () => {
+  const ctx = makeCtx();
+  const rst = vm.runInContext(`(() => {
+    const calls = { hide: [], timers: [] };
+    let mouseInBar = true;
+    const tipFor = { id: "cell" };
+    let tipGraceTimer = 0;
+    function cancelTipGrace() { if (tipGraceTimer) { tipGraceTimer = 0; } }
+    function hideTip(force, cause) { calls.hide.push([force, cause]); }
+    function tipBoundaryHide(src) {
+      if (!tipFor) return;
+      mouseInBar = false;
+      const cause = "win-leave:" + (src || "?");
+      cancelTipGrace();
+      tipGraceTimer = setTimeout(function () { tipGraceTimer = 0; hideTip(true, cause); }, 400);
+    }
+    const fns = [];
+    const setTimeout = function (fn, ms) { calls.timers.push(ms); fns.push(fn); return fns.length; };
+    const clearTimeout = function () {};
+    tipBoundaryHide("blur");
+    const armed = { timers: calls.timers.slice(), hides: calls.hide.length };   // 排宽限、未立即关
+    cancelTipGrace();                                                          // 指针落回 tip/条面：取消
+    tipBoundaryHide("edge");                                                   // 真离开：再排并到期
+    fns[fns.length - 1]();                                                     // 模拟 400ms 到期
+    return { armed, tofire: calls.timers.slice(), fired: calls.hide.slice() };
+  })()`, ctx);
+  // 瞬态 blur 不立即 force 关：进 400ms 宽限定时器（真离开半秒后收）
+  assert.equal(rst.armed.hides, 0, 'no immediate force-hide');
+  assert.equal(rst.armed.timers.join(','), '400', 'grace timer armed at 400ms');
+  // 指针落回取消后，真离开（edge）重新排宽限并到期收起——cause 带来源取证
+  assert.equal(rst.tofire.join(','), '400,400');
+  assert.equal(rst.fired.length, 1, 'grace expiry fires once');
+  assert.equal(rst.fired[0][0], true);
+  assert.match(rst.fired[0][1], /win-leave:edge/);
+});
