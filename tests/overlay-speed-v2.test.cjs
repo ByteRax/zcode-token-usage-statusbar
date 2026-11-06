@@ -790,8 +790,15 @@ test('v280 P1: fixed tooltip width + stable chart column (width stops tracking c
   const html = vm.runInContext('speedCardV2HTML(__o)', ctx);
   // tip 定宽：width 与 max-width 同值 !important（不再只钳 max-width 让内容反向撑缩）
   assert.match(html,
-    /width:min\(960px,calc\(100vw - 24px\)\)!important;max-width:min\(960px,calc\(100vw - 24px\)\)!important;box-sizing:border-box/,
-    'tooltip width is pinned, not content-driven');
+    /width:min\(800px,calc\(100vw - 24px\)\)!important;max-width:min\(800px,calc\(100vw - 24px\)\)!important;box-sizing:border-box/,
+    'tooltip width is pinned at 800 (v283), not content-driven');
+  // v283：两条链路 V2 卡左缘对齐宿主 dock
+  assert.match(source, /if \(tpsTip\.querySelector\("\.zu-sv-root"\)\) \{\n      var spdDock = document\.querySelector\("\.conversation-bottom-dock-transition"\);/,
+    'compact chain aligns card left edge to the dock');
+  assert.match(source, /tip\.__zuDockLeft = \(spdDock && spdDock\.getBoundingClientRect\) \?/,
+    'full tip resolves the dock anchor on content change');
+  assert.match(source, /if \(tip\.__zuDockLeft != null\) \{\n        left = Math\.max\(8, Math\.min\(tip\.__zuDockLeft, Math\.max\(8, innerWidth - tr\.width - 8\)\)\);\n      \}/,
+    'positionTip consumes the dock anchor every frame');
   // 右图表列：flex:1 1 0 + min-width:0（列宽只由 tip 定宽决定）
   assert.match(source, /\.zu-sv-root \.zu-speed-chart\{flex:1 1 0;min-width:0;max-width:100%\}/);
   // 滚动容器：定宽 + 保留横向滚动（不允许用关 overflow 修裁剪）
