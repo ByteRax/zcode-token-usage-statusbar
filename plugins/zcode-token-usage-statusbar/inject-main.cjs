@@ -30,9 +30,17 @@ const ZUSAGE = path.join(HERE, "zusage.py");
 const TOKEN_RATE = path.join(HERE, "token_rate.py");
 const LOG = (...a) => console.error("[zusage]", ...a);
 /* CDP 调试口：正式包宿主仅 !app.isPackaged 开 9229（宿主 index.ts），这里 ready 前强制补开。
+ * 尊重两类既有出口：宿主同款逃生口 env ZCODE_DISABLE_FIXED_REMOTE_DEBUGGING_PORT=1，
+ * 以及用户显式传入的 --remote-debugging-port（Chromium 同名 switch 后者覆盖，append 前查
+ * hasSwitch 不抢用户值）。守卫与 append 一并收在 try 内：宿主缺失 commandLine/hasSwitch
+ * 的极端形态退回既有的 catch 日志路径，不改变 VM/stub 测试环境下的可加载性。
  * 注入行是入口尾部浮动 import，loader 顶层先于 app ready 执行（Electron 45 实证 LOADER-TOP
  * isReady=false 且 /json/version 可达）；端口被占（如同跑开发实例）时静默放弃绑定，不影响启动。 */
-try { app.commandLine.appendSwitch("remote-debugging-port", "9229"); }
+try {
+  let cdpSkip = process.env.ZCODE_DISABLE_FIXED_REMOTE_DEBUGGING_PORT === "1";
+  if (!cdpSkip && app.commandLine && typeof app.commandLine.hasSwitch === "function" && app.commandLine.hasSwitch("remote-debugging-port")) cdpSkip = true;
+  if (!cdpSkip) app.commandLine.appendSwitch("remote-debugging-port", "9229");
+}
 catch (e) { LOG("cdp remote-debugging-port switch failed:", e.message); }
 const loadedHashes = { _loadedAt: Date.now() - process.uptime() * 1000 };
 for (const name of ["inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs", "quota-client.cjs", "model-puller.cjs", "engine-patch.cjs", "overlay.js", "zusage.py"]) {
@@ -67,7 +75,7 @@ function readCfg() {
   return c;
 }
 
-/* config.json 内容缓存：热更新定时器每 2s 触发，改为 stat mtime 判变化后才读文件 */
+/* config.json 内容缓存：热更新定时器按 hotTickMs 周期触发，改为 stat mtime 判变化后才读文件 */
 let cfgMtime = 0;
 let cfgCache = null;
 function readCfgCached() {
@@ -112,7 +120,7 @@ function hotReloadIfChanged() {
     let m = 0;
     try { m = fs.statSync(asset.file).mtimeMs; } catch (e) { continue; }
     const known = asset.srcKey === "turnStats" ? turnStatsMtime : overlayMtime;
-    if (m === known) continue;   // mtime 未变：不读文件（每 2s 心跳零读盘）
+    if (m === known) continue;   // mtime 未变：不读文件（心跳零读盘）
     const loaded = loadValidatedAsset(asset.file);
     if (!loaded) continue;       // 语法没写完：保留旧 mtime，下轮重试
     if (asset.srcKey === "turnStats") { turnStatsMtime = loaded.mtime; turnStatsSrc = loaded.src; }
