@@ -300,7 +300,8 @@ test('danmaku engine fires items and settings section renders all controls', () 
   const ok = api.sendDanmaku('测试弹幕 666', 'running');
   assert.equal(ok, true);
 
-  const html = vm.runInContext('zuRotatorSectionHtml()', ctx);
+  assert.ok(source.includes('zuRotatorSectionHtml(secOpen("rotator") === "")'), 'buildPanel wires zuRotatorSectionHtml');
+  const html = vm.runInContext('zuRotatorSectionHtml(true)', ctx);
   assert.match(html, /data-sec="rotator"/);
   assert.match(html, /zu-rot-mount/);
   assert.match(html, /zu-rot-whaletail/);

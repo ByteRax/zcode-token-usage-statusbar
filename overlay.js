@@ -3261,6 +3261,8 @@
 
 
 
+
+
   /* ==================== Status Rotator & Whale Tail & Danmaku Engine (v268) ====================
    * 移植自 dsh-status-rotator (Phase 1–4 完整实现)：
    * 1. 挂载位置支持三选一：chat（消息流 loading 行）、bar（状态条内轮播格）、both（同时开启）。
@@ -4098,11 +4100,16 @@
       ".zu-dm-HoverPause .zu-dm-item:hover{animation-play-state:paused!important}" +
       ".zu-dm-copy{display:none;margin-left:6px;padding:0 6px;border-radius:999px;border:1px solid rgba(255,255,255,.24);background:rgba(255,255,255,.12);color:#fff;font-size:11px;cursor:pointer;line-height:1.4}" +
       ".zu-dm-item:hover .zu-dm-copy{display:inline-block}" +
-      ".zu-rot-pack-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:6px;padding:6px 12px 10px}" +
-      ".zu-rot-pack-item{display:flex;align-items:center;justify-content:space-between;gap:6px;padding:6px 10px;border:1px solid var(--color-border,rgba(255,255,255,.08));border-radius:8px;font-size:calc(var(--ui-font-size,14px) - 1px);cursor:pointer}" +
+      ".zu-settings-section[data-sec='rotator'] .zu-settings-card+.cap{margin-top:16px}" +
+      ".zu-rot-pack-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px;padding:10px 14px 14px}" +
+      ".zu-settings label.zu-rot-pack-item,.zu-rot-pack-item{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px;border:1px solid var(--color-border,rgba(255,255,255,.1));border-radius:8px;font-size:calc(var(--ui-font-size,14px) - 1px);cursor:pointer;background:var(--color-hover,rgba(255,255,255,.03))}" +
+      ".zu-settings label.zu-rot-pack-item>span{display:inline-flex;align-items:center;gap:6px;padding:0;flex:1;min-width:0}" +
+      ".zu-settings label.zu-rot-pack-item input[type=checkbox]{order:0;margin:0}" +
       ".zu-rot-pack-item small{color:var(--color-foreground-subtle,#8791a3);font-size:11px}" +
       ".zu-rot-textarea{width:calc(100% - 24px);margin:4px 12px 10px;min-height:74px;background:var(--color-input,rgba(0,0,0,.22));border:1px solid var(--color-border,rgba(255,255,255,.12));border-radius:8px;color:inherit;padding:6px 10px;font-family:var(--font-mono,monospace);font-size:calc(var(--ui-font-size,14px) - 2px);resize:vertical;box-sizing:border-box}" +
-      ".zu-rot-inline-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:6px 12px 10px}" +
+      ".zu-rot-inline-row{display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:10px 14px;border-top:1px solid var(--color-border,rgba(255,255,255,.08))}" +
+      ".zu-settings .zu-rot-inline-row label{display:inline-flex;align-items:center;gap:6px;padding:4px 8px;margin:0;border:1px solid var(--color-border,rgba(255,255,255,.1));border-radius:8px;font-size:calc(var(--ui-font-size,14px) - 1px)}" +
+      ".zu-settings .zu-rot-inline-row label input[type=checkbox]{order:0;margin:0}" +
       ".zu-rot-select,.zu-rot-num{background:var(--color-input,rgba(0,0,0,.22));border:1px solid var(--color-border,rgba(255,255,255,.14));border-radius:6px;color:inherit;padding:3px 8px;font:inherit;font-size:calc(var(--ui-font-size,14px) - 1px)}" +
       ".zu-rot-num{width:76px;text-align:right}" +
       ".zu-rot-btn{background:var(--color-hover,rgba(255,255,255,.08));border:1px solid var(--color-border,rgba(255,255,255,.14));border-radius:6px;color:inherit;padding:4px 10px;font:inherit;font-size:calc(var(--ui-font-size,14px) - 1px);cursor:pointer}" +
@@ -4609,6 +4616,7 @@
 
   /* ---------- 设置面板「状态轮播」(data-sec="rotator") UI 与事件委托 ---------- */
   function zuRotatorSectionHtml(isOpen) {
+    ensureRotatorStyleMounted();
     var esc = function (s) { return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); };
     var settingRow = function (input, title, note) { return "<label>" + input + "<span>" + title + "<em>" + note + "</em></span></label>"; };
     var open = isOpen !== undefined ? !!isOpen : (state && state.settingsSec === "rotator");
@@ -4744,6 +4752,7 @@
 
   function zuRotatorSyncPanel(panelEl) {
     if (!panelEl) return;
+    ensureRotatorStyleMounted();
     var q = function (sel) { return panelEl.querySelector(sel); };
     var setCb = function (sel, val) { var el = q(sel); if (el) el.checked = !!val; };
     var setVal = function (sel, val) { var el = q(sel); if (el) el.value = String(val); };
@@ -6317,6 +6326,7 @@
       settingRow('<input type="checkbox" class="zu-cmdk-widen">', L("命令中心加宽", "Wider command center"), L("把宿主 ⌘K 搜索弹框（命令中心、任务搜索等）放宽到窗口宽度的 80%、高度的 80%；小窗口保持原生尺寸。关闭后恢复原生尺寸。默认开启。", "Widens the host ⌘K search dialogs (command center, task search, …) to 80% of the window width and height; small windows keep the native size. Turning it off restores the native size. On by default.")) +
       '<div class="zu-settings-langs"><label><input type="radio" name="zu-lang" value="zh"><span>中文</span></label>' +
       '<label><input type="radio" name="zu-lang" value="en"><span>English</span></label></div></div></section>' +
+      (typeof zuRotatorSectionHtml === "function" ? zuRotatorSectionHtml(secOpen("rotator") === "") : "") +
       '<section class="zu-settings-section" data-sec="stats"' + secOpen("stats") + '><div class="cap">' + L("回答统计", "Reply statistics") + '</div><div class="zu-settings-card">' +
       settingRow('<input type="checkbox" class="zu-rate-line">', L("回答末尾追加统计行", "Append stats to each reply"), L("切换后立即重扫：关闭会撤下插件生成的统计行，开启会补回可用记录。下一次提问沿用该设置；历史正文和已缓存统计行不重算。", "Rescans immediately: off removes plugin-generated lines; on restores available records. Applies to the next prompt; historical text and cached statistics are not recalculated.")) +
       '</div></section>' +
