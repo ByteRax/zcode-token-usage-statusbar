@@ -365,24 +365,38 @@ class OverlayBridgeNoticeTests(unittest.TestCase):
         return outcome, stdout.getvalue()
 
     def test_run_hook_reports_permission_but_not_pending_or_other_errors(self):
-        # v172：桥 pending（客户端退出后监控自动收尾）不再发会话文字；权限不足仍提示。
+        # v172：桥 pending（客户端退出后监控自动收尾）不再发会话文字。
         pending = {"status": "pending", "version": "3.16.2", "detail": ""}
         outcome, stdout = self.hook_output(pending)
         self.assertNotIn("systemMessage", outcome)
         self.assertEqual(stdout, "")
-        # 权限不足按真实 PermissionError 标记判定（Windows 的 os.access 看不见 ACL，
-        # target_writable() 恒 True 的 Program Files 场景也必须提示）
+        # v258：SessionStart 自动链（quiet_hook=True）且注入行在位时，桥缺席/打不上
+        # 静默放行——fiber 兜底 + 渲染端运行时合成桥接手，DB 轮询保底；受保护目录
+        # 权限不再向会话注入提权打扰（stderr 诊断行仍在）。
         denied = {"status": "skipped-error", "version": None,
                   "detail": "[WinError 5] 拒绝访问", "permission": True}
         outcome, stdout = self.hook_output(denied, writable=True)
-        self.assertIn("管理员" if os.name == "nt" else "sudo", outcome["systemMessage"])
-        self.assertIn(str(self.root / "app.asar"), outcome["systemMessage"])
+        self.assertNotIn("systemMessage", outcome)
+        self.assertEqual(stdout, "")
+        unknown = {"status": "skipped-unknown", "version": "9.9.9", "detail": "unregistered asset"}
+        outcome, stdout = self.hook_output(unknown)
+        self.assertNotIn("systemMessage", outcome)
         self.assertEqual(stdout, "")
         # 无权限标记的普通失败仍走 stderr 静默（版本不识别等），不打扰用户
         plain = dict(denied); plain.pop("permission")
         outcome, stdout = self.hook_output(plain)
         self.assertNotIn("systemMessage", outcome)
         self.assertEqual(stdout, "")
+
+    def test_bridge_permission_notice_kept_for_explicit_cli(self):
+        # v258：静默降级只作用于 hook 自动链；显式安装（quiet_hook=False）保留 issue #67
+        # 提权提示原文——权限不足按真实 PermissionError 标记判定（Windows 的 os.access
+        # 看不见 ACL，target_writable() 恒 True 的 Program Files 场景也必须提示）。
+        denied = {"status": "skipped-error", "version": None,
+                  "detail": "[WinError 5] 拒绝访问", "permission": True}
+        outcome = self.installer._bridge_notice({}, denied, self.pi_stub())
+        self.assertIn("管理员" if os.name == "nt" else "sudo", outcome["systemMessage"])
+        self.assertIn(str(self.root / "app.asar"), outcome["systemMessage"])
 
     def test_windows_permission_notice_uses_administrator_hint(self):
         denied = {"status": "skipped-error", "version": None,

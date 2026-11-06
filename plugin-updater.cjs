@@ -307,11 +307,19 @@ function createUpdater(options) {
     return "";
   };
   const saved = readState(stateFile, now());
-  let state = { phase: "idle", supported: false, auto: false, currentVersion: "", latestVersion: "",
-    ...saved, restartRequired: fs.existsSync(markerFile), markerAt: 0, skipped: [], error: "", channel: "", channelHost: "", channelRepo: "", releaseUrl: "", progress: null, checkedVia: "", markerVersion: "" };
+  const prev = options.initialState && typeof options.initialState === "object" ? options.initialState : null;
+  let state = { phase: prev && prev.phase === "updated" ? "updated" : "idle", supported: false, auto: false, currentVersion: "",
+    latestVersion: prev && typeof prev.latestVersion === "string" ? prev.latestVersion : "",
+    ...saved, restartRequired: fs.existsSync(markerFile), markerAt: 0,
+    skipped: prev && Array.isArray(prev.skipped) ? prev.skipped.slice() : [],
+    error: "", channel: "", channelHost: "", channelRepo: "",
+    releaseUrl: prev && typeof prev.releaseUrl === "string" ? prev.releaseUrl : "",
+    progress: null,
+    checkedVia: prev && typeof prev.checkedVia === "string" ? prev.checkedVia : "",
+    markerVersion: "" };
   state.markerAt = state.restartRequired ? markerMtime() : 0;
   state.markerVersion = state.restartRequired ? markerVersion() : "";
-  let busy = false;
+  let busy = false, runtimeSyncNeeded = false;
   let selectedRelease = null, selectedChannel = null;
   const channel = () => {
     const source = options.channel ? options.channel() : releaseChannel.readChannel(home, storage());
@@ -472,7 +480,19 @@ function createUpdater(options) {
       maybeClearFailure();   // 检查失败也不能让已过时的失败标注残留（当前版本已追上目标时）
     } finally {
       if (release) await release();
-      busy = false; publish();
+      busy = false;
+      if (runtimeSyncNeeded) {
+        runtimeSyncNeeded = false;
+        // v258：在 busy=false 释放之后调用宿主热替换钩子（onRuntimeSynced = hotReloadMainModules +
+        // acknowledgeRestart），使包含 plugin-updater/release/storage 自身变更的更新也能当场热换并
+        // 销账 marker，随后 publish() 直接读到已清零的 restartRequired，⚙ 红点零闪烁。
+        if (fs.existsSync(markerFile) && typeof options.onRuntimeSynced === "function") {
+          try { await options.onRuntimeSynced(); } catch (e) { }
+        }
+        state.restartRequired = fs.existsSync(markerFile);
+        state.markerAt = state.restartRequired ? markerMtime() : 0;
+      }
+      publish();
     }
   }
   function clearPending() {
@@ -617,6 +637,7 @@ function createUpdater(options) {
     // Current packages persist the marker themselves. This also covers old
     // packages' changed reports, before clearing durable pending coordination.
     await recordRestart(report);
+    runtimeSyncNeeded = fs.existsSync(markerFile);
     state.lastFailure = null;   // 安装成功：失败目标标注随 pending 一并清除（一次落盘）
     clearPending();
     state.skipped = Array.isArray(report.preserved) ? report.preserved : [];
@@ -647,8 +668,15 @@ function createUpdater(options) {
     load();
     if (state.supported && (state.pendingSync || (state.auto && (!state.lastAttempt || now() - state.lastAttempt >= INTERVAL_MS)))) await check(true);
   }
+  function noteRuntimeAcked() {
+    // v258：主进程热替换销账后同步红点——marker 已被 ack 清除时立即撤下（publish 内
+    // 重算 restartRequired/markerAt/markerVersion 并推送），不等下一轮 tick；marker
+    // 仍在（如 inject-main.cjs 待重启）则保持不动。
+    if (state.restartRequired === fs.existsSync(markerFile)) return;
+    publish();
+  }
   refreshLocal();
-  return { request, tick, status: () => ({ ...state, busy }) };
+  return { request, tick, status: () => ({ ...state, busy }), noteRuntimeAcked };
 }
 
 async function runAutoCommand(argv) {

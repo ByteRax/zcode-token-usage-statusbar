@@ -196,6 +196,67 @@ test("legacy marker obeys startup time boundary and supports old acknowledgement
   assert.equal((await markerCommand(f.runtime, "--ack-restart", { _loadedAt: Date.now() - 1000 })).cleared, false);
   assert.equal((await markerCommand(f.runtime, "--ack-restart", {})).cleared, true);
 });
+test("hot-loaded modules clear a marker written after process start", async (t) => {
+  const f = fixture(t); const marker = path.join(f.runtime, ".plugin-restart-required");
+  const loadedAt = Date.now() - 5000;
+  await markerCommand(f.runtime, "--record-restart", { hashes: { "quota-client.cjs": "qc1", "model-puller.cjs": "mp1" } });
+  const loaded = { _loadedAt: loadedAt, "quota-client.cjs": "qc1", "model-puller.cjs": "mp1" };
+  assert.equal((await markerCommand(f.runtime, "--ack-restart", loaded)).cleared, false);   // 无热证据：启动快照早于 marker
+  loaded._hotLoadedAt = { "quota-client.cjs": Date.now(), "model-puller.cjs": Date.now() };
+  assert.equal((await markerCommand(f.runtime, "--ack-restart", loaded)).cleared, true);
+  assert.equal(fs.existsSync(marker), false);
+});
+test("partial or weak hot evidence keeps the marker byte-identical", async (t) => {
+  const f = fixture(t); const marker = path.join(f.runtime, ".plugin-restart-required");
+  const loadedAt = Date.now() - 5000;
+  await markerCommand(f.runtime, "--record-restart", { hashes: { "quota-client.cjs": "qc1", "inject-main.cjs": "im1" } });
+  const before = fs.readFileSync(marker, "utf8");
+  // loader 条目不参与热销账：即便 digest 匹配也不能靠热时间戳清整单
+  const withLoader = { _loadedAt: loadedAt, "quota-client.cjs": "qc1", "inject-main.cjs": "im1",
+    _hotLoadedAt: { "quota-client.cjs": Date.now(), "inject-main.cjs": Date.now() } };
+  assert.equal((await markerCommand(f.runtime, "--ack-restart", withLoader)).cleared, false);
+  assert.equal(fs.readFileSync(marker, "utf8"), before);
+  // digest 不匹配（热加载的不是 marker 记录的字节）：保留
+  const foreign = { _loadedAt: loadedAt, "quota-client.cjs": "qc2", "inject-main.cjs": "im1",
+    _hotLoadedAt: { "quota-client.cjs": Date.now() } };
+  assert.equal((await markerCommand(f.runtime, "--ack-restart", foreign)).cleared, false);
+  // 热时间戳早于 marker 创建（热更后又来了新同步）：保留
+  const createdAt = JSON.parse(before).createdAt;
+  const tooOld = { _loadedAt: loadedAt, "quota-client.cjs": "qc1", "inject-main.cjs": "im1",
+    _hotLoadedAt: { "quota-client.cjs": (createdAt - 1) * 1000 } };
+  assert.equal((await markerCommand(f.runtime, "--ack-restart", tooOld)).cleared, false);
+  // 非数值/布尔时间戳：保留
+  const weird = { _loadedAt: loadedAt, "quota-client.cjs": "qc1", "inject-main.cjs": "im1",
+    _hotLoadedAt: { "quota-client.cjs": true, "inject-main.cjs": "1719999999999" } };
+  assert.equal((await markerCommand(f.runtime, "--ack-restart", weird)).cleared, false);
+  assert.equal(fs.readFileSync(marker, "utf8"), before);
+});
+test("stale hot stamps keep the marker even without loader entries", async (t) => {
+  const f = fixture(t); const marker = path.join(f.runtime, ".plugin-restart-required");
+  const loadedAt = Date.now() - 5000;
+  await markerCommand(f.runtime, "--record-restart", { hashes: { "quota-client.cjs": "qc1", "model-puller.cjs": "mp1" } });
+  const before = fs.readFileSync(marker, "utf8");
+  const createdAt = JSON.parse(before).createdAt;
+  // 全部条目都可热换（无 inject-main 条目短路）：一个过期戳即整单保留
+  const loaded = { _loadedAt: loadedAt, "quota-client.cjs": "qc1", "model-puller.cjs": "mp1",
+    _hotLoadedAt: { "quota-client.cjs": (createdAt - 1) * 1000, "model-puller.cjs": Date.now() } };
+  assert.equal((await markerCommand(f.runtime, "--ack-restart", loaded)).cleared, false);
+  assert.equal(fs.readFileSync(marker, "utf8"), before);
+});
+test("published pending-install still requires a post-publication process start", async (t) => {
+  const f = fixture(t); const marker = path.join(f.runtime, ".plugin-restart-required");
+  const now = Date.now();
+  fs.writeFileSync(marker, JSON.stringify({
+    createdAt: now / 1000 - 3, state: "pending-install",
+    installation: { asar: "/x/app.asar", entryHash: "h" }, publishedAt: now - 1000,
+    hashes: { "quota-client.cjs": "qc1" },
+  }));
+  const loaded = { _loadedAt: now - 5000, "quota-client.cjs": "qc1", _hotLoadedAt: { "quota-client.cjs": now } };
+  assert.equal((await markerCommand(f.runtime, "--ack-restart", loaded)).cleared, false);   // 热证据不绕过安装意图门控
+  loaded._loadedAt = now + 5000;
+  assert.equal((await markerCommand(f.runtime, "--ack-restart", loaded)).cleared, true);   // 真重启后按 digest 正常销账
+  assert.equal(fs.existsSync(marker), false);
+});
 test("concurrent record and stale ack never lose an unmatched notification", async (t) => {
   const f = fixture(t); const marker = path.join(f.runtime, ".plugin-restart-required");
   await markerCommand(f.runtime, "--record-restart", { hashes: { "inject-main.cjs": "old" } });

@@ -34,13 +34,23 @@ for (const name of ["inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs
   try { loadedHashes[name] = createHash("sha256").update(fs.readFileSync(path.join(HERE, name))).digest("hex"); }
   catch (e) { LOG("startup fingerprint unavailable:", name, e.message); }
 }
-function acknowledgeRestart() {
+function acknowledgeRestart(done) {
   const helper = path.join(HERE, "runtime_lock.py");
-  if (!fs.existsSync(helper)) return;
-  execFile(readCfg().python_path || (process.platform === "win32" ? "python" : "python3"),
-    [helper, "--ack-restart", HERE, JSON.stringify(loadedHashes)],
-    { windowsHide: true, timeout: 15000, maxBuffer: 65536 },
-    (error) => { if (error) LOG("restart acknowledgement failed:", error.message); });
+  const finish = () => {
+    if (typeof done === "function") { try { done(); } catch (e) { LOG("restart ack callback failed:", e.message); } }
+  };
+  if (!fs.existsSync(helper)) { finish(); return Promise.resolve(); }
+  return new Promise((resolve) => {
+    execFile(readCfg().python_path || (process.platform === "win32" ? "python" : "python3"),
+      [helper, "--ack-restart", HERE, JSON.stringify(loadedHashes)],
+      { windowsHide: true, timeout: 15000, maxBuffer: 65536 },
+      (error) => {
+        if (error) LOG("restart acknowledgement failed:", error.message);
+        // v258：可选回调——热替换完成后等销账落定再广播状态（红点即时撤下）。
+        finish();
+        resolve();
+      });
+  });
 }
 
 function readCfg() {
@@ -728,8 +738,9 @@ const hotTickMs = readCfg().hot_reload === true ? 2000 : 5000;
 setInterval(() => {
   const cfg = readCfgCached();
   if (!residentAllowed()) stopResident();
-  if (cfg.hot_reload === false) return;
-  hotReloadIfChanged();
+    if (cfg.hot_reload === false) return;
+    hotReloadIfChanged();
+    hotReloadMainModules();   // v258：六个主进程 .cjs 子模块同拍热换（mtime 轮询，与 renderer 资产同节奏）
   try {
     const m = fs.statSync(ZUSAGE).mtimeMs;
     if (overlayMtimeKnown && m !== zusageMtime && pyRes) {
@@ -772,36 +783,56 @@ function pushPluginState(wc, state) {
 /* ack 必须先于更新器初始化：createUpdater 会在创建瞬间快照 marker 状态并作为首帧
  * 推送——若 ack 后跑，已清除的「待重启」会在重启后的第一分钟被误报（实测 2026-11-01）。 */
 acknowledgeRestart();
-try {
-  const { createUpdater } = require("./plugin-updater.cjs");
-  pluginUpdater = createUpdater({ runtime: HERE, home: app.getPath("home"),
-    resourcesPath: process.resourcesPath, executable: process.execPath,
-    notify: (state) => webContents.getAllWebContents().forEach((wc) => pushPluginState(wc, state)) });
-} catch (e) {
-  delete loadedHashes["plugin-updater.cjs"];
-  delete loadedHashes["plugin-release.cjs"];
-  delete loadedHashes["plugin-storage.cjs"];
-  LOG("plugin updater unavailable:", e.message);
+/* v258：初始化提炼为可重入函数——同名热替换循环（文件尾 hotReloadMainModules）复用
+ * 同一套装配代码重建实例；require 失败时模块级变量保留旧实例，行为与首装失败一致。 */
+function initPluginUpdater() {
+  try {
+    const prevState = pluginUpdater && typeof pluginUpdater.status === "function" ? pluginUpdater.status() : null;
+    const { createUpdater } = require("./plugin-updater.cjs");
+    pluginUpdater = createUpdater({ runtime: HERE, home: app.getPath("home"),
+      resourcesPath: process.resourcesPath, executable: process.execPath,
+      initialState: prevState,
+      notify: (state) => webContents.getAllWebContents().forEach((wc) => pushPluginState(wc, state)),
+      /* v258：安装同步落盘且 busy 释放后先把变更模块热换进内存并销账 marker，再让更新器
+       * 发布终态——已热加载的模块不再要求重启，⚙ 红点零闪烁（G3）。 */
+      onRuntimeSynced: async () => { await hotReloadMainModules(); },
+    });
+    return pluginUpdater;
+  } catch (e) {
+    pluginUpdater = null;
+    delete loadedHashes["plugin-updater.cjs"];
+    delete loadedHashes["plugin-release.cjs"];
+    delete loadedHashes["plugin-storage.cjs"];
+    LOG("plugin updater unavailable:", e.message);
+    return null;
+  }
 }
+initPluginUpdater();
 
 /* ---------- v179 自动压缩阈值引擎补丁：默认关。开启后启动时按 ENGINE_TARGETS 的
  * SHA256 白名单给 <resources>/glm/zcode.cjs 打阈值改道补丁（fail-open/fail-closed
  * 语义详见 engine-patch.cjs 头注）。补丁冷生效（引擎子进程下次 spawn 起用，已运行
  * 会话保持旧阈值）；阈值数值走 autocompact.json 热生效（引擎每轮决策读该文件）。
  * 关闭开关=还原引擎字节。加载失败只少该功能，不拖垮主链。 */
-try {
-  const { createEnginePatcher } = require("./engine-patch.cjs");
-  enginePatcher = createEnginePatcher({
-    runtime: HERE,
-    resourcesPath: process.resourcesPath,
-    appVersion: app.getVersion(),   // issue #191：引擎 sha 漂移时按桌面 build 判"引擎被单独热更"
-    isEnabled: () => readCfgCached().auto_compact_patch !== false,   // v188：缺省开（验收反馈），显式 false 关闭
-    log: (...a) => LOG("[engine-patch]", ...a),
-  });
-  enginePatcher.syncStartup();
-} catch (e) {
-  LOG("engine patcher unavailable:", e.message);
+function initEnginePatcher() {
+  try {
+    const { createEnginePatcher } = require("./engine-patch.cjs");
+    enginePatcher = createEnginePatcher({
+      runtime: HERE,
+      resourcesPath: process.resourcesPath,
+      appVersion: app.getVersion(),   // issue #191：引擎 sha 漂移时按桌面 build 判"引擎被单独热更"
+      isEnabled: () => readCfgCached().auto_compact_patch !== false,   // v188：缺省开（验收反馈），显式 false 关闭
+      log: (...a) => LOG("[engine-patch]", ...a),
+    });
+    enginePatcher.syncStartup();   // 幂等：已 applied 且引擎未变时只重读字节设状态，不重复写盘
+    return enginePatcher;
+  } catch (e) {
+    enginePatcher = null;
+    LOG("engine patcher unavailable:", e.message);
+    return null;
+  }
 }
+initEnginePatcher();
 
 /* ---------- v229 宿主路径解析（额度 / 模型拉取共用，issue #205）：主进程 env 没有
  * ZCODE_*（宿主只注入 CLI 子进程），数据目录迁移（setting.json dataBaseDir）后
@@ -840,26 +871,51 @@ function resolveHostQuotaPaths() {
  * monitor 端点 → 归一化 → 快照 quota 字段。独立模块，加载失败只少额度不拖垮主链
  * （overlay 收不到 quota 字段即隐藏 chip）。凭据只在 quota-client 进程内存流转；
  * 诊断只记 status/HTTP code/错误摘要，token 与请求头绝不进日志。 */
-try {
-  const { createQuotaClient } = require("./quota-client.cjs");
-  const quotaPaths = resolveHostQuotaPaths();
-  const QUOTA_SECRETS = path.join(HERE, "quota-secrets.json");
-  quotaClient = createQuotaClient({
-    ...quotaPaths,
-    secretsPath: QUOTA_SECRETS,
-    quotaEnabled,
-    resetEnabled: resetBadgeEnabled,
-    resetList: true,   // v135：bigmodel 族并行查网页控制台列表端点（近 7 天过期卡 + 上次重置）
+/* ---------- v96 额度客户端（BigModel/Z.ai 个人编码套餐）：解密宿主 OAuth 凭据 →
+ * monitor 端点 → 归一化 → 快照 quota 字段。独立模块，加载失败只少额度不拖垮主链
+ * （overlay 收不到 quota 字段即隐藏 chip）。凭据只在 quota-client 进程内存流转；
+ * 诊断只记 status/HTTP code/错误摘要，token 与请求头绝不进日志。
+ * v258：装配提炼为 createQuotaClientInstance()（热替换循环复用）；凭据目录 watcher
+ * 一次注册（initQuotaWatchers），回调现读模块级 quotaClient——热替换实例无需重建
+ * watcher，重绑自动生效；disposeQuotaSubsystem 供退出与清理。 */
+const QUOTA_SECRETS = path.join(HERE, "quota-secrets.json");
+let quotaWatchers = [];   // 全部凭据目录 fs.watch 句柄
+let quotaCredDebounce = 0;
+let quotaInited = false;
+let quotaWatchGeneration = 0;   // disposeQuotaSubsystem 递增：让在途的 5s 重试定时器不再复活 watcher
+function createQuotaClientInstance() {
+  try {
+    const { createQuotaClient } = require("./quota-client.cjs");
+    const quotaPaths = resolveHostQuotaPaths();
+    quotaClient = createQuotaClient({
+      ...quotaPaths,
+      secretsPath: QUOTA_SECRETS,
+      quotaEnabled,
+      resetEnabled: resetBadgeEnabled,
+      resetList: true,   // v135：bigmodel 族并行查网页控制台列表端点（近 7 天过期卡 + 上次重置）
 
-    log: (...a) => LOG("[quota]", ...a),
-    onUpdate: () => {   // 刷新开始/结算及解冻时同步源状态与最近成功快照
-      broadcastPluginState();
-      if (!lastGoodPayload) return;
-      const withQuota = Object.assign({}, lastGoodPayload, { quota: quotaClient.view() });
-      for (const wc of webContents.getAllWebContents()) pushOnce(wc, withQuota);
-    },
-  });
+      log: (...a) => LOG("[quota]", ...a),
+      onUpdate: () => {   // 刷新开始/结算及解冻时同步源状态与最近成功快照
+        broadcastPluginState();
+        if (!lastGoodPayload || !quotaClient) return;   // dispose 在途 settle 竞窗：旧实例回调到已置空引用
+        const withQuota = Object.assign({}, lastGoodPayload, { quota: quotaClient.view() });
+        for (const wc of webContents.getAllWebContents()) pushOnce(wc, withQuota);
+      },
+    });
+    return quotaPaths;
+  } catch (e) {
+    quotaClient = null;   // 热换路径旧实例已 dispose：不留僵尸引用（冷启动本就是 null）
+    delete loadedHashes["quota-client.cjs"];
+    LOG("quota client unavailable:", e.message);
+    return null;
+  }
+}
+function initQuotaWatchers(quotaPaths) {
   /* 监听实际凭据与 builtin/personal 目录（原子替换文件也能收到），配置变更重判归属并解冻。 */
+  const generation = quotaWatchGeneration;
+  const retryWatch = (watchQuotaCredentials) => setTimeout(() => {
+    if (generation === quotaWatchGeneration) watchQuotaCredentials();
+  }, 5000);
   const quotaWatchDirs = new Map();
   for (const [file, dir] of [[quotaPaths.credsPath, quotaPaths.credsDir],
     [quotaPaths.customCfgPath, quotaPaths.customCfgDir], [quotaPaths.builtinCfgPath, quotaPaths.builtinCfgDir]]) {
@@ -868,13 +924,10 @@ try {
     const filePath = /^(?:[a-z]:[\\/]|\\\\)/i.test(file) ? path.win32 : path.posix;
     quotaWatchDirs.get(dir).add(filePath.basename(file));
   }
-  let quotaCredDebounce = 0;
   for (const [dir, names] of quotaWatchDirs) {
-    let watcher = null;
     const watchQuotaCredentials = () => {
-      if (watcher) return;
       try {
-        watcher = fs.watch(dir, (ev, f) => {
+        const watcher = fs.watch(dir, (ev, f) => {
           if (f && !names.has(String(f))) return;
           clearTimeout(quotaCredDebounce);
           quotaCredDebounce = setTimeout(() => {
@@ -884,39 +937,59 @@ try {
           }, 300);
         });
         watcher.on("error", () => {
+          quotaWatchers = quotaWatchers.filter((w) => w !== watcher);
           try { watcher.close(); } catch (e) { }
-          watcher = null;
-          setTimeout(watchQuotaCredentials, 5000);
+          retryWatch(watchQuotaCredentials);
         });
-      } catch (e) { setTimeout(watchQuotaCredentials, 5000); }
+        quotaWatchers.push(watcher);
+      } catch (e) { retryWatch(watchQuotaCredentials); }
     };
     watchQuotaCredentials();
   }
   setInterval(() => {   // 兜底：not_configured 低频重探/退避到点补拉（活跃时 handlePayload 也会 tick）
     if (hasWindows() && quotaDataEnabled()) syncQuotaProviders();
   }, 60000);
-} catch (e) {
-  delete loadedHashes["quota-client.cjs"];
-  LOG("quota client unavailable:", e.message);
 }
+function initQuotaSubsystem() {
+  if (quotaInited) return;
+  quotaInited = true;
+  const quotaPaths = createQuotaClientInstance();
+  if (quotaPaths) initQuotaWatchers(quotaPaths);
+}
+function disposeQuotaSubsystem() {
+  quotaWatchGeneration += 1;   // 取消在途 watcher 重试定时器（退出瞬间触发不再重建）
+  clearTimeout(quotaCredDebounce);
+  for (const watcher of quotaWatchers) { try { watcher.close(); } catch (e) { } }
+  quotaWatchers = [];
+  if (quotaClient) quotaClient.dispose();
+}
+initQuotaSubsystem();
 
 /* ---------- v129 模型拉取：自定义供应商 /models 一键拉取并写回 provider_config.json。
- * 独立模块独立 try：拉取失败只少该功能，不拖垮额度链与主泵。 */
+ * 独立模块独立 try：拉取失败只少该功能，不拖垮额度链与主泵。
+ * v258：装配提炼为 initModelPuller()——decryptValue 来自 quota-client（本文件注入，
+ * model-puller 不自带），热替换 quota-client 后必须重建本实例以换用新解密函数。 */
 let modelPuller = null;
-try {
-  const { createModelPuller } = require("./model-puller.cjs");
-  const { decryptValue, deriveCipherKey } = require("./quota-client.cjs");
-  const pullPaths = resolveHostQuotaPaths();
-  modelPuller = createModelPuller({
-    customCfgPath: pullPaths.customCfgPath,
-    credentialsPath: pullPaths.credsPath,   // v229：迁移后 ~/.zcode/v2/credentials.json 是宿主不读的死目录（issue #205）
-    decryptValue: (enc) => decryptValue(enc, deriveCipherKey(process.env)),   // 套餐源：内存解密，同额度链纪律
-    cachePath: path.join(__dirname, "model-efforts-cache.json"),   // #236：档位索引落运行目录（pricing-cache.json 同款先例），跨重启复用
-    log: (...a) => LOG("[model-pull]", ...a),
-  });
-} catch (e) {
-  LOG("model puller unavailable:", e.message);
+function initModelPuller() {
+  try {
+    const { createModelPuller } = require("./model-puller.cjs");
+    const { decryptValue, deriveCipherKey } = require("./quota-client.cjs");
+    const pullPaths = resolveHostQuotaPaths();
+    modelPuller = createModelPuller({
+      customCfgPath: pullPaths.customCfgPath,
+      credentialsPath: pullPaths.credsPath,   // v229：迁移后 ~/.zcode/v2/credentials.json 是宿主不读的死目录（issue #205）
+      decryptValue: (enc) => decryptValue(enc, deriveCipherKey(process.env)),   // 套餐源：内存解密，同额度链纪律
+      cachePath: path.join(__dirname, "model-efforts-cache.json"),   // #236：档位索引落运行目录（pricing-cache.json 同款先例），跨重启复用
+      log: (...a) => LOG("[model-pull]", ...a),
+    });
+    return modelPuller;
+  } catch (e) {
+    modelPuller = null;
+    LOG("model puller unavailable:", e.message);
+    return null;
+  }
 }
+initModelPuller();
 
 /* ---------- v228 pending 更新包预注入（macOS）：ZCode 桌面自更新是 Squirrel.Mac 整包
  * 替换——更新 zip 下载到 ~/Library/Caches/<updaterCacheDirName>/pending/，sha512 只在
@@ -1013,11 +1086,137 @@ function patchPendingZip() {
  * repository 一律取自主进程读到的注册渠道，绝不接收页面提供的地址。缓存落运行目录
  * plugin-notes-cache.json（身份键 flavor|repo|version，TTL 1h，非发布素材不进分发链）。 */
 let releaseNotes = null;
-try {
-  const { createNotesService, createNotesCache } = require("./plugin-release.cjs");
-  releaseNotes = createNotesService({ cache: createNotesCache({ file: path.join(HERE, "plugin-notes-cache.json") }) });
-} catch (e) {
-  LOG("release notes unavailable:", e.message);
+function initReleaseNotes() {
+  try {
+    const { createNotesService, createNotesCache } = require("./plugin-release.cjs");
+    releaseNotes = createNotesService({ cache: createNotesCache({ file: path.join(HERE, "plugin-notes-cache.json") }) });
+    return releaseNotes;
+  } catch (e) {
+    releaseNotes = null;
+    LOG("release notes unavailable:", e.message);
+    return null;
+  }
+}
+initReleaseNotes();
+
+/* ---------- v258 主进程子模块热替换（G3：更新除 inject-main.cjs 引导壳以外的主进程
+ * 模块后零重启生效、零红点闪烁）。冷文件名单里 overlay/turn-stats/zusage 之外的六个
+ * .cjs 在这里按 mtime 轮询热换：语法预检（读到半截/被 Windows 独占锁住则跳过本轮）→
+ * dispose 旧实例 → 清 require.cache → 重建实例（依赖方向：quota-client 先落，重装
+ * modelPuller 的 decryptValue 注入；release/storage 变更联动重建 updater 与 notes）→
+ * 刷新 loadedHashes 与 _hotLoadedAt → acknowledgeRestart 销账 → 广播状态。
+ * watcher/定时器一次注册：回调全部现读模块级实例变量，热换不需要也不得重建
+ * （quotaWatchers 重复注册会翻倍）。engine-patch 热换后 syncStartup 幂等，
+ * 已 applied 且引擎未变不重复写盘。inject-main.cjs 自身不在热换面内：
+ * 它持有 ipcMain/web-contents-created 注册与常驻泵，只能随客户端完全重启生效。 */
+const HOT_MAIN_MODULES = ["plugin-storage.cjs", "plugin-release.cjs", "plugin-updater.cjs", "quota-client.cjs", "model-puller.cjs", "engine-patch.cjs"];
+const hotModuleMtimes = {};
+for (const name of HOT_MAIN_MODULES) {
+  try { hotModuleMtimes[name] = fs.statSync(path.join(HERE, name)).mtimeMs; } catch (e) { }
+}
+let hotMainBusy = false;
+function hotReloadMainModules() {
+  if (hotMainBusy) return Promise.resolve(false);   // 与在途热替换/销账互斥：顺延下一 tick
+  hotMainBusy = true;
+  let done;
+  const finished = new Promise((resolve) => { done = resolve; });
+  let result;
+  try {
+    result = hotReloadMainModulesOnce();
+  } catch (e) {
+    LOG("hot reload failed:", (e && e.message) || e);
+    hotMainBusy = false;
+    done(false);
+    return finished;
+  }
+  Promise.resolve(result)
+    .then((v) => done(v), (e) => { LOG("hot reload failed:", (e && e.message) || e); done(false); })
+    .then(() => { hotMainBusy = false; });
+  return finished;
+}
+function hotReloadMainModulesOnce() {
+  const changed = [], mtimes = {};
+  for (const name of HOT_MAIN_MODULES) {
+    let m = 0;
+    try { m = fs.statSync(path.join(HERE, name)).mtimeMs; } catch (e) { continue; }
+    if (hotModuleMtimes[name] === m) continue;
+    changed.push(name);
+    mtimes[name] = m;   // 启动时缺文件后来补齐的也会进 changed：热换路径顺带恢复缺失的子系统
+  }
+  if (!changed.length) return Promise.resolve(false);
+  const sources = {};
+  for (const name of changed) {
+    try {
+      const src = fs.readFileSync(path.join(HERE, name), "utf8");
+      new Function(src);   // 语法预检：半截文件/独占锁（EBUSY/EPERM）留到下轮重试
+      sources[name] = src;
+    } catch (e) {
+      LOG("hot reload skipped (unreadable or invalid):", name, (e && e.message) || e);
+      return Promise.resolve(false);   // 不更新 mtime：保留旧实例，下轮重试
+    }
+  }
+  if (changed.some((n) => n === "plugin-updater.cjs" || n === "plugin-release.cjs" || n === "plugin-storage.cjs") &&
+      pluginUpdater && pluginUpdater.status().busy) {
+    LOG("hot reload deferred: updater busy");   // 旧更新链还持有旧实例闭包，等 busy=false 再换
+    return Promise.resolve(false);
+  }
+  const purge = (name) => { try { delete require.cache[require.resolve("./" + name)]; } catch (e) { } };
+  const ok = {};   // 模块名 -> 重建是否成功：销账与 mtime 只认成功换入者（防「语法过、装配炸」被销账成已加载）
+  if (changed.includes("quota-client.cjs")) {
+    if (quotaClient) { try { quotaClient.dispose(); } catch (e) { } }   // watcher 保留（回调现读模块级变量）
+    purge("quota-client.cjs");
+    ok["quota-client.cjs"] = !!createQuotaClientInstance();
+    purge("model-puller.cjs");
+    ok["model-puller.cjs"] = !!initModelPuller();   // 联动重建：decryptValue 注入须跟随新 quota-client
+    if (ok["quota-client.cjs"]) syncQuotaProviders();   // 新实例从零起步：立即重建 provider 绑定并触发首轮查询
+  } else if (changed.includes("model-puller.cjs")) {
+    purge("model-puller.cjs");
+    ok["model-puller.cjs"] = !!initModelPuller();
+  }
+  if (changed.includes("engine-patch.cjs")) {
+    purge("engine-patch.cjs");
+    ok["engine-patch.cjs"] = !!initEnginePatcher();
+  }
+  const updaterGroup = changed.filter((n) => n === "plugin-updater.cjs" || n === "plugin-release.cjs" || n === "plugin-storage.cjs");
+  if (updaterGroup.length) {
+    // updater 顶层解构捕获 release/storage 导出（CJS 加载期绑定）：单改依赖时也必须
+    // 让 updater 自身重求值，否则新实例仍绑旧导出、ok 传播与销账都会说谎。
+    for (const name of ["plugin-updater.cjs", ...updaterGroup]) purge(name);
+    ok["plugin-release.cjs"] = !!initReleaseNotes();
+    ok["plugin-updater.cjs"] = !!initPluginUpdater();
+    if (updaterGroup.includes("plugin-storage.cjs")) ok["plugin-storage.cjs"] = ok["plugin-updater.cjs"];
+  }
+  const succeeded = changed.filter((name) => ok[name]);
+  const failed = changed.filter((name) => !ok[name]);
+  if (!succeeded.length) {
+    LOG("hot reload failed, keeping old instances:", failed.join(", "));   // mtime 保留旧值：下轮重试
+    return Promise.resolve(false);
+  }
+  const hotAt = Date.now();
+  const prevHot = Object.assign({}, loadedHashes._hotLoadedAt);
+  for (const key of Object.keys(prevHot)) {
+    if (!failed.includes(key)) prevHot[key] = hotAt;   // 多轮热换：刷新既有已热加载条目的证据戳，使其跨过合并 marker 的 createdAt
+  }
+  for (const name of succeeded) {
+    hotModuleMtimes[name] = mtimes[name];
+    try { loadedHashes[name] = createHash("sha256").update(sources[name]).digest("hex"); } catch (e) { }
+    prevHot[name] = hotAt;
+  }
+  loadedHashes._hotLoadedAt = prevHot;
+  LOG("hot reloaded main modules:", succeeded.join(", ") + (failed.length ? "（失败保留待重启: " + failed.join(", ") + "）" : ""));
+  if (failed.length) {
+    // 部分失败：不销账（marker 原样保留，重启兜底仍在），只广播让 UI 用上已换入的模块
+    broadcastPluginState();
+    return Promise.resolve(true);
+  }
+  // 销账先行完成再广播：runtime_lock ack_restart 凭 _hotLoadedAt+digest 清除已热加载
+  // 条目的 marker；noteRuntimeAcked（新更新器）同步撤下红点，旧更新器自然衰减到下轮。
+  return acknowledgeRestart(() => {
+    if (pluginUpdater && typeof pluginUpdater.noteRuntimeAcked === "function") {
+      try { pluginUpdater.noteRuntimeAcked(); } catch (e) { }
+    }
+    broadcastPluginState();
+  }).then(() => true);
 }
 function modelPullerProviderOk(v) {
   return typeof v === "string" && v.length > 0 && v.length <= 160 && !/[\x00-\x1f\x7f]/.test(v);
@@ -1720,6 +1919,10 @@ if (typeof module === "object" && module && module.exports) {
     targetByIdentity: () => targetByIdentity,
     parseGitPorcelain, parseShortstat, queryGitStatus, gitTick, discoverChildRepos, detectGitOp,
     ipcState: () => ({ activeSid, windowWorkspaces, windowTasks, scopeBindings, remoteEvidence }),
+    hotReloadMainModules,   // v258：热替换循环测试入口
+    disposeQuotaSubsystem,   // v258：退出清理测试入口（watcher 关闭断言）
+    quotaWatcherCount: () => quotaWatchers.length,
+    hotModuleState: () => ({ mtimes: { ...hotModuleMtimes }, busy: hotMainBusy, hashes: { ...loadedHashes } }),
   };
 }
 
@@ -1731,7 +1934,7 @@ app.on("before-quit", () => {
   clearTimeout(debounceTimer);
   clearTimeout(pendingZipDebounce);
   stopResident();
-  if (quotaClient) quotaClient.dispose();
+  disposeQuotaSubsystem();   // v258：连同凭据目录 watcher 一并释放（此前 watcher 从不关闭）
   if (dbWatcher) { try { dbWatcher.close(); } catch (e) { } dbWatcher = null; }
   if (pendingZipWatcher) { try { pendingZipWatcher.close(); } catch (e) { } pendingZipWatcher = null; }
   if (pendingZipTimer) { clearInterval(pendingZipTimer); pendingZipTimer = null; }

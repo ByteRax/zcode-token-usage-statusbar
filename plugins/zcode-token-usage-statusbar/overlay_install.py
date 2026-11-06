@@ -806,13 +806,19 @@ def ensure_renderer_bridge(pi, quiet_monitor=False):
     return result
 
 
-def _bridge_notice(out, result, pi):
+def _bridge_notice(out, result, pi, quiet_hook=False):
     """桥补装的用户可见提示（issue #67：受保护目录不再静默失效）。pending 收敛
     由监控在客户端退出后自动完成，不再发文字提醒；权限不足在目标持续不可写期间
-    每次会话提示（故障提示保留）。已有提示时不覆盖——桥只是增强，优先级低于主链。"""
+    每次会话提示（故障提示保留）。已有提示时不覆盖——桥只是增强，优先级低于主链。
+    v258 quiet_hook（SessionStart 自动链，注入行在位）：静态桥缺席/打不上不影响
+    统计主链——readFiberPaneScope fiber 兜底 + 渲染端运行时合成桥接手，DB 轮询
+    保底，skipped-unknown/skipped-error（含受保护目录权限）一律静默放行，只在
+    stderr 留既有诊断行；显式 /install-overlay CLI（quiet_hook=False）保留原提示。"""
     if "systemMessage" in out:
         return out
     status = (result or {}).get("status")
+    if quiet_hook and status in ("skipped-unknown", "skipped-error"):
+        return out
     if status == "skipped-error" and result.get("permission"):
         # Windows 上 os.access 看不见 ACL（目录恒报可写），权限判定按真实
         # PermissionError 而不是 target_writable()，否则 Program Files 场景静默
@@ -920,7 +926,7 @@ def run_hook():
                 # 续守新世代，issue #228）：自愈只兜其余情形（含 launch 失败的下轮补拉），
                 # 不在 publish 当轮重复拉起。
                 _revive_orphan_pending(pi)
-            return _bridge_notice(out, bridge, pi)   # 待重启提醒由状态条齿轮红点承载，不再注入会话文字
+            return _bridge_notice(out, bridge, pi, quiet_hook=True)   # 待重启提醒由状态条齿轮红点承载，不再注入会话文字；桥缺席由运行时动态桥兜底（v258）
         # 未注入：自动安装始终开启，失败只保留故障提示（补丁排定/受保护目录/请重试）
         monitor_env = {name: os.environ.get(name) for name in
                        ("ZUSAGE_NO_MONITOR", "ZUSAGE_MONITOR_QUIET")}
@@ -938,7 +944,7 @@ def run_hook():
         if ok:
             bridge = ensure_renderer_bridge(pi, quiet_monitor=True)
             clear_markers(runtime)
-            return _bridge_notice(out, bridge, pi)
+            return _bridge_notice(out, bridge, pi, quiet_hook=True)   # 自动安装刚成功（注入行在位）：同上，桥缺席静默交给运行时兜底
         from restart_notice import PREFIX
         waiting = _pending_install_waiting(pi)
         if waiting:

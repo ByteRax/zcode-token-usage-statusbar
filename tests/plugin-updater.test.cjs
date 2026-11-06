@@ -113,6 +113,29 @@ test("manual update rechecks then uses official installer and synchronizes insta
   assert.equal(f.updater.status().phase, "updated"); assert.equal(f.updater.status().restartRequired, true);
   assert.deepEqual(f.updater.status().skipped, ["zusage.py"]);
 });
+test("runtime sync callback fires once when a marker is present and cannot fail the update", async (t) => {
+  const f = fixture(t); f.set({ changed: ["quota-client.cjs"] });
+  let synced = 0, boom = false;
+  const u = createUpdater({ ...f.options, onRuntimeSynced: async () => { synced += 1; if (boom) throw new Error("hot swap failed"); } });
+  await u.request({ action: "update" });
+  assert.equal(synced, 1);   // 冷变更写了 marker：宿主热换钩子被 await
+  assert.equal(u.status().phase, "updated");
+  assert.equal(u.status().restartRequired, true);   // fixture 不销账：红点保持（真实链路由 onRuntimeSynced 清除）
+  boom = true;
+  f.set({ version: "1.2.0" });   // 追平后 check 会判 current 跳过安装：二轮给新版本再触发
+  await u.request({ action: "update" });
+  assert.equal(synced, 2);   // 二轮更新再次触发
+  assert.equal(u.status().phase, "updated");   // 回调抛异常被吞，更新链不受损
+});
+test("runtime sync callback is skipped when no cold marker was written", async (t) => {
+  const f = fixture(t); f.set({ changed: [] });
+  let synced = 0;
+  const u = createUpdater({ ...f.options, onRuntimeSynced: async () => { synced += 1; } });
+  await u.request({ action: "update" });
+  assert.equal(f.syncs.length, 1);
+  assert.equal(synced, 0);   // 无冷变更无 marker：不触发热换扫描（避免无谓 ack 子进程）
+  assert.equal(u.status().phase, "updated");
+});
 test("manual update on the local directory channel leaves checking as soon as the version is known, not only after install completes", async (t) => {
   const f = fixture(t);
   await f.updater.request({ action: "update" });
@@ -491,3 +514,32 @@ test("createUpdater spawns the Helper bundle for its CLI children on macOS", asy
   assert.ok(spawned.length >= 1, "CLI 子进程应至少被拉起一次");
   for (const line of spawned) assert.equal(line, helper, "CLI 子进程必须以 Helper bundle 运行");
 });
+test("onRuntimeSynced runs after busy is released and initialState preserves post-update state across hot-swap", async (t) => {
+  const f = fixture(t);
+  f.set({ changed: ["plugin-updater.cjs"], skipped: ["zusage.py"] });
+  const marker = path.join(f.runtime, ".plugin-restart-required");
+  let busyInsideHook = null, replacement = null;
+  const published = [];
+  let currentUpdater = null;
+  const u = createUpdater({
+    ...f.options,
+    notify: (s) => published.push(s),
+    onRuntimeSynced: async () => {
+      busyInsideHook = currentUpdater.status().busy;
+      fs.unlinkSync(marker);   // 模拟 hotReloadMainModules + acknowledgeRestart 当场清掉 marker
+      replacement = createUpdater({ ...f.options, initialState: currentUpdater.status() });
+    },
+  });
+  currentUpdater = u;
+  published.length = 0;
+  await u.request({ action: "update" });
+  assert.equal(busyInsideHook, false, "onRuntimeSynced 必须在 busy=false 释放后调用，以便 updater 自身可当场热换");
+  assert.equal(u.status().restartRequired, false, "marker 在 onRuntimeSynced 中被销账后，终态不得再报告 restartRequired=true");
+  assert.equal(published.some((s) => s.restartRequired === true), false, "全过程不得向 UI 推送任何一帧 restartRequired=true（零红点闪烁）");
+  assert.ok(replacement, "模拟热换重建的新 updater 实例应已创建");
+  assert.equal(replacement.status().phase, "updated", "initialState 应保留刚完成的 updated 阶段");
+  assert.equal(replacement.status().latestVersion, "1.1.0");
+  assert.deepEqual(replacement.status().skipped, ["zusage.py"]);
+  assert.equal(replacement.status().restartRequired, false);
+});
+
