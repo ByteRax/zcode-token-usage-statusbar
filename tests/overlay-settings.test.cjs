@@ -1577,3 +1577,20 @@ test('relaunch click refuses to fire and explains while the capability marker is
   assert.match(statusEl.textContent, /旧版本/);
   assert.equal(timers.length, 0, '不挂确认态/回执超时定时器');
 });
+
+
+test('overlay roots opt out of the host titlebar drag region (v254: settings ✕ clicks were swallowed by native drag)', () => {
+  // 宿主多视图顶部有 48px [app-region:drag] 拖拽条（app.asar 实证）；面板 top:8px 时头部 ✕
+  // 落在条内，Electron 拖拽区穿透未显式 no-drag 的覆盖层 → 点击被窗口拖拽吞掉。
+  assert.ok(
+    source.includes('.zusage-panel,.tip,.zu-mp-ov,.zu-compact-dlg,.zusage-exc{-webkit-app-region:no-drag}'),
+    '浮层根必须显式 no-drag，否则宿主标题栏拖拽区穿透面板头部',
+  );
+  // 规则覆盖面依赖这些类名真实挂在浮层根上：类名改名时此处先红
+  assert.ok(source.includes('panel.className = "panel zu-settings zusage-panel"'));
+  assert.ok(source.includes('subPanel.className = "panel zu-sub-pop zusage-panel"'));
+  assert.ok(source.includes('tip.className = "tip zusage-tip-root"'));
+  assert.ok(source.includes('ov.className = "zu-mp-ov"'));
+  assert.ok(source.includes('dlg.className = "zu-compact-dlg"'));
+  assert.ok(source.includes('excBubble.className = "zusage-exc"'));
+});
