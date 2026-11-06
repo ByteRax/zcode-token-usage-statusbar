@@ -13,6 +13,7 @@
 - `ensure_deployed` 发布被系统拒绝（Windows 客户端运行中持有 asar 不带 FILE_SHARE_DELETE、目标目录 ACL 只读）时返回 `replace-failed` 并移交**完整 stage**，不得静默吞成 skipped：调用方转 `patch_install.publish_external_pending`（TMP + sidecar + monitor 收尾链）或删除 stage，不能留原地；`PermissionError` 单独标 `permission`（Windows `os.access` 看不见 ACL，不能靠 `target_writable` 判权限）；入口清扫超时残留的崩溃孤儿 stage（新 stage 处在移交窗口内绝不能删）；用户 remove 待收尾时让位，锁内拒绝以 install 覆盖 pending remove。
 - 对本机 asar 的整文件哈希断言先检测并剥离本项目 BRIDGE 标记再校验（已部署机器必失配）。`tests/test_renderer_bridge.py` 用最新登记项的 names 推导夹具，不写死混淆名。
 - 旧 conversation-only 补丁须升级安装并完全重启，不启用共享记录回退。
+- **运行时动态桥兜底（v258）**：静态桥缺席（表外客户端版本、桥未部署、Windows replace-failed）时由渲染端自愈，`app.asar` 不再因此重打包。两层：①`overlay.js` 的 `readFiberPaneScope`——宿主自写 `data-session-id` 节点沿 React fiber 上溯（限深 24、撞外层会话/分栏根止步、多候选歧义拒绝）取 SessionPane 组件帧的 `paneId/workspacePath/workspaceIdentity/remoteSessionId`（JSX 属性名不被压缩，AUTO_PANE_PARAM 同源证据；侧聊按 `tabId` 全串匹配），校验与静态属性分支逐字同规；`detOwnerOf`/`sidePaneKeyOf` 有 fiber 侧聊识别的同文副本（分属两个不相交的切片 eval 区间，两处须同步改）。②`turn-stats.js` 运行时合成 BRIDGE_TEMPLATE v2 同契约三访问器——registry 靠一次性 `Map.prototype` 探针按条目形状（layer.entries/acquire + stale/refCount）捕获后立即还原本体方法，另有 `installRuntimeBridge(map)` 注入口；key/topic 公式按 AUTO_NAMES 钉死形状，宿主改公式则静默失配降级 DB（不崩溃）。fail-closed 语义不变：fiber/合成桥只补「桥缺席」，静态属性校验失败（version="1" 但属性非法）不回落；远端身份白名单、跨 pane 隔离、歧义拒绝全部沿用。`overlay_install.py` 的 hook 自动链（quiet_hook）对 skipped-unknown/skipped-error（含受保护目录权限）静默放行交由兜底接手，显式 CLI 安装保留提权提示。
 
 ## 2. 窗口与分栏归属（inject-main + overlay）
 
