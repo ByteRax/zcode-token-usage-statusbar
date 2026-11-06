@@ -18,7 +18,7 @@
 - VM 切片测试：切片桩必须捕获 sandbox 对象（Node 域闭包看不到 vm 全局）；依赖源（stages 等）与预注入状态须在切片前拼接好；切片区间内不得引用区间外变量。`tests/overlay-port-patches.test.cjs` 等按源码切片计数断言的测试，改被切片源码时同步核对断言。
 - stub Element：`hasAttribute/getAttribute` 对 `data-pane-id`/`data-session-id` 的特判走 pid/sid；`querySelector` 未注册选择器返回新建空元素而非 null；`className` setter 同步 classList；夹具 `createTextNode` 产物必须可被遍历（getAttribute/children 可用）。vm 跨上下文比较用 `[...arr]`/`{...obj}` 展开。
 - mock 断言：`execFile` 参数是整串 argv，用 join 后整串判断（`Array.includes` 匹配不到 `--cached`）；mock `executeJavaScript` 返回的 JSON 字符串会被 `Array.isArray` 判死，先解析。
-- `tests/overlay-bridge.test.cjs` 的 `.zu-live` 替身只被"原地改字"路径更新，整条重渲染（innerHTML 重写）后不同步——新增重渲染功能先检查该替身是否覆盖。
+- `tests/overlay-bridge.test.cjs` 的 `.zu-live` 替身每次 `querySelector` 都从 `innerHTML` 回放 class/text，整条重渲染后重新查询即反映新状态；但它按串回放而非事件式同步，持有旧引用不重查仍会陈旧——新增重渲染功能先确认断言走重新查询。
 
 ## 3. 假绿灯反模式
 

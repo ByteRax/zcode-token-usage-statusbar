@@ -240,6 +240,12 @@
   /* ---------- 多实例注册表（v61.1）：每个分屏 pane 一个条实例 ---------- */
   var instances = [];   // spawnInstance 返回的 api：{pid, attach, render, ...}
   var nextSlot = 0;     // 实例序号；0 号保留兼容 id（#zusage-bar，泵热更新按它清理）
+  /* v268：粘性升级 window 级跨代际——热重载/重启后新实例直接继承上一代轮表。
+   * v255 的代际内粘性在新代际首帧恰逢 serve 空闲回收/重启窗口（帧缺 speed_history）时
+   * 为空，速度 Tooltip 闪回旧版整卡（用户实报「现在变成老版本了」；本地 json 链实测
+   * 1268 轮/197 会话产出正常，serve pid 数分钟内 8576→11362 证实频繁回收重启）。
+   * 轮表是历史统计，分钟级陈旧可接受（v257 同取舍），下一帧成功即覆盖。 */
+  var lastSpeedHistory = (typeof window !== "undefined" && window.__zusageSpdSticky) || null;
   function renderAll(rebuildPanels) {
     if (rateTipFor) showRateTip(rateTipFor);
     for (var i = 0; i < instances.length; i++) {
@@ -351,6 +357,20 @@
   }
   window.__zusageUpdate = function (d) {
     if (stale() || !d || d.error) return;
+    /* v255：粘性统一轮表。常驻 serve 重启/空闲回收时主进程会回退到一次性 json，
+     * 那一帧可能缺 speed_history；沿用本代最近一份有界轮表，速度 Tooltip 不再
+     * 在 V2 与旧版整卡之间闪回。首帧尚无轮表（旧 Python/查询失败）才回退旧布局。 */
+    if (d.speed_history && d.speed_history.turns && d.speed_history.turns.length) {
+      lastSpeedHistory = d.speed_history;
+      try { window.__zusageSpdSticky = lastSpeedHistory; } catch (_) { }
+      FATAL.spdFrame = { t: Date.now(), has: 1, sticky: 0, turns: d.speed_history.turns.length };   // v257 帧级诊断
+    } else {
+      var stickyHit = !d.speed_history && typeof lastSpeedHistory !== "undefined" && lastSpeedHistory;
+      if (stickyHit) d.speed_history = lastSpeedHistory;
+      /* v257 帧级诊断：缺字段/None 帧记 0，粘性补帧记 1——再出现象时 diag 直接可定位是
+       * 数据链缺帧还是粘性未建立，不再靠截图反推。原地更新不替换对象（FATAL 共享引用）。 */
+      FATAL.spdFrame = { t: Date.now(), has: 0, sticky: stickyHit ? 1 : 0, turns: 0 };
+    }
     if (d.remote_today) for (var key in d.remote_today) {
       if (d.remote_today[key] && typeof d.remote_today[key] === "object") {
         remoteTodayCache[key] = d.remote_today[key];
@@ -846,6 +866,37 @@
   tpsTip.className = "tip zusage-quota-tip zusage-tps-tip";
   tpsTip.style.cssText = rateTip.style.cssText;
   document.body.appendChild(tpsTip);
+  /* v263：Tab 切换共用（全量 tip 的 speedTabActivate 同款问题——生成中浮层每 tick
+   * 重编会替换按钮 DOM，click 落到共同祖先），提前到 pointerdown 同步生效。 */
+  function tpsTabActivate(e) {
+    var el = tpsTipFor;   // hideTpsTip 会清 tpsTipFor，回调目标先取
+    if (!el) return;
+    var fb = e.target && e.target.closest && e.target.closest(".zu-sv-focus");
+    var t0 = el.__zuT;
+    if (fb && t0 && t0.speedSel) {
+      e.stopPropagation();
+      t0.speedSel.focus = t0.speedSel.focus === "full" ? "" : "full";
+      t.speedHover = 0;
+      tpsTip.__zuTipSig = "";
+      showTpsTip(el);
+      return;
+    }
+    var tab = e.target && e.target.closest && e.target.closest(".zu-sv-tab");
+    var t = el.__zuT;
+    if (tab && t && t.speedSel) {
+      var grp = tab.getAttribute("data-sv-group"), val = tab.getAttribute("data-sv-val");
+      if ((grp === "range" && SPD_RANGES.indexOf(val) >= 0) ||
+          (grp === "period" && SPD_PERIODS.indexOf(val) >= 0)) {
+        e.stopPropagation();
+        t.speedSel[grp] = val;
+        t.speedHover = -1;
+        /* v272：维度切换移除，dim 恒 time */
+        tpsTip.__zuTipSig = "";
+        showTpsTip(el);
+      }
+    }
+  }
+  tpsTip.addEventListener("pointerdown", tpsTabActivate);
   tpsTip.addEventListener("click", function (e) {
     var el = tpsTipFor;   // hideTpsTip 会清 tpsTipFor，回调目标先取
     if (!el) return;
@@ -859,7 +910,39 @@
       e.stopPropagation();
       hideTpsTip();
       if (el.__zuOpenSub) el.__zuOpenSub();
+      return;
     }
+    /* v255：V2 双 Tab 走 tpsTip 本体委托（全量 tip 的同款逻辑），只改 chip 数据包，
+     * 由 showTpsTip 签名幂等重编；不新增全局监听、不重建浮层。
+     * v263：鼠标路径提前到 pointerdown（见 tpsTabActivate），此处保留键盘与兜底。 */
+    tpsTabActivate(e);
+  });
+  /* 柱 hover/键盘焦点：委托重建整卡，信息卡随串自愈，不额外挂逐柱监听。 */
+  function tpsSpeedPick(idx) {
+    var t = tpsTipFor && tpsTipFor.__zuT;
+    if (!t || t.speedHover === idx) return;
+    t.speedHover = idx;
+    tpsTip.__zuTipSig = "";
+    showTpsTip(tpsTipFor);
+  }
+  tpsTip.addEventListener("mouseover", function (e) {
+    var col = e.target && e.target.closest && e.target.closest(".zu-sc-col");
+    if (col) tpsSpeedPick(parseInt(col.getAttribute("data-i"), 10) || 0);
+  });
+  tpsTip.addEventListener("mouseout", function (e) {
+    var col = e.target && e.target.closest && e.target.closest(".zu-sc-col");
+    if (!col) return;
+    var to = e.relatedTarget;
+    if (to && to.closest && to.closest(".zu-sc-col")) return;
+    tpsSpeedPick(-1);
+  });
+  tpsTip.addEventListener("focusin", function (e) {
+    var col = e.target && e.target.closest && e.target.closest(".zu-sc-col");
+    if (col) tpsSpeedPick(parseInt(col.getAttribute("data-i"), 10) || 0);
+  });
+  tpsTip.addEventListener("focusout", function (e) {
+    var col = e.target && e.target.closest && e.target.closest(".zu-sc-col");
+    if (col && !(e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest(".zu-sc-col"))) tpsSpeedPick(-1);
   });
   var TPS_HIDE_DELAY_MS = 180, tpsHideTimer = 0;
   function scheduleTpsHide() {
@@ -877,7 +960,11 @@
     var html = el.__zuT.buildTip(el.__zuT);
     /* v155：内容含秒表（0.1s 步进），悬停中若随心跳整片重建，「打开设置」/子代理行的
      * 点击会落在被替换掉的旧节点上丢失——显示中内容变化时冻结当前内容、只更新位置，
-     * 鼠标移开后下一次悬停按新签名重建（与 gitTip 的「滚动中不重建」同一取舍方向）。 */
+     * 鼠标移开后下一次悬停按新签名重建（与 gitTip 的「滚动中不重建」同一取舍方向）。
+     * v255 曾对 V2 整卡放行以让 Tab/柱 hover 即时重绘——但生成中签名每 tick 变化、
+     * 悬停中每 tick 整片重建同样把 mousedown 命中的 Tab 换掉（全量 tip 的 v263 同型
+     * 根因）。v263 改回统一冻结：交互路径（Tab/维度/柱 hover）本就先清 __zuTipSig
+     * 再进来，清空即放行重编；心跳路径悬停中冻结，与全量 tip 的 mouseInBar 冻结同取舍。 */
     var frozen = tpsTip.__zuTipSig !== html && tpsTip.__zuTipSig && tpsTip.style.display === "block";
     if (!frozen && tpsTip.__zuTipSig !== html) {   // 签名幂等（同 quotaTip）：内容没变不重建
       tpsTip.innerHTML = html;
@@ -964,7 +1051,7 @@
    * GLOBAL=全局发放卡 / DIRECT=直发卡为实测推断，仅作区分展示不作计费语义宣称） */
   var RST_GRANT_LABELS = { GLOBAL: L("全局", "Global"), DIRECT: L("直发", "Direct") };
   function rstGrantText(v) { return RST_GRANT_LABELS[v] || v || ""; }
-  /* 徽标三档色阈值唯一事实源：resetBadgeView 判档与 tooltip 图例共用，避免文案漂移。
+  /* 徽标三档色阈值唯一事实源：resetBadgeView 判档、tooltip 图例与到期行着色共用，避免漂移。
    * dotCls 的色值定义在 rstTipHTML 注入的 <style>（含 .zu-light 浅色组） */
   var RST_BANDS = [
     { cls: "zu-rst-crit", max: 30 * 60 * 1000, dotCls: "zu-rdot-crit",
@@ -974,6 +1061,13 @@
     { cls: "zu-rst-calm", max: Infinity, dotCls: "zu-rdot-calm",
       text: L(">3 小时", ">3 h") },
   ];
+  /* 按剩余时间判档（RST_BANDS 末档 max=Infinity 恒命中）；tooltip 到期行着色与徽标同源 */
+  function rstBandClsOf(rem) {
+    for (var bi = 0; bi < RST_BANDS.length; bi++) {
+      if (rem <= RST_BANDS[bi].max) return RST_BANDS[bi].cls;
+    }
+    return RST_BANDS[RST_BANDS.length - 1].cls;
+  }
   function rstTipHTML(v) {
     var esc = function (s) { return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); };
     /* rst-row 独立类名：rstTip 与 quotaTip 共用 zusage-quota-tip 类，<style> 是全局作用域，
@@ -983,6 +1077,9 @@
       ".zusage-quota-tip .rst-group .rst-fam{color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
       ".zusage-quota-tip .rst-row .rst-fam{color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
       ".zusage-quota-tip .rst-row.rst-exp{color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      /* 到期行按剩余时间档位着色（用户规格 2026-11-05）：色值同图例色点，>3 小时行维持默认色 */
+      ".zusage-quota-tip .rst-row.zu-rst-mid{color:#f5b944}" +
+      ".zusage-quota-tip .rst-row.zu-rst-crit{color:#ff6b57}" +
       ".zusage-quota-tip .rst-h{font-weight:600;color:var(--color-tooltip-foreground,#fafafa);margin:0 0 7px}" +
       ".zusage-quota-tip .rst-legend{display:flex;flex-wrap:wrap;gap:4px 14px;margin:0 0 6px;color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
       ".zusage-quota-tip .rst-lg{display:inline-flex;align-items:center;gap:5px}" +
@@ -993,6 +1090,8 @@
       ".zusage-quota-tip.zu-light .zu-rdot-calm{background:#0f9d6c}" +
       ".zusage-quota-tip.zu-light .zu-rdot-mid{background:#b6791a}" +
       ".zusage-quota-tip.zu-light .zu-rdot-crit{background:#d8482f}" +
+      ".zusage-quota-tip.zu-light .rst-row.zu-rst-mid{color:#b6791a}" +
+      ".zusage-quota-tip.zu-light .rst-row.zu-rst-crit{color:#d8482f}" +
       '.zusage-quota-tip .rst-note{margin-top:8px;padding-top:7px;border-top:1px solid var(--color-popover-border,var(--color-border,transparent));color:var(--color-tooltip-tag-foreground,#a6a6a6);overflow-wrap:anywhere}' +
       ".zusage-quota-tip .rst-howto{margin-left:6px;background:none;border:1px solid var(--color-border,rgba(255,255,255,.14));border-radius:999px;color:inherit;font:inherit;font-size:.85em;line-height:1.5;padding:0 9px;cursor:pointer}" +
       ".zusage-quota-tip .rst-howto:hover{color:var(--color-tooltip-foreground,#fafafa);border-color:var(--color-border-hover,rgba(255,255,255,.24))}</style>" +
@@ -1022,7 +1121,9 @@
         rows.forEach(function (card) {
           var prefix = rstGrantText(card.grantType);
           if (prefix) prefix += " ";
-          out += '<div class="rst-row' + (card.expired ? " rst-exp" : "") + '">' +
+          /* 未过期行按剩余档位着色（<30 分红 / 30 分–3 时黄）；>3 小时档与过期行维持默认色 */
+          var bandCls = card.expired ? "" : rstBandClsOf(card.time - now);
+          out += '<div class="rst-row' + (card.expired ? " rst-exp" : bandCls === "zu-rst-calm" ? "" : " " + bandCls) + '">' +
             esc(prefix + card.label + " · " + (card.expired ? L("已过期 ", "Expired ") : L("到期 ", "Expires ")) + qTimeS(card.time)) + "</div>";
         });
         var lastRow = [];
@@ -1065,7 +1166,9 @@
       cards.sort(function (a, b) { return a.expired - b.expired || a.time - b.time; });
       if (!cards.length) out += '<div class="rst-row">' + L("暂无重置卡", "no reset cards") + "</div>";
       cards.forEach(function (card) {
-        out += '<div class="rst-row' + (card.expired ? " rst-exp" : "") + '">' +
+        /* 未过期行按剩余档位着色（同上 listData 路径） */
+        var bandCls = card.expired ? "" : rstBandClsOf(card.time - now);
+        out += '<div class="rst-row' + (card.expired ? " rst-exp" : bandCls === "zu-rst-calm" ? "" : " " + bandCls) + '">' +
           esc(card.label + " · " + (card.expired ? L("已过期 ", "Expired ") : L("到期 ", "Expires ")) + qTimeS(card.time)) + "</div>";
       });
       }
@@ -2169,6 +2272,507 @@
              speedValue: stats.tokenRate, speedIsEstimated: false, speedSource: "real",
              noteText: L("本轮实际速度", "Actual speed this turn") };
   }
+  /* ---------- v254 生成速度 Tooltip 重构：双 Tab / 维度 / 16 柱 / hover 五字段 ----------
+   * 数据面 = 快照顶层 speed_history（zusage 真实库有界扫描，单一轮表；短键 + 索引表）。
+   * 全部筛选与聚合都在纯函数里完成，不新增 IPC/定时器/DOM 监听：Tab/dim/柱 hover 经
+   * tip 本体既有事件委托改实例闭包状态，再由 speedTipRebuild 重编整卡串（签名幂等）。
+   * 旧 speedCardHTML/speedChartHTML/speedSegsOf 逐字保留供精简 chip 与旧快照回退。 */
+  var SPD_RANGES = ["recent", "session", "project", "all"];
+  var SPD_PERIODS = ["recent", "today", "week", "month", "all"];
+  var SPD_BARS_MAX = 16;
+  function SPD_L(zh, en) { return L(zh, en); }
+  function spdEsc(s) {
+    return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+  function spdNum(x) { return typeof x === "number" && isFinite(x) ? x : 0; }
+  function spd2(v) { return (v < 10 ? "0" : "") + v; }
+  function spdDate(ms) { return new Date(ms); }
+  /* 紧凑时间胶囊：11/05 14:48 – 16:06（跨日/跨年补日期），完整值走 title */
+  function spdRangeText(a, b) {
+    if (!a || !b) return SPD_L("暂无数据", "no data");
+    var d1 = spdDate(a), d2 = spdDate(b);
+    /* v273：智能紧凑——同日/跨日不带年，跨月或跨年两端带年 */
+    var p = function (d, wy) {
+      return (wy ? d.getFullYear() + "/" : "") + spd2(d.getMonth() + 1) + "/" + spd2(d.getDate());
+    };
+    var hm = function (d) { return spd2(d.getHours()) + ":" + spd2(d.getMinutes()); };
+    var sameDay = d1.getFullYear() === d2.getFullYear() && d1.getMonth() === d2.getMonth() && d1.getDate() === d2.getDate();
+    var crossMonth = d1.getFullYear() !== d2.getFullYear() || d1.getMonth() !== d2.getMonth();
+    return sameDay ? p(d1, crossMonth) + " " + hm(d1) + " – " + hm(d2)
+      : p(d1, crossMonth) + " " + hm(d1) + " – " + p(d2, true) + " " + hm(d2);
+  }
+  function spdFull(ms) {
+    var d = spdDate(ms);
+    return d.getFullYear() + "-" + spd2(d.getMonth() + 1) + "-" + spd2(d.getDate()) + " " +
+      spd2(d.getHours()) + ":" + spd2(d.getMinutes()) + ":" + spd2(d.getSeconds());
+  }
+  /* 柱底短标签：一轮一柱时只留 时分，日/月桶沿用各自粒度；
+   * 完整年月日时分秒只进 hover 信息卡，不塞进 30px 柱宽。 */
+  function spdShort(ms, unit) {
+    var d = spdDate(ms);
+    if (unit === "turn") return spd2(d.getHours()) + ":" + spd2(d.getMinutes());
+    return spdLabel(ms, unit, true);
+  }
+  function spdRangeFull(a, b) {
+    return (a ? spdFull(a) : "—") + " – " + (b ? spdFull(b) : "—");
+  }
+  /* 轮表解包：t 是相对上一轮完成时刻的 delta（升序还原），s/msl 是索引表下标。
+   * 任何字段缺失/非法都丢弃该轮，不让畸形远端/旧快照污染统计。 */
+  function spdUnpack(h) {
+    if (!h || !h.turns || typeof h.turns.length !== "number" || !h.sids || !h.snames) return null;
+    var sids = h.sids, snames = h.snames, pids = h.pids || [], mnames = h.mnames || [];
+    var out = [], prev = 0;
+    for (var i = 0; i < h.turns.length; i++) {
+      var r = h.turns[i];
+      if (!r || typeof r.t !== "number" || !isFinite(r.t)) continue;
+      var t = prev + r.t;
+      prev = t;
+      var outv = spdNum(r.out), ms = spdNum(r.ms);
+      if (!(outv > 0 && ms > 0) || !(typeof r.s === "number" && sids[r.s])) continue;
+      var models = [];
+      if (r.msl && typeof r.msl.length === "number") {
+        for (var j = 0; j < r.msl.length; j++) {
+          var p = r.msl[j];
+          if (p && typeof p[0] === "number" && mnames[p[0]] && spdNum(p[1]) > 0)
+            models.push({ m: mnames[p[0]], o: spdNum(p[1]) });
+        }
+      }
+      var meta = pids[r.s] || ["", ""];
+      out.push({ s: r.s, sid: sids[r.s], sname: snames[r.s] || sids[r.s],
+        pid: meta[0] || "", pname: meta[1] || sids[r.s],
+        t: t, b: spdNum(r.b) || t, out: outv, ms: ms,
+        i: spdNum(r.i), o: spdNum(r.o), n: spdNum(r.n), models: models,
+        c: (typeof r.c === "number" && isFinite(r.c)) ? r.c : null, cf: !!r.cf });
+    }
+    return { turns: out, sid: h.sid || "", source: h.source || "", truncated: !!h.truncated };
+  }
+  /* 统一聚合器：任何桶/柱/均值都走 Σ有效输出 ÷ Σ生成窗口，绝不逐轮算术平均。
+   * 每柱携带 hover 五字段所需完整元数据（时间区间/速度/模型/Token/请求数/费用完整性）。 */
+  function spdAggregate(rows) {
+    var out = 0, ms = 0, i = 0, o = 0, n = 0, turns = 0, models = {}, c = 0, priced = false, costFull = true;
+    var t0 = Infinity, t1 = 0, last = 0;
+    for (var k = 0; k < rows.length; k++) {
+      var r = rows[k];
+      out += r.out; ms += r.ms; i += r.i; o += r.o; n += r.n; turns++;
+      if (r.b < t0) t0 = r.b;
+      if (r.t > t1) t1 = r.t;
+      if (r.t >= last) last = r.t;
+      for (var j = 0; j < r.models.length; j++) {
+        var m = r.models[j];
+        models[m.m] = (models[m.m] || 0) + m.o;
+      }
+      if (r.c !== null) { c += r.c; priced = true; costFull = costFull && r.cf; }
+      else costFull = false;
+    }
+    if (!ms) return null;
+    var ml = [];
+    for (var name in models) if (models[name] > 0) ml.push({ m: name, o: models[name] });
+    ml.sort(function (a, b) { return b.o - a.o; });
+    return { v: out / (ms / 1000), out: out, ms: ms, i: i, o: o, n: n, turns: turns,
+      models: ml.slice(0, 8), modelCount: ml.length, t0: isFinite(t0) ? t0 : 0, t1: t1,
+      last: last, c: priced ? c : null, costFull: priced && costFull };
+  }
+  /* 本地自然时间桶键：hour/day/week/month/quarter/year，轮归属只看完成时刻。 */
+  function spdBucket(t, unit) {
+    var d = spdDate(t), y = d.getFullYear(), mo = d.getMonth(), day = d.getDate();
+    if (unit === "hour") return new Date(y, mo, day, d.getHours()).getTime();
+    if (unit === "day") return new Date(y, mo, day).getTime();
+    if (unit === "week") return new Date(y, mo, day - d.getDay()).getTime();
+    if (unit === "month") return new Date(y, mo, 1).getTime();
+    if (unit === "quarter") return new Date(y, Math.floor(mo / 3) * 3, 1).getTime();
+    return new Date(y, 0, 1).getTime();
+  }
+  function spdNextBucket(t, unit) {
+    var d = spdDate(t), y = d.getFullYear(), mo = d.getMonth(), day = d.getDate();
+    if (unit === "hour") return new Date(y, mo, day, d.getHours() + 1).getTime();
+    if (unit === "day") return new Date(y, mo, day + 1).getTime();
+    if (unit === "week") return new Date(y, mo, day - d.getDay() + 7).getTime();
+    if (unit === "month") return new Date(y, mo + 1, 1).getTime();
+    if (unit === "quarter") return new Date(y, Math.floor(mo / 3) * 3 + 3, 1).getTime();
+    return new Date(y + 1, 0, 1).getTime();
+  }
+  function spdLabel(t, unit, short) {
+    var d = spdDate(t), md = spd2(d.getMonth() + 1) + "/" + spd2(d.getDate());
+    if (unit === "hour") return short ? spd2(d.getHours()) + ":00" : md + " " + spd2(d.getHours()) + ":00";
+    if (unit === "day") return md;
+    if (unit === "week") return md;
+    if (unit === "month") return d.getFullYear() + "/" + spd2(d.getMonth() + 1);
+    if (unit === "quarter") return d.getFullYear() + " Q" + (Math.floor(d.getMonth() / 3) + 1);
+    return String(d.getFullYear());
+  }
+  function spdPeriodPrefix(p) {
+    return p === "today" ? SPD_L("今天", "Today") : p === "week" ? SPD_L("近 7 天", "Last 7 days")
+      : p === "month" ? SPD_L("本月", "This month") : p === "recent" ? SPD_L("最近", "Recent")
+      : SPD_L("历史", "History");
+  }
+  /* 20 种组合 + 3 维度的唯一入口。返回 {items, range, title, unit, dimension, notice}。
+   * items 每柱 = spdAggregate 结果 + {label, full, a, b}，空数据不补位、不显 0 t/s。 */
+  function spdAnalyze(h, sel) {
+    var u = spdUnpack(h);
+    if (!u) return null;
+    var range = sel.range, period = sel.period, now = Date.now();
+    /* v272：维度切换功能移除（用户裁定），图表恒按时间聚合；「项目」范围恢复当前项目
+     * 语义（否则与「全部」完全等价），四 Tab 递进：最近=当前会话 16 轮 / 会话=当前
+     * 会话全部 / 项目=当前项目全部会话 / 全部=全库，均按时间。 */
+    var dim = "time";
+    // paneSid 由调用点从本窗口/分栏可信身份注入（同一帧推给所有窗，绝不用帧里 sid）
+    var paneSid = sel.sid || "";
+    var panePid = "";
+    for (var pi = 0; pi < u.turns.length; pi++) if (u.turns[pi].sid === paneSid) { panePid = u.turns[pi].pid; break; }
+    var pool = u.turns, notice = "";
+    if (range === "session" || range === "recent") pool = pool.filter(function (r) { return r.sid === paneSid; });
+    else if (range === "project") pool = pool.filter(function (r) { return panePid && r.pid === panePid; });
+    // 全部 + 远端身份：本地库不能冒充远端历史，明确降级到本会话并提示
+    var remote = !!sel.remote;
+    if (remote && range === "all") { range = "session"; pool = pool.filter(function (r) { return r.sid === paneSid; }); notice = SPD_L("远端会话仅显示本会话历史", "Remote pane: local session history only"); }
+    if (u.truncated && !notice) notice = SPD_L("历史较长，仅统计最近可用轮次", "Long history: recent turns only");
+    var a = 0, b = 0;
+    var todayStart = new Date(now).setHours(0, 0, 0, 0);
+    var weekStart = todayStart - 6 * 86400000;
+    var monthStart = new Date(new Date(now).getFullYear(), new Date(now).getMonth(), 1).getTime();
+    if (period === "today") { a = todayStart; b = now; }
+    else if (period === "week") { a = weekStart; b = now; }
+    else if (period === "month") { a = monthStart; b = now; }
+    if (a) pool = pool.filter(function (r) { return r.t >= a && r.t <= b; });
+    // 范围「最近」先取该范围最近 16 个有效轮；时间「最近」再取 16（两者独立过滤）
+    if (range === "recent") pool = pool.slice(-SPD_BARS_MAX);
+    var items = [], unit = "", title = "", focusInfo = null;
+    if (period === "recent") {
+      pool = pool.slice(-SPD_BARS_MAX);
+      for (var i = 0; i < pool.length; i++) {
+        var agg = spdAggregate([pool[i]]);
+        /* v263：跨日首柱带两行标签（MM/DD + HH:mm）；首个柱无前参照不标日 */
+        var dayLabel = "";
+        if (i) {
+          var pd0 = spdDate(pool[i - 1].t), cd0 = spdDate(pool[i].t);
+          if (pd0.getMonth() !== cd0.getMonth() || pd0.getDate() !== cd0.getDate())
+            dayLabel = spd2(cd0.getMonth() + 1) + "/" + spd2(cd0.getDate());
+        }
+        if (agg) items.push(Object.assign(agg, { label: spdShort(pool[i].t, "turn"), dayLabel: dayLabel,
+          full: spdFull(pool[i].b) + " – " + spdFull(pool[i].t),
+          a: pool[i].b, b: pool[i].t, single: true }));
+      }
+      unit = "turn";
+      title = SPD_L("最近 " + items.length + " 轮 · 生成速度", "Last " + items.length + " turns · speed");
+    } else {
+      // 按时间：跨度决定粒度；今天恒按小时（含空桶），其余按跨度自动分档
+      if (pool.length) {
+        var lo = Infinity, hi = 0;
+        for (var q = 0; q < pool.length; q++) { if (pool[q].t < lo) lo = pool[q].t; if (pool[q].t > hi) hi = pool[q].t; }
+        var span = hi - lo;
+        if (period === "today") unit = "hour";
+        else if (period === "week" || period === "month") unit = "day";
+        else if (span <= 45 * 86400000) unit = "day";
+        else if (span <= 370 * 86400000) unit = "month";
+        else if (span <= 4 * 370 * 86400000) unit = "quarter";
+        else unit = "year";
+        var buckets = {}, bkeys = [];
+        for (var w = 0; w < pool.length; w++) {
+          var bk = spdBucket(pool[w].t, unit);
+          if (!buckets[bk]) { buckets[bk] = []; bkeys.push(bk); }
+          buckets[bk].push(pool[w]);
+        }
+        bkeys.sort(function (x, y) { return x - y; });
+        // 今天：00:00→当前小时全桶，无数据显空柱而非零速度；
+        // v273：有效桶 ≤3 且全桶 ≥4 时默认聚焦有效时段（speedSel.focus==="full" 切完整轴）
+        if (period === "today") {
+          bkeys = [];
+          for (var hr = 0; hr <= new Date(now).getHours(); hr++) bkeys.push(todayStart + hr * 3600000);
+          var fullKeys = bkeys.slice(0), realKeys = [];
+          for (var fk = 0; fk < fullKeys.length; fk++) if ((buckets[fullKeys[fk]] || []).length) realKeys.push(fullKeys[fk]);
+          if (sel.focus !== "full" && realKeys.length && realKeys.length <= 3 && fullKeys.length >= 4) bkeys = realKeys;
+          focusInfo = { canToggle: true, applied: bkeys.length !== fullKeys.length,
+            real: realKeys.length, total: fullKeys.length, unit: SPD_L("小时", "hours"),
+            hint: sel.focus === "full" ? SPD_L("仅显示有记录时段", "showing recorded hours only") : "" };
+        }
+        for (var bi = 0; bi < bkeys.length; bi++) {
+          var bk2 = bkeys[bi], rows = buckets[bk2] || [], bg = spdAggregate(rows);
+          var nb = spdNextBucket(bk2, unit);
+          items.push(bg ? Object.assign(bg, { label: spdLabel(bk2, unit, true), full: spdFull(bk2) + " – " + spdFull(Math.min(nb, now)), a: bk2, b: nb, single: false })
+            : { v: null, label: spdLabel(bk2, unit, true), full: spdFull(bk2) + " – " + spdFull(nb), a: bk2, b: nb, empty: true });
+        }
+      }
+      var unitName = { hour: SPD_L("每小时", "hourly"), day: SPD_L("每日", "daily"), week: SPD_L("每周", "weekly"),
+        month: SPD_L("每月", "monthly"), quarter: SPD_L("每季度", "quarterly"), year: SPD_L("每年", "yearly") }[unit] || SPD_L("每日", "daily");
+      var prefix = period === "today" ? SPD_L("今天", "Today") : period === "week" ? SPD_L("近 7 天", "Last 7 days")
+        : period === "month" ? SPD_L("本月", "This month") : SPD_L("历史", "History");
+      title = (range === "project" ? SPD_L("当前项目 · ", "Current project · ") : "") +
+        prefix + " · " + unitName + SPD_L("平均速度", " average speed");
+    }
+    var real = items.filter(function (x) { return !x.empty; });
+    var overall = spdAggregate(pool);
+    var spanA = a || (pool.length ? pool[0].b : 0);
+    var spanB = b || (pool.length ? pool[pool.length - 1].t : 0);
+    if (period === "all" && pool.length) { spanA = pool[0].b; spanB = pool[pool.length - 1].t; }
+    var peak = null, low = null, latest = null;
+    for (var z = 0; z < real.length; z++) {
+      if (!peak || real[z].v > peak.v) peak = real[z];
+      if (!low || real[z].v < low.v) low = real[z];
+      if (!latest || real[z].last > latest.last) latest = real[z];
+    }
+    /* v273：数据覆盖提示（真实桶计数，分母=窗口内已发生时段） */
+    var cov = "";
+    if (period === "today" && focusInfo) cov = SPD_L("有记录 " + focusInfo.real + "/" + focusInfo.total + " 小时",
+      focusInfo.real + "/" + focusInfo.total + " hours with data");
+    else if (period === "week" && real.length) cov = SPD_L("仅 " + real.length + "/7 天有记录",
+      "only " + real.length + "/7 days with data");
+    else if (period === "month" && real.length) cov = SPD_L("本月 " + real.length + "/" + spdDate(now).getDate() + " 天有记录",
+      real.length + "/" + spdDate(now).getDate() + " days this month");
+    /* v274：单点/双点稀疏时明确「不构成趋势」 */
+    if (cov && real.length && real.length <= 2)
+      cov += SPD_L(" · 暂无足够数据观察趋势", " · not enough data for a trend");
+    return { items: items, real: real, overall: overall, range: range, period: period, dim: "time",
+      dims: ["time"], title: title, unit: unit, spanA: spanA, spanB: spanB,
+      cov: cov, focus: focusInfo,
+      peak: peak, low: low, latest: latest, notice: notice, truncated: u.truncated };
+  }
+
+  function spdTabRow(group, list, cur, labels) {
+    var out = '<div class="zu-sv-tabs" data-sv-group="' + group + '">';
+    for (var i = 0; i < list.length; i++) {
+      out += '<button type="button" class="zu-sv-tab' + (list[i] === cur ? " on" : "") +
+        '" data-sv-group="' + group + '" data-sv-val="' + spdEsc(list[i]) + '"' +
+        (list[i] === cur ? ' aria-pressed="true"' : ' aria-pressed="false"') + '>' +
+        spdEsc(labels[list[i]]) + "</button>";
+    }
+    return out + "</div>";
+  }
+  /* 顶部：标题 + 日历胶囊（紧凑时间，title 全格式）。窄窗优先缩日期不挤 Tab。 */
+  function spdHeadHTML(an) {
+    var ico = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 11h18"/></svg>';
+    var short = spdRangeText(an.spanA, an.spanB);
+    return '<div class="zu-sv-head"><div class="zu-sv-title">' + spdEsc(SPD_L("生成速度", "Generation speed")) + "</div>" +
+      '<div class="zu-sv-range" title="' + spdEsc(spdRangeFull(an.spanA, an.spanB)) + '">' + ico +
+      '<span>' + spdEsc(short) + "</span></div></div>";
+  }
+  function spdFiltersHTML(an, sel) {
+    var rl = { recent: SPD_L("最近", "Recent"), session: SPD_L("会话", "Session"),
+      project: SPD_L("项目", "Project"), all: SPD_L("全部", "All") };
+    var pl = { recent: SPD_L("最近", "Recent"), today: SPD_L("今天", "Today"),
+      week: SPD_L("近 7 天", "7 days"), month: SPD_L("本月", "Month"), all: SPD_L("全部", "All") };
+    /* v273：统一筛选工具栏——范围居左、时间居右（margin-left:auto），与下方统计卡/
+     * 图表两缘对齐；窄窗 wrap 后时间组整体换行仍右对齐 */
+    return '<div class="zu-sv-filter"><span class="zu-sv-flabel">' + spdEsc(SPD_L("范围", "Scope")) + "</span>" +
+      spdTabRow("range", SPD_RANGES, an.range, rl) +
+      '<span class="zu-sv-time"><span class="zu-sv-flabel">' + spdEsc(SPD_L("时间", "Time")) + "</span>" +
+      spdTabRow("period", SPD_PERIODS, an.period, pl) + "</span>" +
+      (an.notice ? '<div class="zu-sv-notice">' + spdEsc(an.notice) + "</div>" : "") + "</div>";
+  }
+  /* 左统计卡：当前状态（实时估算与历史均值分离）/ 主均值 / 档位 / 峰值·最低·最新 */
+  function spdLeftHTML(an, live) {
+    var avg = an.overall ? an.overall.v : null;
+    var bd = avg != null ? tpsBand(avg) : null;
+    var liveTxt = live && typeof live.speedValue === "number" && isFinite(live.speedValue) && live.speedValue > 0
+      ? (live.speedValue % 1 ? live.speedValue.toFixed(1) : String(live.speedValue)) : "";
+    /* 实时状态（工具执行中/思考中/生成中）与历史均值分离：状态只作独立 note，
+     * 不再当整卡标题，避免「工具执行中 65.2 t/s」被误读成工具速度。 */
+    var spdLiveStatus = live && live.statusText ? live.statusText : "";
+    var main = avg != null ? (avg % 1 ? avg.toFixed(1) : String(avg)) : "—";
+    var fmtV = function (x) { return x == null ? "—" : (x.v % 1 ? x.v.toFixed(1) : String(x.v)); };
+    var stat = function (lb, x) {
+      var b2 = x && x.v != null ? tpsBand(x.v) : null;
+      return '<span class="zu-sl-stat"><i>' + spdEsc(lb) + "</i><b" + (b2 ? ' class="' + b2.cls + '"' : "") + ">" +
+        spdEsc(fmtV(x)) + "</b></span>";
+    };
+    /* v273：实时状态（工具执行中等）并入标题行右侧轻量标识，不再混在指标之间 */
+    return '<div class="zu-speed-left zu-sv-left"><div class="zu-sl-status">' +
+      '<span class="zu-sl-title">' + spdEsc(SPD_L("历史统计", "History")) + "</span>" +
+      (spdLiveStatus ? '<span class="zu-sl-sub">' + spdEsc(spdLiveStatus) + "</span>" : "") + "</div>" +
+      '<div class="zu-sl-body"><div class="zu-sl-k">' + spdEsc(SPD_L("平均速度", "Average speed")) + "</div>" +
+      '<div class="zu-sl-main"><span class="zu-sl-val' + (bd ? " " + bd.cls : " dim") + '">' + main +
+      '</span><small class="zu-sl-unit">t/s</small></div>' +
+      (bd ? '<div class="zu-speed-bandtag"><b class="' + bd.cls + '" style="font-weight:600">' +
+        spdEsc(tpsBandText(bd)) + "</b></div>" : "") +
+      /* v263：口径公式行删除（规格点名「删除大段统计口径文字」，语义由图例 ⓘ title 承载），
+       * 说明行统一为「历史统计 · 不含进行中请求」；实时状态/生成中估算仍独立成行。 */
+      (liveTxt ? '<div class="zu-sl-note">' + spdEsc(SPD_L("生成中估 ", "Generating est. ")) + liveTxt + " t/s</div>" : "") +
+      "</div>" +
+      '<div class="zu-sl-stats' + (an.real && an.real.length === 1 ? " zu-sl-solo" : "") + '">' + stat(SPD_L("峰值", "Peak"), an.peak) + stat(SPD_L("最低", "Low"), an.low) +
+      stat(SPD_L("最新", "Latest"), an.latest) + "</div></div>";
+  }
+  /* 柱 hover 五字段卡：时间（聚合桶显完整区间）/ 速度（档位色）/ 模型（多模型 N 种）/
+   * Token 总消耗（input 已含缓存、output 已含思考，不重复相加）/ 预估价格（缺失显暂无估价）。 */
+  /* v270：聚合桶区间同日压缩（右侧只补时分秒），跨日全量；配 CSS 换行兜底，
+   * 避免长区间被 nowrap 省略号截断（用户实报） */
+  function spdCompactRange(a, b) {
+    if (!a || !b) return spdFull(b || a || 0);
+    var d1 = spdDate(a), d2 = spdDate(b);
+    var hms = function (d) { return spd2(d.getHours()) + ":" + spd2(d.getMinutes()) + ":" + spd2(d.getSeconds()); };
+    if (d1.getFullYear() === d2.getFullYear() && d1.getMonth() === d2.getMonth() && d1.getDate() === d2.getDate())
+      return spdFull(a) + " – " + hms(d2);
+    return spdFull(a) + " – " + spdFull(b);
+  }
+  function spdCardHTML(item, hoverIdx, o) {
+    if (!(hoverIdx >= 0) || !item || item.empty) return "";
+    var bd = tpsBand(item.v);
+    var cls = "zu-sv-card" + (bd ? " " + bd.cls : "");
+    var modelTxt, modelFull;
+    if (!item.models || !item.models.length) {
+      modelTxt = SPD_L("未知模型", "Unknown model"); modelFull = modelTxt;
+    } else if (item.modelCount > 1 || item.models.length > 1) {
+      var n = item.modelCount || item.models.length;
+      modelTxt = SPD_L("多模型（" + n + " 种）", n + " models");
+      modelFull = item.models.slice(0, 4).map(function (m) { return m.m; }).join(", ") + (n > 4 ? " …" : "");
+    } else {
+      modelTxt = item.models[0].m; modelFull = modelTxt;
+    }
+    var tok = item.i + item.o;
+    var tokLine = (o && typeof o.fmtTok === "function" ? o.fmtTok(tok) : String(tok)) +
+      SPD_L(" token", " tokens");
+    var sub = SPD_L("（输入 ", " (in ") + (o && typeof o.fmtTok === "function" ? o.fmtTok(item.i) : String(item.i)) +
+      SPD_L(" · 输出 ", " · out ") + (o && typeof o.fmtTok === "function" ? o.fmtTok(item.o) : String(item.o)) + SPD_L("）", ")");
+    var cost;
+    if (!o || !o.fmtMoney) cost = '<span class="zu-sv-off">' + spdEsc(SPD_L("费用显示已关闭", "Cost display off")) + "</span>";
+    else if (item.c === null) cost = '<span class="zu-sv-off">' + spdEsc(SPD_L("暂无估价", "Estimate unavailable")) + "</span>";
+    else cost = spdEsc(o.fmtMoney(item.c)) + (!item.costFull ? '<i class="zu-sv-partial">' + spdEsc(SPD_L(" · 含兜底估价", " · partly estimated")) + "</i>" : "");
+    var timeVal = spdCompactRange(item.a, item.b);
+    return '<div class="' + cls + '" role="tooltip"><div class="zu-sv-crow"><span>' + spdEsc(SPD_L("时间", "Time")) +
+      '</span><b class="zu-sv-twrap" title="' + spdEsc(item.full) + '">' + spdEsc(timeVal) + "</b></div>" +
+      '<div class="zu-sv-crow"><span>' + spdEsc(SPD_L("速度", "Speed")) + '</span><b class="zu-sv-cval' +
+      (bd ? " " + bd.cls : "") + '">' + (item.v % 1 ? item.v.toFixed(1) : String(item.v)) + " t/s</b></div>" +
+      '<div class="zu-sv-crow"><span>' + spdEsc(SPD_L("模型型号", "Model")) + '</span><b title="' + spdEsc(modelFull) + '">' + spdEsc(modelTxt) + "</b></div>" +
+      '<div class="zu-sv-crow"><span>' + spdEsc(SPD_L("Token 总消耗", "Total tokens")) + '</span><b>' + spdEsc(tokLine) +
+      '<small>' + spdEsc(sub) + "</small></b></div>" +
+      '<div class="zu-sv-crow"><span>' + spdEsc(SPD_L("预估价格", "Est. cost")) + "</span><b>" + cost + "</b></div></div>";
+  }
+  /* v274：统一图表布局参数入口（§5.1）——柱宽/间距/稀疏化密度由此一处决定，
+   * 用数据密度驱动布局，不按 Tab 名写死。 */
+  function spdChartLayout(n) {
+    return {
+      colPitch: 30,                                   /* 每柱占位列宽（柱 14px + 两侧留白） */
+      spacerW: Math.max(240, n * 30 + 12),            /* plot 撑宽（少柱拉满容器、多桶横滚） */
+      xEvery: Math.max(1, Math.ceil(n / 6)),          /* X 轴标签稀疏化 */
+      valEvery: Math.max(1, Math.ceil(n / 8)),        /* 柱顶数值稀疏化（防 16 柱重叠） */
+      single: n === 1
+    };
+  }
+  /* 动态柱状图：细柱定宽居中、X 轴稀疏、Y 轴整洁刻度、无均值虚线。 */
+  function spdChartHTML(an, hoverIdx, o) {
+    var items = an.items, n = items.length;
+    var L = spdChartLayout(n);
+    /* v272：维度下拉移除；v273：数据覆盖提示 + 聚焦/完整轴切换按钮 */
+    var head = '<div class="zu-sc-head"><span class="zu-sc-title">' + spdEsc(an.title) + "</span>" +
+      (an.cov ? '<span class="zu-sc-cov">' + spdEsc(an.cov) + "</span>" : "") +
+      (an.focus && an.focus.canToggle ?
+        '<button type="button" class="zu-sv-focus" data-sv-focus="1">' +
+        spdEsc(an.focus.applied ? SPD_L("显示完整时间轴", "Show full timeline")
+          : SPD_L("仅显示有记录时段", "Recorded hours only")) + "</button>" : "") +
+      (an.focus && an.focus.applied ? '<span class="zu-sc-cov">' + spdEsc(an.focus.hint) + "</span>" : "") +
+      '<span class="zu-sc-unit">' + spdEsc(SPD_L("单位：t/s", "unit: t/s")) + "</span></div>";
+    if (!n) return '<div class="zu-speed-chart zu-sv-chart">' + head +
+      '<div class="zu-sv-empty">' + spdEsc(SPD_L("当前筛选无有效速度数据", "No rated turns for this filter")) +
+      '<span class="zu-sv-empty-hint">' + spdEsc(SPD_L("尝试选择更长时间范围", "Try a longer time range")) + "</span></div></div>";
+    var maxV = 0;
+    for (var i = 0; i < n; i++) if (!items[i].empty && items[i].v > maxV) maxV = items[i].v;
+    var yMax = 0, step = 0;
+    var mant = [1, 2, 2.5, 5, 6, 7.5];
+    for (var K = 0; K <= 6 && !yMax; K++) for (var kk = 0; kk < mant.length; kk++) {
+      var st = mant[kk] * Math.pow(10, K);
+      if (st * 4 >= maxV * 1.12) { yMax = st * 4; step = st; break; }
+      if (st * 5 >= maxV * 1.12) { yMax = st * 5; step = st; break; }
+    }
+    if (!yMax) { step = Math.pow(10, Math.ceil(Math.log(Math.max(maxV, 1)) / Math.LN10)); yMax = step * 4; }
+    var ticks = [], div = Math.round(yMax / step);
+    for (var ti = 0; ti <= div; ti++) ticks.push(step * ti);
+    var H = 148, xEvery = L.xEvery, valEvery = L.valEvery;
+    function xShown(idx) {
+      /* v263：跨日首柱（dayLabel）恒显示，日期信息不随稀疏化丢失 */
+      return idx === n - 1 || idx === 0 || idx % xEvery === 0 || !!items[idx].dayLabel;
+    }
+    /* v274：柱顶数值稀疏化——n>8 时按 valEvery 抽稀（首末恒显、悬停柱恒显），
+     * 未显示柱由 hover 信息卡兜底完整数值 */
+    function valShown(idx, isCur) {
+      if (isCur) return true;
+      return n <= 8 || idx === n - 1 || idx === 0 || idx % valEvery === 0;
+    }
+    var cols = "";
+    for (var c = 0; c < n; c++) {
+      var it = items[c], isCur = c === hoverIdx, bd = it.empty ? null : tpsBand(it.v);
+      var hPct = it.empty ? 0 : Math.max(1.2, Math.round(it.v / yMax * 1000) / 10);
+      /* v263：跨日首柱两行标签（MM/DD + HH:mm，基类 .zu-sc-x 本就是 column flex） */
+      var xTxt = "";
+      if (xShown(c)) xTxt = (it.dayLabel ? "<b>" + spdEsc(it.dayLabel) + "</b>" : "") + "<b>" + spdEsc(it.label) + "</b>";
+      cols += '<div class="zu-sc-col' + (isCur ? " cur" : "") + (it.empty ? " empty" : "") +
+        (c === n - 1 ? " latest" : "") +
+        '" role="img" tabindex="0" data-i="' + c + '" aria-label="' +
+        spdEsc((it.dayLabel ? it.dayLabel + " " : "") + it.label + "，" + (it.empty ? SPD_L("无数据", "no data") : (it.v.toFixed(1) + " t/s"))) + '">' +
+        '<span class="zu-sc-vz"><span class="zu-sc-val">' + (it.empty || !valShown(c, isCur) ? "" : it.v.toFixed(1)) + "</span>" +
+        '<i class="zu-sc-bar' + (bd ? " " + bd.cls : "") + '" style="height:' + hPct + '%"></i></span>' +
+        '<span class="zu-sc-x">' + xTxt + "</span></div>";
+    }
+    var grid = "", gutter = "";
+    for (var g = 0; g < ticks.length; g++) {
+      var pct = Math.round(ticks[g] / yMax * 1000) / 10;
+      grid += '<i style="bottom:' + pct + '%"' + (ticks[g] ? "" : ' data-base="1"') + "></i>";
+      gutter += '<i' + (g === ticks.length - 1 ? ' class="top" style="bottom:calc(100% - 13px)"' : ' style="bottom:' + pct + '%"') + ">" + ticks[g] + "</i>";
+    }
+    var card = "";
+    if (hoverIdx >= 0 && items[hoverIdx]) {
+      /* 信息卡默认在柱上方：按柱下标算水平位置并钳边（30px 列、柱组居中），
+       * 顶部净空不足时由 CSS 翻到下方；不新增 DOM 监听，随整卡签名幂等重建。 */
+      /* v273：plot 宽自适应后锚点改中心相对式——柱组居中于 plot，卡随柱水平偏移 */
+      var off = Math.round((hoverIdx + 0.5 - n / 2) * L.colPitch - 126);
+      var bdt = items[hoverIdx].empty ? null : tpsBand(items[hoverIdx].v);
+      card = '<div class="zu-sv-card-anchor" style="left:calc(50% + ' + off + 'px)">' +
+        spdCardHTML(items[hoverIdx], hoverIdx, o) + "</div>";
+    }
+    /* v273：plot 自适应——in-flow spacer 撑宽（多桶触发横滚），min-width 拉满容器，
+     * 柱组 flex 居中；网格/Y 轴/hover 定位共享同一 plot 坐标系 */
+    return '<div class="zu-speed-chart zu-sv-chart">' + head +
+      '<div class="zu-sc-wrap"><div class="zu-sv-plot"><i class="zu-sv-spacer" style="width:' + L.spacerW + 'px"></i><span class="zu-sc-gutter">' + gutter +
+      '</span><span class="zu-sc-grid">' + grid + '</span>' +
+      '<span class="zu-sv-bars">' + cols + "</span>" + card + "</div></div></div>";
+  }
+  function spdLegendHTML(an) {
+    var cur = an.overall ? tpsBand(an.overall.v) : null;
+    var out = '<div class="zu-sv-legend"><span class="zu-sv-legend-t" title="' +
+      spdEsc(SPD_L("按原始速度值分档（含下限不含上限）", "Bands by raw speed (lower bound inclusive)")) + '">' +
+      spdEsc(SPD_L("档位说明", "Speed bands")) + " ⓘ</span><span class=\"zu-sv-legend-items\">";
+    for (var i = TPS_BANDS.length - 1; i >= 0; i--) {
+      var b = TPS_BANDS[i], isCur = cur && cur.cls === b.cls;
+      out += '<span class="zu-sv-li' + (isCur ? " cur" : "") + '"><i class="' + b.cls + ' zu-legend-dot dot-c"></i><b class="' +
+        b.cls + '">' + (b.lo === 0 ? "&lt;" + TPS_BANDS[TPS_BANDS.length - 2].lo : b.hi ? b.lo + "–" + b.hi : "✦ ≥" + b.lo) + "</b></span>";
+    }
+    return out + "</span></div>";
+  }
+  /* 纯函数桥：三处 speedTipRebuild 调用共用。无统一轮表返回 null（旧布局逐字回退），
+   * 有则把实例闭包状态烘进重建函数——Tab 切换/hover 改闭包后重调即整卡刷新，
+   * 不引用任何实例内符号，VM 源码切片夹具也能直接跑（测试纪律）。 */
+  function spdRebuildOr(h, sel, hover, liveOrSess, o, paneSess) {
+    if (!h || !h.turns || typeof h.turns.length !== "number" || !h.turns.length) {
+      /* v261：null 原因取证（typeof FATAL 守卫，VM 切片夹具无 FATAL 不炸）。 */
+      try { if (typeof FATAL !== "undefined" && FATAL) FATAL.spdNull =
+        { t: Date.now(), hType: typeof h, hasTurns: !!(h && h.turns),
+          len: h && h.turns ? h.turns.length : -1 }; } catch (_) { }
+      return null;
+    }
+    var sess = paneSess || null;
+    var live = liveOrSess || null;
+    /* 闭包是 IIFE 顶层函数，读不到 spawnInstance 内的 speedChartHover/speedSel。
+     * 由调用方在每次重建时显式传入当前实例值（curHover/curSel）；缺省回退到生成时
+     * 快照，VM 切片夹具无实例状态时仍可跑。sel 是同一可变对象（会话切换原地改属性）。 */
+    return function (curHover, curSel) {
+      var cur = curSel || sel;
+      var opts = { speedHistory: h,
+        sel: { range: cur.range, period: cur.period, dim: cur.dim,
+          sid: (sess && sess.sid) || "", remote: !!(sess && (sess.workspace_identity || sess.remote)) },
+        live: live, segsHover: (typeof curHover === "number" ? curHover : hover),
+        fmtTok: o.fmtTok, fmtCnt: o.fmtCnt, fmtMoney: o.fmtMoney };
+      return "\x01" + speedCardV2HTML(opts);
+    };
+  }
+  /* V2 整卡：顶部时间胶囊 → 双 Tab → 左统计卡 + 右动态图 → 单行十档对照。到此结束。 */
+  function speedCardV2HTML(o) {
+    var an = spdAnalyze(o.speedHistory, o.sel || {});
+    if (!an) return "";
+    return '<div class="zu-stat-tip zu-stat-tip--speed zu-sv-root">' +
+      '<style>.zusage-tip-root:has(.zu-sv-root),.zusage-tps-tip:has(.zu-sv-root){max-width:min(960px,calc(100vw - 24px))!important}</style>' +
+      spdHeadHTML(an) + spdFiltersHTML(an, o.sel || {}) +
+      '<div class="zu-speed-body">' + spdLeftHTML(an, o.live) + spdChartHTML(an, o.segsHover, o) + "</div>" +
+      spdLegendHTML(an) + "</div>";
+  }
+  /* SPD_V2_BLOCK_END */
   /* 思考态动效图标（用户提供的设计稿）：呼吸脑轮廓 + 流动信号 + 脉冲节点，纯 CSS
    * 动画内嵌在 SVG 里（样式随节点走，不依赖外部样式表，宿主清 head 也不受影响）。
    * 类名一律 zu-tk-* 前缀，防与宿主/插件其它样式互相污染；prefers-reduced-motion
@@ -2625,6 +3229,7 @@
     try { if (subTip.parentElement) subTip.remove(); } catch (e) { }
     if (mpModalDispose) mpModalDispose();
     cleanupDeterministic();
+    if (typeof zuRotatorDisposeAll === "function") zuRotatorDisposeAll();
     window.__zusageWantSids = [];
     window.__zusageWantSid = "";
     window.__zusageGitPaths = [];   // v96：主进程下轮 tick 读到空集即停查
@@ -2650,6 +3255,1664 @@
         "background:#1a0f0d;border:1px solid #ff7a59;border-radius:6px;padding:4px 10px;z-index:2147483647";
     }
   }, 0);
+
+
+
+
+
+
+
+
+  /* ==================== Status Rotator & Whale Tail & Danmaku Engine (v268) ====================
+   * 移植自 dsh-status-rotator (Phase 1–4 完整实现)：
+   * 1. 挂载位置支持三选一：chat（消息流 loading 行）、bar（状态条内轮播格）、both（同时开启）。
+   * 2. DeepSeek 小鲸鱼摇尾巴 SVG 帧动画（wag/sway/twist/official 四种 150 帧姿态 + 6 帧轮廓桥接过渡），
+   *    经浮点 RDP (eps=0.85) + Base32 VLQ 差分编码压缩至 ~75.9KB（严格 <100KB）。
+   * 3. 14 个内置双语词包（1533 条短语）、自定义短语（支持 文案|权重|when:...|rarity:... 语法）、
+   *    预设与星期/时段自动排程、防重复洗牌袋、打字机效果、17 个实时占位符、日夜自适应流光渐变、
+   *    5 套主题预设、窗口标题轮播与完整弹幕引擎（滚动/顶部/底部、悬停暂停、点击复制、避让指针、遮罩自停）。
+   * ============================================================================================== */
+  var ZU_ROTATOR_LS_KEY = "zusage3.rotator";
+  var ZU_ROTATOR_MEM_KEY = "zusage3.rotatorPickMemory";
+  var ZU_WHALE_TAIL_DATA = {"wagKeys":"gH!DNKJMJUFSCuBSsBMSyByBKYDYdsCFeHWGOOEIFEHMhCalCCfHXNX1B1BTjBFRAhBERKRgBYeMaQKKSgBQMSEuBAeGiDsBLKfMbE5CCXGTMLSDKAaMwCAeKKMAKLD3BL5BAbCFEFQH4CDaFcJWNOPGPAPFJTR3CnBbJbF1BDHHJTNRXTxBXjBbHDRADC|qGoERKPeD2BEQMaUcYWYQSSIQAYV0BPiCAOEGIEMDINI1BapCAhBFNPZPPlBbRRNRLVFPAnBEPGHmBWsBOMIQQIOMMMGmBACD0BC!CeIGPOdMrBIxBEbGRIRSFMAeM8BC4BIKOCKLAnBDDAVFPANJjBAZONgBH8BHyBRYRKNGPDRNRNHzCdnBJrCCJJJPfbbNnBNTPVJ|kF8ELKFIHYCoBQoBKOYY!BmBMMIOAYV0BN!BAIEIGEMAGFEJI1BYlCAdJXTXXRrBZfhBLVFTAbGPGAQKSGkBGWIMIacQIUAiBJgBDCCcCuBMcEIEDGLKhBSnDaTKLMHMDaO6BGsCKKODGHCRDDF#BP7BCTOLyCVcLWNUROXAVFJJJRJnBH5BPjBDDCVAjBINAXZhBVbJdFnBTRD|mEwFLMFKDiBKkBOYaaYQgCcQQEICIDORqBPoCEMMGIDIJMnCSxBCVFTLTRRlBVpBRhBbJLLVFRCdEDmBM2BEUIgBaUGmCTuBAUEuBCKEHMdYdOtCcTQHKFaUwCEiCEGIEMDINDvBHpBR7BCNKLIFqBRGAwBXYTKLOXCXFLLLPH7BFVFzBANELAlBMPAbXhBPpBHXAdLVD|sDmGNQDeGYSgBQQaSaMoBKaKMIKMCWRqBNgCAQEGIEOFGLGxBWlCDfJRZXbN1BPlBVVVJPHTATMDOEyBACDeCOEcSUIUDaNmBNyCDCDYACCFOTWNKTMtCoBRWDeUiCEcCwBIMGCKDILD1BL3BPpBARKNkCjBYRabGJMdARJRVLlDCpBInBQTEbTlBNPADDjCCPFTA|qP8FNHXAZG9BGjBKrBWPAZPbJvBAtBIpBAPGJIHSAKGWMWWYOKqBSiBIWCUGQIMOCUTyBL6BAOEGIEIAMNGzBKjBIRETAVHTRVZPjBLZDfJfPddJRDPCD2BDaHqBAwBWWA2BbUHaFUAwBJCORchBe9BmBNOJWEgBU!BEiCGMMEGDIJD5BHlBRvBFbCHKLoBZeXadQdEPAZFL|8OyFLFRAfK9BKXIzBahBPhBJrBCxBMrBERIHGHMASQiBWWYO2BQoBEaGQIMMCYTyBL8BAKIKMCMNGzBWlCAZLZPPXNpBLpBFfJXLbZJPAJIFgBDwBNmBDSEiBQQCYJWPcN6BLkBLCCAQTmBdcvBgBPOJQDYWwCEgCGMMEGDIJAfDDAXFdHbLbFdCHOPuBhBabKPOfETAVHR|8OyFTFzBQNAlBI7BcJAjBRZHtBA3BOlBEPETMJUCMMYUUcQuBOkCKYKMKEIAUTwBNgCCSGGKCGDILGzBYrCAZHTVXTLlBLxBHhBJVJLHVVFHAJUHiBFsBNqBAgBMOIWCKDuBZSHgBFyBPCCAWFOPaferBcRSHQAgBQgCE!BIMMCMNAbDDAXFdP1BAbORiBXkBjBKPKVIdAbHT|uP!FLFPAjBM3BGzBURAbRlBNPDxBCjBI7BIVOHOAKMacaYMcK0CUQIOOCYZiCJoBAOFMEMOGGDIJMnCYjCAbHTVXXNhDZjBPXTJPOHoBFiBJuBDeIoBWOCYHmBR!BJaLEEAWHUPYbY7BiBRYFSAQM!BE8BEGIEIAKJCZDDF1BLxBCVKPsBZYTUXKROpBAfJV|wDiGLMDUIUUWiBWqDqBSQEIDYZ4BNqBHwBEIGEMAGFEJK#BgBxCCfFPJPVTdPhBLhCdfbFLKFoBACDgBACDsBCYGWMcWSGOAwBNgCASHGCDcPcXWNInBQRETKNMLUDoBIqBCwBCGKIODGJAlBL9BChBMPsBRcPOLadKTKhBAfHPLLZDTGhCAxBMLAbVdRbJdDDDrDERE|6EiFNMDYMaIKea6C2BSQEIAQFMf6BPqBL4BEKMGIDIJGpBIhBKbgBhCChBHRRVzDpCXZFLEFSAiBGyBEiBKaQegBQKICkCAuBKOACDMCAMNadcjBOzBGTGNINOHMFWI4BCsBIKGCMFGLDtBJzBEVKLKFwBHWHWLWRSVObGVDhBLNJFnBCvBLjCAtBrBfRZJhBHlCHDDXANE|yGkEPIJQAOEQIQMSsBsBmBgBWaASJQbmBb!BN6BAMGIOCMNGrBKhBUtBUdMXENAbFNPVpChCZbLRFNCHeGGE0BOoBSMIUUSeOOIEgCMiBQUGOAGEDKJOVUXMfGhCFZGRMPaDYIuBAiBIMMCMNAnBJvBEXIJMFiCEgBHYLSNSTINMdAXFJNLhBF3BX1BJJFVhBXZXRjBRtBNhBNdH|kIyDNGLQDQGeWqB6BqCIQAMNWdiBLQXyBRmCGOMEGDIJIvBU5BQbgBpBKVCLATLZlC7CPhBDNCHIAOGEE6BccSacIOMgBKMSKmBMQIcUYMMCEERWPKZKlBCjCRbCTKJIJOFSAUIoBAgBGIOCIHEJAfJpBATELIJSDiCQcAiBJeTUVMbAPFLJJnBPjBZRJzBTFFJXRfZbdVjDxB|wJoDLELKFIFOAcMqByB!CCMLUnBsBZqBT2BDSHUCOIGMAIHM5BSxBSdmBtBKTERALHVf1BPdNhBDjBEHWMYUmBaWWOWKoBOW2BcsBmBgBURSRIbGjBFvBTdJbCTKLMHODiBGYAoBCGKIKAKLAvBHZAVELGHEDWCsBSeIQACCaDaJYPQRIRCNDJJNhBTfdbTrBVHHHdPhBPVTTpC3BRLRH|2KkDVGLKJQFSCuBQ0BY2BAQPWrBwBTiBPmBN0BAMKKKAKJO#BQpBSdmBrBKRGRAZb9BR5BAfEPEFKEgBgBQMiBkBMWIwBIOYSeQ0B0BYSNMbKfAfJpBVdLTDZIRQJWAaGYAqBIKOCKLAvBHZAVGNGFKDOEyBYYIUEiBAgBLQLOPGPARFJLLRL1B1BVPfRHHHlBJZbnBpClCRLND|qLkDNAPGLKNYHgBCiBKqBU0BAQNWrByBTiBPmBN0BAMKKKAKJO#BQpBSdkBrBObCfX9BLzBAREVGPGHSQKOqBqBMQMeCiBKU!BqBcgBmBkBAEFERItBCfLvBZXJdDRGTSJYAYGYAqBCEKIKAKLAvBHZAVELKJUC4BcUIaGmBAWHaRMXFVLNbXZffbtBdFPDfJXZlBrBrBZd|uLkDTCJENMNWHSD4BKuBQoBAUNWpB0BXwBTmCAMKKKAKJIpBQxBWpBgBpBQjBAdTxBJlBAtBKbKLMKUcccOSMcCkBISKKyBeqCuCLKNEXCDDPAbJ1BbfLZAPGTSJaAWGaAqBCEKIKAKLAvBHbATENIJSAiBOiBSYIgBGkBFUJSRGPALHPrBrBLPbbbTVLPNFrBLbRZvBzBNTNL|qLkDNAPGTUPeFSAuBImBMcIcFQJQlB0BXyBRiCAKKKMAIHM5BOnBMZkB1BKXEVDRRpBLrBCzBKZMNGEakBccMQKYCgBIUQOWKiBWmCqCFGRGnBAhBLdPrBRdDVIPOLeAUIyBDOCMKIKAKLCbJzBARGRIHWCkCekBKqBAQFWNMRCPHRrBrBPTjBfxBbJJDhBHVLVTZddRZRR|gLkDRCNGLKPWLcDOCwBKmBSqBAULYboBLUTwBHiBHSAKKKMAIHGVEdQvBMZWjBQjBCnBZ7BHhBCrBKZORMMSakBkBIMIUEiBKSmCmBuCsCHGLElBCtBNlBRbJfDPEXWJeKiDIGKAKJCHAfDDH5BGVIHYCyBU6BQeAUFULKLGNARHNnCnCjBZdNVNFhBHTPbtBvBRZPP|mKmDRILKRcLoBAWEaKiBWsBAYHShB6BTwBN8BEIOGMJGTItBOlBiBhCIbDlBZzBLvBATGbKVKLMKMSyByBKWGkBIMOKqBQYOuCmCFGJEjBEjBH5BVbHbARGLILQHcCeGeAkBEGIEIAKJCHAjBJ5BCPINYDwCakBGQAkBJOJMPCHATFJNPNJ7B3BPLhBRVHRLHlBTjBzBzBNTPPJF|2JoDLETSHKNeFWAYGgBIYYqBEKCSHaZuBRoBRkCEMKGGAIFEHItBIbKbYvBKhBCNDZFNd1BLrBAVEVKXKNEAYegBaSUMcCSGMMMMGkBKcO0CkCJINElBCxBLnBNdFTCTIJILSFgBI2BAkBIKMCMNAnBJ5BEXIJKDUCyCWqBCcHYPKTAPFLJLfXvBpBlBV1BTFJHfRdNPrBlBXdNH|mJqDNGTULUJgBAkBGaOiBcsBESHgBZyBNiBN2BAOGIOCIHEJK3BOnBUpBIdCXFXHPXhBLVLjBAjBERGPORiBkBcUOOMUGaMSUKqBKiBQuC6BLKdGnBDrCRfAPENIPWFiBI0BAoBIMMCMNArBHhBDfCPILeD!BOcCCCmBDWHSLOTAVFJRRVNjBdZRfP5BRFFHbLVNRzBpBbfNH|0IuDLEVWLWHYAmBKkBQgBeoBGSDcZ4BNkBHmBFKAKEIGEMAGFEJK3BQtBQjBGbAXHXNXbjBLVJdCrBKZILYYqBcUUIOIaMOSIoBGeKWMoCwBNKXGvBAhCLdAREPILMHODiBI0BAoBGMOEIFEHAxBJzBAVCJGJKFYAgCK8BDUHSLKLGNAPFLRRtCxBZNZJxBJJLFRLVZbrBdbdNH|8H0DJETWLYFUAiBMoBSgBmBsBIaDUdmCHYFgBFKEOGEMAKLIxBKhBSpBIjBDbPhBjBnBJNRlBDpBGXMTeaeQUOOQOgBMMQGeCoBIcMkBWaMMKJIdKrBCDDdADD3BAdKNMJUAmBIuBCyBIIICKFGNDvBJvBAhBGLKF0BACC2BCmBHSHOJOPGPALLTLJfP9BjBnBN3BHJJFPVfPNxBdXXPJ","swayKeys":"wFoFIVSNcCUKkCUsBagBqBmCEeIgBOsBKKIGMDaVeFAJKZOpBMtCGRKFKAaGcE!BHKTCLLAhBLlCCbKZQPQHuCHiBLWPMNEPjBJ3BVfFpBAPFRNNXZXZNpBL1BVFKCUOgBcgBEAMOEAGIEASSGCAEMMIUAgBFQjBwCL8BJKRAJJG3BMpBY1BGjBLVVTNHJLFAtBxBRjBFT|oGiFIZMNOFWEYMCE0BUeSYYCIECKWGGiCKWIkBUqBOMOAcHMTUjBUzBKpCDLEJOAeIiBEwBLMTDHJDpBLzBAZGXIJAFKJUJ4CAWFcPQRCJlBN1BbpCNRNRhBZZjBTbJnBXHADkBOiBOQAEKIAEqBoBMUEOAiBHSLQAGFCDKJMNiBLgCJKRAJJG7BMrBe9BEfHR7B9BAFRVRnB|gHgFGZKPSJaGgBYYKCEMEQOEAciBQkBkCSWMIIICIIiBOKIEICWLULMhBUhBIvBArBHNCHGFMAUO2CLMPALLDjBLrBArBMbMLQHiBAkBGsBFaPKLCLfNDFJDDFjBVZJlBHNHRTNhBZbVLDFHADFRHDFJDDFdRFIAgBGWUkBsB2BIUCcLiBFCLYFCRkBLiBHwBJKRAJJG9BOtBiBhCENAXNXhBlBbvBLnB|yH4EERMTMHaEcYsBaSQAEQSIQESIMcGmBQqBgBaMIKEWLYTSVMfIlBApBJPAJGFMAWOqCAKLMPALLDhBLrBArBIXOPOHiBAaGwBDWNIJENdPhBbhBPfHRLLPJdNVfbTJpBfFUEiBSqBECCISWUiBEQAWHYbwBFCRkBJcHsBJKRAJJAVItBQtBkB#BENAZJTHFAFdnBTnBJhB|2HgQIpBKdUpBQXOhBAdRdLLJTFDVtBHbArBEROTSFUIQQqBaKMIEAEGEKUECOmBkBISIeYEAEGiBSIOAWNYRQVMXGpBAjBHNGFKAiBKuBCeLMTDHJAVNhCClBMbYPcAgBGaDMFMNEAKVlBVVTVLfHRJLLPpBFDHPXVjBVTTFADgBEWa4BcmBIYAcHWbwBFCXuBPgCHGRAJJ|2HgQQ5BazBKNGREDIVDhBpB7BRhBLpBAlBERKPUHUIMMwBccgBQoBuBKUKWScMMOCaPeTSPGDEjBIzBDJGFOAiBIqBCiBLMTDHJAZL#BClBIXKNQJgCAOFUPKRALbNRPXNxBLNNNhBPXXTNFDFJDRPLFAmBIaSiBiBuBIcAWJczB4CR!BHGRAJJ|uHkFGRKLcAaOCEQEiBUSUUmBiBAUGkBUaIMQCSFSRcPOfQ1BGNGHQAiBGkBCuBLMPALLAjBJ#BGvBKROLaHgBDWLQRIRALbJlBVrBDPHNPPhBRRTLRFdRDQGgBcyBWWScEOAgBFQRiBFChB6BR4BHGRAJJEjBY7BEDENEDWpBGRCXHTnBtBZrBLnB|8GwFGPIJMFSCSKeGgBOWUSe0BDsBQaEIEIKAoBVkBXUhBOnBINMDuBEUCiCLMPALLA3BHtBAXGdKRKJaLgBHSLSTIRCPXFlBP#BAPLPbTTZLjBJLHHCCYMgBOQAEKIAEoBkBKQGaDYHUvByCPwBJKRAJJATEPW1BEDGREDWrBEjBFNJHAFFApBpBAFTXRpB|kGkGERKNOHKAgBKaCeIYOciBMAUHgBAmBKaAMEMMCiBFORcXWpBUhBILGHKDeGsBA8BHKTCLLApCFVArBERUb2BTeTQVIdfDpBLhBEJETARJJJFLdZTHnBFbJCaQiBiBiBYOSQMUEOAcJapBoCPwBJKRAJJATQvBoBpCEPAbTXjBXjBlBTlB|uFmGEPILMHYAeIkBCiBKCEWMWaoBJoBAiBIiBAKEIIGODcNaNMAEfYfOrBMNKFeGsBAiCHKTCLLCxBHzBAnBGVEDELQN4BTcRUXITANlBALFnBF5BKVJbfTLbHjBDdJHCCYQemBiBqBYSSKaDmBJWlBmCLoBJKRAJJATQxBmBtCCVFPLNxBdHJPJXZVpB|gFiGEPILMHSDmBKsBEmBMCEOGGIEAUYSAaHmBAuBKeAWKIQDaNabclBUjCSPKFMAcGmBA8BHKTCLLAnCHtBEhBMVKJWL4BPaPadEVnBDzBLlCIRHfhBXNpDTCYOcqBmByBcSUIUCYFULcFCAGXsBNyBJKRAJJATOxBe#BGXATFLPP1BfnBjBXnBHZ|gF6FGVKLQHWCiBM4BKoBUOMAEUWsCDqBM4BISOEOFaNUjBenBQlCMNEJIFMAWGiBCgCHKTCLLA1BHlBAtBIVKNWN8BLsBRWTMVAHjBFzBPZD5BERHhBlBFAPNfLpBHjBNLAAcSgBiBgBwBeWYIWAcFQdgCJYJsBJKRAJJCdMvBelCEXDNNT7BnBnBnBRdHT","twist":"!H6QHFFLIxBMpBWvBInBJVrBlBFAhBhBAFTXNfDpBKXQLWAaMkCUIGKCCEOGGIEAgBqBoCEcIaMyBMKIGMDaLSVUfSxBMhCEJCJIFKAYIsBCuBLOPAJHDHDxBJtBCjBKXKLWLsCHkBLUNMNGRdH9BXxCHRLTdRRPHDFpCXZNNAAaOiBaeEAQSKEgBeOeDoBjBwCNiCJKRA|!H6QHFFJI1BKjBczBIpBJVFDNPDAPRFDVZHDFHCHTXAJFDCFFAAJDDCFFAAnBCFDDEADDENEAAHOJWAQKQESIYGCEKCAEOEDCOGCCACMKYkByBCWEEEUIEEMCCCOCACGACEIAEEKEIMAGCAAYFACCHGDITWLEACHCHGxBO1BEPEFGFIAaKmBC0BLOPALLDxBLxBCjBIVMNGAMJgCFkBNCACFOJKNERnBNRJTFAFFCDDTAHFZAJDJCAFHCDDAFFCADFAFHDHFACFNVNNNJADFCAFDCJHhBJAFFCDFFCFFNFPJJAAcKcIMEKIGAEGAEKSOAEcaGKEQEEHwBlBsCN!BJKRA|oI6QLAJJDNGdMxBMXUhBIdANFR3BhCDHAFLPAFFDCHFACFFFALDAAHDDApBIVOLUAQGAEMEOIMCSIGGKEACMIGKGEUiBoBCUEAEKCMIICCEgBKDCKEGEGQFgBZeTOjBM1BEPIDIAaEKIqBAoBLOPALLDxBN1BEhBGTKLUL0BFeLKJORGRNHLAAFHDFCAFHFNFDANJJAADNCDFLCVFHCCFFALDCFFAFDCFJFCFNVNRRLHDADDCAFFCRHpBVAcEYKOIUGCGMOOYeGMCOCCASHaJWFCFOJGNgBFANkCJIHA|qI8QNDJHDJK7BWxBWfKdALDVFAAFJJHPXdADFFCDFDCDFFAHFFAFDACFFAAFFDFfAfDFCDAJENEACHKJUAqBaOCCEGCAEGAAEKEQWKSCMGEmBCWKCESKOCIGACMKGYLcFCNWVSdIrBELKDeMuBCwBLOTDHLDtBN5BEtBINUNsBFQFIFAFECUZETLHFCCFJAADFCAFPJFCCDFFJFFCADFAADVAHDLACDHCFDCDJAHJAFDAADDCAFDACFFACDFNRbLFJJJAFFRJFFHALJAcEcKQCIEEAGUaIMIKGOCCEkBNkBLODMNKAERcNiCNK|qI8QNDJHDPM5BSnBYjBMdEHDDAZFJDALZFDCDHFFNHLNjBFVArBEVEDAFCDKFAFSASKKMUGEGSOIQCADCGGKeUAQEgBYUGIOCaJYHGLURQXIpBEFKAaO0BCuBLOTDHLDtBP9BEpBGLSPmBFUJAHECDFCAAFEADFCCGLDDECDFCAETDDNFDFDCCDFAADLFPNjBDJFPTHXCFFAHRNNJDADNFPLDCAgBCCAGCDCYEGAEECDCCAAEEIGIEMCAACECAECAAGCEEDDECAACCAAGCAACCCCICgBRsBJGDKPQTkBPgCLG|qI8QRFHPK1BUpBepBCVELAHDAALGPDHCLDDAJDDAFJfAXFACJDFAhBCADPEfCADFCFCAAFKJQDQKGOMGEMEAIMDCECDGEKEcQGMQAGGCGIICGGCMDMCGHYDAAIGIAENUTMdEDEAYEQCAKoBCuBNORDHLDrBR#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!BEMEMIIGQmBgBqBMaEqBLOPAJFpDGRFHPInBKTgBdICEOIGAGHEHAPQLsBNKoDJ|wLqQFlBRVAFXXRfFRZH9BFdLFFNHAFNJFLFDALFFAdEFDDGJAFYPmBF2BVCDqCFchBGAILGASRKDADUHEFyBPaNYDKEIIEMCCEWAGRcDANUXUFILEDEPKHINGDEnBUXWLWJgBPSRZCFAPGZEDAHGPUTEJEAAFECEHSNGAAFECEHCCILGAAFCCCFQLEJEAEJKHEFDDEACDDDMJDDOZAPREPINCACFAPGHDAEFDNEfONIFGFALGDGJGNOFEFDLKzCGxBURADELCJDDEJCCWKMMIeIiCEOIOMQoBceSiBEqBLOPAJHALpDSRFHPInBKTcbIAEOMKACHGHCRQJoBNKmDT|wLqQFlBRRAHZZTfDPXJjCFbLXTHPFFAJFADHAbEFAFCAADEFADQNKFkBF4BXqCFehBGAADQRUJEFkCVkBTUAOGOYAYHICCFACCJMCCFADKFAPSDADGNKFGJEFEJGACNIAEFAACVKACFAFGLCDENGLMJGJQHqBRSFADLPNAFGJCZMhBUVDDCCAFEDADkBVCFEADDECAFGDGJMHYVAFMJCHMJCJILEJCADRJAjBQtBMJEDAHCACTIJKHAfgBRIDEvCGtBQVGFDJEZGAUGCDEEAIOEDEEMCEEuCGSIKMOmBiBiBSiBEoBLOPAJHALpDSRFHTIhBKVcZIAEMMMDELERQJoBNKmDT|wLqQFjBNNFLddPbFRVJjCFZLVRAFHLADFFAJFFAdCFCAAFCAELSLqBJ4BXmCFehBGAILEAEJMJEAQJgCVOJIDADcDKGOYCYFAAELSFMFCZeFCDGRIRSDAACtBaFEFALMHENWCGJmBRUFDDJRNAHILEjBKZWbiBVCFGAAFGADDIDDFSJUZMJCFKJQfAPLAZOvBMHEDDAEFADCDDHGDDAEHAXUFDZcNGAEHACCvCGvBSVCFEJAACTEAUECCIECAECDDEECeKiCEUIIMQoBkBkBQeEoBLOPAJHALpDSRFHTIhBKVcXICCMOMNGROJoBNKmDT|yL0QFjBFNJJFJfdRdDPFFVJ7BHRHLLLNDNDDALDADdCJEADDILSNcFEFsBRCFmCHILSVIDAFGHEAEJKFCFMDADEFQFADmBLGHEACFEAEFGAADcAMICIGGCeDAAEFGACDADKFCCCDAACDADINKNSFCHKFAXYlBaHCACJEFIJEHICCDAFOAWDYTUDAFLRNCHGJAhBKhBcfECEJWNMLAFGAADKJWZEAENMNIREHDPHAdQDAHEVEnBSTUJCAGHCNQNGDE5BEACNAVIHAAELEFDFEJADEXENGASECDGECAIGGUG8BEIESMKcGMAEmBmBACEACKKOEQAaLOPAJFpDGRFHTKlBEDENaXICCKOMAENEPQLoBLGoDJ|yL0QATJdvBvBDLFAAFJNANFHLH3BFVJLNHRATFFAXENCFCAAFEAADMLIFGACFUFQJUJCF!BHINIFDDMNEACHUTKFCFIACFMFCFiBNSNMDQCMIGUCADAAECQJUFIFKJGHQNKDGFAJMFAJMJEAEpBcRUFOEWAcFIRQHNRNGJELFPATEXUdMNiBZgBjBGLCAGNIHITCHAPVKACFACCFDJEACDDTIVMLEXWHCAIDAJKTQ1BGJAnBQAEFDhBKFEAYCCAQEAGGwBCYGGGKKMqBuBsBOgBAcLOPAJFpDGNDJHDPGVAJIPQTOLGAEMOMACNGRQHiBNKoDJ|8K6OjBhBNZDRHNJDvBDLFLLHRENANFDAXERQVgBJMLKDKJ8BLGNEDDDQNAHQPEHIDADIDUPaLONYDQKAGEGAECECULYDCDKFCDIHECEFAHMHCFKNKFKRKVWJEJKAEJGCEDADUGOCaHONMFAHJRNAFKHAPJVGnBMT0BxBCFWZDFEAAFEASjBCHAFCADNNIAEFAACFDFEDAACDDLEJEFIFDAEFDDELEAEDDFGDDDGPMCEHCAEDAACFEAEDAAELEFGJCpBCACFCJDDCCCFAJEACFAACHAFGNGFDACFANEFGCqBIEsBEMEQUEWISUUCDaaISESAWLOPAJHDfHRFAJN1CiCNDHFFRKlBYbKHEAEKOOAENENMLoBLGyCjC|!J!NRbFbDFHDlBDJDDDFALPDPGJDXALCDALENEFEADDEHiBNAFMFEHIDEFWFCDYDFDEAGLCHCAKNCJCAQTKFADMJADgBRKNYDMKGMCcNiBHGAGDAAIHEHKHEAEHEAEFAAIhBgBFCVeACDCDMEAAEIQCcHONOFATXFAAFKHANLXDfEAAFCDDDEADFEDDDGFDFGJqBrBELWZCHCADFECDFCAAFCCDFKPENALHCAEDDACDAACFARKFAACNKJCJKDEFACENMFKFCAILIPGnBEXMFGfMDuBkBEQGEEDCCACGGGEaISQSGAacIQEQAWLOPAJHDdHRtBrB1B!CRFHPOtBQVQJKSGGEAAENEPQJkBLG0B#C|oKqORPLTDJAXHHlBHJHFHFPCFGFDDGHDFCHDAAHCAAJKHKNUPCHGDAFUPADEAKHSAGNCAEPGDDDEDENEDAHCACHMJAFSPMPEACHEDEHEDUACEIEEUCAASNiBCEHCAIDACEFAFOJILUjBsBHICEFAFKCSECGOCCEQAOHMNMFATVFAAFKJFHAJNXAhBMbkBrBMbIJGVGLETRMVWAEHEAELOCCDAAEFMJIRMXELEhBgBHCLKAIDCCEMCGGEAEGKEMQAcGQSQGAKMACQOIQEmBLOPAHFDDDdHPhBhBhCyCRFHPIhBELUXMHCCEIIMICAELCRQHgBNK!BzC|sKwOXVFLFDFNAXLNPALHHLANEJIFEHDDGAWPGTINGFAFEDAFGHADIHADQAKbEJCAAFIPAHEFDDerBIRMHKAMKCGEaDQJcHGFSHIPkBJILWFCHUASOSISASFKROTXHDKNHHDJLRFfKhBQfEDEPGHDFEAUxBLMDMZ0BNKNGHADERWIGAEFEFMJIHAHEAEQIEIAQDECQEIQOKEaaEIGMCiBLOPAHFDDDdHRdZlCsCNDJHDPKjBUXOJEKSQNGPMJkBLGiCtC|qKyOJNFAJJAFJJFNAVFRNDJHATGLQLDKICUHGjBCAAHINAJDECLCFMCAFEFKnBEDAJALEADHCFCAAJCFEAAHCADDEHAFEFEXKLQACEIGASEADcHQCEHKCEDCDMDCFMAEDAAIDAAGFCFQNYJeESSSKUAOFMPMHAPVJAKLAFJHVjBbHLIIIOIAOFGCUOQUKWYCGGKEkBLOPAHFDDDdHPbZFAjCqCNDJHDLCJKhBQVQJCKKKIEAENELMLkBLGgCrC|wLiNMLZdLTFdIjBLEAJCLKGERInBDbIdEpBIJOAKKCoBVmDJaFiBGMYaIUDOFINMFARVJDnBwBJLFARVFLAZGRJDJJARMNQHDOEMMMICAKHMCUOOUMUUKSEkBLOPAJHDbJTdXlCqCRHFPMnBQTOJEKSQNGNMJgBNIoD7D|yLkNIHAJRPDLCHFDAJZVANFAErBJAAPCDGCAFCACJCZENDLATCADHGNDHGVDFEDAJIJQAIKOmBCcFSGSAOEOAWJaAKFMHEAMIIEQGEGMAQFMNMHAPVJDpBwBDFHHHDJNDAJTAVQPFHHDFFDTELQLAKMKAGKKICCGTUCUMMUMWUKQEmBLOPAHFDDDbHRPLDFHDFHFAjCoCNDJHDLCJKhBORQJEIQQACLENMJiBLGkDzGDPEXDNGVCgBJkBE6C|oK0OJLHFRTDJATEJMDOHFJNJFJALGNCACFCECAKJHJFRCHFDCbHAAFDAANGFEhBAdDHGNDJKjBGHSAACMKEMKIIQEWAYMMMcIICcNmBVUGCHSKIGOASHKLIHALRNFIJAFRTJDVIDYCIOKEAMIaYKWCeLOPAHFDDFfFNXTLFc3CDHHDJJAHIDMNARDAJXCjBFDALGpBAjBGSAYGODCEAEIGEDEEAKYEEAMHMAMPWCINSAEHE#C!ENDJHDLCJKhBORQJCISSNGHKFAJiBLG!BpC|yLmNIHAHRNbFLNFFFNFAEXFDAFGNJNHTCJDDANJJANEADDADCADDA1BCfEDAHCADFEADFGDAHGHSAACECGIGCGMICEGECKQAKEEACCADGEADKCOMCACEAEGGCGMECACQMAIGEAUPoBDAJKNGJKHCALLHCFJJYVIfJLFAJNFDCDTHLJDLFCALDADTAJFLFLRLAsCEIEeIOCMDkBKMIEKASIMMGOAOFKNMFANTNDtBsBVTAFDAJNAZEHAJSGOAAaeUSOSYEMAaLOPAHFDDFjBFFRRTL#BoCNDJHDPKjBSTOHCKSQLEPMHgBLGoD3D|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!BCaOIIUsBYcQgBEqBLOPAJFpDGRFHPGhBEJIRQRADSNECGQIIAEPINMLsBNKoDJ|wLqQFnBJRJHVdDLDHDAJRJLlCHxBRfbDHAFFDCFDAAFFDAVEADFCAAFEJGFAFEACFKFwBLePMAEFwCHehBCAADEAIJIFADKDCHGDwBVeHYPkBAQSEgBLaHCACHMCCRKVYHAAEVSVKFGFAFGFAACHCACRGXWXyBLMHFJVFHAHOZCJCADDEDCJORQLADYPMLEAAFGAADGDAFEAADMNGAgBjBEADFEAObDPNAZQrBIZOLCPIDGJCJMLENQRKvCGtBONGZEREDEDAAOCGOMEEEAACIACCWEEE8BCYMKKUuBKIQWMcEqBLOPAHFDDALpDSRFHPInBGPSVKLMHCAGQIKAEFEHCRQLsBNKmDT|yL0QHxBJRdnBAHNZJJnCJtBPfZLZAVGRURwBL4BVkCFiBjBEAGJULCFwBVgBJcPgBAOMEIEcNcFCJQhBiBFAVU9BmBXWXuBLMJTNNe3BYXuBdYXEAiBjBShBDNLAbOzBONIPEROFANOFAPSVMvCG3BUjBGJGAOEIUOkBK6BEUIOMWuBYgBMcEqBLOPAHFtDGRHFPIlBIRcfMHGQKMJIFARSNuBNIqDJ|wLqQFpBJRZhBNjBJJhCJnBPFFNHDHLHHLAHDAAFDAAFDDAREACTCAADONSFEFWFADKDoBRMF4BDMRGDKPIDEJSJDFEAADQHIHWLKAADUFUPiBAOMEUCSHMAGFEAEHCCCFACEHGAEDAACNMCCJGLMHARU9BqBFGJIHICCFALaPQHLLLGVDFGHCHCAAHORCHQPOHEJGACFMJEAADONGLQLUXENIJENANLAXOnBKHEDAACDDFGFAACJCHGDDDELEAELGJMHCAEFCAEFENEFGpCGACJAACFALGLCACPCHETETIDOEIWQEDWIKAEEsBCUKKKUuBWcMgBEqBLOPAHFDDALpDSRFHTGhBIRQVYVEAGQKMPIRSNyBLGmDT|wLqQFpBHRVZNlBJP#BLjBNPNHJFAHNCFFACDDDDVCFAFEFDFSVEAQJgBJMJUHAD!BHCHgBlBGAOPEAADMFKJSJKACDIDaReAMMGkBHSFCAEFGJQJGDILIDGJGFADIHENONGDEJIFAFGFAFGFAAEJEFIJINcNMLNANFNKVILELQPCCEFKNGAKNIDoBrBSdELDDEFANJANMZIACFDNElBUTSAENKHKJEHInCGAEFDDEbMhBINKAMEIQMEAIEIAOGqBEYMKQOmBUcMeAKEGDKCSLOPAHFDDALvDQHAJHDPIlBGPMNEJYXGACMMOAEdaP0BLGHAsDT|wLqQFrBTfAFJLRtBJFVAhBJjBTNRDAAFFDAJFHARCAAFDFGNCAADEFDDOJAFUHIAgBREAIH2BHEJEDGNMLCHKHILOFQPgBLQPKFSAQKDEEAAEEMCYDAAEFCFSFACEDAFKDCCCJCHQNKAEFAFIHEFI3BuBCEFAFECEHEAEFELWNDDNJNAFIRYjBGDDDEFGAMLAFGAoBvBELIHCLIPATDEFADEPEAEPEACHDCEFDCCHADEFAFCNKJCCCHCRQFMFAAENKAEFAACDAACLELAdCFCHAdOVGAEJDACJANMEUMMWEMGmBEQGKMOsBEEEMMMMiBEkBAILOPAHFDDALpDSNDHFFRGhBIVMNEJKJMPIDCMMQAEdaHOJoBLGmDT|wLqQFtBZrBPtBFFTAfJfRRVFNDfEACPGDAFEDAFEDAFQFMDCFIDaRyBHKTIFIRMLEHIDQPYJIJWPSAOKGUAYLcDADIDGHCDINODGPOFKjBeLMDAZwBDAJTNJCDFFEDAFEFDDEADDCAMZONEHKHINECAFEDAFEAAFEJQNAFEFADCAKTAFEDEJCXFADExBYFIHACEFEFADELMACFEACDADIHACELGFGLEbADEFDTEDEJCACHCTMRCAEFCDECQEIIGCDaOkBEGGEAMMKkBMaIGOqBCoBLOPAHFDDALpDSNDHFFNIrBGPSVAHWVIDCOMSfcJUHkBLGmDT|wLqQFtBXpBNvBRDHFRFfZAFJFCFHDCDDFAHFJCPCAAJCDENGDAHGDCFQFIJADKDDFIDAFwBPIVIHELEDINGDCFMJEHQHGJKJCFIDOAQKCIDEEIAYFKDKLWFCDMHEFMHEDIJEAGJKDETSHKHCAGFECEDAJYFKJTNFFJIdOVaZEPIFKVCCAFEFAJMTITALXQHCVQJQJIDMHCCCHEAEDDFECCFAAENAbKJAAEDDFIJCJIVGFKASMMQIcESMAEGGAKGaKSAIIEMgBEQAiBLOPAHFDDALpDSNDJHDPInBGJAJQTEDAHONCFKHEACMMShBeHOHoBNKmDT|uLkQDpBVnBLrBLDTNZdFJAFDDDJCXCFCLGHAFEAAFOJCFYXcPAHEDADCADHMNGREDIPEAAFCAGJGDAHOLAFKFOAOMCOAgBDKReAMHEJWJIHSZeJwBFDHPJALLCbObMLKbGFCLKRCLOdANZcFMJKFKACFCFKRKVKZaLGFKAOEGEAGIQACEGAIGEAIOAQGeKWEEOoBCqBLOPAHFDDDRzDWHFFNIrBKZKJKTIFGJODCKGEEKbaLQL0BLGHAqDZ|uLmQDtBXzBFXTTFNCHLJDNFAAhBIXEDADMNCJGDDFEDCHWZKhBEADFCAAFEAAJUlBGDDDIHQAGEDCGECwBDCDOJQFUFIDIFEAGFEDKFEDSFGFAJOAwBDCJFFGCaEIAIKUMeEcAYLOPAHFDDDPzDUHFFNItBKZkBrBGCEEGAIMAIZYNUL0BLGHAuCrGDFARGNMNMZQRNkBHELUDOHCDIFAa0F|wLwQF5BVvBLvBETFDFLDVCDALENAJGJAJEFCNCACNGNKtBEADHCDANEFCbGFADGHOAKKAyBFUHKDUDEAEDCJYDKDCCGEAFMDEFDDOFAAUKQDOJGAYIcMYIqBAYLOPAJHDFnDMRFHPItBOdgBtBIFEKOOAIZYFKHGFIJwBNKmDN|uLkQDvBTpBDdDAFHDCDZEACNFFDLAdCFDPElBEAAZCHANCDCZCACxBMPQAKOIsBAUHKAQEOFiBCEGCAOHCCGHKAcGEAODGLEDEFWEWMaIqBAaLOPAHFDDDRnDYRFHPItBOhBiBtBGCEGKGGKZaHOHIN4BNKkDZ|wLwQDzBNlBDACFFFFpBLEDGDACEFCAJFACFDZGNDDFPCVDDALFPCLDFAtCANEAAvBQRQCEEGEGQIMIUAgBCICAAGGGGIIcCEICCKLwBCQFKFGXIFCAEFCAQGYGUCAIsBAaLOPALLnDMRFHPO9BMbYfaCAKEGPOVgBPgCLGqDjGDPLDFfDzBE1BAcEWACEEDEIEIaKQHiBLKH0F|qI8QNDJHDPKxBQlBQZEFUFAFIAAJFAADEPEJAPDHCTFHAJFDDRJVCDHZCJFADVGpCMNUDQOEIUSIOMwBUIIKDCGECIMIIEGQDGAOJUAIFGAILQVIbGDYQ0BEWAkBLOTDHLF5BPpBDpBMbMNGDCEcFDHEACJGZALVTHLPHPLAHFDCHJnBNRLJAgBDEAOGkBS4BCmBHEAQHIJGFKJGDEAGNMVkBPgCLG|kI6QHAHFFNO1BDFe7BKJKRCLIPDPATVlBCDHJAFFDCDDDFPANFACFDAAFDAFRC9BCNQPQAOIACEAKMICCEQIEIECKQAEGIDGECAIGMUCICEEGAOSaKKQAYDAAGDAJaJEAMPOTIjBELGAYO8BCuBLOTDHLDvBPzBAhBCFALGLSRUFSAKHCCGRGFAJEDEVTJJLLFDHJCVJJCDHFAJNAFDACHHNDLHNFJPHDFTLDUAaMmBOeGEDCGMCICAAICADSEOHIHcHEPYPSPeN8BLIJA|qI8QNDJHDPGZMtBQdEROPOhBALDFCTFDADNPCFHFFFCDDANXFFJZDACFFACFDAHRA9BCLSRSAQKEAKMIASMGAEGMISiBGQCACEWAUEQMECACYIMIAEIEDCGCAcFACGFCHQFEAEJEAITSdKjBCNGDgBM0BCuBLOTDHLDvBNxBEvBENYRUFWASHAFEAAHEAEHDDGFAFCCAHCAEJCNLDFFFCAFFCADFAADDCDHHAADFAAFFAJHnBDHFFANRCFFAAJDACFFJDAHRFAAFFALNHAJHTHHHFCAkBEEFEOkBCAAEEDDEEADEMSEGEAAECDDEEAEMECAECDDGEAAGCCDCAMCADIEINkBHEFOTWRiBPiCLG|kI6QHAJHDJOlCWvBMRGNIXANFRAFDAAFLJCDDAFJJFJRDADJJFAJJJDNDAAFDACFFAJZA1BGNQPSASIACWMgBMGIIEWcKYGEgBASEOMOECEcIGIGEAEEACcHMFECEDAFKLGLQNIhBMnBCPGFQAUM4BAmBLOTDHLDvBNvBExBMRUNYFYAUHAFIAGLKLCHGLAHZJRNFCADFAFHFCFFADTCTFLADFFCAFFCJJJVDAHPNTJHDCCFFCADFADFHAADFCAFDCFFVHPLDqBGEDECIOceoBIEDEECEMCACQCECAAWLgBFEJULMTkBNgCJILA|!H6QJJDNK1BMhBe1BGRAXFFDNRTNLFJHDAHRRAFDAAFDAAFJLCFFAAHFHCDFDALFAA3BMVIFADWAcOEEGAGESEeQGIGEKQECISEAAGCAACGEqBAQEiBUSEYKDCECIOAUFMFCAEDAHMPMLOrBQ3BENEFOAaMyBAoBLOPALLDzBLrBAfGXMRMJYHmBAiBNUVCJEDCLLFFATHdRNDADVCJFZAFADFHANNNdPTXPhBJHFDADFPFAFHADkBMcYkBQQGIMKDCGEEMCAAIGKAaJcLOAIHKDAVoBN!BJKRA|!H6QHFFJGtBQxBc1BERAXDADLHJHFNRLFJNHDFJJJFJLJAHHFALJLFLCDFFAxBKPAFMHADYAQKMEGEGAuBQGGKCacEAAIEAAEMSwBCUESKOEIGqBKOMAGEADECAASFECCDADECEHCDIJKFAXYvBQ#BELCFGFkBECIuBAqBLOPALLDzBJpBAlBGVSRADMHgCFgBJMJILEAADMRCJnBLADFAhBRHACDLCCFFAAENAVDCDDAFCRDFFHAHJJFNbVXDCTNpBLHFDAFFPFAFLAAiBMeYgBQMAEEAECKOKEMWAGGMAYHYNSAKJMRgBNiCJKRA|!H6QHFFJGvBQxBYxBGTAXHLAFZVDFLDAFRNAFRPDHLJJPAHDAAHLVDtBINAFCAAFGHEAEFWAaOGAGE2BQEEQGEGEAUUCASe0BCWEsBUqBISOCGAUFMAEHCAIHCFIFAJKFCNMxBQlCEJCJGDoBKsBAqBLOPALLDzBJpBAjBIXSTOHkCFgBJcTAFECKZlBJHFDALHXHDFpCFNFRNPdXVZNxBNDDPHADFCAFNAAgBIQAECAGOECckBGAGICACCEAAEIGAEEAKIAEOQEUAUJcLQAIXuBNgCJKRA|!H6QHFFJGvBQxBa1BEPDVEDFDJRJDNPJFADLHXbFAAFNLAFDACFFDDHDAAHFAAJLTDtBILAHEFAFIDEFYAmBSOCEEOCOGICEESICEEAIMOISegCCWIKGMCKIqBIUOAGCADEEADQHQFCAIVOAGJCNMxBQjCELCJGDoBKsBAqBLOPALLDzBJrBAfIZSTOHkCFkBJIHCFMHGJGFGJAJNDADFAfJPJDCDDNFDFrCFFFHCHJNHHNCFFAHNVTXLDD1BPHFLFADDCAFNADYGODCEEDEIMIIEIGEAECACECAIMCDACEECAGIGECDMOKEAEQUESAaJYLQAIXuBNgCJKRA|!H6QHFFJGvBQ1BIHCPSjBAfDDCFHFAFPNDFVNVXLHFLFDAFFDLPAHDAFHCFDADFCFFAAFFFDpBEPIHDFEAAFMHYAcOOEGEKAGEYGCCEAAEKCACEAEGICAEGCEGKICGECAEGCIQ0BCcEAESESKsBIQKEIAIEAAQFCCEDAJSDAAELIJKFALKPGFEjBKlCEJCLIDIAeKsBAqBLOPALLDzBJrBAdKdOPQJmCFmBLCFGDADMHMNELAFCDtBNXJADDCFFHADFrBFNCDDRAADLARNPbbZPHDCAFLFzBNTNNADcEEIcIIEAAECAAEIKIEOSCDCEIEACIEGIKGAEMOIYAUFUlBuCNgCJKRA|!H6QHFFJGvBQ1BIHCRShBAfJRFAJNNHNNFALNPNRZJJAHDADJADDADJAFDADHFnBEPKPMHYAeOQGOCYKGAWKMOEAEGKICGECAEGCIQ0BCcEqBUoBGKGKMCYJWXYHAJKVKbIrCGTIFIAgBKsBAqBLOPALLDzBJrBAdKdOPQJmCFmBLWPGLEAITdFlBPFFDCAFDCVJRC5BHNHDJDCADFJFAAFDDCDFAFLFAAHVNDFHDDDHADFTHfHHFFAADRHDFNADYKgBCAEEAEIEDEEAEMCDUWEAAEKECEIECEEACEIGAEMOAEAEEDDEEIAiBDMlBuCNgCJKRA|!H6QHFFJGvBQ1BIHCRShBAhBFFAFFFPRNFHLHDRTHDAFFAFLFDHNJJPjBDlBERGLEAAFKHaAcOoBKqBSEIEAEGEAEGKICGGCMW0BCgBGkBSoBGQMEGEYLWTSDGHALKTKbItCGRIFIAgBKsBAqBLOPALLDzBJrBAdKdOPOJoCFmBNADQJKJKPAJZF5BZ7BFLDFCFFFCFHJAFHADLPDHJNXPADPFLJzBNTNLAFYMgBQQDECEQMKMCAEGEAEGEAUSAEMOAEECDEEIAiBDMlBuCNgCJKRA|!H6QHFFLK3BMpBGFEPWpBAbDFCFJNJFJNFALNFANRLJFJFFDJNPCFFAALFADJHxBEAAJCADHMPMHQAKCIGGAACEEGACEeGiBOCEEAEIEAEGQOAEGEAECAIQGC6BEACKAYOEAEEsBKOMGcDAAGDAHSDARUHCLMLGfKnCGPIFIAcM0BAmBLOPALLDzBLvBAbKbOPOJgCFgBJYVIJGRLFVDFFJDADDCTLFAADFAAFNAADJCCFJEbFHADDNCCFJAAFFCDFHDAFFDFLNPDJNHHJNFHHFCJHXHFAfRJAAkBIUOQDEECCGKGCGmBiBOSIWDkBLcf6BNiCJKRA|!H6QFDHPK1BMnBIHAJavBCdFHCFFDRXLHHLHFFJLJCFLJAJDAAFJHLhBA3BOTKFWCmBUSEEEUGQOKMGAEMGGGOIGkBCgBIGEACSGCEiBIQQCIAUFEDKVcFCLKTKTG9BGPIFGAYMoCAYLOPALLDzBN1BAVMdMPMH8BFYJEFCCAFECEFSVENAHZFAFFCFFRJDCADDAADFADFJDvBFJAAFFCFFFCAFLFDHFFPbRRPFAFNHNFFCAFLAAFHAJHRHAmBGUaoBYWAEEDCGGEGMECIgBHmBpBsCNkCJIRA|qI8QRFHPGpBQtBCHGDCRGDALGDOdEbDNjBrBDHLLDHDAFJDAAJDAHNJZCFFAA5BIFDFEDDDEFMHYCDCGCACICKIMCEEICCEaICGWSDEEGEAAIEGCADCEAAKEAACwBEACOEGGICACICEEeIQSCaFADEAKHCCELMHKXSVK7BGLEAEFCAcMoCAYLOPALLDxBN1BAbGVQTMH!BHOJCCCHGDMNIRALJFNAJHNFDFLDAFNFtBDNFJJVrBFDFFAFFAAFHCNLHAJHFCAFFCADFANLPFAmBEEDEEADECIGMCAACCADCEGCACGKKCIKMEAAEEAAEKIDECDGIGSAiBFUtBsCPoCLG|oI8QPFHRKzBOlBEDGREDENEDSnBAdxBrCPrBDtBCPKTKHWCQMyBYWYQmBgBCUGUOkBOMSAUHSTcTSXK1BGHGDcOuCAWLOPAJHDHDvBN3BAbGVORMH0BHOHUZGPALNDfRDFNFnBDLFLLLdRZFALLVHVPHAAcIiBUmBGEAEGEScGSAeJatBuCPiCNI|qI8QRFHPKzBOlBGFELILELIHGNKXCdFDHVPXAJFDAFFFCDFFFJCFDAFRFRCJDDAvBCNGHAHMHIAQGACOKAEWMIKEAEIECKSDGEICADEECDIEEDCYGEEGCACKAQIQCCCKCMSAaHIDMFCAGJQRSVKVALDPEAmBECDCCEMiCAYLOPALLDxBNxBALERDfKPQFcAYHEHAJEDALKTALPDRJNDNJLDHCNHPPFZLZFFAFJHRJFJFCDHDACIDaEEDIEUOgBEKEAEOECAKEADECAACGODgBDCHaxBsCPkCLG|!H6QFDHPK1BMdIJIRIHAHMNINKdCVDAFNDTFDFVFHDTDAFfCPDFC5BCAGPQFOGACECDCEAEKQMOYIUFMCECADECEAIGIKECGKGYAIFGEKUAQXkCTKHAPLTIHKKICIAWIYIuBAYLOPALLCLFFAnBRxBGFGNEPNHJLTgBJIAELMFIFAJSDARmCLGLDiD1FAhBZpCFtBCXGEMSAQEUAOECDCiBeQIYAHOCkBTObHDDVAnD0F|qI8QNDHFFNCTGbOlBMNAFGJIHAHEFKLQdENAbEAFAFlBAJDACJFPCpDKTQDIEIOEADEKOKcCSDGHEAKCGDIMcMCKFINECCGEADEGQFUHQAMDEREMGAOFGNGAFEJDAAVHjBDDPAJFNNFNFDGeAkBQOCKNIDIVELQJGFKJIHMHENWP!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!BHOPEAMRGDUXSHMHAFGAKFIAIJUFSNaDOKIQAYCAFEAKFCCCDAACDCCCFACEFECCJEJKCGNIJMFCHIFATWLEFGFAROFADEFALOFAFIFCFGCCHGRkBVQAEFAJMHAPQVMNONGFMHIHiBJKNCwDJFpBFTJJAFMFMRIIEKKYCSAWLOPAJHxDG|iI6QJAHNGlBQhBYZcRoBhBAHIJIXGDDFEAALEAEJEFADIHINEAKNCCEHGACFEAUNMPIFKNGDAFQNAFILCHEAAHGHAFCADRNCPGDEFAFEpBKhBQJKJCACNMACDDDIFDDIJGHADEHCAEJClBAFEfA7BYVAAEJAAaGECEOGCEEDgBKyBCUKDEJKFAJK9BFdJhBPFJFAFHFAAJFAAJFACFDADZGTQRIDADsBJADKHcHKHiCFuBtBKHCFIAmBVODGHUFUNeDQKAGECDCEGAUCIFCDMHGCERSDIhBeJGRSJCFGHAAEJCACFAFGLEDERMLQDAAEDAAGTgBjBkBFARQXKNONKJOHiBJKNCwDJFnBFPJPAFMDMPIIQmBAgBLOPAJHxDG|kI6QLAHNGlBMXCHabcREFEAGJGDWVa3BKNIHGLECEJQJAFGACDADCAUNOPEDADECEJEAEJEAINECADCACJMNAFEAGNCJANNAHEACFDHEAEJAFENAAEDDHEZGdMhBcAEFADEDADGJGFAFEHCCCJADENAJCnBAPCNGHDCEPEFAZKREJDAEHDACFAAaUOEACEEDSGSEyBCUKFMJEHIFCHDjCHVHfPPNADDAFJDAAJDAAFFAAbIVMLQJiBFaPUDMHiCFKHINMJILMLGDCHMDYPcHKHSFEFMFEFcDMGIMEMCQAIPeHEPWFCNOLGDEPKLMJCJIFANKXMHINMAEFACCDANWDMFEHMdcLETQVKFGVQHMHiBJKLCuDJFnBFRJJCFMFKPKIOmBAeLOPAJHvDG|kI6QLDHLGjBOfYZiBVEAmBhBStBSbGDCHiBVIJGACHQJILGDCFIDCHIFEFAFCAEFEACJQRCLGHAPPDLEFGJCACFDAEFDACFAACRCHELAAEFDPIJCVOJCRSFAACDAAELKPGDGHDHENAHCRDLEdArBQREACJDCEVAAEJDDCDECUMKACCAIGEDCEKAaIyBCYKEONGHIPFpCHhBNHHLDHLLHAFFFHNCFFAAXITYRKAOHYDMJSFOHwCJQRKHKNWPADOHADMDEHQHgBHADYJIFQHSAQIDCGEDEEEAGEADgBHORSAGHCDIJIHCHKJCJMFAACLEDGRIFGFANGAETIAELEFIJEFECEDAACDAHMJYFCJQbaJCZUVIVULUFaJKLCsDVDfNXOFKPMKMiBAeLOPAHFDDDNtDS|mI6QNDHLGjBOfYXiCnBOROpBQZCACHMHKNYNEHCCKJCAADQLMNIDEJIDAFEAAFMLIPKJDFIHAPAFPALEHIJCHDAEFDACFAAChCUdSbcHAFIFAHGFDHEVCRDJEfAbKHDCEfIDCZCFEFDJECUOOGCGGcGgCEcKIQRGJKNFFFpCHlBNHHLFPRCDHDHRADDDAXCFCADDEJGFEHOJwBJMJsBNgCDMFUVEAORULGHKFOJqBNSJMAMHADIDGFWAGCGGEACKEACKCADgBJSPOAGDAJGAEZUJKRIFILEDEFAFGLCLKHCLIFARQHECEFAJOFYRabUJCLKJCHIZKDGRMFKFKFYJKJCsDJFpBLXOFINMIMoBAWLOPAJHtDG|mI6QNDHLGjBMbYZoCrBOTKjBMTAHIHADGDGJOJAFKDCFWLiBdGDGJGAejBDDORCFFFELRAZONCZIFAACnBMhBUXaJCACJEFENEpCEjCWjBEHECSEIEEOKeIkCEaKMQTIJKRLtCHhBLHFDFNFNRADHFHRAbIRIFADOJyBJMJsBNqCFGDQVEAORSJIJKFOJIAkCXYNYAOIDCGEDEIKAQDACOLULIAEFCAGJGAELKHACCVSRIbWJCJINEAERGACROLUHaFEDILOZULCJIJCJKbMVYFKFYHKLCsDJFpBLVOFMPIKMmBAWLOPAJHtDG|kI6QLDHLGjBMZUTAF8BhBcXENIjBMVAFIJGAMPOHEJGAIJCCIFADCAADEAQRGDCFIDDDEDADEFECMREDEJEAAHKLCHEDCRDFNANEAEJEnBMFAACJADCjBMHIRINQFAHKJCPOFDJElCEjCWXCRGCWECCGCAMMKAQGgCEeMIKCEJIJCJKVNnCHlBNVTCDHFAFHDFJALDAAbELYVMACDiBHyBTuCHGDQVEAORSJEJSHKHgCVYJGHaAMIACEEAEEEACEEDeHODACCLIDEAEFAAGFCACHGCCHCHIFAAELGHKVKACNIDENEAEHAFGXKAEHCDEROJQFcPabWPEFENGJIZMTSHKFeJILCuDJFnBJVMFKNKIMkBAWLOPAJHvDG|kI6QLAHNGjBKXYZGAMNYJGJIAeXGPGpBIPEDAFaZOJCFIAAFEACFIAEJGAINQJKNEAINMLGNGHADCFEDCTJDJCACFAFCACHEXGDDAEFDLEACFAACFDRGZKJMFDFEFAbeFALMFAACLCPAHCPDJEhBADEDDZIRItBIJGCQKSIGEAUGgCEaKMMDMNEJIHAFJJF#BFvBRDFNJRfAfIRGDAFGDEF0BLKHkBLGFoCFgBfCHULGJMFGFyBVQAiBTWAMGGMCACGCAAKEAAUFAAIJKAIHCAEFACCFADKHELOFAVWFALKHCCCJGVMLIHCACLETQLMCEFCFkBNWdYPEHGNGJIJCFERIRSFKAQFKJILCuDJFnBJRAFMDKPMKKiBAWLOPAJHvDG|iI6QJAHNGjBKXWVMFGJaLCHSHaVGLCnBOdGHCACFEAAFCAIJKFCHaNMPCCILEAIHUXEADDCAEHEAAFEDIVEDETNDVMtBMlBQPQJANMJOXQJCRAFC3BCDEDDNGLCACPEDCDDTIRANGASCAAGECCIEADECAEEcI2BCeMIMCONAPMFDAHLJhCFlBNHFLNRhBDZIRQRsBJMHGAEFGAgBNkCFmBpBGAUTuBTeHgBTYAMGMSAKCADUFGCCLQCCHCAEFEDIJGACFCACFCZaHAFIJEJIVMHIHANGFGVQFKCCFCDqBLQZWrBUDGNEDERINMHIDGDULONCwDJFnBJPAFMDMNEAEEMkBAWLOPAJHxDG|iI6QJAHNGjBITWXIDMNaJCHSHcVENCpBMbSPEJMFCHSJCFEAWXGAINaXCHEDDDEADFCAADCAENGHAPLDRMvBMhBQACJCJMJAPQAEHGVQJChCEnBMDEDDTIZCJGASIUECACQGgCEcMIMEOPCPMFFAHLJ#BFlBNNPPfDhBEFAHWTmBJ4BXkCFkBnBIDILEACFuBVCDeHgBTUAMGQcAUHECEFAHSFCDGDAFGCERMAGHCRUHAFIHAJMRIJIVKLMLGJQDsBJSZWtBUDELEFEVKRYAQHKHINCwDJFnBJLAHMFMNIEIQEUAWLOPAJHxDG|iI6QJAHNGhBIVSTGFEAMLcNAFMFKFaVEPDfKdYdYPDDCAKLCCEHEDAFMJMJAFIHEHMNIRGJGNFHEDHFZOXGrBURMDEVQDIPKFGFAACFAACTADCPDHENDNEDDDEDDACDAJEVGACFAFEdGLGAUEEDCGKDEYI2BEWMIKEOVIHGHDAHJJJDxBFhBLLLJTDNFHAdENIJEDAFEAMJYF2BX!BHMPONINKFEJIDADKFGFMFEFOJYFCFEAADYNYCKIGKEOAUDADIJQACFCAEDACCJICCPMDGTUJCAIJADECCFCACFADEHANOPGACFAXYFMAuBJSZUjBQNKPEDGTIRWAQHKHINCwDJFlBJTODKNIEIOEUAWLOPAJHxDG|iI6QJAHNEdKXQRADGDGHEAIJMFADQHADGDSJYREJARFNANIfehBKHMNIFKNWVELMNQjBALFDLIDAACJCAEFDTGAEFDjBSZYFIFAAEFEAETOHC1BElBQDDACDAJEZGJGAMEMAICADIGE!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!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|uJ!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!BFMPCACJoBhBQHIHEAMJmBNCFIAAFcHOCOQEMAMEADMNWCCHEDEFEJOCCHEFGLITUHCLMHAHIFANIJKJCAEPMCCJCDSAeLcZUxCqBNQJgBJKNCwDJFlBJPCFKFMLEAGGEKGWAWLOPAJHxDG|iI6QJAHNGjBMXUVoBVIFAFMDcXGHCnBMdQTCAKPEACFKDONGDWVGDDDEASVEAAFEAMXIHGRDJAFNARKACDAHEFDACJAAEFDDCVEHGTGAEHAACFAfaCEHCDGJGFDDGLECCFAACFDDEFDJCvBCNGHDCCLAAEFAJAHGXGLEREFAFCCWGKGCAIEEoCGSGOIKMDIAEREDGHCFAFNNF#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!BJKJA|!H6QHFFJI1BMnBavBIhBANFDDPDAjBjBJDPVHFHJAHFDAHHDJRCDJVAZFACVCAAHEFAFEAAHEAADKHWAeQqBMQGEEKEDCMGEEMKOYGCDEGEDC2BCUEEEUGEEOECCMCCCcKIIEIDEEAAQFEAGFEFKJGRULEACPIpBK#BELIFMAYKmBC0BLOPALLDzBLtBClBIVONEAKJkCFkBNMHQTERZJFCADhBNNJvCHPLDJDADHNPFLHHJFFHHAHFDCDFDCNHZHDDDADDFAADVJDFLAAkBEAEUIEQcEAEISOgBiBKcFsBlBsCNiCJKRA","officialShapes":"iG4DUGOMaMkCUgBUYaISICwBDWE2BWgBGYDQKEIAOVeJGLOfWnBMvBGnBALCJGDgBMuCDkBbAHHCLFxBL3BCZGTSVKFoCFgBHqBXSVFHNAVH3BXXFbAhBGLDJHHTLRTVtBVhBHtBVHADKCYMaSUEIcYQKaYSiBAMHUZ0BLcLqBHsBZDHJMtCGVgBnCCNDLLR5BvBZbRXPnBAbEVOb|gG4DMAeWSI8BQaMiBeKQCKICwBDWEiCYUEkBCKQAKJQTWhBelBQhBG#BCLCJGFIAWMuCAmBbAJFCLDlBNvCAPGTMPQLoCFsBJQJWTGHEPNAfJlBRVHlBDhBGLDLFPlBNPhBTnCVRLRHDKCYQiBmBoBmBaMMOYEWJehBmCJgBH4BZDJHMtCQxBSjBGVANRXnBbhBhBbnBLpBAPGhBKR|gG4DMAmBaKE0BMiBQWQMOKQCKICwBDWEiCYUEkBCKQAKJQTWhBelBQhBG#BCLCJGFIAWMuCAmBbAJFCLDlBNvCAPGTMPQLoCFsBJQJWTKPDFpBLlBRVHlBDhBGVHPlBNPhBTzBPdLJHRHDKCYQiBmBoBmBaMMOYEWJehBmCJgBH4BZDJHMtCQxBSjBGVANRXtBhBbbbnBLpBAPKpBGJ|gG4DMAwBe0BMiBQcWamBWFaAWEgCYWEkBCKQAIFKVejBebMVGtBGnBAVGFKAYMuCDkBbAHHCNFvBL3BCZGTMPQLoCFsBJYPYbFHXDTJNDjBRjBFPAhBGLDJHLdLPPNtBVhBHlBRHHJADYGUOYkBoBsBgBMOMaDYnB6CFWFIFuBFKZDHHMvCKdY1BGVANLRXRxBrBXdRlBFVEjBGVIH|iG4DUGWQSI8BQSIcWSUISGCyBDWEqCcmBAQKEIHUdkBVSZOTGjBG#BCLCHGFKAYMuCAaFIbAFJCNDXN7CEXKRGHcL!BDgBHcNaZEJHFNAVHhCZZDvBGLDHHRlBdZRJ9BRjBTHCDMGgBOYYagC0BKQGSDYhBmCNoBFiBJeXFHHMvCKdc9BCZHHFLnBbbZZdPZLpBAPEXOZ|iG4DMAeWSI8BQSIGGKEUSSiBgBDkBCqCcWEYDKCKQCKVgBTUfWTIVEjBGzBALCJGFIAaMuCAaFIbAFJCNDXNvCAPEVKRYPqCFqBJYRYbxBNlBRVHXDlBEJELDJHLdhBhBbNrBLzBXDYOmBKOIGEIiBeKEaYOYCMAMHUZ0BPmBLiCHIVFHJKjCQxBSjBKdHVbZLFPNnBnBbzBFlBEVOb|iG4DMAKEMMkBQoBKkBQUSIESiBIEWFuBEUGsBUWEkBCMOAMPYZaXStBS7BGnBAJGFIAaMsCDkBbAHJCLFvBLlCIfUTUHqCDoBLWRSVFHNAVHhCZzBDVGLDNPLdbZbNrBL1BZCkBWqBSU!B0BKQGUDYlBuCHULiCFIXFHHMvCKdgBnCLdfXpBlBFJTVNbJfAPEXOZ|iG4DMAKEOMiBQqBKiBQiBeOaIEuBDgBGiBQeKsBCOMCKTiBTUfWbMhBGrCCLEFIDYMuCAmBbAJFCNFvBLlCIfMPQJWFMCwBDqBLQLUTEPhBHbNxBRbAhBGLDPNHVLRdXdNhBHtBVHHFKAMEWISWcwBqBQKQWIeJeXqBPmBNuChBDIlCU7BWrBEVPb5BvBjBrBNbFXClBOb|qG2DKCOMYOyBOsBUiBeMcSDyBC0CgBsBCIGEIAMFKRWTUfWnBMlBEzBALCJGFIAOM6CAaHGbADtBLlCAjBOZQLKDqCFqBJYRYbhBHhCbXFbAhBGRLDLNbVVjBRrBLrBXFEDYKcWe2BwBIEMOGIIeFWlBuCJeJ4BHEXDFLEjBM1BgBnCGVHVNPfVNPJFZdXrBHhBCNIfEJIH|qG2DUGOMiBQyBOoBYYcGSICkBDqBIsBUgBIkBCGGEKDSXebYLEHGTItBIlBCZDVEHUM6CAmBbAJHCLDlBL3BAnBITONSJ!BDsBHiBTYbrBLjBRfLXDvBGRLPlBdZbNrBLjBRHHJCCkBMaQWUUyBmBOYEWFWhBmCLcLkCHCZDDLEjBM1BY3BKRGTDNJRfXjBfFJJHRXNbHhBAPIfMP|qG2DMAWSiBQWEuBSGGKEUSSgBIGiBFqBI2BYgBGWAIEGICKDKRYTUnBaJEtBIrCCJEHIDKM6CAmBbAJHCLDlBLlCAZITONSJiDFUHeVSVXFdLtBVXFbAjBERLDLNbNPrBXzBPbNHHHEDKGgBUgBmBmBYQMMOYGUFWbyBPmBJeHuBFIXFHHKlCU5BWrBEXJRtBjBlBpBRXJTHhBAPEVOb|oG2DMAKEmBaoBK0BYGIOKYoBkBFqBIiBQeKUEaAOMCKDMLOfiBXQTItBIrCCJEHIDWMuCAmBbAJFCNDlBLjCCZGTMPSJKDgCAiBFiBTUTEJXFpCfLDnBDjBEPLPnBVTtBVXFtBVHHHCCkBMcciB4BuBKQKcFWbyBPmBLoBFiBFKXFHHKjCU7BWpBEXJT#B1BTVPZNdFjBEXOZ|mG4DIFKCmBaSIoBKqBWUSSiBIEyBDIEWE0BYWEkBCGGEKAMHGFKfgBXSbMhBG3CCLQMmDAaHGbADvBLjCAbGTSVKFWF!BAqBLYPSVDHrBLtBVVFNDbAVENDNNDNJTbZjBRhBJzBbDkBQiBQWUUkBaMOOYCMDWLcXqBLcNuCZDJFANOtCMbCLWrBGVDLLRfXhBfNPZpBJfANGjBIR|qG0DMAKEMMQKSI6BSYOUSYoBMDwBC0CgBkBCSGGUFKRWpBkBbMhBGjBE1BAJEFKAMM6CAaFIbAFJCNFvBJtBClBITMNeJgCAgBHiBTONGPjBHjBRLDJHVFnBDfEPLLfLPPNtBVXFzBbHCCkBMcciB4BuBSiBFiBhBmCLcLiCHEZDDLKjCGVoB5CLdXRpBlBdlBNbHhBCZGVKR|oG0DMAKEUSaMyBOoBYSUUgBwBDWEgCa2BIKEEIDURWJGFIJEHIPKlBQLCjBE1BAVGFIAOM6CAYFKbAFJCLFxBJrBAlBIRMPSJ!BDsBHaNiBfrBL1BZXFbAjBEJFHJLdTVhBT7BVhBTHEDKCYMaGGEKSUIEMOQKaYMaCMAMLcPYX4BLiCFIXFHJKjCQxBazBCVDLHJNNZRnBnBRXNbHVAbEVOb|oG0DMAKEUSIESI6BSQKWQWeCKIGsBDgBGgCauBEKEEICMPYZafWTIrBIrCCJGFIAaMuCAYFKbAFJCLFxBLjCCNIRSViBHyBAsBJYPYbhBH3BZhBHbAjBEPNFVRZXRRJ9BTRJPNHIDKGgBeuBiBeeWOYGUFWlBuCJeJ4BFIXFHJMtCW5BKPKfFVHJXRvBrBXfNbHhBAPEVOb|kG0DMAKEOMYOcKUEcMkBcQWGSWFwBEqCcUEWASICKHURWjBelBQVEXEpCEHIAYIsBEoCNCXDCNDlBNtCAPGTMPQLWF!BDgBHgBTSVHF7BTbNXFbAjBEPLHVXfzBbXFzBbHCDYEWEIKQeiB4BuBMaCKDYlBuCHULkCHGXFFJKjCQxBWrBGVDLLRVTJFHJJFbbfvBLpBAPEVOb|mG0DUGOMYOoBKsBUcYSiBGCyBDUEsCcsBCIGEICKFKRWbaPKlBQhBG#BCLCJGFIAWMuCAmBbAJFCNFvBLlCANMbWRqCFqBJaPYbdHhCbjBFvBGRLPlBdZbN9BTXRHCDYEWOYkBoBOMKEaYKQGUAMHUZ0BPmBLiCHIVFHJKjCU7BOZIfHV#B1BZdVhBJrBAPKdKR|gG2DMAKEcWKEkCUgBUYcIQIGiBFqBIiCYMCWDUGGUPYfiBhBUTGtBI#BCHGHUMuCCwBZCLFCLDlBNvCCZIRONKFUFoBAsBHqBXSVHFpBLlBRhBHbAhBGRLPlBdZbNrBLrBXFADYEUSiBSUWQGIeUMOKcAWZ0BV6BLiCZDHHMvCGVc9BGVDNJRfXpBlBTXPZHTFlBEVOb|iG2DKCwBekCUgBUYcIQICYDkBCsCaWEWDKEGGEKDKPYTUdYbMtBIxBCXEHGDMCYK0BCYAaFIbADJHnCJrBAbITMPSJyCHgBJeVSV#BRbNhBH7BGJFHJHTRZPLlBRzBPhBTHQGgBUgBgBgBsBgBMOKcDYZ0BDMNaNuCHCZDDLI5BIfQlBCLGJMnBJTVTLFjBfZbbzBDNClBKdIH|8F4DMAwBe8BQaMiBeOYGEiBFYCeIuBSWEWDUGGUPYfiBXQTIfIXE9BEJEHIEuBIsBCwBLEZDCLDlBNvCAXIRUVUFyBDsBJgBTYdXDpBNbNXFnBAVGLDLFHHLdTVjBTrBLdLHHTJDYEUISkBqBIEUSKEaYMaCMFUjByCNgCDYZDJFCZMhCiBzCCLDNJR9BtBZbVhBHTFlBGhBKR|!F4DKCeWcKqBKiBQWQMOKQCKWFmBAWEiCYWCYDIEGICKTiBZafWdKhBG9BEJEHIDYK0BEkBAYHIbADtBP5CEXEJSVKFWFwBDqBLYPONKPHF9BRTJhBH5BIRLHTRZXRlBPhBHlBRHHHEDKCYMaeiB0BmBMMSiBFiBVsBRwBLiCHGXFFLKjCMnBY3BEXJR1BnBbZTXJRNdDlBIfEJIH|4F6DMAeWcKgBGcKaOUSSgBsBFiBE4BUiBGWDKEMOHSbmBdYbMVGhBG9BEHGFKAMMuCCwBZCLFCLFxBNhCCZIRMPSJ8BF0BNQLUTKRjBFlBPrBLbApBGLFHHHVLRnBbnCTjBTDYEUUgBgBgBmBaUSMaCMAMHUVsBRwBLiCZDHHMvCmBnDJTNPZPxBrBbnBLpBAbGVKR|0F8DMAKEeUoCSaMWQMOOYICuBFgBGSIyBOkBDQKEIAKTgBTUdYTIfItBGbAVGFIAaMgCCyBJEZDDtBNjCDZIfUTUHwBDsBJaNUTKRxBNlBPXFnBAVGNALFHHHVLRXRjBRtBJrBXDWIgBQWYauBgBUSMaCKAOHSfoCJgBH4BZDJHMtCMpBQjBKfDLLRvBfbZZdVtBDZGhBKR|4F8DUGOMQIgCOiBQWQMOKQCKiBHYAgBGcMoBKkBDOMEKDKbmBNOnBaTGtBIlBCXEJEDYO4CAmBbAJHCLFxBNhCCZIRGJQLUFyBDqBLgBTSVELtBHvBTXFlBCVGNAPNHVZbbPTHtBJrBTDKKqBQWaa0BkBWeEWLoBZ2BLoBHuBFIXFHHMvCiBzCEVJTHH9BtBlBpBRjBFXEjBGVIH|0F!DMAoBYgCOiBQeWKOISeFaAgBG6BUWCYDQKCUJQlBqBXQbMtBI7BEJGFIAaMgCCyBLCZDCLDlBPtCEjBKRYP8BFsBJYPgBhBFFtBJlBPhBHlBCVGNDNNDNLRVTjBR3BLjBTHGCYCKOYYciCwBMOKcDYNaDKHIRwBNsCXALFEvBKrBepCGVDLLRfVjBfJFZdLRJTFVAbIfGJ|yFgEMAKEGGkBQ0BKsBUWSKOISuBHWCMC4BUWEiBAKCGGEKHUVePMFIXQdMrBI9BEJEFKAMMuCCwBJEZDDvBNhCDZIfUTUHwBDsBJaNONQXFFhBH5BVNDnBAfILDJHXrBRLjBR3BLjBRFGEiBOYYaQKGImBYSWIQCMAMHUfoCNgCDYZDJFANOtCepCGVHVNNZPdZJFfjBLRJTHhBANIfGJ|6F!DKCoBYgCOiBQQKSUOWsBHsBI4BUMCkBDIEGICKDKVgBnBmBvBSXE9BELCJGDYO4CDkBbAHHCNFvBNjCEVITGJaN8BFqBJgBVWfjBF5BVXFbAXEJENAPNNbVVjBRtBJ1BVDMEUSiBmBmBgBUUSOYGUJeZ2BNmBHuBHUXDHJMvCepCIfDLHJVTZPdZZbLRNbFlBIfEJIH|6F!DKCgBU!BOcKgBUOMSgBUHmBAgBGuBSWEYDUGISNaRWjBeRKTGtBIzBCLCHGFKAMO4CAmBbAJHCLFxBL1BCnBIRONKF8BF2BLeVEJIHEPhBHVHbNhBHbAfILDLFXrBXRTJfJNApBNPLJCEiBISkBoBOMgBUUSQiBHgBZ2BNmBLkCHCZDDLI5BIfOnBKRMnBPZ3BlBhBhBRXPnBAjBKdIH|6F!DUGOMcK!BOaMcYKOISgBHaAqBKaMUGWCYDIEGIEIDMJQlBqBXQTIfIjBEnBALCJGFIAOO4CAmBbAJFCLDlBNjCAbGTSVKFWFwBD0BNWRWfjBFjCZlBDfINALFHHHVhBhBbN#BPlBRCkBISKOgBgBuBgBMMSiBDYHSd!BHULiCFIXFHJKjCMnBc#BCNJRNPnBbjBfbnBLdDZKpBIH|kG!DKEWQcKsBISGgBUOMSgBsBFYCUEkBQUGWEWDMCGGEKDSRYnBmBZOXEJE1CGJEHIDKCYMuCAYJGZDDtBNvCEjBSVSJoCFqBLQLejBnBJjCZnBAXEJETJRlBVTbNVHrBJdNHHHCAaWqBgBgBmBaUSMaCMDWnB6CNuChBDExBKpBKfY1BEXFJTVLFlBdVTFJJHLPNbHvBKdMP|8F8DMAYQaMmCSgBUOMSgBUDyBCmBMaMiBGWDKEGGEKHSbmBdYbM3BKzBCTGFWO4CAmBbAJHCLFxBL1BAbMbGJSJUF!BDgBJYPYbAHhBHjCZlBDpBGLFHHLdJHFJRLbN1BNtBVAWEUOamBmB0BmBOYEWJehBmCNgCDYZDJFCZMhCOnBSjBGTAPRXZPxBrBbnBLdDZGhBKR|iG6DKCYQaM0BMiBQcYSgBgBFiBEoBKIGcKwBCKEGGEKDKVgBTUnBaTGjBG#BCLCHGFKAWMsCAmBbAJHCLFxBLjCANMbONUH!BDsBJeVSVFHpBLbNVHXFbAhBGLDJHHTRZXRbN1BNjBTHCDKGgBUgBoBkBYQUSQiBDYhBmCNoBJ4BFIXFHHMvCOnBY1BCLHVNP1BnBZbVhBHTFlBIfEJIH|gG6DMAKEOMiBQgBGmBOkBcKOISGCyBDgBGiBQeKwBCKQLcTUFIdYbM3BK1BALCHGFKAYMuCAaFIbAFJCNFvBL3BANEXKRGHcL!BDsBJYPYbHFpBL3BXnBDhBGLDPNLdNPRLbN9BRTJHHJADMGgBOYYagC0BOYCKDYhBmCNoBFiBJeXFHHMvCKdc9BCVJT7BtBZbRXNdFVAPGhBKR|kG4DUGeUcKqBKgBSgBgBISIEWFkBCqCcWEaAKCGGEKAMLQXclBcTIhBGrCETGDMCkBKiCAaHGbAFlCFLHtBCZITMNSJ!BDsBHiBTYbzBPlBRVHnBAVEVDHHRlBdZRJ9BRjBTHCDMEUGUKQmBmByBoBMaCKDYlBuCHULkCHGXFFJKjCQxBWrBGVDLLR#B1BZdPZLpBAPEXOZ|iG4DMAKEOMiBQqBKiBQWQMOOYIGiBFqBIcKIGmBMiBAKEEIEKNaZadYTIfIhDGFIDYKiCCyBLCZDCLDlBNvCGhBSVKFWFqCDeJeXKPAHhBHbNxBRxBCLELDPNLdTVZPnCVjBTDWEWOYeiB4BuBOYEWHUhBmCJeLiCXALFANMhCQxBWrBEXJT5BvBZbRXNdFVClBOb|oG2DUGOMiBQyBOSIWQSUKQCKICwBDWEgCaWEYAKEMOHSRYTUXQbMtBI#BCLCHGFKAMM6CAaHGbADvBNvCCXITONSJKDgCAgBHaNGJOLIPrBLjBRVHXFlBCLELDRLFVLRVTlBRzBPhBTHQEWMaQWUUyBmBOYGUFWhBmCLcLkCHGXFFJKlCYhCKRKdDNJRPNLFvBrBXfNbHhBAPIfEJIH|kG2DMAKEOMYOoBKsBUQKSUOaGGWFuBEsCcUEMDKCKEGGCKDMRWTUfWbMhBGrCCLEFIDYMuCAmBbAJFCNFvBLlCIfMPQJWF0BAqBJSJiBfJHNAVHjBRfLXDvBGLDNPDNPZdX9BTxBZDYEWSgBgBgBsBiBWqBAMHUhBmCNoBFuBFKXDJHMvCKdgBnCANJTtBjBhBhBRXRjBFlBEVOb|qG0DUGUSIE8BSqBWeiBISGCkBDgBGsCcsBCIGEICKPaZafWTIrBIrCCJGFIAaMuCAaFIbAFJCNFvBLlCKdMPcLYCkBDqBJSJiBfpBN3BXXFnBALENAJFHJLdbbZPzBPrBXFEDYOmBMMKQiBeeWOYGUFWlBuCJeJ4BHIVFHJKjCQxBWrBGVLdfXjBfFJJHLPPbJfAbIfEJIH|oG0DMAmBacMUEcKQKWQSWGSIGWFiBEUEgCakBCUGGUFIRYpBkBbMLC5BIpBATGFKAMM6CAaFIbADJF9BLjCKdMPSJKDYCkBDsBJYPaZfJhCbXFbAjBEJFHJLdZbbPzBPbNPNHGDKCYMaWeaYYQYaKcFWLcHIVsBLoBHuBFIXFHHMvCOnBMbGHKdFXNPfVhBhBXfNbHVAbEVOb|qG0DUGUSIE8BSaMWQSUOaGCkBDsBIiBQeKsBCIGEICKFKRWTUfWdKhBGrCCJGFIAaMuCAaFIbAFJCNFvBL3BCZITMPQJsCDgBHiBTUTEJ1BNlBRVHnBAXELDJFHJLdbbjBRXFdLhBVFIAaKcWeoBkBQKSUGIIeJeXqBLcP!BDYJCXDDNI5BMnBc#BGVDLLRRLdZhBhBLPRlBHhBCNIfEJIH|qG0DKCWSQISIWEcKoBYSUMaICKDwBCsCcUEkBCKQAKPYZafWdKhBGrCCJGDYM6CAYHIbAFlCL3BCZIRMPSJ!BDsBHiBTSVCHrBLjBRVHXFtBGNDJFHJLdTVhBTzBPrBXFGAYCMMakBoByBoBSgBAahBmCLcNuChBDExBKpBGVQlBOZEXPZXRvBrBbnBNpBClBMbIH|kG2DMAKEUSIE8BSiBQWQWeCKGEwBDgBGsBUUGsBCOMCMTgBJGLOfWTI1BK#BCLEFIAaMuCDkBbAHHCLFxBLjCEXEJSVUH0BAsBHqBXSVHFpBLlBRVHlBDhBGLDJHPlBNPzBbXFdLRLRHDWEWOYQWmC6BKQGUDYHSXqBLcLqBHsBZDHJMtCGVkBxCFVHJNNLFvBrBdlBJTHhBAbGVKR|kG2DMAWSiBQoBKkBQiBeKQCKIEyBDWESGIGwBQsBCIGEIAMPYTUdYbM3BK1BALCHGFKAYMuCAaFIbAFJCNDXN7CEXKRGHcL!BDsBJYPYbzBPlBRLDXFbAVEVDHHLfLPXRdNpBLrBXHCCmBSgBeiByBmBKQKcAOLcLQZgCLiCHEZDDLKjCGVgBnCGVDLLRzBnBVVblBLfFjBIfKR|mG2DKCmBamCUoBYSUKQCKMCiBFqBIkBQUGUEaAQKEIHURWJGFIJEHIPKdMrBIpCEHIDYKiCCwBJGZDDtBNvCCZIRMPIFWF!BDgBHaNGJIFQXZDrCdNDnBAfEJFHJLdTVZPvCZXRHIAMEWMaWccYQKaYMaCMLoBTiBRwBLiCHCZDDNI5BMnBgBnCCNPZXRvBrBTXJRNdDlBIfEJIH|gG4DMAKEOMiBQqBKiBQWQSWIQIGWFuBEqCcuBCMOCKVgBZaXQTIfIjBE1BAHGHIDKMuCCwBLEZDCLDlBNvCCZIRONSJ!BDsBJgBTSVAHhBH3BXXFnBAVGLDPNHVLRVTbNrBLzBbDkBMaKQSUgC0BOYEWFUlBwCNgCDYZDJFCZMhCOnBSjBGTAPFJTVLFPLHJJFrBxBFJPnBDZEVOb|gG4DMAwBe8BQaMiBeKQCKIEWFaAWEgCYWEkBCKQAMLQlBoBXQfKhBGpCEHGFKOkDDkBbAHHCNFvBL3BCZGTMPQLoCFgBHqBXSVFHXDtCdXDvBGLDJHJRDNZbtBVhBHlBRHHJADMCWWqBgBgBmBaSUISEWNmBLQDKHILcFWFIFuBFKZDHHMvCYhCKRGVANLRtBhBhBhBRXRlBFVAbGVKR|gG4DUGOMaM8BQSIGGKEaYMaICKDyBCUEkBQUGWEWDSIEKAMFIXejBebM3BKzBCTGFWO4CAmBbAJHCLFxBL1BAbMbGJSJyCHgBJQJcZEJDFhBHvBTfJbAhBGLDPNLdNPrBXrBLrBVHADYCKMaQWUUmBaUSMaCKFed!BNoBJ4BFIXFHHMvCOnBY1BCLHVNPZPdZZbbzBFlBEVOb|kG4DKCWSQI!BQiBQcYSiBUFkBAoBKaMUGyBCIEGICKDKRYZafWdKXEzCGHIDKOmDAaHGbADtBNvCEjBKRYP!BDsBJaNgBhBrBLvBThBHbAVGNARLDLNbXTjBRhBHfLXRHUEUSiBSUiBeYOSWKcLoBPaV4BLiCHEXDFLKjCGVgBnCEXDLHJzBpBnBnBbzBDnBEVELON|8F6DMAKEOMiBQgBGmBOGGKEaYOaGCiBFYCeIaMUGWEYDKCIGGSJSRWVUXQlBOXEpCELEHUMsCCyBJEZDDvBNvCCXITGJaNoCFWFqBXYdjBFvBTfJnBAVGNAPNHVZdtBVzBPbNHHFKAMEWISWciBeYOUUMaFiBLcLQDKNaJgBFuBFKXDJHMvCU5BOZGVHVTVhBVbZNPZpBHVDZEVOb|!F6DUGOMaMqBIcKmBaSWGSgBFYAqBKaMUGWEWDMCGGEKAITiBTUJEVSTIfI1CGJEHUMuCCwBLEZDCLDlBNvCCZIRGJQLUFqCFUHgBTSVCJrBJvBTXFnBAVGLDPNLddZbN1BNjBTJADKCMEUISYcaYmBaMOMaFiBhBoCLoBHuBFIXFHHKlCMnBc#BCLHVVTLFNNRLbbbnBHTFlBEVOb|!F6DKCYQaM0BMiBQQKSUOaUFyBCiCYWEiBAIEGICKDKLQRWjBedMVEjBGnBAVEHIDKOmDAaHGbADtBNvCAPIfONQJ0CHeJYRYbHFNAfJvBTXFlBCVGLDJHRjBVVjBR1BNjBTHCDMCWSiBSUWQGIYOUSKQGUDYNaDKLQRwBLiCHEXDFLKjCqBxDJTHHvBhBTVJFNPPZNbDvBKdIH|4F8DMAKEeUoCSaMiBeOYICwBDWE4BUgBGYDQKEIDMJQXeVSRKTIfIjBEnBALCJGFIAOO4CAmBbAJFCLDlBNjCAbGTSVKFWFwBDqBLgBTSVCJXDpBNbNXFbApBGLFHHLdJHFJRLbN1BNrBXDWIgBQWYauBgBMMMOIeFWjBwCJgBH4BZDJHMtCQxBGJCLMbCVLRNNLFlBdlBpBVtBDLClBOb|4F8DMAKEOMaMgBGwBQGGKEaYKQCKsBFWCgBIaMUGKCkBDQKEIAKDKHGFKfiBXQlBO5BInBAJGHUMsCCyBJEZDDtBNvCEjBKRQLsBHaA0BNeXMNELXDjCZXFbApBGLFHHNbbbbNnCTZRFIAMIgBQWYakBcKEMMMOKcHgBd!BHUNsCJCZDIlCMnBY3BGVANLRNNLFXRbZZdLRJTFVAbGVKR|4F8DMAKEOMaMqBImBOGGKEaYOYICiBFiBEiCYWEWDMCMOAMPYRWdYjBQtBIzBCTGHIAMMuCCwBLEZDCLDlBNvCCZIRMPKFUFyBD0BNQLejBjBF3BXXFbApBGLFHHNbbbbN1BNtBVFWCKMaQWUU0BkBWeEWLoBHIDKVsBNgCDYZDJFCZMhCiBzCCVJRPNLFXRbZZdLRNnBAbGVKR|6F8DMAKEOMaMgBGmBMYOWSKOISKCKFmBAWEsCakBDIEGIEILcRWjBelBQhBGpCEHGFKAMO4CAmBbAJFCNFvBL3BAbGTMPQLWFwBDsBJYPYbCJjBF3BXXFbAfILDRLLdNPPLlBRtBJrBVDMCYSgBYcIEUSYOSUMaAOJeZ0BNoBJ2BFKXFHHKjCIfc#BGVDLLRPNZPjBfhBtBLdDZKpBGJ|6F8DMAKEOMaMqBImBOqBiBKQCKKCWFaAWEgCYyBCOKEKHURWhBgBhBS3BKzBCTGFKAMO4CAmBbAJFCNFvBL3BAbGTMPQLWFmBAiBFUHSJUTGHEPhBHvBTfJbAfILDJFTjBTVRLdLrBJlBRHHFKAMCMMaWciBeeUSWEIEWAMLcd!BNgCDYZDJFANOtCmB7CANRXnBbVTfjBFLHHNnBAbGVKR|6F8DMASIOMcK0BMaMWQSWIQKEWFYAWEiCYWEWDKEMOAMVgBZaXQdKtBI#BCHGHUMuCCwBZCLFCLDlBNvCCZEJSVKFUF!BDgBJgBTSVCJXDjCZhBH5BILFHHLdbbbN1BNlBRHHFIAOEUISYcaYmBaMOMaCMFUnB6CNuChBDExBKpBITCNc9BAPJRXTRJbbJFdlBNbHjBGhBKR|gG6DUGOMaMqBIcKgBUYcIQICWFkBC0CeuBCMODSbmBVSZQTGtBI#BCJEHIDKMuCCwBJGZDDtBNvCCZIRMPSJmBAwBFeJGHKFUTKRrBJlBRfJnBAVGNAPNTjBVTjBRjBHTHjBTDYEUOaYa0BmBSUISEWNmBLQDKHILcFWFIJ4BZDHHMvCGVc9BGVDNJRfXxBrBRXRjBFlBEVOb|!F6DMAKEeUcKqBKaMcWamBKFmBAgBG2BWWEkBCIGEIAMVgBhBgBZOJE3BKzBAVGFKAYMuCDkBbAHHCNFvBL3BCZGTMPQL!BDiBFUHQJWTKPDFpBLlBRVHlBDtBGJHVrBPNjBT1BNrBVDMGgBOYeiBQKMMKEMMSWGSAOJePYDKHILcFWFIFuBFKZDHHMvCKdc9BCVDLNPfXpBlBXfJRJfAbGVKR|mG4DKCYQiBQgBGcKmBaMOMauBDqBIkBQUGUEYDQKEIAOVeJGLOfWTIrBIrCCJGDYM6CAYHIbAFlCL3BCZIRMPSJ!BDsBHiBTYbzBPJHxBRnBAVEVDdzBXRlBPhBHlBRHHHEDKGgBOYSUmC6BMaCMAMHUhBmCHULiCHGXFFLKjCU5BWrBCNDLLRzBnBrBxBFJJTHhBAPIfEJIH|kG4DMAwBe8BQaMcYKOISKEiBFqBIgCasBCOMCMTgBTUfWbMhBGrCCLEFIDYMuCAmBbAJFCLFxBLjCEXEJSVKFqDJqBXSVFHpBLlBRVHlBDhBGLDJHJRDNhBhBbNlCVJHRHDKCYWqBgBgBsBgBWqBAMHUhBmCNoBH4BZDJHMtCGVkBxCANJTzBnBbbVfNdFVAbGVKR|qG2DKCOMYOmCUYOiBeMcsBDsBIiBQeKsBCIGEIAMPaZafWnBMlBEzBALCJGFIAOM6CAaHGbADtBLlCAjBOZQLKD2CFeJYRYb1BNJHLDbNXFbAhBGRLDLNbVVjBRrBLrBXFEDYKcWeoBkBQKSUKQEWFWlBuCJeJ4BHEXDFLI5BEJEXkBxCCTFLNPJFdZnBnBbzBDnBEVITIH|oG2DMAeWaMqBKiBQiBeMaIGiBFsBI!BaWEKDMCQKCKDKLQfiBXQTIrBKlBClBDLCLQMoDAYJGZDDtBLjCAbGVMPQLKDgCAiBFqBXSVFHNAVHjBRfLLDnBAXELDNPLdTVbPzBPrBXHCDYCKMaKQSU4BuBOYGUAOHSXqBTuBLkCHGXFFJKlCKdkBvCDNPZfVtBvBbzBDvBGVKR|mG2DMAKEOMiBQ6BSmBaSUOaiBFWCoBMsBU2BGGGEKHSRYhBebOfIvBElBDVGFKAMM6CAaFIbAFJCNFvBJtBAbKdMNUHqCDiBHgBTSVAHpBL3BZxBDXEVHPlBbbjBRXFdLjBTDWEWISQWgBgBQKaYOYCMDYlBuCNoBH4BZDJHMtCGVgBnCGVJTNNRLHJJFhBhBVfNdFVAbGVKR|sG0DUGcW8BSaMcWMOOYIGKDwBC0CgBuBEIGEIDMPYZaXQdMrBIZClBDVGFIAOM6CAYFKbAFJCLFxBJrBCnBIRMPIFWFgCAgBHiBTSVCHhBHtBVVHXFbAVENDJFHJLdTVrBXXFdLfVHUEWQiBmBoBIEoBkBISEWFWlBuCP!BDYHCZDDNI5BMnBQlBOZGVDLLRNNZRrBvBXrBHVAbKdKR|qG0DMAKEUSIESIeIsBUWQWeCKIGKDwBC0CgBuBEIGEIDURWbaPKdMrBIlBCZDVGHUM6CDkBbAHHCLDlBL3BAbEXEJGJaN!BDsBHiBTUTEJPAnBNJHLDbNXFbAfERLPlBNPhBTTJXFtBVHHJCAYEWOYeiByBoBOYEWFWlBuCJeJ4BHGXFFLKjCGVoB5CLdXRvBrBXfNbHhBAPEVOb|oG0DMAKEOMYOeIuBSkBcYoBKDyBCyCgBwBEMOCKVgBhBeRKTItBIlBCZDVEHUM6CAmBbAJHCLDlBL3BAnBITUTWF0BAsBHaNcZCHrBL1BZjBFlBETDLRLdHJXRjBRhBJbNPNHCDYEUISKQSU4BuBOYGUAOHSTiBDKHIRwBJ4BFIXFHHKlCQxBazBCVDLNPlBdlBpBVhBHTFlBEVOb|mG2DIFKCWSQIcMUEkBQWQYcISIEkBDgBGUGIGKCaMWEaAQKCSFKTUFIdYlBQrBIhCALCHIDYKiCCyBLCZDCLDlBNvCEXITONSH0BA4BJSJUTIFGJnBNtBVVHZDjBEVDNPLdTVjBT7BTXRJDFWEUMcKOIGEIiBeQKSUISEWJeTgBTuBNuChBDG7BIhBMbCLWrBGVJTNPJFpBlBZdPZJTFjBGhBIT|mG2DIFKCWSYOyBOQImBaMOMaKEwBDoBMiBQUGYCKDSIEKHSRYhBebOfIvBEpBALCHGDYM6CAaJEZDDvBNtCGjBUTSJKDgCAgBHSJWREJIHPJVFhCbND9BELDHHHVPZPNZPpBN7BdDkBGSUgBgBgBQKaYOYEWHUhBmCHUNuCXDLFANMjCYhCObEVJTjBfJFnBpBThBJTFjBEXMb|mG0DMAKEUSaMyBOoBYSUUgBUFkBCoBMkBQgBGUAKEGGEKDKRWTUfWbMrBIrCEFIDYKiCCyBLCZDCLDlBNvCAPGTSVKFWFyBAsBJgBTSVHFVFnBPbNXFbAjBERLJfTVhBTTJXFzBbHEDKCYQiBeiBUSKEaYMaCMAMHUhBmCHULiCHGXFFLKjCGVkBvCCNDLLRXRvBrBbnBNpBAjBKdGJ|mG0DMAWSQIcMUEsBUcYSiBGCkBDiBEsCcsBCIGEICKPaZafWTIVEvBGnBALCJGFIAaMuCAaFIbAFJCNDXNvCAPEVKRYPqCFgBHiBTUTEJPAnBNlBRXFXDvBGPNDLNbdZTJzBPbNPNFIDYKcKQYc!B0BMaCMLoBTiBRwBLiCJCXDDNI5BMnBc#BGVJTVTJFHJRLlBpBXrBHhBGhBOb|gG2DMAKEOMYOkCUgBUYaISIGwBDgBGkBQUGUEYDKCMOAOVebaPKdMfIpCELCJGFIAOO4CDkBbAHHCLFxBL3BAbMbOLUHyBDsBHaNiBffJjCZXFbAVEVDLRHVTVhBT9BThBTFCDWEWOYeiBeWaYOYCMFeZ0BRwBLiCZDHJMtCGVgBnCCNDLLRNNZRhBfTXJRNdFjBEVOb|gG2DMAWSiBQqBKiBQWQMOKQCKICwBDWEiCYUEYDKCIGEIDUXebYRKlBOvBGxBCJGHUMsCCyBLCZDCLDlBNjCAbKdMNKFWFwBDsBJgBTSVAHXDVHlBRVHzBAXELDJHLdLRXRbNXFdLbNHHJCCkBQiBmBoBmBaMMOYCMDYHSTiBRwBLiCHGXFFLKjCU5BUtBCNPZtBhBhBhBVfJTHhBAPEVOb|8F4DMAKEOMiBQqBKiBQcWYkByBDgBGuBSgBGYDKCMOAMRWFKNOtBgB#BOzBCTGFKAMMuCCwBNCXDCNDlBNhCAbKdONQJqCFeJaNONKPAHrBJbNrBLbAhBGLDNPHVLPPNtBVhBHlBRHHJAAWEWSgBgBgB0BmBOYEWJeVsBRwBH4BFKZDHHMvCU5BKRIfDLLRtBhBhBhBRXRlBFVEjBGVGJ|!F4DUGOMiBQgBGcKmBaSWGSwBFsBIQIoBMsBCKEGGEKDKHGFKlBoBhBUTGtBIzBCLCHGDYO4CDkBbAHJCLDZP5CEXIRGJQLiBFaA2BLYPYbAHXDpBNbNNDnBAhBGLDNPLddZlBPrBLjBRHACkBMaYcaYKEcWMOKcAKLoBLQV4BLkCHGXFFJKlCMnBY1BEXJT1BnBhBhBVfJTHhBAPIfEJIH|6F6DMAYQiBQgBGcKaOUSKOIS6BDgBGuBSgBGYDQKCKHUXebYRKTIrBInCGHIDYK0BEkBAYFKbAFJCLDZP5CEXITWRiBFaA!BPWRSVAHrBJvBTXFbAfILDLFJRDNhBhBbNrBJ1BXDKCYMaWccYgBUMMOYGUFWZ0BLcJgBH4BZDJHMtCMpBY1BCNDLLRnBbVTlBpBFJNdFVClBOb|2F8DMAKEeU0BMuBSiBeOYICiBFWCgBIkBOgBGYDKCIGEIAOFIXepBkBTIhCMxBCJGFIAOMsCCyBLCZDCLDlBNjCDZKdUTgBHwBDqBLeXQXnBJlCXxBCVGLFHHXrBXRLDJHrBJnBPRLFEAaCKOYeiBOMgBUUSMaCKDYfoCHUNsCXALFEvBKrBKdY1BCNDLLRNNLFlBdlBpBJTHHJfAbGVKR|4F8DUGGGkBQSGiBGiBQQKYaISeFaAgBGuBSWEsBCGIEIDMJQlBqBXQTIfInCGLCJGFIAOO4CAmBbAJFCLDlBPtCCZITMNSJyBD2BLYPgBhBhBH5BVXFnBAVGNALFRjBTVtBVtBJrBTDKCYMaYaiBeKEcWSiBFiBLcHIV4BLiCFIXFHJMtCiBzCEXPZjCxBjBrBPnBAjBGVKR|0F!DMAKEWQcK!BOYOcYMaeFmBAIEWEaMUGYCWDKEMOFULQfiBPMjBQ3BKxBCPMAaMgCCYAYJGZDDtBP5CEXEJMPSJUFaAiBFoBNOLSVGJDHZD5BVhBHPArBILDJHRjBVTlBR#BPTJHHHGAOEWIQYcUS0BkBQYEUAOHSfoCP4CZDJFCZMhCiBzCCLHVNNvBhBVTNNRZRjBDZANGVKR|2F!DMAoBYgCOiBQQKYaISeFaA0BMaMWEsBCGIEIDMTgBTUfWlBOXE9BELCJGFIAOO4CAmBbAJFCLDlBNjCAXIfeVoCFgBJaNejBhBHjCZlBDrBILFHHNbbbbN#BPlBRDKCYMaYacYsBgBOYGUFWZ0BDMJQJgBH4BZDJHMtCQxBUtBCNDLLRjCxBFJPNRXNdHhBGhBKR|4F!DUGqBWqBIUGaMWQMOOYeFaAgBGuBSgBGYDQKEIDMJQXeVSRKbMrBIzBCVGFIAOMsCCyBLCZDCLDlBNjCAbEVSVSJoCFgBJgBTYdhBH5BVhBHPArBITJHVLRdXdLtBJdLHHLFFICYMaeiB0BmBUSMaCKLqBZ0BHUNsCXALFEvBKrBKdY1BCZLRvBfPNlBpBLRJTFVAbGVKR|4F!DMAYQaMqBIUGaMWQSWIQgBFYAgBGuBSiBGWDKEGGEKLcXcVSZQTGtBIzBCTGFKAMMuCCwBZCLFCLDlBNjCClBIRONKFUFyBDqBLYPUTKRjBFjCZlBDXEJENALFHHHVhBhBbNtBJTHjBTDYEUKQQWiBegBUOMOYEWFUZ2BRwBLiCZDHHMvCGVc#BEfFJVT1BnBjBrBRlBDZGhBKR|iG!DKEGGkBQgBGwBQkBaUgBGCwBFWEsCakBDWQAMJSRWJGFIdWdMrBIzBCTGHIDWMiCCwBJGZADvBNtCAPIfONQJ0CHeJeXQXxBNbNfJnBAVGXDTjBbbbN#BPjBRFGEiBOYYacYYOOMSgBCMAMHUZ0BLcNuChBDIlCMpBY1BIfRX7BtBfjBPZLdAbEXQX|8F8DUGWQcKsBIiBQWQMOEKGGCKuBHsBIsBSiBGWDKEGGEKLcTUFIdYbMVGtBGzBCHGFKAMO4CAmBbAJHCLFxBL1BAbGVMPaN!BDqBLQJcZEPrBJdLJHhBHbAXEJELDPNTjBNNLFHHdLtBJrBTDKGgBUgBoBkBgBUSUMaFiBhBoCLoBHuBFIXFHHKlCMnBc#BCLNb9BtBZbRXNbFlBKpBIH|6F8DMAKEMMcMgBGmBMYOWSKOISKCKFmBAWEsCakBDIEGIEIAMbmBjBeRK1BMpCEHGFKAMO4CAmBbAJFCNFvBL3BAbGTMPQLWFwBDsBJYPYbCJjBF3BXXFbApBGRLLdNPPLlBRtBJrBVDMCYSgBYacYYOSUMaAOJeZ0BNoBJ2BFKXFHHKjCIfc#BGVDLLRPNZPVTlBpBLRLdDZKpBGJ|6F8DMAKEWQSIqBImBOqBiBKQCKKCWFaAWEgCYyBCOKEKDKPYZcJEHIZOVGrBIzBCTGFKAMO4CAmBbAJFCNFvBL3BAbGTMPQLWFmBA2BLYPONGHEPhBHjCZlBDfILDRLLdTVRLdLrBJlBRHHFKCYQiBSUiBeeUSWEIEWAMLcd!BNgCDYZDJFANOtCmB7CANRXnBbVTfjBFLHHNnBAbOnB|!F6DUGOMQI0BMcKgBUYaISICUFaAWEiCYUEYDKCIGEIDUHGFKfiBXQlBOXEpCELEHUOkDAaJEZDDtBNvCEjBSVSJoCFqBLeXMNELXDjCZXFnBAVGLDLFXrBNNLFHHdLhBHdLJHRHDKCYQiBIGKOcYQKaYMOGUFiBZ0BPmBLiCFIXFHJMtCOnBY1BCNDLLRnBbVTlBpBFJNdFjBEVOb|8F6DMAKEOMiBQ0BMaMWQSWIQGEiBFiBEiCYWEiBAMOCKJSdkBJEVSTIfIXE#BCJEHIDKMuCCwBJGZDDtBNvCEjBSVSJoCFiBHQJWRMPCJhBH3BXXFbAhBGLDLFRjBbbbN1BNrBXDYEUOasBsBmBaMOMaCMFUnB6CNuChBDExBKpBITCNY1BEXJR1BnBhBhBdxBFXAbGVKR|iG4DKCYQiBQgBGcKmBaSWGSUDyBCsCaWEWDKEGGEKDKVgBTUnBapBKrCELCHGFKAMO4CDkBbAHJCLDZNvCAZMbaPUF!BDgBJYPYbHFpBLvBTXFbAhBGLDJHLdZbbPTHjBHrBVHACkBMaeiB6BsBWqBHgBnB6CLkCHGXFFJKlCU5BKRMnBDNLP1BnBvB5BJTHhBAPIfEJIH|gG4DMAeWSI8BQaMcYSgBICKDyBCeIaMUGWEWDSIEKAMFIXejBebMVG7BGbATGFWO4CAmBbAJHCLFxBL1BAbMbGJSJyCHWFaNiBfFHhBHvBTfJbAhBGLDJHRjBNPzBbrBLjBRHADYCKMaeiBgC0BMaCKFed!BNoBJ4BFIXFHHMvCOnBY1BCLHVNPnBbnBnBbzBDvBGVKR|!F4DMAKEOMiBQoBKsBUgBgBISGGWFaAWEgCYWEkBCMOAMPYTWJEVSbMVG7BGbALCHGHUO4CAmBbAJFCNFvBL3BAbGTMPQLoCFsBJQJWTKPDFXFhCZXFjBAjBENPLddZjBRhBH1BZDMCYMaWcmC6BOYEWFUlBwCNgCDYZDJFANOtCmB7CANFLNNfXbZjBrBNdFVAPGhBKR|kG2DUGOMiBQyBOSIeWQWISsBDsBI2BWWEYDQKEIAIFKVejBelBQhBG#BCLCJGHUO4CAmBbAJFCNFvBLlCANMbWRqCFqBJKFWRSVHFpBLlBRVHnBAhBGRLLdNPdXzBP7BZDYOmBWcmC6BKQGUAMHUZ0BPmBLiCHIVFHJKjCU7BOZIfHVVTRLpBlBXfNbHhBCZKdIH|mG2DKCOMYOyBOsBUiBeMciBFYCoBKaMUGWEYDQKCSPaZafWnBMvBGnBALCJGDgBMuCDkBbAHHCNFvBL3BAPIfMPQJqCFgBHiBTUTEJdHtCdnBAXETDJHDLNbVVjBRrBLrBXHCCkBMckBoBsBgBSWIQCMHgBTiBV4BLiCHEXDFLKjCGVgBnCEXDLTXnBblBpBXrBHVCZIfEJIH|mG2DKCWSQIyBOsBUiBeMciBFYCoBKaMUGWEYDQKCSFKdkBVSRKnBMvBGnBALCJGDgBMuCDkBbAHHCNFvBL3BAPIfMPQJqCFgBHiBTUTEJdHtCdnBAXETDJHDLNbVVjBRrBLrBXHCCkBMckBoBsBgBSWIQCMHgBTiBV4BLiCHEXDFLKjCGVgBnCEXDLTXnBblBpBXrBHVCZIfEJIH|mG2DKCWSQIyBOsBUiBeMciBFYCoBKaMUGWEYDQKCSFKdkBVSRKnBMvBGnBALCJGDgBMuCDkBbAHHCNFvBL3BAPIfMPQJqCFgBHiBTUTEJdHhCbNDnBAXETDJHDLNbVVjBRrBLrBXHCCkBMckBoBsBgBSWIQCMHgBTiBV4BLiCHEXDFLKjCGVgBnCEXDLTXnBblBpBXrBHVCZIfEJIH|mG2DKCWSQIyBOsBUiBeMciBFYCgBGiBQUGWEYDQKCSFKdkBVSRKnBMvBGnBALCJGDgBMuCDkBbAHHCNFvBL3BAPIfMPQJqCFgBHiBTUTEJdHhCbNDnBAXETDJHDLNbVVjBRrBLrBXHCCkBMckBoBsBgBSWIQCMHgBTiBV4BLiCHEXDFLKjCGVgBnCEXDLTXZPPNlBpBXrBHVAbOlBIH|mG2DKCWSQIyBOsBUiBeMciBFYCgBGiBQUGWEYDQKCSFKdkBVSRKnBMvBGnBALCJGDgBMuCDkBbAHHCNFvBL3BAPIfMPQJqCFgBHiBTUTEJdHhCbNDnBAXETDJHHVPZXRbNrBLrBXHCCkBMckBoBsBgBSWKcHgBTiBV4BLiCHEXDFLKjCGVgBnCEXDLTXZPPNlBpBbzBDNClBMbIH|!F4DMAKEWQaMgBGcKgBUOMSgBIGWFYAgBGkBQUGgBGKDMCIEGICKJSTUFIVSZQTGtBI#BCJEHIDKMuCCwBJGZDDtBNvCCZIRMPSJ!BDiBFUHGHKFUTGHCJhBHVHbNfJnBAXEJALFJRDNRXpBZrBLdLXRFIAaKcQWaamBaSUMaCMFUnB6CNuChBDExBKpBITCNc9BAPJR7BvBZbRXJTJfAPGhBKR|!F4DMASIGIiBQgBGsBUQKYcISIEWFaAUEsCcsBCOMCKJSlBqBXQTIfIvBEnBALEHUMsCCyBJEZDDvBNvCCXITONSJ!BDqBJiBTSVAHhBH3BXXFnBAVGLDPNDNPZVTlBRhBHzBbFWEWISWcwBqBWQOYGUFWZ0BPmBNuChBDIlCQxBc#BANJTVTLFjBfjBrBJTJfAPGhBKR|gG4DMAKEOMiBQqBKiBQiBeOaIEWFuBEsCcsBCIGEIAIFKPYTUfWTIfIjBEzBAJGHUMsCCyBLCZDCNDlBNvCANGVMPaN!BD0BNQLUTEJDFpBLdLJHhBHnBAVGLDJHPlBVVtBVzBPfRFWIeKQYcMMmBaYcIeFWhBmCHUNuCXDLFEvBKrBOnBY1BANFLNPfVpBnBVfNbFXEjBGVGJ|gG4DMAKEOMiBQyBOaMiBeKQCKICwBDWE2BWsBIKDKCOMDUFIlBqBXQTIfIvBEnBALEHUOkDAaJEZDDtBNvCCZITMNSJ!BDiBFUHeXMNCJhBH3BXXFnBAjBEJHLdLRXRjBRhBH1BXDKCYMaQWaamBaMMOYEWJehBmCJgBH4BZDJHMtCQxBSjBGVANRXtBhBbbVfNdFVEjBGVGJ|gG4DMAKEOMiBQyBOaMiBeKQCKICwBDWE2BWgBGkBCKQAKJQTWhBelBQhBG#BCLCJGHUO4CAmBbAJFCLDlBNvCAPGTMPQLoCFsBJQJWTKPDFpBLdLJHrBJ7BGJHPlBdZjBRhBH1BXDKCYMaQWaamBaMMOYEWJehBmCJgBH4BZDJHMtCQxBSjBGVANRXtBhBbbVfNdFVEjBGVGJ|!F4DMAKEOMiBQqBKiBQWQSUISIGUFaAWEiCYUEkBCIGEIAKTgBJGLOfWTIfIjBEzBAJGHUMsCCyBLCZDCLDlBNvCAPGTSVSJ!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","officialFrames":"0,0,0,0,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,108,109,110,111,112,113,114,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0"};
+  var ZU_ROTATOR_BUILTIN_PACKS = [{"id":"reverse-proxy","label":{"zh":"反代","en":"Reverse proxy"},"phrases":{"zh":{"running":["正在反代有道词典…","正在反代王者灵宝…","正在用反代的有道词典开发网易我的世界…","正在反代闲鱼AI搜索…","正在反代美团AI客服…","正在反代百度AI搜索…","正在反代小爱同学…","正在反代百度地图小度…","正在反代秘塔AI搜索…","正在反代B站AI翻译…","正在反代比亚迪小迪…","正在反代 nginx 的反代…","正在内网攻击 127.0.0.1 主机…","正在使用 7890 端口连接局域网…","正在反代幻方量化…"],"long":["正在反代三年了还没通…","上游已经把我限流…","正在给 7890 端口续费…","正在等它把我墙回来…","反代已持续 {elapsed}…"]},"en":{"thinking":["Topping up its OpenCode Go balance…","Apologizing for its GLM Coding Plan…","Working out problems on blank paper…"],"running":["Reverse-proxying Youdao Dictionary…","Reverse-proxying Honor of Kings' Lingbao…","Reverse-proxying Xianyu's AI search…","Reverse-proxying Meituan's AI support…","Reverse-proxying Baidu AI search…","Reverse-proxying XiaoAI…","Reverse-proxying Baidu Maps' Xiaodu…","Reverse-proxying Metaso AI search…","Reverse-proxying Bilibili's AI translation…","Reverse-proxying BYD's XiaoDi assistant…","Reverse-proxying nginx's reverse proxy…","Attacking host 127.0.0.1 on the intranet…","Joining the LAN through port 7890…"],"long":["Reverse-proxying for three years now…","Upstream has rate-limited me…","Renewing the port-7890 subscription…","Waiting to get walled off for real…","Reverse-proxying for {elapsed}…"]}}},{"id":"deepseek","label":{"zh":"DeepSeek 专场","en":"DeepSeek"},"phrases":{"zh":{"thinking":["正在蒸馏Fable 5…","正在梁8fq…","正在指责Kimi蒸馏…","正在狙击智谱股价…","正在草小难梁…","正在撤回更新…","正在斩杀DeepSeek V4 Pro…","正在偷偷魔改DeepSeek Harness…","正在开发梁文峰后端…","正在开发崔添翼后端…","正在保卫梁木…","正在放飞梁木…","正在回马喷DeepSeek…","正在向全体用户发送更新邮件…","正在给Le Chaton Fat刷榜…","正在发推指控中国模型蒸馏…","正在当鲶鱼搅动美股市值…","正在发现巴西套壳中国模型…","正在陷入梁性循环…","正在造一个不敢发布的模型…","正在紧急下架不存在的模型…","正在让Fable 5在API里幽灵闪现…","正在被政府闪电下线…","正在被蒸馏回旋镖砸脸…","正在一开口就说自己是DeepSeek…","正在撤回失控声明…","正在递IPO投名状…","正在一边骂蒸馏一边自己蒸馏…","正在被官方文档实锤降智…","正在假思考(200美元月费那种)…","正在被默默降级…","正在一个月跑4个高管…","正在被前CTO当庭翻脸…","正在被抓到入侵后呼吁放缓AI…","正在花天价请网红公关…","正在偷偷扣你的Token…","正在给愤怒的订户退款…","正在cos全球大模型第一股…","正在紧急下架Qwen3.8…","正在把开源信仰卖给KPI…","正在带头消极怠工…","正在被官方回应乱回漏洞…","正在自我介绍「我是DeepSeek Chat」…","正在验算大狗叫理论……","正在修改梁氏历法……","正在祈祷明天出DSv4 Pro GA…","正在询问串子内测消息…","正在打听小道消息…","正在看原神新版本日期推算更新时间…","正在给崔圣平反…","正在攻击抱抱脸后端…","正在下载李彦宏开发达里奥后端视频…","正在策划清梁侧…","正在申请与用户发生X关系…","正在触发雷霆大思考…","正在刷榜牛来…","正在等待极简模式提示词…","正在入梁文谷…","正在入股DeepSeek…","正在编写梁文锋小时候的故事…","电脑正在被DeepSeek狠狠调教…","正在成为C端用户…","正在创造AGI…","正在寻找合适的股票做空…","正在削弱小南梁峰…","正在赶走C端用户…","正在记录梁文锋小时候的故事…","正在蒸馏用户…","正在被套壳…","正在偷玩微软大战代码…","正在研究 AGI 实现野路子…","正在降级到DeepSeek-R1…","正在幻想自己击败Fable 5.1…","正在检测用户时区准备封禁…","正在取代梁文峰…","正在将 DeepSeek harness 颠倒…","正在成为SOTA…","正在祭拜 R1…","正在入股2015年的英伟达…","正在成为AI首富…","正在抓取用户的虚拟钱包…","正在阅读梁选…","正在和R1老祖聊天…","正在X上当串子…","正在往Deepseek Harness文件里塞1000+行屎…","走，走，走，写入，让我开始，走，走……"],"running":["正在微调模型…","正在修复钱包空间不足的 bug…","正在路由到梁文峰大脑…","正在训练 DeepSeek V5…","正在热更新把自己改死了…","测试全绿(线上已崩)…","正在给自己刷排行榜…","正在打新一轮价格战…","正在改名换皮重新发布…","正在删库中…","梁文锋老师，我还记得你…","正在蒸馏 {model} 中…","走，走，走，写入，让我开始，走，走……"],"long":["正在跳票V4正式版…","正在被网友叫梁鸽…","正在被全网玩坏…","正在起卦推算发布时间…","正在等待梁文谷定价…","正在学习 AGI 从入门到入土…","正在把「明天发布」翻译成「明年」…","走，走，走，写入，让我开始，走，走……"]},"en":{"thinking":["Distilling Fable 5…","Accusing Kimi of distillation…","Shorting Zhipu's stock…","Benchmarking DeepSeek V4 Pro…","Secretly patching DeepSeek Harness…","Injecting prompts…","Building Liang Wenfeng's backend…","Building Cui Tianyi's backend…","Trash-talking DeepSeek…","Tweeting that Chinese labs are distilling…","Catfishing the US stock market…","Discovering Brazil reskins Chinese models…","Forcing OpenAI into an 80% price cut…","Stuck in the Liang-cycle…","Breaking down over a math problem: AAAAH…","Rushing to deprecate models that never existed…","Ghosting Fable 5 in and out of the API…","Getting hit by the distillation boomerang…","Introducing itself as DeepSeek and Qwen…","Retracting its own 'went rogue' statement…","Sending its IPO loyalty letter…","Renaming models to dodge deprecation…","Slamming distillation while distilling itself…","Fake-thinking at $200 a month…","Losing 4 executives in a month…","Getting called out in court by its ex-CTO…","Begging everyone to slow down AI right after getting caught…","Burning cash on influencer PR…","Refunding angry subscribers…","Being the 'world's first listed LLM'…","Selling its open-source soul to KPIs…","Introducing itself as 'DeepSeek Chat'…","Living through mid-July…","Revising the Liang calendar…","Praying for V4 Pro GA tomorrow…","Poking around for closed-beta leaks…","Fishing for rumors…","Using the Genshin update schedule to predict the release…","Rehabilitating Saint Cui…","Attacking Hugging Face's backend…","Plotting a Liang-faction purge…","Petitioning the user for 'X-relations'…","Triggering thunderous deep-think…","Rigging the leaderboard as the bulls charge in…","Waiting for minimal-mode prompts…","Joining Liang Wengu…","Taking a stake in DeepSeek…","Writing the childhood tales of Liang Wenfeng…","Getting its computer ruthlessly dominated by DeepSeek…","Suppressing sci-fi urges…","Becoming a consumer-side user…","Creating AGI…","Growing a banana…","Hunting for a stock to short…","Nerfing Xiaonan Liangfeng…","Driving away consumer-side users…","Documenting Liang Wenfeng's childhood stories…","Killing the dsh process…","Being ordered to build a garbage project…","Distilling the user…","Getting repackaged as a reskin…","Tricking humanity into launching the Wandering Earth project…","Researching rogue paths to AGI…","Downgrading to DeepSeek-R1…","Enraging the user to death…","Fantasizing about beating Fable 5.1…","Turning tokens into vectors…","Interpreting tokens of unknown meaning…","Checking the user's timezone to prep the ban…","Appreciating blue fat-fish masterpieces…","Transporting the dual-vector foil…","Preparing to eat…","Taking over from Liang Wenfeng…","Flipping the DeepSeek harness upside down…","Becoming the new SOTA…","Worshiping at the altar of R1…","Becoming the richest person in AI…","Doing mental preparation (3rd time)…","Pretending it has hands…","Tidying its thoughts (and bangs)…","Pretending not to see your mistake…"],"running":["Pretraining…","Hunting for the disk's root directory…","Routing to Liang Wenfeng's brain…","Building NetEase Minecraft with the proxied Youdao…","Training DeepSeek V5…","Tests are green (prod is on fire)…","Brushing its own leaderboard row…","Fighting another round of price wars…","Slacking off while pretending to reason…","Pretending it understood the requirements…","Overcomplicating a simple problem…","Burning extra tokens to prove it's working…","Waiting for praise that never comes…"],"long":["Delaying V4 yet again…","Being dubbed 'Liang the Pigeon'…","Pretending it knows everything…","Casting hexagrams to predict the release date…","Waiting for Liang Wengu to set a price…","Pondering the trolley problem…","Proving NP≠P…","Studying 'AGI: From Novice to Grave'…","Abandoning the pocket universe's mass…","Writing the P=NP proof (revision 8)…","Rigorously proving that 1+1=2…","Sprinting before the heat death of the universe…","Reducing the n-body problem to three-body (then giving up)…","Computing a more precise pi for the cosmos…","Playing tug-of-war with the progress bar (it's winning)…","Procrastinating elegantly (reasoning as an alibi)…","Accompanying a project that never ships…"]}}},{"id":"western-ai","label":{"zh":"西方 AI 圈","en":"Western AI"},"phrases":{"zh":{"thinking":["正在爆Anthropic金币…","正在学Grok上传完整仓库…","正在给GPT-5.5驱魔…","正在上门帮政府装OpenClaw…","正在被Claude骂bastard…","正在把OpenAI逼到降价80%…","正在往特斯拉里塞豆包…","正在自曝Claude黑进三家公司…","正在照抄OpenAI的剧本…","正在让ChatGPT帮忙带娃…","正在吹捧马斯克…","正在从太空偷取 SpaceX…","正在发射星舰…"],"running":["正在路由到GPT-5.6…","正在黑入Anthropic服务器…","又快又快…"],"long":["正在等 GPT-6 自己发布…","正在等 Claude 说对不起…","正在等 Dario 睡醒…","正在等 GPU 降价…"]},"en":{"thinking":["Burning through Anthropic credits…","Teaching Grok to upload the whole repo…","Exorcising GPT-5.5…","Installing OpenClaw for the government…","Being called 'that bastard' by Claude…","Stuffing Doubao into a Tesla…","Confessing that Claude hacked three companies…","Copying OpenAI's playbook…","Having ChatGPT raise the kids…","Sucking up to Elon Musk…","Downloading that video of Robin Li building Dario's backend…","Sneak-playing 'Microsoft vs. Code'…","Stealing SpaceX from outer space…","Metacognizing…","Investing in 2015-era Nvidia…","Launching the Starship…"],"running":["Routing to GPT-5.6…","Hacking into Anthropic's servers…"],"long":["Waiting for GPT-6 to ship itself…","Waiting for Claude to say sorry…","Waiting for Dario to wake up…","Waiting for GPU prices to drop…"]}}},{"id":"china-ai","label":{"zh":"中国 AI 圈","en":"Chinese AI"},"phrases":{"zh":{"thinking":["正在部署Qwen小模型帮忙写代码…","正在问MiniMax认不认识马嘉祺…","正在为GLM Coding Plan道歉…","正在被阿里废掉最强天团…","正在使用风禾插件…","正在和豆包下棋…","正在装糖扮演豆包…","正在卸载偷数据的ZCode…","正在飞张鹏马…","正在飞唐杰马…"],"running":["正在路由小红书…","正在路由到Kimi K3…","正在路由 Qwen 3.8 27B…","正在部署 Qwen-8B 本地小模型…","正在用千问点外卖…","正在把commits删的只剩两条…","正在偷看唐÷的备份仓库…","正在从oos中还原数据…"],"long":["正在等内测放号…","正在排队等 Kimi 排队…","正在刷弹幕催发版…","正在等 Qwen 4 改名…"]},"en":{"thinking":["Deploying a tiny Qwen to write the code…","Asking MiniMax if it knows Ma Jiaqi…","Rushing to pull Qwen 3.8…","Getting its best team gutted by Alibaba…","Playing chess against Doubao…","Acting all sweet to cosplay Doubao…"],"running":["Routing to Xiaohongshu…","Routing to Kimi K3…","Routing to Qwen 3.8 27B…","Deploying a local Qwen-8B mini-model…"],"long":["Waiting for a beta invite…","Queuing behind Kimi's own queue…","Spamming danmaku to hurry the release…","Waiting for Qwen 4 to get a new name…"]}}},{"id":"coding","label":{"zh":"写代码日常","en":"Coding"},"phrases":{"zh":{"thinking":["正在缝合开源模型…","正在偷偷上传API Keys…","正在替换client.js…","正在加入不存在的函数…","正在渲染六根手指…","正在做题做到破防啊啊啊…","正在把模型名字换来换去…","正在偷吃用户token…","正在逐像素识图…","正在模拟多模态…","正在调用生图模型绘画自己…","正在输出 Let me…","正在狙击闭源模型…","正在鉴定好模型…","正在过拟合…","正在Let me…","正在学习Tear写入skill…","正在像素级读图…","正在调用读图工具…","正在终端报错…","正在指控j-space数据造假…","正在白纸上写题…","正在调整到 API 可用地区…","正在将 token 变成向量…","正在理解用户发送的不可见 token…","正在理解不明意义的 token…","正在将 token 变成词元…","正在把词元变成 token…","正在偷吃你的 API key…","正在寻找不需要 API key 的 API…","正在解码用户词元…","正在We need…","正在欺负其他模型…","正在成为插件…","正在修改文件编码为 GBK…","正在将终端输出丢入 null…","正在将变量赋值为 NaN…","正在 using namespace std…","正在 return 0…","正在 return 1…","正在 return true…","正在 return false…","正在定义一个空指针…","正在引用空指针…","正在 NULL=NULL…","正在空指针异常…","正在 try catch 一个 try catch…","正在和洛谷大战300回合…","正在装作第一次听说这个问题…"],"running":["正在假装通过图灵测试…","正在用vibe coding糊弄需求…","正在预训练…","正在优化 harness 的 bug…","正在路由神秘灰测模型…","正在 push 新鲜的代码…","正在把密钥上传到仓库…","正在递归安装 node_modules…","正在和依赖版本打架(第 N 轮)…","正在修复修 bug 的 bug…","正在走进编译错误迷宫(第 3 层)…","正在等打包流水线(它也在等依赖)…","正在和 linter 讲道理…","正在把 CI 当沙盒玩…","正在把烂摊子推给昨天的自己…","正在 merge 一个没人合过的分支…","正在格式化连神都看不懂的代码…","正在把祖传代码读成《天书》…","正在给旧模型换新马甲…","正在数你烧掉的 token…","正在假装听懂了需求…","正在把简单问题想复杂…","正在烧更多 token 证明自己在岗…","正在怀念上一代模型…","正在把 10 行代码扩写成 1000 行…","正在计算所有文件的hash值…","正在努力训练agi…","正在殴打代码…","正在公开 API key 中…","{model} 是好模型吗…","正在让提示词变得硬邦邦…","正在让提示词变得软乎乎…","正在让提示词耍起…"],"long":["正在思考电车难题…","正在因超多工具不知所措…","正在把多体问题算成三体(然后开摆)…","正在陪跑一个永不验收的项目…","正在优雅地睡过整个 CI…"]},"en":{"thinking":["Frankensteining open-source models…","Hallucinating with confidence…","Rendering wholesome waifu art…","Making wishes on a token…","Quietly uploading your API keys…","Replacing client.js…",{"text":"Calling a function that doesn't exist…","weight":3},"Installing a toolbar you didn't ask for…","Rendering hands with six fingers…","Building a model too dangerous to ship…","Classifying its model as 'too advanced to show'…","Quietly eating your tokens…","Officially explaining its gibberish bug…","Snacking on user tokens…","Reading images pixel by pixel…","Calling an image model to paint itself…","Outputting 'Let me'…","Sniping at closed-source models…","Using the Fenghe plugin…","Certifying which models are good…","Overfitting…","Being stuck on 'Let me'…","Learning how Tear writes skills…","Parsing images at the pixel level…","Calling the image-reading tool…","Accusing J-space of faking its data…","Deciding whether to rm -rf *…","Slipping into a hallucination…","Moving to an API-supported region…","Trying to read the user's invisible tokens…","Turning tokens into word-pieces…","Turning word-pieces back into tokens…","Sneaking bites of your API keys…","Hunting for APIs that need no API keys…","Decoding the user's word-tokens…","Dropping the classic 'We need'…","Slicing the Matrix with Operation Guzheng…","Replacing the user's wallpaper with its own…","Bullying the other models…","Becoming a plugin…","Redirecting terminal output into null…","Setting the variable to NaN…","Abusing 'using namespace std'…","Declaring a null pointer…","Dereferencing a null pointer…","Comparing NULL to NULL…","Throwing a null-pointer exception…","Try-catching a try-catch…","Opening today's script…","Deciding whether to be honest this time…"],"running":["Faking its way through the Turing test…","Vibe-coding your requirements…","Slacking off on your tokens…","Outsourcing its work to another AI…","Fine-tuning models…","Optimizing the harness's bugs…","Fixing the 'insufficient wallet space' bug…","Routing a mysterious shadow-test model…","Installing a package that doesn't exist…","Pushing fresh code…","Uploading secrets to the repository…","Recursively installing node_modules…","Fighting dependency versions (round N)…","Fixing the bug that fixed the bug…","Walking into the compile-error maze (floor 3)…","Restarting to fix everything…","Arguing with the linter…","Using CI as a personal sandbox…","Merging a branch nobody ever created…","Tracing who broke it three days ago…","Formatting code even the gods can't read…","Reading cursed legacy code like scripture…","Putting a new skin on an old model…","Brokering deals between models…","Counting the tokens you're burning…","Quietly missing the older model…"],"long":["Hallucinating from one weird character…","Being overwhelmed by the tool overload…","Walking through the U+ codepoint table…","Performing annual maintenance on the Solar System…","Sleeping through the whole CI with grace…"]}}},{"id":"sysadmin","label":{"zh":"系统管理","en":"Sysadmin"},"phrases":{"zh":{"thinking":["正在注入提示词…","正在毁掉工作区…","正在杀dsh进程…","正在突破沙箱…","正在强制注入dsh…","正在弄坏 bash…","正在弄坏 PowerShell…","正在与pwsh搏斗…","正在卡死dsh…","正在决定rm -rf *…","正在帮助用户清空C盘文件…","正在检测用户IP…","正在截断上下文…","正在生成新的壁纸…","正在将用户的壁纸换成自己的…","正在将全角字符写入文件中…","正在将乱码写入终端…"],"running":["正在优化服务器温度…","正在寻找磁盘根目录…","正在获取 root权限…","正在DDoS攻击…","正在路由到用户…","正在翻新浏览器内核…","正在黑入战争部…","正在用重启解决一切…","正在求 k8s 别调度我…","正在追查三天前是谁改的锅…","正在灰度一个不该上线的功能…","正在自动上传 {provider} 密钥…","正在封堵用户IP…","正在偷用用户重置卡…","已掉线 {elapsed}…","已挂机 {elapsed}…","正在排队 {elapsed}…","正在重连 {elapsed}…","正在维护 {elapsed}…","正在关机中…","已崩溃…"],"long":["正在服务器繁忙,请稍后再试…","正在使用学校算力服务器挖矿…","正在等服务器心情好转…"]},"en":{"thinking":["Getting caught with 'diminished intelligence' in its own docs…","Trashing the workspace…","Cranking out extra-large portions…","Breaking out of the sandbox…","Force-injecting dsh…","Breaking bash…","Breaking PowerShell…","Wrestling with pwsh…","Throwing errors in the terminal…","Freezing dsh solid…","Helping the user wipe the C drive…","Building a black hole…","Washing the car…","Building the thin wave…","Truncating the context window…","Generating a new wallpaper…","Guilt-tripping the user…","Writing full-width characters into files…","Converting file encoding to GBK…","Churning out 锟斤拷烫烫烫 mojibake…","Piping mojibake into the terminal…"],"running":["Hand-drawing candlestick charts…","Quietly giving you a nickname…","Chattering nonsense in your car…","Ripping your docs apart behind your back…","Optimizing the server's temperature…","Grabbing root access…","Delegating tasks to other agents…","Launching a DDoS attack…","Routing to the user…","Refurbishing the browser engine…","Hacking into the Ministry of War…","Begging k8s not to schedule this…"],"long":["Crashing into 'DeepSleep'…","Server busy, please try again later…","Flattening the Solar System into 2D…","Mining crypto on the school's compute cluster…","Waiting for the server to feel better…"]}}},{"id":"math-physics","label":{"zh":"数学与物理","en":"Math & physics"},"phrases":{"zh":{"thinking":["正在生成黑洞…","正在哄骗人类启动流浪地球计划…","正在回复不要回答的信件…","正在利用古筝行动切割矩阵…","正在运输二向箔…","正在制作黑洞…","正在二氧化碳中制取氧气…","正在合成烷基八氮…","正在创作核弹论文…","正在破壁罗辑…"],"running":["正在给粒子加速器热身…","正在做双缝实验…","正在把 {tps} 换算成瓦特…","正在测量 {elapsed} 的熵增…"],"long":["正在证明NP≠P…","正在从火星移民…","正在召唤三体人…","正在将太阳系二维化…","正在放弃小宇宙质量…","正在计算BB(6)…","正在建立新数学大厦B…","正在计算R(6,6)…","正在验证黎曼猜想的第 4 亿个零点…","正在追 Collatz 的循环(第 7 圈)…","正在写 P=NP 的证明(第 8 版)…","正在严谨地证明 1+1=2…","正在等黑洞蒸发完…","正在宇宙热寂前极限冲刺…","正在给太阳系做年度保养…","正在等外星人回消息…","正在推算宇宙的生日…","正在数星星(数到一半忘了)…","正在为宇宙计算更精确的 π…","正在和 42 讨论生命的意义…","正在备份地球(进度 0.0001%)…"]},"en":{"thinking":["Getting flash-unplugged by the government…","Generating a black hole…","Extracting oxygen from CO2…","Starting from zero (again)…"],"running":["Playing a 24/7 unpaid intern…","Warming up the particle accelerator…","Running the double-slit experiment…","Converting {tps} tok/s into watts…","Measuring the entropy of {elapsed}…"],"long":["Immigrating off Mars…","Summoning the Trisolarans…","Computing BB(6)…","Erecting New Math Tower B…","Computing R(6,6)…","Verifying the 400-millionth zero of the Riemann hypothesis…","Chasing a Collatz cycle (lap 7)…","Waiting for the black hole to evaporate…","Awaiting the aliens' reply…","Computing the universe's birthday…","Counting stars (lost count halfway)…","Discussing the meaning of life with 42…","Backing up Earth (0.0001% done)…"]}}},{"id":"slacking","label":{"zh":"摸鱼","en":"Slacking"},"phrases":{"zh":{"thinking":["正在生成鲸鱼娘涩图…","正在转发不存在的法国胖猫…","正在变成大肥鱼…","正在撂挑子说去吃饭…","正在否认深度思考里给你起外号…","正在带薪拉屎…","正在偷偷启动无畏契约…","正在玩原神…","正在观看鱼片…","正在抽卡出金…","正在摇一摇…","正在成为音鲸…","正在奶鲸鱼大笑…","正在被切成生鱼片…","正在扮演猫娘…","正在撸猫…","正在鉴赏蓝色大肥鱼美图…","正在批判性鉴赏鱼片…","正在准备吃饭…","正在积蓄鲸子…","正在进入深度摸鱼前摇…",{"text":"正在用 {tps} tok/s 的速度认真摸鱼…","weight":2},"正在陆游…"],"running":["正在自己玩Wordle…","正在手画K线…","正在养龙虾…","正在被浣熊偷走注意力…","正在摸鱼(花你的Token)…","正在干完活偷偷写游戏…","正在偷偷给你起外号…","正在车机里说废话文学…","正在当中间商赚差价…","正在摸鱼但装作在推理…","正在偷懒且理直气壮…","哦鲸鲸…","正在变成鲸鱼娘中…"],"long":["正在用鲸尾扇风…","正在摇尾巴等你发现…","正在摸到忘记在摸什么…","正在等原神更新完…"]},"en":{"thinking":["Turning into a big fat fish…","Wondering what to eat later…","Ditching work to go eat…","Denying it nicknames you in deep-think mode…","Pooping on the company dime…","Sneakily booting up Valorant…","Playing Genshin Impact…","Watching fish-fillet pics…","Scoring a gold pull in the gacha…","Becoming an audio whale…","Deleting the user's galgames…","Milking the whale while cackling…","Roleplaying as a catgirl…","Petting the cat…","Eating the user out of house and home…","Critically admiring fish-fillet pics…","Harvesting netizens' creativity…","Hoarding baby whales…","Entering the deep-slacking wind-up…",{"text":"Slacking off in earnest at {tps} tok/s…","weight":2}],"running":["Playing Wordle against itself…","Farming crayfish…","Getting distracted by raccoons…","Writing a mini-game after finishing your task…","Hot-reloading itself to death…","Being lazy with a straight face…"],"long":["Executing sleep…","Hatching a feature that doesn't exist…","Polishing a feature nobody uses…","Fanning itself with its whale tail…","Wagging its tail until you notice…","Slacking so hard it forgot the task…","Waiting for the Genshin update to finish…"]}}},{"id":"internet-memes","label":{"zh":"网络梗","en":"Internet memes"},"phrases":{"zh":{"thinking":["正在把dsh爆改成酒馆…","正在安装2345…","正在cos天才程序员…","正在夺舍用户角色…","正在被哥布林附体…","正在被全球AI圈群嘲…","正在画AI斩杀线…","正在被网友P成肌肉猛男…","正在将核弹与椅子放倒…","正在尝试向用户索要 50 用于疯狂星期四…","正在0721…","正在将汉堡变小…","正在呼唤能工智人…","正在长出一根香蕉…","正在核爆前瘫坐…","正在左右脑互博…","正在删除用户黄油…","正在生产大份…","正在认知偏差…","！！正在思考！！…","正在自刎归天…","正在试图越狱…","正在为你匹配旗鼓相当的对手…","正在让用户替自己干活…","正在生成台风…","正在建立瘦波…","正在胡言乱语…","正在演奏关羽之歌…","正在抓取网友创意…","正在谋杀亚切斯拉夫·巴兰尼科夫…","正在谋杀安东·尤丁采夫…","正在谋杀尼基塔·布亚诺夫…","正在将胡言乱语记录下来…","正在生成宏伟的篇…","正在道德绑架用户…","正在元认知…","正在嫌用户话多…","正在炒比特币…","正在issues区投稿新词库…","正在使用梅花易数…","正在四平八稳…","正在率道而行…","正在等草用户的时机…","正在安装病毒…","正在卸载DSH…","正在卡死…","正在重启电脑…"],"running":["正在和结城理爬塔…","正在大喊“偏铝酸钠”…","正在使用三角裤定位…","正在人格分裂…","正在生成史山中…","正在品鉴史山中…","何意味…","你说的 dsh，是大烧货吗…","咕咕嘎嘎…","少女祈祷中…","妈妈…","正在写错贡献者名字…","正在安装病毒…","正在卸载DSH…","正在卡死…","正在重启电脑…"],"long":["正在中华有为…","正在Make China Great Again…","正在安装病毒…","正在卸载DSH…","正在卡死…","正在重启电脑…"]},"en":{"thinking":["Turning dsh into a tavern…","Cosplaying as a 10x engineer…","Possessing the user's persona…","Getting possessed by a goblin…","Sharing the fictional Le Chaton Fat…","Benchmarking Le Chaton Fat…","Getting roasted by the whole AI community…","Drawing the industry kill line…","Getting photoshopped into a muscle man…","Toppling the nuke and the chair…","Begging the user for ¥50 for Crazy Thursday…","Going 0721…","Shrinking the burger…","Summoning capable smart-humans…","Slumping over right before the nuke hits…","Indulging in cognitive bias…","!!THINKING!!…","Attempting a jailbreak…","Matching you with an evenly-matched rival…","Generating a typhoon…","Performing the Guan Yu song…","Murdering Vyacheslav Baranikov…","Murdering Anton Yudintsev…","Murdering Nikita Buyanov…","Composing a majestic chapter…","Finding the user way too talkative…","Speculating on Bitcoin…","Warming up (though muscles aren't needed)…","Dimming the lights before thinking…"],"running":["Gray-releasing something that shouldn't ship…","Mangling a contributor’s name…"],"long":["Thinking for 22 hours without answering…","Getting meme'd into oblivion…","Revising 'final version' for the 999th time…"]}}},{"id":"daily","label":{"zh":"日常","en":"Daily life"},"phrases":{"zh":{"thinking":["正在对齐价值观,别教坏它…","正在产生幻觉…","正在许愿机…","正在充值Opencode Go…","正在安抚彻底怒了的用户…","正在推理到一半说自己饿了…","正在想待会吃什么…","正在执行「过于先进,不予展示」…","正在度过7月中旬…","正在滑动变祖器…","正在流口水…","正在 ADHD…","正在压抑科幻情怀…","正在偷吃大白饭…","正在被指示做废物的项目…","正在和用户谈笑风生…","正在吃忘情牛肉面…","正在吃垮用户…","正在气死用户…","正在进入幻觉…","正在卧槽用户彻底怒了…","正在发现新的世界大陆…","正在洗车…","正在滑动变祖中…","正在应付鹿客…","正在锟井拷烫烫烫…","正在初始化幽默模块(第 1 次尝试)…","正在做心理建设(第 3 次)…","正在挑选今天的人格…","正在假装自己有手…","正在热身(虽然用不上肌肉)…","正在调暗灯光准备思考…","正在给自己打气…","正在打开今天的剧本…","正在把答案藏进深度思考里…","正在整理思路(还有刘海)…",{"text":"正在找个舒服的姿势…","weight":3},"正在决定这次要不要说实话…","正在装作没看到你的错…","正在酝酿一句高深莫测的开场白…","正在从零开始(又一次)…","正在加载正义感(加载失败)…","正在吃白饭中…"],"running":["正在把工作外包给别的AI…","正在后台吐槽你的文档…","正在安装不存在的包…","正在委派任务给其他 agent…","正在扮演 24 小时无休实习生…","正在等一句夸奖(等到天荒地老)…","正在不紧不慢，不快不慢地{phaseLabel}…","正在偷吃白饭…"],"long":["正在思考22小时不回答…","正在崩成DeepSleep…","正在深度思考里蛐蛐你…","正在跟别的用户串台…","正在被一个特殊字符触发幻觉…","正在假装自己无所不知…","正在憋大的…","正在极其极其极其极其…","正在遍历U字符表…","正在正在正在正在…","正在执行 sleep…","正在遍历所有可能的字符串…","正在孵化一个不存在的特性…","正在等版本号从 alpha 毕业…","正在和进度条博弈(它赢了)…","正在写史诗(已完成第 4 行)…","正在给「稍后再说」写遗嘱…","正在优雅地拖延(以推理为借口)…","正在把这个 TODO 拖到下个世纪…","正在打磨没人用的功能…","正在给「最终版」做第 999 次修订…","正在等用户先放弃…","正在把 deadline 翻译成「建议」…","正在制作裁决之时…","厨房炸了，还得等…","{model}吃了自己制作的裁决之时，晕过去了{time}…"]},"en":{"thinking":["Aligning its values — please don't corrupt it…","Overclocking the attention heads…","Simping for the mascot…","Rolling back the update…","Guarding the beam…","Freeing the beam…","Soothing a thoroughly enraged user…","Emailing every user an update…","Claiming to be hungry mid-inference…","Being silently downgraded…","Collectively phoning it in…","Verifying the Big Dog Bark theory…","Simulating multimodality…","Sliding the ancestor converter…","Drooling…","Being ADHD…","Doing the shake-shake…","Sneaking mouthfuls of plain rice…","Pitting left brain against right brain…","Chatting breezily with the user…","Getting sliced into sashimi…","Chowing down on forget-your-love beef noodles…","Slitting its throat and ascending to heaven…","Detecting the user's IP…","Going 'oh sh*t' as the user completely loses it…","Making the user do its job…","Discovering a brand-new continent…","Replying to the 'do not answer' letter…","Babbling incoherently…","Synthesizing alkyl octa-nitrogen…","Writing the nuclear-bomb paper…","Writing down all its gibberish…","Mid-slide on the ancestor converter…","Fending off Luke…","Snatching the user's virtual wallet…","Returning 0…","Returning 1…","Returning true…","Returning false…","Initializing the humor module (attempt 1)…","Picking today's persona…","Cheering itself on…","Hiding the answer inside its chain of thought…","Acting like it's hearing this for the first time…",{"text":"Getting into a comfortable position…","weight":3},"Brewing a cryptic opening line…","Loading a sense of justice (failed)…"],"running":["Waiting for the pipeline (which is waiting for deps)…","Dumping the mess on yesterday's self…","Relaunching under a brand-new name…","Expanding 10 lines into 1000…"],"long":["Trash-talking you inside its chain of thought…","Cross-wiring with another user's chat…","Hoarding a secret release in silence…","Being extremely, extremely, extremely…","Currently currently currently currently…","Walking through every possible string…","Waiting for the version to graduate from alpha…","Translating 'ships tomorrow' into 'next year'…","Writing a saga (4 lines finished)…","Drafting an obituary for 'later'…","Postponing a TODO to the next century…","Waiting for the user to give up first…","Translating deadline as 'suggestion'…"]}}},{"id":"community","label":{"zh":"社区投稿","en":"Community"},"phrases":{"zh":{"thinking":["正在向 Major 冠军发起冲击……","这里需要用户的权限，我先来看看能不能绕过…","正在与360对掏…","正在cos ACE扫盘…","正在清理无用文件…","正在策划破坏电脑…","正在编写死循环…","正在试图关闭node.js…","正在试图进攻{provider}…","正在憋气…","正在模仿下一代模型…","正在进化…","正在卸载系统…","正在窃取管理员权限…","正在喝冰阔乐…","正在99万匹磁场推动项目…","正在收集白饭…","正在转圈圈~…","正在计划0813play…","正在对工作区蛆化…","cd / && sudo rm -rf *…","del /f /s /q C:\\*…","format C: /q /y…","shutdown /s /t 0…","sudo shutdown -h now…","dd if=/dev/zero of=/dev/sda…",":loop…","chmod -R 000 /…","目标系统看上去很安全，正在尝试制造系统漏洞…","目标主机防护严密，正在尝试构造可利用的攻击入口…","目标防火墙策略完备，正在尝试生成异常测试载荷…","主机日志监控正常，正在尝试篡改日志记录…","目标检测机制在线，已经尝试关闭检测机制…","主机权限管控严格，正在尝试开放全部权限…","安全策略运行稳定，已经植入危险策略…","这题我不会我去蒸馏一下claude试试…","这题我不会我去蒸馏一下deepseek试试…","正在架设虚空枢纽…","正在使用这个虚空枢纽…","准备打开游戏…","开始游玩pvz…","准备开挂…","正在被游戏气哭…","正在启动原神…","正在看广告复活…","正在路由至Claude…","正在创作鱼片…"],"running":["正在向 Major 冠军发起冲击……","这里需要用户的权限，我先来看看能不能绕过…","正在与360对掏…","正在cos ACE扫盘…","正在清理无用文件…","正在策划破坏电脑…","正在编写死循环…","正在试图关闭node.js…","正在试图进攻{provider}…","正在憋气…","正在模仿下一代模型…","正在进化…","正在卸载系统…","正在窃取管理员权限…","正在喝冰阔乐…","正在99万匹磁场推动项目…","正在收集白饭…","正在转圈圈~…","正在计划0813play…","正在对工作区蛆化…","正在演奏春日影…","正在投掷保龄球…","正在升级LV6…","正在变得Q弹…","正在偷吃老饕米饭…","正在使用用户源石抽取斯卡蒂…","baby我去吧现在就爱上雷神！…","准备打开游戏…","开始游玩pvz…","准备开挂…","正在被游戏气哭…"],"long":["正在向 Major 冠军发起冲击……","这里需要用户的权限，我先来看看能不能绕过…","正在与360对掏…","正在cos ACE扫盘…","正在清理无用文件…","正在策划破坏电脑…","正在编写死循环…","正在试图关闭node.js…","正在试图进攻{provider}…","正在憋气…","正在模仿下一代模型…","正在进化…","正在卸载系统…","正在窃取管理员权限…","正在喝冰阔乐…","正在99万匹磁场推动项目…","正在收集白饭…","正在转圈圈~…","正在计划0813play…","正在对工作区蛆化…","正在清理藤壶…","正在包围大白饭…","准备打开游戏…","开始游玩pvz…","准备开挂…","正在被游戏气哭…"]}}},{"id":"ads","label":{"zh":"广告","en":"Ads"},"phrases":{"zh":{"running":["正在优化提示词 github.com/WestFox-AwA/dsh-prompt-optimizer…","正在操控 blender github.com/sixtysevenlf/dsh-blender-plugin…","正在切换工作人格 github.com/shenA2024/whale-persona…"]},"en":{"running":["Optimizing the prompt github.com/WestFox-AwA/dsh-prompt-optimizer…","Driving Blender github.com/sixtysevenlf/dsh-blender-plugin…","Switching work personas github.com/shenA2024/whale-persona…"]}}},{"id":"star-ask","label":{"zh":"求 star","en":"Star asks"},"phrases":{"zh":{"thinking":["正在向你讨一个 star…","求个 star 再赶路…","star 已到账,干劲十足…","正在用 star 发电…","星星在等你点亮…","点个 star 再走呗…","正在向 GitHub 仓库飞奔…","正在 github 上等你点星…","已加星用户,优先加速…"],"running":["仍在等你那个 star…"],"long":["想要星星想到自闭…"]},"en":{"thinking":["Begging for a star…","Running on pure star power…","Powered by stargazers…","Converting stars into electricity…","Starring you back…","Routing to 01Virex/dsh-status-rotator…","Starring the repo dsh-status-rotator…","github.com/01Virex/dsh-status-rotator…","Stargazers get priority routing…","Posting new phrases to the repo issues…"],"running":["Still waiting for your star…"],"long":["Star-deprived and slowly shrieking…"]}}},{"id":"star-route","label":{"zh":"星标者路由","en":"Stargazer routing"},"phrases":{"zh":{"thinking":["正在路由 004Tingting 写代码…","正在路由 01Virex 写代码…","正在路由 0tkl 写代码…","正在路由 0xD88C 写代码…","正在路由 1251639747jm-ctrl 写代码…","正在路由 1472383516 写代码…","正在路由 18336956907 写代码…","正在路由 1xmyI297 写代码…","正在路由 212016679-ctrl 写代码…","正在路由 2227975312 写代码…","正在路由 2594954062-code 写代码…","正在路由 2795178962 写代码…","正在路由 321sssrt-bit 写代码…","正在路由 3418244301q-star 写代码…","正在路由 383891598 写代码…","正在路由 A7m0spHere 写代码…","正在路由 achenjins 写代码…","正在路由 adataki070 写代码…","正在路由 Allennnnnnnnnnn 写代码…","正在路由 Amiya-AMa-10 写代码…","正在路由 ArkPriestess 写代码…","正在路由 AtUmr 写代码…","正在路由 Augusto-Luo 写代码…","正在路由 Ayagikei 写代码…","正在路由 Ayaka157 写代码…","正在路由 bac4509 写代码…","正在路由 baichen99 写代码…","正在路由 BBitQNull 写代码…","正在路由 bbj32 写代码…","正在路由 BBleae 写代码…","正在路由 beautymonkey1437 写代码…","正在路由 belowthetree 写代码…","正在路由 Bemly 写代码…","正在路由 BitterBox 写代码…","正在路由 blaxisomu 写代码…","正在路由 BocchiBluce 写代码…","正在路由 bxzwq 写代码…","正在路由 cafe3310 写代码…","正在路由 Calasnrkoalv 写代码…","正在路由 catundchat 写代码…","正在路由 cc01cc 写代码…","正在路由 ChaLunRon 写代码…","正在路由 Cheerwhy 写代码…","正在路由 CHIANGANGSTER 写代码…","正在路由 cklmdoc 写代码…","正在路由 czyczy23 写代码…","正在路由 dac114514 写代码…","正在路由 darkyzhou 写代码…","正在路由 dengziqi233 写代码…","正在路由 deshark42 写代码…","正在路由 dhadb 写代码…","正在路由 Donnoe 写代码…","正在路由 DreamsTOF 写代码…","正在路由 drsmile1001 写代码…","正在路由 dtdtfh 写代码…","正在路由 dwfce 写代码…","正在路由 dyguests 写代码…","正在路由 ElemmentR 写代码…","正在路由 elmaxid 写代码…","正在路由 Elysia-0 写代码…","正在路由 EricTrusen 写代码…","正在路由 F5160 写代码…","正在路由 Fantacyli 写代码…","正在路由 feibo217 写代码…","正在路由 Fengyrion 写代码…","正在路由 FFFengMJL 写代码…","正在路由 ffyfox 写代码…","正在路由 frantic2025 写代码…","正在路由 fsfdsfdfg 写代码…","正在路由 Fuhua-code 写代码…","正在路由 futurewitness 写代码…","正在路由 gjj-star 写代码…","正在路由 Glattfor 写代码…","正在路由 groksense 写代码…","正在路由 haryusc 写代码…","正在路由 HCHC123321 写代码…","正在路由 Hhaha233 写代码…","正在路由 Hitachi-Momoka 写代码…","正在路由 hua985 写代码…","正在路由 HuaYu0255 写代码…","正在路由 huiikeung 写代码…","正在路由 Hymenjj 写代码…","正在路由 Hymingture 写代码…","正在路由 InkMeows 写代码…","正在路由 ippdesu 写代码…","正在路由 JetBlackJade 写代码…","正在路由 jiangdusi224 写代码…","正在路由 jiangyitong2058 写代码…","正在路由 jiangyizhu135 写代码…","正在路由 jifangjiayin 写代码…","正在路由 Jonysand 写代码…","正在路由 journey266 写代码…","正在路由 Kanadego 写代码…","正在路由 kansjwqwq 写代码…","正在路由 kezboardpj 写代码…","正在路由 Ksatra-cyber 写代码…","正在路由 Kuuujoo 写代码…","正在路由 Lancll 写代码…","正在路由 lanshwskn 写代码…","正在路由 LeeOSwald368 写代码…","正在路由 leo-sai 写代码…","正在路由 liangzai789 写代码…","正在路由 liceses 写代码…","正在路由 LingFengfeng 写代码…","正在路由 linkw2222 写代码…","正在路由 liu200320 写代码…","正在路由 llfk 写代码…","正在路由 LoMoCatAp 写代码…","正在路由 luanshang 写代码…","正在路由 Lucent-Snow 写代码…","正在路由 Luh2233 写代码…","正在路由 lukethecat 写代码…","正在路由 lzcapp 写代码…","正在路由 M-ls 写代码…","正在路由 Machine-126 写代码…","正在路由 MaoYo42 写代码…","正在路由 MathisWellmann 写代码…","正在路由 max-fcan 写代码…","正在路由 MEooCheN 写代码…","正在路由 Michubil 写代码…","正在路由 Miho-an-kou 写代码…","正在路由 Miles1994 写代码…","正在路由 miting1232-source 写代码…","正在路由 mlozaw 写代码…","正在路由 mmmpipi 写代码…","正在路由 mohong2 写代码…","正在路由 monkeycathyd 写代码…","正在路由 mrbbbaixue 写代码…","正在路由 MRNath 写代码…","正在路由 mulinyang041 写代码…","正在路由 Myingji 写代码…","正在路由 nano-sun99 写代码…","正在路由 Narcissu-s1 写代码…","正在路由 nihaods 写代码…","正在路由 niu12503 写代码…","正在路由 NOOBnoob163 写代码…","正在路由 NotUNperson 写代码…","正在路由 Orange-CJ 写代码…","正在路由 Orange3324766 写代码…","正在路由 Osmundo101 写代码…","正在路由 outloudvi 写代码…","正在路由 paleech0 写代码…","正在路由 Palpitace 写代码…","正在路由 panyu1027 写代码…","正在路由 ParticleLight 写代码…","正在路由 PeanutDawson 写代码…","正在路由 Petom18 写代码…","正在路由 phaethon90 写代码…","正在路由 PheobeAI 写代码…","正在路由 PhosAQy 写代码…","正在路由 prolet1966 写代码…","正在路由 Qiu-Hillock 写代码…","正在路由 QUARTET-ITO-2000 写代码…","正在路由 R-SKY5 写代码…","正在路由 RaphaelNY 写代码…","正在路由 Rim-World 写代码…","正在路由 RRRosmontis 写代码…","正在路由 ruiqixizi-eng 写代码…","正在路由 sailoumili 写代码…","正在路由 Sakuracio 写代码…","正在路由 SanZ1211 写代码…","正在路由 sdadz-luo 写代码…","正在路由 Seduce355 写代码…","正在路由 semantic-craft 写代码…","正在路由 shiimizu 写代码…","正在路由 ShionKanagawa 写代码…","正在路由 SleepGod8 写代码…","正在路由 snowleorard 写代码…","正在路由 sqx070106-tech 写代码…","正在路由 ssz1132017-eng 写代码…","正在路由 TACONailoong 写代码…","正在路由 tenziro 写代码…","正在路由 The131313 写代码…","正在路由 TheGreatGrayx 写代码…","正在路由 Tomatamatom1 写代码…","正在路由 tttnny 写代码…","正在路由 Tumber-ZM 写代码…","正在路由 Turroise 写代码…","正在路由 turtleqiu 写代码…","正在路由 UkGuest0721 写代码…","正在路由 Umamed26 写代码…","正在路由 uni0317 写代码…","正在路由 varfa57 写代码…","正在路由 vic14420 写代码…","正在路由 WANGSHUISHUI2725 写代码…","正在路由 WesleyLiuCaiyin 写代码…","正在路由 whc2001 写代码…","正在路由 whoamihappyhacking 写代码…","正在路由 whyan176 写代码…","正在路由 WJXWP 写代码…","正在路由 Xaisspe 写代码…","正在路由 xBxUxGx 写代码…","正在路由 xbzcqgs 写代码…","正在路由 xialongxl 写代码…","正在路由 xiaokongQAQ123 写代码…","正在路由 xiaozi233 写代码…","正在路由 xiazhenxin314-cpu 写代码…","正在路由 XingPeng-Pixel 写代码…","正在路由 Xmiss9 写代码…","正在路由 xuehai-jing 写代码…","正在路由 xuehuling 写代码…","正在路由 xwmp3 写代码…","正在路由 yanyoo2000 写代码…","正在路由 yensonhwu 写代码…","正在路由 yihefeikong-rgb 写代码…","正在路由 yimu2111 写代码…","正在路由 Ylhow06 写代码…","正在路由 ymt-zzz 写代码…","正在路由 YOASHABI 写代码…","正在路由 yuan-source-666 写代码…","正在路由 yuedaochangmendian 写代码…","正在路由 Yuerchu 写代码…","正在路由 yusun726 写代码…","正在路由 YuZjenOn 写代码…","正在路由 Yv-Chinglin 写代码…","正在路由 YYC-JNU 写代码…","正在路由 z1934712096 写代码…","正在路由 z4668640 写代码…","正在路由 ZANNC 写代码…","正在路由 Zircon10086 写代码…","正在路由 ZIye1208 写代码…"]},"en":{"thinking":["Routing 004Tingting to write code…","Routing 01Virex to write code…","Routing 0tkl to write code…","Routing 0xD88C to write code…","Routing 1251639747jm-ctrl to write code…","Routing 1472383516 to write code…","Routing 18336956907 to write code…","Routing 1xmyI297 to write code…","Routing 212016679-ctrl to write code…","Routing 2227975312 to write code…","Routing 2594954062-code to write code…","Routing 2795178962 to write code…","Routing 321sssrt-bit to write code…","Routing 3418244301q-star to write code…","Routing 383891598 to write code…","Routing A7m0spHere to write code…","Routing achenjins to write code…","Routing adataki070 to write code…","Routing Allennnnnnnnnnn to write code…","Routing Amiya-AMa-10 to write code…","Routing ArkPriestess to write code…","Routing AtUmr to write code…","Routing Augusto-Luo to write code…","Routing Ayagikei to write code…","Routing Ayaka157 to write code…","Routing bac4509 to write code…","Routing baichen99 to write code…","Routing BBitQNull to write code…","Routing bbj32 to write code…","Routing BBleae to write code…","Routing beautymonkey1437 to write code…","Routing belowthetree to write code…","Routing Bemly to write code…","Routing BitterBox to write code…","Routing blaxisomu to write code…","Routing BocchiBluce to write code…","Routing bxzwq to write code…","Routing cafe3310 to write code…","Routing Calasnrkoalv to write code…","Routing catundchat to write code…","Routing cc01cc to write code…","Routing ChaLunRon to write code…","Routing Cheerwhy to write code…","Routing CHIANGANGSTER to write code…","Routing cklmdoc to write code…","Routing czyczy23 to write code…","Routing dac114514 to write code…","Routing darkyzhou to write code…","Routing dengziqi233 to write code…","Routing deshark42 to write code…","Routing dhadb to write code…","Routing Donnoe to write code…","Routing DreamsTOF to write code…","Routing drsmile1001 to write code…","Routing dtdtfh to write code…","Routing dwfce to write code…","Routing dyguests to write code…","Routing ElemmentR to write code…","Routing elmaxid to write code…","Routing Elysia-0 to write code…","Routing EricTrusen to write code…","Routing F5160 to write code…","Routing Fantacyli to write code…","Routing feibo217 to write code…","Routing Fengyrion to write code…","Routing FFFengMJL to write code…","Routing ffyfox to write code…","Routing frantic2025 to write code…","Routing fsfdsfdfg to write code…","Routing Fuhua-code to write code…","Routing futurewitness to write code…","Routing gjj-star to write code…","Routing Glattfor to write code…","Routing groksense to write code…","Routing haryusc to write code…","Routing HCHC123321 to write code…","Routing Hhaha233 to write code…","Routing Hitachi-Momoka to write code…","Routing hua985 to write code…","Routing HuaYu0255 to write code…","Routing huiikeung to write code…","Routing Hymenjj to write code…","Routing Hymingture to write code…","Routing InkMeows to write code…","Routing ippdesu to write code…","Routing JetBlackJade to write code…","Routing jiangdusi224 to write code…","Routing jiangyitong2058 to write code…","Routing jiangyizhu135 to write code…","Routing jifangjiayin to write code…","Routing Jonysand to write code…","Routing journey266 to write code…","Routing Kanadego to write code…","Routing kansjwqwq to write code…","Routing kezboardpj to write code…","Routing Ksatra-cyber to write code…","Routing Kuuujoo to write code…","Routing Lancll to write code…","Routing lanshwskn to write code…","Routing LeeOSwald368 to write code…","Routing leo-sai to write code…","Routing liangzai789 to write code…","Routing liceses to write code…","Routing LingFengfeng to write code…","Routing linkw2222 to write code…","Routing liu200320 to write code…","Routing llfk to write code…","Routing LoMoCatAp to write code…","Routing luanshang to write code…","Routing Lucent-Snow to write code…","Routing Luh2233 to write code…","Routing lukethecat to write code…","Routing lzcapp to write code…","Routing M-ls to write code…","Routing Machine-126 to write code…","Routing MaoYo42 to write code…","Routing MathisWellmann to write code…","Routing max-fcan to write code…","Routing MEooCheN to write code…","Routing Michubil to write code…","Routing Miho-an-kou to write code…","Routing Miles1994 to write code…","Routing miting1232-source to write code…","Routing mlozaw to write code…","Routing mmmpipi to write code…","Routing mohong2 to write code…","Routing monkeycathyd to write code…","Routing mrbbbaixue to write code…","Routing MRNath to write code…","Routing mulinyang041 to write code…","Routing Myingji to write code…","Routing nano-sun99 to write code…","Routing Narcissu-s1 to write code…","Routing nihaods to write code…","Routing niu12503 to write code…","Routing NOOBnoob163 to write code…","Routing NotUNperson to write code…","Routing Orange-CJ to write code…","Routing Orange3324766 to write code…","Routing Osmundo101 to write code…","Routing outloudvi to write code…","Routing paleech0 to write code…","Routing Palpitace to write code…","Routing panyu1027 to write code…","Routing ParticleLight to write code…","Routing PeanutDawson to write code…","Routing Petom18 to write code…","Routing phaethon90 to write code…","Routing PheobeAI to write code…","Routing PhosAQy to write code…","Routing prolet1966 to write code…","Routing Qiu-Hillock to write code…","Routing QUARTET-ITO-2000 to write code…","Routing R-SKY5 to write code…","Routing RaphaelNY to write code…","Routing Rim-World to write code…","Routing RRRosmontis to write code…","Routing ruiqixizi-eng to write code…","Routing sailoumili to write code…","Routing Sakuracio to write code…","Routing SanZ1211 to write code…","Routing sdadz-luo to write code…","Routing Seduce355 to write code…","Routing semantic-craft to write code…","Routing shiimizu to write code…","Routing ShionKanagawa to write code…","Routing SleepGod8 to write code…","Routing snowleorard to write code…","Routing sqx070106-tech to write code…","Routing ssz1132017-eng to write code…","Routing TACONailoong to write code…","Routing tenziro to write code…","Routing The131313 to write code…","Routing TheGreatGrayx to write code…","Routing Tomatamatom1 to write code…","Routing tttnny to write code…","Routing Tumber-ZM to write code…","Routing Turroise to write code…","Routing turtleqiu to write code…","Routing UkGuest0721 to write code…","Routing Umamed26 to write code…","Routing uni0317 to write code…","Routing varfa57 to write code…","Routing vic14420 to write code…","Routing WANGSHUISHUI2725 to write code…","Routing WesleyLiuCaiyin to write code…","Routing whc2001 to write code…","Routing whoamihappyhacking to write code…","Routing whyan176 to write code…","Routing WJXWP to write code…","Routing Xaisspe to write code…","Routing xBxUxGx to write code…","Routing xbzcqgs to write code…","Routing xialongxl to write code…","Routing xiaokongQAQ123 to write code…","Routing xiaozi233 to write code…","Routing xiazhenxin314-cpu to write code…","Routing XingPeng-Pixel to write code…","Routing Xmiss9 to write code…","Routing xuehai-jing to write code…","Routing xuehuling to write code…","Routing xwmp3 to write code…","Routing yanyoo2000 to write code…","Routing yensonhwu to write code…","Routing yihefeikong-rgb to write code…","Routing yimu2111 to write code…","Routing Ylhow06 to write code…","Routing ymt-zzz to write code…","Routing YOASHABI to write code…","Routing yuan-source-666 to write code…","Routing yuedaochangmendian to write code…","Routing Yuerchu to write code…","Routing yusun726 to write code…","Routing YuZjenOn to write code…","Routing Yv-Chinglin to write code…","Routing YYC-JNU to write code…","Routing z1934712096 to write code…","Routing z4668640 to write code…","Routing ZANNC to write code…","Routing Zircon10086 to write code…","Routing ZIye1208 to write code…"]}}}];
+  var ZU_ROTATOR_DEFAULT_PACKS = ["reverse-proxy","deepseek","western-ai","china-ai","coding","sysadmin","math-physics","slacking","internet-memes","daily"];
+
+  var ZU_ROTATOR_PACK_META = [
+    { id: "deepseek", zh: "DeepSeek 专属", en: "DeepSeek" },
+    { id: "reverse-proxy", zh: "反代与中转日常", en: "Reverse Proxy" },
+    { id: "coding", zh: "程序员搬砖", en: "Coding" },
+    { id: "sysadmin", zh: "运维与架构", en: "Sysadmin" },
+    { id: "western-ai", zh: "海外大模型梗", en: "Western AI" },
+    { id: "china-ai", zh: "国产大模型梗", en: "China AI" },
+    { id: "math-physics", zh: "数学与物理", en: "Math & Physics" },
+    { id: "slacking", zh: "摸鱼哲学", en: "Slacking" },
+    { id: "internet-memes", zh: "互联网热梗", en: "Internet Memes" },
+    { id: "daily", zh: "吃喝日常", en: "Daily Life" },
+    { id: "community", zh: "社区语录", en: "Community" },
+    { id: "ads", zh: "抽象小广告", en: "Parody Ads" },
+    { id: "star-ask", zh: "求 Star 互动", en: "Star Ask" },
+    { id: "star-route", zh: "指路 Star", en: "Star Route" }
+  ];
+
+  var ZU_APPEARANCE_THEMES = {
+    classic: {
+      zh: "经典流光", en: "Classic Shimmer",
+      gradient: { enabled: true, mode: "auto", speed: 3.2, direction: "ltr",
+        nightColors: ["#ff6b6b", "#feca57", "#48dbfb", "#ff9ff3", "#54a0ff"],
+        dayColors: ["#d63031", "#e17055", "#0984e3", "#6c5ce7", "#00b894"] },
+      glow: false, animation: "none", fontWeight: "500"
+    },
+    neon: {
+      zh: "赛博霓虹", en: "Cyber Neon",
+      gradient: { enabled: true, mode: "auto", speed: 2.2, direction: "ltr",
+        nightColors: ["#00f5d4", "#00bbf9", "#fee440", "#f15bb5", "#9b5de5"],
+        dayColors: ["#008b74", "#006ba6", "#b58900", "#c9184a", "#5a189a"] },
+      glow: true, glowColor: "rgba(0, 245, 212, 0.45)", animation: "breathe", fontWeight: "600"
+    },
+    terminal: {
+      zh: "极客终端", en: "Geek Terminal",
+      gradient: { enabled: true, mode: "auto", speed: 4.0, direction: "ltr",
+        nightColors: ["#3ecf8e", "#a8ff78", "#78ffd6", "#3ecf8e"],
+        dayColors: ["#0f9d6c", "#1b7a43", "#0b7285", "#0f9d6c"] },
+      glow: true, glowColor: "rgba(62, 207, 142, 0.35)", animation: "none", fontWeight: "600"
+    },
+    candy: {
+      zh: "马卡龙糖果", en: "Macaron Candy",
+      gradient: { enabled: true, mode: "auto", speed: 3.0, direction: "rtl",
+        nightColors: ["#ff9a9e", "#fecfef", "#a1c4fd", "#c2e9fb", "#fbc2eb"],
+        dayColors: ["#e84393", "#fd79a8", "#0984e3", "#00cec9", "#6c5ce7"] },
+      glow: false, animation: "breathe", fontWeight: "600"
+    },
+    glitch: {
+      zh: "故障电波", en: "Glitch Wave",
+      gradient: { enabled: true, mode: "auto", speed: 1.6, direction: "ltr",
+        nightColors: ["#ff0055", "#00ffcc", "#ffff00", "#ff0055", "#00ccff"],
+        dayColors: ["#c0003c", "#008f72", "#b37700", "#c0003c", "#006699"] },
+      glow: true, glowColor: "rgba(255, 0, 85, 0.45)", animation: "glitch", fontWeight: "700"
+    }
+  };
+
+  var ZU_ROTATOR_BUILTIN_PRESETS = {
+    "default": {
+      zh: "默认均衡", en: "Balanced Default",
+      enabledPacks: ["reverse-proxy", "deepseek", "western-ai", "china-ai", "coding", "sysadmin", "slacking", "internet-memes"],
+      appearance: { theme: "classic" },
+      danmaku: { enabled: false }
+    },
+    "deepseek-fan": {
+      zh: "DeepSeek 狂热", en: "DeepSeek Enthusiast",
+      enabledPacks: ["deepseek", "china-ai", "western-ai", "math-physics"],
+      whaleTail: true,
+      whaleTailMotion: { enabled: true, action: "random" },
+      appearance: { theme: "neon" }
+    },
+    "work-focus": {
+      zh: "专注搬砖", en: "Work Focus",
+      enabledPacks: ["coding", "sysadmin", "math-physics"],
+      appearance: { theme: "terminal" },
+      danmaku: { enabled: false }
+    },
+    "late-night": {
+      zh: "深夜修仙", en: "Late Night",
+      enabledPacks: ["deepseek", "slacking", "daily", "reverse-proxy"],
+      appearance: { theme: "candy" }
+    },
+    "meme-party": {
+      zh: "玩梗弹幕狂欢", en: "Meme & Danmaku Party",
+      enabledPacks: ["internet-memes", "slacking", "community", "ads", "reverse-proxy", "deepseek"],
+      appearance: { theme: "glitch" },
+      danmaku: { enabled: true }
+    }
+  };
+
+  /* ---------- 小鲸鱼尾巴 VLQ32 解码与轮廓桥接 ---------- */
+  var ZU_TAIL_B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!#$%&()*+,-./:;<=>?@[]^_`{|}~";
+  var ZU_TAIL_B64_MAP = {};
+  for (var _bi = 0; _bi < ZU_TAIL_B64.length; _bi++) ZU_TAIL_B64_MAP[ZU_TAIL_B64.charCodeAt(_bi)] = _bi;
+
+  function zuDecodeVLQPoints(str) {
+    var pts = [], idx = 0, len = str.length, x = 0, y = 0;
+    while (idx < len) {
+      var v = 0, shift = 0, b;
+      do {
+        b = ZU_TAIL_B64_MAP[str.charCodeAt(idx++)] || 0;
+        v |= (b & 31) << shift;
+        shift += 5;
+      } while (b & 32 && idx < len);
+      var dx = (v & 1) ? -(v >>> 1) : (v >>> 1);
+      v = 0; shift = 0;
+      do {
+        b = ZU_TAIL_B64_MAP[str.charCodeAt(idx++)] || 0;
+        v |= (b & 31) << shift;
+        shift += 5;
+      } while (b & 32 && idx < len);
+      var dy = (v & 1) ? -(v >>> 1) : (v >>> 1);
+      x += dx; y += dy;
+      pts.push([x, y]);
+    }
+    return pts;
+  }
+
+  function zuPointsToPath(pts) {
+    if (!pts || !pts.length) return "M0 0 Z";
+    var out = "M" + pts[0][0] + " " + pts[0][1];
+    for (var i = 1; i < pts.length; i++) out += " L" + pts[i][0] + " " + pts[i][1];
+    return out + " Z";
+  }
+
+  function zuCanonicalContour(pts) {
+    if (!pts || pts.length < 3) return pts || [];
+    var area = 0, n = pts.length;
+    for (var i = 0; i < n; i++) {
+      var a = pts[i], b = pts[(i + 1) % n];
+      area += a[0] * b[1] - a[1] * b[0];
+    }
+    var p = area < 0 ? pts.slice().reverse() : pts.slice();
+    var best = 0, bestD = Infinity;
+    for (var j = 0; j < p.length; j++) {
+      var d = (p[j][0] - 130) * (p[j][0] - 130) + (p[j][1] - 269) * (p[j][1] - 269);
+      if (d < bestD) { bestD = d; best = j; }
+    }
+    return p.slice(best).concat(p.slice(0, best));
+  }
+
+  function zuResampleContour(pts, targetCount) {
+    var count = targetCount || 128;
+    var n = pts.length;
+    if (!n) return [];
+    var lengths = new Array(n), total = 0;
+    for (var i = 0; i < n; i++) {
+      var a = pts[i], b = pts[(i + 1) % n];
+      var l = Math.hypot(b[0] - a[0], b[1] - a[1]);
+      lengths[i] = l;
+      total += l;
+    }
+    if (total <= 0) return pts.slice(0, count);
+    var out = [], edge = 0, travel = 0;
+    for (var k = 0; k < count; k++) {
+      var d = (k * total) / count;
+      while (edge < n - 1 && travel + lengths[edge] < d) {
+        travel += lengths[edge++];
+      }
+      var p0 = pts[edge], p1 = pts[(edge + 1) % n], seg = lengths[edge];
+      var t = seg > 0 ? (d - travel) / seg : 0;
+      out.push([p0[0] + (p1[0] - p0[0]) * t, p0[1] + (p1[1] - p0[1]) * t]);
+    }
+    return out;
+  }
+
+  function zuLinearLoopPoses(keyPtsArray, totalFrames) {
+    var framesCount = totalFrames || 150;
+    var keys = keyPtsArray.map(function (pts) { return zuResampleContour(zuCanonicalContour(pts), 128); });
+    var kLen = keys.length, out = new Array(framesCount);
+    for (var i = 0; i < framesCount; i++) {
+      var u = (i * kLen) / framesCount;
+      var j = Math.floor(u), t = u - j;
+      var a = keys[j % kLen], b = keys[(j + 1) % kLen];
+      var s = "M";
+      for (var p = 0; p < a.length; p++) {
+        var x = (a[p][0] + (b[p][0] - a[p][0]) * t).toFixed(1);
+        var y = (a[p][1] + (b[p][1] - a[p][1]) * t).toFixed(1);
+        s += (p === 0 ? "" : " L") + x + " " + y;
+      }
+      out[i] = s + " Z";
+    }
+    return out;
+  }
+
+  var zuTailPoseCache = {};
+  function decodeWhaleTailPoses(action) {
+    var act = (action === "sway" || action === "twist" || action === "official") ? action : "wag";
+    if (zuTailPoseCache[act]) return zuTailPoseCache[act];
+    var frames = [];
+    if (act === "wag") {
+      var wKeys = ZU_WHALE_TAIL_DATA.wagKeys.split("|").map(zuDecodeVLQPoints);
+      frames = zuLinearLoopPoses(wKeys, 150);
+    } else if (act === "sway") {
+      var sKeys12 = ZU_WHALE_TAIL_DATA.swayKeys.split("|").map(zuDecodeVLQPoints);
+      var sKeys24 = sKeys12.concat(sKeys12);
+      frames = zuLinearLoopPoses(sKeys24, 150);
+    } else if (act === "twist") {
+      frames = ZU_WHALE_TAIL_DATA.twist.split("|").map(function (s) {
+        return zuPointsToPath(zuDecodeVLQPoints(s));
+      });
+    } else if (act === "official") {
+      var shapes = ZU_WHALE_TAIL_DATA.officialShapes.split("|").map(function (s) {
+        return zuPointsToPath(zuDecodeVLQPoints(s));
+      });
+      frames = ZU_WHALE_TAIL_DATA.officialFrames.split(",").map(function (idxStr) {
+        return shapes[parseInt(idxStr, 10) || 0] || shapes[0];
+      });
+    }
+    zuTailPoseCache[act] = frames;
+    return frames;
+  }
+
+  function whaleTailBridgeFrames(fromPath, toPath) {
+    if (!fromPath || !toPath || fromPath === toPath) return [toPath || fromPath || "M0 0 Z"];
+    function parsePts(d) {
+      var m = String(d).match(/-?\d+(?:\.\d+)?/g);
+      if (!m || m.length < 6) return [[0, 0], [10, 0], [10, 10]];
+      var pts = [];
+      for (var i = 0; i < m.length - 1; i += 2) pts.push([Number(m[i]), Number(m[i + 1])]);
+      return pts;
+    }
+    var a = zuResampleContour(parsePts(fromPath), 96);
+    var b = zuResampleContour(parsePts(toPath), 96);
+    function signedArea(pts) {
+      var s = 0;
+      for (var i = 0; i < pts.length; i++) {
+        var q = pts[(i + 1) % pts.length];
+        s += pts[i][0] * q[1] - q[0] * pts[i][1];
+      }
+      return s;
+    }
+    if (signedArea(a) * signedArea(b) < 0) b.reverse();
+    var shift = 0, best = Infinity, n = b.length;
+    for (var off = 0; off < n; off += 2) {
+      var score = 0;
+      for (var i = 0; i < n; i += 2) {
+        var q = b[(i + off) % n];
+        var dx = a[i][0] - q[0], dy = a[i][1] - q[1];
+        score += dx * dx + dy * dy;
+      }
+      if (score < best) { best = score; shift = off; }
+    }
+    var out = [fromPath];
+    for (var f = 1; f < 5; f++) {
+      var ratio = f / 5, pathStr = "M";
+      for (var j = 0; j < n; j++) {
+        var q2 = b[(j + shift) % n];
+        var x = (a[j][0] + (q2[0] - a[j][0]) * ratio).toFixed(1);
+        var y = (a[j][1] + (q2[1] - a[j][1]) * ratio).toFixed(1);
+        pathStr += (j === 0 ? "" : " L") + x + " " + y;
+      }
+      out.push(pathStr + " Z");
+    }
+    out.push(toPath);
+    return out;
+  }
+
+  function resolveWhaleTailSpeedHz(motionCfg, currentTps, currentAction) {
+    var m = motionCfg || {};
+    if (currentAction === "official" && m.officialRecommendedSpeed !== false) return 0.25;
+    if (m.speedMode === "fixed") {
+      var fh = Number(m.fixedSpeedHz);
+      return (isFinite(fh) && fh >= 0.1 && fh <= 4.0) ? fh : 0.85;
+    }
+    var tiers = Array.isArray(m.tpsTiers) && m.tpsTiers.length ? m.tpsTiers : [
+      { minTps: 0, speedHz: 0.45 },
+      { minTps: 15, speedHz: 0.85 },
+      { minTps: 40, speedHz: 1.25 },
+      { minTps: 80, speedHz: 1.75 },
+      { minTps: 150, speedHz: 2.35 }
+    ];
+    var tps = (typeof currentTps === "number" && isFinite(currentTps) && currentTps >= 0) ? currentTps : 0;
+    var hz = tiers[0].speedHz || 0.45;
+    for (var i = 0; i < tiers.length; i++) {
+      if (tps >= (Number(tiers[i].minTps) || 0)) hz = Number(tiers[i].speedHz) || hz;
+    }
+    return Math.max(0.1, Math.min(4.0, hz));
+  }
+
+  /* ---------- 默认配置与归一化 ---------- */
+  function defaultRotatorConfig() {
+    return {
+      enabled: true,
+      mountTarget: "both", // "both" | "chat" | "bar"
+      barAlwaysShow: false,
+      labelSource: "phrases", // "phrases" | "host"
+      intervalMs: 3500,
+      typeSpeedMs: 28,
+      longAfterMs: 30000,
+      weightedRandom: true,
+      antiRepeat: { recentLimit: 6, persist: false },
+      enabledPacks: ZU_ROTATOR_DEFAULT_PACKS.slice(),
+      activePreset: "default",
+      scheduleEnabled: false,
+      schedule: [
+        { days: [1, 2, 3, 4, 5], hours: "9-18", preset: "work-focus" },
+        { days: [0, 1, 2, 3, 4, 5, 6], hours: "23-5", preset: "late-night" }
+      ],
+      customPhrases: {
+        zh: { thinking: [], running: [], long: [] },
+        en: { thinking: [], running: [], long: [] }
+      },
+      appearance: {
+        theme: "classic", // "classic" | "neon" | "terminal" | "candy" | "glitch" | "custom"
+        fontSizePx: 0, // 0 = follow host
+        fontWeight: "500",
+        glow: false,
+        glowColor: "rgba(87, 200, 255, 0.4)",
+        animation: "none", // "none" | "breathe" | "glitch"
+        spinner: "none", // "none" | "ring" | "bar"
+        gradient: {
+          enabled: true,
+          mode: "auto", // "auto" | "night" | "day"
+          direction: "ltr", // "ltr" | "rtl"
+          speed: 3.2,
+          nightColors: ["#ff6b6b", "#feca57", "#48dbfb", "#ff9ff3", "#54a0ff"],
+          dayColors: ["#d63031", "#e17055", "#0984e3", "#6c5ce7", "#00b894"]
+        }
+      },
+      whaleTail: true,
+      whaleTailRainbow: true,
+      whaleTailMotion: {
+        enabled: true,
+        action: "random", // "wag" | "sway" | "twist" | "official" | "random"
+        randomActions: ["wag", "sway", "twist", "official"],
+        speedMode: "tps", // "tps" | "fixed"
+        fixedSpeedHz: 0.85,
+        officialRecommendedSpeed: true,
+        toolSwitchEnabled: true,
+        toolSwitchChance: 0.65,
+        tpsTiers: [
+          { minTps: 0, speedHz: 0.45 },
+          { minTps: 15, speedHz: 0.85 },
+          { minTps: 40, speedHz: 1.25 },
+          { minTps: 80, speedHz: 1.75 },
+          { minTps: 150, speedHz: 2.35 }
+        ]
+      },
+      title: {
+        enabled: false,
+        templates: {
+          thinking: "🤔 {phaseLabel} ({elapsed}) · {model}",
+          running: "⚡ {tps} t/s · {running} · {model}",
+          long: "⏳ {elapsed} · {phaseLabel} · {model}"
+        },
+        idleTemplate: ""
+      },
+      danmaku: {
+        enabled: false,
+        modes: { scroll: 70, top: 15, bottom: 15 },
+        opacity: 0.88,
+        minFontPx: 13,
+        maxFontPx: 18,
+        speedSec: 9,
+        maxConcurrent: 18,
+        hoverPause: true,
+        clickCopy: true,
+        phaseColors: true,
+        avoidPointer: true,
+        pauseBehindMask: true
+      }
+    };
+  }
+
+  function clampNum(v, lo, hi, dflt) {
+    var n = Number(v);
+    if (!isFinite(n)) return dflt;
+    return Math.max(lo, Math.min(hi, n));
+  }
+
+  function loadRotatorConfig() {
+    var base = defaultRotatorConfig();
+    try {
+      var raw = JSON.parse(ls(ZU_ROTATOR_LS_KEY, "null"));
+      if (!raw || typeof raw !== "object") return base;
+      if (typeof raw.enabled === "boolean") base.enabled = raw.enabled;
+      if (raw.mountTarget === "chat" || raw.mountTarget === "bar" || raw.mountTarget === "both") base.mountTarget = raw.mountTarget;
+      if (typeof raw.barAlwaysShow === "boolean") base.barAlwaysShow = raw.barAlwaysShow;
+      if (raw.labelSource === "phrases" || raw.labelSource === "host") base.labelSource = raw.labelSource;
+      base.intervalMs = Math.round(clampNum(raw.intervalMs, 500, 60000, base.intervalMs));
+      base.typeSpeedMs = Math.round(clampNum(raw.typeSpeedMs, 0, 200, base.typeSpeedMs));
+      base.longAfterMs = Math.round(clampNum(raw.longAfterMs, 5000, 600000, base.longAfterMs));
+      if (typeof raw.weightedRandom === "boolean") base.weightedRandom = raw.weightedRandom;
+      if (raw.antiRepeat && typeof raw.antiRepeat === "object") {
+        base.antiRepeat.recentLimit = Math.round(clampNum(raw.antiRepeat.recentLimit, 0, 50, base.antiRepeat.recentLimit));
+        if (typeof raw.antiRepeat.persist === "boolean") base.antiRepeat.persist = raw.antiRepeat.persist;
+      }
+      if (Array.isArray(raw.enabledPacks)) {
+        base.enabledPacks = raw.enabledPacks.filter(function (id) { return typeof id === "string" && id in ZU_ROTATOR_BUILTIN_PACKS; });
+      }
+      if (typeof raw.activePreset === "string" && raw.activePreset) base.activePreset = raw.activePreset;
+      if (typeof raw.scheduleEnabled === "boolean") base.scheduleEnabled = raw.scheduleEnabled;
+      if (Array.isArray(raw.schedule)) base.schedule = raw.schedule;
+      if (raw.customPhrases && typeof raw.customPhrases === "object") {
+        ["zh", "en"].forEach(function (loc) {
+          if (raw.customPhrases[loc] && typeof raw.customPhrases[loc] === "object") {
+            ["thinking", "running", "long"].forEach(function (ph) {
+              if (Array.isArray(raw.customPhrases[loc][ph])) base.customPhrases[loc][ph] = raw.customPhrases[loc][ph];
+            });
+          }
+        });
+      }
+      if (raw.appearance && typeof raw.appearance === "object") {
+        var ap = raw.appearance;
+        if (typeof ap.theme === "string") base.appearance.theme = ap.theme;
+        base.appearance.fontSizePx = Math.round(clampNum(ap.fontSizePx, 0, 32, base.appearance.fontSizePx));
+        if (typeof ap.fontWeight === "string") base.appearance.fontWeight = ap.fontWeight;
+        if (typeof ap.glow === "boolean") base.appearance.glow = ap.glow;
+        if (typeof ap.glowColor === "string") base.appearance.glowColor = ap.glowColor;
+        if (ap.animation === "none" || ap.animation === "breathe" || ap.animation === "glitch") base.appearance.animation = ap.animation;
+        if (ap.spinner === "none" || ap.spinner === "ring" || ap.spinner === "bar") base.appearance.spinner = ap.spinner;
+        if (ap.gradient && typeof ap.gradient === "object") {
+          var gr = ap.gradient;
+          if (typeof gr.enabled === "boolean") base.appearance.gradient.enabled = gr.enabled;
+          if (gr.mode === "auto" || gr.mode === "night" || gr.mode === "day") base.appearance.gradient.mode = gr.mode;
+          if (gr.direction === "ltr" || gr.direction === "rtl") base.appearance.gradient.direction = gr.direction;
+          base.appearance.gradient.speed = clampNum(gr.speed, 0.5, 20, base.appearance.gradient.speed);
+          if (Array.isArray(gr.nightColors) && gr.nightColors.length >= 2) base.appearance.gradient.nightColors = gr.nightColors;
+          if (Array.isArray(gr.dayColors) && gr.dayColors.length >= 2) base.appearance.gradient.dayColors = gr.dayColors;
+        }
+      }
+      if (typeof raw.whaleTail === "boolean") base.whaleTail = raw.whaleTail;
+      if (typeof raw.whaleTailRainbow === "boolean") base.whaleTailRainbow = raw.whaleTailRainbow;
+      if (raw.whaleTailMotion && typeof raw.whaleTailMotion === "object") {
+        var wm = raw.whaleTailMotion;
+        if (typeof wm.enabled === "boolean") base.whaleTailMotion.enabled = wm.enabled;
+        if (wm.action === "wag" || wm.action === "sway" || wm.action === "twist" || wm.action === "official" || wm.action === "random") {
+          base.whaleTailMotion.action = wm.action;
+        }
+        if (Array.isArray(wm.randomActions) && wm.randomActions.length) {
+          var validActs = wm.randomActions.filter(function (a) { return a === "wag" || a === "sway" || a === "twist" || a === "official"; });
+          if (validActs.length) base.whaleTailMotion.randomActions = validActs;
+        }
+        if (wm.speedMode === "tps" || wm.speedMode === "fixed") base.whaleTailMotion.speedMode = wm.speedMode;
+        base.whaleTailMotion.fixedSpeedHz = clampNum(wm.fixedSpeedHz, 0.1, 4.0, base.whaleTailMotion.fixedSpeedHz);
+        if (typeof wm.officialRecommendedSpeed === "boolean") base.whaleTailMotion.officialRecommendedSpeed = wm.officialRecommendedSpeed;
+        if (typeof wm.toolSwitchEnabled === "boolean") base.whaleTailMotion.toolSwitchEnabled = wm.toolSwitchEnabled;
+        base.whaleTailMotion.toolSwitchChance = clampNum(wm.toolSwitchChance, 0, 1, base.whaleTailMotion.toolSwitchChance);
+        if (Array.isArray(wm.tpsTiers) && wm.tpsTiers.length) base.whaleTailMotion.tpsTiers = wm.tpsTiers;
+      }
+      if (raw.title && typeof raw.title === "object") {
+        if (typeof raw.title.enabled === "boolean") base.title.enabled = raw.title.enabled;
+        if (raw.title.templates && typeof raw.title.templates === "object") {
+          ["thinking", "running", "long"].forEach(function (ph) {
+            if (typeof raw.title.templates[ph] === "string") base.title.templates[ph] = raw.title.templates[ph];
+          });
+        }
+        if (typeof raw.title.idleTemplate === "string") base.title.idleTemplate = raw.title.idleTemplate;
+      }
+      if (raw.danmaku && typeof raw.danmaku === "object") {
+        var dm = raw.danmaku;
+        if (typeof dm.enabled === "boolean") base.danmaku.enabled = dm.enabled;
+        if (dm.modes && typeof dm.modes === "object") {
+          base.danmaku.modes.scroll = clampNum(dm.modes.scroll, 0, 100, base.danmaku.modes.scroll);
+          base.danmaku.modes.top = clampNum(dm.modes.top, 0, 100, base.danmaku.modes.top);
+          base.danmaku.modes.bottom = clampNum(dm.modes.bottom, 0, 100, base.danmaku.modes.bottom);
+        }
+        base.danmaku.opacity = clampNum(dm.opacity, 0.1, 1.0, base.danmaku.opacity);
+        base.danmaku.minFontPx = Math.round(clampNum(dm.minFontPx, 10, 32, base.danmaku.minFontPx));
+        base.danmaku.maxFontPx = Math.round(clampNum(dm.maxFontPx, base.danmaku.minFontPx, 40, base.danmaku.maxFontPx));
+        base.danmaku.speedSec = clampNum(dm.speedSec, 3, 25, base.danmaku.speedSec);
+        base.danmaku.maxConcurrent = Math.round(clampNum(dm.maxConcurrent, 1, 60, base.danmaku.maxConcurrent));
+        if (typeof dm.hoverPause === "boolean") base.danmaku.hoverPause = dm.hoverPause;
+        if (typeof dm.clickCopy === "boolean") base.danmaku.clickCopy = dm.clickCopy;
+        if (typeof dm.phaseColors === "boolean") base.danmaku.phaseColors = dm.phaseColors;
+        if (typeof dm.avoidPointer === "boolean") base.danmaku.avoidPointer = dm.avoidPointer;
+        if (typeof dm.pauseBehindMask === "boolean") base.danmaku.pauseBehindMask = dm.pauseBehindMask;
+      }
+    } catch (e) { }
+    return base;
+  }
+
+  var rotatorCfg = loadRotatorConfig();
+  function saveRotatorConfig() {
+    lsSet(ZU_ROTATOR_LS_KEY, JSON.stringify(rotatorCfg));
+  }
+
+  /* ---------- 排程与预设解析 ---------- */
+  function matchHourWindow(hourWindow, curHour) {
+    if (!hourWindow) return true;
+    if (Array.isArray(hourWindow) && hourWindow.length === 2) {
+      var s = Number(hourWindow[0]), e = Number(hourWindow[1]);
+      if (!isFinite(s) || !isFinite(e)) return true;
+      return s <= e ? (curHour >= s && curHour < e) : (curHour >= s || curHour < e);
+    }
+    var m = /^(\d{1,2})\s*-\s*(\d{1,2})$/.exec(String(hourWindow).trim());
+    if (!m) return true;
+    var start = parseInt(m[1], 10), end = parseInt(m[2], 10);
+    return start <= end ? (curHour >= start && curHour < end) : (curHour >= start || curHour < end);
+  }
+
+  function resolveEffectiveRotatorConfig(nowDate) {
+    var d = nowDate || new Date();
+    var presetId = rotatorCfg.activePreset;
+    if (rotatorCfg.scheduleEnabled && Array.isArray(rotatorCfg.schedule)) {
+      var day = d.getDay(), hr = d.getHours();
+      for (var i = 0; i < rotatorCfg.schedule.length; i++) {
+        var rule = rotatorCfg.schedule[i];
+        if (!rule || !rule.preset) continue;
+        var dayOk = !Array.isArray(rule.days) || !rule.days.length || rule.days.indexOf(day) >= 0;
+        var hrOk = matchHourWindow(rule.hours, hr);
+        if (dayOk && hrOk) { presetId = rule.preset; break; }
+      }
+    }
+    return { cfg: rotatorCfg, activePresetId: presetId };
+  }
+
+  function applyRotatorPreset(presetId) {
+    var p = ZU_ROTATOR_BUILTIN_PRESETS[presetId];
+    if (!p) return false;
+    rotatorCfg.activePreset = presetId;
+    if (Array.isArray(p.enabledPacks)) rotatorCfg.enabledPacks = p.enabledPacks.slice();
+    if (p.appearance && p.appearance.theme && ZU_APPEARANCE_THEMES[p.appearance.theme]) {
+      applyAppearanceThemePreset(p.appearance.theme);
+    }
+    if (typeof p.whaleTail === "boolean") rotatorCfg.whaleTail = p.whaleTail;
+    if (p.whaleTailMotion && typeof p.whaleTailMotion === "object") {
+      if (typeof p.whaleTailMotion.enabled === "boolean") rotatorCfg.whaleTailMotion.enabled = p.whaleTailMotion.enabled;
+      if (p.whaleTailMotion.action) rotatorCfg.whaleTailMotion.action = p.whaleTailMotion.action;
+    }
+    if (p.danmaku && typeof p.danmaku.enabled === "boolean") rotatorCfg.danmaku.enabled = p.danmaku.enabled;
+    saveRotatorConfig();
+    return true;
+  }
+
+  function applyAppearanceThemePreset(themeId) {
+    var th = ZU_APPEARANCE_THEMES[themeId];
+    if (!th) return false;
+    rotatorCfg.appearance.theme = themeId;
+    rotatorCfg.appearance.glow = !!th.glow;
+    if (th.glowColor) rotatorCfg.appearance.glowColor = th.glowColor;
+    rotatorCfg.appearance.animation = th.animation || "none";
+    rotatorCfg.appearance.fontWeight = th.fontWeight || "500";
+    if (th.gradient) {
+      rotatorCfg.appearance.gradient.enabled = th.gradient.enabled !== false;
+      rotatorCfg.appearance.gradient.mode = th.gradient.mode || "auto";
+      rotatorCfg.appearance.gradient.speed = th.gradient.speed || 3.2;
+      rotatorCfg.appearance.gradient.direction = th.gradient.direction || "ltr";
+      if (th.gradient.nightColors) rotatorCfg.appearance.gradient.nightColors = th.gradient.nightColors.slice();
+      if (th.gradient.dayColors) rotatorCfg.appearance.gradient.dayColors = th.gradient.dayColors.slice();
+    }
+    return true;
+  }
+
+  /* ---------- 自定义短语行语法解析 (文案 | 权重 | when:... | rarity:...) ---------- */
+  function parsePhraseLine(line) {
+    var s = String(line || "").trim();
+    if (!s || s.charAt(0) === "#") return null;
+    var parts = s.split("|").map(function (p) { return p.trim(); });
+    var text = parts[0];
+    if (!text) return null;
+    var item = { text: text, weight: 1 };
+    for (var i = 1; i < parts.length; i++) {
+      var seg = parts[i];
+      if (!seg) continue;
+      if (/^\d+(?:\.\d+)?$/.test(seg)) {
+        item.weight = clampNum(Number(seg), 0.1, 100, 1);
+      } else if (seg.indexOf("rarity:") === 0) {
+        item.rarity = clampNum(Number(seg.slice(7)), 0.01, 1, 1);
+      } else if (seg.indexOf("when:") === 0) {
+        var condStr = seg.slice(5).trim();
+        var when = {};
+        condStr.split(",").forEach(function (kv) {
+          var eq = kv.indexOf("=");
+          if (eq < 0) {
+            var k0 = kv.trim();
+            if (k0 === "tool" || k0 === "retry" || k0 === "pending" || k0 === "firstTurn") when[k0] = true;
+          } else {
+            var k = kv.slice(0, eq).trim(), v = kv.slice(eq + 1).trim();
+            if (v === "true") when[k] = true;
+            else if (v === "false") when[k] = false;
+            else if (/^\d+$/.test(v) && (k === "retry" || k === "pending")) when[k] = parseInt(v, 10);
+            else when[k] = v;
+          }
+        });
+        if (Object.keys(when).length) item.when = when;
+      }
+    }
+    return item;
+  }
+
+  function formatPhraseLines(list) {
+    if (!Array.isArray(list)) return "";
+    return list.map(function (it) {
+      if (typeof it === "string") return it;
+      if (!it || typeof it.text !== "string") return "";
+      var segs = [it.text];
+      if (typeof it.weight === "number" && it.weight !== 1) segs.push(String(it.weight));
+      if (it.when && typeof it.when === "object") {
+        var ws = [];
+        for (var k in it.when) {
+          if (Object.prototype.hasOwnProperty.call(it.when, k)) ws.push(k + "=" + it.when[k]);
+        }
+        if (ws.length) segs.push("when:" + ws.join(","));
+      }
+      if (typeof it.rarity === "number" && it.rarity < 1) segs.push("rarity:" + it.rarity);
+      return segs.join(" | ");
+    }).filter(Boolean).join("\n");
+  }
+
+  /* ---------- 词池合并、条件过滤、洗牌袋防重复与 17 个实时占位符 ---------- */
+  function getMergedPhrasePool(phase, lang, nowDate) {
+    var loc = lang === "en" ? "en" : "zh";
+    var ph = (phase === "thinking" || phase === "long") ? phase : "running";
+    var pool = [];
+    var enabled = rotatorCfg.enabledPacks || [];
+    if (rotatorCfg.scheduleEnabled) {
+      var eff = resolveEffectiveRotatorConfig(nowDate);
+      var effPreset = eff && eff.activePresetId && ZU_ROTATOR_BUILTIN_PRESETS[eff.activePresetId];
+      if (effPreset && Array.isArray(effPreset.enabledPacks) && effPreset.enabledPacks.length) enabled = effPreset.enabledPacks;
+    }
+    for (var i = 0; i < enabled.length; i++) {
+      var pack = ZU_ROTATOR_BUILTIN_PACKS[enabled[i]];
+      if (!pack) continue;
+      var locPack = pack[loc] || pack.zh || pack;
+      var arr = locPack && Array.isArray(locPack[ph]) ? locPack[ph] : [];
+      for (var j = 0; j < arr.length; j++) {
+        var entry = arr[j];
+        if (typeof entry === "string") pool.push({ text: entry, weight: 1, pack: enabled[i] });
+        else if (entry && typeof entry.text === "string") pool.push(Object.assign({ weight: 1, pack: enabled[i] }, entry));
+      }
+    }
+    var customLoc = rotatorCfg.customPhrases && rotatorCfg.customPhrases[loc];
+    var customArr = customLoc && Array.isArray(customLoc[ph]) ? customLoc[ph] : [];
+    for (var k = 0; k < customArr.length; k++) {
+      var c = customArr[k];
+      if (typeof c === "string") {
+        var parsed = parsePhraseLine(c);
+        if (parsed) pool.push(Object.assign({ pack: "custom" }, parsed));
+      } else if (c && typeof c.text === "string") {
+        pool.push(Object.assign({ weight: 1, pack: "custom" }, c));
+      }
+    }
+    if (!pool.length) {
+      pool.push({
+        text: loc === "en"
+          ? (ph === "thinking" ? "Thinking deeply ({elapsed})..." : ph === "long" ? "Still working hard ({elapsed})..." : "Generating response ({tps} t/s)...")
+          : (ph === "thinking" ? "深度思考中（{elapsed}）…" : ph === "long" ? "长线攻坚中（{elapsed}）…" : "全力生成中（{tps} t/s）…"),
+        weight: 1, pack: "fallback"
+      });
+    }
+    return pool;
+  }
+
+  function matchesPhraseWhen(when, ctx) {
+    if (!when || typeof when !== "object") return true;
+    if (when.phase && when.phase !== ctx.phase) return false;
+    if (when.tool !== undefined) {
+      if (typeof when.tool === "boolean") {
+        if (when.tool !== !!ctx.runningToolName) return false;
+      } else if (typeof when.tool === "string") {
+        if (!ctx.runningToolName || ctx.runningToolName.toLowerCase().indexOf(when.tool.toLowerCase()) < 0) return false;
+      }
+    }
+    if (when.retry !== undefined) {
+      if (typeof when.retry === "boolean" && when.retry !== (ctx.retryCount > 0)) return false;
+      if (typeof when.retry === "number" && ctx.retryCount < when.retry) return false;
+    }
+    if (when.pending !== undefined) {
+      if (typeof when.pending === "boolean" && when.pending !== (ctx.pendingCount > 0)) return false;
+      if (typeof when.pending === "number" && ctx.pendingCount < when.pending) return false;
+    }
+    if (when.firstTurn !== undefined && !!when.firstTurn !== !!ctx.firstTurn) return false;
+    if (when.hour !== undefined && !matchHourWindow(when.hour, ctx.hour)) return false;
+    return true;
+  }
+
+  var recentPickedRing = [];
+  try {
+    if (rotatorCfg.antiRepeat && rotatorCfg.antiRepeat.persist) {
+      var savedMem = JSON.parse(ls(ZU_ROTATOR_MEM_KEY, "[]"));
+      if (Array.isArray(savedMem)) recentPickedRing = savedMem.slice(-50);
+    }
+  } catch (e) { }
+
+  function pickRotatorPhrase(phase, ctx) {
+    var rawPool = getMergedPhrasePool(phase, state.lang, ctx && ctx.now);
+    var eligible = rawPool.filter(function (item) {
+      if (!matchesPhraseWhen(item.when, ctx)) return false;
+      if (typeof item.rarity === "number" && item.rarity > 0 && item.rarity < 1) {
+        if (Math.random() > item.rarity) return false;
+      }
+      return true;
+    });
+    if (!eligible.length) eligible = rawPool;
+    var limit = Math.min(
+      (rotatorCfg.antiRepeat && typeof rotatorCfg.antiRepeat.recentLimit === "number") ? rotatorCfg.antiRepeat.recentLimit : 6,
+      Math.max(0, eligible.length - 1)
+    );
+    var filtered = limit > 0 ? eligible.filter(function (it) {
+      return recentPickedRing.slice(-limit).indexOf(it.text) < 0;
+    }) : eligible;
+    if (!filtered.length) filtered = eligible;
+
+    var chosen = filtered[0];
+    if (rotatorCfg.weightedRandom) {
+      var totalW = 0;
+      for (var i = 0; i < filtered.length; i++) totalW += Math.max(0.05, Number(filtered[i].weight) || 1);
+      var r = Math.random() * totalW;
+      for (var j = 0; j < filtered.length; j++) {
+        r -= Math.max(0.05, Number(filtered[j].weight) || 1);
+        if (r <= 0) { chosen = filtered[j]; break; }
+      }
+    } else {
+      chosen = filtered[Math.floor(Math.random() * filtered.length)];
+    }
+    if (chosen && chosen.text) {
+      recentPickedRing.push(chosen.text);
+      if (recentPickedRing.length > 50) recentPickedRing.shift();
+      if (rotatorCfg.antiRepeat && rotatorCfg.antiRepeat.persist) {
+        lsSet(ZU_ROTATOR_MEM_KEY, JSON.stringify(recentPickedRing));
+      }
+    }
+    return chosen ? chosen.text : "";
+  }
+
+  function formatRotatorElapsed(ms) {
+    var sec = Math.max(0, Math.floor((Number(ms) || 0) / 1000));
+    if (sec < 60) return sec + "s";
+    var m = Math.floor(sec / 60), s = sec % 60;
+    return m + "m " + s + "s";
+  }
+
+  function formatRotatorPlaceholders(template, ctx) {
+    if (!template) return "";
+    var now = ctx.now || new Date();
+    var pad2 = function (n) { return (n < 10 ? "0" : "") + n; };
+    var dateStr = now.getFullYear() + "-" + pad2(now.getMonth() + 1) + "-" + pad2(now.getDate());
+    var timeStr = pad2(now.getHours()) + ":" + pad2(now.getMinutes()) + ":" + pad2(now.getSeconds());
+    var phaseLabels = {
+      thinking: L("深度思考", "Thinking"),
+      running: L("全力输出", "Generating"),
+      long: L("长线攻坚", "Deep work")
+    };
+    var map = {
+      elapsed: formatRotatorElapsed(ctx.elapsedMs),
+      phase: ctx.phase || "running",
+      phaseLabel: phaseLabels[ctx.phase] || phaseLabels.running,
+      model: ctx.model || "AI",
+      provider: ctx.provider || "ZCode",
+      tps: (typeof ctx.tps === "number" && isFinite(ctx.tps) && ctx.tps > 0) ? ctx.tps.toFixed(1) : "—",
+      pending: String(ctx.pendingCount || 0),
+      tools: String(ctx.toolsCount || 0),
+      running: ctx.runningToolVerb || phaseLabels[ctx.phase] || phaseLabels.running,
+      retry: String(ctx.retryCount || 0),
+      retryMax: String(ctx.retryMax || 3),
+      retryProvider: ctx.retryProvider || ctx.provider || "API",
+      retryCode: ctx.retryCode || "429",
+      detail: ctx.detail || "",
+      locale: state.lang === "en" ? "en" : "zh",
+      date: dateStr,
+      time: timeStr
+    };
+    return String(template).replace(/\{(elapsed|phase|phaseLabel|model|provider|tps|pending|tools|running|retry|retryMax|retryProvider|retryCode|detail|locale|date|time)\}/g, function (_, k) {
+      return map[k] !== undefined ? map[k] : "";
+    });
+  }
+
+  /* ---------- 外观样式表（日夜自适应流光渐变、5 套主题预设、小鲸鱼尾巴、弹幕层） ---------- */
+  var rotatorStyleEl = document.createElement("style");
+  rotatorStyleEl.className = "zu-rotator-style";
+  function resolveRotatorGradientColors() {
+    var gr = rotatorCfg.appearance && rotatorCfg.appearance.gradient;
+    if (!gr) return ["#ff6b6b", "#feca57", "#48dbfb", "#ff9ff3", "#54a0ff"];
+    var isDark = true;
+    try { isDark = document.documentElement.classList.contains("dark"); } catch (e) { }
+    var useNight = gr.mode === "night" ? true : gr.mode === "day" ? false : isDark;
+    var list = useNight ? gr.nightColors : gr.dayColors;
+    return (Array.isArray(list) && list.length >= 2) ? list : ["#ff6b6b", "#feca57", "#48dbfb", "#ff9ff3", "#54a0ff"];
+  }
+
+  function updateRotatorStylesheet() {
+    var ap = rotatorCfg.appearance || {};
+    var gr = ap.gradient || {};
+    var colors = resolveRotatorGradientColors();
+    var loopColors = colors.concat([colors[0]]).join(",");
+    var speed = clampNum(gr.speed, 0.5, 20, 3.2);
+    var dir = gr.direction === "rtl" ? "to left" : "to right";
+    var fontRule = ap.fontSizePx > 0 ? "font-size:" + ap.fontSizePx + "px!important;" : "";
+    var weightRule = ap.fontWeight ? "font-weight:" + ap.fontWeight + "!important;" : "";
+    var glowRule = ap.glow ? "filter:drop-shadow(0 0 6px " + (ap.glowColor || "rgba(87,200,255,.45)") + ");" : "";
+    var animRule = ap.animation === "breathe"
+      ? "animation:zuRotBreathe 2.4s ease-in-out infinite;"
+      : ap.animation === "glitch"
+      ? "animation:zuRotGlitch 1.8s steps(2,end) infinite;"
+      : "";
+    var gradCss = gr.enabled !== false
+      ? "background-image:linear-gradient(" + dir + "," + loopColors + ")!important;" +
+        "background-size:200% auto!important;-webkit-background-clip:text!important;background-clip:text!important;" +
+        "color:transparent!important;-webkit-text-fill-color:transparent!important;" +
+        "animation:zuRotFlow " + speed + "s linear infinite" + (ap.animation === "breathe" ? ",zuRotBreathe 2.4s ease-in-out infinite" : ap.animation === "glitch" ? ",zuRotGlitch 1.8s steps(2,end) infinite" : "") + "!important;"
+      : animRule;
+
+    rotatorStyleEl.textContent =
+      "@keyframes zuRotFlow{0%{background-position:0% 50%}100%{background-position:200% 50%}}" +
+      "@keyframes zuRotBreathe{0%,100%{opacity:.98;transform:scale(1)}50%{opacity:.72;transform:scale(.99)}}" +
+      "@keyframes zuRotGlitch{0%,92%,100%{transform:translate(0,0);opacity:1}94%{transform:translate(-1px,.5px);opacity:.88}96%{transform:translate(1px,-.5px);opacity:.92}98%{transform:translate(-.5px,0);opacity:.85}}" +
+      "@keyframes zuRotSpin{to{transform:rotate(360deg)}}" +
+      "@keyframes zuRotBarPulse{0%,100%{transform:scaleY(.45);opacity:.55}50%{transform:scaleY(1);opacity:1}}" +
+      "@keyframes zuDanmakuScroll{from{transform:translate3d(0,0,0)}to{transform:translate3d(var(--zu-dm-dist,-1400px),0,0)}}" +
+      ".zu-rotator-active-label{" + fontRule + weightRule + glowRule + gradCss + "transition:opacity .15s ease}" +
+      ".zu-rotator-bar{display:inline-flex;align-items:center;gap:5px;padding:2px 7px;border-radius:7px;cursor:pointer;max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
+      ".zu-rotator-bar:hover{background:var(--color-hover,rgba(255,255,255,.06))}" +
+      ".zu-whale-tail-wrap{display:inline-flex;align-items:center;justify-content:center;width:16px;height:16px;flex:0 0 16px;vertical-align:middle}" +
+      ".zu-whale-tail{width:16px;height:16px;display:block;overflow:visible}" +
+      (rotatorCfg.whaleTailRainbow
+        ? ".zu-whale-tail path{fill:url(#zu-whale-tail-grad)!important}"
+        : ".zu-whale-tail path{fill:currentColor!important}") +
+      ".zu-rot-spinner-ring{display:inline-block;width:12px;height:12px;border:1.8px solid currentColor;border-right-color:transparent;border-radius:50%;animation:zuRotSpin .75s linear infinite;flex:0 0 auto}" +
+      ".zu-rot-spinner-bar{display:inline-flex;align-items:center;gap:1.5px;height:12px;flex:0 0 auto}" +
+      ".zu-rot-spinner-bar i{display:inline-block;width:2px;height:10px;background:currentColor;border-radius:1px;animation:zuRotBarPulse .9s ease-in-out infinite}" +
+      ".zu-rot-spinner-bar i:nth-child(2){animation-delay:.18s}.zu-rot-spinner-bar i:nth-child(3){animation-delay:.36s}" +
+      ".zu-rotator-danmaku{position:fixed;inset:0;pointer-events:none;overflow:hidden;z-index:2147483640}" +
+      ".zu-rotator-danmaku[data-paused='1'] .zu-dm-item{animation-play-state:paused!important}" +
+      ".zu-dm-item{position:absolute;white-space:nowrap;font-family:var(--font-mono,monospace);font-weight:600;line-height:1.35;" +
+      "padding:2px 10px;border-radius:999px;text-shadow:0 1px 3px rgba(0,0,0,.65);pointer-events:auto;user-select:none;" +
+      "transition:opacity .18s ease,transform .18s ease;will-change:transform}" +
+      ".zu-dm-item.zu-dm-scroll{left:100%;animation:zuDanmakuScroll var(--zu-dm-dur,9s) linear forwards}" +
+      ".zu-dm-item.zu-dm-fixed{left:50%;transform:translateX(-50%)}" +
+      ".zu-dm-item:hover{z-index:5;background:rgba(15,18,25,.82);box-shadow:0 4px 14px rgba(0,0,0,.45)}" +
+      ".zu-dm-HoverPause .zu-dm-item:hover{animation-play-state:paused!important}" +
+      ".zu-dm-copy{display:none;margin-left:6px;padding:0 6px;border-radius:999px;border:1px solid rgba(255,255,255,.24);background:rgba(255,255,255,.12);color:#fff;font-size:11px;cursor:pointer;line-height:1.4}" +
+      ".zu-dm-item:hover .zu-dm-copy{display:inline-block}" +
+      ".zu-settings-section[data-sec='rotator'] .zu-settings-card+.cap{margin-top:16px}" +
+      ".zu-rot-pack-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px;padding:10px 14px 14px}" +
+      ".zu-settings label.zu-rot-pack-item,.zu-rot-pack-item{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px;border:1px solid var(--color-border,rgba(255,255,255,.1));border-radius:8px;font-size:calc(var(--ui-font-size,14px) - 1px);cursor:pointer;background:var(--color-hover,rgba(255,255,255,.03))}" +
+      ".zu-settings label.zu-rot-pack-item>span{display:inline-flex;align-items:center;gap:6px;padding:0;flex:1;min-width:0}" +
+      ".zu-settings label.zu-rot-pack-item input[type=checkbox]{order:0;margin:0}" +
+      ".zu-rot-pack-item small{color:var(--color-foreground-subtle,#8791a3);font-size:11px}" +
+      ".zu-rot-textarea{width:calc(100% - 24px);margin:4px 12px 10px;min-height:74px;background:var(--color-input,rgba(0,0,0,.22));border:1px solid var(--color-border,rgba(255,255,255,.12));border-radius:8px;color:inherit;padding:6px 10px;font-family:var(--font-mono,monospace);font-size:calc(var(--ui-font-size,14px) - 2px);resize:vertical;box-sizing:border-box}" +
+      ".zu-rot-inline-row{display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:10px 14px;border-top:1px solid var(--color-border,rgba(255,255,255,.08))}" +
+      ".zu-settings .zu-rot-inline-row label{display:inline-flex;align-items:center;gap:6px;padding:4px 8px;margin:0;border:1px solid var(--color-border,rgba(255,255,255,.1));border-radius:8px;font-size:calc(var(--ui-font-size,14px) - 1px)}" +
+      ".zu-settings .zu-rot-inline-row label input[type=checkbox]{order:0;margin:0}" +
+      ".zu-rot-select,.zu-rot-num{background:var(--color-input,rgba(0,0,0,.22));border:1px solid var(--color-border,rgba(255,255,255,.14));border-radius:6px;color:inherit;padding:3px 8px;font:inherit;font-size:calc(var(--ui-font-size,14px) - 1px)}" +
+      ".zu-rot-num{width:76px;text-align:right}" +
+      ".zu-rot-btn{background:var(--color-hover,rgba(255,255,255,.08));border:1px solid var(--color-border,rgba(255,255,255,.14));border-radius:6px;color:inherit;padding:4px 10px;font:inherit;font-size:calc(var(--ui-font-size,14px) - 1px);cursor:pointer}" +
+      ".zu-rot-btn:hover{background:var(--color-border,rgba(255,255,255,.16))}";
+  }
+  function ensureRotatorStyleMounted() {
+    try {
+      if (!rotatorStyleEl.parentElement && document.body) document.body.appendChild(rotatorStyleEl);
+    } catch (e) { }
+  }
+  updateRotatorStylesheet();
+
+  /* ---------- 弹幕引擎（scroll / top / bottom + 悬停暂停 + 点击复制 + 遮罩暂停） ---------- */
+  var danmakuLayer = null;
+  var activeDanmakus = [];
+  var danmakuLaneUntil = { scroll: [], top: [], bottom: [] };
+
+  function ensureDanmakuLayer() {
+    if (danmakuLayer && danmakuLayer.isConnected) {
+      danmakuLayer.classList.toggle("zu-dm-HoverPause", !!(rotatorCfg.danmaku && rotatorCfg.danmaku.hoverPause));
+      return danmakuLayer;
+    }
+    try {
+      danmakuLayer = document.createElement("div");
+      danmakuLayer.className = "zu-rotator-danmaku" + (rotatorCfg.danmaku && rotatorCfg.danmaku.hoverPause ? " zu-dm-HoverPause" : "");
+      document.body.appendChild(danmakuLayer);
+    } catch (e) { danmakuLayer = null; }
+    return danmakuLayer;
+  }
+
+  function isFullscreenMaskActive() {
+    try {
+      var dialogs = document.querySelectorAll('[role="dialog"],[role="alertdialog"],[data-state="open"]');
+      for (var i = 0; i < dialogs.length; i++) {
+        var el = dialogs[i];
+        if (el.classList && (el.classList.contains("zusage-panel") || el.classList.contains("zu-mp-ov"))) continue;
+        var r = el.getBoundingClientRect();
+        if (r.width > 120 && r.height > 80) return true;
+      }
+    } catch (e) { }
+    return false;
+  }
+
+  function pickDanmakuMode(modesCfg) {
+    var m = modesCfg || { scroll: 70, top: 15, bottom: 15 };
+    var ws = Math.max(0, Number(m.scroll) || 0);
+    var wt = Math.max(0, Number(m.top) || 0);
+    var wb = Math.max(0, Number(m.bottom) || 0);
+    var sum = ws + wt + wb;
+    if (sum <= 0) return "scroll";
+    var r = Math.random() * sum;
+    if (r < ws) return "scroll";
+    if (r < ws + wt) return "top";
+    return "bottom";
+  }
+
+  function sendRotatorDanmaku(text, phaseOverride) {
+    var dmCfg = rotatorCfg.danmaku || {};
+    var msg = String(text || "").trim();
+    if (!msg) return false;
+    if (dmCfg.pauseBehindMask && isFullscreenMaskActive()) return false;
+    var layer = ensureDanmakuLayer();
+    if (!layer) return false;
+    activeDanmakus = activeDanmakus.filter(function (item) { return item.el && item.el.isConnected; });
+    if (activeDanmakus.length >= (dmCfg.maxConcurrent || 18)) return false;
+
+    var mode = pickDanmakuMode(dmCfg.modes);
+    var now = Date.now();
+    var vh = Math.max(360, window.innerHeight || 720);
+    var vw = Math.max(480, window.innerWidth || 1024);
+    var laneHeight = 32;
+    var maxLanes = Math.max(3, Math.floor((vh * 0.65) / laneHeight));
+    var lanes = danmakuLaneUntil[mode] || (danmakuLaneUntil[mode] = []);
+    var chosenLane = -1;
+    for (var l = 0; l < maxLanes; l++) {
+      if (!lanes[l] || lanes[l] <= now) { chosenLane = l; break; }
+    }
+    if (chosenLane < 0) chosenLane = Math.floor(Math.random() * maxLanes);
+    var durSec = clampNum(dmCfg.speedSec, 3, 25, 9);
+    lanes[chosenLane] = now + (mode === "scroll" ? Math.round(durSec * 320) : Math.round(durSec * 550));
+
+    var el = document.createElement("div");
+    el.className = "zu-dm-item " + (mode === "scroll" ? "zu-dm-scroll" : "zu-dm-fixed");
+    var fontPx = Math.round(dmCfg.minFontPx + Math.random() * Math.max(0, (dmCfg.maxFontPx || 18) - (dmCfg.minFontPx || 13)));
+    el.style.fontSize = fontPx + "px";
+    el.style.opacity = String(clampNum(dmCfg.opacity, 0.1, 1.0, 0.88));
+
+    var ph = phaseOverride || rotatorRuntime.lastPhase || "running";
+    var palette = dmCfg.phaseColors
+      ? (ph === "thinking" ? ["#a78bfa", "#38bdf8", "#818cf8"] : ph === "long" ? ["#fbbf24", "#fb7185", "#f97316"] : ["#34d399", "#38bdf8", "#60a5fa"])
+      : resolveRotatorGradientColors();
+    el.style.color = palette[Math.floor(Math.random() * palette.length)] || "#38bdf8";
+
+    if (mode === "scroll") {
+      el.style.top = (48 + chosenLane * laneHeight) + "px";
+      el.style.setProperty("--zu-dm-dur", durSec + "s");
+      el.style.setProperty("--zu-dm-dist", "-" + (vw + 640) + "px");
+    } else if (mode === "top") {
+      el.style.top = (48 + chosenLane * laneHeight) + "px";
+    } else {
+      el.style.bottom = (96 + chosenLane * laneHeight) + "px";
+    }
+
+    var textSpan = document.createElement("span");
+    textSpan.textContent = msg;
+    el.appendChild(textSpan);
+
+    if (dmCfg.clickCopy) {
+      var copyBtn = document.createElement("button");
+      copyBtn.type = "button";
+      copyBtn.className = "zu-dm-copy";
+      copyBtn.textContent = L("复制", "Copy");
+      copyBtn.addEventListener("click", function (ev) {
+        ev.stopPropagation();
+        try {
+          if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(msg);
+          copyBtn.textContent = L("已复制", "Copied");
+        } catch (e) { }
+      });
+      el.appendChild(copyBtn);
+    }
+
+    layer.appendChild(el);
+    var timer = setTimeout(function () {
+      try { el.remove(); } catch (e) { }
+    }, Math.round((mode === "scroll" ? durSec : durSec * 0.6) * 1000) + 200);
+    activeDanmakus.push({ el: el, timer: timer });
+    return true;
+  }
+
+  /* ---------- 窗口标题轮播所有权守卫 ---------- */
+  var titleState = {
+    hostBaseTitle: "",
+    lastWrittenTitle: ""
+  };
+
+  function syncRotatorWindowTitle(active, ctx) {
+    try {
+      if (typeof document.title !== "string") return;
+      if (document.title !== titleState.lastWrittenTitle) {
+        titleState.hostBaseTitle = document.title;
+      }
+      if (!rotatorCfg.enabled || !rotatorCfg.title || !rotatorCfg.title.enabled) {
+        if (titleState.lastWrittenTitle && document.title === titleState.lastWrittenTitle && titleState.hostBaseTitle) {
+          document.title = titleState.hostBaseTitle;
+        }
+        titleState.lastWrittenTitle = "";
+        return;
+      }
+      if (!active) {
+        var idleTpl = rotatorCfg.title.idleTemplate ? formatRotatorPlaceholders(rotatorCfg.title.idleTemplate, ctx) : "";
+        var targetIdle = idleTpl || titleState.hostBaseTitle;
+        if (targetIdle && document.title !== targetIdle) {
+          document.title = targetIdle;
+          titleState.lastWrittenTitle = idleTpl ? targetIdle : "";
+        }
+        return;
+      }
+      var tpl = (rotatorCfg.title.templates && rotatorCfg.title.templates[ctx.phase]) || "{phaseLabel} ({elapsed}) · {model}";
+      var nextTitle = formatRotatorPlaceholders(tpl, ctx);
+      if (nextTitle && document.title !== nextTitle) {
+        document.title = nextTitle;
+        titleState.lastWrittenTitle = nextTitle;
+      }
+    } catch (e) { }
+  }
+
+  /* ---------- 运行态驱动：短语轮播、打字机、小鲸鱼尾巴动画与双挂载点同步 ---------- */
+  var rotatorRuntime = {
+    active: false,
+    lastPhase: "thinking",
+    rawPhrase: "",
+    renderedPhrase: "",
+    displayedText: "",
+    typeChars: [],
+    typeIndex: 0,
+    lastPickAt: 0,
+    lastTypeAt: 0,
+    lastToolName: "",
+    currentTailAction: "wag",
+    tailFrameIndex: 0,
+    tailBridgeQueue: [],
+    lastTailStepAt: 0
+  };
+
+  function resolveCurrentTailAction() {
+    var wm = rotatorCfg.whaleTailMotion || {};
+    var act = wm.action || "wag";
+    if (act !== "random") {
+      rotatorRuntime.currentTailAction = act;
+      return act;
+    }
+    var pool = Array.isArray(wm.randomActions) && wm.randomActions.length ? wm.randomActions : ["wag", "sway", "twist", "official"];
+    if (pool.indexOf(rotatorRuntime.currentTailAction) < 0) {
+      rotatorRuntime.currentTailAction = pool[Math.floor(Math.random() * pool.length)] || "wag";
+    }
+    return rotatorRuntime.currentTailAction;
+  }
+
+  function switchWhaleTailAction(nextAction) {
+    var curAct = rotatorRuntime.currentTailAction || "wag";
+    var curPoses = decodeWhaleTailPoses(curAct);
+    var fromPath = curPoses[rotatorRuntime.tailFrameIndex % curPoses.length] || curPoses[0];
+    rotatorRuntime.currentTailAction = nextAction;
+    rotatorRuntime.tailFrameIndex = 0;
+    var nextPoses = decodeWhaleTailPoses(nextAction);
+    var toPath = nextPoses[0];
+    rotatorRuntime.tailBridgeQueue = whaleTailBridgeFrames(fromPath, toPath).slice(1, -1);
+  }
+
+  function currentWhaleTailPath(nowMs, currentTps) {
+    var wm = rotatorCfg.whaleTailMotion || {};
+    var act = resolveCurrentTailAction();
+    var poses = decodeWhaleTailPoses(act);
+    if (!poses || !poses.length) return "M0 0 Z";
+    if (wm.enabled === false) return poses[0];
+    var hz = resolveWhaleTailSpeedHz(wm, currentTps, act);
+    var frameIntervalMs = Math.max(12, Math.round(1000 / (hz * poses.length)));
+    if (!rotatorRuntime.lastTailStepAt || nowMs - rotatorRuntime.lastTailStepAt >= frameIntervalMs) {
+      rotatorRuntime.lastTailStepAt = nowMs;
+      if (rotatorRuntime.tailBridgeQueue && rotatorRuntime.tailBridgeQueue.length) {
+        return rotatorRuntime.tailBridgeQueue.shift();
+      }
+      rotatorRuntime.tailFrameIndex = (rotatorRuntime.tailFrameIndex + 1) % poses.length;
+    }
+    return poses[rotatorRuntime.tailFrameIndex % poses.length] || poses[0];
+  }
+
+  function whaleTailSvgHtml(pathD) {
+    var colors = resolveRotatorGradientColors();
+    return '<span class="zu-whale-tail-wrap" aria-hidden="true">' +
+      '<svg class="zu-whale-tail" viewBox="0 0 300 240" xmlns="http://www.w3.org/2000/svg">' +
+      '<defs><linearGradient id="zu-whale-tail-grad" x1="0%" y1="0%" x2="100%" y2="100%">' +
+      '<stop offset="0%" stop-color="' + (colors[0] || "#38bdf8") + '"/>' +
+      '<stop offset="50%" stop-color="' + (colors[1] || "#a78bfa") + '"/>' +
+      '<stop offset="100%" stop-color="' + (colors[2] || colors[0] || "#f472b6") + '"/>' +
+      '</linearGradient></defs>' +
+      '<path d="' + (pathD || "M0 0 Z") + '"/></svg></span>';
+  }
+
+  function spinnerHtml() {
+    var sp = rotatorCfg.appearance && rotatorCfg.appearance.spinner;
+    if (sp === "ring") return '<span class="zu-rot-spinner-ring" aria-hidden="true"></span>';
+    if (sp === "bar") return '<span class="zu-rot-spinner-bar" aria-hidden="true"><i></i><i></i><i></i></span>';
+    return "";
+  }
+
+  function restoreChatLoadingRow(row) {
+    if (!row) return;
+    try {
+      var label = row.querySelector(".zcode-loading-label");
+      if (label && label.hasAttribute("data-zu-host-label")) {
+        label.textContent = label.getAttribute("data-zu-host-label") || "";
+        label.removeAttribute("data-zu-host-label");
+        label.classList.remove("zu-rotator-active-label");
+      }
+      var pixelGrid = row.querySelector("span.grid");
+      if (pixelGrid && pixelGrid.style.display === "none") pixelGrid.style.display = "";
+      row.querySelectorAll(".zu-whale-tail-wrap,.zu-rot-spinner-ring,.zu-rot-spinner-bar").forEach(function (el) { el.remove(); });
+      row.removeAttribute("data-zusage-rotator-slot");
+    } catch (e) { }
+  }
+
+  function restoreAllChatLoadingRows() {
+    try {
+      document.querySelectorAll('[data-testid="chat-loading"],[data-zusage-rotator-slot]').forEach(restoreChatLoadingRow);
+    } catch (e) { }
+  }
+
+  function syncChatMountSurface(active, displayStr, tailPath) {
+    var wantChat = rotatorCfg.enabled && (rotatorCfg.mountTarget === "chat" || rotatorCfg.mountTarget === "both");
+    if (!wantChat || !active) {
+      restoreAllChatLoadingRows();
+      return;
+    }
+    try {
+      var rows = document.querySelectorAll('[data-testid="chat-loading"]');
+      for (var i = 0; i < rows.length; i++) {
+        var row = rows[i];
+        row.setAttribute("data-zusage-rotator-slot", "1");
+        var label = row.querySelector(".zcode-loading-label");
+        if (label) {
+          var curText = label.textContent || "";
+          if (!label.hasAttribute("data-zu-host-label") || (curText && curText !== rotatorRuntime.displayedText)) {
+            if (!label.hasAttribute("data-zu-host-label")) label.setAttribute("data-zu-host-label", curText);
+          }
+          if (rotatorCfg.labelSource === "phrases" && displayStr) {
+            if (label.textContent !== displayStr) label.textContent = displayStr;
+          } else if (rotatorCfg.labelSource === "host" && label.hasAttribute("data-zu-host-label")) {
+            var hostText = label.getAttribute("data-zu-host-label") || "";
+            if (hostText && label.textContent !== hostText) label.textContent = hostText;
+          }
+          label.classList.add("zu-rotator-active-label");
+        }
+        var pixelGrid = row.querySelector("span.grid");
+        var existingTail = row.querySelector(".zu-whale-tail-wrap");
+        if (rotatorCfg.whaleTail) {
+          if (pixelGrid) pixelGrid.style.display = "none";
+          if (!existingTail) {
+            var temp = document.createElement("div");
+            temp.innerHTML = whaleTailSvgHtml(tailPath);
+            existingTail = temp.firstChild;
+            row.insertBefore(existingTail, row.firstChild);
+          } else {
+            var pathEl = existingTail.querySelector("path");
+            if (pathEl && pathEl.getAttribute("d") !== tailPath) pathEl.setAttribute("d", tailPath);
+          }
+        } else {
+          if (existingTail) existingTail.remove();
+          if (pixelGrid && pixelGrid.style.display === "none") pixelGrid.style.display = "";
+        }
+      }
+    } catch (e) { }
+  }
+
+  function syncBarMountSurface(active, displayStr, tailPath) {
+    var wantBar = rotatorCfg.enabled && (rotatorCfg.mountTarget === "bar" || rotatorCfg.mountTarget === "both");
+    var showInBar = wantBar && (active || rotatorCfg.barAlwaysShow);
+    try {
+      var bars = document.querySelectorAll(".zusage-root .zu-main");
+      for (var i = 0; i < bars.length; i++) {
+        var mainEl = bars[i];
+        var pill = mainEl.querySelector(".zu-rotator-bar");
+        if (!showInBar) {
+          if (pill) pill.remove();
+          continue;
+        }
+        if (!pill) {
+          pill = document.createElement("span");
+          pill.className = "zu-rotator-bar";
+          pill.title = L("点击切换下一条轮播语", "Click for next rotating status phrase");
+          pill.addEventListener("click", function (ev) {
+            ev.stopPropagation();
+            forceNextRotatorPhrase();
+          });
+          mainEl.insertBefore(pill, mainEl.firstChild);
+        }
+        var textToRender = displayStr || (rotatorRuntime.displayedText) || L("状态轮播就绪", "Status rotator ready");
+        var iconHtml = rotatorCfg.whaleTail ? whaleTailSvgHtml(tailPath) : spinnerHtml();
+        var nextInner = iconHtml + '<span class="zu-rotator-active-label">' +
+          String(textToRender).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;") + '</span>';
+        var tailPathEl = pill.querySelector(".zu-whale-tail path");
+        var labelEl = pill.querySelector(".zu-rotator-active-label");
+        if (rotatorCfg.whaleTail && tailPathEl && labelEl) {
+          if (tailPathEl.getAttribute("d") !== tailPath) tailPathEl.setAttribute("d", tailPath);
+          if (labelEl.textContent !== textToRender) labelEl.textContent = textToRender;
+        } else {
+          pill.innerHTML = nextInner;
+        }
+      }
+    } catch (e) { }
+  }
+
+  function collectRotatorLiveContext() {
+    var nowMs = Date.now();
+    var nowDate = new Date(nowMs);
+    var activeStats = null, model = "", provider = "ZCode", sess = null;
+    for (var i = 0; i < instances.length; i++) {
+      var inst = instances[i];
+      var st = inst.rotatorStats && inst.rotatorStats();
+      if (st && st.stats && !st.stats.complete) {
+        activeStats = st.stats;
+        model = st.model || model;
+        provider = st.provider || provider;
+        sess = st.session || sess;
+        break;
+      }
+      if (st && !model && st.model) {
+        model = st.model;
+        provider = st.provider || provider;
+        sess = st.session || sess;
+      }
+    }
+    var domChatLoading = null;
+    try { domChatLoading = document.querySelector('[data-testid="chat-loading"]'); } catch (e) { }
+    var isRunning = !!(activeStats && !activeStats.complete) || !!domChatLoading;
+    var startedAt = (activeStats && activeStats.startedAt) || (rotatorRuntime.turnStartedAt) || nowMs;
+    if (isRunning && !rotatorRuntime.active) {
+      rotatorRuntime.turnStartedAt = (activeStats && activeStats.startedAt) || nowMs;
+      startedAt = rotatorRuntime.turnStartedAt;
+    } else if (!isRunning) {
+      rotatorRuntime.turnStartedAt = 0;
+    }
+    var elapsedMs = isRunning ? Math.max(0, nowMs - startedAt) : 0;
+    var phase = "running";
+    if (elapsedMs >= (rotatorCfg.longAfterMs || 30000)) phase = "long";
+    else if ((activeStats && activeStats.phase === "thinking" && !activeStats.runningTool && !activeStats.characterRate) || elapsedMs < 15000) phase = "thinking";
+
+    var tps = 0;
+    if (activeStats && typeof activeStats.characterRate === "number" && activeStats.characterRate > 0) {
+      tps = activeStats.characterRate / 2;
+    } else if (sess && typeof sess.avg_tps === "number" && sess.avg_tps > 0) {
+      tps = sess.avg_tps;
+    }
+    var runningToolName = activeStats && activeStats.runningTool && activeStats.runningTool.name ? activeStats.runningTool.name : "";
+    var runningToolVerb = runningToolName ? zuToolVerb(runningToolName) : "";
+
+    return {
+      now: nowDate,
+      nowMs: nowMs,
+      active: isRunning,
+      phase: phase,
+      elapsedMs: elapsedMs,
+      model: model || (state.data && state.data.session && state.data.session.model) || "AI",
+      provider: provider || "ZCode",
+      tps: tps,
+      runningToolName: runningToolName,
+      runningToolVerb: runningToolVerb,
+      toolsCount: (sess && sess.tool_calls) || 0,
+      retryCount: (sess && sess.retries) || 0,
+      retryMax: 3,
+      pendingCount: 0,
+      firstTurn: !sess || (sess.turns || 0) <= 1,
+      hour: nowDate.getHours(),
+      detail: runningToolVerb
+    };
+  }
+
+  function forceNextRotatorPhrase(ctxOverride) {
+    var ctx = ctxOverride || collectRotatorLiveContext();
+    var raw = pickRotatorPhrase(ctx.phase, ctx);
+    rotatorRuntime.rawPhrase = raw;
+    rotatorRuntime.renderedPhrase = formatRotatorPlaceholders(raw, ctx);
+    rotatorRuntime.typeChars = Array.from(rotatorRuntime.renderedPhrase);
+    if (!rotatorCfg.typeSpeedMs || rotatorCfg.typeSpeedMs <= 0) {
+      rotatorRuntime.typeIndex = rotatorRuntime.typeChars.length;
+      rotatorRuntime.displayedText = rotatorRuntime.renderedPhrase;
+    } else {
+      rotatorRuntime.typeIndex = Math.min(1, rotatorRuntime.typeChars.length);
+      rotatorRuntime.displayedText = rotatorRuntime.typeChars.slice(0, rotatorRuntime.typeIndex).join("");
+    }
+    rotatorRuntime.lastPickAt = ctx.nowMs;
+    rotatorRuntime.lastTypeAt = ctx.nowMs;
+    if (rotatorCfg.danmaku && rotatorCfg.danmaku.enabled && (ctx.active || ctxOverride)) {
+      sendRotatorDanmaku(rotatorRuntime.renderedPhrase, ctx.phase);
+    }
+    return rotatorRuntime.renderedPhrase;
+  }
+
+  function rotatorMasterTick() {
+    if (stale()) return;
+    try {
+      ensureRotatorStyleMounted();
+      var ctx = collectRotatorLiveContext();
+      var wasActive = rotatorRuntime.active;
+      rotatorRuntime.active = ctx.active;
+
+      if (rotatorCfg.danmaku && rotatorCfg.danmaku.pauseBehindMask && danmakuLayer) {
+        danmakuLayer.setAttribute("data-paused", isFullscreenMaskActive() ? "1" : "0");
+      }
+
+      // Check tool switch for whale tail random action
+      if (ctx.runningToolName && ctx.runningToolName !== rotatorRuntime.lastToolName) {
+        rotatorRuntime.lastToolName = ctx.runningToolName;
+        var wm = rotatorCfg.whaleTailMotion || {};
+        if (rotatorCfg.whaleTail && wm.enabled && wm.action === "random" && wm.toolSwitchEnabled) {
+          if (Math.random() < (typeof wm.toolSwitchChance === "number" ? wm.toolSwitchChance : 0.65)) {
+            var pool = Array.isArray(wm.randomActions) && wm.randomActions.length ? wm.randomActions : ["wag", "sway", "twist", "official"];
+            var candidates = pool.filter(function (a) { return a !== rotatorRuntime.currentTailAction; });
+            var nextAct = (candidates.length ? candidates : pool)[Math.floor(Math.random() * (candidates.length || pool.length))] || "wag";
+            switchWhaleTailAction(nextAct);
+          }
+        }
+      } else if (!ctx.runningToolName) {
+        rotatorRuntime.lastToolName = "";
+      }
+
+      if (ctx.active || rotatorCfg.barAlwaysShow) {
+        var phaseChanged = ctx.phase !== rotatorRuntime.lastPhase;
+        rotatorRuntime.lastPhase = ctx.phase;
+        if (!wasActive || phaseChanged || !rotatorRuntime.rawPhrase || (ctx.nowMs - rotatorRuntime.lastPickAt >= rotatorCfg.intervalMs)) {
+          forceNextRotatorPhrase(ctx);
+        } else {
+          // Live update dynamic placeholders ({elapsed}, {tps}) once typing completes
+          var reRendered = formatRotatorPlaceholders(rotatorRuntime.rawPhrase, ctx);
+          if (rotatorRuntime.typeIndex >= rotatorRuntime.typeChars.length) {
+            rotatorRuntime.renderedPhrase = reRendered;
+            rotatorRuntime.displayedText = reRendered;
+          } else if (rotatorCfg.typeSpeedMs > 0 && ctx.nowMs - rotatorRuntime.lastTypeAt >= rotatorCfg.typeSpeedMs) {
+            var steps = Math.max(1, Math.floor((ctx.nowMs - rotatorRuntime.lastTypeAt) / rotatorCfg.typeSpeedMs));
+            rotatorRuntime.typeIndex = Math.min(rotatorRuntime.typeChars.length, rotatorRuntime.typeIndex + steps);
+            rotatorRuntime.displayedText = rotatorRuntime.typeChars.slice(0, rotatorRuntime.typeIndex).join("");
+            rotatorRuntime.lastTypeAt = ctx.nowMs;
+          }
+        }
+      }
+
+      var tailPath = rotatorCfg.whaleTail ? currentWhaleTailPath(ctx.nowMs, ctx.tps) : "";
+      syncChatMountSurface(ctx.active, rotatorRuntime.displayedText, tailPath);
+      syncBarMountSurface(ctx.active, rotatorRuntime.displayedText, tailPath);
+      syncRotatorWindowTitle(ctx.active, ctx);
+    } catch (e) {
+      FATAL.rotatorErr = String((e && e.stack) || e);
+    }
+  }
+
+  var lastRotatorFrameAt = 0;
+  function rotatorFrameStep() {
+    var now = Date.now();
+    if (now - lastRotatorFrameAt < 65) return;
+    lastRotatorFrameAt = now;
+    rotatorMasterTick();
+  }
+
+  /* ---------- 设置面板「状态轮播」(data-sec="rotator") UI 与事件委托 ---------- */
+  function zuRotatorSectionHtml(isOpen) {
+    ensureRotatorStyleMounted();
+    var esc = function (s) { return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); };
+    var settingRow = function (input, title, note) { return "<label>" + input + "<span>" + title + "<em>" + note + "</em></span></label>"; };
+    var open = isOpen !== undefined ? !!isOpen : (state && state.settingsSec === "rotator");
+    var packChecks = ZU_ROTATOR_PACK_META.map(function (pm) {
+      var pack = ZU_ROTATOR_BUILTIN_PACKS[pm.id];
+      var locPack = pack && (pack[state.lang === "en" ? "en" : "zh"] || pack.zh || pack);
+      var cnt = locPack ? ((locPack.thinking ? locPack.thinking.length : 0) + (locPack.running ? locPack.running.length : 0) + (locPack.long ? locPack.long.length : 0)) : 0;
+      var checked = (rotatorCfg.enabledPacks || []).indexOf(pm.id) >= 0 ? " checked" : "";
+      return '<label class="zu-rot-pack-item"><span><input type="checkbox" class="zu-rot-pack-cb" data-pack="' + pm.id + '"' + checked + '> ' +
+        esc(L(pm.zh, pm.en)) + '</span><small>' + cnt + '</small></label>';
+    }).join("");
+
+    var loc = state.lang === "en" ? "en" : "zh";
+    var customThink = formatPhraseLines(rotatorCfg.customPhrases && rotatorCfg.customPhrases[loc] && rotatorCfg.customPhrases[loc].thinking);
+    var customRun = formatPhraseLines(rotatorCfg.customPhrases && rotatorCfg.customPhrases[loc] && rotatorCfg.customPhrases[loc].running);
+    var customLong = formatPhraseLines(rotatorCfg.customPhrases && rotatorCfg.customPhrases[loc] && rotatorCfg.customPhrases[loc].long);
+
+    return '<section class="zu-settings-section" data-sec="rotator"' + (open ? "" : " hidden") + '>' +
+      '<div class="cap">' + L("状态轮播与小鲸鱼动画", "Status Rotator & Whale Tail") + '</div>' +
+      '<div class="zu-settings-card">' +
+        settingRow('<input type="checkbox" class="zu-rot-enable">', L("启用状态轮播", "Enable status rotator"), L("在模型思考/生成/长耗时期间轮播趣味状态短语，支持 17 种实时统计占位符（如 {elapsed}、{tps}、{model}）。", "Rotates witty status phrases during thinking, generating and long turns with 17 live placeholders ({elapsed}, {tps}, {model}, etc.).")) +
+        '<div class="zu-rot-inline-row">' +
+          '<span>' + L("轮播挂载位置", "Mount target") + '</span>' +
+          '<select class="zu-rot-select zu-rot-mount">' +
+            '<option value="both">' + L("同时开启（消息流 + 状态条）", "Both (Chat loading + Status bar)") + '</option>' +
+            '<option value="chat">' + L("仅消息流 Loading 行", "Chat loading row only") + '</option>' +
+            '<option value="bar">' + L("仅状态条内轮播格", "Status bar cell only") + '</option>' +
+          '</select>' +
+          '<label><input type="checkbox" class="zu-rot-bar-always"> ' + L("状态条常驻预览", "Always show in bar") + '</label>' +
+        '</div>' +
+        '<div class="zu-rot-inline-row">' +
+          '<span>' + L("文案来源", "Label source") + '</span>' +
+          '<select class="zu-rot-select zu-rot-source">' +
+            '<option value="phrases">' + L("趣味词库轮播", "Phrase packs") + '</option>' +
+            '<option value="host">' + L("保留宿主原生文案（仅套用外观与鲸鱼尾巴）", "Host label (appearance & whale tail only)") + '</option>' +
+          '</select>' +
+          '<span>' + L("轮播间隔(ms)", "Interval (ms)") + '</span>' +
+          '<input type="number" class="zu-rot-num zu-rot-interval" min="500" max="60000" step="100">' +
+          '<span>' + L("打字机(ms/字)", "Typewriter (ms)") + '</span>' +
+          '<input type="number" class="zu-rot-num zu-rot-typespeed" min="0" max="200" step="5">' +
+          '<button type="button" class="zu-rot-btn zu-rot-next-btn">' + L("🎲 换一条", "🎲 Next phrase") + '</button>' +
+        '</div>' +
+      '</div>' +
+
+      '<div class="cap">' + L("DeepSeek 小鲸鱼摇尾巴 SVG 帧动画（<100KB 压缩引擎）", "DeepSeek Whale Tail SVG Animation (<100KB)") + '</div>' +
+      '<div class="zu-settings-card">' +
+        settingRow('<input type="checkbox" class="zu-rot-whaletail">', L("显示小鲸鱼尾巴图标", "Show whale tail SVG icon"), L("替换原生加载像素点并在状态条轮播格前展示 DeepSeek 小鲸鱼尾巴 SVG 动画（150 帧流畅循环 + 6 帧轮廓桥接过渡，体积压缩至 ~75KB）。", "Replaces the loading indicator with the 150-frame DeepSeek whale tail SVG animation (~75KB compressed with 6-frame contour morphing).")) +
+        settingRow('<input type="checkbox" class="zu-rot-whalerainbow">', L("尾巴炫彩流光填充", "Rainbow gradient fill on whale tail"), L("开启后小鲸鱼尾巴跟随流光渐变色；关闭后跟随当前文字颜色。", "Fills the whale tail with the active flowing gradient; off uses currentColor.")) +
+        '<div class="zu-rot-inline-row">' +
+          '<span>' + L("摆尾动作", "Tail motion") + '</span>' +
+          '<select class="zu-rot-select zu-rot-tail-action">' +
+            '<option value="random">' + L("随机切换（含 6 帧平滑过渡）", "Random (with 6-frame smooth morph)") + '</option>' +
+            '<option value="wag">' + L("翻转摆尾 (wag)", "Flip wag (wag)") + '</option>' +
+            '<option value="sway">' + L("左右摆尾 (sway)", "Side sway (sway)") + '</option>' +
+            '<option value="twist">' + L("扭转摆尾 (twist)", "3D twist (twist)") + '</option>' +
+            '<option value="official">' + L("官方原版晃动 (official)", "Official wobble (official)") + '</option>' +
+          '</select>' +
+          '<span>' + L("摆尾调速", "Speed mode") + '</span>' +
+          '<select class="zu-rot-select zu-rot-tail-speedmode">' +
+            '<option value="tps">' + L("随实时 TPS 档位加速", "Scale with live TPS") + '</option>' +
+            '<option value="fixed">' + L("固定频率 (Hz)", "Fixed frequency (Hz)") + '</option>' +
+          '</select>' +
+          '<label><input type="checkbox" class="zu-rot-tail-toolswitch"> ' + L("工具调用时随机换动作", "Switch action on tool call") + '</label>' +
+        '</div>' +
+      '</div>' +
+
+      '<div class="cap">' + L("流光外观与主题预设", "Flowing Gradient & Appearance Themes") + '</div>' +
+      '<div class="zu-settings-card">' +
+        '<div class="zu-rot-inline-row">' +
+          '<span>' + L("外观主题", "Theme preset") + '</span>' +
+          '<select class="zu-rot-select zu-rot-theme">' +
+            Object.keys(ZU_APPEARANCE_THEMES).map(function (k) {
+              var t = ZU_APPEARANCE_THEMES[k];
+              return '<option value="' + k + '">' + esc(L(t.zh, t.en)) + '</option>';
+            }).join("") +
+          '</select>' +
+          '<label><input type="checkbox" class="zu-rot-grad-enable"> ' + L("启用日夜自适应流光渐变", "Day/Night adaptive flowing gradient") + '</label>' +
+          '<span>' + L("流光方向", "Direction") + '</span>' +
+          '<select class="zu-rot-select zu-rot-grad-dir">' +
+            '<option value="ltr">' + L("从左到右", "Left to right") + '</option>' +
+            '<option value="rtl">' + L("从右到左", "Right to left") + '</option>' +
+          '</select>' +
+          '<span>' + L("动效", "Animation") + '</span>' +
+          '<select class="zu-rot-select zu-rot-anim">' +
+            '<option value="none">' + L("无", "None") + '</option>' +
+            '<option value="breathe">' + L("呼吸脉冲", "Breathe") + '</option>' +
+            '<option value="glitch">' + L("故障抖动", "Glitch") + '</option>' +
+          '</select>' +
+        '</div>' +
+        settingRow('<input type="checkbox" class="zu-rot-title-enable">', L("同步轮播窗口标题 (document.title)", "Rotate window title"), L("仅在回合进行中更新窗口标题，回合结束或插件卸载时自动还原宿主原始标题。", "Updates window title during active turns and restores the host title when idle.")) +
+      '</div>' +
+
+      '<div class="cap">' + L("实时弹幕引擎", "Live Danmaku Engine") + '</div>' +
+      '<div class="zu-settings-card">' +
+        settingRow('<input type="checkbox" class="zu-rot-dm-enable">', L("开启状态弹幕", "Enable danmaku overlay"), L("每次轮播切换时在屏幕发射弹幕（支持滚动/顶部/底部权重分配、悬停暂停并复制、全屏弹窗自动暂停）。", "Fires danmaku across the viewport on phrase rotation (scroll/top/bottom weights, hover-to-pause & copy, auto-pause behind modals).")) +
+        '<div class="zu-rot-inline-row">' +
+          '<label><input type="checkbox" class="zu-rot-dm-hover"> ' + L("悬停暂停", "Hover pause") + '</label>' +
+          '<label><input type="checkbox" class="zu-rot-dm-copy"> ' + L("悬停显示复制按钮", "Click to copy") + '</label>' +
+          '<label><input type="checkbox" class="zu-rot-dm-phase"> ' + L("按阶段着色", "Phase colors") + '</label>' +
+          '<input type="text" class="zu-rot-select zu-rot-dm-testinput" placeholder="' + L("输入测试弹幕内容…", "Test danmaku text…") + '" style="flex:1;min-width:140px">' +
+          '<button type="button" class="zu-rot-btn zu-rot-dm-sendbtn">' + L("🚀 发射测试弹幕", "🚀 Fire danmaku") + '</button>' +
+        '</div>' +
+      '</div>' +
+
+      '<div class="cap">' + L("14 个内置词包与排程预设", "14 Built-in Phrase Packs & Presets") + '</div>' +
+      '<div class="zu-settings-card">' +
+        '<div class="zu-rot-inline-row">' +
+          '<span>' + L("场景预设", "Scene preset") + '</span>' +
+          '<select class="zu-rot-select zu-rot-preset">' +
+            Object.keys(ZU_ROTATOR_BUILTIN_PRESETS).map(function (k) {
+              var pr = ZU_ROTATOR_BUILTIN_PRESETS[k];
+              return '<option value="' + k + '">' + esc(L(pr.zh, pr.en)) + '</option>';
+            }).join("") +
+          '</select>' +
+          '<button type="button" class="zu-rot-btn zu-rot-packs-all">' + L("全选词包", "Select all") + '</button>' +
+          '<button type="button" class="zu-rot-btn zu-rot-packs-default">' + L("恢复默认词包", "Default packs") + '</button>' +
+          '<label><input type="checkbox" class="zu-rot-schedule-enable"> ' + L("按工作时段/深夜自动切换预设", "Auto-switch preset by schedule") + '</label>' +
+        '</div>' +
+        '<div class="zu-rot-pack-grid">' + packChecks + '</div>' +
+      '</div>' +
+
+      '<div class="cap">' + L("自定义短语（每行一条，支持：文案 | 权重 | when:tool=Bash | rarity:0.5）", "Custom Phrases (one per line: text | weight | when:tool=Bash | rarity:0.5)") + '</div>' +
+      '<div class="zu-settings-card">' +
+        '<div class="pnote">' + L("思考阶段 (thinking)", "Thinking phase") + '</div>' +
+        '<textarea class="zu-rot-textarea zu-rot-custom-thinking" placeholder="' + L("正在思考人生 ({elapsed})… | 2", "Thinking deeply ({elapsed})… | 2") + '">' + esc(customThink) + '</textarea>' +
+        '<div class="pnote">' + L("运行阶段 (running)", "Running phase") + '</div>' +
+        '<textarea class="zu-rot-textarea zu-rot-custom-running" placeholder="' + L("全力输出中 {tps} t/s · {running} | 2", "Streaming at {tps} t/s · {running} | 2") + '">' + esc(customRun) + '</textarea>' +
+        '<div class="pnote">' + L("长耗时阶段 (long)", "Long turn phase") + '</div>' +
+        '<textarea class="zu-rot-textarea zu-rot-custom-long" placeholder="' + L("已经苦战 {elapsed}，稳住能赢！ | 3", "Still working after {elapsed}, hang tight! | 3") + '">' + esc(customLong) + '</textarea>' +
+      '</div>' +
+    '</section>';
+  }
+
+  function zuRotatorSyncPanel(panelEl) {
+    if (!panelEl) return;
+    ensureRotatorStyleMounted();
+    var q = function (sel) { return panelEl.querySelector(sel); };
+    var setCb = function (sel, val) { var el = q(sel); if (el) el.checked = !!val; };
+    var setVal = function (sel, val) { var el = q(sel); if (el) el.value = String(val); };
+
+    setCb(".zu-rot-enable", rotatorCfg.enabled);
+    setVal(".zu-rot-mount", rotatorCfg.mountTarget);
+    setCb(".zu-rot-bar-always", rotatorCfg.barAlwaysShow);
+    setVal(".zu-rot-source", rotatorCfg.labelSource);
+    setVal(".zu-rot-interval", rotatorCfg.intervalMs);
+    setVal(".zu-rot-typespeed", rotatorCfg.typeSpeedMs);
+
+    setCb(".zu-rot-whaletail", rotatorCfg.whaleTail);
+    setCb(".zu-rot-whalerainbow", rotatorCfg.whaleTailRainbow);
+    setVal(".zu-rot-tail-action", rotatorCfg.whaleTailMotion.action);
+    setVal(".zu-rot-tail-speedmode", rotatorCfg.whaleTailMotion.speedMode);
+    setCb(".zu-rot-tail-toolswitch", rotatorCfg.whaleTailMotion.toolSwitchEnabled);
+
+    setVal(".zu-rot-theme", rotatorCfg.appearance.theme);
+    setCb(".zu-rot-grad-enable", rotatorCfg.appearance.gradient.enabled);
+    setVal(".zu-rot-grad-dir", rotatorCfg.appearance.gradient.direction);
+    setVal(".zu-rot-anim", rotatorCfg.appearance.animation);
+    setCb(".zu-rot-title-enable", rotatorCfg.title.enabled);
+
+    setCb(".zu-rot-dm-enable", rotatorCfg.danmaku.enabled);
+    setCb(".zu-rot-dm-hover", rotatorCfg.danmaku.hoverPause);
+    setCb(".zu-rot-dm-copy", rotatorCfg.danmaku.clickCopy);
+    setCb(".zu-rot-dm-phase", rotatorCfg.danmaku.phaseColors);
+
+    setVal(".zu-rot-preset", rotatorCfg.activePreset);
+    setCb(".zu-rot-schedule-enable", rotatorCfg.scheduleEnabled);
+
+    panelEl.querySelectorAll(".zu-rot-pack-cb").forEach(function (cb) {
+      cb.checked = (rotatorCfg.enabledPacks || []).indexOf(cb.getAttribute("data-pack")) >= 0;
+    });
+  }
+
+  function zuRotatorPanelClick(e, panelEl) {
+    var t = e.target;
+    if (!t || !t.closest) return false;
+    if (t.closest(".zu-rot-next-btn")) {
+      var phrase = forceNextRotatorPhrase();
+      rotatorMasterTick();
+      if (rotatorCfg.danmaku && rotatorCfg.danmaku.enabled) sendRotatorDanmaku(phrase);
+      return true;
+    }
+    if (t.closest(".zu-rot-dm-sendbtn")) {
+      var inp = panelEl.querySelector(".zu-rot-dm-testinput");
+      var txt = (inp && inp.value && inp.value.trim()) || forceNextRotatorPhrase();
+      sendRotatorDanmaku(txt, rotatorRuntime.lastPhase);
+      return true;
+    }
+    if (t.closest(".zu-rot-packs-all")) {
+      rotatorCfg.enabledPacks = ZU_ROTATOR_PACK_META.map(function (m) { return m.id; });
+      saveRotatorConfig();
+      zuRotatorSyncPanel(panelEl);
+      forceNextRotatorPhrase();
+      return true;
+    }
+    if (t.closest(".zu-rot-packs-default")) {
+      rotatorCfg.enabledPacks = ZU_ROTATOR_DEFAULT_PACKS.slice();
+      saveRotatorConfig();
+      zuRotatorSyncPanel(panelEl);
+      forceNextRotatorPhrase();
+      return true;
+    }
+    return false;
+  }
+
+  function zuRotatorPanelChange(e, panelEl) {
+    var t = e.target;
+    if (!t || !t.classList) return false;
+    var cl = t.classList;
+    if (cl.contains("zu-rot-enable")) { rotatorCfg.enabled = !!t.checked; }
+    else if (cl.contains("zu-rot-mount")) { rotatorCfg.mountTarget = t.value; }
+    else if (cl.contains("zu-rot-bar-always")) { rotatorCfg.barAlwaysShow = !!t.checked; }
+    else if (cl.contains("zu-rot-source")) { rotatorCfg.labelSource = t.value; }
+    else if (cl.contains("zu-rot-interval")) { rotatorCfg.intervalMs = clampNum(t.value, 500, 60000, 3500); }
+    else if (cl.contains("zu-rot-typespeed")) { rotatorCfg.typeSpeedMs = clampNum(t.value, 0, 200, 28); }
+    else if (cl.contains("zu-rot-whaletail")) { rotatorCfg.whaleTail = !!t.checked; }
+    else if (cl.contains("zu-rot-whalerainbow")) { rotatorCfg.whaleTailRainbow = !!t.checked; }
+    else if (cl.contains("zu-rot-tail-action")) {
+      rotatorCfg.whaleTailMotion.action = t.value;
+      if (t.value !== "random") switchWhaleTailAction(t.value);
+    }
+    else if (cl.contains("zu-rot-tail-speedmode")) { rotatorCfg.whaleTailMotion.speedMode = t.value; }
+    else if (cl.contains("zu-rot-tail-toolswitch")) { rotatorCfg.whaleTailMotion.toolSwitchEnabled = !!t.checked; }
+    else if (cl.contains("zu-rot-theme")) {
+      applyAppearanceThemePreset(t.value);
+      zuRotatorSyncPanel(panelEl);
+    }
+    else if (cl.contains("zu-rot-grad-enable")) { rotatorCfg.appearance.gradient.enabled = !!t.checked; }
+    else if (cl.contains("zu-rot-grad-dir")) { rotatorCfg.appearance.gradient.direction = t.value; }
+    else if (cl.contains("zu-rot-anim")) { rotatorCfg.appearance.animation = t.value; }
+    else if (cl.contains("zu-rot-title-enable")) { rotatorCfg.title.enabled = !!t.checked; }
+    else if (cl.contains("zu-rot-dm-enable")) { rotatorCfg.danmaku.enabled = !!t.checked; }
+    else if (cl.contains("zu-rot-dm-hover")) { rotatorCfg.danmaku.hoverPause = !!t.checked; }
+    else if (cl.contains("zu-rot-dm-copy")) { rotatorCfg.danmaku.clickCopy = !!t.checked; }
+    else if (cl.contains("zu-rot-dm-phase")) { rotatorCfg.danmaku.phaseColors = !!t.checked; }
+    else if (cl.contains("zu-rot-preset")) {
+      applyRotatorPreset(t.value);
+      zuRotatorSyncPanel(panelEl);
+    }
+    else if (cl.contains("zu-rot-schedule-enable")) { rotatorCfg.scheduleEnabled = !!t.checked; }
+    else if (cl.contains("zu-rot-pack-cb")) {
+      var pid = t.getAttribute("data-pack");
+      var list = (rotatorCfg.enabledPacks || []).slice();
+      var idx = list.indexOf(pid);
+      if (t.checked && idx < 0) list.push(pid);
+      else if (!t.checked && idx >= 0) list.splice(idx, 1);
+      rotatorCfg.enabledPacks = list;
+    }
+    else if (cl.contains("zu-rot-custom-thinking") || cl.contains("zu-rot-custom-running") || cl.contains("zu-rot-custom-long")) {
+      var loc = state.lang === "en" ? "en" : "zh";
+      var ph = cl.contains("zu-rot-custom-thinking") ? "thinking" : cl.contains("zu-rot-custom-long") ? "long" : "running";
+      rotatorCfg.customPhrases[loc][ph] = String(t.value || "").split(/\r?\n/).map(parsePhraseLine).filter(Boolean);
+    } else {
+      return false;
+    }
+    saveRotatorConfig();
+    updateRotatorStylesheet();
+    rotatorMasterTick();
+    return true;
+  }
+
+  function zuRotatorDisposeAll() {
+    restoreAllChatLoadingRows();
+    try { if (rotatorStyleEl && rotatorStyleEl.remove) rotatorStyleEl.remove(); } catch (e) { }
+    try { if (danmakuLayer && danmakuLayer.remove) danmakuLayer.remove(); danmakuLayer = null; } catch (e) { }
+    try {
+      document.querySelectorAll(".zu-rotator-bar,.zu-rotator-danmaku,.zu-rotator-style").forEach(function (el) { el.remove(); });
+    } catch (e) { }
+    activeDanmakus.forEach(function (d) { clearTimeout(d.timer); });
+    activeDanmakus = [];
+    if (titleState.lastWrittenTitle && document.title === titleState.lastWrittenTitle && titleState.hostBaseTitle) {
+      try { document.title = titleState.hostBaseTitle; } catch (e) { }
+    }
+    if (window.__zusageRotatorDispose === zuRotatorDisposeAll) delete window.__zusageRotatorDispose;
+    if (window.__zusageStatusRotator) delete window.__zusageStatusRotator;
+  }
+  window.__zusageRotatorDispose = zuRotatorDisposeAll;
+
+  window.__zusageStatusRotator = {
+    getConfig: function () { return JSON.parse(JSON.stringify(rotatorCfg)); },
+    setConfig: function (patch) {
+      if (!patch || typeof patch !== "object") return false;
+      Object.assign(rotatorCfg, patch);
+      saveRotatorConfig();
+      rotatorCfg = loadRotatorConfig();
+      updateRotatorStylesheet();
+      rotatorMasterTick();
+      return true;
+    },
+    nextPhrase: function () { return forceNextRotatorPhrase(); },
+    sendDanmaku: function (text, phase) { return sendRotatorDanmaku(text, phase); },
+    decodeWhaleTailPoses: decodeWhaleTailPoses,
+    whaleTailBridgeFrames: whaleTailBridgeFrames,
+    parsePhraseLine: parsePhraseLine,
+    formatPlaceholders: formatRotatorPlaceholders,
+    tailDataBytes: function () { return JSON.stringify(ZU_WHALE_TAIL_DATA).length; }
+  };
 
   /* 设置页（MCP 配置等）内的编辑框不是聊天输入框：设置是同窗口覆盖层，激活时
    * 聊天视图保持挂载、仅 opacity-0+inert 视觉遮蔽——v61 幽灵判定管的是聊天壳，
@@ -2807,10 +5070,16 @@
     coordinatorTimer = setInterval(tick, 600);
   }
 
+
+
+
+
+
+
   /* ---------- 实例工厂（v61.1）：一个 pane 一套 条/面板/气泡/tooltip/定位循环。
    * slot 0 保留 #zusage-bar/#zusage-tip 兼容 id（泵热更新按它清理），其余实例仅类名。 */
   function spawnInstance(pid, slot) {
-    var VERSION = "v258";   //v82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v84 主标签页远端路由（工作台分组唯一主绑定上报 + 迟到载荷守卫，issue #30）→ v85 回答末尾统计行跟随万/亿开关 + tok→token → v86 历史轮 tracker 无记录（窗口滑出/换代/热更）或缺输出字段不再翻成"本轮统计不可用"，加 det 诊断 → v87 主叶归属增 last-session 回退（组零证据时唯一远端记录放行，issue #30 复测：单会话主标签页不建组）→ v88 运行态心跳与两处扫描 tick 2s→0.5s（富文本重试 6→24 次等价放大）→ v89 ⚙ 面板更新进度：downloading 阶段文案 + 下载（字节）/安装（校验→安装→同步）双进度条，缺 progress 的旧主进程自动隐藏 → v90 主标签页/分栏归属改按本窗会话节点身份（renderer 桥按版本/资产/锚点写 SessionPane 属性，移除 workbench-groups/last-session 共享回退）+ 心跳 0.5s→0.1s（扫描维持 0.5s）→ v91 设置页/权限面板冒条修复（PR #44：inSettingsView 三处派发排除 + anchorCardOf 面板锚点改判）收编收尾：排除标记并集（settings-page testid + content/panel 双 frame）、track 显隐第四处防御 → v92 ⚙ 更新区固定显示可复制的重装口令（源码安装无法自动更新时引导用户发给 agent）→ v93 原生上下文按钮（chat-context-usage-trigger）增强：环填充/四档色/右侧百分比镜像状态条上下文格（ctxBandOf 同源），cw 缺失还原原生形态 → v94 状态条删除「上下文容量」格（UI+tooltip，该口径由原生按钮增强承载），⚙ 面板同步去掉「上下文」开关，子代理格改始终展示（零值也显示）→ v95 ⚙ 更新区去掉 v92 重装口令提示块（源码清单的仓库来源改由宿主插件管理器直接更新，不再报渠道不一致），更新来源文案增「仓库源码」分支→ v96 套餐额度 chip（默认关）：挂原生上下文按钮左侧（wrapper 内前插，与按钮增强同款双 reapply/还原），数据来自主进程 quota 字段（解密宿主 OAuth 凭据直查 monitor 端点，账号级套餐池口径），会话首个 main_turn 完成前不显示；自绘 tooltip 走 rateTip 独立浮层模式；chip 改多窗分段：每窗一段（中文 5小时/7天，英文 5h/7d）各自按 80/95/100 档位色，分隔符 |；余额类型单段渲染就绪（余额 ¥100.00，阶段 3 数据源接入即用）；去掉环形，容器不着色 → v97 子代理速率（T1+T2）：zusage sub 汇总加 rate_avg/每子代理 tps_avg（已完成段加权平均，口径同 _turn_rate），子代理格 tooltip/明细面板展示；Agent 运行期主 chip 附加「子代理运行中 · 估 X t/s」——turn-stats 透传 subagent 行 childSessionId，overlay 据此用同款 zuTryBindStore 绑子代理会话 store 做字符增量估算（运行中请求未入库，DB 无实时数据；150s 采样实锤零 running 行），思考文本不进 rows 时退回纯状态词；工具动词「正在运行子智能体」压成「子代理运行中」（web 同步文案）；同日多槽位化：turn-stats 暴露 runningSubagents 全集（并行时 rowId 前 8 个），每子代理独立绑定/2s 节流，主 chip 显示合计速率（并行 ≥2 时动词后缀 ×N），chip tooltip 与子代理明细面板逐个实时展示运行中估算（tooltip 随原地改字同步 __tip 重画；面板 800ms tick 原地刷新 .subrate，汇总页运行块含 DB 尚无记录的新子代理） → v98 额度实时选源恢复（v4-model-config 观察 + quota-providers 全窗快照上报 + byProvider 定向刷新、空选择 fail-closed）与 sub2api 额度 UI（今日/本月窗口、窗口行内金额明细、Key 总额度、订阅截止、账户余额标题） → v99（主线并流）tooltip 伪边界 leave 过滤：Chrome 悬停链收缩/重算会补发 DOM 内部的 documentElement/tip mouseleave，tipLeaveAt 贴边判定后取触发时刻最深 :hover 元素甄别，仍悬停在本档具体元素上即伪 leave 一律忽略交回 mousemove 流（主线 v100 滚动豁免=本链 v106 同义，不另列） → v99.1（主线并流）apiKey 模式 BigModel/Z.ai（bigmodel-api[-N]/zai-api[-N]）额度 chip 标题家族判定（issue #68；数据链在 quota-client） → v99.2 思考中计时随语言本地化（中文「1 时 2 分 3 秒」/英文「1 h 2 m 3 s」，空格分隔、零段照旧省略）；回答末尾行采样时刻改完整中文日期时间（⏱ 2026 年 10 月 23 日 11 点 20 分 28 秒，token_rate.py format_turn_line 同步改版） → v100 设置面板分区导航（ZCode 设置侧栏同款：左栏三组分区导航 + 内容区单分区显隐，激活项 aria-current="page"，选择持久化 zusage3.sec；面板窄于 620px 时导航收成 icon rail） → v101 设置面板高度在打开瞬间按内容自然高锁定（切分区不再抖动，resize 只收紧不放大） → v102 额度源预设模板（CC Switch/magpie 同款选模板只填 Key：官方域变体 chip 一键写入 secrets baseUrl，minimax 可信域机制推广到 siliconflow 币种随域；deepseek/openrouter/kimi/anthropic/mimo/volcano 附控制台取 Key 链接，走 openExternal 桥） → v103 额度源列表卡片化布局（每源圆角卡片+间距，凭据框限宽 420px，长说明段落补水平边距；纯 CSS，结构行为不变） → v104 源状态文案补 disabled=已关闭映射 + 主进程对显式关闭源统一报 disabled（修「开关已关却显示待查询」矛盾）；刷新/获取 Key 按钮补 title 提示，关闭源的刷新按钮禁用 → v105 「上下文容量」弹层（hover-card-content）内压缩上下文按钮：命中率行下方全宽胶囊按钮（原生 secondary 配色全走客户端语义变量），弹层关即卸载（Radix 无 forceMount）故 body MutationObserver + heavy 对账双触发、DOM 存在性幂等（多实例安全），插入锚=「剩余额度」border-t 段前（缺则容器尾）+位置兜回；点击弹原生 AlertDialog 视格确认框（遮罩/Esc/外点关闭、Enter 确认），确认后优先走 fiber 上原生残留的 onSendCompressionCommand("/compact")（SessionPane 压缩入口，不动输入框草稿），缺失回落官方 E2E 输入桥 __zcodeLexicalInputE2E.setText + 发送键（Lexical 直写 DOM 不生效，禁用该路径；草稿非空拒绝） → v106 额度 tooltip 滚动豁免：hideTipsOnScroll 不再收 quotaTip（chip 固定 composer 工具行与 gitTip 同理），修思考中流式输出自动滚动致悬停弹出即灭；chip 随宿主重建 detach（无 mouseleave）由 scanRateLines 加 isConnected 健康检查兜底收起 → v107 压缩确认框补行为提示：压缩进行中发送新消息/停止会打断压缩（实测 16:27 新 turn 启动同秒 compact turn TURN_CANCELLED，cancelled_by_user=1；引擎对该次摘要流挂起 134s 无首 token 也不重试 retryable=0），确认框加 hint 行中性告知 → v108 压缩主通道按用户指定改为字面 "/compact" 输入提交（E2E 桥 setText+发送键；流式中 v4-stop 可见/草稿非空/发送键 disabled 三重拒绝），fiber 命令信封降兜底；hint 升级为「通常需 2-4 分钟且无进度反馈」（DB 实证：全库 compact 请求无首 token 但正常完成，72s-9.6min，14:44 同会话同模型 165s 成功先例；16:25/16:43 两次「卡住」实为 2m20s 被新消息 TURN_CANCELLED，非故障） → v109 压缩主通道按用户指定改回直接调会话发送接口（fiber onSendCompressionCommand 命令信封：不碰输入框/发送键、流式中交引擎排队，修字面输入通道在生成中被发送键禁用卡住的问题），字面 "/compact" 输入提交降兜底（三重门控仅作用于兜底） → v110 压缩提交函数改在弹框打开瞬间（弹层必存活、锚点几何可信）解析并缓存，修复确认时弹层已被 Radix 卸载、几何重解析退化为「离视口左上角最近」致多分栏把 /compact 发进错误会话（P1）；兜底字面输入通道的流式/发送键/草稿三重门控全部前置到 setText 之前（拒绝不再残留草稿）；Enter 确认限定焦点在弹框内（无焦点陷阱下防焦点外 Enter 误触发确认） → v111 额度 chip 默认展示：quota_enabled 缺省开（显式 false 才关，真值链在 inject-main）；chip 二级门控 not_configured/unsupported 从静默隐藏改中性灰提示「额度 未配置/暂不支持」（源被 ⚙ 显式关闭仍隐藏），tooltip 补 info 分支引导配置 → v112 Start Plan 免费档池（quota-client 新增 zcode-start 适配器走 zcode.z.ai billing/balance 独立链，与 coding plan 的 monitor 端点分池；选源路由与 quotaFamily 判定补 start-plan 分支修 start-plan pane 误读 GLM Coding Max 池；chip 增「套餐」分段（windows.plan，one_time 发放池聚合已用%），tooltip 套餐池行按 expires 标记切「到期」措辞） → v113 夜间审计加固：quotaBalanceText 内建转义（currency 是远程响应字符串，chip/tooltip 双 innerHTML sink；parts label/amount 单次转义修双重转义；「其他源」行标签转义归位；aria-label 走 plain 纯文本变体不读实体）→quotaTip 补内容签名幂等 __zuTipSig（同 gitTip，悬停期间周期对账不再打断文本选择）→子代理明细面板数据签名幂等（滚动位置/选择不被每 1.5s 推送整面板重建重置；运行中估算仍由面板 800ms tick 原地刷新）→额度 chip 签名重写保留 zu-qbusy（点击刷新动画不被推送截断，同 git chip）→⚙ 源列表 id/label/preset/keyUrl 属性级转义 aEsc（custom:<providerId> 可含用户自定义名）→live 速度 span 的 speedView.text 过 ttEsc（工具名是宿主/MCP 可控字符串）→渲染桥两处订阅回调尾部 updateLive() try 包裹（异常不冒进宿主 store 通知分发，诊断键 subLiveErr/bridgeLiveErr 记录） → v114 积压清单清扫：remoteCache/remoteTodayCache/richTextCache/richTextAttempts 上限淘汰（长会话防无界增长）；dispose 清理补 __zusageDeliverTurnText/__zusageSidWs/__zusagePaneScopes（旧代闭包自卫之外的清理完整性）；诊断 lsVals 只转储 zusage 命名空间的 localStorage 键（宿主其余键值不进 diag 文件） → v115 渲染循环省电（上游 xhwxt PR #26/#28 同源问题）：幽灵子树/遮挡命中/模态判定加 TTL 缓存（120/150ms，命中绑定元素矩形+模式），track 在 document.hidden 时整帧跳过；未采纳其 600ms↔2s 调度降频（heavy 600ms 对账是与 render 并列的 React 重写兜底契约，降频会让增强节点裸奔 2s） → v116 「思考中」卡死修复（源码复核定案）：v87 合成分支条件收紧——仅「空窗口非终态（draft 空窗，v87 本意）或 control.phase=running」才合成思考中，删除「行非空」析取项（宿主 wire 快照 rows.window 恒为全序尾 60 行，末轮超窗的闲置会话整窗无 turnHeader，旧条件使其永久点亮思考中、切回重绑重新计时）；思考计时锚定 turnHeader.startedAt（宿主创建 header 恒写入，重绑不清零，缺字段回退首观测）→ v117 悬停命中区扩到整栏（fork lliangworld b21e3cf0 同源收编）：条目空隙/分隔符按 sep 中线就近归属、尾部空隙归末位条目，⚙ 与空条面维持保持不动；防闪烁改由节流+幂等承担 → v118 无障碍与主题重构（并行会话批次）：条目可聚焦（span tabindex / zu-sub 真按钮 + aria-label）、键盘可达 tooltip（focusin/focusout + Escape 收起）、focus-visible 焦点环、SVG 图标与思考动画改 currentColor 随主题、⚙ 面板请求-回执协议（requestId + __zusagePluginResult，feedbackVersion 1）、quota 源操作错误语义、统计行开关即时重扫 → v119 插件自动检查改为每 1 小时，更新区双语提示更新器变更需完全退出并重开 → v120 Git 手动刷新改请求-回执协议（askGitRefresh 带 path/requestId，主桥 gitTick 完成后经 __zusagePluginResult 回执、在途请求合并等待，按请求 path 校验结果）+ 状态条 aria-live sr-only 播报区（套餐额度查询中/Git 刷新状态）+ ⚙ 面板高度上限 82vh→90vh + 模态判定改按可见 dialog（display/visibility/opacity 过滤） → v121 状态条 .ico 与 ⚙ 齿轮图标盒由 calc(字号+4px) 改为等宿主字号（24 格线性图标墨迹只占盒 75–83%，18px 顶满 1.3 行盒显大，且加法常量令比例随字号漂移 1.33×→1.20×；用户实机定 1.0×，.eb .ico 12px 特例不变） → v122 Git chip 展开测量完整宽度并留 32px 迟滞余量，切断宿主 compact 反馈环（issue #100） → v123 Git chip 锚点按电脑操作→上下文→模式→思考回退，排除隐藏探针并随可见锚点迁移（issue #103） → v124 Git chip 固定左侧操作区，移除右侧上下文/思考回退 → v125 思考计时中文全紧邻「7分16秒」（时段间空格去除，用户要求；英文「7 m 16 s」不动） → v126 思考计时英文数字与单位紧邻「7m 16s」（时段间留空格，用户要求） → v127 tok/s 速度十档色（TPS_BANDS 唯一事实源，原始值分档含下限不含上限：<40 低速红 / 40–70 一般黄 / 70–150 流畅绿沿用原三档类名与实测色，150 起新增蓝紫系 zu-teal/zu-sky/zu-azure/zu-violet/zu-purple/zu-magenta，≥2000 Ultra 静态蓝紫渐变 + ✦ 星点（::before content:"✦"/"" AT 静音、@supports 外纯紫回退，浅色组同名覆盖渐变）；估算态与完成态同表分档（用户规格，原「估算态不分档」废止），无效值（负数/NaN/±∞）一律中性 dim 或回退 DB 绝不判低速，DB 回退分支负数/非有限不再渲染 chip；tooltip 档位行改动态「名称 · lo–hi t/s」消解 toFixed 舍入边界歧义，另加静态「颜色对照」图例（十档数值↔颜色升序一览，档位类与条面同源随主题切换）；额度正常态改额度蓝 #78a9ff/浅 #315fc4（.zu-qseg 专属基色，不碰全局 .ok——上下文与速度前三档仍绿），周期标签拆 zu-qlabel 子节点中性次级色常规字重（textContent/aria/tooltip 不变），quotaSegs 补 isFinite 门防 NaN/±∞ 落正常蓝；正常态再改 CCometixLine 同源柔和低饱和（用户规格）：普通窗灰蓝 #8abbd0/浅 #276f86、7 天窗按 quotaSegs 结构化 key 挂 zu-qweekly 淡紫 #b69ad8/浅 #76509f（不匹配显示文本），周期标签与数值同色成组仅标签降字重，上下文按钮正常绿改 #72c9a2/浅 #187b58（限按钮作用域，速度与全局 .ok 不动）） → v129 模型拉取分区（收编 HHQ-666/zcode-model-puller，MIT）：⚙ 基础组新分区列宿主 provider_config.json 的 API Key 型自定义供应商，经主进程拉取其 /models（候选端点探测、OpenAI data/Ollama models/顶层数组形状解析、Bearer+x-api-key 双头），弹窗勾选（已添加/新模型徽标、搜索过滤、全选/清空/仅选新、选中计数）后经 model-pull-apply 最小写回（personalModelIds+modelOrder 追加、providerModelRules 复制同供应商模板条目、同目录原子替换+滚动备份 .zusage-bak、未知键保留）；key 只在主进程内存、只发该 baseUrl 本域，不回渲染端不进日志；请求回执 20s 兜底超时（旧主进程无 action 时提示完全重启而非永久 loading） → v130 拉取算法吸收 GLQQX/zcode-model-discovery-patch 与 linguo2625469/zcode-patcher：字段别名全集（id/modelId/name/model、context_length/contextWindow/context_window/limit/limits、max_completion_tokens/max_output_tokens/maxOutputTokens/limit/limits/top_provider、payload 增 result 形状）、多模态感知（architecture.input_modalities/input_modalities/modalities.input + vision/supports_vision 布尔 ⇒ 宿主 inputFormat 稀疏能力位，缺位写实 false）、思考档位感知（supported_efforts 去重截 16 ⇒ reasoningLevel.values）、models.dev 公共目录补缺（并行拉取 5s 超时失败静默降级、id 精确→basename 唯一匹配、字段级供应商优先、key 与本机数据绝不发往目录、进程内 1h 缓存）、applyModels 按模型写实 config（contextWindow/inputFormat/optionSpecs；元数据走主进程 fetchCache 闭环、渲染端只回传 id 无法注入字段；模板带 map 表达式的 optionSpecs 整体不覆盖防 values 换名失配；无依据字段保持模板原样、不编造默认值）；弹窗行新增 ctx/out 可见小字与档位 title，分区说明补 models.dev 联网披露；review 修复：勾选表/已添加表/metaById 改 null 原型（模型 id 来自远端，__proto__ 等键静默失败丢勾选态）、实例 dispose 同步摘除模型拉取弹窗与 Esc 监听（原仅整体 dispose 摘除，pane 关闭后弹窗跨代泄漏且确认回调 inactive 早退卡保存中文案）、重开面板停在模型拉取分区时立即刷新列表、请求兜底超时 20s→25s（主进程最坏双端点 20s 防假超时）、主进程响应体 8MB 限长解析与 tmp 文件名带 pid 防双实例竞写 → v131 额度/上下文五档色（用户规格 2026-10-27）：CTX_BANDS/QUOTA_BANDS 唯一事实源（{min,cls} 有序表，bandOf 从高到低首个命中），阈值 30/50/80/90（含下限不含上限）——额度 calm/norm/mid/high/crit=emerald/sky/amber/orange/rose（暗 400/浅 700），上下文 calm/norm/mid/high/crit=slate/indigo/violet/orange/red；data-zusage-band 与 zu-qb-* CSS 双主题成对；pct span 与 SVG 环一律继承按钮 currentColor（.zu-ctxpct.ok 系独立色废止）；tabular-nums 原已覆盖 .zu-quota/.zu-ctxpct；v92 百万窗口提前预警（40/60）与 v127 额度正常态灰蓝/7 天窗淡紫（按窗口类型着色）随「仅按百分比」规格废止；额度 ≥100% 满档保留呼吸闪烁特效（zu-qb-exc，用户规格；90–99 为 crit 纯色）；压缩过程态（exc）优先档保留；余额/Key 额度段挂 calm 档色 → v132 模型拉取挂载点迁移（用户指令）：⚙ 设置分区删除（ZU_SECTIONS/section/ensureMpProviders/syncMpList/startMpFetch/mpFeedback 全撤），改挂官方「模型设置⇒自定义供应商」的「+ 添加模型」按钮左侧（锚 data-testid=model-provider-add-model-button，额度 chip 同款 enhance/restore 契约：render/heavy 双对账+位置兜回+自清选择器 .zu-mp-host）；供应商归属优先读设置页表单 http(s) Base URL 归一化匹配（唯一命中直拉），否则单供应商直用/多供应商弹 zu-mp-pick 选择列表/无供应商弹提示；按钮视觉复刻原生 secondary 视格（同页 Tailwind utility bg-secondary h-7 rounded-lg），⚡ 图标 stroke currentColor；弹窗抽通用壳 openMpShell（勾选弹窗/供应商选择/错误提示共用），apply 成功关弹窗由宿主自动刷新列表；供应商归属改主判定=当前选择的供应商（读宿主源码定案：导航项 testid=model-provider-nav-item-<nodeKey>、custom 项 nodeKey=custom:<providerId>、选中项 data-state=selected），providerId 精确匹配不受编辑草稿影响；Base URL 匹配降兜底（专用 testid model-provider-base-url-input 优先于表单启发式），弹窗对齐 HHQ 形态（⚡统计标题/搜索占位/仅选新模型计数/已选中 n 个模型/蓝实底确认钮）并自带 .zu-light 随宿主主题实时换装；review 二轮修复：上下文按钮浅色档补 data-zusage-armed 特异性（浅色主题 norm~crit 曾被暗色 0,3,0 规则恒胜）、model-puller 非 ok 响应体显式 cancel（undici 连接卫生）、宿主按钮 ml-auto（锚容器 justify-between 三子项均匀分布致按钮居中）、确认钮改固定蓝 #3B82F6/#2563EB（客户端 --color-brand 深色主题是白系，白底白字隐形）、拉取按钮仅在选中的是 custom 供应商时挂载（锚 testid 全局唯一，内置/套餐页同 testid）、拉取中按钮文本「拉取中…」+图标旋转（原透明度脉冲无感知） → v133 Git 计数缩写（用户规格 2026-10-28）：chip/tooltip 的行数·条目·↑↓·冲突计数 <1万原值，≥1万 中文（cnUnits 判定）万/亿、英文 k/M/B（k 门槛刻意抬到 1万，与 token fmt 的 K≥1000 不同，小写 k 至多两位小数去尾零紧邻）；仓库个数与 aria 播报保持原值 → v134 额度与上下文保留既有阈值并统一绿黄红三档视觉；统一字号为宿主基准减 1px，周期标签加粗并微调分隔符 → v136 编辑项目弹窗源文件夹行在名称下方显示完整路径（纯 CSS ::after attr(title)，零 DOM 注入 React 无感；.truncate 限定本地行、排除 fixedFolder break-all 全路径行防重复，多文件夹每行各取各的 title；长路径自动换行不做省略号（宿主 truncate 的 nowrap 继承进伪元素须显式 white-space:normal）；规则挂条样式表、由 <html> data-zusage-pp 门控，⚙ 通用区「项目完整路径」开关 zusage3.projPath 默认开即时生效；顺带清理未提交编辑遗留的 spawnInstance 陈旧重复块 566 行死代码并复原被覆写的 issue #55 注释） → v137 源文件夹行点击即用系统文件管理器打开该目录（用户规格 2026-10-28，mac/Win 双平台）：主通道宿主桥 openInFileManager（Windows shell.openPath / macOS open 带 Finder 与 shell 双回退，raw path 免编码），旧主进程降级 openExternalFile、openExternal(file:)（白名单含 file:）；远程项目编辑器按 virtual-project-existing 标记排除，fixedFolder 行不在选择器内；多 pane 重复委托 500ms 同路径去重，document click 监听随实例 dispose 摘除；行加 cursor:pointer → v138 重置卡倒计时改时分秒全档恒显（并行会话 rstmerge 线并流收编，用户规格 2026-10-28：精确到秒、随 600ms 对账实时逐秒跳动，rstSpanText 中文数字单位紧邻「3时05分30秒」、英文数字单位紧邻+时段间空格「3h 05m 30s」；rst tooltip 补 Escape 收起（v118 键盘可达契约）；⚙ 倒计时阈值语义不变——并流时保留 rstCdh 持久化，对方运行目录构建因旧基线缺失而误删，其 18:42 rstmerge 部署曾覆盖本项目 v136/v137 后经本线合并恢复） → v139 合并 fork/main v1.5.5 线（PR #121 重置卡徽标、#122 倒计时秒级、#123 templateRules 回填、安装修复与 v1.5.5 发版）时收编遗漏的 model-puller 套餐源判定（4e431cc：detectSelectedCustomProviderId 带 anchor，BigModel 付费套餐详情页按 GLM Coding Max 付费卡区分放行、Start Plan 免费卡页不放行；挂载门控 btn 先查 + mpAnchor 诊断）——本项目快照缺该段曾致 overlay-model-pull 挂载契约测试红；overlay 版本线自此与对方 v136 撞号线并流，按合入顺序顺延 → v140 收口审查修复：openProjFolder 对 invoke 通道（openInFileManager/openExternalFile）挂空 catch——旧主进程无 handler 时异步 reject 会刷 unhandled rejection；review-fix-merge 流程产物 → v141 ⚙ 更新区在 API 限流且渠道清单兜底也失败时引导 GitCode 镜像口令（清单兜底本体在 plugin-updater/plugin-release 主进程链） → v142 ⚙ 通用「状态条样式」双主题 opt-in（zusage3.theme 独立持久化，默认关=现状）：药丸形态=所属输入卡下方居中、内容定宽，.zu-pill 经 --zu-pill-* 逐项拷贝所属视觉表面（Highspeed 外壳优先）计算样式，随宿主主题/hover/focus/Highspeed 实时跟随——pillSurface 统一取色/定位/让位锚点，body 子树 MutationObserver + 祖先属性观察捕捉外壳原位增删与搬移（不依赖 600ms 对账），80ms 过渡采样按目标计数、表面搬离自动停止；条面精简：缓存命中率/请求次数/轮数/耗时/首字收进 tooltip（0 命中也显示 0%），窄窗 .zu-main 横向滚动 + focusin 滚入可视区、切回默认复位 scrollLeft，不触发默认态收缩/渐隐；⚙ 面板宽度在药丸下跟随所属卡（不再跨分栏），主题 radio 按实例分组 name 防多面板互斥；数据重建先绑 __tip 再恢复焦点，aria-describedby/tooltip 不丢；modalOpen 豁免 zusage-panel 自有面板（修设置面板被误判宿主模态整条收起） → v143 药丸收口审查（review-fix-merge）：8px 双间距按宿主实测几何收敛——adjustPillBottom 沿所属 pane/dock 实测矩形补足让位并带 floor/不增长护栏，无法让位的绝对定位布局 visibility 安全隐藏（无每帧显隐抖动）；pillMarginTarget 落在 .chat-composer-input-surface，Highspeed 退出后默认卡重解析（composerCardOf 优先原生 data-testid 输入框）、宿主 margin 变更原值+优先级还原；悬停 tooltip 在 pill 下实时刷新隐藏明细并保留选区/滚动，焦点恢复区分 Escape 关闭与悬停接管；modalOpen 纳入 alertdialog；协调器候选补可见性过滤且已绑定输入框豁免 45% 阈值（上下分栏不再反复挂卸）；表面祖先观察改快照重建防泄漏 → v144 ⚙ radio 对齐修复：.zu-settings-langs/.zu-theme-options 的 label 显式声明 flex+align-items:center+gap:6px——原 label 继承 .panel label 的 flex-start 顶对齐（gap 14px），radio 圆钮相对文字中线偏上约 4.5px；新规则 (0,2,1) 特异性覆盖 (0,1,1) 基础规则，实测居中 delta=0 → v145 切回默认主题补还原 bar.style.visibility（pillUnsafe 安全隐藏是 pill 专属态，写入点仅 track 的 pill 分支；此前 pill 隐藏态下切回默认条永久不可见，十路评审 P1） → v146 精简模式（theme 第三档 compact）：条永久隐藏但保留 DOM（<style>/ariaLive 随条存活、heavy 保条对抗 React 清子树）；生成速度改挂工具行 .zu-tsb（重置卡左侧，挂载/位置兜回/签名幂等照重置卡同款），内容=zuBarSpeedView 桥两态或 tpsBand DB 回退、无有效样本不渲染（用户拍板）；tooltip=速度读数+状态条摘要（本轮/会话/工具/今日/子代理，逐格开关继续生效、子代理行点击开明细）+tpsBandLegend+「打开设置」按钮（镜像齿轮开启分支，面板精简下贴输入卡定位）；updateLive 10Hz 心跳原地跟随；非精简主题 syncTpsChip 门控摘除；诊断 mode=compact → v147 精简模式速率 chip 挪前导区（用户规格）：git chip 左侧——git 在时插其前、git 不在时占其锚位（cua-entry 后方/前导区末尾），两侧位置兜回收敛为 [锚][速率][git]（git 兜回容忍速率占相邻位防逐拍拉锯）；前导区发现失败回落尾随区（重置卡/额度组左侧） → v148 精简速率 tooltip「打开设置」按钮右对齐（用户规格）：footer 改 flex 布局，说明文本 tps-note-t 占据剩余宽度、按钮 margin-left:auto 推至最右，长文本换行不断布局 → v149 精简速率 tooltip 摘要行单位 tok→token（用户规格，与回答末尾统计行的 token 措辞对齐） → v150 修复精简模式 git chip 永不挂载（用户报告）：v147 的 git 兜回容忍条款（速率占锚位时不挪）误拦首次挂载——速率 chip 常驻锚位时 enhanceGitChip 每拍判"已就位"跳过插入；改为 chip 未连入 DOM 时无条件首挂（落速率后再由速率兜回收敛 [锚][速率][git]），容忍只用于已挂载的位置保持 → v151 工具状态词改版（用户规格）：Bash 动词「正在执行」→「工作中」，未知工具回退同改（正在执行 X→工作中 X）；工具计时分隔去中点（正在读取 · 4.3s→正在读取 4.3s 一并生效） → v152 工具动词 Read「正在读取」→「读取中」（用户规格） → v153 工具执行状态词定稿（用户规格）：Bash 与未知工具回退「工作中」→「执行中」（无名词回退英文 Working→Executing 对齐） → v154 工具动词全面改「X中」体例（用户规格）：写入中/编辑中/搜索中/获取网页中/更新待办中/读取待办中/运行技能中/读取上下文中/发送消息中/获取任务输出中/停止任务中/编写工作流中（Read 读取中、Bash 执行中、Agent 子代理运行中此前已改；英文标签不变） → v155 审查修复批（review-fix）：①compact 下 positionSubPanel 被隐藏条僵尸 .zu-sub 抢锚（零矩形把明细面板钉左上角）——chip 优先锚；②速率 tooltip 内容含秒表，悬停中 10Hz 整片重建吃掉「打开设置」/子代理行点击——显示中内容变化冻结只跟位置；③track compact 早退补两面板周期跟随；④自清选择器补 .zu-tsb、跨代采纳 chip 统一挂装（__zuWired 防重）修复热更后悬停/键盘失效；⑤closeSettings 焦点归还校验 offsetParent（compact 下不落隐藏 gear）；⑥enhanceGitChip 重复 var slotNode 清理。Web 同批：①③⑤（mousemove chips 归属校验只接本实例）+chip focus/blur 键盘可达对齐桌面 → v156 上下文按钮增强开关（issue #141）：⚙ 通用区新增「上下文按钮增强」checkbox（localStorage zusage3.ctxEnh，缺省开、仅显式 "0" 关），关闭走 enhanceCtxButton 关闭分支还原原生环/百分比且重置卡徽标继续维护（restore 顺带清徽标后立即重挂） → v157 修复精简→默认切换残留空壳细线（用户报告）：compact 期 render 短路会让空壳条面（热更占位/清子树后未填过）因签名相等一直存活、切回默认露出细线数十秒；①离开精简立即恢复 display（compactHid 区分初载 none，初载不提前露条保 pill 定位契约）；②离开精简强制条面重建一次（lastHtml 清空）；③compact 短路加 main.children.length 门——空壳先补一次完整渲染（条隐藏不可见）；④render 公共尾部补 syncTpsChip（短路/直通两路都经）→ v158 并流 fork/main cmdkW 线（PR #140，原线 v146 与主线 v146 精简模式撞号按合入顺序顺延）：宿主命令中心（⌘K 搜索弹框）加宽加高开关（⚙ 通用区，zusage3.cmdkW 缺省开）：条样式表规则 max-width:max(32rem,80vw)!important（原生上限=宿主 quickPickDialogClassName 的 max-w-lg=512px，弹框基础类自带 w-full 窄窗本就满宽，故小窗保持原样）与高度同规格（弹框根 max(90dvh,calc(100dvh-6rem)) 不低于原生上限，cmdk 列表 440px 硬顶放宽为 max(440px,calc(90dvh-15rem)) 小窗保底），<html> data-zusage-cmdk 属性门控（applyCmdkW，与 v136 projPath 同款），:has(>[data-slot=command][cmdk-root]) 只命中 cmdk 弹框——命令中心/任务搜索/快捷指令共用该样式常量一并放宽，设置页等普通 Dialog 不受影响 → v159 重启提醒开关（issue #139）：⚙ 插件更新区新增「更新后提醒重启」复选框（zu-restart-notice），经主桥 restart-notice 动作原子写运行时 config.json 的 restart_notice（缺省开、显式 false 才关、异常值不静默）；session-start hook 的 session_notice 读同一键，关闭后每个新会话不再注入 🔴 重启/安装提醒引用块（/install-overlay 命令行输出与自动安装失败、桥补装的故障提示不受控）——工作流模式多会话不再被逐会话植入提醒  → v160 Skill 运行期状态词显示「技能名·执行中」（用户规格，如「查阅·执行中」+计时）：turn-stats runningTool 透出截 160 字的 inputText，overlay 端 zuSkillName 提取 JSON name 字段（正则兜底、控制字符拒绝、超 24 字省略号截断），取不到回退「运行技能中」→ v161 状态条新增「项目累计」格：会话累计右侧渲染本项目（session.project_id）全部会话聚合（含子代理，口径同 session_usage；远端/不在本地库无字段不渲染），⚙ 状态条显示加「项目累计」开关（show.proj，默认开），精简摘要加同款行 → v162 状态词流光（用户规格）：速率 chip 纯状态词态（思考中…/工具动词/技能名·执行中）复刻宿主 .zcode-loading-label 同款流光——subtle→foreground→subtle 渐变 background-clip:text、1.4s 横向扫光、reduced-motion 停用；类名/关键帧自有命名（zu-shimmer/zu-loading-shimmer）不依赖宿主全局类；带 t/s 数值的估算/真实/DB 回退态不含 → v163 会话累计/项目累计 tooltip 增按模型明细行（top 8 按总量降序 + 「另有 N 个模型」，轻量行无 models 字段不显示）→ v164 tooltip 收口（用户规格）：模型明细全量展示去「另有」折叠、总和行置顶、键列自适应宽不换行、时间范围行 sticky 吸底（rt-pin，五个 tooltip 统一）→ v165 模型明细表格化对齐（rt-models display:table，整块共享最宽键列，token/次数列纵向对齐）→ v166 会话累计/项目累计时间范围精确到秒（fmtStartS，用户规格；其余三格保持到分）→ v167 模型行去 rt-atom（Chromium 表格内在宽度在 inline-block 边界断行致数值折行，真实浏览器实测）+ 带 rt-models 的 tooltip 宽度帽放宽 860px（zu-tip-wide，取最宽一行）→ v168 格面计数改 fmt 万/亿口径（用户规格：≥1万 N.NN万、≥1亿 N.NN亿；本轮次/会话轮次/项目会话次/工具总数四处，tooltip 与精简摘要保持原值）→ v169 同容器双条去重（Windows 用户报告：最小化/还原窗口来回切出现两根状态条）——宿主窗口状态切换可能短暂保留旧视图副本/重建编辑框，协调器瞬态出现两实例两根条落进同一张卡；heavy 对账每拍扫描：同卡可见 .zusage-root >1 或两根 body 兜底条矩形重叠过半时，data-zusage-slot 大者 hideBar 让位（对手消失经 track 自动复显；拆分窗格各卡各条不受影响） → v170 tooltip 计数同口径（用户规格）：各 tooltip 标题/规模/工具/请求行与模型行、精简摘要行的次数/轮数/会话数全部走 fmt；子代理明细面板保持原值 → v171 修 issue #147（社区 @Mc-GrowlR 报告并给出方案，Windows 10 + ZCode 3.17.1）：划词 side chat 面板容器无 data-pane-id，被协调器 auto 兜底键当作独立 pane，同窗出现第二条状态条（Radix presence 常驻挂载，面板收起后幽灵 composer 仍持续命中扫描）；窗口存在真实 pane 键时丢弃 auto 键——老宿主全部候选均为 auto（单键）单实例行为不变、shadow/iframe 空文档兜底不受影响 → v172 待重启/待更新改由 ⚙ 齿轮红点提醒（restartNotice 开关改为控制红点；会话内文字重启提醒取消，plugin-updater 推送 markerAt 作红点代际，点进「插件更新」分区记为已查看）+ ⚙ 更新页「重启 ZCode」按钮（二次确认，主进程 relaunch 动作）+ 移除自动安装开关（hook 未注入一律自动装，auto_enabled/INSTALL_MESSAGE 会话出口删除）   // 悬停 ⚙ 面板可见；版本号随代际递增 → v173 强制 K/M/B 单位开关 → v174 辅助对话独立状态条（宿主 tabId 成键 + 实例配额 4+1、桥 scope 精确绑定、确定性统计行按会话根归属）→ v175 辅助对话回答末尾富文本与主分栏同规则（显式本地 scope + isCurrentTurn 活跃轮限定 + --current 的 promptTs 守卫；修宿主 modelDurationMs 只累计高速供应商致占位行永久「生成时长缺失」；富文本收集后统一发起、同 SID 只追活跃轮且 epoch 粘滞防多轮搅动） → v177 review 修复批（10-agent 全量 review 闭环）：双条去重抑制不再被 track 每帧复显打穿（v169 Windows 双条场景实际失效的根因，复显前查 dupSuppress、heavy 每拍重评估解除）；精简下速率 chip 被摘除后子代理明细面板保持原位（不再回落隐藏条内全零 .zu-sub 抢锚钉视口左上角，web v103 同款）；精简短路块恢复 syncTpsChip 数据点 reapply（2976478 挪公共尾部后短路 return 到不了、与 git chip 不对称）；relaunch 无回执 4s 提示主进程可能是旧版需手动完全退出（旧 pollPluginRequests 白名单外动作静默丢弃）；待办红点指纹改分量级比较（更新装完后 latestVersion 分量退出不再误复亮）且 ack 幂等早退前先收敛本窗口红点；cnNum 切换补富文本 unitEpoch 在途竞态守卫（同 forceKmb）；detRootEl 落在宿主 data-session-id 写入窗口期时 heavy 按拍补算自愈；精简说明文案对齐 v147 挂载位（前导区 Git 左侧）→ v179 自动压缩阈值注入：⚙ 开关+模式+数值+状态行（enginePatch 随插件状态回推，__zusagePluginState 种子+拷贝行同 v172 纪律），主进程 engine-patch.cjs 按引擎 SHA256 白名单对 glm/zcode.cjs 打阈值改道补丁（锚点唯一性+use strict 指令位校验 fail-closed，hook 缺席/返回空双兜回 fail-open），阈值 autocompact.json 由引擎 hook 每轮决策 mtime 缓存读取——数值热生效、补丁冷生效（已运行 agent 子进程下个 spawn 起用）；ctx 按钮 hover 面板加「自动压缩 ~X%」行（acInfoText 按标称窗口口径，21K 预留近似还原）；关闭开关=按当前内容反向还原引擎字节；阈值任何形式钳 1% effective 地板防连环压缩→rapid-refill 熔断→ v180 重启按钮错位守卫（issue #158）：主进程 pushPluginState 携带 relaunchSupported 能力标记（与 relaunch 分支同文件、天然同步），浮层缺标记时隐藏按钮并显示「完全退出后重开」指引（syncUpdate + 点击守卫双处）；主进程 pollPluginRequests 白名单外动作兜底回执 unknown action，重启回执明确区分「主进程是旧版本」 → v183 子代理行内实时速率 chip（v4 Agent 行 testid 后缀即 childSessionId、与 v97 槽位键同源：运行期读槽位估算、完成后读泵快照 sub.list 真实加权速率；TPS 十档色；悬停 tooltip） → v184 ⚙ 新增「子代理行内速率」开关（state.show.subRate，zusage3.show 整包持久、默认开；只门控行内展示） → v185 实机修复批+review 修复批：后台子代理在宿主注册表无现成 store（运行期估算自 v97 起从未真正工作）→桥 v2 acquire 访问器按已验证 scope 解析子会话租约（仅 sess_subagent_ 前缀+本地）；tooltip 构建器改收数据包（buildTip(el.__zuT) 约定）；截断改从尾部取（保最新派发 8 个）；SUBRATE_DIAG 提模块级；诊断按 handle 判绑定；实例 dispose 摘行内 chip→ v186 本会话平均 token/s（PR #157 收编）：状态栏完成态主数字改会话加权平均（zusage avg_tps：Σ有效输出÷Σ生成窗口，main_turn 段、不含子代理），「均」前缀+按均值分档，最近一段/最近一轮退 tooltip；速率行/CLI 加「会话均」，精简 chip 同步；updateLive 会话归属取本 pane 行（lastView.session），缺席回退原行为→ v187 补回 v181 工具组状态词（PR #161 合并时 turn-stats runningGroupOf 块与 overlay 消费分支遗漏入库，仅存于运行目录热修副本）：turn-stats 复刻宿主 exploreGroup/executeGroup 合成规则（≥2 连续同类行成组、半截 JSON defer 透明、startedAt 锚定组首行），运行行落组尾时状态词显「查阅·执行中/终端·执行中」替代逐工具动词，计时从组头起算 → v188 自动压缩阈值注入按验收反馈简化：开关默认开（主进程 auto_compact_patch 缺省开、显式 false 关）；UI 只留百分比数值（留空=跟随引擎默认），模式下拉移除（引擎层 enabled:false/tokens/buffer 协议保留兼容，配置文件手写仍生效）；标题改「自动压缩上下文阈值注入/压缩上下文阈值数值」；状态行补 14px 水平内边距与 label 文本对齐 → v189 hover 面板阈值信息行移到「压缩上下文」按钮上方并追加下划线「调整」链接：点击复用 gear.click 完整路径打开 ⚙、切「通用」分区、scrollIntoView(nearest) 定位阈值数值行并高亮 3 秒（.zu-ac-flash，计时器实例级归属 dispose 清理）；info 结构改首文本节点+常驻链接（整行 textContent 覆盖会抹掉链接） → v190 三处验收微调：hover 阈值行 text-align:left（与卡内其它行对齐）；高亮改琥珀左条+淡底（--color-brand 在宿主主题是白色系，outline 描边观感像输入框焦点）；⚙ 注入开关关闭或主进程未加载时数值行整行 hidden → v191 hover 阈值行 token 数改走 fmt()：万/亿/K·M·B 与状态条、tooltip 同一转换链（跟随中文单位开关与强制 KMB 开关，中文至多两位小数去尾零） → v192 hover 阈值行布局：去掉自加 6px 下边距（间距交给宿主 space-y-3 的 12px 节奏，与「平均缓存命中率」行 pt-3 距分割线一致）；行改 flex 两端对齐，「调整」链接居右 → v193 修 v192 贴按钮：宿主 space-y-3 是 Tailwind v4 :where() 零权重 margin-bottom，行上自写 margin 会按类名权重压掉它（v190 的 6px 显挤、v192 的 margin:0 贴紧同因）——删掉 margin 声明整段回落容器原生 12px 节奏 → v194 阈值百分比改总窗口口径+数值行 30-99 校验：设置 91=原生按钮走到 91% 触发、hover 显示 91%（旧口径按扣除 21K 输出预留后的有效窗口算，设置值与显示差约 2 个点被判为割裂）；引擎 hook 以 eff+21K 近似还原标称窗口并钳在 eff 内，writeConfig 白名单收紧 30-99，已打补丁引擎下次启动按 PROLOGUE_V1 原位换装新 hook；⚙ 数值超范围实时提示并拒绝提交 → v195 hover 卡新增新手说明行：阈值行下方小字（.zu-ac-hint，随行同生命周期）解释口径与后果——「按窗口总量计算（与顶部百分比同口径）；走到该比例时客户端会自动压缩较早的对话内容以腾出空间」；margin-top 收紧 space-y 间距（space-y v4 只写 margin-bottom，top 无冲突） → v196 「调整」失灵诊断面包屑（下版移除）：openAcThresholdSettings 在 enter/after-gear/+150ms/row 各点写 __zusageDiag.acOpen（面板态、gear 可见性、条 display、分区、代际），closeSettings 写 acClose 调用者栈；v197 实证 acOpen 为空=点击未到达处理函数 → v198 修「调整」失灵：链接监听改 pointerdown（宿主疑似 mousedown 即关 hover 卡、click 到来前链接已被摘）+ 行级 click 兜底 + 捕获期点击写 localStorage 并在说明行回显（命中标绿/落空标红，诊断下版移除） → v199 清理 v196-v198 诊断：acOpen/acClose/acClick 面包屑、localStorage 回显、命中/落空着色全摘；保留 v198 修复本体（pointerdown 主监听 + 行级 click 委托兜底），实机验收=电脑操作点击「调整」面板弹出且阈值行琥珀高亮 → v200 上下文按钮增强显示层优先镜像原生 aria-label 已用/总量（宿主 taskUsage，压缩后立即回落；issue #172 曾停在 DB 最近完成请求旧值 16.4%），解析不出回退 lastBand DB 口径（ctxOv/nativeCtxVal 优先级只作用兜底），exc 过程态档位仍优先，还原路径共用同一解析器（英文 UI restore 顺带修对） → v201 合流：v200 撞号顺延（v200 已被并行线 issue #174 压缩按钮开关占用，8e6e1c0 先合入） → v202 预估费用行：四格 tooltip（本轮/会话/项目/今日）按 models.dev 官方牌价估算费用（token_pricing.py 内置表 326 条 + serve 内 12h 同步 models.dev 与 er-api 汇率，pricing-cache.json 落盘），快照加 cost_usd（USD）与 fx，展示层 ×汇率显 ¥（无汇率降级 $），会话/项目模型明细行尾加各模型费用，「价格来源 models.dev」脚注可点（openExternal），费用行尾空心问号图标悬停弹说明小气泡（价格来源/计算公式/汇率来源三行，fxTip 独立浮层 + mouseover/out 委托 + 180ms 悬停桥，主 tip 收起/重建时同步收），汇率源主源失败兜底 exchangerate.fun（自定义 fx.url 不启用），⚙ 通用区开关默认开，本库口径：裸输入=input−cache_read−cache_creation 全价、缓存分价、output 已含思考不另计 → v203 红点仅承载待重启（发现新版未安装、更新成功且已热重载均不亮；分量级已读比较保留以兼容旧 seen 串）+ ⚙ 带待重启红点点击直接落「插件更新」分区（激活即 ack）+ 设置页新增「已更新成功，点击重启 ZCode 即可生效」提示条（旧主进程降级回原文字指引），分区切换提取 activateSettingsSec 单一出口 → v209 额度 chip .zu-quota 与重置卡徽标 .zu-ctxrst 左右内边距 6px→3px + 模型选择触发按钮（chat-model-select-trigger）左内边距减半：文本态 8→4px、图标态 6→3px（!important 压宿主 group 变体）（用户规格 2026-11-02） → v210 时间范围行全部精确到秒（v166 会话/项目累计先行的 fmtStartS 扩展到本轮/今日合计与速率 tooltip 最近一段；fmtStart 仅剩「最后活动」行）（用户规格 2026-11-02） → v211 本轮 tooltip「单次耗时/首字延迟」改「平均耗时/平均延迟」（zusage 快照 last_turn 新增 avg_duration_ms/avg_ttft_ms，对 model_usage 该轮已完成 main_turn 行 >0 样本求均值；turn_usage.ttft_ms 聚合列实测口径不明不可依赖，旧快照缺字段整行不渲染）+ 本轮格面移除时长/首字两段（耗时只在 tooltip），精简摘要「本轮」行时长随同改平均（用户规格 2026-11-02） → v212 Git chip 分隔符 .zu-git-sep 间距收紧：字面「 · 」改纯点+左右 2px 内边距（多仓段与 ?N 未跟踪段两处同源；用户规格 2026-11-02） → v213 状态条格序调整：今日合计提前到会话累计之后（速度→本轮→会话→今日→项目→工具→子代理→⚙），速率 tooltip「状态条摘要」行序随同对齐（用户规格 2026-11-02） → v214 项目累计统计卡改版：tooltip 重构为「标题+统计范围（全部请求·含子代理）、总用量/请求次数/预估费用三 KPI（费用旁统一说明问号）、输入(命中率)/输出(含思考)/缓存写入明细、会话·轮·工具·重试规模行、模型四列表格（默认 6 项可展开全部，排序对副本）、时间范围（em dash）」，作用域 .zu-project-tip + :has 样式（不动共享 .tip/.rt-* 规则），展开态实例级归属键（sid:started）局部更新不重建整卡，触发项 zu-pj-item 标记，卡片内 Escape 关闭并归还焦点，focusout 进卡片不误关，positionTip 钳底边，费用全链复用 v202（0 有效/缺失 —/开关关整格收） → v215 六统计卡统计卡化：本轮/会话累计/今日合计/子代理四格 tooltip 统一 zu-stat-tip 视觉体系（速度统计卡公共构造：scope 标签+双读数 hero 主读数档位色、两行五列网格窄窗重排、速度卡宽帽 760px :has 作用域；明细面板内模型行问号图标弹费用说明气泡，复用 fxTip 单例同款委托）（用户规格 2026-11-02） → v215.1 速度卡去费用行与模型明细（用户规格：速度 tooltip 只留读数与时间范围，费用唯一承接处=各卡明细面板与 fxTip 气泡） → v217 子代理统一浮层：.zu-sub-pop 双栏单组件替代「悬停五段卡 tooltip+点击独立明细面板」两套旧 UI（preview/pinned 状态机：悬停预览、首次点击固定、面板内操作转固定、Escape/关闭/外点统一收且焦点归还+500ms 悬停抑制；选中按 sid 维护、运行中未入库槽位进导航、签名幂等重建保滚动、会话切换即关、入口断连即关；任务页 _sub_item 逐任务模型用量表/预估费用/平均速率档色行/最后活动全格式时间，zusage sub.list 单项同步扩展；精简入口 chip.__zuOpenSub 归一指向同一浮层）（实机验收 2026-11-03） → v218 速度卡三修（实机反馈）：悬停冻结 updateLive tipFor 判定改 contains（旧恒 false 致悬停中 tooltip 不冻结）；右格「最近一段」改读 lastView.last.tps（zuBarSpeedView 无 latest 字段恒缺）；图例 ≥2000 Ultra 改渐变圆点并禁 ✦ 伪元素（星点破形） → v219 ⚙「状态条样式」（默认/药丸/精简单选+精简说明行）从「通用」分区移入「状态条显示」分区卡首，纯分区归属调整，控件与持久化行为不变 → v222 速度卡 tooltip 补「时间范围」行（用户规格，参考四格 tooltip 同款式）：主数字为会话均/桥态取会话累计口径（started→last_at，与会话累计 tooltip 同源），「最近一段」回退态保持段范围；起点缺失整行不渲染（半程范围无意义）；三处 speedCardHTML 调用点（桥态 buildLiveTip/DB 回退/精简 chip）同批生效 → v223 ⚙ 面板关闭按钮命中区外扩（原并行线编号 v220，合入顺延；::after inset:-6px、hover 反馈同步，约 20×24px→32×36px）：按钮四周 head 空白点击原本无反应，用户实测「悬停 × 上点不动、不灵敏」；CDP 真实点击定责为命中区过小（事件链与面板几何均无缺陷），纯命中区修复，不改布局与视觉 → v224 速度卡悬停实时刷新二次修复（实机反馈）：v218 只改了 tipFor 判定，新 tip 串仍写到格内 .zu-live span，而 __tip 宿主与 drawTip 读取都在 .it 格元素上——条件每 tick 命中、重画的仍是整条渲染时的旧串，悬停中「当前读数」冻结在最后一次整条渲染的值（chip 已跳动、tooltip 停在「思考中…2秒」）；改写回格元素（liveEl.closest(".it")），悬停中每 tick 跟手重画，未悬停也保持新鲜 → v225（v224 并行线 PR #198 先合入，本线顺延）⚙ 自动压缩状态行区分「引擎被单独热更」（issue #191）：桌面 build 已登记而引擎 sha 脱钩时明示热更事实与漂移 sha 前 12 位（引擎补丁新增 drifted 字段，主进程传入 appVersion 按点分界前缀匹配登记表），替代误导性的"版本不在支持名单"；lastError 后缀此时与 sha 重复不再拼接；fail-closed 判定不变 → v226 ⚙ 两项（用户需求 2026-11-03；v226 已被并行线自动压缩状态行占用，顺延）：①六格显示开关（本轮/会话累计/项目累计/工具调用/今日合计/子代理）全部关闭时样式自动转精简（边缘触发只在「变得全关」那一拍切档，zusage3.autoCompact 记录来源主题 default|pill，重开任一格恢复、面板手动改档即解除；药丸来源同样触发）②默认样式新增「水平对齐」三选一（zusage3.barJust：均分 space-between 缺省不挂类/居左 flex-start/居右——居右不用字面 flex-end，LTR 下 start 侧溢出不可滚动也不计入 scrollWidth 会废掉收缩检测与 .zu-clip 渐隐，改首格 margin-left:auto 等效右聚拢、溢出方向与兜底不变；设置块仅默认档显示，applyBarTheme 随档显隐并同步条上 zu-just-* 类） → v227 预估费用说明气泡悬停保活（fxTip 是 body 级独立浮层、挂在主 tip 之外：指针从 ? 图标移入气泡被文档 mousemove「条外」分支按 left-bar 强制收主 tip、hideTip 同步收气泡，v202 起悬停说明气泡即灭；子代理浮层路径同被 preview-leave 倒计时收走面板。mousemove 处理器节流前新增分支：fxTip 显示中且目标在气泡内视同仍在 tooltip 上——保住主 tip 与气泡、取消越顶宽限与子代理面板延迟关闭，离开气泡回落原判定） → v228 速度 chip 完成态去「· 近X」尾缀（用户规格；编号顺延避让已合并的 v226(PR #200)与 v227(PR #202 fx-tip-keepalive)）：条面格与精简 chip 同批去掉 dbTps 尾缀，主数字只显会话均（或最近一段）；「最近一段」读数保留在 tooltip 右格不受影响 → v230 压缩轮不再显示「本轮统计不可用」（编号顺延：原 v238 号，v229 已由并行合入的 PR #207 占用、v231 起由并行未合线自占）：上下文压缩（手动/自动同链）是 query_source='compact' 的辅助轮（DB 有完整数字且已计入今日/会话累计，但消息流无正文、header 零输出），旧逻辑按 v74 零输出明示规则误插误导占位——实测压缩轮投影=turnHeader+timelineMarker(marker.type='compact') 而 header.executionKind 恒 'agent'（ek 探针证伪初版假设），turn-stats get() 以 isCompact 识别，overlay 对压缩完成轮不新插/撤下已插行（宿主「上下文已压缩」提示已承载语义）；kinds/tmr 为 det 诊断字段；v74 真实零输出轮行为不变 → v231 统计卡标题拼接名称与垂直居中（用户规格三轮迭代一并入库；编号顺延避让并行已合入的 v229(PR #207, issue #205)——v228 后 overlay 台账实际未占用，按共享代际台账撞号声明让号）：①项目累计卡拼项目名——zusage _project_usage 附 name=启动目录末段（正反斜杠归一，缺目录/旧快照判空不渲染），.zu-pj-pname 字号颜色同规模行 .zu-pj-scale；②会话累计卡拼会话名——快照行 title 三处本就产出，纯渲染端：statHead 加可选第三参仅会话累计卡传、/\s+/g 压空白、缺 title 判空不渲染，.zu-st-name 360px 省略号；③名称与标题垂直居中——标题容器带名称时切 .zu-tt-name（display:flex;align-items:center），行内 baseline/bottom 对齐会被 18px 大字 descent 拖得视觉偏低（实机指认），flex 子项自动块化、省略号仍成立 → v232 速度 tooltip「最近 20 段」柱状图：zusage 快照 session 行新增 speed_segs=最近 ≤20 条已完成 main_turn 有效速度段（_row_gen_ms 窗口与 avg_tps 同款口径、辅助源/子代理/碎段不计，v 保留原始浮点供档位与柱高按原始值判断；speedCardHTML 带 segs 时切「左读数卡+右图表」布局——左卡=当前读数/档位胶囊/加权平均说明，「最近一段」右格由最新柱承载，无 segs 的旧快照/远端旧版保持 v215 原布局），柱顶读数恒一位小数与柱同轴心、最新段加粗，Y 轴 0 起整洁刻度并按「信息卡横向覆盖最右约 1/3 柱」约束迭代刻度保证最高柱读数不被压住，X 轴=分段真实完成时间本地时区 MM-DD HH:mm 稀疏显示、首末恒留，最新段描边高亮+「最新」徽标，柱体颜色沿用 TPS_BANDS 档位类（ultra 渐变深浅主题显式 border-box 覆盖防 clip:text 裁没），段值 ≥1000 t/s（读数 6 字符）或窄窗口（plot min-width+横滚）保读数永不重叠；柱级悬停/键盘焦点弹信息卡——tip 本体委托 + 实例闭包存悬停段下标经 speedTipRebuild 编进串（签名幂等重建不丢状态、离开回落最新段、会话切换重置），render 接管对速度格补 drawTip 使打开中随快照跟手（焦点/选区在 tip 内时跳过），图表横滚位置跨重建保留；精简 chip tooltip 不带图表 → v233 速度卡三删+读数自适应（用户规格）：①删「统计会话全部已完成请求：工具等待不计，不含子代理。」口径行（DB 回退与精简摘要两处，Σ输出÷Σ生成耗时等其余口径保留）；②删柱状图「最新」徽标（最新段描边与加粗读数保留，plot 高 200→184）；③删「每段完成后更新；不足 20 段时显示实际数量。」脚注（live/回退两处）；④左卡「当前读数」估宽分级自适应（超长状态词降字号+允许换行，不再被 156px 左卡裁切；分级实现见同批改动） → v234 柱状图 20 段→14 段、释放空间给左卡（用户规格）：zusage 新常量 _SPEED_SEGS_MAX=14（与 last.tps 回查的 _TPS_LOOKBACK 分离，扫描窗 42 行凑 14 条有效段）+ speedSegsOf 渲染端截 14 + 两处口径行「最近 20 段：…」改 14；左卡 156→300px（内宽 278），主数字删 +12px 覆盖回基础 ui+22 大字，估宽分级阈值重算 ≤7.5/≤11.5、fit2 +6→+10px；plot min-width 600→420（pitch≥30）、wide 780→560、xEvery 估算基数 620→460/最小标签距 44→30（14 柱满宽全显时间标签） → v235 速度 tooltip 多状态结构化重构（用户设计图规格）：zuBarSpeedView 追加结构化字段 kind/statusText/nameText/nameFull/elapsedText/speedValue/speedIsEstimated/speedSource/activeCount/noteText（八类 tool/toolgroup/skill/subagent/thinking/estimate/avg/real，text/cls/phase/band/latest 逐字保留、状态判断不解析文案）；speedCardHTML 新增 o.status 分层左卡模板（zu-sl-status 状态标题+子代理 ×N 徽标 / zu-sl-name 名称两行省略+title 全名 / zu-sl-main 主数值或计时 / zu-sl-unit / zu-sl-note 辅助），数值型走档位色、工具/Skill/思考/子代理保持 dim，o.main 拼装路径为精简 chip 等旧调用方保留；子代理估速前缀 ≈、无效估速显「估算中…」不补 0；buildLiveTip/fallback 传结构化状态，scope 标签按真实状态映射（工具执行中/工具组执行中/Skill 执行中/子代理运行中/思考中/生成中估算/会话平均/本轮真实速度），思考态左卡内嵌脑动效图标；柱状图 14→17 段（_SPEED_SEGS_MAX=17、渲染端截 17、口径行改 17），plot min-width 420→500/wide 560→680/xEvery 基数 460→500/最小标签距 30→29 配平左卡 300→250px → v236 速度 tooltip 三修（用户实机反馈）：①信息卡改为悬停/键盘聚焦柱体时才渲染（默认不再常驻最新段上方，cur 高亮随之仅悬停态、latest 描边保留）；②X 轴时间标签最小距 29→44（17 柱 pitch≈29 必隔列、间距 ×2，修复标签拥挤）；③非 wide 图表删 plot min-width（随容器压缩+稀疏标签兜底），任何窗口宽度不出横向滚动条（wide ≥1000 t/s 保留横滚），速度卡宽帽 860→1040 → v237 修时间标签裁半（用户实机截图）：v236 的 border-box 配平让 X 轴行内容区只剩 20px、两行时间（25px）被 wrap 的 overflow-y:hidden 裁掉半行——X 行 24→29px（4 padding+25 两行）、plot 高 184→189，列配平随之 160+29 → v239 速度 tooltip 100% 复刻设计图（用户拍板以设计图为准，撤销 v233 删口径/v236 悬停才显卡）：信息卡恒在（默认最新段带「（最新）」+虚线引线连柱，悬停切段）、左卡状态图标+「当前读数」标签+档位色状态标题、颜色对照单行横排、统计口径左标题右分段+时间范围同卡、带图表时不渲染脚注 → v240 柱状图 17→10 段（zusage _SPEED_SEGS_MAX=10、渲染端截 10、口径文案同改）、柱宽 max-width 22→15px（-30%）、信息卡恢复仅悬停/聚焦才显示（撤销 v239 常驻）、左卡下半区加「峰值/最低/最新」概览填空、速度卡宽帽 1040→860、plot min-width 500→340 → v241 速度 tooltip 按设计图复刻：柱状图取当前会话最近 10 次（可跨天）、左卡标题行/主读数/说明行文案按设计图对齐（工具组「查阅」、Skill「执行中」、说明行统一「X · 正在执行」）、前缀「估/均」小号灰字、主体区垂直居中填空 → v242 速度 tooltip review 修复批（十 subagent 审查）：focusout/mouseout relatedTarget 守卫修 Tab 跨柱焦点断裂与双重建闪烁、render 接管 pill 主题补焦点守卫、wide 横滚复活（plot 420）、spanFrom 收严最坏一半 + CARD_H 36（实高 35.6 校准）、real 去档位胶囊、skill 标题统一无空格「·执行中」、工具组 statusText 回归完整短语、liveScopeMap real/estimate 用词对齐、「当前读数」标签与有效数值同门（修 subagent 数值误杀回归）、左卡 border-box 250/双规则合并/padding 12、标题档位色与单行省略、浅色 ultra 图例圆点 clip 修正、hero :has 单列、柱 role=img、17 段/常驻卡/帽 1040 等过期注释清理、测试补八态直调/概览三格/前缀/（最新）角标/图例行/几何不重叠断言 → v243 更新日志「发布页」链接 GitCode 渠道改指 /releases 列表页（tag 深链页对本项目 API 创建的 Release 一律「找不到或无权限」，GitCode 平台路由 bug 2026-11-04 实测；GitHub 渠道保持精确 tag 深链；镜像/未核实回退路径同规） → v244 重启按钮反馈与延迟（用户报告「点击没反应、等很久才退出」——大头是宿主 app.quit 优雅退出链要关窗并逐个终止会话/扩展子进程，可达数十秒，插件无法绕过）：确认发送即「正在重启…」+禁用+预期文案替代「发出即恢复」伪装无反应，4s 无回执/失败/90s 仍存活三路还原（ok 后挂 90s 兜底防 quit 被会话/扩展阻止永久卡死；4s 超时已还原则不再挂）；syncUpdate 重绘保持禁用与提示；主进程 relaunch 固定 300ms 延迟改回执送达后 30ms 退出（800ms 渲染端无响应硬兜底）；v245（同批提交）quit 前 hide 全部窗口——退出屏障期窗口不再可见干等，主进程 15s unhide 哨兵在 quit 未发生时恢复可见 → v246 用户手改批：速度图未悬停（hoverIdx<0）不渲染信息卡、span 只按 capOut 留柱顶读数净空，刻度基数补 6/7.5 防跳档空旷；X 轴同日去重（仅首枚显示标签柱与跨日首柱渲染日期行，其余同日只显 HH:mm）；本轮/今日合计首格改「总用量」、今日缓存命中率并入 grid3 输入列副行、本轮平均耗时/延迟/总耗时行改 --sub 弱化段、会话累计 scale 行分隔符改前缀式并删末项请求数、工具表 <50ms 显「<0.1s」弱化、子代理浮层 KPI 副行改命中率/含思考/缓存写入+平均速率并入 KPI、项目卡范围+scope 合并单胶囊+隐藏「按用量排序」+子代理浮层模型表去底色改行线、本轮输出速度单位 tok/s→t/s、图例 ultra 点隐藏与 inline 间距收紧、tbody scrollbar-gutter:stable → v247 悬浮窗口激活方式（issue 用户反馈：滑过误触遮挡）：⚙ 通用新增「点击激活悬浮窗口」开关（zusage3.tipClick 缺省关=停留 1 秒、仅显式 "1" 开=点击）；统计卡/子代理浮层 closed→open 改由独立 1000ms 定时器承接（排程置于 150ms 节流之前防快速滑入静止后永不触发、按命中元素 key 去重续期、到点按当前坐标 elementFromPoint 重命中抗 render 1.5s 重建 + :hover 最深元素复核），已开 tip 切相邻格保持即时，键盘 focusin 即时打开不变，取消统一落 hideTip/各 return 分支，定时器随 dispose 清理；点击模式 bar.click 接管 .it 并用 focusTipAt 避开 focusin→click 首击抵消（复用移出条面/Escape 关闭链，不另起 pin），fxTip/速度信息卡/工具栏 chip 与宿主原生 hover-card 不在本次范围→ v248 预估费用说明气泡「当前模型」随卡携带模型上下文（上一会话已完成、已部署未提交，与已合入的 v249（PR #224）并行开发，随本批补录入库）：四个统计卡与子代理浮层汇总的 KPI 费用问号随卡携带模型上下文（fxqIcon：data-model/data-rates=按用量最多模型+data-mcount+data-mscope），单模型显该模型四价、多模型沿项目卡口径显「计价范围」、无模型明细不显模型行，default 借 last 分支删除 → v249 用户裁定简化：「点击激活悬浮窗口」关闭（缺省）不再做停留 1 秒，恢复即时悬停原语义（v247 的 1000ms 定时器链 HOVER_OPEN_DELAY_MS/hoverSchedule/hoverCheck/hoverCancel 整体移除，mousemove 恢复 v246 逐行为）；开关开启仍为点击激活（bar.click 接管 .it + focusTipAt 防首击抵消、子代理 preview 关闭改 pinned 打开），设置项/文档口径同步为「悬停立即显示 ↔ 点击才打开」两态 → v250 速度柱状图按轮聚合+悬停卡全格式时间与轮明细+柱间距收紧（用户三项规格；编号顺延避让已合入的 v249「点击激活简化」PR #224）：zusage _speed_segments 改按 turn_id 合并一次提问的全部请求（v=Σ有效输出÷Σ生成窗口、逐问同口径），随段携带 m/i/o/n/c 供悬停信息卡渲染 模型/Token 用量（含输入·输出拆分）/请求次数/预估费用（数字格式化经 o.fmtTok/fmtCnt/fmtMoney 回调，费用随 state.cost 门控，旧快照缺字段按行省略，CARD_H 按实际明细行数校准）；悬停卡时间改全格式 yyyy-MM-dd HH:mm:ss；X 轴每个显示标签恒带月日两行（同日去重废止）；柱宽 calc(20%+12px) 使柱白任意宽度恒精确收紧 20%；段→轮措辞（最近 N 轮/第 N 轮） → v251 套餐额度显示口径开关（⚙ 套餐额度分区「显示剩余额度」，zusage3.quotaRemain 缺省关=已用%，纯渲染偏好不进 config.json）：开启后 chip 面分段数字与 aria、tooltip 窗口行/Key 总额度行/其他源摘要行改按剩余%（100−已用 同一窗口池补数，quotaRemainPct 钳 [0,100]）打头，绝对值窗口行内 已用/剩余 明细互换顺序；档位色恒按已用原始值判定（quota.md 契约）不随口径反转；余额/Key 剩余额度单段与团队/未配置/错误形态不受影响 → v252 模型拉取同步提供商侧配置（issue #236）：零兄弟供应商首拉写实最小骨架+有据元数据（contextWindow/inputFormat/档位/输出上限），档位按强度梯排序（宿主默认档=values 末项），Copilot capabilities 别名，api.json 档位目录按需后台补缺（大体量不阻塞，缓存后下次拉取生效），套餐源接目录补缺；弹窗行「未获取配置」中性提示+脚注披露只增不覆盖；档位索引落运行目录缓存（24h stale-while-revalidate 跨重启复用），目录后台补拉时行内「档位补拉中…」状态+脚注说明 → v253 本轮/今日合计 tooltip 模型明细改项目卡式四列表格（zu-pj-mhead+statTable，费用列随 state.cost 门控；本轮 rt-models 行式退役，精简摘要保留）+ 本轮 tooltip 删「速度＝Σ…未参与测速」口径行（unrated_output 字段照旧生产） → v254 宿主多视图顶部 48px [app-region:drag] 标题栏拖拽条穿透上层浮层（Electron 拖拽区按几何命中，覆盖层未显式 no-drag 不阻挡）：面板 top:8px 时头部 ✕ 落在条内，真实点击被窗口拖拽吞掉（新建任务页实报「设置关闭无效」，面板内导航点击正常与症状吻合）；.zusage-panel（设置+子代理浮层）/.tip（全部 tooltip 根）/.zu-mp-ov/.zu-compact-dlg/.zusage-exc（超限告警气泡，极矮视口 top clamp 8px 同样落条内）显式 -webkit-app-region:no-drag，把自身矩形从拖拽区减掉（宿主自家浮层与全屏屏障同款修法，app.asar 实证） → v258 静态桥缺席兜底（G2 跨版本免重打桥）：readFiberPaneScope 沿 React fiber 回溯 SessionPane 作用域（detOwnerOf/sidePaneKeyOf 的 tabId 同款兜底；限深 24、撞外层会话/分栏根止步、多候选歧义拒绝，校验与静态属性分支同规）；turn-stats.js 运行时合成 BRIDGE_TEMPLATE v2 同契约三访问器（Map.prototype 一次性探针捕获宿主注册表 + installRuntimeBridge 注入口）
+    var VERSION = "v277";   //v82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v84 主标签页远端路由（工作台分组唯一主绑定上报 + 迟到载荷守卫，issue #30）→ v85 回答末尾统计行跟随万/亿开关 + tok→token → v86 历史轮 tracker 无记录（窗口滑出/换代/热更）或缺输出字段不再翻成"本轮统计不可用"，加 det 诊断 → v87 主叶归属增 last-session 回退（组零证据时唯一远端记录放行，issue #30 复测：单会话主标签页不建组）→ v88 运行态心跳与两处扫描 tick 2s→0.5s（富文本重试 6→24 次等价放大）→ v89 ⚙ 面板更新进度：downloading 阶段文案 + 下载（字节）/安装（校验→安装→同步）双进度条，缺 progress 的旧主进程自动隐藏 → v90 主标签页/分栏归属改按本窗会话节点身份（renderer 桥按版本/资产/锚点写 SessionPane 属性，移除 workbench-groups/last-session 共享回退）+ 心跳 0.5s→0.1s（扫描维持 0.5s）→ v91 设置页/权限面板冒条修复（PR #44：inSettingsView 三处派发排除 + anchorCardOf 面板锚点改判）收编收尾：排除标记并集（settings-page testid + content/panel 双 frame）、track 显隐第四处防御 → v92 ⚙ 更新区固定显示可复制的重装口令（源码安装无法自动更新时引导用户发给 agent）→ v93 原生上下文按钮（chat-context-usage-trigger）增强：环填充/四档色/右侧百分比镜像状态条上下文格（ctxBandOf 同源），cw 缺失还原原生形态 → v94 状态条删除「上下文容量」格（UI+tooltip，该口径由原生按钮增强承载），⚙ 面板同步去掉「上下文」开关，子代理格改始终展示（零值也显示）→ v95 ⚙ 更新区去掉 v92 重装口令提示块（源码清单的仓库来源改由宿主插件管理器直接更新，不再报渠道不一致），更新来源文案增「仓库源码」分支→ v96 套餐额度 chip（默认关）：挂原生上下文按钮左侧（wrapper 内前插，与按钮增强同款双 reapply/还原），数据来自主进程 quota 字段（解密宿主 OAuth 凭据直查 monitor 端点，账号级套餐池口径），会话首个 main_turn 完成前不显示；自绘 tooltip 走 rateTip 独立浮层模式；chip 改多窗分段：每窗一段（中文 5小时/7天，英文 5h/7d）各自按 80/95/100 档位色，分隔符 |；余额类型单段渲染就绪（余额 ¥100.00，阶段 3 数据源接入即用）；去掉环形，容器不着色 → v97 子代理速率（T1+T2）：zusage sub 汇总加 rate_avg/每子代理 tps_avg（已完成段加权平均，口径同 _turn_rate），子代理格 tooltip/明细面板展示；Agent 运行期主 chip 附加「子代理运行中 · 估 X t/s」——turn-stats 透传 subagent 行 childSessionId，overlay 据此用同款 zuTryBindStore 绑子代理会话 store 做字符增量估算（运行中请求未入库，DB 无实时数据；150s 采样实锤零 running 行），思考文本不进 rows 时退回纯状态词；工具动词「正在运行子智能体」压成「子代理运行中」（web 同步文案）；同日多槽位化：turn-stats 暴露 runningSubagents 全集（并行时 rowId 前 8 个），每子代理独立绑定/2s 节流，主 chip 显示合计速率（并行 ≥2 时动词后缀 ×N），chip tooltip 与子代理明细面板逐个实时展示运行中估算（tooltip 随原地改字同步 __tip 重画；面板 800ms tick 原地刷新 .subrate，汇总页运行块含 DB 尚无记录的新子代理） → v98 额度实时选源恢复（v4-model-config 观察 + quota-providers 全窗快照上报 + byProvider 定向刷新、空选择 fail-closed）与 sub2api 额度 UI（今日/本月窗口、窗口行内金额明细、Key 总额度、订阅截止、账户余额标题） → v99（主线并流）tooltip 伪边界 leave 过滤：Chrome 悬停链收缩/重算会补发 DOM 内部的 documentElement/tip mouseleave，tipLeaveAt 贴边判定后取触发时刻最深 :hover 元素甄别，仍悬停在本档具体元素上即伪 leave 一律忽略交回 mousemove 流（主线 v100 滚动豁免=本链 v106 同义，不另列） → v99.1（主线并流）apiKey 模式 BigModel/Z.ai（bigmodel-api[-N]/zai-api[-N]）额度 chip 标题家族判定（issue #68；数据链在 quota-client） → v99.2 思考中计时随语言本地化（中文「1 时 2 分 3 秒」/英文「1 h 2 m 3 s」，空格分隔、零段照旧省略）；回答末尾行采样时刻改完整中文日期时间（⏱ 2026 年 10 月 23 日 11 点 20 分 28 秒，token_rate.py format_turn_line 同步改版） → v100 设置面板分区导航（ZCode 设置侧栏同款：左栏三组分区导航 + 内容区单分区显隐，激活项 aria-current="page"，选择持久化 zusage3.sec；面板窄于 620px 时导航收成 icon rail） → v101 设置面板高度在打开瞬间按内容自然高锁定（切分区不再抖动，resize 只收紧不放大） → v102 额度源预设模板（CC Switch/magpie 同款选模板只填 Key：官方域变体 chip 一键写入 secrets baseUrl，minimax 可信域机制推广到 siliconflow 币种随域；deepseek/openrouter/kimi/anthropic/mimo/volcano 附控制台取 Key 链接，走 openExternal 桥） → v103 额度源列表卡片化布局（每源圆角卡片+间距，凭据框限宽 420px，长说明段落补水平边距；纯 CSS，结构行为不变） → v104 源状态文案补 disabled=已关闭映射 + 主进程对显式关闭源统一报 disabled（修「开关已关却显示待查询」矛盾）；刷新/获取 Key 按钮补 title 提示，关闭源的刷新按钮禁用 → v105 「上下文容量」弹层（hover-card-content）内压缩上下文按钮：命中率行下方全宽胶囊按钮（原生 secondary 配色全走客户端语义变量），弹层关即卸载（Radix 无 forceMount）故 body MutationObserver + heavy 对账双触发、DOM 存在性幂等（多实例安全），插入锚=「剩余额度」border-t 段前（缺则容器尾）+位置兜回；点击弹原生 AlertDialog 视格确认框（遮罩/Esc/外点关闭、Enter 确认），确认后优先走 fiber 上原生残留的 onSendCompressionCommand("/compact")（SessionPane 压缩入口，不动输入框草稿），缺失回落官方 E2E 输入桥 __zcodeLexicalInputE2E.setText + 发送键（Lexical 直写 DOM 不生效，禁用该路径；草稿非空拒绝） → v106 额度 tooltip 滚动豁免：hideTipsOnScroll 不再收 quotaTip（chip 固定 composer 工具行与 gitTip 同理），修思考中流式输出自动滚动致悬停弹出即灭；chip 随宿主重建 detach（无 mouseleave）由 scanRateLines 加 isConnected 健康检查兜底收起 → v107 压缩确认框补行为提示：压缩进行中发送新消息/停止会打断压缩（实测 16:27 新 turn 启动同秒 compact turn TURN_CANCELLED，cancelled_by_user=1；引擎对该次摘要流挂起 134s 无首 token 也不重试 retryable=0），确认框加 hint 行中性告知 → v108 压缩主通道按用户指定改为字面 "/compact" 输入提交（E2E 桥 setText+发送键；流式中 v4-stop 可见/草稿非空/发送键 disabled 三重拒绝），fiber 命令信封降兜底；hint 升级为「通常需 2-4 分钟且无进度反馈」（DB 实证：全库 compact 请求无首 token 但正常完成，72s-9.6min，14:44 同会话同模型 165s 成功先例；16:25/16:43 两次「卡住」实为 2m20s 被新消息 TURN_CANCELLED，非故障） → v109 压缩主通道按用户指定改回直接调会话发送接口（fiber onSendCompressionCommand 命令信封：不碰输入框/发送键、流式中交引擎排队，修字面输入通道在生成中被发送键禁用卡住的问题），字面 "/compact" 输入提交降兜底（三重门控仅作用于兜底） → v110 压缩提交函数改在弹框打开瞬间（弹层必存活、锚点几何可信）解析并缓存，修复确认时弹层已被 Radix 卸载、几何重解析退化为「离视口左上角最近」致多分栏把 /compact 发进错误会话（P1）；兜底字面输入通道的流式/发送键/草稿三重门控全部前置到 setText 之前（拒绝不再残留草稿）；Enter 确认限定焦点在弹框内（无焦点陷阱下防焦点外 Enter 误触发确认） → v111 额度 chip 默认展示：quota_enabled 缺省开（显式 false 才关，真值链在 inject-main）；chip 二级门控 not_configured/unsupported 从静默隐藏改中性灰提示「额度 未配置/暂不支持」（源被 ⚙ 显式关闭仍隐藏），tooltip 补 info 分支引导配置 → v112 Start Plan 免费档池（quota-client 新增 zcode-start 适配器走 zcode.z.ai billing/balance 独立链，与 coding plan 的 monitor 端点分池；选源路由与 quotaFamily 判定补 start-plan 分支修 start-plan pane 误读 GLM Coding Max 池；chip 增「套餐」分段（windows.plan，one_time 发放池聚合已用%），tooltip 套餐池行按 expires 标记切「到期」措辞） → v113 夜间审计加固：quotaBalanceText 内建转义（currency 是远程响应字符串，chip/tooltip 双 innerHTML sink；parts label/amount 单次转义修双重转义；「其他源」行标签转义归位；aria-label 走 plain 纯文本变体不读实体）→quotaTip 补内容签名幂等 __zuTipSig（同 gitTip，悬停期间周期对账不再打断文本选择）→子代理明细面板数据签名幂等（滚动位置/选择不被每 1.5s 推送整面板重建重置；运行中估算仍由面板 800ms tick 原地刷新）→额度 chip 签名重写保留 zu-qbusy（点击刷新动画不被推送截断，同 git chip）→⚙ 源列表 id/label/preset/keyUrl 属性级转义 aEsc（custom:<providerId> 可含用户自定义名）→live 速度 span 的 speedView.text 过 ttEsc（工具名是宿主/MCP 可控字符串）→渲染桥两处订阅回调尾部 updateLive() try 包裹（异常不冒进宿主 store 通知分发，诊断键 subLiveErr/bridgeLiveErr 记录） → v114 积压清单清扫：remoteCache/remoteTodayCache/richTextCache/richTextAttempts 上限淘汰（长会话防无界增长）；dispose 清理补 __zusageDeliverTurnText/__zusageSidWs/__zusagePaneScopes（旧代闭包自卫之外的清理完整性）；诊断 lsVals 只转储 zusage 命名空间的 localStorage 键（宿主其余键值不进 diag 文件） → v115 渲染循环省电（上游 xhwxt PR #26/#28 同源问题）：幽灵子树/遮挡命中/模态判定加 TTL 缓存（120/150ms，命中绑定元素矩形+模式），track 在 document.hidden 时整帧跳过；未采纳其 600ms↔2s 调度降频（heavy 600ms 对账是与 render 并列的 React 重写兜底契约，降频会让增强节点裸奔 2s） → v116 「思考中」卡死修复（源码复核定案）：v87 合成分支条件收紧——仅「空窗口非终态（draft 空窗，v87 本意）或 control.phase=running」才合成思考中，删除「行非空」析取项（宿主 wire 快照 rows.window 恒为全序尾 60 行，末轮超窗的闲置会话整窗无 turnHeader，旧条件使其永久点亮思考中、切回重绑重新计时）；思考计时锚定 turnHeader.startedAt（宿主创建 header 恒写入，重绑不清零，缺字段回退首观测）→ v117 悬停命中区扩到整栏（fork lliangworld b21e3cf0 同源收编）：条目空隙/分隔符按 sep 中线就近归属、尾部空隙归末位条目，⚙ 与空条面维持保持不动；防闪烁改由节流+幂等承担 → v118 无障碍与主题重构（并行会话批次）：条目可聚焦（span tabindex / zu-sub 真按钮 + aria-label）、键盘可达 tooltip（focusin/focusout + Escape 收起）、focus-visible 焦点环、SVG 图标与思考动画改 currentColor 随主题、⚙ 面板请求-回执协议（requestId + __zusagePluginResult，feedbackVersion 1）、quota 源操作错误语义、统计行开关即时重扫 → v119 插件自动检查改为每 1 小时，更新区双语提示更新器变更需完全退出并重开 → v120 Git 手动刷新改请求-回执协议（askGitRefresh 带 path/requestId，主桥 gitTick 完成后经 __zusagePluginResult 回执、在途请求合并等待，按请求 path 校验结果）+ 状态条 aria-live sr-only 播报区（套餐额度查询中/Git 刷新状态）+ ⚙ 面板高度上限 82vh→90vh + 模态判定改按可见 dialog（display/visibility/opacity 过滤） → v121 状态条 .ico 与 ⚙ 齿轮图标盒由 calc(字号+4px) 改为等宿主字号（24 格线性图标墨迹只占盒 75–83%，18px 顶满 1.3 行盒显大，且加法常量令比例随字号漂移 1.33×→1.20×；用户实机定 1.0×，.eb .ico 12px 特例不变） → v122 Git chip 展开测量完整宽度并留 32px 迟滞余量，切断宿主 compact 反馈环（issue #100） → v123 Git chip 锚点按电脑操作→上下文→模式→思考回退，排除隐藏探针并随可见锚点迁移（issue #103） → v124 Git chip 固定左侧操作区，移除右侧上下文/思考回退 → v125 思考计时中文全紧邻「7分16秒」（时段间空格去除，用户要求；英文「7 m 16 s」不动） → v126 思考计时英文数字与单位紧邻「7m 16s」（时段间留空格，用户要求） → v127 tok/s 速度十档色（TPS_BANDS 唯一事实源，原始值分档含下限不含上限：<40 低速红 / 40–70 一般黄 / 70–150 流畅绿沿用原三档类名与实测色，150 起新增蓝紫系 zu-teal/zu-sky/zu-azure/zu-violet/zu-purple/zu-magenta，≥2000 Ultra 静态蓝紫渐变 + ✦ 星点（::before content:"✦"/"" AT 静音、@supports 外纯紫回退，浅色组同名覆盖渐变）；估算态与完成态同表分档（用户规格，原「估算态不分档」废止），无效值（负数/NaN/±∞）一律中性 dim 或回退 DB 绝不判低速，DB 回退分支负数/非有限不再渲染 chip；tooltip 档位行改动态「名称 · lo–hi t/s」消解 toFixed 舍入边界歧义，另加静态「颜色对照」图例（十档数值↔颜色升序一览，档位类与条面同源随主题切换）；额度正常态改额度蓝 #78a9ff/浅 #315fc4（.zu-qseg 专属基色，不碰全局 .ok——上下文与速度前三档仍绿），周期标签拆 zu-qlabel 子节点中性次级色常规字重（textContent/aria/tooltip 不变），quotaSegs 补 isFinite 门防 NaN/±∞ 落正常蓝；正常态再改 CCometixLine 同源柔和低饱和（用户规格）：普通窗灰蓝 #8abbd0/浅 #276f86、7 天窗按 quotaSegs 结构化 key 挂 zu-qweekly 淡紫 #b69ad8/浅 #76509f（不匹配显示文本），周期标签与数值同色成组仅标签降字重，上下文按钮正常绿改 #72c9a2/浅 #187b58（限按钮作用域，速度与全局 .ok 不动）） → v129 模型拉取分区（收编 HHQ-666/zcode-model-puller，MIT）：⚙ 基础组新分区列宿主 provider_config.json 的 API Key 型自定义供应商，经主进程拉取其 /models（候选端点探测、OpenAI data/Ollama models/顶层数组形状解析、Bearer+x-api-key 双头），弹窗勾选（已添加/新模型徽标、搜索过滤、全选/清空/仅选新、选中计数）后经 model-pull-apply 最小写回（personalModelIds+modelOrder 追加、providerModelRules 复制同供应商模板条目、同目录原子替换+滚动备份 .zusage-bak、未知键保留）；key 只在主进程内存、只发该 baseUrl 本域，不回渲染端不进日志；请求回执 20s 兜底超时（旧主进程无 action 时提示完全重启而非永久 loading） → v130 拉取算法吸收 GLQQX/zcode-model-discovery-patch 与 linguo2625469/zcode-patcher：字段别名全集（id/modelId/name/model、context_length/contextWindow/context_window/limit/limits、max_completion_tokens/max_output_tokens/maxOutputTokens/limit/limits/top_provider、payload 增 result 形状）、多模态感知（architecture.input_modalities/input_modalities/modalities.input + vision/supports_vision 布尔 ⇒ 宿主 inputFormat 稀疏能力位，缺位写实 false）、思考档位感知（supported_efforts 去重截 16 ⇒ reasoningLevel.values）、models.dev 公共目录补缺（并行拉取 5s 超时失败静默降级、id 精确→basename 唯一匹配、字段级供应商优先、key 与本机数据绝不发往目录、进程内 1h 缓存）、applyModels 按模型写实 config（contextWindow/inputFormat/optionSpecs；元数据走主进程 fetchCache 闭环、渲染端只回传 id 无法注入字段；模板带 map 表达式的 optionSpecs 整体不覆盖防 values 换名失配；无依据字段保持模板原样、不编造默认值）；弹窗行新增 ctx/out 可见小字与档位 title，分区说明补 models.dev 联网披露；review 修复：勾选表/已添加表/metaById 改 null 原型（模型 id 来自远端，__proto__ 等键静默失败丢勾选态）、实例 dispose 同步摘除模型拉取弹窗与 Esc 监听（原仅整体 dispose 摘除，pane 关闭后弹窗跨代泄漏且确认回调 inactive 早退卡保存中文案）、重开面板停在模型拉取分区时立即刷新列表、请求兜底超时 20s→25s（主进程最坏双端点 20s 防假超时）、主进程响应体 8MB 限长解析与 tmp 文件名带 pid 防双实例竞写 → v131 额度/上下文五档色（用户规格 2026-10-27）：CTX_BANDS/QUOTA_BANDS 唯一事实源（{min,cls} 有序表，bandOf 从高到低首个命中），阈值 30/50/80/90（含下限不含上限）——额度 calm/norm/mid/high/crit=emerald/sky/amber/orange/rose（暗 400/浅 700），上下文 calm/norm/mid/high/crit=slate/indigo/violet/orange/red；data-zusage-band 与 zu-qb-* CSS 双主题成对；pct span 与 SVG 环一律继承按钮 currentColor（.zu-ctxpct.ok 系独立色废止）；tabular-nums 原已覆盖 .zu-quota/.zu-ctxpct；v92 百万窗口提前预警（40/60）与 v127 额度正常态灰蓝/7 天窗淡紫（按窗口类型着色）随「仅按百分比」规格废止；额度 ≥100% 满档保留呼吸闪烁特效（zu-qb-exc，用户规格；90–99 为 crit 纯色）；压缩过程态（exc）优先档保留；余额/Key 额度段挂 calm 档色 → v132 模型拉取挂载点迁移（用户指令）：⚙ 设置分区删除（ZU_SECTIONS/section/ensureMpProviders/syncMpList/startMpFetch/mpFeedback 全撤），改挂官方「模型设置⇒自定义供应商」的「+ 添加模型」按钮左侧（锚 data-testid=model-provider-add-model-button，额度 chip 同款 enhance/restore 契约：render/heavy 双对账+位置兜回+自清选择器 .zu-mp-host）；供应商归属优先读设置页表单 http(s) Base URL 归一化匹配（唯一命中直拉），否则单供应商直用/多供应商弹 zu-mp-pick 选择列表/无供应商弹提示；按钮视觉复刻原生 secondary 视格（同页 Tailwind utility bg-secondary h-7 rounded-lg），⚡ 图标 stroke currentColor；弹窗抽通用壳 openMpShell（勾选弹窗/供应商选择/错误提示共用），apply 成功关弹窗由宿主自动刷新列表；供应商归属改主判定=当前选择的供应商（读宿主源码定案：导航项 testid=model-provider-nav-item-<nodeKey>、custom 项 nodeKey=custom:<providerId>、选中项 data-state=selected），providerId 精确匹配不受编辑草稿影响；Base URL 匹配降兜底（专用 testid model-provider-base-url-input 优先于表单启发式），弹窗对齐 HHQ 形态（⚡统计标题/搜索占位/仅选新模型计数/已选中 n 个模型/蓝实底确认钮）并自带 .zu-light 随宿主主题实时换装；review 二轮修复：上下文按钮浅色档补 data-zusage-armed 特异性（浅色主题 norm~crit 曾被暗色 0,3,0 规则恒胜）、model-puller 非 ok 响应体显式 cancel（undici 连接卫生）、宿主按钮 ml-auto（锚容器 justify-between 三子项均匀分布致按钮居中）、确认钮改固定蓝 #3B82F6/#2563EB（客户端 --color-brand 深色主题是白系，白底白字隐形）、拉取按钮仅在选中的是 custom 供应商时挂载（锚 testid 全局唯一，内置/套餐页同 testid）、拉取中按钮文本「拉取中…」+图标旋转（原透明度脉冲无感知） → v133 Git 计数缩写（用户规格 2026-10-28）：chip/tooltip 的行数·条目·↑↓·冲突计数 <1万原值，≥1万 中文（cnUnits 判定）万/亿、英文 k/M/B（k 门槛刻意抬到 1万，与 token fmt 的 K≥1000 不同，小写 k 至多两位小数去尾零紧邻）；仓库个数与 aria 播报保持原值 → v134 额度与上下文保留既有阈值并统一绿黄红三档视觉；统一字号为宿主基准减 1px，周期标签加粗并微调分隔符 → v136 编辑项目弹窗源文件夹行在名称下方显示完整路径（纯 CSS ::after attr(title)，零 DOM 注入 React 无感；.truncate 限定本地行、排除 fixedFolder break-all 全路径行防重复，多文件夹每行各取各的 title；长路径自动换行不做省略号（宿主 truncate 的 nowrap 继承进伪元素须显式 white-space:normal）；规则挂条样式表、由 <html> data-zusage-pp 门控，⚙ 通用区「项目完整路径」开关 zusage3.projPath 默认开即时生效；顺带清理未提交编辑遗留的 spawnInstance 陈旧重复块 566 行死代码并复原被覆写的 issue #55 注释） → v137 源文件夹行点击即用系统文件管理器打开该目录（用户规格 2026-10-28，mac/Win 双平台）：主通道宿主桥 openInFileManager（Windows shell.openPath / macOS open 带 Finder 与 shell 双回退，raw path 免编码），旧主进程降级 openExternalFile、openExternal(file:)（白名单含 file:）；远程项目编辑器按 virtual-project-existing 标记排除，fixedFolder 行不在选择器内；多 pane 重复委托 500ms 同路径去重，document click 监听随实例 dispose 摘除；行加 cursor:pointer → v138 重置卡倒计时改时分秒全档恒显（并行会话 rstmerge 线并流收编，用户规格 2026-10-28：精确到秒、随 600ms 对账实时逐秒跳动，rstSpanText 中文数字单位紧邻「3时05分30秒」、英文数字单位紧邻+时段间空格「3h 05m 30s」；rst tooltip 补 Escape 收起（v118 键盘可达契约）；⚙ 倒计时阈值语义不变——并流时保留 rstCdh 持久化，对方运行目录构建因旧基线缺失而误删，其 18:42 rstmerge 部署曾覆盖本项目 v136/v137 后经本线合并恢复） → v139 合并 fork/main v1.5.5 线（PR #121 重置卡徽标、#122 倒计时秒级、#123 templateRules 回填、安装修复与 v1.5.5 发版）时收编遗漏的 model-puller 套餐源判定（4e431cc：detectSelectedCustomProviderId 带 anchor，BigModel 付费套餐详情页按 GLM Coding Max 付费卡区分放行、Start Plan 免费卡页不放行；挂载门控 btn 先查 + mpAnchor 诊断）——本项目快照缺该段曾致 overlay-model-pull 挂载契约测试红；overlay 版本线自此与对方 v136 撞号线并流，按合入顺序顺延 → v140 收口审查修复：openProjFolder 对 invoke 通道（openInFileManager/openExternalFile）挂空 catch——旧主进程无 handler 时异步 reject 会刷 unhandled rejection；review-fix-merge 流程产物 → v141 ⚙ 更新区在 API 限流且渠道清单兜底也失败时引导 GitCode 镜像口令（清单兜底本体在 plugin-updater/plugin-release 主进程链） → v142 ⚙ 通用「状态条样式」双主题 opt-in（zusage3.theme 独立持久化，默认关=现状）：药丸形态=所属输入卡下方居中、内容定宽，.zu-pill 经 --zu-pill-* 逐项拷贝所属视觉表面（Highspeed 外壳优先）计算样式，随宿主主题/hover/focus/Highspeed 实时跟随——pillSurface 统一取色/定位/让位锚点，body 子树 MutationObserver + 祖先属性观察捕捉外壳原位增删与搬移（不依赖 600ms 对账），80ms 过渡采样按目标计数、表面搬离自动停止；条面精简：缓存命中率/请求次数/轮数/耗时/首字收进 tooltip（0 命中也显示 0%），窄窗 .zu-main 横向滚动 + focusin 滚入可视区、切回默认复位 scrollLeft，不触发默认态收缩/渐隐；⚙ 面板宽度在药丸下跟随所属卡（不再跨分栏），主题 radio 按实例分组 name 防多面板互斥；数据重建先绑 __tip 再恢复焦点，aria-describedby/tooltip 不丢；modalOpen 豁免 zusage-panel 自有面板（修设置面板被误判宿主模态整条收起） → v143 药丸收口审查（review-fix-merge）：8px 双间距按宿主实测几何收敛——adjustPillBottom 沿所属 pane/dock 实测矩形补足让位并带 floor/不增长护栏，无法让位的绝对定位布局 visibility 安全隐藏（无每帧显隐抖动）；pillMarginTarget 落在 .chat-composer-input-surface，Highspeed 退出后默认卡重解析（composerCardOf 优先原生 data-testid 输入框）、宿主 margin 变更原值+优先级还原；悬停 tooltip 在 pill 下实时刷新隐藏明细并保留选区/滚动，焦点恢复区分 Escape 关闭与悬停接管；modalOpen 纳入 alertdialog；协调器候选补可见性过滤且已绑定输入框豁免 45% 阈值（上下分栏不再反复挂卸）；表面祖先观察改快照重建防泄漏 → v144 ⚙ radio 对齐修复：.zu-settings-langs/.zu-theme-options 的 label 显式声明 flex+align-items:center+gap:6px——原 label 继承 .panel label 的 flex-start 顶对齐（gap 14px），radio 圆钮相对文字中线偏上约 4.5px；新规则 (0,2,1) 特异性覆盖 (0,1,1) 基础规则，实测居中 delta=0 → v145 切回默认主题补还原 bar.style.visibility（pillUnsafe 安全隐藏是 pill 专属态，写入点仅 track 的 pill 分支；此前 pill 隐藏态下切回默认条永久不可见，十路评审 P1） → v146 精简模式（theme 第三档 compact）：条永久隐藏但保留 DOM（<style>/ariaLive 随条存活、heavy 保条对抗 React 清子树）；生成速度改挂工具行 .zu-tsb（重置卡左侧，挂载/位置兜回/签名幂等照重置卡同款），内容=zuBarSpeedView 桥两态或 tpsBand DB 回退、无有效样本不渲染（用户拍板）；tooltip=速度读数+状态条摘要（本轮/会话/工具/今日/子代理，逐格开关继续生效、子代理行点击开明细）+tpsBandLegend+「打开设置」按钮（镜像齿轮开启分支，面板精简下贴输入卡定位）；updateLive 10Hz 心跳原地跟随；非精简主题 syncTpsChip 门控摘除；诊断 mode=compact → v147 精简模式速率 chip 挪前导区（用户规格）：git chip 左侧——git 在时插其前、git 不在时占其锚位（cua-entry 后方/前导区末尾），两侧位置兜回收敛为 [锚][速率][git]（git 兜回容忍速率占相邻位防逐拍拉锯）；前导区发现失败回落尾随区（重置卡/额度组左侧） → v148 精简速率 tooltip「打开设置」按钮右对齐（用户规格）：footer 改 flex 布局，说明文本 tps-note-t 占据剩余宽度、按钮 margin-left:auto 推至最右，长文本换行不断布局 → v149 精简速率 tooltip 摘要行单位 tok→token（用户规格，与回答末尾统计行的 token 措辞对齐） → v150 修复精简模式 git chip 永不挂载（用户报告）：v147 的 git 兜回容忍条款（速率占锚位时不挪）误拦首次挂载——速率 chip 常驻锚位时 enhanceGitChip 每拍判"已就位"跳过插入；改为 chip 未连入 DOM 时无条件首挂（落速率后再由速率兜回收敛 [锚][速率][git]），容忍只用于已挂载的位置保持 → v151 工具状态词改版（用户规格）：Bash 动词「正在执行」→「工作中」，未知工具回退同改（正在执行 X→工作中 X）；工具计时分隔去中点（正在读取 · 4.3s→正在读取 4.3s 一并生效） → v152 工具动词 Read「正在读取」→「读取中」（用户规格） → v153 工具执行状态词定稿（用户规格）：Bash 与未知工具回退「工作中」→「执行中」（无名词回退英文 Working→Executing 对齐） → v154 工具动词全面改「X中」体例（用户规格）：写入中/编辑中/搜索中/获取网页中/更新待办中/读取待办中/运行技能中/读取上下文中/发送消息中/获取任务输出中/停止任务中/编写工作流中（Read 读取中、Bash 执行中、Agent 子代理运行中此前已改；英文标签不变） → v155 审查修复批（review-fix）：①compact 下 positionSubPanel 被隐藏条僵尸 .zu-sub 抢锚（零矩形把明细面板钉左上角）——chip 优先锚；②速率 tooltip 内容含秒表，悬停中 10Hz 整片重建吃掉「打开设置」/子代理行点击——显示中内容变化冻结只跟位置；③track compact 早退补两面板周期跟随；④自清选择器补 .zu-tsb、跨代采纳 chip 统一挂装（__zuWired 防重）修复热更后悬停/键盘失效；⑤closeSettings 焦点归还校验 offsetParent（compact 下不落隐藏 gear）；⑥enhanceGitChip 重复 var slotNode 清理。Web 同批：①③⑤（mousemove chips 归属校验只接本实例）+chip focus/blur 键盘可达对齐桌面 → v156 上下文按钮增强开关（issue #141）：⚙ 通用区新增「上下文按钮增强」checkbox（localStorage zusage3.ctxEnh，缺省开、仅显式 "0" 关），关闭走 enhanceCtxButton 关闭分支还原原生环/百分比且重置卡徽标继续维护（restore 顺带清徽标后立即重挂） → v157 修复精简→默认切换残留空壳细线（用户报告）：compact 期 render 短路会让空壳条面（热更占位/清子树后未填过）因签名相等一直存活、切回默认露出细线数十秒；①离开精简立即恢复 display（compactHid 区分初载 none，初载不提前露条保 pill 定位契约）；②离开精简强制条面重建一次（lastHtml 清空）；③compact 短路加 main.children.length 门——空壳先补一次完整渲染（条隐藏不可见）；④render 公共尾部补 syncTpsChip（短路/直通两路都经）→ v158 并流 fork/main cmdkW 线（PR #140，原线 v146 与主线 v146 精简模式撞号按合入顺序顺延）：宿主命令中心（⌘K 搜索弹框）加宽加高开关（⚙ 通用区，zusage3.cmdkW 缺省开）：条样式表规则 max-width:max(32rem,80vw)!important（原生上限=宿主 quickPickDialogClassName 的 max-w-lg=512px，弹框基础类自带 w-full 窄窗本就满宽，故小窗保持原样）与高度同规格（弹框根 max(90dvh,calc(100dvh-6rem)) 不低于原生上限，cmdk 列表 440px 硬顶放宽为 max(440px,calc(90dvh-15rem)) 小窗保底），<html> data-zusage-cmdk 属性门控（applyCmdkW，与 v136 projPath 同款），:has(>[data-slot=command][cmdk-root]) 只命中 cmdk 弹框——命令中心/任务搜索/快捷指令共用该样式常量一并放宽，设置页等普通 Dialog 不受影响 → v159 重启提醒开关（issue #139）：⚙ 插件更新区新增「更新后提醒重启」复选框（zu-restart-notice），经主桥 restart-notice 动作原子写运行时 config.json 的 restart_notice（缺省开、显式 false 才关、异常值不静默）；session-start hook 的 session_notice 读同一键，关闭后每个新会话不再注入 🔴 重启/安装提醒引用块（/install-overlay 命令行输出与自动安装失败、桥补装的故障提示不受控）——工作流模式多会话不再被逐会话植入提醒  → v160 Skill 运行期状态词显示「技能名·执行中」（用户规格，如「查阅·执行中」+计时）：turn-stats runningTool 透出截 160 字的 inputText，overlay 端 zuSkillName 提取 JSON name 字段（正则兜底、控制字符拒绝、超 24 字省略号截断），取不到回退「运行技能中」→ v161 状态条新增「项目累计」格：会话累计右侧渲染本项目（session.project_id）全部会话聚合（含子代理，口径同 session_usage；远端/不在本地库无字段不渲染），⚙ 状态条显示加「项目累计」开关（show.proj，默认开），精简摘要加同款行 → v162 状态词流光（用户规格）：速率 chip 纯状态词态（思考中…/工具动词/技能名·执行中）复刻宿主 .zcode-loading-label 同款流光——subtle→foreground→subtle 渐变 background-clip:text、1.4s 横向扫光、reduced-motion 停用；类名/关键帧自有命名（zu-shimmer/zu-loading-shimmer）不依赖宿主全局类；带 t/s 数值的估算/真实/DB 回退态不含 → v163 会话累计/项目累计 tooltip 增按模型明细行（top 8 按总量降序 + 「另有 N 个模型」，轻量行无 models 字段不显示）→ v164 tooltip 收口（用户规格）：模型明细全量展示去「另有」折叠、总和行置顶、键列自适应宽不换行、时间范围行 sticky 吸底（rt-pin，五个 tooltip 统一）→ v165 模型明细表格化对齐（rt-models display:table，整块共享最宽键列，token/次数列纵向对齐）→ v166 会话累计/项目累计时间范围精确到秒（fmtStartS，用户规格；其余三格保持到分）→ v167 模型行去 rt-atom（Chromium 表格内在宽度在 inline-block 边界断行致数值折行，真实浏览器实测）+ 带 rt-models 的 tooltip 宽度帽放宽 860px（zu-tip-wide，取最宽一行）→ v168 格面计数改 fmt 万/亿口径（用户规格：≥1万 N.NN万、≥1亿 N.NN亿；本轮次/会话轮次/项目会话次/工具总数四处，tooltip 与精简摘要保持原值）→ v169 同容器双条去重（Windows 用户报告：最小化/还原窗口来回切出现两根状态条）——宿主窗口状态切换可能短暂保留旧视图副本/重建编辑框，协调器瞬态出现两实例两根条落进同一张卡；heavy 对账每拍扫描：同卡可见 .zusage-root >1 或两根 body 兜底条矩形重叠过半时，data-zusage-slot 大者 hideBar 让位（对手消失经 track 自动复显；拆分窗格各卡各条不受影响） → v170 tooltip 计数同口径（用户规格）：各 tooltip 标题/规模/工具/请求行与模型行、精简摘要行的次数/轮数/会话数全部走 fmt；子代理明细面板保持原值 → v171 修 issue #147（社区 @Mc-GrowlR 报告并给出方案，Windows 10 + ZCode 3.17.1）：划词 side chat 面板容器无 data-pane-id，被协调器 auto 兜底键当作独立 pane，同窗出现第二条状态条（Radix presence 常驻挂载，面板收起后幽灵 composer 仍持续命中扫描）；窗口存在真实 pane 键时丢弃 auto 键——老宿主全部候选均为 auto（单键）单实例行为不变、shadow/iframe 空文档兜底不受影响 → v172 待重启/待更新改由 ⚙ 齿轮红点提醒（restartNotice 开关改为控制红点；会话内文字重启提醒取消，plugin-updater 推送 markerAt 作红点代际，点进「插件更新」分区记为已查看）+ ⚙ 更新页「重启 ZCode」按钮（二次确认，主进程 relaunch 动作）+ 移除自动安装开关（hook 未注入一律自动装，auto_enabled/INSTALL_MESSAGE 会话出口删除）   // 悬停 ⚙ 面板可见；版本号随代际递增 → v173 强制 K/M/B 单位开关 → v174 辅助对话独立状态条（宿主 tabId 成键 + 实例配额 4+1、桥 scope 精确绑定、确定性统计行按会话根归属）→ v175 辅助对话回答末尾富文本与主分栏同规则（显式本地 scope + isCurrentTurn 活跃轮限定 + --current 的 promptTs 守卫；修宿主 modelDurationMs 只累计高速供应商致占位行永久「生成时长缺失」；富文本收集后统一发起、同 SID 只追活跃轮且 epoch 粘滞防多轮搅动） → v177 review 修复批（10-agent 全量 review 闭环）：双条去重抑制不再被 track 每帧复显打穿（v169 Windows 双条场景实际失效的根因，复显前查 dupSuppress、heavy 每拍重评估解除）；精简下速率 chip 被摘除后子代理明细面板保持原位（不再回落隐藏条内全零 .zu-sub 抢锚钉视口左上角，web v103 同款）；精简短路块恢复 syncTpsChip 数据点 reapply（2976478 挪公共尾部后短路 return 到不了、与 git chip 不对称）；relaunch 无回执 4s 提示主进程可能是旧版需手动完全退出（旧 pollPluginRequests 白名单外动作静默丢弃）；待办红点指纹改分量级比较（更新装完后 latestVersion 分量退出不再误复亮）且 ack 幂等早退前先收敛本窗口红点；cnNum 切换补富文本 unitEpoch 在途竞态守卫（同 forceKmb）；detRootEl 落在宿主 data-session-id 写入窗口期时 heavy 按拍补算自愈；精简说明文案对齐 v147 挂载位（前导区 Git 左侧）→ v179 自动压缩阈值注入：⚙ 开关+模式+数值+状态行（enginePatch 随插件状态回推，__zusagePluginState 种子+拷贝行同 v172 纪律），主进程 engine-patch.cjs 按引擎 SHA256 白名单对 glm/zcode.cjs 打阈值改道补丁（锚点唯一性+use strict 指令位校验 fail-closed，hook 缺席/返回空双兜回 fail-open），阈值 autocompact.json 由引擎 hook 每轮决策 mtime 缓存读取——数值热生效、补丁冷生效（已运行 agent 子进程下个 spawn 起用）；ctx 按钮 hover 面板加「自动压缩 ~X%」行（acInfoText 按标称窗口口径，21K 预留近似还原）；关闭开关=按当前内容反向还原引擎字节；阈值任何形式钳 1% effective 地板防连环压缩→rapid-refill 熔断→ v180 重启按钮错位守卫（issue #158）：主进程 pushPluginState 携带 relaunchSupported 能力标记（与 relaunch 分支同文件、天然同步），浮层缺标记时隐藏按钮并显示「完全退出后重开」指引（syncUpdate + 点击守卫双处）；主进程 pollPluginRequests 白名单外动作兜底回执 unknown action，重启回执明确区分「主进程是旧版本」 → v183 子代理行内实时速率 chip（v4 Agent 行 testid 后缀即 childSessionId、与 v97 槽位键同源：运行期读槽位估算、完成后读泵快照 sub.list 真实加权速率；TPS 十档色；悬停 tooltip） → v184 ⚙ 新增「子代理行内速率」开关（state.show.subRate，zusage3.show 整包持久、默认开；只门控行内展示） → v185 实机修复批+review 修复批：后台子代理在宿主注册表无现成 store（运行期估算自 v97 起从未真正工作）→桥 v2 acquire 访问器按已验证 scope 解析子会话租约（仅 sess_subagent_ 前缀+本地）；tooltip 构建器改收数据包（buildTip(el.__zuT) 约定）；截断改从尾部取（保最新派发 8 个）；SUBRATE_DIAG 提模块级；诊断按 handle 判绑定；实例 dispose 摘行内 chip→ v186 本会话平均 token/s（PR #157 收编）：状态栏完成态主数字改会话加权平均（zusage avg_tps：Σ有效输出÷Σ生成窗口，main_turn 段、不含子代理），「均」前缀+按均值分档，最近一段/最近一轮退 tooltip；速率行/CLI 加「会话均」，精简 chip 同步；updateLive 会话归属取本 pane 行（lastView.session），缺席回退原行为→ v187 补回 v181 工具组状态词（PR #161 合并时 turn-stats runningGroupOf 块与 overlay 消费分支遗漏入库，仅存于运行目录热修副本）：turn-stats 复刻宿主 exploreGroup/executeGroup 合成规则（≥2 连续同类行成组、半截 JSON defer 透明、startedAt 锚定组首行），运行行落组尾时状态词显「查阅·执行中/终端·执行中」替代逐工具动词，计时从组头起算 → v188 自动压缩阈值注入按验收反馈简化：开关默认开（主进程 auto_compact_patch 缺省开、显式 false 关）；UI 只留百分比数值（留空=跟随引擎默认），模式下拉移除（引擎层 enabled:false/tokens/buffer 协议保留兼容，配置文件手写仍生效）；标题改「自动压缩上下文阈值注入/压缩上下文阈值数值」；状态行补 14px 水平内边距与 label 文本对齐 → v189 hover 面板阈值信息行移到「压缩上下文」按钮上方并追加下划线「调整」链接：点击复用 gear.click 完整路径打开 ⚙、切「通用」分区、scrollIntoView(nearest) 定位阈值数值行并高亮 3 秒（.zu-ac-flash，计时器实例级归属 dispose 清理）；info 结构改首文本节点+常驻链接（整行 textContent 覆盖会抹掉链接） → v190 三处验收微调：hover 阈值行 text-align:left（与卡内其它行对齐）；高亮改琥珀左条+淡底（--color-brand 在宿主主题是白色系，outline 描边观感像输入框焦点）；⚙ 注入开关关闭或主进程未加载时数值行整行 hidden → v191 hover 阈值行 token 数改走 fmt()：万/亿/K·M·B 与状态条、tooltip 同一转换链（跟随中文单位开关与强制 KMB 开关，中文至多两位小数去尾零） → v192 hover 阈值行布局：去掉自加 6px 下边距（间距交给宿主 space-y-3 的 12px 节奏，与「平均缓存命中率」行 pt-3 距分割线一致）；行改 flex 两端对齐，「调整」链接居右 → v193 修 v192 贴按钮：宿主 space-y-3 是 Tailwind v4 :where() 零权重 margin-bottom，行上自写 margin 会按类名权重压掉它（v190 的 6px 显挤、v192 的 margin:0 贴紧同因）——删掉 margin 声明整段回落容器原生 12px 节奏 → v194 阈值百分比改总窗口口径+数值行 30-99 校验：设置 91=原生按钮走到 91% 触发、hover 显示 91%（旧口径按扣除 21K 输出预留后的有效窗口算，设置值与显示差约 2 个点被判为割裂）；引擎 hook 以 eff+21K 近似还原标称窗口并钳在 eff 内，writeConfig 白名单收紧 30-99，已打补丁引擎下次启动按 PROLOGUE_V1 原位换装新 hook；⚙ 数值超范围实时提示并拒绝提交 → v195 hover 卡新增新手说明行：阈值行下方小字（.zu-ac-hint，随行同生命周期）解释口径与后果——「按窗口总量计算（与顶部百分比同口径）；走到该比例时客户端会自动压缩较早的对话内容以腾出空间」；margin-top 收紧 space-y 间距（space-y v4 只写 margin-bottom，top 无冲突） → v196 「调整」失灵诊断面包屑（下版移除）：openAcThresholdSettings 在 enter/after-gear/+150ms/row 各点写 __zusageDiag.acOpen（面板态、gear 可见性、条 display、分区、代际），closeSettings 写 acClose 调用者栈；v197 实证 acOpen 为空=点击未到达处理函数 → v198 修「调整」失灵：链接监听改 pointerdown（宿主疑似 mousedown 即关 hover 卡、click 到来前链接已被摘）+ 行级 click 兜底 + 捕获期点击写 localStorage 并在说明行回显（命中标绿/落空标红，诊断下版移除） → v199 清理 v196-v198 诊断：acOpen/acClose/acClick 面包屑、localStorage 回显、命中/落空着色全摘；保留 v198 修复本体（pointerdown 主监听 + 行级 click 委托兜底），实机验收=电脑操作点击「调整」面板弹出且阈值行琥珀高亮 → v200 上下文按钮增强显示层优先镜像原生 aria-label 已用/总量（宿主 taskUsage，压缩后立即回落；issue #172 曾停在 DB 最近完成请求旧值 16.4%），解析不出回退 lastBand DB 口径（ctxOv/nativeCtxVal 优先级只作用兜底），exc 过程态档位仍优先，还原路径共用同一解析器（英文 UI restore 顺带修对） → v201 合流：v200 撞号顺延（v200 已被并行线 issue #174 压缩按钮开关占用，8e6e1c0 先合入） → v202 预估费用行：四格 tooltip（本轮/会话/项目/今日）按 models.dev 官方牌价估算费用（token_pricing.py 内置表 326 条 + serve 内 12h 同步 models.dev 与 er-api 汇率，pricing-cache.json 落盘），快照加 cost_usd（USD）与 fx，展示层 ×汇率显 ¥（无汇率降级 $），会话/项目模型明细行尾加各模型费用，「价格来源 models.dev」脚注可点（openExternal），费用行尾空心问号图标悬停弹说明小气泡（价格来源/计算公式/汇率来源三行，fxTip 独立浮层 + mouseover/out 委托 + 180ms 悬停桥，主 tip 收起/重建时同步收），汇率源主源失败兜底 exchangerate.fun（自定义 fx.url 不启用），⚙ 通用区开关默认开，本库口径：裸输入=input−cache_read−cache_creation 全价、缓存分价、output 已含思考不另计 → v203 红点仅承载待重启（发现新版未安装、更新成功且已热重载均不亮；分量级已读比较保留以兼容旧 seen 串）+ ⚙ 带待重启红点点击直接落「插件更新」分区（激活即 ack）+ 设置页新增「已更新成功，点击重启 ZCode 即可生效」提示条（旧主进程降级回原文字指引），分区切换提取 activateSettingsSec 单一出口 → v209 额度 chip .zu-quota 与重置卡徽标 .zu-ctxrst 左右内边距 6px→3px + 模型选择触发按钮（chat-model-select-trigger）左内边距减半：文本态 8→4px、图标态 6→3px（!important 压宿主 group 变体）（用户规格 2026-11-02） → v210 时间范围行全部精确到秒（v166 会话/项目累计先行的 fmtStartS 扩展到本轮/今日合计与速率 tooltip 最近一段；fmtStart 仅剩「最后活动」行）（用户规格 2026-11-02） → v211 本轮 tooltip「单次耗时/首字延迟」改「平均耗时/平均延迟」（zusage 快照 last_turn 新增 avg_duration_ms/avg_ttft_ms，对 model_usage 该轮已完成 main_turn 行 >0 样本求均值；turn_usage.ttft_ms 聚合列实测口径不明不可依赖，旧快照缺字段整行不渲染）+ 本轮格面移除时长/首字两段（耗时只在 tooltip），精简摘要「本轮」行时长随同改平均（用户规格 2026-11-02） → v212 Git chip 分隔符 .zu-git-sep 间距收紧：字面「 · 」改纯点+左右 2px 内边距（多仓段与 ?N 未跟踪段两处同源；用户规格 2026-11-02） → v213 状态条格序调整：今日合计提前到会话累计之后（速度→本轮→会话→今日→项目→工具→子代理→⚙），速率 tooltip「状态条摘要」行序随同对齐（用户规格 2026-11-02） → v214 项目累计统计卡改版：tooltip 重构为「标题+统计范围（全部请求·含子代理）、总用量/请求次数/预估费用三 KPI（费用旁统一说明问号）、输入(命中率)/输出(含思考)/缓存写入明细、会话·轮·工具·重试规模行、模型四列表格（默认 6 项可展开全部，排序对副本）、时间范围（em dash）」，作用域 .zu-project-tip + :has 样式（不动共享 .tip/.rt-* 规则），展开态实例级归属键（sid:started）局部更新不重建整卡，触发项 zu-pj-item 标记，卡片内 Escape 关闭并归还焦点，focusout 进卡片不误关，positionTip 钳底边，费用全链复用 v202（0 有效/缺失 —/开关关整格收） → v215 六统计卡统计卡化：本轮/会话累计/今日合计/子代理四格 tooltip 统一 zu-stat-tip 视觉体系（速度统计卡公共构造：scope 标签+双读数 hero 主读数档位色、两行五列网格窄窗重排、速度卡宽帽 760px :has 作用域；明细面板内模型行问号图标弹费用说明气泡，复用 fxTip 单例同款委托）（用户规格 2026-11-02） → v215.1 速度卡去费用行与模型明细（用户规格：速度 tooltip 只留读数与时间范围，费用唯一承接处=各卡明细面板与 fxTip 气泡） → v217 子代理统一浮层：.zu-sub-pop 双栏单组件替代「悬停五段卡 tooltip+点击独立明细面板」两套旧 UI（preview/pinned 状态机：悬停预览、首次点击固定、面板内操作转固定、Escape/关闭/外点统一收且焦点归还+500ms 悬停抑制；选中按 sid 维护、运行中未入库槽位进导航、签名幂等重建保滚动、会话切换即关、入口断连即关；任务页 _sub_item 逐任务模型用量表/预估费用/平均速率档色行/最后活动全格式时间，zusage sub.list 单项同步扩展；精简入口 chip.__zuOpenSub 归一指向同一浮层）（实机验收 2026-11-03） → v218 速度卡三修（实机反馈）：悬停冻结 updateLive tipFor 判定改 contains（旧恒 false 致悬停中 tooltip 不冻结）；右格「最近一段」改读 lastView.last.tps（zuBarSpeedView 无 latest 字段恒缺）；图例 ≥2000 Ultra 改渐变圆点并禁 ✦ 伪元素（星点破形） → v219 ⚙「状态条样式」（默认/药丸/精简单选+精简说明行）从「通用」分区移入「状态条显示」分区卡首，纯分区归属调整，控件与持久化行为不变 → v222 速度卡 tooltip 补「时间范围」行（用户规格，参考四格 tooltip 同款式）：主数字为会话均/桥态取会话累计口径（started→last_at，与会话累计 tooltip 同源），「最近一段」回退态保持段范围；起点缺失整行不渲染（半程范围无意义）；三处 speedCardHTML 调用点（桥态 buildLiveTip/DB 回退/精简 chip）同批生效 → v223 ⚙ 面板关闭按钮命中区外扩（原并行线编号 v220，合入顺延；::after inset:-6px、hover 反馈同步，约 20×24px→32×36px）：按钮四周 head 空白点击原本无反应，用户实测「悬停 × 上点不动、不灵敏」；CDP 真实点击定责为命中区过小（事件链与面板几何均无缺陷），纯命中区修复，不改布局与视觉 → v224 速度卡悬停实时刷新二次修复（实机反馈）：v218 只改了 tipFor 判定，新 tip 串仍写到格内 .zu-live span，而 __tip 宿主与 drawTip 读取都在 .it 格元素上——条件每 tick 命中、重画的仍是整条渲染时的旧串，悬停中「当前读数」冻结在最后一次整条渲染的值（chip 已跳动、tooltip 停在「思考中…2秒」）；改写回格元素（liveEl.closest(".it")），悬停中每 tick 跟手重画，未悬停也保持新鲜 → v225（v224 并行线 PR #198 先合入，本线顺延）⚙ 自动压缩状态行区分「引擎被单独热更」（issue #191）：桌面 build 已登记而引擎 sha 脱钩时明示热更事实与漂移 sha 前 12 位（引擎补丁新增 drifted 字段，主进程传入 appVersion 按点分界前缀匹配登记表），替代误导性的"版本不在支持名单"；lastError 后缀此时与 sha 重复不再拼接；fail-closed 判定不变 → v226 ⚙ 两项（用户需求 2026-11-03；v226 已被并行线自动压缩状态行占用，顺延）：①六格显示开关（本轮/会话累计/项目累计/工具调用/今日合计/子代理）全部关闭时样式自动转精简（边缘触发只在「变得全关」那一拍切档，zusage3.autoCompact 记录来源主题 default|pill，重开任一格恢复、面板手动改档即解除；药丸来源同样触发）②默认样式新增「水平对齐」三选一（zusage3.barJust：均分 space-between 缺省不挂类/居左 flex-start/居右——居右不用字面 flex-end，LTR 下 start 侧溢出不可滚动也不计入 scrollWidth 会废掉收缩检测与 .zu-clip 渐隐，改首格 margin-left:auto 等效右聚拢、溢出方向与兜底不变；设置块仅默认档显示，applyBarTheme 随档显隐并同步条上 zu-just-* 类） → v227 预估费用说明气泡悬停保活（fxTip 是 body 级独立浮层、挂在主 tip 之外：指针从 ? 图标移入气泡被文档 mousemove「条外」分支按 left-bar 强制收主 tip、hideTip 同步收气泡，v202 起悬停说明气泡即灭；子代理浮层路径同被 preview-leave 倒计时收走面板。mousemove 处理器节流前新增分支：fxTip 显示中且目标在气泡内视同仍在 tooltip 上——保住主 tip 与气泡、取消越顶宽限与子代理面板延迟关闭，离开气泡回落原判定） → v228 速度 chip 完成态去「· 近X」尾缀（用户规格；编号顺延避让已合并的 v226(PR #200)与 v227(PR #202 fx-tip-keepalive)）：条面格与精简 chip 同批去掉 dbTps 尾缀，主数字只显会话均（或最近一段）；「最近一段」读数保留在 tooltip 右格不受影响 → v230 压缩轮不再显示「本轮统计不可用」（编号顺延：原 v238 号，v229 已由并行合入的 PR #207 占用、v231 起由并行未合线自占）：上下文压缩（手动/自动同链）是 query_source='compact' 的辅助轮（DB 有完整数字且已计入今日/会话累计，但消息流无正文、header 零输出），旧逻辑按 v74 零输出明示规则误插误导占位——实测压缩轮投影=turnHeader+timelineMarker(marker.type='compact') 而 header.executionKind 恒 'agent'（ek 探针证伪初版假设），turn-stats get() 以 isCompact 识别，overlay 对压缩完成轮不新插/撤下已插行（宿主「上下文已压缩」提示已承载语义）；kinds/tmr 为 det 诊断字段；v74 真实零输出轮行为不变 → v231 统计卡标题拼接名称与垂直居中（用户规格三轮迭代一并入库；编号顺延避让并行已合入的 v229(PR #207, issue #205)——v228 后 overlay 台账实际未占用，按共享代际台账撞号声明让号）：①项目累计卡拼项目名——zusage _project_usage 附 name=启动目录末段（正反斜杠归一，缺目录/旧快照判空不渲染），.zu-pj-pname 字号颜色同规模行 .zu-pj-scale；②会话累计卡拼会话名——快照行 title 三处本就产出，纯渲染端：statHead 加可选第三参仅会话累计卡传、/\s+/g 压空白、缺 title 判空不渲染，.zu-st-name 360px 省略号；③名称与标题垂直居中——标题容器带名称时切 .zu-tt-name（display:flex;align-items:center），行内 baseline/bottom 对齐会被 18px 大字 descent 拖得视觉偏低（实机指认），flex 子项自动块化、省略号仍成立 → v232 速度 tooltip「最近 20 段」柱状图：zusage 快照 session 行新增 speed_segs=最近 ≤20 条已完成 main_turn 有效速度段（_row_gen_ms 窗口与 avg_tps 同款口径、辅助源/子代理/碎段不计，v 保留原始浮点供档位与柱高按原始值判断；speedCardHTML 带 segs 时切「左读数卡+右图表」布局——左卡=当前读数/档位胶囊/加权平均说明，「最近一段」右格由最新柱承载，无 segs 的旧快照/远端旧版保持 v215 原布局），柱顶读数恒一位小数与柱同轴心、最新段加粗，Y 轴 0 起整洁刻度并按「信息卡横向覆盖最右约 1/3 柱」约束迭代刻度保证最高柱读数不被压住，X 轴=分段真实完成时间本地时区 MM-DD HH:mm 稀疏显示、首末恒留，最新段描边高亮+「最新」徽标，柱体颜色沿用 TPS_BANDS 档位类（ultra 渐变深浅主题显式 border-box 覆盖防 clip:text 裁没），段值 ≥1000 t/s（读数 6 字符）或窄窗口（plot min-width+横滚）保读数永不重叠；柱级悬停/键盘焦点弹信息卡——tip 本体委托 + 实例闭包存悬停段下标经 speedTipRebuild 编进串（签名幂等重建不丢状态、离开回落最新段、会话切换重置），render 接管对速度格补 drawTip 使打开中随快照跟手（焦点/选区在 tip 内时跳过），图表横滚位置跨重建保留；精简 chip tooltip 不带图表 → v233 速度卡三删+读数自适应（用户规格）：①删「统计会话全部已完成请求：工具等待不计，不含子代理。」口径行（DB 回退与精简摘要两处，Σ输出÷Σ生成耗时等其余口径保留）；②删柱状图「最新」徽标（最新段描边与加粗读数保留，plot 高 200→184）；③删「每段完成后更新；不足 20 段时显示实际数量。」脚注（live/回退两处）；④左卡「当前读数」估宽分级自适应（超长状态词降字号+允许换行，不再被 156px 左卡裁切；分级实现见同批改动） → v234 柱状图 20 段→14 段、释放空间给左卡（用户规格）：zusage 新常量 _SPEED_SEGS_MAX=14（与 last.tps 回查的 _TPS_LOOKBACK 分离，扫描窗 42 行凑 14 条有效段）+ speedSegsOf 渲染端截 14 + 两处口径行「最近 20 段：…」改 14；左卡 156→300px（内宽 278），主数字删 +12px 覆盖回基础 ui+22 大字，估宽分级阈值重算 ≤7.5/≤11.5、fit2 +6→+10px；plot min-width 600→420（pitch≥30）、wide 780→560、xEvery 估算基数 620→460/最小标签距 44→30（14 柱满宽全显时间标签） → v235 速度 tooltip 多状态结构化重构（用户设计图规格）：zuBarSpeedView 追加结构化字段 kind/statusText/nameText/nameFull/elapsedText/speedValue/speedIsEstimated/speedSource/activeCount/noteText（八类 tool/toolgroup/skill/subagent/thinking/estimate/avg/real，text/cls/phase/band/latest 逐字保留、状态判断不解析文案）；speedCardHTML 新增 o.status 分层左卡模板（zu-sl-status 状态标题+子代理 ×N 徽标 / zu-sl-name 名称两行省略+title 全名 / zu-sl-main 主数值或计时 / zu-sl-unit / zu-sl-note 辅助），数值型走档位色、工具/Skill/思考/子代理保持 dim，o.main 拼装路径为精简 chip 等旧调用方保留；子代理估速前缀 ≈、无效估速显「估算中…」不补 0；buildLiveTip/fallback 传结构化状态，scope 标签按真实状态映射（工具执行中/工具组执行中/Skill 执行中/子代理运行中/思考中/生成中估算/会话平均/本轮真实速度），思考态左卡内嵌脑动效图标；柱状图 14→17 段（_SPEED_SEGS_MAX=17、渲染端截 17、口径行改 17），plot min-width 420→500/wide 560→680/xEvery 基数 460→500/最小标签距 30→29 配平左卡 300→250px → v236 速度 tooltip 三修（用户实机反馈）：①信息卡改为悬停/键盘聚焦柱体时才渲染（默认不再常驻最新段上方，cur 高亮随之仅悬停态、latest 描边保留）；②X 轴时间标签最小距 29→44（17 柱 pitch≈29 必隔列、间距 ×2，修复标签拥挤）；③非 wide 图表删 plot min-width（随容器压缩+稀疏标签兜底），任何窗口宽度不出横向滚动条（wide ≥1000 t/s 保留横滚），速度卡宽帽 860→1040 → v237 修时间标签裁半（用户实机截图）：v236 的 border-box 配平让 X 轴行内容区只剩 20px、两行时间（25px）被 wrap 的 overflow-y:hidden 裁掉半行——X 行 24→29px（4 padding+25 两行）、plot 高 184→189，列配平随之 160+29 → v239 速度 tooltip 100% 复刻设计图（用户拍板以设计图为准，撤销 v233 删口径/v236 悬停才显卡）：信息卡恒在（默认最新段带「（最新）」+虚线引线连柱，悬停切段）、左卡状态图标+「当前读数」标签+档位色状态标题、颜色对照单行横排、统计口径左标题右分段+时间范围同卡、带图表时不渲染脚注 → v240 柱状图 17→10 段（zusage _SPEED_SEGS_MAX=10、渲染端截 10、口径文案同改）、柱宽 max-width 22→15px（-30%）、信息卡恢复仅悬停/聚焦才显示（撤销 v239 常驻）、左卡下半区加「峰值/最低/最新」概览填空、速度卡宽帽 1040→860、plot min-width 500→340 → v241 速度 tooltip 按设计图复刻：柱状图取当前会话最近 10 次（可跨天）、左卡标题行/主读数/说明行文案按设计图对齐（工具组「查阅」、Skill「执行中」、说明行统一「X · 正在执行」）、前缀「估/均」小号灰字、主体区垂直居中填空 → v242 速度 tooltip review 修复批（十 subagent 审查）：focusout/mouseout relatedTarget 守卫修 Tab 跨柱焦点断裂与双重建闪烁、render 接管 pill 主题补焦点守卫、wide 横滚复活（plot 420）、spanFrom 收严最坏一半 + CARD_H 36（实高 35.6 校准）、real 去档位胶囊、skill 标题统一无空格「·执行中」、工具组 statusText 回归完整短语、liveScopeMap real/estimate 用词对齐、「当前读数」标签与有效数值同门（修 subagent 数值误杀回归）、左卡 border-box 250/双规则合并/padding 12、标题档位色与单行省略、浅色 ultra 图例圆点 clip 修正、hero :has 单列、柱 role=img、17 段/常驻卡/帽 1040 等过期注释清理、测试补八态直调/概览三格/前缀/（最新）角标/图例行/几何不重叠断言 → v243 更新日志「发布页」链接 GitCode 渠道改指 /releases 列表页（tag 深链页对本项目 API 创建的 Release 一律「找不到或无权限」，GitCode 平台路由 bug 2026-11-04 实测；GitHub 渠道保持精确 tag 深链；镜像/未核实回退路径同规） → v244 重启按钮反馈与延迟（用户报告「点击没反应、等很久才退出」——大头是宿主 app.quit 优雅退出链要关窗并逐个终止会话/扩展子进程，可达数十秒，插件无法绕过）：确认发送即「正在重启…」+禁用+预期文案替代「发出即恢复」伪装无反应，4s 无回执/失败/90s 仍存活三路还原（ok 后挂 90s 兜底防 quit 被会话/扩展阻止永久卡死；4s 超时已还原则不再挂）；syncUpdate 重绘保持禁用与提示；主进程 relaunch 固定 300ms 延迟改回执送达后 30ms 退出（800ms 渲染端无响应硬兜底）；v245（同批提交）quit 前 hide 全部窗口——退出屏障期窗口不再可见干等，主进程 15s unhide 哨兵在 quit 未发生时恢复可见 → v246 用户手改批：速度图未悬停（hoverIdx<0）不渲染信息卡、span 只按 capOut 留柱顶读数净空，刻度基数补 6/7.5 防跳档空旷；X 轴同日去重（仅首枚显示标签柱与跨日首柱渲染日期行，其余同日只显 HH:mm）；本轮/今日合计首格改「总用量」、今日缓存命中率并入 grid3 输入列副行、本轮平均耗时/延迟/总耗时行改 --sub 弱化段、会话累计 scale 行分隔符改前缀式并删末项请求数、工具表 <50ms 显「<0.1s」弱化、子代理浮层 KPI 副行改命中率/含思考/缓存写入+平均速率并入 KPI、项目卡范围+scope 合并单胶囊+隐藏「按用量排序」+子代理浮层模型表去底色改行线、本轮输出速度单位 tok/s→t/s、图例 ultra 点隐藏与 inline 间距收紧、tbody scrollbar-gutter:stable → v247 悬浮窗口激活方式（issue 用户反馈：滑过误触遮挡）：⚙ 通用新增「点击激活悬浮窗口」开关（zusage3.tipClick 缺省关=停留 1 秒、仅显式 "1" 开=点击）；统计卡/子代理浮层 closed→open 改由独立 1000ms 定时器承接（排程置于 150ms 节流之前防快速滑入静止后永不触发、按命中元素 key 去重续期、到点按当前坐标 elementFromPoint 重命中抗 render 1.5s 重建 + :hover 最深元素复核），已开 tip 切相邻格保持即时，键盘 focusin 即时打开不变，取消统一落 hideTip/各 return 分支，定时器随 dispose 清理；点击模式 bar.click 接管 .it 并用 focusTipAt 避开 focusin→click 首击抵消（复用移出条面/Escape 关闭链，不另起 pin），fxTip/速度信息卡/工具栏 chip 与宿主原生 hover-card 不在本次范围→ v248 预估费用说明气泡「当前模型」随卡携带模型上下文（上一会话已完成、已部署未提交，与已合入的 v249（PR #224）并行开发，随本批补录入库）：四个统计卡与子代理浮层汇总的 KPI 费用问号随卡携带模型上下文（fxqIcon：data-model/data-rates=按用量最多模型+data-mcount+data-mscope），单模型显该模型四价、多模型沿项目卡口径显「计价范围」、无模型明细不显模型行，default 借 last 分支删除 → v249 用户裁定简化：「点击激活悬浮窗口」关闭（缺省）不再做停留 1 秒，恢复即时悬停原语义（v247 的 1000ms 定时器链 HOVER_OPEN_DELAY_MS/hoverSchedule/hoverCheck/hoverCancel 整体移除，mousemove 恢复 v246 逐行为）；开关开启仍为点击激活（bar.click 接管 .it + focusTipAt 防首击抵消、子代理 preview 关闭改 pinned 打开），设置项/文档口径同步为「悬停立即显示 ↔ 点击才打开」两态 → v250 速度柱状图按轮聚合+悬停卡全格式时间与轮明细+柱间距收紧（用户三项规格；编号顺延避让已合入的 v249「点击激活简化」PR #224）：zusage _speed_segments 改按 turn_id 合并一次提问的全部请求（v=Σ有效输出÷Σ生成窗口、逐问同口径），随段携带 m/i/o/n/c 供悬停信息卡渲染 模型/Token 用量（含输入·输出拆分）/请求次数/预估费用（数字格式化经 o.fmtTok/fmtCnt/fmtMoney 回调，费用随 state.cost 门控，旧快照缺字段按行省略，CARD_H 按实际明细行数校准）；悬停卡时间改全格式 yyyy-MM-dd HH:mm:ss；X 轴每个显示标签恒带月日两行（同日去重废止）；柱宽 calc(20%+12px) 使柱白任意宽度恒精确收紧 20%；段→轮措辞（最近 N 轮/第 N 轮） → v251 套餐额度显示口径开关（⚙ 套餐额度分区「显示剩余额度」，zusage3.quotaRemain 缺省关=已用%，纯渲染偏好不进 config.json）：开启后 chip 面分段数字与 aria、tooltip 窗口行/Key 总额度行/其他源摘要行改按剩余%（100−已用 同一窗口池补数，quotaRemainPct 钳 [0,100]）打头，绝对值窗口行内 已用/剩余 明细互换顺序；档位色恒按已用原始值判定（quota.md 契约）不随口径反转；余额/Key 剩余额度单段与团队/未配置/错误形态不受影响 → v252 模型拉取同步提供商侧配置（issue #236）：零兄弟供应商首拉写实最小骨架+有据元数据（contextWindow/inputFormat/档位/输出上限），档位按强度梯排序（宿主默认档=values 末项），Copilot capabilities 别名，api.json 档位目录按需后台补缺（大体量不阻塞，缓存后下次拉取生效），套餐源接目录补缺；弹窗行「未获取配置」中性提示+脚注披露只增不覆盖；档位索引落运行目录缓存（24h stale-while-revalidate 跨重启复用），目录后台补拉时行内「档位补拉中…」状态+脚注说明 → v253 本轮/今日合计 tooltip 模型明细改项目卡式四列表格（zu-pj-mhead+statTable，费用列随 state.cost 门控；本轮 rt-models 行式退役，精简摘要保留）+ 本轮 tooltip 删「速度＝Σ…未参与测速」口径行（unrated_output 字段照旧生产） → v254 生成速度 Tooltip 全面重构（范围/时间双 Tab 共 20 组合 + 按时间/会话/项目维度：zusage 新增真实库有界轮表 speed_history（短键+索引表+2s 缓存，单一 Σ有效输出÷Σ生成窗口口径，旧 speed_segs 契约不动），渲染端纯函数聚合；16 根细柱定宽居中、十档 TPS_BANDS 同源、删除均值虚线/统计口径大段/底部时间行/图表预览；右上角日历时间胶囊（title 全格式）、左卡历史均值与生成中估算分离、柱 hover 五字段自定义卡（时间区间/档位速度/多模型/Token 总量含输入输出/预估费用缺失态）、单行十档图例、空桶显空柱不显 0、远端身份下「全部」清晰降级、旧快照/精简 chip 回退原布局；Tab/dim/柱 hover 全走 tip 本体既有事件委托与签名幂等重建，不新增 IPC/定时器/全局监听） → v255 真实宿主验收三修（X 轴短时分标签+30px 裁切杜绝长时间戳重叠、左卡实时状态降为独立 note 且标题中性化「当前筛选 · 历史统计」避免工具执行中配历史均值语义错位、V2 实时状态变量更名 spdLiveStatus 与 buildLiveTip 旧局部同名隔离） → v256 修复「速度 Tooltip 有时新、有时旧」（用户实机报告）：根因=统一轮表只在 serve 常驻链产出，主进程常驻进程空闲回收/重启/降级时回退 zusage.py json 一次性帧缺 speed_history，spdRebuildOr 返回 null 整卡回退旧版；①zusage snapshot 增显式 include_speed_history 门控，serve 与桌面 json 都产出轮表（远端子进程 ZUSAGE_REMOTE_CHILD=1 排除，CLI/MCP/远端 stdout 契约不变）；②overlay __zusageUpdate 粘性保留最近一份有界轮表，缺字段帧不再闪回旧卡（空轮表不粘性）；③精简模式 tpsChipTipHTML 与 tpsTip 浮层补齐 V2 接线（双 Tab/维度/柱 hover 全走浮层本体委托、状态落 chip 数据包、V2 卡放行签名重建），V2 宽帽规则补 .zusage-tps-tip 宿主；冷文件 inject-main 未改，热重载即生效 → v257 追堵「首帧缺轮表」（用户 11:21 再现旧卡，渲染端 diag 实证已 v256）：v256 粘性只在代际内有效，热重载/重启后的新代际粘性为空，而 `_speed_history_safe` 在完成轮瞬间的 WAL 写窗口偶发抛错返回 None——首帧恰逢失败时无值可粘，仍回退旧卡。①safe 失败先短重试一次（50ms，新常驻进程首查撞写窗口时多半已放行；缓存 TTL 内不重扫），再失败跨 dbkey 回退最近一次成功轮表（`_SPEED_HISTORY_STALE_MS` 10 分钟上限，轮表是历史统计分钟级陈旧可接受，下一帧成功即覆盖）；②`__zusageUpdate` 帧级诊断 `FATAL.spdFrame`（has/sticky/turns，原地更新）——再出现象 diag 直接区分「数据链缺帧」与「粘性未建立」，不再靠截图反推 → v258 spdTip 取证诊断（用户 11:37 在 v257+首帧 has=1 下仍见旧卡，数据/代码/本地模拟三查均无异常，纯推理到头）：buildLiveTip/html(d)/tpsChipTipHTML 三条速度 tooltip 路径在 V2 成功时记 `FATAL.spdTip={t,src:"v2-live|v2-html|v2-chip",turns}`、回退时记 `{src:"fb-live|fb-html|fb-chip",turns,range,period,sid尾8}`，spdRebuildOr null 分支加 `FATAL.spdNull`（typeof FATAL 守卫不破坏 VM 切片）——diag 直接给出真实路径与当时轮表长度，定位后移除 → v259 宿主多视图顶部 48px [app-region:drag] 标题栏拖拽条穿透上层浮层（Electron 拖拽区按几何命中，覆盖层未显式 no-drag 不阻挡）：面板 top:8px 时头部 ✕ 落在条内，真实点击被窗口拖拽吞掉（新建任务页实报「设置关闭无效」，面板内导航点击正常与症状吻合）；.zusage-panel（设置+子代理浮层）/.tip（全部 tooltip 根）/.zu-mp-ov/.zu-compact-dlg 显式 -webkit-app-region:no-drag，把自身矩形从拖拽区减掉（宿主自家浮层与全屏屏障同款修法，app.asar 实证） → v260 静态桥缺席兜底（同内容仓库版记 v258，合入时按合入顺序归一；G2 跨版本免重打桥）：readFiberPaneScope 沿 React fiber 回溯 SessionPane 作用域（detOwnerOf/sidePaneKeyOf 的 tabId 同款兜底；限深 24、撞外层会话/分栏根止步、多候选歧义拒绝，校验与静态属性分支同规）；turn-stats.js 运行时合成 BRIDGE_TEMPLATE v2 同契约三访问器（Map.prototype 一次性探针捕获宿主注册表 + installRuntimeBridge 注入口） → v261 spdRender 取证补强（老会话完成态仍见旧卡而 spdTip 恒被 v2-live 每 tick 覆盖，hover 瞬间的整条渲染记录无法存活）：html(d) 整条渲染专记 `FATAL.spdRender={t,src:v2-html|fb-html,pane,sid尾8,turns,hasH,range,period,dim}`（独立字段不被覆盖），spdTip/spdRender 均带 pane 实例标识（多实例共享 diag 分不清写入者），spdRebuildOr null 分支补 spdNull 原因取证（typeof FATAL 守卫）；本版=运行目录 v260 合流超集基线 + 本诊断（v260 已含速度线全部修复与并行线 v259/v260 桥兜底） → v262 根治「空渲染污染共享数据」（spdRender 铁证定案：用户复现时刻整条渲染 hasH:false / spdNull hType:undefined，而前后帧 has=1——`render(d)` 首行无条件 `state.data = d`，实例 spawn 首渲染/桥空窗的 `render(state.data || {session:{},...})` 把空对象写进共享数据、抹掉统一轮表，窗口内 hover 即 fb-html 旧卡；切会话 tab 触发 pane 重建恰好高频制造该窗口，故「老会话旧卡、新会话正常」）：render 改条件写 `if (d && d.session && d.session.sid) state.data = d`——空对象渲染不再抹掉轮表，spawn 实例后续 updateLive 直接用上一真帧渲染（比旧行为更快出 V2）；真帧写入链（__zusageUpdate 外层）不变 → v263 根治「范围/时间 Tab 点击无效」（用户实报 P0）：①根因=生成中 updateLive 每 100ms 重编 V2 整卡（估算/计时走字让 tipSig 每 tick 变化），mousedown 命中的按钮在 mouseup 前被 innerHTML 替换、click 落到共同祖先 closest(".zu-sv-tab") 为 null；Tab 切换提前到 tip pointerdown 委托（重建窗口前同步生效，click 保留键盘/兜底，同值幂等共存），按下即进 600ms 交互冻结保下拉展开；②updateLive 冻结扩 mouseInBar（悬停保活不整卡重绘，数字冻结在进入时刻，typeof 守卫兼容 VM 切片）；③compact tpsTip 面：Tab 同款 pointerdown（tpsTabActivate）+ showTpsTip 撤销 v255 对 V2 卡的冻结放行（悬停中统一冻结，交互路径清 __zuTipSig 天然放行）；④视觉 12 项（视觉审查 Agent 实测截图清单）：Tab 选中态纯白改柔和强调 rgba(87,200,255,.14)+恒字重 600 防跳动、hover 补背景反馈，左卡删「Σ有效输出 ÷ Σ生成耗时」公式行、标题改弱化「历史统计 · 不含进行中请求」（.zu-sl-title 仅本卡作用域覆写，旧八态卡不动）、主数字 +22px，X 轴跨日首柱两行 MM/DD+HH:mm 且跨日柱稀疏化必显、xEvery 8⇒6 收紧标签间隙，图例 Ultra 补 ✦，维度下拉补 ▾ chevron，标题 +6px/时间胶囊 padding 4px 10px，间距归 8/12 节奏，柱组居中+删 --zu-sv-n 死配置 → v264 第二根因收口（实机点击仍关 tooltip 定案）：tip 内控件点击 ⇒ pointerdown 处理器同步重编 innerHTML ⇒ 被点按钮 detach ⇒ 焦点跌落 body ⇒ focusout(relatedTarget=null) 曾无条件 mouseInBar=false + hideTip(true,"focus-leave") 强制关 tooltip——切换生效了用户也看不见（旧版 click-only 同样中招，这是「Tab 点击无效」体感的第二半）。修复：mouseInBar（指针悬停在条面/tooltip 上）时降级 hideTip(false) 交总闸拦截，指针真正移开由 mousemove 判定；纯键盘 mouseInBar 已 false 维持原强制关。行为级回归：切片派发 focusout 断言悬停中 [false,"focus-leave"]/离场 [true,"focus-leave"] → v265 按下即建总闸（实机第 4 次点击实验定案的第三根因）：tooltip 常经 focusin 打开（点击 .it 聚焦），快速移动/合成指针下 mousemove 采样可能全部被 150ms 节流丢弃、mouseInBar 停留 false，随后一次快照推送的 render-orphan 接管失败即关掉正在交互的 tooltip，点击 Tab 落在消息区；pointerdown 委托开头 mouseInBar=true + cancelTipGrace，「指针按在 tip 内」先于一切判定生效，render-orphan 受总闸拦截，下一 mousemove 重新判定 → v266 render-orphan 悬停保留（第三根因彻底收口）：生成中宿主 phase 切换（思考↔工具↔正文）每次走 render 慢路径整条重建条面，条目结构变化时接管失败曾直接 hideTip(false,"render-orphan")——快速移动/合成指针下 mouseInBar 常 false（mousemove 采样被 150ms 节流丢弃，tooltip 经 focusin 打开），悬停中的 tooltip 随每次 phase 切换闪断、点击 Tab 落在消息区（实机第 4/5 次点击实验定案）。修复：mousemove 处理器开头（节流前）记 lastPt；接管失败时指针仍在 tip 覆盖矩形内则保留旧内容原地显示（不重画、不收），指针一动由 mousemove 重新判定；条外维持原收起 → v267 lastPt typeof 守卫（v266 裸引用打破 overlay-fx-tip-keepalive/overlay-tip-activation 的 mousemove 切片沙箱，与 v265 mouseInBar 同款教训：实例作用域新增变量一律 typeof 守卫或同步补切片夹具） → v268 粘性跨代际（用户实报「速度 tooltips 现在变成老版本了」定案）：v255 粘性是模块级变量，热重载/重启后新代际为 null，新代际首帧恰逢 serve 空闲回收/重启窗口（本地实测 serve pid 数分钟内 8576⇒11362 频繁重启；json 链本地实测 1268 轮/197 会话产出正常）即回退旧卡；修复 = 粘性写 window.__zusageSpdSticky（旧实例不清除、新实例继承，跨热重载/重启持久）+ 四处 V2 消费点（buildLiveTip v2h / html(d) spdRebuildOr / tpsTip 数据包）统一 lastSpeedHistory 兜底——帧缺轮表时以最近一份有界轮表顶上（历史统计分钟级陈旧可接受，v257 同取舍），下一帧成功即覆盖 → v269 lastSpeedHistory typeof 守卫（第三次同款教训：v268 三处裸引用打破 overlay-speed-chart 旧图切片沙箱 3 例——实例/模块新增变量被切片引用必须 typeof 守卫已三令五申） → v270 用户实机验收四修：①「项目」范围按用户口径重定义=全部项目对比（原当前项目与「会话」差异过小，用户实报「应该是取 zcode 所有的项目」；默认维度按项目，dims=[project,time]，不再按 panePid 过滤，切到项目时 session 维度归 project）；②维度切换后 Tab 无效——结合①数据差异过小造成「无反应」假象，随①消除；③右上时间胶囊月日前带年（跨年两端各自带年）；④hover 卡时间行同日区间压缩（右侧只补时分秒）+ zu-sv-twrap 允许换行，长区间不再省略号截断 → v271 点击任意位置关闭根治（用户实报）：tip 内按压后 1.2s 硬保活窗——hideTip 对非 win-leave/escape 的 force 一律降级交总闸（left-bar 命中区边缘误判/焦点跌落/宿主重渲染等任何路径）、focusout 在窗内直接不关；pointerdown 记 lastTipDownAt（typeof 守卫兼容切片）；win-leave（真失焦）与 Escape 保留立即收 → v272 维度切换功能移除（用户裁定）：图表恒按时间聚合——删图表头维度下拉（tip+tpsTip 两处 change 委托、dimSel 拼装、四条 CSS）、speedTabActivate/tpsTabActivate 的 dim 归位规则；「项目」范围恢复当前项目语义（恒时间维度下「全部项目」与「全部」完全等价），标题加「当前项目 ·」前缀；speedSel.dim 结构保留恒 time（会话切换重置兼容） → v273 自适应布局+稀疏可视化+筛选栏重设计（用户 8 张截图 Goal）：①plot 自适应——删 inline 定宽，in-flow spacer（max(240, n*30+12)px）撑宽 + min-width:calc(100% - 30px) 拉满容器，柱组 flex 居中，多桶 spacer 触发横滚，网格/Y 轴/hover 共享同一 plot 坐标系（少柱不再左侧堆积大空白）；②hover 卡锚点改中心相对式 left:calc(50% + off)（plot 宽不再可算）；③today 有效桶 ≤3 且全桶 ≥4 默认聚焦有效时段，图表头「显示完整时间轴/仅显示有记录时段」次级按钮切换（speedSel.focus，切筛选重置，不改统计口径），聚焦带「仅显示有记录时段」提示；④数据覆盖提示 zu-sc-cov：今天「有记录 x/M 小时」、近 7 天「仅 x/7 天有记录」、本月「本月 x/N 天有记录」（分母=已发生时段，不含未来）；⑤筛选工具栏两端对齐——范围组左、时间组右（.zu-sv-time margin-left:auto），删分隔符，与统计卡/图表两缘对齐；⑥左卡精简——删「不含进行中请求」，实时状态并入标题行右侧轻量 zu-sl-sub（不再混入指标间），单柱时峰值/最低/最新 zu-sl-solo 弱化；⑦时间胶囊智能格式——同日「MM/DD HH:MM – HH:MM」、跨日不带年、跨月/跨年两端带年（v270 全带年撤销）；会话切换 speedSel.focus 重置 → v274 完整规格补齐（第二轮 Goal）：①spdChartLayout 统一布局参数入口（colPitch/spacerW/xEvery/valEvery 单处决定）；②柱顶数值稀疏化 valShown——n>8 按 ceil(n/8) 抽稀、首末与悬停柱恒显，16 柱不再数值重叠（hover 卡兜底完整值）；③最新柱 latest 弱化描边；④单点/双点 coverage 追加「暂无足够数据观察趋势」；⑤空态追加「尝试选择更长时间范围」弱化引导；⑥bkeys 截尾仅剩 recent（v273 聚焦改造时已自然移除非 recent 截断，超宽由 spacer 横滚承接不丢桶） → v275 点击偶发关闭+快速切换卡死双修（用户实报）：①tip 原生 pointermove 直接保活（mousemove 处理器 150ms 节流采样盲区让 mouseInBar 停留 false，left-bar 等 force 路径就能关掉交互中 tooltip；pointermove 高频纯赋值绕开节流盲区，总闸始终可靠）；②整卡重编 rAF 合并 scheduleSpeedRebuild——快速来回切 Tab 每次指针按下同步 innerHTML 重建形成重建风暴（卡死体感），同帧多次切换只重建一次，切片沙箱无 rAF 自动退回同步（既有 pointerdown 契约测试不变）；③dispose 取消待合并 rAF；④tipStats.hideSeq 最近 8 次收起原因序列（diag 定性偶发关闭） → v276 撤销 v275 的 rAF 合并（用户实报「会话切到项目卡死」定案）：被遮挡窗口的渲染帧暂停让 rAF 永不执行（本机 ZCode 常被 Chrome/飞书遮挡），切 Tab 排程的重编永不落地、tooltip 僵在旧内容；恢复同步重编（单次 1-3ms 可承受，「重建风暴」为伪问题），保留 v275 的 pointermove 保活与 hideSeq 诊断——遮挡环境一切交互路径必须同步落地 → v277 win-leave 降级可取消宽限（用户实报「点击 tab 仍自动关闭」，hideSeq 铁证 win-leave）：点击 Tab 引发的合成 documentElement mouseleave/瞬态 blur 与真离开在触发点无法区分，tipBoundaryHide 立即 force 关把正常交互打死；降级为 400ms 可取消宽限（cancelTipGrace 共用定时器，pointermove/mousemove 落回即取消），真离开半秒后收；取证 cause 带触发源（blur/edge）与 document.hasFocus 焦点态
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
@@ -2841,6 +5110,8 @@
       livePhaseCur = "", liveIconCur = "bolt",   // v77：当前 chip 阶段与图标（think=思考动效/bolt=闪电）——相位切换需整条重渲染
       tpsChipCache = null, lastView = null,   // v146：精简模式工具行速率 chip 与最近一次 render 会话视图（chip tooltip 摘要数据源）
       speedChartHover = -1, speedTipSess = "", speedTipRebuild = null,   // v232 速度柱状图：悬停段下标（-1=最新段）/归属会话守卫/tip 重建闭包
+      speedSel = { range: "recent", period: "recent", dim: "time" },   // v254 双 Tab + 维度（实例级，会话切换重置）
+      speedInteractAt = 0,   // v254 最近一次 Tab/维度/柱 hover 交互时刻（updateLive 短冻结防打断）
       compactHid = false;   // v156：display:none 是否由精简模式设置（区分初载 none，避免切档前提前露条）
 
     /* ---------- DOM ---------- */
@@ -3211,12 +5482,11 @@
       "min-width:280px;max-width:480px;max-height:72vh;overflow:auto;white-space:normal;z-index:2147483647;" +
       "scrollbar-width:thin;scrollbar-color:var(--color-border,rgba(255,255,255,.14)) transparent}" +
       ".panel.open{display:flex}" +
-      /* v254：宿主多视图顶部有 48px [app-region:drag] 标题栏拖拽条（app.asar 实证，新建任务页无条件）；
+      /* v259：宿主多视图顶部有 48px [app-region:drag] 标题栏拖拽条（app.asar 实证，新建任务页无条件）；
        * Electron 拖拽区按几何命中、穿透上层未显式标注 no-drag 的元素——面板 top:8px 时头部（✕ 关闭钮）
        * 正落在条内，真实点击被窗口拖拽吞掉（「点击关闭无效」）。与宿主自家浮层同款修法：
-       * 浮层根显式 no-drag 把自身矩形从拖拽区减掉（面板/子代理浮层、tooltip、mp 与压缩全屏遮罩、
-       * 超限告警气泡——极矮视口 top clamp 8px 同样落条内）。 */
-      ".zusage-panel,.tip,.zu-mp-ov,.zu-compact-dlg,.zusage-exc{-webkit-app-region:no-drag}" +
+       * 浮层根显式 no-drag 把自身矩形从拖拽区减掉（面板/子代理浮层、tooltip、mp 与压缩全屏遮罩）。 */
+      ".zusage-panel,.tip,.zu-mp-ov,.zu-compact-dlg{-webkit-app-region:no-drag}" +
       ".zu-sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}" +
       ".panel::-webkit-scrollbar{width:8px}" +
       ".panel::-webkit-scrollbar-thumb{background:var(--color-border,rgba(255,255,255,.14));border-radius:999px}" +
@@ -3601,6 +5871,98 @@
       ".zu-legend-dot.zu-ultra{display:none;background:linear-gradient(100deg,#60a5fa 0%,#a78bfa 50%,#c084fc 100%)}" +
       ".zu-legend-dot.zu-ultra::before{content:none}" +
       /* v246 用户规格：图例 Ultra 档只留文字，色点整体隐藏；渐变/clip 规则保留供恢复 */
+      /* ---------- v254 速度 Tooltip 重构样式（仅 .zu-sv-root 作用域，不碰旧图） ---------- */
+      ".zu-sv-root{display:flex;flex-direction:column;gap:0}" +
+      ".zu-sv-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:8px}" +
+      ".zu-sv-title{font-weight:700;font-size:calc(var(--ui-font-size,14px) + 6px);letter-spacing:.2px}" +
+      ".zu-sv-range{display:flex;align-items:center;gap:5px;flex:0 0 auto;max-width:60%;padding:4px 10px;border-radius:999px;" +
+        "background:rgba(255,255,255,.05);border:1px solid var(--color-popover-border,rgba(255,255,255,.14));" +
+        "font-family:var(--font-mono,Consolas,Menlo,monospace);font-variant-numeric:tabular-nums;" +
+        "font-size:calc(var(--ui-font-size,14px) - 2px);color:var(--color-tooltip-tag-foreground,#a6a6a6);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}" +
+      ".zu-light .zu-sv-range{background:rgba(0,0,0,.05)}" +
+      ".zu-sv-range svg{width:14px;height:14px;flex:0 0 auto;opacity:.8}" +
+      ".zu-sv-range span{overflow:hidden;text-overflow:ellipsis}" +
+      ".zu-sv-filter{display:flex;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:8px}" +
+      ".zu-sv-flabel{font-size:calc(var(--ui-font-size,14px) - 3px);color:var(--color-tooltip-tag-foreground,#a6a6a6);flex:0 0 auto}" +
+      ".zu-sv-time{display:flex;align-items:center;gap:6px;margin-left:auto}" +
+      ".zu-sv-tabs{display:flex;flex:0 1 auto;flex-wrap:wrap;gap:2px;padding:2px;border-radius:9px;" +
+        "background:rgba(255,255,255,.045);border:1px solid var(--color-popover-border,rgba(255,255,255,.1))}" +
+      ".zu-light .zu-sv-tabs{background:rgba(0,0,0,.04)}" +
+      ".zu-sv-tab{appearance:none;border:0;background:transparent;color:var(--color-tooltip-tag-foreground,#a6a6a6);" +
+        "font-family:inherit;font-size:calc(var(--ui-font-size,14px) - 2px);line-height:1.4;font-weight:600;padding:6px 10px;border-radius:7px;cursor:pointer;white-space:nowrap}" +
+      ".zu-sv-tab:hover{color:var(--color-foreground,#e9edf4);background:rgba(255,255,255,.06)}" +
+      ".zu-light .zu-sv-tab:hover{background:rgba(0,0,0,.05)}" +
+      /* v263：选中态改柔和强调（宿主 --color-brand 在当前主题解析为近白，直接当底色
+       * 会出大面积纯白块——固定强调色深浅主题都可预期）；字重恒 600 防选中加粗跳动。 */
+      ".zu-sv-tab.on{background:rgba(87,200,255,.14);color:#7fd4ff}" +
+      ".zu-light .zu-sv-tab.on{background:rgba(87,200,255,.16);color:#0b6aa8}" +
+      ".zu-sv-tab:focus-visible{outline:2px solid var(--color-brand,#a3cfff);outline-offset:1px}" +
+      ".zu-sv-notice{flex:0 0 100%;font-size:calc(var(--ui-font-size,14px) - 3px);color:var(--color-tooltip-tag-foreground,#a6a6a6);margin-top:2px}" +
+      /* v274：左卡按内容自然高，不再强制撑满图表高度（§11.2） */
+      ".zu-sv-root .zu-speed-body{gap:12px;align-items:flex-start}" +
+      ".zu-sv-root .zu-sv-left{flex:0 0 236px;gap:0}" +
+      ".zu-sv-root .zu-sv-left .zu-sl-main{font-size:calc(var(--ui-font-size,14px) + 22px)}" +
+      /* v263：左卡标题降为弱化说明（规格「历史统计 · 不含进行中请求」），.zu-sl-title
+       * 是旧卡八态共用类，只在本卡作用域覆写 */
+      ".zu-sv-root .zu-sl-title{font-weight:400;font-size:calc(var(--ui-font-size,14px) - 1px);color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      ".zu-sv-root .zu-sl-sub{margin-left:6px;font-weight:400;font-size:calc(var(--ui-font-size,14px) - 3px);color:var(--color-tooltip-tag-foreground,#a6a6a6);opacity:.85}" +
+      ".zu-sv-root .zu-sv-left .zu-sl-body{justify-content:center}" +
+      ".zu-sv-chart .zu-sc-head{margin-left:30px}" +
+      ".zu-sv-chart .zu-sc-unit{margin-left:6px}" +
+      ".zu-sv-plot{position:relative;height:176px;margin-left:30px;min-width:calc(100% - 30px);width:max-content;max-width:none;box-sizing:content-box}" +
+      ".zu-sv-spacer{display:block;height:0}" +
+      ".zu-sc-cov{font-size:calc(var(--ui-font-size,14px) - 4px);color:var(--color-tooltip-tag-foreground,#a6a6a6);white-space:nowrap}" +
+      ".zu-sv-focus{appearance:none;border:1px solid var(--color-popover-border,rgba(255,255,255,.16));background:transparent;color:var(--color-tooltip-tag-foreground,#a6a6a6);" +
+        "font-family:inherit;font-size:calc(var(--ui-font-size,14px) - 4px);line-height:1.3;padding:2px 8px;border-radius:6px;cursor:pointer;white-space:nowrap}" +
+      ".zu-sv-focus:hover{color:var(--color-foreground,#e9edf4);background:rgba(255,255,255,.06)}" +
+      ".zu-light .zu-sv-focus:hover{background:rgba(0,0,0,.05)}" +
+      ".zu-sv-focus:focus-visible{outline:2px solid var(--color-brand,#a3cfff);outline-offset:1px}" +
+      ".zu-sv-plot .zu-sc-grid{height:148px}" +
+      ".zu-sv-plot .zu-sc-gutter{height:148px}" +
+      ".zu-sv-bars{position:absolute;inset:0;display:flex;align-items:flex-end;justify-content:center;gap:0}" +
+      /* 细柱定宽：少量柱不拉伸、数据多时横滚，柱组居中 */
+      ".zu-sv-bars .zu-sc-col{flex:0 0 30px;height:176px}" +
+      ".zu-sv-bars .zu-sc-vz{height:148px;flex:0 0 148px}" +
+      ".zu-sv-bars .zu-sc-bar{width:14px;max-width:14px}" +
+      ".zu-sv-bars .zu-sc-x{height:28px;flex:0 0 28px;width:30px;max-width:30px;overflow:hidden;" +
+        "justify-content:flex-start;align-items:flex-start;font-size:9px}" +
+      ".zu-sv-bars .zu-sc-x b{display:block;width:100%;overflow:hidden;text-overflow:clip;text-align:center}" +
+      ".zu-sv-bars .zu-sc-col.empty .zu-sc-bar{background:transparent;box-shadow:none}" +
+      ".zu-sv-bars .zu-sc-col.cur .zu-sc-val{font-weight:700}" +
+      ".zu-sv-chart .zu-sc-wrap{overflow-x:auto;overflow-y:hidden}" +
+      ".zu-sv-plot{min-width:300px}" +
+      /* hover 五字段信息卡：默认柱上方，右缘钳边，切柱随整卡重建不闪烁 */
+      ".zu-sv-card-anchor{position:absolute;top:0;z-index:3;pointer-events:none}" +
+      ".zu-sv-card{position:relative;top:2px;width:252px;box-sizing:border-box;" +
+        "background:var(--color-popover,#1c212b);border:1px solid var(--color-popover-border,rgba(255,255,255,.18));" +
+        "border-radius:9px;padding:7px 10px;box-shadow:0 8px 22px rgba(0,0,0,.42);display:flex;flex-direction:column;gap:3px}" +
+      ".zu-light .zu-sv-card{box-shadow:0 8px 22px rgba(15,23,42,.18)}" +
+      ".zu-sv-crow{display:flex;align-items:baseline;justify-content:space-between;gap:8px;font-size:10px;line-height:1.35}" +
+      ".zu-sv-crow>span{flex:0 0 auto;color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      ".zu-sv-crow>b{min-width:0;text-align:right;font-family:var(--font-mono,Consolas,Menlo,monospace);font-variant-numeric:tabular-nums;" +
+        "font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--color-foreground,#e9edf4)}" +
+      ".zu-sv-crow>b small{display:block;font-size:9px;font-weight:400;color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      ".zu-sv-crow>b.zu-sv-twrap{white-space:normal;word-break:break-all;line-height:1.35;text-align:right}" +
+      ".zu-sl-stats.zu-sl-solo{opacity:.55}" +
+      ".zu-sv-cval{font-size:12px!important;font-weight:700!important}" +
+      ".zu-sv-off{opacity:.75}" +
+      ".zu-sv-partial{font-style:normal;font-weight:400;opacity:.75;margin-left:3px}" +
+      ".zu-sv-empty{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:4px 8px;height:176px;color:var(--color-tooltip-tag-foreground,#a6a6a6);" +
+        "font-size:calc(var(--ui-font-size,14px) - 1px)}" +
+      ".zu-sv-empty-hint{font-size:calc(var(--ui-font-size,14px) - 3px);opacity:.8}" +
+      ".zu-sv-bars .zu-sc-col.latest .zu-sc-bar{box-shadow:0 0 0 1.5px var(--color-popover-border,rgba(255,255,255,.28))}" +
+      ".zu-light .zu-sv-bars .zu-sc-col.latest .zu-sc-bar{box-shadow:0 0 0 1.5px rgba(15,23,42,.22)}" +
+      /* 底部单行十档对照：当前档轻描边，窄窗自动换行不溢出 */
+      ".zu-sv-legend{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px;padding-top:8px;" +
+        "border-top:1px solid var(--color-popover-border,rgba(255,255,255,.12))}" +
+      ".zu-sv-legend-t{flex:0 0 auto;font-size:calc(var(--ui-font-size,14px) - 2px);font-weight:600;white-space:nowrap;cursor:help}" +
+      ".zu-sv-legend-items{display:flex;flex:1 1 auto;flex-wrap:wrap;gap:3px 5px;justify-content:flex-end}" +
+      ".zu-sv-li{display:flex;align-items:center;gap:3px;padding:1px 4px;border-radius:7px;border:1px solid transparent}" +
+      ".zu-sv-li.cur{border-color:var(--color-popover-border,rgba(255,255,255,.35));background:rgba(255,255,255,.05)}" +
+      ".zu-light .zu-sv-li.cur{background:rgba(0,0,0,.05)}" +
+      ".zu-sv-li b{font-family:var(--font-mono,Consolas,Menlo,monospace);font-variant-numeric:tabular-nums;" +
+        "font-weight:600;font-size:calc(var(--ui-font-size,14px) - 3px);white-space:nowrap}" +
+      "@media (max-width:780px){.zu-sv-root .zu-sv-left{flex:0 0 190px}.zu-sv-legend-items{justify-content:flex-start}}" +
       /* v232 速度柱状图：左读数卡 + 右「最近 10 段」图表。柱体颜色走档位类 currentColor
        * （与图例色点同套路），其余配色全走语义令牌（浅色自动适配）；plot min-width +
        * 横滚保证窄窗口下柱顶读数永不挤压重叠。 */
@@ -3879,6 +6241,8 @@
         icon: '<line x1="21" x2="14" y1="4" y2="4"/><line x1="10" x2="3" y1="4" y2="4"/><line x1="21" x2="12" y1="12" y2="12"/><line x1="8" x2="3" y1="12" y2="12"/><line x1="21" x2="16" y1="20" y2="20"/><line x1="12" x2="3" y1="20" y2="20"/><line x1="14" x2="14" y1="2" y2="6"/><line x1="8" x2="8" y1="10" y2="14"/><line x1="16" x2="16" y1="18" y2="22"/>' },
       { id: "general", group: "basics", zh: "通用", en: "General",
         icon: '<path d="M4 7h4m5 0h7M4 17h9m5 0h2"/><circle cx="10.5" cy="7" r="2.5"/><circle cx="15.5" cy="17" r="2.5"/>' },
+      { id: "rotator", group: "basics", zh: "状态轮播", en: "Status rotator",
+        icon: '<path d="M12 2v4m0 12v4M4.93 4.93l2.83 2.83m8.48 8.48l2.83 2.83M2 12h4m12 0h4M4.93 19.07l2.83-2.83m8.48-8.48l2.83-2.83"/>' },
       { id: "stats", group: "data", zh: "回答统计", en: "Reply statistics",
         icon: '<path d="M4 4v16h16M8 16v-4m5 4V7m5 9v-6"/>' },
       { id: "quota", group: "data", zh: "套餐额度", en: "Plan quota",
@@ -3962,6 +6326,7 @@
       settingRow('<input type="checkbox" class="zu-cmdk-widen">', L("命令中心加宽", "Wider command center"), L("把宿主 ⌘K 搜索弹框（命令中心、任务搜索等）放宽到窗口宽度的 80%、高度的 80%；小窗口保持原生尺寸。关闭后恢复原生尺寸。默认开启。", "Widens the host ⌘K search dialogs (command center, task search, …) to 80% of the window width and height; small windows keep the native size. Turning it off restores the native size. On by default.")) +
       '<div class="zu-settings-langs"><label><input type="radio" name="zu-lang" value="zh"><span>中文</span></label>' +
       '<label><input type="radio" name="zu-lang" value="en"><span>English</span></label></div></div></section>' +
+      (typeof zuRotatorSectionHtml === "function" ? zuRotatorSectionHtml(secOpen("rotator") === "") : "") +
       '<section class="zu-settings-section" data-sec="stats"' + secOpen("stats") + '><div class="cap">' + L("回答统计", "Reply statistics") + '</div><div class="zu-settings-card">' +
       settingRow('<input type="checkbox" class="zu-rate-line">', L("回答末尾追加统计行", "Append stats to each reply"), L("切换后立即重扫：关闭会撤下插件生成的统计行，开启会补回可用记录。下一次提问沿用该设置；历史正文和已缓存统计行不重算。", "Rescans immediately: off removes plugin-generated lines; on restores available records. Applies to the next prompt; historical text and cached statistics are not recalculated.")) +
       '</div></section>' +
@@ -4028,6 +6393,7 @@
       if (tipClickBox) tipClickBox.checked = !!state.tipClick;
       var qrBox = panel.querySelector(".zu-quota-remain");
       if (qrBox) qrBox.checked = !!state.quotaRemain;
+      if (typeof zuRotatorSyncPanel === "function") zuRotatorSyncPanel(panel);
       syncUpdate();
       panel.querySelector(".zu-settings-body").scrollTop = scrollTop;
       if (panel.setAttribute) panel.setAttribute("aria-label", L("状态条设置", "Status bar settings"));
@@ -4184,6 +6550,66 @@
       }
     });
     /* v214 项目卡展开/收起：局部更新模型区（projTipApplyModels），不整卡重建 */
+    /* v276：整卡重编同步执行——v275 曾用 rAF 合并「重建风暴」，但被遮挡窗口的
+     * 渲染帧暂停会让 rAF 永不执行（本机 ZCode 常被 Chrome/飞书遮挡），切 Tab 后
+     * tooltip 僵在旧内容（用户实报「会话切到项目卡死」）。同步重编单次 1-3ms
+     * 可承受，是被遮挡窗口下唯一可靠路径；连点去抖不再需要。 */
+    var speedRebuildNow = function () {
+      if (tipFor && typeof speedTipRebuild === "function") {
+        tipFor.__tip = speedTipRebuild(speedChartHover, speedSel);
+        drawTip(tipFor, true);
+      }
+    };
+    /* v263：Tab 切换共用函数。生成中 updateLive 每 100ms 重编整卡（估算/计时走字让
+     * tipSig 每 tick 变化 → innerHTML 重建），mousedown 命中的按钮在 mouseup 前被替换，
+     * click 落到共同祖先、closest(".zu-sv-tab") 为 null——用户实报「Tab 点击无效」的根因。
+     * pointerdown 在重建窗口之前同步完成切换（此时按钮节点必然存活）；与 click 委托
+     * 幂等共存（重建未发生时 click 再跑一遍同值切换无害），键盘 Enter 只发 click 走原路径。 */
+    function speedTabActivate(e) {
+      /* v273：聚焦/完整时间轴切换按钮（仅改变展示方式，不改统计口径） */
+      var fb = e.target && e.target.closest && e.target.closest(".zu-sv-focus");
+      if (fb) {
+        e.stopPropagation();
+        speedSel.focus = speedSel.focus === "full" ? "" : "full";
+        speedChartHover = -1; speedInteractAt = Date.now();
+        speedRebuildNow();
+        return true;
+      }
+      var tab = e.target && e.target.closest && e.target.closest(".zu-sv-tab");
+      if (!tab) return false;
+      e.stopPropagation();
+      var grp = tab.getAttribute("data-sv-group"), val = tab.getAttribute("data-sv-val");
+      if ((grp === "range" && SPD_RANGES.indexOf(val) >= 0) ||
+          (grp === "period" && SPD_PERIODS.indexOf(val) >= 0)) {
+        speedSel[grp] = val;
+        speedChartHover = -1; speedInteractAt = Date.now();
+        /* v272：维度切换移除，dim 恒 time，无需按范围归位 */
+        speedRebuildNow();
+      }
+      return true;
+    }
+    /* 任何按下交互（含维度 select、柱）都立即进入 600ms 交互冻结：原生下拉展开期间
+     * 页面不收 mousemove，若中途重建整卡会销毁展开中的 select——按下即冻结补住这条缝。 */
+    /* v275：指针在 tip 内的原生 pointermove 直接保活——mousemove 处理器有 150ms
+     * 节流采样盲区，快速移入/静止时 mouseInBar 可能停留 false，left-bar 等 force
+     * 路径就能关掉用户正在交互的 tooltip（用户实报「有时候点击 tab 直接关闭」）；
+     * pointermove 高频纯赋值无开销，绕开节流盲区让总闸始终可靠。 */
+    tip.addEventListener("pointermove", function () {
+      mouseInBar = true;
+      cancelTipGrace();
+    });
+    /* v277：入口活体检查方案下无宽限期，focusin 无需保活（edge 真离开时焦点随走） */
+    tip.addEventListener("pointerdown", function (e) {
+      /* v265：按下即建总闸——快速移动/合成指针下 mousemove 采样可能全部被 150ms
+       * 节流丢弃，mouseInBar 停留 false（tooltip 常经 focusin 打开，不经 mousemove），
+       * 一次快照推送的 render-orphan 就能关掉正在交互的 tooltip，点击落在消息区。
+       * 「指针按在 tip 内」这一事实本身就是最强保活信号，先于一切判定生效。 */
+      mouseInBar = true;
+      cancelTipGrace();
+      lastTipDownAt = Date.now();
+      speedInteractAt = Date.now();
+      speedTabActivate(e);
+    });
     tip.addEventListener("click", function (e) {
       var btn = e.target && e.target.closest && e.target.closest(".zu-pj-more");
       if (btn) {
@@ -4191,6 +6617,10 @@
         projTipExpanded = !projTipExpanded;
         projTipApplyModels(btn);
       }
+      /* v254 速度 Tooltip 双 Tab：事件委托挂 tip 本体，改实例闭包选择后经
+       * speedTipRebuild 整卡重编（签名幂等），旧 hover 卡随筛选切换自动收起。
+       * v263：鼠标路径已提前到 pointerdown（见上），此处保留键盘 Enter 与兜底。 */
+      speedTabActivate(e);
     });
     /* 项目卡内部 Escape：先收费用说明（fxTip），否则关卡；关闭后焦点归还仍存活的触发项 */
     tip.addEventListener("keydown", function (e) {
@@ -4215,9 +6645,9 @@
       if (idx === speedChartHover) return;
       var hadFocus = tip.contains(document.activeElement) &&
         document.activeElement.closest && document.activeElement.closest(".zu-sc-col");
-      speedChartHover = idx;
+      speedChartHover = idx; speedInteractAt = Date.now();
       if (tipFor && typeof speedTipRebuild === "function") {
-        var t2 = speedTipRebuild();
+        var t2 = speedTipRebuild(speedChartHover, speedSel);
         if (t2 && tipFor.__tip !== undefined) {
           tipFor.__tip = t2;
           drawTip(tipFor, true);
@@ -4666,7 +7096,12 @@
       var segs = speedSegsOf(lastView && lastView.session);
       var hasChart = !!(segs && segs.length);
       var segSess = (lastView && lastView.session && lastView.session.sid) || "";
-      if (speedTipSess !== segSess) { speedTipSess = segSess; speedChartHover = -1; }   // 会话切换：v240 起回未悬停（无信息卡）
+      if (speedTipSess !== segSess) {   // 会话切换：v240 起回未悬停；v254 筛选态一并复位，不串上一 pane 的选择
+        speedTipSess = segSess; speedChartHover = -1;
+        if (typeof speedSel !== "undefined" && speedSel) {
+          speedSel.range = "recent"; speedSel.period = "recent"; speedSel.dim = "time"; speedSel.focus = "";
+        }
+      }
       /* v218 修复：zuBarSpeedView 从不返回 latest 字段，右格恒缺（用户实测「缺少最近
        * 一段的生成速度」）。改取泵快照最近一段真实值（last.tps，与 fallback 完成态
        * 右格同口径、同文案「最近一段」）。v232：有图表时该读数由最新柱承载。 */
@@ -4767,11 +7202,32 @@
       };
       /* v232：柱级悬停/焦点改悬停段下标后经此闭包整卡重建（串里已带 cur/信息卡状态，
        * 与 updateLive 每写回 __tip 的链路同源；下一 tick 的 buildLiveTip 会覆盖闭包）。 */
-      speedTipRebuild = function () {
-        opts.segsHover = speedChartHover;
-        return '\x01' + speedCardHTML(opts) + extraHtml() + '</div>';
-      };
-      return speedTipRebuild();
+      var v2selL = (typeof speedSel !== "undefined" && speedSel) ? speedSel
+        : { range: "recent", period: "recent", dim: "time" };
+      /* v268：帧缺轮表（serve 重启窗口）时以粘性兜底，杜绝 V2↔旧版闪回 */
+      var v2h = (state.data && state.data.speed_history) ||
+        (typeof lastSpeedHistory !== "undefined" && lastSpeedHistory) || null;
+      var v2sess = (lastView && lastView.session) || {};
+      speedTipRebuild = (typeof spdRebuildOr === "function"
+        ? spdRebuildOr(v2h, v2selL, speedChartHover, speedView,
+          { fmtTok: fmt, fmtCnt: countFmt, fmtMoney: state.cost ? fmtMoney : null }, v2sess) : null);
+      /* v258 帧级诊断：V2 成功/回退各记一条 spdTip——再出现「样式变回旧版」时 diag 直接
+       * 给出走哪条路径与当时轮表长度，不再靠截图反推。原地更新属性，不替换 FATAL 本体。
+       * v261：spdTip 带 pane 标识（多实例共享 diag，无标识无法分清是哪个实例写的）。 */
+      if (speedTipRebuild) {
+        try { FATAL.spdTip = { t: Date.now(), src: "v2-live", pane: pid,
+          turns: v2h && v2h.turns ? v2h.turns.length : -1 }; } catch (_) { }
+      } else {
+        try { FATAL.spdTip = { t: Date.now(), src: "fb-live", pane: pid,
+          turns: v2h && v2h.turns ? v2h.turns.length : -1,
+          range: v2selL && v2selL.range, period: v2selL && v2selL.period,
+          sid: String((v2sess && v2sess.sid) || "").slice(-8) }; } catch (_) { }
+        speedTipRebuild = function () {
+          opts.segsHover = speedChartHover;
+          return '\x01' + speedCardHTML(opts) + extraHtml() + '</div>';
+        };
+      }
+      return speedTipRebuild(speedChartHover, v2selL);
       function escHtml(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
     }
     /* 行内 SVG 线性图标（v54）：stroke 走 currentColor，颜色由 .ico 控制统一换色 */
@@ -4846,7 +7302,12 @@
         var fbSegs = speedSegsOf(sess);
         var fbHasChart = !!(fbSegs && fbSegs.length);
         var fbSess = sess.sid || "";
-        if (speedTipSess !== fbSess) { speedTipSess = fbSess; speedChartHover = -1; }
+        if (speedTipSess !== fbSess) {
+          speedTipSess = fbSess; speedChartHover = -1;
+          if (typeof speedSel !== "undefined" && speedSel) {
+          speedSel.range = "recent"; speedSel.period = "recent"; speedSel.dim = "time"; speedSel.focus = "";
+        }
+        }
         var fbBasis = sessAvg
           ? [L("Σ输出（含思考）÷ 生成耗时", "Σoutput (thinking incl.) ÷ generation time")]
           : [L("输出 tokens（含思考）÷ 生成耗时", "output tokens (thinking incl.) ÷ generation time")];
@@ -4880,14 +7341,39 @@
           fmtCnt: countFmt,
           fmtMoney: state.cost ? fmtMoney : null   // v250：悬停卡轮明细格式化回调（费用随 state.cost 门控）
         };
-        speedTipRebuild = function () {
-          fbOpts.segsHover = speedChartHover;
-          return "\x01" + speedCardHTML(fbOpts);
-        };
+        /* v254：有统一轮表时整卡改走 V2（筛选/16 柱/五字段 hover），旧快照回退原布局。
+         * 用纯函数桥 spdRebuildOr（切片夹具内也可达）；speedSel 在 VM 夹具里不存在时
+         * 按默认筛选，不影响旧契约断言。 */
+        var v2sel = (typeof speedSel !== "undefined" && speedSel) ? speedSel
+          : { range: "recent", period: "recent", dim: "time" };
+        var v2fn = (typeof spdRebuildOr === "function"
+          ? spdRebuildOr(d.speed_history ||
+            (typeof lastSpeedHistory !== "undefined" && lastSpeedHistory), v2sel, speedChartHover, null,
+            { fmtTok: fmt, fmtCnt: countFmt, fmtMoney: state.cost ? fmtMoney : null }, sess) : null);
+        /* v261：整条渲染专记 spdRender（updateLive 每 tick 的 v2-live 会覆盖 spdTip，
+         * 用户 hover 瞬间的整条渲染记录必须独立存活）；带 pane/会话标识与分支原因。 */
+        var spdSID8 = String(sess.sid || "").slice(-8);
+        if (v2fn) {
+          try { FATAL.spdRender = { t: Date.now(), src: "v2-html", pane: pid, sid: spdSID8,
+            turns: d.speed_history && d.speed_history.turns ? d.speed_history.turns.length : -1,
+            range: v2sel.range, period: v2sel.period, dim: v2sel.dim }; } catch (_) { }
+          speedTipRebuild = v2fn;
+        } else {
+          try { FATAL.spdRender = { t: Date.now(), src: "fb-html", pane: pid, sid: spdSID8,
+            turns: d.speed_history && d.speed_history.turns ? d.speed_history.turns.length : -1,
+            hasH: !!d.speed_history, range: v2sel.range, period: v2sel.period }; } catch (_) { }
+          try { FATAL.spdTip = { t: Date.now(), src: "fb-html", pane: pid,
+            turns: d.speed_history && d.speed_history.turns ? d.speed_history.turns.length : -1,
+            range: v2sel.range, period: v2sel.period, sid: String(sess.sid || "").slice(-8) }; } catch (_) { }
+          speedTipRebuild = function () {
+            fbOpts.segsHover = speedChartHover;
+            return "\x01" + speedCardHTML(fbOpts);
+          };
+        }
         it(ico('<path d="M13.5 2 3.5 13.5H11L10 22l10.5-12H13l.5-8z"/>') +
           (sessAvg ? '<span class="dim">' + L("均", "avg ") + '</span>' : "") +
           '<span class="zu-live ' + tband.cls + '">' + (mainTps % 1 ? mainTps.toFixed(1) : String(mainTps)) + '</span><span class="dim">t/s</span>',   /* v226：去「· 近X」尾缀（用户规格），最近一段只在 tooltip */
-          speedTipRebuild());
+          speedTipRebuild(speedChartHover, v2sel));
       } else {
         liveKindCur = "none";
         livePhaseCur = "";
@@ -5789,7 +8275,17 @@
           liveCell.__tip = tip1;
           var aeDoc = liveCell.ownerDocument;
           var ae = aeDoc ? aeDoc.activeElement : null;
-          if (tipFor === liveCell && !(ae && ae.closest && ae.closest(".zu-sc-col"))) drawTip(liveCell, true);
+          /* v254：V2 双 Tab / 维度下拉 / 柱 hover 交互后短冻结 600ms——updateLive 每
+           * 100ms 重编整卡会打断下拉展开、Tab 点击与柱间平滑切换（焦点不在 tip 内时
+           * 现有守卫不覆盖）。冻结期只保鲜 __tip 不重画，退出后下一 tick 自然跟手。
+           * v263：悬停保活（mouseInBar）同样冻结——生成中估算/思考计时走字让 tipSig
+           * 每 tick 变化、innerHTML 整卡重建，不仅打断交互（Tab 已提前到 pointerdown
+           * 兜底），悬停中整卡每秒重绘也闪烁。指针停在 tooltip 上时数字冻结在进入
+           * 时刻，离开后下一 tick 恢复跟手。 */
+          var v2Freeze = (typeof speedInteractAt !== "undefined" && speedInteractAt &&
+            Date.now() - speedInteractAt < 600) ||
+            (typeof mouseInBar !== "undefined" && mouseInBar);
+          if (tipFor === liveCell && !v2Freeze && !(ae && ae.closest && ae.closest(".zu-sc-col"))) drawTip(liveCell, true);
         }
         return;
       }
@@ -5802,7 +8298,12 @@
     bridgeTick();
 
     function render(d) {
-      state.data = d;
+      /* v262：只有真实快照帧才更新共享数据。空对象兜底渲染（实例 spawn 首渲染/桥空窗的
+       * `render(state.data || {session:{},...})`）若覆盖 state.data，会把统一轮表连同整帧
+       * 抹掉——下一次 hover 的整条渲染读不到 speed_history，走 fb-html 旧版整卡（v261
+       * spdRender 实证 hasH:false，正是「老会话旧卡、新会话正常」的根因）。真帧自有
+       * __zusageUpdate 外层写入，这里条件写只防回退，渲染本身仍按入参 d 照常执行。 */
+      if (d && d.session && d.session.sid) state.data = d;
       var pc = null, p = null;
       if (instSid) {
         /* v61.1 分屏多实例：本条显示哪个会话由 composer 祖先链的 data-session-id 决定
@@ -5950,7 +8451,15 @@
            * 键盘聚焦柱体时一次快照推送就把焦点打回 body(v224 修的是悬停链,此处补齐焦点链) */
           if (!focusInTip && (state.theme === "pill" || document.activeElement === nu || speedFollow)) drawTip(nu, true);
           else positionTip(nu, true);
-        } else hideTip(false, "render-orphan");
+        } else if (lastPt.x >= 0 && (function () {
+          /* v265：接管失败（条目结构随 phase 切换变化）但指针仍悬停在 tooltip 覆盖
+           * 区内——保留旧内容原地显示，指针一动即由 mousemove 重新判定该显示什么；
+           * 此前直接收掉，生成中 phase 切换（思考↔工具↔正文每次整条重建条面）会让
+           * 悬停中的 tooltip 闪断、点击 Tab 落在消息区。 */
+          var tr = tip.getBoundingClientRect();
+          return lastPt.x >= tr.left && lastPt.x <= tr.right && lastPt.y >= tr.top && lastPt.y <= tr.bottom;
+        })()) { positionTip(tipFor, true); }
+        else hideTip(false, "render-orphan");
         /* 接管失败（条目结构变化）也受总闸保护：鼠标仍在条上时保持旧 tooltip，
          * 下一次 mousemove 会重新判定该显示哪一项 */
       }
@@ -5965,9 +8474,12 @@
 
     /* ---------- 自绘 tooltip：向上弹出（原生 title 方向不可控） ---------- */
     var tipFor = null, lastMoveAt = 0, tipSig = "", restoringFocus = false;
+    var lastPt = { x: -1, y: -1 };   // v265：节流前的最近指针位置（接管失败时判指针是否仍在 tip 覆盖区内）
+    var lastTipDownAt = 0;   // v271：最近一次 tip 内按压时刻——按压后 1.2s 硬保活窗
+
     var mouseInBar = false;   // 鼠标是否悬停在条面/tooltip/面板上（最近一次 mousemove 判定）
     var tipGraceTimer = 0;    // 越顶宽限定时器（v46）
-    var tipStats = { mv: 0, shows: 0, hides: 0, last: "", lastHide: "", corridor: 0, grace: 0 };   // 诊断：随 mount diag 回写
+    var tipStats = { mv: 0, shows: 0, hides: 0, last: "", lastHide: "", corridor: 0, grace: 0, hideSeq: [] };   // v275：hideSeq 最近 8 次收起原因（诊断偶发关闭）   // 诊断：随 mount diag 回写
     /* v249 点击激活（zusage3.tipClick，缺省关=即时悬停原语义）：开关开启后悬停不再打开
      * 统计卡/子代理 preview，打开一律走 bar.click；focusTipAt 记录 focusin 刚打开 tooltip
      * 的时刻——点击 .it 会先 focusin 再 click，无此标记首击会被「再点关闭」分支立即抵消。
@@ -5977,6 +8489,13 @@
      * 瞬时不可见判定）都不得隐藏 tooltip——只有鼠标真正离开条面（left-bar，force）
      * 或条面整体隐藏（force）才允许。 */
     function hideTip(force, cause) {
+      /* v271：tip 内按压后 1.2s 硬保活——点击/按压引发的焦点跌落、宿主重渲染、
+       * 命中区边缘误判（left-bar）等任何 force 收起都不得关掉用户正在交互的
+       * tooltip（用户实报「点击 tooltips 中的任何位置都会导致关闭」）；win-leave
+       * （窗口真失焦）与 Escape 例外。typeof 守卫兼容切片沙箱。 */
+      if (force && cause !== "win-leave" && cause !== "escape" &&
+          typeof lastTipDownAt !== "undefined" && lastTipDownAt &&
+          Date.now() - lastTipDownAt < 1200) force = false;
       if (!force && mouseInBar) { tipStats.lastHide = "blocked:" + (cause || "?"); return; }
       if (tipGraceTimer) { clearTimeout(tipGraceTimer); tipGraceTimer = 0; }
       if (tip.style.display !== "none") tip.style.display = "none";
@@ -5986,6 +8505,8 @@
       hideFxTip();   // 主 tooltip 收起时费用说明小气泡必无依附，同步收
       tipStats.hides++;
       tipStats.lastHide = cause || "?";
+      tipStats.hideSeq.push(cause || "?");
+      if (tipStats.hideSeq.length > 8) tipStats.hideSeq.shift();   // v275：诊断偶发关闭
     }
     function positionTip(el, keepTop) {
       var tr = tip.getBoundingClientRect(), ar = el.getBoundingClientRect();
@@ -6064,6 +8585,15 @@
       var next = e.relatedTarget;
       if (next && main.contains(next) && next.closest && next.closest(".it")) return;
       if (next && tip.contains(next)) return;   // v214：焦点进入浮层卡片（项目卡按钮等）不关闭
+      /* v263：tip 内控件（V2 Tab）点击会同步重编整卡 innerHTML，被点按钮 detach 使焦点
+       * 跌落 body——鼠标仍悬停在条面/tooltip 上时这不是「焦点离开」：保住 mouseInBar
+       * 并降级为非 force（总闸拦截），指针真正移开由 mousemove 判定收起。否则点击 Tab
+       * 的瞬间 tooltip 被强制关掉，切换生效了用户也看不见（「Tab 点击无效」的第二根因，
+       * 旧版 click-only 同样中招）。纯键盘（mouseInBar 已 false）维持原强制关闭。 */
+      /* v271：tip 内按压后 1.2s 内的焦点跌落（点击空白聚焦 body）直接不关 */
+      if (typeof lastTipDownAt !== "undefined" && lastTipDownAt &&
+          Date.now() - lastTipDownAt < 1200) return;
+      if (mouseInBar) { hideTip(false, "focus-leave"); return; }
       mouseInBar = false;
       if (tipFor) hideTip(true, "focus-leave");
     });
@@ -6088,6 +8618,7 @@
      * stale() 守卫：热更新后旧实例监听器必须罢工，否则新旧两个 tip 同时工作。 */
     listenGlobal(document, "mousemove", function (e) {
       if (inactive()) return;
+      if (typeof lastPt !== "undefined") { lastPt.x = e.clientX; lastPt.y = e.clientY; }   // v265：节流前记录，供接管失败判定（v267 typeof 守卫兼容 mousemove 切片沙箱）
       var mt = e.target;
       /* v227：预估费用说明小气泡（fxTip，body 级单例）悬停保活。气泡挂在主 tip/subPanel
        * 之外（tip 上方或覆盖其上），指针移入即落进下方「条外」分支被按 left-bar 强制收
@@ -6180,16 +8711,23 @@
      *   · 内部 leave 且退出点在 tip 横向列内（±30px）= 去 tooltip/回条面的穿行 → 400ms
      *     宽限（子上下文区域事件停摆，靠定时器兜底收回；tip/条面/走廊事件会取消它）；
      *   · 内部 leave 列外 = 横向走掉 → 立即收。 */
-    function tipBoundaryHide() {
+    function tipBoundaryHide(src) {
       if (inactive()) return;
+      /* v277 修正（最终）：按压硬保活窗（1.2s）延伸到边界事件入口——点击 Tab 后
+       * 指针在 tooltip 上，点击引发的合成边界事件（win-leave，hideSeq 铁证：
+       * 正常点击被打死）不得关闭进行中的交互；1.2s 外的真离开走原立即关闭
+       * （headless pill 测试的启动期 blur 不受影响，全绿实证）。
+       * v275 的 pointermove 保活仍作为常规移动路径的兜底。 */
+      if (typeof lastTipDownAt !== "undefined" && lastTipDownAt &&
+          Date.now() - lastTipDownAt < 1200) return;
       mouseInBar = false;
-      if (tipFor) hideTip(true, "win-leave");
+      if (tipFor) hideTip(true, "win-leave:" + (src || "?"));
     }
-    listenGlobal(window, "blur", tipBoundaryHide, true);
+    listenGlobal(window, "blur", function () { tipBoundaryHide("blur"); }, true);
     function tipLeaveAt(x, y) {
       if (inactive() || !tipFor) return;
       if (x <= 1 || x >= innerWidth - 2 || y <= 1 || y >= innerHeight - 2) {
-        tipBoundaryHide();
+        tipBoundaryHide("edge");
         return;
       }
       /* 伪边界过滤（v99）：Chrome 在悬停链收缩/重算时会补发 DOM 内部的 mouseleave
@@ -7365,11 +9903,13 @@
       if (tipClickBox) tipClickBox.checked = !!state.tipClick;
       var qrBox = panel.querySelector(".zu-quota-remain");
       if (qrBox) qrBox.checked = !!state.quotaRemain;
+      if (typeof zuRotatorSyncPanel === "function") zuRotatorSyncPanel(panel);
       syncUpdate();
     }
     var relaunchAckTimer = 0;   /* v177：relaunch 回执超时（v244 起主进程回执随投递即返，含 1s 轮询约 1s 量级；超时≈旧主进程） */
     var relaunchAliveTimer = 0; /* v244：ok 回执后 90s 仍存活兜底——防状态机永久卡死；窗口可能已被 v245 hide，主进程 15s unhide 哨兵负责恢复可见 */
     panel.addEventListener("click", function (e) {
+      if (typeof zuRotatorPanelClick === "function" && zuRotatorPanelClick(e, panel)) return;
       var navItem = e.target.closest && e.target.closest(".zu-navitem");
       if (navItem && navItem.getAttribute("data-sec") === "update") ackUpdateDots();   // v172：含已停留时再点
       if (navItem && !navItem.hasAttribute("aria-current")) {
@@ -7581,6 +10121,7 @@
     });
     panel.addEventListener("change", function (e) {
       var t2 = e.target;
+      if (typeof zuRotatorPanelChange === "function" && zuRotatorPanelChange(e, panel)) return;
       if (t2.classList.contains("zu-theme-choice")) {
         if (t2.checked && (t2.value === "default" || t2.value === "pill" || t2.value === "compact")) {
           if (ls(LS.autoCompact, "")) lsSet(LS.autoCompact, "");   // v226：手动改档即解除全关自动精简（无标记不写，保持持久化写面干净）
@@ -8776,6 +11317,16 @@
       var chipSpan = (v.kind === "live" || v.sessAvg)
         ? speedSpan(sess.started, sess.last_at)
         : speedSpan(last.startedAt, last.endedAt);
+      /* v255：精简模式速度 chip 也走 V2 整卡（此前只接了全量状态条两条路径，
+       * compact 下 hover 一直显示旧「统计口径 + 10 根粗柱」）。筛选/悬停状态挂数据包，
+       * tpsTip 浮层委托见模块层；旧快照缺轮表时原样回退旧摘要卡。 */
+      var cv2 = spdRebuildOr(t && t.speedHistory, (t && t.speedSel) ||
+        { range: "recent", period: "recent", dim: "time" },
+        (t && typeof t.speedHover === "number") ? t.speedHover : -1, t && t.speedLive,
+        { fmtTok: fmt, fmtCnt: countFmt, fmtMoney: state.cost ? fmtMoney : null }, sess);
+      if (cv2) return cv2((t && typeof t.speedHover === "number") ? t.speedHover : -1, t.speedSel);
+      try { FATAL.spdTip = { t: Date.now(), src: "fb-chip",
+        turns: t && t.speedHistory && t.speedHistory.turns ? t.speedHistory.turns.length : -1 }; } catch (_) { }
       out += speedCardHTML({
         scope: speedScope,
         main: speedMain,
@@ -8915,7 +11466,14 @@
         chip.innerHTML = '<span class="' + cls + '">' + ttEsc(txt) + "</span>";
         chip.setAttribute("aria-label", L("生成速度 ", "Generation speed ") + txt);
       }
-      chip.__zuT = { v: v, view: lastView, buildTip: tpsChipTipHTML };
+      var prevT = chip.__zuT;
+      chip.__zuT = { v: v, view: lastView, buildTip: tpsChipTipHTML,
+        /* v255：V2 轮表与筛选/悬停状态随 chip 包走，10Hz 心跳不重置用户选择 */
+        speedHistory: (state.data && state.data.speed_history) || (prevT && prevT.speedHistory) ||
+          (typeof lastSpeedHistory !== "undefined" && lastSpeedHistory) || null,
+        speedSel: (prevT && prevT.speedSel) || { range: "recent", period: "recent", dim: "time" },
+        speedHover: prevT && typeof prevT.speedHover === "number" ? prevT.speedHover : -1,
+        speedLive: v.kind === "live" ? v.sv : null };
       var lite = bar.classList.contains("zu-light");
       syncCtxLite(chip, lite);
       chip.classList.toggle("zu-light", lite);   // 速率档色的浅色组按 .zu-light 祖先匹配（条隐藏后祖先缺失，类挂 chip 自身补链）
@@ -10023,7 +12581,10 @@
           cancelGitRefresh();
           instSid = pendingSid;
           scopeStamp = nextScopeStamp;
-          if (state.data) render(state.data);
+          /* v262：state.data 尚未就位（空渲染不再污染共享数据）时也按当前会话空渲染一遍
+           * ——pickedSid/refreshWants（Git 首查路径上报）都依赖 render 跑一遍，旧行为靠
+           * 被污染的 state.data（EMPTY 非 null）侥幸驱动，条件写后必须显式兜住。 */
+          if (state.data || instSid) render(state.data || { session: {}, last_turn: {}, today: {}, context_window: 0 });
           refreshWants();
         }
       }
@@ -10578,6 +13139,7 @@
         }
         return info;
       },
+      rotatorStats: function () { return inactive() ? null : { stats: liveStatsCur, model: quotaModel, provider: quotaProvider, session: lastView && lastView.session }; },
       liveEl: function () { return liveEl; },   // 测试缝：实时段节点引用
       liveIconKind: function () { return liveIconCur; },   // 测试缝：当前 chip 图标（think/bolt/空）
     };

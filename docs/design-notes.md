@@ -14,6 +14,23 @@
 - 子代理任务名 = 派发时 Agent 工具调用的 `description` 参数（与 ZCode 右侧"子智能体目录"面板同源，存 db `part` 表 Agent part 的 `state.input.description`）。与消耗记录的关联：主用**官方回执**——part 完成后 `state.output` 尾部 `agentId: agent_xxx` 行 → 子会话 id `sess_subagent_<agentId>`（客户端硬关联，零歧义）；兜底仅给运行中未出回执的条目：prompt 前缀匹配（子会话 title=prompt 前 57 字+"..."）且候选唯一才绑；配不上的显示线路名，宁无名不错名。
 - 与 ZCode 自带"设置→用量"互补：自带走供应商云端接口（套餐额度/剩余），本工具走本地 db（会话排行/上下文容量/对话内查询）。
 
+### 速度 Tooltip 统一轮表（v254）
+
+生成速度 Tooltip 的 4 范围 × 5 时间组合与按时间/会话/项目三种维度，全部从桌面常驻泵快照的
+顶层 `speed_history` 推导：Python 侧一次有界扫描产出全库真实轮表（按 `turn_id` 合并一次提问
+的全部 completed main_turn 请求，口径与 `_speed_segments`/`avg_tps` 同源——`_row_gen_ms`
+生成窗口 + 200ms–1h 有效段、辅助源与子代理排除、思考/Claude 的 started_at 前移与 provider
+covers 特例），轮里只存 `Σ有效输出`/`Σ有效生成窗口` 与元数据，**不存单点 t/s**；渲染端一律按
+`Σout ÷ (Σms/1000)` 重算每柱/每桶/均值，避免逐轮算术平均。时间桶按轮完成时刻归属（跨边界
+只落一个桶），空桶显空柱而非 0 t/s；今天恒 00:00→当前小时，近 7 天/本月按日，更长历史按
+跨度自动切月/季/年。Token 总消耗 = input + output（input 已含缓存、output 已含思考，不重复
+相加）；费用复用 `cost_usd × fx.rate`，价表未命中模型可能走兜底均价，Tooltip 恒标「含兜底估价」，
+缺价/费用显示关闭各自明示，绝不伪造。
+
+轮表经短键 + 索引表压缩（`sids`/`snames`/`pids` 按 sid 下标一一对应、`mnames` 模型表、完成
+时刻 delta 编码），独立 2s 缓存，仅桌面快照链产出，CLI/MCP stdout 契约不带该字段。同一帧推给
+所有窗口，范围由渲染端按本 pane 可信 sid + 项目 id 判定，远端身份下「全部」降级并明示。
+
 ## 性能开销（实测，db 731MB / 会话活跃场景）
 
 - **架构是事件驱动，不是轮询**：数字刷新跟着"请求完成→db 落盘"走；空闲时零进程零轮询，仅 30s 心跳 stat 一次 mtime（fs.watch 事件不保证送达，心跳不可去——Node 官方文档明确）。
