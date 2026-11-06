@@ -1,0 +1,17 @@
+{
+  "name": "speed-tooltip-host",
+  "version": "0.0.1",
+  "private": true,
+  "description": "生成速度 Tooltip 真实 Electron 视觉/几何 QA harness（QA 专用，不入发布包）。运行见 README.md",
+  "main": "main.cjs",
+  "devDependencies": {
+    "electron": "^45.2.3"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs"
+}

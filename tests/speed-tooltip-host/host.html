@@ -1,0 +1,262 @@
+<!doctype html>
+<html class="dark">
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; height: 100%; background: #1a1e28; color: #e9edf4;
+    font-family: -apple-system, 'PingFang SC', 'Helvetica Neue', sans-serif; }
+  html:not(.dark) body { background: #f4f5f8; color: #1c212b; }
+  /* 浅色主题：宿主 <html> 提供的语义变量在 harness 页按浅色值近似补齐（生产由 ZCode 注入） */
+  html:not(.dark) {
+    --color-popover: #ffffff; --color-popover-border: rgba(15, 23, 42, .16);
+    --color-tooltip: #ffffff; --color-tooltip-border: rgba(15, 23, 42, .16);
+    --color-tooltip-foreground: #1c212b; --color-tooltip-tag-foreground: #5b6472;
+    --color-foreground: #1c212b; --color-foreground-subtle: #5b6472;
+    --color-brand: #0b6aa8;
+  }
+  /* 宿主形态占位：composer 兼任底部 dock（conversation-bottom-dock-transition 是
+   * overlay v282/v283 的对齐锚），textarea 是锚点扫描（COMPOSER_SEL）必需元素，
+   * data-session-id 承载会话归属。 */
+  .composer { position: fixed; left: 48px; right: 48px; bottom: 56px; height: 130px;
+    border: 1px solid rgba(255,255,255,.12); border-radius: 14px; background: rgba(255,255,255,.045); }
+  html:not(.dark) .composer { border-color: rgba(0,0,0,.12); background: rgba(0,0,0,.03); }
+  .composer .hint { padding: 14px 18px; color: #8791a3; font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="composer conversation-bottom-dock-transition" data-session-id="sess_main" data-pane-id="pane_main" id="composer">
+  <div class="hint">ZCode 会话输入框（宿主形态占位 · data-session-id=sess_main · 下方为真实注入的状态条）</div>
+  <textarea placeholder="Give ZCode a task…" style="margin:0 18px 14px;width:calc(100% - 36px);height:56px;
+    box-sizing:border-box;background:rgba(255,255,255,.05);color:inherit;border:1px solid rgba(255,255,255,.1);
+    border-radius:8px;padding:8px 10px;font:inherit;resize:none"></textarea>
+</div>
+<!-- 真实注入：运行目录 overlay.js 原文（main.cjs 将 __OVERLAY_URL__ 替换为绝对 file:// URL） -->
+<script src="__OVERLAY_URL__"></script>
+<script>
+'use strict';
+/* ===== V2 装配层 =====
+ * overlay.js 的 SPD_V2 纯函数块 + TPS_BANDS/tpsBand/tpsBandText + Portal/档位浮层宿主
+ * 函数原文切片（由 main.cjs 从同一文件提取），交互遵循生产同款纯函数重建契约：
+ * 改 sel/hover 包 ⇒ 整卡重编。所有夹具确定性表驱动，无随机数。 */
+window.__zuLang = 'zh';
+window.__zuReady = function (src) {
+  var Lfn = function (zh, en) { return window.__zuLang === 'en' ? en : zh; };
+  var factory = new Function('L', '"' + 'use strict' + '";\n' + src);
+  factory(Lfn);
+  if (!window.__SPD) return false;
+  /* Portal / 档位浮层宿主函数装配：同 eval 作用域供给浮层元素、SPD_PORTAL 桥与
+   * 提取函数引用的模块级变量（spdLegendHideTimer 等——漏供给即运行时 undefined）。 */
+  var scope = new Function('"' + 'use strict' + '";\n' +
+    'var spdHoverPortal = document.createElement("div");\n' +
+    'spdHoverPortal.className = "zusage-quota-tip zu-sv-portal";\n' +
+    'spdHoverPortal.setAttribute("role", "tooltip");\n' +
+    'spdHoverPortal.style.cssText = "position:fixed;display:none;z-index:2147483646;pointer-events:none;";\n' +
+    'document.body.appendChild(spdHoverPortal);\n' +
+    'var spdLegendTip = document.createElement("div");\n' +
+    'spdLegendTip.className = "tip zusage-quota-tip zu-sv-legend-tip";\n' +
+    'spdLegendTip.setAttribute("role", "tooltip");\n' +
+    'spdLegendTip.style.cssText = "position:fixed;display:none;z-index:2147483646;";\n' +
+    'document.body.appendChild(spdLegendTip);\n' +
+    'var SPD_PORTAL = "";\n' +
+    'window.__setSPDPortal = function (v) { SPD_PORTAL = v; };\n' +
+    'window.__portalEl = spdHoverPortal;\n' +
+    'window.__legendEl = spdLegendTip;\n' +
+    'var spdLegendCardHTML = window.__SPD.spdLegendCardHTML;\n' +
+    window.__PORTAL_SRC + '\n' +
+    'window.__portal = { hide: spdHoverPortalHide, place: spdHoverPortalPlace, sync: spdHoverPortalSync };\n' +
+    'window.__legend = { show: spdLegendTipShow, hide: spdLegendTipHide, scheduleHide: spdLegendTipScheduleHide };');
+  scope();
+  return !!window.__SPD;
+};
+/* ===== 确定性夹具 =====
+ * 轮表 delta 编码（spdUnpack 累加还原）：首轮 t=绝对时刻、其后 t=增量、b=绝对生成起点。 */
+var SPD_SPEEDS16 = [150, 120, 161.5, 96, 140, 133, 158, 101, 145, 155, 90, 130, 149, 122, 137, 160];
+function atHour(h, m) { var d = new Date(); d.setHours(h, m || 0, 0, 0); return d.getTime(); }
+function daysAgo(n, h, m) { var d = new Date(); d.setDate(d.getDate() - n); d.setHours(h || 15, m || 0, 0, 0); return d.getTime(); }
+function buildTurns(list) {
+  var prev = 0;
+  return list.map(function (x) {
+    var r = { s: 0, t: x.at - prev, b: x.at - x.gen, out: Math.round(x.sps * 6), ms: 6000,
+      i: Math.round(x.sps * 6 * 2.2), o: Math.round(x.sps * 6), n: 1, msl: [[0, Math.round(x.sps * 6)]],
+      c: Math.round(x.sps) / 100, cf: 1 };
+    prev = x.at; return r;
+  });
+}
+function hist(turns) {
+  return { turns: turns, sids: ['sess_main'], snames: ['速度夹具会话'], pids: [['pid_demo', 'Demo 项目']],
+    mnames: ['GLM-5.3-FlashX'], sid: 'sess_main', source: 'host-fixture', truncated: false };
+}
+var FIXTURES = {
+  recent16: function () {
+    var list = [];
+    for (var i = 0; i < 16; i++) list.push({ at: atHour(14, 5) + i * 12 * 60000, sps: SPD_SPEEDS16[i], gen: 6000 });
+    return hist(buildTurns(list));
+  },
+  sparse2: function () {   /* 今天仅两个有效小时桶（聚焦模式） */
+    return hist(buildTurns([{ at: atHour(16, 10), sps: 152, gen: 6000 }, { at: atHour(17, 5), sps: 133, gen: 6000 }]));
+  },
+  projWeek: function () {  /* 近 7 天中 5 天各 1 轮 */
+    var sps = [128, 143, 111, 156, 138], list = [];
+    for (var i = 0; i < 5; i++) list.push({ at: daysAgo(6 - i, 15, 20 + i), sps: sps[i], gen: 6000 });
+    return hist(buildTurns(list));
+  },
+  singleDay: function () { return hist(buildTurns([{ at: daysAgo(3, 16, 2), sps: 147, gen: 6000 }])); },
+  hist30: function () {    /* 30 天逐日 1 轮（period=all 出 30 日桶，触发内部横滚） */
+    var list = [];
+    for (var i = 0; i < 30; i++) list.push({ at: daysAgo(29 - i, 12 + (i % 8), 10), sps: 95 + ((i * 53) % 110), gen: 6000 });
+    return hist(buildTurns(list));
+  },
+  month20: function () {   /* 本月多日桶 */
+    var list = [];
+    for (var i = 0; i < 20; i++) list.push({ at: daysAgo(19 - i, 11 + (i % 6), 15), sps: 100 + ((i * 37) % 90), gen: 6000 });
+    return hist(buildTurns(list));
+  }
+};
+function payload(fx) {
+  /* avg_tps>0 + mine + last.tps：速度格/浮层数据门控所需 */
+  return { session: { sid: 'sess_main', project: 'Demo 项目', avg_tps: 144.1,
+    model_name: 'GLM-5.3-FlashX' }, mine: 'sess_main', speed_history: fx,
+    last: { tps: 156.1, tokens: 324, ms: 2100 }, today: {}, tools: { total: 0, errors: 0 } };
+}
+window.__zuScenario = function (step) {
+  document.documentElement.classList.toggle('dark', step.theme !== 'light');
+  window.__zuLang = step.lang || 'zh';
+  window.__zuTipRight = !!step.tipRight;
+  var fx = (FIXTURES[step.fixture] || FIXTURES.recent16)();
+  window.__zuFixture = fx;
+  window.__zusageUpdate(payload(fx));
+  return true;
+};
+function fmtTok(n) {
+  n = Math.round(n || 0);
+  if (n >= 1e8) return (n / 1e8).toFixed(n % 1e8 ? 2 : 0) + '亿';
+  if (n >= 1e4) return (n / 1e4).toFixed(n % 1e4 ? 1 : 0) + '万';
+  return String(n);
+}
+window.__zuSel = null; window.__zuHover = -1;
+function buildCard() {
+  return window.__SPD.speedCardV2HTML({
+    speedHistory: window.__zuFixture,
+    sel: Object.assign({ range: 'recent', period: 'recent', dim: 'time', sid: 'sess_main' }, window.__zuSel || {}),
+    live: null, segsHover: window.__zuHover == null ? -1 : window.__zuHover,
+    fmtTok: fmtTok, fmtCnt: fmtTok, fmtMoney: function (u) { return '¥' + u.toFixed(2); }
+  });
+}
+/* 复用生产 tip 容器类（表面样式来自真实注入的样式表）；定位跟随 v283/v284 生产语义 */
+window.__zuMount = function (sel, hover) {
+  window.__zuSel = sel || {}; window.__zuHover = hover == null ? -1 : hover;
+  var tip = document.getElementById('zu-spd-replica');
+  if (!tip) {
+    tip = document.createElement('div');
+    tip.id = 'zu-spd-replica';
+    tip.className = 'tip zusage-quota-tip zusage-tps-tip';
+    tip.style.cssText = 'position:fixed;left:48px;bottom:210px;z-index:2147483000;display:block;max-width:min(800px,calc(100vw - 24px))';
+    /* 生产同款委托交互（改包 ⇒ 整卡重编） */
+    tip.addEventListener('pointerdown', function (e) {
+      var tab = e.target && e.target.closest && e.target.closest('.zu-sv-tab');
+      if (tab) {
+        var g = tab.getAttribute('data-sv-group'), v = tab.getAttribute('data-sv-val');
+        window.__zuSel[g] = v; window.__zuHover = -1; tip.innerHTML = buildCard(); return;
+      }
+      if (e.target && e.target.closest && e.target.closest('.zu-sv-focus')) {
+        window.__zuSel.focus = window.__zuSel.focus === 'full' ? '' : 'full';
+        window.__zuHover = -1; tip.innerHTML = buildCard();
+      }
+    });
+    tip.addEventListener('mouseover', function (e) {
+      var lb = e.target && e.target.closest && e.target.closest('.zu-sv-legend-btn');
+      if (lb) { window.__legend.show(lb); return; }   /* 生产同款：问号 hover 即显 */
+      var col = e.target && e.target.closest && e.target.closest('.zu-sc-col');
+      if (!col) return;
+      var idx = parseInt(col.getAttribute('data-i'), 10) || 0;
+      if (idx !== window.__zuHover) {
+        window.__zuHover = idx; tip.innerHTML = buildCard();
+        window.__setSPDPortal(window.__SPD.getPortal());
+        window.__portal.sync(tip, idx);
+      }
+    });
+    tip.addEventListener('mouseleave', function () {
+      if (window.__zuHover !== -1) {
+        window.__zuHover = -1; tip.innerHTML = buildCard();
+        window.__portal.hide();
+      }
+    });
+    document.body.appendChild(tip);
+  }
+  tip.classList.toggle('zu-light', !document.documentElement.classList.contains('dark'));
+  tip.style.left = window.__zuTipRight ? 'auto' : '48px';
+  if (window.__zuTipRight) tip.style.right = '12px'; else tip.style.right = 'auto';
+  tip.innerHTML = buildCard();
+  /* v284 生产同款：V2 卡左缘对齐锚元素（真实状态条的 .it 速度格）左缘 */
+  var anchor = document.querySelector('.zusage-root .it');
+  if (anchor && anchor.getBoundingClientRect && !window.__zuTipRight) {
+    tip.style.left = Math.max(8, Math.round(anchor.getBoundingClientRect().left)) + 'px';
+    tip.style.right = 'auto';
+  }
+  /* 生产同款浮层渲染 */
+  window.__setSPDPortal(window.__SPD.getPortal());
+  window.__portal.sync(tip, window.__zuHover == null ? -1 : window.__zuHover);
+  return !!tip.querySelector('.zu-sv-root');
+};
+window.__zuRectOf = function (sel) {
+  var el = document.querySelector('#zu-spd-replica ' + sel);
+  if (!el) return null;
+  var r = el.getBoundingClientRect();
+  return { x: r.x, y: r.y, w: r.width, h: r.height };
+};
+window.__zuBarRect = function (idx) {
+  var cols = document.querySelectorAll('#zu-spd-replica .zu-sc-col');
+  if (!cols[idx]) return null;
+  var r = cols[idx].getBoundingClientRect();
+  return { x: r.x, y: r.y, w: r.width, h: r.height };
+};
+window.__zuScrollEnd = function () {
+  var wrap = document.querySelector('#zu-spd-replica .zu-sc-wrap');
+  if (wrap) wrap.scrollLeft = wrap.scrollWidth;
+  return wrap ? { sl: wrap.scrollLeft, sw: wrap.scrollWidth, cw: wrap.clientWidth } : null;
+};
+/* 几何测量：用户所见左缘 = tip 容器外缘（非 .zu-sv-root 内容盒，差 padding） */
+window.__zuDiag = function () {
+  var tip = document.querySelector('#zu-spd-replica .zu-sv-root');
+  if (!tip) return { tipOpen: false };
+  var r = function (el) { if (!el) return null; var b = el.getBoundingClientRect();
+    return { x: Math.round(b.x), y: Math.round(b.y), w: Math.round(b.width), h: Math.round(b.height) }; };
+  var wrap = tip.querySelector('.zu-sc-wrap');
+  var tipBox = document.getElementById('zu-spd-replica');
+  var vw = window.innerWidth, vh = window.innerHeight;
+  var pr = (function () { var pe = window.__portalEl; return pe && pe.style.display !== 'none' ? r(pe) : null; })();
+  var lastEl = null;
+  for (var c = document.body.lastElementChild; c; c = c.previousElementSibling) {
+    if (c.tagName !== 'SCRIPT') { lastEl = c; break; }
+  }
+  var anchor = document.querySelector('.zusage-root .it');
+  return {
+    tipOpen: true,
+    headerTabsInHead: !!(head(tip) && head(tip).querySelector('[data-sv-group="range"]') && head(tip).querySelector('[data-sv-group="period"]')),
+    rangeText: (tip.querySelector('.zu-sv-range') || {}).textContent || null,
+    bars: tip.querySelectorAll('.zu-sc-col').length,
+    legendBtn: !!tip.querySelector('.zu-sv-legend-btn'),
+    legendBand: (function () { var b = tip.querySelector('.zu-sv-legend-btn');
+      return b ? (b.getAttribute('data-sv-band') || '') : null; })(),
+    cov: (tip.querySelector('.zu-sc-cov') || {}).textContent || null,
+    geom: { tip: r(tipBox || tip), left: r(tip.querySelector('.zu-sv-left')), chart: r(tip.querySelector('.zu-speed-chart')),
+      wrap: r(wrap), wrapScrollW: wrap ? wrap.scrollWidth : 0, portal: pr },
+    portalInView: !pr || (pr.x >= 8 && pr.y >= 8 && pr.x + pr.w <= vw - 8 && pr.y + pr.h <= vh - 8),
+    portalOnTop: pr ? lastEl === window.__portalEl : true,
+    dockLeft: anchor ? Math.round(anchor.getBoundingClientRect().left) : null,
+    legendOpen: (function () { var le = window.__legendEl; if (!le || le.style.display !== 'block') return null;
+      var b = le.getBoundingClientRect(); return { x: Math.round(b.x), y: Math.round(b.y), w: Math.round(b.width), h: Math.round(b.height) }; })(),
+    legendInView: (function () { var le = window.__legendEl; if (!le || le.style.display !== 'block') return true;
+      var b = le.getBoundingClientRect(); return b.x >= 8 && b.y >= 8 && b.x + b.width <= vw - 8 && b.y + b.height <= vh - 8; })(),
+    legendBands: (function () { var le = window.__legendEl; return le ? le.querySelectorAll('.zu-sv-li').length : 0; })(),
+    legendCur: (function () { var le = window.__legendEl; var c = le ? le.querySelector('.zu-sv-li.cur b') : null; return c ? c.textContent : null; })(),
+    legendOnTop: (function () { var le = window.__legendEl; if (!le || le.style.display !== 'block') return true; return lastEl === le; })(),
+    legendAlignedToAnchor: (function () { var le = window.__legendEl;
+      if (!le || !anchor || le.style.display !== 'block') return true;
+      return Math.abs(le.getBoundingClientRect().left - anchor.getBoundingClientRect().left) <= 1; })()
+  };
+  function head(t) { return t.querySelector('.zu-sv-head'); }
+};
+</script>
+</body>
+</html>
