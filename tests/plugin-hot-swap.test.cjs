@@ -220,7 +220,7 @@ test("failed rebuild is excluded from _hotLoadedAt and skips the ack (fail-close
   const state = h.seam.hotModuleState();
   assert.equal(typeof state.hashes._hotLoadedAt["quota-client.cjs"], "number");
   assert.equal(state.hashes._hotLoadedAt["engine-patch.cjs"], undefined);   // 失败模块不得销账
-  assert.equal(state.hashes["engine-patch.cjs"], state.hashes["engine-patch.cjs"]);   // 启动指纹不被失败换入覆盖
+  assert.equal(state.hashes["engine-patch.cjs"], sha256("{}"));   // 启动指纹不被失败换入覆盖（夹具启动内容即 "{}"）
   assert.equal(state.mtimes["engine-patch.cjs"], 1000);   // 失败模块保留旧 mtime → 下轮重试
   assert.equal(h.acks.length, beforeAcks);   // 部分失败跳过 acknowledgeRestart（marker 原样保留）
   assert.equal(h.counters.engineSyncs, 1);   // engine 仍是启动实例

@@ -195,6 +195,17 @@ test("one-shot Map probe captures the host registry and restores native methods"
   assert.equal(vm.runInContext("plain.get(42)", ctx), "x");
 });
 
+test("re-injection in the same realm never stacks probe layers", () => {
+  const sandbox = { window: { document: {} } };
+  const ctx = vm.createContext(sandbox);
+  const origSet = vm.runInContext("Map.prototype.set", ctx);
+  vm.runInContext(source, ctx);   // 第一代：布防
+  vm.runInContext(source, ctx);   // 主桥热重注入：__zusageRegistryHooked 守卫阻止叠层
+  assert.equal(vm.runInContext("Map.prototype.set", ctx) === origSet, false);   // 仍是第一代单层钩子
+  vm.runInContext("new Map().set('__base__ /w', { layer: { entries: new Map(), acquire() {} }, stale: false, refCount: 1 });", ctx);
+  assert.equal(vm.runInContext("Map.prototype.set", ctx) === origSet, true);   // 旧钩子完成捕获并还原
+  assert.equal(vm.runInContext("typeof globalThis.__zusageGetExistingConversationStore", ctx), "function");
+});
 test("probe ignores non-registry entries and survives throwing entry objects", () => {
   const { ctx, origSet } = bridgeContext({ windowDoc: true });
   vm.runInContext("const m = new Map(); m.set('plain', { a: 1 }); m.set('__base__ /w', { layer: {} });", ctx);

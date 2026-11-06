@@ -890,7 +890,7 @@ function createQuotaClientInstance() {
       log: (...a) => LOG("[quota]", ...a),
       onUpdate: () => {   // 刷新开始/结算及解冻时同步源状态与最近成功快照
         broadcastPluginState();
-        if (!lastGoodPayload) return;
+        if (!lastGoodPayload || !quotaClient) return;   // dispose 在途 settle 竞窗：旧实例回调到已置空引用
         const withQuota = Object.assign({}, lastGoodPayload, { quota: quotaClient.view() });
         for (const wc of webContents.getAllWebContents()) pushOnce(wc, withQuota);
       },
@@ -1172,9 +1172,11 @@ function hotReloadMainModulesOnce() {
   }
   const updaterGroup = changed.filter((n) => n === "plugin-updater.cjs" || n === "plugin-release.cjs" || n === "plugin-storage.cjs");
   if (updaterGroup.length) {
-    for (const name of updaterGroup) purge(name);
+    // updater 顶层解构捕获 release/storage 导出（CJS 加载期绑定）：单改依赖时也必须
+    // 让 updater 自身重求值，否则新实例仍绑旧导出、ok 传播与销账都会说谎。
+    for (const name of ["plugin-updater.cjs", ...updaterGroup]) purge(name);
     ok["plugin-release.cjs"] = !!initReleaseNotes();
-    ok["plugin-updater.cjs"] = !!initPluginUpdater();   // updater 顶层捕获 release/storage 导出：实例重建才算换入
+    ok["plugin-updater.cjs"] = !!initPluginUpdater();
     if (updaterGroup.includes("plugin-storage.cjs")) ok["plugin-storage.cjs"] = ok["plugin-updater.cjs"];
   }
   const succeeded = changed.filter((name) => ok[name]);
