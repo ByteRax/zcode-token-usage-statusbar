@@ -6,13 +6,13 @@
 
 - `input_tokens` 已含 cache_read；轮数一律用 `count(distinct turn_id)`（`turn_usage` 表覆盖不全）。
 - 缓存命中率 = cache_read ÷ input_tokens（input 已含 cache_read）。缓存写入是本次请求新写进供应商缓存的量（计费高于普通输入），缓存命中是直接复用已有缓存前缀的量。
-- token/s = 最近一次请求的 output_tokens（已含思考 token）÷ 生成耗时。生成耗时默认 completed_at − first_token_at；含思考的请求（reasoning_tokens > 0，或 Claude 这类不单独上报思考的模型）用 completed_at − started_at，因为思考 token 在 first_token_at 之前流出——2026-10-15 真库中 claude-opus-5-5 按首字窗口有 35% 请求超过 300 t/s。「首块即落章」的 provider 例外（fork z1908144712 判据收编）：其 first_token_at 即首个流式块、思考在首字后流出，按该 provider 历史 (reasoning_tokens, time_to_first_token_ms) 的最小二乘斜率 <2.0 ms/token 自动判定（首字等待不随推理量增长；样本 <5 或推理量无变化不判、走默认），判定命中的含思考请求改用首字窗口——一律 started_at 会把首块前的输入预处理（大上下文实测 8~10s）摊进生成耗时，速度系统性偏低。db 只在请求完成时落库，故该值每完成一次请求更新一次，不是流式过程中的实时速率。
-- 上下文容量 = 最近一次 completed 请求的 input_tokens ÷ 上下文窗口（会话压缩后自然回落，不显示峰值）。
-- "当前会话"识别（状态条）：主链路是**泵按窗口注入 mine**——渲染端经客户端自带 IPC 通道 `zcode:sync-active-task-session` 上报本窗口焦点会话 id，主进程推送时按窗口带上；overlay 只显示 mine 对应的池条目，池里没有（新会话无数据）就显示零值，**绝不回退到别的会话**（多窗口共享 localStorage 时旧启发式必错，实测）。兜底（辅助窗口/泵无该窗口信息）：读 localStorage 的 `zcode-v4-last-session:v1:<工作区路径>` 键（ZCode 切换会话即更新），值 = 会话 id，与快照 `recent`（12 条）求交集；多工作区候选时优先取刚切换的、否则取最近活跃的。**顶栏的会话标题不在可扫描的 DOM 文本节点里，标题扫描方案实测永远失败，勿回退。**
-- "当前会话"（CLI / MCP `scope=current`）= 最近 30 分钟内有请求的 session（`current_session`，状态条不用此口径）。
+- 生成速度（token/s）为两态读数：渲染桥命中时，生成中按字符增量估算即时 t/s（估算态不分速度档）；请求完成后，状态条主读数切换为**本会话加权平均速度**（快照 `avg_tps` = 全会话已完成 `main_turn` 段的 `Σ有效 output_tokens ÷ Σ有效生成窗口`，段间工具等待与子代理不计），最近一轮/最近一段真实速度移入悬停 Tooltip（均值缺席时回退最近有效单段速度 `last.tps`）。单段有效生成窗口（`200ms <= gen_ms < 1h`）默认 `completed_at − first_token_at`；含思考的请求（`reasoning_tokens > 0`，或 Claude 这类不单独上报思考的模型）默认用 `completed_at − started_at`，因为思考 token 在 `first_token_at` 之前流出——2026-10-15 真库中 `claude-opus-5-5` 按首字窗口有 35% 请求超过 300 t/s。「首块即落章」的 provider 例外（`usage_stats.query_first_token_covers`，`zusage._provider_first_token_covers` 与 `token_rate.first_token_covers` 同源）：其 `first_token_at` 即首个流式块、思考在首字后流出，按该 provider 历史 `(reasoning_tokens, time_to_first_token_ms)` 的最小二乘斜率 `<2.0 ms/token` 自动判定（首字等待不随推理量增长；样本 `<5` 或推理量无变化不判、走默认），判定命中的含思考请求改用首字窗口——一律 `started_at` 会把首块前的输入预处理（大上下文实测 8~10s）摊进生成耗时，速度系统性偏低。无渲染桥时回退数据库，随请求完成入库刷新。
+- 上下文容量 = 最近一次 completed 请求的 `input_tokens ÷ 上下文窗口`（会话压缩后自然回落，不显示峰值）；原生上下文按钮增强的显示层优先镜像宿主实时 `aria-label` 已用/总量，解析不出时回退数据库口径。
+- "当前会话"识别（状态条）：主链路是**泵按窗口/分栏注入归属**——渲染桥在 `SessionPane` 节点写入 `data-zusage-scope-*` 并结合宿主 `zcode:sync-active-task-session` 与工作区 IPC 上报本窗口/分栏会话 id；overlay 只显示对应池条目，池里没有（新会话无数据）就显示零值，**绝不回退到别的会话**（多窗口共享 localStorage 时旧启发式必错，实测）。无桥且本窗无远端证据时按同 SID 本地记录兜底。**顶栏的会话标题不在可扫描的 DOM 文本节点里，标题扫描方案实测永远失败，勿回退。**
+- "当前会话"（CLI / MCP `scope=current`）= 数据库中 `completed_at` 最近的会话（不限制在 30 分钟内；30 分钟阈值 `SESSION_TIMEOUT_MS` 仅用于标注 `🟢 活跃` / `⚪ 闲置`，状态条不用此口径）。
 - 子代理消耗 = 当前会话通过 `session.parent_id` 关联的全部子代理（`query_source='subagent'`）累计 token；● 表示 30 秒内有子代理请求（运行中）。
 - 子代理任务名 = 派发时 Agent 工具调用的 `description` 参数（与 ZCode 右侧"子智能体目录"面板同源，存 db `part` 表 Agent part 的 `state.input.description`）。与消耗记录的关联：主用**官方回执**——part 完成后 `state.output` 尾部 `agentId: agent_xxx` 行 → 子会话 id `sess_subagent_<agentId>`（客户端硬关联，零歧义）；兜底仅给运行中未出回执的条目：prompt 前缀匹配（子会话 title=prompt 前 57 字+"..."）且候选唯一才绑；配不上的显示线路名，宁无名不错名。
-- 与 ZCode 自带"设置→用量"互补：自带走供应商云端接口（套餐额度/剩余），本工具走本地 db（会话排行/上下文容量/对话内查询）。
+- 用量统计与套餐额度分属两条独立数据链：token 用量/会话排行/上下文容量只读本地 SQLite；套餐额度 chip 与重置卡徽标另行在内存中解密宿主 OAuth 凭据（或读取运行目录 `quota-secrets.json`）直查对应厂商接口，两条链互不推导。
 
 ### 速度 Tooltip 统一轮表（v254）
 
@@ -33,9 +33,9 @@ covers 特例），轮里只存 `Σ有效输出`/`Σ有效生成窗口` 与元�
 
 ## 性能开销（实测，db 731MB / 会话活跃场景）
 
-- **架构是事件驱动，不是轮询**：数字刷新跟着"请求完成→db 落盘"走；空闲时零进程零轮询，仅 30s 心跳 stat 一次 mtime（fs.watch 事件不保证送达，心跳不可去——Node 官方文档明确）。
+- **架构是事件驱动，不是高频轮询**：数字刷新跟着"请求完成→db 落盘"走；默认保持一个常驻 `zusage.py serve` 子进程（~17MB 内存，空闲超 60s 自动释放 SQLite 连接句柄，不持读锁、不阻碍 WAL checkpoint），空闲期无高频查询轮询，仅 30s 心跳 `stat` 一次 mtime（`fs.watch` 事件不保证送达，心跳不可去——Node 官方文档明确）。
 - **单次拉取（常驻 python）：均摊 ~118ms、重算峰值 ~200ms**（常驻化之前为 663ms 冷 / 485ms 热）。收益构成：常驻省解释器启动费 60-100ms；recent 池瘦身（仅兜底候选给完整快照，长尾轻量行 38ms→1ms）；三次全表 group by 合并为一次扫描 + 2s TTL 缓存（聚合慢变量最大陈旧 ~3.5s，无感）；任务名回执解析进程内缓存（29ms→命中 0）。
-- **常驻成本 ~17MB 内存**；意外退出自动重启，30s 内 3 次判不稳定自动回退一次性短进程，`resident: false` 可强制回退。
+- **常驻成本 ~17MB 内存**；意外退出自动重启，30s 内 3 次判不稳定自动回退一次性短进程，`resident: false` 可强制回退为按次启动短进程。
 - **端到端数字延迟最坏 ~2s**（去抖 300ms + 限频 1500ms + 查询 200ms），大头是限频——要更跟手调小 `activity_min_ms`，查询侧已无杠杆。
 - 全表聚合（会话池/今日合计）是唯一随库体积线性增长的项（现 55+30ms），db 涨大后上调 `zusage.py` 顶部 `_AGG_TTL_MS`（如 4-5s）再摊薄一半以上，架构不用动。
 

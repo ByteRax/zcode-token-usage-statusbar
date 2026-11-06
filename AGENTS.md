@@ -9,13 +9,14 @@
 | 改动涉及 | 先读 |
 |---|---|
 | `quota-client.cjs`、额度 chip / ⚙ 额度源面板、`zusage.py` SCNet 估算段、`tests/quota-*` | [.zcode/rules/quota.md](.zcode/rules/quota.md) |
-| `overlay.js`、`turn-stats.js`、浮层 UI / tooltip / 展示口径 | [.zcode/rules/overlay-ui.md](.zcode/rules/overlay-ui.md) |
+| `overlay.js`、`src/overlay/*.js`、`scripts/build_overlay.py`、`turn-stats.js`、浮层 UI / tooltip / 展示口径 | [.zcode/rules/overlay-ui.md](.zcode/rules/overlay-ui.md) |
 | 安装 / 注入 / hooks / 更新器 / 发布链 / 运行目录部署 | [.zcode/rules/install-release.md](.zcode/rules/install-release.md) |
 | `renderer_bridge.py`、窗口分栏归属、远端路由 | [.zcode/rules/bridge-remote.md](.zcode/rules/bridge-remote.md) |
 | `tests/` 新增或修改测试、实机验收方法 | [.zcode/rules/tests.md](.zcode/rules/tests.md) |
 | git 提交 / 分支 / worktree / PR / 并行会话协作 | [.zcode/rules/repo-workflow.md](.zcode/rules/repo-workflow.md) |
 | `README*`、`docs/`、宣传图与 tour 截图 | [.zcode/rules/docs.md](.zcode/rules/docs.md) |
 | `web/` | [.zcode/rules/web.md](.zcode/rules/web.md) |
+| 宿主引擎行为排查 / 逆向 / 引擎补丁 | [.zcode/rules/host-engine.md](.zcode/rules/host-engine.md) |
 
 规则文件只写长期约束与陷阱；PR 号、提交哈希、发版状态、用例数等易变事实不写入任何一层。本文件与规则文件冲突时以源码与测试为准，并同步修文档。
 
@@ -29,7 +30,7 @@
 - 用户运行要求：Python **3.8+**，包含标准库 `sqlite3`，无额外 Python 包；桌面主要支持 Windows/macOS，Linux 有路径与权限适配，但不等于所有发行版已实机验收。
 - 桌面 `.cjs` 由客户端 Electron 的 Node 环境运行，不要求用户另装 npm 依赖；从 Git 克隆源码才需要 Git。
 - 开发测试需要可运行 `node:test`、`node --check` 的 Node，以及 Python；根目录没有 `package.json`、`engines` 或统一 Node 最低版本声明，不虚构 build/lint/format 命令。
-- Web 文档列出 Node 22.19+ / 24+、nginx、systemd；当前 sidecar 实际调用 Python 查询，不使用文档提及的 `node:sqlite`。该版本值是部署文档要求，不是已验证的代码最低门槛。
+- Web 部署需要 Node（运行 `zusage-sidecar.mjs`）、nginx、systemd；sidecar 实际通过 `readonly-guard.py` 调用常驻 Python `zusage.py` 查询，不使用 `node:sqlite`。
 - Python 3.8 是兼容目标，不代表全仓已在 3.8 运行验证；新增语法/标准库 API 要检查最低版本，不能仅凭开发机较新解释器通过就宣布兼容。
 
 ## 2. 代码地图与调用边界
@@ -37,10 +38,11 @@
 | 文件/目录 | 维护职责 |
 |---|---|
 | `zusage.py` | SQLite 查询库、CLI、桌面 JSON 快照、常驻 JSON 行查询与带身份的远端查询 |
+| `usage_stats.py` | 统计/速率公共计算库：`MIN_GEN_MS`/`MAX_GEN_MS`、`round1`、`hides_reasoning` 与「首块即落章」provider 斜率判定 `query_first_token_covers`，供 `zusage.py` 与 `token_rate.py` 共用 |
 | `usage_mcp.py` | stdio JSON-RPC MCP；调用 `zusage`，提供 `token_usage(scope)` |
-| `plugins/zcode-token-usage-statusbar/token_rate.py` | 插件专有逐问速率、提问身份守卫与会话累计查询 |
+| `token_rate.py` | 逐问速率、提问身份守卫与会话累计查询（根目录与插件副本同源同步） |
 | `token_pricing.py` | 模型单价表（models.dev 内置 326 条 + 12h 运行时同步）与预估费用计算（本库口径：input 已含 cache，output 已含思考）；快照 `cost_usd`/`fx` 生产方 |
-| `overlay.js` | 桌面浮层、设置、tooltip、子代理明细、套餐额度 chip、Git 状态 chip 及速率展示 |
+| `overlay.js` / `src/overlay/` / `scripts/build_overlay.py` | 桌面浮层、设置、tooltip、子代理明细、套餐额度 chip、Git 状态 chip 及速率展示；`src/overlay/00-*.js`..`09-*.js` 为模块化分片源码，经零依赖 `scripts/build_overlay.py` 拼接产出单文件 `overlay.js`（仓库仍提交完整 `overlay.js` 以免除用户安装期构建步骤） |
 | `turn-stats.js` | 渲染进程统计行 tracker：历史轮记录、运行中子代理身份透传 |
 | `renderer_bridge.py` | 渲染桥：按客户端版本指纹（HOST_TARGETS 登记 + derive 推导）向 SessionPane 节点写 scope 身份属性 |
 | `inject-main.cjs` | 主进程加载、窗口/工作区 IPC、查询泵、文件监听、快照推送、受限写操作与六个子模块热换循环（唯一冷文件） |
@@ -52,12 +54,12 @@
 | `plugin-storage.cjs` | 按宿主存储解析用户级插件库存/缓存，不假设固定 HOME |
 | `quota-client.cjs` | 套餐额度客户端（主进程，热换）：解密宿主 OAuth 凭据（`enc:v1` AES-256-GCM 重写实现）直查 BigModel/Z.ai monitor 端点，归一化窗口/退避/冻结/epoch 竞态，凭据只在内存 |
 | `runtime_lock.py` / `release_unpack.py` | 跨进程锁、配置事务/可信同步、安全 ZIP 解包 |
-| `sync_plugin.py` / `release_tool.py` | 根源码副本同步；确定性发布包构建、校验、发布预演/发布 |
+| `sync_plugin.py` / `release_tool.py` | 根源码副本同步、`overlay.js` 拼接联动与 6 处分发清单一致性校验（`check_manifests`）；确定性发布包构建、校验、发布预演/发布 |
 | `plugins/zcode-token-usage-statusbar/` | 两份 manifest、`.mcp.json`、命令、技能、hooks、专有安装/更新/提醒入口与共享副本 |
 | `web/` | `boot.js`、独立 `overlay.js`、`zusage-sidecar.mjs`、`readonly-guard.py`、nginx/systemd 示例 |
-| `tests/` / `docs/` | 隔离回归、宿主 CLI 沙箱/交互演示；使用、设计、维护及宣传资料 |
+| `tests/` / `docs/` | 隔离回归（含 `tests/helpers/overlay-extract.cjs` 统一浮层切片助手）、宿主 CLI 沙箱/交互演示；使用、设计、维护及宣传资料 |
 
-本检出包含 `usage_stats.py`、`turn-stats.js`、`renderer_bridge.py`、`renderer_live_check.cjs` 与根目录 `token_rate.py`；不要从其它工作树补出本检出不存在的架构。
+本检出包含 `usage_stats.py`、`src/overlay/`、`scripts/build_overlay.py`、`turn-stats.js`、`renderer_bridge.py`、`renderer_live_check.cjs` 与根目录 `token_rate.py`；不要从其它工作树补出本检出不存在的架构。
 
 关键调用链：
 - 桌面入口以绝对 `file://` 动态 `import` 引入 `inject-main.cjs`；主桥调用 Python，监听数据库及 WAL 变化，按窗口推送快照给 `overlay.js`。
@@ -71,9 +73,10 @@
 
 - `sync_plugin.py` 的 `FILES` 是共享分发清单（根目录是源，以脚本内定义为准）：
   `usage_mcp.py`、`mcp-launch.cjs`、`zusage.py`、`patch_install.py`、`install_monitor.py`、`inject-main.cjs`、`plugin-updater.cjs`、`plugin-release.cjs`、`plugin-storage.cjs`、`quota-client.cjs`、`model-puller.cjs`、`engine-patch.cjs`、`release_unpack.py`、`runtime_lock.py`、`usage_stats.py`、`turn-stats.js`、`overlay.js`、`token_rate.py`、`renderer_bridge.py`、`token_pricing.py`、`pending_zip_patch.py`。
-- 共享文件先改根源码，再同步插件副本；清单外的插件入口、hooks、命令、技能和 manifest **不是生成文件**，应直接维护。新增分发文件须同步的全部登记处（不止 FILES）见 [.zcode/rules/install-release.md](.zcode/rules/install-release.md)。
+- **桌面 `overlay.js` 模块化源码约定**：`src/overlay/00-*.js`..`09-*.js` 是 `overlay.js` 的模块化分片源，由零依赖脚本 `scripts/build_overlay.py` 拼接生成根 `overlay.js`；仓库内仍同时提交拼接后的完整单文件 `overlay.js` 与 `plugins/zcode-token-usage-statusbar/overlay.js`，保证用户直接从 GitHub 市场安装、Release 包安装或 `git clone` 独立安装时**无需执行任何构建步骤**。修改桌面浮层代码时，应优先修改 `src/overlay/` 下的对应模块（若直接修改了根 `overlay.js`，须同步回写对应分片），再运行 `python3 sync_plugin.py`（会自动先调用 `build_overlay.py` 生成根 `overlay.js`，再同步到插件副本）。
+- **6 处分发清单统一校验**：`sync_plugin.py` 维护 `FILES`、`PLUGIN_ONLY_FILES`、`STANDALONE_RUNTIME_FILES`、`PLUGIN_RUNTIME_FILES`、`COLD_FILES`、`RESTART_HASH_FILES`、`RELEASE_PLUGIN_FILES`、`RELEASE_ZIP_FILES` 派生集合，并在 `--check`（以及 `test_plugin_package.py`）中通过 `check_manifests()` 自动核对 `release_tool.py`、`release_unpack.py`、`install.py`、`overlay_install.py`、`restart_notice.py` 与两份 `plugin.json` 的 `packageLayout.files`。共享文件先改根源码，再同步插件副本；清单外的插件入口、hooks、命令、技能和 manifest **不是生成文件**，应直接维护。新增分发文件须同步的全部登记处见 [.zcode/rules/install-release.md](.zcode/rules/install-release.md)。
 - `web/overlay.js` 是独立实现，不在插件同步清单内；不能直接复制根浮层覆盖 Web。共享语义变化要分别评估，保留 Web 的挂载、接口与布局差异。
-- 共享文件修改后在仓库根运行：
+- 共享文件（或 `src/overlay/*.js`）修改后在仓库根运行：
 
 ```bash
 python3 sync_plugin.py
@@ -125,7 +128,7 @@ python3 sync_plugin.py --check
 ### 统计与速率
 
 - 总 token = input + output；input 已含 cache_read，output 已含思考，不能再次相加。缓存命中率为 cache_read / input；轮数用 distinct turn_id，不依赖覆盖不全的 `turn_usage`。
-- 速度是两态（v181/PR #157 起完成态主数字为会话均）：渲染桥命中时，生成中显示按字符增量估算的 t/s（估算态不分档），该轮完成后主数字切换为**本会话加权平均**（快照 `avg_tps`，见下条），最近一轮真实值（输出含思考 ÷ 生成时长，来自 renderer store）进 tooltip「最近一轮」行；无桥回退 DB，完成态同样会话均为主、最近一段进 tooltip，快照/均值缺席（旧远端快照、零值）时回退原读数；按请求完成入库刷新，不是逐字流式读数。普通请求生成耗时为 completed_at − first_token_at；上报思考或 Claude 请求默认 completed_at − started_at，但「首块即落章」provider（按该 provider 历史的 ttft×reasoning 最小二乘斜率 <2.0 ms/token 自动判定；样本 <5 或推理量无变化不判、走默认。zusage `_provider_first_token_covers` 与 token_rate `first_token_covers` 同一规则）思考在首字后随输出流出、首字窗口已含思考，改用 completed_at − first_token_at——一律 started_at 会把首块前的输入预处理（大上下文实测 8~10s）摊进生成耗时。TTFT 与生成窗口不是同一指标。
+- 速度是两态（v181/PR #157 起完成态主数字为会话均）：渲染桥命中时，生成中显示按字符增量估算的 t/s（估算态不分档），该轮完成后主数字切换为**本会话加权平均**（快照 `avg_tps`，见下条），最近一轮真实值（输出含思考 ÷ 生成时长，来自 renderer store）进 tooltip「最近一轮」行；无桥回退 DB，完成态同样会话均为主、最近一段进 tooltip，快照/均值缺席（旧远端快照、零值）时回退原读数；按请求完成入库刷新，不是逐字流式读数。普通请求生成耗时为 completed_at − first_token_at；上报思考或 Claude 请求默认 completed_at − started_at，但「首块即落章」provider（按该 provider 历史的 ttft×reasoning 最小二乘斜率 <2.0 ms/token 自动判定；样本 <5 或推理量无变化不判、走默认。`zusage._provider_first_token_covers` 与 `token_rate.first_token_covers` 共用 `usage_stats.query_first_token_covers` 单一实现，`zusage.py` 保留单文件远端部署回退）思考在首字后随输出流出、首字窗口已含思考，改用 completed_at − first_token_at——一律 started_at 会把首块前的输入预处理（大上下文实测 8~10s）摊进生成耗时。TTFT 与生成窗口不是同一指标。
 - 状态条向前检查最近 20 条请求，取最近有效速度样本；根实现缺首字即拒绝，插件速率对思考/Claude 仍允许 started_at 回退，两者不完全同款。不能用总耗时硬算普通请求速度，也不能把无效样本视作真实 0 t/s。
 - 插件逐问速率只聚合本轮有效段，按 Σoutput / Σ生成耗时加权，段间工具等待不计；近 5 请求均值/峰值不是本轮加权值，不能互相替代。
 - 会话均（v181/PR #157）= 全会话已完成 main_turn 段的加权平均（Σ有效输出 ÷ Σ生成窗口）：速率行「会话均」/CLI「平均」/`--json` `session.sessionAvg`（token_rate，scope 过滤同会话累计）与快照 `avg_tps`（zusage，`_row_gen_ms` 同窗口口径）两处同源；与「近N次均」算术平均并存不互替；辅助 query_source 与子代理行不计；无可评分段时速率行隐藏、快照为 0，消费端回退原读数。
@@ -133,6 +136,7 @@ python3 sync_plugin.py --check
 - 上下文占比取最近完成请求 input / 上下文窗口，不是会话累计或历史峰值；压缩后可以回落。原生上下文按钮增强的**显示层**优先镜像原生 aria-label 已用/总量（宿主 taskUsage store，与悬停面板同源、压缩后立即回落，issue #172），解析不出才回退 DB 口径；ctxOv/nativeCtxVal 的窗口优先级只作用于 DB 兜底路径与 acWarningText。子代理按父子关系关联，不按派发时间最近邻猜任务名。
 - CLI/MCP `current` 选择数据库最近活跃会话，不保证是屏幕焦点；30 分钟阈值用于 active/idle 判断，不限制只选这段时间内的会话。
 - 今日、`days`、`week` 按本地自然日，`models` 从当前时刻滚动回溯；日界线查询采用闭区间，零点存在相邻日重复计入边界。改时间过滤先核对各查询，不擅自统一窗口。
+- 宿主把启动目录 slug 化生成 `session.project_id` 时剥掉所有非 ASCII：纯中文目录整段被剥、坍缩为父目录 slug，多个项目共享同一 project_id（宿主烙进库的 ID 插件改不了，issue #248）。`_project_usage()` 聚合须按 directory 经 `_norm_path_key` 等值过滤（当前会话锚点缺失保持全量不过滤；有锚点时对端目录缺失 fail-closed 剔除），派生会话经 parent_id 自动正确；`_PROJ_CACHE` 键必须含目录，改聚合语义时缓存键一起审。
 - 展示层口径（两态速度实现、万/亿单位、时间文案、tooltip 行为、重启后历史轮规则、Git 状态 chip）见 [.zcode/rules/overlay-ui.md](.zcode/rules/overlay-ui.md)。
 
 ### 套餐额度
@@ -175,19 +179,20 @@ python3 sync_plugin.py --check
 
 ## 6. 测试与验证
 
-在仓库根运行；没有构建、lint 或格式化脚本。基础命令：
+在仓库根运行；除 `scripts/build_overlay.py`（零依赖拼接 `src/overlay/*.js` → `overlay.js`）外没有第三方构建、lint 或格式化脚本。基础命令：
 
 ```bash
 node --test tests/*.test.cjs
 python3 -B -m unittest discover -s tests -p 'test_*.py'
 node --check overlay.js
 node --check inject-main.cjs
+python3 scripts/build_overlay.py --check
 python3 sync_plugin.py --check
 ```
 
-- Node 回归以 VM/stub 为主；Python 回归使用临时数据库、目录和夹具。`-B` 避免主解释器写 bytecode，不保证子进程不写；需要时同时设 `PYTHONDONTWRITEBYTECODE=1`。
+- Node 回归以 VM/stub 为主（浮层源码切片优先复用 `tests/helpers/overlay-extract.cjs`）；Python 回归使用临时数据库、目录和夹具。`-B` 避免主解释器写 bytecode，不保证子进程不写；需要时同时设 `PYTHONDONTWRITEBYTECODE=1`。
 - `ZCODE_USAGE_DB` 只隔离插件逐问脚本，不能当根 `zusage.py` 的通用数据库隔离开关；新测试沿用夹具替换数据库入口，默认不执行真实查询。
-- 首两条是自动化回归，`--check` 是语法/漂移检查，不等于行为验证；无需因仅修改文档而跑安装/发布。
+- 首两条是自动化回归，`--check` 是语法/分片拼接一致性/副本同步与 6 处分发清单漂移检查，不等于行为验证；无需因仅修改文档而跑安装/发布。
 - Node 测试通配符命令适用于会展开 glob 的 shell；Windows PowerShell 请显式列出匹配文件，不能假设 Unix shell 展开行为。部分进程/平台测试会按环境跳过，必须报告。
 - 定向 Python 示例：`python3 -B -m unittest discover -s tests -p 'test_token_rate.py'`；Node 示例：`node --test tests/overlay-rate.test.cjs`。范围扩大时再运行上面的全套命令。
 
@@ -225,7 +230,7 @@ node --check web/zusage-sidecar.mjs
 - 用户可见文案沿用现有字典/语言分支：桌面浮层独立保存 `zusage3.lang` 并跟随 `--font-mono`/`--ui-font-size`，CLI 使用配置 `lang`，Web 跟随宿主语言且布局/字体独立；不能假设共用开关。市场条目保留 `description_i18n`，不为改显示名擅改 slug、市场名、命令或配置键。
 - 配置键、默认值、协议、兼容性变更时更新 `config.example.json`、相关 README、[用户指南](docs/user-guide.md)、插件 README/命令/hooks/技能；设计或发布链变化同时检查维护/设计文档。
 - JSON 示例不得含注释，路径占位须说明替换；检查仓库相对链接、标题锚点及示例能否解析。
-- 当前文档有已知滞后（README 与用户指南的命令命名差异、设计笔记「空闲零进程」与 `current` 窗口表述、Web 文档 `node:sqlite` 与全局「不联网」表述）：完整清单见 [.zcode/rules/docs.md](.zcode/rules/docs.md)。修改对应领域时结合源码/契约测试核对，不顺手改业务逻辑或宣称正式渠道已有 main 功能。
+- 文档核对要点（命令命名与命名空间、设计笔记的速度两态/常驻进程/`current` 口径、Web 文档依赖说明与分项联网边界）见 [.zcode/rules/docs.md](.zcode/rules/docs.md)。修改对应领域时结合源码/契约测试核对，不顺手改业务逻辑或宣称正式渠道已有 main 功能。
 
 ## 8. 发布与外部操作边界
 

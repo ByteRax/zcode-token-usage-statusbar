@@ -12,6 +12,8 @@ diag-*.json
 !.zcode/skills/zcode-github-release/
 !.zcode/skills/zcode-issue-pr-resolver/
 !.zcode/skills/zcode-review-fix-merge/
+!.zcode/skills/zcode-prd-to-spec/
+!.zcode/skills/source-feature-adaptation/
 !.zcode/rules/
 config.json
 .update-baseline.json
