@@ -237,7 +237,7 @@ test('text escaping: model/session names cannot break out of card attributes', (
   assert.match(card, /&quot;&gt;&lt;b&gt;x&lt;\/b&gt;/);
 });
 
-test('V2 card has two tab rows, time pill, 16-bar chart, ten-band legend and no legacy basis/footnote', () => {
+test('V2 header is a single row (title left, dual tab groups right); stats time lives in chart head; legend intact (v278)', () => {
   const ctx = makeCtx();
   ctx.__h = fixture();
   const o = { speedHistory: ctx.__h, sel: { range: 'project', period: 'week', dim: 'time', sid: 'sess_main' },
@@ -245,11 +245,27 @@ test('V2 card has two tab rows, time pill, 16-bar chart, ten-band legend and no 
   ctx.__o = o;
   const html = vm.runInContext('speedCardV2HTML(__o)', ctx);
   assert.match(html, /生成速度/);
-  assert.match(html, /zu-sv-range/);
   assert.equal((html.match(/data-sv-group="range"/g) || []).length, 5, '4 range tabs + row');
   assert.equal((html.match(/data-sv-group="period"/g) || []).length, 6, '5 period tabs + row');
   assert.doesNotMatch(html, /zu-sv-dimsel/, 'dimension select removed (v272)');
+  // 单行 Header：标题与双 Tab 组同容器（范围在前、时间在后），旧独立筛选行删除
+  const bodyStart = html.indexOf('zu-speed-body');
+  assert.ok(bodyStart > 0, 'body marker present');
+  const head = html.slice(0, bodyStart);
+  const body = html.slice(bodyStart);
+  assert.match(head, /zu-sv-head[^]*zu-sv-title">生成速度/, 'title inside the header row');
+  assert.match(head, /zu-sv-head[^]*data-sv-group="range"[^]*data-sv-group="period"/,
+    'scope group before period group, both inside the header');
+  assert.equal((html.match(/zu-sv-filter/g) || []).length, 1, 'standalone filter row removed (v278)');
+  assert.doesNotMatch(head, /zu-sv-range/, 'no time capsule in the header (v278)');
+  // 统计时间：唯一 .zu-sv-range 位于图表标题栏右端，title 挂完整格式区间
+  assert.equal((html.match(/zu-sv-range/g) || []).length, 1, 'single range element, in chart head only');
+  assert.match(body, /zu-sc-head[^]*?zu-sv-range/, 'range sits in the chart title bar');
+  assert.match(body, /zu-sv-range" title="\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} – /,
+    'hover shows full YYYY-MM-DD HH:mm:ss range');
   assert.match(html, /单位：t\/s/);
+  assert.ok(body.indexOf('zu-sc-unit') >= 0 && body.indexOf('zu-sc-unit') < body.indexOf('zu-sv-range'),
+    'unit follows the chart title; range is the far-right element');
   assert.match(html, /zu-sv-legend/);
   assert.equal((html.match(/zu-sv-li/g) || []).length, 10, 'ten bands');
   assert.doesNotMatch(html, /zu-basis|统计口径|均值参考|zu-pj-time/);
@@ -268,6 +284,9 @@ test('live status is a note, not the history card title; estimate stays separate
   assert.match(plain, /历史统计/);
   assert.doesNotMatch(plain, /不含进行中请求/, 'wording removed per user spec (v273)');
   assert.match(plain, /平均速度/);
+  assert.match(plain, /zu-sl-title">平均速度<\/span><span class="zu-sl-hist">历史统计/,
+    'v278 title layer: 平均速度 as card title + small history tag');
+  assert.doesNotMatch(plain, /zu-sl-k[ "]/, '.zu-sl-k label row removed (v278)');
   const busy = mk({ statusText: '工具执行中', speedValue: 88.8, kind: 'estimate' });
   assert.doesNotMatch(busy, /zu-sl-title">工具执行中/, 'live status must not be the card title');
   assert.doesNotMatch(busy, /Σ有效输出/, 'formula line removed in v263');
@@ -683,4 +702,45 @@ test('win-leave downgrades to a cancellable 400ms grace instead of force-hide (v
   assert.equal(rst.fired.length, 1, 'grace expiry fires once');
   assert.equal(rst.fired[0][0], true);
   assert.match(rst.fired[0][1], /win-leave:edge/);
+});
+
+test('chart head carries the stats time at the far end with full-format hover title (v278 §5)', () => {
+  const ctx = makeCtx(); ctx.__h = fixture();
+  const an = analyze(ctx, { range: 'session', period: 'recent', dim: 'time' });
+  ctx.__an = an;
+  ctx.__o = { fmtTok: String, fmtCnt: String, fmtMoney: u => '¥' + u.toFixed(2) };
+  const html = vm.runInContext('spdChartHTML(__an, -1, __o)', ctx);
+  assert.match(html, /zu-sc-head[^]*zu-sv-range/, 'range rendered inside the chart title bar');
+  assert.match(html, /zu-sv-range" title="\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} – /,
+    'hover title carries the full YYYY-MM-DD HH:mm:ss range');
+  assert.ok(html.indexOf('zu-sc-unit') >= 0 && html.indexOf('zu-sc-unit') < html.indexOf('zu-sv-range'),
+    'unit sits next to the chart title; stats time is the far-right element');
+});
+
+test('v278 CSS: header wraps as a unit, filter right-aligned, stats time pill-free', () => {
+  const css = source.slice(source.indexOf('.zu-sv-head{display:flex'),
+    source.indexOf('/* v232 速度柱状图：左读数卡'));
+  assert.match(css, /\.zu-sv-head\{[^}]*flex-wrap:wrap/, 'narrow-width header degrades by wrapping (§4.2)');
+  assert.match(css, /\.zu-sv-filter\{[^}]*margin-left:auto/, 'dual tab groups right-aligned as one block');
+  assert.match(css, /\.zu-sv-filter\{[^}]*justify-content:flex-end/, 'wrapped tab row stays right-aligned');
+  assert.doesNotMatch(css, /\.zu-sv-range\{[^}]*border-radius:999px/, 'capsule pill styling removed (v278)');
+  assert.match(css, /\.zu-sv-range\{[^}]*margin-left:auto/, 'range pushed to the chart-head far end');
+  assert.match(css, /\.zu-sv-root \.zu-sl-hist\{/, 'history tag class styled');
+});
+
+test('stats-time compact format follows §5.4: no year within same month, years across months (v278)', () => {
+  const ctx = makeCtx();
+  const r = vm.runInContext(`(() => {
+    const T = (y, mo, d, h, m) => new Date(y, mo, d, h, m).getTime();
+    return {
+      sameDay: spdRangeText(T(2026, 10, 6, 15, 26), T(2026, 10, 6, 18, 7)),
+      sameMonth: spdRangeText(T(2026, 10, 5, 16, 33), T(2026, 10, 6, 17, 29)),
+      crossMonth: spdRangeText(T(2026, 9, 31, 16, 33), T(2026, 10, 6, 17, 29)),
+      crossYear: spdRangeText(T(2025, 11, 31, 23, 0), T(2026, 0, 2, 1, 0))
+    };
+  })()`, ctx);
+  assert.equal(r.sameDay, '11/06 15:26 – 18:07', 'same day: no year');
+  assert.equal(r.sameMonth, '11/05 16:33 – 11/06 17:29', 'same-month cross-day: no year on either end');
+  assert.equal(r.crossMonth, '2026/10/31 16:33 – 2026/11/06 17:29', 'cross-month: year on both ends');
+  assert.equal(r.crossYear, '2025/12/31 23:00 – 2026/01/02 01:00', 'cross-year: year on both ends');
 });
