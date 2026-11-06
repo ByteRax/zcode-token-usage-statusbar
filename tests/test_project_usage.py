@@ -184,7 +184,7 @@ class ProjectUsageAggTests(FixtureBase):
             self.usage(con, "r1", "m1", total=100)
             p1 = zusage._project_usage(con, "m1")
             self.assertEqual(p1["total"], 100)
-            full = (zusage._db_cache_key(con), ("proj_repo", False))
+            full = (zusage._db_cache_key(con), ("proj_repo", "/repo", False))   # 键含目录（issue #248）
             self.assertIn(full, zusage._PROJ_CACHE)
             self.usage(con, "r2", "m1", turn="t2", total=200)
             self.assertEqual(zusage._project_usage(con, "m1")["total"], 100, "TTL 内命中旧值")
@@ -226,6 +226,76 @@ class ProjectUsageAggTests(FixtureBase):
         self.assertEqual(full["models"][0]["total"], 100)
         light = zusage._light_snapshot(con, "m1", {"context_window": 200000})
         self.assertNotIn("models", light)
+
+
+class ProjectSlugCollisionTests(FixtureBase):
+    """issue #248：宿主 project_id slug 剥非 ASCII，同父目录纯中文目录名项目坍缩共享
+    父目录 project_id——聚合按归一化目录等值过滤，碰撞项目互不混入。"""
+
+    COLLID = "proj_d-projects-shared"
+
+    def test_cjk_slug_collision_filtered_by_directory(self):
+        con = self.fixture()
+        self.sess(con, "m1", project=self.COLLID, directory="D:\\Projects\\Shared\\项目甲")
+        self.sess(con, "m2", project=self.COLLID, directory="D:\\Projects\\Shared\\项目乙")
+        self.sess(con, "sx", project=self.COLLID,
+                  directory="D:\\Projects\\Shared\\项目甲", parent="m1")   # 甲的子代理
+        self.usage(con, "r1", "m1", total=100)
+        self.usage(con, "r2", "m2", total=500)
+        self.usage(con, "r3", "sx", total=50)
+        p = zusage._project_usage(con, "m1")
+        self.assertEqual(p["sessions"], 2)      # m1+其子代理；乙不计入
+        self.assertEqual(p["requests"], 2)
+        self.assertEqual(p["total"], 150)
+        self.assertEqual(p["name"], "项目甲")    # v229 显示名保留原始 Unicode
+        self.assertEqual(zusage._project_usage(con, "m2")["total"], 500)   # 乙视角只统计乙
+
+    def test_directory_normalization_equivalence(self):
+        # 过滤键归一化：反斜杠/正斜杠、尾分隔、ASCII 大小写等价（Windows 不区分大小写）
+        con = self.fixture()
+        self.sess(con, "m1", project=self.COLLID, directory="D:\\Projects\\Shared\\项目甲")
+        self.sess(con, "m2", project=self.COLLID, directory="d:/projects/shared/项目甲/")
+        self.sess(con, "m3", project=self.COLLID, directory="D:\\Projects\\Shared\\项目乙")
+        self.usage(con, "r1", "m1", total=100)
+        self.usage(con, "r2", "m2", total=200)
+        self.assertEqual(zusage._project_usage(con, "m1")["total"], 300)
+        self.assertEqual(zusage._project_usage(con, "m3")["total"], 0)
+
+    def test_collision_missing_directory_excluded(self):
+        # 当前会话有目录锚点：directory 缺失的同 project_id 会话无法证明归属，不计入
+        con = self.fixture()
+        self.sess(con, "m1", project=self.COLLID, directory="D:\\Projects\\Shared\\项目甲")
+        self.sess(con, "m2", project=self.COLLID, directory=None)
+        self.usage(con, "r1", "m1", total=100)
+        self.usage(con, "r2", "m2", total=500)
+        self.assertEqual(zusage._project_usage(con, "m1")["total"], 100)
+
+    def test_no_anchor_keeps_legacy_full_scope(self):
+        # 当前会话 directory 缺失（旧库形态）：无锚点不过滤，保持原全量口径；
+        # 有目录的对端不得被空锚点误剔（钉住 `not pkey or …` 短路豁免）
+        con = self.fixture()
+        self.sess(con, "m1", directory=None)
+        self.sess(con, "m2", directory=None)
+        self.sess(con, "m3", directory="/repo")
+        self.usage(con, "r1", "m1", total=100)
+        self.usage(con, "r2", "m2", total=500)
+        self.usage(con, "r3", "m3", total=1000)
+        self.assertEqual(zusage._project_usage(con, "m1")["total"], 1600)
+
+    def test_file_db_cache_key_includes_directory(self):
+        # 同 project_id 两个碰撞项目先后查询：TTL 内第二查不得命中甲的缓存值（键含目录）
+        with tempfile.TemporaryDirectory() as td:
+            con = sqlite3.connect(str(Path(td) / "db.sqlite"))
+            self.addCleanup(con.close)
+            con.row_factory = sqlite3.Row
+            con.executescript(SCHEMA)
+            self.sess(con, "m1", project=self.COLLID, directory="D:\\Projects\\Shared\\项目甲")
+            self.sess(con, "m2", project=self.COLLID, directory="D:\\Projects\\Shared\\项目乙")
+            self.usage(con, "r1", "m1", total=100)
+            self.usage(con, "r2", "m2", total=500)
+            self.assertEqual(zusage._project_usage(con, "m1")["total"], 100)
+            self.assertEqual(zusage._project_usage(con, "m2")["total"], 500)
+            self.assertEqual(zusage._project_usage(con, "m1")["total"], 100)
 
 
 class ProjectSnapshotInjectTests(FixtureBase):
