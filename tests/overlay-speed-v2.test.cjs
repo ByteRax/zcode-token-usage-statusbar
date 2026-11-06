@@ -744,3 +744,25 @@ test('stats-time compact format follows §5.4: no year within same month, years 
   assert.equal(r.crossMonth, '2026/10/31 16:33 – 2026/11/06 17:29', 'cross-month: year on both ends');
   assert.equal(r.crossYear, '2025/12/31 23:00 – 2026/01/02 01:00', 'cross-year: year on both ends');
 });
+
+test('V2 card root carries the selection key; both rebuild paths preserve h-scroll per key (v279)', () => {
+  const ctx = makeCtx();
+  ctx.__h = fixture();
+  const o = { speedHistory: ctx.__h, sel: { range: 'project', period: 'week', dim: 'time', sid: 'sess_main' },
+    live: null, segsHover: -1, fmtTok: String, fmtCnt: String, fmtMoney: u => '¥' + u.toFixed(2) };
+  ctx.__o = o;
+  const html = vm.runInContext('speedCardV2HTML(__o)', ctx);
+  assert.match(html, /zu-sv-root" data-sv-key="project\|week"/, 'root carries range|period key');
+  // tpsTip 重编分支：捕获旧 DOM 横滚 + 同键回填（结构锁，行为由 drawTip v232 同款机制佐证）
+  const showFn = source.slice(source.indexOf('  function showTpsTip(el) {'),
+    source.indexOf('  function hideTpsTip() {'));
+  assert.match(showFn, /zu-sc-wrap[\s\S]*zu-sv-root[\s\S]*data-sv-key[\s\S]*scrollLeft/,
+    'showTpsTip captures scrollLeft with the selection key before rebuild');
+  assert.match(showFn, /scrollLeft = st0\.x/, 'restore only when key matches');
+  // 全量 tip：横滚保留扩展到重开路径（keepTop 不再是捕获前提）+ 同键守卫
+  const drawFn = source.slice(source.indexOf('    function drawTip(el, keepTop) {'),
+    source.indexOf('    function showTipFor(el) {'));
+  assert.match(drawFn, /oldChartKey/, 'drawTip carries the old selection key');
+  assert.match(drawFn, /oldChartL = oc\.scrollLeft;\n        \}\n      \}/,
+    'capture no longer gated on keepTop (v279 reopen path)');
+});
