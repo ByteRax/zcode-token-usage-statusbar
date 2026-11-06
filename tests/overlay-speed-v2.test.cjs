@@ -393,6 +393,13 @@ function makeTabCtx() {
     const tipFor = { __tip: null };
     const tip = { innerHTML: "" };
     function drawTip(el, keepTop) { calls.draw.push([el === tipFor, keepTop]); tip.innerHTML = String(el.__tip || ""); }
+    function speedRebuildNow() {
+      if (tipFor && typeof speedTipRebuild === "function") {
+        tipFor.__tip = speedTipRebuild(speedChartHover, speedSel);
+        drawTip(tipFor, true);
+      }
+    }
+    function scheduleSpeedRebuild() { speedRebuildNow(); }   // v275 切片：无 rAF，同步等价（与源码 fallback 同契约）
     const speedTipRebuild = (curHover, curSel) => {
       const out = speedCardV2HTML({ speedHistory: ${JSON.stringify(fixture())},
         sel: Object.assign({ sid: "sess_main" }, curSel), live: null, segsHover: curHover,
@@ -607,4 +614,51 @@ test('empty state carries the longer-range hint (§4.2)', () => {
     live: null, segsHover: -1, fmtTok: String, fmtCnt: String, fmtMoney: null })`, ctx);
   assert.match(html, /尝试选择更长时间范围/, 'empty state suggests a longer range');
   assert.match(html, /zu-sv-empty-hint/);
+});
+
+// v275：快速来回切 Tab 的 rAF 合并——同步重编风暴（用户实报「卡死」）与
+// pointermove 保活（mousemove 节流盲区让 mouseInBar 停留 false）。
+test('rapid tab ping-pong coalesces rebuilds into one rAF frame (v275)', () => {
+  const ctx = makeCtx();
+  // mock rAF：手动 flush，记录排队次数
+  ctx.requestAnimationFrame = function (fn) { ctx.__rafQueue.push(fn); return ctx.__rafQueue.length; };
+  ctx.cancelAnimationFrame = function () {};
+  const st = vm.runInContext(`(() => {
+    const calls = { draw: 0 };
+    let speedSel = { range: "recent", period: "recent", dim: "time", focus: "" };
+    let speedChartHover = -1, speedInteractAt = 0, speedRebuildPending = 0;
+    const tipFor = { __tip: null };
+    const tip = { innerHTML: "" };
+    function drawTip(el) { calls.draw++; el && (el.__tip = tip.__tip = speedTipRebuild(speedChartHover, speedSel)); }
+    const speedTipRebuild = (ch, cs) => "\\u0001" + speedCardV2HTML({ speedHistory: ${JSON.stringify(fixture())},
+      sel: Object.assign({ sid: "sess_main" }, cs), live: null, segsHover: ch,
+      fmtTok: String, fmtCnt: String, fmtMoney: u => "¥" + u.toFixed(2) });
+    ${tabFn}
+    function scheduleSpeedRebuild() {
+      if (speedRebuildPending) return;
+      if (typeof requestAnimationFrame !== "function") { speedRebuildNow(); return; }
+      speedRebuildPending = requestAnimationFrame(function () { speedRebuildPending = 0; speedRebuildNow(); });
+    }
+    function speedRebuildNow() {
+      if (tipFor && typeof speedTipRebuild === "function") {
+        tipFor.__tip = speedTipRebuild(speedChartHover, speedSel);
+        drawTip(tipFor, true);
+      }
+    }
+    const activate = (grp, val) => {
+      const node = { closest: sel => sel === ".zu-sv-tab" ? { getAttribute: k => k === "data-sv-group" ? grp : val } : null };
+      speedTabActivate({ target: node, stopPropagation: () => {} });
+    };
+    // 快速来回连点 6 次：同帧只应排一个重编任务
+    activate("range", "project"); activate("range", "all");
+    activate("range", "session"); activate("period", "week");
+    activate("period", "month"); activate("range", "recent");
+    const queued = __rafQueue.length;
+    __rafQueue.splice(0).forEach(fn => fn());   // flush 一帧
+    return { queued, draws: calls.draw, sel: speedSel };
+  })()`, Object.assign(ctx, { __rafQueue: [] }));
+  assert.equal(st.queued, 1, '6 rapid switches coalesce into ONE rebuild task');
+  assert.equal(st.draws, 1, 'one innerHTML rebuild per frame');
+  assert.equal(st.sel.range, 'recent', 'last state wins');
+  assert.equal(st.sel.period, 'month', 'period switch not lost');
 });
