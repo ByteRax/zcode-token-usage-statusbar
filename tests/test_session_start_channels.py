@@ -215,6 +215,29 @@ class SessionStartChannelTests(unittest.TestCase):
         self.assertNotIn("install-overlay 重试", context)
         self.assertIn("uninstall-overlay", context)
 
+    def test_pending_nudge_names_host_incompatibility_when_build_unregistered(self):
+        # issue #247：已装版本未登记适配当前宿主 build 时，反复「已排定」必须讲清为什么
+        # 排定也修不好（需要升级插件），且自动更新绕过 1h 限频立即尝试。
+        self.install.side_effect = lambda before_publish: False
+        with mock.patch.object(self.installer, "_host_build", return_value="3.17.2"), \
+                mock.patch.object(self.installer, "_host_registered", return_value=False), \
+                mock.patch.object(self.pi, "pending_tmp", return_value={"operation": "install"}), \
+                mock.patch.object(self.pi, "client_running", return_value=True):
+            output, _ = self.invoke()
+        context = self.context(output)
+        self.assertIn("已排定", context)
+        self.assertIn("未登记适配 ZCode 3.17.2", context)
+        self.updater.start_auto_update.assert_called_once_with(self.runtime, self.pi, force=True)
+
+    def test_session_record_carries_host_diagnostic(self):
+        # issue #247：plugin-session-start.json 带 host 诊断，排障不再只有「补丁已排定」；
+        # 夹具 asar 无 package.json，hostBuild 如实为 None（探测失败不猜）。
+        self.invoke()
+        record = json.loads((self.runtime / "plugin-session-start.json").read_text(encoding="utf-8"))
+        self.assertIsNone(record["host"]["hostBuild"])
+        self.assertTrue(record["host"]["pluginVersion"])
+        self.assertIn(record["host"]["injected"], (True, False))
+
     def test_pending_without_running_client_keeps_retry_hint(self):
         # 待收尾包有效但客户端未在跑（如杀软瞬时占用的 POSIX 场景）：重试仍然有意义，
         # 维持原有提示。

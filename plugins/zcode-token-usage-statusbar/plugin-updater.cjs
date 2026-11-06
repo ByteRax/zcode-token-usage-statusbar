@@ -114,11 +114,21 @@ function readState(file, currentTime) {
       }
     } catch (e) { }
   }
+  // lastError：最近一次检查/安装失败的错误消息（检查/安装成功即清）。与 lastFailure
+  // （安装目标身份）互补——检查阶段失败（网络/渠道/宿主 CLI 无输出）此前完全不落盘，
+  // 浮层不在时 plugin-update.json 里没有任何痕迹（issue #247）。损坏即丢弃。
+  let lastError = null;
+  if (saved.lastError && typeof saved.lastError === "object" && !Array.isArray(saved.lastError)) {
+    const le = saved.lastError;
+    if (typeof le.message === "string" && le.message && Number.isSafeInteger(le.at) && le.at > 0 && le.at <= currentTime) {
+      lastError = { message: le.message.slice(0, 500), at: le.at };
+    }
+  }
   return { checkedAt: timestamp(saved.checkedAt), lastAttempt: timestamp(saved.lastAttempt),
     pendingSync: saved.pendingSync === true, pendingVersion,
     pendingPid: Number.isSafeInteger(saved.pendingPid) && saved.pendingPid > 0 ? saved.pendingPid : 0,
     pendingRelease: saved.pendingRelease === undefined || saved.pendingRelease === null ? null : saved.pendingRelease,
-    lastFailure };
+    lastFailure, lastError };
 }
 function legacyLockBusy(runtime) {
   // An already-running wx updater cannot honor v2 locks. Respect its live owner,
@@ -382,25 +392,39 @@ function createUpdater(options) {
   function load() { Object.assign(state, readState(stateFile, now())); }
   function save() {
     writeJson(stateFile, { checkedAt: state.checkedAt, lastAttempt: state.lastAttempt,
-      pendingSync: state.pendingSync, pendingVersion: state.pendingVersion, pendingPid: state.pendingPid, pendingRelease: state.pendingRelease, lastFailure: state.lastFailure || null });
+      pendingSync: state.pendingSync, pendingVersion: state.pendingVersion, pendingPid: state.pendingPid, pendingRelease: state.pendingRelease, lastFailure: state.lastFailure || null, lastError: state.lastError || null });
   }
   function diagnostics(data) {
     const errors = (data.diagnostics || []).filter((d) => d.severity === "error" && (!d.pluginId || d.pluginId === PLUGIN_ID));
     if (errors.length) throw new Error(errors.map((d) => d.message).join("; "));
   }
+  async function refreshMarketplace() {
+    // 宿主 CLI 的 GitHub zipball 快路径在网络劣化（codeload 慢/超时）或版本回归时可能
+    // 静默失败（exit 0 无输出 → runFile 报「没有返回有效 JSON」）。市场缓存清单是
+    // Release 渠道安装与清单兜底检查的版本源，刷新失败先重试；仍失败则给出可行动的
+    // 错误，不让它伪装成「检查过了、什么都没发生」（issue #247）。
+    let lastError = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        const market = await cli(["marketplace", "update", "zusage-marketplace"]);
+        diagnostics(market);
+        return market;
+      } catch (error) { lastError = error; }
+    }
+    throw new Error("市场清单刷新连续 3 次失败: " + String((lastError && lastError.message) || lastError));
+  }
   async function catalogFallback(source, cause) {
     // GitHub API 检查失败（限流/不可达）时退回注册 ref 的渠道清单：清单刷新走 zipball
     // 下载桶不占 API 配额，渠道身份与安装校验链都不变。兜底再失败则合并原因一起上报。
     try {
-      const market = await cli(["marketplace", "update", "zusage-marketplace"]);
-      diagnostics(market);
+      await refreshMarketplace();
       if (!isDeepStrictEqual(channel(), source)) throw new Error("更新期间市场来源已变化");
       return releaseChannel.githubReleaseFromCatalog(readReleaseCatalog(), source.repository);
     } catch (error) {
       throw new Error(String((cause && cause.message) || cause) + "；渠道清单回退也失败: " + error.message);
     }
   }
-  async function check(auto = false, install = false) {
+  async function check(auto = false, install = false, force = false) {
     if (busy) { if (!auto) publish(); return; }
     refreshLocal();
     if (!state.supported) { state.phase = localError ? "error" : "unavailable"; state.error = localError; publish(); return; }
@@ -415,7 +439,10 @@ function createUpdater(options) {
       load();
       if (state.pendingSync && await recoverPending()) return;
       refreshLocal();
-      if (auto && (!state.auto || (state.lastAttempt && now() - state.lastAttempt < INTERVAL_MS))) return;
+      // force：hook 兼容性触发（已装版本未登记适配当前宿主 build，issue #247）绕过 1h
+      // 限频立即尝试升级；自动更新开关、锁与 busy 门控全部不变。
+      if (auto && !state.auto) return;
+      if (auto && !force && state.lastAttempt && now() - state.lastAttempt < INTERVAL_MS) return;
       state.phase = "checking"; state.error = ""; publish();
       state.lastAttempt = now();
       save();
@@ -425,8 +452,7 @@ function createUpdater(options) {
       state.releaseUrl = ""; selectedRelease = null; selectedChannel = source; state.checkedVia = "";
       if (source.kind === "release" && source.flavor === "gitcode") {
         // GitCode 渠道：宿主从注册 ref 拉取的渠道清单是唯一版本源，不调 GitCode API。
-        const market = await cli(["marketplace", "update", "zusage-marketplace"]);
-        diagnostics(market);
+        await refreshMarketplace();
         if (!isDeepStrictEqual(channel(), source)) throw new Error("更新期间市场来源已变化");
         selectedRelease = releaseChannel.gitcodeReleaseFromCatalog(readReleaseCatalog(), source.repository);
         state.checkedVia = "release-catalog";
@@ -450,6 +476,7 @@ function createUpdater(options) {
         state.currentVersion = record.version;
         maybeClearFailure();
         const newer = compareVersions(state.latestVersion, record.version) > 0;
+        state.lastError = null;   // 检查成功：上次失败记录随之清除
         state.phase = newer ? "available" : "current"; state.checkedAt = now(); save(); publish();
         if ((auto || install) && newer) {
           const overview = listOverview(await cli(["list"])); diagnostics(overview);
@@ -459,8 +486,7 @@ function createUpdater(options) {
         }
       } else {
         state.checkedVia = "market";
-        const market = await cli(["marketplace", "update", "zusage-marketplace"]);
-        diagnostics(market);
+        await refreshMarketplace();
         const overview = listOverview(await cli(["list", "--available"]));
         diagnostics(overview);
         if (!isDeepStrictEqual(channel(), source)) throw new Error("更新期间市场来源已变化");
@@ -471,6 +497,7 @@ function createUpdater(options) {
         state.latestVersion = available.version || "";
         maybeClearFailure();
         const newer = compareVersions(state.latestVersion, state.currentVersion) > 0;
+        state.lastError = null;   // 检查成功：上次失败记录随之清除
         state.phase = newer ? "available" : "current";
         state.checkedAt = now(); save(); publish();
         if ((auto || install) && newer && installed.enabled !== false) await installUpdate(auto);
@@ -478,6 +505,12 @@ function createUpdater(options) {
     } catch (e) {
       state.phase = "error"; state.error = e.message; state.progress = null;
       maybeClearFailure();   // 检查失败也不能让已过时的失败标注残留（当前版本已追上目标时）
+      // 检查/安装失败持久化（取消类不算失败，与 recordInstallFailure 同口径）：
+      // 浮层不在时 plugin-update.json 是失败原因的唯一痕迹（issue #247）。
+      if (!e || e.cancel !== true) {
+        state.lastError = { message: String((e && e.message) || e).slice(0, 500), at: now() };
+        try { save(); } catch (saveError) { }
+      }
     } finally {
       if (release) await release();
       busy = false;
@@ -564,8 +597,23 @@ function createUpdater(options) {
         // Release 资产错代（API 路径由行内 size 强比对承担等价约束）。
         if (selectedRelease.catalogSha256 !== undefined && downloaded.manifest.asset.sha256 !== selectedRelease.catalogSha256) throw new Error("发布 manifest 与渠道清单的 SHA256 不一致");
         state.progress = { stage: "verify" }; publish();
-        const market = await cli(["marketplace", "update", "zusage-marketplace"]); diagnostics(market);
+        await refreshMarketplace();
         if (!isDeepStrictEqual(channel(), currentChannel)) throw cancelError("更新期间市场来源已变化");
+        // 清单新鲜度（issue #247）：宿主 CLI 静默失败（exit 0 但没拉取）时缓存清单停在
+        // 旧版，随后的 plugins install 会照旧装旧版、最后报误导性的「未提交新版安装记录」。
+        // 这里先比对清单版本与已选 Release，把根因点名。
+        let catalogRelease;
+        try {
+          const catalog = readReleaseCatalog();
+          catalogRelease = currentChannel.flavor === "gitcode"
+            ? releaseChannel.gitcodeReleaseFromCatalog(catalog, currentChannel.repository)
+            : releaseChannel.githubReleaseFromCatalog(catalog, currentChannel.repository);
+        } catch (error) {
+          throw new Error("市场清单刷新后读取不到有效清单: " + error.message);
+        }
+        if (compareVersions(catalogRelease.version, selectedRelease.version) < 0)
+          throw new Error("市场清单刷新后仍为 v" + catalogRelease.version + "，宿主未能拉取到 v"
+            + selectedRelease.version + "；可手动执行 zcode plugins marketplace update zusage-marketplace 排查，或改用 GitCode 镜像渠道");
         record = refreshLocal();
         if (!record) throw cancelError("插件已卸载，更新已取消");
         if (auto && !state.auto) { abandon(); return; }
@@ -660,13 +708,13 @@ function createUpdater(options) {
       await check(false, true);
     }
   }
-  async function tick() {
+  async function tick(force = false) {
     refreshLocal();
     if (localError) { state.phase = "error"; state.error = localError; }
     publish();
     if (busy) return;
     load();
-    if (state.supported && (state.pendingSync || (state.auto && (!state.lastAttempt || now() - state.lastAttempt >= INTERVAL_MS)))) await check(true);
+    if (state.supported && (state.pendingSync || (state.auto && (!state.lastAttempt || now() - state.lastAttempt >= INTERVAL_MS) || force))) await check(true, false, force);
   }
   function noteRuntimeAcked() {
     // v258：主进程热替换销账后同步红点——marker 已被 ack 清除时立即撤下（publish 内
@@ -682,14 +730,17 @@ function createUpdater(options) {
 async function runAutoCommand(argv) {
   if (argv[0] !== "--auto") throw new Error("仅支持 --auto 后台更新模式");
   const values = {};
-  for (let i = 1; i < argv.length; i += 2) {
+  let force = false;
+  for (let i = 1; i < argv.length; i++) {
+    if (argv[i] === "--force") { force = true; continue; }   // issue #247：兼容性触发绕过 1h 限频
     if (!["--resources", "--runtime"].includes(argv[i]) || !argv[i + 1]) throw new Error("无效自动更新参数");
     values[argv[i]] = argv[i + 1];
+    i++;
   }
   if (!values["--resources"] || !values["--runtime"]) throw new Error("缺少客户端或运行时目录");
   const updater = createUpdater({ runtime: path.resolve(values["--runtime"]), home: os.homedir(),
     resourcesPath: path.resolve(values["--resources"]), executable: process.execPath });
-  await updater.tick();
+  await updater.tick(force);
   const state = updater.status();
   process.stdout.write(JSON.stringify(state) + "\n");
   if (state.phase === "error") process.exitCode = 1;

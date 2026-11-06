@@ -63,6 +63,13 @@ class PluginAutoUpdateTests(unittest.TestCase):
         self.assertEqual(output.getvalue(), "")
         return result, errors.getvalue()
 
+    def launch_force(self):
+        output, errors = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(errors):
+            result = updater.start_auto_update(self.runtime, self.pi, force=True)
+        self.assertEqual(output.getvalue(), "")
+        return result, errors.getvalue()
+
     def assert_silent_skip(self):
         self.assertEqual(self.launch(), (False, ""))
         self.popen.assert_not_called()
@@ -83,6 +90,16 @@ class PluginAutoUpdateTests(unittest.TestCase):
         self.pi.zcode_exe_for.assert_not_called()
         self.popen.return_value.wait.assert_not_called()
         self.popen.return_value.communicate.assert_not_called()
+
+    def test_force_adds_only_the_flag(self):
+        # issue #247：兼容性触发（已装版本未登记适配宿主 build）绕过 1h 限频；
+        # argv 除追加 --force 外与普通启动逐字节一致。
+        self.assertEqual(self.launch_force(), (True, ""))
+        self.popen.assert_called_once()
+        args, _ = self.popen.call_args
+        self.assertEqual(args, ([str(self.executable), str(self.loader), "--auto",
+                                 "--resources", str(self.asar.parent), "--runtime",
+                                 str(self.runtime), "--force"],))
 
     def test_explicit_non_true_values_disable_updates(self):
         for value in (False, None, 0, 1, "true", "false", [], {}):

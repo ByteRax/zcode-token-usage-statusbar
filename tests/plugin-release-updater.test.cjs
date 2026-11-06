@@ -120,6 +120,8 @@ function fixture(t, settings = {}, customStorage = false, variant = "github") {
     if (args[0] === "marketplace") {
       assert.deepEqual(args, ["marketplace", "update", MARKET]);
       if (f.marketError) throw new Error(f.marketError);
+      // issue #247：宿主 CLI 静默失败（exit 0 空输出 → runFile 报「没有返回有效 JSON」）。
+      if (f.marketTransientFailures > 0) { f.marketTransientFailures -= 1; throw new Error("插件管理器没有返回有效 JSON"); }
       writeJson(catalogFile, f.catalog);
       if (f.afterMarket) await f.afterMarket();
       return { diagnostics: [] };
@@ -258,6 +260,38 @@ test("rate limit with a failing catalog fallback reports both causes and never i
   assert.match(status.error, /Release 请求失败 \(403\)/);
   assert.match(status.error, /渠道清单回退也失败/);
   assertNoInstall(f);
+});
+
+test("stale catalog after marketplace refresh is named as the cause, installer never launches (issue #247)", async (t) => {
+  const f = fixture(t);
+  f.setRelease("1.1.0");
+  const stale = clone(f.catalog);
+  stale.plugins[0].version = "1.0.9";
+  stale.plugins[0].source.url = `https://github.com/${REPOSITORY}/releases/download/v1.0.9/${PLUGIN}-v1.0.9.zip`;
+  // 模拟宿主 CLI「成功返回但没拉取」：清单停在旧版（3.17.2 静默失败回归）。
+  f.afterMarket = () => writeJson(f.catalogFile, stale);
+  await f.updater.request({ action: "update" });
+  assert.equal(f.updater.status().phase, "error");
+  assert.match(f.updater.status().error, /市场清单刷新后仍为 v1\.0\.9/);
+  assert.match(f.updater.status().error, /未能拉取到 v1\.1\.0/);
+  assert.equal(f.calls.filter((args) => args[0] === "install").length, 0);
+  assert.equal(f.syncs.length, 0);
+  assertCleaned(f);
+  const saved = JSON.parse(fs.readFileSync(path.join(f.runtime, "plugin-update.json"), "utf8"));
+  assert.equal(saved.lastFailure.version, "1.1.0");   // 失败目标身份照旧落盘
+  assert.match(saved.lastError.message, /市场清单刷新后仍为 v1\.0\.9/);
+});
+
+test("transient empty marketplace CLI output is retried and the update still completes (issue #247)", async (t) => {
+  const f = fixture(t);
+  f.setRelease("1.1.0");
+  f.marketTransientFailures = 2;   // 前两次静默失败，第三次成功
+  await f.updater.request({ action: "update" });
+  assert.equal(f.updater.status().phase, "updated");
+  assert.equal(f.calls.filter((args) => args[0] === "marketplace").length, 3);
+  assert.equal(f.calls.filter((args) => args[0] === "install").length, 1);
+  assert.equal(f.syncs.length, 1);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(f.runtime, "plugin-update.json"), "utf8")).lastError, null);
 });
 
 /* 「无正式版」与「超分页上限」是渠道健康信号而非故障（install-release §6），checkRelease

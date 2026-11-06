@@ -4,7 +4,7 @@ const assert = require("node:assert/strict");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { cliExecutable, createUpdater, compareVersions, INTERVAL_MS, PLUGIN_ID, listOverview } = require("../plugin-updater.cjs");
+const { cliExecutable, createUpdater, compareVersions, INTERVAL_MS, PLUGIN_ID, listOverview, runAutoCommand } = require("../plugin-updater.cjs");
 
 function fixture(t, settings = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "zusage-update-test-"));
@@ -222,18 +222,65 @@ test("missing manifest version or entry is an error, not up-to-date", async (t) 
   assert.equal(f.updater.status().phase, "error"); assert.equal(f.updater.status().checkedAt, 0);
   f.set({ missing: true }); await f.updater.request({ action: "check" }); assert.equal(f.updater.status().phase, "error");
 });
-test("network failure is visible and automatic retries are throttled", async (t) => {
+test("network failure is visible, marketplace refresh retries three times, and lastError persists (issue #247)", async (t) => {
   const f = fixture(t, { plugin_auto_update: true }); f.set({ error: "network unavailable" }); await f.updater.tick();
-  assert.equal(f.updater.status().phase, "error"); assert.match(f.updater.status().error, /network unavailable/);
-  await f.updater.tick(); assert.equal(f.calls.length, 1);
-  f.advance(3599999); await f.updater.tick(); assert.equal(f.calls.length, 1);
-  f.advance(1); await f.updater.tick(); assert.equal(f.calls.length, 2);
+  assert.equal(f.updater.status().phase, "error");
+  assert.match(f.updater.status().error, /市场清单刷新连续 3 次失败/);
+  assert.match(f.updater.status().error, /network unavailable/);
+  // 检查阶段失败也持久化 lastError：浮层不在时它是 plugin-update.json 里的唯一痕迹
+  assert.deepEqual(f.updater.status().lastError, { message: "市场清单刷新连续 3 次失败: network unavailable", at: 100000000 });
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(f.runtime, "plugin-update.json"), "utf8")).lastError,
+    { message: "市场清单刷新连续 3 次失败: network unavailable", at: 100000000 });
+  await f.updater.tick(); assert.equal(f.calls.length, 3);
+  f.advance(3599999); await f.updater.tick(); assert.equal(f.calls.length, 3);
+  f.advance(1); await f.updater.tick(); assert.equal(f.calls.length, 6);
   f.set({ error: null }); await f.updater.request({ action: "check" }); assert.equal(f.updater.status().phase, "available");
+  assert.equal(f.updater.status().lastError, null);   // 检查成功即清
+  assert.equal(JSON.parse(fs.readFileSync(path.join(f.runtime, "plugin-update.json"), "utf8")).lastError, null);
 });
 test("CLI error diagnostics are honored even on exit zero", async (t) => {
   const f = fixture(t); const u = createUpdater({ ...f.options,
     cli: async () => ({ diagnostics: [{ severity: "error", message: "market missing" }] }) });
-  await u.request({ action: "check" }); assert.equal(u.status().phase, "error"); assert.equal(u.status().error, "market missing");
+  await u.request({ action: "check" }); assert.equal(u.status().phase, "error"); assert.match(u.status().error, /market missing/);
+});
+test("market install failure persists both lastFailure and lastError with the same cause", async (t) => {
+  const f = fixture(t);
+  const u = createUpdater({ ...f.options, cli: async (args) => {
+    f.calls.push(args);
+    if (args[0] === "marketplace") return { diagnostics: [] };
+    if (args[0] === "list") {
+      if (args.includes("--available")) return { installed: [{ id: PLUGIN_ID, version: "1.0.0", enabled: true }],
+        available: [{ id: PLUGIN_ID, version: "1.1.0" }], diagnostics: [] };
+      return [{ id: PLUGIN_ID, version: "1.0.0", enabled: true, diagnostics: [] }];
+    }
+    if (args[0] === "update") return { ok: true, diagnostics: [] };   // CLI 声称成功但清单版本没前进
+    throw new Error("Unexpected CLI command");
+  } });
+  await u.request({ action: "update" });
+  assert.equal(u.status().phase, "error");
+  assert.match(u.status().error, /未提交新版安装记录/);
+  const saved = JSON.parse(fs.readFileSync(path.join(f.runtime, "plugin-update.json"), "utf8"));
+  assert.equal(saved.lastFailure.version, "1.1.0");       // 安装失败目标身份（既有语义，不变）
+  assert.equal(saved.lastFailure.channel, "market");
+  assert.match(saved.lastError.message, /未提交新版安装记录/);   // 失败原因同落盘（issue #247）
+});
+test("tick force bypasses the hourly throttle but never the auto-update opt-out (issue #247)", async (t) => {
+  const f = fixture(t, { plugin_auto_update: true });
+  await f.updater.tick();   // 首次检查并安装成功，lastAttempt 刚写
+  const count = f.calls.length;
+  await f.updater.tick(); assert.equal(f.calls.length, count);          // 1h 内普通 tick 不再查
+  await f.updater.tick(true); assert.equal(f.calls.length, count + 2);  // force 立即重查（已是最新 → 不安装）
+  assert.equal(f.updater.status().phase, "current");
+  const off = fixture(t, { plugin_auto_update: false });
+  await off.updater.tick(true); assert.equal(off.calls.length, 0);      // 显式关闭仍不更新
+});
+test("auto command accepts --force and rejects unknown flags (issue #247)", async (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "zusage-auto-cmd-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const runtime = path.join(dir, "runtime"); fs.mkdirSync(runtime);
+  await assert.doesNotReject(() => runAutoCommand(["--auto", "--force", "--resources", dir, "--runtime", runtime]));
+  await assert.rejects(() => runAutoCommand(["--auto", "--bogus", "x"]), /无效自动更新参数/);
+  await assert.rejects(() => runAutoCommand(["--auto"]), /缺少客户端或运行时目录/);
 });
 test("invalid config is never overwritten", async (t) => {
   const f = fixture(t); fs.writeFileSync(f.configFile, "{bad JSON");

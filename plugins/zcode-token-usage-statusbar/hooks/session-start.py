@@ -73,6 +73,13 @@ def main():
                   "source": payload.get("source", "") if isinstance(payload, dict) else "",
                   "sessionId": os.environ.get("ZCODE_SESSION_ID") or os.environ.get("CLAUDE_SESSION_ID") or "",
                   "result": result}
+        try:   # run_hook 的兼容性诊断（宿主 build × 已装版本 × 桥状态，issue #247）：排障不再只有「补丁已排定」
+            import overlay_install as _overlay_install
+            diag = getattr(_overlay_install, "LAST_DIAG", None)
+            if isinstance(diag, dict):
+                record["host"] = diag
+        except Exception:
+            pass
         overlay_install._atomic_write(runtime / "plugin-session-start.json",
                                      json.dumps(record, ensure_ascii=False, indent=2).encode("utf-8"))
     except Exception as e:

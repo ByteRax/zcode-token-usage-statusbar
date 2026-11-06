@@ -749,7 +749,7 @@ print(json.dumps(operations))
         self.updater.start_auto_update.side_effect = assert_runtime_ready
         result, _ = self.hook()
         self.assertEqual(result, {"suppressOutput": True})
-        self.updater.start_auto_update.assert_called_once_with(self.runtime, self.pi)
+        self.updater.start_auto_update.assert_called_once_with(self.runtime, self.pi, force=False)
         self.assertFalse((self.runtime / "config.json").exists())
 
     def test_update_failure_does_not_block_overlay_install(self):
@@ -766,8 +766,61 @@ print(json.dumps(operations))
         self.assertEqual(self.main("install")[0], 0)
         result, _ = self.hook()
         self.assertEqual(result, {"suppressOutput": True})   # v172 已注入无会话文字提醒
-        self.updater.start_auto_update.assert_called_once_with(self.runtime, self.pi)
+        self.updater.start_auto_update.assert_called_once_with(self.runtime, self.pi, force=False)
         self.pi.launch_monitor.assert_called_once()
+
+    def test_hook_forces_update_when_host_build_is_unregistered(self):
+        # issue #247：未注入且已装版本未登记适配当前宿主 build——只重装旧版修不好，
+        # 自动更新必须绕过 1h 限频立即尝试（force=True）；安装成功且桥正常时保持既有静默。
+        self.write_config({"asar_path": str(self.asar)})
+        self.write_asar(self.asar, version="9.9.9")
+        with mock.patch.object(self.installer, "_host_registered", return_value=False):
+            result, _ = self.hook()
+        self.assertEqual(result, {"suppressOutput": True})
+        self.updater.start_auto_update.assert_called_once_with(self.runtime, self.pi, force=True)
+
+    def test_compat_notice_fires_once_per_host_build_and_plugin_version(self):
+        # issue #247：已注入但渲染桥按未知版本跳过（skipped-unknown）→ 去重提示 +
+        # 二次强制更新；同一宿主版本 × 已装版本只提示一次。
+        self.write_config({"asar_path": str(self.asar)})
+        self.write_asar(self.asar, version="9.9.9")
+        self.assertEqual(self.main("install")[0], 0)   # 注入行由安装器写入（指向本临时运行目录）
+        with mock.patch.object(self.installer, "ensure_renderer_bridge",
+                               return_value={"status": "skipped-unknown", "version": "9.9.9"}), \
+                mock.patch.object(self.installer, "_host_registered", return_value=False):
+            output, _ = self.hook()
+        self.assertIn("未登记适配 ZCode 9.9.9", output["systemMessage"])
+        self.assertIn("v1.0.0", output["systemMessage"])
+        marker = json.loads((self.runtime / ".plugin-compat-notice.json").read_text(encoding="utf-8"))
+        self.assertEqual(marker, {"hostBuild": "9.9.9", "pluginVersion": "1.0.0"})
+        self.updater.start_auto_update.assert_has_calls(
+            [mock.call(self.runtime, self.pi, force=False), mock.call(self.runtime, self.pi, force=True)])
+        self.updater.start_auto_update.reset_mock()
+        with mock.patch.object(self.installer, "ensure_renderer_bridge",
+                               return_value={"status": "skipped-unknown", "version": "9.9.9"}), \
+                mock.patch.object(self.installer, "_host_registered", return_value=False):
+            output2, _ = self.hook()
+        self.assertNotIn("systemMessage", output2)   # 去重：不再提示（运行时动态桥兜底）
+        self.updater.start_auto_update.assert_has_calls(
+            [mock.call(self.runtime, self.pi, force=False), mock.call(self.runtime, self.pi, force=True)])
+
+    def test_compat_notice_includes_last_update_failure_reason(self):
+        # issue #247：plugin-update.json 的 lastError（检查阶段失败此前完全不落盘）进提示
+        self.runtime.mkdir(parents=True, exist_ok=True)
+        (self.runtime / "plugin-update.json").write_text(json.dumps(
+            {"lastError": {"message": "市场清单刷新连续 3 次失败: x", "at": 1}}), encoding="utf-8")
+        line = self.installer._compat_notice_line(self.runtime, "9.9.9")
+        self.assertIn("当前插件 v1.0.0 未登记适配 ZCode 9.9.9", line)
+        self.assertIn("最近一次自动更新失败：市场清单刷新连续 3 次失败: x", line)
+
+    def test_run_hook_publishes_host_diagnostic_for_session_start_record(self):
+        # LAST_DIAG 是 session-start.py 写入 plugin-session-start.json 的诊断来源；
+        # 夹具 package 名不满足渲染桥身份（@zcode/desktop），bridge 如实记 skipped-error。
+        self.write_config({"asar_path": str(self.asar)})
+        self.write_asar(self.asar, version="9.9.9")
+        self.hook()
+        self.assertEqual(self.installer.LAST_DIAG,
+                         {"hostBuild": "9.9.9", "pluginVersion": "1.0.0", "injected": True, "bridge": "skipped-error"})
 
     def test_windows_candidates_cover_custom_drive_program_files(self):
         # 回归：ZCode 装在 D:\Program Files\ZCode 等非默认位置时探测不到，
