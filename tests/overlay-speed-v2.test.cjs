@@ -900,3 +900,12 @@ test('v281: legend popup — hover/focus opens, mutual exclusion, escape, full l
     'descending storage looped backwards = ascending display (single source)');
   assert.match(build, /b\.cls === curCls/, 'highlight by band cls');
 });
+
+test('v282: legend popup width cap 800 and dock-aligned left edge', () => {
+  assert.match(source, /\.zu-sv-legend-tip\{max-width:min\(800px,calc\(100vw - 24px\)\)/, 'width cap 800');
+  const show = source.slice(source.indexOf('  function spdLegendTipShow(btn) {'),
+    source.indexOf('  spdLegendTip.addEventListener("mouseenter"'));
+  assert.match(show, /conversation-bottom-dock-transition/, 'left edge aligns to the host bottom dock');
+  assert.match(show, /dock && dock\.getBoundingClientRect/, 'graceful fallback when the dock is absent');
+  assert.match(show, /Math\.min\(Math\.max\(m, left\), Math\.max\(m, vw - m - lr\.width\)\)/, 'right-edge clamp still applies');
+});
