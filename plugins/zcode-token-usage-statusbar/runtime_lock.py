@@ -173,11 +173,31 @@ def ack_restart(runtime, loaded):
             return {"ok": True, "cleared": False}
         data = _read_marker(marker)
         loaded_at = loaded.get("_loadedAt")
+        hot_loaded = loaded.get("_hotLoadedAt")
         created_at = data.get("createdAt")
         if not isinstance(created_at, (int, float)) or isinstance(created_at, bool):
             created_at = marker.stat().st_mtime
-        if isinstance(loaded_at, (int, float)) and created_at * 1000 > loaded_at:
-            return {"ok": True, "cleared": False}
+        if isinstance(loaded_at, (int, float)) and not isinstance(loaded_at, bool) and created_at * 1000 > loaded_at:
+            # 本进程启动后才写入的 marker 默认不动（启动快照没见过这份通知）。唯一例外：
+            # 主进程在运行期热重载了全部相关模块——_hotLoadedAt[文件]=热替换完成时刻，
+            # 且 loaded 已持有 marker 记录的同一 digest（热替换加载的正是 marker 想让
+            # 重启后生效的字节）。inject-main.cjs 是 loader 自身，永远只能随进程重启
+            # 生效，不参与热销账。缺任何一项证据整单保留；下方 pending-install /
+            # installation 门控不受热时间戳影响（asar 替换必须真重启）。
+            hot_cleared = False
+            if isinstance(hot_loaded, dict):
+                hot_hashes = _hashes(data.get("hashes"))
+                if hot_hashes:
+                    hot_cleared = True
+                    for hot_key, hot_digest in hot_hashes.items():
+                        hot_stamp = hot_loaded.get(hot_key)
+                        if (hot_key == "inject-main.cjs" or loaded.get(hot_key) != hot_digest
+                                or not isinstance(hot_stamp, (int, float)) or isinstance(hot_stamp, bool)
+                                or hot_stamp < created_at * 1000):
+                            hot_cleared = False
+                            break
+            if not hot_cleared:
+                return {"ok": True, "cleared": False}
         installation = data.get("installation")
         if data.get("state") == "pending-install" or installation is not None:
             published_at = data.get("publishedAt")

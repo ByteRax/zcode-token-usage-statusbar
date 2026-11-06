@@ -617,6 +617,13 @@ function createUpdater(options) {
     // Current packages persist the marker themselves. This also covers old
     // packages' changed reports, before clearing durable pending coordination.
     await recordRestart(report);
+    // v258：marker 在场（本次同步刚写入或既有待办）时先让宿主热替换变更模块并销账
+    // （onRuntimeSynced = 宿主的 hotReloadMainModules + acknowledgeRestart）；完成后
+    // 下方 restartRequired 读到已清零的 marker，⚙ 红点零闪烁。宿主未注入该回调
+    // （旧主进程装配新包）时行为完全不变。
+    if (fs.existsSync(markerFile) && typeof options.onRuntimeSynced === "function") {
+      try { await options.onRuntimeSynced(); } catch (e) { }
+    }
     state.lastFailure = null;   // 安装成功：失败目标标注随 pending 一并清除（一次落盘）
     clearPending();
     state.skipped = Array.isArray(report.preserved) ? report.preserved : [];
@@ -647,8 +654,15 @@ function createUpdater(options) {
     load();
     if (state.supported && (state.pendingSync || (state.auto && (!state.lastAttempt || now() - state.lastAttempt >= INTERVAL_MS)))) await check(true);
   }
+  function noteRuntimeAcked() {
+    // v258：主进程热替换销账后同步红点——marker 已被 ack 清除时立即撤下（publish 内
+    // 重算 restartRequired/markerAt/markerVersion 并推送），不等下一轮 tick；marker
+    // 仍在（如 inject-main.cjs 待重启）则保持不动。
+    if (state.restartRequired === fs.existsSync(markerFile)) return;
+    publish();
+  }
   refreshLocal();
-  return { request, tick, status: () => ({ ...state, busy }) };
+  return { request, tick, status: () => ({ ...state, busy }), noteRuntimeAcked };
 }
 
 async function runAutoCommand(argv) {

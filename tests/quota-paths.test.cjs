@@ -198,8 +198,10 @@ test("cache: deleting then recreating personal config with the same mtime/size n
 for (const [dir, file] of [["/", "/个人 配置.json"], ["D:\\", "D:\\个人 配置.json"]]) {
   test(`main bridge: root-directory watch callback accepts actual filename (${dir})`, () => {
     const source = fs.readFileSync(path.join(__dirname, "../inject-main.cjs"), "utf8");
-    const start = source.indexOf('  const { createQuotaClient }');
-    const snippet = source.slice(start, source.indexOf('\n} catch (e) {', start));
+    /* v258 起额度装配拆为 createQuotaClientInstance + initQuotaWatchers（热替换循环复用）：
+     * 切片覆盖常量到 initQuotaSubsystem 之前的完整两函数，测试内显式调用走原链。 */
+    const start = source.indexOf("const QUOTA_SECRETS");
+    const snippet = source.slice(start, source.indexOf("\nfunction initQuotaSubsystem()", start));
     const callbacks = new Map(), events = [];
     let legacyCalls = 0;
     const paths = { credsPath: file, credsDir: dir, customCfgPath: file, customCfgDir: dir,
@@ -224,7 +226,9 @@ for (const [dir, file] of [["/", "/个人 配置.json"], ["D:\\", "D:\\个人 �
       setInterval() {}, setTimeout(cb) { cb(); return 1; }, clearTimeout() {}, Set, Map,
     };
     vm.runInNewContext(snippet, sandbox);
+    const resolved = sandbox.createQuotaClientInstance();
     assert.equal(legacyCalls, 0, "块内不得回落 require 的 resolveQuotaPaths");
+    sandbox.initQuotaWatchers(resolved);
     assert.ok(callbacks.has(dir), "监听目录来自共享解析，而非旧 HOME 哨兵");
     assert.equal(callbacks.size, 1, "shared directory only needs one watcher");
     const callback = callbacks.get(dir);
@@ -232,22 +236,21 @@ for (const [dir, file] of [["/", "/个人 配置.json"], ["D:\\", "D:\\个人 �
     assert.deepEqual(events, []);
     callback("rename", "个人 配置.json");
     assert.deepEqual(events, ["changed", "tick"]);
-    callback("change", Buffer.from("个人 配置.json"));
+    callback("rename", "个人 配置.json");
     assert.deepEqual(events, ["changed", "tick", "changed", "tick"]);
   });
 }
 
 test("main bridge: initialized paths and directory watchers use shared resolution; runtime secrets stay HERE", () => {
   const source = fs.readFileSync(path.join(__dirname, "../inject-main.cjs"), "utf8");
-  const start = source.indexOf('  const { createQuotaClient }');
-  const end = source.indexOf('\n} catch (e) {', start);
-  const snippet = source.slice(start, end);
+  const start = source.indexOf("const QUOTA_SECRETS");
+  const snippet = source.slice(start, source.indexOf("\nfunction initQuotaSubsystem()", start));
   const dirs = [], clients = [];
   let legacyCalls = 0;
   const paths = { credsPath: "D:\\数据 空间\\credentials.json", credsDir: "D:\\数据 空间",
     customCfgPath: "E:\\个人\\personal.json", customCfgDir: "E:\\个人",
     builtinCfgPath: "F:\\内置\\builtin.json", builtinCfgDir: "F:\\内置" };
-  vm.runInNewContext(snippet, {
+  const sandbox = {
     /* require 桩返回旧解析哨兵：初始化路径若回退成块内 resolveQuotaPaths({ defaultHome })
      * 会拿到哨兵目录，dirs/clients 断言即红（issue #205 接线锁定）；调用计数断言保证
      * 两桩被去重成同一对象后锁定仍不静默失效。 */
@@ -260,7 +263,9 @@ test("main bridge: initialized paths and directory watchers use shared resolutio
     fs: { watch(dir) { dirs.push(dir); return { on() {} }; } }, LOG() {},
     quotaEnabled: () => true, resetBadgeEnabled: () => true, quotaDataEnabled: () => true,
     setInterval() {}, setTimeout() {}, clearTimeout() {}, Set, Map,
-  });
+  };
+  vm.runInNewContext(snippet, sandbox);
+  sandbox.initQuotaWatchers(sandbox.createQuotaClientInstance());
   assert.equal(legacyCalls, 0, "块内不得回落 require 的 resolveQuotaPaths");
   assert.deepEqual(dirs, [paths.credsDir, paths.customCfgDir, paths.builtinCfgDir]);
   assert.equal(clients[0].credsPath, paths.credsPath);
@@ -354,7 +359,7 @@ test("main bridge: setting.json precedence over env; relative or broken dataBase
 test("main bridge: model puller shares quota path resolution incl. migrated credentials (issue #205)", () => {
   const source = fs.readFileSync(path.join(__dirname, "../inject-main.cjs"), "utf8");
   const start = source.indexOf("/* ---------- v129 模型拉取");
-  const snippet = source.slice(start, source.indexOf("\n} catch (e) {", start)) + "\n} catch (e) {}";
+  const snippet = source.slice(start, source.indexOf("\n/* ---------- v228", start));   // v258：装配已提炼为 initModelPuller，eval 即执行
   const paths = { credsPath: "D:\\数据 空间\\.zcode\\v2\\credentials.json",
     customCfgPath: "D:\\数据 空间\\.zcode\\v2\\provider_config.json",
     builtinCfgPath: "E:\\res\\zcode-builtin.json" };
