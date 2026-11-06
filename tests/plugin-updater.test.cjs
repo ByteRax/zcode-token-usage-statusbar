@@ -338,22 +338,34 @@ test("runAutoCommand wires --force through to the updater tick despite a fresh l
     // runAutoCommand 固定 home: os.homedir()：临时改 HOME/USERPROFILE 指向夹具目录，
     // 绝不允许测试触碰真实用户插件存储（posix os.homedir() 每次读 env，无缓存）。
     const realHome = process.env.HOME, realProfile = process.env.USERPROFILE;
+    let statusLine = "";
+    const realWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk) => {
+      if (typeof chunk === "string" && chunk.startsWith("{")) statusLine += chunk;
+      return realWrite(chunk);   // 全量转发，不吞 node:test 的输出
+    };
     process.env.HOME = dir; process.env.USERPROFILE = dir;
     try {
       await runAutoCommand(["--auto", ...argv, "--resources", resources, "--runtime", runtime]);
     } finally {
+      process.stdout.write = realWrite;
       if (realHome === undefined) delete process.env.HOME; else process.env.HOME = realHome;
       if (realProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = realProfile;
     }
+    // 夹具世界钉：updater 必须读到夹具的安装记录（1.0.0）而非真实机器的插件版本
+    const status = JSON.parse(statusLine);
+    assert.equal(status.currentVersion, "1.0.0");
+    assert.equal(process.env.HOME, realHome);   // 环境恢复（隔离护栏自身受测试保护）
     const log = fs.existsSync(callsLog) ? fs.readFileSync(callsLog, "utf8") : "";
     fs.rmSync(callsLog, { force: true });
-    return log;
+    return { log, phase: status.phase };
   };
-  assert.equal(await run([]), "");   // 无 --force：限频生效，零 CLI 调用
+  assert.equal((await run([])).log, "");   // 无 --force：限频生效，零 CLI 调用
   const forced = await run(["--force"]);
-  assert.match(forced, /plugins marketplace update zusage-marketplace/);   // --force 接线到 tick(force)：检查确实发生
-  assert.equal(process.exitCode, 1);   // 假 CLI 不提交新版 → 错误终态的退出码契约，测试有意驱动
-  process.exitCode = 0;
+  assert.match(forced.log, /plugins marketplace update zusage-marketplace/);   // --force 接线到 tick(force)：检查确实发生
+  assert.equal(forced.phase, "error");   // 假 CLI 不提交新版 → 错误终态
+  assert.equal(process.exitCode, 1);   // runAutoCommand 的退出码契约（错误终态 → 1）
+  process.exitCode = 0;   // 复位本测试进程，避免文件级误报
 });
 test("invalid config is never overwritten", async (t) => {
   const f = fixture(t); fs.writeFileSync(f.configFile, "{bad JSON");

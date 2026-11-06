@@ -940,12 +940,16 @@ def _host_registered(version):
 
 
 def _auto_update_disabled(runtime):
-    """用户是否显式关闭了插件自动更新（缺省/损坏视为开启，与 plugin_auto_update 同口径）。"""
+    """插件自动更新是否不会拉起——口径与拉起层逐值一致（plugin_auto_update.py）：
+    非 True 值（0/"false"/null 等）与损坏 config 都不拉起，提示不得谎称「已触发」；
+    仅缺文件视为缺省开启。"""
     try:
         cfg = json.loads((runtime / "config.json").read_text(encoding="utf-8"))
-        return isinstance(cfg, dict) and cfg.get("plugin_auto_update") is False
+    except FileNotFoundError:
+        return False   # 缺省开启（与 start_auto_update 的 cfg={} 同款）
     except Exception:
-        return False
+        return True    # 损坏 config 主链不拉起（plugin_auto_update.py except → return False）
+    return not (isinstance(cfg, dict) and cfg.get("plugin_auto_update", True) is True)
 
 
 def _compat_notice_line(runtime, host_version):

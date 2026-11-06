@@ -815,13 +815,21 @@ print(json.dumps(operations))
         self.assertIn("最近一次自动更新失败：市场清单刷新连续 3 次失败: x", line)
 
     def test_compat_notice_guides_manual_check_when_auto_update_disabled(self):
-        # issue #247 review：显式关闭自动更新时不得谎称「已触发」
+        # issue #247 review：显式关闭自动更新时不得谎称「已触发」；口径与拉起层逐值
+        # 一致——非布尔值与损坏 config 同样不拉起，提示同样不称「已触发」。
         self.runtime.mkdir(parents=True, exist_ok=True)
-        (self.runtime / "config.json").write_text(json.dumps({"plugin_auto_update": False}), encoding="utf-8")
-        line = self.installer._compat_notice_line(self.runtime, "9.9.9")
-        self.assertIn("未登记适配 ZCode 9.9.9", line)
-        self.assertIn("自动更新已被显式关闭", line)
-        self.assertNotIn("已触发插件自动更新", line)
+        for value in (False, 0, 1, "false", None, [], {}):
+            with self.subTest(value=value):
+                (self.runtime / "config.json").write_text(
+                    json.dumps({"plugin_auto_update": value}), encoding="utf-8")
+                line = self.installer._compat_notice_line(self.runtime, "9.9.9")
+                self.assertIn("未登记适配 ZCode 9.9.9", line)
+                self.assertIn("自动更新已被显式关闭", line)
+                self.assertNotIn("已触发插件自动更新", line)
+        (self.runtime / "config.json").write_text("{broken", encoding="utf-8")
+        self.assertIn("自动更新已被显式关闭", self.installer._compat_notice_line(self.runtime, "9.9.9"))
+        (self.runtime / "config.json").unlink()
+        self.assertIn("已触发插件自动更新", self.installer._compat_notice_line(self.runtime, "9.9.9"))
 
     def test_compat_notice_refires_after_the_plugin_version_changes(self):
         # 去重粒度是 宿主版本 × 已装版本：同宿主换插件版本必须重新提示
