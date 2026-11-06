@@ -103,6 +103,14 @@ _TPS_MIN_GEN_MS = 200          # 有效样本下限，同 token_rate.MIN_GEN_MS
 _TPS_MAX_GEN_MS = 3_600_000    # 有效样本上限（1h），同 token_rate.MAX_GEN_MS
 _TPS_LOOKBACK = 20             # first_token_at 缺失时向前找有效请求的扫描条数上限
 _SPEED_SEGS_MAX = 10           # 速度柱状图分段上限（v240 用户规格：17→10）
+# v253 速度 Tooltip 范围/时间/维度筛选：一次有界扫描出统一轮表（真实库），渲染端据此
+# 推导全部 20 种组合，快照帧不随 hover 反复查询。上限是性能护栏，不是伪造补位数据。
+_SPEED_HISTORY_MAX_TURNS = 6000   # 扫描窗口数与输出轮数上限（防超大库把 JSON 帧撑大）
+_SPEED_HISTORY_TTL_MS = 2000      # 2s 短缓存（常驻泵 1.5s 拉一次，同帧同库免重扫）
+# v257：全库扫描偶发失败（完成轮瞬间的 WAL 写窗口/连接重建）时回退最近一次成功轮表的
+# 陈旧上限。轮表是历史统计，分钟级陈旧远好于整帧缺字段让 Tooltip 闪回旧版；下一帧成功即刷新。
+_SPEED_HISTORY_STALE_MS = 10 * 60 * 1000
+_SPEED_CACHE = {}                 # 独立缓存：不与 _cached_agg 的 scan/today 共用上限 8 的 _AGG_CACHE
 
 
 _AGG_TTL_MS = 2000   # 聚合短缓存：今日合计/会话池是慢变量，2s 陈旧无感；泵 1.5s 拉一次省约一半全表聚合
@@ -1068,6 +1076,249 @@ def _turn_rate(rows, covers=frozenset()):
 def _rated_tps(tokens, gen_ms):
     """加权平均 t/s：Σ有效 output ÷ Σ有效生成窗口；窗口为 0（无有效样本）时返回 0。"""
     return round(tokens / (gen_ms / 1000), 1) if gen_ms else 0
+
+
+def _speed_turns(con, session_ids, covers):
+    """v253：按会话集合取真实已完成 main_turn 轮，按轮完成时间升序。
+
+    每行 = 一次用户提问对应的完整模型轮（turn_id 分组；NULL turn_id 的旧行按会话各自
+    归并一组）。速度分子/分母严格复用 _speed_segments 同款口径：_row_gen_ms 生成窗口 +
+    200ms–1h 有效段过滤、辅助 query_source 与子代理行不计、碎段只计 i/o/n 不进分母；
+    轮归属取轮内最后完成时间，跨时间边界不重复计入两个桶。
+    v253 轮字段（短键 + 索引表压缩帧体积）：s=会话 id、t=轮完成时刻、b=轮起始（hover
+    卡显示完整区间）、out=Σ有效输出（速度分子）、ms=Σ有效生成窗口（速度分母）、
+    i/o=轮内已完成行输入/输出合计（input 已含缓存、output 已含思考，不重复相加）、
+    n=请求数、msl=按有效输出排序的 [模型, 输出] 明细、c=轮预估费用 USD（价表可能
+    含兜底均价，展示层恒标「含兜底估价」，不冒充完整牌价）。
+    刻意不存 v（单点 t/s）：渲染端所有柱/桶/均值一律按 Σout÷Σms 重算，杜绝算术平均。
+    返回 (turns, session_rows)：session_rows 供顶部名称表一次性取会话名/项目归属。"""
+    if not session_ids:
+        return [], {}
+    ids = list(session_ids)
+    # 有界：先按库全局取最近 N 个完成轮窗口，再只取这些 (sid,turn_id) 的行——不整表捞行
+    windows = [tuple(r) for r in con.execute(
+        """select session_id, turn_id, max(completed_at) as ct
+           from model_usage where status='completed'
+             and (query_source is null or query_source='main_turn')
+             and completed_at is not null
+           group by session_id, turn_id order by ct desc limit ?""",
+        (_SPEED_HISTORY_MAX_TURNS,))]
+    wanted = set(ids)
+    windows = [w for w in windows if w[0] in wanted]
+    if not windows:
+        return [], {}
+    groups, null_pairs = {}, []
+    for sid, tid, _ in windows:
+        if tid is None:
+            null_pairs.append(sid)
+        groups.setdefault(sid, {})[tid] = []
+    for sid, tids in groups.items():
+        real = [t for t in tids if t is not None]
+        for i in range(0, len(real), 400):
+            part = real[i:i + 400]
+            qm = ",".join("?" * len(part))
+            for row in con.execute(
+                f"""select turn_id, output_tokens, input_tokens, cache_read_input_tokens,
+                           cache_creation_input_tokens, first_token_at, completed_at, started_at,
+                           reasoning_tokens, model_id, provider_id
+                    from model_usage where session_id=? and status='completed'
+                      and (query_source is null or query_source='main_turn') and turn_id in ({qm})""",
+                (sid, *part)):
+                groups[sid][row["turn_id"]].append(row)
+    # turn_id 缺失的旧行：按会话归并一组（与 _speed_segments 的 NULL 轮同款防御上限）
+    for sid in dict.fromkeys(null_pairs):
+        rows = con.execute(
+            """select output_tokens, input_tokens, cache_read_input_tokens,
+                      cache_creation_input_tokens, first_token_at, completed_at, started_at,
+                      reasoning_tokens, model_id, provider_id
+               from model_usage where session_id=? and status='completed'
+                 and (query_source is null or query_source='main_turn') and turn_id is null
+               order by completed_at desc, rowid desc limit 500""",
+            (sid,)).fetchall()
+        if rows:
+            groups[sid][None] = rows
+    srows = {}
+    try:
+        for i in range(0, len(ids), 400):
+            part = ids[i:i + 400]
+            qm = ",".join("?" * len(part))
+            for r in con.execute(
+                    f"select id, title, project_id, directory from session where id in ({qm})", part):
+                srows[r["id"]] = r
+    except sqlite3.Error:
+        srows = {}   # 旧库/列漂移：元数据降级为 sid 自身，不拖垮可选增强字段
+    out = []
+    for sid, by_tid in groups.items():
+        for tid, rows in by_tid.items():
+            if not rows:
+                continue
+            valid_out = valid_ms = tin = tout = 0
+            models, cost_groups = {}, {}
+            t0 = None
+            t1 = max((r["completed_at"] or 0) for r in rows)
+            for row in rows:
+                tokens = row["output_tokens"] or 0
+                inp = row["input_tokens"] or 0
+                tin += inp
+                tout += tokens
+                st = row["started_at"] or 0
+                if st and (t0 is None or st < t0):
+                    t0 = st
+                key = (row["model_id"] or "", row["provider_id"] or "")
+                cg = cost_groups.setdefault(key, [0, 0, 0, 0])
+                cg[0] += inp
+                cg[1] += tokens
+                cg[2] += row["cache_read_input_tokens"] or 0
+                cg[3] += row["cache_creation_input_tokens"] or 0
+                gen_ms = _row_gen_ms(row, covers)
+                if tokens > 0 and gen_ms and _TPS_MIN_GEN_MS <= gen_ms < _TPS_MAX_GEN_MS:
+                    valid_out += tokens
+                    valid_ms += gen_ms
+                    m = models.setdefault(key, {"model": key[0], "out": 0})
+                    m["out"] += tokens
+            if not valid_ms or not t1:
+                continue   # 无有效生成窗口的轮不参与任何速度统计（不显误导性 0 t/s）
+            # 短键 + 顶部名称/模型表：每轮只带索引，避免长 sid/项目名/模型名在千轮帧里重复
+            t = {"s": sid, "t": t1, "b": t0 or t1,
+                 "out": valid_out, "ms": valid_ms,
+                 "i": tin, "o": tout, "n": len(rows)}
+            ml = sorted(models.values(), key=lambda m: -m["out"])
+            t["msl"] = [[m["model"], m["out"]] for m in ml if m["out"] > 0][:8]
+            if _pricing is not None:
+                try:
+                    groups_in = [(k[0], k[1], g[0], g[1], g[2], g[3])
+                                 for k, g in cost_groups.items()]
+                    if groups_in:
+                        t["c"] = _pricing.merge_model_costs(groups_in)[0]
+                        # 价表对未命中模型用 DEFAULT_RATES 兜底均价，且 merge_model_costs
+                        # 不回传命中层级——无法证明"完整牌价"。不置 cf：渲染端一律标
+                        # 「含兜底估价」，绝不把可能含兜底的费用冒充完整价格。
+                except Exception:
+                    pass   # 计价失败省略费用字段，展示层显"暂无估价"
+            out.append(t)
+    out.sort(key=lambda x: (x["t"], x["s"], x["b"]))
+    return out, srows
+
+
+def _speed_history(con, sid=""):
+    """v254：速度 Tooltip 统一数据面——始终产出本库**全部**会话的有界轮表。
+
+    同一帧快照会推给所有窗口/分栏，所以这里不做 pane 级过滤：渲染端按本 pane 可信
+    sid + pids 项目表自行判定「会话/项目/全部」范围（多窗互不串数据）。sid 仅作诊断。
+    全库是「全部」范围的必然要求；远端身份下渲染端禁用「全部」并明示降级，不借本地
+    冒充远端历史。本地与远端不跨库拼接：远端旧版无本字段时整块不渲染。"""
+    covers = _provider_first_token_covers(con)
+    try:
+        all_ids = [r[0] for r in con.execute("select id from session")]
+    except sqlite3.Error:
+        all_ids = []
+    turns, srows = _speed_turns(con, all_ids, covers)
+    try:
+        window_n = con.execute(
+            """select count(*) from (select session_id, turn_id from model_usage
+               where status='completed' and (query_source is null or query_source='main_turn')
+               group by session_id, turn_id limit ?)""",
+            (_SPEED_HISTORY_MAX_TURNS + 1,)).fetchone()[0]
+    except sqlite3.Error:
+        window_n = len(turns)
+    # 名称表：sid → [会话名, project_id, 项目名]；只在轮里出现过的会话才输出，
+    # 渲染端按会话/项目比较维度取标签与归属，长字符串不随千轮重复进帧。
+    # 索引表：长 sid/项目名/模型名各只存一份，轮里改存整数下标——帧体积从 ~540KB
+    # 降到 ~160KB，避免 1.5s 泵每窗重复推长字符串（渲染端按表还原，数值零损失）。
+    sid_idx, sids, snames, pids, mname_idx, mnames = {}, [], [], [], {}, []
+    for t in turns:
+        k = t["s"]
+        if k not in sid_idx:
+            sid_idx[k] = len(sids)
+            sids.append(k)
+        sr = srows.get(k)
+        sn = (sr["title"] if sr is not None else "") or k
+        # snames/pids 都按 sid 下标一一对应（渲染端 spdUnpack 用 snames[r.s]/pids[r.s]）
+        while len(snames) <= sid_idx[k]:
+            snames.append("")
+        snames[sid_idx[k]] = sn[:120]
+        pid = (sr["project_id"] if sr is not None else "") or ""
+        pdir = ((sr["directory"] if sr is not None else "") or "").replace("\\", "/").rstrip("/")
+        pn = pdir.rsplit("/", 1)[-1] if pdir else (pid or k)
+        # pids 按 sid 下标一一对应（渲染端 spdUnpack 用 pids[r.s] 取项目归属）
+        while len(pids) <= sid_idx[k]:
+            pids.append(["", ""])
+        pids[sid_idx[k]] = [pid, pn]
+        for pair in t["msl"]:
+            if pair[0] not in mname_idx:
+                mname_idx[pair[0]] = len(mnames)
+                mnames.append(pair[0])
+    for t in turns:
+        t["s"] = sid_idx[t["s"]]
+        t["msl"] = [[mname_idx[p[0]], p[1]] for p in t["msl"]]
+    # 轮按 (完成时间, 会话, 起始) 升序；相邻时间差通常 < 2^31 ms，delta 编码省掉大整数
+    prev = 0
+    for t in turns:
+        cur = t["t"]
+        t["t"] = cur - prev
+        prev = cur
+    return {
+        "source": "local",               # 数据源边界：远端身份下渲染端禁用「全部」
+        "sids": sids,                    # 会话 id 索引表
+        "snames": snames,                # 会话名索引表（按 sid 下标取）
+        "pids": pids,                    # [project_id, 项目名] 索引表（按 sid 下标取）
+        "mnames": mnames,                # 模型名索引表
+        "turns": turns,                  # 单一事实源：全部筛选/聚合在渲染端按同一公式推导
+        "truncated": window_n > _SPEED_HISTORY_MAX_TURNS,
+    }
+
+
+def _speed_history_cached(con, sid=""):
+    """按库文件身份的 2s 短缓存。轮表是全库统一数据、与 pane 无关，key 不含 sid
+    （避免会话切换产生新键）；内存库不缓存。独立 _SPEED_CACHE 不挤掉 _AGG_CACHE
+    里的 scan/today/todaydetail 热条目（_cached_project 同款教训）。"""
+    dbkey = _db_cache_key(con)
+    if dbkey is None:
+        return _speed_history(con, sid)
+    key = dbkey
+    hit = _SPEED_CACHE.get(key)
+    now = int(time.time() * 1000)
+    if hit and now - hit[0] < _SPEED_HISTORY_TTL_MS:
+        return hit[1]
+    val = _speed_history(con, sid)
+    if len(_SPEED_CACHE) > 4:
+        _SPEED_CACHE.clear()
+    _SPEED_CACHE[key] = (now, val)
+    return val
+
+def _speed_history_stale():
+    """v257：跨 dbkey 取缓存里最近一份成功轮表（写库后 mtime/ino 变键，按键取不到旧值；
+    条目最多 5 个，遍历廉价）。轮表是全库统一数据、与 pane 无关，库文件被替换的极端场景
+    下分钟级陈旧也可接受（渲染端历史统计，下一帧成功即覆盖）。"""
+    now = int(time.time() * 1000)
+    best = None
+    for hit in _SPEED_CACHE.values():
+        if now - hit[0] <= _SPEED_HISTORY_STALE_MS and (best is None or hit[0] > best[0]):
+            best = hit
+    return best[1] if best else None
+
+
+def _speed_history_safe(con, sid=""):
+    """可选增强字段的统一入口：查询失败/旧库缺列/无本地连接返回 None（渲染端判空），
+    不拖垮整帧快照；与 provider_fallback/project 的可选字段降级同款口径。
+    v257：失败先短重试一次（新常驻进程首查撞上完成轮写窗口时，50ms 后 WAL 多半已放行；
+    缓存 TTL 内不重扫，失败路径本就低频），再失败回退最近一次成功轮表（stale 上限见常量）
+    ——热重载后的首帧若恰逢失败，渲染端粘性缓存为空会闪回旧版整卡。"""
+    if con is None:
+        return None
+    try:
+        return _speed_history_cached(con, sid)
+    except (sqlite3.Error, TypeError, ValueError, KeyError, IndexError, OverflowError, AttributeError):
+        pass
+    try:
+        time.sleep(0.05)
+        return _speed_history_cached(con, sid)
+    except (sqlite3.Error, TypeError, ValueError, KeyError, IndexError, OverflowError, AttributeError):
+        pass
+    try:
+        return _speed_history_stale()
+    except Exception:
+        return None
 
 
 def _speed_segments(con, sid, covers=frozenset()):
@@ -2090,15 +2341,17 @@ def _provider_fallback(con):
     return (row or ("",))[0] or ""
 
 
-def snapshot(force_sid="", routes=None, serve_con=None):
+def snapshot(force_sid="", routes=None, serve_con=None, include_speed_history=False):
     """单次快照：最新会话 + 最近 6+6 会话池 + 今日。
     force_sid：各窗口当前会话 id，逗号分隔（泵按窗口汇总上报：主进程 IPC 映射的焦点会话 +
     overlay localStorage 键兜底），全部强制纳入快照——不在 6+6 池里的会话（新开的、久远的）
     也能被各窗口找到自己的会话并显示（v32 起；v34 改为多窗口多 sid）。
     routes：sid→目标键（泵按窗口 workspaceIdentity 路由）；未路由会话走默认目标。
     serve_con：serve 常驻进程传入的复用连接（None = 自建自关，CLI/json 一次性路径）。
-    连接所有权归调用方：serve 模式下查询期出错会就地 close（调用方下次探活重建），
-    finally 不重复关闭。"""
+    include_speed_history：桌面快照链（serve 常驻 + legacySpawn 一次性 json）显式开启，
+    产出 v254 速度 Tooltip 统一轮表；CLI 报表 / MCP / 远端子查询 / zusage json 默认不带
+    这份 ~200KB 增强字段，保持各自 stdout 契约。连接所有权归调用方：serve 模式下查询期
+    出错会就地 close（调用方下次探活重建），finally 不重复关闭。"""
     cfg = load_config()
     if _pricing is not None:
         try:
@@ -2269,6 +2522,11 @@ def snapshot(force_sid="", routes=None, serve_con=None):
             # v202 预估费用汇率视图（USD→CNY，供展示层换算 ¥）：None=无有效汇率，
             # 展示层诚实降级 USD 原值，不编造汇率。与额度/SCNet 链互不推导。
             "fx": (_pricing.fx_view() if _pricing is not None else None),
+            # v254 速度 Tooltip 统一轮表（真实库有界扫描、2s 缓存）：桌面快照链产出
+            # （serve 常驻与 legacySpawn 一次性 json 都显式带桌面标记，避免常驻进程空闲
+            # 回收/重启交替期偶发缺字段而回退旧版整卡）。CLI / MCP / 远端子查询的 stdout
+            # 契约不夹带这份 ~200KB 增强字段；旧远端/无本地连接/缺列降级时省略，渲染端判空回退。
+            **({"speed_history": _speed_history_safe(con, latest_sid)} if include_speed_history else {}),
             "remote_enabled": bool(setup),        # 是否存在可用远端目标（区分"没配"与"配了没查到"）
             "known_sids": known_sids,
             "context_window": base["context_window"],
@@ -2349,7 +2607,7 @@ def serve():
                 con = None
         try:
             force_sid, routes = _parse_query(line.strip())
-            out = json.dumps(snapshot(force_sid, routes, serve_con=con))
+            out = json.dumps(snapshot(force_sid, routes, serve_con=con, include_speed_history=True))
         except Exception as e:
             out = json.dumps({"error": str(e)[:200]})   # 单次查询失败不杀常驻进程
             _drop()   # 异常路径下连接状态未知：弃用，下轮重建
@@ -2385,7 +2643,12 @@ def main(argv):
             force_sid, routes = _parse_query(argv[1] if len(argv) > 1 else "")
             if len(argv) > 2 and not isinstance(routes, list):
                 routes = _parse_routes(argv[2])
-            print(json.dumps(snapshot(force_sid, routes)))
+            # v255：桌面快照链常驻 serve 的回退帧（resident 空闲回收/重启/不稳定降级）
+            # 也必须带统一轮表，否则那一帧缺 speed_history 会让速度 Tooltip 闪回旧版整卡。
+            # 远端子进程显式置 ZUSAGE_REMOTE_CHILD=1，不带这 ~200KB 增强字段（stdout 契约）；
+            # CLI 手工 json / MCP 走 render_* 文本链，均不受影响。
+            desktop = os.environ.get("ZUSAGE_REMOTE_CHILD") != "1"
+            print(json.dumps(snapshot(force_sid, routes, include_speed_history=desktop)))
             return 0
         if cmd == "serve":
             serve()
