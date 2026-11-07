@@ -271,7 +271,7 @@
           }).join("") + "</div>"
         : "";
     }
-    /* v253 本轮/今日合计 tooltip 的「模型明细」表格（样式同项目累计/会话累计统计卡：
+    /* v253 本轮/今日合计 tooltip 的「模型明细」表格（v288 起会话累计卡并入本实现；样式同项目累计统计卡：
      * zu-pj-mhead 标题 + 四列 zu-stat-table；数据同源 _scope_models_cost 已降序，
      * 此处对副本防御性重排不改快照原数组；费用列随 state.cost 门控、缺失显 "—"；
      * 空明细/旧快照缺字段整块不渲染。精简摘要的 rt-models 行式（modelsBlock）保留。 */
@@ -680,18 +680,7 @@
             (sess.tool_calls ? '<span>·</span><span>' + ttEsc(L("工具调用 ", "tools ") + countFmt(sess.tool_calls) + L(" 次", " calls")) + '</span>' : "") +
             (sess.retries ? '<span>·</span><span>' + ttEsc(L("重试 ", "retries ") + countFmt(sess.retries) + L(" 次", " times")) + '</span>' : "") +
           '</div>' +
-          '<div class="zu-pj-mhead"><div class="zu-pj-mtitle">' + ttEsc(L("模型明细", "Models")) + '</div><div class="zu-pj-morder">' + ttEsc(L("按用量排序", "by usage")) + '</div></div>' +
-          statTable(
-            [L("模型", "Model"), L("Token 用量 ↓", "Tokens ↓"), L("请求次数", "Requests"), L("预估费用", "Est. cost")],
-            (sess.models || []).slice().sort(function (a, b) { return (b.total || 0) - (a.total || 0); }).map(function (m1) {
-              var name = m1.model || L("未知模型", "unknown");
-              return '<tr>' +
-                '<td class="zu-pj-mname" title="' + escAttr(name) + '">' + ttEsc(name) + '</td>' +
-                '<td>' + ttEsc(fmt(m1.total || 0)) + '</td>' +
-                '<td>' + ttEsc(countFmt(m1.requests || 0)) + '</td>' +
-                '<td>' + (typeof m1.cost_usd === "number" && isFinite(m1.cost_usd) ? ttEsc(fmtMoney(m1.cost_usd)) : "—") + '</td>' +
-                '</tr>';
-            }).join("")) +
+          statModelsTable(sess.models) +
           (d.code && (d.code.add || d.code.del)
             ? '<div class="zu-stat-scale" style="margin-top:12px"><span>' + ttEsc(L("代码变更 ", "code ") + "+" + (d.code.add || 0) + " / -" + (d.code.del || 0) +
                 (d.code.files ? L("（" + d.code.files + " 文件）", " (" + d.code.files + " files)") : "")) + '</span></div>' : "") +

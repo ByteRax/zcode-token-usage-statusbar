@@ -211,6 +211,7 @@ test('四格 tooltip 显示 ¥ 费用行、模型明细费用与可点来源脚�
   // 会话累计（tips[1]，v215 卡）：KPI 费用 + 模型表格行费用
   assert.match(tips[1], /zu-stat-tip--session/);
   assert.match(tips[1], /预估费用<svg class="tip-fxq"[^]*?zu-stat-v">¥7\.10<\/div>/);
+  assert.match(tips[1], /<thead><tr><th>模型<\/th><th>Token 用量 ↓<\/th><th>请求次数<\/th><th>预估费用<\/th><\/tr><\/thead>/);
   assert.match(tips[1], /<td class="zu-pj-mname" title="GLM-5\.3">GLM-5\.3<\/td><td>1000<\/td><td>3<\/td><td>¥2\.84<\/td>/);
   assert.match(tips[1], /<td class="zu-pj-mname" title="claude-opus-5-5">claude-opus-5-5<\/td><td>2000<\/td><td>1<\/td><td>¥4\.26<\/td>/);
   // 今日合计（tips[2]，v215 卡）：KPI 费用 + 模型明细表格（v253）
@@ -293,6 +294,10 @@ test('⚙ 开关关闭（zusage3.cost=0）后四格均无费用行与脚注', ()
   assert.match(h.tips()[2], /<thead><tr><th>模型<\/th><th>Token 用量 ↓<\/th><th>请求次数<\/th><\/tr><\/thead>/);
   assert.doesNotMatch(h.tips()[0], /<td>¥/);
   assert.doesNotMatch(h.tips()[2], /<td>¥/);
+  // 会话累计模型明细表同走 statModelsTable 门控（曾为内联四列表漏门控，费用列常驻）
+  assert.doesNotMatch(h.tips()[1], /预估费用/);
+  assert.match(h.tips()[1], /<thead><tr><th>模型<\/th><th>Token 用量 ↓<\/th><th>请求次数<\/th><\/tr><\/thead>/);
+  assert.doesNotMatch(h.tips()[1], /<td>¥/);
 });
 
 test('底部「价格来源…汇率…」脚注已从四格与紧凑摘要移除（信息收进气泡）', () => {
