@@ -1112,7 +1112,10 @@
       var cur = curSel || sel;
       var opts = { speedHistory: h,
         sel: { range: cur.range, period: cur.period, dim: cur.dim,
-          sid: (sess && sess.sid) || "", remote: !!(sess && (sess.workspace_identity || sess.remote)) },
+          sid: (sess && sess.sid) || "",
+          /* 远端只认快照 remote 标：本地 scoped 行也带 workspace_identity，
+           * 旧判定把本地 pane 误当远端，选「全部」被静默降级为本会话并显虚假远端提示 */
+          remote: !!(sess && sess.remote) },
         live: live, segsHover: (typeof curHover === "number" ? curHover : hover),
         fmtTok: o.fmtTok, fmtCnt: o.fmtCnt, fmtMoney: o.fmtMoney };
       return "\x01" + speedCardV2HTML(opts);

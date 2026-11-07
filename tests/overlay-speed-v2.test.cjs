@@ -935,3 +935,62 @@ test('v286: chart title bar — weight 600 title, t/s badge, speed-bands SVG ent
   // V1 旧图共享类不受影响：.zu-sc-title 基础规则仍为 700/+1
   assert.match(source, /"\.zu-sc-title\{font-weight:700;font-size:calc\(var\(--ui-font-size,14px\) \+ 1px\)/);
 });
+
+test('local scoped rows carrying workspace_identity are not remote: "all" stays selectable (v287)', () => {
+  const ctx = makeCtx(); ctx.__h = fixture();
+  // 本地 scoped 行形状：zusage 快照对本地行也写 workspace_identity（不带 remote 标）。
+  // 修复前判定 `sess.workspace_identity || sess.remote` 把它当远端——选「全部」被静默降级
+  // 为本会话并显「远端会话仅显示本会话历史」虚假提示。
+  ctx.__sess = { sid: 'sess_main', workspace_identity: '/Users/x/work/proj-a' };
+  const sel = { range: 'all', period: 'all', dim: 'time', sid: 'sess_main' };
+  ctx.__sel = sel;
+  ctx.__o = { fmtTok: String, fmtCnt: String, fmtMoney: u => '¥' + u.toFixed(2) };
+  const rebuild = vm.runInContext('spdRebuildOr(__h, __sel, -1, null, __o, __sess)', ctx);
+  ctx.__rb = rebuild;
+  const html = vm.runInContext('__rb(-1, __sel)', ctx);
+  // 注意锚定 range 组：period（时间）组也有 data-sv-val="all" 按钮，裸匹配会假通过/假失败
+  assert.match(html, /data-sv-group="range" data-sv-val="all" aria-pressed="true"/,
+    '"all" stays selected for local scoped rows');
+  assert.doesNotMatch(html, /远端会话仅显示本会话历史|Remote pane: local session history only/,
+    'no false remote notice for local scoped rows');
+  // 真 remote 标仍降级：契约不因修复而放松
+  ctx.__sess2 = { sid: 'sess_main', workspace_identity: 'remote:h1/a', remote: true };
+  const rebuildRemote = vm.runInContext('spdRebuildOr(__h, __sel, -1, null, __o, __sess2)', ctx);
+  ctx.__rb2 = rebuildRemote;
+  const htmlRemote = vm.runInContext('__rb2(-1, { range: "all", period: "all", dim: "time", sid: "sess_main" })', ctx);
+  assert.match(htmlRemote, /data-sv-group="range" data-sv-val="all" aria-pressed="false"/,
+    'remote pane still downgrades from "all"');
+  assert.match(htmlRemote, /data-sv-group="range" data-sv-val="session" aria-pressed="true"/,
+    'remote pane falls back to session range');
+  assert.match(htmlRemote, /远端会话仅显示本会话历史/, 'remote pane keeps the downgrade notice');
+});
+
+test('compact tps focus toggle: pointerdown lands without TypeError and resets hover to -1 (v287)', () => {
+  const start = source.indexOf('  function tpsTabActivate(e) {');
+  assert.ok(start > 0, 'tpsTabActivate found in overlay.js');
+  const endAnchor = '        showTpsTip(el);\n      }\n    }\n  }';
+  const tpsFn = source.slice(start, source.indexOf(endAnchor, start) + endAnchor.length);
+  const ctx = makeCtx();
+  const st = vm.runInContext(`(() => {
+    const calls = { show: 0, stop: 0 };
+    let tpsTipFor = null;
+    const tpsTip = { __zuTipSig: 'sig' };
+    function showTpsTip(el) { calls.show += 1; }
+    const SPD_RANGES = ['recent', 'session', 'project', 'all'];
+    const SPD_PERIODS = ['recent', 'today', 'week', 'month', 'all'];
+    ${tpsFn}
+    return { calls, get tpsTipFor() { return tpsTipFor; }, set tpsTipFor(v) { tpsTipFor = v; },
+      tpsTip, tpsTabActivate };
+  })()`, ctx);
+  st.tpsTipFor = { __zuT: { speedHover: 3, speedSel: { range: 'today', period: 'recent', dim: 'time', focus: '' } } };
+  const focusNode = { closest: sel => (sel === '.zu-sv-focus' ? focusNode : null) };
+  const e = { target: focusNode, stopPropagation: () => { st.calls.stop += 1; } };
+  // 修复前：分支内 t.speedHover 在 var t 声明前引用，抛 TypeError、界面不刷新
+  assert.doesNotThrow(() => st.tpsTabActivate(e), 'focus toggle must not throw');
+  const t = st.tpsTipFor.__zuT;
+  assert.equal(t.speedSel.focus, 'full', 'focus flipped on');
+  assert.equal(t.speedHover, -1, 'hover resets to -1 (0 would mis-highlight bar 0)');
+  assert.equal(st.tpsTip.__zuTipSig, '', 'tip signature cleared for rebuild');
+  assert.equal(st.calls.show, 1, 'tip re-shown');
+  assert.equal(st.calls.stop, 1, 'propagation stopped');
+});

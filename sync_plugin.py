@@ -167,7 +167,15 @@ def _maybe_build_bundles(root=ROOT, check_only=False):
     return True
 
 
-def main(check_only=False):
+def main(check_only=False, verify_manifests=False):
+    if verify_manifests:
+        errors = check_manifests(ROOT)
+        for err in errors:
+            print("清单漂移:", err)
+        if errors:
+            return 1
+        print("6 处分发清单一致。")
+        return 0
     if not _maybe_build_bundles(ROOT, check_only=check_only):
         return 1
     missing = [f for f in FILES if not (ROOT / f).is_file()]
@@ -202,4 +210,13 @@ def main(check_only=False):
 
 
 if __name__ == "__main__":
-    sys.exit(main(check_only="--check" in sys.argv[1:]))
+    argv = sys.argv[1:]
+    unknown = [a for a in argv if a not in ("--check", "--verify-manifests")]
+    if unknown:
+        # 未知参数（含漏横线/多余位置参数）必须响：静默忽略会退化为写入同步
+        # （--verify-manifests 幽灵旗标事故的根因）
+        print("未知参数: " + ", ".join(unknown)
+              + "（支持：--check 只读检查、--verify-manifests 只校验 6 处分发清单；"
+                "与 --check 同传时仅校验清单）", file=sys.stderr)
+        sys.exit(2)
+    sys.exit(main(check_only="--check" in argv, verify_manifests="--verify-manifests" in argv))
