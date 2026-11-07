@@ -13,12 +13,16 @@ const { pathToFileURL } = require("url");
 const source = fs.readFileSync(path.join(__dirname, "..", "inject-main.cjs"), "utf8");
 const sha256 = (text) => crypto.createHash("sha256").update(text).digest("hex");
 
-function harness() {
+function harness(runtimeCfg) {
   const mtimes = {}, contents = {};
   for (const name of ["inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs",
     "quota-client.cjs", "model-puller.cjs", "engine-patch.cjs", "overlay.js", "zusage.py", "token_pricing.py"]) {
     mtimes[name] = 1000;
     contents[path.join("/fixture/runtime", name)] = "{}";
+  }
+  if (runtimeCfg !== undefined) {
+    contents[path.join("/fixture/runtime", "config.json")] = JSON.stringify(runtimeCfg);
+    mtimes["config.json"] = 500;
   }
   const acks = [], intervals = [], watchers = [];
   const fails = { quota: false, model: false, updater: false, notes: false, engine: false, storage: false };
@@ -292,3 +296,23 @@ test("hotReloadMainModules waits for asynchronous acknowledgeRestart before reso
   assert.equal(h.state.updaterOpts.initialState.latestVersion, "1.9.0");
 });
 
+test("hot_reload:false gates hotReloadMainModules itself — the update-chain onRuntimeSynced path also falls back to restart", async () => {
+  const h = harness({ hot_reload: false });
+  h.mtimes["quota-client.cjs"] = 2000;
+  h.contents[MOD("quota-client.cjs")] = "module.exports = { v: 9 };";
+  const before = { quota: h.counters.quota, acks: h.acks.length };
+  assert.equal(await h.seam.hotReloadMainModules(), false, "gate must short-circuit before any swap");
+  assert.equal(h.counters.quota, before.quota, "no instance swap while hot reload is explicitly off");
+  assert.equal(h.acks.length, before.acks, "no marker ack while hot reload is explicitly off");
+});
+
+test("hot_reload gate reads the mtime-cached config: re-enabling hot_reload lets the next call swap", async () => {
+  const h = harness({ hot_reload: false });
+  h.mtimes["quota-client.cjs"] = 2000;
+  h.contents[MOD("quota-client.cjs")] = "module.exports = { v: 9 };";
+  assert.equal(await h.seam.hotReloadMainModules(), false);
+  h.contents[MOD("config.json")] = "{}";
+  h.mtimes["config.json"] = 900;
+  assert.equal(await h.seam.hotReloadMainModules(), true, "re-enabled config allows the swap");
+  assert.equal(h.counters.quota, 2, "cold boot instance + one hot swap");
+});

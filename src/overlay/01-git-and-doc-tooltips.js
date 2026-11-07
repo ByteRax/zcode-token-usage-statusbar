@@ -467,7 +467,9 @@
     if (fb && t0 && t0.speedSel) {
       e.stopPropagation();
       t0.speedSel.focus = t0.speedSel.focus === "full" ? "" : "full";
-      t.speedHover = 0;
+      /* t 在下方才声明：原 t.speedHover 引用提升的 undefined 必抛 TypeError，聚焦切换不生效；
+       * 且 -1 才与全量链 speedTabActivate 同口径（0 会误高亮第 0 柱） */
+      t0.speedHover = -1;
       tpsTip.__zuTipSig = "";
       showTpsTip(el);
       return;
