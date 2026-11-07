@@ -1,15 +1,13 @@
 "use strict";
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const fs = require("node:fs");
-const path = require("node:path");
 const vm = require("node:vm");
+const { sliceOverlay } = require("./helpers/overlay-extract.cjs");
 // v258：静态桥缺席（HOST_TARGETS 表外客户端）时 readPaneScope/detOwnerOf/sidePaneKeyOf 的
 // React fiber 兜底。切片与 overlay-remote-scope.test.cjs 同源（433→520 行 eval 区间），
 // 新增函数必须落在该切片内且不引用切片外符号——本文件就是对这条约束的守护。
-const source = fs.readFileSync(path.join(__dirname, "..", "overlay.js"), "utf8");
 const ID = "remote:ssh:a:22:u:/p";
-function extract(start, end) { return source.slice(source.indexOf(start), source.indexOf(end, source.indexOf(start))); }
+function extract(start, end) { return sliceOverlay(start, end); }
 function attrNode(attrs) {
   return {
     hasAttribute: (k) => Object.prototype.hasOwnProperty.call(attrs, k),

@@ -4,24 +4,18 @@
 // 以及面板控件与主进程动作的源码契约。
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const fs = require("node:fs");
-const path = require("node:path");
 const vm = require("node:vm");
+const { readOverlaySource, sliceOverlay, getNamedSlice } = require("./helpers/overlay-extract.cjs");
 
-const source = fs.readFileSync(path.join(__dirname, "..", "overlay.js"), "utf8");
-function extract(start, end) {
-  const a = source.indexOf(start), b = source.indexOf(end, a);
-  assert.ok(a >= 0 && b > a, "切片锚点失配：" + start);
-  return source.slice(a, b);
-}
+const source = readOverlaySource();
 /* 面板助手块（acModeOf/syncAutoCompactInputs/acTargetTokens/acWarningText/sendAutoCompactConfig）
  * 与 hover 阈值行（acInfoText）在实例闭包里同层，切片拼进同一沙箱即可互调 */
-const helpers = extract("    /* ---------- v179 自动压缩阈值（⚙ 面板渲染与提交的单一出口） ---------- */", "    function srcStatusText(sv) {");
-const infoText = extract("    /* v179 阈值行文案", "    function syncCompactBtn() {");
+const helpers = getNamedSlice("autoCompactHelpers");
+const infoText = getNamedSlice("autoCompactInfoText");
 /* v191 token 数走 fmt()：单位转换三件套一并入沙箱（cnUnits/cnUnit 与 fmt 同一事实源） */
-const unitSrc = extract("  function cnUnits()", "  function ls(");
-const fmtSrc = extract("    function fmt(n, count) {", "    function countFmt(");
-const cnUnitSrc = extract("    function cnUnit(x)", "    function sec(");
+const unitSrc = sliceOverlay("  function cnUnits()", "  function ls(");
+const fmtSrc = sliceOverlay("    function fmt(n, count) {", "    function countFmt(");
+const cnUnitSrc = sliceOverlay("    function cnUnit(x)", "    function sec(");
 
 function makePanel() {
   const fields = new Map();

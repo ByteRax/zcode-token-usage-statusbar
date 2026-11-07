@@ -1,14 +1,10 @@
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
 const vm = require('node:vm');
 const test = require('node:test');
+const { readOverlaySource, getNamedSlice } = require('./helpers/overlay-extract.cjs');
 
-const source = fs.readFileSync(path.join(__dirname, '..', 'overlay.js'), 'utf8');
-const startIdx = source.indexOf('  /* ==================== Status Rotator & Whale Tail (v268 移植；后按用户规格收敛) ====================');
-const endIdx = source.indexOf('  /* 设置页（MCP 配置等）内的编辑框不是聊天输入框');
-assert.ok(startIdx > 0 && endIdx > startIdx, 'Status Rotator block exists in overlay.js');
-const rotatorSlice = source.slice(startIdx, endIdx);
+const source = readOverlaySource();
+const rotatorSlice = getNamedSlice('statusRotator');
 
 function makeFakeElement(tag = 'div') {
   const attrs = {};

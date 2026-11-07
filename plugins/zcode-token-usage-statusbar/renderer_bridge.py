@@ -622,9 +622,12 @@ def _resolve_target(stream, nodes, base):
 
 
 def _output_path(source, output):
-    if Path(output).is_symlink():
-        raise BridgeError("Output is a symlink")
-    source, output = Path(source).resolve(), Path(output).resolve()
+    try:
+        if Path(output).is_symlink():
+            raise BridgeError("Output is a symlink")
+        source, output = Path(source).resolve(), Path(output).resolve()
+    except OSError as error:
+        raise BridgeError(f"Output path inaccessible: {error}") from error
     roots = (WORKTREE.resolve(), Path(tempfile.gettempdir()).resolve())
     # is_relative_to 是 3.9+ API，Python 3.8 兼容目标下用 parents 成员判定
     if source == output or not any(output == root or root in output.parents for root in roots):

@@ -42,7 +42,7 @@ PLUGIN_ROOT = Path(__file__).parent.resolve()
 PYEXE = sys.executable or "python"
 if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
-from runtime_lock import file_lock, update_config
+from runtime_lock import file_lock, fixed_drives, real_home as _rt_real_home, sudo_user as _rt_sudo_user, update_config
 # 会同步进运行时目录的插件副本（usage_mcp.py 与 overlay_install.py 自身等插件入口
 # 不在其中：它们从插件目录跑；inject-main.cjs 的相对 require 依赖必须全数在列，
 # test_plugin_package 按此不变量守护）
@@ -67,26 +67,13 @@ RUNTIME_FILES = [
 
 def sudo_user():
     """sudo 运行时的真实用户名（POSIX；非 sudo / Windows 返回 None）。"""
-    if sys.platform == "win32" or not os.environ.get("SUDO_USER"):
-        return None
-    try:
-        return os.environ["SUDO_USER"] if os.geteuid() == 0 else None
-    except AttributeError:
-        return None
+    return _rt_sudo_user(sys.platform)
 
 
 def real_home():
     """真实用户家目录：sudo 会重置 HOME，Path.home() 指向 /root，而运行时目录、config.json
-    与 hook 都以普通用户身份读写，必须落在 SUDO_USER 的家里（与根目录 install.py 同源）。
-    Linux 上 /opt 等系统安装位置写入需要 root，这是本函数存在的唯一场景。"""
-    user = sudo_user()
-    if user:
-        try:
-            import pwd
-            return Path(pwd.getpwnam(user).pw_dir)
-        except (KeyError, OSError, ImportError):
-            pass
-    return Path.home()
+    与 hook 都以普通用户身份读写，必须落在 SUDO_USER 的家里（与根目录 install.py 同源）。"""
+    return _rt_real_home(sudo_user, Path.home)
 
 
 def default_runtime():
@@ -152,16 +139,6 @@ def load_runtime_config(runtime):
     return config if isinstance(config, dict) else None
 
 
-def fixed_drives(letters):
-    """本地固定盘盘符：离线的映射网络盘一被访问就触发重连（可卡数秒），光驱/读卡器可能无介质。"""
-    try:
-        import ctypes
-        drive_type = ctypes.windll.kernel32.GetDriveTypeW
-    except (ImportError, AttributeError, OSError):
-        return []
-    return [letter for letter in letters if drive_type(f"{letter}:\\") == 3]   # DRIVE_FIXED
-
-
 def asar_candidates():
     """仅枚举当前平台常见位置；候选仍须通过包身份校验。"""
     if sys.platform == "darwin":
@@ -190,18 +167,9 @@ def asar_candidates():
 
 def is_zcode_asar(pi, asar):
     """生产目标必须由 asar 内 package.json 的 name 确认为 ZCode。"""
-    try:
-        with asar.open("rb") as stream:
-            header, base = pi.read_header(stream)
-            node = header["files"]["package.json"]
-            if node.get("unpacked"):
-                return False
-            stream.seek(base + int(node["offset"]))
-            package = json.loads(stream.read(int(node["size"])).decode("utf-8"))
-        name = package.get("name")
-        return isinstance(name, str) and "zcode" in name.lower()
-    except Exception:
-        return False
+    pkg = load_patch_install().read_asar_package(asar, pi=pi)
+    name = pkg.get("name") if pkg else None
+    return isinstance(name, str) and "zcode" in name.lower()
 
 
 def resolve_paths(runtime=None):
@@ -866,36 +834,10 @@ def _pending_install_waiting(pi):
 
 
 def _revive_orphan_pending(pi):
-    """孤儿待收尾包自愈（issue #228）：publish 后 launch_monitor 的去重检查（锁被
-    持有→复用）与旧监控世代失效退出（PendingTmpError 让位）之间存在交接竞态——旧监控
-    退出、新监控未拉起时 pending 成孤儿，之后任何「完全退出」都不再触发替换，只能
-    等下一次恰好重走 publish+拉起链。SessionStart 在 publish 之外常态检查一次：
-    合法 pending 且实例锁空闲即孤儿，补拉静默监控接管收尾。已有监控值守（锁被持有）
-    不动作；受保护目录（issue #130）无提权收不了尾，交提权重跑链。任何异常只进
-    stderr，绝不影响 hook 主流程。判据与 usage_mcp.revive_finalize_monitor 同款，
-    并多一道目标可写前置（hook 场景须守住 issue #130 边界）。"""
+    """孤儿待收尾包自愈（issue #228，与 patch_install.revive_orphan_pending 同源）：
+    合法 pending + 实例锁空闲 + 目标可写时补拉静默监控接管收尾。"""
     try:
-        if pi.pending_operation() not in ("install", "remove"):
-            return   # 无合法 sidecar（含发布中 journal/撤销遗留）：无事可做
-        with pi.monitor_instance_lock() as acquired:
-            if not acquired:
-                return   # 已有监控在值守：不叠加进程
-        # 试锁成功即释放，锁的长期持有者是监控进程自己；探测与拉起间的极小竞态由
-        # launch_monitor 的去重兜底（后到的监控抢锁失败会自行退出）。调用方（run_hook）
-        # 在本轮刚 publish 的链路（status=pending）上不调用本函数：publish 已自带
-        # launch，新监控（WMI 通道秒级）尚未持锁时会被这里重复拉起。
-        if not pi.target_writable():
-            return   # 受保护目录：无提权监控收不了尾（issue #130），由提权重跑链处理
-        previous = os.environ.get("ZUSAGE_MONITOR_QUIET")
-        try:
-            os.environ["ZUSAGE_MONITOR_QUIET"] = "1"   # 静默收尾；SessionStart 不弹监控黑窗
-            with contextlib.redirect_stdout(sys.stderr):
-                pi.launch_monitor(time.time())
-        finally:
-            if previous is None:
-                os.environ.pop("ZUSAGE_MONITOR_QUIET", None)
-            else:
-                os.environ["ZUSAGE_MONITOR_QUIET"] = previous
+        load_patch_install().revive_orphan_pending(pi, require_writable=True)
     except Exception as e:  # noqa: BLE001
         print(f"[zusage-plugin] 孤儿待收尾包监控复活失败（已忽略）：{e}", file=sys.stderr)
 
@@ -915,18 +857,9 @@ def _host_build(pi):
     既有行为，兼容性提示与强制更新都只建立在确凿读取之上。"""
     if pi.ASAR is None:
         return None
-    try:
-        with open(pi.ASAR, "rb") as stream:
-            header, base = pi.read_header(stream)
-            node = dict(pi.iter_files(header)).get("/package.json")
-            if not node:
-                return None
-            stream.seek(base + int(node["offset"]))
-            package = json.loads(stream.read(node["size"]).decode("utf-8"))
-        version = package.get("version") if isinstance(package, dict) else None
-        return version if isinstance(version, str) and version else None
-    except Exception:
-        return None
+    pkg = load_patch_install().read_asar_package(pi.ASAR, pi=pi)
+    version = pkg.get("version") if pkg else None
+    return version if isinstance(version, str) and version else None
 
 
 def _host_registered(version):

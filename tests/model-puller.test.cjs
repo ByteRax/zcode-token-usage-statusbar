@@ -247,17 +247,20 @@ test("slow catalog does not block the popup: grace window caps the wait", async 
   let settled = false;
   const impl = async (url) => {
     if (url === MODELS_DEV_TEST_URL) {
-      return new Promise((resolve) => setTimeout(() => { settled = true; resolve({ ok: true, status: 200, json: async () => ({}) }); }, 5000));
+      return new Promise((resolve) => {
+        const t = setTimeout(() => { settled = true; resolve({ ok: true, status: 200, json: async () => ({}) }); }, 5000);
+        if (t && typeof t.unref === "function") t.unref();
+      });
     }
     return { ok: true, status: 200, json: async () => ["fast-model"], body: null };
   };
-  const mp = M.createModelPuller({ customCfgPath: file, fetchImpl: impl, modelsDevUrl: MODELS_DEV_TEST_URL });
+  const mp = M.createModelPuller({ customCfgPath: file, fetchImpl: impl, modelsDevUrl: MODELS_DEV_TEST_URL, catalogGraceMs: 60 });
   const started = Date.now();
   const r = await mp.fetchModels("custom-relay");
   const elapsed = Date.now() - started;
   assert.equal(r.ok, true);
   assert.deepEqual(r.models, ["fast-model"]);
-  assert.ok(elapsed < 3000, "should not wait for the slow catalog, took " + elapsed + "ms");   // 宽限 1s 封顶，不等 5s 目录
+  assert.ok(elapsed < 1000, "should not wait for the slow catalog, took " + elapsed + "ms");   // 宽限封顶，不等 5s 目录
   assert.equal(r.metaById["fast-model"], undefined);   // 目录未到：无元数据降级
   assert.equal(settled, false);
 });

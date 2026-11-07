@@ -1,12 +1,10 @@
 "use strict";
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const fs = require("node:fs");
-const path = require("node:path");
 const vm = require("node:vm");
-const source = fs.readFileSync(path.join(__dirname, "..", "overlay.js"), "utf8");
+const { sliceOverlay } = require("./helpers/overlay-extract.cjs");
 const A = "remote:ssh:a:22:u:/p", B = "remote:ssh:b:22:u:/p";
-function extract(start, end) { return source.slice(source.indexOf(start), source.indexOf(end, source.indexOf(start))); }
+function extract(start, end) { return sliceOverlay(start, end); }
 function sessionFixture(mainScope) {
   const context = vm.createContext({ remoteCache: {}, remoteTodayCache: {}, Object,
     window: {}, stale: () => false, state: {}, instances: [], FATAL: {}, nativeCtxVal: 0 });

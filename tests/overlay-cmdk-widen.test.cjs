@@ -1,14 +1,11 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
 const vm = require('node:vm');
+const { readOverlaySource, sliceOverlay } = require('./helpers/overlay-extract.cjs');
 
-const source = fs.readFileSync(path.join(__dirname, '..', 'overlay.js'), 'utf8');
+const source = readOverlaySource();
 function extract(start, end) {
-  const a = source.indexOf(start), b = source.indexOf(end, a);
-  assert.ok(a >= 0 && b > a);
-  return source.slice(a, b);
+  return sliceOverlay(start, end);
 }
 
 /* ---------- v146 宿主命令中心（⌘K 搜索弹框）加宽开关 ---------- */

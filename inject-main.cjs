@@ -1694,11 +1694,12 @@ function isLocalHostPage(wc) {   // 与 pollPluginRequests 同口径：只信宿
   } catch (e) { return false; }
 }
 async function readGitPaths(wc) {
+  let timer;
   try {
     const raw = await Promise.race([
       wc.executeJavaScript('(function(){var p=window.__zusageGitPaths;return JSON.stringify(Array.isArray(p)?p.slice(0,8):[])})()', true),
-      new Promise((resolve) => setTimeout(() => resolve("[]"), 1000)),
-    ]);
+      new Promise((resolve) => { timer = setTimeout(() => resolve("[]"), 1000); }),
+    ]).finally(() => { if (typeof clearTimeout === "function") clearTimeout(timer); });
     const arr = JSON.parse(String(raw || "[]"));
     return Array.isArray(arr) ? arr.filter(gitPathOk) : [];
   } catch (e) { return []; }
@@ -1773,10 +1774,11 @@ async function pollPluginRequests() {
       const local = fileURLToPath(url);
       const relative = path.relative(process.resourcesPath, local);
       if (relative.startsWith("..") || path.isAbsolute(relative)) continue;
+      let reqTimer;
       const requests = await Promise.race([
         wc.executeJavaScript('(function(){var q=window.__zusagePluginRequests;return Array.isArray(q)?q.splice(0,8):[]})()', true),
-        new Promise((resolve) => setTimeout(() => resolve([]), 1000)),
-      ]);
+        new Promise((resolve) => { reqTimer = setTimeout(() => resolve([]), 1000); }),
+      ]).finally(() => { if (typeof clearTimeout === "function") clearTimeout(reqTimer); });
       if (!Array.isArray(requests)) continue;
       for (const req of requests) {
         if (req && ["auto", "check", "update"].includes(req.action)) {

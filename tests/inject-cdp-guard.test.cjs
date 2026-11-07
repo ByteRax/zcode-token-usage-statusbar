@@ -1,17 +1,10 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
 const vm = require('node:vm');
-const source = fs.readFileSync(path.join(__dirname, '..', 'inject-main.cjs'), 'utf8');
+const { getInjectSlice } = require('./helpers/overlay-extract.cjs');
 
 // 切出 CDP 调试口块（注释首 → catch 收尾），在受控桩下跑各分支
-const START = '/* CDP 调试口';
-const END = 'catch (e) { LOG("cdp remote-debugging-port switch failed:", e.message); }';
-const a = source.indexOf(START);
-const b = source.indexOf(END);
-assert.ok(a >= 0 && b > a, 'CDP 块锚点存在');
-const block = source.slice(a, b + END.length);
+const block = getInjectSlice('cdpSwitchBlock');
 
 function runBlock({ env = {}, commandLine } = {}) {
   calls = [];

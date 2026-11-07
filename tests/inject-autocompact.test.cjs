@@ -7,13 +7,10 @@ const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
 
-const source = fs.readFileSync(path.join(__dirname, "..", "inject-main.cjs"), "utf8");
+const { getInjectSlice } = require("./helpers/overlay-extract.cjs");
 
 function pollSlice() {
-  const a = source.indexOf("async function pollPluginRequests() {");
-  const b = source.indexOf("setInterval(pollPluginRequests, 1000);", a);
-  assert.ok(a >= 0 && b > a, "pollPluginRequests 切片锚点失配");
-  return source.slice(a, b);
+  return getInjectSlice("pollPluginRequests");
 }
 
 function runPoll(requests, stubs) {
@@ -56,11 +53,7 @@ test("autocompact-config dispatches mode/value passthrough", async () => {
 });
 
 function pushStateSlice() {
-  const a = source.indexOf("function pushPluginState(wc, state) {");
-  // v206 起 ack 前置到更新器初始化之前：切片止于 ack 注释，避免把 ack 调用圈进沙箱
-  const b = source.indexOf("/* ack 必须先于更新器初始化", a);
-  assert.ok(a >= 0 && b > a, "pushPluginState 切片锚点失配");
-  return source.slice(a, b);
+  return getInjectSlice("pushPluginState");
 }
 
 test("pushPluginState carries enginePatch status for the settings panel", () => {

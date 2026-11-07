@@ -1,9 +1,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
 const vm = require('node:vm');
-const source = fs.readFileSync(path.join(__dirname, '..', 'overlay.js'), 'utf8');
+const { readOverlaySource, getNamedSlice } = require('./helpers/overlay-extract.cjs');
+const source = readOverlaySource();
 
 /* v99：tooltip 伪边界 leave 过滤。Chrome 悬停链收缩/重算会补发 DOM 内部的
  * documentElement/tip mouseleave（格内 .v↔.dim 空隙、tooltip 子元素之间），指针并未离开
@@ -12,10 +11,7 @@ const source = fs.readFileSync(path.join(__dirname, '..', 'overlay.js'), 'utf8')
  * 仍是本档具体元素即伪 leave 忽略；截断到 body/iframe/webview 或空链按真边界走原分流。
  * 真实悬停行为由 Playwright 实机验证（/tmp 复现脚本，未入库）；本文件锁定甄别判定表。 */
 
-const start = source.indexOf('    function tipLeaveAt(x, y) {');
-const end = source.indexOf('    listenGlobal(document.documentElement, "mouseleave"', start);
-assert.ok(start >= 0 && end > start, 'tipLeaveAt 函数与挂载点都存在');
-const fnSource = source.slice(start, end);
+const fnSource = getNamedSlice('tipLeaveAt');
 
 function runLeave({ x = 680, y = 400, hover = null, tipFor = {}, tipRect = null } = {}) {
   let hidden = null, boundaryHide = 0, mouseInBar = true;
@@ -120,11 +116,8 @@ test('documentElement 与 tooltip 两处 mouseleave 都路由 tipLeaveAt（过�
 });
 
 test('web 版同一语义：过滤在 tipLeaveAt 内且双挂载点路由一致', () => {
-  const web = fs.readFileSync(path.join(__dirname, '..', 'web', 'overlay.js'), 'utf8');
-  const wStart = web.indexOf('    function tipLeaveAt(x, y) {');
-  const wEnd = web.indexOf('    listenGlobal(document.documentElement, "mouseleave"', wStart);
-  assert.ok(wStart >= 0 && wEnd > wStart);
-  const wFn = web.slice(wStart, wEnd);
+  const web = readOverlaySource('web/overlay.js');
+  const wFn = getNamedSlice('tipLeaveAt', { file: 'web/overlay.js' });
   assert.match(wFn, /querySelectorAll\(":hover"\)/, 'web 版同样取最深 :hover 甄别');
   assert.match(wFn, /IFRAME/);
   assert.match(web, /tip\.addEventListener\("mouseleave", function \(e\) \{\s*\n\s*tipLeaveAt\(e\.clientX, e\.clientY\);\s*\n\s*\}, true\)/);

@@ -6,12 +6,14 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import stat
 import subprocess
 import sys
 import tempfile
 import unittest
 from unittest import mock
+import warnings
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -92,73 +94,185 @@ state_path.write_text(json.dumps(state))
 
 
 class ReleaseToolTests(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.base = Path(self.tmp.name)
-        self.root = self.base / "repo"
-        self.root.mkdir()
+    @classmethod
+    def setUpClass(cls):
+        cls._template_tmp = tempfile.TemporaryDirectory()
+        tbase = Path(cls._template_tmp.name)
+        troot = tbase / "repo"
+        troot.mkdir()
         for name in tool.NAMES:
-            path = self.root / name
+            path = troot / name
             path.parent.mkdir(parents=True, exist_ok=True)
             source = ROOT / name
-            # 归一成 LF：夹具不随开发者检出的行尾变化（Windows 旧检出可能仍是 CRLF）。
-            content = source.read_bytes().replace(b"\r\n", b"\n") if source.is_file() else b"// fixture source\n"
+            # JSON 配置与 release_unpack.py 读真实源码（供 identities/referenced_resources 校验）；
+            # 其余代码与文档使用轻量多行 LF 夹具，避免 59 个用例反复拷贝与解压 1.1MB overlay.js。
+            if name.endswith(".json") or name.endswith("release_unpack.py"):
+                content = source.read_bytes().replace(b"\r\n", b"\n") if source.is_file() else b"// fixture source\n"
+            else:
+                content = f"// fixture {name}\nline 2\n".encode("utf-8")
             path.write_bytes(content)
         helper = (ROOT / "release_unpack.py").read_bytes().replace(b"\r\n", b"\n")
-        (self.root / tool.PREFIX / "release_unpack.py").write_bytes(helper)
+        (troot / tool.PREFIX / "release_unpack.py").write_bytes(helper)
         manifest = {"name": tool.PLUGIN, "version": "1.2.3", "commands": "commands", "skills": "skills",
                     "packageLayout": {"schemaVersion": 1, "files": list(tool.NAMES)}}
         for name in (".zcode-plugin/plugin.json", ".claude-plugin/plugin.json"):
-            (self.root / tool.PREFIX / name).write_text(json.dumps(manifest))
+            (troot / tool.PREFIX / name).write_text(json.dumps(manifest))
         market = {"name": "zusage-marketplace", "plugins": [{"name": tool.PLUGIN, "version": "1.2.3",
                   "source": "./plugins/" + tool.PLUGIN}]}
-        (self.root / "marketplace.json").write_text(json.dumps(market))
+        (troot / "marketplace.json").write_text(json.dumps(market))
         for name in tool.SYNC_FILES:
-            (self.root / name).write_bytes((self.root / tool.PREFIX / name).read_bytes())
+            (troot / name).write_bytes((troot / tool.PREFIX / name).read_bytes())
         script = (ROOT / "release_tool.py").read_bytes()
-        (self.root / "release_tool.py").write_bytes(script)
-        (self.root / "sync_plugin.py").write_text("# fixture\n")
-        self.git("init", "--quiet")
-        self.git("config", "user.name", "Release Fixture")
-        self.git("config", "user.email", "fixture@example.invalid")
+        (troot / "release_tool.py").write_bytes(script)
+        (troot / "sync_plugin.py").write_text("# fixture\n")
+        def tgit(*args):
+            return subprocess.check_output(["git", *args], cwd=troot, stderr=subprocess.PIPE).decode()
+        tgit("init", "--quiet")
+        tgit("config", "user.name", "Release Fixture")
+        tgit("config", "user.email", "fixture@example.invalid")
         # 关闭行尾转换：系统级 autocrlf=true（Git for Windows 默认装法）会让测试体里的
         # git checkout -- 把归一成 LF 的文件恢复成 CRLF，误报 runtime copy drift。
-        self.git("config", "core.autocrlf", "false")
-        self.git("add", ".")
-        self.git("commit", "--quiet", "-m", "fixture")
-        self.git("tag", "v1.2.3")
-        self.git("remote", "add", "origin", "https://github.com/xhwxt/zcode-token-usage-statusbar.git")
-        self.git("remote", "add", "writable", "git@github.com:" + REPO + ".git")
-        (self.base / "head").write_text(self.git("rev-parse", "HEAD").strip())
-        bin_dir = self.base / "bin"
+        tgit("config", "core.autocrlf", "false")
+        tgit("add", ".")
+        tgit("commit", "--quiet", "-m", "fixture")
+        tgit("tag", "v1.2.3")
+        tgit("remote", "add", "origin", "https://github.com/xhwxt/zcode-token-usage-statusbar.git")
+        tgit("remote", "add", "writable", "git@github.com:" + REPO + ".git")
+        (tbase / "head").write_text(tgit("rev-parse", "HEAD").strip())
+        bin_dir = tbase / "bin"
         bin_dir.mkdir()
         gh = bin_dir / "gh"
         gh.write_text(GH_STUB)
         gh.chmod(0o755)
-        if os.name == "nt":
-            # Windows 的 CreateProcess 解析不了无扩展名的 shebang 脚本（gh stub）：
-            # 垫片把 gh 命令改派给本进程的 Python 解释器执行 stub。仅测试进程内生效，
-            # 真机上 gh.exe 由 GitHub CLI 官方安装，不受影响。
-            real_run = tool.run
+        built = tool.build(troot, REPO, tbase / "out")
+        cls._template_base = tbase
+        cls._asset_name = Path(built["zip"]).name
+        cls._manifest_name = Path(built["manifest"]).name
+        cls._notes = "## 更新说明\r\n\r\n- 修复发布正文校验。\r\n- 保留完整 Markdown 和 UTF-8 说明。\r\n"
+        (tbase / "notes.md").write_bytes(cls._notes.encode("utf-8"))
+        cls._head_blobs = {name: (troot / name).read_bytes() for name in tool.NAMES}
+        cls._head_oids = {
+            name: (hashlib.sha1(f"blob {len(blob)}\0".encode() + blob).hexdigest() + "\n").encode()
+            for name, blob in cls._head_blobs.items()
+        }
 
-            def run_via_python(root, *args, **kwargs):
-                if args and args[0] == "gh":
-                    args = (sys.executable, str(gh), *args[1:])
-                return real_run(root, *args, **kwargs)
+    @classmethod
+    def tearDownClass(cls):
+        cls._template_tmp.cleanup()
 
-            tool.run = run_via_python
-            self.addCleanup(setattr, tool, "run", real_run)
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.base = Path(self.tmp.name)
+        shutil.copytree(self._template_base, self.base, symlinks=True, dirs_exist_ok=True)
+        self.root = self.base / "repo"
+        bin_dir = self.base / "bin"
+        gh = bin_dir / "gh"
+        real_run = tool.run
+        head_blobs = self._head_blobs
+        head_oids = self._head_oids
+
+        def fast_gh(gh_args):
+            root_dir = Path(os.environ["STUB_ROOT"])
+            with (root_dir / "gh.log").open("a", encoding="utf-8") as log:
+                log.write(json.dumps(list(gh_args)) + "\n")
+            mode = os.environ.get("STUB_MODE", "ok")
+            state_path = root_dir / "gh-state.json"
+            state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
+
+            def emit_bytes(value):
+                return (json.dumps(value) + "\n").encode("utf-8")
+
+            def make_release(draft):
+                body = state.get("body")
+                if (mode == "baddraftbody" and draft) or (mode == "badfinalbody" and not draft):
+                    body = "Unreviewed release notes"
+                elif (mode == "missingdraftbody" and draft) or (mode == "missingfinalbody" and not draft):
+                    body = None
+                elif mode == "normalizedbody" and isinstance(body, str):
+                    body = body.replace("\r\n", "\n").rstrip() + "\r\n \t"
+                elif mode == "leadingbody" and draft:
+                    body = " " + body
+                elif mode == "linewhitespacebody" and draft:
+                    body = body.replace("\r\n", " \r\n")
+                return {"draft": draft, "prerelease": False, "tag_name": "v1.2.3", "body": body,
+                        "assets": state.get("assets", [])}
+
+            out = b""
+            if gh_args[:2] == ("auth", "status"):
+                if mode == "noauth":
+                    raise tool.ReleaseError("command failed: gh auth status")
+            elif gh_args[0] == "api":
+                endpoint = gh_args[1]
+                if "/releases/assets/" in endpoint:
+                    asset_id = int(endpoint.rsplit("/", 1)[1])
+                    data = Path(state["paths"][str(asset_id)]).read_bytes()
+                    out = b"tampered" if mode == "badhash" else data
+                elif endpoint.endswith("/releases/tags/v1.2.3"):
+                    out = emit_bytes(make_release(state.get("draft", True)))
+                elif "/git/ref/tags/" in endpoint:
+                    head = (root_dir / "head").read_text(encoding="utf-8").strip()
+                    out = emit_bytes({"object": {"type": "commit", "sha": "0" * 40 if mode == "badtag" else head}})
+                elif endpoint.endswith("/commits/v1.2.3"):
+                    out = emit_bytes({"sha": (root_dir / "head").read_text(encoding="utf-8").strip()})
+                elif "/releases?" in endpoint:
+                    out = emit_bytes([[make_release(state["draft"])]] if "draft" in state else
+                                     [[{"tag_name": "v1.2.3", "draft": True}]] if mode == "exists" else [[]])
+                else:
+                    out = emit_bytes({"full_name": "ByteRax/zcode-token-usage-statusbar",
+                                      "permissions": {"push": mode != "readonly"}})
+            elif gh_args[:2] == ("release", "create"):
+                state["draft"] = True
+                idx = list(gh_args).index("--notes-file") + 1
+                state["body"] = Path(gh_args[idx]).read_bytes().decode("utf-8")
+            elif gh_args[:2] == ("release", "upload"):
+                server = root_dir / "gh-assets"
+                server.mkdir(exist_ok=True)
+                state["paths"] = {}
+                state["assets"] = []
+                for i, p in enumerate(gh_args[3:5], 1):
+                    data = Path(p).read_bytes()
+                    stored = server / str(i)
+                    stored.write_bytes(data)
+                    state["paths"][str(i)] = str(stored)
+                    state["assets"].append({"id": i, "name": Path(p).name,
+                                            "size": len(data), "state": "uploaded"})
+            elif gh_args[:2] == ("release", "edit"):
+                state["draft"] = mode == "badpublish"
+            else:
+                raise tool.ReleaseError("unexpected gh command: " + repr(gh_args))
+            state_path.write_text(json.dumps(state), encoding="utf-8")
+            return out
+
+        def fast_run(root, *args, **kwargs):
+            if args and args[0] == "gh":
+                return fast_gh(tuple(args[1:]))
+            if len(args) == 4 and args[0] == "git" and Path(root) == self.root:
+                if args[1:3] == ("cat-file", "blob") and args[3].startswith("HEAD:"):
+                    name = args[3][5:]
+                    if name in head_blobs:
+                        return head_blobs[name]
+                elif args[1:3] == ("hash-object", "--"):
+                    name = args[3]
+                    target = self.root / name
+                    if name in head_blobs and not target.is_symlink() and target.is_file() and target.read_bytes() == head_blobs[name]:
+                        return head_oids[name]
+            elif len(args) == 3 and args[:2] == ("git", "rev-parse") and args[2].startswith("HEAD:") and Path(root) == self.root:
+                name = args[2][5:]
+                if name in head_oids:
+                    return head_oids[name]
+            return real_run(root, *args, **kwargs)
+
+        tool.run = fast_run
+        self.addCleanup(setattr, tool, "run", real_run)
         self.env = mock.patch.dict(os.environ, {"PATH": str(bin_dir) + os.pathsep + os.environ["PATH"],
                                   "STUB_ROOT": str(self.base), "STUB_MODE": "ok"})
         self.env.start()
         self.addCleanup(self.env.stop)
-        built = tool.build(self.root, REPO, self.base / "out")
-        self.asset = Path(built["zip"])
-        self.manifest = Path(built["manifest"])
+        self.asset = self.base / "out" / self._asset_name
+        self.manifest = self.base / "out" / self._manifest_name
         self.notes_file = self.base / "notes.md"
-        self.notes = "## 更新说明\r\n\r\n- 修复发布正文校验。\r\n- 保留完整 Markdown 和 UTF-8 说明。\r\n"
-        self.notes_file.write_bytes(self.notes.encode("utf-8"))
+        self.notes = self._notes
 
     def git(self, *args):
         return subprocess.check_output(["git", *args], cwd=self.root, stderr=subprocess.PIPE).decode()
@@ -179,10 +293,12 @@ class ReleaseToolTests(unittest.TestCase):
     def rewrite_zip(self, change):
         with zipfile.ZipFile(self.asset) as archive:
             entries = [(info, archive.read(info)) for info in archive.infolist()]
-        with zipfile.ZipFile(self.asset, "w") as archive:
-            for index, (info, data) in enumerate(entries):
-                info, data = change(index, info, data)
-                archive.writestr(info, data)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            with zipfile.ZipFile(self.asset, "w") as archive:
+                for index, (info, data) in enumerate(entries):
+                    info, data = change(index, info, data)
+                    archive.writestr(info, data)
         self.refresh_hash()
 
     def test_deterministic_exact_source_only_and_full_paths(self):

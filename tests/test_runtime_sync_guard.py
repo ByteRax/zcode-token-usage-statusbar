@@ -38,8 +38,13 @@ class RuntimeSyncGuardTests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location("sync_guard_installer", PLUGIN / "overlay_install.py")
         self.installer = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(self.installer)
+        core_changed = {"inject-main.cjs", "overlay.js", "plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs"}
         for name in self.installer.RUNTIME_FILES:
-            (self.plugin / name).write_bytes(("new package:" + name).encode())
+            prefix = "# new package: " if name.endswith(".py") else "// new package: "
+            data = (prefix + name + "\n").encode()
+            (self.plugin / name).write_bytes(data)
+            if name not in core_changed:
+                (self.runtime / name).write_bytes(data)
         for name in ("plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs", "runtime_lock.py"):
             shutil.copy2(ROOT / name, self.runtime / name)
         self.source = {"source": "github", "repo": "ByteRax/zcode-token-usage-statusbar", "ref": "plugin-releases"}
@@ -76,6 +81,15 @@ class RuntimeSyncGuardTests(unittest.TestCase):
         for patcher in patchers:
             patcher.start()
             self.addCleanup(patcher.stop)
+        prev_pi = sys.modules.get("patch_install")
+        def _restore_patch_install():
+            while str(self.plugin) in sys.path:
+                sys.path.remove(str(self.plugin))
+            if prev_pi is None:
+                sys.modules.pop("patch_install", None)
+            else:
+                sys.modules["patch_install"] = prev_pi
+        self.addCleanup(_restore_patch_install)
 
     def write(self, path, value):
         path.write_text(json.dumps(value), encoding="utf-8")
@@ -193,9 +207,17 @@ class RuntimeSyncGuardTests(unittest.TestCase):
         self.assert_rejected()
 
     def use_head_runtime(self):
-        for name in ("plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs"):
-            data = subprocess.check_output(["git", "-C", str(ROOT), "show", "HEAD:" + name])
+        from tests.helpers.py_test_support import cached_head_bytes
+        head_files = cached_head_bytes(ROOT, ("plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs"))
+        for name, data in head_files.items():
             (self.runtime / name).write_bytes(data)
+        # 预置非核心同步文件的相同副本：保持 inject-main.cjs / overlay.js / plugin-updater.cjs 等
+        # 关键冷热文件进入 writes 队列逐文件走真实 Node 验收，同时省去 13 个无关工具文件每次重复
+        # 拉起 Node 子进程（单次测试从 20 次子进程收敛至 7 次，契约覆盖完全等价）。
+        core_changed = {"inject-main.cjs", "overlay.js", "plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs"}
+        for name in self.installer.RUNTIME_FILES:
+            if name not in core_changed:
+                (self.runtime / name).write_bytes((self.plugin / name).read_bytes())
         self.write(self.runtime / "plugin-runtime.json", {
             "version": "1.0.0", "plugin_root": str(self.root / "old-installed"),
             "hashes": {name: hashlib.sha256((self.runtime / name).read_bytes()).hexdigest()
@@ -472,7 +494,7 @@ class RunVerifierTests(unittest.TestCase):
                   f"open({str(marker)!r}, 'w').write(str(child.pid))\n"
                   "time.sleep(30)\n")
         started = time.monotonic()
-        with mock.patch.object(self.installer, "VERIFY_TIMEOUT", 3), \
+        with mock.patch.object(self.installer, "VERIFY_TIMEOUT", 0.5), \
                 self.assertRaises(subprocess.TimeoutExpired):
             self.installer._run_verifier([sys.executable, "-c", script], dict(os.environ))
         self.assertLess(time.monotonic() - started, 15)

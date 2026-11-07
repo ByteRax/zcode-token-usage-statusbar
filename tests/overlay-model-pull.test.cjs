@@ -4,18 +4,12 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const vm = require("vm");
-const fs = require("fs");
-const path = require("path");
+const { readOverlaySource, sliceOverlay } = require("./helpers/overlay-extract.cjs");
 
-const SOURCE = fs.readFileSync(path.join(__dirname, "..", "overlay.js"), "utf8");
+const SOURCE = readOverlaySource();
 
 function sliceFunction(name) {
-  const marker = "function " + name + "(";
-  const start = SOURCE.indexOf(marker);
-  assert.ok(start > 0, "source slice not found: " + name);
-  const end = SOURCE.indexOf("\n    }", start);   // 函数体内部缩进 ≥6 空格，4 空格 } 即函数收尾
-  assert.ok(end > start, "slice end not found: " + name);
-  return SOURCE.slice(start, end + 6);
+  return sliceOverlay("function " + name + "(", "\n    }", { includeEnd: true });
 }
 
 function sliceNamed(name) {   // 与 sliceFunction 同款；用于多入口定位（matchProviderByBaseUrl 等纯函数）

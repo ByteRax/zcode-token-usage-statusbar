@@ -16,6 +16,10 @@ import renderer_bridge as bridge
 import patch_install as asar
 
 HOST = Path('/Applications/ZCode.app/Contents/Resources/app.asar')
+try:
+    HOST_ACCESSIBLE = HOST.is_file()
+except OSError:
+    HOST_ACCESSIBLE = False
 PANE_ANCHORS = {
     '3.17.2': b'"data-testid":Fx(hVe,e),"data-session-id":t??`draft`,',
     '3.17.1': b'"data-testid":Gb(aBe,e),"data-session-id":t??`draft`,',
@@ -297,7 +301,7 @@ assert.equal(next['data-zusage-pane-id'],'pane-2');
                 result = subprocess.run(['node', str(script)], capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
 
-    @unittest.skipUnless(HOST.is_file() and shutil.which('node'), 'Read-only host archive and Node required')
+    @unittest.skipUnless(HOST_ACCESSIBLE and shutil.which('node'), 'Read-only host archive and Node required')
     def test_actual_host_archive_roundtrip_and_vm(self):
         self.pin.stop()
         # Hash all packed files without evaluating any renderer or accessing its database.
@@ -355,7 +359,7 @@ assert.equal(next['data-zusage-pane-id'],'pane-2');
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('VM contract passed', result.stdout)
 
-    @unittest.skipUnless(HOST.is_file(), 'Read-only host archive required')
+    @unittest.skipUnless(HOST_ACCESSIBLE, 'Read-only host archive required')
     def test_derive_matches_pinned_host_entry(self):
         # 自动推导必须能复现人工登记的指纹（真机 bundle 是唯一权威样本）
         self.pin.stop()

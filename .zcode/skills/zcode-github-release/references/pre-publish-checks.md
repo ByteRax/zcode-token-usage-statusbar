@@ -52,11 +52,11 @@ print("VERSION=%s 链长=%d OK" % (cur, len(items)))
 PY
 ```
 
-发现撞号或乱序：按合入时间线重排（例如把前置的 `v99.1` 条目移到 `v99` 与 `v100` 之间），改根 `overlay.js` 后 `python3 sync_plugin.py`，并同步所有断言该代际号的测试。`web/overlay.js` 有独立 `VERSION`，不在此检查内。
+发现撞号或乱序：按合入时间线在 `src/overlay/06-instance-dom-and-styles.js` 重排（例如把前置的 `v99.1` 条目移到 `v99` 与 `v100` 之间），再运行 `python3 sync_plugin.py` 自动拼接生成根 `overlay.js` 并同步插件副本（切勿只改根 `overlay.js`，否则下次 `sync_plugin.py` 会被分片覆盖），并同步所有断言该代际号的测试。`web/overlay.js` 有独立 `VERSION`，不在此检查内。
 
 ## 升级链验证
 
-在野旧版本用**自带的** `release_unpack.py` 校验下载的新 ZIP。包内文件集变化而两份 manifest 没声明 `packageLayout`，旧解包器会按自己的历史文件集精确比对而拒绝：v1.4.4 与 v1.5.0 各新增了包内文件却未声明，致使 ≤1.4.5 的在野版本无法升级到 v1.5.0。`build` 现在会拦声明漂移，但解包器兼容性仍须实测。
+在野旧版本用**自带的** `release_unpack.py` 校验下载的新 ZIP。包内文件集变化而两份 manifest 没声明 `packageLayout`，旧解包器会按自己的历史文件集精确比对而拒绝：v1.4.4 与 v1.5.0 各新增了包内文件却未声明，致使 ≤1.4.5 的在野版本无法升级到 v1.5.0。`build` 与 `sync_plugin.py --verify-manifests` 现在会拦声明漂移，但解包器兼容性仍须实测。
 
 `build` 之后、发布之前，在项目 worktree 里用历史 tag 的解包器各校验一次，**任何一版拒绝或取不到都不得发布**。tag 列表写字面量（zsh 不会拆分未加引号的变量），`vLAST` 换成上一个正式 tag，其间发过版的 tag 一并加入：
 
@@ -85,10 +85,10 @@ done
 
 ## 重启要求
 
-主进程加载的冷文件变更后，用户必须完全退出 ZCode 再启动，更新说明必须写明。权威清单是 `plugin-updater.cjs` 里的 `cold` 判定（先 `grep -n cold plugin-updater.cjs` 核对清单没有漂移，当前为 `inject-main.cjs`、`plugin-updater.cjs`、`plugin-release.cjs`、`plugin-storage.cjs`、`quota-client.cjs`）。改写 `app.asar` 的注入/渲染端桥文件同样需要完全重启。用上一正式 tag 到发布提交的 diff 判定，不凭印象：
+主进程加载的冷文件变更后，旧版主进程（或涉及 `inject-main.cjs` 自身变更时全部版本）必须完全退出 ZCode 再启动，更新说明必须写明。权威清单是 `overlay_install.py` 的 `cold_files` 与 `plugin-updater.cjs` 的 `cold` 判定（先核对两处清单没有漂移，当前为 `inject-main.cjs`、`plugin-updater.cjs`、`plugin-release.cjs`、`plugin-storage.cjs`、`quota-client.cjs`、`model-puller.cjs`、`engine-patch.cjs`；注：v258 起已运行新版 `inject-main.cjs` 的客户端可通过 `hotReloadMainModules` 热换除 `inject-main.cjs` 外的 6 个子模块，但面向在野跨版本升级用户仍须按该清单提示重启）。改写 `app.asar` 的注入/渲染端桥文件或 macOS 待更新包补丁同样需要完全重启。用上一正式 tag 到发布提交的 diff 判定，不凭印象：
 
 ```bash
-git diff --name-only PREV_TAG..TARGET -- inject-main.cjs plugin-updater.cjs plugin-release.cjs plugin-storage.cjs quota-client.cjs renderer_bridge.py patch_install.py
+git diff --name-only PREV_TAG..TARGET -- inject-main.cjs plugin-updater.cjs plugin-release.cjs plugin-storage.cjs quota-client.cjs model-puller.cjs engine-patch.cjs renderer_bridge.py patch_install.py pending_zip_patch.py
 ```
 
 用户在配置里显式写了 `hot_reload: false` 时，`overlay.js`、`zusage.py` 也按冷文件处理（`plugin-updater.cjs`、`overlay_install.py` 在该开关为 false 时把它们并入冷文件清单，见 `docs/user-guide.md` 的热更新说明）：只改了这两个文件时，对这类用户同样要写「完全退出再重新打开」，不能写「无需重启」。

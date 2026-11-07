@@ -14,14 +14,9 @@ import unittest
 from unittest import mock
 
 
+from tests.helpers.py_test_support import load_module, make_asar as _shared_make_asar
+
 PLUGIN = Path(__file__).resolve().parents[1] / "plugins" / "zcode-token-usage-statusbar"
-
-
-def load_module(name, path):
-    spec = importlib.util.spec_from_file_location(name, path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
 
 
 class SessionStartChannelTests(unittest.TestCase):
@@ -73,12 +68,7 @@ class SessionStartChannelTests(unittest.TestCase):
 
     def make_asar(self, injected=False):
         entry = b"official;" + (self.pi.INJECT_LINE.encode("utf-8") if injected else b"")
-        header = {"files": {"out": {"files": {"main": {"files": {"index.js": {
-            "offset": "0", "size": len(entry)}}}}}}}
-        raw = json.dumps(header, separators=(",", ":")).encode("utf-8")
-        aligned = (len(raw) + 7) // 4 * 4
-        self.asar.write_bytes(struct.pack("<4I", 4, aligned + 4, aligned, len(raw)) + raw +
-                              b"\0" * (aligned - len(raw) - 4) + entry)
+        _shared_make_asar(self.asar, entry=entry)
 
     def invoke(self):
         stdout, stderr = io.StringIO(), io.StringIO()

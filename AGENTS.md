@@ -8,7 +8,7 @@
 
 | 改动涉及 | 先读 |
 |---|---|
-| `quota-client.cjs`、额度 chip / ⚙ 额度源面板、`zusage.py` SCNet 估算段、`tests/quota-*` | [.zcode/rules/quota.md](.zcode/rules/quota.md) |
+| `quota-client.cjs`、`src/quota/*.cjs`、`scripts/build_quota.py`、额度 chip / ⚙ 额度源面板、`zusage.py` SCNet 估算段、`tests/quota-*` | [.zcode/rules/quota.md](.zcode/rules/quota.md) |
 | `overlay.js`、`src/overlay/*.js`、`scripts/build_overlay.py`、`turn-stats.js`、浮层 UI / tooltip / 展示口径 | [.zcode/rules/overlay-ui.md](.zcode/rules/overlay-ui.md) |
 | 安装 / 注入 / hooks / 更新器 / 发布链 / 运行目录部署 | [.zcode/rules/install-release.md](.zcode/rules/install-release.md) |
 | `renderer_bridge.py`、窗口分栏归属、远端路由 | [.zcode/rules/bridge-remote.md](.zcode/rules/bridge-remote.md) |
@@ -38,11 +38,11 @@
 | 文件/目录 | 维护职责 |
 |---|---|
 | `zusage.py` | SQLite 查询库、CLI、桌面 JSON 快照、常驻 JSON 行查询与带身份的远端查询 |
-| `usage_stats.py` | 统计/速率公共计算库：`MIN_GEN_MS`/`MAX_GEN_MS`、`round1`、`hides_reasoning` 与「首块即落章」provider 斜率判定 `query_first_token_covers`，供 `zusage.py` 与 `token_rate.py` 共用 |
+| `usage_stats.py` | 统计/速率公共计算库：`MIN_GEN_MS`/`MAX_GEN_MS`、`round1`、`hides_reasoning`、生成窗口计算 `row_gen_ms` 与「首块即落章」provider 斜率判定 `query_first_token_covers`，供 `zusage.py` 与 `token_rate.py` 共用 |
 | `usage_mcp.py` | stdio JSON-RPC MCP；调用 `zusage`，提供 `token_usage(scope)` |
 | `token_rate.py` | 逐问速率、提问身份守卫与会话累计查询（根目录与插件副本同源同步） |
 | `token_pricing.py` | 模型单价表（models.dev 内置 326 条 + 12h 运行时同步）与预估费用计算（本库口径：input 已含 cache，output 已含思考）；快照 `cost_usd`/`fx` 生产方 |
-| `overlay.js` / `src/overlay/` / `scripts/build_overlay.py` | 桌面浮层、设置、tooltip、子代理明细、套餐额度 chip、Git 状态 chip 及速率展示；`src/overlay/00-*.js`..`09-*.js` 为模块化分片源码，经零依赖 `scripts/build_overlay.py` 拼接产出单文件 `overlay.js`（仓库仍提交完整 `overlay.js` 以免除用户安装期构建步骤） |
+| `overlay.js` / `src/overlay/` / `scripts/build_overlay.py` | 桌面浮层、设置、tooltip、子代理明细、套餐额度 chip、Git 状态 chip 及速率展示；`src/overlay/00-*.js`..`12-*.js`（13 个模块）为模块化分片源码，经零依赖 `scripts/build_overlay.py` 拼接产出单文件 `overlay.js`（仓库仍提交完整 `overlay.js` 以免除用户安装期构建步骤） |
 | `turn-stats.js` | 渲染进程统计行 tracker：历史轮记录、运行中子代理身份透传 |
 | `renderer_bridge.py` | 渲染桥：按客户端版本指纹（HOST_TARGETS 登记 + derive 推导）向 SessionPane 节点写 scope 身份属性 |
 | `inject-main.cjs` | 主进程加载、窗口/工作区 IPC、查询泵、文件监听、快照推送、受限写操作与六个子模块热换循环（唯一冷文件） |
@@ -52,14 +52,15 @@
 | `install_monitor.py` | 重启提醒、加载诊断和 Windows 待替换收尾 |
 | `plugin-updater.cjs` / `plugin-release.cjs` | 宿主插件更新调度、正式 GitHub Release 与渠道校验、更新日志（Release 说明）拉取与缓存 |
 | `plugin-storage.cjs` | 按宿主存储解析用户级插件库存/缓存，不假设固定 HOME |
-| `quota-client.cjs` | 套餐额度客户端（主进程，热换）：解密宿主 OAuth 凭据（`enc:v1` AES-256-GCM 重写实现）直查 BigModel/Z.ai monitor 端点，归一化窗口/退避/冻结/epoch 竞态，凭据只在内存 |
+| `quota-client.cjs` / `src/quota/` / `scripts/build_quota.py` | 套餐额度客户端（主进程，热换）：解密宿主 OAuth 凭据（`enc:v1` AES-256-GCM 重写实现）直查 BigModel/Z.ai monitor 端点及多厂商额度/余额接口，归一化窗口/退避/冻结/epoch 竞态，凭据只在内存；`src/quota/00-*.cjs`..`05-*.cjs` 为模块化分片源码，经零依赖 `scripts/build_quota.py` 拼接产出单文件 `quota-client.cjs` |
+| `model-puller.cjs` / `engine-patch.cjs` | 自定义供应商模型列表与思考档位拉取写回（共源 `resolveHostQuotaPaths`）；宿主引擎 bundle 自动压缩阈值等白名单补丁（主进程，热换） |
 | `runtime_lock.py` / `release_unpack.py` | 跨进程锁、配置事务/可信同步、安全 ZIP 解包 |
-| `sync_plugin.py` / `release_tool.py` | 根源码副本同步、`overlay.js` 拼接联动与 6 处分发清单一致性校验（`check_manifests`）；确定性发布包构建、校验、发布预演/发布 |
+| `sync_plugin.py` / `release_tool.py` | 根源码副本同步、`overlay.js`/`quota-client.cjs` 拼接联动与 6 处分发清单一致性校验（`check_manifests` / `--verify-manifests`）；确定性发布包构建、校验、发布预演/发布 |
 | `plugins/zcode-token-usage-statusbar/` | 两份 manifest、`.mcp.json`、命令、技能、hooks、专有安装/更新/提醒入口与共享副本 |
 | `web/` | `boot.js`、独立 `overlay.js`、`zusage-sidecar.mjs`、`readonly-guard.py`、nginx/systemd 示例 |
-| `tests/` / `docs/` | 隔离回归（含 `tests/helpers/overlay-extract.cjs` 统一浮层切片助手）、宿主 CLI 沙箱/交互演示；使用、设计、维护及宣传资料 |
+| `tests/` / `docs/` | 隔离回归（含 `tests/helpers/overlay-extract.cjs` 统一 `overlay.js`/`inject-main.cjs` 切片助手与 `tests/helpers/py_test_support.py` Python 公共测试夹具）、宿主 CLI 沙箱/交互演示；使用、设计、维护及宣传资料 |
 
-本检出包含 `usage_stats.py`、`src/overlay/`、`scripts/build_overlay.py`、`turn-stats.js`、`renderer_bridge.py`、`renderer_live_check.cjs` 与根目录 `token_rate.py`；不要从其它工作树补出本检出不存在的架构。
+本检出包含 `usage_stats.py`、`src/overlay/`、`scripts/build_overlay.py`、`src/quota/`、`scripts/build_quota.py`、`turn-stats.js`、`renderer_bridge.py`、`renderer_live_check.cjs` 与根目录 `token_rate.py`；不要从其它工作树补出本检出不存在的架构。
 
 关键调用链：
 - 桌面入口以绝对 `file://` 动态 `import` 引入 `inject-main.cjs`；主桥调用 Python，监听数据库及 WAL 变化，按窗口推送快照给 `overlay.js`。
@@ -73,10 +74,10 @@
 
 - `sync_plugin.py` 的 `FILES` 是共享分发清单（根目录是源，以脚本内定义为准）：
   `usage_mcp.py`、`mcp-launch.cjs`、`zusage.py`、`patch_install.py`、`install_monitor.py`、`inject-main.cjs`、`plugin-updater.cjs`、`plugin-release.cjs`、`plugin-storage.cjs`、`quota-client.cjs`、`model-puller.cjs`、`engine-patch.cjs`、`release_unpack.py`、`runtime_lock.py`、`usage_stats.py`、`turn-stats.js`、`overlay.js`、`token_rate.py`、`renderer_bridge.py`、`token_pricing.py`、`pending_zip_patch.py`。
-- **桌面 `overlay.js` 模块化源码约定**：`src/overlay/00-*.js`..`09-*.js` 是 `overlay.js` 的模块化分片源，由零依赖脚本 `scripts/build_overlay.py` 拼接生成根 `overlay.js`；仓库内仍同时提交拼接后的完整单文件 `overlay.js` 与 `plugins/zcode-token-usage-statusbar/overlay.js`，保证用户直接从 GitHub 市场安装、Release 包安装或 `git clone` 独立安装时**无需执行任何构建步骤**。修改桌面浮层代码时，应优先修改 `src/overlay/` 下的对应模块（若直接修改了根 `overlay.js`，须同步回写对应分片），再运行 `python3 sync_plugin.py`（会自动先调用 `build_overlay.py` 生成根 `overlay.js`，再同步到插件副本）。
-- **6 处分发清单统一校验**：`sync_plugin.py` 维护 `FILES`、`PLUGIN_ONLY_FILES`、`STANDALONE_RUNTIME_FILES`、`PLUGIN_RUNTIME_FILES`、`COLD_FILES`、`RESTART_HASH_FILES`、`RELEASE_PLUGIN_FILES`、`RELEASE_ZIP_FILES` 派生集合，并在 `--check`（以及 `test_plugin_package.py`）中通过 `check_manifests()` 自动核对 `release_tool.py`、`release_unpack.py`、`install.py`、`overlay_install.py`、`restart_notice.py` 与两份 `plugin.json` 的 `packageLayout.files`。共享文件先改根源码，再同步插件副本；清单外的插件入口、hooks、命令、技能和 manifest **不是生成文件**，应直接维护。新增分发文件须同步的全部登记处见 [.zcode/rules/install-release.md](.zcode/rules/install-release.md)。
+- **桌面 `overlay.js` 与 `quota-client.cjs` 模块化源码约定**：`src/overlay/00-*.js`..`12-*.js`（13 个模块，`VERSION` 与多行代际台账位于 `src/overlay/06-instance-dom-and-styles.js`）与 `src/quota/00-*.cjs`..`05-*.cjs`（6 个模块）分别是 `overlay.js` 和 `quota-client.cjs` 的模块化分片源，由零依赖脚本 `scripts/build_overlay.py` 与 `scripts/build_quota.py` 拼接生成根产物；仓库内仍同时提交拼接后的完整单文件产物及其 `plugins/zcode-token-usage-statusbar/` 副本，保证用户直接从 GitHub 市场安装、Release 包安装或 `git clone` 独立安装时**无需执行任何构建步骤**。修改桌面浮层或额度客户端代码时，必须优先修改 `src/overlay/` 或 `src/quota/` 下的对应分片，再运行 `python3 sync_plugin.py`（会自动先调用两个构建脚本生成根产物，再同步到插件副本；直接改根 `overlay.js` 或 `quota-client.cjs` 会在下次 `sync_plugin.py` 时被分片覆盖）。
+- **6 处分发清单统一校验**：`sync_plugin.py` 维护 `FILES`、`PLUGIN_ONLY_FILES`、`STANDALONE_RUNTIME_FILES`、`PLUGIN_RUNTIME_FILES`、`COLD_FILES`、`RESTART_HASH_FILES`、`RELEASE_PLUGIN_FILES`、`RELEASE_ZIP_FILES` 派生集合，并在 `sync_plugin.py`、`--check`、`--verify-manifests`（以及 `test_plugin_package.py`）中通过 `check_manifests()` 自动核对 `release_tool.py`、`release_unpack.py`、`install.py`、`overlay_install.py`、`restart_notice.py` 与两份 `plugin.json` 的 `packageLayout.files`。共享文件先改根源码，再同步插件副本；清单外的插件入口、hooks、命令、技能和 manifest **不是生成文件**，应直接维护。新增分发文件须同步的全部登记处见 [.zcode/rules/install-release.md](.zcode/rules/install-release.md)。
 - `web/overlay.js` 是独立实现，不在插件同步清单内；不能直接复制根浮层覆盖 Web。共享语义变化要分别评估，保留 Web 的挂载、接口与布局差异。
-- 共享文件（或 `src/overlay/*.js`）修改后在仓库根运行：
+- 共享文件（或 `src/overlay/*.js`、`src/quota/*.cjs`）修改后在仓库根运行：
 
 ```bash
 python3 sync_plugin.py
@@ -99,7 +100,7 @@ python3 sync_plugin.py --check
 3. **安全部署本次改动。** 写入前比较运行文件、来源基与本次修改，保留运行目录热修和其它会话改动，禁止整目录覆盖或借重装绕过保护。`overlay_install.py sync` 是全名单可信同步、没有单文件参数，仅在来源身份匹配且所有待同步差异均属本次已验证范围时使用。需要选择性开发部署时，按 [.zcode/rules/install-release.md](.zcode/rules/install-release.md) 先备份为 `.pre-<原因>-<时间戳>`，只将已确认可安全更新的文件经同目录临时文件、语法检查后原子替换；内容变化须确保 mtime 也变化。出现 `preserved`、来源身份不符、运行目录领先或并行写入冲突时，停止相关文件部署并说明，不强制覆盖。
 4. **按生效类型触发。**
    - `overlay.js`、`turn-stats.js`：部署到实际加载目录后，由主桥按 mtime 轮询检查（`hot_reload` 显式 `true` 时 2 秒、缺省 5 秒、显式 `false` 关闭），任一变化即整体重注入，不刷新页面或重启客户端冒充热重载。
-   - `zusage.py`：同一轮询发现变化后自动重启已有常驻 Python；未启动常驻进程时，下一次启动读取新代码。
+   - `zusage.py`：同一轮询发现变化后自动重启已有常驻 Python（若单独修改被导入的 `usage_stats.py` 或 `token_pricing.py`，因主桥仅监听 `zusage.py` mtime，须连带更新运行目录 `zusage.py` mtime 或确认常驻进程已重启）；未启动常驻进程时，下一次启动读取新代码。
    - 六个子模块 `quota-client.cjs`、`model-puller.cjs`、`plugin-updater.cjs`、`plugin-release.cjs`、`plugin-storage.cjs`、`engine-patch.cjs`：部署后由 loader `hotReloadMainModules` 在同一 mtime 轮询内热换（语法预检→dispose→清 require.cache→按依赖方向重建→`_hotLoadedAt`→ack 自动销账 marker），零重启生效；旧版 loader（未含热换循环）上仍需完全重启。`inject-main.cjs` 自身与首次注入、加载路径、asar 桥补丁变化：不能热重载，只记录并报告待完全重启，不自行退出或重启 ZCode。关闭热重载（`hot_reload:false`）时上述文件一律回退为重启生效。
    - 其它 Python 工具按下一次相关调用／新进程生效；MCP 已导入的模块需重启对应 MCP 进程，不能把文件同步或下一次工具调用当作重新载入。
 5. **验证确实生效。** 部署热文件前记录基线，部署后至少留出一个轮询周期，再检查运行证据：同一 renderer 未导航、未刷新时 `window.__zusageGen` 递增；Python 则核对常驻子进程更替及启动日志；主进程子模块热换的证据是 sync 链写入的 `.plugin-restart-required` 在一个热 tick 内被 `_hotLoadedAt` 路径自动销账（或该模块行为恢复），`__zusageGen` 只证明渲染端。随后验证本次目标行为，UI 按根约束使用内置浏览器优先验收，并检查新增错误。文件 hash 一致、单条触发日志或可能滞后的 `diag-*.json` 均不能单独证明成功；客户端未运行、通道不可用或受保护而未部署时，如实标记「未触发／未验证」，不得声称热更完成。
@@ -108,7 +109,7 @@ python3 sync_plugin.py --check
 
 - 保持修改聚焦，沿用现有原生代码与注释密度；不为统一风格引入框架、依赖或大规模重构。
 - `.js` 浮层是注入浏览器的脚本；`.cjs` 是 CommonJS。客户端入口可能是 ESM，注入行必须动态 `import`，不能直接 `require`；Web sidecar `.mjs` 是 Node ESM，`boot.js` 是浏览器脚本。
-- Python 路径使用 `Path`/已有定位逻辑；`python`、`python3`、`python_path` 与宿主实际可执行命令要区分，Windows 不保证有 `python3` 别名：插件 hooks.json 是 command+shell 回退链 `python3 → python → py -3`；`.mcp.json` 以 `node` 启动 `mcp-launch.cjs`（宿主对 stdio MCP 按 `shell:false` 经 cross-spawn 直接拉起，单命令无 shell 回退通道；但宿主给 MCP 子进程 PATH 末尾追加 Electron Node fallback shim，未装 Node 也能解析 `node`），由 launcher 按 hooks 同款顺序实测探测解释器并透传 stdio，不能改回裸 `python3`/`python` 单命令；主桥 `readCfg()` 把 `python_path` 缺省/空值归一为平台默认（win32=`python`，其它=`python3`），注入/安装时写回 `sys.executable` 并在每次 SessionStart 刷新。改这几处前先对当前客户端版本引擎核对 process/command 两种 hook 类型的 schema 与展开语义；回退链成立的平台依据见 [.zcode/rules/install-release.md](.zcode/rules/install-release.md)。
+- Python 路径使用 `Path`/已有定位逻辑；探测 `/Applications/ZCode.app` 等系统路径（如 `patch_install.py`、`renderer_bridge.py`）须捕获 `OSError`/`PermissionError`，防止在受限沙箱或 macOS TCC 拦截下抛未捕获异常。`python`、`python3`、`python_path` 与宿主实际可执行命令要区分，Windows 不保证有 `python3` 别名：插件 hooks.json 是 command+shell 回退链 `python3 → python → py -3`；`.mcp.json` 以 `node` 启动 `mcp-launch.cjs`（宿主对 stdio MCP 按 `shell:false` 经 cross-spawn 直接拉起，单命令无 shell 回退通道；但宿主给 MCP 子进程 PATH 末尾追加 Electron Node fallback shim，未装 Node 也能解析 `node`），由 launcher 按 hooks 同款顺序实测探测解释器并透传 stdio，不能改回裸 `python3`/`python` 单命令；主桥 `readCfg()` 把 `python_path` 缺省/空值归一为平台默认（win32=`python`，其它=`python3`），注入/安装时写回 `sys.executable` 并在每次 SessionStart 刷新。改这几处前先对当前客户端版本引擎核对 process/command 两种 hook 类型的 schema 与展开语义；回退链成立的平台依据见 [.zcode/rules/install-release.md](.zcode/rules/install-release.md)。
 - 保留带空格路径、Unicode、引号与平台进程行为的测试。POSIX shell 用既有 `shlex` 引用；Windows PowerShell 的 UTF-16LE `EncodedCommand` 路径不能简化为裸引号。
 - Windows 进程查询沿用 `subprocess` argv 与相应解码，不让 Git Bash 转换 `/FI` 等开关；asar 被占用的收尾必须由宿主以外的监控进程执行，不能依赖 ZCode 自己的定时任务。
 - 配置只合并需要的键，不整体覆盖 `config.json`；保留未知键、用户显式关闭与个人路径。插件配置事务在锁内重读、合并，再同目录原子替换；损坏或非对象配置不能被默默重建。
@@ -117,7 +118,7 @@ python3 sync_plugin.py --check
 - 会话内重启/安装提醒文字已取消（v172）：待重启由 ⚙ 齿轮红点承载（`plugin-updater.cjs` 推送 `restartRequired`/`markerAt` 代际，overlay 消费；v208 起红点仅待重启驱动——发现新版未安装、更新成功且已热重载均不亮，分量级已读比较保留以兼容旧 seen 串）；带待重启红点点 ⚙ 直接落「插件更新」分区（激活即 ack），设置页该分区有「已更新成功，点击重启 ZCode 即可生效」提示条（旧主进程降级回文字指引）；`restart_notice` 显式 `false` 关红点；`reminder()` 只服务 `/install-overlay` 命令行反馈与故障 `_nudge`。⚙ 更新页有「重启 ZCode」按钮（主进程 `relaunch` 白名单动作，浮层二次确认）。
 - CLI 普通报表、JSON 快照、hook JSON、MCP stdio 各有输出契约：机器协议的 stdout 不夹日志、安装提示或调试文本；诊断走已有 stderr/诊断文件路径。
 - 常驻查询是一请求一行 JSON 的协议；MCP 是 JSON-RPC，不可混用两者消息形状。增字段需兼容生产者、消费者与测试夹具。
-- 维护要求：新增定时器、文件/IPC/DOM 监听器、子进程要有明确归属，验证热更新、导航、窗口关闭后的停用，不能声称当前已有完整全局 dispose。
+- 维护要求：新增定时器、文件/IPC/DOM 监听器、子进程要有明确归属，验证热更新、导航、窗口关闭后的停用，不能声称当前已有完整全局 dispose；超时兜底定时器（如 `Promise.race` 的 fallback `setTimeout`、`AbortController` 的 `kill` 定时器、宽限期定时器）必须在结算后通过 `.finally(() => { if (typeof clearTimeout === "function") clearTimeout(timer); })` 立即清理并调用 `timer.unref?.()`，防止挂起事件循环与测试进程。
 - 保留浮层代际守卫、幂等内容更新、tooltip 解绑/扫描清理；`rAF` 自调度必须异常后续帧，诊断对象原地更新，不替换闭包共享引用。
 - 桌面默认样式优先挂输入卡工具行之后，缺工具行时回退 body 级 fixed；药丸样式在所属输入卡下方居中，表面随输入卡主题和状态变化。样式挂在条内，几何避开输入框中心点命中检测，避免自遮挡闪烁；宽度和窄窗策略见 overlay-ui 规则，Web 布局另验。
 - 配置/更新/安装锁跨 Python 与 Node；OS advisory 锁文件永久保留，不通过删锁文件解锁。更新租约/所有者与旧锁恢复是另一层协议，保留各自规则，不把冲突当成功，也不删运行目录绕过并发或热修保护。
@@ -128,10 +129,10 @@ python3 sync_plugin.py --check
 ### 统计与速率
 
 - 总 token = input + output；input 已含 cache_read，output 已含思考，不能再次相加。缓存命中率为 cache_read / input；轮数用 distinct turn_id，不依赖覆盖不全的 `turn_usage`。
-- 速度是两态（v181/PR #157 起完成态主数字为会话均）：渲染桥命中时，生成中显示按字符增量估算的 t/s（估算态不分档），该轮完成后主数字切换为**本会话加权平均**（快照 `avg_tps`，见下条），最近一轮真实值（输出含思考 ÷ 生成时长，来自 renderer store）进 tooltip「最近一轮」行；无桥回退 DB，完成态同样会话均为主、最近一段进 tooltip，快照/均值缺席（旧远端快照、零值）时回退原读数；按请求完成入库刷新，不是逐字流式读数。普通请求生成耗时为 completed_at − first_token_at；上报思考或 Claude 请求默认 completed_at − started_at，但「首块即落章」provider（按该 provider 历史的 ttft×reasoning 最小二乘斜率 <2.0 ms/token 自动判定；样本 <5 或推理量无变化不判、走默认。`zusage._provider_first_token_covers` 与 `token_rate.first_token_covers` 共用 `usage_stats.query_first_token_covers` 单一实现，`zusage.py` 保留单文件远端部署回退）思考在首字后随输出流出、首字窗口已含思考，改用 completed_at − first_token_at——一律 started_at 会把首块前的输入预处理（大上下文实测 8~10s）摊进生成耗时。TTFT 与生成窗口不是同一指标。
+- 速度是两态（v181/PR #157 起完成态主数字为会话均）：渲染桥命中时，生成中显示按字符增量估算的 t/s（估算态与完成态同按 `TPS_BANDS` 分档），该轮完成后主数字切换为**本会话加权平均**（快照 `avg_tps`，见下条），最近一段真实值进 tooltip（有快照 `speed_history` 时走 V2 速度统计卡，见 [.zcode/rules/overlay-ui.md](.zcode/rules/overlay-ui.md)）；无桥回退 DB，完成态同样会话均为主、最近一段进 tooltip，快照/均值缺席（旧远端快照、零值）时回退原读数；按请求完成入库刷新，不是逐字流式读数。普通请求生成耗时为 completed_at − first_token_at；上报思考或 Claude 请求默认 completed_at − started_at，但「首块即落章」provider（按该 provider 历史的 ttft×reasoning 最小二乘斜率 <2.0 ms/token 自动判定；样本 <5 或推理量无变化不判、走默认。`zusage._provider_first_token_covers` 与 `token_rate.first_token_covers` 共用 `usage_stats.query_first_token_covers` 单一实现，`zusage.py` 保留单文件远端部署回退）思考在首字后随输出流出、首字窗口已含思考，改用 completed_at − first_token_at——一律 started_at 会把首块前的输入预处理（大上下文实测 8~10s）摊进生成耗时。TTFT 与生成窗口不是同一指标。
 - 状态条向前检查最近 20 条请求，取最近有效速度样本；根实现缺首字即拒绝，插件速率对思考/Claude 仍允许 started_at 回退，两者不完全同款。不能用总耗时硬算普通请求速度，也不能把无效样本视作真实 0 t/s。
 - 插件逐问速率只聚合本轮有效段，按 Σoutput / Σ生成耗时加权，段间工具等待不计；近 5 请求均值/峰值不是本轮加权值，不能互相替代。
-- 会话均（v181/PR #157）= 全会话已完成 main_turn 段的加权平均（Σ有效输出 ÷ Σ生成窗口）：速率行「会话均」/CLI「平均」/`--json` `session.sessionAvg`（token_rate，scope 过滤同会话累计）与快照 `avg_tps`（zusage，`_row_gen_ms` 同窗口口径）两处同源；与「近N次均」算术平均并存不互替；辅助 query_source 与子代理行不计；无可评分段时速率行隐藏、快照为 0，消费端回退原读数。
+- 会话均（v181/PR #157）= 全会话已完成 main_turn 段的加权平均（Σ有效输出 ÷ Σ生成窗口）：速率行「会话均」/CLI「平均」/`--json` `session.sessionAvg`（token_rate，scope 过滤同会话累计）与快照 `avg_tps`（zusage，`_row_gen_ms` 同窗口口径，底层共用 `usage_stats.row_gen_ms`）两处同源；与「近N次均」算术平均并存不互替；辅助 query_source 与子代理行不计；无可评分段时速率行隐藏、快照为 0，消费端回退原读数。
 - `--current` 依赖本会话提问状态（promptTs）做**严格**时间过滤（`started_at >= prompt_ts`，无容差；原 3 秒容差是有意移除的 fail-closed 收紧，勿当 bug 修回）；连发且新轮未入库仍有误选边界，不能宣称零歧义。尚未入库的最终正文不在采样内，首段 TTFT、有效段速率和会话累计保持各自口径。
 - 上下文占比取最近完成请求 input / 上下文窗口，不是会话累计或历史峰值；压缩后可以回落。原生上下文按钮增强的**显示层**优先镜像原生 aria-label 已用/总量（宿主 taskUsage store，与悬停面板同源、压缩后立即回落，issue #172），解析不出才回退 DB 口径；ctxOv/nativeCtxVal 的窗口优先级只作用于 DB 兜底路径与 acWarningText。子代理按父子关系关联，不按派发时间最近邻猜任务名。
 - CLI/MCP `current` 选择数据库最近活跃会话，不保证是屏幕焦点；30 分钟阈值用于 active/idle 判断，不限制只选这段时间内的会话。
@@ -142,13 +143,13 @@ python3 sync_plugin.py --check
 ### 套餐额度
 
 - 额度是**账号级套餐池/账户余额**口径，不是单模型独享；chip/tooltip 不得出现"模型独享额度"语义。内置套餐（BigModel/Z.ai 个人档）数据来自解密宿主 OAuth 凭据直查 `bigmodel.cn|api.z.ai /api/monitor/usage/quota/limit`，BigModel 并行拉 `/api/biz/subscription/list` 取订阅元数据（白名单字段，歧义置 null）。有效期语义与宿主 pickCurrentSubscriptionExpireTime 同源且更严：非自动续费 nextRenewTime=当前权益结束日；自动续费=下次扣费日（renewAt，不声称最终到期）；绝不按 billingCycle 手工减年。与本地 token 统计是两条链，互不推导。
-- **多源调度器**：适配器注册表以 `quota-client.cjs` 源码为准，不在文档维护厂商清单；每源独立 TTL/epoch/退避/凭据指纹；enabled 源全量低频刷新（供 tooltip 分家列全），chip 主显跟随本 pane 会话模型归属（primary 源）；协议 `{active, byProvider, sources}`，本版对 active 源字段做顶层镜像兼容（下版移除）。新协议只加适配器，不做用户自定义解析模板/JS 解析器。
+- **多源调度器**：适配器注册表以 `src/quota/`（及拼接产物 `quota-client.cjs`）源码为准，不在文档维护厂商清单；每源独立 TTL/epoch/退避/凭据指纹；enabled 源全量低频刷新（供 tooltip 分家列全），chip 主显跟随本 pane 会话模型归属（primary 源）；协议 `{active, byProvider, sources}`，本版对 active 源字段做顶层镜像兼容（下版移除）。新协议只加适配器，不做用户自定义解析模板/JS 解析器。
 - **凭据契约**：发现优先级 env → `quota-secrets.json`（运行目录 0600，⚙ 面板 write-only 写入）→ 自动发现（宿主 provider_config.json；Anthropic 另读 `~/.claude/.credentials.json`，披露已单独列明）。发 key 域白名单=各适配器官方域 + 用户自定义中转的本域，绝不发第三方；凭据只在内存，绝不进 config.json/日志/诊断/diag。
 - 401/403 与无套餐冻结到凭据指纹变化（fs.watch credentials.json + quota-secrets/provider_config mtime 失效即解冻）；JWT exp 临期不发请求；失败保留最近成功值并标 stale；解密失败/no_plan/parse_error 一律 fail-closed，绝不显示 0%。
 - 显示门控：会话首个完成的 `main_turn`（快照 `last.provider_id`，已滤辅助请求污染）出现前，chip 跟随快照顶层 `provider_fallback`（全局最近 account:* 请求）；会话最新请求是自定义 provider 时显示对应自定义源（官方域直连/中转探测）。团队套餐显示"暂不支持"。SSH 远端分栏直接显示本地额度（宿主 provisioning 同账号事实）。chip 挂原生上下文按钮左侧，同款双 reapply/还原契约；⚙ 面板每源独立开关/凭据/立即刷新，状态中性提示（无凭据/无订阅不报红）。
 - SCNet 无凭据账本估算走外部快照 + 抵扣表（`SCNET_CREDIT_RATES`）× modelPatterns 在 zusage 侧聚合，随快照顶层 `scnet_estimate` 注入。
 - 额度只进桌面快照链；MCP、CLI、`/usage` stdout 契约不加字段。Web 端不做（sidecar 无凭据）。
-- 窗口分类、有效期解析细则、各家适配器陷阱、自定义中转、apiKey 模式、退避阶梯、路径契约（issue #56）等见 [.zcode/rules/quota.md](.zcode/rules/quota.md)——改 `quota-client.cjs` 或额度 UI 前必读。
+- 窗口分类、有效期解析细则、各家适配器陷阱、自定义中转、apiKey 模式、退避阶梯、路径契约（issue #56）等见 [.zcode/rules/quota.md](.zcode/rules/quota.md)——改 `src/quota/`（`quota-client.cjs`）或额度 UI 前必读。
 
 ### 窗口、分栏与远端
 
@@ -179,18 +180,20 @@ python3 sync_plugin.py --check
 
 ## 6. 测试与验证
 
-在仓库根运行；除 `scripts/build_overlay.py`（零依赖拼接 `src/overlay/*.js` → `overlay.js`）外没有第三方构建、lint 或格式化脚本。基础命令：
+在仓库根运行；除 `scripts/build_overlay.py` 与 `scripts/build_quota.py`（零依赖拼接 `src/overlay/*.js` → `overlay.js`、`src/quota/*.cjs` → `quota-client.cjs`）外没有第三方构建、lint 或格式化脚本。基础命令：
 
 ```bash
 node --test tests/*.test.cjs
 python3 -B -m unittest discover -s tests -p 'test_*.py'
 node --check overlay.js
 node --check inject-main.cjs
+node --check quota-client.cjs
 python3 scripts/build_overlay.py --check
+python3 scripts/build_quota.py --check
 python3 sync_plugin.py --check
 ```
 
-- Node 回归以 VM/stub 为主（浮层源码切片优先复用 `tests/helpers/overlay-extract.cjs`）；Python 回归使用临时数据库、目录和夹具。`-B` 避免主解释器写 bytecode，不保证子进程不写；需要时同时设 `PYTHONDONTWRITEBYTECODE=1`。
+- Node 回归以 VM/stub 为主（`overlay.js` 与 `inject-main.cjs` 源码切片优先复用 `tests/helpers/overlay-extract.cjs` 的 `getNamedSlice`/`sliceOverlay` 与 `getInjectSlice`/`sliceInject`）；Python 回归使用临时数据库、目录和公共夹具 `tests/helpers/py_test_support.py`（提供 `load_module`、`make_asar`、`cached_plugin_runtime_bytes`、`cached_head_bytes`；禁止在测试文件间写 `from test_xxx import ...` 裸同级导入，确保单文件 `python3 -B -m unittest tests/test_xxx.py` 可独立运行）。`-B` 避免主解释器写 bytecode，不保证子进程不写；需要时同时设 `PYTHONDONTWRITEBYTECODE=1`。
 - `ZCODE_USAGE_DB` 只隔离插件逐问脚本，不能当根 `zusage.py` 的通用数据库隔离开关；新测试沿用夹具替换数据库入口，默认不执行真实查询。
 - 首两条是自动化回归，`--check` 是语法/分片拼接一致性/副本同步与 6 处分发清单漂移检查，不等于行为验证；无需因仅修改文档而跑安装/发布。
 - Node 测试通配符命令适用于会展开 glob 的 shell；Windows PowerShell 请显式列出匹配文件，不能假设 Unix shell 展开行为。部分进程/平台测试会按环境跳过，必须报告。
@@ -198,11 +201,11 @@ python3 sync_plugin.py --check
 
 | 改动范围 | 验证选择（文件位于 `tests/`） |
 |---|---|
-| 统计/速率 | `test_token_rate.py`、`test_statusbar_rate.py`、`test_statusbar_cost.py`、`test_token_pricing.py`、`overlay-rate.test.cjs`、`overlay-cost-tip.test.cjs`、`overlay-speed-chart.test.cjs`；更改共享 JSON 时加入远端及插件契约回归 |
-| 套餐额度 | `quota-client.test.cjs`、`opencode-quota.test.cjs`、`quota-paths.test.cjs`、`quota-provider-revoke.test.cjs`、`quota-source-lifecycle.test.cjs`、`sub2api-protocol.test.cjs`、`overlay-quota-chip.test.cjs`、`test_statusbar_rate.py`（provider_fallback/scnet 估算）；真实厂商响应、凭据刷新解冻与 chip 实机挂载需桌面验收，unverified 适配器待真实账号校准 |
-| 浮层/主桥 | `overlay-*.test.cjs`、`plugin-loader.test.cjs`、`plugin-restart-boot.test.cjs`；语法检查，布局/多窗口需桌面验收 |
+| 统计/速率（含 `usage_stats.py`） | `test_token_rate.py`、`test_statusbar_rate.py`、`test_statusbar_cost.py`、`test_token_pricing.py`、`test_speed_history.py`、`overlay-rate.test.cjs`、`overlay-cost-tip.test.cjs`、`overlay-speed-chart.test.cjs`、`overlay-speed-v2.test.cjs`；更改共享 JSON 时加入远端及插件契约回归 |
+| 套餐额度 / 模型拉取 | `quota-client.test.cjs`、`opencode-quota.test.cjs`、`quota-zcode-start.test.cjs`、`quota-paths.test.cjs`、`quota-provider-revoke.test.cjs`、`quota-source-lifecycle.test.cjs`、`sub2api-protocol.test.cjs`、`model-puller.test.cjs`、`overlay-quota-chip.test.cjs`、`test_statusbar_rate.py`（provider_fallback/scnet 估算）；真实厂商响应、凭据刷新解冻与 chip 实机挂载需桌面验收，unverified 适配器待真实账号校准 |
+| 浮层/主桥 | `overlay-*.test.cjs`、`inject-*.test.cjs`、`plugin-loader.test.cjs`、`plugin-restart-boot.test.cjs`；语法检查，布局/多窗口需桌面验收 |
 | 桥/SSH 路由 | `test_renderer_bridge.py`、`test_bridge_pending.py`、`test_remote_targets.py`、`inject-remote-recovery.test.cjs`、`overlay-remote-scope.test.cjs`；实机身份/重连与认证另验 |
-| 安装/更新/锁/解包 | `test_install_discovery.py`、`test_plugin_sudo_install.py`、`test_pending_asar.py`、`test_config_transactions.py`、`test_runtime_sync_guard.py`、`test_release*.py` 及 `plugin-*.test.cjs`、`runtime-lock.test.cjs` |
+| 安装/更新/锁/解包 | `test_install_discovery.py`、`test_plugin_sudo_install.py`、`test_pending_asar.py`、`test_quiet_monitor.py`、`test_pending_zip_patch.py`、`test_config_transactions.py`、`test_plugin_upgrade.py`、`test_runtime_sync_guard.py`、`test_release*.py` 及 `plugin-*.test.cjs`、`runtime-lock.test.cjs` |
 | 插件命令/hooks/MCP | `test_command_frontmatter.py`、`test_plugin_contract.py`、`test_plugin_package.py`、`test_plugin_runtime.py`、`test_session_start_channels.py`、`test_restart_notice.py`；共享文件同时同步并检查漂移 |
 | Web | 下列语法检查；当前回归未覆盖 Web 端到端，需授权的旁挂/认证/浏览器验收，不能拿桌面测试替代 |
 | 文档/本地化 | 路径、相对链接/锚点、JSON 示例、双语对应与 manifest 一致性；涉及默认值/协议时加对应契约测试 |

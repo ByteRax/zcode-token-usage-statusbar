@@ -41,18 +41,7 @@ def revive_finalize_monitor():
         import patch_install as pi   # 与本脚本同目录（运行清单/插件目录都携带）
         pi.set_target(asar)
         pi.set_runtime(cfg_path.parent)
-        # cancelled 的 journal（卸载撤销/发布中断遗留）不是待收尾包：拉起只会得到
-        # 一个被来源授权立即拒绝退出的监控进程，等下次 install 清理即可。
-        if pi.pending_operation() not in ("install", "remove"):
-            return
-        with pi.monitor_instance_lock() as acquired:
-            if not acquired:
-                return   # 已有监控在收尾：不叠加进程（与 launch_monitor 内部去重同款前置）
-        # 试锁成功即释放，锁的长期持有者是监控进程自己；探测与拉起间的极小竞态由
-        # launch_monitor 的去重兜底（后到的监控抢锁失败会自行退出）。
-        os.environ["ZUSAGE_MONITOR_QUIET"] = "1"   # 无窗口静默收尾；不弹窗打断查询
-        with contextlib.redirect_stdout(sys.stderr):   # launch_monitor 的失败提示只许走 stderr
-            pi.launch_monitor(time.time())
+        pi.revive_orphan_pending(pi, require_writable=False)
     except Exception as e:  # noqa: BLE001
         print(f"[zusage] monitor revive skipped: {e}", file=sys.stderr)
 

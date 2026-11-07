@@ -18,15 +18,12 @@ import unittest
 from unittest import mock
 
 
-PLUGIN_ROOT = (Path(__file__).resolve().parents[1] / "plugins" /
-               "zcode-token-usage-statusbar")
-
-
-def load_module(name, path):
-    spec = importlib.util.spec_from_file_location(name, str(path))
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+from tests.helpers.py_test_support import (
+    PLUGIN_ROOT,
+    cached_plugin_runtime_bytes,
+    load_module,
+    make_asar,
+)
 
 
 class PluginUpgradeTests(unittest.TestCase):
@@ -39,6 +36,7 @@ class PluginUpgradeTests(unittest.TestCase):
         self.asar = self.root / "custom-location" / "resources" / "app.asar"
         self.installer = load_module("overlay_upgrade_test", PLUGIN_ROOT / "overlay_install.py")
         self.real_candidates = self.installer.asar_candidates
+        self.real_sync_verifier = self.installer._sync_verifier
         self.pi = load_module("patch_upgrade_test", PLUGIN_ROOT / "patch_install.py")
         self.pi._LANG = "zh"  # 不读取真实用户的语言配置。
         self.body = b"export const clientVersion = '1.0.0';\n"
@@ -46,10 +44,15 @@ class PluginUpgradeTests(unittest.TestCase):
         manifest = self.plugin / ".zcode-plugin" / "plugin.json"
         manifest.parent.mkdir(parents=True)
         manifest.write_text('{"name":"zcode-token-usage-statusbar","version":"1.0.0"}', encoding="utf-8")
-        for name in self.installer.RUNTIME_FILES:
-            (self.plugin / name).write_bytes((PLUGIN_ROOT / name).read_bytes())
+        for name, data in cached_plugin_runtime_bytes(PLUGIN_ROOT, self.installer.RUNTIME_FILES).items():
+            (self.plugin / name).write_bytes(data)
         self.updater = types.SimpleNamespace(start_auto_update=mock.Mock())
         self.notice = load_module("upgrade_restart_notice", PLUGIN_ROOT / "restart_notice.py")
+
+        @contextlib.contextmanager
+        def fixture_verifier(runtime, target_asar=None):
+            yield lambda: None
+
         # Windows 上 SystemRoot 缺失会让 node 验收子进程启动即崩（ncrypto CSPRNG 断言），
         # 清空环境时必须保留系统关键变量；同时固定子进程 IO 编码为 UTF-8——被清空后
         # 子进程会回落到 GBK 控制台编码输出中文，父进程 UTF-8 解码在读线程崩溃（stdout 变 None）。
@@ -60,6 +63,7 @@ class PluginUpgradeTests(unittest.TestCase):
                 mock.patch.object(self.installer, "PLUGIN_ROOT", self.plugin),
                 mock.patch.object(self.installer, "load_patch_install", return_value=self.pi),
                 mock.patch.object(self.installer, "asar_candidates", return_value=[]),
+                mock.patch.object(self.installer, "_sync_verifier", fixture_verifier),
                 mock.patch.object(self.pi, "syntax_check", return_value=True),
                 mock.patch.object(self.pi, "launch_monitor"),
                 mock.patch.object(self.pi, "client_running", return_value=False),
@@ -82,22 +86,7 @@ class PluginUpgradeTests(unittest.TestCase):
             "out/main/index.js": self.body if entry is None else entry,
             "assets/unchanged.txt": b"official resource",
         }
-        header, payload = {"files": {}}, bytearray()
-        for name, data in files.items():
-            parent = header
-            parts = name.split("/")
-            for part in parts[:-1]:
-                parent = parent["files"].setdefault(part, {"files": {}})
-            node = {"offset": str(len(payload)), "size": len(data)}
-            if name == "package.json" and unpacked:
-                node["unpacked"] = True
-            parent["files"][parts[-1]] = node
-            payload.extend(data)
-        encoded = json.dumps(header, separators=(",", ":")).encode("utf-8")
-        aligned = (len(encoded) + 7) // 4 * 4
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(struct.pack("<4I", 4, aligned + 4, aligned, len(encoded)) +
-                         encoded + b"\0" * (aligned - len(encoded) - 4) + payload)
+        make_asar(path, files=files, unpacked=unpacked)
 
     def write_config(self, config):
         self.runtime.mkdir(parents=True, exist_ok=True)

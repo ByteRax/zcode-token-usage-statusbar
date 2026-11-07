@@ -5,16 +5,11 @@ const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
 
-const source = fs.readFileSync(path.join(__dirname, "..", "inject-main.cjs"), "utf8");
-function extract(start, end) {
-  const a = source.indexOf(start), b = source.indexOf(end, a);
-  assert.ok(a >= 0 && b > a, "切片锚点失配：结构重写后请同步更新本测试");
-  return source.slice(a, b);
-}
+const { getInjectSlice } = require("./helpers/overlay-extract.cjs");
 
 /* handleReleaseNotesRequest 单测：渠道门控、参数收敛与回执形状。
  * releaseNotes / readChannel / electron app 全部经沙箱注入。 */
-const handlerSource = extract("async function handleReleaseNotesRequest(req, wc) {", "\n/* 逐问速率行开关");
+const handlerSource = getInjectSlice("handleReleaseNotesRequest");
 function runHandler(req, { channel = null, service = null, noService = false } = {}) {
   const deliveries = [];
   const wc = {};
@@ -81,7 +76,7 @@ test("release notes handler answers unsupported when the service failed to load,
 });
 
 /* pollPluginRequests 白名单分支：release-notes / release-notes-list 进分发，且白名单外动作仍回 unknown。 */
-const pollSource = extract("async function pollPluginRequests() {", "setInterval(pollPluginRequests, 1000);");
+const pollSource = getInjectSlice("pollPluginRequests");
 function runPoll(requests, handled) {
   const deliveries = [];
   const wc = { isDestroyed: () => false, getURL: () => "file://" + path.join(process.resourcesPath || "/r", "x.html"),

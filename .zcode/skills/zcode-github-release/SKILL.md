@@ -70,7 +70,7 @@ python3 -B release_tool.py verify --zip /new/artifact-directory/zcode-token-usag
 
 - 不覆盖已有未知资产目录。检查 JSON 输出、ZIP、SHA256、版本/tag/repository。发布包仅包含市场、许可证与插件运行所需白名单文件；不包含本项目发布技能、发布工具、用量数据、用户配置、凭据、缓存、锁或截图。`build` 另输出 `marketplace-release.json`，是渠道清单，不是第三个 Release 资产；根目录本地 `marketplace.json` 保持不变。
 - **同轮并行执行阶段 A 核查**：按上方「并行多 Subagent 协同策略」在同一轮并发派发只读 subagent，同时完成：
-  1. `overlay.js` 的 `VERSION` 代际台账、升级链验证（用历史 tag 里的 `release_unpack.py` 校验新 ZIP，任何一版拒绝或取不到都不得发布）、重启要求判定（命令都在 [发布前检查](references/pre-publish-checks.md)）；并行工作各自递增会出现同号不同义或乱序（实证：两处 v92 各指不同功能；热修 `v99.1` 被插到台账最前面），发现就由主 agent 按时间线重排后重新 build/verify。
+  1. `overlay.js` 的 `VERSION` 代际台账、升级链验证（用历史 tag 里的 `release_unpack.py` 校验新 ZIP，任何一版拒绝或取不到都不得发布）、重启要求判定（命令都在 [发布前检查](references/pre-publish-checks.md)）；并行工作各自递增会出现同号不同义或乱序（实证：两处 v92 各指不同功能；热修 `v99.1` 被插到台账最前面），发现就由主 agent 在 `src/overlay/06-instance-dom-and-styles.js` 按时间线重排后运行 `python3 sync_plugin.py` 重新生成根 `overlay.js` 与插件副本，再重新 build/verify。
   2. 全量测试与静态检查（测试失败先修复或报告阻塞，不能继续发布；在 subagent 中运行时必须保证不往发布 worktree 写入任何字节或缓存）：
 
 ```bash
@@ -91,7 +91,7 @@ python3 -B -m unittest discover -s tests -p 'test_*.py'
 
 ## 提交与 tag（阶段 B，须授权）
 
-1. 提交本次发布需要的**全部**改动，仅暂存这些文件，不使用 `git add .`：三个 manifest 的版本号；若阶段 A 重排了 `VERSION` 台账，还有根 `overlay.js`、插件副本和断言该代际号的测试（这类改动先向用户确认）。提交信息沿用 `release: vX.Y.Z`。默认分支上需提交时先创建分支（常规路径已在 `release/vX.Y.Z`）。
+1. 提交本次发布需要的**全部**改动，仅暂存这些文件，不使用 `git add .`：三个 manifest 的版本号；若阶段 A 重排了 `VERSION` 台账，还有 `src/overlay/06-instance-dom-and-styles.js`、根 `overlay.js`、插件副本和断言该代际号的测试（这类改动先向用户确认）。提交信息沿用 `release: vX.Y.Z`。默认分支上需提交时先创建分支（常规路径已在 `release/vX.Y.Z`）。
 2. **推 tag 之前的闸门**。已推送的 tag 不能移动，而 preflight 的多数检查要等 tag 推送后才第一次运行，所以先在本地把它们跑出来。命令都在发布 worktree 里执行：
 
    ```bash

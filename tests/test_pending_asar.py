@@ -21,16 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # 兼容 `unittest discover -s tests` 与 `python -m unittest tests.test_xxx` 两种调用形态
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import symlink_support  # noqa: E402
-
-
-def make_asar(path, entry=b"console.log('official v1');"):
-    header = {"files": {"out": {"files": {"main": {"files": {
-        "index.js": {"size": len(entry), "offset": "0"}
-    }}}}}}
-    raw = json.dumps(header, separators=(",", ":")).encode()
-    c = (len(raw) + 7) // 4 * 4
-    path.write_bytes(struct.pack("<4I", 4, c + 4, c, len(raw)) + raw +
-                     b"\0" * (c - len(raw) - 4) + entry)
+from tests.helpers.py_test_support import load_module, make_asar  # noqa: E402
 
 
 class PendingAsarTests(unittest.TestCase):

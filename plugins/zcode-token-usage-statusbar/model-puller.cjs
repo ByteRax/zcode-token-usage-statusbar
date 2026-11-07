@@ -353,6 +353,7 @@ function createModelPuller(opts) {
   const fetchImpl = o.fetchImpl || (typeof fetch === "function" ? fetch : null);
   const modelsDevUrl = o.modelsDevUrl === undefined ? MODELS_DEV_URL : String(o.modelsDevUrl);
   const modelsDevApiUrl = o.modelsDevApiUrl === undefined ? MODELS_DEV_API_URL : String(o.modelsDevApiUrl);
+  const catalogGraceMs = Number.isFinite(Number(o.catalogGraceMs)) && Number(o.catalogGraceMs) >= 0 ? Number(o.catalogGraceMs) : CATALOG_GRACE_MS;
   const cachePath = String(o.cachePath || "");   // 档位索引落盘路径（运行目录，inject-main 传入）；空=仅内存（测试）
   const credentialsPath = String(o.credentialsPath || "");   // 宿主 OAuth 凭据（套餐源）
   const decryptValue = typeof o.decryptValue === "function" ? o.decryptValue : null;   // 注入解密（主进程内存解密）
@@ -572,7 +573,16 @@ function createModelPuller(opts) {
      * CATALOG_GRACE_MS——它是行内小字的锦上添花，绝不拖慢弹窗（cc-switch 拉列表不等目录，同款取舍）。
      * 早退分支（供应商无效/无凭据/无网络栈）先于目录请求返回，不白打 models.dev。 */
     const catalogPromise = loadCatalog();
-    const catalogGrace = new Promise((resolve) => setTimeout(resolve, CATALOG_GRACE_MS));
+    const awaitCatalogWithinGrace = () => {
+      let graceTimer;
+      return Promise.race([
+        catalogPromise,
+        new Promise((resolve) => {
+          graceTimer = setTimeout(() => resolve(catalogCache ? catalogCache.entries : []), catalogGraceMs);
+          if (graceTimer && typeof graceTimer.unref === "function") graceTimer.unref();
+        }),
+      ]).finally(() => clearTimeout(graceTimer));
+    };
     if (planSrc) {
       /* 套餐源：单端点（Anthropic models，与运行协议同源），Bearer 套餐 token */
       try {
@@ -586,7 +596,7 @@ function createModelPuller(opts) {
           .filter((id, i, a) => a.indexOf(id) === i);
         if (!ids.length) return { ok: false, error: "no models in response" };
         ids.sort();
-        const entries = await Promise.race([catalogPromise, catalogGrace.then(() => (catalogCache ? catalogCache.entries : []))]);
+        const entries = await awaitCatalogWithinGrace();
         const metaById = Object.create(null);   // null 原型：模型 id 来自远端，"__proto__" 等键必须可写
         if (entries && entries.length) {
           for (const mid of ids) {
@@ -631,7 +641,7 @@ function createModelPuller(opts) {
       }
     }
     if (!items) return { ok: false, error: lastError };
-    const entries = await Promise.race([catalogPromise, catalogGrace.then(() => (catalogCache ? catalogCache.entries : []))]);
+    const entries = await awaitCatalogWithinGrace();
     const ids = [], metaById = Object.create(null);   // null 原型：模型 id 来自远端，"__proto__" 等键必须可写
     for (const item of items) {
       const pm = extractModelMeta(item);

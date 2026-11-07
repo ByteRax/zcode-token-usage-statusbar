@@ -1,17 +1,13 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
 const vm = require('node:vm');
-const source = fs.readFileSync(path.join(__dirname, '..', 'overlay.js'), 'utf8');
+const { readOverlaySource, getNamedSlice } = require('./helpers/overlay-extract.cjs');
+const source = readOverlaySource();
 
 /* v93：状态条「上下文容量」格已删（UI+tooltip），分档口径 ctxBandOf 的唯一消费方是
  * 原生按钮增强（overlay-ctxbtn.test.cjs 已覆盖其 DOM 行为）；本文件单测口径本身。
  * v131：切片含 CTX_BANDS/QUOTA_BANDS/bandOf（档位表与判定是口径的一部分）。 */
-const bandStart = source.indexOf('    var CTX_BANDS');
-const bandEnd = source.indexOf('    function html(d) {', bandStart);
-assert.ok(bandStart >= 0 && bandEnd > bandStart);
-const bandSource = source.slice(bandStart, bandEnd);
+const bandSource = getNamedSlice('ctxBandOf');
 
 function runBand(sess, { override = '', native = 0, exc = false } = {}) {
   const context = {

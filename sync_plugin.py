@@ -151,18 +151,24 @@ def check_manifests(root=ROOT):
     return errors
 
 
-def _maybe_build_overlay(root=ROOT, check_only=False):
-    """若存在模块化 overlay 构建脚本（scripts/build_overlay.py），先构建或校验根 overlay.js。"""
-    builder = Path(root) / "scripts" / "build_overlay.py"
-    if not builder.is_file():
-        return True
-    mod = _load_module("sync_build_overlay", builder)
-    rc = mod.main(["--check"] if check_only else [])
-    return rc == 0
+def _maybe_build_bundles(root=ROOT, check_only=False):
+    """若存在模块化构建脚本（scripts/build_overlay.py、scripts/build_quota.py），先构建或校验根产物。"""
+    for script_name, mod_name in (
+        ("build_overlay.py", "sync_build_overlay"),
+        ("build_quota.py", "sync_build_quota"),
+    ):
+        builder = Path(root) / "scripts" / script_name
+        if not builder.is_file():
+            continue
+        mod = _load_module(mod_name, builder)
+        rc = mod.main(["--check"] if check_only else [], root=root)
+        if rc != 0:
+            return False
+    return True
 
 
 def main(check_only=False):
-    if not _maybe_build_overlay(ROOT, check_only=check_only):
+    if not _maybe_build_bundles(ROOT, check_only=check_only):
         return 1
     missing = [f for f in FILES if not (ROOT / f).is_file()]
     if missing:

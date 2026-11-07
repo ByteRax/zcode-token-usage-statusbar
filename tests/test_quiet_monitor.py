@@ -908,7 +908,7 @@ class QuietMonitorTests(unittest.TestCase):
                 replace.assert_not_called()
 
     def test_failed_syntax_is_not_activated_by_quiet_or_visible_monitor(self):
-        from test_pending_asar import make_asar
+        from tests.helpers.py_test_support import make_asar
         for quiet in (True, False):
             for operation in ("install", "remove"):
                 with self.subTest(quiet=quiet, operation=operation):

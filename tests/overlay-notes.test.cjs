@@ -1,15 +1,11 @@
 "use strict";
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const fs = require("fs");
-const path = require("path");
 const vm = require("vm");
+const { sliceOverlay } = require("./helpers/overlay-extract.cjs");
 
-const source = fs.readFileSync(path.join(__dirname, "..", "overlay.js"), "utf8");
 function extract(start, end) {
-  const a = source.indexOf(start), b = source.indexOf(end, a);
-  assert.ok(a >= 0 && b > a, "切片锚点失配：结构重写后请同步更新本测试");
-  return source.slice(a, b);
+  return sliceOverlay(start, end);
 }
 /* 更新日志逻辑块（v202）：状态变量段（在早期 buildPanel 调用前赋值）+ 函数段，两段切片求值 */
 const notesVarsSource = extract("/* 更新日志卡片运行态", "var ZU_NAV_GROUPS = [");

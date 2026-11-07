@@ -53,6 +53,33 @@ def query_first_token_covers(con):
     return frozenset(out)
 
 
+def _uses_started_window(row, covers=frozenset(), hides_reasoning_fn=hides_reasoning):
+    """含思考段（reasoning>0）或隐藏思考的模型（Claude）默认将生成窗口前移到 started_at；
+    provider 在 covers（首块即落章）时思考已在首字窗口内，保持从 first_token_at 起算。"""
+    reasoning = row["reasoning_tokens"] or 0
+    if not (reasoning > 0 or hides_reasoning_fn(row["model_id"])):
+        return False
+    try:
+        pid = row["provider_id"]
+    except (KeyError, IndexError):
+        pid = None
+    return pid not in covers
+
+
+def row_gen_ms(row, covers=frozenset(), hides_reasoning_fn=hides_reasoning):
+    """按快照侧（zusage._row_gen_ms）口径计算一行 model_usage 的生成窗口毫秒数：
+    first_token_at 缺失或窗口非正则不可信（返回 None）；含思考段（reasoning>0）或
+    Claude 系列默认从 started_at 起算，provider 在 covers（首块即落章）时保持从
+    first_token_at 起算。"""
+    ft, ct, st = row["first_token_at"], row["completed_at"], row["started_at"]
+    if not ft or not ct or ct <= ft:
+        return None
+    gen_ms = ct - ft
+    if _uses_started_window(row, covers, hides_reasoning_fn=hides_reasoning_fn) and st and ct > st:
+        gen_ms = ct - st
+    return gen_ms
+
+
 def request_stats(row, covers=frozenset()):
     """Output includes reasoning. Missing/invalid generation windows stay unrated.
     Thinking rows default to the started_at window (thinking before the first token);
@@ -61,12 +88,7 @@ def request_stats(row, covers=frozenset()):
     output = row["output_tokens"] or 0
     reasoning = row["reasoning_tokens"] or 0
     completed = row["completed_at"]
-    thinking = reasoning > 0 or hides_reasoning(row["model_id"])
-    try:
-        pid = row["provider_id"]
-    except (KeyError, IndexError):
-        pid = None
-    start = row["started_at"] if thinking and pid not in covers else row["first_token_at"]
+    start = row["started_at"] if _uses_started_window(row, covers) else row["first_token_at"]
     duration = completed - start if _number(completed) and _number(start) and completed > start else None
     reason = None
     if duration is None:

@@ -8,11 +8,8 @@ const path = require("path");
 const vm = require("vm");
 const { pathToFileURL } = require("url");
 
-const source = fs.readFileSync(path.join(__dirname, "..", "inject-main.cjs"), "utf8");
-const a = source.indexOf("async function pollPluginRequests() {");
-const b = source.indexOf("setInterval(pollPluginRequests, 1000);", a);
-assert.ok(a >= 0 && b > a, "pollPluginRequests 切片锚点失配：结构重写后请同步更新本测试");
-const slice = source.slice(a, b);
+const { getInjectSlice } = require("./helpers/overlay-extract.cjs");
+const slice = getInjectSlice("pollPluginRequests");
 assert.ok(slice.includes('req.action === "relaunch"'), "relaunch 分支必须在切片内（白名单契约）");
 
 const RESOURCES = path.join(path.sep, "client", "resources");
@@ -41,7 +38,7 @@ function runPoll(requests, url = HOST_URL, main = true, updater = null) {
     BrowserWindow: { getAllWindows: () => [win] },
     setTimeout, clearTimeout,   // relaunch 分支延迟 quit 用（沙箱无全局定时器）
   });
-  return { calls, settle: () => new Promise((resolve) => setTimeout(resolve, 450)) };
+  return { calls, settle: () => new Promise((resolve) => setTimeout(resolve, 60)) };
 }
 
 test("relaunch action replies ok then relaunches via quit (before-quit cleanup path)", async () => {
@@ -55,9 +52,7 @@ test("relaunch action replies ok then relaunches via quit (before-quit cleanup p
 test("800ms hard fallback quits even when the renderer never settles the receipt delivery", async () => {
   // v244 review：渲染端卡死（executeJavaScript 投递永不结算）时，回执快路径不触发——
   // 800ms 硬兜底必须独立完成 hide + relaunch + quit，不能让「点了重启」静默失效。
-  const dA = source.indexOf("function deliverPluginRequest");
-  const dB = source.indexOf("\n}", dA) + 2;
-  const deliverSrc = source.slice(dA, dB);
+  const deliverSrc = getInjectSlice("deliverPluginRequest");
   assert.ok(deliverSrc.includes("executeJavaScript"), "deliverPluginRequest 切片锚点失配：结构重写后请同步更新本测试");
   const calls = { relaunch: 0, quit: 0, hides: 0 };
   const app = { relaunch: () => { calls.relaunch++; }, quit: () => { calls.quit++; } };
@@ -85,7 +80,7 @@ test("800ms hard fallback quits even when the renderer never settles the receipt
     BrowserWindow: { getAllWindows: () => [win] },
     setTimeout, clearTimeout,
   });
-  await new Promise((resolve) => setTimeout(resolve, 1100));   // 越过 800ms 兜底
+  await new Promise((resolve) => setTimeout(resolve, 850));   // 越过 800ms 兜底
   assert.equal(deliveryCalls.length, 1, "投递确实发出过（卡死的是渲染端执行，不是没发）");
   assert.deepEqual([calls.relaunch, calls.quit], [1, 1], "投递永不结算时 800ms 硬兜底必须退出");
   assert.equal(calls.hides, 1, "硬兜底路径同样先 hide 窗口");
@@ -115,7 +110,7 @@ test("hide is rolled back when relaunch/quit throws synchronously", async () => 
     BrowserWindow: { getAllWindows: () => [win] },
     setTimeout, clearTimeout,
   });
-  await new Promise((resolve) => setTimeout(resolve, 450));
+  await new Promise((resolve) => setTimeout(resolve, 60));
   assert.equal(calls.hides, 1);
   assert.equal(calls.shows, 1, "relaunch/quit 同步 throw 后必须 unhide 全部窗口");
   assert.equal(win.visible, true);
@@ -162,13 +157,10 @@ test("unknown action gets an ok:false fallback receipt instead of silence (v180,
 
 test("pushPluginState pushes the relaunchSupported capability flag (v180, issue #158)", () => {
   // 行为级：真实执行 pushPluginState，捕获推送的 payload 断言标记在列（与 relaunch 分支同文件=缺标记必无该分支）
-  const psA = source.indexOf("function pushPluginState(wc, state) {");
-  // v206 起 ack 前置到更新器初始化之前，pushPluginState 与 try 块之间插入了 ack 调用：切片止于 ack 注释
-  const psB = source.indexOf("\n/* ack 必须先于更新器初始化", psA);
-  assert.ok(psA >= 0 && psB > psA, "pushPluginState 切片锚点失配：结构重写后请同步更新本测试");
+  const psSlice = getInjectSlice("pushPluginState");
   const pushed = [];
   const wc = { isDestroyed: () => false, executeJavaScript: (js) => { pushed.push(js); return Promise.resolve(); } };
-  vm.runInNewContext(source.slice(psA, psB) + "\npushPluginState(wc, { supported: true, restartRequired: true });", {
+  vm.runInNewContext(psSlice + "\npushPluginState(wc, { supported: true, restartRequired: true });", {
     wc,
     isMainWindowState: () => true, isLocalHostPage: () => true,
     readCfgCached: () => ({ answer_rate_line: true, restart_notice: true }),
@@ -275,10 +267,7 @@ test("v245 the 15s sentinel unhides when quit never happens and honours app.isQu
 });
 
 test("deliverPluginRequest resolves handled true/false around executeJavaScript (v244 promise contract)", async () => {
-  const da = source.indexOf("function deliverPluginRequest(wc, requestId, result) {");
-  const db = source.indexOf("async function setAnswerRateLine(", da);
-  assert.ok(da >= 0 && db > da, "deliverPluginRequest 切片锚点失配：结构重写后请同步更新本测试");
-  const dslice = source.slice(da, db);
+  const dslice = getInjectSlice("deliverPluginRequest");
   const deliverWith = (wc, isLocal = true) => {
     const ctx = { wc, isLocalHostPage: () => isLocal, out: null };
     vm.runInNewContext(dslice + "\nout = deliverPluginRequest(wc, 'id-1', { ok: true });", ctx);

@@ -12,6 +12,40 @@ from contextlib import contextmanager
 from pathlib import Path
 
 
+def sudo_user(sys_platform=None):
+    """sudo 运行时的真实用户名（POSIX；非 sudo / Windows 返回 None）。"""
+    plat = sys.platform if sys_platform is None else sys_platform
+    if plat == "win32" or not os.environ.get("SUDO_USER"):
+        return None
+    try:
+        return os.environ["SUDO_USER"] if os.geteuid() == 0 else None
+    except AttributeError:
+        return None
+
+
+def real_home(sudo_user_fn=None, home_fn=None):
+    """真实用户家目录：sudo 会重置 HOME，Path.home() 指向 /root，而数据/运行目录与配置
+    必须落在 SUDO_USER 的家目录。"""
+    user = (sudo_user if sudo_user_fn is None else sudo_user_fn)()
+    if user:
+        try:
+            import pwd
+            return Path(pwd.getpwnam(user).pw_dir)
+        except (KeyError, OSError, ImportError, AttributeError):
+            pass
+    return (Path.home if home_fn is None else home_fn)()
+
+
+def fixed_drives(letters):
+    """本地固定盘盘符：离线的映射网络盘一被访问就触发重连（可卡数秒），光驱/读卡器可能无介质。"""
+    try:
+        import ctypes
+        drive_type = ctypes.windll.kernel32.GetDriveTypeW
+    except (ImportError, AttributeError, OSError):
+        return []
+    return [letter for letter in letters if drive_type(f"{letter}:\\") == 3]   # DRIVE_FIXED
+
+
 @contextmanager
 def file_lock(path, timeout=10.0):
     """Acquire an advisory lock or raise TimeoutError; never unlink the lock file."""

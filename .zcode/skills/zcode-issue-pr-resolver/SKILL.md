@@ -71,9 +71,9 @@ python3 -B "${ZCODE_SKILL_DIR}/scripts/triage.py" released <提交>     # 该提
 
 ## 2. 修复（issue → 自己的 PR）
 
-1. **先复现再修**：写一个在修复前会红的测试（Python 用临时库夹具，Node 用 VM/stub），确认它红，再改实现。根因要落到具体代码行，不要只改症状。涉及多模块联动时，可同一轮并行派发只读探索 subagent 分别排查不同模块的数据契约与调用链。
-2. 共享文件（`AGENTS.md` §3 的 `FILES` 清单）先改根目录源码，再 `python3 sync_plugin.py` 同步插件副本；`web/overlay.js` 是独立实现，单独评估，不直接复制。
-3. `overlay.js` 有行为变化时递增 `VERSION` 代际，号码以 `fork/main` 当前最大号为准；并行线可能已在未提交改动里占了更大的号，PR 描述里写明基于哪个号，合并撞号就在冲突解决里按时间线重排，不复用同号。
+1. **先复现再修**：写一个在修复前会红的测试（Python 用临时库夹具与 `tests/helpers/py_test_support.py`，Node 用 VM/stub 与 `tests/helpers/overlay-extract.cjs`），确认它红，再改实现。根因要落到具体代码行，不要只改症状。涉及多模块联动时，可同一轮并行派发只读探索 subagent 分别排查不同模块的数据契约与调用链。
+2. 共享文件（`AGENTS.md` §3 的 `FILES` 清单）先改根目录源码（其中 `overlay.js` 改 `src/overlay/*.js` 分片、`quota-client.cjs` 改 `src/quota/*.cjs` 分片、`zusage.py`/`token_rate.py` 公共计算改 `usage_stats.py`），再运行 `python3 sync_plugin.py` 自动拼接单文件、同步插件副本并执行 `--verify-manifests`；`web/overlay.js` 是独立实现，单独评估，不直接复制。
+3. `overlay.js` 有行为变化时在 `src/overlay/06-instance-dom-and-styles.js` 递增 `VERSION` 代际并运行 `python3 sync_plugin.py` 生成根 `overlay.js` 与插件副本，号码以 `fork/main` 当前最大号为准；并行线可能已在未提交改动里占了更大的号，PR 描述里写明基于哪个号，合并撞号就在冲突解决里按时间线重排，不复用同号。
 4. 行为、默认值、协议变化要同步文档（README 三语、`docs/user-guide.md`、插件 README 等，`AGENTS.md` §7）。
 5. 按 `AGENTS.md` §6 的改动范围表选验证，改完跑全套（同样约两分钟，超时处理或并行分流见 §0.6）并与 §0 的基线比较：
 

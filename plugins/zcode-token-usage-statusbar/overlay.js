@@ -5830,8 +5830,6 @@
       ".tip .rt-models .rt-row{display:table-row;margin:0}" +
       ".tip .rt-models .rt-row b{display:table-cell;padding:2.5px 14px 2.5px 0;white-space:nowrap}" +
       ".tip .rt-models .rt-row span{display:table-cell;white-space:nowrap}" +
-      /* v167 带 rt-models 的 tooltip（会话/项目累计）放宽宽度帽：取最宽一行自适应 */
-      ".tip.zu-tip-wide{max-width:min(860px,calc(100vw - 24px))}" +
       ".tip .rt-tool{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:16px;margin:5px 0;align-items:baseline}.tip .rt-tool-name{overflow-wrap:anywhere}.tip .rt-tool>.rt-atom{text-align:right}" +
       ".tip .rt-atom{display:inline-block;white-space:nowrap}" +
       ".tip .rt-row span{min-width:0;color:var(--color-tooltip-foreground,#fafafa);overflow-wrap:normal}" +
@@ -8714,8 +8712,6 @@
       tipSig = t;
       hideFxTip();   // innerHTML 重建会换掉 ? 图标节点，旧气泡悬挂无依附——先收
       tip.innerHTML = '<div class="tbody"></div>';
-      /* v167：带模型明细的两个 tooltip 放宽宽度帽（取最宽一行），其余不变 */
-      tip.classList.toggle("zu-tip-wide", t.indexOf("rt-models") > 0);
       if (t.charCodeAt(0) === 1) tip.firstChild.innerHTML = t.slice(1);   // \x01 前缀 = 结构化 HTML（v67.1）
       else tip.firstChild.textContent = t;
       tip.firstChild.scrollTop = oldScroll;

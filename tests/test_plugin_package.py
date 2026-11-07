@@ -113,9 +113,19 @@ class PluginPackageTests(unittest.TestCase):
         build_mod = importlib.util.module_from_spec(build_spec)
         build_spec.loader.exec_module(build_mod)
         assembled, parts = build_mod.assemble_bytes(ROOT / "src" / "overlay")
-        self.assertGreaterEqual(len(parts), 10)
+        self.assertEqual(len(parts), 13)
         self.assertEqual(assembled, (ROOT / "overlay.js").read_bytes())
         self.assertEqual(assembled, (PLUGIN / "overlay.js").read_bytes())
+        self.assertEqual(build_mod.main(["--check"], root=ROOT), 0)
+
+    def test_modular_quota_sources_assemble_byte_identically(self):
+        build_spec = importlib.util.spec_from_file_location("build_quota_test", ROOT / "scripts" / "build_quota.py")
+        build_mod = importlib.util.module_from_spec(build_spec)
+        build_spec.loader.exec_module(build_mod)
+        assembled, parts = build_mod.assemble_bytes(ROOT / "src" / "quota")
+        self.assertEqual(len(parts), 6)
+        self.assertEqual(assembled, (ROOT / "quota-client.cjs").read_bytes())
+        self.assertEqual(assembled, (PLUGIN / "quota-client.cjs").read_bytes())
         self.assertEqual(build_mod.main(["--check"], root=ROOT), 0)
 
     def test_release_skill_requires_post_release_pr_merge_and_verification(self):

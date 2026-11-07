@@ -1,9 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
 const vm = require('node:vm');
-const source = fs.readFileSync(path.join(__dirname, '..', 'overlay.js'), 'utf8');
+const { sliceOverlay } = require('./helpers/overlay-extract.cjs');
 
 /* v227：预估费用说明小气泡（fxTip）悬停保活。fxTip 是 body 级独立浮层，挂在主 tip 与
  * 子代理浮层（.zu-sub-pop）之外——指针从 ? 图标移入气泡后，文档 mousemove 的「条外」
@@ -12,12 +10,7 @@ const source = fs.readFileSync(path.join(__dirname, '..', 'overlay.js'), 'utf8')
  * 且目标在气泡内视同仍在 tooltip 上。本文件锁定该分支的判定表与「先于节流」的位置契约。
  * 真实悬停路径（伪 leave 过滤、8px 悬空缝）仍由实机指针验收，VM 合成事件测不出。 */
 
-const start = source.indexOf('listenGlobal(document, "mousemove"');
-assert.ok(start > 0, 'mousemove handler anchor found');
-const endTag = '}, true);';
-const end = source.indexOf(endTag, start);
-assert.ok(end > start, 'handler closing found');
-const handlerSource = source.slice(start, end + endTag.length);
+const handlerSource = sliceOverlay('listenGlobal(document, "mousemove"', '}, true);', { includeEnd: true });
 
 function makeHandler(ctxExtra = {}) {
   let handler = null;

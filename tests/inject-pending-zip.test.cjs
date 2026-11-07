@@ -11,9 +11,8 @@ const path = require("node:path");
 const vm = require("node:vm");
 const { EventEmitter } = require("node:events");
 
-const SOURCE = fs.readFileSync(path.join(__dirname, "..", "inject-main.cjs"), "utf8");
-const SEGMENT = SOURCE.slice(SOURCE.indexOf("/* ---------- v228 pending 更新包预注入"),
-  SOURCE.indexOf("/* ---------- v202 更新日志"));
+const { getInjectSlice } = require("./helpers/overlay-extract.cjs");
+const SEGMENT = getInjectSlice("pendingZipBlock");
 
 function harness({ platform = "darwin", cfg = {}, version = "3.17.2" } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "zusage-pendingzip-"));

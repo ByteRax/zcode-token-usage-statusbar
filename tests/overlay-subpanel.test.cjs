@@ -1,14 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
 const vm = require('node:vm');
+const { getNamedSlice } = require('./helpers/overlay-extract.cjs');
 
-const source = fs.readFileSync(path.join(__dirname, '..', 'overlay.js'), 'utf8');
-const start = source.indexOf('    function positionSubPop() {');
-const end = source.indexOf('    var subRateTimer = 0;', start);
-assert.ok(start >= 0 && end > start, 'positionSubPop slice found');
-const positionSource = source.slice(start, end);
+const positionSource = getNamedSlice('positionSubPop');
 
 /* v217：统一浮层定位——优先入口上方 12px，左右夹紧 12px；入口 rect 全零回退条锚；
  * 入口断连即关（无法确认归属）。 */
@@ -64,10 +59,7 @@ test('zero-rect entry falls back to the bar anchor; a detached entry closes the 
 
 /* v217：buildSubPop 签名幂等——同数据重复推送不重建（保持滚动/焦点/选择），数据真变才重建 */
 {
-  const s0 = source.indexOf('    function subPopItems(sub) {');
-  const s1 = source.indexOf('    function positionSubPop() {', s0);
-  assert.ok(s0 >= 0 && s1 > s0, 'buildSubPop slice found');
-  const buildSource = source.slice(s0, s1);   // 从 subPopItems 起：状态变量（subPopSel/sig/mode）由 ctx 注入
+  const buildSource = getNamedSlice('buildSubPop');   // 从 subPopItems 起：状态变量（subPopSel/sig/mode）由 ctx 注入
 
   function makePanel() {
     const panel = { children: [], classList: { add() {}, remove() {}, toggle() {}, contains: () => false } };

@@ -35,9 +35,9 @@ reviewer 是新开的 subagent，看不到本对话，简报必须自包含。**
 
 **A. 正确性与回归。** 修复是否真解决 issue 描述的场景（按 issue 的复现步骤自己跑或推演）、相邻路径有没有被破坏、`AGENTS.md` §5 契约是否保持，尤其是 fail-closed、身份隔离、stdout 协议、默认值，以及缺字段与显式 `false` 的区别。
 
-**B. 变异式测试审查**（最有效的一路）。不问「测试过不过」，而问「把实现改坏哪里它不会红」。对每个新增或修改的断言，在另克隆的私有副本里（`T=$(mktemp -d)` + `git clone --no-hardlinks`，不要 `cp -R` worktree，避免与同轮其它 reviewer 冲突）真去改坏实现来验证，列出漏网断言并给出能杀死该变异的用例。警惕死测试：源码字符串匹配冒充行为验证、夹具喂旧形状也能过、用例落在 `if __name__ == "__main__":` 之后没被收集。新增测试较多时可按测试文件拆成多路 B 子代理同轮并行变异。
+**B. 变异式测试审查**（最有效的一路）。不问「测试过不过」，而问「把实现改坏哪里它不会红」。对每个新增或修改的断言，在另克隆的私有副本里（`T=$(mktemp -d)` + `git clone --no-hardlinks`，不要 `cp -R` worktree，避免与同轮其它 reviewer 冲突）真去改坏实现来验证，列出漏网断言并给出能杀死该变异的用例。警惕死测试与脆弱夹具：源码字符串匹配冒充行为验证、夹具喂旧形状也能过、用例落在 `if __name__ == "__main__":` 之后没被收集、Python 测试文件间写 `from test_xxx import ...` 裸同级导入导致单文件独立运行失败、超时兜底定时器未在 `.finally()` 清理或未 `.unref()` 挂起事件循环。新增测试较多时可按测试文件拆成多路 B 子代理同轮并行变异。
 
-**C. 文档与副本一致性。** 跑 `python3 sync_plugin.py --check`；README 三语、`docs/user-guide.md`、`config.example.json`、`.zcode/rules/*.md`、插件 README 里的行为与数字声明与实测对账；`overlay.js` 的 `VERSION` 代际号是否撞号或乱序。
+**C. 文档与副本一致性。** 跑 `python3 sync_plugin.py --check`（同时验证 `src/overlay/*.js` → `overlay.js`、`src/quota/*.cjs` → `quota-client.cjs` 拼接产物一致、插件副本同步及 6 处分发文件清单一致）；README 三语、`docs/user-guide.md`、`config.example.json`、`.zcode/rules/*.md`、插件 README 里的行为与数字声明与实测对账；`src/overlay/06-instance-dom-and-styles.js` 及 `overlay.js` 的 `VERSION` 代际号是否撞号或乱序。
 
 **D. 安全审查**（外部 PR 必加）。先扫隐藏字符，再读 diff，读的就是扫过的那份字节：先落盘、检查上游退出状态，再 scan（直接 `… 2>&1 | scan` 会把 git 的报错文本当成输入，在 `pr-N` 写错时输出「没有发现」并退出 0）。在项目根执行，`<triage.py 的绝对路径>` 填 SKILL.md 里 `scripts/triage.py` 展开后的绝对路径：
 

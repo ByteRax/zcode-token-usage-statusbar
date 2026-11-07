@@ -14,27 +14,15 @@ from pathlib import Path
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
-_spec = importlib.util.spec_from_file_location("install_discovery_test", ROOT / "install.py")
-installer = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(installer)
+from tests.helpers.py_test_support import load_module, make_asar as _shared_make_asar  # noqa: E402
+
+installer = load_module("install_discovery_test", ROOT / "install.py")
 REAL_DRIVE_CANDIDATES = installer.drive_candidates   # setUp 会替换，盘符用例要用真实实现
 
 
 def make_asar(path, files):
     """微型 asar：files = {asar内路径: bytes}；header 布局与 patch_install.read_header 对齐。"""
-    header, payload = {"files": {}}, bytearray()
-    for name, data in files.items():
-        parent = header
-        parts = name.split("/")
-        for part in parts[:-1]:
-            parent = parent["files"].setdefault(part, {"files": {}})
-        parent["files"][parts[-1]] = {"offset": str(len(payload)), "size": len(data)}
-        payload.extend(data)
-    raw = json.dumps(header, separators=(",", ":")).encode("utf-8")
-    aligned = (len(raw) + 7) // 4 * 4
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(struct.pack("<4I", 4, aligned + 4, aligned, len(raw)) + raw +
-                     b"\0" * (aligned - len(raw) - 4) + payload)
+    return _shared_make_asar(path, files=files)
 
 
 def make_raw_asar(path, raw_header, entry=b"{}"):

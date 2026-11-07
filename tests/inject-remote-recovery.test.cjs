@@ -115,8 +115,8 @@ function renderer(wc, panes, bindings = {}, history = [A], workbench = null, sha
     localStorage: { get length() { return entries.size; }, key: i => [...entries.keys()][i], getItem: k => entries.get(k) || null },
   });
   context.ls = (key, fallback) => entries.get(key) || fallback;
-  const extract = (start, end) => overlaySource.slice(overlaySource.indexOf(start), overlaySource.indexOf(end, overlaySource.indexOf(start)));
-  vm.runInContext(extract("  function collectSidWs()", "  /* ---------- 回复末尾速率行") + extract("  function sessionFor(", "  window.__zusageUpdate"), context);
+  const { getNamedSlice, sliceOverlay } = require("./helpers/overlay-extract.cjs");
+  vm.runInContext(getNamedSlice("paneScopeHelpers") + sliceOverlay("  function sessionFor(", "  window.__zusageUpdate"), context);
   context.window.__zusageUpdate = payload => { context.payload = payload; };
   context.replaceWorkbench = list => { entries.set("zcode-v4-session-workbench-groups:v1", workbenchPayload(list)); context.refreshWants(); };
   context.replacePane = (pid, binding) => { nodes.set(pid, node(pid, binding)); context.refreshWants(); };

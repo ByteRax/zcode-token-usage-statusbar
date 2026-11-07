@@ -1,6 +1,6 @@
 # 套餐额度链规则
 
-适用路径：`quota-client.cjs`（及 `plugins/zcode-token-usage-statusbar/quota-client.cjs` 副本）、`overlay.js` 的额度 chip 与 ⚙ 额度源面板段、`inject-main.cjs` 的额度推送段、`zusage.py` 的 SCNet 估算段、`tests/quota-*.test.cjs`、`tests/overlay-quota-chip.test.cjs`、`docs/quota-support-audit.md`。
+适用路径：`src/quota/*.cjs`、`scripts/build_quota.py`、`quota-client.cjs`（及 `plugins/zcode-token-usage-statusbar/quota-client.cjs` 副本）、`overlay.js` 的额度 chip 与 ⚙ 额度源面板段、`inject-main.cjs` 的额度推送段、`zusage.py` 的 SCNet 估算段、`tests/quota-*.test.cjs`、`tests/overlay-quota-chip.test.cjs`、`docs/quota-support-audit.md`。
 
 改动上述路径或涉及套餐额度/账户余额展示前先读本文件。全局不变量（账号级口径、凭据契约、fail-closed、只进桌面链）在根 [AGENTS.md](../../AGENTS.md) §5，本文件是其细则；具体支持范围以 [docs/quota-support-audit.md](../../docs/quota-support-audit.md) 为准。
 
@@ -16,7 +16,7 @@
 
 ## 2. 多源调度器与适配器
 
-- 适配器注册表以 `quota-client.cjs` 源码为准，不在文档里维护厂商清单；新增适配器必须同步发 key 域白名单与 `docs/quota-support-audit.md`。
+- **模块化源码与拼接**：`quota-client.cjs` 源码按职责拆分为 `src/quota/00-constants-and-crypto.cjs` 至 `05-scheduler-and-exports.cjs` 共 6 个模块，经零依赖脚本 `scripts/build_quota.py`（并由 `python3 sync_plugin.py` 自动联动）拼接生成单文件 `quota-client.cjs`。适配器注册表以 `src/quota/`（及拼接产物 `quota-client.cjs`）为准，不在文档里维护厂商清单；新增适配器必须同步发 key 域白名单与 `docs/quota-support-audit.md`。
 - 适配器契约三段：`detect(j, providerId)`（纯函数、按 baseUrl 域名命中官方域，返回 null=不命中）→ `resolveCred` → `fetchOne`（内部调用 normalize* 工具函数归一化响应）。识别结果缓存，baseUrl 变化才重探；全部不命中才落 generic custom。env `ANTHROPIC_BASE_URL`+`ANTHROPIC_API_KEY` 直连接入不产生 provider_config 条目：该类会话额度无源可映射（unsupported/无源）是刻意 fail-closed 不猜 env 身份（API key 无法证明归属厂商），非 detect 缺口——排查「baseUrl 是官方域却显示暂不支持」先确认接入方式（DeepSeek 官方教程教的正是 env 接法）；builtin 同 providerId 字段级 merge 也可能使实际生效 baseUrl 与 ⚙ 面板显示值不一致。
 - apiKey 模式（宿主 apiKey 连接）：provider_id 形如 `bigmodel-api[-N]` / `zai-api[-N]`（非 `account:*`），按家族映射到 bigmodel/zai 适配器的复合源（`bigmodel:<providerId>`）；凭据优先级 env → quota-secrets → provider_config 同家族 key（`access.type` 以 `coding-plan-api-key` 结尾者优先，其次当前 provider，其次首个非空；显式 baseUrl 不在 bigmodel.cn / z.ai 域则不采用，绝不外发）→ 宿主 OAuth；key 只在内存与请求头流转。`provider_fallback` 仍只取 `account:%`，apiKey 用户在会话首个 main_turn 完成前无回退 chip。
 - **不做**用户自定义 request/extractor 模板或用户 JS 解析器（主进程执行用户脚本的攻击面 + 与 key 域白名单冲突）；新协议只走加适配器（dsh / cc-switch 等 MIT 源码转写）。标 `unverified` 的适配器未经真实账号实测，不在文档中宣称已验证。

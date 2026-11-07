@@ -1,17 +1,14 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
 const vm = require('node:vm');
+const { readOverlaySource, sliceOverlay } = require('./helpers/overlay-extract.cjs');
 
 /* v95 Web 精简模式（与桌面 v146 同期、独立实现）：切片验证主题键/归一、chips 挂载锚与
  * 门控、tooltip 摘要与设置入口接线。Web/overlay.js 是独立实现（web.md），不与桌面共用
  * 夹具；此处只做源码切片级回归，端到端需自托管旁挂实机验收。 */
-const source = fs.readFileSync(path.join(__dirname, '..', 'web', 'overlay.js'), 'utf8');
+const source = readOverlaySource('web/overlay.js');
 function extract(start, end) {
-  const a = source.indexOf(start), b = source.indexOf(end, a);
-  assert.ok(a >= 0 && b > a, 'anchor hit: ' + start);
-  return source.slice(a, b);
+  return sliceOverlay(start, end, { file: 'web/overlay.js' });
 }
 
 test('theme key: default off, compact opt-in via localStorage, illegal values fall back', () => {

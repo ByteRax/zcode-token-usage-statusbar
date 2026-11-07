@@ -1,24 +1,23 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
 const vm = require('node:vm');
+const { readOverlaySource, sliceOverlay } = require('./helpers/overlay-extract.cjs');
 
 /* v249 悬浮窗口激活方式（用户裁定简化）：⚙「点击激活悬浮窗口」（zusage3.tipClick）缺省关
  * = 恢复即时悬停原语义（v246 逐行为，v247 的 1000ms 停留定时器链已整体移除）；仅显式 "1"
  * 开 = 点击激活（悬停不打开/切换任何浮层，bar.click 接管，focusTipAt 防 focusin→click
  * 首击抵消，子代理 preview 关闭、点击 pinned 打开）。本文件锁两态判定表、点击模式事件序、
  * 开关接线与还原契约。真实指针/伪 leave 仍须实机验收（tests.md §4）。 */
-const source = fs.readFileSync(path.join(__dirname, '..', 'overlay.js'), 'utf8');
+const source = readOverlaySource();
 function extract(start, end) {
-  const a = source.indexOf(start), b = source.indexOf(end, a);
-  assert.ok(a >= 0 && b > a, 'slice ' + start);
-  return source.slice(a, b);
+  return sliceOverlay(start, end);
 }
 
 /* ---------- 1. v247 停留定时器链确已移除（防回归复活） ---------- */
 test('v249: the v247 dwell timer chain is fully removed from the implementation', () => {
-  const withoutLedger = source.replace(/^.*var VERSION = [^\n]*\n/m, '');
+  const withoutLedger = source
+    .replace(/\/\* VERSION 台账[\s\S]*?\*\/\s*/m, '')
+    .replace(/^.*var VERSION = [^\n]*\n/m, '');
   for (const sym of ['HOVER_OPEN_DELAY_MS', 'hoverTimer', 'hoverSchedule', 'hoverCheck', 'hoverStillOn', 'hoverCancel', 'hoverKey']) {
     assert.equal(withoutLedger.indexOf(sym), -1, sym + ' 不得残留（VERSION 台账的历史叙述除外）');
   }

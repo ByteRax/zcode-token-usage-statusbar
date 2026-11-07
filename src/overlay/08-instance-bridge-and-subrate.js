@@ -874,8 +874,6 @@
       tipSig = t;
       hideFxTip();   // innerHTML 重建会换掉 ? 图标节点，旧气泡悬挂无依附——先收
       tip.innerHTML = '<div class="tbody"></div>';
-      /* v167：带模型明细的两个 tooltip 放宽宽度帽（取最宽一行），其余不变 */
-      tip.classList.toggle("zu-tip-wide", t.indexOf("rt-models") > 0);
       if (t.charCodeAt(0) === 1) tip.firstChild.innerHTML = t.slice(1);   // \x01 前缀 = 结构化 HTML（v67.1）
       else tip.firstChild.textContent = t;
       tip.firstChild.scrollTop = oldScroll;

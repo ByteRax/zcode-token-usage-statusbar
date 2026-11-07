@@ -1,8 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
 const vm = require('node:vm');
+const { getNamedSlice } = require('./helpers/overlay-extract.cjs');
 
 // v126/桌面·web v93 起：中文数字与单位、时间段之间全部紧邻「1时1分10秒」，零段照旧省略（仅全零显示 0秒/0s）；
 // 英文数字与单位紧邻、时段间留空格「1h 1m 10s」（v126 用户要求）
@@ -29,14 +28,11 @@ const cases = [
 ];
 
 for (const file of ['overlay.js', 'web/overlay.js']) {
-  const source = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
-  const start = source.indexOf('  var DEFAULT_CHARS_PER_TOKEN = 2;');
-  const end = source.indexOf('  /* 思考态动效图标', start);
-  assert.ok(start >= 0 && end > start, `提取失败: ${file} zuBarSpeedView`);
+  const slice = getNamedSlice('zuBarSpeedView', { file });
 
   for (const lang of ['zh', 'en']) {
     test(`${file}: ${lang} thinking timer localizes h/m/s units and omits zero units`, () => {
-      const speedView = vm.runInNewContext(source.slice(start, end) + '\nzuBarSpeedView;', {
+      const speedView = vm.runInNewContext(slice + '\nzuBarSpeedView;', {
         L: (zh, en) => lang === 'en' ? en : zh,
       });
       for (const [observedMs, zhExpected, enExpected] of cases) {
@@ -55,12 +51,9 @@ for (const file of ['overlay.js', 'web/overlay.js']) {
  * 缺字段或时钟未及起点回退 observedMs。桌面与 Web 同源语义，两文件同测。 */
 test('overlay.js & web/overlay.js: thinking timer anchors to startedAt when present, falls back to observedMs', () => {
   for (const file of ['overlay.js', 'web/overlay.js']) {
-    const source = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
-    const start = source.indexOf('  var DEFAULT_CHARS_PER_TOKEN = 2;');
-    const end = source.indexOf('  /* 思考态动效图标', start);
-    assert.ok(start >= 0 && end > start, `提取失败: ${file} zuBarSpeedView`);
+    const slice = getNamedSlice('zuBarSpeedView', { file });
     const NOW = 36610000;   // 固定时钟，避开真实墙钟抖动
-    const speedView = vm.runInNewContext(source.slice(start, end) + '\nzuBarSpeedView;', {
+    const speedView = vm.runInNewContext(slice + '\nzuBarSpeedView;', {
       L: (zh) => zh,
       Date: { now: () => NOW },
     });

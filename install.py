@@ -38,7 +38,7 @@ import shutil
 import stat
 import sys
 from pathlib import Path
-from runtime_lock import update_config
+from runtime_lock import fixed_drives, real_home as _rt_real_home, sudo_user as _rt_sudo_user, update_config
 
 HERE = Path(__file__).parent.resolve()
 
@@ -67,27 +67,13 @@ def normalize_asar_arg(p, kind="asar"):
 
 def _sudo_user():
     """sudo 运行时的真实用户名（POSIX；非 sudo / Windows 返回 None）。"""
-    if sys.platform != "win32" and os.environ.get("SUDO_USER"):
-        try:
-            if os.geteuid() == 0:
-                return os.environ["SUDO_USER"]
-        except AttributeError:
-            pass
-    return None
+    return _rt_sudo_user(sys.platform)
 
 
 def real_home():
     """真实用户家目录：sudo 运行时 Path.home() 是 root 的家，而数据目录/MCP 注册/
-    /usage 命令必须落在真实用户的 ~/.zcode（ZCode 客户端与泵都以普通用户身份运行）。
-    Linux 上 /opt 等系统安装位置写入需要 root，这是本函数存在的唯一场景。"""
-    sudo_user = _sudo_user()
-    if sudo_user:
-        try:
-            import pwd
-            return Path(pwd.getpwnam(sudo_user).pw_dir)
-        except (KeyError, OSError):
-            pass
-    return Path.home()
+    /usage 命令必须落在真实用户的 ~/.zcode（ZCode 客户端与泵都以普通用户身份运行）。"""
+    return _rt_real_home(_sudo_user, Path.home)
 
 
 DATA_DIR = real_home() / ".zcode" / "zcode-token-usage-statusbar"   # 标准安装的数据/运行目录
@@ -147,26 +133,10 @@ def load_lang_from_config(dev):
 
 
 def asar_package_name(asar_path):
-    """读 asar 内 package.json 的 name 字段，辅助识别"这是不是 ZCode 的 asar"；
-    读不到（非 asar / 无 package.json / 条目 unpacked 外置）返回 None。"""
-    import struct
-    try:
-        with open(asar_path, "rb") as f:
-            a, b, c, d = struct.unpack("<4I", f.read(16))
-            if a != 4:
-                return None
-            header = json.loads(f.read(d))
-        node = header.get("files", {}).get("package.json")
-        if not isinstance(node, dict) or "size" not in node:
-            return None
-        with open(asar_path, "rb") as f:
-            f.seek(8 + b + int(node["offset"]))
-            data = f.read(int(node["size"]))
-        if b"\x00" in data:   # 被 pickle 对齐补零 / 条目加密等异常，放弃识别
-            return None
-        return json.loads(data.decode("utf-8")).get("name")
-    except (OSError, ValueError, KeyError, TypeError, AttributeError, struct.error):
-        return None   # 畸形 asar（header/package.json 是合法 JSON 但非对象）按读不到处理，跳过该候选
+    """读 asar 内 package.json 的 name 字段（与 patch_install.read_asar_package 同源）。"""
+    import patch_install as pi
+    pkg = pi.read_asar_package(asar_path)
+    return pkg.get("name") if pkg else None
 
 
 def is_zcode_app(asar_path):
@@ -178,16 +148,6 @@ def is_zcode_app(asar_path):
         return True
     name = asar_package_name(asar_path)
     return isinstance(name, str) and "zcode" in name.lower()
-
-
-def fixed_drives(letters):
-    """本地固定盘盘符：离线的映射网络盘一被访问就触发重连（可卡数秒），光驱/读卡器可能无介质。"""
-    try:
-        import ctypes
-        drive_type = ctypes.windll.kernel32.GetDriveTypeW
-    except (ImportError, AttributeError, OSError):
-        return []
-    return [letter for letter in letters if drive_type(f"{letter}:\\") == 3]   # DRIVE_FIXED
 
 
 def drive_candidates():

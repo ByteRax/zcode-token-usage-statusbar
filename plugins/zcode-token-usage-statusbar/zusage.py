@@ -32,12 +32,14 @@ try:
         MAX_GEN_MS as _TPS_MAX_GEN_MS,
         hides_reasoning as _shared_hides_reasoning,
         query_first_token_covers as _query_first_token_covers,
+        row_gen_ms as _shared_row_gen_ms,
     )
 except ImportError:   # 远端单文件直跑等无 usage_stats.py 场景：本模块内联兜底
     _TPS_MIN_GEN_MS = 200
     _TPS_MAX_GEN_MS = 3_600_000
     _shared_hides_reasoning = None
     _query_first_token_covers = None
+    _shared_row_gen_ms = None
 
 
 def load_config():
@@ -1042,12 +1044,11 @@ def _provider_first_token_covers(con):
 
 
 def _row_gen_ms(r, covers=frozenset()):
-    """按 token_rate.py 同款口径算一行 model_usage 的生成时长；first_token_at 缺失
-    或窗口非正则不可信，返回 None（该请求不参与 last.tps 计算）。
-    含思考段（reasoning>0）默认 completed_at − started_at（推理在首字前流出的 provider，
-    漏出分母会虚高）；provider 在 covers（首块落章，见 _provider_first_token_covers）时
-    思考已在首字窗口内，改用 completed_at − first_token_at，不把首块前的输入预处理
-    摊进生成耗时。Claude 系列恒用 started_at（hides_reasoning）。"""
+    """按 usage_stats.row_gen_ms / token_rate.py 同款口径算一行 model_usage 的生成时长；
+    first_token_at 缺失或窗口非正则不可信，返回 None（该请求不参与 last.tps 计算）。
+    底层计算委派 usage_stats.row_gen_ms（支持远端单文件直跑无 usage_stats.py 时的内联兜底）。"""
+    if _shared_row_gen_ms is not None:
+        return _shared_row_gen_ms(r, covers, hides_reasoning_fn=hides_reasoning)
     ft, ct, st = r["first_token_at"], r["completed_at"], r["started_at"]
     if not ft or not ct or ct <= ft:
         return None

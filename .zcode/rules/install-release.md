@@ -6,12 +6,12 @@
 
 ## 1. 分发文件登记（新增/改名文件必查）
 
-一个文件进入分发链要同步**全部**登记处，漏任一处都会在不同阶段报错或断升级：
+一个文件进入分发链要同步**全部**登记处，漏任一处都会在不同阶段报错或断升级（`python3 sync_plugin.py --verify-manifests` 及 `python3 sync_plugin.py --check` 会自动交叉校验以下 6 处登记，并在同步前自动调用 `scripts/build_overlay.py` 与 `scripts/build_quota.py` 拼接生成根 `overlay.js` 和 `quota-client.cjs`）：
 - `sync_plugin.py` 的 `FILES`（根→插件副本同步）与 `release_tool.py` 的同步清单；
 - `release_unpack.py` 的 `PLUGIN_FILES`（安全解包文件集）；
-- 两份运行清单的 `RUNTIME_FILES`（`overlay_install.py` 插件链与 `install.py` 独立链各一份，都拷到稳定运行目录：注入行指向运行目录，`inject-main.cjs` 相对 require 的每个本地模块都必须在列，否则模块静默缺失只在加载时报错；`test_plugin_package` 对两份清单按此不变量守护）与 `overlay_install.py` 的 `cold_files`（决定哪些变更要求完全重启）；
+- 两份运行清单的 `RUNTIME_FILES`（`overlay_install.py` 插件链与 `install.py` 独立链各一份，都拷到稳定运行目录：注入行指向运行目录，`inject-main.cjs` 相对 require 的每个本地模块及 `zusage.py`/`token_rate.py` 共用的 `usage_stats.py` 都必须在列，否则模块静默缺失只在加载时报错；`test_plugin_package` 对两份清单按此不变量守护）与 `overlay_install.py` 的 `cold_files`（决定哪些变更要求完全重启）；
 - `restart_notice.py` 的 hashes 名白名单（漏改报"提醒记录 hashes 无效"）；
-- 两份 manifest（`.zcode-plugin/plugin.json`、`.claude-plugin/plugin.json`）的 `packageLayout.files`——在野旧版解包器要求文件集精确声明，漏声明会让旧版无法升级到新版（曾两次事故），`release_tool.py build` 的 `require_layout` 会拦；
+- 两份 manifest（`.zcode-plugin/plugin.json`、`.claude-plugin/plugin.json`）的 `packageLayout.files`——在野旧版解包器要求文件集精确声明，漏声明会让旧版无法升级到新版（曾两次事故），`release_tool.py build` 的 `require_layout` 与 `sync_plugin.py --verify-manifests` 会拦；
 - 相关契约测试（`tests/test_plugin_package.py`、`test_plugin_runtime.py`、`test_release*.py`）。
 
 反向也要成立（仅指插件链）：`usage_mcp.py`、`mcp-launch.cjs`、`overlay_install.py`、`plugin_auto_update.py`、`restart_notice.py` 与 `hooks/` 下的入口在插件链都从插件目录（缓存）运行，import 的兄弟文件同样来自插件目录，**不属于** `overlay_install.py` 的 `RUNTIME_FILES`，不要为「看起来同步」把它们加进运行时目录；`install.py` 独立链是例外——它的 `RUNTIME_FILES` 必须含 `usage_mcp.py`（独立链的 MCP 从运行目录运行）。
@@ -19,7 +19,7 @@
 ## 2. 注入与运行目录
 
 - 插件缓存按版本号换目录，而 asar 注入行是绝对 `file://` URI——所以 loader 必须先复制到稳定运行目录再对该目录注入，此后升级只需同步文件即可热更。注入/安装时把 `sys.executable` 绝对路径写回配置 `python_path`，每次 SessionStart 刷新。
-- asar 原子替换（mkstemp → `os.replace`）后必须 `os.chmod(stage, S_IMODE(原 asar mode))` 保留权限位，否则降成 0600（lifecycle 测试断言 0644）。
+- asar 原子替换（mkstemp → `os.replace`）后必须 `os.chmod(stage, S_IMODE(原 asar mode))` 保留权限位，否则降成 0600（lifecycle 测试断言 0644）。探测 `/Applications/ZCode.app` 等系统路径（如 `patch_install.py` 的 `ui_element_exe_for`/`syntax_check` 与 `renderer_bridge.py` 的 `_output_path`）必须用 `_safe_is_file` 或捕获 `OSError`（含 `PermissionError`）：Python 3.8/3.9 在受限沙箱或 TCC 拦截下调用 `Path.is_file()`/`is_symlink()`/`resolve()` 会直接抛 `PermissionError` 而非返回 `False`。
 - 待收尾包（pending TMP）的常驻收尾者是 `install_monitor.py`；无人值守的孤儿 pending 有三处补救：插件链 SessionStart hook 的自动安装、hook 的 `_revive_orphan_pending` 自愈检查（合法 pending + 实例锁空闲 + 目标可写 ⇒ 补拉静默监控，issue #228；目标可写前置守住 issue #130 受保护目录边界），以及 `usage_mcp.py` 进程启动时的 `revive_finalize_monitor()`（独立链无 hook，MCP 是其唯一会话级入口；config 所在目录即运行目录，收尾来源授权以此对齐 sidecar）。`_publish_pending` 的 journal 中间态（`cancelled`+`publishing`，期间全量 hash 大包，秒级窗口）是瞬时态：`pending_tmp` 对它抛 `PendingTmpBusy`（`PendingTmpError` 子类），监控循环必须重试续守，绝不能按「来源失效」退出让位——旧监控退出 + `launch_monitor` 去重跳过新拉起 = 孤儿 pending，重启不再替换（issue #228 根因）；`pending_operation()` 对 journal 仍返回 `cancelled`，复活/让位判定因此天然跳过发布窗口。两份运行清单的 `RUNTIME_FILES` 都必须携带 `patch_install.py`/`install_monitor.py`/`runtime_lock.py`——失败提示里的手动收尾命令只依赖运行目录内这套脚本，缺任一个，clone 删除后命令即不可执行（issue #163；`test_standalone_runtime_files_cover_finalize_toolchain` 守护）。
 - 参与 INJECT_LINE 字节比对/自检的 `--runtime` 路径禁止 `Path.resolve()`（macOS `/var`↔`/private/var` 符号链接会破坏字面比对），只用 expanduser/expandvars/abspath；`--asar` 可完整 resolve；standalone `install --finalize` 在自定义安装路径需同时给 `--asar` 与 `--runtime`，`install_monitor.py` 的"手动执行"提示内嵌真实路径。
 - `patch_install.client_running()` 用 `pgrep -x ZCode`，本机进程名可能是 `zcode-cli` 而漏检；它只决定走安全路径，无害，但**测试时不要靠它判断客户端是否在跑**。asar 被占用的收尾必须由宿主以外的监控进程执行，不能依赖 ZCode 自己的定时任务。

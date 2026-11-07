@@ -16,10 +16,10 @@
 
 ## 2. 提交与分支
 
-- overlay.js 的 VERSION 撞号时按合入顺序顺延改号并 rebase 后再提交；注释与代码一起演进。顺延/重排不只改 VERSION 行：`var VERSION` 声明常量、末位台账条目、断言代际号的版本锁测试要一起改（曾重排台账漏改声明，main 上「末位≠声明」卡到发版预检）；注释/docstring/规则文件里的行内 vNNN 标注必漏，收口前全量 grep 旧号核对语境。
+- `overlay.js` 的 `VERSION` 与多行台账正本位于 `src/overlay/06-instance-dom-and-styles.js`（`quota-client.cjs` 正本位于 `src/quota/*.cjs`）：修改代码或顺延/重排 `VERSION` 时必须先改 `src/overlay/`（或 `src/quota/`）下的分片源码，再运行 `python3 sync_plugin.py` 自动拼接生成根级单文件并同步插件副本（直接改根 `overlay.js` 或 `quota-client.cjs` 会在下次 `sync_plugin.py` 时被分片覆盖）。撞号时按合入顺序顺延改号并 rebase 后再提交；顺延/重排不只改 VERSION 行：`var VERSION` 声明常量、末位台账条目、断言代际号的版本锁测试要一起改（曾重排台账漏改声明，main 上「末位≠声明」卡到发版预检）；注释/docstring/规则文件里的行内 vNNN 标注必漏，收口前全量 grep 旧号核对语境。
 - `--theirs` 前核对删除行归属；从共享工作树导出补丁后先过一遍全部变更行再 apply。
 - `.gitignore` 对 `.zcode/` 是**白名单制**（`.zcode/*` + 逐目录 `!` 例外）：`.zcode/skills/` 下新建技能目录若不加 `!.zcode/skills/<名>/` 会被静默忽略、永远进不了提交（git status 看不见、新会话也不报错），新建项目技能后先补例外再写内容。
-- 并行活跃期跑 `sync_plugin.py` 会把他人未提交的根文件改动扫进插件副本与运行目录（详见 [install-release.md](install-release.md)）；且它只同步**所在工作树**的根↔副本：共享文件改在哪个 worktree，就要在那个 worktree 内跑它的 `sync_plugin.py`——在主工作区跑既同步不到你的改动，还会把主工作区他人的未提交改动扫进副本。
+- 并行活跃期跑 `sync_plugin.py` 会把他人未提交的根文件改动扫进插件副本与运行目录（详见 [install-release.md](install-release.md)）；且它只构建并同步**所在工作树**的 `src/` 分片→根文件→插件副本（同时执行 `--verify-manifests` 校验 6 处分发清单）：共享文件改在哪个 worktree，就要在那个 worktree 内跑它的 `sync_plugin.py`——在主工作区跑既同步不到你的改动，还会把主工作区他人的未提交改动扫进副本。
 - 渠道分支按设计**直接推送、绝不开 PR 进 main**（PR 会用 ZIP URL 清单覆盖源码相对路径市场入口）：常驻的 `plugin-releases`，与发过 GitCode 渠道才有的 `plugin-releases-gitcode`（`--gitcode-repo` 在 D 内建 GitCode Release 并上传资产；对渠道分支只是把清单生成到本地资产目录，推成 `plugin-releases-gitcode` 分支是阶段 E 另行授权的动作；未发过则该分支不存在）；GitHub 的 "Compare & pull request" 提示忽略。detached worktree 推渠道分支必须写完整 ref：`git push fork HEAD:refs/heads/plugin-releases`（推本地分支名会因为落后的同名本地分支报 non-FF；写短名 `HEAD:plugin-releases` 在目标分支只在一端不存在时，缺该分支的那一端报 `not a full refname`，有该分支的一端照常更新，两台主机从此不一致）。
 
 ## 3. PR 工作流

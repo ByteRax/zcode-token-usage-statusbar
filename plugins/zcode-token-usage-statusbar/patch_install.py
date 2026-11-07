@@ -43,8 +43,9 @@ import tempfile
 import time
 from pathlib import Path
 
+import contextlib
 from contextlib import contextmanager, nullcontext
-from runtime_lock import file_lock, publish_install
+from runtime_lock import file_lock, publish_install, real_home, sudo_user
 
 IS_WIN = sys.platform == "win32"
 IS_MAC = sys.platform == "darwin"
@@ -97,18 +98,11 @@ def L(zh, en):
     if _LANG is None:
         _LANG = "zh"
         # sudo 运行时（Linux 系统级安装）config 在真实用户的家目录，Path.home() 会指到 root
-        sudo_home = None
-        if sys.platform != "win32" and os.environ.get("SUDO_USER"):
-            try:
-                if os.geteuid() == 0:
-                    import pwd
-                    sudo_home = Path(pwd.getpwnam(os.environ["SUDO_USER"]).pw_dir)
-            except (KeyError, OSError, AttributeError):
-                pass
+        user_home = real_home(lambda: sudo_user(sys.platform), Path.home)
         bases = [RUNTIME,
                  Path.home() / ".zcode" / "zcode-token-usage-statusbar"]
-        if sudo_home:
-            bases.append(sudo_home / ".zcode" / "zcode-token-usage-statusbar")
+        if user_home != Path.home():
+            bases.append(user_home / ".zcode" / "zcode-token-usage-statusbar")
         for base in bases:
             try:
                 lang = json.loads((base / "config.json").read_text(encoding="utf-8")).get("lang")
@@ -145,6 +139,13 @@ def zcode_exe_for(asar_path):
     return None
 
 
+def _safe_is_file(path):
+    try:
+        return bool(path) and Path(path).is_file()
+    except OSError:
+        return False
+
+
 def ui_element_exe_for(exe_path):
     """darwin 后台拉起换 LSUIElement 的 Helper（plugin-updater.cjs cliExecutable 同款）：
     主 bundle 二进制即使带 ELECTRON_RUN_AS_NODE，部分客户端版本仍会向 LaunchServices
@@ -154,7 +155,7 @@ def ui_element_exe_for(exe_path):
         return exe_path
     helper = (Path(exe_path).parent.parent / "Frameworks" / "ZCode Helper.app"
               / "Contents" / "MacOS" / "ZCode Helper")
-    if helper.is_file() and os.access(helper, os.X_OK):
+    if _safe_is_file(helper) and os.access(helper, os.X_OK):
         return helper
     return exe_path
 
@@ -309,6 +310,25 @@ def read_header(f):
     return header, 8 + b
 
 
+def read_asar_package(asar_path, pi=None):
+    """读取 asar 根目录 package.json 解析后的字典；非 asar、unpacked 外置或损坏时返回 None。"""
+    reader = read_header if pi is None else getattr(pi, "read_header", read_header)
+    try:
+        with open(asar_path, "rb") as stream:
+            header, base = reader(stream)
+            node = header.get("files", {}).get("package.json")
+            if not isinstance(node, dict) or node.get("unpacked") or "size" not in node:
+                return None
+            stream.seek(base + int(node["offset"]))
+            data = stream.read(int(node["size"]))
+        if b"\x00" in data:
+            return None
+        pkg = json.loads(data.decode("utf-8"))
+        return pkg if isinstance(pkg, dict) else None
+    except Exception:
+        return None
+
+
 def iter_files(node, path=""):
     """yield (path_in_asar, node_dict)。node_dict 为文件（含 size）。"""
     for name, ch in node.get("files", {}).items():
@@ -394,7 +414,7 @@ def syntax_check(asar_path: Path):
     """用 ZCode 自身当 node（ELECTRON_RUN_AS_NODE）对入口做语法检查；
     找不到/无法运行 ZCode 可执行文件时跳过（自检是锦上添花，不应挡安装）。"""
     exe = ui_element_exe_for(ZCODE_EXE)
-    if not exe or not exe.is_file():
+    if not _safe_is_file(exe):
         print(L("  [check] 未找到 ZCode 可执行文件，跳过语法检查",
                 "  [check] ZCode executable not found; syntax check skipped"))
         return True
@@ -752,6 +772,30 @@ def pending_operation():
         return _load_tmp_metadata()["operation"]
     except PendingTmpError:
         return None
+
+
+def revive_orphan_pending(pi=None, require_writable=False):
+    """检测有效待收尾包且实例锁空闲时静默补拉监控（SessionStart hook 与 MCP 启动共用）。
+    传入 pi 模块/桩对象（默认本模块自身），保持测试 mock 接缝完整。"""
+    target = sys.modules[__name__] if pi is None else pi
+    if target.pending_operation() not in ("install", "remove"):
+        return False
+    with target.monitor_instance_lock() as acquired:
+        if not acquired:
+            return False
+    if require_writable and not target.target_writable():
+        return False
+    previous = os.environ.get("ZUSAGE_MONITOR_QUIET")
+    try:
+        os.environ["ZUSAGE_MONITOR_QUIET"] = "1"
+        with contextlib.redirect_stdout(sys.stderr):
+            target.launch_monitor(time.time())
+    finally:
+        if previous is None:
+            os.environ.pop("ZUSAGE_MONITOR_QUIET", None)
+        else:
+            os.environ["ZUSAGE_MONITOR_QUIET"] = previous
+    return True
 
 
 def pending_tmp(operation="install", verify_hash=False, verified=None):

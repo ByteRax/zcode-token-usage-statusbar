@@ -1,16 +1,15 @@
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
 const vm = require('node:vm');
 const test = require('node:test');
+const { readOverlaySource, sliceOverlay, getNamedSlice } = require('./helpers/overlay-extract.cjs');
 
 // v232 速度 tooltip 柱状图（v240 现役 10 段）：切片夹具沿 overlay-tooltip-span 同款
 // （bandHelpers 含 TPS_BANDS/tpsBand/speedCardHTML/speedChartHTML/speedSegsOf，
 // helpers 含 html() 的 DB 回退速度卡路径）。悬停状态种子对应实例闭包初值。
-const source = fs.readFileSync(path.join(__dirname, '..', 'overlay.js'), 'utf8');
-const helpers = source.slice(source.indexOf('    function fmtStart('), source.indexOf('    function ioc(')) +
-  source.slice(source.indexOf('    function ttEsc('), source.indexOf('    function stubFor('));
-const bandHelpers = source.slice(source.indexOf('  var TPS_BANDS = ['), source.indexOf('  /* 返回 null = 调用方应把这当成'));
+const source = readOverlaySource();
+const helpers = sliceOverlay('    function fmtStart(', '    function ioc(') +
+  sliceOverlay('    function ttEsc(', '    function stubFor(');
+const bandHelpers = getNamedSlice('tpsBandsTable');
 
 function makeCtx(lang = 'zh') {
   return vm.createContext({
@@ -323,10 +322,6 @@ test('speed_segs null behaves like missing field (no chart, legacy layout)', () 
 // v232 桥态（buildLiveTip）图表分支：lastView.session.speed_segs 非空时 live 卡同带
 // 图表、sub 右格让位、口径追加；切会话重置悬停；旧快照保留 v218「最近一段」右格。
 test('buildLiveTip renders the chart from lastView.session.speed_segs and suppresses the sub KPI', () => {
-  const blStart = source.indexOf('    function buildLiveTip(speedView) {');
-  const blEnd = source.indexOf('      function escHtml(s)', blStart);
-  const blClose = source.indexOf('\n    }', blEnd);
-  assert.ok(blStart >= 0 && blEnd > blStart && blClose > blEnd, '提取失败: buildLiveTip');
   const sandbox = {
     L: (zh) => zh,
     lastView: { session: { sid: 'sa', speed_segs: segs(6) }, last: { tps: 110 } },
@@ -339,7 +334,7 @@ test('buildLiveTip renders the chart from lastView.session.speed_segs and suppre
     fmt: v => String(v || 0), countFmt: v => String(v || 0), fmtMoney: usd => '$' + usd.toFixed(2),
   };
   const buildTip = vm.runInNewContext(
-    bandHelpers + '\n' + source.slice(blStart, blClose + 6) + '\nbuildLiveTip;', sandbox);
+    bandHelpers + '\n' + getNamedSlice('buildLiveTip') + '\nbuildLiveTip;', sandbox);
   const view = { cls: 'ok', text: '130.3 t/s', phase: null, band: null };
   const html = buildTip(view);
   assert.match(html, /zu-speed-chart/);

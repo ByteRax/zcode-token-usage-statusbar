@@ -1642,6 +1642,10 @@ function createQuotaClient(opts) {
     const ctl = new AbortController();
     st.ctl = ctl;
     const kill = setTimeout(() => { try { ctl.abort(); } catch (e) { } }, FETCH_TIMEOUT_MS);
+    if (kill && typeof kill.unref === "function") kill.unref();
+    if (ctl.signal && typeof ctl.signal.addEventListener === "function") {
+      ctl.signal.addEventListener("abort", () => clearTimeout(kill), { once: true });
+    }
     const p = (async () => {
       const value = await adapter.fetchOne(j, st.ctx, st.cred, ctl);
       if (value && value.noPlan) { const e = qErr("no_plan", "no plan"); e.st = st; throw e; }
@@ -1925,6 +1929,10 @@ function createQuotaClient(opts) {
       const ctl = new AbortController();
       st.ctl = ctl;
       const kill = setTimeout(() => { try { ctl.abort(); } catch (e) { } }, FETCH_TIMEOUT_MS);
+      if (kill && typeof kill.unref === "function") kill.unref();
+      if (ctl.signal && typeof ctl.signal.addEventListener === "function") {
+        ctl.signal.addEventListener("abort", () => clearTimeout(kill), { once: true });
+      }
       const p = (async () => {
         const body = await j.http.getJson(RESET_ORIGIN + RESET_PATH, {
           authorization: /^Bearer\s/i.test(cred.jwt) ? cred.jwt : "Bearer " + cred.jwt,

@@ -21,19 +21,13 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from tests.helpers.py_test_support import load_module, make_asar as _shared_make_asar  # noqa: E402
 
 
 def make_asar(path, entry=b"console.log('official v1');",
               package=None):
-    pkg = json.dumps(package or {"name": "@zcode/desktop", "type": "module",
-                                 "version": "3.18.0"}).encode()
-    header = {"files": {"out": {"files": {"main": {"files": {
-        "index.js": {"size": len(entry), "offset": "0"}}}}},
-        "package.json": {"size": len(pkg), "offset": str(len(entry))}}}
-    raw = json.dumps(header, separators=(",", ":")).encode()
-    c = (len(raw) + 7) // 4 * 4
-    path.write_bytes(struct.pack("<4I", 4, c + 4, c, len(raw)) + raw +
-                     b"\0" * (c - len(raw) - 4) + entry + pkg)
+    pkg = package or {"name": "@zcode/desktop", "type": "module", "version": "3.18.0"}
+    return _shared_make_asar(path, entry=entry, package=pkg)
 
 
 class PendingZipPatchTests(unittest.TestCase):

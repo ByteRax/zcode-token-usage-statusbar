@@ -1,16 +1,12 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
 const vm = require('node:vm');
+const { getNamedSlice, sliceOverlay } = require('./helpers/overlay-extract.cjs');
 
 /* v117 悬停命中区扩到整栏：hitItemFor 把条面空隙/分隔符按 sep 中线就近归属到条目。
  * 切片纪律（tests.md）：函数体自源码切出、sandbox 提供 main 桩与伪元素，
  * closest/getBoundingClientRect 按语义桩化；行为断言 + handler 接线各占一半。 */
-const source = fs.readFileSync(path.join(__dirname, '..', 'overlay.js'), 'utf8');
-const start = source.indexOf('function hitItemFor');
-const end = source.indexOf('/* 事件挂 document 捕获阶段');
-assert.ok(start > 0 && end > start, 'hitItemFor slice anchors found');
+const hitItemForSrc = getNamedSlice('hitItemFor');
 
 function makeFixture(opts = {}) {
   const its = (opts.items || ['it0', 'it1', 'it2']).map((name, i) => ({
@@ -20,7 +16,7 @@ function makeFixture(opts = {}) {
   const seps = [{ left: 100, right: 140 }, { left: 200, right: 240 }]
     .map(r => ({ getBoundingClientRect: () => r }));
   const main = { querySelectorAll: (sel) => (sel === '.it' ? its : sel === '.sep' ? seps : []) };
-  const hitItemFor = vm.runInNewContext('(' + source.slice(start, end) + ')', { main });
+  const hitItemFor = vm.runInNewContext('(' + hitItemForSrc + ')', { main });
   const target = (isIt, inMain) => ({
     closest(sel) {
       if (sel === '.it') return isIt ? its[1] : null;
@@ -59,8 +55,7 @@ test('gear and empty bar keep the v33.2 no-op (null)', () => {
 });
 
 test('mousemove handler routes hits through hitItemFor with clientX', () => {
-  const h = source.indexOf('listenGlobal(document, "mousemove"');
-  const handler = source.slice(h, source.indexOf('}, true);', h));
+  const handler = sliceOverlay('listenGlobal(document, "mousemove"', '}, true);');
   assert.match(handler, /var el = hitItemFor\(t, e\.clientX\);/);
   assert.doesNotMatch(handler, /var el = t\.closest\("\.it"\);/);
 });

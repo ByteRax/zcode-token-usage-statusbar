@@ -5,7 +5,7 @@
 设计目标：
 - 保持分发产物形态不变：根目录 overlay.js 与 plugins/.../overlay.js 仍为单文件 IIFE，
   无需打包器或第三方依赖，也不改变 Release ZIP 的文件清单契约。
-- 降低维护粒度：1.1MB 的 overlay.js 拆分为职责清晰的 10 个源码模块（src/overlay/）。
+- 降低维护粒度：1.1MB 的 overlay.js 拆分为职责清晰的 13 个源码模块（src/overlay/）。
 - 防漂移门禁：`--check` 校验 src/overlay/ 拼接结果与根 overlay.js 逐字节一致，
   并由 `sync_plugin.py` 自动串联调用。
 
@@ -21,6 +21,18 @@ ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = ROOT / "src" / "overlay"
 TARGET = ROOT / "overlay.js"
 PART_RE = re.compile(r"^[0-9]{2}-[A-Za-z0-9_-]+\.js$")
+_LEDGER_BLOCK_RE = re.compile(
+    r"[ \t]*/\* VERSION 台账[^\n]*\r?\n((?:[ \t]*\* [^\n]*\r?\n)+)[ \t]*\*/\r?\n([ \t]*var VERSION = \"[^\"]+\";)"
+)
+
+
+def _fold_version_ledger(text):
+    """将源码分片中可读的多行 VERSION 台账注释收敛为产物中的同行 `//v82 ...` 注释，
+    既消除源码中的 45KB 超长单行，又保持发版检查脚本对单行 VERSION 台账的校验契约。"""
+    def _repl(match):
+        items = [re.sub(r"^[ \t]*\* ", "", line.rstrip("\r")) for line in match.group(1).splitlines()]
+        return f"{match.group(2)}   //" + " ".join(items)
+    return _LEDGER_BLOCK_RE.sub(_repl, text, count=1)
 
 
 def list_parts(src_dir=SRC_DIR):
@@ -46,9 +58,12 @@ def assemble_bytes(src_dir=SRC_DIR):
         if not data:
             raise ValueError(f"overlay 模块源码为空: {part.name}")
         try:
-            data.decode("utf-8")  # 校验合法 UTF-8
+            text = data.decode("utf-8")  # 校验合法 UTF-8
         except UnicodeDecodeError as exc:
             raise ValueError(f"分片非 UTF-8: {part.name}: {exc}") from None
+        if "/* VERSION 台账" in text:
+            text = _fold_version_ledger(text)
+            data = text.encode("utf-8")
         chunks.append(data)
     return b"".join(chunks), parts
 

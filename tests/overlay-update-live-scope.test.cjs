@@ -1,18 +1,13 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
 const vm = require('node:vm');
+const { getNamedSlice } = require('./helpers/overlay-extract.cjs');
 
 // v181 补修锁定：updateLive 的会话均取本 pane 会话行（render 缓存 lastView），
 // 不取 payload 顶层 state.data.session（全局最近活跃会话，多窗/分栏会串值）。
-const source = fs.readFileSync(path.join(__dirname, '..', 'overlay.js'), 'utf8');
 
 function extractUpdateLive() {
-  const start = source.indexOf('    function updateLive() {');
-  const end = source.indexOf('    /* v90：心跳', start);
-  assert.ok(start >= 0 && end > start, '提取失败: updateLive');
-  return source.slice(start, end) + '\nupdateLive;';
+  return getNamedSlice('updateLive') + '\nupdateLive;';
 }
 
 function runUpdateLive({ lastAvg, payloadAvg, noLastView }) {
