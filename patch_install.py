@@ -402,7 +402,9 @@ def syntax_check(asar_path: Path):
     env = dict(os.environ, ELECTRON_RUN_AS_NODE="1")
     fd, tmp_js, r, run_err = None, None, None, ""
     try:
-        fd, name = tempfile.mkstemp(prefix=".entry-check.", suffix=".js", dir=HERE)
+        # 入口是 ESM（package.json type:module）：临时 .js 在 HERE（无 type:module 上下文）里
+        # 会被 node --check 按 CJS goal 解析，顶层 import 必报语法错误；用 .mjs 按 ESM 检查。
+        fd, name = tempfile.mkstemp(prefix=".entry-check.", suffix=".mjs", dir=HERE)
         tmp_js = Path(name)
         with os.fdopen(fd, "wb") as stream:
             stream.write(src)
