@@ -392,7 +392,7 @@ def self_check(asar_path: Path, expect=True):
 
 def syntax_check(asar_path: Path):
     """用 ZCode 自身当 node（ELECTRON_RUN_AS_NODE）对入口做语法检查；
-    找不到/无法运行 ZCode 可执行文件时跳过（自检是锦上添花，不应挡安装）。"""
+    找不到/无法运行 ZCode 可执行文件时跳过（此时不挡安装；收尾校验真跑出语法错误仍 fail-closed 拒收）。"""
     exe = ui_element_exe_for(ZCODE_EXE)
     if not exe or not exe.is_file():
         print(L("  [check] 未找到 ZCode 可执行文件，跳过语法检查",
