@@ -928,8 +928,73 @@ class CliExitCodeTests(unittest.TestCase):
         self.assertEqual(denied.returncode, 1, denied.stdout.decode("utf-8", "replace"))
 
 
-@unittest.skipUnless(shutil.which("node"), "需要 Node 跑真实语法检查")
+def _node_like_exe():
+    """语法检查探针用可执行：PATH 上的 node，其次本机 ZCode 桌面安装——
+    ELECTRON_RUN_AS_NODE=1 的 ZCode.exe 就是 node（syntax_check 生产路径同款）。
+    D:\\Program Files\\ZCode 是本开发机的安装位置，仅为让 node-less 开发机跑起
+    真实语法检查；其它机器 is_file() 落空自动跳过，无行为影响。"""
+    node = shutil.which("node")
+    if node:
+        return Path(node)
+    if sys.platform == "win32":
+        for root in (Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "ZCode",
+                     Path(r"D:\Program Files\ZCode")):
+            exe = root / "ZCode.exe"
+            if exe.is_file():
+                return exe
+    return None
+
+
+@unittest.skipUnless(_node_like_exe(), "需要 Node（或 ZCode.exe 当 node）跑真实语法检查")
 class SyntaxCheckTests(unittest.TestCase):
+    def test_esm_entry_passes_with_mjs_temp_suffix(self):
+        # issue #255：入口是 ESM（package.json type:module），语法检查临时文件落在无
+        # type:module 上下文的插件目录，.js 后缀按 CJS goal 解析、顶层 import 必然误报，
+        # 挡死 install/remove 收尾校验；.mjs 强制 ESM goal，不依赖各 node/Electron 构建
+        # 的模块语法探测默认值（新版 node 探测兜底时 .js 恰好也能过，不能只测默认环境）。
+        # 反向也成立：CJS 语句（require/module.exports）在 ESM goal 下只是普通调用/
+        # 成员表达式，入口若回退 CJS 同样不误报——两个方向都断言。
+        spec = importlib.util.spec_from_file_location("pending_patch_esm", ROOT / "patch_install.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        module._LANG = "en"
+        exe = _node_like_exe()
+        module.ZCODE_EXE = exe
+        # ZCode 0.17.1 等 Electron 构建不开模块语法探测（实测 .js 必误报），用
+        # --no-experimental-detect-module 复现该模式；旧 node 无此开关则只测默认环境。
+        # 探针必须 ELECTRON_RUN_AS_NODE=1：裸跑 ZCode.exe 会拉起完整桌面实例（单实例
+        # 让位的退出码会让门控恒真、无 timeout 还可能挂起套件）。
+        try:
+            probe = subprocess.run([str(exe), "--no-experimental-detect-module", "-e", ""],
+                                   capture_output=True, timeout=30,
+                                   env=dict(os.environ, ELECTRON_RUN_AS_NODE="1"))
+            no_detect = probe.returncode == 0
+        except subprocess.TimeoutExpired:   # 慢环境兜底：按开关不可用处理，降级只测默认环境
+            no_detect = False
+        esm = b'import { join } from "node:path"\nconsole.log(join("a", "b"))\n'
+        cjs = b'const path = require("path")\nmodule.exports = path.join("a", "b")\n'
+        cases = [("default/esm", {}, esm), ("default/cjs-shape", {}, cjs)]
+        if no_detect:
+            cases += [("no-detect/esm", {"NODE_OPTIONS": "--no-experimental-detect-module"}, esm),
+                      ("no-detect/cjs-shape", {"NODE_OPTIONS": "--no-experimental-detect-module"}, cjs)]
+            # 负向对照：证明 no-detect 环境确实复现 issue #255 的误报模式——同源 .js 仍
+            # 必红。守住本测试的判别力：上游 node 行为变化让模拟失真时这里先响。
+            with tempfile.TemporaryDirectory() as neg_dir:
+                fd, js_name = tempfile.mkstemp(prefix=".entry-check.", suffix=".js", dir=neg_dir)
+                with os.fdopen(fd, "wb") as neg_stream:
+                    neg_stream.write(esm)
+                neg = subprocess.run([str(exe), "--check", js_name], capture_output=True, timeout=60,
+                                     env=dict(os.environ, ELECTRON_RUN_AS_NODE="1",
+                                              NODE_OPTIONS="--no-experimental-detect-module"))
+            with self.subTest(source="no-detect/.js-repro"):
+                self.assertNotEqual(neg.returncode, 0)
+        for name, extra, src in cases:
+            with self.subTest(source=name):
+                module.entry_bytes_of = lambda path, _src=src: _src
+                with mock.patch.dict(os.environ, extra), \
+                        contextlib.redirect_stdout(io.StringIO()):   # 收敛 [check] 进度打印
+                    self.assertTrue(module.syntax_check(None))
+
     def test_failure_diagnostic_survives_non_utf8_locale(self):
         # Node 恒写 UTF-8：语法错误回显的源码行/路径含非 ASCII 时，按区域编码解码会让 Windows
         # 读线程崩溃（stderr 变 None → AttributeError）或解成乱码；打印回显也不能因输出编码再崩。
@@ -949,7 +1014,7 @@ class SyntaxCheckTests(unittest.TestCase):
         for overrides, shown in ((ascii_only, r"\u540d"), ({"PYTHONIOENCODING": "utf-8"}, "名")):
             with self.subTest(env=overrides):
                 out = subprocess.run([sys.executable, "-B", "-c", probe, str(ROOT / "patch_install.py"),
-                                      shutil.which("node")], capture_output=True,
+                                      str(_node_like_exe())], capture_output=True,
                                      env=dict(os.environ, **overrides), timeout=60)
                 stdout = out.stdout.decode("utf-8", "replace")
                 self.assertEqual(out.returncode, 0, out.stderr.decode("utf-8", "replace"))

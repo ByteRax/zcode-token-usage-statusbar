@@ -412,7 +412,7 @@ def self_check(asar_path: Path, expect=True):
 
 def syntax_check(asar_path: Path):
     """用 ZCode 自身当 node（ELECTRON_RUN_AS_NODE）对入口做语法检查；
-    找不到/无法运行 ZCode 可执行文件时跳过（自检是锦上添花，不应挡安装）。"""
+    找不到/无法运行 ZCode 可执行文件时跳过（此时不挡安装；收尾校验真跑出语法错误仍 fail-closed 拒收）。"""
     exe = ui_element_exe_for(ZCODE_EXE)
     if not _safe_is_file(exe):
         print(L("  [check] 未找到 ZCode 可执行文件，跳过语法检查",
@@ -422,7 +422,9 @@ def syntax_check(asar_path: Path):
     env = dict(os.environ, ELECTRON_RUN_AS_NODE="1")
     fd, tmp_js, r, run_err = None, None, None, ""
     try:
-        fd, name = tempfile.mkstemp(prefix=".entry-check.", suffix=".js", dir=HERE)
+        # 入口是 ESM（package.json type:module）：临时 .js 在 HERE（无 type:module 上下文）里
+        # 会被 node --check 按 CJS goal 解析，顶层 import 必报语法错误；用 .mjs 按 ESM 检查。
+        fd, name = tempfile.mkstemp(prefix=".entry-check.", suffix=".mjs", dir=HERE)
         tmp_js = Path(name)
         with os.fdopen(fd, "wb") as stream:
             stream.write(src)
