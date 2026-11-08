@@ -243,13 +243,15 @@ test('N=0/1/6/7 的按钮显隐与降级；排序副本不变异（冻结数组�
     const h = harness(); setup(h);
     withProjectModels(h, Array.from({ length: n }, (_, i) => ({ model: 'x' + i, requests: 1, total: (n - i) * 10, cost_usd: 0 })));
     const html = h.drawProjectTip();
-    assert.equal(/zu-pj-more/.test(html), hasBtn, 'N=' + n);
-    if (n === 0) assert.doesNotMatch(html, /zu-pj-table/);
+    const bare = html.replace(/<style>[\s\S]*?<\/style>/g, '');   // v303 内联 style 含同名选择器文本，先剥
+    assert.equal(/zu-pj-more/.test(bare), hasBtn, 'N=' + n);
+    if (n === 0) assert.doesNotMatch(bare, /zu-pj-table/);
   }
   const h = harness(); setup(h);
   const frozen = Object.freeze([{ model: 'b-small', requests: 1, total: 5 }, { model: 'a-big', requests: 2, total: 999 }]);
   withProjectModels(h, frozen);
-  const order = [...h.drawProjectTip().matchAll(/title="([^"]+)"/g)].map(m => m[1]);
+  /* v303 pname 也带 title（全文可查）——matchAll 收窄到模型名单元格的 title */
+  const order = [...h.drawProjectTip().matchAll(/zu-pj-mname" title="([^"]+)"/g)].map(m => m[1]);
   assert.deepEqual(order, ['a-big', 'b-small']);
   assert.deepEqual(frozen.map(m => m.model), ['b-small', 'a-big']);   // 原数组未被排序修改
 });
@@ -294,8 +296,8 @@ test('归属键变化重置展开态；长模型名 title 全文；切其它格�
   delete p3.recent[0].project.models;
   h.window.__zusageUpdate(p3);
   const html3 = h.drawProjectTip();
-  assert.doesNotMatch(html3, /zu-pj-table/);
-  assert.match(html3, /zu-pj-kpis/);
+  assert.doesNotMatch(html3.replace(/<style>[\s\S]*?<\/style>/g, ''), /zu-pj-table/);
+  assert.match(html3, /zu-turn-kpis/, 'v303 四行 KPI 容器');
 });
 
 test('气泡上下文：项目卡 KPI ? 显示计价范围（N 个模型）；明细行 ? 显示该模型单价', () => {
@@ -327,12 +329,12 @@ test('标题拼接项目名（v229）：pj.name 渲染 zu-pj-pname；旧快照�
   const h = harness(); setup(h);
   withProjectModels(h, [{ model: 'k', requests: 1, total: 10, cost_usd: 0 }]);
   assert.match(h.drawProjectTip(),
-    /zu-pj-title zu-tt-name">项目累计<span class="zu-pj-pname">zcode-token-usage-statusbar<\/span><\/div>/);
+    /zu-pj-title zu-tt-name">项目累计<span class="zu-pj-pname" title="zcode-token-usage-statusbar">zcode-token-usage-statusbar<\/span><\/div>/);
   const h2 = harness(); setup(h2);
   const p = h2.payload({ withCost: true });
   delete p.recent[0].project.name;   // 旧快照/远端旧行无 name：整段不渲染
   h2.window.__zusageUpdate(p);
-  assert.doesNotMatch(h2.drawProjectTip(), /zu-pj-pname/);
+  assert.doesNotMatch(h2.drawProjectTip().replace(/<style>[\s\S]*?<\/style>/g, ''), /zu-pj-pname/);   // v303 剥内联 style（选择器文本含同名类）
 });
 
 test('双语：en 标题/范围/按钮走 L() 同链；Escape keydown 委托已挂', () => {
@@ -341,7 +343,7 @@ test('双语：en 标题/范围/按钮走 L() 同链；Escape keydown 委托已�
   withProjectModels(h, Array.from({ length: 8 }, (_, i) => ({ model: 'm' + i, requests: 1, total: 50 - i, cost_usd: 0 })));
   const html = h.drawProjectTip();
   assert.match(html, /zu-pj-title zu-tt-name">Project total</);
-  assert.match(html, /zu-pj-scope">All requests</);
+  assert.match(html, /zu-pj-scope">All requests · incl\. sub-agents</);   // v303 单行合并
   assert.match(html, /Show all 8 models/);
   assert.ok(h.tipRoot().listeners.get('keydown'), 'Escape handler wired on tip');
 });

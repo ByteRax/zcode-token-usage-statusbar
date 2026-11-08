@@ -9,6 +9,7 @@
       weightedRandom: true,
       antiRepeat: { recentLimit: 6, persist: false },
       enabledPacks: ZU_ROTATOR_PACK_META.map(function (m) { return m.id; }),
+      knownPackIds: ZU_ROTATOR_PACK_META.map(function (m) { return m.id; }),   /* 用户已见过的包集合：META 新增包对存量配置一次性补开，之后显式关包不再被补回 */
       activePreset: "default",
       scheduleEnabled: false,
       schedule: [
@@ -85,6 +86,27 @@
         base.enabledPacks = raw.enabledPacks.filter(function (id) {
           return typeof id === "string" && Object.prototype.hasOwnProperty.call(ZU_ROTATOR_PACK_BY_ID, id);
         });
+      }
+      /* 新增词包对存量配置默认开启：无 knownPackIds 的旧配置以拆分前 14 个 legacy 包 id 作
+       * seen 种子——显式关过的旧包不会被一次性补回，只补新增 id（chairman-mao/
+       * programming-pearls）；带集合的配置只补 META 新增 id——此后用户显式关包保存回
+       * knownPackIds，永不被补回。
+       * 补开发生即落盘（不能等下次设置保存：从不碰设置的存量用户会每次重载重复合并）。 */
+      var metaPackIds = ZU_ROTATOR_PACK_META.map(function (m) { return m.id; });
+      var LEGACY_PACK_IDS = ["deepseek", "reverse-proxy", "coding", "sysadmin", "western-ai", "china-ai", "math-physics", "slacking", "internet-memes", "daily", "community", "ads", "star-ask", "star-route"];
+      var seenPackIds = Array.isArray(raw.knownPackIds)
+        ? raw.knownPackIds.filter(function (id) { return typeof id === "string"; })
+        : LEGACY_PACK_IDS.slice();
+      var merged = false;
+      metaPackIds.forEach(function (id) {
+        if (seenPackIds.indexOf(id) < 0 && base.enabledPacks.indexOf(id) < 0) {
+          base.enabledPacks.push(id);
+          merged = true;
+        }
+      });
+      base.knownPackIds = metaPackIds.slice();
+      if (merged) {
+        try { lsSet(ZU_ROTATOR_LS_KEY, JSON.stringify(base)); } catch (e) { }
       }
       if (typeof raw.activePreset === "string" && raw.activePreset) base.activePreset = raw.activePreset;
       if (typeof raw.scheduleEnabled === "boolean") base.scheduleEnabled = raw.scheduleEnabled;
@@ -236,6 +258,9 @@
             if (k0 === "tool" || k0 === "retry" || k0 === "pending" || k0 === "firstTurn") when[k0] = true;
           } else {
             var k = kv.slice(0, eq).trim(), v = kv.slice(eq + 1).trim();
+            /* 键白名单（与 matchesPhraseWhen 消费集一致）：行语法的未知键直接丢弃——
+             * 任意键名会经编辑器提示行拼进 innerHTML，是存储型注入面（review 修复） */
+            if (k !== "tool" && k !== "retry" && k !== "pending" && k !== "firstTurn" && k !== "hour" && k !== "phase") return;
             if (v === "true") when[k] = true;
             else if (v === "false") when[k] = false;
             else if (/^\d+$/.test(v) && (k === "retry" || k === "pending")) when[k] = parseInt(v, 10);
@@ -267,6 +292,251 @@
     }).filter(Boolean).join("\n");
   }
 
+  /* ---------- 自定义短语可视化编辑器（主视图）+ 文本模式 + 按条定向预览 ----------
+   * 存储协议不变：customPhrases 仍是解析后对象数组，可视化控件直接读写对象；
+   * rotCpTextMode 切回行语法 textarea（formatPhraseLines 序列化、parsePhraseLine 照旧）。
+   * DOM 查询一律类名（VM 测试 FakeElement 只支持类名/标签白名单），data-* 仅作数据载体。 */
+  var rotCpTextMode = false;
+  var rotCpPreview = null;   /* { ph, i, text } 按条预览锚：i 漂移时按 text 校验失配即清 */
+  var rotCpLastTextEl = null;
+
+  function rotCpEsc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+    });
+  }
+
+  /* 17 个实时占位符说明（键与 formatRotatorPlaceholders 白名单一一对应，改一处必同步另一处） */
+  var ZU_CP_PLACEHOLDERS = [
+    { k: "elapsed",       zh: "任务已进行时长",     en: "Elapsed time",          ex: "1m 20s" },
+    { k: "tps",           zh: "实时生成速度",       en: "Live speed (t/s)",      ex: "42.5" },
+    { k: "model",         zh: "当前模型名",         en: "Model name",            ex: "GLM-5.3" },
+    { k: "provider",      zh: "模型供应商",         en: "Provider name",         ex: "Z.ai" },
+    { k: "running",       zh: "当前正在做的动作",   en: "Current action",        ex: "" },
+    { k: "tools",         zh: "本轮已用工具次数",   en: "Tool calls this turn",  ex: "3" },
+    { k: "pending",       zh: "排队中的任务数",     en: "Pending tasks",         ex: "0" },
+    { k: "retry",         zh: "已重试次数",         en: "Retry count",           ex: "0" },
+    { k: "retryMax",      zh: "最大重试次数",       en: "Max retries",           ex: "3" },
+    { k: "retryProvider", zh: "正在重试的供应商",   en: "Provider being retried", ex: "API" },
+    { k: "retryCode",     zh: "触发重试的错误码",   en: "Retry error code",      ex: "429" },
+    { k: "phase",         zh: "阶段标识",           en: "Phase id",              ex: "running" },
+    { k: "phaseLabel",    zh: "阶段名称",           en: "Phase label",           ex: "" },
+    { k: "detail",        zh: "工具附带的详情",     en: "Tool detail",           ex: "" },
+    { k: "locale",        zh: "界面语言",           en: "Locale",                ex: "zh" },
+    { k: "date",          zh: "今天日期",           en: "Today's date",          ex: "2026-11-07" },
+    { k: "time",          zh: "当前时间",           en: "Current time",          ex: "14:30:00" }
+  ];
+
+  function rotCpLoc() {
+    return state.lang === "en" ? "en" : "zh";
+  }
+
+  function rotCpArr(ph) {
+    var locCfg = rotatorCfg.customPhrases && rotatorCfg.customPhrases[rotCpLoc()];
+    return locCfg && Array.isArray(locCfg[ph]) ? locCfg[ph] : [];
+  }
+
+  function rotCpItemOf(ph, i) {
+    var it = rotCpArr(ph)[i];
+    if (it && typeof it === "object" && typeof it.text === "string") return it;
+    if (typeof it === "string") return { text: it };
+    return null;
+  }
+
+  /* 纯函数：可视化控件值 → 存储对象。prev 的 when 中可视化表达不了的键（pending/hour/phase）
+   * 透传保留；显式 false 的 tool/firstTurn/retry 属手写高级语法（「仅无工具时」「仅非首轮」等），
+   * 可视化未勾选不视为清除——原样保留，真要删除请回文本模式（提示行同口径）。 */
+  function rotCpBuildItem(prev, ctl) {
+    var item = { text: String(ctl.text == null ? "" : ctl.text).trim() };
+    var w = parseFloat(ctl.weight);
+    if (isFinite(w) && w !== 1) item.weight = clampNum(w, 0.1, 100, 1);
+    var r = parseFloat(ctl.rarity);
+    if (isFinite(r) && r < 100) item.rarity = clampNum(r, 1, 100, 100) / 100;
+    var prevWhen = prev && prev.when && typeof prev.when === "object" ? prev.when : null;
+    var when = {};
+    if (prevWhen) {
+      ["pending", "hour", "phase"].forEach(function (k) {
+        if (prevWhen[k] !== undefined) when[k] = prevWhen[k];
+      });
+    }
+    if (ctl.retry) {
+      var rn = parseInt(ctl.retryNum, 10);
+      when.retry = (isFinite(rn) && rn > 0) ? rn : true;
+    } else if (prevWhen && prevWhen.retry === false) {
+      when.retry = false;
+    }
+    if (ctl.tool) {
+      var tn = String(ctl.toolName == null ? "" : ctl.toolName).trim();
+      when.tool = tn || true;
+    } else if (prevWhen && prevWhen.tool === false) {
+      when.tool = false;
+    }
+    if (ctl.first) when.firstTurn = true;
+    else if (prevWhen && prevWhen.firstTurn === false) when.firstTurn = false;
+    if (Object.keys(when).length) item.when = when;
+    return item;
+  }
+
+  function rotCpRowHtml(ph, i) {
+    var it = rotCpItemOf(ph, i) || {};
+    var when = it.when && typeof it.when === "object" ? it.when : {};
+    var toolName = typeof when.tool === "string" ? when.tool : "";
+    var retryNum = typeof when.retry === "number" ? when.retry : 0;
+    var rarityPct = (typeof it.rarity === "number" && it.rarity > 0 && it.rarity < 1) ? Math.round(it.rarity * 100) : 100;
+    var hidden = [];
+    for (var k in when) {
+      if (!Object.prototype.hasOwnProperty.call(when, k)) continue;
+      if (k === "tool" || k === "firstTurn" || k === "retry") {
+        if (when[k] === false) hidden.push(k + "=false");
+      } else {
+        hidden.push(k);
+      }
+    }
+    var advOpen = !!(hidden.length || when.tool !== undefined || when.firstTurn !== undefined || when.retry !== undefined || rarityPct < 100);
+    var playing = !!(rotCpPreview && rotCpPreview.ph === ph && rotCpPreview.i === i && rotCpPreview.text === it.text);
+    return '<div class="zu-rot-cp-row' + (playing ? " zu-rot-cp-playing" : "") + '" data-cp-ph="' + ph + '" data-cp-i="' + i + '">' +
+      '<div class="zu-rot-cp-main">' +
+        '<input type="text" class="zu-rot-cp-text" value="' + rotCpEsc(it.text) + '" placeholder="' + rotCpEsc(L("短语文案，可含 {elapsed} {tps} 等占位符（见下方说明）", "Phrase text with {elapsed}, {tps}... placeholders")) + '">' +
+        '<label class="zu-rot-cp-wlabel zu-rot-tipt" data-tip="' + rotCpEsc(L("权重：数字越大越常出现（默认 1）", "Weight: higher = more frequent (default 1)")) + '">' + L("权重", "Wt") +
+          '<input type="number" class="zu-rot-cp-weight" min="0.1" max="100" step="0.5" value="' + (typeof it.weight === "number" ? it.weight : 1) + '"></label>' +
+        '<button type="button" class="zu-rot-btn zu-rot-cp-play zu-rot-tipt" data-tip="' + rotCpEsc(playing ? L("停止预览，恢复随机轮播", "Stop preview") : L("预览这条短语（打字机+占位符真实效果）", "Preview this phrase")) + '">' + (playing ? "■" : "▶") + '</button>' +
+        '<button type="button" class="zu-rot-btn zu-rot-cp-adv zu-rot-tipt' + (advOpen ? " zu-rot-cp-adv-on" : "") + '" data-tip="' + rotCpEsc(L("高级：出现概率与显示条件", "Advanced: chance & conditions")) + '">⚙</button>' +
+        '<button type="button" class="zu-rot-btn zu-rot-cp-del zu-rot-tipt" data-tip="' + rotCpEsc(L("删除这条短语", "Delete phrase")) + '">✕</button>' +
+      '</div>' +
+      '<div class="zu-rot-cp-advpanel"' + (advOpen ? "" : " hidden") + '>' +
+        '<label class="zu-rot-cp-alabel zu-rot-tipt" data-tip="' + rotCpEsc(L("出现概率：低于 100% 时这条短语只会偶尔出现", "Chance: below 100% this phrase appears only occasionally")) + '">' + L("出现概率", "Chance") +
+          '<input type="number" class="zu-rot-cp-rarity" min="1" max="100" step="5" value="' + rarityPct + '">%</label>' +
+        '<label class="zu-rot-tipt" data-tip="' + rotCpEsc(L("只在模型正在执行工具（跑命令、读文件等）时出现", "Only while a tool is running")) + '"><input type="checkbox" class="zu-rot-cp-cb zu-rot-cp-toolcb"' + (when.tool ? " checked" : "") + '> ' + L("仅工具执行时", "Only while tool runs") + '</label>' +
+        '<input type="text" class="zu-rot-cp-toolname" value="' + rotCpEsc(toolName) + '" placeholder="' + rotCpEsc(L("工具名包含，如 Bash（留空=任意工具）", "Tool name contains, e.g. Bash (empty = any)")) + '">' +
+        '<label class="zu-rot-tipt" data-tip="' + rotCpEsc(L("只在本会话第一轮对话时出现", "Only on the first turn of this session")) + '"><input type="checkbox" class="zu-rot-cp-cb zu-rot-cp-firstcb"' + (when.firstTurn ? " checked" : "") + '> ' + L("仅第一轮对话", "First turn only") + '</label>' +
+        '<label class="zu-rot-tipt" data-tip="' + rotCpEsc(L("只在请求失败重试时出现", "Only while retrying after a failure")) + '"><input type="checkbox" class="zu-rot-cp-cb zu-rot-cp-retrycb"' + (when.retry ? " checked" : "") + (retryNum ? ' data-num="' + retryNum + '"' : "") + '> ' + L("正在重试时", "While retrying") + '</label>' +
+        (hidden.length ? '<em class="zu-rot-cp-note">' + rotCpEsc(L("此条还含高级条件（{k}）——可视化不展示，保存会保留，修改请用文本模式", "Extra advanced conditions ({k}) are kept on save; edit them in text mode")).replace("{k}", rotCpEsc(hidden.join("、"))) + '</em>' : "") +
+      '</div>' +
+    '</div>';
+  }
+
+  function rotCpListHtml(ph) {
+    var arr = rotCpArr(ph);
+    if (!arr.length) {
+      return '<div class="zu-rot-cp-empty">' + rotCpEsc(L("还没有自定义短语，点上方「+ 添加」写一条；轮播仍会使用内置词包。", "No custom phrases yet. Click + Add above; built-in packs still rotate.")) + '</div>';
+    }
+    var rows = "";
+    for (var i = 0; i < arr.length; i++) rows += rotCpRowHtml(ph, i);
+    return rows;
+  }
+
+  function rotCpHelpersHtml() {
+    var COMMON = { elapsed: "时长", tps: "速度", model: "模型", running: "动作", tools: "工具数", retry: "重试" };
+    var COMMON_EN = { elapsed: "time", tps: "speed", model: "model", running: "action", tools: "tools", retry: "retry" };
+    var chips = ZU_CP_PLACEHOLDERS.filter(function (p) { return COMMON[p.k]; }).map(function (p) {
+      var tag = state.lang === "en" ? COMMON_EN[p.k] : COMMON[p.k];
+      return '<button type="button" class="zu-rot-cp-chip zu-rot-tipt" data-cp-chip="{' + p.k + '}" data-tip="' +
+        rotCpEsc(L(p.zh, p.en) + "，例如 " + (p.ex || "—")) + '">{ ' + p.k + ' } <b>' + rotCpEsc(tag) + '</b></button>';
+    }).join("");
+    var all = ZU_CP_PLACEHOLDERS.map(function (p) {
+      return '<div class="zu-rot-cp-phitem"><code>{' + p.k + '}</code><span>' + rotCpEsc(L(p.zh, p.en)) + '</span><small>' + rotCpEsc(p.ex || "—") + '</small></div>';
+    }).join("");
+    return '<div class="zu-rot-cp-helpers">' +
+      '<div class="zu-rot-cp-hrow">' +
+        '<span>' + rotCpEsc(L("可用占位符（点击插入正在编辑的文案，完整说明见「全部 17 个」）", "Placeholders (click to insert; see All 17 for details):")) + '</span>' +
+        chips +
+        '<button type="button" class="zu-rot-btn zu-rot-cp-phbtn">' + L("全部 17 个 ▾", "All 17 ▾") + '</button>' +
+      '</div>' +
+      '<div class="zu-rot-cp-phall" hidden>' + all + '</div>' +
+    '</div>';
+  }
+
+  function rotCpCardInner() {
+    if (rotCpTextMode) {
+      var f = function (ph) { return formatPhraseLines(rotCpArr(ph)); };
+      return '<div class="pnote">' + rotCpEsc(L("每行一条：文案 | 权重 | when:tool=Bash | rarity:0.5（点右上「返回可视化编辑」切回表单）", "One per line: text | weight | when:tool=Bash | rarity:0.5")) + '</div>' +
+        '<div class="pnote">' + L("思考阶段 (thinking)", "Thinking phase") + '</div>' +
+        '<textarea class="zu-rot-textarea zu-rot-custom-thinking" placeholder="' + L("正在思考人生 ({elapsed})… | 2", "Thinking deeply ({elapsed})… | 2") + '">' + rotCpEsc(f("thinking")) + '</textarea>' +
+        '<div class="pnote">' + L("运行阶段 (running)", "Running phase") + '</div>' +
+        '<textarea class="zu-rot-textarea zu-rot-custom-running" placeholder="' + L("全力输出中 {tps} t/s · {running} | 2", "Streaming at {tps} t/s · {running} | 2") + '">' + rotCpEsc(f("running")) + '</textarea>' +
+        '<div class="pnote">' + L("长耗时阶段 (long)", "Long turn phase") + '</div>' +
+        '<textarea class="zu-rot-textarea zu-rot-custom-long" placeholder="' + L("已经苦战 {elapsed}，稳住能赢！ | 3", "Still working after {elapsed}, hang tight! | 3") + '">' + rotCpEsc(f("long")) + '</textarea>';
+    }
+    var phase = function (ph) {
+      var label = L("思考阶段 (thinking)", "Thinking phase");
+      if (ph === "running") label = L("运行阶段 (running)", "Running phase");
+      else if (ph === "long") label = L("长耗时阶段 (long)", "Long turn phase");
+      return '<div class="pnote zu-rot-cp-pnote"><span>' + label + '</span>' +
+        '<button type="button" class="zu-rot-btn zu-rot-cp-add" data-cp-add="' + ph + '">+ ' + L("添加", "Add") + '</button></div>' +
+        '<div class="zu-rot-cp-list" data-cp-ph="' + ph + '">' + rotCpListHtml(ph) + '</div>';
+    };
+    return phase("thinking") + phase("running") + phase("long") + rotCpHelpersHtml();
+  }
+
+  function rotCpModeBtnText() {
+    return rotCpTextMode ? L("返回可视化编辑", "Back to visual editor") : L("文本编辑（高级）", "Text editor (advanced)");
+  }
+
+  function rotCpRerenderCard(panelEl) {
+    if (!panelEl || !panelEl.querySelector) return;
+    var card = panelEl.querySelector(".zu-rot-cp-card");
+    if (card) card.innerHTML = rotCpCardInner();
+    var modeBtn = panelEl.querySelector(".zu-rot-cp-mode");
+    if (modeBtn) modeBtn.textContent = rotCpModeBtnText();
+    if (!rotCpTextMode) rotCpSyncPlayBtns(panelEl);
+  }
+
+  function rotCpRerenderList(panelEl, ph) {
+    if (!panelEl || !panelEl.querySelectorAll) return;
+    var lists = panelEl.querySelectorAll(".zu-rot-cp-list");
+    for (var i = 0; i < lists.length; i++) {
+      if (lists[i].getAttribute("data-cp-ph") === ph) lists[i].innerHTML = rotCpListHtml(ph);
+    }
+    rotCpSyncPlayBtns(panelEl);
+  }
+
+  function rotCpSyncPlayBtns(panelEl) {
+    if (!panelEl || !panelEl.querySelectorAll) return;
+    panelEl.querySelectorAll(".zu-rot-cp-play").forEach(function (b) {
+      var row = b.closest ? b.closest(".zu-rot-cp-row") : null;
+      var on = !!(row && rotCpPreview &&
+        row.getAttribute("data-cp-ph") === rotCpPreview.ph &&
+        parseInt(row.getAttribute("data-cp-i"), 10) === rotCpPreview.i);
+      b.textContent = on ? "■" : "▶";
+      b.setAttribute("data-tip", on ? L("停止预览，恢复随机轮播", "Stop preview") : L("预览这条短语（打字机+占位符真实效果）", "Preview this phrase"));
+      if (row && row.classList) row.classList.toggle("zu-rot-cp-playing", on);   /* 播放行高亮边框与按钮符号同步 */
+    });
+  }
+
+  /* 校验按条预览锚：条目被删/改文案/索引漂移时失配清空（防播错条），有效则返回锚 */
+  function rotCpPreviewValid() {
+    if (!rotCpPreview) return null;
+    var it = rotCpItemOf(rotCpPreview.ph, rotCpPreview.i);
+    if (!it || !it.text || it.text !== rotCpPreview.text) { rotCpPreview = null; return null; }
+    return rotCpPreview;
+  }
+
+  /* 行 DOM → 存储对象（change 保存路径）；成功返回该行 ph/i，失败返回 null */
+  function rotCpSaveRow(row) {
+    if (!row || !row.getAttribute || !row.querySelector) return null;
+    var ph = row.getAttribute("data-cp-ph");
+    var i = parseInt(row.getAttribute("data-cp-i"), 10);
+    if (!ph || !(i >= 0)) return null;
+    var arr = rotCpArr(ph);
+    if (i >= arr.length) return null;
+    var prev = arr[i] && typeof arr[i] === "object" ? arr[i] : { text: String(arr[i] == null ? "" : arr[i]) };
+    var q = function (cls) { return row.querySelector("." + cls); };
+    var textEl = q("zu-rot-cp-text");
+    var retryCb = q("zu-rot-cp-retrycb");
+    var arrLoc = rotatorCfg.customPhrases[rotCpLoc()];
+    arrLoc[ph][i] = rotCpBuildItem(prev, {
+      text: textEl ? textEl.value : prev.text,
+      weight: q("zu-rot-cp-weight") ? q("zu-rot-cp-weight").value : "",
+      rarity: q("zu-rot-cp-rarity") ? q("zu-rot-cp-rarity").value : "",
+      tool: q("zu-rot-cp-toolcb") ? !!q("zu-rot-cp-toolcb").checked : false,
+      toolName: q("zu-rot-cp-toolname") ? q("zu-rot-cp-toolname").value : "",
+      first: q("zu-rot-cp-firstcb") ? !!q("zu-rot-cp-firstcb").checked : false,
+      retry: retryCb ? !!retryCb.checked : false,
+      retryNum: retryCb && retryCb.getAttribute ? (retryCb.getAttribute("data-num") || "") : ""
+    });
+    return { ph: ph, i: i };
+  }
+
   /* ---------- 词池合并、条件过滤、洗牌袋防重复与 17 个实时占位符 ---------- */
   function getMergedPhrasePool(phase, lang, nowDate) {
     var loc = lang === "en" ? "en" : "zh";
@@ -296,7 +566,7 @@
       if (typeof c === "string") {
         var parsed = parsePhraseLine(c);
         if (parsed) pool.push(Object.assign({ pack: "custom" }, parsed));
-      } else if (c && typeof c.text === "string") {
+      } else if (c && typeof c.text === "string" && c.text) {   /* 可视化编辑器的空文案草稿行不入池 */
         pool.push(Object.assign({ weight: 1, pack: "custom" }, c));
       }
     }
@@ -464,7 +734,7 @@
       "@keyframes zuRotFlow{0%{background-position:0% 50%}100%{background-position:200% 50%}}" +
       "@keyframes zuRotBreathe{0%,100%{opacity:.98;transform:scale(1)}50%{opacity:.72;transform:scale(.99)}}" +
       "@keyframes zuRotGlitch{0%,92%,100%{transform:translate(0,0);opacity:1}94%{transform:translate(-1px,.5px);opacity:.88}96%{transform:translate(1px,-.5px);opacity:.92}98%{transform:translate(-.5px,0);opacity:.85}}" +
-      ".zu-rotator-active-label{display:inline-block;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom;" + fontRule + weightRule + glowRule + gradCss + "transition:opacity .15s ease}" +
+      ".zu-rotator-active-label{display:inline-block;vertical-align:bottom;word-break:break-word;" + fontRule + weightRule + glowRule + gradCss + "transition:opacity .15s ease}" +
       ".zu-whale-tail-wrap{display:inline-flex;align-items:center;justify-content:center;width:18px;height:15px;flex:0 0 18px;vertical-align:middle;cursor:pointer}" +
       ".zu-whale-tail{width:18px;height:15px;display:block;overflow:visible}" +
       (rotatorCfg.whaleTailRainbow
@@ -476,6 +746,20 @@
       ".zu-rot-pack-item label{display:inline-flex;align-items:center;gap:6px;padding:0;flex:1;min-width:0;cursor:pointer}" +
       ".zu-rot-pack-item input[type=checkbox]{margin:0}" +
       ".zu-rot-pack-item small{color:var(--color-foreground-subtle,#8791a3);font-size:11px}" +
+      ".zu-rot-pack-item .zu-rot-pack-view{flex:none;padding:2px 8px;font-size:11px;line-height:1.4}" +
+      /* 标题行「原作者」按钮（v 线：rotator 设置标题右缘外链致谢）：cap 切 flex，按钮 margin-left:auto 靠右 */
+      ".zu-settings-section[data-sec='rotator'] .cap.zu-rot-cap{display:flex;align-items:center;gap:10px}" +
+      ".zu-rot-credit{margin-left:auto;flex:none;font-weight:400;font-size:calc(var(--ui-font-size,14px) - 2px);line-height:1.4;padding:2px 10px}" +
+      ".zu-rot-pk-dlg{position:fixed;inset:0;z-index:2147483647;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.6);-webkit-app-region:no-drag}" +
+      ".zu-rot-pk-card{box-sizing:border-box;width:600px;max-width:calc(100vw - 24px);height:80vh;display:flex;flex-direction:column;border-radius:14px;background:var(--color-popover,#fff);color:var(--color-foreground,#0a0a0a);border:1px solid var(--color-border,rgba(0,0,0,.1));box-shadow:0 25px 50px -12px rgba(0,0,0,.45);font-family:inherit;overflow:hidden}" +
+      ".zu-rot-pk-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 16px;border-bottom:1px solid var(--color-border,rgba(0,0,0,.1))}" +
+      ".zu-rot-pk-title{font-weight:600;font-size:calc(var(--ui-font-size,14px) + 1px)}" +
+      ".zu-rot-pk-count{color:var(--color-foreground-subtle,#8791a3);font-size:12px;font-variant-numeric:tabular-nums}" +
+      ".zu-rot-pk-close{flex:none;background:none;border:0;color:var(--color-foreground-subtle,#8791a3);font:inherit;font-size:18px;line-height:1;cursor:pointer;padding:4px 8px;border-radius:6px}" +
+      ".zu-rot-pk-close:hover{background:var(--color-hover,rgba(0,0,0,.06));color:var(--color-foreground,#0a0a0a)}" +
+      ".zu-rot-pk-list{flex:1;min-height:0;overflow-y:auto;padding:6px 16px 14px;font-size:calc(var(--ui-font-size,14px) - 1px);line-height:1.6}" +
+      ".zu-rot-pk-item{display:flex;gap:10px;padding:7px 0;border-bottom:1px dashed var(--color-border,rgba(0,0,0,.08))}.zu-rot-pk-no{flex:none;min-width:38px;text-align:right;color:var(--color-foreground-subtle,#8791a3);font-variant-numeric:tabular-nums;user-select:none}.zu-rot-pk-txt{flex:1;min-width:0;white-space:pre-wrap;word-break:break-word}" +
+      ".zu-rot-pk-note{padding:8px 0 2px;color:var(--color-foreground-subtle,#8791a3);font-size:12px}" +
       ".zu-rot-pack-preview{margin:0 14px 12px;color:var(--color-foreground-subtle,#8791a3);font-size:calc(var(--ui-font-size,14px) - 2px)}" +
       ".zu-rot-prev-stage{padding:12px 14px 10px;display:flex;align-items:center;gap:10px;min-height:36px}" +
       ".zu-rot-prev-row{display:inline-flex;align-items:center;gap:10px;max-width:100%;overflow:hidden}" +
@@ -490,7 +774,39 @@
       ".zu-rot-select,.zu-rot-num{background:var(--color-input,rgba(0,0,0,.22));border:1px solid var(--color-border,rgba(255,255,255,.14));border-radius:6px;color:inherit;padding:3px 8px;font:inherit;font-size:calc(var(--ui-font-size,14px) - 1px)}" +
       ".zu-rot-num{width:76px;text-align:right}" +
       ".zu-rot-btn{background:var(--color-hover,rgba(255,255,255,.08));border:1px solid var(--color-border,rgba(255,255,255,.14));border-radius:6px;color:inherit;padding:4px 10px;font:inherit;font-size:calc(var(--ui-font-size,14px) - 1px);cursor:pointer}" +
-      ".zu-rot-btn:hover{background:var(--color-border,rgba(255,255,255,.16))}";
+      ".zu-rot-btn:hover{background:var(--color-border,rgba(255,255,255,.16))}" +
+      /* 自定义短语可视化编辑器 */
+      ".zu-rot-tipt{position:relative}" +
+      ".zu-rot-tipt:hover::after{content:attr(data-tip);position:absolute;bottom:calc(100% + 6px);left:0;z-index:2147483646;max-width:280px;width:max-content;padding:6px 10px;border:1px solid var(--color-popover-border,var(--color-border,rgba(255,255,255,.14)));border-radius:8px;background:var(--color-popover,#20242e);color:var(--color-popover-foreground,var(--color-foreground,#e9edf4));font-size:calc(var(--ui-font-size,14px) - 2px);line-height:1.5;white-space:normal;text-align:left;box-shadow:0 6px 18px rgba(0,0,0,.28);pointer-events:none}" +
+      ".zu-rot-cp-row .zu-rot-tipt:hover::after,.zu-settings .cap .zu-rot-tipt:hover::after{left:auto;right:0}" +
+      ".zu-settings .cap .zu-rot-cp-mode{float:right;margin-top:-4px}" +
+      ".zu-rot-cp-pnote{display:flex;align-items:center;justify-content:space-between;gap:8px}" +
+      ".zu-rot-cp-list{display:flex;flex-direction:column;gap:6px;margin:4px 12px 10px}" +
+      ".zu-rot-cp-row{border:1px solid var(--color-border,rgba(255,255,255,.1));border-radius:8px;padding:6px 8px;background:var(--color-hover,rgba(255,255,255,.03))}" +
+      ".zu-rot-cp-row.zu-rot-cp-playing{border-color:var(--color-brand,rgba(87,200,255,.55))}" +
+      ".zu-rot-cp-main{display:flex;align-items:center;gap:6px}" +
+      ".zu-rot-cp-text{flex:1;min-width:0;background:var(--color-input,rgba(0,0,0,.22));border:1px solid var(--color-border,rgba(255,255,255,.12));border-radius:6px;color:inherit;padding:4px 8px;font:inherit;font-size:calc(var(--ui-font-size,14px) - 1px)}" +
+      /* .zu-settings 前缀不可省：面板基础样式 .zu-settings label{align-items:flex-start;padding:12px 14px}
+       * 特异性 (0,1,1) 压过单类覆写，「权重」标签会顶对齐不与数字框居中（用户截图实证） */
+      ".zu-settings .zu-rot-cp-wlabel,.zu-settings .zu-rot-cp-advpanel label{display:inline-flex;align-items:center;gap:4px;margin:0;padding:0;border:0;font-weight:400;font-size:calc(var(--ui-font-size,14px) - 2px);color:var(--color-foreground-subtle,#8791a3);white-space:nowrap}" +
+      ".zu-settings .zu-rot-cp-wlabel input,.zu-settings .zu-rot-cp-advpanel label input{margin-top:0}" +
+      ".zu-rot-cp-weight,.zu-rot-cp-rarity{width:52px;text-align:right;background:var(--color-input,rgba(0,0,0,.22));border:1px solid var(--color-border,rgba(255,255,255,.14));border-radius:6px;color:inherit;padding:3px 6px;font:inherit}" +
+      ".zu-rot-cp-advpanel{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;margin-top:6px;padding-top:6px;border-top:1px dashed var(--color-border,rgba(255,255,255,.08));font-size:calc(var(--ui-font-size,14px) - 2px)}" +
+      ".zu-rot-cp-toolname{flex:1;min-width:120px;background:var(--color-input,rgba(0,0,0,.22));border:1px solid var(--color-border,rgba(255,255,255,.12));border-radius:6px;color:inherit;padding:3px 8px;font:inherit;font-size:calc(var(--ui-font-size,14px) - 2px)}" +
+      /* 工具名只在勾选「仅工具执行时」时显示（:has 联动，纯 CSS 零监听） */
+      ".zu-rot-cp-row:has(.zu-rot-cp-toolcb:not(:checked)) .zu-rot-cp-toolname{display:none}" +
+      ".zu-rot-cp-note{font-style:normal;color:var(--color-foreground-subtle,#8791a3);opacity:.9}" +
+      ".zu-rot-cp-empty{margin:4px 12px 10px;padding:10px;color:var(--color-foreground-subtle,#8791a3);font-size:calc(var(--ui-font-size,14px) - 2px);border:1px dashed var(--color-border,rgba(255,255,255,.12));border-radius:8px;text-align:center}" +
+      ".zu-rot-cp-helpers{padding:2px 12px 12px;font-size:calc(var(--ui-font-size,14px) - 2px);color:var(--color-foreground-subtle,#8791a3)}" +
+      ".zu-rot-cp-hrow{display:flex;flex-wrap:wrap;align-items:center;gap:4px}" +
+      ".zu-rot-cp-chip{background:var(--color-hover,rgba(255,255,255,.06));border:1px solid var(--color-border,rgba(255,255,255,.12));border-radius:10px;color:inherit;padding:1px 8px;margin:1px 0;font-family:var(--font-mono,monospace);font-size:calc(var(--ui-font-size,14px) - 2px);cursor:pointer}" +
+      ".zu-rot-cp-chip b{font-weight:400;font-family:var(--font-sans,-apple-system,'PingFang SC','Helvetica Neue',sans-serif);opacity:.72;margin-left:3px}" +
+      ".zu-rot-cp-chip:hover{background:var(--color-border,rgba(255,255,255,.14))}" +
+      ".zu-rot-cp-phall{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:4px 14px;margin-top:8px}" +
+      ".zu-rot-cp-phitem{display:flex;align-items:baseline;gap:6px;min-width:0}" +
+      ".zu-rot-cp-phitem code{font-family:var(--font-mono,monospace);color:var(--color-foreground,#e9edf4);white-space:nowrap}" +
+      ".zu-rot-cp-phitem span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
+      ".zu-rot-cp-phitem small{opacity:.7;margin-left:auto;white-space:nowrap}";
   }
   function ensureRotatorStyleMounted() {
     try {
@@ -929,7 +1245,19 @@
         if (pv.labelEl && pv.labelEl.textContent !== pv.displayed) pv.labelEl.textContent = pv.displayed;
         return;
       }
-      if (!pv.raw || now - pv.pickAt >= (rotatorCfg.intervalMs || 3500)) {
+      /* 按条定向预览：锚有效且文案源为短语时强制播放该条（驻留直到停止/失配），跳过时钟换条 */
+      var cpForced = (typeof rotCpPreviewValid === "function") ? rotCpPreviewValid() : null;
+      var forcedPlay = !!(cpForced && rotatorCfg.labelSource !== "host" && cpForced.text);
+      if (forcedPlay && pv.raw !== cpForced.text) {
+        pv.raw = cpForced.text;
+        pv.rendered = formatRotatorPlaceholders(pv.raw, ctx);
+        pv.chars = Array.from(pv.rendered);
+        pv.typeIndex = (!rotatorCfg.typeSpeedMs || rotatorCfg.typeSpeedMs <= 0) ? pv.chars.length : Math.min(1, pv.chars.length);
+        pv.displayed = pv.chars.slice(0, pv.typeIndex).join("");
+        pv.pickAt = now;
+        pv.typeAt = now;
+      }
+      if (!forcedPlay && (!pv.raw || now - pv.pickAt >= (rotatorCfg.intervalMs || 3500))) {
         pv.raw = rotPreviewPoolPick(ctx);
         pv.rendered = formatRotatorPlaceholders(pv.raw, ctx);
         pv.chars = Array.from(pv.rendered);
@@ -964,15 +1292,15 @@
       var locPack = pack && pack.phrases && (pack.phrases[loc] || pack.phrases.zh);
       var cnt = locPack ? ((locPack.thinking ? locPack.thinking.length : 0) + (locPack.running ? locPack.running.length : 0) + (locPack.long ? locPack.long.length : 0)) : 0;
       var checked = (rotatorCfg.enabledPacks || []).indexOf(pm.id) >= 0 ? " checked" : "";
-      return '<div class="zu-rot-pack-item"><label><input type="checkbox" class="zu-rot-pack-cb" data-pack="' + pm.id + '"' + checked + '> ' +
-        esc(L(pm.zh, pm.en)) + '</label><small>' + cnt + '</small></div>';
+      return '<div class="zu-rot-pack-item">' +
+        '<label><input type="checkbox" class="zu-rot-pack-cb" data-pack="' + pm.id + '"' + checked + '> ' +
+        esc(L(pm.zh, pm.en)) + '</label>' +
+        '<button type="button" class="zu-rot-btn zu-rot-pack-view" data-pack="' + pm.id + '">' + L("查看", "View") + '</button>' +
+        '<small>' + cnt + '</small></div>';
     }).join("");
-    var customThink = formatPhraseLines(rotatorCfg.customPhrases && rotatorCfg.customPhrases[loc] && rotatorCfg.customPhrases[loc].thinking);
-    var customRun = formatPhraseLines(rotatorCfg.customPhrases && rotatorCfg.customPhrases[loc] && rotatorCfg.customPhrases[loc].running);
-    var customLong = formatPhraseLines(rotatorCfg.customPhrases && rotatorCfg.customPhrases[loc] && rotatorCfg.customPhrases[loc].long);
-
     return '<section class="zu-settings-section" data-sec="rotator"' + (open ? "" : " hidden") + '>' +
-      '<div class="cap">' + L("状态轮播与小鲸鱼动画", "Status Rotator & Whale Tail") + '</div>' +
+      '<div class="cap zu-rot-cap"><span>' + L("状态轮播与小鲸鱼动画", "Status Rotator & Whale Tail") + '</span>' +
+        '<button type="button" class="zu-rot-btn zu-rot-credit zu-rot-tipt" data-tip="' + esc(L("打开上游原作者仓库（dsh-status-rotator）", "Open the original upstream project (dsh-status-rotator)")) + '">' + L("原作者", "Original author") + '</button></div>' +
       '<div class="zu-settings-card">' +
         settingRow('<input type="checkbox" class="zu-rot-enable">', L("启用状态轮播", "Enable status rotator"), L("在模型思考/生成/长耗时期间于消息流 Loading 行轮播趣味状态短语，支持 17 种实时统计占位符（如 {elapsed}、{tps}、{model}）。状态条速度格保持原生外观。", "Rotates witty status phrases in the chat loading row with 17 live placeholders ({elapsed}, {tps}, {model}, etc.). The status bar speed cell keeps its native look.")) +
         '<div class="zu-rot-inline-row">' +
@@ -1037,7 +1365,7 @@
         '</div>' +
       '</div>' +
 
-      '<div class="cap">' + L("14 个内置词包与排程预设", "14 Built-in Phrase Packs & Presets") + '</div>' +
+      '<div class="cap">' + L("16 个内置词包与排程预设", "16 Built-in Phrase Packs & Presets") + '</div>' +
       '<div class="zu-settings-card">' +
         '<div class="zu-rot-inline-row">' +
           '<span>' + L("场景预设", "Scene preset") + '</span>' +
@@ -1054,15 +1382,10 @@
         '<div class="zu-rot-pack-grid">' + packChecks + '</div>' +
       '</div>' +
 
-      '<div class="cap">' + L("自定义短语（每行一条，支持：文案 | 权重 | when:tool=Bash | rarity:0.5）", "Custom Phrases (one per line: text | weight | when:tool=Bash | rarity:0.5)") + '</div>' +
-      '<div class="zu-settings-card">' +
-        '<div class="pnote">' + L("思考阶段 (thinking)", "Thinking phase") + '</div>' +
-        '<textarea class="zu-rot-textarea zu-rot-custom-thinking" placeholder="' + L("正在思考人生 ({elapsed})… | 2", "Thinking deeply ({elapsed})… | 2") + '">' + esc(customThink) + '</textarea>' +
-        '<div class="pnote">' + L("运行阶段 (running)", "Running phase") + '</div>' +
-        '<textarea class="zu-rot-textarea zu-rot-custom-running" placeholder="' + L("全力输出中 {tps} t/s · {running} | 2", "Streaming at {tps} t/s · {running} | 2") + '">' + esc(customRun) + '</textarea>' +
-        '<div class="pnote">' + L("长耗时阶段 (long)", "Long turn phase") + '</div>' +
-        '<textarea class="zu-rot-textarea zu-rot-custom-long" placeholder="' + L("已经苦战 {elapsed}，稳住能赢！ | 3", "Still working after {elapsed}, hang tight! | 3") + '">' + esc(customLong) + '</textarea>' +
+      '<div class="cap">' + L("自定义短语", "Custom Phrases") +
+        '<button type="button" class="zu-rot-btn zu-rot-cp-mode zu-rot-tipt" data-tip="' + rotCpEsc(L("在可视化表单与「每行一条」的文本语法之间切换；文本模式适合批量粘贴", "Switch between the visual form and one-line-per-phrase syntax (for bulk paste)")) + '">' + rotCpModeBtnText() + '</button>' +
       '</div>' +
+      '<div class="zu-settings-card zu-rot-cp-card">' + rotCpCardInner() + '</div>' +
 
       '<div class="zu-rot-prev-fix">' +
       '<div class="zu-settings-card">' +
@@ -1120,9 +1443,19 @@
     }
   }
 
+  /* 上游原作者仓库（移植来源致谢，标题行「原作者」按钮外链目标） */
+  var ZU_ROTATOR_UPSTREAM_URL = "https://github.com/01Virex/dsh-status-rotator";
+
   function zuRotatorPanelClick(e, panelEl) {
     var t = e.target;
     if (!t || !t.closest) return false;
+    if (t.closest(".zu-rot-credit")) {
+      /* 外链走客户端 openExternal 桥（系统默认浏览器），无桥环境 window.open 兜底（同 ⚙ 取 Key 链接）。 */
+      var zc = window.zcode;
+      if (zc && typeof zc.openExternal === "function") zc.openExternal(ZU_ROTATOR_UPSTREAM_URL);
+      else window.open(ZU_ROTATOR_UPSTREAM_URL, "_blank", "noopener");
+      return true;
+    }
     if (t.closest(".zu-rot-packs-all")) {
       rotatorCfg.enabledPacks = ZU_ROTATOR_PACK_META.map(function (m) { return m.id; });
       saveRotatorConfig();
@@ -1135,6 +1468,111 @@
       saveRotatorConfig();
       zuRotatorSyncPanel(panelEl);
       forceNextRotatorPhrase();
+      return true;
+    }
+    var viewBtn = t.closest(".zu-rot-pack-view");
+    if (viewBtn) {
+      openRotPackDlg(viewBtn.getAttribute("data-pack"));
+      return true;
+    }
+    /* ---------- 自定义短语可视化编辑器 ---------- */
+    var addBtn = t.closest(".zu-rot-cp-add");
+    if (addBtn) {
+      var addPh = addBtn.getAttribute("data-cp-add");
+      if (addPh === "thinking" || addPh === "running" || addPh === "long") {
+        var addArr = rotCpArr(addPh);
+        var locCfg = rotatorCfg.customPhrases[rotCpLoc()];
+        if (locCfg && Array.isArray(locCfg[addPh])) locCfg[addPh].push({ text: "", weight: 1 });
+        saveRotatorConfig();
+        rotCpRerenderList(panelEl, addPh);
+        var lists = panelEl.querySelectorAll(".zu-rot-cp-list");
+        for (var li = 0; li < lists.length; li++) {
+          if (lists[li].getAttribute("data-cp-ph") !== addPh) continue;
+          var texts = lists[li].querySelectorAll(".zu-rot-cp-text");
+          var lastText = texts.length ? texts[texts.length - 1] : null;
+          if (lastText && lastText.focus) {
+            lastText.focus();
+            if (lastText.setSelectionRange) { try { lastText.setSelectionRange(0, 0); } catch (eSet) { } }
+          }
+          rotCpLastTextEl = lastText || rotCpLastTextEl;
+        }
+      }
+      return true;
+    }
+    var delBtn = t.closest(".zu-rot-cp-del");
+    if (delBtn) {
+      var delRow = delBtn.closest(".zu-rot-cp-row");
+      var delPh = delRow ? delRow.getAttribute("data-cp-ph") : "";
+      var delI = delRow ? parseInt(delRow.getAttribute("data-cp-i"), 10) : -1;
+      if (delPh && delI >= 0) {
+        var delArr = rotCpArr(delPh);
+        if (delI < delArr.length) {
+          var locDel = rotatorCfg.customPhrases[rotCpLoc()];
+          locDel[delPh].splice(delI, 1);
+          if (rotCpPreview && rotCpPreview.ph === delPh && rotCpPreview.i === delI) rotCpPreview = null;
+          saveRotatorConfig();
+          rotCpRerenderList(panelEl, delPh);
+          rotatorMasterTick();
+          renderRotPreview();
+        }
+      }
+      return true;
+    }
+    var playBtn = t.closest(".zu-rot-cp-play");
+    if (playBtn) {
+      var pRow = playBtn.closest(".zu-rot-cp-row");
+      var pPh = pRow ? pRow.getAttribute("data-cp-ph") : "";
+      var pI = pRow ? parseInt(pRow.getAttribute("data-cp-i"), 10) : -1;
+      var pIt = (pPh && pI >= 0) ? rotCpItemOf(pPh, pI) : null;
+      if (pIt && pIt.text) {
+        /* 未保存的行内编辑先落库再预览（▶ 所见即保存所得） */
+        rotCpSaveRow(pRow);
+        pIt = rotCpItemOf(pPh, pI) || pIt;
+        if (rotCpPreview && rotCpPreview.ph === pPh && rotCpPreview.i === pI) rotCpPreview = null;
+        else rotCpPreview = pIt.text ? { ph: pPh, i: pI, text: pIt.text } : null;
+        rotPreview.raw = "";
+        rotPreview.pickAt = 0;
+        rotCpSyncPlayBtns(panelEl);
+        renderRotPreview();
+      }
+      return true;
+    }
+    var advBtn = t.closest(".zu-rot-cp-adv");
+    if (advBtn) {
+      var aRow = advBtn.closest(".zu-rot-cp-row");
+      var aPanel = aRow ? aRow.querySelector(".zu-rot-cp-advpanel") : null;
+      if (aPanel) {
+        aPanel.hidden = !aPanel.hidden;
+        advBtn.classList.toggle("zu-rot-cp-adv-on", !aPanel.hidden);
+      }
+      return true;
+    }
+    if (t.closest(".zu-rot-cp-mode")) {
+      rotCpTextMode = !rotCpTextMode;
+      rotCpPreview = null;
+      rotCpRerenderCard(panelEl);
+      return true;
+    }
+    var chip = t.closest(".zu-rot-cp-chip");
+    if (chip) {
+      var token = chip.getAttribute("data-cp-chip") || "";
+      var target = (rotCpLastTextEl && rotCpLastTextEl.isConnected) ? rotCpLastTextEl : (panelEl.querySelector ? panelEl.querySelector(".zu-rot-cp-text") : null);
+      if (target && typeof target.value === "string") {
+        var s0 = typeof target.selectionStart === "number" ? target.selectionStart : target.value.length;
+        var e0 = typeof target.selectionEnd === "number" ? target.selectionEnd : s0;
+        target.value = target.value.slice(0, s0) + token + target.value.slice(e0);
+        if (target.setSelectionRange) { try { target.setSelectionRange(s0 + token.length, s0 + token.length); } catch (eSel) { } }
+        if (target.focus) target.focus();
+      }
+      return true;
+    }
+    var phBtn = t.closest(".zu-rot-cp-phbtn");
+    if (phBtn) {
+      var allPanel = panelEl.querySelector ? panelEl.querySelector(".zu-rot-cp-phall") : null;
+      if (allPanel) {
+        allPanel.hidden = !allPanel.hidden;
+        phBtn.textContent = allPanel.hidden ? L("全部 17 个 ▾", "All 17 ▾") : L("收起 ▴", "Collapse ▴");
+      }
       return true;
     }
     return false;
@@ -1177,6 +1615,23 @@
       else if (!t.checked && idx >= 0) list.splice(idx, 1);
       rotatorCfg.enabledPacks = list;
     }
+    else if (cl.contains("zu-rot-cp-text") || cl.contains("zu-rot-cp-weight") || cl.contains("zu-rot-cp-rarity") ||
+             cl.contains("zu-rot-cp-toolname") || cl.contains("zu-rot-cp-cb")) {
+      var cpRow = t.closest ? t.closest(".zu-rot-cp-row") : null;
+      var saved = cpRow ? rotCpSaveRow(cpRow) : null;
+      if (!saved) return false;
+      if (cl.contains("zu-rot-cp-text")) rotCpLastTextEl = t;
+      if (rotCpPreview && rotCpPreview.ph === saved.ph && rotCpPreview.i === saved.i) {
+        var cpIt = rotCpItemOf(saved.ph, saved.i);
+        if (cpIt && cpIt.text) {
+          rotCpPreview.text = cpIt.text;   /* 编辑中的预览条同步刷新，调试闭环 */
+          rotPreview.raw = "";
+          rotPreview.pickAt = 0;
+        } else {
+          rotCpPreview = null;
+        }
+      }
+    }
     else if (cl.contains("zu-rot-custom-thinking") || cl.contains("zu-rot-custom-running") || cl.contains("zu-rot-custom-long")) {
       var loc = state.lang === "en" ? "en" : "zh";
       var ph = cl.contains("zu-rot-custom-thinking") ? "thinking" : cl.contains("zu-rot-custom-long") ? "long" : "running";
@@ -1193,7 +1648,102 @@
     return true;
   }
 
+  /* ---------- 内置词包查看弹框（用户规格：网格每包勾选框前「查看」按钮，弹框列全部词语；
+   * 宽固定 600px、高 80vh，列表内滚；遮罩/✕/Escape 关闭）---------- */
+  var rotPkDlg = null, rotPkKey = null;
+  function closeRotPackDlg() {
+    if (rotPkKey) {
+      try { document.removeEventListener("keydown", rotPkKey, true); } catch (e) { }
+      rotPkKey = null;
+    }
+    if (rotPkDlg) { try { rotPkDlg.remove(); } catch (e) { } rotPkDlg = null; }
+  }
+  function openRotPackDlg(packId) {
+    closeRotPackDlg();
+    var pack = ZU_ROTATOR_PACK_BY_ID[packId];
+    if (!pack || !pack.phrases) return;
+    var meta = null;
+    for (var mi = 0; mi < ZU_ROTATOR_PACK_META.length; mi++) {
+      if (ZU_ROTATOR_PACK_META[mi].id === packId) { meta = ZU_ROTATOR_PACK_META[mi]; break; }
+    }
+    /* 界面语言优先取对应相；该语言缺失（毛选语录仅中文）回退另一语言并提示 */
+    var wantEn = state.lang === "en";
+    var loc = wantEn && pack.phrases.en ? "en" : (pack.phrases.zh ? "zh" : "en");
+    var locPack = pack.phrases[loc] || {};
+    var phrases = [];
+    ["thinking", "running", "long"].forEach(function (ph) {
+      var arr = locPack[ph];
+      if (!Array.isArray(arr)) return;
+      arr.forEach(function (t) {
+        if (typeof t === "string" && t && phrases.indexOf(t) < 0) phrases.push(t);
+      });
+    });
+    var dlg = document.createElement("div");
+    dlg.className = "zu-rot-pk-dlg";
+    var card = document.createElement("div");
+    card.className = "zu-rot-pk-card";
+    var head = document.createElement("div");
+    head.className = "zu-rot-pk-head";
+    var title = document.createElement("span");
+    title.className = "zu-rot-pk-title";
+    title.textContent = meta ? L(meta.zh, meta.en) : packId;
+    var count = document.createElement("span");
+    count.className = "zu-rot-pk-count";
+    count.textContent = L(phrases.length + " 条", phrases.length + " phrases");
+    var closeBtn = document.createElement("button");
+    closeBtn.type = "button";
+    closeBtn.className = "zu-rot-pk-close";
+    closeBtn.setAttribute("aria-label", L("关闭", "Close"));
+    closeBtn.textContent = "\u2715";
+    head.appendChild(title);
+    head.appendChild(count);
+    head.appendChild(closeBtn);
+    var list = document.createElement("div");
+    list.className = "zu-rot-pk-list";
+    if (wantEn && loc === "zh") {
+      var note = document.createElement("div");
+      note.className = "zu-rot-pk-note";
+      note.textContent = L("该词包仅提供中文短语。", "This pack ships Chinese phrases only.");
+      list.appendChild(note);
+    }
+    if (!phrases.length) {
+      var empty = document.createElement("div");
+      empty.className = "zu-rot-pk-note";
+      empty.textContent = L("该词包暂无短语。", "No phrases in this pack.");
+      list.appendChild(empty);
+    } else {
+      phrases.forEach(function (t, pi) {
+        var it = document.createElement("div");
+        it.className = "zu-rot-pk-item";
+        var no = document.createElement("span");
+        no.className = "zu-rot-pk-no";
+        no.textContent = (pi + 1) + ".";
+        var txt = document.createElement("span");
+        txt.className = "zu-rot-pk-txt";
+        txt.textContent = t;
+        it.appendChild(no);
+        it.appendChild(txt);
+        list.appendChild(it);
+      });
+    }
+    closeBtn.addEventListener("click", closeRotPackDlg);
+    dlg.addEventListener("mousedown", function (e) {
+      if (e.target === dlg) closeRotPackDlg();   // 点遮罩关闭（卡片内点击不关）
+    });
+    rotPkKey = function (e) {
+      if (!rotPkDlg) return;
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeRotPackDlg(); }
+    };
+    document.addEventListener("keydown", rotPkKey, true);
+    card.appendChild(head);
+    card.appendChild(list);
+    dlg.appendChild(card);
+    document.body.appendChild(dlg);
+    rotPkDlg = dlg;
+  }
+
   function zuRotatorDisposeAll() {
+    closeRotPackDlg();
     if (rotatorTimer) { clearInterval(rotatorTimer); rotatorTimer = null; }
     if (rotPreview.timer) { clearInterval(rotPreview.timer); rotPreview.timer = null; }
     rotPreview.panelEl = null;

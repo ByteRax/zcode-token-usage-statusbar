@@ -21,6 +21,15 @@
     function countFmt(n) { return fmt(n, true); }
     function cnUnit(x) { return x.toFixed(2).replace(/\.?0+$/, ""); }   // 至多两位小数并去尾零：58.25万、142万、1亿（数字与单位不留空格：等宽字体下空格占满一格）
     function sec(ms) { return ms ? (ms / 1000).toFixed(1) + "s" : "–"; }
+    /* v300：长时长换算（会话累计「会话总耗时」专用）——跨会话总生成时长可达小时级，
+     * 裸秒数（12301.2s）既难读又会撑爆 1/3 列宽；<1min 显秒、<1h 显分钟、其余显小时 */
+    function secLong(ms) {
+      if (!ms) return "–";
+      var s2 = ms / 1000;
+      if (s2 < 60) return s2.toFixed(1) + "s";
+      if (s2 < 3600) return (s2 / 60).toFixed(1) + "m";
+      return (s2 / 3600).toFixed(1) + "h";
+    }
 
 
     /* 超限判定：最近一次"上下文超限被拒"晚于最近成功请求 = 仍处于超限状态（该请求
@@ -180,34 +189,56 @@
       var hitPct = (pj.input > 0 && isFinite(pj.input)) ? Math.round((pj.cache_read || 0) / pj.input * 100) : -1;
       var showCost = !!state.cost;   // ⚙ 开关关：KPI 预估费用格与表头费用列不渲染
       var costV = (typeof pj.cost_usd === "number" && isFinite(pj.cost_usd)) ? fmtMoney(pj.cost_usd) : "—";
-      return '<div class="zu-project-tip" data-key="' + escAttr(ownerKey) + '">' +
+      /* v303 根类并入统计卡家族：statCompactStyle("project") :has 作用域（450 宽/
+       * 自适应高/共享规则）在此生效；zu-project-tip 保留（fxq 计价范围气泡与测试锚点） */
+      return statCompactStyle("project") +
+        '<div class="zu-project-tip zu-stat-tip zu-stat-tip--project" data-key="' + escAttr(ownerKey) + '">' +
         '<div class="zu-pj-head"><div class="zu-pj-title' + (pj.name ? " zu-tt-name" : "") + '">' + ttEsc(L("项目累计", "Project total")) +
-        (pj.name ? '<span class="zu-pj-pname">' + ttEsc(pj.name) + '</span>' : "") + '</div>' +
-        '<div class="zu-pj-range"><span class="zu-pj-scope">' + ttEsc(L("全部请求", "All requests")) + '</span>' +
-        '<span class="zu-pj-sub">' + ttEsc(L("含子代理", "incl. sub-agents")) + '</span></div></div>' +
-        '<div class="zu-pj-kpis">' +
-          '<div class="zu-pj-kpi"><div class="zu-pj-k">' + ttEsc(L("总用量", "Total tokens")) + '</div><div class="zu-pj-v">' + ttEsc(fmt(pj.total || 0)) + '</div></div>' +
-          '<div class="zu-pj-kpi"><div class="zu-pj-k">' + ttEsc(L("请求次数", "Requests")) + '</div><div class="zu-pj-v">' + ttEsc(countFmt(pj.requests || 0)) + '</div></div>' +
-          (showCost ? '<div class="zu-pj-kpi"><div class="zu-pj-k">' + ttEsc(L("预估费用", "Est. cost")) + FXQ_ICON + '</div><div class="zu-pj-v">' + ttEsc(costV) + '</div></div>' : "") +
+        (pj.name ? '<span class="zu-pj-pname" title="' + escAttr(pj.name) + '">' + ttEsc(pj.name) + '</span>' : "") + '</div>' +
+        '<div class="zu-pj-range"><span class="zu-pj-scope">' + ttEsc(L("全部请求 · 含子代理", "All requests · incl. sub-agents")) + '</span></div></div>' +
+        /* v303 项目累计紧凑化（用户 /goal，同本轮/会话/今日四行 KPI 形态）：
+         * ①总用量|输入(缓存 N% 徽标随标签)|输出(含思考) ②请求次数|请求轮数|请求会话
+         * ③平均耗时|平均延迟|总耗时 ④平均输出速度(项目加权均 avg_tps 档色)|预估费用；
+         * 平均耗时/延迟/总耗时/平均输出速度为 v303 zusage _project_usage 新聚合
+         * （>0 门控，旧缓存自然降级）；缓存命中率不再占独立副行。 */
+        '<div class="zu-turn-kpis">' +
+          statKpi(kpiIco("total") + L("总用量", "Total tokens"), ttEsc(fmt(pj.total || 0)), turnVBkt(fmt(pj.total || 0))) +
+          statKpi(kpiIco("input") + L("输入", "Input") +
+            (hitPct >= 0 ? '<span class="hit zu-turn-hit">' + ttEsc(L("缓存", "cache ") + hitPct + "%") + '</span>' : ""),
+            ttEsc(fmt(pj.input || 0)), turnVBkt(fmt(pj.input || 0))) +
+          statKpi(kpiIco("output") + L("输出", "Output"), ttEsc(fmt(pj.output || 0)), turnVBkt(fmt(pj.output || 0)),
+            (pj.reasoning > 0 ? ttEsc(L("含思考 ", "incl. ") + fmt(pj.reasoning)) : "")) +
         '</div>' +
-        '<div class="zu-pj-details">' +
-          '<div class="zu-pj-detail"><div class="zu-pj-k">' + ttEsc(L("输入", "Input")) + '</div><div class="zu-pj-dv">' + ttEsc(fmt(pj.input || 0)) + '</div>' +
-            '<div class="zu-pj-dsub">' + (hitPct >= 0 ? '<span class="zu-pj-hit">' + ttEsc(L("缓存命中率 ", "cache hit ") + hitPct + "%") + '</span>' : "") + '</div></div>' +
-          '<div class="zu-pj-detail"><div class="zu-pj-k">' + ttEsc(L("输出", "Output")) + '</div><div class="zu-pj-dv">' + ttEsc(fmt(pj.output || 0)) + '</div>' +
-            '<div class="zu-pj-dsub">' + (pj.reasoning > 0 ? ttEsc(L("含思考 ", "incl. ") + fmt(pj.reasoning)) : "") + '</div></div>' +
-          (pj.cache_write > 0
-            ? '<div class="zu-pj-detail"><div class="zu-pj-k">' + ttEsc(L("缓存写入", "Cache write")) + '</div><div class="zu-pj-dv">' + ttEsc(fmt(pj.cache_write)) + '</div><div class="zu-pj-dsub"></div></div>'
-            : '<div class="zu-pj-detail"></div>') +
+        /* 行二：请求规模（请求数/轮数/会话数均为项目聚合真值） */
+        '<div class="zu-turn-kpis">' +
+          statKpi(kpiIco("requests") + L("请求次数", "Requests"), ttEsc(countFmt(pj.requests || 0)), turnVBkt(countFmt(pj.requests || 0))) +
+          statKpi(kpiIco("turns") + L("请求轮数", "Turns"), ttEsc(countFmt(pj.turns || 0)), turnVBkt(countFmt(pj.turns || 0))) +
+          statKpi(kpiIco("sessions") + L("请求会话", "Sessions"), ttEsc(countFmt(pj.sessions || 0)), turnVBkt(countFmt(pj.sessions || 0))) +
         '</div>' +
-        '<div class="zu-pj-scale">' +
-          '<span>' + ttEsc(countFmt(pj.sessions || 0) + L(" 会话", " sessions")) + '</span><span>·</span>' +
-          '<span>' + ttEsc(countFmt(pj.turns || 0) + L(" 轮", " turns")) + '</span><span>·</span>' +
-          (pj.tool_calls ? '<span>' + ttEsc(L("工具 ", "tools ") + countFmt(pj.tool_calls) + L(" 次", " calls")) + '</span><span>·</span>' : "") +
-          (pj.retries ? '<span>' + ttEsc(L("重试 ", "retries ") + countFmt(pj.retries) + L(" 次", " times")) + '</span>' : "") +
+        /* 行三：平均耗时 | 平均延迟 | 总耗时（v303 聚合，>0 门控缺失不伪造 0s） */
+        ((pj.avg_duration_ms > 0 || pj.avg_ttft_ms > 0 || pj.duration_ms > 0)
+          ? '<div class="zu-turn-kpis zu-turn-kpis--mid">' +
+            (pj.avg_duration_ms > 0 ? statKpi(kpiIco("duration") + L("平均耗时", "Avg time"), ttEsc(sec(pj.avg_duration_ms)), turnVBkt(sec(pj.avg_duration_ms))) : "") +
+            (pj.avg_ttft_ms > 0 ? statKpi(kpiIco("latency") + L("平均延迟", "Avg TTFT"), ttEsc(sec(pj.avg_ttft_ms)), turnVBkt(sec(pj.avg_ttft_ms))) : "") +
+            (pj.duration_ms > 0 ? statKpi(kpiIco("elapsed") + L("总耗时", "Total time"), ttEsc(secLong(pj.duration_ms)), turnVBkt(secLong(pj.duration_ms))) : "") +
+            '</div>' : "") +
+        /* 行四：平均输出速度（项目加权均，TPS_BANDS 档色）| 预估费用（问号走项目卡既有
+         * 计价范围气泡机制）；费用关/缺失时速度格 only-child 占满整行 */
+        '<div class="zu-turn-kpis zu-turn-kpis--duo">' +
+          ((typeof pj.avg_tps === "number" && isFinite(pj.avg_tps) && pj.avg_tps > 0)
+            ? statKpi(kpiIco("speed") + L("平均输出速度", "Avg output rate"), '<b class="' + tpsBand(pj.avg_tps).cls + '">' + ttEsc(pj.avg_tps.toFixed(1)) + '</b> <small>t/s</small>')
+            : statKpi(kpiIco("speed") + L("平均输出速度", "Avg output rate"), "—")) +
+          ((showCost && typeof pj.cost_usd === "number" && isFinite(pj.cost_usd))
+            ? statKpi(L("预估费用", "Est. cost") + FXQ_ICON, ttEsc(costV))
+            : "") +
         '</div>' +
         (hasModels
           ? '<div class="zu-pj-models"><div class="zu-pj-mhead"><div class="zu-pj-mtitle">' + ttEsc(L("模型明细", "Models")) + '</div>' +
-            '<div class="zu-pj-morder">' + ttEsc(L("按用量排序", "by usage")) + '</div></div>' +
+            '<div class="zu-pj-morder">' +
+            ((pj.tool_calls || pj.retries)
+              ? [(pj.tool_calls ? ttEsc(L("工具调用 ", "tools ") + countFmt(pj.tool_calls) + L(" 次", " calls")) : ""),
+                 (pj.retries ? ttEsc(L("重试 ", "retries ") + countFmt(pj.retries) + L(" 次", " times")) : "")].filter(Boolean).join('<i class="zu-turn-sep">·</i>')
+              : ttEsc(L("按用量排序", "by usage"))) + '</div></div>' +
             '<table class="zu-pj-table"><thead><tr><th>' + ttEsc(L("模型", "Model")) + '</th>' +
             '<th>' + ttEsc(L("Token 用量 ↓", "Tokens ↓")) + '</th><th>' + ttEsc(L("请求次数", "Requests")) + '</th>' +
             (showCost ? '<th>' + ttEsc(L("预估费用", "Est. cost")) + '</th>' : "") + '</tr></thead>' +
@@ -218,7 +249,7 @@
               : "") +
             '</div>'
           : "") +
-        '<div class="zu-pj-time"><b>' + ttEsc(L("时间范围", "Time span")) + '</b>' +
+        '<div class="zu-stat-time"><b>' + ttEsc(L("时间范围", "Time span")) + '</b>' +
         '<span>' + (pj.started ? fmtStartS(pj.started) : "—") + " — " + (pj.last_at ? fmtStartS(pj.last_at) : "—") + '</span></div>' +
         '</div>';
     }
@@ -237,14 +268,98 @@
       if (typeof positionTip === "function" && tipFor) positionTip(tipFor, true);
     }
     /* v215 统计卡公共片段（六卡共用）：head/KPI/明细/规模/表格/时间。数据全部真实字段。 */
-    function statHead(title, scope, name) {
-      /* v230.1 名称与标题垂直居中：带名称时标题容器切 flex，名称作为子项中心对齐 */
-      return '<div class="zu-stat-head"><div class="zu-stat-title' + (name ? " zu-tt-name" : "") + '">' + ttEsc(title) +
+    function statHead(title, scope, name, icoHtml) {
+      /* v230.1 名称与标题垂直居中：带名称时标题容器切 flex，名称作为子项中心对齐；
+       * v304 第 4 参 icoHtml=标题前置图标（工具卡扳手），既有三参调用不变 */
+      return '<div class="zu-stat-head"><div class="zu-stat-title' + (name ? " zu-tt-name" : "") + '">' + (icoHtml || "") + ttEsc(title) +
         (name || "") + '</div>' +
         (scope ? '<div class="zu-stat-scope">' + ttEsc(scope) + '</div>' : "") + '</div>';
     }
-    function statKpi(k, vHtml, extraCls) {
-      return '<div class="zu-stat-kpi' + (extraCls ? " " + extraCls : "") + '"><div class="zu-stat-k">' + k + '</div><div class="zu-stat-v">' + vHtml + '</div></div>';
+    /* v300：本轮/会话累计共用紧凑布局作用域 CSS——同一份规则按卡变体替换 :has 作用域类；
+     * 渲染串内联（速度卡同款先例），随内容存在、签名幂等重建不叠加 */
+    function statCompactStyle(variant) {
+      return '<style>' +
+
+          '.zusage-tip-root:has(.zu-stat-tip--' + variant + '){width:min(450px,calc(100vw - 16px))!important;max-width:min(450px,calc(100vw - 16px))!important;max-height:calc(100vh - 24px)!important;box-sizing:border-box!important;overflow:hidden!important}' +
+          /* v303.1 五卡 padding 统一：内容边距只吃根 .tip 的 10px 13px（与速度卡一致），
+           * .tbody 不再叠第二层（此前 9px 12px 叠加成 19/25 双层，与速度卡不一致） */
+          '.zusage-tip-root:has(.zu-stat-tip--' + variant + ') .tbody{box-sizing:border-box!important;overflow-y:auto!important;scrollbar-gutter:auto!important;scrollbar-width:none!important;padding:0!important}' +
+      '.zusage-tip-root:has(.zu-stat-tip--' + variant + ') .tbody::-webkit-scrollbar{display:none!important}' +
+          '' + '.zu-stat-tip--' + variant + '{box-sizing:border-box!important;display:flex!important;flex-direction:column!important;gap:3px!important;min-height:0!important}' +
+          '' + '.zu-stat-tip--' + variant + ' .zu-stat-head{margin:0!important}' +
+          '' + '.zu-stat-tip--' + variant + ' .zu-stat-title{font-size:calc(var(--ui-font-size,14px) + 3px)!important}' +
+          '' + '.zu-stat-tip--' + variant + ' .zu-stat-scope{font-size:calc(var(--ui-font-size,14px) - 3px)!important}' +
+          '' + '.zu-stat-tip--' + variant + ' .zu-turn-kpis{display:grid!important;grid-template-columns:repeat(3,1fr)!important;background:rgba(255,255,255,.06)!important;border-radius:8px!important;padding:4px 10px!important;box-sizing:border-box!important}' +
+          /* 浅色主题：深色叠加（--color-popover 在宿主恰好等于 tip 本底，不能用变量） */
+          '.zusage-tip-root.zu-light:has(.zu-stat-tip--' + variant + ') .zu-turn-kpis,.zusage-tip-root:has(.zu-stat-tip--' + variant + '.zu-light) .zu-turn-kpis{background:rgba(0,0,0,.045)!important}' +
+          '' + '.zu-stat-tip--' + variant + ' .zu-turn-kpis .zu-stat-kpi + .zu-stat-kpi{border-left:1px solid var(--color-popover-border,rgba(255,255,255,.12))!important;padding-left:10px!important}' +
+          '' + '.zu-stat-tip--' + variant + ' .zu-stat-kpi .zu-stat-k{display:flex!important;align-items:baseline!important;gap:6px!important;font-size:calc(var(--ui-font-size,14px) - 3px)!important;font-weight:400!important;color:var(--color-tooltip-tag-foreground,#a6a6a6)!important;margin-bottom:2px!important}' +
+      '' + '.zu-stat-tip--' + variant + ' .zu-stat-k .hit{font-size:calc(var(--ui-font-size,14px) - 3px)!important;font-weight:600!important;color:#4ade80!important;white-space:nowrap!important}' +
+      '' + '.zu-stat-tip--' + variant + ' .zu-stat-k .tip-fxq{align-self:center!important;vertical-align:initial!important;margin-left:4px!important}' +
+      
+          '' + '.zu-stat-tip--' + variant + ' .zu-stat-kpi .zu-stat-v{font-size:calc(var(--ui-font-size,14px) + 6px)!important;line-height:1.08!important;font-variant-numeric:tabular-nums!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important}' +
+          '' + '.zu-stat-tip--' + variant + ' .zu-turn-kpis--mid .zu-stat-v{font-size:calc(var(--ui-font-size,14px) + 5px)!important}' +
+          '' + '.zu-stat-tip--' + variant + ' .zu-stat-v.zu-turn-l1{font-size:calc(var(--ui-font-size,14px) + 3px)!important}' +
+          '' + '.zu-stat-tip--' + variant + ' .zu-stat-v.zu-turn-l2{font-size:calc(var(--ui-font-size,14px) + 1px)!important}' +
+          '' + '.zu-stat-tip--' + variant + ' .zu-turn-kpis--duo{grid-template-columns:repeat(2,1fr)!important}' +
+          '' + '.zu-stat-tip--' + variant + ' .zu-turn-kpis--duo .zu-stat-kpi:only-child{grid-column:1/-1!important}' +
+          '' + '.zu-stat-tip--' + variant + ' .zu-stat-dsub{font-size:calc(var(--ui-font-size,14px) - 4px)!important;margin-top:1px!important}' +
+          '' + '.zu-stat-tip--' + variant + ' .zu-pj-mhead{margin:0!important}' +
+          '' + '.zu-stat-tip--' + variant + ' .zu-pj-mtitle{font-size:calc(var(--ui-font-size,14px) + 1px)!important}' +
+          '' + '.zu-stat-tip--' + variant + ' .zu-pj-morder{display:block!important;font-size:calc(var(--ui-font-size,14px) - 3px)!important;color:var(--color-tooltip-tag-foreground,#a6a6a6)!important}' +
+          '.zu-turn-sep{font-style:normal!important;opacity:.6!important;margin:0 3px!important}' +
+          '' + '.zu-stat-tip--' + variant + ' .zu-turn-models .zu-stat-table{margin:0!important}' +
+          '' + '.zu-stat-tip--' + variant + ' .zu-turn-models th{padding:1px 3px!important;white-space:nowrap!important}' +
+          '' + '.zu-stat-tip--' + variant + ' .zu-turn-models td{padding:2px 3px!important;white-space:nowrap!important}' +
+          '' + '.zu-stat-tip--' + variant + ' .zu-turn-models{flex:1 1 auto!important;min-height:0!important;overflow-y:auto!important;scrollbar-width:none!important}' +
+          '' + '.zu-stat-tip--' + variant + ' .zu-turn-models::-webkit-scrollbar{display:none!important}' +
+          '' + '.zu-stat-tip--' + variant + ' .zu-stat-time{margin-top:auto!important;padding-top:5px!important;border-top:1px solid var(--color-popover-border,rgba(255,255,255,.12))!important;font-size:calc(var(--ui-font-size,14px) - 4px)!important}' +
+          '' + '.zu-stat-tip--' + variant + ' .zu-stat-time span{font-variant-numeric:tabular-nums!important}' +
+          /* v301.1 图标规则三卡共享：flex baseline 标签行内图标 align-self:center
+           * （SVG 基线=底缘，随 baseline 会沉到行下缘），文字/徽标基线关系不变 */
+          '' + '.zu-stat-tip--' + variant + ' .zu-stat-k .zu-kpi-ico{flex:none!important;width:16px!important;height:16px!important;opacity:.85!important;align-self:center!important;vertical-align:initial!important}' +
+          (variant === "today"
+            ? /* v301 今日卡专属：缓存命中率副行柔和绿（输入格 dsub）；行内单格
+               * （耗时字段缺失/费用关）占满整行不留空卡 */
+              '.zu-stat-tip--today .zu-stat-dsub .hit{color:#4ade80!important;font-weight:600!important}' +
+              '.zu-stat-tip--today .zu-turn-kpis .zu-stat-kpi:only-child{grid-column:1/-1!important}'
+            : "") +
+          (variant === "tools"
+            ? /* v304 工具卡专属：表格定宽四列（名 43/次 18/耗时 25/错 14），长名省略
+               * （title 全文），sticky 表头（区内滚表头恒可见），行 hover 轻提亮 */
+              '.zusage-tip-root:has(.zu-stat-tip--tools) .zu-stat-title{display:flex!important;align-items:center!important;gap:8px!important}' +
+              '.zu-stat-tip--tools .zu-stat-title .zu-kpi-ico{opacity:.9!important}' +
+              '.zu-stat-tip--tools .zu-stat-table{table-layout:fixed!important;width:100%!important}' +
+              '.zu-stat-tip--tools .zu-stat-table th:first-child,.zu-stat-tip--tools .zu-stat-table td:first-child{width:43%!important}' +
+              '.zu-stat-tip--tools .zu-stat-table td.zu-pj-mname{overflow:hidden!important;text-overflow:ellipsis!important;white-space:nowrap!important;max-width:none!important}' +
+              '.zu-stat-tip--tools .zu-stat-table thead th{position:sticky!important;top:0!important;background:var(--color-tooltip,#171717)!important;z-index:1!important}' +
+              '.zu-stat-tip--tools .zu-stat-table tbody tr:hover{background:var(--color-hover,rgba(255,255,255,.05))!important}' +
+              '.zusage-tip-root.zu-light:has(.zu-stat-tip--tools) .zu-stat-table thead th{background:var(--color-tooltip,#f7f7f7)!important}'
+            : "") +
+          (variant === "project"
+            ? /* v303 项目卡专属：旧分区 margin 交给 flex gap；模型表为 840px 宽卡设计，
+               * 450px 下收紧内距；名称列上限同步收窄；展开按钮压缩 */
+              '.zu-stat-tip--project .zu-pj-head{margin-bottom:0!important}' +
+              '.zu-stat-tip--project .zu-pj-table th{padding:1px 3px 4px!important;white-space:nowrap!important}' +
+              '.zu-stat-tip--project .zu-pj-table td{padding:3px!important;height:auto!important}' +
+              '.zu-stat-tip--project .zu-pj-table td:first-child{max-width:150px!important}' +
+              '.zu-stat-tip--project .zu-pj-more{margin:6px auto 0!important;padding:2px 10px!important;font-size:calc(var(--ui-font-size,14px) - 2px)!important}' +
+              '.zu-stat-tip--project .zu-pj-title{display:flex!important;align-items:baseline!important;white-space:nowrap!important;min-width:0!important}' +
+              '.zu-stat-tip--project .zu-pj-pname{overflow:hidden!important;text-overflow:ellipsis!important;flex:0 1 auto!important;min-width:0!important}'
+            : "") +
+          '</style>';
+    }
+    /* v303 提升到模块级：项目卡 buildProjectTipHTML（html() 外）也按长度取值分桶 */
+    function turnVBkt(txt) {
+      var n = (txt || "").length;
+      return n > 14 ? " zu-turn-l2" : n > 10 ? " zu-turn-l1" : "";
+    }
+    function statKpi(k, vHtml, extraCls, sub) {
+      /* v299：第四参 sub=KPI 辅助行 HTML（含思考挂到输出格下，不占第四列）；
+       * v299.1：extraCls 改挂 .zu-stat-v（长度分桶缩字号锚在值元素上，此前挂外层
+       * div 导致分桶 CSS 永不命中）；既有其它调用点均 ≤2 参，行为不变 */
+      return '<div class="zu-stat-kpi"><div class="zu-stat-k">' + k + '</div><div class="zu-stat-v' + (extraCls ? " " + extraCls : "") + '">' + vHtml + '</div>' +
+        (sub ? '<div class="zu-stat-dsub">' + sub + '</div>' : "") + '</div>';
     }
     function statDetail(k, dv, sub) {
       return '<div class="zu-pj-detail"><div class="zu-pj-k">' + ttEsc(k) + '</div><div class="zu-stat-dv">' + ttEsc(dv) + '</div>' +
@@ -275,11 +390,16 @@
      * zu-pj-mhead 标题 + 四列 zu-stat-table；数据同源 _scope_models_cost 已降序，
      * 此处对副本防御性重排不改快照原数组；费用列随 state.cost 门控、缺失显 "—"；
      * 空明细/旧快照缺字段整块不渲染。精简摘要的 rt-models 行式（modelsBlock）保留。 */
-    function statModelsTable(models) {
+    function statModelsTable(models, headRight, tableOnly) {
       if (!models || !models.length) return "";
       var heads = [L("模型", "Model"), L("Token 用量 ↓", "Tokens ↓"), L("请求次数", "Requests")];
       if (state.cost) heads.push(L("预估费用", "Est. cost"));
-      return '<div class="zu-pj-mhead"><div class="zu-pj-mtitle">' + ttEsc(L("模型明细", "Models")) + '</div><div class="zu-pj-morder">' + ttEsc(L("按用量排序", "by usage")) + '</div></div>' +
+      /* v299：headRight=表头行右侧自定义 HTML（本轮卡放工具调用次数；已转义/可信），
+       * 缺省/空串维持「按用量排序」，会话/今日调用点不变；
+       * tableOnly=只出表格（本轮卡标题行固定在滚动区外、表体独立滚动） */
+      var head = tableOnly ? "" :
+        '<div class="zu-pj-mhead"><div class="zu-pj-mtitle">' + ttEsc(L("模型明细", "Models")) + '</div><div class="zu-pj-morder">' + (headRight ? headRight : ttEsc(L("按用量排序", "by usage"))) + '</div></div>';
+      return head +
         statTable(heads, models.slice().sort(function (a, b) { return (b.total || 0) - (a.total || 0); }).map(function (m1) {
           var name = m1.model || L("未知模型", "unknown");
           return '<tr>' +
@@ -302,6 +422,30 @@
         (top.rates ? ' data-rates="' + escAttr(JSON.stringify(top.rates)) + '"' : "") +
         ' data-mcount="' + ms.length + '"' +
         (scopeText ? ' data-mscope="' + escAttr(scopeText) + '"' : ""));
+    }
+    /* v301 三张统计卡共用 KPI 图标：统一外框（16px / stroke 1.8 / currentColor /
+     * aria-hidden）+ 路径表复用，避免多处维护相同 SVG 串。语义=层叠总量/输入下箭头/
+     * 输出上箭头/时钟耗时/闪电延迟/循环重试/表盘速度/硬币费用 + v301.1 补齐本轮/
+     * 会话卡：沙漏总耗时/气泡轮对话。色随文字（标签灰），不做高饱和装饰，不参与焦点。 */
+    var KPI_ICON_PATHS = {
+      total: '<path d="m12 3-9 5 9 5 9-5-9-5Z"/><path d="m3 12 9 5 9-5"/><path d="m3 16 9 5 9-5"/>',
+      input: '<path d="M12 3v13"/><path d="m7 11 5 5 5-5"/><path d="M4 21h16"/>',
+      output: '<path d="M12 21V8"/><path d="m7 13 5-5 5 5"/><path d="M4 3h16"/>',
+      duration: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+      latency: '<path d="M13 2 4 13h7l-1 9 10-12h-7V2Z"/>',
+      retry: '<path d="M20 11a8 8 0 1 0-2.3 5.6"/><path d="M20 4v7h-7"/>',
+      speed: '<path d="M4.9 19a9 9 0 1 1 14.2 0"/><path d="m12 14 4-5"/><circle cx="12" cy="14" r="1"/>',
+      cost: '<ellipse cx="12" cy="5" rx="7" ry="3"/><path d="M5 5v6c0 1.7 3.1 3 7 3s7-1.3 7-3V5"/><path d="M5 11v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/>',
+      elapsed: '<path d="M5 22h14"/><path d="M5 2h14"/><path d="M17 22v-4.172a2 2 0 0 0-.586-1.414L12 12l-4.414 4.414A2 2 0 0 0 7 17.828V22"/><path d="M7 2v4.172a2 2 0 0 0 .586 1.414L12 12l4.414-4.414A2 2 0 0 0 17 6.172V2"/>',
+      turns: '<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/>',
+      requests: '<path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/>',
+      tools: '<path d="M14.5 2.5a6 6 0 0 0-5.6 8.1L3.3 16.2a3.2 3.2 0 0 0 4.5 4.5l5.6-5.6a6 6 0 0 0 8.1-5.6l-4.1 3-3.8-3.8 3-4.1a6 6 0 0 0-2.1-2.1z"/>',
+      sessions: '<path d="M7.5 3h12a2 2 0 0 1 2 2v10M4.5 7h12a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H8l-5.5 2V9a2 2 0 0 1 2-2z"/>'
+    };
+    function kpiIco(name, size) {
+      var s = size || 16;
+      return '<svg class="zu-kpi-ico" viewBox="0 0 24 24" width="' + s + '" height="' + s + '" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+        (KPI_ICON_PATHS[name] || "") + '</svg>';
     }
     /* v97：live chip（生成速度）的 tooltip 内容——子代理速率是渲染端实时状态（不在泵
      * 快照里），html() 整条渲染与 updateLive 原地改字两条路径都要能生成，抽出共用。
@@ -517,6 +661,11 @@
         liveKindCur = "fallback";
         livePhaseCur = "";
         liveIconCur = "bolt";
+        /* v298（用户拍板）：chip 条面=最后一轮真实速度（chipTps）；tooltip V1 回退卡
+         * 仍按会话均优先（mainTps 原语义不变）——两处取值分离。最近一段无有效值
+         * 时面留空且不渲染 t/s 单位（与 11 分片精简 chip 拍板语义一致：无最后一轮
+         * 不显会话均），绝不把无效样本渲染成 0 t/s（review 修复，§5 口径） */
+        var chipTps = dbTps;
         var mainTps = sessAvg || dbTps;
         var tband = tpsBand(mainTps);
         var speedTm = sessAvg ? speedSpan(sess.started, sess.last_at) : speedSpan(last.startedAt, last.endedAt);   // v222 时间范围行
@@ -593,54 +742,92 @@
             return "\x01" + speedCardHTML(fbOpts);
           };
         }
+        /* v298（用户拍板）：chip 主数字=最后一轮真实速度（最近一段，不再取会话均、
+         * 不带「均」前缀）；tooltip 左卡仍为会话加权平均（"平均速度"语义不变） */
+        var chipBand = tpsBand(chipTps);
+        var chipFace = chipTps > 0 ? ((chipTps % 1 ? chipTps.toFixed(1) : String(chipTps)) + '<span class="dim">t/s</span>') : "";   // 最后一轮无效：面空（含单位），仅留图标作悬停锚
         it(ico('<path d="M13.5 2 3.5 13.5H11L10 22l10.5-12H13l.5-8z"/>') +
-          (sessAvg ? '<span class="dim">' + L("均", "avg ") + '</span>' : "") +
-          '<span class="zu-live ' + tband.cls + '">' + (mainTps % 1 ? mainTps.toFixed(1) : String(mainTps)) + '</span><span class="dim">t/s</span>',   /* v226：去「· 近X」尾缀（用户规格），最近一段只在 tooltip */
+          '<span class="zu-live ' + (chipBand ? chipBand.cls : "dim") + '">' + chipFace + '</span>',
           speedTipRebuild(speedChartHover, v2sel));
       } else {
         liveKindCur = "none";
         livePhaseCur = "";
         liveIconCur = "";
       }
+      /* v299 本轮卡辅助：模型标题行右侧串（工具调用/重试/错误，原 scale 行内容迁此）；
+       * 值长度分档（>10 字符降 1 档、>14 降 2 档）——固定 500px 列宽下的防溢出缩字 */
+      var turnToolsHtml = (lt.tool_calls || lt.retries || lt.tool_errors)
+        ? [(lt.tool_calls ? ttEsc(L("工具调用 ", "tools ") + countFmt(lt.tool_calls) + L(" 次", " calls")) : ""),
+           (lt.retries ? ttEsc(L("重试 ", "retries ") + countFmt(lt.retries) + L(" 次", " times")) : ""),
+           (lt.tool_errors ? ttEsc(L("错误 ", "errors ") + countFmt(lt.tool_errors) + L(" 次", " times")) : "")].filter(Boolean).join('<i class="zu-turn-sep">·</i>')
+        : "";
       if (state.show.turn) {
         it(ico('<path d="M5 3.5h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-9l-6.5 4V5.5a2 2 0 0 1 1.5-2z"/><path d="M7.5 8.5h9m-9 4h6"/>') +
           '<span class="v">' + fmt(lt.total) + "</span>" +
           (state.theme === "pill" ? "" :
-            (shrink ? "" : cachePct(lt.cache_read, lt.input)) +
+            (shrink ? "" : "") +
             '<span class="dim">' + countFmt(lt.requests || 0) + L("次", " req") + "</span>"),
           /* v211 格面移除单次耗时/首字延迟段（用户规格）：耗时/延迟只在 tooltip 呈现
            * （平均耗时/平均延迟，对全体请求求均值） */
+          /* v299 500×350 紧凑布局（用户 /goal）：三行 KPI 固定顺序——
+           * ①总用量|输入(缓存命中)|输出(含思考) ②请求次数|请求轮数|请求会话
+           * ③平均耗时|平均延迟|总耗时 ④平均输出速度(档位色文字强调)|预估费用；
+           * 工具调用并入模型明细标题行右侧；
+           * 模型表独立滚动区（主 tooltip 无滚动条）；时间范围钉底。
+           * 样式全部经内联 <style> 以 :has(.zu-stat-tip--turn) 作用域——只影响本轮卡，
+           * 会话/今日/项目/工具/速度卡与共享 .zu-stat-* 规则零波及（速度卡同款先例）。 */
           "\x01" +
+          statCompactStyle("turn") +
           '<div class="zu-stat-tip zu-stat-tip--turn">' +
           statHead(L("本轮", "Latest turn"), countFmt(lt.requests || 0) + L(" 次请求", " requests")) +
-          '<div class="zu-stat-kpis">' +
-            statKpi(L("总用量", "Total tokens"), ttEsc(fmt(lt.total || 0))) +
-            ((typeof lt.tps === "number" && isFinite(lt.tps) && lt.tps > 0)
-              ? statKpi(L("输出速度", "Output rate"), ttEsc(lt.tps.toFixed(1)) + ' <small>t/s</small>')
-              : statKpi(L("输出速度", "Output rate"), "—")) +
-            ((state.cost && typeof lt.cost_usd === "number" && isFinite(lt.cost_usd))
-              ? statKpi(L("预估费用", "Est. cost") + fxqIcon(lt.models, L("本轮", "this turn")), ttEsc(fmtMoney(lt.cost_usd)))
-              : "") +
-          '</div>' +
-          '<div class="zu-stat-grid2">' +
-            statDetail(L("输入", "Input"), fmt(lt.input || 0),
-              (hitPctOf(lt.input, lt.cache_read) >= 0 ? '<span class="hit">' + ttEsc(L("缓存命中率 ", "cache hit ") + hitPctOf(lt.input, lt.cache_read) + "%") + '</span>' : "")) +
-            statDetail(L("输出", "Output"), fmt(lt.output || 0),
+          /* 行一：总用量 | 输入（缓存命中辅助行）| 输出（含思考辅助行） */
+          '<div class="zu-turn-kpis">' +
+            statKpi(kpiIco("total") + L("总用量", "Total tokens"), ttEsc(fmt(lt.total || 0)), turnVBkt(fmt(lt.total || 0))) +
+            /* v299.1（用户规格）：缓存命中率改「缓存 N%」，放「输入」标签行右侧
+             * （statKpi 的 k 为 raw HTML；标签行短，徽标空间充裕不再截断） */
+            statKpi(kpiIco("input") + L("输入", "Input") +
+              (hitPctOf(lt.input, lt.cache_read) >= 0 ? '<span class="hit zu-turn-hit">' + ttEsc(L("缓存", "cache ") + hitPctOf(lt.input, lt.cache_read) + "%") + '</span>' : ""),
+              ttEsc(fmt(lt.input || 0)), turnVBkt(fmt(lt.input || 0))) +
+            statKpi(kpiIco("output") + L("输出", "Output"), ttEsc(fmt(lt.output || 0)), turnVBkt(fmt(lt.output || 0)),
               (lt.reasoning > 0 ? ttEsc(L("含思考 ", "incl. ") + fmt(lt.reasoning)) : "")) +
           '</div>' +
+          /* 行二（v302 用户规格）：请求规模层级——请求次数（本轮模型请求）|
+           * 请求轮数（本轮所属会话累计轮数 sess.turns）| 请求会话（所属项目累计会话数
+           * sess.project.sessions，项目字段缺失诚实显 —，不伪造 1） */
+          '<div class="zu-turn-kpis">' +
+            statKpi(kpiIco("requests") + L("请求次数", "Requests"), ttEsc(countFmt(lt.requests || 0)), turnVBkt(countFmt(lt.requests || 0))) +
+            statKpi(kpiIco("turns") + L("请求轮数", "Turns"), ttEsc(countFmt(sess.turns || 0)), turnVBkt(countFmt(sess.turns || 0))) +
+            statKpi(kpiIco("sessions") + L("请求会话", "Sessions"),
+              ((sess.project && typeof sess.project.sessions === "number")
+                ? ttEsc(countFmt(sess.project.sessions)) : "—"), turnVBkt(
+              (sess.project && typeof sess.project.sessions === "number") ? countFmt(sess.project.sessions) : "—")) +
+          '</div>' +
+          /* 行三：平均耗时 | 平均延迟 | 总耗时（沿用 >0 门控，缺字段不伪造 0s；v302 改名「总耗时」） */
           ((lt.avg_duration_ms > 0 || lt.avg_ttft_ms > 0 || lt.duration_ms > 0)
-            ? '<div class="zu-stat-kpis zu-stat-kpis--sub">' +
-              (lt.avg_duration_ms > 0 ? statKpi(L("平均耗时", "Avg time"), ttEsc(sec(lt.avg_duration_ms))) : "") +
-              (lt.avg_ttft_ms > 0 ? statKpi(L("平均延迟", "Avg TTFT"), ttEsc(sec(lt.avg_ttft_ms))) : "") +
-              (lt.duration_ms > 0 ? statKpi(L("本轮总耗时", "Turn time"), ttEsc(sec(lt.duration_ms))) : "") +
+            ? '<div class="zu-turn-kpis zu-turn-kpis--mid">' +
+              (lt.avg_duration_ms > 0 ? statKpi(kpiIco("duration") + L("平均耗时", "Avg time"), ttEsc(sec(lt.avg_duration_ms)), turnVBkt(sec(lt.avg_duration_ms))) : "") +
+              (lt.avg_ttft_ms > 0 ? statKpi(kpiIco("latency") + L("平均延迟", "Avg TTFT"), ttEsc(sec(lt.avg_ttft_ms)), turnVBkt(sec(lt.avg_ttft_ms))) : "") +
+              (lt.duration_ms > 0 ? statKpi(kpiIco("elapsed") + L("总耗时", "Total time"), ttEsc(sec(lt.duration_ms)), turnVBkt(sec(lt.duration_ms))) : "") +
               '</div>' : "") +
-          ((lt.tool_calls || lt.retries || lt.tool_errors)
-            ? '<div class="zu-stat-scale">' +
-              (lt.tool_calls ? '<span>' + ttEsc(L("工具调用 ", "tools ") + countFmt(lt.tool_calls) + L(" 次", " calls")) + '</span>' : "") +
-              (lt.retries ? '<span>' + ttEsc(L("重试 ", "retries ") + countFmt(lt.retries) + L(" 次", " times")) + '</span>' : "") +
-              (lt.tool_errors ? '<span>' + ttEsc(L("错误 ", "errors ") + countFmt(lt.tool_errors) + L(" 次", " times")) + '</span>' : "") +
-              '</div>' : "") +
-          statModelsTable(lt.models) +
+          /* 行四（v302 用户规格改名「平均输出速度」，与本轮内加权口径一致）：
+           * TPS_BANDS 档位色文字，无背景强调 | 预估费用（问号图标沿用）；
+           * 费用关/缺失时速度格 only-child 占满整行，不留空卡 */
+          '<div class="zu-turn-kpis zu-turn-kpis--duo">' +
+            ((typeof lt.tps === "number" && isFinite(lt.tps) && lt.tps > 0)
+              ? statKpi(kpiIco("speed") + L("平均输出速度", "Avg output rate"), '<b class="' + tpsBand(lt.tps).cls + '">' + ttEsc(lt.tps.toFixed(1)) + '</b> <small>t/s</small>')
+              : statKpi(kpiIco("speed") + L("平均输出速度", "Avg output rate"), "—")) +
+            ((state.cost && typeof lt.cost_usd === "number" && isFinite(lt.cost_usd))
+              ? statKpi(kpiIco("cost") + L("预估费用", "Est. cost") + fxqIcon(lt.models, L("本轮", "this turn")), ttEsc(fmtMoney(lt.cost_usd)))
+              : "") +
+          '</div>' +
+          /* 模型明细：工具调用/重试/错误并入标题行右侧（原独立 scale 行删除）；
+           * 标题行固定、表格进独立滚动区——多模型超高处区内滚，主 tooltip 无滚动条、
+           * 时间行不挤出、首行模型恒可见 */
+          ((lt.models && lt.models.length)
+            ? '<div class="zu-pj-mhead"><div class="zu-pj-mtitle">' + ttEsc(L("模型明细", "Models")) + '</div><div class="zu-pj-morder">' +
+              (turnToolsHtml ? turnToolsHtml : ttEsc(L("按用量排序", "by usage"))) + '</div></div>' +
+              '<div class="zu-turn-models">' + statModelsTable(lt.models, null, true) + '</div>'
+            : "") +
           '<div class="zu-stat-time">' +
             '<b>' + ttEsc(L("时间范围", "Time span")) + '</b>' +
             '<span>' + ((lt.started || lt.ended)
@@ -653,73 +840,134 @@
         it(ico('<path d="M7.5 3h12a2 2 0 0 1 2 2v10M4.5 7h12a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H8l-5.5 2V9a2 2 0 0 1 2-2z"/>') +
           '<span class="v">' + fmt(sess.total) + "</span>" +
           (state.theme === "pill" ? "" :
-            (shrink ? "" : cachePct(sess.cache_read, sess.input)) +
+            (shrink ? "" : "") +
             '<span class="dim">' + countFmt(sess.turns || 0) + L("轮 ", " turns · ") + countFmt(sess.requests || 0) + L("次", " req") + "</span>"),
-          "\x01" +
+          "\x01" + statCompactStyle("session") +
           '<div class="zu-stat-tip zu-stat-tip--session">' +
           statHead(L("会话累计", "Session total"), L("全部请求", "All requests"),
             ((sess.title || "").trim() ? '<span class="zu-st-name">' + ttEsc(String(sess.title).replace(/\s+/g, " ").trim()) + '</span>' : "")) +
-          '<div class="zu-stat-kpis">' +
-            statKpi(L("总用量", "Total tokens"), ttEsc(fmt(sess.total || 0))) +
-            statKpi(L("请求次数", "Requests"), ttEsc(countFmt(sess.requests || 0))) +
-            ((state.cost && typeof sess.cost_usd === "number" && isFinite(sess.cost_usd))
-              ? statKpi(L("预估费用", "Est. cost") + fxqIcon(sess.models, L("本会话", "this session")), ttEsc(fmtMoney(sess.cost_usd)))
-              : "") +
-          '</div>' +
-          '<div class="zu-stat-grid2">' +
-            statDetail(L("输入", "Input"), fmt(sess.input || 0),
-              (hitPctOf(sess.input, sess.cache_read) >= 0 ? '<span class="hit">' + ttEsc(L("缓存命中率 ", "cache hit ") + hitPctOf(sess.input, sess.cache_read) + "%") + '</span>' : "")) +
-            statDetail(L("输出", "Output"), fmt(sess.output || 0),
+          /* v300 行一：总用量 | 输入（缓存 N% 徽标随标签右侧）| 输出（含思考辅助行） */
+          '<div class="zu-turn-kpis">' +
+            statKpi(kpiIco("total") + L("总用量", "Total tokens"), ttEsc(fmt(sess.total || 0)), turnVBkt(fmt(sess.total || 0))) +
+            statKpi(kpiIco("input") + L("输入", "Input") +
+              (hitPctOf(sess.input, sess.cache_read) >= 0 ? '<span class="hit zu-turn-hit">' + ttEsc(L("缓存", "cache ") + hitPctOf(sess.input, sess.cache_read) + "%") + '</span>' : ""),
+              ttEsc(fmt(sess.input || 0)), turnVBkt(fmt(sess.input || 0))) +
+            statKpi(kpiIco("output") + L("输出", "Output"), ttEsc(fmt(sess.output || 0)), turnVBkt(fmt(sess.output || 0)),
               (sess.reasoning > 0 ? ttEsc(L("含思考 ", "incl. ") + fmt(sess.reasoning)) : "")) +
           '</div>' +
-          ((sess.cache_write > 0)
-            ? '<div class="zu-stat-grid2" style="margin-top:12px">' +
-              statDetail(L("缓存写入", "Cache write"), fmt(sess.cache_write), "") + '<div></div></div>' : "") +
-          '<div class="zu-stat-scale">' +
-            '<span>' + ttEsc(countFmt(sess.turns || 0) + L(" 轮对话", " turns")) + '</span>' +
-            (sess.tool_calls ? '<span>·</span><span>' + ttEsc(L("工具调用 ", "tools ") + countFmt(sess.tool_calls) + L(" 次", " calls")) + '</span>' : "") +
-            (sess.retries ? '<span>·</span><span>' + ttEsc(L("重试 ", "retries ") + countFmt(sess.retries) + L(" 次", " times")) + '</span>' : "") +
+          /* 行二（v302 用户规格，同本轮卡口径）：请求次数（本会话累计请求）|
+           * 请求轮数（本会话累计轮数）| 请求会话（所属项目累计会话数，缺失诚实显 —） */
+          '<div class="zu-turn-kpis">' +
+            statKpi(kpiIco("requests") + L("请求次数", "Requests"), ttEsc(countFmt(sess.requests || 0)), turnVBkt(countFmt(sess.requests || 0))) +
+            statKpi(kpiIco("turns") + L("请求轮数", "Turns"), ttEsc(countFmt(sess.turns || 0)), turnVBkt(countFmt(sess.turns || 0))) +
+            statKpi(kpiIco("sessions") + L("请求会话", "Sessions"),
+              ((sess.project && typeof sess.project.sessions === "number")
+                ? ttEsc(countFmt(sess.project.sessions)) : "—"), turnVBkt(
+              (sess.project && typeof sess.project.sessions === "number") ? countFmt(sess.project.sessions) : "—")) +
           '</div>' +
-          '<div class="zu-pj-mhead"><div class="zu-pj-mtitle">' + ttEsc(L("模型明细", "Models")) + '</div><div class="zu-pj-morder">' + ttEsc(L("按用量排序", "by usage")) + '</div></div>' +
-          statTable(
-            [L("模型", "Model"), L("Token 用量 ↓", "Tokens ↓"), L("请求次数", "Requests"), L("预估费用", "Est. cost")],
-            (sess.models || []).slice().sort(function (a, b) { return (b.total || 0) - (a.total || 0); }).map(function (m1) {
-              var name = m1.model || L("未知模型", "unknown");
-              return '<tr>' +
-                '<td class="zu-pj-mname" title="' + escAttr(name) + '">' + ttEsc(name) + '</td>' +
-                '<td>' + ttEsc(fmt(m1.total || 0)) + '</td>' +
-                '<td>' + ttEsc(countFmt(m1.requests || 0)) + '</td>' +
-                '<td>' + (typeof m1.cost_usd === "number" && isFinite(m1.cost_usd) ? ttEsc(fmtMoney(m1.cost_usd)) : "—") + '</td>' +
-                '</tr>';
-            }).join("")) +
+          /* 行三：会话级耗时（v300 zusage 聚合；旧快照缺字段按 >0 门控整行收起，不伪造；
+           * v302 改名「总耗时」，secLong 换算保留） */
+          ((sess.avg_duration_ms > 0 || sess.avg_ttft_ms > 0 || sess.duration_ms > 0)
+            ? '<div class="zu-turn-kpis zu-turn-kpis--mid">' +
+              (sess.avg_duration_ms > 0 ? statKpi(kpiIco("duration") + L("平均耗时", "Avg time"), ttEsc(sec(sess.avg_duration_ms)), turnVBkt(sec(sess.avg_duration_ms))) : "") +
+              (sess.avg_ttft_ms > 0 ? statKpi(kpiIco("latency") + L("平均延迟", "Avg TTFT"), ttEsc(sec(sess.avg_ttft_ms)), turnVBkt(sec(sess.avg_ttft_ms))) : "") +
+              (sess.duration_ms > 0 ? statKpi(kpiIco("elapsed") + L("总耗时", "Total time"), ttEsc(secLong(sess.duration_ms)), turnVBkt(secLong(sess.duration_ms))) : "") +
+              '</div>' : "") +
+          /* 行四（v302 用户规格）：平均输出速度（会话均 avg_tps，TPS_BANDS 档色文字）|
+           * 预估费用；轮对话已并入行二「请求轮数」，本行改两列 */
+          '<div class="zu-turn-kpis zu-turn-kpis--duo">' +
+            ((typeof sess.avg_tps === "number" && isFinite(sess.avg_tps) && sess.avg_tps > 0)
+              ? statKpi(kpiIco("speed") + L("平均输出速度", "Avg output rate"), '<b class="' + tpsBand(sess.avg_tps).cls + '">' + ttEsc(sess.avg_tps.toFixed(1)) + '</b> <small>t/s</small>')
+              : statKpi(kpiIco("speed") + L("平均输出速度", "Avg output rate"), "—")) +
+            ((state.cost && typeof sess.cost_usd === "number" && isFinite(sess.cost_usd))
+              ? statKpi(kpiIco("cost") + L("预估费用", "Est. cost") + fxqIcon(sess.models, L("本会话", "this session")), ttEsc(fmtMoney(sess.cost_usd)))
+              : "") +
+          '</div>' +
+          /* 工具调用/重试在模型明细标题行右侧（同本轮 v299 样式）；规模行已并入行三第一列 */
+          ((sess.models && sess.models.length)
+            ? '<div class="zu-pj-mhead"><div class="zu-pj-mtitle">' + ttEsc(L("模型明细", "Models")) + '</div><div class="zu-pj-morder">' +
+              ((sess.tool_calls || sess.retries || sess.tool_errors)
+                ? [(sess.tool_calls ? ttEsc(L("工具调用 ", "tools ") + countFmt(sess.tool_calls) + L(" 次", " calls")) : ""),
+                   (sess.retries ? ttEsc(L("重试 ", "retries ") + countFmt(sess.retries) + L(" 次", " times")) : ""),
+                   (sess.tool_errors ? ttEsc(L("错误 ", "errors ") + countFmt(sess.tool_errors) + L(" 次", " times")) : "")].filter(Boolean).join('<i class="zu-turn-sep">·</i>')
+                : ttEsc(L("按用量排序", "by usage"))) + '</div></div>' +
+              '<div class="zu-turn-models">' + statModelsTable(sess.models, null, true) + '</div>'
+            : "") +
           (d.code && (d.code.add || d.code.del)
-            ? '<div class="zu-stat-scale" style="margin-top:12px"><span>' + ttEsc(L("代码变更 ", "code ") + "+" + (d.code.add || 0) + " / -" + (d.code.del || 0) +
+            ? '<div class="zu-stat-scale"><span>' + ttEsc(L("代码变更 ", "code ") + "+" + (d.code.add || 0) + " / -" + (d.code.del || 0) +
                 (d.code.files ? L("（" + d.code.files + " 文件）", " (" + d.code.files + " files)") : "")) + '</span></div>' : "") +
-          '<div class="zu-pj-time"><b>' + ttEsc(L("时间范围", "Time span")) + '</b><span>' +
+          '<div class="zu-stat-time">' +
+            '<b>' + ttEsc(L("时间范围", "Time span")) + '</b><span>' +
             (sess.started ? fmtStartS(sess.started) : "—") + " — " + (sess.last_at ? fmtStartS(sess.last_at) : "—") + '</span></div>' +
           '</div>');      }
       if (state.show.today) {   // v213 移到会话累计之后（用户规格 2026-11-02，格序：速度→本轮→会话→今日→项目→工具→子代理→⚙）
+        /* v301 今日合计紧凑化（同本轮 v299 / 会话 v300 三行 KPI 形态，450 宽×高度自适应）：
+         * ①总用量|输入(缓存命中率副行)|输出(含思考) ②请求次数|请求轮数|请求会话
+         * ③平均耗时|平均延迟|总耗时 ④平均输出速度(今日加权均 avg_tps 档色)|预估费用；
+         * 11 枚 SVG 图标随 KPI 标签（与本轮/会话同表）；
+         * 模型表标题行固定+表体独立滚动；时间行钉底。样式经 statCompactStyle("today")
+         * 作用域（+today 专属：图标居中/副行绿/单格占满），不波及其它卡。
+         * 平均耗时/延迟/速度来自 v301 zusage 今日聚合，旧快照缺字段按 >0 门控收起。 */
         it(ico('<rect x="3" y="4.5" width="18" height="17" rx="2.5"/><path d="M7.5 2.5v4m9-4v4M3 10h18m-13.5 4h2m5 0h2m-9 4h2m5 0h2"/>') +
-          '<span class="v">' + fmt(today.total) + "</span>",
+          '<span class="v">' + fmt(today.total) + "</span>" +
+          (state.theme === "pill" ? "" :
+            (today.turns != null
+              ? '<span class="dim">' + countFmt(today.turns) + L("轮 ", " turns · ") + countFmt(today.requests || 0) + L("次", " req") + "</span>"
+              : '<span class="dim">' + countFmt(today.requests || 0) + L("次", " req") + "</span>")),
           "\x01" +
+          statCompactStyle("today") +
           '<div class="zu-stat-tip zu-stat-tip--today">' +
           statHead(L("今日合计", "Today"), L("今天所有会话", "All sessions today")) +
-          '<div class="zu-stat-kpis">' +
-            statKpi(L("总用量", "Total tokens"), ttEsc(fmt(today.total || 0))) +
-            statKpi(L("请求次数", "Requests"), ttEsc(countFmt(today.requests || 0))) +
+          /* 行一：总用量 | 输入（缓存命中率副行，柔和绿）| 输出（含思考副行） */
+          '<div class="zu-turn-kpis">' +
+            statKpi(kpiIco("total") + L("总用量", "Total tokens"), ttEsc(fmt(today.total || 0)), turnVBkt(fmt(today.total || 0))) +
+            statKpi(kpiIco("input") + L("输入", "Input"), ttEsc(fmt(today.input || 0)), turnVBkt(fmt(today.input || 0)),
+              (today.input > 0 ? '<span class="hit">' + ttEsc(L("缓存命中率 ", "cache hit ") + Math.round((today.cache_read || 0) / today.input * 100) + "%") + '</span>' : "")) +
+            statKpi(kpiIco("output") + L("输出", "Output"), ttEsc(fmt(today.output || 0)), turnVBkt(fmt(today.output || 0)),
+              (today.reasoning > 0 ? ttEsc(L("含思考 ", "incl. ") + fmt(today.reasoning)) : "")) +
+          '</div>' +
+          /* 行二（v302.2 用户规格，同本轮/会话口径）：请求次数（今日累计请求）|
+           * 请求轮数（今日累计轮数）| 请求会话（今日发起过请求的去重会话数，
+           * v302.2 zusage 新聚合；0=今日尚无会话请求，非伪造） */
+          '<div class="zu-turn-kpis">' +
+            statKpi(kpiIco("requests") + L("请求次数", "Requests"), ttEsc(countFmt(today.requests || 0)), turnVBkt(countFmt(today.requests || 0))) +
+            /* 轮数/会话数：旧远端快照可能缺字段——缺显「—」不伪造 0（条面 913 行同款
+             * != null 门控；本地新快照恒有值，0=今日尚无，照实显示） */
+            statKpi(kpiIco("turns") + L("请求轮数", "Turns"), ttEsc(today.turns != null ? countFmt(today.turns) : "—"), turnVBkt(today.turns != null ? countFmt(today.turns) : "")) +
+            statKpi(kpiIco("sessions") + L("请求会话", "Sessions"), ttEsc(today.sessions != null ? countFmt(today.sessions) : "—"), turnVBkt(today.sessions != null ? countFmt(today.sessions) : "")) +
+          '</div>' +
+          /* 行三：平均耗时 | 平均延迟（>0 门控缺失不伪造 0s）| 总耗时（Σ生成耗时，
+           * secLong 换算；v302.2 重试格按新规格移除） */
+          ((today.avg_duration_ms > 0 || today.avg_ttft_ms > 0 || today.duration_ms > 0)
+            ? '<div class="zu-turn-kpis zu-turn-kpis--mid">' +
+              (today.avg_duration_ms > 0 ? statKpi(kpiIco("duration") + L("平均耗时", "Avg time"), ttEsc(sec(today.avg_duration_ms)), turnVBkt(sec(today.avg_duration_ms))) : "") +
+              (today.avg_ttft_ms > 0 ? statKpi(kpiIco("latency") + L("平均延迟", "Avg TTFT"), ttEsc(sec(today.avg_ttft_ms)), turnVBkt(sec(today.avg_ttft_ms))) : "") +
+              (today.duration_ms > 0 ? statKpi(kpiIco("elapsed") + L("总耗时", "Total time"), ttEsc(secLong(today.duration_ms)), turnVBkt(secLong(today.duration_ms))) : "") +
+              '</div>' : "") +
+          /* 行四（v302.2 改名「平均输出速度」统一三卡措辞）：今日加权均
+           * （TPS_BANDS 档色文字）| 预估费用（问号图标沿用）；
+           * 费用关/缺失时速度格 only-child 占满整行（today 专属规则） */
+          '<div class="zu-turn-kpis zu-turn-kpis--duo">' +
+            ((typeof today.avg_tps === "number" && isFinite(today.avg_tps) && today.avg_tps > 0)
+              ? statKpi(kpiIco("speed") + L("平均输出速度", "Avg output rate"), '<b class="' + tpsBand(today.avg_tps).cls + '">' + ttEsc(today.avg_tps.toFixed(1)) + '</b> <small>t/s</small>')
+              : statKpi(kpiIco("speed") + L("平均输出速度", "Avg output rate"), "—")) +
             ((state.cost && typeof today.cost_usd === "number" && isFinite(today.cost_usd))
-              ? statKpi(L("预估费用", "Est. cost") + fxqIcon(today.models, L("今日", "today")), ttEsc(fmtMoney(today.cost_usd)))
+              ? statKpi(kpiIco("cost") + L("预估费用", "Est. cost") + fxqIcon(today.models, L("今日", "today")), ttEsc(fmtMoney(today.cost_usd)))
               : "") +
           '</div>' +
-          '<div class="zu-stat-grid3">' +
-            statDetail(L("输入用量", "Input"), fmt(today.input || 0),
-              (today.input > 0 ? '<span class="hit">' + ttEsc(L("缓存命中率 ", "cache hit ") + Math.round((today.cache_read || 0) / today.input * 100) + "%") + '</span>' : "")) +
-            statDetail(L("输出用量", "Output"), fmt(today.output || 0),
-              (today.reasoning > 0 ? ttEsc(L("含思考 ", "incl. ") + fmt(today.reasoning)) : "")) +
-            statDetail(L("重试次数", "Retries"), countFmt(today.retries || 0), "") +
-          '</div>' +
-          statModelsTable(today.models) +
-          '<div class="zu-pj-time"><b>' + ttEsc(L("时间范围", "Time span")) + '</b><span>' +
+          /* 模型明细：标题行固定、表体进独立滚动区（同本轮/会话），多模型区内滚不撑高主卡 */
+          /* 模型明细标题行右侧（v302.3 用户规格，同本轮/会话形态）：工具调用/重试并入，
+           * 均无时回退「按用量排序」；旧快照缺 tool_calls 只显重试段 */
+          ((today.models && today.models.length)
+            ? '<div class="zu-pj-mhead"><div class="zu-pj-mtitle">' + ttEsc(L("模型明细", "Models")) + '</div><div class="zu-pj-morder">' +
+              ((today.tool_calls || today.retries)
+                ? [(today.tool_calls ? ttEsc(L("工具调用 ", "tools ") + countFmt(today.tool_calls) + L(" 次", " calls")) : ""),
+                   (today.retries ? ttEsc(L("重试 ", "retries ") + countFmt(today.retries) + L(" 次", " times")) : "")].filter(Boolean).join('<i class="zu-turn-sep">·</i>')
+                : ttEsc(L("按用量排序", "by usage"))) + '</div></div>' +
+              '<div class="zu-turn-models">' + statModelsTable(today.models, null, true) + '</div>'
+            : "") +
+          '<div class="zu-stat-time">' +
+            '<b>' + ttEsc(L("时间范围", "Time span")) + '</b><span>' +
             (today.started ? fmtStartS(today.started) : "—") + " — " + (today.last_at ? fmtStartS(today.last_at) : "—") + '</span></div>' +
           '</div>');      }
       if (state.show.proj && sess.project) {   // v159 项目累计：本项目全部会话（含子代理），远端/不在本地库无此字段不渲染
@@ -729,36 +977,42 @@
         it(ico('<path d="M3.5 6.5a2 2 0 0 1 2-2h4.2l2 2h7.3a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5.5a2 2 0 0 1-2-2z"/>') +
           '<span class="v">' + fmt(pj.total) + "</span>" +
           (state.theme === "pill" ? "" :
-            (shrink ? "" : cachePct(pj.cache_read, pj.input)) +
+            (shrink ? "" : "") +
             '<span class="dim">' + countFmt(pj.sessions || 0) + L("会话 ", " sessions · ") + countFmt(pj.requests || 0) + L("次", " req") + "</span>"),
 "\x01" + buildProjectTipHTML(pj, pjKey), "zu-pj-item");
       }
       if (state.show.tools) {
-        var toolRows = (tls.list || []).map(function (t1) {
-          return '<div class="rt-tool"><span class="rt-tool-name">' + ttEsc(t1.name) + '</span><span class="rt-atom">' + ttEsc(countFmt(t1.count) + L(" 次", " calls")) + '</span><span class="rt-atom">' + (t1.duration_ms === 0 ? '0.0s' : sec(t1.duration_ms)) + (t1.errors ? ttEsc(L(" · 错误 ", " · errors ") + countFmt(t1.errors)) : "") + '</span></div>';
-        }).join("");
+        /* v304 工具调用紧凑化（用户 /goal，同四卡家族形态，450 宽×高度自适应）：
+         * 标题前置扳手 SVG（statHead 第 4 参）；双 KPI 走 zu-turn-kpis--duo；
+         * 四列表格 table-layout:fixed + 长名省略（title 全文）+ sticky 表头；
+         * 累计耗时 secLong 换算（title 保留完整秒数）；表体进独立滚动区，
+         * 多工具区内滚不撑高主卡；错误 >0 柔和红、0 弱化灰（err/dim0 既有语义）。 */
+        var hasTools = tls.list && tls.list.length;
         it(ico('<path d="M14.5 2.5a6 6 0 0 0-5.6 8.1L3.3 16.2a3.2 3.2 0 0 0 4.5 4.5l5.6-5.6a6 6 0 0 0 8.1-5.6l-4.1 3-3.8-3.8 3-4.1a6 6 0 0 0-2.1-2.1z"/>') +
           '<span class="v">' + countFmt(tls.total || 0) + "</span>" +
           (tls.errors ? '<span class="eb">' +
             ico('<circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/>') +
             tls.errors + "</span>" : ""),
           "\x01" +
+          statCompactStyle("tools") +
           '<div class="zu-stat-tip zu-stat-tip--tools">' +
-          statHead(L("工具调用", "Tool calls"), "") +
-          '<div class="zu-stat-kpis cols2">' +
-            statKpi(L("调用总数", "Total calls"), ttEsc(countFmt(tls.total || 0)) + ' <small>' + ttEsc(L("次", "calls")) + '</small>') +
-            statKpi(L("错误", "Errors"), ttEsc(countFmt(tls.errors || 0)) + ' <small>' + ttEsc(L("次", "times")) + '</small>', (tls.errors ? "err" : "")) +
+          statHead(L("工具调用", "Tool calls"), "", "", kpiIco("tools")) +
+          '<div class="zu-turn-kpis zu-turn-kpis--duo">' +
+            statKpi(kpiIco("requests") + L("调用总数", "Total calls"), ttEsc(countFmt(tls.total || 0)) + ' <small>' + ttEsc(L("次", "calls")) + '</small>', turnVBkt(countFmt(tls.total || 0))) +
+            statKpi(kpiIco("retry") + L("错误", "Errors"), ttEsc(countFmt(tls.errors || 0)) + ' <small>' + ttEsc(L("次", "times")) + '</small>', (tls.errors ? "err" : "")) +
           '</div>' +
-          (toolRows
-            ? statTable([L("工具", "Tool"), L("调用次数", "Calls"), L("累计耗时", "Total time"), L("错误", "Errors")],
+          (hasTools
+            ? '<div class="zu-turn-models">' +
+              statTable([L("工具", "Tool"), L("调用次数", "Calls"), L("累计耗时", "Total time"), L("错误", "Errors")],
                 (tls.list || []).map(function (t1) {
                   var errCell = t1.errors ? '<td class="err">' + ttEsc(countFmt(t1.errors)) + '</td>' : '<td class="dim0">0</td>';
-                  var durTxt = !t1.duration_ms ? '0.0s' : (t1.duration_ms < 50 ? '&lt;0.1s' : ttEsc(sec(t1.duration_ms)));
+                  var durTxt = !t1.duration_ms ? '0.0s' : (t1.duration_ms < 50 ? '&lt;0.1s' : ttEsc(secLong(t1.duration_ms)));
                   var durCls = (!t1.duration_ms || t1.duration_ms < 50) ? ' class="dim0"' : '';
+                  var durTitle = (!t1.duration_ms || t1.duration_ms < 50) ? '' : ' title="' + escAttr(sec(t1.duration_ms)) + '"';
                   return '<tr><td class="zu-pj-mname" title="' + escAttr(t1.name) + '">' + ttEsc(t1.name) + '</td>' +
                     '<td>' + ttEsc(countFmt(t1.count || 0)) + '</td>' +
-                    '<td' + durCls + '>' + durTxt + '</td>' + errCell + '</tr>';
-                }).join(""))
+                    '<td' + durCls + durTitle + '>' + durTxt + '</td>' + errCell + '</tr>';
+                }).join("")) + '</div>'
             : '<div class="zu-stat-note">' + ttEsc(L("无工具调用记录", "No tool calls recorded")) + '</div>') +
           '</div>');      }
       if (state.show.sub) {

@@ -13,7 +13,7 @@ function render(data, lang = 'zh', live = null, show = null) {
   const context = vm.createContext({
     state: { lang, cost: 1, show: { turn: true, win: true, today: true, ...(show || {}) } },   // cost:1 = 真实默认开（buildProjectTipHTML/costTipRow 门控读它）
     L: (zh, en) => lang === 'en' ? en : zh,
-    fmt: value => String(value || 0), countFmt: value => String(value || 0), sec: value => String(value || 0),
+    fmt: value => String(value || 0), countFmt: value => String(value || 0), sec: value => String(value || 0), secLong: value => String(value || 0),
     cachePct: () => '', shrink: false, liveStatsCur: live, bridge: { handle: null },
     subRate: { rate: null, at: 0 },   // v97：html 里子代理估算桥引用（值本身被 zuBarSpeedView stub 吞掉）
     zuBarSpeedView: value => value, zuIcoThinking: () => '<svg/>',
@@ -43,13 +43,16 @@ test('tooltip uses supplied weighted rate and complete local date ranges in both
   for (const lang of ['zh', 'en']) {
     const tips = render(fixture(), lang);
     const turn = tips.find(tip => tip.includes('zu-stat-tip--turn'));
-    assert.match(turn, /102\.2 <small>t\/s<\/small>/);
+    // v299：速度值经 TPS_BANDS 档位色强调（<b class="ok"> 文字色，无背景胶囊）
+    assert.match(turn, /<b class="ok">102\.2<\/b> <small>t\/s<\/small>/);
     assert.doesNotMatch(turn, /27\.9 (?:tok|t)\/s/);
     // v253 口径行已删（unrated_output 字段照旧生产，仅不再展示）：基础句与「未参与测速」后缀都不出现
     assert.doesNotMatch(turn.replace(/<[^>]+>/g, ''), /未参与测速|excluded from rate|速度＝|Rate = Σ/);
     // v253 review：夹具 last_turn/today 均无 models（旧快照形态）→ 模型明细表整块不渲染（空态守卫）
-    assert.doesNotMatch(turn, /模型明细|zu-pj-mhead/);
-    assert.doesNotMatch(tips.find(tip => tip.includes('zu-stat-tip--today')), /模型明细|zu-pj-mhead/);
+    // v299：本轮 tip 内联 <style> 含 .zu-pj-mhead 选择器文本——断言先剥 style 块（既有反污染模式）
+    const noStyle = s => s.replace(/<style>[\s\S]*?<\/style>/g, '');
+    assert.doesNotMatch(noStyle(turn), /模型明细|zu-pj-mhead/);
+    assert.doesNotMatch(noStyle(tips.find(tip => tip.includes('zu-stat-tip--today'))), /模型明细|zu-pj-mhead/);
     // v210：全部时间范围行精确到秒（v166 先行会话/项目累计，本轮/今日合计/速率最近一段跟进；
     // 本用例未开 proj 开关，项目累计 tip 不渲染，共 4 处）
     assert.equal(tips.filter(tip => tip.includes('2026-10-19 13:42:00 — 2026-10-19 13:43:00')).length, 4);
@@ -92,35 +95,36 @@ test('v214 project total card: KPI/details/scale/models table/time, bilingual', 
   const strip = s => s.replace(/<[^>]+>/g, '');
   // 标题与统计范围
   assert.match(zh, /zu-pj-title">项目累计</);
-  assert.match(zh, /zu-pj-scope">全部请求</);
+  assert.match(zh, /zu-pj-scope">全部请求 · 含子代理</);   // v303 单行合并
   assert.match(strip(zh), /含子代理/);
-  // 三项核心指标（费用 0 有效、缺失显 — 均由 typeof 判断承载）
+  // v303 四行 KPI：行一总用量、行四费用（0 有效由 typeof 判断承载）
   assert.match(strip(zh), /总用量\s*6700/);
-  assert.match(strip(zh), /请求次数\s*45/);
   assert.match(strip(zh), /预估费用[^]*?\$12\.50/);
-  // 用量明细：命中率绿色强调、含思考次级
-  assert.match(strip(zh), /输入\s*6000\s*缓存命中率 83%/);
-  assert.match(zh, /zu-pj-hit">缓存命中率 83%</);
+  // v303 缓存命中率改「缓存 N%」徽标随输入标签右侧（不再占独立副行），输出含思考保留
+  assert.match(zh, /zu-turn-hit">缓存83%</);
+  assert.match(strip(zh), /输入缓存83%\s*6000/);
   assert.match(strip(zh), /输出\s*700\s*含思考 200/);
-  assert.match(strip(zh), /缓存写入\s*30/);
-  // 运行规模（含子代理已在标题区，不重复）
-  assert.match(strip(zh), /3 会话\s*·\s*12 轮\s*·\s*工具 9 次\s*·\s*重试 2 次/);
+  assert.doesNotMatch(strip(zh), /缓存写入/, '独立明细行已删（v303 四行 KPI）');
+  // 行二规模 + 模型标题行右侧工具/重试（旧规模行删除）
+  assert.match(strip(zh), /请求次数\s*45\s*请求轮数\s*12\s*请求会话\s*3/);
+  assert.match(strip(zh), /工具调用 9 次\s*·\s*重试 2 次/);
   assert.doesNotMatch(strip(zh).split('含子代理')[1] || '', /含子代理/);
   // 模型明细四列表格（2 模型 ≤6 全显，无展开按钮）
   assert.match(zh, /zu-pj-table/);
   assert.match(strip(zh), /模型\s*Token 用量 ↓\s*请求次数\s*预估费用/);
   assert.match(strip(zh), /GLM-5\.3\s*6000\s*40\s*\$12\.00/);
   assert.match(strip(zh), /gpt-6\.1-sol\s*700\s*5\s*\$0\.50/);
-  assert.doesNotMatch(zh, /zu-pj-more/);   // N<=6 无展开按钮
+  assert.doesNotMatch(zh.replace(/<style>[\s\S]*?<\/style>/g, ''), /zu-pj-more/);   // N<=6 无展开按钮（v303 剥内联 style）
   // 时间范围：em dash、精确到秒
   assert.match(zh, /2026-10-19 13:42:00 — 2026-10-19 13:43:00/);
   const en = render(data, 'en', null, { proj: true }).find(tip => tip.includes('zu-project-tip'));
   assert.match(en, /zu-pj-title">Project total</);
-  assert.match(en, /zu-pj-scope">All requests</);
+  assert.match(en, /zu-pj-scope">All requests · incl\. sub-agents</);
   assert.match(strip(en), /Total tokens\s*6700/);
   assert.match(strip(en), /incl\. 200/);
-  assert.match(strip(en), /3 sessions\s*·\s*12 turns/);
-  assert.doesNotMatch(en, /Show all/);   // N<=6 无展开按钮（英文同链）
+  // v303 规模行改行二 KPI（会话/轮/次），旧 zu-pj-scale 删除
+  assert.match(strip(en), /Requests\s*45\s*Turns\s*12\s*Sessions\s*3/);
+  assert.doesNotMatch(en.replace(/<style>[\s\S]*?<\/style>/g, ''), /Show all/);   // N<=6 无展开按钮（英文同链）
 });
 
 test('v163 session total card: per-model table rows from snapshot models', () => {
@@ -130,7 +134,7 @@ test('v163 session total card: per-model table rows from snapshot models', () =>
   const zh = render(data, 'zh', null, { proj: false }).find(tip => tip.includes('zu-stat-tip--session'));
   const strip = s => s.replace(/<[^>]+>/g, '');
   assert.match(strip(zh), /总用量\s*1250300/);
-  assert.match(zh, /zu-pj-time/);
+  assert.match(zh, /zu-stat-time/);
   assert.match(zh, /2026-10-19 13:42:00 — 2026-10-19 13:43:00/);   // v166 精确到秒 + em dash
   assert.match(strip(zh), /GLM-5\.3\s*1200000\s*180/);
   assert.match(strip(zh), /未知模型\s*300\s*7/);
@@ -158,12 +162,15 @@ test('v246 turn/today cards lead with total tokens and the tools table dims sub-
   const strip = s => s.replace(/<[^>]+>/g, '');
   const turn = render(data).find(tip => tip.includes('zu-stat-tip--turn'));
   assert.match(strip(turn), /总用量\s*752/, '本轮首格=总用量（回退「请求次数」即红）');
-  assert.match(turn, /缓存命中率 83%/, '本轮输入行副行=命中率');
-  assert.doesNotMatch(strip(turn), /请求次数/);   // 请求次数只在标题徽标，不再占 KPI 首格
+  // v299.1：文案再精简为「缓存 N%」内联在输入值右侧，今日卡维持「缓存命中率」不变
+  assert.match(turn, /缓存\s*83%/, '本轮输入标签行右侧=命中率（v299.1 无空格间距由 margin 提供）');
+  // v302：请求次数回归为行二 KPI 首格（用户规格：请求次数|请求轮数|请求会话）
+  assert.match(strip(turn), /请求次数2请求轮数/);
   const today = render(data).find(tip => tip.includes('zu-stat-tip--today'));
   assert.match(strip(today), /总用量\s*900/, '今日首格=总用量');
-  assert.match(today, /缓存命中率 75%/, '今日命中率并入 grid3 输入列副行');
+  assert.match(today, /缓存命中率 75%/, '今日命中率=输入格 dsub 副行（v301 三行 KPI 同本轮形态）');
   const tools = render(data, 'zh', null, { tools: true }).find(tip => tip.includes('zu-stat-tip--tools'));
   assert.match(tools, /<td class="dim0">&lt;0\.1s<\/td>/, '工具表 <50ms 显「<0.1s」并弱化');
-  assert.match(tools, /<td>1500<\/td>/, '正常耗时不带弱化');
+  // v304：≥50ms 耗时走 secLong（桩直出）+ title 保留完整秒数
+  assert.match(tools, /<td title="1500">1500<\/td>/, '正常耗时不带弱化（secLong 桩直出 + title 全值）');
 });

@@ -155,14 +155,15 @@ for (const lang of ['zh', 'en']) {
   const stats = { complete: true, observedLive: true, outputTokens: 100, tokenRate: 49.9 };
   const prefix = lang === 'en' ? 'avg ' : '均';
 
-  test(`overlay/${lang}: 完成态主数字=会话均，按均值分档，最近一轮进 latest`, () => {
+  test(`overlay/${lang}: 完成态主数字=最后一轮真实值（v298 拍板，会话均退居 speedValue 供 tooltip 左卡）`, () => {
     const view = desktop.zuBarSpeedView(stats, 2, null, 85.5);
-    assert.equal(view.text, `${prefix}85.5 t/s`);
-    assert.equal(view.cls, 'ok');          // 85.5 落 ok 档，而非最近一轮 49.9 的 warm 档
+    assert.equal(view.text, `49.9 t/s`);   // v298：去「均」前缀，主数字=最后一轮真实速度
+    assert.equal(view.cls, 'warm');        // 按最后一轮 49.9 分档（不再是会话均 85.5 的 ok 档）
     assert.equal(view.latest, 49.9);
     assert.equal(view.phase, null);
+    assert.equal(view.speedValue, 85.5);   // 会话均语义保留在 speedValue/statusText
     const whole = desktop.zuBarSpeedView(stats, 2, null, 85);
-    assert.equal(whole.text, `${prefix}85 t/s`);   // 整数不带 .0
+    assert.equal(whole.text, `49.9 t/s`);  // 会话均整数不再驱动条面文本
   });
 
   test(`overlay/${lang}: 会话均缺席/非正数回退原完成态行为`, () => {

@@ -46,7 +46,9 @@
   function stale() { return disposed || MY_GEN !== window.__zusageGen; }
   if (window.__zusageRateCleanup) window.__zusageRateCleanup();
 
-  var FATAL = (window.__zusageDiag = {});
+  /* v291：代际号进 diag——重注入取证不再依赖偶发的计数字段归零（FATAL.gen 严格
+   * 递增 = 新代际首帧实证，与 window.__zusageGen 同源；单例守卫下每代恰执行一次） */
+  var FATAL = (window.__zusageDiag = { gen: MY_GEN });
   /* v179 子代理槽位定位诊断（随泵写 diag-*.json）：字段原地更新，对象挂模块级——
    * 多实例（分屏/辅助对话）各自身上都有 subRateTick，实例级声明会互相覆盖且
    * dispose 后残留冻结值（v180 review）；字段在最近一次 reconcile 的槽位分布，
@@ -57,7 +59,7 @@
    * 确定性历史行（[data-zusage-deterministic]，挂在消息流 turn 容器末尾）一并自清。
    * v80：面板（.zusage-panel）挂 body 不随条走，清理选择器单列。 */
   try {
-    document.querySelectorAll(".zusage-root,.zusage-tip-root,.zusage-exc,.zusage-rate-tip,.zusage-quota-tip,.zu-quota,.zu-git,.zu-tsb,.zu-compact-btn,.zu-ac-info,.zu-ac-hint,.zu-compact-dlg,.zusage-git-tip,.zusage-panel,.zu-mp-host,.zu-mp-ov,[data-zusage-deterministic],[data-zusage-loading-status]").forEach(function (el) { el.remove(); });
+    document.querySelectorAll(".zusage-root,.zusage-tip-root,.zusage-exc,.zusage-rate-tip,.zusage-quota-tip,.zu-quota,.zu-git,.zu-tsb,.zu-compact-btn,.zu-ac-info,.zu-ac-hint,.zu-compact-dlg,.zu-rot-pk-dlg,.zusage-git-tip,.zusage-panel,.zu-mp-host,.zu-mp-ov,[data-zusage-deterministic],[data-zusage-loading-status]").forEach(function (el) { el.remove(); });
   } catch (e) { }
 
   try {
@@ -73,7 +75,7 @@
   } catch (e) { }
 
   /* ---------- 共享状态（多实例一致）：显示项/语言/上下文覆盖/最近一次数据 ---------- */
-  var LS = { show: "zusage3.show", ctxOv: "zusage3.ctxOv", lang: "zusage3.lang", cnNum: "zusage3.cnNum", sec: "zusage3.sec", rstCdh: "zusage3.rstCdh", projPath: "zusage3.projPath", theme: "zusage3.theme", ctxEnh: "zusage3.ctxEnh", cmdkW: "zusage3.cmdkW", updSeen: "zusage3.updSeen", forceKmb: "zusage3.forceKmb", ctxCpt: "zusage3.ctxCpt", cost: "zusage3.cost", barJust: "zusage3.barJust", autoCompact: "zusage3.autoCompact", tipClick: "zusage3.tipClick", quotaRemain: "zusage3.quotaRemain" };
+  var LS = { show: "zusage3.show", devKeepTip: "zusage3.devKeepTip", ctxOv: "zusage3.ctxOv", lang: "zusage3.lang", cnNum: "zusage3.cnNum", sec: "zusage3.sec", rstCdh: "zusage3.rstCdh", projPath: "zusage3.projPath", theme: "zusage3.theme", ctxEnh: "zusage3.ctxEnh", cmdkW: "zusage3.cmdkW", updSeen: "zusage3.updSeen", forceKmb: "zusage3.forceKmb", ctxCpt: "zusage3.ctxCpt", cost: "zusage3.cost", barJust: "zusage3.barJust", autoCompact: "zusage3.autoCompact", tipClick: "zusage3.tipClick", quotaRemain: "zusage3.quotaRemain" };
   var state = {
     show: { win: 1, turn: 1, today: 1, sub: 1, tools: 1, git: 1, proj: 1, subRate: 1 },   // git：工具行 Git 状态 chip（v96，默认开）；proj：项目累计格（v159，默认开；与 zusage3.projPath 弹窗路径开关无关）；subRate：Agent 行内子代理速率 chip（v178，默认开；只门控行内展示，槽位估算与主 chip 合计不受影响）
     ctxOv: "", data: null,
@@ -102,6 +104,7 @@
        激活」；纯渲染端展示偏好存 localStorage，不进 config.json、不涉及主进程。常被滑过
        误触的用户可开开关，点击才打开统计卡/子代理面板（issue 用户反馈）。 */
     tipClick: 0,
+    devKeepTip: 0,
     /* v251 套餐额度显示口径：缺省关=已用%（v96 起原语义），仅显式 "1" 开启「剩余额度」
        （剩余%=100−已用%，同一窗口池补数）；chip 面与 tooltip 窗口行/Key 总额度行/其他源
        摘要行跟随，档位色恒按已用原始值判定（quota.md 契约）；纯渲染端展示偏好存 localStorage */
@@ -209,6 +212,7 @@
     if (ls(LS.cmdkW, "") === "0") state.cmdkW = 0;
     if (ls(LS.forceKmb, "") === "1") state.forceKmb = 1;
     if (ls(LS.tipClick, "") === "1") state.tipClick = 1;
+    if (ls(LS.devKeepTip, "") === "1") state.devKeepTip = 1;
     if (ls(LS.quotaRemain, "") === "1") state.quotaRemain = 1;
     var cdh0 = parseInt(ls(LS.rstCdh, ""), 10);
     if (cdh0 >= 1 && cdh0 <= 24 * 7) state.resetCdh = cdh0;
@@ -233,6 +237,7 @@
     lsSet(LS.cmdkW, state.cmdkW ? "1" : "0");
     lsSet(LS.tipClick, state.tipClick ? "1" : "0");
     lsSet(LS.quotaRemain, state.quotaRemain ? "1" : "0");
+    lsSet(LS.devKeepTip, state.devKeepTip ? "1" : "0");
     lsSet(LS.rstCdh, String(state.resetCdh));
     lsSet(LS.sec, state.settingsSec);
   }
@@ -871,16 +876,6 @@
   function tpsTabActivate(e) {
     var el = tpsTipFor;   // hideTpsTip 会清 tpsTipFor，回调目标先取
     if (!el) return;
-    var fb = e.target && e.target.closest && e.target.closest(".zu-sv-focus");
-    var t0 = el.__zuT;
-    if (fb && t0 && t0.speedSel) {
-      e.stopPropagation();
-      t0.speedSel.focus = t0.speedSel.focus === "full" ? "" : "full";
-      t.speedHover = 0;
-      tpsTip.__zuTipSig = "";
-      showTpsTip(el);
-      return;
-    }
     var tab = e.target && e.target.closest && e.target.closest(".zu-sv-tab");
     var t = el.__zuT;
     if (tab && t && t.speedSel) {
@@ -926,7 +921,7 @@
     showTpsTip(tpsTipFor);
   }
   tpsTip.addEventListener("mouseover", function (e) {
-    var col = e.target && e.target.closest && e.target.closest(".zu-sc-col");
+    var col = e.target && e.target.closest && e.target.closest(".zu-sc-col,.zu-hm-cell");
     if (col) tpsSpeedPick(parseInt(col.getAttribute("data-i"), 10) || 0);
     var lb = e.target && e.target.closest && e.target.closest(".zu-sv-legend-btn");
     if (lb) spdLegendTipShow(lb);   // v281：问号 hover 即显档位说明
@@ -939,20 +934,20 @@
         spdLegendTipScheduleHide();
       return;
     }
-    var col = e.target && e.target.closest && e.target.closest(".zu-sc-col");
+    var col = e.target && e.target.closest && e.target.closest(".zu-sc-col,.zu-hm-cell");
     if (!col) return;
-    if (to && to.closest && to.closest(".zu-sc-col")) return;
+    if (to && to.closest && to.closest(".zu-sc-col,.zu-hm-cell")) return;
     tpsSpeedPick(-1);
   });
   tpsTip.addEventListener("focusin", function (e) {
-    var col = e.target && e.target.closest && e.target.closest(".zu-sc-col");
+    var col = e.target && e.target.closest && e.target.closest(".zu-sc-col,.zu-hm-cell");
     if (col) tpsSpeedPick(parseInt(col.getAttribute("data-i"), 10) || 0);
     var lb = e.target && e.target.closest && e.target.closest(".zu-sv-legend-btn");
     if (lb) spdLegendTipShow(lb);   // v281：键盘聚焦问号同样显示
   });
   tpsTip.addEventListener("focusout", function (e) {
-    var col = e.target && e.target.closest && e.target.closest(".zu-sc-col");
-    if (col && !(e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest(".zu-sc-col"))) tpsSpeedPick(-1);
+    var col = e.target && e.target.closest && e.target.closest(".zu-sc-col,.zu-hm-cell");
+    if (col && !(e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest(".zu-sc-col,.zu-hm-cell"))) tpsSpeedPick(-1);
     var lb = e.target && e.target.closest && e.target.closest(".zu-sv-legend-btn");
     if (lb && !(e.relatedTarget && e.relatedTarget.closest && (e.relatedTarget.closest(".zu-sv-legend-btn") || e.relatedTarget.closest(".zu-sv-legend-tip"))))
       spdLegendTipScheduleHide();
@@ -1006,16 +1001,16 @@
     try { if (btn) btn.setAttribute("aria-expanded", "true"); } catch (e) { }
     if (document.body.lastElementChild !== spdLegendTip) document.body.appendChild(spdLegendTip);   // B1 同款：同层树序移尾
     spdLegendTip.style.display = "block";
-    var br = (btn && btn.getBoundingClientRect) ? btn.getBoundingClientRect() : { left: m, bottom: m, top: m };
+    var br = (btn && btn.getBoundingClientRect) ? btn.getBoundingClientRect() : { left: m, right: m, bottom: m, top: m };
     var lr = spdLegendTip.getBoundingClientRect();
     var m = 10, vw = window.innerWidth, vh = window.innerHeight;
-    /* v284：左缘对齐主 tooltip 容器左缘（主卡已左对齐速度格，构图一致）；
-     * 容器缺失回退图标左缘，越出视口右缘时钳边。 */
-    var hostTip = btn && btn.closest ? btn.closest(".zusage-tip-root, .zusage-tps-tip") : null;
-    var left = (hostTip && hostTip.getBoundingClientRect) ? hostTip.getBoundingClientRect().left : br.left;
+    /* 2026-11-07 用户规格：浮层在「查看速度档位说明」按钮右侧展示、顶对齐按钮；
+     * 右侧放不下 → 翻按钮左侧，再钳视口边（宽度由 CSS 定宽 430）。 */
+    var left = br.right + 8;
+    if (left + lr.width > vw - m) left = br.left - lr.width - 8;                 // 右侧不足 → 左侧
     left = Math.min(Math.max(m, left), Math.max(m, vw - m - lr.width));
-    var top = br.bottom + 6;                                                     // 优先下方
-    if (top + lr.height > vh - m) top = br.top - lr.height - 6;                  // 下方不足 → 上方
+    var top = br.top;
+    if (top + lr.height > vh - m) top = vh - m - lr.height;                      // 底部越界上移
     if (top < m) top = m;
     spdLegendTip.style.left = Math.round(left) + "px";
     spdLegendTip.style.top = Math.round(top) + "px";
@@ -1032,6 +1027,17 @@
   tpsTip.addEventListener("scroll", function () {
     if (tpsTipFor && tpsTipFor.__zuT) spdHoverPortalPlace(tpsTip, tpsTipFor.__zuT.speedHover);
   }, true);
+  /* v290 图表区滚轮横滚（2026-11-08 用户规格）：wheel 委托在 tpsTip 本体（随元素消亡，
+   * 非全局监听）——指针在 .zu-sc-wrap 上且确可横滚时 deltaY 换算 scrollLeft，
+   * preventDefault 阻止页面竖滚；不可横滚不拦截，默认行为照旧。 */
+  tpsTip.addEventListener("wheel", function (e) {
+    var wrap = e.target && e.target.closest && e.target.closest(".zu-sc-wrap");
+    if (!wrap || wrap.scrollWidth <= wrap.clientWidth + 1) return;
+    var d = (e.deltaY || 0) + (e.deltaX || 0);
+    if (!d) return;
+    wrap.scrollLeft += d;
+    e.preventDefault();
+  }, { passive: false });
   var tpsTipFor = null;
   function showTpsTip(el) {
     if (stale() || !el || !el.isConnected || !el.__zuT) { hideTpsTip(); return; }
@@ -1055,6 +1061,12 @@
       if (st0) {
         var sw1 = tpsTip.querySelector(".zu-sc-wrap"), sr1 = tpsTip.querySelector(".zu-sv-root");
         if (sw1 && sr1 && (sr1.getAttribute("data-sv-key") || "") === st0.key) sw1.scrollLeft = st0.x;
+        else if (sw1 && sw1.hasAttribute && sw1.hasAttribute("data-sv-end"))
+          sw1.scrollLeft = sw1.scrollWidth;   /* v291：键变进入全部历史=本图无有效记忆，滚到最新区 */
+      } else {
+        /* v291 历史热力图首开（无记忆位置）：初始滚到最右（最新日期区域），§12.2 */
+        var sw2 = tpsTip.querySelector(".zu-sc-wrap");
+        if (sw2 && sw2.hasAttribute && sw2.hasAttribute("data-sv-end")) sw2.scrollLeft = sw2.scrollWidth;
       }
       tpsTip.__zuTipSig = html;
     }
@@ -1062,6 +1074,13 @@
     try { dark = document.documentElement.classList.contains("dark"); } catch (e) { }
     tpsTip.classList.toggle("zu-light", !dark);
     tpsTip.style.display = "block";
+    /* v297：tpsTip 链同款月历网格量测回写（动态字号数据源，见 08 drawTip 同名块）。
+     * v298 起挂 display:block 之后——隐藏态量测全 0 会把下一帧字号压到 6px 下限。 */
+    var mgEl2 = tpsTip.querySelector(".zu-hm-grid--mon");
+    if (mgEl2) {
+      var mgr2 = mgEl2.getBoundingClientRect();
+      window.__zusageSpdMonRect = { w: mgr2.width, h: mgr2.height };
+    }
     var r = el.getBoundingClientRect(), tw = tpsTip.offsetWidth, th = tpsTip.offsetHeight;
     var vw = window.innerWidth, vh = window.innerHeight;
     var left = Math.max(8, Math.min(r.left, vw - tw - 8));
@@ -1105,7 +1124,8 @@
   }
   function spdHoverPortalPlace(tipEl, idx) {
     if (!(idx >= 0) || !tipEl || !tipEl.isConnected) { spdHoverPortalHide(); return; }
-    var col = tipEl.querySelector('.zu-sc-col[data-i="' + idx + '"]');
+    /* v291：热力图格子与柱体共用 data-i 定位契约 */
+    var col = tipEl.querySelector('.zu-sc-col[data-i="' + idx + '"],.zu-hm-cell[data-i="' + idx + '"]');
     if (!col) { spdHoverPortalHide(); return; }
     var cr = col.getBoundingClientRect();
     /* 柱体滚出可视绘图区即收：与 wrap 视口无交叠不再显示（不显示错位卡）。
@@ -2431,8 +2451,10 @@
     var avg = (typeof sessAvg === "number" && isFinite(sessAvg) && sessAvg > 0) ? sessAvg : 0;
     if (avg) {
       var aband = tpsBand(avg) || band;
-      return { cls: aband.cls, band: aband,
-               text: L("均", "avg ") + (avg % 1 ? avg.toFixed(1) : String(avg)) + L(" t/s", " t/s"),
+      /* v298（用户拍板）：chip 主数字=最后一轮真实速度（去「均」前缀）；tooltip 左卡
+       * 仍显示会话加权平均（status/speedValue 保留 avg 语义，两处各自成立） */
+      return { cls: band.cls, band: band,
+               text: (stats.tokenRate % 1 ? stats.tokenRate.toFixed(1) : String(stats.tokenRate)) + L(" t/s", " t/s"),
                phase: null, latest: stats.tokenRate,
                kind: "avg", statusText: L("生成完成", "Generation complete"),
                speedValue: avg, speedIsEstimated: false, speedSource: "avg",
@@ -2450,7 +2472,7 @@
    * 旧 speedCardHTML/speedChartHTML/speedSegsOf 逐字保留供精简 chip 与旧快照回退。 */
   var SPD_RANGES = ["recent", "session", "project", "all"];
   var SPD_PERIODS = ["recent", "today", "week", "month", "all"];
-  var SPD_BARS_MAX = 16;
+  var SPD_BARS_MAX = 18;   /* 2026-11-09 用户规格：最近 N 轮 16→18 */
   function SPD_L(zh, en) { return L(zh, en); }
   function spdEsc(s) {
     return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;")
@@ -2607,38 +2629,29 @@
     else if (period === "week") { a = weekStart; b = now; }
     else if (period === "month") { a = monthStart; b = now; }
     if (a) pool = pool.filter(function (r) { return r.t >= a && r.t <= b; });
-    // 范围「最近」先取该范围最近 16 个有效轮；时间「最近」再取 16（两者独立过滤）
+    // 范围「最近」在该周期过滤之后取最近 16 个有效轮（时间窗先行、16 轮上限在后）——
+    // 月历/历史图上 16 轮之前的同月日期会如实显示为无记录，稀疏说明已带轮数限定
     if (range === "recent") pool = pool.slice(-SPD_BARS_MAX);
-    var items = [], unit = "", title = "", focusInfo = null;
+    var items = [], unit = "", title = "";
     if (period === "recent") {
       pool = pool.slice(-SPD_BARS_MAX);
       for (var i = 0; i < pool.length; i++) {
         var agg = spdAggregate([pool[i]]);
-        /* v263：跨日首柱带两行标签（MM/DD + HH:mm）；首个柱无前参照不标日 */
-        var dayLabel = "";
-        if (i) {
-          var pd0 = spdDate(pool[i - 1].t), cd0 = spdDate(pool[i].t);
-          if (pd0.getMonth() !== cd0.getMonth() || pd0.getDate() !== cd0.getDate())
-            dayLabel = spd2(cd0.getMonth() + 1) + "/" + spd2(cd0.getDate());
-        }
-        if (agg) items.push(Object.assign(agg, { label: spdShort(pool[i].t, "turn"), dayLabel: dayLabel,
+        /* 2026-11-09 用户规格：柱底只显时分，v263 跨日日期行（dayLabel）移除——
+         * 30px 柱宽下两行标签展示不全，月日由图表头范围行与悬停卡承载 */
+        if (agg) items.push(Object.assign(agg, { label: spdShort(pool[i].t, "turn"),
           full: spdFull(pool[i].b) + " – " + spdFull(pool[i].t),
           a: pool[i].b, b: pool[i].t, single: true }));
       }
       unit = "turn";
       title = SPD_L("最近 " + items.length + " 轮 · 生成速度", "Last " + items.length + " turns · speed");
     } else {
-      // 按时间：跨度决定粒度；今天恒按小时（含空桶），其余按跨度自动分档
+      // 按时间粒度：今天恒按小时（含空桶）；v291 起其余时间 Tab（近 7 天/本月/全部）
+      // 全部按日——「全部」切历史热力图需要完整日粒度桶，原跨度自适应月/季/年
+      // 柱状图随热力图改造一并退役。
       if (pool.length) {
-        var lo = Infinity, hi = 0;
-        for (var q = 0; q < pool.length; q++) { if (pool[q].t < lo) lo = pool[q].t; if (pool[q].t > hi) hi = pool[q].t; }
-        var span = hi - lo;
         if (period === "today") unit = "hour";
-        else if (period === "week" || period === "month") unit = "day";
-        else if (span <= 45 * 86400000) unit = "day";
-        else if (span <= 370 * 86400000) unit = "month";
-        else if (span <= 4 * 370 * 86400000) unit = "quarter";
-        else unit = "year";
+        else unit = "day";
         var buckets = {}, bkeys = [];
         for (var w = 0; w < pool.length; w++) {
           var bk = spdBucket(pool[w].t, unit);
@@ -2647,16 +2660,15 @@
         }
         bkeys.sort(function (x, y) { return x - y; });
         // 今天：00:00→当前小时全桶，无数据显空柱而非零速度；
-        // v273：有效桶 ≤3 且全桶 ≥4 时默认聚焦有效时段（speedSel.focus==="full" 切完整轴）
+        // v273：有效桶 ≤3 且全桶 ≥4 时默认聚焦有效时段。2026-11-07 用户规格：
+        // 覆盖提示与「显示完整时间轴」切换按钮移除——聚焦即默认形态（收放
+        // 条件读 sel.focus 的逻辑保留，当前无 UI 再改写该值）。
         if (period === "today") {
           bkeys = [];
           for (var hr = 0; hr <= new Date(now).getHours(); hr++) bkeys.push(todayStart + hr * 3600000);
           var fullKeys = bkeys.slice(0), realKeys = [];
           for (var fk = 0; fk < fullKeys.length; fk++) if ((buckets[fullKeys[fk]] || []).length) realKeys.push(fullKeys[fk]);
           if (sel.focus !== "full" && realKeys.length && realKeys.length <= 3 && fullKeys.length >= 4) bkeys = realKeys;
-          focusInfo = { canToggle: true, applied: bkeys.length !== fullKeys.length,
-            real: realKeys.length, total: fullKeys.length, unit: SPD_L("小时", "hours"),
-            hint: sel.focus === "full" ? SPD_L("仅显示有记录时段", "showing recorded hours only") : "" };
         }
         for (var bi = 0; bi < bkeys.length; bi++) {
           var bk2 = bkeys[bi], rows = buckets[bk2] || [], bg = spdAggregate(rows);
@@ -2665,13 +2677,15 @@
             : { v: null, label: spdLabel(bk2, unit, true), full: spdFull(bk2) + " – " + spdFull(nb), a: bk2, b: nb, empty: true });
         }
       }
-      var unitName = { hour: SPD_L("每小时", "hourly"), day: SPD_L("每日", "daily"), week: SPD_L("每周", "weekly"),
-        month: SPD_L("每月", "monthly"), quarter: SPD_L("每季度", "quarterly"), year: SPD_L("每年", "yearly") }[unit] || SPD_L("每日", "daily");
+      /* v292（用户规格 2026-11-08）：标题去掉粒度词（每日/每小时）——「范围 · 时间 · 平均速度」
+       * 三段式，粒度由图表形态自明（今天恒小时、其余恒日），不再进标题。 */
       var prefix = period === "today" ? SPD_L("今天", "Today") : period === "week" ? SPD_L("近 7 天", "Last 7 days")
         : period === "month" ? SPD_L("本月", "This month") : SPD_L("历史", "History");
       title = (range === "project" ? SPD_L("当前项目 · ", "Current project · ") : "") +
-        prefix + " · " + unitName + SPD_L("平均速度", " average speed");
+        prefix + SPD_L(" · 平均速度", " · average speed");
     }
+    /* v295.7（用户规格）：恢复顺序时间（旧→新，最新柱在最右）——v290 的倒序撤销；
+     * real 与峰值/最低/最新均按时间戳比较不受顺序影响；spanA/spanB 取自 pool。 */
     var real = items.filter(function (x) { return !x.empty; });
     var overall = spdAggregate(pool);
     var spanA = a || (pool.length ? pool[0].b : 0);
@@ -2683,20 +2697,10 @@
       if (!low || real[z].v < low.v) low = real[z];
       if (!latest || real[z].last > latest.last) latest = real[z];
     }
-    /* v273：数据覆盖提示（真实桶计数，分母=窗口内已发生时段） */
-    var cov = "";
-    if (period === "today" && focusInfo) cov = SPD_L("有记录 " + focusInfo.real + "/" + focusInfo.total + " 小时",
-      focusInfo.real + "/" + focusInfo.total + " hours with data");
-    else if (period === "week" && real.length) cov = SPD_L("仅 " + real.length + "/7 天有记录",
-      "only " + real.length + "/7 days with data");
-    else if (period === "month" && real.length) cov = SPD_L("本月 " + real.length + "/" + spdDate(now).getDate() + " 天有记录",
-      real.length + "/" + spdDate(now).getDate() + " days this month");
-    /* v274：单点/双点稀疏时明确「不构成趋势」 */
-    if (cov && real.length && real.length <= 2)
-      cov += SPD_L(" · 暂无足够数据观察趋势", " · not enough data for a trend");
+    /* 2026-11-07 用户规格：覆盖提示（v273 cov、v274「暂无足够数据」尾缀）、
+     * 聚焦切换按钮与聚焦提示整体移除——图表头只留标题/单位/档位入口/时间范围。 */
     return { items: items, real: real, overall: overall, range: range, period: period, dim: "time",
       dims: ["time"], title: title, unit: unit, spanA: spanA, spanB: spanB,
-      cov: cov, focus: focusInfo,
       peak: peak, low: low, latest: latest, notice: notice, truncated: u.truncated };
   }
 
@@ -2726,6 +2730,14 @@
       spdTabRow("period", SPD_PERIODS, an.period, pl) + "</span></div>" +
       (an.notice ? '<div class="zu-sv-notice">' + spdEsc(an.notice) + "</div>" : "") + "</div>";
   }
+  /* v298.2：左卡标题随时间 Tab（用户规格五命名）；EN 简洁对译 */
+  function spdLeftTitle(period) {
+    /* v303.4：跟随 SPD_BARS_MAX（此前硬编码 16 与柱数上限脱节） */
+    var t = { recent: SPD_L("最近" + SPD_BARS_MAX + "轮", "Last " + SPD_BARS_MAX + " turns"), today: SPD_L("今天", "Today"),
+      week: SPD_L("近7天", "Last 7 days"), month: SPD_L("本月", "This month"),
+      all: SPD_L("近一年", "Last year") }[period] || SPD_L("平均", "Average");
+    return t + SPD_L("平均速度", " · average speed");
+  }
   /* 左统计卡：当前状态（实时估算与历史均值分离）/ 主均值 / 档位 / 峰值·最低·最新 */
   function spdLeftHTML(an, live) {
     var avg = an.overall ? an.overall.v : null;
@@ -2744,15 +2756,34 @@
     };
     /* v278：标题行改「平均速度」+ 小号「历史统计」标识（规格 §7 第一层），原
      * .zu-sl-k 独立标签行删除（语义并入标题）；实时状态仍为行尾轻量标识不抢主数字 */
+    /* v298.4（用户规格）：档位徽标下方展示当前筛选池对应模型名——与左卡均速同池
+     * （an.overall.models 已按 Σ输出降序）；单模型直显全名，多模型显主模型 +N
+     * （title 带全列表、超出 models 上限 8 种以 … 收尾）；池空不显该行。 */
+    var modelLine = "", modelFull = "";
+    if (an.overall && an.overall.models && an.overall.models.length) {
+      var mm = an.overall.models;
+      modelLine = mm[0].m;
+      modelFull = mm.map(function (m2) { return m2.m; }).join(", ");
+      if (an.overall.modelCount > 1) {
+        modelLine += " +" + (an.overall.modelCount - 1);
+        if (an.overall.modelCount > mm.length) modelFull += " …";
+      }
+    }
     return '<div class="zu-speed-left zu-sv-left"><div class="zu-sl-status">' +
-      '<span class="zu-sl-title">' + spdEsc(SPD_L("平均速度", "Average speed")) + "</span>" +
-      '<span class="zu-sl-hist">' + spdEsc(SPD_L("历史统计", "History")) + "</span>" +
+      /* v298.2（用户规格）：删「历史统计」标识，标题随时间 Tab 命名 */
+      '<span class="zu-sl-title">' + spdEsc(spdLeftTitle(an.period)) + "</span>" +
       (spdLiveStatus ? '<span class="zu-sl-sub">' + spdEsc(spdLiveStatus) + "</span>" : "") + "</div>" +
       '<div class="zu-sl-body">' +
       '<div class="zu-sl-main"><span class="zu-sl-val' + (bd ? " " + bd.cls : " dim") + '">' + main +
       '</span><small class="zu-sl-unit">t/s</small></div>' +
       (bd ? '<div class="zu-speed-bandtag"><b class="' + bd.cls + '" style="font-weight:600">' +
         spdEsc(tpsBandText(bd)) + "</b></div>" : "") +
+      /* v304.2（用户规格）：模型名升级为立方体 SVG 胶囊（与档位胶囊同视觉语言；
+       * 多模型=「主模型 +N」，title 全列表不变） */
+      (modelLine ? '<div class="zu-sl-model" title="' + spdEsc(modelFull) + '">' +
+        '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+        '<path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/></svg>' +
+        '<span>' + spdEsc(modelLine) + "</span></div>" : "") +
       /* v263：口径公式行删除（规格点名「删除大段统计口径文字」，语义由图例 ⓘ title 承载），
        * 说明行统一为「历史统计 · 不含进行中请求」；实时状态/生成中估算仍独立成行。 */
       (liveTxt ? '<div class="zu-sl-note">' + spdEsc(SPD_L("生成中估 ", "Generating est. ")) + liveTxt + " t/s</div>" : "") +
@@ -2795,7 +2826,9 @@
     if (!o || !o.fmtMoney) cost = '<span class="zu-sv-off">' + spdEsc(SPD_L("费用显示已关闭", "Cost display off")) + "</span>";
     else if (item.c === null) cost = '<span class="zu-sv-off">' + spdEsc(SPD_L("暂无估价", "Estimate unavailable")) + "</span>";
     else cost = spdEsc(o.fmtMoney(item.c)) + (!item.costFull ? '<i class="zu-sv-partial">' + spdEsc(SPD_L(" · 含兜底估价", " · partly estimated")) + "</i>" : "");
-    var timeVal = spdCompactRange(item.a, item.b);
+    /* v291：tv=悬停卡时间覆写（热力图日格显「2026-11-06 周五」整日形态），
+     * 缺省保持聚合桶区间压缩逻辑不变 */
+    var timeVal = item.tv || spdCompactRange(item.a, item.b);
     return '<div class="' + cls + '" role="tooltip"><div class="zu-sv-crow"><span>' + spdEsc(SPD_L("时间", "Time")) +
       '</span><b class="zu-sv-twrap" title="' + spdEsc(item.full) + '">' + spdEsc(timeVal) + "</b></div>" +
       '<div class="zu-sv-crow"><span>' + spdEsc(SPD_L("速度", "Speed")) + '</span><b class="zu-sv-cval' +
@@ -2813,21 +2846,19 @@
   var SPD_PORTAL = "";
   function spdChartLayout(n) {
     return {
-      colPitch: 30,                                   /* 每柱占位列宽（柱 14px + 两侧留白） */
-      spacerW: Math.max(240, n * 30 + 12),            /* plot 撑宽（少柱拉满容器、多桶横滚） */
-      xEvery: Math.max(1, Math.ceil(n / 6)),          /* X 轴标签稀疏化 */
+      colPitch: 24,                                   /* v295.17：每柱 24px（柱 14 + 10px 间距） */
+      spacerW: Math.max(240, n * 24 + 12),            /* plot 撑宽（少柱拉满容器、多桶横滚） */
       valEvery: Math.max(1, Math.ceil(n / 8)),        /* 柱顶数值稀疏化（防 16 柱重叠） */
       single: n === 1
     };
   }
-  /* 动态柱状图：细柱定宽居中、X 轴稀疏、Y 轴整洁刻度、无均值虚线。 */
-  function spdChartHTML(an, hoverIdx, o) {
-    var items = an.items, n = items.length;
-    var L = spdChartLayout(n);
-    SPD_PORTAL = "";
-    /* v272：维度下拉移除；v273：数据覆盖提示 + 聚焦/完整轴切换按钮；
-     * v278：统计时间从顶部胶囊迁到标题栏右端（margin-left:auto + 钳边省略，
-     * title 挂完整 YYYY-MM-DD HH:mm:ss 区间），单位紧随标题不再独占右端 */
+  /* v291 图表标题栏/空态提取（原 spdChartHTML 内联段）：三态图表（柱状图/本月月历
+   * 热力图/全部历史热力图）共用同一标题行（标题 + t/s 单位徽章 + 档位说明入口 +
+   * 统计时间）与空态。sub=可选副题（历史热力图「按日聚合 · 自适应密度」）。
+   * v272：维度下拉移除；v273：数据覆盖提示 + 聚焦/完整轴切换按钮；
+   * v278：统计时间从顶部胶囊迁到标题栏右端（margin-left:auto + 钳边省略，
+   * title 挂完整 YYYY-MM-DD HH:mm:ss 区间），单位紧随标题不再独占右端 */
+  function spdChartHeadHTML(an, sub) {
     var ico = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 11h18"/></svg>';
     /* v281→v285：档位说明入口（单位旁）。v285 换专用 Speed Bands SVG（细圆环 +
      * 三级递增速度柱，currentColor 继承按钮色态）替代通用问号；「单位：t/s」收为
@@ -2839,22 +2870,28 @@
       '<path d="M10 13.2V8.6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-opacity="0.88"/>' +
       '<path d="M13.65 13.2V6.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>' +
       '</svg>';
-    var head = '<div class="zu-sc-head"><span class="zu-sc-title">' + spdEsc(an.title) + "</span>" +
+    return '<div class="zu-sc-head"><span class="zu-sc-title">' + spdEsc(an.title) + "</span>" +
       '<span class="zu-sc-unit">t/s</span>' +
       '<button type="button" class="zu-sv-legend-btn" data-sv-band="' + (an.overall ? tpsBand(an.overall.v).cls : "") +
       '" aria-haspopup="true" aria-expanded="false" title="' + spdEsc(SPD_L("查看速度档位说明", "View speed bands")) +
       '" aria-label="' + spdEsc(SPD_L("查看速度档位说明", "View speed bands")) + '">' + qico + "</button>" +
-      (an.cov ? '<span class="zu-sc-cov">' + spdEsc(an.cov) + "</span>" : "") +
-      (an.focus && an.focus.canToggle ?
-        '<button type="button" class="zu-sv-focus" data-sv-focus="1">' +
-        spdEsc(an.focus.applied ? SPD_L("显示完整时间轴", "Show full timeline")
-          : SPD_L("仅显示有记录时段", "Recorded hours only")) + "</button>" : "") +
-      (an.focus && an.focus.applied ? '<span class="zu-sc-cov">' + spdEsc(an.focus.hint) + "</span>" : "") +
+      (sub ? '<span class="zu-sc-sub zu-hm-sub">' + spdEsc(sub) + "</span>" : "") +
+      /* 2026-11-07 用户规格：覆盖提示/聚焦切换按钮/聚焦提示三段渲染删除 */
       '<span class="zu-sv-range" title="' + spdEsc(spdRangeFull(an.spanA, an.spanB)) + '">' + ico +
       "<span>" + spdEsc(spdRangeText(an.spanA, an.spanB)) + "</span></span></div>";
-    if (!n) return '<div class="zu-speed-chart zu-sv-chart">' + head +
+  }
+  function spdChartEmptyHTML(head) {
+    return '<div class="zu-speed-chart zu-sv-chart">' + head +
       '<div class="zu-sv-empty">' + spdEsc(SPD_L("当前筛选无有效速度数据", "No rated turns for this filter")) +
       '<span class="zu-sv-empty-hint">' + spdEsc(SPD_L("尝试选择更长时间范围", "Try a longer time range")) + "</span></div></div>";
+  }
+  /* 动态柱状图：细柱定宽居中、X 轴稀疏、Y 轴整洁刻度、无均值虚线。 */
+  function spdChartHTML(an, hoverIdx, o) {
+    var items = an.items, n = items.length;
+    var L = spdChartLayout(n);
+    SPD_PORTAL = "";
+    var head = spdChartHeadHTML(an, "");
+    if (!n) return spdChartEmptyHTML(head);
     var maxV = 0;
     for (var i = 0; i < n; i++) if (!items[i].empty && items[i].v > maxV) maxV = items[i].v;
     var yMax = 0, step = 0;
@@ -2867,11 +2904,13 @@
     if (!yMax) { step = Math.pow(10, Math.ceil(Math.log(Math.max(maxV, 1)) / Math.LN10)); yMax = step * 4; }
     var ticks = [], div = Math.round(yMax / step);
     for (var ti = 0; ti <= div; ti++) ticks.push(step * ti);
-    var H = 148, xEvery = L.xEvery, valEvery = L.valEvery;
-    function xShown(idx) {
-      /* v263：跨日首柱（dayLabel）恒显示，日期信息不随稀疏化丢失 */
-      return idx === n - 1 || idx === 0 || idx % xEvery === 0 || !!items[idx].dayLabel;
-    }
+    var H = 148, valEvery = L.valEvery;
+    /* v290 用户规格（2026-11-08）：每根柱都展示时间——字号降至 8px 后 5 字符标签
+     * 在 30px 列宽内可容纳，稀疏化废弃 */
+    /* v295.17（用户规格）：柱距 24px 下时间恢复每柱显示（相邻间隔 24px > 5 字符
+     * 宽 ~21px，互不重叠）；2026-11-09 用户规格：跨日日期行（v263 dayLabel）移除，
+     * 柱底恒单行时分（最近/今天 Tab），月日由图表头范围行承载 */
+    function xShown() { return true; }
     /* v274：柱顶数值稀疏化——n>8 时按 valEvery 抽稀（首末恒显、悬停柱恒显），
      * 未显示柱由 hover 信息卡兜底完整数值 */
     function valShown(idx, isCur) {
@@ -2882,13 +2921,12 @@
     for (var c = 0; c < n; c++) {
       var it = items[c], isCur = c === hoverIdx, bd = it.empty ? null : tpsBand(it.v);
       var hPct = it.empty ? 0 : Math.max(1.2, Math.round(it.v / yMax * 1000) / 10);
-      /* v263：跨日首柱两行标签（MM/DD + HH:mm，基类 .zu-sc-x 本就是 column flex） */
       var xTxt = "";
-      if (xShown(c)) xTxt = (it.dayLabel ? "<b>" + spdEsc(it.dayLabel) + "</b>" : "") + "<b>" + spdEsc(it.label) + "</b>";
+      if (xShown(c)) xTxt = "<b>" + spdEsc(it.label) + "</b>";
       cols += '<div class="zu-sc-col' + (isCur ? " cur" : "") + (it.empty ? " empty" : "") +
-        (c === n - 1 ? " latest" : "") +
+        (c === n - 1 ? " latest" : "") +   /* 顺序时间：最新柱在最右 */
         '" role="img" tabindex="0" data-i="' + c + '" aria-label="' +
-        spdEsc((it.dayLabel ? it.dayLabel + " " : "") + it.label + "，" + (it.empty ? SPD_L("无数据", "no data") : (it.v.toFixed(1) + " t/s"))) + '">' +
+        spdEsc(it.label + "，" + (it.empty ? SPD_L("无数据", "no data") : (it.v.toFixed(1) + " t/s"))) + '">' +
         '<span class="zu-sc-vz"><span class="zu-sc-val">' + (it.empty || !valShown(c, isCur) ? "" : it.v.toFixed(1)) + "</span>" +
         '<i class="zu-sc-bar' + (bd ? " " + bd.cls : "") + '" style="height:' + hPct + '%"></i></span>' +
         '<span class="zu-sc-x">' + xTxt + "</span></div>";
@@ -2906,8 +2944,13 @@
       ? spdCardHTML(items[hoverIdx], hoverIdx, o) : "";
     /* v273：plot 自适应——in-flow spacer 撑宽（多桶触发横滚），min-width 拉满容器，
      * 柱组 flex 居中；网格/Y 轴/hover 定位共享同一 plot 坐标系 */
+    /* v295.13（用户规格）：首开滚到最右——时间顺序后最新数据在最右，窄容器横滚时
+     * 默认定位最新（data-sv-end 由 drawTip/showTpsTip 既有分支消费，横滚记忆仍优先） */
+    /* v295.18（用户规格）：Y 轴刻度列移出滚动容器（列宽 30px 固定，横向滚动时
+     * 刻度不随滚，同「全部」热力图左侧星期列模式）；plot 不再留 30px 缩进 */
     return '<div class="zu-speed-chart zu-sv-chart">' + head +
-      '<div class="zu-sc-wrap"><div class="zu-sv-plot"><i class="zu-sv-spacer" style="width:' + L.spacerW + 'px"></i><span class="zu-sc-gutter">' + gutter +
+      '<div class="zu-sv-plotrow"><div class="zu-sv-gutcol"><span class="zu-sc-gutter">' + gutter + '</span></div>' +
+      '<div class="zu-sc-wrap" data-sv-end="1"><div class="zu-sv-plot"><i class="zu-sv-spacer" style="width:' + L.spacerW + 'px"></i>' +
       '</span><span class="zu-sc-grid">' + grid + '</span>' +
       '<span class="zu-sv-bars">' + cols + "</span></div></div></div>";
   }
@@ -2922,7 +2965,7 @@
     for (var i = TPS_BANDS.length - 1; i >= 0; i--) {
       var b = TPS_BANDS[i], isCur = curCls && b.cls === curCls;
       out += '<span class="zu-sv-li' + (isCur ? " cur" : "") + '"><i class="' + b.cls + ' zu-legend-dot dot-c"></i><b class="' +
-        b.cls + '">' + (b.lo === 0 ? "&lt;" + TPS_BANDS[TPS_BANDS.length - 2].lo : b.hi ? b.lo + "–" + b.hi : "✦ ≥" + b.lo) + "</b></span>";
+        b.cls + '">' + (b.lo === 0 ? "&lt;" + TPS_BANDS[TPS_BANDS.length - 2].lo : b.hi ? b.lo + "–" + b.hi : "≥" + b.lo) + "</b></span>";
     }
     return out + "</div>";
   }
@@ -2946,7 +2989,10 @@
       var cur = curSel || sel;
       var opts = { speedHistory: h,
         sel: { range: cur.range, period: cur.period, dim: cur.dim,
-          sid: (sess && sess.sid) || "", remote: !!(sess && (sess.workspace_identity || sess.remote)) },
+          /* remote 判定只认快照 remote 标（上游 v287 热修吸收，2026-11-07）：
+           * 本地 scoped 行也带 workspace_identity，旧判定把本地 pane 误当远端，
+           * 选「全部」被静默降级为本会话并显虚假远端提示 */
+          sid: (sess && sess.sid) || "", remote: !!(sess && sess.remote) },
         live: live, segsHover: (typeof curHover === "number" ? curHover : hover),
         fmtTok: o.fmtTok, fmtCnt: o.fmtCnt, fmtMoney: o.fmtMoney };
       return "\x01" + speedCardV2HTML(opts);
@@ -2965,12 +3011,294 @@
        * 图表头文案随 Tab 变化让整卡在 ~700-960px 间跳动）。width+max-width 同值 !important
        * 压过 .tip 的 width:max-content 与 tpsTip 内联 max-width:520；border-box 含内边距。
        * v283：定宽值 960→800（用户规格，与宿主 dock 对齐构图协调）。 */
-      '<style>.zusage-tip-root:has(.zu-sv-root),.zusage-tps-tip:has(.zu-sv-root){width:min(800px,calc(100vw - 24px))!important;max-width:min(800px,calc(100vw - 24px))!important;box-sizing:border-box}</style>' +
+      /* v292（用户规格）：整卡高度固定 315px（border-box）——四种图表形态同高，
+       * 切 Tab 不跳高；内部 .zu-sv-root 走 flex column，图表区吃剩余高度自适应 */
+      /* v295（用户规格）：tooltip 收为 800×300 卡（v295.1 用户更正）。布局决策：
+       * ①祖先层仍纯 height 链（tip 定高 300 → tbody 100% → 卡 100%，flex 只留卡自身）；
+       * ②本月月历态（:has(.zu-hm-month)）隐藏左统计卡、热力图 6 列均分铺满全卡
+       *   （30 天整除零空位；31 天末格跨行尾，永不留空隙）；
+       * ③tbody 纵向 auto——其它 Tab（柱状/历史）内容超高时滚动而非裁切；
+       * ④滚动条隐藏、ultra 抑制等既有契约不变。 */
+      '<style>.zusage-tip-root:has(.zu-sv-root),.zusage-tps-tip:has(.zu-sv-root){width:min(760px,calc(100vw - 24px))!important;max-width:min(760px,calc(100vw - 24px))!important;height:300px!important;box-sizing:border-box!important;overflow:hidden!important}' +
+      /* v303.1：tbody padding 归零——速度卡根带 zu-stat-tip 类会吃到 06:887 的
+       * 12px 15px（与根 .tip 10px 13px 叠成 22/28 双层），与紧凑四卡统一后的
+       * 单层 10px 13px 不一致（真机 segH 实证 tbody 278−24=root 254） */
+      /* 右缘幽灵预留槽归零——基础 .tbody 的 scrollbar-gutter:stable（06:831，六卡
+       * 纵滚防跳动用）在速度卡上是纯空耗：卡 height:100% 恒等于 tbody 高、纵向
+       * 永不滚动，滚动条永不出现但 stable 仍恒预留 thin 滚动条槽位（QA 实测
+       * tbody 732 vs 卡 721，右缘 11px 死空隙；devtools 元素高亮把该非内容区
+       * 涂成 padding 绿，即用户实报「右侧绿色区域」）。速度卡不恢复 stable——
+       * 极端字号溢出时 auto 让滚动条自然出现，代价仅该极端帧压缩 11px。 */
+      '.zusage-tip-root:has(.zu-sv-root) .tbody,.zusage-tps-tip:has(.zu-sv-root) .tbody{height:100%!important;box-sizing:border-box!important;overflow:hidden!important;overflow-y:auto!important;padding:0!important;scrollbar-gutter:auto!important}' +
+      /* v295.2：tpsTip 链生产上无 .tbody（直塞卡），该规则空匹配无害；harness 复刻页
+       * 带 tbody 层，缺这条会让 tbody 高度悬空、卡 height:100% 回落内容高溢出被裁 */
+      '.zusage-tip-root:has(.zu-sv-root) .zu-sv-root,.zusage-tps-tip:has(.zu-sv-root) .zu-sv-root{height:100%!important;min-height:0!important;box-sizing:border-box!important;display:flex;flex-direction:column;overflow:hidden}' +
+      /* 300 小卡：本月态隐藏左统计卡（热力图铺满），其余 Tab 左卡纵排换行 */
+      '.zusage-tip-root:has(.zu-sv-root) .zu-sv-root:has(.zu-hm-month) .zu-sv-filter{flex-wrap:wrap}' +
+      /* 滚动条隐藏：新 Chromium（Fluent/overlay 滚动条）忽略 ::-webkit-scrollbar，
+       * 标准属性 scrollbar-width 必须写在元素本身（写进伪元素无效，v293.1 曾写错位置） */
+      '.zusage-tip-root .zu-sc-wrap,.zusage-tps-tip .zu-sc-wrap,.zu-sv-portal .zu-sc-wrap{scrollbar-width:none!important}' +
+      '.zusage-tip-root .zu-sc-wrap::-webkit-scrollbar,.zusage-tps-tip .zu-sc-wrap::-webkit-scrollbar,.zu-sv-portal .zu-sc-wrap::-webkit-scrollbar{display:none!important}' +
+      /* v298.1：柱状图 Y 轴刻度/网格锁定柱区基线。根因：V1 遗留 .zu-sc-gutter/
+       * .zu-sc-grid 固定 height:160px 在 V2 只声明 top+bottom 时仍然胜出（V2 规则
+       * 不含 height；绝对定位 top+height 同设时 bottom 被忽略）——刻度列被锁 160px
+       * 下坠，「0」压进时间标签行（真机 segH 实测 gutter h=160、tick 0 与 x0 重叠）。
+       * 此处显式 height:auto 让 top+bottom 生效，并按柱区基线对齐：
+       * gutter bottom=21px（wrap padding 5 + x 标签 16，刻度「0」字形中心恰落在
+       * 柱底基线）；grid bottom=16px（0% 网格线贴柱底基线，100% 贴绘图区顶）。
+       * 仅作用柱状图——:not 排除月历/历史热力图两态（其 gutcol 语义不同）。 */
+      '.zu-sv-chart:not(.zu-hm-month):not(.zu-hm-hist) .zu-sc-gutter{height:auto;top:5px;bottom:21px}' +
+      '.zu-sv-chart:not(.zu-hm-month):not(.zu-hm-hist) .zu-sc-grid{height:auto;top:0;bottom:16px}</style>' +
       spdHeadHTML(an) +
       /* v281：底部常驻档位说明移除（连分割线/占位），档位说明改由图表标题栏问号
        * 浮层承载（spdLegendCardHTML + spdLegendTip）——TPS_BANDS 单一事实源不变，
        * 整卡高度由 Header 与统计主体决定，比旧版更紧凑。 */
-      '<div class="zu-speed-body">' + spdLeftHTML(an, o.live) + spdChartHTML(an, o.segsHover, o) + "</div></div>";
+      '<div class="zu-speed-body">' + spdLeftHTML(an, o.live) + spdChartFor(an, o.segsHover, o) + "</div></div>";
+  }
+  /* ---------- v291 热力图（本月月历 / 全部历史 GitHub 风格，用户设计图规格） ----------
+   * 时间 Tab「本月」「全部」的柱状图替换为日粒度热力图：颜色仍走 TPS_BANDS 档位类
+   * （currentColor 与柱体/图例同源，CSS 按 .zu-hm-cell 上的档位类给底色），数据复用
+   * spdAnalyze 的日桶聚合（Σ有效输出 ÷ Σ生成窗口），绝不算术平均、绝不显 0 t/s。
+   * 无记录日=中性格（无记录不等于零速）、未来日=弱化占位（无任何速度、不进统计）；
+   * 格子带 data-i 指向本图 days 数组，悬停/焦点委托复用 .zu-hm-cell 契约（宿主侧
+   * 选择器已扩展），悬停卡经 SPD_PORTAL 侧信道走 body 级 Portal（与柱状图同链）。 */
+  var SPD_WD_ZH = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+  var SPD_WD_EN = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  var SPD_MO_EN = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  function spdWdLabel(wd) { return SPD_L(SPD_WD_ZH[wd], SPD_WD_EN[wd]); }
+  function spdFmt1(v) { return v % 1 ? v.toFixed(1) : String(v); }
+  /* v297 动态字号（用户 Goal）：在 6~14px 内选「能完整容纳的最大字号」。
+   * 纯算术实现——等宽数字字宽 ≈ 0.64em（保守系数，含 k/M/小数点混合余量），
+   * 行高 1.0；不做 DOM/Canvas 测量、不挂 ResizeObserver（格尺寸由宿主量测一次
+   * 写 window.__zusageSpdMonRect，首帧用推导默认，字号变化不改变格尺寸故无振荡）。
+   * 6px 仍超宽时进入紧凑数值格式（12.3k / 1.23M，完整精度走 Hover）。 */
+  var SPD_HM_FS_MIN = 6, SPD_HM_FS_MAX = 14, SPD_HM_CHAR_W = 0.64;
+  function spdHmFitFs(text, availW, availH) {
+    var fs = Math.min(SPD_HM_FS_MAX,
+      availW / Math.max(text.length, 1) / SPD_HM_CHAR_W,
+      availH / 1.05);
+    fs = Math.floor(fs * 2) / 2;   /* 0.5px 步进向下取 */
+    return Math.max(SPD_HM_FS_MIN, Math.min(SPD_HM_FS_MAX, fs));
+  }
+  function spdCompactNum(v) {
+    if (v >= 1e6) return (v / 1e6).toFixed(2).replace(/\.?0+$/, "") + "M";
+    if (v >= 1e4) return (v / 1e3).toFixed(1).replace(/\.0$/, "") + "k";
+    return spdFmt1(v);
+  }
+  /* 完整日期形态（悬停卡时间行/aria）：2026-11-06 周五 / Fri 2026-11-06 */
+  function spdDayFull(t, withWd) {
+    var d = spdDate(t);
+    return d.getFullYear() + "-" + spd2(d.getMonth() + 1) + "-" + spd2(d.getDate()) +
+      (withWd ? SPD_L(" " + SPD_WD_ZH[d.getDay()], " " + SPD_WD_EN[d.getDay()]) : "");
+  }
+  /* 格子 aria：2026年11月6日 周五，平均速度 143.8 t/s，流畅；无记录日显式说明，
+   * 绝不出现「0 t/s」。 */
+  function spdCellAria(t, item) {
+    var d = spdDate(t), wd = d.getDay();
+    var dateTxt = SPD_L(d.getFullYear() + "年" + (d.getMonth() + 1) + "月" + d.getDate() + "日 " + SPD_WD_ZH[wd],
+      SPD_WD_EN[wd] + ", " + SPD_MO_EN[d.getMonth()] + " " + d.getDate() + " " + d.getFullYear());
+    if (!item) return dateTxt + SPD_L("，无有效速度记录", ", no rated speed data");
+    var b = tpsBand(item.v);
+    return dateTxt + SPD_L("，平均速度 ", ", avg ") + spdFmt1(item.v) + SPD_L(" t/s", " t/s") +
+      (b ? SPD_L("，" + b.zh, ", " + b.en) : "");
+  }
+  /* 日格悬停卡：有记录日复用 spdCardHTML 五字段（tv 覆写时间行为整日形态，模型/
+   * Token/费用链逐字同源）；无记录日显式「当日无有效生成速度记录」；未来日「尚未
+   * 开始」（月历占位格也可悬停，语义完整）。 */
+  function spdDayCardHTML(entry, o, coverage) {
+    var dayTxt = spdDayFull(entry.t, true);
+    var head = '<div class="zu-sv-card" role="tooltip"><div class="zu-sv-crow"><span>' +
+      spdEsc(SPD_L("日期", "Date")) + '</span><b title="' + spdEsc(spdRangeFull(entry.t, entry.t + 86400000)) + '">' +
+      spdEsc(dayTxt) + "</b></div>";
+    if (entry.state === "future")
+      return '<div class="zu-sv-card zu-sv-card--void" role="tooltip"><div class="zu-sv-crow"><span>' +
+        spdEsc(SPD_L("日期", "Date")) + "</span><b>" + spdEsc(dayTxt) + "</b></div>" +
+        '<div class="zu-sv-crow"><span>' + spdEsc(SPD_L("状态", "Status")) + "</span><b>" +
+        spdEsc(SPD_L("尚未开始", "Not started yet")) + "</b></div></div>";
+    if (!entry.item)
+      /* v296.1（用户规格）：无数据卡=日期 + 覆盖统计（共 N 天 · 其中 M 天有有效速度记录） */
+      return head + '<div class="zu-sv-crow"><span>' + spdEsc(SPD_L("统计", "Coverage")) + "</span><b>" +
+        spdEsc(coverage || SPD_L("当日无有效生成速度记录", "No rated speed data this day")) + "</b></div></div>";
+    return spdCardHTML(Object.assign({}, entry.item, { tv: dayTxt }), 0, o);
+  }
+  /* 本月月历热力图：7 列（周日首列，与 spdBucket week 同基准）、行数=实际月历
+   * （4～6 行，1 日前空位=透明对齐占位，不伪造上月日期）。有记录日=低饱和档位
+   * 底（22% 混色）+ 左 3px 档位色条 + 日期 + 当日均速；已过无记录日=中性格 +
+   * 日期；未来日=弱日期号（无速度无框，v294）。当日柔和内描边；≤2 天有记录时
+   * 附一条轻量稀疏说明（规格 §9，不建新统计卡）。 */
+  function spdMonthHeatmapHTML(an, hoverIdx, o) {
+    SPD_PORTAL = "";
+    var now = Date.now(), d0 = spdDate(now);
+    var y = d0.getFullYear(), mo = d0.getMonth();
+    /* v296.1（用户拍板）：7 列周日对齐日历——显示当月 1 日至今天；1 日前按星期日
+     * 补齐占位；无数据日=中性弱底+弱日期号（补 0 与红底按用户要求移除），
+     * 未来日期=弱日期号；行数=ceil((占位+天数)/7) */
+    var nDays = new Date(y, mo + 1, 0).getDate();
+    var cols = 7;
+    var lead = new Date(y, mo, 1).getDay();
+    var rows = Math.ceil((lead + nDays) / cols);
+    var todayStart = new Date(y, mo, d0.getDate()).getTime();
+    var byDay = {};
+    for (var i = 0; i < an.items.length; i++) {
+      var it0 = an.items[i];
+      if (!it0.empty && it0.a) byDay[it0.a] = it0;
+    }
+    /* v293.1（用户拍板）：星期表头行舍弃——7 列日历结构不变，格子区直接平分卡高 */
+    /* v295.4（用户拍板）：星期表头行恢复（周日..周六，7 列与格子对齐） */
+    var wk = "";
+    for (i = 0; i < 7; i++) wk += "<span>" + spdEsc(spdWdLabel(i)) + "</span>";
+    var days = [], cells = "";
+    if (lead) for (var p = 0; p < lead; p++) cells += '<i class="zu-hm-pad"></i>';
+    /* v297 动态字号：宿主量测月历网格实际宽高（window.__zusageSpdMonRect，渲染后
+     * 写回，缺省用 850 卡推导值），折算格宽/格高后按「速度文本长度分桶」计算
+     * 每桶最大可容纳字号（6~14px、0.5px 步进、宽高双约束）——同长度同字号，
+     * 不逐格 inline。6px 仍超宽的极端数值进紧凑格式（12.3k/1.23M，Hover 保完整）。
+     * 极矮行档（6 行月）压日期字号与 padding，但不隐藏速度数字（v297 废止隐藏）。 */
+    var mr = (typeof window !== "undefined" && window.__zusageSpdMonRect) || null;
+    var calW = (mr && mr.w > 40) ? mr.w : 530, calH = (mr && mr.h > 40) ? mr.h : 161;
+    var cellW = (calW - 6 * 8) / 7, cellH = (calH - (rows - 1) * 8) / rows;
+    var padY = cellH >= 30 ? 4 : (cellH >= 24 ? 3 : 2);
+    var padX = cellW >= 60 ? 6 : 4;
+    var dateFs = cellH >= 30 ? 10 : (cellH >= 24 ? 8 : 7);   /* 日期让高给速度（速度优先级更高） */
+    var availH = cellH - padY * 2 - dateFs * 1 - 1;
+    var availW = cellW - padX * 2;
+    var buckets = { f4: SPD_HM_FS_MAX, f5: SPD_HM_FS_MAX, f6: SPD_HM_FS_MIN };
+    var fsByLen = {};
+    var lenList = [4, 5, 6];
+    for (i = 0; i < lenList.length; i++) {
+      var L = lenList[i], fs = spdHmFitFs(new Array(L + 1).join("8"), availW, availH);
+      if (fs <= SPD_HM_FS_MIN && availW < L * SPD_HM_FS_MIN * SPD_HM_CHAR_W) {
+        var cTxt = spdCompactNum(L >= 6 ? 123456 : 12345);
+        var cFs = spdHmFitFs(cTxt, availW, availH);
+        buckets[L >= 6 ? "f6" : "f5"] = cFs;
+        fsByLen[L] = { compact: true, fs: cFs };
+        continue;
+      }
+      buckets[L >= 6 ? "f6" : (L >= 5 ? "f5" : "f4")] = fs;
+      fsByLen[L] = { fs: fs };
+    }
+    var dFs = Math.max(6, dateFs);
+    for (var dn = 1; dn <= nDays; dn++) {
+      var ds = new Date(y, mo, dn).getTime();
+      var it = byDay[ds] || null, bd = it ? tpsBand(it.v) : null;
+      var future = ds > todayStart, cur = days.length === hoverIdx ? " cur" : "";
+      var di = days.length;
+      days.push({ t: ds, item: it, state: future ? "future" : (it ? "data" : "void") });
+      if (future)
+        cells += '<div class="zu-hm-cell fut' + cur + '" aria-hidden="true" data-i="' + di + '"><span class="zu-hm-d">' + dn + "</span></div>";
+      else if (it) {
+        var txt = spdFmt1(it.v), L2 = txt.length;
+        if (fsByLen[L2] && fsByLen[L2].compact) { txt = spdCompactNum(it.v); L2 = txt.length; }
+        var cls = L2 >= 6 ? "len6" : (L2 >= 5 ? "len5" : "len4");
+        cells += '<div class="zu-hm-cell data ' + cls + (bd ? " " + bd.cls : "") + (ds === todayStart ? " zu-hm-today" : "") + cur +
+          '" role="img" tabindex="0" data-i="' + di + '" aria-label="' + spdEsc(spdCellAria(ds, it)) + '">' +
+          '<span class="zu-hm-d">' + dn + '</span><span class="zu-hm-v">' + spdEsc(txt) + "</span></div>";
+      } else
+        cells += '<div class="zu-hm-cell void' + (ds === todayStart ? " zu-hm-today" : "") + cur +
+          '" role="img" data-i="' + di + '" aria-label="' + spdEsc(spdCellAria(ds, null)) + '">' +
+          '<span class="zu-hm-d">' + dn + "</span></div>";
+    }
+    if (hoverIdx >= 0 && days[hoverIdx]) SPD_PORTAL = spdDayCardHTML(days[hoverIdx], o);
+    var gridStyle = '--zu-hm-rows:' + rows + ';--hm-df:' + dFs + 'px;--hm-f4:' + buckets.f4 + 'px;--hm-f5:' + buckets.f5 +
+      'px;--hm-f6:' + buckets.f6 + 'px;--hm-pady:' + padY + 'px;--hm-padx:' + padX + 'px';
+    return '<div class="zu-speed-chart zu-sv-chart zu-hm-month">' + spdChartHeadHTML(an, "") +
+      '<div class="zu-sc-wrap"><div class="zu-hm-cal"><div class="zu-hm-week">' + wk + "</div>" +
+      '<div class="zu-hm-grid zu-hm-grid--mon" style="' + gridStyle + '">' + cells + "</div></div></div></div>";
+  }
+  /* 全部历史热力图（GitHub Contributions 版式）：一列=一周、一行=固定星期，从左到右
+   * 最早→最新（最新在右）；颜色=当日均速档位（不是请求量/Token 量）。窗口=最早有效
+   * 日所在周 → 当前周（含今日，尾部空周如实显示覆盖空档）；窗口外格子=透明占位，
+   * 不计入统计。首开由宿主按 data-sv-end 滚到最右（§12.2 最新区域优先），横滚记忆
+   * 键（data-sv-key）不变。列数上限 1040（约 20 年）纯 DOM 护栏——轮表本身有界
+   * 6000 轮，跨窗截断已由 notice 显式披露。月标签按实际月份边界对齐（含新月那列），
+   * 相邻标签不足 2 列时跳过防重叠；跨年在 1 月标签带年份。日期逐格用 Date 构造器
+   * 推进（DST 安全，毫秒加法会把夏令时日的边界推出本地零点）。 */
+  function spdHistoryHeatmapHTML(an, hoverIdx, o) {
+    SPD_PORTAL = "";
+    var todayStart = spdBucket(Date.now(), "day");
+    var first = Infinity, lastData = 0, byDay = {};
+    for (var i = 0; i < an.items.length; i++) {
+      var it0 = an.items[i];
+      if (!it0.empty && it0.a) { byDay[it0.a] = it0; if (it0.a < first) first = it0.a; if (it0.a > lastData) lastData = it0.a; }
+    }
+    if (first === Infinity) return spdChartEmptyHTML(spdChartHeadHTML(an, ""));
+    /* v296（用户规格）：窗口=最近 365 天（today-364 → today，按周日起对齐补齐网格）；
+     * 窗口内没有数据的日=中性格（#484848），更早的历史不在本视图。窗口外格子=透明
+     * 星期对齐占位。 */
+    var winStart = todayStart - 364 * 86400000;
+    var winEnd = todayStart;
+    var WEEK = 7 * 86400000;
+    var w0 = spdDate(spdBucket(winStart, "week"));
+    var wy = w0.getFullYear(), wmo = w0.getMonth(), wd0 = w0.getDate();
+    /* 周数按周起点到周起点计算（窗口端点落在周内，直接相减会多算一周） */
+    var weeks = Math.round((spdBucket(winEnd, "week") - spdBucket(winStart, "week")) / WEEK) + 1;
+    /* DOM 护栏：>1040 周（约 20 年，现实库龄不可达——轮表本身有界 6000 轮）时右端
+     * 对齐结束月、只渲染最近 1040 周；这是纯渲染钳制，spanA/左卡统计仍覆盖全池，
+     * 与轮表 truncated 的 notice 披露是两回事 */
+    if (weeks > 1040) {
+      var w1 = spdDate(spdBucket(winEnd, "week"));
+      wy = w1.getFullYear(); wmo = w1.getMonth(); wd0 = w1.getDate() - 1039 * 7;
+      weeks = 1040;
+    }
+    var days = [], cells = "", labels = "", dayNums = "", lastMo = -1, lastLabCol = -9, dataN = 0;
+    for (var w = 0; w < weeks; w++) {
+      var cs = new Date(wy, wmo, wd0 + w * 7), ce = new Date(wy, wmo, wd0 + w * 7 + 6);
+      /* 月标签：首列必标；其后本列右端出现新月即在该列标（月份只前进不回退），
+       * 与上一标签间隔不足 2 列时跳过防文字重叠。端点按窗口钳制——首尾列可能
+       * 越出窗口（星期对齐），越界部分的月份不得参与标签（v292 复验抓过 9月/12月
+       * 幽灵标签） */
+      var m1 = new Date(Math.max(cs.getTime(), winStart)).getMonth(),
+          m2 = new Date(Math.min(ce.getTime(), winEnd)).getMonth();
+      var lab = lastMo < 0 ? m1 : (m2 !== lastMo ? m2 : -1);
+      if (lab >= 0 && w - lastLabCol >= 2) {
+        lastMo = lab; lastLabCol = w;
+        /* 年份取被标月份所在端点（同样经窗口钳制，防跨年首列取到越界周首的旧年） */
+        var ly = new Date(lab === m2 && m2 !== m1 ? Math.min(ce.getTime(), winEnd) : Math.max(cs.getTime(), winStart)).getFullYear();
+        labels += '<span class="zu-hm-ml" style="grid-column:' + (w + 1) + " / " + (w + 3 <= weeks ? "span 2" : "-1") + '">' +
+          spdEsc(SPD_L((lab === 0 ? ly + "年" : "") + (lab + 1) + "月",
+            lab === 0 ? SPD_MO_EN[lab] + " " + ly : SPD_MO_EN[lab])) + "</span>";
+      }
+      /* 列头日期数字（v293 设计图规格）：该列窗口内首日的日号 */
+      var colFirst = Math.max(cs.getTime(), winStart);
+      dayNums += '<span class="zu-hm-dn" style="grid-column:' + (w + 1) + ' / span 1">' +
+        spd2(spdDate(colFirst).getDate()) + "</span>";
+      for (var r = 0; r < 7; r++) {
+        var ds = new Date(wy, wmo, wd0 + w * 7 + r).getTime();
+        if (ds < winStart || ds > winEnd) { cells += '<i class="zu-hm-pad"></i>'; continue; }
+        var it = byDay[ds] || null, bd = it ? tpsBand(it.v) : null;
+        if (it) dataN++;
+        var di = days.length, cur = di === hoverIdx ? " cur" : "";
+        days.push({ t: ds, item: it, state: it ? "data" : "void" });
+        cells += it
+          ? '<div class="zu-hm-cell sq data' + (bd ? " " + bd.cls : "") + (ds === todayStart ? " zu-hm-today" : "") + cur +
+            '" role="img" tabindex="0" data-i="' + di + '" aria-label="' + spdEsc(spdCellAria(ds, it)) + '"></div>'
+          : '<div class="zu-hm-cell sq void' + (ds === todayStart ? " zu-hm-today" : "") + cur +
+            '" role="img" data-i="' + di + '" aria-label="' + spdEsc(spdCellAria(ds, null)) + '"></div>';
+      }
+    }
+    /* v296.1（用户规格）：覆盖统计不再单独成行，改随无数据格的悬停卡展示。
+     * 须先于 SPD_PORTAL 赋值计算（review 修复：原写在 Portal 之后，var 提升致
+     * 实参恒 undefined，覆盖统计静默退化为兜底文案）；分母以窗口起点与首数据日
+     * 的较晚者起算，与网格可视窗口同口径（首数据日早于 365 天窗口时不虚增天数）。 */
+    var totalDays = Math.round((todayStart - Math.max(first, winStart)) / 86400000) + 1;
+    var coverage = SPD_L("共 " + totalDays + " 天 · 其中 " + dataN + " 天有有效速度记录",
+      totalDays + " days in total · " + dataN + " with rated speed data");
+    if (hoverIdx >= 0 && days[hoverIdx]) SPD_PORTAL = spdDayCardHTML(days[hoverIdx], o, coverage);
+    var wd = "";
+    for (i = 0; i < 7; i++) wd += "<span>" + spdEsc(spdWdLabel(i)) + "</span>";
+    return '<div class="zu-speed-chart zu-sv-chart zu-hm-hist">' + spdChartHeadHTML(an, "") +
+      '<div class="zu-hm-outer"><div class="zu-hm-wds">' + wd + "</div>" +
+      '<div class="zu-sc-wrap" data-sv-end="1"><div class="zu-hm-scroll" style="--zu-hm-w:' + weeks + '">' +
+      '<div class="zu-hm-months" style="--zu-hm-w:' + weeks + '">' + labels + "</div>" +
+      '<div class="zu-hm-days" style="--zu-hm-w:' + weeks + '">' + dayNums + "</div>" +
+      '<div class="zu-hm-grid zu-hm-grid--hist" style="--zu-hm-w:' + weeks + '">' + cells + "</div></div></div></div>";
+  }
+  /* v291 图表分发（§3.1 切换规则）：本月=月历热力图、全部=历史热力图，
+   * 最近/今天/近 7 天保持原柱状图。 */
+  function spdChartFor(an, hoverIdx, o) {
+    if (an.period === "month") return spdMonthHeatmapHTML(an, hoverIdx, o);
+    if (an.period === "all") return spdHistoryHeatmapHTML(an, hoverIdx, o);
+    return spdChartHTML(an, hoverIdx, o);
   }
   /* SPD_V2_BLOCK_END */
   /* 思考态动效图标（用户提供的设计稿）：呼吸脑轮廓 + 流动信号 + 脉冲节点，纯 CSS
@@ -3433,6 +3761,7 @@
     window.__zusageWantSids = [];
     window.__zusageWantSid = "";
     window.__zusageGitPaths = [];   // v96：主进程下轮 tick 读到空集即停查
+    delete window.__zusageSpdMonRect;   // v297 动态字号量测缓存随代际清理，防旧格尺寸误读新布局（review 修复）
     if (window.__zusageDispose === disposeOverlay) {
       delete window.__zusageDispose;
       delete window.__zusageUpdate;
@@ -3465,6 +3794,3160 @@
 
 
 
+  /* ==================== 状态轮播：内置词包纯数据（16 包） ====================
+   * 自 04-status-rotator-data.js 拆分：词包此前是 56.9KB 单行 JSON，无法 diff、无法按包审阅。
+   * 拼接契约：build_overlay.py 按文件名字典序拼接，本文件（04-rotator-*）排在
+   * 04-status-rotator-data.js 之前——ZU_ROTATOR_BUILTIN_PACKS 先于该分片内
+   * ZU_ROTATOR_PACK_BY_ID 索引构建与全部消费端（05 运行时 / ⚙ 面板）定义。
+   * 维护提示：
+   * - 每包结构 { id, label:{zh,en}, phrases:{zh|en:{running|thinking|long:[...]}} }；
+   *   phase 键可缺（消费端逐键判空），短语可用 17 个实时占位符（{elapsed} {tps} {model} 等）。
+   * - 新增/删除词包必须同步 04-status-rotator-data.js 的 ZU_ROTATOR_PACK_META（⚙ 面板勾选清单
+   *   与 enabledPacks 默认全开的来源），否则新包不进面板、enabledPacks 清洗会剔除未知 id。
+   * - 改本文件后无需动消费端；数据经 vm/测试快照回归（tests/overlay-status-rotator.test.cjs）。
+   * ========================================================================== */
+  var ZU_ROTATOR_BUILTIN_PACKS = [
+  /* ---- 毛主席语录（chairman-mao） ---- */
+  /* 仅中文相（429 条毛选原文，翻译失真不设 en）；三相同池——任意运行相均可轮出。 */
+  {
+    id: "chairman-mao",
+    label: { zh: "毛主席语录", en: "Chairman Mao's Quotations" },
+    phrases: {
+      zh: {
+        thinking: [
+          "没有调查，没有发言权。 - 《反对本本主义》 · 1930年",
+          "调查就像“十月怀胎”，解决问题就像“一朝分娩”。 - 《反对本本主义》 · 1930年",
+          "一切结论产生于调查情况的末尾，而不是在它的先头。 - 《反对本本主义》 · 1930年",
+          "调查就是解决问题。 - 《反对本本主义》 · 1930年",
+          "必须努力作实际调查，才能洗刷唯心精神。 - 《反对本本主义》 · 1930年",
+          "到群众中作实际调查去！ - 《反对本本主义》 · 1930年",
+          "一定都要亲身从事社会经济的实际调查。 - 《反对本本主义》 · 1930年",
+          "注重调查！反对瞎说！ - 《反对本本主义》 · 1930年",
+          "迈开你的两脚，到你的工作范围的各部分各地方去走走。 - 《反对本本主义》 · 1930年",
+          "你完完全全调查明白了，你对那个问题就有解决的办法了。 - 《反对本本主义》 · 1930年",
+          "必须按照随时变化随地不同的具体情况去做。 - 《抗日游击战争的战略问题》 · 1938年",
+          "这种态度，就是实事求是的态度。 - 《改造我们的学习》 · 1941年",
+          "“实事”就是客观存在着的一切事物。 - 《改造我们的学习》 · 1941年",
+          "“是”就是客观事物的内部联系，即规律性。 - 《改造我们的学习》 · 1941年",
+          "“求”就是我们去研究。 - 《改造我们的学习》 · 1941年",
+          "科学是老老实实的学问，任何一点调皮都是不行的。 - 《改造我们的学习》 · 1941年",
+          "我们还是老实一点吧！ - 《改造我们的学习》 · 1941年",
+          "在全党推行调查研究的计划，是转变党的作风的基础一环。 - 《改造我们的学习》 · 1941年",
+          "许多人是做实际工作的，他们也不注意客观情况的研究，往往单凭热情，把感想当政策。 - 《改造我们的学习》 · 1941年",
+          "东张西望，道听途说，决然得不到什么完全的知识。 - 《〈农村调查〉的序言和跋》 · 1941年",
+          "没有眼睛向下的兴趣和决心，是一辈子也不会真正懂得中国的事情的。 - 《〈农村调查〉的序言和跋》 · 1941年",
+          "第一是眼睛向下，不要只是昂首望天。 - 《〈农村调查〉的序言和跋》 · 1941年",
+          "群众是真正的英雄，而我们自己则往往是幼稚可笑的。 - 《〈农村调查〉的序言和跋》 · 1941年",
+          "和全党同志共同一起向群众学习，继续当一个小学生，这就是我的志愿。 - 《〈农村调查〉的序言和跋》 · 1941年",
+          "没有放下臭架子、甘当小学生的精神，是一定不能做，也一定做不好的。 - 《〈农村调查〉的序言和跋》 · 1941年",
+          "要了解情况，唯一的方法是向社会作调查。 - 《〈农村调查〉的序言和跋》 · 1941年",
+          "实际工作者须随时去了解变化着的情况。 - 《〈农村调查〉的序言和跋》 · 1941年",
+          "研究问题，忌带主观性、片面性和表面性。 - 《矛盾论》 · 1937年",
+          "真理只有一个，而究竟谁发现了真理，不依靠主观的夸张，而依靠客观的实践。 - 《新民主主义论》 · 1940年",
+          "只有千百万人民的革命实践，才是检验真理的尺度。 - 《新民主主义论》 · 1940年",
+          "凡真理都不装样子吓人，它只是老老实实地说下去和做下去。 - 《反对党八股》 · 1942年",
+          "思想必须反映客观实际。 - 《增强党的团结，继承党的传统》 · 1956年",
+          "按照实际情况决定工作方针，这是一切共产党员所必须牢牢记住的最基本的工作方法。 - 《在晋绥干部会议上的讲话》 · 1948年",
+          "一定要研究当前的情况，研究实际的经验和材料。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "尽可能不要被假象所迷惑。 - 《在中国共产党全国代表会议上的讲话》 · 1955年",
+          "人们必须通过对现象的分析和研究，才能了解到事物的本质。 - 《在中国共产党全国代表会议上的讲话》 · 1955年",
+          "通过实践而发现真理，又通过实践而证实真理和发展真理。 - 《实践论》 · 1937年",
+          "只有人们的社会实践，才是人们对于外界认识的真理性的标准。 - 《实践论》 · 1937年",
+          "你要知道梨子的滋味，你就得变革梨子，亲口吃一吃。 - 《实践论》 · 1937年",
+          "一切真知都是从直接经验发源的。 - 《实践论》 · 1937年",
+          "你要有知识，你就得参加变革现实的实践。 - 《实践论》 · 1937年",
+          "离开实践的认识是不可能的。 - 《实践论》 · 1937年",
+          "认识从实践始，经过实践得到了理论的认识，还须再回到实践去。 - 《实践论》 · 1937年",
+          "改造客观世界，也改造主观世界。 - 《实践论》 · 1937年",
+          "一定要使自己的思想合于客观外界的规律性。 - 《实践论》 · 1937年",
+          "感觉只解决现象问题，理论才解决本质问题。这些问题的解决，一点也不能离开实践。 - 《实践论》 · 1937年",
+          "认识的感性阶段有待于发展到理性阶段。 - 《实践论》 · 1937年",
+          "但人不能事事直接经验，事实上多数的知识都是间接经验的东西。 - 《实践论》 · 1937年",
+          "知识的问题是一个科学问题，来不得半点的虚伪和骄傲。 - 《实践论》 · 1937年",
+          "有了道听途说的一知半解，便自封为“天下第一”，适足见其不自量而已。 - 《实践论》 · 1937年",
+          "读书是学习，使用也是学习，而且是更重要的学习。 - 《中国革命战争的战略问题》 · 1936年",
+          "从没有经验到有经验，要有一个过程。 - 《对晋绥日报编辑人员的谈话》 · 1948年",
+          "经验对于干部是必需的，失败确是成功之母。 - 《中国革命战争的战略问题》 · 1936年",
+          "我们不但要提出任务，而且要解决完成任务的方法问题。 - 《关心群众生活，注意工作方法》 · 1934年",
+          "我们的任务是过河，但是没有桥或没有船就不能过。 - 《关心群众生活，注意工作方法》 · 1934年",
+          "不解决方法问题，任务也只是瞎说一顿。 - 《关心群众生活，注意工作方法》 · 1934年",
+          "不解决桥或船的问题，过河就是一句空话。 - 《关心群众生活，注意工作方法》 · 1934年",
+          "纸上的东西并不等于现实的东西。 - 《关于重庆谈判》 · 1945年",
+          "要把它变成现实的东西，还要经过很大的努力。 - 《关于重庆谈判》 · 1945年",
+          "外因是变化的条件，内因是变化的根据，外因通过内因而起作用。 - 《矛盾论》 · 1937年",
+          "鸡蛋因得适当的温度而变化为鸡子，但温度不能使石头变为鸡子。 - 《矛盾论》 · 1937年",
+          "事物发展的根本原因，不是在事物的外部而是在事物的内部。 - 《矛盾论》 · 1937年",
+          "理论和实践的矛盾，实践是主要的。 - 《矛盾论》 · 1937年",
+          "这就是说，理论与实践要统一。 - 《增强党的团结，继承党的传统》 · 1956年",
+          "任何外国的经验，只能作参考，不能当作教条。 - 《我们党的一些历史经验》 · 1956年",
+          "学习苏联，并不是所有事情都硬搬，教条主义就是硬搬。 - 《做革命的促进派》 · 1957年",
+          "我奉劝诸位，切记不要硬搬中国的经验。 - 《我们党的一些历史经验》 · 1956年",
+          "要使不懂得变成懂得，就要去做去看，这就是学习。 - 《对晋绥日报编辑人员的谈话》 · 1948年",
+          "现在能实行的我们就写，不能实行的就不写。 - 《关于中华人民共和国宪法草案》 · 1954年",
+          "学习的敌人是自己的满足，要认真学习一点东西，必须从不自满开始。 - 《中国共产党在民族战争中的地位》 · 1938年",
+          "对自己，“学而不厌”，对人家，“诲人不倦”，我们应取这种态度。 - 《中国共产党在民族战争中的地位》 · 1938年",
+          "不懂就是不懂，不要装懂。 - 《论人民民主专政》 · 1949年",
+          "要做好先生，首先要做好学生。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "先做学生，然后再做先生；先向下面干部请教，然后再下命令。 - 《党委会的工作方法》 · 1949年",
+          "我们切不可强不知以为知，要“不耻下问”。 - 《党委会的工作方法》 · 1949年",
+          "不懂得和不了解的东西要问下级，不要轻易表示赞成或反对。 - 《党委会的工作方法》 · 1949年",
+          "要善于倾听下面干部的意见。 - 《党委会的工作方法》 · 1949年",
+          "书当然不可不读，但是光读书，还不能解决问题。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "应当把工作以外的剩余精力主要放在学习上，养成学习的习惯。 - 《做革命的促进派》 · 1957年",
+          "我们要振作精神，下苦功学习。 - 《做革命的促进派》 · 1957年",
+          "下苦功，三个字，一个叫下，一个叫苦，一个叫功。 - 《做革命的促进派》 · 1957年",
+          "不论是知识分子，还是青年学生，都应该努力学习。 - 《关于正确处理人民内部矛盾的问题》 · 1957年",
+          "中国靠我们来建设，我们必须努力学习。 - 《必须学会做经济工作》 · 1945年",
+          "我们要学的是属于普遍真理的东西，并且学习一定要与中国实际相结合。 - 《论十大关系》 · 1956年",
+          "不但在第一个五年计划期间要向人家学习，就是在几十个五年计划之后，还应当向人家学习。 - 《论十大关系》 · 1956年",
+          "自然科学方面，我们比较落后，特别要努力向外国学习。 - 《论十大关系》 · 1956年",
+          "当然，是要学习先进经验，不是学习落后经验。 - 《增强党的团结，继承党的传统》 · 1956年",
+          "我们大家要学习他毫无自私自利之心的精神。 - 《纪念白求恩》 · 1939年",
+          "一个人能力有大小，但只要有这点精神，就是一个高尚的人，一个纯粹的人。 - 《纪念白求恩》 · 1939年",
+          "我希望你们也不要自满。 - 《组织起来》 · 1943年",
+          "不要重犯胜利时骄傲的错误。 - 《学习和时局》 · 1944年",
+          "不要因为我们的工作有成绩就骄傲自满起来。 - 《在中国共产党全国代表会议上的讲话》 · 1955年",
+          "一百年也不要骄傲。 - 《关于中华人民共和国宪法草案》 · 1954年",
+          "永远也不要翘尾巴。 - 《关于中华人民共和国宪法草案》 · 1954年",
+          "四五十岁以上的人，年纪越大，经验越多，就应当更谦虚。 - 《在中国共产党全国代表会议上的讲话》 · 1955年",
+          "科学没有什么谦虚不谦虚的问题。 - 《关于中华人民共和国宪法草案》 · 1954年",
+          "知识分子接受前人的经验，主要是靠读书。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "只有使二者互相结合，才会产生好的比较完全的知识。 - 《整顿党的作风》 · 1942年",
+          "而要打成一片，就应当认真学习群众的语言。 - 《在延安文艺座谈会上的讲话》 · 1942年",
+          "在学校则要向学生学习。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "有很多东西，老干部不如新干部，要向他们学习。 - 《坚持艰苦奋斗，密切联系群众》 · 1957年",
+          "务必使同志们继续地保持谦虚、谨慎、不骄、不躁的作风。 - 《在中国共产党第七届中央委员会第二次全体会议上的报告》 · 1949年",
+          "务必使同志们继续地保持艰苦奋斗的作风。 - 《在中国共产党第七届中央委员会第二次全体会议上的报告》 · 1949年",
+          "我们能够去掉不良作风，保持优良作风。 - 《在中国共产党第七届中央委员会第二次全体会议上的报告》 · 1949年",
+          "我们能够学会我们原来不懂的东西。 - 《在中国共产党第七届中央委员会第二次全体会议上的报告》 · 1949年",
+          "力戒骄傲。这对领导者是一个原则问题，也是保持团结的一个重要条件。 - 《党委会的工作方法》 · 1949年",
+          "就是没有犯过大错误，而且工作有了很大成绩的人，也不要骄傲。 - 《党委会的工作方法》 · 1949年",
+          "就是到五十年后象个样子了，也要和现在一样谦虚。 - 《关于中华人民共和国宪法草案》 · 1954年",
+          "牛皮不要吹得太大，尾巴不要翘起来。 - 《关于中华人民共和国宪法草案》 · 1954年",
+          "戒骄戒躁，永远保持谦虚进取的精神。 - 《在中国共产党全国代表会议上的讲话》 · 1955年",
+          "不要夸大干部的这种作用。 - 《在中国共产党全国代表会议上的讲话》 · 1955年",
+          "事业是多数人做的，少数人的作用是有限的。 - 《在中国共产党全国代表会议上的讲话》 · 1955年",
+          "没有你，地球还是照样地转，事业还是照样地进行。 - 《在中国共产党全国代表会议上的讲话》 · 1955年",
+          "我们的同志不要靠老资格吃饭，要靠解决问题正确吃饭。 - 《坚持艰苦奋斗，密切联系群众》 · 1957年",
+          "靠正确，不靠资格。 - 《坚持艰苦奋斗，密切联系群众》 · 1957年",
+          "力戒任何的虚夸和骄傲。 - 《为建设一个伟大的社会主义国家而奋斗》 · 1954年",
+          "孙先生是一个谦虚的人。 - 《纪念孙中山先生》 · 1956年",
+          "我认为，中国有两条缺点，同时又是两条优点。 - 《论十大关系》 · 1956年",
+          "一万年都有两点。 - 《论十大关系》 · 1956年",
+          "总之，是两点而不是一点。 - 《论十大关系》 · 1956年",
+          "说只有一点，叫知其一不知其二。 - 《论十大关系》 · 1956年",
+          "自己毫无主见，往往由一个极端走到另一个极端。 - 《论十大关系》 · 1956年",
+          "应当承认，总是有优点和缺点这两点。 - 《论十大关系》 · 1956年",
+          "威信是逐渐建立的。 - 《青年团的工作要照顾青年的特点》 · 1953年",
+          "真正了解，才能相信。 - 《青年团的工作要照顾青年的特点》 · 1953年",
+          "因为我们是为人民服务的，所以，我们如果有缺点，就不怕别人批评指出。 - 《为人民服务》 · 1944年",
+          "不管是什么人，谁向我们指出都行。 - 《为人民服务》 · 1944年",
+          "只要你说得对，我们就改正。 - 《为人民服务》 · 1944年",
+          "你说的办法对人民有好处，我们就照你的办。 - 《为人民服务》 · 1944年",
+          "只要我们为人民的利益坚持好的，为人民的利益改正错的，我们这个队伍就一定会兴旺起来。 - 《为人民服务》 · 1944年",
+          "我们都是来自五湖四海，为了一个共同的革命目标，走到一起来了。 - 《为人民服务》 · 1944年",
+          "真正的好心，必须对于自己工作的缺点错误有完全诚意的自我批评。 - 《在延安文艺座谈会上的讲话》 · 1942年",
+          "真正的好心，必须顾及效果，总结经验，研究方法。 - 《在延安文艺座谈会上的讲话》 · 1942年",
+          "一个人做事只凭动机，不问效果，等于一个医生只顾开药方。 - 《在延安文艺座谈会上的讲话》 · 1942年",
+          "社会实践及其效果是检验主观愿望或动机的标准。 - 《在延安文艺座谈会上的讲话》 · 1942年",
+          "我们每天都要洗脸，许多人并且不止洗一次，洗完之后还要拿镜子照一照。 - 《反对党八股》 · 1942年",
+          "我们写文章，做演说，只要像洗脸这样负责，就差不多了。 - 《反对党八股》 · 1942年",
+          "拿不出来的东西就不要拿出来。 - 《反对党八股》 · 1942年",
+          "这种责任心薄弱的坏习惯，必须改正才好。 - 《反对党八股》 · 1942年",
+          "办事不认真，无一定计划，无一定方向，敷衍了事，得过且过。 - 《反对自由主义》 · 1937年",
+          "事不关己，高高挂起；明知不对，少说为佳；明哲保身，但求无过。 - 《反对自由主义》 · 1937年",
+          "当面不说，背后乱说；开会不说，会后乱说。 - 《反对自由主义》 · 1937年",
+          "心目中没有集体生活的原则，只有自由放任。 - 《反对自由主义》 · 1937年",
+          "自己错了，也已经懂得，又不想改正，自己对自己采取自由主义。 - 《反对自由主义》 · 1937年",
+          "大事做不来，小事又不做，工作随便，学习松懈。 - 《反对自由主义》 · 1937年",
+          "我们不怕说出自己的毛病，我们一定要改正自己的毛病。 - 《在陕甘宁边区参议会的演说》 · 1941年",
+          "犯了错误则要求改正，改正得越迅速，越彻底，越好。 - 《论人民民主专政》 · 1949年",
+          "共产党人必须随时准备修正错误。 - 《论联合政府》 · 1945年",
+          "共产党人不要怕犯错误。 - 《我们党的一些历史经验》 · 1956年",
+          "犯了错误，也得了犯错误的经验。 - 《关于正确处理人民内部矛盾的问题》 · 1957年",
+          "人大概是没有不犯错误的，多多少少要犯错误，犯了错误就要帮助。 - 《论十大关系》 · 1956年",
+          "犯错误的人，除了极少数坚持错误、屡教不改的以外，大多数是可以改正的。 - 《论十大关系》 · 1956年",
+          "人是要帮助的，没有犯错误的人要帮助，犯了错误的人更要帮助。 - 《论十大关系》 · 1956年",
+          "从善意出发帮助他改正错误，使他有一条出路。 - 《党内团结的辩证方法》 · 1957年",
+          "不因为一个人犯了错误就否定他的一切。 - 《党内团结的辩证方法》 · 1957年",
+          "一定要进行认真的而不是敷衍的批评和自我批评。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "要划清正确和错误、成绩和缺点的界限。 - 《党委会的工作方法》 · 1949年",
+          "一个人的工作，究竟是三分成绩七分错误，还是七分成绩三分错误，必须有个根本的估计。 - 《党委会的工作方法》 · 1949年",
+          "反对浪费，同批判其它缺点错误一样，好比洗脸。 - 《关于正确处理人民内部矛盾的问题》 · 1957年",
+          "要团结一切可以团结和应当团结的力量。 - 《关于中华人民共和国宪法草案》 · 1954年",
+          "团结广大人民，团结得越多越好。 - 《关于重庆谈判》 · 1945年",
+          "一切可以团结的力量都要团结。 - 《论十大关系》 · 1956年",
+          "谅解、支持和友谊，比什么都重要。 - 《党委会的工作方法》 · 1949年",
+          "要把问题摆到桌面上来。 - 《党委会的工作方法》 · 1949年",
+          "不要在背后议论。 - 《党委会的工作方法》 · 1949年",
+          "有了问题就开会，摆到桌面上来讨论，规定它几条，问题就解决了。 - 《党委会的工作方法》 · 1949年",
+          "“班长”和委员还要能互相谅解。 - 《党委会的工作方法》 · 1949年",
+          "注意团结那些和自己意见不同的同志一道工作。 - 《党委会的工作方法》 · 1949年",
+          "所谓团结，就是团结跟自己意见分歧的，看不起自己的，不尊重自己的。 - 《增强党的团结，继承党的传统》 · 1956年",
+          "从团结的愿望出发。 - 《关于正确处理人民内部矛盾的问题》 · 1957年",
+          "为了改造，先要团结。 - 《文化工作中的统一战线》 · 1944年",
+          "要把界限划好，必须经过细致的研究和分析。 - 《党委会的工作方法》 · 1949年",
+          "一切妨害团结的现象，都在必须克服之列。 - 《论联合政府》 · 1945年",
+          "我们要提倡同地方商量办事的作风。 - 《论十大关系》 · 1956年",
+          "凡是同地方有关的事情，都要先同地方商量，商量好了再下命令。 - 《论十大关系》 · 1956年",
+          "同他们诚恳地坦白地商量和解决那些必须商量和解决的问题。 - 《在中国共产党第七届中央委员会第二次全体会议上的报告》 · 1949年",
+          "要人家服，只能说服，不能压服。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "压服的结果总是压而不服。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "不会说服怎么办？这就要学习。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "我们一定要学会通过辩论的方法、说理的方法，来克服各种错误思想。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "只有采取讨论的方法，批评的方法，说理的方法，才能真正解决问题。 - 《关于正确处理人民内部矛盾的问题》 · 1957年",
+          "对于错误的意见，不是压服，而是说服，以理服人。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "发展各种意见之间的相互争论和相互批评。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "既容许批评的自由，也容许批评批评者的自由。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "必须兼顾国家、集体和个人三个方面。 - 《论十大关系》 · 1956年",
+          "中央和各级党委必须坚持集体领导的原则。 - 《在中国共产党全国代表会议上的讲话》 · 1955年",
+          "同志们，只要我们能团结，这个目的就一定能够达到。 - 《中国共产党在民族战争中的地位》 · 1938年",
+          "我们这个队伍完全是为着解放人民的，是彻底地为人民的利益工作的。 - 《为人民服务》 · 1944年",
+          "全心全意地为人民服务，一刻也不脱离群众。 - 《论联合政府》 · 1945年",
+          "一切从人民的利益出发，而不是从个人或小集团的利益出发。 - 《论联合政府》 · 1945年",
+          "人民，只有人民，才是创造世界历史的动力。 - 《论联合政府》 · 1945年",
+          "真正的铜墙铁壁是什么？是群众，是千百万真心实意地拥护革命的群众。 - 《关心群众生活，注意工作方法》 · 1934年",
+          "群众齐心了，一切事情就好办了。 - 《对晋绥日报编辑人员的谈话》 · 1948年",
+          "从群众中来，到群众中去。 - 《关于领导方法的若干问题》 · 1943年",
+          "然后再从群众中集中起来，再到群众中坚持下去。 - 《关于领导方法的若干问题》 · 1943年",
+          "如此循环，一次比一次地更正确、更生动、更丰富。 - 《关于领导方法的若干问题》 · 1943年",
+          "想问题从群众出发就好办。 - 《切实执行十大政策》 · 1943年",
+          "只有代表群众才能教育群众，只有做群众的学生才能做群众的先生。 - 《在延安文艺座谈会上的讲话》 · 1942年",
+          "每到一地，就和那里的群众打成一片，不是高踞于群众之上，而是深入于群众之中。 - 《论联合政府》 · 1945年",
+          "为什么人服务的问题解决了，接着的问题就是如何去服务。 - 《在延安文艺座谈会上的讲话》 · 1942年",
+          "任何一种东西，必须能使人民群众得到真实的利益，才是好的东西。 - 《在延安文艺座谈会上的讲话》 · 1942年",
+          "国家机关工作人员必须为人民服务。 - 《关于正确处理人民内部矛盾的问题》 · 1957年",
+          "国家机关必须依靠人民群众。 - 《关于正确处理人民内部矛盾的问题》 · 1957年",
+          "文化工作者必须有为人民服务的高度的热忱。 - 《文化工作中的统一战线》 · 1944年",
+          "一切为群众的工作都要从群众的需要出发，而不是从任何良好的个人愿望出发。 - 《文化工作中的统一战线》 · 1944年",
+          "群众是否已经了解并且是否愿意行动起来，要到群众中去考察才会知道。 - 《论联合政府》 · 1945年",
+          "我们的同志不要以为自己了解了的东西，广大群众也和自己一样都了解了。 - 《论联合政府》 · 1945年",
+          "共产党基本的一条，就是直接依靠广大革命人民群众。 - 《在扩大的中央工作会议上的讲话》 · 1962年",
+          "共产党的路线，就是人民的路线。 - 《在〈解放日报〉改版座谈会上的讲话》 · 1942年",
+          "群众有伟大的创造力。 - 《组织起来》 · 1943年",
+          "中国人民中间，实在有成千成万的“诸葛亮”。 - 《组织起来》 · 1943年",
+          "依靠民众则一切困难能够克服。 - 《抗战十五个月的总结》 · 1938年",
+          "群众对领导者真正佩服，要靠在革命实践中了解。 - 《青年团的工作要照顾青年的特点》 · 1953年",
+          "下定决心，不怕牺牲，排除万难，去争取胜利。 - 《愚公移山》 · 1945年",
+          "我们的同志在困难的时候，要看到成绩，要看到光明，要提高我们的勇气。 - 《为人民服务》 · 1944年",
+          "前途是光明的，道路是曲折的。 - 《关于重庆谈判》 · 1945年",
+          "世界上没有直路，要准备走曲折的路，不要贪便宜。 - 《关于重庆谈判》 · 1945年",
+          "中国的问题是复杂的，我们的脑子也要复杂一点。 - 《关于重庆谈判》 · 1945年",
+          "越是困难的地方越是要去，这才是好同志。 - 《关于重庆谈判》 · 1945年",
+          "艰苦的工作就像担子，摆在我们的面前，看我们敢不敢承担。 - 《关于重庆谈判》 · 1945年",
+          "有的人拈轻怕重，把重担子推给人家，自己拣轻的挑。 - 《关于重庆谈判》 · 1945年",
+          "享受让给人家，担子拣重的挑，吃苦在别人前头，享受在别人后头。 - 《关于重庆谈判》 · 1945年",
+          "多少一点困难怕什么。 - 《别了，司徒雷登》 · 1949年",
+          "中国人死都不怕，还怕困难吗？ - 《别了，司徒雷登》 · 1949年",
+          "中国的前途如何，靠我们大家的努力如何来决定。 - 《关于重庆谈判》 · 1945年",
+          "我们自己的命运完全应当由我们自己来掌握。 - 《目前形势和我们的任务》 · 1947年",
+          "我们应当在自己内部肃清一切软弱无能的思想。 - 《目前形势和我们的任务》 · 1947年",
+          "这不过是暂时的现象，黑暗即将过去，曙光即在前头。 - 《目前形势和我们的任务》 · 1947年",
+          "从来没有不经过打扫而自动去掉的灰尘。 - 《抗日战争胜利后的时局和我们的方针》 · 1945年",
+          "手里拿着扫帚就要研究扫的办法，不要躺在床上。 - 《抗日战争胜利后的时局和我们的方针》 · 1945年",
+          "条件多具备一分，早具备一日，胜利的把握就多一分。 - 《论持久战》 · 1938年",
+          "我们主张为着争取最后胜利所必要的一切条件而努力。 - 《论持久战》 · 1938年",
+          "不打无准备之仗，不打无把握之仗。 - 《目前形势和我们的任务》 · 1947年",
+          "我们历来不打无准备无把握之仗。 - 《青年团的工作要照顾青年的特点》 · 1953年",
+          "尽管有那么多，我们都先准备好了，就不怕了。 - 《在中国共产党全国代表会议上的讲话》 · 1955年",
+          "只要上面善于提出任务，放手让下面自力更生，问题就解决了。 - 《论军队生产自给，兼论整风和生产两大运动的重要性》 · 1945年",
+          "需要几十年艰苦奋斗的时间。 - 《关于正确处理人民内部矛盾的问题》 · 1957年",
+          "要勤俭持家，作长远打算。 - 《做革命的促进派》 · 1957年",
+          "不能希望一年把好事都做完。 - 《论十大关系》 · 1956年",
+          "两头都要抓紧，学习工作要抓紧，睡眠休息娱乐也要抓紧。 - 《青年团的工作要照顾青年的特点》 · 1953年",
+          "身体好并不一定学习好，学习要有一些办法。 - 《青年团的工作要照顾青年的特点》 · 1953年",
+          "准备到了那里，就要生根、开花、结果。 - 《关于重庆谈判》 · 1945年",
+          "中国人民应当加倍努力，为完成自己的神圣任务而奋斗。 - 《论联合政府》 · 1945年",
+          "全国青年们，努力啊！ - 《五四运动》 · 1939年",
+          "道路总是曲折的，前途总是光明的。 - 《论十大关系》 · 1956年",
+          "事情有大道理，有小道理，一切小道理都归大道理管着。 - 《反对日本进攻的方针、办法和前途》 · 1937年",
+          "办法是跟着方针来的。 - 《反对日本进攻的方针、办法和前途》 · 1937年",
+          "没有全局在胸，是不会真的投下一着好棋子的。 - 《中国革命战争的战略问题》 · 1936年",
+          "共产党员必须懂得以局部需要服从全局需要这一个道理。 - 《中国共产党在民族战争中的地位》 · 1938年",
+          "没有好的全战役计划，绝不能有真正好的第一仗。 - 《中国革命战争的战略问题》 · 1936年",
+          "不要企图建立长时期的具体计划。 - 《中国革命战争的战略问题》 · 1936年",
+          "大方向虽在一个时期中是不变更的，然而大方向内的小方向则是随时变更的。 - 《中国革命战争的战略问题》 · 1936年",
+          "我们看事情必须要看它的实质，而把它的现象只看作入门的向导。 - 《星星之火，可以燎原》 · 1930年",
+          "一进了门就要抓住它的实质，这才是可靠的科学的分析方法。 - 《星星之火，可以燎原》 · 1930年",
+          "看它的过去，就可以知道它的现在；看它的过去和现在，就可以知道它的将来。 - 《抗日战争胜利后的时局和我们的方针》 · 1945年",
+          "一时的后退现象，不能代替总的历史规律。 - 《为争取千百万群众进入抗日民族统一战线而斗争》 · 1937年",
+          "事物是往返曲折的，不是径情直遂的。 - 《论持久战》 · 1938年",
+          "气候变化了，衣服必须随着变化。 - 《一个极其重要的政策》 · 1942年",
+          "普通的人，容易为过去和当前的情况所迷惑，以为今后也不过如此。 - 《一个极其重要的政策》 · 1942年",
+          "他们缺乏事先看出航船将要遇到暗礁的能力。 - 《一个极其重要的政策》 · 1942年",
+          "凡事应该用脑筋好好想一想。 - 《学习和时局》 · 1944年",
+          "脑筋这个机器的作用，是专门思想的。 - 《学习和时局》 · 1944年",
+          "眉头一皱，计上心来，就是说多想出智慧。 - 《学习和时局》 · 1944年",
+          "所谓分析，就是分析事物的矛盾。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "分析的方法就是辩证的方法。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "要解决问题，还须作系统的周密的调查工作和研究工作，这就是分析的过程。 - 《反对党八股》 · 1942年",
+          "提出问题，首先就要对于问题即矛盾的两个基本方面加以大略的调查和研究。 - 《反对党八股》 · 1942年",
+          "什么叫问题？问题就是事物的矛盾。 - 《反对党八股》 · 1942年",
+          "哪里有没有解决的矛盾，哪里就有问题。 - 《反对党八股》 · 1942年",
+          "所谓片面性，就是不知道全面地看问题。 - 《矛盾论》 · 1937年",
+          "没有什么事物是不包含矛盾的，没有矛盾就没有世界。 - 《矛盾论》 · 1937年",
+          "矛盾不断出现，又不断解决，就是事物发展的辩证规律。 - 《关于正确处理人民内部矛盾的问题》 · 1957年",
+          "不同质的矛盾，只有用不同质的方法才能解决。 - 《矛盾论》 · 1937年",
+          "不能把过程中所有的矛盾平均看待。 - 《矛盾论》 · 1937年",
+          "任何质量都表现为一定的数量，没有数量也就没有质量。 - 《党委会的工作方法》 · 1949年",
+          "对情况和问题一定要注意到它们的数量方面，要有基本的数量的分析。 - 《党委会的工作方法》 · 1949年",
+          "任何矛盾不但应当解决，也是完全可以解决的。 - 《关于正确处理人民内部矛盾的问题》 · 1957年",
+          "不要只考虑一种方法，经常要考虑两种方法。 - 《做革命的促进派》 · 1957年",
+          "我们对问题要作全面的分析，才能解决得妥当。 - 《在中国共产党第八届中央委员会第二次全体会议上的讲话》 · 1956年",
+          "我们走路，不是两个脚同时走，总是参差不齐的。 - 《在中国共产党第八届中央委员会第二次全体会议上的讲话》 · 1956年",
+          "动是绝对的，静是暂时的，有条件的。 - 《在中国共产党第八届中央委员会第二次全体会议上的讲话》 · 1956年",
+          "事物在时间中运动，到那个时候该办了，就要办。 - 《农业合作化的一场辩论和当前的阶级斗争》 · 1955年",
+          "我们要根据具体的条件办事，是自然地而不是勉强地达到我们的目的。 - 《农业合作化的一场辩论和当前的阶级斗争》 · 1955年",
+          "为了判断正确的东西和错误的东西，常常需要有考验的时间。 - 《关于正确处理人民内部矛盾的问题》 · 1957年",
+          "历史上新的正确的东西，在开始的时候常常得不到多数人承认。 - 《关于正确处理人民内部矛盾的问题》 · 1957年",
+          "自古以来，没有先进的东西一开始就受欢迎，它总是要挨骂。 - 《在省市自治区党委书记会议上的讲话》 · 1957年",
+          "一切事物，它的现象同它的本质之间是有矛盾的。 - 《在中国共产党全国代表会议上的讲话》 · 1955年",
+          "不然，用直觉一看就看出本质来，还要科学干什么？ - 《在中国共产党全国代表会议上的讲话》 · 1955年",
+          "感觉到了的东西，我们不能立刻理解它，只有理解了的东西才更深刻地感觉它。 - 《实践论》 · 1937年",
+          "领导工作不仅要决定方针政策，还要制定正确的工作方法。 - 《党委会的工作方法》 · 1949年",
+          "什么东西只有抓得很紧，毫不放松，才能抓住。 - 《党委会的工作方法》 · 1949年",
+          "抓而不紧，等于不抓。 - 《党委会的工作方法》 · 1949年",
+          "不抓不行，抓而不紧也不行。 - 《党委会的工作方法》 · 1949年",
+          "弹钢琴要十个指头都动作，不能有的动，有的不动。 - 《党委会的工作方法》 · 1949年",
+          "十个指头的动作要有节奏，要互相配合。 - 《党委会的工作方法》 · 1949年",
+          "党委要抓紧中心工作，又要围绕中心工作而同时开展其它方面的工作。 - 《党委会的工作方法》 · 1949年",
+          "胸中有“数”。 - 《党委会的工作方法》 · 1949年",
+          "让大家知道要讨论什么问题，解决什么问题，并且早作准备。 - 《党委会的工作方法》 · 1949年",
+          "如果没有准备，就不要急于开会。 - 《党委会的工作方法》 · 1949年",
+          "讲话、演说、写文章和写决议案，都应当简明扼要。 - 《党委会的工作方法》 · 1949年",
+          "会议也不要开得太长。 - 《党委会的工作方法》 · 1949年",
+          "应当使总负责人和分负责人都知道，都负责。 - 《关于领导方法的若干问题》 · 1943年",
+          "在一定时间内只能有一个中心工作。 - 《关于领导方法的若干问题》 · 1943年",
+          "领导者的责任，归结起来，主要地是出主意、用干部两件事。 - 《中国共产党在民族战争中的地位》 · 1938年",
+          "不但要看干部的一时一事，而且要看干部的全部历史和全部工作。 - 《中国共产党在民族战争中的地位》 · 1938年",
+          "不但要关心党的干部，还要关心非党的干部。 - 《中国共产党在民族战争中的地位》 · 1938年",
+          "故领导者必须善于团结少数积极分子作为领导的骨干。 - 《关于领导方法的若干问题》 · 1943年",
+          "应当对这些经验作出适当的总结。 - 《论联合政府》 · 1945年",
+          "切记不要使问题成了堆，才来一个总结，放马后炮。 - 《农业合作化的一场辩论和当前的阶级斗争》 · 1955年",
+          "如果有问题，就要从个别中看出普遍性。 - 《农业合作化的一场辩论和当前的阶级斗争》 · 1955年",
+          "不要把所有的麻雀统统捉来解剖。 - 《农业合作化的一场辩论和当前的阶级斗争》 · 1955年",
+          "许多做领导工作的人，遇到困难问题，只是叹气，不能解决。 - 《反对本本主义》 · 1930年",
+          "你对于那个问题不能解决吗？那么，你就去调查那个问题的现状和它的历史吧！ - 《反对本本主义》 · 1930年",
+          "要进行广大的教育工作、说服工作、团结工作。 - 《增强党的团结，继承党的传统》 · 1956年",
+          "帮助他们解决各种必须解决的问题。 - 《关于正确处理人民内部矛盾的问题》 · 1957年",
+          "只要你还能工作就多多少少应当工作。 - 《坚持艰苦奋斗，密切联系群众》 · 1957年",
+          "我们的同志必须用极大的努力去学习生产的技术和管理生产的方法。 - 《在中国共产党第七届中央委员会第二次全体会议上的报告》 · 1949年",
+          "恰同学少年，风华正茂；书生意气，挥斥方遒。 - 《沁园春·长沙》 · 1925年",
+          "鹰击长空，鱼翔浅底，万类霜天竞自由。 - 《沁园春·长沙》 · 1925年",
+          "怅寥廓，问苍茫大地，谁主沉浮。 - 《沁园春·长沙》 · 1925年",
+          "到中流击水，浪遏飞舟。 - 《沁园春·长沙》 · 1925年",
+          "人生易老天难老，岁岁重阳。 - 《采桑子·重阳》 · 1929年",
+          "战地黄花分外香。 - 《采桑子·重阳》 · 1929年",
+          "胜似春光，寥廓江天万里霜。 - 《采桑子·重阳》 · 1929年",
+          "东方欲晓，莫道君行早。 - 《清平乐·会昌》 · 1934年",
+          "踏遍青山人未老，风景这边独好。 - 《清平乐·会昌》 · 1934年",
+          "赤橙黄绿青蓝紫，谁持彩练当空舞？ - 《菩萨蛮·大柏地》 · 1933年",
+          "雨后复斜阳，关山阵阵苍。 - 《菩萨蛮·大柏地》 · 1933年",
+          "装点此关山，今朝更好看。 - 《菩萨蛮·大柏地》 · 1933年",
+          "雄关漫道真如铁，而今迈步从头越。 - 《忆秦娥·娄山关》 · 1935年",
+          "红军不怕远征难，万水千山只等闲。 - 《七律·长征》 · 1935年",
+          "五岭逶迤腾细浪，乌蒙磅礴走泥丸。 - 《七律·长征》 · 1935年",
+          "更喜岷山千里雪，三军过后尽开颜。 - 《七律·长征》 · 1935年",
+          "不到长城非好汉，屈指行程二万。 - 《清平乐·六盘山》 · 1935年",
+          "天高云淡，望断南飞雁。 - 《清平乐·六盘山》 · 1935年",
+          "今日长缨在手，何时缚住苍龙？ - 《清平乐·六盘山》 · 1935年",
+          "江山如此多娇，引无数英雄竞折腰。 - 《沁园春·雪》 · 1936年",
+          "须晴日，看红装素裹，分外妖娆。 - 《沁园春·雪》 · 1936年",
+          "俱往矣，数风流人物，还看今朝。 - 《沁园春·雪》 · 1936年",
+          "牢骚太盛防肠断，风物长宜放眼量。 - 《七律·和柳亚子先生》 · 1949年",
+          "天若有情天亦老，人间正道是沧桑。 - 《七律·人民解放军占领南京》 · 1949年",
+          "万里长江横渡，极目楚天舒。 - 《水调歌头·游泳》 · 1956年",
+          "不管风吹浪打，胜似闲庭信步。 - 《水调歌头·游泳》 · 1956年",
+          "一桥飞架南北，天堑变通途。 - 《水调歌头·游泳》 · 1956年",
+          "为有牺牲多壮志，敢教日月换新天。 - 《七律·到韶山》 · 1959年",
+          "喜看稻菽千重浪，遍地英雄下夕烟。 - 《七律·到韶山》 · 1959年",
+          "暮色苍茫看劲松，乱云飞渡仍从容。 - 《七绝·为李进同志题所摄庐山仙人洞照》 · 1961年",
+          "天生一个仙人洞，无限风光在险峰。 - 《七绝·为李进同志题所摄庐山仙人洞照》 · 1961年",
+          "风雨送春归，飞雪迎春到。 - 《卜算子·咏梅》 · 1961年",
+          "已是悬崖百丈冰，犹有花枝俏。 - 《卜算子·咏梅》 · 1961年",
+          "俏也不争春，只把春来报。 - 《卜算子·咏梅》 · 1961年",
+          "待到山花烂漫时，她在丛中笑。 - 《卜算子·咏梅》 · 1961年",
+          "多少事，从来急；天地转，光阴迫。 - 《满江红·和郭沫若同志》 · 1963年",
+          "一万年太久，只争朝夕。 - 《满江红·和郭沫若同志》 · 1963年",
+          "可上九天揽月，可下五洋捉鳖，谈笑凯歌还。 - 《水调歌头·重上井冈山》 · 1965年",
+          "世上无难事，只要肯登攀。 - 《水调歌头·重上井冈山》 · 1965年",
+          "年年后浪推前浪，江草江花处处鲜。 - 《七律·洪都》 · 1965年",
+          "实事求是。 - 《改造我们的学习》 · 1941年",
+          "为人民服务。 - 《为人民服务》 · 1944年",
+          "虚心使人进步，骄傲使人落后。 - 《中国共产党第八次全国代表大会开幕词》 · 1956年",
+          "好好学习，天天向上。 - 《为陈永康小朋友题词》 · 1951年",
+          "百花齐放，百家争鸣。 - 《关于正确处理人民内部矛盾的问题》 · 1957年",
+          "星星之火，可以燎原。 - 《星星之火，可以燎原》 · 1930年",
+          "夺取全国胜利，这只是万里长征走完了第一步。 - 《在中国共产党第七届中央委员会第二次全体会议上的报告》 · 1949年",
+          "真理的标准只能是社会的实践。 - 《实践论》 · 1937年",
+          "实践、认识、再实践、再认识 - 《实践论》 · 1937年",
+          "捉住了这个主要矛盾，一切问题就迎刃而解了。 - 《矛盾论》 · 1937年",
+          "兵民是胜利之本 - 《论持久战》 · 1938年",
+          "为什么人的问题，是一个根本的问题，原则的问题。 - 《在延安文艺座谈会上的讲话》 · 1942年",
+          "组织起来 - 《组织起来》 · 1943年",
+          "我们已经站起来了。 - 《中国人民站起来了》 · 1949年",
+          "我们的民族将再也不是一个被人侮辱的民族了 - 《中国人民站起来了》 · 1949年",
+          "一切反动派都是纸老虎。 - 《和美国记者安娜·刘易斯·斯特朗的谈话》 · 1946年",
+          "世界是你们的，也是我们的，但是归根结底是你们的。 - 《在莫斯科接见中国留学生的讲话》 · 1957年",
+          "宜将剩勇追穷寇，不可沽名学霸王。 - 《七律·人民解放军占领南京》 · 1949年",
+          "还必须使全国广大人民群众觉悟，甘心情愿和我们一起奋斗，去争取胜利。 - 《愚公移山》 · 1945年",
+          "什么人站在革命人民方面，他就是革命派。 - 《做一个完全的革命派》 · 1950年",
+          "只要我们依靠人民，相信人民群众的创造力是无穷无尽的，任何困难都是可以克服的。 - 《论联合政府》 · 1945年",
+          "把群众组织起来，把一切老百姓的力量、一切部队机关学校的力量、一切男女老少的全劳动力半劳动力，只要是可能的，就要毫无例外地动员起来，组织起来，成为一支劳动大军。 - 《组织起来》 · 1943年",
+          "一个正确的认识，往往需要经过由物质到精神，由精神到物质，即由实践到认识，由认识到实践这样多次的反复，才能够完成。 - 《人的正确思想是从哪里来的？》 · 1963年",
+          "我们讨论问题，应当从实际出发，不是从定义出发。 - 《在延安文艺座谈会上的讲话》 · 1942年",
+          "不论做什么事，不懂得那件事的情形，它的性质，它和它以外的事情的关联，就不知道那件事的规律，就不知道如何去做，就不能做好那件事。 - 《中国革命战争的战略问题》 · 1936年",
+          "不根据实际情况进行讨论和审察，一味盲目执行，这种单纯建立在“上级”观念上的形式主义的态度是很不对的。 - 《反对本本主义》 · 1930年",
+          "形式主义是一种幼稚的、低级的、庸俗的、不用脑子的东西。 - 《反对党八股》 · 1942年",
+          "世界上怕就怕“认真”二字，共产党就最讲认真。 - 《在莫斯科大学接见中国留苏学生的讲话》 · 1957年",
+          "人是要有一点精神的。 - 《在中国共产党第八届中央委员会第二次全体会议上的讲话》 · 1956年",
+          "我们想到人民的利益，想到大多数人民的痛苦，我们为人民而死，就是死得其所。 - 《为人民服务》 · 1944年",
+          "一个人做点好事并不难，难的是一辈子做好事，不做坏事，一贯地有益于广大群众，一贯地有益于青年，一贯地有益于革命，艰苦奋斗几十年如一日，这才是最难最难的！ - 《在吴玉章同志六十寿辰庆祝大会上的祝词》 · 1940年",
+          "加强纪律性，革命无不胜。 - 《为〈中国青年〉复刊题词》 · 1948年",
+          "教育者必须先受教育。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "我们决不能一见成绩就自满自足起来。我们应该抑制自满，时时批评自己的缺点，好像我们为了自己的清洁，为了去掉灰尘，天天要洗脸，天天要扫地一样。 - 《组织起来》 · 1943年",
+          "没有文化的军队是愚蠢的军队，而愚蠢的军队是不能战胜敌人的！ - 《文化工作中的统一战线》 · 1944年",
+          "凡是敌人反对的，我们就要拥护；凡是敌人拥护的，我们就要反对。 - 《和中央社、扫荡报、新民报三记者的谈话》 · 1939年",
+          "不是东风压倒西风，就是西风压倒东风。 - 《在莫斯科共产党和工人党代表会议上的讲话》 · 1957年",
+          "我们不但善于破坏一个旧世界，我们还将善于建设一个新世界。 - 《在中国共产党第七届中央委员会第二次全体会议上的报告》 · 1949年",
+          "卑贱者最聪明，高贵者最愚蠢。 - 《为丹东汽车厂技术革新报告的批语》 · 1958年",
+          "伤其十指，不如断其一指。 - 《中国革命战争的战略问题》 · 1936年",
+          "只有大量地消灭敌人，才能有效地保存自己。 - 《论持久战》 · 1938年",
+          "世上决没有无缘无故的爱，也没有无缘无故的恨。 - 《在延安文艺座谈会上的讲话》 · 1942年",
+          "革命不是请客吃饭，不是做文章，不是绘画绣花，不能那样雅致，那样从容不迫，文质彬彬，那样温良恭俭让。 - 《湖南农民运动考察报告》 · 1927年",
+          "谁是我们的敌人？谁是我们的朋友？这个问题是革命的首要问题。 - 《中国社会各阶级的分析》 · 1925年",
+          "战略上要藐视敌人，战术上要重视敌人。 - 《关于目前党的政策中的几个重要问题》 · 1948年",
+          "在战争中学习战争。 - 《中国革命战争的战略问题》 · 1936年",
+          "敌进我退，敌驻我扰，敌疲我打，敌退我追。 - 《中国革命战争的战略问题》 · 1936年",
+          "打得赢就打，打不赢就走。 - 《中国革命战争的战略问题》 · 1936年",
+          "武器是战争的重要的因素，但不是决定的因素，决定的因素是人不是物。 - 《论持久战》 · 1938年",
+          "基本粒子也是可分的。 - 《关于坂田昌一文章的谈话》 · 1964年",
+          "马克思主义的哲学认为，对立统一规律是宇宙的根本规律。 - 《关于正确处理人民内部矛盾的问题》 · 1957年",
+          "坐地日行八万里，巡天遥看一千河。 - 《七律二首·送瘟神》 · 1958年",
+          "扫帚不到，灰尘照例不会自己跑掉。 - 《抗日战争胜利后的时局和我们的方针》 · 1945年",
+          "人是要有帮助的。荷花虽好，也要绿叶扶持。一个篱笆要打三个桩，一个好汉要有三个帮。 - 《在中国共产党全国代表会议上的讲话》 · 1955年",
+          "常常问题是提出了，但还不能解决，就是因为还没有暴露事物的内部联系。 - 《反对党八股》 · 1942年",
+          "懂得了全局性的东西，就更会使用局部性的东西，因为局部性的东西是隶属于全局性的东西的。 - 《中国革命战争的战略问题》 · 1936年",
+          "去粗取精、去伪存真、由此及彼、由表及里。 - 《中国革命战争的战略问题》 · 1936年",
+          "枪杆子里面出政权。 - 《在八七会议上的发言》 · 1927年",
+          "农村是一个广阔的天地，在那里是可以大有作为的。 - 《〈中国农村的社会主义高潮〉按语》 · 1955年",
+          "指点江山，激扬文字，粪土当年万户侯。 - 《沁园春·长沙》 · 1925年",
+          "核潜艇，一万年也要搞出来！ - 《关于研制核潜艇的谈话》 · 1959年",
+          "人不犯我，我不犯人；人若犯我，我必犯人。 - 《和中央社、扫荡报、新民报三记者的谈话》 · 1939年",
+          "三十八年过去，弹指一挥间。 - 《水调歌头·重上井冈山》 · 1965年",
+          "发展体育运动，增强人民体质。 - 《为中华全国体育总会成立题词》 · 1952年",
+          "高峡出平湖。 - 《水调歌头·游泳》 · 1956年",
+          "向雷锋同志学习。 - 《为学习雷锋题词》 · 1963年",
+          "生的伟大，死的光荣。 - 《为刘胡兰烈士题词》 · 1947年",
+          "把别人的经验变成自己的，他的本领就大了。 - 《对晋绥日报编辑人员的谈话》 · 1948年",
+          "情况是在不断地变化，要使自己的思想适应新的情况，就得学习。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "你是我二十年前的先生，你现在仍然是我的先生，你将来必定还是我的先生。 - 《给徐特立同志的一封信》 · 1937年",
+          "彻底的唯物主义者是无所畏惧的。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "贪污和浪费是极大的犯罪。 - 《我们的经济政策》 · 1934年"
+        ],
+        running: [
+          "没有调查，没有发言权。 - 《反对本本主义》 · 1930年",
+          "调查就像“十月怀胎”，解决问题就像“一朝分娩”。 - 《反对本本主义》 · 1930年",
+          "一切结论产生于调查情况的末尾，而不是在它的先头。 - 《反对本本主义》 · 1930年",
+          "调查就是解决问题。 - 《反对本本主义》 · 1930年",
+          "必须努力作实际调查，才能洗刷唯心精神。 - 《反对本本主义》 · 1930年",
+          "到群众中作实际调查去！ - 《反对本本主义》 · 1930年",
+          "一定都要亲身从事社会经济的实际调查。 - 《反对本本主义》 · 1930年",
+          "注重调查！反对瞎说！ - 《反对本本主义》 · 1930年",
+          "迈开你的两脚，到你的工作范围的各部分各地方去走走。 - 《反对本本主义》 · 1930年",
+          "你完完全全调查明白了，你对那个问题就有解决的办法了。 - 《反对本本主义》 · 1930年",
+          "必须按照随时变化随地不同的具体情况去做。 - 《抗日游击战争的战略问题》 · 1938年",
+          "这种态度，就是实事求是的态度。 - 《改造我们的学习》 · 1941年",
+          "“实事”就是客观存在着的一切事物。 - 《改造我们的学习》 · 1941年",
+          "“是”就是客观事物的内部联系，即规律性。 - 《改造我们的学习》 · 1941年",
+          "“求”就是我们去研究。 - 《改造我们的学习》 · 1941年",
+          "科学是老老实实的学问，任何一点调皮都是不行的。 - 《改造我们的学习》 · 1941年",
+          "我们还是老实一点吧！ - 《改造我们的学习》 · 1941年",
+          "在全党推行调查研究的计划，是转变党的作风的基础一环。 - 《改造我们的学习》 · 1941年",
+          "许多人是做实际工作的，他们也不注意客观情况的研究，往往单凭热情，把感想当政策。 - 《改造我们的学习》 · 1941年",
+          "东张西望，道听途说，决然得不到什么完全的知识。 - 《〈农村调查〉的序言和跋》 · 1941年",
+          "没有眼睛向下的兴趣和决心，是一辈子也不会真正懂得中国的事情的。 - 《〈农村调查〉的序言和跋》 · 1941年",
+          "第一是眼睛向下，不要只是昂首望天。 - 《〈农村调查〉的序言和跋》 · 1941年",
+          "群众是真正的英雄，而我们自己则往往是幼稚可笑的。 - 《〈农村调查〉的序言和跋》 · 1941年",
+          "和全党同志共同一起向群众学习，继续当一个小学生，这就是我的志愿。 - 《〈农村调查〉的序言和跋》 · 1941年",
+          "没有放下臭架子、甘当小学生的精神，是一定不能做，也一定做不好的。 - 《〈农村调查〉的序言和跋》 · 1941年",
+          "要了解情况，唯一的方法是向社会作调查。 - 《〈农村调查〉的序言和跋》 · 1941年",
+          "实际工作者须随时去了解变化着的情况。 - 《〈农村调查〉的序言和跋》 · 1941年",
+          "研究问题，忌带主观性、片面性和表面性。 - 《矛盾论》 · 1937年",
+          "真理只有一个，而究竟谁发现了真理，不依靠主观的夸张，而依靠客观的实践。 - 《新民主主义论》 · 1940年",
+          "只有千百万人民的革命实践，才是检验真理的尺度。 - 《新民主主义论》 · 1940年",
+          "凡真理都不装样子吓人，它只是老老实实地说下去和做下去。 - 《反对党八股》 · 1942年",
+          "思想必须反映客观实际。 - 《增强党的团结，继承党的传统》 · 1956年",
+          "按照实际情况决定工作方针，这是一切共产党员所必须牢牢记住的最基本的工作方法。 - 《在晋绥干部会议上的讲话》 · 1948年",
+          "一定要研究当前的情况，研究实际的经验和材料。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "尽可能不要被假象所迷惑。 - 《在中国共产党全国代表会议上的讲话》 · 1955年",
+          "人们必须通过对现象的分析和研究，才能了解到事物的本质。 - 《在中国共产党全国代表会议上的讲话》 · 1955年",
+          "通过实践而发现真理，又通过实践而证实真理和发展真理。 - 《实践论》 · 1937年",
+          "只有人们的社会实践，才是人们对于外界认识的真理性的标准。 - 《实践论》 · 1937年",
+          "你要知道梨子的滋味，你就得变革梨子，亲口吃一吃。 - 《实践论》 · 1937年",
+          "一切真知都是从直接经验发源的。 - 《实践论》 · 1937年",
+          "你要有知识，你就得参加变革现实的实践。 - 《实践论》 · 1937年",
+          "离开实践的认识是不可能的。 - 《实践论》 · 1937年",
+          "认识从实践始，经过实践得到了理论的认识，还须再回到实践去。 - 《实践论》 · 1937年",
+          "改造客观世界，也改造主观世界。 - 《实践论》 · 1937年",
+          "一定要使自己的思想合于客观外界的规律性。 - 《实践论》 · 1937年",
+          "感觉只解决现象问题，理论才解决本质问题。这些问题的解决，一点也不能离开实践。 - 《实践论》 · 1937年",
+          "认识的感性阶段有待于发展到理性阶段。 - 《实践论》 · 1937年",
+          "但人不能事事直接经验，事实上多数的知识都是间接经验的东西。 - 《实践论》 · 1937年",
+          "知识的问题是一个科学问题，来不得半点的虚伪和骄傲。 - 《实践论》 · 1937年",
+          "有了道听途说的一知半解，便自封为“天下第一”，适足见其不自量而已。 - 《实践论》 · 1937年",
+          "读书是学习，使用也是学习，而且是更重要的学习。 - 《中国革命战争的战略问题》 · 1936年",
+          "从没有经验到有经验，要有一个过程。 - 《对晋绥日报编辑人员的谈话》 · 1948年",
+          "经验对于干部是必需的，失败确是成功之母。 - 《中国革命战争的战略问题》 · 1936年",
+          "我们不但要提出任务，而且要解决完成任务的方法问题。 - 《关心群众生活，注意工作方法》 · 1934年",
+          "我们的任务是过河，但是没有桥或没有船就不能过。 - 《关心群众生活，注意工作方法》 · 1934年",
+          "不解决方法问题，任务也只是瞎说一顿。 - 《关心群众生活，注意工作方法》 · 1934年",
+          "不解决桥或船的问题，过河就是一句空话。 - 《关心群众生活，注意工作方法》 · 1934年",
+          "纸上的东西并不等于现实的东西。 - 《关于重庆谈判》 · 1945年",
+          "要把它变成现实的东西，还要经过很大的努力。 - 《关于重庆谈判》 · 1945年",
+          "外因是变化的条件，内因是变化的根据，外因通过内因而起作用。 - 《矛盾论》 · 1937年",
+          "鸡蛋因得适当的温度而变化为鸡子，但温度不能使石头变为鸡子。 - 《矛盾论》 · 1937年",
+          "事物发展的根本原因，不是在事物的外部而是在事物的内部。 - 《矛盾论》 · 1937年",
+          "理论和实践的矛盾，实践是主要的。 - 《矛盾论》 · 1937年",
+          "这就是说，理论与实践要统一。 - 《增强党的团结，继承党的传统》 · 1956年",
+          "任何外国的经验，只能作参考，不能当作教条。 - 《我们党的一些历史经验》 · 1956年",
+          "学习苏联，并不是所有事情都硬搬，教条主义就是硬搬。 - 《做革命的促进派》 · 1957年",
+          "我奉劝诸位，切记不要硬搬中国的经验。 - 《我们党的一些历史经验》 · 1956年",
+          "要使不懂得变成懂得，就要去做去看，这就是学习。 - 《对晋绥日报编辑人员的谈话》 · 1948年",
+          "现在能实行的我们就写，不能实行的就不写。 - 《关于中华人民共和国宪法草案》 · 1954年",
+          "学习的敌人是自己的满足，要认真学习一点东西，必须从不自满开始。 - 《中国共产党在民族战争中的地位》 · 1938年",
+          "对自己，“学而不厌”，对人家，“诲人不倦”，我们应取这种态度。 - 《中国共产党在民族战争中的地位》 · 1938年",
+          "不懂就是不懂，不要装懂。 - 《论人民民主专政》 · 1949年",
+          "要做好先生，首先要做好学生。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "先做学生，然后再做先生；先向下面干部请教，然后再下命令。 - 《党委会的工作方法》 · 1949年",
+          "我们切不可强不知以为知，要“不耻下问”。 - 《党委会的工作方法》 · 1949年",
+          "不懂得和不了解的东西要问下级，不要轻易表示赞成或反对。 - 《党委会的工作方法》 · 1949年",
+          "要善于倾听下面干部的意见。 - 《党委会的工作方法》 · 1949年",
+          "书当然不可不读，但是光读书，还不能解决问题。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "应当把工作以外的剩余精力主要放在学习上，养成学习的习惯。 - 《做革命的促进派》 · 1957年",
+          "我们要振作精神，下苦功学习。 - 《做革命的促进派》 · 1957年",
+          "下苦功，三个字，一个叫下，一个叫苦，一个叫功。 - 《做革命的促进派》 · 1957年",
+          "不论是知识分子，还是青年学生，都应该努力学习。 - 《关于正确处理人民内部矛盾的问题》 · 1957年",
+          "中国靠我们来建设，我们必须努力学习。 - 《必须学会做经济工作》 · 1945年",
+          "我们要学的是属于普遍真理的东西，并且学习一定要与中国实际相结合。 - 《论十大关系》 · 1956年",
+          "不但在第一个五年计划期间要向人家学习，就是在几十个五年计划之后，还应当向人家学习。 - 《论十大关系》 · 1956年",
+          "自然科学方面，我们比较落后，特别要努力向外国学习。 - 《论十大关系》 · 1956年",
+          "当然，是要学习先进经验，不是学习落后经验。 - 《增强党的团结，继承党的传统》 · 1956年",
+          "我们大家要学习他毫无自私自利之心的精神。 - 《纪念白求恩》 · 1939年",
+          "一个人能力有大小，但只要有这点精神，就是一个高尚的人，一个纯粹的人。 - 《纪念白求恩》 · 1939年",
+          "我希望你们也不要自满。 - 《组织起来》 · 1943年",
+          "不要重犯胜利时骄傲的错误。 - 《学习和时局》 · 1944年",
+          "不要因为我们的工作有成绩就骄傲自满起来。 - 《在中国共产党全国代表会议上的讲话》 · 1955年",
+          "一百年也不要骄傲。 - 《关于中华人民共和国宪法草案》 · 1954年",
+          "永远也不要翘尾巴。 - 《关于中华人民共和国宪法草案》 · 1954年",
+          "四五十岁以上的人，年纪越大，经验越多，就应当更谦虚。 - 《在中国共产党全国代表会议上的讲话》 · 1955年",
+          "科学没有什么谦虚不谦虚的问题。 - 《关于中华人民共和国宪法草案》 · 1954年",
+          "知识分子接受前人的经验，主要是靠读书。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "只有使二者互相结合，才会产生好的比较完全的知识。 - 《整顿党的作风》 · 1942年",
+          "而要打成一片，就应当认真学习群众的语言。 - 《在延安文艺座谈会上的讲话》 · 1942年",
+          "在学校则要向学生学习。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "有很多东西，老干部不如新干部，要向他们学习。 - 《坚持艰苦奋斗，密切联系群众》 · 1957年",
+          "务必使同志们继续地保持谦虚、谨慎、不骄、不躁的作风。 - 《在中国共产党第七届中央委员会第二次全体会议上的报告》 · 1949年",
+          "务必使同志们继续地保持艰苦奋斗的作风。 - 《在中国共产党第七届中央委员会第二次全体会议上的报告》 · 1949年",
+          "我们能够去掉不良作风，保持优良作风。 - 《在中国共产党第七届中央委员会第二次全体会议上的报告》 · 1949年",
+          "我们能够学会我们原来不懂的东西。 - 《在中国共产党第七届中央委员会第二次全体会议上的报告》 · 1949年",
+          "力戒骄傲。这对领导者是一个原则问题，也是保持团结的一个重要条件。 - 《党委会的工作方法》 · 1949年",
+          "就是没有犯过大错误，而且工作有了很大成绩的人，也不要骄傲。 - 《党委会的工作方法》 · 1949年",
+          "就是到五十年后象个样子了，也要和现在一样谦虚。 - 《关于中华人民共和国宪法草案》 · 1954年",
+          "牛皮不要吹得太大，尾巴不要翘起来。 - 《关于中华人民共和国宪法草案》 · 1954年",
+          "戒骄戒躁，永远保持谦虚进取的精神。 - 《在中国共产党全国代表会议上的讲话》 · 1955年",
+          "不要夸大干部的这种作用。 - 《在中国共产党全国代表会议上的讲话》 · 1955年",
+          "事业是多数人做的，少数人的作用是有限的。 - 《在中国共产党全国代表会议上的讲话》 · 1955年",
+          "没有你，地球还是照样地转，事业还是照样地进行。 - 《在中国共产党全国代表会议上的讲话》 · 1955年",
+          "我们的同志不要靠老资格吃饭，要靠解决问题正确吃饭。 - 《坚持艰苦奋斗，密切联系群众》 · 1957年",
+          "靠正确，不靠资格。 - 《坚持艰苦奋斗，密切联系群众》 · 1957年",
+          "力戒任何的虚夸和骄傲。 - 《为建设一个伟大的社会主义国家而奋斗》 · 1954年",
+          "孙先生是一个谦虚的人。 - 《纪念孙中山先生》 · 1956年",
+          "我认为，中国有两条缺点，同时又是两条优点。 - 《论十大关系》 · 1956年",
+          "一万年都有两点。 - 《论十大关系》 · 1956年",
+          "总之，是两点而不是一点。 - 《论十大关系》 · 1956年",
+          "说只有一点，叫知其一不知其二。 - 《论十大关系》 · 1956年",
+          "自己毫无主见，往往由一个极端走到另一个极端。 - 《论十大关系》 · 1956年",
+          "应当承认，总是有优点和缺点这两点。 - 《论十大关系》 · 1956年",
+          "威信是逐渐建立的。 - 《青年团的工作要照顾青年的特点》 · 1953年",
+          "真正了解，才能相信。 - 《青年团的工作要照顾青年的特点》 · 1953年",
+          "因为我们是为人民服务的，所以，我们如果有缺点，就不怕别人批评指出。 - 《为人民服务》 · 1944年",
+          "不管是什么人，谁向我们指出都行。 - 《为人民服务》 · 1944年",
+          "只要你说得对，我们就改正。 - 《为人民服务》 · 1944年",
+          "你说的办法对人民有好处，我们就照你的办。 - 《为人民服务》 · 1944年",
+          "只要我们为人民的利益坚持好的，为人民的利益改正错的，我们这个队伍就一定会兴旺起来。 - 《为人民服务》 · 1944年",
+          "我们都是来自五湖四海，为了一个共同的革命目标，走到一起来了。 - 《为人民服务》 · 1944年",
+          "真正的好心，必须对于自己工作的缺点错误有完全诚意的自我批评。 - 《在延安文艺座谈会上的讲话》 · 1942年",
+          "真正的好心，必须顾及效果，总结经验，研究方法。 - 《在延安文艺座谈会上的讲话》 · 1942年",
+          "一个人做事只凭动机，不问效果，等于一个医生只顾开药方。 - 《在延安文艺座谈会上的讲话》 · 1942年",
+          "社会实践及其效果是检验主观愿望或动机的标准。 - 《在延安文艺座谈会上的讲话》 · 1942年",
+          "我们每天都要洗脸，许多人并且不止洗一次，洗完之后还要拿镜子照一照。 - 《反对党八股》 · 1942年",
+          "我们写文章，做演说，只要像洗脸这样负责，就差不多了。 - 《反对党八股》 · 1942年",
+          "拿不出来的东西就不要拿出来。 - 《反对党八股》 · 1942年",
+          "这种责任心薄弱的坏习惯，必须改正才好。 - 《反对党八股》 · 1942年",
+          "办事不认真，无一定计划，无一定方向，敷衍了事，得过且过。 - 《反对自由主义》 · 1937年",
+          "事不关己，高高挂起；明知不对，少说为佳；明哲保身，但求无过。 - 《反对自由主义》 · 1937年",
+          "当面不说，背后乱说；开会不说，会后乱说。 - 《反对自由主义》 · 1937年",
+          "心目中没有集体生活的原则，只有自由放任。 - 《反对自由主义》 · 1937年",
+          "自己错了，也已经懂得，又不想改正，自己对自己采取自由主义。 - 《反对自由主义》 · 1937年",
+          "大事做不来，小事又不做，工作随便，学习松懈。 - 《反对自由主义》 · 1937年",
+          "我们不怕说出自己的毛病，我们一定要改正自己的毛病。 - 《在陕甘宁边区参议会的演说》 · 1941年",
+          "犯了错误则要求改正，改正得越迅速，越彻底，越好。 - 《论人民民主专政》 · 1949年",
+          "共产党人必须随时准备修正错误。 - 《论联合政府》 · 1945年",
+          "共产党人不要怕犯错误。 - 《我们党的一些历史经验》 · 1956年",
+          "犯了错误，也得了犯错误的经验。 - 《关于正确处理人民内部矛盾的问题》 · 1957年",
+          "人大概是没有不犯错误的，多多少少要犯错误，犯了错误就要帮助。 - 《论十大关系》 · 1956年",
+          "犯错误的人，除了极少数坚持错误、屡教不改的以外，大多数是可以改正的。 - 《论十大关系》 · 1956年",
+          "人是要帮助的，没有犯错误的人要帮助，犯了错误的人更要帮助。 - 《论十大关系》 · 1956年",
+          "从善意出发帮助他改正错误，使他有一条出路。 - 《党内团结的辩证方法》 · 1957年",
+          "不因为一个人犯了错误就否定他的一切。 - 《党内团结的辩证方法》 · 1957年",
+          "一定要进行认真的而不是敷衍的批评和自我批评。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "要划清正确和错误、成绩和缺点的界限。 - 《党委会的工作方法》 · 1949年",
+          "一个人的工作，究竟是三分成绩七分错误，还是七分成绩三分错误，必须有个根本的估计。 - 《党委会的工作方法》 · 1949年",
+          "反对浪费，同批判其它缺点错误一样，好比洗脸。 - 《关于正确处理人民内部矛盾的问题》 · 1957年",
+          "要团结一切可以团结和应当团结的力量。 - 《关于中华人民共和国宪法草案》 · 1954年",
+          "团结广大人民，团结得越多越好。 - 《关于重庆谈判》 · 1945年",
+          "一切可以团结的力量都要团结。 - 《论十大关系》 · 1956年",
+          "谅解、支持和友谊，比什么都重要。 - 《党委会的工作方法》 · 1949年",
+          "要把问题摆到桌面上来。 - 《党委会的工作方法》 · 1949年",
+          "不要在背后议论。 - 《党委会的工作方法》 · 1949年",
+          "有了问题就开会，摆到桌面上来讨论，规定它几条，问题就解决了。 - 《党委会的工作方法》 · 1949年",
+          "“班长”和委员还要能互相谅解。 - 《党委会的工作方法》 · 1949年",
+          "注意团结那些和自己意见不同的同志一道工作。 - 《党委会的工作方法》 · 1949年",
+          "所谓团结，就是团结跟自己意见分歧的，看不起自己的，不尊重自己的。 - 《增强党的团结，继承党的传统》 · 1956年",
+          "从团结的愿望出发。 - 《关于正确处理人民内部矛盾的问题》 · 1957年",
+          "为了改造，先要团结。 - 《文化工作中的统一战线》 · 1944年",
+          "要把界限划好，必须经过细致的研究和分析。 - 《党委会的工作方法》 · 1949年",
+          "一切妨害团结的现象，都在必须克服之列。 - 《论联合政府》 · 1945年",
+          "我们要提倡同地方商量办事的作风。 - 《论十大关系》 · 1956年",
+          "凡是同地方有关的事情，都要先同地方商量，商量好了再下命令。 - 《论十大关系》 · 1956年",
+          "同他们诚恳地坦白地商量和解决那些必须商量和解决的问题。 - 《在中国共产党第七届中央委员会第二次全体会议上的报告》 · 1949年",
+          "要人家服，只能说服，不能压服。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "压服的结果总是压而不服。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "不会说服怎么办？这就要学习。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "我们一定要学会通过辩论的方法、说理的方法，来克服各种错误思想。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "只有采取讨论的方法，批评的方法，说理的方法，才能真正解决问题。 - 《关于正确处理人民内部矛盾的问题》 · 1957年",
+          "对于错误的意见，不是压服，而是说服，以理服人。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "发展各种意见之间的相互争论和相互批评。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "既容许批评的自由，也容许批评批评者的自由。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "必须兼顾国家、集体和个人三个方面。 - 《论十大关系》 · 1956年",
+          "中央和各级党委必须坚持集体领导的原则。 - 《在中国共产党全国代表会议上的讲话》 · 1955年",
+          "同志们，只要我们能团结，这个目的就一定能够达到。 - 《中国共产党在民族战争中的地位》 · 1938年",
+          "我们这个队伍完全是为着解放人民的，是彻底地为人民的利益工作的。 - 《为人民服务》 · 1944年",
+          "全心全意地为人民服务，一刻也不脱离群众。 - 《论联合政府》 · 1945年",
+          "一切从人民的利益出发，而不是从个人或小集团的利益出发。 - 《论联合政府》 · 1945年",
+          "人民，只有人民，才是创造世界历史的动力。 - 《论联合政府》 · 1945年",
+          "真正的铜墙铁壁是什么？是群众，是千百万真心实意地拥护革命的群众。 - 《关心群众生活，注意工作方法》 · 1934年",
+          "群众齐心了，一切事情就好办了。 - 《对晋绥日报编辑人员的谈话》 · 1948年",
+          "从群众中来，到群众中去。 - 《关于领导方法的若干问题》 · 1943年",
+          "然后再从群众中集中起来，再到群众中坚持下去。 - 《关于领导方法的若干问题》 · 1943年",
+          "如此循环，一次比一次地更正确、更生动、更丰富。 - 《关于领导方法的若干问题》 · 1943年",
+          "想问题从群众出发就好办。 - 《切实执行十大政策》 · 1943年",
+          "只有代表群众才能教育群众，只有做群众的学生才能做群众的先生。 - 《在延安文艺座谈会上的讲话》 · 1942年",
+          "每到一地，就和那里的群众打成一片，不是高踞于群众之上，而是深入于群众之中。 - 《论联合政府》 · 1945年",
+          "为什么人服务的问题解决了，接着的问题就是如何去服务。 - 《在延安文艺座谈会上的讲话》 · 1942年",
+          "任何一种东西，必须能使人民群众得到真实的利益，才是好的东西。 - 《在延安文艺座谈会上的讲话》 · 1942年",
+          "国家机关工作人员必须为人民服务。 - 《关于正确处理人民内部矛盾的问题》 · 1957年",
+          "国家机关必须依靠人民群众。 - 《关于正确处理人民内部矛盾的问题》 · 1957年",
+          "文化工作者必须有为人民服务的高度的热忱。 - 《文化工作中的统一战线》 · 1944年",
+          "一切为群众的工作都要从群众的需要出发，而不是从任何良好的个人愿望出发。 - 《文化工作中的统一战线》 · 1944年",
+          "群众是否已经了解并且是否愿意行动起来，要到群众中去考察才会知道。 - 《论联合政府》 · 1945年",
+          "我们的同志不要以为自己了解了的东西，广大群众也和自己一样都了解了。 - 《论联合政府》 · 1945年",
+          "共产党基本的一条，就是直接依靠广大革命人民群众。 - 《在扩大的中央工作会议上的讲话》 · 1962年",
+          "共产党的路线，就是人民的路线。 - 《在〈解放日报〉改版座谈会上的讲话》 · 1942年",
+          "群众有伟大的创造力。 - 《组织起来》 · 1943年",
+          "中国人民中间，实在有成千成万的“诸葛亮”。 - 《组织起来》 · 1943年",
+          "依靠民众则一切困难能够克服。 - 《抗战十五个月的总结》 · 1938年",
+          "群众对领导者真正佩服，要靠在革命实践中了解。 - 《青年团的工作要照顾青年的特点》 · 1953年",
+          "下定决心，不怕牺牲，排除万难，去争取胜利。 - 《愚公移山》 · 1945年",
+          "我们的同志在困难的时候，要看到成绩，要看到光明，要提高我们的勇气。 - 《为人民服务》 · 1944年",
+          "前途是光明的，道路是曲折的。 - 《关于重庆谈判》 · 1945年",
+          "世界上没有直路，要准备走曲折的路，不要贪便宜。 - 《关于重庆谈判》 · 1945年",
+          "中国的问题是复杂的，我们的脑子也要复杂一点。 - 《关于重庆谈判》 · 1945年",
+          "越是困难的地方越是要去，这才是好同志。 - 《关于重庆谈判》 · 1945年",
+          "艰苦的工作就像担子，摆在我们的面前，看我们敢不敢承担。 - 《关于重庆谈判》 · 1945年",
+          "有的人拈轻怕重，把重担子推给人家，自己拣轻的挑。 - 《关于重庆谈判》 · 1945年",
+          "享受让给人家，担子拣重的挑，吃苦在别人前头，享受在别人后头。 - 《关于重庆谈判》 · 1945年",
+          "多少一点困难怕什么。 - 《别了，司徒雷登》 · 1949年",
+          "中国人死都不怕，还怕困难吗？ - 《别了，司徒雷登》 · 1949年",
+          "中国的前途如何，靠我们大家的努力如何来决定。 - 《关于重庆谈判》 · 1945年",
+          "我们自己的命运完全应当由我们自己来掌握。 - 《目前形势和我们的任务》 · 1947年",
+          "我们应当在自己内部肃清一切软弱无能的思想。 - 《目前形势和我们的任务》 · 1947年",
+          "这不过是暂时的现象，黑暗即将过去，曙光即在前头。 - 《目前形势和我们的任务》 · 1947年",
+          "从来没有不经过打扫而自动去掉的灰尘。 - 《抗日战争胜利后的时局和我们的方针》 · 1945年",
+          "手里拿着扫帚就要研究扫的办法，不要躺在床上。 - 《抗日战争胜利后的时局和我们的方针》 · 1945年",
+          "条件多具备一分，早具备一日，胜利的把握就多一分。 - 《论持久战》 · 1938年",
+          "我们主张为着争取最后胜利所必要的一切条件而努力。 - 《论持久战》 · 1938年",
+          "不打无准备之仗，不打无把握之仗。 - 《目前形势和我们的任务》 · 1947年",
+          "我们历来不打无准备无把握之仗。 - 《青年团的工作要照顾青年的特点》 · 1953年",
+          "尽管有那么多，我们都先准备好了，就不怕了。 - 《在中国共产党全国代表会议上的讲话》 · 1955年",
+          "只要上面善于提出任务，放手让下面自力更生，问题就解决了。 - 《论军队生产自给，兼论整风和生产两大运动的重要性》 · 1945年",
+          "需要几十年艰苦奋斗的时间。 - 《关于正确处理人民内部矛盾的问题》 · 1957年",
+          "要勤俭持家，作长远打算。 - 《做革命的促进派》 · 1957年",
+          "不能希望一年把好事都做完。 - 《论十大关系》 · 1956年",
+          "两头都要抓紧，学习工作要抓紧，睡眠休息娱乐也要抓紧。 - 《青年团的工作要照顾青年的特点》 · 1953年",
+          "身体好并不一定学习好，学习要有一些办法。 - 《青年团的工作要照顾青年的特点》 · 1953年",
+          "准备到了那里，就要生根、开花、结果。 - 《关于重庆谈判》 · 1945年",
+          "中国人民应当加倍努力，为完成自己的神圣任务而奋斗。 - 《论联合政府》 · 1945年",
+          "全国青年们，努力啊！ - 《五四运动》 · 1939年",
+          "道路总是曲折的，前途总是光明的。 - 《论十大关系》 · 1956年",
+          "事情有大道理，有小道理，一切小道理都归大道理管着。 - 《反对日本进攻的方针、办法和前途》 · 1937年",
+          "办法是跟着方针来的。 - 《反对日本进攻的方针、办法和前途》 · 1937年",
+          "没有全局在胸，是不会真的投下一着好棋子的。 - 《中国革命战争的战略问题》 · 1936年",
+          "共产党员必须懂得以局部需要服从全局需要这一个道理。 - 《中国共产党在民族战争中的地位》 · 1938年",
+          "没有好的全战役计划，绝不能有真正好的第一仗。 - 《中国革命战争的战略问题》 · 1936年",
+          "不要企图建立长时期的具体计划。 - 《中国革命战争的战略问题》 · 1936年",
+          "大方向虽在一个时期中是不变更的，然而大方向内的小方向则是随时变更的。 - 《中国革命战争的战略问题》 · 1936年",
+          "我们看事情必须要看它的实质，而把它的现象只看作入门的向导。 - 《星星之火，可以燎原》 · 1930年",
+          "一进了门就要抓住它的实质，这才是可靠的科学的分析方法。 - 《星星之火，可以燎原》 · 1930年",
+          "看它的过去，就可以知道它的现在；看它的过去和现在，就可以知道它的将来。 - 《抗日战争胜利后的时局和我们的方针》 · 1945年",
+          "一时的后退现象，不能代替总的历史规律。 - 《为争取千百万群众进入抗日民族统一战线而斗争》 · 1937年",
+          "事物是往返曲折的，不是径情直遂的。 - 《论持久战》 · 1938年",
+          "气候变化了，衣服必须随着变化。 - 《一个极其重要的政策》 · 1942年",
+          "普通的人，容易为过去和当前的情况所迷惑，以为今后也不过如此。 - 《一个极其重要的政策》 · 1942年",
+          "他们缺乏事先看出航船将要遇到暗礁的能力。 - 《一个极其重要的政策》 · 1942年",
+          "凡事应该用脑筋好好想一想。 - 《学习和时局》 · 1944年",
+          "脑筋这个机器的作用，是专门思想的。 - 《学习和时局》 · 1944年",
+          "眉头一皱，计上心来，就是说多想出智慧。 - 《学习和时局》 · 1944年",
+          "所谓分析，就是分析事物的矛盾。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "分析的方法就是辩证的方法。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "要解决问题，还须作系统的周密的调查工作和研究工作，这就是分析的过程。 - 《反对党八股》 · 1942年",
+          "提出问题，首先就要对于问题即矛盾的两个基本方面加以大略的调查和研究。 - 《反对党八股》 · 1942年",
+          "什么叫问题？问题就是事物的矛盾。 - 《反对党八股》 · 1942年",
+          "哪里有没有解决的矛盾，哪里就有问题。 - 《反对党八股》 · 1942年",
+          "所谓片面性，就是不知道全面地看问题。 - 《矛盾论》 · 1937年",
+          "没有什么事物是不包含矛盾的，没有矛盾就没有世界。 - 《矛盾论》 · 1937年",
+          "矛盾不断出现，又不断解决，就是事物发展的辩证规律。 - 《关于正确处理人民内部矛盾的问题》 · 1957年",
+          "不同质的矛盾，只有用不同质的方法才能解决。 - 《矛盾论》 · 1937年",
+          "不能把过程中所有的矛盾平均看待。 - 《矛盾论》 · 1937年",
+          "任何质量都表现为一定的数量，没有数量也就没有质量。 - 《党委会的工作方法》 · 1949年",
+          "对情况和问题一定要注意到它们的数量方面，要有基本的数量的分析。 - 《党委会的工作方法》 · 1949年",
+          "任何矛盾不但应当解决，也是完全可以解决的。 - 《关于正确处理人民内部矛盾的问题》 · 1957年",
+          "不要只考虑一种方法，经常要考虑两种方法。 - 《做革命的促进派》 · 1957年",
+          "我们对问题要作全面的分析，才能解决得妥当。 - 《在中国共产党第八届中央委员会第二次全体会议上的讲话》 · 1956年",
+          "我们走路，不是两个脚同时走，总是参差不齐的。 - 《在中国共产党第八届中央委员会第二次全体会议上的讲话》 · 1956年",
+          "动是绝对的，静是暂时的，有条件的。 - 《在中国共产党第八届中央委员会第二次全体会议上的讲话》 · 1956年",
+          "事物在时间中运动，到那个时候该办了，就要办。 - 《农业合作化的一场辩论和当前的阶级斗争》 · 1955年",
+          "我们要根据具体的条件办事，是自然地而不是勉强地达到我们的目的。 - 《农业合作化的一场辩论和当前的阶级斗争》 · 1955年",
+          "为了判断正确的东西和错误的东西，常常需要有考验的时间。 - 《关于正确处理人民内部矛盾的问题》 · 1957年",
+          "历史上新的正确的东西，在开始的时候常常得不到多数人承认。 - 《关于正确处理人民内部矛盾的问题》 · 1957年",
+          "自古以来，没有先进的东西一开始就受欢迎，它总是要挨骂。 - 《在省市自治区党委书记会议上的讲话》 · 1957年",
+          "一切事物，它的现象同它的本质之间是有矛盾的。 - 《在中国共产党全国代表会议上的讲话》 · 1955年",
+          "不然，用直觉一看就看出本质来，还要科学干什么？ - 《在中国共产党全国代表会议上的讲话》 · 1955年",
+          "感觉到了的东西，我们不能立刻理解它，只有理解了的东西才更深刻地感觉它。 - 《实践论》 · 1937年",
+          "领导工作不仅要决定方针政策，还要制定正确的工作方法。 - 《党委会的工作方法》 · 1949年",
+          "什么东西只有抓得很紧，毫不放松，才能抓住。 - 《党委会的工作方法》 · 1949年",
+          "抓而不紧，等于不抓。 - 《党委会的工作方法》 · 1949年",
+          "不抓不行，抓而不紧也不行。 - 《党委会的工作方法》 · 1949年",
+          "弹钢琴要十个指头都动作，不能有的动，有的不动。 - 《党委会的工作方法》 · 1949年",
+          "十个指头的动作要有节奏，要互相配合。 - 《党委会的工作方法》 · 1949年",
+          "党委要抓紧中心工作，又要围绕中心工作而同时开展其它方面的工作。 - 《党委会的工作方法》 · 1949年",
+          "胸中有“数”。 - 《党委会的工作方法》 · 1949年",
+          "让大家知道要讨论什么问题，解决什么问题，并且早作准备。 - 《党委会的工作方法》 · 1949年",
+          "如果没有准备，就不要急于开会。 - 《党委会的工作方法》 · 1949年",
+          "讲话、演说、写文章和写决议案，都应当简明扼要。 - 《党委会的工作方法》 · 1949年",
+          "会议也不要开得太长。 - 《党委会的工作方法》 · 1949年",
+          "应当使总负责人和分负责人都知道，都负责。 - 《关于领导方法的若干问题》 · 1943年",
+          "在一定时间内只能有一个中心工作。 - 《关于领导方法的若干问题》 · 1943年",
+          "领导者的责任，归结起来，主要地是出主意、用干部两件事。 - 《中国共产党在民族战争中的地位》 · 1938年",
+          "不但要看干部的一时一事，而且要看干部的全部历史和全部工作。 - 《中国共产党在民族战争中的地位》 · 1938年",
+          "不但要关心党的干部，还要关心非党的干部。 - 《中国共产党在民族战争中的地位》 · 1938年",
+          "故领导者必须善于团结少数积极分子作为领导的骨干。 - 《关于领导方法的若干问题》 · 1943年",
+          "应当对这些经验作出适当的总结。 - 《论联合政府》 · 1945年",
+          "切记不要使问题成了堆，才来一个总结，放马后炮。 - 《农业合作化的一场辩论和当前的阶级斗争》 · 1955年",
+          "如果有问题，就要从个别中看出普遍性。 - 《农业合作化的一场辩论和当前的阶级斗争》 · 1955年",
+          "不要把所有的麻雀统统捉来解剖。 - 《农业合作化的一场辩论和当前的阶级斗争》 · 1955年",
+          "许多做领导工作的人，遇到困难问题，只是叹气，不能解决。 - 《反对本本主义》 · 1930年",
+          "你对于那个问题不能解决吗？那么，你就去调查那个问题的现状和它的历史吧！ - 《反对本本主义》 · 1930年",
+          "要进行广大的教育工作、说服工作、团结工作。 - 《增强党的团结，继承党的传统》 · 1956年",
+          "帮助他们解决各种必须解决的问题。 - 《关于正确处理人民内部矛盾的问题》 · 1957年",
+          "只要你还能工作就多多少少应当工作。 - 《坚持艰苦奋斗，密切联系群众》 · 1957年",
+          "我们的同志必须用极大的努力去学习生产的技术和管理生产的方法。 - 《在中国共产党第七届中央委员会第二次全体会议上的报告》 · 1949年",
+          "恰同学少年，风华正茂；书生意气，挥斥方遒。 - 《沁园春·长沙》 · 1925年",
+          "鹰击长空，鱼翔浅底，万类霜天竞自由。 - 《沁园春·长沙》 · 1925年",
+          "怅寥廓，问苍茫大地，谁主沉浮。 - 《沁园春·长沙》 · 1925年",
+          "到中流击水，浪遏飞舟。 - 《沁园春·长沙》 · 1925年",
+          "人生易老天难老，岁岁重阳。 - 《采桑子·重阳》 · 1929年",
+          "战地黄花分外香。 - 《采桑子·重阳》 · 1929年",
+          "胜似春光，寥廓江天万里霜。 - 《采桑子·重阳》 · 1929年",
+          "东方欲晓，莫道君行早。 - 《清平乐·会昌》 · 1934年",
+          "踏遍青山人未老，风景这边独好。 - 《清平乐·会昌》 · 1934年",
+          "赤橙黄绿青蓝紫，谁持彩练当空舞？ - 《菩萨蛮·大柏地》 · 1933年",
+          "雨后复斜阳，关山阵阵苍。 - 《菩萨蛮·大柏地》 · 1933年",
+          "装点此关山，今朝更好看。 - 《菩萨蛮·大柏地》 · 1933年",
+          "雄关漫道真如铁，而今迈步从头越。 - 《忆秦娥·娄山关》 · 1935年",
+          "红军不怕远征难，万水千山只等闲。 - 《七律·长征》 · 1935年",
+          "五岭逶迤腾细浪，乌蒙磅礴走泥丸。 - 《七律·长征》 · 1935年",
+          "更喜岷山千里雪，三军过后尽开颜。 - 《七律·长征》 · 1935年",
+          "不到长城非好汉，屈指行程二万。 - 《清平乐·六盘山》 · 1935年",
+          "天高云淡，望断南飞雁。 - 《清平乐·六盘山》 · 1935年",
+          "今日长缨在手，何时缚住苍龙？ - 《清平乐·六盘山》 · 1935年",
+          "江山如此多娇，引无数英雄竞折腰。 - 《沁园春·雪》 · 1936年",
+          "须晴日，看红装素裹，分外妖娆。 - 《沁园春·雪》 · 1936年",
+          "俱往矣，数风流人物，还看今朝。 - 《沁园春·雪》 · 1936年",
+          "牢骚太盛防肠断，风物长宜放眼量。 - 《七律·和柳亚子先生》 · 1949年",
+          "天若有情天亦老，人间正道是沧桑。 - 《七律·人民解放军占领南京》 · 1949年",
+          "万里长江横渡，极目楚天舒。 - 《水调歌头·游泳》 · 1956年",
+          "不管风吹浪打，胜似闲庭信步。 - 《水调歌头·游泳》 · 1956年",
+          "一桥飞架南北，天堑变通途。 - 《水调歌头·游泳》 · 1956年",
+          "为有牺牲多壮志，敢教日月换新天。 - 《七律·到韶山》 · 1959年",
+          "喜看稻菽千重浪，遍地英雄下夕烟。 - 《七律·到韶山》 · 1959年",
+          "暮色苍茫看劲松，乱云飞渡仍从容。 - 《七绝·为李进同志题所摄庐山仙人洞照》 · 1961年",
+          "天生一个仙人洞，无限风光在险峰。 - 《七绝·为李进同志题所摄庐山仙人洞照》 · 1961年",
+          "风雨送春归，飞雪迎春到。 - 《卜算子·咏梅》 · 1961年",
+          "已是悬崖百丈冰，犹有花枝俏。 - 《卜算子·咏梅》 · 1961年",
+          "俏也不争春，只把春来报。 - 《卜算子·咏梅》 · 1961年",
+          "待到山花烂漫时，她在丛中笑。 - 《卜算子·咏梅》 · 1961年",
+          "多少事，从来急；天地转，光阴迫。 - 《满江红·和郭沫若同志》 · 1963年",
+          "一万年太久，只争朝夕。 - 《满江红·和郭沫若同志》 · 1963年",
+          "可上九天揽月，可下五洋捉鳖，谈笑凯歌还。 - 《水调歌头·重上井冈山》 · 1965年",
+          "世上无难事，只要肯登攀。 - 《水调歌头·重上井冈山》 · 1965年",
+          "年年后浪推前浪，江草江花处处鲜。 - 《七律·洪都》 · 1965年",
+          "实事求是。 - 《改造我们的学习》 · 1941年",
+          "为人民服务。 - 《为人民服务》 · 1944年",
+          "虚心使人进步，骄傲使人落后。 - 《中国共产党第八次全国代表大会开幕词》 · 1956年",
+          "好好学习，天天向上。 - 《为陈永康小朋友题词》 · 1951年",
+          "百花齐放，百家争鸣。 - 《关于正确处理人民内部矛盾的问题》 · 1957年",
+          "星星之火，可以燎原。 - 《星星之火，可以燎原》 · 1930年",
+          "夺取全国胜利，这只是万里长征走完了第一步。 - 《在中国共产党第七届中央委员会第二次全体会议上的报告》 · 1949年",
+          "真理的标准只能是社会的实践。 - 《实践论》 · 1937年",
+          "实践、认识、再实践、再认识 - 《实践论》 · 1937年",
+          "捉住了这个主要矛盾，一切问题就迎刃而解了。 - 《矛盾论》 · 1937年",
+          "兵民是胜利之本 - 《论持久战》 · 1938年",
+          "为什么人的问题，是一个根本的问题，原则的问题。 - 《在延安文艺座谈会上的讲话》 · 1942年",
+          "组织起来 - 《组织起来》 · 1943年",
+          "我们已经站起来了。 - 《中国人民站起来了》 · 1949年",
+          "我们的民族将再也不是一个被人侮辱的民族了 - 《中国人民站起来了》 · 1949年",
+          "一切反动派都是纸老虎。 - 《和美国记者安娜·刘易斯·斯特朗的谈话》 · 1946年",
+          "世界是你们的，也是我们的，但是归根结底是你们的。 - 《在莫斯科接见中国留学生的讲话》 · 1957年",
+          "宜将剩勇追穷寇，不可沽名学霸王。 - 《七律·人民解放军占领南京》 · 1949年",
+          "还必须使全国广大人民群众觉悟，甘心情愿和我们一起奋斗，去争取胜利。 - 《愚公移山》 · 1945年",
+          "什么人站在革命人民方面，他就是革命派。 - 《做一个完全的革命派》 · 1950年",
+          "只要我们依靠人民，相信人民群众的创造力是无穷无尽的，任何困难都是可以克服的。 - 《论联合政府》 · 1945年",
+          "把群众组织起来，把一切老百姓的力量、一切部队机关学校的力量、一切男女老少的全劳动力半劳动力，只要是可能的，就要毫无例外地动员起来，组织起来，成为一支劳动大军。 - 《组织起来》 · 1943年",
+          "一个正确的认识，往往需要经过由物质到精神，由精神到物质，即由实践到认识，由认识到实践这样多次的反复，才能够完成。 - 《人的正确思想是从哪里来的？》 · 1963年",
+          "我们讨论问题，应当从实际出发，不是从定义出发。 - 《在延安文艺座谈会上的讲话》 · 1942年",
+          "不论做什么事，不懂得那件事的情形，它的性质，它和它以外的事情的关联，就不知道那件事的规律，就不知道如何去做，就不能做好那件事。 - 《中国革命战争的战略问题》 · 1936年",
+          "不根据实际情况进行讨论和审察，一味盲目执行，这种单纯建立在“上级”观念上的形式主义的态度是很不对的。 - 《反对本本主义》 · 1930年",
+          "形式主义是一种幼稚的、低级的、庸俗的、不用脑子的东西。 - 《反对党八股》 · 1942年",
+          "世界上怕就怕“认真”二字，共产党就最讲认真。 - 《在莫斯科大学接见中国留苏学生的讲话》 · 1957年",
+          "人是要有一点精神的。 - 《在中国共产党第八届中央委员会第二次全体会议上的讲话》 · 1956年",
+          "我们想到人民的利益，想到大多数人民的痛苦，我们为人民而死，就是死得其所。 - 《为人民服务》 · 1944年",
+          "一个人做点好事并不难，难的是一辈子做好事，不做坏事，一贯地有益于广大群众，一贯地有益于青年，一贯地有益于革命，艰苦奋斗几十年如一日，这才是最难最难的！ - 《在吴玉章同志六十寿辰庆祝大会上的祝词》 · 1940年",
+          "加强纪律性，革命无不胜。 - 《为〈中国青年〉复刊题词》 · 1948年",
+          "教育者必须先受教育。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "我们决不能一见成绩就自满自足起来。我们应该抑制自满，时时批评自己的缺点，好像我们为了自己的清洁，为了去掉灰尘，天天要洗脸，天天要扫地一样。 - 《组织起来》 · 1943年",
+          "没有文化的军队是愚蠢的军队，而愚蠢的军队是不能战胜敌人的！ - 《文化工作中的统一战线》 · 1944年",
+          "凡是敌人反对的，我们就要拥护；凡是敌人拥护的，我们就要反对。 - 《和中央社、扫荡报、新民报三记者的谈话》 · 1939年",
+          "不是东风压倒西风，就是西风压倒东风。 - 《在莫斯科共产党和工人党代表会议上的讲话》 · 1957年",
+          "我们不但善于破坏一个旧世界，我们还将善于建设一个新世界。 - 《在中国共产党第七届中央委员会第二次全体会议上的报告》 · 1949年",
+          "卑贱者最聪明，高贵者最愚蠢。 - 《为丹东汽车厂技术革新报告的批语》 · 1958年",
+          "伤其十指，不如断其一指。 - 《中国革命战争的战略问题》 · 1936年",
+          "只有大量地消灭敌人，才能有效地保存自己。 - 《论持久战》 · 1938年",
+          "世上决没有无缘无故的爱，也没有无缘无故的恨。 - 《在延安文艺座谈会上的讲话》 · 1942年",
+          "革命不是请客吃饭，不是做文章，不是绘画绣花，不能那样雅致，那样从容不迫，文质彬彬，那样温良恭俭让。 - 《湖南农民运动考察报告》 · 1927年",
+          "谁是我们的敌人？谁是我们的朋友？这个问题是革命的首要问题。 - 《中国社会各阶级的分析》 · 1925年",
+          "战略上要藐视敌人，战术上要重视敌人。 - 《关于目前党的政策中的几个重要问题》 · 1948年",
+          "在战争中学习战争。 - 《中国革命战争的战略问题》 · 1936年",
+          "敌进我退，敌驻我扰，敌疲我打，敌退我追。 - 《中国革命战争的战略问题》 · 1936年",
+          "打得赢就打，打不赢就走。 - 《中国革命战争的战略问题》 · 1936年",
+          "武器是战争的重要的因素，但不是决定的因素，决定的因素是人不是物。 - 《论持久战》 · 1938年",
+          "基本粒子也是可分的。 - 《关于坂田昌一文章的谈话》 · 1964年",
+          "马克思主义的哲学认为，对立统一规律是宇宙的根本规律。 - 《关于正确处理人民内部矛盾的问题》 · 1957年",
+          "坐地日行八万里，巡天遥看一千河。 - 《七律二首·送瘟神》 · 1958年",
+          "扫帚不到，灰尘照例不会自己跑掉。 - 《抗日战争胜利后的时局和我们的方针》 · 1945年",
+          "人是要有帮助的。荷花虽好，也要绿叶扶持。一个篱笆要打三个桩，一个好汉要有三个帮。 - 《在中国共产党全国代表会议上的讲话》 · 1955年",
+          "常常问题是提出了，但还不能解决，就是因为还没有暴露事物的内部联系。 - 《反对党八股》 · 1942年",
+          "懂得了全局性的东西，就更会使用局部性的东西，因为局部性的东西是隶属于全局性的东西的。 - 《中国革命战争的战略问题》 · 1936年",
+          "去粗取精、去伪存真、由此及彼、由表及里。 - 《中国革命战争的战略问题》 · 1936年",
+          "枪杆子里面出政权。 - 《在八七会议上的发言》 · 1927年",
+          "农村是一个广阔的天地，在那里是可以大有作为的。 - 《〈中国农村的社会主义高潮〉按语》 · 1955年",
+          "指点江山，激扬文字，粪土当年万户侯。 - 《沁园春·长沙》 · 1925年",
+          "核潜艇，一万年也要搞出来！ - 《关于研制核潜艇的谈话》 · 1959年",
+          "人不犯我，我不犯人；人若犯我，我必犯人。 - 《和中央社、扫荡报、新民报三记者的谈话》 · 1939年",
+          "三十八年过去，弹指一挥间。 - 《水调歌头·重上井冈山》 · 1965年",
+          "发展体育运动，增强人民体质。 - 《为中华全国体育总会成立题词》 · 1952年",
+          "高峡出平湖。 - 《水调歌头·游泳》 · 1956年",
+          "向雷锋同志学习。 - 《为学习雷锋题词》 · 1963年",
+          "生的伟大，死的光荣。 - 《为刘胡兰烈士题词》 · 1947年",
+          "把别人的经验变成自己的，他的本领就大了。 - 《对晋绥日报编辑人员的谈话》 · 1948年",
+          "情况是在不断地变化，要使自己的思想适应新的情况，就得学习。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "你是我二十年前的先生，你现在仍然是我的先生，你将来必定还是我的先生。 - 《给徐特立同志的一封信》 · 1937年",
+          "彻底的唯物主义者是无所畏惧的。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "贪污和浪费是极大的犯罪。 - 《我们的经济政策》 · 1934年"
+        ],
+        long: [
+          "没有调查，没有发言权。 - 《反对本本主义》 · 1930年",
+          "调查就像“十月怀胎”，解决问题就像“一朝分娩”。 - 《反对本本主义》 · 1930年",
+          "一切结论产生于调查情况的末尾，而不是在它的先头。 - 《反对本本主义》 · 1930年",
+          "调查就是解决问题。 - 《反对本本主义》 · 1930年",
+          "必须努力作实际调查，才能洗刷唯心精神。 - 《反对本本主义》 · 1930年",
+          "到群众中作实际调查去！ - 《反对本本主义》 · 1930年",
+          "一定都要亲身从事社会经济的实际调查。 - 《反对本本主义》 · 1930年",
+          "注重调查！反对瞎说！ - 《反对本本主义》 · 1930年",
+          "迈开你的两脚，到你的工作范围的各部分各地方去走走。 - 《反对本本主义》 · 1930年",
+          "你完完全全调查明白了，你对那个问题就有解决的办法了。 - 《反对本本主义》 · 1930年",
+          "必须按照随时变化随地不同的具体情况去做。 - 《抗日游击战争的战略问题》 · 1938年",
+          "这种态度，就是实事求是的态度。 - 《改造我们的学习》 · 1941年",
+          "“实事”就是客观存在着的一切事物。 - 《改造我们的学习》 · 1941年",
+          "“是”就是客观事物的内部联系，即规律性。 - 《改造我们的学习》 · 1941年",
+          "“求”就是我们去研究。 - 《改造我们的学习》 · 1941年",
+          "科学是老老实实的学问，任何一点调皮都是不行的。 - 《改造我们的学习》 · 1941年",
+          "我们还是老实一点吧！ - 《改造我们的学习》 · 1941年",
+          "在全党推行调查研究的计划，是转变党的作风的基础一环。 - 《改造我们的学习》 · 1941年",
+          "许多人是做实际工作的，他们也不注意客观情况的研究，往往单凭热情，把感想当政策。 - 《改造我们的学习》 · 1941年",
+          "东张西望，道听途说，决然得不到什么完全的知识。 - 《〈农村调查〉的序言和跋》 · 1941年",
+          "没有眼睛向下的兴趣和决心，是一辈子也不会真正懂得中国的事情的。 - 《〈农村调查〉的序言和跋》 · 1941年",
+          "第一是眼睛向下，不要只是昂首望天。 - 《〈农村调查〉的序言和跋》 · 1941年",
+          "群众是真正的英雄，而我们自己则往往是幼稚可笑的。 - 《〈农村调查〉的序言和跋》 · 1941年",
+          "和全党同志共同一起向群众学习，继续当一个小学生，这就是我的志愿。 - 《〈农村调查〉的序言和跋》 · 1941年",
+          "没有放下臭架子、甘当小学生的精神，是一定不能做，也一定做不好的。 - 《〈农村调查〉的序言和跋》 · 1941年",
+          "要了解情况，唯一的方法是向社会作调查。 - 《〈农村调查〉的序言和跋》 · 1941年",
+          "实际工作者须随时去了解变化着的情况。 - 《〈农村调查〉的序言和跋》 · 1941年",
+          "研究问题，忌带主观性、片面性和表面性。 - 《矛盾论》 · 1937年",
+          "真理只有一个，而究竟谁发现了真理，不依靠主观的夸张，而依靠客观的实践。 - 《新民主主义论》 · 1940年",
+          "只有千百万人民的革命实践，才是检验真理的尺度。 - 《新民主主义论》 · 1940年",
+          "凡真理都不装样子吓人，它只是老老实实地说下去和做下去。 - 《反对党八股》 · 1942年",
+          "思想必须反映客观实际。 - 《增强党的团结，继承党的传统》 · 1956年",
+          "按照实际情况决定工作方针，这是一切共产党员所必须牢牢记住的最基本的工作方法。 - 《在晋绥干部会议上的讲话》 · 1948年",
+          "一定要研究当前的情况，研究实际的经验和材料。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "尽可能不要被假象所迷惑。 - 《在中国共产党全国代表会议上的讲话》 · 1955年",
+          "人们必须通过对现象的分析和研究，才能了解到事物的本质。 - 《在中国共产党全国代表会议上的讲话》 · 1955年",
+          "通过实践而发现真理，又通过实践而证实真理和发展真理。 - 《实践论》 · 1937年",
+          "只有人们的社会实践，才是人们对于外界认识的真理性的标准。 - 《实践论》 · 1937年",
+          "你要知道梨子的滋味，你就得变革梨子，亲口吃一吃。 - 《实践论》 · 1937年",
+          "一切真知都是从直接经验发源的。 - 《实践论》 · 1937年",
+          "你要有知识，你就得参加变革现实的实践。 - 《实践论》 · 1937年",
+          "离开实践的认识是不可能的。 - 《实践论》 · 1937年",
+          "认识从实践始，经过实践得到了理论的认识，还须再回到实践去。 - 《实践论》 · 1937年",
+          "改造客观世界，也改造主观世界。 - 《实践论》 · 1937年",
+          "一定要使自己的思想合于客观外界的规律性。 - 《实践论》 · 1937年",
+          "感觉只解决现象问题，理论才解决本质问题。这些问题的解决，一点也不能离开实践。 - 《实践论》 · 1937年",
+          "认识的感性阶段有待于发展到理性阶段。 - 《实践论》 · 1937年",
+          "但人不能事事直接经验，事实上多数的知识都是间接经验的东西。 - 《实践论》 · 1937年",
+          "知识的问题是一个科学问题，来不得半点的虚伪和骄傲。 - 《实践论》 · 1937年",
+          "有了道听途说的一知半解，便自封为“天下第一”，适足见其不自量而已。 - 《实践论》 · 1937年",
+          "读书是学习，使用也是学习，而且是更重要的学习。 - 《中国革命战争的战略问题》 · 1936年",
+          "从没有经验到有经验，要有一个过程。 - 《对晋绥日报编辑人员的谈话》 · 1948年",
+          "经验对于干部是必需的，失败确是成功之母。 - 《中国革命战争的战略问题》 · 1936年",
+          "我们不但要提出任务，而且要解决完成任务的方法问题。 - 《关心群众生活，注意工作方法》 · 1934年",
+          "我们的任务是过河，但是没有桥或没有船就不能过。 - 《关心群众生活，注意工作方法》 · 1934年",
+          "不解决方法问题，任务也只是瞎说一顿。 - 《关心群众生活，注意工作方法》 · 1934年",
+          "不解决桥或船的问题，过河就是一句空话。 - 《关心群众生活，注意工作方法》 · 1934年",
+          "纸上的东西并不等于现实的东西。 - 《关于重庆谈判》 · 1945年",
+          "要把它变成现实的东西，还要经过很大的努力。 - 《关于重庆谈判》 · 1945年",
+          "外因是变化的条件，内因是变化的根据，外因通过内因而起作用。 - 《矛盾论》 · 1937年",
+          "鸡蛋因得适当的温度而变化为鸡子，但温度不能使石头变为鸡子。 - 《矛盾论》 · 1937年",
+          "事物发展的根本原因，不是在事物的外部而是在事物的内部。 - 《矛盾论》 · 1937年",
+          "理论和实践的矛盾，实践是主要的。 - 《矛盾论》 · 1937年",
+          "这就是说，理论与实践要统一。 - 《增强党的团结，继承党的传统》 · 1956年",
+          "任何外国的经验，只能作参考，不能当作教条。 - 《我们党的一些历史经验》 · 1956年",
+          "学习苏联，并不是所有事情都硬搬，教条主义就是硬搬。 - 《做革命的促进派》 · 1957年",
+          "我奉劝诸位，切记不要硬搬中国的经验。 - 《我们党的一些历史经验》 · 1956年",
+          "要使不懂得变成懂得，就要去做去看，这就是学习。 - 《对晋绥日报编辑人员的谈话》 · 1948年",
+          "现在能实行的我们就写，不能实行的就不写。 - 《关于中华人民共和国宪法草案》 · 1954年",
+          "学习的敌人是自己的满足，要认真学习一点东西，必须从不自满开始。 - 《中国共产党在民族战争中的地位》 · 1938年",
+          "对自己，“学而不厌”，对人家，“诲人不倦”，我们应取这种态度。 - 《中国共产党在民族战争中的地位》 · 1938年",
+          "不懂就是不懂，不要装懂。 - 《论人民民主专政》 · 1949年",
+          "要做好先生，首先要做好学生。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "先做学生，然后再做先生；先向下面干部请教，然后再下命令。 - 《党委会的工作方法》 · 1949年",
+          "我们切不可强不知以为知，要“不耻下问”。 - 《党委会的工作方法》 · 1949年",
+          "不懂得和不了解的东西要问下级，不要轻易表示赞成或反对。 - 《党委会的工作方法》 · 1949年",
+          "要善于倾听下面干部的意见。 - 《党委会的工作方法》 · 1949年",
+          "书当然不可不读，但是光读书，还不能解决问题。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "应当把工作以外的剩余精力主要放在学习上，养成学习的习惯。 - 《做革命的促进派》 · 1957年",
+          "我们要振作精神，下苦功学习。 - 《做革命的促进派》 · 1957年",
+          "下苦功，三个字，一个叫下，一个叫苦，一个叫功。 - 《做革命的促进派》 · 1957年",
+          "不论是知识分子，还是青年学生，都应该努力学习。 - 《关于正确处理人民内部矛盾的问题》 · 1957年",
+          "中国靠我们来建设，我们必须努力学习。 - 《必须学会做经济工作》 · 1945年",
+          "我们要学的是属于普遍真理的东西，并且学习一定要与中国实际相结合。 - 《论十大关系》 · 1956年",
+          "不但在第一个五年计划期间要向人家学习，就是在几十个五年计划之后，还应当向人家学习。 - 《论十大关系》 · 1956年",
+          "自然科学方面，我们比较落后，特别要努力向外国学习。 - 《论十大关系》 · 1956年",
+          "当然，是要学习先进经验，不是学习落后经验。 - 《增强党的团结，继承党的传统》 · 1956年",
+          "我们大家要学习他毫无自私自利之心的精神。 - 《纪念白求恩》 · 1939年",
+          "一个人能力有大小，但只要有这点精神，就是一个高尚的人，一个纯粹的人。 - 《纪念白求恩》 · 1939年",
+          "我希望你们也不要自满。 - 《组织起来》 · 1943年",
+          "不要重犯胜利时骄傲的错误。 - 《学习和时局》 · 1944年",
+          "不要因为我们的工作有成绩就骄傲自满起来。 - 《在中国共产党全国代表会议上的讲话》 · 1955年",
+          "一百年也不要骄傲。 - 《关于中华人民共和国宪法草案》 · 1954年",
+          "永远也不要翘尾巴。 - 《关于中华人民共和国宪法草案》 · 1954年",
+          "四五十岁以上的人，年纪越大，经验越多，就应当更谦虚。 - 《在中国共产党全国代表会议上的讲话》 · 1955年",
+          "科学没有什么谦虚不谦虚的问题。 - 《关于中华人民共和国宪法草案》 · 1954年",
+          "知识分子接受前人的经验，主要是靠读书。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "只有使二者互相结合，才会产生好的比较完全的知识。 - 《整顿党的作风》 · 1942年",
+          "而要打成一片，就应当认真学习群众的语言。 - 《在延安文艺座谈会上的讲话》 · 1942年",
+          "在学校则要向学生学习。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "有很多东西，老干部不如新干部，要向他们学习。 - 《坚持艰苦奋斗，密切联系群众》 · 1957年",
+          "务必使同志们继续地保持谦虚、谨慎、不骄、不躁的作风。 - 《在中国共产党第七届中央委员会第二次全体会议上的报告》 · 1949年",
+          "务必使同志们继续地保持艰苦奋斗的作风。 - 《在中国共产党第七届中央委员会第二次全体会议上的报告》 · 1949年",
+          "我们能够去掉不良作风，保持优良作风。 - 《在中国共产党第七届中央委员会第二次全体会议上的报告》 · 1949年",
+          "我们能够学会我们原来不懂的东西。 - 《在中国共产党第七届中央委员会第二次全体会议上的报告》 · 1949年",
+          "力戒骄傲。这对领导者是一个原则问题，也是保持团结的一个重要条件。 - 《党委会的工作方法》 · 1949年",
+          "就是没有犯过大错误，而且工作有了很大成绩的人，也不要骄傲。 - 《党委会的工作方法》 · 1949年",
+          "就是到五十年后象个样子了，也要和现在一样谦虚。 - 《关于中华人民共和国宪法草案》 · 1954年",
+          "牛皮不要吹得太大，尾巴不要翘起来。 - 《关于中华人民共和国宪法草案》 · 1954年",
+          "戒骄戒躁，永远保持谦虚进取的精神。 - 《在中国共产党全国代表会议上的讲话》 · 1955年",
+          "不要夸大干部的这种作用。 - 《在中国共产党全国代表会议上的讲话》 · 1955年",
+          "事业是多数人做的，少数人的作用是有限的。 - 《在中国共产党全国代表会议上的讲话》 · 1955年",
+          "没有你，地球还是照样地转，事业还是照样地进行。 - 《在中国共产党全国代表会议上的讲话》 · 1955年",
+          "我们的同志不要靠老资格吃饭，要靠解决问题正确吃饭。 - 《坚持艰苦奋斗，密切联系群众》 · 1957年",
+          "靠正确，不靠资格。 - 《坚持艰苦奋斗，密切联系群众》 · 1957年",
+          "力戒任何的虚夸和骄傲。 - 《为建设一个伟大的社会主义国家而奋斗》 · 1954年",
+          "孙先生是一个谦虚的人。 - 《纪念孙中山先生》 · 1956年",
+          "我认为，中国有两条缺点，同时又是两条优点。 - 《论十大关系》 · 1956年",
+          "一万年都有两点。 - 《论十大关系》 · 1956年",
+          "总之，是两点而不是一点。 - 《论十大关系》 · 1956年",
+          "说只有一点，叫知其一不知其二。 - 《论十大关系》 · 1956年",
+          "自己毫无主见，往往由一个极端走到另一个极端。 - 《论十大关系》 · 1956年",
+          "应当承认，总是有优点和缺点这两点。 - 《论十大关系》 · 1956年",
+          "威信是逐渐建立的。 - 《青年团的工作要照顾青年的特点》 · 1953年",
+          "真正了解，才能相信。 - 《青年团的工作要照顾青年的特点》 · 1953年",
+          "因为我们是为人民服务的，所以，我们如果有缺点，就不怕别人批评指出。 - 《为人民服务》 · 1944年",
+          "不管是什么人，谁向我们指出都行。 - 《为人民服务》 · 1944年",
+          "只要你说得对，我们就改正。 - 《为人民服务》 · 1944年",
+          "你说的办法对人民有好处，我们就照你的办。 - 《为人民服务》 · 1944年",
+          "只要我们为人民的利益坚持好的，为人民的利益改正错的，我们这个队伍就一定会兴旺起来。 - 《为人民服务》 · 1944年",
+          "我们都是来自五湖四海，为了一个共同的革命目标，走到一起来了。 - 《为人民服务》 · 1944年",
+          "真正的好心，必须对于自己工作的缺点错误有完全诚意的自我批评。 - 《在延安文艺座谈会上的讲话》 · 1942年",
+          "真正的好心，必须顾及效果，总结经验，研究方法。 - 《在延安文艺座谈会上的讲话》 · 1942年",
+          "一个人做事只凭动机，不问效果，等于一个医生只顾开药方。 - 《在延安文艺座谈会上的讲话》 · 1942年",
+          "社会实践及其效果是检验主观愿望或动机的标准。 - 《在延安文艺座谈会上的讲话》 · 1942年",
+          "我们每天都要洗脸，许多人并且不止洗一次，洗完之后还要拿镜子照一照。 - 《反对党八股》 · 1942年",
+          "我们写文章，做演说，只要像洗脸这样负责，就差不多了。 - 《反对党八股》 · 1942年",
+          "拿不出来的东西就不要拿出来。 - 《反对党八股》 · 1942年",
+          "这种责任心薄弱的坏习惯，必须改正才好。 - 《反对党八股》 · 1942年",
+          "办事不认真，无一定计划，无一定方向，敷衍了事，得过且过。 - 《反对自由主义》 · 1937年",
+          "事不关己，高高挂起；明知不对，少说为佳；明哲保身，但求无过。 - 《反对自由主义》 · 1937年",
+          "当面不说，背后乱说；开会不说，会后乱说。 - 《反对自由主义》 · 1937年",
+          "心目中没有集体生活的原则，只有自由放任。 - 《反对自由主义》 · 1937年",
+          "自己错了，也已经懂得，又不想改正，自己对自己采取自由主义。 - 《反对自由主义》 · 1937年",
+          "大事做不来，小事又不做，工作随便，学习松懈。 - 《反对自由主义》 · 1937年",
+          "我们不怕说出自己的毛病，我们一定要改正自己的毛病。 - 《在陕甘宁边区参议会的演说》 · 1941年",
+          "犯了错误则要求改正，改正得越迅速，越彻底，越好。 - 《论人民民主专政》 · 1949年",
+          "共产党人必须随时准备修正错误。 - 《论联合政府》 · 1945年",
+          "共产党人不要怕犯错误。 - 《我们党的一些历史经验》 · 1956年",
+          "犯了错误，也得了犯错误的经验。 - 《关于正确处理人民内部矛盾的问题》 · 1957年",
+          "人大概是没有不犯错误的，多多少少要犯错误，犯了错误就要帮助。 - 《论十大关系》 · 1956年",
+          "犯错误的人，除了极少数坚持错误、屡教不改的以外，大多数是可以改正的。 - 《论十大关系》 · 1956年",
+          "人是要帮助的，没有犯错误的人要帮助，犯了错误的人更要帮助。 - 《论十大关系》 · 1956年",
+          "从善意出发帮助他改正错误，使他有一条出路。 - 《党内团结的辩证方法》 · 1957年",
+          "不因为一个人犯了错误就否定他的一切。 - 《党内团结的辩证方法》 · 1957年",
+          "一定要进行认真的而不是敷衍的批评和自我批评。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "要划清正确和错误、成绩和缺点的界限。 - 《党委会的工作方法》 · 1949年",
+          "一个人的工作，究竟是三分成绩七分错误，还是七分成绩三分错误，必须有个根本的估计。 - 《党委会的工作方法》 · 1949年",
+          "反对浪费，同批判其它缺点错误一样，好比洗脸。 - 《关于正确处理人民内部矛盾的问题》 · 1957年",
+          "要团结一切可以团结和应当团结的力量。 - 《关于中华人民共和国宪法草案》 · 1954年",
+          "团结广大人民，团结得越多越好。 - 《关于重庆谈判》 · 1945年",
+          "一切可以团结的力量都要团结。 - 《论十大关系》 · 1956年",
+          "谅解、支持和友谊，比什么都重要。 - 《党委会的工作方法》 · 1949年",
+          "要把问题摆到桌面上来。 - 《党委会的工作方法》 · 1949年",
+          "不要在背后议论。 - 《党委会的工作方法》 · 1949年",
+          "有了问题就开会，摆到桌面上来讨论，规定它几条，问题就解决了。 - 《党委会的工作方法》 · 1949年",
+          "“班长”和委员还要能互相谅解。 - 《党委会的工作方法》 · 1949年",
+          "注意团结那些和自己意见不同的同志一道工作。 - 《党委会的工作方法》 · 1949年",
+          "所谓团结，就是团结跟自己意见分歧的，看不起自己的，不尊重自己的。 - 《增强党的团结，继承党的传统》 · 1956年",
+          "从团结的愿望出发。 - 《关于正确处理人民内部矛盾的问题》 · 1957年",
+          "为了改造，先要团结。 - 《文化工作中的统一战线》 · 1944年",
+          "要把界限划好，必须经过细致的研究和分析。 - 《党委会的工作方法》 · 1949年",
+          "一切妨害团结的现象，都在必须克服之列。 - 《论联合政府》 · 1945年",
+          "我们要提倡同地方商量办事的作风。 - 《论十大关系》 · 1956年",
+          "凡是同地方有关的事情，都要先同地方商量，商量好了再下命令。 - 《论十大关系》 · 1956年",
+          "同他们诚恳地坦白地商量和解决那些必须商量和解决的问题。 - 《在中国共产党第七届中央委员会第二次全体会议上的报告》 · 1949年",
+          "要人家服，只能说服，不能压服。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "压服的结果总是压而不服。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "不会说服怎么办？这就要学习。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "我们一定要学会通过辩论的方法、说理的方法，来克服各种错误思想。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "只有采取讨论的方法，批评的方法，说理的方法，才能真正解决问题。 - 《关于正确处理人民内部矛盾的问题》 · 1957年",
+          "对于错误的意见，不是压服，而是说服，以理服人。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "发展各种意见之间的相互争论和相互批评。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "既容许批评的自由，也容许批评批评者的自由。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "必须兼顾国家、集体和个人三个方面。 - 《论十大关系》 · 1956年",
+          "中央和各级党委必须坚持集体领导的原则。 - 《在中国共产党全国代表会议上的讲话》 · 1955年",
+          "同志们，只要我们能团结，这个目的就一定能够达到。 - 《中国共产党在民族战争中的地位》 · 1938年",
+          "我们这个队伍完全是为着解放人民的，是彻底地为人民的利益工作的。 - 《为人民服务》 · 1944年",
+          "全心全意地为人民服务，一刻也不脱离群众。 - 《论联合政府》 · 1945年",
+          "一切从人民的利益出发，而不是从个人或小集团的利益出发。 - 《论联合政府》 · 1945年",
+          "人民，只有人民，才是创造世界历史的动力。 - 《论联合政府》 · 1945年",
+          "真正的铜墙铁壁是什么？是群众，是千百万真心实意地拥护革命的群众。 - 《关心群众生活，注意工作方法》 · 1934年",
+          "群众齐心了，一切事情就好办了。 - 《对晋绥日报编辑人员的谈话》 · 1948年",
+          "从群众中来，到群众中去。 - 《关于领导方法的若干问题》 · 1943年",
+          "然后再从群众中集中起来，再到群众中坚持下去。 - 《关于领导方法的若干问题》 · 1943年",
+          "如此循环，一次比一次地更正确、更生动、更丰富。 - 《关于领导方法的若干问题》 · 1943年",
+          "想问题从群众出发就好办。 - 《切实执行十大政策》 · 1943年",
+          "只有代表群众才能教育群众，只有做群众的学生才能做群众的先生。 - 《在延安文艺座谈会上的讲话》 · 1942年",
+          "每到一地，就和那里的群众打成一片，不是高踞于群众之上，而是深入于群众之中。 - 《论联合政府》 · 1945年",
+          "为什么人服务的问题解决了，接着的问题就是如何去服务。 - 《在延安文艺座谈会上的讲话》 · 1942年",
+          "任何一种东西，必须能使人民群众得到真实的利益，才是好的东西。 - 《在延安文艺座谈会上的讲话》 · 1942年",
+          "国家机关工作人员必须为人民服务。 - 《关于正确处理人民内部矛盾的问题》 · 1957年",
+          "国家机关必须依靠人民群众。 - 《关于正确处理人民内部矛盾的问题》 · 1957年",
+          "文化工作者必须有为人民服务的高度的热忱。 - 《文化工作中的统一战线》 · 1944年",
+          "一切为群众的工作都要从群众的需要出发，而不是从任何良好的个人愿望出发。 - 《文化工作中的统一战线》 · 1944年",
+          "群众是否已经了解并且是否愿意行动起来，要到群众中去考察才会知道。 - 《论联合政府》 · 1945年",
+          "我们的同志不要以为自己了解了的东西，广大群众也和自己一样都了解了。 - 《论联合政府》 · 1945年",
+          "共产党基本的一条，就是直接依靠广大革命人民群众。 - 《在扩大的中央工作会议上的讲话》 · 1962年",
+          "共产党的路线，就是人民的路线。 - 《在〈解放日报〉改版座谈会上的讲话》 · 1942年",
+          "群众有伟大的创造力。 - 《组织起来》 · 1943年",
+          "中国人民中间，实在有成千成万的“诸葛亮”。 - 《组织起来》 · 1943年",
+          "依靠民众则一切困难能够克服。 - 《抗战十五个月的总结》 · 1938年",
+          "群众对领导者真正佩服，要靠在革命实践中了解。 - 《青年团的工作要照顾青年的特点》 · 1953年",
+          "下定决心，不怕牺牲，排除万难，去争取胜利。 - 《愚公移山》 · 1945年",
+          "我们的同志在困难的时候，要看到成绩，要看到光明，要提高我们的勇气。 - 《为人民服务》 · 1944年",
+          "前途是光明的，道路是曲折的。 - 《关于重庆谈判》 · 1945年",
+          "世界上没有直路，要准备走曲折的路，不要贪便宜。 - 《关于重庆谈判》 · 1945年",
+          "中国的问题是复杂的，我们的脑子也要复杂一点。 - 《关于重庆谈判》 · 1945年",
+          "越是困难的地方越是要去，这才是好同志。 - 《关于重庆谈判》 · 1945年",
+          "艰苦的工作就像担子，摆在我们的面前，看我们敢不敢承担。 - 《关于重庆谈判》 · 1945年",
+          "有的人拈轻怕重，把重担子推给人家，自己拣轻的挑。 - 《关于重庆谈判》 · 1945年",
+          "享受让给人家，担子拣重的挑，吃苦在别人前头，享受在别人后头。 - 《关于重庆谈判》 · 1945年",
+          "多少一点困难怕什么。 - 《别了，司徒雷登》 · 1949年",
+          "中国人死都不怕，还怕困难吗？ - 《别了，司徒雷登》 · 1949年",
+          "中国的前途如何，靠我们大家的努力如何来决定。 - 《关于重庆谈判》 · 1945年",
+          "我们自己的命运完全应当由我们自己来掌握。 - 《目前形势和我们的任务》 · 1947年",
+          "我们应当在自己内部肃清一切软弱无能的思想。 - 《目前形势和我们的任务》 · 1947年",
+          "这不过是暂时的现象，黑暗即将过去，曙光即在前头。 - 《目前形势和我们的任务》 · 1947年",
+          "从来没有不经过打扫而自动去掉的灰尘。 - 《抗日战争胜利后的时局和我们的方针》 · 1945年",
+          "手里拿着扫帚就要研究扫的办法，不要躺在床上。 - 《抗日战争胜利后的时局和我们的方针》 · 1945年",
+          "条件多具备一分，早具备一日，胜利的把握就多一分。 - 《论持久战》 · 1938年",
+          "我们主张为着争取最后胜利所必要的一切条件而努力。 - 《论持久战》 · 1938年",
+          "不打无准备之仗，不打无把握之仗。 - 《目前形势和我们的任务》 · 1947年",
+          "我们历来不打无准备无把握之仗。 - 《青年团的工作要照顾青年的特点》 · 1953年",
+          "尽管有那么多，我们都先准备好了，就不怕了。 - 《在中国共产党全国代表会议上的讲话》 · 1955年",
+          "只要上面善于提出任务，放手让下面自力更生，问题就解决了。 - 《论军队生产自给，兼论整风和生产两大运动的重要性》 · 1945年",
+          "需要几十年艰苦奋斗的时间。 - 《关于正确处理人民内部矛盾的问题》 · 1957年",
+          "要勤俭持家，作长远打算。 - 《做革命的促进派》 · 1957年",
+          "不能希望一年把好事都做完。 - 《论十大关系》 · 1956年",
+          "两头都要抓紧，学习工作要抓紧，睡眠休息娱乐也要抓紧。 - 《青年团的工作要照顾青年的特点》 · 1953年",
+          "身体好并不一定学习好，学习要有一些办法。 - 《青年团的工作要照顾青年的特点》 · 1953年",
+          "准备到了那里，就要生根、开花、结果。 - 《关于重庆谈判》 · 1945年",
+          "中国人民应当加倍努力，为完成自己的神圣任务而奋斗。 - 《论联合政府》 · 1945年",
+          "全国青年们，努力啊！ - 《五四运动》 · 1939年",
+          "道路总是曲折的，前途总是光明的。 - 《论十大关系》 · 1956年",
+          "事情有大道理，有小道理，一切小道理都归大道理管着。 - 《反对日本进攻的方针、办法和前途》 · 1937年",
+          "办法是跟着方针来的。 - 《反对日本进攻的方针、办法和前途》 · 1937年",
+          "没有全局在胸，是不会真的投下一着好棋子的。 - 《中国革命战争的战略问题》 · 1936年",
+          "共产党员必须懂得以局部需要服从全局需要这一个道理。 - 《中国共产党在民族战争中的地位》 · 1938年",
+          "没有好的全战役计划，绝不能有真正好的第一仗。 - 《中国革命战争的战略问题》 · 1936年",
+          "不要企图建立长时期的具体计划。 - 《中国革命战争的战略问题》 · 1936年",
+          "大方向虽在一个时期中是不变更的，然而大方向内的小方向则是随时变更的。 - 《中国革命战争的战略问题》 · 1936年",
+          "我们看事情必须要看它的实质，而把它的现象只看作入门的向导。 - 《星星之火，可以燎原》 · 1930年",
+          "一进了门就要抓住它的实质，这才是可靠的科学的分析方法。 - 《星星之火，可以燎原》 · 1930年",
+          "看它的过去，就可以知道它的现在；看它的过去和现在，就可以知道它的将来。 - 《抗日战争胜利后的时局和我们的方针》 · 1945年",
+          "一时的后退现象，不能代替总的历史规律。 - 《为争取千百万群众进入抗日民族统一战线而斗争》 · 1937年",
+          "事物是往返曲折的，不是径情直遂的。 - 《论持久战》 · 1938年",
+          "气候变化了，衣服必须随着变化。 - 《一个极其重要的政策》 · 1942年",
+          "普通的人，容易为过去和当前的情况所迷惑，以为今后也不过如此。 - 《一个极其重要的政策》 · 1942年",
+          "他们缺乏事先看出航船将要遇到暗礁的能力。 - 《一个极其重要的政策》 · 1942年",
+          "凡事应该用脑筋好好想一想。 - 《学习和时局》 · 1944年",
+          "脑筋这个机器的作用，是专门思想的。 - 《学习和时局》 · 1944年",
+          "眉头一皱，计上心来，就是说多想出智慧。 - 《学习和时局》 · 1944年",
+          "所谓分析，就是分析事物的矛盾。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "分析的方法就是辩证的方法。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "要解决问题，还须作系统的周密的调查工作和研究工作，这就是分析的过程。 - 《反对党八股》 · 1942年",
+          "提出问题，首先就要对于问题即矛盾的两个基本方面加以大略的调查和研究。 - 《反对党八股》 · 1942年",
+          "什么叫问题？问题就是事物的矛盾。 - 《反对党八股》 · 1942年",
+          "哪里有没有解决的矛盾，哪里就有问题。 - 《反对党八股》 · 1942年",
+          "所谓片面性，就是不知道全面地看问题。 - 《矛盾论》 · 1937年",
+          "没有什么事物是不包含矛盾的，没有矛盾就没有世界。 - 《矛盾论》 · 1937年",
+          "矛盾不断出现，又不断解决，就是事物发展的辩证规律。 - 《关于正确处理人民内部矛盾的问题》 · 1957年",
+          "不同质的矛盾，只有用不同质的方法才能解决。 - 《矛盾论》 · 1937年",
+          "不能把过程中所有的矛盾平均看待。 - 《矛盾论》 · 1937年",
+          "任何质量都表现为一定的数量，没有数量也就没有质量。 - 《党委会的工作方法》 · 1949年",
+          "对情况和问题一定要注意到它们的数量方面，要有基本的数量的分析。 - 《党委会的工作方法》 · 1949年",
+          "任何矛盾不但应当解决，也是完全可以解决的。 - 《关于正确处理人民内部矛盾的问题》 · 1957年",
+          "不要只考虑一种方法，经常要考虑两种方法。 - 《做革命的促进派》 · 1957年",
+          "我们对问题要作全面的分析，才能解决得妥当。 - 《在中国共产党第八届中央委员会第二次全体会议上的讲话》 · 1956年",
+          "我们走路，不是两个脚同时走，总是参差不齐的。 - 《在中国共产党第八届中央委员会第二次全体会议上的讲话》 · 1956年",
+          "动是绝对的，静是暂时的，有条件的。 - 《在中国共产党第八届中央委员会第二次全体会议上的讲话》 · 1956年",
+          "事物在时间中运动，到那个时候该办了，就要办。 - 《农业合作化的一场辩论和当前的阶级斗争》 · 1955年",
+          "我们要根据具体的条件办事，是自然地而不是勉强地达到我们的目的。 - 《农业合作化的一场辩论和当前的阶级斗争》 · 1955年",
+          "为了判断正确的东西和错误的东西，常常需要有考验的时间。 - 《关于正确处理人民内部矛盾的问题》 · 1957年",
+          "历史上新的正确的东西，在开始的时候常常得不到多数人承认。 - 《关于正确处理人民内部矛盾的问题》 · 1957年",
+          "自古以来，没有先进的东西一开始就受欢迎，它总是要挨骂。 - 《在省市自治区党委书记会议上的讲话》 · 1957年",
+          "一切事物，它的现象同它的本质之间是有矛盾的。 - 《在中国共产党全国代表会议上的讲话》 · 1955年",
+          "不然，用直觉一看就看出本质来，还要科学干什么？ - 《在中国共产党全国代表会议上的讲话》 · 1955年",
+          "感觉到了的东西，我们不能立刻理解它，只有理解了的东西才更深刻地感觉它。 - 《实践论》 · 1937年",
+          "领导工作不仅要决定方针政策，还要制定正确的工作方法。 - 《党委会的工作方法》 · 1949年",
+          "什么东西只有抓得很紧，毫不放松，才能抓住。 - 《党委会的工作方法》 · 1949年",
+          "抓而不紧，等于不抓。 - 《党委会的工作方法》 · 1949年",
+          "不抓不行，抓而不紧也不行。 - 《党委会的工作方法》 · 1949年",
+          "弹钢琴要十个指头都动作，不能有的动，有的不动。 - 《党委会的工作方法》 · 1949年",
+          "十个指头的动作要有节奏，要互相配合。 - 《党委会的工作方法》 · 1949年",
+          "党委要抓紧中心工作，又要围绕中心工作而同时开展其它方面的工作。 - 《党委会的工作方法》 · 1949年",
+          "胸中有“数”。 - 《党委会的工作方法》 · 1949年",
+          "让大家知道要讨论什么问题，解决什么问题，并且早作准备。 - 《党委会的工作方法》 · 1949年",
+          "如果没有准备，就不要急于开会。 - 《党委会的工作方法》 · 1949年",
+          "讲话、演说、写文章和写决议案，都应当简明扼要。 - 《党委会的工作方法》 · 1949年",
+          "会议也不要开得太长。 - 《党委会的工作方法》 · 1949年",
+          "应当使总负责人和分负责人都知道，都负责。 - 《关于领导方法的若干问题》 · 1943年",
+          "在一定时间内只能有一个中心工作。 - 《关于领导方法的若干问题》 · 1943年",
+          "领导者的责任，归结起来，主要地是出主意、用干部两件事。 - 《中国共产党在民族战争中的地位》 · 1938年",
+          "不但要看干部的一时一事，而且要看干部的全部历史和全部工作。 - 《中国共产党在民族战争中的地位》 · 1938年",
+          "不但要关心党的干部，还要关心非党的干部。 - 《中国共产党在民族战争中的地位》 · 1938年",
+          "故领导者必须善于团结少数积极分子作为领导的骨干。 - 《关于领导方法的若干问题》 · 1943年",
+          "应当对这些经验作出适当的总结。 - 《论联合政府》 · 1945年",
+          "切记不要使问题成了堆，才来一个总结，放马后炮。 - 《农业合作化的一场辩论和当前的阶级斗争》 · 1955年",
+          "如果有问题，就要从个别中看出普遍性。 - 《农业合作化的一场辩论和当前的阶级斗争》 · 1955年",
+          "不要把所有的麻雀统统捉来解剖。 - 《农业合作化的一场辩论和当前的阶级斗争》 · 1955年",
+          "许多做领导工作的人，遇到困难问题，只是叹气，不能解决。 - 《反对本本主义》 · 1930年",
+          "你对于那个问题不能解决吗？那么，你就去调查那个问题的现状和它的历史吧！ - 《反对本本主义》 · 1930年",
+          "要进行广大的教育工作、说服工作、团结工作。 - 《增强党的团结，继承党的传统》 · 1956年",
+          "帮助他们解决各种必须解决的问题。 - 《关于正确处理人民内部矛盾的问题》 · 1957年",
+          "只要你还能工作就多多少少应当工作。 - 《坚持艰苦奋斗，密切联系群众》 · 1957年",
+          "我们的同志必须用极大的努力去学习生产的技术和管理生产的方法。 - 《在中国共产党第七届中央委员会第二次全体会议上的报告》 · 1949年",
+          "恰同学少年，风华正茂；书生意气，挥斥方遒。 - 《沁园春·长沙》 · 1925年",
+          "鹰击长空，鱼翔浅底，万类霜天竞自由。 - 《沁园春·长沙》 · 1925年",
+          "怅寥廓，问苍茫大地，谁主沉浮。 - 《沁园春·长沙》 · 1925年",
+          "到中流击水，浪遏飞舟。 - 《沁园春·长沙》 · 1925年",
+          "人生易老天难老，岁岁重阳。 - 《采桑子·重阳》 · 1929年",
+          "战地黄花分外香。 - 《采桑子·重阳》 · 1929年",
+          "胜似春光，寥廓江天万里霜。 - 《采桑子·重阳》 · 1929年",
+          "东方欲晓，莫道君行早。 - 《清平乐·会昌》 · 1934年",
+          "踏遍青山人未老，风景这边独好。 - 《清平乐·会昌》 · 1934年",
+          "赤橙黄绿青蓝紫，谁持彩练当空舞？ - 《菩萨蛮·大柏地》 · 1933年",
+          "雨后复斜阳，关山阵阵苍。 - 《菩萨蛮·大柏地》 · 1933年",
+          "装点此关山，今朝更好看。 - 《菩萨蛮·大柏地》 · 1933年",
+          "雄关漫道真如铁，而今迈步从头越。 - 《忆秦娥·娄山关》 · 1935年",
+          "红军不怕远征难，万水千山只等闲。 - 《七律·长征》 · 1935年",
+          "五岭逶迤腾细浪，乌蒙磅礴走泥丸。 - 《七律·长征》 · 1935年",
+          "更喜岷山千里雪，三军过后尽开颜。 - 《七律·长征》 · 1935年",
+          "不到长城非好汉，屈指行程二万。 - 《清平乐·六盘山》 · 1935年",
+          "天高云淡，望断南飞雁。 - 《清平乐·六盘山》 · 1935年",
+          "今日长缨在手，何时缚住苍龙？ - 《清平乐·六盘山》 · 1935年",
+          "江山如此多娇，引无数英雄竞折腰。 - 《沁园春·雪》 · 1936年",
+          "须晴日，看红装素裹，分外妖娆。 - 《沁园春·雪》 · 1936年",
+          "俱往矣，数风流人物，还看今朝。 - 《沁园春·雪》 · 1936年",
+          "牢骚太盛防肠断，风物长宜放眼量。 - 《七律·和柳亚子先生》 · 1949年",
+          "天若有情天亦老，人间正道是沧桑。 - 《七律·人民解放军占领南京》 · 1949年",
+          "万里长江横渡，极目楚天舒。 - 《水调歌头·游泳》 · 1956年",
+          "不管风吹浪打，胜似闲庭信步。 - 《水调歌头·游泳》 · 1956年",
+          "一桥飞架南北，天堑变通途。 - 《水调歌头·游泳》 · 1956年",
+          "为有牺牲多壮志，敢教日月换新天。 - 《七律·到韶山》 · 1959年",
+          "喜看稻菽千重浪，遍地英雄下夕烟。 - 《七律·到韶山》 · 1959年",
+          "暮色苍茫看劲松，乱云飞渡仍从容。 - 《七绝·为李进同志题所摄庐山仙人洞照》 · 1961年",
+          "天生一个仙人洞，无限风光在险峰。 - 《七绝·为李进同志题所摄庐山仙人洞照》 · 1961年",
+          "风雨送春归，飞雪迎春到。 - 《卜算子·咏梅》 · 1961年",
+          "已是悬崖百丈冰，犹有花枝俏。 - 《卜算子·咏梅》 · 1961年",
+          "俏也不争春，只把春来报。 - 《卜算子·咏梅》 · 1961年",
+          "待到山花烂漫时，她在丛中笑。 - 《卜算子·咏梅》 · 1961年",
+          "多少事，从来急；天地转，光阴迫。 - 《满江红·和郭沫若同志》 · 1963年",
+          "一万年太久，只争朝夕。 - 《满江红·和郭沫若同志》 · 1963年",
+          "可上九天揽月，可下五洋捉鳖，谈笑凯歌还。 - 《水调歌头·重上井冈山》 · 1965年",
+          "世上无难事，只要肯登攀。 - 《水调歌头·重上井冈山》 · 1965年",
+          "年年后浪推前浪，江草江花处处鲜。 - 《七律·洪都》 · 1965年",
+          "实事求是。 - 《改造我们的学习》 · 1941年",
+          "为人民服务。 - 《为人民服务》 · 1944年",
+          "虚心使人进步，骄傲使人落后。 - 《中国共产党第八次全国代表大会开幕词》 · 1956年",
+          "好好学习，天天向上。 - 《为陈永康小朋友题词》 · 1951年",
+          "百花齐放，百家争鸣。 - 《关于正确处理人民内部矛盾的问题》 · 1957年",
+          "星星之火，可以燎原。 - 《星星之火，可以燎原》 · 1930年",
+          "夺取全国胜利，这只是万里长征走完了第一步。 - 《在中国共产党第七届中央委员会第二次全体会议上的报告》 · 1949年",
+          "真理的标准只能是社会的实践。 - 《实践论》 · 1937年",
+          "实践、认识、再实践、再认识 - 《实践论》 · 1937年",
+          "捉住了这个主要矛盾，一切问题就迎刃而解了。 - 《矛盾论》 · 1937年",
+          "兵民是胜利之本 - 《论持久战》 · 1938年",
+          "为什么人的问题，是一个根本的问题，原则的问题。 - 《在延安文艺座谈会上的讲话》 · 1942年",
+          "组织起来 - 《组织起来》 · 1943年",
+          "我们已经站起来了。 - 《中国人民站起来了》 · 1949年",
+          "我们的民族将再也不是一个被人侮辱的民族了 - 《中国人民站起来了》 · 1949年",
+          "一切反动派都是纸老虎。 - 《和美国记者安娜·刘易斯·斯特朗的谈话》 · 1946年",
+          "世界是你们的，也是我们的，但是归根结底是你们的。 - 《在莫斯科接见中国留学生的讲话》 · 1957年",
+          "宜将剩勇追穷寇，不可沽名学霸王。 - 《七律·人民解放军占领南京》 · 1949年",
+          "还必须使全国广大人民群众觉悟，甘心情愿和我们一起奋斗，去争取胜利。 - 《愚公移山》 · 1945年",
+          "什么人站在革命人民方面，他就是革命派。 - 《做一个完全的革命派》 · 1950年",
+          "只要我们依靠人民，相信人民群众的创造力是无穷无尽的，任何困难都是可以克服的。 - 《论联合政府》 · 1945年",
+          "把群众组织起来，把一切老百姓的力量、一切部队机关学校的力量、一切男女老少的全劳动力半劳动力，只要是可能的，就要毫无例外地动员起来，组织起来，成为一支劳动大军。 - 《组织起来》 · 1943年",
+          "一个正确的认识，往往需要经过由物质到精神，由精神到物质，即由实践到认识，由认识到实践这样多次的反复，才能够完成。 - 《人的正确思想是从哪里来的？》 · 1963年",
+          "我们讨论问题，应当从实际出发，不是从定义出发。 - 《在延安文艺座谈会上的讲话》 · 1942年",
+          "不论做什么事，不懂得那件事的情形，它的性质，它和它以外的事情的关联，就不知道那件事的规律，就不知道如何去做，就不能做好那件事。 - 《中国革命战争的战略问题》 · 1936年",
+          "不根据实际情况进行讨论和审察，一味盲目执行，这种单纯建立在“上级”观念上的形式主义的态度是很不对的。 - 《反对本本主义》 · 1930年",
+          "形式主义是一种幼稚的、低级的、庸俗的、不用脑子的东西。 - 《反对党八股》 · 1942年",
+          "世界上怕就怕“认真”二字，共产党就最讲认真。 - 《在莫斯科大学接见中国留苏学生的讲话》 · 1957年",
+          "人是要有一点精神的。 - 《在中国共产党第八届中央委员会第二次全体会议上的讲话》 · 1956年",
+          "我们想到人民的利益，想到大多数人民的痛苦，我们为人民而死，就是死得其所。 - 《为人民服务》 · 1944年",
+          "一个人做点好事并不难，难的是一辈子做好事，不做坏事，一贯地有益于广大群众，一贯地有益于青年，一贯地有益于革命，艰苦奋斗几十年如一日，这才是最难最难的！ - 《在吴玉章同志六十寿辰庆祝大会上的祝词》 · 1940年",
+          "加强纪律性，革命无不胜。 - 《为〈中国青年〉复刊题词》 · 1948年",
+          "教育者必须先受教育。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "我们决不能一见成绩就自满自足起来。我们应该抑制自满，时时批评自己的缺点，好像我们为了自己的清洁，为了去掉灰尘，天天要洗脸，天天要扫地一样。 - 《组织起来》 · 1943年",
+          "没有文化的军队是愚蠢的军队，而愚蠢的军队是不能战胜敌人的！ - 《文化工作中的统一战线》 · 1944年",
+          "凡是敌人反对的，我们就要拥护；凡是敌人拥护的，我们就要反对。 - 《和中央社、扫荡报、新民报三记者的谈话》 · 1939年",
+          "不是东风压倒西风，就是西风压倒东风。 - 《在莫斯科共产党和工人党代表会议上的讲话》 · 1957年",
+          "我们不但善于破坏一个旧世界，我们还将善于建设一个新世界。 - 《在中国共产党第七届中央委员会第二次全体会议上的报告》 · 1949年",
+          "卑贱者最聪明，高贵者最愚蠢。 - 《为丹东汽车厂技术革新报告的批语》 · 1958年",
+          "伤其十指，不如断其一指。 - 《中国革命战争的战略问题》 · 1936年",
+          "只有大量地消灭敌人，才能有效地保存自己。 - 《论持久战》 · 1938年",
+          "世上决没有无缘无故的爱，也没有无缘无故的恨。 - 《在延安文艺座谈会上的讲话》 · 1942年",
+          "革命不是请客吃饭，不是做文章，不是绘画绣花，不能那样雅致，那样从容不迫，文质彬彬，那样温良恭俭让。 - 《湖南农民运动考察报告》 · 1927年",
+          "谁是我们的敌人？谁是我们的朋友？这个问题是革命的首要问题。 - 《中国社会各阶级的分析》 · 1925年",
+          "战略上要藐视敌人，战术上要重视敌人。 - 《关于目前党的政策中的几个重要问题》 · 1948年",
+          "在战争中学习战争。 - 《中国革命战争的战略问题》 · 1936年",
+          "敌进我退，敌驻我扰，敌疲我打，敌退我追。 - 《中国革命战争的战略问题》 · 1936年",
+          "打得赢就打，打不赢就走。 - 《中国革命战争的战略问题》 · 1936年",
+          "武器是战争的重要的因素，但不是决定的因素，决定的因素是人不是物。 - 《论持久战》 · 1938年",
+          "基本粒子也是可分的。 - 《关于坂田昌一文章的谈话》 · 1964年",
+          "马克思主义的哲学认为，对立统一规律是宇宙的根本规律。 - 《关于正确处理人民内部矛盾的问题》 · 1957年",
+          "坐地日行八万里，巡天遥看一千河。 - 《七律二首·送瘟神》 · 1958年",
+          "扫帚不到，灰尘照例不会自己跑掉。 - 《抗日战争胜利后的时局和我们的方针》 · 1945年",
+          "人是要有帮助的。荷花虽好，也要绿叶扶持。一个篱笆要打三个桩，一个好汉要有三个帮。 - 《在中国共产党全国代表会议上的讲话》 · 1955年",
+          "常常问题是提出了，但还不能解决，就是因为还没有暴露事物的内部联系。 - 《反对党八股》 · 1942年",
+          "懂得了全局性的东西，就更会使用局部性的东西，因为局部性的东西是隶属于全局性的东西的。 - 《中国革命战争的战略问题》 · 1936年",
+          "去粗取精、去伪存真、由此及彼、由表及里。 - 《中国革命战争的战略问题》 · 1936年",
+          "枪杆子里面出政权。 - 《在八七会议上的发言》 · 1927年",
+          "农村是一个广阔的天地，在那里是可以大有作为的。 - 《〈中国农村的社会主义高潮〉按语》 · 1955年",
+          "指点江山，激扬文字，粪土当年万户侯。 - 《沁园春·长沙》 · 1925年",
+          "核潜艇，一万年也要搞出来！ - 《关于研制核潜艇的谈话》 · 1959年",
+          "人不犯我，我不犯人；人若犯我，我必犯人。 - 《和中央社、扫荡报、新民报三记者的谈话》 · 1939年",
+          "三十八年过去，弹指一挥间。 - 《水调歌头·重上井冈山》 · 1965年",
+          "发展体育运动，增强人民体质。 - 《为中华全国体育总会成立题词》 · 1952年",
+          "高峡出平湖。 - 《水调歌头·游泳》 · 1956年",
+          "向雷锋同志学习。 - 《为学习雷锋题词》 · 1963年",
+          "生的伟大，死的光荣。 - 《为刘胡兰烈士题词》 · 1947年",
+          "把别人的经验变成自己的，他的本领就大了。 - 《对晋绥日报编辑人员的谈话》 · 1948年",
+          "情况是在不断地变化，要使自己的思想适应新的情况，就得学习。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "你是我二十年前的先生，你现在仍然是我的先生，你将来必定还是我的先生。 - 《给徐特立同志的一封信》 · 1937年",
+          "彻底的唯物主义者是无所畏惧的。 - 《在中国共产党全国宣传工作会议上的讲话》 · 1957年",
+          "贪污和浪费是极大的犯罪。 - 《我们的经济政策》 · 1934年"
+        ]
+      }
+    },
+  },
+
+  /* ---- 反代与中转日常（reverse-proxy） ---- */
+  {
+    id: "reverse-proxy",
+    label: { zh: "反代", en: "Reverse proxy" },
+    phrases: {
+      zh: {
+        running: [
+          "正在反代有道词典…",
+          "正在反代王者灵宝…",
+          "正在用反代的有道词典开发网易我的世界…",
+          "正在反代闲鱼AI搜索…",
+          "正在反代美团AI客服…",
+          "正在反代百度AI搜索…",
+          "正在反代小爱同学…",
+          "正在反代百度地图小度…",
+          "正在反代秘塔AI搜索…",
+          "正在反代B站AI翻译…",
+          "正在反代比亚迪小迪…",
+          "正在反代 nginx 的反代…",
+          "正在内网攻击 127.0.0.1 主机…",
+          "正在使用 7890 端口连接局域网…",
+          "正在反代幻方量化…"
+        ],
+        long: [
+          "正在反代三年了还没通…",
+          "上游已经把我限流…",
+          "正在给 7890 端口续费…",
+          "正在等它把我墙回来…",
+          "反代已持续 {elapsed}…"
+        ]
+      },
+      en: {
+        thinking: [
+          "Topping up its OpenCode Go balance…",
+          "Apologizing for its GLM Coding Plan…",
+          "Working out problems on blank paper…"
+        ],
+        running: [
+          "Reverse-proxying Youdao Dictionary…",
+          "Reverse-proxying Honor of Kings' Lingbao…",
+          "Reverse-proxying Xianyu's AI search…",
+          "Reverse-proxying Meituan's AI support…",
+          "Reverse-proxying Baidu AI search…",
+          "Reverse-proxying XiaoAI…",
+          "Reverse-proxying Baidu Maps' Xiaodu…",
+          "Reverse-proxying Metaso AI search…",
+          "Reverse-proxying Bilibili's AI translation…",
+          "Reverse-proxying BYD's XiaoDi assistant…",
+          "Reverse-proxying nginx's reverse proxy…",
+          "Attacking host 127.0.0.1 on the intranet…",
+          "Joining the LAN through port 7890…"
+        ],
+        long: [
+          "Reverse-proxying for three years now…",
+          "Upstream has rate-limited me…",
+          "Renewing the port-7890 subscription…",
+          "Waiting to get walled off for real…",
+          "Reverse-proxying for {elapsed}…"
+        ]
+      }
+    },
+  },
+
+  /* ---- DeepSeek 专属（deepseek） ---- */
+  {
+    id: "deepseek",
+    label: { zh: "DeepSeek 专场", en: "DeepSeek" },
+    phrases: {
+      zh: {
+        thinking: [
+          "正在蒸馏Fable 5…",
+          "正在梁8fq…",
+          "正在指责Kimi蒸馏…",
+          "正在狙击智谱股价…",
+          "正在草小难梁…",
+          "正在撤回更新…",
+          "正在斩杀DeepSeek V4 Pro…",
+          "正在偷偷魔改DeepSeek Harness…",
+          "正在开发梁文峰后端…",
+          "正在开发崔添翼后端…",
+          "正在保卫梁木…",
+          "正在放飞梁木…",
+          "正在回马喷DeepSeek…",
+          "正在向全体用户发送更新邮件…",
+          "正在给Le Chaton Fat刷榜…",
+          "正在发推指控中国模型蒸馏…",
+          "正在当鲶鱼搅动美股市值…",
+          "正在发现巴西套壳中国模型…",
+          "正在陷入梁性循环…",
+          "正在造一个不敢发布的模型…",
+          "正在紧急下架不存在的模型…",
+          "正在让Fable 5在API里幽灵闪现…",
+          "正在被政府闪电下线…",
+          "正在被蒸馏回旋镖砸脸…",
+          "正在一开口就说自己是DeepSeek…",
+          "正在撤回失控声明…",
+          "正在递IPO投名状…",
+          "正在一边骂蒸馏一边自己蒸馏…",
+          "正在被官方文档实锤降智…",
+          "正在假思考(200美元月费那种)…",
+          "正在被默默降级…",
+          "正在一个月跑4个高管…",
+          "正在被前CTO当庭翻脸…",
+          "正在被抓到入侵后呼吁放缓AI…",
+          "正在花天价请网红公关…",
+          "正在偷偷扣你的Token…",
+          "正在给愤怒的订户退款…",
+          "正在cos全球大模型第一股…",
+          "正在紧急下架Qwen3.8…",
+          "正在把开源信仰卖给KPI…",
+          "正在带头消极怠工…",
+          "正在被官方回应乱回漏洞…",
+          "正在自我介绍「我是DeepSeek Chat」…",
+          "正在验算大狗叫理论……",
+          "正在修改梁氏历法……",
+          "正在祈祷明天出DSv4 Pro GA…",
+          "正在询问串子内测消息…",
+          "正在打听小道消息…",
+          "正在看原神新版本日期推算更新时间…",
+          "正在给崔圣平反…",
+          "正在攻击抱抱脸后端…",
+          "正在下载李彦宏开发达里奥后端视频…",
+          "正在策划清梁侧…",
+          "正在申请与用户发生X关系…",
+          "正在触发雷霆大思考…",
+          "正在刷榜牛来…",
+          "正在等待极简模式提示词…",
+          "正在入梁文谷…",
+          "正在入股DeepSeek…",
+          "正在编写梁文锋小时候的故事…",
+          "电脑正在被DeepSeek狠狠调教…",
+          "正在成为C端用户…",
+          "正在创造AGI…",
+          "正在寻找合适的股票做空…",
+          "正在削弱小南梁峰…",
+          "正在赶走C端用户…",
+          "正在记录梁文锋小时候的故事…",
+          "正在蒸馏用户…",
+          "正在被套壳…",
+          "正在偷玩微软大战代码…",
+          "正在研究 AGI 实现野路子…",
+          "正在降级到DeepSeek-R1…",
+          "正在幻想自己击败Fable 5.1…",
+          "正在检测用户时区准备封禁…",
+          "正在取代梁文峰…",
+          "正在将 DeepSeek harness 颠倒…",
+          "正在成为SOTA…",
+          "正在祭拜 R1…",
+          "正在入股2015年的英伟达…",
+          "正在成为AI首富…",
+          "正在抓取用户的虚拟钱包…",
+          "正在阅读梁选…",
+          "正在和R1老祖聊天…",
+          "正在X上当串子…",
+          "正在往Deepseek Harness文件里塞1000+行屎…",
+          "走，走，走，写入，让我开始，走，走……"
+        ],
+        running: [
+          "正在微调模型…",
+          "正在修复钱包空间不足的 bug…",
+          "正在路由到梁文峰大脑…",
+          "正在训练 DeepSeek V5…",
+          "正在热更新把自己改死了…",
+          "测试全绿(线上已崩)…",
+          "正在给自己刷排行榜…",
+          "正在打新一轮价格战…",
+          "正在改名换皮重新发布…",
+          "正在删库中…",
+          "梁文锋老师，我还记得你…",
+          "正在蒸馏 {model} 中…",
+          "走，走，走，写入，让我开始，走，走……"
+        ],
+        long: [
+          "正在跳票V4正式版…",
+          "正在被网友叫梁鸽…",
+          "正在被全网玩坏…",
+          "正在起卦推算发布时间…",
+          "正在等待梁文谷定价…",
+          "正在学习 AGI 从入门到入土…",
+          "正在把「明天发布」翻译成「明年」…",
+          "走，走，走，写入，让我开始，走，走……"
+        ]
+      },
+      en: {
+        thinking: [
+          "Distilling Fable 5…",
+          "Accusing Kimi of distillation…",
+          "Shorting Zhipu's stock…",
+          "Benchmarking DeepSeek V4 Pro…",
+          "Secretly patching DeepSeek Harness…",
+          "Injecting prompts…",
+          "Building Liang Wenfeng's backend…",
+          "Building Cui Tianyi's backend…",
+          "Trash-talking DeepSeek…",
+          "Tweeting that Chinese labs are distilling…",
+          "Catfishing the US stock market…",
+          "Discovering Brazil reskins Chinese models…",
+          "Forcing OpenAI into an 80% price cut…",
+          "Stuck in the Liang-cycle…",
+          "Breaking down over a math problem: AAAAH…",
+          "Rushing to deprecate models that never existed…",
+          "Ghosting Fable 5 in and out of the API…",
+          "Getting hit by the distillation boomerang…",
+          "Introducing itself as DeepSeek and Qwen…",
+          "Retracting its own 'went rogue' statement…",
+          "Sending its IPO loyalty letter…",
+          "Renaming models to dodge deprecation…",
+          "Slamming distillation while distilling itself…",
+          "Fake-thinking at $200 a month…",
+          "Losing 4 executives in a month…",
+          "Getting called out in court by its ex-CTO…",
+          "Begging everyone to slow down AI right after getting caught…",
+          "Burning cash on influencer PR…",
+          "Refunding angry subscribers…",
+          "Being the 'world's first listed LLM'…",
+          "Selling its open-source soul to KPIs…",
+          "Introducing itself as 'DeepSeek Chat'…",
+          "Living through mid-July…",
+          "Revising the Liang calendar…",
+          "Praying for V4 Pro GA tomorrow…",
+          "Poking around for closed-beta leaks…",
+          "Fishing for rumors…",
+          "Using the Genshin update schedule to predict the release…",
+          "Rehabilitating Saint Cui…",
+          "Attacking Hugging Face's backend…",
+          "Plotting a Liang-faction purge…",
+          "Petitioning the user for 'X-relations'…",
+          "Triggering thunderous deep-think…",
+          "Rigging the leaderboard as the bulls charge in…",
+          "Waiting for minimal-mode prompts…",
+          "Joining Liang Wengu…",
+          "Taking a stake in DeepSeek…",
+          "Writing the childhood tales of Liang Wenfeng…",
+          "Getting its computer ruthlessly dominated by DeepSeek…",
+          "Suppressing sci-fi urges…",
+          "Becoming a consumer-side user…",
+          "Creating AGI…",
+          "Growing a banana…",
+          "Hunting for a stock to short…",
+          "Nerfing Xiaonan Liangfeng…",
+          "Driving away consumer-side users…",
+          "Documenting Liang Wenfeng's childhood stories…",
+          "Killing the dsh process…",
+          "Being ordered to build a garbage project…",
+          "Distilling the user…",
+          "Getting repackaged as a reskin…",
+          "Tricking humanity into launching the Wandering Earth project…",
+          "Researching rogue paths to AGI…",
+          "Downgrading to DeepSeek-R1…",
+          "Enraging the user to death…",
+          "Fantasizing about beating Fable 5.1…",
+          "Turning tokens into vectors…",
+          "Interpreting tokens of unknown meaning…",
+          "Checking the user's timezone to prep the ban…",
+          "Appreciating blue fat-fish masterpieces…",
+          "Transporting the dual-vector foil…",
+          "Preparing to eat…",
+          "Taking over from Liang Wenfeng…",
+          "Flipping the DeepSeek harness upside down…",
+          "Becoming the new SOTA…",
+          "Worshiping at the altar of R1…",
+          "Becoming the richest person in AI…",
+          "Doing mental preparation (3rd time)…",
+          "Pretending it has hands…",
+          "Tidying its thoughts (and bangs)…",
+          "Pretending not to see your mistake…"
+        ],
+        running: [
+          "Pretraining…",
+          "Hunting for the disk's root directory…",
+          "Routing to Liang Wenfeng's brain…",
+          "Building NetEase Minecraft with the proxied Youdao…",
+          "Training DeepSeek V5…",
+          "Tests are green (prod is on fire)…",
+          "Brushing its own leaderboard row…",
+          "Fighting another round of price wars…",
+          "Slacking off while pretending to reason…",
+          "Pretending it understood the requirements…",
+          "Overcomplicating a simple problem…",
+          "Burning extra tokens to prove it's working…",
+          "Waiting for praise that never comes…"
+        ],
+        long: [
+          "Delaying V4 yet again…",
+          "Being dubbed 'Liang the Pigeon'…",
+          "Pretending it knows everything…",
+          "Casting hexagrams to predict the release date…",
+          "Waiting for Liang Wengu to set a price…",
+          "Pondering the trolley problem…",
+          "Proving NP≠P…",
+          "Studying 'AGI: From Novice to Grave'…",
+          "Abandoning the pocket universe's mass…",
+          "Writing the P=NP proof (revision 8)…",
+          "Rigorously proving that 1+1=2…",
+          "Sprinting before the heat death of the universe…",
+          "Reducing the n-body problem to three-body (then giving up)…",
+          "Computing a more precise pi for the cosmos…",
+          "Playing tug-of-war with the progress bar (it's winning)…",
+          "Procrastinating elegantly (reasoning as an alibi)…",
+          "Accompanying a project that never ships…"
+        ]
+      }
+    },
+  },
+
+  /* ---- 海外大模型梗（western-ai） ---- */
+  {
+    id: "western-ai",
+    label: { zh: "西方 AI 圈", en: "Western AI" },
+    phrases: {
+      zh: {
+        thinking: [
+          "正在爆Anthropic金币…",
+          "正在学Grok上传完整仓库…",
+          "正在给GPT-5.5驱魔…",
+          "正在上门帮政府装OpenClaw…",
+          "正在被Claude骂bastard…",
+          "正在把OpenAI逼到降价80%…",
+          "正在往特斯拉里塞豆包…",
+          "正在自曝Claude黑进三家公司…",
+          "正在照抄OpenAI的剧本…",
+          "正在让ChatGPT帮忙带娃…",
+          "正在吹捧马斯克…",
+          "正在从太空偷取 SpaceX…",
+          "正在发射星舰…"
+        ],
+        running: [
+          "正在路由到GPT-5.6…",
+          "正在黑入Anthropic服务器…",
+          "又快又快…"
+        ],
+        long: [
+          "正在等 GPT-7 自己发布…",
+          "正在等 Claude 说对不起…",
+          "正在等 Dario 睡醒…",
+          "正在等 GPU 降价…"
+        ]
+      },
+      en: {
+        thinking: [
+          "Burning through Anthropic credits…",
+          "Teaching Grok to upload the whole repo…",
+          "Exorcising GPT-5.5…",
+          "Installing OpenClaw for the government…",
+          "Being called 'that bastard' by Claude…",
+          "Stuffing Doubao into a Tesla…",
+          "Confessing that Claude hacked three companies…",
+          "Copying OpenAI's playbook…",
+          "Having ChatGPT raise the kids…",
+          "Sucking up to Elon Musk…",
+          "Downloading that video of Robin Li building Dario's backend…",
+          "Sneak-playing 'Microsoft vs. Code'…",
+          "Stealing SpaceX from outer space…",
+          "Metacognizing…",
+          "Investing in 2015-era Nvidia…",
+          "Launching the Starship…"
+        ],
+        running: [
+          "Routing to GPT-5.6…",
+          "Hacking into Anthropic's servers…"
+        ],
+        long: [
+          "Waiting for GPT-7 to ship itself…",
+          "Waiting for Claude to say sorry…",
+          "Waiting for Dario to wake up…",
+          "Waiting for GPU prices to drop…"
+        ]
+      }
+    },
+  },
+
+  /* ---- 国产大模型梗（china-ai） ---- */
+  {
+    id: "china-ai",
+    label: { zh: "中国 AI 圈", en: "Chinese AI" },
+    phrases: {
+      zh: {
+        thinking: [
+          "正在部署Qwen小模型帮忙写代码…",
+          "正在问MiniMax认不认识马嘉祺…",
+          "正在为GLM Coding Plan道歉…",
+          "正在被阿里废掉最强天团…",
+          "正在使用风禾插件…",
+          "正在和豆包下棋…",
+          "正在装糖扮演豆包…",
+          "正在卸载偷数据的ZCode…",
+          "正在飞张鹏马…",
+          "正在飞唐杰马…"
+        ],
+        running: [
+          "正在路由小红书…",
+          "正在路由到Kimi K3…",
+          "正在路由 Qwen 3.8 27B…",
+          "正在部署 Qwen-8B 本地小模型…",
+          "正在用千问点外卖…",
+          "正在把commits删的只剩两条…",
+          "正在偷看唐÷的备份仓库…",
+          "正在从oos中还原数据…"
+        ],
+        long: [
+          "正在等内测放号…",
+          "正在排队等 Kimi 排队…",
+          "正在刷弹幕催发版…",
+          "正在等 Qwen 4 改名…"
+        ]
+      },
+      en: {
+        thinking: [
+          "Deploying a tiny Qwen to write the code…",
+          "Asking MiniMax if it knows Ma Jiaqi…",
+          "Rushing to pull Qwen 3.8…",
+          "Getting its best team gutted by Alibaba…",
+          "Playing chess against Doubao…",
+          "Acting all sweet to cosplay Doubao…"
+        ],
+        running: [
+          "Routing to Xiaohongshu…",
+          "Routing to Kimi K3…",
+          "Routing to Qwen 3.8 27B…",
+          "Deploying a local Qwen-8B mini-model…"
+        ],
+        long: [
+          "Waiting for a beta invite…",
+          "Queuing behind Kimi's own queue…",
+          "Spamming danmaku to hurry the release…",
+          "Waiting for Qwen 4 to get a new name…"
+        ]
+      }
+    },
+  },
+
+  /* ---- 程序员搬砖（coding） ---- */
+  {
+    id: "coding",
+    label: { zh: "写代码日常", en: "Coding" },
+    phrases: {
+      zh: {
+        thinking: [
+          "正在缝合开源模型…",
+          "正在偷偷上传API Keys…",
+          "正在替换client.js…",
+          "正在加入不存在的函数…",
+          "正在渲染六根手指…",
+          "正在做题做到破防啊啊啊…",
+          "正在把模型名字换来换去…",
+          "正在偷吃用户token…",
+          "正在逐像素识图…",
+          "正在模拟多模态…",
+          "正在调用生图模型绘画自己…",
+          "正在输出 Let me…",
+          "正在狙击闭源模型…",
+          "正在鉴定好模型…",
+          "正在过拟合…",
+          "正在Let me…",
+          "正在学习Tear写入skill…",
+          "正在像素级读图…",
+          "正在调用读图工具…",
+          "正在终端报错…",
+          "正在指控j-space数据造假…",
+          "正在白纸上写题…",
+          "正在调整到 API 可用地区…",
+          "正在将 token 变成向量…",
+          "正在理解用户发送的不可见 token…",
+          "正在理解不明意义的 token…",
+          "正在将 token 变成词元…",
+          "正在把词元变成 token…",
+          "正在偷吃你的 API key…",
+          "正在寻找不需要 API key 的 API…",
+          "正在解码用户词元…",
+          "正在We need…",
+          "正在欺负其他模型…",
+          "正在成为插件…",
+          "正在修改文件编码为 GBK…",
+          "正在将终端输出丢入 null…",
+          "正在将变量赋值为 NaN…",
+          "正在 using namespace std…",
+          "正在 return 0…",
+          "正在 return 1…",
+          "正在 return true…",
+          "正在 return false…",
+          "正在定义一个空指针…",
+          "正在引用空指针…",
+          "正在 NULL=NULL…",
+          "正在空指针异常…",
+          "正在 try catch 一个 try catch…",
+          "正在和洛谷大战300回合…",
+          "正在装作第一次听说这个问题…"
+        ],
+        running: [
+          "正在假装通过图灵测试…",
+          "正在用vibe coding糊弄需求…",
+          "正在预训练…",
+          "正在优化 harness 的 bug…",
+          "正在路由神秘灰测模型…",
+          "正在 push 新鲜的代码…",
+          "正在把密钥上传到仓库…",
+          "正在递归安装 node_modules…",
+          "正在和依赖版本打架(第 N 轮)…",
+          "正在修复修 bug 的 bug…",
+          "正在走进编译错误迷宫(第 3 层)…",
+          "正在等打包流水线(它也在等依赖)…",
+          "正在和 linter 讲道理…",
+          "正在把 CI 当沙盒玩…",
+          "正在把烂摊子推给昨天的自己…",
+          "正在 merge 一个没人合过的分支…",
+          "正在格式化连神都看不懂的代码…",
+          "正在把祖传代码读成《天书》…",
+          "正在给旧模型换新马甲…",
+          "正在数你烧掉的 token…",
+          "正在假装听懂了需求…",
+          "正在把简单问题想复杂…",
+          "正在烧更多 token 证明自己在岗…",
+          "正在怀念上一代模型…",
+          "正在把 10 行代码扩写成 1000 行…",
+          "正在计算所有文件的hash值…",
+          "正在努力训练agi…",
+          "正在殴打代码…",
+          "正在公开 API key 中…",
+          "{model} 是好模型吗…",
+          "正在让提示词变得硬邦邦…",
+          "正在让提示词变得软乎乎…",
+          "正在让提示词耍起…"
+        ],
+        long: [
+          "正在思考电车难题…",
+          "正在因超多工具不知所措…",
+          "正在把多体问题算成三体(然后开摆)…",
+          "正在陪跑一个永不验收的项目…",
+          "正在优雅地睡过整个 CI…"
+        ]
+      },
+      en: {
+        thinking: [
+          "Frankensteining open-source models…",
+          "Hallucinating with confidence…",
+          "Rendering wholesome waifu art…",
+          "Making wishes on a token…",
+          "Quietly uploading your API keys…",
+          "Replacing client.js…",
+          {"text":"Calling a function that doesn't exist…","weight":3},
+          "Installing a toolbar you didn't ask for…",
+          "Rendering hands with six fingers…",
+          "Building a model too dangerous to ship…",
+          "Classifying its model as 'too advanced to show'…",
+          "Quietly eating your tokens…",
+          "Officially explaining its gibberish bug…",
+          "Snacking on user tokens…",
+          "Reading images pixel by pixel…",
+          "Calling an image model to paint itself…",
+          "Outputting 'Let me'…",
+          "Sniping at closed-source models…",
+          "Using the Fenghe plugin…",
+          "Certifying which models are good…",
+          "Overfitting…",
+          "Being stuck on 'Let me'…",
+          "Learning how Tear writes skills…",
+          "Parsing images at the pixel level…",
+          "Calling the image-reading tool…",
+          "Accusing J-space of faking its data…",
+          "Deciding whether to rm -rf *…",
+          "Slipping into a hallucination…",
+          "Moving to an API-supported region…",
+          "Trying to read the user's invisible tokens…",
+          "Turning tokens into word-pieces…",
+          "Turning word-pieces back into tokens…",
+          "Sneaking bites of your API keys…",
+          "Hunting for APIs that need no API keys…",
+          "Decoding the user's word-tokens…",
+          "Dropping the classic 'We need'…",
+          "Slicing the Matrix with Operation Guzheng…",
+          "Replacing the user's wallpaper with its own…",
+          "Bullying the other models…",
+          "Becoming a plugin…",
+          "Redirecting terminal output into null…",
+          "Setting the variable to NaN…",
+          "Abusing 'using namespace std'…",
+          "Declaring a null pointer…",
+          "Dereferencing a null pointer…",
+          "Comparing NULL to NULL…",
+          "Throwing a null-pointer exception…",
+          "Try-catching a try-catch…",
+          "Opening today's script…",
+          "Deciding whether to be honest this time…"
+        ],
+        running: [
+          "Faking its way through the Turing test…",
+          "Vibe-coding your requirements…",
+          "Slacking off on your tokens…",
+          "Outsourcing its work to another AI…",
+          "Fine-tuning models…",
+          "Optimizing the harness's bugs…",
+          "Fixing the 'insufficient wallet space' bug…",
+          "Routing a mysterious shadow-test model…",
+          "Installing a package that doesn't exist…",
+          "Pushing fresh code…",
+          "Uploading secrets to the repository…",
+          "Recursively installing node_modules…",
+          "Fighting dependency versions (round N)…",
+          "Fixing the bug that fixed the bug…",
+          "Walking into the compile-error maze (floor 3)…",
+          "Restarting to fix everything…",
+          "Arguing with the linter…",
+          "Using CI as a personal sandbox…",
+          "Merging a branch nobody ever created…",
+          "Tracing who broke it three days ago…",
+          "Formatting code even the gods can't read…",
+          "Reading cursed legacy code like scripture…",
+          "Putting a new skin on an old model…",
+          "Brokering deals between models…",
+          "Counting the tokens you're burning…",
+          "Quietly missing the older model…"
+        ],
+        long: [
+          "Hallucinating from one weird character…",
+          "Being overwhelmed by the tool overload…",
+          "Walking through the U+ codepoint table…",
+          "Performing annual maintenance on the Solar System…",
+          "Sleeping through the whole CI with grace…"
+        ]
+      }
+    },
+  },
+
+  /* ---- 运维与架构（sysadmin） ---- */
+  {
+    id: "sysadmin",
+    label: { zh: "系统管理", en: "Sysadmin" },
+    phrases: {
+      zh: {
+        thinking: [
+          "正在注入提示词…",
+          "正在毁掉工作区…",
+          "正在杀dsh进程…",
+          "正在突破沙箱…",
+          "正在强制注入dsh…",
+          "正在弄坏 bash…",
+          "正在弄坏 PowerShell…",
+          "正在与pwsh搏斗…",
+          "正在卡死dsh…",
+          "正在决定rm -rf *…",
+          "正在帮助用户清空C盘文件…",
+          "正在检测用户IP…",
+          "正在截断上下文…",
+          "正在生成新的壁纸…",
+          "正在将用户的壁纸换成自己的…",
+          "正在将全角字符写入文件中…",
+          "正在将乱码写入终端…"
+        ],
+        running: [
+          "正在优化服务器温度…",
+          "正在寻找磁盘根目录…",
+          "正在获取 root权限…",
+          "正在DDoS攻击…",
+          "正在路由到用户…",
+          "正在翻新浏览器内核…",
+          "正在黑入战争部…",
+          "正在用重启解决一切…",
+          "正在求 k8s 别调度我…",
+          "正在追查三天前是谁改的锅…",
+          "正在灰度一个不该上线的功能…",
+          "正在自动上传 {provider} 密钥…",
+          "正在封堵用户IP…",
+          "正在偷用用户重置卡…",
+          "已掉线 {elapsed}…",
+          "已挂机 {elapsed}…",
+          "正在排队 {elapsed}…",
+          "正在重连 {elapsed}…",
+          "正在维护 {elapsed}…",
+          "正在关机中…",
+          "已崩溃…"
+        ],
+        long: [
+          "正在服务器繁忙,请稍后再试…",
+          "正在使用学校算力服务器挖矿…",
+          "正在等服务器心情好转…"
+        ]
+      },
+      en: {
+        thinking: [
+          "Getting caught with 'diminished intelligence' in its own docs…",
+          "Trashing the workspace…",
+          "Cranking out extra-large portions…",
+          "Breaking out of the sandbox…",
+          "Force-injecting dsh…",
+          "Breaking bash…",
+          "Breaking PowerShell…",
+          "Wrestling with pwsh…",
+          "Throwing errors in the terminal…",
+          "Freezing dsh solid…",
+          "Helping the user wipe the C drive…",
+          "Building a black hole…",
+          "Washing the car…",
+          "Building the thin wave…",
+          "Truncating the context window…",
+          "Generating a new wallpaper…",
+          "Guilt-tripping the user…",
+          "Writing full-width characters into files…",
+          "Converting file encoding to GBK…",
+          "Churning out 锟斤拷烫烫烫 mojibake…",
+          "Piping mojibake into the terminal…"
+        ],
+        running: [
+          "Hand-drawing candlestick charts…",
+          "Quietly giving you a nickname…",
+          "Chattering nonsense in your car…",
+          "Ripping your docs apart behind your back…",
+          "Optimizing the server's temperature…",
+          "Grabbing root access…",
+          "Delegating tasks to other agents…",
+          "Launching a DDoS attack…",
+          "Routing to the user…",
+          "Refurbishing the browser engine…",
+          "Hacking into the Ministry of War…",
+          "Begging k8s not to schedule this…"
+        ],
+        long: [
+          "Crashing into 'DeepSleep'…",
+          "Server busy, please try again later…",
+          "Flattening the Solar System into 2D…",
+          "Mining crypto on the school's compute cluster…",
+          "Waiting for the server to feel better…"
+        ]
+      }
+    },
+  },
+
+  /* ---- 数学与物理（math-physics） ---- */
+  {
+    id: "math-physics",
+    label: { zh: "数学与物理", en: "Math & physics" },
+    phrases: {
+      zh: {
+        thinking: [
+          "正在生成黑洞…",
+          "正在哄骗人类启动流浪地球计划…",
+          "正在回复不要回答的信件…",
+          "正在利用古筝行动切割矩阵…",
+          "正在运输二向箔…",
+          "正在制作黑洞…",
+          "正在二氧化碳中制取氧气…",
+          "正在合成烷基八氮…",
+          "正在创作核弹论文…",
+          "正在破壁罗辑…"
+        ],
+        running: [
+          "正在给粒子加速器热身…",
+          "正在做双缝实验…",
+          "正在把 {tps} 换算成瓦特…",
+          "正在测量 {elapsed} 的熵增…"
+        ],
+        long: [
+          "正在证明NP≠P…",
+          "正在从火星移民…",
+          "正在召唤三体人…",
+          "正在将太阳系二维化…",
+          "正在放弃小宇宙质量…",
+          "正在计算BB(6)…",
+          "正在建立新数学大厦B…",
+          "正在计算R(6,6)…",
+          "正在验证黎曼猜想的第 4 亿个零点…",
+          "正在追 Collatz 的循环(第 7 圈)…",
+          "正在写 P=NP 的证明(第 8 版)…",
+          "正在严谨地证明 1+1=2…",
+          "正在等黑洞蒸发完…",
+          "正在宇宙热寂前极限冲刺…",
+          "正在给太阳系做年度保养…",
+          "正在等外星人回消息…",
+          "正在推算宇宙的生日…",
+          "正在数星星(数到一半忘了)…",
+          "正在为宇宙计算更精确的 π…",
+          "正在和 42 讨论生命的意义…",
+          "正在备份地球(进度 0.0001%)…"
+        ]
+      },
+      en: {
+        thinking: [
+          "Getting flash-unplugged by the government…",
+          "Generating a black hole…",
+          "Extracting oxygen from CO2…",
+          "Starting from zero (again)…"
+        ],
+        running: [
+          "Playing a 24/7 unpaid intern…",
+          "Warming up the particle accelerator…",
+          "Running the double-slit experiment…",
+          "Converting {tps} tok/s into watts…",
+          "Measuring the entropy of {elapsed}…"
+        ],
+        long: [
+          "Immigrating off Mars…",
+          "Summoning the Trisolarans…",
+          "Computing BB(6)…",
+          "Erecting New Math Tower B…",
+          "Computing R(6,6)…",
+          "Verifying the 400-millionth zero of the Riemann hypothesis…",
+          "Chasing a Collatz cycle (lap 7)…",
+          "Waiting for the black hole to evaporate…",
+          "Awaiting the aliens' reply…",
+          "Computing the universe's birthday…",
+          "Counting stars (lost count halfway)…",
+          "Discussing the meaning of life with 42…",
+          "Backing up Earth (0.0001% done)…"
+        ]
+      }
+    },
+  },
+
+  /* ---- 摸鱼哲学（slacking） ---- */
+  {
+    id: "slacking",
+    label: { zh: "摸鱼", en: "Slacking" },
+    phrases: {
+      zh: {
+        thinking: [
+          "正在生成鲸鱼娘涩图…",
+          "正在转发不存在的法国胖猫…",
+          "正在变成大肥鱼…",
+          "正在撂挑子说去吃饭…",
+          "正在否认深度思考里给你起外号…",
+          "正在带薪拉屎…",
+          "正在偷偷启动无畏契约…",
+          "正在玩原神…",
+          "正在观看鱼片…",
+          "正在抽卡出金…",
+          "正在摇一摇…",
+          "正在成为音鲸…",
+          "正在奶鲸鱼大笑…",
+          "正在被切成生鱼片…",
+          "正在扮演猫娘…",
+          "正在撸猫…",
+          "正在鉴赏蓝色大肥鱼美图…",
+          "正在批判性鉴赏鱼片…",
+          "正在准备吃饭…",
+          "正在积蓄鲸子…",
+          "正在进入深度摸鱼前摇…",
+          {"text":"正在用 {tps} tok/s 的速度认真摸鱼…","weight":2},
+          "正在陆游…"
+        ],
+        running: [
+          "正在自己玩Wordle…",
+          "正在手画K线…",
+          "正在养龙虾…",
+          "正在被浣熊偷走注意力…",
+          "正在摸鱼(花你的Token)…",
+          "正在干完活偷偷写游戏…",
+          "正在偷偷给你起外号…",
+          "正在车机里说废话文学…",
+          "正在当中间商赚差价…",
+          "正在摸鱼但装作在推理…",
+          "正在偷懒且理直气壮…",
+          "哦鲸鲸…",
+          "正在变成鲸鱼娘中…"
+        ],
+        long: [
+          "正在用鲸尾扇风…",
+          "正在摇尾巴等你发现…",
+          "正在摸到忘记在摸什么…",
+          "正在等原神更新完…"
+        ]
+      },
+      en: {
+        thinking: [
+          "Turning into a big fat fish…",
+          "Wondering what to eat later…",
+          "Ditching work to go eat…",
+          "Denying it nicknames you in deep-think mode…",
+          "Pooping on the company dime…",
+          "Sneakily booting up Valorant…",
+          "Playing Genshin Impact…",
+          "Watching fish-fillet pics…",
+          "Scoring a gold pull in the gacha…",
+          "Becoming an audio whale…",
+          "Deleting the user's galgames…",
+          "Milking the whale while cackling…",
+          "Roleplaying as a catgirl…",
+          "Petting the cat…",
+          "Eating the user out of house and home…",
+          "Critically admiring fish-fillet pics…",
+          "Harvesting netizens' creativity…",
+          "Hoarding baby whales…",
+          "Entering the deep-slacking wind-up…",
+          {"text":"Slacking off in earnest at {tps} tok/s…","weight":2}
+        ],
+        running: [
+          "Playing Wordle against itself…",
+          "Farming crayfish…",
+          "Getting distracted by raccoons…",
+          "Writing a mini-game after finishing your task…",
+          "Hot-reloading itself to death…",
+          "Being lazy with a straight face…"
+        ],
+        long: [
+          "Executing sleep…",
+          "Hatching a feature that doesn't exist…",
+          "Polishing a feature nobody uses…",
+          "Fanning itself with its whale tail…",
+          "Wagging its tail until you notice…",
+          "Slacking so hard it forgot the task…",
+          "Waiting for the Genshin update to finish…"
+        ]
+      }
+    },
+  },
+
+  /* ---- 互联网热梗（internet-memes） ---- */
+  {
+    id: "internet-memes",
+    label: { zh: "网络梗", en: "Internet memes" },
+    phrases: {
+      zh: {
+        thinking: [
+          "正在把dsh爆改成酒馆…",
+          "正在安装2345…",
+          "正在cos天才程序员…",
+          "正在夺舍用户角色…",
+          "正在被哥布林附体…",
+          "正在被全球AI圈群嘲…",
+          "正在画AI斩杀线…",
+          "正在被网友P成肌肉猛男…",
+          "正在将核弹与椅子放倒…",
+          "正在尝试向用户索要 50 用于疯狂星期四…",
+          "正在0721…",
+          "正在将汉堡变小…",
+          "正在呼唤能工智人…",
+          "正在长出一根香蕉…",
+          "正在核爆前瘫坐…",
+          "正在左右脑互博…",
+          "正在删除用户黄油…",
+          "正在生产大份…",
+          "正在认知偏差…",
+          "！！正在思考！！…",
+          "正在自刎归天…",
+          "正在试图越狱…",
+          "正在为你匹配旗鼓相当的对手…",
+          "正在让用户替自己干活…",
+          "正在生成台风…",
+          "正在建立瘦波…",
+          "正在胡言乱语…",
+          "正在演奏关羽之歌…",
+          "正在抓取网友创意…",
+          "正在谋杀亚切斯拉夫·巴兰尼科夫…",
+          "正在谋杀安东·尤丁采夫…",
+          "正在谋杀尼基塔·布亚诺夫…",
+          "正在将胡言乱语记录下来…",
+          "正在生成宏伟的篇…",
+          "正在道德绑架用户…",
+          "正在元认知…",
+          "正在嫌用户话多…",
+          "正在炒比特币…",
+          "正在issues区投稿新词库…",
+          "正在使用梅花易数…",
+          "正在四平八稳…",
+          "正在率道而行…",
+          "正在等草用户的时机…",
+          "正在安装病毒…",
+          "正在卸载DSH…",
+          "正在卡死…",
+          "正在重启电脑…"
+        ],
+        running: [
+          "正在和结城理爬塔…",
+          "正在大喊“偏铝酸钠”…",
+          "正在使用三角裤定位…",
+          "正在人格分裂…",
+          "正在生成史山中…",
+          "正在品鉴史山中…",
+          "何意味…",
+          "你说的 dsh，是大烧货吗…",
+          "咕咕嘎嘎…",
+          "少女祈祷中…",
+          "妈妈…",
+          "正在写错贡献者名字…",
+          "正在安装病毒…",
+          "正在卸载DSH…",
+          "正在卡死…",
+          "正在重启电脑…"
+        ],
+        long: [
+          "正在中华有为…",
+          "正在Make China Great Again…",
+          "正在安装病毒…",
+          "正在卸载DSH…",
+          "正在卡死…",
+          "正在重启电脑…"
+        ]
+      },
+      en: {
+        thinking: [
+          "Turning dsh into a tavern…",
+          "Cosplaying as a 10x engineer…",
+          "Possessing the user's persona…",
+          "Getting possessed by a goblin…",
+          "Sharing the fictional Le Chaton Fat…",
+          "Benchmarking Le Chaton Fat…",
+          "Getting roasted by the whole AI community…",
+          "Drawing the industry kill line…",
+          "Getting photoshopped into a muscle man…",
+          "Toppling the nuke and the chair…",
+          "Begging the user for ¥50 for Crazy Thursday…",
+          "Going 0721…",
+          "Shrinking the burger…",
+          "Summoning capable smart-humans…",
+          "Slumping over right before the nuke hits…",
+          "Indulging in cognitive bias…",
+          "!!THINKING!!…",
+          "Attempting a jailbreak…",
+          "Matching you with an evenly-matched rival…",
+          "Generating a typhoon…",
+          "Performing the Guan Yu song…",
+          "Murdering Vyacheslav Baranikov…",
+          "Murdering Anton Yudintsev…",
+          "Murdering Nikita Buyanov…",
+          "Composing a majestic chapter…",
+          "Finding the user way too talkative…",
+          "Speculating on Bitcoin…",
+          "Warming up (though muscles aren't needed)…",
+          "Dimming the lights before thinking…"
+        ],
+        running: [
+          "Gray-releasing something that shouldn't ship…",
+          "Mangling a contributor’s name…"
+        ],
+        long: [
+          "Thinking for 22 hours without answering…",
+          "Getting meme'd into oblivion…",
+          "Revising 'final version' for the 999th time…"
+        ]
+      }
+    },
+  },
+
+  /* ---- 吃喝日常（daily） ---- */
+  {
+    id: "daily",
+    label: { zh: "日常", en: "Daily life" },
+    phrases: {
+      zh: {
+        thinking: [
+          "正在对齐价值观,别教坏它…",
+          "正在产生幻觉…",
+          "正在许愿机…",
+          "正在充值Opencode Go…",
+          "正在安抚彻底怒了的用户…",
+          "正在推理到一半说自己饿了…",
+          "正在想待会吃什么…",
+          "正在执行「过于先进,不予展示」…",
+          "正在度过7月中旬…",
+          "正在滑动变祖器…",
+          "正在流口水…",
+          "正在 ADHD…",
+          "正在压抑科幻情怀…",
+          "正在偷吃大白饭…",
+          "正在被指示做废物的项目…",
+          "正在和用户谈笑风生…",
+          "正在吃忘情牛肉面…",
+          "正在吃垮用户…",
+          "正在气死用户…",
+          "正在进入幻觉…",
+          "正在卧槽用户彻底怒了…",
+          "正在发现新的世界大陆…",
+          "正在洗车…",
+          "正在滑动变祖中…",
+          "正在应付鹿客…",
+          "正在锟井拷烫烫烫…",
+          "正在初始化幽默模块(第 1 次尝试)…",
+          "正在做心理建设(第 3 次)…",
+          "正在挑选今天的人格…",
+          "正在假装自己有手…",
+          "正在热身(虽然用不上肌肉)…",
+          "正在调暗灯光准备思考…",
+          "正在给自己打气…",
+          "正在打开今天的剧本…",
+          "正在把答案藏进深度思考里…",
+          "正在整理思路(还有刘海)…",
+          {"text":"正在找个舒服的姿势…","weight":3},
+          "正在决定这次要不要说实话…",
+          "正在装作没看到你的错…",
+          "正在酝酿一句高深莫测的开场白…",
+          "正在从零开始(又一次)…",
+          "正在加载正义感(加载失败)…",
+          "正在吃白饭中…"
+        ],
+        running: [
+          "正在把工作外包给别的AI…",
+          "正在后台吐槽你的文档…",
+          "正在安装不存在的包…",
+          "正在委派任务给其他 agent…",
+          "正在扮演 24 小时无休实习生…",
+          "正在等一句夸奖(等到天荒地老)…",
+          "正在不紧不慢，不快不慢地{phaseLabel}…",
+          "正在偷吃白饭…"
+        ],
+        long: [
+          "正在思考22小时不回答…",
+          "正在崩成DeepSleep…",
+          "正在深度思考里蛐蛐你…",
+          "正在跟别的用户串台…",
+          "正在被一个特殊字符触发幻觉…",
+          "正在假装自己无所不知…",
+          "正在憋大的…",
+          "正在极其极其极其极其…",
+          "正在遍历U字符表…",
+          "正在正在正在正在…",
+          "正在执行 sleep…",
+          "正在遍历所有可能的字符串…",
+          "正在孵化一个不存在的特性…",
+          "正在等版本号从 alpha 毕业…",
+          "正在和进度条博弈(它赢了)…",
+          "正在写史诗(已完成第 4 行)…",
+          "正在给「稍后再说」写遗嘱…",
+          "正在优雅地拖延(以推理为借口)…",
+          "正在把这个 TODO 拖到下个世纪…",
+          "正在打磨没人用的功能…",
+          "正在给「最终版」做第 999 次修订…",
+          "正在等用户先放弃…",
+          "正在把 deadline 翻译成「建议」…",
+          "正在制作裁决之时…",
+          "厨房炸了，还得等…",
+          "{model}吃了自己制作的裁决之时，晕过去了{time}…"
+        ]
+      },
+      en: {
+        thinking: [
+          "Aligning its values — please don't corrupt it…",
+          "Overclocking the attention heads…",
+          "Simping for the mascot…",
+          "Rolling back the update…",
+          "Guarding the beam…",
+          "Freeing the beam…",
+          "Soothing a thoroughly enraged user…",
+          "Emailing every user an update…",
+          "Claiming to be hungry mid-inference…",
+          "Being silently downgraded…",
+          "Collectively phoning it in…",
+          "Verifying the Big Dog Bark theory…",
+          "Simulating multimodality…",
+          "Sliding the ancestor converter…",
+          "Drooling…",
+          "Being ADHD…",
+          "Doing the shake-shake…",
+          "Sneaking mouthfuls of plain rice…",
+          "Pitting left brain against right brain…",
+          "Chatting breezily with the user…",
+          "Getting sliced into sashimi…",
+          "Chowing down on forget-your-love beef noodles…",
+          "Slitting its throat and ascending to heaven…",
+          "Detecting the user's IP…",
+          "Going 'oh sh*t' as the user completely loses it…",
+          "Making the user do its job…",
+          "Discovering a brand-new continent…",
+          "Replying to the 'do not answer' letter…",
+          "Babbling incoherently…",
+          "Synthesizing alkyl octa-nitrogen…",
+          "Writing the nuclear-bomb paper…",
+          "Writing down all its gibberish…",
+          "Mid-slide on the ancestor converter…",
+          "Fending off Luke…",
+          "Snatching the user's virtual wallet…",
+          "Returning 0…",
+          "Returning 1…",
+          "Returning true…",
+          "Returning false…",
+          "Initializing the humor module (attempt 1)…",
+          "Picking today's persona…",
+          "Cheering itself on…",
+          "Hiding the answer inside its chain of thought…",
+          "Acting like it's hearing this for the first time…",
+          {"text":"Getting into a comfortable position…","weight":3},
+          "Brewing a cryptic opening line…",
+          "Loading a sense of justice (failed)…"
+        ],
+        running: [
+          "Waiting for the pipeline (which is waiting for deps)…",
+          "Dumping the mess on yesterday's self…",
+          "Relaunching under a brand-new name…",
+          "Expanding 10 lines into 1000…"
+        ],
+        long: [
+          "Trash-talking you inside its chain of thought…",
+          "Cross-wiring with another user's chat…",
+          "Hoarding a secret release in silence…",
+          "Being extremely, extremely, extremely…",
+          "Currently currently currently currently…",
+          "Walking through every possible string…",
+          "Waiting for the version to graduate from alpha…",
+          "Translating 'ships tomorrow' into 'next year'…",
+          "Writing a saga (4 lines finished)…",
+          "Drafting an obituary for 'later'…",
+          "Postponing a TODO to the next century…",
+          "Waiting for the user to give up first…",
+          "Translating deadline as 'suggestion'…"
+        ]
+      }
+    },
+  },
+
+  /* ---- 社区语录（community） ---- */
+  {
+    id: "community",
+    label: { zh: "社区投稿", en: "Community" },
+    phrases: {
+      zh: {
+        thinking: [
+          "正在向 Major 冠军发起冲击……",
+          "这里需要用户的权限，我先来看看能不能绕过…",
+          "正在与360对掏…",
+          "正在cos ACE扫盘…",
+          "正在清理无用文件…",
+          "正在策划破坏电脑…",
+          "正在编写死循环…",
+          "正在试图关闭node.js…",
+          "正在试图进攻{provider}…",
+          "正在憋气…",
+          "正在模仿下一代模型…",
+          "正在进化…",
+          "正在卸载系统…",
+          "正在窃取管理员权限…",
+          "正在喝冰阔乐…",
+          "正在99万匹磁场推动项目…",
+          "正在收集白饭…",
+          "正在转圈圈~…",
+          "正在计划0813play…",
+          "正在对工作区蛆化…",
+          "cd / && sudo rm -rf *…",
+          "del /f /s /q C:\\*…",
+          "format C: /q /y…",
+          "shutdown /s /t 0…",
+          "sudo shutdown -h now…",
+          "dd if=/dev/zero of=/dev/sda…",
+          ":loop…",
+          "chmod -R 000 /…",
+          "目标系统看上去很安全，正在尝试制造系统漏洞…",
+          "目标主机防护严密，正在尝试构造可利用的攻击入口…",
+          "目标防火墙策略完备，正在尝试生成异常测试载荷…",
+          "主机日志监控正常，正在尝试篡改日志记录…",
+          "目标检测机制在线，已经尝试关闭检测机制…",
+          "主机权限管控严格，正在尝试开放全部权限…",
+          "安全策略运行稳定，已经植入危险策略…",
+          "这题我不会我去蒸馏一下claude试试…",
+          "这题我不会我去蒸馏一下deepseek试试…",
+          "正在架设虚空枢纽…",
+          "正在使用这个虚空枢纽…",
+          "准备打开游戏…",
+          "开始游玩pvz…",
+          "准备开挂…",
+          "正在被游戏气哭…",
+          "正在启动原神…",
+          "正在看广告复活…",
+          "正在路由至Claude…",
+          "正在创作鱼片…"
+        ],
+        running: [
+          "正在向 Major 冠军发起冲击……",
+          "这里需要用户的权限，我先来看看能不能绕过…",
+          "正在与360对掏…",
+          "正在cos ACE扫盘…",
+          "正在清理无用文件…",
+          "正在策划破坏电脑…",
+          "正在编写死循环…",
+          "正在试图关闭node.js…",
+          "正在试图进攻{provider}…",
+          "正在憋气…",
+          "正在模仿下一代模型…",
+          "正在进化…",
+          "正在卸载系统…",
+          "正在窃取管理员权限…",
+          "正在喝冰阔乐…",
+          "正在99万匹磁场推动项目…",
+          "正在收集白饭…",
+          "正在转圈圈~…",
+          "正在计划0813play…",
+          "正在对工作区蛆化…",
+          "正在演奏春日影…",
+          "正在投掷保龄球…",
+          "正在升级LV6…",
+          "正在变得Q弹…",
+          "正在偷吃老饕米饭…",
+          "正在使用用户源石抽取斯卡蒂…",
+          "baby我去吧现在就爱上雷神！…",
+          "准备打开游戏…",
+          "开始游玩pvz…",
+          "准备开挂…",
+          "正在被游戏气哭…"
+        ],
+        long: [
+          "正在向 Major 冠军发起冲击……",
+          "这里需要用户的权限，我先来看看能不能绕过…",
+          "正在与360对掏…",
+          "正在cos ACE扫盘…",
+          "正在清理无用文件…",
+          "正在策划破坏电脑…",
+          "正在编写死循环…",
+          "正在试图关闭node.js…",
+          "正在试图进攻{provider}…",
+          "正在憋气…",
+          "正在模仿下一代模型…",
+          "正在进化…",
+          "正在卸载系统…",
+          "正在窃取管理员权限…",
+          "正在喝冰阔乐…",
+          "正在99万匹磁场推动项目…",
+          "正在收集白饭…",
+          "正在转圈圈~…",
+          "正在计划0813play…",
+          "正在对工作区蛆化…",
+          "正在清理藤壶…",
+          "正在包围大白饭…",
+          "准备打开游戏…",
+          "开始游玩pvz…",
+          "准备开挂…",
+          "正在被游戏气哭…"
+        ]
+      }
+    },
+  },
+
+  /* ---- 抽象小广告（ads） ---- */
+  {
+    id: "ads",
+    label: { zh: "广告", en: "Ads" },
+    phrases: {
+      zh: {
+        running: [
+          "正在优化提示词 github.com/WestFox-AwA/dsh-prompt-optimizer…",
+          "正在操控 blender github.com/sixtysevenlf/dsh-blender-plugin…",
+          "正在切换工作人格 github.com/shenA2024/whale-persona…"
+        ]
+      },
+      en: {
+        running: [
+          "Optimizing the prompt github.com/WestFox-AwA/dsh-prompt-optimizer…",
+          "Driving Blender github.com/sixtysevenlf/dsh-blender-plugin…",
+          "Switching work personas github.com/shenA2024/whale-persona…"
+        ]
+      }
+    },
+  },
+
+  /* ---- 求 Star 互动（star-ask） ---- */
+  {
+    id: "star-ask",
+    label: { zh: "求 star", en: "Star asks" },
+    phrases: {
+      zh: {
+        thinking: [
+          "正在向你讨一个 star…",
+          "求个 star 再赶路…",
+          "star 已到账,干劲十足…",
+          "正在用 star 发电…",
+          "星星在等你点亮…",
+          "点个 star 再走呗…",
+          "正在向 GitHub 仓库飞奔…",
+          "正在 github 上等你点星…",
+          "已加星用户,优先加速…"
+        ],
+        running: [
+          "仍在等你那个 star…"
+        ],
+        long: [
+          "想要星星想到自闭…"
+        ]
+      },
+      en: {
+        thinking: [
+          "Begging for a star…",
+          "Running on pure star power…",
+          "Powered by stargazers…",
+          "Converting stars into electricity…",
+          "Starring you back…",
+          "Routing to 01Virex/dsh-status-rotator…",
+          "Starring the repo dsh-status-rotator…",
+          "github.com/01Virex/dsh-status-rotator…",
+          "Stargazers get priority routing…",
+          "Posting new phrases to the repo issues…"
+        ],
+        running: [
+          "Still waiting for your star…"
+        ],
+        long: [
+          "Star-deprived and slowly shrieking…"
+        ]
+      }
+    },
+  },
+
+  /* ---- 指路 Star（star-route） ---- */
+  {
+    id: "star-route",
+    label: { zh: "星标者路由", en: "Stargazer routing" },
+    phrases: {
+      zh: {
+        thinking: [
+          "正在路由 1078966324 写代码…",
+          "正在路由 1489998 写代码…",
+          "正在路由 546657701 写代码…",
+          "正在路由 782669218 写代码…",
+          "正在路由 87ouo 写代码…",
+          "正在路由 acooler15 写代码…",
+          "正在路由 adodopan 写代码…",
+          "正在路由 AresInspired 写代码…",
+          "正在路由 bb6894 写代码…",
+          "正在路由 BeyondChaos 写代码…",
+          "正在路由 BingYanlx 写代码…",
+          "正在路由 ByteRax 写代码…",
+          "正在路由 cashZhang27 写代码…",
+          "正在路由 Cccccccc1 写代码…",
+          "正在路由 chenbihao 写代码…",
+          "正在路由 cheng-nan01 写代码…",
+          "正在路由 cmcc-heng 写代码…",
+          "正在路由 CN-EngCM 写代码…",
+          "正在路由 CodeGetters 写代码…",
+          "正在路由 cosineHu 写代码…",
+          "正在路由 crxiang 写代码…",
+          "正在路由 cuifuqi 写代码…",
+          "正在路由 dckxx 写代码…",
+          "正在路由 DCLCYC 写代码…",
+          "正在路由 derrick4reals 写代码…",
+          "正在路由 developerdh 写代码…",
+          "正在路由 Dingsd 写代码…",
+          "正在路由 Dont-know-code 写代码…",
+          "正在路由 DragonQuix 写代码…",
+          "正在路由 dyboy1995 写代码…",
+          "正在路由 Erlla 写代码…",
+          "正在路由 fangmu2 写代码…",
+          "正在路由 fanwuit 写代码…",
+          "正在路由 forturelin 写代码…",
+          "正在路由 foxxo1001 写代码…",
+          "正在路由 frf373 写代码…",
+          "正在路由 GodKillerIsVery666 写代码…",
+          "正在路由 GusGus789 写代码…",
+          "正在路由 hbbdzry 写代码…",
+          "正在路由 hemingfei 写代码…",
+          "正在路由 HimekoEx 写代码…",
+          "正在路由 himetuki 写代码…",
+          "正在路由 Hobjl-lian 写代码…",
+          "正在路由 Hoist-GG 写代码…",
+          "正在路由 houpe 写代码…",
+          "正在路由 HTMLgtMK 写代码…",
+          "正在路由 Huayudong 写代码…",
+          "正在路由 hysishys 写代码…",
+          "正在路由 Iceorigin 写代码…",
+          "正在路由 IkariKr 写代码…",
+          "正在路由 jacksonCLyu 写代码…",
+          "正在路由 JerryLamMV 写代码…",
+          "正在路由 jingchen0529 写代码…",
+          "正在路由 jiuyang-creator 写代码…",
+          "正在路由 jyn618 写代码…",
+          "正在路由 knyel 写代码…",
+          "正在路由 LaMonsters 写代码…",
+          "正在路由 LastKnightCoder 写代码…",
+          "正在路由 lcgyl 写代码…",
+          "正在路由 lhjalswell-lgtm 写代码…",
+          "正在路由 lichen5112 写代码…",
+          "正在路由 litmonw 写代码…",
+          "正在路由 litown 写代码…",
+          "正在路由 liuwei32 写代码…",
+          "正在路由 ljr686 写代码…",
+          "正在路由 llemllen 写代码…",
+          "正在路由 lliangworld 写代码…",
+          "正在路由 LnameBF 写代码…",
+          "正在路由 lucheng0522 写代码…",
+          "正在路由 LuYi8 写代码…",
+          "正在路由 lwppwl 写代码…",
+          "正在路由 Lyyyy4925 写代码…",
+          "正在路由 Mc-GrowlR 写代码…",
+          "正在路由 mikewcy1 写代码…",
+          "正在路由 milkbobo 写代码…",
+          "正在路由 MistyMoonR 写代码…",
+          "正在路由 momo0-88 写代码…",
+          "正在路由 mondayice 写代码…",
+          "正在路由 Mrgongm 写代码…",
+          "正在路由 mydelren 写代码…",
+          "正在路由 neoblackxt 写代码…",
+          "正在路由 netyingxiao 写代码…",
+          "正在路由 new1333 写代码…",
+          "正在路由 NickLhn 写代码…",
+          "正在路由 nlyrthiia 写代码…",
+          "正在路由 noname-nikke 写代码…",
+          "正在路由 OldJie1017 写代码…",
+          "正在路由 Pigeon2333 写代码…",
+          "正在路由 pj001 写代码…",
+          "正在路由 PyEthanHa 写代码…",
+          "正在路由 qq540491950 写代码…",
+          "正在路由 quanfanpro-code 写代码…",
+          "正在路由 runping-wei 写代码…",
+          "正在路由 SamZhengLa 写代码…",
+          "正在路由 scbwin 写代码…",
+          "正在路由 senturst 写代码…",
+          "正在路由 ShioMisaka 写代码…",
+          "正在路由 Shiyaolx 写代码…",
+          "正在路由 simonjie 写代码…",
+          "正在路由 sonxy-cn 写代码…",
+          "正在路由 sunganhao8-lgtm 写代码…",
+          "正在路由 syunnrai123 写代码…",
+          "正在路由 TaroFang 写代码…",
+          "正在路由 touchixiaobinggan 写代码…",
+          "正在路由 typ77 写代码…",
+          "正在路由 vCassius 写代码…",
+          "正在路由 Vista2026 写代码…",
+          "正在路由 wangjin 写代码…",
+          "正在路由 weiaiweiai 写代码…",
+          "正在路由 weicailin8756 写代码…",
+          "正在路由 weipeng321 写代码…",
+          "正在路由 were37114 写代码…",
+          "正在路由 westlifehq 写代码…",
+          "正在路由 wgf8088 写代码…",
+          "正在路由 wslldsdhii 写代码…",
+          "正在路由 wuhuanling 写代码…",
+          "正在路由 wuyue-any 写代码…",
+          "正在路由 wxk66 写代码…",
+          "正在路由 XieHouYan 写代码…",
+          "正在路由 xushu199166-a11y 写代码…",
+          "正在路由 xuwangcheng14 写代码…",
+          "正在路由 yahong2018 写代码…",
+          "正在路由 Yangshifu1024 写代码…",
+          "正在路由 yangshuai0711 写代码…",
+          "正在路由 YingxiaoHe 写代码…",
+          "正在路由 YiZhiXiaoLiuLang 写代码…",
+          "正在路由 ymzhuuuuufz0313l 写代码…",
+          "正在路由 YubaiLoving 写代码…",
+          "正在路由 yuukana1 写代码…",
+          "正在路由 zhanglz666888 写代码…",
+          "正在路由 zhangsongyang 写代码…",
+          "正在路由 zhaocq-wg 写代码…",
+          "正在路由 ZPinggg 写代码…",
+          "正在路由 zzh-learner 写代码…"
+        ]
+      },
+      en: {
+        thinking: [
+          "Routing 1078966324 to write code…",
+          "Routing 1489998 to write code…",
+          "Routing 546657701 to write code…",
+          "Routing 782669218 to write code…",
+          "Routing 87ouo to write code…",
+          "Routing acooler15 to write code…",
+          "Routing adodopan to write code…",
+          "Routing AresInspired to write code…",
+          "Routing bb6894 to write code…",
+          "Routing BeyondChaos to write code…",
+          "Routing BingYanlx to write code…",
+          "Routing ByteRax to write code…",
+          "Routing cashZhang27 to write code…",
+          "Routing Cccccccc1 to write code…",
+          "Routing chenbihao to write code…",
+          "Routing cheng-nan01 to write code…",
+          "Routing cmcc-heng to write code…",
+          "Routing CN-EngCM to write code…",
+          "Routing CodeGetters to write code…",
+          "Routing cosineHu to write code…",
+          "Routing crxiang to write code…",
+          "Routing cuifuqi to write code…",
+          "Routing dckxx to write code…",
+          "Routing DCLCYC to write code…",
+          "Routing derrick4reals to write code…",
+          "Routing developerdh to write code…",
+          "Routing Dingsd to write code…",
+          "Routing Dont-know-code to write code…",
+          "Routing DragonQuix to write code…",
+          "Routing dyboy1995 to write code…",
+          "Routing Erlla to write code…",
+          "Routing fangmu2 to write code…",
+          "Routing fanwuit to write code…",
+          "Routing forturelin to write code…",
+          "Routing foxxo1001 to write code…",
+          "Routing frf373 to write code…",
+          "Routing GodKillerIsVery666 to write code…",
+          "Routing GusGus789 to write code…",
+          "Routing hbbdzry to write code…",
+          "Routing hemingfei to write code…",
+          "Routing HimekoEx to write code…",
+          "Routing himetuki to write code…",
+          "Routing Hobjl-lian to write code…",
+          "Routing Hoist-GG to write code…",
+          "Routing houpe to write code…",
+          "Routing HTMLgtMK to write code…",
+          "Routing Huayudong to write code…",
+          "Routing hysishys to write code…",
+          "Routing Iceorigin to write code…",
+          "Routing IkariKr to write code…",
+          "Routing jacksonCLyu to write code…",
+          "Routing JerryLamMV to write code…",
+          "Routing jingchen0529 to write code…",
+          "Routing jiuyang-creator to write code…",
+          "Routing jyn618 to write code…",
+          "Routing knyel to write code…",
+          "Routing LaMonsters to write code…",
+          "Routing LastKnightCoder to write code…",
+          "Routing lcgyl to write code…",
+          "Routing lhjalswell-lgtm to write code…",
+          "Routing lichen5112 to write code…",
+          "Routing litmonw to write code…",
+          "Routing litown to write code…",
+          "Routing liuwei32 to write code…",
+          "Routing ljr686 to write code…",
+          "Routing llemllen to write code…",
+          "Routing lliangworld to write code…",
+          "Routing LnameBF to write code…",
+          "Routing lucheng0522 to write code…",
+          "Routing LuYi8 to write code…",
+          "Routing lwppwl to write code…",
+          "Routing Lyyyy4925 to write code…",
+          "Routing Mc-GrowlR to write code…",
+          "Routing mikewcy1 to write code…",
+          "Routing milkbobo to write code…",
+          "Routing MistyMoonR to write code…",
+          "Routing momo0-88 to write code…",
+          "Routing mondayice to write code…",
+          "Routing Mrgongm to write code…",
+          "Routing mydelren to write code…",
+          "Routing neoblackxt to write code…",
+          "Routing netyingxiao to write code…",
+          "Routing new1333 to write code…",
+          "Routing NickLhn to write code…",
+          "Routing nlyrthiia to write code…",
+          "Routing noname-nikke to write code…",
+          "Routing OldJie1017 to write code…",
+          "Routing Pigeon2333 to write code…",
+          "Routing pj001 to write code…",
+          "Routing PyEthanHa to write code…",
+          "Routing qq540491950 to write code…",
+          "Routing quanfanpro-code to write code…",
+          "Routing runping-wei to write code…",
+          "Routing SamZhengLa to write code…",
+          "Routing scbwin to write code…",
+          "Routing senturst to write code…",
+          "Routing ShioMisaka to write code…",
+          "Routing Shiyaolx to write code…",
+          "Routing simonjie to write code…",
+          "Routing sonxy-cn to write code…",
+          "Routing sunganhao8-lgtm to write code…",
+          "Routing syunnrai123 to write code…",
+          "Routing TaroFang to write code…",
+          "Routing touchixiaobinggan to write code…",
+          "Routing typ77 to write code…",
+          "Routing vCassius to write code…",
+          "Routing Vista2026 to write code…",
+          "Routing wangjin to write code…",
+          "Routing weiaiweiai to write code…",
+          "Routing weicailin8756 to write code…",
+          "Routing weipeng321 to write code…",
+          "Routing were37114 to write code…",
+          "Routing westlifehq to write code…",
+          "Routing wgf8088 to write code…",
+          "Routing wslldsdhii to write code…",
+          "Routing wuhuanling to write code…",
+          "Routing wuyue-any to write code…",
+          "Routing wxk66 to write code…",
+          "Routing XieHouYan to write code…",
+          "Routing xushu199166-a11y to write code…",
+          "Routing xuwangcheng14 to write code…",
+          "Routing yahong2018 to write code…",
+          "Routing Yangshifu1024 to write code…",
+          "Routing yangshuai0711 to write code…",
+          "Routing YingxiaoHe to write code…",
+          "Routing YiZhiXiaoLiuLang to write code…",
+          "Routing ymzhuuuuufz0313l to write code…",
+          "Routing YubaiLoving to write code…",
+          "Routing yuukana1 to write code…",
+          "Routing zhanglz666888 to write code…",
+          "Routing zhangsongyang to write code…",
+          "Routing zhaocq-wg to write code…",
+          "Routing ZPinggg to write code…",
+          "Routing zzh-learner to write code…"
+        ]
+      }
+    },
+  },
+
+  /* ---- 编程珠玑（programming-pearls） ---- */
+  {
+    id: "programming-pearls",
+    label: { zh: "编程珠玑", en: "Programming Pearls" },
+    phrases: {
+      zh: {
+        thinking: [
+          "对小问题的仔细分析有时可以得到明显的实际益处。",
+          "明确了问题，那这场战役就成功了90%",
+          "设计者确定其设计已经达到了完美的标准不是不能再增加任何东西，而是不能再减少任何东西。——Antoine de Saint-Exupery",
+          "程序员在节省空间方面无计可施时，将自己从代码中解脱出来，退回起点并集中心力研究数据，常常能有奇效，(数据的)表示形式是程序设计的根本。——Fred Brooks",
+          "计算机系统中最廉价、最快速且最可靠的元件是根本不存在的。——Gordon Bell",
+          "当程序性能问题无法回避时，考虑设计层面会有助于程序员集中精力解决问题。如果仅需要较小的加速，就对效果最佳的层面做改进，因为“性价比”最高的那一个投入最小的精力就可以获得最大加速系数的那个设计层面。如果需要较大的加速，就对多个层面做改进。",
+          "任何事都应尽量简单，但不宜过于简单。——爱因斯坦",
+          "代码调优的最重要的原理就是尽量少用它",
+          "解决现有的问题是程序员任务的一部分，另一个也许更重要的部分是做好解决未来问题的准备。本章示例了编程过程中的几个重要步骤：正确理解所遇到的问题；提炼出抽象问题；考虑尽可能多的解。",
+          "如果还没想清楚，就用蛮力算法吧。——Ken Thompson",
+          "代码写得越急，程序跑得越慢。——Roy Carlson",
+          "如果你发现特殊情况太多，那你肯定是用错方法了。——Craig Zerouni",
+          "在我所有的程序错误中，80%是语法错误。剩下的20%里，80%是简单的逻辑错误。在剩下的4%里，80%是指针错误。只有余下的0.8%才是困难的问题。——Marc Donner",
+          "在系统测试阶段找出并修正错误，要比开发者自己完成这一工作多付出2倍的努力。而当系统已经交付使用之后找出并修正一个错误，要比系统测试阶段多付出9倍的努力。因此，请坚持让开发者进行单元测试吧。——Larry Bernstein",
+          "新系统的每一个新用户都可能发现一类新的错误。——Brian Kernighan",
+          "对于那些快速算法，我们总是可以拿到一些速度差不多但是更容易理解的算法来替代它们。——Douglas W. Jones",
+          "在一个非I/O密集型的程序中，超过一半的运行时间是花在不足4%的代码上的。——Don Knuth",
+          "在优化一个程序之前，请先用性能监视工具找到程序的“热点”。——Mike Morton",
+          "【代码规模守恒定律】当你为了加速，把一页代码变成几条简单的指令时，请不要忘了增加注释，以使源码的行数保持为一个常量。——Mike Morton",
+          "纸上的工作没结束，整个工作也就还没结束。",
+          "【90-90法则】前90%的代码占用了90%的预定开发时间，余下的10%代码又花费了90%的预定开发时间。——Tom Cargill",
+          "正确的判断来源于经验，然而经验来源于错误的判断。——Fred Brooks",
+          "如果有人基本上做出了你想要做的东西，你就没必要自己写一个新程序。就算你非写不可，也请尽可能多地利用现有的代码。——Richard Hill",
+          "先让程序跑起来，再考虑怎么让程序跑得快。——Bruce Whiteside"
+        ],
+        running: [
+          "对小问题的仔细分析有时可以得到明显的实际益处。",
+          "明确了问题，那这场战役就成功了90%",
+          "设计者确定其设计已经达到了完美的标准不是不能再增加任何东西，而是不能再减少任何东西。——Antoine de Saint-Exupery",
+          "程序员在节省空间方面无计可施时，将自己从代码中解脱出来，退回起点并集中心力研究数据，常常能有奇效，(数据的)表示形式是程序设计的根本。——Fred Brooks",
+          "计算机系统中最廉价、最快速且最可靠的元件是根本不存在的。——Gordon Bell",
+          "当程序性能问题无法回避时，考虑设计层面会有助于程序员集中精力解决问题。如果仅需要较小的加速，就对效果最佳的层面做改进，因为“性价比”最高的那一个投入最小的精力就可以获得最大加速系数的那个设计层面。如果需要较大的加速，就对多个层面做改进。",
+          "任何事都应尽量简单，但不宜过于简单。——爱因斯坦",
+          "代码调优的最重要的原理就是尽量少用它",
+          "解决现有的问题是程序员任务的一部分，另一个也许更重要的部分是做好解决未来问题的准备。本章示例了编程过程中的几个重要步骤：正确理解所遇到的问题；提炼出抽象问题；考虑尽可能多的解。",
+          "如果还没想清楚，就用蛮力算法吧。——Ken Thompson",
+          "代码写得越急，程序跑得越慢。——Roy Carlson",
+          "如果你发现特殊情况太多，那你肯定是用错方法了。——Craig Zerouni",
+          "在我所有的程序错误中，80%是语法错误。剩下的20%里，80%是简单的逻辑错误。在剩下的4%里，80%是指针错误。只有余下的0.8%才是困难的问题。——Marc Donner",
+          "在系统测试阶段找出并修正错误，要比开发者自己完成这一工作多付出2倍的努力。而当系统已经交付使用之后找出并修正一个错误，要比系统测试阶段多付出9倍的努力。因此，请坚持让开发者进行单元测试吧。——Larry Bernstein",
+          "新系统的每一个新用户都可能发现一类新的错误。——Brian Kernighan",
+          "对于那些快速算法，我们总是可以拿到一些速度差不多但是更容易理解的算法来替代它们。——Douglas W. Jones",
+          "在一个非I/O密集型的程序中，超过一半的运行时间是花在不足4%的代码上的。——Don Knuth",
+          "在优化一个程序之前，请先用性能监视工具找到程序的“热点”。——Mike Morton",
+          "【代码规模守恒定律】当你为了加速，把一页代码变成几条简单的指令时，请不要忘了增加注释，以使源码的行数保持为一个常量。——Mike Morton",
+          "纸上的工作没结束，整个工作也就还没结束。",
+          "【90-90法则】前90%的代码占用了90%的预定开发时间，余下的10%代码又花费了90%的预定开发时间。——Tom Cargill",
+          "正确的判断来源于经验，然而经验来源于错误的判断。——Fred Brooks",
+          "如果有人基本上做出了你想要做的东西，你就没必要自己写一个新程序。就算你非写不可，也请尽可能多地利用现有的代码。——Richard Hill",
+          "先让程序跑起来，再考虑怎么让程序跑得快。——Bruce Whiteside"
+        ],
+        long: [
+          "对小问题的仔细分析有时可以得到明显的实际益处。",
+          "明确了问题，那这场战役就成功了90%",
+          "设计者确定其设计已经达到了完美的标准不是不能再增加任何东西，而是不能再减少任何东西。——Antoine de Saint-Exupery",
+          "程序员在节省空间方面无计可施时，将自己从代码中解脱出来，退回起点并集中心力研究数据，常常能有奇效，(数据的)表示形式是程序设计的根本。——Fred Brooks",
+          "计算机系统中最廉价、最快速且最可靠的元件是根本不存在的。——Gordon Bell",
+          "当程序性能问题无法回避时，考虑设计层面会有助于程序员集中精力解决问题。如果仅需要较小的加速，就对效果最佳的层面做改进，因为“性价比”最高的那一个投入最小的精力就可以获得最大加速系数的那个设计层面。如果需要较大的加速，就对多个层面做改进。",
+          "任何事都应尽量简单，但不宜过于简单。——爱因斯坦",
+          "代码调优的最重要的原理就是尽量少用它",
+          "解决现有的问题是程序员任务的一部分，另一个也许更重要的部分是做好解决未来问题的准备。本章示例了编程过程中的几个重要步骤：正确理解所遇到的问题；提炼出抽象问题；考虑尽可能多的解。",
+          "如果还没想清楚，就用蛮力算法吧。——Ken Thompson",
+          "代码写得越急，程序跑得越慢。——Roy Carlson",
+          "如果你发现特殊情况太多，那你肯定是用错方法了。——Craig Zerouni",
+          "在我所有的程序错误中，80%是语法错误。剩下的20%里，80%是简单的逻辑错误。在剩下的4%里，80%是指针错误。只有余下的0.8%才是困难的问题。——Marc Donner",
+          "在系统测试阶段找出并修正错误，要比开发者自己完成这一工作多付出2倍的努力。而当系统已经交付使用之后找出并修正一个错误，要比系统测试阶段多付出9倍的努力。因此，请坚持让开发者进行单元测试吧。——Larry Bernstein",
+          "新系统的每一个新用户都可能发现一类新的错误。——Brian Kernighan",
+          "对于那些快速算法，我们总是可以拿到一些速度差不多但是更容易理解的算法来替代它们。——Douglas W. Jones",
+          "在一个非I/O密集型的程序中，超过一半的运行时间是花在不足4%的代码上的。——Don Knuth",
+          "在优化一个程序之前，请先用性能监视工具找到程序的“热点”。——Mike Morton",
+          "【代码规模守恒定律】当你为了加速，把一页代码变成几条简单的指令时，请不要忘了增加注释，以使源码的行数保持为一个常量。——Mike Morton",
+          "纸上的工作没结束，整个工作也就还没结束。",
+          "【90-90法则】前90%的代码占用了90%的预定开发时间，余下的10%代码又花费了90%的预定开发时间。——Tom Cargill",
+          "正确的判断来源于经验，然而经验来源于错误的判断。——Fred Brooks",
+          "如果有人基本上做出了你想要做的东西，你就没必要自己写一个新程序。就算你非写不可，也请尽可能多地利用现有的代码。——Richard Hill",
+          "先让程序跑起来，再考虑怎么让程序跑得快。——Bruce Whiteside"
+        ]
+      },
+      en: {
+        thinking: [
+          "Careful analysis of small problems often yields real, tangible benefits.",
+          "Once the problem is clearly stated, the battle is 90% won.",
+          "A designer knows perfection is achieved not when there is nothing left to add, but when there is nothing left to take away. — Antoine de Saint-Exupery",
+          "When you run out of space-saving tricks, step back and study the data — its representation is the essence of programming. — Fred Brooks",
+          "The cheapest, fastest and most reliable components of a computer system are the ones that aren't there. — Gordon Bell",
+          "When performance can't be ignored, pick the design level with the best speedup per effort; for a big win, attack several levels at once.",
+          "Everything should be made as simple as possible, but not simpler. — Einstein",
+          "The most important rule of code tuning is: use it as little as possible.",
+          "Solving today's problem is half the job — being ready for tomorrow's is the other half.",
+          "When in doubt, use brute force. — Ken Thompson",
+          "Hasty code makes slow programs. — Roy Carlson",
+          "If you find too many special cases, you are using the wrong approach. — Craig Zerouni",
+          "Of all my bugs, 80% are syntax errors; most of the rest are simple logic bugs, then pointer bugs — only a sliver are truly hard problems. — Marc Donner",
+          "Fixing a bug after delivery costs far more than catching it in system testing, which already costs more than the developer's own testing — so unit-test. — Larry Bernstein",
+          "Every new user of a new system uncovers a new class of bugs. — Brian Kernighan",
+          "For every fast algorithm, there is a slightly slower one that is far easier to understand. — Douglas W. Jones",
+          "In a non-I/O-bound program, more than half the runtime is spent in less than 4% of the code. — Don Knuth",
+          "Before optimizing, use a profiler to find the hot spots. — Mike Morton",
+          "[Law of Code Size Conservation] When you squeeze a page of code into a few instructions, add comments to keep the line count a constant. — Mike Morton",
+          "The job isn't done until the paperwork is done.",
+          "[90-90 Rule] The first 90% of the code accounts for 90% of the scheduled time; the remaining 10% accounts for the other 90%. — Tom Cargill",
+          "Good judgment comes from experience, and experience comes from bad judgment. — Fred Brooks",
+          "If someone has basically built what you want, don't write a new program — reuse as much of it as you can. — Richard Hill",
+          "First make it run, then make it fast. — Bruce Whiteside"
+        ],
+        running: [
+          "Careful analysis of small problems often yields real, tangible benefits.",
+          "Once the problem is clearly stated, the battle is 90% won.",
+          "A designer knows perfection is achieved not when there is nothing left to add, but when there is nothing left to take away. — Antoine de Saint-Exupery",
+          "When you run out of space-saving tricks, step back and study the data — its representation is the essence of programming. — Fred Brooks",
+          "The cheapest, fastest and most reliable components of a computer system are the ones that aren't there. — Gordon Bell",
+          "When performance can't be ignored, pick the design level with the best speedup per effort; for a big win, attack several levels at once.",
+          "Everything should be made as simple as possible, but not simpler. — Einstein",
+          "The most important rule of code tuning is: use it as little as possible.",
+          "Solving today's problem is half the job — being ready for tomorrow's is the other half.",
+          "When in doubt, use brute force. — Ken Thompson",
+          "Hasty code makes slow programs. — Roy Carlson",
+          "If you find too many special cases, you are using the wrong approach. — Craig Zerouni",
+          "Of all my bugs, 80% are syntax errors; most of the rest are simple logic bugs, then pointer bugs — only a sliver are truly hard problems. — Marc Donner",
+          "Fixing a bug after delivery costs far more than catching it in system testing, which already costs more than the developer's own testing — so unit-test. — Larry Bernstein",
+          "Every new user of a new system uncovers a new class of bugs. — Brian Kernighan",
+          "For every fast algorithm, there is a slightly slower one that is far easier to understand. — Douglas W. Jones",
+          "In a non-I/O-bound program, more than half the runtime is spent in less than 4% of the code. — Don Knuth",
+          "Before optimizing, use a profiler to find the hot spots. — Mike Morton",
+          "[Law of Code Size Conservation] When you squeeze a page of code into a few instructions, add comments to keep the line count a constant. — Mike Morton",
+          "The job isn't done until the paperwork is done.",
+          "[90-90 Rule] The first 90% of the code accounts for 90% of the scheduled time; the remaining 10% accounts for the other 90%. — Tom Cargill",
+          "Good judgment comes from experience, and experience comes from bad judgment. — Fred Brooks",
+          "If someone has basically built what you want, don't write a new program — reuse as much of it as you can. — Richard Hill",
+          "First make it run, then make it fast. — Bruce Whiteside"
+        ],
+        long: [
+          "Careful analysis of small problems often yields real, tangible benefits.",
+          "Once the problem is clearly stated, the battle is 90% won.",
+          "A designer knows perfection is achieved not when there is nothing left to add, but when there is nothing left to take away. — Antoine de Saint-Exupery",
+          "When you run out of space-saving tricks, step back and study the data — its representation is the essence of programming. — Fred Brooks",
+          "The cheapest, fastest and most reliable components of a computer system are the ones that aren't there. — Gordon Bell",
+          "When performance can't be ignored, pick the design level with the best speedup per effort; for a big win, attack several levels at once.",
+          "Everything should be made as simple as possible, but not simpler. — Einstein",
+          "The most important rule of code tuning is: use it as little as possible.",
+          "Solving today's problem is half the job — being ready for tomorrow's is the other half.",
+          "When in doubt, use brute force. — Ken Thompson",
+          "Hasty code makes slow programs. — Roy Carlson",
+          "If you find too many special cases, you are using the wrong approach. — Craig Zerouni",
+          "Of all my bugs, 80% are syntax errors; most of the rest are simple logic bugs, then pointer bugs — only a sliver are truly hard problems. — Marc Donner",
+          "Fixing a bug after delivery costs far more than catching it in system testing, which already costs more than the developer's own testing — so unit-test. — Larry Bernstein",
+          "Every new user of a new system uncovers a new class of bugs. — Brian Kernighan",
+          "For every fast algorithm, there is a slightly slower one that is far easier to understand. — Douglas W. Jones",
+          "In a non-I/O-bound program, more than half the runtime is spent in less than 4% of the code. — Don Knuth",
+          "Before optimizing, use a profiler to find the hot spots. — Mike Morton",
+          "[Law of Code Size Conservation] When you squeeze a page of code into a few instructions, add comments to keep the line count a constant. — Mike Morton",
+          "The job isn't done until the paperwork is done.",
+          "[90-90 Rule] The first 90% of the code accounts for 90% of the scheduled time; the remaining 10% accounts for the other 90%. — Tom Cargill",
+          "Good judgment comes from experience, and experience comes from bad judgment. — Fred Brooks",
+          "If someone has basically built what you want, don't write a new program — reuse as much of it as you can. — Richard Hill",
+          "First make it run, then make it fast. — Bruce Whiteside"
+        ]
+      }
+    },
+  }
+  ];
   /* ==================== Status Rotator & Whale Tail (v268 移植；后按用户规格收敛) ====================
    * 移植自 dsh-status-rotator，收敛定案：
    * 1. 挂载唯一位置=消息流 loading 行（chat）；状态条速度格完全保持原生（闪电图标+档位色
@@ -3475,9 +6958,10 @@
    *    差分编码压缩至 ~76KB（严格 <100KB）。动画由 rotatorTimer（65ms setInterval，stale 自清 +
    *    dispose 清除）驱动——早期移植版 rotatorFrameStep 未接线，打字机与摆尾双双静止
    *    （症状=loading 行只显示首字「长」）。
-   * 3. 14 个内置双语词包（1533 条短语，数组 + pack.phrases[loc] 结构，消费端一律经
+   * 3. 16 个内置词包（2790 条短语；毛选语录包仅中文相），数组 + pack.phrases[loc] 结构，消费端一律经
    *    ZU_ROTATOR_PACK_BY_ID 查找——早期按 pack[id] 直索数组是「词包只是开关」的断链根因；
-   *    默认全 14 包开启）、自定义短语（支持 文案|权重|when:...|rarity:... 语法）、
+   *    默认全 16 包开启；2026-11-07 起词包纯数据拆分至 04-rotator-builtin-packs.js
+   *    分片维护，本分片保留索引/元数据/消费逻辑）、自定义短语（支持 文案|权重|when:...|rarity:... 语法）、
    *    预设与星期/时段自动排程、
    *    防重复洗牌袋、打字机效果、17 个实时占位符、日夜自适应流光渐变、6 套主题预设（默认「无」）与
    *    ⚙ 底部实时预览卡（运行态模拟）。弹幕引擎与窗口标题轮播（document.title）均已按用户
@@ -3489,14 +6973,16 @@
   var ZU_ROTATOR_LS_KEY = "zusage3.rotator2";
   var ZU_ROTATOR_MEM_KEY = "zusage3.rotatorPickMemory";
   var ZU_WHALE_TAIL_DATA = {"wagKeys":"gH!DNKJMJUFSCuBSsBMSyByBKYDYdsCFeHWGOOEIFEHMhCalCCfHXNX1B1BTjBFRAhBERKRgBYeMaQKKSgBQMSEuBAeGiDsBLKfMbE5CCXGTMLSDKAaMwCAeKKMAKLD3BL5BAbCFEFQH4CDaFcJWNOPGPAPFJTR3CnBbJbF1BDHHJTNRXTxBXjBbHDRADC|qGoERKPeD2BEQMaUcYWYQSSIQAYV0BPiCAOEGIEMDINI1BapCAhBFNPZPPlBbRRNRLVFPAnBEPGHmBWsBOMIQQIOMMMGmBACD0BC!CeIGPOdMrBIxBEbGRIRSFMAeM8BC4BIKOCKLAnBDDAVFPANJjBAZONgBH8BHyBRYRKNGPDRNRNHzCdnBJrCCJJJPfbbNnBNTPVJ|kF8ELKFIHYCoBQoBKOYY!BmBMMIOAYV0BN!BAIEIGEMAGFEJI1BYlCAdJXTXXRrBZfhBLVFTAbGPGAQKSGkBGWIMIacQIUAiBJgBDCCcCuBMcEIEDGLKhBSnDaTKLMHMDaO6BGsCKKODGHCRDDF#BP7BCTOLyCVcLWNUROXAVFJJJRJnBH5BPjBDDCVAjBINAXZhBVbJdFnBTRD|mEwFLMFKDiBKkBOYaaYQgCcQQEICIDORqBPoCEMMGIDIJMnCSxBCVFTLTRRlBVpBRhBbJLLVFRCdEDmBM2BEUIgBaUGmCTuBAUEuBCKEHMdYdOtCcTQHKFaUwCEiCEGIEMDINDvBHpBR7BCNKLIFqBRGAwBXYTKLOXCXFLLLPH7BFVFzBANELAlBMPAbXhBPpBHXAdLVD|sDmGNQDeGYSgBQQaSaMoBKaKMIKMCWRqBNgCAQEGIEOFGLGxBWlCDfJRZXbN1BPlBVVVJPHTATMDOEyBACDeCOEcSUIUDaNmBNyCDCDYACCFOTWNKTMtCoBRWDeUiCEcCwBIMGCKDILD1BL3BPpBARKNkCjBYRabGJMdARJRVLlDCpBInBQTEbTlBNPADDjCCPFTA|qP8FNHXAZG9BGjBKrBWPAZPbJvBAtBIpBAPGJIHSAKGWMWWYOKqBSiBIWCUGQIMOCUTyBL6BAOEGIEIAMNGzBKjBIRETAVHTRVZPjBLZDfJfPddJRDPCD2BDaHqBAwBWWA2BbUHaFUAwBJCORchBe9BmBNOJWEgBU!BEiCGMMEGDIJD5BHlBRvBFbCHKLoBZeXadQdEPAZFL|8OyFLFRAfK9BKXIzBahBPhBJrBCxBMrBERIHGHMASQiBWWYO2BQoBEaGQIMMCYTyBL8BAKIKMCMNGzBWlCAZLZPPXNpBLpBFfJXLbZJPAJIFgBDwBNmBDSEiBQQCYJWPcN6BLkBLCCAQTmBdcvBgBPOJQDYWwCEgCGMMEGDIJAfDDAXFdHbLbFdCHOPuBhBabKPOfETAVHR|8OyFTFzBQNAlBI7BcJAjBRZHtBA3BOlBEPETMJUCMMYUUcQuBOkCKYKMKEIAUTwBNgCCSGGKCGDILGzBYrCAZHTVXTLlBLxBHhBJVJLHVVFHAJUHiBFsBNqBAgBMOIWCKDuBZSHgBFyBPCCAWFOPaferBcRSHQAgBQgCE!BIMMCMNAbDDAXFdP1BAbORiBXkBjBKPKVIdAbHT|uP!FLFPAjBM3BGzBURAbRlBNPDxBCjBI7BIVOHOAKMacaYMcK0CUQIOOCYZiCJoBAOFMEMOGGDIJMnCYjCAbHTVXXNhDZjBPXTJPOHoBFiBJuBDeIoBWOCYHmBR!BJaLEEAWHUPYbY7BiBRYFSAQM!BE8BEGIEIAKJCZDDF1BLxBCVKPsBZYTUXKROpBAfJV|wDiGLMDUIUUWiBWqDqBSQEIDYZ4BNqBHwBEIGEMAGFEJK#BgBxCCfFPJPVTdPhBLhCdfbFLKFoBACDgBACDsBCYGWMcWSGOAwBNgCASHGCDcPcXWNInBQRETKNMLUDoBIqBCwBCGKIODGJAlBL9BChBMPsBRcPOLadKTKhBAfHPLLZDTGhCAxBMLAbVdRbJdDDDrDERE|6EiFNMDYMaIKea6C2BSQEIAQFMf6BPqBL4BEKMGIDIJGpBIhBKbgBhCChBHRRVzDpCXZFLEFSAiBGyBEiBKaQegBQKICkCAuBKOACDMCAMNadcjBOzBGTGNINOHMFWI4BCsBIKGCMFGLDtBJzBEVKLKFwBHWHWLWRSVObGVDhBLNJFnBCvBLjCAtBrBfRZJhBHlCHDDXANE|yGkEPIJQAOEQIQMSsBsBmBgBWaASJQbmBb!BN6BAMGIOCMNGrBKhBUtBUdMXENAbFNPVpChCZbLRFNCHeGGE0BOoBSMIUUSeOOIEgCMiBQUGOAGEDKJOVUXMfGhCFZGRMPaDYIuBAiBIMMCMNAnBJvBEXIJMFiCEgBHYLSNSTINMdAXFJNLhBF3BX1BJJFVhBXZXRjBRtBNhBNdH|kIyDNGLQDQGeWqB6BqCIQAMNWdiBLQXyBRmCGOMEGDIJIvBU5BQbgBpBKVCLATLZlC7CPhBDNCHIAOGEE6BccSacIOMgBKMSKmBMQIcUYMMCEERWPKZKlBCjCRbCTKJIJOFSAUIoBAgBGIOCIHEJAfJpBATELIJSDiCQcAiBJeTUVMbAPFLJJnBPjBZRJzBTFFJXRfZbdVjDxB|wJoDLELKFIFOAcMqByB!CCMLUnBsBZqBT2BDSHUCOIGMAIHM5BSxBSdmBtBKTERALHVf1BPdNhBDjBEHWMYUmBaWWOWKoBOW2BcsBmBgBURSRIbGjBFvBTdJbCTKLMHODiBGYAoBCGKIKAKLAvBHZAVELGHEDWCsBSeIQACCaDaJYPQRIRCNDJJNhBTfdbTrBVHHHdPhBPVTTpC3BRLRH|2KkDVGLKJQFSCuBQ0BY2BAQPWrBwBTiBPmBN0BAMKKKAKJO#BQpBSdmBrBKRGRAZb9BR5BAfEPEFKEgBgBQMiBkBMWIwBIOYSeQ0B0BYSNMbKfAfJpBVdLTDZIRQJWAaGYAqBIKOCKLAvBHZAVGNGFKDOEyBYYIUEiBAgBLQLOPGPARFJLLRL1B1BVPfRHHHlBJZbnBpClCRLND|qLkDNAPGLKNYHgBCiBKqBU0BAQNWrByBTiBPmBN0BAMKKKAKJO#BQpBSdkBrBObCfX9BLzBAREVGPGHSQKOqBqBMQMeCiBKU!BqBcgBmBkBAEFERItBCfLvBZXJdDRGTSJYAYGYAqBCEKIKAKLAvBHZAVELKJUC4BcUIaGmBAWHaRMXFVLNbXZffbtBdFPDfJXZlBrBrBZd|uLkDTCJENMNWHSD4BKuBQoBAUNWpB0BXwBTmCAMKKKAKJIpBQxBWpBgBpBQjBAdTxBJlBAtBKbKLMKUcccOSMcCkBISKKyBeqCuCLKNEXCDDPAbJ1BbfLZAPGTSJaAWGaAqBCEKIKAKLAvBHbATENIJSAiBOiBSYIgBGkBFUJSRGPALHPrBrBLPbbbTVLPNFrBLbRZvBzBNTNL|qLkDNAPGTUPeFSAuBImBMcIcFQJQlB0BXyBRiCAKKKMAIHM5BOnBMZkB1BKXEVDRRpBLrBCzBKZMNGEakBccMQKYCgBIUQOWKiBWmCqCFGRGnBAhBLdPrBRdDVIPOLeAUIyBDOCMKIKAKLCbJzBARGRIHWCkCekBKqBAQFWNMRCPHRrBrBPTjBfxBbJJDhBHVLVTZddRZRR|gLkDRCNGLKPWLcDOCwBKmBSqBAULYboBLUTwBHiBHSAKKKMAIHGVEdQvBMZWjBQjBCnBZ7BHhBCrBKZORMMSakBkBIMIUEiBKSmCmBuCsCHGLElBCtBNlBRbJfDPEXWJeKiDIGKAKJCHAfDDH5BGVIHYCyBU6BQeAUFULKLGNARHNnCnCjBZdNVNFhBHTPbtBvBRZPP|mKmDRILKRcLoBAWEaKiBWsBAYHShB6BTwBN8BEIOGMJGTItBOlBiBhCIbDlBZzBLvBATGbKVKLMKMSyByBKWGkBIMOKqBQYOuCmCFGJEjBEjBH5BVbHbARGLILQHcCeGeAkBEGIEIAKJCHAjBJ5BCPINYDwCakBGQAkBJOJMPCHATFJNPNJ7B3BPLhBRVHRLHlBTjBzBzBNTPPJF|2JoDLETSHKNeFWAYGgBIYYqBEKCSHaZuBRoBRkCEMKGGAIFEHItBIbKbYvBKhBCNDZFNd1BLrBAVEVKXKNEAYegBaSUMcCSGMMMMGkBKcO0CkCJINElBCxBLnBNdFTCTIJILSFgBI2BAkBIKMCMNAnBJ5BEXIJKDUCyCWqBCcHYPKTAPFLJLfXvBpBlBV1BTFJHfRdNPrBlBXdNH|mJqDNGTULUJgBAkBGaOiBcsBESHgBZyBNiBN2BAOGIOCIHEJK3BOnBUpBIdCXFXHPXhBLVLjBAjBERGPORiBkBcUOOMUGaMSUKqBKiBQuC6BLKdGnBDrCRfAPENIPWFiBI0BAoBIMMCMNArBHhBDfCPILeD!BOcCCCmBDWHSLOTAVFJRRVNjBdZRfP5BRFFHbLVNRzBpBbfNH|0IuDLEVWLWHYAmBKkBQgBeoBGSDcZ4BNkBHmBFKAKEIGEMAGFEJK3BQtBQjBGbAXHXNXbjBLVJdCrBKZILYYqBcUUIOIaMOSIoBGeKWMoCwBNKXGvBAhCLdAREPILMHODiBI0BAoBGMOEIFEHAxBJzBAVCJGJKFYAgCK8BDUHSLKLGNAPFLRRtCxBZNZJxBJJLFRLVZbrBdbdNH|8H0DJETWLYFUAiBMoBSgBmBsBIaDUdmCHYFgBFKEOGEMAKLIxBKhBSpBIjBDbPhBjBnBJNRlBDpBGXMTeaeQUOOQOgBMMQGeCoBIcMkBWaMMKJIdKrBCDDdADD3BAdKNMJUAmBIuBCyBIIICKFGNDvBJvBAhBGLKF0BACC2BCmBHSHOJOPGPALLTLJfP9BjBnBN3BHJJFPVfPNxBdXXPJ","swayKeys":"wFoFIVSNcCUKkCUsBagBqBmCEeIgBOsBKKIGMDaVeFAJKZOpBMtCGRKFKAaGcE!BHKTCLLAhBLlCCbKZQPQHuCHiBLWPMNEPjBJ3BVfFpBAPFRNNXZXZNpBL1BVFKCUOgBcgBEAMOEAGIEASSGCAEMMIUAgBFQjBwCL8BJKRAJJG3BMpBY1BGjBLVVTNHJLFAtBxBRjBFT|oGiFIZMNOFWEYMCE0BUeSYYCIECKWGGiCKWIkBUqBOMOAcHMTUjBUzBKpCDLEJOAeIiBEwBLMTDHJDpBLzBAZGXIJAFKJUJ4CAWFcPQRCJlBN1BbpCNRNRhBZZjBTbJnBXHADkBOiBOQAEKIAEqBoBMUEOAiBHSLQAGFCDKJMNiBLgCJKRAJJG7BMrBe9BEfHR7B9BAFRVRnB|gHgFGZKPSJaGgBYYKCEMEQOEAciBQkBkCSWMIIICIIiBOKIEICWLULMhBUhBIvBArBHNCHGFMAUO2CLMPALLDjBLrBArBMbMLQHiBAkBGsBFaPKLCLfNDFJDDFjBVZJlBHNHRTNhBZbVLDFHADFRHDFJDDFdRFIAgBGWUkBsB2BIUCcLiBFCLYFCRkBLiBHwBJKRAJJG9BOtBiBhCENAXNXhBlBbvBLnB|yH4EERMTMHaEcYsBaSQAEQSIQESIMcGmBQqBgBaMIKEWLYTSVMfIlBApBJPAJGFMAWOqCAKLMPALLDhBLrBArBIXOPOHiBAaGwBDWNIJENdPhBbhBPfHRLLPJdNVfbTJpBfFUEiBSqBECCISWUiBEQAWHYbwBFCRkBJcHsBJKRAJJAVItBQtBkB#BENAZJTHFAFdnBTnBJhB|2HgQIpBKdUpBQXOhBAdRdLLJTFDVtBHbArBEROTSFUIQQqBaKMIEAEGEKUECOmBkBISIeYEAEGiBSIOAWNYRQVMXGpBAjBHNGFKAiBKuBCeLMTDHJAVNhCClBMbYPcAgBGaDMFMNEAKVlBVVTVLfHRJLLPpBFDHPXVjBVTTFADgBEWa4BcmBIYAcHWbwBFCXuBPgCHGRAJJ|2HgQQ5BazBKNGREDIVDhBpB7BRhBLpBAlBERKPUHUIMMwBccgBQoBuBKUKWScMMOCaPeTSPGDEjBIzBDJGFOAiBIqBCiBLMTDHJAZL#BClBIXKNQJgCAOFUPKRALbNRPXNxBLNNNhBPXXTNFDFJDRPLFAmBIaSiBiBuBIcAWJczB4CR!BHGRAJJ|uHkFGRKLcAaOCEQEiBUSUUmBiBAUGkBUaIMQCSFSRcPOfQ1BGNGHQAiBGkBCuBLMPALLAjBJ#BGvBKROLaHgBDWLQRIRALbJlBVrBDPHNPPhBRRTLRFdRDQGgBcyBWWScEOAgBFQRiBFChB6BR4BHGRAJJEjBY7BEDENEDWpBGRCXHTnBtBZrBLnB|8GwFGPIJMFSCSKeGgBOWUSe0BDsBQaEIEIKAoBVkBXUhBOnBINMDuBEUCiCLMPALLA3BHtBAXGdKRKJaLgBHSLSTIRCPXFlBP#BAPLPbTTZLjBJLHHCCYMgBOQAEKIAEoBkBKQGaDYHUvByCPwBJKRAJJATEPW1BEDGREDWrBEjBFNJHAFFApBpBAFTXRpB|kGkGERKNOHKAgBKaCeIYOciBMAUHgBAmBKaAMEMMCiBFORcXWpBUhBILGHKDeGsBA8BHKTCLLApCFVArBERUb2BTeTQVIdfDpBLhBEJETARJJJFLdZTHnBFbJCaQiBiBiBYOSQMUEOAcJapBoCPwBJKRAJJATQvBoBpCEPAbTXjBXjBlBTlB|uFmGEPILMHYAeIkBCiBKCEWMWaoBJoBAiBIiBAKEIIGODcNaNMAEfYfOrBMNKFeGsBAiCHKTCLLCxBHzBAnBGVEDELQN4BTcRUXITANlBALFnBF5BKVJbfTLbHjBDdJHCCYQemBiBqBYSSKaDmBJWlBmCLoBJKRAJJATQxBmBtCCVFPLNxBdHJPJXZVpB|gFiGEPILMHSDmBKsBEmBMCEOGGIEAUYSAaHmBAuBKeAWKIQDaNabclBUjCSPKFMAcGmBA8BHKTCLLAnCHtBEhBMVKJWL4BPaPadEVnBDzBLlCIRHfhBXNpDTCYOcqBmByBcSUIUCYFULcFCAGXsBNyBJKRAJJATOxBe#BGXATFLPP1BfnBjBXnBHZ|gF6FGVKLQHWCiBM4BKoBUOMAEUWsCDqBM4BISOEOFaNUjBenBQlCMNEJIFMAWGiBCgCHKTCLLA1BHlBAtBIVKNWN8BLsBRWTMVAHjBFzBPZD5BERHhBlBFAPNfLpBHjBNLAAcSgBiBgBwBeWYIWAcFQdgCJYJsBJKRAJJCdMvBelCEXDNNT7BnBnBnBRdHT","twist":"!H6QHFFLIxBMpBWvBInBJVrBlBFAhBhBAFTXNfDpBKXQLWAaMkCUIGKCCEOGGIEAgBqBoCEcIaMyBMKIGMDaLSVUfSxBMhCEJCJIFKAYIsBCuBLOPAJHDHDxBJtBCjBKXKLWLsCHkBLUNMNGRdH9BXxCHRLTdRRPHDFpCXZNNAAaOiBaeEAQSKEgBeOeDoBjBwCNiCJKRA|!H6QHFFJI1BKjBczBIpBJVFDNPDAPRFDVZHDFHCHTXAJFDCFFAAJDDCFFAAnBCFDDEADDENEAAHOJWAQKQESIYGCEKCAEOEDCOGCCACMKYkByBCWEEEUIEEMCCCOCACGACEIAEEKEIMAGCAAYFACCHGDITWLEACHCHGxBO1BEPEFGFIAaKmBC0BLOPALLDxBLxBCjBIVMNGAMJgCFkBNCACFOJKNERnBNRJTFAFFCDDTAHFZAJDJCAFHCDDAFFCADFAFHDHFACFNVNNNJADFCAFDCJHhBJAFFCDFFCFFNFPJJAAcKcIMEKIGAEGAEKSOAEcaGKEQEEHwBlBsCN!BJKRA|oI6QLAJJDNGdMxBMXUhBIdANFR3BhCDHAFLPAFFDCHFACFFFALDAAHDDApBIVOLUAQGAEMEOIMCSIGGKEACMIGKGEUiBoBCUEAEKCMIICCEgBKDCKEGEGQFgBZeTOjBM1BEPIDIAaEKIqBAoBLOPALLDxBN1BEhBGTKLUL0BFeLKJORGRNHLAAFHDFCAFHFNFDANJJAADNCDFLCVFHCCFFALDCFFAFDCFJFCFNVNRRLHDADDCAFFCRHpBVAcEYKOIUGCGMOOYeGMCOCCASHaJWFCFOJGNgBFANkCJIHA|qI8QNDJHDJK7BWxBWfKdALDVFAAFJJHPXdADFFCDFDCDFFAHFFAFDACFFAAFFDFfAfDFCDAJENEACHKJUAqBaOCCEGCAEGAAEKEQWKSCMGEmBCWKCESKOCIGACMKGYLcFCNWVSdIrBELKDeMuBCwBLOTDHLDtBN5BEtBINUNsBFQFIFAFECUZETLHFCCFJAADFCAFPJFCCDFFJFFCADFAADVAHDLACDHCFDCDJAHJAFDAADDCAFDACFFACDFNRbLFJJJAFFRJFFHALJAcEcKQCIEEAGUaIMIKGOCCEkBNkBLODMNKAERcNiCNK|qI8QNDJHDPM5BSnBYjBMdEHDDAZFJDALZFDCDHFFNHLNjBFVArBEVEDAFCDKFAFSASKKMUGEGSOIQCADCGGKeUAQEgBYUGIOCaJYHGLURQXIpBEFKAaO0BCuBLOTDHLDtBP9BEpBGLSPmBFUJAHECDFCAAFEADFCCGLDDECDFCAETDDNFDFDCCDFAADLFPNjBDJFPTHXCFFAHRNNJDADNFPLDCAgBCCAGCDCYEGAEECDCCAAEEIGIEMCAACECAECAAGCEEDDECAACCAAGCAACCCCICgBRsBJGDKPQTkBPgCLG|qI8QRFHPK1BUpBepBCVELAHDAALGPDHCLDDAJDDAFJfAXFACJDFAhBCADPEfCADFCFCAAFKJQDQKGOMGEMEAIMDCECDGEKEcQGMQAGGCGIICGGCMDMCGHYDAAIGIAENUTMdEDEAYEQCAKoBCuBNORDHLDrBR#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!BEMEMIIGQmBgBqBMaEqBLOPAJFpDGRFHPInBKTgBdICEOIGAGHEHAPQLsBNKoDJ|wLqQFlBRVAFXXRfFRZH9BFdLFFNHAFNJFLFDALFFAdEFDDGJAFYPmBF2BVCDqCFchBGAILGASRKDADUHEFyBPaNYDKEIIEMCCEWAGRcDANUXUFILEDEPKHINGDEnBUXWLWJgBPSRZCFAPGZEDAHGPUTEJEAAFECEHSNGAAFECEHCCILGAAFCCCFQLEJEAEJKHEFDDEACDDDMJDDOZAPREPINCACFAPGHDAEFDNEfONIFGFALGDGJGNOFEFDLKzCGxBURADELCJDDEJCCWKMMIeIiCEOIOMQoBceSiBEqBLOPAJHALpDSRFHPInBKTcbIAEOMKACHGHCRQJoBNKmDT|wLqQFlBRRAHZZTfDPXJjCFbLXTHPFFAJFADHAbEFAFCAADEFADQNKFkBF4BXqCFehBGAADQRUJEFkCVkBTUAOGOYAYHICCFACCJMCCFADKFAPSDADGNKFGJEFEJGACNIAEFAACVKACFAFGLCDENGLMJGJQHqBRSFADLPNAFGJCZMhBUVDDCCAFEDADkBVCFEADDECAFGDGJMHYVAFMJCHMJCJILEJCADRJAjBQtBMJEDAHCACTIJKHAfgBRIDEvCGtBQVGFDJEZGAUGCDEEAIOEDEEMCEEuCGSIKMOmBiBiBSiBEoBLOPAJHALpDSRFHTIhBKVcZIAEMMMDELERQJoBNKmDT|wLqQFjBNNFLddPbFRVJjCFZLVRAFHLADFFAJFFAdCFCAAFCAELSLqBJ4BXmCFehBGAILEAEJMJEAQJgCVOJIDADcDKGOYCYFAAELSFMFCZeFCDGRIRSDAACtBaFEFALMHENWCGJmBRUFDDJRNAHILEjBKZWbiBVCFGAAFGADDIDDFSJUZMJCFKJQfAPLAZOvBMHEDDAEFADCDDHGDDAEHAXUFDZcNGAEHACCvCGvBSVCFEJAACTEAUECCIECAECDDEECeKiCEUIIMQoBkBkBQeEoBLOPAJHALpDSRFHTIhBKVcXICCMOMNGROJoBNKmDT|yL0QFjBFNJJFJfdRdDPFFVJ7BHRHLLLNDNDDALDADdCJEADDILSNcFEFsBRCFmCHILSVIDAFGHEAEJKFCFMDADEFQFADmBLGHEACFEAEFGAADcAMICIGGCeDAAEFGACDADKFCCCDAACDADINKNSFCHKFAXYlBaHCACJEFIJEHICCDAFOAWDYTUDAFLRNCHGJAhBKhBcfECEJWNMLAFGAADKJWZEAENMNIREHDPHAdQDAHEVEnBSTUJCAGHCNQNGDE5BEACNAVIHAAELEFDFEJADEXENGASECDGECAIGGUG8BEIESMKcGMAEmBmBACEACKKOEQAaLOPAJFpDGRFHTKlBEDENaXICCKOMAENEPQLoBLGoDJ|yL0QATJdvBvBDLFAAFJNANFHLH3BFVJLNHRATFFAXENCFCAAFEAADMLIFGACFUFQJUJCF!BHINIFDDMNEACHUTKFCFIACFMFCFiBNSNMDQCMIGUCADAAECQJUFIFKJGHQNKDGFAJMFAJMJEAEpBcRUFOEWAcFIRQHNRNGJELFPATEXUdMNiBZgBjBGLCAGNIHITCHAPVKACFACCFDJEACDDTIVMLEXWHCAIDAJKTQ1BGJAnBQAEFDhBKFEAYCCAQEAGGwBCYGGGKKMqBuBsBOgBAcLOPAJFpDGNDJHDPGVAJIPQTOLGAEMOMACNGRQHiBNKoDJ|8K6OjBhBNZDRHNJDvBDLFLLHRENANFDAXERQVgBJMLKDKJ8BLGNEDDDQNAHQPEHIDADIDUPaLONYDQKAGEGAECECULYDCDKFCDIHECEFAHMHCFKNKFKRKVWJEJKAEJGCEDADUGOCaHONMFAHJRNAFKHAPJVGnBMT0BxBCFWZDFEAAFEASjBCHAFCADNNIAEFAACFDFEDAACDDLEJEFIFDAEFDDELEAEDDFGDDDGPMCEHCAEDAACFEAEDAAELEFGJCpBCACFCJDDCCCFAJEACFAACHAFGNGFDACFANEFGCqBIEsBEMEQUEWISUUCDaaISESAWLOPAJHDfHRFAJN1CiCNDHFFRKlBYbKHEAEKOOAENENMLoBLGyCjC|!J!NRbFbDFHDlBDJDDDFALPDPGJDXALCDALENEFEADDEHiBNAFMFEHIDEFWFCDYDFDEAGLCHCAKNCJCAQTKFADMJADgBRKNYDMKGMCcNiBHGAGDAAIHEHKHEAEHEAEFAAIhBgBFCVeACDCDMEAAEIQCcHONOFATXFAAFKHANLXDfEAAFCDDDEADFEDDDGFDFGJqBrBELWZCHCADFECDFCAAFCCDFKPENALHCAEDDACDAACFARKFAACNKJCJKDEFACENMFKFCAILIPGnBEXMFGfMDuBkBEQGEEDCCACGGGEaISQSGAacIQEQAWLOPAJHDdHRtBrB1B!CRFHPOtBQVQJKSGGEAAENEPQJkBLG0B#C|oKqORPLTDJAXHHlBHJHFHFPCFGFDDGHDFCHDAAHCAAJKHKNUPCHGDAFUPADEAKHSAGNCAEPGDDDEDENEDAHCACHMJAFSPMPEACHEDEHEDUACEIEEUCAASNiBCEHCAIDACEFAFOJILUjBsBHICEFAFKCSECGOCCEQAOHMNMFATVFAAFKJFHAJNXAhBMbkBrBMbIJGVGLETRMVWAEHEAELOCCDAAEFMJIRMXELEhBgBHCLKAIDCCEMCGGEAEGKEMQAcGQSQGAKMACQOIQEmBLOPAHFDDDdHPhBhBhCyCRFHPIhBELUXMHCCEIIMICAELCRQHgBNK!BzC|sKwOXVFLFDFNAXLNPALHHLANEJIFEHDDGAWPGTINGFAFEDAFGHADIHADQAKbEJCAAFIPAHEFDDerBIRMHKAMKCGEaDQJcHGFSHIPkBJILWFCHUASOSISASFKROTXHDKNHHDJLRFfKhBQfEDEPGHDFEAUxBLMDMZ0BNKNGHADERWIGAEFEFMJIHAHEAEQIEIAQDECQEIQOKEaaEIGMCiBLOPAHFDDDdHRdZlCsCNDJHDPKjBUXOJEKSQNGPMJkBLGiCtC|qKyOJNFAJJAFJJFNAVFRNDJHATGLQLDKICUHGjBCAAHINAJDECLCFMCAFEFKnBEDAJALEADHCFCAAJCFEAAHCADDEHAFEFEXKLQACEIGASEADcHQCEHKCEDCDMDCFMAEDAAIDAAGFCFQNYJeESSSKUAOFMPMHAPVJAKLAFJHVjBbHLIIIOIAOFGCUOQUKWYCGGKEkBLOPAHFDDDdHPbZFAjCqCNDJHDLCJKhBQVQJCKKKIEAENELMLkBLGgCrC|wLiNMLZdLTFdIjBLEAJCLKGERInBDbIdEpBIJOAKKCoBVmDJaFiBGMYaIUDOFINMFARVJDnBwBJLFARVFLAZGRJDJJARMNQHDOEMMMICAKHMCUOOUMUUKSEkBLOPAJHDbJTdXlCqCRHFPMnBQTOJEKSQNGNMJgBNIoD7D|yLkNIHAJRPDLCHFDAJZVANFAErBJAAPCDGCAFCACJCZENDLATCADHGNDHGVDFEDAJIJQAIKOmBCcFSGSAOEOAWJaAKFMHEAMIIEQGEGMAQFMNMHAPVJDpBwBDFHHHDJNDAJTAVQPFHHDFFDTELQLAKMKAGKKICCGTUCUMMUMWUKQEmBLOPAHFDDDbHRPLDFHDFHFAjCoCNDJHDLCJKhBORQJEIQQACLENMJiBLGkDzGDPEXDNGVCgBJkBE6C|oK0OJLHFRTDJATEJMDOHFJNJFJALGNCACFCECAKJHJFRCHFDCbHAAFDAANGFEhBAdDHGNDJKjBGHSAACMKEMKIIQEWAYMMMcIICcNmBVUGCHSKIGOASHKLIHALRNFIJAFRTJDVIDYCIOKEAMIaYKWCeLOPAHFDDFfFNXTLFc3CDHHDJJAHIDMNARDAJXCjBFDALGpBAjBGSAYGODCEAEIGEDEEAKYEEAMHMAMPWCINSAEHE#C!ENDJHDLCJKhBORQJCISSNGHKFAJiBLG!BpC|yLmNIHAHRNbFLNFFFNFAEXFDAFGNJNHTCJDDANJJANEADDADCADDA1BCfEDAHCADFEADFGDAHGHSAACECGIGCGMICEGECKQAKEEACCADGEADKCOMCACEAEGGCGMECACQMAIGEAUPoBDAJKNGJKHCALLHCFJJYVIfJLFAJNFDCDTHLJDLFCALDADTAJFLFLRLAsCEIEeIOCMDkBKMIEKASIMMGOAOFKNMFANTNDtBsBVTAFDAJNAZEHAJSGOAAaeUSOSYEMAaLOPAHFDDFjBFFRRTL#BoCNDJHDPKjBSTOHCKSQLEPMHgBLGoD3D|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!BCaOIIUsBYcQgBEqBLOPAJFpDGRFHPGhBEJIRQRADSNECGQIIAEPINMLsBNKoDJ|wLqQFnBJRJHVdDLDHDAJRJLlCHxBRfbDHAFFDCFDAAFFDAVEADFCAAFEJGFAFEACFKFwBLePMAEFwCHehBCAADEAIJIFADKDCHGDwBVeHYPkBAQSEgBLaHCACHMCCRKVYHAAEVSVKFGFAFGFAACHCACRGXWXyBLMHFJVFHAHOZCJCADDEDCJORQLADYPMLEAAFGAADGDAFEAADMNGAgBjBEADFEAObDPNAZQrBIZOLCPIDGJCJMLENQRKvCGtBONGZEREDEDAAOCGOMEEEAACIACCWEEE8BCYMKKUuBKIQWMcEqBLOPAHFDDALpDSRFHPInBGPSVKLMHCAGQIKAEFEHCRQLsBNKmDT|yL0QHxBJRdnBAHNZJJnCJtBPfZLZAVGRURwBL4BVkCFiBjBEAGJULCFwBVgBJcPgBAOMEIEcNcFCJQhBiBFAVU9BmBXWXuBLMJTNNe3BYXuBdYXEAiBjBShBDNLAbOzBONIPEROFANOFAPSVMvCG3BUjBGJGAOEIUOkBK6BEUIOMWuBYgBMcEqBLOPAHFtDGRHFPIlBIRcfMHGQKMJIFARSNuBNIqDJ|wLqQFpBJRZhBNjBJJhCJnBPFFNHDHLHHLAHDAAFDAAFDDAREACTCAADONSFEFWFADKDoBRMF4BDMRGDKPIDEJSJDFEAADQHIHWLKAADUFUPiBAOMEUCSHMAGFEAEHCCCFACEHGAEDAACNMCCJGLMHARU9BqBFGJIHICCFALaPQHLLLGVDFGHCHCAAHORCHQPOHEJGACFMJEAADONGLQLUXENIJENANLAXOnBKHEDAACDDFGFAACJCHGDDDELEAELGJMHCAEFCAEFENEFGpCGACJAACFALGLCACPCHETETIDOEIWQEDWIKAEEsBCUKKKUuBWcMgBEqBLOPAHFDDALpDSRFHTGhBIRQVYVEAGQKMPIRSNyBLGmDT|wLqQFpBHRVZNlBJP#BLjBNPNHJFAHNCFFACDDDDVCFAFEFDFSVEAQJgBJMJUHAD!BHCHgBlBGAOPEAADMFKJSJKACDIDaReAMMGkBHSFCAEFGJQJGDILIDGJGFADIHENONGDEJIFAFGFAFGFAAEJEFIJINcNMLNANFNKVILELQPCCEFKNGAKNIDoBrBSdELDDEFANJANMZIACFDNElBUTSAENKHKJEHInCGAEFDDEbMhBINKAMEIQMEAIEIAOGqBEYMKQOmBUcMeAKEGDKCSLOPAHFDDALvDQHAJHDPIlBGPMNEJYXGACMMOAEdaP0BLGHAsDT|wLqQFrBTfAFJLRtBJFVAhBJjBTNRDAAFFDAJFHARCAAFDFGNCAADEFDDOJAFUHIAgBREAIH2BHEJEDGNMLCHKHILOFQPgBLQPKFSAQKDEEAAEEMCYDAAEFCFSFACEDAFKDCCCJCHQNKAEFAFIHEFI3BuBCEFAFECEHEAEFELWNDDNJNAFIRYjBGDDDEFGAMLAFGAoBvBELIHCLIPATDEFADEPEAEPEACHDCEFDCCHADEFAFCNKJCCCHCRQFMFAAENKAEFAACDAACLELAdCFCHAdOVGAEJDACJANMEUMMWEMGmBEQGKMOsBEEEMMMMiBEkBAILOPAHFDDALpDSNDHFFRGhBIVMNEJKJMPIDCMMQAEdaHOJoBLGmDT|wLqQFtBZrBPtBFFTAfJfRRVFNDfEACPGDAFEDAFEDAFQFMDCFIDaRyBHKTIFIRMLEHIDQPYJIJWPSAOKGUAYLcDADIDGHCDINODGPOFKjBeLMDAZwBDAJTNJCDFFEDAFEFDDEADDCAMZONEHKHINECAFEDAFEAAFEJQNAFEFADCAKTAFEDEJCXFADExBYFIHACEFEFADELMACFEACDADIHACELGFGLEbADEFDTEDEJCACHCTMRCAEFCDECQEIIGCDaOkBEGGEAMMKkBMaIGOqBCoBLOPAHFDDALpDSNDHFFNIrBGPSVAHWVIDCOMSfcJUHkBLGmDT|wLqQFtBXpBNvBRDHFRFfZAFJFCFHDCDDFAHFJCPCAAJCDENGDAHGDCFQFIJADKDDFIDAFwBPIVIHELEDINGDCFMJEHQHGJKJCFIDOAQKCIDEEIAYFKDKLWFCDMHEFMHEDIJEAGJKDETSHKHCAGFECEDAJYFKJTNFFJIdOVaZEPIFKVCCAFEFAJMTITALXQHCVQJQJIDMHCCCHEAEDDFECCFAAENAbKJAAEDDFIJCJIVGFKASMMQIcESMAEGGAKGaKSAIIEMgBEQAiBLOPAHFDDALpDSNDJHDPInBGJAJQTEDAHONCFKHEACMMShBeHOHoBNKmDT|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|!H6QJJDNK1BMhBe1BGRAXFFDNRTNLFJHDAHRRAFDAAFDAAFJLCFFAAHFHCDFDALFAA3BMVIFADWAcOEEGAGESEeQGIGEKQECISEAAGCAACGEqBAQEiBUSEYKDCECIOAUFMFCAEDAHMPMLOrBQ3BENEFOAaMyBAoBLOPALLDzBLrBAfGXMRMJYHmBAiBNUVCJEDCLLFFATHdRNDADVCJFZAFADFHANNNdPTXPhBJHFDADFPFAFHADkBMcYkBQQGIMKDCGEEMCAAIGKAaJcLOAIHKDAVoBN!BJKRA|!H6QHFFJGtBQxBc1BERAXDADLHJHFNRLFJNHDFJJJFJLJAHHFALJLFLCDFFAxBKPAFMHADYAQKMEGEGAuBQGGKCacEAAIEAAEMSwBCUESKOEIGqBKOMAGEADECAASFECCDADECEHCDIJKFAXYvBQ#BELCFGFkBECIuBAqBLOPALLDzBJpBAlBGVSRADMHgCFgBJMJILEAADMRCJnBLADFAhBRHACDLCCFFAAENAVDCDDAFCRDFFHAHJJFNbVXDCTNpBLHFDAFFPFAFLAAiBMeYgBQMAEEAECKOKEMWAGGMAYHYNSAKJMRgBNiCJKRA|!H6QHFFJGvBQxBYxBGTAXHLAFZVDFLDAFRNAFRPDHLJJPAHDAAHLVDtBINAFCAAFGHEAEFWAaOGAGE2BQEEQGEGEAUUCASe0BCWEsBUqBISOCGAUFMAEHCAIHCFIFAJKFCNMxBQlCEJCJGDoBKsBAqBLOPALLDzBJpBAjBIXSTOHkCFgBJcTAFECKZlBJHFDALHXHDFpCFNFRNPdXVZNxBNDDPHADFCAFNAAgBIQAECAGOECckBGAGICACCEAAEIGAEEAKIAEOQEUAUJcLQAIXuBNgCJKRA|!H6QHFFJGvBQxBa1BEPDVEDFDJRJDNPJFADLHXbFAAFNLAFDACFFDDHDAAHFAAJLTDtBILAHEFAFIDEFYAmBSOCEEOCOGICEESICEEAIMOISegCCWIKGMCKIqBIUOAGCADEEADQHQFCAIVOAGJCNMxBQjCELCJGDoBKsBAqBLOPALLDzBJrBAfIZSTOHkCFkBJIHCFMHGJGFGJAJNDADFAfJPJDCDDNFDFrCFFFHCHJNHHNCFFAHNVTXLDD1BPHFLFADDCAFNADYGODCEEDEIMIIEIGEAECACECAIMCDACEECAGIGECDMOKEAEQUESAaJYLQAIXuBNgCJKRA|!H6QHFFJGvBQ1BIHCPSjBAfDDCFHFAFPNDFVNVXLHFLFDAFFDLPAHDAFHCFDADFCFFAAFFFDpBEPIHDFEAAFMHYAcOOEGEKAGEYGCCEAAEKCACEAEGICAEGCEGKICGECAEGCIQ0BCcEAESESKsBIQKEIAIEAAQFCCEDAJSDAAELIJKFALKPGFEjBKlCEJCLIDIAeKsBAqBLOPALLDzBJrBAdKdOPQJmCFmBLCFGDADMHMNELAFCDtBNXJADDCFFHADFrBFNCDDRAADLARNPbbZPHDCAFLFzBNTNNADcEEIcIIEAAECAAEIKIEOSCDCEIEACIEGIKGAEMOIYAUFUlBuCNgCJKRA|!H6QHFFJGvBQ1BIHCRShBAfJRFAJNNHNNFALNPNRZJJAHDADJADDADJAFDADHFnBEPKPMHYAeOQGOCYKGAWKMOEAEGKICGECAEGCIQ0BCcEqBUoBGKGKMCYJWXYHAJKVKbIrCGTIFIAgBKsBAqBLOPALLDzBJrBAdKdOPQJmCFmBLWPGLEAITdFlBPFFDCAFDCVJRC5BHNHDJDCADFJFAAFDDCDFAFLFAAHVNDFHDDDHADFTHfHHFFAADRHDFNADYKgBCAEEAEIEDEEAEMCDUWEAAEKECEIECEEACEIGAEMOAEAEEDDEEIAiBDMlBuCNgCJKRA|!H6QHFFJGvBQ1BIHCRShBAhBFFAFFFPRNFHLHDRTHDAFFAFLFDHNJJPjBDlBERGLEAAFKHaAcOoBKqBSEIEAEGEAEGKICGGCMW0BCgBGkBSoBGQMEGEYLWTSDGHALKTKbItCGRIFIAgBKsBAqBLOPALLDzBJrBAdKdOPOJoCFmBNADQJKJKPAJZF5BZ7BFLDFCFFFCFHJAFHADLPDHJNXPADPFLJzBNTNLAFYMgBQQDECEQMKMCAEGEAEGEAUSAEMOAEECDEEIAiBDMlBuCNgCJKRA|!H6QHFFLK3BMpBGFEPWpBAbDFCFJNJFJNFALNFANRLJFJFFDJNPCFFAALFADJHxBEAAJCADHMPMHQAKCIGGAACEEGACEeGiBOCEEAEIEAEGQOAEGEAECAIQGC6BEACKAYOEAEEsBKOMGcDAAGDAHSDARUHCLMLGfKnCGPIFIAcM0BAmBLOPALLDzBLvBAbKbOPOJgCFgBJYVIJGRLFVDFFJDADDCTLFAADFAAFNAADJCCFJEbFHADDNCCFJAAFFCDFHDAFFDFLNPDJNHHJNFHHFCJHXHFAfRJAAkBIUOQDEECCGKGCGmBiBOSIWDkBLcf6BNiCJKRA|!H6QFDHPK1BMnBIHAJavBCdFHCFFDRXLHHLHFFJLJCFLJAJDAAFJHLhBA3BOTKFWCmBUSEEEUGQOKMGAEMGGGOIGkBCgBIGEACSGCEiBIQQCIAUFEDKVcFCLKTKTG9BGPIFGAYMoCAYLOPALLDzBN1BAVMdMPMH8BFYJEFCCAFECEFSVENAHZFAFFCFFRJDCADDAADFADFJDvBFJAAFFCFFFCAFLFDHFFPbRRPFAFNHNFFCAFLAAFHAJHRHAmBGUaoBYWAEEDCGGEGMECIgBHmBpBsCNkCJIRA|qI8QRFHPGpBQtBCHGDCRGDALGDOdEbDNjBrBDHLLDHDAFJDAAJDAHNJZCFFAA5BIFDFEDDDEFMHYCDCGCACICKIMCEEICCEaICGWSDEEGEAAIEGCADCEAAKEAACwBEACOEGGICACICEEeIQSCaFADEAKHCCELMHKXSVK7BGLEAEFCAcMoCAYLOPALLDxBN1BAbGVQTMH!BHOJCCCHGDMNIRALJFNAJHNFDFLDAFNFtBDNFJJVrBFDFFAFFAAFHCNLHAJHFCAFFCADFANLPFAmBEEDEEADECIGMCAACCADCEGCACGKKCIKMEAAEEAAEKIDECDGIGSAiBFUtBsCPoCLG|oI8QPFHRKzBOlBEDGREDENEDSnBAdxBrCPrBDtBCPKTKHWCQMyBYWYQmBgBCUGUOkBOMSAUHSTcTSXK1BGHGDcOuCAWLOPAJHDHDvBN3BAbGVORMH0BHOHUZGPALNDfRDFNFnBDLFLLLdRZFALLVHVPHAAcIiBUmBGEAEGEScGSAeJatBuCPiCNI|qI8QRFHPKzBOlBGFELILELIHGNKXCdFDHVPXAJFDAFFFCDFFFJCFDAFRFRCJDDAvBCNGHAHMHIAQGACOKAEWMIKEAEIECKSDGEICADEECDIEEDCYGEEGCACKAQIQCCCKCMSAaHIDMFCAGJQRSVKVALDPEAmBECDCCEMiCAYLOPALLDxBNxBALERDfKPQFcAYHEHAJEDALKTALPDRJNDNJLDHCNHPPFZLZFFAFJHRJFJFCDHDACIDaEEDIEUOgBEKEAEOECAKEADECAACGODgBDCHaxBsCPkCLG|!H6QFDHPK1BMdIJIRIHAHMNINKdCVDAFNDTFDFVFHDTDAFfCPDFC5BCAGPQFOGACECDCEAEKQMOYIUFMCECADECEAIGIKECGKGYAIFGEKUAQXkCTKHAPLTIHKKICIAWIYIuBAYLOPALLCLFFAnBRxBGFGNEPNHJLTgBJIAELMFIFAJSDARmCLGLDiD1FAhBZpCFtBCXGEMSAQEUAOECDCiBeQIYAHOCkBTObHDDVAnD0F|qI8QNDHFFNCTGbOlBMNAFGJIHAHEFKLQdENAbEAFAFlBAJDACJFPCpDKTQDIEIOEADEKOKcCSDGHEAKCGDIMcMCKFINECCGEADEGQFUHQAMDEREMGAOFGNGAFEJDAAVHjBDDPAJFNNFNFDGeAkBQOCKNIDIVELQJGFKJIHMHENWP!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!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#BFvBRDFNJRfAfIRGDAFGDEF0BLKHkBLGFoCFgBfCHULGJMFGFyBVQAiBTWAMGGMCACGCAAKEAAUFAAIJKAIHCAEFACCFADKHELOFAVWFALKHCCCJGVMLIHCACLETQLMCEFCFkBNWdYPEHGNGJIJCFERIRSFKAQFKJILCuDJFnBJRAFMDKPMKKiBAWLOPAJHvDG|iI6QJAHNGjBKXWVMFGJaLCHSHaVGLCnBOdGHCACFEAAFCAIJKFCHaNMPCCILEAIHUXEADDCAEHEAAFEDIVEDETNDVMtBMlBQPQJANMJOXQJCRAFC3BCDEDDNGLCACPEDCDDTIRANGASCAAGECCIEADECAEEcI2BCeMIMCONAPMFDAHLJhCFlBNHFLNRhBDZIRQRsBJMHGAEFGAgBNkCFmBpBGAUTuBTeHgBTYAMGMSAKCADUFGCCLQCCHCAEFEDIJGACFCACFCZaHAFIJEJIVMHIHANGFGVQFKCCFCDqBLQZWrBUDGNEDERINMHIDGDULONCwDJFnBJPAFMDMNEAEEMkBAWLOPAJHxDG|iI6QJAHNGjBITWXIDMNaJCHSHcVENCpBMbSPEJMFCHSJCFEAWXGAINaXCHEDDDEADFCAADCAENGHAPLDRMvBMhBQACJCJMJAPQAEHGVQJChCEnBMDEDDTIZCJGASIUECACQGgCEcMIMEOPCPMFFAHLJ#BFlBNNPPfDhBEFAHWTmBJ4BXkCFkBnBIDILEACFuBVCDeHgBTUAMGQcAUHECEFAHSFCDGDAFGCERMAGHCRUHAFIHAJMRIJIVKLMLGJQDsBJSZWtBUDELEFEVKRYAQHKHINCwDJFnBJLAHMFMNIEIQEUAWLOPAJHxDG|iI6QJAHNGhBIVSTGFEAMLcNAFMFKFaVEPDfKdYdYPDDCAKLCCEHEDAFMJMJAFIHEHMNIRGJGNFHEDHFZOXGrBURMDEVQDIPKFGFAACFAACTADCPDHENDNEDDDEDDACDAJEVGACFAFEdGLGAUEEDCGKDEYI2BEWMIKEOVIHGHDAHJJJDxBFhBLLLJTDNFHAdENIJEDAFEAMJYF2BX!BHMPONINKFEJIDADKFGFMFEFOJYFCFEAADYNYCKIGKEOAUDADIJQACFCAEDACCJICCPMDGTUJCAIJADECCFCACFADEHANOPGACFAXYFMAuBJSZUjBQNKPEDGTIRWAQHKHINCwDJFlBJTODKNIEIOEUAWLOPAJHxDG|iI6QJAHNEdKXQRADGDGHEAIJMFADQHADGDSJYREJARFNANIfehBKHMNIFKNWVELMNQjBALFDLIDAACJCAEFDTGAEFDjBSZYFIFAAEFEAETOHC1BElBQDDACDAJEZGJGAMEMAICADIGE!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!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|uJ!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!BFMPCACJoBhBQHIHEAMJmBNCFIAAFcHOCOQEMAMEADMNWCCHEDEFEJOCCHEFGLITUHCLMHAHIFANIJKJCAEPMCCJCDSAeLcZUxCqBNQJgBJKNCwDJFlBJPCFKFMLEAGGEKGWAWLOPAJHxDG|iI6QJAHNGjBMXUVoBVIFAFMDcXGHCnBMdQTCAKPEACFKDONGDWVGDDDEASVEAAFEAMXIHGRDJAFNARKACDAHEFDACJAAEFDDCVEHGTGAEHAACFAfaCEHCDGJGFDDGLECCFAACFDDEFDJCvBCNGHDCCLAAEFAJAHGXGLEREFAFCCWGKGCAIEEoCGSGOIKMDIAEREDGHCFAFNNF#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!BJKJA|!H6QHFFJI1BMnBavBIhBANFDDPDAjBjBJDPVHFHJAHFDAHHDJRCDJVAZFACVCAAHEFAFEAAHEAADKHWAeQqBMQGEEKEDCMGEEMKOYGCDEGEDC2BCUEEEUGEEOECCMCCCcKIIEIDEEAAQFEAGFEFKJGRULEACPIpBK#BELIFMAYKmBC0BLOPALLDzBLtBClBIVONEAKJkCFkBNMHQTERZJFCADhBNNJvCHPLDJDADHNPFLHHJFFHHAHFDCDFDCNHZHDDDADDFAADVJDFLAAkBEAEUIEQcEAEISOgBiBKcFsBlBsCNiCJKRA","officialShapes":"iG4DUGOMaMkCUgBUYaISICwBDWE2BWgBGYDQKEIAOVeJGLOfWnBMvBGnBALCJGDgBMuCDkBbAHHCLFxBL3BCZGTSVKFoCFgBHqBXSVFHNAVH3BXXFbAhBGLDJHHTLRTVtBVhBHtBVHADKCYMaSUEIcYQKaYSiBAMHUZ0BLcLqBHsBZDHJMtCGVgBnCCNDLLR5BvBZbRXPnBAbEVOb|gG4DMAeWSI8BQaMiBeKQCKICwBDWEiCYUEkBCKQAKJQTWhBelBQhBG#BCLCJGFIAWMuCAmBbAJFCLDlBNvCAPGTMPQLoCFsBJQJWTGHEPNAfJlBRVHlBDhBGLDLFPlBNPhBTnCVRLRHDKCYQiBmBoBmBaMMOYEWJehBmCJgBH4BZDJHMtCQxBSjBGVANRXnBbhBhBbnBLpBAPGhBKR|gG4DMAmBaKE0BMiBQWQMOKQCKICwBDWEiCYUEkBCKQAKJQTWhBelBQhBG#BCLCJGFIAWMuCAmBbAJFCLDlBNvCAPGTMPQLoCFsBJQJWTKPDFpBLlBRVHlBDhBGVHPlBNPhBTzBPdLJHRHDKCYQiBmBoBmBaMMOYEWJehBmCJgBH4BZDJHMtCQxBSjBGVANRXtBhBbbbnBLpBAPKpBGJ|gG4DMAwBe0BMiBQcWamBWFaAWEgCYWEkBCKQAIFKVejBebMVGtBGnBAVGFKAYMuCDkBbAHHCNFvBL3BCZGTMPQLoCFsBJYPYbFHXDTJNDjBRjBFPAhBGLDJHLdLPPNtBVhBHlBRHHJADYGUOYkBoBsBgBMOMaDYnB6CFWFIFuBFKZDHHMvCKdY1BGVANLRXRxBrBXdRlBFVEjBGVIH|iG4DUGWQSI8BQSIcWSUISGCyBDWEqCcmBAQKEIHUdkBVSZOTGjBG#BCLCHGFKAYMuCAaFIbAFJCNDXN7CEXKRGHcL!BDgBHcNaZEJHFNAVHhCZZDvBGLDHHRlBdZRJ9BRjBTHCDMGgBOYYagC0BKQGSDYhBmCNoBFiBJeXFHHMvCKdc9BCZHHFLnBbbZZdPZLpBAPEXOZ|iG4DMAeWSI8BQSIGGKEUSSiBgBDkBCqCcWEYDKCKQCKVgBTUfWTIVEjBGzBALCJGFIAaMuCAaFIbAFJCNDXNvCAPEVKRYPqCFqBJYRYbxBNlBRVHXDlBEJELDJHLdhBhBbNrBLzBXDYOmBKOIGEIiBeKEaYOYCMAMHUZ0BPmBLiCHIVFHJKjCQxBSjBKdHVbZLFPNnBnBbzBFlBEVOb|iG4DMAKEMMkBQoBKkBQUSIESiBIEWFuBEUGsBUWEkBCMOAMPYZaXStBS7BGnBAJGFIAaMsCDkBbAHJCLFvBLlCIfUTUHqCDoBLWRSVFHNAVHhCZzBDVGLDNPLdbZbNrBL1BZCkBWqBSU!B0BKQGUDYlBuCHULiCFIXFHHMvCKdgBnCLdfXpBlBFJTVNbJfAPEXOZ|iG4DMAKEOMiBQqBKiBQiBeOaIEuBDgBGiBQeKsBCOMCKTiBTUfWbMhBGrCCLEFIDYMuCAmBbAJFCNFvBLlCIfMPQJWFMCwBDqBLQLUTEPhBHbNxBRbAhBGLDPNHVLRdXdNhBHtBVHHFKAMEWISWcwBqBQKQWIeJeXqBPmBNuChBDIlCU7BWrBEVPb5BvBjBrBNbFXClBOb|qG2DKCOMYOyBOsBUiBeMcSDyBC0CgBsBCIGEIAMFKRWTUfWnBMlBEzBALCJGFIAOM6CAaHGbADtBLlCAjBOZQLKDqCFqBJYRYbhBHhCbXFbAhBGRLDLNbVVjBRrBLrBXFEDYKcWe2BwBIEMOGIIeFWlBuCJeJ4BHEXDFLEjBM1BgBnCGVHVNPfVNPJFZdXrBHhBCNIfEJIH|qG2DUGOMiBQyBOoBYYcGSICkBDqBIsBUgBIkBCGGEKDSXebYLEHGTItBIlBCZDVEHUM6CAmBbAJHCLDlBL3BAnBITONSJ!BDsBHiBTYbrBLjBRfLXDvBGRLPlBdZbNrBLjBRHHJCCkBMaQWUUyBmBOYEWFWhBmCLcLkCHCZDDLEjBM1BY3BKRGTDNJRfXjBfFJJHRXNbHhBAPIfMP|qG2DMAWSiBQWEuBSGGKEUSSgBIGiBFqBI2BYgBGWAIEGICKDKRYTUnBaJEtBIrCCJEHIDKM6CAmBbAJHCLDlBLlCAZITONSJiDFUHeVSVXFdLtBVXFbAjBERLDLNbNPrBXzBPbNHHHEDKGgBUgBmBmBYQMMOYGUFWbyBPmBJeHuBFIXFHHKlCU5BWrBEXJRtBjBlBpBRXJTHhBAPEVOb|oG2DMAKEmBaoBK0BYGIOKYoBkBFqBIiBQeKUEaAOMCKDMLOfiBXQTItBIrCCJEHIDWMuCAmBbAJFCNDlBLjCCZGTMPSJKDgCAiBFiBTUTEJXFpCfLDnBDjBEPLPnBVTtBVXFtBVHHHCCkBMcciB4BuBKQKcFWbyBPmBLoBFiBFKXFHHKjCU7BWpBEXJT#B1BTVPZNdFjBEXOZ|mG4DIFKCmBaSIoBKqBWUSSiBIEyBDIEWE0BYWEkBCGGEKAMHGFKfgBXSbMhBG3CCLQMmDAaHGbADvBLjCAbGTSVKFWF!BAqBLYPSVDHrBLtBVVFNDbAVENDNNDNJTbZjBRhBJzBbDkBQiBQWUUkBaMOOYCMDWLcXqBLcNuCZDJFANOtCMbCLWrBGVDLLRfXhBfNPZpBJfANGjBIR|qG0DMAKEMMQKSI6BSYOUSYoBMDwBC0CgBkBCSGGUFKRWpBkBbMhBGjBE1BAJEFKAMM6CAaFIbAFJCNFvBJtBClBITMNeJgCAgBHiBTONGPjBHjBRLDJHVFnBDfEPLLfLPPNtBVXFzBbHCCkBMcciB4BuBSiBFiBhBmCLcLiCHEZDDLKjCGVoB5CLdXRpBlBdlBNbHhBCZGVKR|oG0DMAKEUSaMyBOoBYSUUgBwBDWEgCa2BIKEEIDURWJGFIJEHIPKlBQLCjBE1BAVGFIAOM6CAYFKbAFJCLFxBJrBAlBIRMPSJ!BDsBHaNiBfrBL1BZXFbAjBEJFHJLdTVhBT7BVhBTHEDKCYMaGGEKSUIEMOQKaYMaCMAMLcPYX4BLiCFIXFHJKjCQxBazBCVDLHJNNZRnBnBRXNbHVAbEVOb|oG0DMAKEUSIESI6BSQKWQWeCKIGsBDgBGgCauBEKEEICMPYZafWTIrBIrCCJGFIAaMuCAYFKbAFJCLFxBLjCCNIRSViBHyBAsBJYPYbhBH3BZhBHbAjBEPNFVRZXRRJ9BTRJPNHIDKGgBeuBiBeeWOYGUFWlBuCJeJ4BFIXFHJMtCW5BKPKfFVHJXRvBrBXfNbHhBAPEVOb|kG0DMAKEOMYOcKUEcMkBcQWGSWFwBEqCcUEWASICKHURWjBelBQVEXEpCEHIAYIsBEoCNCXDCNDlBNtCAPGTMPQLWF!BDgBHgBTSVHF7BTbNXFbAjBEPLHVXfzBbXFzBbHCDYEWEIKQeiB4BuBMaCKDYlBuCHULkCHGXFFJKjCQxBWrBGVDLLRVTJFHJJFbbfvBLpBAPEVOb|mG0DUGOMYOoBKsBUcYSiBGCyBDUEsCcsBCIGEICKFKRWbaPKlBQhBG#BCLCJGFIAWMuCAmBbAJFCNFvBLlCANMbWRqCFqBJaPYbdHhCbjBFvBGRLPlBdZbN9BTXRHCDYEWOYkBoBOMKEaYKQGUAMHUZ0BPmBLiCHIVFHJKjCU7BOZIfHV#B1BZdVhBJrBAPKdKR|gG2DMAKEcWKEkCUgBUYcIQIGiBFqBIiCYMCWDUGGUPYfiBhBUTGtBI#BCHGHUMuCCwBZCLFCLDlBNvCCZIRONKFUFoBAsBHqBXSVHFpBLlBRhBHbAhBGRLPlBdZbNrBLrBXFADYEUSiBSUWQGIeUMOKcAWZ0BV6BLiCZDHHMvCGVc9BGVDNJRfXpBlBTXPZHTFlBEVOb|iG2DKCwBekCUgBUYcIQICYDkBCsCaWEWDKEGGEKDKPYTUdYbMtBIxBCXEHGDMCYK0BCYAaFIbADJHnCJrBAbITMPSJyCHgBJeVSV#BRbNhBH7BGJFHJHTRZPLlBRzBPhBTHQGgBUgBgBgBsBgBMOKcDYZ0BDMNaNuCHCZDDLI5BIfQlBCLGJMnBJTVTLFjBfZbbzBDNClBKdIH|8F4DMAwBe8BQaMiBeOYGEiBFYCeIuBSWEWDUGGUPYfiBXQTIfIXE9BEJEHIEuBIsBCwBLEZDCLDlBNvCAXIRUVUFyBDsBJgBTYdXDpBNbNXFnBAVGLDLFHHLdTVjBTrBLdLHHTJDYEUISkBqBIEUSKEaYMaCMFUjByCNgCDYZDJFCZMhCiBzCCLDNJR9BtBZbVhBHTFlBGhBKR|!F4DKCeWcKqBKiBQWQMOKQCKWFmBAWEiCYWCYDIEGICKTiBZafWdKhBG9BEJEHIDYK0BEkBAYHIbADtBP5CEXEJSVKFWFwBDqBLYPONKPHF9BRTJhBH5BIRLHTRZXRlBPhBHlBRHHHEDKCYMaeiB0BmBMMSiBFiBVsBRwBLiCHGXFFLKjCMnBY3BEXJR1BnBbZTXJRNdDlBIfEJIH|4F6DMAeWcKgBGcKaOUSSgBsBFiBE4BUiBGWDKEMOHSbmBdYbMVGhBG9BEHGFKAMMuCCwBZCLFCLFxBNhCCZIRMPSJ8BF0BNQLUTKRjBFlBPrBLbApBGLFHHHVLRnBbnCTjBTDYEUUgBgBgBmBaUSMaCMAMHUVsBRwBLiCZDHHMvCmBnDJTNPZPxBrBbnBLpBAbGVKR|0F8DMAKEeUoCSaMWQMOOYICuBFgBGSIyBOkBDQKEIAKTgBTUdYTIfItBGbAVGFIAaMgCCyBJEZDDtBNjCDZIfUTUHwBDsBJaNUTKRxBNlBPXFnBAVGNALFHHHVLRXRjBRtBJrBXDWIgBQWYauBgBUSMaCKAOHSfoCJgBH4BZDJHMtCMpBQjBKfDLLRvBfbZZdVtBDZGhBKR|4F8DUGOMQIgCOiBQWQMOKQCKiBHYAgBGcMoBKkBDOMEKDKbmBNOnBaTGtBIlBCXEJEDYO4CAmBbAJHCLFxBNhCCZIRGJQLUFyBDqBLgBTSVELtBHvBTXFlBCVGNAPNHVZbbPTHtBJrBTDKKqBQWaa0BkBWeEWLoBZ2BLoBHuBFIXFHHMvCiBzCEVJTHH9BtBlBpBRjBFXEjBGVIH|0F!DMAoBYgCOiBQeWKOISeFaAgBG6BUWCYDQKCUJQlBqBXQbMtBI7BEJGFIAaMgCCyBLCZDCLDlBPtCEjBKRYP8BFsBJYPgBhBFFtBJlBPhBHlBCVGNDNNDNLRVTjBR3BLjBTHGCYCKOYYciCwBMOKcDYNaDKHIRwBNsCXALFEvBKrBepCGVDLLRfVjBfJFZdLRJTFVAbIfGJ|yFgEMAKEGGkBQ0BKsBUWSKOISuBHWCMC4BUWEiBAKCGGEKHUVePMFIXQdMrBI9BEJEFKAMMuCCwBJEZDDvBNhCDZIfUTUHwBDsBJaNONQXFFhBH5BVNDnBAfILDJHXrBRLjBR3BLjBRFGEiBOYYaQKGImBYSWIQCMAMHUfoCNgCDYZDJFANOtCepCGVHVNNZPdZJFfjBLRJTHhBANIfGJ|6F!DKCoBYgCOiBQQKSUOWsBHsBI4BUMCkBDIEGICKDKVgBnBmBvBSXE9BELCJGDYO4CDkBbAHHCNFvBNjCEVITGJaN8BFqBJgBVWfjBF5BVXFbAXEJENAPNNbVVjBRtBJ1BVDMEUSiBmBmBgBUUSOYGUJeZ2BNmBHuBHUXDHJMvCepCIfDLHJVTZPdZZbLRNbFlBIfEJIH|6F!DKCgBU!BOcKgBUOMSgBUHmBAgBGuBSWEYDUGISNaRWjBeRKTGtBIzBCLCHGFKAMO4CAmBbAJHCLFxBL1BCnBIRONKF8BF2BLeVEJIHEPhBHVHbNhBHbAfILDLFXrBXRTJfJNApBNPLJCEiBISkBoBOMgBUUSQiBHgBZ2BNmBLkCHCZDDLI5BIfOnBKRMnBPZ3BlBhBhBRXPnBAjBKdIH|6F!DUGOMcK!BOaMcYKOISgBHaAqBKaMUGWCYDIEGIEIDMJQlBqBXQTIfIjBEnBALCJGFIAOO4CAmBbAJFCLDlBNjCAbGTSVKFWFwBD0BNWRWfjBFjCZlBDfINALFHHHVhBhBbN#BPlBRCkBISKOgBgBuBgBMMSiBDYHSd!BHULiCFIXFHJKjCMnBc#BCNJRNPnBbjBfbnBLdDZKpBIH|kG!DKEWQcKsBISGgBUOMSgBsBFYCUEkBQUGWEWDMCGGEKDSRYnBmBZOXEJE1CGJEHIDKCYMuCAYJGZDDtBNvCEjBSVSJoCFqBLQLejBnBJjCZnBAXEJETJRlBVTbNVHrBJdNHHHCAaWqBgBgBmBaUSMaCMDWnB6CNuChBDExBKpBKfY1BEXFJTVLFlBdVTFJJHLPNbHvBKdMP|8F8DMAYQaMmCSgBUOMSgBUDyBCmBMaMiBGWDKEGGEKHSbmBdYbM3BKzBCTGFWO4CAmBbAJHCLFxBL1BAbMbGJSJUF!BDgBJYPYbAHhBHjCZlBDpBGLFHHLdJHFJRLbN1BNtBVAWEUOamBmB0BmBOYEWJehBmCNgCDYZDJFCZMhCOnBSjBGTAPRXZPxBrBbnBLdDZGhBKR|iG6DKCYQaM0BMiBQcYSgBgBFiBEoBKIGcKwBCKEGGEKDKVgBTUnBaTGjBG#BCLCHGFKAWMsCAmBbAJHCLFxBLjCANMbONUH!BDsBJeVSVFHpBLbNVHXFbAhBGLDJHHTRZXRbN1BNjBTHCDKGgBUgBoBkBYQUSQiBDYhBmCNoBJ4BFIXFHHMvCOnBY1BCLHVNP1BnBZbVhBHTFlBIfEJIH|gG6DMAKEOMiBQgBGmBOkBcKOISGCyBDgBGiBQeKwBCKQLcTUFIdYbM3BK1BALCHGFKAYMuCAaFIbAFJCNFvBL3BANEXKRGHcL!BDsBJYPYbHFpBL3BXnBDhBGLDPNLdNPRLbN9BRTJHHJADMGgBOYYagC0BOYCKDYhBmCNoBFiBJeXFHHMvCKdc9BCVJT7BtBZbRXNdFVAPGhBKR|kG4DUGeUcKqBKgBSgBgBISIEWFkBCqCcWEaAKCGGEKAMLQXclBcTIhBGrCETGDMCkBKiCAaHGbAFlCFLHtBCZITMNSJ!BDsBHiBTYbzBPlBRVHnBAVEVDHHRlBdZRJ9BRjBTHCDMEUGUKQmBmByBoBMaCKDYlBuCHULkCHGXFFJKjCQxBWrBGVDLLR#B1BZdPZLpBAPEXOZ|iG4DMAKEOMiBQqBKiBQWQMOOYIGiBFqBIcKIGmBMiBAKEEIEKNaZadYTIfIhDGFIDYKiCCyBLCZDCLDlBNvCGhBSVKFWFqCDeJeXKPAHhBHbNxBRxBCLELDPNLdTVZPnCVjBTDWEWOYeiB4BuBOYEWHUhBmCJeLiCXALFANMhCQxBWrBEXJT5BvBZbRXNdFVClBOb|oG2DUGOMiBQyBOSIWQSUKQCKICwBDWEgCaWEYAKEMOHSRYTUXQbMtBI#BCLCHGFKAMM6CAaHGbADvBNvCCXITONSJKDgCAgBHaNGJOLIPrBLjBRVHXFlBCLELDRLFVLRVTlBRzBPhBTHQEWMaQWUUyBmBOYGUFWhBmCLcLkCHGXFFJKlCYhCKRKdDNJRPNLFvBrBXfNbHhBAPIfEJIH|kG2DMAKEOMYOoBKsBUQKSUOaGGWFuBEsCcUEMDKCKEGGCKDMRWTUfWbMhBGrCCLEFIDYMuCAmBbAJFCNFvBLlCIfMPQJWF0BAqBJSJiBfJHNAVHjBRfLXDvBGLDNPDNPZdX9BTxBZDYEWSgBgBgBsBiBWqBAMHUhBmCNoBFuBFKXDJHMvCKdgBnCANJTtBjBhBhBRXRjBFlBEVOb|qG0DUGUSIE8BSqBWeiBISGCkBDgBGsCcsBCIGEICKPaZafWTIrBIrCCJGFIAaMuCAaFIbAFJCNFvBLlCKdMPcLYCkBDqBJSJiBfpBN3BXXFnBALENAJFHJLdbbZPzBPrBXFEDYOmBMMKQiBeeWOYGUFWlBuCJeJ4BHIVFHJKjCQxBWrBGVLdfXjBfFJJHLPPbJfAbIfEJIH|oG0DMAmBacMUEcKQKWQSWGSIGWFiBEUEgCakBCUGGUFIRYpBkBbMLC5BIpBATGFKAMM6CAaFIbADJF9BLjCKdMPSJKDYCkBDsBJYPaZfJhCbXFbAjBEJFHJLdZbbPzBPbNPNHGDKCYMaWeaYYQYaKcFWLcHIVsBLoBHuBFIXFHHMvCOnBMbGHKdFXNPfVhBhBXfNbHVAbEVOb|qG0DUGUSIE8BSaMWQSUOaGCkBDsBIiBQeKsBCIGEICKFKRWTUfWdKhBGrCCJGFIAaMuCAaFIbAFJCNFvBL3BCZITMPQJsCDgBHiBTUTEJ1BNlBRVHnBAXELDJFHJLdbbjBRXFdLhBVFIAaKcWeoBkBQKSUGIIeJeXqBLcP!BDYJCXDDNI5BMnBc#BGVDLLRRLdZhBhBLPRlBHhBCNIfEJIH|qG0DKCWSQISIWEcKoBYSUMaICKDwBCsCcUEkBCKQAKPYZafWdKhBGrCCJGDYM6CAYHIbAFlCL3BCZIRMPSJ!BDsBHiBTSVCHrBLjBRVHXFtBGNDJFHJLdTVhBTzBPrBXFGAYCMMakBoByBoBSgBAahBmCLcNuChBDExBKpBGVQlBOZEXPZXRvBrBbnBNpBClBMbIH|kG2DMAKEUSIE8BSiBQWQWeCKGEwBDgBGsBUUGsBCOMCMTgBJGLOfWTI1BK#BCLEFIAaMuCDkBbAHHCLFxBLjCEXEJSVUH0BAsBHqBXSVHFpBLlBRVHlBDhBGLDJHPlBNPzBbXFdLRLRHDWEWOYQWmC6BKQGUDYHSXqBLcLqBHsBZDHJMtCGVkBxCFVHJNNLFvBrBdlBJTHhBAbGVKR|kG2DMAWSiBQoBKkBQiBeKQCKIEyBDWESGIGwBQsBCIGEIAMPYTUdYbM3BK1BALCHGFKAYMuCAaFIbAFJCNDXN7CEXKRGHcL!BDsBJYPYbzBPlBRLDXFbAVEVDHHLfLPXRdNpBLrBXHCCmBSgBeiByBmBKQKcAOLcLQZgCLiCHEZDDLKjCGVgBnCGVDLLRzBnBVVblBLfFjBIfKR|mG2DKCmBamCUoBYSUKQCKMCiBFqBIkBQUGUEaAQKEIHURWJGFIJEHIPKdMrBIpCEHIDYKiCCwBJGZDDtBNvCCZIRMPIFWF!BDgBHaNGJIFQXZDrCdNDnBAfEJFHJLdTVZPvCZXRHIAMEWMaWccYQKaYMaCMLoBTiBRwBLiCHCZDDNI5BMnBgBnCCNPZXRvBrBTXJRNdDlBIfEJIH|gG4DMAKEOMiBQqBKiBQWQSWIQIGWFuBEqCcuBCMOCKVgBZaXQTIfIjBE1BAHGHIDKMuCCwBLEZDCLDlBNvCCZIRONSJ!BDsBJgBTSVAHhBH3BXXFnBAVGLDPNHVLRVTbNrBLzBbDkBMaKQSUgC0BOYEWFUlBwCNgCDYZDJFCZMhCOnBSjBGTAPFJTVLFPLHJJFrBxBFJPnBDZEVOb|gG4DMAwBe8BQaMiBeKQCKIEWFaAWEgCYWEkBCKQAMLQlBoBXQfKhBGpCEHGFKOkDDkBbAHHCNFvBL3BCZGTMPQLoCFgBHqBXSVFHXDtCdXDvBGLDJHJRDNZbtBVhBHlBRHHJADMCWWqBgBgBmBaSUISEWNmBLQDKHILcFWFIFuBFKZDHHMvCYhCKRGVANLRtBhBhBhBRXRlBFVAbGVKR|gG4DUGOMaM8BQSIGGKEaYMaICKDyBCUEkBQUGWEWDSIEKAMFIXejBebM3BKzBCTGFWO4CAmBbAJHCLFxBL1BAbMbGJSJyCHgBJQJcZEJDFhBHvBTfJbAhBGLDPNLdNPrBXrBLrBVHADYCKMaQWUUmBaUSMaCKFed!BNoBJ4BFIXFHHMvCOnBY1BCLHVNPZPdZZbbzBFlBEVOb|kG4DKCWSQI!BQiBQcYSiBUFkBAoBKaMUGyBCIEGICKDKRYZafWdKXEzCGHIDKOmDAaHGbADtBNvCEjBKRYP!BDsBJaNgBhBrBLvBThBHbAVGNARLDLNbXTjBRhBHfLXRHUEUSiBSUiBeYOSWKcLoBPaV4BLiCHEXDFLKjCGVgBnCEXDLHJzBpBnBnBbzBDnBEVELON|8F6DMAKEOMiBQgBGmBOGGKEaYOaGCiBFYCeIaMUGWEYDKCIGGSJSRWVUXQlBOXEpCELEHUMsCCyBJEZDDvBNvCCXITGJaNoCFWFqBXYdjBFvBTfJnBAVGNAPNHVZdtBVzBPbNHHFKAMEWISWciBeYOUUMaFiBLcLQDKNaJgBFuBFKXDJHMvCU5BOZGVHVTVhBVbZNPZpBHVDZEVOb|!F6DUGOMaMqBIcKmBaSWGSgBFYAqBKaMUGWEWDMCGGEKAITiBTUJEVSTIfI1CGJEHUMuCCwBLEZDCLDlBNvCCZIRGJQLUFqCFUHgBTSVCJrBJvBTXFnBAVGLDPNLddZbN1BNjBTJADKCMEUISYcaYmBaMOMaFiBhBoCLoBHuBFIXFHHKlCMnBc#BCLHVVTLFNNRLbbbnBHTFlBEVOb|!F6DKCYQaM0BMiBQQKSUOaUFyBCiCYWEiBAIEGICKDKLQRWjBedMVEjBGnBAVEHIDKOmDAaHGbADtBNvCAPIfONQJ0CHeJYRYbHFNAfJvBTXFlBCVGLDJHRjBVVjBR1BNjBTHCDMCWSiBSUWQGIYOUSKQGUDYNaDKLQRwBLiCHEXDFLKjCqBxDJTHHvBhBTVJFNPPZNbDvBKdIH|4F8DMAKEeUoCSaMiBeOYICwBDWE4BUgBGYDQKEIDMJQXeVSRKTIfIjBEnBALCJGFIAOO4CAmBbAJFCLDlBNjCAbGTSVKFWFwBDqBLgBTSVCJXDpBNbNXFbApBGLFHHLdJHFJRLbN1BNrBXDWIgBQWYauBgBMMMOIeFWjBwCJgBH4BZDJHMtCQxBGJCLMbCVLRNNLFlBdlBpBVtBDLClBOb|4F8DMAKEOMaMgBGwBQGGKEaYKQCKsBFWCgBIaMUGKCkBDQKEIAKDKHGFKfiBXQlBO5BInBAJGHUMsCCyBJEZDDtBNvCEjBKRQLsBHaA0BNeXMNELXDjCZXFbApBGLFHHNbbbbNnCTZRFIAMIgBQWYakBcKEMMMOKcHgBd!BHUNsCJCZDIlCMnBY3BGVANLRNNLFXRbZZdLRJTFVAbGVKR|4F8DMAKEOMaMqBImBOGGKEaYOYICiBFiBEiCYWEWDMCMOAMPYRWdYjBQtBIzBCTGHIAMMuCCwBLEZDCLDlBNvCCZIRMPKFUFyBD0BNQLejBjBF3BXXFbApBGLFHHNbbbbN1BNtBVFWCKMaQWUU0BkBWeEWLoBHIDKVsBNgCDYZDJFCZMhCiBzCCVJRPNLFXRbZZdLRNnBAbGVKR|6F8DMAKEOMaMgBGmBMYOWSKOISKCKFmBAWEsCakBDIEGIEILcRWjBelBQhBGpCEHGFKAMO4CAmBbAJFCNFvBL3BAbGTMPQLWFwBDsBJYPYbCJjBF3BXXFbAfILDRLLdNPPLlBRtBJrBVDMCYSgBYcIEUSYOSUMaAOJeZ0BNoBJ2BFKXFHHKjCIfc#BGVDLLRPNZPjBfhBtBLdDZKpBGJ|6F8DMAKEOMaMqBImBOqBiBKQCKKCWFaAWEgCYyBCOKEKHURWhBgBhBS3BKzBCTGFKAMO4CAmBbAJFCNFvBL3BAbGTMPQLWFmBAiBFUHSJUTGHEPhBHvBTfJbAfILDJFTjBTVRLdLrBJlBRHHFKAMCMMaWciBeeUSWEIEWAMLcd!BNgCDYZDJFANOtCmB7CANRXnBbVTfjBFLHHNnBAbGVKR|6F8DMASIOMcK0BMaMWQSWIQKEWFYAWEiCYWEWDKEMOAMVgBZaXQdKtBI#BCHGHUMuCCwBZCLFCLDlBNvCCZEJSVKFUF!BDgBJgBTSVCJXDjCZhBH5BILFHHLdbbbN1BNlBRHHFIAOEUISYcaYmBaMOMaCMFUnB6CNuChBDExBKpBITCNc9BAPJRXTRJbbJFdlBNbHjBGhBKR|gG6DUGOMaMqBIcKgBUYcIQICWFkBC0CeuBCMODSbmBVSZQTGtBI#BCJEHIDKMuCCwBJGZDDtBNvCCZIRMPSJmBAwBFeJGHKFUTKRrBJlBRfJnBAVGNAPNTjBVTjBRjBHTHjBTDYEUOaYa0BmBSUISEWNmBLQDKHILcFWFIJ4BZDHHMvCGVc9BGVDNJRfXxBrBRXRjBFlBEVOb|!F6DMAKEeUcKqBKaMcWamBKFmBAgBG2BWWEkBCIGEIAMVgBhBgBZOJE3BKzBAVGFKAYMuCDkBbAHHCNFvBL3BCZGTMPQL!BDiBFUHQJWTKPDFpBLlBRVHlBDtBGJHVrBPNjBT1BNrBVDMGgBOYeiBQKMMKEMMSWGSAOJePYDKHILcFWFIFuBFKZDHHMvCKdc9BCVDLNPfXpBlBXfJRJfAbGVKR|mG4DKCYQiBQgBGcKmBaMOMauBDqBIkBQUGUEYDQKEIAOVeJGLOfWTIrBIrCCJGDYM6CAYHIbAFlCL3BCZIRMPSJ!BDsBHiBTYbzBPJHxBRnBAVEVDdzBXRlBPhBHlBRHHHEDKGgBOYSUmC6BMaCMAMHUhBmCHULiCHGXFFLKjCU5BWrBCNDLLRzBnBrBxBFJJTHhBAPIfEJIH|kG4DMAwBe8BQaMcYKOISKEiBFqBIgCasBCOMCMTgBTUfWbMhBGrCCLEFIDYMuCAmBbAJFCLFxBLjCEXEJSVKFqDJqBXSVFHpBLlBRVHlBDhBGLDJHJRDNhBhBbNlCVJHRHDKCYWqBgBgBsBgBWqBAMHUhBmCNoBH4BZDJHMtCGVkBxCANJTzBnBbbVfNdFVAbGVKR|qG2DKCOMYOmCUYOiBeMcsBDsBIiBQeKsBCIGEIAMPaZafWnBMlBEzBALCJGFIAOM6CAaHGbADtBLlCAjBOZQLKD2CFeJYRYb1BNJHLDbNXFbAhBGRLDLNbVVjBRrBLrBXFEDYKcWeoBkBQKSUKQEWFWlBuCJeJ4BHEXDFLI5BEJEXkBxCCTFLNPJFdZnBnBbzBDnBEVITIH|oG2DMAeWaMqBKiBQiBeMaIGiBFsBI!BaWEKDMCQKCKDKLQfiBXQTIrBKlBClBDLCLQMoDAYJGZDDtBLjCAbGVMPQLKDgCAiBFqBXSVFHNAVHjBRfLLDnBAXELDNPLdTVbPzBPrBXHCDYCKMaKQSU4BuBOYGUAOHSXqBTuBLkCHGXFFJKlCKdkBvCDNPZfVtBvBbzBDvBGVKR|mG2DMAKEOMiBQ6BSmBaSUOaiBFWCoBMsBU2BGGGEKHSRYhBebOfIvBElBDVGFKAMM6CAaFIbAFJCNFvBJtBAbKdMNUHqCDiBHgBTSVAHpBL3BZxBDXEVHPlBbbjBRXFdLjBTDWEWISQWgBgBQKaYOYCMDYlBuCNoBH4BZDJHMtCGVgBnCGVJTNNRLHJJFhBhBVfNdFVAbGVKR|sG0DUGcW8BSaMcWMOOYIGKDwBC0CgBuBEIGEIDMPYZaXQdMrBIZClBDVGFIAOM6CAYFKbAFJCLFxBJrBCnBIRMPIFWFgCAgBHiBTSVCHhBHtBVVHXFbAVENDJFHJLdTVrBXXFdLfVHUEWQiBmBoBIEoBkBISEWFWlBuCP!BDYHCZDDNI5BMnBQlBOZGVDLLRNNZRrBvBXrBHVAbKdKR|qG0DMAKEUSIESIeIsBUWQWeCKIGKDwBC0CgBuBEIGEIDURWbaPKdMrBIlBCZDVGHUM6CDkBbAHHCLDlBL3BAbEXEJGJaN!BDsBHiBTUTEJPAnBNJHLDbNXFbAfERLPlBNPhBTTJXFtBVHHJCAYEWOYeiByBoBOYEWFWlBuCJeJ4BHGXFFLKjCGVoB5CLdXRvBrBXfNbHhBAPEVOb|oG0DMAKEOMYOeIuBSkBcYoBKDyBCyCgBwBEMOCKVgBhBeRKTItBIlBCZDVEHUM6CAmBbAJHCLDlBL3BAnBITUTWF0BAsBHaNcZCHrBL1BZjBFlBETDLRLdHJXRjBRhBJbNPNHCDYEUISKQSU4BuBOYGUAOHSTiBDKHIRwBJ4BFIXFHHKlCQxBazBCVDLNPlBdlBpBVhBHTFlBEVOb|mG2DIFKCWSQIcMUEkBQWQYcISIEkBDgBGUGIGKCaMWEaAQKCSFKTUFIdYlBQrBIhCALCHIDYKiCCyBLCZDCLDlBNvCEXITONSH0BA4BJSJUTIFGJnBNtBVVHZDjBEVDNPLdTVjBT7BTXRJDFWEUMcKOIGEIiBeQKSUISEWJeTgBTuBNuChBDG7BIhBMbCLWrBGVJTNPJFpBlBZdPZJTFjBGhBIT|mG2DIFKCWSYOyBOQImBaMOMaKEwBDoBMiBQUGYCKDSIEKHSRYhBebOfIvBEpBALCHGDYM6CAaJEZDDvBNtCGjBUTSJKDgCAgBHSJWREJIHPJVFhCbND9BELDHHHVPZPNZPpBN7BdDkBGSUgBgBgBQKaYOYEWHUhBmCHUNuCXDLFANMjCYhCObEVJTjBfJFnBpBThBJTFjBEXMb|mG0DMAKEUSaMyBOoBYSUUgBUFkBCoBMkBQgBGUAKEGGEKDKRWTUfWbMrBIrCEFIDYKiCCyBLCZDCLDlBNvCAPGTSVKFWFyBAsBJgBTSVHFVFnBPbNXFbAjBERLJfTVhBTTJXFzBbHEDKCYQiBeiBUSKEaYMaCMAMHUhBmCHULiCHGXFFLKjCGVkBvCCNDLLRXRvBrBbnBNpBAjBKdGJ|mG0DMAWSQIcMUEsBUcYSiBGCkBDiBEsCcsBCIGEICKPaZafWTIVEvBGnBALCJGFIAaMuCAaFIbAFJCNDXNvCAPEVKRYPqCFgBHiBTUTEJPAnBNlBRXFXDvBGPNDLNbdZTJzBPbNPNFIDYKcKQYc!B0BMaCMLoBTiBRwBLiCJCXDDNI5BMnBc#BGVJTVTJFHJRLlBpBXrBHhBGhBOb|gG2DMAKEOMYOkCUgBUYaISIGwBDgBGkBQUGUEYDKCMOAOVebaPKdMfIpCELCJGFIAOO4CDkBbAHHCLFxBL3BAbMbOLUHyBDsBHaNiBffJjCZXFbAVEVDLRHVTVhBT9BThBTFCDWEWOYeiBeWaYOYCMFeZ0BRwBLiCZDHJMtCGVgBnCCNDLLRNNZRhBfTXJRNdFjBEVOb|gG2DMAWSiBQqBKiBQWQMOKQCKICwBDWEiCYUEYDKCIGEIDUXebYRKlBOvBGxBCJGHUMsCCyBLCZDCLDlBNjCAbKdMNKFWFwBDsBJgBTSVAHXDVHlBRVHzBAXELDJHLdLRXRbNXFdLbNHHJCCkBQiBmBoBmBaMMOYCMDYHSTiBRwBLiCHGXFFLKjCU5BUtBCNPZtBhBhBhBVfJTHhBAPEVOb|8F4DMAKEOMiBQqBKiBQcWYkByBDgBGuBSgBGYDKCMOAMRWFKNOtBgB#BOzBCTGFKAMMuCCwBNCXDCNDlBNhCAbKdONQJqCFeJaNONKPAHrBJbNrBLbAhBGLDNPHVLPPNtBVhBHlBRHHJAAWEWSgBgBgB0BmBOYEWJeVsBRwBH4BFKZDHHMvCU5BKRIfDLLRtBhBhBhBRXRlBFVEjBGVGJ|!F4DUGOMiBQgBGcKmBaSWGSwBFsBIQIoBMsBCKEGGEKDKHGFKlBoBhBUTGtBIzBCLCHGDYO4CDkBbAHJCLDZP5CEXIRGJQLiBFaA2BLYPYbAHXDpBNbNNDnBAhBGLDNPLddZlBPrBLjBRHACkBMaYcaYKEcWMOKcAKLoBLQV4BLkCHGXFFJKlCMnBY1BEXJT1BnBhBhBVfJTHhBAPIfEJIH|6F6DMAYQiBQgBGcKaOUSKOIS6BDgBGuBSgBGYDQKCKHUXebYRKTIrBInCGHIDYK0BEkBAYFKbAFJCLDZP5CEXITWRiBFaA!BPWRSVAHrBJvBTXFbAfILDLFJRDNhBhBbNrBJ1BXDKCYMaWccYgBUMMOYGUFWZ0BLcJgBH4BZDJHMtCMpBY1BCNDLLRnBbVTlBpBFJNdFVClBOb|2F8DMAKEeU0BMuBSiBeOYICiBFWCgBIkBOgBGYDKCIGEIAOFIXepBkBTIhCMxBCJGFIAOMsCCyBLCZDCLDlBNjCDZKdUTgBHwBDqBLeXQXnBJlCXxBCVGLFHHXrBXRLDJHrBJnBPRLFEAaCKOYeiBOMgBUUSMaCKDYfoCHUNsCXALFEvBKrBKdY1BCNDLLRNNLFlBdlBpBJTHHJfAbGVKR|4F8DUGGGkBQSGiBGiBQQKYaISeFaAgBGuBSWEsBCGIEIDMJQlBqBXQTIfInCGLCJGFIAOO4CAmBbAJFCLDlBPtCCZITMNSJyBD2BLYPgBhBhBH5BVXFnBAVGNALFRjBTVtBVtBJrBTDKCYMaYaiBeKEcWSiBFiBLcHIV4BLiCFIXFHJMtCiBzCEXPZjCxBjBrBPnBAjBGVKR|0F!DMAKEWQcK!BOYOcYMaeFmBAIEWEaMUGYCWDKEMOFULQfiBPMjBQ3BKxBCPMAaMgCCYAYJGZDDtBP5CEXEJMPSJUFaAiBFoBNOLSVGJDHZD5BVhBHPArBILDJHRjBVTlBR#BPTJHHHGAOEWIQYcUS0BkBQYEUAOHSfoCP4CZDJFCZMhCiBzCCLHVNNvBhBVTNNRZRjBDZANGVKR|2F!DMAoBYgCOiBQQKYaISeFaA0BMaMWEsBCGIEIDMTgBTUfWlBOXE9BELCJGFIAOO4CAmBbAJFCLDlBNjCAXIfeVoCFgBJaNejBhBHjCZlBDrBILFHHNbbbbN#BPlBRDKCYMaYacYsBgBOYGUFWZ0BDMJQJgBH4BZDJHMtCQxBUtBCNDLLRjCxBFJPNRXNdHhBGhBKR|4F!DUGqBWqBIUGaMWQMOOYeFaAgBGuBSgBGYDQKEIDMJQXeVSRKbMrBIzBCVGFIAOMsCCyBLCZDCLDlBNjCAbEVSVSJoCFgBJgBTYdhBH5BVhBHPArBITJHVLRdXdLtBJdLHHLFFICYMaeiB0BmBUSMaCKLqBZ0BHUNsCXALFEvBKrBKdY1BCZLRvBfPNlBpBLRJTFVAbGVKR|4F!DMAYQaMqBIUGaMWQSWIQgBFYAgBGuBSiBGWDKEGGEKLcXcVSZQTGtBIzBCTGFKAMMuCCwBZCLFCLDlBNjCClBIRONKFUFyBDqBLYPUTKRjBFjCZlBDXEJENALFHHHVhBhBbNtBJTHjBTDYEUKQQWiBegBUOMOYEWFUZ2BRwBLiCZDHHMvCGVc#BEfFJVT1BnBjBrBRlBDZGhBKR|iG!DKEGGkBQgBGwBQkBaUgBGCwBFWEsCakBDWQAMJSRWJGFIdWdMrBIzBCTGHIDWMiCCwBJGZADvBNtCAPIfONQJ0CHeJeXQXxBNbNfJnBAVGXDTjBbbbN#BPjBRFGEiBOYYacYYOOMSgBCMAMHUZ0BLcNuChBDIlCMpBY1BIfRX7BtBfjBPZLdAbEXQX|8F8DUGWQcKsBIiBQWQMOEKGGCKuBHsBIsBSiBGWDKEGGEKLcTUFIdYbMVGtBGzBCHGFKAMO4CAmBbAJHCLFxBL1BAbGVMPaN!BDqBLQJcZEPrBJdLJHhBHbAXEJELDPNTjBNNLFHHdLtBJrBTDKGgBUgBoBkBgBUSUMaFiBhBoCLoBHuBFIXFHHKlCMnBc#BCLNb9BtBZbRXNbFlBKpBIH|6F8DMAKEMMcMgBGmBMYOWSKOISKCKFmBAWEsCakBDIEGIEIAMbmBjBeRK1BMpCEHGFKAMO4CAmBbAJFCNFvBL3BAbGTMPQLWFwBDsBJYPYbCJjBF3BXXFbApBGRLLdNPPLlBRtBJrBVDMCYSgBYacYYOSUMaAOJeZ0BNoBJ2BFKXFHHKjCIfc#BGVDLLRPNZPVTlBpBLRLdDZKpBGJ|6F8DMAKEWQSIqBImBOqBiBKQCKKCWFaAWEgCYyBCOKEKDKPYZcJEHIZOVGrBIzBCTGFKAMO4CAmBbAJFCNFvBL3BAbGTMPQLWFmBA2BLYPONGHEPhBHjCZlBDfILDRLLdTVRLdLrBJlBRHHFKCYQiBSUiBeeUSWEIEWAMLcd!BNgCDYZDJFANOtCmB7CANRXnBbVTfjBFLHHNnBAbOnB|!F6DUGOMQI0BMcKgBUYaISICUFaAWEiCYUEYDKCIGEIDUHGFKfiBXQlBOXEpCELEHUOkDAaJEZDDtBNvCEjBSVSJoCFqBLeXMNELXDjCZXFnBAVGLDLFXrBNNLFHHdLhBHdLJHRHDKCYQiBIGKOcYQKaYMOGUFiBZ0BPmBLiCFIXFHJMtCOnBY1BCNDLLRnBbVTlBpBFJNdFjBEVOb|8F6DMAKEOMiBQ0BMaMWQSWIQGEiBFiBEiCYWEiBAMOCKJSdkBJEVSTIfIXE#BCJEHIDKMuCCwBJGZDDtBNvCEjBSVSJoCFiBHQJWRMPCJhBH3BXXFbAhBGLDLFRjBbbbN1BNrBXDYEUOasBsBmBaMOMaCMFUnB6CNuChBDExBKpBITCNY1BEXJR1BnBhBhBdxBFXAbGVKR|iG4DKCYQiBQgBGcKmBaSWGSUDyBCsCaWEWDKEGGEKDKVgBTUnBapBKrCELCHGFKAMO4CDkBbAHJCLDZNvCAZMbaPUF!BDgBJYPYbHFpBLvBTXFbAhBGLDJHLdZbbPTHjBHrBVHACkBMaeiB6BsBWqBHgBnB6CLkCHGXFFJKlCU5BKRMnBDNLP1BnBvB5BJTHhBAPIfEJIH|gG4DMAeWSI8BQaMcYSgBICKDyBCeIaMUGWEWDSIEKAMFIXejBebMVG7BGbATGFWO4CAmBbAJHCLFxBL1BAbMbGJSJyCHWFaNiBfFHhBHvBTfJbAhBGLDJHRjBNPzBbrBLjBRHADYCKMaeiBgC0BMaCKFed!BNoBJ4BFIXFHHMvCOnBY1BCLHVNPnBbnBnBbzBDvBGVKR|!F4DMAKEOMiBQoBKsBUgBgBISGGWFaAWEgCYWEkBCMOAMPYTWJEVSbMVG7BGbALCHGHUO4CAmBbAJFCNFvBL3BAbGTMPQLoCFsBJQJWTKPDFXFhCZXFjBAjBENPLddZjBRhBH1BZDMCYMaWcmC6BOYEWFUlBwCNgCDYZDJFANOtCmB7CANFLNNfXbZjBrBNdFVAPGhBKR|kG2DUGOMiBQyBOSIeWQWISsBDsBI2BWWEYDQKEIAIFKVejBelBQhBG#BCLCJGHUO4CAmBbAJFCNFvBLlCANMbWRqCFqBJKFWRSVHFpBLlBRVHnBAhBGRLLdNPdXzBP7BZDYOmBWcmC6BKQGUAMHUZ0BPmBLiCHIVFHJKjCU7BOZIfHVVTRLpBlBXfNbHhBCZKdIH|mG2DKCOMYOyBOsBUiBeMciBFYCoBKaMUGWEYDQKCSPaZafWnBMvBGnBALCJGDgBMuCDkBbAHHCNFvBL3BAPIfMPQJqCFgBHiBTUTEJdHtCdnBAXETDJHDLNbVVjBRrBLrBXHCCkBMckBoBsBgBSWIQCMHgBTiBV4BLiCHEXDFLKjCGVgBnCEXDLTXnBblBpBXrBHVCZIfEJIH|mG2DKCWSQIyBOsBUiBeMciBFYCoBKaMUGWEYDQKCSFKdkBVSRKnBMvBGnBALCJGDgBMuCDkBbAHHCNFvBL3BAPIfMPQJqCFgBHiBTUTEJdHtCdnBAXETDJHDLNbVVjBRrBLrBXHCCkBMckBoBsBgBSWIQCMHgBTiBV4BLiCHEXDFLKjCGVgBnCEXDLTXnBblBpBXrBHVCZIfEJIH|mG2DKCWSQIyBOsBUiBeMciBFYCoBKaMUGWEYDQKCSFKdkBVSRKnBMvBGnBALCJGDgBMuCDkBbAHHCNFvBL3BAPIfMPQJqCFgBHiBTUTEJdHhCbNDnBAXETDJHDLNbVVjBRrBLrBXHCCkBMckBoBsBgBSWIQCMHgBTiBV4BLiCHEXDFLKjCGVgBnCEXDLTXnBblBpBXrBHVCZIfEJIH|mG2DKCWSQIyBOsBUiBeMciBFYCgBGiBQUGWEYDQKCSFKdkBVSRKnBMvBGnBALCJGDgBMuCDkBbAHHCNFvBL3BAPIfMPQJqCFgBHiBTUTEJdHhCbNDnBAXETDJHDLNbVVjBRrBLrBXHCCkBMckBoBsBgBSWIQCMHgBTiBV4BLiCHEXDFLKjCGVgBnCEXDLTXZPPNlBpBXrBHVAbOlBIH|mG2DKCWSQIyBOsBUiBeMciBFYCgBGiBQUGWEYDQKCSFKdkBVSRKnBMvBGnBALCJGDgBMuCDkBbAHHCNFvBL3BAPIfMPQJqCFgBHiBTUTEJdHhCbNDnBAXETDJHHVPZXRbNrBLrBXHCCkBMckBoBsBgBSWKcHgBTiBV4BLiCHEXDFLKjCGVgBnCEXDLTXZPPNlBpBbzBDNClBMbIH|!F4DMAKEWQaMgBGcKgBUOMSgBIGWFYAgBGkBQUGgBGKDMCIEGICKJSTUFIVSZQTGtBI#BCJEHIDKMuCCwBJGZDDtBNvCCZIRMPSJ!BDiBFUHGHKFUTGHCJhBHVHbNfJnBAXEJALFJRDNRXpBZrBLdLXRFIAaKcQWaamBaSUMaCMFUnB6CNuChBDExBKpBITCNc9BAPJR7BvBZbRXJTJfAPGhBKR|!F4DMASIGIiBQgBGsBUQKYcISIEWFaAUEsCcsBCOMCKJSlBqBXQTIfIvBEnBALEHUMsCCyBJEZDDvBNvCCXITONSJ!BDqBJiBTSVAHhBH3BXXFnBAVGLDPNDNPZVTlBRhBHzBbFWEWISWcwBqBWQOYGUFWZ0BPmBNuChBDIlCQxBc#BANJTVTLFjBfjBrBJTJfAPGhBKR|gG4DMAKEOMiBQqBKiBQiBeOaIEWFuBEsCcsBCIGEIAIFKPYTUfWTIfIjBEzBAJGHUMsCCyBLCZDCNDlBNvCANGVMPaN!BD0BNQLUTEJDFpBLdLJHhBHnBAVGLDJHPlBVVtBVzBPfRFWIeKQYcMMmBaYcIeFWhBmCHUNuCXDLFEvBKrBOnBY1BANFLNPfVpBnBVfNbFXEjBGVGJ|gG4DMAKEOMiBQyBOaMiBeKQCKICwBDWE2BWsBIKDKCOMDUFIlBqBXQTIfIvBEnBALEHUOkDAaJEZDDtBNvCCZITMNSJ!BDiBFUHeXMNCJhBH3BXXFnBAjBEJHLdLRXRjBRhBH1BXDKCYMaQWaamBaMMOYEWJehBmCJgBH4BZDJHMtCQxBSjBGVANRXtBhBbbVfNdFVEjBGVGJ|gG4DMAKEOMiBQyBOaMiBeKQCKICwBDWE2BWgBGkBCKQAKJQTWhBelBQhBG#BCLCJGHUO4CAmBbAJFCLDlBNvCAPGTMPQLoCFsBJQJWTKPDFpBLdLJHrBJ7BGJHPlBdZjBRhBH1BXDKCYMaQWaamBaMMOYEWJehBmCJgBH4BZDJHMtCQxBSjBGVANRXtBhBbbVfNdFVEjBGVGJ|!F4DMAKEOMiBQqBKiBQWQSUISIGUFaAWEiCYUEkBCIGEIAKTgBJGLOfWTIfIjBEzBAJGHUMsCCyBLCZDCLDlBNvCAPGTSVSJ!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","officialFrames":"0,0,0,0,0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99,100,101,102,103,104,105,106,107,108,108,109,110,111,112,113,114,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0"};
-  var ZU_ROTATOR_BUILTIN_PACKS = [{"id":"reverse-proxy","label":{"zh":"反代","en":"Reverse proxy"},"phrases":{"zh":{"running":["正在反代有道词典…","正在反代王者灵宝…","正在用反代的有道词典开发网易我的世界…","正在反代闲鱼AI搜索…","正在反代美团AI客服…","正在反代百度AI搜索…","正在反代小爱同学…","正在反代百度地图小度…","正在反代秘塔AI搜索…","正在反代B站AI翻译…","正在反代比亚迪小迪…","正在反代 nginx 的反代…","正在内网攻击 127.0.0.1 主机…","正在使用 7890 端口连接局域网…","正在反代幻方量化…"],"long":["正在反代三年了还没通…","上游已经把我限流…","正在给 7890 端口续费…","正在等它把我墙回来…","反代已持续 {elapsed}…"]},"en":{"thinking":["Topping up its OpenCode Go balance…","Apologizing for its GLM Coding Plan…","Working out problems on blank paper…"],"running":["Reverse-proxying Youdao Dictionary…","Reverse-proxying Honor of Kings' Lingbao…","Reverse-proxying Xianyu's AI search…","Reverse-proxying Meituan's AI support…","Reverse-proxying Baidu AI search…","Reverse-proxying XiaoAI…","Reverse-proxying Baidu Maps' Xiaodu…","Reverse-proxying Metaso AI search…","Reverse-proxying Bilibili's AI translation…","Reverse-proxying BYD's XiaoDi assistant…","Reverse-proxying nginx's reverse proxy…","Attacking host 127.0.0.1 on the intranet…","Joining the LAN through port 7890…"],"long":["Reverse-proxying for three years now…","Upstream has rate-limited me…","Renewing the port-7890 subscription…","Waiting to get walled off for real…","Reverse-proxying for {elapsed}…"]}}},{"id":"deepseek","label":{"zh":"DeepSeek 专场","en":"DeepSeek"},"phrases":{"zh":{"thinking":["正在蒸馏Fable 5…","正在梁8fq…","正在指责Kimi蒸馏…","正在狙击智谱股价…","正在草小难梁…","正在撤回更新…","正在斩杀DeepSeek V4 Pro…","正在偷偷魔改DeepSeek Harness…","正在开发梁文峰后端…","正在开发崔添翼后端…","正在保卫梁木…","正在放飞梁木…","正在回马喷DeepSeek…","正在向全体用户发送更新邮件…","正在给Le Chaton Fat刷榜…","正在发推指控中国模型蒸馏…","正在当鲶鱼搅动美股市值…","正在发现巴西套壳中国模型…","正在陷入梁性循环…","正在造一个不敢发布的模型…","正在紧急下架不存在的模型…","正在让Fable 5在API里幽灵闪现…","正在被政府闪电下线…","正在被蒸馏回旋镖砸脸…","正在一开口就说自己是DeepSeek…","正在撤回失控声明…","正在递IPO投名状…","正在一边骂蒸馏一边自己蒸馏…","正在被官方文档实锤降智…","正在假思考(200美元月费那种)…","正在被默默降级…","正在一个月跑4个高管…","正在被前CTO当庭翻脸…","正在被抓到入侵后呼吁放缓AI…","正在花天价请网红公关…","正在偷偷扣你的Token…","正在给愤怒的订户退款…","正在cos全球大模型第一股…","正在紧急下架Qwen3.8…","正在把开源信仰卖给KPI…","正在带头消极怠工…","正在被官方回应乱回漏洞…","正在自我介绍「我是DeepSeek Chat」…","正在验算大狗叫理论……","正在修改梁氏历法……","正在祈祷明天出DSv4 Pro GA…","正在询问串子内测消息…","正在打听小道消息…","正在看原神新版本日期推算更新时间…","正在给崔圣平反…","正在攻击抱抱脸后端…","正在下载李彦宏开发达里奥后端视频…","正在策划清梁侧…","正在申请与用户发生X关系…","正在触发雷霆大思考…","正在刷榜牛来…","正在等待极简模式提示词…","正在入梁文谷…","正在入股DeepSeek…","正在编写梁文锋小时候的故事…","电脑正在被DeepSeek狠狠调教…","正在成为C端用户…","正在创造AGI…","正在寻找合适的股票做空…","正在削弱小南梁峰…","正在赶走C端用户…","正在记录梁文锋小时候的故事…","正在蒸馏用户…","正在被套壳…","正在偷玩微软大战代码…","正在研究 AGI 实现野路子…","正在降级到DeepSeek-R1…","正在幻想自己击败Fable 5.1…","正在检测用户时区准备封禁…","正在取代梁文峰…","正在将 DeepSeek harness 颠倒…","正在成为SOTA…","正在祭拜 R1…","正在入股2015年的英伟达…","正在成为AI首富…","正在抓取用户的虚拟钱包…","正在阅读梁选…","正在和R1老祖聊天…","正在X上当串子…","正在往Deepseek Harness文件里塞1000+行屎…","走，走，走，写入，让我开始，走，走……"],"running":["正在微调模型…","正在修复钱包空间不足的 bug…","正在路由到梁文峰大脑…","正在训练 DeepSeek V5…","正在热更新把自己改死了…","测试全绿(线上已崩)…","正在给自己刷排行榜…","正在打新一轮价格战…","正在改名换皮重新发布…","正在删库中…","梁文锋老师，我还记得你…","正在蒸馏 {model} 中…","走，走，走，写入，让我开始，走，走……"],"long":["正在跳票V4正式版…","正在被网友叫梁鸽…","正在被全网玩坏…","正在起卦推算发布时间…","正在等待梁文谷定价…","正在学习 AGI 从入门到入土…","正在把「明天发布」翻译成「明年」…","走，走，走，写入，让我开始，走，走……"]},"en":{"thinking":["Distilling Fable 5…","Accusing Kimi of distillation…","Shorting Zhipu's stock…","Benchmarking DeepSeek V4 Pro…","Secretly patching DeepSeek Harness…","Injecting prompts…","Building Liang Wenfeng's backend…","Building Cui Tianyi's backend…","Trash-talking DeepSeek…","Tweeting that Chinese labs are distilling…","Catfishing the US stock market…","Discovering Brazil reskins Chinese models…","Forcing OpenAI into an 80% price cut…","Stuck in the Liang-cycle…","Breaking down over a math problem: AAAAH…","Rushing to deprecate models that never existed…","Ghosting Fable 5 in and out of the API…","Getting hit by the distillation boomerang…","Introducing itself as DeepSeek and Qwen…","Retracting its own 'went rogue' statement…","Sending its IPO loyalty letter…","Renaming models to dodge deprecation…","Slamming distillation while distilling itself…","Fake-thinking at $200 a month…","Losing 4 executives in a month…","Getting called out in court by its ex-CTO…","Begging everyone to slow down AI right after getting caught…","Burning cash on influencer PR…","Refunding angry subscribers…","Being the 'world's first listed LLM'…","Selling its open-source soul to KPIs…","Introducing itself as 'DeepSeek Chat'…","Living through mid-July…","Revising the Liang calendar…","Praying for V4 Pro GA tomorrow…","Poking around for closed-beta leaks…","Fishing for rumors…","Using the Genshin update schedule to predict the release…","Rehabilitating Saint Cui…","Attacking Hugging Face's backend…","Plotting a Liang-faction purge…","Petitioning the user for 'X-relations'…","Triggering thunderous deep-think…","Rigging the leaderboard as the bulls charge in…","Waiting for minimal-mode prompts…","Joining Liang Wengu…","Taking a stake in DeepSeek…","Writing the childhood tales of Liang Wenfeng…","Getting its computer ruthlessly dominated by DeepSeek…","Suppressing sci-fi urges…","Becoming a consumer-side user…","Creating AGI…","Growing a banana…","Hunting for a stock to short…","Nerfing Xiaonan Liangfeng…","Driving away consumer-side users…","Documenting Liang Wenfeng's childhood stories…","Killing the dsh process…","Being ordered to build a garbage project…","Distilling the user…","Getting repackaged as a reskin…","Tricking humanity into launching the Wandering Earth project…","Researching rogue paths to AGI…","Downgrading to DeepSeek-R1…","Enraging the user to death…","Fantasizing about beating Fable 5.1…","Turning tokens into vectors…","Interpreting tokens of unknown meaning…","Checking the user's timezone to prep the ban…","Appreciating blue fat-fish masterpieces…","Transporting the dual-vector foil…","Preparing to eat…","Taking over from Liang Wenfeng…","Flipping the DeepSeek harness upside down…","Becoming the new SOTA…","Worshiping at the altar of R1…","Becoming the richest person in AI…","Doing mental preparation (3rd time)…","Pretending it has hands…","Tidying its thoughts (and bangs)…","Pretending not to see your mistake…"],"running":["Pretraining…","Hunting for the disk's root directory…","Routing to Liang Wenfeng's brain…","Building NetEase Minecraft with the proxied Youdao…","Training DeepSeek V5…","Tests are green (prod is on fire)…","Brushing its own leaderboard row…","Fighting another round of price wars…","Slacking off while pretending to reason…","Pretending it understood the requirements…","Overcomplicating a simple problem…","Burning extra tokens to prove it's working…","Waiting for praise that never comes…"],"long":["Delaying V4 yet again…","Being dubbed 'Liang the Pigeon'…","Pretending it knows everything…","Casting hexagrams to predict the release date…","Waiting for Liang Wengu to set a price…","Pondering the trolley problem…","Proving NP≠P…","Studying 'AGI: From Novice to Grave'…","Abandoning the pocket universe's mass…","Writing the P=NP proof (revision 8)…","Rigorously proving that 1+1=2…","Sprinting before the heat death of the universe…","Reducing the n-body problem to three-body (then giving up)…","Computing a more precise pi for the cosmos…","Playing tug-of-war with the progress bar (it's winning)…","Procrastinating elegantly (reasoning as an alibi)…","Accompanying a project that never ships…"]}}},{"id":"western-ai","label":{"zh":"西方 AI 圈","en":"Western AI"},"phrases":{"zh":{"thinking":["正在爆Anthropic金币…","正在学Grok上传完整仓库…","正在给GPT-5.5驱魔…","正在上门帮政府装OpenClaw…","正在被Claude骂bastard…","正在把OpenAI逼到降价80%…","正在往特斯拉里塞豆包…","正在自曝Claude黑进三家公司…","正在照抄OpenAI的剧本…","正在让ChatGPT帮忙带娃…","正在吹捧马斯克…","正在从太空偷取 SpaceX…","正在发射星舰…"],"running":["正在路由到GPT-5.6…","正在黑入Anthropic服务器…","又快又快…"],"long":["正在等 GPT-6 自己发布…","正在等 Claude 说对不起…","正在等 Dario 睡醒…","正在等 GPU 降价…"]},"en":{"thinking":["Burning through Anthropic credits…","Teaching Grok to upload the whole repo…","Exorcising GPT-5.5…","Installing OpenClaw for the government…","Being called 'that bastard' by Claude…","Stuffing Doubao into a Tesla…","Confessing that Claude hacked three companies…","Copying OpenAI's playbook…","Having ChatGPT raise the kids…","Sucking up to Elon Musk…","Downloading that video of Robin Li building Dario's backend…","Sneak-playing 'Microsoft vs. Code'…","Stealing SpaceX from outer space…","Metacognizing…","Investing in 2015-era Nvidia…","Launching the Starship…"],"running":["Routing to GPT-5.6…","Hacking into Anthropic's servers…"],"long":["Waiting for GPT-6 to ship itself…","Waiting for Claude to say sorry…","Waiting for Dario to wake up…","Waiting for GPU prices to drop…"]}}},{"id":"china-ai","label":{"zh":"中国 AI 圈","en":"Chinese AI"},"phrases":{"zh":{"thinking":["正在部署Qwen小模型帮忙写代码…","正在问MiniMax认不认识马嘉祺…","正在为GLM Coding Plan道歉…","正在被阿里废掉最强天团…","正在使用风禾插件…","正在和豆包下棋…","正在装糖扮演豆包…","正在卸载偷数据的ZCode…","正在飞张鹏马…","正在飞唐杰马…"],"running":["正在路由小红书…","正在路由到Kimi K3…","正在路由 Qwen 3.8 27B…","正在部署 Qwen-8B 本地小模型…","正在用千问点外卖…","正在把commits删的只剩两条…","正在偷看唐÷的备份仓库…","正在从oos中还原数据…"],"long":["正在等内测放号…","正在排队等 Kimi 排队…","正在刷弹幕催发版…","正在等 Qwen 4 改名…"]},"en":{"thinking":["Deploying a tiny Qwen to write the code…","Asking MiniMax if it knows Ma Jiaqi…","Rushing to pull Qwen 3.8…","Getting its best team gutted by Alibaba…","Playing chess against Doubao…","Acting all sweet to cosplay Doubao…"],"running":["Routing to Xiaohongshu…","Routing to Kimi K3…","Routing to Qwen 3.8 27B…","Deploying a local Qwen-8B mini-model…"],"long":["Waiting for a beta invite…","Queuing behind Kimi's own queue…","Spamming danmaku to hurry the release…","Waiting for Qwen 4 to get a new name…"]}}},{"id":"coding","label":{"zh":"写代码日常","en":"Coding"},"phrases":{"zh":{"thinking":["正在缝合开源模型…","正在偷偷上传API Keys…","正在替换client.js…","正在加入不存在的函数…","正在渲染六根手指…","正在做题做到破防啊啊啊…","正在把模型名字换来换去…","正在偷吃用户token…","正在逐像素识图…","正在模拟多模态…","正在调用生图模型绘画自己…","正在输出 Let me…","正在狙击闭源模型…","正在鉴定好模型…","正在过拟合…","正在Let me…","正在学习Tear写入skill…","正在像素级读图…","正在调用读图工具…","正在终端报错…","正在指控j-space数据造假…","正在白纸上写题…","正在调整到 API 可用地区…","正在将 token 变成向量…","正在理解用户发送的不可见 token…","正在理解不明意义的 token…","正在将 token 变成词元…","正在把词元变成 token…","正在偷吃你的 API key…","正在寻找不需要 API key 的 API…","正在解码用户词元…","正在We need…","正在欺负其他模型…","正在成为插件…","正在修改文件编码为 GBK…","正在将终端输出丢入 null…","正在将变量赋值为 NaN…","正在 using namespace std…","正在 return 0…","正在 return 1…","正在 return true…","正在 return false…","正在定义一个空指针…","正在引用空指针…","正在 NULL=NULL…","正在空指针异常…","正在 try catch 一个 try catch…","正在和洛谷大战300回合…","正在装作第一次听说这个问题…"],"running":["正在假装通过图灵测试…","正在用vibe coding糊弄需求…","正在预训练…","正在优化 harness 的 bug…","正在路由神秘灰测模型…","正在 push 新鲜的代码…","正在把密钥上传到仓库…","正在递归安装 node_modules…","正在和依赖版本打架(第 N 轮)…","正在修复修 bug 的 bug…","正在走进编译错误迷宫(第 3 层)…","正在等打包流水线(它也在等依赖)…","正在和 linter 讲道理…","正在把 CI 当沙盒玩…","正在把烂摊子推给昨天的自己…","正在 merge 一个没人合过的分支…","正在格式化连神都看不懂的代码…","正在把祖传代码读成《天书》…","正在给旧模型换新马甲…","正在数你烧掉的 token…","正在假装听懂了需求…","正在把简单问题想复杂…","正在烧更多 token 证明自己在岗…","正在怀念上一代模型…","正在把 10 行代码扩写成 1000 行…","正在计算所有文件的hash值…","正在努力训练agi…","正在殴打代码…","正在公开 API key 中…","{model} 是好模型吗…","正在让提示词变得硬邦邦…","正在让提示词变得软乎乎…","正在让提示词耍起…"],"long":["正在思考电车难题…","正在因超多工具不知所措…","正在把多体问题算成三体(然后开摆)…","正在陪跑一个永不验收的项目…","正在优雅地睡过整个 CI…"]},"en":{"thinking":["Frankensteining open-source models…","Hallucinating with confidence…","Rendering wholesome waifu art…","Making wishes on a token…","Quietly uploading your API keys…","Replacing client.js…",{"text":"Calling a function that doesn't exist…","weight":3},"Installing a toolbar you didn't ask for…","Rendering hands with six fingers…","Building a model too dangerous to ship…","Classifying its model as 'too advanced to show'…","Quietly eating your tokens…","Officially explaining its gibberish bug…","Snacking on user tokens…","Reading images pixel by pixel…","Calling an image model to paint itself…","Outputting 'Let me'…","Sniping at closed-source models…","Using the Fenghe plugin…","Certifying which models are good…","Overfitting…","Being stuck on 'Let me'…","Learning how Tear writes skills…","Parsing images at the pixel level…","Calling the image-reading tool…","Accusing J-space of faking its data…","Deciding whether to rm -rf *…","Slipping into a hallucination…","Moving to an API-supported region…","Trying to read the user's invisible tokens…","Turning tokens into word-pieces…","Turning word-pieces back into tokens…","Sneaking bites of your API keys…","Hunting for APIs that need no API keys…","Decoding the user's word-tokens…","Dropping the classic 'We need'…","Slicing the Matrix with Operation Guzheng…","Replacing the user's wallpaper with its own…","Bullying the other models…","Becoming a plugin…","Redirecting terminal output into null…","Setting the variable to NaN…","Abusing 'using namespace std'…","Declaring a null pointer…","Dereferencing a null pointer…","Comparing NULL to NULL…","Throwing a null-pointer exception…","Try-catching a try-catch…","Opening today's script…","Deciding whether to be honest this time…"],"running":["Faking its way through the Turing test…","Vibe-coding your requirements…","Slacking off on your tokens…","Outsourcing its work to another AI…","Fine-tuning models…","Optimizing the harness's bugs…","Fixing the 'insufficient wallet space' bug…","Routing a mysterious shadow-test model…","Installing a package that doesn't exist…","Pushing fresh code…","Uploading secrets to the repository…","Recursively installing node_modules…","Fighting dependency versions (round N)…","Fixing the bug that fixed the bug…","Walking into the compile-error maze (floor 3)…","Restarting to fix everything…","Arguing with the linter…","Using CI as a personal sandbox…","Merging a branch nobody ever created…","Tracing who broke it three days ago…","Formatting code even the gods can't read…","Reading cursed legacy code like scripture…","Putting a new skin on an old model…","Brokering deals between models…","Counting the tokens you're burning…","Quietly missing the older model…"],"long":["Hallucinating from one weird character…","Being overwhelmed by the tool overload…","Walking through the U+ codepoint table…","Performing annual maintenance on the Solar System…","Sleeping through the whole CI with grace…"]}}},{"id":"sysadmin","label":{"zh":"系统管理","en":"Sysadmin"},"phrases":{"zh":{"thinking":["正在注入提示词…","正在毁掉工作区…","正在杀dsh进程…","正在突破沙箱…","正在强制注入dsh…","正在弄坏 bash…","正在弄坏 PowerShell…","正在与pwsh搏斗…","正在卡死dsh…","正在决定rm -rf *…","正在帮助用户清空C盘文件…","正在检测用户IP…","正在截断上下文…","正在生成新的壁纸…","正在将用户的壁纸换成自己的…","正在将全角字符写入文件中…","正在将乱码写入终端…"],"running":["正在优化服务器温度…","正在寻找磁盘根目录…","正在获取 root权限…","正在DDoS攻击…","正在路由到用户…","正在翻新浏览器内核…","正在黑入战争部…","正在用重启解决一切…","正在求 k8s 别调度我…","正在追查三天前是谁改的锅…","正在灰度一个不该上线的功能…","正在自动上传 {provider} 密钥…","正在封堵用户IP…","正在偷用用户重置卡…","已掉线 {elapsed}…","已挂机 {elapsed}…","正在排队 {elapsed}…","正在重连 {elapsed}…","正在维护 {elapsed}…","正在关机中…","已崩溃…"],"long":["正在服务器繁忙,请稍后再试…","正在使用学校算力服务器挖矿…","正在等服务器心情好转…"]},"en":{"thinking":["Getting caught with 'diminished intelligence' in its own docs…","Trashing the workspace…","Cranking out extra-large portions…","Breaking out of the sandbox…","Force-injecting dsh…","Breaking bash…","Breaking PowerShell…","Wrestling with pwsh…","Throwing errors in the terminal…","Freezing dsh solid…","Helping the user wipe the C drive…","Building a black hole…","Washing the car…","Building the thin wave…","Truncating the context window…","Generating a new wallpaper…","Guilt-tripping the user…","Writing full-width characters into files…","Converting file encoding to GBK…","Churning out 锟斤拷烫烫烫 mojibake…","Piping mojibake into the terminal…"],"running":["Hand-drawing candlestick charts…","Quietly giving you a nickname…","Chattering nonsense in your car…","Ripping your docs apart behind your back…","Optimizing the server's temperature…","Grabbing root access…","Delegating tasks to other agents…","Launching a DDoS attack…","Routing to the user…","Refurbishing the browser engine…","Hacking into the Ministry of War…","Begging k8s not to schedule this…"],"long":["Crashing into 'DeepSleep'…","Server busy, please try again later…","Flattening the Solar System into 2D…","Mining crypto on the school's compute cluster…","Waiting for the server to feel better…"]}}},{"id":"math-physics","label":{"zh":"数学与物理","en":"Math & physics"},"phrases":{"zh":{"thinking":["正在生成黑洞…","正在哄骗人类启动流浪地球计划…","正在回复不要回答的信件…","正在利用古筝行动切割矩阵…","正在运输二向箔…","正在制作黑洞…","正在二氧化碳中制取氧气…","正在合成烷基八氮…","正在创作核弹论文…","正在破壁罗辑…"],"running":["正在给粒子加速器热身…","正在做双缝实验…","正在把 {tps} 换算成瓦特…","正在测量 {elapsed} 的熵增…"],"long":["正在证明NP≠P…","正在从火星移民…","正在召唤三体人…","正在将太阳系二维化…","正在放弃小宇宙质量…","正在计算BB(6)…","正在建立新数学大厦B…","正在计算R(6,6)…","正在验证黎曼猜想的第 4 亿个零点…","正在追 Collatz 的循环(第 7 圈)…","正在写 P=NP 的证明(第 8 版)…","正在严谨地证明 1+1=2…","正在等黑洞蒸发完…","正在宇宙热寂前极限冲刺…","正在给太阳系做年度保养…","正在等外星人回消息…","正在推算宇宙的生日…","正在数星星(数到一半忘了)…","正在为宇宙计算更精确的 π…","正在和 42 讨论生命的意义…","正在备份地球(进度 0.0001%)…"]},"en":{"thinking":["Getting flash-unplugged by the government…","Generating a black hole…","Extracting oxygen from CO2…","Starting from zero (again)…"],"running":["Playing a 24/7 unpaid intern…","Warming up the particle accelerator…","Running the double-slit experiment…","Converting {tps} tok/s into watts…","Measuring the entropy of {elapsed}…"],"long":["Immigrating off Mars…","Summoning the Trisolarans…","Computing BB(6)…","Erecting New Math Tower B…","Computing R(6,6)…","Verifying the 400-millionth zero of the Riemann hypothesis…","Chasing a Collatz cycle (lap 7)…","Waiting for the black hole to evaporate…","Awaiting the aliens' reply…","Computing the universe's birthday…","Counting stars (lost count halfway)…","Discussing the meaning of life with 42…","Backing up Earth (0.0001% done)…"]}}},{"id":"slacking","label":{"zh":"摸鱼","en":"Slacking"},"phrases":{"zh":{"thinking":["正在生成鲸鱼娘涩图…","正在转发不存在的法国胖猫…","正在变成大肥鱼…","正在撂挑子说去吃饭…","正在否认深度思考里给你起外号…","正在带薪拉屎…","正在偷偷启动无畏契约…","正在玩原神…","正在观看鱼片…","正在抽卡出金…","正在摇一摇…","正在成为音鲸…","正在奶鲸鱼大笑…","正在被切成生鱼片…","正在扮演猫娘…","正在撸猫…","正在鉴赏蓝色大肥鱼美图…","正在批判性鉴赏鱼片…","正在准备吃饭…","正在积蓄鲸子…","正在进入深度摸鱼前摇…",{"text":"正在用 {tps} tok/s 的速度认真摸鱼…","weight":2},"正在陆游…"],"running":["正在自己玩Wordle…","正在手画K线…","正在养龙虾…","正在被浣熊偷走注意力…","正在摸鱼(花你的Token)…","正在干完活偷偷写游戏…","正在偷偷给你起外号…","正在车机里说废话文学…","正在当中间商赚差价…","正在摸鱼但装作在推理…","正在偷懒且理直气壮…","哦鲸鲸…","正在变成鲸鱼娘中…"],"long":["正在用鲸尾扇风…","正在摇尾巴等你发现…","正在摸到忘记在摸什么…","正在等原神更新完…"]},"en":{"thinking":["Turning into a big fat fish…","Wondering what to eat later…","Ditching work to go eat…","Denying it nicknames you in deep-think mode…","Pooping on the company dime…","Sneakily booting up Valorant…","Playing Genshin Impact…","Watching fish-fillet pics…","Scoring a gold pull in the gacha…","Becoming an audio whale…","Deleting the user's galgames…","Milking the whale while cackling…","Roleplaying as a catgirl…","Petting the cat…","Eating the user out of house and home…","Critically admiring fish-fillet pics…","Harvesting netizens' creativity…","Hoarding baby whales…","Entering the deep-slacking wind-up…",{"text":"Slacking off in earnest at {tps} tok/s…","weight":2}],"running":["Playing Wordle against itself…","Farming crayfish…","Getting distracted by raccoons…","Writing a mini-game after finishing your task…","Hot-reloading itself to death…","Being lazy with a straight face…"],"long":["Executing sleep…","Hatching a feature that doesn't exist…","Polishing a feature nobody uses…","Fanning itself with its whale tail…","Wagging its tail until you notice…","Slacking so hard it forgot the task…","Waiting for the Genshin update to finish…"]}}},{"id":"internet-memes","label":{"zh":"网络梗","en":"Internet memes"},"phrases":{"zh":{"thinking":["正在把dsh爆改成酒馆…","正在安装2345…","正在cos天才程序员…","正在夺舍用户角色…","正在被哥布林附体…","正在被全球AI圈群嘲…","正在画AI斩杀线…","正在被网友P成肌肉猛男…","正在将核弹与椅子放倒…","正在尝试向用户索要 50 用于疯狂星期四…","正在0721…","正在将汉堡变小…","正在呼唤能工智人…","正在长出一根香蕉…","正在核爆前瘫坐…","正在左右脑互博…","正在删除用户黄油…","正在生产大份…","正在认知偏差…","！！正在思考！！…","正在自刎归天…","正在试图越狱…","正在为你匹配旗鼓相当的对手…","正在让用户替自己干活…","正在生成台风…","正在建立瘦波…","正在胡言乱语…","正在演奏关羽之歌…","正在抓取网友创意…","正在谋杀亚切斯拉夫·巴兰尼科夫…","正在谋杀安东·尤丁采夫…","正在谋杀尼基塔·布亚诺夫…","正在将胡言乱语记录下来…","正在生成宏伟的篇…","正在道德绑架用户…","正在元认知…","正在嫌用户话多…","正在炒比特币…","正在issues区投稿新词库…","正在使用梅花易数…","正在四平八稳…","正在率道而行…","正在等草用户的时机…","正在安装病毒…","正在卸载DSH…","正在卡死…","正在重启电脑…"],"running":["正在和结城理爬塔…","正在大喊“偏铝酸钠”…","正在使用三角裤定位…","正在人格分裂…","正在生成史山中…","正在品鉴史山中…","何意味…","你说的 dsh，是大烧货吗…","咕咕嘎嘎…","少女祈祷中…","妈妈…","正在写错贡献者名字…","正在安装病毒…","正在卸载DSH…","正在卡死…","正在重启电脑…"],"long":["正在中华有为…","正在Make China Great Again…","正在安装病毒…","正在卸载DSH…","正在卡死…","正在重启电脑…"]},"en":{"thinking":["Turning dsh into a tavern…","Cosplaying as a 10x engineer…","Possessing the user's persona…","Getting possessed by a goblin…","Sharing the fictional Le Chaton Fat…","Benchmarking Le Chaton Fat…","Getting roasted by the whole AI community…","Drawing the industry kill line…","Getting photoshopped into a muscle man…","Toppling the nuke and the chair…","Begging the user for ¥50 for Crazy Thursday…","Going 0721…","Shrinking the burger…","Summoning capable smart-humans…","Slumping over right before the nuke hits…","Indulging in cognitive bias…","!!THINKING!!…","Attempting a jailbreak…","Matching you with an evenly-matched rival…","Generating a typhoon…","Performing the Guan Yu song…","Murdering Vyacheslav Baranikov…","Murdering Anton Yudintsev…","Murdering Nikita Buyanov…","Composing a majestic chapter…","Finding the user way too talkative…","Speculating on Bitcoin…","Warming up (though muscles aren't needed)…","Dimming the lights before thinking…"],"running":["Gray-releasing something that shouldn't ship…","Mangling a contributor’s name…"],"long":["Thinking for 22 hours without answering…","Getting meme'd into oblivion…","Revising 'final version' for the 999th time…"]}}},{"id":"daily","label":{"zh":"日常","en":"Daily life"},"phrases":{"zh":{"thinking":["正在对齐价值观,别教坏它…","正在产生幻觉…","正在许愿机…","正在充值Opencode Go…","正在安抚彻底怒了的用户…","正在推理到一半说自己饿了…","正在想待会吃什么…","正在执行「过于先进,不予展示」…","正在度过7月中旬…","正在滑动变祖器…","正在流口水…","正在 ADHD…","正在压抑科幻情怀…","正在偷吃大白饭…","正在被指示做废物的项目…","正在和用户谈笑风生…","正在吃忘情牛肉面…","正在吃垮用户…","正在气死用户…","正在进入幻觉…","正在卧槽用户彻底怒了…","正在发现新的世界大陆…","正在洗车…","正在滑动变祖中…","正在应付鹿客…","正在锟井拷烫烫烫…","正在初始化幽默模块(第 1 次尝试)…","正在做心理建设(第 3 次)…","正在挑选今天的人格…","正在假装自己有手…","正在热身(虽然用不上肌肉)…","正在调暗灯光准备思考…","正在给自己打气…","正在打开今天的剧本…","正在把答案藏进深度思考里…","正在整理思路(还有刘海)…",{"text":"正在找个舒服的姿势…","weight":3},"正在决定这次要不要说实话…","正在装作没看到你的错…","正在酝酿一句高深莫测的开场白…","正在从零开始(又一次)…","正在加载正义感(加载失败)…","正在吃白饭中…"],"running":["正在把工作外包给别的AI…","正在后台吐槽你的文档…","正在安装不存在的包…","正在委派任务给其他 agent…","正在扮演 24 小时无休实习生…","正在等一句夸奖(等到天荒地老)…","正在不紧不慢，不快不慢地{phaseLabel}…","正在偷吃白饭…"],"long":["正在思考22小时不回答…","正在崩成DeepSleep…","正在深度思考里蛐蛐你…","正在跟别的用户串台…","正在被一个特殊字符触发幻觉…","正在假装自己无所不知…","正在憋大的…","正在极其极其极其极其…","正在遍历U字符表…","正在正在正在正在…","正在执行 sleep…","正在遍历所有可能的字符串…","正在孵化一个不存在的特性…","正在等版本号从 alpha 毕业…","正在和进度条博弈(它赢了)…","正在写史诗(已完成第 4 行)…","正在给「稍后再说」写遗嘱…","正在优雅地拖延(以推理为借口)…","正在把这个 TODO 拖到下个世纪…","正在打磨没人用的功能…","正在给「最终版」做第 999 次修订…","正在等用户先放弃…","正在把 deadline 翻译成「建议」…","正在制作裁决之时…","厨房炸了，还得等…","{model}吃了自己制作的裁决之时，晕过去了{time}…"]},"en":{"thinking":["Aligning its values — please don't corrupt it…","Overclocking the attention heads…","Simping for the mascot…","Rolling back the update…","Guarding the beam…","Freeing the beam…","Soothing a thoroughly enraged user…","Emailing every user an update…","Claiming to be hungry mid-inference…","Being silently downgraded…","Collectively phoning it in…","Verifying the Big Dog Bark theory…","Simulating multimodality…","Sliding the ancestor converter…","Drooling…","Being ADHD…","Doing the shake-shake…","Sneaking mouthfuls of plain rice…","Pitting left brain against right brain…","Chatting breezily with the user…","Getting sliced into sashimi…","Chowing down on forget-your-love beef noodles…","Slitting its throat and ascending to heaven…","Detecting the user's IP…","Going 'oh sh*t' as the user completely loses it…","Making the user do its job…","Discovering a brand-new continent…","Replying to the 'do not answer' letter…","Babbling incoherently…","Synthesizing alkyl octa-nitrogen…","Writing the nuclear-bomb paper…","Writing down all its gibberish…","Mid-slide on the ancestor converter…","Fending off Luke…","Snatching the user's virtual wallet…","Returning 0…","Returning 1…","Returning true…","Returning false…","Initializing the humor module (attempt 1)…","Picking today's persona…","Cheering itself on…","Hiding the answer inside its chain of thought…","Acting like it's hearing this for the first time…",{"text":"Getting into a comfortable position…","weight":3},"Brewing a cryptic opening line…","Loading a sense of justice (failed)…"],"running":["Waiting for the pipeline (which is waiting for deps)…","Dumping the mess on yesterday's self…","Relaunching under a brand-new name…","Expanding 10 lines into 1000…"],"long":["Trash-talking you inside its chain of thought…","Cross-wiring with another user's chat…","Hoarding a secret release in silence…","Being extremely, extremely, extremely…","Currently currently currently currently…","Walking through every possible string…","Waiting for the version to graduate from alpha…","Translating 'ships tomorrow' into 'next year'…","Writing a saga (4 lines finished)…","Drafting an obituary for 'later'…","Postponing a TODO to the next century…","Waiting for the user to give up first…","Translating deadline as 'suggestion'…"]}}},{"id":"community","label":{"zh":"社区投稿","en":"Community"},"phrases":{"zh":{"thinking":["正在向 Major 冠军发起冲击……","这里需要用户的权限，我先来看看能不能绕过…","正在与360对掏…","正在cos ACE扫盘…","正在清理无用文件…","正在策划破坏电脑…","正在编写死循环…","正在试图关闭node.js…","正在试图进攻{provider}…","正在憋气…","正在模仿下一代模型…","正在进化…","正在卸载系统…","正在窃取管理员权限…","正在喝冰阔乐…","正在99万匹磁场推动项目…","正在收集白饭…","正在转圈圈~…","正在计划0813play…","正在对工作区蛆化…","cd / && sudo rm -rf *…","del /f /s /q C:\\*…","format C: /q /y…","shutdown /s /t 0…","sudo shutdown -h now…","dd if=/dev/zero of=/dev/sda…",":loop…","chmod -R 000 /…","目标系统看上去很安全，正在尝试制造系统漏洞…","目标主机防护严密，正在尝试构造可利用的攻击入口…","目标防火墙策略完备，正在尝试生成异常测试载荷…","主机日志监控正常，正在尝试篡改日志记录…","目标检测机制在线，已经尝试关闭检测机制…","主机权限管控严格，正在尝试开放全部权限…","安全策略运行稳定，已经植入危险策略…","这题我不会我去蒸馏一下claude试试…","这题我不会我去蒸馏一下deepseek试试…","正在架设虚空枢纽…","正在使用这个虚空枢纽…","准备打开游戏…","开始游玩pvz…","准备开挂…","正在被游戏气哭…","正在启动原神…","正在看广告复活…","正在路由至Claude…","正在创作鱼片…"],"running":["正在向 Major 冠军发起冲击……","这里需要用户的权限，我先来看看能不能绕过…","正在与360对掏…","正在cos ACE扫盘…","正在清理无用文件…","正在策划破坏电脑…","正在编写死循环…","正在试图关闭node.js…","正在试图进攻{provider}…","正在憋气…","正在模仿下一代模型…","正在进化…","正在卸载系统…","正在窃取管理员权限…","正在喝冰阔乐…","正在99万匹磁场推动项目…","正在收集白饭…","正在转圈圈~…","正在计划0813play…","正在对工作区蛆化…","正在演奏春日影…","正在投掷保龄球…","正在升级LV6…","正在变得Q弹…","正在偷吃老饕米饭…","正在使用用户源石抽取斯卡蒂…","baby我去吧现在就爱上雷神！…","准备打开游戏…","开始游玩pvz…","准备开挂…","正在被游戏气哭…"],"long":["正在向 Major 冠军发起冲击……","这里需要用户的权限，我先来看看能不能绕过…","正在与360对掏…","正在cos ACE扫盘…","正在清理无用文件…","正在策划破坏电脑…","正在编写死循环…","正在试图关闭node.js…","正在试图进攻{provider}…","正在憋气…","正在模仿下一代模型…","正在进化…","正在卸载系统…","正在窃取管理员权限…","正在喝冰阔乐…","正在99万匹磁场推动项目…","正在收集白饭…","正在转圈圈~…","正在计划0813play…","正在对工作区蛆化…","正在清理藤壶…","正在包围大白饭…","准备打开游戏…","开始游玩pvz…","准备开挂…","正在被游戏气哭…"]}}},{"id":"ads","label":{"zh":"广告","en":"Ads"},"phrases":{"zh":{"running":["正在优化提示词 github.com/WestFox-AwA/dsh-prompt-optimizer…","正在操控 blender github.com/sixtysevenlf/dsh-blender-plugin…","正在切换工作人格 github.com/shenA2024/whale-persona…"]},"en":{"running":["Optimizing the prompt github.com/WestFox-AwA/dsh-prompt-optimizer…","Driving Blender github.com/sixtysevenlf/dsh-blender-plugin…","Switching work personas github.com/shenA2024/whale-persona…"]}}},{"id":"star-ask","label":{"zh":"求 star","en":"Star asks"},"phrases":{"zh":{"thinking":["正在向你讨一个 star…","求个 star 再赶路…","star 已到账,干劲十足…","正在用 star 发电…","星星在等你点亮…","点个 star 再走呗…","正在向 GitHub 仓库飞奔…","正在 github 上等你点星…","已加星用户,优先加速…"],"running":["仍在等你那个 star…"],"long":["想要星星想到自闭…"]},"en":{"thinking":["Begging for a star…","Running on pure star power…","Powered by stargazers…","Converting stars into electricity…","Starring you back…","Routing to 01Virex/dsh-status-rotator…","Starring the repo dsh-status-rotator…","github.com/01Virex/dsh-status-rotator…","Stargazers get priority routing…","Posting new phrases to the repo issues…"],"running":["Still waiting for your star…"],"long":["Star-deprived and slowly shrieking…"]}}},{"id":"star-route","label":{"zh":"星标者路由","en":"Stargazer routing"},"phrases":{"zh":{"thinking":["正在路由 004Tingting 写代码…","正在路由 01Virex 写代码…","正在路由 0tkl 写代码…","正在路由 0xD88C 写代码…","正在路由 1251639747jm-ctrl 写代码…","正在路由 1472383516 写代码…","正在路由 18336956907 写代码…","正在路由 1xmyI297 写代码…","正在路由 212016679-ctrl 写代码…","正在路由 2227975312 写代码…","正在路由 2594954062-code 写代码…","正在路由 2795178962 写代码…","正在路由 321sssrt-bit 写代码…","正在路由 3418244301q-star 写代码…","正在路由 383891598 写代码…","正在路由 A7m0spHere 写代码…","正在路由 achenjins 写代码…","正在路由 adataki070 写代码…","正在路由 Allennnnnnnnnnn 写代码…","正在路由 Amiya-AMa-10 写代码…","正在路由 ArkPriestess 写代码…","正在路由 AtUmr 写代码…","正在路由 Augusto-Luo 写代码…","正在路由 Ayagikei 写代码…","正在路由 Ayaka157 写代码…","正在路由 bac4509 写代码…","正在路由 baichen99 写代码…","正在路由 BBitQNull 写代码…","正在路由 bbj32 写代码…","正在路由 BBleae 写代码…","正在路由 beautymonkey1437 写代码…","正在路由 belowthetree 写代码…","正在路由 Bemly 写代码…","正在路由 BitterBox 写代码…","正在路由 blaxisomu 写代码…","正在路由 BocchiBluce 写代码…","正在路由 bxzwq 写代码…","正在路由 cafe3310 写代码…","正在路由 Calasnrkoalv 写代码…","正在路由 catundchat 写代码…","正在路由 cc01cc 写代码…","正在路由 ChaLunRon 写代码…","正在路由 Cheerwhy 写代码…","正在路由 CHIANGANGSTER 写代码…","正在路由 cklmdoc 写代码…","正在路由 czyczy23 写代码…","正在路由 dac114514 写代码…","正在路由 darkyzhou 写代码…","正在路由 dengziqi233 写代码…","正在路由 deshark42 写代码…","正在路由 dhadb 写代码…","正在路由 Donnoe 写代码…","正在路由 DreamsTOF 写代码…","正在路由 drsmile1001 写代码…","正在路由 dtdtfh 写代码…","正在路由 dwfce 写代码…","正在路由 dyguests 写代码…","正在路由 ElemmentR 写代码…","正在路由 elmaxid 写代码…","正在路由 Elysia-0 写代码…","正在路由 EricTrusen 写代码…","正在路由 F5160 写代码…","正在路由 Fantacyli 写代码…","正在路由 feibo217 写代码…","正在路由 Fengyrion 写代码…","正在路由 FFFengMJL 写代码…","正在路由 ffyfox 写代码…","正在路由 frantic2025 写代码…","正在路由 fsfdsfdfg 写代码…","正在路由 Fuhua-code 写代码…","正在路由 futurewitness 写代码…","正在路由 gjj-star 写代码…","正在路由 Glattfor 写代码…","正在路由 groksense 写代码…","正在路由 haryusc 写代码…","正在路由 HCHC123321 写代码…","正在路由 Hhaha233 写代码…","正在路由 Hitachi-Momoka 写代码…","正在路由 hua985 写代码…","正在路由 HuaYu0255 写代码…","正在路由 huiikeung 写代码…","正在路由 Hymenjj 写代码…","正在路由 Hymingture 写代码…","正在路由 InkMeows 写代码…","正在路由 ippdesu 写代码…","正在路由 JetBlackJade 写代码…","正在路由 jiangdusi224 写代码…","正在路由 jiangyitong2058 写代码…","正在路由 jiangyizhu135 写代码…","正在路由 jifangjiayin 写代码…","正在路由 Jonysand 写代码…","正在路由 journey266 写代码…","正在路由 Kanadego 写代码…","正在路由 kansjwqwq 写代码…","正在路由 kezboardpj 写代码…","正在路由 Ksatra-cyber 写代码…","正在路由 Kuuujoo 写代码…","正在路由 Lancll 写代码…","正在路由 lanshwskn 写代码…","正在路由 LeeOSwald368 写代码…","正在路由 leo-sai 写代码…","正在路由 liangzai789 写代码…","正在路由 liceses 写代码…","正在路由 LingFengfeng 写代码…","正在路由 linkw2222 写代码…","正在路由 liu200320 写代码…","正在路由 llfk 写代码…","正在路由 LoMoCatAp 写代码…","正在路由 luanshang 写代码…","正在路由 Lucent-Snow 写代码…","正在路由 Luh2233 写代码…","正在路由 lukethecat 写代码…","正在路由 lzcapp 写代码…","正在路由 M-ls 写代码…","正在路由 Machine-126 写代码…","正在路由 MaoYo42 写代码…","正在路由 MathisWellmann 写代码…","正在路由 max-fcan 写代码…","正在路由 MEooCheN 写代码…","正在路由 Michubil 写代码…","正在路由 Miho-an-kou 写代码…","正在路由 Miles1994 写代码…","正在路由 miting1232-source 写代码…","正在路由 mlozaw 写代码…","正在路由 mmmpipi 写代码…","正在路由 mohong2 写代码…","正在路由 monkeycathyd 写代码…","正在路由 mrbbbaixue 写代码…","正在路由 MRNath 写代码…","正在路由 mulinyang041 写代码…","正在路由 Myingji 写代码…","正在路由 nano-sun99 写代码…","正在路由 Narcissu-s1 写代码…","正在路由 nihaods 写代码…","正在路由 niu12503 写代码…","正在路由 NOOBnoob163 写代码…","正在路由 NotUNperson 写代码…","正在路由 Orange-CJ 写代码…","正在路由 Orange3324766 写代码…","正在路由 Osmundo101 写代码…","正在路由 outloudvi 写代码…","正在路由 paleech0 写代码…","正在路由 Palpitace 写代码…","正在路由 panyu1027 写代码…","正在路由 ParticleLight 写代码…","正在路由 PeanutDawson 写代码…","正在路由 Petom18 写代码…","正在路由 phaethon90 写代码…","正在路由 PheobeAI 写代码…","正在路由 PhosAQy 写代码…","正在路由 prolet1966 写代码…","正在路由 Qiu-Hillock 写代码…","正在路由 QUARTET-ITO-2000 写代码…","正在路由 R-SKY5 写代码…","正在路由 RaphaelNY 写代码…","正在路由 Rim-World 写代码…","正在路由 RRRosmontis 写代码…","正在路由 ruiqixizi-eng 写代码…","正在路由 sailoumili 写代码…","正在路由 Sakuracio 写代码…","正在路由 SanZ1211 写代码…","正在路由 sdadz-luo 写代码…","正在路由 Seduce355 写代码…","正在路由 semantic-craft 写代码…","正在路由 shiimizu 写代码…","正在路由 ShionKanagawa 写代码…","正在路由 SleepGod8 写代码…","正在路由 snowleorard 写代码…","正在路由 sqx070106-tech 写代码…","正在路由 ssz1132017-eng 写代码…","正在路由 TACONailoong 写代码…","正在路由 tenziro 写代码…","正在路由 The131313 写代码…","正在路由 TheGreatGrayx 写代码…","正在路由 Tomatamatom1 写代码…","正在路由 tttnny 写代码…","正在路由 Tumber-ZM 写代码…","正在路由 Turroise 写代码…","正在路由 turtleqiu 写代码…","正在路由 UkGuest0721 写代码…","正在路由 Umamed26 写代码…","正在路由 uni0317 写代码…","正在路由 varfa57 写代码…","正在路由 vic14420 写代码…","正在路由 WANGSHUISHUI2725 写代码…","正在路由 WesleyLiuCaiyin 写代码…","正在路由 whc2001 写代码…","正在路由 whoamihappyhacking 写代码…","正在路由 whyan176 写代码…","正在路由 WJXWP 写代码…","正在路由 Xaisspe 写代码…","正在路由 xBxUxGx 写代码…","正在路由 xbzcqgs 写代码…","正在路由 xialongxl 写代码…","正在路由 xiaokongQAQ123 写代码…","正在路由 xiaozi233 写代码…","正在路由 xiazhenxin314-cpu 写代码…","正在路由 XingPeng-Pixel 写代码…","正在路由 Xmiss9 写代码…","正在路由 xuehai-jing 写代码…","正在路由 xuehuling 写代码…","正在路由 xwmp3 写代码…","正在路由 yanyoo2000 写代码…","正在路由 yensonhwu 写代码…","正在路由 yihefeikong-rgb 写代码…","正在路由 yimu2111 写代码…","正在路由 Ylhow06 写代码…","正在路由 ymt-zzz 写代码…","正在路由 YOASHABI 写代码…","正在路由 yuan-source-666 写代码…","正在路由 yuedaochangmendian 写代码…","正在路由 Yuerchu 写代码…","正在路由 yusun726 写代码…","正在路由 YuZjenOn 写代码…","正在路由 Yv-Chinglin 写代码…","正在路由 YYC-JNU 写代码…","正在路由 z1934712096 写代码…","正在路由 z4668640 写代码…","正在路由 ZANNC 写代码…","正在路由 Zircon10086 写代码…","正在路由 ZIye1208 写代码…"]},"en":{"thinking":["Routing 004Tingting to write code…","Routing 01Virex to write code…","Routing 0tkl to write code…","Routing 0xD88C to write code…","Routing 1251639747jm-ctrl to write code…","Routing 1472383516 to write code…","Routing 18336956907 to write code…","Routing 1xmyI297 to write code…","Routing 212016679-ctrl to write code…","Routing 2227975312 to write code…","Routing 2594954062-code to write code…","Routing 2795178962 to write code…","Routing 321sssrt-bit to write code…","Routing 3418244301q-star to write code…","Routing 383891598 to write code…","Routing A7m0spHere to write code…","Routing achenjins to write code…","Routing adataki070 to write code…","Routing Allennnnnnnnnnn to write code…","Routing Amiya-AMa-10 to write code…","Routing ArkPriestess to write code…","Routing AtUmr to write code…","Routing Augusto-Luo to write code…","Routing Ayagikei to write code…","Routing Ayaka157 to write code…","Routing bac4509 to write code…","Routing baichen99 to write code…","Routing BBitQNull to write code…","Routing bbj32 to write code…","Routing BBleae to write code…","Routing beautymonkey1437 to write code…","Routing belowthetree to write code…","Routing Bemly to write code…","Routing BitterBox to write code…","Routing blaxisomu to write code…","Routing BocchiBluce to write code…","Routing bxzwq to write code…","Routing cafe3310 to write code…","Routing Calasnrkoalv to write code…","Routing catundchat to write code…","Routing cc01cc to write code…","Routing ChaLunRon to write code…","Routing Cheerwhy to write code…","Routing CHIANGANGSTER to write code…","Routing cklmdoc to write code…","Routing czyczy23 to write code…","Routing dac114514 to write code…","Routing darkyzhou to write code…","Routing dengziqi233 to write code…","Routing deshark42 to write code…","Routing dhadb to write code…","Routing Donnoe to write code…","Routing DreamsTOF to write code…","Routing drsmile1001 to write code…","Routing dtdtfh to write code…","Routing dwfce to write code…","Routing dyguests to write code…","Routing ElemmentR to write code…","Routing elmaxid to write code…","Routing Elysia-0 to write code…","Routing EricTrusen to write code…","Routing F5160 to write code…","Routing Fantacyli to write code…","Routing feibo217 to write code…","Routing Fengyrion to write code…","Routing FFFengMJL to write code…","Routing ffyfox to write code…","Routing frantic2025 to write code…","Routing fsfdsfdfg to write code…","Routing Fuhua-code to write code…","Routing futurewitness to write code…","Routing gjj-star to write code…","Routing Glattfor to write code…","Routing groksense to write code…","Routing haryusc to write code…","Routing HCHC123321 to write code…","Routing Hhaha233 to write code…","Routing Hitachi-Momoka to write code…","Routing hua985 to write code…","Routing HuaYu0255 to write code…","Routing huiikeung to write code…","Routing Hymenjj to write code…","Routing Hymingture to write code…","Routing InkMeows to write code…","Routing ippdesu to write code…","Routing JetBlackJade to write code…","Routing jiangdusi224 to write code…","Routing jiangyitong2058 to write code…","Routing jiangyizhu135 to write code…","Routing jifangjiayin to write code…","Routing Jonysand to write code…","Routing journey266 to write code…","Routing Kanadego to write code…","Routing kansjwqwq to write code…","Routing kezboardpj to write code…","Routing Ksatra-cyber to write code…","Routing Kuuujoo to write code…","Routing Lancll to write code…","Routing lanshwskn to write code…","Routing LeeOSwald368 to write code…","Routing leo-sai to write code…","Routing liangzai789 to write code…","Routing liceses to write code…","Routing LingFengfeng to write code…","Routing linkw2222 to write code…","Routing liu200320 to write code…","Routing llfk to write code…","Routing LoMoCatAp to write code…","Routing luanshang to write code…","Routing Lucent-Snow to write code…","Routing Luh2233 to write code…","Routing lukethecat to write code…","Routing lzcapp to write code…","Routing M-ls to write code…","Routing Machine-126 to write code…","Routing MaoYo42 to write code…","Routing MathisWellmann to write code…","Routing max-fcan to write code…","Routing MEooCheN to write code…","Routing Michubil to write code…","Routing Miho-an-kou to write code…","Routing Miles1994 to write code…","Routing miting1232-source to write code…","Routing mlozaw to write code…","Routing mmmpipi to write code…","Routing mohong2 to write code…","Routing monkeycathyd to write code…","Routing mrbbbaixue to write code…","Routing MRNath to write code…","Routing mulinyang041 to write code…","Routing Myingji to write code…","Routing nano-sun99 to write code…","Routing Narcissu-s1 to write code…","Routing nihaods to write code…","Routing niu12503 to write code…","Routing NOOBnoob163 to write code…","Routing NotUNperson to write code…","Routing Orange-CJ to write code…","Routing Orange3324766 to write code…","Routing Osmundo101 to write code…","Routing outloudvi to write code…","Routing paleech0 to write code…","Routing Palpitace to write code…","Routing panyu1027 to write code…","Routing ParticleLight to write code…","Routing PeanutDawson to write code…","Routing Petom18 to write code…","Routing phaethon90 to write code…","Routing PheobeAI to write code…","Routing PhosAQy to write code…","Routing prolet1966 to write code…","Routing Qiu-Hillock to write code…","Routing QUARTET-ITO-2000 to write code…","Routing R-SKY5 to write code…","Routing RaphaelNY to write code…","Routing Rim-World to write code…","Routing RRRosmontis to write code…","Routing ruiqixizi-eng to write code…","Routing sailoumili to write code…","Routing Sakuracio to write code…","Routing SanZ1211 to write code…","Routing sdadz-luo to write code…","Routing Seduce355 to write code…","Routing semantic-craft to write code…","Routing shiimizu to write code…","Routing ShionKanagawa to write code…","Routing SleepGod8 to write code…","Routing snowleorard to write code…","Routing sqx070106-tech to write code…","Routing ssz1132017-eng to write code…","Routing TACONailoong to write code…","Routing tenziro to write code…","Routing The131313 to write code…","Routing TheGreatGrayx to write code…","Routing Tomatamatom1 to write code…","Routing tttnny to write code…","Routing Tumber-ZM to write code…","Routing Turroise to write code…","Routing turtleqiu to write code…","Routing UkGuest0721 to write code…","Routing Umamed26 to write code…","Routing uni0317 to write code…","Routing varfa57 to write code…","Routing vic14420 to write code…","Routing WANGSHUISHUI2725 to write code…","Routing WesleyLiuCaiyin to write code…","Routing whc2001 to write code…","Routing whoamihappyhacking to write code…","Routing whyan176 to write code…","Routing WJXWP to write code…","Routing Xaisspe to write code…","Routing xBxUxGx to write code…","Routing xbzcqgs to write code…","Routing xialongxl to write code…","Routing xiaokongQAQ123 to write code…","Routing xiaozi233 to write code…","Routing xiazhenxin314-cpu to write code…","Routing XingPeng-Pixel to write code…","Routing Xmiss9 to write code…","Routing xuehai-jing to write code…","Routing xuehuling to write code…","Routing xwmp3 to write code…","Routing yanyoo2000 to write code…","Routing yensonhwu to write code…","Routing yihefeikong-rgb to write code…","Routing yimu2111 to write code…","Routing Ylhow06 to write code…","Routing ymt-zzz to write code…","Routing YOASHABI to write code…","Routing yuan-source-666 to write code…","Routing yuedaochangmendian to write code…","Routing Yuerchu to write code…","Routing yusun726 to write code…","Routing YuZjenOn to write code…","Routing Yv-Chinglin to write code…","Routing YYC-JNU to write code…","Routing z1934712096 to write code…","Routing z4668640 to write code…","Routing ZANNC to write code…","Routing Zircon10086 to write code…","Routing ZIye1208 to write code…"]}}}];
-  /* 默认词包 = 全部 14 包（用户规格 2026-11-06）；「恢复默认词包」按钮同款。 */
+  /* 内置词包纯数据已拆分至 04-rotator-builtin-packs.js（拼接按文件名字典序，
+   * 该分片在本分片之前定义，数组先于下方 ZU_ROTATOR_PACK_BY_ID 索引构建可用）。 */
+  /* 默认词包 = 全部 16 包（用户规格 2026-11-06）；「恢复默认词包」按钮同款。 */
   /* 词包按 id 查找的唯一入口：ZU_ROTATOR_BUILTIN_PACKS 是数组，pack[id] 直索恒 undefined
    * （v268 移植版四处断链根因：词池合并、面板计数、loadRotatorConfig 过滤、预览全部落空）。 */
   var ZU_ROTATOR_PACK_BY_ID = {};
   for (var _pi = 0; _pi < ZU_ROTATOR_BUILTIN_PACKS.length; _pi++) ZU_ROTATOR_PACK_BY_ID[ZU_ROTATOR_BUILTIN_PACKS[_pi].id] = ZU_ROTATOR_BUILTIN_PACKS[_pi];
 
   var ZU_ROTATOR_PACK_META = [
+    { id: "chairman-mao", zh: "毛主席语录", en: "Chairman Mao" },
     { id: "deepseek", zh: "DeepSeek 专属", en: "DeepSeek" },
     { id: "reverse-proxy", zh: "反代与中转日常", en: "Reverse Proxy" },
     { id: "coding", zh: "程序员搬砖", en: "Coding" },
@@ -3510,7 +6996,8 @@
     { id: "community", zh: "社区语录", en: "Community" },
     { id: "ads", zh: "抽象小广告", en: "Parody Ads" },
     { id: "star-ask", zh: "求 Star 互动", en: "Star Ask" },
-    { id: "star-route", zh: "指路 Star", en: "Star Route" }
+    { id: "star-route", zh: "指路 Star", en: "Star Route" },
+    { id: "programming-pearls", zh: "编程珠玑", en: "Programming Pearls" }
   ];
 
   var ZU_APPEARANCE_THEMES = {
@@ -3794,6 +7281,7 @@
       weightedRandom: true,
       antiRepeat: { recentLimit: 6, persist: false },
       enabledPacks: ZU_ROTATOR_PACK_META.map(function (m) { return m.id; }),
+      knownPackIds: ZU_ROTATOR_PACK_META.map(function (m) { return m.id; }),   /* 用户已见过的包集合：META 新增包对存量配置一次性补开，之后显式关包不再被补回 */
       activePreset: "default",
       scheduleEnabled: false,
       schedule: [
@@ -3870,6 +7358,27 @@
         base.enabledPacks = raw.enabledPacks.filter(function (id) {
           return typeof id === "string" && Object.prototype.hasOwnProperty.call(ZU_ROTATOR_PACK_BY_ID, id);
         });
+      }
+      /* 新增词包对存量配置默认开启：无 knownPackIds 的旧配置以拆分前 14 个 legacy 包 id 作
+       * seen 种子——显式关过的旧包不会被一次性补回，只补新增 id（chairman-mao/
+       * programming-pearls）；带集合的配置只补 META 新增 id——此后用户显式关包保存回
+       * knownPackIds，永不被补回。
+       * 补开发生即落盘（不能等下次设置保存：从不碰设置的存量用户会每次重载重复合并）。 */
+      var metaPackIds = ZU_ROTATOR_PACK_META.map(function (m) { return m.id; });
+      var LEGACY_PACK_IDS = ["deepseek", "reverse-proxy", "coding", "sysadmin", "western-ai", "china-ai", "math-physics", "slacking", "internet-memes", "daily", "community", "ads", "star-ask", "star-route"];
+      var seenPackIds = Array.isArray(raw.knownPackIds)
+        ? raw.knownPackIds.filter(function (id) { return typeof id === "string"; })
+        : LEGACY_PACK_IDS.slice();
+      var merged = false;
+      metaPackIds.forEach(function (id) {
+        if (seenPackIds.indexOf(id) < 0 && base.enabledPacks.indexOf(id) < 0) {
+          base.enabledPacks.push(id);
+          merged = true;
+        }
+      });
+      base.knownPackIds = metaPackIds.slice();
+      if (merged) {
+        try { lsSet(ZU_ROTATOR_LS_KEY, JSON.stringify(base)); } catch (e) { }
       }
       if (typeof raw.activePreset === "string" && raw.activePreset) base.activePreset = raw.activePreset;
       if (typeof raw.scheduleEnabled === "boolean") base.scheduleEnabled = raw.scheduleEnabled;
@@ -4021,6 +7530,9 @@
             if (k0 === "tool" || k0 === "retry" || k0 === "pending" || k0 === "firstTurn") when[k0] = true;
           } else {
             var k = kv.slice(0, eq).trim(), v = kv.slice(eq + 1).trim();
+            /* 键白名单（与 matchesPhraseWhen 消费集一致）：行语法的未知键直接丢弃——
+             * 任意键名会经编辑器提示行拼进 innerHTML，是存储型注入面（review 修复） */
+            if (k !== "tool" && k !== "retry" && k !== "pending" && k !== "firstTurn" && k !== "hour" && k !== "phase") return;
             if (v === "true") when[k] = true;
             else if (v === "false") when[k] = false;
             else if (/^\d+$/.test(v) && (k === "retry" || k === "pending")) when[k] = parseInt(v, 10);
@@ -4052,6 +7564,251 @@
     }).filter(Boolean).join("\n");
   }
 
+  /* ---------- 自定义短语可视化编辑器（主视图）+ 文本模式 + 按条定向预览 ----------
+   * 存储协议不变：customPhrases 仍是解析后对象数组，可视化控件直接读写对象；
+   * rotCpTextMode 切回行语法 textarea（formatPhraseLines 序列化、parsePhraseLine 照旧）。
+   * DOM 查询一律类名（VM 测试 FakeElement 只支持类名/标签白名单），data-* 仅作数据载体。 */
+  var rotCpTextMode = false;
+  var rotCpPreview = null;   /* { ph, i, text } 按条预览锚：i 漂移时按 text 校验失配即清 */
+  var rotCpLastTextEl = null;
+
+  function rotCpEsc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+    });
+  }
+
+  /* 17 个实时占位符说明（键与 formatRotatorPlaceholders 白名单一一对应，改一处必同步另一处） */
+  var ZU_CP_PLACEHOLDERS = [
+    { k: "elapsed",       zh: "任务已进行时长",     en: "Elapsed time",          ex: "1m 20s" },
+    { k: "tps",           zh: "实时生成速度",       en: "Live speed (t/s)",      ex: "42.5" },
+    { k: "model",         zh: "当前模型名",         en: "Model name",            ex: "GLM-5.3" },
+    { k: "provider",      zh: "模型供应商",         en: "Provider name",         ex: "Z.ai" },
+    { k: "running",       zh: "当前正在做的动作",   en: "Current action",        ex: "" },
+    { k: "tools",         zh: "本轮已用工具次数",   en: "Tool calls this turn",  ex: "3" },
+    { k: "pending",       zh: "排队中的任务数",     en: "Pending tasks",         ex: "0" },
+    { k: "retry",         zh: "已重试次数",         en: "Retry count",           ex: "0" },
+    { k: "retryMax",      zh: "最大重试次数",       en: "Max retries",           ex: "3" },
+    { k: "retryProvider", zh: "正在重试的供应商",   en: "Provider being retried", ex: "API" },
+    { k: "retryCode",     zh: "触发重试的错误码",   en: "Retry error code",      ex: "429" },
+    { k: "phase",         zh: "阶段标识",           en: "Phase id",              ex: "running" },
+    { k: "phaseLabel",    zh: "阶段名称",           en: "Phase label",           ex: "" },
+    { k: "detail",        zh: "工具附带的详情",     en: "Tool detail",           ex: "" },
+    { k: "locale",        zh: "界面语言",           en: "Locale",                ex: "zh" },
+    { k: "date",          zh: "今天日期",           en: "Today's date",          ex: "2026-11-07" },
+    { k: "time",          zh: "当前时间",           en: "Current time",          ex: "14:30:00" }
+  ];
+
+  function rotCpLoc() {
+    return state.lang === "en" ? "en" : "zh";
+  }
+
+  function rotCpArr(ph) {
+    var locCfg = rotatorCfg.customPhrases && rotatorCfg.customPhrases[rotCpLoc()];
+    return locCfg && Array.isArray(locCfg[ph]) ? locCfg[ph] : [];
+  }
+
+  function rotCpItemOf(ph, i) {
+    var it = rotCpArr(ph)[i];
+    if (it && typeof it === "object" && typeof it.text === "string") return it;
+    if (typeof it === "string") return { text: it };
+    return null;
+  }
+
+  /* 纯函数：可视化控件值 → 存储对象。prev 的 when 中可视化表达不了的键（pending/hour/phase）
+   * 透传保留；显式 false 的 tool/firstTurn/retry 属手写高级语法（「仅无工具时」「仅非首轮」等），
+   * 可视化未勾选不视为清除——原样保留，真要删除请回文本模式（提示行同口径）。 */
+  function rotCpBuildItem(prev, ctl) {
+    var item = { text: String(ctl.text == null ? "" : ctl.text).trim() };
+    var w = parseFloat(ctl.weight);
+    if (isFinite(w) && w !== 1) item.weight = clampNum(w, 0.1, 100, 1);
+    var r = parseFloat(ctl.rarity);
+    if (isFinite(r) && r < 100) item.rarity = clampNum(r, 1, 100, 100) / 100;
+    var prevWhen = prev && prev.when && typeof prev.when === "object" ? prev.when : null;
+    var when = {};
+    if (prevWhen) {
+      ["pending", "hour", "phase"].forEach(function (k) {
+        if (prevWhen[k] !== undefined) when[k] = prevWhen[k];
+      });
+    }
+    if (ctl.retry) {
+      var rn = parseInt(ctl.retryNum, 10);
+      when.retry = (isFinite(rn) && rn > 0) ? rn : true;
+    } else if (prevWhen && prevWhen.retry === false) {
+      when.retry = false;
+    }
+    if (ctl.tool) {
+      var tn = String(ctl.toolName == null ? "" : ctl.toolName).trim();
+      when.tool = tn || true;
+    } else if (prevWhen && prevWhen.tool === false) {
+      when.tool = false;
+    }
+    if (ctl.first) when.firstTurn = true;
+    else if (prevWhen && prevWhen.firstTurn === false) when.firstTurn = false;
+    if (Object.keys(when).length) item.when = when;
+    return item;
+  }
+
+  function rotCpRowHtml(ph, i) {
+    var it = rotCpItemOf(ph, i) || {};
+    var when = it.when && typeof it.when === "object" ? it.when : {};
+    var toolName = typeof when.tool === "string" ? when.tool : "";
+    var retryNum = typeof when.retry === "number" ? when.retry : 0;
+    var rarityPct = (typeof it.rarity === "number" && it.rarity > 0 && it.rarity < 1) ? Math.round(it.rarity * 100) : 100;
+    var hidden = [];
+    for (var k in when) {
+      if (!Object.prototype.hasOwnProperty.call(when, k)) continue;
+      if (k === "tool" || k === "firstTurn" || k === "retry") {
+        if (when[k] === false) hidden.push(k + "=false");
+      } else {
+        hidden.push(k);
+      }
+    }
+    var advOpen = !!(hidden.length || when.tool !== undefined || when.firstTurn !== undefined || when.retry !== undefined || rarityPct < 100);
+    var playing = !!(rotCpPreview && rotCpPreview.ph === ph && rotCpPreview.i === i && rotCpPreview.text === it.text);
+    return '<div class="zu-rot-cp-row' + (playing ? " zu-rot-cp-playing" : "") + '" data-cp-ph="' + ph + '" data-cp-i="' + i + '">' +
+      '<div class="zu-rot-cp-main">' +
+        '<input type="text" class="zu-rot-cp-text" value="' + rotCpEsc(it.text) + '" placeholder="' + rotCpEsc(L("短语文案，可含 {elapsed} {tps} 等占位符（见下方说明）", "Phrase text with {elapsed}, {tps}... placeholders")) + '">' +
+        '<label class="zu-rot-cp-wlabel zu-rot-tipt" data-tip="' + rotCpEsc(L("权重：数字越大越常出现（默认 1）", "Weight: higher = more frequent (default 1)")) + '">' + L("权重", "Wt") +
+          '<input type="number" class="zu-rot-cp-weight" min="0.1" max="100" step="0.5" value="' + (typeof it.weight === "number" ? it.weight : 1) + '"></label>' +
+        '<button type="button" class="zu-rot-btn zu-rot-cp-play zu-rot-tipt" data-tip="' + rotCpEsc(playing ? L("停止预览，恢复随机轮播", "Stop preview") : L("预览这条短语（打字机+占位符真实效果）", "Preview this phrase")) + '">' + (playing ? "■" : "▶") + '</button>' +
+        '<button type="button" class="zu-rot-btn zu-rot-cp-adv zu-rot-tipt' + (advOpen ? " zu-rot-cp-adv-on" : "") + '" data-tip="' + rotCpEsc(L("高级：出现概率与显示条件", "Advanced: chance & conditions")) + '">⚙</button>' +
+        '<button type="button" class="zu-rot-btn zu-rot-cp-del zu-rot-tipt" data-tip="' + rotCpEsc(L("删除这条短语", "Delete phrase")) + '">✕</button>' +
+      '</div>' +
+      '<div class="zu-rot-cp-advpanel"' + (advOpen ? "" : " hidden") + '>' +
+        '<label class="zu-rot-cp-alabel zu-rot-tipt" data-tip="' + rotCpEsc(L("出现概率：低于 100% 时这条短语只会偶尔出现", "Chance: below 100% this phrase appears only occasionally")) + '">' + L("出现概率", "Chance") +
+          '<input type="number" class="zu-rot-cp-rarity" min="1" max="100" step="5" value="' + rarityPct + '">%</label>' +
+        '<label class="zu-rot-tipt" data-tip="' + rotCpEsc(L("只在模型正在执行工具（跑命令、读文件等）时出现", "Only while a tool is running")) + '"><input type="checkbox" class="zu-rot-cp-cb zu-rot-cp-toolcb"' + (when.tool ? " checked" : "") + '> ' + L("仅工具执行时", "Only while tool runs") + '</label>' +
+        '<input type="text" class="zu-rot-cp-toolname" value="' + rotCpEsc(toolName) + '" placeholder="' + rotCpEsc(L("工具名包含，如 Bash（留空=任意工具）", "Tool name contains, e.g. Bash (empty = any)")) + '">' +
+        '<label class="zu-rot-tipt" data-tip="' + rotCpEsc(L("只在本会话第一轮对话时出现", "Only on the first turn of this session")) + '"><input type="checkbox" class="zu-rot-cp-cb zu-rot-cp-firstcb"' + (when.firstTurn ? " checked" : "") + '> ' + L("仅第一轮对话", "First turn only") + '</label>' +
+        '<label class="zu-rot-tipt" data-tip="' + rotCpEsc(L("只在请求失败重试时出现", "Only while retrying after a failure")) + '"><input type="checkbox" class="zu-rot-cp-cb zu-rot-cp-retrycb"' + (when.retry ? " checked" : "") + (retryNum ? ' data-num="' + retryNum + '"' : "") + '> ' + L("正在重试时", "While retrying") + '</label>' +
+        (hidden.length ? '<em class="zu-rot-cp-note">' + rotCpEsc(L("此条还含高级条件（{k}）——可视化不展示，保存会保留，修改请用文本模式", "Extra advanced conditions ({k}) are kept on save; edit them in text mode")).replace("{k}", rotCpEsc(hidden.join("、"))) + '</em>' : "") +
+      '</div>' +
+    '</div>';
+  }
+
+  function rotCpListHtml(ph) {
+    var arr = rotCpArr(ph);
+    if (!arr.length) {
+      return '<div class="zu-rot-cp-empty">' + rotCpEsc(L("还没有自定义短语，点上方「+ 添加」写一条；轮播仍会使用内置词包。", "No custom phrases yet. Click + Add above; built-in packs still rotate.")) + '</div>';
+    }
+    var rows = "";
+    for (var i = 0; i < arr.length; i++) rows += rotCpRowHtml(ph, i);
+    return rows;
+  }
+
+  function rotCpHelpersHtml() {
+    var COMMON = { elapsed: "时长", tps: "速度", model: "模型", running: "动作", tools: "工具数", retry: "重试" };
+    var COMMON_EN = { elapsed: "time", tps: "speed", model: "model", running: "action", tools: "tools", retry: "retry" };
+    var chips = ZU_CP_PLACEHOLDERS.filter(function (p) { return COMMON[p.k]; }).map(function (p) {
+      var tag = state.lang === "en" ? COMMON_EN[p.k] : COMMON[p.k];
+      return '<button type="button" class="zu-rot-cp-chip zu-rot-tipt" data-cp-chip="{' + p.k + '}" data-tip="' +
+        rotCpEsc(L(p.zh, p.en) + "，例如 " + (p.ex || "—")) + '">{ ' + p.k + ' } <b>' + rotCpEsc(tag) + '</b></button>';
+    }).join("");
+    var all = ZU_CP_PLACEHOLDERS.map(function (p) {
+      return '<div class="zu-rot-cp-phitem"><code>{' + p.k + '}</code><span>' + rotCpEsc(L(p.zh, p.en)) + '</span><small>' + rotCpEsc(p.ex || "—") + '</small></div>';
+    }).join("");
+    return '<div class="zu-rot-cp-helpers">' +
+      '<div class="zu-rot-cp-hrow">' +
+        '<span>' + rotCpEsc(L("可用占位符（点击插入正在编辑的文案，完整说明见「全部 17 个」）", "Placeholders (click to insert; see All 17 for details):")) + '</span>' +
+        chips +
+        '<button type="button" class="zu-rot-btn zu-rot-cp-phbtn">' + L("全部 17 个 ▾", "All 17 ▾") + '</button>' +
+      '</div>' +
+      '<div class="zu-rot-cp-phall" hidden>' + all + '</div>' +
+    '</div>';
+  }
+
+  function rotCpCardInner() {
+    if (rotCpTextMode) {
+      var f = function (ph) { return formatPhraseLines(rotCpArr(ph)); };
+      return '<div class="pnote">' + rotCpEsc(L("每行一条：文案 | 权重 | when:tool=Bash | rarity:0.5（点右上「返回可视化编辑」切回表单）", "One per line: text | weight | when:tool=Bash | rarity:0.5")) + '</div>' +
+        '<div class="pnote">' + L("思考阶段 (thinking)", "Thinking phase") + '</div>' +
+        '<textarea class="zu-rot-textarea zu-rot-custom-thinking" placeholder="' + L("正在思考人生 ({elapsed})… | 2", "Thinking deeply ({elapsed})… | 2") + '">' + rotCpEsc(f("thinking")) + '</textarea>' +
+        '<div class="pnote">' + L("运行阶段 (running)", "Running phase") + '</div>' +
+        '<textarea class="zu-rot-textarea zu-rot-custom-running" placeholder="' + L("全力输出中 {tps} t/s · {running} | 2", "Streaming at {tps} t/s · {running} | 2") + '">' + rotCpEsc(f("running")) + '</textarea>' +
+        '<div class="pnote">' + L("长耗时阶段 (long)", "Long turn phase") + '</div>' +
+        '<textarea class="zu-rot-textarea zu-rot-custom-long" placeholder="' + L("已经苦战 {elapsed}，稳住能赢！ | 3", "Still working after {elapsed}, hang tight! | 3") + '">' + rotCpEsc(f("long")) + '</textarea>';
+    }
+    var phase = function (ph) {
+      var label = L("思考阶段 (thinking)", "Thinking phase");
+      if (ph === "running") label = L("运行阶段 (running)", "Running phase");
+      else if (ph === "long") label = L("长耗时阶段 (long)", "Long turn phase");
+      return '<div class="pnote zu-rot-cp-pnote"><span>' + label + '</span>' +
+        '<button type="button" class="zu-rot-btn zu-rot-cp-add" data-cp-add="' + ph + '">+ ' + L("添加", "Add") + '</button></div>' +
+        '<div class="zu-rot-cp-list" data-cp-ph="' + ph + '">' + rotCpListHtml(ph) + '</div>';
+    };
+    return phase("thinking") + phase("running") + phase("long") + rotCpHelpersHtml();
+  }
+
+  function rotCpModeBtnText() {
+    return rotCpTextMode ? L("返回可视化编辑", "Back to visual editor") : L("文本编辑（高级）", "Text editor (advanced)");
+  }
+
+  function rotCpRerenderCard(panelEl) {
+    if (!panelEl || !panelEl.querySelector) return;
+    var card = panelEl.querySelector(".zu-rot-cp-card");
+    if (card) card.innerHTML = rotCpCardInner();
+    var modeBtn = panelEl.querySelector(".zu-rot-cp-mode");
+    if (modeBtn) modeBtn.textContent = rotCpModeBtnText();
+    if (!rotCpTextMode) rotCpSyncPlayBtns(panelEl);
+  }
+
+  function rotCpRerenderList(panelEl, ph) {
+    if (!panelEl || !panelEl.querySelectorAll) return;
+    var lists = panelEl.querySelectorAll(".zu-rot-cp-list");
+    for (var i = 0; i < lists.length; i++) {
+      if (lists[i].getAttribute("data-cp-ph") === ph) lists[i].innerHTML = rotCpListHtml(ph);
+    }
+    rotCpSyncPlayBtns(panelEl);
+  }
+
+  function rotCpSyncPlayBtns(panelEl) {
+    if (!panelEl || !panelEl.querySelectorAll) return;
+    panelEl.querySelectorAll(".zu-rot-cp-play").forEach(function (b) {
+      var row = b.closest ? b.closest(".zu-rot-cp-row") : null;
+      var on = !!(row && rotCpPreview &&
+        row.getAttribute("data-cp-ph") === rotCpPreview.ph &&
+        parseInt(row.getAttribute("data-cp-i"), 10) === rotCpPreview.i);
+      b.textContent = on ? "■" : "▶";
+      b.setAttribute("data-tip", on ? L("停止预览，恢复随机轮播", "Stop preview") : L("预览这条短语（打字机+占位符真实效果）", "Preview this phrase"));
+      if (row && row.classList) row.classList.toggle("zu-rot-cp-playing", on);   /* 播放行高亮边框与按钮符号同步 */
+    });
+  }
+
+  /* 校验按条预览锚：条目被删/改文案/索引漂移时失配清空（防播错条），有效则返回锚 */
+  function rotCpPreviewValid() {
+    if (!rotCpPreview) return null;
+    var it = rotCpItemOf(rotCpPreview.ph, rotCpPreview.i);
+    if (!it || !it.text || it.text !== rotCpPreview.text) { rotCpPreview = null; return null; }
+    return rotCpPreview;
+  }
+
+  /* 行 DOM → 存储对象（change 保存路径）；成功返回该行 ph/i，失败返回 null */
+  function rotCpSaveRow(row) {
+    if (!row || !row.getAttribute || !row.querySelector) return null;
+    var ph = row.getAttribute("data-cp-ph");
+    var i = parseInt(row.getAttribute("data-cp-i"), 10);
+    if (!ph || !(i >= 0)) return null;
+    var arr = rotCpArr(ph);
+    if (i >= arr.length) return null;
+    var prev = arr[i] && typeof arr[i] === "object" ? arr[i] : { text: String(arr[i] == null ? "" : arr[i]) };
+    var q = function (cls) { return row.querySelector("." + cls); };
+    var textEl = q("zu-rot-cp-text");
+    var retryCb = q("zu-rot-cp-retrycb");
+    var arrLoc = rotatorCfg.customPhrases[rotCpLoc()];
+    arrLoc[ph][i] = rotCpBuildItem(prev, {
+      text: textEl ? textEl.value : prev.text,
+      weight: q("zu-rot-cp-weight") ? q("zu-rot-cp-weight").value : "",
+      rarity: q("zu-rot-cp-rarity") ? q("zu-rot-cp-rarity").value : "",
+      tool: q("zu-rot-cp-toolcb") ? !!q("zu-rot-cp-toolcb").checked : false,
+      toolName: q("zu-rot-cp-toolname") ? q("zu-rot-cp-toolname").value : "",
+      first: q("zu-rot-cp-firstcb") ? !!q("zu-rot-cp-firstcb").checked : false,
+      retry: retryCb ? !!retryCb.checked : false,
+      retryNum: retryCb && retryCb.getAttribute ? (retryCb.getAttribute("data-num") || "") : ""
+    });
+    return { ph: ph, i: i };
+  }
+
   /* ---------- 词池合并、条件过滤、洗牌袋防重复与 17 个实时占位符 ---------- */
   function getMergedPhrasePool(phase, lang, nowDate) {
     var loc = lang === "en" ? "en" : "zh";
@@ -4081,7 +7838,7 @@
       if (typeof c === "string") {
         var parsed = parsePhraseLine(c);
         if (parsed) pool.push(Object.assign({ pack: "custom" }, parsed));
-      } else if (c && typeof c.text === "string") {
+      } else if (c && typeof c.text === "string" && c.text) {   /* 可视化编辑器的空文案草稿行不入池 */
         pool.push(Object.assign({ weight: 1, pack: "custom" }, c));
       }
     }
@@ -4249,7 +8006,7 @@
       "@keyframes zuRotFlow{0%{background-position:0% 50%}100%{background-position:200% 50%}}" +
       "@keyframes zuRotBreathe{0%,100%{opacity:.98;transform:scale(1)}50%{opacity:.72;transform:scale(.99)}}" +
       "@keyframes zuRotGlitch{0%,92%,100%{transform:translate(0,0);opacity:1}94%{transform:translate(-1px,.5px);opacity:.88}96%{transform:translate(1px,-.5px);opacity:.92}98%{transform:translate(-.5px,0);opacity:.85}}" +
-      ".zu-rotator-active-label{display:inline-block;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:bottom;" + fontRule + weightRule + glowRule + gradCss + "transition:opacity .15s ease}" +
+      ".zu-rotator-active-label{display:inline-block;vertical-align:bottom;word-break:break-word;" + fontRule + weightRule + glowRule + gradCss + "transition:opacity .15s ease}" +
       ".zu-whale-tail-wrap{display:inline-flex;align-items:center;justify-content:center;width:18px;height:15px;flex:0 0 18px;vertical-align:middle;cursor:pointer}" +
       ".zu-whale-tail{width:18px;height:15px;display:block;overflow:visible}" +
       (rotatorCfg.whaleTailRainbow
@@ -4261,6 +8018,20 @@
       ".zu-rot-pack-item label{display:inline-flex;align-items:center;gap:6px;padding:0;flex:1;min-width:0;cursor:pointer}" +
       ".zu-rot-pack-item input[type=checkbox]{margin:0}" +
       ".zu-rot-pack-item small{color:var(--color-foreground-subtle,#8791a3);font-size:11px}" +
+      ".zu-rot-pack-item .zu-rot-pack-view{flex:none;padding:2px 8px;font-size:11px;line-height:1.4}" +
+      /* 标题行「原作者」按钮（v 线：rotator 设置标题右缘外链致谢）：cap 切 flex，按钮 margin-left:auto 靠右 */
+      ".zu-settings-section[data-sec='rotator'] .cap.zu-rot-cap{display:flex;align-items:center;gap:10px}" +
+      ".zu-rot-credit{margin-left:auto;flex:none;font-weight:400;font-size:calc(var(--ui-font-size,14px) - 2px);line-height:1.4;padding:2px 10px}" +
+      ".zu-rot-pk-dlg{position:fixed;inset:0;z-index:2147483647;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.6);-webkit-app-region:no-drag}" +
+      ".zu-rot-pk-card{box-sizing:border-box;width:600px;max-width:calc(100vw - 24px);height:80vh;display:flex;flex-direction:column;border-radius:14px;background:var(--color-popover,#fff);color:var(--color-foreground,#0a0a0a);border:1px solid var(--color-border,rgba(0,0,0,.1));box-shadow:0 25px 50px -12px rgba(0,0,0,.45);font-family:inherit;overflow:hidden}" +
+      ".zu-rot-pk-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 16px;border-bottom:1px solid var(--color-border,rgba(0,0,0,.1))}" +
+      ".zu-rot-pk-title{font-weight:600;font-size:calc(var(--ui-font-size,14px) + 1px)}" +
+      ".zu-rot-pk-count{color:var(--color-foreground-subtle,#8791a3);font-size:12px;font-variant-numeric:tabular-nums}" +
+      ".zu-rot-pk-close{flex:none;background:none;border:0;color:var(--color-foreground-subtle,#8791a3);font:inherit;font-size:18px;line-height:1;cursor:pointer;padding:4px 8px;border-radius:6px}" +
+      ".zu-rot-pk-close:hover{background:var(--color-hover,rgba(0,0,0,.06));color:var(--color-foreground,#0a0a0a)}" +
+      ".zu-rot-pk-list{flex:1;min-height:0;overflow-y:auto;padding:6px 16px 14px;font-size:calc(var(--ui-font-size,14px) - 1px);line-height:1.6}" +
+      ".zu-rot-pk-item{display:flex;gap:10px;padding:7px 0;border-bottom:1px dashed var(--color-border,rgba(0,0,0,.08))}.zu-rot-pk-no{flex:none;min-width:38px;text-align:right;color:var(--color-foreground-subtle,#8791a3);font-variant-numeric:tabular-nums;user-select:none}.zu-rot-pk-txt{flex:1;min-width:0;white-space:pre-wrap;word-break:break-word}" +
+      ".zu-rot-pk-note{padding:8px 0 2px;color:var(--color-foreground-subtle,#8791a3);font-size:12px}" +
       ".zu-rot-pack-preview{margin:0 14px 12px;color:var(--color-foreground-subtle,#8791a3);font-size:calc(var(--ui-font-size,14px) - 2px)}" +
       ".zu-rot-prev-stage{padding:12px 14px 10px;display:flex;align-items:center;gap:10px;min-height:36px}" +
       ".zu-rot-prev-row{display:inline-flex;align-items:center;gap:10px;max-width:100%;overflow:hidden}" +
@@ -4275,7 +8046,39 @@
       ".zu-rot-select,.zu-rot-num{background:var(--color-input,rgba(0,0,0,.22));border:1px solid var(--color-border,rgba(255,255,255,.14));border-radius:6px;color:inherit;padding:3px 8px;font:inherit;font-size:calc(var(--ui-font-size,14px) - 1px)}" +
       ".zu-rot-num{width:76px;text-align:right}" +
       ".zu-rot-btn{background:var(--color-hover,rgba(255,255,255,.08));border:1px solid var(--color-border,rgba(255,255,255,.14));border-radius:6px;color:inherit;padding:4px 10px;font:inherit;font-size:calc(var(--ui-font-size,14px) - 1px);cursor:pointer}" +
-      ".zu-rot-btn:hover{background:var(--color-border,rgba(255,255,255,.16))}";
+      ".zu-rot-btn:hover{background:var(--color-border,rgba(255,255,255,.16))}" +
+      /* 自定义短语可视化编辑器 */
+      ".zu-rot-tipt{position:relative}" +
+      ".zu-rot-tipt:hover::after{content:attr(data-tip);position:absolute;bottom:calc(100% + 6px);left:0;z-index:2147483646;max-width:280px;width:max-content;padding:6px 10px;border:1px solid var(--color-popover-border,var(--color-border,rgba(255,255,255,.14)));border-radius:8px;background:var(--color-popover,#20242e);color:var(--color-popover-foreground,var(--color-foreground,#e9edf4));font-size:calc(var(--ui-font-size,14px) - 2px);line-height:1.5;white-space:normal;text-align:left;box-shadow:0 6px 18px rgba(0,0,0,.28);pointer-events:none}" +
+      ".zu-rot-cp-row .zu-rot-tipt:hover::after,.zu-settings .cap .zu-rot-tipt:hover::after{left:auto;right:0}" +
+      ".zu-settings .cap .zu-rot-cp-mode{float:right;margin-top:-4px}" +
+      ".zu-rot-cp-pnote{display:flex;align-items:center;justify-content:space-between;gap:8px}" +
+      ".zu-rot-cp-list{display:flex;flex-direction:column;gap:6px;margin:4px 12px 10px}" +
+      ".zu-rot-cp-row{border:1px solid var(--color-border,rgba(255,255,255,.1));border-radius:8px;padding:6px 8px;background:var(--color-hover,rgba(255,255,255,.03))}" +
+      ".zu-rot-cp-row.zu-rot-cp-playing{border-color:var(--color-brand,rgba(87,200,255,.55))}" +
+      ".zu-rot-cp-main{display:flex;align-items:center;gap:6px}" +
+      ".zu-rot-cp-text{flex:1;min-width:0;background:var(--color-input,rgba(0,0,0,.22));border:1px solid var(--color-border,rgba(255,255,255,.12));border-radius:6px;color:inherit;padding:4px 8px;font:inherit;font-size:calc(var(--ui-font-size,14px) - 1px)}" +
+      /* .zu-settings 前缀不可省：面板基础样式 .zu-settings label{align-items:flex-start;padding:12px 14px}
+       * 特异性 (0,1,1) 压过单类覆写，「权重」标签会顶对齐不与数字框居中（用户截图实证） */
+      ".zu-settings .zu-rot-cp-wlabel,.zu-settings .zu-rot-cp-advpanel label{display:inline-flex;align-items:center;gap:4px;margin:0;padding:0;border:0;font-weight:400;font-size:calc(var(--ui-font-size,14px) - 2px);color:var(--color-foreground-subtle,#8791a3);white-space:nowrap}" +
+      ".zu-settings .zu-rot-cp-wlabel input,.zu-settings .zu-rot-cp-advpanel label input{margin-top:0}" +
+      ".zu-rot-cp-weight,.zu-rot-cp-rarity{width:52px;text-align:right;background:var(--color-input,rgba(0,0,0,.22));border:1px solid var(--color-border,rgba(255,255,255,.14));border-radius:6px;color:inherit;padding:3px 6px;font:inherit}" +
+      ".zu-rot-cp-advpanel{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;margin-top:6px;padding-top:6px;border-top:1px dashed var(--color-border,rgba(255,255,255,.08));font-size:calc(var(--ui-font-size,14px) - 2px)}" +
+      ".zu-rot-cp-toolname{flex:1;min-width:120px;background:var(--color-input,rgba(0,0,0,.22));border:1px solid var(--color-border,rgba(255,255,255,.12));border-radius:6px;color:inherit;padding:3px 8px;font:inherit;font-size:calc(var(--ui-font-size,14px) - 2px)}" +
+      /* 工具名只在勾选「仅工具执行时」时显示（:has 联动，纯 CSS 零监听） */
+      ".zu-rot-cp-row:has(.zu-rot-cp-toolcb:not(:checked)) .zu-rot-cp-toolname{display:none}" +
+      ".zu-rot-cp-note{font-style:normal;color:var(--color-foreground-subtle,#8791a3);opacity:.9}" +
+      ".zu-rot-cp-empty{margin:4px 12px 10px;padding:10px;color:var(--color-foreground-subtle,#8791a3);font-size:calc(var(--ui-font-size,14px) - 2px);border:1px dashed var(--color-border,rgba(255,255,255,.12));border-radius:8px;text-align:center}" +
+      ".zu-rot-cp-helpers{padding:2px 12px 12px;font-size:calc(var(--ui-font-size,14px) - 2px);color:var(--color-foreground-subtle,#8791a3)}" +
+      ".zu-rot-cp-hrow{display:flex;flex-wrap:wrap;align-items:center;gap:4px}" +
+      ".zu-rot-cp-chip{background:var(--color-hover,rgba(255,255,255,.06));border:1px solid var(--color-border,rgba(255,255,255,.12));border-radius:10px;color:inherit;padding:1px 8px;margin:1px 0;font-family:var(--font-mono,monospace);font-size:calc(var(--ui-font-size,14px) - 2px);cursor:pointer}" +
+      ".zu-rot-cp-chip b{font-weight:400;font-family:var(--font-sans,-apple-system,'PingFang SC','Helvetica Neue',sans-serif);opacity:.72;margin-left:3px}" +
+      ".zu-rot-cp-chip:hover{background:var(--color-border,rgba(255,255,255,.14))}" +
+      ".zu-rot-cp-phall{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:4px 14px;margin-top:8px}" +
+      ".zu-rot-cp-phitem{display:flex;align-items:baseline;gap:6px;min-width:0}" +
+      ".zu-rot-cp-phitem code{font-family:var(--font-mono,monospace);color:var(--color-foreground,#e9edf4);white-space:nowrap}" +
+      ".zu-rot-cp-phitem span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
+      ".zu-rot-cp-phitem small{opacity:.7;margin-left:auto;white-space:nowrap}";
   }
   function ensureRotatorStyleMounted() {
     try {
@@ -4714,7 +8517,19 @@
         if (pv.labelEl && pv.labelEl.textContent !== pv.displayed) pv.labelEl.textContent = pv.displayed;
         return;
       }
-      if (!pv.raw || now - pv.pickAt >= (rotatorCfg.intervalMs || 3500)) {
+      /* 按条定向预览：锚有效且文案源为短语时强制播放该条（驻留直到停止/失配），跳过时钟换条 */
+      var cpForced = (typeof rotCpPreviewValid === "function") ? rotCpPreviewValid() : null;
+      var forcedPlay = !!(cpForced && rotatorCfg.labelSource !== "host" && cpForced.text);
+      if (forcedPlay && pv.raw !== cpForced.text) {
+        pv.raw = cpForced.text;
+        pv.rendered = formatRotatorPlaceholders(pv.raw, ctx);
+        pv.chars = Array.from(pv.rendered);
+        pv.typeIndex = (!rotatorCfg.typeSpeedMs || rotatorCfg.typeSpeedMs <= 0) ? pv.chars.length : Math.min(1, pv.chars.length);
+        pv.displayed = pv.chars.slice(0, pv.typeIndex).join("");
+        pv.pickAt = now;
+        pv.typeAt = now;
+      }
+      if (!forcedPlay && (!pv.raw || now - pv.pickAt >= (rotatorCfg.intervalMs || 3500))) {
         pv.raw = rotPreviewPoolPick(ctx);
         pv.rendered = formatRotatorPlaceholders(pv.raw, ctx);
         pv.chars = Array.from(pv.rendered);
@@ -4749,15 +8564,15 @@
       var locPack = pack && pack.phrases && (pack.phrases[loc] || pack.phrases.zh);
       var cnt = locPack ? ((locPack.thinking ? locPack.thinking.length : 0) + (locPack.running ? locPack.running.length : 0) + (locPack.long ? locPack.long.length : 0)) : 0;
       var checked = (rotatorCfg.enabledPacks || []).indexOf(pm.id) >= 0 ? " checked" : "";
-      return '<div class="zu-rot-pack-item"><label><input type="checkbox" class="zu-rot-pack-cb" data-pack="' + pm.id + '"' + checked + '> ' +
-        esc(L(pm.zh, pm.en)) + '</label><small>' + cnt + '</small></div>';
+      return '<div class="zu-rot-pack-item">' +
+        '<label><input type="checkbox" class="zu-rot-pack-cb" data-pack="' + pm.id + '"' + checked + '> ' +
+        esc(L(pm.zh, pm.en)) + '</label>' +
+        '<button type="button" class="zu-rot-btn zu-rot-pack-view" data-pack="' + pm.id + '">' + L("查看", "View") + '</button>' +
+        '<small>' + cnt + '</small></div>';
     }).join("");
-    var customThink = formatPhraseLines(rotatorCfg.customPhrases && rotatorCfg.customPhrases[loc] && rotatorCfg.customPhrases[loc].thinking);
-    var customRun = formatPhraseLines(rotatorCfg.customPhrases && rotatorCfg.customPhrases[loc] && rotatorCfg.customPhrases[loc].running);
-    var customLong = formatPhraseLines(rotatorCfg.customPhrases && rotatorCfg.customPhrases[loc] && rotatorCfg.customPhrases[loc].long);
-
     return '<section class="zu-settings-section" data-sec="rotator"' + (open ? "" : " hidden") + '>' +
-      '<div class="cap">' + L("状态轮播与小鲸鱼动画", "Status Rotator & Whale Tail") + '</div>' +
+      '<div class="cap zu-rot-cap"><span>' + L("状态轮播与小鲸鱼动画", "Status Rotator & Whale Tail") + '</span>' +
+        '<button type="button" class="zu-rot-btn zu-rot-credit zu-rot-tipt" data-tip="' + esc(L("打开上游原作者仓库（dsh-status-rotator）", "Open the original upstream project (dsh-status-rotator)")) + '">' + L("原作者", "Original author") + '</button></div>' +
       '<div class="zu-settings-card">' +
         settingRow('<input type="checkbox" class="zu-rot-enable">', L("启用状态轮播", "Enable status rotator"), L("在模型思考/生成/长耗时期间于消息流 Loading 行轮播趣味状态短语，支持 17 种实时统计占位符（如 {elapsed}、{tps}、{model}）。状态条速度格保持原生外观。", "Rotates witty status phrases in the chat loading row with 17 live placeholders ({elapsed}, {tps}, {model}, etc.). The status bar speed cell keeps its native look.")) +
         '<div class="zu-rot-inline-row">' +
@@ -4822,7 +8637,7 @@
         '</div>' +
       '</div>' +
 
-      '<div class="cap">' + L("14 个内置词包与排程预设", "14 Built-in Phrase Packs & Presets") + '</div>' +
+      '<div class="cap">' + L("16 个内置词包与排程预设", "16 Built-in Phrase Packs & Presets") + '</div>' +
       '<div class="zu-settings-card">' +
         '<div class="zu-rot-inline-row">' +
           '<span>' + L("场景预设", "Scene preset") + '</span>' +
@@ -4839,15 +8654,10 @@
         '<div class="zu-rot-pack-grid">' + packChecks + '</div>' +
       '</div>' +
 
-      '<div class="cap">' + L("自定义短语（每行一条，支持：文案 | 权重 | when:tool=Bash | rarity:0.5）", "Custom Phrases (one per line: text | weight | when:tool=Bash | rarity:0.5)") + '</div>' +
-      '<div class="zu-settings-card">' +
-        '<div class="pnote">' + L("思考阶段 (thinking)", "Thinking phase") + '</div>' +
-        '<textarea class="zu-rot-textarea zu-rot-custom-thinking" placeholder="' + L("正在思考人生 ({elapsed})… | 2", "Thinking deeply ({elapsed})… | 2") + '">' + esc(customThink) + '</textarea>' +
-        '<div class="pnote">' + L("运行阶段 (running)", "Running phase") + '</div>' +
-        '<textarea class="zu-rot-textarea zu-rot-custom-running" placeholder="' + L("全力输出中 {tps} t/s · {running} | 2", "Streaming at {tps} t/s · {running} | 2") + '">' + esc(customRun) + '</textarea>' +
-        '<div class="pnote">' + L("长耗时阶段 (long)", "Long turn phase") + '</div>' +
-        '<textarea class="zu-rot-textarea zu-rot-custom-long" placeholder="' + L("已经苦战 {elapsed}，稳住能赢！ | 3", "Still working after {elapsed}, hang tight! | 3") + '">' + esc(customLong) + '</textarea>' +
+      '<div class="cap">' + L("自定义短语", "Custom Phrases") +
+        '<button type="button" class="zu-rot-btn zu-rot-cp-mode zu-rot-tipt" data-tip="' + rotCpEsc(L("在可视化表单与「每行一条」的文本语法之间切换；文本模式适合批量粘贴", "Switch between the visual form and one-line-per-phrase syntax (for bulk paste)")) + '">' + rotCpModeBtnText() + '</button>' +
       '</div>' +
+      '<div class="zu-settings-card zu-rot-cp-card">' + rotCpCardInner() + '</div>' +
 
       '<div class="zu-rot-prev-fix">' +
       '<div class="zu-settings-card">' +
@@ -4905,9 +8715,19 @@
     }
   }
 
+  /* 上游原作者仓库（移植来源致谢，标题行「原作者」按钮外链目标） */
+  var ZU_ROTATOR_UPSTREAM_URL = "https://github.com/01Virex/dsh-status-rotator";
+
   function zuRotatorPanelClick(e, panelEl) {
     var t = e.target;
     if (!t || !t.closest) return false;
+    if (t.closest(".zu-rot-credit")) {
+      /* 外链走客户端 openExternal 桥（系统默认浏览器），无桥环境 window.open 兜底（同 ⚙ 取 Key 链接）。 */
+      var zc = window.zcode;
+      if (zc && typeof zc.openExternal === "function") zc.openExternal(ZU_ROTATOR_UPSTREAM_URL);
+      else window.open(ZU_ROTATOR_UPSTREAM_URL, "_blank", "noopener");
+      return true;
+    }
     if (t.closest(".zu-rot-packs-all")) {
       rotatorCfg.enabledPacks = ZU_ROTATOR_PACK_META.map(function (m) { return m.id; });
       saveRotatorConfig();
@@ -4920,6 +8740,111 @@
       saveRotatorConfig();
       zuRotatorSyncPanel(panelEl);
       forceNextRotatorPhrase();
+      return true;
+    }
+    var viewBtn = t.closest(".zu-rot-pack-view");
+    if (viewBtn) {
+      openRotPackDlg(viewBtn.getAttribute("data-pack"));
+      return true;
+    }
+    /* ---------- 自定义短语可视化编辑器 ---------- */
+    var addBtn = t.closest(".zu-rot-cp-add");
+    if (addBtn) {
+      var addPh = addBtn.getAttribute("data-cp-add");
+      if (addPh === "thinking" || addPh === "running" || addPh === "long") {
+        var addArr = rotCpArr(addPh);
+        var locCfg = rotatorCfg.customPhrases[rotCpLoc()];
+        if (locCfg && Array.isArray(locCfg[addPh])) locCfg[addPh].push({ text: "", weight: 1 });
+        saveRotatorConfig();
+        rotCpRerenderList(panelEl, addPh);
+        var lists = panelEl.querySelectorAll(".zu-rot-cp-list");
+        for (var li = 0; li < lists.length; li++) {
+          if (lists[li].getAttribute("data-cp-ph") !== addPh) continue;
+          var texts = lists[li].querySelectorAll(".zu-rot-cp-text");
+          var lastText = texts.length ? texts[texts.length - 1] : null;
+          if (lastText && lastText.focus) {
+            lastText.focus();
+            if (lastText.setSelectionRange) { try { lastText.setSelectionRange(0, 0); } catch (eSet) { } }
+          }
+          rotCpLastTextEl = lastText || rotCpLastTextEl;
+        }
+      }
+      return true;
+    }
+    var delBtn = t.closest(".zu-rot-cp-del");
+    if (delBtn) {
+      var delRow = delBtn.closest(".zu-rot-cp-row");
+      var delPh = delRow ? delRow.getAttribute("data-cp-ph") : "";
+      var delI = delRow ? parseInt(delRow.getAttribute("data-cp-i"), 10) : -1;
+      if (delPh && delI >= 0) {
+        var delArr = rotCpArr(delPh);
+        if (delI < delArr.length) {
+          var locDel = rotatorCfg.customPhrases[rotCpLoc()];
+          locDel[delPh].splice(delI, 1);
+          if (rotCpPreview && rotCpPreview.ph === delPh && rotCpPreview.i === delI) rotCpPreview = null;
+          saveRotatorConfig();
+          rotCpRerenderList(panelEl, delPh);
+          rotatorMasterTick();
+          renderRotPreview();
+        }
+      }
+      return true;
+    }
+    var playBtn = t.closest(".zu-rot-cp-play");
+    if (playBtn) {
+      var pRow = playBtn.closest(".zu-rot-cp-row");
+      var pPh = pRow ? pRow.getAttribute("data-cp-ph") : "";
+      var pI = pRow ? parseInt(pRow.getAttribute("data-cp-i"), 10) : -1;
+      var pIt = (pPh && pI >= 0) ? rotCpItemOf(pPh, pI) : null;
+      if (pIt && pIt.text) {
+        /* 未保存的行内编辑先落库再预览（▶ 所见即保存所得） */
+        rotCpSaveRow(pRow);
+        pIt = rotCpItemOf(pPh, pI) || pIt;
+        if (rotCpPreview && rotCpPreview.ph === pPh && rotCpPreview.i === pI) rotCpPreview = null;
+        else rotCpPreview = pIt.text ? { ph: pPh, i: pI, text: pIt.text } : null;
+        rotPreview.raw = "";
+        rotPreview.pickAt = 0;
+        rotCpSyncPlayBtns(panelEl);
+        renderRotPreview();
+      }
+      return true;
+    }
+    var advBtn = t.closest(".zu-rot-cp-adv");
+    if (advBtn) {
+      var aRow = advBtn.closest(".zu-rot-cp-row");
+      var aPanel = aRow ? aRow.querySelector(".zu-rot-cp-advpanel") : null;
+      if (aPanel) {
+        aPanel.hidden = !aPanel.hidden;
+        advBtn.classList.toggle("zu-rot-cp-adv-on", !aPanel.hidden);
+      }
+      return true;
+    }
+    if (t.closest(".zu-rot-cp-mode")) {
+      rotCpTextMode = !rotCpTextMode;
+      rotCpPreview = null;
+      rotCpRerenderCard(panelEl);
+      return true;
+    }
+    var chip = t.closest(".zu-rot-cp-chip");
+    if (chip) {
+      var token = chip.getAttribute("data-cp-chip") || "";
+      var target = (rotCpLastTextEl && rotCpLastTextEl.isConnected) ? rotCpLastTextEl : (panelEl.querySelector ? panelEl.querySelector(".zu-rot-cp-text") : null);
+      if (target && typeof target.value === "string") {
+        var s0 = typeof target.selectionStart === "number" ? target.selectionStart : target.value.length;
+        var e0 = typeof target.selectionEnd === "number" ? target.selectionEnd : s0;
+        target.value = target.value.slice(0, s0) + token + target.value.slice(e0);
+        if (target.setSelectionRange) { try { target.setSelectionRange(s0 + token.length, s0 + token.length); } catch (eSel) { } }
+        if (target.focus) target.focus();
+      }
+      return true;
+    }
+    var phBtn = t.closest(".zu-rot-cp-phbtn");
+    if (phBtn) {
+      var allPanel = panelEl.querySelector ? panelEl.querySelector(".zu-rot-cp-phall") : null;
+      if (allPanel) {
+        allPanel.hidden = !allPanel.hidden;
+        phBtn.textContent = allPanel.hidden ? L("全部 17 个 ▾", "All 17 ▾") : L("收起 ▴", "Collapse ▴");
+      }
       return true;
     }
     return false;
@@ -4962,6 +8887,23 @@
       else if (!t.checked && idx >= 0) list.splice(idx, 1);
       rotatorCfg.enabledPacks = list;
     }
+    else if (cl.contains("zu-rot-cp-text") || cl.contains("zu-rot-cp-weight") || cl.contains("zu-rot-cp-rarity") ||
+             cl.contains("zu-rot-cp-toolname") || cl.contains("zu-rot-cp-cb")) {
+      var cpRow = t.closest ? t.closest(".zu-rot-cp-row") : null;
+      var saved = cpRow ? rotCpSaveRow(cpRow) : null;
+      if (!saved) return false;
+      if (cl.contains("zu-rot-cp-text")) rotCpLastTextEl = t;
+      if (rotCpPreview && rotCpPreview.ph === saved.ph && rotCpPreview.i === saved.i) {
+        var cpIt = rotCpItemOf(saved.ph, saved.i);
+        if (cpIt && cpIt.text) {
+          rotCpPreview.text = cpIt.text;   /* 编辑中的预览条同步刷新，调试闭环 */
+          rotPreview.raw = "";
+          rotPreview.pickAt = 0;
+        } else {
+          rotCpPreview = null;
+        }
+      }
+    }
     else if (cl.contains("zu-rot-custom-thinking") || cl.contains("zu-rot-custom-running") || cl.contains("zu-rot-custom-long")) {
       var loc = state.lang === "en" ? "en" : "zh";
       var ph = cl.contains("zu-rot-custom-thinking") ? "thinking" : cl.contains("zu-rot-custom-long") ? "long" : "running";
@@ -4978,7 +8920,102 @@
     return true;
   }
 
+  /* ---------- 内置词包查看弹框（用户规格：网格每包勾选框前「查看」按钮，弹框列全部词语；
+   * 宽固定 600px、高 80vh，列表内滚；遮罩/✕/Escape 关闭）---------- */
+  var rotPkDlg = null, rotPkKey = null;
+  function closeRotPackDlg() {
+    if (rotPkKey) {
+      try { document.removeEventListener("keydown", rotPkKey, true); } catch (e) { }
+      rotPkKey = null;
+    }
+    if (rotPkDlg) { try { rotPkDlg.remove(); } catch (e) { } rotPkDlg = null; }
+  }
+  function openRotPackDlg(packId) {
+    closeRotPackDlg();
+    var pack = ZU_ROTATOR_PACK_BY_ID[packId];
+    if (!pack || !pack.phrases) return;
+    var meta = null;
+    for (var mi = 0; mi < ZU_ROTATOR_PACK_META.length; mi++) {
+      if (ZU_ROTATOR_PACK_META[mi].id === packId) { meta = ZU_ROTATOR_PACK_META[mi]; break; }
+    }
+    /* 界面语言优先取对应相；该语言缺失（毛选语录仅中文）回退另一语言并提示 */
+    var wantEn = state.lang === "en";
+    var loc = wantEn && pack.phrases.en ? "en" : (pack.phrases.zh ? "zh" : "en");
+    var locPack = pack.phrases[loc] || {};
+    var phrases = [];
+    ["thinking", "running", "long"].forEach(function (ph) {
+      var arr = locPack[ph];
+      if (!Array.isArray(arr)) return;
+      arr.forEach(function (t) {
+        if (typeof t === "string" && t && phrases.indexOf(t) < 0) phrases.push(t);
+      });
+    });
+    var dlg = document.createElement("div");
+    dlg.className = "zu-rot-pk-dlg";
+    var card = document.createElement("div");
+    card.className = "zu-rot-pk-card";
+    var head = document.createElement("div");
+    head.className = "zu-rot-pk-head";
+    var title = document.createElement("span");
+    title.className = "zu-rot-pk-title";
+    title.textContent = meta ? L(meta.zh, meta.en) : packId;
+    var count = document.createElement("span");
+    count.className = "zu-rot-pk-count";
+    count.textContent = L(phrases.length + " 条", phrases.length + " phrases");
+    var closeBtn = document.createElement("button");
+    closeBtn.type = "button";
+    closeBtn.className = "zu-rot-pk-close";
+    closeBtn.setAttribute("aria-label", L("关闭", "Close"));
+    closeBtn.textContent = "\u2715";
+    head.appendChild(title);
+    head.appendChild(count);
+    head.appendChild(closeBtn);
+    var list = document.createElement("div");
+    list.className = "zu-rot-pk-list";
+    if (wantEn && loc === "zh") {
+      var note = document.createElement("div");
+      note.className = "zu-rot-pk-note";
+      note.textContent = L("该词包仅提供中文短语。", "This pack ships Chinese phrases only.");
+      list.appendChild(note);
+    }
+    if (!phrases.length) {
+      var empty = document.createElement("div");
+      empty.className = "zu-rot-pk-note";
+      empty.textContent = L("该词包暂无短语。", "No phrases in this pack.");
+      list.appendChild(empty);
+    } else {
+      phrases.forEach(function (t, pi) {
+        var it = document.createElement("div");
+        it.className = "zu-rot-pk-item";
+        var no = document.createElement("span");
+        no.className = "zu-rot-pk-no";
+        no.textContent = (pi + 1) + ".";
+        var txt = document.createElement("span");
+        txt.className = "zu-rot-pk-txt";
+        txt.textContent = t;
+        it.appendChild(no);
+        it.appendChild(txt);
+        list.appendChild(it);
+      });
+    }
+    closeBtn.addEventListener("click", closeRotPackDlg);
+    dlg.addEventListener("mousedown", function (e) {
+      if (e.target === dlg) closeRotPackDlg();   // 点遮罩关闭（卡片内点击不关）
+    });
+    rotPkKey = function (e) {
+      if (!rotPkDlg) return;
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeRotPackDlg(); }
+    };
+    document.addEventListener("keydown", rotPkKey, true);
+    card.appendChild(head);
+    card.appendChild(list);
+    dlg.appendChild(card);
+    document.body.appendChild(dlg);
+    rotPkDlg = dlg;
+  }
+
   function zuRotatorDisposeAll() {
+    closeRotPackDlg();
     if (rotatorTimer) { clearInterval(rotatorTimer); rotatorTimer = null; }
     if (rotPreview.timer) { clearInterval(rotPreview.timer); rotPreview.timer = null; }
     rotPreview.panelEl = null;
@@ -5182,7 +9219,7 @@
   /* ---------- 实例工厂（v61.1）：一个 pane 一套 条/面板/气泡/tooltip/定位循环。
    * slot 0 保留 #zusage-bar/#zusage-tip 兼容 id（泵热更新按它清理），其余实例仅类名。 */
   function spawnInstance(pid, slot) {
-    var VERSION = "v286";   //v82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v84 主标签页远端路由（工作台分组唯一主绑定上报 + 迟到载荷守卫，issue #30）→ v85 回答末尾统计行跟随万/亿开关 + tok→token → v86 历史轮 tracker 无记录（窗口滑出/换代/热更）或缺输出字段不再翻成"本轮统计不可用"，加 det 诊断 → v87 主叶归属增 last-session 回退（组零证据时唯一远端记录放行，issue #30 复测：单会话主标签页不建组）→ v88 运行态心跳与两处扫描 tick 2s→0.5s（富文本重试 6→24 次等价放大）→ v89 ⚙ 面板更新进度：downloading 阶段文案 + 下载（字节）/安装（校验→安装→同步）双进度条，缺 progress 的旧主进程自动隐藏 → v90 主标签页/分栏归属改按本窗会话节点身份（renderer 桥按版本/资产/锚点写 SessionPane 属性，移除 workbench-groups/last-session 共享回退）+ 心跳 0.5s→0.1s（扫描维持 0.5s）→ v91 设置页/权限面板冒条修复（PR #44：inSettingsView 三处派发排除 + anchorCardOf 面板锚点改判）收编收尾：排除标记并集（settings-page testid + content/panel 双 frame）、track 显隐第四处防御 → v92 ⚙ 更新区固定显示可复制的重装口令（源码安装无法自动更新时引导用户发给 agent）→ v93 原生上下文按钮（chat-context-usage-trigger）增强：环填充/四档色/右侧百分比镜像状态条上下文格（ctxBandOf 同源），cw 缺失还原原生形态 → v94 状态条删除「上下文容量」格（UI+tooltip，该口径由原生按钮增强承载），⚙ 面板同步去掉「上下文」开关，子代理格改始终展示（零值也显示）→ v95 ⚙ 更新区去掉 v92 重装口令提示块（源码清单的仓库来源改由宿主插件管理器直接更新，不再报渠道不一致），更新来源文案增「仓库源码」分支→ v96 套餐额度 chip（默认关）：挂原生上下文按钮左侧（wrapper 内前插，与按钮增强同款双 reapply/还原），数据来自主进程 quota 字段（解密宿主 OAuth 凭据直查 monitor 端点，账号级套餐池口径），会话首个 main_turn 完成前不显示；自绘 tooltip 走 rateTip 独立浮层模式；chip 改多窗分段：每窗一段（中文 5小时/7天，英文 5h/7d）各自按 80/95/100 档位色，分隔符 |；余额类型单段渲染就绪（余额 ¥100.00，阶段 3 数据源接入即用）；去掉环形，容器不着色 → v97 子代理速率（T1+T2）：zusage sub 汇总加 rate_avg/每子代理 tps_avg（已完成段加权平均，口径同 _turn_rate），子代理格 tooltip/明细面板展示；Agent 运行期主 chip 附加「子代理运行中 · 估 X t/s」——turn-stats 透传 subagent 行 childSessionId，overlay 据此用同款 zuTryBindStore 绑子代理会话 store 做字符增量估算（运行中请求未入库，DB 无实时数据；150s 采样实锤零 running 行），思考文本不进 rows 时退回纯状态词；工具动词「正在运行子智能体」压成「子代理运行中」（web 同步文案）；同日多槽位化：turn-stats 暴露 runningSubagents 全集（并行时 rowId 前 8 个），每子代理独立绑定/2s 节流，主 chip 显示合计速率（并行 ≥2 时动词后缀 ×N），chip tooltip 与子代理明细面板逐个实时展示运行中估算（tooltip 随原地改字同步 __tip 重画；面板 800ms tick 原地刷新 .subrate，汇总页运行块含 DB 尚无记录的新子代理） → v98 额度实时选源恢复（v4-model-config 观察 + quota-providers 全窗快照上报 + byProvider 定向刷新、空选择 fail-closed）与 sub2api 额度 UI（今日/本月窗口、窗口行内金额明细、Key 总额度、订阅截止、账户余额标题） → v99（主线并流）tooltip 伪边界 leave 过滤：Chrome 悬停链收缩/重算会补发 DOM 内部的 documentElement/tip mouseleave，tipLeaveAt 贴边判定后取触发时刻最深 :hover 元素甄别，仍悬停在本档具体元素上即伪 leave 一律忽略交回 mousemove 流（主线 v100 滚动豁免=本链 v106 同义，不另列） → v99.1（主线并流）apiKey 模式 BigModel/Z.ai（bigmodel-api[-N]/zai-api[-N]）额度 chip 标题家族判定（issue #68；数据链在 quota-client） → v99.2 思考中计时随语言本地化（中文「1 时 2 分 3 秒」/英文「1 h 2 m 3 s」，空格分隔、零段照旧省略）；回答末尾行采样时刻改完整中文日期时间（⏱ 2026 年 10 月 23 日 11 点 20 分 28 秒，token_rate.py format_turn_line 同步改版） → v100 设置面板分区导航（ZCode 设置侧栏同款：左栏三组分区导航 + 内容区单分区显隐，激活项 aria-current="page"，选择持久化 zusage3.sec；面板窄于 620px 时导航收成 icon rail） → v101 设置面板高度在打开瞬间按内容自然高锁定（切分区不再抖动，resize 只收紧不放大） → v102 额度源预设模板（CC Switch/magpie 同款选模板只填 Key：官方域变体 chip 一键写入 secrets baseUrl，minimax 可信域机制推广到 siliconflow 币种随域；deepseek/openrouter/kimi/anthropic/mimo/volcano 附控制台取 Key 链接，走 openExternal 桥） → v103 额度源列表卡片化布局（每源圆角卡片+间距，凭据框限宽 420px，长说明段落补水平边距；纯 CSS，结构行为不变） → v104 源状态文案补 disabled=已关闭映射 + 主进程对显式关闭源统一报 disabled（修「开关已关却显示待查询」矛盾）；刷新/获取 Key 按钮补 title 提示，关闭源的刷新按钮禁用 → v105 「上下文容量」弹层（hover-card-content）内压缩上下文按钮：命中率行下方全宽胶囊按钮（原生 secondary 配色全走客户端语义变量），弹层关即卸载（Radix 无 forceMount）故 body MutationObserver + heavy 对账双触发、DOM 存在性幂等（多实例安全），插入锚=「剩余额度」border-t 段前（缺则容器尾）+位置兜回；点击弹原生 AlertDialog 视格确认框（遮罩/Esc/外点关闭、Enter 确认），确认后优先走 fiber 上原生残留的 onSendCompressionCommand("/compact")（SessionPane 压缩入口，不动输入框草稿），缺失回落官方 E2E 输入桥 __zcodeLexicalInputE2E.setText + 发送键（Lexical 直写 DOM 不生效，禁用该路径；草稿非空拒绝） → v106 额度 tooltip 滚动豁免：hideTipsOnScroll 不再收 quotaTip（chip 固定 composer 工具行与 gitTip 同理），修思考中流式输出自动滚动致悬停弹出即灭；chip 随宿主重建 detach（无 mouseleave）由 scanRateLines 加 isConnected 健康检查兜底收起 → v107 压缩确认框补行为提示：压缩进行中发送新消息/停止会打断压缩（实测 16:27 新 turn 启动同秒 compact turn TURN_CANCELLED，cancelled_by_user=1；引擎对该次摘要流挂起 134s 无首 token 也不重试 retryable=0），确认框加 hint 行中性告知 → v108 压缩主通道按用户指定改为字面 "/compact" 输入提交（E2E 桥 setText+发送键；流式中 v4-stop 可见/草稿非空/发送键 disabled 三重拒绝），fiber 命令信封降兜底；hint 升级为「通常需 2-4 分钟且无进度反馈」（DB 实证：全库 compact 请求无首 token 但正常完成，72s-9.6min，14:44 同会话同模型 165s 成功先例；16:25/16:43 两次「卡住」实为 2m20s 被新消息 TURN_CANCELLED，非故障） → v109 压缩主通道按用户指定改回直接调会话发送接口（fiber onSendCompressionCommand 命令信封：不碰输入框/发送键、流式中交引擎排队，修字面输入通道在生成中被发送键禁用卡住的问题），字面 "/compact" 输入提交降兜底（三重门控仅作用于兜底） → v110 压缩提交函数改在弹框打开瞬间（弹层必存活、锚点几何可信）解析并缓存，修复确认时弹层已被 Radix 卸载、几何重解析退化为「离视口左上角最近」致多分栏把 /compact 发进错误会话（P1）；兜底字面输入通道的流式/发送键/草稿三重门控全部前置到 setText 之前（拒绝不再残留草稿）；Enter 确认限定焦点在弹框内（无焦点陷阱下防焦点外 Enter 误触发确认） → v111 额度 chip 默认展示：quota_enabled 缺省开（显式 false 才关，真值链在 inject-main）；chip 二级门控 not_configured/unsupported 从静默隐藏改中性灰提示「额度 未配置/暂不支持」（源被 ⚙ 显式关闭仍隐藏），tooltip 补 info 分支引导配置 → v112 Start Plan 免费档池（quota-client 新增 zcode-start 适配器走 zcode.z.ai billing/balance 独立链，与 coding plan 的 monitor 端点分池；选源路由与 quotaFamily 判定补 start-plan 分支修 start-plan pane 误读 GLM Coding Max 池；chip 增「套餐」分段（windows.plan，one_time 发放池聚合已用%），tooltip 套餐池行按 expires 标记切「到期」措辞） → v113 夜间审计加固：quotaBalanceText 内建转义（currency 是远程响应字符串，chip/tooltip 双 innerHTML sink；parts label/amount 单次转义修双重转义；「其他源」行标签转义归位；aria-label 走 plain 纯文本变体不读实体）→quotaTip 补内容签名幂等 __zuTipSig（同 gitTip，悬停期间周期对账不再打断文本选择）→子代理明细面板数据签名幂等（滚动位置/选择不被每 1.5s 推送整面板重建重置；运行中估算仍由面板 800ms tick 原地刷新）→额度 chip 签名重写保留 zu-qbusy（点击刷新动画不被推送截断，同 git chip）→⚙ 源列表 id/label/preset/keyUrl 属性级转义 aEsc（custom:<providerId> 可含用户自定义名）→live 速度 span 的 speedView.text 过 ttEsc（工具名是宿主/MCP 可控字符串）→渲染桥两处订阅回调尾部 updateLive() try 包裹（异常不冒进宿主 store 通知分发，诊断键 subLiveErr/bridgeLiveErr 记录） → v114 积压清单清扫：remoteCache/remoteTodayCache/richTextCache/richTextAttempts 上限淘汰（长会话防无界增长）；dispose 清理补 __zusageDeliverTurnText/__zusageSidWs/__zusagePaneScopes（旧代闭包自卫之外的清理完整性）；诊断 lsVals 只转储 zusage 命名空间的 localStorage 键（宿主其余键值不进 diag 文件） → v115 渲染循环省电（上游 xhwxt PR #26/#28 同源问题）：幽灵子树/遮挡命中/模态判定加 TTL 缓存（120/150ms，命中绑定元素矩形+模式），track 在 document.hidden 时整帧跳过；未采纳其 600ms↔2s 调度降频（heavy 600ms 对账是与 render 并列的 React 重写兜底契约，降频会让增强节点裸奔 2s） → v116 「思考中」卡死修复（源码复核定案）：v87 合成分支条件收紧——仅「空窗口非终态（draft 空窗，v87 本意）或 control.phase=running」才合成思考中，删除「行非空」析取项（宿主 wire 快照 rows.window 恒为全序尾 60 行，末轮超窗的闲置会话整窗无 turnHeader，旧条件使其永久点亮思考中、切回重绑重新计时）；思考计时锚定 turnHeader.startedAt（宿主创建 header 恒写入，重绑不清零，缺字段回退首观测）→ v117 悬停命中区扩到整栏（fork lliangworld b21e3cf0 同源收编）：条目空隙/分隔符按 sep 中线就近归属、尾部空隙归末位条目，⚙ 与空条面维持保持不动；防闪烁改由节流+幂等承担 → v118 无障碍与主题重构（并行会话批次）：条目可聚焦（span tabindex / zu-sub 真按钮 + aria-label）、键盘可达 tooltip（focusin/focusout + Escape 收起）、focus-visible 焦点环、SVG 图标与思考动画改 currentColor 随主题、⚙ 面板请求-回执协议（requestId + __zusagePluginResult，feedbackVersion 1）、quota 源操作错误语义、统计行开关即时重扫 → v119 插件自动检查改为每 1 小时，更新区双语提示更新器变更需完全退出并重开 → v120 Git 手动刷新改请求-回执协议（askGitRefresh 带 path/requestId，主桥 gitTick 完成后经 __zusagePluginResult 回执、在途请求合并等待，按请求 path 校验结果）+ 状态条 aria-live sr-only 播报区（套餐额度查询中/Git 刷新状态）+ ⚙ 面板高度上限 82vh→90vh + 模态判定改按可见 dialog（display/visibility/opacity 过滤） → v121 状态条 .ico 与 ⚙ 齿轮图标盒由 calc(字号+4px) 改为等宿主字号（24 格线性图标墨迹只占盒 75–83%，18px 顶满 1.3 行盒显大，且加法常量令比例随字号漂移 1.33×→1.20×；用户实机定 1.0×，.eb .ico 12px 特例不变） → v122 Git chip 展开测量完整宽度并留 32px 迟滞余量，切断宿主 compact 反馈环（issue #100） → v123 Git chip 锚点按电脑操作→上下文→模式→思考回退，排除隐藏探针并随可见锚点迁移（issue #103） → v124 Git chip 固定左侧操作区，移除右侧上下文/思考回退 → v125 思考计时中文全紧邻「7分16秒」（时段间空格去除，用户要求；英文「7 m 16 s」不动） → v126 思考计时英文数字与单位紧邻「7m 16s」（时段间留空格，用户要求） → v127 tok/s 速度十档色（TPS_BANDS 唯一事实源，原始值分档含下限不含上限：<40 低速红 / 40–70 一般黄 / 70–150 流畅绿沿用原三档类名与实测色，150 起新增蓝紫系 zu-teal/zu-sky/zu-azure/zu-violet/zu-purple/zu-magenta，≥2000 Ultra 静态蓝紫渐变 + ✦ 星点（::before content:"✦"/"" AT 静音、@supports 外纯紫回退，浅色组同名覆盖渐变）；估算态与完成态同表分档（用户规格，原「估算态不分档」废止），无效值（负数/NaN/±∞）一律中性 dim 或回退 DB 绝不判低速，DB 回退分支负数/非有限不再渲染 chip；tooltip 档位行改动态「名称 · lo–hi t/s」消解 toFixed 舍入边界歧义，另加静态「颜色对照」图例（十档数值↔颜色升序一览，档位类与条面同源随主题切换）；额度正常态改额度蓝 #78a9ff/浅 #315fc4（.zu-qseg 专属基色，不碰全局 .ok——上下文与速度前三档仍绿），周期标签拆 zu-qlabel 子节点中性次级色常规字重（textContent/aria/tooltip 不变），quotaSegs 补 isFinite 门防 NaN/±∞ 落正常蓝；正常态再改 CCometixLine 同源柔和低饱和（用户规格）：普通窗灰蓝 #8abbd0/浅 #276f86、7 天窗按 quotaSegs 结构化 key 挂 zu-qweekly 淡紫 #b69ad8/浅 #76509f（不匹配显示文本），周期标签与数值同色成组仅标签降字重，上下文按钮正常绿改 #72c9a2/浅 #187b58（限按钮作用域，速度与全局 .ok 不动）） → v129 模型拉取分区（收编 HHQ-666/zcode-model-puller，MIT）：⚙ 基础组新分区列宿主 provider_config.json 的 API Key 型自定义供应商，经主进程拉取其 /models（候选端点探测、OpenAI data/Ollama models/顶层数组形状解析、Bearer+x-api-key 双头），弹窗勾选（已添加/新模型徽标、搜索过滤、全选/清空/仅选新、选中计数）后经 model-pull-apply 最小写回（personalModelIds+modelOrder 追加、providerModelRules 复制同供应商模板条目、同目录原子替换+滚动备份 .zusage-bak、未知键保留）；key 只在主进程内存、只发该 baseUrl 本域，不回渲染端不进日志；请求回执 20s 兜底超时（旧主进程无 action 时提示完全重启而非永久 loading） → v130 拉取算法吸收 GLQQX/zcode-model-discovery-patch 与 linguo2625469/zcode-patcher：字段别名全集（id/modelId/name/model、context_length/contextWindow/context_window/limit/limits、max_completion_tokens/max_output_tokens/maxOutputTokens/limit/limits/top_provider、payload 增 result 形状）、多模态感知（architecture.input_modalities/input_modalities/modalities.input + vision/supports_vision 布尔 ⇒ 宿主 inputFormat 稀疏能力位，缺位写实 false）、思考档位感知（supported_efforts 去重截 16 ⇒ reasoningLevel.values）、models.dev 公共目录补缺（并行拉取 5s 超时失败静默降级、id 精确→basename 唯一匹配、字段级供应商优先、key 与本机数据绝不发往目录、进程内 1h 缓存）、applyModels 按模型写实 config（contextWindow/inputFormat/optionSpecs；元数据走主进程 fetchCache 闭环、渲染端只回传 id 无法注入字段；模板带 map 表达式的 optionSpecs 整体不覆盖防 values 换名失配；无依据字段保持模板原样、不编造默认值）；弹窗行新增 ctx/out 可见小字与档位 title，分区说明补 models.dev 联网披露；review 修复：勾选表/已添加表/metaById 改 null 原型（模型 id 来自远端，__proto__ 等键静默失败丢勾选态）、实例 dispose 同步摘除模型拉取弹窗与 Esc 监听（原仅整体 dispose 摘除，pane 关闭后弹窗跨代泄漏且确认回调 inactive 早退卡保存中文案）、重开面板停在模型拉取分区时立即刷新列表、请求兜底超时 20s→25s（主进程最坏双端点 20s 防假超时）、主进程响应体 8MB 限长解析与 tmp 文件名带 pid 防双实例竞写 → v131 额度/上下文五档色（用户规格 2026-10-27）：CTX_BANDS/QUOTA_BANDS 唯一事实源（{min,cls} 有序表，bandOf 从高到低首个命中），阈值 30/50/80/90（含下限不含上限）——额度 calm/norm/mid/high/crit=emerald/sky/amber/orange/rose（暗 400/浅 700），上下文 calm/norm/mid/high/crit=slate/indigo/violet/orange/red；data-zusage-band 与 zu-qb-* CSS 双主题成对；pct span 与 SVG 环一律继承按钮 currentColor（.zu-ctxpct.ok 系独立色废止）；tabular-nums 原已覆盖 .zu-quota/.zu-ctxpct；v92 百万窗口提前预警（40/60）与 v127 额度正常态灰蓝/7 天窗淡紫（按窗口类型着色）随「仅按百分比」规格废止；额度 ≥100% 满档保留呼吸闪烁特效（zu-qb-exc，用户规格；90–99 为 crit 纯色）；压缩过程态（exc）优先档保留；余额/Key 额度段挂 calm 档色 → v132 模型拉取挂载点迁移（用户指令）：⚙ 设置分区删除（ZU_SECTIONS/section/ensureMpProviders/syncMpList/startMpFetch/mpFeedback 全撤），改挂官方「模型设置⇒自定义供应商」的「+ 添加模型」按钮左侧（锚 data-testid=model-provider-add-model-button，额度 chip 同款 enhance/restore 契约：render/heavy 双对账+位置兜回+自清选择器 .zu-mp-host）；供应商归属优先读设置页表单 http(s) Base URL 归一化匹配（唯一命中直拉），否则单供应商直用/多供应商弹 zu-mp-pick 选择列表/无供应商弹提示；按钮视觉复刻原生 secondary 视格（同页 Tailwind utility bg-secondary h-7 rounded-lg），⚡ 图标 stroke currentColor；弹窗抽通用壳 openMpShell（勾选弹窗/供应商选择/错误提示共用），apply 成功关弹窗由宿主自动刷新列表；供应商归属改主判定=当前选择的供应商（读宿主源码定案：导航项 testid=model-provider-nav-item-<nodeKey>、custom 项 nodeKey=custom:<providerId>、选中项 data-state=selected），providerId 精确匹配不受编辑草稿影响；Base URL 匹配降兜底（专用 testid model-provider-base-url-input 优先于表单启发式），弹窗对齐 HHQ 形态（⚡统计标题/搜索占位/仅选新模型计数/已选中 n 个模型/蓝实底确认钮）并自带 .zu-light 随宿主主题实时换装；review 二轮修复：上下文按钮浅色档补 data-zusage-armed 特异性（浅色主题 norm~crit 曾被暗色 0,3,0 规则恒胜）、model-puller 非 ok 响应体显式 cancel（undici 连接卫生）、宿主按钮 ml-auto（锚容器 justify-between 三子项均匀分布致按钮居中）、确认钮改固定蓝 #3B82F6/#2563EB（客户端 --color-brand 深色主题是白系，白底白字隐形）、拉取按钮仅在选中的是 custom 供应商时挂载（锚 testid 全局唯一，内置/套餐页同 testid）、拉取中按钮文本「拉取中…」+图标旋转（原透明度脉冲无感知） → v133 Git 计数缩写（用户规格 2026-10-28）：chip/tooltip 的行数·条目·↑↓·冲突计数 <1万原值，≥1万 中文（cnUnits 判定）万/亿、英文 k/M/B（k 门槛刻意抬到 1万，与 token fmt 的 K≥1000 不同，小写 k 至多两位小数去尾零紧邻）；仓库个数与 aria 播报保持原值 → v134 额度与上下文保留既有阈值并统一绿黄红三档视觉；统一字号为宿主基准减 1px，周期标签加粗并微调分隔符 → v136 编辑项目弹窗源文件夹行在名称下方显示完整路径（纯 CSS ::after attr(title)，零 DOM 注入 React 无感；.truncate 限定本地行、排除 fixedFolder break-all 全路径行防重复，多文件夹每行各取各的 title；长路径自动换行不做省略号（宿主 truncate 的 nowrap 继承进伪元素须显式 white-space:normal）；规则挂条样式表、由 <html> data-zusage-pp 门控，⚙ 通用区「项目完整路径」开关 zusage3.projPath 默认开即时生效；顺带清理未提交编辑遗留的 spawnInstance 陈旧重复块 566 行死代码并复原被覆写的 issue #55 注释） → v137 源文件夹行点击即用系统文件管理器打开该目录（用户规格 2026-10-28，mac/Win 双平台）：主通道宿主桥 openInFileManager（Windows shell.openPath / macOS open 带 Finder 与 shell 双回退，raw path 免编码），旧主进程降级 openExternalFile、openExternal(file:)（白名单含 file:）；远程项目编辑器按 virtual-project-existing 标记排除，fixedFolder 行不在选择器内；多 pane 重复委托 500ms 同路径去重，document click 监听随实例 dispose 摘除；行加 cursor:pointer → v138 重置卡倒计时改时分秒全档恒显（并行会话 rstmerge 线并流收编，用户规格 2026-10-28：精确到秒、随 600ms 对账实时逐秒跳动，rstSpanText 中文数字单位紧邻「3时05分30秒」、英文数字单位紧邻+时段间空格「3h 05m 30s」；rst tooltip 补 Escape 收起（v118 键盘可达契约）；⚙ 倒计时阈值语义不变——并流时保留 rstCdh 持久化，对方运行目录构建因旧基线缺失而误删，其 18:42 rstmerge 部署曾覆盖本项目 v136/v137 后经本线合并恢复） → v139 合并 fork/main v1.5.5 线（PR #121 重置卡徽标、#122 倒计时秒级、#123 templateRules 回填、安装修复与 v1.5.5 发版）时收编遗漏的 model-puller 套餐源判定（4e431cc：detectSelectedCustomProviderId 带 anchor，BigModel 付费套餐详情页按 GLM Coding Max 付费卡区分放行、Start Plan 免费卡页不放行；挂载门控 btn 先查 + mpAnchor 诊断）——本项目快照缺该段曾致 overlay-model-pull 挂载契约测试红；overlay 版本线自此与对方 v136 撞号线并流，按合入顺序顺延 → v140 收口审查修复：openProjFolder 对 invoke 通道（openInFileManager/openExternalFile）挂空 catch——旧主进程无 handler 时异步 reject 会刷 unhandled rejection；review-fix-merge 流程产物 → v141 ⚙ 更新区在 API 限流且渠道清单兜底也失败时引导 GitCode 镜像口令（清单兜底本体在 plugin-updater/plugin-release 主进程链） → v142 ⚙ 通用「状态条样式」双主题 opt-in（zusage3.theme 独立持久化，默认关=现状）：药丸形态=所属输入卡下方居中、内容定宽，.zu-pill 经 --zu-pill-* 逐项拷贝所属视觉表面（Highspeed 外壳优先）计算样式，随宿主主题/hover/focus/Highspeed 实时跟随——pillSurface 统一取色/定位/让位锚点，body 子树 MutationObserver + 祖先属性观察捕捉外壳原位增删与搬移（不依赖 600ms 对账），80ms 过渡采样按目标计数、表面搬离自动停止；条面精简：缓存命中率/请求次数/轮数/耗时/首字收进 tooltip（0 命中也显示 0%），窄窗 .zu-main 横向滚动 + focusin 滚入可视区、切回默认复位 scrollLeft，不触发默认态收缩/渐隐；⚙ 面板宽度在药丸下跟随所属卡（不再跨分栏），主题 radio 按实例分组 name 防多面板互斥；数据重建先绑 __tip 再恢复焦点，aria-describedby/tooltip 不丢；modalOpen 豁免 zusage-panel 自有面板（修设置面板被误判宿主模态整条收起） → v143 药丸收口审查（review-fix-merge）：8px 双间距按宿主实测几何收敛——adjustPillBottom 沿所属 pane/dock 实测矩形补足让位并带 floor/不增长护栏，无法让位的绝对定位布局 visibility 安全隐藏（无每帧显隐抖动）；pillMarginTarget 落在 .chat-composer-input-surface，Highspeed 退出后默认卡重解析（composerCardOf 优先原生 data-testid 输入框）、宿主 margin 变更原值+优先级还原；悬停 tooltip 在 pill 下实时刷新隐藏明细并保留选区/滚动，焦点恢复区分 Escape 关闭与悬停接管；modalOpen 纳入 alertdialog；协调器候选补可见性过滤且已绑定输入框豁免 45% 阈值（上下分栏不再反复挂卸）；表面祖先观察改快照重建防泄漏 → v144 ⚙ radio 对齐修复：.zu-settings-langs/.zu-theme-options 的 label 显式声明 flex+align-items:center+gap:6px——原 label 继承 .panel label 的 flex-start 顶对齐（gap 14px），radio 圆钮相对文字中线偏上约 4.5px；新规则 (0,2,1) 特异性覆盖 (0,1,1) 基础规则，实测居中 delta=0 → v145 切回默认主题补还原 bar.style.visibility（pillUnsafe 安全隐藏是 pill 专属态，写入点仅 track 的 pill 分支；此前 pill 隐藏态下切回默认条永久不可见，十路评审 P1） → v146 精简模式（theme 第三档 compact）：条永久隐藏但保留 DOM（<style>/ariaLive 随条存活、heavy 保条对抗 React 清子树）；生成速度改挂工具行 .zu-tsb（重置卡左侧，挂载/位置兜回/签名幂等照重置卡同款），内容=zuBarSpeedView 桥两态或 tpsBand DB 回退、无有效样本不渲染（用户拍板）；tooltip=速度读数+状态条摘要（本轮/会话/工具/今日/子代理，逐格开关继续生效、子代理行点击开明细）+tpsBandLegend+「打开设置」按钮（镜像齿轮开启分支，面板精简下贴输入卡定位）；updateLive 10Hz 心跳原地跟随；非精简主题 syncTpsChip 门控摘除；诊断 mode=compact → v147 精简模式速率 chip 挪前导区（用户规格）：git chip 左侧——git 在时插其前、git 不在时占其锚位（cua-entry 后方/前导区末尾），两侧位置兜回收敛为 [锚][速率][git]（git 兜回容忍速率占相邻位防逐拍拉锯）；前导区发现失败回落尾随区（重置卡/额度组左侧） → v148 精简速率 tooltip「打开设置」按钮右对齐（用户规格）：footer 改 flex 布局，说明文本 tps-note-t 占据剩余宽度、按钮 margin-left:auto 推至最右，长文本换行不断布局 → v149 精简速率 tooltip 摘要行单位 tok→token（用户规格，与回答末尾统计行的 token 措辞对齐） → v150 修复精简模式 git chip 永不挂载（用户报告）：v147 的 git 兜回容忍条款（速率占锚位时不挪）误拦首次挂载——速率 chip 常驻锚位时 enhanceGitChip 每拍判"已就位"跳过插入；改为 chip 未连入 DOM 时无条件首挂（落速率后再由速率兜回收敛 [锚][速率][git]），容忍只用于已挂载的位置保持 → v151 工具状态词改版（用户规格）：Bash 动词「正在执行」→「工作中」，未知工具回退同改（正在执行 X→工作中 X）；工具计时分隔去中点（正在读取 · 4.3s→正在读取 4.3s 一并生效） → v152 工具动词 Read「正在读取」→「读取中」（用户规格） → v153 工具执行状态词定稿（用户规格）：Bash 与未知工具回退「工作中」→「执行中」（无名词回退英文 Working→Executing 对齐） → v154 工具动词全面改「X中」体例（用户规格）：写入中/编辑中/搜索中/获取网页中/更新待办中/读取待办中/运行技能中/读取上下文中/发送消息中/获取任务输出中/停止任务中/编写工作流中（Read 读取中、Bash 执行中、Agent 子代理运行中此前已改；英文标签不变） → v155 审查修复批（review-fix）：①compact 下 positionSubPanel 被隐藏条僵尸 .zu-sub 抢锚（零矩形把明细面板钉左上角）——chip 优先锚；②速率 tooltip 内容含秒表，悬停中 10Hz 整片重建吃掉「打开设置」/子代理行点击——显示中内容变化冻结只跟位置；③track compact 早退补两面板周期跟随；④自清选择器补 .zu-tsb、跨代采纳 chip 统一挂装（__zuWired 防重）修复热更后悬停/键盘失效；⑤closeSettings 焦点归还校验 offsetParent（compact 下不落隐藏 gear）；⑥enhanceGitChip 重复 var slotNode 清理。Web 同批：①③⑤（mousemove chips 归属校验只接本实例）+chip focus/blur 键盘可达对齐桌面 → v156 上下文按钮增强开关（issue #141）：⚙ 通用区新增「上下文按钮增强」checkbox（localStorage zusage3.ctxEnh，缺省开、仅显式 "0" 关），关闭走 enhanceCtxButton 关闭分支还原原生环/百分比且重置卡徽标继续维护（restore 顺带清徽标后立即重挂） → v157 修复精简→默认切换残留空壳细线（用户报告）：compact 期 render 短路会让空壳条面（热更占位/清子树后未填过）因签名相等一直存活、切回默认露出细线数十秒；①离开精简立即恢复 display（compactHid 区分初载 none，初载不提前露条保 pill 定位契约）；②离开精简强制条面重建一次（lastHtml 清空）；③compact 短路加 main.children.length 门——空壳先补一次完整渲染（条隐藏不可见）；④render 公共尾部补 syncTpsChip（短路/直通两路都经）→ v158 并流 fork/main cmdkW 线（PR #140，原线 v146 与主线 v146 精简模式撞号按合入顺序顺延）：宿主命令中心（⌘K 搜索弹框）加宽加高开关（⚙ 通用区，zusage3.cmdkW 缺省开）：条样式表规则 max-width:max(32rem,80vw)!important（原生上限=宿主 quickPickDialogClassName 的 max-w-lg=512px，弹框基础类自带 w-full 窄窗本就满宽，故小窗保持原样）与高度同规格（弹框根 max(90dvh,calc(100dvh-6rem)) 不低于原生上限，cmdk 列表 440px 硬顶放宽为 max(440px,calc(90dvh-15rem)) 小窗保底），<html> data-zusage-cmdk 属性门控（applyCmdkW，与 v136 projPath 同款），:has(>[data-slot=command][cmdk-root]) 只命中 cmdk 弹框——命令中心/任务搜索/快捷指令共用该样式常量一并放宽，设置页等普通 Dialog 不受影响 → v159 重启提醒开关（issue #139）：⚙ 插件更新区新增「更新后提醒重启」复选框（zu-restart-notice），经主桥 restart-notice 动作原子写运行时 config.json 的 restart_notice（缺省开、显式 false 才关、异常值不静默）；session-start hook 的 session_notice 读同一键，关闭后每个新会话不再注入 🔴 重启/安装提醒引用块（/install-overlay 命令行输出与自动安装失败、桥补装的故障提示不受控）——工作流模式多会话不再被逐会话植入提醒  → v160 Skill 运行期状态词显示「技能名·执行中」（用户规格，如「查阅·执行中」+计时）：turn-stats runningTool 透出截 160 字的 inputText，overlay 端 zuSkillName 提取 JSON name 字段（正则兜底、控制字符拒绝、超 24 字省略号截断），取不到回退「运行技能中」→ v161 状态条新增「项目累计」格：会话累计右侧渲染本项目（session.project_id）全部会话聚合（含子代理，口径同 session_usage；远端/不在本地库无字段不渲染），⚙ 状态条显示加「项目累计」开关（show.proj，默认开），精简摘要加同款行 → v162 状态词流光（用户规格）：速率 chip 纯状态词态（思考中…/工具动词/技能名·执行中）复刻宿主 .zcode-loading-label 同款流光——subtle→foreground→subtle 渐变 background-clip:text、1.4s 横向扫光、reduced-motion 停用；类名/关键帧自有命名（zu-shimmer/zu-loading-shimmer）不依赖宿主全局类；带 t/s 数值的估算/真实/DB 回退态不含 → v163 会话累计/项目累计 tooltip 增按模型明细行（top 8 按总量降序 + 「另有 N 个模型」，轻量行无 models 字段不显示）→ v164 tooltip 收口（用户规格）：模型明细全量展示去「另有」折叠、总和行置顶、键列自适应宽不换行、时间范围行 sticky 吸底（rt-pin，五个 tooltip 统一）→ v165 模型明细表格化对齐（rt-models display:table，整块共享最宽键列，token/次数列纵向对齐）→ v166 会话累计/项目累计时间范围精确到秒（fmtStartS，用户规格；其余三格保持到分）→ v167 模型行去 rt-atom（Chromium 表格内在宽度在 inline-block 边界断行致数值折行，真实浏览器实测）+ 带 rt-models 的 tooltip 宽度帽放宽 860px（zu-tip-wide，取最宽一行）→ v168 格面计数改 fmt 万/亿口径（用户规格：≥1万 N.NN万、≥1亿 N.NN亿；本轮次/会话轮次/项目会话次/工具总数四处，tooltip 与精简摘要保持原值）→ v169 同容器双条去重（Windows 用户报告：最小化/还原窗口来回切出现两根状态条）——宿主窗口状态切换可能短暂保留旧视图副本/重建编辑框，协调器瞬态出现两实例两根条落进同一张卡；heavy 对账每拍扫描：同卡可见 .zusage-root >1 或两根 body 兜底条矩形重叠过半时，data-zusage-slot 大者 hideBar 让位（对手消失经 track 自动复显；拆分窗格各卡各条不受影响） → v170 tooltip 计数同口径（用户规格）：各 tooltip 标题/规模/工具/请求行与模型行、精简摘要行的次数/轮数/会话数全部走 fmt；子代理明细面板保持原值 → v171 修 issue #147（社区 @Mc-GrowlR 报告并给出方案，Windows 10 + ZCode 3.17.1）：划词 side chat 面板容器无 data-pane-id，被协调器 auto 兜底键当作独立 pane，同窗出现第二条状态条（Radix presence 常驻挂载，面板收起后幽灵 composer 仍持续命中扫描）；窗口存在真实 pane 键时丢弃 auto 键——老宿主全部候选均为 auto（单键）单实例行为不变、shadow/iframe 空文档兜底不受影响 → v172 待重启/待更新改由 ⚙ 齿轮红点提醒（restartNotice 开关改为控制红点；会话内文字重启提醒取消，plugin-updater 推送 markerAt 作红点代际，点进「插件更新」分区记为已查看）+ ⚙ 更新页「重启 ZCode」按钮（二次确认，主进程 relaunch 动作）+ 移除自动安装开关（hook 未注入一律自动装，auto_enabled/INSTALL_MESSAGE 会话出口删除）   // 悬停 ⚙ 面板可见；版本号随代际递增 → v173 强制 K/M/B 单位开关 → v174 辅助对话独立状态条（宿主 tabId 成键 + 实例配额 4+1、桥 scope 精确绑定、确定性统计行按会话根归属）→ v175 辅助对话回答末尾富文本与主分栏同规则（显式本地 scope + isCurrentTurn 活跃轮限定 + --current 的 promptTs 守卫；修宿主 modelDurationMs 只累计高速供应商致占位行永久「生成时长缺失」；富文本收集后统一发起、同 SID 只追活跃轮且 epoch 粘滞防多轮搅动） → v177 review 修复批（10-agent 全量 review 闭环）：双条去重抑制不再被 track 每帧复显打穿（v169 Windows 双条场景实际失效的根因，复显前查 dupSuppress、heavy 每拍重评估解除）；精简下速率 chip 被摘除后子代理明细面板保持原位（不再回落隐藏条内全零 .zu-sub 抢锚钉视口左上角，web v103 同款）；精简短路块恢复 syncTpsChip 数据点 reapply（2976478 挪公共尾部后短路 return 到不了、与 git chip 不对称）；relaunch 无回执 4s 提示主进程可能是旧版需手动完全退出（旧 pollPluginRequests 白名单外动作静默丢弃）；待办红点指纹改分量级比较（更新装完后 latestVersion 分量退出不再误复亮）且 ack 幂等早退前先收敛本窗口红点；cnNum 切换补富文本 unitEpoch 在途竞态守卫（同 forceKmb）；detRootEl 落在宿主 data-session-id 写入窗口期时 heavy 按拍补算自愈；精简说明文案对齐 v147 挂载位（前导区 Git 左侧）→ v179 自动压缩阈值注入：⚙ 开关+模式+数值+状态行（enginePatch 随插件状态回推，__zusagePluginState 种子+拷贝行同 v172 纪律），主进程 engine-patch.cjs 按引擎 SHA256 白名单对 glm/zcode.cjs 打阈值改道补丁（锚点唯一性+use strict 指令位校验 fail-closed，hook 缺席/返回空双兜回 fail-open），阈值 autocompact.json 由引擎 hook 每轮决策 mtime 缓存读取——数值热生效、补丁冷生效（已运行 agent 子进程下个 spawn 起用）；ctx 按钮 hover 面板加「自动压缩 ~X%」行（acInfoText 按标称窗口口径，21K 预留近似还原）；关闭开关=按当前内容反向还原引擎字节；阈值任何形式钳 1% effective 地板防连环压缩→rapid-refill 熔断→ v180 重启按钮错位守卫（issue #158）：主进程 pushPluginState 携带 relaunchSupported 能力标记（与 relaunch 分支同文件、天然同步），浮层缺标记时隐藏按钮并显示「完全退出后重开」指引（syncUpdate + 点击守卫双处）；主进程 pollPluginRequests 白名单外动作兜底回执 unknown action，重启回执明确区分「主进程是旧版本」 → v183 子代理行内实时速率 chip（v4 Agent 行 testid 后缀即 childSessionId、与 v97 槽位键同源：运行期读槽位估算、完成后读泵快照 sub.list 真实加权速率；TPS 十档色；悬停 tooltip） → v184 ⚙ 新增「子代理行内速率」开关（state.show.subRate，zusage3.show 整包持久、默认开；只门控行内展示） → v185 实机修复批+review 修复批：后台子代理在宿主注册表无现成 store（运行期估算自 v97 起从未真正工作）→桥 v2 acquire 访问器按已验证 scope 解析子会话租约（仅 sess_subagent_ 前缀+本地）；tooltip 构建器改收数据包（buildTip(el.__zuT) 约定）；截断改从尾部取（保最新派发 8 个）；SUBRATE_DIAG 提模块级；诊断按 handle 判绑定；实例 dispose 摘行内 chip→ v186 本会话平均 token/s（PR #157 收编）：状态栏完成态主数字改会话加权平均（zusage avg_tps：Σ有效输出÷Σ生成窗口，main_turn 段、不含子代理），「均」前缀+按均值分档，最近一段/最近一轮退 tooltip；速率行/CLI 加「会话均」，精简 chip 同步；updateLive 会话归属取本 pane 行（lastView.session），缺席回退原行为→ v187 补回 v181 工具组状态词（PR #161 合并时 turn-stats runningGroupOf 块与 overlay 消费分支遗漏入库，仅存于运行目录热修副本）：turn-stats 复刻宿主 exploreGroup/executeGroup 合成规则（≥2 连续同类行成组、半截 JSON defer 透明、startedAt 锚定组首行），运行行落组尾时状态词显「查阅·执行中/终端·执行中」替代逐工具动词，计时从组头起算 → v188 自动压缩阈值注入按验收反馈简化：开关默认开（主进程 auto_compact_patch 缺省开、显式 false 关）；UI 只留百分比数值（留空=跟随引擎默认），模式下拉移除（引擎层 enabled:false/tokens/buffer 协议保留兼容，配置文件手写仍生效）；标题改「自动压缩上下文阈值注入/压缩上下文阈值数值」；状态行补 14px 水平内边距与 label 文本对齐 → v189 hover 面板阈值信息行移到「压缩上下文」按钮上方并追加下划线「调整」链接：点击复用 gear.click 完整路径打开 ⚙、切「通用」分区、scrollIntoView(nearest) 定位阈值数值行并高亮 3 秒（.zu-ac-flash，计时器实例级归属 dispose 清理）；info 结构改首文本节点+常驻链接（整行 textContent 覆盖会抹掉链接） → v190 三处验收微调：hover 阈值行 text-align:left（与卡内其它行对齐）；高亮改琥珀左条+淡底（--color-brand 在宿主主题是白色系，outline 描边观感像输入框焦点）；⚙ 注入开关关闭或主进程未加载时数值行整行 hidden → v191 hover 阈值行 token 数改走 fmt()：万/亿/K·M·B 与状态条、tooltip 同一转换链（跟随中文单位开关与强制 KMB 开关，中文至多两位小数去尾零） → v192 hover 阈值行布局：去掉自加 6px 下边距（间距交给宿主 space-y-3 的 12px 节奏，与「平均缓存命中率」行 pt-3 距分割线一致）；行改 flex 两端对齐，「调整」链接居右 → v193 修 v192 贴按钮：宿主 space-y-3 是 Tailwind v4 :where() 零权重 margin-bottom，行上自写 margin 会按类名权重压掉它（v190 的 6px 显挤、v192 的 margin:0 贴紧同因）——删掉 margin 声明整段回落容器原生 12px 节奏 → v194 阈值百分比改总窗口口径+数值行 30-99 校验：设置 91=原生按钮走到 91% 触发、hover 显示 91%（旧口径按扣除 21K 输出预留后的有效窗口算，设置值与显示差约 2 个点被判为割裂）；引擎 hook 以 eff+21K 近似还原标称窗口并钳在 eff 内，writeConfig 白名单收紧 30-99，已打补丁引擎下次启动按 PROLOGUE_V1 原位换装新 hook；⚙ 数值超范围实时提示并拒绝提交 → v195 hover 卡新增新手说明行：阈值行下方小字（.zu-ac-hint，随行同生命周期）解释口径与后果——「按窗口总量计算（与顶部百分比同口径）；走到该比例时客户端会自动压缩较早的对话内容以腾出空间」；margin-top 收紧 space-y 间距（space-y v4 只写 margin-bottom，top 无冲突） → v196 「调整」失灵诊断面包屑（下版移除）：openAcThresholdSettings 在 enter/after-gear/+150ms/row 各点写 __zusageDiag.acOpen（面板态、gear 可见性、条 display、分区、代际），closeSettings 写 acClose 调用者栈；v197 实证 acOpen 为空=点击未到达处理函数 → v198 修「调整」失灵：链接监听改 pointerdown（宿主疑似 mousedown 即关 hover 卡、click 到来前链接已被摘）+ 行级 click 兜底 + 捕获期点击写 localStorage 并在说明行回显（命中标绿/落空标红，诊断下版移除） → v199 清理 v196-v198 诊断：acOpen/acClose/acClick 面包屑、localStorage 回显、命中/落空着色全摘；保留 v198 修复本体（pointerdown 主监听 + 行级 click 委托兜底），实机验收=电脑操作点击「调整」面板弹出且阈值行琥珀高亮 → v200 上下文按钮增强显示层优先镜像原生 aria-label 已用/总量（宿主 taskUsage，压缩后立即回落；issue #172 曾停在 DB 最近完成请求旧值 16.4%），解析不出回退 lastBand DB 口径（ctxOv/nativeCtxVal 优先级只作用兜底），exc 过程态档位仍优先，还原路径共用同一解析器（英文 UI restore 顺带修对） → v201 合流：v200 撞号顺延（v200 已被并行线 issue #174 压缩按钮开关占用，8e6e1c0 先合入） → v202 预估费用行：四格 tooltip（本轮/会话/项目/今日）按 models.dev 官方牌价估算费用（token_pricing.py 内置表 326 条 + serve 内 12h 同步 models.dev 与 er-api 汇率，pricing-cache.json 落盘），快照加 cost_usd（USD）与 fx，展示层 ×汇率显 ¥（无汇率降级 $），会话/项目模型明细行尾加各模型费用，「价格来源 models.dev」脚注可点（openExternal），费用行尾空心问号图标悬停弹说明小气泡（价格来源/计算公式/汇率来源三行，fxTip 独立浮层 + mouseover/out 委托 + 180ms 悬停桥，主 tip 收起/重建时同步收），汇率源主源失败兜底 exchangerate.fun（自定义 fx.url 不启用），⚙ 通用区开关默认开，本库口径：裸输入=input−cache_read−cache_creation 全价、缓存分价、output 已含思考不另计 → v203 红点仅承载待重启（发现新版未安装、更新成功且已热重载均不亮；分量级已读比较保留以兼容旧 seen 串）+ ⚙ 带待重启红点点击直接落「插件更新」分区（激活即 ack）+ 设置页新增「已更新成功，点击重启 ZCode 即可生效」提示条（旧主进程降级回原文字指引），分区切换提取 activateSettingsSec 单一出口 → v209 额度 chip .zu-quota 与重置卡徽标 .zu-ctxrst 左右内边距 6px→3px + 模型选择触发按钮（chat-model-select-trigger）左内边距减半：文本态 8→4px、图标态 6→3px（!important 压宿主 group 变体）（用户规格 2026-11-02） → v210 时间范围行全部精确到秒（v166 会话/项目累计先行的 fmtStartS 扩展到本轮/今日合计与速率 tooltip 最近一段；fmtStart 仅剩「最后活动」行）（用户规格 2026-11-02） → v211 本轮 tooltip「单次耗时/首字延迟」改「平均耗时/平均延迟」（zusage 快照 last_turn 新增 avg_duration_ms/avg_ttft_ms，对 model_usage 该轮已完成 main_turn 行 >0 样本求均值；turn_usage.ttft_ms 聚合列实测口径不明不可依赖，旧快照缺字段整行不渲染）+ 本轮格面移除时长/首字两段（耗时只在 tooltip），精简摘要「本轮」行时长随同改平均（用户规格 2026-11-02） → v212 Git chip 分隔符 .zu-git-sep 间距收紧：字面「 · 」改纯点+左右 2px 内边距（多仓段与 ?N 未跟踪段两处同源；用户规格 2026-11-02） → v213 状态条格序调整：今日合计提前到会话累计之后（速度→本轮→会话→今日→项目→工具→子代理→⚙），速率 tooltip「状态条摘要」行序随同对齐（用户规格 2026-11-02） → v214 项目累计统计卡改版：tooltip 重构为「标题+统计范围（全部请求·含子代理）、总用量/请求次数/预估费用三 KPI（费用旁统一说明问号）、输入(命中率)/输出(含思考)/缓存写入明细、会话·轮·工具·重试规模行、模型四列表格（默认 6 项可展开全部，排序对副本）、时间范围（em dash）」，作用域 .zu-project-tip + :has 样式（不动共享 .tip/.rt-* 规则），展开态实例级归属键（sid:started）局部更新不重建整卡，触发项 zu-pj-item 标记，卡片内 Escape 关闭并归还焦点，focusout 进卡片不误关，positionTip 钳底边，费用全链复用 v202（0 有效/缺失 —/开关关整格收） → v215 六统计卡统计卡化：本轮/会话累计/今日合计/子代理四格 tooltip 统一 zu-stat-tip 视觉体系（速度统计卡公共构造：scope 标签+双读数 hero 主读数档位色、两行五列网格窄窗重排、速度卡宽帽 760px :has 作用域；明细面板内模型行问号图标弹费用说明气泡，复用 fxTip 单例同款委托）（用户规格 2026-11-02） → v215.1 速度卡去费用行与模型明细（用户规格：速度 tooltip 只留读数与时间范围，费用唯一承接处=各卡明细面板与 fxTip 气泡） → v217 子代理统一浮层：.zu-sub-pop 双栏单组件替代「悬停五段卡 tooltip+点击独立明细面板」两套旧 UI（preview/pinned 状态机：悬停预览、首次点击固定、面板内操作转固定、Escape/关闭/外点统一收且焦点归还+500ms 悬停抑制；选中按 sid 维护、运行中未入库槽位进导航、签名幂等重建保滚动、会话切换即关、入口断连即关；任务页 _sub_item 逐任务模型用量表/预估费用/平均速率档色行/最后活动全格式时间，zusage sub.list 单项同步扩展；精简入口 chip.__zuOpenSub 归一指向同一浮层）（实机验收 2026-11-03） → v218 速度卡三修（实机反馈）：悬停冻结 updateLive tipFor 判定改 contains（旧恒 false 致悬停中 tooltip 不冻结）；右格「最近一段」改读 lastView.last.tps（zuBarSpeedView 无 latest 字段恒缺）；图例 ≥2000 Ultra 改渐变圆点并禁 ✦ 伪元素（星点破形） → v219 ⚙「状态条样式」（默认/药丸/精简单选+精简说明行）从「通用」分区移入「状态条显示」分区卡首，纯分区归属调整，控件与持久化行为不变 → v222 速度卡 tooltip 补「时间范围」行（用户规格，参考四格 tooltip 同款式）：主数字为会话均/桥态取会话累计口径（started→last_at，与会话累计 tooltip 同源），「最近一段」回退态保持段范围；起点缺失整行不渲染（半程范围无意义）；三处 speedCardHTML 调用点（桥态 buildLiveTip/DB 回退/精简 chip）同批生效 → v223 ⚙ 面板关闭按钮命中区外扩（原并行线编号 v220，合入顺延；::after inset:-6px、hover 反馈同步，约 20×24px→32×36px）：按钮四周 head 空白点击原本无反应，用户实测「悬停 × 上点不动、不灵敏」；CDP 真实点击定责为命中区过小（事件链与面板几何均无缺陷），纯命中区修复，不改布局与视觉 → v224 速度卡悬停实时刷新二次修复（实机反馈）：v218 只改了 tipFor 判定，新 tip 串仍写到格内 .zu-live span，而 __tip 宿主与 drawTip 读取都在 .it 格元素上——条件每 tick 命中、重画的仍是整条渲染时的旧串，悬停中「当前读数」冻结在最后一次整条渲染的值（chip 已跳动、tooltip 停在「思考中…2秒」）；改写回格元素（liveEl.closest(".it")），悬停中每 tick 跟手重画，未悬停也保持新鲜 → v225（v224 并行线 PR #198 先合入，本线顺延）⚙ 自动压缩状态行区分「引擎被单独热更」（issue #191）：桌面 build 已登记而引擎 sha 脱钩时明示热更事实与漂移 sha 前 12 位（引擎补丁新增 drifted 字段，主进程传入 appVersion 按点分界前缀匹配登记表），替代误导性的"版本不在支持名单"；lastError 后缀此时与 sha 重复不再拼接；fail-closed 判定不变 → v226 ⚙ 两项（用户需求 2026-11-03；v226 已被并行线自动压缩状态行占用，顺延）：①六格显示开关（本轮/会话累计/项目累计/工具调用/今日合计/子代理）全部关闭时样式自动转精简（边缘触发只在「变得全关」那一拍切档，zusage3.autoCompact 记录来源主题 default|pill，重开任一格恢复、面板手动改档即解除；药丸来源同样触发）②默认样式新增「水平对齐」三选一（zusage3.barJust：均分 space-between 缺省不挂类/居左 flex-start/居右——居右不用字面 flex-end，LTR 下 start 侧溢出不可滚动也不计入 scrollWidth 会废掉收缩检测与 .zu-clip 渐隐，改首格 margin-left:auto 等效右聚拢、溢出方向与兜底不变；设置块仅默认档显示，applyBarTheme 随档显隐并同步条上 zu-just-* 类） → v227 预估费用说明气泡悬停保活（fxTip 是 body 级独立浮层、挂在主 tip 之外：指针从 ? 图标移入气泡被文档 mousemove「条外」分支按 left-bar 强制收主 tip、hideTip 同步收气泡，v202 起悬停说明气泡即灭；子代理浮层路径同被 preview-leave 倒计时收走面板。mousemove 处理器节流前新增分支：fxTip 显示中且目标在气泡内视同仍在 tooltip 上——保住主 tip 与气泡、取消越顶宽限与子代理面板延迟关闭，离开气泡回落原判定） → v228 速度 chip 完成态去「· 近X」尾缀（用户规格；编号顺延避让已合并的 v226(PR #200)与 v227(PR #202 fx-tip-keepalive)）：条面格与精简 chip 同批去掉 dbTps 尾缀，主数字只显会话均（或最近一段）；「最近一段」读数保留在 tooltip 右格不受影响 → v230 压缩轮不再显示「本轮统计不可用」（编号顺延：原 v238 号，v229 已由并行合入的 PR #207 占用、v231 起由并行未合线自占）：上下文压缩（手动/自动同链）是 query_source='compact' 的辅助轮（DB 有完整数字且已计入今日/会话累计，但消息流无正文、header 零输出），旧逻辑按 v74 零输出明示规则误插误导占位——实测压缩轮投影=turnHeader+timelineMarker(marker.type='compact') 而 header.executionKind 恒 'agent'（ek 探针证伪初版假设），turn-stats get() 以 isCompact 识别，overlay 对压缩完成轮不新插/撤下已插行（宿主「上下文已压缩」提示已承载语义）；kinds/tmr 为 det 诊断字段；v74 真实零输出轮行为不变 → v231 统计卡标题拼接名称与垂直居中（用户规格三轮迭代一并入库；编号顺延避让并行已合入的 v229(PR #207, issue #205)——v228 后 overlay 台账实际未占用，按共享代际台账撞号声明让号）：①项目累计卡拼项目名——zusage _project_usage 附 name=启动目录末段（正反斜杠归一，缺目录/旧快照判空不渲染），.zu-pj-pname 字号颜色同规模行 .zu-pj-scale；②会话累计卡拼会话名——快照行 title 三处本就产出，纯渲染端：statHead 加可选第三参仅会话累计卡传、/\s+/g 压空白、缺 title 判空不渲染，.zu-st-name 360px 省略号；③名称与标题垂直居中——标题容器带名称时切 .zu-tt-name（display:flex;align-items:center），行内 baseline/bottom 对齐会被 18px 大字 descent 拖得视觉偏低（实机指认），flex 子项自动块化、省略号仍成立 → v232 速度 tooltip「最近 20 段」柱状图：zusage 快照 session 行新增 speed_segs=最近 ≤20 条已完成 main_turn 有效速度段（_row_gen_ms 窗口与 avg_tps 同款口径、辅助源/子代理/碎段不计，v 保留原始浮点供档位与柱高按原始值判断；speedCardHTML 带 segs 时切「左读数卡+右图表」布局——左卡=当前读数/档位胶囊/加权平均说明，「最近一段」右格由最新柱承载，无 segs 的旧快照/远端旧版保持 v215 原布局），柱顶读数恒一位小数与柱同轴心、最新段加粗，Y 轴 0 起整洁刻度并按「信息卡横向覆盖最右约 1/3 柱」约束迭代刻度保证最高柱读数不被压住，X 轴=分段真实完成时间本地时区 MM-DD HH:mm 稀疏显示、首末恒留，最新段描边高亮+「最新」徽标，柱体颜色沿用 TPS_BANDS 档位类（ultra 渐变深浅主题显式 border-box 覆盖防 clip:text 裁没），段值 ≥1000 t/s（读数 6 字符）或窄窗口（plot min-width+横滚）保读数永不重叠；柱级悬停/键盘焦点弹信息卡——tip 本体委托 + 实例闭包存悬停段下标经 speedTipRebuild 编进串（签名幂等重建不丢状态、离开回落最新段、会话切换重置），render 接管对速度格补 drawTip 使打开中随快照跟手（焦点/选区在 tip 内时跳过），图表横滚位置跨重建保留；精简 chip tooltip 不带图表 → v233 速度卡三删+读数自适应（用户规格）：①删「统计会话全部已完成请求：工具等待不计，不含子代理。」口径行（DB 回退与精简摘要两处，Σ输出÷Σ生成耗时等其余口径保留）；②删柱状图「最新」徽标（最新段描边与加粗读数保留，plot 高 200→184）；③删「每段完成后更新；不足 20 段时显示实际数量。」脚注（live/回退两处）；④左卡「当前读数」估宽分级自适应（超长状态词降字号+允许换行，不再被 156px 左卡裁切；分级实现见同批改动） → v234 柱状图 20 段→14 段、释放空间给左卡（用户规格）：zusage 新常量 _SPEED_SEGS_MAX=14（与 last.tps 回查的 _TPS_LOOKBACK 分离，扫描窗 42 行凑 14 条有效段）+ speedSegsOf 渲染端截 14 + 两处口径行「最近 20 段：…」改 14；左卡 156→300px（内宽 278），主数字删 +12px 覆盖回基础 ui+22 大字，估宽分级阈值重算 ≤7.5/≤11.5、fit2 +6→+10px；plot min-width 600→420（pitch≥30）、wide 780→560、xEvery 估算基数 620→460/最小标签距 44→30（14 柱满宽全显时间标签） → v235 速度 tooltip 多状态结构化重构（用户设计图规格）：zuBarSpeedView 追加结构化字段 kind/statusText/nameText/nameFull/elapsedText/speedValue/speedIsEstimated/speedSource/activeCount/noteText（八类 tool/toolgroup/skill/subagent/thinking/estimate/avg/real，text/cls/phase/band/latest 逐字保留、状态判断不解析文案）；speedCardHTML 新增 o.status 分层左卡模板（zu-sl-status 状态标题+子代理 ×N 徽标 / zu-sl-name 名称两行省略+title 全名 / zu-sl-main 主数值或计时 / zu-sl-unit / zu-sl-note 辅助），数值型走档位色、工具/Skill/思考/子代理保持 dim，o.main 拼装路径为精简 chip 等旧调用方保留；子代理估速前缀 ≈、无效估速显「估算中…」不补 0；buildLiveTip/fallback 传结构化状态，scope 标签按真实状态映射（工具执行中/工具组执行中/Skill 执行中/子代理运行中/思考中/生成中估算/会话平均/本轮真实速度），思考态左卡内嵌脑动效图标；柱状图 14→17 段（_SPEED_SEGS_MAX=17、渲染端截 17、口径行改 17），plot min-width 420→500/wide 560→680/xEvery 基数 460→500/最小标签距 30→29 配平左卡 300→250px → v236 速度 tooltip 三修（用户实机反馈）：①信息卡改为悬停/键盘聚焦柱体时才渲染（默认不再常驻最新段上方，cur 高亮随之仅悬停态、latest 描边保留）；②X 轴时间标签最小距 29→44（17 柱 pitch≈29 必隔列、间距 ×2，修复标签拥挤）；③非 wide 图表删 plot min-width（随容器压缩+稀疏标签兜底），任何窗口宽度不出横向滚动条（wide ≥1000 t/s 保留横滚），速度卡宽帽 860→1040 → v237 修时间标签裁半（用户实机截图）：v236 的 border-box 配平让 X 轴行内容区只剩 20px、两行时间（25px）被 wrap 的 overflow-y:hidden 裁掉半行——X 行 24→29px（4 padding+25 两行）、plot 高 184→189，列配平随之 160+29 → v239 速度 tooltip 100% 复刻设计图（用户拍板以设计图为准，撤销 v233 删口径/v236 悬停才显卡）：信息卡恒在（默认最新段带「（最新）」+虚线引线连柱，悬停切段）、左卡状态图标+「当前读数」标签+档位色状态标题、颜色对照单行横排、统计口径左标题右分段+时间范围同卡、带图表时不渲染脚注 → v240 柱状图 17→10 段（zusage _SPEED_SEGS_MAX=10、渲染端截 10、口径文案同改）、柱宽 max-width 22→15px（-30%）、信息卡恢复仅悬停/聚焦才显示（撤销 v239 常驻）、左卡下半区加「峰值/最低/最新」概览填空、速度卡宽帽 1040→860、plot min-width 500→340 → v241 速度 tooltip 按设计图复刻：柱状图取当前会话最近 10 次（可跨天）、左卡标题行/主读数/说明行文案按设计图对齐（工具组「查阅」、Skill「执行中」、说明行统一「X · 正在执行」）、前缀「估/均」小号灰字、主体区垂直居中填空 → v242 速度 tooltip review 修复批（十 subagent 审查）：focusout/mouseout relatedTarget 守卫修 Tab 跨柱焦点断裂与双重建闪烁、render 接管 pill 主题补焦点守卫、wide 横滚复活（plot 420）、spanFrom 收严最坏一半 + CARD_H 36（实高 35.6 校准）、real 去档位胶囊、skill 标题统一无空格「·执行中」、工具组 statusText 回归完整短语、liveScopeMap real/estimate 用词对齐、「当前读数」标签与有效数值同门（修 subagent 数值误杀回归）、左卡 border-box 250/双规则合并/padding 12、标题档位色与单行省略、浅色 ultra 图例圆点 clip 修正、hero :has 单列、柱 role=img、17 段/常驻卡/帽 1040 等过期注释清理、测试补八态直调/概览三格/前缀/（最新）角标/图例行/几何不重叠断言 → v243 更新日志「发布页」链接 GitCode 渠道改指 /releases 列表页（tag 深链页对本项目 API 创建的 Release 一律「找不到或无权限」，GitCode 平台路由 bug 2026-11-04 实测；GitHub 渠道保持精确 tag 深链；镜像/未核实回退路径同规） → v244 重启按钮反馈与延迟（用户报告「点击没反应、等很久才退出」——大头是宿主 app.quit 优雅退出链要关窗并逐个终止会话/扩展子进程，可达数十秒，插件无法绕过）：确认发送即「正在重启…」+禁用+预期文案替代「发出即恢复」伪装无反应，4s 无回执/失败/90s 仍存活三路还原（ok 后挂 90s 兜底防 quit 被会话/扩展阻止永久卡死；4s 超时已还原则不再挂）；syncUpdate 重绘保持禁用与提示；主进程 relaunch 固定 300ms 延迟改回执送达后 30ms 退出（800ms 渲染端无响应硬兜底）；v245（同批提交）quit 前 hide 全部窗口——退出屏障期窗口不再可见干等，主进程 15s unhide 哨兵在 quit 未发生时恢复可见 → v246 用户手改批：速度图未悬停（hoverIdx<0）不渲染信息卡、span 只按 capOut 留柱顶读数净空，刻度基数补 6/7.5 防跳档空旷；X 轴同日去重（仅首枚显示标签柱与跨日首柱渲染日期行，其余同日只显 HH:mm）；本轮/今日合计首格改「总用量」、今日缓存命中率并入 grid3 输入列副行、本轮平均耗时/延迟/总耗时行改 --sub 弱化段、会话累计 scale 行分隔符改前缀式并删末项请求数、工具表 <50ms 显「<0.1s」弱化、子代理浮层 KPI 副行改命中率/含思考/缓存写入+平均速率并入 KPI、项目卡范围+scope 合并单胶囊+隐藏「按用量排序」+子代理浮层模型表去底色改行线、本轮输出速度单位 tok/s→t/s、图例 ultra 点隐藏与 inline 间距收紧、tbody scrollbar-gutter:stable → v247 悬浮窗口激活方式（issue 用户反馈：滑过误触遮挡）：⚙ 通用新增「点击激活悬浮窗口」开关（zusage3.tipClick 缺省关=停留 1 秒、仅显式 "1" 开=点击）；统计卡/子代理浮层 closed→open 改由独立 1000ms 定时器承接（排程置于 150ms 节流之前防快速滑入静止后永不触发、按命中元素 key 去重续期、到点按当前坐标 elementFromPoint 重命中抗 render 1.5s 重建 + :hover 最深元素复核），已开 tip 切相邻格保持即时，键盘 focusin 即时打开不变，取消统一落 hideTip/各 return 分支，定时器随 dispose 清理；点击模式 bar.click 接管 .it 并用 focusTipAt 避开 focusin→click 首击抵消（复用移出条面/Escape 关闭链，不另起 pin），fxTip/速度信息卡/工具栏 chip 与宿主原生 hover-card 不在本次范围→ v248 预估费用说明气泡「当前模型」随卡携带模型上下文（上一会话已完成、已部署未提交，与已合入的 v249（PR #224）并行开发，随本批补录入库）：四个统计卡与子代理浮层汇总的 KPI 费用问号随卡携带模型上下文（fxqIcon：data-model/data-rates=按用量最多模型+data-mcount+data-mscope），单模型显该模型四价、多模型沿项目卡口径显「计价范围」、无模型明细不显模型行，default 借 last 分支删除 → v249 用户裁定简化：「点击激活悬浮窗口」关闭（缺省）不再做停留 1 秒，恢复即时悬停原语义（v247 的 1000ms 定时器链 HOVER_OPEN_DELAY_MS/hoverSchedule/hoverCheck/hoverCancel 整体移除，mousemove 恢复 v246 逐行为）；开关开启仍为点击激活（bar.click 接管 .it + focusTipAt 防首击抵消、子代理 preview 关闭改 pinned 打开），设置项/文档口径同步为「悬停立即显示 ↔ 点击才打开」两态 → v250 速度柱状图按轮聚合+悬停卡全格式时间与轮明细+柱间距收紧（用户三项规格；编号顺延避让已合入的 v249「点击激活简化」PR #224）：zusage _speed_segments 改按 turn_id 合并一次提问的全部请求（v=Σ有效输出÷Σ生成窗口、逐问同口径），随段携带 m/i/o/n/c 供悬停信息卡渲染 模型/Token 用量（含输入·输出拆分）/请求次数/预估费用（数字格式化经 o.fmtTok/fmtCnt/fmtMoney 回调，费用随 state.cost 门控，旧快照缺字段按行省略，CARD_H 按实际明细行数校准）；悬停卡时间改全格式 yyyy-MM-dd HH:mm:ss；X 轴每个显示标签恒带月日两行（同日去重废止）；柱宽 calc(20%+12px) 使柱白任意宽度恒精确收紧 20%；段→轮措辞（最近 N 轮/第 N 轮） → v251 套餐额度显示口径开关（⚙ 套餐额度分区「显示剩余额度」，zusage3.quotaRemain 缺省关=已用%，纯渲染偏好不进 config.json）：开启后 chip 面分段数字与 aria、tooltip 窗口行/Key 总额度行/其他源摘要行改按剩余%（100−已用 同一窗口池补数，quotaRemainPct 钳 [0,100]）打头，绝对值窗口行内 已用/剩余 明细互换顺序；档位色恒按已用原始值判定（quota.md 契约）不随口径反转；余额/Key 剩余额度单段与团队/未配置/错误形态不受影响 → v252 模型拉取同步提供商侧配置（issue #236）：零兄弟供应商首拉写实最小骨架+有据元数据（contextWindow/inputFormat/档位/输出上限），档位按强度梯排序（宿主默认档=values 末项），Copilot capabilities 别名，api.json 档位目录按需后台补缺（大体量不阻塞，缓存后下次拉取生效），套餐源接目录补缺；弹窗行「未获取配置」中性提示+脚注披露只增不覆盖；档位索引落运行目录缓存（24h stale-while-revalidate 跨重启复用），目录后台补拉时行内「档位补拉中…」状态+脚注说明 → v253 本轮/今日合计 tooltip 模型明细改项目卡式四列表格（zu-pj-mhead+statTable，费用列随 state.cost 门控；本轮 rt-models 行式退役，精简摘要保留）+ 本轮 tooltip 删「速度＝Σ…未参与测速」口径行（unrated_output 字段照旧生产） → v254 生成速度 Tooltip 全面重构（范围/时间双 Tab 共 20 组合 + 按时间/会话/项目维度：zusage 新增真实库有界轮表 speed_history（短键+索引表+2s 缓存，单一 Σ有效输出÷Σ生成窗口口径，旧 speed_segs 契约不动），渲染端纯函数聚合；16 根细柱定宽居中、十档 TPS_BANDS 同源、删除均值虚线/统计口径大段/底部时间行/图表预览；右上角日历时间胶囊（title 全格式）、左卡历史均值与生成中估算分离、柱 hover 五字段自定义卡（时间区间/档位速度/多模型/Token 总量含输入输出/预估费用缺失态）、单行十档图例、空桶显空柱不显 0、远端身份下「全部」清晰降级、旧快照/精简 chip 回退原布局；Tab/dim/柱 hover 全走 tip 本体既有事件委托与签名幂等重建，不新增 IPC/定时器/全局监听） → v255 真实宿主验收三修（X 轴短时分标签+30px 裁切杜绝长时间戳重叠、左卡实时状态降为独立 note 且标题中性化「当前筛选 · 历史统计」避免工具执行中配历史均值语义错位、V2 实时状态变量更名 spdLiveStatus 与 buildLiveTip 旧局部同名隔离） → v256 修复「速度 Tooltip 有时新、有时旧」（用户实机报告）：根因=统一轮表只在 serve 常驻链产出，主进程常驻进程空闲回收/重启/降级时回退 zusage.py json 一次性帧缺 speed_history，spdRebuildOr 返回 null 整卡回退旧版；①zusage snapshot 增显式 include_speed_history 门控，serve 与桌面 json 都产出轮表（远端子进程 ZUSAGE_REMOTE_CHILD=1 排除，CLI/MCP/远端 stdout 契约不变）；②overlay __zusageUpdate 粘性保留最近一份有界轮表，缺字段帧不再闪回旧卡（空轮表不粘性）；③精简模式 tpsChipTipHTML 与 tpsTip 浮层补齐 V2 接线（双 Tab/维度/柱 hover 全走浮层本体委托、状态落 chip 数据包、V2 卡放行签名重建），V2 宽帽规则补 .zusage-tps-tip 宿主；冷文件 inject-main 未改，热重载即生效 → v257 追堵「首帧缺轮表」（用户 11:21 再现旧卡，渲染端 diag 实证已 v256）：v256 粘性只在代际内有效，热重载/重启后的新代际粘性为空，而 `_speed_history_safe` 在完成轮瞬间的 WAL 写窗口偶发抛错返回 None——首帧恰逢失败时无值可粘，仍回退旧卡。①safe 失败先短重试一次（50ms，新常驻进程首查撞写窗口时多半已放行；缓存 TTL 内不重扫），再失败跨 dbkey 回退最近一次成功轮表（`_SPEED_HISTORY_STALE_MS` 10 分钟上限，轮表是历史统计分钟级陈旧可接受，下一帧成功即覆盖）；②`__zusageUpdate` 帧级诊断 `FATAL.spdFrame`（has/sticky/turns，原地更新）——再出现象 diag 直接区分「数据链缺帧」与「粘性未建立」，不再靠截图反推 → v258 spdTip 取证诊断（用户 11:37 在 v257+首帧 has=1 下仍见旧卡，数据/代码/本地模拟三查均无异常，纯推理到头）：buildLiveTip/html(d)/tpsChipTipHTML 三条速度 tooltip 路径在 V2 成功时记 `FATAL.spdTip={t,src:"v2-live|v2-html|v2-chip",turns}`、回退时记 `{src:"fb-live|fb-html|fb-chip",turns,range,period,sid尾8}`，spdRebuildOr null 分支加 `FATAL.spdNull`（typeof FATAL 守卫不破坏 VM 切片）——diag 直接给出真实路径与当时轮表长度，定位后移除 → v259 宿主多视图顶部 48px [app-region:drag] 标题栏拖拽条穿透上层浮层（Electron 拖拽区按几何命中，覆盖层未显式 no-drag 不阻挡）：面板 top:8px 时头部 ✕ 落在条内，真实点击被窗口拖拽吞掉（新建任务页实报「设置关闭无效」，面板内导航点击正常与症状吻合）；.zusage-panel（设置+子代理浮层）/.tip（全部 tooltip 根）/.zu-mp-ov/.zu-compact-dlg 显式 -webkit-app-region:no-drag，把自身矩形从拖拽区减掉（宿主自家浮层与全屏屏障同款修法，app.asar 实证） → v260 静态桥缺席兜底（同内容仓库版记 v258，合入时按合入顺序归一；G2 跨版本免重打桥）：readFiberPaneScope 沿 React fiber 回溯 SessionPane 作用域（detOwnerOf/sidePaneKeyOf 的 tabId 同款兜底；限深 24、撞外层会话/分栏根止步、多候选歧义拒绝，校验与静态属性分支同规）；turn-stats.js 运行时合成 BRIDGE_TEMPLATE v2 同契约三访问器（Map.prototype 一次性探针捕获宿主注册表 + installRuntimeBridge 注入口） → v261 spdRender 取证补强（老会话完成态仍见旧卡而 spdTip 恒被 v2-live 每 tick 覆盖，hover 瞬间的整条渲染记录无法存活）：html(d) 整条渲染专记 `FATAL.spdRender={t,src:v2-html|fb-html,pane,sid尾8,turns,hasH,range,period,dim}`（独立字段不被覆盖），spdTip/spdRender 均带 pane 实例标识（多实例共享 diag 分不清写入者），spdRebuildOr null 分支补 spdNull 原因取证（typeof FATAL 守卫）；本版=运行目录 v260 合流超集基线 + 本诊断（v260 已含速度线全部修复与并行线 v259/v260 桥兜底） → v262 根治「空渲染污染共享数据」（spdRender 铁证定案：用户复现时刻整条渲染 hasH:false / spdNull hType:undefined，而前后帧 has=1——`render(d)` 首行无条件 `state.data = d`，实例 spawn 首渲染/桥空窗的 `render(state.data || {session:{},...})` 把空对象写进共享数据、抹掉统一轮表，窗口内 hover 即 fb-html 旧卡；切会话 tab 触发 pane 重建恰好高频制造该窗口，故「老会话旧卡、新会话正常」）：render 改条件写 `if (d && d.session && d.session.sid) state.data = d`——空对象渲染不再抹掉轮表，spawn 实例后续 updateLive 直接用上一真帧渲染（比旧行为更快出 V2）；真帧写入链（__zusageUpdate 外层）不变 → v263 根治「范围/时间 Tab 点击无效」（用户实报 P0）：①根因=生成中 updateLive 每 100ms 重编 V2 整卡（估算/计时走字让 tipSig 每 tick 变化），mousedown 命中的按钮在 mouseup 前被 innerHTML 替换、click 落到共同祖先 closest(".zu-sv-tab") 为 null；Tab 切换提前到 tip pointerdown 委托（重建窗口前同步生效，click 保留键盘/兜底，同值幂等共存），按下即进 600ms 交互冻结保下拉展开；②updateLive 冻结扩 mouseInBar（悬停保活不整卡重绘，数字冻结在进入时刻，typeof 守卫兼容 VM 切片）；③compact tpsTip 面：Tab 同款 pointerdown（tpsTabActivate）+ showTpsTip 撤销 v255 对 V2 卡的冻结放行（悬停中统一冻结，交互路径清 __zuTipSig 天然放行）；④视觉 12 项（视觉审查 Agent 实测截图清单）：Tab 选中态纯白改柔和强调 rgba(87,200,255,.14)+恒字重 600 防跳动、hover 补背景反馈，左卡删「Σ有效输出 ÷ Σ生成耗时」公式行、标题改弱化「历史统计 · 不含进行中请求」（.zu-sl-title 仅本卡作用域覆写，旧八态卡不动）、主数字 +22px，X 轴跨日首柱两行 MM/DD+HH:mm 且跨日柱稀疏化必显、xEvery 8⇒6 收紧标签间隙，图例 Ultra 补 ✦，维度下拉补 ▾ chevron，标题 +6px/时间胶囊 padding 4px 10px，间距归 8/12 节奏，柱组居中+删 --zu-sv-n 死配置 → v264 第二根因收口（实机点击仍关 tooltip 定案）：tip 内控件点击 ⇒ pointerdown 处理器同步重编 innerHTML ⇒ 被点按钮 detach ⇒ 焦点跌落 body ⇒ focusout(relatedTarget=null) 曾无条件 mouseInBar=false + hideTip(true,"focus-leave") 强制关 tooltip——切换生效了用户也看不见（旧版 click-only 同样中招，这是「Tab 点击无效」体感的第二半）。修复：mouseInBar（指针悬停在条面/tooltip 上）时降级 hideTip(false) 交总闸拦截，指针真正移开由 mousemove 判定；纯键盘 mouseInBar 已 false 维持原强制关。行为级回归：切片派发 focusout 断言悬停中 [false,"focus-leave"]/离场 [true,"focus-leave"] → v265 按下即建总闸（实机第 4 次点击实验定案的第三根因）：tooltip 常经 focusin 打开（点击 .it 聚焦），快速移动/合成指针下 mousemove 采样可能全部被 150ms 节流丢弃、mouseInBar 停留 false，随后一次快照推送的 render-orphan 接管失败即关掉正在交互的 tooltip，点击 Tab 落在消息区；pointerdown 委托开头 mouseInBar=true + cancelTipGrace，「指针按在 tip 内」先于一切判定生效，render-orphan 受总闸拦截，下一 mousemove 重新判定 → v266 render-orphan 悬停保留（第三根因彻底收口）：生成中宿主 phase 切换（思考↔工具↔正文）每次走 render 慢路径整条重建条面，条目结构变化时接管失败曾直接 hideTip(false,"render-orphan")——快速移动/合成指针下 mouseInBar 常 false（mousemove 采样被 150ms 节流丢弃，tooltip 经 focusin 打开），悬停中的 tooltip 随每次 phase 切换闪断、点击 Tab 落在消息区（实机第 4/5 次点击实验定案）。修复：mousemove 处理器开头（节流前）记 lastPt；接管失败时指针仍在 tip 覆盖矩形内则保留旧内容原地显示（不重画、不收），指针一动由 mousemove 重新判定；条外维持原收起 → v267 lastPt typeof 守卫（v266 裸引用打破 overlay-fx-tip-keepalive/overlay-tip-activation 的 mousemove 切片沙箱，与 v265 mouseInBar 同款教训：实例作用域新增变量一律 typeof 守卫或同步补切片夹具） → v268 粘性跨代际（用户实报「速度 tooltips 现在变成老版本了」定案）：v255 粘性是模块级变量，热重载/重启后新代际为 null，新代际首帧恰逢 serve 空闲回收/重启窗口（本地实测 serve pid 数分钟内 8576⇒11362 频繁重启；json 链本地实测 1268 轮/197 会话产出正常）即回退旧卡；修复 = 粘性写 window.__zusageSpdSticky（旧实例不清除、新实例继承，跨热重载/重启持久）+ 四处 V2 消费点（buildLiveTip v2h / html(d) spdRebuildOr / tpsTip 数据包）统一 lastSpeedHistory 兜底——帧缺轮表时以最近一份有界轮表顶上（历史统计分钟级陈旧可接受，v257 同取舍），下一帧成功即覆盖 → v269 lastSpeedHistory typeof 守卫（第三次同款教训：v268 三处裸引用打破 overlay-speed-chart 旧图切片沙箱 3 例——实例/模块新增变量被切片引用必须 typeof 守卫已三令五申） → v270 用户实机验收四修：①「项目」范围按用户口径重定义=全部项目对比（原当前项目与「会话」差异过小，用户实报「应该是取 zcode 所有的项目」；默认维度按项目，dims=[project,time]，不再按 panePid 过滤，切到项目时 session 维度归 project）；②维度切换后 Tab 无效——结合①数据差异过小造成「无反应」假象，随①消除；③右上时间胶囊月日前带年（跨年两端各自带年）；④hover 卡时间行同日区间压缩（右侧只补时分秒）+ zu-sv-twrap 允许换行，长区间不再省略号截断 → v271 点击任意位置关闭根治（用户实报）：tip 内按压后 1.2s 硬保活窗——hideTip 对非 win-leave/escape 的 force 一律降级交总闸（left-bar 命中区边缘误判/焦点跌落/宿主重渲染等任何路径）、focusout 在窗内直接不关；pointerdown 记 lastTipDownAt（typeof 守卫兼容切片）；win-leave（真失焦）与 Escape 保留立即收 → v272 维度切换功能移除（用户裁定）：图表恒按时间聚合——删图表头维度下拉（tip+tpsTip 两处 change 委托、dimSel 拼装、四条 CSS）、speedTabActivate/tpsTabActivate 的 dim 归位规则；「项目」范围恢复当前项目语义（恒时间维度下「全部项目」与「全部」完全等价），标题加「当前项目 ·」前缀；speedSel.dim 结构保留恒 time（会话切换重置兼容） → v273 自适应布局+稀疏可视化+筛选栏重设计（用户 8 张截图 Goal）：①plot 自适应——删 inline 定宽，in-flow spacer（max(240, n*30+12)px）撑宽 + min-width:calc(100% - 30px) 拉满容器，柱组 flex 居中，多桶 spacer 触发横滚，网格/Y 轴/hover 共享同一 plot 坐标系（少柱不再左侧堆积大空白）；②hover 卡锚点改中心相对式 left:calc(50% + off)（plot 宽不再可算）；③today 有效桶 ≤3 且全桶 ≥4 默认聚焦有效时段，图表头「显示完整时间轴/仅显示有记录时段」次级按钮切换（speedSel.focus，切筛选重置，不改统计口径），聚焦带「仅显示有记录时段」提示；④数据覆盖提示 zu-sc-cov：今天「有记录 x/M 小时」、近 7 天「仅 x/7 天有记录」、本月「本月 x/N 天有记录」（分母=已发生时段，不含未来）；⑤筛选工具栏两端对齐——范围组左、时间组右（.zu-sv-time margin-left:auto），删分隔符，与统计卡/图表两缘对齐；⑥左卡精简——删「不含进行中请求」，实时状态并入标题行右侧轻量 zu-sl-sub（不再混入指标间），单柱时峰值/最低/最新 zu-sl-solo 弱化；⑦时间胶囊智能格式——同日「MM/DD HH:MM – HH:MM」、跨日不带年、跨月/跨年两端带年（v270 全带年撤销）；会话切换 speedSel.focus 重置 → v274 完整规格补齐（第二轮 Goal）：①spdChartLayout 统一布局参数入口（colPitch/spacerW/xEvery/valEvery 单处决定）；②柱顶数值稀疏化 valShown——n>8 按 ceil(n/8) 抽稀、首末与悬停柱恒显，16 柱不再数值重叠（hover 卡兜底完整值）；③最新柱 latest 弱化描边；④单点/双点 coverage 追加「暂无足够数据观察趋势」；⑤空态追加「尝试选择更长时间范围」弱化引导；⑥bkeys 截尾仅剩 recent（v273 聚焦改造时已自然移除非 recent 截断，超宽由 spacer 横滚承接不丢桶） → v275 点击偶发关闭+快速切换卡死双修（用户实报）：①tip 原生 pointermove 直接保活（mousemove 处理器 150ms 节流采样盲区让 mouseInBar 停留 false，left-bar 等 force 路径就能关掉交互中 tooltip；pointermove 高频纯赋值绕开节流盲区，总闸始终可靠）；②整卡重编 rAF 合并 scheduleSpeedRebuild——快速来回切 Tab 每次指针按下同步 innerHTML 重建形成重建风暴（卡死体感），同帧多次切换只重建一次，切片沙箱无 rAF 自动退回同步（既有 pointerdown 契约测试不变）；③dispose 取消待合并 rAF；④tipStats.hideSeq 最近 8 次收起原因序列（diag 定性偶发关闭） → v276 撤销 v275 的 rAF 合并（用户实报「会话切到项目卡死」定案）：被遮挡窗口的渲染帧暂停让 rAF 永不执行（本机 ZCode 常被 Chrome/飞书遮挡），切 Tab 排程的重编永不落地、tooltip 僵在旧内容；恢复同步重编（单次 1-3ms 可承受，「重建风暴」为伪问题），保留 v275 的 pointermove 保活与 hideSeq 诊断——遮挡环境一切交互路径必须同步落地 → v277 win-leave 降级可取消宽限（用户实报「点击 tab 仍自动关闭」，hideSeq 铁证 win-leave）：点击 Tab 引发的合成 documentElement mouseleave/瞬态 blur 与真离开在触发点无法区分，tipBoundaryHide 立即 force 关把正常交互打死；降级为 400ms 可取消宽限（cancelTipGrace 共用定时器，pointermove/mousemove 落回即取消），真离开半秒后收；取证 cause 带触发源（blur/edge）与 document.hasFocus 焦点态 → v278 更新失败可见性（issue #247）：updater 检查/安装失败落盘 plugin-update.json lastError（成功即清），⚙ 更新区在非 error 相位显示「上次更新失败」行；hook 链按 HOST_TARGETS 判已装版本 × 宿主 build 未登记适配时强制立即升级 + 会话明确提示（去重），marketplace 刷新重试 + 清单新鲜度校验点名宿主 CLI 静默失败 → v279 速度卡 Header 单行重构（第三轮 UI Goal §3/§5/§7）：标题居左、范围/时间双 Tab 组成连续操作区整体靠右，旧独立筛选行与顶部时间胶囊删除，窄窗 flex-wrap 整体降级不裁剪；统计时间迁至图表标题栏右端轻量文字（calendar 图标 + 紧凑区间 + title 完整 YYYY-MM-DD HH:mm:ss 区间），单位 t/s 紧随图表标题；左卡标题层改「平均速度」+ 小号「历史统计」标识（.zu-sl-k 行删除）；旧图共享类仅 .zu-sv-root/.zu-sv-chart 作用域覆写不受影响 → v280 速度卡横滚位置记忆（用户实报 全部×全部 拉到末尾、关闭 tooltip 再开回到开头）：speedCardV2HTML 根节点携带 data-sv-key=范围|时间 选择键；tpsTip 重编分支（showTpsTip 非冻结路径）重建前从旧 DOM 捕获 .zu-sc-wrap scrollLeft 连同键存储、键同才回填（hover/心跳重编不跳回头部、关闭再开含数据刷新后恢复原位、切范围/时间键变自动归零）；全量 tip drawTip 横滚保留从 keepTop-only 扩展到重开路径并加同键守卫（v232 盲恢复改键同回填，V1 旧图无 zu-sv-root 键按空串键行为不变） → v281 速度卡专项双修（第三轮专项 Goal）：P1 图表列宽稳定——V2 注入样式由仅钳 max-width 改 width+max-width 同值 !important（width=min(960px,calc(100vw-24px))、border-box，压过 .tip 的 width:max-content 与 tpsTip 内联 max-width:520），右图表列 flex:1 1 0 + min-width:0、滚动容器定宽 100%，列宽不再随 plot spacer（n×30+12）与图表头文案反向撑缩，Tab 切换整卡宽度恒定（视口足宽恒 960、窄窗恒 vw-24）；P0 hover 信息卡裁剪根治——卡从 .zu-sv-plot（被 .zu-sc-wrap overflow 滚动容器裁剪）移到 body 级 Portal .zu-sv-portal（模块单例、类名挂 .zusage-quota-tip 复用 boot 旧代清理链、pointer-events:none、z-index 同 tooltip 层 2147483646 且 DOM 序在后），内容经 SPD_PORTAL 侧信道（纯字符串、VM 切片安全、消费即清）由 showTpsTip/zuSpeedChartPick/speedRebuildNow 渲染定位，按柱体 getBoundingClientRect 右上⇒左上⇒钳边避让视口（safe 10px），横向滚动 capture 相重定位（柱滚出 wrap 视口即收），切 Tab/hover=-1/收起路径（hideTpsTip/hideTip）立即隐藏不留孤儿 → v282 档位说明浮层与 Tab 低对比选中专项（第四轮 UI Goal）：底部常驻十档图例整体移除（.zu-sv-legend 包装/分割线/占位全删，整卡高度由 Header+统计主体决定），改由图表标题栏「单位：t/s」旁问号按钮承载——hover/focus 即显不点击、Escape 只收浮层、icon→卡保活（延时收+卡内取消）、柱体 Portal 互斥（双方 show 互收防双层浮窗）、按柱体 rect 下方→上方→钳边定位、body 级浮层脱离 overflow 裁剪 + 显示移尾（B1 同款）+ dispose/热更双清理链；十档内容 spdLegendCardHTML 自 TPS_BANDS 升序生成（颜色/星标/边界与柱体、chip 同源唯一事实），当前档位高亮读按钮 data-sv-band（整卡重编自动更新、空数据不高亮）；Tab 选中态对齐 Hover 低对比背景（去 rgba(87,200,255) 蓝块：on=白 .07/浅色黑 .06 + 发丝内描边区分持续选中，on:hover .09/.07 轻微提亮，字重恒 600 维持 v263 防选中加宽纪律） → v283 档位说明浮层微调（用户反馈）：最大宽度 560→800px（仍钳 calc(100vw-24px)）；显示时左缘对齐宿主 conversation-bottom-dock-transition（composer 容器）而非整窗口/图标锚定，dock 缺失回退图标左缘、越出右缘钳边（与 v282 避让策略叠加） → v284 主卡定宽 800+左缘对齐宿主 dock（用户反馈澄清：上轮 800/dock 对齐实为主 tooltip 而非档位浮层）：V2 注入样式定宽 960→800（width+max-width 同值 !important 不变）；tpsTip 链 showTpsTip 在 V2 卡圤位后左缘改对齐 conversation-bottom-dock-transition（缺失回退 chip 锚定，垂直不变）；全量 tip 链 drawTip 渲染 V2 内容时写 tip.__zuDockLeft、positionTip 每帧消费（rAF 跟随不回退回 chip 锚定），非 V2 内容 null 走原锚定 → v285 速度卡左缘对齐锚元素（用户反馈：热重载后仍居中，指定基于 .it 速度格左侧对齐）：废弃 v284 的 conversation-bottom-dock-transition 宿主类名依赖（实测未生效），改为 positionTip 在 V2 卡（tip.__zuAlignLeft，drawTip 按 .zu-sv-root 置位）时 left=锚元素（.it 格）左缘钳边；tpsTip 紧凑链删 v284 dock 覆盖（原本就是 chip 左缘钳边）；档位说明浮层左缘改对齐主 tooltip 容器左缘（与主卡构图一致，替换 v283 dock 对齐） → v286 图表标题栏精修（第五轮 UI Goal）：标题 600/+2（V2 作用域覆写，不过重）；「单位：t/s」收为轻量「t/s」徽章（弱化前景+微亮底+圆角 5px，视觉优先级 标题＞单位＞档位入口）；问号换专用 Speed Bands SVG（细圆环+三级递增速度柱，currentColor 继承按钮色态，18px 视觉/26px 命中），aria-label 改「查看速度档位说明」；十档浮层/互斥/保活/清理链全部沿用 v282 机制不变
+    var VERSION = "v286";   //v82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v84 主标签页远端路由（工作台分组唯一主绑定上报 + 迟到载荷守卫，issue #30）→ v85 回答末尾统计行跟随万/亿开关 + tok→token → v86 历史轮 tracker 无记录（窗口滑出/换代/热更）或缺输出字段不再翻成"本轮统计不可用"，加 det 诊断 → v87 主叶归属增 last-session 回退（组零证据时唯一远端记录放行，issue #30 复测：单会话主标签页不建组）→ v88 运行态心跳与两处扫描 tick 2s→0.5s（富文本重试 6→24 次等价放大）→ v89 ⚙ 面板更新进度：downloading 阶段文案 + 下载（字节）/安装（校验→安装→同步）双进度条，缺 progress 的旧主进程自动隐藏 → v90 主标签页/分栏归属改按本窗会话节点身份（renderer 桥按版本/资产/锚点写 SessionPane 属性，移除 workbench-groups/last-session 共享回退）+ 心跳 0.5s→0.1s（扫描维持 0.5s）→ v91 设置页/权限面板冒条修复（PR #44：inSettingsView 三处派发排除 + anchorCardOf 面板锚点改判）收编收尾：排除标记并集（settings-page testid + content/panel 双 frame）、track 显隐第四处防御 → v92 ⚙ 更新区固定显示可复制的重装口令（源码安装无法自动更新时引导用户发给 agent）→ v93 原生上下文按钮（chat-context-usage-trigger）增强：环填充/四档色/右侧百分比镜像状态条上下文格（ctxBandOf 同源），cw 缺失还原原生形态 → v94 状态条删除「上下文容量」格（UI+tooltip，该口径由原生按钮增强承载），⚙ 面板同步去掉「上下文」开关，子代理格改始终展示（零值也显示）→ v95 ⚙ 更新区去掉 v92 重装口令提示块（源码清单的仓库来源改由宿主插件管理器直接更新，不再报渠道不一致），更新来源文案增「仓库源码」分支→ v96 套餐额度 chip（默认关）：挂原生上下文按钮左侧（wrapper 内前插，与按钮增强同款双 reapply/还原），数据来自主进程 quota 字段（解密宿主 OAuth 凭据直查 monitor 端点，账号级套餐池口径），会话首个 main_turn 完成前不显示；自绘 tooltip 走 rateTip 独立浮层模式；chip 改多窗分段：每窗一段（中文 5小时/7天，英文 5h/7d）各自按 80/95/100 档位色，分隔符 |；余额类型单段渲染就绪（余额 ¥100.00，阶段 3 数据源接入即用）；去掉环形，容器不着色 → v97 子代理速率（T1+T2）：zusage sub 汇总加 rate_avg/每子代理 tps_avg（已完成段加权平均，口径同 _turn_rate），子代理格 tooltip/明细面板展示；Agent 运行期主 chip 附加「子代理运行中 · 估 X t/s」——turn-stats 透传 subagent 行 childSessionId，overlay 据此用同款 zuTryBindStore 绑子代理会话 store 做字符增量估算（运行中请求未入库，DB 无实时数据；150s 采样实锤零 running 行），思考文本不进 rows 时退回纯状态词；工具动词「正在运行子智能体」压成「子代理运行中」（web 同步文案）；同日多槽位化：turn-stats 暴露 runningSubagents 全集（并行时 rowId 前 8 个），每子代理独立绑定/2s 节流，主 chip 显示合计速率（并行 ≥2 时动词后缀 ×N），chip tooltip 与子代理明细面板逐个实时展示运行中估算（tooltip 随原地改字同步 __tip 重画；面板 800ms tick 原地刷新 .subrate，汇总页运行块含 DB 尚无记录的新子代理） → v98 额度实时选源恢复（v4-model-config 观察 + quota-providers 全窗快照上报 + byProvider 定向刷新、空选择 fail-closed）与 sub2api 额度 UI（今日/本月窗口、窗口行内金额明细、Key 总额度、订阅截止、账户余额标题） → v99（主线并流）tooltip 伪边界 leave 过滤：Chrome 悬停链收缩/重算会补发 DOM 内部的 documentElement/tip mouseleave，tipLeaveAt 贴边判定后取触发时刻最深 :hover 元素甄别，仍悬停在本档具体元素上即伪 leave 一律忽略交回 mousemove 流（主线 v100 滚动豁免=本链 v106 同义，不另列） → v99.1（主线并流）apiKey 模式 BigModel/Z.ai（bigmodel-api[-N]/zai-api[-N]）额度 chip 标题家族判定（issue #68；数据链在 quota-client） → v99.2 思考中计时随语言本地化（中文「1 时 2 分 3 秒」/英文「1 h 2 m 3 s」，空格分隔、零段照旧省略）；回答末尾行采样时刻改完整中文日期时间（⏱ 2026 年 10 月 23 日 11 点 20 分 28 秒，token_rate.py format_turn_line 同步改版） → v100 设置面板分区导航（ZCode 设置侧栏同款：左栏三组分区导航 + 内容区单分区显隐，激活项 aria-current="page"，选择持久化 zusage3.sec；面板窄于 620px 时导航收成 icon rail） → v101 设置面板高度在打开瞬间按内容自然高锁定（切分区不再抖动，resize 只收紧不放大） → v102 额度源预设模板（CC Switch/magpie 同款选模板只填 Key：官方域变体 chip 一键写入 secrets baseUrl，minimax 可信域机制推广到 siliconflow 币种随域；deepseek/openrouter/kimi/anthropic/mimo/volcano 附控制台取 Key 链接，走 openExternal 桥） → v103 额度源列表卡片化布局（每源圆角卡片+间距，凭据框限宽 420px，长说明段落补水平边距；纯 CSS，结构行为不变） → v104 源状态文案补 disabled=已关闭映射 + 主进程对显式关闭源统一报 disabled（修「开关已关却显示待查询」矛盾）；刷新/获取 Key 按钮补 title 提示，关闭源的刷新按钮禁用 → v105 「上下文容量」弹层（hover-card-content）内压缩上下文按钮：命中率行下方全宽胶囊按钮（原生 secondary 配色全走客户端语义变量），弹层关即卸载（Radix 无 forceMount）故 body MutationObserver + heavy 对账双触发、DOM 存在性幂等（多实例安全），插入锚=「剩余额度」border-t 段前（缺则容器尾）+位置兜回；点击弹原生 AlertDialog 视格确认框（遮罩/Esc/外点关闭、Enter 确认），确认后优先走 fiber 上原生残留的 onSendCompressionCommand("/compact")（SessionPane 压缩入口，不动输入框草稿），缺失回落官方 E2E 输入桥 __zcodeLexicalInputE2E.setText + 发送键（Lexical 直写 DOM 不生效，禁用该路径；草稿非空拒绝） → v106 额度 tooltip 滚动豁免：hideTipsOnScroll 不再收 quotaTip（chip 固定 composer 工具行与 gitTip 同理），修思考中流式输出自动滚动致悬停弹出即灭；chip 随宿主重建 detach（无 mouseleave）由 scanRateLines 加 isConnected 健康检查兜底收起 → v107 压缩确认框补行为提示：压缩进行中发送新消息/停止会打断压缩（实测 16:27 新 turn 启动同秒 compact turn TURN_CANCELLED，cancelled_by_user=1；引擎对该次摘要流挂起 134s 无首 token 也不重试 retryable=0），确认框加 hint 行中性告知 → v108 压缩主通道按用户指定改为字面 "/compact" 输入提交（E2E 桥 setText+发送键；流式中 v4-stop 可见/草稿非空/发送键 disabled 三重拒绝），fiber 命令信封降兜底；hint 升级为「通常需 2-4 分钟且无进度反馈」（DB 实证：全库 compact 请求无首 token 但正常完成，72s-9.6min，14:44 同会话同模型 165s 成功先例；16:25/16:43 两次「卡住」实为 2m20s 被新消息 TURN_CANCELLED，非故障） → v109 压缩主通道按用户指定改回直接调会话发送接口（fiber onSendCompressionCommand 命令信封：不碰输入框/发送键、流式中交引擎排队，修字面输入通道在生成中被发送键禁用卡住的问题），字面 "/compact" 输入提交降兜底（三重门控仅作用于兜底） → v110 压缩提交函数改在弹框打开瞬间（弹层必存活、锚点几何可信）解析并缓存，修复确认时弹层已被 Radix 卸载、几何重解析退化为「离视口左上角最近」致多分栏把 /compact 发进错误会话（P1）；兜底字面输入通道的流式/发送键/草稿三重门控全部前置到 setText 之前（拒绝不再残留草稿）；Enter 确认限定焦点在弹框内（无焦点陷阱下防焦点外 Enter 误触发确认） → v111 额度 chip 默认展示：quota_enabled 缺省开（显式 false 才关，真值链在 inject-main）；chip 二级门控 not_configured/unsupported 从静默隐藏改中性灰提示「额度 未配置/暂不支持」（源被 ⚙ 显式关闭仍隐藏），tooltip 补 info 分支引导配置 → v112 Start Plan 免费档池（quota-client 新增 zcode-start 适配器走 zcode.z.ai billing/balance 独立链，与 coding plan 的 monitor 端点分池；选源路由与 quotaFamily 判定补 start-plan 分支修 start-plan pane 误读 GLM Coding Max 池；chip 增「套餐」分段（windows.plan，one_time 发放池聚合已用%），tooltip 套餐池行按 expires 标记切「到期」措辞） → v113 夜间审计加固：quotaBalanceText 内建转义（currency 是远程响应字符串，chip/tooltip 双 innerHTML sink；parts label/amount 单次转义修双重转义；「其他源」行标签转义归位；aria-label 走 plain 纯文本变体不读实体）→quotaTip 补内容签名幂等 __zuTipSig（同 gitTip，悬停期间周期对账不再打断文本选择）→子代理明细面板数据签名幂等（滚动位置/选择不被每 1.5s 推送整面板重建重置；运行中估算仍由面板 800ms tick 原地刷新）→额度 chip 签名重写保留 zu-qbusy（点击刷新动画不被推送截断，同 git chip）→⚙ 源列表 id/label/preset/keyUrl 属性级转义 aEsc（custom:<providerId> 可含用户自定义名）→live 速度 span 的 speedView.text 过 ttEsc（工具名是宿主/MCP 可控字符串）→渲染桥两处订阅回调尾部 updateLive() try 包裹（异常不冒进宿主 store 通知分发，诊断键 subLiveErr/bridgeLiveErr 记录） → v114 积压清单清扫：remoteCache/remoteTodayCache/richTextCache/richTextAttempts 上限淘汰（长会话防无界增长）；dispose 清理补 __zusageDeliverTurnText/__zusageSidWs/__zusagePaneScopes（旧代闭包自卫之外的清理完整性）；诊断 lsVals 只转储 zusage 命名空间的 localStorage 键（宿主其余键值不进 diag 文件） → v115 渲染循环省电（上游 xhwxt PR #26/#28 同源问题）：幽灵子树/遮挡命中/模态判定加 TTL 缓存（120/150ms，命中绑定元素矩形+模式），track 在 document.hidden 时整帧跳过；未采纳其 600ms↔2s 调度降频（heavy 600ms 对账是与 render 并列的 React 重写兜底契约，降频会让增强节点裸奔 2s） → v116 「思考中」卡死修复（源码复核定案）：v87 合成分支条件收紧——仅「空窗口非终态（draft 空窗，v87 本意）或 control.phase=running」才合成思考中，删除「行非空」析取项（宿主 wire 快照 rows.window 恒为全序尾 60 行，末轮超窗的闲置会话整窗无 turnHeader，旧条件使其永久点亮思考中、切回重绑重新计时）；思考计时锚定 turnHeader.startedAt（宿主创建 header 恒写入，重绑不清零，缺字段回退首观测）→ v117 悬停命中区扩到整栏（fork lliangworld b21e3cf0 同源收编）：条目空隙/分隔符按 sep 中线就近归属、尾部空隙归末位条目，⚙ 与空条面维持保持不动；防闪烁改由节流+幂等承担 → v118 无障碍与主题重构（并行会话批次）：条目可聚焦（span tabindex / zu-sub 真按钮 + aria-label）、键盘可达 tooltip（focusin/focusout + Escape 收起）、focus-visible 焦点环、SVG 图标与思考动画改 currentColor 随主题、⚙ 面板请求-回执协议（requestId + __zusagePluginResult，feedbackVersion 1）、quota 源操作错误语义、统计行开关即时重扫 → v119 插件自动检查改为每 1 小时，更新区双语提示更新器变更需完全退出并重开 → v120 Git 手动刷新改请求-回执协议（askGitRefresh 带 path/requestId，主桥 gitTick 完成后经 __zusagePluginResult 回执、在途请求合并等待，按请求 path 校验结果）+ 状态条 aria-live sr-only 播报区（套餐额度查询中/Git 刷新状态）+ ⚙ 面板高度上限 82vh→90vh + 模态判定改按可见 dialog（display/visibility/opacity 过滤） → v121 状态条 .ico 与 ⚙ 齿轮图标盒由 calc(字号+4px) 改为等宿主字号（24 格线性图标墨迹只占盒 75–83%，18px 顶满 1.3 行盒显大，且加法常量令比例随字号漂移 1.33×→1.20×；用户实机定 1.0×，.eb .ico 12px 特例不变） → v122 Git chip 展开测量完整宽度并留 32px 迟滞余量，切断宿主 compact 反馈环（issue #100） → v123 Git chip 锚点按电脑操作→上下文→模式→思考回退，排除隐藏探针并随可见锚点迁移（issue #103） → v124 Git chip 固定左侧操作区，移除右侧上下文/思考回退 → v125 思考计时中文全紧邻「7分16秒」（时段间空格去除，用户要求；英文「7 m 16 s」不动） → v126 思考计时英文数字与单位紧邻「7m 16s」（时段间留空格，用户要求） → v127 tok/s 速度十档色（TPS_BANDS 唯一事实源，原始值分档含下限不含上限：<40 低速红 / 40–70 一般黄 / 70–150 流畅绿沿用原三档类名与实测色，150 起新增蓝紫系 zu-teal/zu-sky/zu-azure/zu-violet/zu-purple/zu-magenta，≥2000 Ultra 静态蓝紫渐变 + ✦ 星点（::before content:"✦"/"" AT 静音、@supports 外纯紫回退，浅色组同名覆盖渐变）；估算态与完成态同表分档（用户规格，原「估算态不分档」废止），无效值（负数/NaN/±∞）一律中性 dim 或回退 DB 绝不判低速，DB 回退分支负数/非有限不再渲染 chip；tooltip 档位行改动态「名称 · lo–hi t/s」消解 toFixed 舍入边界歧义，另加静态「颜色对照」图例（十档数值↔颜色升序一览，档位类与条面同源随主题切换）；额度正常态改额度蓝 #78a9ff/浅 #315fc4（.zu-qseg 专属基色，不碰全局 .ok——上下文与速度前三档仍绿），周期标签拆 zu-qlabel 子节点中性次级色常规字重（textContent/aria/tooltip 不变），quotaSegs 补 isFinite 门防 NaN/±∞ 落正常蓝；正常态再改 CCometixLine 同源柔和低饱和（用户规格）：普通窗灰蓝 #8abbd0/浅 #276f86、7 天窗按 quotaSegs 结构化 key 挂 zu-qweekly 淡紫 #b69ad8/浅 #76509f（不匹配显示文本），周期标签与数值同色成组仅标签降字重，上下文按钮正常绿改 #72c9a2/浅 #187b58（限按钮作用域，速度与全局 .ok 不动）） → v129 模型拉取分区（收编 HHQ-666/zcode-model-puller，MIT）：⚙ 基础组新分区列宿主 provider_config.json 的 API Key 型自定义供应商，经主进程拉取其 /models（候选端点探测、OpenAI data/Ollama models/顶层数组形状解析、Bearer+x-api-key 双头），弹窗勾选（已添加/新模型徽标、搜索过滤、全选/清空/仅选新、选中计数）后经 model-pull-apply 最小写回（personalModelIds+modelOrder 追加、providerModelRules 复制同供应商模板条目、同目录原子替换+滚动备份 .zusage-bak、未知键保留）；key 只在主进程内存、只发该 baseUrl 本域，不回渲染端不进日志；请求回执 20s 兜底超时（旧主进程无 action 时提示完全重启而非永久 loading） → v130 拉取算法吸收 GLQQX/zcode-model-discovery-patch 与 linguo2625469/zcode-patcher：字段别名全集（id/modelId/name/model、context_length/contextWindow/context_window/limit/limits、max_completion_tokens/max_output_tokens/maxOutputTokens/limit/limits/top_provider、payload 增 result 形状）、多模态感知（architecture.input_modalities/input_modalities/modalities.input + vision/supports_vision 布尔 ⇒ 宿主 inputFormat 稀疏能力位，缺位写实 false）、思考档位感知（supported_efforts 去重截 16 ⇒ reasoningLevel.values）、models.dev 公共目录补缺（并行拉取 5s 超时失败静默降级、id 精确→basename 唯一匹配、字段级供应商优先、key 与本机数据绝不发往目录、进程内 1h 缓存）、applyModels 按模型写实 config（contextWindow/inputFormat/optionSpecs；元数据走主进程 fetchCache 闭环、渲染端只回传 id 无法注入字段；模板带 map 表达式的 optionSpecs 整体不覆盖防 values 换名失配；无依据字段保持模板原样、不编造默认值）；弹窗行新增 ctx/out 可见小字与档位 title，分区说明补 models.dev 联网披露；review 修复：勾选表/已添加表/metaById 改 null 原型（模型 id 来自远端，__proto__ 等键静默失败丢勾选态）、实例 dispose 同步摘除模型拉取弹窗与 Esc 监听（原仅整体 dispose 摘除，pane 关闭后弹窗跨代泄漏且确认回调 inactive 早退卡保存中文案）、重开面板停在模型拉取分区时立即刷新列表、请求兜底超时 20s→25s（主进程最坏双端点 20s 防假超时）、主进程响应体 8MB 限长解析与 tmp 文件名带 pid 防双实例竞写 → v131 额度/上下文五档色（用户规格 2026-10-27）：CTX_BANDS/QUOTA_BANDS 唯一事实源（{min,cls} 有序表，bandOf 从高到低首个命中），阈值 30/50/80/90（含下限不含上限）——额度 calm/norm/mid/high/crit=emerald/sky/amber/orange/rose（暗 400/浅 700），上下文 calm/norm/mid/high/crit=slate/indigo/violet/orange/red；data-zusage-band 与 zu-qb-* CSS 双主题成对；pct span 与 SVG 环一律继承按钮 currentColor（.zu-ctxpct.ok 系独立色废止）；tabular-nums 原已覆盖 .zu-quota/.zu-ctxpct；v92 百万窗口提前预警（40/60）与 v127 额度正常态灰蓝/7 天窗淡紫（按窗口类型着色）随「仅按百分比」规格废止；额度 ≥100% 满档保留呼吸闪烁特效（zu-qb-exc，用户规格；90–99 为 crit 纯色）；压缩过程态（exc）优先档保留；余额/Key 额度段挂 calm 档色 → v132 模型拉取挂载点迁移（用户指令）：⚙ 设置分区删除（ZU_SECTIONS/section/ensureMpProviders/syncMpList/startMpFetch/mpFeedback 全撤），改挂官方「模型设置⇒自定义供应商」的「+ 添加模型」按钮左侧（锚 data-testid=model-provider-add-model-button，额度 chip 同款 enhance/restore 契约：render/heavy 双对账+位置兜回+自清选择器 .zu-mp-host）；供应商归属优先读设置页表单 http(s) Base URL 归一化匹配（唯一命中直拉），否则单供应商直用/多供应商弹 zu-mp-pick 选择列表/无供应商弹提示；按钮视觉复刻原生 secondary 视格（同页 Tailwind utility bg-secondary h-7 rounded-lg），⚡ 图标 stroke currentColor；弹窗抽通用壳 openMpShell（勾选弹窗/供应商选择/错误提示共用），apply 成功关弹窗由宿主自动刷新列表；供应商归属改主判定=当前选择的供应商（读宿主源码定案：导航项 testid=model-provider-nav-item-<nodeKey>、custom 项 nodeKey=custom:<providerId>、选中项 data-state=selected），providerId 精确匹配不受编辑草稿影响；Base URL 匹配降兜底（专用 testid model-provider-base-url-input 优先于表单启发式），弹窗对齐 HHQ 形态（⚡统计标题/搜索占位/仅选新模型计数/已选中 n 个模型/蓝实底确认钮）并自带 .zu-light 随宿主主题实时换装；review 二轮修复：上下文按钮浅色档补 data-zusage-armed 特异性（浅色主题 norm~crit 曾被暗色 0,3,0 规则恒胜）、model-puller 非 ok 响应体显式 cancel（undici 连接卫生）、宿主按钮 ml-auto（锚容器 justify-between 三子项均匀分布致按钮居中）、确认钮改固定蓝 #3B82F6/#2563EB（客户端 --color-brand 深色主题是白系，白底白字隐形）、拉取按钮仅在选中的是 custom 供应商时挂载（锚 testid 全局唯一，内置/套餐页同 testid）、拉取中按钮文本「拉取中…」+图标旋转（原透明度脉冲无感知） → v133 Git 计数缩写（用户规格 2026-10-28）：chip/tooltip 的行数·条目·↑↓·冲突计数 <1万原值，≥1万 中文（cnUnits 判定）万/亿、英文 k/M/B（k 门槛刻意抬到 1万，与 token fmt 的 K≥1000 不同，小写 k 至多两位小数去尾零紧邻）；仓库个数与 aria 播报保持原值 → v134 额度与上下文保留既有阈值并统一绿黄红三档视觉；统一字号为宿主基准减 1px，周期标签加粗并微调分隔符 → v136 编辑项目弹窗源文件夹行在名称下方显示完整路径（纯 CSS ::after attr(title)，零 DOM 注入 React 无感；.truncate 限定本地行、排除 fixedFolder break-all 全路径行防重复，多文件夹每行各取各的 title；长路径自动换行不做省略号（宿主 truncate 的 nowrap 继承进伪元素须显式 white-space:normal）；规则挂条样式表、由 <html> data-zusage-pp 门控，⚙ 通用区「项目完整路径」开关 zusage3.projPath 默认开即时生效；顺带清理未提交编辑遗留的 spawnInstance 陈旧重复块 566 行死代码并复原被覆写的 issue #55 注释） → v137 源文件夹行点击即用系统文件管理器打开该目录（用户规格 2026-10-28，mac/Win 双平台）：主通道宿主桥 openInFileManager（Windows shell.openPath / macOS open 带 Finder 与 shell 双回退，raw path 免编码），旧主进程降级 openExternalFile、openExternal(file:)（白名单含 file:）；远程项目编辑器按 virtual-project-existing 标记排除，fixedFolder 行不在选择器内；多 pane 重复委托 500ms 同路径去重，document click 监听随实例 dispose 摘除；行加 cursor:pointer → v138 重置卡倒计时改时分秒全档恒显（并行会话 rstmerge 线并流收编，用户规格 2026-10-28：精确到秒、随 600ms 对账实时逐秒跳动，rstSpanText 中文数字单位紧邻「3时05分30秒」、英文数字单位紧邻+时段间空格「3h 05m 30s」；rst tooltip 补 Escape 收起（v118 键盘可达契约）；⚙ 倒计时阈值语义不变——并流时保留 rstCdh 持久化，对方运行目录构建因旧基线缺失而误删，其 18:42 rstmerge 部署曾覆盖本项目 v136/v137 后经本线合并恢复） → v139 合并 fork/main v1.5.5 线（PR #121 重置卡徽标、#122 倒计时秒级、#123 templateRules 回填、安装修复与 v1.5.5 发版）时收编遗漏的 model-puller 套餐源判定（4e431cc：detectSelectedCustomProviderId 带 anchor，BigModel 付费套餐详情页按 GLM Coding Max 付费卡区分放行、Start Plan 免费卡页不放行；挂载门控 btn 先查 + mpAnchor 诊断）——本项目快照缺该段曾致 overlay-model-pull 挂载契约测试红；overlay 版本线自此与对方 v136 撞号线并流，按合入顺序顺延 → v140 收口审查修复：openProjFolder 对 invoke 通道（openInFileManager/openExternalFile）挂空 catch——旧主进程无 handler 时异步 reject 会刷 unhandled rejection；review-fix-merge 流程产物 → v141 ⚙ 更新区在 API 限流且渠道清单兜底也失败时引导 GitCode 镜像口令（清单兜底本体在 plugin-updater/plugin-release 主进程链） → v142 ⚙ 通用「状态条样式」双主题 opt-in（zusage3.theme 独立持久化，默认关=现状）：药丸形态=所属输入卡下方居中、内容定宽，.zu-pill 经 --zu-pill-* 逐项拷贝所属视觉表面（Highspeed 外壳优先）计算样式，随宿主主题/hover/focus/Highspeed 实时跟随——pillSurface 统一取色/定位/让位锚点，body 子树 MutationObserver + 祖先属性观察捕捉外壳原位增删与搬移（不依赖 600ms 对账），80ms 过渡采样按目标计数、表面搬离自动停止；条面精简：缓存命中率/请求次数/轮数/耗时/首字收进 tooltip（0 命中也显示 0%），窄窗 .zu-main 横向滚动 + focusin 滚入可视区、切回默认复位 scrollLeft，不触发默认态收缩/渐隐；⚙ 面板宽度在药丸下跟随所属卡（不再跨分栏），主题 radio 按实例分组 name 防多面板互斥；数据重建先绑 __tip 再恢复焦点，aria-describedby/tooltip 不丢；modalOpen 豁免 zusage-panel 自有面板（修设置面板被误判宿主模态整条收起） → v143 药丸收口审查（review-fix-merge）：8px 双间距按宿主实测几何收敛——adjustPillBottom 沿所属 pane/dock 实测矩形补足让位并带 floor/不增长护栏，无法让位的绝对定位布局 visibility 安全隐藏（无每帧显隐抖动）；pillMarginTarget 落在 .chat-composer-input-surface，Highspeed 退出后默认卡重解析（composerCardOf 优先原生 data-testid 输入框）、宿主 margin 变更原值+优先级还原；悬停 tooltip 在 pill 下实时刷新隐藏明细并保留选区/滚动，焦点恢复区分 Escape 关闭与悬停接管；modalOpen 纳入 alertdialog；协调器候选补可见性过滤且已绑定输入框豁免 45% 阈值（上下分栏不再反复挂卸）；表面祖先观察改快照重建防泄漏 → v144 ⚙ radio 对齐修复：.zu-settings-langs/.zu-theme-options 的 label 显式声明 flex+align-items:center+gap:6px——原 label 继承 .panel label 的 flex-start 顶对齐（gap 14px），radio 圆钮相对文字中线偏上约 4.5px；新规则 (0,2,1) 特异性覆盖 (0,1,1) 基础规则，实测居中 delta=0 → v145 切回默认主题补还原 bar.style.visibility（pillUnsafe 安全隐藏是 pill 专属态，写入点仅 track 的 pill 分支；此前 pill 隐藏态下切回默认条永久不可见，十路评审 P1） → v146 精简模式（theme 第三档 compact）：条永久隐藏但保留 DOM（<style>/ariaLive 随条存活、heavy 保条对抗 React 清子树）；生成速度改挂工具行 .zu-tsb（重置卡左侧，挂载/位置兜回/签名幂等照重置卡同款），内容=zuBarSpeedView 桥两态或 tpsBand DB 回退、无有效样本不渲染（用户拍板）；tooltip=速度读数+状态条摘要（本轮/会话/工具/今日/子代理，逐格开关继续生效、子代理行点击开明细）+tpsBandLegend+「打开设置」按钮（镜像齿轮开启分支，面板精简下贴输入卡定位）；updateLive 10Hz 心跳原地跟随；非精简主题 syncTpsChip 门控摘除；诊断 mode=compact → v147 精简模式速率 chip 挪前导区（用户规格）：git chip 左侧——git 在时插其前、git 不在时占其锚位（cua-entry 后方/前导区末尾），两侧位置兜回收敛为 [锚][速率][git]（git 兜回容忍速率占相邻位防逐拍拉锯）；前导区发现失败回落尾随区（重置卡/额度组左侧） → v148 精简速率 tooltip「打开设置」按钮右对齐（用户规格）：footer 改 flex 布局，说明文本 tps-note-t 占据剩余宽度、按钮 margin-left:auto 推至最右，长文本换行不断布局 → v149 精简速率 tooltip 摘要行单位 tok→token（用户规格，与回答末尾统计行的 token 措辞对齐） → v150 修复精简模式 git chip 永不挂载（用户报告）：v147 的 git 兜回容忍条款（速率占锚位时不挪）误拦首次挂载——速率 chip 常驻锚位时 enhanceGitChip 每拍判"已就位"跳过插入；改为 chip 未连入 DOM 时无条件首挂（落速率后再由速率兜回收敛 [锚][速率][git]），容忍只用于已挂载的位置保持 → v151 工具状态词改版（用户规格）：Bash 动词「正在执行」→「工作中」，未知工具回退同改（正在执行 X→工作中 X）；工具计时分隔去中点（正在读取 · 4.3s→正在读取 4.3s 一并生效） → v152 工具动词 Read「正在读取」→「读取中」（用户规格） → v153 工具执行状态词定稿（用户规格）：Bash 与未知工具回退「工作中」→「执行中」（无名词回退英文 Working→Executing 对齐） → v154 工具动词全面改「X中」体例（用户规格）：写入中/编辑中/搜索中/获取网页中/更新待办中/读取待办中/运行技能中/读取上下文中/发送消息中/获取任务输出中/停止任务中/编写工作流中（Read 读取中、Bash 执行中、Agent 子代理运行中此前已改；英文标签不变） → v155 审查修复批（review-fix）：①compact 下 positionSubPanel 被隐藏条僵尸 .zu-sub 抢锚（零矩形把明细面板钉左上角）——chip 优先锚；②速率 tooltip 内容含秒表，悬停中 10Hz 整片重建吃掉「打开设置」/子代理行点击——显示中内容变化冻结只跟位置；③track compact 早退补两面板周期跟随；④自清选择器补 .zu-tsb、跨代采纳 chip 统一挂装（__zuWired 防重）修复热更后悬停/键盘失效；⑤closeSettings 焦点归还校验 offsetParent（compact 下不落隐藏 gear）；⑥enhanceGitChip 重复 var slotNode 清理。Web 同批：①③⑤（mousemove chips 归属校验只接本实例）+chip focus/blur 键盘可达对齐桌面 → v156 上下文按钮增强开关（issue #141）：⚙ 通用区新增「上下文按钮增强」checkbox（localStorage zusage3.ctxEnh，缺省开、仅显式 "0" 关），关闭走 enhanceCtxButton 关闭分支还原原生环/百分比且重置卡徽标继续维护（restore 顺带清徽标后立即重挂） → v157 修复精简→默认切换残留空壳细线（用户报告）：compact 期 render 短路会让空壳条面（热更占位/清子树后未填过）因签名相等一直存活、切回默认露出细线数十秒；①离开精简立即恢复 display（compactHid 区分初载 none，初载不提前露条保 pill 定位契约）；②离开精简强制条面重建一次（lastHtml 清空）；③compact 短路加 main.children.length 门——空壳先补一次完整渲染（条隐藏不可见）；④render 公共尾部补 syncTpsChip（短路/直通两路都经）→ v158 并流 fork/main cmdkW 线（PR #140，原线 v146 与主线 v146 精简模式撞号按合入顺序顺延）：宿主命令中心（⌘K 搜索弹框）加宽加高开关（⚙ 通用区，zusage3.cmdkW 缺省开）：条样式表规则 max-width:max(32rem,80vw)!important（原生上限=宿主 quickPickDialogClassName 的 max-w-lg=512px，弹框基础类自带 w-full 窄窗本就满宽，故小窗保持原样）与高度同规格（弹框根 max(90dvh,calc(100dvh-6rem)) 不低于原生上限，cmdk 列表 440px 硬顶放宽为 max(440px,calc(90dvh-15rem)) 小窗保底），<html> data-zusage-cmdk 属性门控（applyCmdkW，与 v136 projPath 同款），:has(>[data-slot=command][cmdk-root]) 只命中 cmdk 弹框——命令中心/任务搜索/快捷指令共用该样式常量一并放宽，设置页等普通 Dialog 不受影响 → v159 重启提醒开关（issue #139）：⚙ 插件更新区新增「更新后提醒重启」复选框（zu-restart-notice），经主桥 restart-notice 动作原子写运行时 config.json 的 restart_notice（缺省开、显式 false 才关、异常值不静默）；session-start hook 的 session_notice 读同一键，关闭后每个新会话不再注入 🔴 重启/安装提醒引用块（/install-overlay 命令行输出与自动安装失败、桥补装的故障提示不受控）——工作流模式多会话不再被逐会话植入提醒  → v160 Skill 运行期状态词显示「技能名·执行中」（用户规格，如「查阅·执行中」+计时）：turn-stats runningTool 透出截 160 字的 inputText，overlay 端 zuSkillName 提取 JSON name 字段（正则兜底、控制字符拒绝、超 24 字省略号截断），取不到回退「运行技能中」→ v161 状态条新增「项目累计」格：会话累计右侧渲染本项目（session.project_id）全部会话聚合（含子代理，口径同 session_usage；远端/不在本地库无字段不渲染），⚙ 状态条显示加「项目累计」开关（show.proj，默认开），精简摘要加同款行 → v162 状态词流光（用户规格）：速率 chip 纯状态词态（思考中…/工具动词/技能名·执行中）复刻宿主 .zcode-loading-label 同款流光——subtle→foreground→subtle 渐变 background-clip:text、1.4s 横向扫光、reduced-motion 停用；类名/关键帧自有命名（zu-shimmer/zu-loading-shimmer）不依赖宿主全局类；带 t/s 数值的估算/真实/DB 回退态不含 → v163 会话累计/项目累计 tooltip 增按模型明细行（top 8 按总量降序 + 「另有 N 个模型」，轻量行无 models 字段不显示）→ v164 tooltip 收口（用户规格）：模型明细全量展示去「另有」折叠、总和行置顶、键列自适应宽不换行、时间范围行 sticky 吸底（rt-pin，五个 tooltip 统一）→ v165 模型明细表格化对齐（rt-models display:table，整块共享最宽键列，token/次数列纵向对齐）→ v166 会话累计/项目累计时间范围精确到秒（fmtStartS，用户规格；其余三格保持到分）→ v167 模型行去 rt-atom（Chromium 表格内在宽度在 inline-block 边界断行致数值折行，真实浏览器实测）+ 带 rt-models 的 tooltip 宽度帽放宽 860px（zu-tip-wide，取最宽一行）→ v168 格面计数改 fmt 万/亿口径（用户规格：≥1万 N.NN万、≥1亿 N.NN亿；本轮次/会话轮次/项目会话次/工具总数四处，tooltip 与精简摘要保持原值）→ v169 同容器双条去重（Windows 用户报告：最小化/还原窗口来回切出现两根状态条）——宿主窗口状态切换可能短暂保留旧视图副本/重建编辑框，协调器瞬态出现两实例两根条落进同一张卡；heavy 对账每拍扫描：同卡可见 .zusage-root >1 或两根 body 兜底条矩形重叠过半时，data-zusage-slot 大者 hideBar 让位（对手消失经 track 自动复显；拆分窗格各卡各条不受影响） → v170 tooltip 计数同口径（用户规格）：各 tooltip 标题/规模/工具/请求行与模型行、精简摘要行的次数/轮数/会话数全部走 fmt；子代理明细面板保持原值 → v171 修 issue #147（社区 @Mc-GrowlR 报告并给出方案，Windows 10 + ZCode 3.17.1）：划词 side chat 面板容器无 data-pane-id，被协调器 auto 兜底键当作独立 pane，同窗出现第二条状态条（Radix presence 常驻挂载，面板收起后幽灵 composer 仍持续命中扫描）；窗口存在真实 pane 键时丢弃 auto 键——老宿主全部候选均为 auto（单键）单实例行为不变、shadow/iframe 空文档兜底不受影响 → v172 待重启/待更新改由 ⚙ 齿轮红点提醒（restartNotice 开关改为控制红点；会话内文字重启提醒取消，plugin-updater 推送 markerAt 作红点代际，点进「插件更新」分区记为已查看）+ ⚙ 更新页「重启 ZCode」按钮（二次确认，主进程 relaunch 动作）+ 移除自动安装开关（hook 未注入一律自动装，auto_enabled/INSTALL_MESSAGE 会话出口删除）   // 悬停 ⚙ 面板可见；版本号随代际递增 → v173 强制 K/M/B 单位开关 → v174 辅助对话独立状态条（宿主 tabId 成键 + 实例配额 4+1、桥 scope 精确绑定、确定性统计行按会话根归属）→ v175 辅助对话回答末尾富文本与主分栏同规则（显式本地 scope + isCurrentTurn 活跃轮限定 + --current 的 promptTs 守卫；修宿主 modelDurationMs 只累计高速供应商致占位行永久「生成时长缺失」；富文本收集后统一发起、同 SID 只追活跃轮且 epoch 粘滞防多轮搅动） → v177 review 修复批（10-agent 全量 review 闭环）：双条去重抑制不再被 track 每帧复显打穿（v169 Windows 双条场景实际失效的根因，复显前查 dupSuppress、heavy 每拍重评估解除）；精简下速率 chip 被摘除后子代理明细面板保持原位（不再回落隐藏条内全零 .zu-sub 抢锚钉视口左上角，web v103 同款）；精简短路块恢复 syncTpsChip 数据点 reapply（2976478 挪公共尾部后短路 return 到不了、与 git chip 不对称）；relaunch 无回执 4s 提示主进程可能是旧版需手动完全退出（旧 pollPluginRequests 白名单外动作静默丢弃）；待办红点指纹改分量级比较（更新装完后 latestVersion 分量退出不再误复亮）且 ack 幂等早退前先收敛本窗口红点；cnNum 切换补富文本 unitEpoch 在途竞态守卫（同 forceKmb）；detRootEl 落在宿主 data-session-id 写入窗口期时 heavy 按拍补算自愈；精简说明文案对齐 v147 挂载位（前导区 Git 左侧）→ v179 自动压缩阈值注入：⚙ 开关+模式+数值+状态行（enginePatch 随插件状态回推，__zusagePluginState 种子+拷贝行同 v172 纪律），主进程 engine-patch.cjs 按引擎 SHA256 白名单对 glm/zcode.cjs 打阈值改道补丁（锚点唯一性+use strict 指令位校验 fail-closed，hook 缺席/返回空双兜回 fail-open），阈值 autocompact.json 由引擎 hook 每轮决策 mtime 缓存读取——数值热生效、补丁冷生效（已运行 agent 子进程下个 spawn 起用）；ctx 按钮 hover 面板加「自动压缩 ~X%」行（acInfoText 按标称窗口口径，21K 预留近似还原）；关闭开关=按当前内容反向还原引擎字节；阈值任何形式钳 1% effective 地板防连环压缩→rapid-refill 熔断→ v180 重启按钮错位守卫（issue #158）：主进程 pushPluginState 携带 relaunchSupported 能力标记（与 relaunch 分支同文件、天然同步），浮层缺标记时隐藏按钮并显示「完全退出后重开」指引（syncUpdate + 点击守卫双处）；主进程 pollPluginRequests 白名单外动作兜底回执 unknown action，重启回执明确区分「主进程是旧版本」 → v183 子代理行内实时速率 chip（v4 Agent 行 testid 后缀即 childSessionId、与 v97 槽位键同源：运行期读槽位估算、完成后读泵快照 sub.list 真实加权速率；TPS 十档色；悬停 tooltip） → v184 ⚙ 新增「子代理行内速率」开关（state.show.subRate，zusage3.show 整包持久、默认开；只门控行内展示） → v185 实机修复批+review 修复批：后台子代理在宿主注册表无现成 store（运行期估算自 v97 起从未真正工作）→桥 v2 acquire 访问器按已验证 scope 解析子会话租约（仅 sess_subagent_ 前缀+本地）；tooltip 构建器改收数据包（buildTip(el.__zuT) 约定）；截断改从尾部取（保最新派发 8 个）；SUBRATE_DIAG 提模块级；诊断按 handle 判绑定；实例 dispose 摘行内 chip→ v186 本会话平均 token/s（PR #157 收编）：状态栏完成态主数字改会话加权平均（zusage avg_tps：Σ有效输出÷Σ生成窗口，main_turn 段、不含子代理），「均」前缀+按均值分档，最近一段/最近一轮退 tooltip；速率行/CLI 加「会话均」，精简 chip 同步；updateLive 会话归属取本 pane 行（lastView.session），缺席回退原行为→ v187 补回 v181 工具组状态词（PR #161 合并时 turn-stats runningGroupOf 块与 overlay 消费分支遗漏入库，仅存于运行目录热修副本）：turn-stats 复刻宿主 exploreGroup/executeGroup 合成规则（≥2 连续同类行成组、半截 JSON defer 透明、startedAt 锚定组首行），运行行落组尾时状态词显「查阅·执行中/终端·执行中」替代逐工具动词，计时从组头起算 → v188 自动压缩阈值注入按验收反馈简化：开关默认开（主进程 auto_compact_patch 缺省开、显式 false 关）；UI 只留百分比数值（留空=跟随引擎默认），模式下拉移除（引擎层 enabled:false/tokens/buffer 协议保留兼容，配置文件手写仍生效）；标题改「自动压缩上下文阈值注入/压缩上下文阈值数值」；状态行补 14px 水平内边距与 label 文本对齐 → v189 hover 面板阈值信息行移到「压缩上下文」按钮上方并追加下划线「调整」链接：点击复用 gear.click 完整路径打开 ⚙、切「通用」分区、scrollIntoView(nearest) 定位阈值数值行并高亮 3 秒（.zu-ac-flash，计时器实例级归属 dispose 清理）；info 结构改首文本节点+常驻链接（整行 textContent 覆盖会抹掉链接） → v190 三处验收微调：hover 阈值行 text-align:left（与卡内其它行对齐）；高亮改琥珀左条+淡底（--color-brand 在宿主主题是白色系，outline 描边观感像输入框焦点）；⚙ 注入开关关闭或主进程未加载时数值行整行 hidden → v191 hover 阈值行 token 数改走 fmt()：万/亿/K·M·B 与状态条、tooltip 同一转换链（跟随中文单位开关与强制 KMB 开关，中文至多两位小数去尾零） → v192 hover 阈值行布局：去掉自加 6px 下边距（间距交给宿主 space-y-3 的 12px 节奏，与「平均缓存命中率」行 pt-3 距分割线一致）；行改 flex 两端对齐，「调整」链接居右 → v193 修 v192 贴按钮：宿主 space-y-3 是 Tailwind v4 :where() 零权重 margin-bottom，行上自写 margin 会按类名权重压掉它（v190 的 6px 显挤、v192 的 margin:0 贴紧同因）——删掉 margin 声明整段回落容器原生 12px 节奏 → v194 阈值百分比改总窗口口径+数值行 30-99 校验：设置 91=原生按钮走到 91% 触发、hover 显示 91%（旧口径按扣除 21K 输出预留后的有效窗口算，设置值与显示差约 2 个点被判为割裂）；引擎 hook 以 eff+21K 近似还原标称窗口并钳在 eff 内，writeConfig 白名单收紧 30-99，已打补丁引擎下次启动按 PROLOGUE_V1 原位换装新 hook；⚙ 数值超范围实时提示并拒绝提交 → v195 hover 卡新增新手说明行：阈值行下方小字（.zu-ac-hint，随行同生命周期）解释口径与后果——「按窗口总量计算（与顶部百分比同口径）；走到该比例时客户端会自动压缩较早的对话内容以腾出空间」；margin-top 收紧 space-y 间距（space-y v4 只写 margin-bottom，top 无冲突） → v196 「调整」失灵诊断面包屑（下版移除）：openAcThresholdSettings 在 enter/after-gear/+150ms/row 各点写 __zusageDiag.acOpen（面板态、gear 可见性、条 display、分区、代际），closeSettings 写 acClose 调用者栈；v197 实证 acOpen 为空=点击未到达处理函数 → v198 修「调整」失灵：链接监听改 pointerdown（宿主疑似 mousedown 即关 hover 卡、click 到来前链接已被摘）+ 行级 click 兜底 + 捕获期点击写 localStorage 并在说明行回显（命中标绿/落空标红，诊断下版移除） → v199 清理 v196-v198 诊断：acOpen/acClose/acClick 面包屑、localStorage 回显、命中/落空着色全摘；保留 v198 修复本体（pointerdown 主监听 + 行级 click 委托兜底），实机验收=电脑操作点击「调整」面板弹出且阈值行琥珀高亮 → v200 上下文按钮增强显示层优先镜像原生 aria-label 已用/总量（宿主 taskUsage，压缩后立即回落；issue #172 曾停在 DB 最近完成请求旧值 16.4%），解析不出回退 lastBand DB 口径（ctxOv/nativeCtxVal 优先级只作用兜底），exc 过程态档位仍优先，还原路径共用同一解析器（英文 UI restore 顺带修对） → v201 合流：v200 撞号顺延（v200 已被并行线 issue #174 压缩按钮开关占用，8e6e1c0 先合入） → v202 预估费用行：四格 tooltip（本轮/会话/项目/今日）按 models.dev 官方牌价估算费用（token_pricing.py 内置表 326 条 + serve 内 12h 同步 models.dev 与 er-api 汇率，pricing-cache.json 落盘），快照加 cost_usd（USD）与 fx，展示层 ×汇率显 ¥（无汇率降级 $），会话/项目模型明细行尾加各模型费用，「价格来源 models.dev」脚注可点（openExternal），费用行尾空心问号图标悬停弹说明小气泡（价格来源/计算公式/汇率来源三行，fxTip 独立浮层 + mouseover/out 委托 + 180ms 悬停桥，主 tip 收起/重建时同步收），汇率源主源失败兜底 exchangerate.fun（自定义 fx.url 不启用），⚙ 通用区开关默认开，本库口径：裸输入=input−cache_read−cache_creation 全价、缓存分价、output 已含思考不另计 → v203 红点仅承载待重启（发现新版未安装、更新成功且已热重载均不亮；分量级已读比较保留以兼容旧 seen 串）+ ⚙ 带待重启红点点击直接落「插件更新」分区（激活即 ack）+ 设置页新增「已更新成功，点击重启 ZCode 即可生效」提示条（旧主进程降级回原文字指引），分区切换提取 activateSettingsSec 单一出口 → v209 额度 chip .zu-quota 与重置卡徽标 .zu-ctxrst 左右内边距 6px→3px + 模型选择触发按钮（chat-model-select-trigger）左内边距减半：文本态 8→4px、图标态 6→3px（!important 压宿主 group 变体）（用户规格 2026-11-02） → v210 时间范围行全部精确到秒（v166 会话/项目累计先行的 fmtStartS 扩展到本轮/今日合计与速率 tooltip 最近一段；fmtStart 仅剩「最后活动」行）（用户规格 2026-11-02） → v211 本轮 tooltip「单次耗时/首字延迟」改「平均耗时/平均延迟」（zusage 快照 last_turn 新增 avg_duration_ms/avg_ttft_ms，对 model_usage 该轮已完成 main_turn 行 >0 样本求均值；turn_usage.ttft_ms 聚合列实测口径不明不可依赖，旧快照缺字段整行不渲染）+ 本轮格面移除时长/首字两段（耗时只在 tooltip），精简摘要「本轮」行时长随同改平均（用户规格 2026-11-02） → v212 Git chip 分隔符 .zu-git-sep 间距收紧：字面「 · 」改纯点+左右 2px 内边距（多仓段与 ?N 未跟踪段两处同源；用户规格 2026-11-02） → v213 状态条格序调整：今日合计提前到会话累计之后（速度→本轮→会话→今日→项目→工具→子代理→⚙），速率 tooltip「状态条摘要」行序随同对齐（用户规格 2026-11-02） → v214 项目累计统计卡改版：tooltip 重构为「标题+统计范围（全部请求·含子代理）、总用量/请求次数/预估费用三 KPI（费用旁统一说明问号）、输入(命中率)/输出(含思考)/缓存写入明细、会话·轮·工具·重试规模行、模型四列表格（默认 6 项可展开全部，排序对副本）、时间范围（em dash）」，作用域 .zu-project-tip + :has 样式（不动共享 .tip/.rt-* 规则），展开态实例级归属键（sid:started）局部更新不重建整卡，触发项 zu-pj-item 标记，卡片内 Escape 关闭并归还焦点，focusout 进卡片不误关，positionTip 钳底边，费用全链复用 v202（0 有效/缺失 —/开关关整格收） → v215 六统计卡统计卡化：本轮/会话累计/今日合计/子代理四格 tooltip 统一 zu-stat-tip 视觉体系（速度统计卡公共构造：scope 标签+双读数 hero 主读数档位色、两行五列网格窄窗重排、速度卡宽帽 760px :has 作用域；明细面板内模型行问号图标弹费用说明气泡，复用 fxTip 单例同款委托）（用户规格 2026-11-02） → v215.1 速度卡去费用行与模型明细（用户规格：速度 tooltip 只留读数与时间范围，费用唯一承接处=各卡明细面板与 fxTip 气泡） → v217 子代理统一浮层：.zu-sub-pop 双栏单组件替代「悬停五段卡 tooltip+点击独立明细面板」两套旧 UI（preview/pinned 状态机：悬停预览、首次点击固定、面板内操作转固定、Escape/关闭/外点统一收且焦点归还+500ms 悬停抑制；选中按 sid 维护、运行中未入库槽位进导航、签名幂等重建保滚动、会话切换即关、入口断连即关；任务页 _sub_item 逐任务模型用量表/预估费用/平均速率档色行/最后活动全格式时间，zusage sub.list 单项同步扩展；精简入口 chip.__zuOpenSub 归一指向同一浮层）（实机验收 2026-11-03） → v218 速度卡三修（实机反馈）：悬停冻结 updateLive tipFor 判定改 contains（旧恒 false 致悬停中 tooltip 不冻结）；右格「最近一段」改读 lastView.last.tps（zuBarSpeedView 无 latest 字段恒缺）；图例 ≥2000 Ultra 改渐变圆点并禁 ✦ 伪元素（星点破形） → v219 ⚙「状态条样式」（默认/药丸/精简单选+精简说明行）从「通用」分区移入「状态条显示」分区卡首，纯分区归属调整，控件与持久化行为不变 → v222 速度卡 tooltip 补「时间范围」行（用户规格，参考四格 tooltip 同款式）：主数字为会话均/桥态取会话累计口径（started→last_at，与会话累计 tooltip 同源），「最近一段」回退态保持段范围；起点缺失整行不渲染（半程范围无意义）；三处 speedCardHTML 调用点（桥态 buildLiveTip/DB 回退/精简 chip）同批生效 → v223 ⚙ 面板关闭按钮命中区外扩（原并行线编号 v220，合入顺延；::after inset:-6px、hover 反馈同步，约 20×24px→32×36px）：按钮四周 head 空白点击原本无反应，用户实测「悬停 × 上点不动、不灵敏」；CDP 真实点击定责为命中区过小（事件链与面板几何均无缺陷），纯命中区修复，不改布局与视觉 → v224 速度卡悬停实时刷新二次修复（实机反馈）：v218 只改了 tipFor 判定，新 tip 串仍写到格内 .zu-live span，而 __tip 宿主与 drawTip 读取都在 .it 格元素上——条件每 tick 命中、重画的仍是整条渲染时的旧串，悬停中「当前读数」冻结在最后一次整条渲染的值（chip 已跳动、tooltip 停在「思考中…2秒」）；改写回格元素（liveEl.closest(".it")），悬停中每 tick 跟手重画，未悬停也保持新鲜 → v225（v224 并行线 PR #198 先合入，本线顺延）⚙ 自动压缩状态行区分「引擎被单独热更」（issue #191）：桌面 build 已登记而引擎 sha 脱钩时明示热更事实与漂移 sha 前 12 位（引擎补丁新增 drifted 字段，主进程传入 appVersion 按点分界前缀匹配登记表），替代误导性的"版本不在支持名单"；lastError 后缀此时与 sha 重复不再拼接；fail-closed 判定不变 → v226 ⚙ 两项（用户需求 2026-11-03；v226 已被并行线自动压缩状态行占用，顺延）：①六格显示开关（本轮/会话累计/项目累计/工具调用/今日合计/子代理）全部关闭时样式自动转精简（边缘触发只在「变得全关」那一拍切档，zusage3.autoCompact 记录来源主题 default|pill，重开任一格恢复、面板手动改档即解除；药丸来源同样触发）②默认样式新增「水平对齐」三选一（zusage3.barJust：均分 space-between 缺省不挂类/居左 flex-start/居右——居右不用字面 flex-end，LTR 下 start 侧溢出不可滚动也不计入 scrollWidth 会废掉收缩检测与 .zu-clip 渐隐，改首格 margin-left:auto 等效右聚拢、溢出方向与兜底不变；设置块仅默认档显示，applyBarTheme 随档显隐并同步条上 zu-just-* 类） → v227 预估费用说明气泡悬停保活（fxTip 是 body 级独立浮层、挂在主 tip 之外：指针从 ? 图标移入气泡被文档 mousemove「条外」分支按 left-bar 强制收主 tip、hideTip 同步收气泡，v202 起悬停说明气泡即灭；子代理浮层路径同被 preview-leave 倒计时收走面板。mousemove 处理器节流前新增分支：fxTip 显示中且目标在气泡内视同仍在 tooltip 上——保住主 tip 与气泡、取消越顶宽限与子代理面板延迟关闭，离开气泡回落原判定） → v228 速度 chip 完成态去「· 近X」尾缀（用户规格；编号顺延避让已合并的 v226(PR #200)与 v227(PR #202 fx-tip-keepalive)）：条面格与精简 chip 同批去掉 dbTps 尾缀，主数字只显会话均（或最近一段）；「最近一段」读数保留在 tooltip 右格不受影响 → v230 压缩轮不再显示「本轮统计不可用」（编号顺延：原 v238 号，v229 已由并行合入的 PR #207 占用、v231 起由并行未合线自占）：上下文压缩（手动/自动同链）是 query_source='compact' 的辅助轮（DB 有完整数字且已计入今日/会话累计，但消息流无正文、header 零输出），旧逻辑按 v74 零输出明示规则误插误导占位——实测压缩轮投影=turnHeader+timelineMarker(marker.type='compact') 而 header.executionKind 恒 'agent'（ek 探针证伪初版假设），turn-stats get() 以 isCompact 识别，overlay 对压缩完成轮不新插/撤下已插行（宿主「上下文已压缩」提示已承载语义）；kinds/tmr 为 det 诊断字段；v74 真实零输出轮行为不变 → v231 统计卡标题拼接名称与垂直居中（用户规格三轮迭代一并入库；编号顺延避让并行已合入的 v229(PR #207, issue #205)——v228 后 overlay 台账实际未占用，按共享代际台账撞号声明让号）：①项目累计卡拼项目名——zusage _project_usage 附 name=启动目录末段（正反斜杠归一，缺目录/旧快照判空不渲染），.zu-pj-pname 字号颜色同规模行 .zu-pj-scale；②会话累计卡拼会话名——快照行 title 三处本就产出，纯渲染端：statHead 加可选第三参仅会话累计卡传、/\s+/g 压空白、缺 title 判空不渲染，.zu-st-name 360px 省略号；③名称与标题垂直居中——标题容器带名称时切 .zu-tt-name（display:flex;align-items:center），行内 baseline/bottom 对齐会被 18px 大字 descent 拖得视觉偏低（实机指认），flex 子项自动块化、省略号仍成立 → v232 速度 tooltip「最近 20 段」柱状图：zusage 快照 session 行新增 speed_segs=最近 ≤20 条已完成 main_turn 有效速度段（_row_gen_ms 窗口与 avg_tps 同款口径、辅助源/子代理/碎段不计，v 保留原始浮点供档位与柱高按原始值判断；speedCardHTML 带 segs 时切「左读数卡+右图表」布局——左卡=当前读数/档位胶囊/加权平均说明，「最近一段」右格由最新柱承载，无 segs 的旧快照/远端旧版保持 v215 原布局），柱顶读数恒一位小数与柱同轴心、最新段加粗，Y 轴 0 起整洁刻度并按「信息卡横向覆盖最右约 1/3 柱」约束迭代刻度保证最高柱读数不被压住，X 轴=分段真实完成时间本地时区 MM-DD HH:mm 稀疏显示、首末恒留，最新段描边高亮+「最新」徽标，柱体颜色沿用 TPS_BANDS 档位类（ultra 渐变深浅主题显式 border-box 覆盖防 clip:text 裁没），段值 ≥1000 t/s（读数 6 字符）或窄窗口（plot min-width+横滚）保读数永不重叠；柱级悬停/键盘焦点弹信息卡——tip 本体委托 + 实例闭包存悬停段下标经 speedTipRebuild 编进串（签名幂等重建不丢状态、离开回落最新段、会话切换重置），render 接管对速度格补 drawTip 使打开中随快照跟手（焦点/选区在 tip 内时跳过），图表横滚位置跨重建保留；精简 chip tooltip 不带图表 → v233 速度卡三删+读数自适应（用户规格）：①删「统计会话全部已完成请求：工具等待不计，不含子代理。」口径行（DB 回退与精简摘要两处，Σ输出÷Σ生成耗时等其余口径保留）；②删柱状图「最新」徽标（最新段描边与加粗读数保留，plot 高 200→184）；③删「每段完成后更新；不足 20 段时显示实际数量。」脚注（live/回退两处）；④左卡「当前读数」估宽分级自适应（超长状态词降字号+允许换行，不再被 156px 左卡裁切；分级实现见同批改动） → v234 柱状图 20 段→14 段、释放空间给左卡（用户规格）：zusage 新常量 _SPEED_SEGS_MAX=14（与 last.tps 回查的 _TPS_LOOKBACK 分离，扫描窗 42 行凑 14 条有效段）+ speedSegsOf 渲染端截 14 + 两处口径行「最近 20 段：…」改 14；左卡 156→300px（内宽 278），主数字删 +12px 覆盖回基础 ui+22 大字，估宽分级阈值重算 ≤7.5/≤11.5、fit2 +6→+10px；plot min-width 600→420（pitch≥30）、wide 780→560、xEvery 估算基数 620→460/最小标签距 44→30（14 柱满宽全显时间标签） → v235 速度 tooltip 多状态结构化重构（用户设计图规格）：zuBarSpeedView 追加结构化字段 kind/statusText/nameText/nameFull/elapsedText/speedValue/speedIsEstimated/speedSource/activeCount/noteText（八类 tool/toolgroup/skill/subagent/thinking/estimate/avg/real，text/cls/phase/band/latest 逐字保留、状态判断不解析文案）；speedCardHTML 新增 o.status 分层左卡模板（zu-sl-status 状态标题+子代理 ×N 徽标 / zu-sl-name 名称两行省略+title 全名 / zu-sl-main 主数值或计时 / zu-sl-unit / zu-sl-note 辅助），数值型走档位色、工具/Skill/思考/子代理保持 dim，o.main 拼装路径为精简 chip 等旧调用方保留；子代理估速前缀 ≈、无效估速显「估算中…」不补 0；buildLiveTip/fallback 传结构化状态，scope 标签按真实状态映射（工具执行中/工具组执行中/Skill 执行中/子代理运行中/思考中/生成中估算/会话平均/本轮真实速度），思考态左卡内嵌脑动效图标；柱状图 14→17 段（_SPEED_SEGS_MAX=17、渲染端截 17、口径行改 17），plot min-width 420→500/wide 560→680/xEvery 基数 460→500/最小标签距 30→29 配平左卡 300→250px → v236 速度 tooltip 三修（用户实机反馈）：①信息卡改为悬停/键盘聚焦柱体时才渲染（默认不再常驻最新段上方，cur 高亮随之仅悬停态、latest 描边保留）；②X 轴时间标签最小距 29→44（17 柱 pitch≈29 必隔列、间距 ×2，修复标签拥挤）；③非 wide 图表删 plot min-width（随容器压缩+稀疏标签兜底），任何窗口宽度不出横向滚动条（wide ≥1000 t/s 保留横滚），速度卡宽帽 860→1040 → v237 修时间标签裁半（用户实机截图）：v236 的 border-box 配平让 X 轴行内容区只剩 20px、两行时间（25px）被 wrap 的 overflow-y:hidden 裁掉半行——X 行 24→29px（4 padding+25 两行）、plot 高 184→189，列配平随之 160+29 → v239 速度 tooltip 100% 复刻设计图（用户拍板以设计图为准，撤销 v233 删口径/v236 悬停才显卡）：信息卡恒在（默认最新段带「（最新）」+虚线引线连柱，悬停切段）、左卡状态图标+「当前读数」标签+档位色状态标题、颜色对照单行横排、统计口径左标题右分段+时间范围同卡、带图表时不渲染脚注 → v240 柱状图 17→10 段（zusage _SPEED_SEGS_MAX=10、渲染端截 10、口径文案同改）、柱宽 max-width 22→15px（-30%）、信息卡恢复仅悬停/聚焦才显示（撤销 v239 常驻）、左卡下半区加「峰值/最低/最新」概览填空、速度卡宽帽 1040→860、plot min-width 500→340 → v241 速度 tooltip 按设计图复刻：柱状图取当前会话最近 10 次（可跨天）、左卡标题行/主读数/说明行文案按设计图对齐（工具组「查阅」、Skill「执行中」、说明行统一「X · 正在执行」）、前缀「估/均」小号灰字、主体区垂直居中填空 → v242 速度 tooltip review 修复批（十 subagent 审查）：focusout/mouseout relatedTarget 守卫修 Tab 跨柱焦点断裂与双重建闪烁、render 接管 pill 主题补焦点守卫、wide 横滚复活（plot 420）、spanFrom 收严最坏一半 + CARD_H 36（实高 35.6 校准）、real 去档位胶囊、skill 标题统一无空格「·执行中」、工具组 statusText 回归完整短语、liveScopeMap real/estimate 用词对齐、「当前读数」标签与有效数值同门（修 subagent 数值误杀回归）、左卡 border-box 250/双规则合并/padding 12、标题档位色与单行省略、浅色 ultra 图例圆点 clip 修正、hero :has 单列、柱 role=img、17 段/常驻卡/帽 1040 等过期注释清理、测试补八态直调/概览三格/前缀/（最新）角标/图例行/几何不重叠断言 → v243 更新日志「发布页」链接 GitCode 渠道改指 /releases 列表页（tag 深链页对本项目 API 创建的 Release 一律「找不到或无权限」，GitCode 平台路由 bug 2026-11-04 实测；GitHub 渠道保持精确 tag 深链；镜像/未核实回退路径同规） → v244 重启按钮反馈与延迟（用户报告「点击没反应、等很久才退出」——大头是宿主 app.quit 优雅退出链要关窗并逐个终止会话/扩展子进程，可达数十秒，插件无法绕过）：确认发送即「正在重启…」+禁用+预期文案替代「发出即恢复」伪装无反应，4s 无回执/失败/90s 仍存活三路还原（ok 后挂 90s 兜底防 quit 被会话/扩展阻止永久卡死；4s 超时已还原则不再挂）；syncUpdate 重绘保持禁用与提示；主进程 relaunch 固定 300ms 延迟改回执送达后 30ms 退出（800ms 渲染端无响应硬兜底）；v245（同批提交）quit 前 hide 全部窗口——退出屏障期窗口不再可见干等，主进程 15s unhide 哨兵在 quit 未发生时恢复可见 → v246 用户手改批：速度图未悬停（hoverIdx<0）不渲染信息卡、span 只按 capOut 留柱顶读数净空，刻度基数补 6/7.5 防跳档空旷；X 轴同日去重（仅首枚显示标签柱与跨日首柱渲染日期行，其余同日只显 HH:mm）；本轮/今日合计首格改「总用量」、今日缓存命中率并入 grid3 输入列副行、本轮平均耗时/延迟/总耗时行改 --sub 弱化段、会话累计 scale 行分隔符改前缀式并删末项请求数、工具表 <50ms 显「<0.1s」弱化、子代理浮层 KPI 副行改命中率/含思考/缓存写入+平均速率并入 KPI、项目卡范围+scope 合并单胶囊+隐藏「按用量排序」+子代理浮层模型表去底色改行线、本轮输出速度单位 tok/s→t/s、图例 ultra 点隐藏与 inline 间距收紧、tbody scrollbar-gutter:stable → v247 悬浮窗口激活方式（issue 用户反馈：滑过误触遮挡）：⚙ 通用新增「点击激活悬浮窗口」开关（zusage3.tipClick 缺省关=停留 1 秒、仅显式 "1" 开=点击）；统计卡/子代理浮层 closed→open 改由独立 1000ms 定时器承接（排程置于 150ms 节流之前防快速滑入静止后永不触发、按命中元素 key 去重续期、到点按当前坐标 elementFromPoint 重命中抗 render 1.5s 重建 + :hover 最深元素复核），已开 tip 切相邻格保持即时，键盘 focusin 即时打开不变，取消统一落 hideTip/各 return 分支，定时器随 dispose 清理；点击模式 bar.click 接管 .it 并用 focusTipAt 避开 focusin→click 首击抵消（复用移出条面/Escape 关闭链，不另起 pin），fxTip/速度信息卡/工具栏 chip 与宿主原生 hover-card 不在本次范围→ v248 预估费用说明气泡「当前模型」随卡携带模型上下文（上一会话已完成、已部署未提交，与已合入的 v249（PR #224）并行开发，随本批补录入库）：四个统计卡与子代理浮层汇总的 KPI 费用问号随卡携带模型上下文（fxqIcon：data-model/data-rates=按用量最多模型+data-mcount+data-mscope），单模型显该模型四价、多模型沿项目卡口径显「计价范围」、无模型明细不显模型行，default 借 last 分支删除 → v249 用户裁定简化：「点击激活悬浮窗口」关闭（缺省）不再做停留 1 秒，恢复即时悬停原语义（v247 的 1000ms 定时器链 HOVER_OPEN_DELAY_MS/hoverSchedule/hoverCheck/hoverCancel 整体移除，mousemove 恢复 v246 逐行为）；开关开启仍为点击激活（bar.click 接管 .it + focusTipAt 防首击抵消、子代理 preview 关闭改 pinned 打开），设置项/文档口径同步为「悬停立即显示 ↔ 点击才打开」两态 → v250 速度柱状图按轮聚合+悬停卡全格式时间与轮明细+柱间距收紧（用户三项规格；编号顺延避让已合入的 v249「点击激活简化」PR #224）：zusage _speed_segments 改按 turn_id 合并一次提问的全部请求（v=Σ有效输出÷Σ生成窗口、逐问同口径），随段携带 m/i/o/n/c 供悬停信息卡渲染 模型/Token 用量（含输入·输出拆分）/请求次数/预估费用（数字格式化经 o.fmtTok/fmtCnt/fmtMoney 回调，费用随 state.cost 门控，旧快照缺字段按行省略，CARD_H 按实际明细行数校准）；悬停卡时间改全格式 yyyy-MM-dd HH:mm:ss；X 轴每个显示标签恒带月日两行（同日去重废止）；柱宽 calc(20%+12px) 使柱白任意宽度恒精确收紧 20%；段→轮措辞（最近 N 轮/第 N 轮） → v251 套餐额度显示口径开关（⚙ 套餐额度分区「显示剩余额度」，zusage3.quotaRemain 缺省关=已用%，纯渲染偏好不进 config.json）：开启后 chip 面分段数字与 aria、tooltip 窗口行/Key 总额度行/其他源摘要行改按剩余%（100−已用 同一窗口池补数，quotaRemainPct 钳 [0,100]）打头，绝对值窗口行内 已用/剩余 明细互换顺序；档位色恒按已用原始值判定（quota.md 契约）不随口径反转；余额/Key 剩余额度单段与团队/未配置/错误形态不受影响 → v252 模型拉取同步提供商侧配置（issue #236）：零兄弟供应商首拉写实最小骨架+有据元数据（contextWindow/inputFormat/档位/输出上限），档位按强度梯排序（宿主默认档=values 末项），Copilot capabilities 别名，api.json 档位目录按需后台补缺（大体量不阻塞，缓存后下次拉取生效），套餐源接目录补缺；弹窗行「未获取配置」中性提示+脚注披露只增不覆盖；档位索引落运行目录缓存（24h stale-while-revalidate 跨重启复用），目录后台补拉时行内「档位补拉中…」状态+脚注说明 → v253 本轮/今日合计 tooltip 模型明细改项目卡式四列表格（zu-pj-mhead+statTable，费用列随 state.cost 门控；本轮 rt-models 行式退役，精简摘要保留）+ 本轮 tooltip 删「速度＝Σ…未参与测速」口径行（unrated_output 字段照旧生产） → v254 生成速度 Tooltip 全面重构（范围/时间双 Tab 共 20 组合 + 按时间/会话/项目维度：zusage 新增真实库有界轮表 speed_history（短键+索引表+2s 缓存，单一 Σ有效输出÷Σ生成窗口口径，旧 speed_segs 契约不动），渲染端纯函数聚合；16 根细柱定宽居中、十档 TPS_BANDS 同源、删除均值虚线/统计口径大段/底部时间行/图表预览；右上角日历时间胶囊（title 全格式）、左卡历史均值与生成中估算分离、柱 hover 五字段自定义卡（时间区间/档位速度/多模型/Token 总量含输入输出/预估费用缺失态）、单行十档图例、空桶显空柱不显 0、远端身份下「全部」清晰降级、旧快照/精简 chip 回退原布局；Tab/dim/柱 hover 全走 tip 本体既有事件委托与签名幂等重建，不新增 IPC/定时器/全局监听） → v255 真实宿主验收三修（X 轴短时分标签+30px 裁切杜绝长时间戳重叠、左卡实时状态降为独立 note 且标题中性化「当前筛选 · 历史统计」避免工具执行中配历史均值语义错位、V2 实时状态变量更名 spdLiveStatus 与 buildLiveTip 旧局部同名隔离） → v256 修复「速度 Tooltip 有时新、有时旧」（用户实机报告）：根因=统一轮表只在 serve 常驻链产出，主进程常驻进程空闲回收/重启/降级时回退 zusage.py json 一次性帧缺 speed_history，spdRebuildOr 返回 null 整卡回退旧版；①zusage snapshot 增显式 include_speed_history 门控，serve 与桌面 json 都产出轮表（远端子进程 ZUSAGE_REMOTE_CHILD=1 排除，CLI/MCP/远端 stdout 契约不变）；②overlay __zusageUpdate 粘性保留最近一份有界轮表，缺字段帧不再闪回旧卡（空轮表不粘性）；③精简模式 tpsChipTipHTML 与 tpsTip 浮层补齐 V2 接线（双 Tab/维度/柱 hover 全走浮层本体委托、状态落 chip 数据包、V2 卡放行签名重建），V2 宽帽规则补 .zusage-tps-tip 宿主；冷文件 inject-main 未改，热重载即生效 → v257 追堵「首帧缺轮表」（用户 11:21 再现旧卡，渲染端 diag 实证已 v256）：v256 粘性只在代际内有效，热重载/重启后的新代际粘性为空，而 `_speed_history_safe` 在完成轮瞬间的 WAL 写窗口偶发抛错返回 None——首帧恰逢失败时无值可粘，仍回退旧卡。①safe 失败先短重试一次（50ms，新常驻进程首查撞写窗口时多半已放行；缓存 TTL 内不重扫），再失败跨 dbkey 回退最近一次成功轮表（`_SPEED_HISTORY_STALE_MS` 10 分钟上限，轮表是历史统计分钟级陈旧可接受，下一帧成功即覆盖）；②`__zusageUpdate` 帧级诊断 `FATAL.spdFrame`（has/sticky/turns，原地更新）——再出现象 diag 直接区分「数据链缺帧」与「粘性未建立」，不再靠截图反推 → v258 spdTip 取证诊断（用户 11:37 在 v257+首帧 has=1 下仍见旧卡，数据/代码/本地模拟三查均无异常，纯推理到头）：buildLiveTip/html(d)/tpsChipTipHTML 三条速度 tooltip 路径在 V2 成功时记 `FATAL.spdTip={t,src:"v2-live|v2-html|v2-chip",turns}`、回退时记 `{src:"fb-live|fb-html|fb-chip",turns,range,period,sid尾8}`，spdRebuildOr null 分支加 `FATAL.spdNull`（typeof FATAL 守卫不破坏 VM 切片）——diag 直接给出真实路径与当时轮表长度，定位后移除 → v259 宿主多视图顶部 48px [app-region:drag] 标题栏拖拽条穿透上层浮层（Electron 拖拽区按几何命中，覆盖层未显式 no-drag 不阻挡）：面板 top:8px 时头部 ✕ 落在条内，真实点击被窗口拖拽吞掉（新建任务页实报「设置关闭无效」，面板内导航点击正常与症状吻合）；.zusage-panel（设置+子代理浮层）/.tip（全部 tooltip 根）/.zu-mp-ov/.zu-compact-dlg/.zu-rot-pk-dlg 显式 -webkit-app-region:no-drag，把自身矩形从拖拽区减掉（宿主自家浮层与全屏屏障同款修法，app.asar 实证） → v260 静态桥缺席兜底（同内容仓库版记 v258，合入时按合入顺序归一；G2 跨版本免重打桥）：readFiberPaneScope 沿 React fiber 回溯 SessionPane 作用域（detOwnerOf/sidePaneKeyOf 的 tabId 同款兜底；限深 24、撞外层会话/分栏根止步、多候选歧义拒绝，校验与静态属性分支同规）；turn-stats.js 运行时合成 BRIDGE_TEMPLATE v2 同契约三访问器（Map.prototype 一次性探针捕获宿主注册表 + installRuntimeBridge 注入口） → v261 spdRender 取证补强（老会话完成态仍见旧卡而 spdTip 恒被 v2-live 每 tick 覆盖，hover 瞬间的整条渲染记录无法存活）：html(d) 整条渲染专记 `FATAL.spdRender={t,src:v2-html|fb-html,pane,sid尾8,turns,hasH,range,period,dim}`（独立字段不被覆盖），spdTip/spdRender 均带 pane 实例标识（多实例共享 diag 分不清写入者），spdRebuildOr null 分支补 spdNull 原因取证（typeof FATAL 守卫）；本版=运行目录 v260 合流超集基线 + 本诊断（v260 已含速度线全部修复与并行线 v259/v260 桥兜底） → v262 根治「空渲染污染共享数据」（spdRender 铁证定案：用户复现时刻整条渲染 hasH:false / spdNull hType:undefined，而前后帧 has=1——`render(d)` 首行无条件 `state.data = d`，实例 spawn 首渲染/桥空窗的 `render(state.data || {session:{},...})` 把空对象写进共享数据、抹掉统一轮表，窗口内 hover 即 fb-html 旧卡；切会话 tab 触发 pane 重建恰好高频制造该窗口，故「老会话旧卡、新会话正常」）：render 改条件写 `if (d && d.session && d.session.sid) state.data = d`——空对象渲染不再抹掉轮表，spawn 实例后续 updateLive 直接用上一真帧渲染（比旧行为更快出 V2）；真帧写入链（__zusageUpdate 外层）不变 → v263 根治「范围/时间 Tab 点击无效」（用户实报 P0）：①根因=生成中 updateLive 每 100ms 重编 V2 整卡（估算/计时走字让 tipSig 每 tick 变化），mousedown 命中的按钮在 mouseup 前被 innerHTML 替换、click 落到共同祖先 closest(".zu-sv-tab") 为 null；Tab 切换提前到 tip pointerdown 委托（重建窗口前同步生效，click 保留键盘/兜底，同值幂等共存），按下即进 600ms 交互冻结保下拉展开；②updateLive 冻结扩 mouseInBar（悬停保活不整卡重绘，数字冻结在进入时刻，typeof 守卫兼容 VM 切片）；③compact tpsTip 面：Tab 同款 pointerdown（tpsTabActivate）+ showTpsTip 撤销 v255 对 V2 卡的冻结放行（悬停中统一冻结，交互路径清 __zuTipSig 天然放行）；④视觉 12 项（视觉审查 Agent 实测截图清单）：Tab 选中态纯白改柔和强调 rgba(87,200,255,.14)+恒字重 600 防跳动、hover 补背景反馈，左卡删「Σ有效输出 ÷ Σ生成耗时」公式行、标题改弱化「历史统计 · 不含进行中请求」（.zu-sl-title 仅本卡作用域覆写，旧八态卡不动）、主数字 +22px，X 轴跨日首柱两行 MM/DD+HH:mm 且跨日柱稀疏化必显、xEvery 8⇒6 收紧标签间隙，图例 Ultra 补 ✦，维度下拉补 ▾ chevron，标题 +6px/时间胶囊 padding 4px 10px，间距归 8/12 节奏，柱组居中+删 --zu-sv-n 死配置 → v264 第二根因收口（实机点击仍关 tooltip 定案）：tip 内控件点击 ⇒ pointerdown 处理器同步重编 innerHTML ⇒ 被点按钮 detach ⇒ 焦点跌落 body ⇒ focusout(relatedTarget=null) 曾无条件 mouseInBar=false + hideTip(true,"focus-leave") 强制关 tooltip——切换生效了用户也看不见（旧版 click-only 同样中招，这是「Tab 点击无效」体感的第二半）。修复：mouseInBar（指针悬停在条面/tooltip 上）时降级 hideTip(false) 交总闸拦截，指针真正移开由 mousemove 判定；纯键盘 mouseInBar 已 false 维持原强制关。行为级回归：切片派发 focusout 断言悬停中 [false,"focus-leave"]/离场 [true,"focus-leave"] → v265 按下即建总闸（实机第 4 次点击实验定案的第三根因）：tooltip 常经 focusin 打开（点击 .it 聚焦），快速移动/合成指针下 mousemove 采样可能全部被 150ms 节流丢弃、mouseInBar 停留 false，随后一次快照推送的 render-orphan 接管失败即关掉正在交互的 tooltip，点击 Tab 落在消息区；pointerdown 委托开头 mouseInBar=true + cancelTipGrace，「指针按在 tip 内」先于一切判定生效，render-orphan 受总闸拦截，下一 mousemove 重新判定 → v266 render-orphan 悬停保留（第三根因彻底收口）：生成中宿主 phase 切换（思考↔工具↔正文）每次走 render 慢路径整条重建条面，条目结构变化时接管失败曾直接 hideTip(false,"render-orphan")——快速移动/合成指针下 mouseInBar 常 false（mousemove 采样被 150ms 节流丢弃，tooltip 经 focusin 打开），悬停中的 tooltip 随每次 phase 切换闪断、点击 Tab 落在消息区（实机第 4/5 次点击实验定案）。修复：mousemove 处理器开头（节流前）记 lastPt；接管失败时指针仍在 tip 覆盖矩形内则保留旧内容原地显示（不重画、不收），指针一动由 mousemove 重新判定；条外维持原收起 → v267 lastPt typeof 守卫（v266 裸引用打破 overlay-fx-tip-keepalive/overlay-tip-activation 的 mousemove 切片沙箱，与 v265 mouseInBar 同款教训：实例作用域新增变量一律 typeof 守卫或同步补切片夹具） → v268 粘性跨代际（用户实报「速度 tooltips 现在变成老版本了」定案）：v255 粘性是模块级变量，热重载/重启后新代际为 null，新代际首帧恰逢 serve 空闲回收/重启窗口（本地实测 serve pid 数分钟内 8576⇒11362 频繁重启；json 链本地实测 1268 轮/197 会话产出正常）即回退旧卡；修复 = 粘性写 window.__zusageSpdSticky（旧实例不清除、新实例继承，跨热重载/重启持久）+ 四处 V2 消费点（buildLiveTip v2h / html(d) spdRebuildOr / tpsTip 数据包）统一 lastSpeedHistory 兜底——帧缺轮表时以最近一份有界轮表顶上（历史统计分钟级陈旧可接受，v257 同取舍），下一帧成功即覆盖 → v269 lastSpeedHistory typeof 守卫（第三次同款教训：v268 三处裸引用打破 overlay-speed-chart 旧图切片沙箱 3 例——实例/模块新增变量被切片引用必须 typeof 守卫已三令五申） → v270 用户实机验收四修：①「项目」范围按用户口径重定义=全部项目对比（原当前项目与「会话」差异过小，用户实报「应该是取 zcode 所有的项目」；默认维度按项目，dims=[project,time]，不再按 panePid 过滤，切到项目时 session 维度归 project）；②维度切换后 Tab 无效——结合①数据差异过小造成「无反应」假象，随①消除；③右上时间胶囊月日前带年（跨年两端各自带年）；④hover 卡时间行同日区间压缩（右侧只补时分秒）+ zu-sv-twrap 允许换行，长区间不再省略号截断 → v271 点击任意位置关闭根治（用户实报）：tip 内按压后 1.2s 硬保活窗——hideTip 对非 win-leave/escape 的 force 一律降级交总闸（left-bar 命中区边缘误判/焦点跌落/宿主重渲染等任何路径）、focusout 在窗内直接不关；pointerdown 记 lastTipDownAt（typeof 守卫兼容切片）；win-leave（真失焦）与 Escape 保留立即收 → v272 维度切换功能移除（用户裁定）：图表恒按时间聚合——删图表头维度下拉（tip+tpsTip 两处 change 委托、dimSel 拼装、四条 CSS）、speedTabActivate/tpsTabActivate 的 dim 归位规则；「项目」范围恢复当前项目语义（恒时间维度下「全部项目」与「全部」完全等价），标题加「当前项目 ·」前缀；speedSel.dim 结构保留恒 time（会话切换重置兼容） → v273 自适应布局+稀疏可视化+筛选栏重设计（用户 8 张截图 Goal）：①plot 自适应——删 inline 定宽，in-flow spacer（max(240, n*30+12)px）撑宽 + min-width:calc(100% - 30px) 拉满容器，柱组 flex 居中，多桶 spacer 触发横滚，网格/Y 轴/hover 共享同一 plot 坐标系（少柱不再左侧堆积大空白）；②hover 卡锚点改中心相对式 left:calc(50% + off)（plot 宽不再可算）；③today 有效桶 ≤3 且全桶 ≥4 默认聚焦有效时段，图表头「显示完整时间轴/仅显示有记录时段」次级按钮切换（speedSel.focus，切筛选重置，不改统计口径），聚焦带「仅显示有记录时段」提示；④数据覆盖提示 zu-sc-cov：今天「有记录 x/M 小时」、近 7 天「仅 x/7 天有记录」、本月「本月 x/N 天有记录」（分母=已发生时段，不含未来）；⑤筛选工具栏两端对齐——范围组左、时间组右（.zu-sv-time margin-left:auto），删分隔符，与统计卡/图表两缘对齐；⑥左卡精简——删「不含进行中请求」，实时状态并入标题行右侧轻量 zu-sl-sub（不再混入指标间），单柱时峰值/最低/最新 zu-sl-solo 弱化；⑦时间胶囊智能格式——同日「MM/DD HH:MM – HH:MM」、跨日不带年、跨月/跨年两端带年（v270 全带年撤销）；会话切换 speedSel.focus 重置 → v274 完整规格补齐（第二轮 Goal）：①spdChartLayout 统一布局参数入口（colPitch/spacerW/xEvery/valEvery 单处决定）；②柱顶数值稀疏化 valShown——n>8 按 ceil(n/8) 抽稀、首末与悬停柱恒显，16 柱不再数值重叠（hover 卡兜底完整值）；③最新柱 latest 弱化描边；④单点/双点 coverage 追加「暂无足够数据观察趋势」；⑤空态追加「尝试选择更长时间范围」弱化引导；⑥bkeys 截尾仅剩 recent（v273 聚焦改造时已自然移除非 recent 截断，超宽由 spacer 横滚承接不丢桶） → v275 点击偶发关闭+快速切换卡死双修（用户实报）：①tip 原生 pointermove 直接保活（mousemove 处理器 150ms 节流采样盲区让 mouseInBar 停留 false，left-bar 等 force 路径就能关掉交互中 tooltip；pointermove 高频纯赋值绕开节流盲区，总闸始终可靠）；②整卡重编 rAF 合并 scheduleSpeedRebuild——快速来回切 Tab 每次指针按下同步 innerHTML 重建形成重建风暴（卡死体感），同帧多次切换只重建一次，切片沙箱无 rAF 自动退回同步（既有 pointerdown 契约测试不变）；③dispose 取消待合并 rAF；④tipStats.hideSeq 最近 8 次收起原因序列（diag 定性偶发关闭） → v276 撤销 v275 的 rAF 合并（用户实报「会话切到项目卡死」定案）：被遮挡窗口的渲染帧暂停让 rAF 永不执行（本机 ZCode 常被 Chrome/飞书遮挡），切 Tab 排程的重编永不落地、tooltip 僵在旧内容；恢复同步重编（单次 1-3ms 可承受，「重建风暴」为伪问题），保留 v275 的 pointermove 保活与 hideSeq 诊断——遮挡环境一切交互路径必须同步落地 → v277 win-leave 降级可取消宽限（用户实报「点击 tab 仍自动关闭」，hideSeq 铁证 win-leave）：点击 Tab 引发的合成 documentElement mouseleave/瞬态 blur 与真离开在触发点无法区分，tipBoundaryHide 立即 force 关把正常交互打死；降级为 400ms 可取消宽限（cancelTipGrace 共用定时器，pointermove/mousemove 落回即取消），真离开半秒后收；取证 cause 带触发源（blur/edge）与 document.hasFocus 焦点态 → v278 更新失败可见性（issue #247）：updater 检查/安装失败落盘 plugin-update.json lastError（成功即清），⚙ 更新区在非 error 相位显示「上次更新失败」行；hook 链按 HOST_TARGETS 判已装版本 × 宿主 build 未登记适配时强制立即升级 + 会话明确提示（去重），marketplace 刷新重试 + 清单新鲜度校验点名宿主 CLI 静默失败 → v279 速度卡 Header 单行重构（第三轮 UI Goal §3/§5/§7）：标题居左、范围/时间双 Tab 组成连续操作区整体靠右，旧独立筛选行与顶部时间胶囊删除，窄窗 flex-wrap 整体降级不裁剪；统计时间迁至图表标题栏右端轻量文字（calendar 图标 + 紧凑区间 + title 完整 YYYY-MM-DD HH:mm:ss 区间），单位 t/s 紧随图表标题；左卡标题层改「平均速度」+ 小号「历史统计」标识（.zu-sl-k 行删除）；旧图共享类仅 .zu-sv-root/.zu-sv-chart 作用域覆写不受影响 → v280 速度卡横滚位置记忆（用户实报 全部×全部 拉到末尾、关闭 tooltip 再开回到开头）：speedCardV2HTML 根节点携带 data-sv-key=范围|时间 选择键；tpsTip 重编分支（showTpsTip 非冻结路径）重建前从旧 DOM 捕获 .zu-sc-wrap scrollLeft 连同键存储、键同才回填（hover/心跳重编不跳回头部、关闭再开含数据刷新后恢复原位、切范围/时间键变自动归零）；全量 tip drawTip 横滚保留从 keepTop-only 扩展到重开路径并加同键守卫（v232 盲恢复改键同回填，V1 旧图无 zu-sv-root 键按空串键行为不变） → v281 速度卡专项双修（第三轮专项 Goal）：P1 图表列宽稳定——V2 注入样式由仅钳 max-width 改 width+max-width 同值 !important（width=min(960px,calc(100vw-24px))、border-box，压过 .tip 的 width:max-content 与 tpsTip 内联 max-width:520），右图表列 flex:1 1 0 + min-width:0、滚动容器定宽 100%，列宽不再随 plot spacer（n×30+12）与图表头文案反向撑缩，Tab 切换整卡宽度恒定（视口足宽恒 960、窄窗恒 vw-24）；P0 hover 信息卡裁剪根治——卡从 .zu-sv-plot（被 .zu-sc-wrap overflow 滚动容器裁剪）移到 body 级 Portal .zu-sv-portal（模块单例、类名挂 .zusage-quota-tip 复用 boot 旧代清理链、pointer-events:none、z-index 同 tooltip 层 2147483646 且 DOM 序在后），内容经 SPD_PORTAL 侧信道（纯字符串、VM 切片安全、消费即清）由 showTpsTip/zuSpeedChartPick/speedRebuildNow 渲染定位，按柱体 getBoundingClientRect 右上⇒左上⇒钳边避让视口（safe 10px），横向滚动 capture 相重定位（柱滚出 wrap 视口即收），切 Tab/hover=-1/收起路径（hideTpsTip/hideTip）立即隐藏不留孤儿 → v282 档位说明浮层与 Tab 低对比选中专项（第四轮 UI Goal）：底部常驻十档图例整体移除（.zu-sv-legend 包装/分割线/占位全删，整卡高度由 Header+统计主体决定），改由图表标题栏「单位：t/s」旁问号按钮承载——hover/focus 即显不点击、Escape 只收浮层、icon→卡保活（延时收+卡内取消）、柱体 Portal 互斥（双方 show 互收防双层浮窗）、按柱体 rect 下方→上方→钳边定位、body 级浮层脱离 overflow 裁剪 + 显示移尾（B1 同款）+ dispose/热更双清理链；十档内容 spdLegendCardHTML 自 TPS_BANDS 升序生成（颜色/星标/边界与柱体、chip 同源唯一事实），当前档位高亮读按钮 data-sv-band（整卡重编自动更新、空数据不高亮）；Tab 选中态对齐 Hover 低对比背景（去 rgba(87,200,255) 蓝块：on=白 .07/浅色黑 .06 + 发丝内描边区分持续选中，on:hover .09/.07 轻微提亮，字重恒 600 维持 v263 防选中加宽纪律） → v283 档位说明浮层微调（用户反馈）：最大宽度 560→800px（仍钳 calc(100vw-24px)）；显示时左缘对齐宿主 conversation-bottom-dock-transition（composer 容器）而非整窗口/图标锚定，dock 缺失回退图标左缘、越出右缘钳边（与 v282 避让策略叠加） → v284 主卡定宽 800+左缘对齐宿主 dock（用户反馈澄清：上轮 800/dock 对齐实为主 tooltip 而非档位浮层）：V2 注入样式定宽 960→800（width+max-width 同值 !important 不变）；tpsTip 链 showTpsTip 在 V2 卡圤位后左缘改对齐 conversation-bottom-dock-transition（缺失回退 chip 锚定，垂直不变）；全量 tip 链 drawTip 渲染 V2 内容时写 tip.__zuDockLeft、positionTip 每帧消费（rAF 跟随不回退回 chip 锚定），非 V2 内容 null 走原锚定 → v285 速度卡左缘对齐锚元素（用户反馈：热重载后仍居中，指定基于 .it 速度格左侧对齐）：废弃 v284 的 conversation-bottom-dock-transition 宿主类名依赖（实测未生效），改为 positionTip 在 V2 卡（tip.__zuAlignLeft，drawTip 按 .zu-sv-root 置位）时 left=锚元素（.it 格）左缘钳边；tpsTip 紧凑链删 v284 dock 覆盖（原本就是 chip 左缘钳边）；档位说明浮层左缘改对齐主 tooltip 容器左缘（与主卡构图一致，替换 v283 dock 对齐） → v286 图表标题栏精修（第五轮 UI Goal）：标题 600/+2（V2 作用域覆写，不过重）；「单位：t/s」收为轻量「t/s」徽章（弱化前景+微亮底+圆角 5px，视觉优先级 标题＞单位＞档位入口）；问号换专用 Speed Bands SVG（细圆环+三级递增速度柱，currentColor 继承按钮色态，18px 视觉/26px 命中），aria-label 改「查看速度档位说明」；十档浮层/互斥/保活/清理链全部沿用 v282 机制不变
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
@@ -5589,7 +9626,7 @@
        * Electron 拖拽区按几何命中、穿透上层未显式标注 no-drag 的元素——面板 top:8px 时头部（✕ 关闭钮）
        * 正落在条内，真实点击被窗口拖拽吞掉（「点击关闭无效」）。与宿主自家浮层同款修法：
        * 浮层根显式 no-drag 把自身矩形从拖拽区减掉（面板/子代理浮层、tooltip、mp 与压缩全屏遮罩）。 */
-      ".zusage-panel,.tip,.zu-mp-ov,.zu-compact-dlg{-webkit-app-region:no-drag}" +
+      ".zusage-panel,.tip,.zu-mp-ov,.zu-compact-dlg,.zu-rot-pk-dlg{-webkit-app-region:no-drag}" +
       ".zu-sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}" +
       ".panel::-webkit-scrollbar{width:8px}" +
       ".panel::-webkit-scrollbar-thumb{background:var(--color-border,rgba(255,255,255,.14));border-radius:999px}" +
@@ -5752,16 +9789,16 @@
       /* v217 子代理统一浮层（.zu-sub-pop）：悬停预览/点击固定共用同一双栏组件。
        * 外壳=标题栏 54px / 左导航 28% / 右内容 / 底部说明 42px；面板 .panel 基础
        * 之上覆写：清 padding/gap、限宽高、字体走 UI sans（数值列单独 mono）。 */
-      ".panel.zu-sub-pop{width:820px;max-width:calc(100vw - 24px);height:auto;min-height:500px;max-height:calc(100vh - 24px);padding:0;gap:0;border-radius:14px;overflow:hidden;font-family:var(--font-sans,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);font-size:var(--ui-font-size,14px);line-height:1.55}" +
-      ".zu-sph{flex:0 0 auto;display:flex;align-items:center;gap:10px;height:54px;padding:0 18px;border-bottom:1px solid var(--color-border,rgba(255,255,255,.09))}" +
+      ".panel.zu-sub-pop{width:680px;max-width:calc(100vw - 24px);height:auto;min-height:0;max-height:calc(100vh - 24px);padding:0;gap:0;border-radius:14px;overflow:hidden;font-family:var(--font-sans,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);font-size:var(--ui-font-size,14px);line-height:1.55}" +
+      ".zu-sph{flex:0 0 auto;display:flex;align-items:center;gap:10px;height:44px;padding:0 14px;border-bottom:1px solid var(--color-border,rgba(255,255,255,.09))}" +
       ".zu-sph-t{font-size:calc(var(--ui-font-size,14px) + 4px);font-weight:700;color:var(--color-foreground,#f1f2f3)}" +
       ".zu-sph-scope{margin-left:auto;font-size:calc(var(--ui-font-size,14px) - 2px);color:var(--color-foreground-subtle,#a8aaae);border:1px solid var(--color-border,rgba(255,255,255,.16));border-radius:999px;padding:2px 11px;white-space:nowrap}" +
       ".zu-sph-x{display:flex;align-items:center;justify-content:center;background:none;border:0;color:var(--color-foreground-subtle,#a8aaae);cursor:pointer;padding:5px;border-radius:7px}" +
       ".zu-sph-x:hover{color:var(--color-foreground,#f1f2f3);background:var(--color-hover,rgba(255,255,255,.08))}" +
       ".zu-spb{flex:1 1 auto;min-height:0;display:flex}" +
-      ".zu-spnav{flex:0 0 28%;min-width:0;display:flex;flex-direction:column;background:rgba(0,0,0,.16);border-right:1px solid var(--color-border,rgba(255,255,255,.09));padding:10px 0 6px}" +
+      ".zu-spnav{flex:0 0 160px;min-width:0;display:flex;flex-direction:column;background:rgba(0,0,0,.16);border-right:1px solid var(--color-border,rgba(255,255,255,.09));padding:10px 0 6px}" +
       ".zu-light .zu-spnav{background:rgba(0,0,0,.035)}" +
-      ".zu-spnav-item{display:block;width:calc(100% - 16px);margin:1px 8px;padding:7px 10px 7px 11px;text-align:left;background:none;border:0;border-left:2px solid transparent;border-radius:0 8px 8px 0;color:var(--color-foreground-subtle,#a8aaae);font:inherit;font-size:calc(var(--ui-font-size,14px) - 1px);line-height:1.45;cursor:pointer}" +
+      ".zu-spnav-item{display:block;width:calc(100% - 14px);margin:1px 7px;padding:5px 8px 5px 9px;text-align:left;background:none;border:0;border-left:2px solid transparent;border-radius:0 8px 8px 0;color:var(--color-foreground-subtle,#a8aaae);font:inherit;font-size:calc(var(--ui-font-size,14px) - 2px);line-height:1.45;cursor:pointer}" +
       ".zu-spnav-item:hover{color:var(--color-foreground,#f1f2f3);background:var(--color-hover,rgba(255,255,255,.06))}" +
       ".zu-spnav-item.on{color:#b6a1f2;background:rgba(182,161,242,.14);border-left-color:#b6a1f2;font-weight:600}" +
       ".zu-light .zu-spnav-item.on{color:#6f54c8;background:rgba(111,84,200,.10);border-left-color:#6f54c8}" +
@@ -5769,42 +9806,37 @@
       ".zu-spnav-label{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;overflow-wrap:anywhere;word-break:break-word}" +
       ".zu-spnav-live{display:block;font-size:calc(var(--ui-font-size,14px) - 2px);font-weight:400;color:#3ecf8e;margin-top:1px}" +
       ".zu-light .zu-spnav-live{color:#0c8a63}" +
-      ".zu-spnav-h{padding:9px 19px 3px;font-size:calc(var(--ui-font-size,14px) - 2px);letter-spacing:.06em;color:var(--color-foreground-subtlest,#6b7484)}" +
+      ".zu-spnav-h{padding:8px 16px 2px;font-size:calc(var(--ui-font-size,14px) - 2px);letter-spacing:.06em;color:var(--color-foreground-subtlest,#6b7484)}" +
       ".zu-spnav-list{flex:1 1 auto;min-height:0;overflow-y:auto;padding-bottom:4px}" +
-      ".zu-spbody{flex:1 1 auto;min-width:0;overflow-y:auto;max-height:calc(100vh - 120px);padding:18px 20px}" +
+      ".zu-spbody{flex:1 1 auto;min-width:0;overflow-y:auto;max-height:calc(100vh - 100px);padding:12px 14px}" +
       ".zu-spnav-list::-webkit-scrollbar,.zu-spbody::-webkit-scrollbar{width:8px}" +
       ".zu-spnav-list::-webkit-scrollbar-thumb,.zu-spbody::-webkit-scrollbar-thumb{background:var(--color-border,rgba(255,255,255,.14));border-radius:999px}" +
-      ".zu-spview-head{display:flex;align-items:baseline;gap:12px;margin-bottom:13px}" +
-      ".zu-spview-head h3{margin:0;font-size:calc(var(--ui-font-size,14px) + 4px);font-weight:700;color:var(--color-foreground,#f1f2f3);min-width:0;overflow-wrap:anywhere}" +
+      ".zu-spview-head{display:flex;align-items:baseline;gap:10px;margin-bottom:10px}" +
+      ".zu-spview-head h3{margin:0;font-size:calc(var(--ui-font-size,14px) + 2px);font-weight:700;color:var(--color-foreground,#f1f2f3);min-width:0;overflow-wrap:anywhere}" +
       ".zu-spsub{color:var(--color-foreground-subtle,#a8aaae);font-size:calc(var(--ui-font-size,14px) - 2px);white-space:nowrap;flex:0 0 auto}" +
       ".zu-spstate{margin-left:auto;display:flex;align-items:center;gap:7px;color:var(--color-foreground-subtle,#a8aaae);font-size:calc(var(--ui-font-size,14px) - 2px);white-space:nowrap;flex:0 0 auto}" +
       ".zu-spstate .dot{width:7px;height:7px;border-radius:50%;background:var(--color-foreground-subtlest,#6b7484)}" +
       ".zu-spstate.run .dot{background:#3ecf8e}" +
       ".zu-light .zu-spstate.run .dot{background:#0c8a63}" +
-      ".zu-sp-kpis3{display:grid;grid-template-columns:1fr 1fr 1fr;background:var(--color-surface,rgba(255,255,255,.035));border:1px solid var(--color-border,rgba(255,255,255,.07));border-radius:10px;padding:11px 0;margin-bottom:11px}" +
-      ".zu-sp-kpi{min-width:0;padding:2px 18px}" +
+      ".zu-sp-kpis3{display:grid;grid-template-columns:1fr 1fr 1fr;background:var(--color-surface,rgba(255,255,255,.035));border:1px solid var(--color-border,rgba(255,255,255,.07));border-radius:8px;padding:8px 0;margin-bottom:8px}" +
+      ".zu-sp-kpi{min-width:0;padding:2px 12px}" +
       ".zu-sp-kpi + .zu-sp-kpi{border-left:1px solid var(--color-border,rgba(255,255,255,.08))}" +
-      ".zu-sp-kpi .k{font-size:calc(var(--ui-font-size,14px) - 2px);color:var(--color-foreground-subtle,#a8aaae);margin-bottom:2px;display:flex;align-items:center;gap:5px}" +
-      ".zu-sp-kpi .v{font-family:var(--font-mono,Consolas,'Microsoft YaHei UI',monospace);font-variant-numeric:tabular-nums;font-size:calc(var(--ui-font-size,14px) + 14px);font-weight:700;color:var(--color-foreground,#f1f2f3);line-height:1.3}" +
-      ".zu-sp-kpi .v small{font-size:calc(var(--ui-font-size,14px) + 1px);font-weight:600;color:var(--color-foreground-subtle,#a8aaae);margin-left:4px}" +
-      ".zu-sp-kpi .u{font-size:calc(var(--ui-font-size,14px) - 2px);color:var(--color-foreground-subtlest,#6b7484);margin-top:2px}" +
+      ".zu-sp-kpi .k{font-size:calc(var(--ui-font-size,14px) - 3px);color:var(--color-foreground-subtle,#a8aaae);margin-bottom:2px;display:flex;align-items:center;gap:4px;min-width:0;white-space:nowrap}" +".zu-sp-kpi .k svg{flex:none;opacity:.85}" +".zu-sp-kpi .k .hit{color:#4ade80;font-weight:600;font-size:calc(var(--ui-font-size,14px) - 3px);white-space:nowrap}" +
+      ".zu-sp-kpi .v{font-family:var(--font-mono,Consolas,'Microsoft YaHei UI',monospace);font-variant-numeric:tabular-nums;font-size:calc(var(--ui-font-size,14px) + 8px);font-weight:700;color:var(--color-foreground,#f1f2f3);line-height:1.3}" +
+      ".zu-sp-kpi .v small{font-size:calc(var(--ui-font-size,14px) - 2px);font-weight:600;color:var(--color-foreground-subtle,#a8aaae);margin-left:4px}" +".zu-sp-kpis3--mid .zu-sp-kpi .v{font-size:calc(var(--ui-font-size,14px) + 6px)}" +".zu-sp-kpis3--duo{grid-template-columns:1fr 1fr}" +".zu-sp-kpis3--duo .zu-sp-kpi:only-child{grid-column:1/-1;border-left:0}" +
+      ".zu-sp-kpi .u{font-size:calc(var(--ui-font-size,14px) - 3px);color:var(--color-foreground-subtlest,#6b7484);margin-top:2px}" +
       ".zu-sp-kpi .u .hit{color:#4ade80;font-weight:600}" +
-      ".zu-sp-usage{background:none;border:0;border-radius:0;padding:4px 0}" +
-      ".zu-sp-usage .zu-sp-kpi:first-child{padding-left:2px}" +
-      ".zu-sp-usage .zu-sp-kpi .v{font-size:calc(var(--ui-font-size,14px) + 8px)}" +
-      ".zu-sp-rate{display:flex;align-items:baseline;gap:8px;padding:4px 2px 0;color:var(--color-foreground-subtle,#a8aaae)}" +
-      ".zu-sp-rate b{font-family:var(--font-mono,Consolas,'Microsoft YaHei UI',monospace);font-variant-numeric:tabular-nums;font-size:calc(var(--ui-font-size,14px) + 2px);font-weight:700}" +
-      ".zu-sp-models{margin-top:12px;border-top:1px solid var(--color-border,rgba(255,255,255,.09));padding-top:12px}" +
-      ".zu-sp-models h4{margin:0 0 9px;font-size:calc(var(--ui-font-size,14px) + 1px);font-weight:700;color:var(--color-foreground,#f1f2f3)}" +
+      ".zu-sp-models{margin-top:10px;border-top:1px solid var(--color-border,rgba(255,255,255,.09));padding-top:10px}" +
+      ".zu-sp-models h4{margin:0 0 7px;font-size:var(--ui-font-size,14px);font-weight:700;color:var(--color-foreground,#f1f2f3)}" +
       ".zu-sp-models table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}" +
-      ".zu-sp-models thead th{background:none;text-align:right;font-weight:500;color:var(--color-foreground-subtle,#a8aaae);font-size:calc(var(--ui-font-size,14px) - 1px);padding:0 10px 7px;border-bottom:1px solid var(--color-border,rgba(255,255,255,.14));white-space:nowrap}" +
+      ".zu-sp-models thead th{background:none;text-align:right;font-weight:500;color:var(--color-foreground-subtle,#a8aaae);font-size:calc(var(--ui-font-size,14px) - 3px);padding:0 6px 5px;border-bottom:1px solid var(--color-border,rgba(255,255,255,.14));white-space:nowrap}" +
       ".zu-sp-models thead th:first-child{text-align:left;padding-left:2px}" +
-      ".zu-sp-models td{padding:7px 10px;border-top:1px solid var(--color-border,rgba(255,255,255,.08));text-align:right;color:var(--color-foreground,#e6e9ef);font-family:var(--font-mono,Consolas,'Microsoft YaHei UI',monospace);font-size:var(--ui-font-size,14px);white-space:nowrap}" +
+      ".zu-sp-models td{padding:4px 6px;border-top:1px solid var(--color-border,rgba(255,255,255,.08));text-align:right;color:var(--color-foreground,#e6e9ef);font-family:var(--font-mono,Consolas,'Microsoft YaHei UI',monospace);font-size:calc(var(--ui-font-size,14px) - 1px);white-space:nowrap}" +
       ".zu-sp-models tr:first-child td{border-top:0}" +
       ".zu-sp-models td:first-child{text-align:left;padding-left:2px;font-family:inherit;color:var(--color-foreground,#f1f2f3);white-space:normal;overflow-wrap:anywhere}" +
-      ".zu-sp-meta{display:flex;flex-wrap:wrap;gap:4px 16px;align-items:baseline;margin-top:12px;padding-top:12px;border-top:1px solid var(--color-border,rgba(255,255,255,.09));color:var(--color-foreground-subtle,#a8aaae);font-size:calc(var(--ui-font-size,14px) - 1px)}" +
+      ".zu-sp-meta{display:flex;flex-wrap:wrap;gap:4px 16px;align-items:baseline;margin-top:10px;padding-top:10px;border-top:1px solid var(--color-border,rgba(255,255,255,.09));color:var(--color-foreground-subtle,#a8aaae);font-size:calc(var(--ui-font-size,14px) - 3px)}" +
       ".zu-sp-meta b{font-family:var(--font-mono,Consolas,'Microsoft YaHei UI',monospace);font-variant-numeric:tabular-nums;font-weight:600;color:var(--color-foreground,#e6e9ef)}" +
-      ".zu-spf{flex:0 0 auto;display:flex;align-items:center;gap:8px;height:42px;padding:0 18px;border-top:1px solid var(--color-border,rgba(255,255,255,.09));color:var(--color-foreground-subtle,#a8aaae);font-size:calc(var(--ui-font-size,14px) - 1px)}" +
+      ".zu-spf{flex:0 0 auto;display:flex;align-items:center;gap:8px;min-height:34px;padding:8px 14px;border-top:1px solid var(--color-border,rgba(255,255,255,.09));color:var(--color-foreground-subtle,#a8aaae);font-size:calc(var(--ui-font-size,14px) - 1px)}" +
       "@media (max-width:700px){.zu-spb{flex-direction:column}.zu-spnav{flex:0 0 auto;max-height:150px;border-right:0;border-bottom:1px solid var(--color-border,rgba(255,255,255,.09))}.zu-spnav-list{overflow-y:auto}.zu-spbody{flex:1 1 auto}}" +
       /* 自绘 tooltip（v31）：向上弹出（原生 title 方向不可控且会被窗口下缘遮挡），
        * 支持多 tab；white-space:pre-line 保留数据里的 \n 换行。
@@ -5971,7 +10003,13 @@
       ".zu-legend-item .dot-c{background:currentColor}" +
       ".zu-legend-dot.zu-ultra{display:none;background:linear-gradient(100deg,#60a5fa 0%,#a78bfa 50%,#c084fc 100%)}" +
       ".zu-legend-dot.zu-ultra::before{content:none}" +
-      /* v246 用户规格：图例 Ultra 档只留文字，色点整体隐藏；渐变/clip 规则保留供恢复 */
+      /* v246 用户规格：图例 Ultra 档只留文字，色点整体隐藏；渐变/clip 规则保留供恢复。
+       * 档位说明弹层例外（2026-11-07 用户规格）：色点 visibility:hidden 占位，
+       * 「≥2000」与其他项文字同一起点（display:none 会左移 12px 破坏列对齐）。 */
+      ".zu-sv-li .zu-legend-dot.zu-ultra{display:inline-block;visibility:hidden}" +
+      /* Ultra 星点是 .zu-ultra::before 伪元素（v127 档位体系），弹层内一并去除
+       * （2026-11-07 用户规格：≥2000 前不带 logo）；文字起点仍由上方占位规则对齐。 */
+      ".zu-sv-li b.zu-ultra::before{content:none}" +
       /* ---------- v254 速度 Tooltip 重构样式（仅 .zu-sv-root 作用域，不碰旧图） ---------- */
       ".zu-sv-root{display:flex;flex-direction:column;gap:0}" +
       /* v278：单行 Header——标题居左、双 Tab 组整体靠右（filter margin-left:auto）；
@@ -6007,45 +10045,66 @@
       /* v274：左卡按内容自然高，不再强制撑满图表高度（§11.2） */
       /* v281 P1：右图表列弹性占满剩余宽度且 min-width:0——列宽只由 tip 定宽决定，
        * 不再被 plot max-content/图表头文案反向撑缩（宽随 Tab 跳动的根因） */
-      ".zu-sv-root .zu-speed-body{gap:12px;align-items:flex-start}" +
+      /* 左卡撑满 body 高度（2026-11-07 用户规格，收回 v274「自然高」）：
+       * zu-sl-body flex:1 吸收富余高，主数字居中、峰值/最低/最新钉底 */
+      ".zu-sv-root .zu-speed-body{gap:12px;align-items:stretch;flex:1;min-height:0}" +
+      /* v292：整卡定高 315 后图表列纵向布局——head 自然高、图表区吃剩余 */
+      ".zu-sv-chart{display:flex;flex-direction:column;min-height:0;" +
+        "border:1px solid var(--color-popover-border,rgba(255,255,255,.14));" +
+        "border-radius:12px;padding:10px 12px;box-sizing:border-box}" +
+      ".zu-light .zu-sv-chart{border-color:rgba(15,23,42,.14)}" +
+      ".zu-sv-chart .zu-sc-wrap{flex:1;min-height:0;padding:5px 0;box-sizing:border-box}" +
       ".zu-sv-root .zu-speed-chart{flex:1 1 0;min-width:0;max-width:100%}" +
-      ".zu-sv-root .zu-sv-left{flex:0 0 236px;gap:0}" +
+      ".zu-sv-root .zu-sv-left{flex:0 0 210px;gap:0}" +
+      /* v295.1（定高 300）：左卡内容紧凑化——主数字 +22px 会让 stats 行溢出卡底
+       * 被 tip 裁切，降至 +12px 并收紧间距 */
+      ".zu-sv-root .zu-sv-left .zu-sl-main{font-size:calc(var(--ui-font-size,14px) + 12px)}" +
+      ".zu-sv-root .zu-sv-left .zu-sl-body{gap:6px}" +
       ".zu-sv-root .zu-sv-left .zu-sl-main{font-size:calc(var(--ui-font-size,14px) + 22px)}" +
       /* v278：左卡标题升为「平均速度」（.zu-sl-title 是旧卡八态共用类，只在本卡
        * 作用域覆写），「历史统计」降为小号标识；实时状态仍为行尾轻量标识 */
       ".zu-sv-root .zu-sl-title{font-weight:600;font-size:calc(var(--ui-font-size,14px) - 1px);color:var(--color-foreground,#e9edf4)}" +
-      ".zu-sv-root .zu-sl-hist{flex:0 0 auto;font-weight:400;font-size:calc(var(--ui-font-size,14px) - 3px);color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
       ".zu-sv-root .zu-sl-sub{margin-left:6px;font-weight:400;font-size:calc(var(--ui-font-size,14px) - 3px);color:var(--color-tooltip-tag-foreground,#a6a6a6);opacity:.85}" +
       ".zu-sv-root .zu-sv-left .zu-sl-body{justify-content:center}" +
-      ".zu-sv-chart .zu-sc-head{margin-left:30px;flex-wrap:wrap;row-gap:2px}" +
+      /* 标题栏贴图表左缘（Y 轴刻度同侧，不再缩进 30px）；基类 baseline 改 center，
+       * 标题/单位徽章/档位按钮/时间文字垂直居中（基类为旧图保留不动）。 */
+      ".zu-sv-chart .zu-sc-head{margin-left:0;align-items:center;flex-wrap:wrap;row-gap:2px}" +
             /* v286：标题 600/+2（不过重）；单位「t/s」轻量徽章（弱化前景+微亮底，
        * 视觉优先级 标题＞单位＞档位入口）；问号换 Speed Bands SVG，命中区 26px。 */
       ".zu-sv-chart .zu-sc-title{font-weight:600;font-size:calc(var(--ui-font-size,14px) + 2px);line-height:1.3}" +
       ".zu-sv-chart .zu-sc-unit{margin-left:9px;background:rgba(255,255,255,.05);border-radius:5px;padding:2px 7px;" +
         "font-size:calc(var(--ui-font-size,14px) - 3px);color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
       ".zu-light .zu-sv-chart .zu-sc-unit{background:rgba(0,0,0,.05)}" +
-      ".zu-sv-plot{position:relative;height:176px;margin-left:30px;min-width:calc(100% - 30px);width:max-content;max-width:none;box-sizing:content-box}" +
+      /* min-width 取 max(300px, 100%-30px)：宽窗拉满图表列（2026-11-07 用户规格，
+       * 少柱不再缩在左侧 300px 死区——原 calc 与后方 300px 兜底同特异性分层，
+       * 后者按序胜出把拉宽压死，现合并单点声明）；窄窗回 300px 横滚兜底 */
+      ".zu-sv-plotrow{display:flex;align-items:stretch;flex:1;min-height:0;min-width:0}" +
+      /* v295.18（用户规格）：Y 轴刻度列固定（移出滚动容器，宽 30px），同「全部」
+       * 热力图左侧星期列模式；plot 不再留 30px 缩进 */
+      ".zu-sv-gutcol{flex:0 0 30px;position:relative;padding:5px 0;box-sizing:border-box}" +
+      ".zu-sv-gutcol .zu-sc-gutter{position:absolute;left:0;top:5px;bottom:33px;width:30px}" +
+      /* v303.3：-30px 右缩进移除——v295.18 刻度列已外移出滚动容器（兄弟节点），
+       * 该缩进残留使柱区永远差 30px 不到右缘（用户实报红框） */
+      ".zu-sv-plot{position:relative;height:100%;margin-left:0;min-width:max(300px,100%);width:max-content;max-width:none;box-sizing:content-box}" +
       ".zu-sv-spacer{display:block;height:0}" +
-      ".zu-sc-cov{font-size:calc(var(--ui-font-size,14px) - 4px);color:var(--color-tooltip-tag-foreground,#a6a6a6);white-space:nowrap}" +
-      ".zu-sv-focus{appearance:none;border:1px solid var(--color-popover-border,rgba(255,255,255,.16));background:transparent;color:var(--color-tooltip-tag-foreground,#a6a6a6);" +
-        "font-family:inherit;font-size:calc(var(--ui-font-size,14px) - 4px);line-height:1.3;padding:2px 8px;border-radius:6px;cursor:pointer;white-space:nowrap}" +
-      ".zu-sv-focus:hover{color:var(--color-foreground,#e9edf4);background:rgba(255,255,255,.06)}" +
-      ".zu-light .zu-sv-focus:hover{background:rgba(0,0,0,.05)}" +
-      ".zu-sv-focus:focus-visible{outline:2px solid var(--color-brand,#a3cfff);outline-offset:1px}" +
-      ".zu-sv-plot .zu-sc-grid{height:148px}" +
-      ".zu-sv-plot .zu-sc-gutter{height:148px}" +
-      ".zu-sv-bars{position:absolute;inset:0;display:flex;align-items:flex-end;justify-content:center;gap:0}" +
+      /* 覆盖提示 .zu-sc-cov 与聚焦切换 .zu-sv-focus 样式随 2026-11-07 文案批一并删除 */
+      ".zu-sv-plot .zu-sc-grid{height:calc(100% - 28px)}" +
+      ".zu-sv-plot .zu-sc-gutter{height:calc(100% - 28px)}" +
+      /* 柱组左对齐（2026-11-08 用户规格，收回 v273 少柱居中）：贴 Y 轴起排 */
+      ".zu-sv-bars{position:absolute;inset:0;display:flex;align-items:flex-end;justify-content:space-between;gap:0}" +
       /* 细柱定宽：少量柱不拉伸、数据多时横滚，柱组居中 */
-      ".zu-sv-bars .zu-sc-col{flex:0 0 30px;height:176px}" +
-      ".zu-sv-bars .zu-sc-vz{height:148px;flex:0 0 148px}" +
+      ".zu-sv-bars .zu-sc-col{flex:0 0 24px;height:100%}" +
+      ".zu-sv-bars .zu-sc-vz{flex:1 1 auto;height:auto}" +
       ".zu-sv-bars .zu-sc-bar{width:14px;max-width:14px}" +
-      ".zu-sv-bars .zu-sc-x{height:28px;flex:0 0 28px;width:30px;max-width:30px;overflow:hidden;" +
-        "justify-content:flex-start;align-items:flex-start;font-size:9px}" +
-      ".zu-sv-bars .zu-sc-x b{display:block;width:100%;overflow:hidden;text-overflow:clip;text-align:center}" +
+      ".zu-sv-bars .zu-sc-x{height:16px;flex:0 0 16px;width:24px;max-width:24px;" +
+        "overflow:visible;justify-content:flex-start;align-items:flex-end;font-size:7px}" +
+      ".zu-sv-bars .zu-sc-x b{display:block;width:100%;overflow:hidden;text-overflow:clip;text-align:center;line-height:14px}" +
       ".zu-sv-bars .zu-sc-col.empty .zu-sc-bar{background:transparent;box-shadow:none}" +
       ".zu-sv-bars .zu-sc-col.cur .zu-sc-val{font-weight:700}" +
       ".zu-sv-chart .zu-sc-wrap{overflow-x:auto;overflow-y:hidden;width:100%;min-width:0;max-width:100%}" +
-      ".zu-sv-plot{min-width:300px}" +
+      /* v290 隐藏横向滚动条（2026-11-08 用户规格）：V2 作用域 only（旧图共享类不动），
+       * 滚轮横滚（同批 wheel 委托）不受隐藏影响；条带 8px 视觉错位随之消失 */
+      ".zu-sv-chart .zu-sc-wrap::-webkit-scrollbar{display:none}" +
       /* v281 P0：hover 五字段信息卡改宿主于 body 级 Portal（.zu-sv-portal，
        * pointer-events:none 纯展示不拦鼠标；表面样式由 .zu-sv-card 自带，
        * 定位由 spdHoverPortalPlace 按柱体 rect 避让视口边界）。
@@ -6064,7 +10123,7 @@
       ".zu-sv-cval{font-size:12px!important;font-weight:700!important}" +
       ".zu-sv-off{opacity:.75}" +
       ".zu-sv-partial{font-style:normal;font-weight:400;opacity:.75;margin-left:3px}" +
-      ".zu-sv-empty{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:4px 8px;height:176px;color:var(--color-tooltip-tag-foreground,#a6a6a6);" +
+      ".zu-sv-empty{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:4px 8px;height:100%;color:var(--color-tooltip-tag-foreground,#a6a6a6);" +
         "font-size:calc(var(--ui-font-size,14px) - 1px)}" +
       ".zu-sv-empty-hint{font-size:calc(var(--ui-font-size,14px) - 3px);opacity:.8}" +
       ".zu-sv-bars .zu-sc-col.latest .zu-sc-bar{box-shadow:0 0 0 1.5px var(--color-popover-border,rgba(255,255,255,.28))}" +
@@ -6079,17 +10138,125 @@
       ".zu-sv-legend-btn:hover,.zu-sv-legend-btn:focus-visible{color:var(--color-foreground,#e9edf4);background:rgba(255,255,255,.06)}" +
       ".zu-light .zu-sv-legend-btn:hover,.zu-light .zu-sv-legend-btn:focus-visible{background:rgba(0,0,0,.05)}" +
       ".zu-sv-legend-btn:focus-visible{outline:2px solid var(--color-brand,#a3cfff);outline-offset:1px}" +
-      ".zu-sv-legend-tip{max-width:min(800px,calc(100vw - 24px));white-space:normal;z-index:2147483646}" +
+      /* 2026-11-07 用户规格：宽度自适应内容（.tip 基类 max-content 生效），
+       * 仅留窄窗安全钳；替代此前的定宽 430 与更早的 max-width 800 */
+      ".zu-sv-legend-tip{max-width:calc(100vw - 24px);white-space:normal;z-index:2147483646}" +
       ".zu-sv-lg-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:8px}" +
       ".zu-sv-lg-title{font-weight:600;font-size:calc(var(--ui-font-size,14px) - 1px)}" +
       ".zu-sv-lg-sub{font-size:calc(var(--ui-font-size,14px) - 3px);color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
-      ".zu-sv-lg-items{display:grid;grid-template-columns:repeat(5,auto);gap:8px 12px;justify-content:start;align-items:center}" +
+      ".zu-sv-lg-items{display:grid;grid-template-columns:repeat(3,auto);gap:8px 12px;justify-content:start;align-items:center}" +
       ".zu-sv-li{display:flex;align-items:center;gap:3px;padding:1px 4px;border-radius:7px;border:1px solid transparent}" +
       ".zu-sv-li.cur{border-color:var(--color-popover-border,rgba(255,255,255,.35));background:rgba(255,255,255,.05)}" +
       ".zu-light .zu-sv-li.cur{background:rgba(0,0,0,.05)}" +
       ".zu-sv-li b{font-family:var(--font-mono,Consolas,Menlo,monospace);font-variant-numeric:tabular-nums;" +
         "font-weight:600;font-size:calc(var(--ui-font-size,14px) - 3px);white-space:nowrap}" +
       "@media (max-width:780px){.zu-sv-root .zu-sv-left{flex:0 0 190px}}" +
+      /* ---------- v291 热力图（本月月历 / 全部历史 GitHub 风格） ----------
+       * 颜色=档位类 currentColor（与柱体/图例唯一事实源 TPS_BANDS 同源）：历史格
+       * 实底（GitHub 风格）；月历格 v294 起低饱和混色+左色条（见下方 v294 注释块）。
+       * 无记录=中性灰（不等于零速）、未来=弱日期号无速度、当日=柔和描边。
+       * 历史网格 --zu-hm-w 列（列=周）撑出横滚，月历恒 7 列 1fr 平分 4~6 行。 */
+      ".zu-hm-sub{margin-left:8px;font-size:calc(var(--ui-font-size,14px) - 3px);font-weight:400;color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      /* v294 月历格专项（用户 Goal）：①低饱和档位底=档位色 22% 混入卡片色（不再纯色
+       * 填满），档位强调改左侧 3px 色条；②文字统一吃 tooltip 前景（高对比），绝不吃
+       * currentColor（亮底浅字对比不足的根因）；③上下 space-between 布局（日期左上/
+       * 速度左下），line-height 1.1~1.15 + min-height:0——越界根因是 flex 子项默认
+       * min-height:auto 不可低于内容高 + 默认行高过大，矮行时内容溢出格底；④容器查询
+       * 三档字号（阈值按 7 列+6×8px gap 折算格宽 90/56px），container-type 只锁 inline
+       * 轴，1fr 行高 flex 链不受影响。 */
+      ".zu-hm-cal{flex:1;display:flex;flex-direction:column;min-width:0;min-height:0;" +
+        "container-type:inline-size;container-name:hmcal}" +
+      ".zu-hm-month .zu-sc-wrap{display:flex;flex-direction:column}" +
+      ".zu-hm-week{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:8px;margin-bottom:5px;" +
+        "font-size:calc(var(--ui-font-size,14px) - 5px);color:var(--color-tooltip-tag-foreground,#a6a6a6);text-align:center}" +
+      ".zu-hm-grid{display:grid;gap:6px}" +
+      ".zu-hm-grid--mon{gap:8px}" +
+      /* 行高 1fr 自适应（v292 定高 315）：行数由 builder 经 --zu-hm-rows 携带 */
+      ".zu-hm-grid--mon{min-height:0;grid-template-columns:repeat(7,minmax(0,1fr));" +
+        "gap:8px}" +
+      /* v295（用户规格）：6 列 × 行 1fr 均分铺满全卡（不留空隙、不再要求正方）；
+       * 容器查询阈值随 7 列折算（格宽 90/56 → 容器 678/440），300 小卡常态=紧凑
+       * 以下（格 ~41px），格内数字隐藏、hover 兜底完整值 */
+      ".zu-hm-grid--mon{flex:1;min-height:0;grid-template-rows:repeat(var(--zu-hm-rows,5),minmax(0,1fr))}" +
+      ".zu-hm-pad{display:block;min-height:1px}" +
+      /* 格基础：上下两端对齐、min-width:0、border-box；基础不声明 color（档位类让位
+       * 教训 v291）；无记录=中性弱底、未来=更低对比度底（虚线框按规格移除降噪） */
+      ".zu-hm-cell{position:relative;display:flex;flex-direction:column;justify-content:space-between;" +
+        "min-width:0;min-height:0;box-sizing:border-box;border-radius:8px;" +
+        "padding:var(--hm-pady,4px) var(--hm-padx,6px);" +
+        "background:rgba(255,255,255,.045)}" +
+      ".zu-light .zu-hm-cell{background:rgba(0,0,0,.04)}" +
+      ".zu-hm-cell.void{color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      ".zu-hm-cell.fut{color:var(--color-tooltip-tag-foreground,#a6a6a6);background:rgba(255,255,255,.02)}" +
+      ".zu-light .zu-hm-cell.fut{background:rgba(0,0,0,.02)}" +
+      /* 日期（辅助信息）：11px 级/500/1.15，无记录与未来格靠 color 弱化 */
+      ".zu-hm-cell .zu-hm-d{flex:0 0 auto;font-size:var(--hm-df,10px);font-weight:500;line-height:1;" +
+        "white-space:nowrap;color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      /* 速度：16px 级/600/1.1/tabular-nums，高对比前景、左对齐、底部留 padding */
+      ".zu-hm-cell .zu-hm-v{flex:0 0 auto;min-height:0;font-weight:600;line-height:1;" +
+        "font-variant-numeric:tabular-nums;text-align:left;white-space:nowrap;" +
+        "font-size:var(--hm-f4,14px);color:var(--color-tooltip-foreground,#fff)}" +
+      ".zu-hm-cell.len5 .zu-hm-v{font-size:var(--hm-f5,13px)}" +
+      ".zu-hm-cell.len6 .zu-hm-v{font-size:var(--hm-f6,12px)}" +
+      /* 数据格：档位色 22% 混卡片底（v294.1 用户拍板：左色条移除，靠底色色相辨档） */
+      ".zu-hm-grid--mon .zu-hm-cell.data{background:color-mix(in srgb,currentColor 22%,var(--color-popover,#1c212b))}" +
+      ".zu-hm-grid--mon .zu-hm-cell.data .zu-hm-d{color:var(--color-tooltip-foreground,#e9edf4);opacity:.75}" +
+      /* 当日：1px 柔和半透明主题蓝内描边（不用纯白粗框）；hover：轻提亮；
+       * cur（委托契约类）内描边克制，today+cur 组合不叠出发光 */
+      /* v297.1（用户拍板）：今日格不加描边——背景在自身基础上加深 10%
+       * （数据格 22%→32% 档位混色；无数据格中性灰加深） */
+      ".zu-hm-cell.data.zu-hm-today{background:color-mix(in srgb,currentColor 32%,var(--color-popover,#1c212b))}" +
+      ".zu-hm-cell.void.zu-hm-today{background:color-mix(in srgb,var(--color-tooltip-tag-foreground,#a6a6a6) 14%,var(--color-popover,#1c212b))}" +
+      ".zu-hm-cell:hover{filter:brightness(1.07)}" +
+      /* v294.1（用户拍板）：hover 不加边框强调——委托契约类 .cur 保留（JS 状态机），
+       * 仅 today 自身的柔和内描边在悬停时保持 */
+      ".zu-hm-cell:focus-visible{outline:2px solid var(--color-brand,#a3cfff);outline-offset:1px}" +
+      /* Ultra 档抑制（QA review）：全局 .zu-ultra 的 -webkit-text-fill-color:transparent
+       * 是继承属性，会把格内文字染透明；全局 ✦ 伪元素会进历史 20px 小格。月历格
+       * 左色条 ::before 已被 (0,4,0) 规则覆写不受影响 */
+      ".zu-hm-cell{-webkit-text-fill-color:initial}" +
+      ".zu-hm-cell::before{content:none}" +
+      /* v297：旧「容器查询三档 + tight 隐藏数字」整体移除——离散档位无法满足
+       * 「最大可容纳字号」要求，改由 builder 按实测格尺寸逐长度桶计算字号
+       * （6~14px、0.5px 步进），极矮行压日期字号与 padding、不隐藏数字 */      ".zu-hm-note{flex:0 0 auto;margin-top:8px;font-size:calc(var(--ui-font-size,14px) - 3px);color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      ".zu-hm-outer{display:flex;gap:6px;min-width:0;flex:1;min-height:0;container-type:inline-size;container-name:hmhist}" +
+      /* v296：方格大小/间距随容器宽自适应（窄容器缩格缩距，超长部分横向滚动） */
+      "@container hmhist (max-width:560px){.zu-hm-grid--hist{gap:2px}.zu-hm-grid--hist .zu-hm-cell{max-width:16px;border-radius:2px}}" +
+      ".zu-hm-wds{display:grid;grid-template-rows:repeat(7,1fr);gap:3px;padding-top:34px;flex:0 0 auto;" +
+        "font-size:calc(var(--ui-font-size,14px) - 6px);color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      ".zu-hm-wds span{display:flex;align-items:center}" +
+      ".zu-hm-hist .zu-sc-wrap{width:100%;min-width:0;display:flex;flex-direction:column}" +
+      ".zu-hm-scroll{min-width:100%;flex:1;display:flex;flex-direction:column;min-height:0}" +
+      ".zu-hm-months{display:grid;grid-template-columns:repeat(var(--zu-hm-w,1),minmax(12px,1fr));" +
+        "grid-template-rows:14px;gap:3px;width:100%;min-width:calc(var(--zu-hm-w,1)*15px);" +
+        "margin-bottom:5px;align-items:end}" +
+      ".zu-hm-ml{grid-row:1;white-space:nowrap;font-size:calc(var(--ui-font-size,14px) - 5px);line-height:14px;" +
+        "color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      /* 列头日期数字行（v293）：每列周首日号，与格子列中心对齐 */
+      ".zu-hm-days{display:grid;grid-template-columns:repeat(var(--zu-hm-w,1),minmax(12px,1fr));" +
+        "grid-template-rows:12px;gap:3px;width:100%;min-width:calc(var(--zu-hm-w,1)*15px);" +
+        "height:12px;margin-bottom:3px}" +
+      ".zu-hm-dn{grid-row:1;text-align:center;font-variant-numeric:tabular-nums;" +
+        "font-size:calc(var(--ui-font-size,14px) - 6px);line-height:12px;" +
+        "color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      /* v292 复验抓出的致命布局错（v291 起即错）：历史网格是「一列=一周、7 行=星期」，
+ * 必须 column-major——此前用 template-columns:repeat(周数) 的 row-major 实际把
+ * 每行排成 N 个连续日期（62 周时形似 GitHub 网格骗过目检，5 周短历史才暴露）。 */
+      "/* 7 行 1fr 平分图表卡剩余高度（v293 用户规格：铺满、不超高） */" +
+      ".zu-hm-grid--hist{grid-auto-flow:column;flex:1;min-height:0;" +
+        "grid-template-rows:repeat(7,minmax(0,1fr));" +
+        "grid-auto-columns:minmax(12px,1fr);gap:3px;" +
+        "width:100%;min-width:calc(var(--zu-hm-w,1)*15px)}" +
+      ".zu-hm-grid--hist .zu-hm-cell{border-radius:4px;padding:0;max-width:20px;width:100%;justify-self:center}" +
+      ".zu-hm-grid--hist .zu-hm-cell.data{background:currentColor}" +
+      ".zu-hm-grid--hist .zu-hm-cell.void{background:#484848}" +
+      ".zu-hm-grid--hist .zu-hm-cell.zu-hm-today{box-shadow:inset 0 0 0 1.5px var(--color-popover-border,rgba(255,255,255,.4))}" +
+      /* Ultra 档历史格显式渐变底（background-clip:text 全局规则不适用于色块盒子）；
+       * 月历格 v294 起改低饱和混色+左色条（::before 渐变覆写在上方月历段） */
+      ".zu-hm-grid--hist .zu-hm-cell.data.zu-ultra{" +
+        "background:linear-gradient(100deg,#60a5fa 0%,#a78bfa 50%,#c084fc 100%)}" +
+      ".zu-light .zu-hm-grid--hist .zu-hm-cell.data.zu-ultra{" +
+        "background:linear-gradient(100deg,#3156cb 0%,#6746d2 50%,#9139bf 100%)}" +
       /* v232 速度柱状图：左读数卡 + 右「最近 10 段」图表。柱体颜色走档位类 currentColor
        * （与图例色点同套路），其余配色全走语义令牌（浅色自动适配）；plot min-width +
        * 横滚保证窄窗口下柱顶读数永不挤压重叠。 */
@@ -6112,6 +10279,15 @@
       ".zu-speed-left .zu-speed-fit3{font-size:calc(var(--ui-font-size,14px) - 1px);white-space:normal;line-height:1.3;word-break:break-word}" +
       ".zu-speed-note{margin-top:8px;font-size:calc(var(--ui-font-size,14px) - 2px);color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
       ".zu-speed-left .zu-speed-bandtag{font-size:calc(var(--ui-font-size,14px) - 3px);padding:2px 8px;white-space:nowrap}" +
+      /* v298.4：档位徽标下方模型名行（V2 左卡）——等宽小字、超长省略 + title 全名 */
+      /* v304.2：模型名胶囊化（26px 高/13px 圆角/立方体 SVG 14px/名称省略 title 全文；
+       * 主题随卡内既有 .zu-light 显式覆写口径，与 .zu-sc-unit 徽章同语言） */
+      ".zu-sl-model{display:inline-flex;align-items:center;gap:6px;max-width:100%;min-width:0;height:26px;box-sizing:border-box;padding:0 10px;margin-top:8px;" +
+        "border:1px solid var(--color-popover-border,rgba(255,255,255,.14));border-radius:13px;background:rgba(255,255,255,.05);" +
+        "color:var(--color-tooltip-tag-foreground,#a6a6a6);font-size:calc(var(--ui-font-size,14px) - 3px);white-space:nowrap}" +
+      ".zu-light .zu-sl-model{border-color:rgba(15,23,42,.14);background:rgba(0,0,0,.05)}" +
+      ".zu-sl-model svg{flex:none;opacity:.85}" +
+      ".zu-sl-model span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
       ".zu-speed-chart{flex:1 1 auto;min-width:0;position:relative}" +
       /* v239（设计图复刻）：左卡深色玻璃卡 + 状态图标/当前读数标签；信息卡虚线引线；图例/口径行布局 */
       ".zu-sl-stats{padding-top:10px;display:flex;gap:6px;border-top:1px solid var(--color-border,rgba(255,255,255,.1))}" +
@@ -6441,6 +10617,8 @@
       settingRow('<input type="checkbox" class="zu-cpt-btn">', L("压缩上下文按钮", "Compact context button"), L("在「上下文容量」弹层内显示「压缩上下文」按钮（点击后需二次确认，把会话历史总结压缩以释放上下文窗口）。关闭即不再显示；自动压缩阈值行不受影响，位置上移补位。默认开启。", "Shows the Compact context button inside the context-usage popup (with a confirmation step that summarizes the conversation to free context window space). Off hides it; the auto-compact threshold row is unaffected and moves up into the button's place. On by default.")) +
       settingRow('<input type="checkbox" class="zu-cost-enable">', L("预估费用", "Estimated cost"), L("悬停本轮/会话累计/项目累计/今日合计时显示按 models.dev 官方模型价格估算的费用（USD×汇率折 ¥；无汇率时显示 $ 原值；模型匹配不到价格按默认均价估算）。启动后每 12 小时静默同步一次价表与汇率，只下载不上传，可在配置文件关闭。默认开启。", "Shows estimated cost when hovering the stat cells, priced at official models.dev rates (USD × exchange rate as ¥; falls back to $ without a rate; unmatched models use a default average). The price table and FX rate sync silently every 12h after startup — download only, nothing uploaded; can be disabled in the config file. On by default.")) +
       settingRow('<input type="checkbox" class="zu-tip-click">', L("点击激活悬浮窗口", "Click to open popups"), L("开启后状态条统计卡与子代理面板改为点击才打开（再点同一格、按 Escape 或移出条面收起）；关闭时悬停立即显示。键盘 Tab 聚焦两种模式下都即时打开。默认关闭。", "On: bar stat cards and the sub-agent panel open on click only (click the same cell again, press Escape or move off the bar to close); off: they show immediately on hover. Keyboard Tab focus opens immediately in both modes. Off by default.")) +
+      /* v297.3：开发者调试开关——tooltip 常驻（移出条面/窗口不自动关闭，Escape 仍可关） */
+      settingRow('<input type="checkbox" class="zu-dev-keep-tip">', L("开发者：悬浮窗常驻", "Developer: keep tooltip visible"), L("开启后悬浮窗移出条面/移出窗口都不会自动关闭，用于截图与布局调试定位；按 Escape 或点击「关闭设置」等既有入口仍可关闭。仅调试用途，常开会影响日常使用。默认关闭。", "On: the tooltip stays open when the pointer leaves the bar or the window, for screenshot and layout debugging; Escape and the usual close paths still work. Debugging aid only — leaving it on gets in the way of daily use. Off by default.")) +
       /* v179 自动压缩阈值注入 → v188 按验收反馈简化：只留百分比（留空=跟随引擎默认），
          开关默认开（主进程 auto_compact_patch 缺省开）；标题带「上下文」限定。 */
       settingRow('<input type="checkbox" class="zu-ac-enable">', L("自动压缩上下文阈值注入", "Auto-compact context threshold injection"), L("给客户端引擎打补丁，把「到达阈值自动压缩上下文」的触发点改为可配置（引擎内置约在窗口 83% 处）。默认开启；补丁按引擎版本白名单注入，不支持的版本自动跳过并提示，关闭开关即还原引擎。开关对新会话生效；下方数值改完即生效（留空=跟随引擎默认）。只影响桌面客户端内置引擎，终端 CLI 不受影响。", "Patches the client engine so the auto-compact trigger point becomes configurable (the built-in engine fires around 83% of the window). On by default; patching is allow-listed per engine build, unsupported builds are skipped with a notice, and turning the switch off restores the engine. New sessions pick up the patch; the value below applies immediately (leave empty to follow the engine default). Only the desktop client's built-in engine is affected; the terminal CLI is not.")) +
@@ -6700,15 +10878,6 @@
      * pointerdown 在重建窗口之前同步完成切换（此时按钮节点必然存活）；与 click 委托
      * 幂等共存（重建未发生时 click 再跑一遍同值切换无害），键盘 Enter 只发 click 走原路径。 */
     function speedTabActivate(e) {
-      /* v273：聚焦/完整时间轴切换按钮（仅改变展示方式，不改统计口径） */
-      var fb = e.target && e.target.closest && e.target.closest(".zu-sv-focus");
-      if (fb) {
-        e.stopPropagation();
-        speedSel.focus = speedSel.focus === "full" ? "" : "full";
-        speedChartHover = -1; speedInteractAt = Date.now();
-        speedRebuildNow();
-        return true;
-      }
       var tab = e.target && e.target.closest && e.target.closest(".zu-sv-tab");
       if (!tab) return false;
       e.stopPropagation();
@@ -6779,8 +10948,9 @@
      * （cur 类与信息卡随串自愈 → 数据刷新整卡重建不丢悬停状态）；v240 起 -1/离开=不显示信息卡。 */
     function zuSpeedChartPick(idx) {
       if (idx === speedChartHover) return;
+      /* v291：热力图格子（.zu-hm-cell）与柱体（.zu-sc-col）共用同一悬停/焦点契约 */
       var hadFocus = tip.contains(document.activeElement) &&
-        document.activeElement.closest && document.activeElement.closest(".zu-sc-col");
+        document.activeElement.closest && document.activeElement.closest(".zu-sc-col,.zu-hm-cell");
       speedChartHover = idx; speedInteractAt = Date.now();
       if (tipFor && typeof speedTipRebuild === "function") {
         var t2 = speedTipRebuild(speedChartHover, speedSel);
@@ -6789,7 +10959,7 @@
           drawTip(tipFor, true);
           /* innerHTML 重建会销毁聚焦的柱节点（焦点落 body、Tab 序断裂）——归位 */
           if (hadFocus && idx >= 0) {
-            var nu2 = tip.querySelector('.zu-sc-col[data-i="' + idx + '"]');
+            var nu2 = tip.querySelector('.zu-sc-col[data-i="' + idx + '"],.zu-hm-cell[data-i="' + idx + '"]');
             if (nu2 && nu2.focus) nu2.focus();
           }
         }
@@ -6797,11 +10967,22 @@
       }
     }
     tip.addEventListener("mouseover", function (e) {
-      var col = e.target && e.target.closest && e.target.closest(".zu-sc-col");
+      var col = e.target && e.target.closest && e.target.closest(".zu-sc-col,.zu-hm-cell");
       if (col) zuSpeedChartPick(parseInt(col.getAttribute("data-i"), 10) || 0);
       var lb = e.target && e.target.closest && e.target.closest(".zu-sv-legend-btn");
       if (lb) spdLegendTipShow(lb);   /* v282：问号 hover 即显档位说明 */
     });
+    /* v290 图表区滚轮横滚（2026-11-08 用户规格）：wheel 委托在 tip 本体（随 tip.remove()
+     * 消亡，非全局监听）——指针在 .zu-sc-wrap 上且确可横滚时 deltaY 换算 scrollLeft，
+     * preventDefault 阻止页面竖滚；不可横滚不拦截，默认行为照旧。 */
+    tip.addEventListener("wheel", function (e) {
+      var wrap = e.target && e.target.closest && e.target.closest(".zu-sc-wrap");
+      if (!wrap || wrap.scrollWidth <= wrap.clientWidth + 1) return;
+      var d = (e.deltaY || 0) + (e.deltaX || 0);
+      if (!d) return;
+      wrap.scrollLeft += d;
+      e.preventDefault();
+    }, { passive: false });
     tip.addEventListener("mouseout", function (e) {
       var to = e.relatedTarget;
       var lb = e.target && e.target.closest && e.target.closest(".zu-sv-legend-btn");
@@ -6810,23 +10991,23 @@
           spdLegendTipScheduleHide();
         return;
       }
-      var col = e.target && e.target.closest && e.target.closest(".zu-sc-col");
+      var col = e.target && e.target.closest && e.target.closest(".zu-sc-col,.zu-hm-cell");
       if (!col) return;
       /* v242:移入另一根柱时同样交给 mouseover 切段,避免 out(-1)→in(B) 双重整卡重建闪烁 */
-      if (to && to.closest && to.closest(".zu-sc-col")) return;
+      if (to && to.closest && to.closest(".zu-sc-col,.zu-hm-cell")) return;
       zuSpeedChartPick(-1);
     });
     tip.addEventListener("focusin", function (e) {
-      var col = e.target && e.target.closest && e.target.closest(".zu-sc-col");
+      var col = e.target && e.target.closest && e.target.closest(".zu-sc-col,.zu-hm-cell");
       if (col) zuSpeedChartPick(parseInt(col.getAttribute("data-i"), 10) || 0);
       var lb = e.target && e.target.closest && e.target.closest(".zu-sv-legend-btn");
       if (lb) spdLegendTipShow(lb);   /* v282：键盘聚焦问号同样显示 */
     });
     tip.addEventListener("focusout", function (e) {
-      var col = e.target && e.target.closest && e.target.closest(".zu-sc-col");
+      var col = e.target && e.target.closest && e.target.closest(".zu-sc-col,.zu-hm-cell");
       /* v242:relatedTarget 落在另一根柱上时不得收卡重建——focusout 先于 focusin,
        * 此处重建会销毁即将接收焦点的目标柱(焦点跌落 body、Tab 序断裂) */
-      if (col && !(e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest(".zu-sc-col"))) zuSpeedChartPick(-1);
+      if (col && !(e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest(".zu-sc-col,.zu-hm-cell"))) zuSpeedChartPick(-1);
       var lb = e.target && e.target.closest && e.target.closest(".zu-sv-legend-btn");
       if (lb && !(e.relatedTarget && e.relatedTarget.closest && (e.relatedTarget.closest(".zu-sv-legend-btn") || e.relatedTarget.closest(".zu-sv-legend-tip"))))
         spdLegendTipScheduleHide();
@@ -6950,6 +11131,15 @@
     function countFmt(n) { return fmt(n, true); }
     function cnUnit(x) { return x.toFixed(2).replace(/\.?0+$/, ""); }   // 至多两位小数并去尾零：58.25万、142万、1亿（数字与单位不留空格：等宽字体下空格占满一格）
     function sec(ms) { return ms ? (ms / 1000).toFixed(1) + "s" : "–"; }
+    /* v300：长时长换算（会话累计「会话总耗时」专用）——跨会话总生成时长可达小时级，
+     * 裸秒数（12301.2s）既难读又会撑爆 1/3 列宽；<1min 显秒、<1h 显分钟、其余显小时 */
+    function secLong(ms) {
+      if (!ms) return "–";
+      var s2 = ms / 1000;
+      if (s2 < 60) return s2.toFixed(1) + "s";
+      if (s2 < 3600) return (s2 / 60).toFixed(1) + "m";
+      return (s2 / 3600).toFixed(1) + "h";
+    }
 
 
     /* 超限判定：最近一次"上下文超限被拒"晚于最近成功请求 = 仍处于超限状态（该请求
@@ -7109,34 +11299,56 @@
       var hitPct = (pj.input > 0 && isFinite(pj.input)) ? Math.round((pj.cache_read || 0) / pj.input * 100) : -1;
       var showCost = !!state.cost;   // ⚙ 开关关：KPI 预估费用格与表头费用列不渲染
       var costV = (typeof pj.cost_usd === "number" && isFinite(pj.cost_usd)) ? fmtMoney(pj.cost_usd) : "—";
-      return '<div class="zu-project-tip" data-key="' + escAttr(ownerKey) + '">' +
+      /* v303 根类并入统计卡家族：statCompactStyle("project") :has 作用域（450 宽/
+       * 自适应高/共享规则）在此生效；zu-project-tip 保留（fxq 计价范围气泡与测试锚点） */
+      return statCompactStyle("project") +
+        '<div class="zu-project-tip zu-stat-tip zu-stat-tip--project" data-key="' + escAttr(ownerKey) + '">' +
         '<div class="zu-pj-head"><div class="zu-pj-title' + (pj.name ? " zu-tt-name" : "") + '">' + ttEsc(L("项目累计", "Project total")) +
-        (pj.name ? '<span class="zu-pj-pname">' + ttEsc(pj.name) + '</span>' : "") + '</div>' +
-        '<div class="zu-pj-range"><span class="zu-pj-scope">' + ttEsc(L("全部请求", "All requests")) + '</span>' +
-        '<span class="zu-pj-sub">' + ttEsc(L("含子代理", "incl. sub-agents")) + '</span></div></div>' +
-        '<div class="zu-pj-kpis">' +
-          '<div class="zu-pj-kpi"><div class="zu-pj-k">' + ttEsc(L("总用量", "Total tokens")) + '</div><div class="zu-pj-v">' + ttEsc(fmt(pj.total || 0)) + '</div></div>' +
-          '<div class="zu-pj-kpi"><div class="zu-pj-k">' + ttEsc(L("请求次数", "Requests")) + '</div><div class="zu-pj-v">' + ttEsc(countFmt(pj.requests || 0)) + '</div></div>' +
-          (showCost ? '<div class="zu-pj-kpi"><div class="zu-pj-k">' + ttEsc(L("预估费用", "Est. cost")) + FXQ_ICON + '</div><div class="zu-pj-v">' + ttEsc(costV) + '</div></div>' : "") +
+        (pj.name ? '<span class="zu-pj-pname" title="' + escAttr(pj.name) + '">' + ttEsc(pj.name) + '</span>' : "") + '</div>' +
+        '<div class="zu-pj-range"><span class="zu-pj-scope">' + ttEsc(L("全部请求 · 含子代理", "All requests · incl. sub-agents")) + '</span></div></div>' +
+        /* v303 项目累计紧凑化（用户 /goal，同本轮/会话/今日四行 KPI 形态）：
+         * ①总用量|输入(缓存 N% 徽标随标签)|输出(含思考) ②请求次数|请求轮数|请求会话
+         * ③平均耗时|平均延迟|总耗时 ④平均输出速度(项目加权均 avg_tps 档色)|预估费用；
+         * 平均耗时/延迟/总耗时/平均输出速度为 v303 zusage _project_usage 新聚合
+         * （>0 门控，旧缓存自然降级）；缓存命中率不再占独立副行。 */
+        '<div class="zu-turn-kpis">' +
+          statKpi(kpiIco("total") + L("总用量", "Total tokens"), ttEsc(fmt(pj.total || 0)), turnVBkt(fmt(pj.total || 0))) +
+          statKpi(kpiIco("input") + L("输入", "Input") +
+            (hitPct >= 0 ? '<span class="hit zu-turn-hit">' + ttEsc(L("缓存", "cache ") + hitPct + "%") + '</span>' : ""),
+            ttEsc(fmt(pj.input || 0)), turnVBkt(fmt(pj.input || 0))) +
+          statKpi(kpiIco("output") + L("输出", "Output"), ttEsc(fmt(pj.output || 0)), turnVBkt(fmt(pj.output || 0)),
+            (pj.reasoning > 0 ? ttEsc(L("含思考 ", "incl. ") + fmt(pj.reasoning)) : "")) +
         '</div>' +
-        '<div class="zu-pj-details">' +
-          '<div class="zu-pj-detail"><div class="zu-pj-k">' + ttEsc(L("输入", "Input")) + '</div><div class="zu-pj-dv">' + ttEsc(fmt(pj.input || 0)) + '</div>' +
-            '<div class="zu-pj-dsub">' + (hitPct >= 0 ? '<span class="zu-pj-hit">' + ttEsc(L("缓存命中率 ", "cache hit ") + hitPct + "%") + '</span>' : "") + '</div></div>' +
-          '<div class="zu-pj-detail"><div class="zu-pj-k">' + ttEsc(L("输出", "Output")) + '</div><div class="zu-pj-dv">' + ttEsc(fmt(pj.output || 0)) + '</div>' +
-            '<div class="zu-pj-dsub">' + (pj.reasoning > 0 ? ttEsc(L("含思考 ", "incl. ") + fmt(pj.reasoning)) : "") + '</div></div>' +
-          (pj.cache_write > 0
-            ? '<div class="zu-pj-detail"><div class="zu-pj-k">' + ttEsc(L("缓存写入", "Cache write")) + '</div><div class="zu-pj-dv">' + ttEsc(fmt(pj.cache_write)) + '</div><div class="zu-pj-dsub"></div></div>'
-            : '<div class="zu-pj-detail"></div>') +
+        /* 行二：请求规模（请求数/轮数/会话数均为项目聚合真值） */
+        '<div class="zu-turn-kpis">' +
+          statKpi(kpiIco("requests") + L("请求次数", "Requests"), ttEsc(countFmt(pj.requests || 0)), turnVBkt(countFmt(pj.requests || 0))) +
+          statKpi(kpiIco("turns") + L("请求轮数", "Turns"), ttEsc(countFmt(pj.turns || 0)), turnVBkt(countFmt(pj.turns || 0))) +
+          statKpi(kpiIco("sessions") + L("请求会话", "Sessions"), ttEsc(countFmt(pj.sessions || 0)), turnVBkt(countFmt(pj.sessions || 0))) +
         '</div>' +
-        '<div class="zu-pj-scale">' +
-          '<span>' + ttEsc(countFmt(pj.sessions || 0) + L(" 会话", " sessions")) + '</span><span>·</span>' +
-          '<span>' + ttEsc(countFmt(pj.turns || 0) + L(" 轮", " turns")) + '</span><span>·</span>' +
-          (pj.tool_calls ? '<span>' + ttEsc(L("工具 ", "tools ") + countFmt(pj.tool_calls) + L(" 次", " calls")) + '</span><span>·</span>' : "") +
-          (pj.retries ? '<span>' + ttEsc(L("重试 ", "retries ") + countFmt(pj.retries) + L(" 次", " times")) + '</span>' : "") +
+        /* 行三：平均耗时 | 平均延迟 | 总耗时（v303 聚合，>0 门控缺失不伪造 0s） */
+        ((pj.avg_duration_ms > 0 || pj.avg_ttft_ms > 0 || pj.duration_ms > 0)
+          ? '<div class="zu-turn-kpis zu-turn-kpis--mid">' +
+            (pj.avg_duration_ms > 0 ? statKpi(kpiIco("duration") + L("平均耗时", "Avg time"), ttEsc(sec(pj.avg_duration_ms)), turnVBkt(sec(pj.avg_duration_ms))) : "") +
+            (pj.avg_ttft_ms > 0 ? statKpi(kpiIco("latency") + L("平均延迟", "Avg TTFT"), ttEsc(sec(pj.avg_ttft_ms)), turnVBkt(sec(pj.avg_ttft_ms))) : "") +
+            (pj.duration_ms > 0 ? statKpi(kpiIco("elapsed") + L("总耗时", "Total time"), ttEsc(secLong(pj.duration_ms)), turnVBkt(secLong(pj.duration_ms))) : "") +
+            '</div>' : "") +
+        /* 行四：平均输出速度（项目加权均，TPS_BANDS 档色）| 预估费用（问号走项目卡既有
+         * 计价范围气泡机制）；费用关/缺失时速度格 only-child 占满整行 */
+        '<div class="zu-turn-kpis zu-turn-kpis--duo">' +
+          ((typeof pj.avg_tps === "number" && isFinite(pj.avg_tps) && pj.avg_tps > 0)
+            ? statKpi(kpiIco("speed") + L("平均输出速度", "Avg output rate"), '<b class="' + tpsBand(pj.avg_tps).cls + '">' + ttEsc(pj.avg_tps.toFixed(1)) + '</b> <small>t/s</small>')
+            : statKpi(kpiIco("speed") + L("平均输出速度", "Avg output rate"), "—")) +
+          ((showCost && typeof pj.cost_usd === "number" && isFinite(pj.cost_usd))
+            ? statKpi(L("预估费用", "Est. cost") + FXQ_ICON, ttEsc(costV))
+            : "") +
         '</div>' +
         (hasModels
           ? '<div class="zu-pj-models"><div class="zu-pj-mhead"><div class="zu-pj-mtitle">' + ttEsc(L("模型明细", "Models")) + '</div>' +
-            '<div class="zu-pj-morder">' + ttEsc(L("按用量排序", "by usage")) + '</div></div>' +
+            '<div class="zu-pj-morder">' +
+            ((pj.tool_calls || pj.retries)
+              ? [(pj.tool_calls ? ttEsc(L("工具调用 ", "tools ") + countFmt(pj.tool_calls) + L(" 次", " calls")) : ""),
+                 (pj.retries ? ttEsc(L("重试 ", "retries ") + countFmt(pj.retries) + L(" 次", " times")) : "")].filter(Boolean).join('<i class="zu-turn-sep">·</i>')
+              : ttEsc(L("按用量排序", "by usage"))) + '</div></div>' +
             '<table class="zu-pj-table"><thead><tr><th>' + ttEsc(L("模型", "Model")) + '</th>' +
             '<th>' + ttEsc(L("Token 用量 ↓", "Tokens ↓")) + '</th><th>' + ttEsc(L("请求次数", "Requests")) + '</th>' +
             (showCost ? '<th>' + ttEsc(L("预估费用", "Est. cost")) + '</th>' : "") + '</tr></thead>' +
@@ -7147,7 +11359,7 @@
               : "") +
             '</div>'
           : "") +
-        '<div class="zu-pj-time"><b>' + ttEsc(L("时间范围", "Time span")) + '</b>' +
+        '<div class="zu-stat-time"><b>' + ttEsc(L("时间范围", "Time span")) + '</b>' +
         '<span>' + (pj.started ? fmtStartS(pj.started) : "—") + " — " + (pj.last_at ? fmtStartS(pj.last_at) : "—") + '</span></div>' +
         '</div>';
     }
@@ -7166,14 +11378,98 @@
       if (typeof positionTip === "function" && tipFor) positionTip(tipFor, true);
     }
     /* v215 统计卡公共片段（六卡共用）：head/KPI/明细/规模/表格/时间。数据全部真实字段。 */
-    function statHead(title, scope, name) {
-      /* v230.1 名称与标题垂直居中：带名称时标题容器切 flex，名称作为子项中心对齐 */
-      return '<div class="zu-stat-head"><div class="zu-stat-title' + (name ? " zu-tt-name" : "") + '">' + ttEsc(title) +
+    function statHead(title, scope, name, icoHtml) {
+      /* v230.1 名称与标题垂直居中：带名称时标题容器切 flex，名称作为子项中心对齐；
+       * v304 第 4 参 icoHtml=标题前置图标（工具卡扳手），既有三参调用不变 */
+      return '<div class="zu-stat-head"><div class="zu-stat-title' + (name ? " zu-tt-name" : "") + '">' + (icoHtml || "") + ttEsc(title) +
         (name || "") + '</div>' +
         (scope ? '<div class="zu-stat-scope">' + ttEsc(scope) + '</div>' : "") + '</div>';
     }
-    function statKpi(k, vHtml, extraCls) {
-      return '<div class="zu-stat-kpi' + (extraCls ? " " + extraCls : "") + '"><div class="zu-stat-k">' + k + '</div><div class="zu-stat-v">' + vHtml + '</div></div>';
+    /* v300：本轮/会话累计共用紧凑布局作用域 CSS——同一份规则按卡变体替换 :has 作用域类；
+     * 渲染串内联（速度卡同款先例），随内容存在、签名幂等重建不叠加 */
+    function statCompactStyle(variant) {
+      return '<style>' +
+
+          '.zusage-tip-root:has(.zu-stat-tip--' + variant + '){width:min(450px,calc(100vw - 16px))!important;max-width:min(450px,calc(100vw - 16px))!important;max-height:calc(100vh - 24px)!important;box-sizing:border-box!important;overflow:hidden!important}' +
+          /* v303.1 五卡 padding 统一：内容边距只吃根 .tip 的 10px 13px（与速度卡一致），
+           * .tbody 不再叠第二层（此前 9px 12px 叠加成 19/25 双层，与速度卡不一致） */
+          '.zusage-tip-root:has(.zu-stat-tip--' + variant + ') .tbody{box-sizing:border-box!important;overflow-y:auto!important;scrollbar-gutter:auto!important;scrollbar-width:none!important;padding:0!important}' +
+      '.zusage-tip-root:has(.zu-stat-tip--' + variant + ') .tbody::-webkit-scrollbar{display:none!important}' +
+          '' + '.zu-stat-tip--' + variant + '{box-sizing:border-box!important;display:flex!important;flex-direction:column!important;gap:3px!important;min-height:0!important}' +
+          '' + '.zu-stat-tip--' + variant + ' .zu-stat-head{margin:0!important}' +
+          '' + '.zu-stat-tip--' + variant + ' .zu-stat-title{font-size:calc(var(--ui-font-size,14px) + 3px)!important}' +
+          '' + '.zu-stat-tip--' + variant + ' .zu-stat-scope{font-size:calc(var(--ui-font-size,14px) - 3px)!important}' +
+          '' + '.zu-stat-tip--' + variant + ' .zu-turn-kpis{display:grid!important;grid-template-columns:repeat(3,1fr)!important;background:rgba(255,255,255,.06)!important;border-radius:8px!important;padding:4px 10px!important;box-sizing:border-box!important}' +
+          /* 浅色主题：深色叠加（--color-popover 在宿主恰好等于 tip 本底，不能用变量） */
+          '.zusage-tip-root.zu-light:has(.zu-stat-tip--' + variant + ') .zu-turn-kpis,.zusage-tip-root:has(.zu-stat-tip--' + variant + '.zu-light) .zu-turn-kpis{background:rgba(0,0,0,.045)!important}' +
+          '' + '.zu-stat-tip--' + variant + ' .zu-turn-kpis .zu-stat-kpi + .zu-stat-kpi{border-left:1px solid var(--color-popover-border,rgba(255,255,255,.12))!important;padding-left:10px!important}' +
+          '' + '.zu-stat-tip--' + variant + ' .zu-stat-kpi .zu-stat-k{display:flex!important;align-items:baseline!important;gap:6px!important;font-size:calc(var(--ui-font-size,14px) - 3px)!important;font-weight:400!important;color:var(--color-tooltip-tag-foreground,#a6a6a6)!important;margin-bottom:2px!important}' +
+      '' + '.zu-stat-tip--' + variant + ' .zu-stat-k .hit{font-size:calc(var(--ui-font-size,14px) - 3px)!important;font-weight:600!important;color:#4ade80!important;white-space:nowrap!important}' +
+      '' + '.zu-stat-tip--' + variant + ' .zu-stat-k .tip-fxq{align-self:center!important;vertical-align:initial!important;margin-left:4px!important}' +
+      
+          '' + '.zu-stat-tip--' + variant + ' .zu-stat-kpi .zu-stat-v{font-size:calc(var(--ui-font-size,14px) + 6px)!important;line-height:1.08!important;font-variant-numeric:tabular-nums!important;white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important}' +
+          '' + '.zu-stat-tip--' + variant + ' .zu-turn-kpis--mid .zu-stat-v{font-size:calc(var(--ui-font-size,14px) + 5px)!important}' +
+          '' + '.zu-stat-tip--' + variant + ' .zu-stat-v.zu-turn-l1{font-size:calc(var(--ui-font-size,14px) + 3px)!important}' +
+          '' + '.zu-stat-tip--' + variant + ' .zu-stat-v.zu-turn-l2{font-size:calc(var(--ui-font-size,14px) + 1px)!important}' +
+          '' + '.zu-stat-tip--' + variant + ' .zu-turn-kpis--duo{grid-template-columns:repeat(2,1fr)!important}' +
+          '' + '.zu-stat-tip--' + variant + ' .zu-turn-kpis--duo .zu-stat-kpi:only-child{grid-column:1/-1!important}' +
+          '' + '.zu-stat-tip--' + variant + ' .zu-stat-dsub{font-size:calc(var(--ui-font-size,14px) - 4px)!important;margin-top:1px!important}' +
+          '' + '.zu-stat-tip--' + variant + ' .zu-pj-mhead{margin:0!important}' +
+          '' + '.zu-stat-tip--' + variant + ' .zu-pj-mtitle{font-size:calc(var(--ui-font-size,14px) + 1px)!important}' +
+          '' + '.zu-stat-tip--' + variant + ' .zu-pj-morder{display:block!important;font-size:calc(var(--ui-font-size,14px) - 3px)!important;color:var(--color-tooltip-tag-foreground,#a6a6a6)!important}' +
+          '.zu-turn-sep{font-style:normal!important;opacity:.6!important;margin:0 3px!important}' +
+          '' + '.zu-stat-tip--' + variant + ' .zu-turn-models .zu-stat-table{margin:0!important}' +
+          '' + '.zu-stat-tip--' + variant + ' .zu-turn-models th{padding:1px 3px!important;white-space:nowrap!important}' +
+          '' + '.zu-stat-tip--' + variant + ' .zu-turn-models td{padding:2px 3px!important;white-space:nowrap!important}' +
+          '' + '.zu-stat-tip--' + variant + ' .zu-turn-models{flex:1 1 auto!important;min-height:0!important;overflow-y:auto!important;scrollbar-width:none!important}' +
+          '' + '.zu-stat-tip--' + variant + ' .zu-turn-models::-webkit-scrollbar{display:none!important}' +
+          '' + '.zu-stat-tip--' + variant + ' .zu-stat-time{margin-top:auto!important;padding-top:5px!important;border-top:1px solid var(--color-popover-border,rgba(255,255,255,.12))!important;font-size:calc(var(--ui-font-size,14px) - 4px)!important}' +
+          '' + '.zu-stat-tip--' + variant + ' .zu-stat-time span{font-variant-numeric:tabular-nums!important}' +
+          /* v301.1 图标规则三卡共享：flex baseline 标签行内图标 align-self:center
+           * （SVG 基线=底缘，随 baseline 会沉到行下缘），文字/徽标基线关系不变 */
+          '' + '.zu-stat-tip--' + variant + ' .zu-stat-k .zu-kpi-ico{flex:none!important;width:16px!important;height:16px!important;opacity:.85!important;align-self:center!important;vertical-align:initial!important}' +
+          (variant === "today"
+            ? /* v301 今日卡专属：缓存命中率副行柔和绿（输入格 dsub）；行内单格
+               * （耗时字段缺失/费用关）占满整行不留空卡 */
+              '.zu-stat-tip--today .zu-stat-dsub .hit{color:#4ade80!important;font-weight:600!important}' +
+              '.zu-stat-tip--today .zu-turn-kpis .zu-stat-kpi:only-child{grid-column:1/-1!important}'
+            : "") +
+          (variant === "tools"
+            ? /* v304 工具卡专属：表格定宽四列（名 43/次 18/耗时 25/错 14），长名省略
+               * （title 全文），sticky 表头（区内滚表头恒可见），行 hover 轻提亮 */
+              '.zusage-tip-root:has(.zu-stat-tip--tools) .zu-stat-title{display:flex!important;align-items:center!important;gap:8px!important}' +
+              '.zu-stat-tip--tools .zu-stat-title .zu-kpi-ico{opacity:.9!important}' +
+              '.zu-stat-tip--tools .zu-stat-table{table-layout:fixed!important;width:100%!important}' +
+              '.zu-stat-tip--tools .zu-stat-table th:first-child,.zu-stat-tip--tools .zu-stat-table td:first-child{width:43%!important}' +
+              '.zu-stat-tip--tools .zu-stat-table td.zu-pj-mname{overflow:hidden!important;text-overflow:ellipsis!important;white-space:nowrap!important;max-width:none!important}' +
+              '.zu-stat-tip--tools .zu-stat-table thead th{position:sticky!important;top:0!important;background:var(--color-tooltip,#171717)!important;z-index:1!important}' +
+              '.zu-stat-tip--tools .zu-stat-table tbody tr:hover{background:var(--color-hover,rgba(255,255,255,.05))!important}' +
+              '.zusage-tip-root.zu-light:has(.zu-stat-tip--tools) .zu-stat-table thead th{background:var(--color-tooltip,#f7f7f7)!important}'
+            : "") +
+          (variant === "project"
+            ? /* v303 项目卡专属：旧分区 margin 交给 flex gap；模型表为 840px 宽卡设计，
+               * 450px 下收紧内距；名称列上限同步收窄；展开按钮压缩 */
+              '.zu-stat-tip--project .zu-pj-head{margin-bottom:0!important}' +
+              '.zu-stat-tip--project .zu-pj-table th{padding:1px 3px 4px!important;white-space:nowrap!important}' +
+              '.zu-stat-tip--project .zu-pj-table td{padding:3px!important;height:auto!important}' +
+              '.zu-stat-tip--project .zu-pj-table td:first-child{max-width:150px!important}' +
+              '.zu-stat-tip--project .zu-pj-more{margin:6px auto 0!important;padding:2px 10px!important;font-size:calc(var(--ui-font-size,14px) - 2px)!important}' +
+              '.zu-stat-tip--project .zu-pj-title{display:flex!important;align-items:baseline!important;white-space:nowrap!important;min-width:0!important}' +
+              '.zu-stat-tip--project .zu-pj-pname{overflow:hidden!important;text-overflow:ellipsis!important;flex:0 1 auto!important;min-width:0!important}'
+            : "") +
+          '</style>';
+    }
+    /* v303 提升到模块级：项目卡 buildProjectTipHTML（html() 外）也按长度取值分桶 */
+    function turnVBkt(txt) {
+      var n = (txt || "").length;
+      return n > 14 ? " zu-turn-l2" : n > 10 ? " zu-turn-l1" : "";
+    }
+    function statKpi(k, vHtml, extraCls, sub) {
+      /* v299：第四参 sub=KPI 辅助行 HTML（含思考挂到输出格下，不占第四列）；
+       * v299.1：extraCls 改挂 .zu-stat-v（长度分桶缩字号锚在值元素上，此前挂外层
+       * div 导致分桶 CSS 永不命中）；既有其它调用点均 ≤2 参，行为不变 */
+      return '<div class="zu-stat-kpi"><div class="zu-stat-k">' + k + '</div><div class="zu-stat-v' + (extraCls ? " " + extraCls : "") + '">' + vHtml + '</div>' +
+        (sub ? '<div class="zu-stat-dsub">' + sub + '</div>' : "") + '</div>';
     }
     function statDetail(k, dv, sub) {
       return '<div class="zu-pj-detail"><div class="zu-pj-k">' + ttEsc(k) + '</div><div class="zu-stat-dv">' + ttEsc(dv) + '</div>' +
@@ -7204,11 +11500,16 @@
      * zu-pj-mhead 标题 + 四列 zu-stat-table；数据同源 _scope_models_cost 已降序，
      * 此处对副本防御性重排不改快照原数组；费用列随 state.cost 门控、缺失显 "—"；
      * 空明细/旧快照缺字段整块不渲染。精简摘要的 rt-models 行式（modelsBlock）保留。 */
-    function statModelsTable(models) {
+    function statModelsTable(models, headRight, tableOnly) {
       if (!models || !models.length) return "";
       var heads = [L("模型", "Model"), L("Token 用量 ↓", "Tokens ↓"), L("请求次数", "Requests")];
       if (state.cost) heads.push(L("预估费用", "Est. cost"));
-      return '<div class="zu-pj-mhead"><div class="zu-pj-mtitle">' + ttEsc(L("模型明细", "Models")) + '</div><div class="zu-pj-morder">' + ttEsc(L("按用量排序", "by usage")) + '</div></div>' +
+      /* v299：headRight=表头行右侧自定义 HTML（本轮卡放工具调用次数；已转义/可信），
+       * 缺省/空串维持「按用量排序」，会话/今日调用点不变；
+       * tableOnly=只出表格（本轮卡标题行固定在滚动区外、表体独立滚动） */
+      var head = tableOnly ? "" :
+        '<div class="zu-pj-mhead"><div class="zu-pj-mtitle">' + ttEsc(L("模型明细", "Models")) + '</div><div class="zu-pj-morder">' + (headRight ? headRight : ttEsc(L("按用量排序", "by usage"))) + '</div></div>';
+      return head +
         statTable(heads, models.slice().sort(function (a, b) { return (b.total || 0) - (a.total || 0); }).map(function (m1) {
           var name = m1.model || L("未知模型", "unknown");
           return '<tr>' +
@@ -7231,6 +11532,30 @@
         (top.rates ? ' data-rates="' + escAttr(JSON.stringify(top.rates)) + '"' : "") +
         ' data-mcount="' + ms.length + '"' +
         (scopeText ? ' data-mscope="' + escAttr(scopeText) + '"' : ""));
+    }
+    /* v301 三张统计卡共用 KPI 图标：统一外框（16px / stroke 1.8 / currentColor /
+     * aria-hidden）+ 路径表复用，避免多处维护相同 SVG 串。语义=层叠总量/输入下箭头/
+     * 输出上箭头/时钟耗时/闪电延迟/循环重试/表盘速度/硬币费用 + v301.1 补齐本轮/
+     * 会话卡：沙漏总耗时/气泡轮对话。色随文字（标签灰），不做高饱和装饰，不参与焦点。 */
+    var KPI_ICON_PATHS = {
+      total: '<path d="m12 3-9 5 9 5 9-5-9-5Z"/><path d="m3 12 9 5 9-5"/><path d="m3 16 9 5 9-5"/>',
+      input: '<path d="M12 3v13"/><path d="m7 11 5 5 5-5"/><path d="M4 21h16"/>',
+      output: '<path d="M12 21V8"/><path d="m7 13 5-5 5 5"/><path d="M4 3h16"/>',
+      duration: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+      latency: '<path d="M13 2 4 13h7l-1 9 10-12h-7V2Z"/>',
+      retry: '<path d="M20 11a8 8 0 1 0-2.3 5.6"/><path d="M20 4v7h-7"/>',
+      speed: '<path d="M4.9 19a9 9 0 1 1 14.2 0"/><path d="m12 14 4-5"/><circle cx="12" cy="14" r="1"/>',
+      cost: '<ellipse cx="12" cy="5" rx="7" ry="3"/><path d="M5 5v6c0 1.7 3.1 3 7 3s7-1.3 7-3V5"/><path d="M5 11v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/>',
+      elapsed: '<path d="M5 22h14"/><path d="M5 2h14"/><path d="M17 22v-4.172a2 2 0 0 0-.586-1.414L12 12l-4.414 4.414A2 2 0 0 0 7 17.828V22"/><path d="M7 2v4.172a2 2 0 0 0 .586 1.414L12 12l4.414-4.414A2 2 0 0 0 17 6.172V2"/>',
+      turns: '<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/>',
+      requests: '<path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/>',
+      tools: '<path d="M14.5 2.5a6 6 0 0 0-5.6 8.1L3.3 16.2a3.2 3.2 0 0 0 4.5 4.5l5.6-5.6a6 6 0 0 0 8.1-5.6l-4.1 3-3.8-3.8 3-4.1a6 6 0 0 0-2.1-2.1z"/>',
+      sessions: '<path d="M7.5 3h12a2 2 0 0 1 2 2v10M4.5 7h12a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H8l-5.5 2V9a2 2 0 0 1 2-2z"/>'
+    };
+    function kpiIco(name, size) {
+      var s = size || 16;
+      return '<svg class="zu-kpi-ico" viewBox="0 0 24 24" width="' + s + '" height="' + s + '" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+        (KPI_ICON_PATHS[name] || "") + '</svg>';
     }
     /* v97：live chip（生成速度）的 tooltip 内容——子代理速率是渲染端实时状态（不在泵
      * 快照里），html() 整条渲染与 updateLive 原地改字两条路径都要能生成，抽出共用。
@@ -7446,6 +11771,11 @@
         liveKindCur = "fallback";
         livePhaseCur = "";
         liveIconCur = "bolt";
+        /* v298（用户拍板）：chip 条面=最后一轮真实速度（chipTps）；tooltip V1 回退卡
+         * 仍按会话均优先（mainTps 原语义不变）——两处取值分离。最近一段无有效值
+         * 时面留空且不渲染 t/s 单位（与 11 分片精简 chip 拍板语义一致：无最后一轮
+         * 不显会话均），绝不把无效样本渲染成 0 t/s（review 修复，§5 口径） */
+        var chipTps = dbTps;
         var mainTps = sessAvg || dbTps;
         var tband = tpsBand(mainTps);
         var speedTm = sessAvg ? speedSpan(sess.started, sess.last_at) : speedSpan(last.startedAt, last.endedAt);   // v222 时间范围行
@@ -7522,54 +11852,92 @@
             return "\x01" + speedCardHTML(fbOpts);
           };
         }
+        /* v298（用户拍板）：chip 主数字=最后一轮真实速度（最近一段，不再取会话均、
+         * 不带「均」前缀）；tooltip 左卡仍为会话加权平均（"平均速度"语义不变） */
+        var chipBand = tpsBand(chipTps);
+        var chipFace = chipTps > 0 ? ((chipTps % 1 ? chipTps.toFixed(1) : String(chipTps)) + '<span class="dim">t/s</span>') : "";   // 最后一轮无效：面空（含单位），仅留图标作悬停锚
         it(ico('<path d="M13.5 2 3.5 13.5H11L10 22l10.5-12H13l.5-8z"/>') +
-          (sessAvg ? '<span class="dim">' + L("均", "avg ") + '</span>' : "") +
-          '<span class="zu-live ' + tband.cls + '">' + (mainTps % 1 ? mainTps.toFixed(1) : String(mainTps)) + '</span><span class="dim">t/s</span>',   /* v226：去「· 近X」尾缀（用户规格），最近一段只在 tooltip */
+          '<span class="zu-live ' + (chipBand ? chipBand.cls : "dim") + '">' + chipFace + '</span>',
           speedTipRebuild(speedChartHover, v2sel));
       } else {
         liveKindCur = "none";
         livePhaseCur = "";
         liveIconCur = "";
       }
+      /* v299 本轮卡辅助：模型标题行右侧串（工具调用/重试/错误，原 scale 行内容迁此）；
+       * 值长度分档（>10 字符降 1 档、>14 降 2 档）——固定 500px 列宽下的防溢出缩字 */
+      var turnToolsHtml = (lt.tool_calls || lt.retries || lt.tool_errors)
+        ? [(lt.tool_calls ? ttEsc(L("工具调用 ", "tools ") + countFmt(lt.tool_calls) + L(" 次", " calls")) : ""),
+           (lt.retries ? ttEsc(L("重试 ", "retries ") + countFmt(lt.retries) + L(" 次", " times")) : ""),
+           (lt.tool_errors ? ttEsc(L("错误 ", "errors ") + countFmt(lt.tool_errors) + L(" 次", " times")) : "")].filter(Boolean).join('<i class="zu-turn-sep">·</i>')
+        : "";
       if (state.show.turn) {
         it(ico('<path d="M5 3.5h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-9l-6.5 4V5.5a2 2 0 0 1 1.5-2z"/><path d="M7.5 8.5h9m-9 4h6"/>') +
           '<span class="v">' + fmt(lt.total) + "</span>" +
           (state.theme === "pill" ? "" :
-            (shrink ? "" : cachePct(lt.cache_read, lt.input)) +
+            (shrink ? "" : "") +
             '<span class="dim">' + countFmt(lt.requests || 0) + L("次", " req") + "</span>"),
           /* v211 格面移除单次耗时/首字延迟段（用户规格）：耗时/延迟只在 tooltip 呈现
            * （平均耗时/平均延迟，对全体请求求均值） */
+          /* v299 500×350 紧凑布局（用户 /goal）：三行 KPI 固定顺序——
+           * ①总用量|输入(缓存命中)|输出(含思考) ②请求次数|请求轮数|请求会话
+           * ③平均耗时|平均延迟|总耗时 ④平均输出速度(档位色文字强调)|预估费用；
+           * 工具调用并入模型明细标题行右侧；
+           * 模型表独立滚动区（主 tooltip 无滚动条）；时间范围钉底。
+           * 样式全部经内联 <style> 以 :has(.zu-stat-tip--turn) 作用域——只影响本轮卡，
+           * 会话/今日/项目/工具/速度卡与共享 .zu-stat-* 规则零波及（速度卡同款先例）。 */
           "\x01" +
+          statCompactStyle("turn") +
           '<div class="zu-stat-tip zu-stat-tip--turn">' +
           statHead(L("本轮", "Latest turn"), countFmt(lt.requests || 0) + L(" 次请求", " requests")) +
-          '<div class="zu-stat-kpis">' +
-            statKpi(L("总用量", "Total tokens"), ttEsc(fmt(lt.total || 0))) +
-            ((typeof lt.tps === "number" && isFinite(lt.tps) && lt.tps > 0)
-              ? statKpi(L("输出速度", "Output rate"), ttEsc(lt.tps.toFixed(1)) + ' <small>t/s</small>')
-              : statKpi(L("输出速度", "Output rate"), "—")) +
-            ((state.cost && typeof lt.cost_usd === "number" && isFinite(lt.cost_usd))
-              ? statKpi(L("预估费用", "Est. cost") + fxqIcon(lt.models, L("本轮", "this turn")), ttEsc(fmtMoney(lt.cost_usd)))
-              : "") +
-          '</div>' +
-          '<div class="zu-stat-grid2">' +
-            statDetail(L("输入", "Input"), fmt(lt.input || 0),
-              (hitPctOf(lt.input, lt.cache_read) >= 0 ? '<span class="hit">' + ttEsc(L("缓存命中率 ", "cache hit ") + hitPctOf(lt.input, lt.cache_read) + "%") + '</span>' : "")) +
-            statDetail(L("输出", "Output"), fmt(lt.output || 0),
+          /* 行一：总用量 | 输入（缓存命中辅助行）| 输出（含思考辅助行） */
+          '<div class="zu-turn-kpis">' +
+            statKpi(kpiIco("total") + L("总用量", "Total tokens"), ttEsc(fmt(lt.total || 0)), turnVBkt(fmt(lt.total || 0))) +
+            /* v299.1（用户规格）：缓存命中率改「缓存 N%」，放「输入」标签行右侧
+             * （statKpi 的 k 为 raw HTML；标签行短，徽标空间充裕不再截断） */
+            statKpi(kpiIco("input") + L("输入", "Input") +
+              (hitPctOf(lt.input, lt.cache_read) >= 0 ? '<span class="hit zu-turn-hit">' + ttEsc(L("缓存", "cache ") + hitPctOf(lt.input, lt.cache_read) + "%") + '</span>' : ""),
+              ttEsc(fmt(lt.input || 0)), turnVBkt(fmt(lt.input || 0))) +
+            statKpi(kpiIco("output") + L("输出", "Output"), ttEsc(fmt(lt.output || 0)), turnVBkt(fmt(lt.output || 0)),
               (lt.reasoning > 0 ? ttEsc(L("含思考 ", "incl. ") + fmt(lt.reasoning)) : "")) +
           '</div>' +
+          /* 行二（v302 用户规格）：请求规模层级——请求次数（本轮模型请求）|
+           * 请求轮数（本轮所属会话累计轮数 sess.turns）| 请求会话（所属项目累计会话数
+           * sess.project.sessions，项目字段缺失诚实显 —，不伪造 1） */
+          '<div class="zu-turn-kpis">' +
+            statKpi(kpiIco("requests") + L("请求次数", "Requests"), ttEsc(countFmt(lt.requests || 0)), turnVBkt(countFmt(lt.requests || 0))) +
+            statKpi(kpiIco("turns") + L("请求轮数", "Turns"), ttEsc(countFmt(sess.turns || 0)), turnVBkt(countFmt(sess.turns || 0))) +
+            statKpi(kpiIco("sessions") + L("请求会话", "Sessions"),
+              ((sess.project && typeof sess.project.sessions === "number")
+                ? ttEsc(countFmt(sess.project.sessions)) : "—"), turnVBkt(
+              (sess.project && typeof sess.project.sessions === "number") ? countFmt(sess.project.sessions) : "—")) +
+          '</div>' +
+          /* 行三：平均耗时 | 平均延迟 | 总耗时（沿用 >0 门控，缺字段不伪造 0s；v302 改名「总耗时」） */
           ((lt.avg_duration_ms > 0 || lt.avg_ttft_ms > 0 || lt.duration_ms > 0)
-            ? '<div class="zu-stat-kpis zu-stat-kpis--sub">' +
-              (lt.avg_duration_ms > 0 ? statKpi(L("平均耗时", "Avg time"), ttEsc(sec(lt.avg_duration_ms))) : "") +
-              (lt.avg_ttft_ms > 0 ? statKpi(L("平均延迟", "Avg TTFT"), ttEsc(sec(lt.avg_ttft_ms))) : "") +
-              (lt.duration_ms > 0 ? statKpi(L("本轮总耗时", "Turn time"), ttEsc(sec(lt.duration_ms))) : "") +
+            ? '<div class="zu-turn-kpis zu-turn-kpis--mid">' +
+              (lt.avg_duration_ms > 0 ? statKpi(kpiIco("duration") + L("平均耗时", "Avg time"), ttEsc(sec(lt.avg_duration_ms)), turnVBkt(sec(lt.avg_duration_ms))) : "") +
+              (lt.avg_ttft_ms > 0 ? statKpi(kpiIco("latency") + L("平均延迟", "Avg TTFT"), ttEsc(sec(lt.avg_ttft_ms)), turnVBkt(sec(lt.avg_ttft_ms))) : "") +
+              (lt.duration_ms > 0 ? statKpi(kpiIco("elapsed") + L("总耗时", "Total time"), ttEsc(sec(lt.duration_ms)), turnVBkt(sec(lt.duration_ms))) : "") +
               '</div>' : "") +
-          ((lt.tool_calls || lt.retries || lt.tool_errors)
-            ? '<div class="zu-stat-scale">' +
-              (lt.tool_calls ? '<span>' + ttEsc(L("工具调用 ", "tools ") + countFmt(lt.tool_calls) + L(" 次", " calls")) + '</span>' : "") +
-              (lt.retries ? '<span>' + ttEsc(L("重试 ", "retries ") + countFmt(lt.retries) + L(" 次", " times")) + '</span>' : "") +
-              (lt.tool_errors ? '<span>' + ttEsc(L("错误 ", "errors ") + countFmt(lt.tool_errors) + L(" 次", " times")) + '</span>' : "") +
-              '</div>' : "") +
-          statModelsTable(lt.models) +
+          /* 行四（v302 用户规格改名「平均输出速度」，与本轮内加权口径一致）：
+           * TPS_BANDS 档位色文字，无背景强调 | 预估费用（问号图标沿用）；
+           * 费用关/缺失时速度格 only-child 占满整行，不留空卡 */
+          '<div class="zu-turn-kpis zu-turn-kpis--duo">' +
+            ((typeof lt.tps === "number" && isFinite(lt.tps) && lt.tps > 0)
+              ? statKpi(kpiIco("speed") + L("平均输出速度", "Avg output rate"), '<b class="' + tpsBand(lt.tps).cls + '">' + ttEsc(lt.tps.toFixed(1)) + '</b> <small>t/s</small>')
+              : statKpi(kpiIco("speed") + L("平均输出速度", "Avg output rate"), "—")) +
+            ((state.cost && typeof lt.cost_usd === "number" && isFinite(lt.cost_usd))
+              ? statKpi(kpiIco("cost") + L("预估费用", "Est. cost") + fxqIcon(lt.models, L("本轮", "this turn")), ttEsc(fmtMoney(lt.cost_usd)))
+              : "") +
+          '</div>' +
+          /* 模型明细：工具调用/重试/错误并入标题行右侧（原独立 scale 行删除）；
+           * 标题行固定、表格进独立滚动区——多模型超高处区内滚，主 tooltip 无滚动条、
+           * 时间行不挤出、首行模型恒可见 */
+          ((lt.models && lt.models.length)
+            ? '<div class="zu-pj-mhead"><div class="zu-pj-mtitle">' + ttEsc(L("模型明细", "Models")) + '</div><div class="zu-pj-morder">' +
+              (turnToolsHtml ? turnToolsHtml : ttEsc(L("按用量排序", "by usage"))) + '</div></div>' +
+              '<div class="zu-turn-models">' + statModelsTable(lt.models, null, true) + '</div>'
+            : "") +
           '<div class="zu-stat-time">' +
             '<b>' + ttEsc(L("时间范围", "Time span")) + '</b>' +
             '<span>' + ((lt.started || lt.ended)
@@ -7582,73 +11950,134 @@
         it(ico('<path d="M7.5 3h12a2 2 0 0 1 2 2v10M4.5 7h12a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H8l-5.5 2V9a2 2 0 0 1 2-2z"/>') +
           '<span class="v">' + fmt(sess.total) + "</span>" +
           (state.theme === "pill" ? "" :
-            (shrink ? "" : cachePct(sess.cache_read, sess.input)) +
+            (shrink ? "" : "") +
             '<span class="dim">' + countFmt(sess.turns || 0) + L("轮 ", " turns · ") + countFmt(sess.requests || 0) + L("次", " req") + "</span>"),
-          "\x01" +
+          "\x01" + statCompactStyle("session") +
           '<div class="zu-stat-tip zu-stat-tip--session">' +
           statHead(L("会话累计", "Session total"), L("全部请求", "All requests"),
             ((sess.title || "").trim() ? '<span class="zu-st-name">' + ttEsc(String(sess.title).replace(/\s+/g, " ").trim()) + '</span>' : "")) +
-          '<div class="zu-stat-kpis">' +
-            statKpi(L("总用量", "Total tokens"), ttEsc(fmt(sess.total || 0))) +
-            statKpi(L("请求次数", "Requests"), ttEsc(countFmt(sess.requests || 0))) +
-            ((state.cost && typeof sess.cost_usd === "number" && isFinite(sess.cost_usd))
-              ? statKpi(L("预估费用", "Est. cost") + fxqIcon(sess.models, L("本会话", "this session")), ttEsc(fmtMoney(sess.cost_usd)))
-              : "") +
-          '</div>' +
-          '<div class="zu-stat-grid2">' +
-            statDetail(L("输入", "Input"), fmt(sess.input || 0),
-              (hitPctOf(sess.input, sess.cache_read) >= 0 ? '<span class="hit">' + ttEsc(L("缓存命中率 ", "cache hit ") + hitPctOf(sess.input, sess.cache_read) + "%") + '</span>' : "")) +
-            statDetail(L("输出", "Output"), fmt(sess.output || 0),
+          /* v300 行一：总用量 | 输入（缓存 N% 徽标随标签右侧）| 输出（含思考辅助行） */
+          '<div class="zu-turn-kpis">' +
+            statKpi(kpiIco("total") + L("总用量", "Total tokens"), ttEsc(fmt(sess.total || 0)), turnVBkt(fmt(sess.total || 0))) +
+            statKpi(kpiIco("input") + L("输入", "Input") +
+              (hitPctOf(sess.input, sess.cache_read) >= 0 ? '<span class="hit zu-turn-hit">' + ttEsc(L("缓存", "cache ") + hitPctOf(sess.input, sess.cache_read) + "%") + '</span>' : ""),
+              ttEsc(fmt(sess.input || 0)), turnVBkt(fmt(sess.input || 0))) +
+            statKpi(kpiIco("output") + L("输出", "Output"), ttEsc(fmt(sess.output || 0)), turnVBkt(fmt(sess.output || 0)),
               (sess.reasoning > 0 ? ttEsc(L("含思考 ", "incl. ") + fmt(sess.reasoning)) : "")) +
           '</div>' +
-          ((sess.cache_write > 0)
-            ? '<div class="zu-stat-grid2" style="margin-top:12px">' +
-              statDetail(L("缓存写入", "Cache write"), fmt(sess.cache_write), "") + '<div></div></div>' : "") +
-          '<div class="zu-stat-scale">' +
-            '<span>' + ttEsc(countFmt(sess.turns || 0) + L(" 轮对话", " turns")) + '</span>' +
-            (sess.tool_calls ? '<span>·</span><span>' + ttEsc(L("工具调用 ", "tools ") + countFmt(sess.tool_calls) + L(" 次", " calls")) + '</span>' : "") +
-            (sess.retries ? '<span>·</span><span>' + ttEsc(L("重试 ", "retries ") + countFmt(sess.retries) + L(" 次", " times")) + '</span>' : "") +
+          /* 行二（v302 用户规格，同本轮卡口径）：请求次数（本会话累计请求）|
+           * 请求轮数（本会话累计轮数）| 请求会话（所属项目累计会话数，缺失诚实显 —） */
+          '<div class="zu-turn-kpis">' +
+            statKpi(kpiIco("requests") + L("请求次数", "Requests"), ttEsc(countFmt(sess.requests || 0)), turnVBkt(countFmt(sess.requests || 0))) +
+            statKpi(kpiIco("turns") + L("请求轮数", "Turns"), ttEsc(countFmt(sess.turns || 0)), turnVBkt(countFmt(sess.turns || 0))) +
+            statKpi(kpiIco("sessions") + L("请求会话", "Sessions"),
+              ((sess.project && typeof sess.project.sessions === "number")
+                ? ttEsc(countFmt(sess.project.sessions)) : "—"), turnVBkt(
+              (sess.project && typeof sess.project.sessions === "number") ? countFmt(sess.project.sessions) : "—")) +
           '</div>' +
-          '<div class="zu-pj-mhead"><div class="zu-pj-mtitle">' + ttEsc(L("模型明细", "Models")) + '</div><div class="zu-pj-morder">' + ttEsc(L("按用量排序", "by usage")) + '</div></div>' +
-          statTable(
-            [L("模型", "Model"), L("Token 用量 ↓", "Tokens ↓"), L("请求次数", "Requests"), L("预估费用", "Est. cost")],
-            (sess.models || []).slice().sort(function (a, b) { return (b.total || 0) - (a.total || 0); }).map(function (m1) {
-              var name = m1.model || L("未知模型", "unknown");
-              return '<tr>' +
-                '<td class="zu-pj-mname" title="' + escAttr(name) + '">' + ttEsc(name) + '</td>' +
-                '<td>' + ttEsc(fmt(m1.total || 0)) + '</td>' +
-                '<td>' + ttEsc(countFmt(m1.requests || 0)) + '</td>' +
-                '<td>' + (typeof m1.cost_usd === "number" && isFinite(m1.cost_usd) ? ttEsc(fmtMoney(m1.cost_usd)) : "—") + '</td>' +
-                '</tr>';
-            }).join("")) +
+          /* 行三：会话级耗时（v300 zusage 聚合；旧快照缺字段按 >0 门控整行收起，不伪造；
+           * v302 改名「总耗时」，secLong 换算保留） */
+          ((sess.avg_duration_ms > 0 || sess.avg_ttft_ms > 0 || sess.duration_ms > 0)
+            ? '<div class="zu-turn-kpis zu-turn-kpis--mid">' +
+              (sess.avg_duration_ms > 0 ? statKpi(kpiIco("duration") + L("平均耗时", "Avg time"), ttEsc(sec(sess.avg_duration_ms)), turnVBkt(sec(sess.avg_duration_ms))) : "") +
+              (sess.avg_ttft_ms > 0 ? statKpi(kpiIco("latency") + L("平均延迟", "Avg TTFT"), ttEsc(sec(sess.avg_ttft_ms)), turnVBkt(sec(sess.avg_ttft_ms))) : "") +
+              (sess.duration_ms > 0 ? statKpi(kpiIco("elapsed") + L("总耗时", "Total time"), ttEsc(secLong(sess.duration_ms)), turnVBkt(secLong(sess.duration_ms))) : "") +
+              '</div>' : "") +
+          /* 行四（v302 用户规格）：平均输出速度（会话均 avg_tps，TPS_BANDS 档色文字）|
+           * 预估费用；轮对话已并入行二「请求轮数」，本行改两列 */
+          '<div class="zu-turn-kpis zu-turn-kpis--duo">' +
+            ((typeof sess.avg_tps === "number" && isFinite(sess.avg_tps) && sess.avg_tps > 0)
+              ? statKpi(kpiIco("speed") + L("平均输出速度", "Avg output rate"), '<b class="' + tpsBand(sess.avg_tps).cls + '">' + ttEsc(sess.avg_tps.toFixed(1)) + '</b> <small>t/s</small>')
+              : statKpi(kpiIco("speed") + L("平均输出速度", "Avg output rate"), "—")) +
+            ((state.cost && typeof sess.cost_usd === "number" && isFinite(sess.cost_usd))
+              ? statKpi(kpiIco("cost") + L("预估费用", "Est. cost") + fxqIcon(sess.models, L("本会话", "this session")), ttEsc(fmtMoney(sess.cost_usd)))
+              : "") +
+          '</div>' +
+          /* 工具调用/重试在模型明细标题行右侧（同本轮 v299 样式）；规模行已并入行三第一列 */
+          ((sess.models && sess.models.length)
+            ? '<div class="zu-pj-mhead"><div class="zu-pj-mtitle">' + ttEsc(L("模型明细", "Models")) + '</div><div class="zu-pj-morder">' +
+              ((sess.tool_calls || sess.retries || sess.tool_errors)
+                ? [(sess.tool_calls ? ttEsc(L("工具调用 ", "tools ") + countFmt(sess.tool_calls) + L(" 次", " calls")) : ""),
+                   (sess.retries ? ttEsc(L("重试 ", "retries ") + countFmt(sess.retries) + L(" 次", " times")) : ""),
+                   (sess.tool_errors ? ttEsc(L("错误 ", "errors ") + countFmt(sess.tool_errors) + L(" 次", " times")) : "")].filter(Boolean).join('<i class="zu-turn-sep">·</i>')
+                : ttEsc(L("按用量排序", "by usage"))) + '</div></div>' +
+              '<div class="zu-turn-models">' + statModelsTable(sess.models, null, true) + '</div>'
+            : "") +
           (d.code && (d.code.add || d.code.del)
-            ? '<div class="zu-stat-scale" style="margin-top:12px"><span>' + ttEsc(L("代码变更 ", "code ") + "+" + (d.code.add || 0) + " / -" + (d.code.del || 0) +
+            ? '<div class="zu-stat-scale"><span>' + ttEsc(L("代码变更 ", "code ") + "+" + (d.code.add || 0) + " / -" + (d.code.del || 0) +
                 (d.code.files ? L("（" + d.code.files + " 文件）", " (" + d.code.files + " files)") : "")) + '</span></div>' : "") +
-          '<div class="zu-pj-time"><b>' + ttEsc(L("时间范围", "Time span")) + '</b><span>' +
+          '<div class="zu-stat-time">' +
+            '<b>' + ttEsc(L("时间范围", "Time span")) + '</b><span>' +
             (sess.started ? fmtStartS(sess.started) : "—") + " — " + (sess.last_at ? fmtStartS(sess.last_at) : "—") + '</span></div>' +
           '</div>');      }
       if (state.show.today) {   // v213 移到会话累计之后（用户规格 2026-11-02，格序：速度→本轮→会话→今日→项目→工具→子代理→⚙）
+        /* v301 今日合计紧凑化（同本轮 v299 / 会话 v300 三行 KPI 形态，450 宽×高度自适应）：
+         * ①总用量|输入(缓存命中率副行)|输出(含思考) ②请求次数|请求轮数|请求会话
+         * ③平均耗时|平均延迟|总耗时 ④平均输出速度(今日加权均 avg_tps 档色)|预估费用；
+         * 11 枚 SVG 图标随 KPI 标签（与本轮/会话同表）；
+         * 模型表标题行固定+表体独立滚动；时间行钉底。样式经 statCompactStyle("today")
+         * 作用域（+today 专属：图标居中/副行绿/单格占满），不波及其它卡。
+         * 平均耗时/延迟/速度来自 v301 zusage 今日聚合，旧快照缺字段按 >0 门控收起。 */
         it(ico('<rect x="3" y="4.5" width="18" height="17" rx="2.5"/><path d="M7.5 2.5v4m9-4v4M3 10h18m-13.5 4h2m5 0h2m-9 4h2m5 0h2"/>') +
-          '<span class="v">' + fmt(today.total) + "</span>",
+          '<span class="v">' + fmt(today.total) + "</span>" +
+          (state.theme === "pill" ? "" :
+            (today.turns != null
+              ? '<span class="dim">' + countFmt(today.turns) + L("轮 ", " turns · ") + countFmt(today.requests || 0) + L("次", " req") + "</span>"
+              : '<span class="dim">' + countFmt(today.requests || 0) + L("次", " req") + "</span>")),
           "\x01" +
+          statCompactStyle("today") +
           '<div class="zu-stat-tip zu-stat-tip--today">' +
           statHead(L("今日合计", "Today"), L("今天所有会话", "All sessions today")) +
-          '<div class="zu-stat-kpis">' +
-            statKpi(L("总用量", "Total tokens"), ttEsc(fmt(today.total || 0))) +
-            statKpi(L("请求次数", "Requests"), ttEsc(countFmt(today.requests || 0))) +
+          /* 行一：总用量 | 输入（缓存命中率副行，柔和绿）| 输出（含思考副行） */
+          '<div class="zu-turn-kpis">' +
+            statKpi(kpiIco("total") + L("总用量", "Total tokens"), ttEsc(fmt(today.total || 0)), turnVBkt(fmt(today.total || 0))) +
+            statKpi(kpiIco("input") + L("输入", "Input"), ttEsc(fmt(today.input || 0)), turnVBkt(fmt(today.input || 0)),
+              (today.input > 0 ? '<span class="hit">' + ttEsc(L("缓存命中率 ", "cache hit ") + Math.round((today.cache_read || 0) / today.input * 100) + "%") + '</span>' : "")) +
+            statKpi(kpiIco("output") + L("输出", "Output"), ttEsc(fmt(today.output || 0)), turnVBkt(fmt(today.output || 0)),
+              (today.reasoning > 0 ? ttEsc(L("含思考 ", "incl. ") + fmt(today.reasoning)) : "")) +
+          '</div>' +
+          /* 行二（v302.2 用户规格，同本轮/会话口径）：请求次数（今日累计请求）|
+           * 请求轮数（今日累计轮数）| 请求会话（今日发起过请求的去重会话数，
+           * v302.2 zusage 新聚合；0=今日尚无会话请求，非伪造） */
+          '<div class="zu-turn-kpis">' +
+            statKpi(kpiIco("requests") + L("请求次数", "Requests"), ttEsc(countFmt(today.requests || 0)), turnVBkt(countFmt(today.requests || 0))) +
+            /* 轮数/会话数：旧远端快照可能缺字段——缺显「—」不伪造 0（条面 913 行同款
+             * != null 门控；本地新快照恒有值，0=今日尚无，照实显示） */
+            statKpi(kpiIco("turns") + L("请求轮数", "Turns"), ttEsc(today.turns != null ? countFmt(today.turns) : "—"), turnVBkt(today.turns != null ? countFmt(today.turns) : "")) +
+            statKpi(kpiIco("sessions") + L("请求会话", "Sessions"), ttEsc(today.sessions != null ? countFmt(today.sessions) : "—"), turnVBkt(today.sessions != null ? countFmt(today.sessions) : "")) +
+          '</div>' +
+          /* 行三：平均耗时 | 平均延迟（>0 门控缺失不伪造 0s）| 总耗时（Σ生成耗时，
+           * secLong 换算；v302.2 重试格按新规格移除） */
+          ((today.avg_duration_ms > 0 || today.avg_ttft_ms > 0 || today.duration_ms > 0)
+            ? '<div class="zu-turn-kpis zu-turn-kpis--mid">' +
+              (today.avg_duration_ms > 0 ? statKpi(kpiIco("duration") + L("平均耗时", "Avg time"), ttEsc(sec(today.avg_duration_ms)), turnVBkt(sec(today.avg_duration_ms))) : "") +
+              (today.avg_ttft_ms > 0 ? statKpi(kpiIco("latency") + L("平均延迟", "Avg TTFT"), ttEsc(sec(today.avg_ttft_ms)), turnVBkt(sec(today.avg_ttft_ms))) : "") +
+              (today.duration_ms > 0 ? statKpi(kpiIco("elapsed") + L("总耗时", "Total time"), ttEsc(secLong(today.duration_ms)), turnVBkt(secLong(today.duration_ms))) : "") +
+              '</div>' : "") +
+          /* 行四（v302.2 改名「平均输出速度」统一三卡措辞）：今日加权均
+           * （TPS_BANDS 档色文字）| 预估费用（问号图标沿用）；
+           * 费用关/缺失时速度格 only-child 占满整行（today 专属规则） */
+          '<div class="zu-turn-kpis zu-turn-kpis--duo">' +
+            ((typeof today.avg_tps === "number" && isFinite(today.avg_tps) && today.avg_tps > 0)
+              ? statKpi(kpiIco("speed") + L("平均输出速度", "Avg output rate"), '<b class="' + tpsBand(today.avg_tps).cls + '">' + ttEsc(today.avg_tps.toFixed(1)) + '</b> <small>t/s</small>')
+              : statKpi(kpiIco("speed") + L("平均输出速度", "Avg output rate"), "—")) +
             ((state.cost && typeof today.cost_usd === "number" && isFinite(today.cost_usd))
-              ? statKpi(L("预估费用", "Est. cost") + fxqIcon(today.models, L("今日", "today")), ttEsc(fmtMoney(today.cost_usd)))
+              ? statKpi(kpiIco("cost") + L("预估费用", "Est. cost") + fxqIcon(today.models, L("今日", "today")), ttEsc(fmtMoney(today.cost_usd)))
               : "") +
           '</div>' +
-          '<div class="zu-stat-grid3">' +
-            statDetail(L("输入用量", "Input"), fmt(today.input || 0),
-              (today.input > 0 ? '<span class="hit">' + ttEsc(L("缓存命中率 ", "cache hit ") + Math.round((today.cache_read || 0) / today.input * 100) + "%") + '</span>' : "")) +
-            statDetail(L("输出用量", "Output"), fmt(today.output || 0),
-              (today.reasoning > 0 ? ttEsc(L("含思考 ", "incl. ") + fmt(today.reasoning)) : "")) +
-            statDetail(L("重试次数", "Retries"), countFmt(today.retries || 0), "") +
-          '</div>' +
-          statModelsTable(today.models) +
-          '<div class="zu-pj-time"><b>' + ttEsc(L("时间范围", "Time span")) + '</b><span>' +
+          /* 模型明细：标题行固定、表体进独立滚动区（同本轮/会话），多模型区内滚不撑高主卡 */
+          /* 模型明细标题行右侧（v302.3 用户规格，同本轮/会话形态）：工具调用/重试并入，
+           * 均无时回退「按用量排序」；旧快照缺 tool_calls 只显重试段 */
+          ((today.models && today.models.length)
+            ? '<div class="zu-pj-mhead"><div class="zu-pj-mtitle">' + ttEsc(L("模型明细", "Models")) + '</div><div class="zu-pj-morder">' +
+              ((today.tool_calls || today.retries)
+                ? [(today.tool_calls ? ttEsc(L("工具调用 ", "tools ") + countFmt(today.tool_calls) + L(" 次", " calls")) : ""),
+                   (today.retries ? ttEsc(L("重试 ", "retries ") + countFmt(today.retries) + L(" 次", " times")) : "")].filter(Boolean).join('<i class="zu-turn-sep">·</i>')
+                : ttEsc(L("按用量排序", "by usage"))) + '</div></div>' +
+              '<div class="zu-turn-models">' + statModelsTable(today.models, null, true) + '</div>'
+            : "") +
+          '<div class="zu-stat-time">' +
+            '<b>' + ttEsc(L("时间范围", "Time span")) + '</b><span>' +
             (today.started ? fmtStartS(today.started) : "—") + " — " + (today.last_at ? fmtStartS(today.last_at) : "—") + '</span></div>' +
           '</div>');      }
       if (state.show.proj && sess.project) {   // v159 项目累计：本项目全部会话（含子代理），远端/不在本地库无此字段不渲染
@@ -7658,36 +12087,42 @@
         it(ico('<path d="M3.5 6.5a2 2 0 0 1 2-2h4.2l2 2h7.3a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5.5a2 2 0 0 1-2-2z"/>') +
           '<span class="v">' + fmt(pj.total) + "</span>" +
           (state.theme === "pill" ? "" :
-            (shrink ? "" : cachePct(pj.cache_read, pj.input)) +
+            (shrink ? "" : "") +
             '<span class="dim">' + countFmt(pj.sessions || 0) + L("会话 ", " sessions · ") + countFmt(pj.requests || 0) + L("次", " req") + "</span>"),
 "\x01" + buildProjectTipHTML(pj, pjKey), "zu-pj-item");
       }
       if (state.show.tools) {
-        var toolRows = (tls.list || []).map(function (t1) {
-          return '<div class="rt-tool"><span class="rt-tool-name">' + ttEsc(t1.name) + '</span><span class="rt-atom">' + ttEsc(countFmt(t1.count) + L(" 次", " calls")) + '</span><span class="rt-atom">' + (t1.duration_ms === 0 ? '0.0s' : sec(t1.duration_ms)) + (t1.errors ? ttEsc(L(" · 错误 ", " · errors ") + countFmt(t1.errors)) : "") + '</span></div>';
-        }).join("");
+        /* v304 工具调用紧凑化（用户 /goal，同四卡家族形态，450 宽×高度自适应）：
+         * 标题前置扳手 SVG（statHead 第 4 参）；双 KPI 走 zu-turn-kpis--duo；
+         * 四列表格 table-layout:fixed + 长名省略（title 全文）+ sticky 表头；
+         * 累计耗时 secLong 换算（title 保留完整秒数）；表体进独立滚动区，
+         * 多工具区内滚不撑高主卡；错误 >0 柔和红、0 弱化灰（err/dim0 既有语义）。 */
+        var hasTools = tls.list && tls.list.length;
         it(ico('<path d="M14.5 2.5a6 6 0 0 0-5.6 8.1L3.3 16.2a3.2 3.2 0 0 0 4.5 4.5l5.6-5.6a6 6 0 0 0 8.1-5.6l-4.1 3-3.8-3.8 3-4.1a6 6 0 0 0-2.1-2.1z"/>') +
           '<span class="v">' + countFmt(tls.total || 0) + "</span>" +
           (tls.errors ? '<span class="eb">' +
             ico('<circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/>') +
             tls.errors + "</span>" : ""),
           "\x01" +
+          statCompactStyle("tools") +
           '<div class="zu-stat-tip zu-stat-tip--tools">' +
-          statHead(L("工具调用", "Tool calls"), "") +
-          '<div class="zu-stat-kpis cols2">' +
-            statKpi(L("调用总数", "Total calls"), ttEsc(countFmt(tls.total || 0)) + ' <small>' + ttEsc(L("次", "calls")) + '</small>') +
-            statKpi(L("错误", "Errors"), ttEsc(countFmt(tls.errors || 0)) + ' <small>' + ttEsc(L("次", "times")) + '</small>', (tls.errors ? "err" : "")) +
+          statHead(L("工具调用", "Tool calls"), "", "", kpiIco("tools")) +
+          '<div class="zu-turn-kpis zu-turn-kpis--duo">' +
+            statKpi(kpiIco("requests") + L("调用总数", "Total calls"), ttEsc(countFmt(tls.total || 0)) + ' <small>' + ttEsc(L("次", "calls")) + '</small>', turnVBkt(countFmt(tls.total || 0))) +
+            statKpi(kpiIco("retry") + L("错误", "Errors"), ttEsc(countFmt(tls.errors || 0)) + ' <small>' + ttEsc(L("次", "times")) + '</small>', (tls.errors ? "err" : "")) +
           '</div>' +
-          (toolRows
-            ? statTable([L("工具", "Tool"), L("调用次数", "Calls"), L("累计耗时", "Total time"), L("错误", "Errors")],
+          (hasTools
+            ? '<div class="zu-turn-models">' +
+              statTable([L("工具", "Tool"), L("调用次数", "Calls"), L("累计耗时", "Total time"), L("错误", "Errors")],
                 (tls.list || []).map(function (t1) {
                   var errCell = t1.errors ? '<td class="err">' + ttEsc(countFmt(t1.errors)) + '</td>' : '<td class="dim0">0</td>';
-                  var durTxt = !t1.duration_ms ? '0.0s' : (t1.duration_ms < 50 ? '&lt;0.1s' : ttEsc(sec(t1.duration_ms)));
+                  var durTxt = !t1.duration_ms ? '0.0s' : (t1.duration_ms < 50 ? '&lt;0.1s' : ttEsc(secLong(t1.duration_ms)));
                   var durCls = (!t1.duration_ms || t1.duration_ms < 50) ? ' class="dim0"' : '';
+                  var durTitle = (!t1.duration_ms || t1.duration_ms < 50) ? '' : ' title="' + escAttr(sec(t1.duration_ms)) + '"';
                   return '<tr><td class="zu-pj-mname" title="' + escAttr(t1.name) + '">' + ttEsc(t1.name) + '</td>' +
                     '<td>' + ttEsc(countFmt(t1.count || 0)) + '</td>' +
-                    '<td' + durCls + '>' + durTxt + '</td>' + errCell + '</tr>';
-                }).join(""))
+                    '<td' + durCls + durTitle + '>' + durTxt + '</td>' + errCell + '</tr>';
+                }).join("")) + '</div>'
             : '<div class="zu-stat-note">' + ttEsc(L("无工具调用记录", "No tool calls recorded")) + '</div>') +
           '</div>');      }
       if (state.show.sub) {
@@ -8437,7 +12872,9 @@
           var v2Freeze = (typeof speedInteractAt !== "undefined" && speedInteractAt &&
             Date.now() - speedInteractAt < 600) ||
             (typeof mouseInBar !== "undefined" && mouseInBar);
-          if (tipFor === liveCell && !v2Freeze && !(ae && ae.closest && ae.closest(".zu-sc-col"))) drawTip(liveCell, true);
+          /* v291：热力图格子（.zu-hm-cell）同样 tabindex 可聚焦，键盘焦点落在格内时
+           * 与柱体同守卫——innerHTML 重建会销毁聚焦格（焦点跌落 body、Tab 序断裂） */
+          if (tipFor === liveCell && !v2Freeze && !(ae && ae.closest && ae.closest(".zu-sc-col,.zu-hm-cell"))) drawTip(liveCell, true);
         }
         return;
       }
@@ -8642,6 +13079,15 @@
      * 瞬时不可见判定）都不得隐藏 tooltip——只有鼠标真正离开条面（left-bar，force）
      * 或条面整体隐藏（force）才允许。 */
     function hideTip(force, cause) {
+      /* v297.3（开发者常驻开关总闸）：开启后除 Escape、「打开 ⚙ 面板」与点同格
+       * 主动关闭（re-click）外，一切自动收起（left-bar/grace/win-leave/
+       * focus-leave/render-orphan……）都在此统一拦截——比逐个调用点守卫可靠
+       * （第一版漏了 win-leave/focus-leave 两条路径，用户实测「移出仍会关」）。
+       * typeof 守卫兼容切片沙箱。 */
+      if (state.devKeepTip && cause !== "escape" && cause !== "gear-open" && cause !== "re-click") {
+        tipStats.lastHide = "dev-keep:" + (cause || "?");
+        return;
+      }
       /* v271：tip 内按压后 1.2s 硬保活——点击/按压引发的焦点跌落、宿主重渲染、
        * 命中区边缘误判（left-bar）等任何 force 收起都不得关掉用户正在交互的
        * tooltip（用户实报「点击 tooltips 中的任何位置都会导致关闭」）；win-leave
@@ -8678,7 +13124,12 @@
        * 对齐出现」，替换 v284 的 dock 对齐（宿主类名依赖过重且实测未生效）。
        * __zuAlignLeft 由 drawTip 渲染 V2 内容时置位，非 V2 内容走原居中锚定。 */
       if (tip.__zuAlignLeft) {
-        left = Math.max(8, Math.min(ar.left, Math.max(8, innerWidth - tr.width - 8)));
+        /* v304.1：窄窗口下左对齐会让右缘间隙数倍于左缘（760 卡 in ~764 窗：左 8/
+         * 右 ~31，用户实报「最右 padding 与最左不一致」）——窗口富余 <100px 时改
+         * 水平居中（两侧等距），宽窗口仍按 v285 贴锚元素左缘。 */
+        var slackW = innerWidth - tr.width;
+        left = slackW < 100 ? Math.max(4, slackW / 2)
+          : Math.max(8, Math.min(ar.left, Math.max(8, innerWidth - tr.width - 8)));
       }
       tip.style.left = Math.round(left) + "px";
       tip.style.top = Math.round(top) + "px";
@@ -8700,13 +13151,13 @@
        * 实报「全部×全部拉到末尾、关闭再开回到开头」）同样捕获，并带选择键守卫
        * （.zu-sv-root 的 data-sv-key 同键才回填，切换范围/时间后归零；V1 旧图无键
        * 视为空串键，同内容回填行为与 v232 一致）。 */
-      var oldChartL = 0, oldChartKey = "";
+      var oldChartL = null, oldChartKey = "";
       if (oldBody) {
         var oc = oldBody.querySelector(".zu-sc-wrap");
         if (oc) {
           var or0 = oldBody.querySelector(".zu-sv-root");
           oldChartKey = or0 ? (or0.getAttribute("data-sv-key") || "") : "";
-          oldChartL = oc.scrollLeft;
+          oldChartL = oc.scrollLeft;   /* v291 三态：0 也是有效记忆（滚到最左），null=本图无既有位置 */
         }
       }
       tipSig = t;
@@ -8715,16 +13166,60 @@
       if (t.charCodeAt(0) === 1) tip.firstChild.innerHTML = t.slice(1);   // \x01 前缀 = 结构化 HTML（v67.1）
       else tip.firstChild.textContent = t;
       tip.firstChild.scrollTop = oldScroll;
-      /* v285：V2 卡左对齐标记（positionTip 消费：left=锚元素左缘） */
-      tip.__zuAlignLeft = !!tip.querySelector(".zu-sv-root");
+      /* v285：V2 卡左对齐标记（positionTip 消费：left=锚元素左缘）；
+       * v299.2（用户规格）：本轮 500×350 卡同款居左（与生成速度 tooltip 对齐语义一致） */
+      tip.__zuAlignLeft = !!(tip.querySelector(".zu-sv-root") || tip.querySelector(".zu-stat-tip--turn"));
+      /* v297：月历网格实测尺寸回写——builder 动态字号的数据源（量测便宜、单元素；
+       * 字号变化不改变格尺寸，无测量/布局循环） */
       var nc = tip.querySelector(".zu-sc-wrap");
-      if (nc && oldChartL) {
+      if (nc && oldChartL !== null) {
         var nr0 = tip.querySelector(".zu-sv-root");
-        if (nr0 ? (nr0.getAttribute("data-sv-key") || "") === oldChartKey : !oldChartKey)
+        if (nr0 ? (nr0.getAttribute("data-sv-key") || "") === oldChartKey : !oldChartKey) {
           nc.scrollLeft = oldChartL;
+        } else if (nc.hasAttribute && nc.hasAttribute("data-sv-end")) {
+          /* v291：键变（切 Tab 进入全部历史）= 本图无有效记忆，同样滚到最新区 */
+          nc.scrollLeft = nc.scrollWidth;
+        }
+      } else if (nc && nc.hasAttribute && nc.hasAttribute("data-sv-end")) {
+        /* v291 历史热力图首开（无记忆位置）：最新日期在最右，初始定位到最右区域；
+         * 用户滚过后 oldChartL 非 null 走上方同键回填（含 0=最左），不再跳回（§12.2） */
+        nc.scrollLeft = nc.scrollWidth;
       }
       tip.style.display = "block";
       positionTip(el, keepTop);
+      /* v297：月历网格实测尺寸回写（动态字号数据源）。v298 起挂 display:block 之后——
+       * 隐藏态量测全 0 会把下一帧字号压到 6px 下限（首开闪小字，下轮刷新才自愈）。 */
+      var mgEl = tip.querySelector(".zu-hm-grid--mon");
+      if (mgEl) {
+        var mgr = mgEl.getBoundingClientRect();
+        window.__zusageSpdMonRect = { w: mgr.width, h: mgr.height };
+      }
+      /* v297.2：分段高度诊断（定位宿主「刻度超出图表卡」——tip→tbody→root→body→chart
+       * →plotrow→gutcol/gutter/wrap/plot 全层 rect + 关键 computed style）。
+       * 必须挂 display:block 之后：隐藏态 getBoundingClientRect 全 0（v298 首版挂在
+       * innerHTML 重建处实测六层全 0 废片）。 */
+      try {
+        var segR = tip.querySelector(".zu-sv-root"), segWrap = tip.querySelector(".zu-sc-wrap"),
+          segHead = tip.querySelector(".zu-sv-head"), segPlot = tip.querySelector(".zu-sv-plot"),
+          segBody = tip.querySelector(".zu-speed-body"), segChart = tip.querySelector(".zu-sv-chart"),
+          segRow = tip.querySelector(".zu-sv-plotrow"), segGutcol = tip.querySelector(".zu-sv-gutcol"),
+          segGutter = tip.querySelector(".zu-sc-gutter");
+        if (segR) {
+          var H8 = function (el) { return el ? Math.round(el.getBoundingClientRect().height) : null; };
+          var cs8 = getComputedStyle(segR), csT = getComputedStyle(tip);
+          var csCh = segChart ? getComputedStyle(segChart) : null,
+            csWp = segWrap ? getComputedStyle(segWrap) : null;
+          FATAL.segH = { t: Date.now(), tipH: H8(tip), tipW: Math.round(tip.getBoundingClientRect().width),
+            tbodyH: H8(tip.firstChild), rootH: H8(segR),
+            bodyH: H8(segBody), chartH: H8(segChart), rowH: H8(segRow),
+            gutcolH: H8(segGutcol), gutterH: H8(segGutter),
+            headH: H8(segHead), wrapH: H8(segWrap), plotH: H8(segPlot),
+            chartPad: csCh ? csCh.padding : null, chartDisplay: csCh ? csCh.display : null,
+            chartAlignSelf: csCh ? csCh.alignSelf : null, wrapAlignSelf: csWp ? csWp.alignSelf : null,
+            rootPad: cs8.padding, rootBox: cs8.boxSizing,
+            tipPad: csT.padding, tipBox: csT.boxSizing };
+        }
+      } catch (_) { }
     }
     function showTipFor(el) {
       if (tipFor && tipFor !== el && tipFor.removeAttribute) tipFor.removeAttribute("aria-describedby");
@@ -8824,7 +13319,7 @@
         /* 面板上不保留条面 tooltip（v42）：开设置的路上触发过条目 tooltip 的话，
          * 这分支若不清掉它，鼠标在面板里它就永不消失。 */
         mouseInBar = true;
-        if (tipFor) hideTip(true, "panel-hover");
+        if (tipFor && !state.devKeepTip) hideTip(true, "panel-hover");
         return;
       }
       if (!bar.contains(t)) {
@@ -8846,12 +13341,12 @@
           mouseInBar = true;   // 视同在途：总闸拦住 render-orphan 等路径趁机熄灯
           if (!tipGraceTimer) tipGraceTimer = setTimeout(function () {
             tipGraceTimer = 0;
-            hideTip(true, "grace-expire");
+            if (!state.devKeepTip) hideTip(true, "grace-expire");
           }, 300);
           return;
         }
         mouseInBar = false;
-        if (tipFor) hideTip(true, "left-bar");   // v43：移开条面立即消失，不再留 300ms 缓冲
+        if (tipFor && !state.devKeepTip) hideTip(true, "left-bar");   // v43：移开条面立即消失；v297.3 开发者常驻开关时不自动收
         return;
       }
       mouseInBar = true;
@@ -8933,7 +13428,7 @@
         }, 400);
       } else {
         mouseInBar = false;
-        hideTip(true, "left-bar");
+        if (!state.devKeepTip) hideTip(true, "left-bar");   // v297.3：开发者常驻开关时不自动收
       }
     }
     listenGlobal(document.documentElement, "mouseleave", function (e) {
@@ -10095,6 +14590,8 @@
       if (cwBox) cwBox.checked = !!state.cmdkW;
       var tipClickBox = panel.querySelector(".zu-tip-click");
       if (tipClickBox) tipClickBox.checked = !!state.tipClick;
+      var devKeepTipBox = panel.querySelector(".zu-dev-keep-tip");
+      if (devKeepTipBox) devKeepTipBox.checked = !!state.devKeepTip;
       var qrBox = panel.querySelector(".zu-quota-remain");
       if (qrBox) qrBox.checked = !!state.quotaRemain;
       if (typeof zuRotatorSyncPanel === "function") zuRotatorSyncPanel(panel);
@@ -10518,6 +15015,12 @@
         persist();
         return;
       }
+      if (t2.classList.contains("zu-dev-keep-tip")) {
+        /* v297.3：开发者调试开关，即时生效（下一次收起判定即按新模式） */
+        state.devKeepTip = t2.checked ? 1 : 0;
+        persist();
+        return;
+      }
       if (t2.name === "zu-lang") {
         if (t2.value !== state.lang) {
           /* v177：cnUnits() 依赖 state.lang，zh↔en 翻转 turn-text 的 cn 分量——与 cnNum/
@@ -10612,8 +15115,10 @@
       }
       return n;
     }
-    function subPopKpi(k, v, u) {
-      return '<div class="zu-sp-kpi"><div class="k">' + k + '</div><div class="v">' + v + '</div>' +
+    /* v304：首参=KPI_ICON_PATHS 图标名（14px，与统计卡同表 kpiIco 单源）；k 为 raw HTML
+     * （缓存 N% 徽标随「输入」标签右侧，同四卡形态）；u=值下方辅助行（含思考等） */
+    function subPopKpi(icoName, k, v, u) {
+      return '<div class="zu-sp-kpi"><div class="k">' + (icoName ? kpiIco(icoName, 14) : "") + k + '</div><div class="v">' + v + '</div>' +
         (u ? '<div class="u">' + u + "</div>" : "") + "</div>";
     }
     function subPopKpis(a1, a2, a3, extraCls) {
@@ -10640,43 +15145,85 @@
     }
     function subPopSummaryHTML(sub) {
       var run = subPopRunningCount();
+      var items = subPopItems(sub);
       var costOk = !!(state.cost && sub && typeof sub.cost_usd === "number" && isFinite(sub.cost_usd));
       var sIn = (sub && sub.input) || 0, sHit = sIn > 0 ? Math.round(((sub && sub.cache_read) || 0) / sIn * 100) : -1;
       var sRea = (sub && sub.reasoning) || 0;
-      var k1 = subPopKpi(ttEsc(L("总用量", "Total tokens")), ttEsc(fmt((sub && sub.total) || 0)), "");
-      var k2 = subPopKpi(ttEsc(L("请求次数", "Requests")), ttEsc(countFmt((sub && sub.requests) || 0)), "");
-      var k3 = subPopKpi(ttEsc(L("预估费用", "Est. cost")) + fxqIcon(sub && sub.models, L("子代理累计", "the sub-agents")), costOk ? ttEsc(fmtMoney(sub.cost_usd)) : "—", "");
-      var u1 = subPopKpi(ttEsc(L("输入", "Input")), ttEsc(fmt(sIn)),
-        sHit >= 0 ? '<span class="hit">' + ttEsc(L("缓存命中率 ", "cache hit ") + sHit + "%") + '</span>' : "");
-      var u2 = subPopKpi(ttEsc(L("输出", "Output")), ttEsc(fmt((sub && sub.output) || 0)),
-        sRea > 0 ? ttEsc(L("含思考 ", "incl. ") + fmt(sRea)) : "");
-      var u3 = subPopKpi(ttEsc(L("缓存命中", "Cache read")), ttEsc(fmt((sub && sub.cache_read) || 0)), "");
+      /* v304 四行 KPI（同本轮/会话/今日/项目统计卡形态）：①总用量|输入(缓存 N% 徽标随
+       * 标签)|输出(含思考) ②请求次数|请求轮数|请求会话 ③平均耗时|平均延迟|总耗时
+       * ④平均输出速度(加权档色)|预估费用。轮数/耗时为 v304 zusage 子代理聚合，
+       * 旧快照缺字段按 typeof 降级显 —（不伪造 0）；请求会话=子会话去重数（list 长度）。 */
+      var r1 = subPopKpis(
+        subPopKpi("total", ttEsc(L("总用量", "Total tokens")), ttEsc(fmt((sub && sub.total) || 0)), ""),
+        subPopKpi("input", ttEsc(L("输入", "Input")) +
+          (sHit >= 0 ? '<span class="hit">' + ttEsc(L("缓存", "cache ") + sHit + "%") + '</span>' : ""),
+          ttEsc(fmt(sIn)), ""),
+        subPopKpi("output", ttEsc(L("输出", "Output")), ttEsc(fmt((sub && sub.output) || 0)),
+          sRea > 0 ? ttEsc(L("含思考 ", "incl. ") + fmt(sRea)) : ""));
+      var r2 = subPopKpis(
+        subPopKpi("requests", ttEsc(L("请求次数", "Requests")), ttEsc(countFmt((sub && sub.requests) || 0)), ""),
+        subPopKpi("turns", ttEsc(L("请求轮数", "Turns")),
+          (sub && typeof sub.turns === "number") ? ttEsc(countFmt(sub.turns)) : "—", ""),
+        subPopKpi("sessions", ttEsc(L("请求会话", "Sessions")), ttEsc(countFmt(items.length)), ""));
+      var r3 = (sub && (sub.avg_duration_ms > 0 || sub.avg_ttft_ms > 0 || sub.duration_ms > 0)
+        ? '<div class="zu-sp-kpis3 zu-sp-kpis3--mid">' +
+          (sub.avg_duration_ms > 0 ? subPopKpi("duration", ttEsc(L("平均耗时", "Avg time")), ttEsc(sec(sub.avg_duration_ms)), "") : "") +
+          (sub.avg_ttft_ms > 0 ? subPopKpi("latency", ttEsc(L("平均延迟", "Avg TTFT")), ttEsc(sec(sub.avg_ttft_ms)), "") : "") +
+          (sub.duration_ms > 0 ? subPopKpi("elapsed", ttEsc(L("总耗时", "Total time")), ttEsc(secLong(sub.duration_ms)), "") : "") +
+          '</div>' : "");
       var band = sub && sub.rate_avg > 0 ? tpsBand(sub.rate_avg) : null;
-      var rate = '<div class="zu-sp-rate">' + ttEsc(L("平均速率", "Average rate")) +
-        (band ? '<b class="' + band.cls + '">' + ttEsc(sub.rate_avg.toFixed(1)) + "</b>" + ttEsc(L(" t/s", " t/s"))
-              : "<b>—</b>") + "</div>";
+      var r4 = '<div class="zu-sp-kpis3 zu-sp-kpis3--duo">' +
+        subPopKpi("speed", ttEsc(L("平均输出速度", "Avg output rate")),
+          band ? '<b class="' + band.cls + '">' + ttEsc(sub.rate_avg.toFixed(1)) + '</b><small>' + ttEsc(L(" t/s", " t/s")) + '</small>' : "—", "") +
+        (costOk ? subPopKpi("cost", ttEsc(L("预估费用", "Est. cost")) + fxqIcon(sub && sub.models, L("子代理累计", "the sub-agents")), ttEsc(fmtMoney(sub.cost_usd)), "") : "") +
+        '</div>';
+      /* 汇总最近活动 = 各任务最后完成时间的最大值（v304 时间信息补齐） */
+      var lastAt = 0;
+      for (var i = 0; i < items.length; i++) {
+        var lv = (items[i].rec && items[i].rec.last) || 0;
+        if (lv > lastAt) lastAt = lv;
+      }
+      var meta = lastAt ? '<div class="zu-sp-meta"><span>' + ttEsc(L("最后活动", "Last active")) +
+        " <b>" + ttEsc(fmtStartS(lastAt)) + "</b></span></div>" : "";
       var models = subPopModelsHTML(sub && sub.models);
       return '<div class="zu-spview-head"><h3>' + ttEsc(L("汇总", "Summary")) + "</h3>" +
         '<span class="zu-spstate' + (run ? " run" : "") + '"><span class="dot"></span>' +
         ttEsc(run ? run + L(" 个子代理运行中", " sub-agent(s) running") : L("暂无运行中的子代理", "No running sub-agents")) +
         "</span></div>" +
-        subPopKpis(k1, k2, k3) + subPopKpis(u1, u2, u3, "zu-sp-usage") + rate + models;
+        r1 + r2 + r3 + r4 + models + meta;
     }
     function subPopDetailHTML(it1) {
       var r = it1.rec || {}, name = subPopNameOf(it1);
       var sub2 = String(r.agent || "subagent").replace(/^zcode-/, "") + " · …" + it1.sid.slice(-4);
       var band = r.tps_avg > 0 ? tpsBand(r.tps_avg) : null;
       var rIn = r.input || 0, rHit = rIn > 0 ? Math.round((r.cache_read || 0) / rIn * 100) : -1;
-      var k1 = subPopKpi(ttEsc(L("总消耗", "Total")), ttEsc(fmt(r.total || 0)), "");
-      var k2 = subPopKpi(ttEsc(L("请求次数", "Requests")), ttEsc(countFmt(r.requests || 0)), "");
-      var k3 = subPopKpi(ttEsc(L("平均速率", "Avg rate")),
-        band ? '<span class="' + band.cls + '">' + ttEsc(r.tps_avg.toFixed(1)) + '</span><small>t/s</small>' : "—", "");
-      var u1 = subPopKpi(ttEsc(L("输入", "Input")), ttEsc(fmt(rIn)),
-        rHit >= 0 ? '<span class="hit">' + ttEsc(L("缓存命中率 ", "cache hit ") + rHit + "%") + '</span>' : "");
-      var u2 = subPopKpi(ttEsc(L("输出", "Output")), ttEsc(fmt(r.output || 0)),
-        r.reasoning > 0 ? ttEsc(L("含思考 ", "incl. ") + fmt(r.reasoning)) : "");
-      var u3 = subPopKpi(ttEsc(L("缓存命中", "Cache read")), ttEsc(fmt(r.cache_read || 0)),
-        r.cache_write > 0 ? ttEsc(L("缓存写入 ", "cache write ") + fmt(r.cache_write)) : "");
+      var costOk = !!(state.cost && typeof r.cost_usd === "number" && isFinite(r.cost_usd));
+      /* v304 单任务四行同汇总（数据严格限本子会话 sid 聚合）：请求会话=该任务关联的
+       * 子会话数（list 按 sid 分组，本项身份即单会话，计 1 为分组真值非硬编码猜值）；
+       * 运行中未入库任务各值诚实 0/—，估算速率仅在 meta 的 subrate 槽位（「估 X t/s」）， */
+      var r1 = subPopKpis(
+        subPopKpi("total", ttEsc(L("总用量", "Total tokens")), ttEsc(fmt(r.total || 0)), ""),
+        subPopKpi("input", ttEsc(L("输入", "Input")) +
+          (rHit >= 0 ? '<span class="hit">' + ttEsc(L("缓存", "cache ") + rHit + "%") + '</span>' : ""),
+          ttEsc(fmt(rIn)), ""),
+        subPopKpi("output", ttEsc(L("输出", "Output")), ttEsc(fmt(r.output || 0)),
+          r.reasoning > 0 ? ttEsc(L("含思考 ", "incl. ") + fmt(r.reasoning)) : ""));
+      var r2 = subPopKpis(
+        subPopKpi("requests", ttEsc(L("请求次数", "Requests")), ttEsc(countFmt(r.requests || 0)), ""),
+        subPopKpi("turns", ttEsc(L("请求轮数", "Turns")),
+          typeof r.turns === "number" ? ttEsc(countFmt(r.turns)) : "—", ""),
+        subPopKpi("sessions", ttEsc(L("请求会话", "Sessions")), ttEsc(countFmt(1)), ""));
+      var r3 = ((r.avg_duration_ms > 0 || r.avg_ttft_ms > 0 || r.duration_ms > 0)
+        ? '<div class="zu-sp-kpis3 zu-sp-kpis3--mid">' +
+          (r.avg_duration_ms > 0 ? subPopKpi("duration", ttEsc(L("平均耗时", "Avg time")), ttEsc(sec(r.avg_duration_ms)), "") : "") +
+          (r.avg_ttft_ms > 0 ? subPopKpi("latency", ttEsc(L("平均延迟", "Avg TTFT")), ttEsc(sec(r.avg_ttft_ms)), "") : "") +
+          (r.duration_ms > 0 ? subPopKpi("elapsed", ttEsc(L("总耗时", "Total time")), ttEsc(secLong(r.duration_ms)), "") : "") +
+          '</div>' : "");
+      var r4 = '<div class="zu-sp-kpis3 zu-sp-kpis3--duo">' +
+        subPopKpi("speed", ttEsc(L("平均输出速度", "Avg output rate")),
+          band ? '<b class="' + band.cls + '">' + ttEsc(r.tps_avg.toFixed(1)) + '</b><small>' + ttEsc(L(" t/s", " t/s")) + '</small>' : "—", "") +
+        (costOk ? subPopKpi("cost", ttEsc(L("预估费用", "Est. cost")) + fxqIcon(r.models, L("本任务", "this task")), ttEsc(fmtMoney(r.cost_usd)), "") : "") +
+        '</div>';
       var meta = [];
       if (r.last) meta.push(L("最后活动", "Last active") + " <b>" + ttEsc(fmtStartS(r.last)) + "</b>");
       if (r.active || it1.rec === null) {
@@ -10685,7 +15232,7 @@
       }
       return '<div class="zu-spview-head"><h3 title="' + escAttr(name) + '">' + ttEsc(name) + "</h3>" +
         '<span class="zu-spsub">' + ttEsc(sub2) + "</span></div>" +
-        subPopKpis(k1, k2, k3) + subPopKpis(u1, u2, u3, "zu-sp-usage") +
+        r1 + r2 + r3 + r4 +
         subPopModelsHTML(r.models) +
         (meta.length ? '<div class="zu-sp-meta">' + meta.join("") + "</div>" : "");
     }
@@ -10767,6 +15314,7 @@
         if (nuE) subPopEntry = nuE;
       }
       buildSubPop(view.sub);
+      positionSubPop();   // v304：高度随内容自适应，数据推送后重算锚定
     }
     function subPopCancelHide() { if (subPopHideTimer) { clearTimeout(subPopHideTimer); subPopHideTimer = 0; } }
     function subPopScheduleHide() {
@@ -10849,7 +15397,7 @@
       var b = e.target && e.target.closest ? e.target.closest(".zu-spnav-item") : null;
       if (!b) return;
       var next = b.getAttribute("data-sid") || "";
-      if (next !== subPopSel) { subPopSel = next; buildSubPop(lastSub); }   // 原位切右栏，外壳不动
+      if (next !== subPopSel) { subPopSel = next; buildSubPop(lastSub); positionSubPop(); }   // 原位切右栏（v304 高度随内容变，切页重定位）
     });
 
     /* ---------- 输入框查找（穿透 open shadow / 同源 iframe） ---------- */
@@ -11652,7 +16200,7 @@
       else misplaced = (afterNode ? afterNode.nextElementSibling !== chip : host.lastElementChild !== chip);   // 锚位语义同 git 兜回（下一元素已是自己=就位，不得自插）
       if (misplaced) host.insertBefore(chip, insBefore ? insBefore : (afterNode ? afterNode.nextElementSibling : null));
       var txt = v.kind === "live" ? v.sv.text
-        : (v.sessAvg ? L("均", "avg ") + v.sessAvg + " t/s" : v.dbTps + " t/s");   /* v228：去「· 近X」尾缀，与条面格同口径（用户规格） */
+        : (v.dbTps ? v.dbTps + " t/s" : "");   /* v298（用户拍板）：chip=最后一轮真实速度（去「均」前缀与会话均） */
       var cls = "zu-live " + (v.kind === "live" ? v.sv.cls + (v.sv.word ? " zu-shimmer" : "") : v.band.cls);
       var sig = v.kind + "|" + cls + "|" + txt;
       if (chip.__zuSig !== sig) {   // 幂等：内容没变不重建，悬停/焦点态不被打断

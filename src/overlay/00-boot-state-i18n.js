@@ -46,7 +46,9 @@
   function stale() { return disposed || MY_GEN !== window.__zusageGen; }
   if (window.__zusageRateCleanup) window.__zusageRateCleanup();
 
-  var FATAL = (window.__zusageDiag = {});
+  /* v291：代际号进 diag——重注入取证不再依赖偶发的计数字段归零（FATAL.gen 严格
+   * 递增 = 新代际首帧实证，与 window.__zusageGen 同源；单例守卫下每代恰执行一次） */
+  var FATAL = (window.__zusageDiag = { gen: MY_GEN });
   /* v179 子代理槽位定位诊断（随泵写 diag-*.json）：字段原地更新，对象挂模块级——
    * 多实例（分屏/辅助对话）各自身上都有 subRateTick，实例级声明会互相覆盖且
    * dispose 后残留冻结值（v180 review）；字段在最近一次 reconcile 的槽位分布，
@@ -57,7 +59,7 @@
    * 确定性历史行（[data-zusage-deterministic]，挂在消息流 turn 容器末尾）一并自清。
    * v80：面板（.zusage-panel）挂 body 不随条走，清理选择器单列。 */
   try {
-    document.querySelectorAll(".zusage-root,.zusage-tip-root,.zusage-exc,.zusage-rate-tip,.zusage-quota-tip,.zu-quota,.zu-git,.zu-tsb,.zu-compact-btn,.zu-ac-info,.zu-ac-hint,.zu-compact-dlg,.zusage-git-tip,.zusage-panel,.zu-mp-host,.zu-mp-ov,[data-zusage-deterministic],[data-zusage-loading-status]").forEach(function (el) { el.remove(); });
+    document.querySelectorAll(".zusage-root,.zusage-tip-root,.zusage-exc,.zusage-rate-tip,.zusage-quota-tip,.zu-quota,.zu-git,.zu-tsb,.zu-compact-btn,.zu-ac-info,.zu-ac-hint,.zu-compact-dlg,.zu-rot-pk-dlg,.zusage-git-tip,.zusage-panel,.zu-mp-host,.zu-mp-ov,[data-zusage-deterministic],[data-zusage-loading-status]").forEach(function (el) { el.remove(); });
   } catch (e) { }
 
   try {
@@ -73,7 +75,7 @@
   } catch (e) { }
 
   /* ---------- 共享状态（多实例一致）：显示项/语言/上下文覆盖/最近一次数据 ---------- */
-  var LS = { show: "zusage3.show", ctxOv: "zusage3.ctxOv", lang: "zusage3.lang", cnNum: "zusage3.cnNum", sec: "zusage3.sec", rstCdh: "zusage3.rstCdh", projPath: "zusage3.projPath", theme: "zusage3.theme", ctxEnh: "zusage3.ctxEnh", cmdkW: "zusage3.cmdkW", updSeen: "zusage3.updSeen", forceKmb: "zusage3.forceKmb", ctxCpt: "zusage3.ctxCpt", cost: "zusage3.cost", barJust: "zusage3.barJust", autoCompact: "zusage3.autoCompact", tipClick: "zusage3.tipClick", quotaRemain: "zusage3.quotaRemain" };
+  var LS = { show: "zusage3.show", devKeepTip: "zusage3.devKeepTip", ctxOv: "zusage3.ctxOv", lang: "zusage3.lang", cnNum: "zusage3.cnNum", sec: "zusage3.sec", rstCdh: "zusage3.rstCdh", projPath: "zusage3.projPath", theme: "zusage3.theme", ctxEnh: "zusage3.ctxEnh", cmdkW: "zusage3.cmdkW", updSeen: "zusage3.updSeen", forceKmb: "zusage3.forceKmb", ctxCpt: "zusage3.ctxCpt", cost: "zusage3.cost", barJust: "zusage3.barJust", autoCompact: "zusage3.autoCompact", tipClick: "zusage3.tipClick", quotaRemain: "zusage3.quotaRemain" };
   var state = {
     show: { win: 1, turn: 1, today: 1, sub: 1, tools: 1, git: 1, proj: 1, subRate: 1 },   // git：工具行 Git 状态 chip（v96，默认开）；proj：项目累计格（v159，默认开；与 zusage3.projPath 弹窗路径开关无关）；subRate：Agent 行内子代理速率 chip（v178，默认开；只门控行内展示，槽位估算与主 chip 合计不受影响）
     ctxOv: "", data: null,
@@ -102,6 +104,7 @@
        激活」；纯渲染端展示偏好存 localStorage，不进 config.json、不涉及主进程。常被滑过
        误触的用户可开开关，点击才打开统计卡/子代理面板（issue 用户反馈）。 */
     tipClick: 0,
+    devKeepTip: 0,
     /* v251 套餐额度显示口径：缺省关=已用%（v96 起原语义），仅显式 "1" 开启「剩余额度」
        （剩余%=100−已用%，同一窗口池补数）；chip 面与 tooltip 窗口行/Key 总额度行/其他源
        摘要行跟随，档位色恒按已用原始值判定（quota.md 契约）；纯渲染端展示偏好存 localStorage */
@@ -209,6 +212,7 @@
     if (ls(LS.cmdkW, "") === "0") state.cmdkW = 0;
     if (ls(LS.forceKmb, "") === "1") state.forceKmb = 1;
     if (ls(LS.tipClick, "") === "1") state.tipClick = 1;
+    if (ls(LS.devKeepTip, "") === "1") state.devKeepTip = 1;
     if (ls(LS.quotaRemain, "") === "1") state.quotaRemain = 1;
     var cdh0 = parseInt(ls(LS.rstCdh, ""), 10);
     if (cdh0 >= 1 && cdh0 <= 24 * 7) state.resetCdh = cdh0;
@@ -233,6 +237,7 @@
     lsSet(LS.cmdkW, state.cmdkW ? "1" : "0");
     lsSet(LS.tipClick, state.tipClick ? "1" : "0");
     lsSet(LS.quotaRemain, state.quotaRemain ? "1" : "0");
+    lsSet(LS.devKeepTip, state.devKeepTip ? "1" : "0");
     lsSet(LS.rstCdh, String(state.resetCdh));
     lsSet(LS.sec, state.settingsSec);
   }

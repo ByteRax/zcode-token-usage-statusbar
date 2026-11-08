@@ -1,35 +1,425 @@
 <!doctype html>
-<html class="dark">
+<html lang="zh-CN" class="dark theme-zai-dark">
 <head>
 <meta charset="utf-8">
 <style>
-  html, body { margin: 0; height: 100%; background: #1a1e28; color: #e9edf4;
-    font-family: -apple-system, 'PingFang SC', 'Helvetica Neue', sans-serif; }
-  html:not(.dark) body { background: #f4f5f8; color: #1c212b; }
-  /* 浅色主题：宿主 <html> 提供的语义变量在 harness 页按浅色值近似补齐（生产由 ZCode 注入） */
-  html:not(.dark) {
-    --color-popover: #ffffff; --color-popover-border: rgba(15, 23, 42, .16);
-    --color-tooltip: #ffffff; --color-tooltip-border: rgba(15, 23, 42, .16);
-    --color-tooltip-foreground: #1c212b; --color-tooltip-tag-foreground: #5b6472;
-    --color-foreground: #1c212b; --color-foreground-subtle: #5b6472;
-    --color-brand: #0b6aa8;
-  }
-  /* 宿主形态占位：composer 兼任底部 dock（conversation-bottom-dock-transition 是
-   * overlay v282/v283 的对齐锚），textarea 是锚点扫描（COMPOSER_SEL）必需元素，
-   * data-session-id 承载会话归属。 */
-  .composer { position: fixed; left: 48px; right: 48px; bottom: 56px; height: 130px;
-    border: 1px solid rgba(255,255,255,.12); border-radius: 14px; background: rgba(255,255,255,.045); }
-  html:not(.dark) .composer { border-color: rgba(0,0,0,.12); background: rgba(0,0,0,.03); }
-  .composer .hint { padding: 14px 18px; color: #8791a3; font-size: 13px; }
+/* ============================================================
+ * 真实 ZCode composer 复刻宿主（QA 背景，非被测对象）。
+ * 结构与令牌逐条对照宿主源码（/Users/hmey/Workspace/AI/ZCode）：
+ * - 主题令牌：packages/ui/src/styles.css（zai-dark/zai-light 为 hex 原文；
+ *   classic dark/light 由 .dark/@theme 的调色板引用换算为 Tailwind 官方 hex）
+ * - composer DOM：v4/ConversationComposer.tsx + prompt-editor/ChatPromptEditor.tsx
+ *   + LexicalChatInput.tsx + v4/composer/V4Composer*.tsx（类名/属性/testid 原样）
+ * - dock 布局：v4/ConversationTimeline.tsx（sticky bottom dock + 内容列宽）
+ * Tailwind 原子类在手写 CSS 中展开为等效规则（rounded-2xl=16px、p-3=12px、
+ * h-7=28px、size-4=16px、text-ui-base=var(--ui-font-size) 等）。
+ * overlay 锚点契约：.chat-composer-input-surface ⊃ [data-composer-layout] ⊃
+ * .group\/toolbar 子行 + data-composer-{leading-actions,leading-content,trailing-actions}。
+ * ============================================================ */
+
+/* ---- Tailwind v4 调色板（@theme emitted；classic 主题引用，zai 主题仅 foreground 用） ---- */
+:root {
+  --neutral-50:#fafafa; --neutral-100:#f5f5f5; --neutral-200:#e5e5e5; --neutral-300:#d4d4d4;
+  --neutral-700:#404040; --neutral-800:#262626; --neutral-900:#171717; --neutral-950:#0a0a0a;
+  --sky-50:#f0f9ff; --sky-100:#e0f2fe; --sky-200:#bae6fd; --sky-300:#7dd3fc; --sky-400:#38bdf8;
+  --sky-500:#0ea5e9; --sky-600:#0284c7; --sky-700:#0369a1; --sky-950:#082f49;
+  --teal-400:#2dd4bf; --teal-600:#0d9488; --violet-400:#a78bfa; --violet-600:#7c3aed;
+  --rose-400:#fb7185; --rose-500:#f43f5e; --indigo-400:#818cf8; --indigo-500:#6366f1;
+  --cyan-400:#22d3ee; --cyan-600:#0891b2; --yellow-500:#eab308; --yellow-600:#ca8a04;
+  --red-500:#ef4444; --red-600:#dc2626; --green-500:#22c55e; --green-600:#16a34a;
+  /* 宿主 :root（styles.css:75-81）+ 字号刻度（150-166） */
+  --ui-font-size: 14px;
+  --text-ui-xl: calc(var(--ui-font-size) + 4px);
+  --text-ui-lg: calc(var(--ui-font-size) + 2px);
+  --text-ui-base: var(--ui-font-size);
+  --text-ui-caption: calc(var(--ui-font-size) - 1px);
+  --text-ui-sm: calc(var(--ui-font-size) - 2px);
+  --text-ui-xs: calc(var(--ui-font-size) - 4px);
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New",
+    "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", monospace;
+  /* classic light（@theme 169-338 子集：composer + overlay 消费面） */
+  --color-background: var(--neutral-50);
+  --color-foreground: var(--neutral-700);
+  --color-foreground-subtle: color-mix(in oklab, var(--neutral-700) 60%, transparent);
+  --color-foreground-subtlest: color-mix(in oklab, var(--neutral-700) 40%, transparent);
+  --color-foreground-inverse: #fff;
+  --color-border: color-mix(in oklab, var(--neutral-950) 10%, transparent);
+  --color-border-hover: color-mix(in oklab, var(--neutral-950) 20%, transparent);
+  --color-hover: var(--neutral-200);
+  --color-selected: color-mix(in oklab, var(--neutral-950) 10%, transparent);
+  --color-surface: color-mix(in oklab, var(--neutral-950) 3%, transparent);
+  --color-surface-hover: color-mix(in oklab, var(--neutral-950) 5%, transparent);
+  --color-popover: #fff; --color-popover-border: var(--color-border); --color-popover-header: var(--neutral-100);
+  --color-tooltip: var(--neutral-100); --color-tooltip-foreground: var(--neutral-950);
+  --color-tooltip-tag: var(--neutral-200);
+  --color-tooltip-tag-foreground: color-mix(in oklab, var(--neutral-950) 60%, transparent);
+  --color-input: #fff; --color-input-focused: var(--neutral-50);
+  --color-input-border: var(--color-border); --color-input-border-hover: var(--color-border-hover);
+  --color-input-border-focused: var(--color-brand);
+  --color-brand: var(--sky-400); --color-accent: var(--sky-50);
+  --color-card: #fff; --color-card-border: var(--color-border);
+  --color-secondary: var(--neutral-300); --color-primary: var(--neutral-950); --color-primary-foreground: var(--neutral-50);
+  --color-warning: var(--yellow-600); --color-destructive: var(--red-600); --color-success: var(--green-600);
+  --color-icon-blue: var(--sky-500);
+  --color-tag: var(--neutral-200); --color-header: var(--neutral-100); --color-panel: var(--neutral-100);
+  --color-sidebar: var(--neutral-100); --color-menu: #fff; --color-menu-hover: var(--neutral-100);
+  --lucide-subtlest-opacity: 0.4;
+  --color-usage-chart-1: var(--sky-600); --color-usage-chart-2: var(--teal-600); --color-usage-chart-3: var(--violet-600);
+  --color-usage-chart-4: var(--rose-500); --color-usage-chart-5: var(--indigo-500); --color-usage-chart-6: var(--cyan-600);
+  --color-context-breakdown-1: var(--sky-600); --color-context-breakdown-2: var(--sky-500);
+  --color-context-breakdown-3: var(--sky-400); --color-context-breakdown-4: var(--sky-300);
+  --color-context-breakdown-5: var(--sky-200); --color-context-breakdown-6: var(--sky-100);
+  --color-context-breakdown-7: color-mix(in oklab, var(--sky-100) 72%, #fff);
+  --color-usage-heatmap-0: color-mix(in oklab, var(--sky-500) 0%, var(--color-surface));
+  --color-usage-heatmap-1: color-mix(in oklab, var(--sky-500) 18%, var(--color-surface));
+  --color-usage-heatmap-2: color-mix(in oklab, var(--sky-500) 36%, var(--color-surface));
+  --color-usage-heatmap-3: color-mix(in oklab, var(--sky-600) 58%, var(--color-surface));
+  --color-usage-heatmap-4: color-mix(in oklab, var(--sky-700) 82%, var(--color-surface));
+}
+/* classic dark（.dark 340-511 子集） */
+html.dark {
+  --color-background: var(--neutral-900);
+  --color-foreground: var(--neutral-200);
+  --color-foreground-subtle: color-mix(in oklab, var(--neutral-200) 60%, transparent);
+  --color-foreground-subtlest: color-mix(in oklab, var(--neutral-200) 30%, transparent);
+  --color-foreground-inverse: #fff;
+  --color-border: color-mix(in oklab, #fff 10%, transparent);
+  --color-border-hover: color-mix(in oklab, #fff 30%, transparent);
+  --color-hover: color-mix(in oklab, #fff 10%, transparent);
+  --color-selected: color-mix(in oklab, #fff 10%, transparent);
+  --color-surface: color-mix(in oklab, #fff 5%, transparent);
+  --color-surface-hover: color-mix(in oklab, #fff 10%, transparent);
+  --color-popover: var(--neutral-800); --color-popover-border: var(--color-border); --color-popover-header: var(--neutral-700);
+  --color-tooltip: var(--neutral-900); --color-tooltip-foreground: var(--neutral-50);
+  --color-tooltip-tag: var(--neutral-800);
+  --color-tooltip-tag-foreground: color-mix(in oklab, var(--neutral-50) 60%, transparent);
+  --color-input: var(--neutral-800); --color-input-focused: var(--neutral-950);
+  --color-input-border: var(--color-border); --color-input-border-hover: var(--color-border-hover);
+  --color-input-border-focused: var(--color-brand);
+  --color-brand: var(--sky-500); --color-accent: color-mix(in oklab, var(--sky-950) 50%, transparent);
+  --color-card: var(--neutral-800); --color-card-border: var(--color-border);
+  --color-secondary: var(--neutral-700); --color-primary: var(--neutral-50); --color-primary-foreground: var(--neutral-950);
+  --color-warning: var(--yellow-500); --color-destructive: var(--red-500); --color-success: var(--green-500);
+  --color-icon-blue: var(--sky-600);
+  --color-tag: var(--neutral-700); --color-header: var(--neutral-900); --color-panel: var(--neutral-900);
+  --color-sidebar: var(--neutral-950); --color-menu: var(--neutral-950); --color-menu-hover: var(--neutral-900);
+  --lucide-subtlest-opacity: 0.3;
+  --color-usage-chart-1: var(--sky-500); --color-usage-chart-2: var(--teal-400); --color-usage-chart-3: var(--violet-400);
+  --color-usage-chart-4: var(--rose-400); --color-usage-chart-5: var(--indigo-400); --color-usage-chart-6: var(--cyan-400);
+  --color-context-breakdown-1: var(--sky-400); --color-context-breakdown-2: var(--sky-300);
+  --color-context-breakdown-3: var(--sky-200);
+  --color-context-breakdown-4: color-mix(in oklab, var(--sky-200) 84%, #fff);
+  --color-context-breakdown-5: color-mix(in oklab, var(--sky-200) 72%, #fff);
+  --color-context-breakdown-6: color-mix(in oklab, var(--sky-200) 60%, #fff);
+  --color-context-breakdown-7: color-mix(in oklab, var(--sky-200) 48%, #fff);
+  --color-usage-heatmap-0: color-mix(in oklab, var(--sky-400) 0%, var(--color-surface));
+  --color-usage-heatmap-1: color-mix(in oklab, var(--sky-400) 24%, var(--color-surface));
+  --color-usage-heatmap-2: color-mix(in oklab, var(--sky-400) 42%, var(--color-surface));
+  --color-usage-heatmap-3: color-mix(in oklab, var(--sky-400) 62%, var(--color-surface));
+  --color-usage-heatmap-4: color-mix(in oklab, var(--sky-300) 78%, var(--color-surface));
+}
+/* zai-light（styles.css 513-675 hex 原文子集） */
+html.theme-zai-light {
+  --color-background: #f8f8f8;
+  --color-foreground: var(--neutral-800);
+  --color-foreground-subtle: color-mix(in oklab, var(--neutral-800) 60%, transparent);
+  --color-foreground-subtlest: color-mix(in oklab, var(--neutral-800) 40%, transparent);
+  --color-foreground-inverse: #ffffff;
+  --color-border: rgba(13, 13, 13, 0.1);
+  --color-border-hover: rgba(13, 13, 13, 0.15);
+  --color-hover: rgba(13, 13, 13, 0.05);
+  --color-selected: rgba(13, 13, 13, 0.05);
+  --color-surface: rgba(13, 13, 13, 0.03);
+  --color-surface-hover: rgba(13, 13, 13, 0.05);
+  --color-popover: #ffffff; --color-popover-border: var(--color-border); --color-popover-header: #f8f8f8;
+  --color-tooltip: #f0f0f0; --color-tooltip-foreground: #0d0d0d;
+  --color-tooltip-tag: #e6e6e6; --color-tooltip-tag-foreground: #5c5c5c;
+  --color-input: #ffffff; --color-input-focused: var(--color-input);
+  --color-input-border: var(--color-border); --color-input-border-hover: var(--color-border-hover);
+  --color-input-border-focused: var(--color-border-hover);
+  --color-brand: #000000; --color-accent: #ebf4ff;
+  --color-card: #ffffff; --color-card-border: var(--color-border);
+  --color-secondary: #e6e6e6; --color-primary: #000000; --color-primary-foreground: #ffffff;
+  --color-warning: #e07b00; --color-destructive: #e03131; --color-success: #1e8a3e;
+  --color-icon-blue: #0b7fff;
+  --color-tag: #e6e6e6; --color-header: #ffffff; --color-panel: #ffffff;
+  --color-sidebar: #f0f0f0; --color-menu: #ffffff; --color-menu-hover: #f0f0f0;
+  --lucide-subtlest-opacity: 0.4;
+  --color-usage-chart-1: #0b7fff; --color-usage-chart-2: #1e8a3e; --color-usage-chart-3: #9e77ed;
+  --color-usage-chart-4: #e03131; --color-usage-chart-5: #e07b00; --color-usage-chart-6: #0aa7a7;
+  --color-context-breakdown-1: #0b7fff; --color-context-breakdown-2: #338fff;
+  --color-context-breakdown-3: #5ca7ff; --color-context-breakdown-4: #85bbff;
+  --color-context-breakdown-5: #acd0ff; --color-context-breakdown-6: #c8ddff; --color-context-breakdown-7: #e0ecff;
+  --color-usage-heatmap-0: color-mix(in oklab, #0b7fff 0%, var(--color-surface));
+  --color-usage-heatmap-1: color-mix(in oklab, #0b7fff 18%, var(--color-surface));
+  --color-usage-heatmap-2: color-mix(in oklab, #0b7fff 36%, var(--color-surface));
+  --color-usage-heatmap-3: color-mix(in oklab, #0b7fff 58%, var(--color-surface));
+  --color-usage-heatmap-4: color-mix(in oklab, #0066dd 82%, var(--color-surface));
+}
+/* zai-dark（styles.css 677-840 hex 原文子集；真机默认主题） */
+html.dark.theme-zai-dark {
+  --color-background: #161616;
+  --color-foreground: var(--neutral-300);
+  --color-foreground-subtle: color-mix(in oklab, var(--neutral-300) 60%, transparent);
+  --color-foreground-subtlest: color-mix(in oklab, var(--neutral-300) 30%, transparent);
+  --color-foreground-inverse: #000000;
+  --color-border: rgba(255, 255, 255, 0.1);
+  --color-border-hover: rgba(255, 255, 255, 0.15);
+  --color-hover: rgba(255, 255, 255, 0.05);
+  --color-selected: rgba(255, 255, 255, 0.1);
+  --color-surface: rgba(255, 255, 255, 0.05);
+  --color-surface-hover: rgba(255, 255, 255, 0.1);
+  --color-popover: #2b2b2b; --color-popover-border: var(--color-border); --color-popover-header: #202020;
+  --color-tooltip: #2b2b2b; --color-tooltip-foreground: #f8f8f8;
+  --color-tooltip-tag: #363636; --color-tooltip-tag-foreground: #adadad;
+  --color-input: #2b2b2b; --color-input-focused: var(--color-input);
+  --color-input-border: var(--color-border); --color-input-border-hover: var(--color-border-hover);
+  --color-input-border-focused: var(--color-border-hover);
+  --color-brand: #ffffff; --color-accent: #001d3d;
+  --color-card: #2b2b2b; --color-card-border: var(--color-border);
+  --color-secondary: #363636; --color-primary: #ffffff; --color-primary-foreground: #000000;
+  --color-warning: #ff8a30; --color-destructive: #ff5c5c; --color-success: #46bf72;
+  --color-icon-blue: #80beff;
+  --color-tag: #363636; --color-header: #202020; --color-panel: #202020;
+  --color-sidebar: #161616; --color-menu: #2b2b2b; --color-menu-hover: #363636;
+  --lucide-subtlest-opacity: 0.3;
+  --color-usage-chart-1: #4099ff; --color-usage-chart-2: #46bf72; --color-usage-chart-3: #7b5ce5;
+  --color-usage-chart-4: #ff5c5c; --color-usage-chart-5: #ff8a30; --color-usage-chart-6: #42c8c8;
+  --color-context-breakdown-1: #4099ff; --color-context-breakdown-2: #66adff;
+  --color-context-breakdown-3: #80beff; --color-context-breakdown-4: #9dceff;
+  --color-context-breakdown-5: #b9ddff; --color-context-breakdown-6: #d0e8ff; --color-context-breakdown-7: #e4f1ff;
+  --color-usage-heatmap-0: color-mix(in oklab, #4099ff 0%, var(--color-surface));
+  --color-usage-heatmap-1: color-mix(in oklab, #4099ff 24%, var(--color-surface));
+  --color-usage-heatmap-2: color-mix(in oklab, #4099ff 42%, var(--color-surface));
+  --color-usage-heatmap-3: color-mix(in oklab, #4099ff 62%, var(--color-surface));
+  --color-usage-heatmap-4: color-mix(in oklab, #80beff 78%, var(--color-surface));
+}
+
+/* ---- 基础（宿主 html/body/#root 透明让位 vibrancy；harness 用背景色等价呈现） ---- */
+html, body { margin: 0; height: 100%; }
+body {
+  background: var(--color-background); color: var(--color-foreground);
+  /* Tailwind v4 默认 sans 栈（宿主无 --font-sans 定义，body 无显式 font-size） */
+  font-family: ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji",
+    "Segoe UI Symbol", "Noto Color Emoji";
+  font-size: var(--ui-font-size);
+}
+button { font: inherit; }
+svg { display: block; }
+
+/* ---- 会话布局（SessionPane 根 + ConversationTimeline 消息列/底 dock） ---- */
+.conv-root { display: flex; flex-direction: column; height: 100%; min-height: 0; position: relative;
+  container-type: inline-size; container-name: conversation; }
+.conv-scroll { flex: 1 1 0%; overflow-y: auto; min-height: 0; }
+.conv-col { margin: 0 auto; width: 100%; padding: 16px 16px 0; }
+@container conversation (min-width: 864px) { .conv-col { max-width: 896px; } }
+@container conversation (min-width: 1280px) { .conv-col { max-width: 1152px; } }
+/* 消息流为背景占位（非复刻对象），仅提供「有历史会话」的真实感 */
+.msg-user { background: var(--color-surface); border-radius: 12px; padding: 10px 14px;
+  margin: 8px 0; width: fit-content; max-width: 85%; margin-left: auto; }
+.msg-assistant { color: var(--color-foreground); line-height: 1.625; margin: 14px 0; }
+.msg-assistant .sub { color: var(--color-foreground-subtle); font-size: var(--text-ui-sm); }
+
+/* 底 dock（ConversationTimeline 2145-2183：sticky bottom + 内容列 px-4 pb-4 + 同宽规则） */
+.dock { position: sticky; bottom: 0; z-index: 20; display: flex; width: 100%; justify-content: center;
+  pointer-events: none; }
+.dock-content { pointer-events: auto; position: relative; z-index: 10; width: 100%; flex-shrink: 0;
+  padding: 0 16px 16px;
+  transition: width .15s ease-out, max-width .15s ease-out, transform .15s ease-out; }
+@container conversation (min-width: 864px) { .dock-content { max-width: 896px; } }
+@container conversation (min-width: 1280px) { .dock-content { max-width: 1152px; transition: transform .15s ease-out; } }
+.dock-transition { display: grid; width: 100%; }
+.dock-layer { grid-column-start: 1; grid-row-start: 1; width: 100%; min-width: 0;
+  transform-origin: bottom; align-self: end; will-change: transform; }
+
+/* ---- composer（ConversationComposer 2531-2539 / 2602-2702） ---- */
+.chat-composer-region { z-index: 20; width: 100%; flex-shrink: 0;
+  container-type: inline-size; container-name: composer; }
+.chat-composer-input-surface { position: relative; width: 100%; }
+.composer-form { position: relative; }
+
+/* 输入壳（ChatPromptEditor 404-415）：flex flex-col gap-3 rounded-2xl border border-input-border
+ * bg-input p-3 + hover/focus-within 变体（`!` 前缀以最高优先级落 focused 边框） */
+.composer-shell { position: relative; display: flex; flex-direction: column; gap: 12px;
+  overflow: hidden; border-radius: 16px; border: 1px solid var(--color-input-border);
+  background: var(--color-input); padding: 12px;
+  transition: border-color .15s, background-color .15s; }
+.composer-shell:hover { border-color: var(--color-input-border-hover); }
+.composer-shell:focus-within { border-color: var(--color-input-border-focused) !important;
+  background: var(--color-input-focused); }
+
+/* 编辑器（LexicalChatInput 1459-1470 + 1487-1490）：min-h-10 max-h-40 text-ui-base leading-5 */
+.editor-root { position: relative; flex: 1 1 0%; }
+.editor-inner { position: relative; }
+.editor-input { min-height: 40px; max-height: 160px; overflow-y: auto; outline: none;
+  font-size: var(--text-ui-base); line-height: 20px; color: var(--color-foreground);
+  white-space: pre-wrap; word-break: break-word; caret-color: var(--color-foreground); }
+.editor-placeholder { pointer-events: none; position: absolute; left: 0; top: 0;
+  font-size: var(--text-ui-base); line-height: 20px;
+  color: var(--color-foreground-subtlest); }
+.editor-input.has-text ~ .editor-placeholder, .editor-placeholder.hidden-p { display: none; }
+
+/* 工具行（ChatPromptEditor 440-457） */
+.composer-toolbar { display: flex; align-items: flex-end; gap: 12px; }
+.tb-leading { display: flex; min-width: 0; flex: 1 1 0%; align-items: center; }
+.tb-leading-content { display: flex; flex-shrink: 0; align-items: center; gap: 4px; }
+.tb-trailing { margin-left: auto; display: flex; flex-shrink: 0; align-items: center;
+  justify-content: flex-end; gap: 6px; }
+
+/* ---- Button（components/ui/button.tsx 基类 + variant/size） ---- */
+.btn { display: inline-flex; flex-shrink: 0; align-items: center; justify-content: center;
+  border-radius: 4px; border: 1px solid transparent; background-clip: padding-box;
+  font-size: var(--text-ui-base); line-height: 1.625; white-space: nowrap;
+  transition: color .15s, background-color .15s, border-color .15s; outline: none;
+  user-select: none; cursor: pointer; padding: 0; background-color: transparent; }
+.btn:disabled { pointer-events: none; opacity: 0.5; }
+.btn > svg { pointer-events: none; flex-shrink: 0; }
+.ic4 { width: 16px; height: 16px; } .ic35 { width: 14px; height: 14px; }
+.btn.ghost { color: var(--color-foreground); }
+.btn.ghost:hover, .btn.ghost[aria-expanded="true"] { background: var(--color-hover);
+  color: var(--color-foreground); }
+/* size=default：h-7 gap-1 px-2，svg 缺省 14px */
+.btn.h7 { height: 28px; gap: 4px; padding: 0 8px; }
+.btn.h7 > svg:not(.ic4) { width: 14px; height: 14px; }
+/* size=icon-md：size-7 rounded-lg，svg 缺省 16px */
+.btn.icon-md { width: 28px; height: 28px; border-radius: 8px; }
+.btn.icon-md > svg { width: 16px; height: 16px; }
+
+/* 模式按钮（V4ComposerModeControls 117-137）：ghost sm + h-7 gap-1 rounded-lg px-2；
+ * yolo（完全访问）态整钮 text-warning 且 hover 不回退（126 行） */
+.btn.mode { height: 28px; gap: 4px; border-radius: 8px; padding: 0 8px; }
+.btn.mode > svg { flex-shrink: 0; }
+.btn.mode .chev { width: 14px; height: 14px; color: var(--color-foreground-subtle); }
+.btn.mode.mode-yolo { color: var(--color-warning); }
+.btn.mode.mode-yolo:hover, .btn.mode.mode-yolo[aria-expanded="true"] { color: var(--color-warning); }
+.btn.mode.mode-yolo .chev { color: inherit; }
+/* CUA 入口（V4ComposerCuaEntry 75-88）：ghost + h-7 w-fit justify-center gap-1 rounded-lg px-1.5 py-1.5 */
+.btn.cua { height: 28px; width: fit-content; justify-content: center; gap: 4px;
+  border-radius: 8px; padding: 6px; }
+/* 模型按钮（ModelConfigSelect 627-637）：ghost default + w-fit justify-between gap-1
+ * rounded-lg pl-2 pr-1.5 text-ui-base whitespace-nowrap */
+.btn.model { height: 28px; gap: 4px; border-radius: 8px; width: fit-content;
+  justify-content: space-between; padding: 0 6px 0 8px; white-space: nowrap; }
+.model-label { display: block; min-width: 0; text-align: left; }
+.btn.model .chev { width: 14px; height: 14px; color: var(--color-foreground-subtle); }
+/* 思考档位徽标（ComposerThoughtIndicator，真机「GLM-5.3-FlashX 最高」并排） */
+.thought-ind { font-size: var(--text-ui-caption); color: var(--color-foreground-subtle); }
+/* context 触发器（contextUsage 966-993 + ai-elements/context 119-133）：ghost icon-md text-foreground-subtle */
+.btn.ctx { color: var(--color-foreground-subtle); }
+/* 发送按钮（ConversationComposer 2407-2418 / ChatPromptEditor 477-488）：icon-md + bg-brand
+ * text-foreground-inverse hover:bg-brand/80 */
+.btn.send { border-radius: 8px; gap: 4px; background: var(--color-brand);
+  color: var(--color-foreground-inverse); }
+.btn.send:hover { background: color-mix(in oklab, var(--color-brand) 80%, transparent); }
+.hidden { display: none; }
 </style>
 </head>
 <body>
-<div class="composer conversation-bottom-dock-transition" data-session-id="sess_main" data-pane-id="pane_main" id="composer">
-  <div class="hint">ZCode 会话输入框（宿主形态占位 · data-session-id=sess_main · 下方为真实注入的状态条）</div>
-  <textarea placeholder="Give ZCode a task…" style="margin:0 18px 14px;width:calc(100% - 36px);height:56px;
-    box-sizing:border-box;background:rgba(255,255,255,.05);color:inherit;border:1px solid rgba(255,255,255,.1);
-    border-radius:8px;padding:8px 10px;font:inherit;resize:none"></textarea>
+<!-- 会话根（SessionPane 节点：renderer_bridge 在生产中写 data-zusage-scope-* / data-session-id） -->
+<div class="conv-root" data-session-id="sess_main" data-pane-id="pane_main" id="session-pane">
+  <div class="conv-scroll">
+    <div class="conv-col">
+      <div class="msg-user">速度卡 QA：看一下本月热力图横滚之后档位说明浮层的落位。</div>
+      <div class="msg-assistant">已打开速度统计卡 V2，近 16 轮样本就绪；切「本月」可查看月历热力图，<span class="sub">图表区支持滚轮横滚，悬停柱体或月历格查看单轮明细。</span></div>
+    </div>
+  </div>
+  <div data-v4-composer-dock="true" class="dock">
+    <div data-v4-composer-dock-content="true" class="dock-content">
+      <div data-v4-back-to-bottom-anchor="composer-dock" style="position:relative">
+        <div data-testid="conversation-bottom-dock-transition" class="dock-transition">
+          <div data-testid="conversation-bottom-dock-transition-layer" data-conversation-bottom-dock-mode="chat" class="dock-layer">
+            <div data-testid="v4-composer" class="chat-composer-region">
+              <div class="chat-composer-input-surface">
+                <form class="composer-form" onsubmit="return false">
+                  <div data-composer-layout="stacked" class="composer-shell">
+                    <div class="editor-root">
+                      <div class="editor-inner">
+                        <div contenteditable="true" role="textbox" aria-multiline="true"
+                          data-testid="v4-composer-input" aria-placeholder="提出后续修改要求"
+                          class="editor-input" id="composer-input"></div>
+                        <div class="editor-placeholder" id="composer-placeholder">提出后续修改要求</div>
+                      </div>
+                    </div>
+                    <div class="composer-toolbar group/toolbar">
+                      <div data-composer-leading-actions class="tb-leading">
+                        <div data-composer-leading-content class="tb-leading-content">
+                          <button type="button" class="btn ghost icon-md" aria-label="插入" data-testid="chat-attachment-button">
+                            <svg class="ic4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>
+                          </button>
+                          <button type="button" class="btn ghost mode mode-yolo" aria-label="切换模式" data-testid="chat-mode-select-trigger">
+                            <svg class="ic4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
+                            <span>完全访问</span>
+                            <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+                          </button>
+                          <button type="button" class="btn ghost cua" aria-label="电脑操作" data-testid="v4-composer-cua-entry">
+                            <svg class="ic4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v4"/><path d="m14.305 7.53.923-.382"/><path d="m15.228 4.852-.923-.383"/><path d="m16.852 3.228-.383-.924"/><path d="m16.852 8.772-.383.923"/><path d="m19.148 3.228.383-.924"/><path d="m19.53 9.696-.382-.924"/><path d="m20.772 4.852.924-.383"/><path d="m20.772 7.148.924.383"/><path d="M22 13v2a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h7"/><path d="M8 21h8"/><circle cx="18" cy="6" r="3"/></svg>
+                            <span>电脑操作</span>
+                          </button>
+                        </div>
+                      </div>
+                      <div data-composer-trailing-actions class="tb-trailing">
+                        <!-- context 圆环（ai-elements/context ContextIcon：viewBox 24 r=10 strokeWidth=4） -->
+                        <button type="button" class="btn ghost icon-md ctx" data-testid="chat-context-usage-trigger" aria-label="上下文使用情况">
+                          <svg class="ic35" viewBox="0 0 24 24" style="color:currentcolor">
+                            <circle cx="12" cy="12" fill="none" opacity="0.25" r="10" stroke="currentColor" stroke-width="4"/>
+                            <circle cx="12" cy="12" fill="none" opacity="0.7" r="10" stroke="currentColor"
+                              stroke-dasharray="62.832 62.832" stroke-dashoffset="43.35" stroke-linecap="round"
+                              stroke-width="4" style="transform:rotate(-90deg);transform-origin:center"/>
+                          </svg>
+                        </button>
+                        <!-- 模型选择器隐藏锚点（V4ComposerToolbar 1243-1263，overlay v98 观察对象） -->
+                        <span data-testid="v4-model-config" class="hidden" data-source="composer"
+                          data-provider="bigmodel" data-model="GLM-5.3-FlashX" data-thought=""
+                          data-thought-levels="" data-mode="" data-plan-enabled="false"
+                          data-usage-used="" data-usage-max=""></span>
+                        <button type="button" class="btn ghost model" aria-label="GLM-5.3-FlashX" data-testid="chat-model-select-trigger">
+                          <svg class="ic4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z"/><path d="M12 22V12"/><polyline points="3.29 7 12 12 20.71 7"/><path d="m7.5 4.27 9 5.15"/></svg>
+                          <span class="model-label">GLM-5.3-FlashX</span>
+                          <span class="thought-ind">最高</span>
+                          <svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+                        </button>
+                        <button type="button" class="btn send" disabled aria-label="发送" data-testid="v4-composer-send">
+                          <svg class="ic4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></svg>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </form>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
+<script>
+'use strict';
+/* 编辑器占位/发送可用性：贴近 Lexical 显隐行为（有内容隐藏 placeholder、可发送） */
+(function () {
+  var input = document.getElementById('composer-input');
+  var ph = document.getElementById('composer-placeholder');
+  var send = document.querySelector('[data-testid="v4-composer-send"]');
+  function sync() {
+    var has = !!(input.textContent || '').trim();
+    input.classList.toggle('has-text', has);
+    if (send) send.disabled = !has;
+  }
+  input.addEventListener('input', sync);
+  sync();
+})();
+/* 四主题切换（useTheme.ts applyTheme 同款 class 组合）：
+ * 'dark'=zai-dark（真机默认） 'light'=zai-light 'classic-dark' 'classic-light' */
+window.__zuSetTheme = function (name) {
+  var c = document.documentElement.classList;
+  c.remove('dark', 'theme-zai-dark', 'theme-zai-light');
+  if (name === 'dark' || name == null) { c.add('dark', 'theme-zai-dark'); }
+  else if (name === 'light') { c.add('theme-zai-light'); }
+  else if (name === 'classic-dark') { c.add('dark'); }
+  /* classic-light：无类 */
+  return true;
+};
+</script>
 <!-- 真实注入：运行目录 overlay.js 原文（main.cjs 将 __OVERLAY_URL__ 替换为绝对 file:// URL） -->
 <script src="__OVERLAY_URL__"></script>
 <script>
@@ -68,6 +458,26 @@ window.__zuReady = function (src) {
   scope();
   return !!window.__SPD;
 };
+/* ===== live 实时数据模式 =====
+ * main.cjs 的泵经生产同款 serve 常驻进程拉真实当前会话快照，直接调 overlay 的
+ * __zusageUpdate（生产泵语义）。这里包装一层：缓存真实轮表/SID 供 V2 卡联动，
+ * 并在夹具步骤（__zuDataMode='fixture'）丢弃真实帧，两条数据线互不污染。 */
+window.__zuDataMode = 'live';   /* 默认 live：未注入场景前泵帧直接生效 */
+window.__zuLiveFixture = null;  /* 泵最近一帧的真实轮表（speed_history） */
+window.__zuLiveSid = null;      /* 真实当前会话 SID（V2 卡 sel.sid / 会话根归属联动） */
+(function () {
+  var nativeUpdate = window.__zusageUpdate;
+  window.__zusageUpdate = function (d) {
+    if (d && d.speed_history && d.speed_history.turns) window.__zuLiveFixture = d.speed_history;
+    if (d && d.session && d.session.sid) {
+      window.__zuLiveSid = d.session.sid;
+      var pane = document.getElementById('session-pane');
+      if (pane) pane.setAttribute('data-session-id', d.session.sid);   /* 会话归属随真实会话 */
+    }
+    if (window.__zuDataMode !== 'fixture' && nativeUpdate) return nativeUpdate(d);
+  };
+  window.__zuNativeUpdate = nativeUpdate;   /* v299：场景夹具直推真实状态条（绕过真实帧丢弃层） */
+})();
 /* ===== 确定性夹具 =====
  * 轮表 delta 编码（spdUnpack 累加还原）：首轮 t=绝对时刻、其后 t=增量、b=绝对生成起点。 */
 var SPD_SPEEDS16 = [150, 120, 161.5, 96, 140, 133, 158, 101, 145, 155, 90, 130, 149, 122, 137, 160];
@@ -110,21 +520,82 @@ var FIXTURES = {
     var list = [];
     for (var i = 0; i < 20; i++) list.push({ at: daysAgo(19 - i, 11 + (i % 6), 15), sps: 100 + ((i * 37) % 90), gen: 6000 });
     return hist(buildTurns(list));
+  },
+  hist400: function () {   /* v291：约 400 天逐日 1 轮（历史热力图密集 + 内部横滚 + 首开滚到最右） */
+    var list = [];
+    for (var i = 0; i < 400; i++) list.push({ at: daysAgo(399 - i, 9 + (i % 10), 10 + (i % 50)),
+      sps: 60 + ((i * 83) % 220), gen: 6000 });
+    return hist(buildTurns(list));
   }
 };
 function payload(fx) {
   /* avg_tps>0 + mine + last.tps：速度格/浮层数据门控所需 */
+  var t0 = new Date(2026, 10, 8, 20, 42, 28).getTime(), t1 = new Date(2026, 10, 8, 20, 46, 14).getTime();
+  var turnRich = { requests: 17, total: 4601400, input: 4593200, output: 8172, cache_read: 4593200,
+    reasoning: 300, tps: 147.8, avg_duration_ms: 6500, avg_ttft_ms: 3200, duration_ms: 226500,
+    cost_usd: 2.7, tool_calls: 16, retries: 1, tool_errors: 0, started: t0, ended: t1,
+    models: [{ model: 'GLM-5.3-FlashX', requests: 17, total: 4601400, cost_usd: 2.7,
+      rates: { input: 0.002, output: 0.008, cache_read: 0.0002, cache_write: 0.0005 } }] };
+  var turnMulti = JSON.parse(JSON.stringify(turnRich));
+  delete turnMulti.cost_usd;
+  turnMulti.models = Array.from({ length: 10 }, function (_, i) {
+    return { model: i === 0 ? 'GLM-5.3-FlashX' : 'glm-' + (4.6 - i * 0.4).toFixed(1) + '-air', requests: 3,
+      total: 4601400 - i * 450000, cost_usd: i < 3 ? 0.9 - i * 0.3 : undefined,
+      rates: i < 3 ? { input: 0.002, output: 0.008 } : undefined };
+  });
+  var turnCur = window.__zuTurnVariant === 'multi' ? turnMulti : turnRich;
   return { session: { sid: 'sess_main', project: 'Demo 项目', avg_tps: 144.1,
     model_name: 'GLM-5.3-FlashX' }, mine: 'sess_main', speed_history: fx,
-    last: { tps: 156.1, tokens: 324, ms: 2100 }, today: {}, tools: { total: 0, errors: 0 } };
+    /* v299：会话数据按 sessionFor 从 recent[] 按 sid 匹配——last/last_turn 必须进条目，
+     * 顶层字段只喂旧副本路径（此前夹具缺 recent → 真实状态条永远 stub 全零） */
+    remote_evidence: false,   /* sessionFor fail-closed 门：缺此键帧被拒→stub 全零 */
+    recent: [{ sid: 'sess_main',
+      total: 4601400, input: 4593200, output: 8172, cache_read: 4593200, reasoning: 300,
+      avg_tps: 144.1, avg_duration_ms: 6500, avg_ttft_ms: 3200, duration_ms: 226500,
+      started: t0, last_at: t1, cost_usd: 2.7,
+      turns: 628, requests: 17, tool_calls: 16, retries: 1,
+      title: '速度卡 QA 会话',
+      models: [{ model: 'GLM-5.3-FlashX', requests: 17, total: 4601400, cost_usd: 2.7,
+        rates: { input: 0.002, output: 0.008, cache_read: 0.0002, cache_write: 0.0005 } }],
+      last: { tps: 156.1, tokens: 324, ms: 2100, startedAt: t0, endedAt: t1 },
+      last_turn: turnCur, tools: { total: 0, errors: 0 },
+      /* v304 子代理面板链（SUB）：两任务夹具（字段同生产 _sub_item 契约 + v304 耗时/轮数）。
+       * 必须挂 recent[0] 条目内——sessionFor 按 recent[].sid 匹配，顶层字段不被读（v299 同款坑）。 */
+      sub: { requests: 27, total: 2030100, input: 2010300, output: 19800, cache_read: 1890000,
+        reasoning: 5200, cache_write: 30000, turns: 9, avg_duration_ms: 7500, avg_ttft_ms: 1200,
+        duration_ms: 203400, rate_avg: 161.5, cost_usd: 1.45, active: false,
+        models: [{ model: 'GLM-5.3-FlashX', total: 2030100, requests: 27, cost_usd: 1.45, rates: { input: 0.002, output: 0.008 } }],
+        list: [
+          { sid: 'sess_subagent_aaaa1111', agent: 'zcode-explore', title: '审计本轮 tooltip 源码结构', task: '审计本轮 tooltip 源码结构',
+            requests: 14, total: 1030100, input: 1020300, output: 9800, cache_read: 960000, reasoning: 2600, cache_write: 15000,
+            tps_avg: 158.2, avg_duration_ms: 7200, avg_ttft_ms: 1100, duration_ms: 101200, turns: 4,
+            last: t1, started: t0, active: false, cost_usd: 0.73,
+            models: [{ model: 'GLM-5.3-FlashX', total: 1030100, requests: 14, cost_usd: 0.73, rates: { input: 0.002, output: 0.008 } }] },
+          { sid: 'sess_subagent_bbbb2222', agent: 'zcode-explore', title: '独立 QA 审查 v294 月历专项与热力图交互', task: '独立 QA 审查 v294 月历专项与热力图交互',
+            requests: 13, total: 1000000, input: 990000, output: 10000, cache_read: 930000, reasoning: 2600, cache_write: 15000,
+            tps_avg: 149.4, avg_duration_ms: 7800, avg_ttft_ms: 1300, duration_ms: 102200, turns: 5,
+            last: t1 - 60000, started: t0, active: false, cost_usd: 0.72,
+            models: [{ model: 'GLM-5.3-FlashX', total: 1000000, requests: 13, cost_usd: 0.72, rates: { input: 0.002, output: 0.008 } }] },
+        ] } }],
+    today: {} };
 }
 window.__zuScenario = function (step) {
-  document.documentElement.classList.toggle('dark', step.theme !== 'light');
+  window.__zuEndScrolled = false;   /* v291：每个场景独立判定「首开滚到最右」 */
+  /* 数据模式：step.live（或 fixture==='live'）吃泵的真实帧；其余步骤锁定夹具并丢弃真实帧 */
+  var live = step.live || step.fixture === 'live';
+  window.__zuDataMode = live ? 'live' : 'fixture';
+  /* 四主题映射：dark→zai-dark（真机默认）、light→zai-light；classic-* 显式请求 */
+  window.__zuSetTheme(step.theme === 'light' ? 'light'
+    : step.theme === 'classic-dark' ? 'classic-dark'
+    : step.theme === 'classic-light' ? 'classic-light' : 'dark');
   window.__zuLang = step.lang || 'zh';
+  window.__zuTurnVariant = step.turnVariant || null;   /* v299：本轮卡夹具变体（multi=多模型） */
   window.__zuTipRight = !!step.tipRight;
+  if (live) return true;   /* 真实帧由泵推送（overlay 已随最新帧渲染） */
   var fx = (FIXTURES[step.fixture] || FIXTURES.recent16)();
   window.__zuFixture = fx;
-  window.__zusageUpdate(payload(fx));
+  if (window.__zuNativeUpdate) window.__zuNativeUpdate(payload(fx));   /* 夹具直推（含 last_turn） */
+  else window.__zusageUpdate(payload(fx));
   return true;
 };
 function fmtTok(n) {
@@ -135,9 +606,12 @@ function fmtTok(n) {
 }
 window.__zuSel = null; window.__zuHover = -1;
 function buildCard() {
+  /* live 模式用泵缓存的真实轮表 + 真实 SID（spdAnalyze 按 sid 过滤会话轮） */
+  var liveCard = window.__zuDataMode === 'live' && window.__zuLiveFixture;
   return window.__SPD.speedCardV2HTML({
-    speedHistory: window.__zuFixture,
-    sel: Object.assign({ range: 'recent', period: 'recent', dim: 'time', sid: 'sess_main' }, window.__zuSel || {}),
+    speedHistory: liveCard ? window.__zuLiveFixture : window.__zuFixture,
+    sel: Object.assign({ range: 'recent', period: 'recent', dim: 'time',
+      sid: window.__zuLiveSid || 'sess_main' }, window.__zuSel || {}),
     live: null, segsHover: window.__zuHover == null ? -1 : window.__zuHover,
     fmtTok: fmtTok, fmtCnt: fmtTok, fmtMoney: function (u) { return '¥' + u.toFixed(2); }
   });
@@ -152,32 +626,48 @@ window.__zuMount = function (sel, hover) {
     tip.className = 'tip zusage-quota-tip zusage-tps-tip';
     tip.style.cssText = 'position:fixed;left:48px;bottom:210px;z-index:2147483000;display:block;max-width:min(800px,calc(100vw - 24px))';
     /* 生产同款委托交互（改包 ⇒ 整卡重编） */
+    /* 重建保留横滚（生产 v280 同键回填的简化版；切 Tab 键变时生产会归零，
+     * 复刻页经由 __zuMount 重挂承载该行为，此处只服务 hover 重建不跳位） */
+    function rebuildKeepScroll() {
+      var ow = tip.querySelector('.zu-sc-wrap'), ox = ow ? ow.scrollLeft : 0;
+      tip.innerHTML = '<div class="tbody"></div>';
+      tip.firstChild.innerHTML = buildCard();
+      var nw = tip.querySelector('.zu-sc-wrap');
+      if (nw && ox) nw.scrollLeft = ox;
+      return nw;
+    }
     tip.addEventListener('pointerdown', function (e) {
       var tab = e.target && e.target.closest && e.target.closest('.zu-sv-tab');
       if (tab) {
         var g = tab.getAttribute('data-sv-group'), v = tab.getAttribute('data-sv-val');
-        window.__zuSel[g] = v; window.__zuHover = -1; tip.innerHTML = buildCard(); return;
-      }
-      if (e.target && e.target.closest && e.target.closest('.zu-sv-focus')) {
-        window.__zuSel.focus = window.__zuSel.focus === 'full' ? '' : 'full';
-        window.__zuHover = -1; tip.innerHTML = buildCard();
+        window.__zuSel[g] = v; window.__zuHover = -1; rebuildKeepScroll(); return;
       }
     });
+    /* v290 生产同款：图表区滚轮横滚（.zu-sv-focus 分支随生产按钮移除一并删除） */
+    tip.addEventListener('wheel', function (e) {
+      var wrap = e.target && e.target.closest && e.target.closest('.zu-sc-wrap');
+      if (!wrap || wrap.scrollWidth <= wrap.clientWidth + 1) return;
+      var d = (e.deltaY || 0) + (e.deltaX || 0);
+      if (!d) return;
+      wrap.scrollLeft += d;
+      e.preventDefault();
+    }, { passive: false });
     tip.addEventListener('mouseover', function (e) {
       var lb = e.target && e.target.closest && e.target.closest('.zu-sv-legend-btn');
       if (lb) { window.__legend.show(lb); return; }   /* 生产同款：问号 hover 即显 */
-      var col = e.target && e.target.closest && e.target.closest('.zu-sc-col');
+      /* v291 生产同款：热力图格子（.zu-hm-cell）与柱体共用 data-i 悬停契约 */
+      var col = e.target && e.target.closest && e.target.closest('.zu-sc-col,.zu-hm-cell');
       if (!col) return;
       var idx = parseInt(col.getAttribute('data-i'), 10) || 0;
       if (idx !== window.__zuHover) {
-        window.__zuHover = idx; tip.innerHTML = buildCard();
+        window.__zuHover = idx; rebuildKeepScroll();
         window.__setSPDPortal(window.__SPD.getPortal());
         window.__portal.sync(tip, idx);
       }
     });
     tip.addEventListener('mouseleave', function () {
       if (window.__zuHover !== -1) {
-        window.__zuHover = -1; tip.innerHTML = buildCard();
+        window.__zuHover = -1; rebuildKeepScroll();
         window.__portal.hide();
       }
     });
@@ -186,7 +676,17 @@ window.__zuMount = function (sel, hover) {
   tip.classList.toggle('zu-light', !document.documentElement.classList.contains('dark'));
   tip.style.left = window.__zuTipRight ? 'auto' : '48px';
   if (window.__zuTipRight) tip.style.right = '12px'; else tip.style.right = 'auto';
-  tip.innerHTML = buildCard();
+  /* v293.1：补生产同构 .tbody 层（全量 tip 链 tip→tbody→卡三级高度链的真实形态，
+   * 此前复刻缺该层导致高度链回归测不出） */
+  tip.innerHTML = '<div class="tbody"></div>';
+  tip.firstChild.innerHTML = buildCard();
+  /* v291 生产同款（drawTip/showTpsTip）：历史热力图首开无记忆位置时滚到最右（最新区域）；
+   * 用户滚过后的位置保留交给生产 v280 同键回填（复刻页不重建滚动记忆） */
+  var wEnd = tip.querySelector('.zu-sc-wrap');
+  if (wEnd && wEnd.hasAttribute && wEnd.hasAttribute('data-sv-end') && !window.__zuEndScrolled) {
+    wEnd.scrollLeft = wEnd.scrollWidth;
+    window.__zuEndScrolled = true;
+  }
   /* v284 生产同款：V2 卡左缘对齐锚元素（真实状态条的 .it 速度格）左缘 */
   var anchor = document.querySelector('.zusage-root .it');
   if (anchor && anchor.getBoundingClientRect && !window.__zuTipRight) {
@@ -204,16 +704,124 @@ window.__zuRectOf = function (sel) {
   var r = el.getBoundingClientRect();
   return { x: r.x, y: r.y, w: r.width, h: r.height };
 };
+/* v299：状态条 .it chip 定位（本轮 tooltip 悬停步骤用）——按 __tip 内容签名匹配
+ * （chip 面板只有图标+数字，无「本轮」文案可匹配；__tip 串含 zu-stat-tip--turn） */
+/* v299：键盘焦点路径开本轮 tooltip（生产 focusin 真实路径；鼠标 sendInputEvent 对底部条不可靠） */
+window.__zuOpenTurn = function (marker) {
+  marker = marker || 'zu-stat-tip--turn';
+  var items = document.querySelectorAll('.it');
+  for (var i = 0; i < items.length; i++) {
+    if ((items[i].__tip || '').indexOf(marker) >= 0) {
+      items[i].focus();
+      var tipEl = document.getElementById(items[i].getAttribute('aria-describedby'));
+      var fr = null; try { fr = window.__zusageDiag && window.__zusageDiag.spdFrame; } catch (_) {}
+      var shown = document.getElementById(items[i].getAttribute('aria-describedby'));
+      var layers = null;
+      if (shown) {
+        var q = function (sel) { return shown.querySelector(sel); };
+        var H = function (el) { return el ? Math.round(el.getBoundingClientRect().height) : null; };
+        var W2 = function (el) { var r = el.getBoundingClientRect(); return { x: Math.round(r.x), w: Math.round(r.width) }; };
+        var card = q(marker.indexOf('today') >= 0 ? '.zu-stat-tip--today' : '.zu-stat-tip--turn');
+        var tbl = q('.zu-stat-table'), zm = q('.zu-turn-models');
+        layers = { tip: H(shown), tbody: H(shown.firstChild), card: H(card),
+          head: H(q('.zu-stat-head')), row1: H(q('.zu-turn-kpis')),
+          mid: H(q('.zu-turn-kpis--mid')), duo: H(q('.zu-turn-kpis--duo')),
+          mhead: H(q('.zu-pj-mhead')), zone: H(zm), table: H(tbl),
+          time: H(q('.zu-stat-time')),
+          zoneScroll: zm ? [zm.scrollTop, zm.scrollHeight, zm.clientHeight] : null,
+          rows: tbl ? tbl.querySelectorAll('tbody tr').length : 0 };
+        var kr = q('.zu-turn-kpis');
+        if (kr) {
+          var k = W2(kr);
+          layers.kpis = { w: k.w, cols: Array.prototype.map.call(kr.querySelectorAll('.zu-stat-kpi'), function (el) {
+            var v = el.querySelector('.zu-stat-v');
+            return { w: W2(el).w, padL: getComputedStyle(el).paddingLeft,
+              vW: v ? W2(v).w : null, vScroll: v ? [v.scrollWidth, v.clientWidth] : null,
+              vFont: v ? getComputedStyle(v).fontSize : null };
+          }) };
+        }
+      }
+      var gaps = null;
+      if (tipEl && shown) {
+        var tr = tipEl.getBoundingClientRect(), sr = shown.getBoundingClientRect();
+        var cs2 = getComputedStyle(shown.firstChild);
+        gaps = { tipL: Math.round(tr.left), tipR: Math.round(tr.right),
+          bodyL: Math.round(sr.left), bodyR: Math.round(sr.right),
+          pad: cs2.padding, gut: cs2.scrollbarGutter,
+          gapL: Math.round(sr.left - tr.left), gapR: Math.round(tr.right - sr.right) };
+      }
+      var tipState = tipEl ? { disp: tipEl.style.display,
+        rect: (function (r) { return [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)]; })(tipEl.getBoundingClientRect()) } : null;
+      return { ok: true, text: (items[i].textContent || '').slice(0, 30), layers: layers, gaps: gaps, tipState: tipState,
+        win: [window.innerWidth, window.innerHeight],
+        native: typeof window.__zuNativeUpdate,
+        spdFrame: fr,
+        tipLen: (items[i].__tip || '').length,
+        tipHead: (items[i].__tip || '').replace(/<style>[\s\S]*?<\/style>/, '').slice(0, 220),
+        shown: tipEl ? tipEl.textContent.slice(0, 80) : null };
+    }
+  }
+  return { ok: false, items: items.length };
+};
+/* v299：截图后回读关闭者（hideTip 总闸记录 lastHide/hideSeq） */
+window.__zuAfterTurn = function () {
+  var el = document.querySelector('.zusage-tip-root');
+  var st = (window.__zusageDiag && window.__zusageDiag.mount && window.__zusageDiag.mount.tip) || {};
+  return { disp: el ? el.style.display : 'no-el', lastHide: st.stats ? st.stats.lastHide : null,
+    hideSeq: st.stats ? st.stats.hideSeq.slice(-4) : null };
+};
+window.__zuItRect = function (txt) {
+  var items = document.querySelectorAll('.it');
+  for (var i = 0; i < items.length; i++) {
+    var tip = items[i].__tip || '';
+    if (tip.indexOf(txt) >= 0 || (items[i].textContent || '').indexOf(txt) >= 0) {
+      var r = items[i].getBoundingClientRect();
+      if (!r.width) continue;
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    }
+  }
+  return null;
+};
 window.__zuBarRect = function (idx) {
   var cols = document.querySelectorAll('#zu-spd-replica .zu-sc-col');
   if (!cols[idx]) return null;
   var r = cols[idx].getBoundingClientRect();
   return { x: r.x, y: r.y, w: r.width, h: r.height };
 };
+/* v291：热力图格子（.zu-hm-cell）rect——data-i 定位，与柱体同一 data-i 契约 */
+window.__zuCellRect = function (idx) {
+  var cells = document.querySelectorAll('#zu-spd-replica .zu-hm-cell[data-i="' + idx + '"]');
+  if (!cells[0]) return null;
+  var r = cells[0].getBoundingClientRect();
+  return { x: r.x, y: r.y, w: r.width, h: r.height };
+};
 window.__zuScrollEnd = function () {
   var wrap = document.querySelector('#zu-spd-replica .zu-sc-wrap');
   if (wrap) wrap.scrollLeft = wrap.scrollWidth;
   return wrap ? { sl: wrap.scrollLeft, sw: wrap.scrollWidth, cw: wrap.clientWidth } : null;
+};
+/* 复刻宿主几何（ composer 挂载证据 + 状态条落位核对用） */
+window.__zuHostDiag = function () {
+  var q = function (s) { return document.querySelector(s); };
+  function r(el) { if (!el) return null; var b = el.getBoundingClientRect();
+    return { x: Math.round(b.x), y: Math.round(b.y), w: Math.round(b.width), h: Math.round(b.height) }; }
+  var input = q('[data-testid="v4-composer-input"]');
+  var bar = q('.zusage-root');
+  return {
+    theme: document.documentElement.className,
+    dataMode: window.__zuDataMode || null,
+    liveSid: window.__zuLiveSid || null,
+    liveTurns: window.__zuLiveFixture && window.__zuLiveFixture.turns ? window.__zuLiveFixture.turns.length : 0,
+    paneSid: (document.getElementById('session-pane') || {}).getAttribute
+      ? document.getElementById('session-pane').getAttribute('data-session-id') : null,
+    composerFound: !!(input && q('.chat-composer-input-surface') && q('[data-composer-layout]')),
+    input: r(input), shell: r(q('.composer-shell')), toolbar: r(q('.composer-toolbar')),
+    dockContent: r(q('[data-v4-composer-dock-content="true"]')),
+    statusbar: r(bar), statusbarInShell: !!(bar && q('.composer-shell') && q('.composer-shell').contains(bar)),
+    leadingActions: r(q('[data-composer-leading-actions]')),
+    ctxTrigger: !!q('[data-testid="chat-context-usage-trigger"]'),
+    modelAnchor: !!(q('[data-testid="v4-model-config"]') && q('[data-testid="v4-model-config"]').getAttribute('data-model'))
+  };
 };
 /* 几何测量：用户所见左缘 = tip 容器外缘（非 .zu-sv-root 内容盒，差 padding） */
 window.__zuDiag = function () {
@@ -232,15 +840,104 @@ window.__zuDiag = function () {
   var anchor = document.querySelector('.zusage-root .it');
   return {
     tipOpen: true,
+    /* live 泵取证：数据模式/真实 SID/真实轮表长度/会话根归属 */
+    dataMode: window.__zuDataMode || null,
+    liveSid: window.__zuLiveSid || null,
+    liveTurns: window.__zuLiveFixture && window.__zuLiveFixture.turns ? window.__zuLiveFixture.turns.length : 0,
+    paneSid: (document.getElementById('session-pane') || {}).getAttribute
+      ? document.getElementById('session-pane').getAttribute('data-session-id') : null,
     headerTabsInHead: !!(head(tip) && head(tip).querySelector('[data-sv-group="range"]') && head(tip).querySelector('[data-sv-group="period"]')),
     rangeText: (tip.querySelector('.zu-sv-range') || {}).textContent || null,
     bars: tip.querySelectorAll('.zu-sc-col').length,
+    /* v293.1：tbody 层横向溢出断言（>0 即出现底部滚动条的根因形态） */
+    segH: (function () { var h = tip.querySelector('.zu-sv-head'),
+        b = tip.querySelector('.zu-speed-body'), tb = tip.querySelector('.tbody');
+      var H = function (el) { return el ? Math.round(el.getBoundingClientRect().height) : null; };
+      var row = tip.querySelector('.zu-sv-plotrow'), gc = tip.querySelector('.zu-sv-gutcol'),
+        gu = tip.querySelector('.zu-sc-gutter'), wp = tip.querySelector('.zu-sc-wrap'),
+        pl = tip.querySelector('.zu-sv-plot'), bar0 = tip.querySelector('.zu-sc-bar'),
+        x0 = tip.querySelector('.zu-sc-x'), col0 = tip.querySelector('.zu-sc-col'),
+        rootEl = tip.querySelector('.zu-sv-root'), chartEl = tip.querySelector('.zu-sv-chart');
+      /* 柱状图纵向全链：相对 tip 顶的 y 偏移 + 高度（刻度越界定位用） */
+      var Y = function (el) { if (!el) return null; var r = el.getBoundingClientRect(), t = tip.getBoundingClientRect();
+        return { y: Math.round(r.y - t.y), h: Math.round(r.height), bottom: Math.round(r.bottom - t.y) }; };
+      return { root: H(tip), svroot: Y(rootEl), chart: Y(chartEl), head: Y(h), body: Y(b), tbody: H(tb),
+        card: H(tip.querySelector('.zu-speed-chart')), cal: H(tip.querySelector('.zu-hm-cal')),
+        grid: H(tip.querySelector('.zu-hm-grid--mon')),
+        row: Y(row), gutcol: Y(gc), gutter: Y(gu), wrap: Y(wp), plot: Y(pl),
+        bar0: Y(bar0), x0: Y(x0), col0: Y(col0),
+        gutterTicks: gu ? Array.prototype.map.call(gu.children, Y) : null }; })(),
+    cellGeo: (function () { var g = tip.querySelector('.zu-hm-grid--mon'); if (!g) return null;
+      var c = g.querySelector('.zu-hm-cell.data') || g.querySelector('.zu-hm-cell'); if (!c) return null;
+      var cr = c.getBoundingClientRect();
+      var d = c.querySelector('.zu-hm-d'), v = c.querySelector('.zu-hm-v');
+      var cs = getComputedStyle(c), ds = d ? getComputedStyle(d) : null, vs = v ? getComputedStyle(v) : null;
+      var gs = getComputedStyle(g);
+      return { cellW: Math.round(cr.width), cellH: Math.round(cr.height),
+        pad: [cs.paddingTop, cs.paddingRight, cs.paddingBottom, cs.paddingLeft].join(' '),
+        dateFs: ds ? ds.fontSize : null, dateLh: ds ? ds.lineHeight : null,
+        valFs: vs ? vs.fontSize : null, valLh: vs ? vs.lineHeight : null,
+        dRect: d ? (function (r) { return { x: Math.round(r.x - cr.x), y: Math.round(r.y - cr.y), w: Math.round(r.width), h: Math.round(r.height) }; })(d.getBoundingClientRect()) : null,
+        vRect: v ? (function (r) { return { x: Math.round(r.x - cr.x), y: Math.round(r.y - cr.y), w: Math.round(r.width), h: Math.round(r.height) }; })(v.getBoundingClientRect()) : null,
+        gap: gs.gap, cols: gs.gridTemplateColumns.split(' ').length }; })(),
+    plotHTML: (function () { var pl = tip.querySelector('.zu-sv-plot'); return pl ? pl.innerHTML.slice(0, 400) : null; })(),
+    barGeo: (function () { var q = function (sel) { var el = tip.querySelector(sel);
+        if (!el) return null; var r = el.getBoundingClientRect(); var cs = getComputedStyle(el);
+        return { w: Math.round(r.width), h: Math.round(r.height), pos: cs.position, disp: cs.display }; };
+      return { row: q('.zu-sv-plotrow'), gut: q('.zu-sv-gutcol'), wrap: q('.zu-sc-wrap'),
+        plot: q('.zu-sv-plot'), bars: q('.zu-sv-bars'),
+        col0: (function(){ var c = tip.querySelector('.zu-sv-bars .zu-sc-col'); return c ? (function(r){return {w:Math.round(r.width),h:Math.round(r.height)};})(c.getBoundingClientRect()) : null; })() }; })(),
+    tbodyScrollX: (function () { var tb = tip.querySelector('.tbody'); if (!tb) return null;
+      return tb.scrollWidth - tb.clientWidth; })(),
+    /* v291：热力图指标（月历格/数据格/今日描边/月标签数/稀疏说明/历史周列数） */
+    hmCells: tip.querySelectorAll('.zu-hm-cell').length,
+    hmData: tip.querySelectorAll('.zu-hm-cell.data').length,
+    hmVoid: tip.querySelectorAll('.zu-hm-cell.void').length,
+    hmFut: tip.querySelectorAll('.zu-hm-cell.fut').length,
+    hmToday: tip.querySelectorAll('.zu-hm-cell.zu-hm-today').length,
+    hmMonths: tip.querySelectorAll('.zu-hm-ml').length,
+    hmMonthLabels: (function () { var a = tip.querySelectorAll('.zu-hm-ml'); var o = [];
+      for (var i = 0; i < a.length; i++) o.push(a[i].textContent); return o; })(),
+    hmNote: (tip.querySelector('.zu-hm-note') || {}).textContent || null,
+    hmWeeks: (function () { var g = tip.querySelector('.zu-hm-grid--hist'); if (!g) return 0;
+      var m = /--zu-hm-w:\s*(\d+)/.exec(g.getAttribute('style') || ''); return m ? +m[1] : 0; })(),
+    hmDataCols: (function () { var g = tip.querySelector('.zu-hm-grid--hist'); if (!g) return [];
+      var kids = g.children; var out = [];
+      for (var i = 0; i < kids.length; i++)
+        if (kids[i].classList && kids[i].classList.contains('data')) out.push(Math.floor(i / 7) + 1);
+      return out; })(),
+    hmDataRect: (function () { var g = tip.querySelector('.zu-hm-grid--hist');
+      var c = g && g.querySelector('.zu-hm-cell.data'); if (!c) return null;
+      var r = c.getBoundingClientRect();
+      var aria = c.getAttribute('aria-label');
+      return { x: Math.round(r.x), y: Math.round(r.y), aria: aria }; })(),
+    hmFirst8: (function () { var g = tip.querySelector('.zu-hm-grid--hist'); if (!g) return [];
+      var out = [];
+      for (var i = 0; i < Math.min(8, g.children.length); i++) {
+        var k = g.children[i], r = k.getBoundingClientRect();
+        out.push({ i: i, cls: (k.getAttribute('class') || '').replace('zu-hm-cell ', ''),
+          x: Math.round(r.x), y: Math.round(r.y),
+          aria: (k.getAttribute('aria-label') || '').slice(0, 14) });
+      }
+      return out; })(),
+    hmGridStyle: (function () { var g = tip.querySelector('.zu-hm-grid--hist'); if (!g) return null;
+      var cs = getComputedStyle(g);
+      return { cols: cs.gridTemplateColumns, flow: cs.gridAutoFlow, dir: cs.direction, w: Math.round(g.getBoundingClientRect().width) }; })(),
     legendBtn: !!tip.querySelector('.zu-sv-legend-btn'),
     legendBand: (function () { var b = tip.querySelector('.zu-sv-legend-btn');
       return b ? (b.getAttribute('data-sv-band') || '') : null; })(),
     cov: (tip.querySelector('.zu-sc-cov') || {}).textContent || null,
     geom: { tip: r(tipBox || tip), left: r(tip.querySelector('.zu-sv-left')), chart: r(tip.querySelector('.zu-speed-chart')),
-      wrap: r(wrap), wrapScrollW: wrap ? wrap.scrollWidth : 0, portal: pr },
+      wrap: r(wrap), wrapScrollW: wrap ? wrap.scrollWidth : 0, wrapScrollLeft: wrap ? wrap.scrollLeft : 0,
+      plot: (function () { var p = tip.querySelector('.zu-sv-plot'); if (!p) return null;
+        var s = getComputedStyle(p); var b = p.getBoundingClientRect();
+        return { x: Math.round(b.x), w: Math.round(b.width), minW: s.minWidth }; })(),
+      bars: (function () { var p = tip.querySelector('.zu-sv-bars'); if (!p) return null;
+        var s = getComputedStyle(p); var b = p.getBoundingClientRect();
+        var c = p.querySelector('.zu-sc-col'); var cb = c ? c.getBoundingClientRect() : null;
+        return { x: Math.round(b.x), w: Math.round(b.width), just: s.justifyContent,
+          col0x: cb ? Math.round(cb.x) : null }; })(),
+      portal: pr },
     portalInView: !pr || (pr.x >= 8 && pr.y >= 8 && pr.x + pr.w <= vw - 8 && pr.y + pr.h <= vh - 8),
     portalOnTop: pr ? lastEl === window.__portalEl : true,
     dockLeft: anchor ? Math.round(anchor.getBoundingClientRect().left) : null,

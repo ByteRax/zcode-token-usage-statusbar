@@ -599,7 +599,9 @@
           var v2Freeze = (typeof speedInteractAt !== "undefined" && speedInteractAt &&
             Date.now() - speedInteractAt < 600) ||
             (typeof mouseInBar !== "undefined" && mouseInBar);
-          if (tipFor === liveCell && !v2Freeze && !(ae && ae.closest && ae.closest(".zu-sc-col"))) drawTip(liveCell, true);
+          /* v291：热力图格子（.zu-hm-cell）同样 tabindex 可聚焦，键盘焦点落在格内时
+           * 与柱体同守卫——innerHTML 重建会销毁聚焦格（焦点跌落 body、Tab 序断裂） */
+          if (tipFor === liveCell && !v2Freeze && !(ae && ae.closest && ae.closest(".zu-sc-col,.zu-hm-cell"))) drawTip(liveCell, true);
         }
         return;
       }
@@ -804,6 +806,15 @@
      * 瞬时不可见判定）都不得隐藏 tooltip——只有鼠标真正离开条面（left-bar，force）
      * 或条面整体隐藏（force）才允许。 */
     function hideTip(force, cause) {
+      /* v297.3（开发者常驻开关总闸）：开启后除 Escape、「打开 ⚙ 面板」与点同格
+       * 主动关闭（re-click）外，一切自动收起（left-bar/grace/win-leave/
+       * focus-leave/render-orphan……）都在此统一拦截——比逐个调用点守卫可靠
+       * （第一版漏了 win-leave/focus-leave 两条路径，用户实测「移出仍会关」）。
+       * typeof 守卫兼容切片沙箱。 */
+      if (state.devKeepTip && cause !== "escape" && cause !== "gear-open" && cause !== "re-click") {
+        tipStats.lastHide = "dev-keep:" + (cause || "?");
+        return;
+      }
       /* v271：tip 内按压后 1.2s 硬保活——点击/按压引发的焦点跌落、宿主重渲染、
        * 命中区边缘误判（left-bar）等任何 force 收起都不得关掉用户正在交互的
        * tooltip（用户实报「点击 tooltips 中的任何位置都会导致关闭」）；win-leave
@@ -840,7 +851,12 @@
        * 对齐出现」，替换 v284 的 dock 对齐（宿主类名依赖过重且实测未生效）。
        * __zuAlignLeft 由 drawTip 渲染 V2 内容时置位，非 V2 内容走原居中锚定。 */
       if (tip.__zuAlignLeft) {
-        left = Math.max(8, Math.min(ar.left, Math.max(8, innerWidth - tr.width - 8)));
+        /* v304.1：窄窗口下左对齐会让右缘间隙数倍于左缘（760 卡 in ~764 窗：左 8/
+         * 右 ~31，用户实报「最右 padding 与最左不一致」）——窗口富余 <100px 时改
+         * 水平居中（两侧等距），宽窗口仍按 v285 贴锚元素左缘。 */
+        var slackW = innerWidth - tr.width;
+        left = slackW < 100 ? Math.max(4, slackW / 2)
+          : Math.max(8, Math.min(ar.left, Math.max(8, innerWidth - tr.width - 8)));
       }
       tip.style.left = Math.round(left) + "px";
       tip.style.top = Math.round(top) + "px";
@@ -862,13 +878,13 @@
        * 实报「全部×全部拉到末尾、关闭再开回到开头」）同样捕获，并带选择键守卫
        * （.zu-sv-root 的 data-sv-key 同键才回填，切换范围/时间后归零；V1 旧图无键
        * 视为空串键，同内容回填行为与 v232 一致）。 */
-      var oldChartL = 0, oldChartKey = "";
+      var oldChartL = null, oldChartKey = "";
       if (oldBody) {
         var oc = oldBody.querySelector(".zu-sc-wrap");
         if (oc) {
           var or0 = oldBody.querySelector(".zu-sv-root");
           oldChartKey = or0 ? (or0.getAttribute("data-sv-key") || "") : "";
-          oldChartL = oc.scrollLeft;
+          oldChartL = oc.scrollLeft;   /* v291 三态：0 也是有效记忆（滚到最左），null=本图无既有位置 */
         }
       }
       tipSig = t;
@@ -877,16 +893,60 @@
       if (t.charCodeAt(0) === 1) tip.firstChild.innerHTML = t.slice(1);   // \x01 前缀 = 结构化 HTML（v67.1）
       else tip.firstChild.textContent = t;
       tip.firstChild.scrollTop = oldScroll;
-      /* v285：V2 卡左对齐标记（positionTip 消费：left=锚元素左缘） */
-      tip.__zuAlignLeft = !!tip.querySelector(".zu-sv-root");
+      /* v285：V2 卡左对齐标记（positionTip 消费：left=锚元素左缘）；
+       * v299.2（用户规格）：本轮 500×350 卡同款居左（与生成速度 tooltip 对齐语义一致） */
+      tip.__zuAlignLeft = !!(tip.querySelector(".zu-sv-root") || tip.querySelector(".zu-stat-tip--turn"));
+      /* v297：月历网格实测尺寸回写——builder 动态字号的数据源（量测便宜、单元素；
+       * 字号变化不改变格尺寸，无测量/布局循环） */
       var nc = tip.querySelector(".zu-sc-wrap");
-      if (nc && oldChartL) {
+      if (nc && oldChartL !== null) {
         var nr0 = tip.querySelector(".zu-sv-root");
-        if (nr0 ? (nr0.getAttribute("data-sv-key") || "") === oldChartKey : !oldChartKey)
+        if (nr0 ? (nr0.getAttribute("data-sv-key") || "") === oldChartKey : !oldChartKey) {
           nc.scrollLeft = oldChartL;
+        } else if (nc.hasAttribute && nc.hasAttribute("data-sv-end")) {
+          /* v291：键变（切 Tab 进入全部历史）= 本图无有效记忆，同样滚到最新区 */
+          nc.scrollLeft = nc.scrollWidth;
+        }
+      } else if (nc && nc.hasAttribute && nc.hasAttribute("data-sv-end")) {
+        /* v291 历史热力图首开（无记忆位置）：最新日期在最右，初始定位到最右区域；
+         * 用户滚过后 oldChartL 非 null 走上方同键回填（含 0=最左），不再跳回（§12.2） */
+        nc.scrollLeft = nc.scrollWidth;
       }
       tip.style.display = "block";
       positionTip(el, keepTop);
+      /* v297：月历网格实测尺寸回写（动态字号数据源）。v298 起挂 display:block 之后——
+       * 隐藏态量测全 0 会把下一帧字号压到 6px 下限（首开闪小字，下轮刷新才自愈）。 */
+      var mgEl = tip.querySelector(".zu-hm-grid--mon");
+      if (mgEl) {
+        var mgr = mgEl.getBoundingClientRect();
+        window.__zusageSpdMonRect = { w: mgr.width, h: mgr.height };
+      }
+      /* v297.2：分段高度诊断（定位宿主「刻度超出图表卡」——tip→tbody→root→body→chart
+       * →plotrow→gutcol/gutter/wrap/plot 全层 rect + 关键 computed style）。
+       * 必须挂 display:block 之后：隐藏态 getBoundingClientRect 全 0（v298 首版挂在
+       * innerHTML 重建处实测六层全 0 废片）。 */
+      try {
+        var segR = tip.querySelector(".zu-sv-root"), segWrap = tip.querySelector(".zu-sc-wrap"),
+          segHead = tip.querySelector(".zu-sv-head"), segPlot = tip.querySelector(".zu-sv-plot"),
+          segBody = tip.querySelector(".zu-speed-body"), segChart = tip.querySelector(".zu-sv-chart"),
+          segRow = tip.querySelector(".zu-sv-plotrow"), segGutcol = tip.querySelector(".zu-sv-gutcol"),
+          segGutter = tip.querySelector(".zu-sc-gutter");
+        if (segR) {
+          var H8 = function (el) { return el ? Math.round(el.getBoundingClientRect().height) : null; };
+          var cs8 = getComputedStyle(segR), csT = getComputedStyle(tip);
+          var csCh = segChart ? getComputedStyle(segChart) : null,
+            csWp = segWrap ? getComputedStyle(segWrap) : null;
+          FATAL.segH = { t: Date.now(), tipH: H8(tip), tipW: Math.round(tip.getBoundingClientRect().width),
+            tbodyH: H8(tip.firstChild), rootH: H8(segR),
+            bodyH: H8(segBody), chartH: H8(segChart), rowH: H8(segRow),
+            gutcolH: H8(segGutcol), gutterH: H8(segGutter),
+            headH: H8(segHead), wrapH: H8(segWrap), plotH: H8(segPlot),
+            chartPad: csCh ? csCh.padding : null, chartDisplay: csCh ? csCh.display : null,
+            chartAlignSelf: csCh ? csCh.alignSelf : null, wrapAlignSelf: csWp ? csWp.alignSelf : null,
+            rootPad: cs8.padding, rootBox: cs8.boxSizing,
+            tipPad: csT.padding, tipBox: csT.boxSizing };
+        }
+      } catch (_) { }
     }
     function showTipFor(el) {
       if (tipFor && tipFor !== el && tipFor.removeAttribute) tipFor.removeAttribute("aria-describedby");
@@ -986,7 +1046,7 @@
         /* 面板上不保留条面 tooltip（v42）：开设置的路上触发过条目 tooltip 的话，
          * 这分支若不清掉它，鼠标在面板里它就永不消失。 */
         mouseInBar = true;
-        if (tipFor) hideTip(true, "panel-hover");
+        if (tipFor && !state.devKeepTip) hideTip(true, "panel-hover");
         return;
       }
       if (!bar.contains(t)) {
@@ -1008,12 +1068,12 @@
           mouseInBar = true;   // 视同在途：总闸拦住 render-orphan 等路径趁机熄灯
           if (!tipGraceTimer) tipGraceTimer = setTimeout(function () {
             tipGraceTimer = 0;
-            hideTip(true, "grace-expire");
+            if (!state.devKeepTip) hideTip(true, "grace-expire");
           }, 300);
           return;
         }
         mouseInBar = false;
-        if (tipFor) hideTip(true, "left-bar");   // v43：移开条面立即消失，不再留 300ms 缓冲
+        if (tipFor && !state.devKeepTip) hideTip(true, "left-bar");   // v43：移开条面立即消失；v297.3 开发者常驻开关时不自动收
         return;
       }
       mouseInBar = true;
@@ -1095,7 +1155,7 @@
         }, 400);
       } else {
         mouseInBar = false;
-        hideTip(true, "left-bar");
+        if (!state.devKeepTip) hideTip(true, "left-bar");   // v297.3：开发者常驻开关时不自动收
       }
     }
     listenGlobal(document.documentElement, "mouseleave", function (e) {
