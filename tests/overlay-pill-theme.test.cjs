@@ -1060,9 +1060,9 @@ test('dual theme browser behaviour (isolated fixture)', { skip: skipReason, time
       return { turn: readTip(turn), session: readTip(session) };
     })()`);
     assert.match(tips.turn, /输入/);
-    assert.match(String(tips.turn), /缓存命中率\s*0%/, 'positive turn input and zero cached tokens must show 0%');
+    assert.match(String(tips.turn), /缓存\s*0%/, 'positive turn input and zero cached tokens must show 0% (v299.1 turn label)');
     assert.match(String(tips.session), /输入/);
-    assert.match(String(tips.session), /缓存命中率\s*0%/, 'positive session input and zero cached tokens must show 0%');
+    assert.match(String(tips.session), /缓存\s*0%/, 'positive session input and zero cached tokens must show 0% (v300 session label)');
   });
 
   await t.test('focused turn tooltip refreshes hidden values without replacing its unchanged item', async () => {
@@ -1144,7 +1144,7 @@ test('dual theme browser behaviour (isolated fixture)', { skip: skipReason, time
     assert.equal(after.focused, true, 'focus should follow the replacement item');
     assert.ok(after.id && after.visible, JSON.stringify(after));
     assert.match(after.tip, /20万/, 'replacement tooltip must reflect the updated input');
-    assert.match(after.tip, /缓存命中率\s*25%/, 'replacement tooltip must reflect updated cache ratio');
+    assert.match(after.tip, /缓存\s*25%/, 'replacement tooltip must reflect updated cache ratio (v299.1 turn label)');
   });
 
   await t.test('compact display keeps values, detail tooltip, units and quota across round trip', async () => {

@@ -274,6 +274,13 @@ def _project_usage(con, sid, with_models=False):
         sessions = turns = requests = input_t = output_t = reasoning = 0
         cache_read = cache_write = total = tool_calls = retries = 0
         started = last_at = None
+        # v303 项目级耗时/速度聚合（项目累计 tooltip 四行 KPI 第三/四行）：avg 口径同
+        # v300 会话（>0 样本过滤）；总耗时=Σduration_ms（含全部 completed 行，与卡片
+        # 「全部请求·含子代理」范围一致）；平均输出速度跨分片累加 _turn_rate 分量后
+        # 合成（rated_output/gen_ms 可加和，不能对分片 tps 再平均）。
+        dur_sum = dur_pos_sum = dur_pos_n = ttft_pos_sum = ttft_pos_n = 0
+        rated_acc = gen_acc = 0
+        covers = _provider_first_token_covers(con)
         models_acc = {}
         cost_groups = []   # v202 预估费用分组（与 with_models 无关恒产出，轻量行项目格同款）
         for i in range(0, len(all_ids), 500):
@@ -288,7 +295,12 @@ def _project_usage(con, sid, with_models=False):
                            coalesce(sum(m.cache_creation_input_tokens),0),
                            coalesce(sum(m.computed_total_tokens),0),
                            coalesce(sum(m.tool_call_count),0), coalesce(sum(m.retry_count),0),
-                           min(m.started_at), max(m.completed_at)
+                           min(m.started_at), max(m.completed_at),
+                           coalesce(sum(m.duration_ms),0),
+                           sum(case when m.duration_ms > 0 then m.duration_ms end),
+                           sum(case when m.duration_ms > 0 then 1 else 0 end),
+                           sum(case when m.time_to_first_token_ms > 0 then m.time_to_first_token_ms end),
+                           sum(case when m.time_to_first_token_ms > 0 then 1 else 0 end)
                     from model_usage m where m.status='completed' and m.session_id in ({qm})""",
                 part).fetchone()
             sessions += r[0]
@@ -306,6 +318,17 @@ def _project_usage(con, sid, with_models=False):
                 started = r[11]
             if r[12] is not None and (last_at is None or r[12] > last_at):
                 last_at = r[12]
+            dur_sum += r[13] or 0
+            dur_pos_sum += r[14] or 0
+            dur_pos_n += r[15] or 0
+            ttft_pos_sum += r[16] or 0
+            ttft_pos_n += r[17] or 0
+            tr = _turn_rate(con.execute(
+                f"""select output_tokens, first_token_at, completed_at, started_at, reasoning_tokens, model_id, provider_id
+                    from model_usage where status='completed' and (query_source is null or query_source='main_turn')
+                    and session_id in ({qm})""", part).fetchall(), covers)
+            rated_acc += tr["rated_output"]
+            gen_acc += tr["gen_ms"]
             # v202：模型分组查询从 with_models 分支提为恒跑（费用与模型明细同源一条 SQL），
             # 聚合到 (model_id, provider_id)——同模型不同 provider 牌价不同，费用分组计；
             # models_acc 仍只在 with_models 时累积（轻量行项目聚合不带 models，v163 契约不变）
@@ -344,6 +367,11 @@ def _project_usage(con, sid, with_models=False):
             "cache_read": cache_read, "cache_write": cache_write, "total": total,
             "tool_calls": tool_calls, "retries": retries,
             "started": started or 0, "last_at": last_at or 0,
+            # v303 可选增强字段：消费端按 >0 门控，旧缓存/失败自然降级不伪造
+            "avg_duration_ms": round(dur_pos_sum / dur_pos_n) if dur_pos_n else 0,
+            "avg_ttft_ms": round(ttft_pos_sum / ttft_pos_n) if ttft_pos_n else 0,
+            "duration_ms": dur_sum,
+            "avg_tps": round(rated_acc / (gen_acc / 1000), 1) if gen_acc else 0,
             "name": pname,
             "models": models,
             # None（价表模块缺失）→ JSON null，消费端按缺字段口径隐藏
@@ -370,12 +398,24 @@ def range_usage(con, start_ms, end_ms):
 
 
 def _today_usage(con, start_ms, end_ms):
+    # v298.1：补 count(distinct turn_id)（今日轮数，条面今日格「N 轮 · M 次」展示）
+    # v301：补今日级平均耗时/平均首字延迟两列（>0 样本过滤，同 v211 本轮 / v300 会话口径；
+    # review 修复起两列过滤 main_turn——与 _today_rate 的 avg_tps 同口径，子代理/辅助行
+    # 稀释均值会让同卡「平均耗时」与「平均输出速度」不可比）；
+    # v302.2：补今日发起过请求的去重会话数与 Σ工具调用数（今日合计 tooltip
+    # 行二「请求会话」与模型明细标题行右侧「工具调用 N 次」，同本轮/会话形态）。
+    # 旧远端元组按长度守卫降级。
     return con.execute(
         """select count(*), coalesce(sum(input_tokens),0), coalesce(sum(output_tokens),0),
                   coalesce(sum(cache_read_input_tokens),0), coalesce(sum(computed_total_tokens),0),
                   coalesce(sum(duration_ms),0), coalesce(sum(reasoning_tokens),0),
                   coalesce(sum(retry_count),0), coalesce(sum(cache_creation_input_tokens),0),
-                  min(started_at), max(completed_at)
+                  min(started_at), max(completed_at),
+                  count(distinct turn_id),
+                  avg(case when duration_ms > 0 and (query_source is null or query_source='main_turn') then duration_ms end),
+                  avg(case when time_to_first_token_ms > 0 and (query_source is null or query_source='main_turn') then time_to_first_token_ms end),
+                  count(distinct session_id),
+                  coalesce(sum(tool_call_count),0)
            from model_usage where status='completed' and completed_at between ? and ?""",
         (start_ms, end_ms),
     ).fetchone()
@@ -687,15 +727,21 @@ def _prompt_matches(title, prompt):
 _TASK_CACHE = {}
 
 
-def _sub_item(con, r, sub_tasks, sub_gen):
+def _sub_item(con, r, sub_tasks, sub_gen, sub_timing=None):
     """sub.list 单项（v217 统一浮层任务页）：基础聚合 + 可选每任务模型明细/费用。
     模型明细按子会话 id 分组查询（与 _session_models_cost 同构口径）；价表缺失
     或分组为空时字段省略，消费端按缺省处理不造零值。"""
+    t = sub_timing.get(r[0]) or [0, 0, 0, 0, 0, set()]
     item = {"sid": r[0], "agent": r[1], "title": r[2], "task": sub_tasks.get(r[0], ""),
             "requests": r[3], "total": r[4],
             "input": r[5], "output": r[6], "cache_read": r[7], "reasoning": r[8],
             "cache_write": r[9], "last": (r[10] or 0), "started": (r[12] or 0),
             "tps_avg": _rated_tps(*sub_gen.get(r[0], [0, 0])),
+            # v304 单任务耗时/轮数（该子会话真实聚合，>0 门控降级同上）
+            "avg_duration_ms": round(t[1] / t[2]) if t[2] else 0,
+            "avg_ttft_ms": round(t[3] / t[4]) if t[4] else 0,
+            "duration_ms": t[0],
+            "turns": len(t[5]),
             "active": bool(r[10] and int(time.time() * 1000) - r[10] < 30000)}
     m1, c1 = _scope_models_cost(con, "session_id=?", (r[0],))
     if c1 is not None:
@@ -1462,6 +1508,17 @@ def _session_snapshot(con, sid, cfg):
              and (query_source is null or query_source='main_turn')""",
         (sid,),
     ).fetchall(), covers)["tps"]
+    # v300 会话级耗时聚合（会话累计 tooltip 三行 KPI 第二行）：对全会话已完成 main_turn
+    # 请求求平均耗时/平均首字延迟（>0 样本过滤，同 v211 本轮口径）；总耗时 = Σ生成耗时
+    # （真实生成时间，非墙钟跨度）。旧快照/缺字段时消费端按 >0 门控整行收起。
+    sess_av = con.execute(
+        """select avg(case when duration_ms > 0 then duration_ms end),
+                  avg(case when time_to_first_token_ms > 0 then time_to_first_token_ms end),
+                  coalesce(sum(duration_ms),0)
+           from model_usage where session_id=? and status='completed'
+             and (query_source is null or query_source='main_turn')""",
+        (sid,),
+    ).fetchone()
     # 本轮数据源 = turn_usage 表的每轮完整聚合（v30 起，替代从 model_usage 手工按轮求和）：
     # 自带请求/重试/工具/工具错误计数与 reasoning 拆分，一轮一行。
     lt = {"requests": 0, "retries": 0, "tool_calls": 0, "tool_errors": 0, "input": 0,
@@ -1557,10 +1614,16 @@ def _session_snapshot(con, sid, cfg):
     # 口径与 _turn_rate 完全一致（first_token_at 缺失即无窗、含思考段窗口用 started_at）；
     # 无效段不进分母。运行中的请求未入库，这里只有已完成段。
     sub_gen = {}
+    # v304 子代理级耗时/轮数聚合（子代理面板四行 KPI 第三行）：按子会话累加
+    # duration/ttft 分量（avg 口径同 v300 会话：>0 样本过滤）与 Σduration（总耗时，
+    # 全部 completed 行）+ distinct turn_id（请求轮数，轮=turn_id 分组）。全部在既有
+    # sub_gen 扫描内顺带完成，零额外查询；旧快照缺字段消费端按 >0 门控降级。
+    sub_timing = {}
     if sub_rows:
         for r in con.execute(
             """select m.session_id, m.output_tokens, m.first_token_at, m.completed_at,
-                      m.started_at, m.reasoning_tokens, m.model_id, m.provider_id
+                      m.started_at, m.reasoning_tokens, m.model_id, m.provider_id,
+                      m.duration_ms, m.time_to_first_token_ms, m.turn_id
                from model_usage m join session s2 on m.session_id = s2.id
                where m.query_source='subagent' and s2.parent_id=? and m.status='completed'""",
             (sid,),
@@ -1571,7 +1634,27 @@ def _session_snapshot(con, sid, cfg):
             if tokens > 0 and gen_ms and _TPS_MIN_GEN_MS <= gen_ms < _TPS_MAX_GEN_MS:
                 g[0] += tokens
                 g[1] += gen_ms
+            t = sub_timing.setdefault(r["session_id"], [0, 0, 0, 0, 0, set()])
+            t[0] += r["duration_ms"] or 0
+            if (r["duration_ms"] or 0) > 0:
+                t[1] += r["duration_ms"]
+                t[2] += 1
+            if (r["time_to_first_token_ms"] or 0) > 0:
+                t[3] += r["time_to_first_token_ms"]
+                t[4] += 1
+            t[5].add(r["turn_id"])
     now_ms = int(time.time() * 1000)
+    # v304 汇总级耗时/轮数（子代理面板四行 KPI）：全部子代理行聚合（>0 样本过滤同
+    # 会话口径；轮数=session+turn 组合去重求和；sessions=子会话去重数由 list 长度
+    # 承载不下发）。无子代理时全 0，消费端按 >0 门控降级。
+    sub_turns = sum(len(t[5]) for t in sub_timing.values())
+    sub_dur_ms = sum(t[0] for t in sub_timing.values())
+    sub_dur_n = sum(t[2] for t in sub_timing.values())
+    sub_dur_pos = sum(t[1] for t in sub_timing.values())
+    sub_ttft_n = sum(t[4] for t in sub_timing.values())
+    sub_ttft_pos = sum(t[3] for t in sub_timing.values())
+    sub_avg_dur = round(sub_dur_pos / sub_dur_n) if sub_dur_n else 0
+    sub_avg_ttft = round(sub_ttft_pos / sub_ttft_n) if sub_ttft_n else 0
     sub_models, sub_cost = _scope_models_cost(
         con, "query_source='subagent' and session_id in (select id from session where parent_id=?)", (sid,))
     sub = {
@@ -1585,11 +1668,16 @@ def _session_snapshot(con, sid, cfg):
         "active": any(r[10] and now_ms - r[10] < 30000 for r in sub_rows),
         "rate_avg": _rated_tps(sum(g[0] for g in sub_gen.values()),
                                sum(g[1] for g in sub_gen.values())),
+        # v304 汇总级耗时/轮数（见上方 sub_timing 聚合注释）
+        "turns": sub_turns,
+        "avg_duration_ms": sub_avg_dur,
+        "avg_ttft_ms": sub_avg_ttft,
+        "duration_ms": sub_dur_ms,
         # v202 子代理群的预估费用与模型明细（可选增强字段，缺失省略）
         **({"cost_usd": sub_cost} if sub_cost is not None else {}),
         **({"models": sub_models} if sub_models else {}),
         "list": [
-            _sub_item(con, r, sub_tasks, sub_gen)
+            _sub_item(con, r, sub_tasks, sub_gen, sub_timing)
             for r in sub_rows
         ],
     }
@@ -1633,6 +1721,10 @@ def _session_snapshot(con, sid, cfg):
         "updated": (_ts(lr[0]).strftime("%H:%M:%S") if lr and lr[0] else ""),
         "started": _session_start_ms(con, sid, srow),
         "avg_tps": sess_avg,
+        # v300 会话级耗时（会话累计 tooltip 第二行）：口径见上方 sess_av 注释
+        "avg_duration_ms": round(sess_av[0] or 0),
+        "avg_ttft_ms": round(sess_av[1] or 0),
+        "duration_ms": int(sess_av[2] or 0),
         "speed_segs": _speed_segments(con, sid, covers),
         "sub": sub,
         "tools": tools,
@@ -2418,7 +2510,24 @@ def snapshot(force_sid="", routes=None, serve_con=None, include_speed_history=Fa
             day = _day_start()
             start_ms, end_ms = _epoch_ms(day), _epoch_ms(day + timedelta(days=1))
             today = _cached_agg(("today", start_ms), lambda: _today_usage(
-                con, start_ms, end_ms)) if con else (0,) * 11
+                con, start_ms, end_ms)) if con else (0,) * 16
+            # v301 今日平均输出速度：今日全部已完成 main_turn 段加权平均（_turn_rate 同款
+            # 口径：_row_gen_ms 生成窗口 + 200ms–1h 有效段过滤；子代理/辅助行不计），
+            # 与会话均 avg_tps 同源不同范围。2s 缓存同 today；covers 自带 60s TTL。
+            # 失败降级 0，消费端 >0 门控显「—」，不为凑数伪造速度。
+            def _today_rate():
+                return _turn_rate(con.execute(
+                    """select output_tokens, first_token_at, completed_at, started_at, reasoning_tokens, model_id, provider_id
+                       from model_usage where status='completed' and completed_at between ? and ?
+                         and (query_source is null or query_source='main_turn')""",
+                    (start_ms, end_ms),
+                ).fetchall(), _provider_first_token_covers(con))["tps"]
+            # 可选增强字段：任何失败（含最小桩连接无 fetchall 的测试形态）按 0 降级
+            # （消费端 >0 门控显「—」），不拖垮整帧（同 project/cost 口径）。
+            try:
+                today_rate = _cached_agg(("todayrate", start_ms), _today_rate) if con else 0
+            except Exception:
+                today_rate = 0
             # v202 今日预估费用+模型明细：同一条分组查询产出，2s 短缓存同 today
             def _today_detail():
                 models, cost = _scope_models_cost(
@@ -2438,7 +2547,7 @@ def snapshot(force_sid="", routes=None, serve_con=None, include_speed_history=Fa
             local_error = str(exc)[:200]
             con.close()
             con = None
-            today, rows, have_local = (0,) * 11, [], set()
+            today, rows, have_local, today_rate = (0,) * 16, [], set(), 0
         known_sids = [s for s in force_sids if s in have_local]
         # 远端补齐（v12）：本地不存在的 force 会话按路由分组查各自远端库
         setup = _remote_setup(cfg)
@@ -2527,6 +2636,18 @@ def snapshot(force_sid="", routes=None, serve_con=None, include_speed_history=Fa
                 "cache_read": today[3], "total": today[4],
                 "reasoning": today[6], "retries": today[7], "cache_write": today[8],
                 "started": today[9] or 0, "last_at": today[10] or 0,
+                # v298.1：今日轮数（turn_id 去重）；旧测试桩/远端行元组可能只有 11 列，长度守卫
+                "turns": (today[11] or 0) if len(today) > 11 else 0,
+                # v301 今日级平均耗时/平均延迟（_today_usage 附加列，长度守卫兼容旧元组）
+                # 与今日加权平均输出速度（消费端均按 >0 门控，缺字段诚实降级不伪造）
+                "avg_duration_ms": round(today[12] or 0) if len(today) > 12 else 0,
+                "avg_ttft_ms": round(today[13] or 0) if len(today) > 13 else 0,
+                "avg_tps": today_rate,
+                # v302.2 今日请求规模行：今日去重会话数 + Σ生成耗时（总耗时，真实生成时间非墙钟）
+                "sessions": (today[14] or 0) if len(today) > 14 else 0,
+                "duration_ms": int(today[5] or 0),
+                # v302.3 今日模型明细标题行右侧：Σ工具调用（重试已在 today[7]）
+                "tool_calls": (today[15] or 0) if len(today) > 15 else 0,
                 # v202 预估费用+模型明细（可选增强字段；价表模块缺失时省略）
                 **({"cost_usd": today_cost} if today_cost is not None else {}),
                 **({"models": today_detail["models"]} if today_detail and today_detail["models"] else {}),

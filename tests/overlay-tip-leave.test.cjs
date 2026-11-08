@@ -32,6 +32,7 @@ function runLeave({ x = 680, y = 400, hover = null, tipFor = {}, tipRect = null 
     get mouseInBar() { return mouseInBar; }, set mouseInBar(v) { mouseInBar = v; },
     tip: { getBoundingClientRect: () => tipRect || { left: 551, top: 509, right: 810, bottom: 673 } },
     tipStats: { grace: 0 },
+    state: { devKeepTip: false },   /* v297.3：tipLeaveAt 内联 devKeepTip 总闸守卫的桩 */
     tipGraceTimer: 0,
     setTimeout(fn, ms) { timers.push({ fn, ms }); return timers.length; },
     clearTimeout() { },

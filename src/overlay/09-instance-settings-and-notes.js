@@ -1130,6 +1130,8 @@
       if (cwBox) cwBox.checked = !!state.cmdkW;
       var tipClickBox = panel.querySelector(".zu-tip-click");
       if (tipClickBox) tipClickBox.checked = !!state.tipClick;
+      var devKeepTipBox = panel.querySelector(".zu-dev-keep-tip");
+      if (devKeepTipBox) devKeepTipBox.checked = !!state.devKeepTip;
       var qrBox = panel.querySelector(".zu-quota-remain");
       if (qrBox) qrBox.checked = !!state.quotaRemain;
       if (typeof zuRotatorSyncPanel === "function") zuRotatorSyncPanel(panel);
@@ -1550,6 +1552,12 @@
       if (t2.classList.contains("zu-tip-click")) {
         /* v249：纯渲染偏好，即时生效（下一次 mousemove/click 即按新模式判定） */
         state.tipClick = t2.checked ? 1 : 0;
+        persist();
+        return;
+      }
+      if (t2.classList.contains("zu-dev-keep-tip")) {
+        /* v297.3：开发者调试开关，即时生效（下一次收起判定即按新模式） */
+        state.devKeepTip = t2.checked ? 1 : 0;
         persist();
         return;
       }

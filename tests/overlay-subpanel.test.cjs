@@ -79,9 +79,11 @@ test('zero-rect entry falls back to the bar anchor; a detached entry closes the 
       pickedSid: 'sid_main', subPopSess: 'sid_main',
       L: (a) => a, ttEsc: (a) => String(a), escAttr: (a) => String(a),
       fmt: () => '1', countFmt: () => '1', fmtMoney: () => '¥1', fmtTime: () => '12:00', fmtStartS: () => '2026-01-01 00:00:00',
+      sec: (v) => v + 's', secLong: (v) => v + 'ms',   // v304 耗时行格式化桩（直出入参锁定接线）
       tpsBand: () => null, FXQ_ICON: '<svg class="tip-fxq"></svg>',
       fxqIcon: (models, scope) => '<svg class="tip-fxq" data-mcount="' + (models ? models.length : 0) + '" data-mscope="' + scope + '"></svg>',   // v248：KPI 问号随卡携带模型上下文（实例闭包函数，切片外桩）
       subPopIco: () => '<svg></svg>',
+      kpiIco: (name) => '<svg class="zu-kpi-ico" data-ico="' + name + '"></svg>',   // v304 四行 KPI 图标（07 分片单源，桩记名断言用）
       subRateSlotText: () => 'est', JSON,
       ...(over || {}),
     };
@@ -124,26 +126,47 @@ test('zero-rect entry falls back to the bar anchor; a detached entry closes the 
     assert.ok(!html.includes('Enter'), 'no Enter keycap');
   });
 
-  test('v246 summary KPI sub-lines carry hit rate / incl-thinking / cache-write', () => {
+  test('v304 summary: four KPI rows, cache badge inline on input label, honest turns degradation', () => {
     const sub = { total: 100, active: false, requests: 3, cost_usd: 0.5, rate_avg: 90,
+      turns: 2, avg_duration_ms: 1500, avg_ttft_ms: 800, duration_ms: 4200,
       input: 60, output: 30, cache_read: 40, cache_write: 5, reasoning: 6, models: [] };
     const panel = makePanel();
     runBuild(panel, sub, '');
     const html = panel.__html;
-    assert.ok(html.includes('缓存命中率'), '输入行副行=命中率（回退 token 尾注即红）');
-    assert.ok(html.includes('67%'), '命中率 40/60=67% 进副行');
-    assert.ok(html.includes('含思考'), '输出行副行=含思考');
-    assert.ok(!/<span class="u">(?:token|次|req)<\/span>/.test(html), 'KPI 第三参单位（token/次）已退役');
+    // 行一：缓存徽标随输入标签右侧（v304 不再占独立副行/独立缓存命中格）
+    assert.ok(html.includes('>输入<span class="hit">缓存67%</span>'), '缓存徽标随输入标签（40/60=67%）');
+    assert.ok(!html.includes('缓存命中率'), '长文案与独立副行已退役');
+    assert.ok(html.includes('含思考'), '输出辅助行=含思考');
+    // 行二：请求规模三格（轮数/会话为真实字段）
+    assert.ok(html.includes('请求轮数'), '行二轮数格');
+    assert.ok(html.includes('请求会话'), '行二会话格');
+    // 行三：耗时聚合（>0 门控渲染，mid 容器）
+    assert.ok(html.includes('zu-sp-kpis3--mid'), '耗时行容器');
+    assert.ok(html.includes('平均耗时') && html.includes('平均延迟') && html.includes('总耗时'), '耗时三格');
+    // 行四：duo 速度+费用
+    assert.ok(html.includes('zu-sp-kpis3--duo'), '速度行容器');
+    assert.ok(!html.includes('zu-sp-usage') && !html.includes('zu-sp-rate'), '旧二行 KPI/速率行已退役');
+    // 旧快照：轮数/耗时缺字段 → — / 行三收起（不伪造 0）
+    const oldSnap = Object.assign({}, sub, { turns: undefined, avg_duration_ms: undefined, avg_ttft_ms: undefined, duration_ms: undefined });
+    const p2 = makePanel();
+    runBuild(p2, oldSnap, '');
+    assert.ok(p2.__html.includes('>请求轮数</div><div class="v">—</div>'), '轮数缺失显 —');
+    assert.ok(!p2.__html.includes('zu-sp-kpis3--mid'), '耗时字段缺失=行三收起');
   });
 
-  test('v246 detail view folds the average rate into the KPI band with an inline t/s unit', () => {
+  test('v304 detail view: four rows keyed to this sub-session, estimate kept in subrate slot', () => {
     const sub = { total: 100, active: false, requests: 3, cost_usd: 0.5, models: [],
       list: [{ task: 'probe', title: 't', agent: 'zcode-gen', sid: 'sess_subagent_abcd1234',
-        input: 60, output: 30, cache_read: 40, cache_write: 5, reasoning: 6, requests: 1, tps_avg: 88, last: 123 }] };
+        input: 60, output: 30, cache_read: 40, cache_write: 5, reasoning: 6, requests: 1, tps_avg: 88,
+        turns: 1, avg_duration_ms: 900, avg_ttft_ms: 400, duration_ms: 1200, last: 123,
+        models: [{ model: 'glm-x', total: 100, requests: 1 }] }] };
     const panel = makePanel();
     runBuild(panel, sub, 'sess_subagent_abcd1234', { tpsBand: () => ({ cls: 'tps-fast', zh: '快', en: 'fast' }) });
     const html = panel.__html;
-    assert.ok(/tps-fast[^<]*<\/span><small>t\/s<\/small>/.test(html), '平均速率档色值内联 t/s 单位');
-    assert.equal((html.match(/平均速率/g) || []).length, 1, '明细页速率仅 KPI 一处（独立速率行已删）');
+    assert.ok(/tps-fast[^<]*<\/b><small> t\/s<\/small>/.test(html), '平均输出速度档色值 + t/s 单位（行四）');
+    assert.equal((html.match(/平均输出速度/g) || []).length, 1, '明细页速度仅行四一处');
+    assert.ok(html.includes('请求会话'), '行二会话格（本项=单子会话，计 1 为分组真值）');
+    assert.ok(html.includes('总耗时'), '行三总耗时（secLong 入参）');
+    assert.ok(html.includes('zu-sp-models'), '模型明细保留');
   });
 }

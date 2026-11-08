@@ -5,7 +5,7 @@
 设计目标：
 - 保持分发产物形态不变：根目录 overlay.js 与 plugins/.../overlay.js 仍为单文件 IIFE，
   无需打包器或第三方依赖，也不改变 Release ZIP 的文件清单契约。
-- 降低维护粒度：1.1MB 的 overlay.js 拆分为职责清晰的 13 个源码模块（src/overlay/）。
+- 降低维护粒度：1.1MB 的 overlay.js 拆分为职责清晰的 14 个源码模块（src/overlay/，`04-` 前缀两文件：词包纯数据 `04-rotator-builtin-packs.js` 先于 `04-status-rotator-data.js` 字典序加载）。
 - 防漂移门禁：`--check` 校验 src/overlay/ 拼接结果与根 overlay.js 逐字节一致，
   并由 `sync_plugin.py` 自动串联调用。
 

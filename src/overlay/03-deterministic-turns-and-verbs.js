@@ -322,6 +322,7 @@
     window.__zusageWantSids = [];
     window.__zusageWantSid = "";
     window.__zusageGitPaths = [];   // v96：主进程下轮 tick 读到空集即停查
+    delete window.__zusageSpdMonRect;   // v297 动态字号量测缓存随代际清理，防旧格尺寸误读新布局（review 修复）
     if (window.__zusageDispose === disposeOverlay) {
       delete window.__zusageDispose;
       delete window.__zusageUpdate;

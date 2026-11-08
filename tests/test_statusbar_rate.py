@@ -29,7 +29,8 @@ token_rate = load("statusbar_rate_token_rate", PLUGIN / "token_rate.py")
 # 只建 _session_snapshot 实际读取的表与列
 SCHEMA = """
 create table session (id text primary key, title text, parent_id text, time_created integer,
-  summary_additions integer, summary_deletions integer, summary_files integer);
+  summary_additions integer, summary_deletions integer, summary_files integer,
+  project_id text, directory text);
 create table model_usage (id text primary key, session_id text, turn_id text, query_source text,
   agent text, provider_id text, model_id text, status text, started_at integer, first_token_at integer,
   completed_at integer, duration_ms integer, time_to_first_token_ms integer, input_tokens integer,
@@ -790,3 +791,72 @@ class SpeedSegmentsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProjectTodayAggTests(unittest.TestCase):
+    """v303 项目级 / v301 今日级聚合的口径补锁（review 变异猎杀发现零覆盖）：
+    项目 avg_tps = 跨会话分片 Σ有效输出 ÷ Σ生成窗口的加权合成，且只计 main_turn
+    （辅助/子代理行不计——会话均同款纪律）；今日 avg_duration/avg_ttft 两列过滤
+    main_turn 且 >0，与同卡 avg_tps（main_turn）可比，否则子代理行稀释均值。"""
+
+    def setUp(self):
+        zusage._COVERS_CACHE.update(ts=0.0, set=frozenset())
+
+    @staticmethod
+    def _db():
+        con = sqlite3.connect(":memory:")
+        con.row_factory = sqlite3.Row
+        con.executescript(SCHEMA)
+        return con
+
+    @staticmethod
+    def _row(rid, sid, source, start, ft, completed, output, reasoning=0, duration=None):
+        return (rid, sid, "t", source, "", "account:test", "GLM-5.3", "completed", start, ft,
+                completed, duration if duration is not None else completed - start,
+                ft - start if ft else None, 10, output, reasoning, 0, 0, output + 10, 0, 0, 0)
+
+    def _insert(self, con, rows):
+        for r in rows:
+            con.execute("insert into model_usage values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", r)
+
+    def test_project_avg_tps_weighted_synthesis_main_turn_only(self):
+        con = self._db()
+        self.addCleanup(con.close)
+        con.execute("insert into session (id, title, project_id, directory) values ('s1','a','p1','/w/a')")
+        con.execute("insert into session (id, title, project_id, directory) values ('s2','b','p1','/w/a')")
+        self._insert(con, [
+            # s1: 1000 tok / 5s = 200 t/s；s2 上报思考: 240 tok / 8s = 30 t/s → 合成 1240/13s = 95.4
+            self._row("r1", "s1", "main_turn", 1_000_000, 1_002_000, 1_007_000, 1000),
+            self._row("r2", "s2", "main_turn", 1_010_000, 1_012_000, 1_018_000, 240, reasoning=100),
+            # 子代理行有完全有效的生成窗口——只有 main_turn 过滤能排除它（变异 d 的守卫）
+            self._row("x1", "s1", "subagent", 1_020_000, 1_021_000, 1_022_000, 99999),
+        ])
+        proj = zusage._project_usage(con, "s1")
+        self.assertEqual(proj["avg_tps"], 95.4)
+        self.assertEqual(proj["sessions"], 2)
+        self.assertEqual(proj["requests"], 3)   # 请求数含子代理行（卡片 scope 标签「全部请求」口径）
+
+    def test_project_avg_tps_zero_when_no_rated_rows(self):
+        con = self._db()
+        self.addCleanup(con.close)
+        con.execute("insert into session (id, title, project_id, directory) values ('s1','a','p1','/w/a')")
+        # 缺首字=无有效生成窗口（avg_tps 0）且 duration<=0（avg_duration_ms 0）
+        self._insert(con, [self._row("f1", "s1", "main_turn", 1_000_000, None, 1_002_000,
+                                     1000, duration=0)])
+        proj = zusage._project_usage(con, "s1")
+        self.assertEqual(proj["avg_tps"], 0)
+        self.assertEqual(proj["avg_duration_ms"], 0)   # duration<=0 不进均值分子分母
+
+    def test_today_avg_columns_filter_main_turn_and_nonpositive(self):
+        con = self._db()
+        self.addCleanup(con.close)
+        con.execute("insert into session (id, title) values ('s','t')")
+        self._insert(con, [
+            self._row("r1", "s", "main_turn", 1_000_000, 1_002_000, 1_007_000, 1000),   # dur 7000 / ttft 2000
+            self._row("x1", "s", "subagent", 1_010_000, 1_011_000, 1_012_000, 99999),   # dur 2000 有效但不计
+            self._row("r2", "s", "main_turn", 1_020_000, 1_022_000, 1_027_000, 500, duration=0),  # dur 0 不计
+        ])
+        r = zusage._today_usage(con, 0, 2_000_000)
+        self.assertEqual(r[12], 7000.0)   # avg duration: main_turn 且 >0（子代理稀释=4500、含 0=3500，都不等）
+        self.assertEqual(r[13], 2000.0)   # avg ttft 同口径
+        self.assertEqual(r[0], 3)         # 计数列保持全请求口径不变

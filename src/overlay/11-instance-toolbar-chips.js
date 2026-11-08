@@ -407,7 +407,7 @@
       else misplaced = (afterNode ? afterNode.nextElementSibling !== chip : host.lastElementChild !== chip);   // 锚位语义同 git 兜回（下一元素已是自己=就位，不得自插）
       if (misplaced) host.insertBefore(chip, insBefore ? insBefore : (afterNode ? afterNode.nextElementSibling : null));
       var txt = v.kind === "live" ? v.sv.text
-        : (v.sessAvg ? L("均", "avg ") + v.sessAvg + " t/s" : v.dbTps + " t/s");   /* v228：去「· 近X」尾缀，与条面格同口径（用户规格） */
+        : (v.dbTps ? v.dbTps + " t/s" : "");   /* v298（用户拍板）：chip=最后一轮真实速度（去「均」前缀与会话均） */
       var cls = "zu-live " + (v.kind === "live" ? v.sv.cls + (v.sv.word ? " zu-shimmer" : "") : v.band.cls);
       var sig = v.kind + "|" + cls + "|" + txt;
       if (chip.__zuSig !== sig) {   // 幂等：内容没变不重建，悬停/焦点态不被打断

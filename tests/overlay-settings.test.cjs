@@ -1610,7 +1610,7 @@ test('overlay roots opt out of the host titlebar drag region (v259: settings ✕
   // 落在条内，Electron 拖拽区穿透未显式 no-drag 的覆盖层 → 点击被窗口拖拽吞掉。
   // v259：.zusage-exc 移出选择器——超限告警气泡挂在条内工具行区，不与标题栏拖拽条叠放。
   assert.ok(
-    source.includes('.zusage-panel,.tip,.zu-mp-ov,.zu-compact-dlg{-webkit-app-region:no-drag}'),
+    source.includes('.zusage-panel,.tip,.zu-mp-ov,.zu-compact-dlg,.zu-rot-pk-dlg{-webkit-app-region:no-drag}'),
     '浮层根必须显式 no-drag，否则宿主标题栏拖拽区穿透面板头部',
   );
   // 规则覆盖面依赖这些类名真实挂在浮层根上：类名改名时此处先红

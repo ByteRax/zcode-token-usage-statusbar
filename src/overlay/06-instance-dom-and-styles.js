@@ -141,7 +141,7 @@
      * → v256 修复「速度 Tooltip 有时新、有时旧」（用户实机报告）：根因=统一轮表只在 serve 常驻链产出，主进程常驻进程空闲回收/重启/降级时回退 zusage.py json 一次性帧缺 speed_history，spdRebuildOr 返回 null 整卡回退旧版；①zusage snapshot 增显式 include_speed_history 门控，serve 与桌面 json 都产出轮表（远端子进程 ZUSAGE_REMOTE_CHILD=1 排除，CLI/MCP/远端 stdout 契约不变）；②overlay __zusageUpdate 粘性保留最近一份有界轮表，缺字段帧不再闪回旧卡（空轮表不粘性）；③精简模式 tpsChipTipHTML 与 tpsTip 浮层补齐 V2 接线（双 Tab/维度/柱 hover 全走浮层本体委托、状态落 chip 数据包、V2 卡放行签名重建），V2 宽帽规则补 .zusage-tps-tip 宿主；冷文件 inject-main 未改，热重载即生效
      * → v257 追堵「首帧缺轮表」（用户 11:21 再现旧卡，渲染端 diag 实证已 v256）：v256 粘性只在代际内有效，热重载/重启后的新代际粘性为空，而 `_speed_history_safe` 在完成轮瞬间的 WAL 写窗口偶发抛错返回 None——首帧恰逢失败时无值可粘，仍回退旧卡。①safe 失败先短重试一次（50ms，新常驻进程首查撞写窗口时多半已放行；缓存 TTL 内不重扫），再失败跨 dbkey 回退最近一次成功轮表（`_SPEED_HISTORY_STALE_MS` 10 分钟上限，轮表是历史统计分钟级陈旧可接受，下一帧成功即覆盖）；②`__zusageUpdate` 帧级诊断 `FATAL.spdFrame`（has/sticky/turns，原地更新）——再出现象 diag 直接区分「数据链缺帧」与「粘性未建立」，不再靠截图反推
      * → v258 spdTip 取证诊断（用户 11:37 在 v257+首帧 has=1 下仍见旧卡，数据/代码/本地模拟三查均无异常，纯推理到头）：buildLiveTip/html(d)/tpsChipTipHTML 三条速度 tooltip 路径在 V2 成功时记 `FATAL.spdTip={t,src:"v2-live|v2-html|v2-chip",turns}`、回退时记 `{src:"fb-live|fb-html|fb-chip",turns,range,period,sid尾8}`，spdRebuildOr null 分支加 `FATAL.spdNull`（typeof FATAL 守卫不破坏 VM 切片）——diag 直接给出真实路径与当时轮表长度，定位后移除
-     * → v259 宿主多视图顶部 48px [app-region:drag] 标题栏拖拽条穿透上层浮层（Electron 拖拽区按几何命中，覆盖层未显式 no-drag 不阻挡）：面板 top:8px 时头部 ✕ 落在条内，真实点击被窗口拖拽吞掉（新建任务页实报「设置关闭无效」，面板内导航点击正常与症状吻合）；.zusage-panel（设置+子代理浮层）/.tip（全部 tooltip 根）/.zu-mp-ov/.zu-compact-dlg 显式 -webkit-app-region:no-drag，把自身矩形从拖拽区减掉（宿主自家浮层与全屏屏障同款修法，app.asar 实证）
+     * → v259 宿主多视图顶部 48px [app-region:drag] 标题栏拖拽条穿透上层浮层（Electron 拖拽区按几何命中，覆盖层未显式 no-drag 不阻挡）：面板 top:8px 时头部 ✕ 落在条内，真实点击被窗口拖拽吞掉（新建任务页实报「设置关闭无效」，面板内导航点击正常与症状吻合）；.zusage-panel（设置+子代理浮层）/.tip（全部 tooltip 根）/.zu-mp-ov/.zu-compact-dlg/.zu-rot-pk-dlg 显式 -webkit-app-region:no-drag，把自身矩形从拖拽区减掉（宿主自家浮层与全屏屏障同款修法，app.asar 实证）
      * → v260 静态桥缺席兜底（同内容仓库版记 v258，合入时按合入顺序归一；G2 跨版本免重打桥）：readFiberPaneScope 沿 React fiber 回溯 SessionPane 作用域（detOwnerOf/sidePaneKeyOf 的 tabId 同款兜底；限深 24、撞外层会话/分栏根止步、多候选歧义拒绝，校验与静态属性分支同规）；turn-stats.js 运行时合成 BRIDGE_TEMPLATE v2 同契约三访问器（Map.prototype 一次性探针捕获宿主注册表 + installRuntimeBridge 注入口）
      * → v261 spdRender 取证补强（老会话完成态仍见旧卡而 spdTip 恒被 v2-live 每 tick 覆盖，hover 瞬间的整条渲染记录无法存活）：html(d) 整条渲染专记 `FATAL.spdRender={t,src:v2-html|fb-html,pane,sid尾8,turns,hasH,range,period,dim}`（独立字段不被覆盖），spdTip/spdRender 均带 pane 实例标识（多实例共享 diag 分不清写入者），spdRebuildOr null 分支补 spdNull 原因取证（typeof FATAL 守卫）；本版=运行目录 v260 合流超集基线 + 本诊断（v260 已含速度线全部修复与并行线 v259/v260 桥兜底）
      * → v262 根治「空渲染污染共享数据」（spdRender 铁证定案：用户复现时刻整条渲染 hasH:false / spdNull hType:undefined，而前后帧 has=1——`render(d)` 首行无条件 `state.data = d`，实例 spawn 首渲染/桥空窗的 `render(state.data || {session:{},...})` 把空对象写进共享数据、抹掉统一轮表，窗口内 hover 即 fb-html 旧卡；切会话 tab 触发 pane 重建恰好高频制造该窗口，故「老会话旧卡、新会话正常」）：render 改条件写 `if (d && d.session && d.session.sid) state.data = d`——空对象渲染不再抹掉轮表，spawn 实例后续 updateLive 直接用上一真帧渲染（比旧行为更快出 V2）；真帧写入链（__zusageUpdate 外层）不变
@@ -172,8 +172,24 @@
      * → v287 修复批：速度卡远端判定改只认快照 remote 标（本地 scoped 行也带 workspace_identity，旧判定把本地 pane 选「全部」误降级为本会话并显「远端会话仅显示本会话历史」）；精简链 tpsTabActivate 聚焦按钮改 t0.speedHover=-1（原 t.speedHover 在声明前引用必抛 TypeError，0 也会误高亮第 0 柱）
      * → v288 会话累计模型明细费用列随 ⚙ 预估费用开关门控（原 v215 内联四列表漏门控，v253 共享 statModelsTable 收编时漏掉本卡——开关关闭后仍渲染「预估费用」表头与 ¥ 单元格；换 statModelsTable(sess.models) 与本轮/今日同源，关时收三列、空明细整块不渲染）
      * → v289 火山方舟额度修复（issue #260/#261）：tooltip「其他源」行抽公共 helper otherSourcesRow 并在 info（未配置/暂不支持）分支同样渲染——主源不可展示时后台已查询成功的源（如火山 AK/SK）不再被提前 return 吞掉；其他源标签对复合源 id（vendor:providerId）回退裸厂商键查找；剩余口径（quotaRemain）在其他源行保持不变
+     * → v290 速度卡交互与标签（2026-11-08 用户规格）：图表区滚轮横滚（tpsTip 本体 wheel 委托，deltaY→scrollLeft，不可横滚不拦截）；每柱恒显时间标签（8px 下 5 字符可容纳，稀疏化废弃）
+     * → v291 速度历史热力图（本月月历/全部历史 GitHub 风格双形态，档位色同源 TPS_BANDS、无记录中性灰、未来弱日期号）+ FATAL.gen 代际号进 diag（重注入取证不依赖计数字段归零）+ 首开/键变滚到最右
+     * → v292 月历定稿第一轮：标题去粒度词改「范围 · 时间 · 平均速度」三段式；整卡定高 315px 四形态同高；跨月占位不越出星期对齐
+     * → v293 月历设计图规格：列头周首日号与格中心对齐、7 行 1fr 铺满、滚动条样式落元素本体（v293.1）
+     * → v294 月历格专项：低饱和档位底 22% 混卡片色（v294.1 拍板去左色条靠底色辨档）、文字统一吃前景色、space-between 布局+min-height 治越界、容器查询三档字号
+     * → v295 月历布局铺满（6 列×行 1fr 均分、紧凑态隐数字 hover 兜底）+ 柱状图系列修订八项：顺序时间恢复（v295.7 撤 v290 倒序）、柱距 24px 恒显时间（v295.17）、Y 轴刻度列外移滚动容器（v295.18）、首开滚最右（v295.13）等
+     * → v296 热力图「全部历史」改最近 365 天窗口（周日起对齐补齐、窗外透明占位、无数据卡覆盖统计 v296.1）+ 方格随容器宽自适应横滚
+     * → v297 热力图动态字号（6~14px 纯算术择优、宿主量测 __zusageSpdMonRect 一次回写、今日格加深 v297.1、分段高度诊断 v297.2、⚙ 面板同款 v297.3）
+     * → v298 chip 主数字改最后一轮真实速度（去「均」前缀，tooltip 左卡保留会话加权均，两处各自成立；无最后一轮真实值时面留空不显会话均）+ Y 轴刻度锁定柱区基线（v298.1）+ 左卡标题随时间 Tab 五命名（v298.2）+ 档位徽标下模型名（v298.4）+ 量测时机挂 display:block 后（08）
+     * → v299 本轮 tooltip 紧凑化（三行 KPI 家族首卡：statKpi 辅助行参数、模型表 headRight/tableOnly、工具/重试迁模型标题行右）
+     * → v300 会话累计卡紧凑化（同三行 KPI 形态）+ 会话总耗时跨会话长时长换算 + zusage 会话级平均耗时/平均首字延迟/Σ生成耗时聚合（>0 门控，旧快照降级）
+     * → v301 今日合计卡紧凑化 + 三张统计卡共用 KPI SVG 图标（KPI_ICON_PATHS）+ zusage 今日聚合扩平均耗时/首字延迟列 + 缓存命中率入输入格副行
+     * → v302 统计卡行结构定名（请求次数/请求轮数/请求会话层级行、「总耗时」「平均输出速度」统一命名）+ zusage 今日去重会话数与 Σ工具调用（v302.2）+ 会话/今日模型标题行右并入工具统计（v302.3）
+     * → v303 项目累计卡紧凑化（根类并入 .zu-stat-tip--project 统计卡家族）+ zusage _project_usage 新聚合（平均耗时/平均首字延迟/总耗时/跨分片合成 avg_tps）+ 刻度列外移联动（v303.3/v303.4）
+     * → v304 工具调用卡紧凑化（定宽四列+sticky 表头+行 hover）+ statKpi 标题图标参数 + zusage 子代理单任务耗时/轮数聚合（v304.1）+ 模型名立方体 SVG 胶囊（v304.2）
+     * → v305 收口审查修复批（review-fix-merge）：轮播可视化编辑器 when: 键白名单+提示行转义（堵存储型注入面）；手写显式 false 高级条件保存保留、false 不再渲染为勾选态；热力图「共 N 天」覆盖统计 var 提升修复（原恒退兜底文案）且分母对齐可视窗口；今日 tooltip 轮数/会话数旧远端缺字段显 —；今日/项目 avg 耗时与项目 avg_tps 过滤 main_turn（与 avg_tps 同口径）；devKeepTip 持久化+re-click 放行；__zusageSpdMonRect 代际清理；speed_v2 聚焦切换测试随功能移除删除；未编号同批内容——轮播自定义短语可视化编辑器+文本模式、内置词包拆独立分片 04-rotator-builtin-packs.js（16 包）、⚙ 轮播分区「原作者」按钮、速度卡覆盖提示/聚焦按钮移除（2026-11-07 文案批）
      */
-    var VERSION = "v289";
+    var VERSION = "v305";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
@@ -580,7 +596,7 @@
        * Electron 拖拽区按几何命中、穿透上层未显式标注 no-drag 的元素——面板 top:8px 时头部（✕ 关闭钮）
        * 正落在条内，真实点击被窗口拖拽吞掉（「点击关闭无效」）。与宿主自家浮层同款修法：
        * 浮层根显式 no-drag 把自身矩形从拖拽区减掉（面板/子代理浮层、tooltip、mp 与压缩全屏遮罩）。 */
-      ".zusage-panel,.tip,.zu-mp-ov,.zu-compact-dlg{-webkit-app-region:no-drag}" +
+      ".zusage-panel,.tip,.zu-mp-ov,.zu-compact-dlg,.zu-rot-pk-dlg{-webkit-app-region:no-drag}" +
       ".zu-sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}" +
       ".panel::-webkit-scrollbar{width:8px}" +
       ".panel::-webkit-scrollbar-thumb{background:var(--color-border,rgba(255,255,255,.14));border-radius:999px}" +
@@ -743,16 +759,16 @@
       /* v217 子代理统一浮层（.zu-sub-pop）：悬停预览/点击固定共用同一双栏组件。
        * 外壳=标题栏 54px / 左导航 28% / 右内容 / 底部说明 42px；面板 .panel 基础
        * 之上覆写：清 padding/gap、限宽高、字体走 UI sans（数值列单独 mono）。 */
-      ".panel.zu-sub-pop{width:820px;max-width:calc(100vw - 24px);height:auto;min-height:500px;max-height:calc(100vh - 24px);padding:0;gap:0;border-radius:14px;overflow:hidden;font-family:var(--font-sans,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);font-size:var(--ui-font-size,14px);line-height:1.55}" +
-      ".zu-sph{flex:0 0 auto;display:flex;align-items:center;gap:10px;height:54px;padding:0 18px;border-bottom:1px solid var(--color-border,rgba(255,255,255,.09))}" +
+      ".panel.zu-sub-pop{width:680px;max-width:calc(100vw - 24px);height:auto;min-height:0;max-height:calc(100vh - 24px);padding:0;gap:0;border-radius:14px;overflow:hidden;font-family:var(--font-sans,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);font-size:var(--ui-font-size,14px);line-height:1.55}" +
+      ".zu-sph{flex:0 0 auto;display:flex;align-items:center;gap:10px;height:44px;padding:0 14px;border-bottom:1px solid var(--color-border,rgba(255,255,255,.09))}" +
       ".zu-sph-t{font-size:calc(var(--ui-font-size,14px) + 4px);font-weight:700;color:var(--color-foreground,#f1f2f3)}" +
       ".zu-sph-scope{margin-left:auto;font-size:calc(var(--ui-font-size,14px) - 2px);color:var(--color-foreground-subtle,#a8aaae);border:1px solid var(--color-border,rgba(255,255,255,.16));border-radius:999px;padding:2px 11px;white-space:nowrap}" +
       ".zu-sph-x{display:flex;align-items:center;justify-content:center;background:none;border:0;color:var(--color-foreground-subtle,#a8aaae);cursor:pointer;padding:5px;border-radius:7px}" +
       ".zu-sph-x:hover{color:var(--color-foreground,#f1f2f3);background:var(--color-hover,rgba(255,255,255,.08))}" +
       ".zu-spb{flex:1 1 auto;min-height:0;display:flex}" +
-      ".zu-spnav{flex:0 0 28%;min-width:0;display:flex;flex-direction:column;background:rgba(0,0,0,.16);border-right:1px solid var(--color-border,rgba(255,255,255,.09));padding:10px 0 6px}" +
+      ".zu-spnav{flex:0 0 160px;min-width:0;display:flex;flex-direction:column;background:rgba(0,0,0,.16);border-right:1px solid var(--color-border,rgba(255,255,255,.09));padding:10px 0 6px}" +
       ".zu-light .zu-spnav{background:rgba(0,0,0,.035)}" +
-      ".zu-spnav-item{display:block;width:calc(100% - 16px);margin:1px 8px;padding:7px 10px 7px 11px;text-align:left;background:none;border:0;border-left:2px solid transparent;border-radius:0 8px 8px 0;color:var(--color-foreground-subtle,#a8aaae);font:inherit;font-size:calc(var(--ui-font-size,14px) - 1px);line-height:1.45;cursor:pointer}" +
+      ".zu-spnav-item{display:block;width:calc(100% - 14px);margin:1px 7px;padding:5px 8px 5px 9px;text-align:left;background:none;border:0;border-left:2px solid transparent;border-radius:0 8px 8px 0;color:var(--color-foreground-subtle,#a8aaae);font:inherit;font-size:calc(var(--ui-font-size,14px) - 2px);line-height:1.45;cursor:pointer}" +
       ".zu-spnav-item:hover{color:var(--color-foreground,#f1f2f3);background:var(--color-hover,rgba(255,255,255,.06))}" +
       ".zu-spnav-item.on{color:#b6a1f2;background:rgba(182,161,242,.14);border-left-color:#b6a1f2;font-weight:600}" +
       ".zu-light .zu-spnav-item.on{color:#6f54c8;background:rgba(111,84,200,.10);border-left-color:#6f54c8}" +
@@ -760,42 +776,37 @@
       ".zu-spnav-label{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden;overflow-wrap:anywhere;word-break:break-word}" +
       ".zu-spnav-live{display:block;font-size:calc(var(--ui-font-size,14px) - 2px);font-weight:400;color:#3ecf8e;margin-top:1px}" +
       ".zu-light .zu-spnav-live{color:#0c8a63}" +
-      ".zu-spnav-h{padding:9px 19px 3px;font-size:calc(var(--ui-font-size,14px) - 2px);letter-spacing:.06em;color:var(--color-foreground-subtlest,#6b7484)}" +
+      ".zu-spnav-h{padding:8px 16px 2px;font-size:calc(var(--ui-font-size,14px) - 2px);letter-spacing:.06em;color:var(--color-foreground-subtlest,#6b7484)}" +
       ".zu-spnav-list{flex:1 1 auto;min-height:0;overflow-y:auto;padding-bottom:4px}" +
-      ".zu-spbody{flex:1 1 auto;min-width:0;overflow-y:auto;max-height:calc(100vh - 120px);padding:18px 20px}" +
+      ".zu-spbody{flex:1 1 auto;min-width:0;overflow-y:auto;max-height:calc(100vh - 100px);padding:12px 14px}" +
       ".zu-spnav-list::-webkit-scrollbar,.zu-spbody::-webkit-scrollbar{width:8px}" +
       ".zu-spnav-list::-webkit-scrollbar-thumb,.zu-spbody::-webkit-scrollbar-thumb{background:var(--color-border,rgba(255,255,255,.14));border-radius:999px}" +
-      ".zu-spview-head{display:flex;align-items:baseline;gap:12px;margin-bottom:13px}" +
-      ".zu-spview-head h3{margin:0;font-size:calc(var(--ui-font-size,14px) + 4px);font-weight:700;color:var(--color-foreground,#f1f2f3);min-width:0;overflow-wrap:anywhere}" +
+      ".zu-spview-head{display:flex;align-items:baseline;gap:10px;margin-bottom:10px}" +
+      ".zu-spview-head h3{margin:0;font-size:calc(var(--ui-font-size,14px) + 2px);font-weight:700;color:var(--color-foreground,#f1f2f3);min-width:0;overflow-wrap:anywhere}" +
       ".zu-spsub{color:var(--color-foreground-subtle,#a8aaae);font-size:calc(var(--ui-font-size,14px) - 2px);white-space:nowrap;flex:0 0 auto}" +
       ".zu-spstate{margin-left:auto;display:flex;align-items:center;gap:7px;color:var(--color-foreground-subtle,#a8aaae);font-size:calc(var(--ui-font-size,14px) - 2px);white-space:nowrap;flex:0 0 auto}" +
       ".zu-spstate .dot{width:7px;height:7px;border-radius:50%;background:var(--color-foreground-subtlest,#6b7484)}" +
       ".zu-spstate.run .dot{background:#3ecf8e}" +
       ".zu-light .zu-spstate.run .dot{background:#0c8a63}" +
-      ".zu-sp-kpis3{display:grid;grid-template-columns:1fr 1fr 1fr;background:var(--color-surface,rgba(255,255,255,.035));border:1px solid var(--color-border,rgba(255,255,255,.07));border-radius:10px;padding:11px 0;margin-bottom:11px}" +
-      ".zu-sp-kpi{min-width:0;padding:2px 18px}" +
+      ".zu-sp-kpis3{display:grid;grid-template-columns:1fr 1fr 1fr;background:var(--color-surface,rgba(255,255,255,.035));border:1px solid var(--color-border,rgba(255,255,255,.07));border-radius:8px;padding:8px 0;margin-bottom:8px}" +
+      ".zu-sp-kpi{min-width:0;padding:2px 12px}" +
       ".zu-sp-kpi + .zu-sp-kpi{border-left:1px solid var(--color-border,rgba(255,255,255,.08))}" +
-      ".zu-sp-kpi .k{font-size:calc(var(--ui-font-size,14px) - 2px);color:var(--color-foreground-subtle,#a8aaae);margin-bottom:2px;display:flex;align-items:center;gap:5px}" +
-      ".zu-sp-kpi .v{font-family:var(--font-mono,Consolas,'Microsoft YaHei UI',monospace);font-variant-numeric:tabular-nums;font-size:calc(var(--ui-font-size,14px) + 14px);font-weight:700;color:var(--color-foreground,#f1f2f3);line-height:1.3}" +
-      ".zu-sp-kpi .v small{font-size:calc(var(--ui-font-size,14px) + 1px);font-weight:600;color:var(--color-foreground-subtle,#a8aaae);margin-left:4px}" +
-      ".zu-sp-kpi .u{font-size:calc(var(--ui-font-size,14px) - 2px);color:var(--color-foreground-subtlest,#6b7484);margin-top:2px}" +
+      ".zu-sp-kpi .k{font-size:calc(var(--ui-font-size,14px) - 3px);color:var(--color-foreground-subtle,#a8aaae);margin-bottom:2px;display:flex;align-items:center;gap:4px;min-width:0;white-space:nowrap}" +".zu-sp-kpi .k svg{flex:none;opacity:.85}" +".zu-sp-kpi .k .hit{color:#4ade80;font-weight:600;font-size:calc(var(--ui-font-size,14px) - 3px);white-space:nowrap}" +
+      ".zu-sp-kpi .v{font-family:var(--font-mono,Consolas,'Microsoft YaHei UI',monospace);font-variant-numeric:tabular-nums;font-size:calc(var(--ui-font-size,14px) + 8px);font-weight:700;color:var(--color-foreground,#f1f2f3);line-height:1.3}" +
+      ".zu-sp-kpi .v small{font-size:calc(var(--ui-font-size,14px) - 2px);font-weight:600;color:var(--color-foreground-subtle,#a8aaae);margin-left:4px}" +".zu-sp-kpis3--mid .zu-sp-kpi .v{font-size:calc(var(--ui-font-size,14px) + 6px)}" +".zu-sp-kpis3--duo{grid-template-columns:1fr 1fr}" +".zu-sp-kpis3--duo .zu-sp-kpi:only-child{grid-column:1/-1;border-left:0}" +
+      ".zu-sp-kpi .u{font-size:calc(var(--ui-font-size,14px) - 3px);color:var(--color-foreground-subtlest,#6b7484);margin-top:2px}" +
       ".zu-sp-kpi .u .hit{color:#4ade80;font-weight:600}" +
-      ".zu-sp-usage{background:none;border:0;border-radius:0;padding:4px 0}" +
-      ".zu-sp-usage .zu-sp-kpi:first-child{padding-left:2px}" +
-      ".zu-sp-usage .zu-sp-kpi .v{font-size:calc(var(--ui-font-size,14px) + 8px)}" +
-      ".zu-sp-rate{display:flex;align-items:baseline;gap:8px;padding:4px 2px 0;color:var(--color-foreground-subtle,#a8aaae)}" +
-      ".zu-sp-rate b{font-family:var(--font-mono,Consolas,'Microsoft YaHei UI',monospace);font-variant-numeric:tabular-nums;font-size:calc(var(--ui-font-size,14px) + 2px);font-weight:700}" +
-      ".zu-sp-models{margin-top:12px;border-top:1px solid var(--color-border,rgba(255,255,255,.09));padding-top:12px}" +
-      ".zu-sp-models h4{margin:0 0 9px;font-size:calc(var(--ui-font-size,14px) + 1px);font-weight:700;color:var(--color-foreground,#f1f2f3)}" +
+      ".zu-sp-models{margin-top:10px;border-top:1px solid var(--color-border,rgba(255,255,255,.09));padding-top:10px}" +
+      ".zu-sp-models h4{margin:0 0 7px;font-size:var(--ui-font-size,14px);font-weight:700;color:var(--color-foreground,#f1f2f3)}" +
       ".zu-sp-models table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}" +
-      ".zu-sp-models thead th{background:none;text-align:right;font-weight:500;color:var(--color-foreground-subtle,#a8aaae);font-size:calc(var(--ui-font-size,14px) - 1px);padding:0 10px 7px;border-bottom:1px solid var(--color-border,rgba(255,255,255,.14));white-space:nowrap}" +
+      ".zu-sp-models thead th{background:none;text-align:right;font-weight:500;color:var(--color-foreground-subtle,#a8aaae);font-size:calc(var(--ui-font-size,14px) - 3px);padding:0 6px 5px;border-bottom:1px solid var(--color-border,rgba(255,255,255,.14));white-space:nowrap}" +
       ".zu-sp-models thead th:first-child{text-align:left;padding-left:2px}" +
-      ".zu-sp-models td{padding:7px 10px;border-top:1px solid var(--color-border,rgba(255,255,255,.08));text-align:right;color:var(--color-foreground,#e6e9ef);font-family:var(--font-mono,Consolas,'Microsoft YaHei UI',monospace);font-size:var(--ui-font-size,14px);white-space:nowrap}" +
+      ".zu-sp-models td{padding:4px 6px;border-top:1px solid var(--color-border,rgba(255,255,255,.08));text-align:right;color:var(--color-foreground,#e6e9ef);font-family:var(--font-mono,Consolas,'Microsoft YaHei UI',monospace);font-size:calc(var(--ui-font-size,14px) - 1px);white-space:nowrap}" +
       ".zu-sp-models tr:first-child td{border-top:0}" +
       ".zu-sp-models td:first-child{text-align:left;padding-left:2px;font-family:inherit;color:var(--color-foreground,#f1f2f3);white-space:normal;overflow-wrap:anywhere}" +
-      ".zu-sp-meta{display:flex;flex-wrap:wrap;gap:4px 16px;align-items:baseline;margin-top:12px;padding-top:12px;border-top:1px solid var(--color-border,rgba(255,255,255,.09));color:var(--color-foreground-subtle,#a8aaae);font-size:calc(var(--ui-font-size,14px) - 1px)}" +
+      ".zu-sp-meta{display:flex;flex-wrap:wrap;gap:4px 16px;align-items:baseline;margin-top:10px;padding-top:10px;border-top:1px solid var(--color-border,rgba(255,255,255,.09));color:var(--color-foreground-subtle,#a8aaae);font-size:calc(var(--ui-font-size,14px) - 3px)}" +
       ".zu-sp-meta b{font-family:var(--font-mono,Consolas,'Microsoft YaHei UI',monospace);font-variant-numeric:tabular-nums;font-weight:600;color:var(--color-foreground,#e6e9ef)}" +
-      ".zu-spf{flex:0 0 auto;display:flex;align-items:center;gap:8px;height:42px;padding:0 18px;border-top:1px solid var(--color-border,rgba(255,255,255,.09));color:var(--color-foreground-subtle,#a8aaae);font-size:calc(var(--ui-font-size,14px) - 1px)}" +
+      ".zu-spf{flex:0 0 auto;display:flex;align-items:center;gap:8px;min-height:34px;padding:8px 14px;border-top:1px solid var(--color-border,rgba(255,255,255,.09));color:var(--color-foreground-subtle,#a8aaae);font-size:calc(var(--ui-font-size,14px) - 1px)}" +
       "@media (max-width:700px){.zu-spb{flex-direction:column}.zu-spnav{flex:0 0 auto;max-height:150px;border-right:0;border-bottom:1px solid var(--color-border,rgba(255,255,255,.09))}.zu-spnav-list{overflow-y:auto}.zu-spbody{flex:1 1 auto}}" +
       /* 自绘 tooltip（v31）：向上弹出（原生 title 方向不可控且会被窗口下缘遮挡），
        * 支持多 tab；white-space:pre-line 保留数据里的 \n 换行。
@@ -962,7 +973,13 @@
       ".zu-legend-item .dot-c{background:currentColor}" +
       ".zu-legend-dot.zu-ultra{display:none;background:linear-gradient(100deg,#60a5fa 0%,#a78bfa 50%,#c084fc 100%)}" +
       ".zu-legend-dot.zu-ultra::before{content:none}" +
-      /* v246 用户规格：图例 Ultra 档只留文字，色点整体隐藏；渐变/clip 规则保留供恢复 */
+      /* v246 用户规格：图例 Ultra 档只留文字，色点整体隐藏；渐变/clip 规则保留供恢复。
+       * 档位说明弹层例外（2026-11-07 用户规格）：色点 visibility:hidden 占位，
+       * 「≥2000」与其他项文字同一起点（display:none 会左移 12px 破坏列对齐）。 */
+      ".zu-sv-li .zu-legend-dot.zu-ultra{display:inline-block;visibility:hidden}" +
+      /* Ultra 星点是 .zu-ultra::before 伪元素（v127 档位体系），弹层内一并去除
+       * （2026-11-07 用户规格：≥2000 前不带 logo）；文字起点仍由上方占位规则对齐。 */
+      ".zu-sv-li b.zu-ultra::before{content:none}" +
       /* ---------- v254 速度 Tooltip 重构样式（仅 .zu-sv-root 作用域，不碰旧图） ---------- */
       ".zu-sv-root{display:flex;flex-direction:column;gap:0}" +
       /* v278：单行 Header——标题居左、双 Tab 组整体靠右（filter margin-left:auto）；
@@ -998,45 +1015,66 @@
       /* v274：左卡按内容自然高，不再强制撑满图表高度（§11.2） */
       /* v281 P1：右图表列弹性占满剩余宽度且 min-width:0——列宽只由 tip 定宽决定，
        * 不再被 plot max-content/图表头文案反向撑缩（宽随 Tab 跳动的根因） */
-      ".zu-sv-root .zu-speed-body{gap:12px;align-items:flex-start}" +
+      /* 左卡撑满 body 高度（2026-11-07 用户规格，收回 v274「自然高」）：
+       * zu-sl-body flex:1 吸收富余高，主数字居中、峰值/最低/最新钉底 */
+      ".zu-sv-root .zu-speed-body{gap:12px;align-items:stretch;flex:1;min-height:0}" +
+      /* v292：整卡定高 315 后图表列纵向布局——head 自然高、图表区吃剩余 */
+      ".zu-sv-chart{display:flex;flex-direction:column;min-height:0;" +
+        "border:1px solid var(--color-popover-border,rgba(255,255,255,.14));" +
+        "border-radius:12px;padding:10px 12px;box-sizing:border-box}" +
+      ".zu-light .zu-sv-chart{border-color:rgba(15,23,42,.14)}" +
+      ".zu-sv-chart .zu-sc-wrap{flex:1;min-height:0;padding:5px 0;box-sizing:border-box}" +
       ".zu-sv-root .zu-speed-chart{flex:1 1 0;min-width:0;max-width:100%}" +
-      ".zu-sv-root .zu-sv-left{flex:0 0 236px;gap:0}" +
+      ".zu-sv-root .zu-sv-left{flex:0 0 210px;gap:0}" +
+      /* v295.1（定高 300）：左卡内容紧凑化——主数字 +22px 会让 stats 行溢出卡底
+       * 被 tip 裁切，降至 +12px 并收紧间距 */
+      ".zu-sv-root .zu-sv-left .zu-sl-main{font-size:calc(var(--ui-font-size,14px) + 12px)}" +
+      ".zu-sv-root .zu-sv-left .zu-sl-body{gap:6px}" +
       ".zu-sv-root .zu-sv-left .zu-sl-main{font-size:calc(var(--ui-font-size,14px) + 22px)}" +
       /* v278：左卡标题升为「平均速度」（.zu-sl-title 是旧卡八态共用类，只在本卡
        * 作用域覆写），「历史统计」降为小号标识；实时状态仍为行尾轻量标识 */
       ".zu-sv-root .zu-sl-title{font-weight:600;font-size:calc(var(--ui-font-size,14px) - 1px);color:var(--color-foreground,#e9edf4)}" +
-      ".zu-sv-root .zu-sl-hist{flex:0 0 auto;font-weight:400;font-size:calc(var(--ui-font-size,14px) - 3px);color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
       ".zu-sv-root .zu-sl-sub{margin-left:6px;font-weight:400;font-size:calc(var(--ui-font-size,14px) - 3px);color:var(--color-tooltip-tag-foreground,#a6a6a6);opacity:.85}" +
       ".zu-sv-root .zu-sv-left .zu-sl-body{justify-content:center}" +
-      ".zu-sv-chart .zu-sc-head{margin-left:30px;flex-wrap:wrap;row-gap:2px}" +
+      /* 标题栏贴图表左缘（Y 轴刻度同侧，不再缩进 30px）；基类 baseline 改 center，
+       * 标题/单位徽章/档位按钮/时间文字垂直居中（基类为旧图保留不动）。 */
+      ".zu-sv-chart .zu-sc-head{margin-left:0;align-items:center;flex-wrap:wrap;row-gap:2px}" +
             /* v286：标题 600/+2（不过重）；单位「t/s」轻量徽章（弱化前景+微亮底，
        * 视觉优先级 标题＞单位＞档位入口）；问号换 Speed Bands SVG，命中区 26px。 */
       ".zu-sv-chart .zu-sc-title{font-weight:600;font-size:calc(var(--ui-font-size,14px) + 2px);line-height:1.3}" +
       ".zu-sv-chart .zu-sc-unit{margin-left:9px;background:rgba(255,255,255,.05);border-radius:5px;padding:2px 7px;" +
         "font-size:calc(var(--ui-font-size,14px) - 3px);color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
       ".zu-light .zu-sv-chart .zu-sc-unit{background:rgba(0,0,0,.05)}" +
-      ".zu-sv-plot{position:relative;height:176px;margin-left:30px;min-width:calc(100% - 30px);width:max-content;max-width:none;box-sizing:content-box}" +
+      /* min-width 取 max(300px, 100%-30px)：宽窗拉满图表列（2026-11-07 用户规格，
+       * 少柱不再缩在左侧 300px 死区——原 calc 与后方 300px 兜底同特异性分层，
+       * 后者按序胜出把拉宽压死，现合并单点声明）；窄窗回 300px 横滚兜底 */
+      ".zu-sv-plotrow{display:flex;align-items:stretch;flex:1;min-height:0;min-width:0}" +
+      /* v295.18（用户规格）：Y 轴刻度列固定（移出滚动容器，宽 30px），同「全部」
+       * 热力图左侧星期列模式；plot 不再留 30px 缩进 */
+      ".zu-sv-gutcol{flex:0 0 30px;position:relative;padding:5px 0;box-sizing:border-box}" +
+      ".zu-sv-gutcol .zu-sc-gutter{position:absolute;left:0;top:5px;bottom:33px;width:30px}" +
+      /* v303.3：-30px 右缩进移除——v295.18 刻度列已外移出滚动容器（兄弟节点），
+       * 该缩进残留使柱区永远差 30px 不到右缘（用户实报红框） */
+      ".zu-sv-plot{position:relative;height:100%;margin-left:0;min-width:max(300px,100%);width:max-content;max-width:none;box-sizing:content-box}" +
       ".zu-sv-spacer{display:block;height:0}" +
-      ".zu-sc-cov{font-size:calc(var(--ui-font-size,14px) - 4px);color:var(--color-tooltip-tag-foreground,#a6a6a6);white-space:nowrap}" +
-      ".zu-sv-focus{appearance:none;border:1px solid var(--color-popover-border,rgba(255,255,255,.16));background:transparent;color:var(--color-tooltip-tag-foreground,#a6a6a6);" +
-        "font-family:inherit;font-size:calc(var(--ui-font-size,14px) - 4px);line-height:1.3;padding:2px 8px;border-radius:6px;cursor:pointer;white-space:nowrap}" +
-      ".zu-sv-focus:hover{color:var(--color-foreground,#e9edf4);background:rgba(255,255,255,.06)}" +
-      ".zu-light .zu-sv-focus:hover{background:rgba(0,0,0,.05)}" +
-      ".zu-sv-focus:focus-visible{outline:2px solid var(--color-brand,#a3cfff);outline-offset:1px}" +
-      ".zu-sv-plot .zu-sc-grid{height:148px}" +
-      ".zu-sv-plot .zu-sc-gutter{height:148px}" +
-      ".zu-sv-bars{position:absolute;inset:0;display:flex;align-items:flex-end;justify-content:center;gap:0}" +
+      /* 覆盖提示 .zu-sc-cov 与聚焦切换 .zu-sv-focus 样式随 2026-11-07 文案批一并删除 */
+      ".zu-sv-plot .zu-sc-grid{height:calc(100% - 28px)}" +
+      ".zu-sv-plot .zu-sc-gutter{height:calc(100% - 28px)}" +
+      /* 柱组左对齐（2026-11-08 用户规格，收回 v273 少柱居中）：贴 Y 轴起排 */
+      ".zu-sv-bars{position:absolute;inset:0;display:flex;align-items:flex-end;justify-content:space-between;gap:0}" +
       /* 细柱定宽：少量柱不拉伸、数据多时横滚，柱组居中 */
-      ".zu-sv-bars .zu-sc-col{flex:0 0 30px;height:176px}" +
-      ".zu-sv-bars .zu-sc-vz{height:148px;flex:0 0 148px}" +
+      ".zu-sv-bars .zu-sc-col{flex:0 0 24px;height:100%}" +
+      ".zu-sv-bars .zu-sc-vz{flex:1 1 auto;height:auto}" +
       ".zu-sv-bars .zu-sc-bar{width:14px;max-width:14px}" +
-      ".zu-sv-bars .zu-sc-x{height:28px;flex:0 0 28px;width:30px;max-width:30px;overflow:hidden;" +
-        "justify-content:flex-start;align-items:flex-start;font-size:9px}" +
-      ".zu-sv-bars .zu-sc-x b{display:block;width:100%;overflow:hidden;text-overflow:clip;text-align:center}" +
+      ".zu-sv-bars .zu-sc-x{height:16px;flex:0 0 16px;width:24px;max-width:24px;" +
+        "overflow:visible;justify-content:flex-start;align-items:flex-end;font-size:7px}" +
+      ".zu-sv-bars .zu-sc-x b{display:block;width:100%;overflow:hidden;text-overflow:clip;text-align:center;line-height:14px}" +
       ".zu-sv-bars .zu-sc-col.empty .zu-sc-bar{background:transparent;box-shadow:none}" +
       ".zu-sv-bars .zu-sc-col.cur .zu-sc-val{font-weight:700}" +
       ".zu-sv-chart .zu-sc-wrap{overflow-x:auto;overflow-y:hidden;width:100%;min-width:0;max-width:100%}" +
-      ".zu-sv-plot{min-width:300px}" +
+      /* v290 隐藏横向滚动条（2026-11-08 用户规格）：V2 作用域 only（旧图共享类不动），
+       * 滚轮横滚（同批 wheel 委托）不受隐藏影响；条带 8px 视觉错位随之消失 */
+      ".zu-sv-chart .zu-sc-wrap::-webkit-scrollbar{display:none}" +
       /* v281 P0：hover 五字段信息卡改宿主于 body 级 Portal（.zu-sv-portal，
        * pointer-events:none 纯展示不拦鼠标；表面样式由 .zu-sv-card 自带，
        * 定位由 spdHoverPortalPlace 按柱体 rect 避让视口边界）。
@@ -1055,7 +1093,7 @@
       ".zu-sv-cval{font-size:12px!important;font-weight:700!important}" +
       ".zu-sv-off{opacity:.75}" +
       ".zu-sv-partial{font-style:normal;font-weight:400;opacity:.75;margin-left:3px}" +
-      ".zu-sv-empty{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:4px 8px;height:176px;color:var(--color-tooltip-tag-foreground,#a6a6a6);" +
+      ".zu-sv-empty{display:flex;align-items:center;justify-content:center;flex-wrap:wrap;gap:4px 8px;height:100%;color:var(--color-tooltip-tag-foreground,#a6a6a6);" +
         "font-size:calc(var(--ui-font-size,14px) - 1px)}" +
       ".zu-sv-empty-hint{font-size:calc(var(--ui-font-size,14px) - 3px);opacity:.8}" +
       ".zu-sv-bars .zu-sc-col.latest .zu-sc-bar{box-shadow:0 0 0 1.5px var(--color-popover-border,rgba(255,255,255,.28))}" +
@@ -1070,17 +1108,125 @@
       ".zu-sv-legend-btn:hover,.zu-sv-legend-btn:focus-visible{color:var(--color-foreground,#e9edf4);background:rgba(255,255,255,.06)}" +
       ".zu-light .zu-sv-legend-btn:hover,.zu-light .zu-sv-legend-btn:focus-visible{background:rgba(0,0,0,.05)}" +
       ".zu-sv-legend-btn:focus-visible{outline:2px solid var(--color-brand,#a3cfff);outline-offset:1px}" +
-      ".zu-sv-legend-tip{max-width:min(800px,calc(100vw - 24px));white-space:normal;z-index:2147483646}" +
+      /* 2026-11-07 用户规格：宽度自适应内容（.tip 基类 max-content 生效），
+       * 仅留窄窗安全钳；替代此前的定宽 430 与更早的 max-width 800 */
+      ".zu-sv-legend-tip{max-width:calc(100vw - 24px);white-space:normal;z-index:2147483646}" +
       ".zu-sv-lg-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:8px}" +
       ".zu-sv-lg-title{font-weight:600;font-size:calc(var(--ui-font-size,14px) - 1px)}" +
       ".zu-sv-lg-sub{font-size:calc(var(--ui-font-size,14px) - 3px);color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
-      ".zu-sv-lg-items{display:grid;grid-template-columns:repeat(5,auto);gap:8px 12px;justify-content:start;align-items:center}" +
+      ".zu-sv-lg-items{display:grid;grid-template-columns:repeat(3,auto);gap:8px 12px;justify-content:start;align-items:center}" +
       ".zu-sv-li{display:flex;align-items:center;gap:3px;padding:1px 4px;border-radius:7px;border:1px solid transparent}" +
       ".zu-sv-li.cur{border-color:var(--color-popover-border,rgba(255,255,255,.35));background:rgba(255,255,255,.05)}" +
       ".zu-light .zu-sv-li.cur{background:rgba(0,0,0,.05)}" +
       ".zu-sv-li b{font-family:var(--font-mono,Consolas,Menlo,monospace);font-variant-numeric:tabular-nums;" +
         "font-weight:600;font-size:calc(var(--ui-font-size,14px) - 3px);white-space:nowrap}" +
       "@media (max-width:780px){.zu-sv-root .zu-sv-left{flex:0 0 190px}}" +
+      /* ---------- v291 热力图（本月月历 / 全部历史 GitHub 风格） ----------
+       * 颜色=档位类 currentColor（与柱体/图例唯一事实源 TPS_BANDS 同源）：历史格
+       * 实底（GitHub 风格）；月历格 v294 起低饱和混色+左色条（见下方 v294 注释块）。
+       * 无记录=中性灰（不等于零速）、未来=弱日期号无速度、当日=柔和描边。
+       * 历史网格 --zu-hm-w 列（列=周）撑出横滚，月历恒 7 列 1fr 平分 4~6 行。 */
+      ".zu-hm-sub{margin-left:8px;font-size:calc(var(--ui-font-size,14px) - 3px);font-weight:400;color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      /* v294 月历格专项（用户 Goal）：①低饱和档位底=档位色 22% 混入卡片色（不再纯色
+       * 填满），档位强调改左侧 3px 色条；②文字统一吃 tooltip 前景（高对比），绝不吃
+       * currentColor（亮底浅字对比不足的根因）；③上下 space-between 布局（日期左上/
+       * 速度左下），line-height 1.1~1.15 + min-height:0——越界根因是 flex 子项默认
+       * min-height:auto 不可低于内容高 + 默认行高过大，矮行时内容溢出格底；④容器查询
+       * 三档字号（阈值按 7 列+6×8px gap 折算格宽 90/56px），container-type 只锁 inline
+       * 轴，1fr 行高 flex 链不受影响。 */
+      ".zu-hm-cal{flex:1;display:flex;flex-direction:column;min-width:0;min-height:0;" +
+        "container-type:inline-size;container-name:hmcal}" +
+      ".zu-hm-month .zu-sc-wrap{display:flex;flex-direction:column}" +
+      ".zu-hm-week{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:8px;margin-bottom:5px;" +
+        "font-size:calc(var(--ui-font-size,14px) - 5px);color:var(--color-tooltip-tag-foreground,#a6a6a6);text-align:center}" +
+      ".zu-hm-grid{display:grid;gap:6px}" +
+      ".zu-hm-grid--mon{gap:8px}" +
+      /* 行高 1fr 自适应（v292 定高 315）：行数由 builder 经 --zu-hm-rows 携带 */
+      ".zu-hm-grid--mon{min-height:0;grid-template-columns:repeat(7,minmax(0,1fr));" +
+        "gap:8px}" +
+      /* v295（用户规格）：6 列 × 行 1fr 均分铺满全卡（不留空隙、不再要求正方）；
+       * 容器查询阈值随 7 列折算（格宽 90/56 → 容器 678/440），300 小卡常态=紧凑
+       * 以下（格 ~41px），格内数字隐藏、hover 兜底完整值 */
+      ".zu-hm-grid--mon{flex:1;min-height:0;grid-template-rows:repeat(var(--zu-hm-rows,5),minmax(0,1fr))}" +
+      ".zu-hm-pad{display:block;min-height:1px}" +
+      /* 格基础：上下两端对齐、min-width:0、border-box；基础不声明 color（档位类让位
+       * 教训 v291）；无记录=中性弱底、未来=更低对比度底（虚线框按规格移除降噪） */
+      ".zu-hm-cell{position:relative;display:flex;flex-direction:column;justify-content:space-between;" +
+        "min-width:0;min-height:0;box-sizing:border-box;border-radius:8px;" +
+        "padding:var(--hm-pady,4px) var(--hm-padx,6px);" +
+        "background:rgba(255,255,255,.045)}" +
+      ".zu-light .zu-hm-cell{background:rgba(0,0,0,.04)}" +
+      ".zu-hm-cell.void{color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      ".zu-hm-cell.fut{color:var(--color-tooltip-tag-foreground,#a6a6a6);background:rgba(255,255,255,.02)}" +
+      ".zu-light .zu-hm-cell.fut{background:rgba(0,0,0,.02)}" +
+      /* 日期（辅助信息）：11px 级/500/1.15，无记录与未来格靠 color 弱化 */
+      ".zu-hm-cell .zu-hm-d{flex:0 0 auto;font-size:var(--hm-df,10px);font-weight:500;line-height:1;" +
+        "white-space:nowrap;color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      /* 速度：16px 级/600/1.1/tabular-nums，高对比前景、左对齐、底部留 padding */
+      ".zu-hm-cell .zu-hm-v{flex:0 0 auto;min-height:0;font-weight:600;line-height:1;" +
+        "font-variant-numeric:tabular-nums;text-align:left;white-space:nowrap;" +
+        "font-size:var(--hm-f4,14px);color:var(--color-tooltip-foreground,#fff)}" +
+      ".zu-hm-cell.len5 .zu-hm-v{font-size:var(--hm-f5,13px)}" +
+      ".zu-hm-cell.len6 .zu-hm-v{font-size:var(--hm-f6,12px)}" +
+      /* 数据格：档位色 22% 混卡片底（v294.1 用户拍板：左色条移除，靠底色色相辨档） */
+      ".zu-hm-grid--mon .zu-hm-cell.data{background:color-mix(in srgb,currentColor 22%,var(--color-popover,#1c212b))}" +
+      ".zu-hm-grid--mon .zu-hm-cell.data .zu-hm-d{color:var(--color-tooltip-foreground,#e9edf4);opacity:.75}" +
+      /* 当日：1px 柔和半透明主题蓝内描边（不用纯白粗框）；hover：轻提亮；
+       * cur（委托契约类）内描边克制，today+cur 组合不叠出发光 */
+      /* v297.1（用户拍板）：今日格不加描边——背景在自身基础上加深 10%
+       * （数据格 22%→32% 档位混色；无数据格中性灰加深） */
+      ".zu-hm-cell.data.zu-hm-today{background:color-mix(in srgb,currentColor 32%,var(--color-popover,#1c212b))}" +
+      ".zu-hm-cell.void.zu-hm-today{background:color-mix(in srgb,var(--color-tooltip-tag-foreground,#a6a6a6) 14%,var(--color-popover,#1c212b))}" +
+      ".zu-hm-cell:hover{filter:brightness(1.07)}" +
+      /* v294.1（用户拍板）：hover 不加边框强调——委托契约类 .cur 保留（JS 状态机），
+       * 仅 today 自身的柔和内描边在悬停时保持 */
+      ".zu-hm-cell:focus-visible{outline:2px solid var(--color-brand,#a3cfff);outline-offset:1px}" +
+      /* Ultra 档抑制（QA review）：全局 .zu-ultra 的 -webkit-text-fill-color:transparent
+       * 是继承属性，会把格内文字染透明；全局 ✦ 伪元素会进历史 20px 小格。月历格
+       * 左色条 ::before 已被 (0,4,0) 规则覆写不受影响 */
+      ".zu-hm-cell{-webkit-text-fill-color:initial}" +
+      ".zu-hm-cell::before{content:none}" +
+      /* v297：旧「容器查询三档 + tight 隐藏数字」整体移除——离散档位无法满足
+       * 「最大可容纳字号」要求，改由 builder 按实测格尺寸逐长度桶计算字号
+       * （6~14px、0.5px 步进），极矮行压日期字号与 padding、不隐藏数字 */      ".zu-hm-note{flex:0 0 auto;margin-top:8px;font-size:calc(var(--ui-font-size,14px) - 3px);color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      ".zu-hm-outer{display:flex;gap:6px;min-width:0;flex:1;min-height:0;container-type:inline-size;container-name:hmhist}" +
+      /* v296：方格大小/间距随容器宽自适应（窄容器缩格缩距，超长部分横向滚动） */
+      "@container hmhist (max-width:560px){.zu-hm-grid--hist{gap:2px}.zu-hm-grid--hist .zu-hm-cell{max-width:16px;border-radius:2px}}" +
+      ".zu-hm-wds{display:grid;grid-template-rows:repeat(7,1fr);gap:3px;padding-top:34px;flex:0 0 auto;" +
+        "font-size:calc(var(--ui-font-size,14px) - 6px);color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      ".zu-hm-wds span{display:flex;align-items:center}" +
+      ".zu-hm-hist .zu-sc-wrap{width:100%;min-width:0;display:flex;flex-direction:column}" +
+      ".zu-hm-scroll{min-width:100%;flex:1;display:flex;flex-direction:column;min-height:0}" +
+      ".zu-hm-months{display:grid;grid-template-columns:repeat(var(--zu-hm-w,1),minmax(12px,1fr));" +
+        "grid-template-rows:14px;gap:3px;width:100%;min-width:calc(var(--zu-hm-w,1)*15px);" +
+        "margin-bottom:5px;align-items:end}" +
+      ".zu-hm-ml{grid-row:1;white-space:nowrap;font-size:calc(var(--ui-font-size,14px) - 5px);line-height:14px;" +
+        "color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      /* 列头日期数字行（v293）：每列周首日号，与格子列中心对齐 */
+      ".zu-hm-days{display:grid;grid-template-columns:repeat(var(--zu-hm-w,1),minmax(12px,1fr));" +
+        "grid-template-rows:12px;gap:3px;width:100%;min-width:calc(var(--zu-hm-w,1)*15px);" +
+        "height:12px;margin-bottom:3px}" +
+      ".zu-hm-dn{grid-row:1;text-align:center;font-variant-numeric:tabular-nums;" +
+        "font-size:calc(var(--ui-font-size,14px) - 6px);line-height:12px;" +
+        "color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
+      /* v292 复验抓出的致命布局错（v291 起即错）：历史网格是「一列=一周、7 行=星期」，
+ * 必须 column-major——此前用 template-columns:repeat(周数) 的 row-major 实际把
+ * 每行排成 N 个连续日期（62 周时形似 GitHub 网格骗过目检，5 周短历史才暴露）。 */
+      "/* 7 行 1fr 平分图表卡剩余高度（v293 用户规格：铺满、不超高） */" +
+      ".zu-hm-grid--hist{grid-auto-flow:column;flex:1;min-height:0;" +
+        "grid-template-rows:repeat(7,minmax(0,1fr));" +
+        "grid-auto-columns:minmax(12px,1fr);gap:3px;" +
+        "width:100%;min-width:calc(var(--zu-hm-w,1)*15px)}" +
+      ".zu-hm-grid--hist .zu-hm-cell{border-radius:4px;padding:0;max-width:20px;width:100%;justify-self:center}" +
+      ".zu-hm-grid--hist .zu-hm-cell.data{background:currentColor}" +
+      ".zu-hm-grid--hist .zu-hm-cell.void{background:#484848}" +
+      ".zu-hm-grid--hist .zu-hm-cell.zu-hm-today{box-shadow:inset 0 0 0 1.5px var(--color-popover-border,rgba(255,255,255,.4))}" +
+      /* Ultra 档历史格显式渐变底（background-clip:text 全局规则不适用于色块盒子）；
+       * 月历格 v294 起改低饱和混色+左色条（::before 渐变覆写在上方月历段） */
+      ".zu-hm-grid--hist .zu-hm-cell.data.zu-ultra{" +
+        "background:linear-gradient(100deg,#60a5fa 0%,#a78bfa 50%,#c084fc 100%)}" +
+      ".zu-light .zu-hm-grid--hist .zu-hm-cell.data.zu-ultra{" +
+        "background:linear-gradient(100deg,#3156cb 0%,#6746d2 50%,#9139bf 100%)}" +
       /* v232 速度柱状图：左读数卡 + 右「最近 10 段」图表。柱体颜色走档位类 currentColor
        * （与图例色点同套路），其余配色全走语义令牌（浅色自动适配）；plot min-width +
        * 横滚保证窄窗口下柱顶读数永不挤压重叠。 */
@@ -1103,6 +1249,15 @@
       ".zu-speed-left .zu-speed-fit3{font-size:calc(var(--ui-font-size,14px) - 1px);white-space:normal;line-height:1.3;word-break:break-word}" +
       ".zu-speed-note{margin-top:8px;font-size:calc(var(--ui-font-size,14px) - 2px);color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
       ".zu-speed-left .zu-speed-bandtag{font-size:calc(var(--ui-font-size,14px) - 3px);padding:2px 8px;white-space:nowrap}" +
+      /* v298.4：档位徽标下方模型名行（V2 左卡）——等宽小字、超长省略 + title 全名 */
+      /* v304.2：模型名胶囊化（26px 高/13px 圆角/立方体 SVG 14px/名称省略 title 全文；
+       * 主题随卡内既有 .zu-light 显式覆写口径，与 .zu-sc-unit 徽章同语言） */
+      ".zu-sl-model{display:inline-flex;align-items:center;gap:6px;max-width:100%;min-width:0;height:26px;box-sizing:border-box;padding:0 10px;margin-top:8px;" +
+        "border:1px solid var(--color-popover-border,rgba(255,255,255,.14));border-radius:13px;background:rgba(255,255,255,.05);" +
+        "color:var(--color-tooltip-tag-foreground,#a6a6a6);font-size:calc(var(--ui-font-size,14px) - 3px);white-space:nowrap}" +
+      ".zu-light .zu-sl-model{border-color:rgba(15,23,42,.14);background:rgba(0,0,0,.05)}" +
+      ".zu-sl-model svg{flex:none;opacity:.85}" +
+      ".zu-sl-model span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
       ".zu-speed-chart{flex:1 1 auto;min-width:0;position:relative}" +
       /* v239（设计图复刻）：左卡深色玻璃卡 + 状态图标/当前读数标签；信息卡虚线引线；图例/口径行布局 */
       ".zu-sl-stats{padding-top:10px;display:flex;gap:6px;border-top:1px solid var(--color-border,rgba(255,255,255,.1))}" +
@@ -1432,6 +1587,8 @@
       settingRow('<input type="checkbox" class="zu-cpt-btn">', L("压缩上下文按钮", "Compact context button"), L("在「上下文容量」弹层内显示「压缩上下文」按钮（点击后需二次确认，把会话历史总结压缩以释放上下文窗口）。关闭即不再显示；自动压缩阈值行不受影响，位置上移补位。默认开启。", "Shows the Compact context button inside the context-usage popup (with a confirmation step that summarizes the conversation to free context window space). Off hides it; the auto-compact threshold row is unaffected and moves up into the button's place. On by default.")) +
       settingRow('<input type="checkbox" class="zu-cost-enable">', L("预估费用", "Estimated cost"), L("悬停本轮/会话累计/项目累计/今日合计时显示按 models.dev 官方模型价格估算的费用（USD×汇率折 ¥；无汇率时显示 $ 原值；模型匹配不到价格按默认均价估算）。启动后每 12 小时静默同步一次价表与汇率，只下载不上传，可在配置文件关闭。默认开启。", "Shows estimated cost when hovering the stat cells, priced at official models.dev rates (USD × exchange rate as ¥; falls back to $ without a rate; unmatched models use a default average). The price table and FX rate sync silently every 12h after startup — download only, nothing uploaded; can be disabled in the config file. On by default.")) +
       settingRow('<input type="checkbox" class="zu-tip-click">', L("点击激活悬浮窗口", "Click to open popups"), L("开启后状态条统计卡与子代理面板改为点击才打开（再点同一格、按 Escape 或移出条面收起）；关闭时悬停立即显示。键盘 Tab 聚焦两种模式下都即时打开。默认关闭。", "On: bar stat cards and the sub-agent panel open on click only (click the same cell again, press Escape or move off the bar to close); off: they show immediately on hover. Keyboard Tab focus opens immediately in both modes. Off by default.")) +
+      /* v297.3：开发者调试开关——tooltip 常驻（移出条面/窗口不自动关闭，Escape 仍可关） */
+      settingRow('<input type="checkbox" class="zu-dev-keep-tip">', L("开发者：悬浮窗常驻", "Developer: keep tooltip visible"), L("开启后悬浮窗移出条面/移出窗口都不会自动关闭，用于截图与布局调试定位；按 Escape 或点击「关闭设置」等既有入口仍可关闭。仅调试用途，常开会影响日常使用。默认关闭。", "On: the tooltip stays open when the pointer leaves the bar or the window, for screenshot and layout debugging; Escape and the usual close paths still work. Debugging aid only — leaving it on gets in the way of daily use. Off by default.")) +
       /* v179 自动压缩阈值注入 → v188 按验收反馈简化：只留百分比（留空=跟随引擎默认），
          开关默认开（主进程 auto_compact_patch 缺省开）；标题带「上下文」限定。 */
       settingRow('<input type="checkbox" class="zu-ac-enable">', L("自动压缩上下文阈值注入", "Auto-compact context threshold injection"), L("给客户端引擎打补丁，把「到达阈值自动压缩上下文」的触发点改为可配置（引擎内置约在窗口 83% 处）。默认开启；补丁按引擎版本白名单注入，不支持的版本自动跳过并提示，关闭开关即还原引擎。开关对新会话生效；下方数值改完即生效（留空=跟随引擎默认）。只影响桌面客户端内置引擎，终端 CLI 不受影响。", "Patches the client engine so the auto-compact trigger point becomes configurable (the built-in engine fires around 83% of the window). On by default; patching is allow-listed per engine build, unsupported builds are skipped with a notice, and turning the switch off restores the engine. New sessions pick up the patch; the value below applies immediately (leave empty to follow the engine default). Only the desktop client's built-in engine is affected; the terminal CLI is not.")) +
@@ -1691,15 +1848,6 @@
      * pointerdown 在重建窗口之前同步完成切换（此时按钮节点必然存活）；与 click 委托
      * 幂等共存（重建未发生时 click 再跑一遍同值切换无害），键盘 Enter 只发 click 走原路径。 */
     function speedTabActivate(e) {
-      /* v273：聚焦/完整时间轴切换按钮（仅改变展示方式，不改统计口径） */
-      var fb = e.target && e.target.closest && e.target.closest(".zu-sv-focus");
-      if (fb) {
-        e.stopPropagation();
-        speedSel.focus = speedSel.focus === "full" ? "" : "full";
-        speedChartHover = -1; speedInteractAt = Date.now();
-        speedRebuildNow();
-        return true;
-      }
       var tab = e.target && e.target.closest && e.target.closest(".zu-sv-tab");
       if (!tab) return false;
       e.stopPropagation();
@@ -1770,8 +1918,9 @@
      * （cur 类与信息卡随串自愈 → 数据刷新整卡重建不丢悬停状态）；v240 起 -1/离开=不显示信息卡。 */
     function zuSpeedChartPick(idx) {
       if (idx === speedChartHover) return;
+      /* v291：热力图格子（.zu-hm-cell）与柱体（.zu-sc-col）共用同一悬停/焦点契约 */
       var hadFocus = tip.contains(document.activeElement) &&
-        document.activeElement.closest && document.activeElement.closest(".zu-sc-col");
+        document.activeElement.closest && document.activeElement.closest(".zu-sc-col,.zu-hm-cell");
       speedChartHover = idx; speedInteractAt = Date.now();
       if (tipFor && typeof speedTipRebuild === "function") {
         var t2 = speedTipRebuild(speedChartHover, speedSel);
@@ -1780,7 +1929,7 @@
           drawTip(tipFor, true);
           /* innerHTML 重建会销毁聚焦的柱节点（焦点落 body、Tab 序断裂）——归位 */
           if (hadFocus && idx >= 0) {
-            var nu2 = tip.querySelector('.zu-sc-col[data-i="' + idx + '"]');
+            var nu2 = tip.querySelector('.zu-sc-col[data-i="' + idx + '"],.zu-hm-cell[data-i="' + idx + '"]');
             if (nu2 && nu2.focus) nu2.focus();
           }
         }
@@ -1788,11 +1937,22 @@
       }
     }
     tip.addEventListener("mouseover", function (e) {
-      var col = e.target && e.target.closest && e.target.closest(".zu-sc-col");
+      var col = e.target && e.target.closest && e.target.closest(".zu-sc-col,.zu-hm-cell");
       if (col) zuSpeedChartPick(parseInt(col.getAttribute("data-i"), 10) || 0);
       var lb = e.target && e.target.closest && e.target.closest(".zu-sv-legend-btn");
       if (lb) spdLegendTipShow(lb);   /* v282：问号 hover 即显档位说明 */
     });
+    /* v290 图表区滚轮横滚（2026-11-08 用户规格）：wheel 委托在 tip 本体（随 tip.remove()
+     * 消亡，非全局监听）——指针在 .zu-sc-wrap 上且确可横滚时 deltaY 换算 scrollLeft，
+     * preventDefault 阻止页面竖滚；不可横滚不拦截，默认行为照旧。 */
+    tip.addEventListener("wheel", function (e) {
+      var wrap = e.target && e.target.closest && e.target.closest(".zu-sc-wrap");
+      if (!wrap || wrap.scrollWidth <= wrap.clientWidth + 1) return;
+      var d = (e.deltaY || 0) + (e.deltaX || 0);
+      if (!d) return;
+      wrap.scrollLeft += d;
+      e.preventDefault();
+    }, { passive: false });
     tip.addEventListener("mouseout", function (e) {
       var to = e.relatedTarget;
       var lb = e.target && e.target.closest && e.target.closest(".zu-sv-legend-btn");
@@ -1801,23 +1961,23 @@
           spdLegendTipScheduleHide();
         return;
       }
-      var col = e.target && e.target.closest && e.target.closest(".zu-sc-col");
+      var col = e.target && e.target.closest && e.target.closest(".zu-sc-col,.zu-hm-cell");
       if (!col) return;
       /* v242:移入另一根柱时同样交给 mouseover 切段,避免 out(-1)→in(B) 双重整卡重建闪烁 */
-      if (to && to.closest && to.closest(".zu-sc-col")) return;
+      if (to && to.closest && to.closest(".zu-sc-col,.zu-hm-cell")) return;
       zuSpeedChartPick(-1);
     });
     tip.addEventListener("focusin", function (e) {
-      var col = e.target && e.target.closest && e.target.closest(".zu-sc-col");
+      var col = e.target && e.target.closest && e.target.closest(".zu-sc-col,.zu-hm-cell");
       if (col) zuSpeedChartPick(parseInt(col.getAttribute("data-i"), 10) || 0);
       var lb = e.target && e.target.closest && e.target.closest(".zu-sv-legend-btn");
       if (lb) spdLegendTipShow(lb);   /* v282：键盘聚焦问号同样显示 */
     });
     tip.addEventListener("focusout", function (e) {
-      var col = e.target && e.target.closest && e.target.closest(".zu-sc-col");
+      var col = e.target && e.target.closest && e.target.closest(".zu-sc-col,.zu-hm-cell");
       /* v242:relatedTarget 落在另一根柱上时不得收卡重建——focusout 先于 focusin,
        * 此处重建会销毁即将接收焦点的目标柱(焦点跌落 body、Tab 序断裂) */
-      if (col && !(e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest(".zu-sc-col"))) zuSpeedChartPick(-1);
+      if (col && !(e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest(".zu-sc-col,.zu-hm-cell"))) zuSpeedChartPick(-1);
       var lb = e.target && e.target.closest && e.target.closest(".zu-sv-legend-btn");
       if (lb && !(e.relatedTarget && e.relatedTarget.closest && (e.relatedTarget.closest(".zu-sv-legend-btn") || e.relatedTarget.closest(".zu-sv-legend-tip"))))
         spdLegendTipScheduleHide();

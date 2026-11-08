@@ -1,10 +1,12 @@
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const test = require('node:test');
-const { readOverlaySource, getNamedSlice } = require('./helpers/overlay-extract.cjs');
+const { readOverlaySource, readOverlayPart, getNamedSlice } = require('./helpers/overlay-extract.cjs');
 
 const source = readOverlaySource();
 const rotatorSlice = getNamedSlice('statusRotator');
+// 词包纯数据已拆分至独立分片（拼接产物中位于 statusRotator 切片起点之前），测试环境须显式载入
+const packDataSlice = readOverlayPart('04-rotator-builtin-packs.js');
 
 function makeFakeElement(tag = 'div') {
   const attrs = {};
@@ -178,13 +180,25 @@ function makeRotatorEnv(lang = 'zh', savedCfg = null, legacyCfg = null) {
     static now() { return NOW; }
   }
 
+  const docListeners = new Map();
   const document = {
     title: 'ZCode Host Title',
     body,
     documentElement: docEl,
     createElement: tag => makeFakeElement(tag),
     querySelectorAll: sel => body.querySelectorAll(sel),
-    querySelector: sel => body.querySelector(sel)
+    querySelector: sel => body.querySelector(sel),
+    addEventListener(type, fn, capture) {
+      const key = capture ? 'cap:' + type : type;
+      (docListeners.get(key) || docListeners.set(key, []).get(key)).push(fn);
+    },
+    removeEventListener(type, fn, capture) {
+      const list = docListeners.get(capture ? 'cap:' + type : type);
+      if (list) { const i = list.indexOf(fn); if (i >= 0) list.splice(i, 1); }
+    },
+    dispatchDocument(type, ev, capture) {
+      (docListeners.get(capture ? 'cap:' + type : type) || []).forEach(fn => fn(ev));
+    }
   };
   const window = {
     innerWidth: 1280,
@@ -212,6 +226,7 @@ function makeRotatorEnv(lang = 'zh', savedCfg = null, legacyCfg = null) {
     clearTimeout: n => timers.delete(n),
     Date: FakeDate, Math, JSON, Number, String, Array, Object, RegExp, Infinity, isFinite, parseInt, parseFloat
   });
+  vm.runInContext(packDataSlice, ctx);
   vm.runInContext(rotatorSlice, ctx);
   return {
     ctx, window, document, body, storage, state, instances, timers,
@@ -327,10 +342,39 @@ test('builtin pack pool flows through the id map (regression: packs were indexed
   const poolLong = vm.runInContext('getMergedPhrasePool("long", "en", new Date())', ctx);
   assert.ok(poolLong.length > 0 && poolLong.every(p => p.pack !== 'fallback'), 'en long pool populated');
 
-  // 保存过词包选择：旧版 `id in 数组` 恒 false 把选择清空，现在必须保留合法 id、丢弃未知 id
+  // 保存过词包选择：旧版 `id in 数组` 恒 false 把选择清空，现在必须保留合法 id、丢弃未知 id。
+  // 无 knownPackIds 的存量配置以拆分前 14 个 legacy id 作 seen 种子：曾显式关掉的旧包不被
+  // 补回，只补拆分后新增的 id（review 修复：旧「升级即全开」会覆盖用户的关包选择），未知 id 仍被剔除
   const env2 = makeRotatorEnv('zh', { enabledPacks: ['deepseek', 'bogus-pack'], mountTarget: 'bar' });
-  assert.deepEqual(vm.runInContext('rotatorCfg.enabledPacks.slice()', env2.ctx), ['deepseek']);
+  const upgraded = vm.runInContext('rotatorCfg.enabledPacks.slice().sort().join(",")', env2.ctx);
+  const metaJoined = vm.runInContext('ZU_ROTATOR_PACK_META.map(function (m) { return m.id; }).sort().join(",")', env2.ctx);
+  assert.equal(upgraded, 'chairman-mao,deepseek,programming-pearls', 'legacy config keeps explicit opt-outs, adds only split-era packs, unknown id dropped');
+  assert.notEqual(upgraded, metaJoined, 'disabled legacy packs are not force-re-enabled');
   assert.equal(vm.runInContext('rotatorCfg.mountTarget', env2.ctx), undefined, 'bar mount config is gone');
+});
+
+test('new builtin packs are force-enabled for existing configs once, then respect explicit opt-outs (knownPackIds)', () => {
+  const env0 = makeRotatorEnv('zh');
+  const metaJoined = vm.runInContext('ZU_ROTATOR_PACK_META.map(function (m) { return m.id; }).sort().join(",")', env0.ctx);
+
+  // 旧配置（无 knownPackIds）：以 legacy 14 包为 seen 种子——只补拆分后新增 id，
+  // 曾显式关掉的旧包不被补回（review 修复：原「升级即全开」覆盖用户关包选择）
+  const legacy = makeRotatorEnv('zh', { enabledPacks: ['deepseek'] });
+  const upgradedLegacy = vm.runInContext('rotatorCfg.enabledPacks.slice().sort().join(",")', legacy.ctx);
+  assert.equal(upgradedLegacy, 'chairman-mao,deepseek,programming-pearls', 'legacy config adds only split-era packs');
+  assert.ok(vm.runInContext('rotatorCfg.enabledPacks.indexOf("programming-pearls")', legacy.ctx) >= 0, 'new pack enabled');
+  assert.ok(vm.runInContext('rotatorCfg.enabledPacks.indexOf("coding")', legacy.ctx) < 0, 'explicitly disabled legacy pack stays disabled');
+  assert.equal(vm.runInContext('rotatorCfg.knownPackIds.slice().sort().join(",")', legacy.ctx), metaJoined, 'seen set recorded');
+  // 全新安装（无任何配置）：落 META 全集默认
+  const fresh = makeRotatorEnv('zh', { enabledPacks: undefined });
+  assert.equal(vm.runInContext('rotatorCfg.enabledPacks.slice().sort().join(",")', fresh.ctx), metaJoined, 'fresh install defaults to full META set');
+
+  // 升级后用户显式关掉新包（knownPackIds 已含全部 META）：不再被补回
+  const optedOut = makeRotatorEnv('zh', {
+    enabledPacks: ['deepseek'],
+    knownPackIds: metaJoined.split(','),
+  });
+  assert.deepEqual(vm.runInContext('rotatorCfg.enabledPacks.slice()', optedOut.ctx), ['deepseek'], 'explicit opt-out survives reload');
 });
 
 test('65ms rotator timer drives the typewriter past the first character (regression: stuck at 「长」)', () => {
@@ -463,6 +507,47 @@ test('danmaku engine is fully removed; settings render pack counts and themeable
   assert.doesNotMatch(html, /zu-rot-prev-next/, 'next-phrase button removed (auto-rotation only)');
 });
 
+test('pack view dialog: view buttons precede checkboxes, dialog lists deduped phrases at 500px/80vh, closes on demand', () => {
+  const { ctx, window, document } = makeRotatorEnv('zh');
+  const html = vm.runInContext('zuRotatorSectionHtml(true)', ctx);
+  // 每包一个查看按钮，且位于其 checkbox 之前（「开启按钮前面」）
+  assert.equal(html.split('zu-rot-pack-view').length - 1, 16, 'one view button per pack');
+  const firstItem = html.slice(html.indexOf('zu-rot-pack-item'));
+  assert.ok(firstItem.indexOf('zu-rot-pack-cb') < firstItem.indexOf('zu-rot-pack-view'), 'view button follows the pack title (right side)');
+  // 毛选包在首位（PACK_META 首项）
+  assert.ok(html.indexOf('data-pack="chairman-mao"') >= 0 && html.indexOf('data-pack="chairman-mao"') < html.indexOf('data-pack="deepseek"'), 'chairman-mao listed first');
+
+  // 打开毛选包：429 条去重平铺（三相同池去重后 429）
+  vm.runInContext('openRotPackDlg("chairman-mao")', ctx);
+  assert.ok(document.body.querySelector('.zu-rot-pk-dlg'), 'dialog appended to body');
+  assert.equal(vm.runInContext('rotPkDlg.querySelectorAll(".zu-rot-pk-item").length', ctx), 429, 'deduped phrase list');
+  assert.ok(vm.runInContext('rotPkDlg.querySelector(".zu-rot-pk-txt").textContent', ctx).includes('没有调查'), 'first phrase rendered');
+  assert.equal(vm.runInContext('rotPkDlg.querySelector(".zu-rot-pk-no").textContent', ctx), '1.', 'serial number starts at 1');
+  const maoNos = vm.runInContext('rotPkDlg.querySelectorAll(".zu-rot-pk-no")', ctx);
+  assert.equal(maoNos[maoNos.length - 1].textContent, String(maoNos.length) + '.', 'last serial equals item count');
+  assert.ok(vm.runInContext('rotPkDlg.querySelector(".zu-rot-pk-card").className', ctx).includes('zu-rot-pk-card'), 'card node present');
+
+  // 再开其他包先关旧的（单例），珠玑包 24 条
+  vm.runInContext('openRotPackDlg("programming-pearls")', ctx);
+  assert.equal(vm.runInContext('rotPkDlg.querySelectorAll(".zu-rot-pk-item").length', ctx), 24, 'singleton: old dialog replaced');
+
+  // Escape keydown 关闭（捕获监听）
+  const escapeHandler = vm.runInContext('rotPkKey', ctx);
+  assert.equal(typeof escapeHandler, 'function', 'capture keydown handler installed');
+  vm.runInContext('rotPkKey({ key: "Escape", preventDefault() {}, stopPropagation() {} })', ctx);
+  assert.equal(vm.runInContext('rotPkDlg', ctx), null, 'Escape closes the dialog');
+
+  // dispose 清理
+  vm.runInContext('openRotPackDlg("coding")', ctx);
+  vm.runInContext('zuRotatorDisposeAll()', ctx);
+  assert.equal(vm.runInContext('rotPkDlg', ctx), null, 'dispose removes the dialog');
+
+  // 尺寸规格在样式表：500px 宽 + 80vh 高
+  const css = vm.runInContext('rotatorStyleEl.textContent', ctx);
+  assert.ok(/\.zu-rot-pk-card\{[^}]*width:600px/.test(css), 'fixed 600px width');
+  assert.ok(/\.zu-rot-pk-card\{[^}]*height:80vh/.test(css), '80vh height');
+});
+
 test('live preview card: last card of the section, follows every setting, self-cleans its timer', () => {
   const env = makeRotatorEnv('zh');
   const { ctx, window, timers, advanceNow } = env;
@@ -582,7 +667,7 @@ test('rotator defaults follow the 2026-11-06 user spec; v2 storage key ignores t
   assert.equal(cfg.appearance.animation, 'none', 'no animation by default');
   assert.equal(cfg.appearance.glow, false, 'no glow by default');
   assert.equal(cfg.appearance.gradient.enabled, false, 'no flowing gradient by default');
-  assert.equal(cfg.enabledPacks.length, 14, 'all 14 packs enabled by default');
+  assert.equal(cfg.enabledPacks.length, 16, 'all 16 packs enabled by default');
   assert.equal(cfg.enabledPacks.slice().sort().join(','), vm.runInContext('ZU_ROTATOR_PACK_META.map(function (m) { return m.id; })', ctx).sort().join(','), 'every pack id enabled');
   assert.equal('zusage3.rotator' in storage, false, 'legacy v1 key untouched on fresh load');
 
@@ -691,4 +776,300 @@ test('panel claim follows real open order: closed syncPanel does not claim, .ope
   assert.ok(lbl && lbl.textContent !== '…', `first-open preview picks a phrase, got "${lbl && lbl.textContent}"`);
 
   window.__zusageRotatorDispose();
+});
+
+/* ---------- v286+ 自定义短语可视化编辑器 ---------- */
+
+function buildCpRow(ph, i, vals = {}) {
+  const row = makeFakeElement('div');
+  row.className = 'zu-rot-cp-row';
+  row.setAttribute('data-cp-ph', ph);
+  row.setAttribute('data-cp-i', String(i));
+  const mk = (cls, value) => {
+    const c = makeFakeElement('input');
+    c.className = cls;
+    if (value !== undefined) c.value = value;
+    return c;
+  };
+  const text = mk('zu-rot-cp-text', vals.text || '');
+  const weight = mk('zu-rot-cp-weight', vals.weight != null ? vals.weight : '1');
+  const rarity = mk('zu-rot-cp-rarity', vals.rarity != null ? vals.rarity : '100');
+  const toolcb = mk('zu-rot-cp-cb zu-rot-cp-toolcb'); toolcb.checked = !!vals.tool;
+  const toolname = mk('zu-rot-cp-toolname', vals.toolName || '');
+  const firstcb = mk('zu-rot-cp-cb zu-rot-cp-firstcb'); firstcb.checked = !!vals.first;
+  const retrycb = mk('zu-rot-cp-cb zu-rot-cp-retrycb'); retrycb.checked = !!vals.retry;
+  if (vals.retryNum) retrycb.setAttribute('data-num', vals.retryNum);
+  [text, weight, rarity, toolcb, toolname, firstcb, retrycb].forEach(c => row.appendChild(c));
+  return { row, text, weight, rarity, toolcb, toolname, firstcb, retrycb };
+}
+
+test('visual custom-phrase card renders rows, add buttons, chips, and the hidden full placeholder table by default', () => {
+  const env = makeRotatorEnv('zh');
+  const { ctx } = env;
+  vm.runInContext('rotatorCfg.customPhrases.zh.running.push({ text: "冲鸭 {tps}", weight: 2.5, rarity: 0.5, when: { tool: "Bash" } })', ctx);
+
+  const html = vm.runInContext('zuRotatorSectionHtml(true)', ctx);
+  assert.ok(html.indexOf('zu-rot-cp-card') > 0, 'visual card container present');
+  assert.ok(html.indexOf('zu-rot-cp-mode') > 0, 'mode toggle button present');
+  assert.ok(html.indexOf('文本编辑（高级）') > 0, 'mode button offers text mode');
+  assert.ok(html.indexOf('data-cp-add="thinking"') > 0 && html.indexOf('data-cp-add="running"') > 0 && html.indexOf('data-cp-add="long"') > 0, 'per-phase add buttons');
+  assert.ok(html.indexOf('zu-rot-cp-text') > 0 && html.indexOf('冲鸭 {tps}') > 0, 'saved phrase rendered as a row');
+  assert.ok(html.indexOf('value="2.5"') > 0, 'weight control mirrors stored weight');
+  assert.ok(html.indexOf('value="50"') > 0, 'rarity shown as percent');
+  assert.ok(html.indexOf('zu-rot-cp-toolcb" checked') > 0 && html.indexOf('value="Bash"') > 0, 'when.tool mirrored');
+  assert.ok(html.indexOf('data-cp-chip="{elapsed}"') > 0 && html.indexOf('data-cp-chip="{tps}"') > 0, 'common placeholder chips present');
+  assert.ok(html.indexOf('zu-rot-cp-phall') > 0, 'full placeholder table present');
+  for (const k of ['retryMax', 'retryProvider', 'retryCode', 'phaseLabel', 'locale', 'detail']) {
+    assert.ok(html.indexOf('{' + k + '}') > 0, `placeholder table lists {${k}}`);
+  }
+  assert.ok(html.indexOf('zu-rot-textarea') < 0, 'no textarea in default visual mode');
+
+  // 文本模式切回 textarea，双视图同源
+  assert.equal(vm.runInContext('rotCpTextMode = true; zuRotatorSectionHtml(true)', ctx).indexOf('zu-rot-custom-running') > 0, true, 'text mode renders textareas');
+  const textHtml = vm.runInContext('zuRotatorSectionHtml(true)', ctx);
+  assert.ok(textHtml.indexOf('返回可视化编辑') > 0, 'mode button flips in text mode');
+  assert.ok(textHtml.indexOf('文案 | 权重 | when:tool=Bash | rarity:0.5') > 0, 'line syntax hint moves into text mode');
+  assert.ok(textHtml.indexOf('zu-rot-cp-text') < 0, 'no visual rows in text mode');
+  vm.runInContext('rotCpTextMode = false', ctx);
+
+  // 预览卡仍是 rotator 分区最后一张卡（既有契约）
+  assert.ok(html.indexOf('zu-rot-prev-stage') > html.indexOf('zu-rot-cp-card'), 'preview card stays last');
+});
+
+test('rotCpBuildItem maps visual controls to stored objects and round-trips through the line syntax', () => {
+  const env = makeRotatorEnv('zh');
+  const { ctx } = env;
+
+  const full = vm.runInContext(`rotCpBuildItem({}, {
+    text: '  编译中 {model}  ', weight: '2.5', rarity: '50',
+    tool: true, toolName: ' Bash ', first: true, retry: true, retryNum: ''
+  })`, ctx);
+  assert.deepEqual(JSON.parse(JSON.stringify(full)), {
+    text: '编译中 {model}', weight: 2.5, rarity: 0.5,
+    when: { tool: 'Bash', retry: true, firstTurn: true }
+  });
+
+  // 默认值不写字段；数字 retry 保留；透传键保留
+  const minimal = vm.runInContext(`rotCpBuildItem(
+    { text: 'x', when: { pending: 2, hour: '9-18', phase: 'thinking', retry: 2 } },
+    { text: 'x', weight: '1', rarity: '100', tool: false, toolName: '', first: false, retry: true, retryNum: '2' }
+  )`, ctx);
+  assert.deepEqual(JSON.parse(JSON.stringify(minimal)), {
+    text: 'x',
+    when: { pending: 2, hour: '9-18', phase: 'thinking', retry: 2 }
+  }, 'weight 1 / rarity 100 omitted; extra when keys passed through; numeric retry kept');
+
+  // buildItem 产物经行语法序列化再解析，语义无损（文本模式往返）
+  const line = vm.runInContext('formatPhraseLines([{ text: "编译中 {model}", weight: 2.5, rarity: 0.5, when: { tool: "Bash", retry: true, firstTurn: true } }])', ctx);
+  assert.equal(line, '编译中 {model} | 2.5 | when:tool=Bash,retry=true,firstTurn=true | rarity:0.5');
+  const back = vm.runInContext(`parsePhraseLine(${JSON.stringify(line)})`, ctx);
+  assert.deepEqual(JSON.parse(JSON.stringify(back)), JSON.parse(JSON.stringify(full)));
+});
+
+test('rotCpSaveRow reads a visual row back into customPhrases', () => {
+  const env = makeRotatorEnv('zh');
+  const { ctx } = env;
+  vm.runInContext('rotatorCfg.customPhrases.zh.thinking.push({ text: "旧文案", weight: 1 })', ctx);
+  const r = buildCpRow('thinking', 0, { text: '新文案 {elapsed}', weight: '3', rarity: '25', tool: true, toolName: 'Read' });
+  env.window.__cpRow = r.row;
+  const out = vm.runInContext('rotCpSaveRow(window.__cpRow)', ctx);
+  assert.ok(out && out.ph === 'thinking' && out.i === 0, 'save reports which row it wrote');
+  const item = vm.runInContext('rotatorCfg.customPhrases.zh.thinking[0]', ctx);
+  assert.deepEqual(JSON.parse(JSON.stringify(item)), {
+    text: '新文案 {elapsed}', weight: 3, rarity: 0.25, when: { tool: 'Read' }
+  });
+  // 保存写回了存储（rotCpSaveRow 内部直接改 cfg；saveRotatorConfig 由调用方 change 链执行）
+});
+
+test('panel click delegates: add appends an empty row, delete splices and clears the preview anchor', () => {
+  const env = makeRotatorEnv('zh');
+  const { ctx, window } = env;
+  vm.runInContext('rotatorCfg.customPhrases.zh.running.push({ text: "要被删的", weight: 1 })', ctx);
+
+  const panel = makeFakeElement('div');
+  const card = makeFakeElement('div'); card.className = 'zu-rot-cp-card';
+  const list = makeFakeElement('div'); list.className = 'zu-rot-cp-list'; list.setAttribute('data-cp-ph', 'running');
+  const addBtn = makeFakeElement('button'); addBtn.className = 'zu-rot-btn zu-rot-cp-add'; addBtn.setAttribute('data-cp-add', 'running');
+  card.appendChild(addBtn);
+  card.appendChild(list);
+  const r0 = buildCpRow('running', 0, { text: '要被删的' });
+  list.appendChild(r0.row);
+  panel.appendChild(card);
+  window.__cpPanel = panel;
+
+  // add：push 空草稿行并局部重建列表
+  assert.equal(vm.runInContext('zuRotatorPanelClick({ target: (function(){ var b = null; return b })() }, null)', ctx), false, 'non-matching click falls through');
+  const addTarget = addBtn;
+  assert.equal(vm.runInContext(`zuRotatorPanelClick({ target: window.__cpPanel.querySelector('.zu-rot-cp-add') }, window.__cpPanel)`, ctx), true);
+  void addTarget;
+  assert.equal(vm.runInContext('rotatorCfg.customPhrases.zh.running.length', ctx), 2, 'add appends a draft row');
+  assert.equal(vm.runInContext('rotatorCfg.customPhrases.zh.running[1].text', ctx), '', 'draft row starts empty');
+
+  // del：splice + 预览锚清理
+  vm.runInContext('rotCpPreview = { ph: "running", i: 0, text: "要被删的" }', ctx);
+  const delBtn = makeFakeElement('button'); delBtn.className = 'zu-rot-btn zu-rot-cp-del';
+  r0.row.appendChild(delBtn);
+  assert.equal(vm.runInContext(`zuRotatorPanelClick({ target: (window.__cpRow0 = window.__cpRow0 || null) }, window.__cpPanel)`, ctx) === undefined, false, 'sanity');
+  window.__cpDelBtn = delBtn;
+  assert.equal(vm.runInContext('zuRotatorPanelClick({ target: window.__cpDelBtn }, window.__cpPanel)', ctx), true);
+  assert.equal(vm.runInContext('rotatorCfg.customPhrases.zh.running.length', ctx), 1, 'delete splices the row');
+  assert.equal(vm.runInContext('rotCpPreview', ctx), null, 'preview anchor cleared when its row is deleted');
+});
+
+test('per-phrase preview: ▶ forces the bottom card to play that phrase and survives the rotation interval', () => {
+  const env = makeRotatorEnv('zh', { typeSpeedMs: 0 });
+  const { ctx, window, timers, advanceNow } = env;
+  vm.runInContext('rotatorCfg.customPhrases.zh.running.push({ text: "冲鸭 {tps} t/s", weight: 1 })', ctx);
+
+  const panel = makeFakeElement('div');
+  const stage = makeFakeElement('div'); stage.className = 'zu-rot-prev-stage';
+  panel.appendChild(stage);
+  const list = makeFakeElement('div'); list.className = 'zu-rot-cp-list'; list.setAttribute('data-cp-ph', 'running');
+  const r0 = buildCpRow('running', 0, { text: '冲鸭 {tps} t/s' });
+  const playBtn = makeFakeElement('button'); playBtn.className = 'zu-rot-btn zu-rot-cp-play';
+  r0.row.appendChild(playBtn);
+  list.appendChild(r0.row);
+  panel.appendChild(list);
+  window.__cpPrevPanel = panel;
+  env.state.settingsSec = 'rotator';
+  panel.classList.add('open');
+  vm.runInContext('zuRotatorSyncPanel(window.__cpPrevPanel)', ctx);
+
+  // ▶：定向预览立刻接管（打字机 typeSpeedMs=0 → 一拍全显，占位符按预览 ctx 替换）
+  assert.equal(vm.runInContext('zuRotatorPanelClick({ target: (window.__cpPrevPanel.querySelector(".zu-rot-cp-play")) }, window.__cpPrevPanel)', ctx), true);
+  // 跨 realm 对象不能与字面量 deepEqual（原型不同）：逐字段断言
+  const anchor = vm.runInContext('rotCpPreview', ctx);
+  assert.ok(anchor && anchor.ph === 'running' && anchor.i === 0 && anchor.text === '冲鸭 {tps} t/s', 'preview anchor set');
+  advanceNow(200);
+  const ivs = [...timers.values()].filter(t => t.interval && t.ms === 65);
+  ivs[ivs.length - 1].fn();
+  const lbl = stage.querySelector('.zu-rotator-active-label');
+  assert.equal(lbl.textContent, '冲鸭 42.5 t/s', `forced preview renders the phrase with live placeholders, got "${lbl.textContent}"`);
+
+  // 驻留：超过轮播间隔也不被随机换条顶掉
+  advanceNow(8000);
+  ivs[ivs.length - 1].fn();
+  assert.equal(stage.querySelector('.zu-rotator-active-label').textContent, '冲鸭 42.5 t/s', 'forced preview persists past the interval');
+
+  // ■：再点同一条恢复随机轮播（按钮符号已翻回 ▶）
+  assert.equal(playBtn.textContent, '■', 'playing row shows the stop glyph');
+  assert.equal(vm.runInContext('zuRotatorPanelClick({ target: window.__cpPrevPanel.querySelector(".zu-rot-cp-play") }, window.__cpPrevPanel)', ctx), true);
+  assert.equal(vm.runInContext('rotCpPreview', ctx), null, 'second click stops the forced preview');
+  assert.equal(playBtn.textContent, '▶', 'glyph flips back to play');
+
+  // 失配自清：数据被改后锚失效，不再强制
+  vm.runInContext('rotCpPreview = { ph: "running", i: 0, text: "冲鸭 {tps} t/s" }; rotatorCfg.customPhrases.zh.running[0].text = "改掉了"', ctx);
+  assert.equal(vm.runInContext('rotCpPreviewValid()', ctx), null, 'anchor invalidated when the phrase text no longer matches');
+  window.__zusageRotatorDispose();
+});
+
+test('clicking a placeholder chip inserts the token into the last edited text box at the cursor', () => {
+  const env = makeRotatorEnv('zh');
+  const { ctx, window } = env;
+  const panel = makeFakeElement('div');
+  const r0 = buildCpRow('thinking', 0, { text: '思考中 ' });
+  r0.text.selectionStart = r0.text.value.length;
+  r0.text.selectionEnd = r0.text.value.length;
+  const chip = makeFakeElement('button'); chip.className = 'zu-rot-cp-chip'; chip.setAttribute('data-cp-chip', '{elapsed}');
+  panel.appendChild(r0.row);
+  panel.appendChild(chip);
+  window.__cpChipPanel = panel;
+
+  // 未 change 过：兜底取面板内第一个文案框
+  assert.equal(vm.runInContext('zuRotatorPanelClick({ target: window.__cpChipPanel.querySelector(".zu-rot-cp-chip") }, window.__cpChipPanel)', ctx), true);
+  assert.equal(r0.text.value, '思考中 {elapsed}', 'chip token appended to the focused text box');
+
+  // 文本模式切换往返：卡片重渲染后模式按钮与视图同步
+  const modeBtn = makeFakeElement('button'); modeBtn.className = 'zu-rot-btn zu-rot-cp-mode';
+  const card = makeFakeElement('div'); card.className = 'zu-rot-cp-card';
+  panel.appendChild(modeBtn);
+  panel.appendChild(card);
+  assert.equal(vm.runInContext('zuRotatorPanelClick({ target: window.__cpChipPanel.querySelector(".zu-rot-cp-mode") }, window.__cpChipPanel)', ctx), true);
+  assert.equal(vm.runInContext('rotCpTextMode', ctx), true, 'mode toggled to text');
+  assert.equal(modeBtn.textContent, '返回可视化编辑', 'mode button label flipped');
+  assert.ok(card.innerHTML.indexOf('zu-rot-custom-thinking') >= 0, 'card re-rendered as textareas');
+  assert.equal(vm.runInContext('zuRotatorPanelClick({ target: window.__cpChipPanel.querySelector(".zu-rot-cp-mode") }, window.__cpChipPanel)', ctx), true);
+  assert.equal(vm.runInContext('rotCpTextMode', ctx), false, 'mode toggled back to visual');
+});
+
+test('visual drafts with empty text never reach the rotation pool', () => {
+  const env = makeRotatorEnv('zh');
+  const { ctx } = env;
+  vm.runInContext('rotatorCfg.customPhrases.zh.running.push({ text: "", weight: 1 })', ctx);
+  const pool = vm.runInContext('getMergedPhrasePool("running", "zh", new Date())', ctx);
+  assert.ok(pool.every(p => p.text !== ''), 'empty draft rows are filtered from the pool');
+});
+
+test('quick hover tips: pure CSS hover pseudo-element on data-tip targets (host event interception cannot break CSS hover)', () => {
+  const env = makeRotatorEnv('zh');
+  const { ctx } = env;
+  const html = vm.runInContext('zuRotatorSectionHtml(true)', ctx);
+  assert.ok(html.indexOf('data-tip=') > 0, 'data-tip attributes present');
+  assert.ok(html.indexOf('zu-rot-tipt') > 0, 'tooltip target marks present');
+  assert.equal(html.indexOf(' title='), -1, 'no native title attributes left in the section');
+
+  // 纯 CSS 契约：hover 伪元素以 data-tip 为内容源（零事件监听，宿主 stopPropagation 拦不住 CSS hover）
+  const css = vm.runInContext('rotatorStyleEl.textContent', ctx);
+  assert.ok(css.indexOf('.zu-rot-tipt{position:relative}') >= 0, 'anchor positioning rule present');
+  assert.ok(css.indexOf('.zu-rot-tipt:hover::after{content:attr(data-tip)') >= 0, 'hover pseudo-element rule present');
+  assert.ok(css.indexOf('bottom:calc(100% + 6px)') >= 0, 'tooltip pops upward (scroll-container bottom clipping)');
+  assert.ok(css.indexOf('pointer-events:none') >= 0, 'pseudo-element never traps the pointer');
+  assert.ok(css.indexOf('.zu-rot-cp-row .zu-rot-tipt:hover::after') >= 0 && css.indexOf('.zu-settings .cap .zu-rot-tipt:hover::after') >= 0, 'right-aligned variants for row/cap targets');
+  assert.equal(css.indexOf('.zu-rot-tip{'), -1, 'JS tooltip float layer removed');
+  assert.equal(vm.runInContext('typeof rotTipShow', ctx), 'undefined', 'no JS tooltip chain left');
+});
+
+test('header credit button: CSS-only hint and upstream repo link via openExternal bridge', () => {
+  const env = makeRotatorEnv('zh');
+  const { ctx, window } = env;
+  const html = vm.runInContext('zuRotatorSectionHtml(true)', ctx);
+  assert.ok(html.indexOf('class="zu-rot-btn zu-rot-credit zu-rot-tipt"') > 0, 'credit button present in the section header');
+  assert.ok(html.indexOf('>原作者<') > 0, 'zh label present');
+  assert.ok(html.indexOf('https://github.com/01Virex/dsh-status-rotator') === -1, 'URL not inlined into section HTML');
+
+  window.__creditBtn = { closest: sel => (sel === '.zu-rot-credit' ? window.__creditBtn : null) };
+  const seen = [];
+  window.zcode = { openExternal: u => { seen.push(u); } };
+  assert.equal(vm.runInContext('zuRotatorPanelClick({ target: window.__creditBtn }, null)', ctx), true, 'credit click handled');
+  assert.deepEqual(seen, ['https://github.com/01Virex/dsh-status-rotator'], 'opens the upstream repo via the openExternal bridge');
+
+  delete window.zcode;
+  const opened = [];
+  window.open = (u, target, feat) => { opened.push([u, target, feat]); return null; };
+  assert.equal(vm.runInContext('zuRotatorPanelClick({ target: window.__creditBtn }, null)', ctx), true, 'credit click handled without bridge');
+  assert.deepEqual(opened, [['https://github.com/01Virex/dsh-status-rotator', '_blank', 'noopener']], 'falls back to window.open without the bridge');
+});
+
+test('review fix: handwritten explicit-false conditions survive visual-mode save and render unchecked', () => {
+  const env = makeRotatorEnv('zh');
+  const { ctx } = env;
+  // 显式 false（tool=false=仅无工具时 / firstTurn=false / retry=false）：勾选框不勾，保存保留原值
+  const kept = vm.runInContext(`rotCpBuildItem(
+    { text: 'x', when: { tool: false, firstTurn: false, retry: false, pending: 1 } },
+    { text: 'x', weight: '1', rarity: '100', tool: false, toolName: '', first: false, retry: false, retryNum: '' }
+  )`, ctx);
+  assert.deepEqual(JSON.parse(JSON.stringify(kept.when)), { tool: false, firstTurn: false, retry: false, pending: 1 },
+    'unchecked visual boxes must NOT flip/delete explicit false conditions (old build silently dropped them)');
+  // 勾选态渲染：false 不渲染为已勾选（旧 !== undefined 判定把 tool=false 画成勾选并翻转语义）
+  const row = vm.runInContext(`rotCpRowHtml('thinking', 0)`, ctx);
+  void row;
+  const ctx2 = env.ctx;
+  vm.runInContext(`rotatorCfg.customPhrases.zh.thinking = [{ text: 'x', when: { tool: false, retry: false } }]`, ctx2);
+  const html = vm.runInContext(`rotCpRowHtml('thinking', 0)`, ctx2);
+  assert.ok(!html.includes('zu-rot-cp-toolcb" checked') && !html.includes('zu-rot-cp-toolcb checked'), 'tool=false renders unchecked');
+  assert.ok(!html.includes('zu-rot-cp-retrycb" checked') && !html.includes('zu-rot-cp-retrycb checked'), 'retry=false renders unchecked');
+  assert.match(html, /tool=false、retry=false|tool=false/, 'false conditions listed in the advanced-conditions note');
+});
+
+test('review fix: phrase when: keys are whitelisted and unknown keys never reach the note HTML unescaped', () => {
+  const env = makeRotatorEnv('zh');
+  const { ctx } = env;
+  // 白名单：未知键直接丢弃（matchesPhraseWhen 消费集之外的键无语义，只会经提示行进 innerHTML）
+  const parsed = vm.runInContext(`parsePhraseLine('x | when:<img src=x onerror=alert(1)>=1,hour=9-18')`, ctx);
+  assert.deepEqual(JSON.parse(JSON.stringify(parsed.when || {})), { hour: '9-18' }, 'unknown when-key dropped by whitelist');
+  // 纵深防御：存量畸形键（白名单前已入库）经提示行必须转义，不产生可执行标签
+  vm.runInContext(`rotatorCfg.customPhrases.zh.thinking = [{ text: 'x', when: { '<img src=x onerror=alert(1)>': 1 } }]`, ctx);
+  const html = vm.runInContext(`rotCpRowHtml('thinking', 0)`, ctx);
+  assert.ok(!html.includes('<img src=x'), 'raw tag from stored key never reaches innerHTML');
+  assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/, 'stored key is entity-escaped in the note');
 });

@@ -47,22 +47,54 @@ userData）。
 注入样式表（`.zu-sv-*`/`.tip` 等）、boot 清理链、状态条渲染全部真实。纯函数工厂的
 `SPD_PORTAL`（`getPortal` 导出）经 `window.__setSPDPortal` 桥给 Portal 函数作用域。
 
-### 3. 锚点检测要求真实输入元素
+### 3. 宿主形态：真实 ZCode composer 复刻（2026-11-08 起）
 
-overlay 的 composer 锚点扫描要求 `textarea/[contenteditable]/[role=textbox]/.ProseMirror`
-等（`COMPOSER_SEL`）。占位 composer **必须包含 `<textarea>`**，且带
-`data-session-id`（会话归属）与 `.conversation-bottom-dock-transition`（v283/283 dock
-对齐锚）才有完整几何。宿主语义变量（`--color-tooltip/--color-popover/...`）在浅色场景
-由 harness 页按浅色值补齐——生产由 ZCode `<html>` 提供。
+`host.html` 的输入区不再是简化占位，而是按宿主源码（`packages/ui/src` 的
+`v4/ConversationComposer.tsx`、`prompt-editor/ChatPromptEditor.tsx`、`LexicalChatInput.tsx`、
+`v4/ConversationTimeline.tsx`、`styles.css`）逐层复刻的真实 composer：
 
-### 4. 夹具纪律
+- DOM 属性/testid 与生产一致：`[data-testid="v4-composer"]`、`v4-composer-input`
+  （`contenteditable` + `role=textbox`，命中 overlay `COMPOSER_SEL` 与 `composerCardOf`
+  的 `chat-composer-input-surface ⊃ [data-composer-layout]` 识别链）、
+  `group/toolbar` 工具行（`toolbarRowOf` 识别串）、`data-composer-leading-actions/`
+  `leading-content`/`trailing-actions`（额度/Git chip 挂载点）、
+  `chat-context-usage-trigger`（v93 原生按钮增强锚）、`v4-model-config` 隐藏锚
+  （v98 额度选源观察对象）、`data-v4-composer-dock[-content]`、会话根
+  `data-session-id`/`data-pane-id`。
+- 主题为四套生产令牌原文：`zai-dark`（真机默认，`html.dark.theme-zai-dark`）、
+  `zai-light`、classic `dark`/`light`（Tailwind 调色板 hex 换算，个别色近似）。
+  `__zuScenario` 的 `theme:'dark'/'light'` 分别映射 zai-dark/zai-light（真机默认主题对），
+  `'classic-dark'/'classic-light'` 可显式请求。
+- 工具行按用户日常实态摆样：yolo「完全访问」警示橙、模型名 + 思考档位徽标（「最高」）、
+  context 圆环（`ContextIcon` viewBox 24 r=10 strokeWidth=4）、禁用发送钮（空文本）。
+- 消息流为背景占位（非复刻对象），仅营造「有历史会话」真实感。
+
+### 4. live 实时数据链（2026-11-08）：真实当前会话，可对照复现
+
+链首的 `live-*` 场景不再用夹具：`main.cjs` 起生产同款 **`zusage.py serve` 常驻泵**
+（inject-main v8 同款 stdin 空行请求 / stdout 一行 JSON 快照行协议，serve 随
+harness 退出 stdin EOF 自清理），拉**真实当前会话**（数据库最近活跃会话，通常就是
+正在跑的这个 ZCode 会话）快照并推给页面：
+
+- 泵帧直推 overlay `__zusageUpdate`（`payload.mine=会话 SID`，生产泵 v34 语义）——
+  状态条、今日、工具计数全部为跑链瞬间的真实值；
+- 页面包装层缓存真实轮表/`__zuLiveSid`，V2 卡 `sel.sid` 联动真实会话，并把复刻
+  composer 的会话根 `data-session-id` 同步为真实 SID（归属链真实）；
+- 数据模式互斥：`step.live`/`fixture:'live'` 为 live，其余步骤锁定 `fixture`
+  模式并丢弃在途真实帧——确定性夹具基线不被污染；
+- `liveWait` 步骤在挂卡状态下每 2s 收帧（如 8s 实时观察），验证状态条随会话更新；
+- 环境：`ZU_ZUSAGE`（默认运行目录 `~/.zcode/zcode-token-usage-statusbar/zusage.py`）、
+  `ZU_PYTHON`（默认 `python3`）。serve 拉起的价表同步线程随进程退出；
+- 当前会话轮数不足时 V2 卡呈真实稀疏形态（非回归；边界场景仍由夹具链覆盖）。
+
+### 5. 夹具纪律
 
 - 轮表是 **delta 编码**：`spdUnpack` 累加还原——首轮 `t` 给绝对时刻、后续给增量，
   `b`（生成起点）给绝对值；弄反会被正确过滤成「0 桶假象」。
 - 全部数值/时刻显式表驱动（`FIXTURES`），**禁止随机数**（Goal 约束：不制造随机数据）。
 - payload 需 `session.avg_tps>0` + `mine` + `last.tps` 才能让速度格/浮层亮起。
 
-### 5. 交互走真实输入事件
+### 6. 交互走真实输入事件
 
 `webContents.sendInputEvent('mouseMove'/'mouseDown'/'mouseUp')` 在页面坐标系打真实
 输入（非合成 DOM 事件）：
@@ -71,19 +103,19 @@ overlay 的 composer 锚点扫描要求 `textarea/[contenteditable]/[role=textbo
 - 悬停目标用 `getBoundingClientRect` 中心；横向滚动场景先 `wrap.scrollLeft = scrollWidth`
   再悬停目标柱（测试「滚到最右的柱」边界）。
 
-### 6. 几何断言优先于截图
+### 7. 几何断言优先于截图
 
 `window.__zuDiag()` 返回 rect（tip/左卡/图表列/wrap/portal/legend）、
 `portalInView/portalOnTop/legendInView/legendOnTop/bands/cur` 等：
 「浮层完整在视口内」「Portal 显示时必须是 body 最后一个元素节点（同 z 层树序压过晚挂
 tip，B1 教训）」「当前档高亮随夹具变化」这类契约用**测量**判定，截图只做人眼终审。
 
-### 7. 测量口径
+### 8. 测量口径
 
 「用户所见左缘」= **tip 容器外缘**（border-box，`#zu-spd-replica` 自身），
 不是 `.zu-sv-root` 内容盒（差 padding 13px 会误报 aligned=False）。
 
-### 8. 已知坑位速查
+### 9. 已知坑位速查
 
 | 症状 | 原因 |
 |---|---|

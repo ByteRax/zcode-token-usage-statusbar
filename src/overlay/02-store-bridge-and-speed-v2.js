@@ -597,8 +597,10 @@
     var avg = (typeof sessAvg === "number" && isFinite(sessAvg) && sessAvg > 0) ? sessAvg : 0;
     if (avg) {
       var aband = tpsBand(avg) || band;
-      return { cls: aband.cls, band: aband,
-               text: L("均", "avg ") + (avg % 1 ? avg.toFixed(1) : String(avg)) + L(" t/s", " t/s"),
+      /* v298（用户拍板）：chip 主数字=最后一轮真实速度（去「均」前缀）；tooltip 左卡
+       * 仍显示会话加权平均（status/speedValue 保留 avg 语义，两处各自成立） */
+      return { cls: band.cls, band: band,
+               text: (stats.tokenRate % 1 ? stats.tokenRate.toFixed(1) : String(stats.tokenRate)) + L(" t/s", " t/s"),
                phase: null, latest: stats.tokenRate,
                kind: "avg", statusText: L("生成完成", "Generation complete"),
                speedValue: avg, speedIsEstimated: false, speedSource: "avg",
@@ -616,7 +618,7 @@
    * 旧 speedCardHTML/speedChartHTML/speedSegsOf 逐字保留供精简 chip 与旧快照回退。 */
   var SPD_RANGES = ["recent", "session", "project", "all"];
   var SPD_PERIODS = ["recent", "today", "week", "month", "all"];
-  var SPD_BARS_MAX = 16;
+  var SPD_BARS_MAX = 18;   /* 2026-11-09 用户规格：最近 N 轮 16→18 */
   function SPD_L(zh, en) { return L(zh, en); }
   function spdEsc(s) {
     return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;")
@@ -773,38 +775,29 @@
     else if (period === "week") { a = weekStart; b = now; }
     else if (period === "month") { a = monthStart; b = now; }
     if (a) pool = pool.filter(function (r) { return r.t >= a && r.t <= b; });
-    // 范围「最近」先取该范围最近 16 个有效轮；时间「最近」再取 16（两者独立过滤）
+    // 范围「最近」在该周期过滤之后取最近 16 个有效轮（时间窗先行、16 轮上限在后）——
+    // 月历/历史图上 16 轮之前的同月日期会如实显示为无记录，稀疏说明已带轮数限定
     if (range === "recent") pool = pool.slice(-SPD_BARS_MAX);
-    var items = [], unit = "", title = "", focusInfo = null;
+    var items = [], unit = "", title = "";
     if (period === "recent") {
       pool = pool.slice(-SPD_BARS_MAX);
       for (var i = 0; i < pool.length; i++) {
         var agg = spdAggregate([pool[i]]);
-        /* v263：跨日首柱带两行标签（MM/DD + HH:mm）；首个柱无前参照不标日 */
-        var dayLabel = "";
-        if (i) {
-          var pd0 = spdDate(pool[i - 1].t), cd0 = spdDate(pool[i].t);
-          if (pd0.getMonth() !== cd0.getMonth() || pd0.getDate() !== cd0.getDate())
-            dayLabel = spd2(cd0.getMonth() + 1) + "/" + spd2(cd0.getDate());
-        }
-        if (agg) items.push(Object.assign(agg, { label: spdShort(pool[i].t, "turn"), dayLabel: dayLabel,
+        /* 2026-11-09 用户规格：柱底只显时分，v263 跨日日期行（dayLabel）移除——
+         * 30px 柱宽下两行标签展示不全，月日由图表头范围行与悬停卡承载 */
+        if (agg) items.push(Object.assign(agg, { label: spdShort(pool[i].t, "turn"),
           full: spdFull(pool[i].b) + " – " + spdFull(pool[i].t),
           a: pool[i].b, b: pool[i].t, single: true }));
       }
       unit = "turn";
       title = SPD_L("最近 " + items.length + " 轮 · 生成速度", "Last " + items.length + " turns · speed");
     } else {
-      // 按时间：跨度决定粒度；今天恒按小时（含空桶），其余按跨度自动分档
+      // 按时间粒度：今天恒按小时（含空桶）；v291 起其余时间 Tab（近 7 天/本月/全部）
+      // 全部按日——「全部」切历史热力图需要完整日粒度桶，原跨度自适应月/季/年
+      // 柱状图随热力图改造一并退役。
       if (pool.length) {
-        var lo = Infinity, hi = 0;
-        for (var q = 0; q < pool.length; q++) { if (pool[q].t < lo) lo = pool[q].t; if (pool[q].t > hi) hi = pool[q].t; }
-        var span = hi - lo;
         if (period === "today") unit = "hour";
-        else if (period === "week" || period === "month") unit = "day";
-        else if (span <= 45 * 86400000) unit = "day";
-        else if (span <= 370 * 86400000) unit = "month";
-        else if (span <= 4 * 370 * 86400000) unit = "quarter";
-        else unit = "year";
+        else unit = "day";
         var buckets = {}, bkeys = [];
         for (var w = 0; w < pool.length; w++) {
           var bk = spdBucket(pool[w].t, unit);
@@ -813,16 +806,15 @@
         }
         bkeys.sort(function (x, y) { return x - y; });
         // 今天：00:00→当前小时全桶，无数据显空柱而非零速度；
-        // v273：有效桶 ≤3 且全桶 ≥4 时默认聚焦有效时段（speedSel.focus==="full" 切完整轴）
+        // v273：有效桶 ≤3 且全桶 ≥4 时默认聚焦有效时段。2026-11-07 用户规格：
+        // 覆盖提示与「显示完整时间轴」切换按钮移除——聚焦即默认形态（收放
+        // 条件读 sel.focus 的逻辑保留，当前无 UI 再改写该值）。
         if (period === "today") {
           bkeys = [];
           for (var hr = 0; hr <= new Date(now).getHours(); hr++) bkeys.push(todayStart + hr * 3600000);
           var fullKeys = bkeys.slice(0), realKeys = [];
           for (var fk = 0; fk < fullKeys.length; fk++) if ((buckets[fullKeys[fk]] || []).length) realKeys.push(fullKeys[fk]);
           if (sel.focus !== "full" && realKeys.length && realKeys.length <= 3 && fullKeys.length >= 4) bkeys = realKeys;
-          focusInfo = { canToggle: true, applied: bkeys.length !== fullKeys.length,
-            real: realKeys.length, total: fullKeys.length, unit: SPD_L("小时", "hours"),
-            hint: sel.focus === "full" ? SPD_L("仅显示有记录时段", "showing recorded hours only") : "" };
         }
         for (var bi = 0; bi < bkeys.length; bi++) {
           var bk2 = bkeys[bi], rows = buckets[bk2] || [], bg = spdAggregate(rows);
@@ -831,13 +823,15 @@
             : { v: null, label: spdLabel(bk2, unit, true), full: spdFull(bk2) + " – " + spdFull(nb), a: bk2, b: nb, empty: true });
         }
       }
-      var unitName = { hour: SPD_L("每小时", "hourly"), day: SPD_L("每日", "daily"), week: SPD_L("每周", "weekly"),
-        month: SPD_L("每月", "monthly"), quarter: SPD_L("每季度", "quarterly"), year: SPD_L("每年", "yearly") }[unit] || SPD_L("每日", "daily");
+      /* v292（用户规格 2026-11-08）：标题去掉粒度词（每日/每小时）——「范围 · 时间 · 平均速度」
+       * 三段式，粒度由图表形态自明（今天恒小时、其余恒日），不再进标题。 */
       var prefix = period === "today" ? SPD_L("今天", "Today") : period === "week" ? SPD_L("近 7 天", "Last 7 days")
         : period === "month" ? SPD_L("本月", "This month") : SPD_L("历史", "History");
       title = (range === "project" ? SPD_L("当前项目 · ", "Current project · ") : "") +
-        prefix + " · " + unitName + SPD_L("平均速度", " average speed");
+        prefix + SPD_L(" · 平均速度", " · average speed");
     }
+    /* v295.7（用户规格）：恢复顺序时间（旧→新，最新柱在最右）——v290 的倒序撤销；
+     * real 与峰值/最低/最新均按时间戳比较不受顺序影响；spanA/spanB 取自 pool。 */
     var real = items.filter(function (x) { return !x.empty; });
     var overall = spdAggregate(pool);
     var spanA = a || (pool.length ? pool[0].b : 0);
@@ -849,20 +843,10 @@
       if (!low || real[z].v < low.v) low = real[z];
       if (!latest || real[z].last > latest.last) latest = real[z];
     }
-    /* v273：数据覆盖提示（真实桶计数，分母=窗口内已发生时段） */
-    var cov = "";
-    if (period === "today" && focusInfo) cov = SPD_L("有记录 " + focusInfo.real + "/" + focusInfo.total + " 小时",
-      focusInfo.real + "/" + focusInfo.total + " hours with data");
-    else if (period === "week" && real.length) cov = SPD_L("仅 " + real.length + "/7 天有记录",
-      "only " + real.length + "/7 days with data");
-    else if (period === "month" && real.length) cov = SPD_L("本月 " + real.length + "/" + spdDate(now).getDate() + " 天有记录",
-      real.length + "/" + spdDate(now).getDate() + " days this month");
-    /* v274：单点/双点稀疏时明确「不构成趋势」 */
-    if (cov && real.length && real.length <= 2)
-      cov += SPD_L(" · 暂无足够数据观察趋势", " · not enough data for a trend");
+    /* 2026-11-07 用户规格：覆盖提示（v273 cov、v274「暂无足够数据」尾缀）、
+     * 聚焦切换按钮与聚焦提示整体移除——图表头只留标题/单位/档位入口/时间范围。 */
     return { items: items, real: real, overall: overall, range: range, period: period, dim: "time",
       dims: ["time"], title: title, unit: unit, spanA: spanA, spanB: spanB,
-      cov: cov, focus: focusInfo,
       peak: peak, low: low, latest: latest, notice: notice, truncated: u.truncated };
   }
 
@@ -892,6 +876,14 @@
       spdTabRow("period", SPD_PERIODS, an.period, pl) + "</span></div>" +
       (an.notice ? '<div class="zu-sv-notice">' + spdEsc(an.notice) + "</div>" : "") + "</div>";
   }
+  /* v298.2：左卡标题随时间 Tab（用户规格五命名）；EN 简洁对译 */
+  function spdLeftTitle(period) {
+    /* v303.4：跟随 SPD_BARS_MAX（此前硬编码 16 与柱数上限脱节） */
+    var t = { recent: SPD_L("最近" + SPD_BARS_MAX + "轮", "Last " + SPD_BARS_MAX + " turns"), today: SPD_L("今天", "Today"),
+      week: SPD_L("近7天", "Last 7 days"), month: SPD_L("本月", "This month"),
+      all: SPD_L("近一年", "Last year") }[period] || SPD_L("平均", "Average");
+    return t + SPD_L("平均速度", " · average speed");
+  }
   /* 左统计卡：当前状态（实时估算与历史均值分离）/ 主均值 / 档位 / 峰值·最低·最新 */
   function spdLeftHTML(an, live) {
     var avg = an.overall ? an.overall.v : null;
@@ -910,15 +902,34 @@
     };
     /* v278：标题行改「平均速度」+ 小号「历史统计」标识（规格 §7 第一层），原
      * .zu-sl-k 独立标签行删除（语义并入标题）；实时状态仍为行尾轻量标识不抢主数字 */
+    /* v298.4（用户规格）：档位徽标下方展示当前筛选池对应模型名——与左卡均速同池
+     * （an.overall.models 已按 Σ输出降序）；单模型直显全名，多模型显主模型 +N
+     * （title 带全列表、超出 models 上限 8 种以 … 收尾）；池空不显该行。 */
+    var modelLine = "", modelFull = "";
+    if (an.overall && an.overall.models && an.overall.models.length) {
+      var mm = an.overall.models;
+      modelLine = mm[0].m;
+      modelFull = mm.map(function (m2) { return m2.m; }).join(", ");
+      if (an.overall.modelCount > 1) {
+        modelLine += " +" + (an.overall.modelCount - 1);
+        if (an.overall.modelCount > mm.length) modelFull += " …";
+      }
+    }
     return '<div class="zu-speed-left zu-sv-left"><div class="zu-sl-status">' +
-      '<span class="zu-sl-title">' + spdEsc(SPD_L("平均速度", "Average speed")) + "</span>" +
-      '<span class="zu-sl-hist">' + spdEsc(SPD_L("历史统计", "History")) + "</span>" +
+      /* v298.2（用户规格）：删「历史统计」标识，标题随时间 Tab 命名 */
+      '<span class="zu-sl-title">' + spdEsc(spdLeftTitle(an.period)) + "</span>" +
       (spdLiveStatus ? '<span class="zu-sl-sub">' + spdEsc(spdLiveStatus) + "</span>" : "") + "</div>" +
       '<div class="zu-sl-body">' +
       '<div class="zu-sl-main"><span class="zu-sl-val' + (bd ? " " + bd.cls : " dim") + '">' + main +
       '</span><small class="zu-sl-unit">t/s</small></div>' +
       (bd ? '<div class="zu-speed-bandtag"><b class="' + bd.cls + '" style="font-weight:600">' +
         spdEsc(tpsBandText(bd)) + "</b></div>" : "") +
+      /* v304.2（用户规格）：模型名升级为立方体 SVG 胶囊（与档位胶囊同视觉语言；
+       * 多模型=「主模型 +N」，title 全列表不变） */
+      (modelLine ? '<div class="zu-sl-model" title="' + spdEsc(modelFull) + '">' +
+        '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+        '<path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/></svg>' +
+        '<span>' + spdEsc(modelLine) + "</span></div>" : "") +
       /* v263：口径公式行删除（规格点名「删除大段统计口径文字」，语义由图例 ⓘ title 承载），
        * 说明行统一为「历史统计 · 不含进行中请求」；实时状态/生成中估算仍独立成行。 */
       (liveTxt ? '<div class="zu-sl-note">' + spdEsc(SPD_L("生成中估 ", "Generating est. ")) + liveTxt + " t/s</div>" : "") +
@@ -961,7 +972,9 @@
     if (!o || !o.fmtMoney) cost = '<span class="zu-sv-off">' + spdEsc(SPD_L("费用显示已关闭", "Cost display off")) + "</span>";
     else if (item.c === null) cost = '<span class="zu-sv-off">' + spdEsc(SPD_L("暂无估价", "Estimate unavailable")) + "</span>";
     else cost = spdEsc(o.fmtMoney(item.c)) + (!item.costFull ? '<i class="zu-sv-partial">' + spdEsc(SPD_L(" · 含兜底估价", " · partly estimated")) + "</i>" : "");
-    var timeVal = spdCompactRange(item.a, item.b);
+    /* v291：tv=悬停卡时间覆写（热力图日格显「2026-11-06 周五」整日形态），
+     * 缺省保持聚合桶区间压缩逻辑不变 */
+    var timeVal = item.tv || spdCompactRange(item.a, item.b);
     return '<div class="' + cls + '" role="tooltip"><div class="zu-sv-crow"><span>' + spdEsc(SPD_L("时间", "Time")) +
       '</span><b class="zu-sv-twrap" title="' + spdEsc(item.full) + '">' + spdEsc(timeVal) + "</b></div>" +
       '<div class="zu-sv-crow"><span>' + spdEsc(SPD_L("速度", "Speed")) + '</span><b class="zu-sv-cval' +
@@ -979,21 +992,19 @@
   var SPD_PORTAL = "";
   function spdChartLayout(n) {
     return {
-      colPitch: 30,                                   /* 每柱占位列宽（柱 14px + 两侧留白） */
-      spacerW: Math.max(240, n * 30 + 12),            /* plot 撑宽（少柱拉满容器、多桶横滚） */
-      xEvery: Math.max(1, Math.ceil(n / 6)),          /* X 轴标签稀疏化 */
+      colPitch: 24,                                   /* v295.17：每柱 24px（柱 14 + 10px 间距） */
+      spacerW: Math.max(240, n * 24 + 12),            /* plot 撑宽（少柱拉满容器、多桶横滚） */
       valEvery: Math.max(1, Math.ceil(n / 8)),        /* 柱顶数值稀疏化（防 16 柱重叠） */
       single: n === 1
     };
   }
-  /* 动态柱状图：细柱定宽居中、X 轴稀疏、Y 轴整洁刻度、无均值虚线。 */
-  function spdChartHTML(an, hoverIdx, o) {
-    var items = an.items, n = items.length;
-    var L = spdChartLayout(n);
-    SPD_PORTAL = "";
-    /* v272：维度下拉移除；v273：数据覆盖提示 + 聚焦/完整轴切换按钮；
-     * v278：统计时间从顶部胶囊迁到标题栏右端（margin-left:auto + 钳边省略，
-     * title 挂完整 YYYY-MM-DD HH:mm:ss 区间），单位紧随标题不再独占右端 */
+  /* v291 图表标题栏/空态提取（原 spdChartHTML 内联段）：三态图表（柱状图/本月月历
+   * 热力图/全部历史热力图）共用同一标题行（标题 + t/s 单位徽章 + 档位说明入口 +
+   * 统计时间）与空态。sub=可选副题（历史热力图「按日聚合 · 自适应密度」）。
+   * v272：维度下拉移除；v273：数据覆盖提示 + 聚焦/完整轴切换按钮；
+   * v278：统计时间从顶部胶囊迁到标题栏右端（margin-left:auto + 钳边省略，
+   * title 挂完整 YYYY-MM-DD HH:mm:ss 区间），单位紧随标题不再独占右端 */
+  function spdChartHeadHTML(an, sub) {
     var ico = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 11h18"/></svg>';
     /* v281→v285：档位说明入口（单位旁）。v285 换专用 Speed Bands SVG（细圆环 +
      * 三级递增速度柱，currentColor 继承按钮色态）替代通用问号；「单位：t/s」收为
@@ -1005,22 +1016,28 @@
       '<path d="M10 13.2V8.6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-opacity="0.88"/>' +
       '<path d="M13.65 13.2V6.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>' +
       '</svg>';
-    var head = '<div class="zu-sc-head"><span class="zu-sc-title">' + spdEsc(an.title) + "</span>" +
+    return '<div class="zu-sc-head"><span class="zu-sc-title">' + spdEsc(an.title) + "</span>" +
       '<span class="zu-sc-unit">t/s</span>' +
       '<button type="button" class="zu-sv-legend-btn" data-sv-band="' + (an.overall ? tpsBand(an.overall.v).cls : "") +
       '" aria-haspopup="true" aria-expanded="false" title="' + spdEsc(SPD_L("查看速度档位说明", "View speed bands")) +
       '" aria-label="' + spdEsc(SPD_L("查看速度档位说明", "View speed bands")) + '">' + qico + "</button>" +
-      (an.cov ? '<span class="zu-sc-cov">' + spdEsc(an.cov) + "</span>" : "") +
-      (an.focus && an.focus.canToggle ?
-        '<button type="button" class="zu-sv-focus" data-sv-focus="1">' +
-        spdEsc(an.focus.applied ? SPD_L("显示完整时间轴", "Show full timeline")
-          : SPD_L("仅显示有记录时段", "Recorded hours only")) + "</button>" : "") +
-      (an.focus && an.focus.applied ? '<span class="zu-sc-cov">' + spdEsc(an.focus.hint) + "</span>" : "") +
+      (sub ? '<span class="zu-sc-sub zu-hm-sub">' + spdEsc(sub) + "</span>" : "") +
+      /* 2026-11-07 用户规格：覆盖提示/聚焦切换按钮/聚焦提示三段渲染删除 */
       '<span class="zu-sv-range" title="' + spdEsc(spdRangeFull(an.spanA, an.spanB)) + '">' + ico +
       "<span>" + spdEsc(spdRangeText(an.spanA, an.spanB)) + "</span></span></div>";
-    if (!n) return '<div class="zu-speed-chart zu-sv-chart">' + head +
+  }
+  function spdChartEmptyHTML(head) {
+    return '<div class="zu-speed-chart zu-sv-chart">' + head +
       '<div class="zu-sv-empty">' + spdEsc(SPD_L("当前筛选无有效速度数据", "No rated turns for this filter")) +
       '<span class="zu-sv-empty-hint">' + spdEsc(SPD_L("尝试选择更长时间范围", "Try a longer time range")) + "</span></div></div>";
+  }
+  /* 动态柱状图：细柱定宽居中、X 轴稀疏、Y 轴整洁刻度、无均值虚线。 */
+  function spdChartHTML(an, hoverIdx, o) {
+    var items = an.items, n = items.length;
+    var L = spdChartLayout(n);
+    SPD_PORTAL = "";
+    var head = spdChartHeadHTML(an, "");
+    if (!n) return spdChartEmptyHTML(head);
     var maxV = 0;
     for (var i = 0; i < n; i++) if (!items[i].empty && items[i].v > maxV) maxV = items[i].v;
     var yMax = 0, step = 0;
@@ -1033,11 +1050,13 @@
     if (!yMax) { step = Math.pow(10, Math.ceil(Math.log(Math.max(maxV, 1)) / Math.LN10)); yMax = step * 4; }
     var ticks = [], div = Math.round(yMax / step);
     for (var ti = 0; ti <= div; ti++) ticks.push(step * ti);
-    var H = 148, xEvery = L.xEvery, valEvery = L.valEvery;
-    function xShown(idx) {
-      /* v263：跨日首柱（dayLabel）恒显示，日期信息不随稀疏化丢失 */
-      return idx === n - 1 || idx === 0 || idx % xEvery === 0 || !!items[idx].dayLabel;
-    }
+    var H = 148, valEvery = L.valEvery;
+    /* v290 用户规格（2026-11-08）：每根柱都展示时间——字号降至 8px 后 5 字符标签
+     * 在 30px 列宽内可容纳，稀疏化废弃 */
+    /* v295.17（用户规格）：柱距 24px 下时间恢复每柱显示（相邻间隔 24px > 5 字符
+     * 宽 ~21px，互不重叠）；2026-11-09 用户规格：跨日日期行（v263 dayLabel）移除，
+     * 柱底恒单行时分（最近/今天 Tab），月日由图表头范围行承载 */
+    function xShown() { return true; }
     /* v274：柱顶数值稀疏化——n>8 时按 valEvery 抽稀（首末恒显、悬停柱恒显），
      * 未显示柱由 hover 信息卡兜底完整数值 */
     function valShown(idx, isCur) {
@@ -1048,13 +1067,12 @@
     for (var c = 0; c < n; c++) {
       var it = items[c], isCur = c === hoverIdx, bd = it.empty ? null : tpsBand(it.v);
       var hPct = it.empty ? 0 : Math.max(1.2, Math.round(it.v / yMax * 1000) / 10);
-      /* v263：跨日首柱两行标签（MM/DD + HH:mm，基类 .zu-sc-x 本就是 column flex） */
       var xTxt = "";
-      if (xShown(c)) xTxt = (it.dayLabel ? "<b>" + spdEsc(it.dayLabel) + "</b>" : "") + "<b>" + spdEsc(it.label) + "</b>";
+      if (xShown(c)) xTxt = "<b>" + spdEsc(it.label) + "</b>";
       cols += '<div class="zu-sc-col' + (isCur ? " cur" : "") + (it.empty ? " empty" : "") +
-        (c === n - 1 ? " latest" : "") +
+        (c === n - 1 ? " latest" : "") +   /* 顺序时间：最新柱在最右 */
         '" role="img" tabindex="0" data-i="' + c + '" aria-label="' +
-        spdEsc((it.dayLabel ? it.dayLabel + " " : "") + it.label + "，" + (it.empty ? SPD_L("无数据", "no data") : (it.v.toFixed(1) + " t/s"))) + '">' +
+        spdEsc(it.label + "，" + (it.empty ? SPD_L("无数据", "no data") : (it.v.toFixed(1) + " t/s"))) + '">' +
         '<span class="zu-sc-vz"><span class="zu-sc-val">' + (it.empty || !valShown(c, isCur) ? "" : it.v.toFixed(1)) + "</span>" +
         '<i class="zu-sc-bar' + (bd ? " " + bd.cls : "") + '" style="height:' + hPct + '%"></i></span>' +
         '<span class="zu-sc-x">' + xTxt + "</span></div>";
@@ -1072,8 +1090,13 @@
       ? spdCardHTML(items[hoverIdx], hoverIdx, o) : "";
     /* v273：plot 自适应——in-flow spacer 撑宽（多桶触发横滚），min-width 拉满容器，
      * 柱组 flex 居中；网格/Y 轴/hover 定位共享同一 plot 坐标系 */
+    /* v295.13（用户规格）：首开滚到最右——时间顺序后最新数据在最右，窄容器横滚时
+     * 默认定位最新（data-sv-end 由 drawTip/showTpsTip 既有分支消费，横滚记忆仍优先） */
+    /* v295.18（用户规格）：Y 轴刻度列移出滚动容器（列宽 30px 固定，横向滚动时
+     * 刻度不随滚，同「全部」热力图左侧星期列模式）；plot 不再留 30px 缩进 */
     return '<div class="zu-speed-chart zu-sv-chart">' + head +
-      '<div class="zu-sc-wrap"><div class="zu-sv-plot"><i class="zu-sv-spacer" style="width:' + L.spacerW + 'px"></i><span class="zu-sc-gutter">' + gutter +
+      '<div class="zu-sv-plotrow"><div class="zu-sv-gutcol"><span class="zu-sc-gutter">' + gutter + '</span></div>' +
+      '<div class="zu-sc-wrap" data-sv-end="1"><div class="zu-sv-plot"><i class="zu-sv-spacer" style="width:' + L.spacerW + 'px"></i>' +
       '</span><span class="zu-sc-grid">' + grid + '</span>' +
       '<span class="zu-sv-bars">' + cols + "</span></div></div></div>";
   }
@@ -1088,7 +1111,7 @@
     for (var i = TPS_BANDS.length - 1; i >= 0; i--) {
       var b = TPS_BANDS[i], isCur = curCls && b.cls === curCls;
       out += '<span class="zu-sv-li' + (isCur ? " cur" : "") + '"><i class="' + b.cls + ' zu-legend-dot dot-c"></i><b class="' +
-        b.cls + '">' + (b.lo === 0 ? "&lt;" + TPS_BANDS[TPS_BANDS.length - 2].lo : b.hi ? b.lo + "–" + b.hi : "✦ ≥" + b.lo) + "</b></span>";
+        b.cls + '">' + (b.lo === 0 ? "&lt;" + TPS_BANDS[TPS_BANDS.length - 2].lo : b.hi ? b.lo + "–" + b.hi : "≥" + b.lo) + "</b></span>";
     }
     return out + "</div>";
   }
@@ -1112,10 +1135,10 @@
       var cur = curSel || sel;
       var opts = { speedHistory: h,
         sel: { range: cur.range, period: cur.period, dim: cur.dim,
-          sid: (sess && sess.sid) || "",
-          /* 远端只认快照 remote 标：本地 scoped 行也带 workspace_identity，
-           * 旧判定把本地 pane 误当远端，选「全部」被静默降级为本会话并显虚假远端提示 */
-          remote: !!(sess && sess.remote) },
+          /* remote 判定只认快照 remote 标（上游 v287 热修吸收，2026-11-07）：
+           * 本地 scoped 行也带 workspace_identity，旧判定把本地 pane 误当远端，
+           * 选「全部」被静默降级为本会话并显虚假远端提示 */
+          sid: (sess && sess.sid) || "", remote: !!(sess && sess.remote) },
         live: live, segsHover: (typeof curHover === "number" ? curHover : hover),
         fmtTok: o.fmtTok, fmtCnt: o.fmtCnt, fmtMoney: o.fmtMoney };
       return "\x01" + speedCardV2HTML(opts);
@@ -1134,12 +1157,294 @@
        * 图表头文案随 Tab 变化让整卡在 ~700-960px 间跳动）。width+max-width 同值 !important
        * 压过 .tip 的 width:max-content 与 tpsTip 内联 max-width:520；border-box 含内边距。
        * v283：定宽值 960→800（用户规格，与宿主 dock 对齐构图协调）。 */
-      '<style>.zusage-tip-root:has(.zu-sv-root),.zusage-tps-tip:has(.zu-sv-root){width:min(800px,calc(100vw - 24px))!important;max-width:min(800px,calc(100vw - 24px))!important;box-sizing:border-box}</style>' +
+      /* v292（用户规格）：整卡高度固定 315px（border-box）——四种图表形态同高，
+       * 切 Tab 不跳高；内部 .zu-sv-root 走 flex column，图表区吃剩余高度自适应 */
+      /* v295（用户规格）：tooltip 收为 800×300 卡（v295.1 用户更正）。布局决策：
+       * ①祖先层仍纯 height 链（tip 定高 300 → tbody 100% → 卡 100%，flex 只留卡自身）；
+       * ②本月月历态（:has(.zu-hm-month)）隐藏左统计卡、热力图 6 列均分铺满全卡
+       *   （30 天整除零空位；31 天末格跨行尾，永不留空隙）；
+       * ③tbody 纵向 auto——其它 Tab（柱状/历史）内容超高时滚动而非裁切；
+       * ④滚动条隐藏、ultra 抑制等既有契约不变。 */
+      '<style>.zusage-tip-root:has(.zu-sv-root),.zusage-tps-tip:has(.zu-sv-root){width:min(760px,calc(100vw - 24px))!important;max-width:min(760px,calc(100vw - 24px))!important;height:300px!important;box-sizing:border-box!important;overflow:hidden!important}' +
+      /* v303.1：tbody padding 归零——速度卡根带 zu-stat-tip 类会吃到 06:887 的
+       * 12px 15px（与根 .tip 10px 13px 叠成 22/28 双层），与紧凑四卡统一后的
+       * 单层 10px 13px 不一致（真机 segH 实证 tbody 278−24=root 254） */
+      /* 右缘幽灵预留槽归零——基础 .tbody 的 scrollbar-gutter:stable（06:831，六卡
+       * 纵滚防跳动用）在速度卡上是纯空耗：卡 height:100% 恒等于 tbody 高、纵向
+       * 永不滚动，滚动条永不出现但 stable 仍恒预留 thin 滚动条槽位（QA 实测
+       * tbody 732 vs 卡 721，右缘 11px 死空隙；devtools 元素高亮把该非内容区
+       * 涂成 padding 绿，即用户实报「右侧绿色区域」）。速度卡不恢复 stable——
+       * 极端字号溢出时 auto 让滚动条自然出现，代价仅该极端帧压缩 11px。 */
+      '.zusage-tip-root:has(.zu-sv-root) .tbody,.zusage-tps-tip:has(.zu-sv-root) .tbody{height:100%!important;box-sizing:border-box!important;overflow:hidden!important;overflow-y:auto!important;padding:0!important;scrollbar-gutter:auto!important}' +
+      /* v295.2：tpsTip 链生产上无 .tbody（直塞卡），该规则空匹配无害；harness 复刻页
+       * 带 tbody 层，缺这条会让 tbody 高度悬空、卡 height:100% 回落内容高溢出被裁 */
+      '.zusage-tip-root:has(.zu-sv-root) .zu-sv-root,.zusage-tps-tip:has(.zu-sv-root) .zu-sv-root{height:100%!important;min-height:0!important;box-sizing:border-box!important;display:flex;flex-direction:column;overflow:hidden}' +
+      /* 300 小卡：本月态隐藏左统计卡（热力图铺满），其余 Tab 左卡纵排换行 */
+      '.zusage-tip-root:has(.zu-sv-root) .zu-sv-root:has(.zu-hm-month) .zu-sv-filter{flex-wrap:wrap}' +
+      /* 滚动条隐藏：新 Chromium（Fluent/overlay 滚动条）忽略 ::-webkit-scrollbar，
+       * 标准属性 scrollbar-width 必须写在元素本身（写进伪元素无效，v293.1 曾写错位置） */
+      '.zusage-tip-root .zu-sc-wrap,.zusage-tps-tip .zu-sc-wrap,.zu-sv-portal .zu-sc-wrap{scrollbar-width:none!important}' +
+      '.zusage-tip-root .zu-sc-wrap::-webkit-scrollbar,.zusage-tps-tip .zu-sc-wrap::-webkit-scrollbar,.zu-sv-portal .zu-sc-wrap::-webkit-scrollbar{display:none!important}' +
+      /* v298.1：柱状图 Y 轴刻度/网格锁定柱区基线。根因：V1 遗留 .zu-sc-gutter/
+       * .zu-sc-grid 固定 height:160px 在 V2 只声明 top+bottom 时仍然胜出（V2 规则
+       * 不含 height；绝对定位 top+height 同设时 bottom 被忽略）——刻度列被锁 160px
+       * 下坠，「0」压进时间标签行（真机 segH 实测 gutter h=160、tick 0 与 x0 重叠）。
+       * 此处显式 height:auto 让 top+bottom 生效，并按柱区基线对齐：
+       * gutter bottom=21px（wrap padding 5 + x 标签 16，刻度「0」字形中心恰落在
+       * 柱底基线）；grid bottom=16px（0% 网格线贴柱底基线，100% 贴绘图区顶）。
+       * 仅作用柱状图——:not 排除月历/历史热力图两态（其 gutcol 语义不同）。 */
+      '.zu-sv-chart:not(.zu-hm-month):not(.zu-hm-hist) .zu-sc-gutter{height:auto;top:5px;bottom:21px}' +
+      '.zu-sv-chart:not(.zu-hm-month):not(.zu-hm-hist) .zu-sc-grid{height:auto;top:0;bottom:16px}</style>' +
       spdHeadHTML(an) +
       /* v281：底部常驻档位说明移除（连分割线/占位），档位说明改由图表标题栏问号
        * 浮层承载（spdLegendCardHTML + spdLegendTip）——TPS_BANDS 单一事实源不变，
        * 整卡高度由 Header 与统计主体决定，比旧版更紧凑。 */
-      '<div class="zu-speed-body">' + spdLeftHTML(an, o.live) + spdChartHTML(an, o.segsHover, o) + "</div></div>";
+      '<div class="zu-speed-body">' + spdLeftHTML(an, o.live) + spdChartFor(an, o.segsHover, o) + "</div></div>";
+  }
+  /* ---------- v291 热力图（本月月历 / 全部历史 GitHub 风格，用户设计图规格） ----------
+   * 时间 Tab「本月」「全部」的柱状图替换为日粒度热力图：颜色仍走 TPS_BANDS 档位类
+   * （currentColor 与柱体/图例同源，CSS 按 .zu-hm-cell 上的档位类给底色），数据复用
+   * spdAnalyze 的日桶聚合（Σ有效输出 ÷ Σ生成窗口），绝不算术平均、绝不显 0 t/s。
+   * 无记录日=中性格（无记录不等于零速）、未来日=弱化占位（无任何速度、不进统计）；
+   * 格子带 data-i 指向本图 days 数组，悬停/焦点委托复用 .zu-hm-cell 契约（宿主侧
+   * 选择器已扩展），悬停卡经 SPD_PORTAL 侧信道走 body 级 Portal（与柱状图同链）。 */
+  var SPD_WD_ZH = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+  var SPD_WD_EN = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  var SPD_MO_EN = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  function spdWdLabel(wd) { return SPD_L(SPD_WD_ZH[wd], SPD_WD_EN[wd]); }
+  function spdFmt1(v) { return v % 1 ? v.toFixed(1) : String(v); }
+  /* v297 动态字号（用户 Goal）：在 6~14px 内选「能完整容纳的最大字号」。
+   * 纯算术实现——等宽数字字宽 ≈ 0.64em（保守系数，含 k/M/小数点混合余量），
+   * 行高 1.0；不做 DOM/Canvas 测量、不挂 ResizeObserver（格尺寸由宿主量测一次
+   * 写 window.__zusageSpdMonRect，首帧用推导默认，字号变化不改变格尺寸故无振荡）。
+   * 6px 仍超宽时进入紧凑数值格式（12.3k / 1.23M，完整精度走 Hover）。 */
+  var SPD_HM_FS_MIN = 6, SPD_HM_FS_MAX = 14, SPD_HM_CHAR_W = 0.64;
+  function spdHmFitFs(text, availW, availH) {
+    var fs = Math.min(SPD_HM_FS_MAX,
+      availW / Math.max(text.length, 1) / SPD_HM_CHAR_W,
+      availH / 1.05);
+    fs = Math.floor(fs * 2) / 2;   /* 0.5px 步进向下取 */
+    return Math.max(SPD_HM_FS_MIN, Math.min(SPD_HM_FS_MAX, fs));
+  }
+  function spdCompactNum(v) {
+    if (v >= 1e6) return (v / 1e6).toFixed(2).replace(/\.?0+$/, "") + "M";
+    if (v >= 1e4) return (v / 1e3).toFixed(1).replace(/\.0$/, "") + "k";
+    return spdFmt1(v);
+  }
+  /* 完整日期形态（悬停卡时间行/aria）：2026-11-06 周五 / Fri 2026-11-06 */
+  function spdDayFull(t, withWd) {
+    var d = spdDate(t);
+    return d.getFullYear() + "-" + spd2(d.getMonth() + 1) + "-" + spd2(d.getDate()) +
+      (withWd ? SPD_L(" " + SPD_WD_ZH[d.getDay()], " " + SPD_WD_EN[d.getDay()]) : "");
+  }
+  /* 格子 aria：2026年11月6日 周五，平均速度 143.8 t/s，流畅；无记录日显式说明，
+   * 绝不出现「0 t/s」。 */
+  function spdCellAria(t, item) {
+    var d = spdDate(t), wd = d.getDay();
+    var dateTxt = SPD_L(d.getFullYear() + "年" + (d.getMonth() + 1) + "月" + d.getDate() + "日 " + SPD_WD_ZH[wd],
+      SPD_WD_EN[wd] + ", " + SPD_MO_EN[d.getMonth()] + " " + d.getDate() + " " + d.getFullYear());
+    if (!item) return dateTxt + SPD_L("，无有效速度记录", ", no rated speed data");
+    var b = tpsBand(item.v);
+    return dateTxt + SPD_L("，平均速度 ", ", avg ") + spdFmt1(item.v) + SPD_L(" t/s", " t/s") +
+      (b ? SPD_L("，" + b.zh, ", " + b.en) : "");
+  }
+  /* 日格悬停卡：有记录日复用 spdCardHTML 五字段（tv 覆写时间行为整日形态，模型/
+   * Token/费用链逐字同源）；无记录日显式「当日无有效生成速度记录」；未来日「尚未
+   * 开始」（月历占位格也可悬停，语义完整）。 */
+  function spdDayCardHTML(entry, o, coverage) {
+    var dayTxt = spdDayFull(entry.t, true);
+    var head = '<div class="zu-sv-card" role="tooltip"><div class="zu-sv-crow"><span>' +
+      spdEsc(SPD_L("日期", "Date")) + '</span><b title="' + spdEsc(spdRangeFull(entry.t, entry.t + 86400000)) + '">' +
+      spdEsc(dayTxt) + "</b></div>";
+    if (entry.state === "future")
+      return '<div class="zu-sv-card zu-sv-card--void" role="tooltip"><div class="zu-sv-crow"><span>' +
+        spdEsc(SPD_L("日期", "Date")) + "</span><b>" + spdEsc(dayTxt) + "</b></div>" +
+        '<div class="zu-sv-crow"><span>' + spdEsc(SPD_L("状态", "Status")) + "</span><b>" +
+        spdEsc(SPD_L("尚未开始", "Not started yet")) + "</b></div></div>";
+    if (!entry.item)
+      /* v296.1（用户规格）：无数据卡=日期 + 覆盖统计（共 N 天 · 其中 M 天有有效速度记录） */
+      return head + '<div class="zu-sv-crow"><span>' + spdEsc(SPD_L("统计", "Coverage")) + "</span><b>" +
+        spdEsc(coverage || SPD_L("当日无有效生成速度记录", "No rated speed data this day")) + "</b></div></div>";
+    return spdCardHTML(Object.assign({}, entry.item, { tv: dayTxt }), 0, o);
+  }
+  /* 本月月历热力图：7 列（周日首列，与 spdBucket week 同基准）、行数=实际月历
+   * （4～6 行，1 日前空位=透明对齐占位，不伪造上月日期）。有记录日=低饱和档位
+   * 底（22% 混色）+ 左 3px 档位色条 + 日期 + 当日均速；已过无记录日=中性格 +
+   * 日期；未来日=弱日期号（无速度无框，v294）。当日柔和内描边；≤2 天有记录时
+   * 附一条轻量稀疏说明（规格 §9，不建新统计卡）。 */
+  function spdMonthHeatmapHTML(an, hoverIdx, o) {
+    SPD_PORTAL = "";
+    var now = Date.now(), d0 = spdDate(now);
+    var y = d0.getFullYear(), mo = d0.getMonth();
+    /* v296.1（用户拍板）：7 列周日对齐日历——显示当月 1 日至今天；1 日前按星期日
+     * 补齐占位；无数据日=中性弱底+弱日期号（补 0 与红底按用户要求移除），
+     * 未来日期=弱日期号；行数=ceil((占位+天数)/7) */
+    var nDays = new Date(y, mo + 1, 0).getDate();
+    var cols = 7;
+    var lead = new Date(y, mo, 1).getDay();
+    var rows = Math.ceil((lead + nDays) / cols);
+    var todayStart = new Date(y, mo, d0.getDate()).getTime();
+    var byDay = {};
+    for (var i = 0; i < an.items.length; i++) {
+      var it0 = an.items[i];
+      if (!it0.empty && it0.a) byDay[it0.a] = it0;
+    }
+    /* v293.1（用户拍板）：星期表头行舍弃——7 列日历结构不变，格子区直接平分卡高 */
+    /* v295.4（用户拍板）：星期表头行恢复（周日..周六，7 列与格子对齐） */
+    var wk = "";
+    for (i = 0; i < 7; i++) wk += "<span>" + spdEsc(spdWdLabel(i)) + "</span>";
+    var days = [], cells = "";
+    if (lead) for (var p = 0; p < lead; p++) cells += '<i class="zu-hm-pad"></i>';
+    /* v297 动态字号：宿主量测月历网格实际宽高（window.__zusageSpdMonRect，渲染后
+     * 写回，缺省用 850 卡推导值），折算格宽/格高后按「速度文本长度分桶」计算
+     * 每桶最大可容纳字号（6~14px、0.5px 步进、宽高双约束）——同长度同字号，
+     * 不逐格 inline。6px 仍超宽的极端数值进紧凑格式（12.3k/1.23M，Hover 保完整）。
+     * 极矮行档（6 行月）压日期字号与 padding，但不隐藏速度数字（v297 废止隐藏）。 */
+    var mr = (typeof window !== "undefined" && window.__zusageSpdMonRect) || null;
+    var calW = (mr && mr.w > 40) ? mr.w : 530, calH = (mr && mr.h > 40) ? mr.h : 161;
+    var cellW = (calW - 6 * 8) / 7, cellH = (calH - (rows - 1) * 8) / rows;
+    var padY = cellH >= 30 ? 4 : (cellH >= 24 ? 3 : 2);
+    var padX = cellW >= 60 ? 6 : 4;
+    var dateFs = cellH >= 30 ? 10 : (cellH >= 24 ? 8 : 7);   /* 日期让高给速度（速度优先级更高） */
+    var availH = cellH - padY * 2 - dateFs * 1 - 1;
+    var availW = cellW - padX * 2;
+    var buckets = { f4: SPD_HM_FS_MAX, f5: SPD_HM_FS_MAX, f6: SPD_HM_FS_MIN };
+    var fsByLen = {};
+    var lenList = [4, 5, 6];
+    for (i = 0; i < lenList.length; i++) {
+      var L = lenList[i], fs = spdHmFitFs(new Array(L + 1).join("8"), availW, availH);
+      if (fs <= SPD_HM_FS_MIN && availW < L * SPD_HM_FS_MIN * SPD_HM_CHAR_W) {
+        var cTxt = spdCompactNum(L >= 6 ? 123456 : 12345);
+        var cFs = spdHmFitFs(cTxt, availW, availH);
+        buckets[L >= 6 ? "f6" : "f5"] = cFs;
+        fsByLen[L] = { compact: true, fs: cFs };
+        continue;
+      }
+      buckets[L >= 6 ? "f6" : (L >= 5 ? "f5" : "f4")] = fs;
+      fsByLen[L] = { fs: fs };
+    }
+    var dFs = Math.max(6, dateFs);
+    for (var dn = 1; dn <= nDays; dn++) {
+      var ds = new Date(y, mo, dn).getTime();
+      var it = byDay[ds] || null, bd = it ? tpsBand(it.v) : null;
+      var future = ds > todayStart, cur = days.length === hoverIdx ? " cur" : "";
+      var di = days.length;
+      days.push({ t: ds, item: it, state: future ? "future" : (it ? "data" : "void") });
+      if (future)
+        cells += '<div class="zu-hm-cell fut' + cur + '" aria-hidden="true" data-i="' + di + '"><span class="zu-hm-d">' + dn + "</span></div>";
+      else if (it) {
+        var txt = spdFmt1(it.v), L2 = txt.length;
+        if (fsByLen[L2] && fsByLen[L2].compact) { txt = spdCompactNum(it.v); L2 = txt.length; }
+        var cls = L2 >= 6 ? "len6" : (L2 >= 5 ? "len5" : "len4");
+        cells += '<div class="zu-hm-cell data ' + cls + (bd ? " " + bd.cls : "") + (ds === todayStart ? " zu-hm-today" : "") + cur +
+          '" role="img" tabindex="0" data-i="' + di + '" aria-label="' + spdEsc(spdCellAria(ds, it)) + '">' +
+          '<span class="zu-hm-d">' + dn + '</span><span class="zu-hm-v">' + spdEsc(txt) + "</span></div>";
+      } else
+        cells += '<div class="zu-hm-cell void' + (ds === todayStart ? " zu-hm-today" : "") + cur +
+          '" role="img" data-i="' + di + '" aria-label="' + spdEsc(spdCellAria(ds, null)) + '">' +
+          '<span class="zu-hm-d">' + dn + "</span></div>";
+    }
+    if (hoverIdx >= 0 && days[hoverIdx]) SPD_PORTAL = spdDayCardHTML(days[hoverIdx], o);
+    var gridStyle = '--zu-hm-rows:' + rows + ';--hm-df:' + dFs + 'px;--hm-f4:' + buckets.f4 + 'px;--hm-f5:' + buckets.f5 +
+      'px;--hm-f6:' + buckets.f6 + 'px;--hm-pady:' + padY + 'px;--hm-padx:' + padX + 'px';
+    return '<div class="zu-speed-chart zu-sv-chart zu-hm-month">' + spdChartHeadHTML(an, "") +
+      '<div class="zu-sc-wrap"><div class="zu-hm-cal"><div class="zu-hm-week">' + wk + "</div>" +
+      '<div class="zu-hm-grid zu-hm-grid--mon" style="' + gridStyle + '">' + cells + "</div></div></div></div>";
+  }
+  /* 全部历史热力图（GitHub Contributions 版式）：一列=一周、一行=固定星期，从左到右
+   * 最早→最新（最新在右）；颜色=当日均速档位（不是请求量/Token 量）。窗口=最早有效
+   * 日所在周 → 当前周（含今日，尾部空周如实显示覆盖空档）；窗口外格子=透明占位，
+   * 不计入统计。首开由宿主按 data-sv-end 滚到最右（§12.2 最新区域优先），横滚记忆
+   * 键（data-sv-key）不变。列数上限 1040（约 20 年）纯 DOM 护栏——轮表本身有界
+   * 6000 轮，跨窗截断已由 notice 显式披露。月标签按实际月份边界对齐（含新月那列），
+   * 相邻标签不足 2 列时跳过防重叠；跨年在 1 月标签带年份。日期逐格用 Date 构造器
+   * 推进（DST 安全，毫秒加法会把夏令时日的边界推出本地零点）。 */
+  function spdHistoryHeatmapHTML(an, hoverIdx, o) {
+    SPD_PORTAL = "";
+    var todayStart = spdBucket(Date.now(), "day");
+    var first = Infinity, lastData = 0, byDay = {};
+    for (var i = 0; i < an.items.length; i++) {
+      var it0 = an.items[i];
+      if (!it0.empty && it0.a) { byDay[it0.a] = it0; if (it0.a < first) first = it0.a; if (it0.a > lastData) lastData = it0.a; }
+    }
+    if (first === Infinity) return spdChartEmptyHTML(spdChartHeadHTML(an, ""));
+    /* v296（用户规格）：窗口=最近 365 天（today-364 → today，按周日起对齐补齐网格）；
+     * 窗口内没有数据的日=中性格（#484848），更早的历史不在本视图。窗口外格子=透明
+     * 星期对齐占位。 */
+    var winStart = todayStart - 364 * 86400000;
+    var winEnd = todayStart;
+    var WEEK = 7 * 86400000;
+    var w0 = spdDate(spdBucket(winStart, "week"));
+    var wy = w0.getFullYear(), wmo = w0.getMonth(), wd0 = w0.getDate();
+    /* 周数按周起点到周起点计算（窗口端点落在周内，直接相减会多算一周） */
+    var weeks = Math.round((spdBucket(winEnd, "week") - spdBucket(winStart, "week")) / WEEK) + 1;
+    /* DOM 护栏：>1040 周（约 20 年，现实库龄不可达——轮表本身有界 6000 轮）时右端
+     * 对齐结束月、只渲染最近 1040 周；这是纯渲染钳制，spanA/左卡统计仍覆盖全池，
+     * 与轮表 truncated 的 notice 披露是两回事 */
+    if (weeks > 1040) {
+      var w1 = spdDate(spdBucket(winEnd, "week"));
+      wy = w1.getFullYear(); wmo = w1.getMonth(); wd0 = w1.getDate() - 1039 * 7;
+      weeks = 1040;
+    }
+    var days = [], cells = "", labels = "", dayNums = "", lastMo = -1, lastLabCol = -9, dataN = 0;
+    for (var w = 0; w < weeks; w++) {
+      var cs = new Date(wy, wmo, wd0 + w * 7), ce = new Date(wy, wmo, wd0 + w * 7 + 6);
+      /* 月标签：首列必标；其后本列右端出现新月即在该列标（月份只前进不回退），
+       * 与上一标签间隔不足 2 列时跳过防文字重叠。端点按窗口钳制——首尾列可能
+       * 越出窗口（星期对齐），越界部分的月份不得参与标签（v292 复验抓过 9月/12月
+       * 幽灵标签） */
+      var m1 = new Date(Math.max(cs.getTime(), winStart)).getMonth(),
+          m2 = new Date(Math.min(ce.getTime(), winEnd)).getMonth();
+      var lab = lastMo < 0 ? m1 : (m2 !== lastMo ? m2 : -1);
+      if (lab >= 0 && w - lastLabCol >= 2) {
+        lastMo = lab; lastLabCol = w;
+        /* 年份取被标月份所在端点（同样经窗口钳制，防跨年首列取到越界周首的旧年） */
+        var ly = new Date(lab === m2 && m2 !== m1 ? Math.min(ce.getTime(), winEnd) : Math.max(cs.getTime(), winStart)).getFullYear();
+        labels += '<span class="zu-hm-ml" style="grid-column:' + (w + 1) + " / " + (w + 3 <= weeks ? "span 2" : "-1") + '">' +
+          spdEsc(SPD_L((lab === 0 ? ly + "年" : "") + (lab + 1) + "月",
+            lab === 0 ? SPD_MO_EN[lab] + " " + ly : SPD_MO_EN[lab])) + "</span>";
+      }
+      /* 列头日期数字（v293 设计图规格）：该列窗口内首日的日号 */
+      var colFirst = Math.max(cs.getTime(), winStart);
+      dayNums += '<span class="zu-hm-dn" style="grid-column:' + (w + 1) + ' / span 1">' +
+        spd2(spdDate(colFirst).getDate()) + "</span>";
+      for (var r = 0; r < 7; r++) {
+        var ds = new Date(wy, wmo, wd0 + w * 7 + r).getTime();
+        if (ds < winStart || ds > winEnd) { cells += '<i class="zu-hm-pad"></i>'; continue; }
+        var it = byDay[ds] || null, bd = it ? tpsBand(it.v) : null;
+        if (it) dataN++;
+        var di = days.length, cur = di === hoverIdx ? " cur" : "";
+        days.push({ t: ds, item: it, state: it ? "data" : "void" });
+        cells += it
+          ? '<div class="zu-hm-cell sq data' + (bd ? " " + bd.cls : "") + (ds === todayStart ? " zu-hm-today" : "") + cur +
+            '" role="img" tabindex="0" data-i="' + di + '" aria-label="' + spdEsc(spdCellAria(ds, it)) + '"></div>'
+          : '<div class="zu-hm-cell sq void' + (ds === todayStart ? " zu-hm-today" : "") + cur +
+            '" role="img" data-i="' + di + '" aria-label="' + spdEsc(spdCellAria(ds, null)) + '"></div>';
+      }
+    }
+    /* v296.1（用户规格）：覆盖统计不再单独成行，改随无数据格的悬停卡展示。
+     * 须先于 SPD_PORTAL 赋值计算（review 修复：原写在 Portal 之后，var 提升致
+     * 实参恒 undefined，覆盖统计静默退化为兜底文案）；分母以窗口起点与首数据日
+     * 的较晚者起算，与网格可视窗口同口径（首数据日早于 365 天窗口时不虚增天数）。 */
+    var totalDays = Math.round((todayStart - Math.max(first, winStart)) / 86400000) + 1;
+    var coverage = SPD_L("共 " + totalDays + " 天 · 其中 " + dataN + " 天有有效速度记录",
+      totalDays + " days in total · " + dataN + " with rated speed data");
+    if (hoverIdx >= 0 && days[hoverIdx]) SPD_PORTAL = spdDayCardHTML(days[hoverIdx], o, coverage);
+    var wd = "";
+    for (i = 0; i < 7; i++) wd += "<span>" + spdEsc(spdWdLabel(i)) + "</span>";
+    return '<div class="zu-speed-chart zu-sv-chart zu-hm-hist">' + spdChartHeadHTML(an, "") +
+      '<div class="zu-hm-outer"><div class="zu-hm-wds">' + wd + "</div>" +
+      '<div class="zu-sc-wrap" data-sv-end="1"><div class="zu-hm-scroll" style="--zu-hm-w:' + weeks + '">' +
+      '<div class="zu-hm-months" style="--zu-hm-w:' + weeks + '">' + labels + "</div>" +
+      '<div class="zu-hm-days" style="--zu-hm-w:' + weeks + '">' + dayNums + "</div>" +
+      '<div class="zu-hm-grid zu-hm-grid--hist" style="--zu-hm-w:' + weeks + '">' + cells + "</div></div></div></div>";
+  }
+  /* v291 图表分发（§3.1 切换规则）：本月=月历热力图、全部=历史热力图，
+   * 最近/今天/近 7 天保持原柱状图。 */
+  function spdChartFor(an, hoverIdx, o) {
+    if (an.period === "month") return spdMonthHeatmapHTML(an, hoverIdx, o);
+    if (an.period === "all") return spdHistoryHeatmapHTML(an, hoverIdx, o);
+    return spdChartHTML(an, hoverIdx, o);
   }
   /* SPD_V2_BLOCK_END */
   /* 思考态动效图标（用户提供的设计稿）：呼吸脑轮廓 + 流动信号 + 脉冲节点，纯 CSS

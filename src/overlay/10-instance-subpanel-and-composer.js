@@ -43,8 +43,10 @@
       }
       return n;
     }
-    function subPopKpi(k, v, u) {
-      return '<div class="zu-sp-kpi"><div class="k">' + k + '</div><div class="v">' + v + '</div>' +
+    /* v304：首参=KPI_ICON_PATHS 图标名（14px，与统计卡同表 kpiIco 单源）；k 为 raw HTML
+     * （缓存 N% 徽标随「输入」标签右侧，同四卡形态）；u=值下方辅助行（含思考等） */
+    function subPopKpi(icoName, k, v, u) {
+      return '<div class="zu-sp-kpi"><div class="k">' + (icoName ? kpiIco(icoName, 14) : "") + k + '</div><div class="v">' + v + '</div>' +
         (u ? '<div class="u">' + u + "</div>" : "") + "</div>";
     }
     function subPopKpis(a1, a2, a3, extraCls) {
@@ -71,43 +73,85 @@
     }
     function subPopSummaryHTML(sub) {
       var run = subPopRunningCount();
+      var items = subPopItems(sub);
       var costOk = !!(state.cost && sub && typeof sub.cost_usd === "number" && isFinite(sub.cost_usd));
       var sIn = (sub && sub.input) || 0, sHit = sIn > 0 ? Math.round(((sub && sub.cache_read) || 0) / sIn * 100) : -1;
       var sRea = (sub && sub.reasoning) || 0;
-      var k1 = subPopKpi(ttEsc(L("总用量", "Total tokens")), ttEsc(fmt((sub && sub.total) || 0)), "");
-      var k2 = subPopKpi(ttEsc(L("请求次数", "Requests")), ttEsc(countFmt((sub && sub.requests) || 0)), "");
-      var k3 = subPopKpi(ttEsc(L("预估费用", "Est. cost")) + fxqIcon(sub && sub.models, L("子代理累计", "the sub-agents")), costOk ? ttEsc(fmtMoney(sub.cost_usd)) : "—", "");
-      var u1 = subPopKpi(ttEsc(L("输入", "Input")), ttEsc(fmt(sIn)),
-        sHit >= 0 ? '<span class="hit">' + ttEsc(L("缓存命中率 ", "cache hit ") + sHit + "%") + '</span>' : "");
-      var u2 = subPopKpi(ttEsc(L("输出", "Output")), ttEsc(fmt((sub && sub.output) || 0)),
-        sRea > 0 ? ttEsc(L("含思考 ", "incl. ") + fmt(sRea)) : "");
-      var u3 = subPopKpi(ttEsc(L("缓存命中", "Cache read")), ttEsc(fmt((sub && sub.cache_read) || 0)), "");
+      /* v304 四行 KPI（同本轮/会话/今日/项目统计卡形态）：①总用量|输入(缓存 N% 徽标随
+       * 标签)|输出(含思考) ②请求次数|请求轮数|请求会话 ③平均耗时|平均延迟|总耗时
+       * ④平均输出速度(加权档色)|预估费用。轮数/耗时为 v304 zusage 子代理聚合，
+       * 旧快照缺字段按 typeof 降级显 —（不伪造 0）；请求会话=子会话去重数（list 长度）。 */
+      var r1 = subPopKpis(
+        subPopKpi("total", ttEsc(L("总用量", "Total tokens")), ttEsc(fmt((sub && sub.total) || 0)), ""),
+        subPopKpi("input", ttEsc(L("输入", "Input")) +
+          (sHit >= 0 ? '<span class="hit">' + ttEsc(L("缓存", "cache ") + sHit + "%") + '</span>' : ""),
+          ttEsc(fmt(sIn)), ""),
+        subPopKpi("output", ttEsc(L("输出", "Output")), ttEsc(fmt((sub && sub.output) || 0)),
+          sRea > 0 ? ttEsc(L("含思考 ", "incl. ") + fmt(sRea)) : ""));
+      var r2 = subPopKpis(
+        subPopKpi("requests", ttEsc(L("请求次数", "Requests")), ttEsc(countFmt((sub && sub.requests) || 0)), ""),
+        subPopKpi("turns", ttEsc(L("请求轮数", "Turns")),
+          (sub && typeof sub.turns === "number") ? ttEsc(countFmt(sub.turns)) : "—", ""),
+        subPopKpi("sessions", ttEsc(L("请求会话", "Sessions")), ttEsc(countFmt(items.length)), ""));
+      var r3 = (sub && (sub.avg_duration_ms > 0 || sub.avg_ttft_ms > 0 || sub.duration_ms > 0)
+        ? '<div class="zu-sp-kpis3 zu-sp-kpis3--mid">' +
+          (sub.avg_duration_ms > 0 ? subPopKpi("duration", ttEsc(L("平均耗时", "Avg time")), ttEsc(sec(sub.avg_duration_ms)), "") : "") +
+          (sub.avg_ttft_ms > 0 ? subPopKpi("latency", ttEsc(L("平均延迟", "Avg TTFT")), ttEsc(sec(sub.avg_ttft_ms)), "") : "") +
+          (sub.duration_ms > 0 ? subPopKpi("elapsed", ttEsc(L("总耗时", "Total time")), ttEsc(secLong(sub.duration_ms)), "") : "") +
+          '</div>' : "");
       var band = sub && sub.rate_avg > 0 ? tpsBand(sub.rate_avg) : null;
-      var rate = '<div class="zu-sp-rate">' + ttEsc(L("平均速率", "Average rate")) +
-        (band ? '<b class="' + band.cls + '">' + ttEsc(sub.rate_avg.toFixed(1)) + "</b>" + ttEsc(L(" t/s", " t/s"))
-              : "<b>—</b>") + "</div>";
+      var r4 = '<div class="zu-sp-kpis3 zu-sp-kpis3--duo">' +
+        subPopKpi("speed", ttEsc(L("平均输出速度", "Avg output rate")),
+          band ? '<b class="' + band.cls + '">' + ttEsc(sub.rate_avg.toFixed(1)) + '</b><small>' + ttEsc(L(" t/s", " t/s")) + '</small>' : "—", "") +
+        (costOk ? subPopKpi("cost", ttEsc(L("预估费用", "Est. cost")) + fxqIcon(sub && sub.models, L("子代理累计", "the sub-agents")), ttEsc(fmtMoney(sub.cost_usd)), "") : "") +
+        '</div>';
+      /* 汇总最近活动 = 各任务最后完成时间的最大值（v304 时间信息补齐） */
+      var lastAt = 0;
+      for (var i = 0; i < items.length; i++) {
+        var lv = (items[i].rec && items[i].rec.last) || 0;
+        if (lv > lastAt) lastAt = lv;
+      }
+      var meta = lastAt ? '<div class="zu-sp-meta"><span>' + ttEsc(L("最后活动", "Last active")) +
+        " <b>" + ttEsc(fmtStartS(lastAt)) + "</b></span></div>" : "";
       var models = subPopModelsHTML(sub && sub.models);
       return '<div class="zu-spview-head"><h3>' + ttEsc(L("汇总", "Summary")) + "</h3>" +
         '<span class="zu-spstate' + (run ? " run" : "") + '"><span class="dot"></span>' +
         ttEsc(run ? run + L(" 个子代理运行中", " sub-agent(s) running") : L("暂无运行中的子代理", "No running sub-agents")) +
         "</span></div>" +
-        subPopKpis(k1, k2, k3) + subPopKpis(u1, u2, u3, "zu-sp-usage") + rate + models;
+        r1 + r2 + r3 + r4 + models + meta;
     }
     function subPopDetailHTML(it1) {
       var r = it1.rec || {}, name = subPopNameOf(it1);
       var sub2 = String(r.agent || "subagent").replace(/^zcode-/, "") + " · …" + it1.sid.slice(-4);
       var band = r.tps_avg > 0 ? tpsBand(r.tps_avg) : null;
       var rIn = r.input || 0, rHit = rIn > 0 ? Math.round((r.cache_read || 0) / rIn * 100) : -1;
-      var k1 = subPopKpi(ttEsc(L("总消耗", "Total")), ttEsc(fmt(r.total || 0)), "");
-      var k2 = subPopKpi(ttEsc(L("请求次数", "Requests")), ttEsc(countFmt(r.requests || 0)), "");
-      var k3 = subPopKpi(ttEsc(L("平均速率", "Avg rate")),
-        band ? '<span class="' + band.cls + '">' + ttEsc(r.tps_avg.toFixed(1)) + '</span><small>t/s</small>' : "—", "");
-      var u1 = subPopKpi(ttEsc(L("输入", "Input")), ttEsc(fmt(rIn)),
-        rHit >= 0 ? '<span class="hit">' + ttEsc(L("缓存命中率 ", "cache hit ") + rHit + "%") + '</span>' : "");
-      var u2 = subPopKpi(ttEsc(L("输出", "Output")), ttEsc(fmt(r.output || 0)),
-        r.reasoning > 0 ? ttEsc(L("含思考 ", "incl. ") + fmt(r.reasoning)) : "");
-      var u3 = subPopKpi(ttEsc(L("缓存命中", "Cache read")), ttEsc(fmt(r.cache_read || 0)),
-        r.cache_write > 0 ? ttEsc(L("缓存写入 ", "cache write ") + fmt(r.cache_write)) : "");
+      var costOk = !!(state.cost && typeof r.cost_usd === "number" && isFinite(r.cost_usd));
+      /* v304 单任务四行同汇总（数据严格限本子会话 sid 聚合）：请求会话=该任务关联的
+       * 子会话数（list 按 sid 分组，本项身份即单会话，计 1 为分组真值非硬编码猜值）；
+       * 运行中未入库任务各值诚实 0/—，估算速率仅在 meta 的 subrate 槽位（「估 X t/s」）， */
+      var r1 = subPopKpis(
+        subPopKpi("total", ttEsc(L("总用量", "Total tokens")), ttEsc(fmt(r.total || 0)), ""),
+        subPopKpi("input", ttEsc(L("输入", "Input")) +
+          (rHit >= 0 ? '<span class="hit">' + ttEsc(L("缓存", "cache ") + rHit + "%") + '</span>' : ""),
+          ttEsc(fmt(rIn)), ""),
+        subPopKpi("output", ttEsc(L("输出", "Output")), ttEsc(fmt(r.output || 0)),
+          r.reasoning > 0 ? ttEsc(L("含思考 ", "incl. ") + fmt(r.reasoning)) : ""));
+      var r2 = subPopKpis(
+        subPopKpi("requests", ttEsc(L("请求次数", "Requests")), ttEsc(countFmt(r.requests || 0)), ""),
+        subPopKpi("turns", ttEsc(L("请求轮数", "Turns")),
+          typeof r.turns === "number" ? ttEsc(countFmt(r.turns)) : "—", ""),
+        subPopKpi("sessions", ttEsc(L("请求会话", "Sessions")), ttEsc(countFmt(1)), ""));
+      var r3 = ((r.avg_duration_ms > 0 || r.avg_ttft_ms > 0 || r.duration_ms > 0)
+        ? '<div class="zu-sp-kpis3 zu-sp-kpis3--mid">' +
+          (r.avg_duration_ms > 0 ? subPopKpi("duration", ttEsc(L("平均耗时", "Avg time")), ttEsc(sec(r.avg_duration_ms)), "") : "") +
+          (r.avg_ttft_ms > 0 ? subPopKpi("latency", ttEsc(L("平均延迟", "Avg TTFT")), ttEsc(sec(r.avg_ttft_ms)), "") : "") +
+          (r.duration_ms > 0 ? subPopKpi("elapsed", ttEsc(L("总耗时", "Total time")), ttEsc(secLong(r.duration_ms)), "") : "") +
+          '</div>' : "");
+      var r4 = '<div class="zu-sp-kpis3 zu-sp-kpis3--duo">' +
+        subPopKpi("speed", ttEsc(L("平均输出速度", "Avg output rate")),
+          band ? '<b class="' + band.cls + '">' + ttEsc(r.tps_avg.toFixed(1)) + '</b><small>' + ttEsc(L(" t/s", " t/s")) + '</small>' : "—", "") +
+        (costOk ? subPopKpi("cost", ttEsc(L("预估费用", "Est. cost")) + fxqIcon(r.models, L("本任务", "this task")), ttEsc(fmtMoney(r.cost_usd)), "") : "") +
+        '</div>';
       var meta = [];
       if (r.last) meta.push(L("最后活动", "Last active") + " <b>" + ttEsc(fmtStartS(r.last)) + "</b>");
       if (r.active || it1.rec === null) {
@@ -116,7 +160,7 @@
       }
       return '<div class="zu-spview-head"><h3 title="' + escAttr(name) + '">' + ttEsc(name) + "</h3>" +
         '<span class="zu-spsub">' + ttEsc(sub2) + "</span></div>" +
-        subPopKpis(k1, k2, k3) + subPopKpis(u1, u2, u3, "zu-sp-usage") +
+        r1 + r2 + r3 + r4 +
         subPopModelsHTML(r.models) +
         (meta.length ? '<div class="zu-sp-meta">' + meta.join("") + "</div>" : "");
     }
@@ -198,6 +242,7 @@
         if (nuE) subPopEntry = nuE;
       }
       buildSubPop(view.sub);
+      positionSubPop();   // v304：高度随内容自适应，数据推送后重算锚定
     }
     function subPopCancelHide() { if (subPopHideTimer) { clearTimeout(subPopHideTimer); subPopHideTimer = 0; } }
     function subPopScheduleHide() {
@@ -280,7 +325,7 @@
       var b = e.target && e.target.closest ? e.target.closest(".zu-spnav-item") : null;
       if (!b) return;
       var next = b.getAttribute("data-sid") || "";
-      if (next !== subPopSel) { subPopSel = next; buildSubPop(lastSub); }   // 原位切右栏，外壳不动
+      if (next !== subPopSel) { subPopSel = next; buildSubPop(lastSub); positionSubPop(); }   // 原位切右栏（v304 高度随内容变，切页重定位）
     });
 
     /* ---------- 输入框查找（穿透 open shadow / 同源 iframe） ---------- */
