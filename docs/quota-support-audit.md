@@ -64,7 +64,7 @@
 ## 尚未承诺全自动的边界
 
 - Z.ai Start Plan、CLIProxyAPI 管理协议、new-api 专用协议未在本轮新增，不能继续列入“已支持零配置”。
-- 配置型源（Anthropic/Cline/MiMo/火山/SCNet）的后台查询与“当前自定义 provider 自动映射到此源”是两回事；缺 detect/显式绑定者不能承诺随模型主显，详见矩阵。火山已补 Ark Agent Plan 的 detect 认领（官方域 + `/api/plan` 前缀）；Cline/MiMo/SCNet 仍无 detect，保持后台源。
+- 配置型源（Anthropic/Cline/MiMo/火山/SCNet）的后台查询与“当前自定义 provider 自动映射到此源”是两回事；缺 detect/显式绑定者不能承诺随模型主显，详见矩阵。火山已补 Ark Agent Plan 的 detect 认领（官方域 + `/api/plan` 前缀）；Anthropic（仅显式 opt-in）、Cline/MiMo/SCNet 仍无 detect，保持后台源。
 - 供应商 key/baseURL 在 provider 不变时的即时失效/冻结恢复仍需完善；本轮不把一次成功查询外推成所有账号切换都已实机验证。
 - Kimi PAYG 仍继承参考项目按金额猜分/元的启发式，低余额有单位误判风险，待明确厂商响应协议后修正；MiniMax weekly status=2 的参考实现存在分歧，不能无真实样本硬改。
 - OpenRouter 改用管理密钥是权限正确性修复，不是新增零配置支持；SiliconFlow 410 为明确不可用提示，不是已恢复端点。

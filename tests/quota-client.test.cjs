@@ -779,6 +779,9 @@ test("volcano: AFP probe empty falls back to CodingPlan; envelope error in HTTP 
   assert.equal(sv.windows.fiveHour.percent, 70);
   assert.equal(sv.windows.weekly.percent, 25);
   assert.equal(sv.windows.monthly.percent, 10);
+  assert.equal(sv.plan.productName, "Coding Plan");
+  assert.equal(sv.label, "火山方舟");
+  assert.equal(sv.kind, "plan");
   // HTTP 200 带错误信封（签名错）：auth_failed
   const b = adapterClient({ secrets: { sources: { volcano: { enabled: true, accessKeyId: "ak", secretAccessKey: "sk" } } } });
   b.client.noteProvider("y");
@@ -814,6 +817,10 @@ test("volcano: Ark Agent Plan custom provider claimed as composite primary sourc
   assert.equal(v.active, "volcano:volcengine-agent-plan");
   assert.ok(!("volcano" in v.sources), "vendorCovered: 复合源在集时裸 volcano 源不重复激活（同一 AK/SK 不双请求）");
   assert.equal(calls.length, 1, "只发 AFP 探测一次（非空即返）");
+  client.setProviders(["volcengine-agent-plan"]);
+  client.tick();
+  assert.equal(calls.length, 1, "detect ctx 必须稳定：setProviders 泵同步重判后不换代重发（ctx 掺随机字段的变异曾致每次同步 epoch+1、清值重发）");
+  assert.equal(client.view().sources["volcano:volcengine-agent-plan"].status, "ok", "窗口值保留");
 });
 
 test("volcano: usage-based /api/v3 baseUrl and spoofed host fall back to custom relay probing", async () => {
@@ -827,6 +834,11 @@ test("volcano: usage-based /api/v3 baseUrl and spoofed host fall back to custom 
   spoof.client.tick();
   assert.ok(spoof.calls[0].url.indexOf("https://ark.cn-beijing.volces.com.evil.example/") === 0,
     "官方域须精确匹配，伪装子域不认领");
+  const sibling = adapterClient({ cfgEntries: [["p2", "https://ark.cn-beijing.volces.com/api/planx", ""]] });
+  sibling.client.noteProvider("p2");
+  sibling.client.tick();
+  assert.ok(sibling.calls[0].url.indexOf("https://ark.cn-beijing.volces.com/api/planx/") === 0,
+    "/api/planx 兄弟路径不认领（路径前缀判定不得用裸 indexOf）");
 });
 
 test("volcano: composite id honors explicit enabled=false (disabled) and missing creds (not_configured, no request)", () => {
