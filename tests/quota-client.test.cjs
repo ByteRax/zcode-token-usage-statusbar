@@ -788,6 +788,65 @@ test("volcano: AFP probe empty falls back to CodingPlan; envelope error in HTTP 
   assert.equal(b.client.view().sources.volcano.status, "auth_failed");
 });
 
+/* ---------- issue #261: volcano detect 认领 Ark Agent Plan 自定义供应商为主显源 ---------- */
+
+const ARK_PLAN_BASEURL = "https://ark.cn-beijing.volces.com/api/plan/v3";
+
+test("volcano: Ark Agent Plan custom provider claimed as composite primary source", async () => {
+  const { client, calls } = adapterClient({
+    cfgEntries: [["volcengine-agent-plan", ARK_PLAN_BASEURL, ""]],
+    secrets: { sources: { volcano: { enabled: true, accessKeyId: "ak", secretAccessKey: "sk" } } },
+  });
+  client.noteProvider("volcengine-agent-plan");
+  client.tick();
+  assert.ok(calls[0].url.indexOf("https://open.volcengineapi.com/?") === 0,
+    "primary 解析为 volcano 复合源，直接走官方端点而非 ark 域 relay 探测");
+  calls[0].d.resolve(fakeRes(200, JSON.stringify({ Result: { AFPFiveHour: { Quota: 400, Used: 48, ResetTime: 1793176110955 } } })));
+  await flush();
+  const v = client.view();
+  const sv = v.sources["volcano:volcengine-agent-plan"];
+  assert.ok(sv, "rememberProvider 生成复合源 id");
+  assert.equal(sv.status, "ok");
+  assert.equal(sv.label, "火山方舟");
+  assert.equal(sv.kind, "plan");
+  assert.equal(sv.plan.productName, "Agent Plan");
+  assert.equal(sv.windows.fiveHour.percent, 12);
+  assert.equal(v.active, "volcano:volcengine-agent-plan");
+  assert.ok(!("volcano" in v.sources), "vendorCovered: 复合源在集时裸 volcano 源不重复激活（同一 AK/SK 不双请求）");
+  assert.equal(calls.length, 1, "只发 AFP 探测一次（非空即返）");
+});
+
+test("volcano: usage-based /api/v3 baseUrl and spoofed host fall back to custom relay probing", async () => {
+  const usage = adapterClient({ cfgEntries: [["p1", "https://ark.cn-beijing.volces.com/api/v3", ""]] });
+  usage.client.noteProvider("p1");
+  usage.client.tick();
+  assert.ok(usage.calls[0].url.indexOf("https://ark.cn-beijing.volces.com/api/v3/") === 0,
+    "按量版无套餐查询语义，不认领，仍落 custom relay 探测");
+  const spoof = adapterClient({ cfgEntries: [["p1", "https://ark.cn-beijing.volces.com.evil.example/api/plan/v3", ""]] });
+  spoof.client.noteProvider("p1");
+  spoof.client.tick();
+  assert.ok(spoof.calls[0].url.indexOf("https://ark.cn-beijing.volces.com.evil.example/") === 0,
+    "官方域须精确匹配，伪装子域不认领");
+});
+
+test("volcano: composite id honors explicit enabled=false (disabled) and missing creds (not_configured, no request)", () => {
+  const off = adapterClient({
+    cfgEntries: [["volcengine-agent-plan", ARK_PLAN_BASEURL, ""]],
+    secrets: { sources: { volcano: { enabled: false, accessKeyId: "ak", secretAccessKey: "sk" } } },
+  });
+  off.client.noteProvider("volcengine-agent-plan");
+  off.client.tick();
+  assert.equal(off.client.view().sources["volcano:volcengine-agent-plan"].status, "disabled",
+    "⚙ 显式关闭归 disabled 隐藏 chip，不误报「暂不支持」");
+  assert.ok(!off.calls.length, "关闭源不联网");
+  const nocred = adapterClient({ cfgEntries: [["volcengine-agent-plan", ARK_PLAN_BASEURL, ""]] });
+  nocred.client.noteProvider("volcengine-agent-plan");
+  nocred.client.tick();
+  assert.equal(nocred.client.view().sources["volcano:volcengine-agent-plan"].status, "not_configured",
+    "无 AK/SK 归本源报未配置（引导去 ⚙），不落 custom 报 unsupported");
+  assert.ok(!nocred.calls.length, "无凭据不发请求");
+});
+
 test("scnet: extras-driven ledger; missing extras soft-hides", async () => {
   const { client, calls } = adapterClient({ secrets: { sources: { scnet: { enabled: true, planCredits: 240000 } } } });
   client.noteProvider("x");

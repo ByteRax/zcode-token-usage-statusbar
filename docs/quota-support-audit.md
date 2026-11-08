@@ -29,7 +29,7 @@
 | SiliconFlow | 官方用户余额适配 | env / secrets / 官方域供应商 key；国内外域须保持对应 | 夹具验证，非真账号；分域及 `totalBalance` 选择列入本轮修复，不能以赠额等单项冒充总余额 |
 | OpenRouter | `/api/v1/credits` 账户余额适配 | **需 management key，不是普通推理 key**；使用 `OPENROUTER_MANAGEMENT_KEY` 或设置中的 Management Key，不自动将推理 key 发往 `/credits` | 夹具验证，非真账号；缺 `total_usage` 不得当 0；本轮修复严格检查响应完整性 |
 | 小米 MiMo | 控制台套餐/余额协议适配 | **控制台 Cookie**，需 `userId` + `serviceToken`；env / secrets；**不是自动读取推理 API key** | 源码转写、夹具验证；Cookie 有效性、控制台协议与展示待真账号校准 |
-| 火山 | 签名查询，双用量接口探测 | **AK/SK**，env / secrets，须具备对应查询权限；**不是自动读取推理 API key** | 源码转写、夹具验证；签名和 HTTP 200 错误信封均需校验；尚无真账号保证 |
+| 火山 | 签名查询，双用量接口探测；baseUrl 为官方域 `ark.cn-beijing.volces.com` 且路径以 `/api/plan` 开头的自定义供应商随模型主显（`/api/v3` 按量版与伪装域不认领） | **AK/SK**，env / secrets，须具备对应查询权限；**不是自动读取推理 API key** | 源码转写、夹具验证；签名和 HTTP 200 错误信封均需校验；尚无真账号保证 |
 | SCNet | 本地账本估算 / 外部快照输入 | 不要求在线凭据；需套餐 Credits、周期、模型映射等估算配置 | **不是官方在线额度接口**；抵扣表及本地记录覆盖影响准确性，展示必须标识估算 |
 | sub2api | **本轮新增**：同源 `/v1/usage`，识别 key 用量/余额及订阅窗口 | 配置中转地址及其推理 key；不索取后台管理 key | 当前 BX-GPT 真站查询及最终运行文件的 createQuotaClient 全链均返回 status=ok、kind=plan、日/周/月 USD 窗口；remaining 不作为钱包余额 |
 | OpenCode Go | **本轮新增**：`https://opencode.ai/zen/go/v1/usage` 三窗口（rolling→5 小时/weekly→周/monthly→月），仅百分比无金额 | env `OPENCODE_API_KEY` / secrets `sources.opencode.apiKey` / 自定义供应商 baseUrl host 为 opencode.ai 且路径以 `/zen/go` 开头（两档命中；`/zen/v1` 按量版无用量 API，刻意不命中） | 源码转写（cc-switch，MIT）、夹具验证，非真账号；403=key 有效但无 Go 订阅（no_plan）、401=auth_failed |
@@ -64,7 +64,7 @@
 ## 尚未承诺全自动的边界
 
 - Z.ai Start Plan、CLIProxyAPI 管理协议、new-api 专用协议未在本轮新增，不能继续列入“已支持零配置”。
-- 配置型源（Anthropic/Cline/MiMo/火山/SCNet）的后台查询与“当前自定义 provider 自动映射到此源”是两回事；缺 detect/显式绑定者不能承诺随模型主显，详见矩阵。
+- 配置型源（Anthropic/Cline/MiMo/火山/SCNet）的后台查询与“当前自定义 provider 自动映射到此源”是两回事；缺 detect/显式绑定者不能承诺随模型主显，详见矩阵。火山已补 Ark Agent Plan 的 detect 认领（官方域 + `/api/plan` 前缀）；Cline/MiMo/SCNet 仍无 detect，保持后台源。
 - 供应商 key/baseURL 在 provider 不变时的即时失效/冻结恢复仍需完善；本轮不把一次成功查询外推成所有账号切换都已实机验证。
 - Kimi PAYG 仍继承参考项目按金额猜分/元的启发式，低余额有单位误判风险，待明确厂商响应协议后修正；MiniMax weekly status=2 的参考实现存在分歧，不能无真实样本硬改。
 - OpenRouter 改用管理密钥是权限正确性修复，不是新增零配置支持；SiliconFlow 410 为明确不可用提示，不是已恢复端点。
