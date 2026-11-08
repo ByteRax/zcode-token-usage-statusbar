@@ -294,20 +294,40 @@
         ".zusage-quota-tip .qt-cur{color:var(--color-tooltip-foreground,#fafafa);font-weight:600}" +
         ".zusage-quota-tip .qt-warn{color:#f5b944}" +
         '.zusage-quota-tip .qt-note{margin-top:8px;padding-top:7px;border-top:1px solid var(--color-popover-border,var(--color-border,transparent));color:var(--color-tooltip-tag-foreground,#a6a6a6);overflow-wrap:anywhere}</style>';
+    var rem = state.quotaRemain === 1;   // v251 显示口径跟随 ⚙「显示剩余额度」：剩余% 打头（与 chip 面同口径）
+    /* 其余启用源的摘要：主源分支与 info 分支共用——主源不可展示（未配置/不支持）时，
+     * 后台源（如火山方舟 AK/SK）可能已查询成功，不应被 info 提前 return 吞掉（issue #261）。 */
+    var otherSourcesRow = function () {
+      if (!d.all || !d.all.sources || typeof d.all.sources !== "object") return "";
+      var others = [];
+      for (var sid in d.all.sources) {
+        if (!Object.prototype.hasOwnProperty.call(d.all.sources, sid) || sid === d.all.active) continue;
+        var sv = d.all.sources[sid];
+        if (!sv || sv.status !== "ok") continue;
+        var sum = sv.balance && typeof sv.balance.amount === "number" ? quotaBalanceText(sv.balance)
+          : (sv.windows ? ["plan", "fiveHour", "weekly", "monthly"].map(function (k) {
+              return sv.windows[k] && typeof sv.windows[k].percent === "number"
+                ? Math.round(rem ? quotaRemainPct(sv.windows[k].percent) : sv.windows[k].percent) + "%" : null;
+            }).filter(Boolean).join(" ") : "✓");
+        /* 复合源 id（vendor:providerId）在 srcLabels 里只有裸厂商键，回退拆分查找 */
+        var lbl = (d.srcLabels && (d.srcLabels[sid] || d.srcLabels[String(sid).split(":")[0]])) || sid;
+        others.push(esc(lbl) + " " + sum);
+      }
+      return others.length ? row(L("其他源", "Other sources"), others.join(" · ")) : "";
+    };
     if (d.mode.kind === "team") {
       return css + '<div class="qt-h">⊘ ' + L("团队套餐额度", "Team plan quota") + "</div>" +
         '<div class="qt-note">' + L("团队套餐需要组织/项目维度的查询，当前版本暂不支持；个人编码套餐已支持。", "Team plans need organization/project-scoped queries, which this version does not support yet; individual coding plans are supported.") + "</div>";
     }
     if (d.mode.kind === "info") {   // v111：未配置/暂不支持的中性说明（无数据可列，只给引导）
       var q0 = d.q || {};
-      return css + '<div class="qt-h">' + L("套餐额度", "Plan quota") + "</div>" +
+      return css + '<div class="qt-h">' + L("套餐额度", "Plan quota") + "</div>" + otherSourcesRow() +
         '<div class="qt-note">' + (q0.status === "not_configured"
           ? L("未找到可用的登录凭据或 API Key；在 ⚙ 面板的额度源里配置后自动显示。", "No usable sign-in credentials or API key found; configure a quota source in the ⚙ panel and the chip fills in.")
           : L("该数据源的额度/余额形状暂不支持查询。", "This source's quota or balance shape is not supported yet.")) + "</div>";
     }
     var q = d.q || {};
     var isBalance = d.mode.kind === "balance";
-    var rem = state.quotaRemain === 1;   // v251 显示口径跟随 ⚙「显示剩余额度」：剩余% 打头（与 chip 面同口径）
     var title = isBalance ? L("账户余额", "Account balance") : L("套餐额度", "Plan quota");
     /* 标题：有订阅元数据（productName/version/valid）时拼成一行；缺失回退 family+档位 */
     var pl = q.plan;
@@ -356,21 +376,7 @@
       }
       out += row(L("余额", "Balance"), balTxt);
     }
-    if (d.all && d.all.sources && typeof d.all.sources === "object") {   // 其余启用源的摘要（tooltip 分家列全）
-      var others = [];
-      for (var sid in d.all.sources) {
-        if (!Object.prototype.hasOwnProperty.call(d.all.sources, sid) || sid === d.all.active) continue;
-        var sv = d.all.sources[sid];
-        if (!sv || sv.status !== "ok") continue;
-        var sum = sv.balance && typeof sv.balance.amount === "number" ? quotaBalanceText(sv.balance)
-          : (sv.windows ? ["plan", "fiveHour", "weekly", "monthly"].map(function (k) {
-              return sv.windows[k] && typeof sv.windows[k].percent === "number"
-                ? Math.round(rem ? quotaRemainPct(sv.windows[k].percent) : sv.windows[k].percent) + "%" : null;
-            }).filter(Boolean).join(" ") : "✓");
-        others.push(esc(d.srcLabels && d.srcLabels[sid] || sid) + " " + sum);
-      }
-      if (others.length) out += row(L("其他源", "Other sources"), others.join(" · "));
-    }
+    out += otherSourcesRow();   // 其余启用源的摘要（tooltip 分家列全）
     if (q.tools && (q.tools.total != null || q.tools.used != null)) {
       var tr = qTime(q.tools.resetsAt);
       out += row(L("内置工具", "Built-in tools"), (q.tools.used == null ? "—" : q.tools.used) + " / " + (q.tools.total == null ? "—" : q.tools.total) +

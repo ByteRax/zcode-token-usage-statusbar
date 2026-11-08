@@ -970,3 +970,32 @@ test('v286: chart title bar — weight 600 title, t/s badge, speed-bands SVG ent
   // V1 旧图共享类不受影响：.zu-sc-title 基础规则仍为 700/+1
   assert.match(source, /"\.zu-sc-title\{font-weight:700;font-size:calc\(var\(--ui-font-size,14px\) \+ 1px\)/);
 });
+
+test('local scoped rows carrying workspace_identity are not remote: "all" stays selectable (v287)', () => {
+  const ctx = makeCtx(); ctx.__h = fixture();
+  // 本地 scoped 行形状：zusage 快照对本地行也写 workspace_identity（不带 remote 标）。
+  // 修复前判定 `sess.workspace_identity || sess.remote` 把它当远端——选「全部」被静默降级
+  // 为本会话并显「远端会话仅显示本会话历史」虚假提示。
+  ctx.__sess = { sid: 'sess_main', workspace_identity: '/Users/x/work/proj-a' };
+  const sel = { range: 'all', period: 'all', dim: 'time', sid: 'sess_main' };
+  ctx.__sel = sel;
+  ctx.__o = { fmtTok: String, fmtCnt: String, fmtMoney: u => '¥' + u.toFixed(2) };
+  const rebuild = vm.runInContext('spdRebuildOr(__h, __sel, -1, null, __o, __sess)', ctx);
+  ctx.__rb = rebuild;
+  const html = vm.runInContext('__rb(-1, __sel)', ctx);
+  // 注意锚定 range 组：period（时间）组也有 data-sv-val="all" 按钮，裸匹配会假通过/假失败
+  assert.match(html, /data-sv-group="range" data-sv-val="all" aria-pressed="true"/,
+    '"all" stays selected for local scoped rows');
+  assert.doesNotMatch(html, /远端会话仅显示本会话历史|Remote pane: local session history only/,
+    'no false remote notice for local scoped rows');
+  // 真 remote 标仍降级：契约不因修复而放松
+  ctx.__sess2 = { sid: 'sess_main', workspace_identity: 'remote:h1/a', remote: true };
+  const rebuildRemote = vm.runInContext('spdRebuildOr(__h, __sel, -1, null, __o, __sess2)', ctx);
+  ctx.__rb2 = rebuildRemote;
+  const htmlRemote = vm.runInContext('__rb2(-1, { range: "all", period: "all", dim: "time", sid: "sess_main" })', ctx);
+  assert.match(htmlRemote, /data-sv-group="range" data-sv-val="all" aria-pressed="false"/,
+    'remote pane still downgrades from "all"');
+  assert.match(htmlRemote, /data-sv-group="range" data-sv-val="session" aria-pressed="true"/,
+    'remote pane falls back to session range');
+  assert.match(htmlRemote, /远端会话仅显示本会话历史/, 'remote pane keeps the downgrade notice');
+});

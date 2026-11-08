@@ -223,7 +223,21 @@ async function volcCall(http, host, action, region, ak, sk) {
 ADAPTERS.push({
   id: "volcano", label: "火山方舟", kind: "plan", defaultOn: false, unverified: true,
   envKeys: ["VOLCENGINE_ACCESS_KEY_ID", "VOLCENGINE_SECRET_ACCESS_KEY"],
-  detect() { return null; },
+  /* Ark Agent Plan 自定义供应商认领（issue #261）：官方域 + /api/plan 前缀才命中（/api/v3
+   * 按量版无套餐查询语义，不认领）。只解析 provider baseUrl，不查凭据、不发请求——无 AK/SK
+   * 时归本源报 not_configured（chip 引导去 ⚙ 配置），比落 custom 报 unsupported 更可操作；
+   * ⚙ 显式 enabled=false 时复合源报 disabled 隐藏 chip（尊重显式关闭）。 */
+  detect(j, providerId) {
+    if (providerId.indexOf("account:") === 0) return null;
+    const cp = j.customProviderOf(providerId);
+    if (!cp) return null;
+    let u = null;
+    try { u = new URL(cp.baseUrl); } catch (e) { return null; }
+    if (u.protocol !== "https:" || u.hostname.toLowerCase() !== "ark.cn-beijing.volces.com") return null;
+    const p = u.pathname.toLowerCase().replace(/\/+$/, "");
+    if (p !== "/api/plan" && !p.startsWith("/api/plan/")) return null;
+    return { config: true, family: "volcano" };
+  },
   resolveCred(j) {
     const sec = (j.secrets.sources || {}).volcano || {};
     const ak = j.env.VOLCENGINE_ACCESS_KEY_ID || sec.accessKeyId || sec.ak;
@@ -254,7 +268,7 @@ ADAPTERS.push({
         }
       }
     }
-    if (Object.keys(windows).length) return { windows, planName: tag };
+    if (Object.keys(windows).length) return { label: "火山方舟", kind: "plan", plan: { productName: tag }, windows, planName: tag };
     const cp = await volcCall(j.http, host, "GetCodingPlanUsage", region, cred.ak, cred.sk);
     const arr = (cp && cp.Result && (cp.Result.QuotaUsage || cp.Result.Usages || cp.Result.Details)) || [];
     for (const e of arr) {
@@ -269,7 +283,7 @@ ADAPTERS.push({
       windows[name] = { percent: Math.round(clampPct(pct) * 10) / 10, resetsAt: resetOf(e.ResetTime != null ? e.ResetTime : e.ResetTimestamp) };
     }
     if (!Object.keys(windows).length) throw qErr("parse_error", "volcano empty");
-    return { windows };
+    return { label: "火山方舟", kind: "plan", plan: { productName: "Coding Plan" }, windows };
   },
 });
 

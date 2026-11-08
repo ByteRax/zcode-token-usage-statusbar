@@ -224,5 +224,53 @@ class ReleaseLedgerTests(unittest.TestCase):
                 self.assertEqual(result.stderr, "", result.stderr)
 
 
+class SyncPluginManifestFlagTests(unittest.TestCase):
+    """--verify-manifests 曾是幽灵旗标：脚本不识别时未知参数静默走写入同步路径，
+    期待只读校验的维护者会被无提示覆盖根产物/插件副本（review 事后发现的 MAJOR）。"""
+
+    @staticmethod
+    def _load_sync_plugin():
+        spec = importlib.util.spec_from_file_location("sync_plugin_under_test", ROOT / "sync_plugin.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_verify_manifests_is_read_only_and_green_on_clean_tree(self):
+        import contextlib
+        import io
+        mod = self._load_sync_plugin()
+        watched = [ROOT / "overlay.js", ROOT / "zusage.py", PLUGIN / "overlay.js", PLUGIN / "zusage.py"]
+        before = {p: p.read_bytes() for p in watched}
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = mod.main(verify_manifests=True)
+        self.assertEqual(rc, 0, buf.getvalue())
+        self.assertIn("6 处分发清单一致", buf.getvalue())
+        self.assertNotIn("已同步", buf.getvalue(), "verify mode must not copy plugin copies")
+        for p in watched:
+            self.assertEqual(p.read_bytes(), before[p], f"verify mode must not rewrite {p.name}")
+
+    def test_verify_manifests_reports_drift_as_failure(self):
+        import contextlib
+        import io
+        from unittest import mock
+        mod = self._load_sync_plugin()
+        buf = io.StringIO()
+        with mock.patch.object(mod, "check_manifests", return_value=["fake: drift"]):
+            with contextlib.redirect_stdout(buf):
+                rc = mod.main(verify_manifests=True)
+        self.assertEqual(rc, 1, buf.getvalue())
+        self.assertIn("清单漂移", buf.getvalue())
+
+    def test_unknown_flag_is_refused_instead_of_silent_sync(self):
+        result = subprocess.run(
+            [sys.executable, "-B", str(ROOT / "sync_plugin.py"), "--verify-manifest-typo"],
+            capture_output=True, text=True, cwd=ROOT,
+        )
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("未知参数", result.stderr)
+        self.assertIn("--verify-manifests", result.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

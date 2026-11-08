@@ -209,6 +209,54 @@ test('display gates: toggle off, unknown provider (new session), custom provider
   assert.equal(h.chipOf(ui.wrap), undefined, 'disabled (source explicitly off in ⚙) → hidden');
 });
 
+test('issue #261: info-mode tooltip still lists other ok sources; composite source id falls back to vendor label', () => {
+  const h = harness({ prefs: { 'zusage3.quotaRemain': '1' } }), ui = h.buildComposer('workspace-main', 'sid_main');
+  h.inject(); h.boot(); h.tick();
+  h.window.__zusagePluginUpdate({ quotaEnabled: true, quotaSources: [
+    { id: 'volcano', label: '火山方舟', kind: 'plan', enabled: true, unverified: true,
+      credentialFields: ['accessKeyId', 'secretAccessKey'], keyConfigured: true, status: 'ok' },
+  ] });
+  /* 主显 custom 源 unsupported（Ark Agent Plan 端点不在 sub2api/legacy 协议内），
+   * 后台 volcano 复合源已查询成功：info tooltip 不得吞掉它 */
+  const quota = { active: 'custom:volcengine-agent-plan', byProvider: { 'volcengine-agent-plan': 'custom:volcengine-agent-plan' },
+    sources: {
+      'custom:volcengine-agent-plan': { status: 'unsupported', reason: 'provider', fetchedAt: 0, stale: false, error: '' },
+      'volcano:volcengine-agent-plan': { status: 'ok', label: '火山方舟', kind: 'plan', fetchedAt: NOW, stale: false,
+        windows: { fiveHour: { percent: 12, resetsAt: null }, weekly: { percent: 25, resetsAt: null }, monthly: { percent: 10, resetsAt: null } } },
+      'account:deepseek': { status: 'auth_failed', fetchedAt: NOW, stale: false, error: 'bad key' },
+    } };
+  h.window.__zusageUpdate(h.payload({ provider: 'volcengine-agent-plan', quota }));
+  const chip = h.chipOf(ui.wrap);
+  assert.ok(chip, 'unsupported primary → info chip');
+  assert.match(chip.innerHTML, /额度 暂不支持/);
+  chip.listeners.get('mouseenter')[0].call(chip);
+  const html = h.tipEl().innerHTML;
+  assert.match(html, /该数据源的额度\/余额形状暂不支持查询/);
+  assert.match(html, /其他源<\/b><span>火山方舟 88% 75% 90%<\/span>/,
+    'info 分支列出后台 ok 源；剩余口径（quotaRemain）传导到 info 分支的 helper（rem 声明曾位于 info 分支之后的变异在此转红）；srcLabels 只有裸厂商键，复合源 id 回退裸厂商名');
+  assert.doesNotMatch(html, /account:deepseek/, '非 ok 源不进「其他源」（失败源标 ✓ 曾误导）');
+});
+
+test('issue #261: value-mode tooltip keeps the other-sources row intact after helper extraction', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  h.inject(); h.boot(); h.tick();
+  h.window.__zusagePluginUpdate({ quotaEnabled: true, quotaSources: [
+    { id: 'volcano', label: '火山方舟', kind: 'plan', enabled: true, unverified: true,
+      credentialFields: ['accessKeyId', 'secretAccessKey'], keyConfigured: true, status: 'ok' },
+  ] });
+  const quota = { active: 'custom:gw', byProvider: { gw: 'custom:gw' }, sources: {
+    'custom:gw': { status: 'ok', label: 'sub2api', kind: 'plan', fetchedAt: NOW, stale: false,
+      windows: { fiveHour: { percent: 33, resetsAt: null } } },
+    'volcano:volcengine-agent-plan': { status: 'ok', label: '火山方舟', kind: 'plan', fetchedAt: NOW, stale: false,
+      windows: { fiveHour: { percent: 12, resetsAt: null }, monthly: { percent: 10, resetsAt: null } } } } };
+  h.window.__zusageUpdate(h.payload({ provider: 'gw', quota }));
+  const chip = h.chipOf(ui.wrap);
+  chip.listeners.get('mouseenter')[0].call(chip);
+  const html = h.tipEl().innerHTML;
+  assert.match(html, /其他源<\/b><span>火山方舟 12% 10%<\/span>/);
+  assert.doesNotMatch(html, /custom:gw/, '本 pane 自己的源不进「其他源」');
+});
+
 test('v111 default-on: chip shows when the initial plugin state lacks quotaEnabled', () => {
   const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
   h.window.__zusagePluginState = {};   // 初始无该字段（主进程首推未到/字段缺省）：缺省开方向

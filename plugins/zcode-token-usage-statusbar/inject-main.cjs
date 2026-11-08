@@ -1130,6 +1130,8 @@ for (const name of HOT_MAIN_MODULES) {
 let hotMainBusy = false;
 function hotReloadMainModules() {
   if (hotMainBusy) return Promise.resolve(false);   // 与在途热替换/销账互斥：顺延下一 tick
+  if (readCfgCached().hot_reload === false) return Promise.resolve(false);
+  // 显式关闭热重载时一律回退为重启生效：mtime 轮询与更新链 onRuntimeSynced 两条路径都必须被门挡住
   hotMainBusy = true;
   let done;
   const finished = new Promise((resolve) => { done = resolve; });

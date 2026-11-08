@@ -211,6 +211,7 @@ test('四格 tooltip 显示 ¥ 费用行、模型明细费用与可点来源脚�
   // 会话累计（tips[1]，v215 卡）：KPI 费用 + 模型表格行费用
   assert.match(tips[1], /zu-stat-tip--session/);
   assert.match(tips[1], /预估费用<svg class="tip-fxq"[^]*?zu-stat-v">¥7\.10<\/div>/);
+  assert.match(tips[1], /<thead><tr><th>模型<\/th><th>Token 用量 ↓<\/th><th>请求次数<\/th><th>预估费用<\/th><\/tr><\/thead>/);
   assert.match(tips[1], /<td class="zu-pj-mname" title="GLM-5\.3">GLM-5\.3<\/td><td>1000<\/td><td>3<\/td><td>¥2\.84<\/td>/);
   assert.match(tips[1], /<td class="zu-pj-mname" title="claude-opus-5-5">claude-opus-5-5<\/td><td>2000<\/td><td>1<\/td><td>¥4\.26<\/td>/);
   // 今日合计（tips[2]，v301 三行 KPI 卡）：输入列缓存副行 + 费用 KPI + 模型明细表格（v253）
