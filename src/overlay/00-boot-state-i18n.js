@@ -12,8 +12,9 @@
  * 主题（v58）：配色全量跟随客户端主题 —— 颜色一律 var(--color-*, 兜底值) 引用客户端语义
  *       变量（<html> 的 .dark 类翻转整套值，zai-light/zai-dark 特殊主题同样适配），
  *       MutationObserver 观察该类同步 .zu-light（仅剩阴影/光晕程度性差异）。
- * 字体（v64）：字族/字号跟随客户端 —— font-family 一律 var(--font-mono, 旧硬编码栈兜底)
- *       （客户端 ：root 上的等宽令牌，macOS 解析为 SF Mono，含中文回退）；字号一律
+ * 字体（v64 定 mono；v315 起条/chip/tooltip 切 var(--font-sans, 旧硬编码栈兜底)，⚙ 设置
+ *       域仍 mono）：字族/字号跟随客户端（macOS sans 解析为 SF Pro+苹方，mono 解析为
+ *       SF Mono，均含中文回退）；字号一律
  *       var(--ui-font-size, 14px) 按应用 text-ui 档位加减偏移（设置页「界面字号」
  *       运行时写 <html> 内联 --ui-font-size，改动实时联动），不再硬编码 px。
  * 数据：主进程泵推 window.__zusageUpdate；显示项可在 ⚙ 面板配置（localStorage 持久化）。

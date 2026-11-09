@@ -187,7 +187,7 @@
   rateTip.style.cssText =
     "position:fixed;display:none;background:var(--color-tooltip,#171717);" +
     "border:1px solid var(--color-border,transparent);border-radius:10px;padding:10px 14px;" +
-    "font-family:var(--font-mono,Consolas,'Microsoft YaHei UI',monospace);" +
+    "font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);" +
     "font-size:calc(var(--ui-font-size,14px) - 1px);line-height:1.55;color:var(--color-tooltip-foreground,#fafafa);" +
     "box-shadow:0 10px 28px rgba(0,0,0,.5),0 2px 6px rgba(0,0,0,.3);" +
     "white-space:normal;z-index:2147483646;max-width:520px;box-sizing:border-box";
