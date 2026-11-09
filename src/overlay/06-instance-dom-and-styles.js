@@ -199,8 +199,9 @@
      * → v314 规格补全（用户实报 maxOutputTokens 89642 超上游 65536 上限 400）：宿主预算链定案——wire 输出预算 baseline=已解析 optionSpecs.maxOutputTokens.max（未写=内置 catch-all 128000），预轮 cap=min(baseline, 窗口−用量−1000) 只下调不设上限（model-token-limits.ts resolveModelStepMaxOutputTokens），超 spec.max 是宿主侧硬拒绝非钳制——所以「不写输出上限规格」会让请求预算完全脱缰。applyModels 是 append-only：先添加的模型在目录证据迟到时永远拿不到写实，v314 在确认流探测路径用拉取会话元数据补「缺失」键（properties.contextWindow / optionSpecs.maxOutputTokens.max，绝不覆盖已写数值、带 map 自洽结构不动、applyBusy 写闸），绿字披露「规格补全：输出上限/上下文窗口」；当日已手修用户配置 max=65536（上游 400 报错自证上限，中转 max_tokens=65536 实测 200）；收口审查补齐：禁止凭据重定向并按实际 key 脱敏、供应商来源与档位 CAS 守卫、缓存身份绑定及已验证路径迁移、自定义 map 不猜测、供应商显式能力优先且 false 保留、修复后补规格、工具限流不误警告、确认单批互斥和逐项强制添加、关键披露停留至再次确认、关窗清理等待与模块 dispose 失效
      * → v315 「原作者」悬停提示被滚动区顶缘裁剪修复（用户实报截图：气泡向上弹、只露底边一线）——cap 内触发点（原作者/自定义短语模式切换）气泡翻到触发元素下方 `bottom:auto;top:calc(100% + 6px)`，右对齐保留；cap 贴 .zu-settings-body（overflow:auto）顶缘是根因；向下弹常规布局落进分区卡片区域可见，纯 CSS 无视口碰撞翻转、cap 滚动至贴滚动区底缘时对称受限（v310 .zu-mp 左弹先例同款取舍）
      * → v316 「压缩上下文」按钮视格重做（用户规格）：全宽 40px 胶囊、无边框、中性深灰半透明底（暗色=白叠加 6.5%/hover 10%/active 14%，浅色=黑叠加 5%/8%/12%，html.dark 分组自动跟随明暗与 zai 主题）、13px/600 文字（字号走 --ui-font-size 令牌 calc(-1px)，随宿主界面字号缩放）+ 18px 收缩双箭头 SVG（currentColor，flex+gap 8px 图文整体居中、nowrap）、focus-visible 焦点环（宿主无 --color-focus-ring 走 fallback）与 :disabled 半透明；reduced-motion 组整体移到全部受控规则之后（@media 不增特异性，置于按钮 transition/弹框 animation 基础规则之前会被同特异性后置规则压成死代码，review 实锤修复），弹框动画一并恢复实效；注入/判定/确认弹框/提交通道逻辑全不动
+     * → v317 ⚙ 面板上层 body 级弹框内按下不再联动关闭设置面板（用户实报：词包「查看」弹框点遮罩/✕ 连设置一起关）——面板外点 mousedown 判定按 e.target 向上匹配弹框根类名（.zu-rot-pk-dlg/.zu-mp-ov）：遮罩关闭监听与面板判定同在 mousedown、target 阶段先执行并已把 rotPkDlg/mpModal 置 null，变量 contains 守卫对遮罩路径失效（✕ 走 click 判定故 contains 版已好、遮罩仍坏），closest 沿已 detach 的残留子树仍命中；弹框外点击照常关面板、无 closest 的 target 按弹框外处理
      */
-    var VERSION = "v316";
+    var VERSION = "v317";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */

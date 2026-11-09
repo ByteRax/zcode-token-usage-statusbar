@@ -1813,12 +1813,18 @@
       renderAll(false);
     });
     listenGlobal(document, "mousedown", function (e) {
-      /* v80：面板挂 body 后 bar.contains 不再覆盖面板自身，点面板内部不能关 */
-      if (panel.classList.contains("open") && !bar.contains(e.target) && !panel.contains(e.target)) {
+      /* v80：面板挂 body 后 bar.contains 不再覆盖面板自身，点面板内部不能关。
+       * 面板上层的 body 级弹框（词包查看 .zu-rot-pk-dlg / 模型选择 .zu-mp-ov）不算「面板外」：
+       * 点遮罩/✕ 只关弹框本身，不联动关设置面板。遮罩关闭与面板外点判定同在 mousedown、
+       * target 阶段先执行并已把 rotPkDlg/mpModal 置 null——按 target 向上匹配弹框根类名，
+       * 弹框已 detach 时 closest 仍沿残留子树命中（用户复报：点弹框外仍连关设置） */
+      var t = e.target;
+      var inModal = !!(t && t.closest && t.closest(".zu-rot-pk-dlg,.zu-mp-ov"));
+      if (panel.classList.contains("open") && !inModal && !bar.contains(t) && !panel.contains(t)) {
         closeSettings(false);
         previousPanelFocus = null;
       }
-      if (subPopOpen() && !bar.contains(e.target) && !subPanel.contains(e.target)) subPopClose(false, "outside");
+      if (subPopOpen() && !inModal && !bar.contains(t) && !subPanel.contains(t)) subPopClose(false, "outside");
     });
     listenGlobal(document, "click", onProjRowClick);   // v137：编辑项目弹窗源文件夹行点击打开文件管理器（随实例 dispose 摘除）
 
