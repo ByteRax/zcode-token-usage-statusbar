@@ -814,7 +814,7 @@ flag = [".github/workflows/ci.yml", ".GitHub/workflows/ci.yml", "AGENTS.md", "do
         "plugins/zcode-token-usage-statusbar/.claude-plugin/plugin.json", "marketplace.json", "marketplace-release.json", "inject-main.cjs",
         "plugins/zcode-token-usage-statusbar/quota-client.cjs", "renderer_live_check.cjs", "install.py", "patch_install.py", "renderer_bridge.py",
         "release_tool.py", "sync_plugin.py", "release_unpack.py", "runtime_lock.py", "install_monitor.py", "overlay_install.py", "plugin_auto_update.py",
-        "restart_notice.py", "overlay.js", "web/overlay.js", "web/nginx.conf.example", "web/readonly-guard.py", "zusage.py", "usage_mcp.py",
+        "restart_notice.py", "overlay.js", "zusage.py", "usage_mcp.py",
         "token_rate.py", "usage_stats.py", "turn-stats.js", "scripts/run.sh", "x.ps1", "x.bat", "x.cmd", "package.json", "package-lock.json",
         "pnpm-lock.yaml", "yarn.lock", "requirements.txt", "requirements-dev.txt", "pyproject.toml", "Pipfile", "Pipfile.lock", "lib/native.node",
         "dist/app.asar", "x.exe", "x.dll", "x.so", "x.dylib", "x.zip", "x.jar", "x.bin", ".gitmodules", ".devcontainer/devcontainer.json",
@@ -1364,7 +1364,7 @@ nested = ["plugins/zcode-token-usage-statusbar/overlay.js", "plugins/zcode-token
           "plugins/zcode-token-usage-statusbar/usage_mcp.py", "plugins/zcode-token-usage-statusbar/runtime_lock.py", "plugins/zcode-token-usage-statusbar/install_monitor.py",
           "plugins/zcode-token-usage-statusbar/overlay_install.py", "plugins/zcode-token-usage-statusbar/token_rate.py", "plugins/zcode-token-usage-statusbar/usage_stats.py",
           "plugins/x/Makefile", "plugins/x/package.json", "plugins/x/.devcontainer/devcontainer.json", "sub/dir/.claude/settings.json", "sub/.cursorrules",
-          "sub/usage.command.md", "web/boot.js", "plugins/x/web/y.html", ".zcode/rules/repo-workflow.md", ".zcode/rules/install-release.md", ".zcode/settings.json",
+          "sub/usage.command.md", ".zcode/rules/repo-workflow.md", ".zcode/rules/install-release.md", ".zcode/settings.json",
           ".zcode/commands/x.md", "plugins/x/.zcode/rules/a.md", ".mcp.json", "commands/x.md", ".zcode-plugin/plugin.json", ".claude-plugin/plugin.json",
           "overlay.js", "turn-stats.js", "hooks/hooks.json", "skills/x/SKILL.md"]
 missed = [p_ for p_ in nested if not t.sensitive_hits([p_])]
@@ -1561,7 +1561,7 @@ NEG = ["docs/x.shtml", "docs/package.json.md", "docs/overlay.js.map", "docs/inst
        "docs/marketplace.json", "docs/marketplace-release.json.bak", "docs/x.exe.txt", "docs/foo.cjsx", "docs/usage.command.mdx", "docs/x.mcp.json",
        "docs/restart_noticeXpy", "docs/zusageXpy", "docs/AGENTSXmd", "docs/CLAUDE.md.txt", "docs/.zcodex/a.md", "docs/.claudeX/a.md", "docs/x.sh.md",
        "docs/hooks-notes/a.md", "hooksx/a.md", "docs/foo.gitattributes", "docs/Xgitattributes", "docs/.gitattributes.bak", ".gitattributes-old", "docs/pyproject.toml.md", "docs/Pipfile.lock.bak", "docs/requirements-notes.md", "docs/requirementsXtxt", "docs/gitmodules.md", "docs/Xgitmodules",
-       "docs/x.zip.md", "docs/web.md", "docs/plugin.json", "docs/.zcode-plugin/plugin.jsonx", "docs/turn-stats.jsx", "docs/Xoverlay.js", "docs/tests/a.md"]
+       "docs/x.zip.md", "docs/notes.md", "docs/plugin.json", "docs/.zcode-plugin/plugin.jsonx", "docs/turn-stats.jsx", "docs/Xoverlay.js", "docs/tests/a.md"]
 bad_neg = [p for p in NEG if t.sensitive_hits([p])]
 check("paths that merely look like sensitive ones are not flagged (anchors/escapes pinned)", not bad_neg, bad_neg)
 reset()

@@ -56,6 +56,6 @@
 
 ## 7. 边界与测试
 
-- 额度与本地 token 统计是两条链，互不推导。额度只进桌面快照链；MCP、CLI、`/usage` stdout 契约不加字段；Web 端不做（sidecar 无凭据）。
+- 额度与本地 token 统计是两条链，互不推导。额度只进桌面快照链；MCP、CLI、`/usage` stdout 契约不加字段。
 - 回归：`tests/quota-*.test.cjs`（client 解密/归一化/状态机/竞态/各家适配器形状、paths、provider-revoke、source-lifecycle）、`tests/overlay-quota-chip.test.cjs`（挂载/门控/还原/多源协议/源列表 UI）、`tests/test_statusbar_rate.py`（provider_fallback / scnet 估算）。用例数随改动变化，不在文档里写死；真实厂商响应、凭据刷新解冻与 chip 实机挂载需桌面验收，unverified 适配器待真实账号校准。
 - `quota-client.cjs` 自热换循环合入起由 loader 热换：部署后一个热 tick 内生效并自动销账 marker（旧 loader 仍需完全重启）；热换重建实例会重跑 `resolveHostQuotaPaths` 与 provider 绑定。生效证据是 sync 链 marker 被自动销账或额度链行为恢复，overlay 热重载验证不覆盖它。

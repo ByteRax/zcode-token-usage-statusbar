@@ -4,7 +4,7 @@
 
 ## 1. 文档对应关系
 
-- `README.md` 与 `README.zh-CN.md` 保持一致（中英标题按节一一对齐，人工核对纪律）；`README.en.md` 在功能、限制、安装、发布范围上对应，可链接中文详细文档但要标明语言。Web 两份 README 同步维护。
+- `README.md` 与 `README.zh-CN.md` 保持一致（中英标题按节一一对齐，人工核对纪律）；`README.en.md` 在功能、限制、安装、发布范围上对应，可链接中文详细文档但要标明语言。
 - 标点与结构是稳定契约不做迁移：正文 ASCII 直引号、UI 标签「」、英文破折号保留；README 章节结构已多轮定稿，不重排。
 - 配置键、默认值、协议、兼容性变更时同步 `config.example.json`、相关 README、user-guide、插件 README/命令/hooks/技能；设计或发布链变化同时核对 maintaining/设计文档。JSON 示例不含注释，路径占位须说明替换；检查仓库相对链接、标题锚点与示例可解析。
 - 文档中不写死会漂移的数字（测试用例数、清单长度、版本清单）；要写数字须由实测对账（验证代理抓过 13≠15）。
@@ -32,4 +32,4 @@
 
 - 命令说明统一使用裸命令（`/usage`、`/install-overlay`、`/uninstall-overlay`），宿主同时支持 `zcode-token-usage-statusbar:` 命名空间前缀；根 `usage.command.md` 与插件 `commands/usage.md` 保持取数顺序与回退说明同步。
 - `docs/design-notes.md` 的速度两态口径（完成态会话均 `avg_tps`、最近一轮进 Tooltip）、`scope=current`（选数据库最近活跃会话，30 分钟仅判 active/idle）及常驻 `zusage.py serve` 进程表述须与源码一致。
-- Web 文档的 Node 要求须说明旁挂服务通过 `readonly-guard.py` 拉起常驻 Python `zusage.py`（不使用 `node:sqlite`）；网络说明须区分本地 SQLite 只读统计与额度/重置卡、预估费用价表汇率同步、插件更新/更新日志及远端 SSH/WSL 查询，不笼统宣称全局“不联网”。核对时结合源码/契约测试，不顺手改业务逻辑或宣称正式渠道已有 main 功能。
+- 网络说明须区分本地 SQLite 只读统计与额度/重置卡、预估费用价表汇率同步、插件更新/更新日志及远端 SSH/WSL 查询，不笼统宣称全局“不联网”。核对时结合源码/契约测试，不顺手改业务逻辑或宣称正式渠道已有 main 功能。

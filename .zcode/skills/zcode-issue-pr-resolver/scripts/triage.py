@@ -79,7 +79,7 @@ SENSITIVE = [
      "命令正文：模型会当作指令执行（install.py 会把 usage.command.md 装成用户的 /usage）"),
     (r"(^|/)\.(zcode|claude)-plugin/plugin\.json$|^marketplace(-release)?\.json$", "插件/市场清单（身份、packageLayout、来源）"),
     (r"(?s)^(?!tests/)(?:.*/)?[^/]+\.cjs$", "Node/Electron 主进程代码或脚本（网络、凭据、更新、注入）"),
-    (r"(^|/)(overlay|turn-stats)\.js$|(^|/)web/", "注入渲染进程/浏览器的脚本，以及 Web 旁挂部署（认证、暴露面）"),
+    (r"(^|/)(overlay|turn-stats)\.js$", "注入渲染进程的浮层脚本（更新器可热替换、影响状态条与提示行为）"),
     (r"(^|/)(install|patch_install|install_monitor|overlay_install|plugin_auto_update|restart_notice|"
      r"renderer_bridge|release_unpack|runtime_lock|release_tool|sync_plugin)\.py$", "安装/注入/升级/发布链"),
     (r"(^|/)(zusage|usage_mcp|token_rate|usage_stats)\.py$", "查询库/MCP/速率：读本地库、起子进程、ssh/wsl/docker 对外通道"),

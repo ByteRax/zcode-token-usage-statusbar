@@ -40,7 +40,6 @@ description: "面向 zcode-token-usage-statusbar 项目，将功能需求、UI �
 | 测试夹具、替身陷阱、数据库排查或实机验收 | `.zcode/rules/tests.md` |
 | Git、分支、工作树或并行会话协作 | `.zcode/rules/repo-workflow.md` |
 | 文档、本地化、宣传图（`docs/promo/`、`docs/tour/`） | `.zcode/rules/docs.md` |
-| Web 旁挂服务或独立浮层（`web/`） | `.zcode/rules/web.md` |
 
 规则不存在时检索当前等价说明；缺少会影响决策的关键契约才提问，不把缺文件等同于没有约束。
 
@@ -52,7 +51,7 @@ description: "面向 zcode-token-usage-statusbar 项目，将功能需求、UI �
 
 ## 3. 只澄清会改变结果的问题
 
-检索后判断是否存在会改变默认行为、统计含义、持久化、兼容性或作用范围的真实分叉。默认值、单位、颜色口径、桌面/Web/CLI/MCP 边界等能从明确需求或既有行为确定时直接沿用；变量名、代码组织等可逆实现选择自行处理，不为凑齐模板提问。
+检索后判断是否存在会改变默认行为、统计含义、持久化、兼容性或作用范围的真实分叉。默认值、单位、颜色口径、桌面/CLI/MCP 边界等能从明确需求或既有行为确定时直接沿用；变量名、代码组织等可逆实现选择自行处理，不为凑齐模板提问。
 
 必须先提问澄清的情形：
 
@@ -64,13 +63,12 @@ description: "面向 zcode-token-usage-statusbar 项目，将功能需求、UI �
 
 ## 4. 生成按需精简的技术验收文档
 
-先以一句话说明用户要获得的行为，再按以下结构在对话中直接输出。小改动可合并段落；与需求无关的数据库、网络、Web 等条目省略或标为不适用，不机械扩展范围。实现任务可用简短计划和验收清单承载同样信息，无需先发送长文等待确认。
+先以一句话说明用户要获得的行为，再按以下结构在对话中直接输出。小改动可合并段落；与需求无关的数据库、网络等条目省略或标为不适用，不机械扩展范围。实现任务可用简短计划和验收清单承载同样信息，无需先发送长文等待确认。
 
 ### 4.1 目标、现状与作用范围
 
 - **需求编号与目标**：为需求分配 `R1...`，写明当前行为（附 `文件:行号`）、目标行为和必须保持的不变项。
-- **改动落点与多端适用性**：列出改动文件及证据（若涉及 `overlay.js` 或 `quota-client.cjs`，标明对应的 `src/overlay/*.js` 或 `src/quota/*.cjs` 分片源码及拼接产物）、配置/协议生产者和消费者、共享清单（`sync_plugin.py`）归属、文档与本地化影响；分别判断桌面浮层、Web（`web/overlay.js`）、CLI、MCP 的适用性。
-- **Web 独立维护边界**：`web/overlay.js` 是独立实现，不在插件同步清单内，禁止用桌面浮层直接覆盖；Web 端无额度/Git/重置卡链、无 `turn-text` 采样时刻、主题仅 `default`/`compact` 两档（无药丸模式）。跨度不明时按第 3 节判断是否需要澄清；不因桌面有新功能便默认扩展全部端。
+- **改动落点与多端适用性**：列出改动文件及证据（若涉及 `overlay.js` 或 `quota-client.cjs`，标明对应的 `src/overlay/*.js` 或 `src/quota/*.cjs` 分片源码及拼接产物）、配置/协议生产者和消费者、共享清单（`sync_plugin.py`）归属、文档与本地化影响；分别判断桌面浮层、CLI、MCP 的适用性。
 
 ### 4.2 输入条件与数据契约
 
@@ -85,7 +83,7 @@ description: "面向 zcode-token-usage-statusbar 项目，将功能需求、UI �
 - **计算与转换逻辑**：公式、舍入顺序、精度、零分母、超限/负值的既有处理。例如 `100 - pct` 仅适用于同一额度窗口的有效已用百分比，且档位色按原始值判定而非显示取整值；未知、错误或不适用不能参与计算，超限数据不擅自截断。
 - **交互与多形态布局适配**：触发动作、状态流转、持久化、刷新链路和最终可观察结果；涉及浮层 UI 时分别检查**默认工具行后挂载、药丸样式（pill mode）、精简样式（compact，`.zu-tsb`/`.zu-ctxb` 挂 `[data-composer-trailing-actions]` 左侧且走实例自绘 tip）、窄窗收缩渐隐**、深浅主题、键盘操作与无障碍属性（`aria-*`）。
 - **挂载还原与样式脱钩**：挂在原生上下文按钮（`data-testid="chat-context-usage-trigger"`）旁的额度 chip 与原生上下文按钮增强，须遵守 `render` + `heavy` 双 reapply 与卸载还原契约；额度分段统一走 `zu-qseg` 专属类（绿/黄/红三档视觉），与全局速度 `.ok` 类脱钩。
-- **本地化与文案纪律**：不假设各端共用 `L(zh, en)` 或同一语言开关（桌面用 `zusage3.lang`，CLI 用配置 `lang`，Web 跟随宿主；`token_rate.py` 逐问速率行标签恒为中文）。宣传与功能文案禁用「实时」（实为入库后计算或字符增量估算）。
+- **本地化与文案纪律**：不假设各端共用 `L(zh, en)` 或同一语言开关（桌面用 `zusage3.lang`，CLI 用配置 `lang`；`token_rate.py` 逐问速率行标签恒为中文）。宣传与功能文案禁用「实时」（实为入库后计算或字符增量估算）。
 
 ### 4.4 边界情况与生命周期
 
@@ -132,7 +130,7 @@ description: "面向 zcode-token-usage-statusbar 项目，将功能需求、UI �
      - Python 新增测试方法勿落在 `if __name__ == "__main__":` 之后，跑完用 `-v` 确认新用例名实际被收集执行；
      - 修改 `commands/*.md` 或 `skills/*/SKILL.md` 的 frontmatter 时，遵循 `tests/test_command_frontmatter.py` 与 `tests/test_plugin_package.py` 白名单及契约断言。
 3. **修改权威源码**：
-   - 共享文件先改根源码：其中 `overlay.js` 必须改 `src/overlay/00..12.js` 分片（`VERSION` 在 `src/overlay/06-instance-dom-and-styles.js`），`quota-client.cjs` 必须改 `src/quota/00..05.cjs` 分片，`zusage.py` 与 `token_rate.py` 共用的计算逻辑改 `usage_stats.py`；插件专有入口（hooks、commands、manifest、`overlay_install.py` 等）直接改本体，`web/overlay.js` 独立评估实现。
+   - 共享文件先改根源码：其中 `overlay.js` 必须改 `src/overlay/00..12.js` 分片（`VERSION` 在 `src/overlay/06-instance-dom-and-styles.js`），`quota-client.cjs` 必须改 `src/quota/00..05.cjs` 分片，`zusage.py` 与 `token_rate.py` 共用的计算逻辑改 `usage_stats.py`；插件专有入口（hooks、commands、manifest、`overlay_install.py` 等）直接改本体。
    - 保持 Python 3.8+ / Node / Electron 兼容目标并说明实际验证版本；开发机较新解释器通过不等于已验证所有平台或 Python 最低版本。
 4. **先定向检查，再安全同步副本**：
    - **同步前必查并行污染**：`python3 sync_plugin.py` 会先运行 `scripts/build_overlay.py` 与 `scripts/build_quota.py` 拼接生成根 `overlay.js` 和 `quota-client.cjs`，再扫描全部 `FILES` 清单同步至插件目录并执行 `--verify-manifests`；执行前先确认根目录下其它共享文件没有并行会话未完成、未验证的改动，防止把他人半成品一并扫进插件副本和运行目录。确认安全后执行 `python3 sync_plugin.py` 与 `python3 sync_plugin.py --check`，再运行语法检查与契约回归。
@@ -156,13 +154,13 @@ node --test tests/*.test.cjs
 python3 -B -m unittest discover -s tests -p 'test_*.py'
 ```
 
-这是检查工具箱，不是所有需求一律执行的脚本顺序。检查本次其它 `.js/.cjs/.mjs/.py` 改动（如 `turn-stats.js`、`quota-client.cjs`、`model-puller.cjs`、`engine-patch.cjs`、`plugin-updater.cjs`，或涉及 `web/` 时加 `node --check web/boot.js`、`node --check web/overlay.js`、`node --check web/zusage-sidecar.mjs`），不能只查上列两文件。跑 Python 测试带 `-B` 与 `PYTHONDONTWRITEBYTECODE=1`。Windows 不假定 `python3` 别名或 shell 通配符展开；选择已核实解释器并显式列出测试文件。项目没有统一 build/lint 命令时不虚构命令。纯文档不触发安装、部署或发布。
+这是检查工具箱，不是所有需求一律执行的脚本顺序。检查本次其它 `.js/.cjs/.py` 改动（如 `turn-stats.js`、`quota-client.cjs`、`model-puller.cjs`、`engine-patch.cjs`、`plugin-updater.cjs`），不能只查上列两文件。跑 Python 测试带 `-B` 与 `PYTHONDONTWRITEBYTECODE=1`。Windows 不假定 `python3` 别名或 shell 通配符展开；选择已核实解释器并显式列出测试文件。项目没有统一 build/lint 命令时不虚构命令。纯文档不触发安装、部署或发布。
 
 自动化测试用临时数据库、目录及隔离环境（如 `ZUSAGE_PLUGIN_RUNTIME` / `ZUSAGE_PLUGIN_ASAR`），不接触个人数据库（真库为 `~/.zcode/cli/db/db.sqlite`；注意 `~/.zcode/db.sqlite` 为 0 字节空文件勿误用）或真实插件库存；真实宿主 CLI/模型测试可能联网及消耗额度，按当前指令与项目规则另行处理。报告实际命令、结果及跳过原因，不把语法检查或 stub 测试当作 Electron 实机验收。
 
 ## 6. 默认完成本地部署与热重载验证
 
-实现任务在适用检查通过后主动执行本节，不等待用户再次要求。只修改文档、测试或素材时不部署；Web、远端、MCP 的生效流程按各自规则处理，不套用桌面热重载。
+实现任务在适用检查通过后主动执行本节，不等待用户再次要求。只修改文档、测试或素材时不部署；远端、MCP 的生效流程按各自规则处理，不套用桌面热重载。
 
 1. **定位真实加载目标**：结合客户端 `app.asar` 注入行引用、客户端进程与来源基线确认实际加载的 `inject-main.cjs` 路径（通常为 `~/.zcode/zcode-token-usage-statusbar/`），区分根源码、插件缓存与稳定运行目录。`--dev` 开发模式已直接加载当前源码时不重复复制。尊重显式 `hot_reload:false`，不擅自改配置开关。
 2. **比较并保护运行目录差异**：部署前先 diff 运行目录文件、来源基线和本次变更，识别运行目录热修、较新版本与其它并行会话写入（运行时可能领先当前工作树，直接覆盖会导致静默降级）。只部署本次已验证文件；遇 `preserved`、来源身份不符或无法安全合并时停止相关文件部署并说明阻碍。严禁整目录覆盖、借重装绕过保护或删除锁文件。

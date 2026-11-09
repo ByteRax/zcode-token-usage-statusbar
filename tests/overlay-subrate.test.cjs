@@ -105,22 +105,20 @@ for (const lang of ['zh', 'en']) {
   });
 }
 
-// 工具动词契约：「正在运行子智能体」压成「子代理运行中」（v97），桌面与 Web 同文案。
-for (const file of ['overlay.js', 'web/overlay.js']) {
-  test(`${file}: Agent verb is exactly 6 CJK chars in zh`, () => {
-    const src = fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
-    const start = src.indexOf('var ZU_TOOL_VERBS = {');
-    const end = src.indexOf('};', start);
-    assert.ok(start >= 0 && end > start, `提取失败: ${file} ZU_TOOL_VERBS`);
-    const verbs = vm.runInNewContext(src.slice(start, end + 2) + '\nZU_TOOL_VERBS;', {});
-    assert.equal(verbs.Agent[0], '子代理运行中');
-    assert.equal(Array.from(verbs.Agent[0]).length, 6);
-    assert.equal(verbs.Task[0], '子代理运行中');
-    assert.equal(verbs.Agent[1], 'Running agent');
-    // 表内不再使用旧文案（版本日志注释保留历史记录，不在检查范围）
-    assert.ok(!src.slice(start, end + 2).includes('正在运行子智能体'));
-  });
-}
+// 工具动词契约：「正在运行子智能体」压成「子代理运行中」（v97）。
+test('overlay.js: Agent verb is exactly 6 CJK chars in zh', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'overlay.js'), 'utf8');
+  const start = src.indexOf('var ZU_TOOL_VERBS = {');
+  const end = src.indexOf('};', start);
+  assert.ok(start >= 0 && end > start, '提取失败: overlay.js ZU_TOOL_VERBS');
+  const verbs = vm.runInNewContext(src.slice(start, end + 2) + '\nZU_TOOL_VERBS;', {});
+  assert.equal(verbs.Agent[0], '子代理运行中');
+  assert.equal(Array.from(verbs.Agent[0]).length, 6);
+  assert.equal(verbs.Task[0], '子代理运行中');
+  assert.equal(verbs.Agent[1], 'Running agent');
+  // 表内不再使用旧文案（版本日志注释保留历史记录，不在检查范围）
+  assert.ok(!src.slice(start, end + 2).includes('正在运行子智能体'));
+});
 
 // subRateTick 生命周期（v97 review P1 回归锁）：subscribeStore 会同步首调一次回调，
 // 首调即 detach（sessionId 不匹配/换代）时不得把悬挂订阅当成功绑定写回，且 2s 节流

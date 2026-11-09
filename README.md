@@ -47,7 +47,7 @@ Windows / macOS · Python 3.8+ · [MIT](LICENSE)
   生成速度       本轮（这次提问）            会话累计（这次对话）      项目累计（本项目全部会话）    工具调用     今日合计    子智能体    设置
 ```
 
-以上是默认样式示意。桌面端可在 ⚙ → 状态条显示 → 状态条样式选择「默认」「药丸」或「精简」；药丸在所属输入框下方居中，宽度随内容变化并受窄窗约束；精简隐藏悬浮条，把生成速度与摘要收进输入框工具行。默认样式另有「水平对齐」三选一（均分/居左/居右，默认均分）；六个格显示开关全部关闭时样式自动转为精简，重开任一格即恢复。Web 版可在 ⚙ → 通用 选择「默认样式/精简模式」。[样式与切换范围 →](docs/user-guide.md#状态条样式)
+以上是默认样式示意。桌面端可在 ⚙ → 状态条显示 → 状态条样式选择「默认」「药丸」或「精简」；药丸在所属输入框下方居中，宽度随内容变化并受窄窗约束；精简隐藏悬浮条，把生成速度与摘要收进输入框工具行。默认样式另有「水平对齐」三选一（均分/居左/居右，默认均分）；六个格显示开关全部关闭时样式自动转为精简，重开任一格即恢复。[样式与切换范围 →](docs/user-guide.md#状态条样式)
 
 每一格说的是：
 
@@ -133,7 +133,7 @@ https://github.com/ByteRax/zcode-token-usage-statusbar#plugin-releases
 https://gitcode.com/tanranran/zcode-token-usage-statusbar.git#plugin-releases-gitcode
 ```
 
-也可以把 README 开头「三步装上」那句自然语言指令发给 AI，让它替你完成市场添加与插件安装（AI 走终端命令，效果一致）。其它装法：想自己改代码，用「**设置 → 插件 → 添加插件市场 → 选择目录**」指向仓库根目录；不想装插件，终端里 `git clone` 后跑 `python install.py` 一键安装；自托管 ZCode 服务器另有独立部署的 [Web 版](web/README.zh-CN.md)，不适用于官方托管网页。四种装法**选一个就行，别叠着来**，逐步说明见[安装指南](docs/user-guide.md#插件安装)。
+也可以把 README 开头「三步装上」那句自然语言指令发给 AI，让它替你完成市场添加与插件安装（AI 走终端命令，效果一致）。其它装法：想自己改代码，用「**设置 → 插件 → 添加插件市场 → 选择目录**」指向仓库根目录；不想装插件，终端里 `git clone` 后跑 `python install.py` 一键安装。三种装法**选一个就行，别叠着来**，逐步说明见[安装指南](docs/user-guide.md#插件安装)。
 
 ### 装完之后，别忘了这三步
 
@@ -188,7 +188,7 @@ ZCode 更新时会把状态条改过的程序文件覆盖回原样。保持插�
 ## 更多文档
 
 - [功能截图](docs/features.md) · [安装、配置与排查](docs/user-guide.md) · [额度支持矩阵](docs/quota-support-audit.md)
-- [Web 版（自托管）](web/README.zh-CN.md) · [实现原理与数据口径](docs/design-notes.md)
+- [实现原理与数据口径](docs/design-notes.md)
 - [开发与发布](docs/maintaining.md) · [测试说明](tests/README.md)
 
 [MIT License](LICENSE)
