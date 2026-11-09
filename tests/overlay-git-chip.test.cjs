@@ -93,7 +93,13 @@ function harness() {
     querySelectorAll: selector => selector.startsWith('textarea,') ? panes : [],
     elementFromPoint: () => panes[0] || body });
   const timers = new Map(), frames = new Map(); let id = 0;
+  /* v308：受控时钟（默认零偏移=真实时间）。ghostOf 的 120ms TTL 用 Date.now 计费，
+   * 「同元素先 live 后 hidden」的同步序列须 advance 越过 TTL 才能观察到新判定。 */
+  let clockOffset = 0;
+  class ZuDate extends Date { }
+  ZuDate.now = () => Date.now() + clockOffset;
   const sandbox = vm.createContext({ window, document, console, innerHeight: 800, innerWidth: 1000,
+    Date: ZuDate,
     location: { href: 'file:///fixture' }, localStorage: { getItem: () => null, setItem() {} },
     getComputedStyle: el => ({ borderTopWidth: '1px', backgroundColor: 'black', opacity: '1', display: 'block', visibility: 'visible', ...el.style }),
     setTimeout: (fn, ms) => { timers.set(++id, { fn, ms, interval: false }); return id; },
@@ -138,7 +144,8 @@ function harness() {
     return { remote_evidence: false, today: {}, not_local: [],
       recent: [{ sid: 'sid_main', workspace_identity: '', ctx, context_window: cw, last_at: 1 }] };
   }
-  return { window, body, inject, tick, boot, buildComposer, payload };
+  function advance(ms) { clockOffset += ms; }   // v308：时钟快进（越过 TTL 缓存）
+  return { window, body, inject, tick, boot, advance, buildComposer, payload };
 }
 
 function gitState(o = {}) {
@@ -219,7 +226,7 @@ test('CUA disabled keeps Git in leading content, outside mode wrapper and right 
   h.tick();
   assert.equal(ui.cua.nextSibling, chip);
   assert.equal(chip.nextSibling, extra);
-  ui.cua.style.visibility = 'hidden'; h.tick();
+  ui.cua.style.visibility = 'hidden'; h.advance(160); h.tick();   // v308：越过 ghostOf TTL 才能观察到新幽灵判定
   assert.equal(extra.nextSibling, chip);
   ui.cua.remove(); h.tick();
   assert.equal(chipOf(leading), chip);
@@ -645,4 +652,39 @@ test('tooltip 行数与条目计数同规则缩写（v128）', () => {
   assert.match(tip.innerHTML, /origin\/main ↑12\.35万/);
   assert.match(tip.innerHTML, /<b>已暂存<\/b><span>2\.5万 项<\/span>/);
   assert.match(tip.innerHTML, /<b>未跟踪<\/b><span>1万 项/);
+});
+
+test('v308 gitMount 的 live() 幽灵判定走 ghostOf TTL 缓存（切换任务主线程阻塞修复）', () => {
+  /* CDP CPU 采样归因（2026-11-09）：裸 inGhostSubtree 逐祖先 getComputedStyle 强制样式
+   * 重算，在任务切换的 React 重挂风暴里被 render/heavy 高频经 gitMount 触发，每次切换
+   * 聚集 ~48ms 主线程阻塞（9 次切换累计 436ms）；改走 120ms TTL 缓存后同路径仅 2ms。
+   * 切片断言锁死：live() 不得回退为裸调用。 */
+  const start = source.indexOf('    function gitMount() {');
+  const end = source.indexOf('    var ZU_GIT_ICON =', start);
+  assert.ok(start > 0 && end > start, 'gitMount slice exists in overlay.js');
+  const body = source.slice(start, end);
+  assert.match(body, /ghostOf\(el\)/, 'live() must use the TTL-cached ghostOf');
+  assert.doesNotMatch(body, /inGhostSubtree\(el\)/, 'raw inGhostSubtree re-forces style recalc per call');
+});
+
+test('v308 ghostOf TTL 内维持旧判定、越 TTL 后重判（缓存语义行为锁）', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  const { leading } = leadingOf(ui);
+  ui.cua.remove(); drive(h, ui);
+  const chip = chipOf(leading);
+  assert.ok(chip);
+  leading.appendChild(ui.cua);
+  const extra = leading.appendChild(new Element('button'));   // 尾哨兵：锚位（CUA 右侧）≠ 兜底位（容器末尾）
+  h.tick();
+  assert.equal(ui.cua.nextSibling, chip, 'chip starts right of the CUA button');
+  assert.notEqual(extra.nextSibling, chip, 'sanity: anchor and fallback placements are distinct');
+  /* TTL 内（真实时钟同步序列≈0ms 推进）：CUA 转幽灵但缓存仍持 live 判定，挂载位不动 */
+  ui.cua.style.visibility = 'hidden';
+  h.tick();
+  assert.equal(ui.cua.nextSibling, chip, 'within TTL the cached verdict keeps the old placement');
+  assert.notEqual(extra.nextSibling, chip, 'cache verdict must not be recomputed within TTL');
+  /* 越过 TTL：重判为幽灵，chip 落 modes 兜底位（容器末尾） */
+  h.advance(160); h.tick();
+  assert.equal(extra.nextSibling, chip, 'past TTL the ghost verdict re-places the chip at container end');
+  assert.equal(chipOf(leading), chip);
 });
