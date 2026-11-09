@@ -52,6 +52,8 @@ SSH/WSL 远端会话需要在每台远端手工部署同版本 `zusage.py`；远
 
 默认运行配置在 `~/.zcode/zcode-token-usage-statusbar/config.json`——只合并需要修改的字段。除上述开关外还覆盖远端目标、额度源与显示选项；见 [`config.example.json`](https://github.com/ByteRax/zcode-token-usage-statusbar/blob/main/config.example.json) 与[用户指南](https://github.com/ByteRax/zcode-token-usage-statusbar/blob/main/docs/user-guide.md)。
 
+**WorkBuddy 数据源（可选）**：`"host": "workbuddy"`（或 `"auto"`）可让查询改读 `~/.workbuddy/workbuddy.db`（会话级上下文与 credit）与会话正文 `projects/*/*.jsonl`（逐请求 token / 缓存 / 思考 / credit / 工具调用）；文件在别处时用 `"hosts": {"workbuddy": {"db_path": "..."}}` 或环境变量 `ZUSAGE_WORKBUDDY_DB`，CLI/MCP 也可单次 `--host workbuddy` / `host: "workbuddy"` 覆盖。缺省仍是 `zcode`；WorkBuddy 没有 asar 链，状态条改走 CDP 注入输入卡。详见 [docs/hosts.md](https://github.com/ByteRax/zcode-token-usage-statusbar/blob/main/docs/hosts.md)。
+
 ## 源码与许可证
 
 MIT — [ByteRax/zcode-token-usage-statusbar](https://github.com/ByteRax/zcode-token-usage-statusbar)。欢迎中英文 issue 与 PR。

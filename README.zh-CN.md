@@ -100,6 +100,23 @@ A community toolkit for ZCode desktop: generation speed, token usage, context tr
 
 上下文占比优先跟随宿主原生按钮，数据库兜底取最近完成请求的输入量 / 上下文窗口，不是会话累计。套餐额度与余额通常独立查询供应商接口，不用本地 token 总量反推；SCNet 的无凭据估算另走账本与抵扣表。完整定义见[数据口径](docs/user-guide.md#数据如何计算)。
 
+## 顺带支持 WorkBuddy（可选）
+
+同一套查询库也能读 **WorkBuddy** 的本地用量：上下文与窗口取自 `~/.workbuddy/workbuddy.db` 的 `session_usage`，**逐请求 token / 缓存 / 思考 / credit / 工具调用**取自会话正文 `projects/*/*.jsonl` 里的 `providerData.rawUsage`（每次模型调用都有）。速度是按响应窗口推算的近似值；**预估费用**按 models.dev 官方牌价逐模型计价（有汇率显示 ¥，否则 $），价表未收录的模型如实标「不可得」并在聚合里注明范围，不拿兜底均价或 0 冒充。
+
+浮层按客户端分流：ZCode 仍走原来的 asar 注入；WorkBuddy 没有这条链，改走 CDP 在**输入卡内注入一条状态条**，每个分段**悬停弹信息卡**（速度卡带最近 8 段柱状图、档位配色与统计口径；本轮/会话/工具/今日/上下文/项目各有明细），右侧齿轮看完整详情。只连客户端自带的调试端口，不改程序文件；启动时按 agent 自动选择，ZCode 侧行为一字未变。
+
+三句话用起来：
+
+```bash
+python zusage.py host                 # 自检：当前宿主、两个库位置、可用指标
+python zusage.py --host workbuddy now # 临时按 WorkBuddy 查，不写配置
+```
+
+想固定下来，在 `config.json` 写 `"host": "workbuddy"`（或 `"auto"` 让它按库存在性选）；库不在默认位置时用 `hosts.workbuddy.db_path` 或环境变量 `ZUSAGE_WORKBUDDY_DB`。MCP 工具多了一个可选 `host` 参数。**默认值仍是 `zcode`**——装了 WorkBuddy 不会改变原 ZCode 的任何行为。
+
+**想直接在 WorkBuddy 客户端里用 `/usage`**：仓库另带 WorkBuddy 专用插件 `plugins/workbuddy-token-usage/`（只有 MCP + 命令，不含 asar 注入），装法见[宿主适配文档](docs/hosts.md#6-在-workbuddy-客户端里安装可选)。
+
 ## 隐私与安全
 
 - **这不是 ZCode 官方功能**，是社区插件；状态条靠修改 ZCode 的程序文件（`app.asar`）实现，卸载时只删自己加的那部分。

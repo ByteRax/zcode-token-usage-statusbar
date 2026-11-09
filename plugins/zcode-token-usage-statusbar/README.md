@@ -52,6 +52,8 @@ Remote sessions (SSH/WSL) need a matching `zusage.py` deployed manually on each 
 
 Default runtime config lives in `~/.zcode/zcode-token-usage-statusbar/config.json` — merge only the fields you change. Beyond the switches above it also covers remote targets, quota sources, and display options; see [`config.example.json`](https://github.com/ByteRax/zcode-token-usage-statusbar/blob/main/config.example.json) and the [user guide](https://github.com/ByteRax/zcode-token-usage-statusbar/blob/main/docs/user-guide.md).
 
+**WorkBuddy data source (optional)**: `"host": "workbuddy"` (or `"auto"`) points queries at `~/.workbuddy/workbuddy.db` for session context and credits, and at the matching transcripts `projects/*/*.jsonl` for per-request tokens, cache, thinking, credits and tool calls. If the files live elsewhere use `"hosts": {"workbuddy": {"db_path": "..."}}` or `ZUSAGE_WORKBUDDY_DB`; CLI/MCP can also override per call with `--host workbuddy` / `host: "workbuddy"`. The default stays `zcode`; WorkBuddy has no asar chain, so its status bar is injected over CDP into the input card instead. See [docs/hosts.md](https://github.com/ByteRax/zcode-token-usage-statusbar/blob/main/docs/hosts.md).
+
 ## Source & license
 
 MIT — [ByteRax/zcode-token-usage-statusbar](https://github.com/ByteRax/zcode-token-usage-statusbar). Bug reports and PRs welcome (Chinese or English).
