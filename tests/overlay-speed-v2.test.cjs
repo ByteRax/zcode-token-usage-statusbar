@@ -812,7 +812,7 @@ test('v281 P1: fixed tooltip width + stable chart column (width stops tracking c
   // tip 定宽：width 与 max-width 同值 !important（不再只钳 max-width 让内容反向撑缩）
   assert.match(html,
     /width:min\(760px,calc\(100vw - 24px\)\)!important;max-width:min\(760px,calc\(100vw - 24px\)\)!important;height:300px!important;box-sizing:border-box/,
-    'tooltip pinned at 760x300 (v284 width mechanism；760 为产物基线宽，本批仅同步钉与说明文字), not content-driven');
+    'tooltip pinned at 760x300 (v284 width mechanism), not content-driven');
   // v285：V2 卡左缘对齐锚元素（.it 速度格）左缘——positionTip 消费 __zuAlignLeft
   assert.match(source, /tip\.__zuAlignLeft = !!\(tip\.querySelector\("\.zu-sv-root"\) \|\| tip\.querySelector\("\.zu-stat-tip--turn"\)\);/,
     'full tip marks V2 content for left alignment');
