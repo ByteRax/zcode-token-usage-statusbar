@@ -634,6 +634,11 @@
   function showTpsTip(el) {
     if (stale() || !el || !el.isConnected || !el.__zuT) { hideTpsTip(); return; }
     var html = el.__zuT.buildTip(el.__zuT);
+    /* \x01 前缀 = 结构化 HTML 哨兵（v67.1）：主链 drawTip 经 tip.firstChild.slice(1)
+     * 剥除后写入；精简链直塞 innerHTML 必须同语义剥除，否则控制字符落成文本节点，
+     * .tip 的 white-space:pre-line 会为其撑出整行行框（~20px 幽灵空行）——V2 卡
+     * 定高 300 + overflow:hidden 后整卡下坠、底部被裁（精简 tooltip 上大下小）。 */
+    if (html.charCodeAt(0) === 1) html = html.slice(1);
     /* v155：内容含秒表（0.1s 步进），悬停中若随心跳整片重建，「打开设置」/子代理行的
      * 点击会落在被替换掉的旧节点上丢失——显示中内容变化时冻结当前内容、只更新位置，
      * 鼠标移开后下一次悬停按新签名重建（与 gitTip 的「滚动中不重建」同一取舍方向）。

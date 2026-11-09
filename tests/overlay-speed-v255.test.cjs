@@ -80,3 +80,14 @@ test('tpsTip has V2 tab / bar hover delegation without extra global listeners (v
   assert.match(block, /\.zu-sc-col/);
   assert.match(block, /function tpsSpeedPick/);
 });
+
+// v306：V2 卡串首部 \x01 是结构化 HTML 哨兵，主链 drawTip 经 tip.firstChild.slice(1)
+// 剥除（08 分片）；精简链 showTpsTip 直塞 innerHTML 不剥的话控制字符落成文本节点，
+// .tip 的 white-space:pre-line 撑出 ~20px 幽灵行框——定高 300+overflow:hidden 下
+// 整卡下坠、底部被裁（用户实报精简 tooltip 上下 padding 不对称）。
+test('showTpsTip strips the \\x01 structured-HTML sentinel before innerHTML (v306)', () => {
+  const block = source.slice(source.indexOf('  function showTpsTip(el) {'),
+    source.indexOf('  function hideTpsTip()'));
+  assert.match(block, /var html = el\.__zuT\.buildTip\(el\.__zuT\);\s*\/\*[\s\S]*?if \(html\.charCodeAt\(0\) === 1\) html = html\.slice\(1\);/,
+    'buildTip 取串后必须先剥 \\x01 哨兵再进签名比较与 innerHTML（与主链同语义）');
+});

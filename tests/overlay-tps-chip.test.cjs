@@ -275,6 +275,18 @@ test('tooltip: speed rows + bar summary gated by per-cell toggles + legend + set
   tip.listeners.get('click')[0]({ target: subFake, stopPropagation() {} });
   const subp = h.body.children.find(e => e.classList.contains('zu-sub-pop'));
   assert.ok(subp && subp.classList.contains('open'), 'unified sub popover opened from the tooltip row');
+  // 右键 chip 直开设置（用户规格 2026-11-09）：镜像 .tps-cfg 路径——先收 tooltip 再开面板
+  panel.classList.remove('open'); gear.setAttribute('aria-expanded', 'false');   // 复位上一用例打开的面板
+  chip.listeners.get('mouseleave')[0].call(chip);
+  chip.listeners.get('blur')[0].call(chip);
+  chip.listeners.get('mouseenter')[0].call(chip);
+  assert.equal(tip.style.display, 'block', 'tooltip visible before right-click');
+  let ctxPrevented = false;
+  chip.listeners.get('contextmenu')[0]({ preventDefault() { ctxPrevented = true; } });
+  assert.ok(ctxPrevented, 'native context menu suppressed');
+  assert.equal(tip.style.display, 'none', 'tooltip hidden on chip right-click');
+  assert.ok(panel.classList.contains('open'), 'settings panel opened by chip right-click');
+  assert.equal(gear.getAttribute('aria-expanded'), 'true');
 });
 
 test('dispose removes the chip; switching theme to default via setBarTheme removes it too', () => {

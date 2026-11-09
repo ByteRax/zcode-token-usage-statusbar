@@ -1,7 +1,9 @@
   /* ---------- 默认配置与归一化 ---------- */
   function defaultRotatorConfig() {
     return {
-      enabled: true,
+      /* 2026-11-09 用户规格：默认关闭（新用户/未写过设置的用户不自动启用；
+       * 显式开/关过的存量配置经 loadRotatorConfig 的布尔覆盖原样保留） */
+      enabled: false,
       labelSource: "phrases", // "phrases" | "host"
       intervalMs: 3500,
       typeSpeedMs: 28,

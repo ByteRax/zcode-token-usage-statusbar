@@ -385,6 +385,7 @@ test('65ms rotator timer drives the typewriter past the first character (regress
   assert.equal(ivs.length, 1, 'module-level ensureRotatorTimer schedules exactly one 65ms interval');
 
   buildChatRow(body);
+  vm.runInContext('rotatorCfg.enabled = true;', ctx);   // 2026-11-09 起默认关闭：直改不触发 masterTick，保持首帧开始打字
   api_typeZero(ctx);
   advanceNow(1000);
   ivs[0].fn();
@@ -653,10 +654,10 @@ test('appearance theme 「无」 disables gradient and whale rainbow; colorful t
   assert.ok(vm.runInContext('rotatorStyleEl.textContent', ctx).includes('zuRotFlow'), 'flow rule back for colorful theme');
 });
 
-test('rotator defaults follow the 2026-11-06 user spec; v2 storage key ignores the legacy one', () => {
+test('rotator defaults follow the 2026-11-06 user spec (2026-11-09: master switch defaults off); v2 storage key ignores the legacy one', () => {
   const { ctx, storage } = makeRotatorEnv('zh');
   const cfg = JSON.parse(JSON.stringify(vm.runInContext('rotatorCfg', ctx)));
-  assert.equal(cfg.enabled, true, 'rotator on');
+  assert.equal(cfg.enabled, false, 'rotator master switch defaults off for fresh users (2026-11-09 用户规格)');
   assert.equal(cfg.labelSource, 'phrases', 'phrase packs as source');
   assert.equal(cfg.whaleTail, true, 'whale tail icon on');
   assert.equal(cfg.whaleTailRainbow, false, 'rainbow fill off (「无」theme semantics)');
@@ -676,6 +677,12 @@ test('rotator defaults follow the 2026-11-06 user spec; v2 storage key ignores t
   assert.equal(vm.runInContext('rotatorCfg.appearance.theme', legacy.ctx), 'none', 'legacy v1 key is ignored');
   const saved = makeRotatorEnv('zh', { appearance: { theme: 'none' } });
   assert.equal(vm.runInContext('rotatorCfg.appearance.theme', saved.ctx), 'none', 'v2 saved config honored');
+
+  // 已显式开启/关闭的存量配置不被默认值翻转（布尔覆盖原样保留）
+  const optedIn = makeRotatorEnv('zh', { enabled: true });
+  assert.equal(vm.runInContext('rotatorCfg.enabled', optedIn.ctx), true, 'persisted explicit opt-in survives the new default');
+  const optedOut = makeRotatorEnv('zh', { enabled: false });
+  assert.equal(vm.runInContext('rotatorCfg.enabled', optedOut.ctx), false, 'persisted explicit opt-out survives');
 });
 
 test('「换一条」 button is fully removed from the rotator settings (user spec)', () => {

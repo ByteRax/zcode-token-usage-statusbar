@@ -188,8 +188,9 @@
      * → v303 项目累计卡紧凑化（根类并入 .zu-stat-tip--project 统计卡家族）+ zusage _project_usage 新聚合（平均耗时/平均首字延迟/总耗时/跨分片合成 avg_tps）+ 刻度列外移联动（v303.3/v303.4）
      * → v304 工具调用卡紧凑化（定宽四列+sticky 表头+行 hover）+ statKpi 标题图标参数 + zusage 子代理单任务耗时/轮数聚合（v304.1）+ 模型名立方体 SVG 胶囊（v304.2）
      * → v305 收口审查修复批（review-fix-merge）：轮播可视化编辑器 when: 键白名单+提示行转义（堵存储型注入面）；手写显式 false 高级条件保存保留、false 不再渲染为勾选态；热力图「共 N 天」覆盖统计 var 提升修复（原恒退兜底文案）且分母对齐可视窗口；今日 tooltip 轮数/会话数旧远端缺字段显 —；今日/项目 avg 耗时与项目 avg_tps 过滤 main_turn（与 avg_tps 同口径）；devKeepTip 持久化+re-click 放行；__zusageSpdMonRect 代际清理；speed_v2 聚焦切换测试随功能移除删除；未编号同批内容——轮播自定义短语可视化编辑器+文本模式、内置词包拆独立分片 04-rotator-builtin-packs.js（16 包）、⚙ 轮播分区「原作者」按钮、速度卡覆盖提示/聚焦按钮移除（2026-11-07 文案批）
+     * → v306 精简 tooltip 幽灵行框修复（\x01 结构化 HTML 哨兵只在主链 drawTip 被 tip.firstChild.slice(1) 剥除，精简链 showTpsTip 直塞 innerHTML 不剥——控制字符落成文本节点被 .tip 的 white-space:pre-line 撑出 ~20px 幽灵行框，V2 卡定高 300+overflow:hidden 下整卡下坠、底部被裁，实报上下 padding 不对称；补齐同语义 charCodeAt 剥除）+ 状态轮播主开关默认关闭（2026-11-09 用户规格：新用户/从未写过设置的用户不自动启用，显式开/关过的存量配置经 loadRotatorConfig 布尔覆盖原样保留）+ 速率 chip 右键直开设置（2026-11-09 用户规格：精简下 chip 是唯一常驻入口，contextmenu 镜像 .tps-cfg 路径——先收 tooltip 再开面板，并压掉宿主原生右键菜单）
      */
-    var VERSION = "v305";
+    var VERSION = "v306";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */

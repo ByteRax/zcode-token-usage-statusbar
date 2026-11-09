@@ -351,6 +351,14 @@
       chip.addEventListener("focus", function () { showTpsTip(chip); });
       chip.addEventListener("blur", hideTpsTip);
       chip.addEventListener("keydown", function (e) { if (e.key === "Escape") hideTpsTip(); });
+      /* 右键直开设置（用户规格 2026-11-09）：精简下 chip 是唯一常驻入口，悬停 tooltip
+       * 里点「打开设置」要两步；右键镜像 .tps-cfg 路径——先收 tooltip 再开面板，
+       * 并压掉宿主原生右键菜单。 */
+      chip.addEventListener("contextmenu", function (e) {
+        if (e && e.preventDefault) e.preventDefault();
+        hideTpsTip();
+        if (chip.__zuOpen) chip.__zuOpen();
+      });
     }
     function syncTpsChip() {
       if (state.theme !== "compact") { restoreTpsChip(); return; }   // v146：速率 chip 是精简模式专属载体
