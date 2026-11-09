@@ -674,14 +674,17 @@ test('v308 ghostOf TTL 内维持旧判定、越 TTL 后重判（缓存语义行�
   const chip = chipOf(leading);
   assert.ok(chip);
   leading.appendChild(ui.cua);
+  const extra = leading.appendChild(new Element('button'));   // 尾哨兵：锚位（CUA 右侧）≠ 兜底位（容器末尾）
   h.tick();
   assert.equal(ui.cua.nextSibling, chip, 'chip starts right of the CUA button');
+  assert.notEqual(extra.nextSibling, chip, 'sanity: anchor and fallback placements are distinct');
   /* TTL 内（真实时钟同步序列≈0ms 推进）：CUA 转幽灵但缓存仍持 live 判定，挂载位不动 */
   ui.cua.style.visibility = 'hidden';
   h.tick();
   assert.equal(ui.cua.nextSibling, chip, 'within TTL the cached verdict keeps the old placement');
+  assert.notEqual(extra.nextSibling, chip, 'cache verdict must not be recomputed within TTL');
   /* 越过 TTL：重判为幽灵，chip 落 modes 兜底位（容器末尾） */
   h.advance(160); h.tick();
-  assert.equal(leading.children.at(-1), chip, 'past TTL the ghost verdict moves the chip');
+  assert.equal(extra.nextSibling, chip, 'past TTL the ghost verdict re-places the chip at container end');
   assert.equal(chipOf(leading), chip);
 });
