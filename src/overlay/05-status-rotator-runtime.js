@@ -780,7 +780,9 @@
       /* 自定义短语可视化编辑器 */
       ".zu-rot-tipt{position:relative}" +
       ".zu-rot-tipt:hover::after{content:attr(data-tip);position:absolute;bottom:calc(100% + 6px);left:0;z-index:2147483646;max-width:280px;width:max-content;padding:6px 10px;border:1px solid var(--color-popover-border,var(--color-border,rgba(255,255,255,.14)));border-radius:8px;background:var(--color-popover,#20242e);color:var(--color-popover-foreground,var(--color-foreground,#e9edf4));font-size:calc(var(--ui-font-size,14px) - 2px);line-height:1.5;white-space:normal;text-align:left;box-shadow:0 6px 18px rgba(0,0,0,.28);pointer-events:none}" +
-      ".zu-rot-cp-row .zu-rot-tipt:hover::after,.zu-settings .cap .zu-rot-tipt:hover::after{left:auto;right:0}" +
+      ".zu-rot-cp-row .zu-rot-tipt:hover::after{left:auto;right:0}" +
+      /* cap 行贴 .zu-settings-body（overflow:auto 滚动容器）顶缘：气泡翻到触发元素下方，向上弹被滚动区裁剪（v315 用户实报「原作者」悬停提示被遮） */
+      ".zu-settings .cap .zu-rot-tipt:hover::after{left:auto;right:0;bottom:auto;top:calc(100% + 6px)}" +
       ".zu-settings .cap .zu-rot-cp-mode{float:right;margin-top:-4px}" +
       ".zu-rot-cp-pnote{display:flex;align-items:center;justify-content:space-between;gap:8px}" +
       ".zu-rot-cp-list{display:flex;flex-direction:column;gap:6px;margin:4px 12px 10px}" +
