@@ -147,6 +147,16 @@ test("manual update on the local directory channel leaves checking as soon as th
   assert.ok(first("updating") > first("available"), phases.join(","));
   assert.equal(f.updater.status().phase, "updated");
 });
+test("a local-directory marketplace never consults the repository rename probe", async (t) => {
+  const f = fixture(t);
+  const probed = [];
+  const updater = createUpdater({ ...f.options, probeRename: async (repo) => { probed.push(repo); return "owner/other"; } });
+  f.set({ error: "GitHub Release 资产来源或大小无效" });   // 文案刻意命中 RENAME_SUSPECT
+  await updater.request({ action: "check" });
+  assert.equal(updater.status().phase, "error");
+  assert.deepEqual(probed, []);
+});
+
 test("up-to-date and older marketplace versions never install", async (t) => {
   const f = fixture(t); f.set({ version: "1.0.0" }); await f.updater.request({ action: "update" });
   f.set({ version: "0.9.0" }); await f.updater.request({ action: "update" });

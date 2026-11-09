@@ -400,6 +400,50 @@ class RuntimeSyncGuardTests(unittest.TestCase):
             self.assertIsNone(verify())   # 锚定：意图与安装记录通过兜底形状门
             self.assertIsNone(verify())   # 复核：再次验收与锚一致，不因 catalogSha256 形状误拒
 
+    def _stale_updater(self):
+        # 旧版 updater：无 verifyRuntimeSync 导出，验收走内嵌 migrate 冻结适配器。
+        (self.runtime / "plugin-updater.cjs").write_text(
+            "module.exports = { compareVersions: (a, b) => {"
+            " const pa = a.split('.').map(Number), pb = b.split('.').map(Number);"
+            " for (let i = 0; i < 3; i++) { if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) > (pb[i] || 0) ? 1 : -1; }"
+            " return 0; } };\n", encoding="utf-8")
+
+    def test_migrate_fallback_is_frozen_for_git_source_on_stale_release_module(self):
+        # 冻结适配器服务的正是旧运行目录：旧 release 模块不导出较新的 gitcodeRepository 等函数
+        # （githubRepository 自首个提交起就导出；下面的桩只导出适配器自身依赖的三个函数，是「适配器依赖面」契约）。
+        # git 形态的 GitHub 来源 + 合法旧意图必须照旧放行，不得因适配器调用新导出而 TypeError。
+        self.use_head_runtime()
+        self._stale_updater()
+        self.source = {"source": "git", "url": "https://github.com/ByteRax/zcode-token-usage-statusbar.git",
+                       "ref": "plugin-releases"}
+        self.write(self.storage / "known_marketplaces.json", {"marketplaces": [
+            {"id": "zusage-marketplace", "source": self.source}]})
+        self.pending["pendingRelease"]["channel"]["source"] = self.source.copy()
+        self.save_state()
+        (self.runtime / "plugin-release.cjs").write_text(
+            "const fs = require('fs'), path = require('path');"
+            " module.exports = {"
+            " readChannel: (home, root) => {"
+            "  const data = JSON.parse(fs.readFileSync(path.join(root, 'known_marketplaces.json'), 'utf8'));"
+            "  return { kind: 'release', repository: 'ByteRax/zcode-token-usage-statusbar',"
+            "   marketplace: data.marketplaces.find((m) => m.id === 'zusage-marketplace') };"
+            " },"
+            " validateRelease: (row, repo) => ({ version: row.tag_name.slice(1) }),"
+            " validateManifest: () => {} };\n", encoding="utf-8")
+        with self.installer._sync_verifier(self.runtime, None) as verify:
+            self.assertIsNone(verify())
+            self.assertIsNone(verify())
+
+    def test_migrate_fallback_reports_missing_channel_as_invalid_intent(self):
+        # 缺 channel 的意图必须得到干净的「意图无效」，而不是读 undefined 属性的 TypeError。
+        self.use_head_runtime()
+        self._stale_updater()
+        del self.pending["pendingRelease"]["channel"]
+        self.save_state()
+        with self.installer._sync_verifier(self.runtime, None) as verify:
+            with self.assertRaisesRegex(ValueError, "Release 更新意图无效"):
+                verify()
+
     def test_migrate_fallback_rejects_catalog_intent_on_stale_release_module(self):
         # release 模块同样过旧（无 validateGithubCatalogRelease 导出）时按旧规则拒绝：
         # archive.size 为 null 的兜底意图过不了合成 API 行校验，保持 fail-closed。

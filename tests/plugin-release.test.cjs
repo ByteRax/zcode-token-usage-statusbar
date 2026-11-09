@@ -8,7 +8,7 @@ const crypto = require("crypto");
 const https = require("https");
 const { EventEmitter } = require("events");
 const { githubRepository, gitcodeRepository, readChannel, checkRelease, gitcodeReleaseFromCatalog, githubReleaseFromCatalog, validateGitcodeRelease, validateGithubCatalogRelease,
-  downloadRelease, validateRelease, validateManifest, catalogChannel,
+  downloadRelease, validateRelease, validateManifest, catalogChannel, probeRepositoryRename,
   fetchBytes, sameAssetUrl, MAX_ASSET, MAX_JSON, PLUGIN_ID } = require("../plugin-release.cjs");
 const { compareVersions } = require("../plugin-updater.cjs");
 
@@ -464,4 +464,238 @@ test("readChannel routes repository sources whose cached catalog points at sourc
   // 本地目录来源不看清单
   home = fixture(t, { source: "directory", path: path.join(home, "pkg") }); writeCatalog(home, sourceCatalog);
   assert.equal(channel(home).kind, "local");
+});
+/* 仓库改名探测（install-release.md §6）：信号一律出自 GitHub 官方答复。两个来源——API 的当前
+   full_name 与网页 301/302 的 Location；测试必须同时注入两者，默认实现会真实联网。 */
+const OLD_REPO = "ByteRax/zcode-token-usage-statusbar", NEW_REPO = "ByteRax/zcode-speed-bar";
+const offlineLookup = async () => { throw new Error("api offline"); };
+const offlineHead = async () => { throw new Error("web offline"); };
+test("repository rename probe via the web accepts only same-host GitHub redirects to a different valid repository", async () => {
+  const web = (status, location) => probeRepositoryRename(OLD_REPO, async () => ({ status, location }), offlineLookup);
+  assert.equal(await web(301, `https://github.com/${NEW_REPO}`), NEW_REPO);
+  assert.equal(await web(302, `https://github.com/${NEW_REPO}/`), NEW_REPO);
+  assert.equal(await web(307, `https://github.com/${NEW_REPO}.git`), NEW_REPO);
+  assert.equal(await web(200, `https://github.com/${NEW_REPO}`), null);
+  assert.equal(await web(404, null), null);
+  assert.equal(await web(301, null), null);
+  assert.equal(await web(301, "https://evil.com/owner/repo"), null);
+  assert.equal(await web(301, "http://github.com/owner/repo"), null);
+  assert.equal(await web(301, `https://github.com/${OLD_REPO}`), null);
+  assert.equal(await web(301, OLD_REPO.toUpperCase()), null);
+  assert.equal(await web(301, "https://github.com/only-owner"), null);
+  assert.equal(await web(301, "https://github.com/a/b/extra/deep"), null);
+  assert.equal(await probeRepositoryRename(OLD_REPO, offlineHead, offlineLookup), null);
+  assert.equal(await probeRepositoryRename("no-slash", async () => ({ status: 301, location: `https://github.com/${NEW_REPO}` }), offlineLookup), null);
+});
+test("repository rename probe prefers the API answer and only falls back to the web when the API fails", async () => {
+  let webCalls = 0;
+  const head = async () => { webCalls++; return { status: 301, location: "https://github.com/ByteRax/from-web" }; };
+  // API 给出合法的新名：定论，不再碰网页主机
+  assert.equal(await probeRepositoryRename(OLD_REPO, head, async () => NEW_REPO), NEW_REPO);
+  // API 答复「同名」（含大小写差异）= 未改名，同样是定论，不用网页来源去推翻它
+  assert.equal(await probeRepositoryRename(OLD_REPO, head, async () => OLD_REPO), null);
+  assert.equal(await probeRepositoryRename(OLD_REPO, head, async () => OLD_REPO.toUpperCase()), null);
+  assert.equal(webCalls, 0);
+  // API 失败（限流/不可达/404）或答复不是合法仓库名：落到网页来源
+  assert.equal(await probeRepositoryRename(OLD_REPO, head, offlineLookup), "ByteRax/from-web");
+  assert.equal(await probeRepositoryRename(OLD_REPO, head, async () => null), "ByteRax/from-web");
+  assert.equal(await probeRepositoryRename(OLD_REPO, head, async () => "not a repository"), "ByteRax/from-web");
+  assert.equal(webCalls, 3);
+  // 两个来源都失败：null，由调用方原样报错
+  assert.equal(await probeRepositoryRename(OLD_REPO, offlineHead, offlineLookup), null);
+});
+test("rename probe asks the API about the registered name first, then the web page of that same name", async () => {
+  const seen = [];
+  const lookup = async (repo) => { seen.push(["lookup", repo]); throw new Error("api offline"); };
+  const head = async (url) => { seen.push(["head", url]); return { status: 301, location: `https://github.com/${NEW_REPO}` }; };
+  assert.equal(await probeRepositoryRename(OLD_REPO, head, lookup), NEW_REPO);
+  assert.deepEqual(seen, [["lookup", OLD_REPO], ["head", `https://github.com/${OLD_REPO}`]]);
+});
+test("web leg accepts exactly the redirect statuses and resolves a relative Location against github.com", async () => {
+  const web = (status, location) => probeRepositoryRename(OLD_REPO, async () => ({ status, location }), offlineLookup);
+  for (const status of [301, 302, 303, 307, 308]) assert.equal(await web(status, `https://github.com/${NEW_REPO}`), NEW_REPO, String(status));
+  for (const status of [200, 204, 300, 304, 305, 306, 400, 404, 500]) assert.equal(await web(status, `https://github.com/${NEW_REPO}`), null, String(status));
+  assert.equal(await web(301, `/${NEW_REPO}`), NEW_REPO);
+});
+test("web leg only accepts github.com itself, never look-alike or sibling hosts", async () => {
+  const web = (location) => probeRepositoryRename(OLD_REPO, async () => ({ status: 301, location }), offlineLookup);
+  assert.equal(await web(`https://github.com/${NEW_REPO}`), NEW_REPO);
+  for (const host of ["notgithub.com", "github.com.evil.example", "api.github.com", "gist.github.com", "www.github.com", "github.community"]) {
+    assert.equal(await web(`https://${host}/${NEW_REPO}`), null, host);
+  }
+});
+test("rename probe refuses non-string or non-canonical repositories without touching either source", async () => {
+  let touched = 0;
+  const head = async () => { touched++; return { status: 301, location: "https://github.com/a/b" }; };
+  const lookup = async () => { touched++; return "a/b"; };
+  for (const bad of [null, undefined, 42, {}, "", "no-slash", "https://github.com/a/b", "a/b.git"]) {
+    assert.equal(await probeRepositoryRename(bad, head, lookup), null, String(bad));
+  }
+  assert.equal(touched, 0);
+});
+/* 默认实现（不注入 head/lookup）经 mock 的 https 层覆盖：API 腿只放行 api.github.com 并校验仓库对象形状；
+   网页腿走 https.request，超时要销毁请求，守卫定时器必须清理且 unref。mockHttps 只替换 https.get。 */
+function mockHead(t, plans) {
+  const seen = { calls: 0, destroyed: 0, resumed: 0, timeouts: [], urls: [] };
+  t.mock.method(https, "request", (url, options, callback) => {
+    const plan = plans[Math.min(seen.calls++, plans.length - 1)];
+    seen.timeouts.push(options.timeout); seen.urls.push(String(url));
+    if (plan.throwSync) throw new Error("fixture: https.request threw synchronously");
+    assert.equal(options.method, "HEAD");
+    assert.equal(options.headers["User-Agent"], "zcode-token-usage-statusbar-release-updater");
+    const request = new EventEmitter();
+    request.destroy = (error) => { seen.destroyed++; if (error) queueMicrotask(() => request.emit("error", error)); return request; };
+    request.end = () => queueMicrotask(() => {
+      if (plan.hang) return;   // 既不响应也不触发 timeout：只有 10s 总守卫能结算
+      if (plan.timeout) { request.emit("timeout"); return; }
+      if (plan.error) { request.emit("error", plan.error); return; }
+      const response = new EventEmitter();
+      response.statusCode = plan.status; response.headers = plan.headers || {}; response.resume = () => { seen.resumed++; };
+      callback(response);
+    });
+    return request;
+  });
+  return seen;
+}
+test("the 10s guard settles a hanging web-leg request and destroys it", async (t) => {
+  const realSet = globalThis.setTimeout;
+  t.mock.method(globalThis, "setTimeout", (fn, ms, ...rest) => realSet(fn, ms === 10000 ? 1 : ms, ...rest));   // 把 10s 守卫压到 1ms
+  mockHttps(t, [{ status: 404 }]);
+  const head = mockHead(t, [{ hang: true }]);
+  assert.equal(await probeRepositoryRename(OLD_REPO), null);
+  assert.ok(head.destroyed >= 1, "守卫触发后必须销毁挂起的请求");
+});
+const repoBody = (over = {}) => Buffer.from(JSON.stringify({ id: 42, name: "zcode-speed-bar", full_name: NEW_REPO,
+  owner: { login: "ByteRax" }, ...over }));
+test("default rename lookup follows api.github.com's 301 and accepts a self-consistent repository object", async (t) => {
+  const head = mockHead(t, [{ status: 404 }]);
+  const calls = mockHttps(t, [
+    { status: 301, headers: { location: "https://api.github.com/repositories/42" } },
+    { chunks: [repoBody()] }]);
+  assert.equal(await probeRepositoryRename(OLD_REPO), NEW_REPO);
+  assert.deepEqual(calls, [`https://api.github.com/repos/${OLD_REPO}`, "https://api.github.com/repositories/42"]);
+  assert.equal(head.calls, 0);   // API 给出定论，不碰网页主机
+});
+test("default rename lookup rejects forged or shapeless answers and falls back to the web leg", async (t) => {
+  const forged = {
+    shapeless: { full_name: "evil/pkg" },
+    "message plus full_name": { message: "Not Found", full_name: "evil/pkg" },
+    "full_name disagrees with owner/name": { id: 7, name: "pkg", full_name: "evil/pkg", owner: { login: "ByteRax" } },
+    "non-integer id": { id: "7", name: "zcode-speed-bar", full_name: NEW_REPO, owner: { login: "ByteRax" } },
+    "missing owner": { id: 7, name: "zcode-speed-bar", full_name: NEW_REPO },
+    "fractional id": { id: 7.5, name: "zcode-speed-bar", full_name: NEW_REPO, owner: { login: "ByteRax" } },
+    // 以下两例的 full_name 与「owner/name 拼接」自洽：只有 login/name 的 typeof 校验能拦下它们
+    "non-string login": { id: 7, name: "zcode-speed-bar", full_name: "123/zcode-speed-bar", owner: { login: 123 } },
+    "non-string name": { id: 7, name: 456, full_name: "ByteRax/456", owner: { login: "ByteRax" } },
+  };
+  for (const [label, body] of Object.entries(forged)) {
+    await t.test(label, async (st) => {
+      const head = mockHead(st, [{ status: 404 }]);
+      mockHttps(st, [{ chunks: [Buffer.from(JSON.stringify(body))] }]);
+      assert.equal(await probeRepositoryRename(OLD_REPO), null);
+      assert.equal(head.calls, 1);   // API 答复被拒 → 落到网页腿（这里 404 → null）
+    });
+  }
+});
+test("default rename lookup treats an oversized answer as an API failure", async (t) => {
+  const head = mockHead(t, [{ status: 404 }]);
+  // 合法的仓库对象 + 超过 MAX_JSON 的填充：若上限失效，它会被接受并返回 NEW_REPO，而不是落到 null
+  mockHttps(t, [{ chunks: [repoBody({ pad: "x".repeat(MAX_JSON) })] }]);
+  assert.equal(await probeRepositoryRename(OLD_REPO), null);
+  assert.equal(head.calls, 1);
+});
+test("default rename lookup accepts an answer of exactly MAX_JSON bytes and refuses one byte more", async (t) => {
+  const sized = (delta) => {
+    const base = JSON.stringify({ id: 42, name: "zcode-speed-bar", full_name: NEW_REPO, owner: { login: "ByteRax" }, pad: "" }).length;
+    return Buffer.from(JSON.stringify({ id: 42, name: "zcode-speed-bar", full_name: NEW_REPO, owner: { login: "ByteRax" },
+      pad: "x".repeat(MAX_JSON - base + delta) }));
+  };
+  assert.equal(sized(0).length, MAX_JSON);
+  await t.test("exactly MAX_JSON bytes", async (st) => {
+    mockHead(st, [{ status: 404 }]);
+    mockHttps(st, [{ chunks: [sized(0)] }]);
+    assert.equal(await probeRepositoryRename(OLD_REPO), NEW_REPO);
+  });
+  await t.test("MAX_JSON + 1 bytes", async (st) => {
+    const head = mockHead(st, [{ status: 404 }]);
+    mockHttps(st, [{ chunks: [sized(1)] }]);
+    assert.equal(await probeRepositoryRename(OLD_REPO), null);
+    assert.equal(head.calls, 1);
+  });
+});
+test("default rename lookup accepts a case-only difference between full_name and owner/name and returns full_name as served", async (t) => {
+  mockHead(t, [{ status: 404 }]);
+  mockHttps(t, [{ chunks: [repoBody({ owner: { login: "byterax" }, name: "ZCODE-SPEED-BAR" })] }]);   // full_name 仍是 NEW_REPO
+  assert.equal(await probeRepositoryRename(OLD_REPO), NEW_REPO);
+});
+test("default rename lookup follows a redirect only within api.github.com", async (t) => {
+  for (const host of ["github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com",
+    "gitcode.com", "file-cdn.gitcode.com", "api.gitcode.com", "evil.example"]) {
+    await t.test(host, async (st) => {
+      const head = mockHead(st, [{ status: 404 }]);
+      const calls = mockHttps(st, [{ status: 301, headers: { location: `https://${host}/x` } }]);
+      assert.equal(await probeRepositoryRename(OLD_REPO), null);
+      assert.deepEqual(calls, [`https://api.github.com/repos/${OLD_REPO}`]);   // 没有第二跳请求
+      assert.equal(head.calls, 1);
+    });
+  }
+});
+/* 网页腿的结算路径：守卫推到 10 分钟，只剩各自的事件能让 promise 结算——3 秒内不结算即视为挂起。 */
+const settleWithin = (promise, ms) => Promise.race([promise, new Promise((resolve, reject) => {
+  const timer = setTimeout(() => reject(new Error(`probe did not settle within ${ms}ms`)), ms);
+  if (typeof timer.unref === "function") timer.unref();
+})]);
+function pushGuardOut(t) {
+  const realSet = globalThis.setTimeout;
+  t.mock.method(globalThis, "setTimeout", (fn, ms, ...rest) => realSet(fn, ms === 10000 ? 600000 : ms, ...rest));
+}
+test("a socket timeout settles the web leg by itself, long before the 10s guard", async (t) => {
+  pushGuardOut(t);
+  mockHttps(t, [{ status: 404 }]);
+  const head = mockHead(t, [{ timeout: true }]);
+  assert.equal(await settleWithin(probeRepositoryRename(OLD_REPO), 3000), null);
+  assert.ok(head.destroyed >= 1);
+});
+test("a request-level error settles the web leg", async (t) => {
+  pushGuardOut(t);
+  mockHttps(t, [{ status: 404 }]);
+  mockHead(t, [{ error: Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" }) }]);
+  assert.equal(await settleWithin(probeRepositoryRename(OLD_REPO), 3000), null);
+});
+test("a synchronous throw from https.request settles the web leg", async (t) => {
+  pushGuardOut(t);
+  mockHttps(t, [{ status: 404 }]);
+  mockHead(t, [{ throwSync: true }]);
+  assert.equal(await settleWithin(probeRepositoryRename(OLD_REPO), 3000), null);
+});
+test("default web leg ignores a non-redirect status even when it carries a Location header", async (t) => {
+  mockHttps(t, [{ status: 404 }]);
+  mockHead(t, [{ status: 200, headers: { location: `https://github.com/${NEW_REPO}` } }]);
+  assert.equal(await probeRepositoryRename(OLD_REPO), null);
+});
+test("default web leg resolves a 301; a socket timeout destroys the request; the guard timer is always cleared and unref'd", async (t) => {
+  const timers = [], cleared = [];
+  const realSet = globalThis.setTimeout, realClear = globalThis.clearTimeout;
+  t.mock.method(globalThis, "setTimeout", (fn, ms, ...rest) => { const timer = realSet(fn, ms, ...rest); if (ms === 10000) timers.push(timer); return timer; });
+  t.mock.method(globalThis, "clearTimeout", (timer) => { cleared.push(timer); return realClear(timer); });
+  await t.test("301 Location", async (st) => {
+    mockHttps(st, [{ status: 404 }]);
+    const head = mockHead(st, [{ status: 301, headers: { location: `https://github.com/${NEW_REPO}` } }]);
+    assert.equal(await probeRepositoryRename(OLD_REPO), NEW_REPO);
+    assert.equal(head.destroyed, 0);
+    assert.deepEqual(head.urls, [`https://github.com/${OLD_REPO}`]);   // 探测的是注册名自己的网页
+    assert.ok(head.timeouts.every((ms) => ms > 0 && ms < 10000), "socket 空闲超时必须设置且短于 10s 总守卫");
+    assert.equal(head.resumed, 1, "响应体必须被消费，socket 才能归还");
+  });
+  await t.test("socket timeout", async (st) => {
+    mockHttps(st, [{ status: 404 }]);
+    const head = mockHead(st, [{ timeout: true }]);
+    assert.equal(await probeRepositoryRename(OLD_REPO), null);
+    assert.ok(head.destroyed >= 1, "超时必须销毁请求");
+  });
+  assert.equal(timers.length, 2);
+  for (const timer of timers) {
+    assert.ok(cleared.includes(timer), "守卫定时器必须在结算后清理");
+    assert.equal(timer.hasRef(), false, "守卫定时器必须 unref，防止挂起事件循环");
+  }
 });

@@ -152,6 +152,36 @@ GitCode 渠道的清单 URL 形状、下载主机白名单（`gitcode.com`/`file
 
 项目内的 [发布技能](../.zcode/skills/zcode-github-release/SKILL.md) 提供检查与预演流程，不全局安装，也不随插件分发。源码 manifest 提升版本不等于远端渠道或用户缓存已完成升级。
 
+### 仓库改名
+
+更新器已预埋改名迁移（契约见 [install-release.md §6](../.zcode/rules/install-release.md)）：改名后老用户的更新检查在旧名路径上遇到来源校验失败时，会向 GitHub 询问仓库当前名（API 的 `full_name`，兜底看网页 301 重定向）并按新名重查。**只有已升级到含该能力版本、且该版本已在主进程里生效的用户受益**，所以顺序不能颠倒。第 2–6 步里的 GitHub 改名、提交、推送、发布 Release 与渠道写入都是外部写操作，须逐项取得**当前明确授权**（AGENTS.md §8），AI 助手不得把本节当作授权代为执行：
+
+
+1. 先发布含迁移能力的版本，等老用户普遍升级**并重启过一次 ZCode** 后再改名：迁移代码在 `plugin-updater.cjs`、`plugin-release.cjs` 两个主进程子模块里（不是 `inject-main.cjs`）：运行 v258 以后加载器的客户端会在轮询周期内热换，更早的在野加载器与 `hot_reload:false` 用户要完全退出重开才生效。仓库没有遥测，可参考该版本 Release 资产下载量与近期 Issue 反馈判断普及度；停在更早版本的用户改名后只能按[用户指南](user-guide.md#切换已有市场到正式渠道)手动切换同名市场来源。
+2. 在 GitHub 仓库设置里**只改仓库名，不要改 owner**；改名后**不要在旧名下新建同名仓库**。前者的风险是旧 owner 名可能被他人注册（仅当 owner 账号本身改名或被删除才会释放旧名，这是 GitHub 平台行为），后者会让重定向失效。第 2–5 步应连续完成：这段窗口里已升级用户的检查会成功迁移（写入 `repoMigration`）但看不到新版，期间不要发布任何改名前构建的包。
+3. 把本地 remote 指向新地址。`origin` 是 xhwxt 上游、只读，不要动。`fork` 有两条 push URL（GitHub、GitCode 镜像），只改 GitHub 那条，GitCode 那条保持不变；单独执行 `git remote set-url fork <新地址>` 只改 fetch URL，GitHub 的 push URL 仍是旧名（靠 GitHub 重定向还能推成功，但不要依赖它）：
+
+   ```bash
+   git remote set-url fork https://github.com/<owner>/<新名>.git
+   git remote set-url --push fork https://github.com/<owner>/<新名>.git https://github.com/<owner>/<旧名>.git
+   git config --get-all remote.fork.pushurl   # 应为：新 GitHub 地址、原 GitCode 地址
+   ```
+
+   `release_tool.py publish` 会核对 `--repo` 是否为已配置的 GitHub remote（`git remote -v` 任一行匹配即可）。
+4. **必须在 build 之前**更新仓库内的旧名并提交：`marketplace.json`、两份 `plugin.json`、插件目录 `README.md`、`overlay.js` 都在发布 ZIP 里，而 `release_tool.py publish` 的 preflight 要求 ZIP 与 HEAD 源码逐字节一致：构建之后再改这些文件会被拒绝（`ZIP is not the current repository source`）；不改就发布，则包里的文件仍是旧名。以 `git grep -n -i 'byterax'` 为准（大小写不敏感：技能测试里有 `bytERAX` 变体；owner 级提及无需改），已知位置：
+   - 两份 `plugin.json` 的 `homepage`/`repository`；根 `marketplace.json` 的 `plugins[0].icon`（jsdelivr 地址不保证跟随 GitHub 重定向，须改新名；`owner.url` 是 owner 级地址，只改仓库名时不用动）。已分发的旧渠道清单与宿主缓存里的 icon 仍是旧名，CDN 缓存过期后可能 404，只影响图标外观；`docs/promo/icon.webp` 的路径与文件名冻结，不要为此移动文件。
+   - 三份根 README（含 star-history 徽章，只在这三份里）、插件目录下的 `README.md`（随 ZIP 分发）与 `README_CN.md`（不随 ZIP 分发，但同样要改）、`docs/` 里的安装命令与链接。
+   - `docs/promo/*.html` 与 `docs/promo/social-copy.md`：改完按 [docs.md §3](../.zcode/rules/docs.md) 用 `docs/promo/shoot.py` 重新导出 promo 图。
+   - 浮层「反馈问题」链接：`src/overlay/09-instance-settings-and-notes.js` 的 `issuesUrl`。这是 overlay 变更，按 [repo-workflow.md §2](../.zcode/rules/repo-workflow.md) 的惯例升 `VERSION` 并补台账，改完经 `sync_plugin.py` 重新拼出 `overlay.js` 与插件副本。
+   - 项目技能里写死的仓库：`.zcode/skills/zcode-issue-pr-resolver/scripts/triage.py` 的 `REPO` 及其测试与文档；`.zcode/rules/repo-workflow.md` 里的仓库地址与 `gh api` 命令。
+   - 测试：只改**断言当前真实地址**的（如 `tests/test_plugin_contract.py` 的 icon 断言、`tests/overlay-settings.test.cjs` 的 `ISSUES_URL`）；`tests/plugin-release.test.cjs` 的 `OLD_REPO`、`tests/plugin-release-updater.test.cjs` 的 `REPOSITORY`/`RENAMED` 等**改名夹具刻意保留旧名或占位名**，批量替换会让改名用例变红。
+   - 官方市场收录 PR 的 source 同样要改。
+
+   更新器代码本身不含 GitHub 仓库硬编码（GitCode 镜像名 `NOTES_GITCODE_MIRROR` 不受 GitHub 改名影响）。
+5. 以新名为 `--repo` **发布下一版**（流程见[发布插件](#发布插件)），使 `plugin-releases` 清单与包内 manifest 都烙新名。不要用改名前构建的包重发清单：包内 manifest 的 `repository` 取自构建时的 `--repo`，用新名 `--repo` 校验旧包时 `release_tool.py verify` 会报 `repository disagrees`，更新器的 `validateManifest` 也会拒绝。
+6. 改名当天在 README 顶部与新版 Release notes 加迁移公告，并在[用户指南](user-guide.md#切换已有市场到正式渠道)补一句「仓库改名后同样适用」、把示例地址换成新名：已升级到含迁移能力版本的用户会自动迁移；更早版本的用户更新报「GitHub Release 资产来源或大小无效」时，按该小节切换同名市场来源，或改用 GitCode 镜像渠道（`plugin-releases-gitcode`，不受 GitHub 改名影响）。
+7. 回读验收：新名下的 Release 与 `plugin-releases` 清单版本、ZIP URL 一致；用旧名注册的环境执行一次检查更新（宿主刷新市场时把已存的 `source` 原样写回，注册名不会被改写成新名，出处见 install-release.md §6），应看到新版本，且运行目录 `plugin-update.json` 出现 `repoMigration`；改名后也用旧名走一遍新用户安装（旧命令仍可用，首次检查会自动迁移）。若迁移后又想回到注册名（例如 `to` 消失），删除 `plugin-update.json` 里的 `repoMigration` 键即可，重新注册同一来源无效。
+
 ## 数据与性能
 
 - 数字主要在模型请求完成入库后刷新，不把“查询实时”说成“流式逐字速率”。

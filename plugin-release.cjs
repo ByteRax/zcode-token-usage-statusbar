@@ -49,6 +49,64 @@ function sameAssetUrl(actual, expected) {
   const a = parseAssetUrl(actual), b = parseAssetUrl(expected);
   return !!a && !!b && a.host === b.host && sameRepository(a.repository, b.repository) && a.path === b.path;
 }
+function defaultProbeHead(url) {
+  return new Promise((resolve, reject) => {
+    let request = null;
+    const timer = setTimeout(() => finish(new Error("改名探测超时")), 10000);
+    if (typeof timer.unref === "function") timer.unref();
+    function finish(error, value) {
+      if (typeof clearTimeout === "function") clearTimeout(timer);
+      if (error) { if (request) request.destroy(); reject(error); } else resolve(value);
+    }
+    try {
+      request = https.request(url, { method: "HEAD", timeout: 8000,
+        headers: { "User-Agent": "zcode-token-usage-statusbar-release-updater" } }, (response) => {
+        response.resume();
+        finish(null, { status: response.statusCode, location: response.headers.location });
+      });
+      request.on("timeout", () => request.destroy(new Error("改名探测超时")));
+      request.on("error", finish);
+      request.end();
+    } catch (error) { finish(error); }
+  });
+}
+function defaultLookupFullName(repository) {
+  // 改名仓库：api.github.com/repos/旧名 先 301 到 /repositories/<id>，再返回当前 full_name。
+  // 只放行 api.github.com 一个主机（不沿用含资产域与 GitCode 域的下载白名单，重定向到别处即拒绝），
+  // 且响应必须是自洽的仓库对象（整数 id、owner.login/name 与 full_name 一致），任何其它形状按失败处理。
+  return fetchBytes("https://api.github.com/repos/" + repository, MAX_JSON, undefined, ["api.github.com"]).then((body) => {
+    const row = JSON.parse(body.toString("utf8"));
+    const owner = row && row.owner && typeof row.owner.login === "string" ? row.owner.login : "";
+    return row && Number.isSafeInteger(row.id) && owner && typeof row.name === "string" && typeof row.full_name === "string" &&
+      row.full_name.toLowerCase() === (owner + "/" + row.name).toLowerCase() ? row.full_name : null;
+  });
+}
+// 仓库改名探测（install-release.md §6）：信号只有仓库真实所有者执行改名才会产生，且一律出自
+// GitHub 官方答复，是唯一信任锚。两个独立来源——①API：旧名 301 到 /repositories/<id> 后给出当前
+// full_name（本机实测 github.com 网页主机经代理常整体 504 而 API 主机稳定，目标用户群恰是代理环境）；
+// ②网页 HEAD：301/302 的 Location 指向新名，不占 API 匿名配额（API 被限流时仍可用）。API 给出合法
+// 仓库名即为定论（含「同名」=未改名），只在 API 失败时才落到网页。任何失败一律 null——调用方必须把
+// 「探测无果」当「未改名」原样报错，绝不静默换源；第二、三参仅供测试注入，生产走默认直连。
+async function probeRepositoryRename(repository, head, lookup) {
+  if (typeof repository !== "string" || githubRepository(repository) !== repository) return null;
+  const renamedTo = (name) => {
+    const found = typeof name === "string" ? githubRepository(name) : null;
+    return found && found === name && found.toLowerCase() !== repository.toLowerCase() ? found : null;
+  };
+  try {
+    const name = await (lookup || defaultLookupFullName)(repository);
+    if (typeof name === "string" && githubRepository(name) === name) return renamedTo(name);
+  } catch (e) { /* 限流/不可达/404：落到网页来源 */ }
+  try {
+    const response = await (head || defaultProbeHead)("https://github.com/" + repository);
+    if (!response || ![301, 302, 303, 307, 308].includes(response.status) ||
+        typeof response.location !== "string" || !response.location) return null;
+    const target = new URL(response.location, "https://github.com");
+    if (target.protocol !== "https:" || target.hostname !== "github.com") return null;
+    const match = /^\/([A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9][A-Za-z0-9._-]*?)(?:\.git)?\/?$/.exec(target.pathname);
+    return match ? renamedTo(match[1]) : null;
+  } catch (e) { return null; }
+}
 function readCatalog(root) {
   // 市场缓存清单只用来识别“源码清单”这一形态；事务进行中、缺失或损坏时按未知处理，
   // 由后续 Release 流程报出准确原因。
@@ -575,5 +633,5 @@ function createNotesService(options) {
 }
 
 module.exports = { sameRepository, sameAssetUrl, githubRepository, gitcodeRepository, readChannel, checkRelease, gitcodeReleaseFromCatalog, githubReleaseFromCatalog, validateGitcodeRelease, validateGithubCatalogRelease,
-  downloadRelease, validateRelease, validateManifest, catalogChannel,
+  downloadRelease, validateRelease, validateManifest, catalogChannel, probeRepositoryRename,
   fetchBytes, fetchReleaseNotes, fetchReleaseNotesList, createNotesCache, createNotesService, notesTag, releaseAcceptHeader, NOTES_API_HOSTS, NOTES_MAX_JSON, NOTES_LIST_MAX_JSON, NOTES_LIST_MAX, MAX_ASSET, MAX_JSON, PLUGIN_ID };
