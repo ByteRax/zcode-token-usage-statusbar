@@ -763,6 +763,11 @@
            * 重建不丢高亮）。焦点/选择在 tip 内时跳过防打断——drawTip 自带签名幂等与
            * 选区守卫，内容没变不会真重建。 */
           var focusInTip = tip.contains(document.activeElement);
+          /* v308 审查还原：本行曾随模型行 data-tip 批次引入「悬停中冻结快照重绘」
+           * （hovFreeze），与已合并的 v224「悬停中 tooltip 随快照跟手刷新」契约冲突
+           * （pill-theme 4 例红）；其动机（原生 title 需 ~1s 稳定悬停，生成期重建打断）
+           * 已由 02 分片同批的纯 CSS data-tip 气泡消解——重建后 :hover 即时跟随新元素，
+           * 无驻留要求，冻结不再有必要，撤销以恢复悬停实时刷新。 */
           var speedFollow = !!(nu.__tip.indexOf && nu.__tip.indexOf("zu-stat-tip--speed") > 0) && !focusInTip;
           /* v242:pill 主题同样受「焦点在 tip 内跳过重绘」守卫——此前无条件 drawTip,
            * 键盘聚焦柱体时一次快照推送就把焦点打回 body(v224 修的是悬停链,此处补齐焦点链) */
