@@ -745,7 +745,7 @@
         /* v298（用户拍板）：chip 主数字=最后一轮真实速度（最近一段，不再取会话均、
          * 不带「均」前缀）；tooltip 左卡仍为会话加权平均（"平均速度"语义不变） */
         var chipBand = tpsBand(chipTps);
-        var chipFace = chipTps > 0 ? ((chipTps % 1 ? chipTps.toFixed(1) : String(chipTps)) + '<span class="dim">t/s</span>') : "";   // 最后一轮无效：面空（含单位），仅留图标作悬停锚；空面补 aria-label 保可访问名（review 修复）
+        var chipFace = chipTps > 0 ? ((chipTps % 1 ? chipTps.toFixed(1) : String(chipTps)) + ' <span class="dim">t/s</span>') : "";   // 最后一轮无效：面空（含单位），仅留图标作悬停锚；空面补 aria-label 保可访问名（review 修复）。v319：数字与单位间补空格（原串无空格、.zu-live 的 word-spacing 对无空格文本无效，真机实测数字紧贴 t/s；补空格后与实时桥路径「 t/s」+word-spacing:2px 渲染一致）
         it(ico('<path d="M13.5 2 3.5 13.5H11L10 22l10.5-12H13l.5-8z"/>') +
           '<span class="zu-live ' + (chipBand ? chipBand.cls : "dim") + '"' + (chipFace ? "" : ' aria-label="' + L("生成速度", "Generation speed") + '"') + '>' + chipFace + '</span>',
           speedTipRebuild(speedChartHover, v2sel));

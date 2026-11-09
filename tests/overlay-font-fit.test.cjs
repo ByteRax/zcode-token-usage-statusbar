@@ -61,6 +61,15 @@ test('tooltip surfaces (exc card/rateTip inline fallback and stat/project/sub/sp
   }
 });
 
+test('fallback speed cell face keeps a space before the unit span (word-spacing needs a separator)', () => {
+  // v319：无桥回退路径 chipFace 原串「数字+'<span class="dim">t/s</span>'」无空格字符，
+  // .zu-live 的 word-spacing 对无空格文本无效（真机实测数字紧贴 t/s）
+  const at = source.indexOf('var chipFace = chipTps > 0');
+  assert.ok(at >= 0, 'chipFace missing');
+  const line = source.slice(at, source.indexOf(String.fromCharCode(10), at));
+  assert.ok(line.includes(") + ' <span class=\"dim\">t/s</span>'"), 'chipFace 数字与单位间必须保留空格');
+});
+
 test('settings domain keeps mono token (sans scope must not leak into ⚙ panel)', () => {
   for (const sel of ['.zu-src-field{', '.zu-mp-id{', '.zu-mp-meta{',
     '.zu-settings .zu-notes-body pre{', '.zu-settings .zu-notes-body code{', '.zu-settings .zu-notes-hist-ver{',
