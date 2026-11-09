@@ -1022,6 +1022,8 @@ test('quick hover tips: pure CSS hover pseudo-element on data-tip targets (host 
   assert.ok(css.indexOf('bottom:calc(100% + 6px)') >= 0, 'tooltip pops upward (scroll-container bottom clipping)');
   assert.ok(css.indexOf('pointer-events:none') >= 0, 'pseudo-element never traps the pointer');
   assert.ok(css.indexOf('.zu-rot-cp-row .zu-rot-tipt:hover::after') >= 0 && css.indexOf('.zu-settings .cap .zu-rot-tipt:hover::after') >= 0, 'right-aligned variants for row/cap targets');
+  // cap 行贴 .zu-settings-body（overflow:auto）顶缘：气泡必须翻到触发元素下方，向上弹被滚动区裁剪（v315 用户实报）
+  assert.ok(css.indexOf('.zu-settings .cap .zu-rot-tipt:hover::after{left:auto;right:0;bottom:auto;top:calc(100% + 6px)}') >= 0, 'cap tips flip below the trigger to dodge scroll-container top clipping');
   assert.equal(css.indexOf('.zu-rot-tip{'), -1, 'JS tooltip float layer removed');
   assert.equal(vm.runInContext('typeof rotTipShow', ctx), 'undefined', 'no JS tooltip chain left');
 });
