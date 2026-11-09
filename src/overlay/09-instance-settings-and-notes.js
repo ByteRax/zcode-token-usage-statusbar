@@ -669,14 +669,32 @@
      * 全部 innerHTML 拼接处经 mEsc 转义。mpAsk 25s 兜底：旧主进程不识别 action 时提示
      * 完全重启而非永久 loading。 */
     var mpModal = null, mpHostBtn = null;
+    var mpWaiters = [];
     var MP_HOST_ANCHOR = '[data-testid="model-provider-add-model-button"]';
+    /* v309 确认前自动探测：勾选 ≤24 个才逐个发最小请求验证（并发 4），全部通过才写入；
+     * 有失败自动取消勾选并保留弹窗展示原因（可重新勾选强制添加）。数量上限防异常全选
+     * 大列表时弹窗被探测阻塞（>24 直接保存，与旧版行为一致）。 */
+    var MP_TEST_MAX = 24, MP_TEST_CONC = 4;
     function mEsc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
-    function mpAsk(action, extra, done) {
-      var settled = false;
-      var finish = function (result) { if (settled) return; settled = true; clearTimeout(timer); done(result || { ok: false, error: "no response" }); };
-      /* 25s：主进程最坏路径 = 目录 5s 并行 + 双候选端点各 10s 串行 ≈ 20s，留 5s 余量防假超时 */
-      var timer = setTimeout(function () { finish(null); }, 25000);
-      pluginRequest(action, extra, finish);
+    function mpAsk(action, extra, done, timeoutMs) {
+      var settled = false, requestId = "";
+      function cancel() {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        var index = mpWaiters.indexOf(cancel);
+        if (index >= 0) mpWaiters.splice(index, 1);
+        if (typeof pluginRequestCallbacks !== "undefined") delete pluginRequestCallbacks[requestId];
+      }
+      function finish(result) {
+        if (settled) return;
+        cancel();
+        done(result || { ok: false, error: "no response" });
+      }
+      var timer = setTimeout(function () { finish(null); }, timeoutMs || 25000);
+      if (timer && typeof timer.unref === "function") timer.unref();
+      mpWaiters.push(cancel);
+      requestId = pluginRequest(action, extra, finish);
     }
     function mpErrorText(err) {
       var s = (err && err.error) || err || "";
@@ -688,11 +706,34 @@
       }
       return String(s);
     }
+    /* 探测结果 → 人话（v309）：path 类必须带宿主实际请求 URL——Base URL 少 /v1 这类错配
+     * 的诊断价值全在这一行；kind 与主进程 classifyProbeStatus 对齐，摘录已在主进程脱敏 */
+    function mpProbeFailText(result) {
+      var r = result || {};
+      var kind = String(r.kind || "");
+      var detail = (r.url ? "\n" + r.url : "") + (r.snippet ? "\n" + r.snippet : "");
+      if (kind === "auth") return L("鉴权失败：API Key 无效或无权限（HTTP " + (r.status || "?") + "）", "Auth failed: API key invalid or unauthorized (HTTP " + (r.status || "?") + ")") + detail;
+      if (kind === "path") return L("路径不匹配（HTTP " + (r.status || "?") + "）：宿主实际请求 " + (r.url || "") + "。OpenAI 兼容接口的 Base URL 通常需要以 /v1 结尾；Anthropic 协议由客户端自动补 /v1、无需手写。",
+        "Path mismatch (HTTP " + (r.status || "?") + "): the client actually requests " + (r.url || "") + ". OpenAI-compatible base URLs usually need to end with /v1; the Anthropic protocol auto-appends /v1.") + (r.snippet ? "\n" + r.snippet : "") +
+        (r.tried && r.tried.length ? "\n" + L("已尝试自动修复（候选也失败）：" + r.tried.join("、"), "Auto-repair tried (candidate also failed): " + r.tried.join(", ")) : "");
+      if (kind === "rate") return L("被限流（HTTP 429）：模型可达但被限流，稍后重试。", "Rate limited (HTTP 429): reachable but throttled; retry later.") + detail;
+      if (kind === "bad_request") return L("请求被拒绝（HTTP 400）：模型名可能不存在或参数不被接受。", "Rejected (HTTP 400): the model id may not exist or params are not accepted.") + detail;
+      if (kind === "server") return L("服务端错误（HTTP " + (r.status || "?") + "）。", "Server error (HTTP " + (r.status || "?") + ").") + detail;
+      if (kind === "timeout") return L("超时：网关无响应（15 秒）。", "Timed out: gateway not responding (15s).") + detail;
+      if (kind === "network") return L("网络错误：无法连接。", "Network error: cannot connect.") + detail;
+      if (kind === "provider") return L("供应商配置不可用。", "Provider config unavailable.") + detail;
+      if (kind === "unsupported") return L("该接口类型不支持自动探测。", "This API type does not support auto testing.") + detail;
+      if (kind === "reasoning") return L("思考档位被上游拒绝（HTTP " + (r.status || "?") + "）：自动写实未成功" + (r.accepted && r.accepted.length ? "，上游接受 " + r.accepted.join("/") : "") + "。可稍后在模型设置的思考下拉手动选择。", "Reasoning level rejected by the upstream (HTTP " + (r.status || "?") + "): auto-heal failed" + (r.accepted && r.accepted.length ? "; the upstream accepts " + r.accepted.join("/") : "") + ". Pick a level later in the model settings.") + detail;
+      return L("请求失败" + (r.status ? "（HTTP " + r.status + "）" : "") + "。", "Request failed" + (r.status ? " (HTTP " + r.status + ")" : "") + ".") + detail;
+    }
     /* 弹窗行元数据（v130）：ctx/out 可见小字，档位与全量进 title；数值 k/M 紧凑格式。
      * issue #236：无任何证据（无 meta 或全空）时给「未获取配置」中性小字，不再静默按默认写入；
      * 主进程目录补拉中（effortsFetching）时换成「档位补拉中…」状态，用户知道在等什么。 */
     function mpMetaParts(meta, fetching) {
-      if (!meta || (!meta.contextWindow && !meta.maxOutputTokens && !(meta.efforts && meta.efforts.length))) {
+      /* v312：能力/输入正证据也算「获取到配置」——只有能力的模型不再误显「未获取配置」 */
+      var hasCaps = !!(meta && ((meta.inputFormat && (meta.inputFormat.supportsImage || meta.inputFormat.supportsPdf || meta.inputFormat.supportsVideo || meta.inputFormat.supportsAudio))
+        || meta.supportsJsonSchemaOutput === true || meta.supportsMidConversationSystem === true || meta.supportsToolCall === false));
+      if (!meta || (!meta.contextWindow && !meta.maxOutputTokens && !(meta.efforts && meta.efforts.length) && !hasCaps)) {
         if (fetching) {
           return {
             visible: L("档位补拉中…", "efforts pulling…"),
@@ -715,6 +756,12 @@
       if (meta.contextWindow) { visible.push(L("上下文 " + fmt(meta.contextWindow), "ctx " + fmt(meta.contextWindow))); title.push("ctx " + fmt(meta.contextWindow)); }
       if (meta.maxOutputTokens) { visible.push(L("输出 " + fmt(meta.maxOutputTokens), "out " + fmt(meta.maxOutputTokens))); title.push("out " + fmt(meta.maxOutputTokens)); }
       if (meta.efforts && meta.efforts.length) title.push(L("思考档位 ", "reasoning ") + meta.efforts.join("/"));
+      /* v312 能力/输入匹配徽标：写实的正证据一览（图/PDF/JSON） */
+      var caps = [];
+      if (meta.inputFormat && meta.inputFormat.supportsImage) caps.push(L("图", "img"));
+      if (meta.inputFormat && meta.inputFormat.supportsPdf) caps.push("PDF");
+      if (meta.supportsJsonSchemaOutput) caps.push("JSON");
+      if (caps.length) { visible.push(caps.join("·")); title.push(caps.join("/")); }
       if (!visible.length && !title.length) return null;
       return { visible: visible.join(" · "), title: title.join(" · ") };
     }
@@ -767,7 +814,9 @@
         '<button type="button" class="zu-mp-fresh">' + L("仅选新模型", "New only") + " (" + newCount + ")</button></div></div>" +
         '<div class="zu-mp-items">' + rows + "</div>" +
         (effortsFetching ? '<div class="zu-mp-note">' + mEsc(L("思考档位目录正在后台补拉（约数 MB，不阻塞本轮），完成后重新拉取即可显示档位。", "The reasoning-level catalog is being fetched in the background (a few MB, non-blocking); pull again once it lands to show levels.")) + "</div>" : "") +
-        '<div class="zu-mp-note">' + mEsc(L("仅新增写入：已有配置的模型不会被覆盖；未获取到配置的模型保持 ZCode 默认值。", "Append-only: existing configs are never overwritten; models without fetched config keep ZCode defaults.")) + "</div>" +
+        '<div class="zu-mp-note">' + mEsc(L("仅新增写入：已有显式配置不会被覆盖；未获取到配置的模型保持 ZCode 默认值。确认会向供应商发送检测请求，可能消耗额度；验证后可修复路径、补全缺失配置。", "Append-only: existing explicit configs are never overwritten; models without fetched config keep ZCode defaults. Confirmation sends provider test requests that may consume quota; verified paths and missing settings may be repaired.")) + "</div>" +
+        '<div class="zu-mp-fix" role="status" aria-live="polite"></div>' +
+        '<div class="zu-mp-warn" role="status" aria-live="polite"></div>' +
         '<div class="zu-mp-err" role="status" aria-live="polite"></div>' +
         '<div class="zu-mp-foot"><span class="zu-mp-count"></span>' +
         '<div class="zu-mp-actions"><button type="button" class="zu-mp-cancel">' + L("取消", "Cancel") + "</button>" +
@@ -776,17 +825,30 @@
       var countNode = ov.querySelector(".zu-mp-count");
       var okBtn = ov.querySelector(".zu-mp-ok");
       var errNode = ov.querySelector(".zu-mp-err");
+      var fixNode = ov.querySelector(".zu-mp-fix");
+      var warnNode = ov.querySelector(".zu-mp-warn");
+      var busy = false, tested = Object.create(null), forced = Object.create(null);
+      function setBusy(value) {
+        busy = value;
+        var controls = [okBtn, ov.querySelector(".zu-mp-all"), ov.querySelector(".zu-mp-none"), ov.querySelector(".zu-mp-fresh")];
+        var inputs = items.querySelectorAll("input");
+        for (var i = 0; i < inputs.length; i++) inputs[i].disabled = value;
+        for (var j = 0; j < controls.length; j++) controls[j].disabled = value;
+        if (!value) refreshCounts();
+      }
       function refreshCounts() {
         var n = 0;
         for (var k in sel) if (Object.prototype.hasOwnProperty.call(sel, k) && sel[k]) n++;
         countNode.textContent = L("已选中 " + n + " / " + models.length + " 个模型", n + " / " + models.length + " selected");
         ov.querySelector(".zu-mp-okn").textContent = String(n);
-        okBtn.disabled = n === 0;
+        okBtn.disabled = busy || n === 0;
       }
       items.addEventListener("change", function (e) {
         var id = e.target.getAttribute && e.target.getAttribute("data-mpid");
         if (id == null || !Object.prototype.hasOwnProperty.call(sel, id)) return;
+        if (busy) { e.target.checked = !!sel[id]; return; }
         sel[id] = e.target.checked;
+        forced[id] = !!sel[id] && tested[id] === "failed";
         refreshCounts();
       });
       ov.querySelector(".zu-mp-search").addEventListener("input", function (e) {
@@ -797,11 +859,13 @@
         }
       });
       function setAll(value, onlyNew) {
+        if (busy) return;
         var nodes = items.querySelectorAll(".zu-mp-item");
         for (var j = 0; j < nodes.length; j++) {
           var id = nodes[j].getAttribute("data-mpid");
           var v = onlyNew ? !existing[id] : value;
           sel[id] = v;
+          if (tested[id] === "failed") forced[id] = false;
           var cb = nodes[j].querySelector("input");
           if (cb) cb.checked = v;
         }
@@ -812,27 +876,175 @@
       ov.querySelector(".zu-mp-fresh").addEventListener("click", function () { setAll(false, true); });
       ov.querySelector(".zu-mp-cancel").addEventListener("click", cleanupMpModal);
       refreshCounts();
-      okBtn.addEventListener("click", function () {
-        var picked = [];
-        for (var j = 0; j < models.length; j++) if (sel[models[j]]) picked.push(models[j]);
-        if (!picked.length) return;
-        okBtn.disabled = true;
+      /* 行内探测状态 chip（v309）：惰性插入到徽标前；原因走 data-tip 伪元素气泡（v310：
+       * 宿主内原生 title 气泡不弹——v307 同款实证，速度卡模型行先例），从 chip 左侧水平
+       * 弹出、行内垂直居中，避开 .zu-mp-items 的 overflow:auto 裁剪。 */
+      function mpRowOf(mid) {
+        var nodes = items.querySelectorAll(".zu-mp-item");
+        for (var j = 0; j < nodes.length; j++) {
+          if (nodes[j].getAttribute("data-mpid") === mid) return nodes[j];
+        }
+        return null;
+      }
+      function mpSetRowTest(mid, cls, text, tip) {
+        var row = mpRowOf(mid);
+        if (!row) return;
+        var node = row.querySelector(".zu-mp-tst");
+        if (!node) {
+          node = document.createElement("span");
+          var badge = row.querySelector(".zu-mp-badge");
+          if (badge) row.insertBefore(node, badge); else row.appendChild(node);
+        }
+        node.className = "zu-mp-tst " + cls;
+        node.textContent = text;
+        if (tip) { node.setAttribute("data-tip", tip); node.setAttribute("aria-label", text + " " + tip); }
+        else { node.removeAttribute("data-tip"); node.removeAttribute("aria-label"); }
+      }
+      function mpClearRowTests() {
+        var nodes = items.querySelectorAll(".zu-mp-tst");
+        for (var j = 0; j < nodes.length; j++) nodes[j].remove();
+      }
+      function mpApply(picked) {
+        setBusy(true);
         okBtn.firstChild.nodeValue = L("正在保存…", "Saving…") + " (";
-        errNode.textContent = "";
         mpAsk("model-pull-apply", { providerId: provider.id, models: picked }, function (result) {
-          if (inactive()) return;
+          if (inactive() || mpModal !== ov) return;
           if (result && result.ok) {
             cleanupMpModal();   // 写回完成：宿主模型列表数秒内自动刷新
             return;
           }
-          okBtn.disabled = false;
+          setBusy(false);
           okBtn.firstChild.nodeValue = L("确认添加并保存", "Confirm and save") + " (";
           errNode.textContent = mpErrorText(result);
         });
+      }
+      /* 先探测后保存（v309）：worker 池逐模型 model-pull-probe（主进程镜像宿主 URL 语义），
+       * 行内 chip 即时刷新；全过自动写入，有失败自动取消勾选并保留弹窗。旧主进程回
+       * unknown action 时降级为直接保存（与旧版行为一致）。
+       * v310：主进程对路径错配（404/405）自动修复 Base URL（±/v1 实测命中即写回配置），
+       * 探测结果带 repaired 标记——汇总区绿字披露写回结果，不再让用户手改配置。
+       * v311：辅助档位被严格上游拒绝时（reasoning_effort "none" 类 400）自动写实合法档位
+       * 表（values[0] 是宿主测试/辅助调用的最低档），effortFixed 标记同区披露。 */
+      function mpProbeThenApply(picked, checking) {
+        setBusy(true);
+        var done = 0, active = 0, cursor = 0, closed = false;
+        var failed = [];
+        var repairs = [];   // 去重后的修复/匹配披露列表
+        var repairSeen = Object.create(null);
+        var capSeen = Object.create(null);   // v312 能力实测写入的项（image/jsonSchema/midConv）
+        var toolHistoryWarned = false;   // v313 通道不支持工具调用历史（代理任务工具轮会失败，纯对话可用）
+        var specSeen = Object.create(null);   // v314 规格补全（contextWindow/maxOutputTokens）
+        function label() {
+          okBtn.firstChild.nodeValue = L("正在检测 " + done + "/" + checking.length + "…", "Testing " + done + "/" + checking.length + "…") + " (";
+        }
+        function settle() {
+          if (closed) return;
+          closed = true;
+          if (Object.keys(capSeen).length) {
+            repairs.push(L("能力匹配：", "capability match: ") + Object.keys(capSeen).map(function (k) {
+              return k === "image" ? L("图片", "image") : k === "jsonSchema" ? L("结构化输出", "structured output") : L("中段系统消息", "mid-conversation system");
+            }).join("/"));
+          }
+          if (Object.keys(specSeen).length) {
+            repairs.push(L("规格补全：", "spec backfilled: ") + Object.keys(specSeen).map(function (k) {
+              return k === "contextWindow" ? L("上下文窗口", "context window") : L("输出上限", "output limit");
+            }).join("/"));
+          }
+          warnNode.textContent = toolHistoryWarned
+            ? L("警告：该模型通道拒绝了测试用工具调用历史，代理任务的工具轮次可能失败；请确认通道兼容性后再使用。", "Warning: this model channel rejected the test tool-call history; agent tool turns may fail. Check the channel compatibility before use.")
+            : "";
+          if (repairs.length) {
+            fixNode.textContent = L("已自动匹配配置（已有模型已写入，新模型保存时写入）：", "Auto-matched settings (existing models saved; new models saved on confirmation): ") + repairs.join(L("；", "; "));
+          }
+          if (!failed.length && !repairs.length && !toolHistoryWarned) { mpApply(picked); return; }
+          for (var j = 0; j < failed.length; j++) {
+            sel[failed[j]] = false;
+            var row = mpRowOf(failed[j]);
+            if (row) { var cb = row.querySelector("input"); if (cb) cb.checked = false; }
+          }
+          setBusy(false);
+          okBtn.firstChild.nodeValue = L("确认添加并保存", "Confirm and save") + " (";
+          if (!failed.length) {
+            errNode.textContent = L("检测完成，请查看以上说明后再次确认保存。", "Testing complete. Review the details above, then confirm again to save.");
+            return;
+          }
+          errNode.textContent = L("自动检测：", "Auto test: ") + (checking.length - failed.length) +
+            L(" 个可用，", " ok, ") + failed.length +
+            L(" 个失败（已取消勾选；悬停「失败」看原因，重新勾选可强制添加）。", " failed (unchecked; hover the failed badge for the reason, re-check to force-add).");
+        }
+        function finishOne(mid, result) {
+          done++;
+          var sec = result && typeof result.latencyMs === "number" ? (Math.round(result.latencyMs / 100) / 10) + "s" : "";
+          if (result) {
+            if (result.repaired && result.repaired.from && result.repaired.to) {
+              var key = result.repaired.from + ">" + result.repaired.to;
+              if (!repairSeen[key]) { repairSeen[key] = 1; repairs.push("Base URL " + result.repaired.from + " → " + result.repaired.to); }
+            }
+            if (result.effortFixed && Array.isArray(result.effortFixed.values) && result.effortFixed.values.length) {
+              var ek = provider.id + ">" + mid + ">effort";
+              if (!repairSeen[ek]) { repairSeen[ek] = 1; repairs.push(L("思考档位 → ", "reasoning levels → ") + result.effortFixed.values.join("/")); }
+            }
+            if (Array.isArray(result.capabilitiesFixed)) {
+              for (var ck = 0; ck < result.capabilitiesFixed.length; ck++) capSeen[result.capabilitiesFixed[ck]] = 1;
+            }
+            if (result.warnings && result.warnings.indexOf("toolHistory") >= 0) toolHistoryWarned = true;
+            if (Array.isArray(result.specEnriched)) {
+              for (var sk = 0; sk < result.specEnriched.length; sk++) specSeen[result.specEnriched[sk]] = 1;
+            }
+          }
+          if (result && result.ok) {
+            tested[mid] = "ok";
+            mpSetRowTest(mid, "zu-mp-tst-ok", L("可用" + (sec ? " " + sec : ""), "ok" + (sec ? " " + sec : "")), result.url || "");
+          } else {
+            tested[mid] = "failed";
+            failed.push(mid);
+            mpSetRowTest(mid, "zu-mp-tst-fail", L("失败", "failed"), mpProbeFailText(result));
+          }
+          label();
+          pump();
+          if (done >= checking.length) settle();
+        }
+        function pump() {
+          while (!closed && active < MP_TEST_CONC && cursor < checking.length) {
+            var mid = checking[cursor++];
+            active++;
+            (function (m) {
+              mpAsk("model-pull-probe", { providerId: provider.id, model: m, caps: true }, function (result) {
+                active--;
+                if (closed) return;
+                if (inactive() || mpModal !== ov) { closed = true; return; }   // 弹窗已关：不再起下一轮
+                if (result && typeof result.error === "string" && result.error.indexOf("unknown action") === 0) {
+                  closed = true;   // 旧主进程不识别探测：降级直接保存
+                  mpClearRowTests();
+                  errNode.textContent = L("主进程较旧，已跳过自动检测。", "Main process outdated; the auto test was skipped.");
+                  mpApply(picked);
+                  return;
+                }
+                finishOne(m, result);
+              }, 90000);   // v312：探测 + 修复 + 重试 + 能力实测（3×6s）最坏约 70s，兜底放宽到 90s
+            })(mid);
+          }
+        }
+        for (var i = 0; i < checking.length; i++) mpSetRowTest(checking[i], "zu-mp-tst-run", L("检测中", "testing"), "");
+        label();
+        pump();
+      }
+      okBtn.addEventListener("click", function () {
+        if (busy) return;
+        var picked = [];
+        for (var j = 0; j < models.length; j++) if (sel[models[j]]) picked.push(models[j]);
+        if (!picked.length) return;
+        errNode.textContent = "";
+        if (picked.length > MP_TEST_MAX) { mpApply(picked); return; }   // 数量过多不阻塞：直接保存
+        var checking = picked.filter(function (m) { return tested[m] !== "ok" && !forced[m]; });
+        if (!checking.length) { mpApply(picked); return; }
+        mpProbeThenApply(picked, checking);
       });
     }
     function cleanupMpModal() {
       if (!mpModal) return;
+      var pending = mpWaiters.slice();
+      for (var i = 0; i < pending.length; i++) pending[i]();
       if (mpModal.__zuMpEsc) document.removeEventListener("keydown", mpModal.__zuMpEsc);
       mpModal.remove();
       mpModal = null;

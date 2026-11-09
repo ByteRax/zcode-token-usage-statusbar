@@ -984,6 +984,7 @@ initQuotaSubsystem();
  * model-puller 不自带），热替换 quota-client 后必须重建本实例以换用新解密函数。 */
 let modelPuller = null;
 function initModelPuller() {
+  if (modelPuller && typeof modelPuller.dispose === "function") modelPuller.dispose();
   try {
     const { createModelPuller } = require("./model-puller.cjs");
     const { decryptValue, deriveCipherKey } = require("./quota-client.cjs");
@@ -1245,6 +1246,13 @@ function handleModelPullRequest(req, wc) {
     modelPuller.fetchModels(req.providerId)
       .then(respond)
       .catch((e) => { LOG("model pull fetch failed:", e.message); respond({ ok: false, error: "fetch failed" }); });
+    return;
+  }
+  if (req.action === "model-pull-probe") {   // v309：确认添加前单模型探测（镜像宿主 URL 语义，主进程发 key 只到配置本域）；v312 caps=确认流能力实测
+    const model = typeof req.model === "string" && req.model.length <= 200 && !/[\x00-\x1f\x7f]/.test(req.model) ? req.model : "";
+    modelPuller.probeModel(req.providerId, model, { caps: req.caps === true })
+      .then(respond)
+      .catch((e) => { LOG("model pull probe failed:", e.message); respond({ ok: false, kind: "network", error: "probe failed" }); });
     return;
   }
   modelPuller.applyModels(req.providerId, Array.isArray(req.models) ? req.models : [])
@@ -1801,7 +1809,7 @@ async function pollPluginRequests() {
           handleAutoCompactConfig(req, wc);
         } else if (req && (req.action === "quota-src" || req.action === "quota-src-key" || req.action === "quota-src-refresh")) {
           handleQuotaSourceRequest(req, wc);
-        } else if (req && (req.action === "model-pull-list" || req.action === "model-pull-fetch" || req.action === "model-pull-apply")) {
+        } else if (req && (req.action === "model-pull-list" || req.action === "model-pull-fetch" || req.action === "model-pull-apply" || req.action === "model-pull-probe")) {
           handleModelPullRequest(req, wc);
         } else if (req && (req.action === "release-notes" || req.action === "release-notes-list")) {   // v202 ⚙ 更新日志：按需拉取当前 Release 渠道的发布说明
           handleReleaseNotesRequest(req, wc);

@@ -10,6 +10,9 @@
  * manualProviderModelRules）；档位按强度梯排序（宿主默认档=values 末项）；GitHub Copilot
  * capabilities 别名；models.dev api.json 档位目录（reasoning_options→effort 词表）只在缺
  * 档位证据时后台拉取补缺；套餐源接目录补缺。
+ * v309 模型探测：「确认添加并保存」先探测后写入——按宿主同款 URL 语义（openai 两型不自动
+ * 补 /v1、anthropic 归一化补 /v1）发最小对话请求，Base URL 少 /v1 这类错配在写入前原样
+ * 暴露；结果按状态分类、错误摘录脱敏后回渲染端；修复成功才写配置，不走 candidateUrls。
  * 只读写宿主 customCfgPath（~/.zcode/v2/provider_config.json）；key 只在主进程内存中用于
  * 该 baseUrl 本域请求，绝不返回渲染端、不进日志。写入是读-改-同目录原子替换，保留未知键；
  * 写前滚动备份 .zusage-bak（单文件覆盖，不堆积）。拉取耗时对齐 cc-switch：目录只在供应商完成后
@@ -17,6 +20,7 @@
 "use strict";
 const fs = require("fs");
 const path = require("path");
+const { createHash } = require("crypto");
 
 const MAX_MODELS = 512;      // 单次写入与单次拉取的模型数上限，防异常网关返回巨列表撑爆弹窗
 const MODEL_ID_MAX = 200;    // 单个模型 id 长度上限（含控制字符的 id 直接丢弃）
@@ -27,6 +31,8 @@ const CATALOG_GRACE_MS = 1000;        // 供应商响应后目录的额外宽限
 const MODELS_DEV_API_URL = "https://models.dev/api.json";   // 档位目录（#236）：models.json 无 effort 词表（实测 0/608），api.json 才有（约 6MB）
 const MODELS_DEV_API_TIMEOUT_MS = 8000;   // 大体量只走后台：超时不阻塞任何用户路径
 const API_CACHE_MAX_AGE_MS = 24 * 3600 * 1000;   // 档位索引缓存生命周期：≥24h 触发一次后台刷新（stale-while-revalidate）
+const PROBE_TIMEOUT_MS = 15000;   // 单模型探测超时：聚合网关上游冷启动实测可达 10s+，太短会假报失败
+const PROBE_SNIPPET_MAX = 200;    // 错误摘录回渲染端的长度上限（先脱敏再截断）
 
 /* ---------- 内置套餐源（v134）：OAuth 型套餐的模型拉取 ----------
  * 智谱 Coding Plan 是宿主内置 OAuth 供应商（account:bigmodel-individual-coding-plan），
@@ -146,6 +152,7 @@ function extractModelMeta(item) {
   const rawId = rawModelId(src);
   const id = typeof rawId === "string" ? rawId.trim() : "";
   const capLimits = asObject(asObject(src.capabilities).limits);
+  const capSupports = asObject(asObject(src.capabilities).supports);
   const ctx = firstPositive(src.context_length, src.contextWindow, src.context_window,
     asObject(src.limit).context, asObject(src.limits).context, capLimits.max_context_window_tokens);
   const out = firstPositive(src.max_completion_tokens, src.max_output_tokens, src.maxOutputTokens,
@@ -156,8 +163,13 @@ function extractModelMeta(item) {
   /* supported_efforts（聚合网关实测）+ capabilities.supports.reasoning_effort（GitHub Copilot
    * /models 实测）：都是 wire effort 词表，归一并按强度梯排序，绝不从布尔能力推导档位 */
   const efforts = effortListFrom([].concat(Array.isArray(src.supported_efforts) ? src.supported_efforts : [],
-    asObject(asObject(src.capabilities).supports).reasoning_effort));
-  return { id, contextWindow: ctx, maxOutputTokens: out, modalities, vision, efforts };
+    capSupports.reasoning_effort));
+  /* 能力位只采信显式布尔（models.dev tool_call/structured_output 与同形富字段），缺省 undefined */
+  const structuredOutput = typeof src.structured_output === "boolean" ? src.structured_output
+    : typeof capSupports.structured_output === "boolean" ? capSupports.structured_output : undefined;
+  const toolCall = typeof src.tool_call === "boolean" ? src.tool_call
+    : typeof capSupports.tool_call === "boolean" ? capSupports.tool_call : undefined;
+  return { id, contextWindow: ctx, maxOutputTokens: out, modalities, vision, efforts, structuredOutput, toolCall };
 }
 
 /* ---------- models.dev 目录（GLQQX）：id 精确匹配 → basename 唯一匹配 ---------- */
@@ -311,11 +323,13 @@ function candidateUrls(baseUrl) {
   return uniq;
 }
 
-/* 供应商条目与目录条目字段级合并：供应商优先，目录只补缺（GLQQX 语义） */
-function mergedMeta(providerMeta, catalogModel) {
+/* 供应商条目与目录条目字段级合并：供应商优先，目录次之，一致性收割兜底（v312 agreed：
+ * 多 provider 歧义但全同意的可加证据），其余键只补缺（GLQQX 语义） */
+function mergedMeta(providerMeta, catalogModel, agreed) {
   const cat = catalogModel ? extractModelMeta(catalogModel) : {};
   const inputFormat = inputFormatFrom(providerMeta.modalities, providerMeta.vision)
-    || inputFormatFrom(cat.modalities, cat.vision);
+    || inputFormatFrom(cat.modalities, cat.vision)
+    || (agreed && agreed.inputFormat);
   const meta = {};
   const ctx = providerMeta.contextWindow || cat.contextWindow;
   const out = providerMeta.maxOutputTokens || cat.maxOutputTokens;
@@ -323,6 +337,13 @@ function mergedMeta(providerMeta, catalogModel) {
   if (out) meta.maxOutputTokens = out;
   if (inputFormat) meta.inputFormat = inputFormat;
   if (providerMeta.efforts.length) meta.efforts = providerMeta.efforts;
+  const structured = typeof providerMeta.structuredOutput === "boolean" ? providerMeta.structuredOutput
+    : typeof cat.structuredOutput === "boolean" ? cat.structuredOutput : agreed && agreed.supportsJsonSchemaOutput;
+  const tools = typeof providerMeta.toolCall === "boolean" ? providerMeta.toolCall
+    : typeof cat.toolCall === "boolean" ? cat.toolCall : agreed && agreed.supportsToolCall;
+  if (typeof structured === "boolean") meta.supportsJsonSchemaOutput = structured;
+  if (typeof tools === "boolean") meta.supportsToolCall = tools;
+  if (providerMeta.midConversationSystem === true || cat.midConversationSystem === true) meta.supportsMidConversationSystem = true;
   return meta;
 }
 
@@ -346,6 +367,141 @@ async function readJsonBounded(res, maxBytes) {
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
+/* ---------- 模型探测（v309）：确认添加前按宿主同款语义发最小请求 ----------
+ * URL 语义必须镜像宿主运行时（apps/zcode-cli model-execution.ts + AI SDK）：
+ * - openai-chat-completions → createOpenAICompatible：{base}/chat/completions，不自动补 /v1
+ * - openai-responses → createOpenAI：{base}/responses，同样不自动补 /v1
+ * - anthropic-messages → 宿主 normalizeAnthropicBaseURL 无 /v1 时补 /v1，SDK 再拼 /messages
+ * 探测的意义就是复现宿主真实路径：Base URL 少 /v1 这类错配在这里原样暴露——fetchModels
+ * 的 candidateUrls 兼容后缀改写刻意不用，它会掩盖宿主真实 URL。 */
+function anthropicBaseWithV1(url) {
+  const base = String(url || "").trim().replace(/\/+$/, "");
+  if (!base) return "";
+  return /\/v1$/i.test(base) ? base : base + "/v1";
+}
+function classifyProbeStatus(status) {
+  if (status === 401 || status === 403) return "auth";
+  if (status === 404 || status === 405) return "path";
+  if (status === 429) return "rate";
+  if (status === 400) return "bad_request";
+  if (status >= 500) return "server";
+  return "http";
+}
+/* 路径错配的确定性修复候选（v310）：openai 两型宿主不自动补 /v1，Base URL 少 /v1（OpenHub
+ * 实案 405）或多写 /v1（404）都只在这一个维度上翻转——不做兼容后缀穷举（fetchModels 的
+ * candidateUrls 面向"列表在别处"的发现场景；探测修复必须止步于宿主真实语义的邻域） */
+function probeRepairCandidates(base, apiType) {
+  const clean = String(base || "").trim().replace(/\/+$/, "");
+  if (!clean) return [];
+  if (apiType !== "openai-chat-completions" && apiType !== "openai-responses") return [];
+  const probePath = apiType === "openai-chat-completions" ? "/chat/completions" : "/responses";
+  if (/\/v1$/i.test(clean)) return [{ base: clean.slice(0, -3), url: clean.slice(0, -3) + probePath }];
+  return [{ base: clean + "/v1", url: clean + "/v1" + probePath }];
+}
+/* 思考档位（v311）：宿主连通性测试与辅助调用都绑 values[0]（最低档），openai 两型内置
+ * catch-all（zcode-builtin.json modelApiRules[2]/[3]）把默认最低档 "disabled" 映射成 wire
+ * reasoning_effort / reasoning.effort = "none"——Gemini 等严格上游只收 minimal..max，宿主
+ * 「测试模型」必炸。探测链在基础连通后追加辅助档位验证：按 catch-all 同款语义发 values[0]
+ * 等效 wire 值，被 400 拒绝时从错误文案解析上游接受集（解析失败退化为逐候选实测），验证
+ * 后把合法档位表写实进模型规则/拉取元数据（values-only 稀疏合法，map 继承 catch-all）。
+ * 梯子只收 effort 词：none/disabled 是宿主内置默认档名，不是上游 effort 词表成员。 */
+const REASONING_LADDER = ["minimal", "low", "medium", "high", "xhigh", "max"];
+function auxWireValue(level) {
+  if (level === "disabled") return "none";   // catch-all 同款映射
+  if (level === "enabled") return "high";
+  return level;
+}
+function reasoningWireField(apiType, value) {
+  if (apiType === "openai-chat-completions") return { reasoning_effort: value };
+  return { reasoning: { effort: value } };   // openai-responses
+}
+function acceptedEffortsFromSnippet(snippet) {
+  const seg = /one of\s*:?([^.;]*)/i.exec(String(snippet || ""));
+  if (!seg) return null;
+  const words = [];
+  const re = /'([^']+)'|"([^"]+)"/g;
+  let t;
+  while ((t = re.exec(seg[1]))) {
+    const w = (t[1] || t[2] || "").trim();
+    if (w && !words.includes(w)) words.push(w);
+  }
+  return words.length ? words : null;
+}
+/* 目录一致性收割（v312）：同名模型常被多 provider 收录（302ai/vertex/edenai…），逐条
+ * 匹配的歧义守卫会把它们整体放弃。可加证据字段（模态/能力位）改按「全命中一致才采纳」：
+ * 任一命中缺证据或取值分歧 → 放弃该字段（宁缺毋滥从「取谁的值」移到「值是否一致」） */
+function catalogHitsFor(entries, id) {
+  const norm = String(id || "").trim().toLowerCase();
+  if (!norm) return [];
+  const exact = entries.filter((e) => e.identities.includes(norm));
+  if (exact.length) return exact;
+  const base = canonicalBasename(norm);
+  return base ? entries.filter((e) => e.basename === base) : [];
+}
+function catalogAgreedValue(entries, id, pick) {
+  const hits = catalogHitsFor(entries, id);
+  if (!hits.length) return undefined;
+  let value;
+  for (const hit of hits) {
+    const v = pick(asObject(hit.model));
+    if (v === undefined || v === null) return undefined;   // 任一命中缺证据不猜
+    if (value === undefined) value = v;
+    else if (JSON.stringify(value) !== JSON.stringify(v)) return undefined;   // 分歧放弃
+  }
+  return value;
+}
+/* 目录可写实的输入/能力证据：模态列表 → inputFormat（缺 pdf 的 OpenAI wire 探测不可靠，
+ * PDF 只能靠目录）；tool_call 只采纳显式 false（默认 true 不需要写）；structured_output
+ * 只采纳 true（扁平目录无该字段，富条目有则采纳） */
+function agreedCapabilities(entries, id) {
+  const out = {};
+  const mod = catalogAgreedValue(entries, id, (m) => {
+    const list = rawInputModalities(m);
+    return list && list.length ? list : undefined;
+  });
+  if (mod) {
+    const fmt = inputFormatFrom(mod, undefined);
+    if (fmt) out.inputFormat = fmt;
+  }
+  const toolCall = catalogAgreedValue(entries, id, (m) => (typeof m.tool_call === "boolean" ? m.tool_call : undefined));
+  if (toolCall === false) out.supportsToolCall = false;
+  const structured = catalogAgreedValue(entries, id, (m) => (typeof m.structured_output === "boolean" ? m.structured_output : undefined));
+  if (structured === true) out.supportsJsonSchemaOutput = true;
+  return out;
+}
+  /* 错误摘录脱敏：sk- 串与 Bearer token 打码后再截断——网关 401 文案可能回显 key 片段，
+   * 渲染端结果不得携带凭据（同额度链纪律：key 不进渲染端/日志/诊断）。返回完整脱敏文本，
+   * 由调用方按需截断（错误文案里的上游接受档位集是修复输入，截断会丢解析原料）。 */
+  function maskSecrets(text, secret) {
+    let value = String(text || "");
+    if (secret) {
+      for (const key of [JSON.stringify(secret).slice(1, -1), secret]) value = value.split(key).join("***");
+    }
+    return value
+      .replace(/sk-[A-Za-z0-9._~-]{6,}/g, "sk-***")
+      .replace(/(Bearer\s+)[A-Za-z0-9._~-]{8,}/gi, "$1***");
+  }
+  async function errorSnippet(res, secret) {
+    const reader = res && res.body && typeof res.body.getReader === "function" ? res.body.getReader() : null;
+    if (!reader) {
+      let text = "";
+      try { text = await res.text(); } catch (e) { return ""; }
+      return maskSecrets(text, secret);
+    }
+    try {
+      const chunks = [];
+      let total = 0;
+      for (;;) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        total += chunk.value.length;
+        chunks.push(chunk.value);
+        if (total >= 4096) { try { reader.cancel(); } catch (e) { } break; }
+      }
+      return maskSecrets(Buffer.concat(chunks).toString("utf8"), secret);
+    } catch (e) { return ""; }
+  }
+
 function createModelPuller(opts) {
   const o = opts || {};
   const customCfgPath = String(o.customCfgPath || "");
@@ -357,6 +513,7 @@ function createModelPuller(opts) {
   const cachePath = String(o.cachePath || "");   // 档位索引落盘路径（运行目录，inject-main 传入）；空=仅内存（测试）
   const credentialsPath = String(o.credentialsPath || "");   // 宿主 OAuth 凭据（套餐源）
   const decryptValue = typeof o.decryptValue === "function" ? o.decryptValue : null;   // 注入解密（主进程内存解密）
+  let disposed = false;
   let applyBusy = false;   // 读-改-写竞态闸：UI 正常路径不会并发，这里防异常路径双写互相覆盖
   let catalogCache = null;   // {at, entries}：目录全量约数百 KB，成功后进程内复用
   let catalogFailedAt = 0;   // 目录失败短缓存：不通的网络环境（代理断连）每次拉取都吃满超时不可接受
@@ -426,6 +583,21 @@ function createModelPuller(opts) {
       if (rule && String(rule.providerId || "") === providerId) return rule;
     }
     return null;
+  }
+  function providerSource(data, providerId) {
+    const src = PLAN_SOURCES[String(providerId || "")];
+    const rule = findRule(data, providerId);
+    const cfg = (rule && rule.config) || {}, api = cfg.api || {}, access = cfg.access || {};
+    return createHash("sha256").update(JSON.stringify(src
+      ? [src.baseUrl, planTokenOf(providerId)]
+      : [access.type, api.type, String(api.baseUrl || "").trim().replace(/\/+$/, ""), String(access.apiKey || "").trim()])).digest("hex");
+  }
+  function currentProbe(ctx, data) {
+    return !disposed && (!ctx || providerSource(data || readProviderCfg(), ctx.providerId) === ctx.source);
+  }
+  function cachedMeta(data, providerId) {
+    const cache = fetchCache.get(providerId);
+    return !disposed && cache && cache.source === providerSource(data, providerId) ? cache : null;
   }
   function dropBody(res) {
     /* 非 ok 响应不读 body 时显式取消：undici 下未消费的 body 会使连接滞留池外直至 GC
@@ -560,9 +732,10 @@ function createModelPuller(opts) {
 
   async function fetchModels(providerId) {
     const data = readProviderCfg();
+    const source = providerSource(data, providerId);
     const rule = data ? findRule(data, providerId) : null;
     const planSrc = PLAN_SOURCES[String(providerId || "")];
-    if (!planSrc && (!rule || !isPullable(rule))) return { ok: false, error: "provider not found" };
+    if (disposed || (!planSrc && (!rule || !isPullable(rule)))) return { ok: false, error: "provider not found" };
     let planToken = null;
     if (planSrc) {
       planToken = planTokenOf(providerId);
@@ -602,12 +775,12 @@ function createModelPuller(opts) {
           for (const mid of ids) {
             const hit = matchCatalogEntry(entries, mid);
             if (!hit) continue;
-            const meta = mergedMeta({ id: mid, contextWindow: 0, maxOutputTokens: 0, modalities: null, vision: undefined, efforts: [] }, hit.model);
+            const meta = mergedMeta({ id: mid, contextWindow: 0, maxOutputTokens: 0, modalities: null, vision: undefined, efforts: [] }, hit.model, agreedCapabilities(entries, mid));
             if (Object.keys(meta).length) metaById[mid] = meta;
           }
         }
         const fetching = fillEffortsFromApiCatalog(metaById, ids);   // #236：GLM 档位词表来自 api 目录（按需）
-        fetchCache.set(providerId, { metaById: metaById });
+        fetchCache.set(providerId, { metaById: metaById, source: source });
         return { ok: true, models: ids, metaById: metaById, via: planSrc.endpoint, effortsFetching: fetching || undefined };
       } catch (e) {
         return { ok: false, error: (e && e.name === "TimeoutError") ? "timeout" : "request failed" };
@@ -648,7 +821,7 @@ function createModelPuller(opts) {
       if (!pm.id || pm.id.length > MODEL_ID_MAX || /[\x00-\x1f\x7f]/.test(pm.id)) continue;
       if (ids.includes(pm.id)) continue;
       const hit = entries.length ? matchCatalogEntry(entries, pm.id) : null;
-      const meta = mergedMeta(pm, hit ? hit.model : null);
+      const meta = mergedMeta(pm, hit ? hit.model : null, agreedCapabilities(entries, pm.id));
       if (Object.keys(meta).length) metaById[pm.id] = meta;
       ids.push(pm.id);
       if (ids.length >= MAX_MODELS) break;
@@ -656,7 +829,7 @@ function createModelPuller(opts) {
     if (!ids.length) return { ok: false, error: "no models in response" };
     ids.sort();
     const fetching = fillEffortsFromApiCatalog(metaById, ids);   // #236：缺档位证据时按需补/后台拉 api 目录
-    fetchCache.set(providerId, { metaById: metaById });
+    fetchCache.set(providerId, { metaById: metaById, source: source });
     if (fetchCache.size > CATALOG_CACHE_MAX) fetchCache.delete(fetchCache.keys().next().value);
     return { ok: true, models: ids, metaById: metaById, via: via, effortsFetching: fetching || undefined };
   }
@@ -712,6 +885,10 @@ function createModelPuller(opts) {
         ? props.inputFormat : (props.inputFormat = {});
       Object.assign(fmt, meta.inputFormat);
     }
+    /* 能力位只写实有据叶子（v312）：正证据 true / 显式负证据 false，缺省不动内置 catch-all */
+    if (typeof meta.supportsJsonSchemaOutput === "boolean") props.supportsJsonSchemaOutput = meta.supportsJsonSchemaOutput;
+    if (meta.supportsMidConversationSystem === true) props.supportsMidConversationSystem = true;
+    if (typeof meta.supportsToolCall === "boolean") props.supportsToolCall = meta.supportsToolCall;
     if (meta.maxOutputTokens || meta.efforts) {
       const specs = entry.optionSpecs && typeof entry.optionSpecs === "object" && !Array.isArray(entry.optionSpecs)
         ? entry.optionSpecs : (entry.optionSpecs = {});
@@ -730,6 +907,7 @@ function createModelPuller(opts) {
   }
 
   async function applyModels(providerId, models) {
+    if (disposed) return { ok: false, error: "model puller disposed" };
     const wanted = sanitizeModelIds(models);
     if (!wanted.length) return { ok: false, error: "no valid models" };
     if (applyBusy) return { ok: false, error: "another write is in progress" };
@@ -776,7 +954,7 @@ function createModelPuller(opts) {
         if (!Array.isArray(mcr.manualProviderModelRules)) mcr.manualProviderModelRules = [];
         const siblings = rules.filter((r) => r && typeof r === "object" && String(r.providerId || "") === providerId && r.config && typeof r.config === "object");
         if (siblings.length) {
-          const cache = fetchCache.get(providerId);
+          const cache = cachedMeta(data, providerId);
           /* 模板取配置最丰富的兄弟（用户手动配全的那条），不是最后一条——最后一条可能恰好
            * 是贫瘠配置，复制后新模型看起来什么都没填（实测翻车：gpt-6.1-terra 继承 astra） */
           const template = siblings.reduce((best, r) => (templateScore(r.config) >= templateScore(best.config) ? r : best)).config;
@@ -790,7 +968,7 @@ function createModelPuller(opts) {
            * 供应商首拉同样走这里，有据元数据（contextWindow/inputFormat/档位/输出上限）
            * 直接写实——稀疏个人规则字段级覆盖内置，map 继承宿主 apiType catch-all；
            * 绝不生成 map，绝不写 manualProviderModelRules */
-          const cache = fetchCache.get(providerId);
+          const cache = cachedMeta(data, providerId);
           for (const mid of adding) {
             rules.push({ modelId: mid, providerId: providerId, config: entryWithMeta({ enabled: true }, cache ? cache.metaById[mid] : null) });
           }
@@ -804,7 +982,419 @@ function createModelPuller(opts) {
     }
   }
 
-  return { listProviders: listProviders, fetchModels: fetchModels, applyModels: applyModels };
+  /* 单模型单次探测（v310 从 probeModel 提出）：URL/鉴权/载荷按宿主同款语义构建。
+   * anthropic 鉴权双头与宿主 withAnthropicAuthorizationHeader 同款（x-api-key + Bearer）。
+   * opts.reasoning 按 apiType 附加 wire 字段（v311）；opts.messages/opts.responseFormat 供
+   * v312 能力探测替换载荷；opts.timeoutMs 收紧能力探测超时。失败结果携带 full（完整脱敏
+   * 文案，供接受集解析），probeModel 返回前剥除——渲染端只见 snippet。 */
+  async function probeRequest(apiType, baseUrl, apiKey, mid, opts, ctx) {
+    if (!currentProbe(ctx)) return { ok: false, model: mid, kind: "provider", error: "provider changed" };
+    const o = opts || {};
+    const remaining = ctx ? ctx.deadline - Date.now() : PROBE_TIMEOUT_MS;
+    if (remaining <= 0) return { ok: false, model: mid, kind: "timeout", error: "timeout" };
+    let url = "", body = null;
+    const headers = { "Content-Type": "application/json" };
+    if (apiType === "openai-chat-completions") {
+      url = baseUrl + "/chat/completions";
+      headers["Authorization"] = "Bearer " + apiKey;
+      body = { model: mid, messages: Array.isArray(o.messages) ? o.messages : [{ role: "user", content: "ping" }], max_tokens: 16, stream: false };
+    } else if (apiType === "openai-responses") {
+      url = baseUrl + "/responses";
+      headers["Authorization"] = "Bearer " + apiKey;
+      body = { model: mid, input: "ping", max_output_tokens: 16, stream: false };
+    } else if (apiType === "anthropic-messages") {
+      url = anthropicBaseWithV1(baseUrl) + "/messages";
+      headers["x-api-key"] = apiKey;
+      headers["anthropic-version"] = "2023-06-01";
+      headers["Authorization"] = "Bearer " + apiKey;
+      body = { model: mid, max_tokens: 16, messages: Array.isArray(o.messages) ? o.messages : [{ role: "user", content: "ping" }] };
+    } else {
+      return { ok: false, model: mid, kind: "unsupported", error: "unsupported api type" };
+    }
+    if (o.reasoning !== undefined) Object.assign(body, reasoningWireField(apiType, o.reasoning));
+    if (o.responseFormat) body.response_format = o.responseFormat;
+    if (o.tools) body.tools = o.tools;
+    const started = Date.now();
+    try {
+      const res = await fetchImpl(url, { headers: headers, body: JSON.stringify(body), method: "POST", redirect: "error", signal: AbortSignal.timeout(Math.min(o.timeoutMs || PROBE_TIMEOUT_MS, remaining)) });
+      if (!currentProbe(ctx)) { dropBody(res); return { ok: false, model: mid, kind: "provider", error: "provider changed" }; }
+      const latencyMs = Date.now() - started;
+      if (res && res.ok) {
+        dropBody(res);
+        return { ok: true, model: mid, status: res.status, latencyMs: latencyMs, url: url };
+      }
+      const full = await errorSnippet(res, apiKey);
+      const status = res ? res.status : 0;
+      return { ok: false, model: mid, kind: classifyProbeStatus(status), status: status, url: url, snippet: full.slice(0, PROBE_SNIPPET_MAX), full: full };
+    } catch (e) {
+      const timedOut = !!(e && (e.name === "TimeoutError" || e.name === "AbortError"));
+      return { ok: false, model: mid, kind: timedOut ? "timeout" : "network", url: url, error: timedOut ? "timeout" : "request failed" };
+    }
+  }
+  /* 路径错配自动修复（v310，用户规格「自动帮我修复而不是红字提示」）：path 类失败时对
+   * ±/v1 邻域候选实测，命中即把新 baseUrl 写回 provider_config（读-改-原子替换，与
+   * applyModels 共享 applyBusy 写闸防交错丢更新）；宿主轮询该文件后对运行中的客户端即
+   * 时生效。单飞：同供应商并发的探测共享同一次修复（全选模型同 URL 全 405 时只测一轮、
+   * 只写一次），各自再按新 base 重试。修复限定 openai 两型（anthropic 型宿主自动补 /v1，
+   * 无此错配维度；套餐源 baseUrl 由插件常量管理，不代改）。 */
+  const probeRepairBusy = new Map();   // providerId → 在途修复 promise（单飞）
+  async function probeRepairOnce(providerId, apiType, baseUrl, apiKey, mid, ctx) {
+    const key = providerId + ":" + ctx.source;
+    const shared = probeRepairBusy.get(key);
+    if (shared) {
+      const result = await shared.task;
+      if (result.base) { ctx.source = result.source; return result; }
+      if (shared.mid === mid || !currentProbe(ctx)) return result;
+      return probeRepairOnce(providerId, apiType, baseUrl, apiKey, mid, ctx);
+    }
+    const task = (async () => {
+      const tried = [];
+      for (const cand of probeRepairCandidates(baseUrl, apiType)) {
+        tried.push(cand.url);
+        const test = await probeRequest(apiType, cand.base, apiKey, mid, null, ctx);
+        if (!test.ok) continue;
+        if (applyBusy) return { base: "", tried: tried };
+        applyBusy = true;
+        try {
+          const data = readProviderCfg();
+          const rule = data ? findRule(data, providerId) : null;
+          if (!currentProbe(ctx, data) || !rule || !isPullable(rule) || !rule.config || !rule.config.api) return { base: "", tried: tried };
+          const cache = cachedMeta(data, providerId);
+          rule.config.api.baseUrl = cand.base;
+          writeProviderCfg(data);
+          ctx.source = providerSource(data, providerId);
+          if (cache) cache.source = ctx.source;
+          log("probe repaired baseUrl for", providerId, "->", cand.base);
+          return { base: cand.base, source: ctx.source, tried: tried };
+        } catch (e) {
+          return { base: "", tried: tried };
+        } finally {
+          applyBusy = false;
+        }
+      }
+      return { base: "", tried: tried };
+    })().catch(() => ({ base: "", tried: [] }));
+    probeRepairBusy.set(key, { task: task, mid: mid });
+    task.finally(() => { if (probeRepairBusy.get(key)?.task === task) probeRepairBusy.delete(key); });
+    return task;
+  }
+  /* 模型级写实规则（modelConfigRules.providerModelRules 的 (providerId, modelId) 条目）：
+   * v252 起 api-key 首拉也落 {enabled:true} 骨架，这里是辅助档位验证的目标读写位置 */
+  function modelRuleOf(data, providerId, mid) {
+    const mcr = data && data.config && data.config.modelConfigRules;
+    const rules = mcr && Array.isArray(mcr.providerModelRules) ? mcr.providerModelRules : null;
+    if (!rules) return null;
+    for (const r of rules) {
+      if (r && typeof r === "object" && String(r.modelId || "") === mid && String(r.providerId || "") === providerId) return r;
+    }
+    return null;
+  }
+  /* 辅助档位自动写实（v311，用户实报 Gemini 严格上游拒 reasoning_effort:"none"）：
+   * 返回 null=现状可用无需动作 / {values}=已写实修复 / {failed,...}=无法修复（渲染端报
+   * reasoning 类失败）。写目标二选一：模型规则已存在→直接写规则（applyModels 不触碰已
+   * 添加模型）；不存在→写 fetchCache 元数据，紧随其后的 applyModels 经 entryWithMeta 落盘
+   * （绝不在探测路径新建模型规则，避免与 applyModels 双写重复条目）。带 map 的自洽结构
+   * 不动（entryWithMeta 同纪律）；写回与 applyModels 共享 applyBusy。 */
+  async function healReasoningLadder(providerId, apiType, baseUrl, apiKey, mid, ctx) {
+    const data = readProviderCfg();
+    const modelRule = data ? modelRuleOf(data, providerId, mid) : null;
+    const cache = cachedMeta(data, providerId);
+    const meta = cache && cache.metaById ? cache.metaById[mid] : null;
+    const level = modelRule && asObject(asObject(modelRule.config).optionSpecs).reasoningLevel;
+    if (typeof asObject(level).map === "string") return null;
+    const expectedLevel = JSON.stringify(level);
+    const writtenValues = modelRule
+      ? (((modelRule.config || {}).optionSpecs || {}).reasoningLevel || {}).values
+      : (meta && Array.isArray(meta.efforts) ? meta.efforts : null);
+    const current = Array.isArray(writtenValues) && writtenValues.length && writtenValues.every((v) => typeof v === "string") ? writtenValues : null;
+    const auxValue = auxWireValue(current ? current[0] : "disabled");   // 宿主测试/辅助取 values[0]；无写入=内置两档最低 disabled
+    const aux = await probeRequest(apiType, baseUrl, apiKey, mid, { reasoning: auxValue }, ctx);
+    if (aux.ok) {
+      if (cache && cache.metaById && currentProbe(ctx) && fetchCache.get(providerId) === cache) cache.metaById[mid] = Object.assign({}, cache.metaById[mid] || {}, { auxOk: true });
+      return null;   // 现状可用
+    }
+    if (!(aux.status === 400 && /reasoning|effort/i.test(aux.full || ""))) return null;   // 非档位问题不越权
+    const accepted = acceptedEffortsFromSnippet(aux.full);
+    const tryCandidates = async (candidates) => {
+      for (let i = 0; i < Math.min(candidates.length, 2); i++) {
+        const pick = candidates.slice(i);
+        const verify = await probeRequest(apiType, baseUrl, apiKey, mid, { reasoning: pick[0] }, ctx);
+        if (!verify.ok) continue;
+        if (modelRule) {
+          const w = await writeLadderToRule(providerId, mid, pick, ctx, expectedLevel);
+          return w ? { values: pick } : { failed: true, status: aux.status, snippet: aux.snippet, writeBlocked: true };
+        }
+        if (!cache || !currentProbe(ctx) || fetchCache.get(providerId) !== cache) return null;
+        cache.metaById[mid] = Object.assign({}, cache.metaById[mid] || {}, { efforts: pick.slice() });
+        return { values: pick.slice() };
+      }
+      return null;
+    };
+    if (accepted) {
+      const r = await tryCandidates(REASONING_LADDER.filter((v) => accepted.indexOf(v) >= 0));
+      if (r) return r;
+    }
+    /* 解析失败/解析与实际不符：逐候选实测，取第一个可用档位写单值表（default=aux 同值，
+     * 宿主测试/辅助立即恢复；主下拉退化但可用，用户可后续在设置里补足） */
+    for (const cand of REASONING_LADDER) {
+      const t = await probeRequest(apiType, baseUrl, apiKey, mid, { reasoning: cand }, ctx);
+      if (!t.ok) continue;
+      if (modelRule) {
+        const w = await writeLadderToRule(providerId, mid, [cand], ctx, expectedLevel);
+        return w ? { values: [cand] } : { failed: true, status: aux.status, snippet: aux.snippet, writeBlocked: true };
+      }
+      if (!cache || !currentProbe(ctx) || fetchCache.get(providerId) !== cache) return null;
+      cache.metaById[mid] = Object.assign({}, cache.metaById[mid] || {}, { efforts: [cand] });
+      return { values: [cand] };
+    }
+    return { failed: true, status: aux.status, snippet: aux.snippet };
+  }
+  async function writeLadderToRule(providerId, mid, values, ctx, expectedLevel) {
+    if (applyBusy) return null;
+    applyBusy = true;
+    try {
+      const data = readProviderCfg();
+      const modelRule = data ? modelRuleOf(data, providerId, mid) : null;
+      if (!currentProbe(ctx, data) || !modelRule || !modelRule.config || typeof modelRule.config !== "object") return null;
+      if (JSON.stringify(asObject(modelRule.config.optionSpecs).reasoningLevel) !== expectedLevel) return null;
+      const specs = modelRule.config.optionSpecs && typeof modelRule.config.optionSpecs === "object" ? modelRule.config.optionSpecs : (modelRule.config.optionSpecs = {});
+      const rl = specs.reasoningLevel && typeof specs.reasoningLevel === "object" ? specs.reasoningLevel : (specs.reasoningLevel = {});
+      if (typeof rl.map === "string") return null;   // 带 map 的自洽结构不动（entryWithMeta 同纪律）
+      rl.values = values.slice();
+      writeProviderCfg(data);
+      log("probe wrote reasoning ladder for", providerId, mid, "->", values.join("/"));
+      return true;
+    } catch (e) {
+      return null;
+    } finally {
+      applyBusy = false;
+    }
+  }
+  /* 能力实测探测（v312，用户规格「输入类型/模型能力自动匹配」）：只采正证据——2xx 才写
+   * true，4xx/网络失败一律不写（保守默认继承内置 catch-all 全 false，绝不因网关脾气把
+   * 能力写死）。三项在真实中转实测可判定（2026-11-09 OpenHub）：图片 content part、
+   * response_format json_schema、对话中 system 消息；PDF 的 OpenAI wire（type:"file"）
+   * 部分中转不认，400 是形状错误不是能力缺失——PDF 只走目录证据；视频/音频无廉价可靠
+   * 探测（audio 宿主无消费者）不探测；原生联网搜索无法廉价如实验证不探测。写目标与
+   * v311 同款双路径：模型规则已存在→合并 properties 叶子（用户显式 false 不覆盖）；
+   * 未落盘→fetchCache 元数据由 applyModels 统一落盘。仅 openai-chat-completions
+   * （responses 型 wire 形状不同，本轮不探测）。 */
+  const PROBE_CAP_TIMEOUT_MS = 6000;
+  const CAP_PROBE_PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";   // 1x1 PNG
+  const CAP_PROBE_SCHEMA = { type: "json_schema", json_schema: { name: "probe", strict: true, schema: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"], additionalProperties: false } } };
+  function ruleLeafTrue(modelRule, inInputFormat, key) {
+    const props = modelRule && modelRule.config && typeof modelRule.config === "object" ? modelRule.config.properties : null;
+    if (!props || typeof props !== "object") return false;
+    const v = inInputFormat ? asObject(props.inputFormat)[key] : props[key];
+    return v === true;
+  }
+  function ruleLeafSettled(modelRule, inInputFormat, key) {
+    /* 已定 = 显式 true 或显式 false（用户/既有证据拍过板，探测不再越权） */
+    const props = modelRule && modelRule.config && typeof modelRule.config === "object" ? modelRule.config.properties : null;
+    if (!props || typeof props !== "object") return false;
+    const v = inInputFormat ? asObject(props.inputFormat)[key] : props[key];
+    return v === true || v === false;
+  }
+  async function writeCapsToRule(providerId, mid, caps, ctx) {
+    if (applyBusy) return null;
+    applyBusy = true;
+    try {
+      const data = readProviderCfg();
+      const modelRule = data ? modelRuleOf(data, providerId, mid) : null;
+      if (!currentProbe(ctx, data) || !modelRule || !modelRule.config || typeof modelRule.config !== "object") return null;
+      const written = [];
+      const props = modelRule.config.properties && typeof modelRule.config.properties === "object" && !Array.isArray(modelRule.config.properties)
+        ? modelRule.config.properties : (modelRule.config.properties = {});
+      if (caps.image && props.inputFormat !== false && asObject(props.inputFormat).supportsImage !== false) {
+        const fmt = props.inputFormat && typeof props.inputFormat === "object" && !Array.isArray(props.inputFormat)
+          ? props.inputFormat : (props.inputFormat = {});
+        fmt.supportsImage = true;
+        written.push("image");
+      }
+      if (caps.jsonSchema && props.supportsJsonSchemaOutput !== false) { props.supportsJsonSchemaOutput = true; written.push("jsonSchema"); }
+      if (caps.midConv && props.supportsMidConversationSystem !== false) { props.supportsMidConversationSystem = true; written.push("midConv"); }
+      if (!written.length) return [];
+      writeProviderCfg(data);
+      log("probe wrote capabilities for", providerId, mid, "->", JSON.stringify(caps));
+      return written;
+    } catch (e) {
+      return null;
+    } finally {
+      applyBusy = false;
+    }
+  }
+  async function healCapabilities(providerId, apiType, baseUrl, apiKey, mid, ctx) {
+    const data = readProviderCfg();
+    const modelRule = data ? modelRuleOf(data, providerId, mid) : null;
+    const cache = cachedMeta(data, providerId);
+    const meta = cache && cache.metaById ? cache.metaById[mid] : null;
+    const have = {
+      image: ruleLeafSettled(modelRule, true, "supportsImage") || !!(meta && meta.inputFormat && typeof meta.inputFormat.supportsImage === "boolean"),
+      jsonSchema: ruleLeafSettled(modelRule, false, "supportsJsonSchemaOutput") || !!(meta && typeof meta.supportsJsonSchemaOutput === "boolean"),
+      midConv: ruleLeafSettled(modelRule, false, "supportsMidConversationSystem") || !!(meta && typeof meta.supportsMidConversationSystem === "boolean"),
+    };
+    const want = [];
+    if (!have.image) want.push("image");
+    if (!have.jsonSchema) want.push("jsonSchema");
+    if (!have.midConv) want.push("midConv");
+    const toolHistoryChecked = !!(meta && meta.toolHistoryChecked === true);
+    const added = [];
+    for (const key of want) {
+      if (!currentProbe(ctx)) return null;
+      let res;
+      if (key === "image") {
+        res = await probeRequest(apiType, baseUrl, apiKey, mid, { timeoutMs: PROBE_CAP_TIMEOUT_MS, messages: [{ role: "user", content: [{ type: "text", text: "ping" }, { type: "image_url", image_url: { url: "data:image/png;base64," + CAP_PROBE_PNG } }] }] }, ctx);
+      } else if (key === "jsonSchema") {
+        res = await probeRequest(apiType, baseUrl, apiKey, mid, { timeoutMs: PROBE_CAP_TIMEOUT_MS, responseFormat: CAP_PROBE_SCHEMA }, ctx);
+      } else {
+        res = await probeRequest(apiType, baseUrl, apiKey, mid, { timeoutMs: PROBE_CAP_TIMEOUT_MS, messages: [{ role: "user", content: "hi" }, { role: "system", content: "reply briefly" }, { role: "user", content: "hi2" }] }, ctx);
+      }
+      if (res && res.ok) added.push(key);
+    }
+    /* 工具历史回灌探测（v313，警告性质）：OpenHub 实证其全部 Gemini 系通道拒收 tool_calls
+     * 历史（首轮工具调用成功、第二轮必 400001），Anthropic 线同病——通道缺陷无法用配置表达
+     * （supportsToolCall:false 会让宿主对带工具请求直接报错，更糟），只如实警告。 */
+    let toolHistoryUnsupported = false;
+    if (!toolHistoryChecked) {
+      const th = await probeRequest(apiType, baseUrl, apiKey, mid, {
+        timeoutMs: PROBE_CAP_TIMEOUT_MS,
+        messages: [
+          { role: "user", content: "read it" },
+          { role: "assistant", content: "", tool_calls: [{ id: "zusage_probe_1", type: "function", function: { name: "zusage_probe", arguments: "{\"path\":\"/x\"}" } }] },
+          { role: "tool", tool_call_id: "zusage_probe_1", content: "data" },
+        ],
+        tools: [{ type: "function", function: { name: "zusage_probe", description: "probe", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } } }],
+      }, ctx);
+      if (!currentProbe(ctx)) return null;
+      if (th && th.ok) toolHistoryUnsupported = false;
+      else if (th && (th.status === 400 || th.status === 422)) toolHistoryUnsupported = true;   // 确定性拒绝才警告；超时/网络/5xx 不定不警
+      if (cache && cache.metaById && fetchCache.get(providerId) === cache && (th.ok || toolHistoryUnsupported)) {
+        cache.metaById[mid] = Object.assign({}, cache.metaById[mid] || {}, { toolHistoryChecked: true, toolHistoryUnsupported: toolHistoryUnsupported || undefined });
+      }
+    } else if (meta && meta.toolHistoryUnsupported) {
+      toolHistoryUnsupported = true;
+    }
+    if (!currentProbe(ctx) || (!added.length && !toolHistoryUnsupported)) return null;
+    const caps = { image: added.indexOf("image") >= 0, jsonSchema: added.indexOf("jsonSchema") >= 0, midConv: added.indexOf("midConv") >= 0 };
+    const warnings = toolHistoryUnsupported ? ["toolHistory"] : [];
+    if (modelRule) {
+      const written = added.length ? await writeCapsToRule(providerId, mid, caps, ctx) : [];
+      return { added: written || [], warnings: warnings };
+    }
+    if (cache && cache.metaById && fetchCache.get(providerId) === cache) {
+      const latest = cache.metaById[mid] || {};
+      const next = Object.assign({}, latest);
+      if (caps.image) next.inputFormat = Object.assign({}, latest.inputFormat, { supportsImage: true });
+      if (caps.jsonSchema) next.supportsJsonSchemaOutput = true;
+      if (caps.midConv) next.supportsMidConversationSystem = true;
+      cache.metaById[mid] = next;   // applyModels 随后经 entryWithMeta 统一落盘
+      return { added: added, warnings: warnings };
+    }
+    return warnings.length ? { added: [], warnings: warnings } : null;   // 无规则无拉取会话：无处写实，不虚报
+  }
+  /* 规格补全（v314，用户实报 400 maxOutputTokens 89642>65537）：applyModels 是 append-only，
+   * 先添加的模型在目录证据迟到时永远拿不到 optionSpecs.maxOutputTokens/properties.contextWindow
+   * 写实——baseline 落到内置 catch-all 128000，宿主预轮 cap=窗口−用量 只会下调不设上限，超出
+   * 上游真实输出上限即 400。探测确认时用拉取会话元数据补「缺失」键（绝不覆盖已写值/带 map
+   * 自洽结构），与 v311/v312 同款双路径纪律。 */
+  async function enrichSpecFromMeta(providerId, mid, ctx) {
+    const cache = cachedMeta(readProviderCfg(), providerId);
+    const meta = cache && cache.metaById ? cache.metaById[mid] : null;
+    if (!meta) return [];
+    if (applyBusy) return [];
+    applyBusy = true;
+    try {
+      const data = readProviderCfg();
+      const modelRule = data ? modelRuleOf(data, providerId, mid) : null;
+      if (!currentProbe(ctx, data) || fetchCache.get(providerId) !== cache || !modelRule || !modelRule.config || typeof modelRule.config !== "object") return [];
+      const props = modelRule.config.properties && typeof modelRule.config.properties === "object" && !Array.isArray(modelRule.config.properties)
+        ? modelRule.config.properties : (modelRule.config.properties = {});
+      const specs = modelRule.config.optionSpecs && typeof modelRule.config.optionSpecs === "object" ? modelRule.config.optionSpecs : (modelRule.config.optionSpecs = {});
+      const out = [];
+      if (meta.contextWindow && typeof props.contextWindow !== "number") {
+        props.contextWindow = meta.contextWindow;
+        out.push("contextWindow");
+      }
+      if (meta.maxOutputTokens) {
+        const limit = specs.maxOutputTokens && typeof specs.maxOutputTokens === "object" ? specs.maxOutputTokens : (specs.maxOutputTokens = {});
+        if (typeof limit.map !== "string" && typeof limit.max !== "number") {
+          limit.max = meta.maxOutputTokens;
+          out.push("maxOutputTokens");
+        }
+      }
+      if (out.length) {
+        writeProviderCfg(data);
+        log("probe enriched spec for", providerId, mid, "->", out.join("/"));
+      }
+      return out;
+    } catch (e) {
+      return [];
+    } finally {
+      applyBusy = false;
+    }
+  }
+  async function probeModel(providerId, modelId, opts) {
+    const probeCaps = !!(opts && opts.caps === true);
+    const mid = sanitizeModelIds([modelId])[0] || "";
+    if (!mid) return { ok: false, model: String(modelId || "").slice(0, MODEL_ID_MAX), kind: "invalid_model", error: "invalid model id" };
+    const data = readProviderCfg();
+    const rule = data ? findRule(data, providerId) : null;
+    const planSrc = PLAN_SOURCES[String(providerId || "")];
+    if (!planSrc && (!rule || !isPullable(rule))) return { ok: false, model: mid, kind: "provider", error: "provider not found" };
+    if (!fetchImpl) return { ok: false, model: mid, kind: "network", error: "no network stack" };
+    const cfg = (rule && rule.config) || {};
+    const api = cfg.api || {};
+    const apiType = planSrc ? "anthropic-messages" : String(api.type || "");
+    const baseUrl = String((planSrc ? planSrc.baseUrl : api.baseUrl) || "").trim().replace(/\/+$/, "");
+    const apiKey = planSrc ? planTokenOf(providerId) : String(((cfg.access || {}).apiKey) || "").trim();
+    if (!apiKey) return { ok: false, model: mid, kind: "auth", error: "no api key" };
+    const ctx = { providerId: providerId, source: providerSource(data, providerId), deadline: Date.now() + 80000 };
+    let attempt = await probeRequest(apiType, baseUrl, apiKey, mid, null, ctx);
+    let effectiveBase = baseUrl;
+    let specEnriched = [];
+    if (!attempt.ok && attempt.kind === "path" && !planSrc) {
+      const repair = await probeRepairOnce(providerId, apiType, baseUrl, apiKey, mid, ctx);
+      if (repair.base) {
+        effectiveBase = repair.base;
+        attempt = await probeRequest(apiType, repair.base, apiKey, mid, null, ctx);
+        attempt.repaired = { from: baseUrl, to: repair.base };   // 写回已发生；重试仍失败也如实标记
+      } else if (repair.tried && repair.tried.length) {
+        attempt.tried = repair.tried;   // 修复候选也失败：渲染端披露试过的 URL
+      }
+    }
+    if (attempt.ok && probeCaps && !planSrc) {
+      specEnriched = await enrichSpecFromMeta(providerId, mid, ctx);
+    }
+    /* 辅助档位验证（v311）：仅 openai 两型且基础连通后（anthropic 型 catch-all 产出
+     * thinking 型字段，off/disabled 即合法无此错配；套餐源同 skip） */
+    if (attempt.ok && !planSrc && (apiType === "openai-chat-completions" || apiType === "openai-responses")) {
+      delete attempt.full;
+      const healed = await healReasoningLadder(providerId, apiType, effectiveBase, apiKey, mid, ctx);
+      if (healed && healed.values) attempt.effortFixed = { values: healed.values };
+      else if (healed && healed.failed) {
+        attempt = Object.assign({}, attempt, { ok: false, model: mid, kind: "reasoning", status: healed.status, snippet: healed.snippet || "", accepted: acceptedEffortsFromSnippet(healed.snippet || "") || undefined });
+      }
+      if (attempt.ok) delete attempt.full;
+      else {
+        if (specEnriched.length) attempt.specEnriched = specEnriched;
+        return attempt;
+      }
+    }
+    /* 能力实测（v312）：确认流显式携带 caps 标志才跑（独立单测/裸探测不触发），仅
+     * chat-completions 且基础连通后 */
+    if (probeCaps && attempt.ok && !planSrc && apiType === "openai-chat-completions") {
+      delete attempt.full;
+      const caps = await healCapabilities(providerId, apiType, effectiveBase, apiKey, mid, ctx);
+      if (caps && caps.added && caps.added.length) attempt.capabilitiesFixed = caps.added;
+      if (caps && caps.warnings && caps.warnings.length) attempt.warnings = caps.warnings;
+    }
+    if (!currentProbe(ctx)) attempt = Object.assign({}, attempt, { ok: false, kind: "provider", error: "provider changed" });
+    if (specEnriched.length) attempt.specEnriched = specEnriched;
+    delete attempt.full;
+    return attempt;
+  }
+
+  return { listProviders: listProviders, fetchModels: fetchModels, applyModels: applyModels, probeModel: probeModel, dispose: () => { disposed = true; fetchCache.clear(); } };
 }
 
 /* 兼容导出：响应形状解析（OpenAI data / Ollama models / result / 顶层数组），供测试与
@@ -820,4 +1410,7 @@ module.exports = {
   createModelPuller, sanitizeModelIds, parseModelsPayload, candidateUrls,
   extractModelMeta, catalogEntries, matchCatalogEntry, inputFormatFrom, canonicalBasename,
   endsWithVersionSegment, rawModelId, apiCatalogEntries, buildEffortsIndex,
+  anthropicBaseWithV1, classifyProbeStatus, maskSecrets, probeRepairCandidates,
+  auxWireValue, reasoningWireField, acceptedEffortsFromSnippet,
+  catalogHitsFor, catalogAgreedValue, agreedCapabilities,
 };
