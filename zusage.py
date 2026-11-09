@@ -1,7 +1,11 @@
 # -*- coding: utf-8 -*-
-"""ZCode token 用量查询（只读访问 ~/.zcode/cli/db/db.sqlite）。
+"""Token 用量查询库（多宿主，只读）。
 
-既可作 CLI（python zusage.py [now|today|days N|sessions [N]|models [days]|workspace 关键词|session id前缀|watch [sec]]），
+宿主（--host / 配置 host / ZUSAGE_HOST，见 §宿主适配）：
+- zcode（默认）= ~/.zcode/cli/db/db.sqlite 的 model_usage 逐请求表；
+- workbuddy = ~/.workbuddy/workbuddy.db 的 session_usage 会话级表（上下文用量 + credit）。
+
+既可作 CLI（python zusage.py [now|today|days N|sessions [N]|models [days]|workspace 关键词|session id前缀|watch [sec]|host]），
 也可被 usage_mcp.py import 为查询库。
 """
 import hashlib
@@ -10,6 +14,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -52,19 +57,318 @@ def load_config():
     return cfg
 
 
-def connect():
+# ---------- 宿主适配（host）：ZCode / WorkBuddy ----------
+# 本项目原生面向 ZCode：用量是 ~/.zcode/cli/db/db.sqlite 里 model_usage 的逐请求行
+# （input/output/思考/缓存/耗时齐备，可算速度、工具调用与预估费用）。
+# WorkBuddy 是另一套宿主：用量落在 ~/.workbuddy/workbuddy.db 的 session_usage 会话级表，
+# 只有「当前上下文已用 token + 每请求 credit 累计」，**没有**逐请求 token 分项与耗时。
+# 因此两个宿主的指标集合不同：由 HOST_CAPS 声明，快照/报表按能力降级，
+# 不把「取不到的 0」当真实值展示（速度、工具、费用在 workbuddy 上标为不可用）。
+HOST_ZCODE, HOST_WORKBUDDY = "zcode", "workbuddy"
+HOSTS = (HOST_ZCODE, HOST_WORKBUDDY)
+_HOST_ALIASES = {"zcode": HOST_ZCODE, "z-code": HOST_ZCODE, "workbuddy": HOST_WORKBUDDY,
+                 "work-buddy": HOST_WORKBUDDY, "wb": HOST_WORKBUDDY}
+_HOST_LABELS = {HOST_ZCODE: "ZCode", HOST_WORKBUDDY: "WorkBuddy"}
+HOST_CAPS = {
+    HOST_ZCODE: {"tokens": True, "tps": True, "tools": True, "cost": True,
+                 "context": True, "credits": False, "transcript": True},
+    # WorkBuddy 的逐请求用量在会话正文里（providerData.rawUsage），因此 token/速度/工具
+    # 都可得；费用靠 token_pricing 的牌价，未收录的模型按「不可得」处理（见 host_caps
+    # 的运行时回退与 wb_usage.model_cost）。
+    HOST_WORKBUDDY: {"tokens": True, "tps": True, "tools": True, "cost": True,
+                     "context": True, "credits": True, "transcript": True},
+}
+_HOST_OVERRIDE = None   # 进程内最高优先（CLI --host / MCP token_usage(host=...)）
+
+
+def normalize_host(value):
+    """宿主名归一（大小写/别名）；空值返回 None，未知值也返回 None（调用方给提示）。"""
+    key = str(value or "").strip().lower()
+    return _HOST_ALIASES.get(key) if key else None
+
+
+def set_host(value):
+    """进程内覆盖当前宿主（CLI --host、MCP 参数）；None/"" 清除覆盖。"""
+    global _HOST_OVERRIDE
+    host = normalize_host(value)
+    if str(value or "").strip() and host is None:
+        raise ValueError(f"unknown host: {value!r} (expected one of {', '.join(HOSTS)})")
+    _HOST_OVERRIDE = host
+
+
+def _sub_cfg(cfg, name):
+    """config.<name> 下的对象；缺省/损坏一律当空 dict（不因坏配置整个查询失败）。"""
+    sub = cfg.get(name) if isinstance(cfg, dict) else None
+    return sub if isinstance(sub, dict) else {}
+
+
+def host_config():
+    """宿主相关配置（只取 host / hosts 两键）：脚本目录 config.json → 标准数据目录
+    config.json，后者只补前者缺的键（与 _load_lang 同款两跳——标准安装的 config 在
+    运行目录，不在插件目录）。不改 load_config() 的既有语义：context_window / poll_ms
+    仍只读脚本目录，避免顺带改变老行为。"""
+    merged = {}
+    for base in (CONFIG_PATH, Path.home() / ".zcode" / "zcode-token-usage-statusbar" / "config.json"):
+        try:
+            data = json.loads(Path(base).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        if isinstance(data.get("host"), str):     # 先到者优先，后面只补缺
+            merged.setdefault("host", data["host"])
+        for key in ("hosts", "agents"):     # 同款逐键合并：先到者优先，后者只补缺
+            sub = data.get(key)
+            if isinstance(sub, dict):
+                acc = merged.setdefault(key, {})
+                for name, entry in sub.items():
+                    if isinstance(entry, dict) and name not in acc:
+                        acc[name] = entry
+    return merged
+
+
+def _effective_host_cfg(cfg=None):
+    """生效的宿主配置 = 文件两跳结果，再叠调用方显式传入的 cfg（MCP/快照自己的 cfg 优先）。"""
+    eff = host_config()
+    if isinstance(cfg, dict):
+        if isinstance(cfg.get("host"), str) and cfg["host"].strip():
+            eff["host"] = cfg["host"]
+        for key in ("hosts", "agents"):
+            sub = cfg.get(key)
+            if isinstance(sub, dict):
+                acc = dict(eff.get(key) or {})
+                acc.update({k: v for k, v in sub.items() if isinstance(v, dict)})
+                eff[key] = acc
+    return eff
+
+
+def workbuddy_db_path(cfg=None):
+    """WorkBuddy 用量库：环境变量 ZUSAGE_WORKBUDDY_DB > config.hosts.workbuddy.db_path > 默认。
+    允许带 ~ 与 %VAR%（Windows）/ $VAR（POSIX）展开，方便多机共用同一份配置。"""
+    raw = os.environ.get("ZUSAGE_WORKBUDDY_DB") or _sub_cfg(
+        _sub_cfg(_effective_host_cfg(cfg), "hosts"), "workbuddy").get("db_path")
+    if isinstance(raw, str) and raw.strip():
+        return Path(os.path.expandvars(raw.strip())).expanduser()
+    return Path.home() / ".workbuddy" / "workbuddy.db"
+
+
+def zcode_db_path(cfg=None):
+    """ZCode 用量库：config.hosts.zcode.db_path（可选，覆盖默认）> 模块级 DB_PATH。
+    默认路径仍走 DB_PATH 这个可被测试/调用方替换的模块量（既有约定，不改成不可变常量）。"""
+    raw = _sub_cfg(_sub_cfg(_effective_host_cfg(cfg), "hosts"), "zcode").get("db_path")
+    if isinstance(raw, str) and raw.strip():
+        return Path(os.path.expandvars(raw.strip())).expanduser()
+    return Path(DB_PATH)
+
+
+def host_db_path(host=None, cfg=None):
+    host = normalize_host(host) or resolve_host(cfg=cfg)
+    return workbuddy_db_path(cfg) if host == HOST_WORKBUDDY else zcode_db_path(cfg)
+
+
+def resolve_host(override=None, cfg=None):
+    """宿主判定优先级：显式 override > 环境变量 ZUSAGE_HOST > config.host > 默认 zcode。
+
+    "auto" 是可选的自动探测（ZCode 库存在即选 zcode，否则 ZCode 库缺失且 WorkBuddy 库
+    存在时选 workbuddy）。**默认不用 auto**：装了 WorkBuddy 的机器上原 ZCode 行为必须
+    一字不变，想按机器自动选宿主的用户显式写 "host": "auto"。"""
+    host = normalize_host(override) or normalize_host(_HOST_OVERRIDE)
+    if host:
+        return host
+    host = normalize_host(os.environ.get("ZUSAGE_HOST"))
+    if host:
+        return host
+    eff = _effective_host_cfg(cfg)
+    choice = normalize_host(eff.get("host"))
+    if choice:
+        return choice
+    # 没有任何显式配置时跟随客户端：WorkBuddy 构建默认读 WorkBuddy 库
+    # （ZCode 构建里 detect_agent 恒为 zcode，行为与以前完全一致）。
+    if detect_agent() == AGENT_WORKBUDDY:
+        return HOST_WORKBUDDY
+    if str(eff.get("host") or "").strip().lower() == "auto":
+        if zcode_db_path(cfg).exists():
+            return HOST_ZCODE
+        if workbuddy_db_path(cfg).exists():
+            return HOST_WORKBUDDY
+    return HOST_ZCODE
+
+
+def host_source(override=None, cfg=None):
+    """当前宿主的判定来源（host 子命令/诊断用）：cli | env | config | auto | default。"""
+    if normalize_host(override) or normalize_host(_HOST_OVERRIDE):
+        return "cli"
+    if normalize_host(os.environ.get("ZUSAGE_HOST")):
+        return "env"
+    eff = _effective_host_cfg(cfg)
+    if normalize_host(eff.get("host")):
+        return "config"
+    if detect_agent() == AGENT_WORKBUDDY:
+        return "agent"
+    if str(eff.get("host") or "").strip().lower() == "auto":
+        return "auto"
+    return "default"
+
+
+def host_label(host=None):
+    return _HOST_LABELS.get(normalize_host(host) or resolve_host(), HOST_ZCODE)
+
+
+def host_caps(host=None):
+    """宿主能力表。WorkBuddy 的逐请求指标依赖会话正文解析、费用还依赖价表，
+    两者都是可选文件（精简部署/旧包里可能没有）——按运行时实际可用性回退，
+    不承诺拿不到的指标。ZCode 侧全静态，与以前一致。"""
+    key = normalize_host(host) or resolve_host()
+    caps = dict(HOST_CAPS.get(key, HOST_CAPS[HOST_ZCODE]))
+    if key == HOST_WORKBUDDY:
+        if _wb_usage is None:
+            caps.update(tokens=False, tps=False, tools=False, transcript=False)
+        if _wb_usage is None or getattr(_wb_usage, "_pricing", None) is None:
+            caps["cost"] = False
+    return caps
+
+
+def host_of(con):
+    """连接所属宿主（连接由 connect() 打标记；外部自建连接按当前判定回退）。"""
+    return getattr(con, "zusage_host", None) or resolve_host()
+
+
+class _HostConn(sqlite3.Connection):
+    """带宿主标记的连接：render_*/snapshot 按连接分派，不按全局猜测——
+    serve 常驻进程复用同一连接跨请求，标记跟着连接走才不会张冠李戴。"""
+    zusage_host = HOST_ZCODE
+
+
+def _open_ro(path, probe):
     """只读连接优先；WAL shm 不可用时退回普通连接（全程只 SELECT）。
     fallback 前先确认文件存在：sqlite3.connect 对不存在的路径会新建空库，
-    可能与尚未初始化数据库的 ZCode 产生交互（v32 审查修复）。"""
+    可能与尚未初始化的宿主产生交互（v32 审查修复）。"""
+    path = Path(path)
     try:
-        con = sqlite3.connect(f"file:{DB_PATH.as_posix()}?mode=ro", uri=True, timeout=3)
-        con.execute("select 1 from model_usage limit 1").fetchone()
+        con = sqlite3.connect(f"file:{path.as_posix()}?mode=ro", uri=True, timeout=3,
+                              factory=_HostConn)
+        con.execute(probe).fetchone()
     except sqlite3.OperationalError:
-        if not DB_PATH.exists():
+        if not path.exists():
             raise
-        con = sqlite3.connect(str(DB_PATH), timeout=3)
+        con = sqlite3.connect(str(path), timeout=3, factory=_HostConn)
     con.row_factory = sqlite3.Row
     return con
+
+
+def connect(host=None):
+    """按宿主打开只读连接；连接上带 zusage_host 标记供上层分派。"""
+    target = resolve_host(host)
+    if target == HOST_WORKBUDDY:
+        con = _open_ro(workbuddy_db_path(), "select 1 from session_usage limit 1")
+    else:
+        con = _open_ro(zcode_db_path(), "select 1 from model_usage limit 1")
+    con.zusage_host = target
+    return con
+
+
+# ---------- 宿主客户端（agent）与启动策略 ----------
+# host（读哪个库）与 agent（在哪个客户端里跑、用哪种展示）是两件事：
+# 同一份代码被两个客户端安装，但浮层形态不同——ZCode 走原来的 asar 注入，
+# WorkBuddy 没有 asar 注入链，改走 CDP（客户端自带 --remote-debugging-port）。
+# 启动策略集中在这里，调用方（MCP/hook）只问「这个 agent 该干什么」。
+AGENT_ZCODE, AGENT_WORKBUDDY, AGENT_CLI = "zcode", "workbuddy", "cli"
+AGENTS = (AGENT_ZCODE, AGENT_WORKBUDDY)
+AGENT_STRATEGY = {
+    AGENT_ZCODE: {"overlay": "asar", "mcp": True, "commands": True,
+                  "rate_line": True, "updater": True},
+    AGENT_WORKBUDDY: {"overlay": "cdp", "mcp": True, "commands": True,
+                      "rate_line": False, "updater": False},
+    AGENT_CLI: {"overlay": None, "mcp": True, "commands": True,
+                "rate_line": False, "updater": False},
+}
+_OVERLAY_MODES = ("asar", "cdp", "off")
+
+
+def detect_agent(env=None):
+    """当前客户端。判定顺序（前者优先，全部可解释）：
+    1. ZUSAGE_AGENT 显式指定（调试/测试）；
+    2. 插件根环境变量：CODEBUDDY_PLUGIN_ROOT → WorkBuddy，ZCODE_PLUGIN_ROOT → ZCode；
+    3. 插件目录里的 manifest 目录：.codebuddy-plugin → WorkBuddy，
+       .zcode-plugin/.claude-plugin → ZCode；
+    4. 默认 zcode——老安装（独立安装器 + 运行目录）没有 plugin 根变量，必须保持不变。
+
+    刻意不看 CLIENT_INFO_PLATFORM 这类客户端指纹：它会被子进程继承，
+    在 WorkBuddy 的终端里跑 ZCode 那份代码时会造成误判。"""
+    env = env if env is not None else os.environ
+    explicit = _agent_key(env.get("ZUSAGE_AGENT"))
+    if explicit:
+        return explicit
+    if str(env.get("CODEBUDDY_PLUGIN_ROOT") or "").strip():
+        return AGENT_WORKBUDDY
+    if str(env.get("ZCODE_PLUGIN_ROOT") or "").strip():
+        return AGENT_ZCODE
+    here = Path(__file__).parent
+    if (here / ".codebuddy-plugin").is_dir():
+        return AGENT_WORKBUDDY
+    if (here / ".zcode-plugin").is_dir() or (here / ".claude-plugin").is_dir():
+        return AGENT_ZCODE
+    return AGENT_ZCODE
+
+
+def _agent_key(value):
+    """agent 名归一：zcode/workbuddy 走别名表，cli/terminal 单列（不在 host 别名里）。"""
+    key = str(value or "").strip().lower()
+    if key in ("cli", "terminal", "none", "headless"):
+        return AGENT_CLI
+    return normalize_host(key)
+
+
+def agent_strategy(agent=None):
+    """该客户端的启动策略（副本，调用方可改）：overlay=asar|cdp|None、mcp、commands、
+    rate_line（逐问速率行只有 ZCode 有渲染桥）、updater（插件更新器只有 ZCode 插件链有）。"""
+    key = _agent_key(agent) or detect_agent()
+    return dict(AGENT_STRATEGY.get(key, AGENT_STRATEGY[AGENT_CLI]))
+
+
+def overlay_mode(agent=None, cfg=None):
+    """生效的浮层模式：config.agents.<agent>.overlay（true/false/asar/cdp/off）覆盖策略表。
+    false/off → None（不启动）；true → 策略表默认值。"""
+    key = _agent_key(agent) or detect_agent()
+    raw = _sub_cfg(_sub_cfg(_effective_host_cfg(cfg), "agents"), key).get("overlay")
+    default = AGENT_STRATEGY.get(key, AGENT_STRATEGY[AGENT_CLI])["overlay"]
+    if isinstance(raw, bool):
+        return default if raw else None
+    if isinstance(raw, str):
+        value = raw.strip().lower()
+        if value in ("off", "none", "no", "false", "0"):
+            return None
+        if value in ("asar", "cdp"):
+            return value
+        if value in ("on", "auto", "true", "1"):
+            return default
+    return default
+
+
+def node_candidates():
+    """node 可执行候选：PATH 优先，其次 WorkBuddy 自带（版本目录降序）。
+    浮层注入器只在 WorkBuddy 用，自带 node 一定存在且带全局 WebSocket（22+）。"""
+    found, seen = [], set()
+
+    def add(path):
+        key = os.path.normcase(os.path.abspath(str(path)))
+        if key not in seen and os.path.isfile(str(path)):
+            seen.add(key)
+            found.append(str(path))
+
+    add(shutil.which("node") or "")
+    home = Path(os.environ.get("WORKBUDDY_HOME") or (Path.home() / ".workbuddy"))
+    versions = home / "binaries" / "node" / "versions"
+    if versions.is_dir():
+        for d in sorted(versions.iterdir(), reverse=True):
+            add(d / ("node.exe" if os.name == "nt" else "bin/node"))
+    return found
+
+
+def overlay_entrypoint():
+    """CDP 浮层注入器路径（与 usage_mcp.py 同目录；ZCode 构建里不存在）。"""
+    return Path(__file__).parent / "wb-overlay.cjs"
+
 
 
 def _ts(ms):
@@ -458,6 +762,8 @@ def model_usage(con, days=7):
 
 def render_current(con):
     """当前会话 = _scan_session_ids 最近活跃的会话（子代理会话也在候选内）。"""
+    if host_of(con) == HOST_WORKBUDDY:
+        return wb_render_current(con)
     rows = _scan_session_ids(con)
     sess, last_at = None, 0
     if rows:
@@ -500,6 +806,8 @@ def render_current(con):
 
 
 def render_days(con, days):
+    if host_of(con) == HOST_WORKBUDDY:
+        return wb_render_days(con, days)
     lines = [L(f"■ 近 {days} 天每日用量 (合计=input+output)", f"■ Last {days} days (total=input+output)")]
     for label, r in daily_usage(con, days):
         bar = "█" * max(0, min(30, int(r[4] / 200_000)))
@@ -511,6 +819,8 @@ def render_days(con, days):
 
 
 def render_sessions(con, limit=10):
+    if host_of(con) == HOST_WORKBUDDY:
+        return wb_render_sessions(con, limit)
     lines = [L(f"■ 最近 {limit} 个会话", f"■ Last {limit} sessions")]
     for sid, title, d, n, inp, outp, total, last in recent_sessions(con, limit):
         t = _ts(last)
@@ -526,6 +836,8 @@ def render_sessions(con, limit=10):
 
 
 def render_models(con, days=7):
+    if host_of(con) == HOST_WORKBUDDY:
+        return wb_render_models(con, days)
     lines = [L(f"■ 近 {days} 天按模型", f"■ Last {days} days by model")]
     for prov, model, n, inp, outp, total in model_usage(con, days):
         lines.append(
@@ -580,6 +892,8 @@ def _match_workspaces(con, pattern):
 
 def render_workspace(con, pattern, top=15):
     """workspace:<目录关键词>：按工作区聚合主会话+子代理，含按会话与按模型两张明细。"""
+    if host_of(con) == HOST_WORKBUDDY:
+        return wb_render_workspace(con, pattern, top)
     pattern = (pattern or "").strip()
     dirs = _match_workspaces(con, pattern) if pattern else []
     if not dirs:
@@ -799,6 +1113,8 @@ def _sub_agent_tasks(con, sid):
 
 def render_session_detail(con, prefix):
     """session:<id前缀>：会话总量 + 按模型 + 子代理明细（任务名与状态条"子智能体目录"同源）。"""
+    if host_of(con) == HOST_WORKBUDDY:
+        return wb_render_session_detail(con, prefix)
     prefix = (prefix or "").strip()
     if not prefix:
         return L("session 需要一个非空 id 前缀（session:<前缀>）",
@@ -2476,11 +2792,17 @@ def snapshot(force_sid="", routes=None, serve_con=None, include_speed_history=Fa
     这份 ~200KB 增强字段，保持各自 stdout 契约。连接所有权归调用方：serve 模式下查询期
     出错会就地 close（调用方下次探活重建），finally 不重复关闭。"""
     cfg = load_config()
+    # 价表配置要在宿主分流之前：WorkBuddy 分支会提前 return，放后面会让它的快照
+    # 读不到 pricing-cache.json（汇率与运行时更新的牌价都落在这个文件里）。
     if _pricing is not None:
         try:
             _pricing.configure(cfg)   # 定位 pricing-cache.json（config.json 同目录优先）
         except Exception:
             pass
+    if resolve_host(cfg=cfg) == HOST_WORKBUDDY:
+        # WorkBuddy：上下文来自 session_usage，逐请求指标来自会话正文（见 wb_snapshot）；
+        # 结构见 host_caps —— 缺什么就声明不可用，不伪造 0 值
+        return wb_snapshot(force_sid, cfg=cfg, serve_con=serve_con)
     scopes = None
     if isinstance(routes, list):
         scopes = []
@@ -2627,6 +2949,10 @@ def snapshot(force_sid="", routes=None, serve_con=None, include_speed_history=Fa
                 if not ident.startswith("remote:"):
                     rec.insert(0, {**local_rows.get(sid, _empty_snapshot(sid, cfg)), "workspace_identity": ident})
         return {
+            # 宿主与能力声明（v241）：消费端据此选择可用指标，不再靠字段缺失猜数据源；
+            # 旧消费端忽略未知键，不影响既有渲染。
+            "host": HOST_ZCODE,
+            "caps": host_caps(HOST_ZCODE),
             "local_error": local_error,
             "session": base,
             "last_turn": base["last_turn"],
@@ -2693,6 +3019,648 @@ def snapshot(force_sid="", routes=None, serve_con=None, include_speed_history=Fa
             con.close()
 
 
+# ---------- WorkBuddy 数据源（会话级上下文 + 正文逐请求用量） ----------
+# 两路数据拼起来才是完整口径：
+#   1) ~/.workbuddy/workbuddy.db 的 session_usage —— 当前上下文用量 used / 窗口 size；
+#   2) projects/<项目>/<sid>.jsonl 的 providerData.rawUsage —— 每次模型调用的
+#      prompt/completion/思考/缓存/credit，以及轮次、工具调用与生成时间窗口。
+# 正文解析放在 wb_usage.py；旧构建可能没有这个文件，缺失时退回「只有上下文 + credit」。
+try:
+    import wb_usage as _wb_usage
+except ImportError:
+    _wb_usage = None
+
+_WB_SCAN_LIMIT = 2000     # session_usage 单次扫描上限（按最后活动倒序）
+_WB_ENRICH = 6            # 只为最近 N 个会话解析正文（状态条只渲染 1 个，其余作兜底）
+_WB_SQL = """
+select u.session_id as sid, u.used, u.size, u.updated_at as usage_at, u.credit_json,
+       s.cwd, s.title, s.custom_title, s.status, s.model, s.context_window,
+       s.created_at, s.last_activity_at, s.updated_at as session_at,
+       s.is_playground, s.is_background_automation
+  from session_usage u
+  left join sessions s on s.id = u.session_id
+ where s.deleted_at is null
+ order by max(coalesce(u.updated_at, 0), coalesce(s.last_activity_at, 0),
+              coalesce(s.updated_at, 0)) desc
+ limit %d
+""" % _WB_SCAN_LIMIT
+
+
+def _wb_credit_total(raw):
+    """credit_json = {计价条目 id: credit}（宿主口径：一轮一条）。
+
+    正文里拿不到 credit 时的回退来源；损坏 JSON / 非数值按跳过处理，不整行失败。"""
+    if not raw:
+        return 0.0, 0
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return 0.0, 0
+    if not isinstance(data, dict):
+        return 0.0, 0
+    total, n = 0.0, 0
+    for value in data.values():
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue
+        total += float(value)
+        n += 1
+    return round(total, 4), n
+
+
+def _wb_int(value):
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _wb_window(row, cfg):
+    """上下文窗口：session_usage.size > sessions.context_window > 配置默认。
+    第二项 = 是否回退值（size 命中是权威值，只有后两级才是回退）。"""
+    window = _wb_int(row["size"])
+    if window > 0:
+        return window, False
+    window = _wb_int(row["context_window"])
+    if window > 0:
+        return window, True
+    return _wb_int(cfg.get("context_window")) or 128000, True
+
+
+def _wb_stats(sid):
+    """会话正文解析（含逐请求用量/轮次/工具）。文件不存在或无 wb_usage 时返回 None。"""
+    if _wb_usage is None or not sid:
+        return None
+    try:
+        path = _wb_usage.session_file(sid)
+        if not path:
+            return None
+        parsed = _wb_usage.parse_transcript(path)
+        if not parsed.get("requests"):
+            return None
+        return {
+            "parsed": parsed,
+            "sum": _wb_usage.summarize(parsed),
+            "turn": _wb_usage.last_turn(parsed),
+            "path": str(path),
+        }
+    except Exception:   # noqa: BLE001 — 单个会话正文坏掉不能拖垮整帧
+        return None
+
+
+def _wb_row(row, cfg, stats=None):
+    """session_usage 行（+可选正文统计）→ 与 ZCode 快照同构的会话行。"""
+    sid = row["sid"] or ""
+    window, auto = _wb_window(row, cfg)
+    credits, credit_entries = _wb_credit_total(row["credit_json"])
+    used = _wb_int(row["used"])
+    last_at = max(_wb_int(row["usage_at"]), _wb_int(row["last_activity_at"]), _wb_int(row["session_at"]))
+    status = str(row["status"] or "")
+    model = str(row["model"] or "")
+    out = _empty_snapshot(sid, {"context_window": window})
+    out.update({
+        "host": HOST_WORKBUDDY,
+        "title": (row["custom_title"] or row["title"] or "") or "",
+        "active": bool(status.lower() in ("working", "running", "streaming")
+                       or (last_at and int(time.time() * 1000) - last_at < SESSION_TIMEOUT_MS)),
+        "ctx": used,
+        "context_window": window,
+        "context_auto": auto,
+        "updated": (_ts(last_at).strftime("%H:%M:%S") if last_at else ""),
+        "last_at": last_at,
+        "started": _wb_int(row["created_at"]),
+        "model": model,
+        "cwd": str(row["cwd"] or ""),
+        "status": status,
+        "credits": credits,
+        "credit_entries": credit_entries,
+        "is_sub": False,
+        "parent": None,
+        "is_playground": bool(_wb_int(row["is_playground"])),
+        "is_background": bool(_wb_int(row["is_background_automation"])),
+        "last": {"duration_ms": 0, "ttft_ms": 0, "model": model, "tps": 0,
+                 "startedAt": 0, "endedAt": last_at},
+    })
+    if not stats:
+        return out
+    summ, turn, parsed = stats["sum"], stats["turn"], stats["parsed"]
+    # 逐请求口径覆盖会话级兜底（正文才是真数据源；session_usage 只补上下文与窗口）
+    out.update({
+        "turns": summ["turns"],
+        "requests": summ["requests"],
+        "input": summ["input"],
+        "output": summ["output"],
+        "reasoning": summ["reasoning"],
+        "cache_read": summ["cache_read"],
+        "cache_write": summ["cache_write"],
+        "total": summ["total"],
+        "tool_calls": summ["tool_calls"],
+        "retries": 0,
+        "avg_tps": summ["avg_tps"],
+        "started": summ["started"] or out["started"],
+        "last_at": max(out["last_at"], summ["last_at"]),
+        "model": parsed.get("model") or model,
+        "title": out["title"] or parsed.get("title") or "",
+        "cwd": out["cwd"] or parsed.get("cwd") or "",
+        "credits": summ["credits"] if summ["credits"] else credits,
+        # 费用按模型分组计（价表命中的才计入）；未定价模型进 cost_unknown，
+        # 上层显示「部分预估」，拿不到就不写 0。
+        "cost_usd": summ.get("cost_usd"),
+        "cost_partial": bool(summ.get("cost_partial")),
+        "cost_unknown": list(summ.get("cost_unknown") or []),
+        "cost_models": summ.get("cost_models") or [],
+        "models": summ.get("cost_models") or [],
+        "tool_errors": summ.get("tool_errors", 0),
+        "speed_segs": [r["tps"] for r in parsed["requests"] if r.get("gen_ms")][-_SPEED_SEGS_MAX:],
+        # 悬停速度卡要画柱状图：每段带时间与用量，光有数值无法标时间轴
+        "speed_points": [{"tps": r["tps"], "ts": r["ts"], "output": r["output"],
+                          "total": r["prompt"] + r["output"]}
+                         for r in parsed["requests"] if r.get("gen_ms")][-_SPEED_SEGS_MAX:],
+    })
+    out["last_turn"] = dict(_EMPTY_TURN, **{k: v for k, v in turn.items() if k in _EMPTY_TURN})
+    out["last_turn"]["cost_usd"] = turn.get("cost_usd")
+    out["last_turn"]["cost_unknown"] = list(turn.get("cost_unknown") or [])
+    out["last"] = {"duration_ms": turn.get("duration_ms", 0), "ttft_ms": 0,
+                   "model": out["model"], "tps": summ["last_tps"],
+                   "startedAt": turn.get("started", 0), "endedAt": turn.get("ended", 0)}
+    out["tools"] = {"total": parsed.get("tool_calls", 0),
+                    "errors": parsed.get("tool_errors", 0),
+                    "list": parsed.get("tools", [])[:12]}
+    return out
+
+
+def _wb_rows(con):
+    """可用会话行（最近 N 个补正文统计，其余只带上下文），按最后活动倒序。"""
+    _wb_ready_pricing()
+    cfg = load_config()
+    raw = con.execute(_WB_SQL).fetchall()
+    rows = []
+    for i, r in enumerate(raw):
+        stats = _wb_stats(r["sid"]) if i < _WB_ENRICH else None
+        rows.append(_wb_row(r, cfg, stats))
+    rows.sort(key=lambda r: (-r["last_at"], r["sid"]))
+    return rows
+
+
+def _wb_empty_row(cfg):
+    row = _empty_snapshot("", cfg)
+    row.update({"host": HOST_WORKBUDDY, "model": "", "cwd": "", "status": "",
+                "credits": 0.0, "credit_entries": 0, "is_sub": False, "parent": None})
+    return row
+
+
+def _wb_pct(row):
+    window = row["context_window"] or 0
+    return (row["ctx"] / window * 100) if window else 0.0
+
+
+def _wb_stamp(ms, fmt="%Y-%m-%d %H:%M:%S"):
+    t = _ts(ms)
+    return t.strftime(fmt) if t else "?"
+
+
+def wb_snapshot(force_sid="", cfg=None, serve_con=None):
+    """WorkBuddy 快照：顶层键与 ZCode 快照对齐。
+
+    会话/本轮/工具/速度来自正文逐请求记录，上下文来自 session_usage，
+    今日与项目累计为跨会话聚合；费用按价表逐模型估算，未收录模型记 None 并带 cost_unknown。"""
+    cfg = cfg if cfg is not None else load_config()
+    if _pricing is not None:
+        try:
+            _pricing.configure(cfg)   # 让直接调用者也能读到 pricing-cache.json 的汇率
+        except Exception:
+            pass
+    con, owns, local_error = serve_con, False, None
+    if con is None or host_of(con) != HOST_WORKBUDDY:
+        try:
+            con = connect(HOST_WORKBUDDY)
+            owns = True
+        except sqlite3.Error as exc:
+            con, local_error = None, str(exc)[:200]
+    try:
+        rows = _wb_rows(con) if con is not None else []
+        by_sid = {r["sid"]: r for r in rows}
+        force = []
+        for fs in str(force_sid).split(","):
+            fs = fs.strip()
+            if fs and re.fullmatch(r"[A-Za-z0-9_-]+", fs) and fs not in force:
+                force.append(fs)
+        known_sids = [s for s in force if s in by_sid]
+        not_local = [s for s in force if s not in by_sid]
+        base = by_sid[known_sids[0]] if known_sids else (rows[0] if rows else _wb_empty_row(cfg))
+        rec, seen = [], set()
+        for row in [by_sid[s] for s in known_sids] + rows:
+            if row["sid"] in seen:
+                continue
+            seen.add(row["sid"])
+            rec.append(row)
+            if len(rec) >= max(6, len(known_sids) + 6):
+                break
+        start_ms = _epoch_ms(_day_start())
+        active_today = [r for r in rows if r["last_at"] >= start_ms]
+        new_today = [r for r in rows if r["started"] >= start_ms]
+        agg = {}
+        if _wb_usage is not None:
+            try:
+                agg = _wb_usage.aggregate_since(start_ms)
+            except Exception:   # noqa: BLE001 — 今日聚合失败只影响今日格
+                agg = {}
+        today = {
+            "requests": agg.get("requests", 0),
+            "input": agg.get("input", 0),
+            "output": agg.get("output", 0),
+            "cache_read": agg.get("cache_read", 0),
+            "cache_write": agg.get("cache_write", 0),
+            "total": agg.get("total", 0),
+            "reasoning": agg.get("reasoning", 0),
+            "retries": 0,
+            "started": start_ms,
+            "sessions": len(active_today),
+            "new_sessions": len(new_today),
+            "credits": round(agg.get("credits", 0.0), 4),
+            "first_at": agg.get("first_at", 0),
+            "last_at": agg.get("last_at", 0) or max([r["last_at"] for r in active_today], default=0),
+            "tool_calls": agg.get("tool_calls", 0),
+            "tool_errors": agg.get("tool_errors", 0),
+            "cost_usd": agg.get("cost_usd"),
+            "cost_partial": bool(agg.get("cost_partial")),
+            "cost_unknown": list(agg.get("cost_unknown") or []),
+            "ctx_max": max([r["ctx"] for r in active_today], default=0),
+            "models": agg.get("by_model", []),
+        }
+        project = {}
+        if _wb_usage is not None and base.get("cwd"):
+            try:
+                project = _wb_usage.aggregate_cwd(base["cwd"])
+            except Exception:   # noqa: BLE001
+                project = {}
+        return {
+            "host": HOST_WORKBUDDY,
+            "caps": host_caps(HOST_WORKBUDDY),
+            "local_error": local_error,
+            "session": base,
+            "last_turn": base["last_turn"],
+            "last": base["last"],
+            "today": today,
+            "project": project,
+            "remote_today": {}, "remote_error": None, "remote_errors": {},
+            "remote_targets": [], "not_local": not_local,
+            "provider_fallback": "", "scnet_estimate": None,
+            "db_path": str(workbuddy_db_path(cfg)),
+            "fx": (_pricing.fx_view() if _pricing is not None else None),
+            "remote_enabled": False, "known_sids": known_sids,
+            "context_window": base["context_window"], "context_auto": base["context_auto"],
+            "code": base["code"], "ctx_exc": 0, "tools": base["tools"],
+            "recent": rec,
+        }
+    finally:
+        if con is not None and owns:
+            con.close()
+
+
+def _wb_hit_pct(cache_read, total_in):
+    return round(cache_read / total_in * 100) if total_in else 0
+
+
+_WB_PRICING_READY = False
+
+
+def _wb_ready_pricing():
+    """渲染入口调用一次：定位 pricing-cache.json。报表可能不经过 snapshot()，
+    不在这里补一次就会丢掉缓存里的汇率与运行时更新的牌价（只用到内置表）。"""
+    global _WB_PRICING_READY
+    if _WB_PRICING_READY or _pricing is None:
+        return
+    try:
+        _pricing.configure(load_config())
+    except Exception:   # noqa: BLE001 — 配置失败只影响币种/新价，不拖垮报表
+        pass
+    _WB_PRICING_READY = True
+
+
+def _wb_money(usd):
+    """USD 金额 → 显示串：有汇率走 ¥（与渲染端 fmtMoney 同口径），否则 $。
+    缺失/不可得返回「—」，绝不写 0 冒充。"""
+    if not isinstance(usd, (int, float)):
+        return "—"
+    fx = _pricing.fx_view() if _pricing is not None else None
+    rate = float((fx or {}).get("rate") or 0)
+    if rate > 0:
+        v = usd * rate
+        return "<¥0.01" if 0 < v < 0.01 else f"¥{v:.2f}"
+    return "<$0.01" if 0 < usd < 0.01 else f"${usd:.2f}"
+
+
+def _wb_cost_note(unknown, en=False):
+    """未定价模型的说明后缀（表明「部分预估」的范围）；空列表返回空串。"""
+    names = [n for n in (unknown or []) if n]
+    if not names:
+        return ""
+    joined = (", " if en else "、").join(names)
+    return f" (excl. unpriced {joined})" if en else f"（不含未收录模型 {joined}）"
+
+
+def wb_render_current(con):
+    rows = _wb_rows(con)
+    if not rows:
+        return L("■ WorkBuddy：本地还没有会话记录（先在 WorkBuddy 里跑一轮对话）。",
+                 "■ WorkBuddy: no local session usage yet (run one turn in WorkBuddy first).")
+    r = rows[0]
+    lt = r.get("last_turn") or {}
+    lines = [L(f"■ WorkBuddy 当前会话 · {r['title'] or '(无标题)'}",
+               f"■ WorkBuddy current session · {r['title'] or '(untitled)'}"),
+             L(f"  模型 {r['model'] or '?'}  状态 {r['status'] or '?'}  "
+               f"轮 {r['turns']} / 请求 {r['requests']} / 工具 {r['tool_calls']}",
+               f"  model {r['model'] or '?'}  status {r['status'] or '?'}  "
+               f"turns {r['turns']} / requests {r['requests']} / tools {r['tool_calls']}"),
+             L(f"  上下文 {fmt(r['ctx'])} / {fmt(r['context_window'])} ({_wb_pct(r):.1f}%)  "
+               f"credit {r['credits']:.2f}",
+               f"  context {fmt(r['ctx'])} / {fmt(r['context_window'])} ({_wb_pct(r):.1f}%)  "
+               f"credits {r['credits']:.2f}")]
+    if r["total"]:
+        lines.append(L(f"  token 入 {fmt(r['input'])}（缓存命中 {_wb_hit_pct(r['cache_read'], r['input'])}%）"
+                       f" 出 {fmt(r['output'])}（思考 {fmt(r['reasoning'])}） 合计 {fmt(r['total'])}",
+                       f"  tokens in {fmt(r['input'])} (cache {_wb_hit_pct(r['cache_read'], r['input'])}%)"
+                       f" out {fmt(r['output'])} (thinking {fmt(r['reasoning'])}) total {fmt(r['total'])}"))
+        lines.append(L(f"  速度 会话均 {r['avg_tps']} t/s · 最近一段 {lt.get('tps', 0)} t/s（按模型响应窗口近似）",
+                       f"  rate avg {r['avg_tps']} t/s · latest {lt.get('tps', 0)} t/s (model response window)"))
+        lines.append(L(f"  本轮 {fmt(lt.get('total', 0))} / {lt.get('requests', 0)} 次"
+                       f" · 会话累计 {r['turns']} 轮",
+                       f"  latest turn {fmt(lt.get('total', 0))} / {lt.get('requests', 0)} req"
+                       f" · session {r['turns']} turns"))
+    else:
+        lines.append(L("  （没有会话正文记录：只能显示上下文与 credit）",
+                       "  (no transcript records: only context and credits available)"))
+    if r.get("cost_usd") is not None:
+        lines.append(L(f"  预估费用 会话 {_wb_money(r['cost_usd'])}"
+                       f" · 本轮 {_wb_money(lt.get('cost_usd'))}"
+                       f"{_wb_cost_note(r.get('cost_unknown') if r.get('cost_partial') else [])}"
+                       f"（按价表牌价，非账单）",
+                       f"  est. cost session {_wb_money(r['cost_usd'])}"
+                       f" · latest turn {_wb_money(lt.get('cost_usd'))}"
+                       f"{_wb_cost_note(r.get('cost_unknown') if r.get('cost_partial') else [], en=True)}"
+                       f" (price table, not a bill)"))
+    else:
+        lines.append(L("  预估费用 不可得（价表未收录该模型；不按兜底均价冒充）",
+                       "  est. cost unavailable (model not in price table; no fallback rates)"))
+    if r["cwd"]:
+        lines.append(L(f"  目录 {r['cwd']}", f"  cwd {r['cwd']}"))
+    lines.append(L("  注：token 来自会话正文的逐次调用记录；速度为模型响应窗口近似值。",
+                   "  Note: tokens come from per-call records in the transcript; "
+                   "rate is approximated from response windows."))
+    return "\n".join(lines)
+
+
+def wb_render_today(con):
+    rows = _wb_rows(con)
+    start_ms = _epoch_ms(_day_start())
+    active = [r for r in rows if r["last_at"] >= start_ms]
+    agg = {}
+    if _wb_usage is not None:
+        try:
+            agg = _wb_usage.aggregate_since(start_ms)
+        except Exception:   # noqa: BLE001
+            agg = {}
+    peak = max([_wb_pct(r) for r in active], default=0.0)
+    head = L(f"■ 今日 ({datetime.now():%Y-%m-%d %a})  [WorkBuddy]",
+             f"■ Today ({datetime.now():%Y-%m-%d %a})  [WorkBuddy]")
+    lines = [head,
+             L(f"  {agg.get('sessions', 0)} 个会话 · {agg.get('requests', 0)} 次请求 · "
+               f"{fmt(agg.get('total', 0))} tokens",
+               f"  {agg.get('sessions', 0)} sessions · {agg.get('requests', 0)} requests · "
+               f"{fmt(agg.get('total', 0))} tokens"),
+             L(f"  入 {fmt(agg.get('input', 0))}（缓存 {fmt(agg.get('cache_read', 0))}）"
+               f" 出 {fmt(agg.get('output', 0))}（思考 {fmt(agg.get('reasoning', 0))}）"
+               f" credit {agg.get('credits', 0):.2f}",
+               f"  in {fmt(agg.get('input', 0))} (cache {fmt(agg.get('cache_read', 0))})"
+               f" out {fmt(agg.get('output', 0))} (thinking {fmt(agg.get('reasoning', 0))})"
+               f" credits {agg.get('credits', 0):.2f}"),
+             L(f"  工具 {agg.get('tool_calls', 0)} 次（错误 {agg.get('tool_errors', 0)}）"
+               f" · 峰值上下文 {peak:.1f}%",
+               f"  tools {agg.get('tool_calls', 0)} (errors {agg.get('tool_errors', 0)})"
+               f" · peak context {peak:.1f}%")]
+    if agg.get("cost_usd") is not None:
+        lines.append(L(f"  预估费用 {_wb_money(agg.get('cost_usd'))}"
+                       f"{_wb_cost_note(agg.get('cost_unknown') if agg.get('cost_partial') else [])}"
+                       f"（按请求时间归属，非账单）",
+                       f"  est. cost {_wb_money(agg.get('cost_usd'))}"
+                       f"{_wb_cost_note(agg.get('cost_unknown') if agg.get('cost_partial') else [], en=True)}"
+                       f" (by request time, not a bill)"))
+    else:
+        lines.append(L("  预估费用 不可得（价表未收录今日所用模型）",
+                       "  est. cost unavailable (today's models not in price table)"))
+    for m in (agg.get("by_model") or [])[:5]:
+        cost_txt = _wb_money(m.get("cost_usd")) if m.get("priced") else "—"
+        lines.append(L(f"  {m['model']:<24} {m['requests']:>5} 次  {fmt(m['total']):>8}  "
+                       f"credit {m['credits']:.2f}  费用 {cost_txt}",
+                       f"  {m['model']:<24} {m['requests']:>5} req  {fmt(m['total']):>8}  "
+                       f"credit {m['credits']:.2f}  cost {cost_txt}"))
+    return "\n".join(lines)
+
+
+def wb_render_days(con, days):
+    _wb_ready_pricing()
+    days = max(1, int(days))
+    buckets = {}
+    if _wb_usage is not None:
+        for path in _wb_usage.transcript_paths():
+            parsed = _wb_usage.parse_transcript(path)
+            for r in parsed.get("requests") or []:
+                if not r["ts"]:
+                    continue
+                key = _ts(r["ts"]).date()
+                b = buckets.setdefault(key, {"requests": 0, "total": 0, "credits": 0.0, "reqs": []})
+                b["requests"] += 1
+                b["total"] += r["prompt"] + r["output"]
+                b["credits"] += r["credit"]
+                b["reqs"].append(r)
+    lines = [L(f"■ 近 {days} 天每日（按请求时间归属）",
+               f"■ Last {days} days (by request time)")]
+    today = _day_start().date()
+    for i in range(days - 1, -1, -1):
+        d = today - timedelta(days=i)
+        b = buckets.get(d, {"requests": 0, "total": 0, "credits": 0.0, "reqs": []})
+        bar = "█" * max(0, min(30, int((b["total"] or 0) / 2_000_000)))
+        day_cost, _, _ = _wb_usage.cost_of_requests(b["reqs"]) if (_wb_usage and b["reqs"]) else (None, [], [])
+        cost_txt = f"  {_wb_money(day_cost):>8}" if day_cost is not None else "        —"
+        lines.append(L(f"  {d:%Y-%m-%d}  {b['requests']:>4} 次  {fmt(b['total']):>8}  "
+                       f"credit {b['credits']:>7.2f}{cost_txt}  {bar}",
+                       f"  {d:%Y-%m-%d}  {b['requests']:>4} req  {fmt(b['total']):>8}  "
+                       f"credit {b['credits']:>7.2f}{cost_txt}  {bar}"))
+    return "\n".join(lines)
+
+
+def wb_render_sessions(con, limit=10):
+    limit = max(1, int(limit))
+    rows = _wb_rows(con)[:limit]
+    lines = [L(f"■ 最近 {limit} 个 WorkBuddy 会话（tokens / 请求 / 上下文）",
+               f"■ Last {limit} WorkBuddy sessions (tokens / requests / context)")]
+    if not rows:
+        lines.append(L("  （本地还没有会话记录）", "  (no local sessions yet)"))
+    for r in rows:
+        cost_txt = f"  {_wb_money(r.get('cost_usd')):>8}" if r.get("cost_usd") is not None else "        —"
+        lines.append(L(f"  {_wb_stamp(r['last_at'], '%m-%d %H:%M')}  {fmt(r['total']):>8}  "
+                       f"{r['requests']:>4} 次{cost_txt}  {_wb_pct(r):>5.1f}%  {(r['model'] or '?'):<20} "
+                       f"{r['title'] or '(无标题)'}  [{r['sid'][:8]}]",
+                       f"  {_wb_stamp(r['last_at'], '%m-%d %H:%M')}  {fmt(r['total']):>8}  "
+                       f"{r['requests']:>4} req{cost_txt}  {_wb_pct(r):>5.1f}%  {(r['model'] or '?'):<20} "
+                       f"{r['title'] or '(untitled)'}  [{r['sid'][:8]}]"))
+    return "\n".join(lines)
+
+
+def wb_render_models(con, days=7):
+    days = max(1, int(days))
+    since = int(time.time() * 1000) - days * 86400000
+    agg = {}
+    if _wb_usage is not None:
+        try:
+            agg = _wb_usage.aggregate_since(since)
+        except Exception:   # noqa: BLE001
+            agg = {}
+    lines = [L(f"■ 近 {days} 天按模型", f"■ Last {days} days by model")]
+    models = agg.get("by_model") or []
+    if not models:
+        lines.append(L("  （该时间窗内没有请求）", "  (no requests in this window)"))
+    for m in models:
+        cost_txt = _wb_money(m.get("cost_usd")) if m.get("priced") else "不可得"
+        lines.append(L(f"  {m['model']:<24} {m['requests']:>5} 次  {fmt(m['total']):>9}  "
+                       f"credit {m['credits']:.2f}  费用 {cost_txt}",
+                       f"  {m['model']:<24} {m['requests']:>5} req  {fmt(m['total']):>9}  "
+                       f"credit {m['credits']:.2f}  cost {cost_txt}"))
+    return "\n".join(lines)
+
+
+def wb_render_workspace(con, pattern, top=15):
+    pattern = (pattern or "").strip()
+    rows = _wb_rows(con)
+    dirs = sorted({r["cwd"] for r in rows if r["cwd"] and pattern.lower() in r["cwd"].lower()})
+    if not dirs:
+        lines = [L(f"未找到目录含 {pattern!r} 的工作区。现有工作区（按会话数前 10）：",
+                   f"No workspace with directory matching {pattern!r}. Existing workspaces (top 10):")]
+        counts = {}
+        for r in rows:
+            if r["cwd"]:
+                counts[r["cwd"]] = counts.get(r["cwd"], 0) + 1
+        for d, n in sorted(counts.items(), key=lambda kv: -kv[1])[:10]:
+            lines.append(f"  {n:>3}  {d}")
+        return "\n".join(lines)
+    target = dirs[0]
+    agg = {}
+    if _wb_usage is not None:
+        try:
+            agg = _wb_usage.aggregate_cwd(target)
+        except Exception:   # noqa: BLE001
+            agg = {}
+    hit = [r for r in rows if r["cwd"] == target]
+    cost_txt = _wb_money(agg.get("cost_usd"))
+    lines = [L(f"■ 工作区 {target}  [WorkBuddy]", f"■ Workspace {target}  [WorkBuddy]"),
+             L(f"  {agg.get('sessions', len(hit))} 个会话 · {agg.get('requests', 0)} 次请求 · "
+               f"{fmt(agg.get('total', 0))} tokens · credit {agg.get('credits', 0):.2f}"
+               f" · 预估费用 {cost_txt}",
+               f"  {agg.get('sessions', len(hit))} sessions · {agg.get('requests', 0)} requests · "
+               f"{fmt(agg.get('total', 0))} tokens · {agg.get('credits', 0):.2f} credits"
+               f" · est. cost {cost_txt}")]
+    for r in hit[:max(1, int(top))]:
+        row_cost = f"  {_wb_money(r.get('cost_usd')):>8}" if r.get("cost_usd") is not None else "        —"
+        lines.append(L(f"  {_wb_stamp(r['last_at'], '%m-%d %H:%M')}  {fmt(r['total']):>8}  "
+                       f"{r['requests']:>4} 次{row_cost}  {_wb_pct(r):>5.1f}%  {r['title'] or '(无标题)'}",
+                       f"  {_wb_stamp(r['last_at'], '%m-%d %H:%M')}  {fmt(r['total']):>8}  "
+                       f"{r['requests']:>4} req{row_cost}  {_wb_pct(r):>5.1f}%  {r['title'] or '(untitled)'}"))
+    return "\n".join(lines)
+
+
+def wb_render_session_detail(con, prefix):
+    prefix = (prefix or "").strip()
+    if not prefix:
+        return L("session 需要一个非空 id 前缀（session:<前缀>）",
+                 "session requires a non-empty id prefix (session:<prefix>)")
+    hits = [r for r in _wb_rows(con) if r["sid"].startswith(prefix)]
+    if not hits:
+        return L(f"WorkBuddy 本地库中没有 id 以 {prefix!r} 开头的会话。",
+                 f"No WorkBuddy session id starts with {prefix!r}.")
+    if len(hits) > 1:
+        lines = [L(f"{prefix!r} 命中 {len(hits)} 个会话，请给出更长的前缀：",
+                   f"{prefix!r} matches {len(hits)} sessions, use a longer prefix:")]
+        for r in hits:
+            lines.append(f"  {r['sid']}  {_wb_stamp(r['last_at'])}  {r['title'] or ''}")
+        return "\n".join(lines)
+    r = hits[0]
+    lt = r.get("last_turn") or {}
+    tools = r.get("tools") or {}
+    lines = [L(f"■ WorkBuddy 会话 {r['sid']}", f"■ WorkBuddy session {r['sid']}"),
+             L(f"  标题 {r['title'] or '(无标题)'}", f"  title {r['title'] or '(untitled)'}"),
+             L(f"  模型 {r['model'] or '?'}  状态 {r['status'] or '?'}",
+               f"  model {r['model'] or '?'}  status {r['status'] or '?'}")]
+    if r["cwd"]:
+        lines.append(L(f"  目录 {r['cwd']}", f"  cwd {r['cwd']}"))
+    lines += [
+        L(f"  时间 {_wb_stamp(r['started'])} → {_wb_stamp(r['last_at'])}",
+          f"  time {_wb_stamp(r['started'])} → {_wb_stamp(r['last_at'])}"),
+        L(f"  上下文 {fmt(r['ctx'])} / {fmt(r['context_window'])} ({_wb_pct(r):.1f}%)",
+          f"  context {fmt(r['ctx'])} / {fmt(r['context_window'])} ({_wb_pct(r):.1f}%)"),
+        L(f"  轮 {r['turns']} · 请求 {r['requests']} · 工具 {r['tool_calls']}（错误 {r.get('tools', {}).get('errors', 0)}）",
+          f"  turns {r['turns']} · requests {r['requests']} · tools {r['tool_calls']}"),
+        L(f"  token 入 {fmt(r['input'])}（缓存 {fmt(r['cache_read'])}）出 {fmt(r['output'])}"
+          f"（思考 {fmt(r['reasoning'])}）合计 {fmt(r['total'])}",
+          f"  tokens in {fmt(r['input'])} (cache {fmt(r['cache_read'])}) out {fmt(r['output'])}"
+          f" (thinking {fmt(r['reasoning'])}) total {fmt(r['total'])}"),
+        L(f"  速度 会话均 {r['avg_tps']} t/s · 最近一段 {lt.get('tps', 0)} t/s"
+          f" · credit {r['credits']:.2f}",
+          f"  rate avg {r['avg_tps']} t/s · latest {lt.get('tps', 0)} t/s"
+          f" · credits {r['credits']:.2f}"),
+        (L(f"  预估费用 会话 {_wb_money(r.get('cost_usd'))}"
+           f" · 本轮 {_wb_money(lt.get('cost_usd'))}"
+           f"{_wb_cost_note(r.get('cost_unknown') if r.get('cost_partial') else [])}",
+           f"  est. cost session {_wb_money(r.get('cost_usd'))}"
+           f" · latest turn {_wb_money(lt.get('cost_usd'))}"
+           f"{_wb_cost_note(r.get('cost_unknown') if r.get('cost_partial') else [], en=True)}")
+         if r.get("cost_usd") is not None else
+         L("  预估费用 不可得（价表未收录该模型）",
+           "  est. cost unavailable (model not in price table)")),
+    ]
+    if tools.get("list"):
+        top = "　".join(f"{t['name']} {t['count']}" for t in tools["list"][:6])
+        lines.append(L(f"  工具明细 {top}", f"  tools {top}"))
+    lines.append(L("  注：费用按价表牌价估算，非账单；速度为模型响应窗口近似值。",
+                   "  Note: cost is estimated from list prices, not a bill; rate is approximated from response windows."))
+    return "\n".join(lines)
+
+
+def describe_host(cfg=None):
+    """`zusage.py host`：当前宿主、判定来源、两侧库位置与可用指标（接入自检入口）。"""
+    cfg = cfg if cfg is not None else load_config()
+    host = resolve_host(cfg=cfg)
+    source = host_source(cfg=cfg)
+    src_label = {"cli": "--host", "env": "ZUSAGE_HOST", "config": "config.host",
+                 "auto": "config.host=auto", "default": L("默认值", "default")}[source]
+    caps = host_caps(host)
+    lines = [L(f"■ 宿主 {host_label(host)}（{host}；判定来源：{src_label}）",
+               f"■ Host {host_label(host)} ({host}; source: {src_label})")]
+    for name in HOSTS:
+        path = host_db_path(name, cfg)
+        mark = L("← 当前", "← active") if name == host else ""
+        if not path.exists():
+            lines.append(f"  {name:<10} {path}  {L('不存在', 'missing')}  {mark}")
+            continue
+        detail = ""
+        try:
+            con = _open_ro(path, "select 1 from session_usage limit 1" if name == HOST_WORKBUDDY
+                           else "select 1 from model_usage limit 1")
+            try:
+                table = "session_usage" if name == HOST_WORKBUDDY else "model_usage"
+                n = con.execute(f"select count(*) from {table}").fetchone()[0]
+                detail = L(f"{n} 条用量记录", f"{n} usage rows")
+            finally:
+                con.close()
+        except sqlite3.Error as exc:
+            detail = L(f"打不开：{exc}", f"unreadable: {exc}")
+        lines.append(f"  {name:<10} {path}  {detail}  {mark}")
+    usable = [k for k, v in caps.items() if v]
+    missing = [k for k, v in caps.items() if not v]
+    lines.append(L(f"  可用指标 {', '.join(usable)}；不可用 {', '.join(missing) or '-'}",
+                   f"  metrics available {', '.join(usable)}; unavailable {', '.join(missing) or '-'}"))
+    return "\n".join(lines)
+
+
 # ---------- CLI ----------
 
 _SERVE_IDLE_S = 60.0   # serve 复用连接的空闲重建阈值（测试把它调成负数即可覆盖回收分支）
@@ -2738,7 +3706,7 @@ def serve():
         now = time.monotonic()
         fresh = False
         try:
-            st = os.stat(DB_PATH)
+            st = os.stat(host_db_path())
             stamp_now = (st.st_dev, st.st_ino)
             fresh = stamp_now == stamp
         except OSError:
@@ -2784,13 +3752,48 @@ def _cli_count(argv, default):
     return v
 
 
+def _extract_host_flag(argv):
+    """摘出全局开关 --host X / --host=X（可出现在任意位置，不占子命令位）。
+    返回 (剩余参数, 宿主值或 None)；非法值与缺值都抛 ValueError。"""
+    rest, host, i = [], None, 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--host":
+            if i + 1 >= len(argv):
+                raise ValueError("--host needs a value (zcode|workbuddy)")
+            host = argv[i + 1]
+            i += 2
+            continue
+        if arg.startswith("--host="):
+            host = arg.split("=", 1)[1]
+            i += 1
+            continue
+        rest.append(arg)
+        i += 1
+    return rest, host
+
+
 def main(argv):
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
+    try:
+        argv, host_flag = _extract_host_flag(list(argv or []))
+    except ValueError as exc:
+        print(str(exc))
+        return 2
+    if host_flag is not None:
+        try:
+            set_host(host_flag)
+        except ValueError as exc:
+            print(exc)
+            return 2
     cmd = argv[0] if argv else "now"
     try:
+        if cmd == "host":
+            print(describe_host())
+            return 0
         if cmd == "json":
             force_sid, routes = _parse_query(argv[1] if len(argv) > 1 else "")
             if len(argv) > 2 and not isinstance(routes, list):
@@ -2832,17 +3835,21 @@ def main(argv):
         con.close()
     except sqlite3.DatabaseError as e:
         # 列/表变更不在 connect 的表存在性探测内（那会破坏按需裁剪的测试夹具库），
-        # 在入口统一转换成可行动提示，替代整段查询栈回溯。
+        # 在入口统一转换成可行动提示，替代整段查询栈回溯。宿主名按当前判定取值，
+        # 避免把 WorkBuddy 的库结构漂移说成 ZCode 升级。
+        label = host_label()
         print(L(f"查询失败：{e}", f"query failed: {e}"))
-        print(L("多半是 ZCode 升级改了用量库结构（表/列变更）。请更新本插件后再查询；"
+        print(L(f"多半是 {label} 升级改了用量库结构（表/列变更）。请更新本插件后再查询；"
                 "已落库的历史数据不受影响。",
-                "Most likely ZCode changed the usage DB schema in an update. "
+                f"Most likely {label} changed the usage DB schema in an update. "
                 "Update this plugin before querying; stored history is unaffected."))
         return 1
     return 0
 
 
 def render_today(con):
+    if host_of(con) == HOST_WORKBUDDY:
+        return wb_render_today(con)
     today = range_usage(con, _epoch_ms(_day_start()), _epoch_ms(_day_start() + timedelta(days=1)))
     head = L(f"■ 今日 ({datetime.now():%Y-%m-%d %a})", f"■ Today ({datetime.now():%Y-%m-%d %a})")
     row = L(f"  {today[0]} 次请求  input {fmt(today[1])} (cache read {fmt(today[3])})  "

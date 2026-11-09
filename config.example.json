@@ -19,6 +19,15 @@
     }
   },
   "lang": "zh",
+  "host": "zcode",
+  "hosts": {
+    "zcode": {
+      "db_path": ""
+    },
+    "workbuddy": {
+      "db_path": ""
+    }
+  },
   "remote": {
     "auto": true,
     "enabled": false,

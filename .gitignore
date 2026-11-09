@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 diag-*.json
+.workbuddy/
 .entry-check*.js
 .v2c/
 .video_agent/
