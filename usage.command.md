@@ -19,6 +19,7 @@ argument-hint: [today|week|days:N|sessions|models|session:<id前缀>|workspace:<
 - "models" → scope="models"；"按模型近N天" → scope="models:N"（子命令 models [days]）
 - "session:<会话id前缀>" → 原样传入（返回该会话总量+按模型+子代理明细）（子命令 session <前缀>）
 - 统计某个工作区/项目（如"XX 工作区/项目用了多少 token"）→ scope="workspace:<目录关键词>"。用户用中文或简称称呼工作区时，先从需求推断实际目录名的特征子串（缩写式称呼可直接传，工具支持单词首字母缩写匹配）；未命中时工具会列出候选目录，照着换更准的子串重试（子命令 workspace <关键词>）
+- 用户明确要查 **WorkBuddy** 的用量（如"workbuddy 今天用了多少"）→ 额外传 host="workbuddy"；其余情况不传 host（跟随配置，默认 ZCode）。WorkBuddy 只有会话级上下文与 credit，token 分项/速度/工具/费用不可用，照报表如实转述
 - 其他输入 → 原样作为 scope 传入
 
 用户附加要求：$ARGUMENTS

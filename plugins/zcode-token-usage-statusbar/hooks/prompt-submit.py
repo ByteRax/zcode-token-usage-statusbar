@@ -62,6 +62,16 @@ def rate_line_enabled():
 
 def main():
     read_stdin()
+    # 启动策略按 agent 分流：逐问速率行依赖 ZCode 的渲染桥与 token_rate 状态文件，
+    # 其它宿主（WorkBuddy）没有这条链，静默跳过而不是写无用状态。
+    try:
+        sys.path.insert(0, str(PLUGIN_ROOT))
+        import zusage
+        if zusage.detect_agent() != zusage.AGENT_ZCODE:
+            print(json.dumps({"suppressOutput": True}, ensure_ascii=False))
+            return
+    except Exception:   # noqa: BLE001 — 判定失败按 ZCode 老路径继续
+        pass
     enabled = rate_line_enabled()   # 先判开关：关闭时不再开库查"上轮行"（白查还占锁）
     sid = os.environ.get("ZCODE_SESSION_ID") or os.environ.get("CLAUDE_SESSION_ID") or ""
     try:
