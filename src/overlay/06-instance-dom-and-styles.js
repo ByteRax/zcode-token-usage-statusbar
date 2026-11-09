@@ -198,8 +198,9 @@
      * → v313 工具历史回灌探测（用户实报：配置就绪后真实对话 Turn execution failed 400001——实弹二分定位为 OpenHub 中转全部 Gemini 系通道（3.5/3.7/3.8，流式与否）拒收 assistant tool_calls + role:tool 历史形状（C4-C7 全变体 400），与插件写入无关（裸形状同样拒），Anthropic 线同病；工具结果折进 user 消息反而 200（Gemini 原生映射）；同站 qwen3.8-max 正常=通道级缺陷。宿主侧无配置解（supportsToolCall:false 会令宿主对带工具请求直接报错更糟），落为警告性质：确认流第 4 项 6s 探测发最小工具历史形状，4xx 确定性拒绝才警告（超时/网络/5xx 不定不警），琥珀 .zu-mp-warn 披露「代理任务在工具轮次会失败，纯对话可用」，绝不写任何配置位，结论按拉取会话 fetchCache 去重（裸探测无会话不去重）
      * → v314 规格补全（用户实报 maxOutputTokens 89642 超上游 65536 上限 400）：宿主预算链定案——wire 输出预算 baseline=已解析 optionSpecs.maxOutputTokens.max（未写=内置 catch-all 128000），预轮 cap=min(baseline, 窗口−用量−1000) 只下调不设上限（model-token-limits.ts resolveModelStepMaxOutputTokens），超 spec.max 是宿主侧硬拒绝非钳制——所以「不写输出上限规格」会让请求预算完全脱缰。applyModels 是 append-only：先添加的模型在目录证据迟到时永远拿不到写实，v314 在确认流探测路径用拉取会话元数据补「缺失」键（properties.contextWindow / optionSpecs.maxOutputTokens.max，绝不覆盖已写数值、带 map 自洽结构不动、applyBusy 写闸），绿字披露「规格补全：输出上限/上下文窗口」；当日已手修用户配置 max=65536（上游 400 报错自证上限，中转 max_tokens=65536 实测 200）；收口审查补齐：禁止凭据重定向并按实际 key 脱敏、供应商来源与档位 CAS 守卫、缓存身份绑定及已验证路径迁移、自定义 map 不猜测、供应商显式能力优先且 false 保留、修复后补规格、工具限流不误警告、确认单批互斥和逐项强制添加、关键披露停留至再次确认、关窗清理等待与模块 dispose 失效
      * → v315 「原作者」悬停提示被滚动区顶缘裁剪修复（用户实报截图：气泡向上弹、只露底边一线）——cap 内触发点（原作者/自定义短语模式切换）气泡翻到触发元素下方 `bottom:auto;top:calc(100% + 6px)`，右对齐保留；cap 贴 .zu-settings-body（overflow:auto）顶缘是根因；向下弹常规布局落进分区卡片区域可见，纯 CSS 无视口碰撞翻转、cap 滚动至贴滚动区底缘时对称受限（v310 .zu-mp 左弹先例同款取舍）
+     * → v316 「压缩上下文」按钮视格重做（用户规格）：全宽 40px 胶囊、无边框、中性深灰半透明底（暗色=白叠加 6.5%/hover 10%/active 14%，浅色=黑叠加 5%/8%/12%，html.dark 分组自动跟随明暗与 zai 主题）、13px/600 文字（字号走 --ui-font-size 令牌 calc(-1px)，随宿主界面字号缩放）+ 18px 收缩双箭头 SVG（currentColor，flex+gap 8px 图文整体居中、nowrap）、focus-visible 焦点环（宿主无 --color-focus-ring 走 fallback）与 :disabled 半透明；reduced-motion 组整体移到全部受控规则之后（@media 不增特异性，置于按钮 transition/弹框 animation 基础规则之前会被同特异性后置规则压成死代码，review 实锤修复），弹框动画一并恢复实效；注入/判定/确认弹框/提交通道逻辑全不动
      */
-    var VERSION = "v315";
+    var VERSION = "v316";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
@@ -1436,18 +1437,25 @@
       ".zu-light .zu-ultra::before{background:linear-gradient(100deg,#3156cb 0%,#6746d2 50%,#9139bf 100%);" +
       "-webkit-background-clip:text;background-clip:text}}" +
       ".zu-light .xb-copied{color:#0c8a63}" +
-      /* 减少动态偏好：关闭呼吸/闪烁与悬浮过渡 */
-      "@media (prefers-reduced-motion:reduce){.exc,.dot,.zu-compact-dlg,.zu-compact-card{animation:none}" +
-      ".it,.btn,.ttab,.panel label{transition:none}}" +
-      /* v105 压缩上下文：弹层内胶囊按钮 + 确认弹框。配色全量引用客户端语义变量
-       * （secondary/primary/popover/border/hover，明暗与 zai 主题自动跟随）；color-mix
-       * 处加同值前置声明（不支持时落实色）。按钮复刻原生 hover:bg-secondary/80。 */
-      ".zu-compact-btn{display:block;box-sizing:border-box;width:100%;height:36px;padding:0;border:0;border-radius:9999px;" +
-      "background:var(--color-secondary,#e5e5e5);color:var(--color-foreground,#0a0a0a);" +
-      "font-family:inherit;font-size:14px;font-weight:500;line-height:1;cursor:pointer;" +
-      "transition:background .15s}" +
-      ".zu-compact-btn:hover{background:var(--color-secondary,#e5e5e5);background:color-mix(in srgb,var(--color-secondary,#e5e5e5) 80%,transparent)}" +
-      ".zu-compact-btn:active{background:var(--color-secondary,#e5e5e5);background:color-mix(in srgb,var(--color-secondary,#e5e5e5) 68%,transparent)}" +
+      /* v105 压缩上下文：弹层内胶囊按钮 + 确认弹框。v316 按钮视格重做（用户规格）：
+       * 全宽 40px 胶囊、无边框、中性深灰半透明底——暗色=白色叠加（hover 提亮/active 再亮一档），
+       * 浅色=黑色叠加（hover/active 对应加深），html.dark 分组自动跟随明暗与 zai 主题；
+       * 字号走 --ui-font-size 令牌（默认档恰 13px，随宿主界面字号设置缩放，overlay-ui §2）；
+       * 文字色仍走 --color-foreground 正常前景；仅键盘聚焦给 focus-visible 焦点环
+       * （宿主无 --color-focus-ring 变量，fallback 落实色）。弹框配色仍全量引用客户端语义变量。 */
+      ".zu-compact-btn{display:flex;align-items:center;justify-content:center;gap:8px;box-sizing:border-box;" +
+      "width:100%;min-width:0;height:40px;padding:0 12px;border:0;border-radius:9999px;" +
+      "background:rgba(255,255,255,.065);color:var(--color-foreground,#fafafa);" +
+      "font-family:inherit;font-size:calc(var(--ui-font-size,14px) - 1px);font-weight:600;line-height:1;white-space:nowrap;cursor:pointer;" +
+      "transition:background-color .15s ease}" +
+      ".zu-compact-btn:hover{background:rgba(255,255,255,.10)}" +
+      ".zu-compact-btn:active{background:rgba(255,255,255,.14)}" +
+      ".zu-compact-btn:focus-visible{outline:2px solid var(--color-focus-ring,#78aaff);outline-offset:2px}" +
+      ".zu-compact-btn:disabled{opacity:.5;cursor:not-allowed}" +
+      ".zu-compact-btn svg{width:18px;height:18px;flex:0 0 18px}" +
+      "html:not(.dark) .zu-compact-btn{background:rgba(0,0,0,.05)}" +
+      "html:not(.dark) .zu-compact-btn:hover{background:rgba(0,0,0,.08)}" +
+      "html:not(.dark) .zu-compact-btn:active{background:rgba(0,0,0,.12)}" +
       /* v193 布局：行上不得写任何 margin——宿主 body 的 space-y-3 是 Tailwind v4
        * :where() 零权重规则（margin-bottom 打在非末尾子元素上），自写 margin 会按
        * 类名权重压掉它（v190 的 6px 显挤、v192 的 margin:0 贴紧按钮都是这个坑）；
@@ -1482,7 +1490,12 @@
       ".zu-compact-ok:hover{opacity:.8}" +
       ".zu-compact-ok:disabled{opacity:.5;cursor:default}" +
       "@keyframes zuCptFade{from{opacity:0}to{opacity:1}}" +
-      "@keyframes zuCptZoom{from{opacity:0;transform:scale(.95)}to{opacity:1;transform:scale(1)}}";
+      "@keyframes zuCptZoom{from{opacity:0;transform:scale(.95)}to{opacity:1;transform:scale(1)}}" +
+      /* 减少动态偏好：关闭呼吸/闪烁/弹框动画与悬浮过渡。整组必须排在全部受控规则
+       * 之后——@media 不增特异性，同特异性按源序后者胜，放前面会被后置基础规则
+       * 压成死代码（v316 按钮 transition、v105 弹框 animation 均实证过）。 */
+      "@media (prefers-reduced-motion:reduce){.exc,.dot,.zu-compact-dlg,.zu-compact-card{animation:none}" +
+      ".it,.btn,.ttab,.panel label,.zu-compact-btn{transition:none}}";
 
     /* 结构：条撑满卡片宽后 .zu-main 占满剩余宽、条目+分隔线默认 space-between 均匀分布
      * （v226 可经 ⚙「水平对齐」改居左/居右，均分仍为缺省），⚙ 落在最右缘（内容超宽时分级收缩、
