@@ -313,7 +313,7 @@ test('live status is a note, not the history card title; estimate stays separate
   assert.doesNotMatch(busy, /zu-sl-title">工具执行中/, 'live status must not be the card title');
   assert.doesNotMatch(busy, /Σ有效输出/, 'formula line removed in v263');
   assert.match(busy, /zu-sl-sub">工具执行中/, 'live status as lightweight header badge (v273)');
-  assert.match(busy, /生成中估 88\.8 t\/s/);
+  assert.doesNotMatch(busy, /生成中估/, 'estimate note row removed (v307)');
   assert.match(busy, /平均速度/);
 });
 
@@ -546,7 +546,7 @@ test('left card: history-only wording, no formula line, soft selected tab and ul
   assert.ok(!html.includes('历史统计'), 'hist tag removed (v298.2)');
   assert.doesNotMatch(html, /Σ有效输出/, 'formula line removed (VIS-002)');
   assert.doesNotMatch(html, /当前筛选/, 'old title wording gone (VIS-009)');
-  assert.match(html, /生成中估 88\.8/, 'live estimate stays a note');
+  assert.doesNotMatch(html, /生成中估/, 'estimate note row removed (v307)');
   assert.doesNotMatch(html, /zu-sv-tab\.on\{background:var\(--color-brand/, 'no solid brand fill (VIS-001)');
   assert.doesNotMatch(html, /≥2000 Ultra/, 'ultra text label replaced by star (VIS-007)');
 });
@@ -812,7 +812,7 @@ test('v281 P1: fixed tooltip width + stable chart column (width stops tracking c
   // tip 定宽：width 与 max-width 同值 !important（不再只钳 max-width 让内容反向撑缩）
   assert.match(html,
     /width:min\(760px,calc\(100vw - 24px\)\)!important;max-width:min\(760px,calc\(100vw - 24px\)\)!important;height:300px!important;box-sizing:border-box/,
-    'tooltip pinned at 800x390 (v284 width + v292/v294.2 height), not content-driven');
+    'tooltip pinned at 760x300 (v284 width mechanism；760 为产物基线宽，本批仅同步钉与说明文字), not content-driven');
   // v285：V2 卡左缘对齐锚元素（.it 速度格）左缘——positionTip 消费 __zuAlignLeft
   assert.match(source, /tip\.__zuAlignLeft = !!\(tip\.querySelector\("\.zu-sv-root"\) \|\| tip\.querySelector\("\.zu-stat-tip--turn"\)\);/,
     'full tip marks V2 content for left alignment');
@@ -998,4 +998,42 @@ test('local scoped rows carrying workspace_identity are not remote: "all" stays 
   assert.match(htmlRemote, /data-sv-group="range" data-sv-val="session" aria-pressed="true"/,
     'remote pane falls back to session range');
   assert.match(htmlRemote, /远端会话仅显示本会话历史/, 'remote pane keeps the downgrade notice');
+});
+
+test('v307 模型行 data-tip 全量名单不省略：>8 模型完整列出（spdAggregate withNames）', () => {
+  const ctx = makeCtx(); ctx.__h = fixture();
+  // 单会话 11 个互异模型（含 1 个含 HTML 特殊字符的名字），验证 data-tip 全量不截断
+  const names = ['M"odel<X>&Y'].concat(Array.from({ length: 10 }, (_, i) => 'model-' + (i + 2)));
+  const d = (h) => { const base = new Date(2026, 10, 5, 9).getTime(); return base + h * HOUR; };
+  const turns = [];
+  let prev = 0;
+  names.forEach((_, i) => {
+    const t = d(i + 1);
+    turns.push({ s: 0, t: t - prev, b: t - 60000, out: 100, ms: 1000, i: 80, o: 100,
+      n: 1, msl: [[i, 100]] });
+    prev = t;
+  });
+  ctx.__h = { sid: 'sess_main', source: 'local', truncated: false,
+    sids: ['sess_main'], snames: ['本会话'], pids: [['proj_a', '项目A']], mnames: names, turns };
+  ctx.__o = { speedHistory: ctx.__h, sel: { range: 'session', period: 'recent', dim: 'time', sid: 'sess_main' },
+    live: null, segsHover: -1, fmtTok: String, fmtCnt: String, fmtMoney: u => '¥' + u.toFixed(2) };
+  const html = vm.runInContext('speedCardV2HTML(__o)', ctx);
+  const m = html.match(/data-tip="([^"]*)"/);
+  assert.ok(m, 'model row data-tip exists');
+  const tip = m[1];
+  assert.match(tip, /M&quot;odel&lt;X&gt;&amp;Y/, 'special chars stay escaped inside the attribute (spdEsc)');
+  for (let i = 2; i <= 11; i++) assert.ok(tip.includes('model-' + i), 'full list includes model-' + i + ': ' + tip);
+  assert.ok(!tip.includes('…'), 'list is not truncated with ellipsis');
+  assert.match(html, /aria-label="M&quot;odel&lt;X&gt;&amp;Y[^"]*"/, 'aria-label mirrors the full list for a11y');
+});
+
+test('v308 柱组左对齐+呼吸边距防回潮；zu-sl-solo 单柱弱化不复活', () => {
+  // 2026-11-09 用户规格：.zu-sv-bars 贴 Y 轴左对齐（space-between 会在少柱时把首末柱推到两缘），
+  // 且两侧 5px 呼吸边距吸收柱顶 nowrap 数值越缘，否则 .zu-sc-wrap 撑出 ~2px 横滚（变异审查实证零断言保护）
+  assert.match(source,
+    /\.zu-sv-bars\{position:absolute;inset:0;display:flex;align-items:flex-end;justify-content:flex-start;gap:0;padding:0 5px\}/,
+    'bars row stays left-aligned with 5px edge padding (no horizontal scroll)');
+  // 单柱弱化已删：JS 条件类与 CSS 规则都不得复活（近 7 天/本月/全部 聚合常只有一根柱）
+  assert.doesNotMatch(source, /\? " zu-sl-solo" : ""/, 'no solo class concat in spdLeftHTML');
+  assert.doesNotMatch(source, /\.zu-sl-stats\.zu-sl-solo\{/, 'no solo dimming CSS rule');
 });

@@ -586,7 +586,12 @@
     function gitMount() {
       if (!cardCache) return null;
       function live(el) {
-        if (!el.isConnected || !el.parentElement || inGhostSubtree(el)) return false;
+        /* v308：幽灵判定改走 ghostOf（120ms TTL WeakMap 缓存）——裸 inGhostSubtree 逐祖先
+         * getComputedStyle 强制样式重算，而 enhanceGitChip 在每次 render/heavy 都跑 gitMount，
+         * 任务切换的 React 重挂风暴里样式树最脏，实测每次切换聚集 ~48ms 主线程阻塞
+         * （CDP CPU 采样归因：inGhostSubtree 436ms/9.4s 几乎全部经 gitMount；ghostOf 缓存路径仅 2ms）。
+         * 缓存语义与 track 每帧的 ghostOf(composer) 同款（v115 契约），设置页幽灵壳收敛延迟 ≤120ms。 */
+        if (!el.isConnected || !el.parentElement || ghostOf(el)) return false;
         var r = el.getBoundingClientRect();
         return r.width > 0 && r.height > 0;
       }

@@ -189,8 +189,10 @@
      * → v304 工具调用卡紧凑化（定宽四列+sticky 表头+行 hover）+ statKpi 标题图标参数 + zusage 子代理单任务耗时/轮数聚合（v304.1）+ 模型名立方体 SVG 胶囊（v304.2）
      * → v305 收口审查修复批（review-fix-merge）：轮播可视化编辑器 when: 键白名单+提示行转义（堵存储型注入面）；手写显式 false 高级条件保存保留、false 不再渲染为勾选态；热力图「共 N 天」覆盖统计 var 提升修复（原恒退兜底文案）且分母对齐可视窗口；今日 tooltip 轮数/会话数旧远端缺字段显 —；今日/项目 avg 耗时与项目 avg_tps 过滤 main_turn（与 avg_tps 同口径）；devKeepTip 持久化+re-click 放行；__zusageSpdMonRect 代际清理；speed_v2 聚焦切换测试随功能移除删除；未编号同批内容——轮播自定义短语可视化编辑器+文本模式、内置词包拆独立分片 04-rotator-builtin-packs.js（16 包）、⚙ 轮播分区「原作者」按钮、速度卡覆盖提示/聚焦按钮移除（2026-11-07 文案批）
      * → v306 精简 tooltip 幽灵行框修复（\x01 结构化 HTML 哨兵只在主链 drawTip 被 tip.firstChild.slice(1) 剥除，精简链 showTpsTip 直塞 innerHTML 不剥——控制字符落成文本节点被 .tip 的 white-space:pre-line 撑出 ~20px 幽灵行框，V2 卡定高 300+overflow:hidden 下整卡下坠、底部被裁，实报上下 padding 不对称；补齐同语义 charCodeAt 剥除）+ 状态轮播主开关默认关闭（2026-11-09 用户规格：新用户/从未写过设置的用户不自动启用，显式开/关过的存量配置经 loadRotatorConfig 布尔覆盖原样保留）+ 速率 chip 右键直开设置（2026-11-09 用户规格：精简下 chip 是唯一常驻入口，contextmenu 镜像 .tps-cfg 路径——先收 tooltip 再开面板，并压掉宿主原生右键菜单）
+     * → v307 速度 tooltip 左卡「生成中估 X t/s」note 行删除（2026-11-09 用户规格）：生成中估算只留标题旁「生成中（估算）」徽标，瞬时估算值不再与历史均值同卡并列；完成态会话均被误标「生成中估」的边界（v298 speedValue 保留 avg 语义 × v263 门控只看 speedValue>0）一并消失（.zu-sl-note CSS 保留——旧版 speedCardHTML 回退卡仍用）；未编号同批内容——速度卡模型行原生 title 改纯 CSS data-tip 伪元素气泡（2026-11-09 用户实报：宿主内原生 title 不弹——生成期重建打断驻留 + Electron 宿主对 title 气泡不可靠，同轮播 zu-rot-tipt 先例）+ 悬停模型列表不省略（spdAggregate 增 withNames 仅整体口径产出全量 modelNames，消费点唯一带 fallback）+ 模型行补 aria-label 全名单（伪元素 content:attr 不进可访问树）
+     * → v308 切换任务主线程阻塞修复（用户实报「来回切换任务卡很久才反应」）：gitMount 的 live() 幽灵判定从裸 inGhostSubtree 改走 ghostOf 120ms TTL 缓存——裸调用逐祖先 getComputedStyle 强制样式重算，恰在切换的 React 重挂风暴（样式树最脏）里被 render/heavy 高频触发，CDP CPU 采样归因 inGhostSubtree 436ms/9.4s 近乎全部经 gitMount→live（每次切换聚集 ~48ms，与长任务 72-102ms 时刻逐一吻合），缓存路径实测仅 2ms；判定语义与 track 每帧 ghostOf(composer) 同款；未编号同批内容——.zu-sv-bars 由 space-between 改 flex-start + 两侧 5px padding（修少柱如「最近 3 轮」柱顶 nowrap 数值越缘撑出 ~2px 横向滚动）+ 单柱 zu-sl-solo 弱化移除（2026-11-09 用户规格，含 CSS）+ 合入审查撤销同批误入的 hovFreeze 悬停冻结（08 分片 render 接管链：与已合并 v224「悬停中 tooltip 随快照跟手刷新」契约冲突致 pill-theme 4 例红，其原生 title 驻留动机已被 v307 data-tip 气泡消解，净 diff 与 fork/main 逐字节一致）
      */
-    var VERSION = "v306";
+    var VERSION = "v308";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
@@ -1061,8 +1063,13 @@
       /* 覆盖提示 .zu-sc-cov 与聚焦切换 .zu-sv-focus 样式随 2026-11-07 文案批一并删除 */
       ".zu-sv-plot .zu-sc-grid{height:calc(100% - 28px)}" +
       ".zu-sv-plot .zu-sc-gutter{height:calc(100% - 28px)}" +
-      /* 柱组左对齐（2026-11-08 用户规格，收回 v273 少柱居中）：贴 Y 轴起排 */
-      ".zu-sv-bars{position:absolute;inset:0;display:flex;align-items:flex-end;justify-content:space-between;gap:0}" +
+      /* 柱组左对齐（2026-11-08 用户规格，收回 v273 少柱居中；2026-11-09 用户规格
+       * 落地为 flex-start：space-between 在少柱时把首末柱推到 plot 两缘，用户实报
+       * 改居左、贴 Y 轴起排，多桶横滚态密度不变）。
+       * padding 0 5px：柱顶 nowrap 数值（5 字符 ~27px > 24px 列宽）越缘 ~1.5px
+       * 会在 .zu-sc-wrap 撑出 ~2px 可滚区（用户实报「最近 3 轮」横向可滚一点点）
+       * ——两侧各留 5px 呼吸边距（容 6 字符粗体值），溢出归零即无横滚 */
+      ".zu-sv-bars{position:absolute;inset:0;display:flex;align-items:flex-end;justify-content:flex-start;gap:0;padding:0 5px}" +
       /* 细柱定宽：少量柱不拉伸、数据多时横滚，柱组居中 */
       ".zu-sv-bars .zu-sc-col{flex:0 0 24px;height:100%}" +
       ".zu-sv-bars .zu-sc-vz{flex:1 1 auto;height:auto}" +
@@ -1090,7 +1097,8 @@
         "font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--color-foreground,#e9edf4)}" +
       ".zu-sv-crow>b small{display:block;font-size:9px;font-weight:400;color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
       ".zu-sv-crow>b.zu-sv-twrap{white-space:normal;word-break:break-all;line-height:1.35;text-align:right}" +
-      ".zu-sl-stats.zu-sl-solo{opacity:.55}" +
+      /* v273 ⑥ 的单柱 zu-sl-solo 弱化（opacity:.55）已按 2026-11-09 用户规格删除——
+       * 近 7 天/本月/全部聚合后常只有一根柱，峰值/最低/最新档位色不再随柱数弱化 */
       ".zu-sv-cval{font-size:12px!important;font-weight:700!important}" +
       ".zu-sv-off{opacity:.75}" +
       ".zu-sv-partial{font-style:normal;font-weight:400;opacity:.75;margin-left:3px}" +
@@ -1259,6 +1267,13 @@
       ".zu-light .zu-sl-model{border-color:rgba(15,23,42,.14);background:rgba(0,0,0,.05)}" +
       ".zu-sl-model svg{flex:none;opacity:.85}" +
       ".zu-sl-model span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
+      /* 2026-11-09 用户实报：宿主内原生 title 气泡不弹（同轮播设置分区先例，v268）——
+       * 模型行全名列表改纯 CSS data-tip 伪元素气泡（zu-rot-tipt 同款）。
+       * .zu-sv-left 放开卡片 overflow:hidden（V2 作用域，V1 老卡单 .zu-speed-left
+       * 不受影响）——否则气泡被卡片裁掉；卡内内容本就自带省略/换行自裁剪。 */
+      ".zu-sv-left{overflow:visible}" +
+      ".zu-sv-left .zu-sl-model{position:relative}" +
+      ".zu-sv-left .zu-sl-model[data-tip]:hover::after{content:attr(data-tip);position:absolute;bottom:calc(100% + 6px);left:0;z-index:60;max-width:280px;width:max-content;padding:6px 10px;border:1px solid var(--color-popover-border,var(--color-border,rgba(255,255,255,.14)));border-radius:8px;background:var(--color-popover,#20242e);color:var(--color-popover-foreground,var(--color-foreground,#e9edf4));font-size:calc(var(--ui-font-size,14px) - 2px);line-height:1.5;white-space:normal;text-align:left;box-shadow:0 6px 18px rgba(0,0,0,.28);pointer-events:none}" +
       ".zu-speed-chart{flex:1 1 auto;min-width:0;position:relative}" +
       /* v239（设计图复刻）：左卡深色玻璃卡 + 状态图标/当前读数标签；信息卡虚线引线；图例/口径行布局 */
       ".zu-sl-stats{padding-top:10px;display:flex;gap:6px;border-top:1px solid var(--color-border,rgba(255,255,255,.1))}" +

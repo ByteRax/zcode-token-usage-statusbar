@@ -689,7 +689,7 @@
   }
   /* 统一聚合器：任何桶/柱/均值都走 Σ有效输出 ÷ Σ生成窗口，绝不逐轮算术平均。
    * 每柱携带 hover 五字段所需完整元数据（时间区间/速度/模型/Token/请求数/费用完整性）。 */
-  function spdAggregate(rows) {
+  function spdAggregate(rows, withNames) {
     var out = 0, ms = 0, i = 0, o = 0, n = 0, turns = 0, models = {}, c = 0, priced = false, costFull = true;
     var t0 = Infinity, t1 = 0, last = 0;
     for (var k = 0; k < rows.length; k++) {
@@ -709,9 +709,13 @@
     var ml = [];
     for (var name in models) if (models[name] > 0) ml.push({ m: name, o: models[name] });
     ml.sort(function (a, b) { return b.o - a.o; });
-    return { v: out / (ms / 1000), out: out, ms: ms, i: i, o: o, n: n, turns: turns,
+    var res = { v: out / (ms / 1000), out: out, ms: ms, i: i, o: o, n: n, turns: turns,
       models: ml.slice(0, 8), modelCount: ml.length, t0: isFinite(t0) ? t0 : 0, t1: t1,
       last: last, c: priced ? c : null, costFull: priced && costFull };
+    /* 2026-11-09 用户规格：模型行悬停列表不省略——仅整体口径（withNames）额外产出
+     * 全量模型名；逐柱/逐桶聚合不产（热力图数百桶 × 名单，白耗分配） */
+    if (withNames) res.modelNames = ml.map(function (x) { return x.m; });
+    return res;
   }
   /* 本地自然时间桶键：hour/day/week/month/quarter/year，轮归属只看完成时刻。 */
   function spdBucket(t, unit) {
@@ -833,7 +837,7 @@
     /* v295.7（用户规格）：恢复顺序时间（旧→新，最新柱在最右）——v290 的倒序撤销；
      * real 与峰值/最低/最新均按时间戳比较不受顺序影响；spanA/spanB 取自 pool。 */
     var real = items.filter(function (x) { return !x.empty; });
-    var overall = spdAggregate(pool);
+    var overall = spdAggregate(pool, true);
     var spanA = a || (pool.length ? pool[0].b : 0);
     var spanB = b || (pool.length ? pool[pool.length - 1].t : 0);
     if (period === "all" && pool.length) { spanA = pool[0].b; spanB = pool[pool.length - 1].t; }
@@ -888,8 +892,6 @@
   function spdLeftHTML(an, live) {
     var avg = an.overall ? an.overall.v : null;
     var bd = avg != null ? tpsBand(avg) : null;
-    var liveTxt = live && typeof live.speedValue === "number" && isFinite(live.speedValue) && live.speedValue > 0
-      ? (live.speedValue % 1 ? live.speedValue.toFixed(1) : String(live.speedValue)) : "";
     /* 实时状态（工具执行中/思考中/生成中）与历史均值分离：状态只作独立 note，
      * 不再当整卡标题，避免「工具执行中 65.2 t/s」被误读成工具速度。 */
     var spdLiveStatus = live && live.statusText ? live.statusText : "";
@@ -904,15 +906,20 @@
      * .zu-sl-k 独立标签行删除（语义并入标题）；实时状态仍为行尾轻量标识不抢主数字 */
     /* v298.4（用户规格）：档位徽标下方展示当前筛选池对应模型名——与左卡均速同池
      * （an.overall.models 已按 Σ输出降序）；单模型直显全名，多模型显主模型 +N
-     * （title 带全列表、超出 models 上限 8 种以 … 收尾）；池空不显该行。 */
+     * （悬停带全列表）；池空不显该行。
+     * 2026-11-09 用户实报：宿主内原生 title 不弹（生成期重建打断 + Electron 宿主
+     * 对 title 气泡不可靠，同轮播分区先例）——改纯 CSS data-tip 伪元素气泡。
+     * 同日用户规格：悬停列表**不省略**——用整体口径全量 modelNames（spdAggregate
+     * withNames 产出），不再以 models 上限 8 截断加 …。 */
     var modelLine = "", modelFull = "";
     if (an.overall && an.overall.models && an.overall.models.length) {
       var mm = an.overall.models;
       modelLine = mm[0].m;
-      modelFull = mm.map(function (m2) { return m2.m; }).join(", ");
+      var fullNames = (an.overall.modelNames && an.overall.modelNames.length)
+        ? an.overall.modelNames : mm.map(function (m2) { return m2.m; });
+      modelFull = fullNames.join(", ");
       if (an.overall.modelCount > 1) {
         modelLine += " +" + (an.overall.modelCount - 1);
-        if (an.overall.modelCount > mm.length) modelFull += " …";
       }
     }
     return '<div class="zu-speed-left zu-sv-left"><div class="zu-sl-status">' +
@@ -926,15 +933,18 @@
         spdEsc(tpsBandText(bd)) + "</b></div>" : "") +
       /* v304.2（用户规格）：模型名升级为立方体 SVG 胶囊（与档位胶囊同视觉语言；
        * 多模型=「主模型 +N」，title 全列表不变） */
-      (modelLine ? '<div class="zu-sl-model" title="' + spdEsc(modelFull) + '">' +
+      (modelLine ? '<div class="zu-sl-model" data-tip="' + spdEsc(modelFull) + '" aria-label="' + spdEsc(modelFull) + '">' +
         '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
         '<path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/></svg>' +
         '<span>' + spdEsc(modelLine) + "</span></div>" : "") +
-      /* v263：口径公式行删除（规格点名「删除大段统计口径文字」，语义由图例 ⓘ title 承载），
-       * 说明行统一为「历史统计 · 不含进行中请求」；实时状态/生成中估算仍独立成行。 */
-      (liveTxt ? '<div class="zu-sl-note">' + spdEsc(SPD_L("生成中估 ", "Generating est. ")) + liveTxt + " t/s</div>" : "") +
+      /* v263：口径公式行删除（规格点名「删除大段统计口径文字」，语义由图例 ⓘ title 承载）。
+       * v307（用户规格）：「生成中估 X t/s」note 行删除——生成中估算只留标题旁
+       * 「生成中（估算）」徽标，瞬时估算值不再与历史均值同卡并列（完成态会话均
+       * 被误标「生成中估」的边界一并消失）。 */
       "</div>" +
-      '<div class="zu-sl-stats' + (an.real && an.real.length === 1 ? " zu-sl-solo" : "") + '">' + stat(SPD_L("峰值", "Peak"), an.peak) + stat(SPD_L("最低", "Low"), an.low) +
+      /* 2026-11-09 用户规格：单柱 zu-sl-solo 弱化删除——近 7 天/本月/全部聚合后常
+       * 只有一根柱，峰值/最低/最新档位色恒与多柱态一致（CSS 规则同步删） */
+      '<div class="zu-sl-stats">' + stat(SPD_L("峰值", "Peak"), an.peak) + stat(SPD_L("最低", "Low"), an.low) +
       stat(SPD_L("最新", "Latest"), an.latest) + "</div></div>";
   }
   /* 柱 hover 五字段卡：时间（聚合桶显完整区间）/ 速度（档位色）/ 模型（多模型 N 种）/
