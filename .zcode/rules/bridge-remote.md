@@ -21,7 +21,7 @@
 - 身份读取须校验协议、字段、SID、paneId 与节点存活；明确本地 identity 为空可查本地；无桥/读不到身份且本窗**无任何**远端证据（`remote_evidence === false`）时按本地记录显示；有远端证据或泵绑定为远端时 fail-closed，不借同 SID 本地快照或其它 pane 远端数据。未收集过证据按保守处理；任务证据只按 pane 自身 sid 统计；workspace 证据是窗口级（窗口任一远端连接 → 无桥本地 pane 保持零值，该取舍勿移除）。
 - 身份不在本窗可信 workspace IPC 或与 tasks 矛盾时不放行远端；当前节点改变或撤销后迟到载荷丢弃。改身份/归属逻辑必须同时核对 overlay `sessionFor` 守卫与泵 `scope_bindings` 两侧语义一致。
 - 子代理按父子关系关联，不按派发时间最近邻猜任务名。主标签页（`workspace-main`）及各分栏的归属只取本窗口实际 SessionPane 节点。
-- 远端身份白名单 `REMOTE_IDENTITY_RE = /^remote:(?:ssh|wsl|docker|server):/`（`inject-main.cjs`）；宿主 v3.16 起所有传输连接握手后统一升级为 `remote:server:<serverId>:<path>`，`remote:wsl:` 等只留作 legacy。`web/overlay.js` 另有独立的 `remote:ssh:` 白名单（Web 链）。
+- 远端身份白名单 `REMOTE_IDENTITY_RE = /^remote:(?:ssh|wsl|docker|server):/`（`inject-main.cjs`）；宿主 v3.16 起所有传输连接握手后统一升级为 `remote:server:<serverId>:<path>`，`remote:wsl:` 等只留作 legacy。
 
 ## 3. 远端目标（remote.* 配置）
 

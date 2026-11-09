@@ -22,7 +22,6 @@
 | `tests/` 新增或修改测试、实机验收方法 | [.zcode/rules/tests.md](.zcode/rules/tests.md) |
 | git 提交 / 分支 / worktree / PR / 并行会话协作 | [.zcode/rules/repo-workflow.md](.zcode/rules/repo-workflow.md) |
 | `README*`、`docs/`、宣传图与 tour 截图 | [.zcode/rules/docs.md](.zcode/rules/docs.md) |
-| `web/` | [.zcode/rules/web.md](.zcode/rules/web.md) |
 | 宿主引擎行为排查 / 逆向 / 引擎补丁 | [.zcode/rules/host-engine.md](.zcode/rules/host-engine.md) |
 
 规则文件只写长期约束与陷阱；PR 号、提交哈希、发版状态、用例数等易变事实不写入任何一层。本文件与规则文件冲突时以源码与测试为准，并同步修文档。
@@ -30,14 +29,12 @@
 ## 1. 项目定位与环境
 
 - 为 ZCode 显示模型速度、token 用量、上下文占比（承载于原生上下文按钮增强，状态条无此格）、套餐额度/账户余额 chip 与 Git 状态 chip。用量统计来自本地 SQLite；套餐额度另走解密凭据直查供应商接口（见 §5），两条链互不推导。
-- 技术栈是 Python 标准库、原生 JavaScript、Electron 主进程 CommonJS，以及 Web 旁挂 HTTP 服务；不是 npm 前端工程。
+- 技术栈是 Python 标准库、原生 JavaScript、Electron 主进程 CommonJS；不是 npm 前端工程。
 - 桌面插件是**安装与查询渠道**，不是原生状态栏扩展：最终仍向客户端 `app.asar` 注入稳定运行目录的加载器。
 - 独立安装器和插件共享注入/运行链；CLI、`/usage`、stdio MCP 可独立查询，纯 CLI 没有状态条 UI。
-- Web 是单独部署方案，需要控制自托管 ZCode、nginx 和旁挂服务，不能用桌面安装器修改浏览器或官方托管网页。
 - 用户运行要求：Python **3.8+**，包含标准库 `sqlite3`，无额外 Python 包；桌面主要支持 Windows/macOS，Linux 有路径与权限适配，但不等于所有发行版已实机验收。
 - 桌面 `.cjs` 由客户端 Electron 的 Node 环境运行，不要求用户另装 npm 依赖；从 Git 克隆源码才需要 Git。
 - 开发测试需要可运行 `node:test`、`node --check` 的 Node，以及 Python；根目录没有 `package.json`、`engines` 或统一 Node 最低版本声明，不虚构 build/lint/format 命令。
-- Web 部署需要 Node（运行 `zusage-sidecar.mjs`）、nginx、systemd；sidecar 实际通过 `readonly-guard.py` 调用常驻 Python `zusage.py` 查询，不使用 `node:sqlite`。
 - Python 3.8 是兼容目标，不代表全仓已在 3.8 运行验证；新增语法/标准库 API 要检查最低版本，不能仅凭开发机较新解释器通过就宣布兼容。
 
 ## 2. 代码地图与调用边界
@@ -64,7 +61,6 @@
 | `runtime_lock.py` / `release_unpack.py` | 跨进程锁、配置事务/可信同步、安全 ZIP 解包 |
 | `sync_plugin.py` / `release_tool.py` | 根源码副本同步、`overlay.js`/`quota-client.cjs` 拼接联动与 6 处分发清单一致性校验（`check_manifests` / `--verify-manifests`）；确定性发布包构建、校验、发布预演/发布 |
 | `plugins/zcode-token-usage-statusbar/` | 两份 manifest、`.mcp.json`、命令、技能、hooks、专有安装/更新/提醒入口与共享副本 |
-| `web/` | `boot.js`、独立 `overlay.js`、`zusage-sidecar.mjs`、`readonly-guard.py`、nginx/systemd 示例 |
 | `tests/` / `docs/` | 隔离回归（含 `tests/helpers/overlay-extract.cjs` 统一 `overlay.js`/`inject-main.cjs` 切片助手与 `tests/helpers/py_test_support.py` Python 公共测试夹具）、宿主 CLI 沙箱/交互演示；使用、设计、维护及宣传资料 |
 
 本检出包含 `usage_stats.py`、`src/overlay/`、`scripts/build_overlay.py`、`src/quota/`、`scripts/build_quota.py`、`turn-stats.js`、`renderer_bridge.py`、`renderer_live_check.cjs` 与根目录 `token_rate.py`；不要从其它工作树补出本检出不存在的架构。
@@ -83,7 +79,6 @@
   `usage_mcp.py`、`mcp-launch.cjs`、`zusage.py`、`patch_install.py`、`install_monitor.py`、`inject-main.cjs`、`plugin-updater.cjs`、`plugin-release.cjs`、`plugin-storage.cjs`、`quota-client.cjs`、`model-puller.cjs`、`engine-patch.cjs`、`release_unpack.py`、`runtime_lock.py`、`usage_stats.py`、`turn-stats.js`、`overlay.js`、`token_rate.py`、`renderer_bridge.py`、`token_pricing.py`、`pending_zip_patch.py`。
 - **桌面 `overlay.js` 与 `quota-client.cjs` 模块化源码约定**：`src/overlay/00-*.js`..`12-*.js`（14 个模块，`04-` 前缀两文件——词包纯数据 `04-rotator-builtin-packs.js` 在字典序上先于 `04-status-rotator-data.js` 加载；`VERSION` 与多行代际台账位于 `src/overlay/06-instance-dom-and-styles.js`）与 `src/quota/00-*.cjs`..`05-*.cjs`（6 个模块）分别是 `overlay.js` 和 `quota-client.cjs` 的模块化分片源，由零依赖脚本 `scripts/build_overlay.py` 与 `scripts/build_quota.py` 拼接生成根产物；仓库内仍同时提交拼接后的完整单文件产物及其 `plugins/zcode-token-usage-statusbar/` 副本，保证用户直接从 GitHub 市场安装、Release 包安装或 `git clone` 独立安装时**无需执行任何构建步骤**。修改桌面浮层或额度客户端代码时，必须优先修改 `src/overlay/` 或 `src/quota/` 下的对应分片，再运行 `python3 sync_plugin.py`（会自动先调用两个构建脚本生成根产物，再同步到插件副本；直接改根 `overlay.js` 或 `quota-client.cjs` 会在下次 `sync_plugin.py` 时被分片覆盖）。
 - **6 处分发清单统一校验**：`sync_plugin.py` 维护 `FILES`、`PLUGIN_ONLY_FILES`、`STANDALONE_RUNTIME_FILES`、`PLUGIN_RUNTIME_FILES`、`COLD_FILES`、`RESTART_HASH_FILES`、`RELEASE_PLUGIN_FILES`、`RELEASE_ZIP_FILES` 派生集合，并在 `sync_plugin.py`、`--check`、`--verify-manifests`（以及 `test_plugin_package.py`）中通过 `check_manifests()` 自动核对 `release_tool.py`、`release_unpack.py`、`install.py`、`overlay_install.py`、`restart_notice.py` 与两份 `plugin.json` 的 `packageLayout.files`。共享文件先改根源码，再同步插件副本；清单外的插件入口、hooks、命令、技能和 manifest **不是生成文件**，应直接维护。新增分发文件须同步的全部登记处见 [.zcode/rules/install-release.md](.zcode/rules/install-release.md)。
-- `web/overlay.js` 是独立实现，不在插件同步清单内；不能直接复制根浮层覆盖 Web。共享语义变化要分别评估，保留 Web 的挂载、接口与布局差异。
 - 共享文件（或 `src/overlay/*.js`、`src/quota/*.cjs`）修改后在仓库根运行：
 
 ```bash
@@ -98,7 +93,7 @@ python3 sync_plugin.py --check
 
 ### 每次改码后的自动热重载（必做）
 
-每轮代码修改完成后，助手必须在**同一轮任务内主动执行适用的同步、部署与热重载验收**，不等用户再次要求；不是每保存一次文件就部署。仅修改文档（含本文件）、测试或宣传素材时不部署，Web、远端与 MCP 也不能套用桌面热重载流程。
+每轮代码修改完成后，助手必须在**同一轮任务内主动执行适用的同步、部署与热重载验收**，不等用户再次要求；不是每保存一次文件就部署。仅修改文档（含本文件）、测试或宣传素材时不部署，远端与 MCP 也不能套用桌面热重载流程。
 
 - **不要把“尚未确认加载路径”直接当作交付终点**：应继续检查 asar 注入入口、客户端进程及运行目录来源基线，能安全核实时就在同一轮部署；只有证据确实不足、存在受保护差异或权限限制等无法自行解决的阻碍时，才停止并明确列出阻碍和未部署文件。仓库测试通过或插件副本同步不等于已部署；仅重启客户端也不能让尚未部署的源码生效。要求用户完全重启之前，必须先确认对应冷文件已安全部署到实际加载目录；否则明确说明尚未部署及阻碍，不把重启当作部署替代。交付时逐文件区分「仓库／插件副本已同步」「运行目录已部署」「热重载已验证」和「冷文件待重启」，不把任何一种状态冒充另一种。
 
@@ -115,7 +110,7 @@ python3 sync_plugin.py --check
 ## 4. 开发与兼容性约定
 
 - 保持修改聚焦，沿用现有原生代码与注释密度；不为统一风格引入框架、依赖或大规模重构。
-- `.js` 浮层是注入浏览器的脚本；`.cjs` 是 CommonJS。客户端入口可能是 ESM，注入行必须动态 `import`，不能直接 `require`；Web sidecar `.mjs` 是 Node ESM，`boot.js` 是浏览器脚本。
+- `.js` 浮层是注入浏览器的脚本；`.cjs` 是 CommonJS。客户端入口可能是 ESM，注入行必须动态 `import`，不能直接 `require`。
 - Python 路径使用 `Path`/已有定位逻辑；探测 `/Applications/ZCode.app` 等系统路径（如 `patch_install.py`、`renderer_bridge.py`）须捕获 `OSError`/`PermissionError`，防止在受限沙箱或 macOS TCC 拦截下抛未捕获异常。`python`、`python3`、`python_path` 与宿主实际可执行命令要区分，Windows 不保证有 `python3` 别名：插件 hooks.json 是 command+shell 回退链 `python3 → python → py -3`；`.mcp.json` 以 `node` 启动 `mcp-launch.cjs`（宿主对 stdio MCP 按 `shell:false` 经 cross-spawn 直接拉起，单命令无 shell 回退通道；但宿主给 MCP 子进程 PATH 末尾追加 Electron Node fallback shim，未装 Node 也能解析 `node`），由 launcher 按 hooks 同款顺序实测探测解释器并透传 stdio，不能改回裸 `python3`/`python` 单命令；主桥 `readCfg()` 把 `python_path` 缺省/空值归一为平台默认（win32=`python`，其它=`python3`），注入/安装时写回 `sys.executable` 并在每次 SessionStart 刷新。改这几处前先对当前客户端版本引擎核对 process/command 两种 hook 类型的 schema 与展开语义；回退链成立的平台依据见 [.zcode/rules/install-release.md](.zcode/rules/install-release.md)。
 - 保留带空格路径、Unicode、引号与平台进程行为的测试。POSIX shell 用既有 `shlex` 引用；Windows PowerShell 的 UTF-16LE `EncodedCommand` 路径不能简化为裸引号。
 - Windows 进程查询沿用 `subprocess` argv 与相应解码，不让 Git Bash 转换 `/FI` 等开关；asar 被占用的收尾必须由宿主以外的监控进程执行，不能依赖 ZCode 自己的定时任务。
@@ -127,7 +122,7 @@ python3 sync_plugin.py --check
 - 常驻查询是一请求一行 JSON 的协议；MCP 是 JSON-RPC，不可混用两者消息形状。增字段需兼容生产者、消费者与测试夹具。
 - 维护要求：新增定时器、文件/IPC/DOM 监听器、子进程要有明确归属，验证热更新、导航、窗口关闭后的停用，不能声称当前已有完整全局 dispose；超时兜底定时器（如 `Promise.race` 的 fallback `setTimeout`、`AbortController` 的 `kill` 定时器、宽限期定时器）必须在结算后通过 `.finally(() => { if (typeof clearTimeout === "function") clearTimeout(timer); })` 立即清理并调用 `timer.unref?.()`，防止挂起事件循环与测试进程。
 - 保留浮层代际守卫、幂等内容更新、tooltip 解绑/扫描清理；`rAF` 自调度必须异常后续帧，诊断对象原地更新，不替换闭包共享引用。
-- 桌面默认样式优先挂输入卡工具行之后，缺工具行时回退 body 级 fixed；药丸样式在所属输入卡下方居中，表面随输入卡主题和状态变化。样式挂在条内，几何避开输入框中心点命中检测，避免自遮挡闪烁；宽度和窄窗策略见 overlay-ui 规则，Web 布局另验。
+- 桌面默认样式优先挂输入卡工具行之后，缺工具行时回退 body 级 fixed；药丸样式在所属输入卡下方居中，表面随输入卡主题和状态变化。样式挂在条内，几何避开输入框中心点命中检测，避免自遮挡闪烁；宽度和窄窗策略见 overlay-ui 规则。
 - 配置/更新/安装锁跨 Python 与 Node；OS advisory 锁文件永久保留，不通过删锁文件解锁。更新租约/所有者与旧锁恢复是另一层协议，保留各自规则，不把冲突当成功，也不删运行目录绕过并发或热修保护。
 - `.gitattributes` 固定 LF。发现 CRLF 或未提交改动时先保留数据，用干净的独立工作树验证；禁止用强制 reset/clean/重新检出解决问题而丢失用户修改。
 
@@ -155,7 +150,7 @@ python3 sync_plugin.py --check
 - 401/403 与无套餐冻结到凭据指纹变化（fs.watch credentials.json + quota-secrets/provider_config mtime 失效即解冻）；JWT exp 临期不发请求；失败保留最近成功值并标 stale；解密失败/no_plan/parse_error 一律 fail-closed，绝不显示 0%。
 - 显示门控：会话首个完成的 `main_turn`（快照 `last.provider_id`，已滤辅助请求污染）出现前，chip 跟随快照顶层 `provider_fallback`（全局最近 account:* 请求）；会话最新请求是自定义 provider 时显示对应自定义源（官方域直连/中转探测）。团队套餐显示"暂不支持"。SSH 远端分栏直接显示本地额度（宿主 provisioning 同账号事实）。chip 挂原生上下文按钮左侧，同款双 reapply/还原契约；⚙ 面板每源独立开关/凭据/立即刷新，状态中性提示（无凭据/无订阅不报红）。
 - SCNet 无凭据账本估算走外部快照 + 抵扣表（`SCNET_CREDIT_RATES`）× modelPatterns 在 zusage 侧聚合，随快照顶层 `scnet_estimate` 注入。
-- 额度只进桌面快照链；MCP、CLI、`/usage` stdout 契约不加字段。Web 端不做（sidecar 无凭据）。
+- 额度只进桌面快照链；MCP、CLI、`/usage` stdout 契约不加字段。
 - 窗口分类、有效期解析细则、各家适配器陷阱、自定义中转、apiKey 模式、退避阶梯、路径契约（issue #56）等见 [.zcode/rules/quota.md](.zcode/rules/quota.md)——改 `src/quota/`（`quota-client.cjs`）或额度 UI 前必读。
 
 ### 窗口、分栏与远端
@@ -168,7 +163,7 @@ python3 sync_plugin.py --check
 - 各目标分别维护 today、错误、缓存与恢复；失败不借本地/其它目标总量，保留同身份最近成功快照并标记过期。null/error 不等于成功，也不应清空最近成功显示。
 - 保留持续退避重试、超时/并发预算、配置与连接变化心跳；统计链恢复不等于插件替宿主重连 SSH。
 - 远端只需手工部署匹配的 `zusage.py`、Python 和数据库读取权限，通道必须免交互。不能解密复用宿主密码/私钥口令，不自动部署或登录；递归防护不可去除。
-- 远端支持限桌面 JSON 查询链；MCP、`/usage`、逐问速率不自动跨机，Web 单独部署。详情见 [远程会话](docs/user-guide.md#远程会话)。
+- 远端支持限桌面 JSON 查询链；MCP、`/usage`、逐问速率不自动跨机。详情见 [远程会话](docs/user-guide.md#远程会话)。
 
 ### 安装、数据保护与网络
 
@@ -177,7 +172,6 @@ python3 sync_plugin.py --check
 - 自动安装/修复可能受权限、事件触发、宿主结构影响；成功后仍需重启。不替用户自行重启，不用强制提权掩盖失败；sudo 提示必须保留目标用户 HOME/PATH 和用户产物归属。
 - 配置、数据库、诊断、本地热修不是发布素材；可信同步保护用户改动，解包保留路径穿越、链接、重复项和文件集限制。
 - 本地统计只读数据库，不上传用量；预估费用链每 12 小时匿名下载 models.dev 牌价与 er-api/exchangerate.fun 汇率（后者仅作默认源失败兜底，显式配置 `pricing.fx.url` 时不启用；`pricing.fetch: false` 可关，`pricing-cache.json` 落运行目录）；远端查询使用配置/宿主连接通道，插件更新另行联网下载代码，不能笼统宣称整个插件“不联网”。
-- Web 默认 loopback sidecar 向本机 ZCode 校验设备 Cookie；保留 nginx 认证、静态白名单和 systemd 只读限制，不直接暴露公网。`readonly-guard.py` 不改写已含 `mode=rw` 的 URI，不能把包装器当无条件只读安全边界。
 
 ### 命令、技能与元数据
 
@@ -214,16 +208,7 @@ python3 sync_plugin.py --check
 | 桥/SSH 路由 | `test_renderer_bridge.py`、`test_bridge_pending.py`、`test_remote_targets.py`、`inject-remote-recovery.test.cjs`、`overlay-remote-scope.test.cjs`；实机身份/重连与认证另验 |
 | 安装/更新/锁/解包 | `test_install_discovery.py`、`test_plugin_sudo_install.py`、`test_pending_asar.py`、`test_quiet_monitor.py`、`test_pending_zip_patch.py`、`test_config_transactions.py`、`test_plugin_upgrade.py`、`test_runtime_sync_guard.py`、`test_release*.py` 及 `plugin-*.test.cjs`、`runtime-lock.test.cjs` |
 | 插件命令/hooks/MCP | `test_command_frontmatter.py`、`test_plugin_contract.py`、`test_plugin_package.py`、`test_plugin_runtime.py`、`test_session_start_channels.py`、`test_restart_notice.py`；共享文件同时同步并检查漂移 |
-| Web | 下列语法检查；当前回归未覆盖 Web 端到端，需授权的旁挂/认证/浏览器验收，不能拿桌面测试替代 |
 | 文档/本地化 | 路径、相对链接/锚点、JSON 示例、双语对应与 manifest 一致性；涉及默认值/协议时加对应契约测试 |
-
-Web 安全静态检查，不启动服务：
-
-```bash
-node --check web/boot.js
-node --check web/overlay.js
-node --check web/zusage-sidecar.mjs
-```
 
 宿主真实 CLI 沙箱测试和交互演示见 [测试说明](tests/README.md)。它们使用真实 ZCode、认证和模型，可能联网/消耗 token，不属于默认纯隔离测试；测试对象必须指向自有临时 HOME、插件库存与夹具。
 真实桌面安装会改客户端文件；默认回归不得接触个人数据库、配置、真实插件库存或客户端。语法通过、手工 hook 成功、Windows 收尾夹具通过均不能替代自然 SessionStart/重启/多窗口/远端实机证据。
@@ -236,11 +221,11 @@ node --check web/zusage-sidecar.mjs
 
 ## 7. 文档、本地化与已知差异
 
-- `README.md` 与 `README.zh-CN.md` 保持一致；`README.en.md` 在功能、限制、安装、发布范围上对应。Web 两份 README 同步维护；英文可链接中文详细文档，但要标明语言。
-- 用户可见文案沿用现有字典/语言分支：桌面浮层独立保存 `zusage3.lang` 并跟随 `--font-mono`/`--ui-font-size`，CLI 使用配置 `lang`，Web 跟随宿主语言且布局/字体独立；不能假设共用开关。市场条目保留 `description_i18n`，不为改显示名擅改 slug、市场名、命令或配置键。
+- `README.md` 与 `README.zh-CN.md` 保持一致；`README.en.md` 在功能、限制、安装、发布范围上对应，英文可链接中文详细文档，但要标明语言。
+- 用户可见文案沿用现有字典/语言分支：桌面浮层独立保存 `zusage3.lang` 并跟随 `--font-mono`/`--ui-font-size`，CLI 使用配置 `lang`；不能假设共用开关。市场条目保留 `description_i18n`，不为改显示名擅改 slug、市场名、命令或配置键。
 - 配置键、默认值、协议、兼容性变更时更新 `config.example.json`、相关 README、[用户指南](docs/user-guide.md)、插件 README/命令/hooks/技能；设计或发布链变化同时检查维护/设计文档。
 - JSON 示例不得含注释，路径占位须说明替换；检查仓库相对链接、标题锚点及示例能否解析。
-- 文档核对要点（命令命名与命名空间、设计笔记的速度两态/常驻进程/`current` 口径、Web 文档依赖说明与分项联网边界）见 [.zcode/rules/docs.md](.zcode/rules/docs.md)。修改对应领域时结合源码/契约测试核对，不顺手改业务逻辑或宣称正式渠道已有 main 功能。
+- 文档核对要点（命令命名与命名空间、设计笔记的速度两态/常驻进程/`current` 口径、分项联网边界）见 [.zcode/rules/docs.md](.zcode/rules/docs.md)。修改对应领域时结合源码/契约测试核对，不顺手改业务逻辑或宣称正式渠道已有 main 功能。
 
 ## 8. 发布与外部操作边界
 

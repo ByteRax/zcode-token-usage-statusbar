@@ -115,11 +115,3 @@ test('documentElement 与 tooltip 两处 mouseleave 都路由 tipLeaveAt（过�
   assert.match(source, /listenGlobal\(document\.documentElement, "mouseleave", function \(e\) \{\s*\n\s*tipLeaveAt\(e\.clientX, e\.clientY\);\s*\n\s*\}, true\)/);
   assert.match(source, /tip\.addEventListener\("mouseleave", function \(e\) \{\s*\n\s*tipLeaveAt\(e\.clientX, e\.clientY\);\s*\n\s*\}, true\)/);
 });
-
-test('web 版同一语义：过滤在 tipLeaveAt 内且双挂载点路由一致', () => {
-  const web = readOverlaySource('web/overlay.js');
-  const wFn = getNamedSlice('tipLeaveAt', { file: 'web/overlay.js' });
-  assert.match(wFn, /querySelectorAll\(":hover"\)/, 'web 版同样取最深 :hover 甄别');
-  assert.match(wFn, /IFRAME/);
-  assert.match(web, /tip\.addEventListener\("mouseleave", function \(e\) \{\s*\n\s*tipLeaveAt\(e\.clientX, e\.clientY\);\s*\n\s*\}, true\)/);
-});

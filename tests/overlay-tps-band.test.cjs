@@ -4,12 +4,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-// v127（桌面）/ v94（web）：tok/s 速度十档色。TPS_BANDS 是阈值/类名/文案的唯一事实源，
+// v127：tok/s 速度十档色。TPS_BANDS 是阈值/类名/文案的唯一事实源，
 // 按**原始速度值**分档（含下限、不含上限），生成中估算与完成态真实值同表；
 // 无效值（负数/NaN/±Infinity）一律中性 dim 或整枚 chip 回退，绝不判成低速。
-// 桌面与 web 同源语义，两文件同测；CSS 漂移检查保证 JS 类名与样式定义不脱钩。
+// CSS 漂移检查保证 JS 类名与样式定义不脱钩。
 
-const FILES = ['overlay.js', 'web/overlay.js'];
+const FILES = ['overlay.js'];
 const LADDER = ['hot', 'warm', 'ok', 'zu-teal', 'zu-sky', 'zu-azure', 'zu-violet', 'zu-purple', 'zu-magenta', 'zu-ultra'];
 const BOUNDS = [40, 70, 150, 200, 300, 500, 800, 1000, 2000];
 
@@ -101,18 +101,12 @@ for (const file of FILES) {
         idx = at;
       }
       for (const cls of LADDER) assert.ok(legend.includes(`class="${cls}"`), `图例缺档位类 ${cls}`);
-      if (file === 'overlay.js') {
-        // v215 桌面版：图例网格化（范围文字原色 + 色点辅助 + 当前档位描边；旧 · 分隔点移除）
-        assert.doesNotMatch(legend, /rt-lsep/, 'v215 旧 · 分隔点已移除');
-        assert.ok(legend.includes('zu-legend-grid'), 'v215 图例网格容器缺失');
-        assert.ok(legend.includes('zu-legend-dot'), 'v215 色点缺失');
-        assert.ok(legend.includes('zu-legend-item cur') === false, '无参调用不应有当前档位描边');
-        assert.ok(source.includes('.zu-legend-grid{'), 'v215 图例网格 CSS 缺失');
-      } else {
-        // web 版本次不改版：保留旧行内分隔符形态
-        assert.ok(legend.includes('rt-lsep'), 'web 分隔符缺失');
-        assert.ok(source.includes('.rt-legend{'), 'web 图例 CSS 缺失');
-      }
+      // v215：图例网格化（范围文字原色 + 色点辅助 + 当前档位描边；旧 · 分隔点移除）
+      assert.doesNotMatch(legend, /rt-lsep/, 'v215 旧 · 分隔点已移除');
+      assert.ok(legend.includes('zu-legend-grid'), 'v215 图例网格容器缺失');
+      assert.ok(legend.includes('zu-legend-dot'), 'v215 色点缺失');
+      assert.ok(legend.includes('zu-legend-item cur') === false, '无参调用不应有当前档位描边');
+      assert.ok(source.includes('.zu-legend-grid{'), 'v215 图例网格 CSS 缺失');
     });
 
     test(`${file}/${lang}: TPS_BANDS 表完整性与半开区间口径`, () => {
@@ -148,10 +142,9 @@ for (const file of FILES) {
 
 // v181（PR #157）：完成态主数字改会话加权平均（第 4 参 sessAvg，桌面快照 avg_tps），
 // 「均」前缀 + 按均值分档，最近一轮真实值放 latest 供 tooltip 展开；
-// 缺席/非正数回退原完成态。web/overlay.js 是独立实现，不消费该参数。
+// 缺席/非正数回退原完成态。
 for (const lang of ['zh', 'en']) {
   const desktop = extract('overlay.js', lang).api;
-  const web = extract('web/overlay.js', lang).api;
   const stats = { complete: true, observedLive: true, outputTokens: 100, tokenRate: 49.9 };
   const prefix = lang === 'en' ? 'avg ' : '均';
 
@@ -173,11 +166,5 @@ for (const lang of ['zh', 'en']) {
       assert.equal(view.latest, undefined);
       assert.equal(view.cls, 'warm');
     }
-  });
-
-  test(`web/${lang}: 不消费 sessAvg，完成态仍显示最近一轮真实值`, () => {
-    const view = web.zuBarSpeedView(stats, 2, null, 85.5);
-    assert.equal(view.text, '49.9 t/s');
-    assert.equal(view.cls, 'warm');
   });
 }

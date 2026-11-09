@@ -47,7 +47,7 @@ A thin bar appears along the bottom of the chat window, roughly like this:
    Speed        This turn             Session total       Project total        Tools     Today    Sub-agents   Settings
 ```
 
-The example above shows the default style. In the desktop app, choose **Default**, **Pill** or **Compact** under ⚙ → Display items → Status bar style. The pill is centered below its composer, sized to its content and constrained in narrow windows. Compact hides the floating bar and moves the speed readout and cell summaries into the composer toolbar. The Default style also offers horizontal alignment (space between / left / right; space between by default), and with all six display toggles off the style switches to Compact automatically — turning any toggle back on restores the previous style. On the Web, choose Default/Compact under ⚙ → General. [Style and switching details →](docs/user-guide.md#状态条样式) (Chinese)
+The example above shows the default style. In the desktop app, choose **Default**, **Pill** or **Compact** under ⚙ → Display items → Status bar style. The pill is centered below its composer, sized to its content and constrained in narrow windows. Compact hides the floating bar and moves the speed readout and cell summaries into the composer toolbar. The Default style also offers horizontal alignment (space between / left / right; space between by default), and with all six display toggles off the style switches to Compact automatically — turning any toggle back on restores the previous style. [Style and switching details →](docs/user-guide.md#状态条样式) (Chinese)
 
 Here's what each part tells you:
 
@@ -126,7 +126,7 @@ Then install **ZCode Token Usage Statusbar** from that market and keep it enable
 https://gitcode.com/tanranran/zcode-token-usage-statusbar.git#plugin-releases-gitcode
 ```
 
-You can also send the natural-language "three steps" line from the top of this README to the AI and let it add the market and install the plugin for you (it uses terminal commands; the result is identical). Other routes: to hack on the code, point **Settings → Plugins → Add marketplace → Choose directory** at the repository root; to skip the plugin entirely, `git clone` and run `python install.py`; self-hosted ZCode servers have a separately deployed [Web edition](web/README.md), which cannot be installed on the officially hosted website. Pick **one** route and stick with it — see the [installation guide](docs/user-guide.md#插件安装) (Chinese) for step-by-step details.
+You can also send the natural-language "three steps" line from the top of this README to the AI and let it add the market and install the plugin for you (it uses terminal commands; the result is identical). Other routes: to hack on the code, point **Settings → Plugins → Add marketplace → Choose directory** at the repository root; to skip the plugin entirely, `git clone` and run `python install.py`. Pick **one** route and stick with it — see the [installation guide](docs/user-guide.md#插件安装) (Chinese) for step-by-step details.
 
 ### After installing, don't skip these three steps
 
@@ -183,7 +183,7 @@ Cash bills, no — there's no billing data here. Plan quota and balance, yes —
 Detailed desktop guides are currently in Chinese.
 
 - [Feature screenshots](docs/features.md) (Chinese) · [Installation, configuration and troubleshooting](docs/user-guide.md) (Chinese) · [Quota support matrix](docs/quota-support-audit.md) (Chinese)
-- [Web edition (self-hosted)](web/README.md) · [Architecture and data semantics](docs/design-notes.md) (Chinese)
+- [Architecture and data semantics](docs/design-notes.md) (Chinese)
 - [Development and releases](docs/maintaining.md) (Chinese) · [Tests](tests/README.md) (Chinese)
 
 [MIT License](LICENSE)

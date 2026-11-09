@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const { getNamedSlice } = require('./helpers/overlay-extract.cjs');
 
-// v126/桌面·web v93 起：中文数字与单位、时间段之间全部紧邻「1时1分10秒」，零段照旧省略（仅全零显示 0秒/0s）；
+// v126 起：中文数字与单位、时间段之间全部紧邻「1时1分10秒」，零段照旧省略（仅全零显示 0秒/0s）；
 // 英文数字与单位紧邻、时段间留空格「1h 1m 10s」（v126 用户要求）
 const cases = [
   [0, '0 秒', '0s'],
@@ -27,44 +27,39 @@ const cases = [
   [90061000, '25 时 1 分 1 秒', '25h 1m 1s'],
 ];
 
-for (const file of ['overlay.js', 'web/overlay.js']) {
-  const slice = getNamedSlice('zuBarSpeedView', { file });
-
-  for (const lang of ['zh', 'en']) {
-    test(`${file}: ${lang} thinking timer localizes h/m/s units and omits zero units`, () => {
-      const speedView = vm.runInNewContext(slice + '\nzuBarSpeedView;', {
-        L: (zh, en) => lang === 'en' ? en : zh,
-      });
-      for (const [observedMs, zhExpected, enExpected] of cases) {
-        const view = speedView({ complete: false, characterRate: null, observedMs });
-        const prefix = lang === 'en' ? 'thinking…' : '思考中…';
-        const expected = lang === 'en' ? enExpected : zhExpected.replace(/ /g, '');
-        assert.equal(view.text, prefix + expected, `${observedMs}ms`);
-        assert.equal(view.phase, 'thinking');
-        assert.equal(view.cls, 'dim');
-      }
+for (const lang of ['zh', 'en']) {
+  test(`overlay.js: ${lang} thinking timer localizes h/m/s units and omits zero units`, () => {
+    const slice = getNamedSlice('zuBarSpeedView', { file: 'overlay.js' });
+    const speedView = vm.runInNewContext(slice + '\nzuBarSpeedView;', {
+      L: (zh, en) => lang === 'en' ? en : zh,
     });
-  }
+    for (const [observedMs, zhExpected, enExpected] of cases) {
+      const view = speedView({ complete: false, characterRate: null, observedMs });
+      const prefix = lang === 'en' ? 'thinking…' : '思考中…';
+      const expected = lang === 'en' ? enExpected : zhExpected.replace(/ /g, '');
+      assert.equal(view.text, prefix + expected, `${observedMs}ms`);
+      assert.equal(view.phase, 'thinking');
+      assert.equal(view.cls, 'dim');
+    }
+  });
 }
 
 /* v116：思考计时锚定 turnHeader.startedAt（宿主创建 header 恒写入，重绑不清零）；
- * 缺字段或时钟未及起点回退 observedMs。桌面与 Web 同源语义，两文件同测。 */
-test('overlay.js & web/overlay.js: thinking timer anchors to startedAt when present, falls back to observedMs', () => {
-  for (const file of ['overlay.js', 'web/overlay.js']) {
-    const slice = getNamedSlice('zuBarSpeedView', { file });
-    const NOW = 36610000;   // 固定时钟，避开真实墙钟抖动
-    const speedView = vm.runInNewContext(slice + '\nzuBarSpeedView;', {
-      L: (zh) => zh,
-      Date: { now: () => NOW },
-    });
-    // startedAt 存在：锚定 now-startedAt（1时1分10秒），忽略 observedMs
-    let v = speedView({ complete: false, characterRate: null, observedMs: 3000, startedAt: NOW - 3670000 });
-    assert.equal(v.text, '思考中…1时1分10秒', `${file} anchor`);
-    // startedAt 缺席（tracker 对非有限数归一为 null，turn-stats.js:122）：回退 observedMs
-    v = speedView({ complete: false, characterRate: null, observedMs: 999, startedAt: null });
-    assert.equal(v.text, '思考中…0秒', `${file} fallback`);
-    // startedAt 在当前时钟之后（时钟漂移/异常）：回退 observedMs，不出负数
-    v = speedView({ complete: false, characterRate: null, observedMs: 4200, startedAt: NOW + 5000 });
-    assert.equal(v.text, '思考中…4秒', `${file} future-startedAt fallback`);
-  }
+ * 缺字段或时钟未及起点回退 observedMs。 */
+test('overlay.js: thinking timer anchors to startedAt when present, falls back to observedMs', () => {
+  const slice = getNamedSlice('zuBarSpeedView', { file: 'overlay.js' });
+  const NOW = 36610000;   // 固定时钟，避开真实墙钟抖动
+  const speedView = vm.runInNewContext(slice + '\nzuBarSpeedView;', {
+    L: (zh) => zh,
+    Date: { now: () => NOW },
+  });
+  // startedAt 存在：锚定 now-startedAt（1时1分10秒），忽略 observedMs
+  let v = speedView({ complete: false, characterRate: null, observedMs: 3000, startedAt: NOW - 3670000 });
+  assert.equal(v.text, '思考中…1时1分10秒', 'anchor');
+  // startedAt 缺席（tracker 对非有限数归一为 null，turn-stats.js:122）：回退 observedMs
+  v = speedView({ complete: false, characterRate: null, observedMs: 999, startedAt: null });
+  assert.equal(v.text, '思考中…0秒', 'fallback');
+  // startedAt 在当前时钟之后（时钟漂移/异常）：回退 observedMs，不出负数
+  v = speedView({ complete: false, characterRate: null, observedMs: 4200, startedAt: NOW + 5000 });
+  assert.equal(v.text, '思考中…4秒', 'future-startedAt fallback');
 });

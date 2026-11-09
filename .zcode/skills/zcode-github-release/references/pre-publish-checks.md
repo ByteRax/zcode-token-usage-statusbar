@@ -52,7 +52,7 @@ print("VERSION=%s 链长=%d OK" % (cur, len(items)))
 PY
 ```
 
-发现撞号或乱序：按合入时间线在 `src/overlay/06-instance-dom-and-styles.js` 重排（例如把前置的 `v99.1` 条目移到 `v99` 与 `v100` 之间），再运行 `python3 sync_plugin.py` 自动拼接生成根 `overlay.js` 并同步插件副本（切勿只改根 `overlay.js`，否则下次 `sync_plugin.py` 会被分片覆盖），并同步所有断言该代际号的测试。`web/overlay.js` 有独立 `VERSION`，不在此检查内。
+发现撞号或乱序：按合入时间线在 `src/overlay/06-instance-dom-and-styles.js` 重排（例如把前置的 `v99.1` 条目移到 `v99` 与 `v100` 之间），再运行 `python3 sync_plugin.py` 自动拼接生成根 `overlay.js` 并同步插件副本（切勿只改根 `overlay.js`，否则下次 `sync_plugin.py` 会被分片覆盖），并同步所有断言该代际号的测试。
 
 ## 升级链验证
 
