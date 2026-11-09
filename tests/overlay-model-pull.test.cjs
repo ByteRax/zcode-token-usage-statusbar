@@ -144,3 +144,127 @@ test("host mount contract: anchor testid, left-insert, secondary look, currentCo
   assert.doesNotMatch(SOURCE, /function (?:ensureMpProviders|syncMpList|startMpFetch)\b/);   // 旧列表逻辑仅存于台账注释
   assert.doesNotMatch(SOURCE, /ensureMpProviders\(\)|syncMpList\(\)|startMpFetch\(/);
 });
+
+/* ---------- v309 确认前自动探测 ---------- */
+
+test("confirm flow probes picked models first; all-pass saves, failures uncheck and keep dialog", () => {
+  assert.match(SOURCE, /MP_TEST_MAX = 24, MP_TEST_CONC = 4/);   // 上限防全选大列表阻塞；并发 4
+  assert.match(SOURCE, /mpAsk\("model-pull-probe", \{ providerId: provider\.id, model: m, caps: true \}/);   // 逐模型探测
+  assert.match(SOURCE, /function mpProbeThenApply\(/);
+  assert.match(SOURCE, /function mpApply\(/);
+  assert.match(SOURCE, /if \(!failed\.length && !repairs\.length && !toolHistoryWarned\) \{ mpApply\(picked\); return; \}/);   // 无需确认的全过路径自动写入
+  assert.match(SOURCE, /sel\[failed\[j\]\] = false;/);   // 失败自动取消勾选
+  assert.match(SOURCE, /重新勾选可强制添加/);   // 可强制添加的出路保留
+  assert.match(SOURCE, /indexOf\("unknown action"\) === 0/);   // 旧主进程降级为直接保存
+  assert.match(SOURCE, /已跳过自动检测/);
+  assert.match(SOURCE, /zu-mp-tst-run/);
+  assert.match(SOURCE, /zu-mp-tst-ok/);
+  assert.match(SOURCE, /zu-mp-tst-fail/);
+  assert.match(SOURCE, /picked\.length > MP_TEST_MAX/);   // 超限不阻塞：直接保存
+  assert.match(SOURCE, /if \(inactive\(\) \|\| mpModal !== ov\) \{ closed = true; return; \}/);   // 弹窗关闭后不再起下一轮
+});
+
+test("probe chip styles ship in both themes", () => {
+  assert.match(SOURCE, /\.zu-mp-tst\{flex:0 0 auto;position:relative;display:inline-flex/);
+  assert.match(SOURCE, /\.zu-mp-tst\.zu-mp-tst-fail\{color:#f87171/);
+  assert.match(SOURCE, /\.zu-mp-ov\.zu-light \.zu-mp-tst\.zu-mp-tst-ok\{color:#059669/);
+  assert.match(SOURCE, /\.zu-mp-ov\.zu-light \.zu-mp-tst\.zu-mp-tst-fail\{color:#dc2626/);
+});
+
+test("mpProbeFailText: path kind carries the actual requested URL and /v1 hint; bilingual", () => {
+  function loadText(lang) {
+    const sandbox = vm.createContext({});
+    const code = "var state = { lang: " + JSON.stringify(lang) + " };\n" +
+      "function L(zh, en) { return state.lang === 'en' ? en : zh; }\n" +
+      sliceFunction("mpProbeFailText") + "\nthis.__t = mpProbeFailText;";
+    vm.runInContext(code, sandbox);
+    return sandbox.__t;
+  }
+  const zh = loadText("zh");
+  const path405 = zh({ kind: "path", status: 405, url: "https://relay.example.com/chat/completions", snippet: "<html>405</html>" });
+  assert.ok(path405.indexOf("路径不匹配（HTTP 405）") >= 0);
+  assert.ok(path405.indexOf("宿主实际请求 https://relay.example.com/chat/completions") >= 0);   // 实际请求 URL 是本功能诊断价值核心
+  assert.ok(path405.indexOf("/v1") >= 0);   // OpenAI 兼容需 /v1 结尾的修复指引
+  assert.ok(path405.indexOf("Anthropic 协议由客户端自动补 /v1") >= 0);   // anthropic 型补 /v1 是宿主行为，不能误导用户去手写
+  const auth = zh({ kind: "auth", status: 401, snippet: "Invalid token sk-***" });
+  assert.ok(auth.indexOf("鉴权失败") >= 0 && auth.indexOf("HTTP 401") >= 0);
+  assert.ok(zh({ kind: "timeout" }).indexOf("15 秒") >= 0);
+  assert.ok(zh({ kind: "http", status: 418 }).indexOf("HTTP 418") >= 0);
+  const en = loadText("en");
+  assert.ok(en({ kind: "path", status: 404, url: "https://x/v1/chat/completions" }).indexOf("actually requests https://x/v1/chat/completions") >= 0);
+  assert.ok(en({ kind: "auth", status: 403 }).indexOf("API key invalid") >= 0);
+});
+
+/* ---------- v310 失败原因 data-tip 气泡（原生 title 宿主不弹）+ 路径错配自动修复披露 ---------- */
+
+test("probe chip reason rides data-tip bubble, not native title (v307 precedent)", () => {
+  assert.match(SOURCE, /node\.setAttribute\("data-tip", tip\)/);
+  assert.match(SOURCE, /node\.removeAttribute\("data-tip"\)/);
+  assert.match(SOURCE, /node\.setAttribute\("aria-label", text \+ " " \+ tip\)/);   // 伪元素不进可访问树（v307 同款补偿）
+  assert.doesNotMatch(SOURCE, /node\.setAttribute\("title"/);   // title 形态不得回潮
+  assert.match(SOURCE, /\.zu-mp-tst\[data-tip\]\:hover\:\:after\{content:attr\(data-tip\)/);   // 气泡规则
+  assert.match(SOURCE, /right:calc\(100% \+ 8px\);transform:translateY\(-50%\)/);   // 左侧水平弹出避开 overflow:auto 裁剪
+  assert.match(SOURCE, /white-space:pre-line/);   // 多行原因（URL+摘录）
+  assert.match(SOURCE, /\.zu-mp-ov\.zu-light \.zu-mp-tst\[data-tip\]\:hover\:\:after\{background:#fff/);   // 浅色气泡
+  assert.match(SOURCE, /position:relative;display:inline-flex/);   // chip 自身是气泡锚点
+});
+
+test("path mismatch auto-repair is disclosed in green and config writes stay visible", () => {
+  assert.match(SOURCE, /zu-mp-fix/);   // 修复披露节点（绿字，与红字失败区并排）
+  assert.match(SOURCE, /已自动匹配配置（已有模型已写入，新模型保存时写入）/);   // v312 起披露句头泛化（修复 + 能力匹配）
+  assert.match(SOURCE, /Base URL " \+ result\.repaired\.from \+ " → " \+ result\.repaired\.to/);   // URL 修复项
+  assert.match(SOURCE, /思考档位 → /);   // 档位写实披露项（effortFixed）
+  assert.match(SOURCE, /result\.effortFixed\.values\.join\("\/"\)/);   // 档位表以 / 连接进披露
+  assert.match(SOURCE, /kind === "reasoning"/);   // 档位修复不成给专属失败文案（含上游接受集）
+  assert.match(SOURCE, /思考档位被上游拒绝/);
+  assert.match(SOURCE, /result\.repaired\.from && result\.repaired\.to/);   // repaired 去重入披露
+  assert.match(SOURCE, /已尝试自动修复（候选也失败）/);   // 修复候选失败也在失败原因里披露
+  assert.match(SOURCE, /}, 90000\)/);   // 探测 ask 兜底放宽：探测+修复+重试+能力实测最坏约 70s（v312）
+  assert.match(SOURCE, /zu-mp-fix:empty\{display:none\}/);   // 空披露不占位
+});
+
+/* ---------- v312 输入类型/模型能力自动匹配 ---------- */
+
+test("capability match rides the confirm probe and is disclosed; meta shows badges", () => {
+  assert.match(SOURCE, /model: m, caps: true/);   // 确认流显式携带能力实测标志
+  assert.match(SOURCE, /result\.capabilitiesFixed/);
+  assert.match(SOURCE, /能力匹配：/);
+  assert.match(SOURCE, /已自动匹配配置（已有模型已写入，新模型保存时写入）/);   // 披露句头从「修复」泛化为「匹配」（v312）
+  assert.match(SOURCE, /}, 90000\)/);   // 探测+修复+重试+能力实测最坏约 70s，兜底 90s
+  assert.match(SOURCE, /zu-sv-left \.zu-sl-model\[data-tip\]|zu-mp-tst\[data-tip\]/);   // data-tip 气泡契约仍在
+  assert.match(SOURCE, /caps\.push\(L\("图", "img"\)\)/);   // 行内徽标：图/PDF/JSON
+  assert.match(SOURCE, /caps\.push\("PDF"\)/);
+  assert.match(SOURCE, /caps\.push\("JSON"\)/);
+});
+
+test("mpMetaParts appends capability badges after ctx/out (existing copy unchanged)", () => {
+  const mp = loadMpHelpers("zh");
+  const plain = mp.mpMetaParts({ contextWindow: 1048576, maxOutputTokens: 65536 });
+  assert.equal(plain.visible, "上下文 1M · 输出 66k");   // 无能力证据时与 v309 完全同形
+  const full = mp.mpMetaParts({ contextWindow: 1048576, inputFormat: { supportsImage: true, supportsPdf: true }, supportsJsonSchemaOutput: true });
+  assert.ok(full.visible.indexOf("上下文 1M") === 0);
+  assert.ok(full.visible.indexOf("图·PDF·JSON") > 0);
+  assert.ok(full.title.indexOf("图/PDF/JSON") > 0);
+  const en = loadMpHelpers("en");
+  const enFull = en.mpMetaParts({ inputFormat: { supportsImage: true }, supportsJsonSchemaOutput: true });
+  assert.ok(enFull.visible.indexOf("img·JSON") >= 0);
+});
+
+/* ---------- v313 工具历史通道缺陷琥珀警告 ---------- */
+
+test("tool-history channel defect warns amber without failing the probe", () => {
+  assert.match(SOURCE, /zu-mp-warn/);
+  assert.match(SOURCE, /zu-mp-warn:empty\{display:none\}/);
+  assert.match(SOURCE, /toolHistoryWarned/);
+  assert.match(SOURCE, /该模型通道拒绝了测试用工具调用历史/);   // 警告限于已观测的测试结果，不推广厂商或其它通道
+  assert.match(SOURCE, /result\.warnings && result\.warnings\.indexOf\("toolHistory"\) >= 0/);
+  assert.match(SOURCE, /\.zu-mp-ov\.zu-light \.zu-mp-warn\{color:#b45309\}/);   // 浅色琥珀
+});
+
+/* ---------- v314 规格补全披露 ---------- */
+
+test("spec backfill is disclosed with per-key labels", () => {
+  assert.match(SOURCE, /specEnriched/);
+  assert.match(SOURCE, /规格补全：/);
+  assert.match(SOURCE, /specSeen\[result\.specEnriched\[sk\]\] = 1/);
+});

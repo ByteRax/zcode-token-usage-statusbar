@@ -9,6 +9,7 @@ See model speed, token usage, context size, plan quota, and Git status while you
 - Floating status bar (desktop): generation speed (tok/s), per-turn / session / today token usage, cache hit rate, sub-agent breakdown, context usage, plan-quota chip, Git status chip. Tooltips show details; the ⚙ panel toggles what is shown.
 - Per-answer rate line appended under each reply: tok/s, time to first token, output tokens, duration, session totals.
 - `/usage` command (today / week / models / current), the `token_usage` MCP tool, and a skill that teaches the agent how to query usage.
+- Source capability: **⚡ Pull models** in the host's model settings checks selected models before saving, can repair a verified URL path, fill evidence-backed model settings, and warn about tool-history compatibility. Checks call the current provider and may consume quota; see the [user guide (Chinese)](https://github.com/ByteRax/zcode-token-usage-statusbar/blob/main/docs/user-guide.md#拉取模型与确认检测) for release availability and limits.
 
 ## Requirements
 

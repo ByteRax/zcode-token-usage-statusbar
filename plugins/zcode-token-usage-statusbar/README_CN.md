@@ -9,6 +9,7 @@
 - 桌面悬浮状态条：生成速度（tok/s）、本轮 / 会话 / 今日 token 用量、缓存命中率、子代理明细、上下文容量、套餐额度 chip、Git 状态 chip。悬停看明细，⚙ 面板可调整显示项。
 - 每条回答末尾自动追加逐问速率行：tok/s、首字延迟、输出 token、生成耗时、会话累计。
 - `/usage` 命令（today / week / models / current）、`token_usage` MCP 工具，以及一个教会智能体查询用量的技能。
+- 源码能力：宿主模型设置中的「⚡ 拉取模型」在确认保存前检测勾选模型，可提示路径修复、补齐有依据的模型配置和工具历史兼容性警告。检测会请求当前供应商、可能消耗额度；正式渠道可用范围及操作边界见[用户指南（中文）](https://github.com/ByteRax/zcode-token-usage-statusbar/blob/main/docs/user-guide.md#拉取模型与确认检测)。
 
 ## 环境要求
 

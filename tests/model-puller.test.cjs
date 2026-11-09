@@ -1044,3 +1044,560 @@ test("api.json efforts cache: prototype-named model ids stay fail-closed through
   assert.equal(r.metaById["toString"], undefined);
   assert.equal(r.metaById["hasOwnProperty"], undefined);
 });
+
+/* ---------- v309 模型探测：确认添加前按宿主同款语义发最小请求 ---------- */
+
+test("probe URL helpers: anthropic base gains /v1, status classes, secrets masked", () => {
+  assert.equal(M.anthropicBaseWithV1("https://relay.example.com"), "https://relay.example.com/v1");   // 宿主 normalizeAnthropicBaseURL 同款：无 /v1 补 /v1
+  assert.equal(M.anthropicBaseWithV1("https://relay.example.com/"), "https://relay.example.com/v1");   // 尾斜杠先剥
+  assert.equal(M.anthropicBaseWithV1("https://relay.example.com/v1"), "https://relay.example.com/v1");   // 已带 /v1 不重复
+  assert.equal(M.anthropicBaseWithV1("https://open.bigmodel.cn/api/anthropic"), "https://open.bigmodel.cn/api/anthropic/v1");
+  assert.equal(M.anthropicBaseWithV1(""), "");
+  assert.equal(M.classifyProbeStatus(401), "auth");
+  assert.equal(M.classifyProbeStatus(403), "auth");
+  assert.equal(M.classifyProbeStatus(404), "path");
+  assert.equal(M.classifyProbeStatus(405), "path");
+  assert.equal(M.classifyProbeStatus(429), "rate");
+  assert.equal(M.classifyProbeStatus(400), "bad_request");
+  assert.equal(M.classifyProbeStatus(500), "server");
+  assert.equal(M.classifyProbeStatus(503), "server");
+  assert.equal(M.classifyProbeStatus(418), "http");
+  const masked = M.maskSecrets('{"error":"Invalid token sk-LiveAbcdef123456 for Bearer sk-SecretValue99"}');
+  assert.equal(masked, '{"error":"Invalid token sk-*** for Bearer sk-***"}');
+  assert.ok(!masked.includes("Abcdef123456") && !masked.includes("SecretValue99"));
+});
+
+function probeCfg(types) {
+  return {
+    config: {
+      providerConfigRules: {
+        providerRules: [
+          { providerId: "chat-relay", config: { access: { type: "api-key", apiKey: "sk-secret-1" }, api: { type: "openai-chat-completions", baseUrl: "https://relay.example.com" } } },
+          { providerId: "resp-relay", config: { access: { type: "api-key", apiKey: "sk-secret-2" }, api: { type: "openai-responses", baseUrl: "https://relay.example.com/v1/" } } },
+          { providerId: "claude-relay", config: { access: { type: "api-key", apiKey: "sk-secret-3" }, api: { type: "anthropic-messages", baseUrl: "https://relay.example.com" } } },
+          { providerId: "weird-relay", config: { access: { type: "api-key", apiKey: "sk-secret-4" }, api: { type: "future-api", baseUrl: "https://relay.example.com" } } },
+        ],
+      },
+    },
+  };
+}
+
+function probePuller(file, handler) {
+  const calls = [];
+  const impl = async (url, opts) => {
+    calls.push({ url, opts });
+    return handler(url, opts);
+  };
+  const mp = M.createModelPuller({ customCfgPath: file, fetchImpl: impl, modelsDevUrl: MODELS_DEV_TEST_URL });
+  return { mp, calls };
+}
+
+test("probe mirrors host URL semantics: openai types never gain /v1, anthropic does", async () => {
+  const file = tmpCfgPath();
+  writeCfg(file, probeCfg());
+  const { mp, calls } = probePuller(file, () => ({ ok: true, status: 200 }));
+  const ok1 = await mp.probeModel("chat-relay", "gemini-3.8-flash");
+  assert.equal(ok1.ok, true);
+  assert.equal(ok1.url, "https://relay.example.com/chat/completions");   // 回归锚：Base URL 少 /v1 时不补——宿主 createOpenAICompatible 同款，2026-11-09 OpenHub-Gemini 405 实案 */
+  assert.equal(ok1.status, 200);
+  assert.ok(typeof ok1.latencyMs === "number");
+  const ok2 = await mp.probeModel("resp-relay", "gpt-6.1-sol");
+  assert.equal(ok2.url, "https://relay.example.com/v1/responses");   // trailing slash stripped, /v1 kept as user wrote
+  const ok3 = await mp.probeModel("claude-relay", "claude-sonnet-5-5");
+  assert.equal(ok3.url, "https://relay.example.com/v1/messages");   // anthropic 宿主 normalize 同款补 /v1
+  const bases = calls.filter((c) => { const b = JSON.parse(c.opts.body); return b.reasoning_effort === undefined && b.reasoning === undefined && (b.max_tokens === 16 || b.max_output_tokens === 16); });   // v311 起基础探测后还有 aux 档位验证请求（responses 型 aux 用嵌套 reasoning 字段），按形状定位
+  assert.equal(bases.length, 3);
+  const req = bases[0].opts;
+  assert.equal(req.method, "POST");
+  assert.equal(req.headers.Authorization, "Bearer sk-secret-1");
+  assert.equal(req.headers["Content-Type"], "application/json");
+  assert.deepEqual(JSON.parse(req.body), { model: "gemini-3.8-flash", messages: [{ role: "user", content: "ping" }], max_tokens: 16, stream: false });
+  const req3 = bases[2].opts;
+  assert.equal(req3.headers["x-api-key"], "sk-secret-3");   // 宿主 withAnthropicAuthorizationHeader 同款双头
+  assert.equal(req3.headers["anthropic-version"], "2023-06-01");
+  assert.equal(req3.headers.Authorization, "Bearer sk-secret-3");
+  assert.deepEqual(JSON.parse(req3.body), { model: "claude-sonnet-5-5", max_tokens: 16, messages: [{ role: "user", content: "ping" }] });
+});
+
+test("probe classifies failures and masks the error snippet", async () => {
+  const file = tmpCfgPath();
+  writeCfg(file, probeCfg());
+  const { mp } = probePuller(file, (url) => {
+    if (url.endsWith("/chat/completions")) return { ok: false, status: 405, text: async () => '<html>405 for key sk-LiveZzzz9999</html>' };
+    if (url.endsWith("/v1/messages")) return { ok: false, status: 401, text: async () => '{"error":{"message":"Invalid token sk-LiveAbcdef123456"}}' };
+    if (url.endsWith("/responses")) throw Object.assign(new Error("boom"), { name: "TimeoutError" });
+    return { ok: true, status: 200 };
+  });
+  const p405 = await mp.probeModel("chat-relay", "gemini-3.8-flash");
+  assert.equal(p405.ok, false);
+  assert.equal(p405.kind, "path");   // 405=路径不对（OpenHub 实案），展示宿主实际请求 URL
+  assert.equal(p405.status, 405);
+  assert.equal(p405.url, "https://relay.example.com/chat/completions");
+  assert.ok(p405.snippet.includes("405") && !p405.snippet.includes("sk-LiveZzzz9999"));
+  const p401 = await mp.probeModel("claude-relay", "claude-sonnet-5-5");
+  assert.equal(p401.kind, "auth");
+  assert.ok(p401.snippet.includes("sk-***") && !p401.snippet.includes("Abcdef123456"));
+  const pTimeout = await mp.probeModel("resp-relay", "gpt-6.1-sol");
+  assert.equal(pTimeout.kind, "timeout");
+  const net = probePuller(file, () => { throw new Error("ECONNREFUSED"); });
+  const pNet = await net.mp.probeModel("chat-relay", "m");
+  assert.equal(pNet.kind, "network");
+});
+
+test("probe fail-closed on structural problems; plan source probes anthropic messages with oauth bearer", async () => {
+  const file = tmpCfgPath();
+  writeCfg(file, probeCfg());
+  fs.writeFileSync("/tmp/creds.json", JSON.stringify({ "oauth:bigmodel:access_token": "enc:xxx" }));
+  const seen = [];
+  const mp = M.createModelPuller({
+    customCfgPath: file, modelsDevUrl: MODELS_DEV_TEST_URL,
+    credentialsPath: "/tmp/creds.json", decryptValue: () => "plan-oauth-token",
+    fetchImpl: async (url, opts) => { seen.push({ url, auth: opts.headers.Authorization }); return { ok: true, status: 200 }; },
+  });
+  assert.equal((await mp.probeModel("missing", "m")).kind, "provider");
+  assert.equal((await mp.probeModel("weird-relay", "m")).kind, "unsupported");
+  assert.equal((await mp.probeModel("chat-relay", "bad\x01id")).kind, "invalid_model");
+  assert.equal((await mp.probeModel("chat-relay", "")).kind, "invalid_model");
+  const plan = await mp.probeModel(PLAN_ID, "GLM-5.3-FlashX");
+  assert.equal(plan.ok, true);
+  assert.equal(seen[seen.length - 1].url, "https://open.bigmodel.cn/api/anthropic/v1/messages");   // 套餐源与运行协议同源（Anthropic messages）
+  assert.equal(seen[seen.length - 1].auth, "Bearer plan-oauth-token");
+});
+
+/* ---------- v310 路径错配自动修复：±/v1 候选实测命中即写回 provider_config ---------- */
+
+test("probe auto-repairs a missing /v1 base, retests and persists the fix", async () => {
+  const file = tmpCfgPath();
+  writeCfg(file, probeCfg());
+  const { mp, calls } = probePuller(file, (url) => {
+    if (url === "https://relay.example.com/chat/completions") return { ok: false, status: 405, text: async () => "405" };   // OpenHub 实案形状
+    if (url === "https://relay.example.com/v1/chat/completions") return { ok: true, status: 200 };
+    throw new Error("unexpected " + url);
+  });
+  const r = await mp.probeModel("chat-relay", "gemini-3.8-flash");
+  assert.equal(r.ok, true);
+  assert.equal(r.url, "https://relay.example.com/v1/chat/completions");
+  assert.deepEqual(r.repaired, { from: "https://relay.example.com", to: "https://relay.example.com/v1" });
+  const saved = JSON.parse(fs.readFileSync(file, "utf8"));
+  const rule = saved.config.providerConfigRules.providerRules.find((p) => p.providerId === "chat-relay");
+  assert.equal(rule.config.api.baseUrl, "https://relay.example.com/v1");   // 修复写回 provider_config
+  assert.equal(fs.existsSync(file + ".zusage-bak"), true);   // 与 applyModels 同款滚动备份
+  assert.ok(calls.some((c) => c.url === "https://relay.example.com/v1/chat/completions" && JSON.parse(c.opts.body).model === "gemini-3.8-flash"));   // 修复后按新 base 重试
+});
+
+test("probe auto-repairs an extra /v1 by stripping it (reverse direction)", async () => {
+  const file = tmpCfgPath();
+  writeCfg(file, probeCfg());
+  const { mp } = probePuller(file, (url) => {
+    if (url === "https://relay.example.com/v1/responses") return { ok: false, status: 404, text: async () => "404" };
+    if (url === "https://relay.example.com/responses") return { ok: true, status: 200 };
+    throw new Error("unexpected " + url);
+  });
+  const r = await mp.probeModel("resp-relay", "gpt-6.1-sol");
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.repaired, { from: "https://relay.example.com/v1", to: "https://relay.example.com" });
+  const saved = JSON.parse(fs.readFileSync(file, "utf8"));
+  const rule = saved.config.providerConfigRules.providerRules.find((p) => p.providerId === "resp-relay");
+  assert.equal(rule.config.api.baseUrl, "https://relay.example.com");
+});
+
+test("probe repair discloses tried candidates when they also fail; config untouched", async () => {
+  const file = tmpCfgPath();
+  writeCfg(file, probeCfg());
+  const { mp } = probePuller(file, () => ({ ok: false, status: 405, text: async () => "405" }));
+  const r = await mp.probeModel("chat-relay", "gemini-3.8-flash");
+  assert.equal(r.ok, false);
+  assert.equal(r.kind, "path");
+  assert.deepEqual(r.tried, ["https://relay.example.com/v1/chat/completions"]);
+  const saved = JSON.parse(fs.readFileSync(file, "utf8"));
+  const rule = saved.config.providerConfigRules.providerRules.find((p) => p.providerId === "chat-relay");
+  assert.equal(rule.config.api.baseUrl, "https://relay.example.com");   // 未命中不写回
+});
+
+test("probe repair is single-flight per provider: one candidate test and one write for concurrent probes", async () => {
+  const file = tmpCfgPath();
+  writeCfg(file, probeCfg());
+  const variantHits = [];
+  const { mp } = probePuller(file, (url) => {
+    if (url === "https://relay.example.com/chat/completions") return { ok: false, status: 405, text: async () => "405" };
+    if (url === "https://relay.example.com/v1/chat/completions") { variantHits.push(1); return { ok: true, status: 200 }; }
+    throw new Error("unexpected " + url);
+  });
+  const [a, b, c] = await Promise.all([
+    mp.probeModel("chat-relay", "m1"),
+    mp.probeModel("chat-relay", "m2"),
+    mp.probeModel("chat-relay", "m3"),
+  ]);
+  assert.equal(variantHits.length, 7, "单飞语义：变体 URL 命中 = 1 次候选实测 + 3 次修复后重试 + 3 次 aux 档位验证（v311；候选实测单飞破坏时远大于此）");   // 候选实测单飞
+  assert.ok(a.repaired && b.repaired && c.repaired, "并发探测共享同一次修复，各自重试均带 repaired 标记");
+  const saved = JSON.parse(fs.readFileSync(file, "utf8"));
+  assert.equal(saved.config.providerConfigRules.providerRules.find((p) => p.providerId === "chat-relay").config.api.baseUrl, "https://relay.example.com/v1");
+});
+
+test("probe repair never touches anthropic/plan sources (no mismatch dimension)", async () => {
+  const file = tmpCfgPath();
+  writeCfg(file, probeCfg());
+  fs.writeFileSync("/tmp/creds.json", JSON.stringify({ "oauth:bigmodel:access_token": "enc:xxx" }));
+  const urls = [];
+  const mp = M.createModelPuller({
+    customCfgPath: file, modelsDevUrl: MODELS_DEV_TEST_URL,
+    credentialsPath: "/tmp/creds.json", decryptValue: () => "plan-oauth-token",
+    fetchImpl: async (url) => { urls.push(url); return { ok: false, status: 404, text: async () => "404" }; },
+  });
+  const claude = await mp.probeModel("claude-relay", "claude-sonnet-5-5");   // anthropic 型宿主自动补 /v1：无 ±/v1 错配
+  assert.equal(claude.kind, "path");
+  assert.equal(claude.tried, undefined);
+  const plan = await mp.probeModel(PLAN_ID, "GLM-5.3-FlashX");
+  assert.equal(plan.kind, "path");
+  assert.equal(urls.filter((u) => u.indexOf("/messages") > 0).length, 2);   // 各一次原始请求，无修复候选
+  assert.ok(urls.every((u) => u.indexOf("/chat/completions") < 0));
+  assert.equal(M.probeRepairCandidates("", "openai-chat-completions").length, 0);
+  assert.equal(M.probeRepairCandidates("https://x", "anthropic-messages").length, 0);
+  assert.deepEqual(M.probeRepairCandidates("https://x/", "openai-responses"), [{ base: "https://x/v1", url: "https://x/v1/responses" }]);
+});
+
+/* ---------- v311 辅助档位写实：values[0] wire 值被严格上游拒绝时自动修复 ---------- */
+
+test("reasoning helpers: aux wire mapping and accepted-set parsing stop at the boundary", () => {
+  assert.equal(M.auxWireValue("disabled"), "none");   // 内置两档最低 disabled 的 catch-all wire 值（宿主测试实际发送的词）
+  assert.equal(M.auxWireValue("enabled"), "high");
+  assert.equal(M.auxWireValue("minimal"), "minimal");
+  assert.deepEqual(M.reasoningWireField("openai-chat-completions", "low"), { reasoning_effort: "low" });
+  assert.deepEqual(M.reasoningWireField("openai-responses", "low"), { reasoning: { effort: "low" } });
+  const real = '[{"error":{"code":400,"message":"Expected \'reasoning_effort\' to be one of: \'high\', \'low\', \'max\', \'medium\', \'minimal\'; found \'none\'.","status":"INVALID_ARGUMENT"}}]';
+  const parsed = M.acceptedEffortsFromSnippet(real);
+  assert.deepEqual(parsed, ["high", "low", "max", "medium", "minimal"]);   // 真实报错形状（用户实报）
+  assert.equal(parsed.includes("none"), false);   // "found 'none'" 在分号之后，不是接受集成员
+  assert.equal(M.acceptedEffortsFromSnippet("some other error"), null);
+});
+
+function auxProbeCfg() {
+  return {
+    config: {
+      providerConfigRules: {
+        providerRules: [
+          { providerId: "gem-relay", config: { access: { type: "api-key", apiKey: "sk-secret-1" }, api: { type: "openai-chat-completions", baseUrl: "https://relay.example.com/v1" } } },
+        ],
+      },
+      modelConfigRules: {
+        manualProviderModelRules: [],
+        providerModelRules: [
+          { modelId: "gemini-3.8-flash", providerId: "gem-relay", config: { enabled: true } },
+        ],
+      },
+    },
+  };
+}
+
+test("aux probe: default none rejected heals the ladder parsed from the error text", async () => {
+  const file = tmpCfgPath();
+  writeCfg(file, auxProbeCfg());
+  const bodies = [];
+  const { mp } = probePuller(file, (url, opts) => {
+    const body = JSON.parse(opts.body);
+    bodies.push(body);
+    if (body.reasoning_effort === undefined || body.reasoning_effort === "none") {
+      return { ok: body.reasoning_effort === undefined, status: 400, text: async () => '[{"error":{"code":400,"message":"Expected \'reasoning_effort\' to be one of: \'high\', \'low\', \'max\', \'medium\', \'minimal\'; found \'none\'.","status":"INVALID_ARGUMENT"}}]' };
+    }
+    return { ok: true, status: 200 };
+  });
+  const r = await mp.probeModel("gem-relay", "gemini-3.8-flash");
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.effortFixed, { values: ["minimal", "low", "medium", "high", "max"] });   // 梯序∩接受集
+  // 基础探测不带 reasoning 字段；aux 验证发 "none" 被拒；写实验证发 "minimal"
+  assert.equal(bodies[0].reasoning_effort, undefined);
+  assert.equal(bodies[1].reasoning_effort, "none");
+  assert.equal(bodies[2].reasoning_effort, "minimal");
+  const saved = JSON.parse(fs.readFileSync(file, "utf8"));
+  const modelRule = saved.config.modelConfigRules.providerModelRules.find((x) => x.modelId === "gemini-3.8-flash" && x.providerId === "gem-relay");
+  assert.deepEqual(modelRule.config.optionSpecs.reasoningLevel.values, ["minimal", "low", "medium", "high", "max"]);   // 稀疏 values-only 写实
+  assert.equal(modelRule.config.enabled, true);   // 原有键保留
+  assert.equal(modelRule.config.optionSpecs.reasoningLevel.map, undefined);   // 绝不生成 map（红线）
+});
+
+test("aux probe: healthy upstream (accepts none) is left untouched", async () => {
+  const file = tmpCfgPath();
+  writeCfg(file, auxProbeCfg());
+  const { mp, calls } = probePuller(file, () => ({ ok: true, status: 200 }));
+  const r = await mp.probeModel("gem-relay", "gemini-3.8-flash");
+  assert.equal(r.ok, true);
+  assert.equal(r.effortFixed, undefined);
+  assert.equal(calls.length, 2);   // 基础 + aux 验证，无写实请求
+  const saved = JSON.parse(fs.readFileSync(file, "utf8"));
+  const modelRule = saved.config.modelConfigRules.providerModelRules.find((x) => x.modelId === "gemini-3.8-flash");
+  assert.equal(modelRule.config.optionSpecs, undefined);   // 无据不写
+});
+
+test("aux probe: written values[0] is validated; unparseable error falls back to per-candidate probing", async () => {
+  const file = tmpCfgPath();
+  writeCfg(file, auxProbeCfg());
+  const rule = JSON.parse(fs.readFileSync(file, "utf8"));
+  rule.config.modelConfigRules.providerModelRules[0].config = { enabled: true, optionSpecs: { reasoningLevel: { values: ["none", "minimal", "high"] } } };
+  writeCfg(file, rule);
+  const seen = [];
+  const { mp } = probePuller(file, (url, opts) => {
+    const effort = JSON.parse(opts.body).reasoning_effort;
+    seen.push(effort === undefined ? "(base)" : effort);
+    if (effort === undefined || effort === "none") return { ok: effort === undefined, status: 400, text: async () => '{"error":{"message":"Invalid reasoning_effort value."}}' };   // 无接受集可解析但点名词段
+    return { ok: true, status: 200 };   // minimal 起全部可用
+  });
+  const r = await mp.probeModel("gem-relay", "gemini-3.8-flash");
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.effortFixed, { values: ["minimal"] });   // 写实前 values[0]="none"（梯排序后），被拒；解析失败逐候选，minimal 首个可用
+  assert.deepEqual(seen, ["(base)", "none", "minimal"]);
+  const saved = JSON.parse(fs.readFileSync(file, "utf8"));
+  const modelRule = saved.config.modelConfigRules.providerModelRules.find((x) => x.modelId === "gemini-3.8-flash");
+  assert.deepEqual(modelRule.config.optionSpecs.reasoningLevel.values, ["minimal"]);
+});
+
+test("aux probe: nothing passes fails closed with reasoning kind; config untouched", async () => {
+  const file = tmpCfgPath();
+  writeCfg(file, auxProbeCfg());
+  const { mp } = probePuller(file, (url, opts) => {
+    const effort = JSON.parse(opts.body).reasoning_effort;
+    if (effort === undefined) return { ok: true, status: 200 };
+    return { ok: false, status: 400, text: async () => '[{"error":{"message":"Expected \'reasoning_effort\' to be one of: \'high\', \'low\', \'max\', \'medium\', \'minimal\'; found \'none\'."}}]' };
+  });
+  const r = await mp.probeModel("gem-relay", "gemini-3.8-flash");
+  assert.equal(r.ok, false);
+  assert.equal(r.kind, "reasoning");   // 渲染端给「思考档位被上游拒绝」文案 + 接受集披露
+  assert.deepEqual(r.accepted, ["high", "low", "max", "medium", "minimal"]);
+  assert.equal(r.snippet.includes("sk-"), false);
+  const saved = JSON.parse(fs.readFileSync(file, "utf8"));
+  const modelRule = saved.config.modelConfigRules.providerModelRules.find((x) => x.modelId === "gemini-3.8-flash");
+  assert.equal(modelRule.config.optionSpecs, undefined);   // 修复不成不动配置
+});
+
+test("aux probe: un-added model heals fetchCache metadata for the follow-up apply write", async () => {
+  const file = tmpCfgPath();
+  const noModelRule = auxProbeCfg();
+  noModelRule.config.modelConfigRules.providerModelRules = [];   // 未添加场景：无模型规则，写实只能进 fetchCache 元数据
+  writeCfg(file, noModelRule);
+  fs.writeFileSync("/tmp/models-list.json", "");
+  const mp = M.createModelPuller({
+    customCfgPath: file,
+    fetchImpl: async (url, opts) => {
+      if (url.endsWith("/v1/models")) return { ok: true, status: 200, json: async () => ({ data: [{ id: "gemini-3.8-flash", supported_efforts: ["none", "minimal", "high"] }] }) };
+      const effort = JSON.parse(opts.body).reasoning_effort;
+      if (effort === undefined || effort === "none") return { ok: effort === undefined, status: 400, text: async () => '[{"error":{"message":"Expected \'reasoning_effort\' to be one of: \'high\', \'low\', \'max\', \'medium\', \'minimal\'; found \'none\'."}}]' };
+      return { ok: true, status: 200 };
+    },
+    modelsDevUrl: MODELS_DEV_TEST_URL,
+  });
+  await mp.fetchModels("gem-relay");   // 拉取会话建立 fetchCache（supported_efforts 含 none）
+  const r = await mp.probeModel("gem-relay", "gemini-3.8-flash");
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.effortFixed, { values: ["minimal", "low", "medium", "high", "max"] });   // 上游接受集是权威（声明里的 none 本就被拒）
+  const saved = JSON.parse(fs.readFileSync(file, "utf8"));
+  assert.equal(saved.config.modelConfigRules.providerModelRules.find((x) => x.modelId === "gemini-3.8-flash"), undefined);   // 探测不新建规则（防与 applyModels 双写）
+  const applied = await mp.applyModels("gem-relay", ["gemini-3.8-flash"]);
+  assert.equal(applied.ok, true);
+  const after = JSON.parse(fs.readFileSync(file, "utf8"));
+  const modelRule = after.config.modelConfigRules.providerModelRules.find((x) => x.modelId === "gemini-3.8-flash" && x.providerId === "gem-relay");
+  assert.deepEqual(modelRule.config.optionSpecs.reasoningLevel.values, ["minimal", "low", "medium", "high", "max"]);   // applyModels 按修复后元数据落盘
+});
+
+/* ---------- v312 输入类型/模型能力自动匹配：目录一致性收割 + 确认流正证据实测 ---------- */
+
+test("catalog agreement: ambiguous multi-provider hits resolve only when all agree", () => {
+  const entries = M.catalogEntries({
+    "a/flash-x": { id: "flash-x", modalities: { input: ["text", "image", "pdf"], output: ["text"] }, tool_call: false },
+    "b/flash-x": { id: "flash-x", modalities: { input: ["text", "image", "pdf"], output: ["text"] }, tool_call: false },
+  });
+  assert.equal(entries.length, 2);
+  assert.equal(M.matchCatalogEntry(entries, "flash-x"), null);   // 逐条匹配仍守歧义
+  const caps = M.agreedCapabilities(entries, "flash-x");
+  assert.deepEqual(caps.inputFormat, { supportsImage: true, supportsVideo: false, supportsAudio: false, supportsPdf: true });
+  assert.equal(caps.supportsToolCall, false);   // 显式 false 负证据采纳
+  assert.equal(caps.supportsJsonSchemaOutput, undefined);   // 目录缺字段不猜
+  const disagree = M.catalogEntries({
+    "a/flash-y": { id: "flash-y", modalities: { input: ["text"], output: ["text"] } },
+    "b/flash-y": { id: "flash-y", modalities: { input: ["text", "image"], output: ["text"] } },
+  });
+  assert.equal(M.agreedCapabilities(disagree, "flash-y").inputFormat, undefined);   // 分歧放弃
+  const gap = M.catalogEntries({
+    "a/flash-z": { id: "flash-z", modalities: { input: ["text", "pdf"], output: ["text"] } },
+    "b/flash-z": { id: "flash-z", tool_call: true },   // 一条缺模态证据：该字段整体放弃（tool_call 一致 false/true 与模态互不影响）
+  });
+  assert.equal(M.agreedCapabilities(gap, "flash-z").inputFormat, undefined);
+});
+
+test("capability probes write positive evidence only; explicit user false is never overridden", async () => {
+  const file = tmpCfgPath();
+  writeCfg(file, auxProbeCfg());
+  const kinds = [];
+  const { mp, calls } = probePuller(file, (url, opts) => {
+    const body = JSON.parse(opts.body);
+    if (body.tools) { kinds.push("toolHistory"); return { ok: true, status: 200 }; }
+    if (Array.isArray(body.messages) && body.messages.length === 3) { kinds.push("midConv"); return { ok: true, status: 200 }; }
+    if (body.response_format) { kinds.push("jsonSchema"); return { ok: true, status: 200 }; }
+    if (Array.isArray(body.messages) && Array.isArray(body.messages[0].content)) { kinds.push("image"); return { ok: true, status: 200 }; }
+    kinds.push(body.reasoning_effort === undefined ? "base" : "aux");
+    return { ok: true, status: 200 };
+  });
+  const r = await mp.probeModel("gem-relay", "gemini-3.8-flash", { caps: true });
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.capabilitiesFixed, ["image", "jsonSchema", "midConv"]);
+  assert.equal(r.warnings, undefined);   // stub 全 200：工具历史正常
+  assert.deepEqual(kinds, ["base", "aux", "image", "jsonSchema", "midConv", "toolHistory"]);   // 顺序契约（v313 末位工具历史探测）
+  const saved = JSON.parse(fs.readFileSync(file, "utf8"));
+  const modelRule = saved.config.modelConfigRules.providerModelRules.find((x) => x.modelId === "gemini-3.8-flash" && x.providerId === "gem-relay");
+  assert.equal(modelRule.config.properties.inputFormat.supportsImage, true);
+  assert.equal(modelRule.config.properties.supportsJsonSchemaOutput, true);
+  assert.equal(modelRule.config.properties.supportsMidConversationSystem, true);
+  assert.equal(modelRule.config.properties.supportsToolCall, undefined);
+
+  // 用户显式 false 不被覆盖；已证实的字段不再重复探测
+  const cfg2 = JSON.parse(fs.readFileSync(file, "utf8"));
+  cfg2.config.modelConfigRules.providerModelRules[0].config.properties.supportsJsonSchemaOutput = false;
+  writeCfg(file, cfg2);
+  const seen2 = [];
+  const mp2 = M.createModelPuller({
+    customCfgPath: file, fetchImpl: async (url, opts) => {
+      const body = JSON.parse(opts.body);
+      seen2.push(body.tools ? "toolHistory" : body.response_format ? "jsonSchema" : (Array.isArray(body.messages) && body.messages.length === 3) ? "midConv" : Array.isArray(body.messages) && Array.isArray(body.messages[0].content) ? "image" : "other");
+      return { ok: true, status: 200 };
+    }, modelsDevUrl: MODELS_DEV_TEST_URL,
+  });
+  const r2 = await mp2.probeModel("gem-relay", "gemini-3.8-flash", { caps: true });
+  assert.equal(r2.capabilitiesFixed, undefined);   // image/midConv 已在规则、jsonSchema 用户显式 false：正证据全部跳过
+  assert.deepEqual(seen2, ["other", "other", "toolHistory"]);   // base+aux 计 other；仅剩 toolHistory 警告级探测（无 fetchCache 会话不去重）
+  const saved2 = JSON.parse(fs.readFileSync(file, "utf8"));
+  assert.equal(saved2.config.modelConfigRules.providerModelRules[0].config.properties.supportsJsonSchemaOutput, false);
+});
+
+test("capability probes fail open: 4xx/network writes nothing", async () => {
+  const file = tmpCfgPath();
+  writeCfg(file, auxProbeCfg());
+  const { mp } = probePuller(file, (url, opts) => {
+    const body = JSON.parse(opts.body);
+    if (body.tools) return { ok: true, status: 200 };   // 工具历史正常
+    if (Array.isArray(body.messages) && body.messages.length === 3) return { ok: false, status: 400, text: async () => "bad" };
+    if (body.response_format) return { ok: true, status: 200 };
+    if (Array.isArray(body.messages) && Array.isArray(body.messages[0].content)) throw new Error("ECONNRESET");
+    return { ok: true, status: 200 };
+  });
+  const r = await mp.probeModel("gem-relay", "gemini-3.8-flash", { caps: true });
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.capabilitiesFixed, ["jsonSchema"]);   // 只有正证据项写入
+  assert.equal(r.warnings, undefined);
+  const saved = JSON.parse(fs.readFileSync(file, "utf8"));
+  const modelRule = saved.config.modelConfigRules.providerModelRules.find((x) => x.modelId === "gemini-3.8-flash");
+  assert.equal(modelRule.config.properties.inputFormat, undefined);   // 图片探测网络失败：不写
+  assert.equal(modelRule.config.properties.supportsMidConversationSystem, undefined);   // 400：不写
+  assert.equal(modelRule.config.properties.supportsJsonSchemaOutput, true);
+});
+
+test("capability probes only run with the caps flag and only for chat-completions", async () => {
+  const file = tmpCfgPath();
+  writeCfg(file, auxProbeCfg());
+  let capRequests = 0;
+  const { mp } = probePuller(file, (url, opts) => {
+    const body = JSON.parse(opts.body);
+    if (body.response_format || (Array.isArray(body.messages) && (body.messages.length === 3 || Array.isArray(body.messages[0].content)))) capRequests++;
+    return { ok: true, status: 200 };
+  });
+  await mp.probeModel("gem-relay", "gemini-3.8-flash");   // 无 caps 标志
+  assert.equal(capRequests, 0);
+  // 未落盘模型 + 无拉取会话：无处写实，不虚报
+  const r = await mp.probeModel("gem-relay", "un-added-model", { caps: true });
+  assert.equal(r.ok, true);
+  assert.equal(r.capabilitiesFixed, undefined);
+});
+
+test("tool-history probe: channel rejection warns without writing config; session-deduped", async () => {
+  const file = tmpCfgPath();
+  writeCfg(file, auxProbeCfg());
+  let toolHistoryCalls = 0;
+  const mp = M.createModelPuller({
+    customCfgPath: file, modelsDevUrl: MODELS_DEV_TEST_URL,
+    fetchImpl: async (url, opts) => {
+      const body = opts && opts.body ? JSON.parse(opts.body) : null;
+      if (url === MODELS_DEV_TEST_URL) return { ok: true, status: 200, json: async () => ({}) };
+      if (url.endsWith("/v1/models")) return { ok: true, status: 200, json: async () => ({ data: ["gemini-3.8-flash"] }) };   // 预热 fetchCache（拉取会话）
+      if (body && body.tools) {
+        toolHistoryCalls++;
+        return { ok: false, status: 400, text: async () => '{"error":{"code":"400001","message":"Invalid request parameters."}}' };
+      }
+      return { ok: true, status: 200 };
+    },
+  });
+  await mp.fetchModels("gem-relay");
+  const r1 = await mp.probeModel("gem-relay", "gemini-3.8-flash", { caps: true });
+  assert.equal(r1.ok, true);   // 模型本身可达，警告不判失败
+  assert.deepEqual(r1.warnings, ["toolHistory"]);
+  assert.deepEqual(r1.capabilitiesFixed, ["image", "jsonSchema", "midConv"]);   // 正证据项照常实测写入
+  const saved = JSON.parse(fs.readFileSync(file, "utf8"));
+  const modelRule = saved.config.modelConfigRules.providerModelRules.find((x) => x.modelId === "gemini-3.8-flash");
+  assert.equal(modelRule.config.properties.supportsJsonSchemaOutput, true);   // 正证据落盘
+  assert.equal(modelRule.config.properties.supportsToolCall, undefined);   // 警告性质：toolHistory 绝不写配置（supportsToolCall:false 会让宿主对带工具请求直接报错）
+  const r2 = await mp.probeModel("gem-relay", "gemini-3.8-flash", { caps: true });
+  assert.equal(toolHistoryCalls, 1, "探测结论按拉取会话去重（fetchCache 标记）");
+  assert.deepEqual(r2.warnings, ["toolHistory"]);   // 去重后仍回放缓存结论
+});
+
+test("fetchModels merges agreed capabilities into meta; applyModels persists them", async () => {
+  const file = tmpCfgPath();
+  writeCfg(file, auxProbeCfg());
+  const mp = M.createModelPuller({
+    customCfgPath: file,
+    modelsDevUrl: MODELS_DEV_TEST_URL,
+    fetchImpl: async (url, opts) => {
+      if (url === MODELS_DEV_TEST_URL) {
+        return { ok: true, status: 200, json: async () => ({
+          "a/gem-amb": { id: "gem-amb", modalities: { input: ["text", "image", "pdf"], output: ["text"] }, tool_call: false },
+          "b/gem-amb": { id: "gem-amb", modalities: { input: ["text", "image", "pdf"], output: ["text"] }, tool_call: false },
+        }) };
+      }
+      if (url.endsWith("/v1/models")) return { ok: true, status: 200, json: async () => ({ data: ["gem-amb"] }) };
+      return { ok: true, status: 200 };
+    },
+  });
+  const r = await mp.fetchModels("gem-relay");
+  assert.equal(r.ok, true);
+  const meta = r.metaById["gem-amb"];
+  assert.deepEqual([meta.inputFormat.supportsImage, meta.inputFormat.supportsPdf, meta.supportsToolCall], [true, true, false]);
+  const applied = await mp.applyModels("gem-relay", ["gem-amb"]);
+  assert.equal(applied.ok, true);
+  const saved = JSON.parse(fs.readFileSync(file, "utf8"));
+  const modelRule = saved.config.modelConfigRules.providerModelRules.find((x) => x.modelId === "gem-amb" && x.providerId === "gem-relay");
+  assert.equal(modelRule.config.properties.inputFormat.supportsPdf, true);
+  assert.equal(modelRule.config.properties.supportsToolCall, false);
+});
+
+/* ---------- v314 规格补全：确认流用拉取会话元数据回填缺失的窗口/输出上限 ---------- */
+
+test("spec enrichment backfills missing contextWindow/maxOutputTokens; never overwrites", async () => {
+  const file = tmpCfgPath();
+  writeCfg(file, auxProbeCfg());
+  const mp = M.createModelPuller({
+    customCfgPath: file, modelsDevUrl: MODELS_DEV_TEST_URL,
+    fetchImpl: async (url, opts) => {
+      if (url === MODELS_DEV_TEST_URL) return { ok: true, status: 200, json: async () => ({}) };
+      if (url.endsWith("/v1/models")) return { ok: true, status: 200, json: async () => ({ data: [{ id: "gemini-3.8-flash", limit: { context: 1048576, output: 65536 } }] }) };
+      return { ok: true, status: 200 };
+    },
+  });
+  await mp.fetchModels("gem-relay");   // 拉取会话建立 meta（1048576/65536）
+  const r = await mp.probeModel("gem-relay", "gemini-3.8-flash", { caps: true });
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.specEnriched, ["contextWindow", "maxOutputTokens"]);
+  const saved = JSON.parse(fs.readFileSync(file, "utf8"));
+  const modelRule = saved.config.modelConfigRules.providerModelRules.find((x) => x.modelId === "gemini-3.8-flash");
+  assert.equal(modelRule.config.properties.contextWindow, 1048576);
+  assert.equal(modelRule.config.optionSpecs.maxOutputTokens.max, 65536);   // 89642 事故的回归锁：baseline 不再落内置 128000
+  assert.equal(modelRule.config.optionSpecs.reasoningLevel, undefined);   // 不越权动其它键
+
+  // 已写值不覆盖（append-only 语义延展到补全）：窗口已有值保持，仅回填缺失的输出上限
+  const before = JSON.parse(fs.readFileSync(file, "utf8"));
+  const rule0 = before.config.modelConfigRules.providerModelRules.find((x) => x.modelId === "gemini-3.8-flash");
+  rule0.config.properties.contextWindow = 128000;   // 用户侧已写：绝不覆盖
+  delete rule0.config.optionSpecs.maxOutputTokens;
+  writeCfg(file, before);
+  const r2 = await mp.probeModel("gem-relay", "gemini-3.8-flash", { caps: true });
+  assert.deepEqual(r2.specEnriched, ["maxOutputTokens"]);
+  const saved2 = JSON.parse(fs.readFileSync(file, "utf8"));
+  const rule2 = saved2.config.modelConfigRules.providerModelRules.find((x) => x.modelId === "gemini-3.8-flash");
+  assert.equal(rule2.config.properties.contextWindow, 128000);   // 中转报告值不被目录 1M 覆盖
+  assert.equal(rule2.config.optionSpecs.maxOutputTokens.max, 65536);
+});

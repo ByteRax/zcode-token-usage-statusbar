@@ -191,8 +191,14 @@
      * → v306 精简 tooltip 幽灵行框修复（\x01 结构化 HTML 哨兵只在主链 drawTip 被 tip.firstChild.slice(1) 剥除，精简链 showTpsTip 直塞 innerHTML 不剥——控制字符落成文本节点被 .tip 的 white-space:pre-line 撑出 ~20px 幽灵行框，V2 卡定高 300+overflow:hidden 下整卡下坠、底部被裁，实报上下 padding 不对称；补齐同语义 charCodeAt 剥除）+ 状态轮播主开关默认关闭（2026-11-09 用户规格：新用户/从未写过设置的用户不自动启用，显式开/关过的存量配置经 loadRotatorConfig 布尔覆盖原样保留）+ 速率 chip 右键直开设置（2026-11-09 用户规格：精简下 chip 是唯一常驻入口，contextmenu 镜像 .tps-cfg 路径——先收 tooltip 再开面板，并压掉宿主原生右键菜单）
      * → v307 速度 tooltip 左卡「生成中估 X t/s」note 行删除（2026-11-09 用户规格）：生成中估算只留标题旁「生成中（估算）」徽标，瞬时估算值不再与历史均值同卡并列；完成态会话均被误标「生成中估」的边界（v298 speedValue 保留 avg 语义 × v263 门控只看 speedValue>0）一并消失（.zu-sl-note CSS 保留——旧版 speedCardHTML 回退卡仍用）；未编号同批内容——速度卡模型行原生 title 改纯 CSS data-tip 伪元素气泡（2026-11-09 用户实报：宿主内原生 title 不弹——生成期重建打断驻留 + Electron 宿主对 title 气泡不可靠，同轮播 zu-rot-tipt 先例）+ 悬停模型列表不省略（spdAggregate 增 withNames 仅整体口径产出全量 modelNames，消费点唯一带 fallback）+ 模型行补 aria-label 全名单（伪元素 content:attr 不进可访问树）
      * → v308 切换任务主线程阻塞修复（用户实报「来回切换任务卡很久才反应」）：gitMount 的 live() 幽灵判定从裸 inGhostSubtree 改走 ghostOf 120ms TTL 缓存——裸调用逐祖先 getComputedStyle 强制样式重算，恰在切换的 React 重挂风暴（样式树最脏）里被 render/heavy 高频触发，CDP CPU 采样归因 inGhostSubtree 436ms/9.4s 近乎全部经 gitMount→live（每次切换聚集 ~48ms，与长任务 72-102ms 时刻逐一吻合），缓存路径实测仅 2ms；判定语义与 track 每帧 ghostOf(composer) 同款；未编号同批内容——.zu-sv-bars 由 space-between 改 flex-start + 两侧 5px padding（修少柱如「最近 3 轮」柱顶 nowrap 数值越缘撑出 ~2px 横向滚动）+ 单柱 zu-sl-solo 弱化移除（2026-11-09 用户规格，含 CSS）+ 合入审查撤销同批误入的 hovFreeze 悬停冻结（08 分片 render 接管链：与已合并 v224「悬停中 tooltip 随快照跟手刷新」契约冲突致 pill-theme 4 例红，其原生 title 驻留动机已被 v307 data-tip 气泡消解，净 diff 与 fork/main 逐字节一致）
+     * → v309 拉取模型「确认添加并保存」先探测后保存（用户实报 OpenHub-Gemini Base URL 少 /v1：宿主实际请求 {base}/chat/completions 得 405，界面报 "Model request failed."）：勾选 ≤24 个时逐模型 model-pull-probe （主进程按宿主同款 URL 语义发最小对话请求——openai 两型不自动补 /v1、anthropic 归一化补 /v1 拼/messages、套餐源=套餐 baseUrl+messages+Bearer；刻意不走 candidateUrls 兼容改写以复现宿主真实路径），行内状态 chip （检测中/可用+延迟/失败，title=分类原因+实际 URL+脱敏摘录）并发 4 刷新，全过自动写入、有失败自动取消勾选保留弹窗（可重新勾选强制添加，旧主进程 unknown action 降级直接保存；inject-main 白名单加 model-pull-probe，model-puller 增 probeModel/分类/脱敏）
+     * → v310 拉取模型探测体验收口（用户实测两报）：①失败原因悬停不显示——v309 在 chip 上挂的原生 title 在 Electron 宿主内不弹（v307 同款实证），改 data-tip 伪元素气泡（从 chip 左侧水平弹出、行内垂直居中，避开 .zu-mp-items 的 overflow:auto 裁剪，双语 aria-label 同步）；②路径错配自动修复而非红字提示——主进程探测 404/405 时对 ±/v1 邻域候选实测，命中即把新 Base URL 读-改-原子写回 provider_config（与 applyModels 共享 applyBusy 写闸、同供应商单飞：全选模型同 URL 全失败只测一轮只写一次），模型按新 base 重试，弹窗绿字披露 「已自动修复 Base URL 并写入供应商配置」（.zu-mp-fix），修复候选也失败时失败原因附「已尝试自动修复」；探测 ask 兜底 25s 改 65s（探测+修复+重试最坏约 45s 不能被错杀）；修复限定 openai 两型（anthropic 型宿主自动补 /v1 无此错配、套餐源 baseUrl 不代改）
+     * → v311 辅助档位写实（用户实报：添加后宿主「测试模型」报 reasoning_effort "none" 被上游拒绝——宿主 testModelConnectivity 绑 values[0] 最低档，openai 两型内置 catch-all 把默认最低档 disabled 映射成 wire "none"（zcode-builtin.json modelApiRules[2]/[3] 同款语义），Gemini 严格上游只收 minimal..max；探测链基础连通后追加辅助档位验证：按 catch-all 同款语义发 values[0] 等效 wire 值，被 400 拒绝时从错误文案解析上游接受集（解析失败退化为逐候选实测），验证后写实合法档位表——模型规则已存在直接写规则（values-only 稀疏合法、带 map 自洽结构不动），未落盘模型写 fetchCache 元数据由 applyModels 统一落盘（绝不在探测路径新建规则防双写重复），绿字披露「思考档位写入 minimal/…」；失败新增 reasoning 类文案附上游接受集；错误摘录保留完整脱敏文本供解析
+     * → v312 输入类型/模型能力自动匹配（用户实报：拉取后能力区全空）。宿主侧定案（源码+内置配置审计）：modelRules 的 `.*` catch-all 对所有模型显式设保守默认（text-only、json-schema/联网/中段系统全 false），**无协议级推导**、能力位必须逐模型证据；个人稀疏规则字段级覆盖合法。证据源三路：①目录一致性收割——同名模型多 provider 收录的歧义守卫改为「可加证据字段全命中一致才采纳」（modalities 收 inputFormat 含 PDF；tool_call 只采显式 false；structured_output 只采 true），mergedMeta 第三参最低优先级并入；②确认流能力实测（caps 标志显式携带才跑，仅 chat-completions、仅正证据 2xx 写 true、4xx/网络失败不写保守默认）：图片 content part / response_format json_schema / 对话中 system 消息三项 6s 探测（2026-11-09 真实中转实测三项可判定；PDF 的 OpenAI wire type:"file" 部分中转不认故 PDF 只走目录；视频/音频/联网搜索无廉价如实验证不探测），写目标与 v311 同款双路径（已存在规则合并 properties 叶子且用户显式 false 不覆盖；未落盘写 fetchCache 由 applyModels 落盘）；③弹窗行内徽标（图/PDF/JSON）+ 绿字披露「能力匹配：图片/结构化输出/中段系统消息」；探测兜底 65s 放宽 90s
+     * → v313 工具历史回灌探测（用户实报：配置就绪后真实对话 Turn execution failed 400001——实弹二分定位为 OpenHub 中转全部 Gemini 系通道（3.5/3.7/3.8，流式与否）拒收 assistant tool_calls + role:tool 历史形状（C4-C7 全变体 400），与插件写入无关（裸形状同样拒），Anthropic 线同病；工具结果折进 user 消息反而 200（Gemini 原生映射）；同站 qwen3.8-max 正常=通道级缺陷。宿主侧无配置解（supportsToolCall:false 会令宿主对带工具请求直接报错更糟），落为警告性质：确认流第 4 项 6s 探测发最小工具历史形状，4xx 确定性拒绝才警告（超时/网络/5xx 不定不警），琥珀 .zu-mp-warn 披露「代理任务在工具轮次会失败，纯对话可用」，绝不写任何配置位，结论按拉取会话 fetchCache 去重（裸探测无会话不去重）
+     * → v314 规格补全（用户实报 maxOutputTokens 89642 超上游 65536 上限 400）：宿主预算链定案——wire 输出预算 baseline=已解析 optionSpecs.maxOutputTokens.max（未写=内置 catch-all 128000），预轮 cap=min(baseline, 窗口−用量−1000) 只下调不设上限（model-token-limits.ts resolveModelStepMaxOutputTokens），超 spec.max 是宿主侧硬拒绝非钳制——所以「不写输出上限规格」会让请求预算完全脱缰。applyModels 是 append-only：先添加的模型在目录证据迟到时永远拿不到写实，v314 在确认流探测路径用拉取会话元数据补「缺失」键（properties.contextWindow / optionSpecs.maxOutputTokens.max，绝不覆盖已写数值、带 map 自洽结构不动、applyBusy 写闸），绿字披露「规格补全：输出上限/上下文窗口」；当日已手修用户配置 max=65536（上游 400 报错自证上限，中转 max_tokens=65536 实测 200）；收口审查补齐：禁止凭据重定向并按实际 key 脱敏、供应商来源与档位 CAS 守卫、缓存身份绑定及已验证路径迁移、自定义 map 不猜测、供应商显式能力优先且 false 保留、修复后补规格、工具限流不误警告、确认单批互斥和逐项强制添加、关键披露停留至再次确认、关窗清理等待与模块 dispose 失效
      */
-    var VERSION = "v308";
+    var VERSION = "v314";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
@@ -543,6 +549,15 @@
       ".zu-mp-badge{flex:0 0 auto;display:inline-flex;align-items:center;height:18px;padding:0 7px;border-radius:6px;font-size:calc(var(--ui-font-size,14px) - 3px);line-height:1;white-space:nowrap}" +
       ".zu-mp-badge.zu-mp-old{color:var(--color-foreground-subtle,#8791a3);border:1px solid var(--color-border,rgba(255,255,255,.12));background:var(--color-surface,rgba(255,255,255,.03))}" +
       ".zu-mp-badge.zu-mp-new{color:#34D399;border:1px solid rgba(52,211,153,.45);background:rgba(52,211,153,.08)}" +   /* v132 新模型=emerald（HHQ 同源），浅色组换 700 档 */
+      ".zu-mp-tst{flex:0 0 auto;position:relative;display:inline-flex;align-items:center;height:18px;padding:0 7px;border-radius:6px;font-size:calc(var(--ui-font-size,14px) - 3px);line-height:1;white-space:nowrap}" +   /* v309 探测状态 chip（徽标前惰性插入，data-tip 承载原因） */
+      ".zu-mp-tst.zu-mp-tst-run{color:var(--color-foreground-subtle,#8791a3);border:1px dashed var(--color-border,rgba(255,255,255,.25));background:transparent}" +
+      ".zu-mp-tst.zu-mp-tst-ok{color:#34D399;border:1px solid rgba(52,211,153,.45);background:rgba(52,211,153,.08)}" +
+      ".zu-mp-tst.zu-mp-tst-fail{color:#f87171;border:1px solid rgba(248,113,113,.5);background:rgba(248,113,113,.1);cursor:help}" +
+      /* v310 原因气泡：宿主内原生 title 不弹（v307 实证），data-tip 伪元素从 chip 左侧
+       * 水平弹出、行内垂直居中——列表容器 overflow:auto 只在上下方向裁剪，左弹不越界 */
+      ".zu-mp-tst[data-tip]:hover::after{content:attr(data-tip);position:absolute;top:50%;right:calc(100% + 8px);transform:translateY(-50%);z-index:80;max-width:340px;width:max-content;padding:7px 10px;border:1px solid var(--color-popover-border,var(--color-border,rgba(255,255,255,.14)));border-radius:8px;background:var(--color-popover,#20242e);color:var(--color-popover-foreground,var(--color-foreground,#e9edf4));font-size:calc(var(--ui-font-size,14px) - 2px);line-height:1.5;white-space:pre-line;text-align:left;box-shadow:0 6px 18px rgba(0,0,0,.28);pointer-events:none}" +
+      ".zu-mp-fix:empty{display:none}.zu-mp-fix{color:#34D399;overflow-wrap:anywhere;font-size:calc(var(--ui-font-size,14px) - 1px)}" +   /* v310 自动修复披露（绿=已写入，与 .zu-mp-err 红区并排） */
+      ".zu-mp-warn:empty{display:none}.zu-mp-warn{color:#f5b944;overflow-wrap:anywhere;font-size:calc(var(--ui-font-size,14px) - 1px)}" +   /* v313 通道缺陷警告（琥珀=可用但有关键限制，档位色同额度黄） */
       ".zu-mp-bolt{width:18px;height:18px;flex:0 0 auto;color:#3B82F6}" +   /* 标题 ⚡（HHQ 同款蓝），浅色组换 600 档 */
       ".zu-mp-close-abs{position:absolute;top:12px;right:12px}" +
       ".zu-mp-host[aria-busy=true]{cursor:progress;opacity:.7}" +
@@ -575,6 +590,12 @@
       ".zu-mp-ov.zu-light .zu-mp-close{color:#64748b}.zu-mp-ov.zu-light .zu-mp-close:hover{color:#0f172a}" +
       ".zu-mp-ov.zu-light .zu-mp-badge.zu-mp-old{color:#94a3b8;border-color:#e2e8f0;background:#f1f5f9}" +
       ".zu-mp-ov.zu-light .zu-mp-badge.zu-mp-new{color:#059669;border-color:#6ee7b7;background:#ecfdf5}" +
+      ".zu-mp-ov.zu-light .zu-mp-tst.zu-mp-tst-run{color:#64748b;border-color:#cbd5e1}" +
+      ".zu-mp-ov.zu-light .zu-mp-tst.zu-mp-tst-ok{color:#059669;border-color:#6ee7b7;background:#ecfdf5}" +
+      ".zu-mp-ov.zu-light .zu-mp-tst.zu-mp-tst-fail{color:#dc2626;border-color:#fca5a5;background:#fef2f2}" +
+      ".zu-mp-ov.zu-light .zu-mp-tst[data-tip]:hover::after{background:#fff;color:#0f172a;border-color:#e2e8f0;box-shadow:0 6px 18px rgba(15,23,42,.12)}" +
+      ".zu-mp-ov.zu-light .zu-mp-fix{color:#059669}" +
+      ".zu-mp-ov.zu-light .zu-mp-warn{color:#b45309}" +
       ".zu-mp-ov.zu-light .zu-mp-actions button{color:#0f172a;background:#f1f5f9}" +
       ".zu-mp-ov.zu-light .zu-mp-actions button:hover{background:#e2e8f0}" +
       ".zu-mp-ov.zu-light .zu-mp-bolt{color:#2563EB}" +
