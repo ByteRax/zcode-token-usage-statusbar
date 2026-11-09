@@ -262,6 +262,491 @@ test("rate limit with a failing catalog fallback reports both causes and never i
   assertNoInstall(f);
 });
 
+// 真实 release_tool 打包脚本（合成源文件，无 Git/凭据/外部 HTTP）：参数 = 仓库根、临时目录、owner/repo。
+const REAL_BUILD_SCRIPT = `
+import importlib.util, json, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("fixture_builder", Path(sys.argv[1]) / "release_tool.py")
+tool = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(tool)
+root = Path(sys.argv[2]) / "source"
+for name in tool.NAMES:
+    p = root / name
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(b"not executable fixture source\\n")
+plugin = {"name": tool.PLUGIN, "version": "1.1.0", "commands": "commands", "skills": "skills",
+         "packageLayout": {"schemaVersion": 1, "files": list(tool.NAMES)}}
+for name in (".zcode-plugin/plugin.json", ".claude-plugin/plugin.json"):
+    (root / tool.PREFIX / name).write_text(json.dumps(plugin))
+(root / "marketplace.json").write_text(json.dumps({"name": "zusage-marketplace", "plugins": [
+    {"name": tool.PLUGIN, "version": "1.1.0", "source": "./plugins/" + tool.PLUGIN}]}))
+for name in (".mcp.json", "hooks/hooks.json"):
+    (root / tool.PREFIX / name).write_text("{}")
+for name in tool.SYNC_FILES:
+    (root / name).write_bytes((root / tool.PREFIX / name).read_bytes())
+script = (Path(sys.argv[1]) / "release_tool.py").read_bytes()
+(root / "release_tool.py").write_bytes(script)
+print(json.dumps(tool.build(root, sys.argv[3], Path(sys.argv[2]) / "assets")))
+`;
+
+/* 仓库改名迁移（install-release.md §6）：GitHub 对改名仓库的 API 响应体规范化为新名，
+   按注册旧名的资产比对与清单兜底全部挂掉后，探测官方 301/302 命中新名，整体重查成功后
+   才持久化 repoMigration；意图 channel 存新名，复核经迁移记录豁免注册旧名。 */
+const RENAMED = "ByteRax/zcode-speed-bar";
+const FIRST_RENAME = "ByteRax/zcode-first-name";
+function renamedFixture(f, bytes, manifest) {
+  f.setRelease("1.1.0", bytes);
+  const row = clone(f.row);
+  for (const asset of row.assets) asset.browser_download_url = asset.browser_download_url.replace(`/${REPOSITORY}/`, `/${RENAMED}/`);
+  f.row = row; f.rows = [row];
+  f.release = validateRelease(row, RENAMED);
+  if (manifest) f.manifest = manifest; else f.manifest.repository = RENAMED;   // 改名后发布的新包烙新名
+  f.catalog = { name: MARKET, plugins: [{ name: PLUGIN, version: "1.1.0", source: { source: "url", type: "zip",
+    url: `https://github.com/${RENAMED}/releases/download/v1.1.0/${PLUGIN}-v1.1.0.zip`, sha256: f.manifest.asset.sha256,
+    path: "plugins/" + PLUGIN, stripRoot: false } }] };
+  f.intent = () => ({ release: clone(f.release), manifest: clone(f.manifest), channel: { ...f.channel(), repository: RENAMED } });
+}
+// GitHub 对改名仓库的任一旧名都 301 到同一仓库，响应体按当前名规范化：names 列出本夹具应答的 API 仓库名。
+function renamedFetch(f, names = [REPOSITORY, RENAMED]) {
+  const serve = new Set(names);
+  return async (url) => {
+    const api = /^https:\/\/api\.github\.com\/repos\/([^/]+\/[^/]+)\/releases\?per_page=100&page=1$/.exec(url);
+    if (api) {
+      if (!serve.has(api[1])) throw new Error("unexpected API name: " + api[1]);
+      return Buffer.from(JSON.stringify(f.rows));
+    }
+    if (url === f.release.manifest.browser_download_url) return Buffer.from(JSON.stringify(f.manifest));
+    if (url === f.release.archive.browser_download_url) return f.bytes;
+    throw new Error("unexpected fetch: " + url);
+  };
+}
+function renamedOptions(f, extra = {}) {
+  return { ...f.options, fetchRelease: renamedFetch(f),
+    prepareRelease: async (release) => {
+      assert.equal(release.repository, RENAMED);
+      const directory = fs.mkdtempSync(path.join(f.dir, "prepared-")); f.prepared.push(directory);
+      return { directory, release, manifest: clone(f.manifest), cleanup: () => {
+        f.cleanupCount++; fs.rmSync(directory, { recursive: true, force: true });
+      } };
+    }, ...extra };
+}
+test("renamed repository is probed after check and catalog failures, then retried under the new name", async (t) => {
+  const f = fixture(t);
+  renamedFixture(f);
+  let probes = 0;
+  f.options = renamedOptions(f, { probeRename: async (repo) => { probes++; assert.equal(repo, REPOSITORY); return RENAMED; } });
+  f.updater = f.restart();
+  await f.updater.request({ action: "check" });
+  const status = f.updater.status();
+  assert.equal(status.phase, "available", status.error);
+  assert.equal(status.checkedVia, "release-api");
+  assert.equal(probes, 1);
+  const saved = readJson(f.stateFile);
+  assert.deepEqual({ from: saved.repoMigration.from, to: saved.repoMigration.to }, { from: REPOSITORY, to: RENAMED });
+  assert.equal(saved.repoMigration.at, 100000000);   // 夹具时钟
+  await f.updater.request({ action: "update" });
+  assert.equal(f.updater.status().phase, "updated", f.updater.status().error);
+  assert.equal(f.syncs.length, 1);
+  const record = readJson(f.recordFile).plugins[0];
+  assert.equal(record.version, "1.1.0");
+  assert.equal(record.source.url, `https://github.com/${RENAMED}/releases/download/v1.1.0/${PLUGIN}-v1.1.0.zip`);
+  assert.equal(readJson(f.stateFile).repoMigration.to, RENAMED);   // 迁移记录跨安装保留
+  assert.equal(probes, 1);                                          // 安装阶段不再探测
+});
+
+test("probe without a redirect keeps the original failure and never switches source or installs", async (t) => {
+  const f = fixture(t);
+  renamedFixture(f);
+  let probes = 0;
+  f.options = { ...f.options, probeRename: async () => { probes++; return null; }, fetchRelease: renamedFetch(f) };
+  f.updater = f.restart();
+  await f.updater.request({ action: "check" });
+  const status = f.updater.status();
+  assert.equal(status.phase, "error");
+  assert.match(status.error, /资产来源或大小无效/);
+  assert.doesNotMatch(status.error, /仓库已改名为/);   // 没有证据就不声称改名
+  assert.equal(probes, 1);
+  assert.equal(readJson(f.stateFile).repoMigration, null);
+  assertNoInstall(f);
+});
+
+test("a persisted migration record short-circuits probing and checks directly under the new name", async (t) => {
+  const f = fixture(t, { plugin_auto_update: false });
+  renamedFixture(f);
+  let probes = 0;
+  f.options = { ...f.options, probeRename: async () => { probes++; throw new Error("must not probe"); },
+    fetchRelease: renamedFetch(f, [RENAMED]) };
+  f.updater = f.restart();
+  writeJson(f.stateFile, { checkedAt: 1, lastAttempt: 1, repoMigration: { from: REPOSITORY, to: RENAMED, at: 1 } });
+  await f.updater.request({ action: "check" });
+  assert.equal(f.updater.status().phase, "available", f.updater.status().error);
+  assert.equal(f.updater.status().checkedVia, "release-api");
+  assert.equal(probes, 0);
+});
+
+test("verifyRuntimeSync accepts a migrated intent only with the persisted migration record", (t) => {
+  const f = fixture(t);
+  renamedFixture(f);
+  fs.mkdirSync(path.join(f.record.installPath, ".zcode-plugin"), { recursive: true });
+  writeJson(path.join(f.record.installPath, ".zcode-plugin", "plugin.json"), { name: PLUGIN, version: "1.1.0" });
+  f.record.version = "1.1.0"; f.record.enabled = true;
+  f.record.source = clone(f.catalog.plugins[0].source); f.writeRecord();
+  const pendingRelease = { release: clone(f.release), manifest: clone(f.manifest), channel: { ...f.channel(), repository: RENAMED } };
+  const run = () => verifyRuntimeSync({ runtime: f.runtime, pluginRoot: f.record.installPath, home: f.home, env: {} });
+  const state = (repoMigration) => ({ checkedAt: 1, lastAttempt: 1, pendingSync: true, pendingVersion: "1.0.0", pendingPid: 0, pendingRelease, repoMigration });
+  writeJson(f.stateFile, state({ from: REPOSITORY, to: RENAMED, at: 1 }));
+  assert.equal(run().ok, true);
+  writeJson(f.stateFile, state(null));
+  assert.throws(run, /市场来源已变化/);   // 无记录：fail-closed
+  writeJson(f.stateFile, state({ from: "other/repo", to: RENAMED, at: 1 }));
+  assert.throws(run, /市场来源已变化/);   // 记录与注册名不匹配：fail-closed
+  writeJson(f.stateFile, state({ from: REPOSITORY }));
+  assert.throws(run, /市场来源已变化/);   // 缺 to 的残缺记录：fail-closed
+  writeJson(f.stateFile, state({ from: REPOSITORY, to: "someone/else", at: 1 }));
+  assert.throws(run, /市场来源已变化/);   // 记录的 to 与意图仓库不一致：fail-closed
+  writeJson(f.stateFile, state({ from: REPOSITORY, to: RENAMED, at: 1 }));
+  assert.equal(run().ok, true);
+  // 同一份合法状态，缓存清单却变成源码形态 → 渠道种类 release→market：kind 恒严格，豁免不得放宽
+  writeJson(f.catalogFile, { name: MARKET, plugins: [{ name: PLUGIN, version: "1.1.0", source: "./plugins/" + PLUGIN }] });
+  assert.throws(run, /市场来源已变化/);
+});
+
+test("a migrated release whose package manifest still carries the old name is refused before install", async (t) => {
+  const f = fixture(t);
+  renamedFixture(f);
+  f.manifest.repository = REPOSITORY;   // 改名前构建的包：渠道与清单已是新名，包内 manifest 仍烙旧名
+  f.options = renamedOptions(f, { probeRename: async () => RENAMED });
+  f.updater = f.restart();
+  await f.updater.request({ action: "update" });
+  assert.equal(f.updater.status().phase, "error");
+  assert.match(f.updater.status().error, /manifest 与正式版本、来源或资源不一致/);
+  assertNoInstall(f);   // 在宿主安装前就拒绝，不留下「版本已前进、运行目录未同步」的半成品
+  assertCleaned(f);
+  assert.equal(readJson(f.stateFile).pendingSync, false);
+});
+
+test("a failed retry under the new name never persists the migration record", async (t) => {
+  const f = fixture(t);
+  renamedFixture(f);
+  const served = renamedFetch(f);
+  f.options = renamedOptions(f, { probeRename: async () => RENAMED,
+    fetchRelease: async (url) => {
+      if (url.includes(`/repos/${RENAMED}/`)) throw new Error("fixture new-name API down");
+      return served(url);
+    } });
+  // 旧名路径的清单兜底恰好刷新成功一次（据此判定失败并触发探测），随后宿主 CLI 离线：新名重试的兜底也失败。
+  f.afterMarket = () => { f.marketError = "fixture marketplace offline"; };
+  f.updater = f.restart();
+  await f.updater.request({ action: "check" });
+  assert.equal(f.updater.status().phase, "error");
+  assert.match(f.updater.status().error, /仓库已改名为 ByteRax\/zcode-speed-bar，按新名重新检查仍失败：.*fixture new-name API down/);
+  assert.equal(readJson(f.stateFile).repoMigration, null);   // 未经证实的目标不落盘，下轮检查重新从注册名判定
+  assert.equal(f.updater.status().repoMigration, null);
+  assertNoInstall(f);
+});
+
+test("a second rename is followed from the migrated name and the record keeps the registered name as origin", async (t) => {
+  const f = fixture(t);
+  renamedFixture(f);   // 仓库现名 RENAMED；记录还停在第一次改名后的 FIRST_RENAME
+  const probed = [];
+  f.options = renamedOptions(f, { fetchRelease: renamedFetch(f, [FIRST_RENAME, RENAMED]),
+    probeRename: async (repo) => { probed.push(repo); return RENAMED; } });
+  f.updater = f.restart();
+  writeJson(f.stateFile, { checkedAt: 1, lastAttempt: 1, repoMigration: { from: REPOSITORY, to: FIRST_RENAME, at: 1 } });
+  await f.updater.request({ action: "update" });
+  assert.equal(f.updater.status().phase, "updated", f.updater.status().error);
+  assert.deepEqual(probed, [FIRST_RENAME]);   // 从当前所在名继续追，而不是回到注册名
+  const saved = readJson(f.stateFile).repoMigration;
+  assert.deepEqual({ from: saved.from, to: saved.to }, { from: REPOSITORY, to: RENAMED });
+});
+
+test("renaming back to the registered name clears the migration record", async (t) => {
+  const f = fixture(t);
+  f.setRelease("1.1.0");   // 仓库已改回注册名：release 与清单都是注册名 URL
+  const served = f.fetch;
+  f.options = { ...f.options, probeRename: async (repo) => { assert.equal(repo, FIRST_RENAME); return REPOSITORY; },
+    fetchRelease: async (url, limit) => url.startsWith(`https://api.github.com/repos/${FIRST_RENAME}/`)
+      ? Buffer.from(JSON.stringify(f.rows)) : served(url, limit) };
+  f.updater = f.restart();
+  writeJson(f.stateFile, { checkedAt: 1, lastAttempt: 1, repoMigration: { from: REPOSITORY, to: FIRST_RENAME, at: 1 } });
+  await f.updater.request({ action: "update" });
+  assert.equal(f.updater.status().phase, "updated", f.updater.status().error);
+  assert.equal(readJson(f.stateFile).repoMigration, null);
+});
+
+test("a probe answer that differs from the registered name only by case is treated as renaming back, using the registered spelling", async (t) => {
+  const f = fixture(t);
+  f.setRelease("1.1.0");   // 仓库在注册名上：release 与清单都是注册名 URL，f.fetch 只应答注册名的精确拼写
+  const served = f.fetch;
+  f.options = { ...f.options, probeRename: async () => REPOSITORY.toLowerCase(),
+    fetchRelease: async (url, limit) => url.startsWith(`https://api.github.com/repos/${FIRST_RENAME}/`)
+      ? Buffer.from(JSON.stringify(f.rows)) : served(url, limit) };
+  f.updater = f.restart();
+  writeJson(f.stateFile, { checkedAt: 1, lastAttempt: 1, repoMigration: { from: REPOSITORY, to: FIRST_RENAME, at: 1 } });
+  await f.updater.request({ action: "update" });
+  assert.equal(f.updater.status().phase, "updated", f.updater.status().error);   // 若按应答的小写拼写重查，served 会拒绝
+  assert.equal(readJson(f.stateFile).repoMigration, null);
+});
+
+test("a persisted record whose origin differs from the registered name only by case is still honoured without probing", async (t) => {
+  const f = fixture(t, { plugin_auto_update: false });
+  renamedFixture(f);
+  let probes = 0;
+  f.options = renamedOptions(f, { probeRename: async () => { probes++; throw new Error("must not probe"); },
+    fetchRelease: renamedFetch(f, [RENAMED]) });   // 旧名 API 不应被询问
+  f.updater = f.restart();
+  writeJson(f.stateFile, { checkedAt: 1, lastAttempt: 1, repoMigration: { from: REPOSITORY.toLowerCase(), to: RENAMED, at: 1 } });
+  await f.updater.request({ action: "check" });
+  assert.equal(f.updater.status().phase, "available", f.updater.status().error);
+  assert.equal(probes, 0);
+});
+
+test("damaged migration records are dropped on load and a bad timestamp is sanitised to 0", async (t) => {
+  const damaged = {
+    "not an object (string)": "ByteRax/a",
+    "array": [REPOSITORY, RENAMED],
+    "missing to": { from: REPOSITORY, at: 1 },
+    "null from and to": { from: null, to: null, at: 1 },
+    "non-string to": { from: REPOSITORY, to: 42, at: 1 },
+    "no slash": { from: "noslash", to: RENAMED, at: 1 },
+    "URL form": { from: `https://github.com/${REPOSITORY}`, to: RENAMED, at: 1 },
+    "from equals to": { from: REPOSITORY, to: REPOSITORY, at: 1 },
+    "from equals to ignoring case": { from: "a/b", to: "A/B", at: 1 },
+  };
+  for (const [label, record] of Object.entries(damaged)) {
+    const f = fixture(t);
+    writeJson(f.stateFile, { checkedAt: 1, lastAttempt: 1, repoMigration: record });
+    assert.equal(f.restart().status().repoMigration, null, label);
+  }
+  for (const at of ["yesterday", -5, 0, 1.5, null]) {
+    const f = fixture(t);
+    writeJson(f.stateFile, { checkedAt: 1, lastAttempt: 1, repoMigration: { from: REPOSITORY, to: RENAMED, at } });
+    assert.deepEqual(f.restart().status().repoMigration, { from: REPOSITORY, to: RENAMED, at: 0 }, `at=${JSON.stringify(at)}`);
+  }
+  const f = fixture(t);
+  writeJson(f.stateFile, { checkedAt: 1, lastAttempt: 1, repoMigration: { from: REPOSITORY, to: RENAMED, at: 123, extra: "dropped" } });
+  assert.deepEqual(f.restart().status().repoMigration, { from: REPOSITORY, to: RENAMED, at: 123 });
+});
+
+test("verifyRuntimeSync fails closed with a clean rejection on malformed migration records and intents", (t) => {
+  const f = fixture(t);
+  renamedFixture(f);
+  fs.mkdirSync(path.join(f.record.installPath, ".zcode-plugin"), { recursive: true });
+  writeJson(path.join(f.record.installPath, ".zcode-plugin", "plugin.json"), { name: PLUGIN, version: "1.1.0" });
+  f.record.version = "1.1.0"; f.record.enabled = true;
+  f.record.source = clone(f.catalog.plugins[0].source); f.writeRecord();
+  const intent = { release: clone(f.release), manifest: clone(f.manifest), channel: { ...f.channel(), repository: RENAMED } };
+  const run = () => verifyRuntimeSync({ runtime: f.runtime, pluginRoot: f.record.installPath, home: f.home, env: {} });
+  const write = (pendingRelease, repoMigration) => writeJson(f.stateFile, { checkedAt: 1, lastAttempt: 1, pendingSync: true,
+    pendingVersion: "1.0.0", pendingPid: 0, pendingRelease, repoMigration });
+  const clean = (error) => error instanceof Error && !(error instanceof TypeError) && /Release 更新意图无效|市场来源已变化/.test(error.message);
+  write(intent, { from: REPOSITORY, to: RENAMED, at: 1 });
+  assert.equal(run().ok, true);   // 对照：合法组合通过，下面的拒绝不是因为夹具本身坏了
+  for (const record of [{ from: REPOSITORY, to: null, at: 1 }, { from: null, to: null, at: 1 }, { from: REPOSITORY, to: 42, at: 1 }, "ByteRax/a", [REPOSITORY, RENAMED]]) {
+    write(intent, record);
+    assert.throws(run, clean, JSON.stringify(record));   // 必须是干净的拒绝，不能是 TypeError
+  }
+  const noChannel = clone(intent); delete noChannel.channel;
+  write(noChannel, { from: REPOSITORY, to: RENAMED, at: 1 });
+  assert.throws(run, (error) => !(error instanceof TypeError) && /Release 更新意图无效/.test(error.message));
+});
+
+test("API normalised to the new name while the host cannot refresh the catalog still reaches the probe and migrates", async (t) => {
+  const f = fixture(t);
+  renamedFixture(f);
+  f.marketError = "fixture marketplace offline";   // 代理环境常见：复合错误里只剩「资产来源」一支文案
+  let probes = 0;
+  f.options = renamedOptions(f, { probeRename: async (repo) => { probes++; assert.equal(repo, REPOSITORY); return RENAMED; } });
+  f.updater = f.restart();
+  await f.updater.request({ action: "check" });
+  assert.equal(f.updater.status().phase, "available", f.updater.status().error);
+  assert.equal(probes, 1);
+  assert.equal(readJson(f.stateFile).repoMigration.to, RENAMED);
+});
+
+test("a stale migration record whose origin is not the registered name is ignored", async (t) => {
+  const f = fixture(t);   // 注册名 REPOSITORY；夹具的 API 应答断言 URL 必须是注册名
+  let probes = 0;
+  f.options = { ...f.options, probeRename: async () => { probes++; return RENAMED; } };
+  f.updater = f.restart();
+  writeJson(f.stateFile, { checkedAt: 1, lastAttempt: 1, repoMigration: { from: "someone/old-name", to: RENAMED, at: 1 } });
+  await f.updater.request({ action: "check" });
+  assert.equal(f.updater.status().phase, "available", f.updater.status().error);
+  assert.equal(f.updater.status().checkedVia, "release-api");
+  assert.equal(probes, 0);
+});
+
+test("with a migration record the registered source must still match between check and install", async (t) => {
+  const f = fixture(t);
+  renamedFixture(f);
+  const served = renamedFetch(f);
+  let apiCalls = 0;
+  f.options = renamedOptions(f, { probeRename: async () => RENAMED,
+    fetchRelease: async (url, limit) => {
+      const body = await served(url, limit);
+      // 新名重查成功后（第 2 次 releases 请求），用户在检查与安装之间把注册来源的 ref 换掉
+      if (url.includes("/releases?") && ++apiCalls === 2) writeJson(f.knownFile, { version: 1, marketplaces: [{ id: MARKET, source: { ...f.source, ref: "other-ref" } }] });
+      return body;
+    } });
+  f.updater = f.restart();
+  await f.updater.request({ action: "update" });
+  assert.equal(f.updater.status().phase, "error");
+  assert.match(f.updater.status().error, /更新期间市场来源已变化/);
+  assertNoInstall(f);
+});
+
+test("a forged github flavor in the persisted intent cannot lift the migration exemption on a GitCode registration", (t) => {
+  const f = fixture(t, {}, false, "gitcode");
+  fs.mkdirSync(path.join(f.record.installPath, ".zcode-plugin"), { recursive: true });
+  writeJson(path.join(f.record.installPath, ".zcode-plugin", "plugin.json"), { name: PLUGIN, version: "1.1.0" });
+  const base = `https://github.com/${RENAMED}/releases/download/v1.1.0/`, name = `${PLUGIN}-v1.1.0.zip`;
+  const bytes = Buffer.from("forged archive"), sha = crypto.createHash("sha256").update(bytes).digest("hex");
+  const release = validateRelease({ tag_name: "v1.1.0", draft: false, prerelease: false, assets: [
+    { name, state: "uploaded", size: bytes.length, browser_download_url: base + name },
+    { name: "release-manifest.json", state: "uploaded", size: 400, browser_download_url: base + "release-manifest.json" }] }, RENAMED);
+  const manifest = { schemaVersion: 1, repository: RENAMED, version: "1.1.0", tag: "v1.1.0", pluginId: PLUGIN_ID,
+    asset: { name, size: bytes.length, sha256: sha } };
+  f.record.version = "1.1.0"; f.record.enabled = true;
+  f.record.source = { source: "url", type: "zip", url: base + name, sha256: sha, path: "plugins/" + PLUGIN, stripRoot: false };
+  f.writeRecord();
+  // 注册来源是 GitCode 镜像，状态文件却自称 github flavor 并带一条迁移记录：豁免只认宿主注册来源，必须拒绝。
+  writeJson(f.stateFile, { checkedAt: 1, lastAttempt: 1, pendingSync: true, pendingVersion: "1.0.0", pendingPid: 0,
+    pendingRelease: { release, manifest, channel: { kind: "release", flavor: "github", repository: RENAMED, source: clone(f.source) } },
+    repoMigration: { from: GITCODE_REPOSITORY, to: RENAMED, at: 1 } });
+  assert.throws(() => verifyRuntimeSync({ runtime: f.runtime, pluginRoot: f.record.installPath, home: f.home, env: {} }), /市场来源已变化/);
+});
+
+test("GitCode channel never consults the rename probe, even when the catalog refresh fails", async (t) => {
+  const f = fixture(t, {}, false, "gitcode");
+  f.setGitcodeRelease("1.2.0");
+  // 文案刻意命中 RENAME_SUSPECT：若回归让 gitcode 的失败误入 GitHub 的改名探测分支，探测会被调用。
+  f.marketError = "GitHub Release 资产来源或大小无效";
+  let probes = 0;
+  f.options = { ...f.options, probeRename: async () => { probes++; return RENAMED; } };
+  f.updater = f.restart();
+  await f.updater.request({ action: "check" });
+  assert.equal(f.updater.status().phase, "error");
+  assert.equal(probes, 0);
+  assert.equal(readJson(f.stateFile).repoMigration, null);
+});
+
+test("an invalid probe answer is ignored and the original failure is reported", async (t) => {
+  for (const answer of [{ name: "owner/repo" }, "not a repository", "https://github.com/a/b", 42, "", true]) {
+    const f = fixture(t);
+    renamedFixture(f);
+    f.options = renamedOptions(f, { probeRename: async () => answer });
+    f.updater = f.restart();
+    await f.updater.request({ action: "check" });
+    assert.equal(f.updater.status().phase, "error", JSON.stringify(answer));
+    assert.match(f.updater.status().error, /资产来源或大小无效/);
+    assert.doesNotMatch(f.updater.status().error, /仓库已改名为/);
+    assert.equal(readJson(f.stateFile).repoMigration, null);
+    assertNoInstall(f);
+  }
+});
+
+test("pure network failures never trigger the rename probe", async (t) => {
+  const f = fixture(t);
+  renamedFixture(f);
+  let probes = 0;
+  f.apiLimited = true; f.marketError = "fixture marketplace offline";   // 限流 + 宿主 CLI 刷新失败：没有任何来源校验信号
+  f.options = { ...f.options, probeRename: async () => { probes++; return RENAMED; } };
+  f.updater = f.restart();
+  await f.updater.request({ action: "check" });
+  assert.equal(f.updater.status().phase, "error");
+  assert.match(f.updater.status().error, /Release 请求失败 \(403\)/);
+  assert.match(f.updater.status().error, /渠道清单回退也失败/);
+  assert.equal(probes, 0);   // 受限网络里不把失败的检查再拖长
+  assert.equal(readJson(f.stateFile).repoMigration, null);
+  assertNoInstall(f);
+});
+
+test("rate-limited API plus a catalog already carrying the new name still reaches the probe and migrates", async (t) => {
+  const f = fixture(t);
+  renamedFixture(f);
+  const served = renamedFetch(f);
+  let probes = 0;
+  f.options = renamedOptions(f, { probeRename: async (repo) => { probes++; assert.equal(repo, REPOSITORY); return RENAMED; },
+    fetchRelease: async (url, limit) => {
+      if (url.includes(`/repos/${REPOSITORY}/`)) throw new Error("Release 请求失败 (403)");   // 旧名 API 配额耗尽
+      return served(url, limit);
+    } });
+  f.updater = f.restart();
+  await f.updater.request({ action: "check" });
+  assert.equal(f.updater.status().phase, "available", f.updater.status().error);
+  assert.equal(probes, 1);
+  assert.equal(readJson(f.stateFile).repoMigration.to, RENAMED);
+});
+
+test("a probe that throws never masks the original failure", async (t) => {
+  const f = fixture(t);
+  renamedFixture(f);
+  f.options = renamedOptions(f, { probeRename: async () => { throw new Error("probe exploded"); } });
+  f.updater = f.restart();
+  await f.updater.request({ action: "check" });
+  assert.equal(f.updater.status().phase, "error");
+  assert.match(f.updater.status().error, /资产来源或大小无效/);
+  assert.doesNotMatch(f.updater.status().error, /probe exploded/);
+  assert.doesNotMatch(f.updater.status().error, /仓库已改名为/);   // 探测抛错 ≠ 改回注册名，也不是改名证据
+  assert.equal(readJson(f.stateFile).repoMigration, null);
+  assertNoInstall(f);
+});
+
+test("an injected fetchRelease without probeRename keeps the rename probe off the real network", async (t) => {
+  const https = require("https");
+  const calls = [];
+  for (const method of ["request", "get"]) {
+    t.mock.method(https, method, (...args) => { calls.push(String(args[0])); throw new Error("network forbidden"); });
+  }
+  const f = fixture(t);
+  renamedFixture(f);
+  f.options = renamedOptions(f);   // 接管了网络层却没注入 probeRename：探测必须关闭，默认回归不得联网
+  assert.equal(f.options.probeRename, undefined);
+  f.updater = f.restart();
+  await f.updater.request({ action: "check" });
+  assert.equal(f.updater.status().phase, "error");
+  assert.match(f.updater.status().error, /资产来源或大小无效/);
+  assert.deepEqual(calls, []);
+});
+
+test("renamed repository: a real built ZIP for the new name installs through the migration path from an old-name registration", async (t) => {
+  // 改名后才装、沿用旧安装命令的新用户（注册来源是旧名、没有 plugin-update.json），或改名后升级的老用户。
+  const f = fixture(t);
+  const run = promisify(execFile), repositoryRoot = path.resolve(__dirname, "..");
+  const env = { HOME: f.home, USERPROFILE: f.home, TMPDIR: f.dir, PYTHONDONTWRITEBYTECODE: "1",
+    PATH: process.env.PATH, LANG: "en_US.UTF-8" };
+  const built = JSON.parse((await run("python3", ["-B", "-c", REAL_BUILD_SCRIPT, repositoryRoot, f.dir, RENAMED],
+    { cwd: f.dir, env, timeout: 30000 })).stdout);
+  const zip = fs.readFileSync(built.zip), manifestBytes = fs.readFileSync(built.manifest);
+  renamedFixture(f, zip, readJson(built.manifest));
+  f.catalog = readJson(built.catalog);
+  const api = renamedFetch(f);
+  const fetch = async (url, limit) => {
+    if (url === f.release.manifest.browser_download_url) return manifestBytes;
+    if (url === f.release.archive.browser_download_url) return zip;
+    return api(url, limit);
+  };
+  const unpacked = [];
+  f.options = renamedOptions(f, { fetchRelease: fetch, probeRename: async () => RENAMED,
+    prepareRelease: async (release) => {
+      f.events.push("prepare");
+      const result = await downloadRelease(release, "python3", fetch, async (command, args) => {
+        unpacked.push(args[args.indexOf("--repository") + 1]);
+        return JSON.parse((await run(command, ["-B", ...args], { cwd: f.dir, env, timeout: 30000 })).stdout);
+      });
+      t.after(result.cleanup);
+      return result;
+    } });
+  f.updater = f.restart();
+  await f.updater.request({ action: "update" });
+  assert.equal(f.updater.status().phase, "updated", f.updater.status().error);
+  assert.deepEqual(unpacked, [RENAMED]);   // 真实解包器按新名复核真实打包出的 manifest
+  assert.equal(f.syncs.length, 1);
+  assert.equal(readJson(f.recordFile).plugins[0].source.url,
+    `https://github.com/${RENAMED}/releases/download/v1.1.0/${PLUGIN}-v1.1.0.zip`);
+  assert.equal(readJson(f.stateFile).repoMigration.to, RENAMED);
+});
+
 test("stale catalog after marketplace refresh is named as the cause, installer never launches (issue #247)", async (t) => {
   const f = fixture(t);
   f.setRelease("1.1.0");
@@ -779,31 +1264,7 @@ test("Release updater installs a real built ZIP through downloadRelease and unpa
   const run = promisify(execFile), repositoryRoot = path.resolve(__dirname, "..");
   const env = { HOME: f.home, USERPROFILE: f.home, TMPDIR: f.dir, PYTHONDONTWRITEBYTECODE: "1",
     PATH: process.env.PATH, LANG: "en_US.UTF-8" };
-  const code = `
-import importlib.util, json, sys
-from pathlib import Path
-spec = importlib.util.spec_from_file_location("fixture_builder", Path(sys.argv[1]) / "release_tool.py")
-tool = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(tool)
-root = Path(sys.argv[2]) / "source"
-for name in tool.NAMES:
-    p = root / name
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_bytes(b"not executable fixture source\\n")
-plugin = {"name": tool.PLUGIN, "version": "1.1.0", "commands": "commands", "skills": "skills",
-         "packageLayout": {"schemaVersion": 1, "files": list(tool.NAMES)}}
-for name in (".zcode-plugin/plugin.json", ".claude-plugin/plugin.json"):
-    (root / tool.PREFIX / name).write_text(json.dumps(plugin))
-(root / "marketplace.json").write_text(json.dumps({"name": "zusage-marketplace", "plugins": [
-    {"name": tool.PLUGIN, "version": "1.1.0", "source": "./plugins/" + tool.PLUGIN}]}))
-for name in (".mcp.json", "hooks/hooks.json"):
-    (root / tool.PREFIX / name).write_text("{}")
-for name in tool.SYNC_FILES:
-    (root / name).write_bytes((root / tool.PREFIX / name).read_bytes())
-script = (Path(sys.argv[1]) / "release_tool.py").read_bytes()
-(root / "release_tool.py").write_bytes(script)
-print(json.dumps(tool.build(root, sys.argv[3], Path(sys.argv[2]) / "assets")))
-`;
+  const code = REAL_BUILD_SCRIPT;
   const built = JSON.parse((await run("python3", ["-B", "-c", code, repositoryRoot, f.dir, REPOSITORY],
     { cwd: f.dir, env, timeout: 30000 })).stdout);
   f.setRelease("1.1.0", fs.readFileSync(built.zip), readJson(built.manifest));

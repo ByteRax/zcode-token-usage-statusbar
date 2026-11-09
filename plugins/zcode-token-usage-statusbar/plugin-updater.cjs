@@ -10,6 +10,9 @@ const { resolvePluginStorage } = require("./plugin-storage.cjs");
 
 const PLUGIN_ID = "zcode-token-usage-statusbar@zusage-marketplace";
 const INTERVAL_MS = 60 * 60 * 1000;
+// 仓库改名只会表现为这两类来源校验失败（plugin-release.cjs 的 validateRelease / githubReleaseFromCatalog），
+// 文案变动须同步；tests/plugin-release-updater.test.cjs 的改名用例走真实校验函数，失配会变红。
+const RENAME_SUSPECT = /GitHub Release 资产来源或大小无效|GitHub 渠道清单下载源与注册仓库或版本不一致/;
 
 function cliExecutable(executable, platform = process.platform) {
   // 仅 macOS 换用 Helper bundle：主 bundle 二进制启动即以 LaunchServices Foreground 登记，
@@ -124,11 +127,23 @@ function readState(file, currentTime) {
       lastError = { message: le.message.slice(0, 500), at: le.at };
     }
   }
+  // repoMigration：仓库改名迁移记录（install-release.md §6）。from/to 必须是合法且不同的
+  // GitHub owner/repo，损坏即丢弃——豁免随之失效，回到按注册名检查并在失败后重新探测。
+  let repoMigration = null;
+  if (saved.repoMigration && typeof saved.repoMigration === "object" && !Array.isArray(saved.repoMigration)) {
+    const m = saved.repoMigration;
+    if (typeof m.from === "string" && typeof m.to === "string" &&
+        releaseChannel.githubRepository(m.from) === m.from &&
+        releaseChannel.githubRepository(m.to) === m.to &&
+        m.from.toLowerCase() !== m.to.toLowerCase()) {
+      repoMigration = { from: m.from, to: m.to, at: Number.isSafeInteger(m.at) && m.at > 0 ? m.at : 0 };
+    }
+  }
   return { checkedAt: timestamp(saved.checkedAt), lastAttempt: timestamp(saved.lastAttempt),
     pendingSync: saved.pendingSync === true, pendingVersion,
     pendingPid: Number.isSafeInteger(saved.pendingPid) && saved.pendingPid > 0 ? saved.pendingPid : 0,
     pendingRelease: saved.pendingRelease === undefined || saved.pendingRelease === null ? null : saved.pendingRelease,
-    lastFailure, lastError };
+    lastFailure, lastError, repoMigration };
 }
 function legacyLockBusy(runtime) {
   // An already-running wx updater cannot honor v2 locks. Respect its live owner,
@@ -186,9 +201,21 @@ function acquireUpdateLock(runtime, python, helper) {
 
 // 渠道身份只比 kind/repository/source；flavor 由 source 可推导，不参与比较，
 // 这样旧版本持久化的更新意图（无 flavor 字段）在新代码下仍然等价，不会误判来源变化。
-function sameChannel(a, b) {
-  return !!a && !!b && a.kind === b.kind && (a.repository || "") === (b.repository || "") &&
+function sameChannel(a, b, migration) {
+  return !!a && !!b && a.kind === b.kind && repositoryMatches(a.repository, b.repository, migration) &&
     isDeepStrictEqual(a.source === undefined ? null : a.source, b.source === undefined ? null : b.source);
+}
+// 仓库改名迁移豁免（install-release.md §6）：仅当迁移记录 from/to 均为合法 GitHub 仓库且
+// 精确等于注册名与生效名（大小写不敏感）时允许 repository 不同；kind 与 source 恒严格相等。
+// 缺省/损坏/非 GitHub 形态的迁移记录一律回退严格比对；GitCode 渠道调用方必须传 null。
+function repositoryMatches(registered, effective, migration) {
+  if ((registered || "") === (effective || "")) return true;
+  const record = migration;
+  return !!(record && typeof record.from === "string" && typeof record.to === "string" &&
+    releaseChannel.githubRepository(record.from) === record.from &&
+    releaseChannel.githubRepository(record.to) === record.to &&
+    record.from.toLowerCase() === String(registered || "").toLowerCase() &&
+    record.to.toLowerCase() === String(effective || "").toLowerCase());
 }
 function channelFlavor(channel) {
   // 持久化意图的渠道形态：注册为 GitCode git 来源即镜像渠道，其余远端一律按 GitHub 校验。
@@ -196,10 +223,14 @@ function channelFlavor(channel) {
     releaseChannel.gitcodeRepository(channel.source.url)) ? "gitcode" : "github";
 }
 
-function verifyCommittedRelease(record, expected, currentChannel) {
+function verifyCommittedRelease(record, expected, currentChannel, migration) {
   const release = expected && expected.release, manifest = expected && expected.manifest;
-  if (!release || !manifest || !expected.channel || !sameChannel(currentChannel, expected.channel)) throw new Error("Release 更新意图无效或市场来源已变化，停止运行时同步");
+  if (!release || !manifest || !expected.channel) throw new Error("Release 更新意图无效或市场来源已变化，停止运行时同步");
   const flavor = expected.channel.flavor || channelFlavor(expected.channel);
+  // 迁移豁免仅限 GitHub 渠道；GitCode 渠道无迁移语义，repository 一律严格相等。渠道形态取自宿主注册来源
+  // （currentChannel），而不是持久化意图里的 flavor——后者在本地可写的状态文件里可被篡改。
+  const registeredFlavor = currentChannel ? currentChannel.flavor || channelFlavor(currentChannel) : "";
+  if (!sameChannel(currentChannel, expected.channel, registeredFlavor === "gitcode" ? null : migration)) throw new Error("Release 更新意图无效或市场来源已变化，停止运行时同步");
   // GitHub 意图有两个来源：API 行（archive.size 有效）与清单兜底（catalogSha256 标记），
   // 各用同源形状门复核；GitCode 意图只来自渠道清单。
   const validated = flavor === "gitcode"
@@ -259,7 +290,7 @@ function verifyRuntimeSync(options) {
   if (hasPending) {
     if (pending.pendingSync !== true) throw new Error("待同步意图不完整，停止运行时同步");
     if (pending.pendingVersion && compareVersions(record.version, pending.pendingVersion) <= 0) throw new Error("插件安装尚未提交新版，停止运行时同步");
-    if (pending.pendingRelease !== undefined && pending.pendingRelease !== null) verifyCommittedRelease(record, pending.pendingRelease, currentChannel);
+    if (pending.pendingRelease !== undefined && pending.pendingRelease !== null) verifyCommittedRelease(record, pending.pendingRelease, currentChannel, pending.repoMigration || null);
     else if (currentChannel.kind === "release") throw new Error("历史更新意图缺少 Release 校验信息，停止运行时同步");
   }
   return { ok: true, pluginRoot: root, version: manifest.version, identity: { record, channel: currentChannel, pending, manifest } };
@@ -336,6 +367,11 @@ function createUpdater(options) {
     return { kind: source.kind, flavor: source.flavor || "", repository: source.repository || "", source: source.marketplace ? source.marketplace.source : null };
   };
   const fetchRelease = options.fetchRelease || releaseChannel.fetchBytes;
+  // 改名探测（install-release.md §6）默认走真实网络；调用方接管了网络层（注入 fetchRelease，即测试/沙箱）
+  // 却没注入 probeRename 时关闭，避免默认回归无意联网；旧 release 模块（版本错配）无该导出时同样返回 null。
+  const probeRename = options.probeRename || (options.fetchRelease ? async () => null
+    : async (repository) => typeof releaseChannel.probeRepositoryRename === "function"
+      ? releaseChannel.probeRepositoryRename(repository) : null);
   const prepareRelease = options.prepareRelease || ((release, onProgress) => releaseChannel.downloadRelease(release, python(), fetchRelease, undefined, onProgress));
   const readReleaseCatalog = options.readReleaseCatalog || (() => {
     const root = path.join(storage(), "marketplaces");
@@ -392,7 +428,8 @@ function createUpdater(options) {
   function load() { Object.assign(state, readState(stateFile, now())); }
   function save() {
     writeJson(stateFile, { checkedAt: state.checkedAt, lastAttempt: state.lastAttempt,
-      pendingSync: state.pendingSync, pendingVersion: state.pendingVersion, pendingPid: state.pendingPid, pendingRelease: state.pendingRelease, lastFailure: state.lastFailure || null, lastError: state.lastError || null });
+      pendingSync: state.pendingSync, pendingVersion: state.pendingVersion, pendingPid: state.pendingPid, pendingRelease: state.pendingRelease, lastFailure: state.lastFailure || null, lastError: state.lastError || null,
+      repoMigration: state.repoMigration || null });
   }
   function diagnostics(data) {
     const errors = (data.diagnostics || []).filter((d) => d.severity === "error" && (!d.pluginId || d.pluginId === PLUGIN_ID));
@@ -413,13 +450,40 @@ function createUpdater(options) {
     }
     throw new Error("市场清单刷新连续 3 次失败: " + String((lastError && lastError.message) || lastError));
   }
-  async function catalogFallback(source, cause) {
+  function migrationRepoFor(source) {
+    // 已确认的改名迁移（install-release.md §6）：注册名命中记录 from 时直接返回 to，
+    // 后续检查零额外请求；记录形状非法或注册名已变化返回 null（豁免随之失效）。
+    const migration = state.repoMigration;
+    return !!(migration && typeof migration.from === "string" && typeof migration.to === "string" &&
+      releaseChannel.githubRepository(migration.from) === migration.from &&
+      releaseChannel.githubRepository(migration.to) === migration.to &&
+      migration.from.toLowerCase() === String(source.repository || "").toLowerCase()) ? migration.to : null;
+  }
+  async function checkGithubRelease(source, repo) {
+    // GitHub Release 渠道检查：repo 为迁移后新名时，API 响应体按新名规范化、资产比对自洽；
+    // 失败（限流/不可达/迁移窗口校验挂）退回注册 ref 渠道清单，清单也按同名查；健康信号不兜底。
+    const target = repo || migrationRepoFor(source) || source.repository;
+    try {
+      return { release: await releaseChannel.checkRelease(target, compareVersions, fetchRelease), checkedVia: "release-api" };
+    } catch (error) {
+      if (/不能安装开发分支|安全分页上限/.test(error.message)) throw error;
+      return { release: await catalogFallback(source, error, target), checkedVia: "release-catalog" };
+    }
+  }
+  function channelMatchesRegistration(effective, current = channel()) {
+    // 非迁移路径保持原整体深比较（含 flavor）；仅存在迁移记录时才允许 repository 经记录豁免，
+    // kind 与 source 恒严格——与 verifyCommittedRelease 的 sameChannel 门同构。
+    return isDeepStrictEqual(current, effective) ||
+      (!!state.repoMigration && sameChannel(current, effective, state.repoMigration));
+  }
+  async function catalogFallback(source, cause, repoOverride) {
     // GitHub API 检查失败（限流/不可达）时退回注册 ref 的渠道清单：清单刷新走 zipball
     // 下载桶不占 API 配额，渠道身份与安装校验链都不变。兜底再失败则合并原因一起上报。
+    // repoOverride：仓库改名迁移生效时按新名查清单（注册名已对不上清单下载源）。
     try {
       await refreshMarketplace();
       if (!isDeepStrictEqual(channel(), source)) throw new Error("更新期间市场来源已变化");
-      return releaseChannel.githubReleaseFromCatalog(readReleaseCatalog(), source.repository);
+      return releaseChannel.githubReleaseFromCatalog(readReleaseCatalog(), repoOverride || source.repository);
     } catch (error) {
       throw new Error(String((cause && cause.message) || cause) + "；渠道清单回退也失败: " + error.message);
     }
@@ -457,16 +521,28 @@ function createUpdater(options) {
         selectedRelease = releaseChannel.gitcodeReleaseFromCatalog(readReleaseCatalog(), source.repository);
         state.checkedVia = "release-catalog";
       } else if (source.kind === "release") {
-        try {
-          selectedRelease = await releaseChannel.checkRelease(source.repository, compareVersions, fetchRelease);
-          state.checkedVia = "release-api";
-        } catch (error) {
-          // API 明确答复「无正式版」或分页守卫触发说明渠道健康，兜底只会绕过这些结论；
-          // 只对限流/网络类不可达失败退回渠道清单。
-          if (/不能安装开发分支|安全分页上限/.test(error.message)) throw error;
-          selectedRelease = await catalogFallback(source, error);
-          state.checkedVia = "release-catalog";
-        }
+        const outcome = await checkGithubRelease(source).catch(async (error) => {
+          // 疑似仓库改名（install-release.md §6）：只有「来源/仓库不一致」类校验失败才可能由改名引起
+          // （GitHub 把资产 URL 规范化为新名、清单下载源与注册名对不上）；超时、限流、宿主 CLI 刷新失败
+          // 等纯网络类失败不探测——它们在受限网络里本就慢，探测只会把失败的检查再拖长。探测对象是仓库
+          // 当前所在名（已有迁移记录取记录里的新名，否则是注册名）；命中则按新名整体重查一次，重查成功
+          // 才更新迁移记录（随本轮 save() 落盘），未经证实的目标不持久化。探测是尽力而为，任何失败都
+          // 不得掩盖原始错误；探测无果原样抛错，绝不静默换源。探测结果等于注册名视为改回，清除记录。
+          if (!error || !RENAME_SUSPECT.test(String(error.message))) throw error;
+          let renamed = null;
+          try { renamed = await probeRename(migrationRepoFor(source) || source.repository); } catch (probeError) { }
+          if (typeof renamed !== "string" || releaseChannel.githubRepository(renamed) !== renamed) throw error;
+          const back = renamed.toLowerCase() === String(source.repository).toLowerCase();
+          let retried;
+          try { retried = await checkGithubRelease(source, back ? source.repository : renamed); }
+          catch (retryError) { throw new Error("仓库已改名为 " + renamed + "，按新名重新检查仍失败：" + retryError.message); }
+          state.repoMigration = back ? null : { from: source.repository, to: renamed, at: now() };
+          return retried;
+        });
+        selectedRelease = outcome.release;
+        if (selectedRelease.repository !== source.repository)
+          selectedChannel = { ...source, repository: selectedRelease.repository };
+        state.checkedVia = outcome.checkedVia;
       }
       if (selectedRelease) {
         state.releaseUrl = selectedRelease.url;
@@ -574,7 +650,7 @@ function createUpdater(options) {
     let record = refreshLocal();
     if (!record) throw cancelError("插件已卸载，更新已取消");
     if (auto && !state.auto) return;
-    if (!isDeepStrictEqual(channel(), selectedChannel)) throw cancelError("更新期间市场来源已变化");
+    if (!channelMatchesRegistration(selectedChannel)) throw cancelError("更新期间市场来源已变化");
     compareVersions(record.version, record.version);
     let downloaded = null;
     // 中途放弃（插件被卸载/禁用、自动更新被关闭、版本已不再更新）时退回「发现新版本」，
@@ -583,7 +659,11 @@ function createUpdater(options) {
     try {
       if (selectedRelease) {
         const currentChannel = channel();
-        if (!isDeepStrictEqual(currentChannel, selectedChannel) || currentChannel.kind !== "release" || !releaseChannel.sameRepository(currentChannel.repository, selectedRelease.repository)) throw cancelError("更新期间市场来源已变化");
+        // 仓库改名迁移生效时 selectedRelease/selectedChannel 已按新名选定（check 阶段）；
+        // 非迁移路径保持原比较（大小写不敏感的仓库一致），迁移路径额外允许经 repoMigration 豁免。
+        if (!channelMatchesRegistration(selectedChannel, currentChannel) || currentChannel.kind !== "release" ||
+            !(releaseChannel.sameRepository(currentChannel.repository, selectedRelease.repository) ||
+              repositoryMatches(currentChannel.repository, selectedRelease.repository, state.repoMigration || null))) throw cancelError("更新期间市场来源已变化");
         state.phase = "downloading"; state.progress = { stage: "download", loaded: 0, total: selectedRelease.archive.size || 0 }; publish();
         let lastPublished = 0;
         downloaded = await prepareRelease(selectedRelease, (progress) => {
@@ -605,9 +685,10 @@ function createUpdater(options) {
         let catalogRelease;
         try {
           const catalog = readReleaseCatalog();
+          // 迁移生效时按检查选定的（新）名查清单新鲜度，注册旧名对不上新清单下载源。
           catalogRelease = currentChannel.flavor === "gitcode"
             ? releaseChannel.gitcodeReleaseFromCatalog(catalog, currentChannel.repository)
-            : releaseChannel.githubReleaseFromCatalog(catalog, currentChannel.repository);
+            : releaseChannel.githubReleaseFromCatalog(catalog, selectedRelease.repository);
         } catch (error) {
           throw new Error("市场清单刷新后读取不到有效清单: " + error.message);
         }
@@ -629,7 +710,9 @@ function createUpdater(options) {
       }
       state.phase = "updating"; state.progress = { stage: "install" };
       state.pendingSync = true; state.pendingVersion = record.version; state.pendingPid = 0;
-      state.pendingRelease = selectedRelease ? { release: selectedRelease, manifest: downloaded.manifest, channel: channel() } : null;
+      // 意图渠道存检查选定的 selectedChannel：迁移生效时 repository 为新名（与 release 自洽），
+      // source/kind 保留注册原值；复核侧经 pending.repoMigration 豁免注册旧名比对。
+      state.pendingRelease = selectedRelease ? { release: selectedRelease, manifest: downloaded.manifest, channel: selectedChannel } : null;
       save(); publish();
       const command = selectedRelease ? ["install", PLUGIN_ID, "--scope", "user"] : ["update", PLUGIN_ID];
       try {
@@ -656,7 +739,7 @@ function createUpdater(options) {
     finally { if (downloaded && downloaded.cleanup) downloaded.cleanup(); }
   }
   function verifyReleaseCommit(record) {
-    verifyCommittedRelease(record, state.pendingRelease, channel());
+    verifyCommittedRelease(record, state.pendingRelease, channel(), state.repoMigration || null);
   }
   async function recordRestart(report) {
     if (report.restartRecorded === true) return;
