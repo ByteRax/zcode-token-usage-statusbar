@@ -1,0 +1,39 @@
+{
+  "name": "workbuddy-token-usage",
+  "version": "2.9.0",
+  "description": "只读查询 WorkBuddy 本地用量（上下文占比 + credit，数据来自 ~/.workbuddy/workbuddy.db），提供 token_usage MCP 工具与 /usage 命令。不改客户端文件、不注入 asar、不联网。",
+  "description_en": "Read-only local usage for WorkBuddy (context usage + credits from ~/.workbuddy/workbuddy.db) via the token_usage MCP tool and the /usage command. No client modification, no asar injection, no network.",
+  "author": {
+    "name": "ByteRax",
+    "url": "https://github.com/ByteRax"
+  },
+  "homepage": "https://github.com/ByteRax/zcode-token-usage-statusbar",
+  "repository": "https://github.com/ByteRax/zcode-token-usage-statusbar",
+  "license": "MIT",
+  "keywords": [
+    "workbuddy",
+    "token",
+    "usage",
+    "credits",
+    "monitor"
+  ],
+  "category": "monitoring",
+  "commands": [
+    "./commands/usage.md"
+  ],
+  "mcpServers": {
+    "zusage": {
+      "command": "python",
+      "args": [
+        "${CODEBUDDY_PLUGIN_ROOT}/usage_mcp.py"
+      ],
+      "env": {
+        "ZUSAGE_HOST": "workbuddy",
+        "ZUSAGE_CDP_PORT": "9335"
+      }
+    }
+  },
+  "skills": [
+    "./skills/token-usage"
+  ]
+}
