@@ -115,7 +115,7 @@ python zusage.py --host workbuddy now # 临时按 WorkBuddy 查，不写配置
 
 想固定下来，在 `config.json` 写 `"host": "workbuddy"`（或 `"auto"` 让它按库存在性选）；库不在默认位置时用 `hosts.workbuddy.db_path` 或环境变量 `ZUSAGE_WORKBUDDY_DB`。MCP 工具多了一个可选 `host` 参数。**默认值仍是 `zcode`**——装了 WorkBuddy 不会改变原 ZCode 的任何行为。
 
-**想直接在 WorkBuddy 客户端里用 `/usage`**：仓库另带 WorkBuddy 专用插件 `plugins/workbuddy-token-usage/`（只有 MCP + 命令，不含 asar 注入），装法见[宿主适配文档](docs/hosts.md#6-在-workbuddy-客户端里安装可选)。
+**想直接在 WorkBuddy 客户端里用 `/usage`**：仓库另带 WorkBuddy 专用插件 `plugins/workbuddy-token-usage/`（只有 MCP + 命令，不含 asar 注入），装法见[宿主适配文档](docs/hosts.md#7-在-workbuddy-客户端里安装可选)。
 
 ## 隐私与安全
 

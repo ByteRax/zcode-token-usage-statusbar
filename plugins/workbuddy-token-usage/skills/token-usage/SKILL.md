@@ -1,11 +1,11 @@
 ---
 name: token-usage
-description: 查询本地 token 用量与 credit（WorkBuddy 读 ~/.workbuddy/workbuddy.db 的会话级上下文与 credit；ZCode 读逐请求 model_usage）。当用户问「今天用了多少 / 当前上下文多大 / 这个会话花了多少 credit / 哪个模型用得多 / 某个项目用了多少」时使用。
+description: 查询本地 token 用量与 credit（WorkBuddy：session_usage 上下文 + 会话正文逐请求用量；ZCode：逐请求 model_usage）。当用户问「今天用了多少 / 当前上下文多大 / 这个会话花了多少 credit / 哪个模型用得多 / 某个项目用了多少」时使用。
 ---
 
 # Token 用量查询
 
-数据只读本地 SQLite，不联网。默认宿主由插件清单的 `ZUSAGE_HOST` 决定（WorkBuddy 构建预置为 `workbuddy`）。
+数据只读本地 SQLite（牌价缓存按 12h 匿名同步，`pricing.fetch: false` 可关）。默认宿主由插件清单的 `ZUSAGE_HOST` 决定（WorkBuddy 构建预置为 `workbuddy`）。
 
 ## 怎么查
 

@@ -1,7 +1,7 @@
 # 宿主适配：ZCode 与 WorkBuddy
 
 本项目最初只读 ZCode 的用量库。v241 起把「数据源」抽象成**宿主（host）**，
-`zusage.py` / `usage_mcp.py` / JSON 快照 / Web sidecar 共用同一套出口，
+`zusage.py` / `usage_mcp.py` / JSON 快照 / 主桥查询泵共用同一套出口，
 换宿主只换适配层，不改上层调用方式。
 
 本文说明 WorkBuddy 的接入方式、配置项、能力差异与验证方法。
@@ -19,7 +19,7 @@
 | token 分项 | input/output/思考/缓存读写齐全 | 齐全（正文每次模型调用都记 `rawUsage`） |
 | 生成速度 | 有（按请求耗时） | 近似值：响应时间 − 触发者时间（含思考/网络，不含工具执行） |
 | 工具调用 | 有 | 有（`function_call` / `function_call_result` 计数与错误归属） |
-| 预估费用 | 有（单价表） | **无**（价表没有这些模型），但有宿主的 **credit** |
+| 预估费用 | 有（单价表） | **有**（同一单价表；价表未收录的模型如实标「不可得」），另有宿主的 **credit** |
 | 子代理 / 会话分栏 | 有 | **无**（本地库无该维度） |
 
 能力由 `zusage.HOST_CAPS` 声明，随快照的 `caps` 字段下发，
@@ -41,7 +41,7 @@ python zusage.py --host workbuddy json
 #    工具新增可选 host 参数，缺省跟随配置
 {"name":"token_usage","arguments":{"scope":"today","host":"workbuddy"}}
 
-# 3) JSON 快照 / Web sidecar / 主桥查询泵
+# 3) JSON 快照 / 主桥查询泵
 #    走配置或环境变量选宿主，无需改调用方命令行
 ```
 
@@ -65,7 +65,7 @@ python zusage.py --host workbuddy json
 
 | 键 | 取值 | 说明 |
 |---|---|---|
-| `host` | `"zcode"` / `"workbuddy"` / `"auto"` | 数据源宿主。**缺省 = `zcode`**，插件在原宿主上的行为一字不变 |
+| `host` | `"zcode"` / `"workbuddy"` | 数据源宿主。**缺省跟随客户端构建**：ZCode 构建（默认安装）恒为 `zcode`，行为一字不变 |
 | `host` | `"auto"` | 显式开启自动探测：ZCode 库存在即选 zcode；ZCode 库缺失且 WorkBuddy 库存在时选 workbuddy |
 | `hosts.zcode.db_path` | 路径或 `""` | 覆盖 ZCode 库位置（多机/自定义安装；`~` 与 `%VAR%`/`$VAR` 会展开） |
 | `hosts.workbuddy.db_path` | 路径或 `""` | 覆盖 WorkBuddy 库位置，常用于 WSL/多用户/绿色版目录 |
@@ -77,10 +77,15 @@ python zusage.py --host workbuddy json
 | `ZUSAGE_HOST` | 覆盖宿主，接受 `zcode` / `workbuddy`（别名 `wb`、`work-buddy`，大小写不敏感） |
 | `ZUSAGE_WORKBUDDY_DB` | 覆盖 WorkBuddy 库路径 |
 
-**判定优先级**：`--host` / MCP 参数 > `ZUSAGE_HOST` > `config.host` > 默认 `zcode`。
+**判定优先级**：`--host` / MCP 参数 > `ZUSAGE_HOST` > `config.host`（`auto` 除外，见下）
+> agent 跟随（`detect_agent`：ZCode 构建恒为 zcode，WorkBuddy 构建读 workbuddy）
+> `config.host: "auto"` 按库存在性探测 > 默认 `zcode`。
 
 为什么默认不是 `auto`：装了 WorkBuddy 的机器上，ZCode 用户已在用的状态栏、
-`/usage`、MCP 查询不能被静默改指向另一个库。自动探测只作为显式选择提供。
+`/usage`、MCP 查询不能被静默改指向另一个库。WorkBuddy 专用插件构建零配置即按
+agent 跟随读 WorkBuddy 库（清单 `mcpServers.env` 的 `ZUSAGE_HOST=workbuddy` 又钉了一层）；
+「按库存在性」的机器探测才需要显式 `auto`——该分支在 WorkBuddy 构建中被 agent 跟随遮蔽，
+实际只有 ZCode 构建会走到。
 
 ---
 
@@ -145,8 +150,9 @@ python zusage.py --host workbuddy json
 
 ### 不可得的指标
 
-只有**预估费用**不可得（价表无对应模型），`caps.cost=false`，报表显式写「不可得」；
-token 分项、生成速度、工具调用、缓存命中率都已从正文补全。
+只有**个别未收录模型**的费用不可得（价表无对应条目；`caps.cost` 仍为 true，
+模型明细逐条标「不可得」、聚合注明范围）；token 分项、生成速度、工具调用、
+缓存命中率都已从正文补全。
 
 ## 5. 验证
 
@@ -184,7 +190,7 @@ echo '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"token_usag
 回归测试：
 
 ```bash
-python -B -m unittest tests.test_hosts_workbuddy -v   # 宿主适配 17 项
+python -B -m unittest tests.test_hosts_workbuddy -v   # 宿主适配回归
 python -B -m unittest discover -s tests -p 'test_*.py' # 全量
 python3 sync_plugin.py --check                        # 插件副本一致性
 ```
@@ -198,7 +204,7 @@ python3 sync_plugin.py --check                        # 插件副本一致性
 | agent | 浮层 | MCP / 命令 | 逐问速率行 | 插件更新器 |
 |---|---|---|---|---|
 | `zcode` | `asar`：`inject-main.cjs` + `overlay.js`（原机制，一字未改） | 有 | 有（依赖渲染桥） | 有 |
-| `workbuddy` | `cdp`：`wb-overlay.cjs` 连 `--remote-debugging-port`，在**输入卡内底部**注入整行状态条（本地库状态 / 上下文% / 已用÷窗口 / 会话 credit / 今日，右侧齿轮开详情；卡不存在才退回右下角） | 有 | 无（无渲染桥） | 无 |
+| `workbuddy` | `cdp`：`wb-overlay.cjs` 连 `--remote-debugging-port`，在**输入卡内底部**注入整行状态条（本地库状态 / 上下文% / 已用÷窗口 / 会话 credit / 今日，右侧 ⓘ 详情与 ⚙ 设置；卡不存在才退回右下角） | 有 | 无（无渲染桥） | 无 |
 | `cli` | 无 | 有 | 无 | 无 |
 
 判定（`zusage.detect_agent`）：`ZUSAGE_AGENT` > `CODEBUDDY_PLUGIN_ROOT`（WorkBuddy）/
@@ -233,7 +239,7 @@ node "<插件目录>/wb-overlay.cjs"             # 常驻（Ctrl+C 退出）
   → 它的最后一个子元素就是状态条；工具行 `.cr-input-toolbar` 在其上，
   卡片高度按内容增长且底边锚定，不会把胶囊挤出屏幕。
 - 分段：`● 本地库 | ⚡ t/s | 本轮 tokens·次数 | 会话 轮·请求 | 工具·错误 | 今日 tokens·请求 |
-  ◷ 上下文% | 项目累计 | ⚙`
+  ◷ 上下文% | 项目累计 | ⓘ ⚙`
   分隔线用 `border-left`，整行上方一条内嵌 1px 分隔线，颜色全部用 `rgba(255,255,255,.xx)` 跟随主题。
 - **悬停信息卡**：每个分段悬停弹一张卡，位置随分段居中、贴状态条上方，放不下自动翻到下方并夹进视口。
   卡片挂在 `body`（fixed），不会被输入卡的层叠上下文/工具栏遮挡。
@@ -255,7 +261,9 @@ node "<插件目录>/wb-overlay.cjs"             # 常驻（Ctrl+C 退出）
   `MutationObserver`，下一帧把状态条贴回卡片；顺序用 flex `order:9999` 固定，
   不反复搬节点（反复 appendChild 会打断悬停）。
 - 数据超过 12s 没刷新 → 状态条内容降为 45% 不透明度、状态点转灰；**悬停卡保持不透明**（否则字看不清）。
-- 齿轮点开完整详情浮层（会话/模型/上下文/会话累计/今日/口径说明），点别处关闭；打开时自动收起悬停卡。
+- ⓘ 点开完整详情浮层（会话/模型/上下文/会话累计/今日/口径说明）；⚙ 打开状态条设置
+  （显示分段 / 排布均分·居左·居右 / 中文万·亿单位，存 localStorage）；点别处或 Esc 关闭，
+  两个浮层互斥；打开时自动收起悬停卡。
 
 ## 7. 在 WorkBuddy 客户端里安装（可选）
 
@@ -270,7 +278,7 @@ plugins/workbuddy-token-usage/
     plugin.json                    # 插件清单（mcpServers 内联，命令用 ${CODEBUDDY_PLUGIN_ROOT}）
   commands/usage.md                # /usage 命令
   skills/token-usage/SKILL.md      # 技能入口（插件面板/斜杠菜单里可见）
-  usage_mcp.py / zusage.py / wb_usage.py / token_pricing.py / wb-overlay.cjs
+  usage_mcp.py / zusage.py / wb_usage.py / usage_stats.py / token_pricing.py / wb-overlay.cjs
                                    # 运行时副本（根源码同步生成）
 ```
 
@@ -296,6 +304,9 @@ python scripts/install_workbuddy_plugin.py --uninstall
 插件清单里把 `ZUSAGE_HOST=workbuddy` 写进了 MCP 的 `env`，所以默认读 WorkBuddy 库；
 要查 ZCode 时在调用里传 `host="zcode"`。
 
+WorkBuddy 构建不进 ZCode 的发布链（`release_tool.py`/市场清单不打包它），
+经上面任一入口安装即可；分发渠道就是本仓库的这份目录。
+
 改了 `usage_mcp.py` / `zusage.py` / `token_pricing.py` 之后：
 
 ```bash
@@ -306,7 +317,7 @@ python scripts/install_workbuddy_plugin.py  # 重新部署到 WorkBuddy 缓存
 ## 8. 已知边界
 
 - **状态条浮层注入仍只针对 ZCode**（`app.asar` 注入、渲染桥、窗口 IPC 都是 ZCode 客户端契约）。
-  WorkBuddy 侧的接入面是 CLI / MCP / JSON 快照 / Web sidecar，不改动 WorkBuddy 客户端文件。
+  WorkBuddy 侧的接入面是 CLI / MCP / JSON 快照，不改动 WorkBuddy 客户端文件。
 - 快照顶层的 `host`、`caps`、以及 WorkBuddy 行的 `credits` / `credit_entries` / `cwd` / `status` / `model`
   是新增字段；旧消费端读到未列出的键会忽略，缺字段仍按既有默认值降级。
 - 远程（SSH/WSL/Docker）查询链路仍是 ZCode 语义：它转发的是 `zusage.py json`，

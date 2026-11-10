@@ -1,8 +1,8 @@
 {
   "name": "workbuddy-token-usage",
   "version": "2.9.0",
-  "description": "只读查询 WorkBuddy 本地用量（上下文占比 + credit，数据来自 ~/.workbuddy/workbuddy.db），提供 token_usage MCP 工具与 /usage 命令。不改客户端文件、不注入 asar、不联网。",
-  "description_en": "Read-only local usage for WorkBuddy (context usage + credits from ~/.workbuddy/workbuddy.db) via the token_usage MCP tool and the /usage command. No client modification, no asar injection, no network.",
+  "description": "只读查询 WorkBuddy 本地用量（上下文占比、credit、token 分项、近似速度、工具调用与预估费用），提供 token_usage MCP 工具与 /usage 命令。不改客户端文件、不注入 asar；牌价缓存按 12h 匿名同步（可关），无凭据上传。",
+  "description_en": "Read-only local usage for WorkBuddy (context usage, credits, token breakdown, approx. speed, tool calls and estimated cost) via the token_usage MCP tool and the /usage command. No client modification, no asar injection; the price-table cache syncs anonymously every 12h (can be disabled).",
   "author": {
     "name": "ByteRax",
     "url": "https://github.com/ByteRax"

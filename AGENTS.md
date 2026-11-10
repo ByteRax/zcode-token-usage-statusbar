@@ -29,7 +29,7 @@
 ## 1. 项目定位与环境
 
 - 为 ZCode 显示模型速度、token 用量、上下文占比（承载于原生上下文按钮增强，状态条无此格）、套餐额度/账户余额 chip 与 Git 状态 chip。用量统计来自本地 SQLite；套餐额度另走解密凭据直查供应商接口（见 §5），两条链互不推导。
-- 数据源按**宿主（host）**分层：`zcode`（默认，逐请求 `model_usage`）与 `workbuddy`（会话级 `session_usage`，只有上下文用量与 credit）。宿主适配实现在 `zusage.py` 内（`HOST_CAPS` + `wb_*` 段 + `connect`/`resolve_host`），**不新增分发文件**——新增数据源时同样内联，避免再走一遍分发链登记。差异与验证方式见 [docs/hosts.md](docs/hosts.md)。
+- 数据源按**宿主（host）**分层：`zcode`（默认，逐请求 `model_usage`）与 `workbuddy`（`session_usage` 上下文/credit + 会话正文逐请求用量，解析在 `wb_usage.py`）。宿主适配实现在 `zusage.py` 内（`HOST_CAPS` + `wb_*` 段 + `connect`/`resolve_host`），不改 `sync_plugin.py` 的 ZCode 分发清单；WorkBuddy 插件副本走 `scripts/sync_workbuddy_plugin.py` 独立链，不进发布包。差异与验证方式见 [docs/hosts.md](docs/hosts.md)。
 - 技术栈是 Python 标准库、原生 JavaScript、Electron 主进程 CommonJS；不是 npm 前端工程。
 - 桌面插件是**安装与查询渠道**，不是原生状态栏扩展：最终仍向客户端 `app.asar` 注入稳定运行目录的加载器。
 - 独立安装器和插件共享注入/运行链；CLI、`/usage`、stdio MCP 可独立查询，纯 CLI 没有状态条 UI。
@@ -66,7 +66,7 @@
 | `plugins/workbuddy-token-usage/` | WorkBuddy 专用构建（`.codebuddy-plugin/plugin.json` 内联 mcpServers + `/usage`，**不含 hooks/asar 链**），`usage_mcp.py`/`zusage.py`/`token_pricing.py` 为 `scripts/sync_workbuddy_plugin.py` 生成的副本；安装用 `scripts/install_workbuddy_plugin.py`（WorkBuddy 运行中时其 CLI 抢不到固定端口） |
 | `tests/` / `docs/` | 隔离回归（含 `tests/helpers/overlay-extract.cjs` 统一 `overlay.js`/`inject-main.cjs` 切片助手与 `tests/helpers/py_test_support.py` Python 公共测试夹具）、宿主 CLI 沙箱/交互演示；使用、设计、维护及宣传资料 |
 
-本检出包含 `usage_stats.py`、`src/overlay/`、`scripts/build_overlay.py`、`src/quota/`、`scripts/build_quota.py`、`turn-stats.js`、`renderer_bridge.py`、`renderer_live_check.cjs` 与根目录 `token_rate.py`；不要从其它工作树补出本检出不存在的架构。
+本检出包含 `usage_stats.py`、`src/overlay/`、`scripts/build_overlay.py`、`src/quota/`、`scripts/build_quota.py`、`turn-stats.js`、`renderer_bridge.py`、`renderer_live_check.cjs`、根目录 `token_rate.py`，以及 WorkBuddy 链的 `wb_usage.py`、`wb-overlay.cjs`、`scripts/install_workbuddy_plugin.py`、`scripts/sync_workbuddy_plugin.py` 与 `plugins/workbuddy-token-usage/`；不要从其它工作树补出本检出不存在的架构。
 
 关键调用链：
 - 桌面入口以绝对 `file://` 动态 `import` 引入 `inject-main.cjs`；主桥调用 Python，监听数据库及 WAL 变化，按窗口推送快照给 `overlay.js`。
@@ -113,7 +113,7 @@ python3 sync_plugin.py --check
 ## 4. 开发与兼容性约定
 
 - 保持修改聚焦，沿用现有原生代码与注释密度；不为统一风格引入框架、依赖或大规模重构。
-- 新增/调整宿主时：能力差异写进 `HOST_CAPS`（快照随 `caps` 下发），取不到的指标按「不可用」降级而不返回 0 假值；默认宿主必须保持 `zcode`，自动探测只能经 `"host": "auto"` 显式开启——装了其它宿主不能改变 ZCode 用户已有的输出。
+- 新增/调整宿主时：能力差异写进 `HOST_CAPS`（快照随 `caps` 下发），取不到的指标按「不可用」降级而不返回 0 假值；宿主判定为显式参数/env/config 优先，无显式配置时按 agent 跟随（ZCode 构建恒 zcode，WorkBuddy 构建读 workbuddy），「按库存在性」的机器探测只能经 `"host": "auto"` 显式开启——装了其它宿主不能改变 ZCode 用户已有的输出。「在哪个客户端跑」（agent）与「读哪个库」（host）是两件事，asar 自愈等安装链守卫一律判 agent、不判 host。
 - `.js` 浮层是注入浏览器的脚本；`.cjs` 是 CommonJS。客户端入口可能是 ESM，注入行必须动态 `import`，不能直接 `require`。
 - Python 路径使用 `Path`/已有定位逻辑；探测 `/Applications/ZCode.app` 等系统路径（如 `patch_install.py`、`renderer_bridge.py`）须捕获 `OSError`/`PermissionError`，防止在受限沙箱或 macOS TCC 拦截下抛未捕获异常。`python`、`python3`、`python_path` 与宿主实际可执行命令要区分，Windows 不保证有 `python3` 别名：插件 hooks.json 是 command+shell 回退链 `python3 → python → py -3`；`.mcp.json` 以 `node` 启动 `mcp-launch.cjs`（宿主对 stdio MCP 按 `shell:false` 经 cross-spawn 直接拉起，单命令无 shell 回退通道；但宿主给 MCP 子进程 PATH 末尾追加 Electron Node fallback shim，未装 Node 也能解析 `node`），由 launcher 按 hooks 同款顺序实测探测解释器并透传 stdio，不能改回裸 `python3`/`python` 单命令；主桥 `readCfg()` 把 `python_path` 缺省/空值归一为平台默认（win32=`python`，其它=`python3`），注入/安装时写回 `sys.executable` 并在每次 SessionStart 刷新。改这几处前先对当前客户端版本引擎核对 process/command 两种 hook 类型的 schema 与展开语义；回退链成立的平台依据见 [.zcode/rules/install-release.md](.zcode/rules/install-release.md)。
 - 保留带空格路径、Unicode、引号与平台进程行为的测试。POSIX shell 用既有 `shlex` 引用；Windows PowerShell 的 UTF-16LE `EncodedCommand` 路径不能简化为裸引号。

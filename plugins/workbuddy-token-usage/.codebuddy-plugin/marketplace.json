@@ -2,11 +2,11 @@
   "name": "workbuddy-token-usage",
   "owner": "ByteRax",
   "version": "2.9.0",
-  "description": "WorkBuddy 本地用量查询市场：上下文占比与 credit（token_usage MCP 工具 + /usage 命令），只读本地库。",
+  "description": "WorkBuddy 本地用量查询市场（token_usage MCP 工具 + /usage 命令），只读本地库。",
   "plugins": [
     {
       "name": "workbuddy-token-usage",
-      "description": "只读查询 WorkBuddy 本地用量：当前/今日会话的上下文占比与 credit 累计，支持按会话/模型/工作区聚合；同一套查询库可按需查 ZCode 的逐请求 token 用量。",
+      "description": "只读查询 WorkBuddy 本地用量：上下文占比、credit、token 分项、近似速度、工具调用与预估费用，支持按会话/模型/工作区聚合；同一套查询库可按需查 ZCode 的逐请求 token 用量。",
       "version": "2.9.0",
       "author": "ByteRax",
       "license": "MIT",

@@ -111,7 +111,7 @@ python zusage.py --host workbuddy now # query WorkBuddy for one run, no config c
 
 To make it permanent, set `"host": "workbuddy"` in `config.json` (or `"auto"` to pick by DB presence); if the DB lives elsewhere use `hosts.workbuddy.db_path` or `ZUSAGE_WORKBUDDY_DB`. The MCP tool gained an optional `host` argument. **The default stays `zcode`** — installing WorkBuddy never changes existing ZCode behaviour.
 
-**To use `/usage` inside the WorkBuddy client itself**, the repo ships a WorkBuddy-only build at `plugins/workbuddy-token-usage/` (MCP + command, no asar injection); install steps are in the [host adapter docs](docs/hosts.md#6-在-workbuddy-客户端里安装可选) (Chinese).
+**To use `/usage` inside the WorkBuddy client itself**, the repo ships a WorkBuddy-only build at `plugins/workbuddy-token-usage/` (MCP + command, no asar injection); install steps are in the [host adapter docs](docs/hosts.md#7-在-workbuddy-客户端里安装可选) (Chinese).
 
 ## Privacy and security
 
