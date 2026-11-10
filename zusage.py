@@ -23,31 +23,73 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
 
-# 宿主 dataBaseDir 合法值：绝对路径（POSIX 绝对 / Windows 盘符 / UNC）——相对值宿主无稳定基准，不采纳
+# 宿主路径合法值：绝对路径（POSIX 绝对 / Windows 盘符 / UNC）——相对值宿主无稳定基准，不采纳
 _DB_BASE_ABS_RE = re.compile(r"^(?:[a-z]:[\\/]|\\\\|/)", re.IGNORECASE)
 
 
+def _mirror_agent_db_path(value, home):
+    """宿主 localUsageEvidence.resolveMirroredSessionDbPath 镜像：~/ 展开与绝对
+    路径采纳；相对路径按 agent 工作区 cwd 解析、宿主视为无法镜像，返回 None 逐级回落。"""
+    v = str(value or "").strip()
+    if not v:
+        return None
+    if v.startswith("~/"):
+        return home / v[2:]
+    if _DB_BASE_ABS_RE.match(v):
+        return Path(v)
+    return None
+
+
 def resolve_db_path(env=None, home=None):
-    """本地用量库路径（issue #279）：跟随宿主数据目录迁移，与注入侧 resolveHostQuotaPaths
-    同序解析——setting.json 的 dataBaseDir（只采纳绝对路径）> ZCODE_DATA_BASE_DIR env >
-    <home>。setting.json 恒在 <home>/.zcode/v2（宿主 desktopDataBaseDirBootstrap，不随
-    迁移走）；token_rate.py 的默认路径与本函数同源，改动两处同步。"""
+    """本地用量库路径（issue #279 及查漏补缺）：镜像宿主 agent 会话库解析
+    （v3.17.1 onboarding/localUsageEvidence.resolveAgentSessionDbPath——写库方是
+    agent 进程，其链不消费 dataBaseDir），并兼容 3.17.x 迁移目录两态：
+      1) env ZCODE_SESSION_DB_PATH / ZCODE_SESSION_DB（宿主双别名按 env 键序取后）
+      2) <home>/.zcode/cli/config.json 的 storage.sessionDbPath（CLI config 恒在
+         HOME 不随迁移；缺文件/损坏/相对值忽略继续）
+      3) setting.json dataBaseDir（绝对）或 ZCODE_DATA_BASE_DIR，且
+         <base>/.zcode/cli/db/db.sqlite 已存在——3.17.x 实测迁移用户库在迁移目录
+         （宿主 copyDataDirectory 不搬 .zcode/cli，该位置有库必为真实写入位）
+      4) 默认 <home>/.zcode/cli/db/db.sqlite
+    与宿主的差异：宿主「无法确定」（相对路径/project 级覆盖）按未知跳过证据源，
+    本查询链必须落到一个库，故逐级回落；project 级覆盖同宿主属已知限制。
+    token_rate.py 的默认路径与本函数同源，改动两处同步。"""
     env = os.environ if env is None else env
     home = Path.home() if home is None else Path(home)
-    base = ""
+    picked = None
+    for key, value in env.items():
+        if key in ("ZCODE_SESSION_DB_PATH", "ZCODE_SESSION_DB") and value:
+            picked = value   # 宿主双别名按 env 键序取后
+    candidate = _mirror_agent_db_path(picked, home)
+    if candidate:
+        return candidate
+    try:
+        file = home / ".zcode" / "cli" / "config.json"
+        if file.exists():
+            raw = json.loads(file.read_text(encoding="utf-8-sig"))
+            storage = raw.get("storage") if isinstance(raw, dict) else None
+            candidate = _mirror_agent_db_path(
+                storage.get("sessionDbPath") if isinstance(storage, dict) else None, home)
+            if candidate:
+                return candidate
+    except Exception:
+        pass   # 缺文件/损坏忽略（宿主读不出按默认），不拖垮查询链
     try:
         file = home / ".zcode" / "v2" / "setting.json"
         if file.exists():
             raw = json.loads(file.read_text(encoding="utf-8-sig"))
-            v = str((raw.get("dataBaseDir") if isinstance(raw, dict) else "") or "").strip()
-            if v and _DB_BASE_ABS_RE.match(v):
-                base = v
+            base = str((raw.get("dataBaseDir") if isinstance(raw, dict) else "") or "").strip()
+        else:
+            base = ""
+        if not base or not _DB_BASE_ABS_RE.match(base):
+            base = str(env.get("ZCODE_DATA_BASE_DIR") or "").strip()
+        if base and _DB_BASE_ABS_RE.match(base):
+            candidate = Path(base) / ".zcode" / "cli" / "db" / "db.sqlite"
+            if candidate.exists():
+                return candidate
     except Exception:
-        pass   # 缺文件/损坏按无迁移处理，回落 env / home，不拖垮查询链
-    if not base:
-        base = str(env.get("ZCODE_DATA_BASE_DIR") or "").strip()
-    # env 值原样使用不展开 ~（宿主 getDataBaseDir 同款；setting.json 值已被绝对路径校验挡住 ~）
-    return (Path(base) if base else home) / ".zcode" / "cli" / "db" / "db.sqlite"
+        pass   # 缺文件/损坏按无迁移处理，回落 HOME 默认，不拖垮查询链
+    return home / ".zcode" / "cli" / "db" / "db.sqlite"
 
 
 DB_PATH = resolve_db_path()

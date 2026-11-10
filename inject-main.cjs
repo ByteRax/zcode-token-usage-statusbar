@@ -226,27 +226,56 @@ try {
 } catch (e) { LOG("ipc hook failed:", e.message); }
 
 /* db 活动戳：db.sqlite / -wal / -shm 的最新 mtime。WAL 模式下写入主要落在 -wal。
- * v279：dbDir 跟随宿主数据目录迁移，解析顺序同 resolveHostQuotaPaths（v229，issue #279）——
- * setting.json 恒在 <home>/.zcode/v2（宿主 desktopDataBaseDirBootstrap，不随迁移走），
- * 其 dataBaseDir 只采纳绝对路径且优先于 ZCODE_DATA_BASE_DIR env（宿主 setDataBaseDir > env）。
- * 解析一次随进程生效；运行期迁移与其它冷路径一样需完全重启（宿主引导本身也要求重启）。 */
-function resolveHostDataBaseDir() {
+ * v279 及查漏补缺：dbDir 镜像宿主 agent 会话库解析（v3.17.1
+ * onboarding/localUsageEvidence.resolveAgentSessionDbPath——写库方是 agent 进程，
+ * 其链不消费 dataBaseDir）：env ZCODE_SESSION_DB_PATH / ZCODE_SESSION_DB（宿主双
+ * 别名按 env 键序取后；~/ 展开与绝对采纳，相对不可镜像忽略）→
+ * <home>/.zcode/cli/config.json 的 storage.sessionDbPath（CLI config 恒在 HOME
+ * 不随迁）→ dataBaseDir 迁移目录存在性兼容（setting.json 恒在 <home>/.zcode/v2
+ * 不随迁移，dataBaseDir 绝对值优先于 ZCODE_DATA_BASE_DIR env；copyDataDirectory
+ * 不搬 .zcode/cli，<base>/.zcode/cli/db/db.sqlite 已存在才是 3.17.x 真实写入位）
+ * → 默认 <home>/.zcode/cli/db。解析一次随进程生效；运行期变更需完全重启。 */
+function resolveHostDbDir() {
   const env = process.env || {};
   const home = env.ZCODE_DESKTOP_HOME_DIR || app.getPath("home");
+  const mirrored = (v) => {   // 宿主 resolveMirroredSessionDbPath 同款：~/ 展开与绝对采纳
+    const s = String(v || "").trim();
+    if (!s) return "";
+    if (s.startsWith("~/")) return path.join(home, s.slice(2));
+    return (/^(?:[a-z]:[\\/]|\\\\)/i.test(s) || s.startsWith("/")) ? s : "";
+  };
+  let picked = "";
+  for (const [k, v] of Object.entries(env)) {
+    if ((k === "ZCODE_SESSION_DB_PATH" || k === "ZCODE_SESSION_DB") && v) picked = v;
+  }
+  const fromEnv = mirrored(picked);
+  if (fromEnv) return path.dirname(fromEnv);
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(home, ".zcode", "cli", "config.json"), "utf8").replace(/^\uFEFF/, ""));
+    const fromCfg = mirrored(cfg && typeof cfg === "object" && cfg.storage && cfg.storage.sessionDbPath);
+    if (fromCfg) return path.dirname(fromCfg);
+  } catch (e) { }
   try {
     const file = path.join(home, ".zcode", "v2", "setting.json");
     if (fs.existsSync(file)) {
       const s = JSON.parse(fs.readFileSync(file, "utf8").replace(/^\uFEFF/, ""));
-      const v = String((s && typeof s === "object" && s.dataBaseDir) || "").trim();
-      if (v && (/^(?:[a-z]:[\\/]|\\\\)/i.test(v) || v.startsWith("/"))) return v;
+      let v = String((s && typeof s === "object" && s.dataBaseDir) || "").trim();
+      if (v && (/^(?:[a-z]:[\\/]|\\\\)/i.test(v) || v.startsWith("/"))) {
+        const db = path.join(v, ".zcode", "cli", "db", "db.sqlite");
+        if (fs.existsSync(db)) return path.dirname(db);
+      }
     }
   } catch (e) { LOG("[db] setting.json unreadable:", e && e.message); }
-  const envBase = String(env.ZCODE_DATA_BASE_DIR || "").trim();   // 宿主与 Python 侧同款 trim 后判空
-  return envBase || home;
+  let envBase = String(env.ZCODE_DATA_BASE_DIR || "").trim();   // 宿主与 Python 侧同款 trim 后判空
+  if (envBase && (/^(?:[a-z]:[\\/]|\\\\)/i.test(envBase) || envBase.startsWith("/"))) {
+    const db = path.join(envBase, ".zcode", "cli", "db", "db.sqlite");
+    if (fs.existsSync(db)) return path.dirname(db);
+  }
+  return path.join(home, ".zcode", "cli", "db");
 }
 let DB_DIR = null;
 function dbDir() {
-  if (!DB_DIR) DB_DIR = path.join(resolveHostDataBaseDir(), ".zcode", "cli", "db");
+  if (!DB_DIR) DB_DIR = resolveHostDbDir();
   return DB_DIR;
 }
 function dbStamp() {
