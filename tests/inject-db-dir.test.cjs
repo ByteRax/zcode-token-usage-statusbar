@@ -81,7 +81,10 @@ test('env 双别名按 env 键序取后者（宿主 adapter 赋值序同款）',
 test('env 双别名后值为空白：弃用整个 env 来源（宿主 pickEnvSessionDbPath 同款）', (t) => {
   const { base, home } = makeHome(t);
   const db = touchDb(base);
-  const api = runBlock({ env: { ZCODE_DESKTOP_HOME_DIR: home, ZCODE_SESSION_DB_PATH: db, ZCODE_SESSION_DB: '  ' } });
+  // 空串（非空白）才能区分新旧语义：旧「跳过 falsy 取前非空」会回读 db 目录
+  let api = runBlock({ env: { ZCODE_DESKTOP_HOME_DIR: home, ZCODE_SESSION_DB_PATH: db, ZCODE_SESSION_DB: '' } });
+  assert.equal(api.resolveHostDbDir(), path.join(home, '.zcode', 'cli', 'db'));
+  api = runBlock({ env: { ZCODE_DESKTOP_HOME_DIR: home, ZCODE_SESSION_DB_PATH: db, ZCODE_SESSION_DB: '  ' } });
   assert.equal(api.resolveHostDbDir(), path.join(home, '.zcode', 'cli', 'db'));
 });
 

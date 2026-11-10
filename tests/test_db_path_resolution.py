@@ -83,12 +83,19 @@ class ResolveDbPathTest(unittest.TestCase):
         self.assertEqual(p, self.migrated_db)
 
     def test_env_double_alias_later_blank_discards_source(self):
-        # 后一个别名为空串：宿主 pickEnvSessionDbPath 取后（含空）再判空 → 弃用整个
-        # env 来源落 config/默认；不得回取前一个非空别名（与 agent 实际写库位一致）
+        # 后一个别名为空值：宿主 pickEnvSessionDbPath 取后（含空）再判空 → 弃用整个
+        # env 来源落 config/默认；不得回取前一个非空别名（与 agent 实际写库位一致）。
+        # 空串（非空白）才能区分旧「跳过 falsy 取前非空」语义，故诱饵路径 + '' 都要用。
+        decoy = self.home / "decoy" / "db.sqlite"
         self.touch_migrated_db()
         self.write_setting(str(self.migrated))
         p = self.zusage.resolve_db_path(env={
-            "ZCODE_SESSION_DB_PATH": str(self.migrated_db),
+            "ZCODE_SESSION_DB_PATH": str(decoy),
+            "ZCODE_SESSION_DB": "",
+        }, home=self.home)
+        self.assertEqual(p, self.migrated_db)
+        p = self.zusage.resolve_db_path(env={
+            "ZCODE_SESSION_DB_PATH": str(decoy),
             "ZCODE_SESSION_DB": "  ",
         }, home=self.home)
         self.assertEqual(p, self.migrated_db)
@@ -277,7 +284,7 @@ class CrossFileConsistencyTest(unittest.TestCase):
             {"ZCODE_SESSION_DB_PATH": "   "},
             {"ZCODE_DATA_BASE_DIR": str(self.migrated)},
             {"ZCODE_SESSION_DB_PATH": str(self.migrated_db), "ZCODE_SESSION_DB": "~/custom/db.sqlite"},
-            {"ZCODE_SESSION_DB_PATH": str(self.migrated_db), "ZCODE_SESSION_DB": "  "},
+            {"ZCODE_SESSION_DB_PATH": str(self.migrated_db), "ZCODE_SESSION_DB": ""},
         ]
         for env in scenarios:
             self.assert_same(env)
