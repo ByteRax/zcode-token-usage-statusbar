@@ -1,0 +1,53 @@
+# 宿主卡顿治理（流式 / 空闲 / 数据链）
+
+用户反馈安装本插件后 ZCode 卡顿。本规格只治理**计算与推送频率**，不改变任何展示口径、数值、文案和交互。
+
+## 证据（2026-11-10；CDP 采样 + Precise Coverage + Node/Python 微基准；本机 2.5GB 库、1388 轮历史）
+
+- 流式生成时，`turn-stats.js` 的 `ingest` 在**宿主 store 通知链内同步执行**，每次通知对窗口内全部文本做 `Array.from(text).length`（整串拆数组）：单次 0.35ms（20 行）→ 2.2ms（60 行 / 20k 流式字符）→ 4.1ms（60k），并产生大量 GC（采样里 GC 占主线程 12%）。
+- `updateLive` 快路径在每次心跳（100ms）与每次 store 通知都调 `buildLiveTip`，整张 V2 速度 tooltip 串重新生成，**无人悬停也生成**；其中 `spdUnpack` 每次全量解包整张轮表：1400 轮 1.3ms、6000 轮 5.3ms（占生成成本 95%）。覆盖率计数：部署前 `buildLiveTip` ≈ 20 次/s、`spdNum` ≈ 22 万次/s。
+- 历史（非 live）会话的 `updateLive` 每个心跳都落到整条 `render()`：急切构建全部 tooltip 串并跑五个 enhance*（单次约 8~20ms）。
+- 轮播主开关默认关闭，但 65ms 定时器仍在做遗留 DOM 还原的两次整文档查询（~30 次/s）。
+- Python 常驻泵每帧：命中帧 ~200ms、未命中帧 700~1100ms，**两者每 ~3s 交替**（TTL 2s < 泵间隔）。流式期间 `model_usage` 实际恒定不变（宿主请求完成才一次性 INSERT），重算纯属浪费；耗时大头是 `_project_usage`（~150ms×多键）、`_speed_history`（~150ms）、今日三查询与全库 scan。
+- 宿主窗口被遮挡/隐藏（`visibilityState=hidden`）时 Chromium 把定时器降到 ≈1Hz、rAF 停发：此状态下的度量会把前台成本低估约一个数量级，度量前必须先核对可见性。
+
+## 产品规则（不变量）
+
+> 编号约定：代码注释与测试里的「§N」指本节「产品规则 N」；验收场景用「验收 N」。
+
+1. **展示不变**：tooltip / chip / 统计行的数值与格式逐字不变；悬停中 tooltip 仍 ≤100ms 跟手，打开瞬间内容必须是最新的（不得陈旧）。
+2. **字符计数等价**：`ingest` 的字符数与原 `Array.from(text).length`（码点计数；高低代理对记 1，孤立代理项各记 1）逐值相同。
+3. **轮表解包按引用缓存**：同一份 `speed_history` 对象重复 `spdUnpack` 只解包一次（WeakMap，随帧对象回收）；新帧是新对象自然失效；结果只读。
+4. **未悬停不白建 tooltip**：实时速度 chip 所在格未悬停时，`updateLive` 不再每拍构建 tooltip 串，只记最新 view 并标失鲜（`__zuTipStale`）；`drawTip` 读取 `__tip` 前经 `liveTipRefresh` 补建；兜底每 1s 保鲜一次；悬停本格仍每拍构建并重画（v224 契约）；整条 `render` 重挂 `__tip` 时清失鲜标记。
+5. **store 通知保持同步**：store 驱动的 `updateLive` **不做合并/延迟**（曾试做 80ms 合并，测试与语义均依赖通知后同步更新状态条，已撤销；懒构建之后每次 `updateLive` 只剩微秒级工作，合并无必要）。
+6. **空闲整条重渲染降频**：非 live 会话（`view` 为 null 且上一拍也非 live）且数据帧引用未变、距上次整条渲染不足 500ms 时，心跳不重复 `render`；数据帧变化、live↔非 live 切换、设置/主题变化（它们直接调 `render`）仍即时。
+7. **轮播关闭态**：`rotatorCfg.enabled` 为假时，65ms 定时器的帧步降到 1s 一次（只剩遗留 DOM 还原）；开启或设置变更走 `rotatorMasterTick` 直调，不经此节流。
+8. **model_usage 水位延长聚合缓存（Python）**：`_cached_agg`（scan / 今日三项）、`_cached_project`、`_speed_history_cached` 在 TTL(2s) 过期后，若水位 `(库身份, max(rowid))` 未变且距上次计算 <20s（`_WM_MAX_AGE_MS`），继续复用；水位一变（有新请求完成）立即重算。TTL 内行为不变；水位在**计算前**读取（计算期间的新写入只会使存下的水位偏旧→下次重算，安全方向）；内存库/桩连接/未带连接的调用取不到水位，退回纯 TTL。`_cached_agg` 保持 `(key, fn)` 二参签名，连接经 `_WmFn` 包装携带。
+   **前提假设（宿主升级体检须复核）**：宿主只在请求结束时一次性插入终态行（completed/error/cancelled），不先写 `running` 再 UPDATE（宿主 `recordModelUsageFact` 与真库实测零 `running` 行）。水位对 in-place UPDATE、非尾行删除（含 session 级联删除）、尾行删除后 rowid 复用不可见——这些情形下陈旧上限即 `_WM_MAX_AGE_MS`；若宿主将来改成「先写 running 再 UPDATE」，「完成瞬间不陈旧」会退化为最多 20s。未加 `count(*)`：大表 O(n)（30 万行约 1ms，对比水位查询 ~7µs），且仍抓不到 in-place UPDATE。依赖 `session` 表的字段（会话名、项目名）与价表 12h 刷新带来的费用同样最长陈旧 20s，无 AGENTS 契约承诺它们实时。
+   **降级结果**：`_speed_history_cached` 对空轮表（可能是 `session` 表读失败等降级的结果）不写水位，仍按 TTL 重试；`_today_detail` 内 `_scope_models_cost` 查询瞬时失败时的降级值（`cost: None`、`models: []`）目前不做同样处理——出现条件仅为瞬时失败（如库被锁），后果是今日费用/模型明细最长 20s 空白后自愈，与上述 20s 陈旧口径同类，已知并接受（不为此在签收后再改代码）。
+9. 新增定时器/监听必须随实例 `dispose` 清理，热更新、导航、窗口关闭后停用（本批未新增定时器/监听）。
+
+## 状态所有者与接口
+
+- 渲染进程拥有全部实例级节流状态（`liveTipBuiltAt`、`idleRenderData/At`）与失鲜标记（`__zuTipView`/`__zuTipStale`，挂在 `.it` 格元素上）；均为实例闭包变量/元素私有属性，随实例销毁，不进 `localStorage`、不进快照。
+- `turn-stats.js` 的 `createTracker` 公共接口不变（`ingest/get/clear/dispose`）；行字符数缓存归 tracker 的 turn 持有（`turn.counts`：rowId → `{text, n}`，以文本相等校验），随行移出窗口、turn 删除、`clear/dispose` 释放。
+- Python 水位缓存状态（`_AGG_WM/_PROJ_WM/_SPEED_WM`）与对应缓存同生命周期、同上限、同清空；不进快照、不改 CLI/MCP/`/usage` 输出契约；`speed_history` 帧字段、协议与大小不变。
+- 本批全部为热文件：`overlay.js`、`turn-stats.js`（主桥 mtime 轮询整体重注入）、`zusage.py`（mtime 变化后常驻 Python 自动重启）；**不涉及冷文件 `inject-main.cjs`**，无需重启客户端。
+
+## 验收场景
+
+1. `ingest` 对含 emoji、孤立代理项、中英混排的文本得到与 `Array.from` 相同的字符数；同一行文本未变时命中缓存；文本变化时重算；行移出窗口后缓存释放；热路径不再对字符串调用 `Array.from`（变异：换回旧实现该守卫测试变红）。
+2. `updateLive` 快路径：未悬停且距上次构建 <1s → 不调 `buildLiveTip`、`__tip` 标记失鲜；满 1s 保鲜；悬停本格 → 每拍构建并重画；`drawTip` 读取失鲜格前先补建（顺序锁）；补建异常不外溢。
+3. `spdUnpack` 同一 `speed_history` 引用重复调用只解包一次；新引用/轮数变化重算；结果与未缓存实现逐字段一致。
+4. 空闲会话：同一数据帧下 500ms 内的心跳不 `render`；数据帧引用变化即渲染；满 500ms 兜底渲染；live→非 live 切换即渲染；view 非空的结构切换不受节流。
+5. 轮播关闭态帧步按 1s 节流；开启后恢复 65ms 节奏。
+6. 水位缓存：TTL 过期且水位未变 → 复用；新请求完成（水位变）→ 立即重算；超过 `_WM_MAX_AGE_MS` → 兜底重算；TTL 内不碰库；内存库/无连接纯 TTL；计算期间并发写入强制下一帧重算（变异：把水位读取挪到计算之后/让水位缓存恒失效，对应测试变红）；缓存字典有界。
+7. 真库对比（只读，隔离 HOME，同一请求 1.5s 节奏）：旧版逐帧 190↔900ms 交替（均值 474ms），新版稳定 ~200ms、仅每 20s 兜底重算一次（均值 268ms）。
+8. 根产物 `overlay.js` / `turn-stats.js` / `zusage.py` 与 ZCode 插件副本、WorkBuddy 插件副本一致；`python3 sync_plugin.py --check`、`scripts/sync_workbuddy_plugin.py --check` 通过。
+
+## 未做（已评估，留作后续）
+
+- 主进程冷文件 `inject-main.cjs`：`speed_history` 按指纹去重推送（本机每窗口每 ≥1.5s 约 312KB，其中 241KB 为 `speed_history`）；`gitTick` 窗口失焦门控 + 结果不变退避 + 子仓库枚举改异步（本机 17k 文件仓库每 10s 仅 0.15~0.3s，Windows 上更重）；同窗最多 3 次重复注入 1.5MB 脚本前加探针。均需完全重启才生效。
+- 渲染端：逐帧 `track()` 的几何读取按 pill 以外 150ms 节流；`hcObserver`/quota observer 缩小观察范围（依赖 Radix portal 假设，需先验证）；`heavy` 与协调器 tick 的双倍频率。前台实测前不动。
+- Python 命中帧基线 ~200ms：子代理 `_scope_models_cost` N+1（48 次 ≈ 56ms）、5 个完整会话快照、`_provider_fallback` 无缓存（~18ms）、`_sub_agent_tasks` 按 part 全量重扫。
+- hooks：`SessionStart` 每次对 373MB `app.asar` 全量 SHA256（~135ms，仅发布前才需要，可改廉价 stat 戳）；`UserPromptSubmit` 为 `detect_agent` 整体 `import zusage`（~37ms）。hook 读插件缓存副本，需发版后生效。

@@ -1082,3 +1082,25 @@ test('review fix: phrase when: keys are whitelisted and unknown keys never reach
   assert.ok(!html.includes('<img src=x'), 'raw tag from stored key never reaches innerHTML');
   assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/, 'stored key is entity-escaped in the note');
 });
+
+test('rotator 关闭态（默认）：65ms 定时器的帧步降到 1s 一次；开启后恢复 65ms（perf-lag-reduction §7）', () => {
+  const env = makeRotatorEnv('zh');
+  const { ctx, timers, advanceNow } = env;
+  let ticks = 0;
+  ctx.rotatorMasterTick = () => { ticks++; };                       // 帧步的唯一下游：计数即可，不执行整文档还原扫描
+  const iv = [...timers.values()].find(t => t.interval && t.ms === 65);
+  assert.equal(vm.runInContext('rotatorCfg.enabled', ctx), false, '主开关默认关闭');
+  advanceNow(5000); iv.fn();
+  assert.equal(ticks, 1, '首拍执行');
+  for (let i = 0; i < 14; i++) { advanceNow(65); iv.fn(); }          // 约 0.9s 内的 65ms 心跳
+  assert.equal(ticks, 1, '关闭态 1s 内心跳全部跳过');
+  advanceNow(200); iv.fn();
+  assert.equal(ticks, 2, '满 1s 后再执行一次');
+  advanceNow(999); iv.fn();
+  assert.equal(ticks, 2, '距上次 999ms：仍跳过');
+  advanceNow(1); iv.fn();
+  assert.equal(ticks, 3, '距上次恰 1000ms：执行');
+  vm.runInContext('rotatorCfg.enabled = true;', ctx);
+  for (let i = 0; i < 5; i++) { advanceNow(70); iv.fn(); }           // 开启后恢复 65ms 节奏：每个心跳都执行
+  assert.equal(ticks, 8);
+});
