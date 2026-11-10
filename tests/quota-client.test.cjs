@@ -21,8 +21,142 @@ test("decryptValue roundtrip, wrong key, bad format, plaintext passthrough", () 
   assert.equal(Q.decryptValue(enc, Q.deriveCipherKey({ ZCODE_CREDENTIAL_SECRET: "other" })), null);
   assert.equal(Q.decryptValue("enc:v1:only.two", KEY), null);
   assert.equal(Q.decryptValue("enc:v1:" + "A".repeat(16) + "." + "B".repeat(24) + ".", KEY), null);
+  assert.equal(Q.decryptValue("enc:v3:future-envelope", KEY), null);   // 未知 enc: 版本按宿主语义拒绝，不当明文外发
   assert.equal(Q.decryptValue("plain-value", KEY), "plain-value");
   assert.equal(Q.decryptValue(42, KEY), 42);
+});
+
+/* ---------- v2 信封（宿主 3.18.0：OS keychain 随机密钥 + keyId 指纹） ---------- */
+function sealV2Raw(key, plain) {
+  const iv = crypto.randomBytes(12);
+  const c = crypto.createCipheriv("aes-256-gcm", key, iv);
+  const ct = Buffer.concat([c.update(plain, "utf8"), c.final()]);
+  return iv.toString("base64url") + "." + c.getAuthTag().toString("base64url") + "." + ct.toString("base64url");
+}
+function v2Envelope(key, plain, source) {
+  const keyId = crypto.createHash("sha256").update(key).digest("hex").slice(0, 24);
+  return "enc:v2:" + (source || "os") + ":" + keyId + ":" + sealV2Raw(key, plain);
+}
+function fakeKeyring(secret) {
+  const calls = { n: 0 };
+  class E {
+    constructor(service, account) { this.service = service; this.account = account; calls.n += 1; }
+    async getPassword() { if (secret === null) throw new Error("no entry"); return secret; }
+  }
+  return { AsyncEntry: E, Entry: E, calls };
+}
+const V2KEY = crypto.randomBytes(32);
+const V2SECRET = V2KEY.toString("base64url");
+
+test("v2:os decrypt via default ctx + injected keyring; pending gate then warm; foreign keyId stays null", async () => {
+  Q.setDefaultDecryptCtx({ credsPath: "/t/creds.json", env: {}, keyringMod: fakeKeyring(V2SECRET) });
+  const enc = v2Envelope(V2KEY, "v2-token-abc");
+  assert.equal(Q.decryptValue(enc, KEY), null);            // 缓存未热：fail-closed + pending
+  assert.equal(Q.v2KeyPending(), true);
+  await Q.ensureDefaultV2Key();
+  assert.equal(Q.decryptValue(enc, KEY), "v2-token-abc");  // 预热后同同步调用点解密成功
+  assert.equal(Q.v2KeyPending(), false);
+  const other = crypto.randomBytes(32);
+  assert.equal(Q.decryptValue(v2Envelope(other, "x"), KEY), null);   // keyId 失配：不跨钥强解
+  await Q.ensureDefaultV2Key();                            // 重读仍是他钥信封 → 维持不可解
+  assert.equal(Q.decryptValue(v2Envelope(other, "x"), KEY), null);
+});
+
+test("v2:env via ZCODE_CREDENTIAL_SECRET (host derivation sha256(secret)); source must match cache", async () => {
+  const secret = "headless-managed-secret";                 // 任意 utf8：宿主对 env secret 无形状限制
+  const key = crypto.createHash("sha256").update(secret).digest();
+  Q.setDefaultDecryptCtx({ credsPath: "/t/creds2.json", env: { ZCODE_CREDENTIAL_SECRET: secret }, keyringMod: fakeKeyring(null) });
+  await Q.ensureDefaultV2Key();
+  assert.equal(Q.decryptValue(v2Envelope(key, "env-token", "env"), KEY), "env-token");
+  assert.equal(Q.decryptValue(v2Envelope(key, "env-token", "os"), KEY), null);   // source 不符 → null
+});
+
+test("v2 malformed envelopes and unavailable keychain stay fail-closed without retry storm", async () => {
+  const mod = fakeKeyring(null);
+  Q.setDefaultDecryptCtx({ credsPath: "/t/creds3.json", env: {}, keyringMod: mod });
+  await Q.ensureDefaultV2Key();   // keychain 抛错 → 无缓存 + 60 秒失败冷却
+  assert.equal(Q.decryptValue("enc:v2:web:" + "a".repeat(24) + ":" + sealV2Raw(V2KEY, "x"), KEY), null);   // 非法 source
+  assert.equal(Q.decryptValue("enc:v2:os:zz:" + sealV2Raw(V2KEY, "x"), KEY), null);                        // 非法 keyId
+  assert.equal(Q.decryptValue("enc:v2:os", KEY), null);                                                    // 段数不足
+  assert.equal(Q.decryptValue(v2Envelope(V2KEY, "x"), KEY), null);                                         // 无缓存
+  assert.equal(Q.v2KeyPending(), false);   // 冷却期内不置 pending：调度器回退 60 秒低频
+  await Q.ensureDefaultV2Key();            // 冷却期内再预热不得重打 keychain（防 1 秒风暴）
+  assert.equal(mod.calls.n, 1);
+});
+
+test("v1 path unaffected by the v2 dispatcher", () => {
+  assert.equal(Q.decryptValue(encryptValue("still-v1"), KEY), "still-v1");
+});
+
+test("v2:os keychain rotation: stale cache invalidated, re-read recovers", async () => {
+  const kA = crypto.randomBytes(32), kB = crypto.randomBytes(32);
+  const seq = [kA.toString("base64url"), kB.toString("base64url")];
+  let calls = 0;
+  const mod = { AsyncEntry: class { async getPassword() { return seq[Math.min(calls++, seq.length - 1)]; } } };
+  Q.setDefaultDecryptCtx({ credsPath: "/t/rot.json", env: {}, keyringMod: mod });
+  const eA = v2Envelope(kA, "tok-a"), eB = v2Envelope(kB, "tok-b");
+  await Q.ensureDefaultV2Key();
+  assert.equal(Q.decryptValue(eA, null), "tok-a");
+  assert.equal(Q.decryptValue(eB, null), null);            // 换钥信封：keyId 失配 → 作废缓存
+  await Q.ensureDefaultV2Key();                            // 重读得新钥
+  assert.equal(Q.decryptValue(eB, null), "tok-b");         // 运行期自愈，无需重启
+  assert.equal(Q.decryptValue(eA, null), null);            // 旧钥信封不再可解
+});
+
+test("v2:env secret file via ZCODE_CREDENTIAL_SECRET_FILE; unreadable and out-of-bounds fail closed", async () => {
+  const secret = "f".repeat(40);
+  const key = crypto.createHash("sha256").update(secret).digest();
+  const d = Q.makeHostDecryptor({ credsPath: "/t/c.json", env: { ZCODE_CREDENTIAL_SECRET_FILE: "/t/sec" }, readFileRaw: () => secret, keyringMod: fakeKeyring(null) });
+  await d.ensureKey();
+  assert.equal(d.decrypt(v2Envelope(key, "tok", "env"), null), "tok");
+  const d2 = Q.makeHostDecryptor({ credsPath: "/t/c.json", env: { ZCODE_CREDENTIAL_SECRET_FILE: "/t/sec" }, readFileRaw: () => { throw new Error("EACCES"); }, keyringMod: fakeKeyring(null) });
+  await d2.ensureKey();
+  assert.equal(d2.ctx.lastError, "managed secret file unreadable");
+  assert.equal(d2.decrypt(v2Envelope(key, "tok", "env"), null), null);
+  const d3 = Q.makeHostDecryptor({ credsPath: "/t/c.json", env: { ZCODE_CREDENTIAL_SECRET_FILE: "/t/sec" }, readFileRaw: () => "short", keyringMod: fakeKeyring(null) });
+  await d3.ensureKey();
+  assert.equal(d3.ctx.lastError, "managed secret file length invalid");
+  const d4 = Q.makeHostDecryptor({ credsPath: "/t/c.json", env: { ZCODE_CREDENTIAL_SECRET_FILE: "/t/sec" }, readFileRaw: () => "f".repeat(4097), keyringMod: fakeKeyring(null) });
+  await d4.ensureKey();
+  assert.equal(d4.ctx.lastError, "managed secret file length invalid");   // 上界 4096
+});
+
+test("v2 both managed-secret envs set -> misconfigured fail-closed (host-throw mirror)", async () => {
+  const d = Q.makeHostDecryptor({ credsPath: "/t/c.json", env: { ZCODE_CREDENTIAL_SECRET: "a", ZCODE_CREDENTIAL_SECRET_FILE: "/t/sec" }, keyringMod: fakeKeyring(V2SECRET) });
+  await d.ensureKey();
+  assert.equal(d.ctx.lastError, "managed secret misconfigured");
+  assert.equal(d.ctx.cache.size, 0);                        // 不落钥、不外发
+});
+
+test("v2:os keychain addressing (service/account) and per-credsPath bucketing", async () => {
+  const seen = [];
+  const mod = { AsyncEntry: class { constructor(service, account) { seen.push([service, account]); } async getPassword() { return V2SECRET; } } };
+  const pa = "C:\a\credentials.json", pb = "C:\b\credentials.json";
+  const a = Q.makeHostDecryptor({ credsPath: pa, env: {}, keyringMod: mod });
+  const b = Q.makeHostDecryptor({ credsPath: pb, env: {}, keyringMod: mod });
+  await a.ensureKey(); await b.ensureKey();
+  const hex = (x) => crypto.createHash("sha256").update(x).digest("hex");
+  assert.deepEqual(seen[0], ["ZCode Credential Encryption", hex(pa)]);
+  assert.deepEqual(seen[1], ["ZCode Credential Encryption", hex(pb)]);
+  assert.equal(a.ctx.cache.size, 1);
+  assert.equal(b.ctx.cache.size, 1);                        // 分桶互不串
+  const e = v2Envelope(V2KEY, "tok");
+  assert.equal(a.decrypt(e, null), "tok");
+  assert.equal(b.decrypt(e, null), "tok");
+});
+
+test("v2 truncated-tag and malformed-keychain-secret envelopes stay null", async () => {
+  Q.setDefaultDecryptCtx({ credsPath: "/t/tag.json", env: {}, keyringMod: fakeKeyring(V2SECRET) });
+  await Q.ensureDefaultV2Key();
+  const iv = crypto.randomBytes(12);
+  const c = crypto.createCipheriv("aes-256-gcm", V2KEY, iv);
+  const ct = Buffer.concat([c.update("x", "utf8"), c.final()]).toString("base64url");
+  const kid = crypto.createHash("sha256").update(V2KEY).digest("hex").slice(0, 24);
+  assert.equal(Q.decryptValue("enc:v2:os:" + kid + ":" + iv.toString("base64url") + "." + crypto.randomBytes(12).toString("base64url") + "." + ct, null), null);   // tag 12 字节
+  const mod2 = fakeKeyring("short");
+  Q.setDefaultDecryptCtx({ credsPath: "/t/shape.json", env: {}, keyringMod: mod2 });
+  await Q.ensureDefaultV2Key();
+  assert.equal(Q.decryptValue(v2Envelope(V2KEY, "x"), null), null);   // keychain 返回畸形 secret → 冷却，不解
 });
 
 test("jwtExpMs reads exp; non-JWT yields null", () => {
