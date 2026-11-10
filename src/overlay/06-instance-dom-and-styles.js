@@ -203,8 +203,9 @@
      * → v318 chip 字体切 sans（用户实报 Windows 上 chip 数字与中文大小不一，mac 无此问题，最终方案）：宿主 --font-mono 首选 ui-monospace——Windows 落到 Consolas（内置浏览器实测 13px 数字墨迹约 8px），中文回退 Microsoft YaHei UI（11~12px），条/chip/tooltip 内中文显大 ~40%；原生 UI 无此问题靠 sans 配对（Segoe 数字 10px + 雅黑 11~12px，配比 1.1）。缩放面路线三轮实机回退后整体废弃：ZuCJKFit CJK 面（90/82/76%；82% 真机像素测量实测配比仍 1.2 嫌数字小，76% 后数字锐利但配比失衡）与 ZuNumFit 数字面（ASCII 110%，实报数字边缘发虚——size-adjust 缩放路径光栅化比原生整数尺寸软，canvas 拉普拉斯方差实测低于原生面）全部删除。定稿=条/chip/tooltip 全部 30 处 mono font-family 换 var(--font-sans,…)+ 既有 tabular-nums 保留（含 01 模块 rateTip 内联 cssText 兜底，被 quotaTip/rstTip/tpsTip 整体复制）：Windows Segoe tnum 实测生效（13px 同 7 位任意数字恒 56.12px）数字刷新不抖宽，Segoe 数字 10px + 雅黑 11~12px 配比 1.1 与原生同源，零缩放零模糊零调参；mac SF Pro+苹方天然同构（用户实测无失衡），Linux system-ui tnum 未实机验收；⚙ mono 域（06 设置面板 .zu-src-field、.zu-mp-*、.zu-notes-* 与 05 rotator 编辑器 .zu-rot-*）仍走 mono 令牌
      * → v319 速度格数字与单位加距 4px（用户实报 "158.9t/s" 贴字，且「修改过程中对的、判定生效又变回去」——两条渲染路径只有一条有空格）：①实时桥路径 zuBarSpeedView text="… t/s" 有空格但切 sans 后 Segoe 空格 7.15px→~3.7px 视觉贴字，.zu-live 加 word-spacing:4px（用户实机逐档对比定稿）；②无桥 DB 回退路径 chipFace（07）数字直拼 '<span class="dim">t/s</span>' 根本无空格字符、word-spacing 对其无效——补空格后与①渲染一致；用户看到的「忽对忽错」=生成中走①、完成/无桥走②
      * → v320 「不在本地库」提示与 ⚙「数据库统计」注记不再写死 ~/.zcode 路径（issue #279：宿主 dataBaseDir 迁移后旧提示误导）：tooltip 改中性描述并指引重装/更新、⚙ 注记改「只读本地用量库（默认 ~/.zcode/...，跟随宿主 dataBaseDir 迁移）」；用量链 DB 路径解析本体在 zusage.py / token_rate.py / inject-main.cjs（非浮层），此为配套文案
+     * → v321 速度格贴字真根因修复：`.zusage-root .it>span:not(.eb)` 的 inline-flex 把速度格也 flex 化，flex 剥离文本 item 尾随空格——数字态（数字+span.dim 两 item）空格 spaceW=0、v319 的 word-spacing 无效（CDP 实测墨迹间隙 0），状态词态单文本 item 不受影响故「动态对、停止贴」；选择器豁免 .zu-live（外部 flex item 布局块化等价、零变化），空格与 word-spacing:4px 恢复生效，间隔与动态态一致 ~7.7px
      */
-    var VERSION = "v320";
+    var VERSION = "v321";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
@@ -350,7 +351,12 @@
        * 不加 +Npx 常量——加法会让比例随字号漂移（14px 时 1.29×、20px 时 1.2×）。数字字面略高于行盒中心，轮廓上移半像素作光学校正。 */
       ".zusage-root .ico{display:block;width:var(--ui-font-size,14px);height:var(--ui-font-size,14px);" +
       "flex:0 0 auto;align-self:center;overflow:visible;color:var(--color-foreground-subtle,#a1a1a1);opacity:1;transform:translateY(-.5px)}" +
-      ".zusage-root .it{line-height:1.3}.zusage-root .it>span:not(.eb){display:inline-flex;align-items:center;min-height:1.3em}" +
+      /* v321：速度格 .zu-live 豁免 flex——inline-flex 容器会把文本 item 的尾随空格剥离，
+       * 数字态（"128.6 "+<span.dim>t/s）两 item 结构下空格根本不渲染、word-spacing 完全无效
+       *（CDP 实测 spaceW=0、墨迹间隙 0，即用户「动态对、停止贴」的真根因；状态词态是单文本
+       * item 不受影响）。豁免后内部回块级流，空格恢复渲染，v319 的 word-spacing:4px 真正生效，
+       * 间隔=动态态的 ~7.7px。.zu-live 作为 .it 的 flex item 会被块化，外部布局零变化。 */
+      ".zusage-root .it{line-height:1.3}.zusage-root .it>span:not(.eb):not(.zu-live){display:inline-flex;align-items:center;min-height:1.3em}" +
       ".zusage-root .eb .ico{width:12px;height:12px;transform:none}" +
       ".zusage-root .zu-think{color:var(--color-brand,#8171e8);opacity:1}" +
       /* 工具错误数徽标 */
