@@ -216,6 +216,24 @@ class ProjectUsageAggTests(FixtureBase):
         p2 = zusage._project_usage(con, "m1", with_models=False)
         self.assertEqual(p2["models"], [])
 
+    def test_models_case_insensitive_dedup(self):
+        con = self.fixture()
+        self.sess(con, "m1")
+        # 同一模型不同大小写形式（如 GLM-5.3 和 glm-5.3，GLM-5.3-Flash 和 glm-5.3-flash）
+        self.usage(con, "r1", "m1", turn="t1", total=100, model="GLM-5.3")
+        self.usage(con, "r2", "m1", turn="t2", total=200, model="glm-5.3")
+        self.usage(con, "r3", "m1", turn="t3", total=50, model="glm-5.3-flash")
+        self.usage(con, "r4", "m1", turn="t4", total=150, model="GLM-5.3-Flash")
+        p = zusage._project_usage(con, "m1", with_models=True)
+        self.assertEqual(len(p["models"]), 2, "大小写不同应合并为同个模型，不出现重复行")
+        m_map = {m["model"]: m for m in p["models"]}
+        self.assertIn("GLM-5.3", m_map, "优先保留含大写字母的规范展示名")
+        self.assertIn("GLM-5.3-Flash", m_map)
+        self.assertEqual(m_map["GLM-5.3"]["total"], 300)
+        self.assertEqual(m_map["GLM-5.3"]["requests"], 2)
+        self.assertEqual(m_map["GLM-5.3-Flash"]["total"], 200)
+        self.assertEqual(m_map["GLM-5.3-Flash"]["requests"], 2)
+
     def test_session_snapshot_models_light_rows_without(self):
         con = self.fixture()
         self.sess(con, "m1")

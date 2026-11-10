@@ -788,9 +788,19 @@ def _bridge_notice(out, result, pi, quiet_hook=False):
     if quiet_hook and status in ("skipped-unknown", "skipped-error"):
         return out
     if status == "skipped-error" and result.get("permission"):
-        # Windows 上 os.access 看不见 ACL（目录恒报可写），权限判定按真实
-        # PermissionError 而不是 target_writable()，否则 Program Files 场景静默
         from restart_notice import PREFIX
+        # PermissionError 在 Windows 上不只来自 ACL：客户端占用 asar、杀毒扫描新写入的
+        # 大文件同样抛它。target_writable() 含真实写入探针（不止 os.access），探针能在
+        # 同目录建文件说明不是受保护目录（如 %LOCALAPPDATA%\Programs\ZCode），此时让用户
+        # 提权既无必要也不对症——只提示占用/拦截并给重试方式。
+        try:
+            protected = not pi.target_writable()
+        except Exception:
+            protected = True
+        if not protected:
+            return _nudge(out, PREFIX + f"状态条已安装，但逐问速率行所需的客户端补丁暂时无法写入 {pi.ASAR}"
+                          f"（文件被 ZCode 占用或被安全软件拦截，并非权限不足）。"
+                          f"完全退出 ZCode 后运行 /install-overlay 重试；不需要该功能可忽略本提示。")
         script = PLUGIN_ROOT / "overlay_install.py"
         if os.name == "nt":
             action = (f'以管理员身份打开终端，执行 "{PYEXE}" "{script}" install')

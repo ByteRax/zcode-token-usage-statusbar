@@ -598,12 +598,12 @@ test('sticky turn-table survives generation reload via window.__zusageSpdSticky 
 });
 
 // v271 点击任意位置关闭根治：tip 内按压后 1.2s 硬保活窗——hideTip 对非
-// win-leave/escape 的 force 一律降级交总闸；focusout 在窗内直接不关。
+// win-leave/escape/gear-open/re-click/bar-hidden/compact-theme/sub-pop 的任何收起（v329 起不限 force）一律拦截；focusout 在窗内直接不关。
 test('press-keepalive window: any force hide within 1.2s of a tip press is downgraded (v271)', () => {
   const s = source;
   assert.ok(s.includes('var lastTipDownAt = 0;'), 'press timestamp state');
   assert.ok(s.includes('lastTipDownAt = Date.now();'), 'pointerdown stamps the window');
-  assert.match(s, /if \(force && cause !== "win-leave" && cause !== "escape" &&\n          typeof lastTipDownAt !== "undefined" && lastTipDownAt &&\n          Date\.now\(\) - lastTipDownAt < 1200\) force = false;/);
+  assert.match(s, /if \(cause !== "win-leave" && cause !== "escape" && \(cause \|\| ""\)\.indexOf\("win-leave"\) !== 0 &&\n          cause !== "gear-open" && cause !== "re-click" &&\n          cause !== "bar-hidden" && cause !== "compact-theme" && cause !== "sub-pop" &&\n          typeof lastTipDownAt !== "undefined" && lastTipDownAt &&\n          Date\.now\(\) - lastTipDownAt < 1200\) \{\n        tipStats\.lastHide = "blocked:" \+ \(cause \|\| "\?"\);\n        return;\n      \}/);
   assert.match(s, /if \(typeof lastTipDownAt !== "undefined" && lastTipDownAt &&\n          Date\.now\(\) - lastTipDownAt < 1200\) return;/, 'focusout short-circuit in window');
 });
 

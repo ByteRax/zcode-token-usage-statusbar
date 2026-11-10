@@ -843,13 +843,18 @@
         tipStats.lastHide = "dev-keep:" + (cause || "?");
         return;
       }
-      /* v271：tip 内按压后 1.2s 硬保活——点击/按压引发的焦点跌落、宿主重渲染、
-       * 命中区边缘误判（left-bar）等任何 force 收起都不得关掉用户正在交互的
+      /* v271/v329：tip 内按压后 1.2s 硬保活——点击/按压引发的焦点跌落、宿主重渲染、
+       * 命中区边缘误判（left-bar）等任何收起都不得关掉用户正在交互的
        * tooltip（用户实报「点击 tooltips 中的任何位置都会导致关闭」）；win-leave
-       * （窗口真失焦）与 Escape 例外。typeof 守卫兼容切片沙箱。 */
-      if (force && cause !== "win-leave" && cause !== "escape" &&
+       * （窗口真失焦）与 Escape、齿轮、同格再次点击与宿主格已消失（bar-hidden/compact-theme/sub-pop）例外。typeof 守卫兼容切片沙箱。 */
+      if (cause !== "win-leave" && cause !== "escape" && (cause || "").indexOf("win-leave") !== 0 &&
+          cause !== "gear-open" && cause !== "re-click" &&
+          cause !== "bar-hidden" && cause !== "compact-theme" && cause !== "sub-pop" &&
           typeof lastTipDownAt !== "undefined" && lastTipDownAt &&
-          Date.now() - lastTipDownAt < 1200) force = false;
+          Date.now() - lastTipDownAt < 1200) {
+        tipStats.lastHide = "blocked:" + (cause || "?");
+        return;
+      }
       if (!force && mouseInBar) { tipStats.lastHide = "blocked:" + (cause || "?"); return; }
       spdHoverPortalHide();   /* v281：Portal 随 tooltip 收起，不留孤儿浮层 */
       spdLegendTipHide();     /* v282：档位说明浮层同链收起 */
@@ -1111,6 +1116,12 @@
           }, 300);
           return;
         }
+        /* v329：按压硬保活窗（1.2s）内不触发移开收起，保持 mouseInBar */
+        if (typeof lastTipDownAt !== "undefined" && lastTipDownAt &&
+            Date.now() - lastTipDownAt < 1200) {
+          mouseInBar = true;
+          return;
+        }
         mouseInBar = false;
         if (tipFor && !state.devKeepTip) hideTip(true, "left-bar");   // v43：移开条面立即消失；v297.3 开发者常驻开关时不自动收
         return;
@@ -1163,6 +1174,9 @@
     listenGlobal(window, "blur", function () { tipBoundaryHide("blur"); }, true);
     function tipLeaveAt(x, y) {
       if (inactive() || !tipFor) return;
+      /* v329：按压硬保活窗（1.2s）内不触发任何离开（防止合成 leave / 边缘跳动误关） */
+      if (typeof lastTipDownAt !== "undefined" && lastTipDownAt &&
+          Date.now() - lastTipDownAt < 1200) return;
       if (x <= 1 || x >= innerWidth - 2 || y <= 1 || y >= innerHeight - 2) {
         tipBoundaryHide("edge");
         return;

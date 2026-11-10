@@ -304,7 +304,7 @@ class OverlayBridgeNoticeTests(unittest.TestCase):
         self.assertIs(outcome.get("permission"), True)
         self.assertFalse(stage.exists())
         # 消费端闭环：该结果经 _bridge_notice 必须产出权限提示
-        self.assertIn("受保护目录", self.installer._bridge_notice({}, outcome, pi)["systemMessage"])
+        self.assertIn("受保护目录", self.installer._bridge_notice({}, outcome, self.pi_stub(writable=False))["systemMessage"])
 
     def test_pending_remove_intent_wins_over_auto_bridge(self):
         stage = self.root / "stage.asar"
@@ -394,9 +394,29 @@ class OverlayBridgeNoticeTests(unittest.TestCase):
         # 看不见 ACL，target_writable() 恒 True 的 Program Files 场景也必须提示）。
         denied = {"status": "skipped-error", "version": None,
                   "detail": "[WinError 5] 拒绝访问", "permission": True}
-        outcome = self.installer._bridge_notice({}, denied, self.pi_stub())
+        outcome = self.installer._bridge_notice({}, denied, self.pi_stub(writable=False))
         self.assertIn("管理员" if os.name == "nt" else "sudo", outcome["systemMessage"])
         self.assertIn(str(self.root / "app.asar"), outcome["systemMessage"])
+
+    def test_permission_error_on_writable_dir_is_not_called_protected(self):
+        # %LOCALAPPDATA%\\Programs\\ZCode 这类用户目录：写入探针通过，PermissionError 实为
+        # 占用/杀毒拦截，不得谎称受保护目录并引导管理员提权。
+        denied = {"status": "skipped-error", "version": None,
+                  "detail": "[WinError 5] 拒绝访问", "permission": True}
+        message = self.installer._bridge_notice({}, denied, self.pi_stub(writable=True))["systemMessage"]
+        self.assertNotIn("受保护目录", message)
+        self.assertNotIn("管理员", message)
+        self.assertNotIn("sudo", message)
+        self.assertIn("/install-overlay", message)
+
+    def test_writable_probe_exception_stays_fail_closed(self):
+        # 探针自身抛异常时判不出是否受保护：回到原有提权提示，不得误报"占用/拦截"。
+        denied = {"status": "skipped-error", "version": None,
+                  "detail": "[WinError 5] 拒绝访问", "permission": True}
+        pi = self.pi_stub(writable=True)
+        pi.target_writable.side_effect = RuntimeError("probe boom")
+        message = self.installer._bridge_notice({}, denied, pi)["systemMessage"]
+        self.assertIn("管理员" if os.name == "nt" else "sudo", message)
 
     def test_windows_permission_notice_uses_administrator_hint(self):
         denied = {"status": "skipped-error", "version": None,
@@ -404,7 +424,7 @@ class OverlayBridgeNoticeTests(unittest.TestCase):
         # 直接单测 _bridge_notice：mock 全局 os.name 会让 pathlib 在非 Windows 上
         # 实例化 WindowsPath，无法走完整 run_hook
         with mock.patch.object(self.installer.os, "name", "nt"):
-            outcome = self.installer._bridge_notice({}, denied, self.pi_stub())
+            outcome = self.installer._bridge_notice({}, denied, self.pi_stub(writable=False))
         self.assertIn("管理员", outcome["systemMessage"])
         self.assertIn("overlay_install.py", outcome["systemMessage"])
         self.assertNotIn("sudo", outcome["systemMessage"])
