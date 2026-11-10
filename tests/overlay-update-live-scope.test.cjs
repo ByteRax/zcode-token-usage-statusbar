@@ -67,6 +67,8 @@ function runFastPath({ tipForOnCell = true, sameTip = false } = {}) {
     renderSubAgentRows: () => {},
     subRate: { sum: null },
     zuBarSpeedView: () => view,
+    /* v326：updateLive 经 zuLiveFaceHtml 写「数字+dim」两 item——切片环境提供同款实现 */
+    zuLiveFaceHtml: (t) => (typeof t === 'string' && / t\/s$/.test(t) ? t.slice(0, -4) + '<span class="dim">t/s</span>' : t),
     buildLiveTip: v => (sameTip ? 'TIP:233.6 t/s' : 'TIP:' + v.text),
     syncTpsChip: () => {},
     liveKindCur: 'live', livePhaseCur: 'generate', liveStatsCur: null,

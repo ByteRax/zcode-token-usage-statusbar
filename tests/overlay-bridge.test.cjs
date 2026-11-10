@@ -85,11 +85,24 @@ class Element {
     // 且每次查询都从 innerHTML 回放 class/text——整条重渲染（换图标/换文案）后替身
     // 也要反映新状态，否则只有原地改字路径可见（v77 相位切换引入了更多整条重渲染）。
     if (selector === '.zu-live') {
-      const m = this.innerHTML.match(/class="(zu-live[^"]*)"[^>]*>([^<]*)/);
+      /* v326：.zu-live 内是「数字 + <span class="dim">t/s</span>」两 item 结构，
+       * textContent = 全部后代文本拼接（数字尾空格 + t/s），不再只取首个文本段 */
+      const m = this.innerHTML.match(/class="(zu-live[^"]*)"[^>]*>([\s\S]*?)<\/span>/);
       if (m) {
-        if (!this.__liveEl) this.__liveEl = new Element('span');
+        if (!this.__liveEl) {
+          this.__liveEl = new Element('span');
+          /* v326：updateLive 原地更新写 liveEl.innerHTML（两 item 结构）。真实 DOM 里这会
+           * 改变节点文本；合成替身需把 innerHTML 赋值同步到 textContent（去标签），否则
+           * 原地路径的文本推进对断言不可见。get 返回最近一次赋值原串，保持 updateLive 的
+           * innerHTML 幂等比较语义。 */
+          let liveHtml = '';
+          Object.defineProperty(this.__liveEl, 'innerHTML', {
+            set: (v) => { liveHtml = String(v); this.__liveEl.textContent = liveHtml.replace(/<[^>]*>/g, ''); },
+            get: () => liveHtml,
+          });
+        }
         this.__liveEl.className = m[1];
-        this.__liveEl.textContent = m[2];
+        this.__liveEl.textContent = m[2].replace(/<[^>]*>/g, '');
         return this.__liveEl;
       }
       return null;
@@ -418,17 +431,17 @@ test('⑭ empty delivery (DB not caught up yet) keeps the placeholder and retrie
 test('⑮ bar "generation speed" chip is untouched by the rich-text overlay path', () => {
   const h = harness();
   const store = driveLocalStreaming(h);
-  assert.equal(instanceOf(h).liveEl().textContent, '1.5 t/s');   // 生成中：估算态
+  assert.equal(instanceOf(h).liveEl().textContent, '1.5t/s');   // 生成中：估算态
   const { line } = completeTurn(h, store);
   // 完成态 chip：紧凑 tok/s + 档位色（v73 格式，与对话内长句无关）——富文本请求/交付全程不变
-  assert.equal(instanceOf(h).liveEl().textContent, '250.0 t/s');
+  assert.equal(instanceOf(h).liveEl().textContent, '250.0t/s');
   assert.equal(instanceOf(h).liveEl().className, 'zu-live zu-sky');   // 250 t/s ∈ 200–300 快速档（v127 十档）
   h.window.__zusageDeliverTurnText('sid_a', RICH);
   assert.equal(line().textContent, RICH);
-  assert.equal(instanceOf(h).liveEl().textContent, '250.0 t/s');
+  assert.equal(instanceOf(h).liveEl().textContent, '250.0t/s');
   assert.equal(instanceOf(h).liveEl().className, 'zu-live zu-sky');   // 250 t/s ∈ 200–300 快速档（v127 十档）
   h.runTimers(500);
-  assert.equal(instanceOf(h).liveEl().textContent, '250.0 t/s');
+  assert.equal(instanceOf(h).liveEl().textContent, '250.0t/s');
 });
 
 function driveLocalStreaming(h) {
@@ -487,7 +500,7 @@ test('② matched session binds store and live segment shows c2t-estimated tok/s
   const live = inst.liveEl();
   assert.ok(live, 'live segment node mounted');
   // 本会话尚无已完成轮次校准过比例：退回默认每 token 2 字符 → 3/2 = 1.5
-  assert.equal(live.textContent, '1.5 t/s');
+  assert.equal(live.textContent, '1.5t/s');
   assert.equal(live.className, 'zu-live hot');   // 估算 1.5 t/s 套低速档（v127 估算态也分档）
   // 无桥时不渲染实时段（降级现状）：见用例①，liveEl 为 null
 });
@@ -502,7 +515,7 @@ test('③ completed turn swaps live text to final summary and inserts determinis
   assert.equal(stats.complete, true);
   assert.equal(stats.tokenRate, 250);
   // 悬浮条 chip 完成态：紧凑真实 tok/s + 档位色（与对话内长句 zuFinalText 分开，互不影响）
-  assert.equal(inst.liveEl().textContent, '250.0 t/s');
+  assert.equal(inst.liveEl().textContent, '250.0t/s');
   assert.equal(inst.liveEl().className, 'zu-live zu-sky');   // 250 t/s ∈ 200–300 快速档（v127 十档）
   // 原始 turnId 形态（DOM data-turn-id）经 alias 映射同样命中
   assert.equal(inst.statsFor('t1').tokenRate, 250);
@@ -600,7 +613,7 @@ test('⑦ rate-line toggle off detaches the bridge and withdraws live segment an
   h.runTimers(500);
   assert.equal(h.deterministic().length, 1);
   const live = instanceOf(h).liveEl();
-  assert.equal(live.textContent, '250.0 t/s');
+  assert.equal(live.textContent, '250.0t/s');
   h.window.__zusagePluginUpdate({ rateLine: false });   // ⚙ 面板关闭逐问速率行
   h.runTimers(100);                                    // 下一轮检测（0.1s 心跳）：detach
   h.runTimers(500);                                    // 扫描撤下自插历史行
@@ -614,11 +627,11 @@ test('⑦ rate-line toggle off detaches the bridge and withdraws live segment an
 test('⑧ c2t calibration uses the previous completed turn\'s real ratio for the next live estimate', () => {
   const h = harness();
   const store = driveStreaming(h);   // pt1 生成中，characterRate=3（尚无校准样本，用默认比例 2）
-  assert.equal(instanceOf(h).liveEl().textContent, '1.5 t/s');
+  assert.equal(instanceOf(h).liveEl().textContent, '1.5t/s');
   h.clock.now = 2000;
   // pt1 完成：6 字符（'abcdef'）÷ 2 tokens = 每 token 3 字符（区别于默认值 2，便于断言区分）
   store.set(snap(3, [header('completedSuccess', { outputTokens: 2, modelDurationMs: 1000, activeMs: 1000 }), text('abcdef')]));
-  assert.equal(instanceOf(h).liveEl().textContent, '2.0 t/s');
+  assert.equal(instanceOf(h).liveEl().textContent, '2.0t/s');
   // 新一轮 t2/pt2 开始生成（同一 store/session，calibration 不随换轮重置）
   h.clock.now = 2100;
   store.set(snap(4, [
@@ -632,7 +645,7 @@ test('⑧ c2t calibration uses the previous completed turn\'s real ratio for the
   ]));
   assert.equal(instanceOf(h).statsFor('pt2').characterRate, 9);
   // 用上一轮校准出的 3 字符/token（而非默认 2）：9 ÷ 3 = 3.0
-  assert.equal(instanceOf(h).liveEl().textContent, '3.0 t/s');
+  assert.equal(instanceOf(h).liveEl().textContent, '3.0t/s');
 });
 
 test('⑨ nested [data-v4-turn-unit] wrapping a section with the same turn-id inserts exactly one line', () => {
@@ -708,8 +721,8 @@ test('⑩b compact auxiliary turn (timelineMarker type=compact) never shows the 
 
 test('⑪ heartbeat tick alone (no new store push) still advances the observed-seconds display during a stall', () => {
   const h = harness();
-  const store = driveStreaming(h);   // 末尾：characterRate=3，liveEl 显示 '1.5 t/s'
-  assert.equal(instanceOf(h).liveEl().textContent, '1.5 t/s');
+  const store = driveStreaming(h);   // 末尾：characterRate=3，liveEl 显示 '1.5t/s'（v326 两 item 拼接无空格）
+  assert.equal(instanceOf(h).liveEl().textContent, '1.5t/s');
   // 模拟工具执行期间宿主不再推送新快照：只推进时钟、只触发 bridgeTick 自身的 0.1s 心跳
   h.clock.now = 3100;   // 距上个样本（t=1000）超过 2000ms 陈旧窗口，characterRate 应变为 null
   h.runTimers(100);
@@ -731,8 +744,8 @@ test('⑪ heartbeat tick alone (no new store push) still advances the observed-s
 
 test('⑫ bar chip mirrors the running toolCall state (verb + elapsed) instead of a stale 生成中', () => {
   const h = harness();
-  const store = driveStreaming(h);   // 正文流式中：'1.5 t/s'
-  assert.equal(instanceOf(h).liveEl().textContent, '1.5 t/s');
+  const store = driveStreaming(h);   // 正文流式中：'1.5t/s'
+  assert.equal(instanceOf(h).liveEl().textContent, '1.5t/s');
   // 工具开始执行（本轮最后一个活动行变为 running 的 toolCall）：悬浮条切到宿主同款动词
   store.set(snap(3, [header('running'), text('abcdef'),
     { rowId: 5, turnId: 't1', productTurnId: 'pt1', kind: 'toolCall', toolName: 'Edit', inputText: '{}', status: 'running', startedAt: Date.now() - 4200 }]));
@@ -755,7 +768,7 @@ test('⑬ running phases keep distinct generating, thinking and tool icons after
     { rowId: 5, turnId: 't1', productTurnId: 'pt1', kind: 'reasoning', text: '想一想' }]));
   assert.equal(inst.statsFor('pt1').phase, 'thinking');
   assert.equal(inst.liveIconKind(), 'think');   // 相位切换触发整条重渲染：动效脑保持
-  assert.match(inst.liveEl().textContent, /^\d+(\.\d+)? t\/s$/);   // 思考文本也在流式：估算速度照常
+  assert.match(inst.liveEl().textContent, /^\d+(\.\d+)?t\/s$/);   // 思考文本也在流式：估算速度照常（v326 两 item 拼接无空格）
   // 工具执行期同样保持动效脑（v77.1：运行期一律脑图标）
   store.set(snap(4, [header('running'), text('abcdef'),
     { rowId: 6, turnId: 't1', productTurnId: 'pt1', kind: 'toolCall', toolName: 'Read', inputText: '', status: 'running', startedAt: Date.now() }]));
@@ -769,7 +782,7 @@ test('⑬ running phases keep distinct generating, thinking and tool icons after
   // 轮次完成：无相位，图标回落到 bolt（真实 tok/s 档位视图）
   store.set(snap(6, [header('completedSuccess', { outputTokens: 1000, modelDurationMs: 4000, activeMs: 5000 }), text('abcdefghij')]));
   assert.equal(inst.liveIconKind(), 'bolt');
-  assert.equal(inst.liveEl().textContent, '250.0 t/s');
+  assert.equal(inst.liveEl().textContent, '250.0t/s');
 });
 
 test('⑯ switching to a session whose latest turn finished before this binding does not show a misleading "rate unavailable"', () => {
@@ -873,7 +886,7 @@ test('⑰ a turn observed from "running" still shows its real rate normally (obs
   // 从 running 一路追踪到 complete：observedLive 应为 true，悬浮条正常显示真实速度，
   // 不会被这次新增的"历史存量"过滤误伤。
   assert.equal(instanceOf(h).statsFor('pt1').observedLive, true);
-  assert.equal(instanceOf(h).liveEl().textContent, '250.0 t/s');
+  assert.equal(instanceOf(h).liveEl().textContent, '250.0t/s');
   assert.equal(instanceOf(h).liveEl().className, 'zu-live zu-sky');   // 250 t/s ∈ 200–300 快速档（v127 十档）
   assert.equal(line().textContent, '⚡ 250.0 token/s(本轮) · 输出 1,000 token · 耗时 5.0s');
 });
@@ -1024,7 +1037,7 @@ test('㉓ v87 synthetic thinking fires only for empty-window draft or phase=runn
 
 test('㉓b thinking elapsed anchors to turnHeader.startedAt (host writes it at header creation), not first observation (v116)', () => {
   const h = harness();
-  const store = driveStreaming(h);   // t=1000，'1.5 t/s'
+  const store = driveStreaming(h);   // t=1000，'1.5t/s'
   store.set(snap(3, [header('running', { startedAt: Date.now() - 4200 }), text('abcdef')]));
   h.clock.now = 3100;   // 字符流停滞 >2s：characterRate 失效进入思考态
   h.runTimers(100);     // 仅心跳驱动（无新快照），同 ⑪

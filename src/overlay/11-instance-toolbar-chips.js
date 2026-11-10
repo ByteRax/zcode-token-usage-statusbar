@@ -420,7 +420,9 @@
       var sig = v.kind + "|" + cls + "|" + txt;
       if (chip.__zuSig !== sig) {   // 幂等：内容没变不重建，悬停/焦点态不被打断
         chip.__zuSig = sig;
-        chip.innerHTML = '<span class="' + cls + '">' + ttEsc(txt) + "</span>";
+        /* v326：两 item 结构（数字+dim），与条内速度格同一 gap:5px 机制（.zu-live 规则全局作用域，
+         * compact chip 同吃 inline-flex——单文本时 gap 无 item 可分，间距退回裸空格 ~3.7px） */
+        chip.innerHTML = '<span class="' + cls + '">' + zuLiveFaceHtml(txt) + "</span>";
         chip.setAttribute("aria-label", L("生成速度 ", "Generation speed ") + txt);
       }
       var prevT = chip.__zuT;
