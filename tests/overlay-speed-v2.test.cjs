@@ -1037,3 +1037,14 @@ test('v308 柱组左对齐+呼吸边距防回潮；zu-sl-solo 单柱弱化不复
   assert.doesNotMatch(source, /\? " zu-sl-solo" : ""/, 'no solo class concat in spdLeftHTML');
   assert.doesNotMatch(source, /\.zu-sl-stats\.zu-sl-solo\{/, 'no solo dimming CSS rule');
 });
+
+test('v327 左卡标题行状态词恒不收缩不折行（大字号防竖排破版）', () => {
+  // 他机实报：--ui-font-size≈20px（宿主「界面字号」滑条上限 12–20）时标题行需求宽
+  // （实测模型 ≈11.16×ui−5.16，20px 时 ~218px）超出 210px 左卡内宽 184px，zu-sl-sub 无
+  // nowrap 被 flex 均摊收缩压成逐字竖排「思考/中」，同时 zu-sl-title 以 ellipsis 截断。
+  // 状态词 flex:0 0 auto + nowrap 后收缩由标题独享，默认 14px（需求 151.1px、余量 33px）视觉零变化。
+  // 正则锁两属性共存于该规则声明块内（[^}]* 不跨规则），不锁各自前的前缀属性与相互顺序。
+  assert.match(source,
+    /\.zu-sv-root \.zu-sl-sub\{[^}]*flex:0 0 auto[^}]*white-space:nowrap/,
+    'live status word never shrinks or wraps vertically (title takes the ellipsis)');
+});
