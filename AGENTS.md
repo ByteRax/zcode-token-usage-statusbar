@@ -58,7 +58,7 @@
 | `install_monitor.py` | 重启提醒、加载诊断和 Windows 待替换收尾 |
 | `plugin-updater.cjs` / `plugin-release.cjs` | 宿主插件更新调度、正式 GitHub Release 与渠道校验、更新日志（Release 说明）拉取与缓存 |
 | `plugin-storage.cjs` | 按宿主存储解析用户级插件库存/缓存，不假设固定 HOME |
-| `quota-client.cjs` / `src/quota/` / `scripts/build_quota.py` | 套餐额度客户端（主进程，热换）：解密宿主 OAuth 凭据（`enc:v1` AES-256-GCM 重写实现）直查 BigModel/Z.ai monitor 端点及多厂商额度/余额接口，归一化窗口/退避/冻结/epoch 竞态，凭据只在内存；`src/quota/00-*.cjs`..`05-*.cjs` 为模块化分片源码，经零依赖 `scripts/build_quota.py` 拼接产出单文件 `quota-client.cjs` |
+| `quota-client.cjs` / `src/quota/` / `scripts/build_quota.py` | 套餐额度客户端（主进程，热换）：解密宿主 OAuth 凭据（`enc:v1`/`enc:v2` 双信封按宿主语义重写实现，v2 密钥在 OS 凭据库，见 [.zcode/rules/quota.md](.zcode/rules/quota.md)）直查 BigModel/Z.ai monitor 端点及多厂商额度/余额接口，归一化窗口/退避/冻结/epoch 竞态，凭据只在内存；`src/quota/00-*.cjs`..`05-*.cjs` 为模块化分片源码，经零依赖 `scripts/build_quota.py` 拼接产出单文件 `quota-client.cjs` |
 | `model-puller.cjs` / `engine-patch.cjs` | 自定义供应商模型列表与思考档位拉取写回（共源 `resolveHostQuotaPaths`）；宿主引擎 bundle 自动压缩阈值等白名单补丁（主进程，热换） |
 | `runtime_lock.py` / `release_unpack.py` | 跨进程锁、配置事务/可信同步、安全 ZIP 解包 |
 | `sync_plugin.py` / `release_tool.py` | 根源码副本同步、`overlay.js`/`quota-client.cjs` 拼接联动与 6 处分发清单一致性校验（`check_manifests` / `--verify-manifests`）；确定性发布包构建、校验、发布预演/发布 |

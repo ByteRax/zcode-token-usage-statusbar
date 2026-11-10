@@ -13,7 +13,11 @@ function createQuotaClient(opts) {
   /* resetListOn 同理缺省关：bigmodel 族并行查网页控制台列表端点补充过期卡历史
    * （status 端点无过期历史）；请求量翻倍且属增强数据，由注入侧显式开启 */
   const resetListOn = typeof o.resetList === "function" ? o.resetList : (o.resetList ? () => true : () => false);
-  const { credsPath, customCfgPath, builtinCfgPath } = resolveQuotaPaths(o);
+  const { credsPath, customCfgPath, builtinCfgPath, credsDir } = resolveQuotaPaths(o);
+  /* v2 凭据（宿主 3.18.0 enc:v2:os）绑定真实路径上下文并预热 keychain 密钥缓存：
+   * 异步预热、解密同步读缓存；未热时解密失败走 pending 短重试（见 tickSource）。 */
+  setDefaultDecryptCtx({ credsPath, credsDir, resourcesDir: o.resourcesDir, env });
+  void ensureDefaultV2Key();
   const secretsPath = o.secretsPath || path.join(path.dirname(credsPath), "quota-secrets.json");
   const readFile = o.readFile || ((p) => JSON.parse(fs.readFileSync(p, "utf8")));
   const log = o.log || (() => {});
@@ -243,7 +247,8 @@ function createQuotaClient(opts) {
     }
     if (cred.decryptFailed) {
       if (st.status !== "not_configured") setState(st, { status: "not_configured", reason: "decrypt", lastError: "credential decrypt failed" });
-      st.nextAt = t + NOT_CONFIGURED_RETRY_MS;
+      /* v2 密钥缓存未热是瞬态（预热在途）：1 秒短重试；真不可解（keychain 缺失等）维持低频 */
+      st.nextAt = t + (v2KeyPending() ? 1000 : NOT_CONFIGURED_RETRY_MS);
       return false;
     }
     if (cred.fingerprint !== st.fingerprint) {
@@ -343,6 +348,7 @@ function createQuotaClient(opts) {
 
   function tick(force) {
     let started = 0;
+    void ensureDefaultV2Key();   // v2 密钥缓存预热：已缓存/在途时为廉价空转（memoize）
     const qOn = quotaOn();
     const set = activeSet();   // 撤销/禁用重评始终执行；额度关时只停联网查询
     if (qOn) for (const { a, st } of set.values()) if (tickSource(a, st, force)) started++;
@@ -700,6 +706,10 @@ module.exports = {
   resolveCustomProvider,
   decryptValue,
   deriveCipherKey,
+  makeHostDecryptor,
+  setDefaultDecryptCtx,
+  ensureDefaultV2Key,
+  v2KeyPending,
   jwtExpMs,
   normalizeQuotaBody,
   normalizeZcodeStartBalance,

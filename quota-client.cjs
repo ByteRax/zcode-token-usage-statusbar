@@ -61,7 +61,7 @@ function jwtExpMs(token) {
   } catch (e) { return null; }
 }
 
-/* ---------- 宿主凭据解密（enc:v1 AES-256-GCM，按宿主语义重写） ---------- */
+/* ---------- 宿主凭据解密（enc:v1 / enc:v2 双信封，按宿主语义重写） ---------- */
 function deriveSecret(env) {
   const conf = env.ZCODE_CREDENTIAL_SECRET;
   if (conf) return conf;
@@ -70,7 +70,7 @@ function deriveSecret(env) {
   return `zcode-credential-fallback:${os.platform()}:${os.homedir()}:${username}`;
 }
 function deriveCipherKey(env) { return crypto.createHash("sha256").update(deriveSecret(env)).digest(); }
-function decryptValue(value, key) {
+function decryptV1Value(value, key) {
   if (typeof value !== "string" || !value.startsWith(ENC_PREFIX)) return value;
   const parts = value.slice(ENC_PREFIX.length).split(".");
   if (parts.length !== 3 || !parts[0] || !parts[1] || parts[2] === undefined) return null;
@@ -86,6 +86,148 @@ function decryptValue(value, key) {
     d.setAuthTag(tag);
     return Buffer.concat([d.update(ct), d.final()]).toString("utf8");
   } catch (e) { return null; }
+}
+
+/* ---------- v2 信封（宿主 3.18.0）：enc:v2:{os|env}:{keyId24}:{iv.tag.ct} ----------
+ * 密钥是 32 字节随机值，OS 源存宿主 OS 凭据库（service "ZCode Credential Encryption"，
+ * account=sha256(resolve(credentials.json)).hex），env 源=sha256(受管 secret)。信封内
+ * keyId24=sha256(key).hex 前 24 位，解密前先比对指纹：密钥不在/换钥一律 null，绝不跨钥强解。
+ * keychain 读取异步而解密调用点全同步：ensureKey() 异步预热缓存，decrypt 同步读缓存；
+ * 未热/失配时置 pending 供调度器用 1 秒短重试（区别于真解密失败的 60 秒）。 */
+const ENC_V2_PFX = "enc:v2:";
+const V2_SERVICE = "ZCode Credential Encryption";
+const V2_KEY_RE = /^[A-Za-z0-9_-]{43}$/;   // 32 字节 base64url（无填充）
+
+function keyIdOf(key) { return crypto.createHash("sha256").update(key).digest("hex").slice(0, 24); }
+
+function openV2Seal(seal, key) {
+  const parts = seal.split(".");
+  if (parts.length !== 3 || !parts[0] || !parts[1] || parts[2] === undefined) return null;
+  let iv, tag, ct;
+  try {
+    iv = Buffer.from(parts[0], "base64url");
+    tag = Buffer.from(parts[1], "base64url");
+    ct = Buffer.from(parts[2], "base64url");
+  } catch (e) { return null; }
+  if (iv.length !== 12 || tag.length !== 16) return null;
+  try {
+    const d = crypto.createDecipheriv("aes-256-gcm", key, iv);
+    d.setAuthTag(tag);
+    return Buffer.concat([d.update(ct), d.final()]).toString("utf8");
+  } catch (e) { return null; }
+}
+
+let hostKeyringMod;   // undefined=未探测；null=探测过不可用；对象=可用绑定
+function loadHostKeyring(resourcesDir) {
+  if (hostKeyringMod !== undefined) return hostKeyringMod;
+  hostKeyringMod = null;
+  const dir = String(resourcesDir || "");
+  if (!dir) return null;
+  const tries = [];
+  /* asar 内 wrapper（Electron fs 透传把 .node 指到 unpacked）；直接 require 失败不影响后续 */
+  tries.push(() => require(path.join(dir, "app.asar", "node_modules", "@napi-rs", "keyring")));
+  try {   // unpacked 原生 .node 兜底：扫描 @napi-rs/keyring-<triple> 目录
+    const scope = path.join(dir, "app.asar.unpacked", "node_modules", "@napi-rs");
+    for (const name of fs.readdirSync(scope)) {
+      if (!/^keyring-/.test(name)) continue;
+      const pdir = path.join(scope, name);
+      for (const f of fs.readdirSync(pdir)) {
+        if (f.endsWith(".node")) tries.push(((p, f2) => () => require(path.join(p, f2)))(pdir, f));
+      }
+    }
+  } catch (e) { /* 无 unpacked 目录/受限读取 */ }
+  for (const t of tries) {
+    try {
+      const m = t();
+      if (m && (m.AsyncEntry || m.Entry)) { hostKeyringMod = m; break; }
+    } catch (e) { /* 下一候选 */ }
+  }
+  return hostKeyringMod;
+}
+
+/* 受管 secret（v2:env 源）：镜像宿主 resolveManagedSecret 的非强制分支——只认
+ * ZCODE_CREDENTIAL_SECRET env 与 ZCODE_CREDENTIAL_SECRET_FILE env 指向的文件；
+ * 两者同设按配置错误处理（宿主同款 throw）。不自动探测固定文件路径。 */
+function readManagedSecret(ctx) {
+  const env = ctx.env || {};
+  if (env.ZCODE_CREDENTIAL_SECRET && env.ZCODE_CREDENTIAL_SECRET_FILE) { ctx.lastError = "managed secret misconfigured"; return null; }
+  if (env.ZCODE_CREDENTIAL_SECRET) return env.ZCODE_CREDENTIAL_SECRET;
+  if (env.ZCODE_CREDENTIAL_SECRET_FILE) {
+    try { return (ctx.readFileRaw || ((p) => fs.readFileSync(p, "utf8")))(env.ZCODE_CREDENTIAL_SECRET_FILE); }
+    catch (e) { ctx.lastError = "managed secret file unreadable"; return null; }
+  }
+  return null;
+}
+
+async function ensureV2Key(ctx) {
+  const cur = ctx.cache.get(ctx.credsPath) || null;
+  if (cur) return cur;   // 已热：不重读 keychain/secret（换钥由 decrypt 侧 keyId 失配作废缓存后重读）
+  const env = ctx.env || process.env;
+  let secret = readManagedSecret(ctx), source = "";
+  if (ctx.lastError) return cur;
+  if (secret !== null) {
+    source = "env";
+  } else {
+    const mod = ctx.keyringMod !== undefined ? ctx.keyringMod : loadHostKeyring(ctx.resourcesDir);
+    if (!mod || !(mod.AsyncEntry || mod.Entry)) { ctx.lastError = "host keyring unavailable"; return cur; }
+    try {
+      const E = mod.AsyncEntry || mod.Entry;
+      const account = crypto.createHash("sha256").update(String(ctx.credsPath)).digest("hex");
+      secret = await new E(V2_SERVICE, account).getPassword();
+    } catch (e) { ctx.lastError = "keychain read failed"; return cur; }
+    source = "os";
+  }
+  if (typeof secret !== "string" || !V2_KEY_RE.test(secret)) { ctx.lastError = "key shape invalid"; return cur; }
+  const key = Buffer.from(secret, "base64url");
+  if (key.length !== 32) { ctx.lastError = "key length invalid"; return cur; }
+  const ent = { key, keyId: keyIdOf(key), source };
+  ctx.cache.set(ctx.credsPath, ent);
+  ctx.lastError = "";
+  return ent;
+}
+
+function makeHostDecryptor(opts) {
+  const o = opts || {};
+  const ctx = {
+    credsPath: o.credsPath || "",
+    credsDir: o.credsDir || "",
+    resourcesDir: o.resourcesDir !== undefined ? o.resourcesDir : ((typeof process !== "undefined" && process.resourcesPath) || ""),
+    env: o.env || process.env,
+    readFileRaw: o.readFileRaw,
+    keyringMod: o.keyringMod,   // undefined=自动探测；null/对象=显式指定（测试注入）
+    cache: new Map(), lastError: "", pending: 0, ensuring: null,
+  };
+  function ensureKey() {
+    if (ctx.ensuring) return ctx.ensuring;
+    ctx.ensuring = ensureV2Key(ctx).finally(() => { ctx.ensuring = null; ctx.pending = 0; });
+    return ctx.ensuring;
+  }
+  function decrypt(enc, legacyKey) {
+    if (typeof enc !== "string") return enc;
+    if (!enc.startsWith(ENC_V2_PFX)) return decryptV1Value(enc, legacyKey);
+    const parts = enc.slice(ENC_V2_PFX.length).split(":");
+    if (parts.length !== 3 || !/^(os|env)$/.test(parts[0]) || !/^[a-f0-9]{24}$/.test(parts[1])) return null;
+    const ent = ctx.cache.get(ctx.credsPath);
+    if (!ent || parts[0] !== ent.source || parts[1] !== ent.keyId) {
+      if (ent) ctx.cache.delete(ctx.credsPath);   // 缓存钥与信封不符（宿主换钥）：作废并重读
+      ctx.pending = 1;
+      try { void ensureKey(); } catch (e) { /* 同步段不抛 */ }
+      return null;
+    }
+    return openV2Seal(parts[2], ent.key);
+  }
+  return { ctx, ensureKey, decrypt, keyPending: () => !!ctx.pending };
+}
+
+/* 导出的 decryptValue 分发器：v2 信封走缺省宿主解密器（调用方无需感知上下文与缓存），
+ * v1/明文维持原 (value, key) 语义。客户端装配时 setDefaultDecryptCtx 绑定真实路径。 */
+let defaultDec = makeHostDecryptor({ env: process.env });
+function setDefaultDecryptCtx(opts) { defaultDec = makeHostDecryptor(opts || {}); }
+function ensureDefaultV2Key() { return defaultDec.ensureKey(); }
+function v2KeyPending() { return defaultDec.keyPending(); }
+function decryptValue(value, key) {
+  if (typeof value === "string" && value.startsWith(ENC_V2_PFX)) return defaultDec.decrypt(value, key);
+  return decryptV1Value(value, key);
 }
 
 /* ---------- BigModel/Z.ai monitor 归一化（v96 口径不变） ---------- */
@@ -1475,7 +1617,11 @@ function createQuotaClient(opts) {
   /* resetListOn 同理缺省关：bigmodel 族并行查网页控制台列表端点补充过期卡历史
    * （status 端点无过期历史）；请求量翻倍且属增强数据，由注入侧显式开启 */
   const resetListOn = typeof o.resetList === "function" ? o.resetList : (o.resetList ? () => true : () => false);
-  const { credsPath, customCfgPath, builtinCfgPath } = resolveQuotaPaths(o);
+  const { credsPath, customCfgPath, builtinCfgPath, credsDir } = resolveQuotaPaths(o);
+  /* v2 凭据（宿主 3.18.0 enc:v2:os）绑定真实路径上下文并预热 keychain 密钥缓存：
+   * 异步预热、解密同步读缓存；未热时解密失败走 pending 短重试（见 tickSource）。 */
+  setDefaultDecryptCtx({ credsPath, credsDir, resourcesDir: o.resourcesDir, env });
+  void ensureDefaultV2Key();
   const secretsPath = o.secretsPath || path.join(path.dirname(credsPath), "quota-secrets.json");
   const readFile = o.readFile || ((p) => JSON.parse(fs.readFileSync(p, "utf8")));
   const log = o.log || (() => {});
@@ -1705,7 +1851,8 @@ function createQuotaClient(opts) {
     }
     if (cred.decryptFailed) {
       if (st.status !== "not_configured") setState(st, { status: "not_configured", reason: "decrypt", lastError: "credential decrypt failed" });
-      st.nextAt = t + NOT_CONFIGURED_RETRY_MS;
+      /* v2 密钥缓存未热是瞬态（预热在途）：1 秒短重试；真不可解（keychain 缺失等）维持低频 */
+      st.nextAt = t + (v2KeyPending() ? 1000 : NOT_CONFIGURED_RETRY_MS);
       return false;
     }
     if (cred.fingerprint !== st.fingerprint) {
@@ -1805,6 +1952,7 @@ function createQuotaClient(opts) {
 
   function tick(force) {
     let started = 0;
+    void ensureDefaultV2Key();   // v2 密钥缓存预热：已缓存/在途时为廉价空转（memoize）
     const qOn = quotaOn();
     const set = activeSet();   // 撤销/禁用重评始终执行；额度关时只停联网查询
     if (qOn) for (const { a, st } of set.values()) if (tickSource(a, st, force)) started++;
@@ -2162,6 +2310,10 @@ module.exports = {
   resolveCustomProvider,
   decryptValue,
   deriveCipherKey,
+  makeHostDecryptor,
+  setDefaultDecryptCtx,
+  ensureDefaultV2Key,
+  v2KeyPending,
   jwtExpMs,
   normalizeQuotaBody,
   normalizeZcodeStartBalance,
