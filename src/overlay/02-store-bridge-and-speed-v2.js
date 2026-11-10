@@ -659,8 +659,20 @@
   }
   /* 轮表解包：t 是相对上一轮完成时刻的 delta（升序还原），s/msl 是索引表下标。
    * 任何字段缺失/非法都丢弃该轮，不让畸形远端/旧快照污染统计。 */
+  /* 按 speed_history 对象引用缓存解包结果：updateLive 心跳/store 通知与悬停重编会反复经 spdAnalyze
+   * 解包同一份轮表（6000 轮约 5ms/次，占整张速度卡生成的 95%）。同一帧内引用恒定；新帧是新 JSON
+   * 对象自然失效，引用相等即内容相等，零陈旧风险。WeakMap 随帧对象回收，无需上限。
+   * 结果只读：spdAnalyze/spdAggregate 只 filter/slice 出新数组、不改行对象；轮数守卫防原地追加。 */
+  var SPD_UNPACK_MEMO = new WeakMap();
   function spdUnpack(h) {
     if (!h || !h.turns || typeof h.turns.length !== "number" || !h.sids || !h.snames) return null;
+    var memo = SPD_UNPACK_MEMO.get(h);
+    if (memo && memo.n === h.turns.length) return memo.res;
+    var res = spdUnpackRaw(h);
+    SPD_UNPACK_MEMO.set(h, { n: h.turns.length, res: res });
+    return res;
+  }
+  function spdUnpackRaw(h) {
     var sids = h.sids, snames = h.snames, pids = h.pids || [], mnames = h.mnames || [];
     var out = [], prev = 0;
     for (var i = 0; i < h.turns.length; i++) {

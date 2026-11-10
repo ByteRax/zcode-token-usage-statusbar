@@ -1138,6 +1138,9 @@
   var lastRotatorFrameAt = 0;
   function rotatorFrameStep() {
     var now = Date.now();
+    /* 性能治理（specs/perf-lag-reduction.md §7）：主开关默认关闭，关闭态 masterTick 只剩遗留 DOM 还原的
+     * 两次整文档查询——65ms 一次（~30 次/s）纯属空转，降到 1s 一次；开启/设置变更走 masterTick 直调不经此处。 */
+    if (rotatorCfg && !rotatorCfg.enabled && now - lastRotatorFrameAt < 1000) return;
     if (now - lastRotatorFrameAt < 65) return;
     lastRotatorFrameAt = now;
     rotatorMasterTick();

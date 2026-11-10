@@ -577,9 +577,20 @@
         var cls = "zu-live " + view.cls + (view.word ? " zu-shimmer" : "");
         if (liveEl.className !== cls) liveEl.className = cls;
         /* v97：子代理速率是渲染端实时状态（不在泵快照里），tooltip 里的逐子代理
-         * 行随原地改字一起刷新——内容签名没变时 drawTip 幂等只调位置，不闪烁。 */
-        var tip1 = buildLiveTip(view);
+         * 行随原地改字一起刷新——内容签名没变时 drawTip 幂等只调位置，不闪烁。
+         * 性能治理（specs/perf-lag-reduction.md §4）：未悬停本格时不再每拍白建整张 V2 速度卡
+         * （心跳 10Hz + store 通知，6000 轮历史时 ~5ms/次）——只记最新 view 并标失鲜，
+         * drawTip 打开瞬间经 liveTipRefresh 补建，兜底每 1s 保鲜一次；悬停本格仍每拍构建。 */
         var liveCell = liveEl.closest ? liveEl.closest(".it") : null;
+        var hoverLive = !!liveCell && typeof tipFor !== "undefined" && tipFor === liveCell;
+        if (liveCell && !hoverLive && Date.now() - liveTipBuiltAt < 1000) {
+          liveCell.__zuTipView = view;
+          liveCell.__zuTipStale = true;
+          return;
+        }
+        liveTipBuiltAt = Date.now();
+        var tip1 = buildLiveTip(view);
+        if (liveCell) liveCell.__zuTipStale = false;
         if (liveCell && liveCell.__tip !== tip1) {
           /* v224 修复：__tip 宿主与 drawTip 读取都在 .it 格元素上（render 挂 tips[i]、
            * drawTip 读 tipFor.__tip）——v218 只改了 tipFor 判定，新串仍写到格内
@@ -609,8 +620,16 @@
         return;
       }
       liveTextCur = view ? view.text : "";
+      /* 性能治理（specs/perf-lag-reduction.md §6）：非 live（view 为 null，历史/空闲会话）且数据帧引用
+       * 未变时，100ms 心跳不重复整条 render——html() 急切构建全部 tooltip 串 + 五个 enhance* 全文档查询，
+       * 单次约 8~20ms，v90「空转无性能顾虑」的前提（只比较不写 DOM）并不成立。数据帧变化、live↔非 live
+       * 切换、设置/主题变化（直调 render）仍即时；500ms 兜底与 heavy(600ms) 同量级。 */
+      if (!view && !wasLive && idleRenderData === state.data && Date.now() - idleRenderAt < 500) return;
+      idleRenderData = state.data;
+      idleRenderAt = Date.now();
       render(state.data || { session: {}, last_turn: {}, today: {}, context_window: 0 });
     }
+    var liveTipBuiltAt = -Infinity, idleRenderData = null, idleRenderAt = -Infinity;   // 实例级节流状态（updateLive 切片内声明，VM 夹具同源；初值 -Infinity：首拍恒构建/渲染，不依赖时钟绝对值）
     /* v90：心跳 0.5s→0.1s——0.5s 秒数走字仍有可感卡顿；render 有 lastHtml 幂等守卫，
      * 内容未变时仅字符串构建+比较、不写 DOM，10Hz 空转无性能顾虑。扫描 tick 保持 0.5s。 */
     bridge.timer = setInterval(bridgeTick, 100);
@@ -741,6 +760,7 @@
       }
       var els = main.querySelectorAll(".it");
       for (var i = 0; i < els.length; i++) els[i].__tip = h.tips[i] || null;
+      for (var iz = 0; iz < els.length; iz++) els[iz].__zuTipStale = false;   // 整条渲染已按当前 view 重建 __tip，懒构建的失鲜标记作废（独立语句：测试 harness 按上一行源码锚点打补丁）
       if (didRebuild && focusedIndex >= 0) {
         var nextFocus = els[focusedIndex];
         if (nextFocus && nextFocus.focus) {
@@ -869,7 +889,18 @@
       tip.style.left = Math.round(left) + "px";
       tip.style.top = Math.round(top) + "px";
     }
+    /* 实时速度 chip tooltip 的懒构建补建（updateLive 未悬停时不再每拍构建，见其注释）：
+     * drawTip 读取 __tip 之前调用，保证打开/聚焦瞬间内容与此刻的 view 一致。 */
+    function liveTipRefresh(el) {
+      var v = el.__zuTipView;
+      el.__zuTipStale = false;
+      if (!v) return;
+      try { var s = buildLiveTip(v); if (s) el.__tip = s; } catch (e) {
+        if (typeof FATAL !== "undefined" && FATAL) FATAL.liveTipRefreshErr = String((e && e.stack) || e);   // 失败保留旧串，留痕供 diag 排查
+      }
+    }
     function drawTip(el, keepTop) {
+      if (el && el.__zuTipStale) liveTipRefresh(el);
       var t = el && el.__tip;
       if (!t) { tip.style.display = "none"; tipFor = null; return; }
       /* 幂等：内容没变就只调位置，不重建 innerHTML（重建=悬停中每 1.5s 闪烁） */

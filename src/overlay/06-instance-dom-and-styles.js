@@ -210,8 +210,9 @@
      * → v325 动态态 word-spacing 1px→4px（用户实机回定；完成态零间隔不受影响——无空格字符可加距）
      * → v326 数字与 t/s 间距改用 inline-flex+gap:5px+baseline：去除 word-spacing（用户实测调值无视觉变化——完成态无空格、动态态单文本）。动态态整条渲染（07 render live 分支）与原地更新（08）统一走 zuLiveFaceHtml 拆「数字+dim」两 item，gap 才有 item 可分；状态词态保持单文本。完成态 v324 曾零间隔，v326 起与动态态统一 5px（用户屏幕验证接受）；函数声明必须实例级（html(d) 分支块内是 Annex B 块级声明，live 分支 TypeError / 08 ReferenceError，实测 44 测试红）
      * → v327 V2 左卡标题行防破版（另一台机器实报截图：--ui-font-size≈20px 浅色主题下「最近18轮平均速度」截断+「思考中」竖排折行）：标题行需求宽随字号线性增长而卡内宽固定 184px（实测 14px 需 151.1 余量 33、ui≥17 必溢出），.zu-sv-root .zu-sl-sub 加 flex:0 0 auto+white-space:nowrap——状态词永不收缩竖排，溢出收缩由标题独享 ellipsis 降级；本机默认字号视觉零变化，CSS 契约断言锁定
+     * → v328 宿主卡顿治理（specs/perf-lag-reduction.md）：流式期间插件在宿主渲染线程的工作量与会话文本量/历史轮数解耦——①turn-stats ingest 字符计数改无分配码点计数+按行缓存（原 Array.from(text).length 整串拆数组，单次 0.35→4.1ms 且跑在宿主 store 通知链内，现 0.02→0.4ms）；②spdUnpack 按 speed_history 引用 WeakMap 缓存（6000 轮单次 ~5ms，占速度卡生成 95%）；③updateLive 快路径未悬停本格不再每拍白建整张 V2 速度卡（只记 view 标失鲜，drawTip 打开瞬间 liveTipRefresh 补建，兜底 1s 保鲜；悬停仍每拍）；④非 live 会话数据帧未变时 500ms 内心跳不重复整条 render（原每 100ms 全量重建 tooltip 串+五个 enhance*）；⑤轮播主开关关闭态 65ms 帧步降为 1s（仅剩遗留 DOM 还原的整文档查询）
      */
-    var VERSION = "v327";
+    var VERSION = "v328";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */

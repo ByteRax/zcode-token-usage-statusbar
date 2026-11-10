@@ -294,3 +294,134 @@ test('isCompact flags turns containing a compact timelineMarker (header executio
   tracker.ingest(snapshot(3, [header('completedSuccess', { outputTokens: 12 })]));
   assert.equal(tracker.get('t').isCompact, false);
 });
+
+// ---- 性能治理（specs/perf-lag-reduction.md）：ingest 字符计数不得再整串 Array.from，且结果逐值等价 ----
+
+function totalChars(texts) {
+  const tracker = createTracker({ now: () => 0 });
+  const rows = [header()];
+  texts.forEach((t, i) => rows.push({ rowId: i + 2, turnId: 't', kind: 'assistantText', text: t }));
+  tracker.ingest(snapshot(1, rows));
+  return tracker.get('t').totalCharacters;
+}
+
+test('character count equals Array.from(text).length for emoji, lone surrogates and mixed text', () => {
+  const cases = [
+    '', 'abc', '中文混排abc', '😀', '😀😀a😀', 'a\uD83D', '\uDE00a', '\uD83D\uD83D\uDE00', '\uDE00\uD83D',
+    '\uD83D\uD83D', 'x'.repeat(1000) + '😀', '👨‍👩‍👧‍👦 family', '\uD83Dabc\uDE00',
+    // 代理项区间边界码点（0xD800/0xDBFF 高、0xDC00/0xDFFF 低；0xD7FF/0xE000 在区间外）
+    '\uD800\uDC00', '\uDBFF\uDFFF', '\uDBFF\uDC00', '\uD7FFa', '\uDC00\uDC00', '\uD800', '\uDBFF', '\uDC00', '\uDFFF', '\uD7FF\uE000', '\uD800\uE000',
+  ];
+  for (const c of cases) assert.equal(totalChars([c]), Array.from(c).length, JSON.stringify(c));
+  // 随机串：覆盖代理项在各种位置的组合
+  const pool = ['a', '中', '\uD83D', '\uDE00', '😀', '\n'];
+  let seed = 7;
+  const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+  for (let k = 0; k < 300; k++) {
+    let s = '';
+    for (let i = 0, n = Math.floor(rnd() * 40); i < n; i++) s += pool[Math.floor(rnd() * pool.length)];
+    assert.equal(totalChars([s]), Array.from(s).length, JSON.stringify(s));
+  }
+  assert.equal(totalChars(['😀a', 'b\uD83D', '中']), Array.from('😀a').length + Array.from('b\uD83D').length + 1);
+});
+
+test('ingest never builds an array from a text string (hot path allocation guard)', () => {
+  const realFrom = Array.from;
+  let stringCalls = 0;
+  Array.from = function (x, ...rest) { if (typeof x === 'string') stringCalls++; return realFrom.call(this, x, ...rest); };
+  try {
+    const tracker = createTracker({ now: () => 0 });
+    const big = { rowId: 3, turnId: 't', kind: 'toolCall', inputText: 'x'.repeat(50000) };
+    tracker.ingest(snapshot(1, [header(), text('流式😀'.repeat(2000)), big]));
+    tracker.ingest(snapshot(2, [header(), text('流式😀'.repeat(2001)), big]));
+  } finally { Array.from = realFrom; }
+  assert.equal(stringCalls, 0);
+});
+
+test('row character cache: unchanged text is reused, changed text recounts, removed rows stop counting and recount on reappearance', () => {
+  const tracker = createTracker({ now: () => 0 });
+  const big = { rowId: 3, turnId: 't', kind: 'toolCall', inputText: '😀'.repeat(100) };
+  tracker.ingest(snapshot(1, [header(), text('abc'), big]));
+  assert.equal(tracker.get('t').totalCharacters, 3 + 100);
+  // 同一行文本不变（新行对象、同内容）→ 总数稳定
+  tracker.ingest(snapshot(2, [header(), text('abc'), { ...big }]));
+  assert.equal(tracker.get('t').totalCharacters, 3 + 100);
+  // 文本变化 → 重算；工具入参行不变仍按缓存计入
+  tracker.ingest(snapshot(3, [header(), text('abcdef😀'), big]));
+  assert.equal(tracker.get('t').totalCharacters, 7 + 100);
+  // 同 rowId 换 kind/文本（文本相同则缓存仍正确，不同则重算）
+  tracker.ingest(snapshot(4, [header(), { rowId: 2, turnId: 't', kind: 'reasoning', text: '想想' }, big]));
+  assert.equal(tracker.get('t').totalCharacters, 2 + 100);
+  // 行被移出窗口：不再计入，再次出现按新文本计数（旧缓存不得复活）
+  tracker.ingest(snapshot(5, [header(), text('z')]));
+  assert.equal(tracker.get('t').totalCharacters, 1);
+  tracker.ingest(snapshot(6, [header(), text('z'), { ...big, inputText: 'ab' }]));
+  assert.equal(tracker.get('t').totalCharacters, 3);
+});
+
+test('row character cache is actually used: an unchanged large row is not rescanned on the next notification', () => {
+  const tracker = createTracker({ now: () => 0 });
+  const big = { rowId: 3, turnId: 't', kind: 'toolCall', inputText: 'x'.repeat(50000) };
+  tracker.ingest(snapshot(1, [header(), text('a'), big]));
+  const real = String.prototype.charCodeAt;
+  let calls = 0;
+  String.prototype.charCodeAt = function (i) { calls++; return real.call(this, i); };
+  try {
+    tracker.ingest(snapshot(2, [header(), text('ab'), big]));   // 仅小行变化；大行文本引用/内容未变
+  } finally { String.prototype.charCodeAt = real; }
+  assert.ok(calls < 1000, `unchanged 50k-char row must hit the cache (charCodeAt calls: ${calls})`);
+  assert.equal(tracker.get('t').totalCharacters, 2 + 50000);
+});
+
+test('row character cache compares text content, not just length (same UTF-16 length, different code points)', () => {
+  const tracker = createTracker({ now: () => 0 });
+  tracker.ingest(snapshot(1, [header(), text('ab')]));
+  assert.equal(tracker.get('t').totalCharacters, 2);
+  tracker.ingest(snapshot(2, [header(), text('😀')]));   // UTF-16 长度同为 2，码点数 2→1
+  assert.equal(tracker.get('t').totalCharacters, 1);
+});
+
+test('row character cache is keyed per row: two long rows of the same kind do not overwrite each other', () => {
+  const tracker = createTracker({ now: () => 0 });
+  const a = { rowId: 3, turnId: 't', kind: 'assistantText', text: 'a'.repeat(5000) };
+  const b = { rowId: 4, turnId: 't', kind: 'assistantText', text: 'b'.repeat(5000) };
+  tracker.ingest(snapshot(1, [header(), a, b]));
+  const real = String.prototype.charCodeAt;
+  let calls = 0;
+  String.prototype.charCodeAt = function (i) { calls++; return real.call(this, i); };
+  try {
+    tracker.ingest(snapshot(2, [header(), a, b]));
+  } finally { String.prototype.charCodeAt = real; }
+  assert.ok(calls < 100, `both unchanged rows must hit their own cache entry (charCodeAt calls: ${calls})`);
+  assert.equal(tracker.get('t').totalCharacters, 10000);
+});
+
+test('row character cache is released when a row leaves the window: the same text reappearing is recounted', () => {
+  const tracker = createTracker({ now: () => 0 });
+  const long = { rowId: 3, turnId: 't', kind: 'assistantText', text: 'x'.repeat(5000) };
+  tracker.ingest(snapshot(1, [header(), long]));
+  tracker.ingest(snapshot(2, [header()]));                   // 行滑出窗口
+  const real = String.prototype.charCodeAt;
+  let calls = 0;
+  String.prototype.charCodeAt = function (i) { calls++; return real.call(this, i); };
+  try {
+    tracker.ingest(snapshot(3, [header(), long]));           // 同文本重现
+  } finally { String.prototype.charCodeAt = real; }
+  assert.ok(calls >= 4000, `released entry must not be revived from the old cache (charCodeAt calls: ${calls})`);
+  assert.equal(tracker.get('t').totalCharacters, 5000);
+});
+
+test('non-string text fields never throw and are not counted', () => {
+  const tracker = createTracker({ now: () => 0 });
+  const rows = [header(),
+    { rowId: 2, turnId: 't', kind: 'assistantText', text: null },
+    { rowId: 3, turnId: 't', kind: 'assistantText', text: 5 },
+    { rowId: 4, turnId: 't', kind: 'reasoning', text: { a: 1 } },
+    { rowId: 5, turnId: 't', kind: 'toolCall', inputText: undefined },
+    { rowId: 6, turnId: 't', kind: 'toolCall', inputText: ['x'] },
+    { rowId: 7, turnId: 't', kind: 'assistantText', text: 'ok' }];
+  assert.doesNotThrow(() => tracker.ingest(snapshot(1, rows)));
+  assert.equal(tracker.get('t').totalCharacters, 2);
+  assert.doesNotThrow(() => tracker.ingest(snapshot(2, rows)));   // 二次 ingest 走缓存分支同样安全
+  assert.equal(tracker.get('t').totalCharacters, 2);
+});

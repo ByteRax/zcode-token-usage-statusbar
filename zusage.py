@@ -498,25 +498,79 @@ _SPEED_HISTORY_TTL_MS = 2000      # 2s 短缓存（常驻泵 1.5s 拉一次，�
 # 陈旧上限。轮表是历史统计，分钟级陈旧远好于整帧缺字段让 Tooltip 闪回旧版；下一帧成功即刷新。
 _SPEED_HISTORY_STALE_MS = 10 * 60 * 1000
 _SPEED_CACHE = {}                 # 独立缓存：不与 _cached_agg 的 scan/today 共用上限 8 的 _AGG_CACHE
+_SPEED_WM = {}                    # 轮表缓存的 model_usage 水位（TTL 过期后水位未变续用，见 _WM_MAX_AGE_MS）
 
 
 _AGG_TTL_MS = 2000   # 聚合短缓存：今日合计/会话池是慢变量，2s 陈旧无感；泵 1.5s 拉一次省约一半全表聚合
 _AGG_CACHE = {}
 
+# 卡顿治理（specs/perf-lag-reduction.md §8）：model_usage 水位延长聚合缓存。
+# 宿主请求完成才一次性 INSERT、运行中无行（实测零 running 行），流式生成期间 model_usage 恒定不变，
+# 但纯 TTL(2s) 仍每 ~3s 全量重算项目累计/速度轮表/今日合计（大库未命中帧 0.7~1.1s，占 25~45% 单核）。
+# 现在 TTL 过期后若水位 (库身份, max(rowid)) 未变且距上次计算 <_WM_MAX_AGE_MS，继续复用；一旦有新请求
+# 完成水位即变、TTL 一过立即重算（TTL 内行为不变）。水位未覆盖的变化（会话改名、尾行被删后 rowid 复用等）
+# 由 _WM_MAX_AGE_MS 兜底。max(rowid) 是 B 树末端查找（微秒级），不做额外记忆——精确优先。
+# 内存库/桩连接取不到水位 → 退回纯 TTL。
+_WM_MAX_AGE_MS = 20 * 1000
+_AGG_WM = {}
+
+
+def _usage_watermark(con):
+    """(库身份, max(rowid))；取不到（内存库/列漂移/桩连接）返回 None。"""
+    try:
+        dbkey = _db_cache_key(con)
+        if dbkey is None:
+            return None
+        return (dbkey, con.execute("select max(rowid) from model_usage").fetchone()[0])
+    except Exception:
+        return None
+
+
+def _wm_alive(wm_store, key, hit, con, now):
+    """TTL 已过期后的二次判定：水位未变且未超 _WM_MAX_AGE_MS 则缓存仍可复用。"""
+    if con is None or now - hit[0] >= _WM_MAX_AGE_MS:
+        return False
+    old = wm_store.get(key)
+    return old is not None and _usage_watermark(con) == old
+
+
+class _WmFn:
+    """携带连接的计算闭包：让 _cached_agg 保持 (key, fn) 二参签名（既有测试以二参 lambda 替身该函数），
+    同时把水位校验所需的连接带进来。未包装的 fn（无连接）退回纯 TTL。"""
+    __slots__ = ("fn", "wm_con")
+
+    def __init__(self, fn, con):
+        self.fn = fn
+        self.wm_con = con
+
+    def __call__(self):
+        return self.fn()
+
 
 def _cached_agg(key, fn):
+    con = getattr(fn, "wm_con", None)
     now = int(time.time() * 1000)
     hit = _AGG_CACHE.get(key)
-    if hit and now - hit[0] < _AGG_TTL_MS:
-        return hit[1]
+    if hit:
+        if now - hit[0] < _AGG_TTL_MS:
+            return hit[1]
+        if _wm_alive(_AGG_WM, key, hit, con, now):
+            return hit[1]
+    wm = _usage_watermark(con) if con is not None else None   # 必须先于 fn()：期间新写入只会让存下的水位偏旧→下次重算（安全方向）
     val = fn()
     if len(_AGG_CACHE) > 8:
         _AGG_CACHE.clear()   # 键固定只有几个，正常到不了；保险防膨胀
+        _AGG_WM.clear()
     _AGG_CACHE[key] = (now, val)
+    if wm is None:
+        _AGG_WM.pop(key, None)
+    else:
+        _AGG_WM[key] = wm
     return val
 
 
 _PROJ_CACHE = {}
+_PROJ_WM = {}
 
 
 def _db_cache_key(con):
@@ -542,7 +596,7 @@ def _db_cache_key(con):
     return (path, st.st_dev, st.st_ino)
 
 
-def _cached_project(dbkey, key, fn):
+def _cached_project(dbkey, key, fn, con=None):
     """v177：_project_usage 专用缓存，键挂库文件身份 + (project_id, 目录键, with_models)——常驻泵
     跨请求复用连接时吃到 2s TTL 的跨帧免重扫（实测无缓存大库单项目聚合 ~40ms，池内多行
     一帧可达数百 ms）。独立于 _AGG_CACHE：项目键随使用增长，混进共享缓存会把它顶过上限
@@ -550,12 +604,21 @@ def _cached_project(dbkey, key, fn):
     now = int(time.time() * 1000)
     full = (dbkey, key)
     hit = _PROJ_CACHE.get(full)
-    if hit and now - hit[0] < _AGG_TTL_MS:
-        return hit[1]
+    if hit:
+        if now - hit[0] < _AGG_TTL_MS:
+            return hit[1]
+        if _wm_alive(_PROJ_WM, full, hit, con, now):   # 流式期间 model_usage 恒定：水位未变续用（见 _WM_MAX_AGE_MS）
+            return hit[1]
+    wm = _usage_watermark(con) if con is not None else None
     val = fn()
     if len(_PROJ_CACHE) > 64:
         _PROJ_CACHE.clear()   # 保险防膨胀：清空只损失缓存，不损正确性
+        _PROJ_WM.clear()
     _PROJ_CACHE[full] = (now, val)
+    if wm is None:
+        _PROJ_WM.pop(full, None)
+    else:
+        _PROJ_WM[full] = wm
     return val
 
 
@@ -569,7 +632,7 @@ def _scan_session_ids(con):
         return con.execute(
             """select session_id, max(coalesce(completed_at, 0)) as m
                from model_usage group by session_id""").fetchall()
-    return _cached_agg("scan", run)
+    return _cached_agg("scan", _WmFn(run, con))
 
 
 def session_usage(con, sid):
@@ -755,7 +818,7 @@ def _project_usage(con, sid, with_models=False):
     if dbkey is None:   # 内存库（database_list 的 file 列为空的连接）：不缓存，就地聚合
         return run()
     # 缓存键带 pkey：同 project_id 的碰撞项目（issue #248）各自目录结果不同，不得互串
-    return _cached_project(dbkey, (prow[0], pkey, bool(with_models)), run)
+    return _cached_project(dbkey, (prow[0], pkey, bool(with_models)), run, con)
 
 
 def range_usage(con, start_ms, end_ms):
@@ -1740,12 +1803,22 @@ def _speed_history_cached(con, sid=""):
     key = dbkey
     hit = _SPEED_CACHE.get(key)
     now = int(time.time() * 1000)
-    if hit and now - hit[0] < _SPEED_HISTORY_TTL_MS:
-        return hit[1]
+    if hit:
+        if now - hit[0] < _SPEED_HISTORY_TTL_MS:
+            return hit[1]
+        # 冷算 0.15~0.7s（大库）：流式期间 model_usage 恒定，水位未变就别重扫（泵 1.5s < TTL 2s 曾致约一半帧重算）
+        if _wm_alive(_SPEED_WM, key, hit, con, now):
+            return hit[1]
+    wm = _usage_watermark(con)
     val = _speed_history(con, sid)
     if len(_SPEED_CACHE) > 4:
         _SPEED_CACHE.clear()
+        _SPEED_WM.clear()
     _SPEED_CACHE[key] = (now, val)
+    if wm is None or not (isinstance(val, dict) and val.get("turns")):
+        _SPEED_WM.pop(key, None)   # 空轮表可能是查询降级（session 表读失败等）的结果：不延长，仍按 TTL 重试
+    else:
+        _SPEED_WM[key] = wm
     return val
 
 def _speed_history_stale():
@@ -2900,8 +2973,8 @@ def snapshot(force_sid="", routes=None, serve_con=None, include_speed_history=Fa
         try:
             day = _day_start()
             start_ms, end_ms = _epoch_ms(day), _epoch_ms(day + timedelta(days=1))
-            today = _cached_agg(("today", start_ms), lambda: _today_usage(
-                con, start_ms, end_ms)) if con else (0,) * 16
+            today = _cached_agg(("today", start_ms), _WmFn(lambda: _today_usage(
+                con, start_ms, end_ms), con)) if con else (0,) * 16
             # v301 今日平均输出速度：今日全部已完成 main_turn 段加权平均（_turn_rate 同款
             # 口径：_row_gen_ms 生成窗口 + 200ms–1h 有效段过滤；子代理/辅助行不计），
             # 与会话均 avg_tps 同源不同范围。2s 缓存同 today；covers 自带 60s TTL。
@@ -2916,7 +2989,7 @@ def snapshot(force_sid="", routes=None, serve_con=None, include_speed_history=Fa
             # 可选增强字段：任何失败（含最小桩连接无 fetchall 的测试形态）按 0 降级
             # （消费端 >0 门控显「—」），不拖垮整帧（同 project/cost 口径）。
             try:
-                today_rate = _cached_agg(("todayrate", start_ms), _today_rate) if con else 0
+                today_rate = _cached_agg(("todayrate", start_ms), _WmFn(_today_rate, con)) if con else 0
             except Exception:
                 today_rate = 0
             # v202 今日预估费用+模型明细：同一条分组查询产出，2s 短缓存同 today
@@ -2924,7 +2997,7 @@ def snapshot(force_sid="", routes=None, serve_con=None, include_speed_history=Fa
                 models, cost = _scope_models_cost(
                     con, "completed_at between ? and ?", (start_ms, end_ms))
                 return {"cost": cost, "models": models if models else []}
-            today_detail = _cached_agg(("todaydetail", start_ms), _today_detail) if con else None
+            today_detail = _cached_agg(("todaydetail", start_ms), _WmFn(_today_detail, con)) if con else None
             today_cost = today_detail["cost"] if today_detail else None
             rows = _scan_session_ids(con) if con else []
             have_local = set()

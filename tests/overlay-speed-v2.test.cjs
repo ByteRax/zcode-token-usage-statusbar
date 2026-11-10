@@ -1048,3 +1048,54 @@ test('v327 左卡标题行状态词恒不收缩不折行（大字号防竖排破
     /\.zu-sv-root \.zu-sl-sub\{[^}]*flex:0 0 auto[^}]*white-space:nowrap/,
     'live status word never shrinks or wraps vertically (title takes the ellipsis)');
 });
+
+// 性能治理（specs/perf-lag-reduction.md §3）：updateLive 心跳/store 通知与悬停重编会反复解包同一份轮表，
+// 6000 轮约 5ms/次——按 speed_history 对象引用缓存，同帧内只解包一次。
+test('spdUnpack 按 speed_history 引用缓存：同引用复用，新引用/轮数变化重算，结果逐字段一致', () => {
+  const ctx = makeCtx();
+  ctx.__h = fixture();
+  const a = vm.runInContext('spdUnpack(__h)', ctx);
+  assert.ok(a && a.turns.length > 0);
+  assert.equal(vm.runInContext('spdUnpack(__h)', ctx), a, '同一引用返回同一结果对象（未重新解包）');
+  // 下一帧：新 JSON 对象、同内容 → 重算但结果等价（缓存不得改变语义）
+  ctx.__h2 = JSON.parse(JSON.stringify(ctx.__h));
+  const b = vm.runInContext('spdUnpack(__h2)', ctx);
+  assert.notEqual(b, a);
+  assert.deepEqual(JSON.parse(JSON.stringify(b)), JSON.parse(JSON.stringify(a)));
+  // 同一对象被原地追加一轮：轮数守卫使缓存失效
+  ctx.__h.turns.push({ s: 0, t: 60000, b: 1, out: 100, ms: 1000, i: 1, o: 1, n: 1, msl: [[0, 100]] });
+  const c = vm.runInContext('spdUnpack(__h)', ctx);
+  assert.notEqual(c, a);
+  assert.equal(c.turns.length, a.turns.length + 1);
+  // 无效入参不缓存、不抛错
+  assert.equal(vm.runInContext('spdUnpack(null)', ctx), null);
+  assert.equal(vm.runInContext('spdUnpack({turns: [], sids: null, snames: []})', ctx), null);
+  // 缓存命中不改变分析结果：同一引用 + 同一 sel 连调三次 spdAnalyze（命中解包缓存），结果逐字段一致
+  // （注意 analyze() 每次把 __h 序列化成新字面量、引用每次都变，不能用它验证缓存命中）
+  ctx.__s = { range: 'all', period: 'all', sid: 'sess_main' };
+  const r1 = JSON.stringify(vm.runInContext('spdAnalyze(__h, __s)', ctx));
+  const r2 = JSON.stringify(vm.runInContext('spdAnalyze(__h, __s)', ctx));
+  const r3 = JSON.stringify(vm.runInContext('spdAnalyze(__h, __s)', ctx));
+  assert.equal(r1, r2);
+  assert.equal(r2, r3);
+});
+
+test('spdUnpack 缓存结果只读：同一引用依次用多种范围/周期分析，结果与每次用新引用时逐一一致', () => {
+  const ctx = makeCtx();
+  ctx.__h = fixture();
+  const sels = [
+    { range: 'recent', period: 'recent' }, { range: 'session', period: 'all' }, { range: 'project', period: 'today' },
+    { range: 'all', period: 'week' }, { range: 'all', period: 'month' }, { range: 'all', period: 'all' },
+    { range: 'recent', period: 'today' }, { range: 'project', period: 'recent' },
+  ].map(x => Object.assign({ sid: 'sess_main' }, x));
+  const shared = sels.map((sel, i) => { ctx.__s = sel; return JSON.stringify(vm.runInContext('spdAnalyze(__h, __s)', ctx)); });
+  const fresh = sels.map((sel) => {
+    ctx.__hf = JSON.parse(JSON.stringify(fixture()));   // 每次全新引用：不命中缓存
+    ctx.__s = sel;
+    return JSON.stringify(vm.runInContext('spdAnalyze(__hf, __s)', ctx));
+  });
+  assert.deepEqual(shared, fresh);
+  // 再倒序跑一遍共享引用：前面任何一次若原地改了缓存结果，这里会偏离
+  const again = sels.slice().reverse().map((sel) => { ctx.__s = sel; return JSON.stringify(vm.runInContext('spdAnalyze(__h, __s)', ctx)); }).reverse();
+  assert.deepEqual(again, fresh);
+});
