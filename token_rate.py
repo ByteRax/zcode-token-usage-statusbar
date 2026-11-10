@@ -15,7 +15,8 @@
                                          的统计指令带此参数，防止模型迟迟才跑该命令时，
                                          并行会话抢先提问把"最近提问会话"状态覆盖掉）
   ZCODE_SESSION_ID=xxx python3 ...       只统计指定会话
-  ZCODE_USAGE_DB=/path/db.sqlite         指定数据库路径（默认按用户主目录解析）
+  ZCODE_USAGE_DB=/path/db.sqlite         指定数据库路径（默认跟随宿主 dataBaseDir 迁移，
+                                         未迁移时按用户主目录解析）
   ZUSAGE_RATE_STATE_FILE=/path           指定钩子状态文件（测试接缝）
 
 只读打开 WAL 数据库，不影响运行中的客户端。
@@ -67,7 +68,8 @@ def _default_db_path(env=None, home=None):
         pass   # 缺文件/损坏按无迁移处理，回落 env / home，不拖垮统计链
     if not base:
         base = str(env.get("ZCODE_DATA_BASE_DIR") or "").strip()
-    return (Path(base) if base else home).expanduser() / ".zcode" / "cli" / "db" / "db.sqlite"
+    # env 值原样使用不展开 ~（宿主 getDataBaseDir 同款；setting.json 值已被绝对路径校验挡住 ~）
+    return (Path(base) if base else home) / ".zcode" / "cli" / "db" / "db.sqlite"
 
 
 DB_PATH = os.environ.get("ZCODE_USAGE_DB") or str(_default_db_path())

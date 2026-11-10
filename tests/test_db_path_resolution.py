@@ -98,6 +98,12 @@ class ResolveDbPathTest(unittest.TestCase):
             env={"ZCODE_DATA_BASE_DIR": str(self.migrated)}, home=self.home)
         self.assertEqual(p, self.expect(self.migrated))
 
+    def test_env_tilde_used_verbatim_not_expanded(self):
+        # 宿主 getDataBaseDir 对 env 值原样 join 不展开 ~；三处实现一致（issue #279 review 收口）
+        p = self.zusage.resolve_db_path(env={"ZCODE_DATA_BASE_DIR": "~/abs-sub"}, home=self.home)
+        self.assertEqual(p, Path("~/abs-sub") / ".zcode" / "cli" / "db" / "db.sqlite")
+        self.assertEqual(str(p), "~/abs-sub/.zcode/cli/db/db.sqlite")
+
     def test_missing_setting_file(self):
         p = self.zusage.resolve_db_path(env={}, home=self.home / "nowhere")
         self.assertEqual(p, self.expect(self.home / "nowhere"))
@@ -148,9 +154,9 @@ class CrossFileConsistencyTest(unittest.TestCase):
         self.zusage = load_module("zusage_sync", REPO / "zusage.py")
         self.token_rate = load_module("token_rate_sync", REPO / "token_rate.py")
 
-    def write_setting(self, value):
+    def write_setting(self, value, encoding="utf-8"):
         f = self.home / ".zcode" / "v2" / "setting.json"
-        f.write_text(json.dumps({"dataBaseDir": value}), encoding="utf-8")
+        f.write_text(json.dumps({"dataBaseDir": value}), encoding=encoding)
 
     def test_same_result_across_scenarios(self):
         scenarios = [
@@ -158,6 +164,7 @@ class CrossFileConsistencyTest(unittest.TestCase):
             ({"ZCODE_DATA_BASE_DIR": str(self.migrated)}, None),
             ({"ZCODE_DATA_BASE_DIR": str(self.home)}, str(self.migrated)),
             ({"ZCODE_DATA_BASE_DIR": str(self.migrated)}, "relative/dir"),
+            ({"ZCODE_DATA_BASE_DIR": "~/abs-sub"}, None),
         ]
         for env, setting in scenarios:
             if setting is not None:
@@ -169,6 +176,12 @@ class CrossFileConsistencyTest(unittest.TestCase):
             a = self.zusage.resolve_db_path(env=env, home=self.home)
             b = self.token_rate._default_db_path(env=env, home=self.home)
             self.assertEqual(a, b, msg=f"env={env} setting={setting}")
+        # BOM 写入两份实现都必须容忍（此前只锁了 zusage 侧）
+        self.write_setting(str(self.migrated), encoding="utf-8-sig")
+        self.assertEqual(self.zusage.resolve_db_path(env={}, home=self.home),
+                         self.token_rate._default_db_path(env={}, home=self.home))
+        self.assertEqual(self.token_rate._default_db_path(env={}, home=self.home),
+                         self.migrated / ".zcode" / "cli" / "db" / "db.sqlite")
 
 
 if __name__ == "__main__":

@@ -41,7 +41,8 @@ def resolve_db_path(env=None, home=None):
         pass   # 缺文件/损坏按无迁移处理，回落 env / home，不拖垮查询链
     if not base:
         base = str(env.get("ZCODE_DATA_BASE_DIR") or "").strip()
-    return (Path(base) if base else home).expanduser() / ".zcode" / "cli" / "db" / "db.sqlite"
+    # env 值原样使用不展开 ~（宿主 getDataBaseDir 同款；setting.json 值已被绝对路径校验挡住 ~）
+    return (Path(base) if base else home) / ".zcode" / "cli" / "db" / "db.sqlite"
 
 
 DB_PATH = resolve_db_path()
