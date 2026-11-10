@@ -246,7 +246,7 @@ function resolveHostDbDir() {
   };
   let picked = "";
   for (const [k, v] of Object.entries(env)) {
-    if ((k === "ZCODE_SESSION_DB_PATH" || k === "ZCODE_SESSION_DB") && v) picked = v;
+    if (k === "ZCODE_SESSION_DB_PATH" || k === "ZCODE_SESSION_DB") picked = v || "";   // 键序取后（含空值，空即弃用）
   }
   const fromEnv = mirrored(picked);
   if (fromEnv) return path.dirname(fromEnv);

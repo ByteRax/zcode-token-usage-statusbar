@@ -82,6 +82,17 @@ class ResolveDbPathTest(unittest.TestCase):
         }, home=self.home)
         self.assertEqual(p, self.migrated_db)
 
+    def test_env_double_alias_later_blank_discards_source(self):
+        # 后一个别名为空串：宿主 pickEnvSessionDbPath 取后（含空）再判空 → 弃用整个
+        # env 来源落 config/默认；不得回取前一个非空别名（与 agent 实际写库位一致）
+        self.touch_migrated_db()
+        self.write_setting(str(self.migrated))
+        p = self.zusage.resolve_db_path(env={
+            "ZCODE_SESSION_DB_PATH": str(self.migrated_db),
+            "ZCODE_SESSION_DB": "  ",
+        }, home=self.home)
+        self.assertEqual(p, self.migrated_db)
+
     def test_env_session_db_tilde_expanded(self):
         p = self.zusage.resolve_db_path(
             env={"ZCODE_SESSION_DB_PATH": "~/custom/db.sqlite"}, home=self.home)
@@ -180,6 +191,15 @@ class ResolveDbPathTest(unittest.TestCase):
         p = self.zusage.resolve_db_path(env={}, home=self.home)
         self.assertEqual(p, self.expect(self.home))
 
+    def test_databasedir_corrupted_setting_env_marker_still_effective(self):
+        # setting.json 损坏不连累 ZCODE_DATA_BASE_DIR 迁移标记（与 Node 侧同构）
+        self.touch_migrated_db()
+        f = self.home / ".zcode" / "v2" / "setting.json"
+        f.write_text("{not json", encoding="utf-8")
+        p = self.zusage.resolve_db_path(
+            env={"ZCODE_DATA_BASE_DIR": str(self.migrated)}, home=self.home)
+        self.assertEqual(p, self.migrated_db)
+
     def test_databasedir_bom_tolerated(self):
         self.touch_migrated_db()
         self.write_setting(str(self.migrated), encoding="utf-8-sig")
@@ -256,6 +276,8 @@ class CrossFileConsistencyTest(unittest.TestCase):
             {"ZCODE_SESSION_DB_PATH": "relative/db.sqlite"},
             {"ZCODE_SESSION_DB_PATH": "   "},
             {"ZCODE_DATA_BASE_DIR": str(self.migrated)},
+            {"ZCODE_SESSION_DB_PATH": str(self.migrated_db), "ZCODE_SESSION_DB": "~/custom/db.sqlite"},
+            {"ZCODE_SESSION_DB_PATH": str(self.migrated_db), "ZCODE_SESSION_DB": "  "},
         ]
         for env in scenarios:
             self.assert_same(env)

@@ -71,10 +71,10 @@ def _default_db_path(env=None, home=None):
     3.17.x 迁移目录存在性；本脚本单独部署不 import zusage，改动两处同步）。"""
     env = os.environ if env is None else env
     home = Path.home() if home is None else Path(home)
-    picked = None
+    picked = ""
     for key, value in env.items():
-        if key in ("ZCODE_SESSION_DB_PATH", "ZCODE_SESSION_DB") and value:
-            picked = value   # 宿主双别名按 env 键序取后
+        if key in ("ZCODE_SESSION_DB_PATH", "ZCODE_SESSION_DB"):
+            picked = value or ""   # 宿主双别名按 env 键序取后（含空值，空即弃用该来源）
     candidate = _mirror_agent_db_path(picked, home)
     if candidate:
         return candidate
@@ -96,14 +96,14 @@ def _default_db_path(env=None, home=None):
             base = str((raw.get("dataBaseDir") if isinstance(raw, dict) else "") or "").strip()
         else:
             base = ""
-        if not base or not re.match(r"^(?:[a-z]:[\\/]|\\\\|/)", base, re.IGNORECASE):
-            base = str(env.get("ZCODE_DATA_BASE_DIR") or "").strip()
-        if base and re.match(r"^(?:[a-z]:[\\/]|\\\\|/)", base, re.IGNORECASE):
-            candidate = Path(base) / ".zcode" / "cli" / "db" / "db.sqlite"
-            if candidate.exists():
-                return candidate
     except Exception:
-        pass   # 缺文件/损坏按无迁移处理，回落 HOME 默认，不拖垮统计链
+        base = ""   # 损坏按无迁移处理；env 迁移标记不受其连累（与 Node 侧同构）
+    if not base or not re.match(r"^(?:[a-z]:[\\/]|\\\\|/)", base, re.IGNORECASE):
+        base = str(env.get("ZCODE_DATA_BASE_DIR") or "").strip()
+    if base and re.match(r"^(?:[a-z]:[\\/]|\\\\|/)", base, re.IGNORECASE):
+        candidate = Path(base) / ".zcode" / "cli" / "db" / "db.sqlite"
+        if candidate.exists():
+            return candidate
     return home / ".zcode" / "cli" / "db" / "db.sqlite"
 
 

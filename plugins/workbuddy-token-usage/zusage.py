@@ -2,7 +2,7 @@
 """Token 用量查询库（多宿主，只读）。
 
 宿主（--host / 配置 host / ZUSAGE_HOST，见 §宿主适配）：
-- zcode（默认）= 本地用量库的 model_usage 逐请求表（路径经 resolve_db_path 跟随宿主 dataBaseDir 迁移）；
+- zcode（默认）= 本地用量库的 model_usage 逐请求表（路径经 resolve_db_path 镜像宿主 agent 会话库解析，兼容 dataBaseDir 迁移目录）；
 - workbuddy = ~/.workbuddy/workbuddy.db 的 session_usage 会话级表（上下文用量 + credit）。
 
 既可作 CLI（python zusage.py [now|today|days N|sessions [N]|models [days]|workspace 关键词|session id前缀|watch [sec]|host]），
@@ -56,10 +56,10 @@ def resolve_db_path(env=None, home=None):
     token_rate.py 的默认路径与本函数同源，改动两处同步。"""
     env = os.environ if env is None else env
     home = Path.home() if home is None else Path(home)
-    picked = None
+    picked = ""
     for key, value in env.items():
-        if key in ("ZCODE_SESSION_DB_PATH", "ZCODE_SESSION_DB") and value:
-            picked = value   # 宿主双别名按 env 键序取后
+        if key in ("ZCODE_SESSION_DB_PATH", "ZCODE_SESSION_DB"):
+            picked = value or ""   # 宿主双别名按 env 键序取后（含空值，空即弃用该来源）
     candidate = _mirror_agent_db_path(picked, home)
     if candidate:
         return candidate
@@ -81,14 +81,14 @@ def resolve_db_path(env=None, home=None):
             base = str((raw.get("dataBaseDir") if isinstance(raw, dict) else "") or "").strip()
         else:
             base = ""
-        if not base or not _DB_BASE_ABS_RE.match(base):
-            base = str(env.get("ZCODE_DATA_BASE_DIR") or "").strip()
-        if base and _DB_BASE_ABS_RE.match(base):
-            candidate = Path(base) / ".zcode" / "cli" / "db" / "db.sqlite"
-            if candidate.exists():
-                return candidate
     except Exception:
-        pass   # 缺文件/损坏按无迁移处理，回落 HOME 默认，不拖垮查询链
+        base = ""   # 损坏按无迁移处理；env 迁移标记不受其连累（与 Node 侧同构）
+    if not base or not _DB_BASE_ABS_RE.match(base):
+        base = str(env.get("ZCODE_DATA_BASE_DIR") or "").strip()
+    if base and _DB_BASE_ABS_RE.match(base):
+        candidate = Path(base) / ".zcode" / "cli" / "db" / "db.sqlite"
+        if candidate.exists():
+            return candidate
     return home / ".zcode" / "cli" / "db" / "db.sqlite"
 
 
