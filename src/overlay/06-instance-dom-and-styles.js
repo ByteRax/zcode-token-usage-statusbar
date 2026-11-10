@@ -209,8 +209,9 @@
      * → v324 完成态数字与 t/s 零间隔：chipFace 去除空格字符（7.7→5.7→4.7px 逐档后用户定稿 0）。动态态（单文本 "… t/s"）仍空格+word-spacing:1px ~4.7px；word-spacing 对完成态无空格文本不再生效（CSS 保留无害）
      * → v325 动态态 word-spacing 1px→4px（用户实机回定；完成态零间隔不受影响——无空格字符可加距）
      * → v326 数字与 t/s 间距改用 inline-flex+gap:5px+baseline：去除 word-spacing（用户实测调值无视觉变化——完成态无空格、动态态单文本）。动态态整条渲染（07 render live 分支）与原地更新（08）统一走 zuLiveFaceHtml 拆「数字+dim」两 item，gap 才有 item 可分；状态词态保持单文本。完成态 v324 曾零间隔，v326 起与动态态统一 5px（用户屏幕验证接受）；函数声明必须实例级（html(d) 分支块内是 Annex B 块级声明，live 分支 TypeError / 08 ReferenceError，实测 44 测试红）
+     * → v327 V2 左卡标题行防破版（另一台机器实报截图：--ui-font-size≈20px 浅色主题下「最近18轮平均速度」截断+「思考中」竖排折行）：标题行需求宽随字号线性增长而卡内宽固定 184px（实测 14px 需 151.1 余量 33、ui≥17 必溢出），.zu-sv-root .zu-sl-sub 加 flex:0 0 auto+white-space:nowrap——状态词永不收缩竖排，溢出收缩由标题独享 ellipsis 降级；本机默认字号视觉零变化，CSS 契约断言锁定
      */
-    var VERSION = "v326";
+    var VERSION = "v327";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
@@ -1091,7 +1092,9 @@
       /* v278：左卡标题升为「平均速度」（.zu-sl-title 是旧卡八态共用类，只在本卡
        * 作用域覆写），「历史统计」降为小号标识；实时状态仍为行尾轻量标识 */
       ".zu-sv-root .zu-sl-title{font-weight:600;font-size:calc(var(--ui-font-size,14px) - 1px);color:var(--color-foreground,#e9edf4)}" +
-      ".zu-sv-root .zu-sl-sub{margin-left:6px;font-weight:400;font-size:calc(var(--ui-font-size,14px) - 3px);color:var(--color-tooltip-tag-foreground,#a6a6a6);opacity:.85}" +
+      /* v327：状态词恒不收缩不折行——大字号（--ui-font-size≥17）下标题行溢出时
+       * 收缩由标题独享（ellipsis 降级），状态词不出现竖排破版（他机实报） */
+      ".zu-sv-root .zu-sl-sub{margin-left:6px;flex:0 0 auto;white-space:nowrap;font-weight:400;font-size:calc(var(--ui-font-size,14px) - 3px);color:var(--color-tooltip-tag-foreground,#a6a6a6);opacity:.85}" +
       ".zu-sv-root .zu-sv-left .zu-sl-body{justify-content:center}" +
       /* 标题栏贴图表左缘（Y 轴刻度同侧，不再缩进 30px）；基类 baseline 改 center，
        * 标题/单位徽章/档位按钮/时间文字垂直居中（基类为旧图保留不动）。 */
