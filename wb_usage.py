@@ -29,7 +29,6 @@
 """
 import json
 import os
-from datetime import datetime
 from pathlib import Path
 
 MIN_GEN_MS = 200
@@ -230,6 +229,8 @@ def parse_transcript(path):
                     rec = json.loads(line)
                 except ValueError:
                     continue
+                if not isinstance(rec, dict):
+                    continue   # 合法 JSON 但非对象（如数组行）：跳过，不让单行坏正文炸整帧
                 rtype = rec.get("type")
                 ts = _num(rec.get("timestamp")) or 0
                 if rec.get("cwd") and not cwd:
@@ -395,12 +396,6 @@ def last_turn(parsed, max_steps=200):
         "gen_ms": gen,
         "credits": round(sum(r["credit"] for r in group), 4),
     }
-
-
-def day_bounds(now=None):
-    now = now or datetime.now()
-    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    return int(start.timestamp() * 1000), int((start.timestamp() + 86400) * 1000)
 
 
 def aggregate_since(since_ms, home=None):

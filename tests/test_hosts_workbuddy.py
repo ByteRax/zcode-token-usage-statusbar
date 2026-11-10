@@ -93,8 +93,11 @@ class HostResolutionTests(unittest.TestCase):
         zusage.set_host(None)
         self._env = mock.patch.dict(os.environ, {}, clear=False)
         self._env.start()
-        os.environ.pop("ZUSAGE_HOST", None)
-        os.environ.pop("ZUSAGE_WORKBUDDY_DB", None)
+        # 保存/恢复而不是裸 pop：裸 pop 会把整个测试进程的变量删掉，影响后续用例
+        for name in ("ZUSAGE_HOST", "ZUSAGE_WORKBUDDY_DB"):
+            if name in os.environ:
+                saved = os.environ.pop(name)
+                self.addCleanup(os.environ.__setitem__, name, saved)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.addCleanup(zusage.set_host, None)
@@ -187,7 +190,9 @@ class HostResolutionTests(unittest.TestCase):
 class WorkBuddySnapshotTests(unittest.TestCase):
     def setUp(self):
         zusage.set_host(None)
-        os.environ.pop("ZUSAGE_HOST", None)
+        if "ZUSAGE_HOST" in os.environ:
+            saved = os.environ.pop("ZUSAGE_HOST")
+            self.addCleanup(os.environ.__setitem__, "ZUSAGE_HOST", saved)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.addCleanup(zusage.set_host, None)
@@ -203,6 +208,14 @@ class WorkBuddySnapshotTests(unittest.TestCase):
         cfg_patcher = mock.patch.object(zusage, "CONFIG_PATH", self.cfg_path)
         cfg_patcher.start()
         self.addCleanup(cfg_patcher.stop)
+        # 价表缓存重定向到临时目录（并拦截测试内 _wb_ready_pricing 的 configure 重指回
+        # 仓库/运行目录）：不隔离会读开发机真实 pricing-cache.json，改价同步后随机红
+        real_configure = zusage._pricing.configure
+        pricing = mock.patch.object(
+            zusage._pricing, "configure",
+            lambda *a, **k: real_configure({}, config_dir=self.tmp.name))
+        pricing.start()
+        self.addCleanup(pricing.stop)
 
     def test_snapshot_shape_caps_and_values(self):
         snap = zusage.snapshot()
@@ -288,6 +301,12 @@ class WorkBuddyReportTests(unittest.TestCase):
         env = mock.patch.dict(os.environ, {"WORKBUDDY_HOME": self.tmp.name})
         env.start()
         self.addCleanup(env.stop)
+        real_configure = zusage._pricing.configure
+        pricing = mock.patch.object(
+            zusage._pricing, "configure",
+            lambda *a, **k: real_configure({}, config_dir=self.tmp.name))
+        pricing.start()
+        self.addCleanup(pricing.stop)
 
     def test_session_row_carries_speed_points_for_hover_chart(self):
         """悬停速度卡要画柱状图：每段必须有时间戳与用量，不能只给 tps 数值。"""
@@ -349,7 +368,9 @@ class WorkBuddyReportTests(unittest.TestCase):
 class HostCliTests(unittest.TestCase):
     def setUp(self):
         zusage.set_host(None)
-        os.environ.pop("ZUSAGE_HOST", None)
+        if "ZUSAGE_HOST" in os.environ:
+            saved = os.environ.pop("ZUSAGE_HOST")
+            self.addCleanup(os.environ.__setitem__, "ZUSAGE_HOST", saved)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.addCleanup(zusage.set_host, None)
@@ -381,6 +402,23 @@ class HostCliTests(unittest.TestCase):
         self.assertIn("不存在", text)          # zcode 库缺失也如实标注
         self.assertIn("可用指标", text)
         self.assertIn("cost", text.split("可用指标")[1])   # 费用已可算
+
+    def test_host_command_shows_agent_source_without_keyerror(self):
+        """WorkBuddy 构建零配置（host_source=agent）跑自检入口：来源如实显示，不崩。"""
+        fixture = WorkBuddyFixture(self.tmp.name)
+        out = io.StringIO()
+        with mock.patch.object(zusage, "CONFIG_PATH", Path(self.tmp.name) / "absent.json"), \
+                mock.patch.object(zusage.Path, "home", return_value=Path(self.tmp.name)), \
+                mock.patch.object(zusage, "DB_PATH", Path(self.tmp.name) / "zcode.sqlite"), \
+                mock.patch.dict(os.environ, {"ZUSAGE_WORKBUDDY_DB": str(fixture.path),
+                                             "ZUSAGE_AGENT": "workbuddy"}), \
+                redirect_stdout(out):
+            code = zusage.main(["host"])
+        text = out.getvalue()
+        self.assertEqual(code, 0)
+        self.assertIn("workbuddy", text)
+        self.assertIn("跟随客户端构建", text)
+        self.assertNotIn("Traceback", text)
 
     def test_invalid_host_flag_exits_two_without_traceback(self):
         out = io.StringIO()

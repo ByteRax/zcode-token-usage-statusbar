@@ -6,7 +6,7 @@
  * 于是改用 CDP 往渲染进程注入一个自绘胶囊——和 zcode-beautify 改 UI 是同一路子。
  *
  * 形态：输入卡内底部一条状态行（与 ZCode 版视觉对齐）；每个分段悬停弹信息卡，
- * 右侧齿轮点开完整详情。速度卡的柱状图/颜色档位/统计口径照 ZCode 的悬浮说明做。
+ * 右侧 ⓘ 详情与 ⚙ 设置。速度卡的柱状图/颜色档位/统计口径照 ZCode 的悬浮说明做。
  * 挂载点随宿主重渲染重贴回卡片；找不到卡片才退回窗口右下角。
  *
  * 数据：自己拉起 `zusage.py serve`（一行一请求），按间隔取快照，推给页面。
@@ -162,6 +162,7 @@ function startPython() {
     query() {
       return new Promise((resolve) => {
         if (!child.stdin.writable) { resolve(null); return; }
+        if (waiter) { resolve(null); return; }   // 上一拍未回：拒绝并发，迟到响应不串到下一拍
         waiter = resolve;
         child.stdin.write('\n');
         setTimeout(() => { if (waiter === resolve) { waiter = null; resolve(null); } }, 5000);
@@ -285,7 +286,7 @@ function toPayload(snap) {
 
 /* ---------- 注入到页面的脚本（自包含，幂等） ---------- */
 
-const PAGE_VERSION = 'wb-2.9.0';   // 页面脚本版本：一致就复用，升级后下一次 tick 自动重建
+const PAGE_VERSION = 'wb-2.9.1';   // 页面脚本版本：一致就复用，升级后下一次 tick 自动重建
 const PAGE_SCRIPT = `(function(){
   var ID = 'zusage-wb-bar';
   var VER = '${PAGE_VERSION}';
@@ -506,11 +507,11 @@ const PAGE_SCRIPT = `(function(){
     pop.innerHTML = html;
   }
 
-  ['pointerdown', 'click'].forEach(function(type){
-    document.addEventListener(type, function(ev){
-      if (!pop.contains(ev.target) && !bar.contains(ev.target)) pop.style.display = 'none';
-    }, true);
-  });
+  function onDocTap(ev){
+    if (!pop.contains(ev.target) && !bar.contains(ev.target)) pop.style.display = 'none';
+  }
+  document.addEventListener('pointerdown', onDocTap, true);
+  document.addEventListener('click', onDocTap, true);
   /* 宿主在输入卡的按下阶段做了处理，真实鼠标的 click 到不了这里（程序化 click 能到），
      所以绑 pointerdown 并就地吞掉事件；老内核退回 click。 */
   var infoEl = bar.querySelector('.info');
@@ -876,20 +877,22 @@ const PAGE_SCRIPT = `(function(){
       if (window.__zusageWB_update) window.__zusageWB_update(lastPayload);
     }
   });
-  ['pointerdown', 'click'].forEach(function(type){
-    document.addEventListener(type, function(ev){
-      if (!setOpen) return;
-      var t = ev.target;
-      if (setEl.contains(t)) return;
-      if (t && t.closest && t.closest('.set')) return;   // 点按钮交给 toggleSet
-      closeSet();
-    }, true);
-  });
-  document.addEventListener('keydown', function(ev){
+  function onSetTap(ev){
+    if (!setOpen) return;
+    var t = ev.target;
+    if (setEl.contains(t)) return;
+    if (t && t.closest && t.closest('.set')) return;   // 点按钮交给 toggleSet
+    closeSet();
+  }
+  function onSetKey(ev){
     if (!setOpen) return;
     if (ev.key === 'Escape') { ev.stopPropagation(); closeSet(); }
-  }, true);
-  window.addEventListener('resize', function(){ if (setOpen) placeSet(); });
+  }
+  function onWinResize(){ if (setOpen) placeSet(); }
+  document.addEventListener('pointerdown', onSetTap, true);
+  document.addEventListener('click', onSetTap, true);
+  document.addEventListener('keydown', onSetKey, true);
+  window.addEventListener('resize', onWinResize);
 
   applyPrefs();
 
@@ -1277,7 +1280,7 @@ const PAGE_SCRIPT = `(function(){
   try { mo.observe(document.body, {childList: true, subtree: true}); } catch (e) { /* 老内核 */ }
   mount();
 
-  setInterval(function(){
+  var staleTimer = setInterval(function(){
     var stale = !lastAt || (Date.now() - lastAt > 12000);
     bar.classList.toggle('stale', stale);
     if (stale) bar.title = 'WorkBuddy 用量：数据已停止刷新（注入器未在运行）';
@@ -1289,7 +1292,9 @@ const PAGE_SCRIPT = `(function(){
     lastAt = Date.now();
     fxRate = Number(d.fxRate) || 0;
     mount();
-    bar.className = band(Number(d.pct) || 0);
+    // className 重置会抹掉 fallback 定位类（无输入卡回退 body 时整条 fixed 靠它），按挂载位置补回
+    bar.className = band(Number(d.pct) || 0)
+      + (document.querySelector('.cr-input-container') ? '' : ' fallback');
     applyPrefs();   // className 被重置，排布模式与分段显隐按偏好重贴
     bar.querySelector('.st').classList.toggle('bad', !d.ok);
     bar.querySelector('.sts').textContent = d.ok ? '本地库' : '未找到库';
@@ -1323,6 +1328,11 @@ const PAGE_SCRIPT = `(function(){
   window.__zusageWB_destroy = function(){
     if (mo) { try { mo.disconnect(); } catch (e) {} }
     if (moRaf) { try { cancelAnimationFrame(moRaf); } catch (e) {} }
+    if (staleTimer) { try { clearInterval(staleTimer); } catch (e) {} }
+    try { document.removeEventListener('pointerdown', onDocTap, true); document.removeEventListener('click', onDocTap, true); } catch (e) {}
+    try { document.removeEventListener('pointerdown', onSetTap, true); document.removeEventListener('click', onSetTap, true); } catch (e) {}
+    try { document.removeEventListener('keydown', onSetKey, true); } catch (e) {}
+    try { window.removeEventListener('resize', onWinResize); } catch (e) {}
     var n = document.getElementById(ID);
     if (n) n.remove();
     if (pop && pop.parentElement) pop.remove();

@@ -36,8 +36,10 @@ def revive_finalize_monitor():
     sidecar 记录的运行时目录一致，收尾来源授权才能通过。诊断走 stderr，绝不碰
     stdout（stdio 协议通道）。"""
     try:
-        if zusage.resolve_host() == zusage.HOST_WORKBUDDY:
-            return   # WorkBuddy 宿主没有 asar 注入链，待收尾包监控不适用
+        if zusage.detect_agent() != zusage.AGENT_ZCODE:
+            return   # 只有 ZCode 客户端有 asar 注入链。「在哪个客户端跑」（agent）与
+                     # 「读哪个库」（host）是两件事：ZCode 用户配 host=workbuddy 跨宿主
+                     # 查询时，待收尾包自愈（issue #163）仍必须保留
         cfg_path = Path(__file__).parent / "config.json"
         if not cfg_path.is_file():
             cfg_path = Path.home() / ".zcode" / "zcode-token-usage-statusbar" / "config.json"
@@ -53,11 +55,10 @@ def revive_finalize_monitor():
 
 
 def tool_token_usage(scope: str = "current", host: str = "") -> str:
-    """host 为空 = 跟随配置/环境判定（zusage.resolve_host）；显式传入即覆盖本次查询的宿主。
-    单次调用改的是进程内覆盖值，MCP 进程一会话一进程，不影响其它宿主上的查询。"""
-    if str(host or "").strip():
-        zusage.set_host(host)
-    con = zusage.connect()
+    """host 为空 = 跟随配置/环境判定（zusage.resolve_host）；显式传入只覆盖本次查询
+    （按次传给 connect，不写进程级覆盖——同一 MCP 进程可能连续查两个宿主，
+    粘滞覆盖会让「不传 host 跟随配置」的契约失效）。"""
+    con = zusage.connect(host or None)
     try:
         if scope in ("current", "now"):
             return zusage.render_current(con)
@@ -169,7 +170,8 @@ def _spawn_via_wmi(cmd):
         encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
         result = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
-            capture_output=True, timeout=20)
+            capture_output=True, timeout=20,
+            creationflags=0x08000000 if os.name == "nt" else 0)   # CREATE_NO_WINDOW，防闪窗（同 patch_install）
     except (OSError, ValueError, subprocess.SubprocessError):
         return None
     if result.returncode != 0:

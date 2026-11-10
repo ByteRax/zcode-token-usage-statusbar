@@ -184,6 +184,9 @@ class CostTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
+        # 价表缓存重定向到临时目录：读开发机真实 pricing-cache.json 的话，models.dev
+        # 改价经 12h 同步落盘后，下面的精确牌价断言会随机红（内置表本身是确定的）
+        wb._pricing.configure({}, config_dir=self.tmp.name)
         self.root = Path(self.tmp.name) / "projects" / "d-work-demo"
         self.root.mkdir(parents=True)
         self.path = self.root / f"{SID}.jsonl"
@@ -192,6 +195,20 @@ class CostTests(unittest.TestCase):
         self.path.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n",
                              encoding="utf-8")
         wb._CACHE.clear()
+
+    def test_non_object_json_lines_are_skipped(self):
+        """合法 JSON 但非对象（数组/字符串行）必须跳过：单行坏正文不能炸整帧解析。"""
+        self.path.write_text(
+            "[1, 2]\n"
+            '"str-line"\n'
+            + json.dumps(rec("message", 1000, role="user", content=[]), ensure_ascii=False) + "\n"
+            + json.dumps(call(3000, "r1", 1, 100, 10), ensure_ascii=False) + "\n",
+            encoding="utf-8")
+        wb._CACHE.clear()
+        parsed = wb.parse_transcript(self.path)
+        self.assertEqual(parsed["turns"], 1)
+        self.assertEqual(len(parsed["requests"]), 1)
+        self.assertEqual(parsed["requests"][0]["prompt"], 100)
 
     def test_alias_resolves_v41_to_the_only_v41_entry(self):
         # 价表里官方 family 只到 v4；v4.1 必须走别名，否则会按 v4 低估

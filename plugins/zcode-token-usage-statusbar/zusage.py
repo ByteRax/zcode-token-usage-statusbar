@@ -195,7 +195,7 @@ def resolve_host(override=None, cfg=None):
 
 
 def host_source(override=None, cfg=None):
-    """当前宿主的判定来源（host 子命令/诊断用）：cli | env | config | auto | default。"""
+    """当前宿主的判定来源（host 子命令/诊断用）：cli | env | config | agent | auto | default。"""
     if normalize_host(override) or normalize_host(_HOST_OVERRIDE):
         return "cli"
     if normalize_host(os.environ.get("ZUSAGE_HOST")):
@@ -3161,6 +3161,7 @@ def _wb_row(row, cfg, stats=None):
         "model": parsed.get("model") or model,
         "title": out["title"] or parsed.get("title") or "",
         "cwd": out["cwd"] or parsed.get("cwd") or "",
+        # 正文 credit 合计为 0 时回退宿主 credit_json（正文不记 credit 的部署仍有会话级值）
         "credits": summ["credits"] if summ["credits"] else credits,
         # 费用按模型分组计（价表命中的才计入）；未定价模型进 cost_unknown，
         # 上层显示「部分预估」，拿不到就不写 0。
@@ -3179,6 +3180,8 @@ def _wb_row(row, cfg, stats=None):
     out["last_turn"] = dict(_EMPTY_TURN, **{k: v for k, v in turn.items() if k in _EMPTY_TURN})
     out["last_turn"]["cost_usd"] = turn.get("cost_usd")
     out["last_turn"]["cost_unknown"] = list(turn.get("cost_unknown") or [])
+    out["last_turn"]["cost_models"] = list(turn.get("cost_models") or [])
+    out["last_turn"]["credits"] = turn.get("credits", 0)
     out["last"] = {"duration_ms": turn.get("duration_ms", 0), "ttft_ms": 0,
                    "model": out["model"], "tps": summ["last_tps"],
                    "startedAt": turn.get("started", 0), "endedAt": turn.get("ended", 0)}
@@ -3188,10 +3191,10 @@ def _wb_row(row, cfg, stats=None):
     return out
 
 
-def _wb_rows(con):
+def _wb_rows(con, cfg=None):
     """可用会话行（最近 N 个补正文统计，其余只带上下文），按最后活动倒序。"""
     _wb_ready_pricing()
-    cfg = load_config()
+    cfg = cfg if cfg is not None else load_config()
     raw = con.execute(_WB_SQL).fetchall()
     rows = []
     for i, r in enumerate(raw):
@@ -3237,7 +3240,7 @@ def wb_snapshot(force_sid="", cfg=None, serve_con=None):
         except sqlite3.Error as exc:
             con, local_error = None, str(exc)[:200]
     try:
-        rows = _wb_rows(con) if con is not None else []
+        rows = _wb_rows(con, cfg) if con is not None else []
         by_sid = {r["sid"]: r for r in rows}
         force = []
         for fs in str(force_sid).split(","):
@@ -3460,9 +3463,15 @@ def wb_render_today(con):
 def wb_render_days(con, days):
     _wb_ready_pricing()
     days = max(1, int(days))
+    since = int(time.time() * 1000) - days * 86400000
     buckets = {}
     if _wb_usage is not None:
         for path in _wb_usage.transcript_paths():
+            try:
+                if path.stat().st_mtime * 1000 < since:
+                    continue   # 窗口外的文件不解析（窗口内有请求的文件必然在窗口内写过）
+            except OSError:
+                continue
             parsed = _wb_usage.parse_transcript(path)
             for r in parsed.get("requests") or []:
                 if not r["ts"]:
@@ -3631,6 +3640,7 @@ def describe_host(cfg=None):
     host = resolve_host(cfg=cfg)
     source = host_source(cfg=cfg)
     src_label = {"cli": "--host", "env": "ZUSAGE_HOST", "config": "config.host",
+                 "agent": L("跟随客户端构建", "follows client build"),
                  "auto": "config.host=auto", "default": L("默认值", "default")}[source]
     caps = host_caps(host)
     lines = [L(f"■ 宿主 {host_label(host)}（{host}；判定来源：{src_label}）",

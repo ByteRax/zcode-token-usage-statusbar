@@ -147,5 +147,36 @@ class HookAgentGateTests(unittest.TestCase):
         self.assertEqual(proc.stderr, b"")
 
 
+class McpHostBehaviorTests(unittest.TestCase):
+    """MCP host 参数按次生效（不写进程级覆盖）；待收尾包自愈门控按 agent 判定。"""
+
+    def test_tool_host_override_is_per_call(self):
+        recorded = []
+
+        def fake_connect(host=None):
+            recorded.append(host)
+            return mock.MagicMock()
+
+        with mock.patch.object(usage_mcp.zusage, "connect", side_effect=fake_connect), \
+                mock.patch.object(usage_mcp.zusage, "render_current", return_value="ok"):
+            usage_mcp.tool_token_usage(scope="current", host="workbuddy")
+            usage_mcp.tool_token_usage(scope="current")
+        self.assertEqual(recorded, ["workbuddy", None])   # 不传 host 的下一次回到跟随配置
+        self.assertIsNone(usage_mcp.zusage._HOST_OVERRIDE)
+
+    def test_finalize_revive_gate_follows_agent_not_host(self):
+        """ZCode 客户端 + host=workbuddy 配置：待收尾包自愈（issue #163）必须保留。"""
+        path_mock = mock.MagicMock()
+        with mock.patch.object(usage_mcp.zusage, "detect_agent", return_value="zcode"), \
+                mock.patch.object(usage_mcp.zusage, "resolve_host", return_value="workbuddy"), \
+                mock.patch.object(usage_mcp, "Path", return_value=path_mock) as pmock:
+            usage_mcp.revive_finalize_monitor()
+        self.assertTrue(pmock.called, "agent=zcode 时不得因 host=workbuddy 提前 return")
+        with mock.patch.object(usage_mcp.zusage, "detect_agent", return_value="workbuddy"), \
+                mock.patch.object(usage_mcp, "Path", return_value=path_mock) as pmock2:
+            usage_mcp.revive_finalize_monitor()
+        self.assertFalse(pmock2.called, "agent=workbuddy 应在触碰任何路径前退出")
+
+
 if __name__ == "__main__":
     unittest.main()
