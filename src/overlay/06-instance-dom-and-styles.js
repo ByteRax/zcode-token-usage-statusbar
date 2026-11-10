@@ -204,8 +204,13 @@
      * → v319 速度格数字与单位加距 4px（用户实报 "158.9t/s" 贴字，且「修改过程中对的、判定生效又变回去」——两条渲染路径只有一条有空格）：①实时桥路径 zuBarSpeedView text="… t/s" 有空格但切 sans 后 Segoe 空格 7.15px→~3.7px 视觉贴字，.zu-live 加 word-spacing:4px（用户实机逐档对比定稿）；②无桥 DB 回退路径 chipFace（07）数字直拼 '<span class="dim">t/s</span>' 根本无空格字符、word-spacing 对其无效——补空格后与①渲染一致；用户看到的「忽对忽错」=生成中走①、完成/无桥走②
      * → v320 「不在本地库」提示与 ⚙「数据库统计」注记不再写死 ~/.zcode 路径（issue #279：宿主 dataBaseDir 迁移后旧提示误导）：tooltip 改中性描述并指引重装/更新、⚙ 注记改「只读本地用量库（默认 ~/.zcode/...，跟随宿主 dataBaseDir 迁移）」；用量链 DB 路径解析本体在 zusage.py / token_rate.py / inject-main.cjs（非浮层），此为配套文案
      * → v321 速度格贴字真根因修复：`.zusage-root .it>span:not(.eb)` 的 inline-flex 把速度格也 flex 化，flex 剥离文本 item 尾随空格——数字态（数字+span.dim 两 item）空格 spaceW=0、v319 的 word-spacing 无效（CDP 实测墨迹间隙 0），状态词态单文本 item 不受影响故「动态对、停止贴」；选择器豁免 .zu-live（外部 flex item 布局块化等价、零变化），空格与 word-spacing:4px 恢复生效，间隔与动态态一致 ~7.7px
+     * → v322 速度格 word-spacing 4px→2px（用户实机目测：7.7px 偏宽，收窄到 ~5.7px）
+     * → v323 速度格 word-spacing 2px→1px（用户实机继续收窄：~4.7px）
+     * → v324 完成态数字与 t/s 零间隔：chipFace 去除空格字符（7.7→5.7→4.7px 逐档后用户定稿 0）。动态态（单文本 "… t/s"）仍空格+word-spacing:1px ~4.7px；word-spacing 对完成态无空格文本不再生效（CSS 保留无害）
+     * → v325 动态态 word-spacing 1px→4px（用户实机回定；完成态零间隔不受影响——无空格字符可加距）
+     * → v326 数字与 t/s 间距改用 inline-flex+gap:5px+baseline：去除 word-spacing（用户实测调值无视觉变化——完成态无空格、动态态单文本）。动态态整条渲染（07 render live 分支）与原地更新（08）统一走 zuLiveFaceHtml 拆「数字+dim」两 item，gap 才有 item 可分；状态词态保持单文本。完成态 v324 曾零间隔，v326 起与动态态统一 5px（用户屏幕验证接受）；函数声明必须实例级（html(d) 分支块内是 Annex B 块级声明，live 分支 TypeError / 08 ReferenceError，实测 44 测试红）
      */
-    var VERSION = "v321";
+    var VERSION = "v326";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
@@ -313,7 +318,8 @@
       /* v319：数字与 t/s 同文本节点（"158.9 t/s"），切 sans 后 Segoe 空格（~3.7px）比
        * Consolas（7.15px）窄一半，视觉贴字——word-spacing 加距（用户实机逐档对比后定稿 4px），不改字符串
        * （text 经 ttEsc 转义、aria/tooltip 同串不受 DOM 改动影响） */
-      ".zu-live{color:var(--color-foreground,#e9edf4);font-weight:600;word-spacing:4px}" +
+      /* v326：数字与 t/s 间距唯一机制=inline-flex+gap（word-spacing 已除——完成态无空格字符、动态态单文本调值无视觉效果，用户实测）；baseline 对齐防 flex 拉伸错位 */
+      ".zu-live{color:var(--color-foreground,#e9edf4);font-weight:600;display:inline-flex;gap:5px;align-items:baseline}" +
       /* v176 子代理行内速率 chip：挂宿主 v4 Agent 行 .tool-summary-content 之后，颜色走
        * TPS 十档类（与条面同源），数字 tabular 不抖宽；cursor:help 提示可悬停看口径。 */
       ".zu-subrate{flex:0 0 auto;white-space:nowrap;cursor:help;font-size:12px;line-height:1.4;font-weight:600;font-variant-numeric:tabular-nums}" +

@@ -159,7 +159,7 @@ test('compact theme: tps chip mounts in the leading area, taking the git slot (a
   assert.ok(chip, 'chip mounted');
   assert.equal(chip.parentElement, ui.leadWrap, 'chip lives in the leading content group (git chip home)');
   assert.equal(ui.cua.nextElementSibling, chip, 'git absent -> chip takes the git anchor slot right after the cua button');
-  assert.equal(chip.innerHTML, '<span class="zu-live ok">87.3 t/s</span>', 'DB fallback renders value + unit with the 70-150 band class');
+  assert.equal(chip.innerHTML, '<span class="zu-live ok">87.3<span class="dim">t/s</span></span>', 'DB fallback renders value + unit with the 70-150 band class');
   assert.equal(chip.getAttribute('aria-label'), '生成速度 87.3 t/s');
   assert.ok(chip.tabIndex === 0, 'keyboard reachable');
 });
@@ -218,7 +218,7 @@ test('content is signature-idempotent, re-anchors after being displaced, and upd
   // 数据变化：签名变化重建内容
   h.window.__zusageUpdate(h.payload({ tps: 12.5 }));
   chip = h.chipOf(ui.row);
-  assert.equal(chip.innerHTML, '<span class="zu-live hot">12.5 t/s</span>', 'new band class on new value');
+  assert.equal(chip.innerHTML, '<span class="zu-live hot">12.5<span class="dim">t/s</span></span>', 'new band class on new value');
 });
 
 test('tooltip: speed rows + bar summary gated by per-cell toggles + legend + settings button that opens the panel', () => {
@@ -320,7 +320,7 @@ test('session avg + dbTps>0: chip 面=最后一轮真实值（v298 拍板）；t
   p.recent[0].last_at = t1;   // 覆盖夹具的 last_at:1：会话范围行按真实时刻断言
   h.window.__zusageUpdate(p);
   const chip = h.chipOf(ui.row);
-  assert.equal(chip.innerHTML, '<span class="zu-live ok">42 t/s</span>');   // v298：面=最后一轮，去「均」前缀
+  assert.equal(chip.innerHTML, '<span class="zu-live ok">42<span class="dim">t/s</span></span>');   // v298：面=最后一轮，去「均」前缀（v326 两 item 结构）
   chip.listeners.get('mouseenter')[0].call(chip);
   const tip = h.tipEl().innerHTML;
   assert.ok(tip.includes('zu-stat-scope">会话平均<'), 'session-avg scope tag');

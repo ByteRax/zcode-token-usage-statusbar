@@ -115,6 +115,16 @@
     /* 结构化 tooltip（v67.1）：\x01 前缀标记 HTML 内容（drawTip 分流），行/脚注排版与
      * 回复末尾统计行 tooltip 同款；动态值一律过 ttEsc（innerHTML 安全，如工具名/错误文案） */
     function ttEsc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+    /* v326：动态态与完成态统一「数字 + dim 单位」两 item 结构——.zu-live 用 inline-flex+gap:5px
+     * 控制数字与 t/s 间距（word-spacing 已除：对完成态无空格字符、动态态单文本均无视觉效果）。
+     * t/s 结尾才拆（状态词态保持单文本）。声明必须在实例一级：07 render live 分支、08 updateLive
+     * 原地更新、11 compact chip 三处消费——放在 html(d) 分支块内是 Annex B 块级函数声明，
+     * live 分支执行时绑定未初始化（TypeError），跨分片 08 直接 ReferenceError（实测 44 测试红）。 */
+    function zuLiveFaceHtml(text) {
+      return typeof text === "string" && / t\/s$/.test(text)
+        ? ttEsc(text.slice(0, -4)) + '<span class="dim">t/s</span>'
+        : ttEsc(text);
+    }
     function ttH(t) { return '<div class="rt-h">' + ttEsc(t) + "</div>"; }
     var RT_ATOM_RE = /(?:[¥$]\d[\d,.]*|\b\d[\d,.]*(?:\s*(?:tok\/s|t\/s|tokens?|requests?|calls?|s|ms|次|轮|万|亿|%))(?=$|[\s，；。·（）()]))/g;
     function ttAtomHtml(escaped) { return escaped.replace(RT_ATOM_RE, '<span class="rt-atom">$&</span>'); }
@@ -652,7 +662,7 @@
         it((speedView.phase === "thinking" ? zuIcoThinking()
           : speedView.phase === "tool" ? ico('<path d="M14.5 2.5a6 6 0 0 0-5.6 8.1L3.3 16.2a3.2 3.2 0 0 0 4.5 4.5l5.6-5.6a6 6 0 0 0 8.1-5.6l-4.1 3-3.8-3.8 3-4.1a6 6 0 0 0-2.1-2.1z"/>')
           : ico('<path d="M13.5 2 3.5 13.5H11L10 22l10.5-12H13l.5-8z"/>')) +
-          '<span class="zu-live ' + speedView.cls + (speedView.word ? " zu-shimmer" : "") + '">' + ttEsc(speedView.text) + "</span>",
+          '<span class="zu-live ' + speedView.cls + (speedView.word ? " zu-shimmer" : "") + '">' + zuLiveFaceHtml(speedView.text) + "</span>",
           buildLiveTip(speedView));
       } else if ((sessAvg || dbTps) && isFinite(sessAvg || dbTps) && (sessAvg || dbTps) > 0) {
         /* v127：负数/±Infinity 是异常数据，按无数据处理（整枚 chip 不渲染，与
@@ -745,7 +755,7 @@
         /* v298（用户拍板）：chip 主数字=最后一轮真实速度（最近一段，不再取会话均、
          * 不带「均」前缀）；tooltip 左卡仍为会话加权平均（"平均速度"语义不变） */
         var chipBand = tpsBand(chipTps);
-        var chipFace = chipTps > 0 ? ((chipTps % 1 ? chipTps.toFixed(1) : String(chipTps)) + ' <span class="dim">t/s</span>') : "";   // 最后一轮无效：面空（含单位），仅留图标作悬停锚；空面补 aria-label 保可访问名（review 修复）。v319：数字与单位间补空格（原串无空格、.zu-live 的 word-spacing 对无空格文本无效，真机实测数字紧贴 t/s；补空格后与实时桥路径「 t/s」+word-spacing:4px 渲染一致）
+        var chipFace = chipTps > 0 ? ((chipTps % 1 ? chipTps.toFixed(1) : String(chipTps)) + '<span class="dim">t/s</span>') : "";   // 最后一轮无效：面空（含单位），仅留图标作悬停锚；空面补 aria-label 保可访问名（review 修复）。v319 补空格→v321 flex 豁免后空格生效→v324 去空格（曾零间隔）→v326 统一 gap:5px 机制：完成态与动态态同为「数字+dim」两 item、间距恒 5px（用户屏幕验证）
         it(ico('<path d="M13.5 2 3.5 13.5H11L10 22l10.5-12H13l.5-8z"/>') +
           '<span class="zu-live ' + (chipBand ? chipBand.cls : "dim") + '"' + (chipFace ? "" : ' aria-label="' + L("生成速度", "Generation speed") + '"') + '>' + chipFace + '</span>',
           speedTipRebuild(speedChartHover, v2sel));

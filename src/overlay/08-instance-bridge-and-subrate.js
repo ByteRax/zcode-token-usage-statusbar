@@ -569,7 +569,10 @@
       if (view && wasLive && phase === livePhaseCur) {
         liveTextCur = view.text;
         if (!liveEl) { render(state.data || { session: {}, last_turn: {}, today: {}, context_window: 0 }); return; }
-        if (liveEl.textContent !== view.text) liveEl.textContent = view.text;
+        /* v326：原地更新同样写「数字+dim」两 item 结构（gap:5px 需两 item；textContent
+         * 会把结构转义成纯文本）。innerHTML 小串无压力，相位切换仍走整条重渲染。 */
+        var faceHtml = zuLiveFaceHtml(view.text);
+        if (liveEl.innerHTML !== faceHtml) liveEl.innerHTML = faceHtml;
         liveIconCur = phase === "thinking" ? "think" : phase === "tool" ? "tool" : phase ? "generate" : "bolt";
         var cls = "zu-live " + view.cls + (view.word ? " zu-shimmer" : "");
         if (liveEl.className !== cls) liveEl.className = cls;

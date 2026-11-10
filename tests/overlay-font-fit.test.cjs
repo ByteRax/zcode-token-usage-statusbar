@@ -61,18 +61,36 @@ test('tooltip surfaces (exc card/rateTip inline fallback and stat/project/sub/sp
   }
 });
 
-test('speed number/unit spacing: live path word-spacing + fallback face space (v319)', () => {
-  // v319 双路径：①实时桥 .zu-live 文本 "… t/s" 有空格但切 sans 后 Segoe 空格变窄，加 word-spacing；
-  // ②无桥回退 chipFace 原串「数字+'<span class="dim">t/s</span>'」无空格字符，word-spacing 对
-  // 无空格文本无效（真机实测数字紧贴 t/s），必须保留补入的空格
+test('speed number/unit spacing: gap:5px mechanism + zero-space faces (v326)', () => {
+  // v326 定稿：数字与 t/s 间距唯一机制 = .zu-live inline-flex+gap:5px+baseline；
+  // 完成态（chipFace）与动态态（zuLiveFaceHtml）都是「数字+dim」两 item、无空格字符。
+  // word-spacing 全链移除（对无空格完成态、单文本动态态均无视觉效果），不得回加。
   const liveAt = source.indexOf('.zu-live{');
   assert.ok(liveAt >= 0, '.zu-live missing');
   const liveBody = source.slice(liveAt, source.indexOf('}', liveAt));
-  assert.ok(liveBody.includes('word-spacing:4px'), '.zu-live 实时桥路径必须保留 word-spacing:4px 加距');
+    assert.ok(liveBody.includes('display:inline-flex') && liveBody.includes('gap:5px') && liveBody.includes('align-items:baseline'),
+    '.zu-live 须 inline-flex+gap:5px+baseline（v326 数字与 t/s 间距唯一机制）');
+  assert.ok(!liveBody.includes('word-spacing'), '.zu-live 不得回加 word-spacing（完成态无空格、动态态单文本均无视觉效果，v326 已除）');
+  assert.ok(source.includes('+ zuLiveFaceHtml(speedView.text)'), '动态态整条渲染须走 zuLiveFaceHtml 拆「数字+dim」两 item（gap 需两 item）');
+  assert.ok(source.includes('zuLiveFaceHtml(view.text)'), '原地更新须写拆分后结构（textContent 会转义成纯文本）');
   const at = source.indexOf('var chipFace = chipTps > 0');
   assert.ok(at >= 0, 'chipFace missing');
   const line = source.slice(at, source.indexOf(String.fromCharCode(10), at));
-  assert.ok(line.includes(") + ' <span class=\"dim\">t/s</span>'"), 'chipFace 数字与单位间必须保留空格');
+  assert.ok(line.includes(") + '<span class=\"dim\">t/s</span>'"), 'chipFace 数字与单位间必须零间隔（v324 用户定稿：不得回加空格字符）');
+});
+
+test('zuLiveFaceHtml behaviour lock: splits exactly the " t/s" suffix into number+dim (v326)', () => {
+  // 行为级锁（字符串存在性断言抓不住「函数被改成 no-op」——变异实验实证）：
+  // 从产物提取真函数体在隔离函数里执行，锁定拆分输出与转义边界
+  const fnSrc = source.slice(source.indexOf('function zuLiveFaceHtml(text)'),
+    source.indexOf('ttEsc(text);\n    }', source.indexOf('function zuLiveFaceHtml(text)')) + 'ttEsc(text);\n    }'.length);
+  assert.ok(fnSrc.includes('return typeof text === "string"'), '提取到的是完整函数体');
+  const ttEsc = (v) => String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const f = new Function('ttEsc', fnSrc + ';\nreturn zuLiveFaceHtml;')(ttEsc);
+  assert.equal(f('160.6 t/s'), '160.6<span class="dim">t/s</span>', 't/s 结尾拆两 item');
+  assert.equal(f('思考中…59秒'), '思考中…59秒', '状态词态不拆');
+  assert.equal(f('—'), '—', '无数据态不拆');
+  assert.equal(f('a<b&c t/s'), 'a&lt;b&amp;c<span class="dim">t/s</span>', '数字部分转义保留');
 });
 
 test('speed cell must stay exempt from the segment flex rule (flex strips trailing spaces)', () => {
