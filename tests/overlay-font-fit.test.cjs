@@ -75,6 +75,16 @@ test('speed number/unit spacing: live path word-spacing + fallback face space (v
   assert.ok(line.includes(") + ' <span class=\"dim\">t/s</span>'"), 'chipFace 数字与单位间必须保留空格');
 });
 
+test('speed cell must stay exempt from the segment flex rule (flex strips trailing spaces)', () => {
+  // v321：`.it>span:not(.eb)` 的 inline-flex 会把速度格数字态「数字+dim」两 item 结构的
+  // 尾随空格剥离（spaceW=0），word-spacing 对不存在的空格无效——v319 贴字复发真根因。
+  // 豁免选择器一旦被改掉/移除，数字态立刻回到 0 间隙。
+  assert.ok(source.includes('.zusage-root .it>span:not(.eb):not(.zu-live){display:inline-flex'),
+    '分段 flex 规则必须继续豁免 .zu-live（:not(.zu-live)），否则速度格数字态空格被 flex 剥离、贴字复发');
+  assert.ok(!source.includes('.it>span:not(.eb){'),
+    '分段 flex 规则不得回归为无豁免形态（.it>span:not(.eb){）');
+});
+
 test('settings domain keeps mono token (sans scope must not leak into ⚙ panel)', () => {
   for (const sel of ['.zu-src-field{', '.zu-mp-id{', '.zu-mp-meta{',
     '.zu-settings .zu-notes-body pre{', '.zu-settings .zu-notes-body code{', '.zu-settings .zu-notes-hist-ver{',
