@@ -1,1 +1,12 @@
 * text=auto eol=lf
+
+# 排除文档与图片资源，防止打包进 GitHub 自动生成的 Source code (zip) 归档
+docs/tour/** export-ignore
+docs/promo/** export-ignore
+docs/images/** export-ignore
+docs/assets/** export-ignore
+docs/*.png export-ignore
+docs/*.jpg export-ignore
+docs/*.jpeg export-ignore
+docs/*.gif export-ignore
+docs/*.webp export-ignore

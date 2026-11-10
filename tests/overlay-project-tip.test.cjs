@@ -347,3 +347,83 @@ test('双语：en 标题/范围/按钮走 L() 同链；Escape keydown 委托已�
   assert.match(html, /Show all 8 models/);
   assert.ok(h.tipRoot().listeners.get('keydown'), 'Escape handler wired on tip');
 });
+
+test('v329: pointerdown 展开模型明细 + 阻止冒泡与默认行为，后续 click 幂等不重复收起', () => {
+  const h = harness(); setup(h);
+  const models = Array.from({ length: 12 }, (_, i) => (
+    { model: 'pj-m-' + String(12 - i).padStart(2, '0'), requests: 10 - i, total: 9000 - i * 700, cost_usd: 0.5 + i * 0.1 }));
+  withProjectModels(h, models);
+  const html = h.drawProjectTip();
+  const tip = h.tipRoot();
+  const key = html.match(/data-key="([^"]+)"/)[1];
+  const rowsEl = new Element(); rowsEl.setAttribute('data-zu-pj-rows', '1');
+  const rootEl = new Element(); rootEl.queries.set('[data-zu-pj-rows]', rowsEl);
+  const pjBtn = new Element('button');
+  pjBtn.setAttribute('data-key', key);
+  pjBtn.closest = sel => (sel === '.zu-project-tip' ? rootEl : null);
+  const fakeTarget = { closest: sel => (sel === '.zu-pj-more' ? pjBtn : null) };
+
+  let spCalled = false, pdCalled = false;
+  // 1. pointerdown 触发
+  tip.listeners.get('pointerdown')[0]({
+    type: 'pointerdown',
+    target: fakeTarget,
+    stopPropagation: () => { spCalled = true; },
+    preventDefault: () => { pdCalled = true; },
+  });
+  assert.equal(spCalled, true, 'pointerdown 必须 stopPropagation');
+  assert.equal(pdCalled, true, 'pointerdown 必须 preventDefault');
+  assert.equal(pjBtn.getAttribute('aria-expanded'), 'true');
+  assert.equal((rowsEl.innerHTML.match(/<tr>/g) || []).length, 12);
+
+  // 2. 紧随其后的 click（由指针抬起产生）保持幂等，不翻转回折叠态
+  tip.listeners.get('click')[0]({
+    type: 'click',
+    target: fakeTarget,
+    stopPropagation: () => {},
+    preventDefault: () => {},
+  });
+  assert.equal(pjBtn.getAttribute('aria-expanded'), 'true', '紧跟 pointerdown 的 click 不得 double-toggle');
+  assert.equal((rowsEl.innerHTML.match(/<tr>/g) || []).length, 12);
+
+  // 3. mousedown 阻止冒泡与默认行为（防止冒泡至宿主触发失焦）
+  let mdSp = false, mdPd = false;
+  tip.listeners.get('mousedown')[0]({
+    type: 'mousedown',
+    target: fakeTarget,
+    stopPropagation: () => { mdSp = true; },
+    preventDefault: () => { mdPd = true; },
+  });
+  assert.equal(mdSp, true, 'mousedown 必须 stopPropagation');
+  assert.equal(mdPd, true, 'mousedown 必须 preventDefault');
+});
+
+test('v329: 按住超过 400ms 再松开，click 仍被一次性吞掉，不二次翻转', () => {
+  const h = harness(); setup(h);
+  const models = Array.from({ length: 12 }, (_, i) => (
+    { model: 'pj-m-' + String(12 - i).padStart(2, '0'), requests: 10 - i, total: 9000 - i * 700, cost_usd: 0.5 + i * 0.1 }));
+  withProjectModels(h, models);
+  const html = h.drawProjectTip();
+  const tip = h.tipRoot();
+  const key = html.match(/data-key="([^"]+)"/)[1];
+  const rowsEl = new Element(); rowsEl.setAttribute('data-zu-pj-rows', '1');
+  const rootEl = new Element(); rootEl.queries.set('[data-zu-pj-rows]', rowsEl);
+  const pjBtn = new Element('button');
+  pjBtn.setAttribute('data-key', key);
+  pjBtn.closest = sel => (sel === '.zu-project-tip' ? rootEl : null);
+  const fakeTarget = { closest: sel => (sel === '.zu-pj-more' ? pjBtn : null) };
+  const ev = type => ({ type, target: fakeTarget, stopPropagation: () => {}, preventDefault: () => {} });
+  const realNow = Date.now;
+  let t = realNow();
+  Date.now = () => t;
+  try {
+    tip.listeners.get('pointerdown')[0](ev('pointerdown'));
+    assert.equal(pjBtn.getAttribute('aria-expanded'), 'true');
+    t += 900;   // 按住 900ms 再松开
+    tip.listeners.get('click')[0](ev('click'));
+    assert.equal(pjBtn.getAttribute('aria-expanded'), 'true', '长按后的 click 不得把刚展开的明细收回');
+    // 无前置 pointerdown 的 click（键盘 Enter）仍正常翻转
+    tip.listeners.get('click')[0](ev('click'));
+    assert.equal(pjBtn.getAttribute('aria-expanded'), 'false', '键盘 click 正常切换');
+  } finally { Date.now = realNow; }
+});

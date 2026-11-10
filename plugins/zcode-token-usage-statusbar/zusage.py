@@ -663,6 +663,20 @@ def _norm_path_key(d):
     return (d or "").replace("\\", "/").rstrip("/").lower()
 
 
+def _canon_model_name(existing, candidate):
+    """同一模型大小写归一化时的优先展示名判定。
+    优先保留含大写字母或大写字符较多者（如 'GLM-5.3' 优于 'glm-5.3'）。"""
+    if not existing:
+        return candidate or ""
+    if not candidate:
+        return existing
+    if existing.islower() and not candidate.islower():
+        return candidate
+    if sum(1 for c in candidate if c.isupper()) > sum(1 for c in existing if c.isupper()):
+        return candidate
+    return existing
+
+
 def _project_usage(con, sid, with_models=False):
     """项目累计（v159）：当前会话所属项目（session.project_id，与宿主 --continue 同一
     项目身份）下全部会话的 completed 用量聚合，口径与 session_usage 一致；计入主会话与
@@ -718,7 +732,8 @@ def _project_usage(con, sid, with_models=False):
         rated_acc = gen_acc = 0
         covers = _provider_first_token_covers(con)
         models_acc = {}
-        cost_groups = []   # v202 预估费用分组（与 with_models 无关恒产出，轻量行项目格同款）
+        model_names = {}
+        raw_groups = []   # v202 预估费用分组（与 with_models 无关恒产出，轻量行项目格同款）
         for i in range(0, len(all_ids), 500):
             part = all_ids[i:i + 500]
             qm = ",".join("?" * len(part))
@@ -776,18 +791,23 @@ def _project_usage(con, sid, with_models=False):
                            coalesce(sum(m.cache_creation_input_tokens),0)
                     from model_usage m where m.status='completed' and m.session_id in ({qm})
                     group by m.model_id, m.provider_id""", part).fetchall():
+                raw_m = mm[0] or ""
+                m_key = raw_m.lower()
+                model_names[m_key] = _canon_model_name(model_names.get(m_key), raw_m)
                 if with_models:
-                    acc = models_acc.setdefault(mm[0] or "", [0, 0])
+                    acc = models_acc.setdefault(m_key, [0, 0])
                     acc[0] += mm[2]
                     acc[1] += mm[3]
-                cost_groups.append((mm[0] or "", mm[1] or "", mm[4], mm[5], mm[6], mm[7]))
-        models = [{"model": k, "requests": v[0], "total": v[1]}
+                raw_groups.append((raw_m, mm[1] or "", mm[4], mm[5], mm[6], mm[7]))
+        models = [{"model": model_names[k], "requests": v[0], "total": v[1]}
                   for k, v in models_acc.items()]
         if _pricing is not None:
             try:
-                proj_cost, per_cost = _pricing.merge_model_costs(cost_groups)
+                canon_groups = [(model_names[(m or "").lower()], prov, inp, out, cr, cw)
+                                for m, prov, inp, out, cr, cw in raw_groups]
+                proj_cost, per_cost = _pricing.merge_model_costs(canon_groups)
                 prov_of = {}
-                for model, prov, *_ in cost_groups:
+                for model, prov, *_ in canon_groups:
                     prov_of.setdefault(model, prov)
                 for m in models:
                     m["cost_usd"] = per_cost.get(m["model"], 0.0)
@@ -1351,23 +1371,28 @@ def _session_models_cost(con, sid):
     """模型明细 + 会话预估费用（v202）：单条 GROUP BY 查询同时产出计数/总量/费用。
     返回 (models 列表（按 total 降序，价表模块可用时带 cost_usd）, 会话总费用或 None)。
     价表模块缺失（旧运行目录未部署 token_pricing.py）时退回 v163 结构、总费用 None。"""
-    acc = {}
-    groups = []
+    models_acc = {}
+    model_names = {}
+    raw_groups = []
     for r in con.execute(
         """select model_id, provider_id, count(*), coalesce(sum(computed_total_tokens),0),
                   coalesce(sum(input_tokens),0), coalesce(sum(output_tokens),0),
                   coalesce(sum(cache_read_input_tokens),0), coalesce(sum(cache_creation_input_tokens),0)
            from model_usage where session_id=? and status='completed'
            group by model_id, provider_id""", (sid,)).fetchall():
-        model = r[0] or ""
-        a = acc.setdefault(model, [0, 0])
+        raw_m = r[0] or ""
+        m_key = raw_m.lower()
+        model_names[m_key] = _canon_model_name(model_names.get(m_key), raw_m)
+        a = models_acc.setdefault(m_key, [0, 0])
         a[0] += r[2]
         a[1] += r[3]
-        groups.append((model, r[1] or "", r[4], r[5], r[6], r[7]))
-    models = [{"model": k, "requests": v[0], "total": v[1]} for k, v in acc.items()]
+        raw_groups.append((raw_m, r[1] or "", r[4], r[5], r[6], r[7]))
+    models = [{"model": model_names[k], "requests": v[0], "total": v[1]} for k, v in models_acc.items()]
     if _pricing is None:
         models.sort(key=lambda m: -m["total"])
         return models, None
+    groups = [(model_names[(m or "").lower()], prov, inp, out, cr, cw)
+              for m, prov, inp, out, cr, cw in raw_groups]
     total, per = _pricing.merge_model_costs(groups)
     prov_of = {}
     for model, prov, *_ in groups:
@@ -1408,14 +1433,19 @@ def _scope_models_cost(con, where, args):
         ).fetchall()
     except Exception:
         return None, None
-    acc = {}
-    groups = []
+    models_acc = {}
+    model_names = {}
+    raw_groups = []
     for r in rows:
-        model = r[0] or ""
-        a = acc.setdefault(model, [0, 0])
+        raw_m = r[0] or ""
+        m_key = raw_m.lower()
+        model_names[m_key] = _canon_model_name(model_names.get(m_key), raw_m)
+        a = models_acc.setdefault(m_key, [0, 0])
         a[0] += r[2]
         a[1] += r[3]
-        groups.append((model, r[1] or "", r[4], r[5], r[6], r[7]))
+        raw_groups.append((raw_m, r[1] or "", r[4], r[5], r[6], r[7]))
+    groups = [(model_names[(m or "").lower()], prov, inp, out, cr, cw)
+              for m, prov, inp, out, cr, cw in raw_groups]
     try:
         total, per = _pricing.merge_model_costs(groups)
     except Exception:
@@ -1423,9 +1453,9 @@ def _scope_models_cost(con, where, args):
     prov_of = {}
     for model, prov, *_ in groups:
         prov_of.setdefault(model, prov)
-    models = [{"model": k, "requests": v[0], "total": v[1], "cost_usd": per.get(k, 0.0),
-               "rates": _model_rates(k, prov_of.get(k, "")).get("rates")}
-              for k, v in acc.items()]
+    models = [{"model": model_names[k], "requests": v[0], "total": v[1], "cost_usd": per.get(model_names[k], 0.0),
+               "rates": _model_rates(model_names[k], prov_of.get(model_names[k], "")).get("rates")}
+              for k, v in models_acc.items()]
     models.sort(key=lambda m: -m["total"])
     return models, total
 
