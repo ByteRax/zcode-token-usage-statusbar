@@ -116,6 +116,9 @@ test("v2:env secret file via ZCODE_CREDENTIAL_SECRET_FILE; unreadable and out-of
   const d3 = Q.makeHostDecryptor({ credsPath: "/t/c.json", env: { ZCODE_CREDENTIAL_SECRET_FILE: "/t/sec" }, readFileRaw: () => "short", keyringMod: fakeKeyring(null) });
   await d3.ensureKey();
   assert.equal(d3.ctx.lastError, "managed secret file length invalid");
+  const d4 = Q.makeHostDecryptor({ credsPath: "/t/c.json", env: { ZCODE_CREDENTIAL_SECRET_FILE: "/t/sec" }, readFileRaw: () => "f".repeat(4097), keyringMod: fakeKeyring(null) });
+  await d4.ensureKey();
+  assert.equal(d4.ctx.lastError, "managed secret file length invalid");   // 上界 4096
 });
 
 test("v2 both managed-secret envs set -> misconfigured fail-closed (host-throw mirror)", async () => {
