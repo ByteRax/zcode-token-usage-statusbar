@@ -230,7 +230,10 @@ test('胶囊按钮注入在命中率行下、「剩余额度」段前，重复�
   h.inject(); h.boot(); h.tick();
   const btn = h.compactBtnOf(ui.body);
   assert.ok(btn, 'button mounted');
-  assert.equal(btn.textContent, '压缩上下文');
+  /* v316 图标+文字组合：innerHTML 常量串不进 VM 桩 DOM，文案以 textNode 挂 children
+   * （夹具桩的 children 含文本节点、textContent 是普通属性不聚合，故从 children 读）；
+   * 真实浏览器要用 childNodes（children 只含元素节点），svg 无文本节点，语义一致。 */
+  assert.equal(btn.children.map(c => c.textContent).join(''), '压缩上下文');
   assert.equal(ui.body.children.indexOf(btn), ui.body.children.indexOf(ui.borderT) - 1);
   h.tick();
   assert.equal(h.compactBtnOf(ui.body), btn, 'idempotent: 同一颗按钮不被重建');
@@ -497,7 +500,7 @@ test('英文语言：按钮与弹框文案走 en 分支', () => {
   comp.btn['__reactFiber$fixture'] = { memoizedProps: { onSendCompressionCommand: cmd => { sent.push(cmd); } }, return: null };
   h.inject(); h.boot(); h.tick();
   const btn = h.compactBtnOf(ui.body);
-  assert.equal(btn.textContent, 'Compact context');
+  assert.equal(btn.children.map(c => c.textContent).join(''), 'Compact context');
   btn.dispatch('click');
   assert.equal(h.findIn(h.dlgEl(), 'zu-compact-title').textContent, 'Compact context');
   const usage = h.findIn(h.dlgEl(), 'zu-compact-desc').children[0];
@@ -514,6 +517,40 @@ test('源码契约：冷启动清扫与新类名/观察器接线齐备', () => {
   assert.match(source, /onSendCompressionCommand/);
   assert.match(source, /__zcodeLexicalInputE2E/);
   assert.match(source, /data-e2e-lexical-bridge/);
+});
+
+test('v316 视格契约：胶囊按钮 flex 居中/40px/无边框/中性叠加底 + SVG 图标 + 主题分组', () => {
+  /* 布局与几何：全宽 40px 胶囊、flex 图文居中、13px/600、nowrap */
+  assert.match(source, /\.zu-compact-btn\{display:flex;align-items:center;justify-content:center;gap:8px;/);
+  assert.match(source, /\.zu-compact-btn\{[^}]*width:100%;min-width:0;height:40px/);
+  assert.match(source, /\.zu-compact-btn\{[^}]*border:0;border-radius:9999px/);
+  assert.match(source, /\.zu-compact-btn\{[^}]*font-size:calc\(var\(--ui-font-size,14px\) - 1px\);font-weight:600/);
+  assert.match(source, /\.zu-compact-btn\{[^}]*white-space:nowrap/);
+  /* 中性叠加底：暗色=白叠加三态，浅色=黑叠加三态（html.dark 分组），无渐变/阴影/边框 */
+  assert.match(source, /\.zu-compact-btn\{[^}]*background:rgba\(255,255,255,\.065\)/);
+  assert.match(source, /\.zu-compact-btn:hover\{background:rgba\(255,255,255,\.10\)\}/);
+  assert.match(source, /\.zu-compact-btn:active\{background:rgba\(255,255,255,\.14\)\}/);
+  assert.match(source, /html:not\(\.dark\) \.zu-compact-btn\{background:rgba\(0,0,0,\.05\)\}/);
+  assert.match(source, /html:not\(\.dark\) \.zu-compact-btn:hover\{background:rgba\(0,0,0,\.08\)\}/);
+  assert.match(source, /html:not\(\.dark\) \.zu-compact-btn:active\{background:rgba\(0,0,0,\.12\)\}/);
+  /* 键盘焦点环 / 禁用态 / 图标尺寸 */
+  assert.match(source, /\.zu-compact-btn:focus-visible\{outline:2px solid var\(--color-focus-ring,#78aaff\);outline-offset:2px\}/);
+  assert.match(source, /\.zu-compact-btn:disabled\{opacity:\.5;cursor:not-allowed\}/);
+  assert.match(source, /\.zu-compact-btn svg\{width:18px;height:18px;flex:0 0 18px\}/);
+  /* 收缩双箭头 SVG（向中心压缩语义）经 innerHTML 常量串注入，currentColor 随主题 */
+  assert.match(source, /b\.innerHTML = '<svg xmlns="http:\/\/www\.w3\.org\/2000\/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1\.8"/);
+  assert.match(source, /<path d="M5 11h14"\/><path d="M5 13h14"\/><path d="M12 2v6"\/><path d="m9 5 3 3 3-3"\/>/);
+  assert.match(source, /<path d="M12 22v-6"\/><path d="m9 19 3-3 3 3"\/><\/svg>/);
+  assert.match(source, /b\.appendChild\(document\.createTextNode\(L\("压缩上下文", "Compact context"\)\)\)/);
+  /* reduced-motion 组关按钮过渡：组必须整体排在受控基础规则之后（@media 不增特异性，
+   * 同特异性源序后者胜——前置会被按钮 transition 基础规则压成死代码，R1 审查实锤），
+   * 用源序断言锁位置，字符串存在性测不出级联失效。 */
+  assert.match(source, /\.it,\.btn,\.ttab,\.panel label,\.zu-compact-btn\{transition:none\}/);
+  const rmGroupAt = source.indexOf('@media (prefers-reduced-motion:reduce){.exc,.dot');
+  const btnTransitionAt = source.indexOf('.zu-compact-btn{display:flex');
+  assert.ok(rmGroupAt > -1, 'reduced-motion 组存在');
+  assert.ok(btnTransitionAt > -1, '按钮基础规则存在');
+  assert.ok(rmGroupAt > btnTransitionAt, 'reduced-motion 组必须后置（否则死代码）');
 });
 
 test('v179 阈值行：补丁生效时钉在按钮之后，推送变化原地改字，未生效即摘除', () => {

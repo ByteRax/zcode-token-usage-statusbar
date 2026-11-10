@@ -198,8 +198,12 @@
      * → v313 工具历史回灌探测（用户实报：配置就绪后真实对话 Turn execution failed 400001——实弹二分定位为 OpenHub 中转全部 Gemini 系通道（3.5/3.7/3.8，流式与否）拒收 assistant tool_calls + role:tool 历史形状（C4-C7 全变体 400），与插件写入无关（裸形状同样拒），Anthropic 线同病；工具结果折进 user 消息反而 200（Gemini 原生映射）；同站 qwen3.8-max 正常=通道级缺陷。宿主侧无配置解（supportsToolCall:false 会令宿主对带工具请求直接报错更糟），落为警告性质：确认流第 4 项 6s 探测发最小工具历史形状，4xx 确定性拒绝才警告（超时/网络/5xx 不定不警），琥珀 .zu-mp-warn 披露「代理任务在工具轮次会失败，纯对话可用」，绝不写任何配置位，结论按拉取会话 fetchCache 去重（裸探测无会话不去重）
      * → v314 规格补全（用户实报 maxOutputTokens 89642 超上游 65536 上限 400）：宿主预算链定案——wire 输出预算 baseline=已解析 optionSpecs.maxOutputTokens.max（未写=内置 catch-all 128000），预轮 cap=min(baseline, 窗口−用量−1000) 只下调不设上限（model-token-limits.ts resolveModelStepMaxOutputTokens），超 spec.max 是宿主侧硬拒绝非钳制——所以「不写输出上限规格」会让请求预算完全脱缰。applyModels 是 append-only：先添加的模型在目录证据迟到时永远拿不到写实，v314 在确认流探测路径用拉取会话元数据补「缺失」键（properties.contextWindow / optionSpecs.maxOutputTokens.max，绝不覆盖已写数值、带 map 自洽结构不动、applyBusy 写闸），绿字披露「规格补全：输出上限/上下文窗口」；当日已手修用户配置 max=65536（上游 400 报错自证上限，中转 max_tokens=65536 实测 200）；收口审查补齐：禁止凭据重定向并按实际 key 脱敏、供应商来源与档位 CAS 守卫、缓存身份绑定及已验证路径迁移、自定义 map 不猜测、供应商显式能力优先且 false 保留、修复后补规格、工具限流不误警告、确认单批互斥和逐项强制添加、关键披露停留至再次确认、关窗清理等待与模块 dispose 失效
      * → v315 「原作者」悬停提示被滚动区顶缘裁剪修复（用户实报截图：气泡向上弹、只露底边一线）——cap 内触发点（原作者/自定义短语模式切换）气泡翻到触发元素下方 `bottom:auto;top:calc(100% + 6px)`，右对齐保留；cap 贴 .zu-settings-body（overflow:auto）顶缘是根因；向下弹常规布局落进分区卡片区域可见，纯 CSS 无视口碰撞翻转、cap 滚动至贴滚动区底缘时对称受限（v310 .zu-mp 左弹先例同款取舍）
+     * → v316 「压缩上下文」按钮视格重做（用户规格）：全宽 40px 胶囊、无边框、中性深灰半透明底（暗色=白叠加 6.5%/hover 10%/active 14%，浅色=黑叠加 5%/8%/12%，html.dark 分组自动跟随明暗与 zai 主题）、13px/600 文字（字号走 --ui-font-size 令牌 calc(-1px)，随宿主界面字号缩放）+ 18px 收缩双箭头 SVG（currentColor，flex+gap 8px 图文整体居中、nowrap）、focus-visible 焦点环（宿主无 --color-focus-ring 走 fallback）与 :disabled 半透明；reduced-motion 组整体移到全部受控规则之后（@media 不增特异性，置于按钮 transition/弹框 animation 基础规则之前会被同特异性后置规则压成死代码，review 实锤修复），弹框动画一并恢复实效；注入/判定/确认弹框/提交通道逻辑全不动
+     * → v317 ⚙ 面板上层 body 级弹框内按下不再联动关闭设置面板（用户实报：词包「查看」弹框点遮罩/✕ 连设置一起关）——面板外点 mousedown 判定按 e.target 向上匹配弹框根类名（.zu-rot-pk-dlg/.zu-mp-ov）：遮罩关闭监听与面板判定同在 mousedown、target 阶段先执行并已把 rotPkDlg/mpModal 置 null，变量 contains 守卫对遮罩路径失效（✕ 走 click 判定故 contains 版已好、遮罩仍坏），closest 沿已 detach 的残留子树仍命中；弹框外点击照常关面板、无 closest 的 target 按弹框外处理
+     * → v318 chip 字体切 sans（用户实报 Windows 上 chip 数字与中文大小不一，mac 无此问题，最终方案）：宿主 --font-mono 首选 ui-monospace——Windows 落到 Consolas（内置浏览器实测 13px 数字墨迹约 8px），中文回退 Microsoft YaHei UI（11~12px），条/chip/tooltip 内中文显大 ~40%；原生 UI 无此问题靠 sans 配对（Segoe 数字 10px + 雅黑 11~12px，配比 1.1）。缩放面路线三轮实机回退后整体废弃：ZuCJKFit CJK 面（90/82/76%；82% 真机像素测量实测配比仍 1.2 嫌数字小，76% 后数字锐利但配比失衡）与 ZuNumFit 数字面（ASCII 110%，实报数字边缘发虚——size-adjust 缩放路径光栅化比原生整数尺寸软，canvas 拉普拉斯方差实测低于原生面）全部删除。定稿=条/chip/tooltip 全部 30 处 mono font-family 换 var(--font-sans,…)+ 既有 tabular-nums 保留（含 01 模块 rateTip 内联 cssText 兜底，被 quotaTip/rstTip/tpsTip 整体复制）：Windows Segoe tnum 实测生效（13px 同 7 位任意数字恒 56.12px）数字刷新不抖宽，Segoe 数字 10px + 雅黑 11~12px 配比 1.1 与原生同源，零缩放零模糊零调参；mac SF Pro+苹方天然同构（用户实测无失衡），Linux system-ui tnum 未实机验收；⚙ mono 域（06 设置面板 .zu-src-field、.zu-mp-*、.zu-notes-* 与 05 rotator 编辑器 .zu-rot-*）仍走 mono 令牌
+     * → v319 速度格数字与单位加距 4px（用户实报 "158.9t/s" 贴字，且「修改过程中对的、判定生效又变回去」——两条渲染路径只有一条有空格）：①实时桥路径 zuBarSpeedView text="… t/s" 有空格但切 sans 后 Segoe 空格 7.15px→~3.7px 视觉贴字，.zu-live 加 word-spacing:4px（用户实机逐档对比定稿）；②无桥 DB 回退路径 chipFace（07）数字直拼 '<span class="dim">t/s</span>' 根本无空格字符、word-spacing 对其无效——补空格后与①渲染一致；用户看到的「忽对忽错」=生成中走①、完成/无桥走②
      */
-    var VERSION = "v315";
+    var VERSION = "v319";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
@@ -244,8 +248,19 @@
        * var(--color-*, 旧值兜底) 引用客户端语义变量（<html> 的 .dark 类翻转整套值，
        * zai-light/zai-dark 特殊主题同样自动适配）；color-mix 处加同值前置声明，
        * 不支持 color-mix 的旧引擎落到实色行不至于透明。 */
+      /* v315 chip 字体定稿（Windows 混排失衡的最终方案）：宿主 --font-mono 首选 ui-monospace，
+       * Windows 落到 Consolas（13px 数字墨迹约 8px）而中文回退 Microsoft YaHei UI（11~12px），
+       * mono 混排中文比数字显大 ~40%；原生 UI 无此问题靠的是 sans 配对（Segoe 数字 10px +
+       * 雅黑 11~12px，配比 1.1）。中间迭代全部撤销：size-adjust 缩放面三轮实机回退
+       * （ZuNumFit 数字面 110% 光栅化发虚→撤；CJK 面 90/82/76% 越调整条越小且 82% 实测
+       * 配比仍 1.2 嫌数字小），最终定稿=借用宿主原生配对：条/chip/tooltip 字族
+       * var(--font-sans,…)+tabular-nums——零缩放零模糊零调参，跨平台天然协调（mac
+       * SF Pro+苹方即用户实测无失衡的组合）。tabular-nums 是宽度稳定的关键：Segoe tnum
+       * 实测生效（13px 同 7 位任意数字恒 56.12px），每秒刷新的速度数字不抖宽；Linux
+       * system-ui 的 tnum 未实机验收。⚙ mono 域（06 的 .zu-src-field、.zu-mp-*、.zu-notes-* 与 05 的 rotator 编辑器
+       * .zu-rot-textarea/.zu-rot-cp-chip/.zu-rot-cp-phitem code）仍走 mono 令牌。 */
       ".zusage-root{position:fixed;box-sizing:border-box;" +
-      "font-family:var(--font-mono,Consolas,'Cascadia Mono',Menlo,'Microsoft YaHei UI','Microsoft YaHei',monospace);" +
+      "font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);" +
       "font-size:var(--ui-font-size,14px);line-height:1.3;" +
       "font-variant-numeric:tabular-nums;color:var(--color-foreground-subtle,#8791a3);" +
       "background:rgba(15,18,25,.86);background:color-mix(in srgb,var(--color-background,#0f1219) 86%,transparent);" +
@@ -293,7 +308,10 @@
       ".it.zu-sub:focus-visible{outline:2px solid var(--color-input-border-focused,var(--color-brand,#57c8ff))!important;outline-offset:2px}" +
       ".sep{width:1px;height:15px;background:var(--color-border,rgba(255,255,255,.09));flex:0 0 auto;margin:0 3px}" +
       ".k{color:var(--color-foreground-subtle,#a1a1a1)}.v{color:var(--color-foreground,#e9edf4);font-weight:600}" +
-      ".zu-live{color:var(--color-foreground,#e9edf4);font-weight:600}" +
+      /* v319：数字与 t/s 同文本节点（"158.9 t/s"），切 sans 后 Segoe 空格（~3.7px）比
+       * Consolas（7.15px）窄一半，视觉贴字——word-spacing 加距（用户实机逐档对比后定稿 4px），不改字符串
+       * （text 经 ttEsc 转义、aria/tooltip 同串不受 DOM 改动影响） */
+      ".zu-live{color:var(--color-foreground,#e9edf4);font-weight:600;word-spacing:4px}" +
       /* v176 子代理行内速率 chip：挂宿主 v4 Agent 行 .tool-summary-content 之后，颜色走
        * TPS 十档类（与条面同源），数字 tabular 不抖宽；cursor:help 提示可悬停看口径。 */
       ".zu-subrate{flex:0 0 auto;white-space:nowrap;cursor:help;font-size:12px;line-height:1.4;font-weight:600;font-variant-numeric:tabular-nums}" +
@@ -354,9 +372,9 @@
       "[data-testid=chat-context-usage-trigger][data-zusage-armed]>svg:not(.animate-spin) circle{opacity:1;stroke-width:3;r:9px}" +
       "[data-testid=chat-context-usage-trigger][data-zusage-armed]>svg:not(.animate-spin) circle:first-of-type{stroke:var(--color-hover,rgba(255,255,255,.1))}" +
       "[data-testid=chat-context-usage-trigger][data-zusage-armed]>svg:not(.animate-spin) circle:last-of-type{stroke:currentColor;stroke-linecap:round}" +
-      /* v133：与额度 chip 同字体（14px 加粗等宽，显式声明不依赖按钮的 text-ui-base 链） */
+      /* v133：与额度 chip 同字体（14px 加粗，v315 起字族 sans+tabular-nums；显式声明不依赖按钮的 text-ui-base 链） */
       ".zu-ctxpct{display:inline-flex;align-items:center;flex:0 0 auto;" +
-      "font-family:var(--font-mono,Consolas,'Cascadia Mono',Menlo,'Microsoft YaHei UI','Microsoft YaHei',monospace);font-size:calc(var(--text-ui-base,var(--ui-font-size,14px)) - 1px);font-weight:700;font-variant-numeric:tabular-nums}" +
+      "font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);font-size:calc(var(--text-ui-base,var(--ui-font-size,14px)) - 1px);font-weight:700;font-variant-numeric:tabular-nums}" +
       /* 浅色档（与 .zu-light 组同源深化值）：标记由 enhanceCtxButton 随 bar 主题同步到
        * button（pct span 与环都在按钮内，同为 data-zusage-light 后代）。 */
       /* 浅色档必须带 [data-zusage-armed] 补足特异性（0,3,0）：否则暗色三属性档位规则
@@ -368,12 +386,12 @@
       /* v131 pct span 与环一律继承按钮 currentColor（band 色唯一来源=上方 data-zusage-band
        * 规则），图标与文字天然同色；v127 的 .zu-ctxpct.ok/warm/hot 独立色随五档规格废止 */
       "[data-zusage-light] .zu-ctxpct.exc{text-shadow:none}" +
-      /* v135 重置卡徽标（.zu-ctxrst，pct 右侧）：字体与 .zu-ctxpct 同链（14px 加粗等宽
+      /* v135 重置卡徽标（.zu-ctxrst，pct 右侧）：字体与 .zu-ctxpct 同链（14px 加粗，v315 起 sans
        * tabular-nums）；三档色沿用额度三色（用户规格 2026-10-28），crit 加 zupulse 呼吸
        * （与 .zu-quota.zu-qbusy 同动画）；浅色档由按钮 data-zusage-light 后代选择器换装 */
       ".zu-ctxrst{display:inline-flex;align-items:center;flex:0 0 auto;white-space:nowrap;" +
       "height:1.75rem;padding:0 3px;border-radius:.5rem;cursor:default;" +   /* 左右 3px（用户规格 2026-11-02，原 6px） */
-      "font-family:var(--font-mono,Consolas,'Cascadia Mono',Menlo,'Microsoft YaHei UI','Microsoft YaHei',monospace);font-size:calc(var(--text-ui-base,var(--ui-font-size,14px)) - 1px);font-weight:700;font-variant-numeric:tabular-nums}" +
+      "font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);font-size:calc(var(--text-ui-base,var(--ui-font-size,14px)) - 1px);font-weight:700;font-variant-numeric:tabular-nums}" +
       ".zu-ctxrst:hover{background:var(--color-hover,rgba(255,255,255,.08))}" +   // 与额度/Git chip 同款 hover 视格（用户反馈 2026-10-28）
       ".zu-ctxrst>svg{margin-right:3px}" +   // 图标↔数字间距（用户规格 2026-10-28 调优）
       ".zu-ctxrst.zu-rst-calm{color:#3ecf8e}" +
@@ -423,7 +441,7 @@
        * 写在 chip 自身的 data-zusage-light 切换。 */
       ".zu-git{display:inline-flex;align-items:center;gap:4px;height:1.75rem;padding:0 .375rem;border-radius:.5rem;" +
       "flex:0 0 auto;box-sizing:border-box;cursor:pointer;user-select:none;white-space:nowrap;outline:none;" +
-      "font-family:var(--font-mono,Consolas,'Cascadia Mono',Menlo,'Microsoft YaHei UI','Microsoft YaHei',monospace);" +
+      "font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);" +
       "font-size:var(--ui-font-size,14px);line-height:1;font-variant-numeric:tabular-nums;color:#afafb2;transition:background-color .15s}" +
       ".zu-git:hover,.zu-git:focus-visible{background:var(--color-hover,rgba(255,255,255,.08))}" +
       ".zu-git:focus-visible,.zu-quota:focus-visible{outline:2px solid var(--color-input-border-focused,var(--color-brand,#57c8ff))!important;outline-offset:2px}" +
@@ -456,11 +474,11 @@
       /* v96 套餐额度 chip（原生上下文按钮左侧，wrapper 内前插）：多窗分段样式——每个窗口
        * 一段（中文 5小时/7天，英文 5h/7d）各自按 QUOTA_BANDS 上档位色；余额类型单段
        * （阶段 3 数据源接入即显示）；容器不着色，颜色只落在分段上。 */
-      /* v133 字体显式声明（用户规格 2026-10-28 定稿）：14px（--ui-font-size）+ 加粗 + 等宽 +
+      /* v133 字体显式声明（用户规格 2026-10-28 定稿；v315 起字族 sans）：14px（--ui-font-size）+ 加粗 + tabular-nums +
        * tabular-nums，额度与上下文百分比两处恒等——不再靠继承（工具栏容器字号偏小、
        * 与带 text-ui-base 的按钮不等高，实测两段字号不一致）。 */
       ".zu-quota{display:inline-flex;align-items:center;gap:5px;height:1.75rem;padding:0 3px;border-radius:.5rem;cursor:pointer;user-select:none;flex:0 0 auto;" +   /* 左右 3px（用户规格 2026-11-02，原 6px；.zu-tsb 不随动） */
-      "font-family:var(--font-mono,Consolas,'Cascadia Mono',Menlo,'Microsoft YaHei UI','Microsoft YaHei',monospace);font-size:calc(var(--text-ui-base,var(--ui-font-size,14px)) - 1px);font-weight:700;font-variant-numeric:tabular-nums}" +
+      "font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);font-size:calc(var(--text-ui-base,var(--ui-font-size,14px)) - 1px);font-weight:700;font-variant-numeric:tabular-nums}" +
       ".zu-quota:hover,.zu-quota:focus-visible{background:var(--color-hover,rgba(255,255,255,.08));outline:none}" +
       /* 额度 chip 三档视觉（用户规格 2026-10-28）：绿/黄/红映射 QUOTA_BANDS 五档阈值——
        * calm+norm(<50) 绿、mid+high(50–89) 黄、crit(90–99) 红，阈值表不动仅色值收敛；
@@ -481,11 +499,11 @@
       ".zu-quota[data-zusage-light] .zu-qseg.zu-qb-exc{text-shadow:none}" +
       ".zu-quota[data-zusage-light] .zu-qseg.dim{color:#8a8a8a}" +
       /* v146 精简模式速率 chip（.zu-tsb）：挂工具行、重置卡左侧；字体显式规格与 .zu-quota
-       * 同源（--text-ui-base-1px + 700 + 等宽 + tabular-nums，用户规格 2026-10-28 对齐）。
+       * 同源（--text-ui-base-1px + 700 + tabular-nums，用户规格 2026-10-28 对齐；v315 起字族 sans）。
        * 速率色档复用全局 .ok/.warm/.hot 与 TPS 十档类（含 Ultra 渐变 ✦）；浅色组靠 chip
        * 自身的 .zu-light 类补链（条隐藏后 .zu-light 祖先缺失）。 */
       ".zu-tsb{display:inline-flex;align-items:center;gap:5px;height:1.75rem;padding:0 6px;border-radius:.5rem;cursor:pointer;user-select:none;flex:0 0 auto;" +
-      "font-family:var(--font-mono,Consolas,'Cascadia Mono',Menlo,'Microsoft YaHei UI','Microsoft YaHei',monospace);font-size:calc(var(--text-ui-base,var(--ui-font-size,14px)) - 1px);font-weight:700;font-variant-numeric:tabular-nums}" +
+      "font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);font-size:calc(var(--text-ui-base,var(--ui-font-size,14px)) - 1px);font-weight:700;font-variant-numeric:tabular-nums}" +
       ".zu-tsb:hover,.zu-tsb:focus-visible{background:var(--color-hover,rgba(255,255,255,.08));outline:none}" +
       /* 阶段 3 ⚙ 源列表（v103 布局）：每源一张圆角小卡片（dsh QuotaCard 同款），卡片间距与
        * 内边距呼吸开；凭据框限宽不拉满；说明段落（card 直子 pnote）补水平边距 */
@@ -611,7 +629,7 @@
       "backdrop-filter:blur(18px) saturate(1.3);-webkit-backdrop-filter:blur(18px) saturate(1.3);" +
       "border:1px solid var(--color-border,rgba(255,255,255,.09));border-radius:12px;padding:12px 14px;display:none;" +
       "flex-direction:column;gap:4px;" +
-      "font-family:var(--font-mono,Consolas,Menlo,'Microsoft YaHei UI',monospace);" +
+      "font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);" +
       "font-size:calc(var(--ui-font-size,14px) - 1px);line-height:1.6;color:var(--color-foreground,#c6cdd9);" +
       "box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 12px 32px rgba(0,0,0,.5),0 2px 8px rgba(0,0,0,.35);" +
       "min-width:280px;max-width:480px;max-height:72vh;overflow:auto;white-space:normal;z-index:2147483647;" +
@@ -817,7 +835,7 @@
       ".zu-sp-kpi{min-width:0;padding:2px 12px}" +
       ".zu-sp-kpi + .zu-sp-kpi{border-left:1px solid var(--color-border,rgba(255,255,255,.08))}" +
       ".zu-sp-kpi .k{font-size:calc(var(--ui-font-size,14px) - 3px);color:var(--color-foreground-subtle,#a8aaae);margin-bottom:2px;display:flex;align-items:center;gap:4px;min-width:0;white-space:nowrap}" +".zu-sp-kpi .k svg{flex:none;opacity:.85}" +".zu-sp-kpi .k .hit{color:#4ade80;font-weight:600;font-size:calc(var(--ui-font-size,14px) - 3px);white-space:nowrap}" +
-      ".zu-sp-kpi .v{font-family:var(--font-mono,Consolas,'Microsoft YaHei UI',monospace);font-variant-numeric:tabular-nums;font-size:calc(var(--ui-font-size,14px) + 8px);font-weight:700;color:var(--color-foreground,#f1f2f3);line-height:1.3}" +
+      ".zu-sp-kpi .v{font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);font-variant-numeric:tabular-nums;font-size:calc(var(--ui-font-size,14px) + 8px);font-weight:700;color:var(--color-foreground,#f1f2f3);line-height:1.3}" +
       ".zu-sp-kpi .v small{font-size:calc(var(--ui-font-size,14px) - 2px);font-weight:600;color:var(--color-foreground-subtle,#a8aaae);margin-left:4px}" +".zu-sp-kpis3--mid .zu-sp-kpi .v{font-size:calc(var(--ui-font-size,14px) + 6px)}" +".zu-sp-kpis3--duo{grid-template-columns:1fr 1fr}" +".zu-sp-kpis3--duo .zu-sp-kpi:only-child{grid-column:1/-1;border-left:0}" +
       ".zu-sp-kpi .u{font-size:calc(var(--ui-font-size,14px) - 3px);color:var(--color-foreground-subtlest,#6b7484);margin-top:2px}" +
       ".zu-sp-kpi .u .hit{color:#4ade80;font-weight:600}" +
@@ -826,11 +844,11 @@
       ".zu-sp-models table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}" +
       ".zu-sp-models thead th{background:none;text-align:right;font-weight:500;color:var(--color-foreground-subtle,#a8aaae);font-size:calc(var(--ui-font-size,14px) - 3px);padding:0 6px 5px;border-bottom:1px solid var(--color-border,rgba(255,255,255,.14));white-space:nowrap}" +
       ".zu-sp-models thead th:first-child{text-align:left;padding-left:2px}" +
-      ".zu-sp-models td{padding:4px 6px;border-top:1px solid var(--color-border,rgba(255,255,255,.08));text-align:right;color:var(--color-foreground,#e6e9ef);font-family:var(--font-mono,Consolas,'Microsoft YaHei UI',monospace);font-size:calc(var(--ui-font-size,14px) - 1px);white-space:nowrap}" +
+      ".zu-sp-models td{padding:4px 6px;border-top:1px solid var(--color-border,rgba(255,255,255,.08));text-align:right;color:var(--color-foreground,#e6e9ef);font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);font-size:calc(var(--ui-font-size,14px) - 1px);white-space:nowrap}" +
       ".zu-sp-models tr:first-child td{border-top:0}" +
       ".zu-sp-models td:first-child{text-align:left;padding-left:2px;font-family:inherit;color:var(--color-foreground,#f1f2f3);white-space:normal;overflow-wrap:anywhere}" +
       ".zu-sp-meta{display:flex;flex-wrap:wrap;gap:4px 16px;align-items:baseline;margin-top:10px;padding-top:10px;border-top:1px solid var(--color-border,rgba(255,255,255,.09));color:var(--color-foreground-subtle,#a8aaae);font-size:calc(var(--ui-font-size,14px) - 3px)}" +
-      ".zu-sp-meta b{font-family:var(--font-mono,Consolas,'Microsoft YaHei UI',monospace);font-variant-numeric:tabular-nums;font-weight:600;color:var(--color-foreground,#e6e9ef)}" +
+      ".zu-sp-meta b{font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);font-variant-numeric:tabular-nums;font-weight:600;color:var(--color-foreground,#e6e9ef)}" +
       ".zu-spf{flex:0 0 auto;display:flex;align-items:center;gap:8px;min-height:34px;padding:8px 14px;border-top:1px solid var(--color-border,rgba(255,255,255,.09));color:var(--color-foreground-subtle,#a8aaae);font-size:calc(var(--ui-font-size,14px) - 1px)}" +
       "@media (max-width:700px){.zu-spb{flex-direction:column}.zu-spnav{flex:0 0 auto;max-height:150px;border-right:0;border-bottom:1px solid var(--color-border,rgba(255,255,255,.09))}.zu-spnav-list{overflow-y:auto}.zu-spbody{flex:1 1 auto}}" +
       /* 自绘 tooltip（v31）：向上弹出（原生 title 方向不可控且会被窗口下缘遮挡），
@@ -842,7 +860,8 @@
        * 内部次级文字用宿主 tooltip-tag 系变量；毛玻璃在实色底下无意义，删。 */
       ".tip{position:fixed;background:var(--color-tooltip,#171717);" +
       "border:1px solid var(--color-popover-border,var(--color-border,transparent));border-radius:10px;padding:10px 13px;" +
-      "font-family:var(--font-mono,Consolas,'Microsoft YaHei UI',monospace);" +
+      "font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);" +
+      "font-variant-numeric:tabular-nums;" +
       "font-size:calc(var(--ui-font-size,14px) - 1px);line-height:1.55;color:var(--color-tooltip-foreground,#fafafa);" +
       "box-shadow:0 10px 28px rgba(0,0,0,.5),0 2px 6px rgba(0,0,0,.3);" +
       "white-space:pre-line;z-index:2147483646;width:max-content;max-width:min(560px,calc(100vw - 24px));max-height:calc(100vh - 24px);overflow:auto;display:none;scrollbar-width:thin}" +
@@ -891,10 +910,10 @@
       ".zu-pj-kpi + .zu-pj-kpi{border-left:1px solid var(--color-popover-border,rgba(255,255,255,.12));padding-left:9px}" +
       ".zu-light .zu-pj-kpi + .zu-pj-kpi{border-left-color:rgba(0,0,0,.12)}" +
       ".zu-pj-k{font-size:calc(var(--ui-font-size,14px) - 2px);color:var(--color-tooltip-tag-foreground,#a6a6a6);display:flex;align-items:center;gap:5px}" +
-      ".zu-pj-v{font-family:var(--font-mono,Consolas,'Microsoft YaHei UI',monospace);font-variant-numeric:tabular-nums;font-size:calc(var(--ui-font-size,14px) + 15px);font-weight:700;margin-top:4px;white-space:nowrap}" +
+      ".zu-pj-v{font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);font-variant-numeric:tabular-nums;font-size:calc(var(--ui-font-size,14px) + 15px);font-weight:700;margin-top:4px;white-space:nowrap}" +
       ".zu-pj-details{display:grid;grid-template-columns:repeat(3,1fr);gap:0 18px;margin-top:16px}" +
       ".zu-pj-detail .zu-pj-k{margin-bottom:2px}" +
-      ".zu-pj-dv{font-family:var(--font-mono,Consolas,'Microsoft YaHei UI',monospace);font-variant-numeric:tabular-nums;font-size:calc(var(--ui-font-size,14px) + 7px);font-weight:600;white-space:nowrap}" +
+      ".zu-pj-dv{font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);font-variant-numeric:tabular-nums;font-size:calc(var(--ui-font-size,14px) + 7px);font-weight:600;white-space:nowrap}" +
       ".zu-pj-dsub{font-size:calc(var(--ui-font-size,14px) - 2px);color:var(--color-tooltip-tag-foreground,#a6a6a6);margin-top:2px}" +
       ".zu-pj-hit{color:#4ade80;font-weight:600}" +
       ".zu-pj-scale{margin-top:14px;font-size:calc(var(--ui-font-size,14px) - 1px);color:var(--color-tooltip-tag-foreground,#a6a6a6);display:flex;flex-wrap:wrap;column-gap:8px}" +
@@ -910,7 +929,7 @@
       ".zu-pj-table th{font-weight:500;color:var(--color-tooltip-tag-foreground,#a6a6a6);text-align:right;padding:0 10px 7px;border-bottom:1px solid var(--color-popover-border,rgba(255,255,255,.14));white-space:nowrap}" +
       ".zu-light .zu-pj-table th{border-bottom-color:rgba(0,0,0,.14)}" +
       ".zu-pj-table th:first-child{text-align:left;padding-left:2px}" +
-      ".zu-pj-table td{padding:7px 10px;border-top:1px solid var(--color-popover-border,rgba(255,255,255,.08));height:32px;box-sizing:border-box;text-align:right;font-family:var(--font-mono,Consolas,'Microsoft YaHei UI',monospace);font-variant-numeric:tabular-nums;white-space:nowrap}" +
+      ".zu-pj-table td{padding:7px 10px;border-top:1px solid var(--color-popover-border,rgba(255,255,255,.08));height:32px;box-sizing:border-box;text-align:right;font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);font-variant-numeric:tabular-nums;white-space:nowrap}" +
       ".zu-light .zu-pj-table td{border-top-color:rgba(0,0,0,.08)}" +
       ".zu-pj-table tr:first-child td{border-top:0}" +
       ".zu-pj-table td:first-child{text-align:left;font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);padding-left:2px;max-width:300px;overflow:hidden;text-overflow:ellipsis}" +
@@ -919,7 +938,7 @@
       ".zu-pj-time{display:flex;flex-wrap:wrap;gap:2px 10px;margin-top:7px;padding-top:6px;border-top:1px solid var(--color-popover-border,rgba(255,255,255,.12));font-size:calc(var(--ui-font-size,14px) - 2px);color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
       ".zu-light .zu-pj-time{border-top-color:rgba(0,0,0,.12)}" +
       ".zu-pj-time b{font-weight:500}" +
-      ".zu-pj-time span{font-family:var(--font-mono,Consolas,'Microsoft YaHei UI',monospace);font-variant-numeric:tabular-nums}" +
+      ".zu-pj-time span{font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);font-variant-numeric:tabular-nums}" +
       /* v215 六统计卡（生成速度/本轮/会话累计/工具调用/今日合计/子代理）：作用域
        * .zu-stat-tip + 类型修饰；:has 定位本条，不动共享 .tip/.rt-* 规则；字体分层同项目卡。 */
       ".zusage-tip-root:has(.zu-stat-tip){max-width:min(840px,calc(100vw - 24px))}" +
@@ -943,13 +962,13 @@
       ".zu-stat-kpi + .zu-stat-kpi{border-left:1px solid var(--color-popover-border,rgba(255,255,255,.12));padding-left:9px}" +
       ".zu-light .zu-stat-kpi + .zu-stat-kpi{border-left-color:rgba(0,0,0,.12)}" +
       ".zu-stat-k{font-size:calc(var(--ui-font-size,14px) - 2px);color:var(--color-tooltip-tag-foreground,#a6a6a6);display:flex;align-items:center;gap:5px}" +
-      ".zu-stat-v{font-family:var(--font-mono,Consolas,'Microsoft YaHei UI',monospace);font-variant-numeric:tabular-nums;font-size:calc(var(--ui-font-size,14px) + 15px);font-weight:700;margin-top:4px;white-space:nowrap}" +
+      ".zu-stat-v{font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);font-variant-numeric:tabular-nums;font-size:calc(var(--ui-font-size,14px) + 15px);font-weight:700;margin-top:4px;white-space:nowrap}" +
       ".zu-stat-v small{font-size:calc(var(--ui-font-size,14px) + 2px);font-weight:600;color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
       ".zu-stat-v.err,.zu-stat-kpi.err .zu-stat-v{color:#ff6b57}" +
       ".zu-light .zu-stat-v.err,.zu-light .zu-stat-kpi.err .zu-stat-v{color:#d8482f}" +
       ".zu-stat-grid2{display:grid;grid-template-columns:repeat(2,1fr);gap:0 9px;margin-top:8px}" +
       ".zu-stat-grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:0 18px;margin-top:12px}" +
-      ".zu-stat-dv{font-family:var(--font-mono,Consolas,'Microsoft YaHei UI',monospace);font-variant-numeric:tabular-nums;font-size:calc(var(--ui-font-size,14px) + 7px);font-weight:600;white-space:nowrap;margin-top:2px}" +
+      ".zu-stat-dv{font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);font-variant-numeric:tabular-nums;font-size:calc(var(--ui-font-size,14px) + 7px);font-weight:600;white-space:nowrap;margin-top:2px}" +
       ".zu-stat-dsub{font-size:calc(var(--ui-font-size,14px) - 2px);color:var(--color-tooltip-tag-foreground,#a6a6a6);margin-top:2px}" +
       ".zu-stat-dsub .hit{color:#4ade80;font-weight:600}" +
       ".zu-stat-scale{margin-top:7px;font-size:calc(var(--ui-font-size,14px) - 1px);color:var(--color-tooltip-tag-foreground,#a6a6a6);display:flex;flex-wrap:wrap;column-gap:8px}" +
@@ -961,12 +980,12 @@
       ".zu-stat-time{display:flex;flex-wrap:wrap;gap:4px 10px;margin-top:14px;padding-top:12px;border-top:1px solid var(--color-popover-border,rgba(255,255,255,.12));font-size:calc(var(--ui-font-size,14px) - 2px);color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
       ".zu-light .zu-stat-time{border-top-color:rgba(0,0,0,.12)}" +
       ".zu-stat-time b{font-weight:500}" +
-      ".zu-stat-time span{font-family:var(--font-mono,Consolas,'Microsoft YaHei UI',monospace);font-variant-numeric:tabular-nums}" +
+      ".zu-stat-time span{font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);font-variant-numeric:tabular-nums}" +
       ".zu-stat-table{width:100%;border-collapse:collapse;font-size:var(--ui-font-size,14px)}" +
       ".zu-stat-table th{font-weight:500;color:var(--color-tooltip-tag-foreground,#a6a6a6);text-align:right;padding:0 10px 7px;border-bottom:1px solid var(--color-popover-border,rgba(255,255,255,.14));white-space:nowrap}" +
       ".zu-light .zu-stat-table th{border-bottom-color:rgba(0,0,0,.14)}" +
       ".zu-stat-table th:first-child{text-align:left;padding-left:2px}" +
-      ".zu-stat-table td{padding:7px 10px;border-top:1px solid var(--color-popover-border,rgba(255,255,255,.08));height:32px;box-sizing:border-box;text-align:right;font-family:var(--font-mono,Consolas,'Microsoft YaHei UI',monospace);font-variant-numeric:tabular-nums;white-space:nowrap}" +
+      ".zu-stat-table td{padding:7px 10px;border-top:1px solid var(--color-popover-border,rgba(255,255,255,.08));height:32px;box-sizing:border-box;text-align:right;font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);font-variant-numeric:tabular-nums;white-space:nowrap}" +
       ".zu-light .zu-stat-table td{border-top-color:rgba(0,0,0,.08)}" +
       ".zu-stat-table tr:first-child td{border-top:0}" +
       ".zu-stat-table td:first-child{text-align:left;font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);padding-left:2px;max-width:300px;overflow:hidden;text-overflow:ellipsis}" +
@@ -980,11 +999,11 @@
       ".zu-light .zu-speed-hero{background:rgba(0,0,0,.045)}" +
       ".zu-speed-hero .zu-stat-kpi + .zu-stat-kpi{border-left:1px solid var(--color-popover-border,rgba(255,255,255,.12));padding-left:9px}" +
       ".zu-light .zu-speed-hero .zu-stat-kpi + .zu-stat-kpi{border-left-color:rgba(0,0,0,.12)}" +
-      ".zu-speed-main{font-family:var(--font-mono,Consolas,'Microsoft YaHei UI',monospace);font-variant-numeric:tabular-nums;font-size:calc(var(--ui-font-size,14px) + 22px);font-weight:700;line-height:1.15;margin-top:4px;white-space:nowrap}" +
+      ".zu-speed-main{font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);font-variant-numeric:tabular-nums;font-size:calc(var(--ui-font-size,14px) + 22px);font-weight:700;line-height:1.15;margin-top:4px;white-space:nowrap}" +
       ".zu-speed-main small{font-size:calc(var(--ui-font-size,14px) + 4px);font-weight:600;color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
-      ".zu-speed-sub{font-family:var(--font-mono,Consolas,'Microsoft YaHei UI',monospace);font-variant-numeric:tabular-nums;font-size:calc(var(--ui-font-size,14px) + 11px);font-weight:700;margin-top:4px;white-space:nowrap}" +
+      ".zu-speed-sub{font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);font-variant-numeric:tabular-nums;font-size:calc(var(--ui-font-size,14px) + 11px);font-weight:700;margin-top:4px;white-space:nowrap}" +
       ".zu-speed-sub small{font-size:calc(var(--ui-font-size,14px) - 1px);font-weight:600;color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
-      ".zu-speed-bandtag{display:inline-block;margin-top:8px;font-family:var(--font-mono,Consolas,'Microsoft YaHei UI',monospace);font-size:calc(var(--ui-font-size,14px) - 1px);border:1px solid var(--color-popover-border,rgba(255,255,255,.16));border-radius:999px;padding:2px 10px}" +
+      ".zu-speed-bandtag{display:inline-block;margin-top:8px;font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);font-size:calc(var(--ui-font-size,14px) - 1px);border:1px solid var(--color-popover-border,rgba(255,255,255,.16));border-radius:999px;padding:2px 10px}" +
       ".zu-legend-head{display:flex;align-items:baseline;justify-content:space-between;margin:18px 0 8px}" +
       ".zu-legend-title{font-size:calc(var(--ui-font-size,14px) + 2px);font-weight:700}" +
       ".zu-legend-unit{font-size:calc(var(--ui-font-size,14px) - 2px);color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
@@ -994,7 +1013,7 @@
       ".zu-legend-item.cur{border-color:var(--color-popover-border,rgba(255,255,255,.35));background:rgba(255,255,255,.05)}" +
       ".zu-light .zu-legend-item.cur{background:rgba(0,0,0,.05)}" +
       ".zu-legend-dot{flex:0 0 auto;width:9px;height:9px;border-radius:50%}" +
-      ".zu-legend-item b{font-family:var(--font-mono,Consolas,'Microsoft YaHei UI',monospace);font-variant-numeric:tabular-nums;font-weight:600;font-size:calc(var(--ui-font-size,14px) - 1px);white-space:nowrap}" +
+      ".zu-legend-item b{font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);font-variant-numeric:tabular-nums;font-weight:600;font-size:calc(var(--ui-font-size,14px) - 1px);white-space:nowrap}" +
       ".zu-legend-item .dot-c{background:currentColor}" +
       ".zu-legend-dot.zu-ultra{display:none;background:linear-gradient(100deg,#60a5fa 0%,#a78bfa 50%,#c084fc 100%)}" +
       ".zu-legend-dot.zu-ultra::before{content:none}" +
@@ -1013,7 +1032,7 @@
       ".zu-sv-head{display:flex;align-items:center;flex-wrap:wrap;gap:6px 12px;margin-bottom:10px}" +
       ".zu-sv-title{font-weight:700;font-size:calc(var(--ui-font-size,14px) + 6px);letter-spacing:.2px}" +
       ".zu-sv-range{display:inline-flex;align-items:center;gap:5px;flex:0 0 auto;max-width:60%;margin-left:auto;" +
-        "font-family:var(--font-mono,Consolas,Menlo,monospace);font-variant-numeric:tabular-nums;" +
+        "font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);font-variant-numeric:tabular-nums;" +
         "font-size:calc(var(--ui-font-size,14px) - 3px);color:var(--color-tooltip-tag-foreground,#a6a6a6);white-space:nowrap}" +
       ".zu-sv-range svg{width:13px;height:13px;flex:0 0 auto;opacity:.75}" +
       ".zu-sv-range span{overflow:hidden;text-overflow:ellipsis}" +
@@ -1115,7 +1134,7 @@
       ".zu-light .zu-sv-card{box-shadow:0 8px 22px rgba(15,23,42,.18)}" +
       ".zu-sv-crow{display:flex;align-items:baseline;justify-content:space-between;gap:8px;font-size:10px;line-height:1.35}" +
       ".zu-sv-crow>span{flex:0 0 auto;color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
-      ".zu-sv-crow>b{min-width:0;text-align:right;font-family:var(--font-mono,Consolas,Menlo,monospace);font-variant-numeric:tabular-nums;" +
+      ".zu-sv-crow>b{min-width:0;text-align:right;font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);font-variant-numeric:tabular-nums;" +
         "font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--color-foreground,#e9edf4)}" +
       ".zu-sv-crow>b small{display:block;font-size:9px;font-weight:400;color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
       ".zu-sv-crow>b.zu-sv-twrap{white-space:normal;word-break:break-all;line-height:1.35;text-align:right}" +
@@ -1149,7 +1168,7 @@
       ".zu-sv-li{display:flex;align-items:center;gap:3px;padding:1px 4px;border-radius:7px;border:1px solid transparent}" +
       ".zu-sv-li.cur{border-color:var(--color-popover-border,rgba(255,255,255,.35));background:rgba(255,255,255,.05)}" +
       ".zu-light .zu-sv-li.cur{background:rgba(0,0,0,.05)}" +
-      ".zu-sv-li b{font-family:var(--font-mono,Consolas,Menlo,monospace);font-variant-numeric:tabular-nums;" +
+      ".zu-sv-li b{font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);font-variant-numeric:tabular-nums;" +
         "font-weight:600;font-size:calc(var(--ui-font-size,14px) - 3px);white-space:nowrap}" +
       "@media (max-width:780px){.zu-sv-root .zu-sv-left{flex:0 0 190px}}" +
       /* ---------- v291 热力图（本月月历 / 全部历史 GitHub 风格） ----------
@@ -1273,14 +1292,14 @@
       ".zu-sl-status{display:flex;align-items:center;gap:6px;font-size:calc(var(--ui-font-size,14px) - 1px);color:var(--color-foreground-subtle,#8791a3);min-width:0}" +
       ".zu-sl-status .ico{width:20px;height:20px;flex:0 0 auto}" +
       ".zu-sl-count{flex:0 0 auto;font-size:calc(var(--ui-font-size,14px) - 4px);font-weight:700;line-height:1.5;border:1px solid currentColor;border-radius:999px;padding:0 6px}" +
-      ".zu-sl-main{margin-top:8px;font-family:var(--font-mono,Consolas,'Cascadia Mono',Menlo,'Microsoft YaHei UI',monospace);font-variant-numeric:tabular-nums;font-size:calc(var(--ui-font-size,14px) + 22px);font-weight:700;line-height:1.1;white-space:nowrap}" +
+      ".zu-sl-main{margin-top:8px;font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);font-variant-numeric:tabular-nums;font-size:calc(var(--ui-font-size,14px) + 22px);font-weight:700;line-height:1.1;white-space:nowrap}" +
       ".zu-sl-unit{font-size:calc(var(--ui-font-size,14px) + 4px);font-weight:600;color:var(--color-tooltip-tag-foreground,#a6a6a6);margin-left:4px}" +
       ".zu-sl-val.dim,.zu-sl-estdim{color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
       ".zu-sl-note{margin-top:8px;font-size:calc(var(--ui-font-size,14px) - 2px);color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
       ".zu-speed-left .zu-speed-fit3{font-size:calc(var(--ui-font-size,14px) - 1px);white-space:normal;line-height:1.3;word-break:break-word}" +
       ".zu-speed-note{margin-top:8px;font-size:calc(var(--ui-font-size,14px) - 2px);color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
       ".zu-speed-left .zu-speed-bandtag{font-size:calc(var(--ui-font-size,14px) - 3px);padding:2px 8px;white-space:nowrap}" +
-      /* v298.4：档位徽标下方模型名行（V2 左卡）——等宽小字、超长省略 + title 全名 */
+      /* v298.4：档位徽标下方模型名行（V2 左卡）——小字、超长省略 + title 全名 */
       /* v304.2：模型名胶囊化（26px 高/13px 圆角/立方体 SVG 14px/名称省略 title 全文；
        * 主题随卡内既有 .zu-light 显式覆写口径，与 .zu-sc-unit 徽章同语言） */
       ".zu-sl-model{display:inline-flex;align-items:center;gap:6px;max-width:100%;min-width:0;height:26px;box-sizing:border-box;padding:0 10px;margin-top:8px;" +
@@ -1301,7 +1320,7 @@
       ".zu-sl-stats{padding-top:10px;display:flex;gap:6px;border-top:1px solid var(--color-border,rgba(255,255,255,.1))}" +
       ".zu-sl-stat{flex:1 1 0;min-width:0;display:flex;flex-direction:column;gap:2px}" +
       ".zu-sl-stat i{font-style:normal;font-size:calc(var(--ui-font-size,14px) - 3px);color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
-      ".zu-sl-stat b{font-family:var(--font-mono,Consolas,Menlo,monospace);font-variant-numeric:tabular-nums;font-size:calc(var(--ui-font-size,14px) + 1px);font-weight:700}" +
+      ".zu-sl-stat b{font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);font-variant-numeric:tabular-nums;font-size:calc(var(--ui-font-size,14px) + 1px);font-weight:700}" +
       ".zu-sl-status span{min-width:0}" +
       /* v241：标题 15px 加粗；Skill 长名两行省略；主体区在剩余高度内垂直居中（填空旷），前缀「估/均」小号灰字 */
       /* v242:标题色不设 color——无档态继承 .zu-sl-status 中性灰,数值态由档位类直接着色(ultra 走渐变字) */
@@ -1385,7 +1404,7 @@
       "background:linear-gradient(180deg,color-mix(in srgb,var(--color-destructive,#ff2d55) 10%,var(--color-background,#1b0e10)),color-mix(in srgb,var(--color-destructive,#ff2d55) 5%,var(--color-background,#1b0e10)));" +
       "border:1px solid rgba(255,45,85,.4);border-color:color-mix(in srgb,var(--color-destructive,#ff2d55) 40%,transparent);" +
       "border-radius:12px;padding:12px 15px;" +
-      "font-family:var(--font-mono,Consolas,'Microsoft YaHei UI',monospace);" +
+      "font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);" +
       "font-size:calc(var(--ui-font-size,14px) - 1px);line-height:1.7;color:var(--color-foreground,#e9edf4);" +
       "box-shadow:0 12px 32px rgba(0,0,0,.5),0 4px 18px rgba(255,45,85,.12);white-space:normal;z-index:2147483647;" +
       "user-select:text;display:none}" +
@@ -1436,18 +1455,25 @@
       ".zu-light .zu-ultra::before{background:linear-gradient(100deg,#3156cb 0%,#6746d2 50%,#9139bf 100%);" +
       "-webkit-background-clip:text;background-clip:text}}" +
       ".zu-light .xb-copied{color:#0c8a63}" +
-      /* 减少动态偏好：关闭呼吸/闪烁与悬浮过渡 */
-      "@media (prefers-reduced-motion:reduce){.exc,.dot,.zu-compact-dlg,.zu-compact-card{animation:none}" +
-      ".it,.btn,.ttab,.panel label{transition:none}}" +
-      /* v105 压缩上下文：弹层内胶囊按钮 + 确认弹框。配色全量引用客户端语义变量
-       * （secondary/primary/popover/border/hover，明暗与 zai 主题自动跟随）；color-mix
-       * 处加同值前置声明（不支持时落实色）。按钮复刻原生 hover:bg-secondary/80。 */
-      ".zu-compact-btn{display:block;box-sizing:border-box;width:100%;height:36px;padding:0;border:0;border-radius:9999px;" +
-      "background:var(--color-secondary,#e5e5e5);color:var(--color-foreground,#0a0a0a);" +
-      "font-family:inherit;font-size:14px;font-weight:500;line-height:1;cursor:pointer;" +
-      "transition:background .15s}" +
-      ".zu-compact-btn:hover{background:var(--color-secondary,#e5e5e5);background:color-mix(in srgb,var(--color-secondary,#e5e5e5) 80%,transparent)}" +
-      ".zu-compact-btn:active{background:var(--color-secondary,#e5e5e5);background:color-mix(in srgb,var(--color-secondary,#e5e5e5) 68%,transparent)}" +
+      /* v105 压缩上下文：弹层内胶囊按钮 + 确认弹框。v316 按钮视格重做（用户规格）：
+       * 全宽 40px 胶囊、无边框、中性深灰半透明底——暗色=白色叠加（hover 提亮/active 再亮一档），
+       * 浅色=黑色叠加（hover/active 对应加深），html.dark 分组自动跟随明暗与 zai 主题；
+       * 字号走 --ui-font-size 令牌（默认档恰 13px，随宿主界面字号设置缩放，overlay-ui §2）；
+       * 文字色仍走 --color-foreground 正常前景；仅键盘聚焦给 focus-visible 焦点环
+       * （宿主无 --color-focus-ring 变量，fallback 落实色）。弹框配色仍全量引用客户端语义变量。 */
+      ".zu-compact-btn{display:flex;align-items:center;justify-content:center;gap:8px;box-sizing:border-box;" +
+      "width:100%;min-width:0;height:40px;padding:0 12px;border:0;border-radius:9999px;" +
+      "background:rgba(255,255,255,.065);color:var(--color-foreground,#fafafa);" +
+      "font-family:inherit;font-size:calc(var(--ui-font-size,14px) - 1px);font-weight:600;line-height:1;white-space:nowrap;cursor:pointer;" +
+      "transition:background-color .15s ease}" +
+      ".zu-compact-btn:hover{background:rgba(255,255,255,.10)}" +
+      ".zu-compact-btn:active{background:rgba(255,255,255,.14)}" +
+      ".zu-compact-btn:focus-visible{outline:2px solid var(--color-focus-ring,#78aaff);outline-offset:2px}" +
+      ".zu-compact-btn:disabled{opacity:.5;cursor:not-allowed}" +
+      ".zu-compact-btn svg{width:18px;height:18px;flex:0 0 18px}" +
+      "html:not(.dark) .zu-compact-btn{background:rgba(0,0,0,.05)}" +
+      "html:not(.dark) .zu-compact-btn:hover{background:rgba(0,0,0,.08)}" +
+      "html:not(.dark) .zu-compact-btn:active{background:rgba(0,0,0,.12)}" +
       /* v193 布局：行上不得写任何 margin——宿主 body 的 space-y-3 是 Tailwind v4
        * :where() 零权重规则（margin-bottom 打在非末尾子元素上），自写 margin 会按
        * 类名权重压掉它（v190 的 6px 显挤、v192 的 margin:0 贴紧按钮都是这个坑）；
@@ -1482,7 +1508,12 @@
       ".zu-compact-ok:hover{opacity:.8}" +
       ".zu-compact-ok:disabled{opacity:.5;cursor:default}" +
       "@keyframes zuCptFade{from{opacity:0}to{opacity:1}}" +
-      "@keyframes zuCptZoom{from{opacity:0;transform:scale(.95)}to{opacity:1;transform:scale(1)}}";
+      "@keyframes zuCptZoom{from{opacity:0;transform:scale(.95)}to{opacity:1;transform:scale(1)}}" +
+      /* 减少动态偏好：关闭呼吸/闪烁/弹框动画与悬浮过渡。整组必须排在全部受控规则
+       * 之后——@media 不增特异性，同特异性按源序后者胜，放前面会被后置基础规则
+       * 压成死代码（v316 按钮 transition、v105 弹框 animation 均实证过）。 */
+      "@media (prefers-reduced-motion:reduce){.exc,.dot,.zu-compact-dlg,.zu-compact-card{animation:none}" +
+      ".it,.btn,.ttab,.panel label,.zu-compact-btn{transition:none}}";
 
     /* 结构：条撑满卡片宽后 .zu-main 占满剩余宽、条目+分隔线默认 space-between 均匀分布
      * （v226 可经 ⚙「水平对齐」改居左/居右，均分仍为缺省），⚙ 落在最右缘（内容超宽时分级收缩、

@@ -1620,3 +1620,45 @@ test('overlay roots opt out of the host titlebar drag region (v259: settings ✕
   assert.ok(source.includes('ov.className = "zu-mp-ov"'));
   assert.ok(source.includes('dlg.className = "zu-compact-dlg"'));
 });
+
+
+test('面板上层 body 级弹框内按下不联动关面板（词包查看遮罩/✕、模型选择弹窗，含同事件先关闭的时序）', () => {
+  // 用户实报：⚙ 轮播分区点词包「查看」弹框后，点遮罩/✕ 关弹框时设置面板被同一 mousedown
+  // 联动关闭——弹框挂 body，目标既不在 bar 也不在 panel，外点关闭误判。修复：面板外点
+  // 判定按 e.target 向上匹配弹框根类名（.zu-rot-pk-dlg/.zu-mp-ov）。复报修补时序洞：遮罩
+  // 关闭监听与面板判定同在 mousedown，target 阶段先执行并置空 rotPkDlg/mpModal——变量
+  // contains 守卫对其失效，closest 沿已 detach 的残留子树仍命中。
+  const mdownSource = extract(
+    '    listenGlobal(document, "mousedown", function (e) {',
+    '    listenGlobal(document, "click", onProjRowClick)',
+  );
+  const closed = [];
+  let handler = null;
+  const makeCtx = () => ({
+    document: {},
+    panel: { classList: { contains: () => true }, contains: () => false },
+    bar: { contains: () => false },
+    previousPanelFocus: null,
+    subPopOpen: () => false,
+    subPopClose: () => {},
+    closeSettings: why => closed.push(why),
+    listenGlobal: (_, __, fn) => { handler = fn; },
+  });
+  const pkRoot = { pk: true }, mpRoot = { mp: true };
+  // hit: 'pk'/'mp'=target 在对应弹框子树内（closest 命中对应根），null=弹框外
+  const mkTarget = hit => ({
+    closest: sel => hit === 'pk' && sel.indexOf('.zu-rot-pk-dlg') >= 0 ? pkRoot
+      : hit === 'mp' && sel.indexOf('.zu-mp-ov') >= 0 ? mpRoot : null,
+  });
+  const ctx = makeCtx();
+  vm.runInNewContext(mdownSource, ctx);
+  assert.equal(typeof handler, 'function', 'mousedown 处理器可切片求值');
+  handler({ target: mkTarget('pk') });    // 词包弹框遮罩/卡片/✕（含 detach 残留子树）
+  assert.deepEqual(closed, [], '词包弹框内按下不得关闭设置面板');
+  handler({ target: mkTarget('mp') });    // 模型选择弹窗遮罩（同样先关后判的时序洞）
+  assert.deepEqual(closed, [], '模型选择弹窗内按下不得关闭设置面板');
+  handler({ target: mkTarget(null) });    // 弹框外：外点关闭语义保持
+  assert.deepEqual(closed, [false]);
+  handler({ target: {} });                // 无 closest 的极端 target：按弹框外处理
+  assert.deepEqual(closed, [false, false]);
+});

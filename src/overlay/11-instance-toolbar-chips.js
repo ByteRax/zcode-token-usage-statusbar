@@ -989,7 +989,14 @@
           var b = document.createElement("button");
           b.type = "button";
           b.className = "zu-compact-btn";
-          b.textContent = L("压缩上下文", "Compact context");
+          /* v316 视格重做：18px 收缩双箭头 SVG + 文案 textNode，flex+gap 8px 图文整体
+           * 居中（匿名文本项同样参与 gap 对齐）；SVG 用 currentColor 随主题换装。
+           * 图标走常量串 innerHTML 无注入面；文案经 L() 后以文本节点写入，不用
+           * innerHTML 整体拼（VM 桩不解析 HTML，tests 读 children.textContent 断言）。 */
+          b.innerHTML = '<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' +
+            '<path d="M5 11h14"/><path d="M5 13h14"/><path d="M12 2v6"/><path d="m9 5 3 3 3-3"/>' +
+            '<path d="M12 22v-6"/><path d="m9 19 3-3 3 3"/></svg>';
+          b.appendChild(document.createTextNode(L("压缩上下文", "Compact context")));
           b.addEventListener("click", onCompactClick);
           body.insertBefore(b, anchor);
           exist = b;   // 首挂即回填：阈值行的位置钉靠它，不依赖 querySelector 兜底
