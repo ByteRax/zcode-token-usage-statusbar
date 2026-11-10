@@ -29,6 +29,7 @@
 ## 1. 项目定位与环境
 
 - 为 ZCode 显示模型速度、token 用量、上下文占比（承载于原生上下文按钮增强，状态条无此格）、套餐额度/账户余额 chip 与 Git 状态 chip。用量统计来自本地 SQLite；套餐额度另走解密凭据直查供应商接口（见 §5），两条链互不推导。
+- 数据源按**宿主（host）**分层：`zcode`（默认，逐请求 `model_usage`）与 `workbuddy`（`session_usage` 上下文/credit + 会话正文逐请求用量，解析在 `wb_usage.py`）。宿主适配实现在 `zusage.py` 内（`HOST_CAPS` + `wb_*` 段 + `connect`/`resolve_host`），不改 `sync_plugin.py` 的 ZCode 分发清单；WorkBuddy 插件副本走 `scripts/sync_workbuddy_plugin.py` 独立链，不进发布包。差异与验证方式见 [docs/hosts.md](docs/hosts.md)。
 - 技术栈是 Python 标准库、原生 JavaScript、Electron 主进程 CommonJS；不是 npm 前端工程。
 - 桌面插件是**安装与查询渠道**，不是原生状态栏扩展：最终仍向客户端 `app.asar` 注入稳定运行目录的加载器。
 - 独立安装器和插件共享注入/运行链；CLI、`/usage`、stdio MCP 可独立查询，纯 CLI 没有状态条 UI。
@@ -41,8 +42,9 @@
 
 | 文件/目录 | 维护职责 |
 |---|---|
-| `zusage.py` | SQLite 查询库、CLI、桌面 JSON 快照、常驻 JSON 行查询与带身份的远端查询 |
+| `zusage.py` | SQLite 查询库、CLI、桌面 JSON 快照、常驻 JSON 行查询与带身份的远端查询；宿主适配层（`HOST_CAPS`/`resolve_host`/`connect`）、WorkBuddy 会话级数据源（`wb_*`）与**启动策略**（`detect_agent`/`agent_strategy`/`overlay_mode`/`node_candidates`） |
 | `usage_stats.py` | 统计/速率公共计算库：`MIN_GEN_MS`/`MAX_GEN_MS`、`round1`、`hides_reasoning`、生成窗口计算 `row_gen_ms` 与「首块即落章」provider 斜率判定 `query_first_token_covers`，供 `zusage.py` 与 `token_rate.py` 共用 |
+| `wb-overlay.cjs` | WorkBuddy 的 CDP 浮层注入器（`agents.workbuddy.overlay=cdp` 时由 MCP 启动拉起）：连 `--remote-debugging-port`，在 `.cr-input-container` 末尾注入整行状态条（分段按输入框宽度均摊：`.it` 用 `flex:1 1 auto` 等比吃满剩余宽度、首末**可见**段由脚本打 `.first`/`.end` 贴边，窗口拉宽/收窄时整行自动跟随；分段悬停信息卡：速度卡柱状图/档位/口径；右侧 ⓘ 完整详情 + ⚙ 设置面板——显示项/排布/中文单位存 localStorage `zusagewb.prefs`；12s 无更新标灰）；**改 PAGE_SCRIPT 必须同步升 PAGE_VERSION**，否则运行中的页面会按「已是最新」复用旧脚本；页面侧用 MutationObserver 自愈宿主重渲染，顺序靠 flex order 而非反复 appendChild，数据来自 `zusage.py serve`；ZCode 不走这里（asar 注入不变） |
 | `usage_mcp.py` | stdio JSON-RPC MCP；调用 `zusage`，提供 `token_usage(scope)` |
 | `token_rate.py` | 逐问速率、提问身份守卫与会话累计查询（根目录与插件副本同源同步） |
 | `token_pricing.py` | 模型单价表（models.dev 内置 326 条 + 12h 运行时同步）与预估费用计算（本库口径：input 已含 cache，output 已含思考）；快照 `cost_usd`/`fx` 生产方 |
@@ -61,9 +63,10 @@
 | `runtime_lock.py` / `release_unpack.py` | 跨进程锁、配置事务/可信同步、安全 ZIP 解包 |
 | `sync_plugin.py` / `release_tool.py` | 根源码副本同步、`overlay.js`/`quota-client.cjs` 拼接联动与 6 处分发清单一致性校验（`check_manifests` / `--verify-manifests`）；确定性发布包构建、校验、发布预演/发布 |
 | `plugins/zcode-token-usage-statusbar/` | 两份 manifest、`.mcp.json`、命令、技能、hooks、专有安装/更新/提醒入口与共享副本 |
+| `plugins/workbuddy-token-usage/` | WorkBuddy 专用构建（`.codebuddy-plugin/plugin.json` 内联 mcpServers + `/usage`，**不含 hooks/asar 链**），`usage_mcp.py`/`zusage.py`/`token_pricing.py` 为 `scripts/sync_workbuddy_plugin.py` 生成的副本；安装用 `scripts/install_workbuddy_plugin.py`（WorkBuddy 运行中时其 CLI 抢不到固定端口） |
 | `tests/` / `docs/` | 隔离回归（含 `tests/helpers/overlay-extract.cjs` 统一 `overlay.js`/`inject-main.cjs` 切片助手与 `tests/helpers/py_test_support.py` Python 公共测试夹具）、宿主 CLI 沙箱/交互演示；使用、设计、维护及宣传资料 |
 
-本检出包含 `usage_stats.py`、`src/overlay/`、`scripts/build_overlay.py`、`src/quota/`、`scripts/build_quota.py`、`turn-stats.js`、`renderer_bridge.py`、`renderer_live_check.cjs` 与根目录 `token_rate.py`；不要从其它工作树补出本检出不存在的架构。
+本检出包含 `usage_stats.py`、`src/overlay/`、`scripts/build_overlay.py`、`src/quota/`、`scripts/build_quota.py`、`turn-stats.js`、`renderer_bridge.py`、`renderer_live_check.cjs`、根目录 `token_rate.py`，以及 WorkBuddy 链的 `wb_usage.py`、`wb-overlay.cjs`、`scripts/install_workbuddy_plugin.py`、`scripts/sync_workbuddy_plugin.py` 与 `plugins/workbuddy-token-usage/`；不要从其它工作树补出本检出不存在的架构。
 
 关键调用链：
 - 桌面入口以绝对 `file://` 动态 `import` 引入 `inject-main.cjs`；主桥调用 Python，监听数据库及 WAL 变化，按窗口推送快照给 `overlay.js`。
@@ -110,6 +113,7 @@ python3 sync_plugin.py --check
 ## 4. 开发与兼容性约定
 
 - 保持修改聚焦，沿用现有原生代码与注释密度；不为统一风格引入框架、依赖或大规模重构。
+- 新增/调整宿主时：能力差异写进 `HOST_CAPS`（快照随 `caps` 下发），取不到的指标按「不可用」降级而不返回 0 假值；宿主判定为显式参数/env/config 优先，无显式配置时按 agent 跟随（ZCode 构建恒 zcode，WorkBuddy 构建读 workbuddy），「按库存在性」的机器探测只能经 `"host": "auto"` 显式开启——装了其它宿主不能改变 ZCode 用户已有的输出。「在哪个客户端跑」（agent）与「读哪个库」（host）是两件事，asar 自愈等安装链守卫一律判 agent、不判 host。
 - `.js` 浮层是注入浏览器的脚本；`.cjs` 是 CommonJS。客户端入口可能是 ESM，注入行必须动态 `import`，不能直接 `require`。
 - Python 路径使用 `Path`/已有定位逻辑；探测 `/Applications/ZCode.app` 等系统路径（如 `patch_install.py`、`renderer_bridge.py`）须捕获 `OSError`/`PermissionError`，防止在受限沙箱或 macOS TCC 拦截下抛未捕获异常。`python`、`python3`、`python_path` 与宿主实际可执行命令要区分，Windows 不保证有 `python3` 别名：插件 hooks.json 是 command+shell 回退链 `python3 → python → py -3`；`.mcp.json` 以 `node` 启动 `mcp-launch.cjs`（宿主对 stdio MCP 按 `shell:false` 经 cross-spawn 直接拉起，单命令无 shell 回退通道；但宿主给 MCP 子进程 PATH 末尾追加 Electron Node fallback shim，未装 Node 也能解析 `node`），由 launcher 按 hooks 同款顺序实测探测解释器并透传 stdio，不能改回裸 `python3`/`python` 单命令；主桥 `readCfg()` 把 `python_path` 缺省/空值归一为平台默认（win32=`python`，其它=`python3`），注入/安装时写回 `sys.executable` 并在每次 SessionStart 刷新。改这几处前先对当前客户端版本引擎核对 process/command 两种 hook 类型的 schema 与展开语义；回退链成立的平台依据见 [.zcode/rules/install-release.md](.zcode/rules/install-release.md)。
 - 保留带空格路径、Unicode、引号与平台进程行为的测试。POSIX shell 用既有 `shlex` 引用；Windows PowerShell 的 UTF-16LE `EncodedCommand` 路径不能简化为裸引号。

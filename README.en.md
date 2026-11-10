@@ -98,6 +98,21 @@ With the renderer bridge, speed during generation is estimated from text changes
 
 The context percentage prefers the host's native button. Its database fallback uses the latest completed request's input divided by the context window, not cumulative session usage. Plan quota and balance are generally queried independently from providers rather than inferred from local token totals. SCNet's credential-free estimate uses a separate ledger and conversion-rate path. See the [data semantics guide](docs/user-guide.md#数据如何计算) (Chinese) for full definitions.
 
+## WorkBuddy support (optional)
+
+The same query library can also read **WorkBuddy**'s local usage: context and window come from `session_usage` in `~/.workbuddy/workbuddy.db`, while per-request **tokens / cache / thinking / credits / tool calls / turns** come from `providerData.rawUsage` in each session transcript (`projects/*/*.jsonl`). Speed is approximated from response windows; **estimated cost** is priced per model at models.dev list rates (¥ when an FX rate is available, otherwise $), and models missing from the price table are reported as unavailable — never as fallback averages or fake zeros.
+
+The overlay is picked per client at startup: ZCode keeps the original asar injection; WorkBuddy has no such chain, so it gets a **CDP-injected status row inside the input card**; every segment shows a **hover card** (speed has a last-8-segment bar chart with the same colour bands and basis text; turn / session / tools / today / context / project each get their own breakdown), with a gear for the full details including estimated cost. It only uses the client's own debug port and never modifies program files. ZCode behaviour is unchanged.
+
+```bash
+python zusage.py host                 # self-check: active host, both DB paths, available metrics
+python zusage.py --host workbuddy now # query WorkBuddy for one run, no config change
+```
+
+To make it permanent, set `"host": "workbuddy"` in `config.json` (or `"auto"` to pick by DB presence); if the DB lives elsewhere use `hosts.workbuddy.db_path` or `ZUSAGE_WORKBUDDY_DB`. The MCP tool gained an optional `host` argument. **The default stays `zcode`** — installing WorkBuddy never changes existing ZCode behaviour.
+
+**To use `/usage` inside the WorkBuddy client itself**, the repo ships a WorkBuddy-only build at `plugins/workbuddy-token-usage/` (MCP + command, no asar injection); install steps are in the [host adapter docs](docs/hosts.md#7-在-workbuddy-客户端里安装可选) (Chinese).
+
 ## Privacy and security
 
 - **This is not an official ZCode feature.** It is a community plugin that modifies ZCode's program files (`app.asar`); uninstall removes only the project's own injection.
