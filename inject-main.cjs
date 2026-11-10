@@ -225,10 +225,28 @@ try {
   });
 } catch (e) { LOG("ipc hook failed:", e.message); }
 
-/* db 活动戳：db.sqlite / -wal / -shm 的最新 mtime。WAL 模式下写入主要落在 -wal。 */
+/* db 活动戳：db.sqlite / -wal / -shm 的最新 mtime。WAL 模式下写入主要落在 -wal。
+ * v279：dbDir 跟随宿主数据目录迁移，解析顺序同 resolveHostQuotaPaths（v229，issue #279）——
+ * setting.json 恒在 <home>/.zcode/v2（宿主 desktopDataBaseDirBootstrap，不随迁移走），
+ * 其 dataBaseDir 只采纳绝对路径且优先于 ZCODE_DATA_BASE_DIR env（宿主 setDataBaseDir > env）。
+ * 解析一次随进程生效；运行期迁移与其它冷路径一样需完全重启（宿主引导本身也要求重启）。 */
+function resolveHostDataBaseDir() {
+  const env = process.env || {};
+  const home = env.ZCODE_DESKTOP_HOME_DIR || app.getPath("home");
+  try {
+    const file = path.join(home, ".zcode", "v2", "setting.json");
+    if (fs.existsSync(file)) {
+      const s = JSON.parse(fs.readFileSync(file, "utf8").replace(/^\uFEFF/, ""));
+      const v = String((s && typeof s === "object" && s.dataBaseDir) || "").trim();
+      if (v && (/^(?:[a-z]:[\\/]|\\\\)/i.test(v) || v.startsWith("/"))) return v;
+    }
+  } catch (e) { LOG("[db] setting.json unreadable:", e && e.message); }
+  const envBase = String(env.ZCODE_DATA_BASE_DIR || "").trim();   // 宿主与 Python 侧同款 trim 后判空
+  return envBase || home;
+}
 let DB_DIR = null;
 function dbDir() {
-  if (!DB_DIR) DB_DIR = path.join(app.getPath("home"), ".zcode", "cli", "db");
+  if (!DB_DIR) DB_DIR = path.join(resolveHostDataBaseDir(), ".zcode", "cli", "db");
   return DB_DIR;
 }
 function dbStamp() {
