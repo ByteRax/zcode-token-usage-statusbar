@@ -5,7 +5,8 @@
 **Model speed, token usage, context and plan quota — at a glance.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Platform: Windows | Linux | macOS](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-blue.svg)](#what-you-need)
+[![Windows](https://img.shields.io/badge/-Windows-0078D6?logo=data:image/svg%2Bxml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCI+PHBhdGggZmlsbD0iI2ZmZmZmZiIgZD0iTTAsMEgxMS4zNzdWMTEuMzcySDBaTTEyLjYyMywwSDI0VjExLjM3MkgxMi42MjNaTTAsMTIuNjIzSDExLjM3N1YyNEgwWm0xMi42MjMsMEgyNFYyNEgxMi42MjMiLz48L3N2Zz4%3D)](https://github.com/ByteRax/zcode-token-usage-statusbar) [![macOS](https://img.shields.io/badge/-macOS-000000?logo=apple&logoColor=white)](https://github.com/ByteRax/zcode-token-usage-statusbar) [![Linux](https://img.shields.io/badge/-Linux-FCC624?logo=linux&logoColor=black)](https://github.com/ByteRax/zcode-token-usage-statusbar)
+[![QQ 群](https://img.shields.io/badge/QQ-129554306-12B7F5?logo=qq&logoColor=white)](https://qm.qq.com/q/l43Xj8P7mE) [![微信](https://img.shields.io/badge/%E5%BE%AE%E4%BF%A1-ByteRax-07C160?logo=wechat&logoColor=white)](#-community)
 
 A third-party toolkit for the [ZCode](https://zcode.z.ai) desktop app, with a speed status bar, usage queries and UI enhancements. Its marketplace name remains **ZCode Token Usage Statusbar**; repository URLs and commands are unchanged.
 
@@ -27,7 +28,7 @@ Promotional image with staged UI and demonstration data; the actual interface va
 
 ### Installation
 
-Send this to ZCode to install or update the stable-channel plugin:
+Send this to ZCode to install or update the plugin:
 
 ```text
 Please install or update and enable this ZCode plugin: https://github.com/ByteRax/zcode-token-usage-statusbar#plugin-releases
@@ -43,11 +44,9 @@ Then run /install-overlay in the ZCode chat. Once you confirm the status bar ins
 If installation fails, explain why. If you cannot run the command in the current session, ask me to run it manually; do not skip this step or claim installation succeeded.
 ```
 
-Keep `#plugin-releases` / `#plugin-releases-gitcode` in the URLs: they select the project's stable release channels. Alternatively, paste the appropriate URL into **Settings → Plugins → Add marketplace**, install and enable **ZCode Token Usage Statusbar**, then run `/install-overlay` manually. For source-based installation and other routes, see the [installation guide](docs/user-guide.md#插件安装) (Chinese). Choose one route rather than combining them.
+Keep `#plugin-releases` / `#plugin-releases-gitcode` in the URLs: they select the project's stable release channels.
 
 > **Important:** installing the bar modifies ZCode's program files (`app.asar`), so proceed only if you trust the project. **After the first successful injection, quit ZCode completely and reopen it** (closing the window or reopening a session is not enough), then check that the bar appears. If installation fails or permissions are insufficient, diagnose that first; restarting does not replace installation.
-
-For later updates, use the update check in ⚙ (auto-update is on by default). Hot-reloadable files can take effect automatically; if the plugin reports that a restart is required, fully quit and reopen the client. [Update and client-upgrade details →](docs/user-guide.md#更新与客户端升级) (Chinese)
 
 If the bar is still missing after a successful installation and full restart, send this to ZCode:
 
@@ -55,16 +54,20 @@ If the bar is still missing after a successful installation and full restart, se
 Please investigate why the status bar or toolbar chips from https://github.com/ByteRax/zcode-token-usage-statusbar are missing. Check whether the plugin is enabled, installation succeeded, the actual loaded path is correct, and the relevant switches are on. Ask for my confirmation before modifying client files. If a report is needed, prepare redacted reproduction steps and a diagnostic summary, then wait for my approval before submitting to https://github.com/ByteRax/zcode-token-usage-statusbar/issues. Do not upload credentials or complete local logs.
 ```
 
-### Troubleshooting and automatic repair
+### Troubleshooting, automatic repair and uninstall
 
 Client upgrades can overwrite injection patches. Keep the plugin enabled and **start or resume a session** to trigger automatic installation/repair; sending another message in an already-open session does not guarantee a trigger. Confirm repair succeeded, then fully quit and reopen ZCode if a restart is required. Insufficient permissions or changes to the host's structure can still prevent repair.
 
-- `/install-overlay`: manually install or repair the injection; confirm success, then fully restart as instructed.
-- `/uninstall-overlay`: remove the bar and write an opt-out marker to prevent automatic re-injection. Confirm success, then fully quit and reopen. `/usage` and MCP queries remain available; the per-answer rate line depends on the overlay and renderer bridge.
+- **Plugin install/update**: `/install-overlay`: open ZCode, start a new session, type `/install-overlay` and press Enter to re-trigger the repair injection; after confirming success, fully restart as instructed.
+- **Plugin uninstall**: ① turn off auto-update in ⚙ → ② run `/uninstall-overlay` in chat and confirm success → ③ open **Settings → Plugins → Installed → ZCode Token Usage Statusbar → ⋯ → Uninstall** → ④ fully quit and reopen ZCode. Never uninstall only the plugin and leave the bar injected; for configuration and cache cleanup, see the [full uninstall guide](docs/user-guide.md#彻底卸载) (Chinese).
 
-[Installation guide](docs/user-guide.md#插件安装) (Chinese) · [FAQ](#faq) · [Feature illustrations](docs/features.md) (Chinese) · [More troubleshooting](docs/user-guide.md#排查) (Chinese)
-
-> This page describes the `main` branch, which may include unreleased features. For the stable channel, refer to the corresponding version in [GitHub Releases](https://github.com/ByteRax/zcode-token-usage-statusbar/releases).
+- [Installation guide](docs/user-guide.md#插件安装) (Chinese)
+- [Update and client-upgrade details →](docs/user-guide.md#更新与客户端升级) (Chinese)
+- [Feature illustrations](docs/features.md) (Chinese)
+- [Quota support matrix](docs/quota-support-audit.md) (Chinese)
+- [Architecture and data semantics](docs/design-notes.md) (Chinese)
+- [Development and releases](docs/maintaining.md) (Chinese)
+- [Tests](tests/README.md) (Chinese)
 
 ---
 
@@ -137,16 +140,16 @@ To make it permanent, set `"host": "workbuddy"` in `config.json` (or `"auto"` to
 
 [More troubleshooting →](docs/user-guide.md#排查) (Chinese)
 
-## Uninstall
+## 💬 Community
 
-- **Plugin installation:** ① disable auto-update in ⚙ → ② run `/uninstall-overlay` in chat and confirm success → ③ open **Settings → Plugins → Installed → ZCode Token Usage Statusbar → ⋯ → Uninstall** → ④ fully quit and reopen ZCode. Do not uninstall only the plugin and leave the bar injected. For configuration and cache cleanup, see the [full uninstall guide](docs/user-guide.md#彻底卸载) (Chinese).
-- **Source-script installation:** run `python3 install.py --remove` from the repository directory (or use `python`, depending on your installation), confirm removal succeeded, then fully quit and reopen ZCode.
+- QQ group: **129554306** ([join link](https://qm.qq.com/q/WXuISJK3ug))
+- WeChat: add **ByteRax** and ask for an invite
 
-## More documentation
-
-- [Feature screenshots](docs/features.md) (Chinese) · [Installation, configuration and troubleshooting](docs/user-guide.md) (Chinese) · [Quota support matrix](docs/quota-support-audit.md) (Chinese)
-- [Architecture and data semantics](docs/design-notes.md) (Chinese)
-- [Development and releases](docs/maintaining.md) (Chinese) · [Tests](tests/README.md) (Chinese)
+<p>
+  <img src="docs/contact/qq-group.webp" width="200" alt="QQ group QR code" />
+  &nbsp;&nbsp;
+  <img src="docs/contact/wechat.webp" width="200" alt="WeChat QR code (ByteRax)" />
+</p>
 
 ## Help improve ZCodeBox
 
