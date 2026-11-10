@@ -58,6 +58,8 @@ def tool_token_usage(scope: str = "current", host: str = "") -> str:
     """host 为空 = 跟随配置/环境判定（zusage.resolve_host）；显式传入只覆盖本次查询
     （按次传给 connect，不写进程级覆盖——同一 MCP 进程可能连续查两个宿主，
     粘滞覆盖会让「不传 host 跟随配置」的契约失效）。"""
+    if str(host or "").strip() and zusage.normalize_host(host) is None:
+        raise ValueError(f"unknown host: {host!r} (expected one of {', '.join(zusage.HOSTS)})")
     con = zusage.connect(host or None)
     try:
         if scope in ("current", "now"):

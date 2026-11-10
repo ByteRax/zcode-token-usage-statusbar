@@ -78,7 +78,7 @@ HOST_CAPS = {
     HOST_WORKBUDDY: {"tokens": True, "tps": True, "tools": True, "cost": True,
                      "context": True, "credits": True, "transcript": True},
 }
-_HOST_OVERRIDE = None   # 进程内最高优先（CLI --host / MCP token_usage(host=...)）
+_HOST_OVERRIDE = None   # 进程内最高优先（CLI --host；MCP 的 host 参数按次走 connect，不经这里）
 
 
 def normalize_host(value):

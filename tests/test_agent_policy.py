@@ -164,6 +164,11 @@ class McpHostBehaviorTests(unittest.TestCase):
         self.assertEqual(recorded, ["workbuddy", None])   # 不传 host 的下一次回到跟随配置
         self.assertIsNone(usage_mcp.zusage._HOST_OVERRIDE)
 
+    def test_tool_rejects_unknown_host(self):
+        """enum 外的宿主值要报错可自纠，不得静默回退跟随配置（与 CLI --host 行为一致）。"""
+        with self.assertRaises(ValueError):
+            usage_mcp.tool_token_usage(scope="current", host="claude")
+
     def test_finalize_revive_gate_follows_agent_not_host(self):
         """ZCode 客户端 + host=workbuddy 配置：待收尾包自愈（issue #163）必须保留。"""
         path_mock = mock.MagicMock()
