@@ -71,7 +71,10 @@ function deriveSecret(env) {
 }
 function deriveCipherKey(env) { return crypto.createHash("sha256").update(deriveSecret(env)).digest(); }
 function decryptV1Value(value, key) {
-  if (typeof value !== "string" || !value.startsWith(ENC_PREFIX)) return value;
+  if (typeof value !== "string") return value;
+  /* 未知 enc: 版本按宿主 legacy 语义拒绝（null）：绝不把密文当明文 token 外发 */
+  if (value.startsWith("enc:") && !value.startsWith(ENC_PREFIX)) return null;
+  if (!value.startsWith(ENC_PREFIX)) return value;
   const parts = value.slice(ENC_PREFIX.length).split(".");
   if (parts.length !== 3 || !parts[0] || !parts[1] || parts[2] === undefined) return null;
   let iv, tag, ct;
@@ -117,12 +120,13 @@ function openV2Seal(seal, key) {
   } catch (e) { return null; }
 }
 
-let hostKeyringMod;   // undefined=未探测；null=探测过不可用；对象=可用绑定
+/* 负缓存按 resourcesDir 分桶：一次空 dir/失败探测不再拖累其它目录（热换重建前的自愈路径） */
+const hostKeyringByDir = new Map();
 function loadHostKeyring(resourcesDir) {
-  if (hostKeyringMod !== undefined) return hostKeyringMod;
-  hostKeyringMod = null;
   const dir = String(resourcesDir || "");
   if (!dir) return null;
+  if (hostKeyringByDir.has(dir)) return hostKeyringByDir.get(dir);
+  let mod = null;
   const tries = [];
   /* asar 内 wrapper（Electron fs 透传把 .node 指到 unpacked）；直接 require 失败不影响后续 */
   tries.push(() => require(path.join(dir, "app.asar", "node_modules", "@napi-rs", "keyring")));
@@ -139,10 +143,11 @@ function loadHostKeyring(resourcesDir) {
   for (const t of tries) {
     try {
       const m = t();
-      if (m && (m.AsyncEntry || m.Entry)) { hostKeyringMod = m; break; }
+      if (m && (m.AsyncEntry || m.Entry)) { mod = m; break; }
     } catch (e) { /* 下一候选 */ }
   }
-  return hostKeyringMod;
+  hostKeyringByDir.set(dir, mod);
+  return mod;
 }
 
 /* 受管 secret（v2:env 源）：镜像宿主 resolveManagedSecret 的非强制分支——只认
@@ -162,10 +167,18 @@ function readManagedSecret(ctx) {
 async function ensureV2Key(ctx) {
   const cur = ctx.cache.get(ctx.credsPath) || null;
   if (cur) return cur;   // 已热：不重读 keychain/secret（换钥由 decrypt 侧 keyId 失配作废缓存后重读）
+  if (ctx.keyFailedAt && Date.now() - ctx.keyFailedAt < 60000) return cur;   // 失败冷却：keychain 缺失时不做 1 秒风暴重试
+  ctx.lastError = "";   // 只反映最近一次尝试，不跨调用短路
   const env = ctx.env || process.env;
   let secret = readManagedSecret(ctx), source = "";
-  if (ctx.lastError) return cur;
+  if (ctx.lastError) { ctx.keyFailedAt = Date.now(); return cur; }   // 受管 secret 配置错误：与 keychain 失败同冷却
+  let key;
   if (secret !== null) {
+    /* 宿主 X1n：env 源密钥 = sha256(受管 secret) 原始 32 字节，对 secret 无 base64url 形状要求；
+     * 文件路径的宿主校验是内容 32–4096 字节。 */
+    const blen = Buffer.byteLength(secret, "utf8");
+    if (env.ZCODE_CREDENTIAL_SECRET_FILE && (blen < 32 || blen > 4096)) { ctx.lastError = "managed secret file length invalid"; ctx.keyFailedAt = Date.now(); return cur; }
+    key = crypto.createHash("sha256").update(secret).digest();
     source = "env";
   } else {
     const mod = ctx.keyringMod !== undefined ? ctx.keyringMod : loadHostKeyring(ctx.resourcesDir);
@@ -173,16 +186,17 @@ async function ensureV2Key(ctx) {
     try {
       const E = mod.AsyncEntry || mod.Entry;
       const account = crypto.createHash("sha256").update(String(ctx.credsPath)).digest("hex");
-      secret = await new E(V2_SERVICE, account).getPassword();
-    } catch (e) { ctx.lastError = "keychain read failed"; return cur; }
+      secret = await new E(V2_SERVICE, account, { linux: { store: "secret-service" } }).getPassword();
+    } catch (e) { ctx.lastError = "keychain read failed"; ctx.keyFailedAt = Date.now(); return cur; }
     source = "os";
+    if (typeof secret !== "string" || !V2_KEY_RE.test(secret)) { ctx.lastError = "key shape invalid"; ctx.keyFailedAt = Date.now(); return cur; }
+    key = Buffer.from(secret, "base64url");
+    if (key.length !== 32) { ctx.lastError = "key length invalid"; ctx.keyFailedAt = Date.now(); return cur; }
   }
-  if (typeof secret !== "string" || !V2_KEY_RE.test(secret)) { ctx.lastError = "key shape invalid"; return cur; }
-  const key = Buffer.from(secret, "base64url");
-  if (key.length !== 32) { ctx.lastError = "key length invalid"; return cur; }
   const ent = { key, keyId: keyIdOf(key), source };
   ctx.cache.set(ctx.credsPath, ent);
   ctx.lastError = "";
+  ctx.keyFailedAt = 0;
   return ent;
 }
 
@@ -195,7 +209,7 @@ function makeHostDecryptor(opts) {
     env: o.env || process.env,
     readFileRaw: o.readFileRaw,
     keyringMod: o.keyringMod,   // undefined=自动探测；null/对象=显式指定（测试注入）
-    cache: new Map(), lastError: "", pending: 0, ensuring: null,
+    cache: new Map(), lastError: "", pending: 0, ensuring: null, keyFailedAt: 0,
   };
   function ensureKey() {
     if (ctx.ensuring) return ctx.ensuring;
@@ -210,7 +224,7 @@ function makeHostDecryptor(opts) {
     const ent = ctx.cache.get(ctx.credsPath);
     if (!ent || parts[0] !== ent.source || parts[1] !== ent.keyId) {
       if (ent) ctx.cache.delete(ctx.credsPath);   // 缓存钥与信封不符（宿主换钥）：作废并重读
-      ctx.pending = 1;
+      if (!ctx.keyFailedAt) ctx.pending = 1;   // 失败冷却期内不置位：调度器回退 60 秒，防 1 秒风暴
       try { void ensureKey(); } catch (e) { /* 同步段不抛 */ }
       return null;
     }
