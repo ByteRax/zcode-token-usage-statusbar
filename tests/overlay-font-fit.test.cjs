@@ -61,9 +61,14 @@ test('tooltip surfaces (exc card/rateTip inline fallback and stat/project/sub/sp
   }
 });
 
-test('fallback speed cell face keeps a space before the unit span (word-spacing needs a separator)', () => {
-  // v319：无桥回退路径 chipFace 原串「数字+'<span class="dim">t/s</span>'」无空格字符，
-  // .zu-live 的 word-spacing 对无空格文本无效（真机实测数字紧贴 t/s）
+test('speed number/unit spacing: live path word-spacing + fallback face space (v319)', () => {
+  // v319 双路径：①实时桥 .zu-live 文本 "… t/s" 有空格但切 sans 后 Segoe 空格变窄，加 word-spacing；
+  // ②无桥回退 chipFace 原串「数字+'<span class="dim">t/s</span>'」无空格字符，word-spacing 对
+  // 无空格文本无效（真机实测数字紧贴 t/s），必须保留补入的空格
+  const liveAt = source.indexOf('.zu-live{');
+  assert.ok(liveAt >= 0, '.zu-live missing');
+  const liveBody = source.slice(liveAt, source.indexOf('}', liveAt));
+  assert.ok(liveBody.includes('word-spacing:4px'), '.zu-live 实时桥路径必须保留 word-spacing:4px 加距');
   const at = source.indexOf('var chipFace = chipTps > 0');
   assert.ok(at >= 0, 'chipFace missing');
   const line = source.slice(at, source.indexOf(String.fromCharCode(10), at));
