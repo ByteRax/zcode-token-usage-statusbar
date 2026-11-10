@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""ZCode token 用量查询（只读访问 ~/.zcode/cli/db/db.sqlite）。
+"""ZCode token 用量查询（只读访问本地用量库，默认 ~/.zcode/cli/db/db.sqlite，跟随宿主 dataBaseDir 迁移）。
 
 既可作 CLI（python zusage.py [now|today|days N|sessions [N]|models [days]|workspace 关键词|session id前缀|watch [sec]]），
 也可被 usage_mcp.py import 为查询库。
@@ -18,7 +18,33 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
 
-DB_PATH = Path.home() / ".zcode" / "cli" / "db" / "db.sqlite"
+# 宿主 dataBaseDir 合法值：绝对路径（POSIX 绝对 / Windows 盘符 / UNC）——相对值宿主无稳定基准，不采纳
+_DB_BASE_ABS_RE = re.compile(r"^(?:[a-z]:[\\/]|\\\\|/)", re.IGNORECASE)
+
+
+def resolve_db_path(env=None, home=None):
+    """本地用量库路径（issue #279）：跟随宿主数据目录迁移，与注入侧 resolveHostQuotaPaths
+    同序解析——setting.json 的 dataBaseDir（只采纳绝对路径）> ZCODE_DATA_BASE_DIR env >
+    <home>。setting.json 恒在 <home>/.zcode/v2（宿主 desktopDataBaseDirBootstrap，不随
+    迁移走）；token_rate.py 的默认路径与本函数同源，改动两处同步。"""
+    env = os.environ if env is None else env
+    home = Path.home() if home is None else Path(home)
+    base = ""
+    try:
+        file = home / ".zcode" / "v2" / "setting.json"
+        if file.exists():
+            raw = json.loads(file.read_text(encoding="utf-8-sig"))
+            v = str((raw.get("dataBaseDir") if isinstance(raw, dict) else "") or "").strip()
+            if v and _DB_BASE_ABS_RE.match(v):
+                base = v
+    except Exception:
+        pass   # 缺文件/损坏按无迁移处理，回落 env / home，不拖垮查询链
+    if not base:
+        base = str(env.get("ZCODE_DATA_BASE_DIR") or "").strip()
+    return (Path(base) if base else home).expanduser() / ".zcode" / "cli" / "db" / "db.sqlite"
+
+
+DB_PATH = resolve_db_path()
 CONFIG_PATH = Path(__file__).parent / "config.json"
 
 try:

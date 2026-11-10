@@ -626,8 +626,8 @@
       if (d.not_local) {   // v62（issue #14）：本地库没有这个会话 —— 全 0 不是插件坏了，是数据不在这儿
         it(ico('<circle cx="12" cy="12" r="9"/><path d="M12 16h.01"/><path d="M12 8h.01"/>') +
           '<span class="dim">' + L("不在本地库", "not in local db") + "</span>",
-          L("这个会话不在本地数据库里（~/.zcode/cli/db/db.sqlite 查不到它），所以各项显示 0 —— 不是插件坏了。",
-            "This session is not in the local database (~/.zcode/cli/db/db.sqlite), which is why every item reads 0 — the plugin is not broken.") + "\n" +
+          L("这个会话不在本地用量库里（宿主数据目录迁移 dataBaseDir 后由插件自动跟随；仍显示 0 请重装/更新插件），所以各项显示 0 —— 不是插件坏了。",
+            "This session is not in the local usage database (the plugin follows the host dataBaseDir migration automatically; if items still read 0, reinstall/update the plugin) — the plugin is not broken.") + "\n" +
           (d.remote_enabled
             ? L("已配置 remote 段，但远端查询没有返回它：", "A remote section is configured, but the remote query did not return it: ")
               + (d.remote_error ? L("查询失败 ", "query failed: ") + d.remote_error

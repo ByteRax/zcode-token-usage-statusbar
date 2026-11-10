@@ -19,7 +19,9 @@ function loadPump(config = {}, desktopHome = "/fixture/home") {
       if (file === "/fixture/runtime/config.json") return { mtimeMs: cfgStamp, size: 1 };
       if (file === desktopHome + "/.zcode/v2/setting.json") return { mtimeMs: settingStamp, size: 1 };
       if (["/fixture/runtime/overlay.js", "/fixture/runtime/zusage.py",
-        ...["db.sqlite", "db.sqlite-wal", "db.sqlite-shm"].map(name => "/fixture/home/.zcode/cli/db/" + name)].includes(file)) {
+        // db 路径跟随 desktopHome（issue #279 起 dbDir 解析 setting.json dataBaseDir / env），
+        // development-home 场景下库随之迁移，否则 stamp 恒 0 打穿去重
+        ...["db.sqlite", "db.sqlite-wal", "db.sqlite-shm"].map(name => desktopHome + "/.zcode/cli/db/" + name)].includes(file)) {
         return { mtimeMs: 1, size: 1 };
       }
       throw Object.assign(new Error("ENOENT: " + file), { code: "ENOENT" });

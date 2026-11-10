@@ -34,6 +34,7 @@
 import json
 import math
 import os
+import re
 import sqlite3
 import sys
 import tempfile
@@ -48,8 +49,28 @@ try:
 except ImportError:
     query_first_token_covers = None
 
-DB_PATH = os.environ.get("ZCODE_USAGE_DB") or str(
-    Path.home() / ".zcode" / "cli" / "db" / "db.sqlite")
+
+def _default_db_path(env=None, home=None):
+    """未设 ZCODE_USAGE_DB 时的默认库路径：与 zusage.resolve_db_path 同源解析
+    （issue #279 宿主 dataBaseDir 迁移；本脚本单独部署不 import zusage，改动两处同步）。"""
+    env = os.environ if env is None else env
+    home = Path.home() if home is None else Path(home)
+    base = ""
+    try:
+        file = home / ".zcode" / "v2" / "setting.json"
+        if file.exists():
+            raw = json.loads(file.read_text(encoding="utf-8-sig"))
+            v = str((raw.get("dataBaseDir") if isinstance(raw, dict) else "") or "").strip()
+            if v and re.match(r"^(?:[a-z]:[\\/]|\\\\|/)", v, re.IGNORECASE):
+                base = v
+    except Exception:
+        pass   # 缺文件/损坏按无迁移处理，回落 env / home，不拖垮统计链
+    if not base:
+        base = str(env.get("ZCODE_DATA_BASE_DIR") or "").strip()
+    return (Path(base) if base else home).expanduser() / ".zcode" / "cli" / "db" / "db.sqlite"
+
+
+DB_PATH = os.environ.get("ZCODE_USAGE_DB") or str(_default_db_path())
 # 钩子状态文件：记录"用户最后所处的会话"与最近提问时刻（--current 守卫依赖 promptTs）
 STATE_FILE = os.environ.get("ZUSAGE_RATE_STATE_FILE") or str(
     Path.home() / ".zcode" / "zusage-rate.last-session.json")
