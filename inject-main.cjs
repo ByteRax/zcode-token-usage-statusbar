@@ -241,7 +241,8 @@ function resolveHostDataBaseDir() {
       if (v && (/^(?:[a-z]:[\\/]|\\\\)/i.test(v) || v.startsWith("/"))) return v;
     }
   } catch (e) { LOG("[db] setting.json unreadable:", e && e.message); }
-  return env.ZCODE_DATA_BASE_DIR || home;
+  const envBase = String(env.ZCODE_DATA_BASE_DIR || "").trim();   // 宿主与 Python 侧同款 trim 后判空
+  return envBase || home;
 }
 let DB_DIR = null;
 function dbDir() {

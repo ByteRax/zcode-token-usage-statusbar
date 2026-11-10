@@ -104,6 +104,11 @@ class ResolveDbPathTest(unittest.TestCase):
         self.assertEqual(p, Path("~/abs-sub") / ".zcode" / "cli" / "db" / "db.sqlite")
         self.assertEqual(str(p), "~/abs-sub/.zcode/cli/db/db.sqlite")
 
+    def test_env_whitespace_trimmed_falls_to_home(self):
+        # 宿主 ?.trim() || null 同款：纯空白 env 视为未设置（与 inject-main 侧 trim 对拍）
+        p = self.zusage.resolve_db_path(env={"ZCODE_DATA_BASE_DIR": "   "}, home=self.home)
+        self.assertEqual(p, self.expect(self.home))
+
     def test_missing_setting_file(self):
         p = self.zusage.resolve_db_path(env={}, home=self.home / "nowhere")
         self.assertEqual(p, self.expect(self.home / "nowhere"))

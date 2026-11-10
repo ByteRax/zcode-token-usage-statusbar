@@ -156,7 +156,7 @@ python3 -B -m unittest discover -s tests -p 'test_*.py'
 
 这是检查工具箱，不是所有需求一律执行的脚本顺序。检查本次其它 `.js/.cjs/.py` 改动（如 `turn-stats.js`、`quota-client.cjs`、`model-puller.cjs`、`engine-patch.cjs`、`plugin-updater.cjs`），不能只查上列两文件。跑 Python 测试带 `-B` 与 `PYTHONDONTWRITEBYTECODE=1`。Windows 不假定 `python3` 别名或 shell 通配符展开；选择已核实解释器并显式列出测试文件。项目没有统一 build/lint 命令时不虚构命令。纯文档不触发安装、部署或发布。
 
-自动化测试用临时数据库、目录及隔离环境（如 `ZUSAGE_PLUGIN_RUNTIME` / `ZUSAGE_PLUGIN_ASAR`），不接触个人数据库（真库为 `~/.zcode/cli/db/db.sqlite`；注意 `~/.zcode/db.sqlite` 为 0 字节空文件勿误用）或真实插件库存；真实宿主 CLI/模型测试可能联网及消耗额度，按当前指令与项目规则另行处理。报告实际命令、结果及跳过原因，不把语法检查或 stub 测试当作 Electron 实机验收。
+自动化测试用临时数据库、目录及隔离环境（如 `ZUSAGE_PLUGIN_RUNTIME` / `ZUSAGE_PLUGIN_ASAR`），不接触个人数据库（真库默认 `~/.zcode/cli/db/db.sqlite`，跟随宿主 dataBaseDir 迁移；注意 `~/.zcode/db.sqlite` 为 0 字节空文件勿误用）或真实插件库存；真实宿主 CLI/模型测试可能联网及消耗额度，按当前指令与项目规则另行处理。报告实际命令、结果及跳过原因，不把语法检查或 stub 测试当作 Electron 实机验收。
 
 ## 6. 默认完成本地部署与热重载验证
 

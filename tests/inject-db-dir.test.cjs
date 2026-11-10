@@ -11,12 +11,12 @@ const { sliceInject } = require('./helpers/overlay-extract.cjs');
 // dbStamp / db watcher 跟随新库。切出「db 活动戳」整段在受控桩下跑各分支。
 const block = sliceInject('/* db 活动戳', '/* 远端状态按');
 
-function makeHome(settingJson) {
+function makeHome(settingJson, { bom = false } = {}) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'zusage-dbdir-'));
   if (settingJson !== undefined) {
     fs.mkdirSync(path.join(home, '.zcode', 'v2'), { recursive: true });
-    fs.writeFileSync(path.join(home, '.zcode', 'v2', 'setting.json'),
-      typeof settingJson === 'string' ? settingJson : JSON.stringify(settingJson));
+    const body = typeof settingJson === 'string' ? settingJson : JSON.stringify(settingJson);
+    fs.writeFileSync(path.join(home, '.zcode', 'v2', 'setting.json'), bom ? '\uFEFF' + body : body);
   }
   return home;
 }
@@ -80,6 +80,26 @@ test('Windows 盘符 dataBaseDir 被采纳为基目录', () => {
   const home = makeHome({ dataBaseDir: 'D:\\zcode-data' });
   const api = runBlock({ env: { ZCODE_DESKTOP_HOME_DIR: home }, home: '/fake-home' });
   assert.equal(api.resolveHostDataBaseDir(), 'D:\\zcode-data');
+});
+
+test('env 值带首尾空白被 trim（宿主/Python 侧同款），纯空白回落 home', () => {
+  const api = runBlock({ env: { ZCODE_DATA_BASE_DIR: '  /from/env  ' }, home: '/fake-home' });
+  assert.equal(api.dbDir(), path.join('/from/env', '.zcode', 'cli', 'db'));
+  const api2 = runBlock({ env: { ZCODE_DATA_BASE_DIR: '   ' }, home: '/fake-home' });
+  assert.equal(api2.dbDir(), path.join('/fake-home', '.zcode', 'cli', 'db'));
+});
+
+test('env 值带 ~ 原样使用不展开（与宿主 getDataBaseDir 一致）', () => {
+  const api = runBlock({ env: { ZCODE_DATA_BASE_DIR: '~/abs-sub' }, home: '/fake-home' });
+  assert.equal(api.resolveHostDataBaseDir(), '~/abs-sub');
+  assert.equal(api.dbDir(), path.join('~/abs-sub', '.zcode', 'cli', 'db'));
+});
+
+test('setting.json 带 UTF-8 BOM 仍能读出 dataBaseDir', () => {
+  const migrated = fs.mkdtempSync(path.join(os.tmpdir(), 'zusage-mig3-'));
+  const home = makeHome({ dataBaseDir: migrated }, { bom: true });
+  const api = runBlock({ env: { ZCODE_DESKTOP_HOME_DIR: home }, home: '/fake-home' });
+  assert.equal(api.resolveHostDataBaseDir(), migrated);
 });
 
 test('dbStamp 探测解析后目录下的 db.sqlite/-wal/-shm', () => {
