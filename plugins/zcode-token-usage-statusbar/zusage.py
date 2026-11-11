@@ -1129,10 +1129,12 @@ def model_usage(con, days=7):
 # ---------- 展示 ----------
 
 def render_current(con):
-    """当前会话 = _scan_session_ids 最近活跃的会话（子代理会话也在候选内）。"""
+    """当前会话 = _scan_session_ids 最近活跃的会话（普通子代理会话也在候选内；
+    工作流 actor 会话 sess_dwf-* 除外——run 进行中多个 actor 轮流活跃且标题是
+    run 视角，成为「当前会话」属误报，specs/workflow-support.md）。"""
     if host_of(con) == HOST_WORKBUDDY:
         return wb_render_current(con)
-    rows = _scan_session_ids(con)
+    rows = [r for r in _scan_session_ids(con) if not _is_sub_kind_workflow(r[0])]
     sess, last_at = None, 0
     if rows:
         sid, last_at = max(rows, key=lambda r: r[1])
@@ -1242,6 +1244,13 @@ def _sub_kind_of(sid):
     if s.startswith(_WF_PREFIX):
         return "workflow"
     return ""
+
+
+def _is_sub_kind_workflow(sid):
+    """仅工作流 actor 会话判定：普通子代理（sess_subagent_*）保持既有候选语义，
+    sess_dwf-* 从 latest/current 候选排除（run 进行中多个 actor 轮流活跃且标题是
+    run 视角，成为「当前会话」属误报）。"""
+    return str(sid).startswith(_WF_PREFIX)
 
 
 def _usage_rows(con, sids):
@@ -1462,7 +1471,15 @@ def _sub_agent_tasks(con, sid):
     stamp = con.execute(
         "select count(*), coalesce(max(time_updated),0) from part where session_id=?", (sid,)
     ).fetchone()
-    key = (stamp[0], stamp[1])
+    # dwf_actor 新增/改名不动 part：工作流运行中动态创建 actor 且其 ask 完成落库时，
+    # 父会话可能无新 part 行——失效键补 dwf_actor 维度，旧库无表按 0（同款 fail-closed）。
+    try:
+        astamp = con.execute(
+            """select coalesce(max(a.time_created),0) from dwf_actor a
+               join session s2 on a.session_id = s2.id where s2.parent_id=?""", (sid,)).fetchone()[0]
+    except sqlite3.Error:
+        astamp = 0
+    key = (stamp[0], stamp[1], astamp)
     hit = _TASK_CACHE.get(sid)
     if hit and hit[0] == key:
         return hit[1]
@@ -3322,12 +3339,16 @@ def snapshot(force_sid="", routes=None, serve_con=None, include_speed_history=Fa
                 local_error = str(exc)[:200]
                 return _empty_snapshot(sid, cfg)
 
-        latest_sid = max(rows, key=lambda r: r[1])[0] if rows else None
+        # 工作流 actor 会话（sess_dwf-*）不进 latest 候选：run 进行中多个 actor 轮流活跃，
+        # 全库 max(completed_at) 几乎恒被它们占据，顶层 session/CLI current 会被顶成 run
+        # 视角（specs/workflow-support.md）。普通子代理（sess_subagent_*）保持既有候选语义。
+        ranked = sorted((r for r in rows if not _is_sub_kind_workflow(r[0])),
+                        key=lambda r: -r[1])
+        latest_sid = ranked[0][0] if ranked else None
         base = local_snapshot(latest_sid) if latest_sid else _empty_snapshot("", cfg)
-        # 工作流 actor 会话（sess_dwf-*）与普通子代理同桶：directory=父工作区、活跃度
-        # 跟随 run，放 normal 池会挤占主会话 top-6 并可被 CLI current 误选（specs/workflow-support.md）。
-        normal = sorted((r for r in rows if not _is_sub_sid(r[0])),
-                        key=lambda r: -r[1])[:6]
+        # 池分桶：sess_dwf 与普通子代理同入子代理桶（directory=父工作区、活跃度跟随
+        # run），放 normal 池会挤占主会话 top-6。
+        normal = ranked[:6]
         suba = sorted((r for r in rows if _is_sub_sid(r[0])),
                       key=lambda r: -r[1])[:6]
         ids = [r[0] for r in normal] + [r[0] for r in suba]
