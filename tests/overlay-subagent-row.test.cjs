@@ -36,7 +36,6 @@ class El {
     this.parentElement = null; this.isConnected = false;
   }
   contains(el) { return el === this || this.children.some(c => c.contains(el)); }
-  get parentNode() { return this.parentElement; }
   get nextSibling() {
     if (!this.parentElement) return null;
     const a = this.parentElement.children, i = a.indexOf(this);
@@ -280,6 +279,22 @@ for (const lang of ['zh', 'en']) {
     assert.equal(chipOf(row), null, '定位不到 pane 壳不写任何 DOM');
   });
 
+  test(`${lang}: closing subRate gate does not kill hover tips of other chip kinds`, () => {
+    const { ctx, fn } = extractRender(lang);
+    const p = makePane('sess_subagent_a');
+    ctx.composer = p.composer;
+    const wf = new El('span');           // 悬停中：另一类 chip（工作流卡 .zu-wfrun）
+    wf.classes.add('zu-wfrun');
+    p.row.appendChild(wf);
+    ctx.subTipFor = wf;
+    ctx.state.show.subRate = 0;
+    let hidden = 0;
+    ctx.hideSubTip = () => { hidden++; };
+    fn.render();                         // 关门摘 .zu-subrate，但不得收其它类的悬停浮层
+    assert.equal(chipOf(p.row), null);
+    assert.equal(hidden, 0, '关门只收本类 chip 的浮层（v334 收窄回归锁，宽条件即红）');
+  });
+
   test(`${lang}: ⚙ switch off removes chips and suppresses hover tip; on rebuilds`, () => {
     const { ctx, fn } = extractRender(lang);
     const p = makePane('sess_subagent_a');
@@ -397,7 +412,7 @@ test('source contracts: updateLive hook, scan cleanup, delegation listener, CSS 
   assert.match(source, /"\.zu-subrate\{flex:0 0 auto;white-space:nowrap;cursor:help/, 'chip 样式入注入块');
   // v179/v180 review P1：调用侧形状锁——showSubTip 以数据包调 buildTip（v178 回归即红）；
   // 历史版本演进台账见 src/overlay/06-instance-dom-and-styles.js 的 VERSION 台账注释块。
-  assert.match(source, /var VERSION = "v334";/);   // 随批次顺延（v307 批次漏更致套件长期红）
+  assert.match(source, /var VERSION = "v335";/);   // 随批次顺延（v307 批次漏更致套件长期红）
   assert.ok(source.includes('el.__zuT.buildTip(el.__zuT)'), 'tooltip 数据包调用约定');
   assert.ok(source.includes("runningSubagents.length - 1"), '截断从尾部取（最新派发优先）');
   assert.match(source, /__zusageAcquireConversationStore/, '桥 v2 acquire 访问器消费点');

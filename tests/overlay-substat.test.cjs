@@ -255,5 +255,9 @@ test('source contracts: substat wiring (style, delegation, call sites, union fee
   assert.match(source, /renderRunningSubagentItems\(\);   \/\/ v333：状态面板 Agents 行速率 chip 数据点 reapply/, 'render 尾部数据点');
   assert.match(source, /renderRunningSubagentItems\(\);   \/\/ v333：状态面板 Agents 行 chip DOM 对账点/, 'heavy DOM 对账点');
   assert.match(source, /w\.kind === "subagent" && w\.status === "running"/, '补给只认运行中 subagent 条目');
-  assert.match(source, /var VERSION = "v334";/);
+  /* v335：dispose（12 分片）与 00 启动自清的三类 chip 全覆盖——两处收窄/缺类名都会让
+   * pane 回收或热重载后残留冻结 chip（第一轮审查 M1/m2 的变异全绿缺口，源码契约锁定） */
+  assert.match(source, /var staleChips = srr\.querySelectorAll\("\.zu-subrate,\.zu-wfrun,\.zu-substat"\)/, 'dispose 摘净链含三类 chip');
+  assert.match(source, /,\.zu-subrate,\.zu-wfrun,\.zu-substat"\)\.forEach/, '启动自清列表含三类 chip');
+  assert.match(source, /var VERSION = "v335";/);
 });

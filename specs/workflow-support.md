@@ -37,7 +37,7 @@ ZCode 动态工作流（`CreateWorkflow`，run id `dwfrun-<uuid>`）派生的子
 
 ## 6. 验收场景
 
-1. 父会话工作流 run 卡出现 chip：token 随各 actor ask 完成逐步增长；运行中状态点实时。
+1. 父会话工作流 run 卡出现 chip：token 随各 actor ask 完成逐步增长；运行状态在悬停提示实时刷新。
 2. 悬停 chip：actor 明细（名字来自 dwf_actor.name）、口径行「已完成段加权平均；运行中部分完成后计入」。
 3. ⚙ 关闭 wfChip：chip 摘净、tooltip 收起；重开自愈。
 4. CLI `zusage.py` current/池不再把 sess_dwf 当主会话候选；`session:<sid>` 明细的子代理段含工作流 actor。

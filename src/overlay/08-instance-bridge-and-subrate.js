@@ -313,21 +313,22 @@
       var cards;
       try { cards = rootEl.querySelectorAll('[data-testid="' + WF_CARD_TID + '"]'); } catch (e) { return; }
       if (!cards.length) return;
-      var runIds = [];
-      for (var rc = 0; rc < cards.length; rc++) {
-        var rid0 = String(cards[rc].getAttribute("data-workflow-run-id") || "");
-        if (rid0) runIds.push(rid0);
-      }
-      if (!runIds.length) return;
-      var runs = wfRunsFromList(runIds);
-      var dark = true;
-      try { dark = document.documentElement.classList.contains("dark"); } catch (e) { }
       /* 摘除单卡旧 chip（v334）：run 失败/取消且无任何 ask 落库、或宿主摘掉状态属性后，
        * 不满足渲染条件的卡不再保留上一拍的「运行中」残留。 */
       var wfChipStale = function (card0) {
         var old = card0.querySelector(".zu-wfrun");
         if (old) { try { old.remove(); } catch (e) { } }
       };
+      var runIds = [];
+      for (var rc = 0; rc < cards.length; rc++) {
+        var rid0 = String(cards[rc].getAttribute("data-workflow-run-id") || "");
+        if (rid0) runIds.push(rid0);
+        else wfChipStale(cards[rc]);   // v335：runId 被宿主剥掉同样算不满足条件，摘残留（空 runIds 早退前执行）
+      }
+      if (!runIds.length) return;
+      var runs = wfRunsFromList(runIds);
+      var dark = true;
+      try { dark = document.documentElement.classList.contains("dark"); } catch (e) { }
       for (var c = 0; c < cards.length; c++) {
         var card = cards[c];
         var runId = String(card.getAttribute("data-workflow-run-id") || "");

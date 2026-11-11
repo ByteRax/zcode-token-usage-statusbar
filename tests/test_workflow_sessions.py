@@ -123,6 +123,19 @@ class WorkflowSessionTests(unittest.TestCase):
         self.assertEqual(snap["avg_tps"], base)
         self.assertNotEqual(snap["sub"]["rate_avg"], 0)   # 子代理口径已纳入（含工作流段）
 
+    def test_task_name_cache_invalidated_by_actor_insert(self):
+        """dwf_actor 插行不动 part：失效键的 astamp 维度负责杀缓存——先暖缓存再插
+        actor，名字必须出现（失效键缺该维度时命中旧缓存，用例红）。"""
+        con = self.con()
+        self.sess(con, MAIN)
+        self.sess(con, WF_SID, parent=MAIN)
+        self.usage(con, "w1", WF_SID, qs="workflow_child", turn="wturn")
+        self.assertEqual(zusage._sub_agent_tasks(con, MAIN).get(WF_SID), None)   # 暖缓存（actor 未登记）
+        con.execute(
+            "insert into dwf_actor (run_id, site_id, name, session_id, time_created, time_updated)"
+            " values (?,?,?,?,?,?)", (RUN, "judge-1@1", "研究员·通识", WF_SID, 5_000, 5_000))
+        self.assertEqual(zusage._sub_agent_tasks(con, MAIN).get(WF_SID), "研究员·通识")
+
     def test_task_name_without_dwf_actor_table(self):
         """旧宿主/WorkBuddy 无 dwf_* 表：fail-closed 跳过，不抛错、无任务名。"""
         con = self.con(with_actor_table=False)

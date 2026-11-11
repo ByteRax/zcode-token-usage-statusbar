@@ -1472,11 +1472,13 @@ def _sub_agent_tasks(con, sid):
         "select count(*), coalesce(max(time_updated),0) from part where session_id=?", (sid,)
     ).fetchone()
     # dwf_actor 新增/改名不动 part：工作流运行中动态创建 actor 且其 ask 完成落库时，
-    # 父会话可能无新 part 行——失效键补 dwf_actor 维度，旧库无表按 0（同款 fail-closed）。
+    # 父会话可能无新 part 行——失效键补 dwf_actor 维度（greatest 覆盖纯改名只动
+    # time_updated 的形态），旧库无表按 0（同款 fail-closed）。
     try:
         astamp = con.execute(
-            """select coalesce(max(a.time_created),0) from dwf_actor a
-               join session s2 on a.session_id = s2.id where s2.parent_id=?""", (sid,)).fetchone()[0]
+            """select coalesce(max(max(a.time_created, coalesce(a.time_updated,0))),0)
+               from dwf_actor a join session s2 on a.session_id = s2.id where s2.parent_id=?""",
+            (sid,)).fetchone()[0]
     except sqlite3.Error:
         astamp = 0
     key = (stamp[0], stamp[1], astamp)
@@ -3346,9 +3348,9 @@ def snapshot(force_sid="", routes=None, serve_con=None, include_speed_history=Fa
                         key=lambda r: -r[1])
         latest_sid = ranked[0][0] if ranked else None
         base = local_snapshot(latest_sid) if latest_sid else _empty_snapshot("", cfg)
-        # 池分桶：sess_dwf 与普通子代理同入子代理桶（directory=父工作区、活跃度跟随
-        # run），放 normal 池会挤占主会话 top-6。
-        normal = ranked[:6]
+        # 池分桶：normal 恒为主会话独占（子代理放进来会挤占主会话 top-6 甚至把主会话
+        # 挤出完整快照层——issue #22 症状面）；sess_dwf 与普通子代理同入子代理桶。
+        normal = [r for r in ranked if not _is_sub_sid(r[0])][:6]
         suba = sorted((r for r in rows if _is_sub_sid(r[0])),
                       key=lambda r: -r[1])[:6]
         ids = [r[0] for r in normal] + [r[0] for r in suba]
