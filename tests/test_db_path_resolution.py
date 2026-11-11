@@ -3,17 +3,22 @@
 """issue #279 及查漏补缺：本地用量库路径解析（宿主 agent 会话库镜像序）。
 
 宿主写 model_usage 的是 agent 进程，其库路径链（v3.17.1
-packages/services/src/onboarding/localUsageEvidence.resolveAgentSessionDbPath）
+packages/services/src/onboarding/localUsageEvidence.resolveAgentSessionDbPath；
+3.18.0 bundle 复核仍只认 env/CLI config/HOME 默认，不消费 dataBaseDir）
 不消费 dataBaseDir：env ZCODE_SESSION_DB_PATH / ZCODE_SESSION_DB（双别名按 env
 键序取后）→ ~/.zcode/cli/config.json 的 storage.sessionDbPath（CLI config 恒在
 HOME 不随迁）→ 默认 ~/.zcode/cli/db/db.sqlite。3.17.x 实测迁移用户库又在
-<dataBaseDir>/.zcode/cli/db/db.sqlite（copyDataDirectory 不搬 .zcode/cli，该
-位置有库必为宿主真实写入位）——第 3 级做存在性兼容。zusage.py 与 token_rate.py
-各自内联同源实现，本文件锁定解析顺序、容错与两份实现的一致性。
+<dataBaseDir>/.zcode/cli/db/db.sqlite（copyDataDirectory 不搬 .zcode/cli）——
+第 3 级做存在性兼容；但「该位置有库必为真实写入位」被 issue #294 证伪（陈旧
+迁移库 + HOME 活跃库并存），两库并存时按写入新鲜度仲裁（db.sqlite/-wal 最新
+mtime，-shm 不算；候选不落后才采纳，HOME 库未建仍采纳）。规格见
+specs/db-path-stale-arbitration.md。zusage.py 与 token_rate.py 各自内联同源
+实现，本文件锁定解析顺序、容错、新鲜度仲裁与两份实现的一致性。
 
 运行：python3 -B -m unittest discover -s tests -p 'test_*.py'
 """
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -53,6 +58,16 @@ class ResolveDbPathTest(unittest.TestCase):
     def touch_migrated_db(self):
         self.migrated_db.parent.mkdir(parents=True, exist_ok=True)
         self.migrated_db.write_bytes(b"")
+
+    def touch_home_db(self):
+        db = self.home / ".zcode" / "cli" / "db" / "db.sqlite"
+        db.parent.mkdir(parents=True, exist_ok=True)
+        db.write_bytes(b"")
+        return db
+
+    @staticmethod
+    def stamp(path, sec):
+        os.utime(path, (sec, sec))
 
     def expect(self, base):
         return Path(base) / ".zcode" / "cli" / "db" / "db.sqlite"
@@ -213,6 +228,72 @@ class ResolveDbPathTest(unittest.TestCase):
         p = self.zusage.resolve_db_path(env={}, home=self.home)
         self.assertEqual(p, self.migrated_db)
 
+    # ---- 第 3 级仲裁（issue #294）：两库并存按写入新鲜度取舍 ----
+
+    def test_stale_migrated_db_falls_back_to_fresh_home(self):
+        # #294 主场景：迁移目录库是历史遗留（更旧），写库方已在 HOME——读 HOME 默认库
+        self.touch_migrated_db()
+        home_db = self.touch_home_db()
+        self.stamp(self.migrated_db, 1_700_000_000)
+        self.stamp(home_db, 1_700_001_000)
+        self.write_setting(str(self.migrated))
+        p = self.zusage.resolve_db_path(env={}, home=self.home)
+        self.assertEqual(p, self.expect(self.home))
+
+    def test_fresh_migrated_db_beats_home_by_wal(self):
+        # #279 两库并存真迁移：候选库仅 -wal 更新也算持续写入，仍采纳候选
+        self.touch_migrated_db()
+        home_db = self.touch_home_db()
+        self.stamp(self.migrated_db, 1_700_000_000)
+        wal = self.migrated_db.parent / "db.sqlite-wal"
+        wal.write_bytes(b"")
+        self.stamp(wal, 1_700_002_000)
+        self.stamp(home_db, 1_700_001_000)
+        self.write_setting(str(self.migrated))
+        p = self.zusage.resolve_db_path(env={}, home=self.home)
+        self.assertEqual(p, self.migrated_db)
+
+    def test_stale_migrated_db_home_absent_still_adopted(self):
+        # HOME 库未建：候选是唯一数据源，陈旧也采纳（#279 全数据在迁移目录）
+        self.touch_migrated_db()
+        self.stamp(self.migrated_db, 1_700_000_000)
+        self.write_setting(str(self.migrated))
+        p = self.zusage.resolve_db_path(env={}, home=self.home)
+        self.assertEqual(p, self.migrated_db)
+
+    def test_shm_touch_does_not_count_as_write(self):
+        # -shm 只读连接也会更新，不入仲裁：仅 -shm 新的候选仍视为陈旧
+        self.touch_migrated_db()
+        home_db = self.touch_home_db()
+        self.stamp(self.migrated_db, 1_700_000_000)
+        shm = self.migrated_db.parent / "db.sqlite-shm"
+        shm.write_bytes(b"")
+        self.stamp(shm, 1_700_003_000)
+        self.stamp(home_db, 1_700_001_000)
+        self.write_setting(str(self.migrated))
+        p = self.zusage.resolve_db_path(env={}, home=self.home)
+        self.assertEqual(p, self.expect(self.home))
+
+    def test_equal_freshness_tie_adopts_candidate(self):
+        # 新鲜度恰等（mtime 粒度量化可出现）：按 >= 语义采纳候选，与旧存在性行为连续
+        self.touch_migrated_db()
+        home_db = self.touch_home_db()
+        self.stamp(self.migrated_db, 1_700_000_000)
+        self.stamp(home_db, 1_700_000_000)
+        self.write_setting(str(self.migrated))
+        p = self.zusage.resolve_db_path(env={}, home=self.home)
+        self.assertEqual(p, self.migrated_db)
+
+    def test_env_data_base_dir_stale_candidate_same_arbitration(self):
+        # env 迁移标记与 setting.json 同走存在性分支，仲裁同款
+        self.touch_migrated_db()
+        home_db = self.touch_home_db()
+        self.stamp(self.migrated_db, 1_700_000_000)
+        self.stamp(home_db, 1_700_001_000)
+        p = self.zusage.resolve_db_path(
+            env={"ZCODE_DATA_BASE_DIR": str(self.migrated)}, home=self.home)
+        self.assertEqual(p, self.expect(self.home))
+
     def test_missing_home_dirs_all_fall_back(self):
         p = self.zusage.resolve_db_path(env={}, home=self.home / "nowhere")
         self.assertEqual(p, (self.home / "nowhere") / ".zcode" / "cli" / "db" / "db.sqlite")
@@ -270,6 +351,10 @@ class CrossFileConsistencyTest(unittest.TestCase):
         f = self.home / ".zcode" / "cli" / "config.json"
         f.write_text(json.dumps({"storage": {"sessionDbPath": value}}), encoding="utf-8")
 
+    @staticmethod
+    def stamp(path, sec):
+        os.utime(path, (sec, sec))
+
     def assert_same(self, env, home=None):
         a = self.zusage.resolve_db_path(env=env, home=home or self.home)
         b = self.token_rate._default_db_path(env=env, home=home or self.home)
@@ -302,6 +387,21 @@ class CrossFileConsistencyTest(unittest.TestCase):
         self.assert_same({})
         self.migrated_db.parent.mkdir(parents=True, exist_ok=True)
         self.migrated_db.write_bytes(b"")
+        self.assert_same({})
+        self.assertEqual(self.token_rate._default_db_path(env={}, home=self.home),
+                         self.migrated_db)
+        # issue #294 两库并存仲裁：陈旧候选两份镜像同判回落 HOME；-wal 更新同判采纳候选
+        home_db = self.home / ".zcode" / "cli" / "db" / "db.sqlite"
+        home_db.parent.mkdir(parents=True, exist_ok=True)
+        home_db.write_bytes(b"")
+        self.stamp(self.migrated_db, 1_700_000_000)
+        self.stamp(home_db, 1_700_001_000)
+        self.assert_same({})
+        self.assertEqual(self.zusage.resolve_db_path(env={}, home=self.home),
+                         self.home / ".zcode" / "cli" / "db" / "db.sqlite")
+        wal = self.migrated_db.parent / "db.sqlite-wal"
+        wal.write_bytes(b"")
+        self.stamp(wal, 1_700_002_000)
         self.assert_same({})
         self.assertEqual(self.token_rate._default_db_path(env={}, home=self.home),
                          self.migrated_db)

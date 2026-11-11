@@ -233,8 +233,23 @@ try {
  * <home>/.zcode/cli/config.json 的 storage.sessionDbPath（CLI config 恒在 HOME
  * 不随迁）→ dataBaseDir 迁移目录存在性兼容（setting.json 恒在 <home>/.zcode/v2
  * 不随迁移，dataBaseDir 绝对值优先于 ZCODE_DATA_BASE_DIR env；copyDataDirectory
- * 不搬 .zcode/cli，<base>/.zcode/cli/db/db.sqlite 已存在才是 3.17.x 真实写入位）
+ * 不搬 .zcode/cli）+ issue #294 陈旧候选仲裁——3.18.0 宿主源码复核写库方恒写
+ * HOME，候选「存在」不等于「真实写入位」，与 HOME 默认库并存时按 db.sqlite/-
+ * wal 最新 mtime 取舍（-shm 只读连接也会更新不算）：候选不落后才采纳，HOME 库
+ * 未建仍采纳（#279 真迁移）；Python 侧 _adopt_migration_candidate 内联同款
  * → 默认 <home>/.zcode/cli/db。解析一次随进程生效；运行期变更需完全重启。 */
+function dbWriteFreshMs(db) {
+  let m = 0;
+  for (const f of [db, db + "-wal"]) {
+    try { m = Math.max(m, fs.statSync(f).mtimeMs); } catch (e) { }
+  }
+  return m;
+}
+function adoptsMigrationCandidate(db, home) {
+  const homeDb = path.join(home, ".zcode", "cli", "db", "db.sqlite");
+  if (!fs.existsSync(homeDb)) return true;   // #279 真迁移：候选是唯一数据源
+  return dbWriteFreshMs(db) >= dbWriteFreshMs(homeDb);
+}
 function resolveHostDbDir() {
   const env = process.env || {};
   const home = env.ZCODE_DESKTOP_HOME_DIR || app.getPath("home");
@@ -262,14 +277,14 @@ function resolveHostDbDir() {
       let v = String((s && typeof s === "object" && s.dataBaseDir) || "").trim();
       if (v && (/^(?:[a-z]:[\\/]|\\\\)/i.test(v) || v.startsWith("/"))) {
         const db = path.join(v, ".zcode", "cli", "db", "db.sqlite");
-        if (fs.existsSync(db)) return path.dirname(db);
+        if (fs.existsSync(db) && adoptsMigrationCandidate(db, home)) return path.dirname(db);
       }
     }
   } catch (e) { LOG("[db] setting.json unreadable:", e && e.message); }
   let envBase = String(env.ZCODE_DATA_BASE_DIR || "").trim();   // 宿主与 Python 侧同款 trim 后判空
   if (envBase && (/^(?:[a-z]:[\\/]|\\\\)/i.test(envBase) || envBase.startsWith("/"))) {
     const db = path.join(envBase, ".zcode", "cli", "db", "db.sqlite");
-    if (fs.existsSync(db)) return path.dirname(db);
+    if (fs.existsSync(db) && adoptsMigrationCandidate(db, home)) return path.dirname(db);
   }
   return path.join(home, ".zcode", "cli", "db");
 }

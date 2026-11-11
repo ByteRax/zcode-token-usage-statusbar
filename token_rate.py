@@ -17,7 +17,7 @@
   ZCODE_SESSION_ID=xxx python3 ...       只统计指定会话
   ZCODE_USAGE_DB=/path/db.sqlite         指定数据库路径（默认镜像宿主 agent 会话库解析：
                                          ZCODE_SESSION_DB_PATH/config.sessionDbPath 优先，
-                                         兼容 dataBaseDir 迁移目录，回落 ~/.zcode）
+                                         兼容 dataBaseDir 迁移目录并仲裁陈旧候选，回落 ~/.zcode）
   ZUSAGE_RATE_STATE_FILE=/path           指定钩子状态文件（测试接缝）
 
 只读打开 WAL 数据库，不影响运行中的客户端。
@@ -65,10 +65,33 @@ def _mirror_agent_db_path(value, home):
     return None
 
 
+def _db_write_fresh(path):
+    """库写入新鲜度：db.sqlite 与 -wal 的最新 mtime；-shm 只读连接也会更新，不入仲裁。"""
+    fresh = 0.0
+    for suffix in ("", "-wal"):
+        try:
+            fresh = max(fresh, os.stat(str(path) + suffix).st_mtime)
+        except OSError:
+            pass
+    return fresh
+
+
+def _adopt_migration_candidate(candidate, home):
+    """issue #294 陈旧迁移库仲裁（zusage._adopt_migration_candidate 内联同款，
+    改动两处同步）：3.18.0 宿主源码复核写库方（agent 链）恒写 HOME 默认库、
+    不消费 dataBaseDir，迁移目录库与 HOME 库并存时可能是历史遗留。两库并存按
+    写入新鲜度取舍：候选不落后（>=）才采纳；HOME 库未建仍采纳候选（#279 真迁移）。"""
+    home_db = home / ".zcode" / "cli" / "db" / "db.sqlite"
+    if not home_db.exists():
+        return True
+    return _db_write_fresh(candidate) >= _db_write_fresh(home_db)
+
+
 def _default_db_path(env=None, home=None):
     """未设 ZCODE_USAGE_DB 时的默认库路径：与 zusage.resolve_db_path 同源解析
     （issue #279 及查漏补缺——镜像宿主 agent 会话库 localUsageEvidence 序并兼容
-    3.17.x 迁移目录存在性；本脚本单独部署不 import zusage，改动两处同步）。"""
+    3.17.x 迁移目录存在性 + issue #294 陈旧候选新鲜度仲裁；本脚本单独部署不
+    import zusage，改动两处同步）。"""
     env = os.environ if env is None else env
     home = Path.home() if home is None else Path(home)
     picked = ""
@@ -102,7 +125,7 @@ def _default_db_path(env=None, home=None):
         base = str(env.get("ZCODE_DATA_BASE_DIR") or "").strip()
     if base and re.match(r"^(?:[a-z]:[\\/]|\\\\|/)", base, re.IGNORECASE):
         candidate = Path(base) / ".zcode" / "cli" / "db" / "db.sqlite"
-        if candidate.exists():
+        if candidate.exists() and _adopt_migration_candidate(candidate, home):
             return candidate
     return home / ".zcode" / "cli" / "db" / "db.sqlite"
 

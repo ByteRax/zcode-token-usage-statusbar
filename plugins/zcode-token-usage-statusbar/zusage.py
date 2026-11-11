@@ -2,7 +2,7 @@
 """Token 用量查询库（多宿主，只读）。
 
 宿主（--host / 配置 host / ZUSAGE_HOST，见 §宿主适配）：
-- zcode（默认）= 本地用量库的 model_usage 逐请求表（路径经 resolve_db_path 镜像宿主 agent 会话库解析，兼容 dataBaseDir 迁移目录）；
+- zcode（默认）= 本地用量库的 model_usage 逐请求表（路径经 resolve_db_path 镜像宿主 agent 会话库解析，兼容 dataBaseDir 迁移目录并仲裁陈旧候选）；
 - workbuddy = ~/.workbuddy/workbuddy.db 的 session_usage 会话级表（上下文用量 + credit）。
 
 既可作 CLI（python zusage.py [now|today|days N|sessions [N]|models [days]|workspace 关键词|session id前缀|watch [sec]|host]），
@@ -40,6 +40,29 @@ def _mirror_agent_db_path(value, home):
     return None
 
 
+def _db_write_fresh(path):
+    """库写入新鲜度：db.sqlite 与 -wal 的最新 mtime；-shm 只读连接也会更新，不入仲裁。"""
+    fresh = 0.0
+    for suffix in ("", "-wal"):
+        try:
+            fresh = max(fresh, Path(str(path) + suffix).stat().st_mtime)
+        except OSError:
+            pass
+    return fresh
+
+
+def _adopt_migration_candidate(candidate, home):
+    """issue #294 陈旧迁移库仲裁：3.18.0 宿主源码复核写库方（agent 链）恒写 HOME
+    默认库、不消费 dataBaseDir，迁移目录库与 HOME 库并存时可能是历史遗留（候选
+    「存在」不再等于「真实写入位」）。两库并存按写入新鲜度取舍：候选不落后（>=）
+    才采纳；HOME 库未建仍采纳候选（#279 真迁移：那种用户的候选库才是被持续写入
+    的一边，或全部数据只在迁移目录）。token_rate.py 内联同款，改动两处同步。"""
+    home_db = home / ".zcode" / "cli" / "db" / "db.sqlite"
+    if not home_db.exists():
+        return True
+    return _db_write_fresh(candidate) >= _db_write_fresh(home_db)
+
+
 def resolve_db_path(env=None, home=None):
     """本地用量库路径（issue #279 及查漏补缺）：镜像宿主 agent 会话库解析
     （v3.17.1 onboarding/localUsageEvidence.resolveAgentSessionDbPath——写库方是
@@ -48,8 +71,10 @@ def resolve_db_path(env=None, home=None):
       2) <home>/.zcode/cli/config.json 的 storage.sessionDbPath（CLI config 恒在
          HOME 不随迁移；缺文件/损坏/相对值忽略继续）
       3) setting.json dataBaseDir（绝对）或 ZCODE_DATA_BASE_DIR，且
-         <base>/.zcode/cli/db/db.sqlite 已存在——3.17.x 实测迁移用户库在迁移目录
-         （宿主 copyDataDirectory 不搬 .zcode/cli，该位置有库必为真实写入位）
+         <base>/.zcode/cli/db/db.sqlite 已存在、写入新鲜度不落后 HOME 默认库——
+         3.17.x 实测迁移用户库在迁移目录（宿主 copyDataDirectory 不搬 .zcode/cli）；
+         但 3.18.0 宿主源码复核写库方恒写 HOME，「存在」不等于「真实写入位」
+         （issue #294 陈旧迁移库），两库并存按 db.sqlite/-wal mtime 仲裁（-shm 不算）
       4) 默认 <home>/.zcode/cli/db/db.sqlite
     与宿主的差异：宿主「无法确定」（相对路径/project 级覆盖）按未知跳过证据源，
     本查询链必须落到一个库，故逐级回落；project 级覆盖同宿主属已知限制。
@@ -87,7 +112,7 @@ def resolve_db_path(env=None, home=None):
         base = str(env.get("ZCODE_DATA_BASE_DIR") or "").strip()
     if base and _DB_BASE_ABS_RE.match(base):
         candidate = Path(base) / ".zcode" / "cli" / "db" / "db.sqlite"
-        if candidate.exists():
+        if candidate.exists() and _adopt_migration_candidate(candidate, home):
             return candidate
     return home / ".zcode" / "cli" / "db" / "db.sqlite"
 
