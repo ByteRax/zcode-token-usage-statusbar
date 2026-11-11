@@ -422,6 +422,13 @@ class CrossFileConsistencyTest(unittest.TestCase):
                          self.home / ".zcode" / "cli" / "db" / "db.sqlite")
         # 显式来源不经仲裁：env 指定较旧库仍原样返回（两镜像同判）
         self.assert_same({"ZCODE_SESSION_DB_PATH": str(self.migrated_db)})
+        # 同款锁定 CLI config 来源：此时迁移库较旧、HOME 库更新，token_rate 若在第
+        # 2 级误加仲裁会改答 HOME 库（交叉断言与值级断言双杀，R2 变异实测补格）
+        self.write_cli_config(str(self.migrated_db))
+        self.assert_same({})
+        self.assertEqual(self.token_rate._default_db_path(env={}, home=self.home),
+                         self.migrated_db)
+        (self.home / ".zcode" / "cli" / "config.json").unlink()   # 还原，后续继续走 dataBaseDir 分支
         wal = self.migrated_db.parent / "db.sqlite-wal"
         wal.write_bytes(b"")
         self.stamp(wal, 1_700_002_000)
