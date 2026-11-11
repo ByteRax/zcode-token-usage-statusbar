@@ -179,11 +179,15 @@ import sys
 import types
 stub = types.ModuleType('zusage')
 stub.L = lambda zh, en: zh
+stub.HOSTS = ('zcode', 'workbuddy')
+# 仅占位：本探针所有用例都不传 host，usage_mcp 在 host 为空时短路、不会调到它；真实归一
+# （大小写与别名）由 tests/test_hosts_workbuddy.py 对真实 zusage 覆盖
+stub.normalize_host = lambda host: host if host in stub.HOSTS else None
 class Connection:
     closed = False
     def close(self): self.closed = True
 connections = []
-def connect():
+def connect(host=None):
     connection = Connection()
     connections.append(connection)
     return connection

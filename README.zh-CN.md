@@ -145,6 +145,9 @@ asar 注入），装法见[宿主适配文档](docs/hosts.md#7-在-workbuddy-客
 - **凭据边界**：ZCode 里存的 SSH 密码、私钥口令不会被插件解密使用；额度查询凭据不写入日志或诊断。⚙ 面板保存的凭据持久化在运行目录的
   `quota-secrets.json`（支持时设置为 0600），请求只发往对应官方域或用户配置的中转站本域。Anthropic 数据源默认关闭，显式启用后可能读取
   `~/.claude/.credentials.json`。额度与重置卡查询开关独立，停止这两类查询需分别关闭。
+  ZCode 3.18.0 起登录凭据的加密密钥存放在系统钥匙串，或宿主的 managed secret（`ZCODE_CREDENTIAL_SECRET`、
+  `ZCODE_CREDENTIAL_SECRET_FILE` 指向的文件、凭据同目录的 `credential-secret`）；查询内置套餐额度、重置卡与拉取套餐模型时，
+  插件在 ZCode 进程内读取该密钥用于解密（钥匙串经宿主自带的钥匙串模块读取），密钥只在内存。
 - **token 用量 ≠ 账单**：额度 chip 可显示支持的数据源提供的套餐已用比例或账户余额，但不提供现金扣费账单或计费明细。
 
 ## 常见问题

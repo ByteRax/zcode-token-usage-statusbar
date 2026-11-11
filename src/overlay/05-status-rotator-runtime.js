@@ -831,7 +831,6 @@
     lastPickAt: 0,
     lastTypeAt: 0,
     lastToolName: "",
-    lastLabelText: "",   /* 我方最后一次写入 loading 标签的文本：区分「宿主改写」与「自己上一帧」 */
     currentTailAction: "wag",
     tailFrameIndex: 0,
     tailBridgeQueue: [],
@@ -896,16 +895,28 @@
       '<path d="' + (pathD || "M0 0 Z") + '"/></svg></span>';
   }
 
+  /* 宿主 3.18.0 起 loading 行内部结构更换（实测 2026-11-11）：label 类由 .zcode-loading-label
+   * 换成 .animated-gradient-text（行内唯一文案节点），spinner 图标位由 span.grid 换成带
+   * data-chat-loading-icon 属性的 span；.font-mono 耗时格未变。旧客户端结构不变——先试旧
+   * 选择器再试新的，两条 querySelector 不能合并成逗号选择器（那会变成文档序而非旧结构优先）。 */
+  function chatLoadingLabelOf(row) {
+    return row.querySelector(".zcode-loading-label") || row.querySelector("span.animated-gradient-text");
+  }
+  function chatLoadingPixelGridOf(row) {
+    return row.querySelector("span.grid") || row.querySelector("[data-chat-loading-icon]");
+  }
+
   function restoreChatLoadingRow(row) {
     if (!row) return;
     try {
-      var label = row.querySelector(".zcode-loading-label");
+      var label = chatLoadingLabelOf(row);
       if (label && label.hasAttribute("data-zu-host-label")) {
         label.textContent = label.getAttribute("data-zu-host-label") || "";
         label.removeAttribute("data-zu-host-label");
         label.classList.remove("zu-rotator-active-label");
       }
-      var pixelGrid = row.querySelector("span.grid");
+      if (label) label.removeAttribute("data-zu-last-text");
+      var pixelGrid = chatLoadingPixelGridOf(row);
       if (pixelGrid && pixelGrid.style.display === "none") pixelGrid.style.display = "";
       var clockEl = row.querySelector(".font-mono");
       if (clockEl && clockEl.style && clockEl.style.display === "none") clockEl.style.display = "";
@@ -931,31 +942,36 @@
       for (var i = 0; i < rows.length; i++) {
         var row = rows[i];
         row.setAttribute("data-zusage-rotator-slot", "1");
-        var label = row.querySelector(".zcode-loading-label");
+        var label = chatLoadingLabelOf(row);
         if (label) {
           var curText = label.textContent || "";
+          /* 「我方最后一次写入」基准挂 label 自身属性（v330）：原先用模块级单例做基准，多个
+           * loading 行并存时（多分栏并发请求）行间互踩——先处理的行打字推进把基准改写，
+           * 后处理的行的打字机文本被误判「宿主改写」而污染 data-zu-host-label 快照。 */
+          var lastWritten = label.getAttribute("data-zu-last-text") || "";
           if (!label.hasAttribute("data-zu-host-label")) {
             label.setAttribute("data-zu-host-label", curText);
-            rotatorRuntime.lastLabelText = curText;
-          } else if (curText && curText !== rotatorRuntime.lastLabelText && curText !== (label.getAttribute("data-zu-host-label") || "")) {
+            label.setAttribute("data-zu-last-text", curText);
+          } else if (curText && curText !== lastWritten && curText !== (label.getAttribute("data-zu-host-label") || "")) {
             /* 宿主中途改写同节点文案（≠我方最后写入、≠已存快照）才重拍——打字机逐帧文本以
-             * lastLabelText 基准排除，不误拍退化快照 */
+             * data-zu-last-text 基准排除，不误拍退化快照 */
             label.setAttribute("data-zu-host-label", curText);
-            rotatorRuntime.lastLabelText = curText;
+            label.setAttribute("data-zu-last-text", curText);
           }
           if (rotatorCfg.labelSource === "phrases" && displayStr) {
-            if (label.textContent !== displayStr) { label.textContent = displayStr; rotatorRuntime.lastLabelText = displayStr; }
+            if (label.textContent !== displayStr) { label.textContent = displayStr; label.setAttribute("data-zu-last-text", displayStr); }
           } else if (rotatorCfg.labelSource === "host" && label.hasAttribute("data-zu-host-label")) {
             var hostText = label.getAttribute("data-zu-host-label") || "";
-            if (hostText && label.textContent !== hostText) { label.textContent = hostText; rotatorRuntime.lastLabelText = hostText; }
+            if (hostText && label.textContent !== hostText) { label.textContent = hostText; label.setAttribute("data-zu-last-text", hostText); }
           }
           label.classList.add("zu-rotator-active-label");
         }
         /* 用户规格：轮播文案已内嵌耗时（{elapsed}），宿主自带的独立耗时格隐藏避免双计时；
-         * labelSource=host（保留原生文案）时耗时格照常显示。 */
+         * labelSource=host（保留原生文案）时耗时格照常显示。label 未命中（宿主再改结构）时
+         * 词组写不进去，耗时格必须留着——否则词组与原生计时双双消失（3.18.0 上的实际症状）。 */
         var clockEl = row.querySelector(".font-mono");
-        if (clockEl && clockEl.style) clockEl.style.display = (rotatorCfg.labelSource === "phrases" && displayStr) ? "none" : "";
-        var pixelGrid = row.querySelector("span.grid");
+        if (clockEl && clockEl.style) clockEl.style.display = (label && rotatorCfg.labelSource === "phrases" && displayStr) ? "none" : "";
+        var pixelGrid = chatLoadingPixelGridOf(row);
         var existingTail = row.querySelector(".zu-whale-tail-wrap");
         if (rotatorCfg.whaleTail) {
           if (pixelGrid) pixelGrid.style.display = "none";

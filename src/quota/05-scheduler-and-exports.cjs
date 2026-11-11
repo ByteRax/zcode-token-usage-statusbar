@@ -109,6 +109,7 @@ function createQuotaClient(opts) {
   const j = {
     env, now, fetchImpl, readFile, secrets: { sources: {} }, customCfgPath, log, http, extras,
     credsPath,
+    keyringEntry: typeof o.keyringEntry === "function" ? o.keyringEntry : undefined,   // enc:v2:os 钥匙串条目句柄注入点（缺省取宿主自带 keyring）
     customProviderOf: (pid) => resolveCustomProvider(pid, readFile, customCfgPath, builtinCfgPath),
     familyApiKeyOf: (family, pid) => resolveFamilyApiKey(family, pid, readFile, customCfgPath, builtinCfgPath),
   };
@@ -253,6 +254,9 @@ function createQuotaClient(opts) {
       st.nextAt = 0;
     }
     if (!force && (st.status === "auth_failed" || st.status === "no_plan")) return false;
+    /* 凭据刚就绪（钥匙串密钥到位、用户补了 key）：离开「未配置」，无论 token 是否临期——
+     * 否则临期早退会把上一拍的 decrypt 失败状态原样留在面板上 */
+    if (st.status === "not_configured") { st.status = "idle"; st.reason = ""; st.lastError = ""; }
     if (cred.source === "host" || cred.source === "env") {
       const exp = jwtExpMs(cred.token || "");
       if (exp && exp - t < EXP_SOON_MS) { st.nextAt = t + EXP_RETRY_MS; return false; }
@@ -430,8 +434,8 @@ function createQuotaClient(opts) {
     if (!raw || typeof raw !== "object") return null;
     const oauthEnc = raw[famConf.credKey], jwtEnc = raw["zcodejwttoken"];
     if (typeof oauthEnc !== "string" || !oauthEnc || typeof jwtEnc !== "string" || !jwtEnc) return null;
-    const oauth = decryptValue(oauthEnc, deriveCipherKey(j.env));
-    const jwt = decryptValue(jwtEnc, deriveCipherKey(j.env));
+    const oauth = decryptHostCredential(oauthEnc, j);
+    const jwt = decryptHostCredential(jwtEnc, j);
     if (!oauth || !jwt) return { decryptFailed: true, fingerprint: "host:" + sha16(oauthEnc + "\n" + jwtEnc) };
     if (!oauth.trim() || !jwt.trim()) return null;
     return { oauth: oauth.trim(), jwt: jwt.trim(), fingerprint: sha16(JSON.stringify([oauthEnc, jwtEnc])) };
@@ -536,12 +540,49 @@ function createQuotaClient(opts) {
     }
   }
 
-  return {
+  function reassessCredentials() {
+    /* 同一 provider 的 key/baseURL 也可能被修改；重读实际配置并重判适配器，
+     * 不能沿用旧 ctx 或让一次 unsupported 永久锁住后来补全的 MiniMax 规则。 */
+    const registered = new Set(Object.keys(byProvider));
+    if (primaryProvider) registered.add(primaryProvider);
+    /* 经 rememberProvider 重判：复合源后缀（vendor:providerId）与代际失效/状态复位
+     * 由它统一处理——直接用 resolvePrimary 裸写 byProvider 会把厂商内复合源坍缩成
+     * 裸家族源，丢账户隔离（多账户中转串显，实测）。 */
+    for (const provider of registered) rememberProvider(provider);
+    if (primaryProvider) {
+      primaryId = byProvider[primaryProvider] || "";
+      const st = primaryId ? states.get(primaryId) : null;
+      primaryCtx = st ? st.ctx : null;
+    }
+    activeSet();   // 总开关关闭时也撤销旧额度；只重评本地配置，不发请求/回调
+    /* 唤醒"值得重评"的源：冻结态（Infinity）重评后仍由 status 短路（指纹未变不复 fetch）；
+     * not_configured 唤醒以承接 secrets/供应商配置刚启用；宿主凭据源即时重拉（token 刷新）。
+     * ok 态保持 TTL——指纹在其自然到期重查时校验，避免一次 secrets 写入全源冗余刷新。 */
+    for (const st of states.values()) {
+      if (st.nextAt === Infinity || st.status === "not_configured" || (st.cred && st.cred.source === "host")) st.nextAt = 0;
+    }
+    if (resetGateOpen()) for (const famConf of RESET_FAMILIES) {
+      const st = resetStates.get(famConf.fam);
+      if (!st) continue;
+      if (!syncResetCredential(st, resolveResetCred(famConf)) &&
+          (st.nextAt === Infinity || st.status === "not_configured")) st.nextAt = 0;
+    }
+  }
+  /* enc:v2:os 的钥匙串密钥异步到位（见 hostOsKey）：此前这批源按解密失败落在 not_configured，
+   * 重评一次凭据并立即 tick，不必等 60 秒低频探测。dispose 时注销。 */
+  const onHostKey = (path0) => {
+    if (path0 !== credsPath) return;
+    if (!quotaOn() && !resetGateOpen()) return;   // 额度与重置卡都关：密钥到位也不重评凭据（关闭即停解密）
+    reassessCredentials();
+    tick();
+  };
+  const client = {
     tick,
-    refresh() { return tick(true) > 0; },
+    refresh() { hostKeyRetryNow(credsPath); return tick(true) > 0; },
     refreshSource(id) {   // 厂商按钮刷新该厂商各账户；chip 的完整源 id 只刷新本账户
       const a = adapterOf(id);
       if (!a) return false;
+      hostKeyRetryNow(credsPath);
       let started = false;
       if (String(id).indexOf(":") >= 0) {
         const st = states.get(id);
@@ -578,33 +619,9 @@ function createQuotaClient(opts) {
         st.inFlight = null;
       }
     },
-    credentialsChanged() {
-      /* 同一 provider 的 key/baseURL 也可能被修改；重读实际配置并重判适配器，
-       * 不能沿用旧 ctx 或让一次 unsupported 永久锁住后来补全的 MiniMax 规则。 */
-      const registered = new Set(Object.keys(byProvider));
-      if (primaryProvider) registered.add(primaryProvider);
-      /* 经 rememberProvider 重判：复合源后缀（vendor:providerId）与代际失效/状态复位
-       * 由它统一处理——直接用 resolvePrimary 裸写 byProvider 会把厂商内复合源坍缩成
-       * 裸家族源，丢账户隔离（多账户中转串显，实测）。 */
-      for (const provider of registered) rememberProvider(provider);
-      if (primaryProvider) {
-        primaryId = byProvider[primaryProvider] || "";
-        const st = primaryId ? states.get(primaryId) : null;
-        primaryCtx = st ? st.ctx : null;
-      }
-      activeSet();   // 总开关关闭时也撤销旧额度；只重评本地配置，不发请求/回调
-      /* 唤醒"值得重评"的源：冻结态（Infinity）重评后仍由 status 短路（指纹未变不复 fetch）；
-       * not_configured 唤醒以承接 secrets/供应商配置刚启用；宿主凭据源即时重拉（token 刷新）。
-       * ok 态保持 TTL——指纹在其自然到期重查时校验，避免一次 secrets 写入全源冗余刷新。 */
-      for (const st of states.values()) {
-        if (st.nextAt === Infinity || st.status === "not_configured" || (st.cred && st.cred.source === "host")) st.nextAt = 0;
-      }
-      if (resetGateOpen()) for (const famConf of RESET_FAMILIES) {
-        const st = resetStates.get(famConf.fam);
-        if (!st) continue;
-        if (!syncResetCredential(st, resolveResetCred(famConf)) &&
-            (st.nextAt === Infinity || st.status === "not_configured")) st.nextAt = 0;
-      }
+    credentialsChanged() {   // 凭据文件/配置变更（主桥 fs.watch 等）：钥匙串密钥也可能换了，允许马上重取
+      hostKeyRetryNow(credsPath);
+      reassessCredentials();
     },
     noteSnapshotExtras(data) {   // 快照侧注入（scnet 估算等）；ledger 源数据到位即解冻
       const prevScnet = extras.scnet;
@@ -678,6 +695,7 @@ function createQuotaClient(opts) {
     },
     secretsPath,
     dispose() {
+      hostKeyWaiters.delete(onHostKey);
       for (const st of states.values()) {
         if (st.ctl) { try { st.ctl.abort(); } catch (e) { } }
         st.inFlight = null;
@@ -692,6 +710,8 @@ function createQuotaClient(opts) {
     _states: states,
     _adapters: ADAPTERS,
   };
+  hostKeyWaiters.add(onHostKey);
+  return client;
 }
 
 module.exports = {
@@ -699,6 +719,8 @@ module.exports = {
   resolveQuotaPaths,
   resolveCustomProvider,
   decryptValue,
+  decryptHostCredential,
+  hostKeyRetryNow,
   deriveCipherKey,
   jwtExpMs,
   normalizeQuotaBody,

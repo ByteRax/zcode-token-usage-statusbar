@@ -36,7 +36,7 @@ for (const fam of ["bigmodel", "zai"]) {
       try { raw = j.readFile(j.credsPath); } catch (e) { return null; }
       const enc = raw && typeof raw === "object" ? raw[conf.credKey] : null;
       if (typeof enc !== "string" || !enc) return null;
-      const token = decryptValue(enc, deriveCipherKey(j.env));
+      const token = decryptHostCredential(enc, j);
       if (!token) return { decryptFailed: true, fingerprint: "host:" + sha16(enc) };
       return { token, fingerprint: "host:" + sha16(enc), source: "host" };
     },
@@ -90,7 +90,7 @@ ADAPTERS.push({
       try { raw = j.readFile(j.credsPath); } catch (e) { return null; }
       const enc = raw && typeof raw === "object" ? raw["zcodejwttoken"] : null;
       if (typeof enc !== "string" || !enc) return null;
-      token = decryptValue(enc, deriveCipherKey(j.env));
+      token = decryptHostCredential(enc, j);
       if (!token) return { decryptFailed: true, fingerprint: "host:" + sha16(enc) };
       source = "host";
     }

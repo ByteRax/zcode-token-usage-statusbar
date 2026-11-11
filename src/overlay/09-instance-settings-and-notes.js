@@ -1167,6 +1167,15 @@
         if (btn.__zuMpLabel && btn.lastChild && btn.lastChild.nodeType === 3) btn.lastChild.nodeValue = btn.__zuMpLabel;
       }
     }
+    /* 从列表里选出要拉取的供应商。选中的是套餐源（account:*）而列表里没有它时返回 pending：
+     * 套餐 token 靠系统钥匙串里的密钥解密、密钥异步到位，列表可能暂时不含它——这时绝不能
+     * 落到「只有一个供应商就用它」的兜底上，那会把请求改投到别的供应商。 */
+    function pickMpProvider(providers, selectedId, baseUrl) {
+      var byId = matchProviderById(providers, selectedId);
+      if (byId) return { provider: byId };
+      if (/^account:/.test(selectedId || "")) return { pending: true };
+      return { provider: matchProviderByBaseUrl(providers, baseUrl) || (providers.length === 1 ? providers[0] : null) };
+    }
     function onMpHostClick(e) {
       e.preventDefault();
       e.stopPropagation();
@@ -1174,19 +1183,32 @@
       var self = e.currentTarget;
       if (self.getAttribute("aria-busy") === "true") return;
       setMpHostBusy(self, true);   // loading 覆盖全程：list 是本地读取（毫秒级），真正的网络耗时在 fetch 阶段
+      askMpList(self, false, detectSelectedCustomProviderId(self));   // 点击时同步采样选中项
+    }
+    function askMpList(self, retried, wanted) {
       mpAsk("model-pull-list", undefined, function (result) {
         if (inactive()) { restoreModelPuller(); return; }
         var providers = result && result.ok && Array.isArray(result.providers) ? result.providers : null;
         if (!providers) { setMpHostBusy(self, false); openMpNotice(mpErrorText(result)); return; }
+        /* 判定用点击时刻的选中项：400ms 等待期间宿主可能重渲染详情区/切换导航，重读 DOM 会把
+         * 选中态读丢，从而落回「只有一个供应商就用它」——那会把拉取改投到别的供应商。 */
+        var selectedId = wanted || detectSelectedCustomProviderId(self);
+        var pick = pickMpProvider(providers, selectedId, detectMpProviderBaseUrl(self));
+        if (pick.pending) {
+          if (!retried) {   // 首次列表会触发取钥：稍等重问一次
+            setTimeout(function () { if (inactive()) { restoreModelPuller(); return; } askMpList(self, true, selectedId); }, 400);
+            return;
+          }
+          setMpHostBusy(self, false);
+          openMpNotice(L("当前套餐的登录凭据暂时不可用，请稍后重试。", "The sign-in credential for this plan is not available right now. Try again shortly."));
+          return;
+        }
         if (!providers.length) {
           setMpHostBusy(self, false);
           openMpNotice(L("未找到 API Key 型自定义供应商：先在「模型设置 → 自定义供应商」里添加一个（填写 Base URL 与 API Key）再来。", "No API-key custom provider found: add one under Model settings first (base URL + API key), then pull."));
           return;
         }
-        var provider = matchProviderById(providers, detectSelectedCustomProviderId(self))
-          || matchProviderByBaseUrl(providers, detectMpProviderBaseUrl(self))
-          || (providers.length === 1 ? providers[0] : null);
-        if (provider) startMpHostFetch(provider, self);   // busy 延续到 fetch 回调（弹窗出现/失败才解除）
+        if (pick.provider) startMpHostFetch(pick.provider, self);   // busy 延续到 fetch 回调（弹窗出现/失败才解除）
         else { setMpHostBusy(self, false); openMpProviders(providers); }
       });
     }

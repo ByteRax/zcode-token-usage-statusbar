@@ -13,6 +13,31 @@ const { createEnginePatcher, ENGINE_TARGETS, PROLOGUE, PROLOGUE_V1, PROLOGUE_PRE
 
 function sha256hex(buf) { return require("crypto").createHash("sha256").update(buf).digest("hex"); }
 
+/* 出厂登记表快照：registerTarget 会往共享数组追加夹具条目，须在任何用例之前拍下 */
+const FACTORY_TARGETS = ENGINE_TARGETS.map((t) => ({ build: t.build, engineSha256: t.engineSha256, anchor: t.anchor, replacement: t.replacement }));
+
+/* 各版本引擎的判定符号随构建轮换，逐条钉死：新登记版本滚动 ANCHOR/REPLACEMENT 时，旧条目
+ * 若仍引用常量会静默继承新锚点（已打补丁用户 patched_inconsistent、restore 永久失败）。
+ * 登记新版本时在此追加一行。 */
+test("出厂登记表逐版本锁定判定符号：滚动 ANCHOR/REPLACEMENT 不得改写旧条目", () => {
+  const symbols = {
+    "3.18.0": ["nTe", "K9o", "26785f28ab8fb9f8b0f3821f2bf71d294f4d0b8bf28108785292f86c7e14090d"],
+    "3.17.2": ["cke", "jBo", "d9afd58d694f98a5279bf548cdc7646413c125762e86730605a6071f9e0346d6"],
+    "3.17.1": ["ake", "DBo", "9afd565a104d660259e6bdeeaa5cb8abc74a908559e21aa3c5f6a06f2a9da6c6"],
+  };
+  assert.deepEqual(FACTORY_TARGETS.map((t) => t.build), Object.keys(symbols), "登记版本集合与顺序（新版本在表首）");
+  for (const t of FACTORY_TARGETS) {
+    const [fn, dflt, sha] = symbols[t.build];
+    assert.equal(t.engineSha256, sha, t.build + " engine sha256");
+    assert.equal(t.anchor, "n=" + fn + "(e.bufferTokens)??" + dflt + ";return Math.max(0,t-n)", t.build + " anchor");
+    assert.equal(t.replacement, "n=" + fn + "(e.bufferTokens)??" + dflt +
+      ";return (globalThis." + MARK + "&&globalThis." + MARK + "(t,n))??Math.max(0,t-n)", t.build + " replacement");
+  }
+  assert.equal(new Set(FACTORY_TARGETS.map((t) => t.anchor)).size, FACTORY_TARGETS.length, "各版本锚点互不相同");
+  assert.equal(FACTORY_TARGETS[0].anchor, ANCHOR, "ANCHOR 常量只对应表首（最新登记）条目");
+  assert.equal(FACTORY_TARGETS[0].replacement, REPLACEMENT);
+});
+
 function makeFixture(opts = {}) {
   const anchor = opts.anchor || ANCHOR;
   return Buffer.from(
@@ -112,7 +137,8 @@ test("unsupported_build 附 drifted：桌面 build 已登记而引擎 sha 不同
 });
 
 test("unsupported_build 不附 drifted：桌面 build 本身不在登记表（全新版本）", () => {
-  const s = setup({ fixture: Buffer.from(makeFixture().toString("utf8") + "/* drift-b */\n"), appVersion: "3.18.0.1" });
+  // appVersion 用永不可能被登记的哨兵号：写成「下一个版本号」会在登记该版本时撞车
+  const s = setup({ fixture: Buffer.from(makeFixture().toString("utf8") + "/* drift-b */\n"), appVersion: "0.0.0.1" });
   try {
     const t = registerTarget(Buffer.from("drift-b-marker-unrelated"));
     t.build = "3.17.2";

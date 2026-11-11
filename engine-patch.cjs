@@ -1,4 +1,5 @@
-/* v179 自动压缩阈值引擎补丁（主进程冷模块，由 inject-main.cjs 相对 require）。
+/* v179 自动压缩阈值引擎补丁（主进程热换模块，由 inject-main.cjs 相对 require；v258 起随
+ * loader 热换循环零重启生效）。
  * 原理：桌面客户端把 agent 引擎放在 <resources>/glm/zcode.cjs（独立子进程加载，
  * spawn env 白名单构造，NODE_OPTIONS 注入不可行）。auto-compact 阈值判定在
  * getAutoCompactThreshold（源码 core/src/compact/policy.ts，bundle 内锚点唯一）。
@@ -26,8 +27,8 @@ const anchorFor = (fn, dflt) => "n=" + fn + "(e.bufferTokens)??" + dflt + ";retu
 const replacementFor = (fn, dflt) => "n=" + fn + "(e.bufferTokens)??" + dflt +
   ";return (globalThis." + MARK + "&&globalThis." + MARK + "(t,n))??Math.max(0,t-n)";
 /* 最新登记版本的锚点对；旧版本符号轮换见 ENGINE_TARGETS 各条目。 */
-const ANCHOR = anchorFor("cke", "jBo");
-const REPLACEMENT = replacementFor("cke", "jBo");
+const ANCHOR = anchorFor("nTe", "K9o");
+const REPLACEMENT = replacementFor("nTe", "K9o");
 
 /* hook 本体：插入引擎文件头。优先级 enabled:false > thresholdPercent(30-99，
  * v194 起总窗口口径：引擎判定只认扣除输出预留后的有效窗口 eff，按 eff+21K 近似
@@ -58,13 +59,22 @@ const PROLOGUE_V1 = (() => {
 })();
 
 /* 登记表：客户端升级后引擎字节变化，必须实测新 SHA 并在此补条目（renderer_bridge
- * HOST_TARGETS 同款维护模型）；表外版本拒绝补丁并明示，绝不盲打。 */
+ * HOST_TARGETS 同款维护模型）；表外版本拒绝补丁并明示，绝不盲打。滚动 ANCHOR/REPLACEMENT
+ * 到新版本时，旧条目必须同步改为 anchorFor/replacementFor 显式字面量——只有表首条目
+ * 允许引用常量，否则旧条目会静默继承新版本锚点（tests/engine-patch.test.cjs 锁表守护）。 */
 const ENGINE_TARGETS = [
+  {
+    build: "3.18.0",
+    engineSha256: "26785f28ab8fb9f8b0f3821f2bf71d294f4d0b8bf28108785292f86c7e14090d",
+    anchor: ANCHOR,
+    replacement: REPLACEMENT,
+    prologue: PROLOGUE,
+  },
   {
     build: "3.17.2",
     engineSha256: "d9afd58d694f98a5279bf548cdc7646413c125762e86730605a6071f9e0346d6",
-    anchor: ANCHOR,
-    replacement: REPLACEMENT,
+    anchor: anchorFor("cke", "jBo"),
+    replacement: replacementFor("cke", "jBo"),
     prologue: PROLOGUE,
   },
   {
