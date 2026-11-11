@@ -359,7 +359,7 @@ test("main bridge: setting.json precedence over env; relative or broken dataBase
 test("main bridge: model puller shares quota path resolution incl. migrated credentials (issue #205)", () => {
   const source = fs.readFileSync(path.join(__dirname, "../inject-main.cjs"), "utf8");
   const start = source.indexOf("/* ---------- v129 模型拉取");
-  const snippet = source.slice(start, source.indexOf("\n/* ---------- v228", start));   // v258：装配已提炼为 initModelPuller，eval 即执行
+  const snippet = source.slice(start, source.indexOf("\n/* ---------- v339", start));   // v258：装配已提炼为 initModelPuller，eval 即执行；结束锚=紧随其后的 v339 pending 清理段（issue #298 改段号须同步）
   const paths = { credsPath: "D:\\数据 空间\\.zcode\\v2\\credentials.json",
     customCfgPath: "D:\\数据 空间\\.zcode\\v2\\provider_config.json",
     builtinCfgPath: "E:\\res\\zcode-builtin.json" };
