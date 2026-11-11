@@ -213,8 +213,10 @@
      * → v328 宿主卡顿治理（specs/perf-lag-reduction.md）：流式期间插件在宿主渲染线程的工作量与会话文本量/历史轮数解耦——①turn-stats ingest 字符计数改无分配码点计数+按行缓存（原 Array.from(text).length 整串拆数组，单次 0.35→4.1ms 且跑在宿主 store 通知链内，现 0.02→0.4ms）；②spdUnpack 按 speed_history 引用 WeakMap 缓存（6000 轮单次 ~5ms，占速度卡生成 95%）；③updateLive 快路径未悬停本格不再每拍白建整张 V2 速度卡（只记 view 标失鲜，drawTip 打开瞬间 liveTipRefresh 补建，兜底 1s 保鲜；悬停仍每拍）；④非 live 会话数据帧未变时 500ms 内心跳不重复整条 render（原每 100ms 全量重建 tooltip 串+五个 enhance*）；⑤轮播主开关关闭态 65ms 帧步降为 1s（仅剩遗留 DOM 还原的整文档查询）
      * → v329 修复项目累计 tooltip 点击「查看全部模型」异常收起与同模型大小写重复：①根因=按钮未在 pointerdown/mousedown 阶段阻止默认/冒泡，且 hideTip 1.2s 保活因 mouseInBar=false 被绕过导致 left-bar 误杀 tooltip；在 pointerdown/mousedown 增加对 .zu-pj-more 的委托与阻止默认行为，hideTip/tipLeaveAt/mousemove 硬保活 1.2s 不受 mouseInBar 干扰；②zusage.py 聚合与计费统一对 model_id 大小写归一化（优先保留大写/官方名，合并同模型如 GLM-5.3 与 glm-5.3，费用累加不漏）。
      * → v330 宿主 3.18.0 loading 行结构适配：①chat-loading 行 label 类由 .zcode-loading-label 换成 .animated-gradient-text、spinner 图标位由 span.grid 换成带 data-chat-loading-icon 属性的 span（.font-mono 耗时格未变），轮播挂载/还原选择器双兼容（chatLoadingLabelOf/chatLoadingPixelGridOf，旧结构优先），label 未命中时不再隐藏宿主耗时格（宿主再改结构时退化为保留原生计时）；②「我方最后写入」基准由模块级单例改挂 label 自身 data-zu-last-text 属性，修多个 loading 行并存（多分栏并发请求）时后处理行的宿主文案快照被词组污染；③「拉取模型」选中套餐源而列表暂不含它（套餐 token 的解密密钥异步到位）时重问一次、仍没有则提示凭据暂不可用，不再落到「只有一个供应商就用它」而改投别的供应商；⚙ 额度披露文案补充钥匙串密钥的读取。
+     * → v331 项目累计 Tooltip 双范围统计（specs/all-projects-usage.md）：zusage 新增 _all_projects_usage 全库聚合（归属单元=会话、parent 链取根环守卫、项目键=(project_id,归一化目录) 承 issue #248、未归属单列桶、totals==Σ projects 对账；桌面快照链顶层 all_projects，serve/桌面 json 带、CLI/MCP/远端子查询不带；_PROJ_CACHE 水位缓存，实测 2.6GB 库 ~210ms/次）；渲染端头部右上「当前项目/全部项目」双 Tab 替代范围胶囊（低对比选中对齐 v282，pointerdown 同步重编+click 幂等吞掉，归属键变化重置），输入格新增「含缓存」副行（cache_read 原值、同「含思考」层级、两模式同规则），全部项目模式新增四列项目明细表（模型明细之前、默认前 5、projTipProjExpanded 独立展开、未归属显本地化文案、名称转义+title 目录、截断 500 提示、空态不渲染表头），缺帧显「全部项目统计暂不可用」不借当前项目冒充。
+     * → v332 工作流支持（specs/workflow-support.md）：zusage 把 sess_dwf-*（宿主动态工作流子代理，query_source='workflow_child'）归入子代理类——sub.list/明细/费用/速率聚合四处 query_source 门扩展、is_sub+sub_kind 字段、任务名从 dwf_actor.name 反查、快照池分桶防挤占主会话 top-6、_sub_item 下发 tps_out/tps_gen 速率分量；渲染端在会话流工作流卡（workflow-card data-workflow-run-id）注入 .zu-wfrun 汇总 chip（token 合计 + Σout÷Σgen 完成态聚合速率 + DOM 实时运行状态，悬停出逐执行者 tooltip，复用 subTip 浮层与委托监听），⚙ 新增「工作流卡汇总」开关；08 分片顺手去除 v176 以来整段重复定义的子代理 chip 块（两份 138 行逐字节相同，行为不变）。
      */
-    var VERSION = "v330";
+    var VERSION = "v332";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
@@ -327,6 +329,9 @@
       /* v176 子代理行内速率 chip：挂宿主 v4 Agent 行 .tool-summary-content 之后，颜色走
        * TPS 十档类（与条面同源），数字 tabular 不抖宽；cursor:help 提示可悬停看口径。 */
       ".zu-subrate{flex:0 0 auto;white-space:nowrap;cursor:help;font-size:12px;line-height:1.4;font-weight:600;font-variant-numeric:tabular-nums}" +
+      /* v332 工作流 run 卡 chip：挂宿主动态工作流卡 workflow-card-status 之后（specs/workflow-support.md），
+       * 外观同 subrate 一族（tabular 不抖宽、cursor:help）；颜色走 TPS 十档类与条面同源。 */
+      ".zu-wfrun{flex:0 0 auto;white-space:nowrap;cursor:help;font-size:12px;line-height:1.4;font-weight:600;font-variant-numeric:tabular-nums;margin-left:8px}" +
       /* v159 状态词流光（用户规格）：复刻宿主 .zcode-loading-label 同款参数——subtle→foreground→subtle
        * 横向渐变 background-clip:text 扫光 1.4s；类名/关键帧自有命名，不依赖宿主全局类防其改版。
        * reduced-motion 停动画（与宿主一致，渐变停在可见段）。 */
@@ -917,8 +922,6 @@
       ".zu-project-tip{font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);font-size:calc(var(--ui-font-size,14px) + 1px);line-height:1.5;color:var(--color-tooltip-foreground,#fafafa)}" +
       ".zu-pj-head{display:flex;align-items:baseline;justify-content:space-between;gap:14px;margin-bottom:8px}" +
       ".zu-pj-title{font-size:calc(var(--ui-font-size,14px) + 4px);font-weight:700;letter-spacing:.5px}" +
-      ".zu-pj-range{display:inline-flex;align-items:center;gap:6px;white-space:nowrap;font-size:calc(var(--ui-font-size,14px) - 2px);color:var(--color-tooltip-foreground,#fafafa);opacity:.72;border:1px solid var(--color-popover-border,rgba(255,255,255,.16));border-radius:999px;padding:2px 10px}" +
-      ".zu-pj-scope{color:inherit}" +
       ".zu-pj-sub{color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
       ".zu-pj-sub::before{content:'· ';opacity:.6}" +
       ".zu-pj-kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:0 9px;background:rgba(255,255,255,.045);border-radius:8px;padding:7px 9px}" +
@@ -952,6 +955,23 @@
       ".zu-pj-table td:first-child{text-align:left;font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);padding-left:2px;max-width:300px;overflow:hidden;text-overflow:ellipsis}" +
       ".zu-pj-more{display:block;margin:10px auto 0;background:none;border:0;color:var(--color-brand,#a3cfff);font:inherit;font-size:var(--ui-font-size,14px);cursor:pointer;padding:4px 12px;border-radius:8px}" +
       ".zu-pj-more:hover{text-decoration:underline}" +
+      /* v331：note-only 表头行（分区名并入首列 th 后，工具/截断注记单独靠右） */
+      ".zu-pj-mnote{margin-left:auto}" +
+      /* v331 双范围 Tab（当前项目/全部项目）：对齐 v282 速度 Tab 低对比选中（去高饱和
+       * 色块），字重恒 600 防选中加宽跳动；卡片头部空间紧，padding 比速度 Tab 收一档 */
+      ".zu-pj-tabs{display:inline-flex;flex:0 0 auto;gap:2px;padding:2px;border-radius:8px;background:rgba(255,255,255,.045);border:1px solid var(--color-popover-border,rgba(255,255,255,.1))}" +
+      ".zu-light .zu-pj-tabs{background:rgba(0,0,0,.04)}" +
+      ".zu-pj-tab{appearance:none;border:0;background:transparent;color:var(--color-tooltip-tag-foreground,#a6a6a6);font-family:inherit;font-size:calc(var(--ui-font-size,14px) - 2px);line-height:1.4;font-weight:600;padding:3px 10px;border-radius:6px;cursor:pointer;white-space:nowrap}" +
+      ".zu-pj-tab:hover{color:var(--color-foreground,#e9edf4);background:rgba(255,255,255,.06)}" +
+      ".zu-light .zu-pj-tab:hover{background:rgba(0,0,0,.05)}" +
+      ".zu-pj-tab.on{background:rgba(255,255,255,.07);color:var(--color-foreground,#e9edf4);box-shadow:inset 0 0 0 1px rgba(255,255,255,.08)}" +
+      ".zu-light .zu-pj-tab.on{background:rgba(0,0,0,.06);color:var(--color-foreground,#1c212b);box-shadow:inset 0 0 0 1px rgba(15,23,42,.08)}" +
+      ".zu-pj-tab.on:hover{background:rgba(255,255,255,.09)}" +
+      ".zu-light .zu-pj-tab.on:hover{background:rgba(0,0,0,.07)}" +
+      ".zu-pj-tab:focus-visible{outline:2px solid var(--color-brand,#a3cfff);outline-offset:1px}" +
+      /* v331：全部项目模式下项目明细与模型明细之间的分隔线 */
+      ".zu-pj-div{border-top:1px solid var(--color-popover-border,rgba(255,255,255,.12));margin-top:10px}" +
+      ".zu-light .zu-pj-div{border-top-color:rgba(0,0,0,.12)}" +
       ".zu-pj-time{display:flex;flex-wrap:wrap;gap:2px 10px;margin-top:7px;padding-top:6px;border-top:1px solid var(--color-popover-border,rgba(255,255,255,.12));font-size:calc(var(--ui-font-size,14px) - 2px);color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
       ".zu-light .zu-pj-time{border-top-color:rgba(0,0,0,.12)}" +
       ".zu-pj-time b{font-weight:500}" +
@@ -1667,6 +1687,7 @@
       settingRow('<input type="checkbox" data-k="today">', L("今日合计", "Today's total"), L("今天所有会话的消耗", "Usage across all sessions today")) +
       settingRow('<input type="checkbox" data-k="sub">', L("子代理", "Sub-agents"), L("悬停或点击状态条上的子代理查看统计", "Hover or click the bar item for sub-agent stats")) +
       settingRow('<input type="checkbox" data-k="subRate">', L("子代理行内速率", "Sub-agent row rate"), L("在会话流的 Agent 工具行内实时显示各子代理 tok/s（运行期估算，完成后切换为真实平均速率；悬停看明细）。默认开启。", "Shows each sub-agent's live tok/s inside its Agent tool row (running estimate, actual average after completion; hover for details). On by default.")) +
+      settingRow('<input type="checkbox" data-k="wfChip">', L("工作流卡汇总", "Workflow card summary"), L("在会话流的工作流卡片上显示 token 合计与聚合速率（完成态，每次执行结算后更新；悬停看各执行者明细）。默认开启。", "Shows token total and aggregate rate on workflow cards in the conversation (settled data, refreshed as each ask completes; hover for per-actor details). On by default.")) +
       settingRow('<input type="checkbox" data-k="git">', L("Git 状态", "Git status"), L("工具行显示当前分支、↑领先 ↓落后与未提交改动（+插入行 -删除行 ?未跟踪）；优先挂在「电脑操作」右侧，缺失时留在左侧操作区末尾；仅本地仓库", "Branch, ↑ahead ↓behind and uncommitted changes (+ins -del ?untracked) in the toolbar; beside Computer Use, or at the end of the left action group when unavailable; local repositories only")) +
       '</div></section>' +
       '<section class="zu-settings-section" data-sec="general"' + secOpen("general") + '><div class="cap">' + L("通用", "General") + '</div><div class="zu-settings-card">' +
@@ -1935,9 +1956,59 @@
         lastMoreDownAt = 0;
         if (swallow) return true;
       }
-      projTipExpanded = !projTipExpanded;
-      projTipApplyModels(btn);
+      if (btn.getAttribute("data-kind") === "proj") {
+        /* v331：项目明细展开态独立于模型明细；apply* 守卫通过才落状态（review MINOR：
+         * 先翻后守卫会在帧间丢 all_projects/归属键已换时空翻，下帧整卡重建自己展开） */
+        projTipApplyProjects(btn, !projTipProjExpanded);
+      } else {
+        projTipApplyModels(btn, !projTipExpanded);
+      }
       return true;
+    }
+    /* v331 项目卡双范围 Tab（当前项目/全部项目）：与 speedTabActivate 同款时序——
+     * pointerdown 同步切换（v276 纪律：被遮挡窗口 rAF 冻结，重编必须同步落地），
+     * 其后的 click 一次性吞掉（键盘 Enter 只发 click 走原路径）。 */
+    var lastScopeDownAt = 0, lastScopeTab = null;
+    function projTipTabActivate(e) {
+      var tab = e.target && e.target.closest && e.target.closest(".zu-pj-tab");
+      if (!tab) return false;
+      e.stopPropagation();
+      if (e.preventDefault) e.preventDefault();
+      if (e.type === "pointerdown" && e.button) return true;   // 右/中键不切换
+      if (e.type === "pointerdown") {
+        lastScopeDownAt = Date.now();
+        lastScopeTab = tab;
+      } else if (lastScopeDownAt) {
+        /* pointerdown 已切换：其后同键 click 一次性吞掉；不同键（如键盘 Enter 切另一
+         * Tab）不吞——review MINOR：无条件 3s 窗会吃掉无 pointerdown 的键盘首击 */
+        var swallow = Date.now() - lastScopeDownAt < 3000 && tab === lastScopeTab;
+        lastScopeDownAt = 0;
+        lastScopeTab = null;
+        if (swallow) return true;
+      }
+      var scope = tab.getAttribute("data-scope") === "all" ? "all" : "cur";
+      if (scope !== projTipScope) {
+        var hadFocus = typeof document !== "undefined" && document.activeElement === tab;
+        projTipScope = scope;
+        projTipProjExpanded = false;   // 切范围重置项目明细展开（模型明细展开态保留）
+        projTipRebuildNow();
+        if (hadFocus) {   // 键盘 Enter 切换：重编销毁了被按按钮，焦点归还新选中 Tab（review MINOR）
+          var on = tip.querySelector(".zu-pj-tab.on");
+          if (on && on.focus) on.focus();
+        }
+      }
+      return true;
+    }
+    /* v331：Tab 切换同步整卡重编（数据源=projTipPj 快照；下一帧 render 以新帧覆盖）。
+     * 与 speedRebuildNow 同构：改 __tip 后 drawTip 走 tipSig 幂等路径。宿主解析：
+     * 生产路径 tooltip 必经 showTipFor 打开（tipFor=条目格、__tip 在格上）；tipFor
+     * 缺席时回退 tip 容器（drawTip 对二者都消费 __tip，焦点打开前/替身环境兜底）。 */
+    function projTipRebuildNow() {
+      var host = (tipFor && tipFor.__tip !== undefined) ? tipFor : tip;
+      if (host && projTipPj) {
+        host.__tip = "\x01" + buildProjectTipHTML(projTipPj, projTipKey);
+        drawTip(host, true);
+      }
     }
     /* v276：整卡重编同步执行——v275 曾用 rAF 合并「重建风暴」，但被遮挡窗口的
      * 渲染帧暂停会让 rAF 永不执行（本机 ZCode 常被 Chrome/飞书遮挡），切 Tab 后
@@ -1989,20 +2060,23 @@
       cancelTipGrace();
       lastTipDownAt = Date.now();
       speedInteractAt = Date.now();
+      if (projTipTabActivate(e)) return;
       if (projTipMoreActivate(e)) return;
       speedTabActivate(e);
     });
     tip.addEventListener("mousedown", function (e) {
-      /* v329：防止 tip 内交互元素在 mousedown 冒泡至宿主导致编辑器失焦或关闭卡片 */
+      /* v329：防止 tip 内交互元素在 mousedown 冒泡至宿主导致编辑器失焦或关闭卡片；
+       * v331：双范围 Tab 同入名单 */
       var t = e.target;
       if (!t || !t.closest) return;
-      var interactive = t.closest(".zu-pj-more") || t.closest(".zu-sv-tab");
+      var interactive = t.closest(".zu-pj-more") || t.closest(".zu-pj-tab") || t.closest(".zu-sv-tab");
       if (interactive) {
         e.stopPropagation();
         if (e.preventDefault) e.preventDefault();
       }
     });
     tip.addEventListener("click", function (e) {
+      if (projTipTabActivate(e)) return;
       if (projTipMoreActivate(e)) return;
       /* v254 速度 Tooltip 双 Tab：事件委托挂 tip 本体，改实例闭包选择后经
        * speedTipRebuild 整卡重编（签名幂等），旧 hover 卡随筛选切换自动收起。

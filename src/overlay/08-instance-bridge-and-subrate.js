@@ -25,144 +25,6 @@
     var subRate = { slots: {}, sum: { rate: null, at: 0, count: 0 } };
     /* 释放槽位的绑定资源但保留槽位（want/retryAt）：绑定失败/首调 detach 时等待
      * 2s 后重试；对未绑定槽位（handle 为 null）调用也安全。 */
-    /* ---------- 子代理行内速率 chip（v176）：把逐槽位估算/快照真实值投到会话流 Agent 行 ----------
-     * 宿主 v4 行 testid = TID_V4_SUBAGENT_OPEN_SIDE_PANE + childSessionId（宿主 e2e 锁定的
-     * 稳定契约），与上面 subRate 槽位键天然同源，两态互补：
-     * ① 运行中槽位 3s 内有估算速率 →「估 X t/s」；思考期无字符流不显示（行内流光动画
-     *    已指示运行中）；
-     * ② 槽位收敛后读泵快照 sub.list 的 tps_avg（已完成段加权平均真实速率，查询无时间窗，
-     *    重启后历史行也能回填）→「X t/s」；槽位解绑与泵推送之间有几秒无 chip 间隙，属预期。
-     * chip 插在 .tool-summary-content 之后（缺该节点退回行末尾）；React 对未知末尾节点
-     * 通常不回收，行虚拟化卸载/整行重挂时 chip 随节点消亡——本函数无状态对账，每拍按期望
-     * 形态幂等重建，不持有 chip 引用。扫描根 = composer/wantedEl 祖先链最近
-     * [data-session-id]（本 pane 会话壳）：分屏同会话时两实例各管各 pane，绝不互相覆写。
-     * 悬停 tooltip 内容构建器挂 chip.__zuT，显隐由模块级 subTip 的委托监听驱动。 */
-    var SUBROW_TID_PREFIX = "v4-subagent-open-side-pane-";
-    function subRowPaneRoot() {
-      var el = (composer && composer.isConnected) ? composer : (wantedEl && wantedEl.isConnected ? wantedEl : null);
-      try {
-        while (el && !(el.hasAttribute && el.hasAttribute("data-session-id"))) el = el.parentElement;
-      } catch (e) { return null; }
-      return el && el.isConnected ? el : null;
-    }
-    function subRowDurText(ms) {
-      if (!(ms >= 1000)) return sec(ms);
-      var total = Math.floor(ms / 1000), m = Math.floor(total / 60), s = total % 60;
-      return m ? L(m + "分" + (s ? s + "秒" : ""), m + "m" + (s ? " " + s + "s" : "")) : L(total + "秒", total + "s");
-    }
-    /* tooltip 构建器收「数据包」而非元素：模块 showSubTip 的调用约定是
-     * el.__zuT.buildTip(el.__zuT)（同 tpsChipTipHTML(t)），包里携带取数所需
-     * 全部字段——v178 首版误按元素取 __zu* 导致全部 undefined、tooltip 恒显
-     * 「— t/s」+无名（实机截图定案）。 */
-    function subRowTipHTML(t) {
-      var csid = t.csid || "", mode = t.mode || "";
-      var s1 = null, list = (lastSub && lastSub.list) || [];
-      for (var i = 0; i < list.length; i++) if (list[i] && list[i].sid === csid) { s1 = list[i]; break; }
-      var name = (s1 && (String(s1.task || "").trim() || String(s1.title || "").trim())) ||
-        String(t.title || "").trim() || L("子代理", "Sub-agent");
-      var agent = s1 && s1.agent ? String(s1.agent) : "";
-      /* 作用域样式挂在内容串里（同 quotaTip/tpsTip）：浮层是 body 级共享元素，样式随内容走 */
-      var out = "<style>" +
-        '.zusage-subrate-tip .rt-h{font-weight:600;color:var(--color-tooltip-foreground,#fafafa);margin:0 0 7px;overflow-wrap:anywhere}' +
-        '.zusage-subrate-tip .rt-row{display:flex;gap:12px;margin:4px 0;align-items:flex-start}' +
-        '.zusage-subrate-tip .rt-row b{flex:0 0 86px;min-width:0;color:var(--color-tooltip-tag-foreground,#a6a6a6);font-weight:500}' +
-        '.zusage-subrate-tip .rt-row span{min-width:0;color:var(--color-tooltip-foreground,#fafafa);overflow-wrap:anywhere}' +
-        ".zusage-subrate-tip .sub-agent{font-weight:400;color:var(--color-tooltip-tag-foreground,#a6a6a6);font-size:.9em}" +
-        "</style>";
-      out += '<div class="rt-h">' + ttEsc(name) + (agent ? ' <span class="sub-agent">' + ttEsc(agent) + "</span>" : "") + "</div>";
-      var rateTxt = (t.rate || "—") + L(" t/s", " t/s");
-      if (mode === "est") {
-        out += ttRow(L("估速", "Estimate"), rateTxt);
-        var sl = subRate.slots[csid];
-        if (sl && sl.store) {
-          try {
-            var st = sl.store.getState(), snap = st && st.snapshot;
-            var tid = zuActiveTurnId(snap), ts = (tid && sl.tracker) ? sl.tracker.get(tid) : null;
-            if (ts && ts.startedAt) out += ttRow(L("已运行", "Running for"), subRowDurText(Date.now() - ts.startedAt));
-            if (ts && ts.totalCharacters > 0) {
-              var c2t = sl.calib || (bridge.handle && bridge.handle.charsPerToken) || DEFAULT_CHARS_PER_TOKEN;
-              out += ttRow(L("累计输出", "Output"), "≈" + fmt(ts.totalCharacters / c2t) + L(" token", " tokens"));
-            }
-          } catch (e) { }
-        }
-        out += ttRow(L("口径", "Basis"), L("字符增量估算；完成后切换真实值", "Text-delta estimate; actual value on completion"));
-      } else {
-        out += ttRow(L("平均速率", "Average rate"), rateTxt);
-        if (s1) {
-          if (s1.input != null) out += ttRow(L("输入", "Input"), fmt(s1.input) + L(" token", " tokens"));
-          out += ttRow(L("输出", "Output"), fmt(s1.output) + L(" token（含思考）", " tokens (thinking incl.)"));
-          out += ttRow(L("请求数", "Requests"), (s1.requests || 0) + L(" 次", " requests"));
-          if (s1.started || s1.last) out += ttRow(L("起始时间", "Time span"),
-            (s1.started ? fmtStartS(s1.started) : "—") + " - " + (s1.last ? fmtStartS(s1.last) : "—"));
-        }
-        out += ttRow(L("口径", "Basis"), L("已完成段加权平均（Σ输出 ÷ Σ生成耗时）", "Completed-segment weighted average"));
-      }
-      return out;
-    }
-    function renderSubAgentRows() {
-      if (inactive()) return;
-      if (!(composer && composer.isConnected) && !(wantedEl && wantedEl.isConnected)) return;
-      var rootEl = subRowPaneRoot();
-      if (!rootEl) return;
-      /* v178 ⚙「子代理行内速率」门：关闭即摘净本 pane 已有 chip 并收起本 pane 的悬停
-       * 浮层，重开由 0.1s 心跳自然重建；只门控行内展示——槽位估算与主 chip「子代理
-       * 运行中 · 估 X t/s」合计是独立功能，照常工作。 */
-      if (!state.show.subRate) {
-        var staleChips = rootEl.querySelectorAll(".zu-subrate");
-        for (var sc = 0; sc < staleChips.length; sc++) { try { staleChips[sc].remove(); } catch (e) { } }
-        if (subTipFor && (rootEl.contains(subTipFor) || !subTipFor.isConnected)) hideSubTip();
-        return;
-      }
-      var now = Date.now(), list = (lastSub && lastSub.list) || [], bySid = {};
-      for (var i = 0; i < list.length; i++) if (list[i] && list[i].sid) bySid[list[i].sid] = list[i];
-      var rows;
-      try { rows = rootEl.querySelectorAll('[data-testid^="' + SUBROW_TID_PREFIX + '"]'); } catch (e) { return; }
-      var dark = true;
-      try { dark = document.documentElement.classList.contains("dark"); } catch (e) { }
-      for (var r = 0; r < rows.length; r++) {
-        var el = rows[r], tattr = String(el.getAttribute("data-testid") || "");
-        if (tattr.length <= SUBROW_TID_PREFIX.length) continue;
-        var csid = tattr.slice(SUBROW_TID_PREFIX.length);
-        var sl = subRate.slots[csid];
-        var rate = (sl && sl.rate != null && now - sl.at <= 3000) ? sl.rate : null;
-        var mode = rate != null ? "est" : "";
-        if (!mode && bySid[csid] && bySid[csid].tps_avg > 0) { rate = bySid[csid].tps_avg; mode = "real"; }
-        var chip = el.querySelector(".zu-subrate");
-        if (!mode) { if (chip) { try { chip.remove(); } catch (e) { } } continue; }
-        var band = tpsBand(rate);
-        var bandCls = band ? band.cls : "ok";
-        /* 十档色的浅色加深版是后代选择器（.zu-light .ok），档位类挂内层 span、
-         * zu-light 挂 chip 本体（同 syncTpsChip 结构），两态切换只换内层。 */
-        var cls = "zu-subrate" + (dark ? "" : " zu-light");
-        var txt = (mode === "est" ? L("估 ", "est ") : "") + rate.toFixed(1) + L(" t/s", " t/s");
-        var sig = mode + "|" + bandCls + "|" + cls + "|" + txt;
-        if (!chip) {
-          chip = document.createElement("span");
-          chip.className = cls;
-          chip.innerHTML = '<span class="' + bandCls + '">' + ttEsc(txt) + "</span>";
-          chip.__zuSig = sig;
-          var anchor = el.querySelector(".tool-summary-content") || el;
-          try {
-            if (anchor === el) el.appendChild(chip);
-            else anchor.parentNode.insertBefore(chip, anchor.nextSibling);
-          } catch (e) { continue; }
-        } else if (chip.parentElement !== el) {
-          try { el.appendChild(chip); } catch (e) { }
-        }
-        if (chip.__zuSig !== sig) {
-          chip.__zuSig = sig;
-          chip.className = cls;
-          chip.innerHTML = '<span class="' + bandCls + '">' + ttEsc(txt) + "</span>";
-        }
-        chip.setAttribute("data-zusage-csid", csid);
-        /* tooltip 数据包（buildTip 收包不收元素，见 subRowTipHTML 注释）：
-         * showSubTip 以 el.__zuT.buildTip(el.__zuT) 调用，取数全走包内字段。 */
-        chip.__zuT = { buildTip: subRowTipHTML, csid: csid, mode: mode,
-                       rate: rate.toFixed(1), title: el.getAttribute("title") || "" };
-      }
-      if (subTipFor && subTipFor.isConnected && subTipFor.__zuT) showSubTip(subTipFor);   // 悬停中随推送刷新（签名幂等不重建）
-      else if (subTipFor && !subTipFor.isConnected) hideSubTip();
-    }
     function subSlotReset(sl) {
       if (sl.handle) sl.handle.dead = true;
       try { if (sl.off) sl.off(); } catch (e) { }
@@ -335,6 +197,161 @@
          * showSubTip 以 el.__zuT.buildTip(el.__zuT) 调用，取数全走包内字段。 */
         chip.__zuT = { buildTip: subRowTipHTML, csid: csid, mode: mode,
                        rate: rate.toFixed(1), title: el.getAttribute("title") || "" };
+      }
+      if (subTipFor && subTipFor.isConnected && subTipFor.__zuT) showSubTip(subTipFor);   // 悬停中随推送刷新（签名幂等不重建）
+      else if (subTipFor && !subTipFor.isConnected) hideSubTip();
+    }
+    /* ---------- 工作流 run 卡 chip（v332，specs/workflow-support.md）：会话流的宿主动态
+     * 工作流卡片（[data-testid="workflow-card"]，data-workflow-run-id 携带 runId）注入
+     * 运行汇总。数据双源：
+     * ① 泵快照 sub.list 的 sess_dwf-<runId> 前缀行（完成态，每 ask 落库后随推送刷新）——
+     *    run 级聚合速率按 tps_out/tps_gen 分量 Σout ÷ Σgen 加权（不能对各 tps_avg 直接
+     *    平均）；旧快照缺分量字段时只显 token。
+     * ② 卡 DOM 实时状态：data-workflow-card-state + 卡内 [data-agent-status] 计 running
+     *    数（会话流内药丸不带 session id，只能提供 run 级计数）。
+     * 悬停 tooltip 复用 subTip 浮层与 01 的委托监听（判定含 .zu-wfrun，不加新监听）；
+     * 签名幂等、不持有 chip 引用，React 重建由 render 与 heavy（600ms）两处对账兜回。
+     * 调用点=render 尾部与 compact 短路尾部（数据点）+ heavy（DOM 对账点），不上 100ms
+     * 心跳（specs/perf-lag-reduction.md 热路径预算；状态点延迟 ≤600ms 属预期）。 */
+    var WF_CARD_TID = "workflow-card";
+    /* 按「已知 runId 集合」前缀匹配分组，不从 sid 反推 runId——runId 自身含 `-`
+     * （dwfrun-<uuid>），取首个 `-` 会错切成 "dwfrun"；runId 以 DOM 卡的
+     * data-workflow-run-id 为准（宿主同源值），sess_dwf-<runId>- 前缀匹配可靠。 */
+    function wfRunsFromList(runIds) {
+      var out = {}, list = (lastSub && lastSub.list) || [];
+      for (var i = 0; i < list.length; i++) {
+        var it = list[i];
+        if (!it || !it.sid || String(it.sid).indexOf("sess_dwf-") !== 0) continue;
+        for (var r = 0; r < runIds.length; r++) {
+          if (String(it.sid).indexOf("sess_dwf-" + runIds[r] + "-") !== 0) continue;
+          var g = out[runIds[r]];
+          if (!g) g = out[runIds[r]] = { runId: runIds[r], total: 0, requests: 0, outSum: 0, genSum: 0, actors: [] };
+          g.total += it.total || 0;
+          g.requests += it.requests || 0;
+          g.outSum += it.tps_out || 0;
+          g.genSum += it.tps_gen || 0;
+          g.actors.push(it);
+          break;
+        }
+      }
+      return out;
+    }
+    function wfRunStateOf(card) {
+      var st = card.getAttribute("data-workflow-card-state") ||
+               card.getAttribute("data-workflow-run-status") || "";
+      var running = 0, pills = null;
+      try { pills = card.querySelectorAll("[data-agent-status]"); } catch (e) { pills = null; }
+      if (pills) {
+        for (var i = 0; i < pills.length; i++) {
+          if (String(pills[i].getAttribute("data-agent-status") || "") === "running") running++;
+        }
+      }
+      return { state: st, running: running, pills: pills ? pills.length : 0 };
+    }
+    /* tooltip 构建器收包不收元素（同 subRowTipHTML 约定）：showSubTip 以
+     * el.__zuT.buildTip(el.__zuT) 调用，取数全走包内字段。 */
+    function wfRunTipHTML(t) {
+      var out = "<style>" +
+        '.zusage-wfrun-tip .rt-h{font-weight:600;color:var(--color-tooltip-foreground,#fafafa);margin:0 0 7px;overflow-wrap:anywhere}' +
+        '.zusage-wfrun-tip .rt-row{display:flex;gap:12px;margin:4px 0;align-items:flex-start}' +
+        '.zusage-wfrun-tip .rt-row b{flex:0 0 86px;min-width:0;color:var(--color-tooltip-tag-foreground,#a6a6a6);font-weight:500}' +
+        '.zusage-wfrun-tip .rt-row span{min-width:0;color:var(--color-tooltip-foreground,#fafafa);overflow-wrap:anywhere}' +
+        ".zusage-wfrun-tip .wf-actor{display:flex;gap:8px;margin:3px 0;font-size:.92em;align-items:baseline}" +
+        ".zusage-wfrun-tip .wf-name{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
+        ".zusage-wfrun-tip .wf-num{flex:0 0 auto;color:var(--color-tooltip-tag-foreground,#a6a6a6);font-variant-numeric:tabular-nums}" +
+        "</style>";
+      out += '<div class="rt-h">' + ttEsc(L("工作流", "Workflow")) + ' <span class="sub-agent">' + ttEsc(t.runShort) + "</span></div>";
+      var stText = t.running > 0 ? L("运行中 · ", "running · ") + t.running + L(" 个执行中", " active")
+        : (t.state ? ttEsc(t.state) : L("未知", "unknown"));
+      out += ttRow(L("状态", "State"), stText);
+      out += ttRow(L("Token 合计", "Tokens"), fmt(t.total));
+      if (t.rate != null) {
+        out += ttRow(L("聚合速率", "Aggregate rate"), t.rate + L(" t/s", " t/s"));
+        out += ttRow(L("口径", "Basis"), L("已完成段加权平均（Σ输出 ÷ Σ生成耗时）；运行中部分完成后计入",
+          "Completed-segment weighted average; in-flight asks count in as they settle"));
+      }
+      out += ttRow(L("请求数", "Requests"), t.requests + L(" 次", " requests"));
+      if (t.actors && t.actors.length) {
+        out += '<div class="rt-row"><b>' + ttEsc(L("执行者", "Actors")) + "</b><span>";
+        for (var i = 0; i < t.actors.length; i++) {
+          var a = t.actors[i];
+          out += '<div class="wf-actor"><span class="wf-name">' + ttEsc(a.name) + "</span>" +
+            '<span class="wf-num">' + fmt(a.total) + (a.tps != null ? " · " + a.tps + L(" t/s", " t/s") : "") + "</span></div>";
+        }
+        out += "</span></div>";
+      }
+      return out;
+    }
+    function renderWorkflowCards() {
+      if (inactive()) return;
+      if (!(composer && composer.isConnected) && !(wantedEl && wantedEl.isConnected)) return;
+      var rootEl = subRowPaneRoot();
+      if (!rootEl) return;
+      /* ⚙「工作流卡汇总」门（同 subRate 门语义）：关闭即摘净本 pane chip 并收起悬停浮层，
+       * 重开由 render/heavy 对账自然重建。 */
+      if (!state.show.wfChip) {
+        var staleWf = rootEl.querySelectorAll(".zu-wfrun");
+        for (var wc = 0; wc < staleWf.length; wc++) { try { staleWf[wc].remove(); } catch (e) { } }
+        if (subTipFor && subTipFor.classList && subTipFor.classList.contains("zu-wfrun")) hideSubTip();
+        return;
+      }
+      var cards;
+      try { cards = rootEl.querySelectorAll('[data-testid="' + WF_CARD_TID + '"]'); } catch (e) { return; }
+      if (!cards.length) return;
+      var runIds = [];
+      for (var rc = 0; rc < cards.length; rc++) {
+        var rid0 = String(cards[rc].getAttribute("data-workflow-run-id") || "");
+        if (rid0) runIds.push(rid0);
+      }
+      if (!runIds.length) return;
+      var runs = wfRunsFromList(runIds);
+      var dark = true;
+      try { dark = document.documentElement.classList.contains("dark"); } catch (e) { }
+      for (var c = 0; c < cards.length; c++) {
+        var card = cards[c];
+        var runId = String(card.getAttribute("data-workflow-run-id") || "");
+        if (!runId) continue;
+        var dom = wfRunStateOf(card);
+        if (!dom.state && !dom.pills) continue;   // 无状态属性的卡不认（防宿主同名 testid 漂移出别物）
+        var g = runs[runId] || { runId: runId, total: 0, requests: 0, outSum: 0, genSum: 0, actors: [] };
+        if (!g.total && !g.requests && !dom.state && !dom.pills) continue;   // 全缺不渲染
+        var rate = g.genSum > 0 ? g.outSum * 1000 / g.genSum : null;   // tps_gen 分量是毫秒（同 _rated_tps：Σout ÷ (Σgen/1000)）
+        var bandCls = "ok", parts = [];
+        if (g.total > 0) parts.push(fmt(g.total));
+        if (rate != null) {
+          bandCls = (tpsBand(rate) || { cls: "ok" }).cls;
+          parts.push(rate.toFixed(1) + L(" t/s", " t/s"));
+        }
+        if (!parts.length && dom.running > 0) parts.push(L("运行中", "running"));
+        if (!parts.length) continue;   // 无 token、无速率、也不在跑：不渲染
+        var txt = parts.join(L(" · ", " · "));
+        var cls = "zu-wfrun" + (dark ? "" : " zu-light");
+        var sig = bandCls + "|" + cls + "|" + txt + "|" + dom.state + "|" + dom.running;
+        var chip = card.querySelector(".zu-wfrun");
+        if (!chip) {
+          chip = document.createElement("span");
+          chip.className = cls;
+          chip.__zuSig = "";
+          var anchor0 = card.querySelector(".workflow-card-status");
+          try {
+            if (anchor0) anchor0.parentNode.insertBefore(chip, anchor0.nextSibling);
+            else card.appendChild(chip);
+          } catch (e) { continue; }
+        }
+        if (chip.__zuSig !== sig) {
+          chip.__zuSig = sig;
+          chip.className = cls;
+          chip.innerHTML = '<span class="' + bandCls + '">' + ttEsc(txt) + "</span>";
+          var actors = [];
+          for (var ai = 0; ai < g.actors.length; ai++) {
+            var a0 = g.actors[ai];
+            actors.push({ name: (String(a0.task || "").trim() || String(a0.title || "").trim() || String(a0.sid || "").slice(-6)),
+                          total: a0.total || 0, tps: (a0.tps_avg > 0 ? a0.tps_avg.toFixed(1) : null) });
+          }
+          chip.__zuT = { buildTip: wfRunTipHTML, runId: runId, runShort: runId.slice(-12), state: dom.state,
+                         running: dom.running, total: g.total, requests: g.requests,
+                         rate: (rate != null ? rate.toFixed(1) : null), actors: actors };
+        }
       }
       if (subTipFor && subTipFor.isConnected && subTipFor.__zuT) showSubTip(subTipFor);   // 悬停中随推送刷新（签名幂等不重建）
       else if (subTipFor && !subTipFor.isConnected) hideSubTip();
@@ -744,6 +761,7 @@
         enhanceGitChip();
         syncTpsChip();   /* v177：恢复 v146 短路内调用——2976478 挪到公共尾部后短路 return 到不了，
                           * 泵推送的最坏 600ms 延迟落在速率 chip 上且与 git chip 不对称 */
+        renderWorkflowCards();   // v332：工作流 run 卡 chip 数据点 reapply（compact 只藏条面，会话流 chip 照常）
         return;
       }
       var h = html(view);
@@ -814,6 +832,7 @@
       enhanceModelPuller();   // v132：宿主设置页「拉取模型」按钮 reapply
       enhanceGitChip();     // v96：同点对账 Git chip（开关/会话切换/scope 变化在此收敛）
       syncTpsChip();        // v155：速率 chip 数据点 reapply（compact 短路与空壳直通两路都经此）
+      renderWorkflowCards();   // v332：工作流 run 卡 chip 数据点 reapply（DOM 对账由 heavy 兜）
     }
 
 

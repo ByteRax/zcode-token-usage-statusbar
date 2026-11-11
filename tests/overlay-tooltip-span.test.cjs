@@ -93,10 +93,12 @@ test('v214 project total card: KPI/details/scale/models table/time, bilingual', 
   const zh = render(data, 'zh', null, { proj: true }).find(tip => tip.includes('zu-project-tip'));
   console.error('SPANPJ:' + String(zh).slice(0, 700));
   const strip = s => s.replace(/<[^>]+>/g, '');
-  // 标题与统计范围
+  // 标题与统计范围（v331：范围胶囊由右上双范围 Tab 替代，默认选中当前项目）
   assert.match(zh, /zu-pj-title">项目累计</);
-  assert.match(zh, /zu-pj-scope">全部请求 · 含子代理</);   // v303 单行合并
-  assert.match(strip(zh), /含子代理/);
+  assert.match(zh, /zu-pj-tabs/);
+  assert.match(zh, /aria-selected="true"[^>]*>当前项目</);
+  assert.match(zh, /aria-selected="false"[^>]*>全部项目</);
+  assert.doesNotMatch(zh.replace(/<style>[\s\S]*?<\/style>/g, ''), /zu-pj-scope/, 'v331 范围胶囊已删除');
   // v303 四行 KPI：行一总用量、行四费用（0 有效由 typeof 判断承载）
   assert.match(strip(zh), /总用量\s*6700/);
   assert.match(strip(zh), /预估费用[^]*?\$12\.50/);
@@ -108,10 +110,10 @@ test('v214 project total card: KPI/details/scale/models table/time, bilingual', 
   // 行二规模 + 模型标题行右侧工具/重试（旧规模行删除）
   assert.match(strip(zh), /请求次数\s*45\s*请求轮数\s*12\s*请求会话\s*3/);
   assert.match(strip(zh), /工具调用 9 次\s*·\s*重试 2 次/);
-  assert.doesNotMatch(strip(zh).split('含子代理')[1] || '', /含子代理/);
+  assert.equal((zh.match(/zu-pj-tabs/g) || []).length, 1, 'v331 范围 Tab 仅头部一份');
   // 模型明细四列表格（2 模型 ≤6 全显，无展开按钮）
   assert.match(zh, /zu-pj-table/);
-  assert.match(strip(zh), /模型\s*Token 用量 ↓\s*请求次数\s*预估费用/);
+  assert.match(strip(zh), /模型明细\s*Token 用量 ↓\s*请求次数\s*预估费用/);   // v331：分区名并入首列 th
   assert.match(strip(zh), /GLM-5\.3\s*6000\s*40\s*\$12\.00/);
   assert.match(strip(zh), /gpt-6\.1-sol\s*700\s*5\s*\$0\.50/);
   assert.doesNotMatch(zh.replace(/<style>[\s\S]*?<\/style>/g, ''), /zu-pj-more/);   // N<=6 无展开按钮（v303 剥内联 style）
@@ -119,7 +121,7 @@ test('v214 project total card: KPI/details/scale/models table/time, bilingual', 
   assert.match(zh, /2026-10-19 13:42:00 — 2026-10-19 13:43:00/);
   const en = render(data, 'en', null, { proj: true }).find(tip => tip.includes('zu-project-tip'));
   assert.match(en, /zu-pj-title">Project total</);
-  assert.match(en, /zu-pj-scope">All requests · incl\. sub-agents</);
+  assert.match(en, /aria-selected="true"[^>]*>Current</);   // v331 双范围 Tab 英文同链
   assert.match(strip(en), /Total tokens\s*6700/);
   assert.match(strip(en), /incl\. 200/);
   // v303 规模行改行二 KPI（会话/轮/次），旧 zu-pj-scale 删除

@@ -391,11 +391,11 @@ test('light theme structure: band class rides inner span, zu-light on chip body 
 test('source contracts: updateLive hook, scan cleanup, delegation listener, CSS rule, version', () => {
   assert.match(source, /renderSubAgentRows\(\);   \/\/ v176：Agent 行内速率 chip 对账/, 'updateLive 挂渲染通道');
   assert.match(source, /if \(subTipFor && !subTipFor\.isConnected\) hideSubTip\(\);/, 'scanRateLines detach 兜底收起');
-  assert.ok(source.includes('e.target.closest(".zu-subrate")'), 'document 委托悬停（免逐 chip 监听）');
+  assert.ok(source.includes('e.target.closest(".zu-subrate,.zu-wfrun")'), 'document 委托悬停（免逐 chip 监听；v332 起含工作流卡 chip）');
   assert.match(source, /"\.zu-subrate\{flex:0 0 auto;white-space:nowrap;cursor:help/, 'chip 样式入注入块');
   // v179/v180 review P1：调用侧形状锁——showSubTip 以数据包调 buildTip（v178 回归即红）；
   // 历史版本演进台账见 src/overlay/06-instance-dom-and-styles.js 的 VERSION 台账注释块。
-  assert.match(source, /var VERSION = "v330";/);   // 随批次顺延（v307 批次漏更致套件长期红）
+  assert.match(source, /var VERSION = "v332";/);   // 随批次顺延（v307 批次漏更致套件长期红）
   assert.ok(source.includes('el.__zuT.buildTip(el.__zuT)'), 'tooltip 数据包调用约定');
   assert.ok(source.includes("runningSubagents.length - 1"), '截断从尾部取（最新派发优先）');
   assert.match(source, /__zusageAcquireConversationStore/, '桥 v2 acquire 访问器消费点');
@@ -405,7 +405,8 @@ test('source contracts: updateLive hook, scan cleanup, delegation listener, CSS 
 });
 
 test('source contracts: ⚙ subRate switch (seed, panel row, render gate)', () => {
-  assert.match(source, /subRate: 1 \},/, 'state.show 种子默认开');
+  assert.match(source, /subRate: 1, wfChip: 1 \},/, 'state.show 种子默认开（v332 起含 wfChip）');
+  assert.match(source, /wfChip: 1 \},/, 'wfChip 工作流卡 chip 种子默认开');
   assert.match(source, /data-k="subRate"/, '⚙ 面板行（data-k 通用 handler 零接线）');
   assert.match(source, /if \(!state\.show\.subRate\) \{/, '渲染门控读开关');
   assert.match(source, /rootEl\.contains\(subTipFor\) \|\| !subTipFor\.isConnected/, '只收本 pane 浮层');
