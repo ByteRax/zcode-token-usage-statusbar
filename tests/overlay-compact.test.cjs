@@ -320,7 +320,10 @@ test('点击开确认框：标题/用量行/双语按钮齐全，Esc、遮罩、
   assert.ok(esc, 'Esc capture listener registered');
   esc({ key: 'Escape', preventDefault() {}, stopPropagation() {} });
   assert.equal(h.dlgEl(), undefined, 'Esc closes');
-  assert.equal(h.keyDownLast(), null, 'keydown 监听随关闭解绑');
+  /* v339 起实例常驻 tipGlobalEsc 也在 document keydown 上（issue #297），
+   * 「最后一个监听器为 null」不再成立——改断言 compactDlgKey 本身已解绑 */
+  const keydownFns = () => h.document.listeners.get('keydown') || [];
+  assert.ok(!keydownFns().includes(esc), 'keydown 监听随关闭解绑');
   btn.dispatch('click');
   h.findIn(h.dlgEl(), 'zu-compact-cancel').dispatch('click');
   assert.equal(h.dlgEl(), undefined, 'cancel closes');
@@ -328,7 +331,7 @@ test('点击开确认框：标题/用量行/双语按钮齐全，Esc、遮罩、
   const dlg3 = h.dlgEl();
   dlg3.dispatch('mousedown', { target: dlg3 });   // 点遮罩（target===dlg）
   assert.equal(h.dlgEl(), undefined, 'backdrop closes');
-  assert.equal(h.keyDownLast(), null, 'keydown 监听随关闭解绑');
+  assert.ok(!keydownFns().includes(esc), 'keydown 监听随关闭解绑');
 });
 
 test('主通道（v109）：直接调 fiber 命令信封 onSendCompressionCommand("/compact")，Enter 亦可确认', () => {
