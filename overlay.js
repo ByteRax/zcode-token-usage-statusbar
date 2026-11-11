@@ -11583,30 +11583,6 @@
       /* v331 含缓存辅助行：输入主数值下显 cache_read 原值（缓存命中率分子同口径），
        * 层级同输出格「含思考」；>0 才渲染，不反推、不重复计入 */
       var cachedSub = v.cache_read > 0 ? ttEsc(L("含缓存 ", "incl. cached ") + fmt(v.cache_read)) : "";
-      /* 行四（v331 用户规格）：全部项目模式第一列=项目数量（projects_total=截断前
-       * 真实数）；费用可见时三格挂 --trio，费用关退两格走 --duo 不留空档 */
-      var costCell = (showCost && typeof v.cost_usd === "number" && isFinite(v.cost_usd))
-        ? statKpi(L("预估费用", "Est. cost") + (all ? fxqIcon(v.models, L("全部项目", "all projects")) : FXQ_ICON), ttEsc(costV))
-        : "";
-      var row4Kpis;
-      if (all) {
-        var allCount = v.projects_total || (v.projects || []).length;
-        row4Kpis = '<div class="zu-turn-kpis zu-turn-kpis--duo' + (costCell ? " zu-turn-kpis--trio" : "") + '">' +
-          statKpi(kpiIco("projects") + L("项目数量", "Projects"),
-            ttEsc(countFmt(allCount)), turnVBkt(countFmt(allCount))) +
-          ((typeof v.avg_tps === "number" && isFinite(v.avg_tps) && v.avg_tps > 0)
-            ? statKpi(kpiIco("speed") + L("平均输出速度", "Avg output rate"), '<b class="' + tpsBand(v.avg_tps).cls + '">' + ttEsc(v.avg_tps.toFixed(1)) + '</b> <small>t/s</small>')
-            : statKpi(kpiIco("speed") + L("平均输出速度", "Avg output rate"), "—")) +
-          costCell +
-          '</div>';
-      } else {
-        row4Kpis = '<div class="zu-turn-kpis zu-turn-kpis--duo">' +
-          ((typeof v.avg_tps === "number" && isFinite(v.avg_tps) && v.avg_tps > 0)
-            ? statKpi(kpiIco("speed") + L("平均输出速度", "Avg output rate"), '<b class="' + tpsBand(v.avg_tps).cls + '">' + ttEsc(v.avg_tps.toFixed(1)) + '</b> <small>t/s</small>')
-            : statKpi(kpiIco("speed") + L("平均输出速度", "Avg output rate"), "—")) +
-          costCell +
-          '</div>';
-      }
       /* v331 项目明细（仅全部项目模式，位于模型明细之前）：四列同款表格，默认前 5，
        * 展开态 projTipProjExpanded 独立于模型明细；空列表显空态不渲染表头。 */
       var plist = (v.projects || []);
@@ -11656,8 +11632,16 @@
             (v.avg_ttft_ms > 0 ? statKpi(kpiIco("latency") + L("平均延迟", "Avg TTFT"), ttEsc(sec(v.avg_ttft_ms)), turnVBkt(sec(v.avg_ttft_ms))) : "") +
             (v.duration_ms > 0 ? statKpi(kpiIco("elapsed") + L("总耗时", "Total time"), ttEsc(secLong(v.duration_ms)), turnVBkt(secLong(v.duration_ms))) : "") +
             '</div>' : "") +
-        row4Kpis +
-
+        /* 行四：平均输出速度（加权均，TPS_BANDS 档色）| 预估费用（全部项目模式问号随
+         * fxqIcon 携带全局模型计价范围；费用关/缺失时速度格 only-child 占满整行） */
+        '<div class="zu-turn-kpis zu-turn-kpis--duo">' +
+          ((typeof v.avg_tps === "number" && isFinite(v.avg_tps) && v.avg_tps > 0)
+            ? statKpi(kpiIco("speed") + L("平均输出速度", "Avg output rate"), '<b class="' + tpsBand(v.avg_tps).cls + '">' + ttEsc(v.avg_tps.toFixed(1)) + '</b> <small>t/s</small>')
+            : statKpi(kpiIco("speed") + L("平均输出速度", "Avg output rate"), "—")) +
+          ((showCost && typeof v.cost_usd === "number" && isFinite(v.cost_usd))
+            ? statKpi(L("预估费用", "Est. cost") + (all ? fxqIcon(v.models, L("全部项目", "all projects")) : FXQ_ICON), ttEsc(costV))
+            : "") +
+        '</div>' +
         projBlock +
         (hasModels
           ? '<div class="zu-pj-models">' +
@@ -11680,31 +11664,12 @@
         '<span>' + (v.started ? fmtStartS(v.started) : "—") + " — " + (v.last_at ? fmtStartS(v.last_at) : "—") + '</span></div>' +
         '</div>';
     }
-    /* v331 用户规格：项目卡高度调整自下而上——底边固定不向下移动、顶边升降。
-     * prevBottom=内容变更前采集的底边（projTipPrevBottom），变更后按新高度反推 top；
-     * 卡自身 max-height=calc(100vh-24px) 视口钳制保证反推 top ≥ 8 恒在视口内。
-     * 无基线（首次弹出，top 未落盘或未显示）回退 positionTip 原锚定逻辑。 */
-    function projTipPositionGrowUp(el, prevBottom) {
-      if (typeof positionTip === "function") positionTip(el, true);
-      if (!(prevBottom > 0) || typeof tip === "undefined" || !tip) return;
-      var top = Math.max(8, prevBottom - tip.getBoundingClientRect().height);
-      tip.style.top = Math.round(top) + "px";
-    }
-    function projTipPrevBottom() {
-      if (typeof tip === "undefined" || !tip || !tip.style || !tip.style.top ||
-          tip.style.display !== "block") return 0;
-      var top = parseFloat(tip.style.top);
-      if (!isFinite(top)) return 0;
-      var h = tip.getBoundingClientRect().height;
-      return h > 0 ? top + h : 0;
-    }
     /* 展开/收起的局部更新：只替换模型行与按钮态，不重建整卡（滚动/焦点/选择不受扰）。
      * 内容串纳入 expanded 态，数据刷新整卡重建时保持展开；归属键不匹配则忽略。 */
     function projTipApplyModels(btn, targetExpanded) {
       var root = btn.closest && btn.closest(".zu-project-tip");
       if (!root || btn.getAttribute("data-key") !== projTipKey) return false;
       if (typeof targetExpanded === "boolean") projTipExpanded = targetExpanded;   // v331：守卫通过才落状态
-      var prevBottom = projTipPrevBottom();
       var shown = projTipExpanded ? projTipList : projTipList.slice(0, 6);
       var rows = root.querySelector("[data-zu-pj-rows]");
       if (rows) rows.innerHTML = pjRowsHTML(shown, true);
@@ -11712,7 +11677,7 @@
       btn.innerHTML = projTipExpanded
         ? ttEsc(L("收起", "Show less"))
         : ttEsc(L("查看全部 " + projTipList.length + " 个模型", "Show all " + projTipList.length + " models")) + " ▾";
-      if (tipFor) projTipPositionGrowUp(tipFor, prevBottom);
+      if (typeof positionTip === "function" && tipFor) positionTip(tipFor, true);
       return true;
     }
     /* v331：项目明细展开/收起的局部更新（同 projTipApplyModels 不重建整卡）；
@@ -11723,7 +11688,6 @@
       var ap = allProjectsData();
       if (!root || !ap || btn.getAttribute("data-key") !== projTipKey) return false;
       if (typeof targetExpanded === "boolean") projTipProjExpanded = targetExpanded;
-      var prevBottom = projTipPrevBottom();
       var total = ap.projects_total || ap.projects.length;
       var rows = root.querySelector("[data-zu-pj-projects]");
       if (rows) rows.innerHTML = pjProjRowsHTML(pjProjRowsFor(ap, projTipProjExpanded));
@@ -11731,7 +11695,7 @@
       btn.innerHTML = projTipProjExpanded
         ? ttEsc(L("收起", "Show less"))
         : ttEsc(L("查看全部 " + total + " 个项目", "Show all " + total + " projects")) + " ▾";
-      if (tipFor) projTipPositionGrowUp(tipFor, prevBottom);
+      if (typeof positionTip === "function" && tipFor) positionTip(tipFor, true);
       return true;
     }
     /* v215 统计卡公共片段（六卡共用）：head/KPI/明细/规模/表格/时间。数据全部真实字段。 */
@@ -11770,8 +11734,6 @@
           '' + '.zu-stat-tip--' + variant + ' .zu-stat-v.zu-turn-l2{font-size:calc(var(--ui-font-size,14px) + 1px)!important}' +
           '' + '.zu-stat-tip--' + variant + ' .zu-turn-kpis--duo{grid-template-columns:repeat(2,1fr)!important}' +
           '' + '.zu-stat-tip--' + variant + ' .zu-turn-kpis--duo .zu-stat-kpi:only-child{grid-column:1/-1!important}' +
-          /* v331 用户规格：全部项目模式第四行三格（项目数量|速度|费用） */
-          '' + '.zu-stat-tip--' + variant + ' .zu-turn-kpis--trio{grid-template-columns:repeat(3,1fr)!important}' +
           '' + '.zu-stat-tip--' + variant + ' .zu-stat-dsub{font-size:calc(var(--ui-font-size,14px) - 4px)!important;margin-top:1px!important}' +
           '' + '.zu-stat-tip--' + variant + ' .zu-pj-mhead{margin:0!important}' +
           '' + '.zu-stat-tip--' + variant + ' .zu-pj-mtitle{font-size:calc(var(--ui-font-size,14px) + 1px)!important}' +
@@ -11814,11 +11776,7 @@
               '.zu-stat-tip--project .zu-pj-table td:first-child{max-width:150px!important}' +
               '.zu-stat-tip--project .zu-pj-more{margin:6px auto 0!important;padding:2px 10px!important;font-size:calc(var(--ui-font-size,14px) - 2px)!important}' +
               '.zu-stat-tip--project .zu-pj-title{display:flex!important;align-items:baseline!important;white-space:nowrap!important;min-width:0!important}' +
-              '.zu-stat-tip--project .zu-pj-pname{overflow:hidden!important;text-overflow:ellipsis!important;flex:0 1 auto!important;min-width:0!important}' +
-              /* v331 用户规格：表体不受共享 60vh 帽（06 基础 .tbody 规则）限制——
-               * 上限提到与卡根同款视口帽（calc(100vh-24px)），实际内容不超窗时
-               * 完整展示（无内滚）；超窗仍由根 max-height 封顶转表体内滚 */
-              '.zusage-tip-root:has(.zu-stat-tip--project) .tbody{max-height:calc(100vh - 24px)!important}'
+              '.zu-stat-tip--project .zu-pj-pname{overflow:hidden!important;text-overflow:ellipsis!important;flex:0 1 auto!important;min-width:0!important}'
             : "") +
           '</style>';
     }
@@ -11913,8 +11871,7 @@
       turns: '<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/>',
       requests: '<path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/>',
       tools: '<path d="M14.5 2.5a6 6 0 0 0-5.6 8.1L3.3 16.2a3.2 3.2 0 0 0 4.5 4.5l5.6-5.6a6 6 0 0 0 8.1-5.6l-4.1 3-3.8-3.8 3-4.1a6 6 0 0 0-2.1-2.1z"/>',
-      sessions: '<path d="M7.5 3h12a2 2 0 0 1 2 2v10M4.5 7h12a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H8l-5.5 2V9a2 2 0 0 1 2-2z"/>',
-      projects: '<path d="M3.5 6.5a2 2 0 0 1 2-2h4.2l2 2h7.3a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5.5a2 2 0 0 1-2-2z"/>'
+      sessions: '<path d="M7.5 3h12a2 2 0 0 1 2 2v10M4.5 7h12a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H8l-5.5 2V9a2 2 0 0 1 2-2z"/>'
     };
     function kpiIco(name, size) {
       var s = size || 16;
