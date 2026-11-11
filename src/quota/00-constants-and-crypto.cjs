@@ -1,4 +1,4 @@
-/* 额度客户端（主进程，冷文件）v3：多厂商适配器 + 多源调度器。
+/* 额度客户端（主进程热换模块）v3：多厂商适配器 + 多源调度器。
  * 阶段 3（浮层 v96 线）：BigModel/Z.ai 内置套餐（解密宿主 OAuth 凭据直查 monitor 端点）
  * 之外，新增零配置官方域适配器（MiniMax/Kimi/CommandCode/DeepSeek/OpenRouter/SiliconFlow/
  * Anthropic OAuth）与显式配置适配器（Cline/MiMo Cookie/火山 AK-SK/SCNet 账本）。
@@ -150,9 +150,10 @@ function loadHostKeyring(resourcesDir) {
   return mod;
 }
 
-/* 受管 secret（v2:env 源）：镜像宿主 resolveManagedSecret 的非强制分支——只认
- * ZCODE_CREDENTIAL_SECRET env 与 ZCODE_CREDENTIAL_SECRET_FILE env 指向的文件；
- * 两者同设按配置错误处理（宿主同款 throw）。不自动探测固定文件路径。 */
+/* 受管 secret（v2:env 源）：镜像宿主 resolveManagedSecret——ZCODE_CREDENTIAL_SECRET env
+ * → ZCODE_CREDENTIAL_SECRET_FILE env 指向的文件（不校验权限位，内容 32–4096 字节在 ensureV2Key 判）
+ * → 凭据同目录 credential-secret（宿主在无 os 标记时以它派生 env 源：headless 部署靠它；常规文件、
+ *   非 win32 须仅属主可读写、32–4096 字节）。前两者同设按配置错误处理（宿主同款 throw）。 */
 function readManagedSecret(ctx) {
   const env = ctx.env || {};
   if (env.ZCODE_CREDENTIAL_SECRET && env.ZCODE_CREDENTIAL_SECRET_FILE) { ctx.lastError = "managed secret misconfigured"; return null; }
@@ -161,17 +162,27 @@ function readManagedSecret(ctx) {
     try { return (ctx.readFileRaw || ((p) => fs.readFileSync(p, "utf8")))(env.ZCODE_CREDENTIAL_SECRET_FILE); }
     catch (e) { ctx.lastError = "managed secret file unreadable"; return null; }
   }
+  if (ctx.credsDir) {
+    try {
+      const p = path.join(ctx.credsDir, "credential-secret");
+      const st = fs.statSync(p);
+      if (st.isFile() && st.size >= 32 && st.size <= 4096 &&
+          (process.platform === "win32" || (st.mode & 63) === 0)) {
+        return (ctx.readFileRaw || ((q) => fs.readFileSync(q, "utf8")))(p);
+      }
+    } catch (e) { /* 无固定路径文件或不可读：按未配置 */ }
+  }
   return null;
 }
 
-async function ensureV2Key(ctx) {
+async function ensureV2Key(ctx, force) {
   const cur = ctx.cache.get(ctx.credsPath) || null;
-  if (cur) return cur;   // 已热：不重读 keychain/secret（换钥由 decrypt 侧 keyId 失配作废缓存后重读）
+  if (cur && !force) return cur;   // 已热：不重读 keychain/secret（换钥由 decrypt 侧 keyId 失配限频 force 重读）
   if (ctx.keyFailedAt && Date.now() - ctx.keyFailedAt < 60000) return cur;   // 失败冷却：keychain 缺失时不做 1 秒风暴重试
   ctx.lastError = "";   // 只反映最近一次尝试，不跨调用短路
   const env = ctx.env || process.env;
   let secret = readManagedSecret(ctx), source = "";
-  if (ctx.lastError) { ctx.keyFailedAt = Date.now(); return cur; }   // 受管 secret 配置错误：与 keychain 失败同冷却
+  if (ctx.lastError) { ctx.keyFailedAt = ctx.retryNow ? 0 : Date.now(); ctx.retryNow = false; return cur; }   // 受管 secret 配置错误：与 keychain 失败同冷却
   let key;
   if (secret !== null) {
     /* 宿主 X1n：env 源密钥 = sha256(受管 secret) 原始 32 字节，对 secret 无 base64url 形状要求；
@@ -182,21 +193,22 @@ async function ensureV2Key(ctx) {
     source = "env";
   } else {
     const mod = ctx.keyringMod !== undefined ? ctx.keyringMod : loadHostKeyring(ctx.resourcesDir);
-    if (!mod || !(mod.AsyncEntry || mod.Entry)) { ctx.lastError = "host keyring unavailable"; return cur; }
+    if (!mod || !(mod.AsyncEntry || mod.Entry)) { ctx.lastError = "host keyring unavailable"; ctx.keyFailedAt = ctx.retryNow ? 0 : Date.now(); ctx.retryNow = false; return cur; }
     try {
       const E = mod.AsyncEntry || mod.Entry;
       const account = crypto.createHash("sha256").update(String(ctx.credsPath)).digest("hex");
       secret = await new E(V2_SERVICE, account, { linux: { store: "secret-service" } }).getPassword();
-    } catch (e) { ctx.lastError = "keychain read failed"; ctx.keyFailedAt = Date.now(); return cur; }
+    } catch (e) { ctx.lastError = "keychain read failed"; ctx.keyFailedAt = ctx.retryNow ? 0 : Date.now(); ctx.retryNow = false; return cur; }
     source = "os";
-    if (typeof secret !== "string" || !V2_KEY_RE.test(secret)) { ctx.lastError = "key shape invalid"; ctx.keyFailedAt = Date.now(); return cur; }
+    if (typeof secret !== "string" || !V2_KEY_RE.test(secret)) { ctx.lastError = "key shape invalid"; ctx.keyFailedAt = ctx.retryNow ? 0 : Date.now(); ctx.retryNow = false; return cur; }
     key = Buffer.from(secret, "base64url");
-    if (key.length !== 32) { ctx.lastError = "key length invalid"; ctx.keyFailedAt = Date.now(); return cur; }
+    if (key.length !== 32) { ctx.lastError = "key length invalid"; ctx.keyFailedAt = ctx.retryNow ? 0 : Date.now(); ctx.retryNow = false; return cur; }
   }
   const ent = { key, keyId: keyIdOf(key), source };
-  ctx.cache.set(ctx.credsPath, ent);
+  ctx.cache.set(ctx.credsPath, ent);   // 重读成功才覆盖：失败路径不清旧钥（旧条目继续可解）
   ctx.lastError = "";
   ctx.keyFailedAt = 0;
+  ctx.retryNow = false;   // 成功路径同样消费越窗意图：不留着把下一次无关失败放行出冷却
   return ent;
 }
 
@@ -209,11 +221,11 @@ function makeHostDecryptor(opts) {
     env: o.env || process.env,
     readFileRaw: o.readFileRaw,
     keyringMod: o.keyringMod,   // undefined=自动探测；null/对象=显式指定（测试注入）
-    cache: new Map(), lastError: "", pending: 0, ensuring: null, keyFailedAt: 0,
+    cache: new Map(), lastError: "", pending: 0, ensuring: null, keyFailedAt: 0, mismatchAt: 0, retryNow: false,
   };
-  function ensureKey() {
+  function ensureKey(force) {
     if (ctx.ensuring) return ctx.ensuring;
-    ctx.ensuring = ensureV2Key(ctx).finally(() => { ctx.ensuring = null; ctx.pending = 0; });
+    ctx.ensuring = ensureV2Key(ctx, force).finally(() => { ctx.ensuring = null; ctx.pending = 0; });
     return ctx.ensuring;
   }
   function decrypt(enc, legacyKey) {
@@ -223,9 +235,20 @@ function makeHostDecryptor(opts) {
     if (parts.length !== 3 || !/^(os|env)$/.test(parts[0]) || !/^[a-f0-9]{24}$/.test(parts[1])) return null;
     const ent = ctx.cache.get(ctx.credsPath);
     if (!ent || parts[0] !== ent.source || parts[1] !== ent.keyId) {
-      if (ent) ctx.cache.delete(ctx.credsPath);   // 缓存钥与信封不符（宿主换钥）：作废并重读
-      if (!ctx.keyFailedAt) ctx.pending = 1;   // 失败冷却期内不置位：调度器回退 60 秒，防 1 秒风暴
-      try { void ensureKey(); } catch (e) { /* 同步段不抛 */ }
+      /* 缓存钥与信封不符（宿主换钥/残留旧条目）：不清缓存（重读失败会把仍可解的条目一起打死，
+       * 整桶最长 60 秒不可用），限频 force 重读自愈 */
+      const now = Date.now();
+      /* force 重读与失败冷却共用一条 60 秒节拍：失配限频与失败冷却**都**过期才发 force（盖新
+       * 戳），pending 置位让调度器 1 秒短重试接住——「先失败后换钥」的序列在冷却过期的下一拍
+       * 即自愈（约 61 秒），而冷却期内不发（防 1 秒风暴，上游防风暴语义保留）。 */
+      const mismatchDue = !ctx.mismatchAt || now - ctx.mismatchAt >= 60000;
+      const cooldownDue = !ctx.keyFailedAt || now - ctx.keyFailedAt >= 60000;
+      if (mismatchDue && cooldownDue) {
+        ctx.mismatchAt = now;
+        ctx.keyFailedAt = 0;
+        try { void ensureKey(true); } catch (e) { /* 同步段不抛 */ }
+        ctx.pending = 1;
+      }
       return null;
     }
     return openV2Seal(parts[2], ent.key);
@@ -239,6 +262,14 @@ let defaultDec = makeHostDecryptor({ env: process.env });
 function setDefaultDecryptCtx(opts) { defaultDec = makeHostDecryptor(opts || {}); }
 function ensureDefaultV2Key() { return defaultDec.ensureKey(); }
 function v2KeyPending() { return defaultDec.keyPending(); }
+/* 用户显式动作（chip 立即刷新/凭据变更/拉取模型点击）越过 v2 密钥的失败冷却与失配限频，
+ * 对齐「点击立即刷新绕过一切间隔与冻结」；在途读取稍后失败时不开新冷却窗。 */
+function v2KeyRetryNow() {
+  const ctx = defaultDec.ctx;
+  if (ctx.ensuring) { ctx.retryNow = true; return; }
+  ctx.keyFailedAt = 0;
+  ctx.mismatchAt = 0;
+}
 function decryptValue(value, key) {
   if (typeof value === "string" && value.startsWith(ENC_V2_PFX)) return defaultDec.decrypt(value, key);
   return decryptV1Value(value, key);

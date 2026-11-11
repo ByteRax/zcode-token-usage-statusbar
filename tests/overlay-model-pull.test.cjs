@@ -118,7 +118,7 @@ test("host mount contract: anchor testid, left-insert, secondary look, currentCo
   assert.match(SOURCE, /btn\.lastChild\.nodeValue = L\("拉取中…", "Pulling…"\)/);
   assert.match(SOURCE, /\.zu-mp-host\[aria-busy=true\] svg\{animation:zumpspin/);
   // loading 覆盖全程：list 回调不解除，fetch 回调（弹窗出现/失败）才解除
-  assert.match(SOURCE, /if \(provider\) startMpHostFetch\(provider, self\);   \/\/ busy 延续到 fetch 回调/);
+  assert.match(SOURCE, /if \(pick\.provider\) startMpHostFetch\(pick\.provider, self\);   \/\/ busy 延续到 fetch 回调/);
   assert.match(SOURCE, /cleanupMpModal\(\);   \/\/ 写回完成：宿主模型列表数秒内自动刷新/);
   // 弹窗主题自适应（HHQ 形态）：自带 .zu-light 随 <html>.dark 换装（openMpShell 同步 + applyTheme 实时挂钩）
   assert.match(SOURCE, /ov\.classList\.toggle\("zu-light", !themeDark\)/);
@@ -138,7 +138,7 @@ test("host mount contract: anchor testid, left-insert, secondary look, currentCo
   assert.match(SOURCE, /\[data-testid\^="model-provider-nav-item-"\]\[data-state="selected"\]/);
   assert.ok(SOURCE.indexOf('^custom:(.+)$/.exec(nodeKey)') >= 0);   // nodeKey 已剥 testid 前缀（源码字面量断言，避免转义歧义）
   assert.match(SOURCE, /function matchProviderById\(providers, providerId\)/);
-  assert.match(SOURCE, /matchProviderById\(providers, detectSelectedCustomProviderId\(self\)\)/);   // 主判定先于 Base URL 兜底（点击路径传锚）
+  assert.match(SOURCE, /askMpList\(self, false, detectSelectedCustomProviderId\(self\)\);/);   // 点击时同步采样选中项；选择规则的行为断言见文件尾
   assert.match(SOURCE, /\[data-testid="model-provider-base-url-input"\]/);   // Base URL 专用 testid 优先于启发式
   assert.doesNotMatch(SOURCE, /data-sec="models"/);   // ⚙ 分区已撤
   assert.doesNotMatch(SOURCE, /function (?:ensureMpProviders|syncMpList|startMpFetch)\b/);   // 旧列表逻辑仅存于台账注释
@@ -267,4 +267,135 @@ test("spec backfill is disclosed with per-key labels", () => {
   assert.match(SOURCE, /specEnriched/);
   assert.match(SOURCE, /规格补全：/);
   assert.match(SOURCE, /specSeen\[result\.specEnriched\[sk\]\] = 1/);
+});
+
+
+/* ---------- 供应商选择与列表重问（v330）----------
+ * 套餐源（account:*）的 token 要用系统钥匙串里的密钥解密，密钥异步到位，「列出供应商」可能
+ * 暂时不含它。选中的是套餐源而列表里没有它时：稍等重问一次，仍没有就提示凭据暂不可用——
+ * 不得落到「只有一个供应商就用它」的兜底，那会把拉取请求改投到用户的另一个供应商。 */
+const PLAN = { id: "account:bigmodel-individual-coding-plan", name: "BigModel Coding Plan", baseUrl: "https://open.bigmodel.cn/api/anthropic" };
+const RELAY = { id: "my-relay", name: "My Relay", baseUrl: "https://relay.example.com/v1" };
+const OTHER = { id: "other", name: "Other", baseUrl: "https://other.example.com/v1" };
+
+function loadMpPicker(selected) {
+  const calls = { ask: [], fetch: [], notice: [], chooser: [], busy: [], timers: [], restored: 0 };
+  const env = { active: true };
+  let selectedNow = () => selected.id || "";
+  if (typeof selected.id === "function") selectedNow = selected.id;   // 动态选中态：模拟等待期间宿主重渲染把选中项读丢
+  const sandbox = vm.createContext({
+    inactive: () => !env.active,
+    restoreModelPuller: () => { calls.restored += 1; },
+    setMpHostBusy: (btn, busy) => calls.busy.push(busy),
+    mpAsk: (action, payload, cb) => calls.ask.push({ action, cb }),
+    openMpNotice: (text) => calls.notice.push(text),
+    mpErrorText: () => "error-text",
+    detectSelectedCustomProviderId: () => selectedNow(),
+    detectMpProviderBaseUrl: () => selected.baseUrl || "",
+    startMpHostFetch: (provider) => calls.fetch.push(provider.id),
+    openMpProviders: (list) => calls.chooser.push(list.map((x) => x.id)),
+    setTimeout: (fn, ms) => { calls.timers.push({ fn, ms }); return calls.timers.length; },
+  });
+  vm.runInContext("var state = { lang: 'zh' };\nfunction L(zh, en) { return state.lang === 'en' ? en : zh; }\n" +
+    ["matchProviderById", "matchProviderByBaseUrl", "pickMpProvider", "askMpList"].map(sliceFunction).join("\n") +
+    "\nthis.__mp = { pickMpProvider: pickMpProvider, askMpList: askMpList };", sandbox);
+  const answer = (providers) => calls.ask[calls.ask.length - 1].cb({ ok: true, providers });
+  return { mp: sandbox.__mp, calls, env, answer };
+}
+
+test("pickMpProvider: 选中项按 id 命中优先；选中套餐源却不在列表里是 pending，不兜底", () => {
+  const { mp } = loadMpPicker({});
+  const plain = (v) => JSON.parse(JSON.stringify(v));
+  assert.deepEqual(plain(mp.pickMpProvider([RELAY, PLAN], PLAN.id, "")), { provider: PLAN });
+  assert.deepEqual(plain(mp.pickMpProvider([RELAY, OTHER], OTHER.id, RELAY.baseUrl)), { provider: OTHER });   // id 先于 Base URL
+  assert.deepEqual(plain(mp.pickMpProvider([RELAY], PLAN.id, "")), { pending: true });                          // 唯一供应商也不拿来顶替套餐源
+  assert.deepEqual(plain(mp.pickMpProvider([RELAY], PLAN.id, RELAY.baseUrl)), { pending: true });               // Base URL 碰巧相符同样不顶替
+  assert.deepEqual(plain(mp.pickMpProvider([], PLAN.id, "")), { pending: true });
+  assert.deepEqual(plain(mp.pickMpProvider([RELAY, OTHER], "", OTHER.baseUrl)), { provider: OTHER });           // 未识别选中项：Base URL 兜底
+  assert.deepEqual(plain(mp.pickMpProvider([RELAY], "", "")), { provider: RELAY });                             // 未识别选中项且只有一个：沿用既有兜底
+  assert.deepEqual(plain(mp.pickMpProvider([RELAY, OTHER], "", "")), { provider: null });                       // 多个且无法判定：交给选择弹窗
+});
+
+test("askMpList: 套餐源首次缺席则重问一次，到位后拉的是套餐源", () => {
+  const { mp, calls, answer } = loadMpPicker(PLAN);
+  mp.askMpList({}, false);
+  assert.equal(calls.ask.length, 1);
+  assert.equal(calls.ask[0].action, "model-pull-list");
+  answer([RELAY]);                                   // 钥匙串密钥还没进缓存：列表只有中转
+  assert.deepEqual(calls.fetch, []);
+  assert.deepEqual(calls.notice, []);
+  assert.equal(calls.timers.length, 1);
+  assert.equal(calls.timers[0].ms, 400);
+  calls.timers[0].fn();
+  assert.equal(calls.ask.length, 2);
+  answer([RELAY, PLAN]);
+  assert.deepEqual(calls.fetch, [PLAN.id]);
+  assert.deepEqual(calls.notice, []);
+  assert.equal(calls.timers.length, 1);
+});
+
+test("askMpList: 套餐源重问后仍缺席——提示凭据暂不可用，绝不改投到别的供应商", () => {
+  for (const listed of [[RELAY], [], [RELAY, OTHER]]) {
+    const { mp, calls, answer } = loadMpPicker(PLAN);
+    mp.askMpList({}, false);
+    answer(listed);
+    calls.timers[0].fn();
+    answer(listed);
+    assert.deepEqual(calls.fetch, [], "未向任何供应商发起拉取：" + JSON.stringify(listed.map((x) => x.id)));
+    assert.deepEqual(calls.chooser, []);
+    assert.deepEqual(calls.notice, ["当前套餐的登录凭据暂时不可用，请稍后重试。"]);
+    assert.deepEqual(calls.busy, [false]);          // 按钮 loading 解除
+    assert.equal(calls.timers.length, 1);           // 只重问一次
+  }
+});
+
+test("askMpList: 重问等待期间实例失活则收手，不再发第二次请求", () => {
+  const { mp, calls, env, answer } = loadMpPicker(PLAN);
+  mp.askMpList({}, false);
+  answer([RELAY]);
+  env.active = false;
+  calls.timers[0].fn();
+  assert.equal(calls.ask.length, 1);
+  assert.equal(calls.restored, 1);
+  assert.deepEqual(calls.fetch, []);
+});
+
+test("askMpList: 自定义供应商路径不变——命中即拉、无供应商给添加指引、无法判定开选择弹窗", () => {
+  const hit = loadMpPicker(RELAY);
+  hit.mp.askMpList({}, false);
+  hit.answer([OTHER, RELAY]);
+  assert.deepEqual(hit.calls.fetch, [RELAY.id]);
+  assert.equal(hit.calls.timers.length, 0);
+
+  const none = loadMpPicker({});
+  none.mp.askMpList({}, false);
+  none.answer([]);
+  assert.equal(none.calls.notice.length, 1);
+  assert.match(none.calls.notice[0], /未找到 API Key 型自定义供应商/);
+  assert.deepEqual(none.calls.busy, [false]);
+
+  const many = loadMpPicker({});
+  many.mp.askMpList({}, false);
+  many.answer([RELAY, OTHER]);
+  assert.deepEqual(many.calls.chooser, [[RELAY.id, OTHER.id]]);
+  assert.deepEqual(many.calls.fetch, []);
+
+  const failed = loadMpPicker(RELAY);
+  failed.mp.askMpList({}, false);
+  failed.calls.ask[0].cb({ ok: false, error: "x" });
+  assert.deepEqual(failed.calls.notice, ["error-text"]);
+});
+
+test("askMpList: 判定沿用点击时刻的选中项——等待期间选中态变化（读丢或变成别的供应商）都不改投", () => {
+  for (const later of ["", RELAY.id]) {   // 等待期间宿主重渲染把选中项读丢 / 用户切到了别的供应商
+    const seen = [];
+    const { mp, calls, answer } = loadMpPicker({ id: () => (seen.push(1), seen.length === 1 ? PLAN.id : later) });
+    mp.askMpList({}, false, seen.length === 0 ? undefined : PLAN.id);   // 点击时采样（loadMpPicker 的入口在 mp.askMpList 内已采样；这里显式传点击值）
+    answer([RELAY]);
+    assert.equal(calls.timers.length, 1, later);
+    calls.timers[0].fn();
+    answer([RELAY]);
+    assert.deepEqual(calls.fetch, [], "不得改投到唯一的自定义供应商：" + JSON.stringify(later));
+    assert.deepEqual(calls.notice, ["当前套餐的登录凭据暂时不可用，请稍后重试。"], later);
+  }
 });

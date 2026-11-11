@@ -555,15 +555,22 @@ function createModelPuller(opts) {
   function isPlanProvider(providerId) {
     return !!PLAN_SOURCES[String(providerId || "")];
   }
-  /* 套餐 token：宿主 credentials.json 解密，只在内存流转（同额度链纪律：不落盘不进日志） */
+  /* 套餐 token：宿主 credentials.json 解密，只在内存流转（同额度链纪律：不落盘不进日志）。
+   * 注入的 decryptValue 是 quota-client 的分发器（上游 #289）：v1/v2 双信封都能解，v2 密钥
+   * 经 defaultDec 绑定的真实路径上下文取。本入口只被用户动作触达：先越过 v2 密钥的失败冷却
+   * 与失配限频（钥匙串刚解锁时点一下就能拉到，不必等 60 秒）；密钥异步未热时本次为空、下次
+   * 即可。仍带 enc: 前缀的结果一律作废——热换竞窗里旧模块闭包可能透传密文，绝不外发。 */
   function planTokenOf(providerId) {
     const src = PLAN_SOURCES[String(providerId || "")];
     if (!src || !credentialsPath || !decryptValue) return null;
     try {
+      const quota = require("./quota-client.cjs");
+      if (typeof quota.v2KeyRetryNow === "function") quota.v2KeyRetryNow();
       const raw = JSON.parse(fs.readFileSync(credentialsPath, "utf8"));
       const enc = raw && typeof raw === "object" ? raw[src.credKey] : null;
       if (typeof enc !== "string" || !enc) return null;
-      const token = decryptValue(enc);
+      let token = decryptValue(enc);
+      if (typeof token === "string" && token.startsWith("enc:")) token = null;
       return token && String(token).trim() ? String(token).trim() : null;
     } catch (e) { return null; }
   }

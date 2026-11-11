@@ -141,6 +141,8 @@ function makeFakeElement(tag = 'div') {
         s = s.trim();
         if (s === 'path') return node.tagName === 'PATH';
         if (s === 'span.grid') return node.tagName === 'SPAN' && node.classList.contains('grid');
+        if (s === 'span.animated-gradient-text') return node.tagName === 'SPAN' && node.classList.contains('animated-gradient-text');   // 宿主 3.18.0 新 label
+        if (s === '[data-chat-loading-icon]') return node.hasAttribute('data-chat-loading-icon');   // 宿主 3.18.0 新 spinner 图标位
         if (s === 'svg.ico') return node.tagName === 'SVG' && node.classList.contains('ico');
         if (s === '.zu-whale-tail path') return node.tagName === 'PATH';
         if (s === '.zusage-root .zu-main') return node.classList.contains('zu-main');
@@ -428,10 +430,158 @@ test('chat mount replaces the label, hides the host elapsed clock in phrases mod
   api.setConfig({ enabled: false });
   assert.equal(label.textContent, '工作中...');
   assert.equal(label.hasAttribute('data-zu-host-label'), false);
+  assert.equal(label.hasAttribute('data-zu-last-text'), false, 'write-baseline attribute cleaned on restore');
   assert.equal(pixelGrid.style.display, '', 'pixel grid restored');
   assert.equal(clock.style.display, '', 'clock restored');
   assert.equal(chatRow.querySelector('.zu-whale-tail-wrap'), null, 'whale tail removed');
   assert.equal(chatRow.hasAttribute('data-zusage-rotator-slot'), false);
+});
+
+/* 宿主 3.18.0 loading 行新结构：label 类 .animated-gradient-text、spinner 图标位带
+ * data-chat-loading-icon 属性（.font-mono 耗时格未变）——轮播挂载/还原双兼容（v330）。 */
+function buildChatRow3180(body, labelText = '工作中') {
+  const chatRow = makeFakeElement('div');
+  chatRow.setAttribute('data-testid', 'chat-loading');
+  const pixelGrid = makeFakeElement('span');
+  pixelGrid.className = 'flex size-4 shrink-0 items-center justify-center';
+  pixelGrid.setAttribute('data-chat-loading-icon', 'true');
+  const label = makeFakeElement('span');
+  label.className = 'animated-gradient-text animated-gradient-text-foreground text-ui-base font-normal';
+  label.textContent = labelText;
+  const clock = makeFakeElement('span');
+  clock.className = 'font-mono text-ui-caption tabular-nums text-foreground-subtle';
+  clock.textContent = '1 分 32 秒';
+  chatRow.appendChild(pixelGrid);
+  chatRow.appendChild(label);
+  chatRow.appendChild(clock);
+  body.appendChild(chatRow);
+  return { chatRow, pixelGrid, label, clock };
+}
+
+test('chat mount works on the 3.18.0 loading row structure (label class renamed, v330)', () => {
+  const { ctx, window, body } = makeRotatorEnv('zh');
+  const api = window.__zusageStatusRotator;
+  const { chatRow, pixelGrid, label, clock } = buildChatRow3180(body, '工作中');
+
+  api.setConfig({ enabled: true, whaleTail: true, typeSpeedMs: 0 });
+  assert.equal(chatRow.getAttribute('data-zusage-rotator-slot'), '1', 'row claimed as rotator slot');
+  assert.equal(label.getAttribute('data-zu-host-label'), '工作中', 'host label snapshotted on the new node');
+  assert.notEqual(label.textContent, '工作中', 'phrase replaces the new label text');
+  assert.ok(label.classList.contains('zu-rotator-active-label'), 'active label class applied');
+  assert.equal(pixelGrid.style.display, 'none', 'new spinner icon slot hidden while whale tail is on');
+  assert.equal(clock.style.display, 'none', 'host elapsed clock hidden in phrases mode');
+
+  api.setConfig({ labelSource: 'host' });
+  assert.equal(label.textContent, '工作中', 'host mode restores native text on the new node');
+  assert.equal(clock.style.display, '', 'host mode keeps the native clock visible');
+
+  api.setConfig({ enabled: false });
+  assert.equal(label.textContent, '工作中');
+  assert.equal(label.hasAttribute('data-zu-host-label'), false);
+  assert.equal(label.hasAttribute('data-zu-last-text'), false, 'write-baseline attribute cleaned on restore');
+  assert.equal(pixelGrid.style.display, '', 'new spinner icon slot restored');
+  assert.equal(clock.style.display, '', 'clock restored');
+  assert.equal(chatRow.querySelector('.zu-whale-tail-wrap'), null, 'whale tail removed');
+  assert.equal(chatRow.hasAttribute('data-zusage-rotator-slot'), false);
+});
+
+/* v330：多个 loading 行并存（多分栏并发请求）时「我方最后写入」基准挂 label 自身
+ * data-zu-last-text，行间互不干扰。基准若是模块级单例，先处理的行每拍改写它，后处理的行
+ * 上一拍写入的打字文本就被误判成「宿主改写」而覆盖 data-zu-host-label 快照——只有显示文本
+ * 逐拍变化（打字推进/换词）时才暴露，所以必须驱动多拍，单拍整句显示测不出来。 */
+function driveConcurrentRows(env, a, b, hostA, hostB) {
+  const { window, timers, advanceNow } = env;
+  const api = window.__zusageStatusRotator;
+  api.setConfig({ enabled: true, typeSpeedMs: 28, whaleTail: false });
+  const ivs = [...timers.values()].filter(t => t.interval && t.ms === 65);
+  const tick = ivs[ivs.length - 1].fn;
+  const intact = (when) => {
+    assert.equal(a.label.getAttribute('data-zu-host-label'), hostA, `first row snapshot intact ${when}`);
+    assert.equal(b.label.getAttribute('data-zu-host-label'), hostB, `second row snapshot intact ${when}`);
+  };
+  const shown = new Set([b.label.textContent]);
+  for (let i = 0; i < 8; i++) { advanceNow(150); tick(); shown.add(b.label.textContent); intact(`at typing beat ${i + 1}`); }
+  advanceNow(4000); tick(); advanceNow(150); tick();   // 越过轮换间隔：换下一条词组再打一拍
+  shown.add(b.label.textContent);
+  intact('after phrase rotation');
+  assert.ok(shown.size >= 2, `displayed text really changed across beats (distinct: ${shown.size})`);   // 文本变一次就足以暴露共享基准；短词组 + 换词撞同文时只有 2~3 种
+  assert.equal(a.label.textContent, b.label.textContent, 'both rows show the same phrase text');
+
+  api.setConfig({ enabled: false });
+  assert.equal(a.label.textContent, hostA, 'first row restored to its own host text');
+  assert.equal(b.label.textContent, hostB, 'second row restored to its own host text');
+  for (const row of [a, b]) {
+    assert.equal(row.label.hasAttribute('data-zu-host-label'), false);
+    assert.equal(row.label.hasAttribute('data-zu-last-text'), false, 'write-baseline attribute cleaned on restore');
+  }
+}
+
+test('two concurrent loading rows keep independent host snapshots across typing beats (legacy + 3.18.0 structure)', () => {
+  const env = makeRotatorEnv('zh');
+  driveConcurrentRows(env, buildChatRow(env.body, '工作中...'), buildChatRow3180(env.body, 'Thinking'), '工作中...', 'Thinking');
+});
+
+test('two concurrent loading rows of the same structure keep independent host snapshots across typing beats', () => {
+  const legacy = makeRotatorEnv('zh');
+  driveConcurrentRows(legacy, buildChatRow(legacy.body, '工作中...'), buildChatRow(legacy.body, '正在思考...'), '工作中...', '正在思考...');
+  const modern = makeRotatorEnv('zh');
+  driveConcurrentRows(modern, buildChatRow3180(modern.body, '工作中'), buildChatRow3180(modern.body, 'Working'), '工作中', 'Working');
+});
+
+test('legacy selectors win when one row carries both structures (no comma-selector document order)', () => {
+  const { window, body } = makeRotatorEnv('zh');
+  const api = window.__zusageStatusRotator;
+  const chatRow = makeFakeElement('div');
+  chatRow.setAttribute('data-testid', 'chat-loading');
+  const iconDecoy = makeFakeElement('span');
+  iconDecoy.setAttribute('data-chat-loading-icon', 'true');
+  const grid = makeFakeElement('span');
+  grid.className = 'grid';
+  const decoy = makeFakeElement('span');
+  decoy.className = 'animated-gradient-text';
+  decoy.textContent = 'decoy';
+  const legacy = makeFakeElement('span');
+  legacy.className = 'zcode-loading-label';
+  legacy.textContent = '工作中...';
+  chatRow.appendChild(iconDecoy);   // 新结构的节点都排在前面：合并成逗号选择器会先命中它们
+  chatRow.appendChild(grid);
+  chatRow.appendChild(decoy);
+  chatRow.appendChild(legacy);
+  body.appendChild(chatRow);
+
+  api.setConfig({ enabled: true, whaleTail: true, typeSpeedMs: 0 });
+  assert.equal(legacy.getAttribute('data-zu-host-label'), '工作中...', 'legacy node is the mounted label');
+  assert.notEqual(legacy.textContent, '工作中...');
+  assert.equal(decoy.textContent, 'decoy', 'later-structure label untouched');
+  assert.equal(decoy.hasAttribute('data-zu-host-label'), false);
+  assert.equal(grid.style.display, 'none', 'legacy icon slot is the one hidden');
+  assert.equal(iconDecoy.style.display, '', 'later-structure icon slot untouched');
+  api.setConfig({ enabled: false });
+  assert.equal(legacy.textContent, '工作中...');
+  assert.equal(grid.style.display, '');
+});
+
+test('label not found: the host elapsed clock stays visible instead of losing both phrase and timer', () => {
+  const { window, body } = makeRotatorEnv('zh');
+  const api = window.__zusageStatusRotator;
+  const chatRow = makeFakeElement('div');
+  chatRow.setAttribute('data-testid', 'chat-loading');
+  const unknownLabel = makeFakeElement('span');
+  unknownLabel.className = 'some-future-label-class';
+  unknownLabel.textContent = '工作中';
+  const clock = makeFakeElement('span');
+  clock.className = 'font-mono tabular-nums';
+  clock.textContent = '12.3s';
+  chatRow.appendChild(unknownLabel);
+  chatRow.appendChild(clock);
+  body.appendChild(chatRow);
+
+  api.setConfig({ enabled: true, typeSpeedMs: 0 });
+  assert.equal(chatRow.getAttribute('data-zusage-rotator-slot'), '1', 'row still claimed');
+  assert.equal(unknownLabel.textContent, '工作中', 'unrecognised label left alone');
+  assert.equal(clock.style.display, '', 'native clock kept when the phrase cannot be shown');
+  api.setConfig({ enabled: false });
+  assert.equal(clock.style.display, '');
 });
 
 test('speed cell is fully native — no rotator pill, no whale svg, no flow theme (user revert 2026-11-06)', () => {
@@ -1103,4 +1253,72 @@ test('rotator 关闭态（默认）：65ms 定时器的帧步降到 1s 一次；
   vm.runInContext('rotatorCfg.enabled = true;', ctx);
   for (let i = 0; i < 5; i++) { advanceNow(70); iv.fn(); }           // 开启后恢复 65ms 节奏：每个心跳都执行
   assert.equal(ticks, 8);
+});
+
+/* ---------- 宿主中途改写同节点文案：重拍分支与还原路径（v330 之后补的设防） ---------- */
+test('host rewrites the mounted label: snapshot re-takes; host mode A→B→A ends on A; empty beat is not a rewrite', () => {
+  const env = makeRotatorEnv('zh');
+  const { window, body, timers, advanceNow } = env;
+  const api = window.__zusageStatusRotator;
+  const { label } = buildChatRow(body, '工作中...');
+  api.setConfig({ enabled: true, typeSpeedMs: 0 });
+  const tick = [...timers.values()].filter(t => t.interval && t.ms === 65).pop().fn;
+
+  // phrases 模式：宿主改写文案（≠我方最后写入、≠已存快照）→ 快照重拍为新文案，显示仍写回词组
+  advanceNow(100); tick();
+  label.textContent = '换个说法';
+  advanceNow(100); tick();
+  assert.equal(label.getAttribute('data-zu-host-label'), '换个说法', 'snapshot follows the host rewrite');
+  assert.notEqual(label.textContent, '换个说法', 'phrases mode keeps showing the phrase');
+  api.setConfig({ enabled: false });
+  assert.equal(label.textContent, '换个说法', 'disable restores the re-taken host text, not the pre-rewrite one');
+
+  // host 模式 A→B→A：每拍重拍，最终快照与显示都是 A（重拍不更新基准时快照会停在 B）
+  api.setConfig({ labelSource: 'host', enabled: true, typeSpeedMs: 0 });
+  advanceNow(100); tick();
+  label.textContent = 'B 文案';
+  advanceNow(100); tick();
+  assert.equal(label.getAttribute('data-zu-host-label'), 'B 文案');
+  assert.equal(label.textContent, 'B 文案', 'host mode shows the latest host text');
+  label.textContent = 'A 文案';
+  advanceNow(100); tick();
+  assert.equal(label.getAttribute('data-zu-host-label'), 'A 文案', 'snapshot follows back to A');
+  assert.equal(label.textContent, 'A 文案');
+  api.setConfig({ enabled: false });
+  assert.equal(label.textContent, 'A 文案');
+
+  // 文本被清空一拍：空串不是宿主改写，快照不变（清空常见于宿主重渲染的中间态）
+  api.setConfig({ labelSource: 'host', enabled: true, typeSpeedMs: 0 });
+  advanceNow(100); tick();
+  label.textContent = '';
+  advanceNow(100); tick();
+  assert.equal(label.getAttribute('data-zu-host-label'), 'A 文案', 'empty beat does not re-snapshot');
+  assert.equal(label.textContent, 'A 文案', 'host text is written back after the empty beat');
+});
+
+test('phrases 模式直接关闭（不经 host 模式中转）：耗时格恢复可见、激活类摘除', () => {
+  const { window, body } = makeRotatorEnv('zh');
+  const api = window.__zusageStatusRotator;
+  const { label, clock } = buildChatRow(body, '工作中...');
+  api.setConfig({ enabled: true, typeSpeedMs: 0 });
+  assert.equal(clock.style.display, 'none');
+  assert.ok(label.classList.contains('zu-rotator-active-label'));
+  api.setConfig({ enabled: false });
+  assert.equal(clock.style.display, '', 'clock restored on direct disable');
+  assert.equal(label.classList.contains('zu-rotator-active-label'), false, 'active label class removed');
+});
+
+test('关闭态的整文档还原不碰从未挂载过的 loading 行（新旧结构都要守卫）', () => {
+  const env = makeRotatorEnv('zh');
+  const { body, timers, advanceNow } = env;
+  const rows = [buildChatRow(body, '工作中...'), buildChatRow3180(body, 'Thinking')];
+  const tick = [...timers.values()].filter(t => t.interval && t.ms === 65).pop().fn;
+  advanceNow(2000); tick();   // 关闭态（默认）的 1s 帧步会扫全文档还原
+  advanceNow(2000); tick();
+  const want = ['工作中...', 'Thinking'];
+  rows.forEach((row, i) => {
+    assert.equal(row.label.textContent, want[i], 'untouched row keeps its host text');
+    assert.equal(row.chatRow.hasAttribute('data-zusage-rotator-slot'), false);
+    assert.equal(row.label.hasAttribute('data-zu-host-label'), false);
+  });
 });

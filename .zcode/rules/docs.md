@@ -30,6 +30,6 @@
 
 ## 4. 文档核对要点（改到对应领域时核对）
 
-- 命令说明统一使用裸命令（`/usage`、`/install-overlay`、`/uninstall-overlay`），宿主同时支持 `zcode-token-usage-statusbar:` 命名空间前缀；根 `usage.command.md` 与插件 `commands/usage.md` 保持取数顺序与回退说明同步。
+- 命令说明统一使用裸命令（`/usage`、`/install-overlay`、`/uninstall-overlay`），命令**不加插件名前缀**——引擎按命令文件名注册，带 `zcode-token-usage-statusbar:` 前缀的写法是 not-found（smoke 对真实引擎断言过；带插件名的是技能命名空间与 MCP 工具全名，不是命令）；根 `usage.command.md` 与插件 `commands/usage.md` 保持取数顺序与回退说明同步。
 - `docs/design-notes.md` 的速度两态口径（完成态会话均 `avg_tps`、最近一轮进 Tooltip）、`scope=current`（选数据库最近活跃会话，30 分钟仅判 active/idle）及常驻 `zusage.py serve` 进程表述须与源码一致。
 - 网络说明须区分本地 SQLite 只读统计与额度/重置卡、预估费用价表汇率同步、插件更新/更新日志及远端 SSH/WSL 查询，不笼统宣称全局“不联网”。核对时结合源码/契约测试，不顺手改业务逻辑或宣称正式渠道已有 main 功能。

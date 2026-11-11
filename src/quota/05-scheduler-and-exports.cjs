@@ -258,6 +258,9 @@ function createQuotaClient(opts) {
       st.nextAt = 0;
     }
     if (!force && (st.status === "auth_failed" || st.status === "no_plan")) return false;
+    /* 凭据刚就绪（钥匙串密钥到位、用户补了 key）：离开「未配置」，无论 token 是否临期——
+     * 否则临期早退会把上一拍的 decrypt 失败状态原样留在面板上 */
+    if (st.status === "not_configured") { st.status = "idle"; st.reason = ""; st.lastError = ""; }
     if (cred.source === "host" || cred.source === "env") {
       const exp = jwtExpMs(cred.token || "");
       if (exp && exp - t < EXP_SOON_MS) { st.nextAt = t + EXP_RETRY_MS; return false; }
@@ -542,12 +545,13 @@ function createQuotaClient(opts) {
     }
   }
 
-  return {
+  const client = {
     tick,
-    refresh() { return tick(true) > 0; },
+    refresh() { v2KeyRetryNow(); return tick(true) > 0; },   // 用户显式刷新：越过 v2 密钥冷却/失配限频
     refreshSource(id) {   // 厂商按钮刷新该厂商各账户；chip 的完整源 id 只刷新本账户
       const a = adapterOf(id);
       if (!a) return false;
+      v2KeyRetryNow();
       let started = false;
       if (String(id).indexOf(":") >= 0) {
         const st = states.get(id);
@@ -584,7 +588,8 @@ function createQuotaClient(opts) {
         st.inFlight = null;
       }
     },
-    credentialsChanged() {
+    credentialsChanged() {   // 凭据文件/配置变更（主桥 fs.watch 等）：v2 密钥也可能换了，允许马上重取
+      v2KeyRetryNow();
       /* 同一 provider 的 key/baseURL 也可能被修改；重读实际配置并重判适配器，
        * 不能沿用旧 ctx 或让一次 unsupported 永久锁住后来补全的 MiniMax 规则。 */
       const registered = new Set(Object.keys(byProvider));
@@ -698,6 +703,7 @@ function createQuotaClient(opts) {
     _states: states,
     _adapters: ADAPTERS,
   };
+  return client;
 }
 
 module.exports = {
@@ -710,6 +716,7 @@ module.exports = {
   setDefaultDecryptCtx,
   ensureDefaultV2Key,
   v2KeyPending,
+  v2KeyRetryNow,
   jwtExpMs,
   normalizeQuotaBody,
   normalizeZcodeStartBalance,
