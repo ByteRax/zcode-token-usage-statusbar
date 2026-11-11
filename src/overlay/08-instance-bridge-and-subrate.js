@@ -109,6 +109,17 @@
         "</style>";
       out += '<div class="rt-h">' + ttEsc(name) + (agent ? ' <span class="sub-agent">' + ttEsc(agent) + "</span>" : "") + "</div>";
       var rateTxt = (t.rate || "—") + L(" t/s", " t/s");
+      if (mode === "run") {
+        /* v334：状态面板「运行中」兜底态（无槽位无数据）——既无估算也无将来的估算，
+         * 不挂估速口径，只显事实与 DB 已知量。 */
+        out += ttRow(L("状态", "State"), L("运行中", "running"));
+        if (s1) {
+          if (s1.input != null) out += ttRow(L("输入", "Input"), fmt(s1.input) + L(" token", " tokens"));
+          out += ttRow(L("输出", "Output"), fmt(s1.output) + L(" token（含思考）", " tokens (thinking incl.)"));
+          out += ttRow(L("请求数", "Requests"), (s1.requests || 0) + L(" 次", " requests"));
+        }
+        return out;
+      }
       if (mode === "est") {
         out += ttRow(L("估速", "Estimate"), rateTxt);
         var sl = subRate.slots[csid];
@@ -148,7 +159,11 @@
       if (!state.show.subRate) {
         var staleChips = rootEl.querySelectorAll(".zu-subrate");
         for (var sc = 0; sc < staleChips.length; sc++) { try { staleChips[sc].remove(); } catch (e) { } }
-        if (subTipFor && (rootEl.contains(subTipFor) || !subTipFor.isConnected)) hideSubTip();
+        /* 只收本类 chip 的浮层（v334 修复）：宽条件会在 subRate 关 + wfChip 开时杀掉
+         * 悬停中的 .zu-wfrun/.zu-substat tooltip（10Hz 心跳常驻执行，闪烁）；其它类
+         * chip 的断连收起由各自渲染器尾部分支与 dispose 链负责。 */
+        if (subTipFor && subTipFor.classList && subTipFor.classList.contains("zu-subrate") &&
+            (rootEl.contains(subTipFor) || !subTipFor.isConnected)) hideSubTip();
         return;
       }
       var now = Date.now(), list = (lastSub && lastSub.list) || [], bySid = {};
@@ -262,7 +277,7 @@
         "</style>";
       out += '<div class="rt-h">' + ttEsc(L("工作流", "Workflow")) + ' <span class="sub-agent">' + ttEsc(t.runShort) + "</span></div>";
       var stText = t.running > 0 ? L("运行中 · ", "running · ") + t.running + L(" 个执行中", " active")
-        : (t.state ? ttEsc(t.state) : L("未知", "unknown"));
+        : (t.state || L("未知", "unknown"));   // 原文进 ttRow 由其统一转义（v334：去内层 ttEsc 防双重转义）
       out += ttRow(L("状态", "State"), stText);
       out += ttRow(L("Token 合计", "Tokens"), fmt(t.total));
       if (t.rate != null) {
@@ -307,14 +322,19 @@
       var runs = wfRunsFromList(runIds);
       var dark = true;
       try { dark = document.documentElement.classList.contains("dark"); } catch (e) { }
+      /* 摘除单卡旧 chip（v334）：run 失败/取消且无任何 ask 落库、或宿主摘掉状态属性后，
+       * 不满足渲染条件的卡不再保留上一拍的「运行中」残留。 */
+      var wfChipStale = function (card0) {
+        var old = card0.querySelector(".zu-wfrun");
+        if (old) { try { old.remove(); } catch (e) { } }
+      };
       for (var c = 0; c < cards.length; c++) {
         var card = cards[c];
         var runId = String(card.getAttribute("data-workflow-run-id") || "");
-        if (!runId) continue;
+        if (!runId) { wfChipStale(card); continue; }
         var dom = wfRunStateOf(card);
-        if (!dom.state && !dom.pills) continue;   // 无状态属性的卡不认（防宿主同名 testid 漂移出别物）
+        if (!dom.state && !dom.pills) { wfChipStale(card); continue; }   // 无状态属性的卡不认（防宿主同名 testid 漂移出别物；全缺与它重合，不单列）
         var g = runs[runId] || { runId: runId, total: 0, requests: 0, outSum: 0, genSum: 0, actors: [] };
-        if (!g.total && !g.requests && !dom.state && !dom.pills) continue;   // 全缺不渲染
         var rate = g.genSum > 0 ? g.outSum * 1000 / g.genSum : null;   // tps_gen 分量是毫秒（同 _rated_tps：Σout ÷ (Σgen/1000)）
         var bandCls = "ok", parts = [];
         if (g.total > 0) parts.push(fmt(g.total));
@@ -323,7 +343,7 @@
           parts.push(rate.toFixed(1) + L(" t/s", " t/s"));
         }
         if (!parts.length && dom.running > 0) parts.push(L("运行中", "running"));
-        if (!parts.length) continue;   // 无 token、无速率、也不在跑：不渲染
+        if (!parts.length) { wfChipStale(card); continue; }   // 无 token、无速率、也不在跑：摘旧 chip
         var txt = parts.join(L(" · ", " · "));
         var cls = "zu-wfrun" + (dark ? "" : " zu-light");
         var sig = bandCls + "|" + cls + "|" + txt + "|" + dom.state + "|" + dom.running;
@@ -342,16 +362,18 @@
           chip.__zuSig = sig;
           chip.className = cls;
           chip.innerHTML = '<span class="' + bandCls + '">' + ttEsc(txt) + "</span>";
-          var actors = [];
-          for (var ai = 0; ai < g.actors.length; ai++) {
-            var a0 = g.actors[ai];
-            actors.push({ name: (String(a0.task || "").trim() || String(a0.title || "").trim() || String(a0.sid || "").slice(-6)),
-                          total: a0.total || 0, tps: (a0.tps_avg > 0 ? a0.tps_avg.toFixed(1) : null) });
-          }
-          chip.__zuT = { buildTip: wfRunTipHTML, runId: runId, runShort: runId.slice(-12), state: dom.state,
-                         running: dom.running, total: g.total, requests: g.requests,
-                         rate: (rate != null ? rate.toFixed(1) : null), actors: actors };
         }
+        /* tooltip 包每拍重写（v334）：requests/actor 名只进包不进 sig——ask 空结算或
+         * 任务名后补时保持「打开瞬间内容最新」（specs/perf-lag-reduction.md §1）。 */
+        var actors = [];
+        for (var ai = 0; ai < g.actors.length; ai++) {
+          var a0 = g.actors[ai];
+          actors.push({ name: (String(a0.task || "").trim() || String(a0.title || "").trim() || String(a0.sid || "").slice(-6)),
+                        total: a0.total || 0, tps: (a0.tps_avg > 0 ? a0.tps_avg.toFixed(1) : null) });
+        }
+        chip.__zuT = { buildTip: wfRunTipHTML, runId: runId, runShort: runId.slice(-12), state: dom.state,
+                       running: dom.running, total: g.total, requests: g.requests,
+                       rate: (rate != null ? rate.toFixed(1) : null), actors: actors };
       }
       if (subTipFor && subTipFor.isConnected && subTipFor.__zuT) showSubTip(subTipFor);   // 悬停中随推送刷新（签名幂等不重建）
       else if (subTipFor && !subTipFor.isConnected) hideSubTip();
@@ -369,7 +391,11 @@
       if (!h || h.dead || !h.store) return list;
       var st = null;
       try { st = h.store.getState(); } catch (e) { return list; }
-      var works = st && st.snapshot && st.snapshot.backgroundWorks;
+      var snap = st && st.snapshot;
+      /* 会话校验（v334）：pane 原地切会话后、bridgeTick 重绑前的一拍内不得并入上一
+       * 会话的后台任务清单（同函数族既有的 snap.sessionId 校验纪律）。 */
+      if (!snap || snap.sessionId !== h.sid) return list;
+      var works = snap.backgroundWorks;
       if (!Array.isArray(works)) return list;
       for (var i = 0; i < works.length; i++) {
         var w = works[i];
@@ -425,11 +451,12 @@
           txt = rate.toFixed(1) + L(" t/s", " t/s");
           mode = "real";
         } else if (sl) {
-          bandCls = "dim";   // 绑定中/思考期：无字符流不显估算
+          bandCls = "dim";   // 绑定中/思考期：无字符流不显估算，估速口径仍适用（等待字符流）
           txt = L("估算中…", "estimating…");
         } else {
           bandCls = "dim";
           txt = L("运行中", "running");
+          mode = "run";   // v334：无槽位无数据，既无估算也无将来的估算，tooltip 不挂估速口径
         }
         var chip = el.querySelector(".zu-substat");
         var cls = "zu-substat" + (dark ? "" : " zu-light");
@@ -439,6 +466,10 @@
           chip.className = cls;
           chip.__zuSig = "";   // 置空走下方内容分支首建即写（预设 sig 会跳过 innerHTML，chip 恒空白）
           try { el.appendChild(chip); } catch (e) { continue; }
+        } else if (chip.parentElement !== el) {
+          /* v334：宿主结构变更可能把 chip 裹进更深容器——回位到行直接子节点，保住
+           * margin-left:auto 靠右定位（renderSubAgentRows 同款守卫）。 */
+          try { el.appendChild(chip); } catch (e) { }
         }
         if (chip.__zuSig !== sig) {
           chip.__zuSig = sig;

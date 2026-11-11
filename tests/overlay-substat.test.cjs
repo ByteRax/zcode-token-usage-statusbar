@@ -178,8 +178,10 @@ for (const lang of ['zh', 'en']) {
     ctx.lastSub = { list: [] };
     fn.render();
     assert.ok(chipOf(p.item).innerHTML.includes(lang === 'en' ? 'estimating…' : '估算中…'), '绑定中/思考期状态词');
-    ctx.subRate.slots[BG_SID].rate = 20;   // 过期速率（at=0）
+    ctx.subRate.slots[BG_SID].rate = 20;   // 过期速率：3.5s 前刷新，超出 3s 新鲜度窗（钉住常量量级）
+    ctx.subRate.slots[BG_SID].at = NOW - 3500;
     fn.render();
+    assert.ok(chipOf(p.item).innerHTML.includes(lang === 'en' ? 'estimating…' : '估算中…'), '过期估算不得作为速率显示（v334 补断言）');
     ctx.lastSub = { list: [{ sid: BG_SID, tps_avg: 88.4, total: 1000, task: 'Explore', title: '' }] };
     ctx.subRate.slots[BG_SID] = null;
     fn.render();
@@ -187,13 +189,29 @@ for (const lang of ['zh', 'en']) {
     assert.equal(chipOf(p.item).__zuT.mode, 'real');
   });
 
-  test(`${lang}: no slot and no data shows running-only chip`, () => {
+  test(`${lang}: no slot and no data shows running-only chip with run tooltip mode`, () => {
     const { ctx, fn } = extractSubStat(lang);
     const p = makePaneItem(BG_SID);
     ctx.composer = p.composer;
     ctx.lastSub = { list: [] };
     fn.render();
     assert.ok(chipOf(p.item).innerHTML.includes(lang === 'en' ? 'running<' : '运行中<'));
+    assert.equal(chipOf(p.item).__zuT.mode, 'run', '兜底态独立 mode：tooltip 不挂估速口径');
+  });
+
+  test(`${lang}: chip returns to the row when the host re-wraps it`, () => {
+    const { ctx, fn } = extractSubStat(lang);
+    const p = makePaneItem(BG_SID);
+    ctx.composer = p.composer;
+    ctx.subRate.slots[BG_SID] = { rate: 45, at: NOW - 100 };
+    fn.render();
+    const chip = chipOf(p.item);
+    const inner = new El('div');   // 宿主结构变更把 chip 裹进更深容器
+    inner.appendChild(chip);
+    p.item.appendChild(inner);
+    fn.render();
+    assert.equal(chipOf(p.item), chip, '仍可寻回');
+    assert.equal(chip.parentElement, p.item, '回位到行直接子节点（margin-left:auto 靠右定位依赖）');
   });
 
   test(`${lang}: render is idempotent and updates in place`, () => {
@@ -237,5 +255,5 @@ test('source contracts: substat wiring (style, delegation, call sites, union fee
   assert.match(source, /renderRunningSubagentItems\(\);   \/\/ v333：状态面板 Agents 行速率 chip 数据点 reapply/, 'render 尾部数据点');
   assert.match(source, /renderRunningSubagentItems\(\);   \/\/ v333：状态面板 Agents 行 chip DOM 对账点/, 'heavy DOM 对账点');
   assert.match(source, /w\.kind === "subagent" && w\.status === "running"/, '补给只认运行中 subagent 条目');
-  assert.match(source, /var VERSION = "v333";/);
+  assert.match(source, /var VERSION = "v334";/);
 });

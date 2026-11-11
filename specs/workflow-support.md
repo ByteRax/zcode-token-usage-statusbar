@@ -25,15 +25,15 @@ ZCode 动态工作流（`CreateWorkflow`，run id `dwfrun-<uuid>`）派生的子
 
 ## 4. run 卡 chip（渲染端）
 
-- 锚点 `[data-testid="workflow-card"][data-workflow-run-id]`，chip 类 `.zu-wfrun`，插在卡状态行附近，`__zuSig` 幂等。
-- chip 内容：运行状态点（DOM `data-workflow-card-state`）+ token 合计 + 聚合速率（sub.list 该 run 前缀行的 `Σoutput ÷ Σgen_ms` 加权，即各 actor `sub_gen` 分量之和；无有效段不显速率）。数据全缺（无 DB 行且无状态）不渲染。
-- tooltip 复用 body 级 `subTip` 浮层与既有 mouseover/mouseout 委托（判定加 `.zu-wfrun`，不新增监听）：run 状态、token 合计、聚合速率（口径行注明完成态）、actor 明细表（名字/状态/token/速率）；actor 状态构建时实时读卡 DOM，卡已卸载只显 DB 数据。
-- 开关：`state.show.wfChip`（localStorage `zusage3.wfChip`，缺省开，显式 `"0"` 关），只门控 chip 展示。
+- 锚点 `[data-testid="workflow-card"][data-workflow-run-id]`，chip 类 `.zu-wfrun`，插在卡状态行附近，`__zuSig` 幂等；不满足渲染条件（run 失败且无 ask 落库、宿主摘掉状态属性）时摘除旧 chip 不留「运行中」残留。
+- chip 面 = token 合计 + 聚合速率（sub.list 该 run 前缀行的 tps_out/tps_gen 分量 Σout ÷ (Σgen/1000)，即各 actor `sub_gen` 加权；无有效段不显速率）；尚无任何结算但卡在运行时显「运行中」。**chip 面不设状态点**，run 状态在悬停提示的状态行承载（随数据推送实时刷新）。
+- tooltip 复用 body 级 `subTip` 浮层与既有 mouseover/mouseout 委托（判定加 `.zu-wfrun`，不新增监听）：run 状态（sig 变化时刻的 DOM 快照）、token 合计、聚合速率（口径行注明完成态）、actor 明细表（名字/token/速率；会话流内药丸不带 session id，无法按 actor 对应状态，见 §1）。
+- 开关：`state.show.wfChip`（随 `zusage3.show` 整包持久化，⚙「工作流卡汇总」，缺省开），只门控 chip 展示。
 
 ## 5. 明确不做
 
 - 不放开 `turn-stats.js`/02 分片的 `sess_subagent_` acquire 前缀门（宿主若未来投行，sess_dwf 空转占槽风险）；工作流 actor 无流式估算。
-- 不加底部工具条 chip、不动 `inject-main.cjs`/`renderer_bridge.py`、不动 MCP/CLI stdout 契约结构（sub 段只是行数变多）。
+- 不加底部工具条 chip、不动 `inject-main.cjs`/`renderer_bridge.py`；CLI/MCP stdout 不改结构（sub 行仅增量字段 tps_out/tps_gen 与 is_sub/sub_kind，旧消费端按缺字段容错）。
 
 ## 6. 验收场景
 

@@ -97,7 +97,7 @@ class WorkflowSessionTests(unittest.TestCase):
         con.execute("insert into dwf_actor (run_id, site_id, name, session_id) values (?,?,?,?)",
                     (RUN, "judge-1@1", "研究员·通识", WF_SID))
         snap = zusage._session_snapshot(con, MAIN, CFG)
-        self.assertTrue(snap["is_sub"] is False or snap["is_sub"] is False)   # 主会话自身恒 False
+        self.assertFalse(snap["is_sub"])
         self.assertEqual(snap["sub_kind"], "")
         sub = snap["sub"]
         self.assertEqual(sub["requests"], 1)
@@ -169,6 +169,55 @@ class WorkflowSessionTests(unittest.TestCase):
         for row in (full, light):
             self.assertTrue(row["is_sub"])
             self.assertEqual(row["sub_kind"], "workflow")
+
+    def test_latest_and_current_exclude_workflow_actor(self):
+        """latest_sid 与 CLI current 排除工作流 actor（普通子代理保持既有候选语义）。"""
+        con = self.con()
+        self.sess(con, MAIN, title="父会话")
+        self.sess(con, WF_SID, parent=MAIN)
+        self.usage(con, "r1", MAIN, qs="main_turn", completed=1_000_000)
+        self.usage(con, "w1", WF_SID, qs="workflow_child", completed=9_000_000)   # actor 全库最新
+        self.assertEqual(zusage.render_current(con).find(WF_SID[-6:]), -1,
+                         "current 不得落到工作流 actor 会话")
+        self.assertIn("父会话", zusage.render_current(con))
+        rows = [(MAIN, 1_000_000), (WF_SID, 9_000_000)]
+        proxy = mock.Mock(wraps=con)
+        proxy.close = mock.Mock()
+        with mock.patch.object(zusage, "connect", return_value=proxy), \
+             mock.patch.object(zusage, "load_config", return_value=dict(CFG)), \
+             mock.patch.object(zusage, "_AGG_CACHE", {}), \
+             mock.patch.object(zusage, "_scan_session_ids", return_value=rows), \
+             mock.patch.object(zusage, "_remote_setup", return_value=None), \
+             mock.patch.object(zusage, "_PROJ_CACHE", {}):
+            snap = zusage.snapshot(force_sid="")
+        self.assertEqual(snap["session"]["sid"], MAIN, "顶层 base 不被 actor 顶掉")
+
+    def test_session_detail_includes_workflow_actor(self):
+        """CLI session:<前缀> 明细的子代理段纳入工作流 actor（query_source 门）。"""
+        con = self.con()
+        self.sess(con, MAIN, title="父会话")
+        self.sess(con, WF_SID, parent=MAIN, title="wf actor")
+        self.usage(con, "w1", WF_SID, qs="workflow_child", total=300, turn="wturn")
+        con.execute("insert into dwf_actor (run_id, site_id, name, session_id) values (?,?,?,?)",
+                    (RUN, "judge-1@1", "研究员·通识", WF_SID))
+        out = zusage.render_session_detail(con, MAIN)
+        self.assertIn("研究员·通识", out, "子代理明细段应含 dwf_actor.name")
+        self.assertIn(WF_SID[-6:], out)
+
+    def test_sub_cost_and_models_include_workflow_rows(self):
+        """子代理聚合费用/模型门纳入 workflow_child 行（_scope_models_cost 的门）。"""
+        con = self.con()
+        self.sess(con, MAIN)
+        self.sess(con, WF_SID, parent=MAIN)
+        self.usage(con, "w1", WF_SID, qs="workflow_child", total=300, model="GLM-5.3", turn="wturn")
+        fake_pricing = mock.Mock()
+        fake_pricing.merge_model_costs = lambda groups: (1.25, {"GLM-5.3": 1.25})
+        with mock.patch.object(zusage, "_pricing", fake_pricing):
+            snap = zusage._session_snapshot(con, MAIN, CFG)
+        self.assertIn("models", snap["sub"], "无门（改回单值）时本断言红")
+        self.assertEqual(snap["sub"]["models"][0]["model"], "GLM-5.3")
+        self.assertEqual(snap["sub"]["models"][0]["requests"], 1)
+        self.assertAlmostEqual(snap["sub"]["cost_usd"], 1.25)
 
 
 if __name__ == "__main__":

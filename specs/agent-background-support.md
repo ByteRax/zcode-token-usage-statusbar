@@ -17,7 +17,7 @@
 
 插件的运行中子代理清单原以 turn-stats 透传的父会话 rows（尾部 60 行窗口）为唯一来源；后台智能体运行中用户继续对话会把启动行滚出窗口 → 槽位解绑、估算与「子代理运行中 ×N」计数丢失。规则：
 
-- 消费侧（08 实例 updateLive）以桥 store 的 `snapshot.backgroundWorks` 补给：`kind==='subagent' && status==='running' && childSessionId` 的条目并入 `subRateTick` 输入集合（rows 行在前、补给追加、去重）。
+- 消费侧（08 实例 updateLive）以桥 store 的 `snapshot.backgroundWorks` 补给：`kind==='subagent' && status==='running' && childSessionId` 的条目并入 `subRateTick` 输入集合（rows 行在前、补给追加、去重）。**槽位上限的取舍**：补给条目追加在尾部，`subRateTick` 仍从尾部取前 8（最新优先）——并发 >8 时后台智能体倾向优先获槽（它们正是滚出窗口、无法从会话流再获估算的那部分），会话流内仍有行内 chip 交代的前台子代理让位；该优先级是有意取舍。
 - `backgroundWorks` 是事件驱动 state 键、窗口无关；条目在结果投递后消失（status=`resultPending` 即已完成不计），由既有对账自然解绑槽位。
 - `snapshot.subagents.running` 与 rows 同窗口派生，不作为补给源。
 

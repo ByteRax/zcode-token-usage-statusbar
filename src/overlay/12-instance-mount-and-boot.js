@@ -804,11 +804,12 @@
       restoreGitChip();   // v96：摘掉本 pane 的 Git chip（含在显 tooltip）
       /* v180 review：行内速率 chip 挂在宿主 Agent 行内（非条面自家节点），dispose
        * 不摘会在 pane 输入框暂时不可见被协调器回收时冻结在旧速率上、悬停还弹出
-       * 已 dispose 实例的 tooltip——趁 wantedEl/composer 尚在按 pane 根摘净。 */
+       * 已 dispose 实例的 tooltip——趁 wantedEl/composer 尚在按 pane 根摘净。
+       * v334：工作流卡（.zu-wfrun）与状态面板行（.zu-substat）chip 同性质同摘。 */
       try {
         var srr = subRowPaneRoot();
         if (srr) {
-          var staleChips = srr.querySelectorAll(".zu-subrate");
+          var staleChips = srr.querySelectorAll(".zu-subrate,.zu-wfrun,.zu-substat");
           for (var sc = 0; sc < staleChips.length; sc++) { try { staleChips[sc].remove(); } catch (e) { } }
           if (subTipFor && (srr.contains(subTipFor) || !subTipFor.isConnected)) hideSubTip();
         }

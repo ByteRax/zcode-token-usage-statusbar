@@ -206,6 +206,34 @@ for (const lang of ['zh', 'en']) {
     assert.equal(chip.__zuT.rate, null);
   });
 
+  test(`${lang}: card without state attributes is not trusted (drift guard), sibling card still renders`, () => {
+    const { ctx, fn } = extractWf(lang);
+    const p = makeCard(RUN, { pills: 1 });   // 对照卡：带状态属性，正常渲染
+    ctx.composer = p.composer;
+    const fake = new El('section');          // 负向夹具：同名 testid + runId，但无状态属性（宿主漂移出别物）
+    fake.setAttribute('data-testid', 'workflow-card');
+    fake.setAttribute('data-workflow-run-id', RUN);
+    p.root.appendChild(fake);
+    ctx.lastSub = { list: [{ sid: WF_SID, total: 50, requests: 1, tps_out: 100, tps_gen: 1000, tps_avg: 100, task: 'a', title: '' }] };
+    fn.render();
+    assert.equal(fake.querySelectorAll('.zu-wfrun').length, 0, '无状态属性的卡不渲染（防同名 testid 漂移）');
+    assert.ok(chipOf(p.card), '同 pane 带状态属性的卡照常渲染（对照，防断言太松全绿）');
+  });
+
+  test(`${lang}: stale chip is removed when the run no longer qualifies`, () => {
+    const { ctx, fn } = extractWf(lang);
+    const p = makeCard(RUN, { state: 'running', pills: 1 });
+    ctx.composer = p.composer;
+    ctx.lastSub = { list: [] };
+    fn.render();   // 先以「运行中」渲染出 chip
+    assert.ok(chipOf(p.card));
+    p.card.setAttribute('data-workflow-card-state', 'failed');   // 宿主随后 run 失败
+    const pill = p.card.querySelector('[data-agent-status]');
+    pill.setAttribute('data-agent-status', 'failed');
+    fn.render();   // running=0、无 token：不再满足渲染条件
+    assert.equal(chipOf(p.card), null, '状态残留摘除（v334）');
+  });
+
   test(`${lang}: no workflow cards in pane is a no-op`, () => {
     const { ctx, fn } = extractWf(lang);
     const root = new El();
