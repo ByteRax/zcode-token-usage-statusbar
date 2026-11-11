@@ -818,14 +818,16 @@
   }
   function subTipDocOver(e) {
     if (stale()) return;
-    var chip = e.target && e.target.closest ? e.target.closest(".zu-subrate") : null;
+    /* v332：工作流 run 卡 chip（.zu-wfrun）、v333 状态面板行 chip（.zu-substat）共用本浮层与委托——不加新监听（监听预算纪律） */
+    var chip = e.target && e.target.closest ? e.target.closest(".zu-subrate,.zu-wfrun,.zu-substat") : null;
     if (chip && chip.__zuT) { cancelSubHide(); showSubTip(chip); return; }
     if (subTipFor && !(e.target && subTip.contains(e.target))) scheduleSubHide();
   }
   function subTipDocOut(e) {
     if (!subTipFor) return;
     var to = e.relatedTarget;
-    if (to && (subTip.contains(to) || (to.closest && to.closest(".zu-subrate") === subTipFor))) return;
+    if (to && (subTip.contains(to) || (to.closest && (to.closest(".zu-subrate") === subTipFor ||
+        to.closest(".zu-wfrun") === subTipFor || to.closest(".zu-substat") === subTipFor)))) return;
     scheduleSubHide();
   }
   document.addEventListener("mouseover", subTipDocOver, true);

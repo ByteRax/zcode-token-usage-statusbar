@@ -171,6 +171,10 @@
      * 展开态保存在实例（projTipKey/projTipExpanded），归属键=sid+":"+起始时刻，项目变化自动重置；
      * 展开/收起走局部更新（projTipApplyModels）不重建整卡；数据刷新仍走 tipSig 全量签名。 */
     var projTipKey = "", projTipExpanded = false, projTipList = null;
+    /* v331 双范围 Tab：projTipScope="cur"|"all"（归属键变化时重置回 cur）；projTipProjExpanded
+     * 是项目明细独立展开态（与模型明细 projTipExpanded 互不联动）；projTipPj=Tab 同步
+     * 重编的数据源快照（下一帧 render 以新数据覆盖）。specs/all-projects-usage.md */
+    var projTipScope = "cur", projTipProjExpanded = false, projTipPj = null;
     function escAttr(s) { return String(s).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
     function pjRowsHTML(list, full) {
       var showCost = !!state.cost;   // ⚙ 开关关：费用列整体不渲染（与费用行同语义）
@@ -189,67 +193,129 @@
       var list = (pj.models || []).slice().sort(function (a, b) { return (b.total || 0) - (a.total || 0); });
       return expanded ? list : list.slice(0, 6);
     }
+    /* ---------- v331 全部项目模式（specs/all-projects-usage.md）----------
+     * 数据源=桌面快照顶层 all_projects（zusage._all_projects_usage）。旧主进程/旧
+     * Python/远端帧缺字段返回 null，调用方显式降级「暂不可用」，不借当前项目数据冒充。 */
+    function allProjectsData() {
+      var ap = state.data && state.data.all_projects;
+      return (ap && typeof ap === "object" && Array.isArray(ap.projects)) ? ap : null;
+    }
+    function pjProjRowsHTML(list) {
+      var showCost = !!state.cost;
+      return list.map(function (p1) {
+        var name = p1.unattributed ? L("未归属项目", "Unattributed")
+          : (p1.name || p1.directory || L("未知项目", "Unknown"));
+        return '<tr>' +
+          '<td class="zu-pj-mname" title="' + escAttr(p1.directory || name) + '">' + ttEsc(name) + '</td>' +
+          '<td>' + ttEsc(fmt(p1.total || 0)) + '</td>' +
+          '<td>' + ttEsc(countFmt(p1.requests || 0)) + '</td>' +
+          (showCost ? '<td>' + (typeof p1.cost_usd === "number" && isFinite(p1.cost_usd) ? ttEsc(fmtMoney(p1.cost_usd)) : "—") + '</td>' : "") +
+          '</tr>';
+      }).join("");
+    }
+    function pjProjRowsFor(ap, expanded) {
+      /* 上游 _all_projects_usage 已按 total 降序；此处对副本再排序（稳定），不改快照原数组 */
+      var list = (ap.projects || []).slice().sort(function (a, b) { return (b.total || 0) - (a.total || 0); });
+      return expanded ? list : list.slice(0, 5);
+    }
     function buildProjectTipHTML(pj, ownerKey) {
       projTipKey = ownerKey;
+      projTipPj = pj;   // v331：Tab 同步重编的数据源快照（下一帧 render 以新数据覆盖）
+      var isAll = projTipScope === "all";
+      var all = isAll ? allProjectsData() : null;
+      /* v331 头部：标题 + 右侧双范围 Tab（替代 v303「全部请求 · 含子代理」胶囊）。
+       * 两模式都渲染 Tab（全部项目下可切回）；当前项目名仅当前项目模式显示。 */
+      var head = '<div class="zu-pj-head"><div class="zu-pj-title' + (!isAll && pj.name ? " zu-tt-name" : "") + '">' + ttEsc(L("项目累计", "Project total")) +
+        (!isAll && pj.name ? '<span class="zu-pj-pname" title="' + escAttr(pj.name) + '">' + ttEsc(pj.name) + '</span>' : "") + '</div>' +
+        '<div class="zu-pj-tabs" role="tablist" aria-label="' + escAttr(L("统计范围", "Stats scope")) + '">' +
+        '<button type="button" class="zu-pj-tab' + (isAll ? "" : " on") + '" data-scope="cur" role="tab" aria-selected="' + (isAll ? "false" : "true") + '">' + ttEsc(L("当前项目", "Current")) + '</button>' +
+        '<button type="button" class="zu-pj-tab' + (isAll ? " on" : "") + '" data-scope="all" role="tab" aria-selected="' + (isAll ? "true" : "false") + '">' + ttEsc(L("全部项目", "All projects")) + '</button>' +
+        '</div></div>';
+      if (isAll && !all) {   // v331：缺 all_projects 字段（旧主进程/旧 Python 帧）显式不可用，不冒充
+        return statCompactStyle("project") +
+          '<div class="zu-project-tip zu-stat-tip zu-stat-tip--project" data-key="' + escAttr(ownerKey) + '">' + head +
+          '<div class="zu-stat-note">' + ttEsc(L("全部项目统计暂不可用", "All-projects stats unavailable")) + '</div></div>';
+      }
+      var v = all || pj;   // cur=pj；all=全部项目聚合（字段名与 project 行同构，KPI/明细/时间共用）
       var expanded = projTipExpanded;
-      var fullList = (pj.models || []).slice().sort(function (a, b) { return (b.total || 0) - (a.total || 0); });
+      var fullList = (v.models || []).slice().sort(function (a, b) { return (b.total || 0) - (a.total || 0); });
       projTipList = fullList;
       var shown = expanded ? fullList : fullList.slice(0, 6);
       var hasModels = fullList.length > 0;
-      var hitPct = (pj.input > 0 && isFinite(pj.input)) ? Math.round((pj.cache_read || 0) / pj.input * 100) : -1;
+      var hitPct = (v.input > 0 && isFinite(v.input)) ? Math.round((v.cache_read || 0) / v.input * 100) : -1;
       var showCost = !!state.cost;   // ⚙ 开关关：KPI 预估费用格与表头费用列不渲染
-      var costV = (typeof pj.cost_usd === "number" && isFinite(pj.cost_usd)) ? fmtMoney(pj.cost_usd) : "—";
+      var costV = (typeof v.cost_usd === "number" && isFinite(v.cost_usd)) ? fmtMoney(v.cost_usd) : "—";
+      /* v331 含缓存辅助行：输入主数值下显 cache_read 原值（缓存命中率分子同口径），
+       * 层级同输出格「含思考」；>0 才渲染，不反推、不重复计入 */
+      var cachedSub = v.cache_read > 0 ? ttEsc(L("含缓存 ", "incl. cached ") + fmt(v.cache_read)) : "";
+      /* v331 项目明细（仅全部项目模式，位于模型明细之前）：四列同款表格，默认前 5，
+       * 展开态 projTipProjExpanded 独立于模型明细；空列表显空态不渲染表头。 */
+      var plist = (v.projects || []);
+      /* v331 用户规格：分区名并入首列表头（项目明细=第一列），独立标题行删除；
+       * 截断注记降级为仅截断时出现的右对齐 note 行（.zu-pj-mnote 靠右） */
+      var projBlock = !all ? "" :
+        '<div class="zu-pj-models">' +
+        (v.projects_truncated ? '<div class="zu-pj-mhead"><div class="zu-pj-morder zu-pj-mnote">' + ttEsc(L("已截断，共 " + (v.projects_total || plist.length) + " 项", "truncated, " + (v.projects_total || plist.length) + " total")) + '</div></div>' : "") +
+        (plist.length
+          ? '<table class="zu-pj-table"><thead><tr><th>' + ttEsc(L("项目明细", "Projects")) + '</th>' +
+            '<th>' + ttEsc(L("Token 用量 ↓", "Tokens ↓")) + '</th><th>' + ttEsc(L("请求次数", "Requests")) + '</th>' +
+            (showCost ? '<th>' + ttEsc(L("预估费用", "Est. cost")) + '</th>' : "") + '</tr></thead>' +
+            '<tbody data-zu-pj-projects>' + pjProjRowsHTML(pjProjRowsFor(v, projTipProjExpanded)) + '</tbody></table>' +
+            (plist.length > 5
+              ? '<button type="button" class="zu-pj-more" data-kind="proj" data-key="' + escAttr(ownerKey) + '" aria-expanded="' + (projTipProjExpanded ? "true" : "false") + '">' +
+                (projTipProjExpanded ? ttEsc(L("收起", "Show less")) : ttEsc(L("查看全部 " + (v.projects_total || plist.length) + " 个项目", "Show all " + (v.projects_total || plist.length) + " projects")) + ' ▾') + '</button>'
+              : "")
+          : '<div class="zu-stat-note">' + ttEsc(L("暂无项目数据", "No project data")) + '</div>') +
+        '</div><div class="zu-pj-div"></div>';
       /* v303 根类并入统计卡家族：statCompactStyle("project") :has 作用域（450 宽/
        * 自适应高/共享规则）在此生效；zu-project-tip 保留（fxq 计价范围气泡与测试锚点） */
       return statCompactStyle("project") +
         '<div class="zu-project-tip zu-stat-tip zu-stat-tip--project" data-key="' + escAttr(ownerKey) + '">' +
-        '<div class="zu-pj-head"><div class="zu-pj-title' + (pj.name ? " zu-tt-name" : "") + '">' + ttEsc(L("项目累计", "Project total")) +
-        (pj.name ? '<span class="zu-pj-pname" title="' + escAttr(pj.name) + '">' + ttEsc(pj.name) + '</span>' : "") + '</div>' +
-        '<div class="zu-pj-range"><span class="zu-pj-scope">' + ttEsc(L("全部请求 · 含子代理", "All requests · incl. sub-agents")) + '</span></div></div>' +
+        head +
         /* v303 项目累计紧凑化（用户 /goal，同本轮/会话/今日四行 KPI 形态）：
-         * ①总用量|输入(缓存 N% 徽标随标签)|输出(含思考) ②请求次数|请求轮数|请求会话
-         * ③平均耗时|平均延迟|总耗时 ④平均输出速度(项目加权均 avg_tps 档色)|预估费用；
-         * 平均耗时/延迟/总耗时/平均输出速度为 v303 zusage _project_usage 新聚合
-         * （>0 门控，旧缓存自然降级）；缓存命中率不再占独立副行。 */
+         * ①总用量|输入(缓存 N% 徽标随标签；v331 副行「含缓存」)|输出(含思考)
+         * ②请求次数|请求轮数|请求会话 ③平均耗时|平均延迟|总耗时
+         * ④平均输出速度(加权均 avg_tps 档色)|预估费用（>0 门控，缺失不伪造 0s/0%） */
         '<div class="zu-turn-kpis">' +
-          statKpi(kpiIco("total") + L("总用量", "Total tokens"), ttEsc(fmt(pj.total || 0)), turnVBkt(fmt(pj.total || 0))) +
+          statKpi(kpiIco("total") + L("总用量", "Total tokens"), ttEsc(fmt(v.total || 0)), turnVBkt(fmt(v.total || 0))) +
           statKpi(kpiIco("input") + L("输入", "Input") +
             (hitPct >= 0 ? '<span class="hit zu-turn-hit">' + ttEsc(L("缓存", "cache ") + hitPct + "%") + '</span>' : ""),
-            ttEsc(fmt(pj.input || 0)), turnVBkt(fmt(pj.input || 0))) +
-          statKpi(kpiIco("output") + L("输出", "Output"), ttEsc(fmt(pj.output || 0)), turnVBkt(fmt(pj.output || 0)),
-            (pj.reasoning > 0 ? ttEsc(L("含思考 ", "incl. ") + fmt(pj.reasoning)) : "")) +
+            ttEsc(fmt(v.input || 0)), turnVBkt(fmt(v.input || 0)), cachedSub) +
+          statKpi(kpiIco("output") + L("输出", "Output"), ttEsc(fmt(v.output || 0)), turnVBkt(fmt(v.output || 0)),
+            (v.reasoning > 0 ? ttEsc(L("含思考 ", "incl. ") + fmt(v.reasoning)) : "")) +
         '</div>' +
-        /* 行二：请求规模（请求数/轮数/会话数均为项目聚合真值） */
+        /* 行二：请求规模（请求数/轮数/会话数均为聚合真值） */
         '<div class="zu-turn-kpis">' +
-          statKpi(kpiIco("requests") + L("请求次数", "Requests"), ttEsc(countFmt(pj.requests || 0)), turnVBkt(countFmt(pj.requests || 0))) +
-          statKpi(kpiIco("turns") + L("请求轮数", "Turns"), ttEsc(countFmt(pj.turns || 0)), turnVBkt(countFmt(pj.turns || 0))) +
-          statKpi(kpiIco("sessions") + L("请求会话", "Sessions"), ttEsc(countFmt(pj.sessions || 0)), turnVBkt(countFmt(pj.sessions || 0))) +
+          statKpi(kpiIco("requests") + L("请求次数", "Requests"), ttEsc(countFmt(v.requests || 0)), turnVBkt(countFmt(v.requests || 0))) +
+          statKpi(kpiIco("turns") + L("请求轮数", "Turns"), ttEsc(countFmt(v.turns || 0)), turnVBkt(countFmt(v.turns || 0))) +
+          statKpi(kpiIco("sessions") + L("请求会话", "Sessions"), ttEsc(countFmt(v.sessions || 0)), turnVBkt(countFmt(v.sessions || 0))) +
         '</div>' +
-        /* 行三：平均耗时 | 平均延迟 | 总耗时（v303 聚合，>0 门控缺失不伪造 0s） */
-        ((pj.avg_duration_ms > 0 || pj.avg_ttft_ms > 0 || pj.duration_ms > 0)
+        /* 行三：平均耗时 | 平均延迟 | 总耗时（>0 门控缺失不伪造 0s） */
+        ((v.avg_duration_ms > 0 || v.avg_ttft_ms > 0 || v.duration_ms > 0)
           ? '<div class="zu-turn-kpis zu-turn-kpis--mid">' +
-            (pj.avg_duration_ms > 0 ? statKpi(kpiIco("duration") + L("平均耗时", "Avg time"), ttEsc(sec(pj.avg_duration_ms)), turnVBkt(sec(pj.avg_duration_ms))) : "") +
-            (pj.avg_ttft_ms > 0 ? statKpi(kpiIco("latency") + L("平均延迟", "Avg TTFT"), ttEsc(sec(pj.avg_ttft_ms)), turnVBkt(sec(pj.avg_ttft_ms))) : "") +
-            (pj.duration_ms > 0 ? statKpi(kpiIco("elapsed") + L("总耗时", "Total time"), ttEsc(secLong(pj.duration_ms)), turnVBkt(secLong(pj.duration_ms))) : "") +
+            (v.avg_duration_ms > 0 ? statKpi(kpiIco("duration") + L("平均耗时", "Avg time"), ttEsc(sec(v.avg_duration_ms)), turnVBkt(sec(v.avg_duration_ms))) : "") +
+            (v.avg_ttft_ms > 0 ? statKpi(kpiIco("latency") + L("平均延迟", "Avg TTFT"), ttEsc(sec(v.avg_ttft_ms)), turnVBkt(sec(v.avg_ttft_ms))) : "") +
+            (v.duration_ms > 0 ? statKpi(kpiIco("elapsed") + L("总耗时", "Total time"), ttEsc(secLong(v.duration_ms)), turnVBkt(secLong(v.duration_ms))) : "") +
             '</div>' : "") +
-        /* 行四：平均输出速度（项目加权均，TPS_BANDS 档色）| 预估费用（问号走项目卡既有
-         * 计价范围气泡机制）；费用关/缺失时速度格 only-child 占满整行 */
+        /* 行四：平均输出速度（加权均，TPS_BANDS 档色）| 预估费用（全部项目模式问号随
+         * fxqIcon 携带全局模型计价范围；费用关/缺失时速度格 only-child 占满整行） */
         '<div class="zu-turn-kpis zu-turn-kpis--duo">' +
-          ((typeof pj.avg_tps === "number" && isFinite(pj.avg_tps) && pj.avg_tps > 0)
-            ? statKpi(kpiIco("speed") + L("平均输出速度", "Avg output rate"), '<b class="' + tpsBand(pj.avg_tps).cls + '">' + ttEsc(pj.avg_tps.toFixed(1)) + '</b> <small>t/s</small>')
+          ((typeof v.avg_tps === "number" && isFinite(v.avg_tps) && v.avg_tps > 0)
+            ? statKpi(kpiIco("speed") + L("平均输出速度", "Avg output rate"), '<b class="' + tpsBand(v.avg_tps).cls + '">' + ttEsc(v.avg_tps.toFixed(1)) + '</b> <small>t/s</small>')
             : statKpi(kpiIco("speed") + L("平均输出速度", "Avg output rate"), "—")) +
-          ((showCost && typeof pj.cost_usd === "number" && isFinite(pj.cost_usd))
-            ? statKpi(L("预估费用", "Est. cost") + FXQ_ICON, ttEsc(costV))
+          ((showCost && typeof v.cost_usd === "number" && isFinite(v.cost_usd))
+            ? statKpi(L("预估费用", "Est. cost") + (all ? fxqIcon(v.models, L("全部项目", "all projects")) : FXQ_ICON), ttEsc(costV))
             : "") +
         '</div>' +
+        projBlock +
         (hasModels
-          ? '<div class="zu-pj-models"><div class="zu-pj-mhead"><div class="zu-pj-mtitle">' + ttEsc(L("模型明细", "Models")) + '</div>' +
-            '<div class="zu-pj-morder">' +
-            ((pj.tool_calls || pj.retries)
-              ? [(pj.tool_calls ? ttEsc(L("工具调用 ", "tools ") + countFmt(pj.tool_calls) + L(" 次", " calls")) : ""),
-                 (pj.retries ? ttEsc(L("重试 ", "retries ") + countFmt(pj.retries) + L(" 次", " times")) : "")].filter(Boolean).join('<i class="zu-turn-sep">·</i>')
-              : ttEsc(L("按用量排序", "by usage"))) + '</div></div>' +
-            '<table class="zu-pj-table"><thead><tr><th>' + ttEsc(L("模型", "Model")) + '</th>' +
+          ? '<div class="zu-pj-models">' +
+            ((v.tool_calls || v.retries)
+              ? '<div class="zu-pj-mhead"><div class="zu-pj-morder zu-pj-mnote">' +
+                [(v.tool_calls ? ttEsc(L("工具调用 ", "tools ") + countFmt(v.tool_calls) + L(" 次", " calls")) : ""),
+                 (v.retries ? ttEsc(L("重试 ", "retries ") + countFmt(v.retries) + L(" 次", " times")) : "")].filter(Boolean).join('<i class="zu-turn-sep">·</i>') + '</div></div>'
+              : "") +
+            '<table class="zu-pj-table"><thead><tr><th>' + ttEsc(L("模型明细", "Models")) + '</th>' +
             '<th>' + ttEsc(L("Token 用量 ↓", "Tokens ↓")) + '</th><th>' + ttEsc(L("请求次数", "Requests")) + '</th>' +
             (showCost ? '<th>' + ttEsc(L("预估费用", "Est. cost")) + '</th>' : "") + '</tr></thead>' +
             '<tbody data-zu-pj-rows>' + pjRowsHTML(shown, true) + '</tbody></table>' +
@@ -260,14 +326,15 @@
             '</div>'
           : "") +
         '<div class="zu-stat-time"><b>' + ttEsc(L("时间范围", "Time span")) + '</b>' +
-        '<span>' + (pj.started ? fmtStartS(pj.started) : "—") + " — " + (pj.last_at ? fmtStartS(pj.last_at) : "—") + '</span></div>' +
+        '<span>' + (v.started ? fmtStartS(v.started) : "—") + " — " + (v.last_at ? fmtStartS(v.last_at) : "—") + '</span></div>' +
         '</div>';
     }
     /* 展开/收起的局部更新：只替换模型行与按钮态，不重建整卡（滚动/焦点/选择不受扰）。
      * 内容串纳入 expanded 态，数据刷新整卡重建时保持展开；归属键不匹配则忽略。 */
-    function projTipApplyModels(btn) {
+    function projTipApplyModels(btn, targetExpanded) {
       var root = btn.closest && btn.closest(".zu-project-tip");
-      if (!root || btn.getAttribute("data-key") !== projTipKey) return;
+      if (!root || btn.getAttribute("data-key") !== projTipKey) return false;
+      if (typeof targetExpanded === "boolean") projTipExpanded = targetExpanded;   // v331：守卫通过才落状态
       var shown = projTipExpanded ? projTipList : projTipList.slice(0, 6);
       var rows = root.querySelector("[data-zu-pj-rows]");
       if (rows) rows.innerHTML = pjRowsHTML(shown, true);
@@ -276,6 +343,25 @@
         ? ttEsc(L("收起", "Show less"))
         : ttEsc(L("查看全部 " + projTipList.length + " 个模型", "Show all " + projTipList.length + " models")) + " ▾";
       if (typeof positionTip === "function" && tipFor) positionTip(tipFor, true);
+      return true;
+    }
+    /* v331：项目明细展开/收起的局部更新（同 projTipApplyModels 不重建整卡）；
+     * 展开态 projTipProjExpanded 独立，数据源=当前帧 all_projects（缺帧静默忽略，
+     * 返回 false 交调用方保持原状态）。展开按钮计数用 projects_total（截断前真实数）。 */
+    function projTipApplyProjects(btn, targetExpanded) {
+      var root = btn.closest && btn.closest(".zu-project-tip");
+      var ap = allProjectsData();
+      if (!root || !ap || btn.getAttribute("data-key") !== projTipKey) return false;
+      if (typeof targetExpanded === "boolean") projTipProjExpanded = targetExpanded;
+      var total = ap.projects_total || ap.projects.length;
+      var rows = root.querySelector("[data-zu-pj-projects]");
+      if (rows) rows.innerHTML = pjProjRowsHTML(pjProjRowsFor(ap, projTipProjExpanded));
+      btn.setAttribute("aria-expanded", projTipProjExpanded ? "true" : "false");
+      btn.innerHTML = projTipProjExpanded
+        ? ttEsc(L("收起", "Show less"))
+        : ttEsc(L("查看全部 " + total + " 个项目", "Show all " + total + " projects")) + " ▾";
+      if (typeof positionTip === "function" && tipFor) positionTip(tipFor, true);
+      return true;
     }
     /* v215 统计卡公共片段（六卡共用）：head/KPI/明细/规模/表格/时间。数据全部真实字段。 */
     function statHead(title, scope, name, icoHtml) {
@@ -983,7 +1069,8 @@
       if (state.show.proj && sess.project) {   // v159 项目累计：本项目全部会话（含子代理），远端/不在本地库无此字段不渲染
         var pj = sess.project;
         var pjKey = (pickedSid || "") + ":" + (pj.started || 0);   // v214 项目卡归属键：项目变化（started 变）自动重置展开态
-        if (pjKey !== projTipKey) { projTipKey = pjKey; projTipExpanded = false; }
+        /* v331：归属键变化同时重置范围 Tab 与项目明细展开态（新项目回到默认当前项目视角） */
+        if (pjKey !== projTipKey) { projTipKey = pjKey; projTipExpanded = false; projTipScope = "cur"; projTipProjExpanded = false; }
         it(ico('<path d="M3.5 6.5a2 2 0 0 1 2-2h4.2l2 2h7.3a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5.5a2 2 0 0 1-2-2z"/>') +
           '<span class="v">' + fmt(pj.total) + "</span>" +
           (state.theme === "pill" ? "" :

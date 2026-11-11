@@ -841,6 +841,222 @@ def _project_usage(con, sid, with_models=False):
     return _cached_project(dbkey, (prow[0], pkey, bool(with_models)), run, con)
 
 
+_ALLPROJ_CACHE_KEY = ("__all_projects__",)   # _PROJ_CACHE 内的全局聚合专属键（project_id 均为宿主 slug，不撞）
+_ALLPROJ_MAX_PROJECTS = 500   # 项目明细条目上限（totals 恒为全量真值，超出置 projects_truncated）
+
+
+def _all_projects_usage(con):
+    """全部项目聚合（v331，specs/all-projects-usage.md）：本地统计数据源所有项目的
+    completed 请求累计——全局 KPI + 按项目明细 + 按模型全局明细，供项目累计 Tooltip
+    「全部项目」Tab。归属单元=会话：派生会话沿 parent_id 链上行取根会话的项目身份
+    （环守卫、父缺失按自身）；项目键=(project_id, 归一化目录) 与 _project_usage 的
+    issue #248 语义一致（碰撞项目互不混入）；project_id 为空或会话已删的请求单列
+    未归属桶（unattributed），保证 totals==Σ projects 对账恒成立。每条请求只经其
+    会话参与一次统计，主会话/子代理不重复计入。缓存复用 _cached_project（水位/2s TTL
+    同款，实测 2.6GB 库 ~210ms/次、载荷 ~6KB，仅水位变化帧重算）；任何列漂移抛
+    sqlite3.Error 由调用方按可选增强降级省略。"""
+    def run():
+        sess = {}
+        for r in con.execute("select id, project_id, directory, parent_id from session"):
+            sess[r[0]] = (r[1] or "", r[2] or "", r[3])
+        proj_of = {}   # sid -> (key, name, directory, unattributed)
+        meta = {}      # key -> (name, directory, unattributed)（同键多会话同值，setdefault 幂等）
+        for sid, (pid, pdir, _parent) in sess.items():
+            cur, seen = sid, set()
+            while True:   # 派生会话沿 parent 链上行取根。环守卫只保证终止（宿主数据损坏
+                # 防御）：环上各起点的"根"互不相同，归属可能错位但不死循环、账本仍恒成立
+                nxt = sess[cur][2]
+                if not nxt or nxt in seen or nxt not in sess:
+                    break
+                seen.add(cur)
+                cur = nxt
+            rpid, rdir = sess[cur][0], sess[cur][1]
+            if not rpid:
+                # project_id 为空（含带目录的）：目录不足以安全归属（宿主正常会话恒有
+                # project_id，缺失即数据残缺）——全部并入单一未归属桶，不按目录拆多桶
+                proj_of[sid] = (("", ""), "", "", True)
+                meta.setdefault(("", ""), ("", "", True))
+                continue
+            rdir_n = rdir.replace("\\", "/").rstrip("/")
+            name = rdir_n.rsplit("/", 1)[-1] if rdir_n else ""
+            proj_of[sid] = ((rpid, _norm_path_key(rdir_n)), name, rdir_n, False)
+            meta.setdefault((rpid, _norm_path_key(rdir_n)), (name, rdir_n, False))
+
+        def key_of(sid):
+            hit = proj_of.get(sid)
+            # 会话表缺失（session 已删）的请求：未归属桶，不丢也不并入任何项目
+            return hit if hit is not None else (("", ""), "", "", True)
+
+        agg = {}      # key -> [sessions,turns,requests,input,output,reasoning,cache_read,
+                      #          cache_write,total,tool_calls,retries,dur_sum,dur_pos,dur_n,
+                      #          ttft_pos,ttft_n,started,last_at]
+        groups = {}   # key -> {(model_lower, provider): [input, output, cache_read, cache_write]}
+        mnames = {}   # key -> {model_lower: 规范展示名}
+        for r in con.execute(
+            """select session_id, count(*), count(distinct coalesce(turn_id,'')),
+                      coalesce(sum(input_tokens),0), coalesce(sum(output_tokens),0),
+                      coalesce(sum(reasoning_tokens),0),
+                      coalesce(sum(cache_read_input_tokens),0),
+                      coalesce(sum(cache_creation_input_tokens),0),
+                      coalesce(sum(computed_total_tokens),0),
+                      coalesce(sum(tool_call_count),0), coalesce(sum(retry_count),0),
+                      coalesce(sum(duration_ms),0),
+                      sum(case when duration_ms > 0 then duration_ms end),
+                      sum(case when duration_ms > 0 then 1 else 0 end),
+                      sum(case when time_to_first_token_ms > 0 then time_to_first_token_ms end),
+                      sum(case when time_to_first_token_ms > 0 then 1 else 0 end),
+                      min(started_at), max(completed_at)
+               from model_usage where status='completed' group by session_id"""):
+            a = agg.setdefault(key_of(r[0])[0], [0] * 16 + [None, None])
+            a[0] += 1
+            a[1] += r[2] or 0
+            a[2] += r[1]
+            for i in range(3, 16):
+                a[i] += r[i] or 0
+            if r[16] is not None and (a[16] is None or r[16] < a[16]):
+                a[16] = r[16]
+            if r[17] is not None and (a[17] is None or r[17] > a[17]):
+                a[17] = r[17]
+        # 模型分组（会话粒度取回后按项目分桶）：计价需 (model, provider) × 项目拆分；
+        # 全局模型明细与各项目费用同源这条 SQL，不再回表。全局聚合器独立累积——
+        # groups/mnames 按项目分桶，未归属桶只是其中一个 key，不能当全局读。
+        gnames = {}
+        ggroups = {}
+        greq = {}
+        gtot = {}
+        for r in con.execute(
+            """select session_id, model_id, provider_id, count(*),
+                      coalesce(sum(input_tokens),0), coalesce(sum(output_tokens),0),
+                      coalesce(sum(cache_read_input_tokens),0),
+                      coalesce(sum(cache_creation_input_tokens),0),
+                      coalesce(sum(computed_total_tokens),0)
+               from model_usage where status='completed'
+               group by session_id, model_id, provider_id"""):
+            key = key_of(r[0])[0]
+            raw_m = r[1] or ""
+            m_key = raw_m.lower()
+            names = mnames.setdefault(key, {})
+            names[m_key] = _canon_model_name(names.get(m_key), raw_m)
+            gacc = groups.setdefault(key, {}).setdefault((m_key, r[2] or ""), [0, 0, 0, 0])
+            gacc[0] += r[4]
+            gacc[1] += r[5]
+            gacc[2] += r[6]
+            gacc[3] += r[7]
+            gnames[m_key] = _canon_model_name(gnames.get(m_key), raw_m)
+            gacc_g = ggroups.setdefault((m_key, r[2] or ""), [0, 0, 0, 0])
+            for i in range(4):
+                gacc_g[i] += r[4 + i]
+            greq[m_key] = greq.get(m_key, 0) + r[3]
+            gtot[m_key] = gtot.get(m_key, 0) + r[8]
+        # 平均输出速度（全局）：Σ有效输出 ÷ Σ有效生成窗口，_project_usage 同源口径
+        covers = _provider_first_token_covers(con)
+        rate_rows = con.execute(
+            """select output_tokens, first_token_at, completed_at, started_at,
+                      reasoning_tokens, model_id, provider_id
+               from model_usage where status='completed'
+                 and (query_source is null or query_source='main_turn')""").fetchall()
+        tr = _turn_rate(rate_rows, covers)
+
+        def canon_groups(gg, names):
+            return [(names[ml], prov, v[0], v[1], v[2], v[3]) for (ml, prov), v in gg.items()]
+
+        def cost_of(key):
+            """按 (model, provider) 分组计价；价表缺失/失败返回 None（消费端按缺失降级）"""
+            if _pricing is None or not groups.get(key):
+                return None
+            try:
+                return _pricing.merge_model_costs(canon_groups(groups[key], mnames.get(key, {})))[0]
+            except Exception:
+                return None
+
+        gmodels = [{"model": gnames[ml], "requests": greq[ml], "total": gtot[ml]} for ml in gnames]
+        g_cost = None
+        if _pricing is not None and ggroups:
+            try:
+                g_cost, per_cost = _pricing.merge_model_costs(canon_groups(ggroups, gnames))
+                prov_of = {}
+                for model_name, prov, *_ in canon_groups(ggroups, gnames):
+                    prov_of.setdefault(model_name, prov)
+                for m1 in gmodels:
+                    m1["cost_usd"] = per_cost.get(m1["model"], 0.0)
+                    m1["rates"] = _model_rates(m1["model"], prov_of.get(m1["model"], "")).get("rates")
+            except Exception:
+                g_cost = None   # 计价失败不拖垮明细（cost 字段缺失，消费端显 —，不冒充 0）
+        gmodels.sort(key=lambda m1: -m1["total"])
+
+        projects = []
+        for key, a in agg.items():
+            name, directory, unattr = meta.get(key, ("", "", True))
+            projects.append({
+                "name": name, "directory": directory, "total": a[8], "requests": a[2],
+                "cost_usd": cost_of(key),
+                **({"unattributed": True} if unattr else {}),
+            })
+        projects.sort(key=lambda p: (-p["total"], p["name"], p["directory"]))
+        truncated = len(projects) > _ALLPROJ_MAX_PROJECTS
+
+        sessions = turns = requests = total = 0
+        input_t = output_t = reasoning = cache_read = cache_write = 0
+        tool_calls = retries = dur_sum = dur_pos = dur_n = ttft_pos = ttft_n = 0
+        started = last_at = None
+        for a in agg.values():
+            sessions += a[0]
+            turns += a[1]
+            requests += a[2]
+            input_t += a[3]
+            output_t += a[4]
+            reasoning += a[5]
+            cache_read += a[6]
+            cache_write += a[7]
+            total += a[8]
+            tool_calls += a[9]
+            retries += a[10]
+            dur_sum += a[11]
+            dur_pos += a[12]
+            dur_n += a[13]
+            ttft_pos += a[14]
+            ttft_n += a[15]
+            if a[16] is not None and (started is None or a[16] < started):
+                started = a[16]
+            if a[17] is not None and (last_at is None or a[17] > last_at):
+                last_at = a[17]
+        out = {
+            "sessions": sessions, "turns": turns, "requests": requests,
+            "input": input_t, "output": output_t, "reasoning": reasoning,
+            "cache_read": cache_read, "cache_write": cache_write, "total": total,
+            "tool_calls": tool_calls, "retries": retries,
+            "started": started or 0, "last_at": last_at or 0,
+            "avg_duration_ms": round(dur_pos / dur_n) if dur_n else 0,
+            "avg_ttft_ms": round(ttft_pos / ttft_n) if ttft_n else 0,
+            "duration_ms": dur_sum,
+            "avg_tps": round(tr["rated_output"] / (tr["gen_ms"] / 1000), 1) if tr["gen_ms"] else 0,
+            "models": gmodels,
+            "cost_usd": g_cost,
+            "projects": projects[:_ALLPROJ_MAX_PROJECTS],
+        }
+        if truncated:
+            out["projects_truncated"] = True
+            out["projects_total"] = len(projects)   # 截断前的真实项目数（明细表提示用）
+        return out
+
+    dbkey = _db_cache_key(con)
+    if dbkey is None:   # 内存库（测试夹具）：不缓存，就地聚合
+        return run()
+    return _cached_project(dbkey, _ALLPROJ_CACHE_KEY, run, con)
+
+
+def _all_projects_usage_safe(con):
+    """可选增强字段统一入口：查询失败/旧库缺列/无本地连接返回 None（渲染端判空显
+    「暂不可用」），不拖垮整帧快照；捕获面与 _speed_history_safe 同款（含 TypeError 等
+    数据形状异常）。失败只损失本帧该字段，水位缓存未命中下一帧自然重试。"""
+    if con is None:
+        return None
+    try:
+        return _all_projects_usage(con)
+    except (sqlite3.Error, TypeError, ValueError, KeyError, IndexError, OverflowError, AttributeError):
+        return None
+
+
 def range_usage(con, start_ms, end_ms):
     # 末尾三列（reasoning/retry/cache_write）是 v30/v31 追加，CLI 老代码按索引 0-4 取值不受影响
     return con.execute(
@@ -913,10 +1129,12 @@ def model_usage(con, days=7):
 # ---------- 展示 ----------
 
 def render_current(con):
-    """当前会话 = _scan_session_ids 最近活跃的会话（子代理会话也在候选内）。"""
+    """当前会话 = _scan_session_ids 最近活跃的会话（普通子代理会话也在候选内；
+    工作流 actor 会话 sess_dwf-* 除外——run 进行中多个 actor 轮流活跃且标题是
+    run 视角，成为「当前会话」属误报，specs/workflow-support.md）。"""
     if host_of(con) == HOST_WORKBUDDY:
         return wb_render_current(con)
-    rows = _scan_session_ids(con)
+    rows = [r for r in _scan_session_ids(con) if not _is_sub_kind_workflow(r[0])]
     sess, last_at = None, 0
     if rows:
         sid, last_at = max(rows, key=lambda r: r[1])
@@ -1006,6 +1224,33 @@ def render_models(con, days=7):
 # 会话迁移过工作区时历史用量全部记在当前目录名下（model_usage 无工作区维度）。
 
 _SUB_PREFIX_LEN = 13   # len("sess_subagent")
+# 工作流子代理会话（宿主动态工作流 dwfrun-* 派生，task_type='workflow_child'，
+# 规格见 specs/workflow-support.md）：与 sess_subagent 同属子代理类——不进主会话池、
+# is_sub=true；runId 段可直接前缀匹配（dwfrun-<uuid> 无 `_`，宿主 sanitize 折叠恒等）。
+_WF_PREFIX = "sess_dwf-"
+
+
+def _is_sub_sid(sid):
+    """子代理类会话判定：普通子代理（sess_subagent_*）+ 工作流 actor（sess_dwf-*）。"""
+    s = str(sid)
+    return s.startswith("sess_subagent") or s.startswith(_WF_PREFIX)
+
+
+def _sub_kind_of(sid):
+    """子代理类细分（快照行 sub_kind 字段）：agent=普通子代理 / workflow=工作流 actor / 空串。"""
+    s = str(sid)
+    if s.startswith("sess_subagent"):
+        return "agent"
+    if s.startswith(_WF_PREFIX):
+        return "workflow"
+    return ""
+
+
+def _is_sub_kind_workflow(sid):
+    """仅工作流 actor 会话判定：普通子代理（sess_subagent_*）保持既有候选语义，
+    sess_dwf-* 从 latest/current 候选排除（run 进行中多个 actor 轮流活跃且标题是
+    run 视角，成为「当前会话」属误报）。"""
+    return str(sid).startswith(_WF_PREFIX)
 
 
 def _usage_rows(con, sids):
@@ -1203,6 +1448,11 @@ def _sub_item(con, r, sub_tasks, sub_gen, sub_timing=None):
             "input": r[5], "output": r[6], "cache_read": r[7], "reasoning": r[8],
             "cache_write": r[9], "last": (r[10] or 0), "started": (r[12] or 0),
             "tps_avg": _rated_tps(*sub_gen.get(r[0], [0, 0])),
+            # 工作流支持（specs/workflow-support.md）：速率聚合分量原样下发，渲染端对
+            # run 内多 actor 求 Σout ÷ Σgen 加权（不能对各 tps_avg 平均）；旧快照缺字段
+            # 消费端按缺失降级为不显速率。
+            "tps_out": sub_gen.get(r[0], [0, 0])[0],
+            "tps_gen": sub_gen.get(r[0], [0, 0])[1],
             # v304 单任务耗时/轮数（该子会话真实聚合，>0 门控降级同上）
             "avg_duration_ms": round(t[1] / t[2]) if t[2] else 0,
             "avg_ttft_ms": round(t[3] / t[4]) if t[4] else 0,
@@ -1221,7 +1471,17 @@ def _sub_agent_tasks(con, sid):
     stamp = con.execute(
         "select count(*), coalesce(max(time_updated),0) from part where session_id=?", (sid,)
     ).fetchone()
-    key = (stamp[0], stamp[1])
+    # dwf_actor 新增/改名不动 part：工作流运行中动态创建 actor 且其 ask 完成落库时，
+    # 父会话可能无新 part 行——失效键补 dwf_actor 维度（greatest 覆盖纯改名只动
+    # time_updated 的形态），旧库无表按 0（同款 fail-closed）。
+    try:
+        astamp = con.execute(
+            """select coalesce(max(max(a.time_created, coalesce(a.time_updated,0))),0)
+               from dwf_actor a join session s2 on a.session_id = s2.id where s2.parent_id=?""",
+            (sid,)).fetchone()[0]
+    except sqlite3.Error:
+        astamp = 0
+    key = (stamp[0], stamp[1], astamp)
     hit = _TASK_CACHE.get(sid)
     if hit and hit[0] == key:
         return hit[1]
@@ -1257,6 +1517,17 @@ def _sub_agent_tasks(con, sid):
         if len(cands) == 1:
             tasks[cands[0]] = desc
             used.add(cands[0])
+    # 工作流 actor 显示名（specs/workflow-support.md）：dwf_actor.name 是 agent() 创建时的
+    # 用户可见名，session_id 直连子会话。dwf_* 表随 3.18+ 宿主建，旧库/WorkBuddy 无表时
+    # sqlite3.Error fail-closed 跳过；键前缀与 sess_subagent_ 不相交，不会覆盖回执映射。
+    try:
+        for ar in con.execute(
+            """select a.session_id, a.name from dwf_actor a
+               join session s2 on a.session_id = s2.id where s2.parent_id=?""", (sid,)):
+            if ar[0] and ar[1]:
+                tasks[ar[0]] = str(ar[1])
+    except sqlite3.Error:
+        pass
     if len(_TASK_CACHE) > 32:   # 防长驻膨胀：会话数有限，正常到不了；超了整表清掉
         _TASK_CACHE.clear()
     _TASK_CACHE[sid] = (key, tasks)
@@ -1322,7 +1593,7 @@ def render_session_detail(con, prefix):
         """select m.session_id, coalesce(s2.title,''), count(*),
                   coalesce(sum(m.computed_total_tokens),0), max(m.completed_at)
            from model_usage m join session s2 on m.session_id = s2.id
-           where m.query_source='subagent' and s2.parent_id=? and m.status='completed'
+           where m.query_source in ('subagent','workflow_child') and s2.parent_id=? and m.status='completed'
            group by m.session_id order by max(m.completed_at) desc""", (sid,)).fetchall()
     if sub_rows:
         tasks = _sub_agent_tasks(con, sid)
@@ -1510,7 +1781,8 @@ def _light_snapshot(con, sid, cfg):
         "last_at": con.execute(
             "select max(completed_at) from model_usage where session_id=? and status='completed'", (sid,),
         ).fetchone()[0] or 0,
-        "is_sub": sid.startswith("sess_subagent"),
+        "is_sub": _is_sub_sid(sid),
+        "sub_kind": _sub_kind_of(sid),   # 工作流支持（specs/workflow-support.md）：agent/workflow/空串，消费端按缺省容错
         "parent": (srow["parent_id"] if srow is not None else None),
     }
 
@@ -2088,7 +2360,7 @@ def _session_snapshot(con, sid, cfg):
                   coalesce(sum(m.cache_creation_input_tokens),0), max(m.completed_at), s2.time_created,
                   min(m.started_at)
            from model_usage m join session s2 on m.session_id = s2.id
-           where m.query_source='subagent' and s2.parent_id=? and m.status='completed'
+           where m.query_source in ('subagent','workflow_child') and s2.parent_id=? and m.status='completed'
            group by m.session_id order by max(m.completed_at) desc""",
         (sid,),
     ).fetchall()
@@ -2113,7 +2385,7 @@ def _session_snapshot(con, sid, cfg):
                       m.started_at, m.reasoning_tokens, m.model_id, m.provider_id,
                       m.duration_ms, m.time_to_first_token_ms, m.turn_id
                from model_usage m join session s2 on m.session_id = s2.id
-               where m.query_source='subagent' and s2.parent_id=? and m.status='completed'""",
+               where m.query_source in ('subagent','workflow_child') and s2.parent_id=? and m.status='completed'""",
             (sid,),
         ):
             g = sub_gen.setdefault(r["session_id"], [0, 0])
@@ -2144,7 +2416,7 @@ def _session_snapshot(con, sid, cfg):
     sub_avg_dur = round(sub_dur_pos / sub_dur_n) if sub_dur_n else 0
     sub_avg_ttft = round(sub_ttft_pos / sub_ttft_n) if sub_ttft_n else 0
     sub_models, sub_cost = _scope_models_cost(
-        con, "query_source='subagent' and session_id in (select id from session where parent_id=?)", (sid,))
+        con, "query_source in ('subagent','workflow_child') and session_id in (select id from session where parent_id=?)", (sid,))
     sub = {
         "requests": sum(r[3] for r in sub_rows),
         "total": sum(r[4] for r in sub_rows),
@@ -2248,7 +2520,8 @@ def _session_snapshot(con, sid, cfg):
         "last_at": con.execute(
             "select max(completed_at) from model_usage where session_id=? and status='completed'", (sid,),
         ).fetchone()[0] or 0,
-        "is_sub": sid.startswith("sess_subagent"),
+        "is_sub": _is_sub_sid(sid),
+        "sub_kind": _sub_kind_of(sid),   # 工作流支持（specs/workflow-support.md）：agent/workflow/空串，消费端按缺省容错
         "parent": (srow["parent_id"] if srow is not None else None),
     }
 
@@ -2952,7 +3225,8 @@ def _provider_fallback(con):
     return (row or ("",))[0] or ""
 
 
-def snapshot(force_sid="", routes=None, serve_con=None, include_speed_history=False):
+def snapshot(force_sid="", routes=None, serve_con=None, include_speed_history=False,
+             include_all_projects=False):
     """单次快照：最新会话 + 最近 6+6 会话池 + 今日。
     force_sid：各窗口当前会话 id，逗号分隔（泵按窗口汇总上报：主进程 IPC 映射的焦点会话 +
     overlay localStorage 键兜底），全部强制纳入快照——不在 6+6 池里的会话（新开的、久远的）
@@ -2961,8 +3235,11 @@ def snapshot(force_sid="", routes=None, serve_con=None, include_speed_history=Fa
     serve_con：serve 常驻进程传入的复用连接（None = 自建自关，CLI/json 一次性路径）。
     include_speed_history：桌面快照链（serve 常驻 + legacySpawn 一次性 json）显式开启，
     产出 v254 速度 Tooltip 统一轮表；CLI 报表 / MCP / 远端子查询 / zusage json 默认不带
-    这份 ~200KB 增强字段，保持各自 stdout 契约。连接所有权归调用方：serve 模式下查询期
-    出错会就地 close（调用方下次探活重建），finally 不重复关闭。"""
+    这份 ~200KB 增强字段，保持各自 stdout 契约。
+    include_all_projects（v331）：同门控产出全部项目聚合（specs/all-projects-usage.md，
+    挂顶层 all_projects，~6KB 量级）；任何 sqlite3.Error/列漂移省略字段不拖垮整帧。
+    连接所有权归调用方：serve 模式下查询期出错会就地 close（调用方下次探活重建），
+    finally 不重复关闭。"""
     cfg = load_config()
     # 价表配置要在宿主分流之前：WorkBuddy 分支会提前 return，放后面会让它的快照
     # 读不到 pricing-cache.json（汇率与运行时更新的牌价都落在这个文件里）。
@@ -3064,11 +3341,17 @@ def snapshot(force_sid="", routes=None, serve_con=None, include_speed_history=Fa
                 local_error = str(exc)[:200]
                 return _empty_snapshot(sid, cfg)
 
-        latest_sid = max(rows, key=lambda r: r[1])[0] if rows else None
+        # 工作流 actor 会话（sess_dwf-*）不进 latest 候选：run 进行中多个 actor 轮流活跃，
+        # 全库 max(completed_at) 几乎恒被它们占据，顶层 session/CLI current 会被顶成 run
+        # 视角（specs/workflow-support.md）。普通子代理（sess_subagent_*）保持既有候选语义。
+        ranked = sorted((r for r in rows if not _is_sub_kind_workflow(r[0])),
+                        key=lambda r: -r[1])
+        latest_sid = ranked[0][0] if ranked else None
         base = local_snapshot(latest_sid) if latest_sid else _empty_snapshot("", cfg)
-        normal = sorted((r for r in rows if not str(r[0]).startswith("sess_subagent")),
-                        key=lambda r: -r[1])[:6]
-        suba = sorted((r for r in rows if str(r[0]).startswith("sess_subagent")),
+        # 池分桶：normal 恒为主会话独占（子代理放进来会挤占主会话 top-6 甚至把主会话
+        # 挤出完整快照层——issue #22 症状面）；sess_dwf 与普通子代理同入子代理桶。
+        normal = [r for r in ranked if not _is_sub_sid(r[0])][:6]
+        suba = sorted((r for r in rows if _is_sub_sid(r[0])),
                       key=lambda r: -r[1])[:6]
         ids = [r[0] for r in normal] + [r[0] for r in suba]
         seen = set()
@@ -3120,6 +3403,9 @@ def snapshot(force_sid="", routes=None, serve_con=None, include_speed_history=Fa
             for sid, ident in scopes:
                 if not ident.startswith("remote:"):
                     rec.insert(0, {**local_rows.get(sid, _empty_snapshot(sid, cfg)), "workspace_identity": ident})
+        # v331 全部项目聚合（specs/all-projects-usage.md）：桌面快照链显式开启；
+        # 失败按无字段降级，不拖垮整帧（与 provider_fallback 同款口径）
+        all_proj = _all_projects_usage_safe(con) if include_all_projects else None
         return {
             # 宿主与能力声明（v241）：消费端据此选择可用指标，不再靠字段缺失猜数据源；
             # 旧消费端忽略未知键，不影响既有渲染。
@@ -3177,6 +3463,9 @@ def snapshot(force_sid="", routes=None, serve_con=None, include_speed_history=Fa
             # 回收/重启交替期偶发缺字段而回退旧版整卡）。CLI / MCP / 远端子查询的 stdout
             # 契约不夹带这份 ~200KB 增强字段；旧远端/无本地连接/缺列降级时省略，渲染端判空回退。
             **({"speed_history": _speed_history_safe(con, latest_sid)} if include_speed_history else {}),
+            # v331 全部项目聚合（specs/all-projects-usage.md）：桌面快照链顶层可选字段；
+            # 无连接/缺列降级时省略，渲染端判空显「暂不可用」，不借当前项目数据冒充
+            **({"all_projects": all_proj} if all_proj is not None else {}),
             "remote_enabled": bool(setup),        # 是否存在可用远端目标（区分"没配"与"配了没查到"）
             "known_sids": known_sids,
             "context_window": base["context_window"],
@@ -3909,7 +4198,8 @@ def serve():
                 con = None
         try:
             force_sid, routes = _parse_query(line.strip())
-            out = json.dumps(snapshot(force_sid, routes, serve_con=con, include_speed_history=True))
+            out = json.dumps(snapshot(force_sid, routes, serve_con=con, include_speed_history=True,
+                                      include_all_projects=True))
         except Exception as e:
             out = json.dumps({"error": str(e)[:200]})   # 单次查询失败不杀常驻进程
             _drop()   # 异常路径下连接状态未知：弃用，下轮重建
@@ -3985,7 +4275,8 @@ def main(argv):
             # 远端子进程显式置 ZUSAGE_REMOTE_CHILD=1，不带这 ~200KB 增强字段（stdout 契约）；
             # CLI 手工 json / MCP 走 render_* 文本链，均不受影响。
             desktop = os.environ.get("ZUSAGE_REMOTE_CHILD") != "1"
-            print(json.dumps(snapshot(force_sid, routes, include_speed_history=desktop)))
+            print(json.dumps(snapshot(force_sid, routes, include_speed_history=desktop,
+                                      include_all_projects=desktop)))
             return 0
         if cmd == "serve":
             serve()

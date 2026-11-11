@@ -22,7 +22,10 @@ function runUpdateLive({ lastAvg, payloadAvg, noLastView }) {
     sideHandleValid: () => true,
     bridgeDetach: () => {},
     subRateTick: () => {},
+    subRunningList: () => [],   // v333：运行中子代理集合补给（∪ backgroundWorks，本切片外定义）
     renderSubAgentRows: () => {},   // v185 并行线：Agent 行内速率 chip 渲染通道
+    renderWorkflowCards: () => {},   // v332：工作流 run 卡 chip（本切片外定义）
+    renderRunningSubagentItems: () => {},   // v333：状态面板 Agents 行 chip（本切片外定义）
     subRate: { sum: null },
     zuBarSpeedView: (...args) => { seen.args = args; return null; },
     syncTpsChip: () => {},
@@ -64,7 +67,10 @@ function runFastPath({ tipForOnCell = true, sameTip = false } = {}) {
     sideHandleValid: () => true,
     bridgeDetach: () => {},
     subRateTick: () => {},
+    subRunningList: () => [],   // v333：运行中子代理集合补给（本切片外定义）
     renderSubAgentRows: () => {},
+    renderWorkflowCards: () => {},   // v332（本切片外定义）
+    renderRunningSubagentItems: () => {},   // v333（本切片外定义）
     subRate: { sum: null },
     zuBarSpeedView: () => view,
     /* v326：updateLive 经 zuLiveFaceHtml 写「数字+dim」两 item——切片环境提供同款实现 */
@@ -115,6 +121,9 @@ function makeLiveEnv({ tipForOnCell = false, tipForOther = false, withView = tru
     bridge: { turnId: 'turn_x', timer: null,
       handle: { dead: false, charsPerToken: 2, tracker: { get: () => ({ complete: false }) } } },
     sideHandleValid: () => true, bridgeDetach: () => {}, subRateTick: () => {}, renderSubAgentRows: () => {},
+    subRunningList: () => [],   // v333：运行中子代理集合补给（本切片外定义）
+    renderWorkflowCards: () => {},   // v332（本切片外定义）
+    renderRunningSubagentItems: () => {},   // v333（本切片外定义）
     subRate: { sum: null },
     zuBarSpeedView: () => {
       if (!withView) return null;

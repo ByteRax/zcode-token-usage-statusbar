@@ -343,7 +343,10 @@ test('双语：en 标题/范围/按钮走 L() 同链；Escape keydown 委托已�
   withProjectModels(h, Array.from({ length: 8 }, (_, i) => ({ model: 'm' + i, requests: 1, total: 50 - i, cost_usd: 0 })));
   const html = h.drawProjectTip();
   assert.match(html, /zu-pj-title zu-tt-name">Project total</);
-  assert.match(html, /zu-pj-scope">All requests · incl\. sub-agents</);   // v303 单行合并
+  /* v331：范围胶囊已由右上双范围 Tab 替代（specs/all-projects-usage.md） */
+  assert.match(html, /zu-pj-tab[^>]*aria-selected="true"[^>]*>Current</);
+  assert.match(html, /zu-pj-tab[^>]*aria-selected="false"[^>]*>All projects</);
+  assert.doesNotMatch(html, /zu-pj-scope/, 'v331 范围胶囊已删除');
   assert.match(html, /Show all 8 models/);
   assert.ok(h.tipRoot().listeners.get('keydown'), 'Escape handler wired on tip');
 });
@@ -426,4 +429,235 @@ test('v329: 按住超过 400ms 再松开，click 仍被一次性吞掉，不二�
     tip.listeners.get('click')[0](ev('click'));
     assert.equal(pjBtn.getAttribute('aria-expanded'), 'false', '键盘 click 正常切换');
   } finally { Date.now = realNow; }
+});
+
+/* ---------- v331 全部项目模式（specs/all-projects-usage.md）---------- */
+
+function allProjectsFixture(over) {
+  return Object.assign({
+    sessions: 103, turns: 222, requests: 556,
+    input: 100000, output: 4000, reasoning: 349,
+    cache_read: 97000, cache_write: 200, total: 104000,
+    tool_calls: 689, retries: 123,
+    started: Date.now() - 86400000, last_at: Date.now() - 1000,
+    avg_duration_ms: 17800, avg_ttft_ms: 8000, duration_ms: 988000000,
+    avg_tps: 77.3, cost_usd: 16.5,
+    models: [
+      { model: 'GLM-5.3-FlashX', requests: 300, total: 60000, cost_usd: 9 },
+      { model: 'claude-sonnet-5', requests: 100, total: 20000, cost_usd: 7.5 },
+    ],
+    projects: [
+      { name: 'proj-a', directory: '/w/proj-a', total: 52000, requests: 287, cost_usd: 12.5 },
+      { name: 'proj-b', directory: '/w/proj-b', total: 31000, requests: 120, cost_usd: 4 },
+      { name: '', directory: '', unattributed: true, total: 300, requests: 2, cost_usd: 0 },
+    ],
+  }, over || {});
+}
+
+function withAllProjects(h, ap) {
+  const p = h.payload({ withCost: true });
+  p.all_projects = ap;
+  h.window.__zusageUpdate(p);
+  return p;
+}
+
+function clickTab(h, scope) {   // pointerdown 委托切换（生产路径）；返回重编后的卡片 HTML
+  h.drawProjectTip();   // 建立 tipFor/projTipPj（真实使用中 tooltip 必已打开）
+  const tip = h.tipRoot();
+  const tabBtn = new Element('button');
+  tabBtn.setAttribute('data-scope', scope);
+  const fakeTarget = { closest: sel => (sel === '.zu-pj-tab' ? tabBtn : null) };
+  tip.listeners.get('pointerdown')[0]({
+    type: 'pointerdown', target: fakeTarget, button: 0,
+    stopPropagation() {}, preventDefault() {},
+  });
+  return h.tipRoot().firstChild.innerHTML;
+}
+
+function clickMoreKind(h, kind) {   // 指定 data-kind 的展开按钮（proj=项目明细 / 缺省=模型明细）
+  const html = h.tipRoot().firstChild.innerHTML;
+  const key = html.match(/data-key="([^"]+)"/)[1];
+  const rowsSel = kind === 'proj' ? '[data-zu-pj-projects]' : '[data-zu-pj-rows]';
+  const rowsEl = new Element(); rowsEl.setAttribute(rowsSel, '1');
+  const rootEl = new Element(); rootEl.queries.set(rowsSel, rowsEl);
+  const btn = new Element('button');
+  btn.setAttribute('data-key', key);
+  if (kind) btn.setAttribute('data-kind', kind);
+  btn.closest = sel => (sel === '.zu-project-tip' ? rootEl : null);
+  const fakeTarget = { closest: sel => (sel === '.zu-pj-more' ? btn : null) };
+  h.tipRoot().listeners.get('pointerdown')[0]({
+    type: 'pointerdown', target: fakeTarget,
+    stopPropagation() {}, preventDefault() {},
+  });
+  return { rowsEl, btn };
+}
+
+test('v331 默认当前项目：头部双 Tab、输入格含缓存辅助行、无项目明细', () => {
+  const h = harness(); setup(h);
+  withAllProjects(h, allProjectsFixture());
+  const html = h.drawProjectTip().replace(/<style>[\s\S]*?<\/style>/g, '');
+  assert.match(html, /aria-selected="true"[^>]*>当前项目</);
+  assert.match(html, /aria-selected="false"[^>]*>全部项目</);
+  assert.match(html, /zu-pj-pname/, '当前项目模式拼项目名');
+  assert.match(html, /含缓存 4万/, '输入格副行=当前项目 cache_read 原值');
+  assert.doesNotMatch(html, /data-zu-pj-projects/, '当前项目模式无项目明细');
+  assert.doesNotMatch(html, /zu-pj-div/, '无分隔线');
+});
+
+test('v331 切全部项目：KPI/明细/时间切换、项目明细在模型明细前、未归属条目、转义', () => {
+  const h = harness(); setup(h);
+  withAllProjects(h, allProjectsFixture({
+    projects: [
+      { name: 'proj-a', directory: '/w/proj-a', total: 52000, requests: 287, cost_usd: 12.5 },
+      { name: '<img src=x onerror=alert(1)>', directory: '/w/evil', total: 31000, requests: 120, cost_usd: 4 },
+      { name: '', directory: '', unattributed: true, total: 300, requests: 2, cost_usd: 0 },
+    ],
+  }));
+  const html = clickTab(h, 'all');
+  const bare = html.replace(/<style>[\s\S]*?<\/style>/g, '');
+  // Tab 选中态与项目名隐藏
+  assert.match(bare, /aria-selected="true"[^>]*>全部项目</);
+  assert.doesNotMatch(bare, /zu-pj-pname/, '全部项目模式不显示当前项目名');
+  // KPI 换全局口径：总用量/缓存命中率/含缓存/平均输出速度/费用
+  assert.match(bare, /总用量/);
+  assert.match(bare, /10\.4万/);
+  assert.match(bare, /缓存97%/);
+  assert.match(bare, /含缓存 9\.7万/);
+  assert.match(bare, /77\.3/);
+  assert.match(bare, /¥117\.15/, 'cost_usd 16.5 × fx 7.1');
+  // 项目明细在模型明细之前 + 未归属条目本地化 + XSS 转义
+  const idxP = bare.indexOf('项目明细'), idxM = bare.indexOf('模型明细');
+  assert.ok(idxP > 0 && idxM > idxP, '项目明细必须位于模型明细之前');
+  assert.match(bare, /未归属项目/);
+  assert.doesNotMatch(bare, /<img src=x/, '项目名必须转义');
+  assert.match(bare, /&lt;img src=x/);
+  // 模型明细标题行右侧全局工具/重试
+  assert.match(bare, /工具调用 689\s*次/);
+  assert.match(bare, /重试 123\s*次/);
+  // 分隔线与时间范围（全局起止）
+  assert.match(bare, /zu-pj-div/);
+  assert.match(bare, /zu-stat-time/);
+});
+
+test('v331 切回当前项目：数据与项目名恢复，无项目明细残留', () => {
+  const h = harness(); setup(h);
+  withAllProjects(h, allProjectsFixture());
+  clickTab(h, 'all');
+  const back = clickTab(h, 'cur').replace(/<style>[\s\S]*?<\/style>/g, '');
+  assert.match(back, /aria-selected="true"[^>]*>当前项目</);
+  assert.match(back, /zu-pj-pname/);
+  assert.match(back, /5\.6万/, 'pj.total=56000（夹具项目值）');
+  assert.doesNotMatch(back, /data-zu-pj-projects/);
+  assert.doesNotMatch(back, /未归属项目/);
+});
+
+test('v331 项目明细独立展开（整卡重建核数）+ 切范围重置项目明细/保留模型明细', () => {
+  const h = harness(); setup(h);
+  const projects = Array.from({ length: 8 }, (_, i) => (
+    { name: 'p-' + String(8 - i).padStart(2, '0'), directory: '/w/p' + (8 - i), total: 9000 - i * 700, requests: 10 - i, cost_usd: 1 }));
+  const models = Array.from({ length: 12 }, (_, i) => (
+    { model: 'm-' + String(12 - i).padStart(2, '0'), requests: 1, total: 8000 - i * 500, cost_usd: 1 }));
+  const ap = allProjectsFixture({ projects, models });
+  const p0 = withAllProjects(h, ap);   // 之后复用同一 payload：重建会漂移 started 触发归属键重置（设计行为）
+  clickTab(h, 'all');
+  const rowsOf = html => ({
+    // 各 tbody 切片到本表 </table> 为止（后续模型表/表头行不串数）
+    proj: (((html.split('data-zu-pj-projects>')[1] || '').split('</table>')[0]).match(/<tr>/g) || []).length,
+    model: (((html.split('data-zu-pj-rows>')[1] || '').split('</table>')[0]).match(/<tr>/g) || []).length,
+  });
+  // 默认：项目 5 行 / 模型 6 行
+  let r = rowsOf(h.tipRoot().firstChild.innerHTML.replace(/<style>[\s\S]*?<\/style>/g, ''));
+  assert.deepEqual(r, { proj: 5, model: 6 });
+  // 经真实局部更新展开两者（projTipApply* 守卫通过才落状态）
+  r = clickMoreKind(h, 'proj');   // 项目 → 8
+  assert.equal(r.btn.getAttribute('aria-expanded'), 'true');
+  r = clickMoreKind(h, undefined);   // 模型 → 12
+  assert.equal(r.btn.getAttribute('aria-expanded'), 'true');
+  // 数据帧整卡重建：两个展开态都保持（8/12），状态变量真实生效而非桩残留
+  h.window.__zusageUpdate(p0);   // 同键刷新（同一 payload 对象）
+  let bare = h.drawProjectTip().replace(/<style>[\s\S]*?<\/style>/g, '');
+  assert.deepEqual(rowsOf(bare), { proj: 8, model: 12 }, '整卡重建后两展开态各自保持');
+  // 切范围（cur→all）重置项目明细展开（spec §6），模型明细展开保留
+  clickTab(h, 'cur');
+  bare = clickTab(h, 'all').replace(/<style>[\s\S]*?<\/style>/g, '');
+  assert.deepEqual(rowsOf(bare), { proj: 5, model: 12 }, '项目明细重置为 5、模型保持 12');
+});
+
+test('v331 缺 all_projects 字段：全部项目显「暂不可用」，切回当前项目正常；归属键变化重置范围', () => {
+  const h = harness(); setup(h);
+  withProjectModels(h, [{ model: 'k', requests: 1, total: 10, cost_usd: 0 }]);   // 无 all_projects
+  const allHtml = clickTab(h, 'all').replace(/<style>[\s\S]*?<\/style>/g, '');
+  assert.match(allHtml, /全部项目统计暂不可用/);
+  assert.doesNotMatch(allHtml, /data-zu-pj-projects/, '缺数据不渲染项目明细');
+  const back = clickTab(h, 'cur').replace(/<style>[\s\S]*?<\/style>/g, '');
+  assert.doesNotMatch(back, /暂不可用/);
+  assert.match(back, /zu-pj-pname/, '当前项目模式不受影响');
+  // 切到全部后归属键变化（项目 started 变）→ 重置回当前项目
+  withAllProjects(h, allProjectsFixture());
+  clickTab(h, 'all');
+  const p2 = h.payload({ withCost: true });
+  p2.recent[0].project.started += 999;
+  p2.all_projects = allProjectsFixture();
+  h.window.__zusageUpdate(p2);
+  const html2 = h.drawProjectTip().replace(/<style>[\s\S]*?<\/style>/g, '');
+  assert.match(html2, /aria-selected="true"[^>]*>当前项目</, '归属键变化重置范围 Tab');
+});
+
+test('v331 Tab 切换 pointerdown 同步生效、后随 click 幂等；Tab 进 mousedown 阻止名单', () => {
+  const h = harness(); setup(h);
+  withAllProjects(h, allProjectsFixture());
+  h.drawProjectTip();   // 打开态（生产中 Tab 点击必然发生在 tooltip 打开后）
+  const tip = h.tipRoot();
+  const tabBtn = new Element('button');
+  tabBtn.setAttribute('data-scope', 'all');
+  const fakeTarget = { closest: sel => (sel === '.zu-pj-tab' ? tabBtn : null) };
+  let sp = false, pd = false;
+  tip.listeners.get('pointerdown')[0]({
+    type: 'pointerdown', target: fakeTarget, button: 0,
+    stopPropagation: () => { sp = true; }, preventDefault: () => { pd = true; },
+  });
+  assert.equal(sp, true, 'pointerdown 必须 stopPropagation');
+  assert.equal(pd, true, 'pointerdown 必须 preventDefault');
+  assert.match(h.tipRoot().firstChild.innerHTML, /data-zu-pj-projects/, 'pointerdown 已同步切换');
+  tip.listeners.get('click')[0]({ type: 'click', target: fakeTarget, stopPropagation() {}, preventDefault() {} });
+  const after = h.tipRoot().firstChild.innerHTML;
+  assert.match(after, /aria-selected="true"[^>]*>全部项目</, '后随 click 不重置');
+  // mousedown 名单含 Tab（防宿主失焦）
+  let mdSp = false, mdPd = false;
+  tip.listeners.get('mousedown')[0]({
+    type: 'mousedown', target: fakeTarget,
+    stopPropagation: () => { mdSp = true; }, preventDefault: () => { mdPd = true; },
+  });
+  assert.equal(mdSp && mdPd, true, 'mousedown 必须阻止冒泡与默认行为');
+});
+
+test('v331 截断提示：projects_total 为截断前真实项目数', () => {
+  const h = harness(); setup(h);
+  const projects = Array.from({ length: 8 }, (_, i) => (
+    { name: 'p-' + i, directory: '/w/p' + i, total: 9000 - i, requests: 1, cost_usd: 0 }));
+  withAllProjects(h, allProjectsFixture({ projects, projects_truncated: true, projects_total: 57 }));
+  clickTab(h, 'all');
+  const bare = h.tipRoot().firstChild.innerHTML.replace(/<style>[\s\S]*?<\/style>/g, '');
+  assert.match(bare, /已截断，共 57 项/, '提示用截断前总数而非列表长度');
+  assert.match(bare, /data-zu-pj-projects/);
+});
+
+test('v331 费用开关关：项目明细与模型明细费用列整体不渲染', () => {
+  const h = harness({ costLS: '0' }); setup(h);
+  withAllProjects(h, allProjectsFixture());
+  clickTab(h, 'all');
+  const bare = h.tipRoot().firstChild.innerHTML.replace(/<style>[\s\S]*?<\/style>/g, '');
+  assert.doesNotMatch(bare, /预估费用/);
+  assert.doesNotMatch(bare, /¥/);
+  assert.match(bare, /data-zu-pj-projects/, '明细表仍在，仅收费用列');
+});
+
+test('v331 数据刷新不重置选中 Tab；旧快照项目行缺 all_projects 时当前卡不受扰', () => {
+  const h = harness(); setup(h);
+  const p = withAllProjects(h, allProjectsFixture());
+  clickTab(h, 'all');
+  h.window.__zusageUpdate(p);   // 同帧重发（数据刷新）
+  const bare = h.drawProjectTip().replace(/<style>[\s\S]*?<\/style>/g, '');
+  assert.match(bare, /aria-selected="true"[^>]*>全部项目</, '数据刷新不得重置 Tab');
+  assert.match(bare, /data-zu-pj-projects/);
 });

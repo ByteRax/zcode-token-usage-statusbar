@@ -370,6 +370,8 @@
       enhanceModelPuller();   // v132：宿主设置页按钮 DOM 对账点（进设置页/React 重建后兜回，幂等）
       enhanceGitChip();     // v96：同点对账（React 重建工具行后重挂/位置兜回/紧凑态切换）
       syncTpsChip();        // v146：速率 chip DOM 对账点（React 重建工具行/位置挤走后兜回；非精简主题内部门控摘除）
+      renderWorkflowCards();   // v332：工作流 run 卡 chip DOM 对账点（React 重建卡片后兜回；数据点在 render 尾部）
+      renderRunningSubagentItems();   // v333：状态面板 Agents 行 chip DOM 对账点（React 高频重写 elapsed 后兜回）
       syncCompactBtn();     // v105：弹层压缩按钮对账点（Observer 漏触发/节点移位后兜回）
       dedupBars();          // v169：同容器双条去重（Windows 最小化/还原双条，用户报告）
       if (state.data && pid === "auto") {
@@ -802,11 +804,12 @@
       restoreGitChip();   // v96：摘掉本 pane 的 Git chip（含在显 tooltip）
       /* v180 review：行内速率 chip 挂在宿主 Agent 行内（非条面自家节点），dispose
        * 不摘会在 pane 输入框暂时不可见被协调器回收时冻结在旧速率上、悬停还弹出
-       * 已 dispose 实例的 tooltip——趁 wantedEl/composer 尚在按 pane 根摘净。 */
+       * 已 dispose 实例的 tooltip——趁 wantedEl/composer 尚在按 pane 根摘净。
+       * v334：工作流卡（.zu-wfrun）与状态面板行（.zu-substat）chip 同性质同摘。 */
       try {
         var srr = subRowPaneRoot();
         if (srr) {
-          var staleChips = srr.querySelectorAll(".zu-subrate");
+          var staleChips = srr.querySelectorAll(".zu-subrate,.zu-wfrun,.zu-substat");
           for (var sc = 0; sc < staleChips.length; sc++) { try { staleChips[sc].remove(); } catch (e) { } }
           if (subTipFor && (srr.contains(subTipFor) || !subTipFor.isConnected)) hideSubTip();
         }

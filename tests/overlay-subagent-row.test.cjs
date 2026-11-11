@@ -41,6 +41,7 @@ class El {
     const a = this.parentElement.children, i = a.indexOf(this);
     return a[i + 1] || null;
   }
+  get classList() { const s = this.classes; return { contains: c => s.has(c) }; }   // v334 起 renderSubAgentRows 关门分支读 subTipFor.classList
   get parentNode() { return this.parentElement; }
   querySelectorAll(sel) {
     const m = /^\[data-testid\^="(.+)"\]$/.exec(sel);
@@ -278,6 +279,28 @@ for (const lang of ['zh', 'en']) {
     assert.equal(chipOf(row), null, '定位不到 pane 壳不写任何 DOM');
   });
 
+  test(`${lang}: closing subRate gate does not kill hover tips of other chip kinds`, () => {
+    const { ctx, fn } = extractRender(lang);
+    const p = makePane('sess_subagent_a');
+    ctx.composer = p.composer;
+    const wf = new El('span');           // 悬停中：另一类 chip（工作流卡 .zu-wfrun）
+    wf.classes.add('zu-wfrun');
+    p.row.appendChild(wf);
+    ctx.subTipFor = wf;
+    ctx.state.show.subRate = 0;
+    let hidden = 0;
+    ctx.hideSubTip = () => { hidden++; };
+    fn.render();                         // 关门摘 .zu-subrate，但不得收其它类的悬停浮层
+    assert.equal(chipOf(p.row), null);
+    assert.equal(hidden, 0, '关门只收本类 chip 的浮层（v334 收窄回归锁，宽条件即红）');
+    const own = new El('span');          // 反向：关门态悬停本类（.zu-subrate）chip 仍被收起
+    own.classes.add('zu-subrate');
+    p.row.appendChild(own);
+    ctx.subTipFor = own;
+    fn.render();
+    assert.ok(hidden >= 1, '关门收起本类悬停浮层（类名收窄的非对称性回归锁）');
+  });
+
   test(`${lang}: ⚙ switch off removes chips and suppresses hover tip; on rebuilds`, () => {
     const { ctx, fn } = extractRender(lang);
     const p = makePane('sess_subagent_a');
@@ -391,11 +414,11 @@ test('light theme structure: band class rides inner span, zu-light on chip body 
 test('source contracts: updateLive hook, scan cleanup, delegation listener, CSS rule, version', () => {
   assert.match(source, /renderSubAgentRows\(\);   \/\/ v176：Agent 行内速率 chip 对账/, 'updateLive 挂渲染通道');
   assert.match(source, /if \(subTipFor && !subTipFor\.isConnected\) hideSubTip\(\);/, 'scanRateLines detach 兜底收起');
-  assert.ok(source.includes('e.target.closest(".zu-subrate")'), 'document 委托悬停（免逐 chip 监听）');
+  assert.ok(source.includes('e.target.closest(".zu-subrate,.zu-wfrun,.zu-substat")'), 'document 委托悬停（免逐 chip 监听；v332 起含工作流卡 chip、v333 起含状态面板行 chip）');
   assert.match(source, /"\.zu-subrate\{flex:0 0 auto;white-space:nowrap;cursor:help/, 'chip 样式入注入块');
   // v179/v180 review P1：调用侧形状锁——showSubTip 以数据包调 buildTip（v178 回归即红）；
   // 历史版本演进台账见 src/overlay/06-instance-dom-and-styles.js 的 VERSION 台账注释块。
-  assert.match(source, /var VERSION = "v330";/);   // 随批次顺延（v307 批次漏更致套件长期红）
+  assert.match(source, /var VERSION = "v335";/);   // 随批次顺延（v307 批次漏更致套件长期红）
   assert.ok(source.includes('el.__zuT.buildTip(el.__zuT)'), 'tooltip 数据包调用约定');
   assert.ok(source.includes("runningSubagents.length - 1"), '截断从尾部取（最新派发优先）');
   assert.match(source, /__zusageAcquireConversationStore/, '桥 v2 acquire 访问器消费点');
@@ -405,7 +428,8 @@ test('source contracts: updateLive hook, scan cleanup, delegation listener, CSS 
 });
 
 test('source contracts: ⚙ subRate switch (seed, panel row, render gate)', () => {
-  assert.match(source, /subRate: 1 \},/, 'state.show 种子默认开');
+  assert.match(source, /subRate: 1, wfChip: 1 \},/, 'state.show 种子默认开（v332 起含 wfChip）');
+  assert.match(source, /wfChip: 1 \},/, 'wfChip 工作流卡 chip 种子默认开');
   assert.match(source, /data-k="subRate"/, '⚙ 面板行（data-k 通用 handler 零接线）');
   assert.match(source, /if \(!state\.show\.subRate\) \{/, '渲染门控读开关');
   assert.match(source, /rootEl\.contains\(subTipFor\) \|\| !subTipFor\.isConnected/, '只收本 pane 浮层');
