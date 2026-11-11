@@ -46,7 +46,21 @@ function makeTeamClient(t, { setting = SETTING, fam = "bigmodel", creds, calls }
       throw new Error("ENOENT: " + p);
     },
     fetchImpl: (url, init) => {
-      calls.push({ url, headers: init.headers });
+      calls.push({ url, headers: init.headers, method: init.method });
+      if (url.indexOf("/api/biz/customer/getCustomerInfo") >= 0) {
+        const famSel = (setting && setting.providerFamilyConnectionSelections) || {};
+        const org = (Object.values(famSel)[0] || {}).organizationId || "org-1";
+        const proj = (Object.values(famSel)[0] || {}).projectId || "proj-1";
+        return Promise.resolve(fakeRes(200, JSON.stringify({ code: 200, data: { organizations: [
+          { organizationId: org, projects: [{ projectId: proj }] },
+        ] } })));
+      }
+      if (url.indexOf("/api_keys") >= 0 && init.method === "GET") return Promise.resolve(fakeRes(200, JSON.stringify({ code: 200, data: [
+        { name: "zcode-team-api-key", keyType: 2, apiKey: "team-pat-key-id" },
+      ] })));
+      if (url.indexOf("/access_tokens") >= 0) return Promise.resolve(fakeRes(200, JSON.stringify({ code: 200, data: {
+        enable: true, accessToken: "pat.team.token", tokenType: "Bearer", expiresIn: 3600, expiresAt: T0 + 3600 * 1000,
+      } })));
       if (url === TEAM_MONITOR[fam]) return Promise.resolve(fakeRes(200, OK_BODY));
       if (url.indexOf("/reset/status") >= 0) return Promise.resolve(fakeRes(200, JSON.stringify({ code: 0, success: true, data: { available_five_hour_resets: [], available_week_resets: [] } })));
       if (url.indexOf("customer-package-reset/list") >= 0) return Promise.resolve(fakeRes(200, JSON.stringify({ code: 0, success: true, data: {
@@ -109,7 +123,7 @@ test("team: 有选择即按团队链查询——?type=2、团队头、明文 tok
     await new Promise((r) => setTimeout(r, 10));
     const monitor = calls.filter((c) => c.url === TEAM_MONITOR.bigmodel);
     assert.equal(monitor.length, 1);
-    assert.equal(monitor[0].headers.authorization, "plan.team.key");          // BigModel 业务 token 裸头
+    assert.equal(monitor[0].headers.authorization, "pat.team.token");         // monitor 鉴权=项目 PAT（裸头）
     assert.equal(monitor[0].headers["Bigmodel-Organization"], "org-1");
     assert.equal(monitor[0].headers["Bigmodel-Project"], "proj-1");
     const entry = client.view().sources["bigmodel-team"];
@@ -140,7 +154,7 @@ test("team: zai 家族走 api.z.ai + Bearer", async (t) => {
   await new Promise((r) => setTimeout(r, 10));
   const monitor = calls.filter((c) => c.url === TEAM_MONITOR.zai);
   assert.equal(monitor.length, 1);
-  assert.equal(monitor[0].headers.authorization, "Bearer plan.team.key");   // Z.ai 业务 token 走 Bearer
+  assert.equal(monitor[0].headers.authorization, "pat.team.token");         // Z.ai PAT 同样裸头
   assert.equal(monitor[0].headers["Bigmodel-Organization"], "org-z");
   assert.equal(client.view().sources["zai-team"].status, "ok");
 });
@@ -174,10 +188,19 @@ test("team: 重置卡走 targetType=TEAM 列表（团队头），值形与徽标
     },
     quotaEnabled: () => false, resetEnabled: () => true,
     fetchImpl: (url, init) => {
-      calls.push({ url, headers: init.headers });
+      calls.push({ url, headers: init.headers, method: init.method });
       if (url.indexOf("customer-package-reset/list") >= 0) return Promise.resolve(fakeRes(200, JSON.stringify({ code: 0, success: true, data: {
         fiveHourResets: [{ available: true, expireTime: "2026-11-13 09:00:00" }, { available: false, expireTime: "2026-11-13 06:00:00" }],
         weekResets: [{ available: true, expireTime: "2026-11-18 09:00:00" }],
+      } })));
+      if (url.indexOf("/api/biz/customer/getCustomerInfo") >= 0) return Promise.resolve(fakeRes(200, JSON.stringify({ code: 200, data: { organizations: [
+        { organizationId: "org-1", projects: [{ projectId: "proj-1" }] },
+      ] } })));
+      if (url.indexOf("/api_keys") >= 0 && init.method === "GET") return Promise.resolve(fakeRes(200, JSON.stringify({ code: 200, data: [
+        { name: "zcode-team-api-key", keyType: 2, apiKey: "team-pat-key-id" },
+      ] })));
+      if (url.indexOf("/access_tokens") >= 0) return Promise.resolve(fakeRes(200, JSON.stringify({ code: 200, data: {
+        enable: true, accessToken: "pat.team.token", tokenType: "Bearer", expiresIn: 3600, expiresAt: T0 + 3600 * 1000,
       } })));
       return Promise.resolve(fakeRes(200, "{}"));
     },
@@ -193,7 +216,7 @@ test("team: 重置卡走 targetType=TEAM 列表（团队头），值形与徽标
   const list = calls.filter((c) => c.url.indexOf("customer-package-reset/list?targetType=TEAM") >= 0);
   assert.equal(list.length, 1, "团队模式只打 TEAM 列表");
   assert.ok(!calls.some((c) => c.url.indexOf("/reset/status") >= 0), "个人 reset/status 不发");
-  assert.equal(list[0].headers.authorization, "plan.team.key");   // 业务 token 裸头
+  assert.equal(list[0].headers.authorization, "pat.team.token");   // 重置列表鉴权=项目 PAT
   assert.equal(list[0].headers["Bigmodel-Organization"], "org-1");
   assert.equal(list[0].headers["Bigmodel-Project"], "proj-1");
   const famEntry = client.view().resets && client.view().resets.bigmodel;

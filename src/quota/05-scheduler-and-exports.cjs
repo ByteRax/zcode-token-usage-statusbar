@@ -511,9 +511,11 @@ function createQuotaClient(opts) {
       const p = (async () => {
         if (cred.team) {
           /* 团队模式：个人 reset/status 不适用，只打 targetType=TEAM 列表（成员可用的卡）。
-           * 值形与个人链对齐（fiveHour/week 仅存未过期可用卡），供徽标同款消费。 */
+           * 鉴权与配额链同款=项目 PAT（ensureTeamPat 换取并缓存）；值形与个人链对齐
+           * （fiveHour/week 仅存未过期可用卡），供徽标同款消费。 */
+          const pat = await ensureTeamPat(j, famConf.fam, cred.team, cred.oauth, ctl);
           const teamList = await j.http.getJson(RESET_LIST_ORIGIN + "/api/biz/customer-package-reset/list?targetType=TEAM", {
-            authorization: cred.oauth,
+            authorization: pat,
             "Bigmodel-Organization": cred.team.org,
             "Bigmodel-Project": cred.team.project,
             "set-language": "zh",

@@ -859,6 +859,76 @@ function teamSelectionOf(j, fam) {
     return { org, project };
   } catch (e) { return null; }
 }
+/* 团队 PAT（项目访问令牌）交换链——宿主 ProjectAccessTokenClient 同款只读子集：
+ * ① getCustomerInfo（裸业务 token）校验 org/project 存在；
+ * ② api_keys 列表（裸业务 token + 团队头）找 name=zcode-team-api-key 且 keyType=2 的条目
+ *    （缺条目不创建——宿主在 App 内切换团队套餐时自建，本插件只读）；
+ * ③ POST api_keys/{id}/access_tokens（Bearer 业务 token，body clientType/clientVersion）
+ *    → 项目级短期 PAT，用作 monitor?type=2 的 authorization（裸头，不套 Bearer）。
+ * PAT 按 fam|org|project 缓存到过期前 2 分钟；apiKeyId 稳定一并缓存。链上任一环节失败
+ * 按既有分类抛出（auth_failed/unsupported/network_error…），fail-closed 零请求降级。 */
+const TEAM_PAT_REFRESH_LEAD = 120 * 1000;
+const TEAM_PAT_CLIENT = { clientType: "zcode", clientVersion: "3.18.0" };
+const teamPatCache = new Map();   // fam|org|project → { pat, expiresAt, apiKeyId }
+function teamPatCacheGet(key, now) {
+  const c = teamPatCache.get(key);
+  if (c && c.expiresAt - TEAM_PAT_REFRESH_LEAD > now) return c;
+  return null;
+}
+async function ensureTeamPat(j, fam, sel, loginToken, ctl) {
+  const bizOrigin = fam === "bigmodel" ? "https://bigmodel.cn" : "https://api.z.ai";
+  const cacheKey = fam + "|" + sel.org + "|" + sel.project;
+  const now = typeof j.now === "function" ? j.now() : Date.now();
+  const hit = teamPatCacheGet(cacheKey, now);
+  if (hit) return hit.pat;
+  const teamHeaders = {
+    "Bigmodel-Organization": sel.org,
+    "Bigmodel-Project": sel.project,
+    "set-language": "zh",
+  };
+  /* ① org/project 存在性（裸业务 token，不套 Bearer——宿主 getCustomerInfo 同款） */
+  const info = await j.http.getJson(bizOrigin + "/api/biz/customer/getCustomerInfo",
+    { authorization: loginToken }, ctl);
+  const orgs = info && info.data && Array.isArray(info.data.organizations) ? info.data.organizations : [];
+  const orgHit = orgs.some((o) => o && o.organizationId === sel.org &&
+    Array.isArray(o.projects) && o.projects.some((pj) => pj && pj.projectId === sel.project));
+  if (!orgHit) throw qErr("unsupported", "team project unavailable");
+  /* ② api_keys 列表找 keyType=2 团队条目（只读，不创建——创建属宿主 App 内切换行为） */
+  const keysUrl = bizOrigin + "/api/biz/v1/organization/" + encodeURIComponent(sel.org) +
+    "/projects/" + encodeURIComponent(sel.project) + "/api_keys";
+  const keys = await j.http.getJson(keysUrl, { authorization: loginToken, ...teamHeaders }, ctl);
+  const keyList = keys && keys.data && Array.isArray(keys.data) ? keys.data : [];
+  const teamKey = keyList.find((k) => k && k.name === "zcode-team-api-key" &&
+    k.keyType === 2 && typeof k.apiKey === "string" && k.apiKey.trim());
+  if (!teamKey) throw qErr("unsupported", "team api key missing");
+  /* ③ PAT 签发（Bearer 业务 token；429/5xx 一次重试，与宿主 MAX_TOKEN_ISSUE_ATTEMPTS 对齐） */
+  let raw = null, lastErr = null;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      raw = await j.http.post(keysUrl + "/" + encodeURIComponent(teamKey.apiKeyId) + "/access_tokens", {
+        authorization: "Bearer " + loginToken,
+        "content-type": "application/json",
+      }, ctl);
+      break;
+    } catch (e) {
+      lastErr = e;
+      const retryable = e && (e.code === "network_error" || e.code === "rate_limited");
+      if (attempt >= 2 || !retryable) throw e;
+      await new Promise((r2) => setTimeout(r2, 500));
+    }
+  }
+  if (lastErr) throw lastErr;
+  const patData = raw && raw.data && typeof raw.data === "object" ? raw.data : null;
+  const pat = patData && patData.enable !== false && typeof patData.accessToken === "string" &&
+    patData.accessToken.trim() ? patData.accessToken.trim() : null;
+  if (!pat) throw qErr("unsupported", "team pat missing");
+  const expiresAt = typeof patData.expiresAt === "number" && patData.expiresAt > 0
+    ? patData.expiresAt : (typeof patData.expiresIn === "number" && patData.expiresIn > 0
+      ? now + patData.expiresIn * 1000 : now + 3600 * 1000);
+  const cachedEntry = { pat, expiresAt, apiKeyId: teamKey.apiKeyId };
+  teamPatCache.set(cacheKey, cachedEntry);
+  return cachedEntry.pat;
+}
 for (const teamFam of ["bigmodel", "zai"]) {
   const teamOrigin = teamFam === "bigmodel" ? "https://bigmodel.cn" : "https://api.z.ai";
   const teamBearer = teamFam === "zai";   // BigModel 业务 token 裸 Authorization，Z.ai 走 Bearer
@@ -886,8 +956,11 @@ for (const teamFam of ["bigmodel", "zai"]) {
                source: "host", team: { org: sel.org, project: sel.project } };
     },
     async fetchOne(j, ctx, cred, ctl) {
+      /* monitor 鉴权=项目 PAT（宿主 resolveAccountTeamPlanRuntimeMaterial 同款）；
+       * 业务 token 只用于换 PAT。 */
+      const pat = await ensureTeamPat(j, teamFam, cred.team, cred.token, ctl);
       const body = await j.http.getJson(teamOrigin + QUOTA_PATH + "?type=2", {
-        authorization: (teamBearer ? "Bearer " : "") + cred.token,
+        authorization: pat,
         "Bigmodel-Organization": cred.team.org,
         "Bigmodel-Project": cred.team.project,
         "set-language": "zh",
@@ -2238,9 +2311,11 @@ function createQuotaClient(opts) {
       const p = (async () => {
         if (cred.team) {
           /* 团队模式：个人 reset/status 不适用，只打 targetType=TEAM 列表（成员可用的卡）。
-           * 值形与个人链对齐（fiveHour/week 仅存未过期可用卡），供徽标同款消费。 */
+           * 鉴权与配额链同款=项目 PAT（ensureTeamPat 换取并缓存）；值形与个人链对齐
+           * （fiveHour/week 仅存未过期可用卡），供徽标同款消费。 */
+          const pat = await ensureTeamPat(j, famConf.fam, cred.team, cred.oauth, ctl);
           const teamList = await j.http.getJson(RESET_LIST_ORIGIN + "/api/biz/customer-package-reset/list?targetType=TEAM", {
-            authorization: cred.oauth,
+            authorization: pat,
             "Bigmodel-Organization": cred.team.org,
             "Bigmodel-Project": cred.team.project,
             "set-language": "zh",
