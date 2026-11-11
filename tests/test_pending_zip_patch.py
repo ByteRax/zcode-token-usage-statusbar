@@ -9,7 +9,8 @@ zip 总大小必然偏离该长度，拉包被截断/失配即静默失败，res
 官方字节），绝不改写任何 zip，update-info.json 恒不读不写。
 
 覆盖：sha256 对账删除、官方重下保留只清账本、无记录/他运行目录记录不动、
-zip 缺失清账本、旧版工作目录与候选残留清扫、平台守卫、幂等。
+zip 缺失清账本、删除失败报 1、摘要中并发改写放弃（锚点复核）、旧版工作目录与
+候选残留清扫、平台守卫、幂等。
 全程临时目录，不触碰真实 pending 缓存。
 """
 import contextlib
@@ -187,6 +188,23 @@ class PendingZipUndoTests(unittest.TestCase):
             self.skipTest("Windows 对只读位不敏感，无法注入 unlink 失败")
         if hasattr(os, "geteuid") and os.geteuid() == 0:
             self.skipTest("root 不受只读位限制，无法注入 unlink 失败")
+
+    def test_undo_aborts_when_file_changes_during_hashing(self):
+        # 锚点复核：摘要算的是旧字节、文件被并发改写（宿主重下中）时本轮必须放弃，
+        # 绝不能拿旧摘要的对账结论去删新落盘的文件
+        self.build_zip()
+        self.record()
+        real_sha = self.pzp.sha256_of
+
+        def sha_then_concurrent_rewrite(path):
+            digest = real_sha(path)
+            self.build_zip(b"host-redownloaded-mid-hash")   # 换内容=换 size/ino
+            return digest
+
+        with mock.patch.object(self.pzp, "sha256_of", side_effect=sha_then_concurrent_rewrite):
+            self.assertEqual(self.run_undo(), 1)
+        self.assertTrue(self.zip_path.exists(), "并发改写后绝不删除新落盘的文件")
+        self.assertEqual(len(self.read_records()), 1, "放弃时账本原地保留，下轮按新字节对账")
 
     def test_main_platform_guard(self):
         self.build_zip()

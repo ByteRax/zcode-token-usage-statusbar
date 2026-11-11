@@ -134,8 +134,7 @@ test("record names with path separators never resolve outside pending", async ()
     // mock 成原样返回，让分隔符防御行成为唯一门——防御被删时用例必须红
     h.sandbox.fs = { ...h.sandbox.fs, readdirSync: () => ["../escape.zip"] };
     await h.intervals.find((i) => i.ms === 60000).fn();
-    assert.equal(h.spawns.length, 0);
-    assert.ok(!fs.existsSync(path.join(h.pending, "escape.zip")));
+    assert.equal(h.spawns.length, 0, "分隔符防御行必须独立拦截，不得依赖 readdir 兜底");
   } finally { h.cleanup(); }
 });
 

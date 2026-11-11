@@ -8,7 +8,8 @@
 「重启以更新」时 Squirrel 经该代理按此长度拉流，而改写后的 zip 总大小必然偏离官方值
 （实测 3.18.0 官方 305,360,451 B → 重写后 317,024,560 B），拉包被截断/失配即 Squirrel
 解析失败，宿主静默 relaunch 回旧版（日志仅 ~/.zcode/v2/logs/ 一行 warn）；restage 缓存
-命中同一坏包，连续重试全部复现。sha512 元数据级校验只挡下载阶段，挡不住这一层。
+命中同一坏包，连续重试全部复现。sha512 在下载完成与缓存复用轮各验一次字节，安装
+拉流阶段不复验，挡不住这一层。
 
 现行为反转为清理自愈：旧版改写会在运行目录 pending-zip-patch.json 记账。本工具对账本
 中记录的 zip 逐个核对当前字节 sha256——仍与改写时一致（还是坏包）即删除，宿主下次
@@ -129,7 +130,10 @@ def undo_zip(zip_path, runtime=None):
     with file_lock(runtime / (STATE_NAME + ".lock")):
         record = load_state(runtime)["files"].get(zip_path.name)
     if not isinstance(record, dict):
+        # 无记录（含 sha256 缺失被 load_state 滤掉的坏条目）：zip 不动，条目清掉，
+        # 否则 Node 候选只看键名会对坏条目 60s 空转 spawn
         _log(f"{zip_path.name}: no patch record; leave it alone")
+        _forget(runtime, zip_path.name)
         return 0
     if record.get("runtime") != str(runtime.absolute()):
         _log(f"{zip_path.name}: record belongs to another runtime; leave it alone")
