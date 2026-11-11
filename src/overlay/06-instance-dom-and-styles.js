@@ -215,8 +215,9 @@
      * → v330 宿主 3.18.0 loading 行结构适配：①chat-loading 行 label 类由 .zcode-loading-label 换成 .animated-gradient-text、spinner 图标位由 span.grid 换成带 data-chat-loading-icon 属性的 span（.font-mono 耗时格未变），轮播挂载/还原选择器双兼容（chatLoadingLabelOf/chatLoadingPixelGridOf，旧结构优先），label 未命中时不再隐藏宿主耗时格（宿主再改结构时退化为保留原生计时）；②「我方最后写入」基准由模块级单例改挂 label 自身 data-zu-last-text 属性，修多个 loading 行并存（多分栏并发请求）时后处理行的宿主文案快照被词组污染；③「拉取模型」选中套餐源而列表暂不含它（套餐 token 的解密密钥异步到位）时重问一次、仍没有则提示凭据暂不可用，不再落到「只有一个供应商就用它」而改投别的供应商；⚙ 额度披露文案补充钥匙串密钥的读取。
      * → v331 项目累计 Tooltip 双范围统计（specs/all-projects-usage.md）：zusage 新增 _all_projects_usage 全库聚合（归属单元=会话、parent 链取根环守卫、项目键=(project_id,归一化目录) 承 issue #248、未归属单列桶、totals==Σ projects 对账；桌面快照链顶层 all_projects，serve/桌面 json 带、CLI/MCP/远端子查询不带；_PROJ_CACHE 水位缓存，实测 2.6GB 库 ~210ms/次）；渲染端头部右上「当前项目/全部项目」双 Tab 替代范围胶囊（低对比选中对齐 v282，pointerdown 同步重编+click 幂等吞掉，归属键变化重置），输入格新增「含缓存」副行（cache_read 原值、同「含思考」层级、两模式同规则），全部项目模式新增四列项目明细表（模型明细之前、默认前 5、projTipProjExpanded 独立展开、未归属显本地化文案、名称转义+title 目录、截断 500 提示、空态不渲染表头），缺帧显「全部项目统计暂不可用」不借当前项目冒充。
      * → v332 工作流支持（specs/workflow-support.md）：zusage 把 sess_dwf-*（宿主动态工作流子代理，query_source='workflow_child'）归入子代理类——sub.list/明细/费用/速率聚合四处 query_source 门扩展、is_sub+sub_kind 字段、任务名从 dwf_actor.name 反查、快照池分桶防挤占主会话 top-6、_sub_item 下发 tps_out/tps_gen 速率分量；渲染端在会话流工作流卡（workflow-card data-workflow-run-id）注入 .zu-wfrun 汇总 chip（token 合计 + Σout÷Σgen 完成态聚合速率 + DOM 实时运行状态，悬停出逐执行者 tooltip，复用 subTip 浮层与委托监听），⚙ 新增「工作流卡汇总」开关；08 分片顺手去除 v176 以来整段重复定义的子代理 chip 块（两份 138 行逐字节相同，行为不变）。
+     * → v333 智能体后台运行的状态同步（specs/agent-background-support.md）：后台智能体（AgentProfile 后台子代理）会话身份与前台子代理同构（sess_subagent_* / query_source='subagent'），DB 统计链天然覆盖零改动；修复实时面缺口——①运行中子代理集合在消费侧并入桥快照 backgroundWorks（kind='subagent' status='running'，事件驱动 state 键、窗口无关）补给，后台智能体把启动行滚出父会话 60 行窗口后槽位估算与「子代理运行中 ×N」计数不再丢失；②宿主状态面板 Agents 分区行（v4-running-subagent-item + data-child-session-id）注入 .zu-substat 速率 chip（槽位估算→「估 X t/s」、tps_avg 回填、无数据显「运行中」，tooltip 复用 subRowTipHTML 与 subTip 委托），render 尾部 + heavy 双对账点，共用 subRate 开关。
      */
-    var VERSION = "v332";
+    var VERSION = "v333";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
@@ -332,6 +333,9 @@
       /* v332 工作流 run 卡 chip：挂宿主动态工作流卡 workflow-card-status 之后（specs/workflow-support.md），
        * 外观同 subrate 一族（tabular 不抖宽、cursor:help）；颜色走 TPS 十档类与条面同源。 */
       ".zu-wfrun{flex:0 0 auto;white-space:nowrap;cursor:help;font-size:12px;line-height:1.4;font-weight:600;font-variant-numeric:tabular-nums;margin-left:8px}" +
+      /* v333 状态面板 Agents 行速率 chip（specs/agent-background-support.md）：append 到宿主行末，
+       * margin-left:auto 靠右不挤宿主 elapsed 计时；其余同 subrate 一族。 */
+      ".zu-substat{flex:0 0 auto;white-space:nowrap;cursor:help;font-size:12px;line-height:1.4;font-weight:600;font-variant-numeric:tabular-nums;margin-left:auto;padding-left:10px}" +
       /* v159 状态词流光（用户规格）：复刻宿主 .zcode-loading-label 同款参数——subtle→foreground→subtle
        * 横向渐变 background-clip:text 扫光 1.4s；类名/关键帧自有命名，不依赖宿主全局类防其改版。
        * reduced-motion 停动画（与宿主一致，渐变停在可见段）。 */
@@ -2006,8 +2010,10 @@
     function projTipRebuildNow() {
       var host = (tipFor && tipFor.__tip !== undefined) ? tipFor : tip;
       if (host && projTipPj) {
+        var prevBottom = (typeof projTipPrevBottom === "function") ? projTipPrevBottom() : 0;
         host.__tip = "\x01" + buildProjectTipHTML(projTipPj, projTipKey);
         drawTip(host, true);
+        if (typeof projTipPositionGrowUp === "function") projTipPositionGrowUp(host, prevBottom);
       }
     }
     /* v276：整卡重编同步执行——v275 曾用 rAF 合并「重建风暴」，但被遮挡窗口的

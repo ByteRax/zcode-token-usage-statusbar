@@ -371,6 +371,7 @@
       enhanceGitChip();     // v96：同点对账（React 重建工具行后重挂/位置兜回/紧凑态切换）
       syncTpsChip();        // v146：速率 chip DOM 对账点（React 重建工具行/位置挤走后兜回；非精简主题内部门控摘除）
       renderWorkflowCards();   // v332：工作流 run 卡 chip DOM 对账点（React 重建卡片后兜回；数据点在 render 尾部）
+      renderRunningSubagentItems();   // v333：状态面板 Agents 行 chip DOM 对账点（React 高频重写 elapsed 后兜回）
       syncCompactBtn();     // v105：弹层压缩按钮对账点（Observer 漏触发/节点移位后兜回）
       dedupBars();          // v169：同容器双条去重（Windows 最小化/还原双条，用户报告）
       if (state.data && pid === "auto") {

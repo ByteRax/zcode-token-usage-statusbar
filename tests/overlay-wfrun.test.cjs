@@ -256,7 +256,7 @@ test('source contracts: wf chip wiring (style, panel row, delegation, reapply po
   assert.match(source, /"\.zu-wfrun\{flex:0 0 auto;white-space:nowrap;cursor:help/, 'chip 样式入注入块');
   assert.match(source, /data-k="wfChip"/, '⚙ 面板行（data-k 通用 handler 零接线）');
   assert.match(source, /if \(!state\.show\.wfChip\) \{/, '渲染门控读开关');
-  assert.match(source, /e\.target\.closest\("\.zu-subrate,\.zu-wfrun"\)/, '委托判定含工作流 chip（零新增监听）');
+  assert.match(source, /e\.target\.closest\("\.zu-subrate,\.zu-wfrun,\.zu-substat"\)/, '委托判定含工作流 chip（零新增监听；v333 起含状态面板行 chip）');
   assert.match(source, /closest\("\.zu-wfrun"\) === subTipFor/, 'mouseout 离开判定同步');
   assert.match(source, /renderWorkflowCards\(\);   \/\/ v332：工作流 run 卡 chip 数据点 reapply/, 'render 尾部数据点');
   assert.match(source, /renderWorkflowCards\(\);   \/\/ v332：工作流 run 卡 chip DOM 对账点/, 'heavy DOM 对账点');

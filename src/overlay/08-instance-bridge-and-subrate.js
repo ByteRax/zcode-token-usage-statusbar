@@ -356,6 +356,102 @@
       if (subTipFor && subTipFor.isConnected && subTipFor.__zuT) showSubTip(subTipFor);   // 悬停中随推送刷新（签名幂等不重建）
       else if (subTipFor && !subTipFor.isConnected) hideSubTip();
     }
+    /* ---------- 运行中子代理集合补给（v333，specs/agent-background-support.md）：
+     * rows 行（turn-stats 透传，父会话尾部 60 行窗口内）∪ 桥快照 backgroundWorks 的
+     * 后台智能体条目——后台运行中用户继续对话会把启动行滚出窗口，backgroundWorks
+     * 是事件驱动 state 键、窗口无关（kind 闭集 bash|subagent|workflow，status 闭集
+     * running|resultPending|failed|cancelled，resultPending=已完成不计）；条目投递后
+     * 消失，由既有对账自然解绑槽位。snapshot.subagents.running 与 rows 同窗口派生，
+     * 不作补给源。 */
+    function subRunningList(stats) {
+      var list = (stats && !stats.complete && Array.isArray(stats.runningSubagents)) ? stats.runningSubagents.slice() : [];
+      var h = bridge.handle;
+      if (!h || h.dead || !h.store) return list;
+      var st = null;
+      try { st = h.store.getState(); } catch (e) { return list; }
+      var works = st && st.snapshot && st.snapshot.backgroundWorks;
+      if (!Array.isArray(works)) return list;
+      for (var i = 0; i < works.length; i++) {
+        var w = works[i];
+        if (w && w.kind === "subagent" && w.status === "running" &&
+            typeof w.childSessionId === "string" && w.childSessionId) {
+          var dup = false;
+          for (var j = 0; j < list.length; j++) if (list[j] && list[j].childSessionId === w.childSessionId) { dup = true; break; }
+          if (!dup) list.push({ childSessionId: w.childSessionId });
+        }
+      }
+      return list;
+    }
+    /* ---------- 状态面板 Agents 行速率 chip（v333，specs/agent-background-support.md）：
+     * 宿主状态面板 Agents 分区行（v4-running-subagent-item + data-child-session-id，
+     * e2e 锁定）是后台智能体的主要运行态 UI，宿主只有 elapsed 计时无用量。行内注入
+     * .zu-substat（独立类名：不被 subRate 门的摘净选择器误伤，但同受 state.show.subRate
+     * 门控）——槽位估算（3s 内）→「估 X t/s」；槽位在但无字符流 →「估算中…」；无槽位
+     * → sub.list tps_avg 回填 →「X t/s」；全缺 →「运行中」。tooltip 复用 subRowTipHTML
+     * 数据包与 subTip 浮层（01 委托判定含 .zu-substat）。调用点=render 尾部 + heavy
+     * （600ms 对账），不上 100ms 心跳（热路径预算）。锚点为宿主内部 testid，漂移时
+     * 零命中 no-op。 */
+    function renderRunningSubagentItems() {
+      if (inactive()) return;
+      if (!(composer && composer.isConnected) && !(wantedEl && wantedEl.isConnected)) return;
+      var rootEl = subRowPaneRoot();
+      if (!rootEl) return;
+      if (!state.show.subRate) {   // 子代理速率族共用开关：关即摘净并收起本 pane 悬停浮层
+        var staleStat = rootEl.querySelectorAll(".zu-substat");
+        for (var sc = 0; sc < staleStat.length; sc++) { try { staleStat[sc].remove(); } catch (e) { } }
+        if (subTipFor && subTipFor.classList && subTipFor.classList.contains("zu-substat")) hideSubTip();
+        return;
+      }
+      var now = Date.now(), list = (lastSub && lastSub.list) || [], bySid = {};
+      for (var li = 0; li < list.length; li++) if (list[li] && list[li].sid) bySid[list[li].sid] = list[li];
+      var rows;
+      try { rows = rootEl.querySelectorAll('[data-testid="v4-running-subagent-item"]'); } catch (e) { return; }
+      var dark = true;
+      try { dark = document.documentElement.classList.contains("dark"); } catch (e) { }
+      for (var r = 0; r < rows.length; r++) {
+        var el = rows[r];
+        var csid = String(el.getAttribute("data-child-session-id") || "");
+        if (!csid) continue;
+        var sl = subRate.slots[csid];
+        var rate = (sl && sl.rate != null && now - sl.at <= 3000) ? sl.rate : null;
+        var bandCls = "ok", txt, mode = "est";
+        if (rate != null) {
+          var band = tpsBand(rate);
+          bandCls = band ? band.cls : "ok";
+          txt = L("估 ", "est ") + rate.toFixed(1) + L(" t/s", " t/s");
+        } else if (bySid[csid] && bySid[csid].tps_avg > 0) {
+          rate = bySid[csid].tps_avg;   // 转场瞬间（行还在、槽位刚解绑）回填真实均速
+          bandCls = (tpsBand(rate) || { cls: "ok" }).cls;
+          txt = rate.toFixed(1) + L(" t/s", " t/s");
+          mode = "real";
+        } else if (sl) {
+          bandCls = "dim";   // 绑定中/思考期：无字符流不显估算
+          txt = L("估算中…", "estimating…");
+        } else {
+          bandCls = "dim";
+          txt = L("运行中", "running");
+        }
+        var chip = el.querySelector(".zu-substat");
+        var cls = "zu-substat" + (dark ? "" : " zu-light");
+        var sig = mode + "|" + bandCls + "|" + cls + "|" + txt;
+        if (!chip) {
+          chip = document.createElement("span");
+          chip.className = cls;
+          chip.__zuSig = "";   // 置空走下方内容分支首建即写（预设 sig 会跳过 innerHTML，chip 恒空白）
+          try { el.appendChild(chip); } catch (e) { continue; }
+        }
+        if (chip.__zuSig !== sig) {
+          chip.__zuSig = sig;
+          chip.className = cls;
+          chip.innerHTML = '<span class="' + bandCls + '">' + ttEsc(txt) + "</span>";
+        }
+        chip.setAttribute("data-zusage-csid", csid);
+        chip.__zuT = { buildTip: subRowTipHTML, csid: csid, mode: mode,
+                       rate: (rate != null ? rate.toFixed(1) : ""), title: el.getAttribute("title") || "" };
+      }
+      if (subTipFor && subTipFor.isConnected && subTipFor.__zuT) showSubTip(subTipFor);   // 悬停中随推送刷新（签名幂等不重建）
+      else if (subTipFor && !subTipFor.isConnected) hideSubTip();
+    }
     /* 每次主桥数据到达时 reconcile：不在 runningSubagents 里的槽位解绑，新出现的
      * 尝试绑定（槽位级 2s 节流——updateLive 挂在 0.1s 心跳上，不节流会让 diag 全表
      * 枚举跟着心跳空转）。 */
@@ -568,7 +664,7 @@
       if (h && stats && stats.complete && stats.outputTokens > 0 && stats.totalCharacters > 0) {
         h.charsPerToken = stats.totalCharacters / stats.outputTokens;   // c2t 自校准：本轮真实比例供下一轮估算用
       }
-      subRateTick(stats && !stats.complete ? stats.runningSubagents : null);   // 运行中子代理逐个绑/解速率桥
+      subRateTick(subRunningList(stats));   // 运行中子代理逐个绑/解速率桥（v333：∪ backgroundWorks 补给，窗口滚出不丢）
       renderSubAgentRows();   // v176：Agent 行内速率 chip 对账（槽位估算/快照真实值两态）
       var wasLive = liveKindCur === "live";
       var view = stats ? zuBarSpeedView(stats, h && h.charsPerToken, subRate.sum,
@@ -762,6 +858,7 @@
         syncTpsChip();   /* v177：恢复 v146 短路内调用——2976478 挪到公共尾部后短路 return 到不了，
                           * 泵推送的最坏 600ms 延迟落在速率 chip 上且与 git chip 不对称 */
         renderWorkflowCards();   // v332：工作流 run 卡 chip 数据点 reapply（compact 只藏条面，会话流 chip 照常）
+        renderRunningSubagentItems();   // v333：状态面板 Agents 行速率 chip 数据点 reapply
         return;
       }
       var h = html(view);
@@ -833,6 +930,7 @@
       enhanceGitChip();     // v96：同点对账 Git chip（开关/会话切换/scope 变化在此收敛）
       syncTpsChip();        // v155：速率 chip 数据点 reapply（compact 短路与空壳直通两路都经此）
       renderWorkflowCards();   // v332：工作流 run 卡 chip 数据点 reapply（DOM 对账由 heavy 兜）
+      renderRunningSubagentItems();   // v333：状态面板 Agents 行速率 chip 数据点 reapply（DOM 对账由 heavy 兜）
     }
 
 

@@ -82,6 +82,7 @@ const NAMED_SLICES = {
   statusRotator: ['  /* ==================== Status Rotator & Whale Tail (v268 移植；后按用户规格收敛) ====================', '  /* 设置页（MCP 配置等）内的编辑框不是聊天输入框'],
   subAgentRows: ['    var SUBROW_TID_PREFIX = "v4-subagent-open-side-pane-";', '    function subRateTick('],
   wfRunCards: ['    var WF_CARD_TID = "workflow-card";', '    /* 每次主桥数据到达时 reconcile'],
+  subStatItems: ['    function subRunningList(stats) {', '    /* 每次主桥数据到达时 reconcile'],
 };
 
 /**
