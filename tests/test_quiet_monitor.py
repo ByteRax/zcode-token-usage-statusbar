@@ -532,6 +532,79 @@ class QuietMonitorTests(unittest.TestCase):
         wmi.assert_not_called()
         self.assertEqual(spawn.call_count, 1)
 
+    def _visible_win_launch(self, popen_side_effect=None, wmi_pid=None, extra_env=None):
+        """Windows 可见（手动安装）监控拉起夹具：返回 (结果, Popen mock, WMI mock, stdout, stderr)。"""
+        flags = {"CREATE_NEW_CONSOLE": 0x10, "CREATE_BREAKAWAY_FROM_JOB": 0x01000000}
+        env = {"ZUSAGE_NO_MONITOR": "", "ZUSAGE_MONITOR_QUIET": "", "ZUSAGE_MONITOR_NO_WMI": ""}
+        env.update(extra_env or {})
+        with mock.patch.dict(os.environ, env), \
+                mock.patch.object(self.patch, "IS_WIN", True), \
+                mock.patch.object(self.patch, "_wmi_interpreter", return_value=r"C:\Py\pythonw.exe"), \
+                mock.patch.object(self.patch, "_spawn_via_wmi", return_value=wmi_pid) as wmi, \
+                mock.patch.multiple(self.patch.subprocess, create=True, **flags), \
+                mock.patch.object(self.patch.subprocess, "Popen", side_effect=popen_side_effect) as spawn, \
+                contextlib.redirect_stdout(io.StringIO()) as out, \
+                contextlib.redirect_stderr(io.StringIO()) as err:
+            result = self.patch.launch_monitor(1.5)
+        return result, spawn, wmi, out.getvalue(), err.getvalue()
+
+    def test_windows_visible_breakaway_denied_hands_over_to_wmi_survivor(self):
+        # 手动安装（可见监控）与 issue #208 同源：breakaway 被拒时树内窗口会随 ZCode
+        # 退出一起消失；改走 WMI 脱离的静默监控，不再留注定被回收的树内监控。
+        result, spawn, wmi, out, err = self._visible_win_launch(
+            popen_side_effect=OSError("job object does not allow breakaway"), wmi_pid=4321)
+        self.assertEqual(result, 4321)
+        self.assertEqual(spawn.call_count, 1)   # 只试过一次 breakaway，没有树内回退
+        wmi.assert_called_once()
+        wmi_cmd = wmi.call_args.args[0]
+        self.assertEqual(wmi_cmd[0], r"C:\Py\pythonw.exe")
+        self.assertTrue(wmi_cmd[1].endswith("install_monitor.py"))
+        self.assertEqual(wmi_cmd[2:], ["1.500", str(self.patch.ASAR), str(self.patch.RUNTIME), "--quiet"])
+        self.assertIn("没有监控窗口", out)   # 文案如实：不再让用户找窗口
+        self.assertEqual(err, "")
+
+    def test_windows_visible_breakaway_denied_and_wmi_unavailable_falls_back_in_tree(self):
+        result, spawn, wmi, out, err = self._visible_win_launch(
+            popen_side_effect=[OSError("job object does not allow breakaway"), mock.DEFAULT],
+            wmi_pid=None)
+        self.assertEqual(spawn.call_count, 2)
+        self.assertEqual(spawn.call_args_list[0].kwargs["creationflags"], 0x10 | 0x01000000)
+        self.assertEqual(spawn.call_args_list[1].kwargs["creationflags"], 0x10)
+        wmi.assert_called_once()
+        self.assertIn("issue #208", err)   # 最后一级回退保留 #208 留痕
+        self.assertNotIn("没有监控窗口", out)
+
+    def test_windows_visible_breakaway_success_never_uses_wmi(self):
+        result, spawn, wmi, out, err = self._visible_win_launch(wmi_pid=4321)
+        self.assertEqual(spawn.call_count, 1)
+        self.assertEqual(spawn.call_args.kwargs["creationflags"], 0x10 | 0x01000000)
+        wmi.assert_not_called()
+        self.assertEqual(out, "")
+
+    def test_windows_visible_wmi_survivor_respects_no_wmi_switch(self):
+        result, spawn, wmi, out, err = self._visible_win_launch(
+            popen_side_effect=[OSError("denied"), mock.DEFAULT], extra_env={"ZUSAGE_MONITOR_NO_WMI": "1"})
+        wmi.assert_not_called()
+        self.assertEqual(spawn.call_count, 2)
+
+    def test_visible_launch_reports_existing_monitor_but_quiet_launch_stays_silent(self):
+        # 同目标已有监控持锁：可见模式如实告知"没有新窗口"；静默模式（hook，机器协议
+        # stdout）一个字都不输出。
+        with self.patch.monitor_instance_lock() as held:
+            self.assertTrue(held)
+            with mock.patch.dict(os.environ, {"ZUSAGE_NO_MONITOR": "", "ZUSAGE_MONITOR_QUIET": ""}), \
+                    mock.patch.object(self.patch.subprocess, "Popen") as spawn, \
+                    contextlib.redirect_stdout(io.StringIO()) as visible:
+                self.patch.launch_monitor(0)
+            spawn.assert_not_called()
+            self.assertIn("已有监控", visible.getvalue())
+            with mock.patch.dict(os.environ, {"ZUSAGE_NO_MONITOR": "1", "ZUSAGE_MONITOR_QUIET": "1"}), \
+                    mock.patch.object(self.patch.subprocess, "Popen") as spawn, \
+                    contextlib.redirect_stdout(io.StringIO()) as quiet:
+                self.patch.launch_monitor(0)
+            spawn.assert_not_called()
+            self.assertEqual(quiet.getvalue(), "")
+
     def test_wmi_spawn_encodes_full_command_line(self):
         # -EncodedCommand 承载 UTF-16LE base64：命令行经 list2cmdline 整体嵌入
         # PS 单引号串（内嵌单引号翻倍），任何失败不得抛出。
