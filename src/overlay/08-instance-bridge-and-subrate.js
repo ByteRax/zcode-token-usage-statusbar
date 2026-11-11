@@ -1017,8 +1017,10 @@
       /* v271/v329：tip 内按压后 1.2s 硬保活——点击/按压引发的焦点跌落、宿主重渲染、
        * 命中区边缘误判（left-bar）等任何收起都不得关掉用户正在交互的
        * tooltip（用户实报「点击 tooltips 中的任何位置都会导致关闭」）；win-leave
-       * （窗口真失焦）与 Escape、齿轮、同格再次点击与宿主格已消失（bar-hidden/compact-theme/sub-pop）例外。typeof 守卫兼容切片沙箱。 */
-      if (cause !== "win-leave" && cause !== "escape" && (cause || "").indexOf("win-leave") !== 0 &&
+       * （窗口真失焦）与 Escape、齿轮、同格再次点击、outside（v339 issue #297：点
+       * 空白是显式关闭意图，1.2s 内同样放行）与宿主格已消失（bar-hidden/compact-theme/sub-pop）例外。typeof 守卫兼容切片沙箱。 */
+      if (cause !== "win-leave" && cause !== "escape" && cause !== "outside" &&
+          (cause || "").indexOf("win-leave") !== 0 &&
           cause !== "gear-open" && cause !== "re-click" &&
           cause !== "bar-hidden" && cause !== "compact-theme" && cause !== "sub-pop" &&
           typeof lastTipDownAt !== "undefined" && lastTipDownAt &&
@@ -1408,4 +1410,58 @@
     function cancelTipGrace() {
       if (tipGraceTimer) { clearTimeout(tipGraceTimer); tipGraceTimer = 0; }
     }
+    /* v339（issue #297）：点击空白立即收起详情卡。此前唯一关闭途径是鼠标移开
+     * （mousemove 采样/leave 分流/chip 的 180ms 延时），详情卡挡住下方消息流时必须
+     * 绕开卡片移动鼠标，且 v271/v329 按压硬保活窗会把「点过 Tab 后 1.2s 内点空白」
+     * 的收起也吞掉。挂 document 捕获（v32 同因：宿主可能在冒泡路 stopPropagation），
+     * target 落在自绘浮层本体/条面/设置面板/各弹框之外即外点：主 tip 收 cause
+     * "outside"（进 hideTip 硬保活窗白名单；devKeepTip 总闸不白名单——开发者常驻
+     * 模式仍只认 Escape/齿轮/再点同格，契约不变），chip tooltip（额度/速率/重置卡/
+     * 子代理行内/git/费用说明/档位说明）一并收。柱体信息卡 Portal 是
+     * pointer-events:none，target 不会落在其上，无需排除。 */
+    function tipOutsideDown(e) {
+      if (inactive()) return;
+      var t = e && e.target;
+      /* 全关早退：整条链最常见的形态是没有任何浮层打开，不做 closest 探测 */
+      if (!tipFor && !quotaTipFor && !rateTipFor && !tpsTipFor && !rstTipFor &&
+          !subTipFor && !gitTipFor &&
+          fxTip.style.display !== "block" && spdLegendTip.style.display !== "block") return;
+      if (!t || !t.closest) return;
+      /* 各弹框与统一子代理浮层内部不算外点：各自已有 outside/关闭链，点弹框不联动收 */
+      if (t.closest(".zu-rot-pk-dlg,.zu-mp-ov,.zu-compact-dlg,.zu-sub-pop")) return;
+      if (panel.classList.contains("open") && panel.contains(t)) return;   // 设置面板内部
+      /* 悬停浮层本体内部按压是交互不是关闭（切 Tab/选维度/看图表） */
+      if (tip.contains(t) || tpsTip.contains(t) || rstTip.contains(t) || subTip.contains(t) ||
+          gitTip.contains(t) || quotaTip.contains(t) || rateTip.contains(t) ||
+          (fxTip.style.display === "block" && fxTip.contains(t)) ||
+          (spdLegendTip.style.display === "block" && spdLegendTip.contains(t))) return;
+      if (bar.contains(t)) return;   // 条面内点击（切格/re-click/⚙）由既有链处理
+      if (tipFor) hideTip(true, "outside");
+      if (quotaTipFor) hideQuotaTip();
+      if (rateTipFor) hideRateTip();
+      if (tpsTipFor) hideTpsTip();
+      if (rstTipFor) hideRstTip();
+      if (subTipFor) hideSubTip();
+      if (gitTipFor) hideGitTip();
+      if (fxTip.style.display === "block") hideFxTip();
+      if (spdLegendTip.style.display === "block") spdLegendTipHide();
+    }
+    listenGlobal(document, "mousedown", tipOutsideDown, true);
+    /* v339（issue #297）：全局 Escape 兜底。焦点不在条目/tip/浮层内（如点空白后落在
+     * body）时既有元素级 Escape 链收不到；冒泡挂载让 tip 内分层 Esc（档位说明→费用
+     * →关卡，stopPropagation）与 chip/浮层专属 Esc 先行，本 handler 只收漏网的，且不
+     * preventDefault/stopPropagation——不吞宿主对 Escape 的语义。 */
+    function tipGlobalEsc(e) {
+      if (inactive() || !e || e.key !== "Escape") return;
+      if (tipFor) { hideTip(true, "escape"); return; }
+      if (spdLegendTip.style.display === "block") { spdLegendTipHide(); return; }
+      if (tpsTipFor) { hideTpsTip(); return; }
+      if (rstTipFor) { hideRstTip(); return; }
+      if (subTipFor) { hideSubTip(); return; }
+      if (quotaTipFor) { hideQuotaTip(); return; }
+      if (rateTipFor) { hideRateTip(); return; }
+      if (gitTipFor) { hideGitTip(); return; }
+      if (fxTip.style.display === "block") hideFxTip();
+    }
+    listenGlobal(document, "keydown", tipGlobalEsc);
 

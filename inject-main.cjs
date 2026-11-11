@@ -1067,13 +1067,16 @@ function initModelPuller() {
 }
 initModelPuller();
 
-/* ---------- v228 pending 更新包预注入（macOS）：ZCode 桌面自更新是 Squirrel.Mac 整包
- * 替换——更新 zip 下载到 ~/Library/Caches/<updaterCacheDirName>/pending/，sha512 只在
- * 下载完成时校验一次，安装前宿主不再复验 zip 内容（getValidCachedUpdateFile 只比对
- * update-info.json 与 manifest 的元数据）。在这里抢先把 zip 内 app.asar 补上注入行
- * （pending_zip_patch.py，表内版本顺带打渲染桥），更新重启即生效，省掉 SessionStart
- * 重注入后的第二次重启。Windows 走 NSIS 安装器且安装包带 Authenticode 验签，不适用。
- * 空闲零成本：无候选 zip 时不 spawn；失败退避防 60s 兜底轮询反复打。 */
+/* ---------- v339 pending 更新包清理自愈（macOS，issue #298）：旧 v228 预注入（Squirrel
+ * 取包前改写 pending zip 内 app.asar）废除——宿主 electron-updater 6.8.10 +
+ * autoInstallOnAppQuit=false 下，Squirrel 经 MacUpdater 本地代理按「下载完成时固化的
+ * 官方 Content-Length」拉流，改写后的 zip 总大小必然偏离该长度（实测 3.18.0 官方
+ * 305,360,451 B → 重写后 317,024,560 B），拉包被截断即 Squirrel 解析失败，宿主静默
+ * relaunch 回旧版；restage 缓存命中同一坏包，连续重试全部复现。现反转为清理：
+ * 旧版改写留有运行目录 pending-zip-patch.json 账本，这里只在「账本有记录且 zip 仍在
+ * pending」时触发 pending_zip_patch.py 按 sha256 对账删除（宿主自动重下官方字节），
+ * 无记录的 zip（含官方包）绝不触碰。清理是纠错自愈，恒开；没有候选时零 spawn。
+ * Windows 走 NSIS 安装器，本就无 pending zip 链。 */
 let pendingZipWatcher = null;
 let pendingZipTimer = null;
 let pendingZipDebounce = 0;
@@ -1092,62 +1095,56 @@ function pendingZipDir() {
   return path.join(app.getPath("home"), "Library", "Caches", updaterCacheDirName(), "pending");
 }
 function pendingZipCandidate() {
-  const infoFile = path.join(pendingZipDir(), "update-info.json");
-  let info = null;
-  try { info = JSON.parse(fs.readFileSync(infoFile, "utf8")); } catch (e) { return null; }
+  let state = null;
+  try {
+    state = JSON.parse(fs.readFileSync(path.join(HERE, "pending-zip-patch.json"), "utf8"));
+  } catch (e) { return null; }
+  const files = state && typeof state === "object" ? state.files : null;
+  if (!files || typeof files !== "object") return null;
   let names = [];
   try { names = fs.readdirSync(pendingZipDir()); } catch (e) { return null; }
-  for (const name of names) {
-    const m = /^ZCode-(\d+(?:\.\d+){1,3})-mac-(?:arm64|x64)\.zip$/.exec(name);
-    if (!m || (info.fileName && info.fileName !== name)) continue;
-    const have = String(app.getVersion() || "").split(".").map((n) => parseInt(n, 10) || 0);
-    const next = m[1].split(".").map((n) => parseInt(n, 10) || 0);
-    let newer = false;
-    for (let i = 0; i < Math.max(have.length, next.length); i++) {
-      const d = (next[i] || 0) - (have[i] || 0);
-      if (d) { newer = d > 0; break; }
-    }
-    if (!newer) continue;   // 只补未来版本：当前版本的残留缓存留给差量下载用
+  for (const name of Object.keys(files)) {
+    // 账本是本插件写的，仍按防御处理：带路径分隔符/相对段的记录名绝不解析出 pending 目录
+    if (typeof name !== "string" || !name.endsWith(".zip")) continue;
+    if (name.includes("/") || name.includes("\\") || name.includes("..")) continue;
+    if (!names.includes(name)) continue;
+    const rec = files[name];
+    if (!rec || typeof rec !== "object" || rec.runtime !== HERE) continue;   // 他运行目录名下的记录归他清
     return path.join(pendingZipDir(), name);
   }
   return null;
 }
-function patchPendingZip() {
+function cleanupPendingZip() {
   if (pendingZipBusy || shuttingDown) return;
-  if (process.platform !== "darwin" || readCfgCached().pending_zip_patch === false) return;
+  if (process.platform !== "darwin") return;
   if (pendingZipFails >= 3 && Date.now() - pendingZipLastFailAt < 600000) return;   // 失败退避 10 分钟
   const zip = pendingZipCandidate();
   if (!zip) return;
-  const resourcesAsar = path.join(process.resourcesPath, "app.asar");
-  if (!fs.existsSync(resourcesAsar)) return;
   pendingZipBusy = true;
   const py = spawn(readCfgCached().python_path,
-    [path.join(HERE, "pending_zip_patch.py"), "--zip", zip, "--asar", resourcesAsar, "--runtime", HERE],
-    { windowsHide: true, timeout: 900000 });   // 看门狗：300MB zip 慢盘余量取 15 分钟，卡死不再占住 in-flight
+    [path.join(HERE, "pending_zip_patch.py"), "--zip", zip, "--runtime", HERE],
+    { windowsHide: true, timeout: 900000 });   // 看门狗：300MB zip 慢盘 sha256 余量取 15 分钟，卡死不再占住 in-flight
   let out = "";
   py.stdout.on("data", (d) => { out += d; if (out.length > 4000) out = out.slice(-4000); });
   py.stderr.on("data", (d) => { out += d; if (out.length > 4000) out = out.slice(-4000); });
   py.on("error", (e) => {
     pendingZipBusy = false; pendingZipFails++; pendingZipLastFailAt = Date.now();
-    LOG("pending zip patch spawn failed:", e.message);
+    LOG("pending zip cleanup spawn failed:", e.message);
   });
   py.on("close", (code) => {
     pendingZipBusy = false;
-    if (code === 0) { pendingZipFails = 0; LOG("pending update zip patched:", path.basename(zip)); return; }
+    if (code === 0) { pendingZipFails = 0; LOG("pending update zip cleanup:", path.basename(zip)); return; }
     pendingZipFails++; pendingZipLastFailAt = Date.now();
-    LOG("pending zip patch failed (exit " + code + "):", out.trim().slice(-400));
+    LOG("pending zip cleanup failed (exit " + code + "):", out.trim().slice(-400));
   });
 }
 {
-  if (process.platform === "darwin" && readCfg().pending_zip_patch !== false) {
-    /* 不设启动检查 timer：上会话留下的待装包由首次 60s 兜底轮询覆盖（Squirrel 取包
-     * 要等用户点击，不差这几十秒），也避免与常驻泵的 15000ms 超时哨兵同值——
-     * inject-main-lifecycle 测试按 ms 值区分 timer。 */
-    pendingZipTimer = setInterval(patchPendingZip, 60000);   // 兜底轮询：fs.watch 事件不保证送达
+  if (process.platform === "darwin") {
+    pendingZipTimer = setInterval(cleanupPendingZip, 60000);   // 兜底轮询：fs.watch 事件不保证送达
     try {
       pendingZipWatcher = fs.watch(pendingZipDir(), () => {
         clearTimeout(pendingZipDebounce);
-        pendingZipDebounce = setTimeout(patchPendingZip, 3000);   // 下载完成（zip+json 落盘）的去抖
+        pendingZipDebounce = setTimeout(cleanupPendingZip, 3000);   // 宿主清缓存/重下落盘的去抖
       });
       pendingZipWatcher.on("error", () => {
         try { pendingZipWatcher.close(); } catch (e) { }

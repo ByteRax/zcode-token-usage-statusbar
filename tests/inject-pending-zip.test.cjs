@@ -1,8 +1,9 @@
 "use strict";
-/* v228 pending 更新包预注入触发链回归：候选筛选（版本/文件名/update-info.json 一致性）、
- * 配置与平台门控、spawn 参数、失败退避、before-quit 清理。
- * 切片加载 inject-main.cjs 的 v228 段；fs 走真实临时目录（home 指向沙箱根），仅
- * app-update.yml 由 stub 提供 updaterCacheDirName。 */
+/* v339 pending 更新包清理触发链回归（issue #298：预注入改写废除，反转为清理自愈）：
+ * 候选来自运行目录账本 pending-zip-patch.json 且 zip 仍在 pending 目录、路径穿越拒绝、
+ * 清理恒开（pending_zip_patch:false 不再跳过）、平台门控、spawn 参数、失败退避、
+ * before-quit 清理。切片加载 inject-main.cjs 段；fs 走真实临时目录（home 指向沙箱根），
+ * 仅 app-update.yml 由 stub 提供 updaterCacheDirName。 */
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -14,7 +15,7 @@ const { EventEmitter } = require("node:events");
 const { getInjectSlice } = require("./helpers/overlay-extract.cjs");
 const SEGMENT = getInjectSlice("pendingZipBlock");
 
-function harness({ platform = "darwin", cfg = {}, version = "3.17.2" } = {}) {
+function harness({ platform = "darwin", cfg = {}, version = "3.18.0" } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "zusage-pendingzip-"));
   const pending = path.join(root, "Library", "Caches", "test-updater", "pending");
   fs.mkdirSync(pending, { recursive: true });
@@ -72,92 +73,104 @@ function harness({ platform = "darwin", cfg = {}, version = "3.17.2" } = {}) {
   };
 }
 
-function stageUpdate(h, { name = "ZCode-3.18.0-mac-arm64.zip", infoName = null } = {}) {
-  fs.writeFileSync(path.join(h.pending, name), "zip-bytes");
-  fs.writeFileSync(path.join(h.pending, "update-info.json"),
-    JSON.stringify({ fileName: infoName === null ? name : infoName, sha512: "x" }));
+function stageRecord(h, name = "ZCode-3.18.0-mac-arm64.zip", { withZip = true } = {}) {
+  const state = { version: 1, files: {} };
+  state.files[name] = { sha256: "a".repeat(64), patchedAt: 1, asarVersion: "3.18.0", runtime: h.sandbox.HERE };
+  fs.mkdirSync(h.sandbox.HERE, { recursive: true });
+  fs.writeFileSync(path.join(h.sandbox.HERE, "pending-zip-patch.json"), JSON.stringify(state));
+  if (withZip) fs.writeFileSync(path.join(h.pending, name), "zip-bytes");
+  return name;
 }
-const patchArgs = (h, spawnRecord) => ({
+const spawnArgs = (h, spawnRecord) => ({
   script: spawnRecord.args[0],
   zip: spawnRecord.args[2],
-  asar: spawnRecord.args[4],
-  runtime: spawnRecord.args[6],
+  runtime: spawnRecord.args[4],
 });
 
-test("darwin pending zip with a newer version spawns the patcher with explicit paths", async () => {
+test("recorded zip still in pending spawns the cleaner with explicit paths", async () => {
   const h = harness();
   try {
-    stageUpdate(h);
-    fs.mkdirSync(path.join(h.root, "resources"), { recursive: true });
-    fs.writeFileSync(path.join(h.root, "resources", "app.asar"), "asar");
+    const name = stageRecord(h);
     const tick = h.intervals.find((i) => i.ms === 60000);
     assert.ok(tick, "60s fallback poll registered");
     await tick.fn();
     assert.equal(h.spawns.length, 1);
     const p = h.spawns[0];
     assert.match(p.bin, /python3$/);
-    const a = patchArgs(h, p);
+    const a = spawnArgs(h, p);
     assert.equal(a.script, path.join(h.sandbox.HERE, "pending_zip_patch.py"));
-    assert.equal(a.zip, path.join(h.pending, "ZCode-3.18.0-mac-arm64.zip"));
-    assert.equal(a.asar, path.join(h.root, "resources", "app.asar"));
+    assert.equal(a.zip, path.join(h.pending, name));
     assert.equal(a.runtime, h.sandbox.HERE);
+    assert.ok(!p.args.includes("--asar"), "清理链不再需要 --asar");
     await h.settle(0);
-    assert.ok(h.logs.some((l) => l.includes("pending update zip patched")));
+    assert.ok(h.logs.some((l) => l.includes("pending update zip cleanup")));
   } finally { h.cleanup(); }
 });
 
-test("candidate gating: running version, stale info, dmg and wrong arch layout", async () => {
-  const h = harness({ version: "3.17.2" });
+test("no record or missing zip spawns nothing", async () => {
+  const h = harness();
   try {
-    // resources/app.asar 必须先就位：existsSync 守卫先于候选判定，缺失会屏蔽全部用例
-    fs.mkdirSync(path.join(h.root, "resources"), { recursive: true });
-    fs.writeFileSync(path.join(h.root, "resources", "app.asar"), "asar");
-    stageUpdate(h, { name: "ZCode-3.17.2-mac-arm64.zip" });   // 当前版本：残留缓存留给差量
     await h.intervals.find((i) => i.ms === 60000).fn();
-    assert.equal(h.spawns.length, 0);
-    stageUpdate(h, { name: "ZCode-3.18.0-mac-arm64.zip", infoName: "ZCode-3.19.0-mac-arm64.zip" });
+    assert.equal(h.spawns.length, 0, "无账本不 spawn");
+    fs.writeFileSync(path.join(h.pending, "ZCode-3.19.0-mac-arm64.zip"), "official");
+    fs.writeFileSync(path.join(h.pending, "update-info.json"), JSON.stringify({ fileName: "ZCode-3.19.0-mac-arm64.zip" }));
     await h.intervals.find((i) => i.ms === 60000).fn();
-    assert.equal(h.spawns.length, 0);   // update-info.json 指向别的包：陈旧缓存不打
-    stageUpdate(h, { name: "ZCode-3.18.0-mac-x64.zip", infoName: "ZCode-3.18.0-mac-x64.zip" });
-    fs.writeFileSync(path.join(h.pending, "installer.dmg"), "dmg");
+    assert.equal(h.spawns.length, 0, "官方字节 zip 没有账本记录，绝不被触碰");
+    stageRecord(h, "ZCode-3.18.0-mac-arm64.zip", { withZip: false });
     await h.intervals.find((i) => i.ms === 60000).fn();
-    // dmg 无候选名不选；arm64 zip 因 update-info.json 已指向 x64 包被过滤；x64 匹配即 spawn
+    assert.equal(h.spawns.length, 0, "账本条目指向的 zip 已被宿主清掉：留给 python 按需清账本，Node 端不空转");
+  } finally { h.cleanup(); }
+});
+
+test("record names with path separators never resolve outside pending", async () => {
+  const h = harness();
+  try {
+    const state = { version: 1, files: {} };
+    state.files["../escape.zip"] = { sha256: "a".repeat(64), patchedAt: 1, runtime: h.sandbox.HERE };
+    fs.mkdirSync(h.sandbox.HERE, { recursive: true });
+    fs.writeFileSync(path.join(h.sandbox.HERE, "pending-zip-patch.json"), JSON.stringify(state));
+    fs.writeFileSync(path.join(h.root, "escape.zip"), "outside");
+    // readdir 真实产物不可能含分隔符，正常门（names.includes）兜不住这名字；
+    // mock 成原样返回，让分隔符防御行成为唯一门——防御被删时用例必须红
+    h.sandbox.fs = { ...h.sandbox.fs, readdirSync: () => ["../escape.zip"] };
+    await h.intervals.find((i) => i.ms === 60000).fn();
+    assert.equal(h.spawns.length, 0, "分隔符防御行必须独立拦截，不得依赖 readdir 兜底");
+  } finally { h.cleanup(); }
+});
+
+test("records owned by another runtime are not candidates (no idle respawn loop)", async () => {
+  const h = harness();
+  try {
+    const state = { version: 1, files: {} };
+    state.files["ZCode-3.18.0-mac-arm64.zip"] = { sha256: "a".repeat(64), patchedAt: 1, runtime: "/other/runtime" };
+    fs.mkdirSync(h.sandbox.HERE, { recursive: true });
+    fs.writeFileSync(path.join(h.sandbox.HERE, "pending-zip-patch.json"), JSON.stringify(state));
+    fs.writeFileSync(path.join(h.pending, "ZCode-3.18.0-mac-arm64.zip"), "zip-bytes");
+    await h.intervals.find((i) => i.ms === 60000).fn();
+    assert.equal(h.spawns.length, 0, "python 端对他 runtime 记录恒无事可做：Node 端就不该 spawn");
+  } finally { h.cleanup(); }
+});
+
+test("cleanup stays on with pending_zip_patch:false; non-darwin registers nothing", async () => {
+  const h = harness({ cfg: { pending_zip_patch: false } });
+  try {
+    stageRecord(h);
+    assert.equal(h.intervals.length, 1, "清理自愈恒开：显式 false 不再跳过注册");
+    await h.intervals.find((i) => i.ms === 60000).fn();
     assert.equal(h.spawns.length, 1);
-    assert.equal(path.basename(h.spawns[0].args[2]), "ZCode-3.18.0-mac-x64.zip");
   } finally { h.cleanup(); }
-});
-
-test("x64 candidates are patched the same way on x64 hosts", async () => {
-  const h = harness({ version: "3.17.2" });
+  const w = harness({ platform: "win32" });
   try {
-    fs.mkdirSync(path.join(h.root, "resources"), { recursive: true });
-    fs.writeFileSync(path.join(h.root, "resources", "app.asar"), "asar");
-    stageUpdate(h, { name: "ZCode-3.18.0-mac-x64.zip" });
-    await h.intervals.find((i) => i.ms === 60000).fn();
-    assert.equal(h.spawns.length, 1, "x64 zip with matching info must spawn");
-    assert.equal(h.spawns[0].args[2], path.join(h.pending, "ZCode-3.18.0-mac-x64.zip"));
-  } finally { h.cleanup(); }
-});
-
-test("pending_zip_patch:false and non-darwin register no watcher and never spawn", async () => {
-  for (const opts of [{ cfg: { pending_zip_patch: false } }, { platform: "win32" }]) {
-    const h = harness(opts);
-    try {
-      stageUpdate(h);
-      fs.mkdirSync(path.join(h.root, "resources"), { recursive: true });
-      fs.writeFileSync(path.join(h.root, "resources", "app.asar"), "asar");
-      assert.equal(h.intervals.length, 0);
-      assert.equal(h.spawns.length, 0);
-    } finally { h.cleanup(); }
-  }
+    stageRecord(w);
+    assert.equal(w.intervals.length, 0);
+    assert.equal(w.spawns.length, 0);
+  } finally { w.cleanup(); }
 });
 
 test("three consecutive failures back off for ten minutes, success resets the counter", async () => {
   const h = harness();
   try {
-    stageUpdate(h);
-    fs.mkdirSync(path.join(h.root, "resources"), { recursive: true });
-    fs.writeFileSync(path.join(h.root, "resources", "app.asar"), "asar");
+    stageRecord(h);
     const tick = () => h.intervals.find((i) => i.ms === 60000).fn();
     await tick(); await h.settle(1);
     await tick(); await h.settle(1);
@@ -179,9 +192,8 @@ test("three consecutive failures back off for ten minutes, success resets the co
 test("shuttingDown gates the fallback poll (before-quit cleanup is asserted in inject-main-lifecycle)", async () => {
   const h = harness();
   try {
-    stageUpdate(h);
-    const watcherCount = h.intervals.length;
-    assert.equal(watcherCount, 1);
+    stageRecord(h);
+    assert.equal(h.intervals.length, 1);
     h.sandbox.shuttingDown = true;
     await h.intervals[0].fn();
     assert.equal(h.spawns.length, 0);   // shuttingDown 后兜底轮询不再 spawn

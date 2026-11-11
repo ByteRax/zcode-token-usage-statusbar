@@ -73,6 +73,9 @@ const NAMED_SLICES = {
   remoteViewBlock: ['      var myTarget = p.remote_target || "";', '      lastSub = view.sub;'],
   hitItemFor: ['function hitItemFor', '/* 事件挂 document 捕获阶段'],
   tipLeaveAt: ['    function tipLeaveAt(x, y) {', '    listenGlobal(document.documentElement, "mouseleave"'],
+  tipOutsideDown: ['    function tipOutsideDown(e) {', '    listenGlobal(document, "mousedown", tipOutsideDown'],
+  tipGlobalEsc: ['    function tipGlobalEsc(e) {', '    listenGlobal(document, "keydown", tipGlobalEsc'],
+  hideTipFn: ['    function hideTip(force, cause) {', '    function positionTip(el, keepTop) {'],
   zuBarSpeedView: ['  var DEFAULT_CHARS_PER_TOKEN = 2;', '  /* 思考态动效图标'],
   positionSubPop: ['    function positionSubPop() {', '    var subRateTimer = 0;'],
   buildSubPop: ['    function subPopItems(sub) {', '    function positionSubPop() {'],
@@ -93,7 +96,7 @@ const INJECT_SLICES = {
   pushPluginState: ['function pushPluginState(wc, state) {', '/* ack 必须先于更新器初始化'],
   deliverPluginRequest: ['function deliverPluginRequest(wc, requestId, result) {', 'async function setAnswerRateLine('],
   cdpSwitchBlock: ['/* CDP 调试口', 'catch (e) { LOG("cdp remote-debugging-port switch failed:", e.message); }', { includeEnd: true }],
-  pendingZipBlock: ['/* ---------- v228 pending 更新包预注入', '/* ---------- v202 更新日志'],
+  pendingZipBlock: ['/* ---------- v339 pending 更新包清理自愈', '/* ---------- v202 更新日志'],
   handleReleaseNotesRequest: ['async function handleReleaseNotesRequest(req, wc) {', '\n/* 逐问速率行开关'],
 };
 
