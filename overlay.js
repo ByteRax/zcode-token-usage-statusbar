@@ -11664,31 +11664,12 @@
         '<span>' + (v.started ? fmtStartS(v.started) : "—") + " — " + (v.last_at ? fmtStartS(v.last_at) : "—") + '</span></div>' +
         '</div>';
     }
-    /* v331 用户规格：项目卡高度调整自下而上——底边固定不向下移动、顶边升降。
-     * prevBottom=内容变更前采集的底边（projTipPrevBottom），变更后按新高度反推 top；
-     * 卡自身 max-height=calc(100vh-24px) 视口钳制保证反推 top ≥ 8 恒在视口内。
-     * 无基线（首次弹出，top 未落盘或未显示）回退 positionTip 原锚定逻辑。 */
-    function projTipPositionGrowUp(el, prevBottom) {
-      if (typeof positionTip === "function") positionTip(el, true);
-      if (!(prevBottom > 0) || typeof tip === "undefined" || !tip) return;
-      var top = Math.max(8, prevBottom - tip.getBoundingClientRect().height);
-      tip.style.top = Math.round(top) + "px";
-    }
-    function projTipPrevBottom() {
-      if (typeof tip === "undefined" || !tip || !tip.style || !tip.style.top ||
-          tip.style.display !== "block") return 0;
-      var top = parseFloat(tip.style.top);
-      if (!isFinite(top)) return 0;
-      var h = tip.getBoundingClientRect().height;
-      return h > 0 ? top + h : 0;
-    }
     /* 展开/收起的局部更新：只替换模型行与按钮态，不重建整卡（滚动/焦点/选择不受扰）。
      * 内容串纳入 expanded 态，数据刷新整卡重建时保持展开；归属键不匹配则忽略。 */
     function projTipApplyModels(btn, targetExpanded) {
       var root = btn.closest && btn.closest(".zu-project-tip");
       if (!root || btn.getAttribute("data-key") !== projTipKey) return false;
       if (typeof targetExpanded === "boolean") projTipExpanded = targetExpanded;   // v331：守卫通过才落状态
-      var prevBottom = projTipPrevBottom();
       var shown = projTipExpanded ? projTipList : projTipList.slice(0, 6);
       var rows = root.querySelector("[data-zu-pj-rows]");
       if (rows) rows.innerHTML = pjRowsHTML(shown, true);
@@ -11696,7 +11677,7 @@
       btn.innerHTML = projTipExpanded
         ? ttEsc(L("收起", "Show less"))
         : ttEsc(L("查看全部 " + projTipList.length + " 个模型", "Show all " + projTipList.length + " models")) + " ▾";
-      if (tipFor) projTipPositionGrowUp(tipFor, prevBottom);
+      if (typeof positionTip === "function" && tipFor) positionTip(tipFor, true);
       return true;
     }
     /* v331：项目明细展开/收起的局部更新（同 projTipApplyModels 不重建整卡）；
@@ -11707,7 +11688,6 @@
       var ap = allProjectsData();
       if (!root || !ap || btn.getAttribute("data-key") !== projTipKey) return false;
       if (typeof targetExpanded === "boolean") projTipProjExpanded = targetExpanded;
-      var prevBottom = projTipPrevBottom();
       var total = ap.projects_total || ap.projects.length;
       var rows = root.querySelector("[data-zu-pj-projects]");
       if (rows) rows.innerHTML = pjProjRowsHTML(pjProjRowsFor(ap, projTipProjExpanded));
@@ -11715,7 +11695,7 @@
       btn.innerHTML = projTipProjExpanded
         ? ttEsc(L("收起", "Show less"))
         : ttEsc(L("查看全部 " + total + " 个项目", "Show all " + total + " projects")) + " ▾";
-      if (tipFor) projTipPositionGrowUp(tipFor, prevBottom);
+      if (typeof positionTip === "function" && tipFor) positionTip(tipFor, true);
       return true;
     }
     /* v215 统计卡公共片段（六卡共用）：head/KPI/明细/规模/表格/时间。数据全部真实字段。 */
