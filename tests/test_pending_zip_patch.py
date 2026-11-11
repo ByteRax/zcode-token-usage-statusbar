@@ -138,6 +138,20 @@ class PendingZipUndoTests(unittest.TestCase):
         self.assertEqual(self.run_undo(), 0)
         self.assertEqual(self.read_records(), {})
 
+    def test_undo_clears_corrupt_record_entry(self):
+        # sha256 缺失的坏条目会被 load_state 滤成「无记录」：zip 不动，但条目必须清掉，
+        # 否则 Node 候选只看键名会对它 60s 空转 spawn
+        self.build_zip()
+        self.record(sha256=None)
+        # record() 在 zip 存在时按内容算 sha，这里直接改写成缺字段条目
+        state_path = self.runtime / "pending-zip-patch.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["files"][self.zip_path.name].pop("sha256")
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        self.assertEqual(self.run_undo(), 0)
+        self.assertTrue(self.zip_path.exists())
+        self.assertEqual(self.read_records(), {}, "坏条目清账后 Node 候选不再空转")
+
     def test_undo_is_idempotent(self):
         self.build_zip()
         self.record()
@@ -198,7 +212,7 @@ class PendingZipUndoTests(unittest.TestCase):
 
         def sha_then_concurrent_rewrite(path):
             digest = real_sha(path)
-            self.build_zip(b"host-redownloaded-mid-hash")   # 换内容=换 size/ino
+            self.build_zip(b"host-redownloaded-mid-hash")   # 换内容=换 size/mtime_ns（截断写 inode 不变）
             return digest
 
         with mock.patch.object(self.pzp, "sha256_of", side_effect=sha_then_concurrent_rewrite):
