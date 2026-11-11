@@ -130,8 +130,25 @@ test("record names with path separators never resolve outside pending", async ()
     fs.mkdirSync(h.sandbox.HERE, { recursive: true });
     fs.writeFileSync(path.join(h.sandbox.HERE, "pending-zip-patch.json"), JSON.stringify(state));
     fs.writeFileSync(path.join(h.root, "escape.zip"), "outside");
+    // readdir 真实产物不可能含分隔符，正常门（names.includes）兜不住这名字；
+    // mock 成原样返回，让分隔符防御行成为唯一门——防御被删时用例必须红
+    h.sandbox.fs = { ...h.sandbox.fs, readdirSync: () => ["../escape.zip"] };
     await h.intervals.find((i) => i.ms === 60000).fn();
     assert.equal(h.spawns.length, 0);
+    assert.ok(!fs.existsSync(path.join(h.pending, "escape.zip")));
+  } finally { h.cleanup(); }
+});
+
+test("records owned by another runtime are not candidates (no idle respawn loop)", async () => {
+  const h = harness();
+  try {
+    const state = { version: 1, files: {} };
+    state.files["ZCode-3.18.0-mac-arm64.zip"] = { sha256: "a".repeat(64), patchedAt: 1, runtime: "/other/runtime" };
+    fs.mkdirSync(h.sandbox.HERE, { recursive: true });
+    fs.writeFileSync(path.join(h.sandbox.HERE, "pending-zip-patch.json"), JSON.stringify(state));
+    fs.writeFileSync(path.join(h.pending, "ZCode-3.18.0-mac-arm64.zip"), "zip-bytes");
+    await h.intervals.find((i) => i.ms === 60000).fn();
+    assert.equal(h.spawns.length, 0, "python 端对他 runtime 记录恒无事可做：Node 端就不该 spawn");
   } finally { h.cleanup(); }
 });
 

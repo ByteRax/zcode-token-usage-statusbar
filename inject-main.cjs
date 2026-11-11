@@ -1093,11 +1093,13 @@ function pendingZipCandidate() {
     if (typeof name !== "string" || !name.endsWith(".zip")) continue;
     if (name.includes("/") || name.includes("\\") || name.includes("..")) continue;
     if (!names.includes(name)) continue;
+    const rec = files[name];
+    if (!rec || typeof rec !== "object" || rec.runtime !== HERE) continue;   // 他运行目录名下的记录归他清
     return path.join(pendingZipDir(), name);
   }
   return null;
 }
-function patchPendingZip() {
+function cleanupPendingZip() {
   if (pendingZipBusy || shuttingDown) return;
   if (process.platform !== "darwin") return;
   if (pendingZipFails >= 3 && Date.now() - pendingZipLastFailAt < 600000) return;   // 失败退避 10 分钟
@@ -1123,11 +1125,11 @@ function patchPendingZip() {
 }
 {
   if (process.platform === "darwin") {
-    pendingZipTimer = setInterval(patchPendingZip, 60000);   // 兜底轮询：fs.watch 事件不保证送达
+    pendingZipTimer = setInterval(cleanupPendingZip, 60000);   // 兜底轮询：fs.watch 事件不保证送达
     try {
       pendingZipWatcher = fs.watch(pendingZipDir(), () => {
         clearTimeout(pendingZipDebounce);
-        pendingZipDebounce = setTimeout(patchPendingZip, 3000);   // 宿主清缓存/重下落盘的去抖
+        pendingZipDebounce = setTimeout(cleanupPendingZip, 3000);   // 宿主清缓存/重下落盘的去抖
       });
       pendingZipWatcher.on("error", () => {
         try { pendingZipWatcher.close(); } catch (e) { }

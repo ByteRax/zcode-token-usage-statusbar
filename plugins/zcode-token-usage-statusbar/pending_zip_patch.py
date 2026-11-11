@@ -84,12 +84,19 @@ def save_state(runtime, state):
 def _forget(runtime, name):
     with file_lock(runtime / (STATE_NAME + ".lock")):
         state = load_state(runtime)
+        # 恒落盘：load_state 已把损坏条目滤在内存之外，这里写回即顺带清掉它们，
+        # 否则 Node 候选（只看键名）会为坏条目每 60s 空转一次 spawn
         if name in state["files"]:
             del state["files"][name]
-            save_state(runtime, state)
+        save_state(runtime, state)
 
 
 STALE_WORKDIR_SECONDS = 3600
+
+
+def stat_anchor(path):
+    st = path.stat()
+    return {"size": st.st_size, "mtime_ns": st.st_mtime_ns, "ino": st.st_ino}
 
 
 def _sweep_stale_workdirs(directory):
@@ -127,6 +134,7 @@ def undo_zip(zip_path, runtime=None):
     if record.get("runtime") != str(runtime.absolute()):
         _log(f"{zip_path.name}: record belongs to another runtime; leave it alone")
         return 0
+    anchor = stat_anchor(zip_path)
     digest = sha256_of(zip_path)
     if record.get("sha256") != digest:
         # 字节与改写时记账不一致：宿主已重新下载官方包，只清账本，绝不动文件
@@ -134,6 +142,10 @@ def undo_zip(zip_path, runtime=None):
         _forget(runtime, zip_path.name)
         return 0
     try:
+        if stat_anchor(zip_path) != anchor:
+            # 摘要算的是旧字节，文件已被并发改写（宿主重下中）：本轮放弃，下轮按新字节对账
+            _log(f"{zip_path.name}: changed during hashing; retry next tick")
+            return 1
         zip_path.unlink()
     except OSError as e:
         _log(f"{zip_path.name}: remove failed: {e}")

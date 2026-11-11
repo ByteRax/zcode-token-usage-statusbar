@@ -13,6 +13,7 @@ zip 缺失清账本、旧版工作目录与候选残留清扫、平台守卫、�
 全程临时目录，不触碰真实 pending 缓存。
 """
 import contextlib
+import hashlib
 import importlib.util
 import io
 import json
@@ -27,7 +28,6 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from tests.helpers.py_test_support import load_module  # noqa: E402
 
 
 class PendingZipUndoTests(unittest.TestCase):
@@ -59,7 +59,9 @@ class PendingZipUndoTests(unittest.TestCase):
              "sha512": "official-sha512", "isAdminRightsRequired": False}), encoding="utf-8")
 
     def record(self, name=None, sha256=None, runtime=None):
-        """写一份旧版预注入留下的账本条目（字段与旧版 save_state 相同）。"""
+        """写一份旧版预注入留下的账本条目（字段与旧版 save_state 相同）。sha 默认值
+        用独立 hashlib 计算，不用被测实现的 sha256_of——摘要函数自身损坏时夹具不能
+        跟着错（否则对账测试对「坏摘要」自洽全绿）。"""
         state_path = self.runtime / "pending-zip-patch.json"
         try:
             state = json.loads(state_path.read_text(encoding="utf-8"))
@@ -67,9 +69,11 @@ class PendingZipUndoTests(unittest.TestCase):
             state = {"version": 1, "files": {}}
         if not isinstance(state.get("files"), dict):
             state["files"] = {}
+        if sha256 is None:
+            sha256 = (hashlib.sha256(self.zip_path.read_bytes()).hexdigest()
+                      if self.zip_path.exists() else "0" * 64)
         state["files"][name if name is not None else self.zip_path.name] = {
-            "sha256": sha256 if sha256 is not None else (
-                self.pzp.sha256_of(self.zip_path) if self.zip_path.exists() else "0" * 64),
+            "sha256": sha256,
             "patchedAt": int(time.time()),
             "asarVersion": "3.18.0",
             "runtime": str(self.runtime.absolute()) if runtime is None else runtime,
@@ -108,6 +112,9 @@ class PendingZipUndoTests(unittest.TestCase):
             self.assertEqual(zf.read("ZCode.app/Contents/Resources/app.asar"),
                              b"official-redownloaded-bytes")
         self.assertEqual(self.read_records(), {})
+        # mismatch 分支同样不许碰 update-info.json（宿主缓存有效性判据恒不动）
+        self.assertEqual(json.loads((self.pending / "update-info.json").read_text())["sha512"],
+                         "official-sha512")
 
     def test_undo_without_record_leaves_zip_alone(self):
         self.build_zip()
@@ -162,6 +169,24 @@ class PendingZipUndoTests(unittest.TestCase):
         (self.runtime / "pending-zip-patch.json").write_text("not-json", encoding="utf-8")
         self.assertEqual(self.run_undo(), 0)
         self.assertTrue(self.zip_path.exists())
+
+    def test_undo_unlink_failure_reports_one(self):
+        # 删除失败必须报 1：Node 端按退出码计退避，谎报 0 会静默放弃重试（坏包永存）
+        self.build_zip()
+        self.record()
+        self.skipIfWriteProtectedRoot()
+        mode = self.pending.stat().st_mode
+        self.pending.chmod(0o555)   # unlink 权限检查看父目录：目录只读即 EACCES
+        self.addCleanup(self.pending.chmod, mode)   # 允许 TemporaryDirectory 清理
+        self.assertEqual(self.run_undo(), 1)
+        self.assertTrue(self.zip_path.exists(), "删除失败时坏包原地保留，等下一轮触发")
+        self.assertEqual(len(self.read_records()), 1, "删除失败不清账本（下次重试仍要认领）")
+
+    def skipIfWriteProtectedRoot(self):
+        if os.name == "nt":
+            self.skipTest("Windows 对只读位不敏感，无法注入 unlink 失败")
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            self.skipTest("root 不受只读位限制，无法注入 unlink 失败")
 
     def test_main_platform_guard(self):
         self.build_zip()
