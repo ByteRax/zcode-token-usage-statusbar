@@ -484,6 +484,27 @@
       if (subTipFor && subTipFor.isConnected && subTipFor.__zuT) showSubTip(subTipFor);   // 悬停中随推送刷新（签名幂等不重建）
       else if (subTipFor && !subTipFor.isConnected) hideSubTip();
     }
+    /* ---------- 主格子代理运行态合成（v336，specs/agent-background-support.md §3）：
+     * 后台智能体经 backgroundWorks 补给进槽位后，主会话自身无实时轮（空闲/上一轮已
+     * 完成）时速度格仍静态显示会话均——合成 runningTool=Agent 态让 zuBarSpeedView 走
+     * 既有子代理分支（「子代理运行中 · 估 X t/s」×N，槽位有估算时；绑定中/思考期
+     * 降级为状态词），后台全部结束（槽位解绑）自动回落会话均。主会话自己的轮在跑
+     * 时优先返回原 stats（v87 合成分支先行、工具/正文态不被覆盖）。 */
+    function synthesizeBackgroundStats(stats) {
+      if (stats && !stats.complete) return stats;
+      var want = [];
+      for (var sid in subRate.slots) {
+        if (subRate.slots[sid] && subRate.slots[sid].want) want.push({ childSessionId: sid });
+      }
+      if (!want.length) return stats;
+      return {
+        complete: false, characterRate: null,
+        runningTool: { name: "Agent", startedAt: null,
+                       childSessionId: want[want.length - 1].childSessionId },
+        phase: "tool", observedMs: 0, observedLive: true, totalCharacters: 0,
+        runningSubagents: want,
+      };
+    }
     /* 每次主桥数据到达时 reconcile：不在 runningSubagents 里的槽位解绑，新出现的
      * 尝试绑定（槽位级 2s 节流——updateLive 挂在 0.1s 心跳上，不节流会让 diag 全表
      * 枚举跟着心跳空转）。 */
@@ -697,6 +718,7 @@
         h.charsPerToken = stats.totalCharacters / stats.outputTokens;   // c2t 自校准：本轮真实比例供下一轮估算用
       }
       subRateTick(subRunningList(stats));   // 运行中子代理逐个绑/解速率桥（v333：∪ backgroundWorks 补给，窗口滚出不丢）
+      stats = synthesizeBackgroundStats(stats);   // v336：主会话无实时轮而后台槽位在跑——合成子代理运行态（速度格不再静态）
       renderSubAgentRows();   // v176：Agent 行内速率 chip 对账（槽位估算/快照真实值两态）
       var wasLive = liveKindCur === "live";
       var view = stats ? zuBarSpeedView(stats, h && h.charsPerToken, subRate.sum,

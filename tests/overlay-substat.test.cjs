@@ -98,7 +98,7 @@ function extractSubStat(lang) {
   const ctx = vm.createContext(ctxObj);
   const fn = vm.runInContext(
     '(function(){' + getNamedSlice('subStatItems') +
-    '\nreturn { list: subRunningList, render: renderRunningSubagentItems };})();', ctx);
+    '\nreturn { list: subRunningList, render: renderRunningSubagentItems, synth: synthesizeBackgroundStats };})();', ctx);
   return { ctx, fn };
 }
 
@@ -247,6 +247,32 @@ for (const lang of ['zh', 'en']) {
   });
 }
 
+  test(`synth: idle main session with live slots synthesizes Agent runningTool`, () => {
+    const { ctx, fn } = extractSubStat('zh');
+    ctx.subRate.slots[BG_SID] = { handle: {}, want: BG_SID, rate: 45, at: NOW - 100 };
+    ctx.subRate.slots['sess_subagent_agent_b2'] = { handle: {}, want: 'sess_subagent_agent_b2', rate: 30, at: NOW - 100 };
+    const out = fn.synth(null);   // 主会话无 stats（空闲）
+    assert.equal(out.complete, false);
+    assert.equal(out.runningTool.name, 'Agent');
+    assert.equal(out.runningTool.childSessionId, 'sess_subagent_agent_b2', 'runningSubagents 取末槽');
+    assert.equal(out.runningSubagents.length, 2);
+    const out2 = fn.synth({ complete: true, runningTool: null });   // 上一轮已完成同样合成
+    assert.equal(out2.runningTool.name, 'Agent');
+  });
+
+  test(`synth: live main session passes through; no slots returns original`, () => {
+    const { ctx, fn } = extractSubStat('zh');
+    const live = { complete: false, runningTool: { name: 'Read' } };
+    assert.equal(fn.synth(live), live, '主会话实时轮优先，不合成');
+    ctx.subRate.slots[BG_SID] = { want: BG_SID };
+    const out = fn.synth(null);
+    assert.equal(out.runningTool.name, 'Agent', 'want 槽位触发合成');
+    ctx.subRate.slots = {};   // 清空槽位（后台全部结束）
+    assert.equal(fn.synth(null), null, '无槽位且无 stats：原样返回（回落 DB/会话均路径）');
+    const idle = { complete: true };
+    assert.equal(fn.synth(idle), idle, '无槽位不合成：回落原完成态（会话均）');
+  });
+
 test('source contracts: substat wiring (style, delegation, call sites, union feed, version)', () => {
   assert.match(source, /"\.zu-substat\{flex:0 0 auto;white-space:nowrap;cursor:help/, 'chip 样式入注入块');
   assert.match(source, /e\.target\.closest\("\.zu-subrate,\.zu-wfrun,\.zu-substat"\)/, '委托判定含状态面板 chip');
@@ -259,5 +285,9 @@ test('source contracts: substat wiring (style, delegation, call sites, union fee
    * pane 回收或热重载后残留冻结 chip（第一轮审查 M1/m2 的变异全绿缺口，源码契约锁定） */
   assert.match(source, /var staleChips = srr\.querySelectorAll\("\.zu-subrate,\.zu-wfrun,\.zu-substat"\)/, 'dispose 摘净链含三类 chip');
   assert.match(source, /,\.zu-subrate,\.zu-wfrun,\.zu-substat"\)\.forEach/, '启动自清列表含三类 chip');
-  assert.match(source, /var VERSION = "v335";/);
+  /* v337 主格合成态：槽位在而主会话无实时轮——合成 runningTool=Agent 让速度格走子代理分支 */
+  assert.match(source, /function synthesizeBackgroundStats\(stats\)/, '合成函数在切片内');
+  assert.match(source, /stats = synthesizeBackgroundStats\(stats\);/, 'updateLive 接线');
+  assert.match(source, /if \(stats && !stats\.complete\) return stats;/, '主会话实时轮优先不合成');
+  assert.match(source, /var VERSION = "v337";/);
 });
