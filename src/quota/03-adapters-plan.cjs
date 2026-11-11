@@ -36,7 +36,7 @@ for (const fam of ["bigmodel", "zai"]) {
       try { raw = j.readFile(j.credsPath); } catch (e) { return null; }
       const enc = raw && typeof raw === "object" ? raw[conf.credKey] : null;
       if (typeof enc !== "string" || !enc) return null;
-      const token = decryptHostCredential(enc, j);
+      const token = decryptValue(enc, deriveCipherKey(j.env));   // v2 信封由 decryptValue 分发器经 defaultDec 解（上游 #289 架构）
       if (!token) return { decryptFailed: true, fingerprint: "host:" + sha16(enc) };
       return { token, fingerprint: "host:" + sha16(enc), source: "host" };
     },
@@ -90,7 +90,7 @@ ADAPTERS.push({
       try { raw = j.readFile(j.credsPath); } catch (e) { return null; }
       const enc = raw && typeof raw === "object" ? raw["zcodejwttoken"] : null;
       if (typeof enc !== "string" || !enc) return null;
-      token = decryptHostCredential(enc, j);
+      token = decryptValue(enc, deriveCipherKey(j.env));
       if (!token) return { decryptFailed: true, fingerprint: "host:" + sha16(enc) };
       source = "host";
     }

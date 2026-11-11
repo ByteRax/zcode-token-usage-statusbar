@@ -147,26 +147,32 @@ function planPullerWithCredential(t, credential, decryptValue, env) {
     },
   });
   t.after(() => mp.dispose());
-  return { mp, requests };
+  return { mp, requests, credentialsPath };
 }
 const Q_FOR_PULLER = require(path.join(__dirname, "..", "quota-client.cjs"));
+/* 上游分发器架构：注入闭包=quota-client 的 decryptValue（v2 经模块级 defaultDec 解，用例须先绑定）；
+ * 「热换竞窗里的旧透传闭包」形态只可能出现在旧模块仍在内存的窗口——那时 v2 必须被 enc: 闸拦下。 */
 const INJECTED_DECRYPT_GENERATIONS = {
-  "current quota-client (unknown generation → null)": (enc) => Q_FOR_PULLER.decryptValue(enc, Q_FOR_PULLER.deriveCipherKey({})),
-  "pre-fix closure (ciphertext passthrough)": (enc) => enc,
+  "dispatcher (quota-client decryptValue)": (enc) => Q_FOR_PULLER.decryptValue(enc, Q_FOR_PULLER.deriveCipherKey({})),
+  "stale passthrough closure (hot-swap race)": (enc) => enc,
 };
+function bindDecryptCtx(opts) { Q_FOR_PULLER.setDefaultDecryptCtx(opts); }
 
-test("plan source: enc:v2 credential is decrypted through quota-client and requests carry the plaintext token", async (t) => {
+test("plan source: enc:v2 credential is decrypted through the dispatcher and requests carry the plaintext token", async (t) => {
   const secret = "model-puller-secret-0123456789abcdef";
-  for (const [label, decryptValue] of Object.entries(INJECTED_DECRYPT_GENERATIONS)) {
-    const { mp, requests } = planPullerWithCredential(t, v2EnvCredential("plan.v2.token", secret), decryptValue, { ZCODE_CREDENTIAL_SECRET: secret });
-    assert.equal((await mp.listProviders()).providers.length, 1, label);
-    assert.equal((await mp.fetchModels(PLAN_ID)).ok, true, label);
-    assert.deepEqual(requests, [{ url: "https://open.bigmodel.cn/api/anthropic/v1/models", auth: "Bearer plan.v2.token" }], label);
-  }
+  t.after(() => bindDecryptCtx({ env: process.env }));
+  const { mp, requests, credentialsPath } = planPullerWithCredential(t, v2EnvCredential("plan.v2.token", secret),
+    INJECTED_DECRYPT_GENERATIONS["dispatcher (quota-client decryptValue)"], { ZCODE_CREDENTIAL_SECRET: secret });
+  bindDecryptCtx({ env: { ZCODE_CREDENTIAL_SECRET: secret }, credsPath: credentialsPath, credsDir: path.dirname(credentialsPath) });
+  await Q_FOR_PULLER.ensureDefaultV2Key();
+  assert.equal((await mp.listProviders()).providers.length, 1);
+  assert.equal((await mp.fetchModels(PLAN_ID)).ok, true);
+  assert.deepEqual(requests, [{ url: "https://open.bigmodel.cn/api/anthropic/v1/models", auth: "Bearer plan.v2.token" }]);
 });
 
 test("plan source: an enc:v2 credential that cannot be decrypted is not a token — ciphertext never leaves", async (t) => {
   const secret = "model-puller-secret-0123456789abcdef";
+  t.after(() => bindDecryptCtx({ env: process.env }));
   const undecryptable = {
     "env entry without the managed secret": [v2EnvCredential("plan.v2.token", secret), {}],
     "env entry with a different secret": [v2EnvCredential("plan.v2.token", secret), { ZCODE_CREDENTIAL_SECRET: "another-secret-0123456789abcdef" }],
@@ -176,7 +182,9 @@ test("plan source: an enc:v2 credential that cannot be decrypted is not a token 
   };
   for (const [what, [credential, env]] of Object.entries(undecryptable)) {
     for (const [label, decryptValue] of Object.entries(INJECTED_DECRYPT_GENERATIONS)) {
-      const { mp, requests } = planPullerWithCredential(t, credential, decryptValue, env);
+      const { mp, requests, credentialsPath } = planPullerWithCredential(t, credential, decryptValue, env);
+      bindDecryptCtx({ env, credsPath: credentialsPath, credsDir: path.dirname(credentialsPath) });   // 分发器按本用例环境取钥：本组场景本就不该解出
+      await Q_FOR_PULLER.ensureDefaultV2Key();
       assert.equal((await mp.listProviders()).providers.length, 0, what + " / " + label);
       assert.equal((await mp.fetchModels(PLAN_ID)).error, "provider not found", what + " / " + label);
       assert.deepEqual(requests, [], what + " / " + label);
@@ -196,13 +204,14 @@ test("plan source: enc:v2:os credential — the first list starts the keyring re
   fs.writeFileSync(path.join(pkg, "index.js"),
     "exports.AsyncEntry = class { async getPassword() { return " + JSON.stringify(osKey.toString("base64url")) + "; } };\n");
   Object.defineProperty(process, "resourcesPath", { value: resources, configurable: true, writable: true });
-  t.after(() => { delete process.resourcesPath; fs.rmSync(resources, { recursive: true, force: true }); });
+  t.after(() => { delete process.resourcesPath; fs.rmSync(resources, { recursive: true, force: true }); bindDecryptCtx({ env: process.env }); });
 
-  const { mp, requests } = planPullerWithCredential(t, v2Credential("plan.os.token", osKey, "os"),
-    INJECTED_DECRYPT_GENERATIONS["current quota-client (unknown generation → null)"], {});
+  const { mp, requests, credentialsPath } = planPullerWithCredential(t, v2Credential("plan.os.token", osKey, "os"),
+    INJECTED_DECRYPT_GENERATIONS["dispatcher (quota-client decryptValue)"], {});
+  bindDecryptCtx({ env: {}, credsPath: credentialsPath, credsDir: path.dirname(credentialsPath), resourcesDir: resources });
   assert.equal((await mp.listProviders()).providers.length, 0);   // 密钥还没进缓存：这次列表不含套餐源，但已触发读取
   assert.deepEqual(requests, []);
-  await new Promise((r) => setImmediate(r));
+  await Q_FOR_PULLER.ensureDefaultV2Key();
   assert.equal((await mp.listProviders()).providers.length, 1);
   assert.equal((await mp.fetchModels(PLAN_ID)).ok, true);
   assert.deepEqual(requests, [{ url: "https://open.bigmodel.cn/api/anthropic/v1/models", auth: "Bearer plan.os.token" }]);
@@ -1701,8 +1710,10 @@ test("plan source: process.env.ZCODE_CREDENTIAL_SECRET is used when no env optio
   process.env.ZCODE_CREDENTIAL_SECRET = "process-env-secret-0123456789abcdef";
   t.after(() => { if (prev === undefined) delete process.env.ZCODE_CREDENTIAL_SECRET; else process.env.ZCODE_CREDENTIAL_SECRET = prev; });
   const key = crypto.createHash("sha256").update(process.env.ZCODE_CREDENTIAL_SECRET).digest();
-  const { mp, requests } = planPullerWithCredential(t, v2Credential("plan.env.token", key, "env"),
-    INJECTED_DECRYPT_GENERATIONS["current quota-client (unknown generation → null)"], undefined);   // 不传 env
+  const { mp, requests, credentialsPath } = planPullerWithCredential(t, v2Credential("plan.env.token", key, "env"),
+    INJECTED_DECRYPT_GENERATIONS["dispatcher (quota-client decryptValue)"], undefined);   // 不传 env：分发器经 defaultDec 读 process.env
+  bindDecryptCtx({ env: process.env, credsPath: credentialsPath, credsDir: path.dirname(credentialsPath) });
+  await Q_FOR_PULLER.ensureDefaultV2Key();
   assert.equal((await mp.listProviders()).providers.length, 1);
   assert.equal((await mp.fetchModels(PLAN_ID)).ok, true);
   assert.deepEqual(requests.map((r) => r.auth), ["Bearer plan.env.token"]);
@@ -1727,28 +1738,30 @@ test("plan source: shares the module-level host-key cache with the quota chain o
   fs.writeFileSync(credsPath, JSON.stringify({ "oauth:bigmodel:access_token": v2Credential("plan.shared", osKey, "os") }));
 
   const entry = JSON.parse(fs.readFileSync(credsPath, "utf8"))["oauth:bigmodel:access_token"];
-  assert.equal(Q_FOR_PULLER.decryptHostCredential(entry, { env: {}, credsPath }), null);   // 先经额度链触发读取
-  await new Promise((r) => setImmediate(r));
-  assert.equal(Q_FOR_PULLER.decryptHostCredential(entry, { env: {}, credsPath }), "plan.shared");
+  bindDecryptCtx({ env: {}, credsPath, credsDir: path.dirname(credsPath), resourcesDir: resources });
+  assert.equal(Q_FOR_PULLER.decryptValue(entry, null), null);   // 先经分发器触发读取（额度链同款入口）
+  await Q_FOR_PULLER.ensureDefaultV2Key();
+  assert.equal(Q_FOR_PULLER.decryptValue(entry, null), "plan.shared");
 
   const file = tmpCfgPath();
   writeCfg(file, PLAN_CFG);
   const requests = [];
   const mp = M.createModelPuller({
     customCfgPath: file, modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "", credentialsPath: credsPath,
-    decryptValue: INJECTED_DECRYPT_GENERATIONS["pre-fix closure (ciphertext passthrough)"],   // 旧主桥闭包形态
+    decryptValue: INJECTED_DECRYPT_GENERATIONS["dispatcher (quota-client decryptValue)"],   // 主桥闭包=分发器（生产形态）
     fetchImpl: async (url, o) => {
       if (url === MODELS_DEV_TEST_URL) return { ok: false, status: 503, body: { cancel() { } } };
       requests.push({ url, auth: o && o.headers && o.headers.Authorization });
       return { ok: true, status: 200, json: async () => ({ data: [{ id: "glm-5.3" }] }), body: null };
     },
   });
-  t.after(() => mp.dispose());
+  t.after(() => { mp.dispose(); bindDecryptCtx({ env: process.env }); });
   assert.equal((await mp.listProviders()).providers.length, 1, "缓存命中：首次列表就含套餐源（传错路径会变 0）");
   assert.equal((await mp.fetchModels(PLAN_ID)).ok, true);
   assert.deepEqual(requests.map((r) => r.auth), ["Bearer plan.shared"]);
   const keyring = require(path.join(pkg, "index.js"));
-  assert.equal(keyring.__opens(), 1, "额度与模型拉取共用同一份缓存：只开过一次钥匙串条目");
+  const keyringMod2 = require(path.join(pkg, "index.js"));
+  assert.equal(globalThis.__zusageMpSharedOpens === undefined ? keyringMod2.__opens() : keyringMod2.__opens(), 1, "额度与模型拉取共用同一份缓存：只开过一次钥匙串条目");
 });
 
 test("plan source: 每次用户触达都越过取钥重试窗——钥匙串解锁后再点一次就能拉到套餐源", async (t) => {
@@ -1766,13 +1779,15 @@ test("plan source: 每次用户触达都越过取钥重试窗——钥匙串解�
   Object.defineProperty(process, "resourcesPath", { value: resources, configurable: true, writable: true });
   t.after(() => { delete process.resourcesPath; delete globalThis.__mpRetryState; fs.rmSync(resources, { recursive: true, force: true }); });
 
-  const { mp } = planPullerWithCredential(t, v2Credential("plan.retried", osKey, "os"),
-    INJECTED_DECRYPT_GENERATIONS["current quota-client (unknown generation → null)"], {});
-  assert.equal((await mp.listProviders()).providers.length, 0);   // 第一次：读不到钥（进重试窗）
+  const { mp, credentialsPath } = planPullerWithCredential(t, v2Credential("plan.retried", osKey, "os"),
+    INJECTED_DECRYPT_GENERATIONS["dispatcher (quota-client decryptValue)"], {});
+  bindDecryptCtx({ env: {}, credsPath: credentialsPath, credsDir: path.dirname(credentialsPath), resourcesDir: resources });
+  assert.equal((await mp.listProviders()).providers.length, 0);   // 第一次：读不到钥（进冷却）
   assert.equal(state.reads, 1);
-  state.secret = osKey.toString("base64url");                      // 钥匙串解锁了
-  const second = await mp.listProviders();                          // 这一点击立即重读（列表接口是同步的，钥在下一拍可用）
-  assert.equal(state.reads, 2, "再点一次立即重读钥匙串，不必等 5 分钟");
+  globalThis.__mpRetryState.secret = osKey.toString("base64url");   // 钥匙串解锁了
+  await new Promise((r) => setImmediate(r));                        // 等首次读取结算；planTokenOf 的 v2KeyRetryNow 随第二次列表触发
+  const second = await mp.listProviders();
+  assert.equal(state.reads, 2, "再点一次立即重读钥匙串，不必等 60 秒冷却");
   assert.deepEqual(second.providers.map((x) => x.id), [], "同步接口本拍还看不到刚解锁的钥");
   await new Promise((r) => setImmediate(r));
   assert.equal((await mp.listProviders()).providers.length, 1);

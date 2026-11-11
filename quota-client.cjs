@@ -1,4 +1,4 @@
-/* 额度客户端（主进程热换模块）v3：多厂商适配器 + 多源调度器。
+/* 额度客户端（主进程，冷文件）v3：多厂商适配器 + 多源调度器。
  * 阶段 3（浮层 v96 线）：BigModel/Z.ai 内置套餐（解密宿主 OAuth 凭据直查 monitor 端点）
  * 之外，新增零配置官方域适配器（MiniMax/Kimi/CommandCode/DeepSeek/OpenRouter/SiliconFlow/
  * Anthropic OAuth）与显式配置适配器（Cline/MiMo Cookie/火山 AK-SK/SCNet 账本）。
@@ -61,7 +61,7 @@ function jwtExpMs(token) {
   } catch (e) { return null; }
 }
 
-/* ---------- 宿主凭据解密（enc:v1 AES-256-GCM，按宿主语义重写） ---------- */
+/* ---------- 宿主凭据解密（enc:v1 / enc:v2 双信封，按宿主语义重写） ---------- */
 function deriveSecret(env) {
   const conf = env.ZCODE_CREDENTIAL_SECRET;
   if (conf) return conf;
@@ -70,11 +70,11 @@ function deriveSecret(env) {
   return `zcode-credential-fallback:${os.platform()}:${os.homedir()}:${username}`;
 }
 function deriveCipherKey(env) { return crypto.createHash("sha256").update(deriveSecret(env)).digest(); }
-function decryptValue(value, key) {
+function decryptV1Value(value, key) {
   if (typeof value !== "string") return value;
-  /* 只解 enc:v1。无前缀明文原样返回；其它 enc:* 代际一律 null——原先对非 v1 值原样返回，
-   * enc:v2 密文会被调用方当成明文 token 外发（宿主对未知前缀同款拒绝）。 */
-  if (!value.startsWith(ENC_PREFIX)) return value.startsWith("enc:") ? null : value;
+  /* 未知 enc: 版本按宿主 legacy 语义拒绝（null）：绝不把密文当明文 token 外发 */
+  if (value.startsWith("enc:") && !value.startsWith(ENC_PREFIX)) return null;
+  if (!value.startsWith(ENC_PREFIX)) return value;
   const parts = value.slice(ENC_PREFIX.length).split(".");
   if (parts.length !== 3 || !parts[0] || !parts[1] || parts[2] === undefined) return null;
   let iv, tag, ct;
@@ -91,155 +91,181 @@ function decryptValue(value, key) {
   } catch (e) { return null; }
 }
 
-/* ---------- 宿主凭据解密（enc:v2，宿主 3.18.0 起） ----------
- * 形状 enc:v2:<os|env>:<keyId>:<payload>：仍 AES-256-GCM，payload 为三段 base64url(iv.tag.ct)
- * 点分隔；keyId = sha256(key) hex 前 24 字符，与所取密钥不符即拒（防拿错钥解出垃圾）。
- *   os  = 密钥在系统钥匙串（service "ZCode Credential Encryption"、account =
- *         sha256hex(绝对化 credentials.json 路径)）。取钥走宿主自带的 @napi-rs/keyring：
- *         宿主主进程自己就是这样读写该条目的，本模块跑在同一进程内、访问身份与宿主相同，
- *         不经外部命令、不改条目的访问控制。取钥是异步的：未就绪时本次按解密失败降级，
- *         到位后经 hostKeyWaiters 唤醒调度器重评；取不到或与条目 keyId 不符时
- *         HOST_KEY_RETRY_MS 内不重取（已有的密钥不因一次失败被清掉），单次读取有超时兜底。
- *         宿主无该依赖（3.17.x 及更早）或加载失败一律取不到。
- *         Windows/Linux 走同一条链，未实机验证。
- *   env = 宿主 managed secret，来源序同宿主：ZCODE_CREDENTIAL_SECRET →
- *         ZCODE_CREDENTIAL_SECRET_FILE（两者同配按不可用）→ 凭据同目录 credential-secret
- *         （非 win32 须仅属主可读写）；文件须为常规文件、32–4096 字节；key = sha256(secret)。
- *         按条目声明的源取钥并以 keyId 把关，不像宿主那样再要求它等于当前环境解析出的源。
- * 密钥只在内存，不进日志/诊断。 */
-const ENC_V2_PREFIX = "enc:v2:";
-const KEYRING_SERVICE = "ZCode Credential Encryption";
-const HOST_KEY_RETRY_MS = 5 * 60 * 1000;    // 取不到或与条目 keyId 不符后的重取间隔
-const HOST_KEY_TIMEOUT_MS = 30 * 1000;      // 单次读取的兜底：钥匙串被锁等情况下不让在途状态永久占住
-const hostKeys = new Map();         // credsPath → { key, keyId, at, flight }（模块级：额度与模型拉取共用，热换即重置）
-const hostKeyWaiters = new Set();   // 密钥到位回调 (credsPath) => void：各 client 创建时注册、dispose 时注销
-function v2KeyIdOf(key) { return crypto.createHash("sha256").update(key).digest("hex").slice(0, 24); }
-function v2SecretFile(file, ownerOnly) {
-  try {
-    const st = fs.statSync(file);
-    if (!st.isFile() || st.size > 4096 || (ownerOnly && process.platform !== "win32" && (st.mode & 63) !== 0)) return null;
-    const text = fs.readFileSync(file, "utf8");
-    const size = Buffer.byteLength(text, "utf8");
-    return size >= 32 && size <= 4096 ? text : null;
-  } catch (e) { return null; }
-}
-function v2EnvKey(env, credsPath) {
-  const direct = env.ZCODE_CREDENTIAL_SECRET, file = env.ZCODE_CREDENTIAL_SECRET_FILE;
-  if (direct && file) return null;   // 宿主互斥语义：双配视为不可用，不猜取哪个
-  let secret = direct || null;
-  if (!secret && file) secret = v2SecretFile(file, false);   // 显式指定的文件宿主不查权限位
-  else if (!secret && typeof credsPath === "string" && credsPath) {
-    secret = v2SecretFile(path.join(path.dirname(path.resolve(credsPath)), "credential-secret"), true);
-  }
-  return secret ? crypto.createHash("sha256").update(secret).digest() : null;
-}
-/* 宿主自己的钥匙串条目句柄（宿主 getEntry 同款参数）。按宿主的依赖解析方式取包：桌面主
- * 程序已加载过它，这里拿到的是同一份模块。非 Electron 环境（CLI、测试）没有宿主资源目录。 */
-function hostKeyringEntry(service, account) {
-  const resources = process.resourcesPath;
-  if (!resources) return null;
-  const hostRequire = require("module").createRequire(path.join(resources, "app.asar", "package.json"));
-  const { AsyncEntry } = hostRequire("@napi-rs/keyring");
-  return new AsyncEntry(service, account, { linux: { store: "secret-service" } });
-}
-/* 清掉某凭据路径的取钥重试窗口（在途读取不受影响）：用户点「立即刷新」或凭据文件变更时调用，
- * 让下一次凭据重评可以马上再读一次钥匙串。 */
-function hostKeyRetryNow(credsPath) {
-  const st = hostKeys.get(credsPath);
-  if (!st) return;
-  st.at = 0;
-  if (st.flight) st.retryNow = true;   // 在途读取稍后失败时不重开窗口
-}
-/* 同步门面：缓存里有与条目 keyId 相符的密钥就返回；否则发起一次异步取钥（单飞）并返回 null。
- * 每次载荷推送都会经 resolveCred 走到这里，所以除首次与重试窗口外不得读钥匙串。 */
-function hostOsKey(j, keyId) {
-  const credsPath = j.credsPath;
-  if (typeof credsPath !== "string" || !credsPath) return null;
-  let st = hostKeys.get(credsPath);
-  if (!st) { st = { key: null, keyId: "", at: 0, flight: false, retryNow: false }; hostKeys.set(credsPath, st); }
-  if (st.key && st.keyId === keyId) return st.key;
-  if (st.flight) return null;
-  const clock = typeof j.now === "function" ? j.now : Date.now;
-  if (st.at) {
-    const since = clock() - st.at;
-    if (since < 0) st.at = clock() || 1;   // 时钟回拨：从现在重新计窗，既不立即重取也不无限期推迟
-    if (since < HOST_KEY_RETRY_MS) return null;
-  }
-  const log = typeof j.log === "function" ? j.log : null;
-  let settled = false, timer = null;
-  const settle = (secret, why) => {
-    if (settled) return;   // 每次读取只结算一次
-    settled = true;
-    if (timer) clearTimeout(timer);
-    const raw = typeof secret === "string" && /^[A-Za-z0-9_-]{43}$/.test(secret) ? Buffer.from(secret, "base64url") : null;   // 宿主同款形状：base64url 43 字符 = 32 字节
-    const fresh = raw && raw.length === 32 ? raw : null;
-    st.at = st.retryNow ? 0 : (clock() || 1);   // 在途期间被要求重试（手动刷新/凭据变更）：失败后不开新窗口
-    st.retryNow = false;
-    st.flight = false;
-    if (!fresh) {   // 这次没取到：已有的密钥照旧可用，不清
-      if (log) log("host credential key unavailable:", why);
-      return;
-    }
-    const freshId = v2KeyIdOf(fresh);
-    const changed = !st.key || st.keyId !== freshId;
-    st.key = fresh;
-    st.keyId = freshId;
-    if (!changed) return;   // 取到的还是同一把钥：没有新信息，不唤醒
-    for (const wake of Array.from(hostKeyWaiters)) {
-      if (!hostKeyWaiters.has(wake)) continue;   // 遍历途中被注销的 client 不再唤醒
-      try { wake(credsPath); } catch (e) { /* 单个 client 的唤醒异常不连累其它 */ }
-    }
-  };
-  let entry = null;
-  try {
-    const open = typeof j.keyringEntry === "function" ? j.keyringEntry : hostKeyringEntry;
-    entry = open(KEYRING_SERVICE, crypto.createHash("sha256").update(path.resolve(credsPath)).digest("hex"));
-  } catch (e) { entry = null; }
-  if (!entry || typeof entry.getPassword !== "function") { settle(null, "keyring module unavailable"); return null; }
-  st.flight = true;
-  /* 软超时：钥匙串读取走 libuv 线程池（宿主 keyring 原生模块没有取消口），挂住的读取释不掉也
-   * 取消不了。超时只留日志，在途标志保持——真正落定前绝不叠加新读取（每次挂住各占一个线程池
-   * 线程，叠加会占满宿主主进程的异步容量），迟到结果照常采纳、失败后照常进重试窗。 */
-  timer = setTimeout(() => {
-    if (settled) return;
-    if (log) log("host credential key read timed out; waiting for it to settle");
-  }, Number.isFinite(j.keyTimeoutMs) ? j.keyTimeoutMs : HOST_KEY_TIMEOUT_MS);
-  if (timer && typeof timer.unref === "function") timer.unref();
-  let pending;
-  try { pending = Promise.resolve(entry.getPassword()); } catch (e) { pending = Promise.reject(e); }
-  pending.then((secret) => settle(secret, secret == null ? "no keychain entry" : "malformed value"), () => settle(null, "read failed"));
-  return null;
-}
-function v2Open(payload, key) {
-  const parts = payload.split(".");
-  if (parts.length !== 3 || parts.some((p) => !/^[A-Za-z0-9_-]*$/.test(p))) return null;
+/* ---------- v2 信封（宿主 3.18.0）：enc:v2:{os|env}:{keyId24}:{iv.tag.ct} ----------
+ * 密钥是 32 字节随机值，OS 源存宿主 OS 凭据库（service "ZCode Credential Encryption"，
+ * account=sha256(resolve(credentials.json)).hex），env 源=sha256(受管 secret)。信封内
+ * keyId24=sha256(key).hex 前 24 位，解密前先比对指纹：密钥不在/换钥一律 null，绝不跨钥强解。
+ * keychain 读取异步而解密调用点全同步：ensureKey() 异步预热缓存，decrypt 同步读缓存；
+ * 未热/失配时置 pending 供调度器用 1 秒短重试（区别于真解密失败的 60 秒）。 */
+const ENC_V2_PFX = "enc:v2:";
+const V2_SERVICE = "ZCode Credential Encryption";
+const V2_KEY_RE = /^[A-Za-z0-9_-]{43}$/;   // 32 字节 base64url（无填充）
+
+function keyIdOf(key) { return crypto.createHash("sha256").update(key).digest("hex").slice(0, 24); }
+
+function openV2Seal(seal, key) {
+  const parts = seal.split(".");
+  if (parts.length !== 3 || !parts[0] || !parts[1] || parts[2] === undefined) return null;
   let iv, tag, ct;
   try {
     iv = Buffer.from(parts[0], "base64url");
     tag = Buffer.from(parts[1], "base64url");
     ct = Buffer.from(parts[2], "base64url");
   } catch (e) { return null; }
-  if (!ct.length || iv.length !== 12 || tag.length !== 16) return null;
+  if (iv.length !== 12 || tag.length !== 16) return null;
   try {
     const d = crypto.createDecipheriv("aes-256-gcm", key, iv);
     d.setAuthTag(tag);
     return Buffer.concat([d.update(ct), d.final()]).toString("utf8");
   } catch (e) { return null; }
 }
-/* 宿主凭据统一解密入口：无前缀明文原样返回；enc:v1 走旧链；enc:v2 按 os/env 源取钥；
- * 其它 enc:* 代际返回 null。j 需带 env 与 credsPath；可选 now、log、keyringEntry、
- * keyTimeoutMs 注入（后两个主要供测试）。 */
-function decryptHostCredential(value, j) {
-  if (typeof value !== "string" || !value.startsWith("enc:")) return value;
-  j = j || {};
-  const env = j.env || {};
-  if (value.startsWith(ENC_PREFIX)) return decryptValue(value, deriveCipherKey(env));
-  if (!value.startsWith(ENC_V2_PREFIX)) return null;
-  const parts = value.slice(ENC_V2_PREFIX.length).split(":");
-  if (parts.length !== 3 || (parts[0] !== "os" && parts[0] !== "env") || !/^[a-f0-9]{24}$/.test(parts[1])) return null;
-  const key = parts[0] === "env" ? v2EnvKey(env, j.credsPath) : hostOsKey(j, parts[1]);
-  if (!key || v2KeyIdOf(key) !== parts[1]) return null;
-  return v2Open(parts[2], key);
+
+/* 负缓存按 resourcesDir 分桶：一次空 dir/失败探测不再拖累其它目录（热换重建前的自愈路径） */
+const hostKeyringByDir = new Map();
+function loadHostKeyring(resourcesDir) {
+  const dir = String(resourcesDir || "");
+  if (!dir) return null;
+  if (hostKeyringByDir.has(dir)) return hostKeyringByDir.get(dir);
+  let mod = null;
+  const tries = [];
+  /* asar 内 wrapper（Electron fs 透传把 .node 指到 unpacked）；直接 require 失败不影响后续 */
+  tries.push(() => require(path.join(dir, "app.asar", "node_modules", "@napi-rs", "keyring")));
+  try {   // unpacked 原生 .node 兜底：扫描 @napi-rs/keyring-<triple> 目录
+    const scope = path.join(dir, "app.asar.unpacked", "node_modules", "@napi-rs");
+    for (const name of fs.readdirSync(scope)) {
+      if (!/^keyring-/.test(name)) continue;
+      const pdir = path.join(scope, name);
+      for (const f of fs.readdirSync(pdir)) {
+        if (f.endsWith(".node")) tries.push(((p, f2) => () => require(path.join(p, f2)))(pdir, f));
+      }
+    }
+  } catch (e) { /* 无 unpacked 目录/受限读取 */ }
+  for (const t of tries) {
+    try {
+      const m = t();
+      if (m && (m.AsyncEntry || m.Entry)) { mod = m; break; }
+    } catch (e) { /* 下一候选 */ }
+  }
+  hostKeyringByDir.set(dir, mod);
+  return mod;
+}
+
+/* 受管 secret（v2:env 源）：镜像宿主 resolveManagedSecret——ZCODE_CREDENTIAL_SECRET env
+ * → ZCODE_CREDENTIAL_SECRET_FILE env 指向的文件（不校验权限位，内容 32–4096 字节在 ensureV2Key 判）
+ * → 凭据同目录 credential-secret（宿主在无 os 标记时以它派生 env 源：headless 部署靠它；常规文件、
+ *   非 win32 须仅属主可读写、32–4096 字节）。前两者同设按配置错误处理（宿主同款 throw）。 */
+function readManagedSecret(ctx) {
+  const env = ctx.env || {};
+  if (env.ZCODE_CREDENTIAL_SECRET && env.ZCODE_CREDENTIAL_SECRET_FILE) { ctx.lastError = "managed secret misconfigured"; return null; }
+  if (env.ZCODE_CREDENTIAL_SECRET) return env.ZCODE_CREDENTIAL_SECRET;
+  if (env.ZCODE_CREDENTIAL_SECRET_FILE) {
+    try { return (ctx.readFileRaw || ((p) => fs.readFileSync(p, "utf8")))(env.ZCODE_CREDENTIAL_SECRET_FILE); }
+    catch (e) { ctx.lastError = "managed secret file unreadable"; return null; }
+  }
+  if (ctx.credsDir) {
+    try {
+      const p = path.join(ctx.credsDir, "credential-secret");
+      const st = fs.statSync(p);
+      if (st.isFile() && st.size >= 32 && st.size <= 4096 &&
+          (process.platform === "win32" || (st.mode & 63) === 0)) {
+        return (ctx.readFileRaw || ((q) => fs.readFileSync(q, "utf8")))(p);
+      }
+    } catch (e) { /* 无固定路径文件或不可读：按未配置 */ }
+  }
+  return null;
+}
+
+async function ensureV2Key(ctx, force) {
+  const cur = ctx.cache.get(ctx.credsPath) || null;
+  if (cur && !force) return cur;   // 已热：不重读 keychain/secret（换钥由 decrypt 侧 keyId 失配限频 force 重读）
+  if (ctx.keyFailedAt && Date.now() - ctx.keyFailedAt < 60000) return cur;   // 失败冷却：keychain 缺失时不做 1 秒风暴重试
+  ctx.lastError = "";   // 只反映最近一次尝试，不跨调用短路
+  const env = ctx.env || process.env;
+  let secret = readManagedSecret(ctx), source = "";
+  if (ctx.lastError) { ctx.keyFailedAt = ctx.retryNow ? 0 : Date.now(); ctx.retryNow = false; return cur; }   // 受管 secret 配置错误：与 keychain 失败同冷却
+  let key;
+  if (secret !== null) {
+    /* 宿主 X1n：env 源密钥 = sha256(受管 secret) 原始 32 字节，对 secret 无 base64url 形状要求；
+     * 文件路径的宿主校验是内容 32–4096 字节。 */
+    const blen = Buffer.byteLength(secret, "utf8");
+    if (env.ZCODE_CREDENTIAL_SECRET_FILE && (blen < 32 || blen > 4096)) { ctx.lastError = "managed secret file length invalid"; ctx.keyFailedAt = Date.now(); return cur; }
+    key = crypto.createHash("sha256").update(secret).digest();
+    source = "env";
+  } else {
+    const mod = ctx.keyringMod !== undefined ? ctx.keyringMod : loadHostKeyring(ctx.resourcesDir);
+    if (!mod || !(mod.AsyncEntry || mod.Entry)) { ctx.lastError = "host keyring unavailable"; return cur; }
+    try {
+      const E = mod.AsyncEntry || mod.Entry;
+      const account = crypto.createHash("sha256").update(String(ctx.credsPath)).digest("hex");
+      secret = await new E(V2_SERVICE, account, { linux: { store: "secret-service" } }).getPassword();
+    } catch (e) { ctx.lastError = "keychain read failed"; ctx.keyFailedAt = ctx.retryNow ? 0 : Date.now(); ctx.retryNow = false; return cur; }
+    source = "os";
+    if (typeof secret !== "string" || !V2_KEY_RE.test(secret)) { ctx.lastError = "key shape invalid"; ctx.keyFailedAt = ctx.retryNow ? 0 : Date.now(); ctx.retryNow = false; return cur; }
+    key = Buffer.from(secret, "base64url");
+    if (key.length !== 32) { ctx.lastError = "key length invalid"; ctx.keyFailedAt = ctx.retryNow ? 0 : Date.now(); ctx.retryNow = false; return cur; }
+  }
+  const ent = { key, keyId: keyIdOf(key), source };
+  ctx.cache.set(ctx.credsPath, ent);   // 重读成功才覆盖：失败路径不清旧钥（旧条目继续可解）
+  ctx.lastError = "";
+  ctx.keyFailedAt = 0;
+  return ent;
+}
+
+function makeHostDecryptor(opts) {
+  const o = opts || {};
+  const ctx = {
+    credsPath: o.credsPath || "",
+    credsDir: o.credsDir || "",
+    resourcesDir: o.resourcesDir !== undefined ? o.resourcesDir : ((typeof process !== "undefined" && process.resourcesPath) || ""),
+    env: o.env || process.env,
+    readFileRaw: o.readFileRaw,
+    keyringMod: o.keyringMod,   // undefined=自动探测；null/对象=显式指定（测试注入）
+    cache: new Map(), lastError: "", pending: 0, ensuring: null, keyFailedAt: 0, mismatchAt: 0, retryNow: false,
+  };
+  function ensureKey(force) {
+    if (ctx.ensuring) return ctx.ensuring;
+    ctx.ensuring = ensureV2Key(ctx, force).finally(() => { ctx.ensuring = null; ctx.pending = 0; });
+    return ctx.ensuring;
+  }
+  function decrypt(enc, legacyKey) {
+    if (typeof enc !== "string") return enc;
+    if (!enc.startsWith(ENC_V2_PFX)) return decryptV1Value(enc, legacyKey);
+    const parts = enc.slice(ENC_V2_PFX.length).split(":");
+    if (parts.length !== 3 || !/^(os|env)$/.test(parts[0]) || !/^[a-f0-9]{24}$/.test(parts[1])) return null;
+    const ent = ctx.cache.get(ctx.credsPath);
+    if (!ent || parts[0] !== ent.source || parts[1] !== ent.keyId) {
+      /* 缓存钥与信封不符（宿主换钥/残留旧条目）：不清缓存（重读失败会把仍可解的条目一起打死，
+       * 整桶最长 60 秒不可用），限频 force 重读自愈 */
+      const now = Date.now();
+      if (!ctx.mismatchAt || now - ctx.mismatchAt >= 60000) {
+        ctx.mismatchAt = now;
+        try { void ensureKey(true); } catch (e) { /* 同步段不抛 */ }
+      }
+      if (!ctx.keyFailedAt) ctx.pending = 1;   // 失败冷却期内不置位：调度器回退 60 秒，防 1 秒风暴
+      return null;
+    }
+    return openV2Seal(parts[2], ent.key);
+  }
+  return { ctx, ensureKey, decrypt, keyPending: () => !!ctx.pending };
+}
+
+/* 导出的 decryptValue 分发器：v2 信封走缺省宿主解密器（调用方无需感知上下文与缓存），
+ * v1/明文维持原 (value, key) 语义。客户端装配时 setDefaultDecryptCtx 绑定真实路径。 */
+let defaultDec = makeHostDecryptor({ env: process.env });
+function setDefaultDecryptCtx(opts) { defaultDec = makeHostDecryptor(opts || {}); }
+function ensureDefaultV2Key() { return defaultDec.ensureKey(); }
+function v2KeyPending() { return defaultDec.keyPending(); }
+/* 用户显式动作（chip 立即刷新/凭据变更/拉取模型点击）越过 v2 密钥的失败冷却与失配限频，
+ * 对齐「点击立即刷新绕过一切间隔与冻结」；在途读取稍后失败时不开新冷却窗。 */
+function v2KeyRetryNow() {
+  const ctx = defaultDec.ctx;
+  if (ctx.ensuring) { ctx.retryNow = true; return; }
+  ctx.keyFailedAt = 0;
+  ctx.mismatchAt = 0;
+}
+function decryptValue(value, key) {
+  if (typeof value === "string" && value.startsWith(ENC_V2_PFX)) return defaultDec.decrypt(value, key);
+  return decryptV1Value(value, key);
 }
 
 /* ---------- BigModel/Z.ai monitor 归一化（v96 口径不变） ---------- */
@@ -767,7 +793,7 @@ for (const fam of ["bigmodel", "zai"]) {
       try { raw = j.readFile(j.credsPath); } catch (e) { return null; }
       const enc = raw && typeof raw === "object" ? raw[conf.credKey] : null;
       if (typeof enc !== "string" || !enc) return null;
-      const token = decryptHostCredential(enc, j);
+      const token = decryptValue(enc, deriveCipherKey(j.env));   // v2 信封由 decryptValue 分发器经 defaultDec 解（上游 #289 架构）
       if (!token) return { decryptFailed: true, fingerprint: "host:" + sha16(enc) };
       return { token, fingerprint: "host:" + sha16(enc), source: "host" };
     },
@@ -821,7 +847,7 @@ ADAPTERS.push({
       try { raw = j.readFile(j.credsPath); } catch (e) { return null; }
       const enc = raw && typeof raw === "object" ? raw["zcodejwttoken"] : null;
       if (typeof enc !== "string" || !enc) return null;
-      token = decryptHostCredential(enc, j);
+      token = decryptValue(enc, deriveCipherKey(j.env));
       if (!token) return { decryptFailed: true, fingerprint: "host:" + sha16(enc) };
       source = "host";
     }
@@ -1629,7 +1655,11 @@ function createQuotaClient(opts) {
   /* resetListOn 同理缺省关：bigmodel 族并行查网页控制台列表端点补充过期卡历史
    * （status 端点无过期历史）；请求量翻倍且属增强数据，由注入侧显式开启 */
   const resetListOn = typeof o.resetList === "function" ? o.resetList : (o.resetList ? () => true : () => false);
-  const { credsPath, customCfgPath, builtinCfgPath } = resolveQuotaPaths(o);
+  const { credsPath, customCfgPath, builtinCfgPath, credsDir } = resolveQuotaPaths(o);
+  /* v2 凭据（宿主 3.18.0 enc:v2:os）绑定真实路径上下文并预热 keychain 密钥缓存：
+   * 异步预热、解密同步读缓存；未热时解密失败走 pending 短重试（见 tickSource）。 */
+  setDefaultDecryptCtx({ credsPath, credsDir, resourcesDir: o.resourcesDir, env });
+  void ensureDefaultV2Key();
   const secretsPath = o.secretsPath || path.join(path.dirname(credsPath), "quota-secrets.json");
   const readFile = o.readFile || ((p) => JSON.parse(fs.readFileSync(p, "utf8")));
   const log = o.log || (() => {});
@@ -1725,7 +1755,6 @@ function createQuotaClient(opts) {
   const j = {
     env, now, fetchImpl, readFile, secrets: { sources: {} }, customCfgPath, log, http, extras,
     credsPath,
-    keyringEntry: typeof o.keyringEntry === "function" ? o.keyringEntry : undefined,   // enc:v2:os 钥匙串条目句柄注入点（缺省取宿主自带 keyring）
     customProviderOf: (pid) => resolveCustomProvider(pid, readFile, customCfgPath, builtinCfgPath),
     familyApiKeyOf: (family, pid) => resolveFamilyApiKey(family, pid, readFile, customCfgPath, builtinCfgPath),
   };
@@ -1860,7 +1889,8 @@ function createQuotaClient(opts) {
     }
     if (cred.decryptFailed) {
       if (st.status !== "not_configured") setState(st, { status: "not_configured", reason: "decrypt", lastError: "credential decrypt failed" });
-      st.nextAt = t + NOT_CONFIGURED_RETRY_MS;
+      /* v2 密钥缓存未热是瞬态（预热在途）：1 秒短重试；真不可解（keychain 缺失等）维持低频 */
+      st.nextAt = t + (v2KeyPending() ? 1000 : NOT_CONFIGURED_RETRY_MS);
       return false;
     }
     if (cred.fingerprint !== st.fingerprint) {
@@ -1963,6 +1993,7 @@ function createQuotaClient(opts) {
 
   function tick(force) {
     let started = 0;
+    void ensureDefaultV2Key();   // v2 密钥缓存预热：已缓存/在途时为廉价空转（memoize）
     const qOn = quotaOn();
     const set = activeSet();   // 撤销/禁用重评始终执行；额度关时只停联网查询
     if (qOn) for (const { a, st } of set.values()) if (tickSource(a, st, force)) started++;
@@ -2050,8 +2081,8 @@ function createQuotaClient(opts) {
     if (!raw || typeof raw !== "object") return null;
     const oauthEnc = raw[famConf.credKey], jwtEnc = raw["zcodejwttoken"];
     if (typeof oauthEnc !== "string" || !oauthEnc || typeof jwtEnc !== "string" || !jwtEnc) return null;
-    const oauth = decryptHostCredential(oauthEnc, j);
-    const jwt = decryptHostCredential(jwtEnc, j);
+    const oauth = decryptValue(oauthEnc, deriveCipherKey(j.env));
+    const jwt = decryptValue(jwtEnc, deriveCipherKey(j.env));
     if (!oauth || !jwt) return { decryptFailed: true, fingerprint: "host:" + sha16(oauthEnc + "\n" + jwtEnc) };
     if (!oauth.trim() || !jwt.trim()) return null;
     return { oauth: oauth.trim(), jwt: jwt.trim(), fingerprint: sha16(JSON.stringify([oauthEnc, jwtEnc])) };
@@ -2156,49 +2187,13 @@ function createQuotaClient(opts) {
     }
   }
 
-  function reassessCredentials() {
-    /* 同一 provider 的 key/baseURL 也可能被修改；重读实际配置并重判适配器，
-     * 不能沿用旧 ctx 或让一次 unsupported 永久锁住后来补全的 MiniMax 规则。 */
-    const registered = new Set(Object.keys(byProvider));
-    if (primaryProvider) registered.add(primaryProvider);
-    /* 经 rememberProvider 重判：复合源后缀（vendor:providerId）与代际失效/状态复位
-     * 由它统一处理——直接用 resolvePrimary 裸写 byProvider 会把厂商内复合源坍缩成
-     * 裸家族源，丢账户隔离（多账户中转串显，实测）。 */
-    for (const provider of registered) rememberProvider(provider);
-    if (primaryProvider) {
-      primaryId = byProvider[primaryProvider] || "";
-      const st = primaryId ? states.get(primaryId) : null;
-      primaryCtx = st ? st.ctx : null;
-    }
-    activeSet();   // 总开关关闭时也撤销旧额度；只重评本地配置，不发请求/回调
-    /* 唤醒"值得重评"的源：冻结态（Infinity）重评后仍由 status 短路（指纹未变不复 fetch）；
-     * not_configured 唤醒以承接 secrets/供应商配置刚启用；宿主凭据源即时重拉（token 刷新）。
-     * ok 态保持 TTL——指纹在其自然到期重查时校验，避免一次 secrets 写入全源冗余刷新。 */
-    for (const st of states.values()) {
-      if (st.nextAt === Infinity || st.status === "not_configured" || (st.cred && st.cred.source === "host")) st.nextAt = 0;
-    }
-    if (resetGateOpen()) for (const famConf of RESET_FAMILIES) {
-      const st = resetStates.get(famConf.fam);
-      if (!st) continue;
-      if (!syncResetCredential(st, resolveResetCred(famConf)) &&
-          (st.nextAt === Infinity || st.status === "not_configured")) st.nextAt = 0;
-    }
-  }
-  /* enc:v2:os 的钥匙串密钥异步到位（见 hostOsKey）：此前这批源按解密失败落在 not_configured，
-   * 重评一次凭据并立即 tick，不必等 60 秒低频探测。dispose 时注销。 */
-  const onHostKey = (path0) => {
-    if (path0 !== credsPath) return;
-    if (!quotaOn() && !resetGateOpen()) return;   // 额度与重置卡都关：密钥到位也不重评凭据（关闭即停解密）
-    reassessCredentials();
-    tick();
-  };
   const client = {
     tick,
-    refresh() { hostKeyRetryNow(credsPath); return tick(true) > 0; },
+    refresh() { v2KeyRetryNow(); return tick(true) > 0; },   // 用户显式刷新：越过 v2 密钥冷却/失配限频
     refreshSource(id) {   // 厂商按钮刷新该厂商各账户；chip 的完整源 id 只刷新本账户
       const a = adapterOf(id);
       if (!a) return false;
-      hostKeyRetryNow(credsPath);
+      v2KeyRetryNow();
       let started = false;
       if (String(id).indexOf(":") >= 0) {
         const st = states.get(id);
@@ -2235,9 +2230,34 @@ function createQuotaClient(opts) {
         st.inFlight = null;
       }
     },
-    credentialsChanged() {   // 凭据文件/配置变更（主桥 fs.watch 等）：钥匙串密钥也可能换了，允许马上重取
-      hostKeyRetryNow(credsPath);
-      reassessCredentials();
+    credentialsChanged() {   // 凭据文件/配置变更（主桥 fs.watch 等）：v2 密钥也可能换了，允许马上重取
+      v2KeyRetryNow();
+      /* 同一 provider 的 key/baseURL 也可能被修改；重读实际配置并重判适配器，
+       * 不能沿用旧 ctx 或让一次 unsupported 永久锁住后来补全的 MiniMax 规则。 */
+      const registered = new Set(Object.keys(byProvider));
+      if (primaryProvider) registered.add(primaryProvider);
+      /* 经 rememberProvider 重判：复合源后缀（vendor:providerId）与代际失效/状态复位
+       * 由它统一处理——直接用 resolvePrimary 裸写 byProvider 会把厂商内复合源坍缩成
+       * 裸家族源，丢账户隔离（多账户中转串显，实测）。 */
+      for (const provider of registered) rememberProvider(provider);
+      if (primaryProvider) {
+        primaryId = byProvider[primaryProvider] || "";
+        const st = primaryId ? states.get(primaryId) : null;
+        primaryCtx = st ? st.ctx : null;
+      }
+      activeSet();   // 总开关关闭时也撤销旧额度；只重评本地配置，不发请求/回调
+      /* 唤醒"值得重评"的源：冻结态（Infinity）重评后仍由 status 短路（指纹未变不复 fetch）；
+       * not_configured 唤醒以承接 secrets/供应商配置刚启用；宿主凭据源即时重拉（token 刷新）。
+       * ok 态保持 TTL——指纹在其自然到期重查时校验，避免一次 secrets 写入全源冗余刷新。 */
+      for (const st of states.values()) {
+        if (st.nextAt === Infinity || st.status === "not_configured" || (st.cred && st.cred.source === "host")) st.nextAt = 0;
+      }
+      if (resetGateOpen()) for (const famConf of RESET_FAMILIES) {
+        const st = resetStates.get(famConf.fam);
+        if (!st) continue;
+        if (!syncResetCredential(st, resolveResetCred(famConf)) &&
+            (st.nextAt === Infinity || st.status === "not_configured")) st.nextAt = 0;
+      }
     },
     noteSnapshotExtras(data) {   // 快照侧注入（scnet 估算等）；ledger 源数据到位即解冻
       const prevScnet = extras.scnet;
@@ -2311,7 +2331,6 @@ function createQuotaClient(opts) {
     },
     secretsPath,
     dispose() {
-      hostKeyWaiters.delete(onHostKey);
       for (const st of states.values()) {
         if (st.ctl) { try { st.ctl.abort(); } catch (e) { } }
         st.inFlight = null;
@@ -2326,7 +2345,6 @@ function createQuotaClient(opts) {
     _states: states,
     _adapters: ADAPTERS,
   };
-  hostKeyWaiters.add(onHostKey);
   return client;
 }
 
@@ -2335,9 +2353,12 @@ module.exports = {
   resolveQuotaPaths,
   resolveCustomProvider,
   decryptValue,
-  decryptHostCredential,
-  hostKeyRetryNow,
   deriveCipherKey,
+  makeHostDecryptor,
+  setDefaultDecryptCtx,
+  ensureDefaultV2Key,
+  v2KeyPending,
+  v2KeyRetryNow,
   jwtExpMs,
   normalizeQuotaBody,
   normalizeZcodeStartBalance,
