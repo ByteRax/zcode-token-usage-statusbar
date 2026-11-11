@@ -187,24 +187,32 @@ def client_running():
         return True  # 查不到时按在跑处理，走安全路径
 
 
-def _spawn_detached(cmd, flags, **kwargs):
+def _spawn_detached(cmd, flags, fallback=True, **kwargs):
     """Windows：优先带 CREATE_BREAKAWAY_FROM_JOB 拉起，让监控脱离父进程的 Job 对象——
     从 agent/工具会话里跑安装时，会话清理会整树杀掉子进程，监控等不到客户端退出就被杀，
     收尾只能寄望下次 SessionStart 重试。Job 不允许 breakaway 时降级为普通创建，并留
     一行 stderr 线索（降级后的监控大概率活不过宿主回收，见 issue #208；静默场景的
-    存活兜底由 launch_monitor 的 WMI 通道承担，这里只是最后一级回退）。"""
+    存活兜底由 launch_monitor 的 WMI 通道承担，这里只是最后一级回退）。
+    fallback=False 时 breakaway 被拒直接抛 OSError，由调用方改走 WMI 脱离通道，
+    不先留一个注定被回收的树内监控。"""
     if not IS_WIN:
         return None
     breakaway = getattr(subprocess, "CREATE_BREAKAWAY_FROM_JOB", 0)
     try:
         return subprocess.Popen(cmd, creationflags=flags | breakaway, **kwargs)
     except OSError as e:
-        print(L(f"（breakaway 被拒（{e}）：监控留在父进程 Job 内，会随宿主回收被杀，"
-                f"可能收不了尾，见 issue #208）",
-                f"(breakaway denied ({e}): the monitor stays inside the parent job and "
-                f"will be killed with it; finalization may strand, see issue #208)"),
-              file=sys.stderr)
+        if not fallback:
+            raise
+        _warn_breakaway_denied(e)
         return subprocess.Popen(cmd, creationflags=flags, **kwargs)
+
+
+def _warn_breakaway_denied(e):
+    print(L(f"（breakaway 被拒（{e}）：监控留在父进程 Job 内，会随宿主回收被杀，"
+            f"可能收不了尾，见 issue #208）",
+            f"(breakaway denied ({e}): the monitor stays inside the parent job and "
+            f"will be killed with it; finalization may strand, see issue #208)"),
+          file=sys.stderr)
 
 
 WMI_TIMEOUT = 15   # powershell 冷启动 + CIM 创建的富余上限（秒）
@@ -249,13 +257,25 @@ def _spawn_via_wmi(cmd):
         return None
 
 
+def _spawn_survivor_monitor(epoch):
+    """WMI 脱离式拉起无窗口 --quiet 监控（静默收尾与可见监控 breakaway 被拒共用）。
+    ZUSAGE_MONITOR_NO_WMI=1 或无 pythonw.exe 时返回 None；解释器约束见 _wmi_interpreter。"""
+    if os.environ.get("ZUSAGE_MONITOR_NO_WMI"):
+        return None
+    interpreter = _wmi_interpreter()
+    if not interpreter:
+        return None
+    return _spawn_via_wmi([interpreter, str(HERE / "install_monitor.py"), "%.3f" % epoch,
+                           str(ASAR), str(RUNTIME), "--quiet"])
+
+
 def launch_monitor(epoch):
     """Windows 开新控制台窗口跑安装监控（提醒重启 + 确认生效 + .tmp 收尾）；
     macOS/Linux 无控制台概念，后台静默跑（收尾与自动退出照常）。设 ZUSAGE_NO_MONITOR=1 可禁用。
     同目标已有存活监控时不再拉起（issue #120：SessionStart 每次自动安装都会走到这里，
     不去重会随会话数线性堆积）；锁在 spawn 前释放，由监控进程自己去持有。
-    返回值：Windows 静默 WMI 通道返回新进程 PID，其余返回 Popen 对象或 None
-    （当前调用方均不消费返回值；PID 供测试断言与排查用）。"""
+    返回值：Windows 走 WMI（静默分支，或可见分支 breakaway 被拒的幸存通道）时返回新进程
+    PID，其余返回 Popen 对象或 None（当前调用方均不消费返回值；PID 供测试断言与排查用）。"""
     if os.environ.get("ZUSAGE_NO_MONITOR") and not os.environ.get("ZUSAGE_MONITOR_QUIET"):
         return
     monitor = HERE / "install_monitor.py"
@@ -263,6 +283,9 @@ def launch_monitor(epoch):
         return
     with monitor_instance_lock() as acquired:
         if not acquired:
+            if not os.environ.get("ZUSAGE_MONITOR_QUIET"):   # 静默模式服务 hook，stdout 不夹文本
+                print(L("（已有监控在值守同一目标，不再重复弹窗：完全退出 ZCode 后会自动完成替换）",
+                        "(A monitor is already watching this target, so no new window is opened: the replacement finishes automatically once ZCode quits completely)"))
             return   # 已有同目标监控在等：复用即可，不叠加进程
     # 试锁成功即释放，锁的长期持有者是监控进程自己；极小竞态窗口内并发双拉起
     # 也无害——后到的监控抢锁失败会自行退出。
@@ -275,14 +298,9 @@ def launch_monitor(epoch):
                 # 继承本进程环境、也没有创建标志位，解释器须换同目录 pythonw.exe
                 #（无控制台；缺失时跳过 WMI 走树内回退——用 python.exe 会在交互
                 # 会话闪现控制台窗，行为不能劣化），静默开关走 --quiet 参数。
-                if not os.environ.get("ZUSAGE_MONITOR_NO_WMI"):
-                    interpreter = _wmi_interpreter()
-                    if interpreter:
-                        pid = _spawn_via_wmi(
-                            [interpreter, str(monitor), "%.3f" % epoch,
-                             str(ASAR), str(RUNTIME), "--quiet"])
-                        if pid is not None:
-                            return pid
+                pid = _spawn_survivor_monitor(epoch)
+                if pid is not None:
+                    return pid
                 return _spawn_detached(cmd, subprocess.CREATE_NO_WINDOW, cwd=str(HERE),
                                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                        stderr=subprocess.DEVNULL)
@@ -291,7 +309,24 @@ def launch_monitor(epoch):
                                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                     stderr=subprocess.DEVNULL)
         if IS_WIN:
-            return _spawn_detached(cmd, subprocess.CREATE_NEW_CONSOLE, cwd=str(HERE))
+            try:
+                return _spawn_detached(cmd, subprocess.CREATE_NEW_CONSOLE, fallback=False,
+                                       cwd=str(HERE))
+            except OSError as denied:
+                # breakaway 被拒：树内可见监控会在用户退出 ZCode 时随宿主回收一起消失，
+                # 手动安装就永远收不了尾（issue #208 同源）。先试 WMI 脱离的静默监控，
+                # 都不可用才回到原树内回退。注意 fallback=False 会把任意 Popen OSError
+                # 一并抛到这里（AV 拦截/磁盘故障同码 WinError 5，无法按错误码区分）：
+                # 行为只会多一次 WMI 尝试、永不劣于基线，警告标签按最常见原因措辞。
+                pid = _spawn_survivor_monitor(epoch)
+                if pid is not None:
+                    print(L("（监控窗口无法脱离 ZCode 进程组，已改为后台静默监控：没有监控窗口、"
+                            "也无需保持任何窗口，完全退出 ZCode 后会自动完成替换）",
+                            "(The monitor window cannot detach from ZCode's process group, so a silent background monitor was started instead: "
+                            "there is no window to keep open; the replacement finishes automatically once ZCode quits completely)"))
+                    return pid
+                _warn_breakaway_denied(denied)
+                return subprocess.Popen(cmd, creationflags=subprocess.CREATE_NEW_CONSOLE, cwd=str(HERE))
         return subprocess.Popen(cmd, cwd=str(HERE),
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except OSError as e:
@@ -1009,8 +1044,8 @@ def _install(finalize=False, before_publish=None):
             _replace_pending("install")
             print(L("\n客户端运行中，但 asar 原子替换成功（运行中进程仍读旧数据）。",
                     "\nZCode is running, but the asar was replaced atomically (running processes keep reading the old data)."))
-            print(L("重启 ZCode 后悬浮条生效；已弹出监控窗口，确认生效后自动关闭。",
-                    "The floating bar activates after restarting ZCode; a monitor window has opened and will close itself once the load is confirmed."))
+            print(L("重启 ZCode 后悬浮条生效。若弹出了监控窗口，它会确认生效后自动关闭。",
+                    "The floating bar activates after restarting ZCode. If a monitor window opened, it confirms the result and closes automatically."))
             cleanup_legacy_bak()
             launch_monitor(time.time())
             return True
@@ -1019,10 +1054,12 @@ def _install(finalize=False, before_publish=None):
             return False
         except OSError as e:
             tool = RUNTIME / "patch_install.py"
-            print(L(f"\n运行中替换失败（{e}）。已弹出监控窗口：完全退出 ZCode 后会自动完成替换，",
-                    f"\nReplacement while running failed ({e}). A monitor window has opened: it finishes the replacement once ZCode quits completely,"))
-            print(L(f"请勿关闭该窗口；若已关闭，可手动执行：\"{PYEXE}\" \"{tool}\" install --finalize --asar \"{ASAR}\" --runtime \"{RUNTIME}\"",
-                    f"Keep it open; if it was closed already, run manually: \"{PYEXE}\" \"{tool}\" install --finalize --asar \"{ASAR}\" --runtime \"{RUNTIME}\""))
+            win_why = L("Windows 下运行中的 ZCode 会锁定 app.asar，这是预期现象而非安装故障。",
+                        "On Windows a running ZCode locks app.asar; this is expected, not an install fault. ") if IS_WIN else ""
+            print(L(f"\n运行中替换失败（{e}）。{win_why}监控会在完全退出 ZCode 后自动完成替换，",
+                    f"\nReplacement while running failed ({e}). {win_why}A monitor finishes the replacement once ZCode quits completely,"))
+            print(L(f"若弹出了监控窗口请勿关闭；没有窗口或已关闭时，可手动执行：\"{PYEXE}\" \"{tool}\" install --finalize --asar \"{ASAR}\" --runtime \"{RUNTIME}\"",
+                    f"keep any monitor window open; with no window or after closing it, run manually: \"{PYEXE}\" \"{tool}\" install --finalize --asar \"{ASAR}\" --runtime \"{RUNTIME}\""))
             launch_monitor(time.time())
             return False
     try:

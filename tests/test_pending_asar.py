@@ -539,7 +539,9 @@ class PendingAsarTests(unittest.TestCase):
         self.assertIn(f'--runtime "{self.pi.RUNTIME}"', output)
         tool = self.pi.RUNTIME / "patch_install.py"
         self.assertIn(f'"{sys.executable}" "{tool}"', output)
-        self.assertIn("Keep it open", output)   # 夹具 _LANG="en"（setUp）
+        if self.pi.IS_WIN:   # 该句仅 Windows 分支输出（darwin 夹具下 win_why 为空）
+            self.assertIn("locks app.asar", output)   # Windows「属预期」说明（spec 规则 5）
+        self.assertIn("keep any monitor window open", output)   # 夹具 _LANG="en"（setUp）
 
     def test_remove_failure_hint_includes_asar_path(self):
         self.pi.install()   # 先注入，_remove() 才会走到 _replace_pending
