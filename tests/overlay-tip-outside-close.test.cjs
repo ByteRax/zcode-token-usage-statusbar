@@ -30,23 +30,24 @@ function stubEl(name, { display = 'none', openClass = false, kids = [] } = {}) {
   };
   return node;
 }
-function stubTarget({ inModal = false } = {}) {
+function stubTarget({ modal = null } = {}) {
+  /* modal：target 所在弹框的根类名（词包查看/模型选择/压缩确认/子代理浮层四类逐一注入） */
   return {
     __name: 'target',
-    closest: (sel) => (inModal && /zu-mp-ov/.test(sel) ? { __name: 'modal' } : null),
+    closest: (sel) => (modal && sel.split(',').some((s) => s.trim() === `.${modal}`) ? { __name: modal } : null),
   };
 }
 function runOutside({
-  inactive = false, inModal = false, panelOpen = false,
+  inactive = false, modal = null, panelOpen = false,
   tipFor = null, quotaTipFor = null, rateTipFor = null, tpsTipFor = null,
   rstTipFor = null, subTipFor = null, gitTipFor = null,
   fxOpen = false, legendOpen = false,
-  targetIn = null,   /* 'tip'|'bar'|'panel'|'fx'|'legend'|'tps'|null(空白) */
+  targetIn = null,   /* 'tip'|'bar'|'panel'|'fx'|'legend'|'tps'|'rst'|'sub'|'git'|'quota'|'rate'|null(空白) */
 } = {}) {
   const calls = { hideTip: [], quota: 0, rate: 0, tps: 0, rst: 0, sub: 0, git: 0, fx: 0, legend: 0 };
   const ctx = {
     inactive: () => inactive,
-    target: stubTarget({ inModal }),
+    target: stubTarget({ modal }),
     tipFor, quotaTipFor, rateTipFor, tpsTipFor, rstTipFor, subTipFor, gitTipFor,
     bar: stubEl('bar'),
     panel: stubEl('panel', { openClass: panelOpen }),
@@ -102,16 +103,18 @@ test('tip 本体/条面/设置面板内部按压不是外点（切格、re-click
     [{ force: true, cause: 'outside' }]);
 });
 
-test('弹框内部不算外点（词包查看/模型选择/压缩确认/子代理浮层各自有关闭链）', () => {
-  assert.deepEqual(runOutside({ tipFor: {}, inModal: true }).calls.hideTip, []);
+test('弹框内部不算外点（词包查看/模型选择/压缩确认/子代理浮层四类逐一）', () => {
+  for (const dlg of ['zu-rot-pk-dlg', 'zu-mp-ov', 'zu-compact-dlg', 'zu-sub-pop']) {
+    assert.deepEqual(runOutside({ tipFor: {}, modal: dlg }).calls.hideTip, [], `${dlg} 内点不收`);
+  }
 });
 
 test('v271 硬保活窗白名单：outside 不被 1.2s 窗吞掉，left-bar 仍被吞（既有回归）', () => {
-  function runHide({ cause, lastDown, devKeep = 0, mouseInBar = false }) {
+  function runHide({ cause, lastDown, devKeep = 0, mouseInBar = false, force = true }) {
     const tipStats = { hides: 0, lastHide: '', hideSeq: [] };
     const ctx = {
       state: { devKeepTip: devKeep },
-      cause, force: true, mouseInBar,
+      cause, force, mouseInBar,
       lastTipDownAt: lastDown,
       Date, setTimeout, clearTimeout,
       tipStats,
@@ -122,7 +125,7 @@ test('v271 硬保活窗白名单：outside 不被 1.2s 窗吞掉，left-bar 仍�
       hideFxTip: () => { },
     };
     vm.runInNewContext(hideTipSrc + '\n__result = hideTip(__force, __cause);',
-      Object.assign(vm.createContext(ctx), { __force: true, __cause: cause }));
+      Object.assign(vm.createContext(ctx), { __force: force, __cause: cause }));
     return tipStats;
   }
   const now = Date.now();
@@ -131,6 +134,8 @@ test('v271 硬保活窗白名单：outside 不被 1.2s 窗吞掉，left-bar 仍�
   assert.equal(runHide({ cause: 'left-bar', lastDown: now - 100 }).lastHide, 'blocked:left-bar',
     'left-bar 在硬保活窗内仍被吞（v271 既有行为不变）');
   assert.equal(runHide({ cause: 'left-bar', lastDown: 0 }).lastHide, 'left-bar');
+  assert.equal(runHide({ cause: 'left-bar', lastDown: 0, mouseInBar: true, force: false }).lastHide,
+    'blocked:left-bar', 'v33 总闸：非 force 且鼠标在条面上任何路径不收（review M24 顺带锁）');
   assert.equal(runHide({ cause: 'outside', lastDown: now - 100, devKeep: 1 }).lastHide,
     'dev-keep:outside', 'devKeepTip 常驻模式契约不变：outside 不在总闸白名单');
   assert.equal(runHide({ cause: 'escape', lastDown: now - 100, devKeep: 1 }).lastHide, 'escape',
@@ -144,8 +149,10 @@ test('chip tooltip 外点一并收，本体内部按压保持', () => {
     const r = runOutside(o);
     assert.equal(r.calls[key], 1, `${key} tooltip 外点应收`);
     assert.deepEqual(r.calls.hideTip, [], '主 tip 未开不受影响');
+    /* 六个 chip 的本体排除逐一锁（v339 review M21-23：只锁 tps 一个代表会让其余五个的
+     * 本体误判外点收起的回归不红） */
+    assert.equal(runOutside({ [field]: {}, targetIn: key }).calls[key], 0, `${key} 本体内按压保持`);
   }
-  assert.equal(runOutside({ tpsTipFor: {}, targetIn: 'tps' }).calls.tps, 0, 'tpsTip 内按压保持');
 });
 
 test('费用说明/档位说明浮层：外点收、内部按压保持', () => {
@@ -208,6 +215,17 @@ test('全局 Escape 兜底：焦点在 body 时也能收起当前打开的详情
   assert.equal(runEsc({ fxOpen: true }).fx, 1);
   assert.equal(runEsc({ legendOpen: true }).legend, 1);
   assert.equal(runEsc({}).fx, 0, '全关时无动作');
+});
+
+test('「一次收一个」在多开场景成立（review M16/M13）：主 tip 优先，chip 与依附层不动', () => {
+  const c = runEsc({ tipFor: {}, tpsTipFor: {}, quotaTipFor: {}, fxOpen: true, legendOpen: true });
+  assert.deepEqual(c.hideTip, [{ force: true, cause: 'escape' }]);
+  assert.equal(c.tps, 0); assert.equal(c.quota, 0);
+  assert.equal(c.fx, 0); assert.equal(c.legend, 0);
+  /* 主 tip 未开时链头让给档位说明（依附层优先于 chip tooltip） */
+  const c2 = runEsc({ legendOpen: true, tpsTipFor: {}, quotaTipFor: {} });
+  assert.equal(c2.legend, 1);
+  assert.equal(c2.tps, 0); assert.equal(c2.quota, 0);
 });
 
 test('非 Escape 键与实例失效不动作；兜底不吞宿主键盘语义', () => {
