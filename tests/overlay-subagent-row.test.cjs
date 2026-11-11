@@ -293,6 +293,12 @@ for (const lang of ['zh', 'en']) {
     fn.render();                         // 关门摘 .zu-subrate，但不得收其它类的悬停浮层
     assert.equal(chipOf(p.row), null);
     assert.equal(hidden, 0, '关门只收本类 chip 的浮层（v334 收窄回归锁，宽条件即红）');
+    const own = new El('span');          // 反向：关门态悬停本类（.zu-subrate）chip 仍被收起
+    own.classes.add('zu-subrate');
+    p.row.appendChild(own);
+    ctx.subTipFor = own;
+    fn.render();
+    assert.ok(hidden >= 1, '关门收起本类悬停浮层（类名收窄的非对称性回归锁）');
   });
 
   test(`${lang}: ⚙ switch off removes chips and suppresses hover tip; on rebuilds`, () => {

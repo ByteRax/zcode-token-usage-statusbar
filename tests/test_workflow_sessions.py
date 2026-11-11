@@ -136,6 +136,49 @@ class WorkflowSessionTests(unittest.TestCase):
             " values (?,?,?,?,?,?)", (RUN, "judge-1@1", "研究员·通识", WF_SID, 5_000, 5_000))
         self.assertEqual(zusage._sub_agent_tasks(con, MAIN).get(WF_SID), "研究员·通识")
 
+    def test_task_name_cache_invalidated_by_actor_rename(self):
+        """纯改名只动 time_updated（time_created 不变）：失效键必须仍杀缓存——
+        失效键退回 max(time_created) 时命中旧名，本用例红（第二轮复审 MAJOR-2）。"""
+        con = self.con()
+        self.sess(con, MAIN)
+        self.sess(con, WF_SID, parent=MAIN)
+        self.usage(con, "w1", WF_SID, qs="workflow_child", turn="wturn")
+        con.execute(
+            "insert into dwf_actor (run_id, site_id, name, session_id, time_created, time_updated)"
+            " values (?,?,?,?,?,?)", (RUN, "judge-1@1", "旧名", WF_SID, 1_000, 1_000))
+        self.assertEqual(zusage._sub_agent_tasks(con, MAIN).get(WF_SID), "旧名")   # 暖缓存
+        con.execute("update dwf_actor set name='新名', time_updated=2_000 where session_id=?", (WF_SID,))
+        self.assertEqual(zusage._sub_agent_tasks(con, MAIN).get(WF_SID), "新名")
+
+    def test_normal_pool_keeps_subagents_out(self):
+        """normal 桶主会话独占：普通子代理（sess_subagent_*）不得挤占主会话 top-6——
+        normal 误用 ranked[:6]（只滤 sess_dwf）时本用例红（第二轮复审 MAJOR-1）。"""
+        con = self.con()
+        sids = []
+        for i in range(6):
+            sid = f"m{i}"
+            self.sess(con, sid, title=f"主会话{i}")
+            self.usage(con, f"r{i}", sid, qs="main_turn", completed=1_000_000 + i)
+            sids.append(sid)
+        sub = "sess_subagent_agent_new1"
+        self.sess(con, sub, parent="m5", title="新子代理")
+        self.usage(con, "ws", sub, qs="subagent", completed=9_000_000)   # 全库最新：变异态会把 m0 顶出 normal 桶
+        rows = [(f"m{i}", 1_000_000 + i) for i in range(6)] + [(sub, 9_000_000)]
+        proxy = mock.Mock(wraps=con)
+        proxy.close = mock.Mock()
+        with mock.patch.object(zusage, "connect", return_value=proxy), \
+             mock.patch.object(zusage, "load_config", return_value=dict(CFG)), \
+             mock.patch.object(zusage, "_AGG_CACHE", {}), \
+             mock.patch.object(zusage, "_scan_session_ids", return_value=rows), \
+             mock.patch.object(zusage, "_remote_setup", return_value=None), \
+             mock.patch.object(zusage, "_PROJ_CACHE", {}):
+            snap = zusage.snapshot(force_sid="")
+        recent = snap.get("recent", [])
+        normal_sids = [row["sid"] for row in recent if not row.get("is_sub")]
+        self.assertNotIn(sub, normal_sids, "普通子代理不得进 normal 桶")
+        for m in sids:
+            self.assertIn(m, normal_sids, f"主会话 {m} 不得被子代理挤出 normal 桶")
+
     def test_task_name_without_dwf_actor_table(self):
         """旧宿主/WorkBuddy 无 dwf_* 表：fail-closed 跳过，不抛错、无任务名。"""
         con = self.con(with_actor_table=False)
