@@ -46,6 +46,13 @@ function qErr(code, message, extra) {
 function clampPct(x) { return Number.isNaN(x) ? 0 : Math.max(0, Math.min(100, x)); }   // NaN→0 防御；±Infinity 按钳制方向处理（超限→100，fail-closed）
 /* 团队套餐 id 判定：词边界匹配，含 "team" 子串的普通 id（如假想的 steam-promo）不误判 */
 function isTeamProviderId(p) { return /(^|[-:])team([-:]|$)/.test(String(p || "")); }
+/* 团队套餐 provider 的规范形 → 所属家族；其余（含近似串）null。 */
+function teamFamilyOf(p) {
+  const s = String(p || "");
+  if (s === "account:bigmodel-team-coding-plan") return "bigmodel";
+  if (s === "account:zai-team-coding-plan") return "zai";
+  return null;
+}
 function parseRetryAfterMs(v) {
   if (v == null) return null;
   const sec = Number(v);

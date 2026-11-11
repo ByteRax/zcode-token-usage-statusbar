@@ -147,7 +147,7 @@ test("resolveWanted: start-plan ids route to zcode-start, coding-plan ids unchan
   assert.deepEqual(Q.resolveWanted("account:zai-start-plan"), { family: "zcode-start" });
   assert.deepEqual(Q.resolveWanted("account:bigmodel-individual-coding-plan"), { family: "bigmodel" });
   assert.deepEqual(Q.resolveWanted("account:zai-pro-coding-plan"), { family: "zai" });
-  assert.deepEqual(Q.resolveWanted("account:bigmodel-team-coding-plan"), { unsupported: "team" });
+  assert.deepEqual(Q.resolveWanted("account:bigmodel-team-coding-plan"), { family: "bigmodel", team: true });
 });
 
 /* ---------- 客户端状态机 ---------- */

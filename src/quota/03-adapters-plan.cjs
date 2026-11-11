@@ -56,6 +56,77 @@ for (const fam of ["bigmodel", "zai"]) {
   });
 }
 
+/* --- 团队套餐（GLM Coding Plan team，配方转写自 magpie zcode_team.go，MIT） ---
+ * 成员账号与个人套餐同端点服务，但鉴权用业务登录 token（oauth:{fam}:access_token）、
+ * 必须带团队头 Bigmodel-Organization/Bigmodel-Project，配额走 ?type=2
+ * （CREDIT_LIMIT unit3=5 小时、unit6=周，TIME_LIMIT=MCP 月度工具调用、不阻断模型）。
+ * 选择读 setting.json（恒在 HOME/.zcode/v2，不随 dataBaseDir 迁移）：
+ * providerFamilyConnectionSelections[fam]={kind:"team-coding-plan",organizationId,projectId}；
+ * legacy modelProviderFamilySelectedKeys[fam]="team-plan:builtin:{fam}-coding-plan:{org}:{project}"
+ * （org/project 各段 URL 编码）。无选择=未切团队：fail-closed 不发请求。BigModel 家族里
+ * 业务 token 与 zcodejwttoken 解密相同视为陈旧令牌，跳过（ZCode 也不会用它，magpie 同款）。 */
+function teamSelectionOf(j, fam) {
+  try {
+    const set = j.readFile(j.settingPath || path.join(os.homedir(), ".zcode", "v2", "setting.json"));
+    if (!set || typeof set !== "object") return null;
+    let org = "", project = "";
+    const sel = (set.providerFamilyConnectionSelections || {})[fam];
+    if (sel && sel.kind === "team-coding-plan") {
+      org = String(sel.organizationId || "").trim();
+      project = String(sel.projectId || "").trim();
+    } else {
+      const legacy = String((set.modelProviderFamilySelectedKeys || {})[fam] || "").trim();
+      const prefix = "team-plan:builtin:" + fam + "-coding-plan:";
+      if (legacy.indexOf(prefix) === 0) {
+        const parts = legacy.slice(prefix.length).split(":");
+        if (parts.length === 3) {
+          try { org = decodeURIComponent(parts[1]); project = decodeURIComponent(parts[2]); } catch (e) { return null; }
+        }
+      }
+    }
+    if (!org || !project) return null;
+    return { org, project };
+  } catch (e) { return null; }
+}
+for (const teamFam of ["bigmodel", "zai"]) {
+  const teamOrigin = teamFam === "bigmodel" ? "https://bigmodel.cn" : "https://api.z.ai";
+  const teamBearer = teamFam === "zai";   // BigModel 业务 token 裸 Authorization，Z.ai 走 Bearer
+  const teamCredKey = teamFam === "bigmodel" ? "oauth:bigmodel:access_token" : "oauth:zai:access_token";
+  ADAPTERS.push({
+    id: teamFam + "-team", label: teamFam === "bigmodel" ? "BigModel 团队套餐" : "Z.ai 团队套餐", kind: "plan", defaultOn: false, envKeys: [],
+    detect(j, providerId) { return teamFamilyOf(providerId) === teamFam ? { family: teamFam, team: true } : null; },
+    resolveCred(j, ctx) {
+      const sel = teamSelectionOf(j, teamFam);
+      if (!sel) return null;   // 未切到团队套餐：按未配置 fail-closed
+      let raw = null;
+      try { raw = j.readFile(j.credsPath); } catch (e) { return null; }
+      const enc = raw && typeof raw === "object" ? raw[teamCredKey] : null;
+      if (typeof enc !== "string" || !enc) return null;
+      const token = decryptValue(enc, deriveCipherKey(j.env));   // v2 信封由分发器解
+      if (!token) return { decryptFailed: true, fingerprint: "host:" + sha16(enc) };
+      if (teamFam === "bigmodel") {
+        const jwtEnc = raw["zcodejwttoken"];
+        if (typeof jwtEnc === "string" && jwtEnc) {
+          const jwt = decryptValue(jwtEnc, deriveCipherKey(j.env));
+          if (jwt && jwt.trim() === token.trim()) return null;   // 陈旧业务令牌：ZCode 也不会用
+        }
+      }
+      return { token: token.trim(), fingerprint: "team:" + sha16(JSON.stringify([teamFam, sel.org, sel.project, enc])),
+               source: "host", team: { org: sel.org, project: sel.project } };
+    },
+    async fetchOne(j, ctx, cred, ctl) {
+      const body = await j.http.getJson(teamOrigin + QUOTA_PATH + "?type=2", {
+        authorization: (teamBearer ? "Bearer " : "") + cred.token,
+        "Bigmodel-Organization": cred.team.org,
+        "Bigmodel-Project": cred.team.project,
+        "set-language": "zh",
+      }, ctl);
+      const value = normalizeQuotaBody(body);
+      if (value && value.noPlan) return { noPlan: true };
+      return value;
+    },
+  });
+}
 /* --- ZCode Start Plan（免费档发放池：zcode.z.ai 账号级权益，OAuth zcodejwttoken 零配置） ---
  * 与 coding plan 是两条独立链：monitor/subscription 只返回编码套餐订阅，Start Plan 的
  * 权益/额度只在 zcode-plan billing/balance（宿主 getStartPlanSnapshot 同源端点）。
