@@ -478,3 +478,22 @@ test("client: zcode-start 链（zcodejwttoken）与重置卡链解 enc:v2，请�
   }
   assert.ok(everyHeader(calls).every((v) => !v.startsWith("enc:")));
 });
+
+/* ---------- 第四轮补口 ---------- */
+test("v2KeyRetryNow 的在途分支：读取成功也消费越窗意图，下一次无关失败仍进冷却", async () => {
+  let release;
+  const ring = fakeKeyring(() => new Promise((r) => { release = r; }));
+  const dec = osDec(ring);
+  const good = v2Entry("jwt.consume", OS_KEY, "os");
+  const bad = v2Entry("jwt.consume2", crypto.randomBytes(32), "os");
+  dec.decrypt(good, V1_KEY);              // 在途
+  dec.ctx.retryNow = true;                // 在途期间用户点了刷新（v2KeyRetryNow 的 ensuring 分支语义）
+  release(OS_SECRET);                     // 这次读取成功
+  await settle();
+  assert.equal(dec.ctx.retryNow, false, "成功路径同样消费 retryNow");
+  assert.equal(dec.decrypt(good, V1_KEY), "jwt.consume");
+  dec.ctx.keyFailedAt = Date.now();       // 之后一次无关失败（如钥匙串刚被锁）
+  dec.decrypt(bad, V1_KEY);               // 失配 force 被冷却压制
+  await settle();
+  assert.ok(dec.ctx.keyFailedAt > 0, "无关失败正常进冷却，不被残留意图放行");
+});

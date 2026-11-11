@@ -1,4 +1,4 @@
-/* 额度客户端（主进程，冷文件）v3：多厂商适配器 + 多源调度器。
+/* 额度客户端（主进程热换模块）v3：多厂商适配器 + 多源调度器。
  * 阶段 3（浮层 v96 线）：BigModel/Z.ai 内置套餐（解密宿主 OAuth 凭据直查 monitor 端点）
  * 之外，新增零配置官方域适配器（MiniMax/Kimi/CommandCode/DeepSeek/OpenRouter/SiliconFlow/
  * Anthropic OAuth）与显式配置适配器（Cline/MiMo Cookie/火山 AK-SK/SCNet 账本）。
@@ -193,7 +193,7 @@ async function ensureV2Key(ctx, force) {
     source = "env";
   } else {
     const mod = ctx.keyringMod !== undefined ? ctx.keyringMod : loadHostKeyring(ctx.resourcesDir);
-    if (!mod || !(mod.AsyncEntry || mod.Entry)) { ctx.lastError = "host keyring unavailable"; return cur; }
+    if (!mod || !(mod.AsyncEntry || mod.Entry)) { ctx.lastError = "host keyring unavailable"; ctx.keyFailedAt = ctx.retryNow ? 0 : Date.now(); ctx.retryNow = false; return cur; }
     try {
       const E = mod.AsyncEntry || mod.Entry;
       const account = crypto.createHash("sha256").update(String(ctx.credsPath)).digest("hex");
@@ -208,6 +208,7 @@ async function ensureV2Key(ctx, force) {
   ctx.cache.set(ctx.credsPath, ent);   // 重读成功才覆盖：失败路径不清旧钥（旧条目继续可解）
   ctx.lastError = "";
   ctx.keyFailedAt = 0;
+  ctx.retryNow = false;   // 成功路径同样消费越窗意图：不留着把下一次无关失败放行出冷却
   return ent;
 }
 
@@ -237,11 +238,15 @@ function makeHostDecryptor(opts) {
       /* 缓存钥与信封不符（宿主换钥/残留旧条目）：不清缓存（重读失败会把仍可解的条目一起打死，
        * 整桶最长 60 秒不可用），限频 force 重读自愈 */
       const now = Date.now();
-      if (!ctx.mismatchAt || now - ctx.mismatchAt >= 60000) {
+      /* force 重读与失败冷却共用一条 60 秒节拍：失败冷却已过期即视作「未失败」，失配的 force
+       * 立即发起（盖新戳），pending 置位让调度器 1 秒短重试接住——否则「先失败后换钥」的序列
+       * 要等两个 60 秒窗才自愈。冷却未过期时维持失配限频，防 1 秒风暴。 */
+      if (!ctx.mismatchAt || now - ctx.mismatchAt >= 60000 || (ctx.keyFailedAt && now - ctx.keyFailedAt >= 60000)) {
         ctx.mismatchAt = now;
+        ctx.keyFailedAt = 0;
         try { void ensureKey(true); } catch (e) { /* 同步段不抛 */ }
+        ctx.pending = 1;
       }
-      if (!ctx.keyFailedAt) ctx.pending = 1;   // 失败冷却期内不置位：调度器回退 60 秒，防 1 秒风暴
       return null;
     }
     return openV2Seal(parts[2], ent.key);

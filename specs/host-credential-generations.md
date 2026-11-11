@@ -7,7 +7,7 @@
 - `enc:v2:<os|env>:<keyId>:<payload>` 的密钥来源由条目自身声明：
   - `os`：密钥在 OS 凭据库（macOS Keychain / Windows 凭据管理器 / Linux secret-service）。插件主进程模块运行在宿主进程内，经宿主自带的 `@napi-rs/keyring` 读取（asar 内 wrapper 优先，unpacked 原生 `.node` 扫描兜底），与宿主自身的读取方式相同；不调用外部命令，不修改凭据库条目。
   - `env`：宿主 managed secret，来源序与宿主一致：`ZCODE_CREDENTIAL_SECRET`，其次 `ZCODE_CREDENTIAL_SECRET_FILE`（两者同时配置按不可用），最后是凭据同目录的 `credential-secret`（常规文件、非 win32 仅属主、32–4096 字节——宿主在无 os 标记时以它派生 env 源）。
-- 取到的密钥必须与条目的 keyId 相符才用于解密。插件按条目声明的来源取钥，不像宿主那样再要求该来源等于当前环境解析出的来源；这两点比宿主宽，但密钥不对就解不开。
+- 取到的密钥必须与条目的 keyId 相符才用于解密。插件与宿主同款：受管 secret 可用即优先按 env 源取钥（不看信封声明），否则走 OS 凭据库；密钥与条目不符就解不开。桌面常驻下受管 secret 通常缺席，OS 凭据库是常态来源。
 - 密钥只在内存，不落盘、不进日志与诊断。
 - 宿主没有 keyring 依赖时（3.17.x 及更早，凭据仍是 `enc:v1`）行为与此前一致。
 
