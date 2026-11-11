@@ -109,6 +109,10 @@ function harness({ costLS = null, kmbLS = null, lang = 'zh' } = {}) {
              'window.__zuTips = h.tips;\n      for (var i = 0; i < els.length; i++) els[i].__tip = h.tips[i] || null;')
     .replace('function wireTpsChip(chip) {', 'window.__zuTpsTip = tpsChipTipHTML;\n    function wireTpsChip(chip) {')
     .replace('function drawTip(el, keepTop) {', 'window.__zuDrawTip = drawTip;\n    function drawTip(el, keepTop) {')
+    .replace('function projTipPositionGrowUp(el, prevBottom) {', 'window.__zuProjGrowUp = projTipPositionGrowUp;\n    function projTipPositionGrowUp(el, prevBottom) {')
+    .replace('function projTipPrevBottom() {', 'window.__zuProjPrevBottom = projTipPrevBottom;\n    function projTipPrevBottom() {')
+    .replace('if (typeof projTipPositionGrowUp === "function") projTipPositionGrowUp(host, prevBottom);',
+             'if (typeof projTipPositionGrowUp === "function") { window.__zuGrowArgs = (window.__zuGrowArgs || []).concat(prevBottom); projTipPositionGrowUp(host, prevBottom); }')
     .replace(/\}\)\(\);\s*$/, 'window.costTest = { state: function() { return state; } };})();');
   function inject() { window.__zusageOverlay = false; if (!globalThis.__exeDumped) { globalThis.__exeDumped = true; fs.writeFileSync('/tmp/exe-full.js', executable); } vm.runInContext(executable, sandbox); }
   function tick() { for (const t of [...timers.values()]) if (t.interval && (t.ms === 600 || t.ms === 500)) t.fn(); }
@@ -528,6 +532,7 @@ test('v331 切全部项目：KPI/明细/时间切换、项目明细在模型明�
   // 项目明细在模型明细之前 + 未归属条目本地化 + XSS 转义
   const idxP = bare.indexOf('项目明细'), idxM = bare.indexOf('模型明细');
   assert.ok(idxP > 0 && idxM > idxP, '项目明细必须位于模型明细之前');
+  assert.match(bare, /<th[^>]*>项目明细<\/th>/, 'v331 首列 th 专锁：分区名并入项目表表头（独立标题行不得回归）');
   assert.match(bare, /未归属项目/);
   assert.doesNotMatch(bare, /<img src=x/, '项目名必须转义');
   assert.match(bare, /&lt;img src=x/);
@@ -660,4 +665,81 @@ test('v331 数据刷新不重置选中 Tab；旧快照项目行缺 all_projects 
   const bare = h.drawProjectTip().replace(/<style>[\s\S]*?<\/style>/g, '');
   assert.match(bare, /aria-selected="true"[^>]*>全部项目</, '数据刷新不得重置 Tab');
   assert.match(bare, /data-zu-pj-projects/);
+});
+
+test('v338 行四项目数量格（仅全部项目模式）：计数用 projects_total、费用关退两格', () => {
+  const h = harness(); setup(h);
+  const p1 = withAllProjects(h, allProjectsFixture());
+  clickTab(h, 'all');
+  // 切 Tab 重编接线实收基线>0（projTipPrevBottom 经真实调用链传入 GrowUp）
+  const growArgs = h.window.__zuGrowArgs || [];
+  assert.ok(growArgs.length >= 1 && growArgs[growArgs.length - 1] > 0, 'rebuild 接线传递真实底边基线');
+  let bare = h.tipRoot().firstChild.innerHTML.replace(/<style>[\s\S]*?<\/style>/g, '');
+  assert.match(bare, /项目数量/, '全部项目模式行四第一列=项目数量');
+  const stripTags = t => t.replace(/<[^>]+>/g, '');
+  assert.match(stripTags(bare), /项目数量\s*3/);
+  assert.match(bare, /zu-turn-kpis--trio/, '费用可见时三格');
+  assert.equal((bare.match(/项目数量/g) || []).length, 1, '仅一处');
+  // 截断时计数用截断前总数（复用同一 payload：重建会漂移 started 触发归属键重置）
+  const projects = Array.from({ length: 8 }, (_, i) => ({ name: 'p-' + i, directory: '/w/p' + i, total: 9000 - i, requests: 1, cost_usd: 0 }));
+  p1.all_projects = allProjectsFixture({ projects, projects_truncated: true, projects_total: 57 });
+  h.window.__zusageUpdate(p1);
+  bare = h.drawProjectTip().replace(/<style>[\s\S]*?<\/style>/g, '');
+  assert.match(stripTags(bare), /项目数量\s*57/, '截断时显截断前真实数');
+  // 费用关：两格退 --duo，项目数量仍在
+  const h3 = harness({ costLS: '0' }); setup(h3);
+  withAllProjects(h3, allProjectsFixture());
+  clickTab(h3, 'all');
+  bare = h3.tipRoot().firstChild.innerHTML.replace(/<style>[\s\S]*?<\/style>/g, '');
+  assert.match(bare, /项目数量/);
+  assert.doesNotMatch(bare, /zu-turn-kpis--trio/, '费用关退两格');
+  // 当前项目模式无该格
+  const h4 = harness(); setup(h4);
+  withProjectModels(h4, [{ model: 'k', requests: 1, total: 10, cost_usd: 0 }]);
+  const cur = h4.drawProjectTip().replace(/<style>[\s\S]*?<\/style>/g, '');
+  assert.doesNotMatch(cur, /项目数量/, '当前项目模式无项目数量格');
+});
+
+test('v338 源码契约锁：.tbody 视口帽 36px 与展开按钮路径 growUp 接线', () => {
+  // 变异复审：36px 值无行为锁（改回 24px 全绿）——源码契约断言钉住
+  assert.match(source, /\.zusage-tip-root:has\(\.zu-stat-tip--project\) \.tbody\{max-height:calc\(100vh - 36px\)!important\}/);
+  // 展开按钮两路径接线（VM 中 tipFor 恒空走不到，只能源码锁）：基线采集先于局部更新、growUp 随后
+  const calls = source.match(/projTipPositionGrowUp\(tipFor, prevBottom\);/g) || [];
+  assert.equal(calls.length, 2, 'applyModels/applyProjects 两处接线各一次');
+  // 4 = 两处展开接线 + rebuild 条件守卫 + 函数声明行（grep 语义：声明也含 "()"）
+  assert.equal((source.match(/projTipPrevBottom\(\)/g) || []).length, 4,
+    '三条路径均在内容变更前采集基线（2 展开 + 1 rebuild 守卫 + 1 声明行）');
+});
+
+test('v338 高度自下而上：增高/收缩底边固定、顶边钳 8px、无基线回退原锚定', () => {
+  const h = harness(); setup(h);
+  withAllProjects(h, allProjectsFixture());
+  h.drawProjectTip();
+  const tip = h.tipRoot();
+  tip.style.top = '300px'; tip.style.display = 'block';
+  let tipH = 200;
+  tip.getBoundingClientRect = () => ({ top: 300, bottom: 300 + tipH, left: 20, right: 520, width: 500, height: tipH });
+  // PrevBottom 正路径：显示态基线 = top + height（300+200=500）
+  assert.equal(h.window.__zuProjPrevBottom(), 500, '显示态基线=top+height');
+  // 增高 200→320：底边 500 固定，top=180（用户规格：不向下移动）
+  tipH = 320;
+  h.window.__zuProjGrowUp(tip, 500);
+  assert.equal(parseFloat(tip.style.top), 180);
+  // 收缩 320→120：底边仍 500，top=380
+  tipH = 120;
+  h.window.__zuProjGrowUp(tip, 500);
+  assert.equal(parseFloat(tip.style.top), 380);
+  // 高度逼近基线：top 钳 ≥8px（max-height 视口钳制兜底不越出）
+  tipH = 500;
+  h.window.__zuProjGrowUp(tip, 500);
+  assert.equal(parseFloat(tip.style.top), 8, '顶边不低于 8px');
+  // 无基线（首次弹出）：回退 positionTip 原锚定，不抛错（先清 top 防残留假绿）
+  tipH = 200;
+  tip.style.top = '';
+  h.window.__zuProjGrowUp(tip, 0);
+  assert.match(tip.style.top, /px$/, '无基线回退 positionTip 重写 top');
+  assert.equal(parseFloat(tip.style.top), 92, '回退=锚定公式 anchor.top(300)−height(200)−8（el=tip 自身）');
+  // 基线采集守卫：非显示态不产基线
+  tip.style.display = 'none';
+  assert.equal(h.window.__zuProjPrevBottom(), 0);
 });
