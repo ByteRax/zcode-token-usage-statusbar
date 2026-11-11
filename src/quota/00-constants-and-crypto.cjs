@@ -238,10 +238,12 @@ function makeHostDecryptor(opts) {
       /* 缓存钥与信封不符（宿主换钥/残留旧条目）：不清缓存（重读失败会把仍可解的条目一起打死，
        * 整桶最长 60 秒不可用），限频 force 重读自愈 */
       const now = Date.now();
-      /* force 重读与失败冷却共用一条 60 秒节拍：失败冷却已过期即视作「未失败」，失配的 force
-       * 立即发起（盖新戳），pending 置位让调度器 1 秒短重试接住——否则「先失败后换钥」的序列
-       * 要等两个 60 秒窗才自愈。冷却未过期时维持失配限频，防 1 秒风暴。 */
-      if (!ctx.mismatchAt || now - ctx.mismatchAt >= 60000 || (ctx.keyFailedAt && now - ctx.keyFailedAt >= 60000)) {
+      /* force 重读与失败冷却共用一条 60 秒节拍：失配限频与失败冷却**都**过期才发 force（盖新
+       * 戳），pending 置位让调度器 1 秒短重试接住——「先失败后换钥」的序列在冷却过期的下一拍
+       * 即自愈（约 61 秒），而冷却期内不发（防 1 秒风暴，上游防风暴语义保留）。 */
+      const mismatchDue = !ctx.mismatchAt || now - ctx.mismatchAt >= 60000;
+      const cooldownDue = !ctx.keyFailedAt || now - ctx.keyFailedAt >= 60000;
+      if (mismatchDue && cooldownDue) {
         ctx.mismatchAt = now;
         ctx.keyFailedAt = 0;
         try { void ensureKey(true); } catch (e) { /* 同步段不抛 */ }
