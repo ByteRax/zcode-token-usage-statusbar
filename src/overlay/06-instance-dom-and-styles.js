@@ -218,8 +218,9 @@
      * → v333 智能体后台运行的状态同步（specs/agent-background-support.md）：后台智能体（AgentProfile 后台子代理）会话身份与前台子代理同构（sess_subagent_* / query_source='subagent'），DB 统计链天然覆盖零改动；修复实时面缺口——①运行中子代理集合在消费侧并入桥快照 backgroundWorks（kind='subagent' status='running'，事件驱动 state 键、窗口无关）补给，后台智能体把启动行滚出父会话 60 行窗口后槽位估算与「子代理运行中 ×N」计数不再丢失；②宿主状态面板 Agents 分区行（v4-running-subagent-item + data-child-session-id）注入 .zu-substat 速率 chip（槽位估算→「估 X t/s」、tps_avg 回填、无数据显「运行中」，tooltip 复用 subRowTipHTML 与 subTip 委托），render 尾部 + heavy 双对账点，共用 subRate 开关。
      * → v334 审查修复批（review-fix-merge 四路并行审查）：①zusage latest 候选与 CLI current 排除工作流 actor 会话（run 进行中多个 actor 轮流活跃会把顶层 session/current 顶成 run 视角，此前分桶注释声称已防而 latest/current 实未防）；②renderSubAgentRows 关门收浮层条件收窄到 .zu-subrate——原宽条件在 subRate 关 + wfChip 开时把悬停中的 .zu-wfrun/.zu-substat tooltip 每拍杀掉（闪烁）；③dispose 摘净链与 00 启动自清列表补 .zu-wfrun/.zu-substat（pane 回收后 chip 冻结 + 死实例 tooltip）；④renderWorkflowCards 不满足渲染条件的卡摘旧 chip（run 失败后「运行中」残留）+ tooltip 数据包每拍重写（requests/actor 名不进 sig 的打开瞬间新鲜度）+ 状态行去内层 ttEsc 防双重转义；⑤subRunningList 加快照 sessionId 校验（切会话一拍内不并入上一会话后台清单）；⑥substat「运行中」兜底态独立 run tooltip 口径 + chip 回位守卫 + 用例钉住 3s 新鲜度门与工作流卡防漂移负向夹具；⑦zusage _TASK_CACHE 失效键补 dwf_actor 维度（动态新建 actor 名字有界丢失）；⑧specs 与文档漂移同步（chip 面无状态点、开关持久化形态、CLI stdout 增量字段措辞、补给槽位优先级取舍）。
      * → v335 第二轮复审修复：①zusage 池分桶回归修复——v334 改 latest 候选时把 normal 桶误改 ranked[:6]（含普通子代理），恢复 normal=主会话独占、子代理/dwf 同入子代理桶（防挤占主会话 top-6 的 v332 语义）；②_TASK_CACHE 失效键改 greatest(time_created,time_updated) 覆盖纯改名；③renderWorkflowCards 的 runIds 收集循环对被宿主剥掉 runId 的卡也摘残留（空 runIds 早退前执行，wfChipStale 定义上移至循环前）；④测试设防：关门收窄行为锁（宽条件即红）、dispose/00 启动表三类 chip 源码契约、_TASK_CACHE astamp 失效用例、正常子代理不占 normal 桶用例；⑤spec §6.1 残留「运行中状态点」措辞清理。
+     * → v337 后台智能体的主格速度关联（specs/agent-background-support.md §3）：后台槽位经 backgroundWorks 补给在跑而主会话自身无实时轮（空闲/上一轮已完成）时，updateLive 合成 runningTool=Agent 态让速度格走既有子代理分支（「子代理运行中 · 估 X t/s」×N；槽位绑定中/思考期降级状态词），后台全部结束（槽位解绑）自动回落会话均——主格不再静态；主会话自己的轮在跑时优先原 stats（v87 合成分支先行）。
      */
-    var VERSION = "v335";
+    var VERSION = "v337";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */

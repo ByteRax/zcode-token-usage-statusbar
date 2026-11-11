@@ -23,6 +23,7 @@ function runUpdateLive({ lastAvg, payloadAvg, noLastView }) {
     bridgeDetach: () => {},
     subRateTick: () => {},
     subRunningList: () => [],   // v333：运行中子代理集合补给（∪ backgroundWorks，本切片外定义）
+    synthesizeBackgroundStats: (s) => s,   // v336：主格子代理运行态合成（本切片外定义，恒等桩保留入参）
     renderSubAgentRows: () => {},   // v185 并行线：Agent 行内速率 chip 渲染通道
     renderWorkflowCards: () => {},   // v332：工作流 run 卡 chip（本切片外定义）
     renderRunningSubagentItems: () => {},   // v333：状态面板 Agents 行 chip（本切片外定义）
@@ -68,6 +69,7 @@ function runFastPath({ tipForOnCell = true, sameTip = false } = {}) {
     bridgeDetach: () => {},
     subRateTick: () => {},
     subRunningList: () => [],   // v333：运行中子代理集合补给（本切片外定义）
+    synthesizeBackgroundStats: (s) => s,   // v336：主格子代理运行态合成（本切片外定义，恒等桩保留入参）
     renderSubAgentRows: () => {},
     renderWorkflowCards: () => {},   // v332（本切片外定义）
     renderRunningSubagentItems: () => {},   // v333（本切片外定义）
@@ -122,6 +124,7 @@ function makeLiveEnv({ tipForOnCell = false, tipForOther = false, withView = tru
       handle: { dead: false, charsPerToken: 2, tracker: { get: () => ({ complete: false }) } } },
     sideHandleValid: () => true, bridgeDetach: () => {}, subRateTick: () => {}, renderSubAgentRows: () => {},
     subRunningList: () => [],   // v333：运行中子代理集合补给（本切片外定义）
+    synthesizeBackgroundStats: (s) => s,   // v336：主格子代理运行态合成（本切片外定义，恒等桩保留入参）
     renderWorkflowCards: () => {},   // v332（本切片外定义）
     renderRunningSubagentItems: () => {},   // v333（本切片外定义）
     subRate: { sum: null },
