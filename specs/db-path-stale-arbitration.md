@@ -32,3 +32,9 @@
 4. 候选仅 `-shm` 更新、db/-wal 更旧 → 视为陈旧，读 HOME 库（-shm 不入仲裁）。
 5. 无 `dataBaseDir` / 候选不存在 / 显式 env、config 来源 → 与修复前逐字节一致。
 6. 三处镜像在以上场景结果一致（Python 交叉一致性用例 + Node VM 切片用例）。
+7. 显式来源不经仲裁（规则 5 锁定）：env `ZCODE_SESSION_DB_PATH` / CLI config `sessionDbPath` 指向比 HOME 默认库更旧的库时仍原样返回（变异：在第 1/2 级误加仲裁时该用例变红）。
+
+## 遗留（后续版本顺手）
+
+- `src/overlay/07-instance-render-and-tips.js` 的 not_local 提示文案「宿主数据目录迁移 dataBaseDir 后由插件自动跟随」为无条件表述，未提陈旧迁移库回落例外；改它须升 `VERSION` 并重建产物，与本次修复成本不对称，本批不动（2026-11-11 审查 C 记录）。
+- `tests/inject-db-dir.test.cjs` 的 statSync stub 对不存在的文件返回兜底 mtime 而非抛 ENOENT：现状所有用例时间戳为 1.7e9 量级、42 等价「极旧」，无掩护效应；未来若有依赖「缺失须抛错」的用例再收紧（2026-11-11 审查 B 记录，自评非必须）。

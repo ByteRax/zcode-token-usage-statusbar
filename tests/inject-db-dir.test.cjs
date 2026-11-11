@@ -218,6 +218,30 @@ test('新鲜度恰等：按 >= 语义仍采纳候选（与旧存在性行为连�
   assert.equal(api.resolveHostDbDir(), path.dirname(migDb));
 });
 
+test('显式 env 来源不经仲裁：指定较旧库仍原样返回（规格产品规则 5）', (t) => {
+  const { base, home } = makeHome(t);
+  const migrated = path.join(base, 'migrated');
+  const migDb = touchDb(migrated);
+  const homeDb = touchDb(home);
+  const mtimes = { [migDb]: 1_700_000_000, [homeDb]: 1_700_001_000 };
+  const api = runBlock({
+    env: { ZCODE_DESKTOP_HOME_DIR: home, ZCODE_SESSION_DB_PATH: migDb },
+    mtimes,
+  });
+  assert.equal(api.resolveHostDbDir(), path.dirname(migDb));
+});
+
+test('显式 CLI config 来源不经仲裁：指定较旧库仍原样返回', (t) => {
+  const { base, home } = makeHome(t);
+  const migrated = path.join(base, 'migrated');
+  const migDb = touchDb(migrated);
+  const homeDb = touchDb(home);
+  const mtimes = { [migDb]: 1_700_000_000, [homeDb]: 1_700_001_000 };
+  writeJson(path.join(home, '.zcode', 'cli', 'config.json'), { storage: { sessionDbPath: migDb } });
+  const api = runBlock({ env: { ZCODE_DESKTOP_HOME_DIR: home }, mtimes });
+  assert.equal(api.resolveHostDbDir(), path.dirname(migDb));
+});
+
 test('ZCODE_DATA_BASE_DIR env 候选同走新鲜度仲裁', (t) => {
   const { base, home } = makeHome(t);
   const migrated = path.join(base, 'migrated');

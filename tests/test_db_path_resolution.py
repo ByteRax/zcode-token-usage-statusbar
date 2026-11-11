@@ -284,6 +284,27 @@ class ResolveDbPathTest(unittest.TestCase):
         p = self.zusage.resolve_db_path(env={}, home=self.home)
         self.assertEqual(p, self.migrated_db)
 
+    def test_explicit_env_source_skips_freshness_arbitration(self):
+        # 规格产品规则 5：显式 env 来源不经仲裁——用户指定的库就是写库位，
+        # 即便它比 HOME 默认库旧（变异：在第 1 级误加仲裁时本用例变红）
+        self.touch_migrated_db()
+        home_db = self.touch_home_db()
+        self.stamp(self.migrated_db, 1_700_000_000)
+        self.stamp(home_db, 1_700_001_000)
+        p = self.zusage.resolve_db_path(
+            env={"ZCODE_SESSION_DB_PATH": str(self.migrated_db)}, home=self.home)
+        self.assertEqual(p, self.migrated_db)
+
+    def test_explicit_cli_config_skips_freshness_arbitration(self):
+        # 同上：CLI config storage.sessionDbPath 命中即返回，不与 HOME 库比新鲜度
+        self.touch_migrated_db()
+        home_db = self.touch_home_db()
+        self.stamp(self.migrated_db, 1_700_000_000)
+        self.stamp(home_db, 1_700_001_000)
+        self.write_cli_config(str(self.migrated_db))
+        p = self.zusage.resolve_db_path(env={}, home=self.home)
+        self.assertEqual(p, self.migrated_db)
+
     def test_env_data_base_dir_stale_candidate_same_arbitration(self):
         # env 迁移标记与 setting.json 同走存在性分支，仲裁同款
         self.touch_migrated_db()
@@ -399,6 +420,8 @@ class CrossFileConsistencyTest(unittest.TestCase):
         self.assert_same({})
         self.assertEqual(self.zusage.resolve_db_path(env={}, home=self.home),
                          self.home / ".zcode" / "cli" / "db" / "db.sqlite")
+        # 显式来源不经仲裁：env 指定较旧库仍原样返回（两镜像同判）
+        self.assert_same({"ZCODE_SESSION_DB_PATH": str(self.migrated_db)})
         wal = self.migrated_db.parent / "db.sqlite-wal"
         wal.write_bytes(b"")
         self.stamp(wal, 1_700_002_000)
