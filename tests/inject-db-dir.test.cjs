@@ -10,7 +10,9 @@ const { sliceInject } = require('./helpers/overlay-extract.cjs');
 // onboarding/localUsageEvidence.resolveAgentSessionDbPath：写库方 agent 不消费
 // dataBaseDir）——env ZCODE_SESSION_DB_PATH/ZCODE_SESSION_DB（双别名键序取后）>
 // ~/.zcode/cli/config.json 的 storage.sessionDbPath > dataBaseDir 迁移目录
-// （库存在才用，3.17.x 兼容）> ~/.zcode/cli/db。切出「db 活动戳」整段跑各分支。
+// （库存在才用，3.17.x 兼容）> ~/.zcode/cli/db。issue #294 补两库并存的新鲜度
+// 仲裁：候选 db.sqlite/-wal 最新 mtime 落后 HOME 默认库即回落（-shm 不算）。
+// 切出「db 活动戳」整段跑各分支。
 const block = sliceInject('/* db 活动戳', '/* 远端状态按');
 
 function makeHome(t) {
@@ -35,8 +37,9 @@ function touchDb(base) {
   return db;
 }
 
-// statPaths 记录 dbStamp 实际探测的文件路径，证明监听/活动戳跟随解析后的目录
-function runBlock({ env = {}, home = '/fake-home', statPaths } = {}) {
+// statPaths 记录 dbStamp 实际探测的文件路径，证明监听/活动戳跟随解析后的目录；
+// mtimes 按绝对路径覆盖 statSync 返回的 mtimeMs（新鲜度仲裁用），缺省仍为 42
+function runBlock({ env = {}, home = '/fake-home', statPaths, mtimes } = {}) {
   const sandbox = vm.createContext({
     process: { env },
     path,
@@ -45,7 +48,7 @@ function runBlock({ env = {}, home = '/fake-home', statPaths } = {}) {
       readFileSync: (p, enc) => fs.readFileSync(p, enc),
       statSync: (p) => {
         if (statPaths) statPaths.push(String(p));
-        return { mtimeMs: 42 };
+        return { mtimeMs: (mtimes && mtimes[String(p)]) ?? 42 };
       },
     },
     app: { getPath: (name) => (name === 'home' ? home : '/fake-' + name) },
@@ -161,6 +164,95 @@ test('setting.json 带 UTF-8 BOM 仍能读出 dataBaseDir；损坏不连累 env 
   writeJson(path.join(home, '.zcode', 'v2', 'setting.json'), '{broken');
   const api2 = runBlock({ env: { ZCODE_DESKTOP_HOME_DIR: home, ZCODE_DATA_BASE_DIR: migrated } });
   assert.equal(api2.resolveHostDbDir(), path.dirname(db));
+});
+
+test('issue #294 陈旧迁移库仲裁：候选落后 HOME 默认库即回落', (t) => {
+  const { base, home } = makeHome(t);
+  const migrated = path.join(base, 'migrated');
+  const migDb = touchDb(migrated);
+  const homeDb = touchDb(home);
+  const mtimes = { [migDb]: 1_700_000_000, [homeDb]: 1_700_001_000 };
+  writeJson(path.join(home, '.zcode', 'v2', 'setting.json'), { dataBaseDir: migrated });
+  const api = runBlock({ env: { ZCODE_DESKTOP_HOME_DIR: home }, mtimes });
+  assert.equal(api.resolveHostDbDir(), path.join(home, '.zcode', 'cli', 'db'));
+});
+
+test('候选仅 -wal 更新也算持续写入：仍采纳迁移目录（#279 两库并存）', (t) => {
+  const { base, home } = makeHome(t);
+  const migrated = path.join(base, 'migrated');
+  const migDb = touchDb(migrated);
+  const homeDb = touchDb(home);
+  const mtimes = {
+    [migDb]: 1_700_000_000,
+    [migDb + '-wal']: 1_700_002_000,
+    [homeDb]: 1_700_001_000,
+  };
+  writeJson(path.join(home, '.zcode', 'v2', 'setting.json'), { dataBaseDir: migrated });
+  const api = runBlock({ env: { ZCODE_DESKTOP_HOME_DIR: home }, mtimes });
+  assert.equal(api.resolveHostDbDir(), path.dirname(migDb));
+});
+
+test('-shm 更新不算写入：仅 -shm 新的候选仍视为陈旧', (t) => {
+  const { base, home } = makeHome(t);
+  const migrated = path.join(base, 'migrated');
+  const migDb = touchDb(migrated);
+  const homeDb = touchDb(home);
+  const mtimes = {
+    [migDb]: 1_700_000_000,
+    [migDb + '-shm']: 1_700_003_000,
+    [homeDb]: 1_700_001_000,
+  };
+  writeJson(path.join(home, '.zcode', 'v2', 'setting.json'), { dataBaseDir: migrated });
+  const api = runBlock({ env: { ZCODE_DESKTOP_HOME_DIR: home }, mtimes });
+  assert.equal(api.resolveHostDbDir(), path.join(home, '.zcode', 'cli', 'db'));
+});
+
+test('新鲜度恰等：按 >= 语义仍采纳候选（与旧存在性行为连续）', (t) => {
+  const { base, home } = makeHome(t);
+  const migrated = path.join(base, 'migrated');
+  const migDb = touchDb(migrated);
+  const homeDb = touchDb(home);
+  const mtimes = { [migDb]: 1_700_000_000, [homeDb]: 1_700_000_000 };
+  writeJson(path.join(home, '.zcode', 'v2', 'setting.json'), { dataBaseDir: migrated });
+  const api = runBlock({ env: { ZCODE_DESKTOP_HOME_DIR: home }, mtimes });
+  assert.equal(api.resolveHostDbDir(), path.dirname(migDb));
+});
+
+test('显式 env 来源不经仲裁：指定较旧库仍原样返回（规格产品规则 5）', (t) => {
+  const { base, home } = makeHome(t);
+  const migrated = path.join(base, 'migrated');
+  const migDb = touchDb(migrated);
+  const homeDb = touchDb(home);
+  const mtimes = { [migDb]: 1_700_000_000, [homeDb]: 1_700_001_000 };
+  const api = runBlock({
+    env: { ZCODE_DESKTOP_HOME_DIR: home, ZCODE_SESSION_DB_PATH: migDb },
+    mtimes,
+  });
+  assert.equal(api.resolveHostDbDir(), path.dirname(migDb));
+});
+
+test('显式 CLI config 来源不经仲裁：指定较旧库仍原样返回', (t) => {
+  const { base, home } = makeHome(t);
+  const migrated = path.join(base, 'migrated');
+  const migDb = touchDb(migrated);
+  const homeDb = touchDb(home);
+  const mtimes = { [migDb]: 1_700_000_000, [homeDb]: 1_700_001_000 };
+  writeJson(path.join(home, '.zcode', 'cli', 'config.json'), { storage: { sessionDbPath: migDb } });
+  const api = runBlock({ env: { ZCODE_DESKTOP_HOME_DIR: home }, mtimes });
+  assert.equal(api.resolveHostDbDir(), path.dirname(migDb));
+});
+
+test('ZCODE_DATA_BASE_DIR env 候选同走新鲜度仲裁', (t) => {
+  const { base, home } = makeHome(t);
+  const migrated = path.join(base, 'migrated');
+  const migDb = touchDb(migrated);
+  const homeDb = touchDb(home);
+  const mtimes = { [migDb]: 1_700_000_000, [homeDb]: 1_700_001_000 };
+  const api = runBlock({
+    env: { ZCODE_DESKTOP_HOME_DIR: home, ZCODE_DATA_BASE_DIR: migrated },
+    mtimes,
+  });
+  assert.equal(api.resolveHostDbDir(), path.join(home, '.zcode', 'cli', 'db'));
 });
 
 test('dbStamp 探测解析后目录下的 db.sqlite/-wal/-shm', (t) => {
