@@ -54,7 +54,7 @@
 | `inject-main.cjs` | 主进程加载、窗口/工作区 IPC、查询泵、文件监听、快照推送、受限写操作与六个子模块热换循环（唯一冷文件） |
 | `install.py` | 独立安装/卸载、运行文件、配置、独立 MCP 与 `/usage` 注册 |
 | `patch_install.py` | asar 定位、注入/移除、自检、原子替换及待替换文件 |
-| `pending_zip_patch.py` | macOS 更新包预注入：Squirrel 取走前改写 pending 缓存 zip 内 app.asar 补注入行；update-info.json 元数据绝不动（宿主缓存有效性判据） |
+| `pending_zip_patch.py` | macOS pending 更新包清理自愈（v339/issue #298）：按改写账本 sha256 对账删除旧版预注入改写的 pending zip（宿主自动重下官方包）；无记录 zip 绝不碰，update-info.json 恒不读写（宿主缓存有效性判据）。旧「Squirrel 取包前改写预注入」已废除——改写改变包大小，与 MacUpdater 本地代理按下载完成时固化的官方 Content-Length 拉流冲突，导致更新静默失败 |
 | `install_monitor.py` | 重启提醒、加载诊断和 Windows 待替换收尾 |
 | `plugin-updater.cjs` / `plugin-release.cjs` | 宿主插件更新调度、正式 GitHub Release 与渠道校验、更新日志（Release 说明）拉取与缓存 |
 | `plugin-storage.cjs` | 按宿主存储解析用户级插件库存/缓存，不假设固定 HOME |

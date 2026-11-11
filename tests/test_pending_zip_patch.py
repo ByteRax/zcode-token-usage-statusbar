@@ -1,9 +1,17 @@
 # -*- coding: utf-8 -*-
-"""pending_zip_patch（macOS pending 更新包预注入）回归。
+"""pending_zip_patch（macOS pending 更新包清理自愈）回归。
 
-覆盖：注入行写入与其它条目保留、状态命中免解压、update-info.json 竞态锚点、
-陈旧缓存拒打、非 ZCode asar 拒绝、坏 zip 拒绝、幂等（已打补丁短路）、平台守卫。
-全程临时目录，不触碰真实 pending 缓存与 asar。
+历史：本模块曾按「方案 B」在 Squirrel 取包前改写 pending zip 内 app.asar（issue #298
+定案该设计结构性不可行——electron-updater 6.8.10 + autoInstallOnAppQuit=false 下，
+Squirrel 经 MacUpdater 本地代理按下载完成时固化的官方 Content-Length 拉流，改写后的
+zip 总大小必然偏离该长度，拉包被截断/失配即静默失败，restage 缓存命中反复复现）。
+现行为反转为清理：只删除本插件曾改写且仍在 pending 的 zip（宿主按缓存失效重新下载
+官方字节），绝不改写任何 zip，update-info.json 恒不读不写。
+
+覆盖：sha256 对账删除、官方重下保留只清账本、无记录/他运行目录记录不动、
+zip 缺失清账本、删除失败报 1、摘要中并发改写放弃（锚点复核）、旧版工作目录与
+候选残留清扫、平台守卫、幂等。
+全程临时目录，不触碰真实 pending 缓存。
 """
 import contextlib
 import hashlib
@@ -12,37 +20,27 @@ import io
 import json
 import os
 from pathlib import Path
-import struct
 import sys
 import tempfile
+import time
 import unittest
 import zipfile
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from tests.helpers.py_test_support import load_module, make_asar as _shared_make_asar  # noqa: E402
 
 
-def make_asar(path, entry=b"console.log('official v1');",
-              package=None):
-    pkg = package or {"name": "@zcode/desktop", "type": "module", "version": "3.18.0"}
-    return _shared_make_asar(path, entry=entry, package=pkg)
-
-
-class PendingZipPatchTests(unittest.TestCase):
+class PendingZipUndoTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         self.runtime = self.root / "runtime"
         self.runtime.mkdir()
-        (self.runtime / "inject-main.cjs").write_text("// fixture", encoding="utf-8")
         self.pending = self.root / "pending"
         self.pending.mkdir()
         self.zip_path = self.pending / "ZCode-3.18.0-mac-arm64.zip"
-        self.other = b"#!/bin/sh\necho hello\n"
-        self.plist = b"plist-bytes"
         spec = importlib.util.spec_from_file_location(
             "pending_zip_patch_test", ROOT / "pending_zip_patch.py")
         self.pzp = importlib.util.module_from_spec(spec)
@@ -51,161 +49,184 @@ class PendingZipPatchTests(unittest.TestCase):
         output.__enter__()
         self.addCleanup(output.__exit__, None, None, None)
 
-    def build_zip(self, asar_bytes, name="ZCode.app/Contents/Resources/app.asar"):
-        # 显式 ZipInfo：external_attr（POSIX mode 位 + MS-DOS 标志）、create_system、
-        # 压缩方式与 date_time 是 Squirrel 解包恢复权限的关键元数据，rewrite_zip 必须
-        # 逐字段保留——缺执行位更新后的 app 无法启动，且无任何链路可兜底。
-        def info(entry, mode, stored=False, is_dir=False):
-            item = zipfile.ZipInfo(entry, date_time=(2026, 1, 2, 3, 4, 6))   # 偶数秒：DOS 时间戳 2 秒粒度，奇数秒写读会舍入
-            item.create_system = 3   # unix
-            item.external_attr = (mode << 16) | (0x10 if is_dir else 0x20)
-            item.compress_type = zipfile.ZIP_STORED if stored else zipfile.ZIP_DEFLATED
-            return item
-
+    def build_zip(self, payload=b"official-zip-bytes"):
         with zipfile.ZipFile(self.zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr(info("ZCode.app/Contents/Info.plist", 0o644, stored=True), self.plist)
-            zf.writestr(info(name, 0o644), asar_bytes)
-            zf.writestr(info("ZCode.app/Contents/MacOS/ZCode", 0o755), self.other)
-            zf.writestr(info("ZCode.app/Contents/Resources/", 0o755, is_dir=True), b"")
-        self.write_update_info()
+            zf.writestr("ZCode.app/Contents/Resources/app.asar", payload)
         return self.zip_path
 
-    def write_update_info(self, file_name=None, sha512="official-sha512"):
+    def write_update_info(self, file_name=None):
         (self.pending / "update-info.json").write_text(json.dumps(
             {"fileName": file_name if file_name is not None else self.zip_path.name,
-             "sha512": sha512, "isAdminRightsRequired": False}), encoding="utf-8")
+             "sha512": "official-sha512", "isAdminRightsRequired": False}), encoding="utf-8")
 
-    def official_asar(self):
-        asar = self.root / "source.asar"
-        make_asar(asar)
-        return asar.read_bytes()
-
-    def run_patch(self):
-        return self.pzp.patch_zip(self.zip_path, None, self.runtime)
-
-    def read_entry(self, name="ZCode.app/Contents/Resources/app.asar"):
-        with zipfile.ZipFile(self.zip_path) as zf:
-            return zf.read(name)
-
-    def assert_zip_intact_except_asar(self):
-        self.assertEqual(self.read_entry("ZCode.app/Contents/Info.plist"), self.plist)
-        self.assertEqual(self.read_entry("ZCode.app/Contents/MacOS/ZCode"), self.other)
-        # 元数据逐字段核对：external_attr（权限位+MS-DOS 标志）、压缩方式、date_time
-        # 与 create_system 任何一个丢掉都会让更新包解包出错或 app 无法启动
-        expected = {
-            "ZCode.app/Contents/Info.plist": (0o644 << 16) | 0x20,
-            "ZCode.app/Contents/Resources/app.asar": (0o644 << 16) | 0x20,
-            "ZCode.app/Contents/MacOS/ZCode": (0o755 << 16) | 0x20,
-            "ZCode.app/Contents/Resources/": (0o755 << 16) | 0x10,
+    def record(self, name=None, sha256=None, runtime=None):
+        """写一份旧版预注入留下的账本条目（字段与旧版 save_state 相同）。sha 默认值
+        用独立 hashlib 计算，不用被测实现的 sha256_of——摘要函数自身损坏时夹具不能
+        跟着错（否则对账测试对「坏摘要」自洽全绿）。"""
+        state_path = self.runtime / "pending-zip-patch.json"
+        try:
+            state = json.loads(state_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            state = {"version": 1, "files": {}}
+        if not isinstance(state.get("files"), dict):
+            state["files"] = {}
+        if sha256 is None:
+            sha256 = (hashlib.sha256(self.zip_path.read_bytes()).hexdigest()
+                      if self.zip_path.exists() else "0" * 64)
+        state["files"][name if name is not None else self.zip_path.name] = {
+            "sha256": sha256,
+            "patchedAt": int(time.time()),
+            "asarVersion": "3.18.0",
+            "runtime": str(self.runtime.absolute()) if runtime is None else runtime,
         }
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    def read_records(self):
+        try:
+            state = json.loads((self.runtime / "pending-zip-patch.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return state.get("files") if isinstance(state.get("files"), dict) else {}
+
+    def run_undo(self):
+        return self.pzp.undo_zip(self.zip_path, self.runtime)
+
+    def test_undo_removes_patched_zip_and_forgets_record(self):
+        self.build_zip()
+        self.write_update_info()
+        self.record()
+        self.assertEqual(self.run_undo(), 0)
+        self.assertFalse(self.zip_path.exists(), "改写坏包必须删除：宿主按缓存失效重新下载官方字节")
+        self.assertEqual(self.read_records(), {}, "删除后账本条目一并清掉")
+        # update-info.json 恒不动：宿主重下与缓存有效性的判定依据
+        self.assertEqual(json.loads((self.pending / "update-info.json").read_text())["sha512"],
+                         "official-sha512")
+
+    def test_undo_keeps_redownloaded_official_bytes(self):
+        # 账本 sha 与当前字节不符：宿主已重下官方包，只清账本绝不动文件
+        self.build_zip(b"official-redownloaded-bytes")
+        self.record(sha256="0" * 64)
+        self.write_update_info()
+        self.assertEqual(self.run_undo(), 0)
+        self.assertTrue(self.zip_path.exists())
         with zipfile.ZipFile(self.zip_path) as zf:
-            for item in zf.infolist():
-                self.assertEqual(item.external_attr, expected[item.filename], item.filename)
-                self.assertEqual(item.compress_type,
-                                 zipfile.ZIP_STORED if item.filename.endswith("Info.plist")
-                                 else zipfile.ZIP_DEFLATED, item.filename)
-                self.assertEqual(item.date_time, (2026, 1, 2, 3, 4, 6), item.filename)
-                self.assertEqual(item.create_system, 3, item.filename)
-            self.assertEqual([i.filename for i in zf.infolist() if i.is_dir()],
-                             ["ZCode.app/Contents/Resources/"])
+            self.assertEqual(zf.read("ZCode.app/Contents/Resources/app.asar"),
+                             b"official-redownloaded-bytes")
+        self.assertEqual(self.read_records(), {})
+        # mismatch 分支同样不许碰 update-info.json（宿主缓存有效性判据恒不动）
+        self.assertEqual(json.loads((self.pending / "update-info.json").read_text())["sha512"],
+                         "official-sha512")
 
-    def test_patch_adds_injection_and_keeps_entries(self):
-        self.build_zip(self.official_asar())
-        self.assertEqual(self.run_patch(), 0)
-        self.assertIn(b"inject-main.cjs", self.read_entry())
-        self.assert_zip_intact_except_asar()
-        # update-info.json 绝不改动：它是宿主缓存有效性的判定依据
-        info = json.loads((self.pending / "update-info.json").read_text())
-        self.assertEqual(info["sha512"], "official-sha512")
-        state = json.loads((self.runtime / "pending-zip-patch.json").read_text())
-        record = state["files"][self.zip_path.name]
-        self.assertEqual(record["sha256"], hashlib.sha256(self.zip_path.read_bytes()).hexdigest())
-        self.assertEqual(record["asarVersion"], "3.18.0")
-
-    def test_state_hit_skips_without_touching_zip(self):
-        self.build_zip(self.official_asar())
-        self.assertEqual(self.run_patch(), 0)
-        patched = self.zip_path.read_bytes()
-        with mock.patch.object(self.pzp, "patch_asar_bytes",
-                               side_effect=AssertionError("must not decompress on state hit")):
-            self.assertEqual(self.run_patch(), 0)
-        self.assertEqual(self.zip_path.read_bytes(), patched)
-
-    def test_update_info_anchor_drift_aborts(self):
-        self.build_zip(self.official_asar())
-        original = self.zip_path.read_bytes()
-        update_info = self.pending / "update-info.json"
-        real_rewrite = self.pzp.rewrite_zip
-
-        def rewrite_then_host_redownload(*args, **kwargs):
-            result = real_rewrite(*args, **kwargs)
-            update_info.write_text('{"fileName":"other.zip","sha512":"new"}')  # 宿主重下会重写 json
-            return result
-
-        with mock.patch.object(self.pzp, "rewrite_zip",
-                               side_effect=rewrite_then_host_redownload):
-            self.assertEqual(self.run_patch(), 1)
-        self.assertEqual(self.zip_path.read_bytes(), original)
-
-    def test_stale_cache_file_name_refused(self):
-        self.build_zip(self.official_asar())
-        original = self.zip_path.read_bytes()
-        self.write_update_info(file_name="ZCode-3.19.0-mac-arm64.zip")
-        self.assertEqual(self.run_patch(), 1)
-        self.assertEqual(self.zip_path.read_bytes(), original)
-        self.assertFalse((self.runtime / "pending-zip-patch.json").exists())
-
-    def test_non_zcode_asar_refused(self):
-        asar = self.root / "foreign.asar"
-        make_asar(asar, package={"name": "someone-else", "type": "module", "version": "1.0"})
-        self.build_zip(asar.read_bytes())
-        original = self.zip_path.read_bytes()
-        self.assertEqual(self.run_patch(), 1)
-        self.assertEqual(self.zip_path.read_bytes(), original)
-
-    def test_missing_asar_entry_refused(self):
-        with zipfile.ZipFile(self.zip_path, "w") as zf:
-            zf.writestr("ZCode.app/Contents/Info.plist", self.plist)
+    def test_undo_without_record_leaves_zip_alone(self):
+        self.build_zip()
         self.write_update_info()
-        self.assertEqual(self.run_patch(), 1)
+        self.assertEqual(self.run_undo(), 0)
+        self.assertTrue(self.zip_path.exists())
+        self.assertEqual(self.read_records(), {})
+        # 没有账本记录的 zip（含官方字节）永远不动，即使旁边躺着可读的 update-info.json
+        self.assertTrue((self.pending / "update-info.json").exists())
 
-    def test_corrupt_zip_refused(self):
-        self.zip_path.write_bytes(b"PK\x03\x04 truncated garbage")
-        self.write_update_info()
-        original = self.zip_path.read_bytes()
-        self.assertEqual(self.run_patch(), 1)
-        self.assertEqual(self.zip_path.read_bytes(), original)
+    def test_undo_ignores_other_runtime_record(self):
+        self.build_zip()
+        self.record(runtime=str(self.root / "another-runtime"))
+        self.assertEqual(self.run_undo(), 0)
+        self.assertTrue(self.zip_path.exists())
+        self.assertEqual(len(self.read_records()), 1, "他运行目录名下的记录不动")
 
-    def test_already_patched_zip_short_circuits(self):
-        asar = self.root / "source.asar"
-        make_asar(asar)
-        # 直接造出「已带注入行」的 zip：跑一次 patch 后的 asar 再重打进一个新 zip
-        self.build_zip(asar.read_bytes())
-        self.assertEqual(self.run_patch(), 0)
-        entry = self.read_entry()
-        pre_state = json.loads((self.runtime / "pending-zip-patch.json").read_text())
-        # 状态清掉后重跑：内容判定路径（无解压跳过可用）也必须判已打，且不再改 zip
-        (self.runtime / "pending-zip-patch.json").unlink()
-        with zipfile.ZipFile(self.zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr("ZCode.app/Contents/Info.plist", self.plist)
-            zf.writestr("ZCode.app/Contents/Resources/app.asar", entry)
-            zf.writestr("ZCode.app/Contents/MacOS/ZCode", self.other)
-        self.write_update_info()
-        before = self.zip_path.read_bytes()
-        with mock.patch.object(self.pzp, "rewrite_zip",
-                               side_effect=AssertionError("already-patched must not rewrite")):
-            self.assertEqual(self.run_patch(), 0)
-        self.assertEqual(self.zip_path.read_bytes(), before)
-        state = json.loads((self.runtime / "pending-zip-patch.json").read_text())
-        self.assertIn(self.zip_path.name, state["files"])
-        del pre_state
+    def test_undo_missing_zip_clears_record(self):
+        self.record()
+        self.assertEqual(self.run_undo(), 0)
+        self.assertEqual(self.read_records(), {})
+
+    def test_undo_clears_corrupt_record_entry(self):
+        # sha256 缺失的坏条目会被 load_state 滤成「无记录」：zip 不动，但条目必须清掉，
+        # 否则 Node 候选只看键名会对它 60s 空转 spawn
+        self.build_zip()
+        self.record(sha256=None)
+        # record() 在 zip 存在时按内容算 sha，这里直接改写成缺字段条目
+        state_path = self.runtime / "pending-zip-patch.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["files"][self.zip_path.name].pop("sha256")
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        self.assertEqual(self.run_undo(), 0)
+        self.assertTrue(self.zip_path.exists())
+        self.assertEqual(self.read_records(), {}, "坏条目清账后 Node 候选不再空转")
+
+    def test_undo_is_idempotent(self):
+        self.build_zip()
+        self.record()
+        self.assertEqual(self.run_undo(), 0)
+        self.assertEqual(self.run_undo(), 0)
+        self.assertFalse(self.zip_path.exists())
+
+    def test_undo_sweeps_legacy_workdir_and_candidate_tmp(self):
+        # 旧版改写链的残留：硬杀没走 finally 的工作目录与同目录候选临时文件
+        stale = self.pending / ".zusage-pendingzip-abc"
+        stale.mkdir()
+        stale.joinpath("staged.asar").write_bytes(b"x")
+        old = time.time() - 7200
+        os.utime(stale, (old, old))
+        fresh = self.pending / ".zusage-pendingzip-fresh"
+        fresh.mkdir()
+        os.utime(fresh, (time.time(), time.time()))
+        tmp = self.pending / (".zusage-zip-" + self.zip_path.name + ".tmp")
+        tmp.write_bytes(b"partial")
+        self.build_zip()
+        self.record()
+        self.assertEqual(self.run_undo(), 0)
+        self.assertFalse(stale.exists(), "超龄工作目录清扫")
+        self.assertTrue(fresh.exists(), "刚创建的工作目录不动")
+        self.assertFalse(tmp.exists(), "旧版候选临时文件残留清扫")
+
+    def test_undo_survives_corrupt_state_file(self):
+        # 账本损坏按未记录处理：绝不动 zip
+        self.build_zip()
+        (self.runtime / "pending-zip-patch.json").write_text("not-json", encoding="utf-8")
+        self.assertEqual(self.run_undo(), 0)
+        self.assertTrue(self.zip_path.exists())
+
+    def test_undo_unlink_failure_reports_one(self):
+        # 删除失败必须报 1：Node 端按退出码计退避，谎报 0 会静默放弃重试（坏包永存）
+        self.build_zip()
+        self.record()
+        self.skipIfWriteProtectedRoot()
+        mode = self.pending.stat().st_mode
+        self.pending.chmod(0o555)   # unlink 权限检查看父目录：目录只读即 EACCES
+        self.addCleanup(self.pending.chmod, mode)   # 允许 TemporaryDirectory 清理
+        self.assertEqual(self.run_undo(), 1)
+        self.assertTrue(self.zip_path.exists(), "删除失败时坏包原地保留，等下一轮触发")
+        self.assertEqual(len(self.read_records()), 1, "删除失败不清账本（下次重试仍要认领）")
+
+    def skipIfWriteProtectedRoot(self):
+        if os.name == "nt":
+            self.skipTest("Windows 对只读位不敏感，无法注入 unlink 失败")
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            self.skipTest("root 不受只读位限制，无法注入 unlink 失败")
+
+    def test_undo_aborts_when_file_changes_during_hashing(self):
+        # 锚点复核：摘要算的是旧字节、文件被并发改写（宿主重下中）时本轮必须放弃，
+        # 绝不能拿旧摘要的对账结论去删新落盘的文件
+        self.build_zip()
+        self.record()
+        real_sha = self.pzp.sha256_of
+
+        def sha_then_concurrent_rewrite(path):
+            digest = real_sha(path)
+            self.build_zip(b"host-redownloaded-mid-hash")   # 换内容=换 size/mtime_ns（截断写 inode 不变）
+            return digest
+
+        with mock.patch.object(self.pzp, "sha256_of", side_effect=sha_then_concurrent_rewrite):
+            self.assertEqual(self.run_undo(), 1)
+        self.assertTrue(self.zip_path.exists(), "并发改写后绝不删除新落盘的文件")
+        self.assertEqual(len(self.read_records()), 1, "放弃时账本原地保留，下轮按新字节对账")
 
     def test_main_platform_guard(self):
-        self.build_zip(self.official_asar())
+        self.build_zip()
+        self.record()
         original = self.zip_path.read_bytes()
         with mock.patch.object(self.pzp.sys, "platform", "win32"), \
-                mock.patch.object(self.pzp, "patch_zip",
-                                  side_effect=AssertionError("win32 must not patch")) as guard:
+                mock.patch.object(self.pzp, "undo_zip",
+                                  side_effect=AssertionError("win32 must not touch pending")) as guard:
             self.assertEqual(self.pzp.main(["--zip", str(self.zip_path),
                                             "--runtime", str(self.runtime)]), 0)
         guard.assert_not_called()
