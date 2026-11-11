@@ -242,7 +242,7 @@ test("normalize: reset seconds auto-scale; string passthrough; no-plan envelope 
 test("resolveWanted: builtin families, team, custom provider", () => {
   assert.deepEqual(Q.resolveWanted("account:bigmodel-individual-coding-plan"), { family: "bigmodel" });
   assert.deepEqual(Q.resolveWanted("account:zai-pro-coding-plan"), { family: "zai" });
-  assert.deepEqual(Q.resolveWanted("account:bigmodel-team-coding-plan"), { unsupported: "team" });
+  assert.deepEqual(Q.resolveWanted("account:bigmodel-team-coding-plan"), { family: "bigmodel", team: true });
   assert.equal(Q.resolveWanted("new-provider"), null);
   assert.equal(Q.resolveWanted(""), null);
   assert.deepEqual(Q.resolveWanted("bigmodel-api"), { family: "bigmodel" });
@@ -416,8 +416,9 @@ test("client: not_configured / decrypt failure fail-closed; unsupported team & c
   const c = makeClient({ creds: CRED_FILE() });
   c.client.noteProvider("account:bigmodel-team-coding-plan");
   c.client.tick();
-  assert.equal(c.client.view().status, "unsupported");
-  assert.equal(c.client.view().reason, "team");
+  /* 团队套餐（v331）：无选择（setting.json 无团队项）按未配置降级，fail-closed 零请求 */
+  assert.equal(c.client.view().status, "not_configured");
+  assert.equal(c.calls.length, 0);
   c.client.noteProvider("new-provider");
   c.client.tick();
   assert.equal(c.client.view().reason, "provider");
@@ -1735,9 +1736,10 @@ test("volcano post: 400 with JSON signature envelope stays auth_failed (envelope
 
 /* ---------- 2026-10-24 第 4 轮回归：team 词边界 / 坏 baseUrl 归 unsupported ---------- */
 
-test("team detection uses word boundaries: substring-only ids are not team plans", () => {
-  assert.deepEqual(Q.resolveWanted("account:bigmodel-team-coding-plan"), { unsupported: "team" });
-  assert.deepEqual(Q.resolveWanted("account:zai-team"), { unsupported: "team" });
+test("team detection uses exact provider ids: substring-only ids are not team plans", () => {
+  assert.deepEqual(Q.resolveWanted("account:bigmodel-team-coding-plan"), { family: "bigmodel", team: true });
+  assert.deepEqual(Q.resolveWanted("account:zai-team-coding-plan"), { family: "zai", team: true });
+  assert.deepEqual(Q.resolveWanted("account:zai-team"), { family: "zai" });   // 非规范形沿家族前缀，不误判团队
   const steam = Q.resolveWanted("account:steam-promo");   // 含 "team" 子串的假想 id
   assert.ok(!steam || !steam.unsupported || steam.unsupported !== "team",
     "substring match must not misclassify: " + JSON.stringify(steam));

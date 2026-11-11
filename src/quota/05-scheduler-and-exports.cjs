@@ -110,9 +110,11 @@ function createQuotaClient(opts) {
     },
   };
 
+  /* 团队套餐选择所在的 setting.json：恒在 HOME/.zcode/v2（不随 dataBaseDir 迁移）；测试可注入 */
+  const settingPath = o.settingPath || path.join(os.homedir(), ".zcode", "v2", "setting.json");
   const j = {
     env, now, fetchImpl, readFile, secrets: { sources: {} }, customCfgPath, log, http, extras,
-    credsPath,
+    credsPath, settingPath,
     customProviderOf: (pid) => resolveCustomProvider(pid, readFile, customCfgPath, builtinCfgPath),
     familyApiKeyOf: (family, pid) => resolveFamilyApiKey(family, pid, readFile, customCfgPath, builtinCfgPath),
   };
@@ -146,7 +148,8 @@ function createQuotaClient(opts) {
     const p = String(providerId || "");
     if (!p) return { id: "" };
     if (p.indexOf("account:") === 0) {
-      if (isTeamProviderId(p)) return { id: "team" };
+      const teamFam = teamFamilyOf(p);
+      if (teamFam) return { id: teamFam + "-team", ctx: { family: teamFam, team: true } };
       if (zcodeStartDetectOf(p)) return { id: "zcode-start", ctx: { family: "zcode-start" } };
       if (p.indexOf("account:bigmodel") === 0) return { id: "bigmodel", ctx: { family: "bigmodel" } };
       if (p.indexOf("account:zai") === 0) return { id: "zai", ctx: { family: "zai" } };
@@ -437,12 +440,21 @@ function createQuotaClient(opts) {
     let raw = null;
     try { raw = j.readFile(j.credsPath); } catch (e) { return null; }
     if (!raw || typeof raw !== "object") return null;
-    const oauthEnc = raw[famConf.credKey], jwtEnc = raw["zcodejwttoken"];
-    if (typeof oauthEnc !== "string" || !oauthEnc || typeof jwtEnc !== "string" || !jwtEnc) return null;
+    const oauthEnc = raw[famConf.credKey];
+    if (typeof oauthEnc !== "string" || !oauthEnc) return null;
     const oauth = decryptValue(oauthEnc, deriveCipherKey(j.env));
+    if (!oauth) return { decryptFailed: true, fingerprint: "host:" + sha16(oauthEnc) };
+    if (!oauth.trim()) return null;
+    const sel = teamSelectionOf(j, famConf.fam);
+    if (sel) {
+      /* 团队模式：targetType=TEAM 列表只认业务身份——业务 token + org/project，个人 zcodejwttoken 不参与 */
+      return { oauth: oauth.trim(), team: sel,
+        fingerprint: sha16(JSON.stringify([famConf.fam, sel.org, sel.project, oauthEnc])) };
+    }
+    const jwtEnc = raw["zcodejwttoken"];
+    if (typeof jwtEnc !== "string" || !jwtEnc) return null;
     const jwt = decryptValue(jwtEnc, deriveCipherKey(j.env));
-    if (!oauth || !jwt) return { decryptFailed: true, fingerprint: "host:" + sha16(oauthEnc + "\n" + jwtEnc) };
-    if (!oauth.trim() || !jwt.trim()) return null;
+    if (!jwt || !jwt.trim()) return { decryptFailed: true, fingerprint: "host:" + sha16(oauthEnc + "\n" + jwtEnc) };
     return { oauth: oauth.trim(), jwt: jwt.trim(), fingerprint: sha16(JSON.stringify([oauthEnc, jwtEnc])) };
   }
   /* 关闭门控时清除整个独立链；view/sourcesConfig 不发回调，避免推送时递归。 */
@@ -457,7 +469,7 @@ function createQuotaClient(opts) {
   }
   /* 在推送前或发请求前复核凭据；身份变化时清除旧账户值并废弃在途结果。 */
   function syncResetCredential(st, cred) {
-    const fingerprint = cred && !cred.decryptFailed && cred.oauth && cred.jwt ? cred.fingerprint : "";
+    const fingerprint = cred && !cred.decryptFailed && cred.oauth && (cred.jwt || cred.team) ? cred.fingerprint : "";
     const error = cred && cred.decryptFailed ? "credential decrypt failed" : "";
     if (fingerprint === st.fingerprint && (fingerprint || (st.status === "not_configured" && st.lastError === error))) return false;
     st.epoch += 1;
@@ -483,8 +495,10 @@ function createQuotaClient(opts) {
       }
       if (!force && t < st.nextAt) continue;
       if (!force && st.status === "auth_failed") continue;
-      const exp = jwtExpMs(cred.jwt);
-      if (exp && exp - t < EXP_SOON_MS) { st.nextAt = t + EXP_RETRY_MS; continue; }   // JWT 临期不发请求
+      if (!cred.team) {
+        const exp = jwtExpMs(cred.jwt);
+        if (exp && exp - t < EXP_SOON_MS) { st.nextAt = t + EXP_RETRY_MS; continue; }   // JWT 临期不发请求（个人链）
+      }
       st.epoch += 1;
       const ep = st.epoch;
       const ctl = new AbortController();
@@ -495,6 +509,21 @@ function createQuotaClient(opts) {
         ctl.signal.addEventListener("abort", () => clearTimeout(kill), { once: true });
       }
       const p = (async () => {
+        if (cred.team) {
+          /* 团队模式：个人 reset/status 不适用，只打 targetType=TEAM 列表（成员可用的卡）。
+           * 值形与个人链对齐（fiveHour/week 仅存未过期可用卡），供徽标同款消费。 */
+          const teamList = await j.http.getJson(RESET_LIST_ORIGIN + "/api/biz/customer-package-reset/list?targetType=TEAM", {
+            authorization: cred.oauth,
+            "Bigmodel-Organization": cred.team.org,
+            "Bigmodel-Project": cred.team.project,
+            "set-language": "zh",
+          }, ctl);
+          const parsed = normalizeResetList(teamList, now());
+          if (!parsed || !parsed.list) throw qErr("parse_error", "invalid team reset list");
+          const live = (cards) => (cards || []).filter((c) => c && c.available !== false &&
+            typeof c.expireAt === "number" && c.expireAt > now()).map((c) => ({ expireAt: c.expireAt, grantType: c.grantType || "" }));
+          return { fiveHour: live(parsed.list.fiveHour), week: live(parsed.list.weekly), list: parsed.list };
+        }
         const body = await j.http.getJson(RESET_ORIGIN + RESET_PATH, {
           authorization: /^Bearer\s/i.test(cred.jwt) ? cred.jwt : "Bearer " + cred.jwt,
           "X-Bigmodel-Authorization": cred.oauth,   // 宿主契约：裸 token，不套 Bearer
@@ -733,7 +762,8 @@ module.exports = {
     const p = String(providerId || "");
     if (apiKeyFamilyOf(p)) return { family: apiKeyFamilyOf(p) };
     if (p.indexOf("account:") !== 0) return null;
-    if (isTeamProviderId(p)) return { unsupported: "team" };
+    const teamFam = teamFamilyOf(p);
+    if (teamFam) return { family: teamFam, team: true };
     if (zcodeStartDetectOf(p)) return { family: "zcode-start" };
     if (p.indexOf("account:bigmodel") === 0) return { family: "bigmodel" };
     if (p.indexOf("account:zai") === 0) return { family: "zai" };

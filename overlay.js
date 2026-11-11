@@ -16323,13 +16323,19 @@
      * 卡到期但数据未刷新（expireAt<=now）按无卡处理，绝不显示过期倒计时。 */
     function resetBadgeView() {
       if (!state.resetBadge || !lastResets) return null;
-      /* 只信本 pane 的实时个人编码套餐选择；旧宿主无 marker 时不借历史请求或全局回退，
-       * apiKey、团队与 Start Plan 也不能证明对应个人重置卡的归属。 */
+      /* 只信本 pane 的实时编码套餐选择；旧宿主无 marker 时不借历史请求或全局回退，
+       * apiKey 与 Start Plan 不能证明重置卡的归属。个人选择=个人卡；团队选择（团队套餐）
+       * 时家族重置状态就是 targetType=TEAM 列表，只认所选家族的卡。 */
       var provider = quotaSelection && quotaSelection.providerId;
-      if (provider !== "account:bigmodel-individual-coding-plan" &&
-          provider !== "account:zai-individual-coding-plan") return null;
+      /* overlay 自包含 bundle：quota-client 的 teamFamilyOf 不可用，团队规范形在此内联 */
+      var teamFam = provider === "account:bigmodel-team-coding-plan" ? "bigmodel"
+        : provider === "account:zai-team-coding-plan" ? "zai" : null;
+      var personal = provider === "account:bigmodel-individual-coding-plan" ||
+                     provider === "account:zai-individual-coding-plan";
+      if (!personal && !teamFam) return null;
       var now = Date.now(), earliest = 0, total = 0, fams = [], counts = [];
       ["bigmodel", "zai"].forEach(function (name) {
+        if (teamFam && name !== teamFam) return;   // 团队模式：另一家族没有 TEAM 卡
         var e = lastResets[name], count = 0;
         if (!e || typeof e !== "object") return;
         [e.fiveHour, e.week].forEach(function (cards) {

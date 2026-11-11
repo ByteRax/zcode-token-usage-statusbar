@@ -750,21 +750,24 @@ test('live pane provider switches hide the badge and tooltip immediately, then r
   assert.equal(ui.row.children.indexOf(restored) + 1, ui.row.children.indexOf(ui.wrap), 'badge stays left of the quota group after restore');
 });
 
-test('only explicit personal account markers display reset cards', () => {
+test('only explicit personal or team coding-plan markers display reset cards', () => {
   const h = harness(), ui = resetComposer(h);
   h.inject(); h.boot(); h.tick();
   h.window.__zusageUpdate(payloadWithResets(h.payload, { bigmodel: rstEntry(3600e3) }));
   assert.ok(rst(ui.btn));
-  for (const provider of ['account:bigmodel-team-coding-plan', 'account:zai-team-coding-plan',
-    'account:bigmodel-start-plan', 'account:zai-start-plan', 'bigmodel-api', 'bigmodel-api-2',
+  /* 团队套餐（v331）：团队选择下家族重置状态即 targetType=TEAM 列表，徽标照常显示
+   * （只认所选家族的卡：夹具只推了 bigmodel 卡，zai-team 无数据 → 不显示，属正确 fail 行为） */
+  for (const provider of ['account:bigmodel-team-coding-plan', 'account:bigmodel-individual-coding-plan']) {
+    ui.marker.setAttribute('data-provider', provider);
+    h.mutate(ui.pane);
+    assert.ok(rst(ui.btn), provider + ' displays its family reset cards');
+  }
+  for (const provider of ['account:bigmodel-start-plan', 'account:zai-start-plan', 'bigmodel-api', 'bigmodel-api-2',
     'zai-api', 'zai-api-2', 'account:other', 'account:bigmodel', '', 'new-provider-ds']) {
     ui.marker.setAttribute('data-provider', provider);
     h.mutate(ui.pane);
-    assert.equal(rst(ui.btn), undefined, provider + ' must not inherit a personal account badge');
+    assert.equal(rst(ui.btn), undefined, provider + ' must not inherit a reset badge');
   }
-  ui.marker.setAttribute('data-provider', 'account:bigmodel-individual-coding-plan');
-  h.mutate(ui.pane);
-  assert.ok(rst(ui.btn));
 });
 
 test('missing or ambiguous live markers and session mismatch fail closed without using DB fallback', () => {
