@@ -71,7 +71,7 @@ python3 -B "${ZCODE_SKILL_DIR}/scripts/triage.py" released <提交>     # 该提
 
 ## 2. 修复（issue → 自己的 PR）
 
-1. **先复现再修**：写一个在修复前会红的测试（Python 用临时库夹具与 `tests/helpers/py_test_support.py`，Node 用 VM/stub 与 `tests/helpers/overlay-extract.cjs`），确认它红，再改实现。根因要落到具体代码行，不要只改症状。涉及多模块联动时，可同一轮并行派发只读探索 subagent 分别排查不同模块的数据契约与调用链。
+1. **先复现再修**：写一个在修复前会红的测试（Python 用临时库夹具与 `tests/helpers/py_test_support.py`，Node 用 VM/stub 与 `tests/helpers/overlay-extract.cjs`），确认它红，再改实现。根因要落到具体代码行，不要只改症状。涉及多模块联动时，可同一轮并行派发只读探索 subagent 分别排查不同模块的数据契约与调用链。**报告自带根因叙述时，动手前先对叙述最弱的一环做一次独立证伪**（谁调用、谁消费、数据是否真走这条路径——能 grep 或扫描的就扫，几分钟的事）：代码与描述吻合只证明报告没写错代码，不证明因果；红测试要复现**报告的症状路径**，只证明某个属性成立（如「引用不稳定」）不算复现。证伪不了就不要写「已修复」：在 issue 里说明已做的加固与未证的因果，保持 open 并向报告者要能定位的证据（模板 B/F）。先例 #307：宿主代码根本不引用被指控的包装，修复合并后才发现（参见 `.zcode/rules/bridge-remote.md`）。
 2. 共享文件（`AGENTS.md` §3 的 `FILES` 清单）先改根目录源码（其中 `overlay.js` 改 `src/overlay/*.js` 分片、`quota-client.cjs` 改 `src/quota/*.cjs` 分片、`zusage.py`/`token_rate.py` 公共计算改 `usage_stats.py`），再运行 `python3 sync_plugin.py` 自动拼接单文件、同步插件副本并执行 `--verify-manifests`。
 3. `overlay.js` 有行为变化时在 `src/overlay/06-instance-dom-and-styles.js` 递增 `VERSION` 代际并运行 `python3 sync_plugin.py` 生成根 `overlay.js` 与插件副本，号码以 `fork/main` 当前最大号为准；并行线可能已在未提交改动里占了更大的号，PR 描述里写明基于哪个号，合并撞号就在冲突解决里按时间线重排，不复用同号。
 4. 行为、默认值、协议变化要同步文档（README 三语、`docs/user-guide.md`、插件 README 等，`AGENTS.md` §7）。
@@ -192,7 +192,7 @@ python3 -B "${ZCODE_SKILL_DIR}/scripts/triage.py" released <提交>     # 该提
    ```
 
    写法与 `.zcode/rules/repo-workflow.md` 一致。不要用 `git push fork main`：本地 main 常落后于远端（主工作区有并行改动，不能 ff）而被拒；而且用本地分支推送失败后，本地的 `fork/main` 引用可能被改写成镜像的旧位置，之后按上面的写法推送会被 GitHub 判成非快进。所以推送前后都先 `git fetch fork` 取最新 tip。回读 `git ls-remote gitcode main` 的 SHA 等于合并后的 `fork/main`；失败只在报告里写明。
-6. 本地 `main` 指针：合并后把本地 main 跟进到 `fork/main`。先 `git merge-base --is-ancestor main fork/main` 确认本地 main 没有 `fork/main` 缺失的提交（有的话停下报告，`branch -f` 会把它们挤到只剩 reflog）。主工作区没检出 `main` 时按 `.zcode/rules/repo-workflow.md` 用 `git branch -f main fork/main`；检出着 `main`（主工作区或别的 worktree）时，就在检出它的那个工作区 `git merge --ff-only fork/main`——与并行未提交改动撞路径时 git 会拒绝，此时如实报告受阻文件即可，不 stash、不 checkout、不强推；ff 成功与否都不再把「本地 main 落后」当遗留事项。
+6. 本地 `main` 指针：合并后把本地 main 跟进到 `fork/main`。**先确认这个检出是不是本机插件的部署源**：读 `~/.zcode/cli/plugins/known_marketplaces.json` 里本插件的 `source.path`，若就是该检出，宿主会按自己的节律（进入商店页、约 10 分钟节流；与 git 操作无关，实测 ff 后无刷新、未 ff 时也刷新）把这棵工作树**整目录复制**到 `~/.zcode/cli/plugins/marketplaces/<id>`，再把它 vendored 进 `cache/<id>/<版本号>/`，新会话 SessionStart 随后 `ensure_deployed` 用该缓存改写真机 `app.asar`。因此**部署不看提交状态，只看工作树内容**：这个检出里的未提交插件文件（尤其 `plugins/` 下）同样会进缓存。ff 本身不触发刷新，别把它当部署开关；真正的纪律是别在这棵工作树留下未验证/未完成的 `plugins/`、桥或注入链改动，汇报「是否部署」时把缓存与真机 asar 一并核对（`grep ^BRIDGE_GEN` 缓存件、读 asar 的桥标记）。其余同下：先 `git merge-base --is-ancestor main fork/main` 确认本地 main 没有 `fork/main` 缺失的提交（有的话停下报告，`branch -f` 会把它们挤到只剩 reflog）。主工作区没检出 `main` 时按 `.zcode/rules/repo-workflow.md` 用 `git branch -f main fork/main`；检出着 `main`（主工作区或别的 worktree）时，就在检出它的那个工作区 `git merge --ff-only fork/main`——与并行未提交改动撞路径时 git 会拒绝，此时如实报告受阻文件即可，不 stash、不 checkout、不强推；ff 成功与否都不再把「本地 main 落后」当遗留事项。
 7. 清理（回到项目根执行）：`git push fork --delete fix/issue-N`，`git worktree remove .worktrees/issue-N`（有未跟踪文件会被拒绝，先看是什么，确认是自己生成的再清，不要直接 `--force`）；外部 PR 同样清理 `pr-N` 分支与 worktree。删本地分支前显式确认已在 `fork/main`：`git merge-base --is-ancestor fix/issue-N fork/main && git branch -D fix/issue-N`。
 
 ## 6. 回复、致谢、关闭
