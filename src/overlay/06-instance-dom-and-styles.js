@@ -224,8 +224,9 @@
      * → v340 心跳不再深拷贝整窗快照（issue #309，长会话卡顿；规格 specs/perf-lag-reduction.md 规则 10–12）：桥 v2 的 getState() 每次都是整窗深拷贝（本机 374 行 ≈1ms，报告者 6868 行 ≈86ms），而 100ms 心跳里 bridgeTick 健康检查与 updateLive→subRunningList 每拍各读一次（无 stats 时「思考中」合成再读一次）、每次 store 通知还有 subscribeStore 与 overlay 回调各读一次，v2 桥下 ≥20 次整窗拷贝/秒。三处修复且与桥代际无关（v2/v3 均有效）：①心跳经 handleSnapshot 读 handle 上的快照记录（通知回调写入，超 SNAP_FRESH_MS=2s 才回源一次并兼作 store 关闭/换代探活，时钟回拨按陈旧）；②turn-stats.js subscribeStore 把本次已读 state 传给 changed(state)，回调不再二读；③通知处理按实测成本自适应合并（上次处理 ≥8ms 时间隔 min(1s, cost×9)，占比 ≤~10%，尾部定时器归订阅持有、退订即清；廉价会话逐字不变）。pane 切会话仍由 handle.sid/sideKey 即时重绑；不改桥模板与 BRIDGE_GEN（冷路径）。
      * → v341 issue #309 复审补修：子代理槽位通知回调复用 changed(state) 不再二读；通知处理同步分支作废迟到的尾部定时器；全局 setTimeout/clearTimeout 缺席时不抛进宿主通知链（退回同步处理）；订正「窗口恒 60 行」旧注释（reducer 增量不截）。
      * → v342 ⚙ 面板底栏「反馈问题」左侧新增「联系我」按钮：点击经 openMpShell 复用 .zu-mp-ov 弹窗外壳（收窄 .zu-ct-ov 卡宽）展示维护者微信二维码远程直链（http 直链经实测可用；https 不可达；宿主渲染页 file:// 无混合内容拦截），加载失败隐藏图片换文字兜底；Esc/遮罩/✕ 关闭沿用壳协议，外部点击豁免走既有 .zu-mp-ov 白名单。随批修复既有潜在缺陷：openMpShell 系自有弹层被 modalOpen（v62）误判宿主模态——body 直挂全屏遮罩+内部 role=dialog 完整命中两层判定 ⇒ track 收条连带 closeSettings（用户实报：点「联系我」/关弹框后设置面板被关）；modalOpen 两层扫描与 isOwnOverlay 豁免清单补 .zu-mp-ov/.zu-rot-pk-dlg/.zu-compact-dlg，宿主真模态判定不变。复审补修：.zu-ct-img 补 [hidden] 显式隐藏（作者 display:block 压过 UA [hidden]，同 .zu-update-progress 先例）；mp 壳 Esc 升捕获相+stopPropagation 对齐 rotPkKey 协议（焦点在面板内按 Esc 曾关面板留弹窗）；error 守卫改 isConnected；img 补宽高属性防加载回流；09 面板外点白名单补 .zu-compact-dlg；⚙ 联网边界披露「联系我」图床拉图。
+     * → v343 turn-text 回推诊断计数（issue #321「生成时长缺失，暂不显示速率」每轮常驻且零可观测）：完成态占位行的速率来自数据库富文本回推（token_rate.py --turn --current），此前回推失败全静默——空交付不区分「主进程没回（旧冷文件/通道断）」与「Python spawn 失败、15s 超时、非零退出」及「库没追上」。渲染端新增页面存活期单调计数 rt（sent、ok、empty、miss、stale，空交付原因细分 spawn/timeout/pyerr）随 FATAL.det.rt 落 diag-*.json；miss=请求 20s 无回执（略大于主进程 15s 超时），stale=未匹配在途请求的设计内淘汰回执；主进程空交付带原因标签属 inject-main.cjs 冷文件改动，需完全重启才细分，旧主进程回退落 empty 桶。
      */
-    var VERSION = "v342";
+    var VERSION = "v343";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */

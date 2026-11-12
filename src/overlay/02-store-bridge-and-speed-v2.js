@@ -1518,6 +1518,14 @@
    * 与主分栏同规则（显式本地 scope + 活跃轮限定），远端/身份未知不查不收。 */
   var richTextCache = {}, richTextAttempts = {}, richTextRequestTids = {};
   var richTextUnitEpoch = 0, richTextRequestEpoch = 0, richTextOwners = new WeakMap(), richTextOwnerSeq = 0;
+  /* v343（issue #321）：turn-text 回推诊断计数——占位行每轮常驻时此前零可观测，无从区分
+   * 「主进程没回（旧冷文件/通道断）」与「回了但空（Python 失败/库没追上）」。页面存活期
+   * 单调，经 FATAL.det.rt 落 diag-*.json（03 分片写入）。sent=已入队请求数；ok=非空交付
+   * 入缓存；empty=空交付（旧主进程无原因标签时也落这里）；miss=入队后 RICH_TEXT_MISS_MS
+   * 内无回执；stale=未匹配在途请求的回执（换代、单位切换、owner 消失等设计内淘汰）；
+   * spawn、timeout、pyerr=新主进程标注的空交付原因（inject-main.cjs 需同版才细分，冷文件）。 */
+  var richTextDiag = { sent: 0, ok: 0, empty: 0, miss: 0, stale: 0, spawn: 0, timeout: 0, pyerr: 0 };
+  var richTextInFlight = {};   // epoch 记账：首个回执核销，同 epoch 重试刷新时限，超窗记 miss
   function zuRichIdentity(owner) {
     if (!owner || !owner.getSid || !owner.getScope) return "";
     var sideChat = String(owner.pid).indexOf("selection-side-chat:") === 0;
@@ -1552,6 +1560,7 @@
     richTextAttempts = {};
     richTextRequestTids = {};
     richTextWants = {};
+    richTextInFlight = {};   // 在途作废：后续回执落 stale（设计内淘汰），不再计 miss
   }
   /* 每个 scan tick 对「已完成 + 有输出 + 尚无富文本 + 未超重试上限」的 turn 收集补发候选；
    * 循环结束后由 zuFlushRichTextWants 统一发起。同 SID 只追最新一个未缓存轮：--current
@@ -1570,7 +1579,20 @@
     if (!sid || owner.getSid() !== sid) return;
     richTextWants[sid] = { owner: owner, tid: tid, key: key };
   }
+  /* #321 诊断：入队后 RICH_TEXT_MISS_MS 内无任何回执记 miss（旧主进程无此动作处理器、
+   * 通道断、主进程丢请求）。迟到回执若 pending 仍匹配则照常入缓存，只是不再计数（miss
+   * 已记，ok/empty 只记窗口内的首个回执）。 */
+  var RICH_TEXT_MISS_MS = 20000;   // 略大于主进程 15s 超时
+  function zuSweepRichTextMiss() {
+    var now = Date.now();
+    for (var ep in richTextInFlight) {
+      if (now - richTextInFlight[ep].at < RICH_TEXT_MISS_MS) continue;
+      delete richTextInFlight[ep];
+      richTextDiag.miss++;
+    }
+  }
   function zuFlushRichTextWants() {
+    zuSweepRichTextMiss();
     for (var sid in richTextWants) {
       var w = richTextWants[sid];
       if (richTextCache[w.key] || instances.indexOf(w.owner) < 0) continue;
@@ -1587,20 +1609,38 @@
       if (window.__zusagePluginRequests) window.__zusagePluginRequests.push(req);
       else window.__zusagePluginRequests = [req];
       capPut(richTextAttempts, w.key, (richTextAttempts[w.key] || 0) + 1, 256);
+      richTextDiag.sent++;
+      richTextInFlight[pending.epoch] = { at: Date.now() };   // 同 epoch 重试刷新时限：miss 按「最近一次请求」起算
     }
     richTextWants = {};
   }
   /* 主进程回推：非空 = 富文本到位，写缓存并立即重扫（不等下一个 0.5s tick）；空 = 库里还没
    * 追到这一轮（或没有有效的提问时刻可推断），什么都不做——重试由 scanDeterministicLines
-   * 的定时扫描自然驱动，这里绝不自建重试队列（否则两个驱动源叠加会绕开 attempts 上限）。 */
-  window.__zusageDeliverTurnText = function (sid, text, unitEpoch) {
+   * 的定时扫描自然驱动，这里绝不自建重试队列（否则两个驱动源叠加会绕开 attempts 上限）。
+   * v343（issue #321）：回执按原因计数进 FATAL.det.rt——ok=非空入缓存；空交付按主进程
+   * 原因标签分桶（spawn、timeout、pyerr，需主进程同版），无标签（旧主进程）与「库没追上」
+   * 一并落 empty；未匹配任何在途请求的回执计 stale 不计 empty——换代、单位切换、owner
+   * 消失都是设计内淘汰，不是查询失败。同 epoch 重试的多个回执只记首个（sent 已按请求
+   * 计数，ok 与空桶是回执批级的下界，够定位「每轮常驻」的失败层）。 */
+  window.__zusageDeliverTurnText = function (sid, text, unitEpoch, reason) {
     if (stale() || typeof sid !== "string") return;
     var pending = richTextRequestTids[sid];
     if (!pending || pending.unit !== richTextUnitEpoch || instances.indexOf(pending.owner) < 0 ||
         pending.owner.getSid() !== sid || zuRichKey(pending.owner, pending.tid) !== pending.key ||
-        (unitEpoch == null ? !pending.legacy : unitEpoch !== pending.epoch)) return;
-    var key = pending.key;
-    if (richTextCache[key] || typeof text !== "string" || !text) return;
+        (unitEpoch == null ? !pending.legacy : unitEpoch !== pending.epoch)) {
+      richTextDiag.stale++;
+      return;
+    }
+    var key = pending.key, first = !!richTextInFlight[pending.epoch];
+    if (first) delete richTextInFlight[pending.epoch];
+    if (richTextCache[key]) return;
+    if (typeof text !== "string" || !text) {
+      if (!first) return;
+      if (reason === "spawn" || reason === "timeout" || reason === "pyerr") richTextDiag[reason]++;
+      else richTextDiag.empty++;   // 旧主进程无标签，或主进程明确的「库没追上」
+      return;
+    }
+    if (first) richTextDiag.ok++;
     capPut(richTextCache, key, text, 256);
     delete richTextAttempts[key];
     scanDeterministicLines();

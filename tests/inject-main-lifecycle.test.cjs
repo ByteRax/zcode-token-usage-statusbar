@@ -5,13 +5,18 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { EventEmitter } = require('node:events');
 const source = fs.readFileSync(path.join(__dirname, '..', 'inject-main.cjs'), 'utf8');
+/* 夹具根按平台取合法形态：win32 的 fileURLToPath 拒绝无盘符的 file:///fixture/...（ERR 没
+ * 有「File URL path must be absolute」之外的分支——pollPluginRequests 逐 wc 用它核验宿主
+ * 本地页，假 URL 一旦非法，整个 poll 每拍中止，turn-text 域全部空转）。真实宿主 URL 恒带
+ * 盘符，产品行为无涉，这里只修夹具。 */
+const FIXTURE = process.platform === 'win32' ? 'C:\\fixture' : '/fixture';
 function harness(initialCfg) {
   const timers = new Map(), intervals = [], procs = [], injected = [], deliveries = [];
-  const app = new EventEmitter(); app.getPath = () => '/fixture';
+  const app = new EventEmitter(); app.getPath = () => FIXTURE;
   let id = 0, cfg = initialCfg || {}, overlay = 'window.revision=1;', mtime = 1, reads = 0;
   const queue = [];   // 页面 __zusagePluginRequests 的替代：测试往这里推动作，poll 取走
   const wc = new EventEmitter(); Object.assign(wc, { id: 1, getType: () => 'window', isDestroyed: () => false,
-    getURL: () => 'file:///fixture/index.html', isLoading: () => false,
+    getURL: () => (process.platform === 'win32' ? 'file:///C:/fixture/index.html' : 'file:///fixture/index.html'), isLoading: () => false,
     executeJavaScript: async s => {
       injected.push(s);
       if (s.includes('__zusageDeliverTurnText')) deliveries.push(s);
@@ -26,9 +31,9 @@ function harness(initialCfg) {
     procs.push(p); return p;
   };
   const spawnRecording = (bin, args) => { const p = spawn(); p.bin = bin; p.args = args; return p; };
-  const sandbox = vm.createContext({ __dirname: '/fixture', console: { error() {} },
+  const sandbox = vm.createContext({ __dirname: FIXTURE, console: { error() {} },
     Buffer,   // 主进程全局（turn-text 子进程输出按 Buffer 收集后统一解码）
-    process: { uptime: () => 1, platform: process.platform, resourcesPath: '/fixture', execPath: process.execPath },
+    process: { uptime: () => 1, platform: process.platform, resourcesPath: FIXTURE, execPath: process.execPath },
     setTimeout: (fn, ms) => { timers.set(++id, { fn, ms }); return id; }, clearTimeout: n => timers.delete(n),
     setInterval: (fn, ms) => { const intervalId = ++id; intervals.push({ fn, ms, id: intervalId }); return intervalId; },
     clearInterval: n => { const i = intervals.findIndex(t => t.id === n); if (i >= 0) intervals.splice(i, 1); },
@@ -109,10 +114,12 @@ test('idle/config-off/no-window/quit stop resident and never schedule unconditio
     if (mode === 'window') { h.windows.length = 0; h.wc.emit('destroyed'); assert.equal(h.evalCode('lastStamp'), 0); }
     if (mode === 'quit') {
       // pending zip 60s 兜底轮询必须随 before-quit 注销；quota 段另有恒在的 60s
-      // 兜底（dispose 由模块内部处理），只能按数量差断言
+      // 兜底（dispose 由模块内部处理），只能按数量差断言。pending zip 轮询仅 darwin
+      // 注册（pending_zip_patch 是 macOS 自愈链）：win32 上没有可注销项，数量不变。
       const before = h.intervals.filter(t => t.ms === 60000).length;
       h.app.emit('before-quit');
-      assert.equal(h.intervals.filter(t => t.ms === 60000).length, before - 1, mode);
+      assert.equal(h.intervals.filter(t => t.ms === 60000).length,
+        process.platform === 'darwin' ? before - 1 : before, mode);
     }
     p.emit('close', 0);
     assert.equal(h.evalCode('pyRes'), null, mode); assert.equal(p.kills, 1, mode);
@@ -175,7 +182,7 @@ test('turn-text request runs a one-shot token_rate --current query by session', 
   const p = h.procs.at(-1);
   assert.equal(p.request, undefined);                    // 未写常驻 stdin
   assert.equal(p.bin, process.platform === 'win32' ? 'python' : 'python3');   // 缺省按平台
-  assert.equal(p.args[0], '/fixture/token_rate.py');
+  assert.equal(p.args[0], path.join(FIXTURE, 'token_rate.py'));
   assert.equal(p.args.slice(1).join(' '), '--turn --current --session sid_a');   // 纯文本模式，不带 --json/--turn-id
   const before15 = h.timersAt(15000);
   p.stdout.emit('data', Buffer.from('⚡ 82.6 token/s(本轮) · 首字 1.4s\n'));   // 真实 stdout 恒发 Buffer
@@ -208,12 +215,44 @@ test('turn-text echoes only a valid unit epoch on success and timeout', async ()
     const p = h.procs.at(-1);
     p.stdout.emit('data', Buffer.from('ok'));
     p.emit('close', 0); await flush();
-    assert.ok(h.deliveries.at(-1).endsWith(',"ok",' + expected + ')'));
+    assert.ok(h.deliveries.at(-1).endsWith(',"ok",' + expected + ',null)'));   // v343：第 4 参=原因标签，成功交付为 null
   }
   h.queue.push({ action: 'turn-text', sid: 'sid_a', unitEpoch: '42:4' });
   h.poll(); await flush();
   h.runLastTimer(15000); await flush();
-  assert.ok(h.deliveries.at(-1).endsWith(',"","42:4")'));
+  assert.ok(h.deliveries.at(-1).endsWith(',"","42:4","timeout")'));
+});
+
+/* v343（issue #321）：空交付带原因标签——渲染端据此把「占位行每轮常驻」的失败层细分进
+ * diag（spawn=解释器拉不起、timeout=15s 超时、pyerr=Python 非零退出、empty=exit 0 空输出
+ * 即「库没追上」）；非空交付恒 null，旧渲染端忽略第 4 参 */
+test('turn-text empty deliveries carry a reason tag for the renderer diag', async () => {
+  const h = harness(); await flush();
+  h.queue.push({ action: 'turn-text', sid: 'sid_a' });
+  h.poll(); await flush();
+  h.procs.at(-1).emit('close', 1); await flush();   // Python 非零退出
+  assert.ok(h.deliveries.at(-1).endsWith(',"pyerr")'));
+  h.queue.push({ action: 'turn-text', sid: 'sid_a' });
+  h.poll(); await flush();
+  h.procs.at(-1).emit('close', null); await flush();   // 信号杀死（外部 kill/OOM，code=null）空输出也归 pyerr，不误当「库没追上」
+  assert.ok(h.deliveries.at(-1).endsWith(',"pyerr")'));
+  h.queue.push({ action: 'turn-text', sid: 'sid_a' });
+  h.poll(); await flush();
+  h.procs.at(-1).emit('close', 0); await flush();   // exit 0 空输出 = 库没追上
+  assert.ok(h.deliveries.at(-1).endsWith(',"empty")'));
+  h.queue.push({ action: 'turn-text', sid: 'sid_a' });
+  h.poll(); await flush();
+  h.procs.at(-1).emit('error', new Error('spawn python ENOENT')); await flush();   // 解释器拉不起
+  assert.ok(h.deliveries.at(-1).endsWith(',"spawn")'));
+  h.queue.push({ action: 'turn-text', sid: 'sid_a' });
+  h.poll(); await flush();
+  h.runLastTimer(15000); await flush();             // 15s 超时
+  assert.ok(h.deliveries.at(-1).endsWith(',"timeout")'));
+  h.queue.push({ action: 'turn-text', sid: 'sid_a' });
+  h.poll(); await flush();
+  h.procs.at(-1).stdout.emit('data', Buffer.from('⚡ ok'));
+  h.procs.at(-1).emit('close', 0); await flush();   // 成功：reason 恒 null，渲染端按非空文本记 ok
+  assert.ok(h.deliveries.at(-1).endsWith(',"⚡ ok",null,null)'));
 });
 
 test('turn-text passes force KMB only for explicit true, independently of cn', async () => {

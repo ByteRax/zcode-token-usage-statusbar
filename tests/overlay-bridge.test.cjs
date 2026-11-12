@@ -358,6 +358,52 @@ test('⑬ delivered DB rich text replaces the placeholder line immediately, with
   assert.equal(turnRequests(h).length, 1);  // 已有富文本：不再入队
 });
 
+/* v343（issue #321）：turn-text 回推诊断计数——「生成时长缺失」占位行每轮常驻时此前零可观测，
+ * 现在失败层进 FATAL.det.rt（window.__zusageDiag.det.rt）落 diag-*.json：ok=非空入缓存；
+ * empty=旧主进程无标签的空交付；spawn/timeout/pyerr=新主进程标注的原因；stale=未匹配在途
+ * 请求的设计内淘汰回执；miss=请求 20s 内无回执（略大于主进程 15s 超时）。 */
+test('issue #321: turn-text diag counters classify ok, empty, reason buckets, stale and miss', () => {
+  const h = harness();
+  const store = driveLocalStreaming(h);
+  completeTurn(h, store, 'pt1');   // 内部已 runTimers(500)：首个请求已入队
+  const epoch = () => turnRequests(h).at(-1).unitEpoch;
+  h.window.__zusageDeliverTurnText('sid_a', '', epoch());   // 旧主进程：空交付无标签
+  assert.match(h.deterministic()[0].querySelector('p').textContent, /250\.0/);   // 占位仍在
+  h.runTimers(500);                                         // 下一 tick 重试（同 epoch，重挂在途）
+  h.window.__zusageDeliverTurnText('sid_a', '', epoch(), 'pyerr');     // Python 非零退出
+  h.runTimers(500);
+  h.window.__zusageDeliverTurnText('sid_a', '', epoch(), 'timeout');   // 15s 超时
+  h.runTimers(500);
+  h.window.__zusageDeliverTurnText('sid_a', '', epoch(), 'spawn');     // 解释器拉不起
+  h.window.__zusageDeliverTurnText('sid_a', '', epoch(), 'spawn');     // 同 epoch 重复空回执：只计首个（锁变异 e2：重复原因桶不双计）
+  h.runTimers(500);
+  h.window.__zusageDeliverTurnText('sid_a', RICH, epoch());            // 恢复：非空入缓存
+  assert.equal(h.deterministic()[0].querySelector('p').textContent, RICH);
+  h.window.__zusageDeliverTurnText('sid_a', RICH + ' dup', epoch());   // 同 epoch 重复非空交付：缓存命中，ok 不双计（锁变异 e）
+  assert.equal(h.deterministic()[0].querySelector('p').textContent, RICH);
+  h.window.__zusageDeliverTurnText('sid_a', 'late', 'bogus');          // 未匹配在途 → stale
+  h.clock.now = 3200;                    // 第二轮：新 seq（tracker 才会收录）、新 key、新请求，一直不交付
+  store.set(snap(4, [
+    header('completedSuccess', { outputTokens: 2000, modelDurationMs: 4000, activeMs: 5000, turnId: 't2', productTurnId: 'pt2' }),
+    { rowId: 3, turnId: 't2', productTurnId: 'pt2', kind: 'assistantText', text: 'xy' },
+  ]));
+  const section2 = h.pane().appendChild(new Element('section'));
+  section2.dataset.turnId = 'pt2';
+  h.runTimers(500);                      // pt2 请求入队
+  h.advanceDate(21000);
+  h.runTimers(500);                      // 扫描 tick 内 sweep：pt2 请求超窗 → miss；同拍写 det
+  const rt = h.window.__zusageDiag.det.rt;
+  assert.ok(rt, 'det.rt written with the diag write');
+  assert.equal(rt.ok, 1);
+  assert.equal(rt.empty, 1);
+  assert.equal(rt.pyerr, 1);
+  assert.equal(rt.timeout, 1);
+  assert.equal(rt.spawn, 1);
+  assert.equal(rt.stale, 1);
+  assert.equal(rt.miss, 1);
+  assert.ok(rt.sent >= 6, 'sent counts every enqueued request, retries included');
+});
+
 test('⑬b delayed DB rich text still replaces the placeholder after its tracker record slides out', () => {
   const h = harness();
   const store = driveLocalStreaming(h);
