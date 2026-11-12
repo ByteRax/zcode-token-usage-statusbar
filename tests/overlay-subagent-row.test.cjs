@@ -418,7 +418,7 @@ test('source contracts: updateLive hook, scan cleanup, delegation listener, CSS 
   assert.match(source, /"\.zu-subrate\{flex:0 0 auto;white-space:nowrap;cursor:help/, 'chip 样式入注入块');
   // v179/v180 review P1：调用侧形状锁——showSubTip 以数据包调 buildTip（v178 回归即红）；
   // 历史版本演进台账见 src/overlay/06-instance-dom-and-styles.js 的 VERSION 台账注释块。
-  assert.match(source, /var VERSION = "v339";/);   // 随批次顺延（v307 批次漏更致套件长期红）
+  assert.match(source, /var VERSION = "v340";/);   // 随批次顺延（v307 批次漏更致套件长期红）
   assert.ok(source.includes('el.__zuT.buildTip(el.__zuT)'), 'tooltip 数据包调用约定');
   assert.ok(source.includes("runningSubagents.length - 1"), '截断从尾部取（最新派发优先）');
   assert.match(source, /__zusageAcquireConversationStore/, '桥 v2 acquire 访问器消费点');
