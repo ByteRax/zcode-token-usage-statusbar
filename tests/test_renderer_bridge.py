@@ -382,6 +382,71 @@ assert.equal(next['data-zusage-pane-id'],'pane-2');
         self.assertEqual(installed['sha256'], bridge.NEWEST['sha256'])
 
 
+# 各代际桥模板正文的 SHA256（占位符未代入的原字节；v1/v2 取自发布 tag 的 renderer_bridge.py 逐字核对）。
+# 已发布代际冻结：已部署机器的 asar 里就是逐字节这一份，改任何字节都会让升级剥离认不出它
+# （issue #307 复盘）。当前代未发布前可更新钉值；一旦发布，再改模板必须升 BRIDGE_GEN、把旧模板
+# 原样留作 BRIDGE_TEMPLATE_V<N> 并扩 _original_module 的识别集合。
+PINNED_TEMPLATE_SHA256 = {
+    'v1': '1899d681070f667e676fa9bfd299e81c27540162d721c00c8f39b006e2ef2e5b',   # v1.5.0–v1.5.7
+    'v2': '9a42813e4e46de82dbace38878f9f29746522e6c7c38dfbf616f1f2bdef8bf9f',   # v1.5.9–v1.5.17
+    'v3': 'f25d75eafc511cbddd9c6e5c869a0830810e28cd6aa612d3a9f43d785ddc9b84',   # 当前代
+}
+
+
+class BridgeGenerationTests(unittest.TestCase):
+    """桥代际的隔离回归：不读真机 asar。
+
+    test_actual_host_archive_roundtrip_and_vm 只在「装了 ZCode 且 asar 里恰好部署着旧桥」的机器上才覆盖
+    遗留代升级剥离，本机桥一升级（SessionStart 自动打桥）它就不再走这条路径——曾在合并后约 20 分钟失效，
+    去掉 V1/V2 识别或误改遗留模板正文的变异全部通过。关键不变量必须有不依赖本机状态的等价测试。
+    """
+
+    def setUp(self):
+        self.pinned = synthetic_target(bridge.NEWEST, MINI)
+        pin = patch.object(bridge, 'HOST_TARGETS', [self.pinned])
+        pin.start()
+        self.addCleanup(pin.stop)
+
+    @staticmethod
+    def templates():
+        found = {'current': bridge.BRIDGE_TEMPLATE}
+        for name in dir(bridge):
+            if re.fullmatch(r'BRIDGE_TEMPLATE_V\d+', name):
+                found[name] = getattr(bridge, name)
+        return found
+
+    def test_template_bytes_are_frozen_per_generation(self):
+        seen = {}
+        for name, template in self.templates().items():
+            begin = re.search(rb':(v\d+) begin \*/', template)
+            end = re.search(rb':(v\d+) end \*/', template)
+            self.assertTrue(begin and end and begin.group(1) == end.group(1), name)
+            label = begin.group(1).decode()
+            self.assertNotIn(label, seen, f'{name} 与 {seen.get(label)} 同代际 {label}')
+            seen[label] = name
+            self.assertIn(label, PINNED_TEMPLATE_SHA256, f'{label} 未钉 SHA256：新增代际必须同时登记钉值')
+            self.assertEqual(
+                hashlib.sha256(template).hexdigest(), PINNED_TEMPLATE_SHA256[label],
+                f'{name}（{label}）正文变了：若该代际已随正式版发布，必须升 BRIDGE_GEN、把旧模板原样'
+                f'留作 BRIDGE_TEMPLATE_V<N> 并扩 _original_module 识别集合；未发布才可更新钉值')
+        current = bridge.BRIDGE_GEN.decode()
+        self.assertEqual(seen.get(current), 'current')
+        self.assertTrue(all(int(label[1:]) < int(current[1:]) for label in seen if label != current))
+
+    def test_every_legacy_generation_is_recognized_upgraded_and_removed(self):
+        anchor = PANE_ANCHORS[bridge.NEWEST['version']]
+        expected = patched_module(MINI, bridge.NEWEST)
+        legacy = {name: template for name, template in self.templates().items() if name != 'current'}
+        self.assertGreaterEqual(len(legacy), 2)   # 至少 V1、V2
+        for name, template in legacy.items():
+            with self.subTest(template=name):
+                deployed = (MINI.replace(anchor, anchor + bridge.pane_attributes(bridge.NEWEST)) +
+                            bridge.bridge_code(bridge.NEWEST, template))
+                self.assertEqual(bridge.target_for_module(deployed), self.pinned)
+                self.assertEqual(bridge.transform_module(deployed, 'patch'), expected)
+                self.assertEqual(bridge.transform_module(deployed, 'remove'), MINI)
+
+
 class DeriveTests(unittest.TestCase):
     """表外版本的严格推导与就地自动补丁（合成 asar，不碰真机安装）。"""
 
