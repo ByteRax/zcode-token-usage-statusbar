@@ -10,6 +10,12 @@ const PLUGIN_ID = "zcode-token-usage-statusbar@zusage-marketplace";
 const STABLE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const MAX_ASSET = 16 * 1024 * 1024;
 const MAX_JSON = 256 * 1024;
+// 官方 GitCode 镜像仓库（specs/github-mirror-fallback.md）：更新日志回退、GitHub 渠道
+// 镜像检查/安装回退与 release_tool --gitcode-repo 的发布目标都是这一个仓库。
+const GITCODE_MIRROR_REPOSITORY = "tanranran/zcode-token-usage-statusbar";
+// 镜像回退的官方上游仓库：只有注册到这一仓库的 GitHub Release 渠道才允许自动镜像——
+// fork/第三方副本注册的渠道内容可能与官方不同，静默换装官方字节会无提示覆盖 fork 改动。
+const GITHUB_UPSTREAM_REPOSITORY = "ByteRax/zcode-token-usage-statusbar";
 // GitCode 形状于 2026-10-20 实测：browser_download_url 为 GitHub 风格路径，
 // 下载重定向到 file-cdn.gitcode.com；两台主机的形状都必须留在各自白名单里。
 const RELEASE_HOSTS = {
@@ -396,6 +402,81 @@ function validateGitcodeRelease(release) {
       page.pathname !== `/${release.repository}/releases/tag/${encodeURIComponent(release.tag)}`) return null;
   return { ...release, version: release.version };
 }
+/* ---------- GitHub 渠道的官方 GitCode 镜像回退（specs/github-mirror-fallback.md）----------
+ * 触发方（plugin-updater.cjs）已限定：GitHub flavor、检查双路径失败且属网络/限流类。
+ * 这里只负责「从镜像取到可信的最新版本行」：版本号来自 GitCode v5 API（notes 同款
+ * 只读域），资产身份来自该 tag 的 release-manifest.json（发布链与 GitHub Release 同产物，
+ * sha256 逐字节一致），下载环节（downloadRelease）还会再下载 manifest 与 zip 复核。 */
+function checkGitcodeMirrorRelease(compareVersions, fetch = fetchBytes, targetVersion) {
+  return (async () => {
+    // targetVersion：下载阶段半通回退（API 可达、github.com 下载域不可达）按已选定版本
+    // 钉死取镜像 manifest，不再问 API 列表——镜像行必须与面板已呈现的 Release 版本一致。
+    let best = typeof targetVersion === "string" && STABLE.test(targetVersion) ? targetVersion : null;
+    if (!best) {
+      // 翻页与 checkRelease 同款防御：不信任 direction=desc 被服务端正确执行（notes 实测
+      // 默认升序），满页即续拉，版本号在客户端重排取最大；满安全分页上限仍未尽则拒绝
+      // （不静默用已收集页内最大值——错选旧版会装错版本，宁可失败重试）。
+      for (let page = 1; page <= 10; page++) {
+        const body = await fetch(`https://api.gitcode.com/api/v5/repos/${GITCODE_MIRROR_REPOSITORY}/releases?per_page=100&page=${page}&direction=desc`,
+          NOTES_LIST_MAX_JSON, undefined, Object.values(NOTES_API_HOSTS).map((h) => h.api));
+        let rows;
+        try { rows = JSON.parse(body.toString("utf8")); }
+        catch (e) { throw new Error("GitCode 镜像 Release 列表不是有效 JSON"); }
+        if (!Array.isArray(rows)) throw new Error("GitCode 镜像 Release 列表格式无效");
+        for (const row of rows) {
+          if (!row || row.prerelease === true || typeof row.tag_name !== "string") continue;
+          const version = row.tag_name.startsWith("v") ? row.tag_name.slice(1) : "";
+          if (!STABLE.test(version)) continue;
+          if (!best || compareVersions(version, best) > 0) best = version;
+        }
+        if (rows.length < 100) break;
+        if (page === 10) throw new Error("GitCode 镜像 Release 列表超过安全分页上限");
+      }
+      if (!best) throw new Error("GitCode 镜像尚无稳定版本 Release");
+    }
+    const tag = "v" + best;
+    const manifestUrl = `https://gitcode.com/${GITCODE_MIRROR_REPOSITORY}/releases/download/${encodeURIComponent(tag)}/${encodeURIComponent("release-manifest.json")}`;
+    let manifest;
+    try {
+      manifest = JSON.parse((await fetch(manifestUrl, MAX_JSON)).toString("utf8"));
+    } catch (e) {
+      throw new Error(`GitCode 镜像缺少 v${best} 的发布 manifest`);
+    }
+    const asset = manifest && manifest.asset;
+    if (!manifest || manifest.schemaVersion !== 1 || manifest.pluginId !== PLUGIN_ID ||
+        manifest.version !== best || manifest.tag !== tag || !asset ||
+        asset.name !== `zcode-token-usage-statusbar-v${best}.zip` ||
+        !Number.isSafeInteger(asset.size) || asset.size <= 0 || asset.size > MAX_ASSET ||
+        typeof asset.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(asset.sha256)) throw new Error("GitCode 镜像发布 manifest 身份或资产无效");
+    const expectedPath = `/releases/download/${encodeURIComponent(tag)}/${encodeURIComponent(asset.name)}`;
+    return {
+      flavor: "gitcode", mirror: true, version: best, tag, repository: GITCODE_MIRROR_REPOSITORY,
+      archive: { name: asset.name, size: asset.size, browser_download_url: `https://gitcode.com/${GITCODE_MIRROR_REPOSITORY}${expectedPath}` },
+      manifest: { name: "release-manifest.json", browser_download_url: manifestUrl },
+      url: `https://gitcode.com/${GITCODE_MIRROR_REPOSITORY}/releases/tag/${encodeURIComponent(tag)}` };
+  })();
+}
+function validateGithubMirrorRelease(release) {
+  // 安装提交后复核持久化的镜像回退意图：仓库钉死内置镜像常量、URL 形状与版本/资产自洽。
+  // 本地状态文件可伪造 mirror 标志，但至多把安装指向官方镜像的已校验资产，无提权面。
+  if (!release || release.flavor !== "gitcode" || release.mirror !== true ||
+      release.repository !== GITCODE_MIRROR_REPOSITORY || typeof release.version !== "string" ||
+      !STABLE.test(release.version) || release.tag !== "v" + release.version || !release.archive ||
+      release.archive.name !== `zcode-token-usage-statusbar-v${release.version}.zip` ||
+      !Number.isSafeInteger(release.archive.size) || release.archive.size <= 0) return null;
+  const archive = parseAssetUrl(release.archive.browser_download_url);
+  const manifest = parseAssetUrl(release.manifest && release.manifest.browser_download_url);
+  const downloadPath = `/releases/download/${encodeURIComponent(release.tag)}/`;
+  let page = null;
+  try { page = new URL(release.url); } catch (e) { }
+  if (!archive || archive.host !== "gitcode" || archive.repository !== GITCODE_MIRROR_REPOSITORY ||
+      archive.path !== downloadPath + encodeURIComponent(release.archive.name) ||
+      !manifest || manifest.host !== "gitcode" || manifest.repository !== GITCODE_MIRROR_REPOSITORY ||
+      manifest.path !== downloadPath + encodeURIComponent("release-manifest.json") ||
+      !page || page.protocol !== "https:" || page.hostname !== "gitcode.com" ||
+      page.pathname !== `/${GITCODE_MIRROR_REPOSITORY}/releases/tag/${encodeURIComponent(release.tag)}`) return null;
+  return { ...release, version: release.version };
+}
 /* 已注册市场的清单指向什么：Release 下载源，还是仓库源码（本地路径/开发分支）。
    readChannel 据此把源码清单的仓库来源判为 market 渠道，交给宿主插件管理器直接更新。 */
 function catalogChannel(catalog, pluginName = "zcode-token-usage-statusbar") {
@@ -420,7 +501,7 @@ const NOTES_LIST_MAX_JSON = 1024 * 1024;
 const NOTES_LIST_MAX = 20;   // 历史版本一次最多取 20 条，不做全量扫描
 // 官方 GitCode 镜像（与 release_tool.py publish --gitcode-repo 的发布目标一致，正文双写同源）：
 // GitHub API 匿名配额按出口 IP 共享、限流/不可达常见，notes 拉取失败时回退镜像取同号正文。
-const NOTES_GITCODE_MIRROR = "tanranran/zcode-token-usage-statusbar";
+const NOTES_GITCODE_MIRROR = GITCODE_MIRROR_REPOSITORY;
 const NOTES_API_HOSTS = {
   github: { repo: githubRepository, api: "api.github.com", base: "https://api.github.com", origin: "https://github.com" },
   gitcode: { repo: gitcodeRepository, api: "api.gitcode.com", base: "https://api.gitcode.com/api/v5", origin: "https://gitcode.com" },
@@ -633,5 +714,6 @@ function createNotesService(options) {
 }
 
 module.exports = { sameRepository, sameAssetUrl, githubRepository, gitcodeRepository, readChannel, checkRelease, gitcodeReleaseFromCatalog, githubReleaseFromCatalog, validateGitcodeRelease, validateGithubCatalogRelease,
+  checkGitcodeMirrorRelease, validateGithubMirrorRelease, GITCODE_MIRROR_REPOSITORY, GITHUB_UPSTREAM_REPOSITORY,
   downloadRelease, validateRelease, validateManifest, catalogChannel, probeRepositoryRename,
   fetchBytes, fetchReleaseNotes, fetchReleaseNotesList, createNotesCache, createNotesService, notesTag, releaseAcceptHeader, NOTES_API_HOSTS, NOTES_MAX_JSON, NOTES_LIST_MAX_JSON, NOTES_LIST_MAX, MAX_ASSET, MAX_JSON, PLUGIN_ID };
