@@ -222,6 +222,9 @@
         scanDeterministicLines.diagAt = Date.now();
         FATAL.det = {
           time: new Date().toISOString(), boxes: boxes.length, rich: Object.keys(richTextCache).length,
+          rt: { sent: richTextDiag.sent, ok: richTextDiag.ok, empty: richTextDiag.empty,
+            miss: richTextDiag.miss, stale: richTextDiag.stale,
+            spawn: richTextDiag.spawn, timeout: richTextDiag.timeout, pyerr: richTextDiag.pyerr },   // v343 issue #321：回推失败可观测（spawn/timeout/pyerr 需主进程同版）
           bridge: instances.map(function (inst) { return inst.bridgeInfo ? inst.bridgeInfo() : null; }),
           turns: diagTurns.slice(0, 40),
         };

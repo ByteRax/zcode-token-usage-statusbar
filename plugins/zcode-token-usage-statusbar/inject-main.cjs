@@ -1534,12 +1534,15 @@ function handleAutoCompactConfig(req, wc) {
  * 并行会话不串台），这正是模型以前实际在跑的同一条查询，口径已被验证过。
  * 用一次性 spawn 而非常驻泵：低频（每个完成的轮次至多几次重试）、与主数据泵完全并行
  * 的旁路查询，不占用泵的 stdin 行协议。查不到（数据库还没追上/没有有效提问时刻/
- * 这一轮已被新提问越过）时回推空串，不是错误，渲染端据此限流重试。 */
+ * 这一轮已被新提问越过）时回推空串，不是错误，渲染端据此限流重试。
+ * v343（issue #321）：空交付带原因标签（第 4 参："spawn"=解释器拉不起、"timeout"=15s
+ * 超时、"pyerr"=Python 非零退出、"empty"=exit 0 空输出即「库没追上」），渲染端据此把
+ * 失败层细分进 diag（旧渲染端忽略第 4 参，双向兼容）。 */
 function queryTurnText(sid, wc, plainUnits, forceKmb, unitEpoch) {
-  const deliver = (text) => {
+  const deliver = (text, reason) => {
     if (!wc || wc.isDestroyed() || !isLocalHostPage(wc)) return;
     wc.executeJavaScript("window.__zusageDeliverTurnText && window.__zusageDeliverTurnText(" +
-      JSON.stringify(sid) + "," + JSON.stringify(text || "") + "," + JSON.stringify(typeof unitEpoch === "string" && /^\d{1,15}:\d{1,15}$/.test(unitEpoch) ? unitEpoch : null) + ")", true).catch(() => { });
+      JSON.stringify(sid) + "," + JSON.stringify(text || "") + "," + JSON.stringify(typeof unitEpoch === "string" && /^\d{1,15}:\d{1,15}$/.test(unitEpoch) ? unitEpoch : null) + "," + JSON.stringify(reason || null) + ")", true).catch(() => { });
   };
   if (typeof sid !== "string" || !/^[A-Za-z0-9_-]{1,80}$/.test(sid)) return;
   let py;
@@ -1548,24 +1551,27 @@ function queryTurnText(sid, wc, plainUnits, forceKmb, unitEpoch) {
        缺省（含旧渲染端不带 cn 字段）与产品默认一致，Python 侧自行用万/亿 */
     py = spawn(readCfgCached().python_path,
       [TOKEN_RATE, "--turn", "--current", "--session", sid].concat(plainUnits ? ["--no-cn-units"] : [], forceKmb ? ["--force-kmb"] : []), { windowsHide: true });
-  } catch (e) { LOG("turn text spawn failed:", e.message); deliver(""); return; }
+  } catch (e) { LOG("turn text spawn failed:", e.message); deliver("", "spawn"); return; }
   let finished = false;
-  const finish = (text) => {
+  const finish = (text, reason) => {
     if (finished) return;
     finished = true;
     clearTimeout(killTimer);
-    deliver(text);
+    deliver(text, reason);
   };
   const killTimer = setTimeout(() => {
     LOG("turn text query timeout, killing");
     try { py.kill(); } catch (e) { }
-    finish("");
+    finish("", "timeout");
   }, 15000);
   const chunks = [];
   py.stdout.on("data", (d) => { chunks.push(d); });   // Buffer 收集、close 时一次性解码：多字节字符跨 chunk 不截断
   py.stderr.on("data", () => { });
-  py.on("error", (e) => { LOG("turn text spawn failed:", e.message); finish(""); });
-  py.on("close", () => { finish(Buffer.concat(chunks).toString("utf8").trim()); });   // 空串 = 库里还没这一轮，不是错误
+  py.on("error", (e) => { LOG("turn text spawn failed:", e.message); finish("", "spawn"); });
+  py.on("close", (code) => {
+    const text = Buffer.concat(chunks).toString("utf8").trim();
+    finish(text, text ? null : (code ? "pyerr" : "empty"));   // #321：空交付区分 Python 失败（非零退出）与「库没追上」（exit 0 空输出）
+  });   // 空串 = 库里还没这一轮，不是错误
 }
 
 /* ---------- Git 状态旁路查询（v96）：工具行 Git chip 的数据源 ----------
