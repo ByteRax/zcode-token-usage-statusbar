@@ -373,7 +373,9 @@
      * v41 补 tooltip——会话/工具的长 tooltip 同样盖住输入框中心，悬停 0.4s 后闪一下且 tooltip 消失）。
      * 只豁免 track 的可见性路径；findComposer 找输入框时不用（ownOK 缺省 false）。 */
     function isOwnOverlay(el) {
-      try { return !!(el && el.closest && el.closest(".zusage-tip-root,.panel,.zusage-exc")); } catch (e) { return false; }
+      /* v342 补自有全屏遮罩（.zu-mp-ov 系/词包查看/压缩确认）：此前 only 面板/tooltip/气泡——
+       * 遮罩盖输入框中心曾被判「被整体罩住」→ track 收条连带 closeSettings（用户实报） */
+      try { return !!(el && el.closest && el.closest(".zusage-tip-root,.panel,.zusage-exc,.zu-mp-ov,.zu-rot-pk-dlg,.zu-compact-dlg")); } catch (e) { return false; }
     }
     /* 幽灵子树检测（v61，取代 v58/v59 的 coverLock + 穿透特判）：
      * 客户端 3.11.x 的设置页 = 设置 tab 激活时给工作区主视图套 opacity-0 + inert +
@@ -412,13 +414,19 @@
      * 实测），且文档里同时存在 [role="dialog"]。此时聊天区整体不可交互，条必须整体收起：
      * 模型配置弹窗里的「推理参数映射」编辑框正好落在视口下半部，会被 findComposer 的
      * 启发式当聊天输入框，条就冒在弹窗里（用户 issue #9 截图）。
-     * 自己的浮层（.zu-bar/.zu-back/.zu-sheet——移动端抽屉遮罩是同款全屏底色）不算。 */
+     * 自己的浮层（.zu-bar/.zu-back/.zu-sheet——移动端抽屉遮罩是同款全屏底色）不算。
+     * v342：插件自有全屏弹层同样不算——.zu-mp-ov（模型拉取/选择供应商/联系我）、
+     * 词包查看 .zu-rot-pk-dlg、压缩确认 .zu-compact-dlg 都是「body 直挂全屏遮罩 +
+     * 内部 role=dialog」，曾完整命中下方两层判定 → track 收条连带 closeSettings
+     * （用户实报：⚙ 面板点「联系我」，设置面板被关；关弹框后也不复开）。 */
+    var OWN_LAYER_SEL = ".zusage-panel,.zu-mp-ov,.zu-rot-pk-dlg,.zu-compact-dlg";
     function modalOpen() {
       try {
         var dialogs = document.querySelectorAll('[role="dialog"],[role="alertdialog"]');
         var hasVisibleDialog = false;
         for (var d = 0; d < dialogs.length; d++) {
           if (dialogs[d].classList && dialogs[d].classList.contains("zusage-panel")) continue;
+          if (dialogs[d].closest && dialogs[d].closest(OWN_LAYER_SEL)) continue;   // 自有弹窗内层（v342）
           var ds = getComputedStyle(dialogs[d]);
           if (ds.display !== "none" && ds.visibility !== "hidden" && parseFloat(ds.opacity || "1") >= 0.05) {
             hasVisibleDialog = true;
@@ -431,6 +439,7 @@
           var el = kids[i];
           var cls = String(el.getAttribute && el.getAttribute("class") || "");
           if (el.id === "zusage-bar" || /(^|\s)zu-(bar|back|sheet)(\s|$)/.test(cls) || (el.classList && el.classList.contains("zusage-panel"))) continue;
+          if (el.closest && el.closest(OWN_LAYER_SEL)) continue;   // 自有全屏遮罩（v342）
           var cs = getComputedStyle(el);
           if (cs.position !== "fixed" || cs.display === "none" || cs.visibility === "hidden") continue;
           if (parseFloat(cs.opacity || "1") < 0.05) continue;
