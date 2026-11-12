@@ -78,6 +78,23 @@ function fixture(t, settings = {}, customStorage = false, variant = "github") {
       path: "plugins/" + PLUGIN, stripRoot: false } }] };
     f.rows = [f.row];
   };
+  f.setGithubMirrorRelease = (version, bytes = Buffer.from("mirror archive")) => {
+    // GitHub 渠道镜像回退行（specs/github-mirror-fallback.md）：GitCode 域 URL、上游 manifest
+    // 身份（ByteRax）、mirror 标记；与 checkGitcodeMirrorRelease 的合成行逐字段同构。
+    const sha = crypto.createHash("sha256").update(bytes).digest("hex");
+    const name = `${PLUGIN}-v${version}.zip`;
+    const base = `https://gitcode.com/${GITCODE_REPOSITORY}/releases/download/v${version}/`;
+    f.mirrorManifest = { schemaVersion: 1, repository: REPOSITORY, version, tag: "v" + version,
+      pluginId: PLUGIN_ID, asset: { name, size: bytes.length, sha256: sha } };
+    f.mirrorBytes = bytes;
+    f.mirrorRelease = { flavor: "gitcode", mirror: true, version, tag: "v" + version, repository: GITCODE_REPOSITORY,
+      archive: { name, size: bytes.length, browser_download_url: base + name },
+      manifest: { name: "release-manifest.json", browser_download_url: base + "release-manifest.json" },
+      url: `https://gitcode.com/${GITCODE_REPOSITORY}/releases/tag/v${version}` };
+    f.mirrorApiRows = [{ tag_name: "v" + version, prerelease: false, created_at: "2026-11-12T00:00:00Z" }];
+  };
+  // 镜像回退被选中后，安装链（prepareRelease/intent 深比较）按镜像行与镜像 manifest 校验。
+  f.selectMirrorRelease = () => { f.release = f.mirrorRelease; f.manifest = f.mirrorManifest; f.bytes = f.mirrorBytes; };
   f.intent = () => ({ release: clone(f.release), manifest: clone(f.manifest), channel: f.channel() });
   f.seedPending = (pendingRelease = f.intent()) => {
     record.version = f.release.version; record.source = clone(f.catalog.plugins[0].source); f.writeRecord();
@@ -98,6 +115,20 @@ function fixture(t, settings = {}, customStorage = false, variant = "github") {
       if (f.apiLimited) { events.push("api-403"); throw new Error("Release 请求失败 (403)"); }
       if (f.afterFetch) await f.afterFetch();
       return Buffer.from(JSON.stringify(f.rows));
+    }
+    // 官方 GitCode 镜像回退链（specs/github-mirror-fallback.md）：API 列表 + manifest/zip 下载。
+    if (url.startsWith("https://api.gitcode.com/")) {
+      events.push("mirror-api");
+      if (f.mirrorApiError) throw new Error(f.mirrorApiError);
+      return Buffer.from(JSON.stringify(f.mirrorApiRows ?? []));
+    }
+    if (f.mirrorRelease && url === f.mirrorRelease.manifest.browser_download_url) {
+      events.push("mirror-manifest");
+      return Buffer.from(JSON.stringify(f.mirrorManifest));
+    }
+    if (f.mirrorRelease && url === f.mirrorRelease.archive.browser_download_url) {
+      events.push("mirror-archive");
+      return f.mirrorBytes;
     }
     if (url === f.release.manifest.browser_download_url) return Buffer.from(JSON.stringify(f.manifest));
     if (url === f.release.archive.browser_download_url) return f.bytes;
@@ -142,9 +173,16 @@ function fixture(t, settings = {}, customStorage = false, variant = "github") {
   };
   const prepareRelease = async (release, onProgress) => {
     events.push("prepare");
-    assert.deepEqual(release, f.release);
-    if (f.prepareError) throw new Error(f.prepareError);
-    const manifest = clone(validateManifest(f.manifest, release));
+    // 镜像行（检查第三跳或下载转换）与 GitHub 行共用本 stub：按行类型取期望行与 manifest。
+    if (release.mirror === true) assert.deepEqual(release, f.mirrorRelease);
+    else assert.deepEqual(release, f.release);
+    if (f.prepareError && release.mirror !== true) {
+      // 半通用例钩子：GitHub 行下载失败即镜像转换时刻——此刻起 f.release/manifest 切镜像，
+      // 后续 install stub 的 intent()/record 断言按镜像行期望。
+      if (f.onGitHubPrepareFail) f.onGitHubPrepareFail();
+      throw new Error(f.prepareError);
+    }
+    const manifest = clone(validateManifest(release.mirror === true ? f.mirrorManifest : f.manifest, release));
     if (typeof onProgress === "function") for (const step of f.progressSteps || []) onProgress(clone(step));
     const directory = fs.mkdtempSync(path.join(dir, "prepared-")); prepared.push(directory);
     if (f.afterPrepare) await f.afterPrepare();
@@ -260,6 +298,261 @@ test("rate limit with a failing catalog fallback reports both causes and never i
   assert.match(status.error, /Release 请求失败 \(403\)/);
   assert.match(status.error, /渠道清单回退也失败/);
   assertNoInstall(f);
+});
+
+test("unreachable GitHub falls back to the official GitCode mirror (issue #310)", async (t) => {
+  // 限流类（403）与网络类（DNS）都属「GitHub 走不通」：两条 GitHub 检查路径失败后第三跳
+  // 官方镜像，检查/下载/安装整体挪出 GitHub 域；镜像版本经 manifest 校验后才对外呈现。
+  const f = fixture(t);
+  f.setGithubMirrorRelease("1.2.0");
+  f.apiLimited = true;
+  f.marketError = "fixture marketplace offline";
+  await f.updater.request({ action: "check" });
+  const status = f.updater.status();
+  assert.equal(status.phase, "available", status.error);
+  assert.equal(status.latestVersion, "1.2.0");
+  assert.equal(status.checkedVia, "release-mirror");
+  assert.equal(status.mirror, true);
+  assert.equal(status.releaseUrl, `https://gitcode.com/${GITCODE_REPOSITORY}/releases/tag/v1.2.0`);
+  assertNoInstall(f);
+
+  const g = fixture(t);
+  g.setGithubMirrorRelease("1.2.0");
+  g.options = { ...g.options, fetchRelease: async (url, limit) => {
+    if (String(url).startsWith("https://api.github.com/")) throw new Error("getaddrinfo ENOTFOUND api.github.com");
+    return g.fetch(url, limit);
+  } };
+  g.marketError = "fixture marketplace offline";
+  g.updater = g.restart();
+  await g.updater.request({ action: "check" });
+  assert.equal(g.updater.status().phase, "available", g.updater.status().error);
+  assert.equal(g.updater.status().checkedVia, "release-mirror");
+});
+
+test("mirror fallback failure reports all three layers with the channel hint (issue #310)", async (t) => {
+  const f = fixture(t);
+  f.mirrorApiRows = [];   // 镜像无稳定 Release：第三跳也失败
+  f.apiLimited = true;
+  f.marketError = "fixture marketplace offline";
+  await f.updater.request({ action: "check" });
+  const status = f.updater.status();
+  assert.equal(status.phase, "error");
+  assert.match(status.error, /Release 请求失败 \(403\)/);
+  assert.match(status.error, /渠道清单回退也失败/);
+  assert.match(status.error, /GitCode 镜像回退也失败.*GitCode 镜像渠道 https:\/\/gitcode\.com\/tanranran\/zcode-token-usage-statusbar\.git#plugin-releases-gitcode/);
+  assertNoInstall(f);
+});
+
+test("non-network catalog fallback failures never touch the mirror", async (t) => {
+  // 来源校验类失败（如仓库改名窗口的资产 URL 不一致）不是网络问题：不试镜像也不指引换渠道。
+  const f = fixture(t);
+  f.setGithubMirrorRelease("1.2.0");
+  f.options = { ...f.options, fetchRelease: async () => { throw new Error("GitHub Release 资产来源或大小无效"); } };
+  f.marketError = "fixture marketplace offline";
+  f.updater = f.restart();
+  await f.updater.request({ action: "check" });
+  const status = f.updater.status();
+  assert.equal(status.phase, "error");
+  assert.match(status.error, /渠道清单回退也失败/);
+  assert.doesNotMatch(status.error, /GitCode 镜像/);
+  assert.equal(f.events.includes("mirror-api"), false);   // 镜像域零请求
+  assertNoInstall(f);
+});
+
+test("mirror install patches the marketplace catalog, installs, then restores the catalog", async (t) => {
+  // 宿主 install 下载源取自本地缓存清单（引擎 install 链实证）：镜像安装把 entry 指向镜像
+  // 同版本资产交给宿主下载，安装结束恢复原清单字节；record.source 因此是镜像 URL，
+  // 复核（verifyCommittedRelease）按镜像豁免通过。
+  const f = fixture(t);
+  f.setGithubMirrorRelease("1.2.0");
+  f.selectMirrorRelease();
+  f.apiLimited = true;
+  f.marketError = "fixture marketplace offline";
+  writeJson(f.catalogFile, f.catalog);   // 真实 Release 渠道用户安装时宿主已拉过缓存清单（GitHub 域 1.1.0）
+  f.afterInstall = () => {
+    // 安装时刻：缓存清单 entry 必须已指向镜像资产（宿主将按它下载并 sha256 校验）。
+    const row = readJson(f.catalogFile).plugins[0];
+    assert.equal(row.version, "1.2.0");
+    assert.equal(row.source.url, f.mirrorRelease.archive.browser_download_url);
+    assert.equal(row.source.sha256, f.mirrorManifest.asset.sha256);
+  };
+  await f.updater.request({ action: "update" });
+  const status = f.updater.status();
+  assert.equal(status.phase, "updated", status.error);
+  assert.equal(status.checkedVia, "release-mirror");
+  assert.equal(f.syncs.length, 1);
+  // 宿主提交的安装记录：source 是补丁清单的镜像 URL，版本是镜像版本。
+  const record = readJson(f.recordFile).plugins[0];
+  assert.equal(record.version, "1.2.0");
+  assert.equal(record.source.url, f.mirrorRelease.archive.browser_download_url);
+  // 缓存清单已原子恢复为原字节（GitHub 渠道注册与后续 GitHub 检查不受补丁影响）。
+  assert.deepEqual(readJson(f.catalogFile), f.catalog);
+  // 安装成功后意图已清账；「持久化意图是镜像行 + 注册渠道」由 install stub 的深比较断言
+  // （pendingRelease === f.intent()，即镜像行与 GitHub 注册渠道）覆盖。
+  assert.equal(readJson(f.stateFile).pendingRelease, null);
+});
+
+test("half-open network: API check succeeds, GitHub download fails, mirror retry installs (issue #310)", async (t) => {
+  // api.github.com 可达、github.com 下载域不可达的半通形态：检查按 API 行成功（不触发
+  // 第三跳），下载失败属网络类时按同版本转官方镜像行重试，安装链随 mirror 标记走镜像。
+  // 网络类消息形态参数化：fetchBytes 超时文案与真机实测的无代理 TLS 断连形态都命中。
+  for (const message of ["Release 请求超时", "Client network socket disconnected before secure TLS connection was established"]) {
+    const f = fixture(t);
+    f.setRelease("1.2.0");
+    // 镜像列表刻意只回更新版本 v1.3.0：下载转换按已选定版本钉死直取 manifest，
+    // 不查列表、不被更新版本带偏（面板已呈现 1.2.0，装的就必须是 1.2.0）。
+    f.setGithubMirrorRelease("1.2.0");
+    f.mirrorApiRows = [{ tag_name: "v1.3.0", prerelease: false, created_at: "2026-11-12T00:00:00Z" }];
+    writeJson(f.catalogFile, f.catalog);   // 真实 Release 渠道用户安装时宿主已拉过缓存清单
+    f.prepareError = message;   // 只对 GitHub 行抛（fixture stub 对 mirror 行放行）
+    f.onGitHubPrepareFail = () => f.selectMirrorRelease();   // 下载转换时刻起按镜像行期望
+    f.afterInstall = () => {
+      const row = readJson(f.catalogFile).plugins[0];
+      assert.equal(row.version, "1.2.0", message);
+      assert.equal(row.source.url, f.mirrorRelease.archive.browser_download_url, message);
+    };
+    // 检查阶段（API 行）成功后进入安装：request update 重新检查仍走 API（可达），安装内
+    // 下载失败属网络类 → 同版本转镜像行重试 → 安装链随 mirror 标记走缓存清单补丁。
+    await f.updater.request({ action: "update" });
+    const status = f.updater.status();
+    assert.equal(status.phase, "updated", message + " | " + status.error);
+    assert.equal(status.checkedVia, "release-mirror");   // 下载转换后如实标注
+    assert.equal(status.mirror, true);
+    assert.equal(status.latestVersion, "1.2.0");
+    assert.equal(f.events.includes("mirror-api"), false, message);   // 钉版本路径不查镜像列表
+    assert.deepEqual(readJson(f.catalogFile), f.catalog, message);   // 安装结束清单已恢复
+    assert.equal(readJson(f.recordFile).plugins[0].source.url, f.mirrorRelease.archive.browser_download_url, message);
+  }
+});
+
+test("half-open network with a non-network download error keeps the original failure", async (t) => {
+  // 非网络类下载失败（如 sha256 校验失败）不转镜像：重试会掩盖真实的资产问题。
+  const f = fixture(t);
+  f.setRelease("1.2.0");
+  f.setGithubMirrorRelease("1.2.0");
+  f.prepareError = "发布包下载大小或 SHA256 校验失败";
+  await f.updater.request({ action: "update" });
+  assert.equal(f.updater.status().phase, "error");
+  assert.match(f.updater.status().error, /SHA256 校验失败/);
+  assert.equal(f.events.includes("mirror-api"), false);
+  assertNoInstall(f);
+});
+
+test("GitCode channel download timeouts never switch to the mirror row", async (t) => {
+  // GitCode 注册渠道下载的就是镜像域资产：超时按同源重试即可，转镜像行会因 flavor/形状
+  // 与 GitCode 渠道复核门不符导致「装成功却报更新失败」（review MAJOR，探针复现锁定）。
+  const f = fixture(t, {}, false, "gitcode");
+  f.setGitcodeRelease("1.2.0");
+  f.prepareError = "Release 请求超时";
+  await f.updater.request({ action: "update" });
+  assert.equal(f.updater.status().phase, "error");
+  assert.match(f.updater.status().error, /Release 请求超时/);
+  assert.doesNotMatch(f.updater.status().error, /镜像/);
+  assert.equal(f.events.includes("mirror-api"), false);
+  assertNoInstall(f);
+});
+
+test("fork-registered GitHub channels never auto-switch to the official mirror", async (t) => {
+  // 注册仓库≠官方上游（fork/第三方副本）的 GitHub 渠道：检查双失败与下载失败都不镜像——
+  // fork 内容可能与官方不同，静默换装官方字节会无提示覆盖 fork 改动（review MAJOR）。
+  const fork = "somefork/zcode-token-usage-statusbar";
+  for (const phase of ["check", "download"]) {
+    const f = fixture(t);
+    writeJson(f.knownFile, { version: 1, marketplaces: [{ id: MARKET, source: { source: "github", repo: fork, ref: "plugin-releases" } }] });
+    f.options = { ...f.options, fetchRelease: async (url, limit) => {
+      if (String(url).startsWith("https://api.github.com/")) {
+        if (phase === "check") throw new Error("Release 请求失败 (403)");
+        return Buffer.from(JSON.stringify(f.rows));
+      }
+      return f.fetch(url, limit);
+    } };
+    f.marketError = "fixture marketplace offline";
+    f.options.probeRename = async () => null;   // fork 行资产校验失败会误触改名探测：桩掉，不触网
+    if (phase === "download") {
+      f.setGithubMirrorRelease("1.2.0");
+      f.setRelease("1.2.0");
+      // fork 仓库的同款 API 行（资产 URL 换 fork 域，检查校验链按注册仓库参数化才能到达下载阶段）
+      const swap = (text) => String(text).split(`github.com/${REPOSITORY}/`).join(`github.com/${fork}/`);
+      f.rows = JSON.parse(swap(JSON.stringify(f.rows)));
+      f.release = JSON.parse(swap(JSON.stringify(f.release)));
+      f.release.repository = fork;   // repository 是校验参数不是 URL，swap 换不到、手动改
+      f.prepareError = "Release 请求超时";   // fork 行下载失败：门控拒绝转官方镜像
+    }
+    f.updater = f.restart();
+    await f.updater.request({ action: phase === "check" ? "check" : "update" });
+    const status = f.updater.status();
+    assert.equal(status.phase, "error", phase + " | " + status.error);
+    assert.equal(status.checkedVia !== "release-mirror", true, phase);
+    assert.match(status.error, phase === "check" ? /渠道清单回退也失败/ : /Release 请求超时/);
+    assert.doesNotMatch(status.error, /镜像回退/, phase);
+    assert.equal(f.events.includes("mirror-api"), false, phase);
+    assertNoInstall(f);
+  }
+});
+
+test("a forged mirror repository in the persisted intent is rejected by the commit verifier", async (t) => {
+  const f = fixture(t);
+  f.setGithubMirrorRelease("1.2.0");
+  f.selectMirrorRelease();
+  f.record.version = "1.2.0";
+  f.record.source = { source: "url", type: "zip", url: f.mirrorRelease.archive.browser_download_url,
+    sha256: f.mirrorManifest.asset.sha256, path: "plugins/" + PLUGIN, stripRoot: false };
+  fs.mkdirSync(path.join(f.record.installPath, ".zcode-plugin"), { recursive: true });
+  writeJson(path.join(f.record.installPath, ".zcode-plugin", "plugin.json"), { name: PLUGIN, version: "1.2.0" });
+  const intent = f.intent();
+  intent.release.repository = "evil/repo";   // 本地状态文件伪造的 mirror 标志指向陌生仓库
+  intent.release.archive.browser_download_url = intent.release.archive.browser_download_url.replace(GITCODE_REPOSITORY, "evil/repo");
+  intent.release.manifest.browser_download_url = intent.release.manifest.browser_download_url.replace(GITCODE_REPOSITORY, "evil/repo");
+  f.writeRecord();
+  writeJson(f.stateFile, { checkedAt: 1, lastAttempt: 1, pendingSync: true, pendingVersion: "1.0.0", pendingPid: 0, pendingRelease: intent });
+  assert.throws(() => verifyRuntimeSync({ runtime: f.runtime, pluginRoot: f.record.installPath, home: f.home, env: {} }), /更新意图无效/);
+});
+
+test("mirror pending intent recovers across restarts through the exemption", async (t) => {
+  // 安装进行中主进程退出：镜像意图随 pendingRelease 持久化，重启后 recoverPending →
+  // verifyReleaseCommit 按镜像豁免复核宿主已提交的镜像安装并完成运行时同步（spec 验收场景 4）。
+  const f = fixture(t);
+  f.setGithubMirrorRelease("1.2.0");
+  f.selectMirrorRelease();
+  f.seedPending(f.intent());
+  // seedPending 默认把 record.source 设成 GitHub 清单源；宿主按补丁清单提交的实况是镜像 URL。
+  const rec = readJson(f.recordFile);
+  rec.plugins[0].source = { source: "url", type: "zip", url: f.mirrorRelease.archive.browser_download_url,
+    sha256: f.mirrorManifest.asset.sha256, path: "plugins/" + PLUGIN, stripRoot: false };
+  writeJson(f.recordFile, rec);
+  f.updater = f.restart();
+  await f.updater.tick();
+  const status = f.updater.status();
+  assert.equal(status.phase, "updated", status.error);
+  assert.equal(status.currentVersion, "1.2.0");
+  assert.equal(f.syncs.length, 1);
+  const intent = readJson(f.stateFile);
+  assert.equal(intent.pendingSync, false);
+  assert.equal(intent.pendingRelease, null);
+});
+
+test("a forged mirror mark on a GitCode registration is rejected by the commit verifier", async (t) => {
+  // GitCode 渠道的持久化意图自称 mirror：镜像豁免只认 GitHub 注册（registeredFlavor 门），
+  // GitCode 注册必须仍走 validateGitcodeRelease 严格门（archive.size===null），伪造必拒。
+  const f = fixture(t, {}, false, "gitcode");
+  f.setGitcodeRelease("1.2.0");
+  f.record.version = "1.2.0";
+  f.record.source = clone(f.catalog.plugins[0].source);
+  fs.mkdirSync(path.join(f.record.installPath, ".zcode-plugin"), { recursive: true });
+  writeJson(path.join(f.record.installPath, ".zcode-plugin", "plugin.json"), { name: PLUGIN, version: "1.2.0" });
+  const intent = f.intent();
+  const mirror = require("../plugin-release.cjs").checkGitcodeMirrorRelease(
+    (a, b) => (a === b ? 0 : a > b ? 1 : -1), async (url) => {
+      if (String(url).startsWith("https://api.gitcode.com/"))
+        return Buffer.from(JSON.stringify([{ tag_name: "v1.2.0", prerelease: false }]));
+      return Buffer.from(JSON.stringify(f.mirrorManifest || { schemaVersion: 1, repository: REPOSITORY, version: "1.2.0", tag: "v1.2.0", pluginId: PLUGIN_ID,
+        asset: { name: `${PLUGIN}-v1.2.0.zip`, size: 10, sha256: crypto.createHash("sha256").update("x").digest("hex") } }));
+    });
+  const mirrored = await mirror;
+  intent.release = mirrored;   // 状态文件被改写成「GitCode 渠道 + 镜像行」的组合
+  f.writeRecord();
+  writeJson(f.stateFile, { checkedAt: 1, lastAttempt: 1, pendingSync: true, pendingVersion: "1.0.0", pendingPid: 0, pendingRelease: intent });
+  assert.throws(() => verifyRuntimeSync({ runtime: f.runtime, pluginRoot: f.record.installPath, home: f.home, env: {} }), /更新意图无效/);
 });
 
 // 真实 release_tool 打包脚本（合成源文件，无 Git/凭据/外部 HTTP）：参数 = 仓库根、临时目录、owner/repo。

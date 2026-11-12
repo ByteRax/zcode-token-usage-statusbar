@@ -13,6 +13,14 @@ const INTERVAL_MS = 60 * 60 * 1000;
 // 仓库改名只会表现为这两类来源校验失败（plugin-release.cjs 的 validateRelease / githubReleaseFromCatalog），
 // 文案变动须同步；tests/plugin-release-updater.test.cjs 的改名用例走真实校验函数，失配会变红。
 const RENAME_SUSPECT = /GitHub Release 资产来源或大小无效|GitHub 渠道清单下载源与注册仓库或版本不一致/;
+// GitHub 不可达/限流类失败的 message 特征：fetchBytes 的超时与状态码文案，加 Node 原生
+// DNS/连接/证书错误（request.on("error") 透传）。「socket disconnected before secure TLS」
+// 是无代理直连 github.com 的实测形态（2026-11-12 真机沙箱），与 ECONNRESET 同族。
+const GITHUB_UNREACHABLE = /超时|时限|ENOTFOUND|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH|EPROTO|证书|socket hang up|socket disconnected|TLS connection|请求失败 \((?:403|429|5\d\d)\)/;
+// Release 渠道的检查、下载与宿主安装整条链都走 GitHub 域；GitHub 不可达时插件侧回退救不了
+// 宿主 CLI 的下载环节，改注册 GitCode 镜像渠道（清单与资产同源发布）是用户可自助完成的
+// 完整出路（issue #310：1.5.17→1.5.18 用户网络不通 GitHub，检查双路径即失败）。
+const GITCODE_MIRROR_HINT = "；GitHub 无法访问时可改用 GitCode 镜像渠道 https://gitcode.com/tanranran/zcode-token-usage-statusbar.git#plugin-releases-gitcode";
 
 function cliExecutable(executable, platform = process.platform) {
   // 仅 macOS 换用 Helper bundle：主 bundle 二进制启动即以 LaunchServices Foreground 登记，
@@ -232,16 +240,23 @@ function verifyCommittedRelease(record, expected, currentChannel, migration) {
   const registeredFlavor = currentChannel ? currentChannel.flavor || channelFlavor(currentChannel) : "";
   if (!sameChannel(currentChannel, expected.channel, registeredFlavor === "gitcode" ? null : migration)) throw new Error("Release 更新意图无效或市场来源已变化，停止运行时同步");
   // GitHub 意图有两个来源：API 行（archive.size 有效）与清单兜底（catalogSha256 标记），
-  // 各用同源形状门复核；GitCode 意图只来自渠道清单。
-  const validated = flavor === "gitcode"
-    ? releaseChannel.validateGitcodeRelease(release)
-    : release.catalogSha256 !== undefined
-      ? releaseChannel.validateGithubCatalogRelease(release)
-      : releaseChannel.validateRelease({ tag_name: release.tag, draft: false, prerelease: false,
-        assets: [release.archive, release.manifest] }, release.repository);
+  // 各用同源形状门复核；GitCode 意图只来自渠道清单；镜像回退行只发生在 GitHub 渠道
+  // （specs/github-mirror-fallback.md），仓库钉死内置镜像常量，URL/版本/资产自洽经严格门复核，
+  // 本地伪造 mirror 标志至多把安装指向官方镜像的已校验资产，无提权面。
+  const mirrorRow = release.mirror === true && registeredFlavor !== "gitcode";
+  const validated = mirrorRow
+    ? releaseChannel.validateGithubMirrorRelease(release)
+    : flavor === "gitcode"
+      ? releaseChannel.validateGitcodeRelease(release)
+      : release.catalogSha256 !== undefined
+        ? releaseChannel.validateGithubCatalogRelease(release)
+        : releaseChannel.validateRelease({ tag_name: release.tag, draft: false, prerelease: false,
+          assets: [release.archive, release.manifest] }, release.repository);
   if (!validated || validated.version !== release.version || expected.channel.kind !== "release" ||
-      flavor !== validated.flavor ||
-      !releaseChannel.sameRepository(expected.channel.repository, release.repository)) throw new Error("Release 更新意图无效，停止运行时同步");
+      (flavor !== validated.flavor && validated.mirror !== true) ||
+      !releaseChannel.sameRepository(expected.channel.repository, release.repository) &&
+      !(mirrorRow && releaseChannel.sameRepository(release.repository, releaseChannel.GITCODE_MIRROR_REPOSITORY)))
+    throw new Error("Release 更新意图无效，停止运行时同步");
   releaseChannel.validateManifest(manifest, validated);
   if (release.catalogSha256 !== undefined && manifest.asset.sha256 !== release.catalogSha256) throw new Error("发布 manifest 与渠道清单的 SHA256 不一致，停止运行时同步");
   if (record.version !== release.version || !record.source || !releaseChannel.sameAssetUrl(record.source.url, release.archive.browser_download_url) ||
@@ -462,13 +477,79 @@ function createUpdater(options) {
   async function checkGithubRelease(source, repo) {
     // GitHub Release 渠道检查：repo 为迁移后新名时，API 响应体按新名规范化、资产比对自洽；
     // 失败（限流/不可达/迁移窗口校验挂）退回注册 ref 渠道清单，清单也按同名查；健康信号不兜底。
+    // 两条 GitHub 路径都失败且属网络/限流类时，第三跳官方 GitCode 镜像（specs/github-mirror-fallback.md）：
+    // 镜像把检查/下载/安装整体挪出 GitHub 域，GitHub 完全不可达的用户也能更新（issue #310）。
     const target = repo || migrationRepoFor(source) || source.repository;
+    let apiError;
     try {
       return { release: await releaseChannel.checkRelease(target, compareVersions, fetchRelease), checkedVia: "release-api" };
-    } catch (error) {
-      if (/不能安装开发分支|安全分页上限/.test(error.message)) throw error;
-      return { release: await catalogFallback(source, error, target), checkedVia: "release-catalog" };
+    } catch (error) { apiError = error; }
+    if (/不能安装开发分支|安全分页上限/.test(apiError.message)) throw apiError;
+    let fallbackError;
+    try {
+      return { release: await catalogFallback(source, apiError, target), checkedVia: "release-catalog" };
+    } catch (error) { fallbackError = error; }
+    if (!GITHUB_UNREACHABLE.test(String((apiError && apiError.message) || apiError))) throw fallbackError;
+    // 注册仓库门控（specs/github-mirror-fallback.md）：只有官方上游仓库的 GitHub Release 渠道
+    // 才自动镜像——fork/第三方副本注册的渠道内容可能与官方不同，静默换装官方字节会无提示
+    // 覆盖 fork 改动；改名迁移生效时注册名对不上上游，同样不镜像（如实报错即可）。
+    if (typeof releaseChannel.GITHUB_UPSTREAM_REPOSITORY !== "string" ||
+        !releaseChannel.sameRepository(source.repository, releaseChannel.GITHUB_UPSTREAM_REPOSITORY)) throw fallbackError;
+    try {
+      const release = typeof releaseChannel.checkGitcodeMirrorRelease === "function"
+        ? await releaseChannel.checkGitcodeMirrorRelease(compareVersions, fetchRelease) : null;
+      if (release) return { release, checkedVia: "release-mirror" };
+      throw new Error("GitCode 镜像检查不可用");
+    } catch (mirrorError) {
+      // 三层原因如实合并，末尾附可自助执行的换渠道注册地址：自动镜像救不了时，换注册渠道仍是完整出路。
+      throw new Error(fallbackError.message + "；GitCode 镜像回退也失败: " + mirrorError.message + GITCODE_MIRROR_HINT);
     }
+  }
+  function patchReleaseCatalogForMirror(release, manifest) {
+    // 镜像回退安装的缓存清单补丁（specs/github-mirror-fallback.md）：读原字节 → 把本插件
+    // entry 的 version/source.url/source.sha256 指向官方镜像同版本资产（url 即镜像行
+    // archive URL，sha256 为已下载校验过的 manifest.asset.sha256）→ 原子写入并读回校验。
+    // restore() 以保存的原字节原子写回，幂等；恢复失败静默容忍（宿主 marketplace update 收敛）。
+    const file = path.join(storage(), "marketplaces", "zusage-marketplace", "marketplace.json");
+    // 与 readReleaseCatalog 同款事务守卫（标记在 marketplaces/ 根下）：宿主市场事务进行中
+    // 不动缓存清单——补丁窗口与事务提交交错时 restore 会吞掉宿主刚写入的新清单，宁可中止。
+    if (fs.existsSync(path.join(path.dirname(path.dirname(file)), ".zusage-marketplace.transaction.json"))) throw new Error("官方插件市场事务尚未完成，镜像安装中止");
+    let original;
+    try { original = fs.readFileSync(file); }
+    catch (error) { throw new Error("镜像安装需要可读的市场缓存清单: " + error.message); }
+    let parsed;
+    try { parsed = JSON.parse(original.toString("utf8")); }
+    catch (error) { throw new Error("市场缓存清单不是有效 JSON，镜像安装中止"); }
+    const rows = parsed && Array.isArray(parsed.plugins) ? parsed.plugins.filter((p) => p && p.name === "zcode-token-usage-statusbar") : [];
+    const entry = rows.length === 1 ? rows[0] : null;
+    const source = entry && entry.source;
+    if (!entry || !source || typeof source !== "object" || source.source !== "url" || source.type !== "zip" ||
+        typeof source.url !== "string") throw new Error("市场缓存清单缺少本插件的 zip 源，镜像安装中止");
+    entry.version = release.version;
+    entry.source = { ...source, url: release.archive.browser_download_url, sha256: manifest.asset.sha256 };
+    const write = (bytes) => {
+      const tmp = file + ".zusage-mirror." + process.pid + ".tmp";
+      try {
+        fs.writeFileSync(tmp, bytes);
+        fs.renameSync(tmp, file);
+      } finally { try { fs.unlinkSync(tmp); } catch (e) { } }
+    };
+    write(Buffer.from(JSON.stringify(parsed, null, 2) + "\n", "utf8"));
+    let restored = false;
+    return {
+      assertApplied() {
+        const data = readJson(file, null);
+        const row = data && Array.isArray(data.plugins) ? data.plugins.find((p) => p && p.name === "zcode-token-usage-statusbar") : null;
+        if (!row || row.version !== release.version || !row.source || typeof row.source !== "object" ||
+            row.source.url !== release.archive.browser_download_url || row.source.sha256 !== manifest.asset.sha256)
+          throw new Error("镜像缓存清单补丁未生效，中止安装");
+      },
+      restore() {
+        if (restored) return;
+        restored = true;
+        try { write(original); } catch (e) { }
+      },
+    };
   }
   function channelMatchesRegistration(effective, current = channel()) {
     // 非迁移路径保持原整体深比较（含 flavor）；仅存在迁移记录时才允许 repository 经记录豁免，
@@ -485,6 +566,7 @@ function createUpdater(options) {
       if (!isDeepStrictEqual(channel(), source)) throw new Error("更新期间市场来源已变化");
       return releaseChannel.githubReleaseFromCatalog(readReleaseCatalog(), repoOverride || source.repository);
     } catch (error) {
+      // 指引与镜像回退统一由 checkGithubRelease 的第三跳收口，这里只如实合并两层原因。
       throw new Error(String((cause && cause.message) || cause) + "；渠道清单回退也失败: " + error.message);
     }
   }
@@ -513,7 +595,7 @@ function createUpdater(options) {
       const source = channel();
       state.channel = source.kind; state.channelHost = source.flavor === "gitcode" ? "gitcode" : source.flavor === "github" ? "github" : "";
       state.channelRepo = source.repository || "";   // 更新日志卡片按渠道仓库构造 Release 页链接（market/local 为空）
-      state.releaseUrl = ""; selectedRelease = null; selectedChannel = source; state.checkedVia = "";
+      state.releaseUrl = ""; selectedRelease = null; selectedChannel = source; state.checkedVia = ""; state.mirror = false;
       if (source.kind === "release" && source.flavor === "gitcode") {
         // GitCode 渠道：宿主从注册 ref 拉取的渠道清单是唯一版本源，不调 GitCode API。
         await refreshMarketplace();
@@ -540,13 +622,14 @@ function createUpdater(options) {
           return retried;
         });
         selectedRelease = outcome.release;
-        if (selectedRelease.repository !== source.repository)
+        if (!selectedRelease.mirror && selectedRelease.repository !== source.repository)
           selectedChannel = { ...source, repository: selectedRelease.repository };
         state.checkedVia = outcome.checkedVia;
       }
       if (selectedRelease) {
         state.releaseUrl = selectedRelease.url;
         state.latestVersion = selectedRelease.version;
+        state.mirror = selectedRelease.mirror === true;   // 本轮检查经官方 GitCode 镜像（面板来源行标注用）
         const record = installedRecord();
         if (!record) throw new Error("用户级插件安装记录不存在");
         state.currentVersion = record.version;
@@ -653,6 +736,7 @@ function createUpdater(options) {
     if (!channelMatchesRegistration(selectedChannel)) throw cancelError("更新期间市场来源已变化");
     compareVersions(record.version, record.version);
     let downloaded = null;
+    let mirrorPatch = null;
     // 中途放弃（插件被卸载/禁用、自动更新被关闭、版本已不再更新）时退回「发现新版本」，
     // 不能让 downloading 阶段与进度条停在面板上。
     const abandon = () => { state.phase = "available"; state.progress = null; };
@@ -661,40 +745,80 @@ function createUpdater(options) {
         const currentChannel = channel();
         // 仓库改名迁移生效时 selectedRelease/selectedChannel 已按新名选定（check 阶段）；
         // 非迁移路径保持原比较（大小写不敏感的仓库一致），迁移路径额外允许经 repoMigration 豁免。
+        // 镜像回退行（specs/github-mirror-fallback.md）仓库是官方 GitCode 镜像而非注册仓库，
+        // 按内置镜像常量豁免 repository 比对，渠道注册身份守卫不变。
         if (!channelMatchesRegistration(selectedChannel, currentChannel) || currentChannel.kind !== "release" ||
             !(releaseChannel.sameRepository(currentChannel.repository, selectedRelease.repository) ||
+              (selectedRelease.mirror === true && releaseChannel.sameRepository(selectedRelease.repository, releaseChannel.GITCODE_MIRROR_REPOSITORY)) ||
               repositoryMatches(currentChannel.repository, selectedRelease.repository, state.repoMigration || null))) throw cancelError("更新期间市场来源已变化");
         state.phase = "downloading"; state.progress = { stage: "download", loaded: 0, total: selectedRelease.archive.size || 0 }; publish();
         let lastPublished = 0;
-        downloaded = await prepareRelease(selectedRelease, (progress) => {
+        const downloadProgress = (progress) => {
           state.progress = progress;
           // 下载字节进度按 ~150ms 节流推送；阶段切换与下载完成一律立即推送。
           const complete = progress.stage !== "download" || (progress.total && progress.loaded >= progress.total);
           if (complete || now() - lastPublished >= 150) { lastPublished = now(); publish(); }
-        });
+        };
+        try {
+          downloaded = await prepareRelease(selectedRelease, downloadProgress);
+        } catch (downloadError) {
+          // 半通网络（api.github.com 可达、github.com 下载域不可达）下检查走 API 成功、
+          // 下载必然失败：同版本转官方镜像行重试一次（specs/github-mirror-fallback.md）。
+          // 仅 GitHub 渠道（GitCode 渠道下载的就是镜像域资产，超时重试同源即可，转镜像行
+          // 反而过不了提交复核）且注册仓库为官方上游（fork 渠道不静默换装官方字节）；
+          // 镜像缺该版本或非网络类失败则如实报原错。后续安装分支按 mirror 标记走镜像链。
+          if (selectedRelease.mirror === true || selectedRelease.flavor !== "github" ||
+              typeof releaseChannel.GITHUB_UPSTREAM_REPOSITORY !== "string" ||
+              !releaseChannel.sameRepository(currentChannel.repository, releaseChannel.GITHUB_UPSTREAM_REPOSITORY) ||
+              !GITHUB_UNREACHABLE.test(String(downloadError.message))) throw downloadError;
+          let mirror = null;
+          try {
+            if (typeof releaseChannel.checkGitcodeMirrorRelease === "function")
+              mirror = await releaseChannel.checkGitcodeMirrorRelease(compareVersions, fetchRelease, selectedRelease.version);
+          } catch (mirrorError) {
+            // 镜像侧失败不顶替 GitHub 下载根因，合并两层原因便于排查。
+            throw new Error(downloadError.message + "；GitCode 镜像重试也失败: " + mirrorError.message);
+          }
+          if (!mirror || mirror.version !== selectedRelease.version) throw downloadError;
+          selectedRelease = mirror;
+          state.checkedVia = "release-mirror"; state.mirror = true;
+          state.releaseUrl = mirror.url;
+          downloaded = await prepareRelease(selectedRelease, downloadProgress);
+        }
         releaseChannel.validateManifest(downloaded.manifest, selectedRelease);
         // 清单兜底意图：下载到的 manifest 必须与检查时的渠道清单同代同资产，防清单与
         // Release 资产错代（API 路径由行内 size 强比对承担等价约束）。
         if (selectedRelease.catalogSha256 !== undefined && downloaded.manifest.asset.sha256 !== selectedRelease.catalogSha256) throw new Error("发布 manifest 与渠道清单的 SHA256 不一致");
         state.progress = { stage: "verify" }; publish();
-        await refreshMarketplace();
-        if (!isDeepStrictEqual(channel(), currentChannel)) throw cancelError("更新期间市场来源已变化");
-        // 清单新鲜度（issue #247）：宿主 CLI 静默失败（exit 0 但没拉取）时缓存清单停在
-        // 旧版，随后的 plugins install 会照旧装旧版、最后报误导性的「未提交新版安装记录」。
-        // 这里先比对清单版本与已选 Release，把根因点名。
-        let catalogRelease;
-        try {
-          const catalog = readReleaseCatalog();
-          // 迁移生效时按检查选定的（新）名查清单新鲜度，注册旧名对不上新清单下载源。
-          catalogRelease = currentChannel.flavor === "gitcode"
-            ? releaseChannel.gitcodeReleaseFromCatalog(catalog, currentChannel.repository)
-            : releaseChannel.githubReleaseFromCatalog(catalog, selectedRelease.repository);
-        } catch (error) {
-          throw new Error("市场清单刷新后读取不到有效清单: " + error.message);
+        if (selectedRelease.mirror === true) {
+          // 镜像回退安装（specs/github-mirror-fallback.md）：宿主 plugins install 在缓存清单
+          // 存在时不联网拉取、按 entry.source.url 下载并 sha256 校验（引擎 install 链实证）。
+          // 把本插件 entry 指向官方镜像同版本资产（与 GitHub Release 同产物同 sha256），
+          // 安装结束原子恢复原清单；版本源是刚下载校验过的 manifest，不走 GitHub 清单
+          // 刷新与新鲜度门（那是 #247 防宿主按旧清单装旧版的守卫，镜像模式无此路径）。
+          mirrorPatch = patchReleaseCatalogForMirror(selectedRelease, downloaded.manifest);
+          mirrorPatch.assertApplied();
+          if (!isDeepStrictEqual(channel(), currentChannel)) throw cancelError("更新期间市场来源已变化");
+        } else {
+          await refreshMarketplace();
+          if (!isDeepStrictEqual(channel(), currentChannel)) throw cancelError("更新期间市场来源已变化");
+          // 清单新鲜度（issue #247）：宿主 CLI 静默失败（exit 0 但没拉取）时缓存清单停在
+          // 旧版，随后的 plugins install 会照旧装旧版、最后报误导性的「未提交新版安装记录」。
+          // 这里先比对清单版本与已选 Release，把根因点名。
+          let catalogRelease;
+          try {
+            const catalog = readReleaseCatalog();
+            // 迁移生效时按检查选定的（新）名查清单新鲜度，注册旧名对不上新清单下载源。
+            catalogRelease = currentChannel.flavor === "gitcode"
+              ? releaseChannel.gitcodeReleaseFromCatalog(catalog, currentChannel.repository)
+              : releaseChannel.githubReleaseFromCatalog(catalog, selectedRelease.repository);
+          } catch (error) {
+            throw new Error("市场清单刷新后读取不到有效清单: " + error.message);
+          }
+          if (compareVersions(catalogRelease.version, selectedRelease.version) < 0)
+            throw new Error("市场清单刷新后仍为 v" + catalogRelease.version + "，宿主未能拉取到 v"
+              + selectedRelease.version + "；可手动执行 zcode plugins marketplace update zusage-marketplace 排查，或改用 GitCode 镜像渠道 https://gitcode.com/tanranran/zcode-token-usage-statusbar.git#plugin-releases-gitcode");
         }
-        if (compareVersions(catalogRelease.version, selectedRelease.version) < 0)
-          throw new Error("市场清单刷新后仍为 v" + catalogRelease.version + "，宿主未能拉取到 v"
-            + selectedRelease.version + "；可手动执行 zcode plugins marketplace update zusage-marketplace 排查，或改用 GitCode 镜像渠道");
         record = refreshLocal();
         if (!record) throw cancelError("插件已卸载，更新已取消");
         if (auto && !state.auto) { abandon(); return; }
@@ -736,7 +860,12 @@ function createUpdater(options) {
       if (selectedRelease) verifyReleaseCommit(committed);
       await syncInstalled();
     } catch (e) { if (!e || e.cancel !== true) recordInstallFailure(); save(); throw e; }   // 失败身份立即落盘（clearPending 已先写过一次）；取消类不误标失败
-    finally { if (downloaded && downloaded.cleanup) downloaded.cleanup(); }
+    finally {
+      // 镜像补丁恢复先于临时目录清理：宿主 install 结束（成败皆然）缓存清单必须回到原字节，
+      // 恢复失败容忍——GitHub 恢复可达后宿主 marketplace update 会以注册来源清单收敛。
+      if (mirrorPatch) mirrorPatch.restore();
+      if (downloaded && downloaded.cleanup) downloaded.cleanup();
+    }
   }
   function verifyReleaseCommit(record) {
     verifyCommittedRelease(record, state.pendingRelease, channel(), state.repoMigration || null);

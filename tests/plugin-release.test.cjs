@@ -699,3 +699,63 @@ test("default web leg resolves a 301; a socket timeout destroys the request; the
     assert.equal(timer.hasRef(), false, "守卫定时器必须 unref，防止挂起事件循环");
   }
 });
+
+// ---------- GitHub 渠道官方 GitCode 镜像回退（specs/github-mirror-fallback.md）----------
+const { checkGitcodeMirrorRelease, validateGithubMirrorRelease, GITCODE_MIRROR_REPOSITORY } = require("../plugin-release.cjs");
+const MIRROR = "tanranran/zcode-token-usage-statusbar";
+function mirrorManifest(version, bytes) {
+  return { schemaVersion: 1, repository: "ByteRax/zcode-token-usage-statusbar", version, tag: "v" + version,
+    pluginId: PLUGIN_ID, asset: { name: `zcode-token-usage-statusbar-v${version}.zip`, size: bytes.length,
+      sha256: crypto.createHash("sha256").update(bytes).digest("hex") } };
+}
+test("checkGitcodeMirrorRelease synthesizes a mirror row from the API list and manifest", async (t) => {
+  const bytes = Buffer.from("mirror archive");
+  const manifest = mirrorManifest("1.2.0", bytes);
+  const seen = [];
+  const fetch = async (url) => {
+    seen.push(String(url));
+    if (String(url).startsWith("https://api.gitcode.com/")) {
+      // 镜像列表混入 prerelease 与非稳定 tag：只有稳定语义版本可入选。
+      return Buffer.from(JSON.stringify([
+        { tag_name: "v1.1.0", prerelease: false }, { tag_name: "v1.2.0", prerelease: false },
+        { tag_name: "v9.0.0-rc.1", prerelease: false }, { tag_name: "v0.9.0", prerelease: true }]));
+    }
+    return Buffer.from(JSON.stringify(manifest));
+  };
+  const row = await checkGitcodeMirrorRelease(compareVersions, fetch);
+  assert.equal(row.version, "1.2.0");
+  assert.equal(row.flavor, "gitcode");
+  assert.equal(row.mirror, true);
+  assert.equal(row.repository, MIRROR);
+  assert.equal(row.archive.browser_download_url, `https://gitcode.com/${MIRROR}/releases/download/v1.2.0/zcode-token-usage-statusbar-v1.2.0.zip`);
+  assert.equal(row.archive.size, bytes.length);
+  assert.deepEqual(row, validateGithubMirrorRelease(row));
+  // API 域与资产域分属两个白名单：一次回退各请求一次。
+  assert.deepEqual(seen, [`https://api.gitcode.com/api/v5/repos/${MIRROR}/releases?per_page=100&page=1&direction=desc`,
+    `https://gitcode.com/${MIRROR}/releases/download/v1.2.0/release-manifest.json`]);
+});
+test("checkGitcodeMirrorRelease rejects empty lists and mismatched manifests", async (t) => {
+  await assert.rejects(checkGitcodeMirrorRelease(compareVersions, async () => Buffer.from("[]")), /尚无稳定版本/);
+  const manifest = mirrorManifest("1.2.0", Buffer.from("mirror archive"));
+  const tampered = { ...manifest, pluginId: "other@zusage-marketplace" };
+  await assert.rejects(checkGitcodeMirrorRelease(compareVersions, async (url) =>
+    String(url).startsWith("https://api.gitcode.com/")
+      ? Buffer.from(JSON.stringify([{ tag_name: "v1.2.0", prerelease: false }]))
+      : Buffer.from(JSON.stringify(tampered))), /manifest 身份或资产无效/);
+});
+test("validateGithubMirrorRelease rejects forged repositories, hosts and missing mirror marks", () => {
+  const bytes = Buffer.from("mirror archive");
+  const manifest = mirrorManifest("1.2.0", bytes);
+  const row = checkGitcodeMirrorRelease(compareVersions, async (url) =>
+    String(url).startsWith("https://api.gitcode.com/")
+      ? Buffer.from(JSON.stringify([{ tag_name: "v1.2.0", prerelease: false }]))
+      : Buffer.from(JSON.stringify(manifest)));
+  return row.then((valid) => {
+    assert.ok(validateGithubMirrorRelease(valid));
+    assert.equal(validateGithubMirrorRelease({ ...valid, mirror: undefined }), null);
+    assert.equal(validateGithubMirrorRelease({ ...valid, repository: "evil/repo" }), null);
+    assert.equal(validateGithubMirrorRelease({ ...valid, archive: { ...valid.archive,
+      browser_download_url: valid.archive.browser_download_url.replace(MIRROR, "evil/repo") } }), null);
+    assert.equal(validateGithubMirrorRelease({ ...valid, url: "https://github.com/" + MIRROR + "/releases/tag/v1.2.0" }), null);
+  });
+});
