@@ -136,12 +136,12 @@ function extractSubRateBridge() {
 // zuTryBindStore 计数以验证节流；TURN_STATS stub 复刻 subscribeStore 同步首调行为。
 function makeSandbox({ stores = {}, stats = null, c2t = 2, paneScope = null, acquireStore = null } = {}) {
   const win = acquireStore ? { __zusageAcquireConversationStore: acquireStore } : {};   // 桥 v2 探针共用
-  const state = { bindCalls: 0, unsubscribed: 0, disposed: 0, updates: 0 };
+  const state = { bindCalls: 0, unsubscribed: 0, disposed: 0, updates: 0, reads: 0 };
   const sandboxStores = {};
   for (const sid of Object.keys(stores).length ? Object.keys(stores) : []) {
     const conf = stores[sid];
     sandboxStores[sid] = {
-      getState: () => ({ snapshot: { sessionId: conf.snapshotSessionId || sid } }),
+      getState: () => { state.reads++; return { snapshot: { sessionId: conf.snapshotSessionId || sid } }; },
       subscribe: (fn) => { (conf.listeners = conf.listeners || []).push(fn); return () => { state.unsubscribed++; }; },
       off: () => { state.unsubscribed++; },
     };
@@ -153,9 +153,9 @@ function makeSandbox({ stores = {}, stats = null, c2t = 2, paneScope = null, acq
     TURN_STATS: {
       createTracker: () => tracker,
       subscribeStore: (st, tr, cb) => {   // 复刻真实行为：注册后同步首调一次
-        const off = st.subscribe(() => cb());
+        const off = st.subscribe(() => cb(st.getState()));   // 与真实 subscribeStore 同：读一次，把 state 传给回调
         if (typeof off !== 'function') return null;
-        cb();
+        cb(st.getState());
         return () => { try { off(); } finally { tr.dispose(); } };
       },
     },
@@ -393,3 +393,10 @@ test('zuSkillName extraction: JSON field, regex fallback, control-char rejection
   assert.equal(fn('{"args":{}}'), '');
 });
 
+
+// issue #309 review：子代理槽位回调同样遵守「每通知只读一次」（规则 11）——用 changed(state)，不二读。
+test('subRateTick: a sub-agent store notification costs exactly one getState (callback reuses the state)', () => {
+  const { tick, state } = makeSandbox({ stores: { sess_a: { stats: { complete: false, characterRate: 90 } } } });
+  tick([{ childSessionId: 'sess_a' }]);
+  assert.equal(state.reads, 1, 'initial synchronous pass reads once, not twice');
+});

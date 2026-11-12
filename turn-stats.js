@@ -255,8 +255,9 @@
     if (!store || typeof store.getState !== 'function' || typeof store.subscribe !== 'function') return null;
     const now = options.now || (() =>
       typeof performance === 'object' && performance && typeof performance.now === 'function' ? performance.now() : Date.now());
-    const arm = options.setTimeout || ((fn, ms) => setTimeout(fn, ms));
-    const disarm = options.clearTimeout || (t => clearTimeout(t));
+    // AGENTS §4：全局定时器缺席时不抛进宿主通知链——arm 返回 null，调用方退回同步处理
+    const arm = options.setTimeout || ((fn, ms) => (typeof setTimeout === 'function' ? setTimeout(fn, ms) : null));
+    const disarm = options.clearTimeout || (t => { if (typeof clearTimeout === 'function') clearTimeout(t); });
     let closed = false, timer = null, pending = false, lastEnd = 0, lastCost = 0;
     const run = () => {
       const started = now();
@@ -282,12 +283,23 @@
         if (wait > 0) {
           pending = true;
           if (timer === null) {
-            timer = arm(flush, wait);
-            if (timer && typeof timer.unref === 'function') timer.unref();   // 不挂住 Node 测试进程
+            let t = null;
+            try { t = arm(flush, wait); } catch (e) { t = null; }
+            if (t !== null && t !== undefined) {
+              timer = t;
+              if (typeof timer.unref === 'function') timer.unref();   // 不挂住 Node 测试进程
+              return;
+            }
+            pending = false;   // 无法排尾部定时器：退回同步处理，绝不留下无人冲刷的 pending
+          } else {
+            return;
           }
-          return;
         }
       }
+      // 同步处理（廉价会话 / 间隔已过 / 无法排定时器）：先作废待冲刷的尾部定时器——它被后台节流而迟到时，
+      // 新通知已处理了最新状态，再让它读一次整窗只是白拷贝。
+      if (timer !== null) { try { disarm(timer); } catch (e) { } timer = null; }
+      pending = false;
       run();
     };
     const off = store.subscribe(update);
