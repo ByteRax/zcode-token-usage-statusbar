@@ -222,8 +222,9 @@
      * → v338 项目累计卡体验批（用户规格四连；v331 迭代）：①分区名并入首列表头（项目明细/模型明细=各自首列 th，独立标题行删除；工具调用·重试与截断注记降级为 .zu-pj-mnote 右对齐 note 行、仅有值时渲染，「按用量排序」占位删除——v331/v332 批已落基线，此处汇总声明）；②高度自下而上——切 Tab/展开明细的高度变化底边固定（projTipPrevBottom 基线 + projTipPositionGrowUp 反推 top，max-height 钳制保证 top≥8；首次弹出无基线回退原锚定，仅项目卡路径）；③表体视口帽——项目卡 .tbody 破共享 60vh 帽，覆写 max-height:calc(100vh-36px)=视口帽扣根纵向可达 chrome（上边框1+上内距10+下边框1），内容不超窗完整展示无内滚、超窗转表体内滚（其它统计卡维持 60vh）；④全部项目模式行四第一列=项目数量格（KPI folder 图标，计数=projects_total 截断前真实数或列表长度；费用可见三格 .zu-turn-kpis--trio 3 列网格、费用关退 --duo 两格）。
      * → v339 详情卡点击空白/Esc 关闭（issue #297）：document mousedown 捕获外点判定（tipOutsideDown）——target 落在自绘浮层本体/条面/设置面板/各弹框之外即收，主 tip cause="outside" 进 hideTip 硬保活窗白名单（v271/v329 的 1.2s 窗不再吞「点过 Tab 后点空白」；devKeepTip 常驻模式契约不变仍只认 Escape/齿轮/再点同格），额度/速率/重置卡/子代理行内/git chip tooltip 与费用说明/档位说明浮层一并收（柱体 Portal pointer-events:none 无需排除）；document keydown 冒泡全局 Escape 兜底（tipGlobalEsc）——焦点在 body 时既有元素级 Esc 链收不到，此处一次收一个且不 preventDefault/stopPropagation 不吞宿主语义，冒泡挂载保住 tip 内「先收档位说明不关卡」分层。
      * → v340 心跳不再深拷贝整窗快照（issue #309，长会话卡顿；规格 specs/perf-lag-reduction.md 规则 10–12）：桥 v2 的 getState() 每次都是整窗深拷贝（本机 374 行 ≈1ms，报告者 6868 行 ≈86ms），而 100ms 心跳里 bridgeTick 健康检查与 updateLive→subRunningList 每拍各读一次（无 stats 时「思考中」合成再读一次）、每次 store 通知还有 subscribeStore 与 overlay 回调各读一次，v2 桥下 ≥20 次整窗拷贝/秒。三处修复且与桥代际无关（v2/v3 均有效）：①心跳经 handleSnapshot 读 handle 上的快照记录（通知回调写入，超 SNAP_FRESH_MS=2s 才回源一次并兼作 store 关闭/换代探活，时钟回拨按陈旧）；②turn-stats.js subscribeStore 把本次已读 state 传给 changed(state)，回调不再二读；③通知处理按实测成本自适应合并（上次处理 ≥8ms 时间隔 min(1s, cost×9)，占比 ≤~10%，尾部定时器归订阅持有、退订即清；廉价会话逐字不变）。pane 切会话仍由 handle.sid/sideKey 即时重绑；不改桥模板与 BRIDGE_GEN（冷路径）。
+     * → v341 issue #309 复审补修：子代理槽位通知回调复用 changed(state) 不再二读；通知处理同步分支作废迟到的尾部定时器；全局 setTimeout/clearTimeout 缺席时不抛进宿主通知链（退回同步处理）；订正「窗口恒 60 行」旧注释（reducer 增量不截）。
      */
-    var VERSION = "v340";
+    var VERSION = "v341";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */

@@ -590,10 +590,9 @@
       var h = { dead: false, sid: sl.want };
       var tracker = TURN_STATS.createTracker();
       sl.handle = h; sl.store = store; sl.tracker = tracker;
-      var offFn = TURN_STATS.subscribeStore(store, tracker, function () {
+      var offFn = TURN_STATS.subscribeStore(store, tracker, function (st) {
         if (inactive() || h.dead) { subSlotReset(sl); subRateRecompute(); return; }
-        var st = null;
-        try { st = store.getState(); } catch (e) { st = null; }
+        /* issue #309 复审：st 是本次通知已读的 state，不再 store.getState()（同主桥，规则 11） */
         var snap = st && st.snapshot;
         if (!snap || snap.sessionId !== sl.want) { subSlotReset(sl); subRateRecompute(); return; }   // 关闭/换代：重置待重试
         var tid = zuActiveTurnId(snap);
@@ -713,8 +712,9 @@
       /* v87：绑定成功但 turnHeader 还没到——桥活着就别让 chip 空着，按绑定时长合成
        * "思考中"，turnHeader 到位后自然切换为真实统计。v116 条件按宿主源码收紧：
        * ① control.phase==="running"（verifier/长轮 header 滑出，轮真的在跑）；
-       * ② 显式 phase==="draft" 且窗口为空（新会话空窗，v87 本意）。宿主 wire 快照
-       * rows.window 恒为全序尾 60 行（PROTOCOL_V4_LIMITS.snapshotTailWindowRows），
+       * ② 显式 phase==="draft" 且窗口为空（新会话空窗，v87 本意）。宿主 wire/hydrate
+       * 快照的 rows.window 截为全序尾 60 行（PROTOCOL_V4_LIMITS.snapshotTailWindowRows；渲染端
+       * reducer 之后增量只增不截，窗口可达数千行，见 specs/perf-lag-reduction.md），
        * 末轮行数超窗口的闲置会话整窗没有 turnHeader——旧条件「行非空」会让这类会话
        * 永久合成"思考中"（用户停了任务还亮着、切走切回每次重绑重新计时）；而
        * phase=running 与 turnHeader 行同批到达，「行非空且非 running」不存在合法瞬态。

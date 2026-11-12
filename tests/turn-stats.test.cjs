@@ -544,3 +544,33 @@ test('non-string text fields never throw and are not counted', () => {
   assert.doesNotThrow(() => tracker.ingest(snapshot(2, rows)));   // 二次 ingest 走缓存分支同样安全
   assert.equal(tracker.get('t').totalCharacters, 2);
 });
+
+test('a notification arriving after the gap but before a late timer runs synchronously and retires the pending timer', () => {
+  const f = budgetFixture(() => 96);
+  f.clock.t += 1; f.notify();                // 进入合并，排尾部定时器
+  const timer = f.live()[0];
+  assert.ok(timer);
+  f.clock.t += 900;                          // 间隔已过，但定时器被后台节流而迟到
+  f.notify();                                // 新通知先到：同步处理
+  assert.equal(f.log.changed, 2);
+  assert.equal(timer.cleared, true, 'the superseded timer is cleared');
+  const reads = f.log.reads;
+  timer.fire();                              // 即便迟到回调仍被调到，也不再多读一次整窗
+  assert.equal(f.log.reads, reads, 'no redundant full-window read after the synchronous run');
+});
+
+test('default timer helpers tolerate hosts without setTimeout/clearTimeout (AGENTS §4 typeof guard)', () => {
+  const saved = { st: global.setTimeout, ct: global.clearTimeout };
+  try {
+    const f = (() => {
+      let l, n = 0, clock = 0;
+      const store = { getState: () => { clock += 96; return { snapshot: snapshot(++n, [header(), text('x')]) }; }, subscribe: cb => { l = cb; return () => {}; } };
+      const close = subscribeStore(store, createTracker({ now: () => clock }), () => {}, { now: () => clock });
+      return { l, close, bump: () => { clock += 1; } };
+    })();
+    global.setTimeout = undefined; global.clearTimeout = undefined;
+    f.bump();
+    assert.doesNotThrow(() => f.l(), 'arming without setTimeout must not throw into the host notification chain');
+    assert.doesNotThrow(() => f.close(), 'closing without clearTimeout must not throw');
+  } finally { global.setTimeout = saved.st; global.clearTimeout = saved.ct; }
+});
