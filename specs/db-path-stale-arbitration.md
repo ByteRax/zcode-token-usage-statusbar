@@ -22,7 +22,7 @@
 
 - 仲裁为各镜像内联私有 helper（Python `_db_write_fresh` + 采纳判定，Node `dbWriteFreshMs` + `adoptsMigrationCandidate`），不进快照、不改 CLI/MCP/hook 输出契约。
 - `DB_PATH`（Python 模块量）与 `DB_DIR`（Node 进程缓存）仍为一次解析随进程生效；运行期库位置变化仍依赖既有热重载/重启语义，不变。
-- `hosts.zcode.db_path` 显式覆盖（docs/hosts.md）只在 zusage 查询链生效的现状不变；本仲裁修的是「默认解析」本身，修复后 #294 型场景不再需要该覆盖规避。
+- `hosts.zcode.db_path` 显式覆盖（docs/hosts.md）不经本仲裁（显式来源即写库位）。issue #314 起 token_rate 与 zusage 同样遵循该覆盖，优先级与读取口径见 [db-path-config-override.md](db-path-config-override.md)；本仲裁修的是「默认解析」本身，修复后 #294 型场景不再需要该覆盖规避。
 
 ## 验收场景
 

@@ -67,7 +67,7 @@ python zusage.py --host workbuddy json
 |---|---|---|
 | `host` | `"zcode"` / `"workbuddy"` | 数据源宿主。**缺省跟随客户端构建**：ZCode 构建（默认安装）恒为 `zcode`，行为一字不变 |
 | `host` | `"auto"` | 显式开启自动探测：ZCode 库存在即选 zcode；ZCode 库缺失且 WorkBuddy 库存在时选 workbuddy |
-| `hosts.zcode.db_path` | 路径或 `""` | 覆盖 ZCode 库位置（多机/自定义安装；`~` 与 `%VAR%`/`$VAR` 会展开） |
+| `hosts.zcode.db_path` | 路径或 `""` | 覆盖 ZCode 库位置（多机/自定义安装；`~` 与 `%VAR%`/`$VAR` 会展开；建议写绝对路径）。查询链（CLI / MCP / 桌面快照）与逐问速率脚本 `token_rate.py`（状态条统计行、提问背景行）读的是同一个库 |
 | `hosts.workbuddy.db_path` | 路径或 `""` | 覆盖 WorkBuddy 库位置，常用于 WSL/多用户/绿色版目录 |
 
 环境变量（优先级高于配置）：
@@ -76,6 +76,7 @@ python zusage.py --host workbuddy json
 |---|---|
 | `ZUSAGE_HOST` | 覆盖宿主，接受 `zcode` / `workbuddy`（别名 `wb`、`work-buddy`，大小写不敏感） |
 | `ZUSAGE_WORKBUDDY_DB` | 覆盖 WorkBuddy 库路径 |
+| `ZCODE_USAGE_DB` | 覆盖逐问速率脚本 `token_rate.py` 的库路径（仅它读取，`zusage.py` 不读；主要用作隔离测试的接缝） |
 
 **判定优先级**：`--host` / MCP 参数 > `ZUSAGE_HOST` > `config.host`（`auto` 除外，见下）
 > agent 跟随（`detect_agent`：ZCode 构建恒为 zcode，WorkBuddy 构建读 workbuddy）
@@ -323,3 +324,7 @@ python scripts/install_workbuddy_plugin.py  # 重新部署到 WorkBuddy 缓存
 - 远程（SSH/WSL/Docker）查询链路仍是 ZCode 语义：它转发的是 `zusage.py json`，
   若远端也要读 WorkBuddy 数据，需在远端写同样的 `host` 配置。
 - 逐问速率行（`token_rate.py`）依赖逐请求 token 与耗时，WorkBuddy 不适用。
+- 桌面主桥（`inject-main.cjs`）监听库文件变化、判断「有无新写入」时仍按默认解析目录，不跟随
+  `hosts.zcode.db_path`：库放在非默认位置时，快照内容读的是覆盖库，但覆盖库的写入不会触发状态条
+  刷新，新数据可能要等到切换会话等其它刷新时机才显示。详见
+  [specs/db-path-config-override.md](../specs/db-path-config-override.md)「遗留」。
