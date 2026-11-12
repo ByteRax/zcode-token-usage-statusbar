@@ -15,9 +15,10 @@
                                          的统计指令带此参数，防止模型迟迟才跑该命令时，
                                          并行会话抢先提问把"最近提问会话"状态覆盖掉）
   ZCODE_SESSION_ID=xxx python3 ...       只统计指定会话
-  ZCODE_USAGE_DB=/path/db.sqlite         指定数据库路径（默认镜像宿主 agent 会话库解析：
-                                         ZCODE_SESSION_DB_PATH/config.sessionDbPath 优先，
-                                         兼容 dataBaseDir 迁移目录并仲裁陈旧候选，回落 ~/.zcode）
+  ZCODE_USAGE_DB=/path/db.sqlite         指定数据库路径（最高优先；其次 config.json 的 hosts.zcode.db_path
+                                         显式覆盖，与 zusage 同款，issue #314；都未设时默认镜像宿主
+                                         agent 会话库解析：ZCODE_SESSION_DB_PATH/config.sessionDbPath
+                                         优先，兼容 dataBaseDir 迁移目录并仲裁陈旧候选，回落 ~/.zcode）
   ZUSAGE_RATE_STATE_FILE=/path           指定钩子状态文件（测试接缝）
 
 只读打开 WAL 数据库，不影响运行中的客户端。
@@ -130,7 +131,36 @@ def _default_db_path(env=None, home=None):
     return home / ".zcode" / "cli" / "db" / "db.sqlite"
 
 
-DB_PATH = os.environ.get("ZCODE_USAGE_DB") or str(_default_db_path())
+def _configured_db_path(home=None, script_dir=None):
+    """config.json 的 hosts.zcode.db_path 显式覆盖（issue #314，规格 specs/db-path-config-override.md）：
+    与 zusage.zcode_db_path 同款——两跳 config（脚本同目录 → ~/.zcode/zcode-token-usage-statusbar/
+    config.json，UTF-8），hosts.zcode 对象先到者整段胜出（其 db_path 为空也遮蔽后一跳），非空串
+    经 expandvars/expanduser；不检查存在性、不仲裁（显式来源即写库位）。本脚本单独部署不 import
+    zusage，改动两处同步。缺失/损坏/无法展开一律返回 None（当未配置）：DB_PATH 在导入期求值，
+    抛异常会连带丢掉 hook 的 write_session_state。"""
+    home = Path.home() if home is None else Path(home)
+    script_dir = Path(__file__).parent if script_dir is None else Path(script_dir)
+    for file in (script_dir / "config.json",
+                 home / ".zcode" / "zcode-token-usage-statusbar" / "config.json"):
+        try:
+            data = json.loads(file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        hosts = data.get("hosts") if isinstance(data, dict) else None
+        entry = hosts.get("zcode") if isinstance(hosts, dict) else None
+        if not isinstance(entry, dict):
+            continue
+        raw = entry.get("db_path")
+        if not (isinstance(raw, str) and raw.strip()):
+            return None   # 先到者整段胜出：空值同样遮蔽后一跳（与 zusage 一致）
+        try:
+            return Path(os.path.expandvars(raw.strip())).expanduser()
+        except (RuntimeError, OSError):
+            return None   # ~user 无法展开：当未配置，不在导入期抛
+    return None
+
+
+DB_PATH = os.environ.get("ZCODE_USAGE_DB") or str(_configured_db_path() or _default_db_path())
 # 钩子状态文件：记录"用户最后所处的会话"与最近提问时刻（--current 守卫依赖 promptTs）
 STATE_FILE = os.environ.get("ZUSAGE_RATE_STATE_FILE") or str(
     Path.home() / ".zcode" / "zusage-rate.last-session.json")
