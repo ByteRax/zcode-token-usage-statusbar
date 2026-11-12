@@ -111,6 +111,57 @@ test("get returns a frozen snapshot wrapper, passes notifications, throws on inv
   assert.equal(get({ sessionId: "s1", workspacePath: "/elsewhere" }), null);
 });
 
+test("wrapped getState is reference-stable per underlying state (issue #307)", () => {
+  // 宿主 React useSyncExternalStore 以 Object.is 比对 getSnapshot：同一底层状态引用
+  // 必须映射到同一冻结快照，否则渲染期间视为 store 又变了 → 无限重渲染（#185）。
+  // 真实宿主形态：无变化时底层 getState 返回同一引用（夹具默认每次造新对象，
+  // 这里换成稳定引用 store 专门锁此契约）。
+  const { sandbox, ctx, api } = bridgeContext({ windowDoc: false });
+  const reg = buildRegistry(ctx);
+  vm.runInContext(`(() => {
+    globalThis.__zuState = globalThis.__zuStore.getState();
+    globalThis.__zuStore.getState = () => globalThis.__zuState;
+  })()`, ctx);
+  api.installRuntimeBridge(reg.registry);
+  const store = sandbox.__zusageGetExistingConversationStore({ sessionId: "s1", workspacePath: "/work" });
+  const keepOff = store.subscribe(() => { });   // 订阅在场：wrapper 内部订阅底层 store，通知才能到达缓存失效链
+  const first = store.getState();
+  assert.equal(store.getState(), first);              // 同一底层引用 → 同一快照（修复前每次新引用）
+  assert.notEqual(first, ctx.__zuState);              // 仍是深拷贝，绝不外借宿主对象
+  assert.ok(Object.isFrozen(first));
+  // 就地变更不通知：React 契约下不可观察，返回缓存旧快照（缓存语义的代价与依据）
+  vm.runInContext("globalThis.__zuState.snapshot.seq = 7", ctx);
+  assert.equal(store.getState(), first);
+  assert.equal(first.snapshot.seq, 1);
+  // 就地变更 + 通知：缓存失效 → 重建，读到新内容且再次稳定
+  vm.runInContext("globalThis.__zuStore.notify()", ctx);
+  const second = store.getState();
+  assert.notEqual(second, first);
+  assert.equal(second.snapshot.seq, 7);
+  assert.equal(store.getState(), second);
+  // 不可变更新 + 通知：新底层引用 → 新快照
+  vm.runInContext(`globalThis.__zuState = { status: "active", snapshot: { sessionId: "s1", logEpoch: "e1", seq: 8, rows: { window: [] } } }; globalThis.__zuStore.notify()`, ctx);
+  const third = store.getState();
+  assert.notEqual(third, second);
+  assert.equal(third.snapshot.seq, 8);
+  assert.equal(store.getState(), third);
+  // 裸换坏状态（含函数）不通知：构造抛出时缓存三变量原样保留（先构造后提交），
+  // 逐次一致重抛——若实现改为先提交 lastRaw 再构造（issue 建议顺序），第二次
+  // 调用会因 raw===lastRaw 跳过重建、吞错返回旧快照，本断言即红。
+  vm.runInContext(`globalThis.__zuState = { status: "active", snapshot: { sessionId: "s1", logEpoch: "e1", seq: 11, fn: () => {} } }`, ctx);
+  assert.throws(() => store.getState(), /Unsupported snapshot value/);
+  assert.throws(() => store.getState(), /Unsupported snapshot value/);
+  // 底层状态含不支持值（函数）：重建构造抛 TypeError（vm 域原型，按消息匹配），缓存不提交，逐次一致抛出
+  vm.runInContext(`globalThis.__zuState = { status: "active", snapshot: { sessionId: "s1", logEpoch: "e1", seq: 9, fn: () => {} } }; globalThis.__zuStore.notify()`, ctx);
+  assert.throws(() => store.getState(), /Unsupported snapshot value/);
+  assert.throws(() => store.getState(), /Unsupported snapshot value/);
+  // off 后 null，后续通知不复活
+  keepOff();
+  store.off();
+  vm.runInContext("globalThis.__zuStore.notify()", ctx);
+  assert.equal(store.getState(), null);
+});
+
 test("get degrades to null and self-unsubscribes when the session dies", () => {
   const { sandbox, ctx, api } = bridgeContext({ windowDoc: false });
   const reg = buildRegistry(ctx);

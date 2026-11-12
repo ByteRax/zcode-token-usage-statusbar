@@ -286,7 +286,7 @@
     return `⚡ ${speed} · ${output}${duration}${status}`;
   }
 
-  /* ---------- v258：运行时合成桥（renderer_bridge.py BRIDGE_TEMPLATE v2 的免混淆名同契约实现） ----------
+  /* ---------- v258：运行时合成桥（renderer_bridge.py BRIDGE_TEMPLATE 当前代的免混淆名同契约实现） ----------
    * 静态桥由 renderer_bridge.py 按版本混淆名打进宿主 asar；客户端升级到 HOST_TARGETS 表外
    * 版本、桥未部署或 Windows 运行期替换被拒时，由本模块在渲染端自行合成同契约的三个只读
    * 访问器（__zusageGetExistingConversationStore / __zusageAcquireConversationStore /
@@ -330,6 +330,12 @@
   function zuWrapStore(store, current, release) {
     let stopped = false;
     const cancellations = new Set();
+    /* 快照缓存按底层状态引用取键（issue #307）：宿主 React 以 useSyncExternalStore
+     * （Object.is 语义）消费本包装，同一底层状态必须映射到同一冻结快照，否则宿主把
+     * 每次读取都当作「渲染期间 store 又变了」而无限重渲染（React error #185）。
+     * 宿主通知先失效缓存再转发——就地变更一经通知即可在下一次读取可见；未经通知的
+     * 就地变更按订阅契约本就不可观察。 */
+    let lastRaw = null, lastSnap = null, hasSnap = false;
     const off = () => {
       if (stopped) return;
       stopped = true;
@@ -343,7 +349,17 @@
       return false;
     };
     return Object.freeze({
-      getState: () => active() ? zuSnapshot(store.getState()) : null,
+      getState: () => {
+        if (!active()) { hasSnap = false; return null; }
+        const raw = store.getState();
+        if (!hasSnap || raw !== lastRaw) {
+          const snap = zuSnapshot(raw);   // 先构造后提交：构造抛出时缓存原样保留
+          lastRaw = raw;
+          lastSnap = snap;
+          hasSnap = true;
+        }
+        return lastSnap;
+      },
       subscribe: callback => {
         if (typeof callback !== "function") throw new TypeError("Invalid callback");
         if (!active()) return () => {};
@@ -356,6 +372,7 @@
         };
         const unsubscribe = store.subscribe(() => {
           if (cancelled || !active()) return;
+          hasSnap = false;   // 先失效缓存再转发：就地变更也由此覆盖
           try {
             const result = callback();
             if (result && typeof result.then === "function")

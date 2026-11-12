@@ -662,18 +662,23 @@ VM_ASSERTIONS = r'''
  assert(Object.isFrozen(handle));
  assert.equal(session.store,store);
  const state = handle.getState();
- assert.notEqual(state,store.state); assert.equal(state.circular,state);
+ assert.equal(handle.getState(),state); assert.notEqual(state,store.state); assert.equal(state.circular,state);
  assert(Object.isFrozen(state.snapshot.rows[0]));
  try {state.snapshot.rows[0].text='consumer';state.snapshot.rows.push({});} catch (_) {}
  assert.equal(store.state.snapshot.rows[0].text,'host');
  assert(!Object.isFrozen(store.state.snapshot));
  store.state.snapshot.rows[0].text='new';
- assert.equal(handle.getState().snapshot.rows[0].text,'new');
+ assert.equal(handle.getState(),state);
+ assert.equal(handle.getState().snapshot.rows[0].text,'host');
  assert.equal(state.snapshot.rows[0].text,'host');
  let calls=0; const off = handle.subscribe(() => calls++);
  handle.subscribe(() => {throw Error('consumer error');});
  handle.subscribe(async () => {throw Error('async consumer error');});
  store.setState({status:'live'}); assert.equal(calls,1);
+ const liveState = handle.getState();
+ assert.notEqual(liveState,state);
+ assert.equal(liveState.snapshot.rows[0].text,'new');
+ assert.equal(handle.getState(),liveState);
  off(); off(); store.setState({status:'live'}); assert.equal(calls,1);
  handle.off();handle.off(); assert.equal(store.listeners.size,0);
  assert.equal(handle.getState(),null);
