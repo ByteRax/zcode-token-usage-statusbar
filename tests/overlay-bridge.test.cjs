@@ -375,8 +375,11 @@ test('issue #321: turn-text diag counters classify ok, empty, reason buckets, st
   h.window.__zusageDeliverTurnText('sid_a', '', epoch(), 'timeout');   // 15s 超时
   h.runTimers(500);
   h.window.__zusageDeliverTurnText('sid_a', '', epoch(), 'spawn');     // 解释器拉不起
+  h.window.__zusageDeliverTurnText('sid_a', '', epoch(), 'spawn');     // 同 epoch 重复空回执：只计首个（锁变异 e2：重复原因桶不双计）
   h.runTimers(500);
   h.window.__zusageDeliverTurnText('sid_a', RICH, epoch());            // 恢复：非空入缓存
+  assert.equal(h.deterministic()[0].querySelector('p').textContent, RICH);
+  h.window.__zusageDeliverTurnText('sid_a', RICH + ' dup', epoch());   // 同 epoch 重复非空交付：缓存命中，ok 不双计（锁变异 e）
   assert.equal(h.deterministic()[0].querySelector('p').textContent, RICH);
   h.window.__zusageDeliverTurnText('sid_a', 'late', 'bogus');          // 未匹配在途 → stale
   h.clock.now = 3200;                    // 第二轮：新 seq（tracker 才会收录）、新 key、新请求，一直不交付

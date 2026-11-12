@@ -1570,7 +1570,9 @@ function queryTurnText(sid, wc, plainUnits, forceKmb, unitEpoch) {
   py.on("error", (e) => { LOG("turn text spawn failed:", e.message); finish("", "spawn"); });
   py.on("close", (code) => {
     const text = Buffer.concat(chunks).toString("utf8").trim();
-    finish(text, text ? null : (code ? "pyerr" : "empty"));   // #321：空交付区分 Python 失败（非零退出）与「库没追上」（exit 0 空输出）
+    // #321：空交付区分 Python 失败与「库没追上」；code 仅在正常退出时为 0，信号杀死
+    //（外部 kill/OOM，非本方 timeout——那条路已先行 finish("timeout")）为 null，归 pyerr
+    finish(text, text ? null : (code === 0 ? "empty" : "pyerr"));
   });   // 空串 = 库里还没这一轮，不是错误
 }
 

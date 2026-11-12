@@ -234,6 +234,10 @@ test('turn-text empty deliveries carry a reason tag for the renderer diag', asyn
   assert.ok(h.deliveries.at(-1).endsWith(',"pyerr")'));
   h.queue.push({ action: 'turn-text', sid: 'sid_a' });
   h.poll(); await flush();
+  h.procs.at(-1).emit('close', null); await flush();   // 信号杀死（外部 kill/OOM，code=null）空输出也归 pyerr，不误当「库没追上」
+  assert.ok(h.deliveries.at(-1).endsWith(',"pyerr")'));
+  h.queue.push({ action: 'turn-text', sid: 'sid_a' });
+  h.poll(); await flush();
   h.procs.at(-1).emit('close', 0); await flush();   // exit 0 空输出 = 库没追上
   assert.ok(h.deliveries.at(-1).endsWith(',"empty")'));
   h.queue.push({ action: 'turn-text', sid: 'sid_a' });
