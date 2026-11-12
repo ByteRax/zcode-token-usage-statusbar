@@ -78,7 +78,7 @@
   /* ---------- 共享状态（多实例一致）：显示项/语言/上下文覆盖/最近一次数据 ---------- */
   var LS = { show: "zusage3.show", devKeepTip: "zusage3.devKeepTip", ctxOv: "zusage3.ctxOv", lang: "zusage3.lang", cnNum: "zusage3.cnNum", sec: "zusage3.sec", rstCdh: "zusage3.rstCdh", projPath: "zusage3.projPath", theme: "zusage3.theme", ctxEnh: "zusage3.ctxEnh", cmdkW: "zusage3.cmdkW", updSeen: "zusage3.updSeen", forceKmb: "zusage3.forceKmb", ctxCpt: "zusage3.ctxCpt", cost: "zusage3.cost", barJust: "zusage3.barJust", autoCompact: "zusage3.autoCompact", tipClick: "zusage3.tipClick", quotaRemain: "zusage3.quotaRemain" };
   var state = {
-    show: { win: 1, turn: 1, today: 1, sub: 1, tools: 1, git: 1, proj: 1, subRate: 1, wfChip: 1 },   // git：工具行 Git 状态 chip（v96，默认开）；proj：项目累计格（v159，默认开；与 zusage3.projPath 弹窗路径开关无关）；subRate：Agent 行内子代理速率 chip（v178，默认开；只门控行内展示，槽位估算与主 chip 合计不受影响）；wfChip：工作流 run 卡汇总 chip（v332，默认开；specs/workflow-support.md）
+    show: { win: 1, turn: 1, today: 1, all: 1, sub: 1, tools: 1, git: 1, proj: 1, subRate: 1, wfChip: 1 },   // git：工具行 Git 状态 chip（v96，默认开）；proj：项目累计格（v159，默认开；与 zusage3.projPath 弹窗路径开关无关）；subRate：Agent 行内子代理速率 chip（v178，默认开；只门控行内展示，槽位估算与主 chip 合计不受影响）；wfChip：工作流 run 卡汇总 chip（v332，默认开；specs/workflow-support.md）；all：全期累计格（fork，默认开）
     ctxOv: "", data: null,
     lang: "zh", theme: "default", pluginUpdate: window.__zusagePluginState || null,
     /* v226 默认样式水平对齐：between|start|end（均分/居左/居右），仅默认档生效；药丸恒 flex-start */
@@ -267,7 +267,7 @@
   /* v226 六格显示开关（本轮/会话累计/项目累计/工具调用/今日合计/子代理）全部关闭时自动转精简：
    * 边缘触发（只在「变得全关」那一拍切档，手动改回默认不立即翻回）；zusage3.autoCompact 记录
    * 来源主题（default|pill），重开任一格即恢复；用户在面板手动改档即清标记解除自动干预 */
-  var SHOW_CELLS = ["turn", "win", "proj", "tools", "today", "sub"];
+  var SHOW_CELLS = ["turn", "win", "proj", "tools", "today", "all", "sub"];
   function cellsAllOff() {
     for (var i = 0; i < SHOW_CELLS.length; i++) if (state.show[SHOW_CELLS[i]]) return false;
     return true;
@@ -10756,6 +10756,7 @@
       settingRow('<input type="checkbox" data-k="proj">', L("项目累计", "Project total"), L("本项目所有会话的消耗（含子代理），按目录归属", "Usage across all sessions in this project (sub-agents incl.), grouped by directory")) +
       settingRow('<input type="checkbox" data-k="tools">', L("工具调用", "Tool calls"), L("悬停查看各工具明细与错误", "Hover for per-tool details and errors")) +
       settingRow('<input type="checkbox" data-k="today">', L("今日合计", "Today's total"), L("今天所有会话的消耗", "Usage across all sessions today")) +
+      settingRow('<input type="checkbox" data-k="all">', L("全期累计", "All-time total"), L("本地库全部历史的消耗（所有会话×所有任务，含按模型预估费用）", "Usage across the entire local database (all sessions × all tasks, with per-model estimated costs)")) +
       settingRow('<input type="checkbox" data-k="sub">', L("子代理", "Sub-agents"), L("悬停或点击状态条上的子代理查看统计", "Hover or click the bar item for sub-agent stats")) +
       settingRow('<input type="checkbox" data-k="subRate">', L("子代理行内速率", "Sub-agent row rate"), L("在会话流的 Agent 工具行内实时显示各子代理 tok/s（运行期估算，完成后切换为真实平均速率；悬停看明细）。默认开启。", "Shows each sub-agent's live tok/s inside its Agent tool row (running estimate, actual average after completion; hover for details). On by default.")) +
       settingRow('<input type="checkbox" data-k="wfChip">', L("工作流卡汇总", "Workflow card summary"), L("在会话流的工作流卡片上显示 token 合计与聚合速率（完成态，每次执行结算后更新；悬停看各执行者明细）。默认开启。", "Shows token total and aggregate rate on workflow cards in the conversation (settled data, refreshed as each ask completes; hover for per-actor details). On by default.")) +
@@ -12083,7 +12084,7 @@
       return '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + paths + "</svg>";
     }
     function html(d) {
-      var sess = d.session || {}, lt = d.last_turn || {}, today = d.today || {}, last = d.last || {};
+      var sess = d.session || {}, lt = d.last_turn || {}, today = d.today || {}, allu = d.all || {}, last = d.last || {};
       var tls = d.tools || { total: 0, errors: 0, list: [] };
       var items = [], tips = [];
       function it(inner, tipContent, cls) {
@@ -12451,6 +12452,51 @@
             '<b>' + ttEsc(L("时间范围", "Time span")) + '</b><span>' +
             (today.started ? fmtStartS(today.started) : "—") + " — " + (today.last_at ? fmtStartS(today.last_at) : "—") + '</span></div>' +
           '</div>');      }
+      if (state.show.all) {   // [zusage-fork] 全期累计：本地库全部历史（所有会话×所有任务），置于今日合计之后
+        it(ico('<path d="M3.5 8a9 9 0 1 1-1.2 6.2"/><path d="M3 3.5V8h4.5"/><path d="M12 8v4.5l3 2"/>') +
+          '<span class="v">' + fmt(allu.total) + "</span>" +
+          (state.theme === "pill" ? "" :
+            '<span class="dim">' + countFmt(allu.sessions || 0) + L("会话 ", " sessions · ") + countFmt(allu.turns || 0) + L("轮 ", " turns · ") + countFmt(allu.requests || 0) + L("次", " req") + "</span>"),
+          "\x01" +
+          statCompactStyle("today") +
+          '<div class="zu-stat-tip zu-stat-tip--today">' +
+          statHead(L("全期累计", "All-time"), L("本地库全部历史（所有会话×所有任务）", "Entire local database (all sessions × all tasks)")) +
+          /* 行一：总用量 | 输入（缓存命中率副行）| 输出（含思考副行）——同今日合计口径 */
+          '<div class="zu-turn-kpis">' +
+            statKpi(kpiIco("total") + L("总用量", "Total tokens"), ttEsc(fmt(allu.total || 0)), turnVBkt(fmt(allu.total || 0))) +
+            statKpi(kpiIco("input") + L("输入", "Input"), ttEsc(fmt(allu.input || 0)), turnVBkt(fmt(allu.input || 0)),
+              (allu.input > 0 ? '<span class="hit">' + ttEsc(L("缓存命中率 ", "cache hit ") + Math.round((allu.cache_read || 0) / allu.input * 100) + "%") + '</span>' : "")) +
+            statKpi(kpiIco("output") + L("输出", "Output"), ttEsc(fmt(allu.output || 0)), turnVBkt(fmt(allu.output || 0)),
+              (allu.reasoning > 0 ? ttEsc(L("含思考 ", "incl. ") + fmt(allu.reasoning)) : "")) +
+          '</div>' +
+          /* 行二：请求次数 | 请求轮数 | 请求会话（全期去重） */
+          '<div class="zu-turn-kpis">' +
+            statKpi(kpiIco("requests") + L("请求次数", "Requests"), ttEsc(countFmt(allu.requests || 0)), turnVBkt(countFmt(allu.requests || 0))) +
+            statKpi(kpiIco("turns") + L("请求轮数", "Turns"), ttEsc(allu.turns != null ? countFmt(allu.turns) : "—"), turnVBkt(allu.turns != null ? countFmt(allu.turns) : "")) +
+            statKpi(kpiIco("sessions") + L("请求会话", "Sessions"), ttEsc(allu.sessions != null ? countFmt(allu.sessions) : "—"), turnVBkt(allu.sessions != null ? countFmt(allu.sessions) : "")) +
+          '</div>' +
+          /* 行三：预估费用（问号气泡沿用）| Σ生成耗时。不做全期平均耗时/速度——
+           * 跨会话长期平均参考价值低，避免誘导误读 */
+          '<div class="zu-turn-kpis zu-turn-kpis--duo">' +
+            ((state.cost && typeof allu.cost_usd === "number" && isFinite(allu.cost_usd))
+              ? statKpi(kpiIco("cost") + L("预估费用", "Est. cost") + fxqIcon(allu.models, L("全期", "all-time")), ttEsc(fmtMoney(allu.cost_usd)))
+              : "") +
+            (allu.duration_ms > 0 ? statKpi(kpiIco("elapsed") + L("总耗时", "Total time"), ttEsc(secLong(allu.duration_ms)), turnVBkt(secLong(allu.duration_ms))) : "") +
+          '</div>' +
+          /* 模型明细：全期按模型费用（同今日合计的固定表头+独立滚动） */
+          ((allu.models && allu.models.length)
+            ? '<div class="zu-pj-mhead"><div class="zu-pj-mtitle">' + ttEsc(L("模型明细", "Models")) + '</div><div class="zu-pj-morder">' +
+              ((allu.tool_calls || allu.retries)
+                ? [(allu.tool_calls ? ttEsc(L("工具调用 ", "tools ") + countFmt(allu.tool_calls) + L(" 次", " calls")) : ""),
+                   (allu.retries ? ttEsc(L("重试 ", "retries ") + countFmt(allu.retries) + L(" 次", " times")) : "")].filter(Boolean).join('<i class="zu-turn-sep">·</i>')
+                : ttEsc(L("按用量排序", "by usage"))) + '</div></div>' +
+              '<div class="zu-turn-models">' + statModelsTable(allu.models, null, true) + '</div>'
+            : "") +
+          '<div class="zu-stat-time">' +
+            '<b>' + ttEsc(L("时间范围", "Time span")) + '</b><span>' +
+            (allu.started ? fmtStartS(allu.started) : "—") + " — " + (allu.last_at ? fmtStartS(allu.last_at) : "—") + '</span></div>' +
+          '</div>');
+      }
       if (state.show.proj && sess.project) {   // v159 项目累计：本项目全部会话（含子代理），远端/不在本地库无此字段不渲染
         var pj = sess.project;
         var pjKey = (pickedSid || "") + ":" + (pj.started || 0);   // v214 项目卡归属键：项目变化（started 变）自动重置展开态
@@ -13548,6 +13594,8 @@
         session: p, last_turn: p.last_turn || {}, last: p.last || {},
         /* v9：远端会话的「今日合计」用远端机数据，本地 today 只在显示本地会话时使用 */
         today: p.remote ? (remoteToday || {}) : d.today,
+        /* [zusage-fork] 全期累计是本机库维度，不随会话路由：本地/远端会话都用本地快照 */
+        all: d.all || {},
         native_ctx: nativeCtxVal,
         context_window: p.context_window, context_auto: p.context_auto,
         code: p.code, ctx_exc: p.ctx_exc, tools: p.tools,
@@ -16975,7 +17023,7 @@
     }
     function tpsChipTipHTML(t) {
       var v = t.v, view = t.view || {};
-      var sess = view.session || {}, lt = view.last_turn || {}, today = view.today || {}, last = view.last || {};
+      var sess = view.session || {}, lt = view.last_turn || {}, today = view.today || {}, allu = view.all || {}, last = view.last || {};
       var tls = view.tools || { total: 0, errors: 0 };
       /* 作用域样式挂在内容串里（同 rstTipHTML）：浮层是 body 级共享元素，样式随内容走 */
       var out = "<style>" +
@@ -17052,6 +17100,9 @@
       }
       if (state.show.today) {   // v213 摘要行序随格序对齐（用户规格 2026-11-02）
         out += tpsRowHtml(L("今日合计", "Today"), fmt(today.total) + L(" token · ", " token · ") + countFmt(today.requests || 0) + L("次", " req") + costSuffix(today.cost_usd));
+      }
+      if (state.show.all) {   // [zusage-fork] 全期累计摘要行（与今日合计同款形态）
+        out += tpsRowHtml(L("全期累计", "All-time"), fmt(allu.total) + L(" token · ", " token · ") + countFmt(allu.requests || 0) + L("次", " req") + costSuffix(allu.cost_usd));
       }
       if (state.show.proj && sess.project) {   // v159：项目累计摘要行（与会话累计同款口径）
         var pj2 = sess.project;

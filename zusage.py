@@ -5,7 +5,7 @@
 - zcode（默认）= 本地用量库的 model_usage 逐请求表（路径经 resolve_db_path 镜像宿主 agent 会话库解析，兼容 dataBaseDir 迁移目录并仲裁陈旧候选）；
 - workbuddy = ~/.workbuddy/workbuddy.db 的 session_usage 会话级表（上下文用量 + credit）。
 
-既可作 CLI（python zusage.py [now|today|days N|sessions [N]|models [days]|workspace 关键词|session id前缀|watch [sec]|host]），
+既可作 CLI（python zusage.py [now|today|days N|all|sessions [N]|models [days]|workspace 关键词|session id前缀|watch [sec]|host]），
 也可被 usage_mcp.py import 为查询库。
 """
 import hashlib
@@ -1239,6 +1239,35 @@ def render_models(con, days=7):
             L(f"  {model:<22} {n:>5} 次  in {fmt(inp):>8}  out {fmt(outp):>7}  合计 {fmt(total):>8}  ({prov})",
               f"  {model:<22} {n:>5} req  in {fmt(inp):>8}  out {fmt(outp):>7}  total {fmt(total):>8}  ({prov})")
         )
+    return "\n".join(lines)
+
+
+def render_all(con, top=12):
+    """[zusage-fork] 全期累计（所有会话×所有任务）：全库范围聚合 + 按模型预估费用。
+    口径与今日合计一致（completed 行，range_usage/_scope_models_cost），只是不加时间过滤。
+    费用为 models.dev 牌价等值估算，非实际账单（价表模块缺失时只出 token 计数）。"""
+    if host_of(con) == HOST_WORKBUDDY:
+        return L("累计口径仅支持本地 ZCode 库。", "All-time scope supports the local ZCode database only.")
+    end = _epoch_ms(datetime.now() + timedelta(days=1))
+    r = range_usage(con, 0, end)
+    lines = [L("■ 全期累计（所有会话×所有任务）", "■ All-time (all sessions × all tasks)"),
+             L(f"  {r[0]} 次请求  in {fmt(r[1])}  out {fmt(r[2])}  合计 {fmt(r[4])}",
+               f"  {r[0]} requests  in {fmt(r[1])}  out {fmt(r[2])}  total {fmt(r[4])}")]
+    try:
+        models, cost = _scope_models_cost(con, "completed_at between ? and ?", (0, end))
+    except Exception:
+        models, cost = None, None
+    if models:
+        lines.append(L("  按模型（预估费用，按用量降序）：", "  by model (est. cost, by usage):"))
+        for m in models[:top]:
+            cost_cell = _wb_money(m["cost_usd"]) if m.get("cost_usd") is not None else "—"
+            lines.append(L(f"    {m['model']:<26} {m['requests']:>5} 次  合计 {fmt(m['total'])}  {cost_cell}",
+                           f"    {m['model']:<26} {m['requests']:>5} req  total {fmt(m['total'])}  {cost_cell}"))
+        if len(models) > top:
+            lines.append(L(f"  …另有 {len(models) - top} 个模型", f"  …and {len(models) - top} more models"))
+    if cost is not None:
+        lines.append(L(f"  预估费用合计 {_wb_money(cost)}（models.dev 牌价等值估算，非实际账单）",
+                       f"  Estimated total {_wb_money(cost)} (models.dev list-price equivalent, not an actual bill)"))
     return "\n".join(lines)
 
 
@@ -3331,6 +3360,18 @@ def snapshot(force_sid="", routes=None, serve_con=None, include_speed_history=Fa
                 return {"cost": cost, "models": models if models else []}
             today_detail = _cached_agg(("todaydetail", start_ms), _WmFn(_today_detail, con)) if con else None
             today_cost = today_detail["cost"] if today_detail else None
+            # [zusage-fork] 全期累计（所有会话×所有任务）：全库 completed 行，不加时间过滤。
+            # 复用 _today_usage 16 列聚合与 _scope_models_cost 分组费用；缓存键恒定，
+            # 失效走水位（_usage_watermark）同 today。任何失败按 today 同款降级，不拖垮整帧。
+            def _all_usage_row():
+                return _today_usage(con, 0, _epoch_ms(datetime.now() + timedelta(days=1)))
+            all_row = _cached_agg(("allusage",), _WmFn(_all_usage_row, con)) if con else (0,) * 16
+            def _all_detail():
+                models, cost = _scope_models_cost(
+                    con, "completed_at between ? and ?", (0, _epoch_ms(datetime.now() + timedelta(days=1))))
+                return {"cost": cost, "models": models if models else []}
+            all_detail = _cached_agg(("alldetail",), _WmFn(_all_detail, con)) if con else None
+            all_cost = all_detail["cost"] if all_detail else None
             rows = _scan_session_ids(con) if con else []
             have_local = set()
             if con and force_sids:
@@ -3344,6 +3385,7 @@ def snapshot(force_sid="", routes=None, serve_con=None, include_speed_history=Fa
             con.close()
             con = None
             today, rows, have_local, today_rate = (0,) * 16, [], set(), 0
+            all_row, all_detail, all_cost = (0,) * 16, None, None
         known_sids = [s for s in force_sids if s in have_local]
         # 远端补齐（v12）：本地不存在的 force 会话按路由分组查各自远端库
         setup = _remote_setup(cfg)
@@ -3460,6 +3502,20 @@ def snapshot(force_sid="", routes=None, serve_con=None, include_speed_history=Fa
                 # v202 预估费用+模型明细（可选增强字段；价表模块缺失时省略）
                 **({"cost_usd": today_cost} if today_cost is not None else {}),
                 **({"models": today_detail["models"]} if today_detail and today_detail["models"] else {}),
+            },
+            # [zusage-fork] 全期累计（所有会话×所有任务）：全库口径，与会话/项目/今日互不影响。
+            # 远端会话也用本地库全量（累计是本机维度，不随会话路由）。旧消费端忽略未知键。
+            "all": {
+                "requests": all_row[0], "input": all_row[1], "output": all_row[2],
+                "cache_read": all_row[3], "total": all_row[4],
+                "reasoning": all_row[6], "retries": all_row[7], "cache_write": all_row[8],
+                "started": all_row[9] or 0, "last_at": all_row[10] or 0,
+                "turns": (all_row[11] or 0) if len(all_row) > 11 else 0,
+                "sessions": (all_row[14] or 0) if len(all_row) > 14 else 0,
+                "duration_ms": int(all_row[5] or 0),
+                "tool_calls": (all_row[15] or 0) if len(all_row) > 15 else 0,
+                **({"cost_usd": all_cost} if all_cost is not None else {}),
+                **({"models": all_detail["models"]} if all_detail and all_detail["models"] else {}),
             },
             # 远端数据源（v12）：显示远端会话时 overlay 按其 remote_target 取对应主机的今日值；
             # dict 键=目标键。remote_error 保留首个错误（旧字段），remote_errors 按目标细分。
@@ -4313,6 +4369,8 @@ def main(argv):
             print(render_today(con))
         elif cmd == "days":
             print(render_days(con, _cli_count(argv, 7)))
+        elif cmd == "all":
+            print(render_all(con))
         elif cmd == "sessions":
             print(render_sessions(con, _cli_count(argv, 10)))
         elif cmd == "models":

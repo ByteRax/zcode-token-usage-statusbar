@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Token 用量 MCP server（stdio, 零依赖；注册名 zcode-token-usage-statusbar）。
 
-提供工具 token_usage(scope, host)：current(默认)/today/days:N/sessions[:N]/models[:days]/session:<id前缀>/workspace:<目录关键词>。
+提供工具 token_usage(scope, host)：current(默认)/today/days:N/all(全期累计)/sessions[:N]/models[:days]/session:<id前缀>/workspace:<目录关键词>。
 host 缺省跟随配置（zcode | workbuddy），也可在单次调用里显式指定。
 协议仅实现 initialize / tools/list / tools/call；调试信息只走 stderr。
 
@@ -70,6 +70,8 @@ def tool_token_usage(scope: str = "current", host: str = "") -> str:
             return zusage.render_days(con, int(scope.split(":", 1)[1]))
         if scope == "week":
             return zusage.render_days(con, 7)
+        if scope == "all":
+            return zusage.render_all(con)
         if scope.startswith("sessions"):
             n = int(scope.split(":", 1)[1]) if ":" in scope else 10
             return zusage.render_sessions(con, n)
@@ -80,8 +82,8 @@ def tool_token_usage(scope: str = "current", host: str = "") -> str:
             return zusage.render_session_detail(con, scope.split(":", 1)[1].strip())
         if scope.startswith("workspace:"):
             return zusage.render_workspace(con, scope.split(":", 1)[1].strip())
-        return L(f"未知 scope: {scope!r}。可用: current | today | week | days:N | sessions[:N] | models[:days] | session:<id前缀> | workspace:<目录关键词>",
-                 f"Unknown scope: {scope!r}. Available: current | today | week | days:N | sessions[:N] | models[:days] | session:<id prefix> | workspace:<dir keyword>")
+        return L(f"未知 scope: {scope!r}。可用: current | today | week | all | days:N | sessions[:N] | models[:days] | session:<id前缀> | workspace:<目录关键词>",
+                 f"Unknown scope: {scope!r}. Available: current | today | week | all | days:N | sessions[:N] | models[:days] | session:<id prefix> | workspace:<dir keyword>")
     finally:
         con.close()
 
@@ -93,15 +95,15 @@ TOOLS = [
             L("查询 token 用量（只读本地库）。默认宿主 zcode（~/.zcode/cli/db/db.sqlite 的逐请求表），"
               "host=workbuddy 时读 ~/.workbuddy/workbuddy.db 的上下文 + 会话正文的逐次调用记录"
               "（token 分项/缓存/思考/速度/工具/费用都有；费用按牌价估算，未收录模型标不可得）。"
-              "scope 可选: current(当前会话+今日,默认), today, week, days:N(近N天每日), "
-              "sessions:N(最近N个会话), models:days(按模型), session:<id前缀>(指定会话,含按模型与子代理明细), "
+              "scope 可选: current(当前会话+今日,默认), today, week, all(全期累计,所有会话×所有任务含按模型费用), "
+              "days:N(近N天每日), sessions:N(最近N个会话), models:days(按模型), session:<id前缀>(指定会话,含按模型与子代理明细), "
               "workspace:<目录关键词>(按工作区聚合主会话+子代理,含按会话与按模型明细)。",
               "Query token usage (read-only local DB). Default host zcode (per-request tables in "
               "~/.zcode/cli/db/db.sqlite); with host=workbuddy it reads context from ~/.workbuddy/workbuddy.db "
               "plus per-call records in session transcripts (tokens/cache/thinking/speed/tools/cost; "
               "cost is estimated and unpriced models are reported unavailable). "
-              "scope: current(current session+today, default), today, week, days:N(last N days per day), "
-              "sessions:N(last N sessions), models:days(by model), session:<id prefix>(specific session, with per-model and subagent details), "
+              "scope: current(current session+today, default), today, week, all(all-time total across all sessions and tasks, with per-model costs), "
+              "days:N(last N days per day), sessions:N(last N sessions), models:days(by model), session:<id prefix>(specific session, with per-model and subagent details), "
               "workspace:<dir keyword>(aggregate a workspace's main sessions+subagents, with per-session and per-model details).")
         ),
         "inputSchema": {
