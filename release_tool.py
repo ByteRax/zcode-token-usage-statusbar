@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Build/verify local release assets; publishing requires two explicit approvals."""
 import argparse
+import base64
 import hashlib
 import importlib.util
 import json
@@ -400,6 +401,38 @@ def gitcode_mirror(asset, manifest_path, manifest, notes, tag, gitcode_repo, out
             "catalog": str(catalog_path.resolve()), "redirectHops": hops}
 
 
+def channel_lag(root, repo, version):
+    # 渠道清单推送（阶段 E）是独立授权步骤，发布刚完成时清单停在旧版本是流程内常态；
+    # 但 v1.5.17 因此滞留十余小时、市场渠道注册用户收不到更新（issue #308）。发布验收
+    # 通过后只读回读 plugin-releases 清单版本，滞后时在计划与 stderr 双路亮警告；核对
+    # 失败降级为 unknown。发布已公开，这条建议性核对绝不反过来让 publish 报错，也不
+    # 由 publish 代推渠道（E 仍须单独授权）。
+    info = {"branch": "plugin-releases", "releaseVersion": version,
+            "manifestVersion": None, "lagging": None, "error": None}
+    try:
+        payload = gh_json(root, f"repos/{repo}/contents/marketplace.json",
+                          "-f", "ref=plugin-releases")
+        require(isinstance(payload, dict) and payload.get("encoding") == "base64" and
+                isinstance(payload.get("content"), str), "channel manifest payload disagrees")
+        entry = json.loads(base64.b64decode(payload["content"]).decode("utf-8"))["plugins"][0]
+        require(isinstance(entry, dict) and isinstance(entry.get("version"), str),
+                "channel manifest entry disagrees")
+        info["manifestVersion"] = entry["version"]
+        info["lagging"] = entry["version"] != version
+    except (ReleaseError, OSError, ValueError, KeyError, IndexError, TypeError) as error:
+        info["error"] = str(error)
+        print("release_tool: channel lag check failed; channel state unknown: " + str(error),
+              file=sys.stderr)
+        return info
+    if info["lagging"]:
+        print("release_tool: WARNING channel manifest lags the release: plugin-releases serves "
+              "{} but this release is {}; registered users get no update until stage E pushes "
+              "the channel manifest "
+              "(.zcode/skills/zcode-github-release/references/post-release.md)"
+              .format(info["manifestVersion"], version), file=sys.stderr)
+    return info
+
+
 def publish(root, repo, asset, manifest_path, approved=False, confirm=None, notes_file=None,
             gitcode_repo=None):
     repo = repository(repo)
@@ -520,6 +553,7 @@ def publish(root, repo, asset, manifest_path, approved=False, confirm=None, note
             plan["gitcode"].update(gitcode_mirror(
                 asset, manifest_path, manifest, notes, tag, gitcode_repo,
                 Path(manifest_input).parent))
+        plan["channelLag"] = channel_lag(root, repo, manifest["version"])
         return plan
 
 

@@ -134,7 +134,7 @@ python3 release_tool.py verify --repo OWNER/REPO \
 
 正式发布还需明确 `--publish` 与 `--confirm OWNER/REPO/v版本号`，先上传草稿并核验下载字节，再发布。提交、tag 推送、Release 和渠道清单推送分别需要授权；默认不替用户执行。
 
-GitHub 自动更新要求已注册市场的 `marketplace.json` 指向同一个 Release ZIP/hash。维护者应将生成的 `marketplace-release.json` 作为渠道分支上的 `marketplace.json` 发布。[ByteRax 的 `plugin-releases` 渠道](https://github.com/ByteRax/zcode-token-usage-statusbar/tree/plugin-releases) 已发布 `v1.4.0` 一致清单，新用户注册 `ByteRax/zcode-token-usage-statusbar#plugin-releases`。未来发版须同步更新该清单，不能只上传 Release；不要擅自切换用户已有来源。
+GitHub 自动更新要求已注册市场的 `marketplace.json` 指向同一个 Release ZIP/hash。维护者应将生成的 `marketplace-release.json` 作为渠道分支上的 `marketplace.json` 发布。[ByteRax 的 `plugin-releases` 渠道](https://github.com/ByteRax/zcode-token-usage-statusbar/tree/plugin-releases) 已发布 `v1.4.0` 一致清单，新用户注册 `ByteRax/zcode-token-usage-statusbar#plugin-releases`。未来发版须同步更新该清单，不能只上传 Release（`publish` 结束时会输出 `channelLag` 并在 stderr 警告清单滞后；发布目录已清理时可从正式 tag 确定性重建清单，见发布技能的[发布后收尾](../.zcode/skills/zcode-github-release/references/post-release.md)）；不要擅自切换用户已有来源。
 
 ### GitCode 更新渠道
 

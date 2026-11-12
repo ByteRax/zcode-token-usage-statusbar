@@ -39,6 +39,19 @@ git fetch -q fork plugin-releases && git show FETCH_HEAD:marketplace.json | diff
 
 新用户注册 `OWNER/REPO#plugin-releases`；已有注册追踪原 ref，不会自动切换，也不修改用户的市场注册。追踪源码路径清单的用户走 `market` 渠道，由宿主插件管理器按清单直接更新、不经发布包校验。
 
+## 补推（Release 已发、渠道清单未更新）
+
+阶段 E 与发布（D）是两步授权，E 没跟上时市场渠道注册用户收不到新版本（v1.5.17 实例，issue #308；`publish --publish` 结束时会输出 `channelLag` 并在 stderr 亮警告，收尾报告必须如实转述）。原 `build` 输出目录可能已被清理，此时从正式 tag 的独立 detached worktree 确定性重建即可再生清单，无需原产物：
+
+```bash
+git worktree add --detach .worktrees/rebuild-vX.Y.Z vX.Y.Z
+python3 .worktrees/rebuild-vX.Y.Z/release_tool.py build \
+  --root .worktrees/rebuild-vX.Y.Z --repo OWNER/REPO \
+  --out /tmp/zusage-rebuild-vX.Y.Z --version X.Y.Z
+```
+
+重建后先对账再推送：重建 ZIP 的 sha256 必须等于 Release 资产 digest（上一节第二段命令的 `.digest`），`release-manifest.json` 应与线上资产逐字节一致。不一致说明检出或工具有变，停止并报告，不得把可疑清单推上渠道。对账通过后，把 `/tmp/zusage-rebuild-vX.Y.Z` 当作上面的 `/new/artifact-directory` 走同一推送与回读流程。GitCode 渠道欠账时先补镜像（直接调用 `gitcode_mirror`，见 [发布失败与回退](publish-failures.md#已公开但核验不符)），再用其生成的 `marketplace-release-gitcode.json` 推 `plugin-releases-gitcode`。
+
 ## GitCode 渠道
 
 GitCode Release 的创建与上传属于发布动作，须在 D 阶段的授权语里点名 `--gitcode-repo` 与 GitCode 仓库，因为它和 GitHub 发布是**同一条命令**：`publish --publish` 追加 `--gitcode-repo tanranran/zcode-token-usage-statusbar`，并先设置环境变量 `GITCODE_TOKEN`（令牌走 query 参数，不落盘、不进日志）。缺该变量时 `--publish` 在创建 draft 之前就整体失败（`--dry-run` 不检查）。工具在 GitHub 发布验收后创建或复用同 tag 的 GitCode Release、上传同一字节的 ZIP 与 manifest、回读比对，并在资产目录生成 `marketplace-release-gitcode.json`。该清单形状同上，只是 `url` 指向 GitCode Release 资产；同样不上传、不入 ZIP。

@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import base64
 import contextlib
 import hashlib
 import importlib.util
@@ -26,7 +27,7 @@ REPO = "ByteRax/zcode-token-usage-statusbar"
 
 # An executable gh stub; all GitHub calls below are isolated and have no network access.
 GH_STUB = r'''#!/usr/bin/env python3
-import json, os, pathlib, sys
+import base64, json, os, pathlib, sys
 root = pathlib.Path(os.environ["STUB_ROOT"])
 args = sys.argv[1:]
 with (root / "gh.log").open("a") as log:
@@ -68,6 +69,23 @@ if args[0] == "api":
     elif "/releases?" in endpoint:
         emit([[release(state["draft"])]] if "draft" in state else
              [[{"tag_name": "v1.2.3", "draft": True}]] if mode == "exists" else [[]])
+    elif "/contents/marketplace.json" in endpoint:
+        if mode == "badchannel":
+            sys.exit(1)
+        raw = json.dumps({"plugins": [{"version": state.get("channelVersion", "1.2.3")}]})
+        if mode == "badb64":
+            content = "!!!not base64!!!"
+        else:
+            if mode == "badjson":
+                raw = "{not json"
+            elif mode == "noplugins":
+                raw = json.dumps({"unexpected": []})
+            elif mode == "emptyplugins":
+                raw = json.dumps({"plugins": []})
+            elif mode == "pluginsint":
+                raw = json.dumps({"plugins": 5})
+            content = base64.b64encode(raw.encode()).decode()
+        emit({"encoding": "base64", "content": content})
     else:
         emit({"full_name": "ByteRax/zcode-token-usage-statusbar", "permissions": {"push": mode != "readonly"}})
 elif args[:2] == ["release", "create"]:
@@ -218,6 +236,24 @@ class ReleaseToolTests(unittest.TestCase):
                 elif "/releases?" in endpoint:
                     out = emit_bytes([[make_release(state["draft"])]] if "draft" in state else
                                      [[{"tag_name": "v1.2.3", "draft": True}]] if mode == "exists" else [[]])
+                elif "/contents/marketplace.json" in endpoint:
+                    if mode == "badchannel":
+                        raise tool.ReleaseError("command failed: gh api contents/marketplace.json")
+                    raw = json.dumps({"plugins": [{"version": state.get("channelVersion", "1.2.3")}]})
+                    if mode == "badb64":
+                        # 不经 b64encode 直接下发，让 channel_lag 的 b64decode 真正抛 binascii.Error。
+                        content = "!!!not base64!!!"
+                    else:
+                        if mode == "badjson":
+                            raw = "{not json"
+                        elif mode == "noplugins":
+                            raw = json.dumps({"unexpected": []})
+                        elif mode == "emptyplugins":
+                            raw = json.dumps({"plugins": []})
+                        elif mode == "pluginsint":
+                            raw = json.dumps({"plugins": 5})
+                        content = base64.b64encode(raw.encode("utf-8")).decode("ascii")
+                    out = emit_bytes({"encoding": "base64", "content": content})
                 else:
                     out = emit_bytes({"full_name": "ByteRax/zcode-token-usage-statusbar",
                                       "permissions": {"push": mode != "readonly"}})
@@ -594,6 +630,7 @@ class ReleaseToolTests(unittest.TestCase):
         self.assertEqual(plan["notes"], self.notes)
         self.assertEqual(plan["commands"][0][-2:], ["--notes-file", str(self.notes_file)])
         self.assertNotIn("--notes", plan["commands"][0])
+        self.assertNotIn("channelLag", plan)
         self.assert_no_publish()
 
     def test_missing_notes_file_rejected_before_preflight(self):
@@ -775,8 +812,58 @@ print("bounded unclosed notes completed")
         between = calls[write_positions[1] + 1:write_positions[2]]
         self.assertEqual(sum("/releases/assets/" in c[1] for c in between), 2)
         self.assertIn("--draft=false", calls[write_positions[2]])
-        self.assertTrue(calls[-1][1].endswith("/releases/tags/v1.2.3"))
+        self.assertTrue(calls[-2][1].endswith("/releases/tags/v1.2.3"))
+        self.assertIn("/contents/marketplace.json", calls[-1][1])
         self.assertFalse(any("--clobber" in c or "--force" in c for c in calls))
+
+    def test_channel_lag_reported_when_manifest_behind_release(self):
+        (self.base / "gh-state.json").write_text(json.dumps({"channelVersion": "1.2.2"}))
+        stderr = __import__("io").StringIO()
+        with contextlib.redirect_stderr(stderr):
+            plan = tool.publish(self.root, REPO, self.asset, self.manifest, True, REPO + "/v1.2.3",
+                                notes_file=self.notes_file)
+        self.assertEqual(plan["channelLag"], {"branch": "plugin-releases", "releaseVersion": "1.2.3",
+                                              "manifestVersion": "1.2.2", "lagging": True, "error": None})
+        warning = stderr.getvalue()
+        self.assertIn("plugin-releases serves 1.2.2", warning)
+        self.assertIn("this release is 1.2.3", warning)
+        self.assertIn("post-release.md", warning)
+        self.assertIn("ref=plugin-releases", self.calls()[-1])
+
+    def test_channel_lag_malformed_payloads_degrade_without_failing_publish(self):
+        for mode in ("badb64", "badjson", "noplugins", "emptyplugins", "pluginsint"):
+            stderr = __import__("io").StringIO()
+            # 每轮重置 stub 状态：上一轮已把 draft 写进 gh-state，不清会在 preflight 误报已存在。
+            for name in ("gh-state.json", "gh.log"):
+                path = self.base / name
+                if path.exists():
+                    path.unlink()
+            with self.subTest(mode=mode), \
+                    mock.patch.dict(os.environ, {"STUB_MODE": mode}), contextlib.redirect_stderr(stderr):
+                plan = tool.publish(self.root, REPO, self.asset, self.manifest, True, REPO + "/v1.2.3",
+                                    notes_file=self.notes_file)
+            self.assertFalse(plan["dryRun"])
+            self.assertIsNone(plan["channelLag"]["lagging"])
+            self.assertTrue(plan["channelLag"]["error"])
+
+    def test_channel_lag_absent_when_manifest_current(self):
+        stderr = __import__("io").StringIO()
+        with contextlib.redirect_stderr(stderr):
+            plan = tool.publish(self.root, REPO, self.asset, self.manifest, True, REPO + "/v1.2.3",
+                                notes_file=self.notes_file)
+        self.assertEqual(plan["channelLag"], {"branch": "plugin-releases", "releaseVersion": "1.2.3",
+                                              "manifestVersion": "1.2.3", "lagging": False, "error": None})
+        self.assertEqual(stderr.getvalue(), "")
+
+    def test_channel_lag_check_failure_degrades_without_failing_publish(self):
+        stderr = __import__("io").StringIO()
+        with mock.patch.dict(os.environ, {"STUB_MODE": "badchannel"}), contextlib.redirect_stderr(stderr):
+            plan = tool.publish(self.root, REPO, self.asset, self.manifest, True, REPO + "/v1.2.3",
+                                notes_file=self.notes_file)
+        self.assertFalse(plan["dryRun"])
+        self.assertIsNone(plan["channelLag"]["lagging"])
+        self.assertTrue(plan["channelLag"]["error"])
+        self.assertIn("channel lag check failed", stderr.getvalue())
 
     def test_original_assets_replaced_after_preflight_upload_only_verified_snapshot(self):
         expected = {self.asset.name: self.asset.read_bytes(), self.manifest.name: self.manifest.read_bytes()}

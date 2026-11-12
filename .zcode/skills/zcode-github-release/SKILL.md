@@ -20,7 +20,7 @@ description: "仅为当前 zcode-token-usage-statusbar 项目发版：检查、�
 | B | 提交版本改动、打 tag、推送分支与 tag | 须明确授权（主 agent 串行执行） |
 | C | `publish --dry-run` | 须先完成 B：preflight 要求相关文件已提交，且本地与远端 tag 都指向 HEAD |
 | D | `publish --publish --confirm OWNER/REPO/vX.Y.Z` | 须明确授权，授权语点明仓库与版本；要同时镜像 GitCode Release 时还须点名 `--gitcode-repo` 与 GitCode 仓库（该写入在同一命令内、GitHub 验收后自动执行，无法拆到 D 之后） |
-| E | `plugin-releases` / `plugin-releases-gitcode` 两个渠道分支的清单推送 | 须另行点名授权，且在 D 验收通过之后（主 agent 串行推送，可并行派发只读 subagent 回读核对） |
+| E | `plugin-releases` / `plugin-releases-gitcode` 两个渠道分支的清单推送 | 须另行点名授权，且在 D 验收通过之后（主 agent 串行推送，可并行派发只读 subagent 回读核对）。publish（D）结束时输出 `channelLag` 并在 stderr 亮滞后警告——E 未获授权跳过时，收尾报告必须如实转述该滞后，补推路径见 [发布后收尾](references/post-release.md#补推release-已发渠道清单未更新) |
 | F | 源码 PR 创建与合并、GitCode 镜像 base 同步 | 用户明确授权完整发版时已包含（主 agent 串行执行） |
 
 - 「授权完整发版」= B + D + F，其中 D 默认只含 GitHub；GitCode Release 镜像只在授权语点名 `--gitcode-repo` 时执行；E 不在其内，须另行点名。「仅发 Release」= B + D。创建/迁移技能本身不是发布授权。
