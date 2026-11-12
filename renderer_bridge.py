@@ -213,7 +213,7 @@ if (typeof globalThis === "object" && globalThis !== null) {
 '''
 
 
-# 遗留代 v2（1.5.14–1.5.17 已部署桥块的逐字识别）：升级剥离用，不再新打。
+# 遗留代 v2（v1.5.9–v1.5.17 已部署桥块的逐字识别）：升级剥离用，不再新打。
 BRIDGE_TEMPLATE_V2 = rb'''
 /* zusage-existing-conversation-store:v2 begin */
 // Only consumer reads allocate copies. Never freeze a host-owned object.

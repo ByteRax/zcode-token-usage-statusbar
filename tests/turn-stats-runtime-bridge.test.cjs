@@ -145,6 +145,12 @@ test("wrapped getState is reference-stable per underlying state (issue #307)", (
   assert.notEqual(third, second);
   assert.equal(third.snapshot.seq, 8);
   assert.equal(store.getState(), third);
+  // 裸换坏状态（含函数）不通知：构造抛出时缓存三变量原样保留（先构造后提交），
+  // 逐次一致重抛——若实现改为先提交 lastRaw 再构造（issue 建议顺序），第二次
+  // 调用会因 raw===lastRaw 跳过重建、吞错返回旧快照，本断言即红。
+  vm.runInContext(`globalThis.__zuState = { status: "active", snapshot: { sessionId: "s1", logEpoch: "e1", seq: 11, fn: () => {} } }`, ctx);
+  assert.throws(() => store.getState(), /Unsupported snapshot value/);
+  assert.throws(() => store.getState(), /Unsupported snapshot value/);
   // 底层状态含不支持值（函数）：重建构造抛 TypeError（vm 域原型，按消息匹配），缓存不提交，逐次一致抛出
   vm.runInContext(`globalThis.__zuState = { status: "active", snapshot: { sessionId: "s1", logEpoch: "e1", seq: 9, fn: () => {} } }; globalThis.__zuStore.notify()`, ctx);
   assert.throws(() => store.getState(), /Unsupported snapshot value/);
