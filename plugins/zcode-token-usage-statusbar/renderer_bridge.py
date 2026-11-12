@@ -17,7 +17,7 @@ import patch_install as asar
 # CLI 输出白名单根：脚本所在目录（仓库根或插件包根——两处都是合法的源码工作区）
 WORKTREE = Path(__file__).resolve().parent
 BRIDGE_ID = b"/* zusage-existing-conversation-store"
-BRIDGE_GEN = b"v2"   # v2：+acquireSubagentConversationStore（后台子代理运行期估算）
+BRIDGE_GEN = b"v3"   # v3：快照按底层状态引用缓存（issue #307，宿主 React #185）；v2：+acquireSubagentConversationStore
 # MARKER 取各代公共前缀：v1 补丁的升级剥离（_original_module 按标记对剥）与
 # ensure_deployed 的“是否已带桥”判定都只认前缀，不锁死代数。
 MARKER = BRIDGE_ID + b":v"
@@ -213,8 +213,8 @@ if (typeof globalThis === "object" && globalThis !== null) {
 '''
 
 
-# 桥代码模板：标识符占位符按目标版本的混淆名实例化（__ZU_*__ 不与 JS 语法冲突）。
-BRIDGE_TEMPLATE = rb'''
+# 遗留代 v2（1.5.14–1.5.17 已部署桥块的逐字识别）：升级剥离用，不再新打。
+BRIDGE_TEMPLATE_V2 = rb'''
 /* zusage-existing-conversation-store:v2 begin */
 // Only consumer reads allocate copies. Never freeze a host-owned object.
 function zuSnapshot(value, seen = new WeakMap()) {
@@ -383,6 +383,195 @@ if (typeof globalThis === "object" && globalThis !== null) {
 /* zusage-existing-conversation-store:v2 end */
 '''
 
+# 当前代 v3：新打/升级目标模板（标识符占位符按目标版本的混淆名实例化，__ZU_*__ 不与 JS 语法冲突）。
+BRIDGE_TEMPLATE = rb'''
+/* zusage-existing-conversation-store:v3 begin */
+// Only consumer reads allocate copies. Never freeze a host-owned object.
+function zuSnapshot(value, seen = new WeakMap()) {
+  if (value === null || typeof value !== "object") {
+    if (typeof value === "function" || typeof value === "symbol")
+      throw new TypeError("Unsupported snapshot value");
+    return value;
+  }
+  if (seen.has(value)) return seen.get(value);
+  const proto = Object.getPrototypeOf(value);
+  if (!Array.isArray(value) && proto !== Object.prototype && proto !== null)
+    throw new TypeError("Unsupported snapshot object");
+  const result = Array.isArray(value) ? [] : Object.create(null);
+  seen.set(value, result);
+  for (const key of Reflect.ownKeys(value)) {
+    if (Array.isArray(value) && key === "length") continue;
+    const d = Object.getOwnPropertyDescriptor(value, key);
+    if (!("value" in d)) throw new TypeError("Unsupported snapshot accessor");
+    Object.defineProperty(result, key, {
+      value: zuSnapshot(d.value, seen), enumerable: d.enumerable,
+      writable: false, configurable: false
+    });
+  }
+  if (Array.isArray(value)) result.length = value.length;
+  return Object.freeze(result);
+}
+/* Shared store wrapper (existing + acquire): a false current() self-stops;
+ * release returns the acquire lease (null for existing). off unsubscribes
+ * first, then releases; re-acquire inside the host keep-warm window is a
+ * warm refcount reuse. */
+function zuWrapStore(store, current, release) {
+  let stopped = false;
+  const cancellations = new Set();
+  // Snapshot cache keyed by the underlying state reference: the host consumes
+  // this wrapper via useSyncExternalStore (Object.is), so the same underlying
+  // state must map to the same frozen snapshot, or the host treats every read
+  // as "the store changed during render" and re-renders forever (React #185).
+  // Host notifications invalidate the cache before forwarding, so in-place
+  // mutations become visible on the next read once announced; unannounced
+  // in-place mutations are unobservable by the subscription contract.
+  let lastRaw = null, lastSnap = null, hasSnap = false;
+  const off = () => {
+    if (stopped) return;
+    stopped = true;
+    for (const cancel of [...cancellations]) cancel();
+    try { release?.(); } catch (_) {}
+  };
+  const active = () => {
+    if (stopped) return false;
+    if (current()) return true;
+    off();
+    return false;
+  };
+  return Object.freeze({
+    getState: () => {
+      if (!active()) { hasSnap = false; return null; }
+      const raw = store.getState();
+      if (!hasSnap || raw !== lastRaw) {
+        const snap = zuSnapshot(raw);   // build first, commit after: a throw leaves the cache untouched
+        lastRaw = raw;
+        lastSnap = snap;
+        hasSnap = true;
+      }
+      return lastSnap;
+    },
+    subscribe: callback => {
+      if (typeof callback !== "function") throw new TypeError("Invalid callback");
+      if (!active()) return () => {};
+      let cancelled = false;
+      const cancel = () => {
+        if (cancelled) return;
+        cancelled = true;
+        cancellations.delete(cancel);
+        try { unsubscribe(); } catch (_) {}
+      };
+      const unsubscribe = store.subscribe(() => {
+        if (cancelled || !active()) return;
+        hasSnap = false;   // invalidate before forwarding: covers in-place mutations too
+        try {
+          const result = callback();
+          if (result && typeof result.then === "function")
+            Promise.resolve(result).catch(() => {});
+        } catch (_) {}
+      });
+      cancellations.add(cancel);
+      return cancel;
+    },
+    off
+  });
+}
+export function getExistingConversationStore(scope) {
+  const fields = ["sessionId", "workspacePath", "workspaceIdentity", "remoteSessionId"];
+  if (!scope || typeof scope !== "object" || Array.isArray(scope))
+    throw new TypeError("Invalid conversation scope");
+  const descriptors = Object.getOwnPropertyDescriptors(scope);
+  if (Reflect.ownKeys(descriptors).some(key => !fields.includes(key)))
+    throw new TypeError("Unknown conversation scope field");
+  const checked = Object.create(null);
+  for (const key of fields) {
+    const d = descriptors[key];
+    if (!d) continue;
+    if (!("value" in d) || typeof d.value !== "string" ||
+        !d.value.trim() || /[\x00-\x1f\x7f]/.test(d.value))
+      throw new TypeError("Invalid conversation scope field");
+    if ((key === "sessionId" || key === "remoteSessionId") && /\s/.test(d.value))
+      throw new TypeError("Invalid conversation identifier");
+    if (key === "remoteSessionId" && d.value === "__base__")
+      throw new TypeError("Reserved remote identifier");
+    checked[key] = d.value;
+  }
+  if (!checked.sessionId || !checked.workspacePath)
+    throw new TypeError("Missing conversation scope field");
+  const key = __ZU_KEY_FN__(checked), topic = __ZU_TOPIC_FN__(checked.sessionId);
+  const entry = __ZU_REGISTRY__.get(key), layer = entry?.layer;
+  const session = layer?.entries.get(topic), store = session?.store;
+  const current = () => !!store && __ZU_REGISTRY__.get(key) === entry && !entry.stale &&
+    !layer.disposed && layer.entries.get(topic) === session &&
+    session.store === store && !store.closed;
+  if (!current()) return null;
+  return zuWrapStore(store, current, null);
+}
+/* v2: restricted acquire for background running subagents (same
+ * SessionDataLayer.acquire path as the drilldown output preview; the
+ * directory pane never subscribes, so background subagents had no ready
+ * store - the root cause of missing live estimates). Only sess_subagent_
+ * prefix + local __base__ key; lease refcount is host-owned, wrapper off
+ * releases. All misses/failures return null (never throw) so the caller
+ * retries in 2s; never spins up a runtime for arbitrary sessions. */
+export function acquireSubagentConversationStore(scope) {
+  const fields = ["sessionId", "workspacePath", "workspaceIdentity"];
+  if (!scope || typeof scope !== "object" || Array.isArray(scope))
+    throw new TypeError("Invalid conversation scope");
+  const descriptors = Object.getOwnPropertyDescriptors(scope);
+  if (Reflect.ownKeys(descriptors).some(key => !fields.includes(key)))
+    throw new TypeError("Unknown conversation scope field");
+  const checked = Object.create(null);
+  for (const key of fields) {
+    const d = descriptors[key];
+    if (!d) continue;
+    if (!("value" in d) || typeof d.value !== "string" ||
+        !d.value.trim() || /[\x00-\x1f\x7f]/.test(d.value))
+      throw new TypeError("Invalid conversation scope field");
+    if (key === "sessionId" && /\s/.test(d.value))
+      throw new TypeError("Invalid conversation scope field");
+    checked[key] = d.value;
+  }
+  if (!checked.sessionId || !checked.sessionId.startsWith("sess_subagent_")) return null;
+  const key = __ZU_KEY_FN__(checked);
+  if (typeof key !== "string" || !key.startsWith("__base__ ")) return null;
+  const entry = __ZU_REGISTRY__.get(key), layer = entry?.layer;
+  if (!entry || entry.stale || !layer || layer.disposed ||
+      typeof layer.acquire !== "function") return null;
+  const topic = __ZU_TOPIC_FN__(checked.sessionId);
+  let lease = null;
+  try { lease = layer.acquire(checked.sessionId); } catch (_) { return null; }
+  const store = lease && lease.store;
+  if (!store || store.closed) {
+    try { lease?.release(); } catch (_) {}
+    return null;
+  }
+  const current = () => !!store && !store.closed && __ZU_REGISTRY__.get(key) === entry &&
+    !entry.stale && !layer.disposed && layer.entries.get(topic)?.store === store;
+  return zuWrapStore(store, current, () => lease.release());
+}
+if (typeof globalThis === "object" && globalThis !== null) {
+  globalThis.__zusageGetExistingConversationStore = getExistingConversationStore;
+  globalThis.__zusageAcquireConversationStore = acquireSubagentConversationStore;
+  // Read-only acceptance diagnostics: enumerate live registry keys/topics for verification.
+  globalThis.__zusageConversationDiagnostics = function () {
+    const keys = [], sessions = [];
+    for (const [key, entry] of __ZU_REGISTRY__) {
+      keys.push(key);
+      const layer = entry && entry.layer;
+      if (!layer || layer.disposed || entry.stale) continue;
+      for (const [topic, session] of layer.entries) {
+        const store = session && session.store;
+        const state = store && !store.closed && store.getState();
+        sessions.push({ key, topic, status: state ? (state.status || "unknown") : "unavailable",
+          seq: state && state.snapshot ? state.snapshot.seq : null });
+      }
+    }
+    return { keys, sessions };
+  };
+}
+/* zusage-existing-conversation-store:v3 end */
+'''
+
 def bridge_code(target, template=None):
     names = target["names"]
     return ((template or BRIDGE_TEMPLATE)
@@ -421,7 +610,8 @@ def _original_module(data, target):
         # 与前后文分隔），比对时按同形还原。
         block = data[m_begin.start():m_end.end()]
         wrapped = b"\n" + block + b"\n"
-        if wrapped not in (bridge_code(target), bridge_code(target, BRIDGE_TEMPLATE_V1)):
+        if wrapped not in (bridge_code(target), bridge_code(target, BRIDGE_TEMPLATE_V2),
+             bridge_code(target, BRIDGE_TEMPLATE_V1)):
             raise BridgeError("Bridge marker/content tampered")
         has_bridge = True
         prefix = data[:m_begin.start() - 1]
