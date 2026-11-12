@@ -223,8 +223,9 @@
      * → v339 详情卡点击空白/Esc 关闭（issue #297）：document mousedown 捕获外点判定（tipOutsideDown）——target 落在自绘浮层本体/条面/设置面板/各弹框之外即收，主 tip cause="outside" 进 hideTip 硬保活窗白名单（v271/v329 的 1.2s 窗不再吞「点过 Tab 后点空白」；devKeepTip 常驻模式契约不变仍只认 Escape/齿轮/再点同格），额度/速率/重置卡/子代理行内/git chip tooltip 与费用说明/档位说明浮层一并收（柱体 Portal pointer-events:none 无需排除）；document keydown 冒泡全局 Escape 兜底（tipGlobalEsc）——焦点在 body 时既有元素级 Esc 链收不到，此处一次收一个且不 preventDefault/stopPropagation 不吞宿主语义，冒泡挂载保住 tip 内「先收档位说明不关卡」分层。
      * → v340 心跳不再深拷贝整窗快照（issue #309，长会话卡顿；规格 specs/perf-lag-reduction.md 规则 10–12）：桥 v2 的 getState() 每次都是整窗深拷贝（本机 374 行 ≈1ms，报告者 6868 行 ≈86ms），而 100ms 心跳里 bridgeTick 健康检查与 updateLive→subRunningList 每拍各读一次（无 stats 时「思考中」合成再读一次）、每次 store 通知还有 subscribeStore 与 overlay 回调各读一次，v2 桥下 ≥20 次整窗拷贝/秒。三处修复且与桥代际无关（v2/v3 均有效）：①心跳经 handleSnapshot 读 handle 上的快照记录（通知回调写入，超 SNAP_FRESH_MS=2s 才回源一次并兼作 store 关闭/换代探活，时钟回拨按陈旧）；②turn-stats.js subscribeStore 把本次已读 state 传给 changed(state)，回调不再二读；③通知处理按实测成本自适应合并（上次处理 ≥8ms 时间隔 min(1s, cost×9)，占比 ≤~10%，尾部定时器归订阅持有、退订即清；廉价会话逐字不变）。pane 切会话仍由 handle.sid/sideKey 即时重绑；不改桥模板与 BRIDGE_GEN（冷路径）。
      * → v341 issue #309 复审补修：子代理槽位通知回调复用 changed(state) 不再二读；通知处理同步分支作废迟到的尾部定时器；全局 setTimeout/clearTimeout 缺席时不抛进宿主通知链（退回同步处理）；订正「窗口恒 60 行」旧注释（reducer 增量不截）。
+     * → v342 ⚙ 面板底栏「反馈问题」左侧新增「联系我」按钮：点击经 openMpShell 复用 .zu-mp-ov 弹窗外壳（收窄 .zu-ct-ov 卡宽）展示维护者微信二维码远程直链（http 直链经实测可用；https 不可达；宿主渲染页 file:// 无混合内容拦截），加载失败隐藏图片换文字兜底；Esc/遮罩/✕ 关闭沿用壳协议，外部点击豁免走既有 .zu-mp-ov 白名单。随批修复既有潜在缺陷：openMpShell 系自有弹层被 modalOpen（v62）误判宿主模态——body 直挂全屏遮罩+内部 role=dialog 完整命中两层判定 ⇒ track 收条连带 closeSettings（用户实报：点「联系我」/关弹框后设置面板被关）；modalOpen 两层扫描与 isOwnOverlay 豁免清单补 .zu-mp-ov/.zu-rot-pk-dlg/.zu-compact-dlg，宿主真模态判定不变。复审补修：.zu-ct-img 补 [hidden] 显式隐藏（作者 display:block 压过 UA [hidden]，同 .zu-update-progress 先例）；mp 壳 Esc 升捕获相+stopPropagation 对齐 rotPkKey 协议（焦点在面板内按 Esc 曾关面板留弹窗）；error 守卫改 isConnected；img 补宽高属性防加载回流；09 面板外点白名单补 .zu-compact-dlg；⚙ 联网边界披露「联系我」图床拉图。
      */
-    var VERSION = "v341";
+    var VERSION = "v342";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
@@ -825,9 +826,15 @@
       ".zu-settings .zu-settings-scroll:disabled{color:var(--color-foreground-subtle,#8791a3);cursor:default}" +
       /* 反馈按钮（v70）：常驻底栏右缘，点击经 window.open 交由系统默认浏览器打开 issues */
       ".zu-settings .zu-settings-feedback-status{flex:0 1 auto;min-width:0;color:var(--color-foreground-subtle,#a1a1a1);font-size:calc(var(--ui-font-size,14px) - 2px);overflow-wrap:anywhere}" +
-      ".zu-settings .zu-settings-feedback{flex:0 0 auto;font:inherit;font-size:calc(var(--ui-font-size,14px) - 2px);" +
+      ".zu-settings .zu-settings-feedback,.zu-settings .zu-settings-contact{flex:0 0 auto;font:inherit;font-size:calc(var(--ui-font-size,14px) - 2px);" +
       "color:var(--color-foreground,#e9edf4);background:var(--color-hover,rgba(255,255,255,.07));" +
       "border:1px solid var(--color-border,rgba(255,255,255,.14));border-radius:6px;padding:3px 10px;cursor:pointer}" +
+      /* v342 联系我弹窗：复用 .zu-mp-ov/.zu-mp-modal 外壳，收窄为二维码卡宽 */
+      ".zu-ct-ov .zu-mp-modal{width:auto;max-width:min(360px,calc(100vw - 48px))}" +
+      ".zu-ct-img{display:block;max-width:280px;max-height:60vh;width:auto;height:auto;margin:2px auto 0;border-radius:10px}" +
+      ".zu-ct-img[hidden]{display:none}" +   /* 作者 display:block 压过 UA [hidden]，error 兜底要显式隐藏（.zu-update-progress 同款先例） */
+      ".zu-ct-note{color:var(--color-foreground-subtle,#8791a3);font-size:calc(var(--ui-font-size,14px) - 2px);text-align:center;margin-top:8px}" +
+      ".zu-mp-ov.zu-light .zu-ct-note{color:#64748b}" +
       /* 子代理明细面板（v49）：点击条目弹出的固定面板（与设置面板同机制，互斥打开）；
        * 面板不随鼠标消失，绕开悬停+tab 的全部几何问题。 */
       ".zu-sub{cursor:pointer}" +
@@ -1750,9 +1757,10 @@
       '<section class="zu-settings-section" data-sec="about"' + secOpen("about") + '><div class="cap">' + L("关于数据", "About the data") + '</div><div class="pnote">' +
       L("数据库统计：只读本地用量库（默认 ~/.zcode/cli/db/db.sqlite，跟随宿主 dataBaseDir 迁移），请求完成后入库；总 token 为输入加输出，缓存已含在输入中，思考已含在输出中。", "Database statistics: read-only from the local usage database (default ~/.zcode/cli/db/db.sqlite; follows the host dataBaseDir migration), written after requests complete. Total tokens = input + output; cache is included in input and thinking in output.") + '</div><div class="pnote">' +
       L("生成速度：只读渲染器状态桥在生成时按字符增量估算，完成后切换为真实速度；桥不可用时回退数据库最近有效段。", "Generation speed: the read-only renderer bridge estimates from text deltas while running and uses actual speed after completion; without the bridge it falls back to the latest valid database segment.") + '</div><div class="pnote">' +
-      L("联网边界：额度源查询对应账号的套餐或余额接口；插件更新可联网下载代码与读取发布日志（源码渠道为注册仓库的同号 Release 参考）。额度不是本地 token 统计推算值。SSH 数据查询使用已配置通道。", "Network boundaries: quota sources query account plan/balance endpoints; plugin updates can download code and read release notes (source channels read the registered repo's same-version release as reference). Quota is not inferred from local token usage. SSH statistics use configured connections.") + '</div></section></div></div>' +
+      L("联网边界：额度源查询对应账号的套餐或余额接口；插件更新可联网下载代码与读取发布日志（源码渠道为注册仓库的同号 Release 参考），「联系我」弹窗会从维护者图床加载微信二维码图片。额度不是本地 token 统计推算值。SSH 数据查询使用已配置通道。", "Network boundaries: quota sources query account plan/balance endpoints; plugin updates can download code and read release notes (source channels read the registered repo's same-version release as reference), and the Contact-me dialog loads the maintainer's WeChat QR image from their image host. Quota is not inferred from local token usage. SSH statistics use configured connections.") + '</div></section></div></div>' +
       '<div class="zu-settings-foot"><button type="button" class="zu-settings-scroll"></button>' +
       '<span class="zu-settings-feedback-status" role="status" aria-live="polite"></span>' +
+      '<button type="button" class="zu-settings-contact">' + L("联系我", "Contact me") + '</button>' +
       '<button type="button" class="zu-settings-feedback">' + L("反馈问题", "Report an issue") + '</button></div>';
       panel.querySelectorAll('input[name=zu-lang]').forEach(function (r) {
         r.checked = state.lang === r.value;

@@ -199,3 +199,33 @@ test('hidden dialog does not suppress the bar, while a visible dialog with an ov
   dialog.computed = { display: 'block' };
   assert.equal(sandbox.modalOpen(), true, 'a visible dialog plus a full-screen fixed overlay is modal');
 });
+
+/* v342：插件自有全屏弹层（.zu-mp-ov 系/词包查看/压缩确认）不是宿主模态——
+ * 用户实报 ⚙ 面板点「联系我」设置面板被关（track 判模态收条连带 closeSettings） */
+test('plugin-owned mp-ov shell and rotator/compact dialogs never count as a host modal', () => {
+  const { sandbox } = boot();
+  const inOwnLayer = sel => String(sel).indexOf('.zu-mp-ov') >= 0 ? {} : null;
+  const ownDialog = { closest: inOwnLayer, computed: { display: 'block' } };   // 弹窗内层 role=dialog
+  const ownOverlay = { closest: inOwnLayer, getBoundingClientRect: () => ({ width: 1200, height: 800 }), computed: {
+    position: 'fixed', display: 'block', visibility: 'visible', opacity: '1', zIndex: '2147483647', backgroundColor: 'rgba(0, 0, 0, 0.45)',
+  } };
+  sandbox.document.querySelectorAll = selector => selector === '[role="dialog"],[role="alertdialog"]' ? [ownDialog] : [];
+  sandbox.document.body.children = [ownOverlay];
+  assert.equal(sandbox.modalOpen(), false, 'own .zu-mp-ov shell (inner dialog + full-screen overlay) is not a host modal');
+  const hostDialog = { computed: { display: 'block' } };   // 宿主对话框在弹层之下（真实场景形状）
+  sandbox.document.querySelectorAll = selector => selector === '[role="dialog"],[role="alertdialog"]' ? [hostDialog] : [];
+  assert.equal(sandbox.modalOpen(), false, 'host dialog under our overlay alone still does not hide the bar');
+  const inCompactLayer = sel => String(sel).indexOf('.zu-compact-dlg') >= 0 ? {} : null;   // v342 豁免清单的 compact 成员同钉
+  ownDialog.closest = inCompactLayer; ownOverlay.closest = inCompactLayer;
+  sandbox.document.querySelectorAll = selector => selector === '[role="dialog"],[role="alertdialog"]' ? [ownDialog] : [];
+  sandbox.document.body.children = [ownOverlay];
+  assert.equal(sandbox.modalOpen(), false, 'compact-confirm dialog with its own backdrop is not a host modal either');
+});
+test('own mp-ov overlay covering the composer center does not read as occluded', () => {
+  const { sandbox } = boot();
+  const el = makeEl(sandbox, { left: 10, top: 400, width: 500, height: 50, right: 510, bottom: 450 });
+  sandbox.hitEl = { getBoundingClientRect: () => ({ left: 0, top: 0, right: 1200, bottom: 800 }),
+    contains: () => false, closest: sel => String(sel).indexOf('.zu-mp-ov') >= 0 ? {} : null };
+  assert.equal(sandbox.reallyVisible(el, true), true, 'ownOK path exempts the mp-ov overlay');
+  assert.equal(sandbox.coverOK(el), true, 'coverOK path exempts the mp-ov overlay too');
+});

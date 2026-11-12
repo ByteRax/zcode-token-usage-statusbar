@@ -781,9 +781,32 @@
       mpModalThemeSync = function (lite) { ov.classList.toggle("zu-light", lite); };
       ov.querySelector(".zu-mp-close").addEventListener("click", cleanupMpModal);
       ov.addEventListener("mousedown", function (e) { if (e.target === ov) cleanupMpModal(); });
-      function onEsc(e) { if (e.key === "Escape") cleanupMpModal(); }
-      document.addEventListener("keydown", onEsc);
+      /* Esc 升捕获相 + stopPropagation 对齐词包查看 rotPkKey 协议（05 分片）：mp 壳是视口
+       * 最顶层（z-index 拉满），Esc 必须先关弹窗——冒泡相监听会被焦点所在面板的 keydown
+       * （closeSettings+stopPropagation）截胡，弹窗留存而设置面板被关（v342 实报） */
+      function onEsc(e) {
+        if (e.key !== "Escape") return;
+        e.preventDefault();
+        e.stopPropagation();
+        cleanupMpModal();
+      }
+      document.addEventListener("keydown", onEsc, true);
       ov.__zuMpEsc = onEsc;
+      return ov;
+    }
+    /* v342 联系我弹窗：设置底栏入口，展示维护者微信二维码（远程直链，加载失败给文字兜底） */
+    function openContactModal() {
+      var ov = openMpShell(L("联系我", "Contact me"),
+        '<img class="zu-ct-img" src="http://qiniu.tanranran.cn/wechat.webp" width="600" height="600" alt="' + L("微信二维码", "WeChat QR code") + '">' +
+        '<div class="zu-ct-note" hidden>' + L("图片加载失败，请检查网络后重试。", "Failed to load the image; check your network and retry.") + '</div>');
+      ov.classList.add("zu-ct-ov");   // openMpShell 写死 className，收窄卡宽覆写靠此后加类生效
+      var img = ov.querySelector(".zu-ct-img");
+      var note = ov.querySelector(".zu-ct-note");
+      img.addEventListener("error", function () {
+        if (!img.isConnected) return;   // 弹窗已关（外壳移除）就不必再改 DOM
+        img.hidden = true;
+        note.hidden = false;
+      });
       return ov;
     }
     /* 模型选择弹窗：勾选（已添加默认不选/新模型默认全选）、搜索、快捷批选，确认后
@@ -1045,7 +1068,7 @@
       if (!mpModal) return;
       var pending = mpWaiters.slice();
       for (var i = 0; i < pending.length; i++) pending[i]();
-      if (mpModal.__zuMpEsc) document.removeEventListener("keydown", mpModal.__zuMpEsc);
+      if (mpModal.__zuMpEsc) document.removeEventListener("keydown", mpModal.__zuMpEsc, true);   // 捕获相注册必须同 flag 摘除
       mpModal.remove();
       mpModal = null;
       mpModalDispose = null;
@@ -1401,6 +1424,10 @@
       var srcBtn = e.target.closest && e.target.closest(".zu-src-refresh");
       if (srcBtn && !srcBtn.disabled) {
         pluginRequest("quota-src-refresh", { id: srcBtn.dataset.src });
+        return;
+      }
+      if (e.target.closest && e.target.closest(".zu-settings-contact")) {
+        openContactModal();
         return;
       }
       if (e.target.closest && e.target.closest(".zu-settings-feedback")) {
@@ -1841,7 +1868,7 @@
        * target 阶段先执行并已把 rotPkDlg/mpModal 置 null——按 target 向上匹配弹框根类名，
        * 弹框已 detach 时 closest 仍沿残留子树命中（用户复报：点弹框外仍连关设置） */
       var t = e.target;
-      var inModal = !!(t && t.closest && t.closest(".zu-rot-pk-dlg,.zu-mp-ov"));
+      var inModal = !!(t && t.closest && t.closest(".zu-rot-pk-dlg,.zu-mp-ov,.zu-compact-dlg"));   // v342 补压缩弹框，与 OWN_LAYER_SEL 对齐
       if (panel.classList.contains("open") && !inModal && !bar.contains(t) && !panel.contains(t)) {
         closeSettings(false);
         previousPanelFocus = null;

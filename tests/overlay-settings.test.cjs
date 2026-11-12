@@ -472,6 +472,119 @@ test('footer feedback click falls back to window.open when the bridge is absent'
   assert.equal(opened.length, 1);
 });
 
+test('v342 contact button sits left of feedback with localized copy', () => {
+  const buildSource = extract('    function settingRow(', '    function syncSettingsScroll() {');
+  const body = { scrollTop: 0 };
+  const context = {
+    slot: 0,
+    panel: {
+      innerHTML: '',
+      querySelector: () => body, querySelectorAll: () => [],
+    },
+    state: { lang: 'zh', show: {}, ctxOv: '' },
+    L: (zh, en) => context.state.lang === 'en' ? en : zh,
+    syncUpdate: () => {}, syncSettingsScroll: () => {},
+  };
+  vm.runInNewContext(buildSource + '\nbuildPanel();', context);
+  assert.match(context.panel.innerHTML, /class="zu-settings-contact">联系我<\/button>/);
+  assert.ok(context.panel.innerHTML.indexOf('zu-settings-contact') > context.panel.innerHTML.indexOf('zu-settings-scroll'));
+  assert.ok(context.panel.innerHTML.indexOf('zu-settings-contact') < context.panel.innerHTML.indexOf('class="zu-settings-feedback"'));
+  context.state.lang = 'en';
+  vm.runInNewContext('buildPanel();', context);
+  assert.match(context.panel.innerHTML, /class="zu-settings-contact">Contact me<\/button>/);
+});
+test('v342 contact click opens the QR modal via the shared shell', () => {
+  assert.match(source, /function openContactModal\(\)/);
+  assert.ok(source.includes('http://qiniu.tanranran.cn/wechat.webp'));   // https 该域不可达（实测无响应），恒走 http 直链
+  assert.match(source, /openMpShell\(L\("联系我", "Contact me"\)/);
+  const clickSource = extract('    panel.addEventListener("click",', '    gear.addEventListener("click"');
+  let handler;
+  let contactOpens = 0, pluginCalls = 0;
+  const context = {
+    panel: {
+      addEventListener: (_, fn) => { handler = fn; },
+      classList: { remove: () => {} },
+      querySelector: () => ({ scrollTop: 0 }),
+    },
+    window: { open: () => { throw new Error('unexpected window.open'); } },
+    openContactModal: () => { contactOpens++; },
+    syncSettingsScroll: () => {},
+    pluginRequest: () => { pluginCalls++; },
+  };
+  vm.runInNewContext(clickSource, context);
+  handler({ target: { closest: sel => sel === '.zu-settings-contact' ? {} : null } });
+  assert.equal(contactOpens, 1);
+  assert.equal(pluginCalls, 0);
+});
+test('v342 openContactModal runs for real: shell tag, qr img attrs and error fallback', () => {
+  const fnSource = extract('    function openContactModal() {', '    /* 模型选择弹窗：勾选');
+  let shellArgs = null;
+  const img = { hidden: false, isConnected: true, parentNode: {}, handlers: {}, addEventListener: (t, fn) => { img.handlers[t] = fn; } };
+  const note = { hidden: true };
+  const ov = { tags: new Set(), querySelector: sel => sel === '.zu-ct-img' ? img : sel === '.zu-ct-note' ? note : null };
+  ov.classList = { add: c => ov.tags.add(c) };
+  const detach = () => { img.isConnected = false; img.parentNode = null; };   // 双附件信号联动，防绑死单一实现
+  const ctx = {
+    L: (zh, en) => zh,
+    openMpShell: (title, body) => { shellArgs = [title, body]; return ov; },
+  };
+  vm.runInNewContext(fnSource + '\nvar ov = openContactModal();', ctx);
+  assert.equal(shellArgs[0], '联系我');
+  assert.match(shellArgs[1], /class="zu-ct-img" src="http:\/\/qiniu\.tanranran\.cn\/wechat\.webp" width="600" height="600"/);
+  assert.match(shellArgs[1], /class="zu-ct-note" hidden/);
+  assert.ok(ov.tags.has('zu-ct-ov'), '收窄卡宽覆写依赖此后加类（变异守卫）');
+  assert.ok(source.includes('.zu-ct-img[hidden]{display:none}'), '作者 display:block 压过 UA [hidden]，error 兜底依赖此规则实际显隐');
+  assert.equal(typeof img.handlers.error, 'function');
+  img.handlers.error();
+  assert.equal(img.hidden, true);
+  assert.equal(note.hidden, false);
+  img.hidden = false; note.hidden = true;
+  detach();   // 弹窗已关（外壳移除）：双附件信号同假，守卫短路
+  img.handlers.error();
+  assert.equal(img.hidden, false);
+  assert.equal(note.hidden, true);
+});
+test('v342 mp shell Esc is capture-phase with cleanup removing the same flag', () => {
+  const shellSource = extract('    function openMpShell(titleText, bodyHtml) {', '    /* v342 联系我弹窗：设置底栏入口');
+  const cleanupSource = extract('    function cleanupMpModal() {', '    /* 供应商归属');
+  const removed = [];
+  function makeOvStub() {
+    const closeBtn = { addEventListener: () => {} };
+    const el = {
+      removeCalls: 0, listeners: {}, toggled: null,
+      querySelector: sel => sel === '.zu-mp-close' ? closeBtn : null,
+      addEventListener: (t, fn) => { el.listeners[t] = fn; },
+      remove: () => { el.removeCalls++; },
+    };
+    el.classList = { toggle: (n, on) => { el.toggled = [n, on]; }, add: () => {} };
+    return el;
+  }
+  const ctx = {
+    themeDark: true, mpModal: null, mpModalDispose: null, mpModalThemeSync: null, mpWaiters: [],
+    L: (zh, en) => zh, mEsc: s => s,
+    document: {
+      createElement: () => makeOvStub(),
+      body: { appendChild: () => {} },
+      keydownCaps: [], keydownBubble: [], removed,
+      addEventListener: (t, fn, cap) => { if (t === 'keydown') (cap ? ctx.document.keydownCaps : ctx.document.keydownBubble).push(fn); },
+      removeEventListener: (t, fn, cap) => { removed.push([t, fn, !!cap]); },
+    },
+  };
+  ctx.cleanupMpModal = null;   // 占位：VM 脚本内 hoisted 函数声明会覆盖为真实现
+  vm.runInNewContext(cleanupSource + '\n' + shellSource + '\nvar ov = openMpShell("联系我", "");', ctx);
+  assert.equal(ctx.document.keydownCaps.length, 1, 'Esc 注册在捕获相');
+  assert.equal(ctx.document.keydownBubble.length, 0);
+  const esc = ctx.document.keydownCaps[0];
+  esc({ key: 'a', preventDefault: () => {}, stopPropagation: () => {} });
+  assert.equal(ctx.ov.removeCalls, 0, '非 Escape 不触发');
+  const pd = [], sp = [];
+  esc({ key: 'Escape', preventDefault: () => pd.push(1), stopPropagation: () => sp.push(1) });
+  assert.equal(ctx.ov.removeCalls, 1, 'Escape 关闭弹窗外壳');
+  assert.ok(pd.length && sp.length, 'preventDefault+stopPropagation 截胡面板层 Esc（v342 分层修复）');
+  assert.deepEqual(removed, [['keydown', esc, true]], 'cleanup 以同一 capture flag 摘除监听');
+  assert.equal(ctx.mpModal, null);
+});
+
 /* ---------- v83：万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 ---------- */
 test('万/亿 preference defaults on, honours only an explicit "0" and round-trips through persist', () => {
   const stateSource = extract('  var LS = {', '  /* ---------- 多实例注册表');
@@ -1644,11 +1757,12 @@ test('面板上层 body 级弹框内按下不联动关面板（词包查看遮�
     closeSettings: why => closed.push(why),
     listenGlobal: (_, __, fn) => { handler = fn; },
   });
-  const pkRoot = { pk: true }, mpRoot = { mp: true };
-  // hit: 'pk'/'mp'=target 在对应弹框子树内（closest 命中对应根），null=弹框外
+  const pkRoot = { pk: true }, mpRoot = { mp: true }, cdRoot = { cd: true };
+  // hit: 'pk'/'mp'/'cd'=target 在对应弹框子树内（closest 命中对应根），null=弹框外
   const mkTarget = hit => ({
     closest: sel => hit === 'pk' && sel.indexOf('.zu-rot-pk-dlg') >= 0 ? pkRoot
-      : hit === 'mp' && sel.indexOf('.zu-mp-ov') >= 0 ? mpRoot : null,
+      : hit === 'mp' && sel.indexOf('.zu-mp-ov') >= 0 ? mpRoot
+      : hit === 'cd' && sel.indexOf('.zu-compact-dlg') >= 0 ? cdRoot : null,
   });
   const ctx = makeCtx();
   vm.runInNewContext(mdownSource, ctx);
@@ -1657,6 +1771,8 @@ test('面板上层 body 级弹框内按下不联动关面板（词包查看遮�
   assert.deepEqual(closed, [], '词包弹框内按下不得关闭设置面板');
   handler({ target: mkTarget('mp') });    // 模型选择弹窗遮罩（同样先关后判的时序洞）
   assert.deepEqual(closed, [], '模型选择弹窗内按下不得关闭设置面板');
+  handler({ target: mkTarget('cd') });    // v342 补压缩确认弹框（与 OWN_LAYER_SEL 对齐）
+  assert.deepEqual(closed, [], '压缩确认弹框内按下不得关闭设置面板');
   handler({ target: mkTarget(null) });    // 弹框外：外点关闭语义保持
   assert.deepEqual(closed, [false]);
   handler({ target: {} });                // 无 closest 的极端 target：按弹框外处理
