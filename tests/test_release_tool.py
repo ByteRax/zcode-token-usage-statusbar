@@ -74,12 +74,18 @@ if args[0] == "api":
             sys.exit(1)
         raw = json.dumps({"plugins": [{"version": state.get("channelVersion", "1.2.3")}]})
         if mode == "badb64":
-            raw = "!!!not base64!!!"
-        elif mode == "badjson":
-            raw = "{not json"
-        elif mode == "noplugins":
-            raw = json.dumps({"unexpected": []})
-        emit({"encoding": "base64", "content": base64.b64encode(raw.encode()).decode()})
+            content = "!!!not base64!!!"
+        else:
+            if mode == "badjson":
+                raw = "{not json"
+            elif mode == "noplugins":
+                raw = json.dumps({"unexpected": []})
+            elif mode == "emptyplugins":
+                raw = json.dumps({"plugins": []})
+            elif mode == "pluginsint":
+                raw = json.dumps({"plugins": 5})
+            content = base64.b64encode(raw.encode()).decode()
+        emit({"encoding": "base64", "content": content})
     else:
         emit({"full_name": "ByteRax/zcode-token-usage-statusbar", "permissions": {"push": mode != "readonly"}})
 elif args[:2] == ["release", "create"]:
@@ -235,13 +241,19 @@ class ReleaseToolTests(unittest.TestCase):
                         raise tool.ReleaseError("command failed: gh api contents/marketplace.json")
                     raw = json.dumps({"plugins": [{"version": state.get("channelVersion", "1.2.3")}]})
                     if mode == "badb64":
-                        raw = "!!!not base64!!!"
-                    elif mode == "badjson":
-                        raw = "{not json"
-                    elif mode == "noplugins":
-                        raw = json.dumps({"unexpected": []})
-                    out = emit_bytes({"encoding": "base64", "content": base64.b64encode(
-                        raw.encode("utf-8")).decode("ascii")})
+                        # 不经 b64encode 直接下发，让 channel_lag 的 b64decode 真正抛 binascii.Error。
+                        content = "!!!not base64!!!"
+                    else:
+                        if mode == "badjson":
+                            raw = "{not json"
+                        elif mode == "noplugins":
+                            raw = json.dumps({"unexpected": []})
+                        elif mode == "emptyplugins":
+                            raw = json.dumps({"plugins": []})
+                        elif mode == "pluginsint":
+                            raw = json.dumps({"plugins": 5})
+                        content = base64.b64encode(raw.encode("utf-8")).decode("ascii")
+                    out = emit_bytes({"encoding": "base64", "content": content})
                 else:
                     out = emit_bytes({"full_name": "ByteRax/zcode-token-usage-statusbar",
                                       "permissions": {"push": mode != "readonly"}})
@@ -819,7 +831,7 @@ print("bounded unclosed notes completed")
         self.assertIn("ref=plugin-releases", self.calls()[-1])
 
     def test_channel_lag_malformed_payloads_degrade_without_failing_publish(self):
-        for mode in ("badb64", "badjson", "noplugins"):
+        for mode in ("badb64", "badjson", "noplugins", "emptyplugins", "pluginsint"):
             stderr = __import__("io").StringIO()
             # 每轮重置 stub 状态：上一轮已把 draft 写进 gh-state，不清会在 preflight 误报已存在。
             for name in ("gh-state.json", "gh.log"):
