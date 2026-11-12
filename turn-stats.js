@@ -239,22 +239,66 @@
     return run && run.len >= 2 ? { kind: run.kind, startedAt: run.firstAt } : null;
   }
 
-  function subscribeStore(store, tracker, changed) {
+  /* 通知处理预算（issue #309，specs/perf-lag-reduction.md 规则 12）：桥 v2 的 getState() 是整窗深拷贝，
+   * 长会话（数千行）里「读 store + ingest + 回调」一次就几十毫秒，流式期间每秒数次通知就把主线程占满。
+   * 上一次处理实测 ≥ MIN_COST 时，下一次处理至少间隔 min(MAX_GAP, cost × GAP_RATIO)（插件占比 ≤ ~10%）；
+   * 间隔内的通知只置 pending，由唯一的尾部定时器在间隔届满时处理**最新**状态（中间快照不读不 ingest，
+   * ingest 以 seq 单调，丢中间帧无副作用）。廉价会话（cost < MIN_COST）与此前逐字一致：每次通知同步
+   * 处理，不排任何定时器（规则 5：测试与语义依赖通知后同步更新状态条）。 */
+  const BUDGET_MIN_COST_MS = 8;
+  const BUDGET_GAP_RATIO = 9;
+  const BUDGET_MAX_GAP_MS = 1000;
+
+  /* changed(state)：回调拿到本次已读的 state，不应再 store.getState()（v2 桥每读一次 = 一份整窗拷贝）。
+   * options.now / setTimeout / clearTimeout 是测试注入缝，缺省取 performance.now 与全局定时器。 */
+  function subscribeStore(store, tracker, changed, options = {}) {
     if (!store || typeof store.getState !== 'function' || typeof store.subscribe !== 'function') return null;
-    let closed = false;
-    const update = () => {
-      if (closed) return;
+    const now = options.now || (() =>
+      typeof performance === 'object' && performance && typeof performance.now === 'function' ? performance.now() : Date.now());
+    const arm = options.setTimeout || ((fn, ms) => setTimeout(fn, ms));
+    const disarm = options.clearTimeout || (t => clearTimeout(t));
+    let closed = false, timer = null, pending = false, lastEnd = 0, lastCost = 0;
+    const run = () => {
+      const started = now();
       /* changed() 跑在宿主 store 的通知分发链上，异常会冒进宿主其它订阅者——统一兜住
        * （调用方 overlay 侧另有 try 记录诊断，这里是不让异常出模块的最后闸）。 */
       try {
         const state = store.getState();
-        if (tracker.ingest(state && state.snapshot)) changed();
+        if (tracker.ingest(state && state.snapshot)) changed(state);
       } catch (e) { /* 单次通知失败不影响后续订阅 */ }
+      lastEnd = now();
+      lastCost = lastEnd - started;
+    };
+    const flush = () => {
+      timer = null;
+      if (closed || !pending) return;
+      pending = false;
+      run();
+    };
+    const update = () => {
+      if (closed) return;
+      if (lastCost >= BUDGET_MIN_COST_MS) {
+        const wait = Math.min(BUDGET_MAX_GAP_MS, lastCost * BUDGET_GAP_RATIO) - (now() - lastEnd);
+        if (wait > 0) {
+          pending = true;
+          if (timer === null) {
+            timer = arm(flush, wait);
+            if (timer && typeof timer.unref === 'function') timer.unref();   // 不挂住 Node 测试进程
+          }
+          return;
+        }
+      }
+      run();
     };
     const off = store.subscribe(update);
     if (typeof off !== 'function') { closed = true; return null; }
     update();
-    return () => { if (closed) return; closed = true; try { off(); } finally { tracker.dispose(); } };
+    return () => {
+      if (closed) return;
+      closed = true;
+      if (timer !== null) { try { disarm(timer); } catch (e) { } timer = null; }   // 尾部定时器归订阅持有，随退订清除
+      try { off(); } finally { tracker.dispose(); }
+    };
   }
 
   // cn=true 时 token 数量按万/亿显示（≥1 亿用亿、≥1 万用万，至多两位小数去尾零，数字与单位不留空格），

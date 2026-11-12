@@ -190,10 +190,15 @@ function harness(withBridge = true, bootLs = {}) {
   }
 
   const clock = { now: 0 };
+  /* Date.now 可平移（issue #309）：快照记录的新鲜度按 Date.now 计，测试用 advanceDate 越过探活窗口，
+   * 不真等 2 秒。skew 默认 0，等同真实时间，其余用例不受影响。 */
+  const dateSkew = { ms: 0 };
+  class FixtureDate extends Date { static now() { return Date.now() + dateSkew.ms; } }
   const timers = new Map(), frames = new Map();
   let id = 0;
   const sandbox = vm.createContext({
     window, document, console, innerHeight: 800, innerWidth: 1000,
+    Date: FixtureDate,
     location: { href: 'file:///fixture' },
     localStorage: { getItem: k => (k in bootLs ? bootLs[k] : null), setItem() {} },
     performance: { now: () => clock.now },
@@ -221,6 +226,7 @@ function harness(withBridge = true, bootLs = {}) {
   }
   return {
     window, body, timers, frames, inject, boot, runTimers, setPanes, clock,
+    advanceDate: ms => { dateSkew.ms += ms; },
     pane: () => panes[0].parentElement,
     diagSessions, bindCalls: () => bindCalls,
     panesPush: el => { panes.push(el); },   // v174：辅助对话 composer 进入协调器扫描
@@ -740,6 +746,128 @@ test('⑪ heartbeat tick alone (no new store push) still advances the observed-s
   // 无可测字符流=思考态：chip 图标切到动效脑（v77：用户语义"生成中"改"思考中"）
   assert.equal(instanceOf(h).liveIconKind(), 'think');
   assert.equal(store.subscribers(), 1);   // 心跳没有误判成"店铺换代"而重新订阅/脱离
+});
+
+/* ---------- issue #309：100ms 心跳不得对桥包装 getState()（specs/perf-lag-reduction.md 规则 10–12） ----------
+ * 桥 v2 的 getState() 每次都是整窗深拷贝（本机 374 行 ≈1ms，报告者 6868 行 ≈86ms）。症状路径是
+ * 「心跳每拍读 store」，所以这里用读取计数桩复现——读取次数是确定的，不依赖计时。 */
+function countReads(store) {
+  const real = store.getState, c = { n: 0 };
+  store.getState = function () { c.n += 1; return real.call(this); };
+  return c;
+}
+
+test('issue #309: heartbeat ticks do not read the store while the snapshot record is fresh', () => {
+  const h = harness();
+  const store = driveStreaming(h);
+  const reads = countReads(store);
+  for (let i = 0; i < 20; i++) { h.clock.now += 100; h.runTimers(100); }   // 2 秒心跳，没有任何推送
+  assert.equal(reads.n, 0, '100ms 心跳不得对桥包装 getState()：v2 桥每次读 = 整窗深拷贝，每拍两次就占满主线程');
+  assert.equal(store.subscribers(), 1, '订阅没有因为不读 store 而丢失');
+});
+
+test('issue #309: a stale snapshot record is refreshed with exactly one read, which doubles as the liveness probe', () => {
+  const h = harness();
+  const store = driveStreaming(h);
+  const reads = countReads(store);
+  h.advanceDate(2500);   // 记录超过 SNAP_FRESH_MS(2s)
+  h.runTimers(100);
+  assert.equal(reads.n, 1, '陈旧后的首个心跳回源恰好一次（同拍 subRunningList 复用刷新后的记录）');
+  for (let i = 0; i < 10; i++) h.runTimers(100);
+  assert.equal(reads.n, 1, '刷新后回到零读取');
+  // store 在两次通知之间失效（getState → null 且不再通知）：探活窗口内仍视为健康，陈旧后的首个心跳才发现
+  h.diagSessions.length = 0;   // 宿主注册表同时撤掉该条目，否则同拍会重绑回同一个夹具对象（见 ⑤）
+  store.state = null;
+  for (let i = 0; i < 5; i++) h.runTimers(100);
+  assert.equal(store.subscribers(), 1, '记录新鲜期内不探活');
+  assert.equal(store.offs, 0);
+  h.advanceDate(2500);
+  h.runTimers(100);
+  assert.equal(store.subscribers(), 0, '陈旧后的首个心跳回源读到 null：脱离并释放订阅');
+  assert.ok(store.offs >= 1, '同时释放了桥包装的租约');
+  assert.equal(instanceOf(h).statsFor('pt1'), null, 'tracker 已 dispose');
+});
+
+test('issue #309: one store push costs exactly one read through the whole overlay path', () => {
+  const h = harness();
+  const store = driveStreaming(h);
+  const reads = countReads(store);
+  h.clock.now = 1100;
+  store.set(snap(3, [header('running'), text('abcdefghi')]));
+  assert.equal(reads.n, 1, 'subscribeStore 读一次并把 state 交给回调；回调与同步触发的 updateLive 都不再二读');
+  assert.equal(instanceOf(h).statsFor('pt1').totalCharacters, 9, '读到的数据确实被消费');
+});
+
+test('issue #309: the synthetic "thinking" branch (no turn stats yet) also reads from the record, not the store', () => {
+  const h = harness();
+  h.setPanes(['a']); h.inject(); h.boot(); h.runTimers(600);
+  const store = makeStore({ ...snap(1, []), control: { phase: 'running' } });   // 空窗 + running：v87/v116 合成「思考中」
+  h.diagSessions.push({ key: '__base__ /fixture/ws', topic: 'conversation/sid_a', store });
+  h.runTimers(100);   // 绑定
+  const reads = countReads(store);
+  for (let i = 0; i < 10; i++) { h.clock.now += 100; h.runTimers(100); }
+  assert.equal(reads.n, 0, '合成分支原来每拍再读一次 store');
+  assert.match(instanceOf(h).liveEl().textContent, /^思考中/, '合成「思考中」仍在走字');
+  h.clock.now += 100;
+  store.set({ ...snap(2, []), control: { phase: 'running' } });
+  assert.equal(reads.n, 1, '一次推送仍只读一次');
+});
+
+test('issue #309: switching the pane to another session rebinds in the same tick, not after the probe window', () => {
+  const h = harness();
+  const a = driveStreaming(h);
+  const b = makeStore(snap(1, [header('running'), text('xyz')], 'sid_b'));
+  h.diagSessions.push({ key: '__base__ /fixture/ws', topic: 'conversation/sid_b', store: b });
+  h.pane().dataset.sessionId = 'sid_b';
+  h.runTimers(600);   // 协调器 tick（pendingSid）+ heavy（instSid）：实例会话切到 sid_b
+  h.runTimers(100);   // 心跳：记录仍新鲜，但 handle.sid ≠ 当前会话 → 立即重绑
+  assert.equal(a.subscribers(), 0, '旧 store 订阅立即释放');
+  assert.equal(b.subscribers(), 1, '新会话的 store 在同一拍绑定，不等探活窗口');
+});
+
+/* 昂贵 store：每读一次把夹具的 performance.now 推进 96ms，等价于 6800+ 行整窗拷贝的耗时。 */
+function expensiveStore(h, snapshot, costMs = 96) {
+  const store = makeStore(snapshot), real = store.getState;
+  store.getState = function () { h.clock.now += costMs; return real.call(this); };
+  return store;
+}
+function newTimersSince(h, known) { return [...h.timers].filter(([k]) => !known.has(k)); }
+
+test('issue #309: an expensive session coalesces a push burst into one trailing run on the latest state', () => {
+  const h = harness();
+  h.setPanes(['a']); h.inject(); h.boot(); h.runTimers(600);
+  const store = expensiveStore(h, snap(1, [header('running'), text('abc')]));
+  h.diagSessions.push({ key: '__base__ /fixture/ws', topic: 'conversation/sid_a', store });
+  h.runTimers(100);   // 绑定：初次处理实测 96ms → 预算间隔 864ms
+  assert.equal(instanceOf(h).statsFor('pt1').totalCharacters, 3);
+  const known = new Set(h.timers.keys());
+  store.set(snap(2, [header('running'), text('abcdef')]));
+  store.set(snap(3, [header('running'), text('abcdefghi')]));
+  assert.equal(instanceOf(h).statsFor('pt1').totalCharacters, 3, '间隔内的推送被合并：tracker 仍是上一次处理的数据');
+  const trailing = newTimersSince(h, known);
+  assert.equal(trailing.length, 1, '整段突发只排一个尾部定时器');
+  assert.ok(trailing[0][1].ms > 0 && trailing[0][1].ms <= 864, '定时器在预算间隔届满时触发');
+  h.clock.now += 900;
+  h.timers.delete(trailing[0][0]); trailing[0][1].fn();
+  assert.equal(instanceOf(h).statsFor('pt1').totalCharacters, 9, '尾部处理读到的是最新状态，中间帧不丢最终结果');
+});
+
+test('issue #309: disposing with a pending trailing run leaves no timer and never touches the store again', () => {
+  const h = harness();
+  h.setPanes(['a']); h.inject(); h.boot(); h.runTimers(600);
+  const store = expensiveStore(h, snap(1, [header('running'), text('abc')]));
+  h.diagSessions.push({ key: '__base__ /fixture/ws', topic: 'conversation/sid_a', store });
+  h.runTimers(100);
+  const known = new Set(h.timers.keys());
+  store.set(snap(2, [header('running'), text('abcdef')]));   // 合并中：尾部定时器待触发
+  assert.equal(newTimersSince(h, known).length, 1);
+  const stale = newTimersSince(h, known)[0][1];
+  h.window.__zusageDispose();
+  assert.equal(h.timers.size, 0, 'dispose 同时清掉订阅持有的尾部定时器');
+  assert.equal(store.subscribers(), 0);
+  const reads = countReads(store);
+  stale.fn();   // 即使迟到的回调仍被调到
+  assert.equal(reads.n, 0, '已关闭的订阅不再读 store');
 });
 
 test('⑫ bar chip mirrors the running toolCall state (verb + elapsed) instead of a stale 生成中', () => {

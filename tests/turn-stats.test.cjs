@@ -102,6 +102,125 @@ test('unavailable interfaces are rejected', () => {
   assert.equal(subscribeStore({}, createTracker(), () => {}), null);
 });
 
+/* ---------- issue #309：通知路径的读取次数与处理预算（specs/perf-lag-reduction.md 规则 11/12） ----------
+ * 桥 v2 的 getState() 每次都是整窗深拷贝（O(window)），所以 subscribeStore 必须只读一次并把读到的
+ * state 交给回调；窗口大到单次处理很贵时，连发通知按成本合并，CPU 占比封顶。 */
+test('subscribeStore reads once per notification and hands that very state to changed()', () => {
+  let reads = 0, listener;
+  const state = { snapshot: snapshot(1, [header()]) };
+  const store = { getState: () => (reads++, state), subscribe: cb => { listener = cb; return () => {}; } };
+  const seen = [];
+  subscribeStore(store, createTracker({ now: () => 0 }), s => seen.push(s));
+  assert.equal(reads, 1);
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0], state, 'changed receives the state object that was read, so callers need no second getState()');
+  state.snapshot = snapshot(2, [header(), text('abc')]);
+  listener();
+  assert.equal(reads, 2);
+  assert.equal(seen[1], state);
+});
+
+/* 预算夹具：注入时钟与定时器；getState 每读一次把时钟推进 costMs()，模拟整窗拷贝的耗时。
+ * seq 随读取次数递增，保证每次处理都被 ingest 接受并触发 changed。 */
+function budgetFixture(costMs) {
+  const clock = { t: 0 }, timers = [], log = { reads: 0, changed: 0, states: [] };
+  let listener, seq = 0, throwNext = false;
+  const store = {
+    getState: () => {
+      log.reads += 1;
+      if (throwNext) { throwNext = false; clock.t += costMs(); throw new Error('store closed mid-flight'); }
+      clock.t += costMs();
+      return { snapshot: snapshot(++seq, [header(), text('x'.repeat(seq))]) };
+    },
+    subscribe: cb => { listener = cb; return () => {}; },
+  };
+  const options = {
+    now: () => clock.t,
+    setTimeout: (fn, ms) => { const t = { fn, ms, cleared: false, fired: false, unref() { t.unrefd = true; }, fire() { t.fired = true; fn(); } }; timers.push(t); return t; },
+    clearTimeout: t => { if (t) t.cleared = true; },
+  };
+  const close = subscribeStore(store, createTracker({ now: () => clock.t }), s => { log.changed += 1; log.states.push(s); }, options);
+  const live = () => timers.filter(t => !t.cleared && !t.fired);
+  return { clock, timers, live, log, close, notify: () => listener(), failNext: () => { throwNext = true; } };
+}
+
+test('cheap sessions are never deferred: every notification is processed synchronously (rule 5 unchanged)', () => {
+  const f = budgetFixture(() => 2);
+  for (let i = 0; i < 5; i++) { f.clock.t += 1; f.notify(); }
+  assert.equal(f.log.changed, 6, 'initial subscribe pass + one per notification');
+  assert.equal(f.timers.length, 0, 'no timer is ever armed for a cheap session');
+});
+
+test('expensive sessions coalesce a burst into one trailing run on the latest state', () => {
+  const f = budgetFixture(() => 96);
+  assert.equal(f.log.changed, 1);            // 初次同步处理：耗时 96ms → 预算间隔 min(1000, 96×9=864)
+  f.clock.t += 4; f.notify();                // 距上次处理结束 4ms
+  f.clock.t += 20; f.notify();
+  f.clock.t += 20; f.notify();
+  assert.equal(f.log.reads, 1, 'burst inside the gap neither reads the store nor ingests');
+  assert.equal(f.log.changed, 1);
+  assert.equal(f.live().length, 1, 'exactly one trailing timer for the whole burst');
+  assert.equal(f.live()[0].ms, 864 - 4, 'armed on the first coalesced notification, to land exactly when the gap (864ms) after the last run ends');
+  assert.equal(f.live()[0].unrefd, true, 'timer is unref-ed so it cannot hold a Node test process open');
+  f.clock.t += 820;
+  f.live()[0].fire();                        // 尾部定时器触发
+  assert.equal(f.log.reads, 2);
+  assert.equal(f.log.changed, 2);
+  assert.equal(f.log.states[1].snapshot.seq, 2, 'the trailing run reads the latest state');
+  assert.equal(f.live().length, 0, 'fired timer is not left armed');
+});
+
+test('after the gap elapses the next notification is processed synchronously again, without a timer', () => {
+  const f = budgetFixture(() => 96);
+  f.clock.t += 1; f.notify();                // 进入合并
+  f.clock.t += 900; f.live()[0].fire();      // 尾部处理（间隔届满）
+  const timersBefore = f.timers.length;
+  f.clock.t += 864 + 1;                      // 越过本次处理结束后的间隔
+  f.notify();
+  assert.equal(f.log.changed, 3, 'processed immediately');
+  assert.equal(f.timers.length, timersBefore, 'no new timer needed');
+});
+
+test('budget thresholds: 8ms is the first throttled cost, the gap is capped at 1000ms', () => {
+  const below = budgetFixture(() => 7.99);
+  below.clock.t += 1; below.notify();
+  assert.equal(below.log.changed, 2, '7.99ms stays synchronous');
+  assert.equal(below.timers.length, 0);
+  const at = budgetFixture(() => 8);
+  at.clock.t += 1; at.notify();
+  assert.equal(at.log.changed, 1, '8ms is already throttled');
+  assert.equal(at.live()[0].ms, 72 - 1, 'gap = cost × 9');
+  const huge = budgetFixture(() => 500);
+  huge.clock.t += 1; huge.notify();
+  assert.equal(huge.live()[0].ms, 1000 - 1, 'gap never exceeds 1000ms however expensive one run was');
+});
+
+test('closing the subscription clears the trailing timer and a stale firing does nothing', () => {
+  const f = budgetFixture(() => 96);
+  f.clock.t += 1; f.notify();
+  const timer = f.live()[0];
+  assert.ok(timer, 'a trailing run is pending');
+  f.close();
+  assert.equal(timer.cleared, true, 'close() clears the pending timer');
+  const reads = f.log.reads;
+  timer.fn();                                // 即使定时器回调仍被调到
+  assert.equal(f.log.reads, reads, 'closed subscriptions never read the store');
+  f.notify();
+  assert.equal(f.log.reads, reads);
+});
+
+test('a store that throws during the trailing run neither escapes the timer nor stops later notifications', () => {
+  const f = budgetFixture(() => 96);
+  f.clock.t += 1; f.notify();
+  f.failNext();
+  f.clock.t += 900;
+  assert.doesNotThrow(() => f.live()[0].fire());
+  const changed = f.log.changed;
+  f.clock.t += 5000;
+  f.notify();
+  assert.equal(f.log.changed, changed + 1, 'the subscription survives a failed run');
+});
+
 test('removed rows reset the live rate instead of retaining old characters', () => {
   let now = 0;
   const tracker = createTracker({ now: () => now });

@@ -5,12 +5,12 @@
     function bridgeDetach(handle) {
       if (!handle || handle.dead) return;
       handle.dead = true;
+      handle.snap = null;   // issue #309：整窗快照记录不随已死 handle 滞留
       try { if (handle.off) handle.off(); } catch (e) { }   // 停订阅 + dispose tracker
       try { handle.store.off(); } catch (e) { }
       if (bridge.handle === handle) { bridge.handle = null; bridge.turnId = ""; }
       subRateDetach();   // 主桥释放（换代/切换/世代失效）时子代理速率桥一并释放
     }
-
     /* ---------- 子代理运行期速率桥（v97）：主会话 rows 的 subagent 行自带
      * childSessionId（turn-stats 的 runningSubagents 集合），据此用同一套 zuTryBindStore
      * 为**每个**运行中的子代理绑定会话 store，字符增量 ÷ c2t 估算各自输出 tok/s；
@@ -379,6 +379,27 @@
       if (subTipFor && subTipFor.isConnected && subTipFor.__zuT) showSubTip(subTipFor);   // 悬停中随推送刷新（签名幂等不重建）
       else if (subTipFor && !subTipFor.isConnected) hideSubTip();
     }
+    /* 心跳读快照（issue #309，specs/perf-lag-reduction.md 规则 10）：100ms 心跳不得对桥包装
+     * getState()——桥 v2 每次读都是整窗深拷贝（O(window)：本机 374 行 ≈1ms，报告者 6868 行 ≈86ms；
+     * 心跳每拍读两次就把主线程占满）。通知回调已把最新快照记在 handle 上（snap/snapAt），心跳路径的
+     * 消费方（bridgeTick 健康检查、subRunningList、「思考中」合成）都读这份记录。记录超过
+     * SNAP_FRESH_MS 无更新才回源 getState() 一次并回写——这次回源兼作 store 关闭/换代的探活
+     * （读到 null 或 sessionId 变，调用方按既有语义脱离重绑）；pane 切会话由 handle.sid/sideKey
+     * 与当前会话的比对即时重绑，不靠探活。age<0（系统时钟回拨）按陈旧处理，不让记录永远「新鲜」。 */
+    var SNAP_FRESH_MS = 2000;
+    function handleSnapshot(h) {
+      if (!h || h.dead || !h.store) return null;
+      var now = Date.now();
+      if (typeof h.snapAt === "number") {
+        var age = now - h.snapAt;
+        if (age >= 0 && age < SNAP_FRESH_MS) return h.snap || null;
+      }
+      var snap = null;
+      try { var st = h.store.getState(); snap = (st && st.snapshot) || null; } catch (e) { snap = null; }
+      h.snap = snap;
+      h.snapAt = now;
+      return snap;
+    }
     /* ---------- 运行中子代理集合补给（v333，specs/agent-background-support.md）：
      * rows 行（turn-stats 透传，父会话尾部 60 行窗口内）∪ 桥快照 backgroundWorks 的
      * 后台智能体条目——后台运行中用户继续对话会把启动行滚出窗口，backgroundWorks
@@ -390,9 +411,7 @@
       var list = (stats && !stats.complete && Array.isArray(stats.runningSubagents)) ? stats.runningSubagents.slice() : [];
       var h = bridge.handle;
       if (!h || h.dead || !h.store) return list;
-      var st = null;
-      try { st = h.store.getState(); } catch (e) { return list; }
-      var snap = st && st.snapshot;
+      var snap = handleSnapshot(h);   // issue #309：读通知回调记下的快照，不在 100ms 心跳里 getState()
       /* 会话校验（v334）：pane 原地切会话后、bridgeTick 重绑前的一拍内不得并入上一
        * 会话的后台任务清单（同函数族既有的 snap.sessionId 校验纪律）。 */
       if (!snap || snap.sessionId !== h.sid) return list;
@@ -633,9 +652,9 @@
       var sideKey = sideScope ? JSON.stringify([sideScope.sid, sideScope.identity, sideScope.workspacePath, sideScope.remoteSessionId]) : null;
       if (bridge.handle) {
         if (bridge.handle.sid === sid && bridge.handle.sideKey === sideKey) {
-          var cur = null;
-          try { cur = bridge.handle.store.getState(); } catch (e) { }
-          var snap = cur && cur.snapshot;
+          /* issue #309：健康检查读 handle 上的快照记录（handleSnapshot：≤2s 回源一次兼作探活），
+           * 100ms 心跳不再每拍 getState()。 */
+          var snap = handleSnapshot(bridge.handle);
           /* 绑定健康：store 可能在工具执行期间（查阅/编辑等）很久不推新快照——
            * 仍按本轮 2s 心跳刷新一次，让「已观察 Xs」能继续走字，而不是整段
            * 工具执行时间里界面像冻住；updateLive 内部按文本/类名是否真变化
@@ -649,14 +668,16 @@
       });
       if (!store) { updateLive(); return; }   // 无桥 / 无匹配 session：降级（DB 路径不变），下轮再探
       var tracker = TURN_STATS.createTracker();
-      var handle = { dead: false, sid: sid, sideKey: sideKey, store: store, tracker: tracker, alias: {}, off: null, charsPerToken: null, bornAt: Date.now() };
-      var off = TURN_STATS.subscribeStore(store, tracker, function () {
+      var handle = { dead: false, sid: sid, sideKey: sideKey, store: store, tracker: tracker, alias: {}, off: null, charsPerToken: null, bornAt: Date.now(), snap: null, snapAt: null };
+      var off = TURN_STATS.subscribeStore(store, tracker, function (st) {
         if (inactive() || handle.dead) return;
         if (!sideHandleValid(handle)) { bridgeDetach(handle); updateLive(); return; }
-        var st = null;
-        try { st = store.getState(); } catch (e) { st = null; }
+        /* issue #309：st 是 subscribeStore 本次通知已读的 state（桥 v2 每读一次 = 一份整窗深拷贝），
+         * 直接用，不再 getState()；同时记到 handle 上供 100ms 心跳消费（handleSnapshot）。 */
         var snap = st && st.snapshot;
         if (!snap || snap.sessionId !== sid) { bridgeDetach(handle); updateLive(); return; }   // 换代/关闭：下轮 tick 重绑
+        handle.snap = snap;
+        handle.snapAt = Date.now();
         var rows = snap.rows && snap.rows.window;
         if (Array.isArray(rows)) {
           for (var i = 0; i < rows.length; i++) {
@@ -700,8 +721,7 @@
        * control 缺失或 phase 未知的旧形状一律不合成（字段缺失是常态不是错误）。 */
       if (!stats && h && !h.dead && bridge.handle && h.store) {
         try {
-          var st0 = h.store.getState();
-          var snap0 = st0 && st0.snapshot;
+          var snap0 = handleSnapshot(h);   // issue #309：读快照记录，不在 100ms 心跳里 getState()
           if (snap0 && snap0.sessionId === h.sid) {
             var rows0 = snap0.rows && snap0.rows.window;
             var ph0 = snap0.control && snap0.control.phase;
