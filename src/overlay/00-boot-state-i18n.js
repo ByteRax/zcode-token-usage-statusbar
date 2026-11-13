@@ -60,7 +60,7 @@
    * 确定性历史行（[data-zusage-deterministic]，挂在消息流 turn 容器末尾）一并自清。
    * v80：面板（.zusage-panel）挂 body 不随条走，清理选择器单列。 */
   try {
-    document.querySelectorAll(".zusage-root,.zusage-tip-root,.zusage-exc,.zusage-rate-tip,.zusage-quota-tip,.zu-quota,.zu-git,.zu-tsb,.zu-compact-btn,.zu-ac-info,.zu-ac-hint,.zu-compact-dlg,.zu-rot-pk-dlg,.zusage-git-tip,.zusage-panel,.zu-mp-host,.zu-mp-ov,[data-zusage-deterministic],[data-zusage-loading-status],.zu-subrate,.zu-wfrun,.zu-substat").forEach(function (el) { el.remove(); });
+    document.querySelectorAll(".zusage-root,.zusage-tip-root,.zusage-exc,.zusage-rate-tip,.zusage-quota-tip,.zu-quota,.zu-git,.zu-tsb,.zu-compact-btn,.zu-ac-info,.zu-ac-hint,.zu-compact-dlg,.zu-rot-pk-dlg,.zusage-git-tip,.zusage-panel,.zu-mp-host,.zu-mp-ov,[data-zusage-deterministic],[data-zusage-loading-status],.zu-subrate,.zu-wfrun,.zu-substat,.zu-enhance").forEach(function (el) { el.remove(); });
   } catch (e) { }
 
   try {
@@ -118,6 +118,9 @@
     /* 套餐额度开关：真值在 config.json 的 quota_enabled（主进程据此决定是否解密凭据
        联网查询，并随插件状态推送 quotaEnabled）；缺省开启，仅显式 false 关闭（v111） */
     quotaEnabled: !(window.__zusagePluginState && window.__zusagePluginState.quotaEnabled === false),
+    /* v344 增强提示词按钮开关：真值在 config.json 的 enhance_enabled（主进程动作入口
+       fail-closed 校验，并随插件状态推送 enhanceEnabled）；缺省开启，仅显式 false 关闭 */
+    enhanceEnabled: !(window.__zusagePluginState && window.__zusagePluginState.enhanceEnabled === false),
     /* v135 重置卡徽标开关：真值在 config.json 的 reset_badge_enabled（主进程推送
        resetBadgeEnabled）；独立于 quota_enabled（额度关时仍查询 reset/status）。缺省开启 */
     resetBadge: !(window.__zusagePluginState && window.__zusagePluginState.resetBadgeEnabled === false),

@@ -929,6 +929,7 @@
         enhanceQuotaChip();
         enhanceModelPuller();
         enhanceGitChip();
+        enhancePromptBtn();   /* v344：增强按钮 compact 数据点 reapply（compact 只藏条面，工具行 chip 照常） */
         syncTpsChip();   /* v177：恢复 v146 短路内调用——2976478 挪到公共尾部后短路 return 到不了，
                           * 泵推送的最坏 600ms 延迟落在速率 chip 上且与 git chip 不对称 */
         renderWorkflowCards();   // v332：工作流 run 卡 chip 数据点 reapply（compact 只藏条面，会话流 chip 照常）
@@ -1002,6 +1003,7 @@
       enhanceQuotaChip();   // v96：额度 chip 数据点 reapply
       enhanceModelPuller();   // v132：宿主设置页「拉取模型」按钮 reapply
       enhanceGitChip();     // v96：同点对账 Git chip（开关/会话切换/scope 变化在此收敛）
+      enhancePromptBtn();   // v344：增强按钮数据点 reapply（开关显隐/锚点变化/相位外观在此收敛）
       syncTpsChip();        // v155：速率 chip 数据点 reapply（compact 短路与空壳直通两路都经此）
       renderWorkflowCards();   // v332：工作流 run 卡 chip 数据点 reapply（DOM 对账由 heavy 兜）
       renderRunningSubagentItems();   // v333：状态面板 Agents 行速率 chip 数据点 reapply（DOM 对账由 heavy 兜）

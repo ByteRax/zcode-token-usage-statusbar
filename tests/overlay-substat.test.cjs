@@ -284,10 +284,10 @@ test('source contracts: substat wiring (style, delegation, call sites, union fee
   /* v335：dispose（12 分片）与 00 启动自清的三类 chip 全覆盖——两处收窄/缺类名都会让
    * pane 回收或热重载后残留冻结 chip（第一轮审查 M1/m2 的变异全绿缺口，源码契约锁定） */
   assert.match(source, /var staleChips = srr\.querySelectorAll\("\.zu-subrate,\.zu-wfrun,\.zu-substat"\)/, 'dispose 摘净链含三类 chip');
-  assert.match(source, /,\.zu-subrate,\.zu-wfrun,\.zu-substat"\)\.forEach/, '启动自清列表含三类 chip');
+  assert.match(source, /,\.zu-subrate,\.zu-wfrun,\.zu-substat,\.zu-enhance"\)\.forEach/, '启动自清列表含三类 chip');
   /* v337 主格合成态：槽位在而主会话无实时轮——合成 runningTool=Agent 让速度格走子代理分支 */
   assert.match(source, /function synthesizeBackgroundStats\(stats\)/, '合成函数在切片内');
   assert.match(source, /stats = synthesizeBackgroundStats\(stats\);/, 'updateLive 接线');
   assert.match(source, /if \(stats && !stats\.complete\) return stats;/, '主会话实时轮优先不合成');
-  assert.match(source, /var VERSION = "v343";/);   // 只锁代际顺延；台账内容合法性由 ReleaseLedgerTests 守护
+  assert.match(source, /var VERSION = "v344";/);   // 只锁代际顺延；台账内容合法性由 ReleaseLedgerTests 守护
 });

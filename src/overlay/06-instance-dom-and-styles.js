@@ -225,8 +225,9 @@
      * → v341 issue #309 复审补修：子代理槽位通知回调复用 changed(state) 不再二读；通知处理同步分支作废迟到的尾部定时器；全局 setTimeout/clearTimeout 缺席时不抛进宿主通知链（退回同步处理）；订正「窗口恒 60 行」旧注释（reducer 增量不截）。
      * → v342 ⚙ 面板底栏「反馈问题」左侧新增「联系我」按钮：点击经 openMpShell 复用 .zu-mp-ov 弹窗外壳（收窄 .zu-ct-ov 卡宽）展示维护者微信二维码远程直链（http 直链经实测可用；https 不可达；宿主渲染页 file:// 无混合内容拦截），加载失败隐藏图片换文字兜底；Esc/遮罩/✕ 关闭沿用壳协议，外部点击豁免走既有 .zu-mp-ov 白名单。随批修复既有潜在缺陷：openMpShell 系自有弹层被 modalOpen（v62）误判宿主模态——body 直挂全屏遮罩+内部 role=dialog 完整命中两层判定 ⇒ track 收条连带 closeSettings（用户实报：点「联系我」/关弹框后设置面板被关）；modalOpen 两层扫描与 isOwnOverlay 豁免清单补 .zu-mp-ov/.zu-rot-pk-dlg/.zu-compact-dlg，宿主真模态判定不变。复审补修：.zu-ct-img 补 [hidden] 显式隐藏（作者 display:block 压过 UA [hidden]，同 .zu-update-progress 先例）；mp 壳 Esc 升捕获相+stopPropagation 对齐 rotPkKey 协议（焦点在面板内按 Esc 曾关面板留弹窗）；error 守卫改 isConnected；img 补宽高属性防加载回流；09 面板外点白名单补 .zu-compact-dlg；⚙ 联网边界披露「联系我」图床拉图。
      * → v343 turn-text 回推诊断计数（issue #321「生成时长缺失，暂不显示速率」每轮常驻且零可观测）：完成态占位行的速率来自数据库富文本回推（token_rate.py --turn --current），此前回推失败全静默——空交付不区分「主进程没回（旧冷文件/通道断）」与「Python spawn 失败、15s 超时、非零退出」及「库没追上」。渲染端新增页面存活期单调计数 rt（sent、ok、empty、miss、stale，空交付原因细分 spawn/timeout/pyerr）随 FATAL.det.rt 落 diag-*.json；miss=请求 20s 无回执（略大于主进程 15s 超时），stale=未匹配在途请求的设计内淘汰回执；主进程空交付带原因标签属 inject-main.cjs 冷文件改动，需完全重启才细分，旧主进程回退落 empty 桶。
+     * → v344 增强提示词按钮（specs/prompt-enhance.md）：模型 chip（chat-model-select-trigger，空配置「管理模型」分支同名）左侧 ✦ 按钮，chip 缺位回退用量圆环左侧；点击读 composer 草稿（__zcodeLexicalInputE2E，Lexical 直写 DOM 不进 EditorState 的唯一官方写通道）经 pluginRequest("prompt-enhance") 主进程按会话模型凭据（v4-model-config 实时选择优先、快照 last 兜底）一次性非流式改写后回填前重读草稿比对防覆盖用户编辑，再以 setText 替换，20 秒内按钮变撤销态恢复原文；增强中忽略再点（主进程 60s 超时 + 渲染端 75s 兜底）；警示态 4s 自愈（空草稿/模型未识别/失败原因/冲突）。实现落 model-puller.cjs enhanceText（三协议非流式 POST、套餐源 planTokenOf 解密、api-key 型自定义供应商、错误摘录脱敏）+ inject-main 白名单三动作（prompt-enhance / prompt-enhance-cancel 取消 / enhance 开关，enhance_enabled 缺省开显式 false 关、推送面 enhanceEnabled）+ ⚙ 面板「回答统计」分区开关行。增强中再点按钮=取消在途请求；主进程不认识新动作的旧版本回 unknown action，按钮按失败警示不挂起。
      */
-    var VERSION = "v343";
+    var VERSION = "v344";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
@@ -533,6 +534,11 @@
       ".zu-quota[data-zusage-light] .zu-qseg.zu-qb-crit{color:#d8482f}" +
       ".zu-quota[data-zusage-light] .zu-qseg.zu-qb-exc{text-shadow:none}" +
       ".zu-quota[data-zusage-light] .zu-qseg.dim{color:#8a8a8a}" +
+            ".zu-enhance{display:inline-flex;align-items:center;justify-content:center;height:1.75rem;width:1.75rem;padding:0;border-radius:.5rem;border:none;background:transparent;color:var(--color-foreground-subtle,rgba(255,255,255,.55));cursor:pointer;user-select:none;flex:0 0 auto;outline:none}" +
+      ".zu-enhance:hover,.zu-enhance:focus-visible{background:var(--color-hover,rgba(255,255,255,.08));color:var(--color-foreground,#fff)}" +
+      ".zu-enhance:focus-visible{outline:2px solid var(--color-input-border-focused,var(--color-brand,#57c8ff))!important;outline-offset:2px}" +
+      ".zu-enhance[aria-busy=true] svg{animation:zumpspin .9s linear infinite}" +
+      ".zu-enhance.zu-ewarn{color:var(--color-destructive,#ff2d55)}" +
       /* v146 精简模式速率 chip（.zu-tsb）：挂工具行、重置卡左侧；字体显式规格与 .zu-quota
        * 同源（--text-ui-base-1px + 700 + tabular-nums，用户规格 2026-10-28 对齐；v315 起字族 sans）。
        * 速率色档复用全局 .ok/.warm/.hot 与 TPS 十档类（含 Ultra 渐变 ✦）；浅色组靠 chip
@@ -1732,6 +1738,7 @@
       (typeof zuRotatorSectionHtml === "function" ? zuRotatorSectionHtml(secOpen("rotator") === "") : "") +
       '<section class="zu-settings-section" data-sec="stats"' + secOpen("stats") + '><div class="cap">' + L("回答统计", "Reply statistics") + '</div><div class="zu-settings-card">' +
       settingRow('<input type="checkbox" class="zu-rate-line">', L("回答末尾追加统计行", "Append stats to each reply"), L("切换后立即重扫：关闭会撤下插件生成的统计行，开启会补回可用记录。下一次提问沿用该设置；历史正文和已缓存统计行不重算。", "Rescans immediately: off removes plugin-generated lines; on restores available records. Applies to the next prompt; historical text and cached statistics are not recalculated.")) +
+      settingRow('<input type="checkbox" class="zu-enhance-toggle">', L("增强提示词按钮", "Prompt enhance button"), L("在输入框工具条模型选择按钮左侧显示 ✦ 按钮：点击用当前会话模型把输入框草稿改写得更清晰后替换原文，20 秒内可点按钮撤销。点击会向当前模型供应商发送草稿文本并消耗其额度；默认开启，主进程端同名开关关闭时不渲染。", "Shows a ✦ button left of the model picker in the composer toolbar: click to rewrite the composer draft with the current session model and replace it (click again within 20s to undo). Clicking sends the draft text to the current model provider and consumes its quota; on by default, and the button is hidden when the main-process switch of the same name is off.")) +
       '</div></section>' +
       '<section class="zu-settings-section" data-sec="quota"' + secOpen("quota") + '><div class="cap">' + L("套餐额度", "Plan quota") + '</div><div class="zu-settings-card">' +
       settingRow('<input type="checkbox" class="zu-quota-enable">', L("显示套餐额度", "Show plan quota"), L("在输入框上下文按钮左侧显示当前登录账号编码套餐的已用比例与重置时间（含 Start Plan 免费档池的已用比例与到期时间；账号级套餐池，不是单个模型独享）。默认开启，关闭即停查询。点击 chip 立即刷新。", "Shows the signed-in account's coding-plan usage and reset time left of the context button (plus the Start Plan free tier's usage and expiry; account-level pool, not per model). On by default; turning it off stops the queries. Click the chip to refresh.")) +

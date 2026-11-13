@@ -34,6 +34,7 @@
     if (s && typeof s.rateLine === "boolean") state.rateLine = s.rateLine;
     if (s && typeof s.quotaEnabled === "boolean") state.quotaEnabled = s.quotaEnabled;
     if (s && typeof s.resetBadgeEnabled === "boolean") state.resetBadge = s.resetBadgeEnabled;   // v135
+    if (s && typeof s.enhanceEnabled === "boolean") state.enhanceEnabled = s.enhanceEnabled;   // v344：增强按钮显隐随主进程真值
     if (s && typeof s.restartNotice === "boolean") state.restartNotice = s.restartNotice;   // v159（issue #139）
     if (s && s.enginePatch && typeof s.enginePatch === "object") state.enginePatch = s.enginePatch;   // v179：⚙ 状态行与 hover 阈值行的数据源
     if (s && Array.isArray(s.quotaSources)) state.quotaSources = s.quotaSources;   // v95：chip 门控随主进程真值（heavy 对账点内生效）
@@ -1006,6 +1007,35 @@
     rstTip.style.display = "none";
     rstTipFor = null;
   }
+  /* ---------- v344 增强按钮 tooltip：rstTip 同款 body 级轻量文本浮层（.tip 样式/上方
+   * 弹出/签名幂等/主题跟随）。纯文案无交互（textContent，不经 innerHTML），文案由按钮
+   * 相位同步处写入 el.__zuEnhTip（实例闭包算好双语与相位），悬停中相位变化跟随重显。 */
+  var enhanceTip = document.createElement("div");
+  enhanceTip.className = "tip zusage-quota-tip zusage-enhance-tip";
+  enhanceTip.style.cssText = rateTip.style.cssText;
+  document.body.appendChild(enhanceTip);
+  var enhanceTipFor = null;
+  function showEnhanceTip(el) {
+    if (stale() || !el || !el.isConnected || !el.__zuEnhTip) { hideEnhanceTip(); return; }
+    var txt = el.__zuEnhTip;
+    if (enhanceTip.__zuTipText !== txt) { enhanceTip.textContent = txt; enhanceTip.__zuTipText = txt; }
+    var dark = true;
+    try { dark = document.documentElement.classList.contains("dark"); } catch (e) { }
+    enhanceTip.classList.toggle("zu-light", !dark);
+    enhanceTip.style.display = "block";
+    var r = el.getBoundingClientRect(), tw = enhanceTip.offsetWidth, th = enhanceTip.offsetHeight;
+    var vw = window.innerWidth, vh = window.innerHeight;
+    var left = Math.max(8, Math.min(r.left, vw - tw - 8));
+    var top = r.top - th - 8;
+    if (top < 8) top = Math.min(r.bottom + 8, vh - th - 8);
+    enhanceTip.style.left = Math.round(left) + "px";
+    enhanceTip.style.top = Math.round(top) + "px";
+    enhanceTipFor = el;
+  }
+  function hideEnhanceTip() {
+    enhanceTip.style.display = "none";
+    enhanceTipFor = null;
+  }
   /* ---------- v202 预估费用说明小气泡（费用行 ? 图标悬停）：rstTip 同款浮层/悬停桥。
    * 内容三行：价格来源（models.dev）/ 计算公式（本库口径）/ 汇率来源（快照 fx.source，
    * 无汇率标 USD 原值显示）。监听在各实例 tip 本体 mouseover/out 委托（innerHTML 重建不丢）。 */
@@ -1210,6 +1240,8 @@
     tpsTip.remove();   // v146：精简模式速率 tooltip 同链清理
     hideFxTip();
     fxTip.remove();   // v202：预估费用说明小气泡同链清理
+    hideEnhanceTip();
+    enhanceTip.remove();   // v344：增强按钮 tooltip 同链清理（dispose 不留 body 孤儿浮层）
     spdHoverPortalHide();
     spdHoverPortal.remove();   // v280：柱 hover Portal 同链清理（dispose/热更不留孤儿浮层）
     spdLegendTipHide();
