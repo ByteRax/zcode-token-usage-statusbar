@@ -233,7 +233,7 @@ Windows 对应用户目录下的 `.zcode\zcode-token-usage-statusbar\config.json
 | `pricing` | 预估费用（v202）数据链配置，整块可省略：`fetch`（默认 `true`）设 `false` 彻底关闭价表/汇率联网同步（已落盘的缓存仍参与显示）；`url` 覆盖价表源（默认 `https://models.dev/api.json`）；`fx.url` 覆盖汇率源（默认 `https://open.er-api.com/v6/latest/USD`，响应须含 `rates.CNY` 数值；仅使用默认主源时，失败会按序兜底到公益源 `https://api.exchangerate.fun/latest?base=USD`，显式配置的源失败即失败、不擅自换源）。同步在常驻查询进程内每 12 小时一次（启动时缓存超期才拉，超时 10 秒、失败静默保留旧值），结果落运行目录 `pricing-cache.json`；一次性 CLI（`json` 子命令）只读不联网。费用在悬停本轮/会话累计/项目累计/今日合计的 tooltip 里按 models.dev 官方模型价格估算（内置 326 条随插件发版），USD 计算、按拉取汇率折 ¥ 显示，无有效汇率显示 $ 原值；匹配不到模型价格的模型按默认均价（$1/$5 每百万）估算，⚙ 通用区「预估费用」开关只门控显示 |
 | `context_window` | 自动识别失败时的上下文窗口大小兜底 |
 | `resident` | 使用常驻 Python 查询进程，默认开 |
-| `activity_min_ms` | 活跃期最小查询间隔，默认 1500ms |
+| `activity_min_ms` | 活跃期最小查询间隔，默认 1500ms。大库上一帧查询耗时 T 超过该值一半（约 750ms）时会自动拉长：下一帧在上一帧结算后再冷却 T，把常驻 Python 的单核占用控制在约 50% 以内（代价是此时数字刷新周期约 2T）；T 较小时节奏不变 |
 | `heartbeat_ms` | 文件事件丢失时的兜底检查间隔，默认 30000ms |
 
 配置是 JSON，不能直接粘贴带注释的示例。

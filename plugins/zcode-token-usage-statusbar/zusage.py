@@ -610,7 +610,9 @@ def _db_cache_key(con):
                 break
         else:
             return None
-    except sqlite3.Error:
+    except (sqlite3.Error, AttributeError, TypeError):
+        # 桩连接（测试替身游标无 fetchall / Mock 返回非序列）：契约本就是「取不到库身份→None→
+        # 调用方退回不缓存」。_usage_watermark 同款宽捕获；这里补上以免新增调用点击穿整帧快照。
         return None
     if not path:
         return None
@@ -647,6 +649,39 @@ def _cached_project(dbkey, key, fn, con=None):
     return val
 
 
+_SESS_CACHE = {}
+_SESS_WM = {}
+
+
+def _cached_session(con, sid, kind, fn):
+    """会话级聚合缓存（specs/perf-lag-reduction.md 规则 13）：键 (库身份, sid, kind)。
+    长会话的 session_usage / 会话均速（全会话 fetchall + Python 逐行）/ 耗时均值原先
+    每帧对每份完整快照全量重算（8,237 条消息的会话即每帧数万次逐行运算），是活跃期
+    占空比主因。与 _cached_project 同款 2s TTL + 水位续用；取不到库身份时每次真算。"""
+    dbkey = _db_cache_key(con)
+    if dbkey is None:
+        return fn()
+    now = int(time.time() * 1000)
+    full = (dbkey, sid, kind)
+    hit = _SESS_CACHE.get(full)
+    if hit:
+        if now - hit[0] < _AGG_TTL_MS:
+            return hit[1]
+        if _wm_alive(_SESS_WM, full, hit, con, now):
+            return hit[1]
+    wm = _usage_watermark(con)   # 先于 fn()：期间新写入只让存下的水位偏旧→下次重算（安全方向）
+    val = fn()
+    if len(_SESS_CACHE) > 32:
+        _SESS_CACHE.clear()   # 保险防膨胀：清空只损失缓存，不损正确性
+        _SESS_WM.clear()
+    _SESS_CACHE[full] = (now, val)
+    if wm is None:
+        _SESS_WM.pop(full, None)
+    else:
+        _SESS_WM[full] = wm
+    return val
+
+
 def _scan_session_ids(con):
     """全库 session_id → max(completed_at) 一次分组扫描（731MB 库 ~55ms）。
     最新会话与 recent 池原先各自独立做同样的全表 group by（3 次 118ms），
@@ -663,23 +698,26 @@ def _scan_session_ids(con):
 def session_usage(con, sid):
     # last_request_input 取最近一次 completed 请求的 input_tokens（= 当前上下文容量）。
     # 不能用 max(input_tokens)：会话压缩后 input 骤降，峰值永远不回落（v28 修复）。
-    r = con.execute(
-        """select count(*), coalesce(sum(input_tokens),0), coalesce(sum(output_tokens),0),
-                  coalesce(sum(reasoning_tokens),0), coalesce(sum(cache_read_input_tokens),0),
-                  coalesce(sum(cache_creation_input_tokens),0), coalesce(sum(computed_total_tokens),0),
-                  coalesce(sum(tool_call_count),0),
-                  (select m2.input_tokens from model_usage m2
-                    where m2.session_id = m.session_id and m2.status = 'completed'
-                    order by m2.completed_at desc, m2.id desc limit 1),
-                  count(distinct turn_id), coalesce(sum(retry_count),0)
-           from model_usage m where m.session_id=? and status='completed'""",
-        (sid,),
-    ).fetchone()
-    return {
-        "requests": r[0], "input": r[1], "output": r[2], "reasoning": r[3],
-        "cache_read": r[4], "cache_write": r[5], "total": r[6], "tool_calls": r[7],
-        "last_request_input": r[8] or 0, "turns": r[9], "retries": r[10],
-    }
+    # 规则 13：按 (库身份, sid) 缓存——本函数在长会话上每帧被多份快照重复调用。
+    def run():
+        r = con.execute(
+            """select count(*), coalesce(sum(input_tokens),0), coalesce(sum(output_tokens),0),
+                      coalesce(sum(reasoning_tokens),0), coalesce(sum(cache_read_input_tokens),0),
+                      coalesce(sum(cache_creation_input_tokens),0), coalesce(sum(computed_total_tokens),0),
+                      coalesce(sum(tool_call_count),0),
+                      (select m2.input_tokens from model_usage m2
+                        where m2.session_id = m.session_id and m2.status = 'completed'
+                        order by m2.completed_at desc, m2.id desc limit 1),
+                      count(distinct turn_id), coalesce(sum(retry_count),0)
+               from model_usage m where m.session_id=? and status='completed'""",
+            (sid,),
+        ).fetchone()
+        return {
+            "requests": r[0], "input": r[1], "output": r[2], "reasoning": r[3],
+            "cache_read": r[4], "cache_write": r[5], "total": r[6], "tool_calls": r[7],
+            "last_request_input": r[8] or 0, "turns": r[9], "retries": r[10],
+        }
+    return dict(_cached_session(con, sid, "usage", run))   # 浅拷贝出缓存：调用方改动不污染
 
 
 def _norm_path_key(d):
@@ -1461,6 +1499,8 @@ def _prompt_matches(title, prompt):
 # 2456 行大 JSON，实测 29ms/次，泵 1.5s 拉一次全付）。失效键 = 父会话 part 的
 # 行数+最新 time_updated（索引聚合，<1ms）；普通消息 part 新增也会失效，宁多算不漏算。
 _TASK_CACHE = {}
+_TASK_AT = {}                  # sid → 上次实际扫描时刻（规则 15 的最小重扫间隔判定）
+_TASK_RESCAN_MS = 3000         # 快照热路径最小重扫间隔：任务名最长陈旧 3s
 
 
 def _sub_item(con, r, sub_tasks, sub_gen, sub_timing=None):
@@ -1555,8 +1595,22 @@ def _sub_agent_tasks(con, sid):
         pass
     if len(_TASK_CACHE) > 32:   # 防长驻膨胀：会话数有限，正常到不了；超了整表清掉
         _TASK_CACHE.clear()
+        _TASK_AT.clear()
     _TASK_CACHE[sid] = (key, tasks)
+    _TASK_AT[sid] = int(time.time() * 1000)
     return tasks
+
+
+def _sub_agent_tasks_hot(con, sid):
+    """快照热路径包装（specs/perf-lag-reduction.md 规则 15）：part 在流式期间持续新增，
+    _sub_agent_tasks 的失效键每帧失配，正文 LIKE 扫描随帧重复。距上次计算不足
+    _TASK_RESCAN_MS 时直接复用上次结果（任务名最长陈旧 3s）；无缓存时才走精确路径。
+    CLI 文本报表仍用 _sub_agent_tasks，不受此节流影响。"""
+    hit = _TASK_CACHE.get(sid)
+    at = _TASK_AT.get(sid)
+    if hit is not None and at is not None and int(time.time() * 1000) - at < _TASK_RESCAN_MS:
+        return hit[1]
+    return _sub_agent_tasks(con, sid)
 
 
 def render_session_detail(con, prefix):
@@ -2287,23 +2341,24 @@ def _session_snapshot(con, sid, cfg):
     # （_turn_rate 同款口径：_row_gen_ms 窗口 + 200ms–1h 有效段过滤，无效段不进分母；
     # 子代理与辅助 query_source 行不计）。状态栏完成态主数字（平均为主，
     # 最近一段退到 tooltip）；与子代理 rate_avg 同构。
-    sess_avg = _turn_rate(con.execute(
+    # 规则 13：全会话 fetchall + 逐行窗口运算，长会话每帧数万次——按 (库身份, sid) 缓存。
+    sess_avg = _cached_session(con, sid, "avg_tps", lambda: _turn_rate(con.execute(
         """select output_tokens, first_token_at, completed_at, started_at, reasoning_tokens, model_id, provider_id
            from model_usage where session_id=? and status='completed'
              and (query_source is null or query_source='main_turn')""",
         (sid,),
-    ).fetchall(), covers)["tps"]
+    ).fetchall(), covers)["tps"])
     # v300 会话级耗时聚合（会话累计 tooltip 三行 KPI 第二行）：对全会话已完成 main_turn
     # 请求求平均耗时/平均首字延迟（>0 样本过滤，同 v211 本轮口径）；总耗时 = Σ生成耗时
     # （真实生成时间，非墙钟跨度）。旧快照/缺字段时消费端按 >0 门控整行收起。
-    sess_av = con.execute(
+    sess_av = _cached_session(con, sid, "sess_av", lambda: con.execute(
         """select avg(case when duration_ms > 0 then duration_ms end),
                   avg(case when time_to_first_token_ms > 0 then time_to_first_token_ms end),
                   coalesce(sum(duration_ms),0)
            from model_usage where session_id=? and status='completed'
              and (query_source is null or query_source='main_turn')""",
         (sid,),
-    ).fetchone()
+    ).fetchone())
     # 本轮数据源 = turn_usage 表的每轮完整聚合（v30 起，替代从 model_usage 手工按轮求和）：
     # 自带请求/重试/工具/工具错误计数与 reasoning 拆分，一轮一行。
     lt = {"requests": 0, "retries": 0, "tool_calls": 0, "tool_errors": 0, "input": 0,
@@ -2394,7 +2449,7 @@ def _session_snapshot(con, sid, cfg):
     # 子会话 id 即 "sess_subagent_"+agentId（客户端自己的硬关联，无歧义）。
     # 兜底只给运行中尚未出现回执的条目：prompt 前缀匹配且候选唯一才绑（同前缀多候选宁可
     # 无名，不做时间猜测——历史 part 不带 childSessionId，时间最近邻存在错位风险）。
-    sub_tasks = _sub_agent_tasks(con, sid) if sub_rows else {}
+    sub_tasks = _sub_agent_tasks_hot(con, sid) if sub_rows else {}
     # 子代理已完成段速率（v97）：每子会话 Σ有效 output / Σ有效生成窗口的加权平均，
     # 口径与 _turn_rate 完全一致（first_token_at 缺失即无窗、含思考段窗口用 started_at）；
     # 无效段不进分母。运行中的请求未入库，这里只有已完成段。
@@ -3236,9 +3291,18 @@ def _empty_snapshot(sid, cfg):
 
 
 def _provider_fallback(con):
-    """额度 chip 的会话无历史回退（见 snapshot 内注释）；旧库列漂移时按空串降级。"""
+    """额度 chip 的会话无历史回退（见 snapshot 内注释）；旧库列漂移时按空串降级。
+    规则 14：全表 order by completed_at desc 每帧必跑，挂 _cached_agg（2s TTL + 水位）。
+    键必须带库身份：同进程内可能先后查不同库（测试夹具/远端），裸键会跨库串值。"""
     if con is None:
         return ""
+    dbkey = _db_cache_key(con)
+    if dbkey is None:
+        return _provider_fallback_uncached(con)
+    return _cached_agg(("provfbk", dbkey), _WmFn(lambda: _provider_fallback_uncached(con), con))
+
+
+def _provider_fallback_uncached(con):
     try:
         row = con.execute(
             """select provider_id from model_usage

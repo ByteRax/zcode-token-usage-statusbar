@@ -55,6 +55,7 @@ class WorkflowSessionTests(unittest.TestCase):
         # 夹具互相独立：covers 60s TTL 与任务名缓存都按库键缓存，必须每用例重置
         zusage._COVERS_CACHE.update(ts=0.0, set=frozenset())
         zusage._TASK_CACHE.clear()
+        zusage._TASK_AT.clear()
 
     def con(self, with_actor_table=True):
         con = sqlite3.connect(":memory:")

@@ -33,11 +33,13 @@ create table turn_usage (session_id text, turn_id text, status text, model_reque
   cache_creation_input_tokens integer, computed_total_tokens integer, duration_ms integer,
   time_to_first_token_ms integer);
 create table tool_usage (session_id text, tool_name text, status text, duration_ms integer);
+create table part (session_id text, data text, time_created integer, time_updated integer);
 """
 
 
 def _clear_caches():
-    for name in ("_AGG_CACHE", "_AGG_WM", "_PROJ_CACHE", "_PROJ_WM", "_SPEED_CACHE", "_SPEED_WM"):
+    for name in ("_AGG_CACHE", "_AGG_WM", "_PROJ_CACHE", "_PROJ_WM", "_SPEED_CACHE", "_SPEED_WM",
+                 "_SESS_CACHE", "_SESS_WM", "_TASK_CACHE", "_TASK_AT"):
         getattr(zusage, name).clear()
 
 
@@ -121,7 +123,7 @@ class WatermarkCacheTests(unittest.TestCase):
         self.assertEqual(zusage._cached_agg("k", zusage._WmFn(fn, self.con)), 2, "兜底：超过 _WM_MAX_AGE_MS 必重算")
 
     def test_within_ttl_hits_never_query_the_watermark(self):
-        """TTL 内命中不得查水位（不碰库）：三条缓存各验一次——名副其实的『TTL 内行为不变』。"""
+        """TTL 内命中不得查水位（不碰库）：四条缓存（agg / project / speed_history / session）各验一次——名副其实的『TTL 内行为不变』。"""
         calls = []
         fn = lambda: calls.append(1) or len(calls)
         dbkey = zusage._db_cache_key(self.con)
@@ -129,12 +131,14 @@ class WatermarkCacheTests(unittest.TestCase):
         zusage._cached_agg("k", zusage._WmFn(fn, self.con))
         zusage._cached_project(dbkey, pkey, fn, self.con)
         zusage._speed_history_cached(self.con, "s1")
+        zusage._cached_session(self.con, "s1", "usage", lambda: "sess")
         self.add_row()
         boom = mock.patch.object(zusage, "_usage_watermark", side_effect=AssertionError("TTL 内不得查水位"))
         with boom:
             self.assertEqual(zusage._cached_agg("k", zusage._WmFn(fn, self.con)), 1)
             self.assertEqual(zusage._cached_project(dbkey, pkey, fn, self.con), 2)
             zusage._speed_history_cached(self.con, "s1")
+            self.assertEqual(zusage._cached_session(self.con, "s1", "usage", lambda: "other"), "sess")
 
     def test_agg_without_connection_or_with_memory_db_is_pure_ttl(self):
         calls = []
@@ -188,6 +192,242 @@ class WatermarkCacheTests(unittest.TestCase):
         self.add_row()
         self.expire(zusage._PROJ_CACHE, full, 1)
         self.assertEqual(zusage._project_usage(self.con, "s1")["requests"], 2, "水位变：重算")
+
+    # ---- _cached_session（规则 13：长会话每帧全量重算止损）----
+    def test_session_cache_reuses_until_watermark_changes(self):
+        dbkey = zusage._db_cache_key(self.con)
+        full = (dbkey, "s1", "usage")
+        calls = []
+        fn = lambda: calls.append(1) or len(calls)
+        self.assertEqual(zusage._cached_session(self.con, "s1", "usage", fn), 1)
+        self.expire(zusage._SESS_CACHE, full, zusage._AGG_TTL_MS + 1)
+        self.assertEqual(zusage._cached_session(self.con, "s1", "usage", fn), 1, "水位未变：复用")
+        self.add_row()
+        self.expire(zusage._SESS_CACHE, full, 1)
+        self.assertEqual(zusage._cached_session(self.con, "s1", "usage", fn), 2, "水位变：重算")
+
+    def test_session_cache_keys_by_sid_and_kind(self):
+        """同一库不同 sid / 不同 kind 不得互相命中（否则会话与会话均速串值）。"""
+        calls = []
+        fn = lambda: calls.append(1) or len(calls)
+        self.assertEqual(zusage._cached_session(self.con, "s1", "usage", fn), 1)
+        self.assertEqual(zusage._cached_session(self.con, "s2", "usage", fn), 2)
+        self.assertEqual(zusage._cached_session(self.con, "s1", "avg_tps", fn), 3)
+        self.assertEqual(zusage._cached_session(self.con, "s1", "usage", fn), 1, "同键命中")
+
+    def test_session_usage_end_to_end_picks_up_new_request_after_ttl(self):
+        self.assertEqual(zusage.session_usage(self.con, "s1")["requests"], 1)
+        dbkey = zusage._db_cache_key(self.con)
+        full = (dbkey, "s1", "usage")
+        self.expire(zusage._SESS_CACHE, full, zusage._AGG_TTL_MS + 1)
+        self.assertEqual(zusage.session_usage(self.con, "s1")["requests"], 1, "水位未变：复用")
+        self.add_row()
+        self.expire(zusage._SESS_CACHE, full, 1)
+        self.assertEqual(zusage.session_usage(self.con, "s1")["requests"], 2, "水位变：重算")
+
+    def test_session_usage_returns_copy_so_callers_cannot_corrupt_cache(self):
+        u = zusage.session_usage(self.con, "s1")
+        u["requests"] = 999
+        self.assertEqual(zusage.session_usage(self.con, "s1")["requests"], 1, "调用方改动不得污染缓存")
+
+    def test_session_cache_memory_db_is_uncached_but_correct(self):
+        mem = sqlite3.connect(":memory:")
+        self.addCleanup(mem.close)
+        mem.executescript(SCHEMA)
+        calls = []
+        fn = lambda: calls.append(1) or len(calls)
+        self.assertEqual(zusage._cached_session(mem, "s1", "usage", fn), 1)
+        self.assertEqual(zusage._cached_session(mem, "s1", "usage", fn), 2, "无库身份：每次真算")
+
+    def _make_file_db(self, name, provider, n_rows):
+        """另建一个文件库（SCHEMA 夹具），同一 sid 's1' 写入 n_rows 行：用于验证缓存键带库身份。"""
+        path = Path(self.td.name) / name
+        c = sqlite3.connect(str(path))
+        self.addCleanup(c.close)
+        c.row_factory = sqlite3.Row
+        c.executescript(SCHEMA)
+        for i in range(n_rows):
+            c.execute(
+                "insert into model_usage (id, session_id, turn_id, query_source, provider_id, model_id,"
+                " status, started_at, first_token_at, completed_at, input_tokens, output_tokens)"
+                " values (?,?,?,?,?,?,?,?,?,?,?,?)",
+                ("%s-%d" % (name, i), "s1", "t%d" % i, "main_turn", provider, "GLM-5.3", "completed",
+                 1000, 1500, 3500, 60, 30))
+        c.commit()
+        return c
+
+    def test_session_cache_does_not_leak_across_databases(self):
+        """键必须带库身份：同进程先后查两个文件库、同 sid，不得互相命中（去掉 dbkey 的变异会让第二个库读到第一个库的值）。"""
+        a = self._make_file_db("a.sqlite", "account:alpha", 1)
+        b = self._make_file_db("b.sqlite", "account:beta", 3)
+        count = lambda c: c.execute("select count(*) from model_usage").fetchone()[0]
+        self.assertNotEqual(count(a), count(b), "夹具须使两库数据不同，否则串值不可观察、本用例失去杀伤力")
+        self.assertEqual(zusage.session_usage(a, "s1")["requests"], 1)
+        self.assertEqual(zusage.session_usage(b, "s1")["requests"], 3, "另一个库不得命中前一个库的缓存")
+
+    def test_session_cache_watermark_is_taken_before_compute(self):
+        """fn() 期间并发写入：存下的水位须是计算前的（偏旧→下次重算），否则新行被永久漏算。"""
+        dbkey = zusage._db_cache_key(self.con)
+        full = (dbkey, "s1", "usage")
+        calls = []
+
+        def fn():
+            calls.append(1)
+            if len(calls) == 1:
+                self.add_row()   # 计算途中写入
+            return len(calls)
+
+        self.assertEqual(zusage._cached_session(self.con, "s1", "usage", fn), 1)
+        self.expire(zusage._SESS_CACHE, full, zusage._AGG_TTL_MS + 1)
+        self.assertEqual(zusage._cached_session(self.con, "s1", "usage", fn), 2, "水位偏旧：必须重算")
+
+    def test_session_cache_overflow_clears_watermarks_too(self):
+        peak, prev, shrank = 0, 0, False
+        for i in range(40):
+            zusage._cached_session(self.con, "sx%d" % i, "usage", lambda: 1)
+            n = len(zusage._SESS_CACHE)
+            peak, shrank, prev = max(peak, n), shrank or n < prev, n
+            self.assertTrue(set(zusage._SESS_WM) <= set(zusage._SESS_CACHE), "清空缓存须同步清水位，防内存泄漏")
+        self.assertLessEqual(peak, 33, "上限 32：写入前判断，峰值至多 33（上限被放宽到 34+ 会在此变红）")
+        self.assertTrue(shrank, "灌 40 个键必须触发过整体清空（上限被去掉会让缓存无界增长）")
+
+    def test_task_at_is_cleared_together_with_task_cache_on_overflow(self):
+        """_sub_agent_tasks 溢出整表清空时必须同步清 _TASK_AT：漏清则 _TASK_AT 随会话数无界增长。"""
+        for i in range(34):
+            zusage._sub_agent_tasks(self.con, "sid%d" % i)
+        self.assertLessEqual(len(zusage._TASK_CACHE), 33)
+        self.assertTrue(set(zusage._TASK_AT) <= set(zusage._TASK_CACHE), "_TASK_AT 键必须是 _TASK_CACHE 键的子集")
+
+    def test_session_snapshot_avg_tps_cached_and_recomputed_on_watermark(self):
+        """真实 _session_snapshot 路径：avg_tps / requests 的会话缓存生效，水位变后重算；三个 kind 键名各自落位。"""
+        ctx = {"context_window": 200000}
+        s1 = zusage._session_snapshot(self.con, "s1", ctx)
+        self.assertEqual(s1["requests"], 1)
+        self.assertGreater(s1["avg_tps"], 0)
+        dbkey = zusage._db_cache_key(self.con)
+        for kind in ("usage", "avg_tps", "sess_av"):
+            self.assertIn((dbkey, "s1", kind), zusage._SESS_CACHE, kind)
+        self.assertIsInstance(zusage._SESS_CACHE[(dbkey, "s1", "avg_tps")][1], float)
+        self.assertEqual(len(zusage._SESS_CACHE[(dbkey, "s1", "sess_av")][1]), 3)
+        self.con.execute(
+            "insert into model_usage (id, session_id, turn_id, query_source, provider_id, model_id,"
+            " status, started_at, first_token_at, completed_at, output_tokens, input_tokens)"
+            " values ('fast','s1','tf','main_turn','account:test','GLM-5.3','completed',1000,1500,2500,5000,10)")
+        self.con.commit()
+        for kind in ("usage", "avg_tps", "sess_av"):
+            self.expire(zusage._SESS_CACHE, (dbkey, "s1", kind), zusage._AGG_TTL_MS + 1)
+        s2 = zusage._session_snapshot(self.con, "s1", ctx)
+        self.assertEqual(s2["requests"], 2)
+        self.assertGreater(s2["avg_tps"], s1["avg_tps"])
+
+    # ---- _provider_fallback（规则 14）----
+    def test_provider_fallback_is_cached_per_db(self):
+        self.con.execute(
+            "insert into model_usage (id, session_id, status, query_source, provider_id, completed_at)"
+            " values ('pf','s1','completed','main_turn','account:test',900)")
+        self.con.commit()
+        calls = []
+        real = zusage._provider_fallback_uncached
+
+        def counting(con):
+            calls.append(1)
+            return real(con)
+
+        zusage._provider_fallback_uncached = counting
+        self.addCleanup(setattr, zusage, "_provider_fallback_uncached", real)
+        self.assertEqual(zusage._provider_fallback(self.con), "account:test")
+        self.assertEqual(zusage._provider_fallback(self.con), "account:test")
+        self.assertEqual(len(calls), 1, "TTL 内同库只扫一次")
+
+    def test_provider_fallback_cache_does_not_leak_across_databases(self):
+        """键必须带库身份：先后查两个文件库不得互相命中（裸键 "provfbk" 会让第二个库读到第一个库的值；
+        开发中曾真踩，但那次是靠内存库夹具撞出来的，实现改成「内存库不缓存」后该保护失效，故在此用两个文件库锁住）。"""
+        a = self._make_file_db("a.sqlite", "account:alpha", 1)
+        b = self._make_file_db("b.sqlite", "account:beta", 1)
+        self.assertEqual(zusage._provider_fallback(a), "account:alpha")
+        self.assertEqual(zusage._provider_fallback(b), "account:beta", "另一个库不得命中前一个库的缓存")
+
+    # ---- _sub_agent_tasks_hot（规则 15）----
+    def test_hot_task_scan_throttles_within_rescan_interval(self):
+        # 任务名最长陈旧须保持秒级：用例用 `_TASK_RESCAN_MS+1` 自适应常量，对常量值本身不敏感，这里单独钉上界
+        self.assertGreater(zusage._TASK_RESCAN_MS, 0)
+        self.assertLessEqual(zusage._TASK_RESCAN_MS, 10000, "任务名最长陈旧须保持秒级")
+        calls = []
+        real = zusage._sub_agent_tasks
+
+        def counting(con, sid):
+            calls.append(1)
+            return real(con, sid)
+
+        zusage._sub_agent_tasks = counting
+        self.addCleanup(setattr, zusage, "_sub_agent_tasks", real)
+        first = zusage._sub_agent_tasks_hot(self.con, "s1")
+        self.assertEqual(len(calls), 1)
+        second = zusage._sub_agent_tasks_hot(self.con, "s1")
+        self.assertEqual(len(calls), 1, "间隔内复用，不重扫 part")
+        self.assertEqual(second, first, "复用路径必须返回任务字典本身，而不是缓存键")
+        self.assertIsInstance(second, dict)
+        zusage._TASK_AT["s1"] -= zusage._TASK_RESCAN_MS + 1
+        zusage._sub_agent_tasks_hot(self.con, "s1")
+        self.assertEqual(len(calls), 2, "超过重扫间隔后恢复精确扫描")
+
+    def test_hot_task_scan_tolerates_missing_scan_timestamp(self):
+        """_TASK_CACHE 有而 _TASK_AT 缺（只清了一边）：不得抛 TypeError，应退回精确扫描。"""
+        zusage._sub_agent_tasks_hot(self.con, "s1")
+        zusage._TASK_AT.clear()
+        self.assertIsInstance(zusage._sub_agent_tasks_hot(self.con, "s1"), dict)
+
+    def test_session_snapshot_uses_throttled_task_scan(self):
+        """真实快照路径：有子代理时任务名走 _sub_agent_tasks_hot（3s 节流），TTL 内两次快照只扫一次 part
+        （快照热路径改回直接调 _sub_agent_tasks 的变异会让每次快照都重扫正文）。"""
+        self.con.execute(
+            "insert into session (id, title, parent_id, project_id, directory, time_created)"
+            " values ('sub1','t','s1','proj','/w/p',200)")
+        self.con.execute(
+            "insert into model_usage (id, session_id, turn_id, query_source, provider_id, model_id, status,"
+            " started_at, first_token_at, completed_at, input_tokens, output_tokens, computed_total_tokens)"
+            " values ('u-sub','sub1','ts','subagent','account:test','GLM-5.3','completed',1000,1500,3500,10,20,30)")
+        self.con.commit()
+        calls = []
+        real = zusage._sub_agent_tasks
+
+        def counting(con, sid):
+            calls.append(sid)
+            return real(con, sid)
+
+        zusage._sub_agent_tasks = counting
+        self.addCleanup(setattr, zusage, "_sub_agent_tasks", real)
+        ctx = {"context_window": 200000}
+        zusage._session_snapshot(self.con, "s1", ctx)
+        zusage._session_snapshot(self.con, "s1", ctx)
+        self.assertEqual(calls, ["s1"], "快照热路径任务名扫描须被节流：两次快照只扫一次")
+
+    # ---- 桩连接契约 ----
+    def test_db_cache_key_degrades_to_none_on_stub_connections(self):
+        """桩连接（无 fetchall 的游标 / Mock / 非序列返回）：取不到库身份必须返回 None 而非抛错。
+        回归：新增调用点（_cached_session / _provider_fallback）曾因 except 只收 sqlite3.Error，
+        被 test_remote_targets 的列表子类游标夹具击穿整帧快照。"""
+        class _NoFetchall(list):
+            def fetchone(self):
+                return self[0] if self else None
+        stub = mock.Mock()
+        stub.execute.return_value = _NoFetchall([(0, 0)])
+        self.assertIsNone(zusage._db_cache_key(stub), "游标无 fetchall：降级 None")
+        stub2 = mock.Mock()
+        stub2.execute.return_value.fetchall.return_value = None
+        self.assertIsNone(zusage._db_cache_key(stub2), "fetchall 返回非可迭代：降级 None")
+        self.assertIsNone(zusage._db_cache_key(object()), "无 execute：降级 None")
+
+    def test_new_cache_call_sites_survive_stub_connections(self):
+        """_cached_session / _provider_fallback 在桩连接上：退回不缓存、真算，不抛。"""
+        stub = mock.Mock()
+        stub.execute.return_value.fetchall.side_effect = AttributeError("stub")
+        calls = []
+        fn = lambda: calls.append(1) or len(calls)
+        self.assertEqual(zusage._cached_session(stub, "s1", "usage", fn), 1)
+        self.assertEqual(zusage._cached_session(stub, "s1", "usage", fn), 2, "桩连接：每次真算，不跨调用缓存")
+        stub.execute.return_value.fetchone.return_value = ("account:x",)
+        self.assertEqual(zusage._provider_fallback(stub), "account:x", "桩连接：provider_fallback 直算")
 
     # ---- speed_history ----
     def test_speed_history_cached_reuses_until_watermark_changes(self):
