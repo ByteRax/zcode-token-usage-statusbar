@@ -113,12 +113,11 @@
     }
     return entry.token;
   }
-  var ZU_DET_NULL_GRACE = 3;   // v345 issue #327：令牌连续取不到的拍数达此值才撤行（扫描 0.5s/拍）
-  function zuDetNullOwner(owner) {   // 令牌为空的原因计数（owner=无归属实例，sid=实例无会话，scope=scope 与 sid 不符/侧聊）
-    var n = scanDeterministicLines.nulls;
-    if (!owner || !owner.getSid) n.owner++;
-    else if (!owner.getSid()) n.sid++;
-    else n.scope++;
+  var ZU_DET_NULL_GRACE = 3, ZU_DET_NULL_MS = 1000;   // v345 issue #327：令牌连续取不到的拍数且墙钟都达标才撤行（扫描 0.5s/拍）
+  function zuDetNullOwner(owner) {   // 带行的 box 令牌为空时归因并计数：owner=无归属实例，sid=实例无会话，scope=scope 与 sid 不符/侧聊；返回原因
+    var n = scanDeterministicLines.nulls, why = !owner || !owner.getSid ? "owner" : (!owner.getSid() ? "sid" : "scope");
+    n[why]++;
+    return why;
   }
   function scanDeterministicLines() {
     if (stale()) return;
@@ -152,16 +151,26 @@
         var owner = detOwnerOf(box), ownerToken = detOwnerToken(owner);
         var mine = null;
         try { mine = box.querySelector("[data-zusage-deterministic]"); } catch (e) { }
-        if (!ownerToken) zuDetNullOwner(owner);
         /* v345 issue #327：令牌瞬时取不到（getSid 空串、实例重绑、同根歧义）的单拍里，已验证归属的行
-         * 宽限 ZU_DET_NULL_GRACE-1 拍再撤——此前当拍整块 remove 且 continue 不重建，逐拍抖动即
-         * 约 0.5s 一档的消失/重现（块高归零、下方内容跳动）。宽限只给「令牌为空」：归属换成另一个
-         * 有效令牌（SID/scope 切换）仍即时撤旧；无 __zuDetOwner 的遗留行无法证明归属，不宽限。 */
-        if (mine && !ownerToken && mine.__zuDetOwner) {
-          mine.__zuDetNull = (mine.__zuDetNull || 0) + 1;
-          if (mine.__zuDetNull < ZU_DET_NULL_GRACE) { scanDeterministicLines.nulls.grace++; continue; }
+         * 宽限再撤——此前当拍整块 remove 且 continue 不重建，逐拍抖动即约 0.5s 一档的消失/重现
+         * （块高归零、下方内容跳动）。宽限只给「证据缺席」型空令牌（reason=owner 无归属实例 / sid
+         * 实例暂无会话）且行仍属同一 tid（__zuDetTid，防虚拟列表复用节点滞留旧轮文本）：连续
+         * ZU_DET_NULL_GRACE 拍且跨过 ZU_DET_NULL_MS 才撤（扫描另有富文本回执/设置开关同步调用，
+         * 纯拍数可能被爆发耗尽；纯墙钟又会被后台节流拉长，故两者并取）。scope 与 sid 不符/侧聊
+         * 远端是「属于别的会话」的反证，归属换成另一个有效令牌（SID/scope 切换）、无 __zuDetOwner
+         * 或 __zuDetTid 的遗留行无法证明归属，均仍即时撤——fail-closed 对这些情形不松动。 */
+        if (mine && !ownerToken) {
+          var nullWhy = zuDetNullOwner(owner);
+          if (nullWhy !== "scope" && mine.__zuDetOwner && mine.__zuDetTid === tid) {
+            if (!mine.__zuDetNull) { mine.__zuDetNull = 0; mine.__zuDetNullAt = Date.now(); }
+            mine.__zuDetNull++;
+            if (mine.__zuDetNull < ZU_DET_NULL_GRACE || Date.now() - mine.__zuDetNullAt < ZU_DET_NULL_MS) {
+              scanDeterministicLines.nulls.grace++;
+              continue;
+            }
+          }
         }
-        if (mine && (!ownerToken || mine.__zuDetOwner !== ownerToken)) { mine.remove(); mine = null; }
+        if (mine && (!ownerToken || mine.__zuDetOwner !== ownerToken)) { if (!ownerToken) scanDeterministicLines.nulls.removed++; mine.remove(); mine = null; }
         if (!ownerToken) continue;
         if (mine) mine.__zuDetNull = 0;
         var richKey = zuRichKey(owner, tid);
@@ -220,6 +229,7 @@
         if (!statsOk && stats.isCompact && !richTextCache[richKey]) continue;   // v230：压缩轮零输出不插「不可用」行（宿主压缩提示已承载语义；rec.line 已在上面记 none）
         var quote = document.createElement("blockquote");
         quote.__zuDetOwner = ownerToken;
+        quote.__zuDetTid = tid;   // v345：宽限只给仍属同一 tid 的行
         quote.dataset.zusageDeterministic = "1";
         var p = document.createElement("p");
         p.dataset.zusageDeterministic = "1";
@@ -243,13 +253,13 @@
             miss: richTextDiag.miss, stale: richTextDiag.stale,
             spawn: richTextDiag.spawn, timeout: richTextDiag.timeout, pyerr: richTextDiag.pyerr },   // v343 issue #321：回推失败可观测（spawn/timeout/pyerr 需主进程同版）
           bridge: instances.map(function (inst) { return inst.bridgeInfo ? inst.bridgeInfo() : null; }),
-          nullOwner: scanDeterministicLines.nulls,   // v345 issue #327：令牌取不到的累计拍数与原因、宽限命中数
+          nullOwner: scanDeterministicLines.nulls,   // v345 issue #327：带行 box 令牌取不到的累计拍数与原因、宽限命中数、撤行数
           turns: diagTurns.slice(0, 40),
         };
       }
     } catch (e) { FATAL.detErr = String((e && e.stack) || e); }
   }
-  scanDeterministicLines.nulls = { owner: 0, sid: 0, scope: 0, grace: 0 };
+  scanDeterministicLines.nulls = { owner: 0, sid: 0, scope: 0, grace: 0, removed: 0 };   // 仅统计「带统计行的 box」令牌为空的拍数；grace=宽限放行拍数，removed=因空令牌撤行次数
   function zuDiagStats(s) {
     return s ? { c: s.complete ? 1 : 0, live: s.observedLive ? 1 : 0, out: s.outputTokens, st: s.state,
       sa: s.startedAt, ea: s.endedAt, mm: s.modelMs, dm: s.durationMs,
