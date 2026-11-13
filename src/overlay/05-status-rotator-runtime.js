@@ -5,6 +5,10 @@
        * 显式开/关过的存量配置经 loadRotatorConfig 的布尔覆盖原样保留） */
       enabled: false,
       labelSource: "phrases", // "phrases" | "host"
+      /* 2026-11-14 用户规格（specs/status-rotator-work-duration.md）：轮播接管 label 时在其后
+       * 追加宿主同款「工作中 X 分 X 秒」时长文案；默认开启（显式 false 过的存量配置经布尔守卫
+       * 原样保留）。悬停 tooltip（data-tip）独立于此开关恒随轮播。 */
+      appendWorkDuration: true,
       intervalMs: 3500,
       typeSpeedMs: 28,
       longAfterMs: 30000,
@@ -76,6 +80,7 @@
       if (!raw || typeof raw !== "object") return base;
       if (typeof raw.enabled === "boolean") base.enabled = raw.enabled;
       if (raw.labelSource === "phrases" || raw.labelSource === "host") base.labelSource = raw.labelSource;
+      if (typeof raw.appendWorkDuration === "boolean") base.appendWorkDuration = raw.appendWorkDuration;
       base.intervalMs = Math.round(clampNum(raw.intervalMs, 500, 60000, base.intervalMs));
       base.typeSpeedMs = Math.round(clampNum(raw.typeSpeedMs, 0, 200, base.typeSpeedMs));
       base.longAfterMs = Math.round(clampNum(raw.longAfterMs, 5000, 600000, base.longAfterMs));
@@ -662,6 +667,43 @@
     return m + "m " + s + "s";
   }
 
+  /* 宿主同款「工作中 X 分 X 秒」时长格式（specs/status-rotator-work-duration.md）：与
+   * packages/ui/src/v4/conversationWorkDuration.ts formatConversationWorkDuration 逐句对齐
+   * （3.18.2 app.asar 实测同款）——totalSeconds = max(1, round(ms/1000))，天/时/分/秒非零
+   * 单位入列、秒为 0 且已有高位单位时不入列、至多取前两段；中文值与单位间插空格，英文不插。
+   * 起点 = collectRotatorLiveContext 的 elapsedMs（锚宿主 turnHeader.startedAt），数值逐秒一致。 */
+  function formatWorkDuration(lang, ms) {
+    var totalSeconds = Math.max(1, Math.round((Number(ms) || 0) / 1000));
+    var d = Math.floor(totalSeconds / 86400);
+    var h = Math.floor((totalSeconds % 86400) / 3600);
+    var m = Math.floor((totalSeconds % 3600) / 60);
+    var s = totalSeconds % 60;
+    var en = lang === "en";
+    var units = [[d, "天", "d"], [h, "时", "h"], [m, "分", "m"], [s, "秒", "s"]];
+    var parts = [];
+    for (var i = 0; i < units.length; i++) {
+      if (units[i][0] > 0 || (i === 3 && !parts.length)) {
+        parts.push(en ? units[i][0] + units[i][2] : units[i][0] + " " + units[i][1]);
+      }
+    }
+    return parts.slice(0, 2).join(" ");
+  }
+
+  /* 附加时长全文（前缀 + duration）按整型秒 + 语言门控缓存（specs/perf-lag-reduction.md 规则
+   * 17 ③）：同一秒内的重复调用（每 tick 每 loading 行一次）不重格式化字符串，仅整型比较；
+   * 文案同时供追加 span 与 label data-tip 消费。 */
+  function workDurationFullText(elapsedMs) {
+    var lang = state.lang === "en" ? "en" : "zh";
+    var sec = Math.floor((Number(elapsedMs) || 0) / 1000);
+    if (rotatorRuntime.workDurSec === sec && rotatorRuntime.workDurLang === lang && rotatorRuntime.workDurText) {
+      return rotatorRuntime.workDurText;
+    }
+    rotatorRuntime.workDurSec = sec;
+    rotatorRuntime.workDurLang = lang;
+    rotatorRuntime.workDurText = L("工作中", "Working for") + " " + formatWorkDuration(lang, elapsedMs);
+    return rotatorRuntime.workDurText;
+  }
+
   function formatRotatorPlaceholders(template, ctx) {
     if (!template) return "";
     var now = ctx.now || new Date();
@@ -742,6 +784,18 @@
       (rotatorCfg.whaleTailRainbow
         ? ".zu-whale-tail path{fill:url(#zu-whale-tail-grad)!important}"
         : ".zu-whale-tail path{fill:currentColor!important}") +
+      /* 2026-11-14 附加工作时长 span 与轮播行悬停 tooltip（specs/status-rotator-work-duration.md；
+       * 性能规则 17：气泡静态无动画、pointer-events:none 防气泡偷 hover 造成闪烁/额外命中测试；
+       * 新建 zu-rot-livetip 不复用 zu-rot-tipt，避免 position:relative 与 cap 翻下变体耦合；
+       * v349 起类挂行容器 [data-testid="chat-loading"]——脱离宿主 label 的 filter drop-shadow
+       * 作用域（filter 不继承但作用整子树，气泡在 label 下会被一起泛红光）） */
+      ".zu-rotator-elapsed{color:var(--color-foreground-subtle,#8791a3);font-size:calc(var(--ui-font-size,14px) - 2px);font-variant-numeric:tabular-nums;white-space:nowrap}" +
+      ".zu-rot-livetip{position:relative}" +
+      /* 系统同款（v348，宿主原生 TooltipContent 视格 rounded-lg border-border bg-tooltip px-3 py-1.5，
+       * 原生即无阴影——用户点名去阴影）：-webkit-text-fill-color 必须显式重置——宿主 gradient
+       * label 的 text-fill-color:transparent 是继承属性，会压过本规则 color 让气泡文字隐形
+       * （2026-11-14 用户实报「悬停看不到」根因，CDP computed 实证 afterTextFill=transparent）。 */
+      ".zu-rot-livetip:hover::after{content:attr(data-tip);position:absolute;bottom:calc(100% + 6px);left:0;z-index:2147483646;max-width:280px;width:max-content;padding:6px 12px;border:1px solid var(--color-border,transparent);border-radius:8px;background:var(--color-tooltip,#171717);color:var(--color-tooltip-foreground,#fafafa);-webkit-text-fill-color:var(--color-tooltip-foreground,#fafafa);font-size:calc(var(--ui-font-size,14px) - 2px);line-height:1.5;white-space:normal;text-align:left;pointer-events:none}" +
       ".zu-settings-section[data-sec='rotator'] .zu-settings-card+.cap{margin-top:16px}" +
       ".zu-rot-pack-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px;padding:10px 14px 14px}" +
       ".zu-rot-pack-item{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px;border:1px solid var(--color-border,rgba(255,255,255,.1));border-radius:8px;font-size:calc(var(--ui-font-size,14px) - 1px);background:var(--color-hover,rgba(255,255,255,.03))}" +
@@ -834,7 +888,11 @@
     currentTailAction: "wag",
     tailFrameIndex: 0,
     tailBridgeQueue: [],
-    lastTailStepAt: 0
+    lastTailStepAt: 0,
+    /* 附加工作时长秒级缓存（规则 17）：sec=-1 保证首轮必算；不缓存 span 节点引用 */
+    workDurSec: -1,
+    workDurLang: "",
+    workDurText: ""
   };
 
   function resolveCurrentTailAction() {
@@ -915,12 +973,23 @@
         label.removeAttribute("data-zu-host-label");
         label.classList.remove("zu-rotator-active-label");
       }
-      if (label) label.removeAttribute("data-zu-last-text");
+      if (label) {
+        label.removeAttribute("data-zu-last-text");
+        /* 附加时长与悬停提示随还原一并摘除（specs/status-rotator-work-duration.md §4）：
+         * 前置判断避免关闭态每 tick 的无效 removeAttribute/classList 调用；
+         * label 侧为 v348 旧代际残留清理（v349 起气泡挂行） */
+        if (label.hasAttribute("data-tip")) label.removeAttribute("data-tip");
+        if (label.classList.contains("zu-rot-livetip")) label.classList.remove("zu-rot-livetip");
+      }
+      /* v349 起气泡挂行容器（脱离 label filter 作用域），随还原摘除 */
+      if (row.hasAttribute("data-tip")) row.removeAttribute("data-tip");
+      if (row.classList.contains("zu-rot-livetip")) row.classList.remove("zu-rot-livetip");
       var pixelGrid = chatLoadingPixelGridOf(row);
       if (pixelGrid && pixelGrid.style.display === "none") pixelGrid.style.display = "";
       var clockEl = row.querySelector(".font-mono");
       if (clockEl && clockEl.style && clockEl.style.display === "none") clockEl.style.display = "";
-      row.querySelectorAll(".zu-whale-tail-wrap,.zu-rot-spinner-ring,.zu-rot-spinner-bar").forEach(function (el) { el.remove(); });
+      /* .zu-rotator-elapsed 并入同一选择器串摘除（规则 17 ⑦：不新增遍历） */
+      row.querySelectorAll(".zu-whale-tail-wrap,.zu-rot-spinner-ring,.zu-rot-spinner-bar,.zu-rotator-elapsed").forEach(function (el) { el.remove(); });
       row.removeAttribute("data-zusage-rotator-slot");
     } catch (e) { }
   }
@@ -931,7 +1000,39 @@
     } catch (e) { }
   }
 
-  function syncChatMountSurface(active, displayStr, tailPath) {
+  /* 附加时长 span（label 后）+ 悬停 tooltip（data-tip 挂行）的每行对账（specs/status-rotator-work-duration.md；
+   * 性能预算 specs/perf-lag-reduction.md 规则 17）：span 判位 nextElementSibling O(1)——零文档级
+   * 查询、不缓存节点引用（宿主重建行内节点时下一拍自愈，同鲸鱼尾先例）；textContent/data-tip/
+   * classList 全部带比较前置判断，同一秒内重复调用零 DOM 写。
+   * v349：气泡从 label 改挂行容器——3.18 宿主 gradient label 自带 filter:drop-shadow(255,0,85
+   * 辉光)，filter 不继承但作用整棵子树，气泡作为伪元素子盒被一起泛红光（用户实报「红色 shadow」，
+   * CDP computed 实证 label.filter ≠ none / row.filter = none）；挂行即脱离 filter 作用域。
+   * label 上的 v348 旧代际 tip 属性/类在此一并清退（热重载残留防双气泡）。 */
+  function syncWorkDurationSurface(row, label, wantAppend, text) {
+    var sib = label.nextElementSibling;
+    var span = sib && sib.classList && sib.classList.contains("zu-rotator-elapsed") ? sib : null;
+    if (wantAppend) {
+      if (!span) {
+        span = document.createElement("span");
+        span.className = "zu-rotator-elapsed";
+        label.insertAdjacentElement("afterend", span);
+      }
+      if (span.textContent !== text) span.textContent = text;
+    } else if (span) {
+      span.remove();
+    }
+    if (label.hasAttribute("data-tip")) label.removeAttribute("data-tip");
+    if (label.classList.contains("zu-rot-livetip")) label.classList.remove("zu-rot-livetip");
+    if (text) {
+      if (row.getAttribute("data-tip") !== text) row.setAttribute("data-tip", text);
+      if (!row.classList.contains("zu-rot-livetip")) row.classList.add("zu-rot-livetip");
+    } else {
+      if (row.hasAttribute("data-tip")) row.removeAttribute("data-tip");
+      if (row.classList.contains("zu-rot-livetip")) row.classList.remove("zu-rot-livetip");
+    }
+  }
+
+  function syncChatMountSurface(active, displayStr, tailPath, elapsedMs) {
     var wantChat = rotatorCfg.enabled;
     if (!wantChat || !active) {
       restoreAllChatLoadingRows();
@@ -987,6 +1088,13 @@
         } else {
           if (existingTail) existingTail.remove();
           if (pixelGrid && pixelGrid.style.display === "none") pixelGrid.style.display = "";
+        }
+        if (label) {
+          /* ①附加工作时长（appendWorkDuration，仅 phrases 接管 label——host 模式宿主耗时格已在，
+           * 不重复追加）；②悬停 tooltip（data-tip 同款文案，v349 起挂行容器脱离 label 的
+           * filter 作用域）独立于开关①恒随轮播；文案经 workDurationFullText 秒级缓存，
+           * 同秒内多行/多拍零重算零写入。 */
+          syncWorkDurationSurface(row, label, !!(rotatorCfg.appendWorkDuration && rotatorCfg.labelSource === "phrases"), workDurationFullText(elapsedMs));
         }
       }
     } catch (e) { }
@@ -1145,7 +1253,7 @@
       }
 
       var tailPath = rotatorCfg.whaleTail ? currentWhaleTailPath(ctx.nowMs, ctx.tps) : "";
-      syncChatMountSurface(ctx.active, rotatorRuntime.displayedText, tailPath);
+      syncChatMountSurface(ctx.active, rotatorRuntime.displayedText, tailPath, ctx.elapsedMs);
     } catch (e) {
       FATAL.rotatorErr = String((e && e.stack) || e);
     }
@@ -1326,6 +1434,7 @@
         '<button type="button" class="zu-rot-btn zu-rot-credit zu-rot-tipt" data-tip="' + esc(L("打开上游原作者仓库（dsh-status-rotator）", "Open the original upstream project (dsh-status-rotator)")) + '">' + L("原作者", "Original author") + '</button></div>' +
       '<div class="zu-settings-card">' +
         settingRow('<input type="checkbox" class="zu-rot-enable">', L("启用状态轮播", "Enable status rotator"), L("在模型思考/生成/长耗时期间于消息流 Loading 行轮播趣味状态短语，支持 17 种实时统计占位符（如 {elapsed}、{tps}、{model}）。状态条速度格保持原生外观。", "Rotates witty status phrases in the chat loading row with 17 live placeholders ({elapsed}, {tps}, {model}, etc.). The status bar speed cell keeps its native look.")) +
+        settingRow('<input type="checkbox" class="zu-rot-append-duration">', L("追加工作时长", "Append work duration"), L("在轮播文案后追加宿主同款「工作中 X 分 X 秒」实时耗时（与消息流折叠头的原生计时同源同格式，逐秒跳动）；悬停轮播文案也可随时查看。仅「趣味词库轮播」来源生效。", "Appends the native-style working duration (same source and format as the host's turn header timer) after the rotator phrase; also available as a hover tooltip. Applies to the phrase-packs label source.")) +
         '<div class="zu-rot-inline-row">' +
           '<span>' + L("文案来源", "Label source") + '</span>' +
           '<select class="zu-rot-select zu-rot-source">' +
@@ -1427,6 +1536,7 @@
     var setVal = function (sel, val) { var el = q(sel); if (el) el.value = String(val); };
 
     setCb(".zu-rot-enable", rotatorCfg.enabled);
+    setCb(".zu-rot-append-duration", rotatorCfg.appendWorkDuration);
     setVal(".zu-rot-source", rotatorCfg.labelSource);
     setVal(".zu-rot-interval", rotatorCfg.intervalMs);
     setVal(".zu-rot-typespeed", rotatorCfg.typeSpeedMs);
@@ -1606,6 +1716,7 @@
     if (!t || !t.classList) return false;
     var cl = t.classList;
     if (cl.contains("zu-rot-enable")) { rotatorCfg.enabled = !!t.checked; }
+    else if (cl.contains("zu-rot-append-duration")) { rotatorCfg.appendWorkDuration = !!t.checked; }
     else if (cl.contains("zu-rot-source")) { rotatorCfg.labelSource = t.value; }
     else if (cl.contains("zu-rot-interval")) { rotatorCfg.intervalMs = clampNum(t.value, 500, 60000, 3500); }
     else if (cl.contains("zu-rot-typespeed")) { rotatorCfg.typeSpeedMs = clampNum(t.value, 0, 200, 28); }
