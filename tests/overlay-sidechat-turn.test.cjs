@@ -192,6 +192,7 @@ test('统计行随节点迁移及 SID、scope 切换撤旧，同 owner tracker �
       return [];
     }
   }
+  const clock = { t: 1000000 };   // 假时钟：空令牌宽限（issue #327）同时看拍数与墙钟
   const box = new Element('section'); box.tid = 'turn';
   const document = { body: {}, createElement: tag => new Element(tag), querySelectorAll: selector =>
     selector === 'section[data-turn-id]' ? [box] : [] };
@@ -199,7 +200,7 @@ test('统计行随节点迁移及 SID、scope 切换撤旧，同 owner tracker �
     state: { rateLine: true }, TURN_STATS: {}, FATAL: {}, stale: () => false, cnUnits: () => true,
     capPut: (obj, key, value) => { obj[key] = value; }, zuHasMeaningfulOutput: s => !!s.outputTokens,
     zuFinalText: s => s.text, zuUnavailableText: () => 'unavailable', zuIsUnavailableText: text => text === 'unavailable',
-    isRateLine: () => false });
+    isRateLine: () => false, Date: class extends Date { static now() { return clock.t; } } });
   vm.runInContext(source.slice(source.indexOf('  var richTextCache ='), source.indexOf('  function zuDiagStats(')) +
     '\nfunction zuDiagStats() { return null; }', c);
   const stats = text => ({ complete: true, observedLive: true, outputTokens: 1, text, sessionId: 'sid' });
@@ -224,7 +225,10 @@ test('统计行随节点迁移及 SID、scope 切换撤旧，同 owner tracker �
   b.scope = { ...b.scope, workspacePath: '/other' }; current = null;
   c.scanDeterministicLines(); assert.equal(line(), null);
   current = { ...stats('scope'), sessionId: 'new' }; c.scanDeterministicLines(); assert.equal(text(), 'scope');
-  b.detRoot = () => root(); c.scanDeterministicLines(); assert.equal(line(), null);
+  b.detRoot = () => root();   // owner 丢失：已验证归属的行宽限 2 拍（issue #327），第 3 拍连续取不到才撤
+  const tick = () => { clock.t += 500; c.scanDeterministicLines(); };
+  tick(); tick(); assert.equal(text(), 'scope');
+  tick(); assert.equal(line(), null);
 });
 
 test('两个无 owner 的同 tid 节点各自撤除遗留统计行', () => {

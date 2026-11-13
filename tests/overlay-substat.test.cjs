@@ -289,5 +289,5 @@ test('source contracts: substat wiring (style, delegation, call sites, union fee
   assert.match(source, /function synthesizeBackgroundStats\(stats\)/, '合成函数在切片内');
   assert.match(source, /stats = synthesizeBackgroundStats\(stats\);/, 'updateLive 接线');
   assert.match(source, /if \(stats && !stats\.complete\) return stats;/, '主会话实时轮优先不合成');
-  assert.match(source, /var VERSION = "v344";/);   // 只锁代际顺延；台账内容合法性由 ReleaseLedgerTests 守护
+  assert.match(source, /var VERSION = "v345";/);   // 只锁代际顺延；台账内容合法性由 ReleaseLedgerTests 守护
 });
