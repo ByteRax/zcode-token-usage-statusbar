@@ -231,3 +231,18 @@ test('removed 只计空令牌撤行，非空令牌换代撤旧计入 swap', () =
   assert.equal(n.removed, 0);
   assert.equal(n.swap, 1);
 });
+
+test('恢复后第二段取不到须重新起算墙钟：拍数够但墙钟不够仍保留', () => {
+  const { inst, line, scan } = setup();
+  scan(); const first = line();
+  inst.sid = ''; scan(); scan();
+  inst.sid = 'sid'; scan();
+  inst.sid = '';
+  for (let i = 0; i < 6; i++) scan(10);
+  assert.equal(line(), first);
+});
+
+test('nullOwner.since 为本代起算的 ISO 时刻', () => {
+  const { c } = setup();
+  assert.match(c.scanDeterministicLines.nulls.since, /^\d{4}-\d{2}-\d{2}T/);
+});
