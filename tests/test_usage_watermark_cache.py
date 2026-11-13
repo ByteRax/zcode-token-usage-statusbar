@@ -123,7 +123,7 @@ class WatermarkCacheTests(unittest.TestCase):
         self.assertEqual(zusage._cached_agg("k", zusage._WmFn(fn, self.con)), 2, "兜底：超过 _WM_MAX_AGE_MS 必重算")
 
     def test_within_ttl_hits_never_query_the_watermark(self):
-        """TTL 内命中不得查水位（不碰库）：三条缓存各验一次——名副其实的『TTL 内行为不变』。"""
+        """TTL 内命中不得查水位（不碰库）：四条缓存（agg / project / speed_history / session）各验一次——名副其实的『TTL 内行为不变』。"""
         calls = []
         fn = lambda: calls.append(1) or len(calls)
         dbkey = zusage._db_cache_key(self.con)
@@ -131,12 +131,14 @@ class WatermarkCacheTests(unittest.TestCase):
         zusage._cached_agg("k", zusage._WmFn(fn, self.con))
         zusage._cached_project(dbkey, pkey, fn, self.con)
         zusage._speed_history_cached(self.con, "s1")
+        zusage._cached_session(self.con, "s1", "usage", lambda: "sess")
         self.add_row()
         boom = mock.patch.object(zusage, "_usage_watermark", side_effect=AssertionError("TTL 内不得查水位"))
         with boom:
             self.assertEqual(zusage._cached_agg("k", zusage._WmFn(fn, self.con)), 1)
             self.assertEqual(zusage._cached_project(dbkey, pkey, fn, self.con), 2)
             zusage._speed_history_cached(self.con, "s1")
+            self.assertEqual(zusage._cached_session(self.con, "s1", "usage", lambda: "other"), "sess")
 
     def test_agg_without_connection_or_with_memory_db_is_pure_ttl(self):
         calls = []
@@ -258,6 +260,8 @@ class WatermarkCacheTests(unittest.TestCase):
         """键必须带库身份：同进程先后查两个文件库、同 sid，不得互相命中（去掉 dbkey 的变异会让第二个库读到第一个库的值）。"""
         a = self._make_file_db("a.sqlite", "account:alpha", 1)
         b = self._make_file_db("b.sqlite", "account:beta", 3)
+        count = lambda c: c.execute("select count(*) from model_usage").fetchone()[0]
+        self.assertNotEqual(count(a), count(b), "夹具须使两库数据不同，否则串值不可观察、本用例失去杀伤力")
         self.assertEqual(zusage.session_usage(a, "s1")["requests"], 1)
         self.assertEqual(zusage.session_usage(b, "s1")["requests"], 3, "另一个库不得命中前一个库的缓存")
 
@@ -278,10 +282,21 @@ class WatermarkCacheTests(unittest.TestCase):
         self.assertEqual(zusage._cached_session(self.con, "s1", "usage", fn), 2, "水位偏旧：必须重算")
 
     def test_session_cache_overflow_clears_watermarks_too(self):
+        peak, prev, shrank = 0, 0, False
         for i in range(40):
             zusage._cached_session(self.con, "sx%d" % i, "usage", lambda: 1)
-        self.assertLessEqual(len(zusage._SESS_CACHE), 33)
-        self.assertTrue(set(zusage._SESS_WM) <= set(zusage._SESS_CACHE), "清空缓存须同步清水位，防内存泄漏")
+            n = len(zusage._SESS_CACHE)
+            peak, shrank, prev = max(peak, n), shrank or n < prev, n
+            self.assertTrue(set(zusage._SESS_WM) <= set(zusage._SESS_CACHE), "清空缓存须同步清水位，防内存泄漏")
+        self.assertLessEqual(peak, 33, "上限 32：写入前判断，峰值至多 33（上限被放宽到 34+ 会在此变红）")
+        self.assertTrue(shrank, "灌 40 个键必须触发过整体清空（上限被去掉会让缓存无界增长）")
+
+    def test_task_at_is_cleared_together_with_task_cache_on_overflow(self):
+        """_sub_agent_tasks 溢出整表清空时必须同步清 _TASK_AT：漏清则 _TASK_AT 随会话数无界增长。"""
+        for i in range(34):
+            zusage._sub_agent_tasks(self.con, "sid%d" % i)
+        self.assertLessEqual(len(zusage._TASK_CACHE), 33)
+        self.assertTrue(set(zusage._TASK_AT) <= set(zusage._TASK_CACHE), "_TASK_AT 键必须是 _TASK_CACHE 键的子集")
 
     def test_session_snapshot_avg_tps_cached_and_recomputed_on_watermark(self):
         """真实 _session_snapshot 路径：avg_tps / requests 的会话缓存生效，水位变后重算；三个 kind 键名各自落位。"""
