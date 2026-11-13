@@ -540,3 +540,51 @@ test("resident timeout is widened for slow frames but stays 15s for fast ones", 
   await start(fast, ""); await fast.advance(15100);
   assert.equal(fast.procs[0].killed, true, "快帧场景仍保持 15s 硬超时");
 });
+/* 以下 5 例守护冷却门的边角（变异审查补全）：失败结算同样冷却、远端帧同样冷却、放行不早不晚、快帧后冷却归零、
+ * 15s 封顶与超时比例。超时被硬杀的帧同样按实耗记入冷却是有意取舍（见 specs/perf-lag-reduction.md 规则 16）。 */
+test("error/null settle also starts cooldown (not only success)", async () => {
+  for (const payload of [{ error: "x" }, null]) {
+    const f = loadPump({ activity_min_ms: 1500 });
+    await start(f, ""); await f.advance(6000); f.respond(payload);
+    f.bumpDb(); f.api.maybeSpawn(); await flush();
+    assert.equal(f.lines.length, 1, "结算瞬间不放行");
+    await f.advance(5500);
+    assert.equal(f.lines.length, 1, "错误结算后冷却同样生效 " + JSON.stringify(payload));
+  }
+});
+test("remote frames are cooled too", async () => {
+  const f = loadPump({ activity_min_ms: 1500, remote: { poll_ms: 1000 } });
+  await start(f, A); await f.advance(6000); f.respond(success(A));   // 标记 remoteActive，绕过去重
+  f.api.maybeSpawn(); await flush(); assert.equal(f.lines.length, 1, "结算瞬间不放行"); await f.advance(5500);
+  assert.equal(f.lines.length, 1, "远端帧结算后冷却未满不放行");
+  await f.advance(700);
+  assert.equal(f.lines.length, 2);
+});
+test("cooldown releases promptly (no more than ~250ms late) and not early", async () => {
+  const f = loadPump({ activity_min_ms: 1500 });
+  await start(f, ""); await f.advance(6100); f.respond({ recent: [] }); f.bumpDb();
+  f.api.maybeSpawn(); await flush();
+  await f.advance(6100 - 1); assert.equal(f.lines.length, 1);
+  await f.advance(200); assert.equal(f.lines.length, 2, "冷却满后 ≤ ~250ms 内放行");
+});
+test("a fast frame after a slow one resets the cooldown", async () => {
+  const f = loadPump({ activity_min_ms: 1500 });
+  await start(f, ""); await f.advance(6000); f.respond({ recent: [] });
+  f.bumpDb(); f.api.maybeSpawn(); await flush(); await f.advance(6100); assert.equal(f.lines.length, 2);
+  f.respond({ recent: [] });                               // 0ms 帧
+  f.bumpDb(); f.api.maybeSpawn(); await flush(); await f.advance(1700);
+  assert.equal(f.lines.length, 3, "快帧后冷却归零，仅受 activity_min_ms 约束");
+});
+test("lastQueryMs capped at 15s and timeout scales to 30s", async () => {
+  const f = loadPump({ activity_min_ms: 1500 });
+  await start(f, ""); await f.advance(10000); f.respond({ recent: [] });   // T=10s → timeout 20s
+  f.bumpDb(); f.api.maybeSpawn(); await flush(); await f.advance(10100); assert.equal(f.lines.length, 2);
+  await f.advance(19000);                                    // 帧2 共 19s 仍在 20s 超时内
+  f.respond({ recent: [] });                                 // spent=19s → 封顶 15s
+  f.bumpDb(); f.api.maybeSpawn(); await flush(); await f.advance(14900); assert.equal(f.lines.length, 2, "冷却 15s 未满");
+  await f.advance(400); assert.equal(f.lines.length, 3, "封顶 15s：不应等 19s");
+  // 此时 lastQueryMs=15000 → 超时 30s
+  const p = f.procs.at(-1);
+  await f.advance(29500); assert.equal(p.killed, undefined, "29.5s 仍在 2× 超时内");
+  await f.advance(1000); assert.equal(p.killed, true, "30s 超时应触发");
+});

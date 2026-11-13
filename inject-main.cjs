@@ -605,11 +605,11 @@ function runQuery(request) {
       const waiter = (payload) => { clearTimeout(timer); done(payload); };
       /* 规则 16：慢帧场景下 15s 硬超时会杀掉仍在正常计算（但更慢）的常驻进程，
        * 连带丢掉全部内存缓存、下一帧从冷启动重来（8,237 条消息的会话可达此量级）。
-       * 放宽到 max(15s, 2×上帧耗时)，上限 45s；快帧时仍是原 15000ms。 */
+       * 放宽到 max(15s, 2×上帧耗时)；lastQueryMs 封顶 15s，故上限实为 30s；快帧时仍是原 15000ms。 */
       const timer = setTimeout(() => {
         LOG("resident query timeout, restarting it");
         stopResident(true);
-      }, Math.min(45000, Math.max(15000, lastQueryMs * 2)));
+      }, Math.max(15000, lastQueryMs * 2));
       state.waiters.push(waiter);
       try {
         state.proc.stdin.write(line + "\n", (error) => {
