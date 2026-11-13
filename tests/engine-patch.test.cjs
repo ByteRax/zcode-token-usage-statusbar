@@ -21,6 +21,7 @@ const FACTORY_TARGETS = ENGINE_TARGETS.map((t) => ({ build: t.build, engineSha25
  * 登记新版本时在此追加一行。 */
 test("出厂登记表逐版本锁定判定符号：滚动 ANCHOR/REPLACEMENT 不得改写旧条目", () => {
   const symbols = {
+    "3.18.2": ["iTe", "PWo", "08726b5ef69e1e9072828baa4656713cb3aac93bb096938681278c5600312b2c"],
     "3.18.1": ["oTe", "vWo", "666f9c5a0a566eb8cbb906625e219aa2657e9f6a0e0ea8a73471fabdc54110b6"],
     "3.18.0": ["nTe", "K9o", "26785f28ab8fb9f8b0f3821f2bf71d294f4d0b8bf28108785292f86c7e14090d"],
     "3.17.2": ["cke", "jBo", "d9afd58d694f98a5279bf548cdc7646413c125762e86730605a6071f9e0346d6"],

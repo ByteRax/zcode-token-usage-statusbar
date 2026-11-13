@@ -27,8 +27,8 @@ const anchorFor = (fn, dflt) => "n=" + fn + "(e.bufferTokens)??" + dflt + ";retu
 const replacementFor = (fn, dflt) => "n=" + fn + "(e.bufferTokens)??" + dflt +
   ";return (globalThis." + MARK + "&&globalThis." + MARK + "(t,n))??Math.max(0,t-n)";
 /* 最新登记版本的锚点对；旧版本符号轮换见 ENGINE_TARGETS 各条目。 */
-const ANCHOR = anchorFor("oTe", "vWo");
-const REPLACEMENT = replacementFor("oTe", "vWo");
+const ANCHOR = anchorFor("iTe", "PWo");
+const REPLACEMENT = replacementFor("iTe", "PWo");
 
 /* hook 本体：插入引擎文件头。优先级 enabled:false > thresholdPercent(30-99，
  * v194 起总窗口口径：引擎判定只认扣除输出预留后的有效窗口 eff，按 eff+21K 近似
@@ -64,10 +64,17 @@ const PROLOGUE_V1 = (() => {
  * 允许引用常量，否则旧条目会静默继承新版本锚点（tests/engine-patch.test.cjs 锁表守护）。 */
 const ENGINE_TARGETS = [
   {
-    build: "3.18.1",
-    engineSha256: "666f9c5a0a566eb8cbb906625e219aa2657e9f6a0e0ea8a73471fabdc54110b6",
+    build: "3.18.2",
+    engineSha256: "08726b5ef69e1e9072828baa4656713cb3aac93bb096938681278c5600312b2c",
     anchor: ANCHOR,
     replacement: REPLACEMENT,
+    prologue: PROLOGUE,
+  },
+  {
+    build: "3.18.1",
+    engineSha256: "666f9c5a0a566eb8cbb906625e219aa2657e9f6a0e0ea8a73471fabdc54110b6",
+    anchor: anchorFor("oTe", "vWo"),
+    replacement: replacementFor("oTe", "vWo"),
     prologue: PROLOGUE,
   },
   {
