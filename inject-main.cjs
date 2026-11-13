@@ -323,6 +323,8 @@ function remotePollMs() {
 let busy = false;
 let pushCount = 0;
 let lastSpawn = 0;    // 上次发起查询时刻（activity_min_ms 限频用）
+let lastQueryMs = 0;  // 上一帧实际耗时（规则 16：慢帧自适应冷却，占空比封顶约 50%）
+let lastDoneAt = 0;   // 上一帧结算时刻（冷却从结算起算：从发起起算时慢帧结算瞬间间隔已满，仍会无缝连发）
 let lastStamp = 0;    // 上次拉取时的 db mtime（去重：无新写入不拉）
 let lastWants = "";   // 上次查询用的会话 id 集合（变化即拉，防"会话切了但 db 没写入"滞留旧数据）
 let lastRequest = { sids: [], scopes: [] };
@@ -568,11 +570,19 @@ function killResidentForUpgrade() { stopResident(true); }
  * 每笔请求只结算一次；error 载荷转 pendingSids 由远端重试链兜底。 */
 function runQuery(request) {
   busy = true;
+  const startedAt = Date.now();
   let settled = false;
   const done = (payload) => {
     if (settled) return;
     settled = true;
     busy = false;
+    /* 规则 16（specs/perf-lag-reduction.md）：记录本帧实耗与结算时刻，供 maybeSpawn 做慢帧冷却。
+     * 大库/长会话单帧可能远慢于 activity_min_ms：限频若只从「发起」起算，慢帧结算瞬间间隔
+     * 已满，下一帧零间隔紧接着发出，serve 连续执行把单核占满（占空比 ≈100%）。上限 15s
+     * 防异常值把刷新频率永久拖死。 */
+    const nowDone = Date.now();
+    const spent = nowDone - startedAt;
+    if (spent >= 0) { lastQueryMs = Math.min(15000, spent); lastDoneAt = nowDone; }
     const keys = requestKeys(request);
     if (payload && !payload.error) {
       if (!shuttingDown && hasWindows()) handlePayload(payload);
@@ -593,10 +603,13 @@ function runQuery(request) {
       clearTimeout(residentIdleTimer);
       const state = pyRes;
       const waiter = (payload) => { clearTimeout(timer); done(payload); };
+      /* 规则 16：慢帧场景下 15s 硬超时会杀掉仍在正常计算（但更慢）的常驻进程，
+       * 连带丢掉全部内存缓存、下一帧从冷启动重来（8,237 条消息的会话可达此量级）。
+       * 放宽到 max(15s, 2×上帧耗时)，上限 45s；快帧时仍是原 15000ms。 */
       const timer = setTimeout(() => {
         LOG("resident query timeout, restarting it");
         stopResident(true);
-      }, 15000);
+      }, Math.min(45000, Math.max(15000, lastQueryMs * 2)));
       state.waiters.push(waiter);
       try {
         state.proc.stdin.write(line + "\n", (error) => {
@@ -768,6 +781,12 @@ function maybeSpawn() {
       const pendingDue = keys.some((s) => { const t = pendingSids.get(s); return t !== undefined && t <= now; });
       if (key === lastWants && src === lastSourceStamp && st && st === lastStamp && !remoteActive && !pendingDue) return;
       const effWait = (remoteActive || pendingDue) ? remotePollMs() : wait;
+      /* 规则 16 慢帧冷却：结算后须再等 ≥ 上帧实耗才放行 → 占空比 T/(T+T) ≤ 50%。对所有帧生效、
+       * 不设「T > 有效间隔」门槛：真库实测冷帧 ~1.05s 低于 activity_min_ms(1.5s)，有门槛时冷却不介入，
+       * 占空比仍达 ~70%（T 贴近间隔时近 100%），且在 T 跨过间隔处从 ~100% 骤降到 50%（不连续）。
+       * T ≤ 有效间隔/2 时该门被上面的旧限频门覆盖（下一帧 ≥ 发起+间隔 ≥ 结算+T），行为逐字不变。 */
+      const cool = lastDoneAt + lastQueryMs - now;
+      if (cool > 0) { scheduleRetry(cool + 50); return; }
       if (now - lastSpawn < effWait) { scheduleRetry(effWait - (now - lastSpawn) + 50); return; }
       lastWants = key;
       lastSourceStamp = src;

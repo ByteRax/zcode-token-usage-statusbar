@@ -9,7 +9,7 @@ const source = fs.readFileSync(path.join(__dirname, "..", "inject-main.cjs"), "u
 const A = "remote:ssh:a:22:u:/p", B = "remote:ssh:b:22:u:/p";
 const flush = () => new Promise(resolve => setImmediate(resolve));
 function loadPump(config = {}, desktopHome = "/fixture/home") {
-  let now = 100000, id = 0, cfgStamp = 1, settingStamp = 1;
+  let now = 100000, id = 0, cfgStamp = 1, settingStamp = 1, dbStamp = 1;
   const timers = new Map(), intervals = [], procs = [], lines = [], windows = [], ipc = new EventEmitter();
   let cfg = { activity_min_ms: 300, remote: { poll_ms: 1000 }, ...config };
   class Clock extends Date { static now() { return now; } }
@@ -22,7 +22,7 @@ function loadPump(config = {}, desktopHome = "/fixture/home") {
         // db 路径跟随 desktopHome（issue #279 起 dbDir 解析 setting.json dataBaseDir / env），
         // development-home 场景下库随之迁移，否则 stamp 恒 0 打穿去重
         ...["db.sqlite", "db.sqlite-wal", "db.sqlite-shm"].map(name => desktopHome + "/.zcode/cli/db/" + name)].includes(file)) {
-        return { mtimeMs: 1, size: 1 };
+        return { mtimeMs: file.includes("/db/") ? dbStamp : 1, size: 1 };
       }
       throw Object.assign(new Error("ENOENT: " + file), { code: "ENOENT" });
     },
@@ -69,6 +69,7 @@ function loadPump(config = {}, desktopHome = "/fixture/home") {
     respond(payload, p = procs.at(-1)) { p.stdout.emit("data", Buffer.from(JSON.stringify(payload) + "\n")); },
     setCfg(value) { cfg = { ...cfg, ...value }; cfgStamp++; },
     settingChanged() { settingStamp++; },
+    bumpDb() { dbStamp++; },   // 模拟宿主写 WAL：db 戳变化才会越过 maybeSpawn 的去重短路
     async advance(ms) {
       const end = now + ms;
       for (;;) {
@@ -459,4 +460,83 @@ test("one-shot uses JSON protocol and retries after error/close once", async () 
   assert.equal(JSON.parse(f.procs[0].args[2]).scopes[0].workspaceIdentity, A);
   f.procs[0].emit("error", new Error("ENOENT")); f.procs[0].emit("close");
   await f.advance(1000); assert.equal(f.procs.length, 2);
+});
+/* 规则 16（specs/perf-lag-reduction.md）：大库慢帧冷却。纯本地会话 + db 戳变化才会越过去重短路。
+ * 旧门只从「发起」起算：帧耗时 ≥ 间隔时结算瞬间已满、下一帧零间隔紧接（占空比 ≈100%）——
+ * 冷却从「结算」起算后，慢帧结算起须再等 ≥ 上帧实耗。 */
+test("slow frame cools down for its own duration after settling (duty cycle capped)", async () => {
+  const f = loadPump({ activity_min_ms: 1500 });
+  await start(f, "");                                        // 本地 sid，无远端身份
+  assert.equal(f.lines.length, 1);
+  await f.advance(6000);                                     // 帧耗时 6s（远大于 activity_min_ms=1500）
+  f.respond({ recent: [] });                                 // 结算：lastQueryMs=6000
+  f.bumpDb(); f.api.maybeSpawn(); await flush();
+  assert.equal(f.lines.length, 1, "结算瞬间不得零间隔紧接下一帧（旧门在此处会放行）");
+  await f.advance(5500);
+  assert.equal(f.lines.length, 1, "结算后冷却未满 6s 仍不放行");
+  await f.advance(700);                                      // 总冷却 6.2s ≥ 6s + 50ms
+  assert.equal(f.lines.length, 2, "冷却满后由 scheduleRetry 自驱放行");
+});
+/* 占空比驱动：宿主持续写库（bumpDb + maybeSpawn 代表 fs.watch 事件，夹具 watch 是空桩），
+ * 每帧放行后 FRAME 毫秒结算（模拟 serve 返回）；返回放行帧数、结算帧数与帧间空闲时长。 */
+async function drivePump(f, FRAME, WINDOW, STEP) {
+  let sent = f.lines.length, settleAt = FRAME, frames = 0, idleMs = 0;
+  for (let t = 0; t < WINDOW; t += STEP) {
+    f.bumpDb(); f.api.maybeSpawn();
+    if (t >= settleAt && sent > frames) { f.respond({ recent: [] }); frames = sent; settleAt = Infinity; }
+    await f.advance(STEP);
+    if (f.lines.length > sent) { sent = f.lines.length; settleAt = t + STEP + FRAME; }
+    if (settleAt === Infinity) idleMs += STEP;               // 两帧之间的空闲（冷却）时间
+  }
+  return { sent, frames, idleMs };
+}
+test("duty cycle stays at or below ~50% under sustained slow frames", async () => {
+  const f = loadPump({ activity_min_ms: 1500 });
+  await start(f, "");
+  const FRAME = 6000, WINDOW = 120000;
+  const { frames, idleMs } = await drivePump(f, FRAME, WINDOW, 250);
+  assert.ok(frames >= 5, "窗口内必须真的发生多帧（防空转假绿灯），实测 " + frames + " 帧");
+  const duty = (frames * FRAME) / WINDOW;
+  assert.ok(duty <= 0.55, "占空比应 ≤ ~50%，实测 " + Math.round(duty * 100) + "%（" + frames + " 帧）");
+  assert.ok(idleMs > 0, "帧间必须存在冷却空闲");
+});
+test("frames just under activity_min_ms are capped too (no discontinuity at the interval)", async () => {
+  /* 真库实测冷帧 ~1.05s 低于 activity_min_ms=1.5s。冷却若只在「帧耗时 > 间隔」时介入，T=1.2s 的帧
+   * 占空比 ≈ 1.2/1.55 ≈ 77%，且在 T 跨过间隔处从 ~100% 骤降到 50%——这一档正是冷却最该覆盖的区间。 */
+  const f = loadPump({ activity_min_ms: 1500 });
+  await start(f, "");
+  const FRAME = 1200, WINDOW = 60000;
+  const { frames } = await drivePump(f, FRAME, WINDOW, 100);
+  assert.ok(frames >= 10, "窗口内必须真的发生多帧，实测 " + frames + " 帧");
+  const duty = (frames * FRAME) / WINDOW;
+  assert.ok(duty <= 0.55, "占空比应 ≤ ~50%，实测 " + Math.round(duty * 100) + "%（" + frames + " 帧）");
+});
+test("fast frames keep the original activity_min_ms cadence (no behaviour change)", async () => {
+  const f = loadPump({ activity_min_ms: 1500 });
+  await start(f, ""); await f.advance(200); f.respond({ recent: [] });   // 帧耗时 200ms ≪ 1500ms
+  f.bumpDb(); await f.advance(1000); f.api.maybeSpawn(); await flush();
+  assert.equal(f.lines.length, 1, "未满 activity_min_ms 不放行");
+  await f.advance(400); f.api.maybeSpawn(); await flush();
+  assert.equal(f.lines.length, 2, "快帧仍按 1500ms 原节奏放行（冷却不介入）");
+});
+test("frames up to half the interval keep the original cadence (cooldown is covered by the old gate)", async () => {
+  /* 帧耗时 T ≤ 间隔/2 时，旧限频门（发起+间隔）已比冷却（结算+T = 发起+2T）更严，节奏必须与旧版逐字一致。
+   * 变异守卫：冷却若比 T 更长（如 2×T 或固定加量），这里的节奏会掉下来。 */
+  const f = loadPump({ activity_min_ms: 1500 });
+  await start(f, "");
+  const { sent } = await drivePump(f, 600, 30000, 100);
+  // 旧版/实测：每 ~1.43–1.55s 一帧 → 30s 内 21 帧；冷却若比 T 更长（2×T=1.8s 周期 → ~17 帧）会掉下来
+  assert.ok(sent >= 20, "T=600ms 的节奏应保持 ~1.5s/帧，30s 内至少 20 帧，实测 " + sent);
+});
+test("resident timeout is widened for slow frames but stays 15s for fast ones", async () => {
+  const slow = loadPump({ activity_min_ms: 1500 });
+  await start(slow, ""); await slow.advance(8000); slow.respond({ recent: [] });   // 上帧 8s → 超时 max(15,16)=16s
+  slow.bumpDb(); await slow.advance(8100); slow.api.maybeSpawn(); await flush();
+  assert.equal(slow.lines.length, 2);
+  const old = slow.procs[0];
+  await slow.advance(15500);
+  assert.equal(old.killed, undefined, "慢帧场景 15.5s 时尚在放宽后的超时内，不得被硬杀");
+  const fast = loadPump({ activity_min_ms: 1500 });
+  await start(fast, ""); await fast.advance(15100);
+  assert.equal(fast.procs[0].killed, true, "快帧场景仍保持 15s 硬超时");
 });

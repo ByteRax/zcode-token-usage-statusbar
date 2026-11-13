@@ -33,11 +33,13 @@ create table turn_usage (session_id text, turn_id text, status text, model_reque
   cache_creation_input_tokens integer, computed_total_tokens integer, duration_ms integer,
   time_to_first_token_ms integer);
 create table tool_usage (session_id text, tool_name text, status text, duration_ms integer);
+create table part (session_id text, data text, time_created integer, time_updated integer);
 """
 
 
 def _clear_caches():
-    for name in ("_AGG_CACHE", "_AGG_WM", "_PROJ_CACHE", "_PROJ_WM", "_SPEED_CACHE", "_SPEED_WM"):
+    for name in ("_AGG_CACHE", "_AGG_WM", "_PROJ_CACHE", "_PROJ_WM", "_SPEED_CACHE", "_SPEED_WM",
+                 "_SESS_CACHE", "_SESS_WM", "_TASK_CACHE", "_TASK_AT"):
         getattr(zusage, name).clear()
 
 
@@ -188,6 +190,117 @@ class WatermarkCacheTests(unittest.TestCase):
         self.add_row()
         self.expire(zusage._PROJ_CACHE, full, 1)
         self.assertEqual(zusage._project_usage(self.con, "s1")["requests"], 2, "水位变：重算")
+
+    # ---- _cached_session（规则 13：长会话每帧全量重算止损）----
+    def test_session_cache_reuses_until_watermark_changes(self):
+        dbkey = zusage._db_cache_key(self.con)
+        full = (dbkey, "s1", "usage")
+        calls = []
+        fn = lambda: calls.append(1) or len(calls)
+        self.assertEqual(zusage._cached_session(self.con, "s1", "usage", fn), 1)
+        self.expire(zusage._SESS_CACHE, full, zusage._AGG_TTL_MS + 1)
+        self.assertEqual(zusage._cached_session(self.con, "s1", "usage", fn), 1, "水位未变：复用")
+        self.add_row()
+        self.expire(zusage._SESS_CACHE, full, 1)
+        self.assertEqual(zusage._cached_session(self.con, "s1", "usage", fn), 2, "水位变：重算")
+
+    def test_session_cache_keys_by_sid_and_kind(self):
+        """同一库不同 sid / 不同 kind 不得互相命中（否则会话与会话均速串值）。"""
+        calls = []
+        fn = lambda: calls.append(1) or len(calls)
+        self.assertEqual(zusage._cached_session(self.con, "s1", "usage", fn), 1)
+        self.assertEqual(zusage._cached_session(self.con, "s2", "usage", fn), 2)
+        self.assertEqual(zusage._cached_session(self.con, "s1", "avg_tps", fn), 3)
+        self.assertEqual(zusage._cached_session(self.con, "s1", "usage", fn), 1, "同键命中")
+
+    def test_session_usage_end_to_end_picks_up_new_request_after_ttl(self):
+        self.assertEqual(zusage.session_usage(self.con, "s1")["requests"], 1)
+        dbkey = zusage._db_cache_key(self.con)
+        full = (dbkey, "s1", "usage")
+        self.expire(zusage._SESS_CACHE, full, zusage._AGG_TTL_MS + 1)
+        self.assertEqual(zusage.session_usage(self.con, "s1")["requests"], 1, "水位未变：复用")
+        self.add_row()
+        self.expire(zusage._SESS_CACHE, full, 1)
+        self.assertEqual(zusage.session_usage(self.con, "s1")["requests"], 2, "水位变：重算")
+
+    def test_session_usage_returns_copy_so_callers_cannot_corrupt_cache(self):
+        u = zusage.session_usage(self.con, "s1")
+        u["requests"] = 999
+        self.assertEqual(zusage.session_usage(self.con, "s1")["requests"], 1, "调用方改动不得污染缓存")
+
+    def test_session_cache_memory_db_is_uncached_but_correct(self):
+        mem = sqlite3.connect(":memory:")
+        self.addCleanup(mem.close)
+        mem.executescript(SCHEMA)
+        calls = []
+        fn = lambda: calls.append(1) or len(calls)
+        self.assertEqual(zusage._cached_session(mem, "s1", "usage", fn), 1)
+        self.assertEqual(zusage._cached_session(mem, "s1", "usage", fn), 2, "无库身份：每次真算")
+
+    # ---- _provider_fallback（规则 14）----
+    def test_provider_fallback_is_cached_per_db(self):
+        self.con.execute(
+            "insert into model_usage (id, session_id, status, query_source, provider_id, completed_at)"
+            " values ('pf','s1','completed','main_turn','account:test',900)")
+        self.con.commit()
+        calls = []
+        real = zusage._provider_fallback_uncached
+
+        def counting(con):
+            calls.append(1)
+            return real(con)
+
+        zusage._provider_fallback_uncached = counting
+        self.addCleanup(setattr, zusage, "_provider_fallback_uncached", real)
+        self.assertEqual(zusage._provider_fallback(self.con), "account:test")
+        self.assertEqual(zusage._provider_fallback(self.con), "account:test")
+        self.assertEqual(len(calls), 1, "TTL 内同库只扫一次")
+
+    # ---- _sub_agent_tasks_hot（规则 15）----
+    def test_hot_task_scan_throttles_within_rescan_interval(self):
+        calls = []
+        real = zusage._sub_agent_tasks
+
+        def counting(con, sid):
+            calls.append(1)
+            return real(con, sid)
+
+        zusage._sub_agent_tasks = counting
+        self.addCleanup(setattr, zusage, "_sub_agent_tasks", real)
+        zusage._sub_agent_tasks_hot(self.con, "s1")
+        self.assertEqual(len(calls), 1)
+        zusage._sub_agent_tasks_hot(self.con, "s1")
+        self.assertEqual(len(calls), 1, "间隔内复用，不重扫 part")
+        zusage._TASK_AT["s1"] -= zusage._TASK_RESCAN_MS + 1
+        zusage._sub_agent_tasks_hot(self.con, "s1")
+        self.assertEqual(len(calls), 2, "超过重扫间隔后恢复精确扫描")
+
+    # ---- 桩连接契约 ----
+    def test_db_cache_key_degrades_to_none_on_stub_connections(self):
+        """桩连接（无 fetchall 的游标 / Mock / 非序列返回）：取不到库身份必须返回 None 而非抛错。
+        回归：新增调用点（_cached_session / _provider_fallback）曾因 except 只收 sqlite3.Error，
+        被 test_remote_targets 的列表子类游标夹具击穿整帧快照。"""
+        class _NoFetchall(list):
+            def fetchone(self):
+                return self[0] if self else None
+        stub = mock.Mock()
+        stub.execute.return_value = _NoFetchall([(0, 0)])
+        self.assertIsNone(zusage._db_cache_key(stub), "游标无 fetchall：降级 None")
+        stub2 = mock.Mock()
+        stub2.execute.return_value.fetchall.return_value = None
+        self.assertIsNone(zusage._db_cache_key(stub2), "fetchall 返回非可迭代：降级 None")
+        self.assertIsNone(zusage._db_cache_key(object()), "无 execute：降级 None")
+
+    def test_new_cache_call_sites_survive_stub_connections(self):
+        """_cached_session / _provider_fallback 在桩连接上：退回不缓存、真算，不抛。"""
+        stub = mock.Mock()
+        stub.execute.return_value.fetchall.side_effect = AttributeError("stub")
+        calls = []
+        fn = lambda: calls.append(1) or len(calls)
+        self.assertEqual(zusage._cached_session(stub, "s1", "usage", fn), 1)
+        self.assertEqual(zusage._cached_session(stub, "s1", "usage", fn), 2, "桩连接：每次真算，不跨调用缓存")
+        stub.execute.return_value.fetchone.return_value = ("account:x",)
+        self.assertEqual(zusage._provider_fallback(stub), "account:x", "桩连接：provider_fallback 直算")
 
     # ---- speed_history ----
     def test_speed_history_cached_reuses_until_watermark_changes(self):
