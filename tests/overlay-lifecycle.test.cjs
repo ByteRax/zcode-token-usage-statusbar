@@ -210,8 +210,9 @@ test('reinjection and repeated cleanup cancel old loops and leave one live gener
   const cleanup = h.window.__zusageDispose;
   h.inject(); h.boot(); cleanup();
   assert.equal(h.frames.size, 1); assert.equal(h.observers.filter(e => e.connected).length, 2);   // v105：theme + 弹层压缩按钮 body 观察器
-  // 6 = coordinator(600) + heavy(600) + rateScan(2s) + deterministic scan(2s) + per-pane bridge probe(2s) + rotator(65ms)
-  assert.equal(h.timers.size, 6);
+  // 7 = coordinator(600) + heavy(600) + rateScan(2s) + deterministic scan(2s) + per-pane bridge probe(2s) + rotator(65ms)
+  //     + 13-mobile-chips 的 mcTimer(1s，手机远控 target 上报；随 __zusageDispose 链清理)
+  assert.equal(h.timers.size, 7);
   h.window.__zusageDispose(); cleanup();
   assert.equal(h.timers.size, 0); assert.equal(h.frames.size, 0);
   assert.deepEqual(Array.from(h.window.__zusageWantSids), []); assert.equal(h.window.__zusageWantSid, '');
