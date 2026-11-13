@@ -885,7 +885,7 @@
          * 不带「均」前缀）；tooltip 左卡仍为会话加权平均（"平均速度"语义不变） */
         var chipBand = tpsBand(chipTps);
         var chipFace = chipTps > 0 ? ((chipTps % 1 ? chipTps.toFixed(1) : String(chipTps)) + '<span class="dim">t/s</span>') : "";   // 最后一轮无效：面空（含单位），仅留图标作悬停锚；空面补 aria-label 保可访问名（review 修复）。v319 补空格→v321 flex 豁免后空格生效→v324 去空格（曾零间隔）→v326 统一 gap:5px 机制：完成态与动态态同为「数字+dim」两 item、间距恒 5px（用户屏幕验证）
-        it(ico('<path d="M13.5 2 3.5 13.5H11L10 22l10.5-12H13l.5-8z"/>') +
+        it(ico(/*zm-ico:speed*/'<path d="M13.5 2 3.5 13.5H11L10 22l10.5-12H13l.5-8z"/>') +
           '<span class="zu-live ' + (chipBand ? chipBand.cls : "dim") + '"' + (chipFace ? "" : ' aria-label="' + L("生成速度", "Generation speed") + '"') + '>' + chipFace + '</span>',
           speedTipRebuild(speedChartHover, v2sel));
       } else {
@@ -901,7 +901,7 @@
            (lt.tool_errors ? ttEsc(L("错误 ", "errors ") + countFmt(lt.tool_errors) + L(" 次", " times")) : "")].filter(Boolean).join('<i class="zu-turn-sep">·</i>')
         : "";
       if (state.show.turn) {
-        it(ico('<path d="M5 3.5h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-9l-6.5 4V5.5a2 2 0 0 1 1.5-2z"/><path d="M7.5 8.5h9m-9 4h6"/>') +
+        it(ico(/*zm-ico:turn*/'<path d="M5 3.5h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-9l-6.5 4V5.5a2 2 0 0 1 1.5-2z"/><path d="M7.5 8.5h9m-9 4h6"/>') +
           '<span class="v">' + fmt(lt.total) + "</span>" +
           (state.theme === "pill" ? "" :
             (shrink ? "" : "") +
@@ -976,7 +976,7 @@
           '</div>');
       }
       if (state.show.win) {
-        it(ico('<path d="M7.5 3h12a2 2 0 0 1 2 2v10M4.5 7h12a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H8l-5.5 2V9a2 2 0 0 1 2-2z"/>') +
+        it(ico(/*zm-ico:win*/'<path d="M7.5 3h12a2 2 0 0 1 2 2v10M4.5 7h12a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H8l-5.5 2V9a2 2 0 0 1 2-2z"/>') +
           '<span class="v">' + fmt(sess.total) + "</span>" +
           (state.theme === "pill" ? "" :
             (shrink ? "" : "") +
@@ -1047,7 +1047,7 @@
          * 模型表标题行固定+表体独立滚动；时间行钉底。样式经 statCompactStyle("today")
          * 作用域（+today 专属：图标居中/副行绿/单格占满），不波及其它卡。
          * 平均耗时/延迟/速度来自 v301 zusage 今日聚合，旧快照缺字段按 >0 门控收起。 */
-        it(ico('<rect x="3" y="4.5" width="18" height="17" rx="2.5"/><path d="M7.5 2.5v4m9-4v4M3 10h18m-13.5 4h2m5 0h2m-9 4h2m5 0h2"/>') +
+        it(ico(/*zm-ico:today*/'<rect x="3" y="4.5" width="18" height="17" rx="2.5"/><path d="M7.5 2.5v4m9-4v4M3 10h18m-13.5 4h2m5 0h2m-9 4h2m5 0h2"/>') +
           '<span class="v">' + fmt(today.total) + "</span>" +
           (state.theme === "pill" ? "" :
             (today.turns != null
@@ -1114,7 +1114,7 @@
         var pjKey = (pickedSid || "") + ":" + (pj.started || 0);   // v214 项目卡归属键：项目变化（started 变）自动重置展开态
         /* v331：归属键变化同时重置范围 Tab 与项目明细展开态（新项目回到默认当前项目视角） */
         if (pjKey !== projTipKey) { projTipKey = pjKey; projTipExpanded = false; projTipScope = "cur"; projTipProjExpanded = false; }
-        it(ico('<path d="M3.5 6.5a2 2 0 0 1 2-2h4.2l2 2h7.3a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5.5a2 2 0 0 1-2-2z"/>') +
+        it(ico(/*zm-ico:proj*/'<path d="M3.5 6.5a2 2 0 0 1 2-2h4.2l2 2h7.3a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5.5a2 2 0 0 1-2-2z"/>') +
           '<span class="v">' + fmt(pj.total) + "</span>" +
           (state.theme === "pill" ? "" :
             (shrink ? "" : "") +
@@ -1128,7 +1128,7 @@
          * 累计耗时 secLong 换算（title 保留完整秒数）；表体进独立滚动区，
          * 多工具区内滚不撑高主卡；错误 >0 柔和红、0 弱化灰（err/dim0 既有语义）。 */
         var hasTools = tls.list && tls.list.length;
-        it(ico('<path d="M14.5 2.5a6 6 0 0 0-5.6 8.1L3.3 16.2a3.2 3.2 0 0 0 4.5 4.5l5.6-5.6a6 6 0 0 0 8.1-5.6l-4.1 3-3.8-3.8 3-4.1a6 6 0 0 0-2.1-2.1z"/>') +
+        it(ico(/*zm-ico:tools*/'<path d="M14.5 2.5a6 6 0 0 0-5.6 8.1L3.3 16.2a3.2 3.2 0 0 0 4.5 4.5l5.6-5.6a6 6 0 0 0 8.1-5.6l-4.1 3-3.8-3.8 3-4.1a6 6 0 0 0-2.1-2.1z"/>') +
           '<span class="v">' + countFmt(tls.total || 0) + "</span>" +
           (tls.errors ? '<span class="eb">' +
             ico('<circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/>') +
@@ -1160,7 +1160,7 @@
          * v217：悬停/点击都开统一浮层（.zu-sub-pop），__tip 置空不再走通用 tooltip
          * ——旧五段卡与「查看子代理明细」CTA 移除，明细能力由统一浮层右侧承接。 */
         var sb = d.sub || { requests: 0, total: 0, input: 0, output: 0, cache_read: 0, active: false };
-        it(ico('<circle cx="5" cy="5" r="3"/><circle cx="19" cy="8" r="3"/><circle cx="5" cy="19" r="3"/><path d="M5 8v8m0-4h9a5 5 0 0 0 5-1"/>') +
+        it(ico(/*zm-ico:sub*/'<circle cx="5" cy="5" r="3"/><circle cx="19" cy="8" r="3"/><circle cx="5" cy="19" r="3"/><path d="M5 8v8m0-4h9a5 5 0 0 0 5-1"/>') +
           '<span class="v">' + fmt(sb.total) + "</span>" +
 (sb.active ? '<span class="ok dot">●</span>' : ""),
           null, "zu-sub");

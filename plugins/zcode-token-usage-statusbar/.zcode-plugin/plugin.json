@@ -30,6 +30,8 @@
       "plugins/zcode-token-usage-statusbar/commands/uninstall-overlay.md",
       "plugins/zcode-token-usage-statusbar/commands/usage.md",
       "plugins/zcode-token-usage-statusbar/engine-patch.cjs",
+      "plugins/zcode-token-usage-statusbar/mobile-relay.cjs",
+      "plugins/zcode-token-usage-statusbar/mobile_relay_patch.py",
       "plugins/zcode-token-usage-statusbar/hooks/hooks.json",
       "plugins/zcode-token-usage-statusbar/hooks/prompt-submit.py",
       "plugins/zcode-token-usage-statusbar/hooks/session-start.py",

@@ -227,7 +227,9 @@
      * → v343 turn-text 回推诊断计数（issue #321「生成时长缺失，暂不显示速率」每轮常驻且零可观测）：完成态占位行的速率来自数据库富文本回推（token_rate.py --turn --current），此前回推失败全静默——空交付不区分「主进程没回（旧冷文件/通道断）」与「Python spawn 失败、15s 超时、非零退出」及「库没追上」。渲染端新增页面存活期单调计数 rt（sent、ok、empty、miss、stale，空交付原因细分 spawn/timeout/pyerr）随 FATAL.det.rt 落 diag-*.json；miss=请求 20s 无回执（略大于主进程 15s 超时），stale=未匹配在途请求的设计内淘汰回执；主进程空交付带原因标签属 inject-main.cjs 冷文件改动，需完全重启才细分，旧主进程回退落 empty 桶。
      * → v344 增强提示词按钮（specs/prompt-enhance.md）：模型 chip（chat-model-select-trigger，空配置「管理模型」分支同名）左侧 ✦ 按钮，chip 缺位回退用量圆环左侧；点击读 composer 草稿（__zcodeLexicalInputE2E，Lexical 直写 DOM 不进 EditorState 的唯一官方写通道）经 pluginRequest("prompt-enhance") 主进程按会话模型凭据（v4-model-config 实时选择优先、快照 last 兜底）一次性非流式改写后回填前重读草稿比对防覆盖用户编辑，再以 setText 替换，20 秒内按钮变撤销态恢复原文；增强中忽略再点（主进程 60s 超时 + 渲染端 75s 兜底）；警示态 4s 自愈（空草稿/模型未识别/失败原因/冲突）。实现落 model-puller.cjs enhanceText（三协议非流式 POST、套餐源 planTokenOf 解密、api-key 型自定义供应商、错误摘录脱敏）+ inject-main 白名单三动作（prompt-enhance / prompt-enhance-cancel 取消 / enhance 开关，enhance_enabled 缺省开显式 false 关、推送面 enhanceEnabled）+ ⚙ 面板「回答统计」分区开关行。增强中再点按钮=取消在途请求；主进程不认识新动作的旧版本回 unknown action，按钮按失败警示不挂起。
      * → v345 issue #327 回答末尾统计行逐拍消失/重现加固：scanDeterministicLines 在 owner 令牌取不到的单拍里对已验证归属的行整块 remove 且当拍 continue 不重建，令牌逐拍抖动即呈约 0.5s 一档的亮灭、块高归零下方内容跳动。现对「证据缺席」型空令牌（owner 无归属实例 / sid 实例暂无会话）且行仍属同一 tid（新增 __zuDetTid）宽限：连续 3 拍且跨过 1s 才撤（拍数防回执爆发耗尽、墙钟防后台节流拉长，同一扫描内多 box 命中同一行只计一次，时钟回拨视为到期，恢复一拍清零）；scope 与 sid 不符或侧聊远端（属于别的会话的反证）、归属换成另一个有效令牌（SID/scope 切换）、无 __zuDetOwner/__zuDetTid 的遗留行仍即时撤，fail-closed 对这些情形不松动。带行 box 令牌为空的原因拍数（owner/sid/scope）、宽限放行数 grace、空令牌撤行数 removed、非空令牌换代撤旧数 swap 与本代起算时刻 since 累计进 FATAL.det.nullOwner 随 diag 落盘，供报告者回传定位是哪个写入方在抖动。未证因果：本机复现不了，宽限属加固而非已确认根因的修复。
+     * → v346 手机远控中继（specs/mobile-relay.md、specs/mobile-userscript-build.md）：asar 双段注入与官方 acknowledged relay；按宿主 mobileTaskView 精确推送目标快照，手机上行配置达成查询门控；原接收端带独立 chips 渲染，后续由 v348 统一为桌面 overlay。
      * → v347 状态轮播附加工作时长与悬停提示（specs/status-rotator-work-duration.md；性能预算 specs/perf-lag-reduction.md 规则 17）：①appendWorkDuration 开关（默认 true、显式 false 保留，存 zusage3.rotator2）开启且 labelSource=phrases 时在 loading 行 label 后追加宿主同款「工作中 X 分 X 秒」兄弟 span（.zu-rotator-elapsed，格式逐句对齐宿主 formatConversationWorkDuration：max(1,round(ms/1000)) 拆天/时/分/秒非零入列至多两段、中文值与单位间空格；起点锚 turnHeader.startedAt 与宿主折叠头计时逐秒一致，宿主文案节点在虚拟滚动内无生产 API 故自算）；②悬停纯 CSS tooltip（data-tip + zu-rot-livetip 伪元素，内容同款文案）独立于开关①恒随轮播，零监听零布局读取，气泡静态 pointer-events:none 防偷 hover 抖动；③写入纪律（规则 17）：span 判位 nextElementSibling O(1) 零新增文档级查询、textContent/data-tip/classList 带比较前置判断按整型秒门控（同秒内 tick 零 DOM 写、每行至多 1 写/秒，不在打字机 15Hz 写流上叠加），文案缓存挂 rotatorRuntime 随热重载换代，restore 名单并入既有 querySelectorAll 选择器串；④⚙ 面板「追加工作时长」checkbox（.zu-rot-append-duration，启用行之后）走既有 setCb/change 尾缀统一保存链，底部预览卡不联动；⑤两轮用户实报修复——文字隐形根因=宿主 gradient label 的 -webkit-text-fill-color:transparent 是继承属性压过规则 color 使气泡文字全透明（CDP computed 实证，pointer-events 实测 auto 排除禁点），气泡显式重置 -webkit-text-fill-color:var(--color-tooltip-foreground) 堵继承；红色泛光根因=宿主 label 自带 filter:drop-shadow(rgba(255,0,85,.45) 辉光)（255,0,85=宿主渐变首色，shimmer 固有）不继承但作用整棵子树，气泡作为 label 伪元素子盒被整体泛光——data-tip/类改挂行容器 [data-testid="chat-loading"] 脱离作用域，label 旧代际属性每拍清退防热重载双气泡，还原名单行级摘除；样式对齐宿主原生 TooltipContent 视格（asar 实证 rounded-lg border-border bg-tooltip px-3 py-1.5 text-ui-sm，原生即无阴影——用户点名去阴影）：去 box-shadow、--color-tooltip/--color-tooltip-foreground 反色变量、var(--color-border) 边框、圆角 8px、padding 6px 12px。
+     * → v348 手机远控中继统一桌面 overlay（specs/mobile-unified-overlay.md）：目标数值投影与匿名 binding 隔离；移动接收端内嵌唯一桌面 overlay，本地/WSL/SSH 共用相同状态条、设置和 tooltip。
      */
     var VERSION = "v347";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
@@ -319,6 +321,9 @@
       "mask-image:linear-gradient(90deg,#000 calc(100% - 26px),transparent)}" +
       /* zu-main 不得带 .it class：querySelectorAll('.it') 收集 tooltip 时会把它算进第 0 位，
        * tips 全部错位一位且末项为 null —— v31"悬停只有空胶囊/内容错位"的根因 */
+      /*zm-cell-css-begin：格样式区锚点（specs/mobile-userscript-build.md）——构建脚本提取本区
+       * 白名单规则（.it/.sep/.k/.v/.dim/.eb）改写 .zm-root 前缀后注入手机端油猴回退条；
+       * 区内无关规则（.zu-gear/.zu-live 等）构建时丢弃，桌面增删无关规则不必维护锚点。 */
       ".it{display:flex;align-items:center;gap:5px;padding:2px 7px;border:0;border-radius:7px;" +
       "background:transparent;color:inherit;font:inherit;line-height:inherit;text-align:left;white-space:nowrap;" +
       "transition:background-color .12s ease-out,color .12s ease-out}" +
@@ -358,6 +363,9 @@
       /* 三档状态色刻意不走客户端变量（v58.1）：terminal-bright-* 是语法高亮色板，
        * 绿档在条面小字号/细进度条上发白（用户实测）；改用高对比自调档，
        * 浅色加深版在 .zu-light 组。 */
+      /*zm-band-css-begin：TPS 色档区锚点（specs/mobile-userscript-build.md）——构建脚本提取
+       * 单类 color 规则展开为手机端 zm-band-/zm-tone- 双份注入回退条（::before/@supports
+       * 渐变等复杂规则丢弃，回退条保持基础色）。 */
       ".ok{color:#3ecf8e}.warm{color:#f5b944}.hot{color:#ff6b57}" +
       /* v127 速度十档新增蓝紫系（阈值唯一事实源 = JS TPS_BANDS，CSS 只按类给色）。
        * ≥2000 Ultra：静态蓝紫渐变（background-clip:text 染字），@supports 外回退
@@ -371,6 +379,7 @@
       "-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}" +
       ".zu-ultra::before{background:linear-gradient(100deg,#60a5fa 0%,#a78bfa 50%,#c084fc 100%);" +
       "-webkit-background-clip:text;background-clip:text}}" +
+      /*zm-band-css-end */
       /* 超限=亮红呼吸闪烁（v38 定性"亮红闪烁优先于一切档位"，v54 落成动画） */
       "@keyframes zuexc{0%,100%{opacity:1}50%{opacity:.4}}" +
       ".exc{color:var(--color-destructive,#ff2d55);text-shadow:0 0 8px rgba(255,45,85,.5);animation:zuexc 1.1s ease-in-out infinite}" +
@@ -394,6 +403,7 @@
       ".eb{background:rgba(255,107,87,.14);background:color-mix(in srgb,var(--color-destructive,#ff6b57) 14%,transparent);" +
       "color:var(--color-destructive,#ff8a73);border-radius:999px;padding:0 6px;line-height:16px;font-weight:600;display:inline-flex;align-items:center;gap:2px}" +
       ".eb .ico{color:inherit}" +
+      /*zm-cell-css-end */
       /* v92 原生上下文按钮增强（原状态条「上下文容量」格 v93 删除，档位口径由本处承载）：四档色由 data-zusage-band 驱动 —— React
        * 不清理非 props 的手动属性；!important 压原生 text-success/text-warning/
        * text-foreground-subtle 变调；静态几何（r/描边/圆帽/透明度）用 CSS 覆盖
@@ -1501,12 +1511,14 @@
       ".tip.zu-light{box-shadow:0 10px 28px rgba(15,23,42,.16),0 2px 6px rgba(15,23,42,.08)}" +
       ".zusage-exc.zu-light{box-shadow:0 12px 32px rgba(15,23,42,.14),0 4px 18px rgba(220,38,38,.1)}" +
       ".zu-light .exc{text-shadow:none}" +
+      /*zm-band-css-light-begin：浅色色档锚点（specs/mobile-userscript-build.md），改写为 .zm-light 前缀注入 */
       ".zu-light .ok{color:#0f9d6c}.zu-light .warm{color:#b6791a}.zu-light .hot{color:#d8482f}" +
       /* v127 速度新七档浅色深化值（规格初稿；150 以下沿用上面既有三档实测值不动）。
        * Ultra 浅色渐变同名覆盖（特异性更高），@supports 外回退纯紫 #6746d2。 */
       ".zu-light .zu-teal{color:#087d74}.zu-light .zu-sky{color:#0875a8}.zu-light .zu-azure{color:#405fd0}" +
       ".zu-light .zu-violet{color:#6249c6}.zu-light .zu-purple{color:#8042bd}.zu-light .zu-magenta{color:#9638a8}" +
       ".zu-light .zu-ultra{color:#6746d2}" +
+      /*zm-band-css-light-end */
       /* v232 柱体 Ultra 浅色渐变：特异性 (0,3,0) 压过上面 (0,2,0) 的 clip:text 组——
        * 柱体是无文字的盒子，被 text 裁剪会整根隐形（图例圆点同款教训）。 */
       ".zu-light .zu-sc-bar.zu-ultra{background:linear-gradient(100deg,#3156cb 0%,#6746d2 50%,#9139bf 100%);-webkit-background-clip:border-box;background-clip:border-box}" +
@@ -1707,6 +1719,8 @@
       '<label><input type="radio" class="zu-just-choice" name="zu-just-' + slot + '" value="start"' + (state.barJust === "start" ? " checked" : "") + '><span>' + L("居左对齐", "Align left") + '</span></label>' +
       '<label><input type="radio" class="zu-just-choice" name="zu-just-' + slot + '" value="end"' + (state.barJust === "end" ? " checked" : "") + '><span>' + L("居右对齐", "Align right") + '</span></label></div>' +
       '<div class="pnote">' + L("仅默认样式生效：均分为格铺满整条，居左/居右时格靠一侧聚拢，⚙ 齿轮仍在最右。", "Applies to the Default style only: space between spreads the cells across the bar; left/right packs them to one side — the gear stays at the far right.") + '</div></div>' +
+      /*zm-show-rows-begin：显示项行锚点（specs/mobile-userscript-build.md）——构建脚本提取
+       * settingRow 的 data-k 与中文标题/描述，按油猴声明键集过滤后生成回退条面板行。 */
       settingRow('<input type="checkbox" data-k="turn">', L("本轮", "Current turn"), L("tokens、请求次数、耗时与首字延迟", "Tokens, requests, duration and first-token latency")) +
       settingRow('<input type="checkbox" data-k="win">', L("会话累计", "Session total"), L("当前会话的 tokens、轮数与请求次数", "Tokens, turns and requests in this session")) +
       settingRow('<input type="checkbox" data-k="proj">', L("项目累计", "Project total"), L("本项目所有会话的消耗（含子代理），按目录归属", "Usage across all sessions in this project (sub-agents incl.), grouped by directory")) +
@@ -1716,6 +1730,7 @@
       settingRow('<input type="checkbox" data-k="subRate">', L("子代理行内速率", "Sub-agent row rate"), L("在会话流的 Agent 工具行内实时显示各子代理 tok/s（运行期估算，完成后切换为真实平均速率；悬停看明细）。默认开启。", "Shows each sub-agent's live tok/s inside its Agent tool row (running estimate, actual average after completion; hover for details). On by default.")) +
       settingRow('<input type="checkbox" data-k="wfChip">', L("工作流卡汇总", "Workflow card summary"), L("在会话流的工作流卡片上显示 token 合计与聚合速率（完成态，每次执行结算后更新；悬停看各执行者明细）。默认开启。", "Shows token total and aggregate rate on workflow cards in the conversation (settled data, refreshed as each ask completes; hover for per-actor details). On by default.")) +
       settingRow('<input type="checkbox" data-k="git">', L("Git 状态", "Git status"), L("工具行显示当前分支、↑领先 ↓落后与未提交改动（+插入行 -删除行 ?未跟踪）；优先挂在「电脑操作」右侧，缺失时留在左侧操作区末尾；仅本地仓库", "Branch, ↑ahead ↓behind and uncommitted changes (+ins -del ?untracked) in the toolbar; beside Computer Use, or at the end of the left action group when unavailable; local repositories only")) +
+      /*zm-show-rows-end */
       '</div></section>' +
       '<section class="zu-settings-section" data-sec="general"' + secOpen("general") + '><div class="cap">' + L("通用", "General") + '</div><div class="zu-settings-card">' +
       settingRow('<input type="text" class="zu-ctxov" inputmode="numeric" aria-label="' + L("上下文窗口", "Context window") + '" placeholder="' + L("自动（按模型）", "Auto (model)") + '">', L("上下文窗口", "Context window"), L("留空自动识别，优先使用客户端数值；手动值以 token 为单位，按整数读取", "Leave empty for automatic detection, preferring the client value; manual values are read as integer tokens")) +

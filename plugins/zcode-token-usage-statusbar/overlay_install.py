@@ -48,6 +48,8 @@ from runtime_lock import file_lock, fixed_drives, real_home as _rt_real_home, su
 # test_plugin_package 按此不变量守护）
 RUNTIME_FILES = [
     "inject-main.cjs",
+    "mobile-relay.cjs",
+    "mobile_relay_patch.py",
     "overlay.js",
     "zusage.py",
     "patch_install.py",
@@ -697,6 +699,46 @@ def _install_overlay(runtime, pi):
     from restart_notice import record_restart
     return pi.install(before_publish=lambda installation: record_restart(
         runtime, {"state": "pending-install", "installation": installation}))
+
+
+def ensure_mobile_relay_stash(pi, quiet_monitor=False):
+    """安装/更新后补 mobile relay stash + uplink 钩子注入（mobile_relay_patch.
+    ensure_deployed 的 overlay_install 包装）：与 renderer bridge 同生命周期——客户端
+    升级重写 asar 会把注入一起抹掉，这里幂等补打。旁路增强：任何失败只进诊断，不影响
+    安装主流程，不给用户提示。
+    v346 起与桥同款待替换链：就地替换被拒（Windows 客户端运行中持有 asar）时把已
+    构建的完整包转存为待替换文件（patch_install 的 TMP+monitor 链，客户端退出后自动
+    收尾）。此前「直接丢弃让下轮补装」的设计有个死结——hooks 补装周期恒在客户端运行
+    时执行，ensure_deployed 永远撞锁，「下轮」永远轮不到（uplink 上线后 stash 不再是
+    纯旁路：缺钩子 + 已广播 zuUpCap 会诱使 0.5.3+ 油猴上行打挂会话，热修层只是运行期
+    兜底，持久层必须落装）。用户 remove 待收尾时让位。"""
+    try:
+        from mobile_relay_patch import ensure_deployed as ensure_stash
+        result = ensure_stash(pi.ASAR)
+    except Exception as e:
+        print(f"[zusage-plugin] mobile relay stash ensure failed（已忽略）：{e}", file=sys.stderr)
+        return {"status": "skipped-error", "detail": str(e)}
+    if result.get("status") == "replace-failed":
+        stage = Path(result.get("stage") or "")
+        try:
+            existing = pi.pending_operation()
+        except Exception:
+            existing = None
+        if existing == "remove":
+            try: stage.unlink(missing_ok=True)
+            except OSError: pass
+            return {"status": "skipped-error", "detail": "已有待收尾的卸载操作，stash 补装让位"}
+        # v346 与桥同款：转存待替换链（TMP+monitor），客户端退出后自动收尾。
+        try:
+            pi.publish_external_pending(stage, source=result.get("source"), operation="install")
+        except Exception as e:
+            try: stage.unlink(missing_ok=True)
+            except OSError: pass
+            print(f"[zusage-plugin] mobile relay stash pending publish failed（已忽略）：{e}", file=sys.stderr)
+            return {"status": "skipped-error", "version": result.get("version"),
+                    "detail": f"pending publish failed: {e}"}
+        return {"status": "pending", "detail": str(result.get("detail") or "replace refused")}
+    return result
 
 
 def ensure_renderer_bridge(pi, quiet_monitor=False):

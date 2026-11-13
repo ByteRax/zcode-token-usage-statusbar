@@ -898,4 +898,6 @@
     refreshWants();
     return api;
   }
-})();
+/* boot 闭包收尾移交 13-mobile-chips（v346 契约）：产物末尾的 `})();` 必须属于
+ * boot 闭包——overlay-rate/lifecycle 测试在此注入内窥代码，需要访问闭包内 state
+ * 与 renderAll。追加 13 分片时删掉本文件的收尾，由 13 分片尾统一关闭。 */

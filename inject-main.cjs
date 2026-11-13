@@ -809,7 +809,12 @@ function watchDb() {
     dbWatcher = fs.watch(dbDir(), (ev, f) => {
       if (f && !/db\.sqlite/.test(f)) return;
       clearTimeout(debounceTimer);
-      debounceTimer = setTimeout(maybeSpawn, 300);
+      debounceTimer = setTimeout(() => {
+        maybeSpawn();
+        /* v348：手机远控与桌面同款触发模型——DB 写入（每次请求落库）即对账推送，
+         * 不再由 mobile-relay 自己 1.5s 轮询；查询节流在其内部（MIN_PUSH_INTERVAL_MS）。 */
+        try { if (mobileRelay) mobileRelay.pump(); } catch (e) { }
+      }, 300);
     });
     dbWatcher.on("error", () => {
       LOG("db watcher error, re-arm in 5s");
@@ -932,6 +937,54 @@ function initEnginePatcher() {
   }
 }
 initEnginePatcher();
+/* v331：mobile-relay（手机远控中继，热换模块 #7）。stash 由 mobile_relay_patch.py
+ * 注入主 bundle；本模块只消费——加载失败只少推送，不拖垮主链。
+ * 渲染端 chips 由 overlay 13-mobile-chips 写 window.__zusageMobileChips，
+ * 泵 readWants 读回后 push；config mobile_relay.enabled === false 显式关闭。 */
+let mobileRelay = null;
+function initMobileRelay() {
+  try {
+    const { createMobileRelay } = require("./mobile-relay.cjs");
+    if (mobileRelay) { try { mobileRelay.dispose(); } catch (e) { } }
+    /* 限频与主泵同源：同一个 config.activity_min_ms（缺省 1500ms）。传 getter 而不是
+     * 快照值——readCfgCached 自带 mtime 缓存，用户在 config.json 改值后下一拍即生效，
+     * 无需重启或热换模块。 */
+    mobileRelay = createMobileRelay({
+      log: (...a) => LOG("[mobile-relay]", ...a),
+      getMinIntervalMs: () => readCfgCached().activity_min_ms | 0 || 1500,
+    });
+    return mobileRelay;
+  } catch (e) {
+    mobileRelay = null;
+    LOG("mobile relay unavailable:", e.message);
+    return null;
+  }
+}
+initMobileRelay();
+/* 手机 chips 独立泵（v343）：主泵只在「桌面请求/DB 水位变化」时运行，远控页在手机上
+ * 切换会话通常不产生 DB 写入，芯片更新最坏要等 30s 兜底心跳——这是「远控端更新慢」
+ * 的主因。这里每 1.5s 只读一次渲染端 __zusageMobileChips（单窗一次 executeJavaScript，
+ * 不查库、不碰主泵状态），有 payload 就交给 mobile-relay（其内部 1.5s 刷新 + 内容去重）。 */
+const MOBILE_PUMP_JS = 'JSON.stringify(window.__zusageMobileChips||null)';
+const MOBILE_PUMP_MS = 1500;
+setInterval(() => {
+  try {
+    if (shuttingDown || !mobileRelay) return;
+    const rcfg = readCfgCached().mobile_relay;
+    if (rcfg && rcfg.enabled === false) return;
+    const wc = webContents.getAllWebContents().find((w) => isMainWindowState(w) && !w.isDestroyed());
+    if (!wc) return;
+    Promise.resolve().then(() => wc.executeJavaScript(MOBILE_PUMP_JS, true))
+      .then((v) => {
+        if (shuttingDown || !mobileRelay) return;
+        let m = null;
+        try { m = JSON.parse(v || "null"); } catch (e) { }
+        if (m && m.zm === 1) { try { mobileRelay.push(m); } catch (e) { } }
+      })
+      .catch(() => { });
+  } catch (e) { }
+}, MOBILE_PUMP_MS);
+
 
 /* ---------- v229 宿主路径解析（额度 / 模型拉取共用，issue #205）：主进程 env 没有
  * ZCODE_*（宿主只注入 CLI 子进程），数据目录迁移（setting.json dataBaseDir）后
