@@ -24,12 +24,14 @@ class Element {
   }
 }
 
-function setup() {
+function setup({ outer = false } = {}) {
   const clock = { t: 1000000 };   // 假时钟：宽限同时看拍数与墙钟，每次 scan 默认前进 500ms（与真实扫描节奏同）
   class FakeDate extends Date { static now() { return clock.t; } }
   const box = new Element('section'); box.tid = 'turn';
+  const wrap = outer ? new Element('div') : null;   // 外层 [data-v4-turn-unit] 包着内层 section，带同一个 data-turn-id
+  if (wrap) { wrap.tid = 'turn'; wrap.appendChild(box); }
   const document = { body: {}, createElement: tag => new Element(tag), querySelectorAll: selector =>
-    selector === 'section[data-turn-id]' ? [box] : [] };
+    selector === 'section[data-turn-id]' ? [box] : (selector === '[data-v4-turn-unit][data-turn-id]' && wrap ? [wrap] : []) };
   const c = vm.createContext({ window: {}, document, instances: [], MY_GEN: 3,
     state: { rateLine: true }, TURN_STATS: {}, FATAL: {}, stale: () => false, cnUnits: () => true,
     capPut: (obj, key, value) => { obj[key] = value; }, zuHasMeaningfulOutput: s => !!s.outputTokens,
@@ -38,7 +40,7 @@ function setup() {
   vm.runInContext(source.slice(source.indexOf('  var richTextCache ='), source.indexOf('  function zuDiagStats(')) +
     '\nfunction zuDiagStats() { return null; }', c);
   const inst = { pid: 'main', sid: 'sid', scope: { sid: 'sid', identity: '', workspacePath: '/workspace', remoteSessionId: '' },
-    detRoot: () => ({ contains: node => node === box }),
+    detRoot: () => ({ contains: node => node === box || node === wrap }),
     statsFor: () => ({ complete: true, observedLive: true, outputTokens: 1, text: 'stats' }),
     getSid() { return this.sid; }, getScope() { return this.scope; }, isCurrentTurn: () => true };
   c.instances.push(inst);
@@ -155,7 +157,7 @@ test('detRoot 取不到/同根歧义（owner 缺席）同样宽限 2 拍，第 3
 test('令牌取不到的原因只统计带行 box，计数精确', () => {
   const { c, inst, line, scan } = setup();
   scan();
-  assert.deepEqual({ ...c.scanDeterministicLines.nulls }, { owner: 0, sid: 0, scope: 0, grace: 0, removed: 0 });
+  assert.deepEqual({ ...c.scanDeterministicLines.nulls, since: 0 }, { owner: 0, sid: 0, scope: 0, grace: 0, removed: 0, swap: 0, since: 0 });
   inst.sid = '';
   scan(); scan();   // sid×2，均宽限
   inst.sid = 'sid'; scan();   // 恢复
@@ -165,12 +167,12 @@ test('令牌取不到的原因只统计带行 box，计数精确', () => {
   scan();   // owner 第 3 拍：撤行
   assert.equal(line(), null);
   scan();   // 已无行：不再计数
-  assert.deepEqual({ ...c.scanDeterministicLines.nulls }, { owner: 3, sid: 2, scope: 0, grace: 4, removed: 1 });
+  assert.deepEqual({ ...c.scanDeterministicLines.nulls, since: 0 }, { owner: 3, sid: 2, scope: 0, grace: 4, removed: 1, swap: 0, since: 0 });
   inst.detRoot = () => ({ contains: () => true });
   scan();   // 重建
   inst.scope = { ...inst.scope, sid: 'mismatch' };
   scan();
-  assert.deepEqual({ ...c.scanDeterministicLines.nulls }, { owner: 3, sid: 2, scope: 1, grace: 4, removed: 2 });
+  assert.deepEqual({ ...c.scanDeterministicLines.nulls, since: 0 }, { owner: 3, sid: 2, scope: 1, grace: 4, removed: 2, swap: 0, since: 0 });
 });
 
 test('FATAL.det.nullOwner 随 diag 输出', () => {
@@ -182,4 +184,50 @@ test('FATAL.det.nullOwner 随 diag 输出', () => {
   scan();
   assert.equal(c.FATAL.det.nullOwner.sid, 2);
   assert.equal(c.FATAL.det.nullOwner.grace, 2);
+});
+
+test('每拍间隔远超 1s（后台节流）时仍须连续 3 拍才撤，拍数门独立生效', () => {
+  const { inst, line, scan } = setup();
+  scan();
+  const first = line();
+  inst.sid = '';
+  scan(60000); scan(60000);
+  assert.equal(line(), first);
+  scan(60000);
+  assert.equal(line(), null);
+});
+
+test('外层 turn-unit 与内层 section 同命中一行：每拍只计一次，诊断不翻倍', () => {
+  const { c, inst, line, scan } = setup({ outer: true });
+  scan();
+  const first = line();
+  assert.ok(first);
+  inst.detRoot = () => null;   // owner 缺席：detSeenKey 为 null，内外两个 box 都会被扫到
+  scan(); scan();
+  assert.equal(line(), first, '前 2 拍保留（拍数门不被双 box 提前耗尽）');
+  assert.equal(c.scanDeterministicLines.nulls.owner, 2);
+  assert.equal(c.scanDeterministicLines.nulls.grace, 2);
+  scan();
+  assert.equal(line(), null);
+  assert.equal(c.scanDeterministicLines.nulls.removed, 1);
+});
+
+test('系统时钟回拨视为宽限到期，行不会无限滞留', () => {
+  const { inst, line, scan, clock } = setup();
+  scan();
+  inst.sid = '';
+  scan(); scan();
+  clock.t -= 3600000;   // 回拨 1h
+  scan();
+  assert.equal(line(), null);
+});
+
+test('removed 只计空令牌撤行，非空令牌换代撤旧计入 swap', () => {
+  const { c, inst, scan } = setup();
+  scan();
+  inst.sid = 'other'; inst.scope = { ...inst.scope, sid: 'other' };
+  scan();
+  const n = c.scanDeterministicLines.nulls;
+  assert.equal(n.removed, 0);
+  assert.equal(n.swap, 1);
 });
