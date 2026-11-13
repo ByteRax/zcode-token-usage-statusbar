@@ -115,6 +115,29 @@ function makeFakeElement(tag = 'div') {
       else children.unshift(child);
       return child;
     },
+    /* v347 附加时长 span 的判位（nextElementSibling）与插入（insertAdjacentElement）走真实兄弟序 */
+    get nextElementSibling() {
+      const p = el.parentElement;
+      if (!p) return null;
+      const idx = p.children.indexOf(el);
+      if (idx < 0) return null;
+      return p.children[idx + 1] || null;
+    },
+    insertAdjacentElement(pos, node) {
+      if (!node) return null;
+      const p = el.parentElement;
+      if (!p) return null;
+      if (node.parentElement) {
+        const oldIdx = node.parentElement.children.indexOf(node);
+        if (oldIdx >= 0) node.parentElement.children.splice(oldIdx, 1);
+      }
+      const idx = p.children.indexOf(el);
+      if (idx >= 0) p.children.splice(idx + 1, 0, node);
+      else p.children.push(node);
+      node.parentElement = p;
+      node.isConnected = true;
+      return node;
+    },
     remove() {
       el.isConnected = false;
       if (el.parentElement) {
@@ -1321,4 +1344,199 @@ test('关闭态的整文档还原不碰从未挂载过的 loading 行（新旧�
     assert.equal(row.chatRow.hasAttribute('data-zusage-rotator-slot'), false);
     assert.equal(row.label.hasAttribute('data-zu-host-label'), false);
   });
+});
+
+/* ---------- v347 附加工作时长与悬停提示（specs/status-rotator-work-duration.md；
+ * 性能预算 specs/perf-lag-reduction.md 规则 17）---------- */
+
+test('v347 defaults: appendWorkDuration defaults on; explicit false survives; dirty value falls back', () => {
+  const fresh = makeRotatorEnv('zh');
+  assert.equal(vm.runInContext('rotatorCfg.appendWorkDuration', fresh.ctx), true, 'defaults on (2026-11-14 用户规格)');
+  const optedOut = makeRotatorEnv('zh', { appendWorkDuration: false });
+  assert.equal(vm.runInContext('rotatorCfg.appendWorkDuration', optedOut.ctx), false, 'persisted explicit opt-out survives');
+  const dirty = makeRotatorEnv('zh', { appendWorkDuration: 'yes' });
+  assert.equal(vm.runInContext('rotatorCfg.appendWorkDuration', dirty.ctx), true, 'non-boolean falls back to the default');
+});
+
+test('v347 formatWorkDuration mirrors the host formatConversationWorkDuration across all buckets', () => {
+  const { ctx } = makeRotatorEnv('zh');
+  const fmt = (lang, ms) => vm.runInContext(`formatWorkDuration(${JSON.stringify(lang)}, ${ms})`, ctx);
+  assert.equal(fmt('zh', 125000), '2 分 5 秒');
+  assert.equal(fmt('zh', 42000), '42 秒');
+  assert.equal(fmt('zh', 3780000), '1 时 3 分');
+  assert.equal(fmt('zh', 3723000), '1 时 2 分', 'three non-zero units are capped at the first two (review V2)');
+  assert.equal(fmt('zh', 60000), '1 分', 'seconds=0 with a higher unit is not listed');
+  assert.equal(fmt('zh', 93600000), '1 天 2 时', 'first two units win across the day boundary');
+  assert.equal(fmt('zh', 500), '1 秒', 'sub-second rounds up to the 1s floor');
+  assert.equal(fmt('zh', 1500), '2 秒', 'rounds up past the half-second boundary (review V1)');
+  assert.equal(fmt('en', 400), '1s', 'sub-second rounds up to the 1s floor (en)');
+  assert.equal(fmt('en', 125000), '2m 5s');
+  assert.equal(fmt('en', 3780000), '1h 3m');
+  assert.equal(fmt('en', 3723000), '1h 2m', 'three non-zero units are capped at the first two (en)');
+  assert.equal(fmt('en', 93600000), '1d 2h');
+});
+
+test('v347 mount: duration span after the label, tooltip independent of the toggle, restore cleans both', () => {
+  const { window, body } = makeRotatorEnv('zh');
+  const api = window.__zusageStatusRotator;
+  const { chatRow, label } = buildChatRow(body, '工作中...');
+
+  api.setConfig({ enabled: true, typeSpeedMs: 0 });
+  const span = label.nextElementSibling;
+  assert.ok(span && span.classList.contains('zu-rotator-elapsed'), 'duration span inserted right after the label');
+  assert.ok(/^工作中 /.test(span.textContent), `span shows the host-format duration, got "${span.textContent}"`);
+  assert.equal(span.textContent, chatRow.getAttribute('data-tip'), 'tooltip shares the same text as the span');
+  assert.ok(chatRow.classList.contains('zu-rot-livetip'), 'tooltip class on the row (v349: outside the label filter scope)');
+  assert.equal(label.getAttribute('data-tip'), null, 'no legacy tip left on the label');
+  assert.equal(label.getAttribute('title'), null, 'no native title on the label');
+
+  // host 模式：span 摘除（宿主耗时格本就显示），tooltip 仍在（独立于开关①）
+  api.setConfig({ labelSource: 'host' });
+  assert.equal(chatRow.querySelector('.zu-rotator-elapsed'), null, 'span removed in host mode');
+  assert.ok(chatRow.hasAttribute('data-tip'), 'tooltip stays in host mode');
+
+  // 关闭还原：span 与 tooltip 一并摘除
+  api.setConfig({ enabled: false });
+  assert.equal(chatRow.querySelector('.zu-rotator-elapsed'), null, 'span removed on restore');
+  assert.equal(chatRow.hasAttribute('data-tip'), false, 'row data-tip cleaned on restore');
+  assert.equal(chatRow.classList.contains('zu-rot-livetip'), false, 'tooltip class cleaned on restore');
+  assert.equal(label.hasAttribute('data-tip'), false, 'label legacy tip stays clean');
+});
+
+test('v347 mount works on the 3.18.0 loading row structure (label renamed; host-client parity)', () => {
+  const { window, body } = makeRotatorEnv('zh');
+  const api = window.__zusageStatusRotator;
+  const { chatRow, label } = buildChatRow3180(body, '工作中');
+
+  api.setConfig({ enabled: true, typeSpeedMs: 0 });
+  const span = label.nextElementSibling;
+  assert.ok(span && span.classList.contains('zu-rotator-elapsed'), 'duration span inserted after the renamed label');
+  assert.ok((chatRow.getAttribute('data-tip') || '').startsWith('工作中'), 'tooltip carried by the row (v349)');
+  assert.ok(chatRow.classList.contains('zu-rot-livetip'), 'tooltip class on the row');
+  assert.equal(label.getAttribute('data-tip'), null, 'no legacy tip on the renamed label');
+
+  api.setConfig({ appendWorkDuration: false });
+  assert.equal(chatRow.querySelector('.zu-rotator-elapsed'), null, 'span removed on toggle off (new structure)');
+  assert.ok(chatRow.hasAttribute('data-tip'), 'tooltip independent of the toggle (new structure)');
+
+  api.setConfig({ enabled: false });
+  assert.equal(chatRow.querySelector('.zu-rotator-elapsed'), null, 'span removed on restore (new structure)');
+  assert.equal(chatRow.hasAttribute('data-tip'), false, 'row tip cleaned on restore (new structure)');
+  assert.equal(chatRow.classList.contains('zu-rot-livetip'), false, 'tooltip class cleaned (new structure)');
+  assert.equal(label.textContent, '工作中', 'host text restored on the renamed label');
+});
+
+test('v347 perf rule 17: same-second ticks write nothing; second rollover writes once; no added document queries', () => {
+  const env = makeRotatorEnv('zh');
+  const { ctx, window, body, timers, advanceNow } = env;
+  const doc = env.document;
+  const api = window.__zusageStatusRotator;
+  const { chatRow, label } = buildChatRow(body, '工作中...');
+
+  let qsaCalls = 0;
+  const rawQsa = doc.querySelectorAll.bind(doc);
+  doc.querySelectorAll = sel => { qsaCalls++; return rawQsa(sel); };
+
+  api.setConfig({ enabled: true, typeSpeedMs: 0, whaleTail: false });
+  const tick = [...timers.values()].filter(t => t.interval && t.ms === 65).pop().fn;
+  const span = label.nextElementSibling;
+  assert.ok(span && span.classList.contains('zu-rotator-elapsed'), 'span mounted before the gating measurements');
+
+  // 写计数探针：textContent 用 defineProperty 覆盖夹具的 get/set 属性后计数
+  function spyWrites(el) {
+    const counts = { text: 0, attr: 0, cls: 0 };
+    const rawSetAttr = el.setAttribute.bind(el);
+    el.setAttribute = (k, v) => { counts.attr++; rawSetAttr(k, v); };
+    const cls = el.classList;
+    const rawAdd = cls.add.bind(cls);
+    const rawRemove = cls.remove.bind(cls);
+    cls.add = (...a) => { counts.cls++; return rawAdd(...a); };
+    cls.remove = (...a) => { counts.cls++; return rawRemove(...a); };
+    let tv = el.textContent;
+    Object.defineProperty(el, 'textContent', {
+      configurable: true,
+      get: () => tv,
+      set: v => { counts.text++; tv = String(v == null ? '' : v); }
+    });
+    return counts;
+  }
+  const spanW = spyWrites(span);
+  const labelW = spyWrites(label);
+  // data-tip 专项计数：行上另有既有代码每拍无条件写的 slot 标记（setAttribute 同值 DOM no-op），
+  // 整表 attr 计数会把非本功能写入混进来
+  let tipWrites = 0;
+  const rawRowSetAttr = chatRow.setAttribute.bind(chatRow);
+  chatRow.setAttribute = (k, v) => { if (k === 'data-tip') tipWrites++; return rawRowSetAttr(k, v); };
+
+  advanceNow(70); tick();   // 同一秒内（elapsed ~140ms < 1s）
+  advanceNow(70); tick();
+  assert.deepEqual(spanW, { text: 0, attr: 0, cls: 0 }, 'same-second ticks write nothing to the span');
+  assert.equal(labelW.text, 0, 'same-second ticks write nothing to the label text (static phrase)');
+  assert.equal(labelW.attr, 0, 'same-second ticks write nothing to label attributes');
+  assert.equal(tipWrites, 0, 'same-second ticks write nothing to the row tooltip');
+  const qsaBefore = qsaCalls;
+  advanceNow(70); tick();
+  assert.equal(qsaCalls - qsaBefore, 1, 'one whole-document rows scan per tick — the duration span adds none');
+
+  advanceNow(1500); tick();   // 秒跨变（宿主 round 进位：elapsed ~1.71s → 「2 秒」）→ 恰各一次写
+  assert.equal(spanW.text, 1, 'second rollover writes the span once');
+  assert.equal(tipWrites, 1, 'second rollover writes the row tooltip once');
+  // 注：labelW.cls 不在此断言——既有代码每拍无条件 classList.add("zu-rotator-active-label")
+  // （对已存在类是 DOM no-op，非本功能写入）；本功能的类操作门控由源码契约测试锁定。
+
+  api.setConfig({ appendWorkDuration: false });
+  assert.equal(chatRow.querySelector('.zu-rotator-elapsed'), null, 'span removed when the toggle is off');
+  assert.ok(chatRow.hasAttribute('data-tip'), 'tooltip independent of the toggle');
+});
+
+test('v347 panel: append-duration checkbox rendered, synced and saved through the change chain', () => {
+  const env = makeRotatorEnv('zh');
+  const { ctx, window, storage } = env;
+  const html = vm.runInContext('zuRotatorSectionHtml(true)', ctx);
+  assert.ok(html.indexOf('zu-rot-append-duration') > 0, 'checkbox present in the rotator section');
+  assert.ok(html.indexOf('追加工作时长') > 0, 'zh label present');
+  assert.equal(html.indexOf(' title='), -1, 'no native title attributes');
+
+  const panel = makeFakeElement('div');
+  const stage = makeFakeElement('div'); stage.className = 'zu-rot-prev-stage';
+  panel.appendChild(stage);
+  const cb = makeFakeElement('input');
+  cb.className = 'zu-rot-append-duration';
+  panel.appendChild(cb);
+  window.__adPanel = panel;
+  vm.runInContext('zuRotatorSyncPanel(window.__adPanel)', ctx);
+  assert.equal(cb.checked, true, 'syncPanel checks the box per the default-on config');
+
+  cb.checked = false;
+  window.__adCb = cb;
+  assert.equal(vm.runInContext('zuRotatorPanelChange({ target: window.__adCb }, window.__adPanel)', ctx), true, 'change handled');
+  window.__adCb = null;
+  assert.equal(vm.runInContext('rotatorCfg.appendWorkDuration', ctx), false, 'config updated');
+  const saved = JSON.parse(storage['zusage3.rotator2'] || '{}');
+  assert.equal(saved.appendWorkDuration, false, 'persisted through saveRotatorConfig');
+  window.__adPanel = null;
+});
+
+test('v347 source contracts: zero queries/listeners/timers in the surface sync, static CSS bubble, folded restore selector', () => {
+  const { ctx } = makeRotatorEnv('zh');
+  const fnSrc = rotatorSlice.match(/function syncWorkDurationSurface\([\s\S]*?\n  \}/);
+  assert.ok(fnSrc, 'syncWorkDurationSurface present in the shard');
+  assert.ok(!/querySelector/.test(fnSrc[0]), 'span locating is nextElementSibling-only (zero document queries)');
+  assert.ok(!/addEventListener|setInterval|setTimeout|MutationObserver/.test(fnSrc[0]), 'zero listeners/timers/observers');
+  assert.ok(/querySelectorAll\("\.zu-whale-tail-wrap,[^"]*\.zu-rotator-elapsed"\)/.test(rotatorSlice), 'span removal folded into the existing restore selector');
+  assert.ok(!/label\.setAttribute\("data-tip"/.test(rotatorSlice), 'tip never written back onto the gradient label (v349 filter scope)');
+  assert.ok(/row\.setAttribute\("data-tip"/.test(fnSrc[0]) && /row\.getAttribute\("data-tip"\) !== text/.test(fnSrc[0]), 'tooltip lives on the row, attr compare-gated');
+  assert.ok(/contains\("zu-rot-livetip"\)\) row\.classList\.add/.test(fnSrc[0]) && /contains\("zu-rot-livetip"\)\) row\.classList\.remove/.test(fnSrc[0]), 'tooltip class ops are contains-gated (no unconditional class writes)');
+  assert.equal((rotatorSlice.match(/setInterval\(/g) || []).length, 2, 'no new intervals (rotator tick + preview tick only)');
+
+  const css = vm.runInContext('rotatorStyleEl.textContent', ctx);
+  assert.ok(css.indexOf('.zu-rot-livetip{position:relative}') >= 0, 'tooltip anchor rule present');
+  assert.ok(css.indexOf('.zu-rot-livetip:hover::after{content:attr(data-tip)') >= 0, 'CSS-only tooltip rule present');
+  assert.ok(/\.zu-rot-livetip:hover::after\{[^}]*pointer-events:none/.test(css), 'pseudo-element never traps the pointer');
+  assert.ok(!/\.zu-rot-livetip[^{]*\{[^}]*animation/.test(css), 'no animation on the bubble (rule 17 ⑤)');
+  /* v348 用户实报两连：文字隐形=text-fill-color 透明继承；样式=宿主原生 TooltipContent 视格（无阴影） */
+  assert.ok(/\.zu-rot-livetip:hover::after\{[^}]*-webkit-text-fill-color:var\(--color-tooltip-foreground/.test(css), 'text-fill-color reset defeats the gradient-label transparent inheritance');
+  assert.ok(/\.zu-rot-livetip:hover::after\{[^}]*background:var\(--color-tooltip,/.test(css), 'system tooltip background (bg-tooltip)');
+  assert.ok(/\.zu-rot-livetip:hover::after\{[^}]*border:1px solid var\(--color-border,/.test(css), 'system tooltip border (border-border)');
+  assert.ok(!/\.zu-rot-livetip:hover::after\{[^}]*box-shadow/.test(css), 'no shadow on the bubble (native TooltipContent has none)');
 });
