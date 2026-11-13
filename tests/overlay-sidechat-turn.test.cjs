@@ -224,7 +224,9 @@ test('统计行随节点迁移及 SID、scope 切换撤旧，同 owner tracker �
   b.scope = { ...b.scope, workspacePath: '/other' }; current = null;
   c.scanDeterministicLines(); assert.equal(line(), null);
   current = { ...stats('scope'), sessionId: 'new' }; c.scanDeterministicLines(); assert.equal(text(), 'scope');
-  b.detRoot = () => root(); c.scanDeterministicLines(); assert.equal(line(), null);
+  b.detRoot = () => root();   // owner 丢失：已验证归属的行宽限 2 拍（issue #327），第 3 拍连续取不到才撤
+  c.scanDeterministicLines(); c.scanDeterministicLines(); assert.equal(text(), 'scope');
+  c.scanDeterministicLines(); assert.equal(line(), null);
 });
 
 test('两个无 owner 的同 tid 节点各自撤除遗留统计行', () => {

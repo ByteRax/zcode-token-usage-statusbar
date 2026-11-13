@@ -113,6 +113,13 @@
     }
     return entry.token;
   }
+  var ZU_DET_NULL_GRACE = 3;   // v345 issue #327：令牌连续取不到的拍数达此值才撤行（扫描 0.5s/拍）
+  function zuDetNullOwner(owner) {   // 令牌为空的原因计数（owner=无归属实例，sid=实例无会话，scope=scope 与 sid 不符/侧聊）
+    var n = scanDeterministicLines.nulls;
+    if (!owner || !owner.getSid) n.owner++;
+    else if (!owner.getSid()) n.sid++;
+    else n.scope++;
+  }
   function scanDeterministicLines() {
     if (stale()) return;
     try {
@@ -145,8 +152,18 @@
         var owner = detOwnerOf(box), ownerToken = detOwnerToken(owner);
         var mine = null;
         try { mine = box.querySelector("[data-zusage-deterministic]"); } catch (e) { }
+        if (!ownerToken) zuDetNullOwner(owner);
+        /* v345 issue #327：令牌瞬时取不到（getSid 空串、实例重绑、同根歧义）的单拍里，已验证归属的行
+         * 宽限 ZU_DET_NULL_GRACE-1 拍再撤——此前当拍整块 remove 且 continue 不重建，逐拍抖动即
+         * 约 0.5s 一档的消失/重现（块高归零、下方内容跳动）。宽限只给「令牌为空」：归属换成另一个
+         * 有效令牌（SID/scope 切换）仍即时撤旧；无 __zuDetOwner 的遗留行无法证明归属，不宽限。 */
+        if (mine && !ownerToken && mine.__zuDetOwner) {
+          mine.__zuDetNull = (mine.__zuDetNull || 0) + 1;
+          if (mine.__zuDetNull < ZU_DET_NULL_GRACE) { scanDeterministicLines.nulls.grace++; continue; }
+        }
         if (mine && (!ownerToken || mine.__zuDetOwner !== ownerToken)) { mine.remove(); mine = null; }
         if (!ownerToken) continue;
+        if (mine) mine.__zuDetNull = 0;
         var richKey = zuRichKey(owner, tid);
         var rec = diagTurns ? { tid: tid.slice(-8) } : null;
         if (rec) diagTurns.push(rec);
@@ -226,11 +243,13 @@
             miss: richTextDiag.miss, stale: richTextDiag.stale,
             spawn: richTextDiag.spawn, timeout: richTextDiag.timeout, pyerr: richTextDiag.pyerr },   // v343 issue #321：回推失败可观测（spawn/timeout/pyerr 需主进程同版）
           bridge: instances.map(function (inst) { return inst.bridgeInfo ? inst.bridgeInfo() : null; }),
+          nullOwner: scanDeterministicLines.nulls,   // v345 issue #327：令牌取不到的累计拍数与原因、宽限命中数
           turns: diagTurns.slice(0, 40),
         };
       }
     } catch (e) { FATAL.detErr = String((e && e.stack) || e); }
   }
+  scanDeterministicLines.nulls = { owner: 0, sid: 0, scope: 0, grace: 0 };
   function zuDiagStats(s) {
     return s ? { c: s.complete ? 1 : 0, live: s.observedLive ? 1 : 0, out: s.outputTokens, st: s.state,
       sa: s.startedAt, ea: s.endedAt, mm: s.modelMs, dm: s.durationMs,
