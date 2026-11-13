@@ -586,6 +586,286 @@
       ariaLiveState.textContent = ariaLiveState.__zuGitLive || "";
     }
 
+    /* ---------- v344 增强提示词按钮：模型 chip 左侧 ----------
+     * 锚点：模型选择触发按钮（chat-model-select-trigger；空配置「管理模型」分支同名 testid
+     * 一并覆盖）优先，缺位回退用量圆环（与额度 chip 同源锚缓存）；两者都缺不挂。
+     * 点击读当前 composer 草稿（__zcodeLexicalInputE2E——Lexical 直写 DOM 不进 EditorState，
+     * 该 E2E 桥是唯一官方写通道），经 pluginRequest("prompt-enhance") 由主进程按会话模型
+     * 凭据一次性改写后回填；回填前重读草稿比对，用户已编辑则不覆盖。相位 idle→enhancing
+     * →undo(20s 可撤销)；警示态 4s 自愈。开关 enhance_enabled（推送面 enhanceEnabled）关
+     * 闭或实例停用一律 restore；双 reapply（render 数据点 + heavy 对账点）兜回位置与相位，
+     * __zuPhase 签名幂等，busy 旋转走 aria-busy CSS 不打断。 */
+    var enhanceBtnCache = null;
+    var enhancePhase = "idle";   // idle | enhancing | undo
+    var enhanceTimer = 0;        // undo 窗口定时器
+    var enhanceWaitTimer = 0;    // 渲染端等待兜底（主进程 60s 超时 + 轮询量级余量）
+    var enhanceWarnText = "";    // 非空 = 警示态（4s 自愈）
+    var enhanceWarnTimer = 0;
+    var enhanceSettled = true;   // v344.1：true=本次请求已被消费/取消，迟到回包一律丢弃
+    var enhanceInFlightId = "";  // v344.1：在途请求的 requestId（取消动作的定位键）
+    var enhanceOriginal = "";    // undo 相位持有增强前草稿
+    var enhanceEnhanced = null;  // v344.2：undo 窗口的成立基准=我们写入的增强文本；不匹配（已发送/被编辑/被清空）即失效
+    var enhanceSid = "";         // v344.3：发起时的会话身份（instSid/pickedSid）——回填/撤销前校验，防止结果写进切走后的新会话
+    var enhanceCurSid = function () { return instSid || pickedSid || ""; };
+    var ENHANCE_ANCHOR_SEL = '[data-testid="chat-model-select-trigger"]';
+    var ENHANCE_INPUT_SEL = '[data-testid="v4-composer-input"]';
+    var ENHANCE_UNDO_MS = 20000, ENHANCE_WAIT_MS = 75000, ENHANCE_WARN_MS = 4000;
+    var ENH_SVG_STAR = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" style="flex:0 0 auto"><path transform="matrix(1 0 0 1 0.524459 0.757238)" d="M6.1838 2.2198C6.6022 1.3093 7.8641 1.2266 8.1057 2.0939L8.84 4.7335C8.992 5.2783 9.3896 5.6893 9.9289 5.8595L12.5431 6.6827C13.4014 6.9536 13.2757 8.2113 12.3517 8.5987L9.9972 9.5861L9.8361 9.6583C9.0366 10.0399 8.3731 10.7089 8.0031 11.5138L6.9377 13.8341L6.8488 13.9943C6.3971 14.7003 5.39 14.7669 5.0734 14.1115L5.0158 13.9601L4.2815 11.3205C4.1485 10.8435 3.8277 10.4679 3.3879 10.2677L3.1916 10.1935L0.5783 9.3712C-0.2801 9.1005 -0.155 7.8418 0.7688 7.4542L3.1242 6.4679C3.9412 6.1253 4.632 5.4846 5.0402 4.6983L5.1184 4.5392L6.1838 2.2198ZM6.2004 4.88C5.652 6.0736 4.6394 7.0538 3.4279 7.5616L1.5295 8.3565L3.719 9.046C4.5745 9.3157 5.2059 9.9689 5.4465 10.8331L6.0608 13.0431L6.9201 11.174C7.4685 9.9802 8.4821 9.0001 9.6935 8.4923L11.591 7.6964L9.4025 7.0069C8.547 6.7373 7.9156 6.085 7.675 5.2208L7.0598 3.0099L6.2004 4.88ZM12.7072 0.214C12.8295 -0.052 13.198 -0.0764 13.2687 0.1769L13.6193 1.4396C13.6415 1.5192 13.7005 1.5797 13.7795 1.6046L15.0285 1.9982C15.2795 2.0772 15.243 2.4445 14.9728 2.5577L13.6281 3.1212C13.5431 3.1568 13.4722 3.226 13.4338 3.3097L12.8254 4.6349C12.703 4.9009 12.3344 4.9245 12.2638 4.671L11.9123 3.4093C11.8901 3.3296 11.8319 3.2691 11.7531 3.2442L10.5031 2.8507C10.2522 2.7715 10.2888 2.4045 10.5588 2.2911L11.9035 1.7267C11.9884 1.6911 12.0593 1.6228 12.0978 1.5392L12.7072 0.214Z"/></svg>';
+    var ENH_SVG_UNDO = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex:0 0 auto"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11"/></svg>';
+    var ENH_SVG_BUSY = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-loader-circle size-4 text-foreground-subtle" aria-hidden="true"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>';
+    var ENH_SVG_WARN = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex:0 0 auto"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>';    function enhanceInputApi() {
+      var anchor = (enhanceBtnCache && enhanceBtnCache.isConnected) ? enhanceBtnCache : cardCache;
+      var input = nearestByRect(anchor || null, ENHANCE_INPUT_SEL);
+      if (!input || input.getAttribute("data-e2e-lexical-bridge") !== "ready") return null;
+      try { return input.__zcodeLexicalInputE2E || null; } catch (e) { return null; }
+    }
+    function enhanceSetPhase(p) {
+      enhancePhase = p;
+      var b = enhanceBtnCache;
+      if (b) b.__zuPhase = "";   // 强制下一拍外观同步
+      enhancePromptBtn();
+    }
+    function enhanceWarn(text) {
+      enhanceWarnText = String(text || "");
+      if (enhanceWarnTimer) { clearTimeout(enhanceWarnTimer); enhanceWarnTimer = 0; }
+      if (enhanceWarnText) {
+        enhanceWarnTimer = setTimeout(function () {
+          enhanceWarnTimer = 0;
+          if (inactive()) return;
+          enhanceWarnText = "";
+          enhanceSetPhase(enhancePhase);
+        }, ENHANCE_WARN_MS);
+      }
+      enhanceSetPhase(enhancePhase);
+    }
+    function onEnhanceClick() {
+      if (inactive()) return;
+      if (enhancePhase === "enhancing") {
+        /* v344.1 增强中再点 = 取消：置 settled 丢弃迟到回包（不再应用结果），通知主进程
+         * abort 在途请求（prompt-enhance-cancel，fire-and-forget），静默恢复初始可点击态。 */
+        enhanceSettled = true;
+        if (enhanceWaitTimer) { clearTimeout(enhanceWaitTimer); enhanceWaitTimer = 0; }
+        if (enhanceInFlightId) pluginRequest("prompt-enhance-cancel", { requestId: enhanceInFlightId });
+        enhanceInFlightId = "";   // 清身份键：R1 的迟到回包被 finish 身份门丢弃，不误入后续请求槽位
+        enhanceOriginal = "";
+        enhanceEnhanced = null;
+        enhanceSid = "";
+        enhanceSetPhase("idle");
+        return;
+      }
+      if (enhancePhase === "undo") {   // 恢复增强前草稿
+        var apiUndo = enhanceInputApi();
+        var curUndo = "";
+        try { curUndo = apiUndo ? String(apiUndo.getText() || "") : ""; } catch (e) { }
+        var sidChangedUndo = enhanceSid !== "" && enhanceCurSid() !== enhanceSid;   // v344.3：会话已切换时撤销窗口随之失效
+        /* v344.2 守卫：仅当草稿仍是我们写入的增强文本时才回写原文。消息已发送（草稿被
+         * 提交流程清空）或用户已再编辑时不恢复——把原文塞进已清空/已变更的输入框是破坏性的 */
+        if (apiUndo && enhanceOriginal && !sidChangedUndo && curUndo === enhanceEnhanced) { try { apiUndo.setText(enhanceOriginal); } catch (e) { } }
+        if (enhanceTimer) { clearTimeout(enhanceTimer); enhanceTimer = 0; }
+        enhanceOriginal = "";
+        enhanceEnhanced = null;
+        enhanceSid = "";
+        enhanceSetPhase("idle");
+        return;
+      }
+      var api = enhanceInputApi();
+      var draft = "";
+      try { draft = api ? String(api.getText() || "") : ""; } catch (e) { }
+      if (!draft.trim()) { enhanceWarn(L("先输入内容再增强", "Type a prompt to enhance first")); return; }
+      if (draft.length > 20000) { enhanceWarn(L("草稿过长（上限 20000 字符）", "Draft exceeds the 20000-character limit")); return; }   // 主进程同值预检
+      var providerId = (quotaSelection && quotaSelection.providerId) ? quotaSelection.providerId : (quotaProvider || "");
+      var modelId = (quotaSelection && quotaSelection.modelId) ? quotaSelection.modelId : (quotaModel || "");
+      if (!providerId || !modelId) { enhanceWarn(L("未识别当前模型，暂不能增强", "Current model not identified")); return; }
+      enhanceOriginal = draft;
+      enhanceSid = enhanceCurSid();   // v344.3：锚定发起会话，回填/撤销前比对
+      if (enhanceTimer) { clearTimeout(enhanceTimer); enhanceTimer = 0; }
+      if (enhanceWarnTimer) { clearTimeout(enhanceWarnTimer); enhanceWarnTimer = 0; }
+      enhanceWarnText = "";
+      enhanceSetPhase("enhancing");
+      enhanceSettled = false;
+      /* v344.1 回执身份门：只有「当前在途那笔」的回包才允许消费——取消/还原后的迟到
+       * 回包、被新请求覆盖的旧回包（相邻生成的竞态）一律在此丢弃，不再误入新请求的槽位。 */
+      var myId = "";
+      var finish = function (fn) {
+        if (enhanceSettled || inactive()) return;
+        /* 身份不匹配（R1 迟到回包落在 R2 在途之后）只丢弃本回包——enhanceSettled 闩的属主
+         * 已是 R2，误置会把 R2 的回包与 75s 兜底一起闩死（第二轮复审探针实证的回归）。 */
+        if (!myId || enhanceInFlightId !== myId) return;
+        enhanceSettled = true;
+        enhanceInFlightId = "";
+        if (enhanceWaitTimer) { clearTimeout(enhanceWaitTimer); enhanceWaitTimer = 0; }
+        fn();
+      };
+      enhanceWaitTimer = setTimeout(function () {
+        enhanceWaitTimer = 0;
+        finish(function () {
+          enhanceWarn(L("增强超时，请稍后重试", "Enhance timed out"));
+          enhanceSetPhase("idle");
+        });
+      }, ENHANCE_WAIT_MS);
+      enhanceInFlightId = "";
+      myId = pluginRequest("prompt-enhance", { providerId: providerId, modelId: modelId, text: draft }, function (res) {
+        finish(function () {
+          if (res && res.ok && typeof res.text === "string" && res.text) {
+            var apiNow = enhanceInputApi();
+            if (enhanceSid !== "" && enhanceCurSid() !== enhanceSid) {   // v344.3：会话已切换（内容比对无法区分的场景）——绝不写进新会话
+              enhanceWarn(L("会话已切换，本次结果未应用", "Session changed; the result was not applied"));
+              enhanceSetPhase("idle");
+              return;
+            }
+            var current = "";
+            try { current = apiNow ? String(apiNow.getText() || "") : ""; } catch (e) { }
+            if (!apiNow || current !== draft) {   // 回填前快照比对：用户已编辑/输入框不可用不覆盖
+              enhanceWarn(L("草稿已变化，未覆盖你的最新内容", "Draft changed; your latest edits were kept"));
+              enhanceSetPhase("idle");
+              return;
+            }
+            try { apiNow.setText(res.text); } catch (e) {
+              enhanceWarn(L("写回输入框失败", "Failed to write back"));
+              enhanceSetPhase("idle");
+              return;
+            }
+            enhanceEnhanced = res.text;   // 撤销窗基准=我们写入的增强文本（渲染端即 res.text，无二次解包）
+            enhanceSetPhase("undo");
+            enhanceTimer = setTimeout(function () {
+              enhanceTimer = 0;
+              if (inactive()) return;
+              enhanceOriginal = "";
+              enhanceEnhanced = null;
+              enhanceSid = "";
+              enhanceSetPhase("idle");
+            }, ENHANCE_UNDO_MS);
+          } else {
+            /* kind 转可读文案；snippet 是主进程脱敏后的上游错误摘录（实测智谱 500「网络错误 code 1234」
+             * 就藏在这里），截 100 字符带出，用户不用再猜 "server" 是什么 */
+            if (res && res.kind === "cancelled") { enhanceSetPhase("idle"); return; }   // 取消回包静默收口（正常路径已被身份门丢弃，此处兜 restore 摘除路径）
+            var kindMap = {
+              server: L("模型服务返回错误", "Model server error"),
+              http: L("模型服务返回错误", "Model server error"),
+              bad_request: L("请求被模型服务拒绝", "Rejected by model service"),
+              path: L("服务端点不存在", "Endpoint not found"),
+              rate: L("请求过于频繁，稍后再试", "Rate limited; try later"),
+              auth: L("凭据无效或已过期", "Credential invalid or expired"),
+              timeout: L("增强请求超时", "Enhance timed out"),
+              network: L("网络请求失败", "Network request failed"),
+              parse: L("响应解析失败", "Bad response"),
+              empty: L("模型返回为空", "Empty completion"),
+              unsupported: L("该供应商协议不受支持", "Unsupported provider protocol"),
+              provider: L("供应商配置不可用", "Provider config unavailable"),
+              unavailable: L("主进程模块未就绪，请完全重启 ZCode", "Main-process module not ready; fully restart ZCode"),
+              disabled: L("增强功能已关闭", "Prompt enhance is off"),
+              invalid_input: L("草稿长度超出范围", "Draft length out of range"),
+              invalid_model: L("当前模型不可用", "Current model unavailable"),
+            };
+            var reason = res && res.error ? String(res.error) : (res && res.kind && kindMap[res.kind]) || (res && res.kind) || "enhance failed";
+            if (res && res.snippet) {
+              var snip = String(res.snippet).replace(/\s+/g, " ");
+              if (snip) reason += " · " + (snip.length > 100 ? snip.slice(0, 100) + "…" : snip);
+            }
+            enhanceWarn(L("增强失败：", "Enhance failed: ") + reason);
+            enhanceSetPhase("idle");
+          }
+        });
+      });
+      enhanceInFlightId = myId;
+
+    }
+    function enhancePromptBtn() {
+      if (inactive() || state.enhanceEnabled === false) { restoreEnhanceBtn(); return; }
+      var btn = null;
+      try { btn = (cardCache && cardCache.isConnected) ? cardCache.querySelector(ENHANCE_ANCHOR_SEL) : null; } catch (e) { }
+      if (!btn || !btn.parentElement) {   // 模型 chip 缺位（罕见分支）：回退用量圆环
+        try { btn = (ctxBtnCache && ctxBtnCache.isConnected) ? ctxBtnCache : (cardCache ? cardCache.querySelector(ZU_CTX_TRIGGER) : null); } catch (e) { }
+      }
+      if (!btn || !btn.parentElement) { restoreEnhanceBtn(); return; }
+      var wrap = btn.parentElement;
+      var b = enhanceBtnCache;
+      if (!b || !b.isConnected || b.parentElement !== wrap) {
+        if (b && b.isConnected) b.remove();
+        b = null;
+        for (var i = 0; i < wrap.children.length; i++) {   // 复用热更/重建遗留同类节点，避免双按钮
+          if (wrap.children[i].classList && wrap.children[i].classList.contains("zu-enhance")) { b = wrap.children[i]; break; }
+        }
+        if (!b) {
+          b = document.createElement("button");
+          b.type = "button";
+          b.className = "zu-enhance";
+          b.addEventListener("click", onEnhanceClick);
+          /* v344 悬停 tooltip（rstTip 同款）：Esc 键盘可达契约 + focus/blur 对齐 */
+          b.addEventListener("mouseenter", function () { showEnhanceTip(this); });
+          b.addEventListener("mouseleave", hideEnhanceTip);
+          b.addEventListener("focus", function () { showEnhanceTip(this); });
+          b.addEventListener("blur", hideEnhanceTip);
+          b.addEventListener("keydown", function (e) { if (e.key === "Escape") hideEnhanceTip(); });
+        }
+        enhanceBtnCache = b;
+      }
+      /* 位置兜回：紧贴锚点左侧；回退锚（用量圆环）场景额度 chip（.zu-quota）恒贴圆环，
+       * 按钮落在 chip 更左侧（跳过连续 quota 段找插入点），两节点同锚互不挤位振荡。
+       * 真实 DOM 的 children 是 HTMLCollection（无 indexOf），只能 length+下标遍历。 */
+      var ref = btn;
+      for (var ri = wrap.children.length - 1; ri >= 0; ri--) {
+        if (wrap.children[ri] !== btn) continue;
+        for (var rj = ri - 1; rj >= 0; rj--) {
+          var pc = wrap.children[rj];
+          if (pc.classList && pc.classList.contains("zu-quota")) ref = pc;
+          else break;
+        }
+        break;
+      }
+      if (b.nextElementSibling !== ref) wrap.insertBefore(b, ref);
+      if (enhanceTipFor && !enhanceTipFor.isConnected) hideEnhanceTip();   // 按钮被宿主重建 detach 的兜底收起（v135 徽标同款）
+      if (enhancePhase === "undo") {
+        /* v344.2/v344.3 撤销窗自愈：草稿不再等于我们写入的增强文本（消息已发送被提交流程清空/
+         * 用户再编辑/输入框被外部改写），或会话身份已切换，即提前收窗回初始态——不依赖 20s
+         * 定时器，tooltip 不再滞留「撤销增强」误导。守卫读与 undo 点击同一基准。 */
+        var apiChk = enhanceInputApi();
+        var curChk = "";
+        try { curChk = apiChk ? String(apiChk.getText() || "") : ""; } catch (e) { }
+        if (!apiChk || curChk !== enhanceEnhanced || (enhanceSid !== "" && enhanceCurSid() !== enhanceSid)) {
+          if (enhanceTimer) { clearTimeout(enhanceTimer); enhanceTimer = 0; }
+          enhanceOriginal = "";
+          enhanceEnhanced = null;
+          enhanceSid = "";
+          enhanceSetPhase("idle");
+          return;
+        }
+      }
+      var phase = enhanceWarnText ? "warn" : enhancePhase;
+      if (b.__zuPhase !== phase) {   // 签名幂等：相位没变不重写，busy 旋转/悬停不被打断
+        b.__zuPhase = phase;
+        b.innerHTML = phase === "enhancing" ? ENH_SVG_BUSY : (phase === "warn" ? ENH_SVG_WARN : (phase === "undo" ? ENH_SVG_UNDO : ENH_SVG_STAR));
+        b.classList.toggle("zu-ewarn", phase === "warn");
+        var label = phase === "enhancing" ? L("增强中…", "Enhancing…")
+          : phase === "undo" ? L("撤销增强，恢复原文", "Undo enhance")
+          : phase === "warn" ? enhanceWarnText
+          : L("增强提示词", "Enhance prompt");
+        b.setAttribute("aria-label", label);
+        b.setAttribute("aria-busy", phase === "enhancing" ? "true" : "false");
+        b.__zuEnhTip = label;   // tooltip 文案包（showEnhanceTip 读，实例闭包算好双语/相位）
+        if (enhanceTipFor === b) showEnhanceTip(b);   // 悬停中相位变化：文案跟随（额度 chip 同款）
+      }
+    }
+    function restoreEnhanceBtn(alsoCancel) {
+      /* alsoCancel=true 仅 dispose/热更路径：实例销毁后回执无处落地，在途请求中断止损，
+       * 并置 settled 丢弃迟到回包。临时摘除（无锚/开关关）不传：请求照常完成，回包经
+       * finish 身份门 + sid/草稿守卫裁决回填（spec 承诺的「冲突保护兜底」），不清身份键。 */
+      if (alsoCancel && enhanceInFlightId && !enhanceSettled) {
+        pluginRequest("prompt-enhance-cancel", { requestId: enhanceInFlightId });
+      }
+      if (alsoCancel) enhanceSettled = true;
+      if (enhanceTimer) { clearTimeout(enhanceTimer); enhanceTimer = 0; }
+      if (enhanceWaitTimer) { clearTimeout(enhanceWaitTimer); enhanceWaitTimer = 0; }
+      if (enhanceWarnTimer) { clearTimeout(enhanceWarnTimer); enhanceWarnTimer = 0; }
+      enhancePhase = "idle"; enhanceWarnText = "";
+      if (alsoCancel) { enhanceOriginal = ""; enhanceEnhanced = null; enhanceSid = ""; enhanceSettled = true; enhanceInFlightId = ""; }
+      /* 临时摘除保留 original/enhanced/sid：迟到成功回包经身份门+守卫回填后，undo 撤销与
+       * 会话守卫仍完整（复审 MINOR-1：清空会让撤销无声失效、sid 守卫被削弱）。 */
+      if (enhanceTipFor === enhanceBtnCache) hideEnhanceTip();   // 在显 tooltip 随按钮一起收（v135 徽标同款）
+      if (enhanceBtnCache && enhanceBtnCache.isConnected) enhanceBtnCache.remove();
+      enhanceBtnCache = null;
+    }
+
     /* ---------- v124 Git 状态 chip：始终挂在工具行左侧操作区 ----------
      * 样式移植 cc-pretty-statusline 的 git 段：⎇ 分支 ↑N ↓N (+插入行 -删除行 ?未跟踪文件)。
      * 数据：模块级 gitViewFor(scope.workspacePath)（主进程旁路查询推送）；本 pane 的 scope 为远端

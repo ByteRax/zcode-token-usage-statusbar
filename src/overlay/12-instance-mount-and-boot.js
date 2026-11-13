@@ -369,6 +369,7 @@
       enhanceQuotaChip();   // v96：额度 chip DOM 对账点（按钮重建/前插节点被挤走后兜回）
       enhanceModelPuller();   // v132：宿主设置页按钮 DOM 对账点（进设置页/React 重建后兜回，幂等）
       enhanceGitChip();     // v96：同点对账（React 重建工具行后重挂/位置兜回/紧凑态切换）
+      enhancePromptBtn();   // v344：增强按钮 DOM 对账点（React 重建工具行/位置挤走后兜回）
       syncTpsChip();        // v146：速率 chip DOM 对账点（React 重建工具行/位置挤走后兜回；非精简主题内部门控摘除）
       renderWorkflowCards();   // v332：工作流 run 卡 chip DOM 对账点（React 重建卡片后兜回；数据点在 render 尾部）
       renderRunningSubagentItems();   // v333：状态面板 Agents 行 chip DOM 对账点（React 高频重写 elapsed 后兜回）
@@ -800,6 +801,7 @@
       releasePads();
       if (ctxBtnCache) { restoreCtxButton(ctxBtnCache); ctxBtnCache = null; }   // v92：还原原生按钮形态
       restoreQuotaChip();   // v95：摘除额度 chip（不留孤儿节点）
+      restoreEnhanceBtn(true);   // v344：摘除增强按钮（清相位与定时器，不留孤儿节点）；v344.3：dispose 中断在途增强请求
       restoreTpsChip();   // v146：摘除精简模式速率 chip（含在显 tooltip）
       restoreGitChip();   // v96：摘掉本 pane 的 Git chip（含在显 tooltip）
       /* v180 review：行内速率 chip 挂在宿主 Agent 行内（非条面自家节点），dispose

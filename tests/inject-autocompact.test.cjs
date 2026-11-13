@@ -26,7 +26,7 @@ function runPoll(requests, stubs) {
     pluginUpdater: null, quotaClient: null, enginePatcher: null, modelPuller: null, gitTick: async () => { },
     setAnswerRateLine: () => { }, setRestartNotice: () => { }, setQuotaEnabled: () => { }, setResetBadgeEnabled: () => { },
     handleQuotaProviders: () => { }, handleQuotaSourceRequest: () => { }, handleModelPullRequest: () => { },
-    queryTurnText: () => { }, quotaEnabled: () => true,
+    queryTurnText: () => { }, quotaEnabled: () => true, enhanceEnabled: () => true,
     setAutoCompactPatch: (enabled, wc2, requestId) => calls.patch.push({ enabled, requestId }),
     handleAutoCompactConfig: (req2) => calls.config.push({ mode: req2.mode, value: req2.value, requestId: req2.requestId }),
     deliverPluginRequest: (w, requestId, result) => calls.deliveries.push({ requestId, result }),
@@ -63,7 +63,7 @@ test("pushPluginState carries enginePatch status for the settings panel", () => 
     wc,
     isMainWindowState: () => true, isLocalHostPage: () => true,
     readCfgCached: () => ({ answer_rate_line: false, restart_notice: true }),
-    quotaEnabled: () => false, resetBadgeEnabled: () => true, quotaClient: null,
+    quotaEnabled: () => false, resetBadgeEnabled: () => true, enhanceEnabled: () => true, quotaClient: null,
     enginePatcher: { status: () => ({ enabled: true, state: "applied", build: "3.17.1" }) },
     JSON, webContentsDummy: 0,
   });
@@ -82,7 +82,7 @@ test("pushPluginState survives a missing engine patcher (null field)", () => {
     wc,
     isMainWindowState: () => true, isLocalHostPage: () => true,
     readCfgCached: () => ({}),
-    quotaEnabled: () => false, resetBadgeEnabled: () => false, quotaClient: null,
+    quotaEnabled: () => false, resetBadgeEnabled: () => false, enhanceEnabled: () => true, quotaClient: null,
     enginePatcher: null,
     JSON,
   });

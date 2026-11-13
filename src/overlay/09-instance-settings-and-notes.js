@@ -117,7 +117,7 @@
       if (!active && u && u.error) text += "\n" + messages.error;
       if (active && u.currentVersion) text += "\n" + L("当前版本：", "Current version: ") + u.currentVersion;
       if (active && u.latestVersion) text += (u.channel === "release" ? L(" · Release 版本：", " · Release version: ") : L(" · 市场版本：", " · Marketplace version: ")) + u.latestVersion;
-      if (active && u.channel) text += "\n" + L("更新来源：", "Update source: ") + (u.channel === "release" ? (u.channelHost === "gitcode" ? L("GitCode 正式 Release（校验 ZIP 与 SHA256）", "stable GitCode Release (validated ZIP and SHA256)") : L("GitHub 正式 Release（校验 ZIP 与 SHA256）", "stable GitHub Release (validated ZIP and SHA256)"))
+      if (active && u.channel) text += "\n" + L("更新来源：", "Update source: ") + (u.channel === "release" ? (u.channelHost === "gitcode" ? L("GitCode 正式 Release（校验 ZIP 与 SHA256）", "stable GitCode Release (validated ZIP and SHA256)") : u.mirror ? L("GitHub 正式 Release（经 GitCode 镜像下载，校验 ZIP 与 SHA256）", "stable GitHub Release (downloaded via the GitCode mirror, validated ZIP and SHA256)") : L("GitHub 正式 Release（校验 ZIP 与 SHA256）", "stable GitHub Release (validated ZIP and SHA256)"))
         : u.channel === "market" ? (u.channelHost === "gitcode" ? L("GitCode 仓库源码（由插件管理器直接更新）", "GitCode repository source (updated directly by the plugin manager)") : L("GitHub 仓库源码（由插件管理器直接更新）", "GitHub repository source (updated directly by the plugin manager)"))
         : L("本地目录市场", "local directory marketplace"));
       if (active && u.releaseUrl) text += "\n" + u.releaseUrl;
@@ -1391,6 +1391,8 @@
       if (devKeepTipBox) devKeepTipBox.checked = !!state.devKeepTip;
       var qrBox = panel.querySelector(".zu-quota-remain");
       if (qrBox) qrBox.checked = !!state.quotaRemain;
+      var enhBox = panel.querySelector(".zu-enhance-toggle");   // v344：勾选态由推送面 enhanceEnabled 决定
+      if (enhBox) enhBox.checked = state.enhanceEnabled !== false;
       if (typeof zuRotatorSyncPanel === "function") zuRotatorSyncPanel(panel);
       syncUpdate();
     }
@@ -1676,6 +1678,23 @@
           if (inactive()) return;
           if (result.ok) { showSettingsFeedback(false, false); return; }
           state.quotaEnabled = previousQuota;
+          syncPanel();
+          showSettingsFeedback(true);
+        });
+        renderAll(false);
+        return;
+      }
+      if (t2.classList.contains("zu-enhance-toggle")) {
+        /* v344：乐观更新，真值以主进程写 config.json 的 enhance_enabled 后回推为准；按钮
+           显隐在下一次 render/heavy 对账点收敛，主进程动作入口 fail-closed 双保险 */
+        var requestedEnh = t2.checked;
+        var previousEnh = state.enhanceEnabled !== false;
+        state.enhanceEnabled = requestedEnh;
+        showSettingsFeedback(false, true);
+        pluginRequest("enhance", requestedEnh, function (result) {
+          if (inactive()) return;
+          if (result.ok) { showSettingsFeedback(false, false); return; }
+          state.enhanceEnabled = previousEnh;
           syncPanel();
           showSettingsFeedback(true);
         });

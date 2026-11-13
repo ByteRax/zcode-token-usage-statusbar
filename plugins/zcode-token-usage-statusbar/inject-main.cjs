@@ -349,6 +349,10 @@ function quotaEnabled() { return readCfgCached().quota_enabled !== false; }
  * 独立于 quota_enabled——额度 chip 关闭时本开关仍允许主进程解密凭据、仅查询
  * reset/status 只读端点维护徽标（联网语义已在 ⚙ 面板披露）。 */
 function resetBadgeEnabled() { return readCfgCached().reset_badge_enabled !== false; }
+/* v344 增强提示词开关：config.json 的 enhance_enabled（缺省开，显式 false 才关）。
+ * 关闭即停按钮渲染与 prompt-enhance 动作入口（动作入口 fail-closed 双保险）；
+ * 调用仍按用户主动点击发起，不加任何后台周期行为。 */
+function enhanceEnabled() { return readCfgCached().enhance_enabled !== false; }
 function quotaDataEnabled() { return quotaEnabled() || resetBadgeEnabled(); }
 function clearRemoteRecovery() {
   remoteSids.clear();
@@ -851,6 +855,7 @@ function pushPluginState(wc, state) {
   /* rateLine / quotaEnabled / restartNotice / enginePatch 随插件状态一起推送：⚙ 面板开关的真值都来自 config.json */
   const payload = { ...state, rateLine: readCfgCached().answer_rate_line !== false, quotaEnabled: quotaEnabled(),
     resetBadgeEnabled: resetBadgeEnabled(), restartNotice: readCfgCached().restart_notice !== false,
+    enhanceEnabled: enhanceEnabled(),
     quotaSources: quotaClient ? quotaClient.sourcesConfig() : [], enginePatch: enginePatcher ? enginePatcher.status() : null, feedbackVersion: 1,
     relaunchSupported: true };   // v180 issue #158：能力标记与下方 relaunch 分支同文件（inject-main），缺标记=旧主进程必然没有该动作分支
   wc.executeJavaScript(`window.__zusagePluginUpdate && window.__zusagePluginUpdate(${JSON.stringify(payload)})`, true).catch(() => { });
@@ -1317,6 +1322,55 @@ function handleModelPullRequest(req, wc) {
   modelPuller.applyModels(req.providerId, Array.isArray(req.models) ? req.models : [])
     .then(respond)
     .catch((e) => { LOG("model pull apply failed:", e.message); respond({ ok: false, error: "apply failed" }); });
+}
+
+/* v344 增强提示词：渲染端按钮 → 一次性非流式改写。开关在动作入口 fail-closed（渲染端
+ * 显隐只是第一层）；负载 {providerId, modelId, text} 形状校验同 model-pull 域口径。
+ * draft 只进当前供应商请求体，凭据/响应摘要不进日志。 */
+function enhanceRequestTextOk(v) {
+  return typeof v === "string" && v.trim().length > 0 && v.length <= 20000;
+}
+const enhanceInFlight = new Map();   // requestId → { controller, wc }（渲染端「增强中再点=取消」的中断入口）；requestId 形如 zusage-<gen>-<seq>，gen 每窗口独立计数可能跨窗口相撞，读写都必须校验 wc 归属
+function handlePromptEnhanceRequest(req, wc) {
+  const respond = (result) => {
+    const entry = enhanceInFlight.get(req.requestId);
+    if (entry && entry.wc === wc) enhanceInFlight.delete(req.requestId);   // 只删本窗口条目，防同名误删
+    deliverPluginRequest(wc, req.requestId, result);
+  };
+  if (!enhanceEnabled()) { respond({ ok: false, kind: "disabled", error: "prompt enhance is disabled" }); return; }
+  if (!modelPuller || typeof modelPuller.enhanceText !== "function") { respond({ ok: false, kind: "unavailable", error: "model puller unavailable; fully restart ZCode to load it" }); return; }   // 含热换错位窗
+  if (!modelPullerProviderOk(req.providerId)) { respond({ ok: false, kind: "invalid_input", error: "invalid provider" }); return; }
+  const model = typeof req.modelId === "string" && req.modelId.length <= 200 && !/[\x00-\x1f\x7f]/.test(req.modelId) ? req.modelId : "";
+  if (!enhanceRequestTextOk(req.text)) { respond({ ok: false, kind: "invalid_input", error: "draft length out of range" }); return; }
+  if (typeof req.requestId !== "string" || !req.requestId) { respond({ ok: false, kind: "invalid_input", error: "invalid requestId" }); return; }   // 与 cancel 分支口径一致
+  const controller = new AbortController();
+  enhanceInFlight.set(req.requestId, { controller: controller, wc: wc });
+  modelPuller.enhanceText(req.providerId, model, req.text, { signal: controller.signal })
+    .then(respond)
+    .catch((e) => { LOG("prompt enhance failed:", e.message); respond({ ok: false, kind: "network", error: "enhance failed" }); });
+}
+/* 取消在途增强（fire-and-forget，不回执）：abort 后 enhanceText 以 kind:"cancelled" 收口，
+ * 渲染端在取消时已置 settled 并丢弃回执，两侧状态各自收敛。 */
+function handlePromptEnhanceCancel(req, wc) {
+  const entry = enhanceInFlight.get(req.requestId);
+  if (entry && entry.wc === wc) {   // 同名 requestId 只取消本窗口的（跨窗口相撞时不误伤）
+    enhanceInFlight.delete(req.requestId);
+    try { entry.controller.abort(); } catch (e) { LOG("prompt enhance cancel failed:", e.message); }
+  }
+}
+/* 增强开关（⚙ 面板）：原子写 config.json 的 enhance_enabled（缺省开）。参照
+ * setQuotaEnabled 同款事务与广播；失败回执让渲染端回滚勾选态。 */
+async function setEnhanceEnabled(enabled, wc, requestId) {
+  try {
+    const { updateConfig } = require("./plugin-updater.cjs");
+    await updateConfig(HERE, { enhance_enabled: enabled }, readCfgCached().python_path || (process.platform === "win32" ? "python" : "python3"));
+    cfgCache = null;
+    broadcastPluginState();
+    deliverPluginRequest(wc, requestId, { ok: true });
+  } catch (e) {
+    LOG("enhance_enabled toggle failed:", e.message);
+    deliverPluginRequest(wc, requestId, { ok: false, error: e.message });
+  }
 }
 
 /* 渠道门控：Release 渠道取本渠道 Release；market（源码）渠道取注册仓库的同号 Release，
@@ -1878,6 +1932,12 @@ async function pollPluginRequests() {
           handleQuotaSourceRequest(req, wc);
         } else if (req && (req.action === "model-pull-list" || req.action === "model-pull-fetch" || req.action === "model-pull-apply" || req.action === "model-pull-probe")) {
           handleModelPullRequest(req, wc);
+        } else if (req && req.action === "prompt-enhance") {   // v344：增强提示词按钮（模型 chip 左侧）
+          handlePromptEnhanceRequest(req, wc);
+        } else if (req && req.action === "prompt-enhance-cancel" && typeof req.requestId === "string") {   // v344.1：增强中再点=取消在途请求
+          handlePromptEnhanceCancel(req, wc);
+        } else if (req && req.action === "enhance" && typeof req.enabled === "boolean") {   // ⚙ 面板开关（同 rate-line/quota 族命名）
+          setEnhanceEnabled(req.enabled, wc, req.requestId);
         } else if (req && (req.action === "release-notes" || req.action === "release-notes-list")) {   // v202 ⚙ 更新日志：按需拉取当前 Release 渠道的发布说明
           handleReleaseNotesRequest(req, wc);
         } else if (req && req.action === "quota-refresh") {   // ⚙/chip 手动刷新：绕过 TTL 与软冻结
