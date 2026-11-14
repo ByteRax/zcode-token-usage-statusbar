@@ -628,8 +628,9 @@
     if (!wrap || wrap.scrollWidth <= wrap.clientWidth + 1) return;
     var d = (e.deltaY || 0) + (e.deltaX || 0);
     if (!d) return;
+    var before = wrap.scrollLeft;
     wrap.scrollLeft += d;
-    e.preventDefault();
+    if (wrap.scrollLeft !== before) e.preventDefault();
   }, { passive: false });
   var tpsTipFor = null;
   function showTpsTip(el) {
@@ -647,14 +648,19 @@
      * 悬停中每 tick 整片重建同样把 mousedown 命中的 Tab 换掉（全量 tip 的 v263 同型
      * 根因）。v263 改回统一冻结：交互路径（Tab/维度/柱 hover）本就先清 __zuTipSig
      * 再进来，清空即放行重编；心跳路径悬停中冻结，与全量 tip 的 mouseInBar 冻结同取舍。 */
-    var frozen = tpsTip.__zuTipSig !== html && tpsTip.__zuTipSig && tpsTip.style.display === "block";
-    if (!frozen && tpsTip.__zuTipSig !== html) {   // 签名幂等（同 quotaTip）：内容没变不重建
+    var wasVisible = tpsTip.style.display === "block", oldTipScroll = tpsTip.scrollTop;
+    var frozen = tpsTip.__zuTipSig !== html && tpsTip.__zuTipSig && wasVisible;
+    var rebuilt = !frozen && tpsTip.__zuTipSig !== html;
+    if (rebuilt) {   // 签名幂等（同 quotaTip）：内容没变不重建
       /* v279：柱状图横滚位置跨重编记忆（用户实报 全部×全部 拉到末尾、关闭再开回到
        * 开头）——重建前从旧 DOM 连同选择键（data-sv-key）一起捕获，键同才回填：
        * hover/心跳重编不跳回头部，关闭再开（含期间数据刷新）恢复原位置，切换
        * 范围/时间后键变自动归零；空态/V1 图无 .zu-sv-root 键不参与。 */
       var sw0 = tpsTip.querySelector(".zu-sc-wrap"), sr0 = tpsTip.querySelector(".zu-sv-root"), st0 = null;
-      if (sw0 && sr0) st0 = { key: sr0.getAttribute("data-sv-key") || "", x: sw0.scrollLeft };
+      if (sw0 && sr0) {
+        var oldKey = sr0.getAttribute("data-sv-key") || "";
+        st0 = !wasVisible ? (tpsTip.__zuChartScroll && tpsTip.__zuChartScroll.key === oldKey ? tpsTip.__zuChartScroll : null) : { key: oldKey, x: sw0.scrollLeft };
+      }
       tpsTip.innerHTML = html;
       if (st0) {
         var sw1 = tpsTip.querySelector(".zu-sc-wrap"), sr1 = tpsTip.querySelector(".zu-sv-root");
@@ -672,18 +678,31 @@
     try { dark = document.documentElement.classList.contains("dark"); } catch (e) { }
     tpsTip.classList.toggle("zu-light", !dark);
     tpsTip.style.display = "block";
+    if (rebuilt || !wasVisible || (tpsTip.__zuSpeedSize && (tpsTip.__zuSpeedSize.vw !== window.innerWidth || tpsTip.__zuSpeedSize.vh !== window.innerHeight))) {
+      if (typeof spdFitTip === "function") spdFitTip(tpsTip, !wasVisible);
+      if (typeof fitModelNames === "function") fitModelNames(tpsTip);
+      if (rebuilt || !wasVisible) {
+        if (!rebuilt) st0 = tpsTip.__zuChartScroll || null;
+        var fittedChart = tpsTip.querySelector(".zu-sc-wrap"), fittedRoot = tpsTip.querySelector(".zu-sv-root");
+        if (fittedChart && st0 && fittedRoot && (fittedRoot.getAttribute("data-sv-key") || "") === st0.key) fittedChart.scrollLeft = st0.x;
+        else if (fittedChart && fittedChart.hasAttribute && fittedChart.hasAttribute("data-sv-end")) fittedChart.scrollLeft = fittedChart.scrollWidth;
+      }
+      tpsTip.scrollTop = oldTipScroll;
+    }
     /* v297：tpsTip 链同款月历网格量测回写（动态字号数据源，见 08 drawTip 同名块）。
      * v298 起挂 display:block 之后——隐藏态量测全 0 会把下一帧字号压到 6px 下限。 */
     var mgEl2 = tpsTip.querySelector(".zu-hm-grid--mon");
     if (mgEl2) {
       var mgr2 = mgEl2.getBoundingClientRect();
-      window.__zusageSpdMonRect = { w: mgr2.width, h: mgr2.height };
+      var monRoot2 = mgEl2.closest && mgEl2.closest(".zu-sv-root");
+      var monZoom2 = parseFloat(monRoot2 && monRoot2.style && monRoot2.style.zoom) || 1;
+      window.__zusageSpdMonRect = { w: mgr2.width / monZoom2, h: mgr2.height / monZoom2 };
     }
     var r = el.getBoundingClientRect(), tw = tpsTip.offsetWidth, th = tpsTip.offsetHeight;
     var vw = window.innerWidth, vh = window.innerHeight;
     var left = Math.max(8, Math.min(r.left, vw - tw - 8));
     var top = r.top - th - 8;
-    if (top < 8) top = Math.min(r.bottom + 8, vh - th - 8);
+    if (top < 8) top = Math.max(8, Math.min(r.bottom + 8, vh - th - 8));
     tpsTip.style.left = Math.round(left) + "px";
     tpsTip.style.top = Math.round(top) + "px";
     /* v284：紧凑链保持 chip 左缘对齐（v283 的 dock 覆盖删除——对齐锚统一为速度格） */
@@ -696,6 +715,10 @@
   }
   function hideTpsTip() {
     cancelTpsHide();
+    if (tpsTip.style.display !== "none") {
+      var closingChart = tpsTip.querySelector(".zu-sc-wrap"), closingRoot = tpsTip.querySelector(".zu-sv-root");
+      if (closingChart && closingRoot) tpsTip.__zuChartScroll = { key: closingRoot.getAttribute("data-sv-key") || "", x: closingChart.scrollLeft };
+    }
     tpsTip.style.display = "none";
     tpsTipFor = null;
     spdHoverPortalHide();   // v280：Portal 随 tooltip 收起，不留孤儿浮层
@@ -735,6 +758,14 @@
       var wr = wrap.getBoundingClientRect();
       if (cr.right < wr.left + 2 || cr.left > wr.right - 2 || cr.bottom < wr.top + 2 || cr.top > wr.bottom - 2) { spdHoverPortalHide(); return; }
     }
+    var clip = col.parentElement;
+    while (clip && clip !== tipEl.parentElement) {
+      if (clip === tipEl || (clip.classList && clip.classList.contains("tbody"))) {
+        var clipRect = clip.getBoundingClientRect();
+        if (cr.right <= clipRect.left || cr.left >= clipRect.right || cr.bottom <= clipRect.top || cr.top >= clipRect.bottom) { spdHoverPortalHide(); return; }
+      }
+      clip = clip.parentElement;
+    }
     if (spdHoverPortal.style.display !== "block") {
       if (!spdHoverPortal.__zuHtml) { spdHoverPortalHide(); return; }
       spdHoverPortal.innerHTML = spdHoverPortal.__zuHtml;
@@ -771,6 +802,7 @@
     if (document.body.lastElementChild !== spdHoverPortal) document.body.appendChild(spdHoverPortal);
     spdLegendTipHide();   // v281 互斥：柱体信息卡显示时收档位说明，不允许双层浮窗并存
     spdHoverPortal.style.display = "block";
+    if (typeof fitModelNames === "function") fitModelNames(spdHoverPortal);
     spdHoverPortalPlace(tipEl, idx);
   }
   /* v176：子代理行内速率 chip 的悬停 tooltip（body 级共享元素，骨架同 tpsTip；内容
@@ -1098,7 +1130,7 @@
       modelRow = '<div class="rt-row"><b>' + esc(L("计价范围", "Pricing scope")) + '</b><span>' +
         esc(info.scope + L("的全部 " + info.count + " 个模型，按各自模型价格分别计价", ": all " + info.count + " models, each priced at its own model prices")) + '</span></div>';
     } else if (model && rates && typeof rates.input === "number") {
-      modelRow = '<div class="rt-row"><b>' + esc(info.type === "model" ? L("模型", "Model") : L("当前模型", "Current model")) + '</b><span>' + esc(model) +
+      modelRow = '<div class="rt-row"><b>' + esc(info.type === "model" ? L("模型", "Model") : L("当前模型", "Current model")) + '</b><span><span class="zu-model-fit" style="display:inline-block;max-width:100%" title="' + esc(model) + '">' + esc(model) + '</span>' +
         '<span style="display:block;margin-top:2px">' +
         esc(L("输入 ", "in ") + money(rates.input) + L(" · 输出 ", " · out ") + money(rates.output) +
             L(" · 缓存读 ", " · cache read ") + money(rates.cache_read) + L(" · 缓存写 ", " · cache write ") + money(rates.cache_write)) +
@@ -1127,6 +1159,7 @@
     try { dark = document.documentElement.classList.contains("dark"); } catch (e) { }
     fxTip.classList.toggle("zu-light", !dark);
     fxTip.style.display = "block";
+    if (typeof fitModelNames === "function") fitModelNames(fxTip);
     var r = el.getBoundingClientRect(), tw = fxTip.offsetWidth, th = fxTip.offsetHeight;
     var vw = window.innerWidth, vh = window.innerHeight;
     var left = Math.max(8, Math.min(r.left, vw - tw - 8));

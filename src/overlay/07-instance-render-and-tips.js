@@ -181,7 +181,7 @@
       return list.map(function (m1) {
         var name = m1.model || L("未知模型", "unknown");
         return '<tr>' +
-          '<td class="zu-pj-mname"' + (full ? ' title="' + escAttr(name) + '"' : '') + '>' + ttEsc(name) + '</td>' +
+          '<td class="zu-pj-mname zu-model-fit"' + (full ? ' title="' + escAttr(name) + '"' : '') + '>' + ttEsc(name) + '</td>' +
           '<td>' + ttEsc(fmt(m1.total || 0)) + '</td>' +
           '<td>' + ttEsc(countFmt(m1.requests || 0)) + '</td>' +
           (showCost ? '<td>' + (typeof m1.cost_usd === "number" && isFinite(m1.cost_usd) ? ttEsc(fmtMoney(m1.cost_usd)) : "—") + '</td>' : "") +
@@ -302,7 +302,7 @@
          * ④平均输出速度(加权均 avg_tps 档色)|预估费用（>0 门控，缺失不伪造 0s/0%） */
         '<div class="zu-turn-kpis">' +
           statKpi(kpiIco("total") + L("总用量", "Total tokens"), ttEsc(fmt(v.total || 0)), turnVBkt(fmt(v.total || 0))) +
-          statKpi(kpiIco("input") + L("输入", "Input") +
+          statKpi(kpiIco("input") + '<span class="zu-kpi-label">' + L("输入", "Input") + '</span>' +
             (hitPct >= 0 ? '<span class="hit zu-turn-hit">' + ttEsc(L("缓存", "cache ") + hitPct + "%") + '</span>' : ""),
             ttEsc(fmt(v.input || 0)), turnVBkt(fmt(v.input || 0)), cachedSub) +
           statKpi(kpiIco("output") + L("输出", "Output"), ttEsc(fmt(v.output || 0)), turnVBkt(fmt(v.output || 0)),
@@ -371,7 +371,7 @@
       var prevBottom = projTipPrevBottom();
       var shown = projTipExpanded ? projTipList : projTipList.slice(0, 6);
       var rows = root.querySelector("[data-zu-pj-rows]");
-      if (rows) rows.innerHTML = pjRowsHTML(shown, true);
+      if (rows) { rows.innerHTML = pjRowsHTML(shown, true); fitModelNames(rows); }
       btn.setAttribute("aria-expanded", projTipExpanded ? "true" : "false");
       btn.innerHTML = projTipExpanded
         ? ttEsc(L("收起", "Show less"))
@@ -424,7 +424,8 @@
           /* 浅色主题：深色叠加（--color-popover 在宿主恰好等于 tip 本底，不能用变量） */
           '.zusage-tip-root.zu-light:has(.zu-stat-tip--' + variant + ') .zu-turn-kpis,.zusage-tip-root:has(.zu-stat-tip--' + variant + '.zu-light) .zu-turn-kpis{background:rgba(0,0,0,.045)!important}' +
           '' + '.zu-stat-tip--' + variant + ' .zu-turn-kpis .zu-stat-kpi + .zu-stat-kpi{border-left:1px solid var(--color-popover-border,rgba(255,255,255,.12))!important;padding-left:10px!important}' +
-          '' + '.zu-stat-tip--' + variant + ' .zu-stat-kpi .zu-stat-k{display:flex!important;align-items:baseline!important;gap:6px!important;font-size:calc(var(--ui-font-size,14px) - 3px)!important;font-weight:400!important;color:var(--color-tooltip-tag-foreground,#a6a6a6)!important;margin-bottom:2px!important}' +
+          '' + '.zu-stat-tip--' + variant + ' .zu-stat-kpi .zu-stat-k{display:flex!important;align-items:baseline!important;flex-wrap:wrap!important;gap:0 6px!important;font-size:calc(var(--ui-font-size,14px) - 3px)!important;font-weight:400!important;color:var(--color-tooltip-tag-foreground,#a6a6a6)!important;margin-bottom:2px!important}' +
+          '' + '.zu-stat-tip--' + variant + ' .zu-stat-k .zu-kpi-label{white-space:nowrap!important;flex:none!important}' +
       '' + '.zu-stat-tip--' + variant + ' .zu-stat-k .hit{font-size:calc(var(--ui-font-size,14px) - 3px)!important;font-weight:600!important;color:#4ade80!important;white-space:nowrap!important}' +
       '' + '.zu-stat-tip--' + variant + ' .zu-stat-k .tip-fxq{align-self:center!important;vertical-align:initial!important;margin-left:4px!important}' +
       
@@ -442,10 +443,10 @@
           '' + '.zu-stat-tip--' + variant + ' .zu-pj-morder{display:block!important;font-size:calc(var(--ui-font-size,14px) - 3px)!important;color:var(--color-tooltip-tag-foreground,#a6a6a6)!important}' +
           '.zu-turn-sep{font-style:normal!important;opacity:.6!important;margin:0 3px!important}' +
           '' + '.zu-stat-tip--' + variant + ' .zu-turn-models .zu-stat-table{margin:0!important}' +
+          (variant === "tools" ? "" : '.zu-stat-tip--' + variant + ' .zu-turn-models .zu-stat-table th:first-child,.zu-stat-tip--' + variant + ' .zu-turn-models .zu-stat-table td:first-child{max-width:100px!important;overflow:hidden!important;text-overflow:ellipsis!important;white-space:nowrap!important}') +
           '' + '.zu-stat-tip--' + variant + ' .zu-turn-models th{padding:1px 3px!important;white-space:nowrap!important}' +
           '' + '.zu-stat-tip--' + variant + ' .zu-turn-models td{padding:2px 3px!important;white-space:nowrap!important}' +
-          '' + '.zu-stat-tip--' + variant + ' .zu-turn-models{flex:1 1 auto!important;min-height:0!important;overflow-y:auto!important;scrollbar-width:none!important}' +
-          '' + '.zu-stat-tip--' + variant + ' .zu-turn-models::-webkit-scrollbar{display:none!important}' +
+          '' + '.zu-stat-tip--' + variant + ' .zu-turn-models{flex:1 1 auto!important;min-height:0!important;overflow:auto!important;scrollbar-width:thin!important}' +
           '' + '.zu-stat-tip--' + variant + ' .zu-stat-time{margin-top:auto!important;padding-top:5px!important;border-top:1px solid var(--color-popover-border,rgba(255,255,255,.12))!important;font-size:calc(var(--ui-font-size,14px) - 4px)!important}' +
           '' + '.zu-stat-tip--' + variant + ' .zu-stat-time span{font-variant-numeric:tabular-nums!important}' +
           /* v301.1 图标规则三卡共享：flex baseline 标签行内图标 align-self:center
@@ -517,7 +518,7 @@
     function modelsBlock(models) {
       return (models && models.length)
         ? '<div class="rt-models">' + models.map(function (m1) {
-            return '<div class="rt-row"><b>' + ttEsc(m1.model || L("未知模型", "unknown")) + '</b><span>' +
+            return '<div class="rt-row"><b class="zu-model-fit" title="' + escAttr(m1.model || L("未知模型", "unknown")) + '">' + ttEsc(m1.model || L("未知模型", "unknown")) + '</b><span>' +
               ttEsc(fmt(m1.total) + L(" token · ", " token · ") + countFmt(m1.requests || 0) + L("次", " req") +
                 (state.cost && typeof m1.cost_usd === "number" ? L(" · ", " · ") + fmtMoney(m1.cost_usd) : "")) +
               (state.cost && typeof m1.cost_usd === "number" ? FXQ_ICON.replace('class="tip-fxq"', 'class="tip-fxq" data-model="' + escAttr(m1.model || "") + '"' + (m1.rates ? ' data-rates="' + escAttr(JSON.stringify(m1.rates)) + '"' : "")) : "") + "</span></div>";
@@ -541,7 +542,7 @@
         statTable(heads, models.slice().sort(function (a, b) { return (b.total || 0) - (a.total || 0); }).map(function (m1) {
           var name = m1.model || L("未知模型", "unknown");
           return '<tr>' +
-            '<td class="zu-pj-mname" title="' + escAttr(name) + '">' + ttEsc(name) + '</td>' +
+            '<td class="zu-pj-mname zu-model-fit" title="' + escAttr(name) + '">' + ttEsc(name) + '</td>' +
             '<td>' + ttEsc(fmt(m1.total || 0)) + '</td>' +
             '<td>' + ttEsc(countFmt(m1.requests || 0)) + '</td>' +
             (state.cost ? '<td>' + (typeof m1.cost_usd === "number" && isFinite(m1.cost_usd) ? ttEsc(fmtMoney(m1.cost_usd)) : "—") + '</td>' : "") +
@@ -924,7 +925,7 @@
             statKpi(kpiIco("total") + L("总用量", "Total tokens"), ttEsc(fmt(lt.total || 0)), turnVBkt(fmt(lt.total || 0))) +
             /* v299.1（用户规格）：缓存命中率改「缓存 N%」，放「输入」标签行右侧
              * （statKpi 的 k 为 raw HTML；标签行短，徽标空间充裕不再截断） */
-            statKpi(kpiIco("input") + L("输入", "Input") +
+            statKpi(kpiIco("input") + '<span class="zu-kpi-label">' + L("输入", "Input") + '</span>' +
               (hitPctOf(lt.input, lt.cache_read) >= 0 ? '<span class="hit zu-turn-hit">' + ttEsc(L("缓存", "cache ") + hitPctOf(lt.input, lt.cache_read) + "%") + '</span>' : ""),
               ttEsc(fmt(lt.input || 0)), turnVBkt(fmt(lt.input || 0))) +
             statKpi(kpiIco("output") + L("输出", "Output"), ttEsc(fmt(lt.output || 0)), turnVBkt(fmt(lt.output || 0)),
@@ -988,7 +989,7 @@
           /* v300 行一：总用量 | 输入（缓存 N% 徽标随标签右侧）| 输出（含思考辅助行） */
           '<div class="zu-turn-kpis">' +
             statKpi(kpiIco("total") + L("总用量", "Total tokens"), ttEsc(fmt(sess.total || 0)), turnVBkt(fmt(sess.total || 0))) +
-            statKpi(kpiIco("input") + L("输入", "Input") +
+            statKpi(kpiIco("input") + '<span class="zu-kpi-label">' + L("输入", "Input") + '</span>' +
               (hitPctOf(sess.input, sess.cache_read) >= 0 ? '<span class="hit zu-turn-hit">' + ttEsc(L("缓存", "cache ") + hitPctOf(sess.input, sess.cache_read) + "%") + '</span>' : ""),
               ttEsc(fmt(sess.input || 0)), turnVBkt(fmt(sess.input || 0))) +
             statKpi(kpiIco("output") + L("输出", "Output"), ttEsc(fmt(sess.output || 0)), turnVBkt(fmt(sess.output || 0)),

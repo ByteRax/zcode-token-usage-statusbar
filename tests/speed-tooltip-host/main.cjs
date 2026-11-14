@@ -56,7 +56,7 @@ function buildV2Slice() {
     'var SPD_LEGEND_HIDE_MS = 180, spdLegendHideTimer = 0;';
   return tpsBands + '\n' + tpsBand + '\n' + tpsBandText + '\n' + spdBlock +
     '\nwindow.__SPD = { speedCardV2HTML: speedCardV2HTML, spdAnalyze: spdAnalyze,' +
-    ' spdLegendCardHTML: spdLegendCardHTML, getPortal: function(){ return SPD_PORTAL; } };' +
+    ' spdLegendCardHTML: spdLegendCardHTML, spdFitTip: spdFitTip, getPortal: function(){ return SPD_PORTAL; } };' +
     '\nwindow.__PORTAL_SRC = ' + JSON.stringify(hostFns) + ';';
 }
 
@@ -336,6 +336,28 @@ app.whenReady().then(async () => {
   await sleep(500);
   await wc.executeJavaScript('window.__zuReady(' + JSON.stringify(V2SLICE) + ')', true);
   await sleep(200);
+  if (process.env.ZU_GEOMETRY_ONLY) {
+    const result = await wc.executeJavaScript(`(() => {
+      const failures = [];
+      for (const font of [14, 17, 20]) {
+        document.documentElement.style.setProperty('--ui-font-size', font + 'px');
+        window.__zuScenario({ fixture: 'recent16' });
+        window.__zuMount({}, -1);
+        const tip = document.getElementById('zu-spd-replica');
+        const box = s => tip.querySelector(s).getBoundingClientRect();
+        const status = box('.zu-sl-status'), main = box('.zu-sl-main');
+        const model = box('.zu-sl-model'), stats = box('.zu-sl-stats');
+        if (main.top + 1 < status.bottom || stats.top + 1 < model.bottom) failures.push('speed overlaps at ' + font);
+        const old = tip.querySelector('.zu-sv-root');
+        tip.querySelector('[data-sv-group="period"][data-sv-val="month"]').dispatchEvent(new PointerEvent('pointerdown', { bubbles:true }));
+        const next = tip.querySelector('.zu-sv-root');
+        if (next === old || !next.style.zoom || !tip.querySelector('.zu-hm-month')) failures.push('tab rebuild lost scaling at ' + font);
+      }
+      return failures;
+    })()`, true);
+    if (result.length) { console.error('GEOMETRY_FAILURE', JSON.stringify(result)); app.exit(1); return; }
+    console.log('GEOMETRY_PASS'); app.exit(0); return;
+  }
   const log = [];
 
   /* 链 LIVE（2026-11-08）：真实当前会话数据。生产同款 serve 泵拉最近活跃会话快照，
