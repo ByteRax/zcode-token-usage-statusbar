@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ZCode 用量状态条（远控中继接收端·调试版）
 // @namespace    zusage-mobile
-// @version      0.7.1
+// @version      0.1.0
 // @description  调试版：默认显示排障面板（帧统计/overlay 加载状态）；日常使用请安装正式版 zusage-mobile.user.js
 // @downloadURL  https://raw.githubusercontent.com/ByteRax/zcode-token-usage-statusbar/main/zusage-mobile.debug.user.js
 // @updateURL    https://raw.githubusercontent.com/ByteRax/zcode-token-usage-statusbar/main/zusage-mobile.debug.user.js

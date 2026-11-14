@@ -17,7 +17,7 @@
 ## 安装与同步
 
 - 用户从上游仓库 `main` 的 Raw HTTPS 地址安装：正式版为 `https://raw.githubusercontent.com/ByteRax/zcode-token-usage-statusbar/main/zusage-mobile.user.js`，调试版为同目录 `zusage-mobile.debug.user.js`。README、插件 README 和用户指南提供可点击入口，不要求用户寻找插件缓存或本机源码。
-- 两个产物保留各自 `@name`，各自的 `@downloadURL`、`@updateURL` 指向同一变体的根目录 Raw 地址；调试版更新不能变成正式版。源码分片维护脚本 `@version`，重建不会自行涨号。脚本管理器按其设置检查并确认更新，不由桌面插件静默安装。
+- 两个产物保留各自 `@name`，各自的 `@downloadURL`、`@updateURL` 指向同一变体的根目录 Raw 地址；调试版更新不能变成正式版。源码分片维护脚本 `@version`，重建不会自行涨号。脚本版本独立于桌面插件版本，正式版与调试版使用相同版本号；首次公开分发前可重设版本起点，公开分发后按脚本产物更新递增（包括内嵌桌面 overlay 的变化）。脚本管理器按其设置检查并确认更新，不由桌面插件静默安装。
 - `main` 链接跟随源码分支，可能领先正式插件 Release；安装文档须提醒使用支持当前中继协议的桌面插件。只有源码推送并进入上游 `main` 后，新地址才能提供相应产物；本地构建不等于已发布。
 - `sync_plugin.py` 依次构建桌面 overlay、quota 与手机用户脚本，再同步既有 `FILES`；`--check` 同时检查三类根产物且不写文件。用户脚本不加入 `FILES`、Release 资产或插件包白名单，沿用源码 Raw 分发。
 - 移除旧 `docs/` 同名产物；不保留第二份构建副本。构建器只写当前工作树根目录文件，不自动清理任意旧路径或用户文件。
