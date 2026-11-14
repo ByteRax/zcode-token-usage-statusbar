@@ -25,7 +25,7 @@ description: "处理本项目（ByteRax/zcode-token-usage-statusbar）的 GitHub
 3. **外部 PR 先扫后派（安全硬门禁）**：
    - 外部 PR **严禁在未完成 §3 隐藏字符扫描前直接并发派给多个 subagent 裸读**。必须先由主 agent 在项目根完成 `git fetch` 固定起点 SHA、落盘 diff 与提交信息、跑 `triage.py scan` 确认「高危类 = 0」，之后才可在同一轮并发派发 §4 的多路只读审查 subagent。
 4. **同轮多路并发独立 Review（见 §4）**：
-   - §4 的每一轮审查都必须在**同一轮工具调用中同时启动全部 reviewer subagent**（按规模表取路数，首行 0–1 路小改动可自审不派；常规 2–4 路，复杂 UI/图表/多状态机改动可横向拆细至合计 4–10 路专项只读 subagent），禁止串行排队。所有 reviewer 严格只读，需要改码做变异测试或运行外部 PR 代码时，各自在独立的 `mktemp -d` 下 `git clone --no-hardlinks` 临时副本并 `remote remove origin`。
+   - §4 的每一轮审查都必须在**同一轮工具调用中同时启动全部 reviewer subagent**（按规模表取路数，首行 0–1 路小改动可自审不派；常规 2–4 路，复杂 UI/图表/多状态机改动可横向拆细至合计 4–6 路专项只读 subagent，上限见仓库 `specs/review-agent-concurrency.md`），禁止串行排队。所有 reviewer 严格只读，需要改码做变异测试或运行外部 PR 代码时，各自在独立的 `mktemp -d` 下 `git clone --no-hardlinks` 临时副本并 `remote remove origin`。
 
 ## 0. 预检
 
@@ -130,7 +130,7 @@ python3 -B "${ZCODE_SKILL_DIR}/scripts/triage.py" released <提交>     # 该提
 | 文档/文案或单文件小修，无行为变化 | 0–1 路：自审 diff + 全套测试 |
 | 常规 bug 修复/小功能（约 3–8 个文件） | **2 路并行**：A 正确性与回归 + B 变异式测试审查 |
 | 跨模块、协议/契约/安全相关、主进程冷文件、外部 PR | **3–4 路并行**：A + B + C 文档与副本一致性；外部 PR 必加 D 安全审查 |
-| 复杂多状态 UI / 图表 / 多模块大改或要求极致深审 | **合计 4–10 路并行专项切片**：在 A/B/C（及 D）的额度内将复杂域横向拆分给独立 subagent 同轮并发深审（如：状态机与边界逻辑、DOM/CSS/窄窗与浅色主题、焦点/悬停/事件竞态、Python/SQLite 聚合口径、多路分片变异测试猎杀） |
+| 复杂多状态 UI / 图表 / 多模块大改或要求极致深审 | **合计 4–6 路并行专项切片**：在 A/B/C（及 D）的额度内将复杂域横向拆分给独立 subagent 同轮并发深审（如：状态机与边界逻辑、DOM/CSS/窄窗与浅色主题、焦点/悬停/事件竞态、Python/SQLite 聚合口径、多路分片变异测试猎杀；上限依据 `specs/review-agent-concurrency.md`） |
 
 处理规则：主 agent 等待当轮全部并行 reviewer 返回后汇总去重；BLOCKER/MAJOR 必须修；MINOR 修掉，或在回复里写明为何不修；MINOR 的修复若不只是改措辞，再开 reviewer 覆盖这些改动。**review 发现问题的修复均由主 agent 在目标 worktree 内集中执行并同步副本**（避免多 subagent 并发写同一 worktree；多议题各自的实现 subagent 仍按总则 item 1 在独占 worktree 内并行工作）。修完提交后**再开新一轮并行 reviewer**，攻击对象包括上一轮的修复本身，被审 SHA 换成修复之后的新 SHA。终止条件是某一轮所有并行 reviewer 都给出「可合并」且无 BLOCKER/MAJOR（MINOR 已修或写明理由），并且本地全套测试相对基线无新增失败。**默认最多 3 轮**：第 3 轮仍有 BLOCKER/MAJOR（说明方案本身有问题），或一轮之内反复来回震荡，就停下来向用户报告，不无限循环；此时成果只在本地 worktree，报告里写明路径、分支和未解决的问题。用户明确要求「审到没有任何问题为止」时，终止条件收紧为某一轮所有 reviewer 都未发现任何缺陷，轮数不设上限；但同一个缺陷修后又复现、修复来回震荡、或连续三轮的缺陷总数（含 MINOR）没有下降，就停下来报告。
 

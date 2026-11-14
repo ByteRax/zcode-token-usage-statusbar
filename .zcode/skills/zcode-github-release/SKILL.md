@@ -38,7 +38,7 @@ description: "仅为当前 zcode-token-usage-statusbar 项目发版：检查、�
    - **子代理 1（全量测试与静态检查路）**：针对发布 worktree（测试或编译检查一律带 `PYTHONDONTWRITEBYTECODE=1` 与 `python3 -B`，或先 `git clone --no-hardlinks` 到 `mktemp -d` 临时目录运行——克隆只含已提交内容，阶段 A 未提交的版本号与 `VERSION` 台账改动不在其内，须先把目标文件拷入克隆再测，否则测的是旧树；**绝不在发布 worktree 内留下未跟踪文件、`__pycache__` 或修改任何字节**，以免破坏阶段 B 的 `git status --porcelain` 空检查与确定性 ZIP 比对）运行 `sync_plugin.py --check`、`node --check overlay.js && node --check inject-main.cjs`、`node --test tests/*.test.cjs` 及 `python3 -B -m unittest discover -s tests -p 'test_*.py'`，汇总测试结果并区分环境基线红灯。
    - **子代理 2（代际台账、升级链与冷文件核查路）**：按 [发布前检查](references/pre-publish-checks.md) 执行 `overlay.js` 的 `VERSION` 台账严格递增校验、用历史正式 tag（`v1.4.0`、`v1.4.5`、`vLAST` 等）的 `release_unpack.py` 在独立临时目录校验新生成的候选 ZIP，并跑 `PREV_TAG..TARGET` 冷文件 diff 给出准确的「重启要求」判定结论。
    - **子代理 3（更新日志消费者与合同核查路）**：按 [更新日志交付](references/update-log-delivery.md) §1–§5 检查目标提交中 `plugin-release.cjs`、`plugin-updater.cjs`、`inject-main.cjs`、`overlay.js` 的日志消费实现、版本身份映射及对应单元测试覆盖情况。
-   - **子代理 4（PR 素材采集与更新说明核实路）**：按 [更新说明规范](references/release-notes.md) 盘点 `PREV_TAG..TARGET` 的真实提交与合并 PR，批量读取各 PR 正文的「发版说明素材」块并对照提交 diff、测试和文档核实真伪（若跨度内 PR 较多，可再拆成 2 个并行子代理分片读取 PR），汇总「新增 / 修复与改进 / 安装与升级注意 / 能力成熟度」结构化草稿交回主 agent 定稿 `release-notes.md`。
+   - **子代理 4（PR 素材采集与更新说明核实路）**：按 [更新说明规范](references/release-notes.md) 盘点 `PREV_TAG..TARGET` 的真实提交与合并 PR，批量读取各 PR 正文的「发版说明素材」块并对照提交 diff、测试和文档核实真伪（若跨度内 PR 较多，可再拆成 2 个并行子代理分片读取 PR），仅按「新增 / 修复与改进」汇总白话短句草稿；必要的重启、迁移与能力限制并入相关条目，核实证据另交工作记录，由主 agent 定稿 `release-notes.md`。
 2. **阶段 D / E / F 发布后多端只读回读并发扇出**：
    - 正式发布（D）或渠道推送（E）完成后，可**同一轮并行派发只读验收 subagent**：一路回读 GitHub Release 状态、正文并下载真实发布资产重跑历史解包器升级链验证；一路回读 GitCode 镜像 tag、Release 正文与资产一致性（已授权镜像时）；一路在独立临时目录比对远端 `plugin-releases` / `plugin-releases-gitcode` 清单与本地生成清单的字节与 SHA256。
 3. **严禁下放给并发 subagent 的写操作（红线）**：
@@ -87,7 +87,7 @@ python3 -B -m unittest discover -s tests -p 'test_*.py'
 可由阶段 A 的并行只读 subagent 先完成提交/PR 扫描、冷文件 diff 核对与日志消费者合同核查，再由主 agent 汇总并写入最终说明文件：
 
 - 先执行 [更新日志交付](references/update-log-delivery.md) 的消费者能力检查与来源映射：以目标提交中实际实现为准，未实现日志 UI 时只准备 Release 正文，不将设计计划写成已发布功能；已实现时检查其数据合同与适用回归。日志必须对应准确仓库、渠道和版本/提交，不用 latest 或同版本号猜测源码对应关系。不要为此擅自新增包内文件、第三个资产或修改发布 schema。
-- 按 [更新说明规范](references/release-notes.md) 核实范围、撰写面向用户的 Markdown（含重启要求等必写项）。未发布的渠道、未安装的客户端、仅夹具验证的平台必须如实区分。使用 Write 保存为新的 UTF-8 `release-notes.md`，放在独立资产目录或临时目录，不混入 ZIP 或修改用户现有文件；拒绝空正文和仅项目名/版本的一行占位，发布工具不会自动编造说明。
+- 按 [更新说明规范](references/release-notes.md) 核实范围、撰写小白能看懂的短说明：只保留「新增」「修复与改进」，空节省略，每条一句白话；必要的重启或迁移提醒并入相关条目，不附安装说明、验证或提交范围。未发布的渠道、未安装的客户端、仅夹具验证的平台必须如实区分。使用 Write 保存为新的 UTF-8 `release-notes.md`，放在独立资产目录或临时目录，不混入 ZIP 或修改用户现有文件；拒绝空正文和仅项目名/版本的一行占位，发布工具不会自动编造说明。
 
 ## 提交与 tag（阶段 B，须授权）
 

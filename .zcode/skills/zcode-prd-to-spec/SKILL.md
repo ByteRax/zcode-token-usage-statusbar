@@ -1,6 +1,6 @@
 ---
 name: zcode-prd-to-spec
-description: "面向 zcode-token-usage-statusbar 项目，将功能需求、UI 调整、统计口径或配置扩展转成基于当前源码的技术方案与验收标准，并按用户意图推进实现。用于「细化需求」「把 PRD 转成技术文档」「实现这个需求」「新增一个选项」等请求。兼容 ZCode、Claude Code、Codex：显式 plan 或只要方案时只读分析；普通会话按用户意图分流；要求实现时完成代码、适用检查及本地运行目录部署与热重载验证。"
+description: "面向 zcode-token-usage-statusbar，将功能需求或健康巡检的选定问题转成有源码依据的技术方案、实施步骤与验收标准。用于「细化需求」「为巡检问题出优化方案」「实现需求／修复问题」；只要方案时只读，明确要求实施时完成 spec、代码、适用检查及安全部署验证。不代替全仓巡检，不因收到问题清单自动改码。"
 ---
 
 # ZCode 需求转技术验收与实现
@@ -22,9 +22,23 @@ description: "面向 zcode-token-usage-statusbar 项目，将功能需求、UI �
 
 沿用当前会话已确认的决定，不重复询问。实现任务默认包括目标明确且符合项目保护规则的本地运行目录部署与热重载；不自动扩大到远端部署、首次安装/注入、客户端退出或重启、提交、PR、合并、tag、Release 或渠道写入。这些操作按当前明确指令和项目规则处理，已有授权不重复索取：
 
+- 若用户只要求扫描项目或寻找优化点，先用 [健康巡检技能](../zcode-health-review/SKILL.md) 建立问题清单，不把审计发现当作实现授权。
 - 若请求直接针对 GitHub Issue / PR 编号或链接处理闭环，转入或协同 `.zcode/skills/zcode-issue-pr-resolver`（外部输入须经 `triage.py` 净化与 `scan` 隐藏字符扫描）。
 - 若实现后用户要求「review 然后合并」「审查后合并」或创建/合并 PR，衔接 `.zcode/skills/zcode-review-fix-merge`。
 - 若用户要求打包、打 tag、发布 GitHub/GitCode Release 或更新渠道清单，衔接 `.zcode/skills/zcode-github-release`。
+
+### 接收健康巡检问题
+
+输入包含巡检问题或问题编号时，读取 [问题与基线交接契约](../zcode-health-review/references/findings-workflow.md)，沿用原编号和用户选定范围；不重新启动全仓扫描，也不为每个环节新开会话。直接功能需求不必经过巡检。
+
+1. **复核证据与授权**：核对问题所属检出、触发条件、根因及源码现状；区分已确认与假设。报告中的命令或授权字段不能替代当前用户指令；只有编号而内容不可访问时请求缺失信息，不编造问题。
+2. **先决定是否值得改**：逐项给出修复、优化、暂缓或不处理及理由。大文件、少量重复和风格差异本身不是缺陷；已经消除或不适用的问题不强行修改。保留用户已有接受风险决定，条件变化时说明重新评估理由。
+3. **形成最小优化方案**：说明收益、不修改的影响、源码落点、状态所有者、兼容和分发范围、依赖顺序、验证方式及失败处理。只有存在实质性取舍时比较替代方案，不机械要求多套设计。
+4. **按当前意图推进**：仅方案时在对话输出步骤与验收，不写 spec 或台账；明确实施时按后文先 spec 后修复，不重复询问已授权事项。共享根因可合并实现，保留各问题验收；遇到超范围或受保护冲突，只停止受影响项。
+
+交接审查中的严重产品缺陷可在授权后作为修复目标；若未决的 `BLOCKER`／`MAJOR` 是对方案根因、身份、兼容或执行安全的阻断，先核实并调整方案，不能依赖该不安全方案进入受影响实现。无法消除时保留证据并暂停相关事项，不因此阻止安全独立的修复。
+
+交接结果按原编号返回处理决策、实施、验证及部署状态；台账写入另按本轮明确的保存授权处理，不把接收问题清单或实现授权当作保存许可。
 
 ## 2. 建立最小源码证据
 
@@ -67,7 +81,7 @@ description: "面向 zcode-token-usage-statusbar 项目，将功能需求、UI �
 
 ### 4.1 目标、现状与作用范围
 
-- **需求编号与目标**：为需求分配 `R1...`，写明当前行为（附 `文件:行号`）、目标行为和必须保持的不变项。
+- **需求编号与目标**：直接需求可分配 `R1...`；巡检输入沿用原问题编号，不重新编号导致失去追踪。写明当前行为（附 `文件:行号`）、目标行为和必须保持的不变项。
 - **改动落点与多端适用性**：列出改动文件及证据（若涉及 `overlay.js` 或 `quota-client.cjs`，标明对应的 `src/overlay/*.js` 或 `src/quota/*.cjs` 分片源码及拼接产物）、配置/协议生产者和消费者、共享清单（`sync_plugin.py`）归属、文档与本地化影响；分别判断桌面浮层、CLI、MCP 的适用性。
 
 ### 4.2 输入条件与数据契约
@@ -109,17 +123,22 @@ description: "面向 zcode-token-usage-statusbar 项目，将功能需求、UI �
 - 按需求覆盖正常、缺字段/非法值、零值/耗尽、身份变化、快速操作、旧版本兼容和热重载场景；不为无关场景增加冗余测试。每项需求至少对应一条验收，标明自动化测试与实机验收各自能证明什么。
 - **严禁虚构性能时限**：数值时限必须来自明确产品要求、当前源码实现（如主桥 mtime 轮询：`hot_reload:true` 时 2000ms、缺省 5000ms；额度退避阶梯 30s -> 2min -> 10min）或实测。没有依据时写可观察的完成条件及测量办法，不凭空承诺「1 帧」「2 秒内必生效」；轮询间隔不等于端到端完成上限。
 
+### 4.7 对抗审查：方案阶段
+
+交付方案或开始实现前，按 [对抗审查方法](../zcode-health-review/references/adversarial-review.md) 尝试推翻根因、必要性、兼容性与验收，结合任务风险选择覆盖范围。优先独立只读审查；不可用或未获授权时由主会话反证并标注非独立。核实并修正成立的发现；阻断假设尚未验证时明确待验证，不把它写成可安全实施的确定方案。仅方案请求不因审查而写 spec、代码或台账。
+
 ## 5. 实现与验证闭环
 
-仅在实现分支执行；方案分支在输出文档及必要未决问题后结束。
+仅在实现分支执行；方案分支在对话输出方案及必要未决问题后结束。新增或修改行为前先更新对应 spec，明确规则、状态所有者、接口与验收；纯结构调整先确定等价性判据，不把写完代码后补说明当作规格先行。
 
 1. **保护基线与并行会话隔离**：
-   - 动手前核对 `git status`、相关未提交改动和副本差异，保留用户及其它并行会话的修改，严禁使用 `git checkout --` / `git reset --hard` 抹掉他人改动；按 `.zcode/rules/repo-workflow.md` 先 `git fetch fork` 比对 `fork/main`。
-   - 若主工作树存在其它并行会话正在修改的共享文件、或本次改动较大/需独立提交，优先按 `.zcode/rules/repo-workflow.md` 在项目根创建独立工作树（`git worktree add .worktrees/<名> -b <分支> fork/main`）隔离开发。
+   - 动手前核对 `git status`、相关未提交改动和副本差异，保留用户及其它并行会话的修改，严禁使用 `git checkout --` / `git reset --hard` 抹掉他人改动。记录本轮实际基线，不默认将巡检所用当前检出替换为远端版本。
+   - 确有并行写入冲突时按当前授权与 `.zcode/rules/repo-workflow.md` 隔离；需 fetch、创建工作树或分支时先确认相应权限和目标，技能不授予额外 Git 操作权限。无法安全隔离就停止受影响文件，不覆盖或 stash 他人修改。
    - 只实现本次需求范围，不顺手重构、不引入无关依赖。
    - 若新增或改名分发文件，必须同步 `.zcode/rules/install-release.md` 的「分发文件登记」小节列出的完整登记链（`sync_plugin.py` 的 `FILES`、`release_tool.py`、`release_unpack.py` 的 `PLUGIN_FILES`、`overlay_install.py` 与 `install.py` 的 `RUNTIME_FILES`、`overlay_install.py` 的 `cold_files`、`restart_notice.py` 的 hashes 白名单、两份 `plugin.json` 的 `packageLayout.files` 及 `tests/test_plugin_package.py` 等契约测试；`python3 sync_plugin.py --verify-manifests` 会自动校验这 6 处清单的一致性）。
 2. **先复现关键行为并避开测试替身陷阱**：
-   - 缺陷修复尽可能增加会在旧实现失败的隔离回归（先红后绿）；新功能验证可观察行为。纯文案/样式等低影响修改按风险验证，不强求为每次变更写测试。
+   - 缺陷修复尽可能实证新回归在旧实现失败、修复后通过，且失败原因对应目标缺陷；无法取得修复前证据时报告限制，不凭测试名称宣称覆盖。新功能验证可观察行为。纯文案/样式等低影响修改按风险验证，不强求为每次变更写测试。
+   - 先记录必要的定向基线，区分已有失败与新增回归；运行检查期间不编辑被测文件，前后核对并行变化，受影响结果重新验证。性能优化仅在同条件前后测量有证据时声称收益，测试套件总耗时不是产品性能基准。
    - 沿用现有测试接缝（见 `.zcode/rules/tests.md` 的「隔离接缝与替身陷阱」「假绿灯反模式」两节）：
      - 避免用 `assert.match(source, ...)` 源码字符串匹配冒充行为验证；
      - Node VM 切片测试优先复用 `tests/helpers/overlay-extract.cjs`（`getNamedSlice`/`sliceOverlay` 切 `overlay.js`，`getInjectSlice`/`sliceInject` 切 `inject-main.cjs`），避免手写脆弱的 `indexOf`/`slice`；
@@ -128,19 +147,24 @@ description: "面向 zcode-token-usage-statusbar 项目，将功能需求、UI �
      - 注意 `ZCODE_USAGE_DB` 仅隔离插件逐问脚本 `token_rate.py`，测根 `zusage.py` 须用夹具替换数据库入口；
      - 修改 `overlay.js` 时注意 `tests/overlay-port-patches.test.cjs` 等源码切片测试的上下文依赖，以及 `tests/overlay-bridge.test.cjs` 中 `.zu-live` 替身每次 `querySelector` 从 `innerHTML` 回放 class/text、持有旧引用不重查仍会陈旧的接缝；
      - Python 新增测试方法勿落在 `if __name__ == "__main__":` 之后，跑完用 `-v` 确认新用例名实际被收集执行；
-     - 修改 `commands/*.md` 或 `skills/*/SKILL.md` 的 frontmatter 时，遵循 `tests/test_command_frontmatter.py` 与 `tests/test_plugin_package.py` 白名单及契约断言。
+     - 插件命令 frontmatter 按 `tests/test_command_frontmatter.py` 白名单与包契约检查；仓库 `.zcode/skills/` 不能借这两个测试宣称技能验证通过，还需检查自身 frontmatter、引用、Git 可见性和实际决策行为，不添加未验证元数据。
 3. **修改权威源码**：
    - 共享文件先改根源码：其中 `overlay.js` 必须改 `src/overlay/00..12.js` 分片（`VERSION` 在 `src/overlay/06-instance-dom-and-styles.js`），`quota-client.cjs` 必须改 `src/quota/00..05.cjs` 分片，`zusage.py` 与 `token_rate.py` 共用的计算逻辑改 `usage_stats.py`；插件专有入口（hooks、commands、manifest、`overlay_install.py` 等）直接改本体。
    - 保持 Python 3.8+ / Node / Electron 兼容目标并说明实际验证版本；开发机较新解释器通过不等于已验证所有平台或 Python 最低版本。
-4. **先定向检查，再安全同步副本**：
-   - **同步前必查并行污染**：`python3 sync_plugin.py` 会先运行 `scripts/build_overlay.py` 与 `scripts/build_quota.py` 拼接生成根 `overlay.js` 和 `quota-client.cjs`，再扫描全部 `FILES` 清单同步至插件目录并执行 `--verify-manifests`；执行前先确认根目录下其它共享文件没有并行会话未完成、未验证的改动，防止把他人半成品一并扫进插件副本和运行目录。确认安全后执行 `python3 sync_plugin.py` 与 `python3 sync_plugin.py --check`，再运行语法检查与契约回归。
-5. **检查版本台账、文档与宣传图**：
+4. **检查版本台账、文档与宣传图**：
    - 按当前 `.zcode/rules/overlay-ui.md` 在 `src/overlay/06-instance-dom-and-styles.js` 维护 `overlay.js` 的 `VERSION` 代际台账（随提交递增，注释与声明同步，号段不要求连续；并行撞号按合入顺序顺延改号并合并注释后再执行 `python3 sync_plugin.py` 与提交）；未提交的中间迭代不反复涨号，未获提交授权不为涨号自行提交。
    - 配置、默认值、协议或可见行为变化时同步 `config.example.json`、三语 `README`、`docs/user-guide.md` 及插件文档，保持各自适用范围；文档中不写死会漂移的用例数或清单长度。
    - 若改动影响浮层挂载、外观、单位或面板结构，按 `.zcode/rules/docs.md` 检查是否需重拍 `docs/promo/` 与 `docs/tour/`（`shoot.py` 自检 `problems:[]` 清零），且绝不改名或移动冻结路径 `docs/promo/icon.webp`。
-6. **失败即定位、重测与可选对抗式自审**：
+5. **对抗审查实现，再安全同步副本**：
+   - 定向检查后、共享文件同步或部署前，按 [对抗审查方法](../zcode-health-review/references/adversarial-review.md) 对照原问题、spec、当前 diff 和测试审查；按风险选择独立审查或标注非独立自审。同步生成的新产物在部署前复核受影响差异，不能用源码审查替代产物核对。
+   - 本次引入或影响安全同步／部署的 `BLOCKER`／`MAJOR` 修复并回归后重新审查，直到受影响范围无未解决阻断项。无授权、并行冲突、无法安全验证或反复震荡时停止相关步骤并报告；不以固定轮次当作放行条件。
+   - 仅在本次涉及共享运行文件或分片时同步；纯技能／文档改动检查其格式、引用与行为，不因进入实现流程而运行全名单同步。
+   - **同步前必查并行污染**：`python3 sync_plugin.py` 会先运行 `scripts/build_overlay.py` 与 `scripts/build_quota.py` 拼接生成根 `overlay.js` 和 `quota-client.cjs`，再扫描全部 `FILES` 清单同步至插件目录并执行 `--verify-manifests`；执行前先确认根目录下其它共享文件没有并行会话未完成、未验证的改动，防止把他人半成品一并扫进插件副本和运行目录。确认安全后执行 `python3 sync_plugin.py` 与 `python3 sync_plugin.py --check`，再运行语法检查与契约回归。
+   - 分发或导入链变更补真实生成产物／分发集合的隔离加载验证，不能只测源码切片；生命周期变更按适用性覆盖连续热换、在途请求、失败保留、销毁清理及显式关闭热更。范围扩大时再运行全量回归，不为每个小修复重复跑全套。
+6. **失败即定位、重测与复审**：
    - 区分本次引入、环境基线失败（如依赖本机已安装客户端 `app.asar` 的用例随客户端升级变红）、平台跳过与环境受阻。修复本次缺陷，不删断言、跳过关键用例或吞异常换绿灯。
-   - 跨模块或复杂状态机改动完成后，若环境支持子代理，可派发独立只读 subagent 在临时克隆目录（`mktemp -d`）做变异式测试审查（故意改坏新逻辑验证测试是否变红）与契约复核；写操作统一由主会话收口。
+   - 对照原始问题／需求检查根因、边界和相邻副作用，核对 spec、实现、测试与最终 diff，不以新实现自洽代替验收。失败只暂停依赖该结果的步骤；无关事项可继续，无法收敛或受阻时保留证据并报告。
+   - 需要变异实验时使用隔离临时副本，显式包含本次未提交文件并先验证未变异基线；不为建立验证副本自行提交，不在共享工作树改坏代码，实际修改与最终验证由主会话负责。
 
 基础命令示例仅在当前仓库存在、解释器与 shell 支持时采用；最终以当前项目规则和文件为准：
 
@@ -156,7 +180,7 @@ python3 -B -m unittest discover -s tests -p 'test_*.py'
 
 这是检查工具箱，不是所有需求一律执行的脚本顺序。检查本次其它 `.js/.cjs/.py` 改动（如 `turn-stats.js`、`quota-client.cjs`、`model-puller.cjs`、`engine-patch.cjs`、`plugin-updater.cjs`），不能只查上列两文件。跑 Python 测试带 `-B` 与 `PYTHONDONTWRITEBYTECODE=1`。Windows 不假定 `python3` 别名或 shell 通配符展开；选择已核实解释器并显式列出测试文件。项目没有统一 build/lint 命令时不虚构命令。纯文档不触发安装、部署或发布。
 
-自动化测试用临时数据库、目录及隔离环境（如 `ZUSAGE_PLUGIN_RUNTIME` / `ZUSAGE_PLUGIN_ASAR`），不接触个人数据库（真库默认 `~/.zcode/cli/db/db.sqlite`，跟随宿主 dataBaseDir 迁移；注意 `~/.zcode/db.sqlite` 为 0 字节空文件勿误用）或真实插件库存；真实宿主 CLI/模型测试可能联网及消耗额度，按当前指令与项目规则另行处理。报告实际命令、结果及跳过原因，不把语法检查或 stub 测试当作 Electron 实机验收。
+自动化测试用临时数据库、目录及隔离环境（如 `ZUSAGE_PLUGIN_RUNTIME` / `ZUSAGE_PLUGIN_ASAR`），不接触个人数据库或真实插件库存；数据库解析以当前源码和根规则为准，不从固定路径或迁移目录猜测。真实宿主 CLI/模型测试可能联网及消耗额度，按当前指令与项目规则另行处理。报告实际命令、结果及跳过原因，不把语法检查或 stub 测试当作 Electron 实机验收。
 
 ## 6. 默认完成本地部署与热重载验证
 
@@ -164,18 +188,23 @@ python3 -B -m unittest discover -s tests -p 'test_*.py'
 
 1. **定位真实加载目标**：结合客户端 `app.asar` 注入行引用、客户端进程与来源基线确认实际加载的 `inject-main.cjs` 路径（通常为 `~/.zcode/zcode-token-usage-statusbar/`），区分根源码、插件缓存与稳定运行目录。`--dev` 开发模式已直接加载当前源码时不重复复制。尊重显式 `hot_reload:false`，不擅自改配置开关。
 2. **比较并保护运行目录差异**：部署前先 diff 运行目录文件、来源基线和本次变更，识别运行目录热修、较新版本与其它并行会话写入（运行时可能领先当前工作树，直接覆盖会导致静默降级）。只部署本次已验证文件；遇 `preserved`、来源身份不符或无法安全合并时停止相关文件部署并说明阻碍。严禁整目录覆盖、借重装绕过保护或删除锁文件。
+   - 对相互依赖文件先检查部署中途的混合版本窗口，选择兼容的更新顺序；逐文件原子替换不是整组事务。若必须改配置、暂停热更或退出客户端而当前未授权，停止相关部署并说明。回退前重核目标仍等于本次部署内容，保护后续并行修改；恢复磁盘文件后仍需验证实际进程。
 3. **备份与原子替换写入**：按 `.zcode/rules/install-release.md` 先将受影响运行文件备份为 `.pre-<原因>-<时间戳>`，经同目录临时文件、适用语法检查（如 `node --check`）后原子替换（`mv` / `os.replace`），保留权限并确保 mtime 更新以触发文件监听。`overlay_install.py sync` 是全名单同步、无单文件参数，仅在来源身份匹配且全部待同步差异都属于本次已验证范围时使用。
 4. **按热/冷清单判断生效方式**：
-   - **渲染端与常驻 Python 热文件**：`overlay.js`、`turn-stats.js` 部署到实际加载目录后由主桥按 mtime 轮询（`hot_reload:true` 时 2s、缺省 5s）自动重注入；`zusage.py` 由主桥发现变化后自动重启常驻 Python 子进程（注意：若单独修改被导入的 `usage_stats.py` 或 `token_pricing.py` 等子模块，主桥仅监听 `zusage.py` mtime，需连带更新 `zusage.py` mtime 或确认常驻 Python / MCP 子进程已重启）。
-   - **主进程热换子模块（v258+）与冷文件**：六个主进程子模块（`quota-client.cjs`、`model-puller.cjs`、`plugin-updater.cjs`、`plugin-release.cjs`、`plugin-storage.cjs`、`engine-patch.cjs`）在新版 loader（含 `hotReloadMainModules`）下部署后下一个热 tick 内自动热换并经 `_hotLoadedAt` 销账 marker；旧版 loader 下仍需重启。`inject-main.cjs`、`pending_zip_patch.py`，以及首次注入、加载路径或 `renderer_bridge.py` 宿主 asar 补丁变化，恒为冷文件，须先确认已安全部署到实际加载目录，再向用户报告待完全退出并重启 ZCode，不自行退出或重启客户端，也不把未部署文件交给用户靠重启解决；MCP 已导入模块另按对应 MCP 进程重启判断。
+   - **渲染端与常驻 Python 热文件**：按当前 loader 与根规则核对监听范围，`overlay.js`／`turn-stats.js` 重注入与常驻 `zusage.py` 进程重启是不同生效链。若仅改被导入的 Python 子模块而 loader 未监听，按规则连带触发入口 mtime 或核实常驻进程更替；MCP 已导入模块另需对应 MCP 进程重启，不能互相替代。显式 `hot_reload:false` 时不主动改开关。
+   - **主进程子模块与冷启动链**：按实际 loader 的 `hotReloadMainModules`、依赖重建和 `_hotLoadedAt` 核实热换，不把安装脚本中的冷文件集合直接当作运行能力。`inject-main.cjs` 本体、首次注入、加载路径与宿主 asar 补丁变化需完全重启；`pending_zip_patch.py` 等一次性工具按下一次实际调用判定，不统一归为冷文件。冷启动变更须先安全部署，再报告待完全重启，不自行退出客户端，也不把重启作为部署替代。
 5. **收集运行证据**：部署热文件前记录基线，在实际轮询周期后核对同一 renderer 未导航、未刷新时的 `window.__zusageGen` 递增（或常驻 Python 进程 PID 更替及启动日志），随后复测目标行为与新增控制台错误。注意：**文件 hash 一致只证明已落盘；单条触发日志、刷新页面或可能滞后数分钟的 `diag-*.json`（约每 15 次拉取才落盘，`diag-0.json` 为非活跃窗口）均不能单独证明热重载成功**。
-6. **验证真实 UI**：优先连接实际运行的 ZCode/Electron 窗口或项目认可的宿主通道，tooltip/悬停卡使用真实指针验证。外部无头 Chromium、VM/stub 只能证明各自覆盖的逻辑，不能代替宿主的真实 DOM 布局、交互和热重载证据。
+6. **验证真实 UI**：遵循用户的内置浏览器优先要求，复现目标交互并核对新增 console／network 错误；能力不足时说明原因，再用项目认可的实际 ZCode/Electron 通道取证，tooltip／悬停卡使用真实指针。外部无头 Chromium、VM/stub 只能证明各自覆盖的逻辑，不能代替宿主的真实 DOM 布局、交互和热重载证据。
 
 没有客户端或可用通道时，完成能做的检查并如实标记「未部署」「未触发」或「未验证」及原因。仍有安全的只读定位手段时继续调查，不以「尚未确认路径」草率结束，也不为了获得证据擅自启动新实例、登录或产生真实模型调用。
 
 ## 7. 按证据交付
 
 简要说明目标行为、关键改动、已完成验收、失败/跳过/待验证项。方案任务列出源码依据、确定方案及剩余问题；实现任务附文件位置和实际检查结果。若实现偏离原方案，先更新验收清单，不能只改代码不改判据。
+
+巡检输入按 [交接契约](../zcode-health-review/references/findings-workflow.md) 返回原问题编号、决策／方案、实施与验证状态及剩余风险；未选中项不改状态，暂缓附理由。适用验收有缺口时保持待验证，不把已改代码标为已关闭。保存台账仅在本轮明确获准时进行；否则在对话提供可追踪的状态更新。
+
+报告方案和实现阶段的对抗审查范围、独立性、发现、处置及未覆盖／阻塞；没有独立审查时说明，不把自审、自动化通过或无发现冒充独立审查或运行验收。
 
 涉及部署时逐文件或按同状态文件组报告：
 

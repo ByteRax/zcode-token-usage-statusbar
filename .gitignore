@@ -14,6 +14,7 @@ diag-*.json
 !.zcode/skills/zcode-issue-pr-resolver/
 !.zcode/skills/zcode-review-fix-merge/
 !.zcode/skills/zcode-prd-to-spec/
+!.zcode/skills/zcode-health-review/
 !.zcode/skills/source-feature-adaptation/
 !.zcode/rules/
 config.json
