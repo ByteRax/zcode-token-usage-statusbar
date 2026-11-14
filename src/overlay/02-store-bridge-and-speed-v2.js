@@ -948,7 +948,7 @@
       (modelLine ? '<div class="zu-sl-model" data-tip="' + spdEsc(modelFull) + '" aria-label="' + spdEsc(modelFull) + '">' +
         '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
         '<path d="m12 3 9 5-9 5-9-5 9-5Z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/></svg>' +
-        '<span>' + spdEsc(modelLine) + "</span></div>" : "") +
+        '<span class="zu-model-fit">' + spdEsc(modelLine) + "</span></div>" : "") +
       /* v263：口径公式行删除（规格点名「删除大段统计口径文字」，语义由图例 ⓘ title 承载）。
        * v307（用户规格）：「生成中估 X t/s」note 行删除——生成中估算只留标题旁
        * 「生成中（估算）」徽标，瞬时估算值不再与历史均值同卡并列（完成态会话均
@@ -1001,7 +1001,7 @@
       '</span><b class="zu-sv-twrap" title="' + spdEsc(item.full) + '">' + spdEsc(timeVal) + "</b></div>" +
       '<div class="zu-sv-crow"><span>' + spdEsc(SPD_L("速度", "Speed")) + '</span><b class="zu-sv-cval' +
       (bd ? " " + bd.cls : "") + '">' + (item.v % 1 ? item.v.toFixed(1) : String(item.v)) + " t/s</b></div>" +
-      '<div class="zu-sv-crow"><span>' + spdEsc(SPD_L("模型型号", "Model")) + '</span><b title="' + spdEsc(modelFull) + '">' + spdEsc(modelTxt) + "</b></div>" +
+      '<div class="zu-sv-crow"><span>' + spdEsc(SPD_L("模型型号", "Model")) + '</span><b class="zu-model-fit" title="' + spdEsc(modelFull) + '">' + spdEsc(modelTxt) + "</b></div>" +
       '<div class="zu-sv-crow"><span>' + spdEsc(SPD_L("Token 总消耗", "Total tokens")) + '</span><b>' + spdEsc(tokLine) +
       '<small>' + spdEsc(sub) + "</small></b></div>" +
       '<div class="zu-sv-crow"><span>' + spdEsc(SPD_L("预估价格", "Est. cost")) + "</span><b>" + cost + "</b></div></div>";
@@ -1120,7 +1120,7 @@
       '<div class="zu-sv-plotrow"><div class="zu-sv-gutcol"><span class="zu-sc-gutter">' + gutter + '</span></div>' +
       '<div class="zu-sc-wrap" data-sv-end="1"><div class="zu-sv-plot"><i class="zu-sv-spacer" style="width:' + L.spacerW + 'px"></i>' +
       '</span><span class="zu-sc-grid">' + grid + '</span>' +
-      '<span class="zu-sv-bars">' + cols + "</span></div></div></div>";
+      '<span class="zu-sv-bars' + (n >= 10 ? ' zu-sv-bars--spread' : '') + '">' + cols + "</span></div></div></div>";
   }
   /* v281：档位说明浮层内容（底部常驻图例移除，改由图表标题栏问号按钮承载）。
    * 十档自 TPS_BANDS 升序生成（颜色/星标/文案与柱体、chip 同源唯一事实）；
@@ -1166,6 +1166,79 @@
       return "\x01" + speedCardV2HTML(opts);
     };
   }
+  /* 模型名按实际宽度缩小至不低于 10px，仍放不下时保留既有省略兜底。 */
+  function fitModelNames(root) {
+    if (!root || !root.querySelectorAll) return;
+    var nodes = root.querySelectorAll(".zu-model-fit");
+    for (var i = 0; i < nodes.length; i++) {
+      var el = nodes[i];
+      if (!el.style || !el.clientWidth) continue;
+      el.style.removeProperty("font-size");
+      var initial = parseFloat(getComputedStyle(el).fontSize) || 14;
+      el.style.setProperty("white-space", "nowrap", "important");
+      for (var size = Math.floor(initial); el.scrollWidth > el.clientWidth + 1 && size > 10; )
+        el.style.setProperty("font-size", (--size) + "px", "important");
+    }
+  }
+  /* 只按筛选栏和左卡量尺寸，不读取图表横滚内容，避免随历史桶数量撑宽。 */
+  function spdFitTip(tip, reset) {
+    if (!tip || !tip.querySelector || !tip.style) return;
+    var root = tip.querySelector(".zu-sv-root");
+    if (!root) {
+      tip.__zuSpeedSize = null;
+      tip.style.removeProperty("--zu-sv-width");
+      tip.style.removeProperty("--zu-sv-height");
+      tip.style.removeProperty("--zu-sv-left-width");
+      return;
+    }
+    var vw = window.innerWidth, vh = window.innerHeight;
+    if (!(vw > 0 && vh > 0) || !root.getBoundingClientRect) return;
+    var maxW = Math.max(1, vw - 24), maxH = Math.max(1, vh - 16);
+    /* 速度卡以 14px 基准整体缩放；保留最小 80%，空间不足再交给扩高和滚动。 */
+    var tipStyle = getComputedStyle(tip);
+    var fontSize = parseFloat(tipStyle && tipStyle.getPropertyValue && tipStyle.getPropertyValue("--ui-font-size")) || 14;
+    var scale = Math.max(0.8, Math.min(1, 14 / fontSize));
+    root.style.zoom = String(scale);
+    root.style.width = "100%";
+    var previous = reset ? null : tip.__zuSpeedSize;
+    if (previous && (previous.vw !== vw || previous.vh !== vh || previous.font !== fontSize)) previous = null;
+    tip.style.setProperty("--zu-sv-width", Math.min(760, maxW) + "px");
+    tip.style.setProperty("--zu-sv-left-width", (vw <= 780 ? 190 : 210) + "px");
+    tip.classList.add("zu-sv-measure");
+    var head = root.querySelector(".zu-sv-head"), left = root.querySelector(".zu-sv-left");
+    var width = Math.min(760, maxW), baseLeft = vw <= 780 ? 190 : 210, leftWidth = baseLeft;
+    try {
+      if (head) width = Math.max(width, head.getBoundingClientRect().width + tip.getBoundingClientRect().width - root.getBoundingClientRect().width);
+      if (left) {
+        var title = left.querySelector(".zu-sl-title"), status = left.querySelector(".zu-sl-status");
+        if (title && status) leftWidth += Math.max(0, title.scrollWidth - title.clientWidth);
+        var stats = left.querySelectorAll(".zu-sl-stat b");
+        for (var i = 0; i < stats.length; i++) {
+          /* ×3：.zu-sl-stat 为三等分列，单列截断量换算为左卡总增量 */
+          leftWidth = Math.max(leftWidth, baseLeft + Math.max(0, stats[i].scrollWidth - stats[i].clientWidth) * 3);
+        }
+        leftWidth = Math.min(320, Math.max(leftWidth, previous ? previous.left : 0));
+        width = Math.max(width, 760 + leftWidth - baseLeft);
+      }
+      width = Math.min(maxW, Math.ceil(Math.max(width, previous ? previous.w : 0)));
+      leftWidth = Math.min(leftWidth, Math.max(120, width - 120));
+    } finally {
+      tip.classList.remove("zu-sv-measure");
+    }
+    tip.style.setProperty("--zu-sv-width", width + "px");
+    tip.style.setProperty("--zu-sv-left-width", leftWidth + "px");
+    tip.classList.add("zu-sv-measure-height");
+    var height = 300;
+    try {
+      height = Math.ceil(tip.getBoundingClientRect().height);
+    } finally {
+      tip.classList.remove("zu-sv-measure-height");
+    }
+    if (height > 300) height += 12;   // 留出标题、正文和底部统计的呼吸间距
+    height = Math.min(maxH, Math.max(300, height, previous ? previous.h : 0));
+    tip.style.setProperty("--zu-sv-height", height + "px");
+    tip.__zuSpeedSize = { w: width, h: height, left: leftWidth, vw: vw, vh: vh, font: fontSize };
+  }
   /* V2 整卡（v278 三层）：单行 Header（标题居左 + 双 Tab 组整体靠右）→ 左统计卡 +
    * 右动态图（统计时间在图表标题栏右端）→ 单行十档对照。到此结束。 */
   function speedCardV2HTML(o) {
@@ -1187,7 +1260,9 @@
        *   （30 天整除零空位；31 天末格跨行尾，永不留空隙）；
        * ③tbody 纵向 auto——其它 Tab（柱状/历史）内容超高时滚动而非裁切；
        * ④滚动条隐藏、ultra 抑制等既有契约不变。 */
-      '<style>.zusage-tip-root:has(.zu-sv-root),.zusage-tps-tip:has(.zu-sv-root){width:min(760px,calc(100vw - 24px))!important;max-width:min(760px,calc(100vw - 24px))!important;height:300px!important;box-sizing:border-box!important;overflow:hidden!important}' +
+      '<style>.zusage-tip-root:has(.zu-sv-root),.zusage-tps-tip:has(.zu-sv-root){width:var(--zu-sv-width,min(760px,calc(100vw - 24px)))!important;max-width:calc(100vw - 24px)!important;height:var(--zu-sv-height,300px)!important;max-height:calc(100vh - 16px)!important;box-sizing:border-box!important;overflow-y:auto!important;overflow-x:hidden!important}' +
+      '.zu-sv-measure .zu-sv-head{width:max-content!important;max-width:none!important;flex-wrap:nowrap!important}.zu-sv-measure .zu-sv-filter,.zu-sv-measure .zu-sv-tabs{flex-wrap:nowrap!important}' +
+      '.zu-sv-measure-height:has(.zu-sv-root){height:auto!important;max-height:none!important}.zusage-tip-root.zu-sv-measure-height:has(.zu-sv-root) .tbody,.zusage-tps-tip.zu-sv-measure-height:has(.zu-sv-root) .tbody,.zusage-tip-root.zu-sv-measure-height:has(.zu-sv-root) .zu-sv-root,.zusage-tps-tip.zu-sv-measure-height:has(.zu-sv-root) .zu-sv-root{height:auto!important;max-height:none!important;overflow:visible!important}.zu-sv-measure-height .zu-speed-body{min-height:180px!important}.zu-sv-measure-height .zu-sv-left .zu-sl-body{min-height:max-content!important}' +
       /* v303.1：tbody padding 归零——速度卡根带 zu-stat-tip 类会吃到 06:887 的
        * 12px 15px（与根 .tip 10px 13px 叠成 22/28 双层），与紧凑四卡统一后的
        * 单层 10px 13px 不一致（真机 segH 实证 tbody 278−24=root 254） */
@@ -1200,7 +1275,7 @@
       '.zusage-tip-root:has(.zu-sv-root) .tbody,.zusage-tps-tip:has(.zu-sv-root) .tbody{height:100%!important;box-sizing:border-box!important;overflow:hidden!important;overflow-y:auto!important;padding:0!important;scrollbar-gutter:auto!important}' +
       /* v295.2：tpsTip 链生产上无 .tbody（直塞卡），该规则空匹配无害；harness 复刻页
        * 带 tbody 层，缺这条会让 tbody 高度悬空、卡 height:100% 回落内容高溢出被裁 */
-      '.zusage-tip-root:has(.zu-sv-root) .zu-sv-root,.zusage-tps-tip:has(.zu-sv-root) .zu-sv-root{height:100%!important;min-height:0!important;box-sizing:border-box!important;display:flex;flex-direction:column;overflow:hidden}' +
+      '.zusage-tip-root:has(.zu-sv-root) .zu-sv-root,.zusage-tps-tip:has(.zu-sv-root) .zu-sv-root{height:100%!important;min-height:0!important;box-sizing:border-box!important;display:flex;flex-direction:column;overflow:visible}' +
       /* 300 小卡：本月态隐藏左统计卡（热力图铺满），其余 Tab 左卡纵排换行 */
       '.zusage-tip-root:has(.zu-sv-root) .zu-sv-root:has(.zu-hm-month) .zu-sv-filter{flex-wrap:wrap}' +
       /* 滚动条隐藏：新 Chromium（Fluent/overlay 滚动条）忽略 ::-webkit-scrollbar，

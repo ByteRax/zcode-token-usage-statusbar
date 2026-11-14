@@ -228,8 +228,9 @@
      * → v344 增强提示词按钮（specs/prompt-enhance.md）：模型 chip（chat-model-select-trigger，空配置「管理模型」分支同名）左侧 ✦ 按钮，chip 缺位回退用量圆环左侧；点击读 composer 草稿（__zcodeLexicalInputE2E，Lexical 直写 DOM 不进 EditorState 的唯一官方写通道）经 pluginRequest("prompt-enhance") 主进程按会话模型凭据（v4-model-config 实时选择优先、快照 last 兜底）一次性非流式改写后回填前重读草稿比对防覆盖用户编辑，再以 setText 替换，20 秒内按钮变撤销态恢复原文；增强中忽略再点（主进程 60s 超时 + 渲染端 75s 兜底）；警示态 4s 自愈（空草稿/模型未识别/失败原因/冲突）。实现落 model-puller.cjs enhanceText（三协议非流式 POST、套餐源 planTokenOf 解密、api-key 型自定义供应商、错误摘录脱敏）+ inject-main 白名单三动作（prompt-enhance / prompt-enhance-cancel 取消 / enhance 开关，enhance_enabled 缺省开显式 false 关、推送面 enhanceEnabled）+ ⚙ 面板「回答统计」分区开关行。增强中再点按钮=取消在途请求；主进程不认识新动作的旧版本回 unknown action，按钮按失败警示不挂起。
      * → v345 issue #327 回答末尾统计行逐拍消失/重现加固：scanDeterministicLines 在 owner 令牌取不到的单拍里对已验证归属的行整块 remove 且当拍 continue 不重建，令牌逐拍抖动即呈约 0.5s 一档的亮灭、块高归零下方内容跳动。现对「证据缺席」型空令牌（owner 无归属实例 / sid 实例暂无会话）且行仍属同一 tid（新增 __zuDetTid）宽限：连续 3 拍且跨过 1s 才撤（拍数防回执爆发耗尽、墙钟防后台节流拉长，同一扫描内多 box 命中同一行只计一次，时钟回拨视为到期，恢复一拍清零）；scope 与 sid 不符或侧聊远端（属于别的会话的反证）、归属换成另一个有效令牌（SID/scope 切换）、无 __zuDetOwner/__zuDetTid 的遗留行仍即时撤，fail-closed 对这些情形不松动。带行 box 令牌为空的原因拍数（owner/sid/scope）、宽限放行数 grace、空令牌撤行数 removed、非空令牌换代撤旧数 swap 与本代起算时刻 since 累计进 FATAL.det.nullOwner 随 diag 落盘，供报告者回传定位是哪个写入方在抖动。未证因果：本机复现不了，宽限属加固而非已确认根因的修复。
      * → v347 状态轮播附加工作时长与悬停提示（specs/status-rotator-work-duration.md；性能预算 specs/perf-lag-reduction.md 规则 17）：①appendWorkDuration 开关（默认 true、显式 false 保留，存 zusage3.rotator2）开启且 labelSource=phrases 时在 loading 行 label 后追加宿主同款「工作中 X 分 X 秒」兄弟 span（.zu-rotator-elapsed，格式逐句对齐宿主 formatConversationWorkDuration：max(1,round(ms/1000)) 拆天/时/分/秒非零入列至多两段、中文值与单位间空格；起点锚 turnHeader.startedAt 与宿主折叠头计时逐秒一致，宿主文案节点在虚拟滚动内无生产 API 故自算）；②悬停纯 CSS tooltip（data-tip + zu-rot-livetip 伪元素，内容同款文案）独立于开关①恒随轮播，零监听零布局读取，气泡静态 pointer-events:none 防偷 hover 抖动；③写入纪律（规则 17）：span 判位 nextElementSibling O(1) 零新增文档级查询、textContent/data-tip/classList 带比较前置判断按整型秒门控（同秒内 tick 零 DOM 写、每行至多 1 写/秒，不在打字机 15Hz 写流上叠加），文案缓存挂 rotatorRuntime 随热重载换代，restore 名单并入既有 querySelectorAll 选择器串；④⚙ 面板「追加工作时长」checkbox（.zu-rot-append-duration，启用行之后）走既有 setCb/change 尾缀统一保存链，底部预览卡不联动；⑤两轮用户实报修复——文字隐形根因=宿主 gradient label 的 -webkit-text-fill-color:transparent 是继承属性压过规则 color 使气泡文字全透明（CDP computed 实证，pointer-events 实测 auto 排除禁点），气泡显式重置 -webkit-text-fill-color:var(--color-tooltip-foreground) 堵继承；红色泛光根因=宿主 label 自带 filter:drop-shadow(rgba(255,0,85,.45) 辉光)（255,0,85=宿主渐变首色，shimmer 固有）不继承但作用整棵子树，气泡作为 label 伪元素子盒被整体泛光——data-tip/类改挂行容器 [data-testid="chat-loading"] 脱离作用域，label 旧代际属性每拍清退防热重载双气泡，还原名单行级摘除；样式对齐宿主原生 TooltipContent 视格（asar 实证 rounded-lg border-border bg-tooltip px-3 py-1.5 text-ui-sm，原生即无阴影——用户点名去阴影）：去 box-shadow、--color-tooltip/--color-tooltip-foreground 反色变量、var(--color-border) 边框、圆角 8px、padding 6px 12px。
+     * → v348 速度与统计浮层适配大字号（specs/speed-tooltip-adaptive-layout.md、specs/stat-tooltip-large-text.md；开发早于 v347、晚于其合入，代际号按合入时间线顺延取 v348）：①速度卡 spdFitTip（02 分片）——固定 760×300 改 CSS 变量驱动（--zu-sv-width/--zu-sv-height/--zu-sv-left-width 注入 tip，未设置时 fallback 精确回落旧值），字号异常增大先按 14px 基准整体 zoom（下限 0.8），只按筛选栏/左卡量尺寸不读图表横滚内容，空间不足再按内容扩高（>300 加 12px 呼吸间距）并经 tip 纵滚到达，视口变化经既有定位周期 reset 重算、字号变化留待下次重建经 previous（__zuSpeedSize，含 font）失效重算，同视口同字号内 previous 防悬停中逐拍重建的尺寸抖动；②统计/模型名 fitModelNames（02 分片）——.zu-model-fit 按实际宽度缩字号至不低于 10px、仍放不下保留省略+title 全名，接入速度卡/统计卡模型表/项目卡/fxTip/子代理浮层（子代理浮层 td 补 max-width 帽让 fit 在表级溢出档生效）；③统计卡「输入」标签 .zu-kpi-label nowrap + .zu-stat-k flex-wrap（07 分片），命中率徽标允许换行不重叠；④多柱（n≥10）柱组 .zu-sv-bars--spread 均匀铺满、柱宽不拉粗（部分恢复 v273⑤ 废止的 space-between，仅多柱档）；⑤图表横滚位置 __zuChartScroll 关闭时捕获/重开同键回填（修隐藏态 scrollLeft 恒 0），root overflow:visible + tip overflow-y:auto、wheel 到边放行默认滚动，键盘 Tab 进滚动明细区（role=region）+Shift+Tab 归还；QA 门 ZU_GEOMETRY_ONLY（tests/speed-tooltip-host）覆盖 14/17/20px 字号与重叠断言。
      */
-    var VERSION = "v347";
+    var VERSION = "v348";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
@@ -895,7 +896,7 @@
       ".zu-sp-models thead th:first-child{text-align:left;padding-left:2px}" +
       ".zu-sp-models td{padding:4px 6px;border-top:1px solid var(--color-border,rgba(255,255,255,.08));text-align:right;color:var(--color-foreground,#e6e9ef);font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);font-size:calc(var(--ui-font-size,14px) - 1px);white-space:nowrap}" +
       ".zu-sp-models tr:first-child td{border-top:0}" +
-      ".zu-sp-models td:first-child{text-align:left;padding-left:2px;font-family:inherit;color:var(--color-foreground,#f1f2f3);white-space:normal;overflow-wrap:anywhere}" +
+      ".zu-sp-models td:first-child{text-align:left;padding-left:2px;font-family:inherit;color:var(--color-foreground,#f1f2f3);white-space:normal;overflow-wrap:anywhere;max-width:300px}" +
       ".zu-sp-meta{display:flex;flex-wrap:wrap;gap:4px 16px;align-items:baseline;margin-top:10px;padding-top:10px;border-top:1px solid var(--color-border,rgba(255,255,255,.09));color:var(--color-foreground-subtle,#a8aaae);font-size:calc(var(--ui-font-size,14px) - 3px)}" +
       ".zu-sp-meta b{font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);font-variant-numeric:tabular-nums;font-weight:600;color:var(--color-foreground,#e6e9ef)}" +
       ".zu-spf{flex:0 0 auto;display:flex;align-items:center;gap:8px;min-height:34px;padding:8px 14px;border-top:1px solid var(--color-border,rgba(255,255,255,.09));color:var(--color-foreground-subtle,#a8aaae);font-size:calc(var(--ui-font-size,14px) - 1px)}" +
@@ -1125,7 +1126,7 @@
        * 不再被 plot max-content/图表头文案反向撑缩（宽随 Tab 跳动的根因） */
       /* 左卡撑满 body 高度（2026-11-07 用户规格，收回 v274「自然高」）：
        * zu-sl-body flex:1 吸收富余高，主数字居中、峰值/最低/最新钉底 */
-      ".zu-sv-root .zu-speed-body{gap:12px;align-items:stretch;flex:1;min-height:0}" +
+      ".zu-sv-root .zu-speed-body{gap:12px;align-items:stretch;flex:1;min-height:180px}" +
       /* v292：整卡定高 315 后图表列纵向布局——head 自然高、图表区吃剩余 */
       ".zu-sv-chart{display:flex;flex-direction:column;min-height:0;" +
         "border:1px solid var(--color-popover-border,rgba(255,255,255,.14));" +
@@ -1133,7 +1134,9 @@
       ".zu-light .zu-sv-chart{border-color:rgba(15,23,42,.14)}" +
       ".zu-sv-chart .zu-sc-wrap{flex:1;min-height:0;padding:5px 0;box-sizing:border-box}" +
       ".zu-sv-root .zu-speed-chart{flex:1 1 0;min-width:0;max-width:100%}" +
-      ".zu-sv-root .zu-sv-left{flex:0 0 210px;gap:0}" +
+      ".zu-sv-root .zu-sv-left{flex:0 0 var(--zu-sv-left-width,210px);min-height:max-content;gap:0}" +
+      ".zu-sv-root .zu-sv-left .zu-sl-body{min-height:max-content}" +
+      ".zu-sv-root .zu-sl-model{height:auto;min-height:26px}" +
       /* v295.1（定高 300）：左卡内容紧凑化——主数字 +22px 会让 stats 行溢出卡底
        * 被 tip 裁切，降至 +12px 并收紧间距 */
       ".zu-sv-root .zu-sv-left .zu-sl-main{font-size:calc(var(--ui-font-size,14px) + 12px)}" +
@@ -1177,6 +1180,7 @@
        * 会在 .zu-sc-wrap 撑出 ~2px 可滚区（用户实报「最近 3 轮」横向可滚一点点）
        * ——两侧各留 5px 呼吸边距（容 6 字符粗体值），溢出归零即无横滚 */
       ".zu-sv-bars{position:absolute;inset:0;display:flex;align-items:flex-end;justify-content:flex-start;gap:0;padding:0 5px}" +
+      ".zu-sv-bars--spread{justify-content:space-between}" +
       /* 细柱定宽：少量柱不拉伸、数据多时横滚，柱组居中 */
       ".zu-sv-bars .zu-sc-col{flex:0 0 24px;height:100%}" +
       ".zu-sv-bars .zu-sc-vz{flex:1 1 auto;height:auto}" +
@@ -1236,7 +1240,7 @@
       ".zu-light .zu-sv-li.cur{background:rgba(0,0,0,.05)}" +
       ".zu-sv-li b{font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);font-variant-numeric:tabular-nums;" +
         "font-weight:600;font-size:calc(var(--ui-font-size,14px) - 3px);white-space:nowrap}" +
-      "@media (max-width:780px){.zu-sv-root .zu-sv-left{flex:0 0 190px}}" +
+      "@media (max-width:780px){.zu-sv-root .zu-sv-left{flex:0 0 var(--zu-sv-left-width,190px)}}" +
       /* ---------- v291 热力图（本月月历 / 全部历史 GitHub 风格） ----------
        * 颜色=档位类 currentColor（与柱体/图例唯一事实源 TPS_BANDS 同源）：历史格
        * 实底（GitHub 风格）；月历格 v294 起低饱和混色+左色条（见下方 v294 注释块）。
@@ -1374,6 +1378,7 @@
       ".zu-light .zu-sl-model{border-color:rgba(15,23,42,.14);background:rgba(0,0,0,.05)}" +
       ".zu-sl-model svg{flex:none;opacity:.85}" +
       ".zu-sl-model span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
+      ".zu-model-fit{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
       /* 2026-11-09 用户实报：宿主内原生 title 气泡不弹（同轮播设置分区先例，v268）——
        * 模型行全名列表改纯 CSS data-tip 伪元素气泡（zu-rot-tipt 同款）。
        * .zu-sv-left 放开卡片 overflow:hidden（V2 作用域，V1 老卡单 .zu-speed-left
@@ -2117,6 +2122,11 @@
     /* 项目卡内部 Escape：先收档位说明浮层（v282，只收浮层不关卡）、再收费用说明
      * （fxTip），否则关卡；关闭后焦点归还仍存活的触发项。 */
     tip.addEventListener("keydown", function (e) {
+      if (e.key === "Tab" && e.shiftKey && e.target && e.target.classList && e.target.classList.contains("zu-turn-models") && tipFor) {
+        e.preventDefault();
+        tipFor.focus();
+        return;
+      }
       if (e.key !== "Escape") return;
       e.stopPropagation();
       if (spdLegendTip.style.display === "block") { spdLegendTipHide(); return; }
@@ -2169,8 +2179,9 @@
       if (!wrap || wrap.scrollWidth <= wrap.clientWidth + 1) return;
       var d = (e.deltaY || 0) + (e.deltaX || 0);
       if (!d) return;
+      var before = wrap.scrollLeft;
       wrap.scrollLeft += d;
-      e.preventDefault();
+      if (wrap.scrollLeft !== before) e.preventDefault();
     }, { passive: false });
     tip.addEventListener("mouseout", function (e) {
       var to = e.relatedTarget;
@@ -2193,6 +2204,11 @@
       if (lb) spdLegendTipShow(lb);   /* v282：键盘聚焦问号同样显示 */
     });
     tip.addEventListener("focusout", function (e) {
+      if (e.target && e.target.classList && e.target.classList.contains("zu-turn-models") &&
+          !(e.relatedTarget && (tip.contains(e.relatedTarget) || (main && main.contains(e.relatedTarget))))) {
+        mouseInBar = false;
+        hideTip(true, "focus-leave");
+      }
       var col = e.target && e.target.closest && e.target.closest(".zu-sc-col,.zu-hm-cell");
       /* v242:relatedTarget 落在另一根柱上时不得收卡重建——focusout 先于 focusin,
        * 此处重建会销毁即将接收焦点的目标柱(焦点跌落 body、Tab 序断裂) */

@@ -1054,7 +1054,12 @@
       spdHoverPortalHide();   /* v281：Portal 随 tooltip 收起，不留孤儿浮层 */
       spdLegendTipHide();     /* v282：档位说明浮层同链收起 */
       if (tipGraceTimer) { clearTimeout(tipGraceTimer); tipGraceTimer = 0; }
-      if (tip.style.display !== "none") tip.style.display = "none";
+      if (tip.style.display !== "none") {
+        var closingChart = tip.querySelector && tip.querySelector(".zu-sc-wrap"), closingRoot = tip.querySelector && tip.querySelector(".zu-sv-root");
+        if (closingChart && closingRoot) tip.__zuChartScroll = { key: closingRoot.getAttribute("data-sv-key") || "", x: closingChart.scrollLeft };
+        tip.style.display = "none";
+      }
+      tip.__zuSpeedSize = null;
       if (tipFor && tipFor.removeAttribute) tipFor.removeAttribute("aria-describedby");
       tipFor = null;
       tipSig = "";
@@ -1065,6 +1070,8 @@
       if (tipStats.hideSeq.length > 8) tipStats.hideSeq.shift();   // v275：诊断偶发关闭
     }
     function positionTip(el, keepTop) {
+      if (tip.__zuSpeedSize && (tip.__zuSpeedSize.vw !== innerWidth || tip.__zuSpeedSize.vh !== innerHeight)) spdFitTip(tip, true);
+      if (tip.__zuModelFitWidth !== innerWidth) { fitModelNames(tip); tip.__zuModelFitWidth = innerWidth; }
       var tr = tip.getBoundingClientRect(), ar = el.getBoundingClientRect();
       var left = ar.left + ar.width / 2 - tr.width / 2;
       left = Math.max(8, Math.min(left, Math.max(8, innerWidth - tr.width - 8)));
@@ -1113,6 +1120,7 @@
       if (keepTop && selection && !selection.isCollapsed && selection.anchorNode && selection.focusNode &&
           tip.contains(selection.anchorNode) && tip.contains(selection.focusNode)) { positionTip(el, true); return; }
       var oldBody = tip.querySelector ? tip.querySelector(".tbody") : null, oldScroll = keepTop && oldBody ? oldBody.scrollTop : 0;
+      var oldTipScroll = keepTop ? tip.scrollTop : 0;
       /* v232：速度图表横滚位置跨重建保留；v280 扩展——重开路径（keepTop=false，用户
        * 实报「全部×全部拉到末尾、关闭再开回到开头」）同样捕获，并带选择键守卫
        * （.zu-sv-root 的 data-sv-key 同键才回填，切换范围/时间后归零；V1 旧图无键
@@ -1123,7 +1131,8 @@
         if (oc) {
           var or0 = oldBody.querySelector(".zu-sv-root");
           oldChartKey = or0 ? (or0.getAttribute("data-sv-key") || "") : "";
-          oldChartL = oc.scrollLeft;   /* v291 三态：0 也是有效记忆（滚到最左），null=本图无既有位置 */
+          var savedChart = tip.style.display === "none" && tip.__zuChartScroll;
+          oldChartL = savedChart && savedChart.key === oldChartKey ? savedChart.x : (tip.style.display === "none" ? null : oc.scrollLeft);   /* 0 也是有效记忆；隐藏态不可直接读取 */
         }
       }
       tipSig = t;
@@ -1152,13 +1161,24 @@
         nc.scrollLeft = nc.scrollWidth;
       }
       tip.style.display = "block";
+      spdFitTip(tip, !keepTop);
+      fitModelNames(tip);
+      if (nc && oldChartL !== null) {
+        var fittedRoot = tip.querySelector(".zu-sv-root");
+        if (fittedRoot && (fittedRoot.getAttribute("data-sv-key") || "") === oldChartKey) nc.scrollLeft = oldChartL;
+        else if (nc.hasAttribute && nc.hasAttribute("data-sv-end")) nc.scrollLeft = nc.scrollWidth;
+      } else if (nc && nc.hasAttribute && nc.hasAttribute("data-sv-end")) nc.scrollLeft = nc.scrollWidth;
+      tip.firstChild.scrollTop = oldScroll;
+      tip.scrollTop = oldTipScroll;
       positionTip(el, keepTop);
       /* v297：月历网格实测尺寸回写（动态字号数据源）。v298 起挂 display:block 之后——
        * 隐藏态量测全 0 会把下一帧字号压到 6px 下限（首开闪小字，下轮刷新才自愈）。 */
       var mgEl = tip.querySelector(".zu-hm-grid--mon");
       if (mgEl) {
         var mgr = mgEl.getBoundingClientRect();
-        window.__zusageSpdMonRect = { w: mgr.width, h: mgr.height };
+        var monRoot = mgEl.closest && mgEl.closest(".zu-sv-root");
+        var monZoom = parseFloat(monRoot && monRoot.style && monRoot.style.zoom) || 1;
+        window.__zusageSpdMonRect = { w: mgr.width / monZoom, h: mgr.height / monZoom };
       }
       /* v297.2：分段高度诊断（定位宿主「刻度超出图表卡」——tip→tbody→root→body→chart
        * →plotrow→gutcol/gutter/wrap/plot 全层 rect + 关键 computed style）。
@@ -1199,7 +1219,17 @@
       drawTip(el, false);
     }
     main.addEventListener("keydown", function (e) {
-      if (e.key === "Escape") { e.preventDefault(); hideTip(true, "escape"); }
+      if (e.key === "Escape") { e.preventDefault(); hideTip(true, "escape"); return; }
+      if (e.key === "Tab" && !e.shiftKey && tipFor && e.target === tipFor && tip.style.display === "block") {
+        var scrollRegion = tip.querySelector(".zu-turn-models");
+        if (scrollRegion && (scrollRegion.scrollWidth > scrollRegion.clientWidth + 1 || scrollRegion.scrollHeight > scrollRegion.clientHeight + 1)) {
+          scrollRegion.setAttribute("tabindex", "-1");
+          scrollRegion.setAttribute("role", "region");
+          scrollRegion.setAttribute("aria-label", L("明细，可滚动", "Details, scrollable"));
+          e.preventDefault();
+          scrollRegion.focus();
+        }
+      }
     });
     main.addEventListener("focusin", function (e) {
       if (inactive() || restoringFocus || panel.classList.contains("open")) return;
