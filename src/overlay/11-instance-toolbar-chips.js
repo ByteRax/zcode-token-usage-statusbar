@@ -607,6 +607,14 @@
     var enhanceEnhanced = null;  // v344.2：undo 窗口的成立基准=我们写入的增强文本；不匹配（已发送/被编辑/被清空）即失效
     var enhanceSid = "";         // v344.3：发起时的会话身份（instSid/pickedSid）——回填/撤销前校验，防止结果写进切走后的新会话
     var enhanceCurSid = function () { return instSid || pickedSid || ""; };
+    var enhanceScopeKey = "", enhanceOriginalState = "", enhanceEnhancedState = "";
+    function enhanceStateOf(api) {
+      try { return api && typeof api.getEditorState === "function" ? JSON.stringify(api.getEditorState()) : ""; } catch (e) { return ""; }
+    }
+    function enhanceCurrentScope() {
+      var sid = enhanceCurSid(), scope = readPaneScope(wantedEl, sid, pid);
+      return scope ? JSON.stringify([scope.sid, scope.identity, scope.workspacePath, scope.remoteSessionId]) : "";
+    }
     var ENHANCE_ANCHOR_SEL = '[data-testid="chat-model-select-trigger"]';
     var ENHANCE_INPUT_SEL = '[data-testid="v4-composer-input"]';
     var ENHANCE_UNDO_MS = 20000, ENHANCE_WAIT_MS = 75000, ENHANCE_WARN_MS = 4000;
@@ -614,8 +622,8 @@
     var ENH_SVG_UNDO = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex:0 0 auto"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11"/></svg>';
     var ENH_SVG_BUSY = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-loader-circle size-4 text-foreground-subtle" aria-hidden="true"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>';
     var ENH_SVG_WARN = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex:0 0 auto"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>';    function enhanceInputApi() {
-      var anchor = (enhanceBtnCache && enhanceBtnCache.isConnected) ? enhanceBtnCache : cardCache;
-      var input = nearestByRect(anchor || null, ENHANCE_INPUT_SEL);
+      var input = null;
+      try { input = cardCache && cardCache.isConnected ? cardCache.querySelector(ENHANCE_INPUT_SEL) : null; } catch (e) { }
       if (!input || input.getAttribute("data-e2e-lexical-bridge") !== "ready") return null;
       try { return input.__zcodeLexicalInputE2E || null; } catch (e) { return null; }
     }
@@ -641,11 +649,13 @@
     function onEnhanceClick() {
       if (inactive()) return;
       if (enhancePhase === "enhancing") {
+        if (enhanceSettled) return;   // 写入已提交，等待编辑器状态确认，不再接受取消
         /* v344.1 增强中再点 = 取消：置 settled 丢弃迟到回包（不再应用结果），通知主进程
          * abort 在途请求（prompt-enhance-cancel，fire-and-forget），静默恢复初始可点击态。 */
         enhanceSettled = true;
         if (enhanceWaitTimer) { clearTimeout(enhanceWaitTimer); enhanceWaitTimer = 0; }
         if (enhanceInFlightId) pluginRequest("prompt-enhance-cancel", { requestId: enhanceInFlightId });
+        forgetPluginRequest(enhanceInFlightId);
         enhanceInFlightId = "";   // 清身份键：R1 的迟到回包被 finish 身份门丢弃，不误入后续请求槽位
         enhanceOriginal = "";
         enhanceEnhanced = null;
@@ -660,7 +670,9 @@
         var sidChangedUndo = enhanceSid !== "" && enhanceCurSid() !== enhanceSid;   // v344.3：会话已切换时撤销窗口随之失效
         /* v344.2 守卫：仅当草稿仍是我们写入的增强文本时才回写原文。消息已发送（草稿被
          * 提交流程清空）或用户已再编辑时不恢复——把原文塞进已清空/已变更的输入框是破坏性的 */
-        if (apiUndo && enhanceOriginal && !sidChangedUndo && curUndo === enhanceEnhanced) { try { apiUndo.setText(enhanceOriginal); } catch (e) { } }
+        if (apiUndo && enhanceOriginal && enhanceScopeKey && enhanceCurrentScope() === enhanceScopeKey && !sidChangedUndo && curUndo === enhanceEnhanced && (!enhanceEnhancedState || enhanceStateOf(apiUndo) === enhanceEnhancedState)) {
+          try { if (enhanceOriginalState && typeof apiUndo.setEditorStateJson === "function") apiUndo.setEditorStateJson(enhanceOriginalState); else apiUndo.setText(enhanceOriginal); } catch (e) { }
+        }
         if (enhanceTimer) { clearTimeout(enhanceTimer); enhanceTimer = 0; }
         enhanceOriginal = "";
         enhanceEnhanced = null;
@@ -676,8 +688,18 @@
       var providerId = (quotaSelection && quotaSelection.providerId) ? quotaSelection.providerId : (quotaProvider || "");
       var modelId = (quotaSelection && quotaSelection.modelId) ? quotaSelection.modelId : (quotaModel || "");
       if (!providerId || !modelId) { enhanceWarn(L("未识别当前模型，暂不能增强", "Current model not identified")); return; }
+      enhanceSid = enhanceCurSid();
+      enhanceScopeKey = enhanceCurrentScope();
+      if (!enhanceSid || !enhanceScopeKey) { enhanceWarn(L("未识别当前会话，暂不能增强", "Current session not identified")); return; }
+      enhanceOriginalState = "";
+      try {
+        if (typeof api.getEditorState === "function" && typeof api.setEditorStateJson === "function") enhanceOriginalState = JSON.stringify(api.getEditorState());
+      } catch (e) { enhanceWarn(L("无法保存草稿状态", "Cannot preserve draft state")); return; }
+      if (enhanceOriginalState && /"type"\s*:\s*"prompt-mention"/.test(enhanceOriginalState) || !enhanceOriginalState && /\]\((?:file|plugin|skill|agent):\/\//.test(draft)) {
+        enhanceOriginalState = "";
+        enhanceWarn(L("草稿含引用，暂不能安全增强", "Cannot safely enhance a draft with mentions")); return;
+      }
       enhanceOriginal = draft;
-      enhanceSid = enhanceCurSid();   // v344.3：锚定发起会话，回填/撤销前比对
       if (enhanceTimer) { clearTimeout(enhanceTimer); enhanceTimer = 0; }
       if (enhanceWarnTimer) { clearTimeout(enhanceWarnTimer); enhanceWarnTimer = 0; }
       enhanceWarnText = "";
@@ -698,6 +720,8 @@
       };
       enhanceWaitTimer = setTimeout(function () {
         enhanceWaitTimer = 0;
+        if (enhanceInFlightId) pluginRequest("prompt-enhance-cancel", { requestId: enhanceInFlightId });
+        forgetPluginRequest(enhanceInFlightId);
         finish(function () {
           enhanceWarn(L("增强超时，请稍后重试", "Enhance timed out"));
           enhanceSetPhase("idle");
@@ -706,16 +730,20 @@
       enhanceInFlightId = "";
       myId = pluginRequest("prompt-enhance", { providerId: providerId, modelId: modelId, text: draft }, function (res) {
         finish(function () {
+          if (state.enhanceEnabled === false) { restoreEnhanceBtn(true); return; }
           if (res && res.ok && typeof res.text === "string" && res.text) {
             var apiNow = enhanceInputApi();
-            if (enhanceSid !== "" && enhanceCurSid() !== enhanceSid) {   // v344.3：会话已切换（内容比对无法区分的场景）——绝不写进新会话
+            if (enhanceSid !== "" && (enhanceCurSid() !== enhanceSid || !enhanceScopeKey || enhanceCurrentScope() !== enhanceScopeKey)) {   // v344.3：会话已切换（内容比对无法区分的场景）——绝不写进新会话
               enhanceWarn(L("会话已切换，本次结果未应用", "Session changed; the result was not applied"));
               enhanceSetPhase("idle");
               return;
             }
-            var current = "";
-            try { current = apiNow ? String(apiNow.getText() || "") : ""; } catch (e) { }
-            if (!apiNow || current !== draft) {   // 回填前快照比对：用户已编辑/输入框不可用不覆盖
+            var current = "", currentState = "";
+            try {
+              current = apiNow ? String(apiNow.getText() || "") : "";
+              if (enhanceOriginalState && apiNow && typeof apiNow.getEditorState === "function") currentState = JSON.stringify(apiNow.getEditorState());
+            } catch (e) { }
+            if (!apiNow || current !== draft || (enhanceOriginalState && currentState !== enhanceOriginalState)) {   // 回填前快照比对：用户已编辑/输入框不可用不覆盖
               enhanceWarn(L("草稿已变化，未覆盖你的最新内容", "Draft changed; your latest edits were kept"));
               enhanceSetPhase("idle");
               return;
@@ -725,19 +753,38 @@
               enhanceSetPhase("idle");
               return;
             }
-            enhanceEnhanced = res.text;   // 撤销窗基准=我们写入的增强文本（渲染端即 res.text，无二次解包）
-            enhanceSetPhase("undo");
+            /* Lexical editor.update 异步提交；下一任务读取已提交状态，不能同步判失败。 */
             enhanceTimer = setTimeout(function () {
               enhanceTimer = 0;
-              if (inactive()) return;
-              enhanceOriginal = "";
-              enhanceEnhanced = null;
-              enhanceSid = "";
-              enhanceSetPhase("idle");
-            }, ENHANCE_UNDO_MS);
+              if (inactive() || state.enhanceEnabled === false) return;
+              if (enhanceCurSid() !== enhanceSid || !enhanceScopeKey || enhanceCurrentScope() !== enhanceScopeKey) {
+                enhanceOriginal = ""; enhanceEnhanced = null; enhanceSid = "";
+                enhanceSetPhase("idle");
+                return;
+              }
+              var committed = "";
+              try { committed = String(apiNow.getText() || ""); } catch (e) { }
+              if (enhanceInputApi() !== apiNow || committed !== res.text) {
+                enhanceWarn(L("写回输入框失败或草稿已变化", "Write failed or draft changed"));
+                enhanceSetPhase("idle");
+                return;
+              }
+              enhanceEnhanced = res.text;
+              enhanceEnhancedState = enhanceOriginalState ? enhanceStateOf(apiNow) : "";
+              if (enhanceOriginalState && !enhanceEnhancedState) { enhanceWarn(L("无法确认草稿状态", "Cannot verify draft state")); enhanceSetPhase("idle"); return; }
+              enhanceSetPhase("undo");
+              enhanceTimer = setTimeout(function () {
+                enhanceTimer = 0;
+                if (inactive()) return;
+                enhanceOriginal = "";
+                enhanceEnhanced = null;
+                enhanceSid = "";
+                enhanceSetPhase("idle");
+              }, ENHANCE_UNDO_MS);
+            }, 0);
           } else {
-            /* kind 转可读文案；snippet 是主进程脱敏后的上游错误摘录（实测智谱 500「网络错误 code 1234」
-             * 就藏在这里），截 100 字符带出，用户不用再猜 "server" 是什么 */
+            /* kind 转可读文案；主进程不回传上游错误正文（仅 status/ kind），error 字段只承载
+             * 插件自身的原因短语 */
             if (res && res.kind === "cancelled") { enhanceSetPhase("idle"); return; }   // 取消回包静默收口（正常路径已被身份门丢弃，此处兜 restore 摘除路径）
             var kindMap = {
               server: L("模型服务返回错误", "Model server error"),
@@ -758,10 +805,6 @@
               invalid_model: L("当前模型不可用", "Current model unavailable"),
             };
             var reason = res && res.error ? String(res.error) : (res && res.kind && kindMap[res.kind]) || (res && res.kind) || "enhance failed";
-            if (res && res.snippet) {
-              var snip = String(res.snippet).replace(/\s+/g, " ");
-              if (snip) reason += " · " + (snip.length > 100 ? snip.slice(0, 100) + "…" : snip);
-            }
             enhanceWarn(L("增强失败：", "Enhance failed: ") + reason);
             enhanceSetPhase("idle");
           }
@@ -771,7 +814,7 @@
 
     }
     function enhancePromptBtn() {
-      if (inactive() || state.enhanceEnabled === false) { restoreEnhanceBtn(); return; }
+      if (inactive() || state.enhanceEnabled === false) { restoreEnhanceBtn(true); return; }
       var btn = null;
       try { btn = (cardCache && cardCache.isConnected) ? cardCache.querySelector(ENHANCE_ANCHOR_SEL) : null; } catch (e) { }
       if (!btn || !btn.parentElement) {   // 模型 chip 缺位（罕见分支）：回退用量圆环
@@ -822,7 +865,7 @@
         var apiChk = enhanceInputApi();
         var curChk = "";
         try { curChk = apiChk ? String(apiChk.getText() || "") : ""; } catch (e) { }
-        if (!apiChk || curChk !== enhanceEnhanced || (enhanceSid !== "" && enhanceCurSid() !== enhanceSid)) {
+        if (!apiChk || curChk !== enhanceEnhanced || (enhanceEnhancedState && enhanceStateOf(apiChk) !== enhanceEnhancedState) || !enhanceScopeKey || enhanceCurrentScope() !== enhanceScopeKey || (enhanceSid !== "" && enhanceCurSid() !== enhanceSid)) {
           if (enhanceTimer) { clearTimeout(enhanceTimer); enhanceTimer = 0; }
           enhanceOriginal = "";
           enhanceEnhanced = null;
@@ -853,12 +896,14 @@
       if (alsoCancel && enhanceInFlightId && !enhanceSettled) {
         pluginRequest("prompt-enhance-cancel", { requestId: enhanceInFlightId });
       }
-      if (alsoCancel) enhanceSettled = true;
-      if (enhanceTimer) { clearTimeout(enhanceTimer); enhanceTimer = 0; }
-      if (enhanceWaitTimer) { clearTimeout(enhanceWaitTimer); enhanceWaitTimer = 0; }
-      if (enhanceWarnTimer) { clearTimeout(enhanceWarnTimer); enhanceWarnTimer = 0; }
-      enhancePhase = "idle"; enhanceWarnText = "";
-      if (alsoCancel) { enhanceOriginal = ""; enhanceEnhanced = null; enhanceSid = ""; enhanceSettled = true; enhanceInFlightId = ""; }
+      if (alsoCancel) { forgetPluginRequest(enhanceInFlightId); enhanceSettled = true; }
+      if (alsoCancel) {
+        if (enhanceTimer) { clearTimeout(enhanceTimer); enhanceTimer = 0; }
+        if (enhanceWaitTimer) { clearTimeout(enhanceWaitTimer); enhanceWaitTimer = 0; }
+        if (enhanceWarnTimer) { clearTimeout(enhanceWarnTimer); enhanceWarnTimer = 0; }
+        enhancePhase = "idle"; enhanceWarnText = "";
+        enhanceOriginal = ""; enhanceEnhanced = null; enhanceSid = ""; enhanceScopeKey = ""; enhanceOriginalState = ""; enhanceSettled = true; enhanceInFlightId = "";
+      }
       /* 临时摘除保留 original/enhanced/sid：迟到成功回包经身份门+守卫回填后，undo 撤销与
        * 会话守卫仍完整（复审 MINOR-1：清空会让撤销无声失效、sid 守卫被削弱）。 */
       if (enhanceTipFor === enhanceBtnCache) hideEnhanceTip();   // 在显 tooltip 随按钮一起收（v135 徽标同款）

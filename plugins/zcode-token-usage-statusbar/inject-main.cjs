@@ -1349,12 +1349,20 @@ function handleModelPullRequest(req, wc) {
 function enhanceRequestTextOk(v) {
   return typeof v === "string" && v.trim().length > 0 && v.length <= 20000;
 }
-const enhanceInFlight = new Map();   // requestId → { controller, wc }（渲染端「增强中再点=取消」的中断入口）；requestId 形如 zusage-<gen>-<seq>，gen 每窗口独立计数可能跨窗口相撞，读写都必须校验 wc 归属
+const enhanceInFlight = new Map();   // webContents → Map<requestId, entry>，不同窗口的请求身份隔离
 function handlePromptEnhanceRequest(req, wc) {
+  let entry = null;
+  let entries = enhanceInFlight.get(wc);
+  if (entries && entries.has(req.requestId)) return;   // 同 ID 回执会误消费原请求的回调
   const respond = (result) => {
-    const entry = enhanceInFlight.get(req.requestId);
-    if (entry && entry.wc === wc) enhanceInFlight.delete(req.requestId);   // 只删本窗口条目，防同名误删
-    deliverPluginRequest(wc, req.requestId, result);
+    const entries = enhanceInFlight.get(wc);
+    const owned = !!(entry && entries && entries.get(req.requestId) === entry);
+    if (owned) {
+      entries.delete(req.requestId);
+      if (!entries.size) enhanceInFlight.delete(wc);
+      if (entry.onDestroyed && typeof wc.removeListener === "function") wc.removeListener("destroyed", entry.onDestroyed);
+    }
+    if (!entry || owned) deliverPluginRequest(wc, req.requestId, result);
   };
   if (!enhanceEnabled()) { respond({ ok: false, kind: "disabled", error: "prompt enhance is disabled" }); return; }
   if (!modelPuller || typeof modelPuller.enhanceText !== "function") { respond({ ok: false, kind: "unavailable", error: "model puller unavailable; fully restart ZCode to load it" }); return; }   // 含热换错位窗
@@ -1362,8 +1370,19 @@ function handlePromptEnhanceRequest(req, wc) {
   const model = typeof req.modelId === "string" && req.modelId.length <= 200 && !/[\x00-\x1f\x7f]/.test(req.modelId) ? req.modelId : "";
   if (!enhanceRequestTextOk(req.text)) { respond({ ok: false, kind: "invalid_input", error: "draft length out of range" }); return; }
   if (typeof req.requestId !== "string" || !req.requestId) { respond({ ok: false, kind: "invalid_input", error: "invalid requestId" }); return; }   // 与 cancel 分支口径一致
+  if (!entries) { entries = new Map(); enhanceInFlight.set(wc, entries); }
   const controller = new AbortController();
-  enhanceInFlight.set(req.requestId, { controller: controller, wc: wc });
+  entry = { controller: controller, wc: wc, onDestroyed: null };
+  entry.onDestroyed = () => {
+    const current = enhanceInFlight.get(wc);
+    if (current && current.get(req.requestId) === entry) {
+      current.delete(req.requestId);
+      if (!current.size) enhanceInFlight.delete(wc);
+      controller.abort();
+    }
+  };
+  entries.set(req.requestId, entry);
+  if (wc && typeof wc.once === "function") wc.once("destroyed", entry.onDestroyed);
   modelPuller.enhanceText(req.providerId, model, req.text, { signal: controller.signal })
     .then(respond)
     .catch((e) => { LOG("prompt enhance failed:", e.message); respond({ ok: false, kind: "network", error: "enhance failed" }); });
@@ -1371,9 +1390,12 @@ function handlePromptEnhanceRequest(req, wc) {
 /* 取消在途增强（fire-and-forget，不回执）：abort 后 enhanceText 以 kind:"cancelled" 收口，
  * 渲染端在取消时已置 settled 并丢弃回执，两侧状态各自收敛。 */
 function handlePromptEnhanceCancel(req, wc) {
-  const entry = enhanceInFlight.get(req.requestId);
-  if (entry && entry.wc === wc) {   // 同名 requestId 只取消本窗口的（跨窗口相撞时不误伤）
-    enhanceInFlight.delete(req.requestId);
+  const entries = enhanceInFlight.get(wc);
+  const entry = entries && entries.get(req.requestId);
+  if (entry) {
+    entries.delete(req.requestId);
+    if (!entries.size) enhanceInFlight.delete(wc);
+    if (entry.onDestroyed && typeof wc.removeListener === "function") wc.removeListener("destroyed", entry.onDestroyed);
     try { entry.controller.abort(); } catch (e) { LOG("prompt enhance cancel failed:", e.message); }
   }
 }
