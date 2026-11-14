@@ -226,11 +226,6 @@ test("planKeyOf: enc: v2 config key never leaves as plaintext; falls back to oau
     "builtin:bigmodel-coding-plan": { options: { apiKey: "enc:v2:env:aa:bb.cc" } },   // 密文形态（宿主未解密直写）
   } }));
   const seen = [];
-  const impl = async (url) => {
-    if (url === MODELS_DEV_TEST_URL) return { ok: false, status: 503, body: { cancel() { } } };
-    seen.push({ url, headers: (arguments.length, undefined) || null, auth: null });
-    return sseRes(['data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"ok"}}\n\n', 'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n', 'data: {"type":"message_stop"}\n\n']);
-  };
   const capturing = async (url, requestOpts) => {
     if (url === MODELS_DEV_TEST_URL) return { ok: false, status: 503, body: { cancel() { } } };
     seen.push({ url, headers: requestOpts.headers });

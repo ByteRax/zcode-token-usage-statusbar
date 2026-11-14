@@ -555,12 +555,27 @@ test('same request ID is isolated by window and old replies cannot consume a rep
   const a = {}, b = {}, req = {requestId:'same',providerId:'p',modelId:'m',text:'draft'};
   sandbox.handlePromptEnhanceRequest(req,a); sandbox.handlePromptEnhanceRequest(req,b);
   assert.equal(calls.length,2);
-  sandbox.handlePromptEnhanceRequest({...req,providerId:''},a); assert.equal(calls.length,2); assert.equal(replies.length,0);   // 非法 provider 被真实闸拒绝（零回执）
+  sandbox.handlePromptEnhanceRequest({...req,providerId:''},a); assert.equal(calls.length,2); assert.equal(replies.length,0);   // 同 ID 去重闸先行静默返回（真实 provider 闸在同 ID 闸之后）
   sandbox.handlePromptEnhanceCancel(req,a); assert.equal(calls[0].signal.aborted,true); assert.equal(calls[1].signal.aborted,false);
   sandbox.handlePromptEnhanceRequest(req,a); assert.equal(calls.length,3);
   calls[0].resolve({ok:false}); await new Promise(setImmediate); assert.equal(replies.length,0);
   calls[1].resolve({ok:true,text:'b'}); calls[2].resolve({ok:true,text:'a'}); await new Promise(setImmediate);
   assert.equal(replies.length,2); assert.equal(replies.find(x=>x.wc===a).result.text,'a');
+});
+
+test('main-process real gates: invalid provider and empty draft reject with zero side effects', () => {
+  const start = injectSource.indexOf('function modelPullerProviderOk(v) {');
+  const end = injectSource.indexOf('/* 渠道门控');
+  const calls = [], replies = [];
+  const sandbox = { AbortController, LOG: () => {}, enhanceEnabled: () => true,
+    deliverPluginRequest: (wc, id, result) => replies.push({ id, result }),
+    modelPuller: { enhanceText: () => { calls.push(1); return new Promise(() => {}); } } };
+  vm.runInNewContext(injectSource.slice(start, end), sandbox);
+  const wc = {};
+  sandbox.handlePromptEnhanceRequest({ requestId: 'g1', providerId: '', modelId: 'm', text: '草稿' }, wc);
+  sandbox.handlePromptEnhanceRequest({ requestId: 'g2', providerId: 'p', modelId: 'm', text: '' }, wc);
+  assert.equal(calls.length, 0, 'gates must reject before any network attempt');
+  assert.equal(replies.filter(x => x.result.kind === 'invalid_input').length, 2);
 });
 
 test('write verification waits for asynchronous editor commit', () => {
@@ -574,36 +589,21 @@ test('write verification waits for asynchronous editor commit', () => {
 });
 
 
-test('cancelled enhance frees its callback slot (registry hygiene via 32-slot eviction equivalence)', () => {
+test('cancelled enhance leaves no pending enhance request and never touches the draft', () => {
   const h = harness();
   const ui = h.buildComposer('workspace-main', 'sid_main', { provider: 'p', model: 'm', draft: '草稿' });
   h.inject(); h.boot(); h.coordAttach(ui.editor, 'sid_main');
   h.window.__zusageUpdate(h.payload({ provider: 'p', model: 'm' })); h.tick();
   const btn = h.enhOf(ui.wrap);
-  // 先发一个无关动作 X 占住比 R1 更早的槽位
-  const xIds = [];
-  h.window.__zusagePluginRequests.push({ action: 'test-echo', requestId: 'x-1' });
-  // 占位回执路由记录（simulate 主进程消费：直接 respond）
-  let xHandled = 0;
-  h.window.__zusagePluginResult({ id: 'x-1', ok: true });   // X 的回执直接消费（无 done 回调也无妨——只验证路由不抛）
-  // 发起增强 R1 → 取消 → 回调应被 forget（不占 32 槽）
   btn.listeners.get('click')[0]();
-  const reqs = h.takeRequests();
-  const r1 = reqs.find(r => r.action === 'prompt-enhance');
+  const r1 = h.takeRequests().find(r => r.action === 'prompt-enhance');
   btn.listeners.get('click')[0]();   // 取消
   h.takeRequests();
-  // 无 forget 时：R1 滞留 1 槽。发 31 个新回调请求把窗口填满并逐出最早者
-  for (let i = 0; i < 31; i++) {
-    h.window.__zusagePluginRequests.push({ action: 'test-echo', requestId: 'fill-' + i });
-  }
   const q = h.window.__zusagePluginRequests || [];
-  assert.equal(q.filter(r2 => r2.action === 'prompt-enhance').length, 0, 'cancelled enhance leaves no pending request entry');
-  // 清理队列后验证：fill 回执路由 31 次无异常（若注册表被滞留项污染，回执路由的逐出逻辑会错位）
-  h.takeRequests();
-  let routed = 0;
-  for (let i = 0; i < 31; i++) { h.window.__zusagePluginResult && h.window.__zusagePluginResult({ id: 'fill-' + i, ok: true }); routed++; }
-  assert.equal(routed, 31);
-  assert.equal(ui.editor.__zuDraft, '草稿');   // 全程草稿未被触碰
+  assert.equal(q.filter(r2 => r2.action === 'prompt-enhance').length, 0, 'cancelled enhance must not requeue');
+  h.respond(r1.requestId, { ok: true, text: '迟到结果' });   // 迟到成功回包也不得写稿
+  assert.equal(ui.editor.__zuDraft, '草稿');
+  assert.equal(ui.editor.setTextCalls || 0, 0);
 });
 test('structured mention draft is rejected before network request', () => {
   const h=harness(); const ui=h.buildComposer('workspace-main','sid_main',{provider:'p',model:'m',draft:'@file'});

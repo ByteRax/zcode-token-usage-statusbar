@@ -805,10 +805,6 @@
               invalid_model: L("当前模型不可用", "Current model unavailable"),
             };
             var reason = res && res.error ? String(res.error) : (res && res.kind && kindMap[res.kind]) || (res && res.kind) || "enhance failed";
-            if (res && res.snippet) {
-              var snip = String(res.snippet).replace(/\s+/g, " ");
-              if (snip) reason += " · " + (snip.length > 100 ? snip.slice(0, 100) + "…" : snip);
-            }
             enhanceWarn(L("增强失败：", "Enhance failed: ") + reason);
             enhanceSetPhase("idle");
           }
