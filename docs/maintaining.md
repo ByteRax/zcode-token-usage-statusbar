@@ -128,7 +128,7 @@ python3 release_tool.py verify --repo OWNER/REPO \
 
 ### 发布预演与正式渠道
 
-`release_tool.py publish --dry-run` 使用同样的 `--repo`、`--zip` 和 `--manifest` 参数，并必须提供 `--notes-file /绝对路径/release-notes.md`。先核对上一正式 tag 到目标提交的实际变化，生成包含修复、升级注意和验证结果的非空 UTF-8 更新说明；不要只填版本号。预演会展示完整正文，说明变化后应重新预演。预演仍要求相关源码已提交、目标仓库权限可用、本地与远端 tag 指向该提交且 Release 尚不存在；它不是绕过这些前置条件的离线检查。
+`release_tool.py publish --dry-run` 使用同样的 `--repo`、`--zip` 和 `--manifest` 参数，并必须提供 `--notes-file /绝对路径/release-notes.md`。先核对上一正式 tag 到目标提交的实际变化，生成非空 UTF-8 更新说明（仅「新增」「修复与改进」两章节，必要提醒并入相关条目）；不要只填版本号。预演会展示完整正文，说明变化后应重新预演。预演仍要求相关源码已提交、目标仓库权限可用、本地与远端 tag 指向该提交且 Release 尚不存在；它不是绕过这些前置条件的离线检查。
 
 发布包取工作区字节，必须与 HEAD 逐字节一致。`.gitattributes` 固定 `eol=lf`，Windows 新检出也是 LF；在此之前检出的 Windows 工作区可能仍是 CRLF，预演会报 `line endings differ from HEAD`。先提交或暂存改动，再执行 `git rm --cached -r -q . && git reset --hard` 重新检出。
 

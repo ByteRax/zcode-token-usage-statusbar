@@ -91,6 +91,6 @@ done
 git diff --name-only PREV_TAG..TARGET -- inject-main.cjs plugin-updater.cjs plugin-release.cjs plugin-storage.cjs quota-client.cjs model-puller.cjs engine-patch.cjs renderer_bridge.py patch_install.py pending_zip_patch.py
 ```
 
-用户在配置里显式写了 `hot_reload: false` 时，`overlay.js`、`zusage.py` 也按冷文件处理（`plugin-updater.cjs`、`overlay_install.py` 在该开关为 false 时把它们并入冷文件清单，见 `docs/user-guide.md` 的热更新说明）：只改了这两个文件时，对这类用户同样要写「完全退出再重新打开」，不能写「无需重启」。
+用户在配置里显式写了 `hot_reload: false` 时，`overlay.js`、`zusage.py` 也按冷文件处理（`plugin-updater.cjs`、`overlay_install.py` 在该开关为 false 时把它们并入冷文件清单，见 `docs/user-guide.md` 的热更新说明）：只改了这两个文件时，对这类用户同样要在相关条目末尾补「更新后请完全退出 ZCode 再打开」，不能写「无需重启」。
 
-有输出：「安装与升级注意」写明「完全退出 ZCode（所有窗口，托盘退出而非只关窗口）再重新打开」，只关窗口、刷新页面或重开会话无效。无输出：只涉及热更新文件，也要按 `AGENTS.md` §3 确认实际加载路径后再写「无需重启」。
+有输出：在相关新增或修复条目末尾补「更新后请完全退出 ZCode 再打开」，涉及托盘时注明从托盘退出；不另设「安装与升级注意」章节。只关窗口、刷新页面或重开会话无效。无输出：不例行追加重启声明；确需写「无需重启」时，仍须按 `AGENTS.md` §3 核实实际加载路径。
