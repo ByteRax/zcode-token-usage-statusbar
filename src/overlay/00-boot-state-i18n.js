@@ -409,6 +409,7 @@
     window.__zusagePluginRequests.push(o);
     return o.requestId || "";
   }
+  function forgetPluginRequest(id) { if (id) delete pluginRequestCallbacks[id]; }
   window.__zusagePluginResult = function (result) {
     if (!result || typeof result.id !== "string") return;
     var done = pluginRequestCallbacks[result.id];

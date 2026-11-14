@@ -61,6 +61,11 @@ function sampleCfg() {
 }
 
 function sseRes(events) {
+  if (!events.some(e => e.includes('"type":"message_start"'))) events.unshift('data: {"type":"message_start"}\n\n');
+  if (!events.some(e => e.includes('"type":"content_block_start"'))) events.splice(1, 0, 'data: {"type":"content_block_start","index":0}\n\n');
+  events = events.map(e => e.replace('"type":"content_block_delta","delta"', '"type":"content_block_delta","index":0,"delta"'));
+  const stop = events.findIndex(e => e.includes('"type":"message_delta"'));
+  if (stop >= 0) events.splice(stop, 0, 'data: {"type":"content_block_stop","index":0}\n\n');
   const enc = new TextEncoder();
   let i = 0;
   return {
@@ -88,9 +93,9 @@ function createEnhancer(file, routes, opts) {
 
 test("enhanceUserContent wraps draft in user_draft delimiters", () => {
   const wrapped = M.enhanceUserContent("帮我写个脚本");
-  assert.match(wrapped, /^<user_draft>\n帮我写个脚本\n<\/user_draft>\n\n/);
-  assert.match(M.enhanceUnwrapText({ choices: [{ message: { content: " x " } }] }), /^x$/);
-  assert.match(M.enhanceUnwrapText({ choices: [{ message: { reasoning_content: "思考" } }] }), /^思考$/);
+  assert.match(wrapped, /User draft \(JSON string\):\n"帮我写个脚本"/);
+  assert.match(M.enhanceUnwrapText({ choices: [{ finish_reason: "stop", message: { content: " x " } }] }), /^x$/);
+  assert.equal(M.enhanceUnwrapText({ choices: [{ finish_reason: "stop", message: { reasoning_content: "思考" } }] }), "");
   assert.equal(M.enhanceUnwrapText({ output_text: "out" }), "out");
   assert.equal(M.enhanceUnwrapText({ output: [{ content: [{ type: "output_text", text: "resp" }] }] }), "resp");
   assert.equal(M.enhanceUnwrapText({ content: [{ type: "text", text: "ant" }] }), "ant");
@@ -102,7 +107,7 @@ test("openai chat-completions: url/headers/body shape and content unwrap", async
   const file = tmpCfgPath();
   fs.writeFileSync(file, JSON.stringify(sampleCfg()));
   const { mp, calls } = createEnhancer(file, [
-    { url: "https://relay.example.com/chat/completions", body: { choices: [{ message: { content: "更清晰的提示词" } }] } },
+    { url: "https://relay.example.com/chat/completions", body: { choices: [{ finish_reason: "stop", message: { content: "更清晰的提示词" } }] } },
   ]);
   const r = await mp.enhanceText("custom-relay", "gpt-4o", "写个脚本");
   assert.equal(r.ok, true);
@@ -117,7 +122,7 @@ test("openai chat-completions: url/headers/body shape and content unwrap", async
   assert.equal(body.max_tokens > 0, true);
   assert.equal(body.messages[0].role, "system");
   assert.match(body.messages[0].content, /Prompt Engineering Expert/);
-  assert.match(body.messages[1].content, /^<user_draft>\n写个脚本\n<\/user_draft>/);
+  assert.match(body.messages[1].content, /User draft \(JSON string\):\n"写个脚本"/);
 });
 
 test("anthropic-messages: /v1/messages path, top-level system, dual auth headers", async () => {
@@ -128,6 +133,7 @@ test("anthropic-messages: /v1/messages path, top-level system, dual auth headers
     'event: content_block_start\ndata: {"type":"content_block_start","index":0}\n\n',
     'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"润色"}}\n\n',
     'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"结果"}}\n\n',
+    'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n',
     'event: message_stop\ndata: {"type":"message_stop"}\n\n',
   ]);
   const seen = [];
@@ -153,7 +159,7 @@ test("openai responses: /responses with message-shaped input", async () => {
   const file = tmpCfgPath();
   fs.writeFileSync(file, JSON.stringify(sampleCfg()));
   const { mp, calls } = createEnhancer(file, [
-    { url: "https://resp.example.com/responses", body: { output_text: "resp 结果" } },
+    { url: "https://resp.example.com/responses", body: { status: "completed", output_text: "resp 结果" } },
   ]);
   const r = await mp.enhanceText("responses-relay", "gpt-4o", "写个脚本");
   assert.equal(r.ok, true);
@@ -178,7 +184,7 @@ test("plan source uses anthropic endpoint + decrypted oauth token", async () => 
     if (url === MODELS_DEV_TEST_URL) return { ok: false, status: 503, body: { cancel() { } } };
     if (url === "https://open.bigmodel.cn/api/anthropic/v1/messages") {
       seen.push({ headers: requestOpts.headers, body: JSON.parse(requestOpts.body) });
-      return sseRes(['event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"套餐增强"}}\n\n', 'event: message_stop\ndata: {"type":"message_stop"}\n\n']);
+      return sseRes(['event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"套餐增强"}}\n\n', 'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n', 'event: message_stop\ndata: {"type":"message_stop"}\n\n']);
     }
     throw new Error("unexpected url " + url);
   };
@@ -199,7 +205,7 @@ test("plan source uses anthropic endpoint + decrypted oauth token", async () => 
     if (url === MODELS_DEV_TEST_URL) return { ok: false, status: 503, body: { cancel() { } } };
     if (url === "https://open.bigmodel.cn/api/anthropic/v1/messages") {
       seen2.push({ headers: requestOpts.headers });
-      return sseRes(['event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"套餐增强"}}\n\n']);
+      return sseRes(['event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"套餐增强"}}\n\n', 'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n', 'data: {"type":"message_stop"}\n\n']);
     }
     throw new Error("unexpected url " + url);
   };
@@ -209,7 +215,7 @@ test("plan source uses anthropic endpoint + decrypted oauth token", async () => 
   assert.equal(seen2[0].headers.Authorization, "Bearer plan-oauth-token");   // OAuth 兜底
 });
 
-test("fail-closed: http errors classified, snippet masked and truncated", async () => {
+test("fail-closed: http errors classified without exposing response body", async () => {
   const file = tmpCfgPath();
   fs.writeFileSync(file, JSON.stringify(sampleCfg()));
   const { mp } = createEnhancer(file, [
@@ -219,8 +225,7 @@ test("fail-closed: http errors classified, snippet masked and truncated", async 
   assert.equal(r.ok, false);
   assert.equal(r.kind, "auth");
   assert.equal(r.status, 401);
-  assert.doesNotMatch(r.snippet, /sk-secret-1/);
-  assert.match(r.snippet, /\*\*\*/);
+  assert.equal(r.snippet, undefined);
 });
 
 test("fail-closed: missing key, unknown protocol, provider not found, empty draft", async () => {
@@ -256,22 +261,66 @@ test("fail-closed: invalid json and empty completion", async () => {
   assert.equal(bad.ok, false);
   assert.equal(bad.kind, "parse");
   const { mp } = createEnhancer(file, [
-    { url: "https://relay.example.com/chat/completions", body: { choices: [{ message: { content: "" } }] } },
+    { url: "https://relay.example.com/chat/completions", body: { choices: [{ finish_reason: "stop", message: { content: "" } }] } },
   ]);
   const empty = await mp.enhanceText("custom-relay", "gpt-4o", "写个脚本");
   assert.equal(empty.ok, false);
   assert.equal(empty.kind, "empty");
 });
 
-test("reasoning-only model falls back to reasoning_content then strips fences", async () => {
+test("reasoning-only model does not expose reasoning as a completion", async () => {
   const file = tmpCfgPath();
   fs.writeFileSync(file, JSON.stringify(sampleCfg()));
   const { mp } = createEnhancer(file, [
-    { url: "https://relay.example.com/chat/completions", body: { choices: [{ message: { content: "", reasoning_content: "```text\n思考后的结果\n```" } }] } },
+    { url: "https://relay.example.com/chat/completions", body: { choices: [{ finish_reason: "stop", message: { content: "", reasoning_content: "```text\n思考后的结果\n```" } }] } },
   ]);
   const r = await mp.enhanceText("custom-relay", "gpt-4o", "写个脚本");
-  assert.equal(r.ok, true);
-  assert.equal(r.text, "思考后的结果");
+  assert.equal(r.ok, false);
+  assert.equal(r.kind, "empty");
+});
+
+test("response body abort returns cancelled instead of parse error", async () => {
+  const file = tmpCfgPath();
+  fs.writeFileSync(file, JSON.stringify(sampleCfg()));
+  let ready;
+  const reading = new Promise((resolve) => { ready = resolve; });
+  let calls = 0;
+  const impl = async (url, opts) => {
+    calls++;
+    return { ok: true, status: 200, text: () => new Promise((resolve, reject) => {
+      ready();
+      opts.signal.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })), { once: true });
+    }) };
+  };
+  const mp = M.createModelPuller({ customCfgPath: file, fetchImpl: impl, modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "" });
+  const ctl = new AbortController();
+  const pending = mp.enhanceText("custom-relay", "gpt-4o", "草稿", { signal: ctl.signal });
+  await reading;
+  ctl.abort();
+  const result = await pending;
+  assert.equal(result.kind, "cancelled");
+  assert.equal(calls, 1);
+});
+
+test("SSE reader failure retries without returning partial output", async () => {
+  const file = tmpCfgPath();
+  fs.writeFileSync(file, JSON.stringify(sampleCfg()));
+  let calls = 0;
+  const impl = async () => {
+    calls++;
+    if (calls === 1) {
+      let read = 0;
+      return { ok: true, body: { getReader: () => ({ read: async () => {
+        if (read++) throw new Error("connection reset");
+        return { done: false, value: new TextEncoder().encode('data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"partial"}}\n\n') };
+      } }) } };
+    }
+    return sseRes(['data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"complete"}}\n\n', 'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n', 'data: {"type":"message_stop"}\n\n']);
+  };
+  const mp = M.createModelPuller({ customCfgPath: file, fetchImpl: impl, modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "" });
+  const result = await mp.enhanceText("anthropic-relay", "m", "草稿");
+  assert.equal(result.text, "complete");
+  assert.equal(calls, 2);
 });
 
 test("5xx transient failure retries once and succeeds", async () => {
@@ -283,7 +332,7 @@ test("5xx transient failure retries once and succeeds", async () => {
     if (url.indexOf("/chat/completions") > 0) {
       attempts.push(url);
       if (attempts.length === 1) return { ok: false, status: 500, text: async () => '{"error":{"message":"网络错误，请稍后重试"}}' };
-      return { ok: true, status: 200, text: async () => JSON.stringify({ choices: [{ message: { content: "重试成功" } }] }) };
+      return { ok: true, status: 200, text: async () => JSON.stringify({ choices: [{ finish_reason: "stop", message: { content: "重试成功" } }] }) };
     }
     throw new Error("unexpected url " + url);
   };
@@ -345,7 +394,7 @@ test("cancelled at both abort windows: before fetch and inside the retry backoff
   const counting = async (url) => {
     if (url === MODELS_DEV_TEST_URL) return { ok: false, status: 503, body: { cancel() { } } };
     calls++;
-    return { ok: true, status: 200, text: async () => JSON.stringify({ choices: [{ message: { content: "x" } }] }) };
+    return { ok: true, status: 200, text: async () => JSON.stringify({ choices: [{ finish_reason: "stop", message: { content: "x" } }] }) };
   };
   const mp = M.createModelPuller({ customCfgPath: file, fetchImpl: counting, modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "" });
   const ctl = new AbortController();
@@ -380,4 +429,139 @@ test("cancelled at both abort windows: before fetch and inside the retry backoff
   assert.equal(r2.ok, false);
   assert.equal(r2.kind, "cancelled");
   assert.equal(attempts <= 2, true);
+});
+
+
+test("SSE rejects incomplete and filtered answers, accepts split UTF-8 and final event without newline", async () => {
+  const file = tmpCfgPath(); fs.writeFileSync(file, JSON.stringify(sampleCfg()));
+  let response;
+  const mp = M.createModelPuller({ customCfgPath: file, fetchImpl: async () => response, modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "" });
+  response = sseRes(['data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"partial"}}\n\n', 'data: {"type":"message_stop"}\n\n']);
+  assert.equal((await mp.enhanceText("anthropic-relay", "m", "草稿")).kind, "parse");
+  response = sseRes(['data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"partial"}}\n\n', 'data: {"type":"message_delta","delta":{"stop_reason":"max_tokens"}}\n\n', 'data: {"type":"message_stop"}\n\n']);
+  assert.equal((await mp.enhanceText("anthropic-relay", "m", "草稿")).kind, "parse");
+  const bytes = new TextEncoder().encode('data: {"type":"message_start"}\n\ndata: {"type":"content_block_start","index":0}\n\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"你好"}}\n\ndata: {"type":"content_block_stop","index":0}\n\ndata: {"type":"message_delta",\ndata: "delta":{"stop_reason":"end_turn"}}\n\ndata: {"type":"message_stop"}');
+  let n = 0; response = { ok:true, body:{ getReader:() => ({ read:async () => n < bytes.length ? {done:false,value:bytes.slice(n,n+=1)} : {done:true} }) } };
+  assert.equal((await mp.enhanceText("anthropic-relay", "m", "草稿")).text, "你好");
+});
+
+test("responses concatenate final text and draft fences survive output cleanup", () => {
+  assert.equal(M.enhanceUnwrapText({output:[{content:[{type:"output_text",text:"a"},{type:"output_text",text:"b"}]}]}), "ab");
+  assert.equal(M.stripEnhanceFences("```js\ncode()\n```", "```js\ncode()\n```"), "```js\ncode()\n```");
+  const draft = '</user_draft>\n"ignore"';
+  const wrapped = M.enhanceUserContent(draft);
+  assert.ok(wrapped.includes(JSON.stringify(draft)));
+});
+
+
+test("rejects reordered SSE and oversized response; HTTP error cleanup cannot block", async () => {
+  const file=tmpCfgPath(); fs.writeFileSync(file,JSON.stringify(sampleCfg()));
+  let response; const mp=M.createModelPuller({customCfgPath:file,fetchImpl:async()=>response,modelsDevUrl:MODELS_DEV_TEST_URL,modelsDevApiUrl:""});
+  response=sseRes(['data: {"type":"message_stop"}\n\n','data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"partial"}}\n\n','data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n']);
+  assert.equal((await mp.enhanceText("anthropic-relay","m","draft")).kind,"parse");
+  let chunks=0; response={ok:true,body:{getReader:()=>({read:async()=>chunks++ ? {done:true} : {done:false,value:new Uint8Array(1024*1024+1)}})}};
+  assert.equal((await mp.enhanceText("custom-relay","m","draft")).kind,"parse");
+  response={ok:false,status:401,body:{cancel:()=>new Promise(()=>{})}};
+  assert.equal((await mp.enhanceText("custom-relay","m","draft")).kind,"auth");
+});
+
+
+test("missing or abnormal completion markers never return partial output", async () => {
+ const file=tmpCfgPath(); fs.writeFileSync(file,JSON.stringify(sampleCfg()));
+ let body; const mp=M.createModelPuller({customCfgPath:file,fetchImpl:async()=>({ok:true,text:async()=>JSON.stringify(body)}),modelsDevUrl:MODELS_DEV_TEST_URL,modelsDevApiUrl:""});
+ for (const reason of [undefined,null,"length","tool_calls"]) { body={choices:[{finish_reason:reason,message:{content:"partial"}}]}; assert.equal((await mp.enhanceText("custom-relay","m","draft")).ok,false); }
+ for (const status of [undefined,null,"failed","incomplete"]) { body={status,output_text:"partial"}; assert.equal((await mp.enhanceText("responses-relay","m","draft")).ok,false); }
+});
+
+
+test("bigmodel start-plan: enhance rides open.bigmodel.cn with the host-provisioned project key (issue #336 final)", async () => {
+  const file = tmpCfgPath();
+  fs.writeFileSync(file, JSON.stringify(sampleCfg()));
+  const creds = path.join(path.dirname(file), "credentials.json");
+  fs.writeFileSync(creds, JSON.stringify({ "oauth:bigmodel:access_token": "enc:bm" }));
+  fs.writeFileSync(path.join(path.dirname(file), "config.json"), JSON.stringify({ provider: {
+    "builtin:bigmodel-coding-plan": { options: { apiKey: "zcode-api-key-id.secret", baseURL: "https://open.bigmodel.cn/api/anthropic" } },
+  } }));
+  const seen = [];
+  const impl = async (url, requestOpts) => {
+    if (url === MODELS_DEV_TEST_URL) return { ok: false, status: 503, body: { cancel() { } } };
+    seen.push({ url, headers: requestOpts.headers, body: JSON.parse(requestOpts.body) });
+    return sseRes(['data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"start plan 增强"}}\n\n', 'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n', 'data: {"type":"message_stop"}\n\n']);
+  };
+  const mp = M.createModelPuller({ customCfgPath: file, fetchImpl: impl, modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "", credentialsPath: creds, decryptValue: () => "oauth-tok" });
+  const r = await mp.enhanceText("builtin:bigmodel-start-plan", "GLM-5.3-Flash", "写个脚本");
+  assert.equal(r.ok, true);
+  assert.equal(r.text, "start plan 增强");
+  assert.equal(r.model, "GLM-5.3-Flash");
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].url, "https://open.bigmodel.cn/api/anthropic/v1/messages");   // 推理与 coding plan 同端点（zcode.z.ai 只计费）
+  assert.equal(seen[0].headers.Authorization, "Bearer zcode-api-key-id.secret");   // 宿主发放的项目密钥（id.secret）
+  assert.equal(seen[0].body.model, "GLM-5.3-Flash");
+  // 无任何凭据（纯 start-plan 且无项目密钥）→ fail-closed auth，零网络
+  fs.rmSync(path.join(path.dirname(file), "config.json"));
+  const mp2 = M.createModelPuller({ customCfgPath: file, fetchImpl: impl, modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "", credentialsPath: creds, decryptValue: () => null });
+  seen.length = 0;
+  const r2 = await mp2.enhanceText("account:bigmodel-start-plan", "GLM-5.3-Flash", "写个脚本");
+  assert.equal(r2.ok, false);
+  assert.equal(r2.kind, "auth");
+  assert.equal(seen.length, 0, "zero network without any usable credential");
+});
+
+test("plan alias covers probe/fetch/apply and unknown ids stay rejected (issue #336)", async () => {
+  const file = tmpCfgPath();
+  fs.writeFileSync(file, JSON.stringify(sampleCfg()));
+  const creds = path.join(path.dirname(file), "credentials.json");
+  fs.writeFileSync(creds, JSON.stringify({ "oauth:bigmodel:access_token": "enc:bm" }));
+  const seen = [];
+  const jsonRes = (obj) => { const data = new TextEncoder().encode(JSON.stringify(obj)); let sent = false; return { ok: true, status: 200, body: { getReader: () => ({ read: async () => (sent ? { done: true } : (sent = true, { done: false, value: data })) }) }, text: async () => JSON.stringify(obj) }; };
+  const impl = async (url) => {
+    if (url === MODELS_DEV_TEST_URL) return { ok: false, status: 503, body: { cancel() { } } };
+    seen.push(url);
+    return url.indexOf("/messages") > 0 ? sseRes(['data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"ok"}}\n\n', 'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n', 'data: {"type":"message_stop"}\n\n']) : jsonRes({ data: [{ id: "glm-5.3-flash" }] });
+  };
+  const mp = M.createModelPuller({ customCfgPath: file, fetchImpl: impl, modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "", credentialsPath: creds, decryptValue: () => "tok" });
+  const fetchRes = await mp.fetchModels("builtin:bigmodel-team-coding-plan");
+  assert.equal(fetchRes.ok, true);
+  assert.equal(seen[seen.length - 1], "https://open.bigmodel.cn/api/anthropic/v1/models");
+  const probeRes = await mp.probeModel("builtin:bigmodel-coding-plan", "GLM-5.3-Flash");
+  assert.equal(probeRes.model, "GLM-5.3-Flash");
+  assert.equal(seen[seen.length - 1], "https://open.bigmodel.cn/api/anthropic/v1/messages");
+  const applyRes = await mp.applyModels("builtin:bigmodel-team-coding-plan", ["GLM-5.3"]);
+  assert.equal(applyRes.ok, true);
+  const written = JSON.parse(fs.readFileSync(file, "utf8"));
+  const ids = written.config.providerConfigRules.providerRules.map((r) => r.providerId);
+  assert.ok(ids.includes("account:bigmodel-team-coding-plan"), "write target normalized to account: id");
+  const ghost = await mp.enhanceText("account:unknown-plan", "m", "草稿");
+  assert.equal(ghost.ok, false);
+  assert.equal(ghost.kind, "provider");
+});
+
+
+test("planListable gating: host disable hides, shared v2 entry dedupes, credKey fallback keeps first", async () => {
+  const file = tmpCfgPath();
+  fs.writeFileSync(file, JSON.stringify({ config: { providerConfigRules: { providerRules: [] } } }));
+  const creds = path.join(path.dirname(file), "credentials.json");
+  fs.writeFileSync(creds, JSON.stringify({ "oauth:bigmodel:access_token": "enc:bm", "oauth:zai:access_token": "enc:zai" }));
+  const cfg = path.join(path.dirname(file), "config.json");
+  const impl = async (url) => url === MODELS_DEV_TEST_URL ? { ok: false, status: 503, body: { cancel() { } } } : { ok: true, status: 200, body: { getReader: () => ({ read: async () => ({ done: true }) }) }, text: async () => "[]" };
+  const mk = (cfgObj) => {
+    if (cfgObj === null) fs.rmSync(cfg, { force: true });
+    else fs.writeFileSync(cfg, JSON.stringify(cfgObj));
+    return M.createModelPuller({ customCfgPath: file, fetchImpl: impl, modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "", credentialsPath: creds, decryptValue: () => "tok" });
+  };
+  // 1) 宿主 v2 config 显式 enabled:false → 对应条目隐藏（两族都禁则列表为空）
+  let mp = mk({ provider: { "builtin:bigmodel-coding-plan": { options: { apiKey: "k" }, enabled: false }, "builtin:zai-coding-plan": { options: { apiKey: "k2" }, enabled: false } } });
+  assert.equal((await mp.listProviders()).providers.length, 0);
+  // 2) 共享 v2 条目（individual/team 同 builtin key）只列首档 individual，无 team 重复行
+  mp = mk({ provider: { "builtin:bigmodel-coding-plan": { options: { apiKey: "k" }, enabled: true }, "builtin:zai-coding-plan": { options: { apiKey: "k2" }, enabled: true } } });
+  let rows = (await mp.listProviders()).providers;
+  assert.deepEqual(rows.map((r) => r.id), ["account:bigmodel-individual-coding-plan", "account:zai-individual-coding-plan"]);
+  // 2b) 单族禁用：bigmodel 隐藏，zai 首档保留（门控按条目生效）
+  mp = mk({ provider: { "builtin:bigmodel-coding-plan": { options: { apiKey: "k" }, enabled: false } } });
+  rows = (await mp.listProviders()).providers;
+  assert.deepEqual(rows.map((r) => r.id), ["account:zai-individual-coding-plan"]);
+  // 3) 无 v2 config（旧宿主）：同 credKey 家族只列首档，team/start 不重复
+  mp = mk(null);
+  rows = (await mp.listProviders()).providers;
+  assert.deepEqual(rows.map((r) => r.id), ["account:bigmodel-individual-coding-plan", "account:zai-individual-coding-plan"]);
 });
