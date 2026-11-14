@@ -16,6 +16,7 @@
 另外把插件内容复制到 plugins/marketplaces/<market> 与 plugins/cache/<market>/<plugin>/<ver>。
 
 注意：WorkBuddy 正在运行时退出可能回写 settings.json，若重启后插件不见了，重跑本脚本即可。
+三入口的登记结构预检契约见 specs/workbuddy-install-validation.md。
 """
 import json
 import shutil
@@ -86,11 +87,26 @@ def install():
     ip_path = plugins / "installed_plugins.json"
     st_path = base / "settings.json"
     km, ip, st = load(km_path), load(ip_path), load(st_path)
+    if km is None or ip is None:
+        print("known_marketplaces.json 或 installed_plugins.json 缺失或无法解析，拒绝改写")
+        return 1
     if not isinstance(km, dict) or not isinstance(ip, dict):
         print("插件登记文件不是对象，拒绝改写（不做默默重建）")
         return 1
+    if st is None:
+        print("settings.json 缺失或无法解析，拒绝改写")
+        return 1
     if not isinstance(st, dict):
         print("settings.json 不是对象，拒绝改写")
+        return 1
+    records = ip.get("plugins", {})
+    enabled = st.get("enabledPlugins", {})
+    if not isinstance(records, dict) or not isinstance(enabled, dict):
+        print("installed_plugins.json 的 plugins 或 settings.json 的 enabledPlugins 不是对象，拒绝改写")
+        return 1
+    old = records.get(KEY, [])
+    if not isinstance(old, list) or (old and not isinstance(old[0], dict)):
+        print(f"插件安装记录（{KEY}）不是有效列表，拒绝改写")
         return 1
 
     ver = version()
@@ -122,7 +138,7 @@ def install():
 
     records = ip.setdefault("plugins", {})
     old = records.get(KEY) or []
-    installed_at = old[0].get("installedAt") if old and isinstance(old[0], dict) else now
+    installed_at = (old[0].get("installedAt") or now) if old and isinstance(old[0], dict) else now
     records[KEY] = [{
         "scope": "user",
         "installPath": str(cache_dir),
@@ -147,7 +163,12 @@ def uninstall():
     km_path = plugins / "known_marketplaces.json"
     ip_path = plugins / "installed_plugins.json"
     st_path = base / "settings.json"
-    km, ip, st = load(km_path) or {}, load(ip_path) or {}, load(st_path) or {}
+    km, ip, st = (load(p) if p.exists() else {} for p in (km_path, ip_path, st_path))
+    if (not isinstance(km, dict) or not isinstance(ip, dict) or not isinstance(st, dict)
+            or not isinstance(ip.get("plugins", {}), dict)
+            or not isinstance(st.get("enabledPlugins", {}), dict)):
+        print("登记文件或嵌套字段不是对象，拒绝卸载")
+        return 1
     backup(base, [km_path, ip_path, st_path])
     removed = []
     if isinstance(km, dict) and km.pop(MARKET, None) is not None:
@@ -174,20 +195,31 @@ def uninstall():
 def check():
     base = home()
     plugins = base / "plugins"
-    km = load(plugins / "known_marketplaces.json") or {}
-    ip = load(plugins / "installed_plugins.json") or {}
-    st = load(base / "settings.json") or {}
+    km, ip, st = (load(p) if p.exists() else {} for p in
+                  (plugins / "known_marketplaces.json",
+                   plugins / "installed_plugins.json",
+                   base / "settings.json"))
+    if any(v is None for v in (km, ip, st)):
+        print("登记文件存在但无法读取或解析（或顶层非对象），无法检查")
+        return 1
+    if (not isinstance(km, dict) or not isinstance(ip, dict) or not isinstance(st, dict)
+            or not isinstance(ip.get("plugins", {}), dict)
+            or not isinstance(st.get("enabledPlugins", {}), dict)):
+        print("登记文件或嵌套字段不是对象，无法检查（安装/卸载会拒绝改写）")
+        return 1
     ok = True
     print("市场登记:", "有" if MARKET in km else "无")
     ok &= MARKET in km
     rec = (ip.get("plugins") or {}).get(KEY)
+    rec_ok = isinstance(rec, list) and bool(rec) and isinstance(rec[0], dict)
     print("安装记录:", json.dumps(rec, ensure_ascii=False) if rec else "无")
-    ok &= bool(rec)
+    ok &= rec_ok
     enabled = (st.get("enabledPlugins") or {}).get(KEY)
     print("启用开关:", enabled)
     ok &= bool(enabled)
-    if rec and rec[0].get("installPath"):
-        target = Path(rec[0]["installPath"])
+    install_path = rec[0].get("installPath") if rec_ok else None
+    if isinstance(install_path, str) and install_path:
+        target = Path(install_path)
         print("缓存存在:", target.is_dir())
         ok &= target.is_dir()
         if target.is_dir():
@@ -196,6 +228,9 @@ def check():
                 present = (target / name).is_file()
                 print(f"  {name:<34}{'有' if present else '缺'}")
                 ok &= present
+    elif rec_ok:
+        print("缓存路径: installPath 缺失或非法，未就绪")
+        ok = False
     print("\n结论:", "已安装" if ok else "未就绪（运行安装命令）")
     return 0 if ok else 1
 

@@ -629,11 +629,15 @@ window.__zuMount = function (sel, hover) {
     /* 重建保留横滚（生产 v280 同键回填的简化版；切 Tab 键变时生产会归零，
      * 复刻页经由 __zuMount 重挂承载该行为，此处只服务 hover 重建不跳位） */
     function rebuildKeepScroll() {
-      var ow = tip.querySelector('.zu-sc-wrap'), ox = ow ? ow.scrollLeft : 0;
+      var ow = tip.querySelector('.zu-sc-wrap'), oldRoot = tip.querySelector('.zu-sv-root');
+      var ox = ow ? ow.scrollLeft : null, oldKey = oldRoot && oldRoot.getAttribute('data-sv-key');
       tip.innerHTML = '<div class="tbody"></div>';
       tip.firstChild.innerHTML = buildCard();
-      var nw = tip.querySelector('.zu-sc-wrap');
-      if (nw && ox) nw.scrollLeft = ox;
+      window.__SPD.spdFitTip(tip, false);
+      if (tip.getBoundingClientRect().top < 8) { tip.style.bottom = 'auto'; tip.style.top = '8px'; }
+      var nw = tip.querySelector('.zu-sc-wrap'), newRoot = tip.querySelector('.zu-sv-root');
+      if (nw && ox !== null && newRoot && newRoot.getAttribute('data-sv-key') === oldKey) nw.scrollLeft = ox;
+      else if (nw && nw.hasAttribute('data-sv-end')) nw.scrollLeft = nw.scrollWidth;
       return nw;
     }
     tip.addEventListener('pointerdown', function (e) {
@@ -680,6 +684,9 @@ window.__zuMount = function (sel, hover) {
    * 此前复刻缺该层导致高度链回归测不出） */
   tip.innerHTML = '<div class="tbody"></div>';
   tip.firstChild.innerHTML = buildCard();
+  if (document.querySelector('.zusage-root style')) window.__SPD.spdFitTip(tip, true);
+  else setTimeout(function () { if (tip.isConnected && tip.querySelector('.zu-sv-root')) window.__SPD.spdFitTip(tip, true); }, 100);
+  if (tip.getBoundingClientRect().top < 8) { tip.style.bottom = 'auto'; tip.style.top = '8px'; }
   /* v291 生产同款（drawTip/showTpsTip）：历史热力图首开无记忆位置时滚到最右（最新区域）；
    * 用户滚过后的位置保留交给生产 v280 同键回填（复刻页不重建滚动记忆） */
   var wEnd = tip.querySelector('.zu-sc-wrap');

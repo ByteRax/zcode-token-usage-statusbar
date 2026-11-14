@@ -100,7 +100,7 @@ test('v302 session tip: 11 KPI label icons aligned with turn card', () => {
 test('v300 session tip: cache badge on input label row (short label)', () => {
   const raw = noStyle(render(sessionFixture()));
   assert.match(raw, /<span class="hit zu-turn-hit">缓存98%<\/span>/);
-  assert.ok(raw.indexOf('>输入<span class="hit') >= 0, '徽标紧跟输入标签');
+  assert.ok(raw.indexOf('class="zu-kpi-label">输入</span><span class="hit') >= 0, '徽标紧跟不可拆分的输入标签');
 });
 
 test('v300 session tip: avg output speed banded (session avg, not last turn)', () => {

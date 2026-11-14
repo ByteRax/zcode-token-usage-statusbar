@@ -301,8 +301,8 @@ test('dispatch: month/all swap to heatmaps, recent/today/week keep bars; head is
     else
       assert.ok(!dom.includes(absent), period + ' does not render ' + absent);
     assert.ok(dom.includes('data-sv-band='), 'shared head with band legend entry (' + period + ')');
-    // v292：整卡定高 315（border-box），四种图表形态同高不跳变
-    assert.ok(html.includes('height:300px!important'), 'tooltip height pinned at 300 (' + period + ')');
+    // 默认 300px，内容放不下时由实际测量扩高。
+    assert.ok(html.includes('height:var(--zu-sv-height,300px)!important'), 'adaptive tooltip height (' + period + ')');
   }
 });
 

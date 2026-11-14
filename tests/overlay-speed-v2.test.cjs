@@ -32,6 +32,113 @@ function makeCtx(lang = 'zh') {
   return ctx;
 }
 
+test('speed sizing measures header and left card, clamps to viewport, and resets between displays', () => {
+  const ctx = makeCtx();
+  ctx.window = { innerWidth: 1100, innerHeight: 700 };
+  const props = {};
+  let uiFontSize = '14px';
+  ctx.getComputedStyle = () => ({ getPropertyValue: () => uiFontSize });
+  const title = { scrollWidth: 220, clientWidth: 180 };
+  const left = { querySelector: s => s === '.zu-sl-title' ? title : {}, querySelectorAll: () => [] };
+  const head = { getBoundingClientRect: () => ({ width: 850 }) };
+  const root = { style: { setProperty() {} }, clientWidth: 732, getBoundingClientRect: () => ({ width: 732 }),
+    querySelector: s => s === '.zu-sv-head' ? head : left };
+  const tip = { offsetWidth: 760, __zuSpeedSize: null,
+    style: { setProperty: (k, v) => { props[k] = v; }, removeProperty: k => { delete props[k]; } },
+    classList: { add() {}, remove() {} }, querySelector: () => root,
+    getBoundingClientRect: () => ({ width: 760, height: 340 }) };
+  ctx.__tip = tip;
+  vm.runInContext('spdFitTip(__tip, true)', ctx);
+  assert.equal(props['--zu-sv-width'], '878px');
+  assert.equal(props['--zu-sv-left-width'], '250px');
+  assert.equal(props['--zu-sv-height'], '352px');
+  head.getBoundingClientRect = () => ({ width: 600 });
+  title.scrollWidth = 180;
+  vm.runInContext('spdFitTip(__tip, false)', ctx);
+  assert.equal(props['--zu-sv-width'], '878px', 'open card does not shrink on rebuild');
+  ctx.window.innerWidth = 500; ctx.window.innerHeight = 320;
+  vm.runInContext('spdFitTip(__tip, false)', ctx);
+  assert.equal(props['--zu-sv-width'], '476px');
+  assert.equal(props['--zu-sv-height'], '304px');
+  ctx.window.innerWidth = 1100; ctx.window.innerHeight = 700;
+  vm.runInContext('spdFitTip(__tip, true)', ctx);
+  assert.equal(props['--zu-sv-width'], '760px', 'reopening starts with the baseline');
+  uiFontSize = '20px';
+  vm.runInContext('spdFitTip(__tip, true)', ctx);
+  assert.equal(root.style.zoom, '0.8', 'large text uses bounded whole-card scaling');
+  uiFontSize = '40px';
+  vm.runInContext('spdFitTip(__tip, true)', ctx);
+  assert.equal(root.style.zoom, '0.8', 'scaling never shrinks below the readability floor');
+});
+
+function fixture12() {
+  const t0 = new Date(2026, 10, 5, 9).getTime();
+  const rows = [];
+  for (let k = 0; k < 12; k++) {
+    rows.push([0, t0 + k * HOUR, t0 + k * HOUR - 60000, 500, 3000, 4000, 500, 1, [[0, 500]], 0.05, 1]);
+  }
+  let prev = 0;
+  const turns = rows.map(r => {
+    const o = { s: r[0], t: r[1] - prev, b: r[2], out: r[3], ms: r[4], i: r[5], o: r[6], n: r[7], msl: r[8], c: r[9], cf: 1 };
+    prev = r[1];
+    return o;
+  });
+  return { sid: 'sess_main', source: 'local', truncated: false, sids: ['sess_main'], snames: ['S'], pids: [['p', 'P']], mnames: ['M'], turns };
+}
+
+test('v348 adaptive layout: spread threshold, left-card clamp, model-name shrink, production wiring', () => {
+  const ctx = makeCtx();
+  /* ① 柱组 spread 阈值：n≥10 才挂 zu-sv-bars--spread（少柱保持靠左，柱宽不拉粗） */
+  ctx.__h12 = fixture12();
+  const many = vm.runInContext('speedCardV2HTML({ speedHistory: __h12, sel: { period: "recent" } })', ctx);
+  assert.ok(many.includes('zu-sv-bars--spread'), 'columns >= 10 spread evenly');
+  ctx.__h6 = fixture();
+  const few = vm.runInContext('speedCardV2HTML({ speedHistory: __h6, sel: { period: "recent" } })', ctx);
+  assert.ok(!few.includes('zu-sv-bars--spread'), 'few columns keep flex-start');
+
+  /* ② 左卡扩宽钳制：标题截断量再大也停在 320px（防单行长名无限撑宽） */
+  ctx.window = { innerWidth: 1100, innerHeight: 700 };
+  ctx.getComputedStyle = () => ({ getPropertyValue: () => '14px' });
+  const props = {};
+  const title = { scrollWidth: 1000, clientWidth: 180 };
+  const left = { querySelector: s => s === '.zu-sl-title' ? title : {}, querySelectorAll: () => [] };
+  const head = { getBoundingClientRect: () => ({ width: 850 }) };
+  const root = { style: { setProperty() {} }, clientWidth: 732, getBoundingClientRect: () => ({ width: 732 }),
+    querySelector: s => s === '.zu-sv-head' ? head : left };
+  const tip = { offsetWidth: 760, __zuSpeedSize: null,
+    style: { setProperty: (k, v) => { props[k] = v; }, removeProperty: k => { delete props[k]; } },
+    classList: { add() {}, remove() {} }, querySelector: () => root,
+    getBoundingClientRect: () => ({ width: 760, height: 340 }) };
+  ctx.__tip2 = tip;
+  vm.runInContext('spdFitTip(__tip2, true)', ctx);
+  assert.equal(props['--zu-sv-left-width'], '320px', 'left card growth clamps at 320px');
+  assert.equal(props['--zu-sv-width'], '878px', 'clamped left card still widens the card');
+
+  /* ③ 模型名缩字：1px 容差内不缩、逐级下探、10px 下限不穿底 */
+  ctx.getComputedStyle = () => ({ fontSize: '14px' });
+  const mkNode = swOf => ({
+    style: { _p: {}, _fs: 0, removeProperty(k) { delete this._p[k]; },
+      setProperty(k, v) { this._p[k] = v; if (k === 'font-size') this._fs = parseFloat(v); } },
+    clientWidth: 100, get scrollWidth() { return swOf(this); },
+  });
+  const shrinkable = mkNode(el => Math.round(130 * (el._fs || 14) / 14));
+  ctx.__m1 = { querySelectorAll: () => [shrinkable] };
+  vm.runInContext('fitModelNames(__m1)', ctx);
+  assert.equal(shrinkable.style._p['font-size'], '10px', 'shrinks stepwise until it fits or hits the floor');
+  const exact = mkNode(() => 101);   // 恰超宽 1px=容差内，不动字号
+  ctx.__m2 = { querySelectorAll: () => [exact] };
+  vm.runInContext('fitModelNames(__m2)', ctx);
+  assert.ok(!('font-size' in exact.style._p), 'within the 1px tolerance no shrink');
+  const stuck = mkNode(() => 130);   // 恒溢出：降到 10px 停
+  ctx.__m3 = { querySelectorAll: () => [stuck] };
+  vm.runInContext('fitModelNames(__m3)', ctx);
+  assert.equal(stuck.style._p['font-size'], '10px', 'never below the 10px floor');
+
+  /* ④ 生产接线：drawTip/showTpsTip 的测量调用在场（删除即红） */
+  assert.match(source, /tip\.style\.display = "block";\s*\n\s*spdFitTip\(tip, !keepTop\);\s*\n\s*fitModelNames\(tip\);/, 'drawTip measurement wiring');
+  assert.match(source, /if \(typeof spdFitTip === "function"\) spdFitTip\(tpsTip, !wasVisible\);/, 'showTpsTip measurement wiring');
+});
+
 const HOUR = 3600000, DAY = 86400000;
 // 用冻结时钟的本地时区固定点造真值轮表：3 个会话 / 2 个项目 / 跨日与跨月
 function fixture() {
@@ -797,11 +904,8 @@ test('V2 card root carries the selection key; both rebuild paths preserve h-scro
   assert.match(drawFn, /oldChartKey/, 'drawTip carries the old selection key');
   // v291 起捕获行带三态注释（0 也是有效记忆），形状锁放宽为语义锁：
   // 捕获必须发生在 innerHTML 重建之前（v281 重开路径不按 keepTop 门控）
-  assert.match(drawFn, /oldChartL = oc\.scrollLeft;/,
-    'capture not gated on keepTop (v281 reopen path)');
-  assert.ok(drawFn.indexOf('oldChartL = oc.scrollLeft;') >= 0 &&
-    drawFn.indexOf('oldChartL = oc.scrollLeft;') < drawFn.indexOf('tip.innerHTML'),
-    'scroll capture happens before rebuild');
+  assert.match(drawFn, /savedChart && savedChart\.key === oldChartKey \? savedChart\.x/, 'hidden card restores the saved visible scroll position');
+  assert.ok(drawFn.indexOf('var savedChart =') < drawFn.indexOf('tip.innerHTML'), 'scroll capture happens before rebuild');
 });
 
 test('v281 P1: fixed tooltip width + stable chart column (width stops tracking content)', () => {
@@ -809,10 +913,9 @@ test('v281 P1: fixed tooltip width + stable chart column (width stops tracking c
   ctx.__o = { speedHistory: ctx.__h, sel: { range: 'recent', period: 'recent', dim: 'time', sid: 'sess_main' },
     live: null, segsHover: -1, fmtTok: String, fmtCnt: String, fmtMoney: u => '¥' + u.toFixed(2) };
   const html = vm.runInContext('speedCardV2HTML(__o)', ctx);
-  // tip 定宽：width 与 max-width 同值 !important（不再只钳 max-width 让内容反向撑缩）
-  assert.match(html,
-    /width:min\(760px,calc\(100vw - 24px\)\)!important;max-width:min\(760px,calc\(100vw - 24px\)\)!important;height:300px!important;box-sizing:border-box/,
-    'tooltip pinned at 760x300 (v284 width mechanism), not content-driven');
+  // 图表内容不决定宽度；默认 760×300，测量结果受视口限制。
+  assert.match(html, /width:var\(--zu-sv-width,min\(760px,calc\(100vw - 24px\)\)\)!important/);
+  assert.match(html, /height:var\(--zu-sv-height,300px\)!important;max-height:calc\(100vh - 16px\)/);
   // v285：V2 卡左缘对齐锚元素（.it 速度格）左缘——positionTip 消费 __zuAlignLeft
   assert.match(source, /tip\.__zuAlignLeft = !!\(tip\.querySelector\("\.zu-sv-root"\) \|\| tip\.querySelector\("\.zu-stat-tip--turn"\)\);/,
     'full tip marks V2 content for left alignment');
@@ -842,7 +945,7 @@ test('v281 P0: hover card portal — body-level singleton, viewport-aware placem
   assert.match(place, /zu-sc-wrap/, 'hide when the bar scrolls out of the chart viewport');
   // 生命周期：收起路径全联动，不留孤儿 Portal
   assert.match(source, /spdHoverPortalSync\(tip, speedChartHover\);/, 'tab switch invalidates the old card via empty channel');
-  assert.match(source, /function hideTpsTip\(\) \{[^}]*spdHoverPortalHide\(\)/, 'compact tip close hides portal');
+  assert.match(source.slice(source.indexOf('function hideTpsTip() {'), source.indexOf('/* ---------- v280 柱 hover')), /spdHoverPortalHide\(\)/, 'compact tip close hides portal');
   // dispose/热更：Portal 进 cleanupRateTip 同链清理（boot 自清旧代 + __zusageDispose 摘除）
   assert.match(source, /hideFxTip\(\);\n    fxTip\.remove\(\);[^]*?spdHoverPortalHide\(\);\n    spdHoverPortal\.remove\(\);/,
     'portal removed by the dispose chain');
@@ -921,7 +1024,7 @@ test('v282: legend popup — hover/focus opens, mutual exclusion, escape, full l
   assert.ok(/tpsTip\.addEventListener\("keydown"[\s\S]{0,300}spdLegendTip\.style\.display === "block"/.test(source),
     'compact chain keeps its own escape listener');
   // 生命周期：主 tooltip 收起与 dispose 链
-  assert.match(source, /function hideTpsTip\(\) \{[^}]*spdLegendTipHide\(\)/, 'compact tip close hides legend popup');
+  assert.match(source.slice(source.indexOf('function hideTpsTip() {'), source.indexOf('/* ---------- v280 柱 hover')), /spdLegendTipHide\(\)/, 'compact tip close hides legend popup');
   assert.match(source, /spdHoverPortalHide\(\); {2,3}\/\* v281：Portal 随 tooltip 收起[^]*?spdLegendTipHide\(\); +\/\* v282/, 'full tip close hides legend popup');
   assert.match(source, /spdLegendTip\.remove\(\); {2,5}\/\/ v281：档位说明浮层同链清理/, 'dispose chain removes legend popup');
   // 内容构建器：升序 + 当前档来自 data-sv-band

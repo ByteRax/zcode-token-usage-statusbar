@@ -45,9 +45,9 @@ test('contract: inject-main whitelist routes prompt-enhance with fail-closed gat
   assert.match(injectSource, /enhanceEnabled: enhanceEnabled\(\),/);   // 推送面
   assert.match(injectSource, /enhance_enabled: enabled/);   // 原子事务写
   assert.match(injectSource, /req\.action === "prompt-enhance-cancel" && typeof req\.requestId === "string"/);   // 取消分支
-  assert.match(injectSource, /enhanceInFlight\.set\(req\.requestId, \{ controller: controller, wc: wc \}\)/);   // 在途表登记（带窗口归属）
+  assert.match(injectSource, /enhanceInFlight\.set\(wc, entries\)/);
   assert.match(injectSource, /signal: controller\.signal/);   // 中断透传 enhanceText
-  assert.match(injectSource, /entry && entry\.wc === wc/);   // 在途表按窗口归属读写（多窗口 requestId 相撞防护）
+  assert.match(injectSource, /entries\.get\(req\.requestId\) === entry/);
   assert.match(source, /lucide-loader-circle/);   // （重复锚亦作 loading 态回归锚）
 });
 
@@ -152,7 +152,12 @@ function harness({ enhanceOn = true } = {}) {
     const pane = body.appendChild(new Element());
     pane.setAttribute('data-testid', 'v4-session-pane-' + pid);
     pane.setAttribute('data-pane-id', pid);   // 协调器按 data-pane-id 祖先定 pane 键并派发 attach
-    pane.setAttribute('data-session-id', sid);   // readQuotaSelection 的实时模型归属校验（paneSid===sid）
+    pane.setAttribute('data-session-id', sid);
+    pane.setAttribute('data-zusage-scope-version', '1');
+    pane.setAttribute('data-zusage-pane-id', pid);
+    pane.setAttribute('data-zusage-workspace-path', '/fixture');
+    pane.setAttribute('data-zusage-workspace-identity', '');
+    pane.setAttribute('data-zusage-remote-session-id', '');   // readQuotaSelection 的实时模型归属校验（paneSid===sid）
     pane.sid = sid;
     const card = pane.appendChild(new Element());
     const marker = card.appendChild(new Element('span'));
@@ -170,8 +175,12 @@ function harness({ enhanceOn = true } = {}) {
     const editor = card.appendChild(new Element());
     editor.setAttribute('data-testid', 'v4-composer-input');
     editor.setAttribute('data-e2e-lexical-bridge', 'ready');
-    editor.closest = () => card;   // composerCardOf 的 .chat-composer-input-surface/[data-composer-layout] 判定命中 card 自身
-    editor.pid = pid; editor.sid = sid;   // 协调器按 pane 归属派发 wantedEl（额度夹具同款）
+    editor.setAttribute('data-zusage-scope-version', '1');
+    editor.setAttribute('data-zusage-workspace-path', '/fixture');
+    editor.setAttribute('data-zusage-workspace-identity', '');
+    editor.setAttribute('data-zusage-remote-session-id', '');
+    editor.closest = selector => selector === '.chat-composer-input-surface' || selector === '[data-composer-layout]' ? card : null;   // composerCardOf 的 .chat-composer-input-surface/[data-composer-layout] 判定命中 card 自身
+    editor.pid = pid; editor.setAttribute('data-session-id', sid);   // 协调器按 pane 归属派发 wantedEl（额度夹具同款）
     editor.__zcodeLexicalInputE2E = {
       getText: () => editor.__zuDraft,
       setText: t => { editor.__zuDraft = String(t); editor.setTextCalls = (editor.setTextCalls || 0) + 1; },
@@ -193,13 +202,14 @@ function harness({ enhanceOn = true } = {}) {
   }
   function respond(requestId, result) {
     window.__zusagePluginResult && window.__zusagePluginResult(Object.assign({ id: requestId }, result));
+    runPending(timers, 0);
   }
   /* 协调器派发的测试入口：生产链路 inst.attach(el, sid)（05 分片 coordinator 按扫描结果
    * 调用同一入口）；fixture 不复刻宿主全量可见性扫描，直接走协议入口最稳 */
   function coordAttach(el, sid) {
     if (!window.enhanceTest) return;
     const inst = window.enhanceTest.instances()[0];
-    if (inst) inst.attach(el, sid);
+    if (inst) { el.parentElement.parentElement.setAttribute('data-zusage-pane-id', inst.pid); el.setAttribute('data-zusage-pane-id', inst.pid); inst.attach(el, sid); }
   }
   const enhOf = wrap => wrap.children.find(e => e.classList.contains('zu-enhance'));
   return { window, body, inject, boot, tick, buildComposer, payload, takeRequests, respond, enhOf, coordAttach, lsStore, timers };
@@ -230,7 +240,7 @@ test('click sends prompt-enhance with live selection; reply replaces draft and a
   h.tick();
   const enh = h.enhOf(ui.wrap);
   enh.listeners.get('click')[0]();
-  assert.equal(enh.getAttribute('aria-busy'), 'true');   // busy 立即置位，不等回包
+  assert.equal(enh.getAttribute('aria-busy'), 'true', enh.getAttribute('aria-label'));   // busy 立即置位，不等回包
   const reqs = h.takeRequests().filter(r => r.action === 'prompt-enhance');
   assert.equal(reqs.length, 1);
   assert.equal(reqs[0].providerId, 'account:bigmodel-individual-coding-plan');
@@ -392,6 +402,8 @@ test('session switch during enhance: reply not applied to the new session, disti
   const req = h.takeRequests().find(r => r.action === 'prompt-enhance');
   assert.ok(req, 'request was fired before the switch');
   const switched = h.payload();
+  ui.editor.setAttribute('data-session-id', 'sid_other');
+  h.coordAttach(ui.editor, 'sid_other');
   switched.mine = 'sid_other';   // auto 实例的会话身份跟随泵推送的窗口焦点会话（mine），等同宿主切会话
   h.window.__zusageUpdate(switched);
   h.tick();
@@ -415,6 +427,8 @@ test('undo sid guard: session switched inside the window, undo click must not wr
   h.respond(req.requestId, { ok: true, text: '会话A增强稿' });
   assert.equal(ui.editor.__zuDraft, '会话A增强稿');
   const switched = h.payload();
+  ui.editor.setAttribute('data-session-id', 'sid_other');
+  h.coordAttach(ui.editor, 'sid_other');
   switched.mine = 'sid_other';
   h.window.__zusageUpdate(switched);
   h.tick();
@@ -448,7 +462,7 @@ test('undo window expires after 20s back to idle; missing reply hits the 75s tim
 
 test('main-process handlers: abort wiring, cross-window guard, fail-closed gate (behavior)', () => {
   const injectSource = fs.readFileSync(path.join(__dirname, '..', 'inject-main.cjs'), 'utf8');
-  const start = injectSource.indexOf('const enhanceInFlight = new Map();');
+  const start = injectSource.indexOf('function modelPullerProviderOk(v) {');
   const end = injectSource.indexOf('/* 渠道门控');   // 取消 handler 之后的下一个分区锚
   assert.ok(start > 0 && end > start, 'handler slice anchors');
   const slice = injectSource.slice(start, end);
@@ -470,10 +484,10 @@ test('main-process handlers: abort wiring, cross-window guard, fail-closed gate 
     enhanceRequestTextOk: (v) => typeof v === 'string' && v.trim().length > 0 && v.length <= 20000,
     deliverPluginRequest: (wc, id, result) => replies.push({ wc: wc.id, id, result }),
     LOG: () => { },
-    AbortController,
+    AbortController, wc1,
     console,
   };
-  vm.runInNewContext(slice + '\n;globalThis.__enh = { get: (k) => enhanceInFlight.get(k), has: (k) => enhanceInFlight.has(k) };', sandbox);
+  vm.runInNewContext(slice + '\n;globalThis.__enh = { get: (k) => enhanceInFlight.get(wc1)?.get(k), has: (k) => !!enhanceInFlight.get(wc1)?.has(k) };', sandbox);
   assert.equal(typeof sandbox.handlePromptEnhanceRequest, 'function');
   assert.equal(typeof sandbox.handlePromptEnhanceCancel, 'function');
   const R = { action: 'prompt-enhance', requestId: 'zusage-1-1', providerId: 'p1', modelId: 'm1', text: '草稿' };
@@ -527,4 +541,108 @@ test('R1 late reply after cancel-then-reenhance must not poison R2 (round-2 MAJO
   h.respond(r2.requestId, { ok: true, text: '二次增强稿' });
   assert.equal(ui.editor.__zuDraft, '二次增强稿');
   assert.match(enh.getAttribute('aria-label'), /撤销增强/);
+});
+
+
+test('same request ID is isolated by window and old replies cannot consume a replacement', async () => {
+  const start = injectSource.indexOf('function modelPullerProviderOk(v) {');
+  const end = injectSource.indexOf('/* 渠道门控');
+  const calls = [], replies = [];
+  const sandbox = { AbortController, LOG:()=>{}, enhanceEnabled:()=>true,
+    deliverPluginRequest:(wc,id,result)=>replies.push({wc,id,result}),
+    modelPuller:{ enhanceText:(p,m,t,o)=>new Promise(resolve=>calls.push({signal:o.signal,resolve})) } };
+  vm.runInNewContext(injectSource.slice(start,end), sandbox);
+  const a = {}, b = {}, req = {requestId:'same',providerId:'p',modelId:'m',text:'draft'};
+  sandbox.handlePromptEnhanceRequest(req,a); sandbox.handlePromptEnhanceRequest(req,b);
+  assert.equal(calls.length,2);
+  sandbox.handlePromptEnhanceRequest({...req,providerId:''},a); assert.equal(calls.length,2); assert.equal(replies.length,0);   // 同 ID 去重闸先行静默返回（真实 provider 闸在同 ID 闸之后）
+  sandbox.handlePromptEnhanceCancel(req,a); assert.equal(calls[0].signal.aborted,true); assert.equal(calls[1].signal.aborted,false);
+  sandbox.handlePromptEnhanceRequest(req,a); assert.equal(calls.length,3);
+  calls[0].resolve({ok:false}); await new Promise(setImmediate); assert.equal(replies.length,0);
+  calls[1].resolve({ok:true,text:'b'}); calls[2].resolve({ok:true,text:'a'}); await new Promise(setImmediate);
+  assert.equal(replies.length,2); assert.equal(replies.find(x=>x.wc===a).result.text,'a');
+});
+
+test('main-process real gates: invalid provider and empty draft reject with zero side effects', () => {
+  const start = injectSource.indexOf('function modelPullerProviderOk(v) {');
+  const end = injectSource.indexOf('/* 渠道门控');
+  const calls = [], replies = [];
+  const sandbox = { AbortController, LOG: () => {}, enhanceEnabled: () => true,
+    deliverPluginRequest: (wc, id, result) => replies.push({ id, result }),
+    modelPuller: { enhanceText: () => { calls.push(1); return new Promise(() => {}); } } };
+  vm.runInNewContext(injectSource.slice(start, end), sandbox);
+  const wc = {};
+  sandbox.handlePromptEnhanceRequest({ requestId: 'g1', providerId: '', modelId: 'm', text: '草稿' }, wc);
+  sandbox.handlePromptEnhanceRequest({ requestId: 'g2', providerId: 'p', modelId: 'm', text: '' }, wc);
+  assert.equal(calls.length, 0, 'gates must reject before any network attempt');
+  assert.equal(replies.filter(x => x.result.kind === 'invalid_input').length, 2);
+});
+
+test('write verification waits for asynchronous editor commit', () => {
+  const h=harness(); const ui=h.buildComposer('workspace-main','sid_main',{provider:'p',model:'m',draft:'original'});
+  h.inject(); h.boot(); h.coordAttach(ui.editor,'sid_main'); h.window.__zusageUpdate(h.payload({provider:'p',model:'m'})); h.tick();
+  const btn=h.enhOf(ui.wrap);
+  ui.editor.__zcodeLexicalInputE2E.setText = text => { h.timers.set(-1,{ms:0,interval:false,fn:()=>{ui.editor.__zuDraft=text;}}); };
+  btn.listeners.get('click')[0](); const req=h.takeRequests().find(r=>r.action==='prompt-enhance');
+  h.respond(req.requestId,{ok:true,text:'enhanced'});
+  assert.equal(ui.editor.__zuDraft,'enhanced'); assert.match(btn.getAttribute('aria-label'),/撤销增强/);
+});
+
+
+test('cancelled enhance leaves no pending enhance request and never touches the draft', () => {
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'sid_main', { provider: 'p', model: 'm', draft: '草稿' });
+  h.inject(); h.boot(); h.coordAttach(ui.editor, 'sid_main');
+  h.window.__zusageUpdate(h.payload({ provider: 'p', model: 'm' })); h.tick();
+  const btn = h.enhOf(ui.wrap);
+  btn.listeners.get('click')[0]();
+  const r1 = h.takeRequests().find(r => r.action === 'prompt-enhance');
+  btn.listeners.get('click')[0]();   // 取消
+  h.takeRequests();
+  const q = h.window.__zusagePluginRequests || [];
+  assert.equal(q.filter(r2 => r2.action === 'prompt-enhance').length, 0, 'cancelled enhance must not requeue');
+  h.respond(r1.requestId, { ok: true, text: '迟到结果' });   // 迟到成功回包也不得写稿
+  assert.equal(ui.editor.__zuDraft, '草稿');
+  assert.equal(ui.editor.setTextCalls || 0, 0);
+});
+test('structured mention draft is rejected before network request', () => {
+  const h=harness(); const ui=h.buildComposer('workspace-main','sid_main',{provider:'p',model:'m',draft:'@file'});
+  ui.editor.__zcodeLexicalInputE2E.getEditorState=()=>({root:{children:[{type:'prompt-mention',markdown:'@file'}]}});
+  ui.editor.__zcodeLexicalInputE2E.setEditorStateJson=()=>{};
+  h.inject(); h.boot(); h.coordAttach(ui.editor,'sid_main'); h.window.__zusageUpdate(h.payload({provider:'p',model:'m'})); h.tick();
+  const btn=h.enhOf(ui.wrap); btn.listeners.get('click')[0]();
+  assert.equal(h.takeRequests().filter(r=>r.action==='prompt-enhance').length,0);
+  assert.match(btn.getAttribute('aria-label'),/草稿含引用/); assert.equal(ui.editor.__zuDraft,'@file');
+});
+
+
+test('structural change with identical text prevents writeback', () => {
+  const h=harness(); const ui=h.buildComposer('workspace-main','sid_main',{provider:'p',model:'m',draft:'same'});
+  let state={root:{children:[{type:'text',text:'same'}]}};
+  ui.editor.__zcodeLexicalInputE2E.getEditorState=()=>state; ui.editor.__zcodeLexicalInputE2E.setEditorStateJson=()=>{};
+  h.inject(); h.boot(); h.coordAttach(ui.editor,'sid_main'); h.window.__zusageUpdate(h.payload({provider:'p',model:'m'})); h.tick();
+  const btn=h.enhOf(ui.wrap); btn.listeners.get('click')[0](); const req=h.takeRequests().find(r=>r.action==='prompt-enhance');
+  state={root:{children:[{type:'prompt-mention',markdown:'same'}]}}; h.respond(req.requestId,{ok:true,text:'changed'});
+  assert.equal(ui.editor.__zuDraft,'same'); assert.equal(ui.editor.setTextCalls||0,0);
+});
+
+
+test('undo does not overwrite structurally edited draft with identical text', () => {
+ const h=harness(), ui=h.buildComposer('workspace-main','sid_main',{provider:'p',model:'m',draft:'same'});
+ let state={root:{children:[{type:'text',text:'same'}]}}; let restored=0;
+ ui.editor.__zcodeLexicalInputE2E.getEditorState=()=>state; ui.editor.__zcodeLexicalInputE2E.setEditorStateJson=()=>{restored++};
+ ui.editor.__zcodeLexicalInputE2E.setText=text=>{ui.editor.__zuDraft=text;state={root:{children:[{type:'text',text}]}}};
+ h.inject(); h.boot(); h.coordAttach(ui.editor,'sid_main'); h.window.__zusageUpdate(h.payload({provider:'p',model:'m'})); h.tick();
+ const btn=h.enhOf(ui.wrap); btn.listeners.get('click')[0](); const req=h.takeRequests().find(r=>r.action==='prompt-enhance');
+ h.respond(req.requestId,{ok:true,text:'enhanced'}); state={root:{children:[{type:'text',text:'enhanced',format:1}]}};
+ btn.listeners.get('click')[0](); assert.equal(restored,0); assert.equal(ui.editor.__zuDraft,'enhanced');
+});
+
+
+test('disabled state arriving before reply never writes draft', () => {
+ const h=harness(), ui=h.buildComposer('workspace-main','sid_main',{provider:'p',model:'m',draft:'original'});
+ h.inject(); h.boot(); h.coordAttach(ui.editor,'sid_main'); h.window.__zusageUpdate(h.payload({provider:'p',model:'m'})); h.tick();
+ const btn=h.enhOf(ui.wrap); btn.listeners.get('click')[0](); const req=h.takeRequests().find(r=>r.action==='prompt-enhance');
+ h.window.enhanceTest.state().enhanceEnabled=false; h.respond(req.requestId,{ok:true,text:'late'});
+ assert.equal(ui.editor.__zuDraft,'original'); assert.equal(ui.editor.setTextCalls||0,0);
 });

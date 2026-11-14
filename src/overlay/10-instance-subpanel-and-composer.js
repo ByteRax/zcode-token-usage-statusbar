@@ -63,7 +63,7 @@
             FXQ_ICON.replace('class="tip-fxq"', 'class="tip-fxq" data-model="' + escAttr(m1.model || "") + '"' +
               (m1.rates ? ' data-rates="' + escAttr(JSON.stringify(m1.rates)) + '"' : ""));
         }
-        return "<tr><td>" + ttEsc(m1.model || L("未知模型", "unknown")) + "</td><td>" + ttEsc(fmt(m1.total || 0)) +
+        return '<tr><td class="zu-model-fit" title="' + escAttr(m1.model || L("未知模型", "unknown")) + '">' + ttEsc(m1.model || L("未知模型", "unknown")) + "</td><td>" + ttEsc(fmt(m1.total || 0)) +
           "</td><td>" + ttEsc(countFmt(m1.requests || 0)) + "</td><td>" + mc + "</td></tr>";
       }).join("");
       return '<div class="zu-sp-models"><h4>' + ttEsc(L("模型用量", "Model usage")) + "</h4><table><thead><tr>" +
@@ -207,6 +207,7 @@
     function positionSubPop() {
       if (!subPopOpen()) return;
       if (subPopEntry && !subPopEntry.isConnected) { subPopClose(false, "entry-gone"); return; }
+      if (typeof fitModelNames === "function") fitModelNames(subPanel);
       var width = subPanel.offsetWidth, height = subPanel.offsetHeight;
       var ir = subPopEntry ? subPopEntry.getBoundingClientRect() : bar.getBoundingClientRect();
       if (!ir.width && !ir.height) ir = bar.getBoundingClientRect();   // 隐藏条内入口 rect 全零，回退条锚

@@ -255,7 +255,7 @@ test('N=0/1/6/7 的按钮显隐与降级；排序副本不变异（冻结数组�
   const frozen = Object.freeze([{ model: 'b-small', requests: 1, total: 5 }, { model: 'a-big', requests: 2, total: 999 }]);
   withProjectModels(h, frozen);
   /* v303 pname 也带 title（全文可查）——matchAll 收窄到模型名单元格的 title */
-  const order = [...h.drawProjectTip().matchAll(/zu-pj-mname" title="([^"]+)"/g)].map(m => m[1]);
+  const order = [...h.drawProjectTip().matchAll(/zu-pj-mname zu-model-fit" title="([^"]+)"/g)].map(m => m[1]);
   assert.deepEqual(order, ['a-big', 'b-small']);
   assert.deepEqual(frozen.map(m => m.model), ['b-small', 'a-big']);   // 原数组未被排序修改
 });
@@ -269,7 +269,7 @@ test('费用语义：0 有效、缺失显 —、开关关收 KPI 格与表格费
   const html = h.drawProjectTip();
   console.error('YENCODE:', [...html].filter(c => c === '¥' || c === '￥').map(c => c.codePointAt(0).toString(16)).join(','));
   assert.ok(html.indexOf('priced') >= 0, 'TBODY: ' + (html.split('data-zu-pj-rows>')[1] || 'NONE').slice(0, 400));
-  assert.match(html, /<td class="zu-pj-mname" title="unpriced">unpriced<\/td><td>50<\/td><td>2<\/td><td>\u2014<\/td>/);
+  assert.match(html, /<td class="zu-pj-mname zu-model-fit" title="unpriced">unpriced<\/td><td>50<\/td><td>2<\/td><td>\u2014<\/td>/);
   const h2 = harness({ kmbLS: '1' }); setup(h2);
   withProjectModels(h2, [{ model: 'k', requests: 12345, total: 1234567, cost_usd: 1 }]);
   const html2 = h2.drawProjectTip();
@@ -324,7 +324,7 @@ test('气泡上下文：项目卡 KPI ? 显示计价范围（N 个模型）；�
   const rowIcon = { closest: sel => (sel === '.tip-fxq' ? { getAttribute: k => (k === 'data-model' ? 'GLM-5.3-FlashX' : (k === 'data-rates' ? '{"input":0.29879,"output":1.04577,"cache_read":0.08516,"cache_write":0,"key":"glm-5.3-flashx"}' : null)), closest: () => null, getBoundingClientRect: () => ({ top: 200, bottom: 220, left: 30, right: 50 }) } : null) };
   tipRoot().listeners.get('mouseover')[0]({ target: rowIcon });
   fx = body.children.find(e => e.className.indexOf('zusage-fx-tip') >= 0);
-  assert.match(fx.innerHTML, /模型<\/b><span>GLM-5\.3-FlashX/);
+  assert.match(fx.innerHTML, /模型<\/b><span><span class="zu-model-fit" style="display:inline-block;max-width:100%" title="GLM-5\.3-FlashX">GLM-5\.3-FlashX/);
   assert.match(fx.innerHTML, /输入 ¥2\.12 · 输出 ¥7\.42 · 缓存读 ¥0\.60/);   // 单价随实时汇率折 ¥（fx 7.1）
   assert.doesNotMatch(fx.innerHTML, /计价范围/);
 });
