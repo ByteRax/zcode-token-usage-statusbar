@@ -80,8 +80,8 @@ var PLAN_SOURCES = {
     endpoint: "https://api.z.ai/api/anthropic/v1/models",
     baseUrl: "https://api.z.ai/api/anthropic",
     credKey: "oauth:zai:access_token",
-    /* zai 家族 start-plan：凭据取 OAuth（zcodejwttoken 链未验证），api.z.ai anthropic
-     * 端点未实测（无 zai 测试账号）——诚实尝试，失败按上游错误展示。 */
+    /* zai 家族 start-plan：凭据走 planKeyOf 统一口径（v2 key 优先、OAuth 兜底），
+     * api.z.ai anthropic 端点未实测（无 zai 测试账号）——诚实尝试，失败按上游错误展示。 */
     v2ConfigKey: "builtin:zai-coding-plan",
   },
   "account:bigmodel-team-coding-plan": {

@@ -783,8 +783,8 @@
               }, ENHANCE_UNDO_MS);
             }, 0);
           } else {
-            /* kind 转可读文案；snippet 是主进程脱敏后的上游错误摘录（实测智谱 500「网络错误 code 1234」
-             * 就藏在这里），截 100 字符带出，用户不用再猜 "server" 是什么 */
+            /* kind 转可读文案；主进程不回传上游错误正文（仅 status/ kind），error 字段只承载
+             * 插件自身的原因短语 */
             if (res && res.kind === "cancelled") { enhanceSetPhase("idle"); return; }   // 取消回包静默收口（正常路径已被身份门丢弃，此处兜 restore 摘除路径）
             var kindMap = {
               server: L("模型服务返回错误", "Model server error"),
@@ -798,7 +798,6 @@
               parse: L("响应解析失败", "Bad response"),
               empty: L("模型返回为空", "Empty completion"),
               unsupported: L("该供应商协议不受支持", "Unsupported provider protocol"),
-              signing: L("该套餐网关要求客户端签名校验，暂不支持增强", "Plan gateway requires client signing; enhance unavailable"),
               provider: L("供应商配置不可用", "Provider config unavailable"),
               unavailable: L("主进程模块未就绪，请完全重启 ZCode", "Main-process module not ready; fully restart ZCode"),
               disabled: L("增强功能已关闭", "Prompt enhance is off"),

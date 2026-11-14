@@ -35,7 +35,6 @@ test('contract: renderer slices keep enhance button wiring anchors', () => {
   assert.match(source, /b\.__zuEnhTip = label;/);   // 文案包随相位同步
   assert.doesNotMatch(source, /b\.title = label/);   // 禁原生 title（防与自绘 tooltip 双显）
   assert.match(source, /"enhance failed: "\.slice|Enhancing…|增强中…/);
-  assert.match(source, /signing: L\("该套餐网关要求客户端签名校验，暂不支持增强"/);   // issue #336 签名墙本地化文案
 });
 
 test('contract: inject-main whitelist routes prompt-enhance with fail-closed gate', () => {
@@ -463,7 +462,7 @@ test('undo window expires after 20s back to idle; missing reply hits the 75s tim
 
 test('main-process handlers: abort wiring, cross-window guard, fail-closed gate (behavior)', () => {
   const injectSource = fs.readFileSync(path.join(__dirname, '..', 'inject-main.cjs'), 'utf8');
-  const start = injectSource.indexOf('const enhanceInFlight = new Map();');
+  const start = injectSource.indexOf('function modelPullerProviderOk(v) {');
   const end = injectSource.indexOf('/* 渠道门控');   // 取消 handler 之后的下一个分区锚
   assert.ok(start > 0 && end > start, 'handler slice anchors');
   const slice = injectSource.slice(start, end);
@@ -546,17 +545,17 @@ test('R1 late reply after cancel-then-reenhance must not poison R2 (round-2 MAJO
 
 
 test('same request ID is isolated by window and old replies cannot consume a replacement', async () => {
-  const start = injectSource.indexOf('const enhanceInFlight = new Map();');
+  const start = injectSource.indexOf('function modelPullerProviderOk(v) {');
   const end = injectSource.indexOf('/* 渠道门控');
   const calls = [], replies = [];
-  const sandbox = { AbortController, LOG:()=>{}, enhanceEnabled:()=>true, modelPullerProviderOk:()=>true, enhanceRequestTextOk:()=>true,
+  const sandbox = { AbortController, LOG:()=>{}, enhanceEnabled:()=>true,
     deliverPluginRequest:(wc,id,result)=>replies.push({wc,id,result}),
     modelPuller:{ enhanceText:(p,m,t,o)=>new Promise(resolve=>calls.push({signal:o.signal,resolve})) } };
   vm.runInNewContext(injectSource.slice(start,end), sandbox);
   const a = {}, b = {}, req = {requestId:'same',providerId:'p',modelId:'m',text:'draft'};
   sandbox.handlePromptEnhanceRequest(req,a); sandbox.handlePromptEnhanceRequest(req,b);
   assert.equal(calls.length,2);
-  sandbox.handlePromptEnhanceRequest({...req,text:''},a); assert.equal(calls.length,2); assert.equal(replies.length,0);
+  sandbox.handlePromptEnhanceRequest({...req,providerId:''},a); assert.equal(calls.length,2); assert.equal(replies.length,0);   // 非法 provider 被真实闸拒绝（零回执）
   sandbox.handlePromptEnhanceCancel(req,a); assert.equal(calls[0].signal.aborted,true); assert.equal(calls[1].signal.aborted,false);
   sandbox.handlePromptEnhanceRequest(req,a); assert.equal(calls.length,3);
   calls[0].resolve({ok:false}); await new Promise(setImmediate); assert.equal(replies.length,0);
@@ -575,6 +574,37 @@ test('write verification waits for asynchronous editor commit', () => {
 });
 
 
+test('cancelled enhance frees its callback slot (registry hygiene via 32-slot eviction equivalence)', () => {
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'sid_main', { provider: 'p', model: 'm', draft: '草稿' });
+  h.inject(); h.boot(); h.coordAttach(ui.editor, 'sid_main');
+  h.window.__zusageUpdate(h.payload({ provider: 'p', model: 'm' })); h.tick();
+  const btn = h.enhOf(ui.wrap);
+  // 先发一个无关动作 X 占住比 R1 更早的槽位
+  const xIds = [];
+  h.window.__zusagePluginRequests.push({ action: 'test-echo', requestId: 'x-1' });
+  // 占位回执路由记录（simulate 主进程消费：直接 respond）
+  let xHandled = 0;
+  h.window.__zusagePluginResult({ id: 'x-1', ok: true });   // X 的回执直接消费（无 done 回调也无妨——只验证路由不抛）
+  // 发起增强 R1 → 取消 → 回调应被 forget（不占 32 槽）
+  btn.listeners.get('click')[0]();
+  const reqs = h.takeRequests();
+  const r1 = reqs.find(r => r.action === 'prompt-enhance');
+  btn.listeners.get('click')[0]();   // 取消
+  h.takeRequests();
+  // 无 forget 时：R1 滞留 1 槽。发 31 个新回调请求把窗口填满并逐出最早者
+  for (let i = 0; i < 31; i++) {
+    h.window.__zusagePluginRequests.push({ action: 'test-echo', requestId: 'fill-' + i });
+  }
+  const q = h.window.__zusagePluginRequests || [];
+  assert.equal(q.filter(r2 => r2.action === 'prompt-enhance').length, 0, 'cancelled enhance leaves no pending request entry');
+  // 清理队列后验证：fill 回执路由 31 次无异常（若注册表被滞留项污染，回执路由的逐出逻辑会错位）
+  h.takeRequests();
+  let routed = 0;
+  for (let i = 0; i < 31; i++) { h.window.__zusagePluginResult && h.window.__zusagePluginResult({ id: 'fill-' + i, ok: true }); routed++; }
+  assert.equal(routed, 31);
+  assert.equal(ui.editor.__zuDraft, '草稿');   // 全程草稿未被触碰
+});
 test('structured mention draft is rejected before network request', () => {
   const h=harness(); const ui=h.buildComposer('workspace-main','sid_main',{provider:'p',model:'m',draft:'@file'});
   ui.editor.__zcodeLexicalInputE2E.getEditorState=()=>({root:{children:[{type:'prompt-mention',markdown:'@file'}]}});

@@ -119,7 +119,7 @@ test("openai chat-completions: url/headers/body shape and content unwrap", async
   const body = JSON.parse(calls[0].opts.body);
   assert.equal(body.model, "gpt-4o");
   assert.equal(body.stream, false);
-  assert.equal(body.max_tokens > 0, true);
+  assert.ok(body.max_tokens >= 1024 && body.max_tokens <= 4096, "max_tokens out of sane range: " + body.max_tokens);
   assert.equal(body.messages[0].role, "system");
   assert.match(body.messages[0].content, /Prompt Engineering Expert/);
   assert.match(body.messages[1].content, /User draft \(JSON string\):\n"写个脚本"/);
@@ -194,7 +194,7 @@ test("plan source uses anthropic endpoint + decrypted oauth token", async () => 
   assert.equal(r.text, "套餐增强");
   assert.equal(seen[0].headers.Authorization, "Bearer v2-key-1");   // 宿主同款 key 优先
   assert.equal(seen[0].headers["x-api-key"], "v2-key-1");
-  assert.equal(seen[0].body.max_tokens > 0, true);
+  assert.ok(seen[0].body.max_tokens >= 1024 && seen[0].body.max_tokens <= 4096, "max_tokens out of sane range");
   assert.equal(seen[0].body.stream, true);
   assert.equal(seen[0].body.messages[0].role, "user");   // anthropic 路径 user 消息（system 在顶层）
 
@@ -215,6 +215,41 @@ test("plan source uses anthropic endpoint + decrypted oauth token", async () => 
   assert.equal(seen2[0].headers.Authorization, "Bearer plan-oauth-token");   // OAuth 兜底
 });
 
+test("planKeyOf: enc: v2 config key never leaves as plaintext; falls back to oauth or auth (issue #336 review)", async () => {
+  const file = tmpCfgPath();
+  fs.writeFileSync(file, JSON.stringify({
+    config: { providerConfigRules: { providerRules: [{ providerId: PLAN_ID, config: { personalModelIds: ["GLM-5.3-FlashX"] } }] } },
+  }));
+  const creds = path.join(path.dirname(file), "credentials.json");
+  fs.writeFileSync(creds, JSON.stringify({ "oauth:bigmodel:access_token": "enc:bm" }));
+  fs.writeFileSync(path.join(path.dirname(file), "config.json"), JSON.stringify({ provider: {
+    "builtin:bigmodel-coding-plan": { options: { apiKey: "enc:v2:env:aa:bb.cc" } },   // 密文形态（宿主未解密直写）
+  } }));
+  const seen = [];
+  const impl = async (url) => {
+    if (url === MODELS_DEV_TEST_URL) return { ok: false, status: 503, body: { cancel() { } } };
+    seen.push({ url, headers: (arguments.length, undefined) || null, auth: null });
+    return sseRes(['data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"ok"}}\n\n', 'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n', 'data: {"type":"message_stop"}\n\n']);
+  };
+  const capturing = async (url, requestOpts) => {
+    if (url === MODELS_DEV_TEST_URL) return { ok: false, status: 503, body: { cancel() { } } };
+    seen.push({ url, headers: requestOpts.headers });
+    return sseRes(['data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"ok"}}\n\n', 'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\n', 'data: {"type":"message_stop"}\n\n']);
+  };
+  // enc: 密文不作明文 key → 回退 credentials.json OAuth 明文
+  const mp = M.createModelPuller({ customCfgPath: file, fetchImpl: capturing, modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "", credentialsPath: creds, decryptValue: () => "plan-oauth-token" });
+  const r = await mp.enhanceText(PLAN_ID, "GLM-5.3-FlashX", "草稿");
+  assert.equal(r.ok, true);
+  assert.equal(seen[0].headers.Authorization, "Bearer plan-oauth-token");
+  assert.doesNotMatch(seen[0].headers.Authorization, /enc:/);
+  // OAuth 也解不出 → auth fail-closed 且零网络
+  seen.length = 0;
+  const mp2 = M.createModelPuller({ customCfgPath: file, fetchImpl: capturing, modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "", credentialsPath: creds, decryptValue: () => null });
+  const r2 = await mp2.enhanceText(PLAN_ID, "GLM-5.3-FlashX", "草稿");
+  assert.equal(r2.ok, false);
+  assert.equal(r2.kind, "auth");
+  assert.equal(seen.length, 0, "no network without a usable credential");
+});
 test("fail-closed: http errors classified without exposing response body", async () => {
   const file = tmpCfgPath();
   fs.writeFileSync(file, JSON.stringify(sampleCfg()));
