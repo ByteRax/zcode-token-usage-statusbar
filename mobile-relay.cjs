@@ -86,9 +86,31 @@ function createMobileRelay(options) {
     };
   })();
   const defaultPython = process.platform === "win32" ? "python" : "python3";
-  const isEnabled = () => {
-    try { return !options || typeof options.isEnabled !== "function" || options.isEnabled() !== false; }
+  /* 主进程拥有配置真值；只接受同步 getter 返回的显式 true。观察到关闭即失效
+   * 本代状态，setter 仍须在写 false 后同步调用 disable，覆盖两次检查间的快速关开。 */
+  const readEnabled = () => {
+    try { return !!(options && options.strictOptIn === true &&
+      typeof options.isEnabled === "function" && options.isEnabled() === true); }
     catch (e) { return false; }
+  };
+  let enabledState = readEnabled(), enabledEpoch = 0;
+  function discardUplinkQueue() {
+    try {
+      const q = globalThis.__zusageRelayUplinkQueue;
+      if (Array.isArray(q)) q.splice(0, q.length);
+    } catch (e) { }
+  }
+  const isEnabled = () => {
+    const enabled = readEnabled();
+    if (!enabled && !disposed) disable();
+    else if (enabled && !enabledState && !disposed) {
+      /* 持久 onRawTransportPayload 在 dispatcher 前无条件入队，无法标记接收代际。
+       * 重新开启的首个观察点保守丢弃积压，随后只接受新握手，绝不复用关闭期间偏好。 */
+      discardUplinkQueue();
+      enabledEpoch++;
+      enabledState = true;
+    }
+    return enabled && !disposed;
   };
   const getPythonCmd = () => {
     try { return (options && typeof options.getPythonCmd === "function" && options.getPythonCmd()) || defaultPython; }
@@ -105,7 +127,7 @@ function createMobileRelay(options) {
     return targetBinding;
   }
   let targetEpoch = 0, validateTarget = null, verifyTarget = null, disposed = false, readyBridge = null;
-  let queryBusy = false, lastQueryAt = 0, queryPending = false;
+  let queryBusy = false, activeQuery = null, lastQueryAt = 0, queryPending = false;
   /* 手机端已上报配置 = 有消费者（v346 门控）：只有收到手机上行配置后才开始查库推送，
    * 单纯建立远控通道不推（避免无消费者盲推占带宽）。 */
   let clientReady = false, clientCfg = null, clientCfgGen = 0, uplinkFrames = 0;
@@ -129,7 +151,7 @@ function createMobileRelay(options) {
   }
 
   function targetIsCurrent(target, epoch, bridge) {
-    if (disposed || !isEnabled() || epoch !== targetEpoch || currentTarget !== target) return false;
+    if (disposed || !isEnabled() || !clientReady || epoch !== targetEpoch || currentTarget !== target) return false;
     if (typeof validateTarget === "function") {
       try { if (!validateTarget(target)) return false; } catch (e) { return false; }
     }
@@ -141,19 +163,23 @@ function createMobileRelay(options) {
    * globalThis.__zusageRelayUplinkQueue——帧在 acceptPayload 严格 seq 校验前被消费，
    * 官方 ack 水位零接触。载荷 = 手机端 overlay 偏好（zusage3.* 同键），gen 单调幂等。 */
   function drainUplink(schedule) {
+    /* 先观察启用边沿/丢弃旧队列，再取帧；仅清全局队列不能撤销已经 splice 的 frames。 */
+    if (disposed || !isEnabled()) return;
+    const epoch = enabledEpoch;
     let q;
     try { q = globalThis.__zusageRelayUplinkQueue; } catch (e) { return; }
     if (!Array.isArray(q) || !q.length) return;
     const frames = q.splice(0, q.length);
     refreshBridges();
-    if (live.length !== 1 || disposed || !isEnabled()) return;
+    if (live.length !== 1 || disposed || !isEnabled() || epoch !== enabledEpoch) return;
     for (const item of frames) {
       uplinkFrames++;
       if (!item || item.b !== live[0].b || item.relay !== live[0].b.relayProtocol ||
           item.relay.protocol !== live[0].p) continue;
       const p = item.frame;
       const cfg = p && typeof p === "object" ? p.zuCfg : null;
-      if (!isEnabled() || disposed || !cfg || typeof cfg !== "object") continue;
+      if (!isEnabled() || disposed || epoch !== enabledEpoch) return;
+      if (!cfg || typeof cfg !== "object") continue;
       const gen = Math.floor(Number(cfg.gen)) || 0;
       if (gen <= clientCfgGen) continue;
       clientCfgGen = gen;
@@ -166,27 +192,49 @@ function createMobileRelay(options) {
     }
   }
 
-  /* 热修层（与 asar 持久层等价的双保险）：包裹 stash 桥的 relayProtocol.acceptPayload，
-   * zuUp 帧进队列并返回 true（先于严格校验被消费）。客户端重装/升级抹掉 asar 补丁时，
-   * 这里仍能保证上行安全；新桥由 refreshBridges 节拍补包。 */
+  /* 热修层（与 asar 持久层等价的双保险）：稳定 dispatcher 保留在宿主桥上，
+   * 当前实例只拥有可替换的 handler。热换不能让旧实例的 disposed/getter 永久拦掉上行。 */
+  const uplinkHooks = new Set();
+  function acceptUplink(payload, bridge, relay) {
+    if (!isEnabled()) return; // 关闭仍先于宿主 seq 校验消费，但不应用或排队
+    const q = globalThis.__zusageRelayUplinkQueue = globalThis.__zusageRelayUplinkQueue || [];
+    if (q.length >= 64) q.splice(0, q.length - 63);
+    q.push({ frame: payload, b: bridge, relay });
+  }
   function wrapUplinkHooks() {
+    if (disposed) return;
     for (const e of stash()) {
       const relay = e && e.b && e.b.relayProtocol;
-      if (!relay || typeof relay.acceptPayload !== "function" || relay.__zusageUplinkWrappedV2 === relay.acceptPayload) continue;
-      let orig;
-      try { orig = relay.acceptPayload.bind(relay); } catch (e2) { continue; }
-      const wrapped = function (payload) {
+      if (!relay || typeof relay.acceptPayload !== "function") continue;
+      if (relay.__zusageUplinkDispatcherV2 !== relay.acceptPayload) {
+        let orig;
+        try { orig = relay.acceptPayload.bind(relay); } catch (e2) { continue; }
+        const wrapped = function (payload) {
+          try {
+            if (payload && payload.zuUp) {
+              const handler = relay.__zusageUplinkHandlerV2;
+              try { if (handler) handler.accept(payload, handler.bridge, relay); } catch (e2) { }
+              return true;
+            }
+          } catch (e2) { }
+          return orig(payload);
+        };
         try {
-          if (payload && payload.zuUp) {
-            const q = globalThis.__zusageRelayUplinkQueue = globalThis.__zusageRelayUplinkQueue || [];
-            if (q.length >= 64) q.splice(0, q.length - 63);
-            q.push({ frame: payload, b: e.b, relay });
-            return true;
+          relay.acceptPayload = wrapped;
+          if (relay.acceptPayload === wrapped) {
+            relay.__zusageUplinkDispatcherV2 = wrapped;
+            relay.__zusageUplinkWrappedV2 = wrapped;
           }
         } catch (e2) { }
-        return orig(payload);
-      };
-      try { relay.acceptPayload = wrapped; if (relay.acceptPayload === wrapped) relay.__zusageUplinkWrappedV2 = wrapped; } catch (e2) { }
+      }
+      if (relay.__zusageUplinkDispatcherV2 !== relay.acceptPayload) continue;
+      try {
+        const handler = relay.__zusageUplinkHandlerV2;
+        if (!handler || handler.accept !== acceptUplink || handler.bridge !== e.b) {
+          relay.__zusageUplinkHandlerV2 = { accept: acceptUplink, bridge: e.b };
+        }
+        uplinkHooks.add(relay);
+      } catch (e2) { }
     }
   }
 
@@ -257,6 +305,7 @@ function createMobileRelay(options) {
     ? { sids: [], scopes: [{ sid: target.taskId, workspaceIdentity: target.workspaceIdentity }] }
     : { sids: [target.taskId], scopes: [] });
   let pyRes = null, pyFail = 0, pyIdle = 0;
+  const legacyQueries = new Set();
   function stopResident() {
     if (pyIdle) { clearTimeout(pyIdle); pyIdle = 0; }
     const c = pyRes;
@@ -296,7 +345,7 @@ function createMobileRelay(options) {
     proc.on("close", c.finish);
     proc.stderr.on("data", () => { });
     proc.stdout.on("data", (d) => {
-      if (c.finished) return;
+      if (c.finished || c.intentional) return;
       c.buf += d.toString("utf8");
       if (c.buf.length > 8 * 1024 * 1024) { c.buf = ""; return; }
       let i;
@@ -335,14 +384,21 @@ function createMobileRelay(options) {
     try { proc = spawn(getPythonCmd(), [zusagePath, "json", request], { windowsHide: true }); }
     catch (e) { lastError = "json spawn: " + e.message; finish(null); return; }
     let out = "";
-    const timer = setTimeout(() => { try { proc.kill(); } catch (e) { } finish(null); }, RESIDENT_TIMEOUT_MS);
-    if (timer && typeof timer.unref === "function") timer.unref();
-    proc.stdout.on("data", (d) => { if (out.length < 8 * 1024 * 1024) out += d.toString("utf8"); });
-    proc.on("error", () => { clearTimeout(timer); finish(null); });
-    proc.on("close", (code) => {
+    const query = { cancel: () => { try { proc.kill(); } catch (e) { } complete(null); } };
+    const complete = (payload) => {
       clearTimeout(timer);
-      if (code !== 0) { finish(null); return; }
-      try { finish(JSON.parse(out)); } catch (e) { finish(null); }
+      legacyQueries.delete(query);
+      finish(payload);
+    };
+    const timer = setTimeout(() => query.cancel(), RESIDENT_TIMEOUT_MS);
+    if (timer && typeof timer.unref === "function") timer.unref();
+    legacyQueries.add(query);
+    proc.stdout.on("data", (d) => { if (!settled && out.length < 8 * 1024 * 1024) out += d.toString("utf8"); });
+    proc.on("error", () => complete(null));
+    proc.on("close", (code) => {
+      if (settled) return;
+      if (code !== 0) { complete(null); return; }
+      try { complete(JSON.parse(out)); } catch (e) { complete(null); }
     });
   }
 
@@ -417,12 +473,18 @@ function createMobileRelay(options) {
   }
 
   function queryAndPush(target, epoch, bridge) {
-    if (queryBusy) return;
+    if (queryBusy || !targetIsCurrent(target, epoch, bridge)) return;
+    const query = {};
+    activeQuery = query;
     queryBusy = true;
     const runId = ++queryRuns;
     queryJson(target, (d) => {
+      /* disable 先撤销请求身份再回收子进程；旧回调不能释放重开后的 busy 或补拍。 */
+      if (activeQuery !== query) return;
+      activeQuery = null;
       queryBusy = false;
       lastQueryAt = Date.now();
+      if (!isEnabled()) return;
       if (queryPending) { queryPending = false; schedulePump(0); }
       if (!targetIsCurrent(target, epoch, bridge)) return;
       if (!d || d.error) { lastError = "query failed"; diag(); sendUnavailable(target, epoch, bridge, runId); return; }
@@ -547,6 +609,7 @@ function createMobileRelay(options) {
    * 不能被先前按旧限频排下的长等待拖住（桌面 scheduleRetry 只保留最后一次，
    * 这里取更早者——语义上是「最早可查时刻」，两者等价且不受旧值牵制）。 */
   function schedulePump(delayMs) {
+    if (disposed || !isEnabled()) return;
     const due = Date.now() + Math.max(0, delayMs || 0);
     if (pumpTimer) {
       if (pumpTimerDue <= due) return;   // 已有更早的排程
@@ -561,7 +624,23 @@ function createMobileRelay(options) {
     if (pumpTimer && typeof pumpTimer.unref === "function") pumpTimer.unref();
   }
   function clearPump() {
-    if (pumpTimer) { clearTimeout(pumpTimer); pumpTimer = 0; pumpTimerDue = 0; }
+    if (pumpTimer) clearTimeout(pumpTimer);
+    pumpTimer = 0; pumpTimerDue = 0;
+  }
+  /* 由主进程 setter 在写入 false 后同步调用；不 dispose，重开由新目标与上行重新握手。
+   * 不发撤销帧、不移除安全上行拦截，也不触碰宿主拥有的 stash/远控协议。 */
+  function disable() {
+    enabledState = false; enabledEpoch++;
+    targetEpoch++;
+    currentTarget = null; validateTarget = null; verifyTarget = null;
+    clientReady = false; clientCfg = null; clientCfgGen = 0; readyBridge = null;
+    activeQuery = null; queryBusy = false; queryPending = false;
+    clearPump();
+    lastQueryAt = 0; lastSnapAt = 0; lastSnapKey = ""; lastAnnounceAt = 0;
+    lastQueryRecord = null; lastMode = "";
+    discardUplinkQueue();
+    stopResident();
+    for (const query of Array.from(legacyQueries)) query.cancel();
   }
   /* 一次对账：门控（clientReady）→ 目标 → 节流 → 查询推送。 */
   function pump() {
@@ -582,12 +661,11 @@ function createMobileRelay(options) {
   /* 渲染端上报：{zm:1, ts, target, bySession}。目标变化立即 pump；同一目标等 DB 事件。
    * 无手机配置（clientReady=false）时不查库不推——门控在 pump 内。 */
   function push(payload, validator, verifier) {
-    if (disposed || !payload || payload.zm !== 1) return false;
-    if (!isEnabled()) { clientReady = false; clientCfg = null; clientCfgGen = 0; readyBridge = null; }
+    if (disposed || !payload || payload.zm !== 1 || !isEnabled()) return false;
     const input = payload.target;
     const sid = input && typeof input.taskId === "string" ? input.taskId : "";
     const identity = input && typeof input.workspaceIdentity === "string" ? input.workspaceIdentity : null;
-    const tgt = isEnabled() && /^[A-Za-z0-9_-]{1,256}$/.test(sid) &&
+    const tgt = /^[A-Za-z0-9_-]{1,256}$/.test(sid) &&
       identity !== null && (!identity || /^remote:(?:ssh|wsl|docker|server):/.test(identity))
       ? { taskId: sid, workspaceIdentity: identity, workspacePath: input.workspacePath || "",
         bridge: input.bridge, bridgeState: input.bridgeState, relay: input.relay,
@@ -625,12 +703,23 @@ function createMobileRelay(options) {
     }),
     /* 测试接缝：DB 事件正常由 inject-main 调用（冷文件），测试直调 */
     pump,
+    disable,
     dispose: () => {
-      disposed = true; targetEpoch++; currentTarget = null; clientReady = false;
+      if (disposed) return;
+      disposed = true;
+      disable();
+      for (const relay of uplinkHooks) {
+        try {
+          if (relay.__zusageUplinkHandlerV2 && relay.__zusageUplinkHandlerV2.accept === acceptUplink) {
+            delete relay.__zusageUplinkHandlerV2;
+          }
+        } catch (e) { }
+      }
+      uplinkHooks.clear();
       if (bridgeTimer) clearInterval(bridgeTimer);
       if (announceTimer) clearInterval(announceTimer);
       if (remoteTimer) clearInterval(remoteTimer);
-      clearPump(); stopResident(); live = [];
+      live = [];
     },
   };
 }

@@ -8,7 +8,7 @@ const readline = require("readline");
 const { spawn, execFile } = require("child_process");
 const { promisify } = require("util");
 const execute = promisify(execFile);
-const { createUpdater, PLUGIN_ID } = require("../plugin-updater.cjs");
+const { createUpdater, PLUGIN_ID, updateConfig } = require("../plugin-updater.cjs");
 const helper = path.resolve(__dirname, "../runtime_lock.py");
 const python = process.env.ZUSAGE_PLUGIN_PYTHON || (process.platform === "win32" ? "python" : "python3");
 const env = { ...process.env, PYTHONDONTWRITEBYTECODE: "1" };
@@ -173,6 +173,71 @@ test("Python context manager times out then recovers after exceptions", async (t
   const recovery = `import sys\nsys.path.insert(0,${JSON.stringify(path.dirname(helper))})\nfrom runtime_lock import file_lock\ntry:\n with file_lock(${JSON.stringify(f.lock)},timeout=0): raise ValueError('test')\nexcept ValueError: pass\nwith file_lock(${JSON.stringify(f.lock)},timeout=0): print('recovered')\n`;
   assert.equal((await execute(python, ["-c", recovery], { env })).stdout.trim(), "recovered");
 });
+test("updateConfig bridge forwards merge while preserving unknown config fields", async (t) => {
+  const f = fixture(t); const config = path.join(f.runtime, "config.json");
+  fs.writeFileSync(config, JSON.stringify({ unknown: { keep: true }, plugin_auto_update: false,
+    mobile_relay: { enabled: false, keep: { nested: 1 } } }));
+  const merge = { mobile_relay: { enabled: true } };
+  assert.deepEqual(await updateConfig(f.runtime, {}, python, undefined, merge), { ok: true, changed: true });
+  assert.deepEqual(JSON.parse(fs.readFileSync(config)), { unknown: { keep: true }, plugin_auto_update: false,
+    mobile_relay: { enabled: true, keep: { nested: 1 } } });
+  assert.deepEqual(merge, { mobile_relay: { enabled: true } });
+  const before = fs.readFileSync(config, "utf8");
+  assert.deepEqual(await updateConfig(f.runtime, {}, python, undefined, merge), { ok: true, changed: false });
+  assert.equal(fs.readFileSync(config, "utf8"), before);
+  assert.deepEqual(await updateConfig(f.runtime, {}, python, undefined, { mobile_relay: { enabled: false } }),
+    { ok: true, changed: true });
+  assert.deepEqual(JSON.parse(fs.readFileSync(config)).mobile_relay, { enabled: false, keep: { nested: 1 } });
+});
+test("updateConfig bridge persists boolean enabled over equal legacy numbers", async (t) => {
+  const f = fixture(t); const config = path.join(f.runtime, "config.json");
+  for (const [old, enabled] of [[0, false], [1, true]]) {
+    fs.writeFileSync(config, JSON.stringify({ mobile_relay: { enabled: old, keep: 1 } }));
+    const merge = { mobile_relay: { enabled } };
+    assert.deepEqual(await updateConfig(f.runtime, {}, python, undefined, merge), { ok: true, changed: true });
+    assert.deepEqual(JSON.parse(fs.readFileSync(config)), { mobile_relay: { enabled, keep: 1 } });
+    assert.deepEqual(await updateConfig(f.runtime, {}, python, undefined, merge), { ok: true, changed: false });
+  }
+});
+test("updateConfig bridge keeps legacy defaults and whole-field changes semantics", async (t) => {
+  const f = fixture(t); const config = path.join(f.runtime, "config.json");
+  fs.writeFileSync(config, JSON.stringify({ plugin_auto_update: false, python_path: "custom",
+    mobile_relay: { enabled: true, old: 1 } }));
+  assert.deepEqual(await updateConfig(f.runtime, { mobile_relay: { enabled: false } }, python,
+    { plugin_auto_update: true, python_path: "fallback", unknown: 2 }), { ok: true, changed: true });
+  assert.deepEqual(JSON.parse(fs.readFileSync(config)), { plugin_auto_update: false, python_path: "custom",
+    mobile_relay: { enabled: false }, unknown: 2 });
+  assert.deepEqual(await updateConfig(f.runtime, {}, python), { ok: true, changed: false });
+});
+test("updateConfig bridge recovers non-object nested fields but preserves corrupt top-level config", async (t) => {
+  const f = fixture(t); const config = path.join(f.runtime, "config.json");
+  for (const value of [null, false, 0, "legacy", [], [1]]) {
+    fs.writeFileSync(config, JSON.stringify({ mobile_relay: value, unknown: true }));
+    assert.deepEqual(await updateConfig(f.runtime, {}, python, undefined, { mobile_relay: { enabled: true } }),
+      { ok: true, changed: true });
+    assert.deepEqual(JSON.parse(fs.readFileSync(config)), { mobile_relay: { enabled: true }, unknown: true });
+  }
+  for (const input of ["{broken", "[]", "null", "true"]) {
+    fs.writeFileSync(config, input);
+    await assert.rejects(updateConfig(f.runtime, {}, python, undefined, { mobile_relay: { enabled: true } }));
+    assert.equal(fs.readFileSync(config, "utf8"), input);
+  }
+});
+test("updateConfig bridge rejects invalid merge types and prototype keys without writing", async (t) => {
+  const f = fixture(t); const config = path.join(f.runtime, "config.json");
+  const before = '{"unknown": true, "mobile_relay": {"keep": 1}}';
+  fs.writeFileSync(config, before);
+  const invalid = [[], false, 1, "bad", ...[null, [], false, 1, "bad"].map((value) => ({ mobile_relay: value }))];
+  for (const key of ["__proto__", "constructor", "prototype"]) {
+    invalid.push(JSON.parse(`{"${key}":{"enabled":true}}`), JSON.parse(`{"mobile_relay":{"${key}":true}}`));
+  }
+  for (const merge of invalid) {
+    await assert.rejects(updateConfig(f.runtime, {}, python, undefined, merge), /config merge/);
+    assert.equal(fs.readFileSync(config, "utf8"), before);
+  }
+  assert.equal(Object.prototype.enabled, undefined);
+});
+
 test("marker merge and acknowledgement remove only loaded hashes", async (t) => {
   const f = fixture(t); const marker = path.join(f.runtime, ".plugin-restart-required");
   await markerCommand(f.runtime, "--record-restart", { hashes: { "inject-main.cjs": "old", "plugin-updater.cjs": "same" } });

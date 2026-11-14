@@ -123,6 +123,11 @@
     /* v344 增强提示词按钮开关：真值在 config.json 的 enhance_enabled（主进程动作入口
        fail-closed 校验，并随插件状态推送 enhanceEnabled）；缺省开启，仅显式 false 关闭 */
     enhanceEnabled: !(window.__zusagePluginState && window.__zusagePluginState.enhanceEnabled === false),
+    /* 移动端推送只认主进程配置与能力的显式 true，缺字段的旧 loader 保持关闭；
+       pending 仅保存本窗口各 pane 共享的待确认勾选，不进 localStorage。 */
+    mobileRelayEnabled: !!(window.__zusagePluginState && window.__zusagePluginState.mobileRelayEnabled === true),
+    mobileRelaySupported: !!(window.__zusagePluginState && window.__zusagePluginState.mobileRelaySupported === true),
+    mobileRelayPending: null,
     /* v135 重置卡徽标开关：真值在 config.json 的 reset_badge_enabled（主进程推送
        resetBadgeEnabled）；独立于 quota_enabled（额度关时仍查询 reset/status）。缺省开启 */
     resetBadge: !(window.__zusagePluginState && window.__zusagePluginState.resetBadgeEnabled === false),

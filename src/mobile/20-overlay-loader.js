@@ -177,6 +177,10 @@
     var script = document.createElement("script");
     try {
       window.__zusageMobileMode = true;
+      /* 手机仅消费统计；即使页面残留桌面状态，也不授予配置推送的能力。 */
+      window.__zusagePluginState = Object.assign({}, window.__zusagePluginState, {
+        mobileRelayEnabled: false, mobileRelaySupported: false,
+      });
       script.textContent = OVERLAY_CODE;
       host.appendChild(script);
       if (!(window.__zusageOverlay && typeof window.__zusageUpdate === "function")) throw new Error("overlay not active");

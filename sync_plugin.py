@@ -155,10 +155,11 @@ def check_manifests(root=ROOT):
 
 
 def _maybe_build_bundles(root=ROOT, check_only=False):
-    """若存在模块化构建脚本（scripts/build_overlay.py、scripts/build_quota.py），先构建或校验根产物。"""
+    """依次构建桌面、额度和根目录用户脚本；check_only 只校验，不写产物。"""
     for script_name, mod_name in (
         ("build_overlay.py", "sync_build_overlay"),
         ("build_quota.py", "sync_build_quota"),
+        ("build_mobile_userscript.py", "sync_build_mobile_userscript"),
     ):
         builder = Path(root) / "scripts" / script_name
         if not builder.is_file():

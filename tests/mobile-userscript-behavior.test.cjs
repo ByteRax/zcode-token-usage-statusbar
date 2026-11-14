@@ -11,6 +11,7 @@ const source = fs.readdirSync(DIR).filter(name => /^\d\d-.*\.js$/.test(name)).so
 const overlayStub = `(() => {
   if (!window.__zusageMobileMode) throw new Error('mobile mode must precede activation');
   window.__overlays.installed++;
+  window.__overlays.pluginStates.push({ ...window.__zusagePluginState });
   window.__zusageOverlay = true;
   window.__zusageUpdate = data => window.__overlays.updates.push(data);
   window.__zusageDispose = () => { window.__overlays.disposed++; window.__zusageOverlay = false; };
@@ -28,10 +29,10 @@ function encoded(body) {
   const data = Buffer.from(JSON.stringify(body));
   return Buffer.from([4, 2, 6, ...vql(204), 6, ...vql(2147483647), 5, ...vql(data.length), ...data]);
 }
-function harness({ stored = {}, debug = false, preexisting = false, readyState = 'complete', noBody = false } = {}) {
+function harness({ stored = {}, debug = false, preexisting = false, readyState = 'complete', noBody = false, pluginState } = {}) {
   let time = 100000, timerId = 0, reloads = 0;
   const timers = new Map(), elements = [], infos = [], storage = new Map(Object.entries(stored));
-  const overlays = { installed: 0, updates: [], disposed: 0 };
+  const overlays = { installed: 0, updates: [], disposed: 0, pluginStates: [] };
   class Events {
     constructor() { this.events = {}; }
     addEventListener(type, fn) { (this.events[type] ||= []).push(fn); }
@@ -65,6 +66,7 @@ function harness({ stored = {}, debug = false, preexisting = false, readyState =
   const FakeDate = class extends Date { static now() { return time; } };
   function setTimer(fn, delay, repeat) { const id = ++timerId; timers.set(id, { fn, delay, repeat }); return id; }
   const sandbox = { document, WebSocket: WS, Worker, SharedWorker: Worker, URL, Date: FakeDate,
+    __zusagePluginState: pluginState,
     localStorage: { getItem: key => storage.has(key) ? storage.get(key) : null, setItem: (key, value) => storage.set(key, String(value)) },
     location: { href: 'https://zcode.z.ai/remote/?sid=d_device', search: '?sid=d_device', reload() { reloads++; } },
     atob: text => Buffer.from(text, 'base64').toString('binary'), console: { info: text => infos.push(text) },
@@ -110,6 +112,25 @@ test('starts embedded desktop overlay in mobile waiting mode without independent
   assert.equal(h.debugNodes().length, 0);
   assert.equal(h.elements.some(el => /zm-root|zm-bar|zm-panel/.test(el.className)), false);
   assert.equal(h.document.head.children.length, 0, 'inline script element must be removed after execution');
+});
+
+test('mobile activation always seeds relay disabled and unsupported without enabling desktop configuration', () => {
+  for (const debug of [false, true]) {
+    const original = { mobileRelayEnabled: true, mobileRelaySupported: true, unknown: 'keep' };
+    const h = harness({ debug, pluginState: original });
+    const expected = { mobileRelayEnabled: false, mobileRelaySupported: false, unknown: 'keep' };
+    assert.deepEqual(plain(h.overlays.pluginStates[0]), expected);
+    assert.equal(original.mobileRelayEnabled, true, 'the previous state object is not mutated');
+    const ws = h.socket(), frame = dataFrame();
+    frame.snap.mobileRelayEnabled = true; frame.snap.mobileRelaySupported = true;
+    h.frame(ws, frame); h.frame(ws, cap());
+    assert.deepEqual(plain(h.sandbox.__zusagePluginState), expected, 'downlink statistics cannot grant desktop configuration capability');
+    assert.equal(ws.sent[0].payload.zuCfg.prefs.mobileRelayEnabled, undefined);
+    assert.equal(ws.sent[0].payload.zuCfg.prefs.mobileRelaySupported, undefined);
+    h.inject();
+    assert.deepEqual(plain(h.overlays.pluginStates.at(-1)), expected);
+    assert.equal(h.sandbox.__zusagePluginRequests, undefined);
+  }
 });
 
 test('document-start defers desktop activation until body exists and keeps the newest pending frame', () => {

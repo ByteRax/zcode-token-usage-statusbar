@@ -133,7 +133,7 @@ description: "面向 zcode-token-usage-statusbar 项目，将功能需求、UI �
    - 共享文件先改根源码：其中 `overlay.js` 必须改 `src/overlay/00..12.js` 分片（`VERSION` 在 `src/overlay/06-instance-dom-and-styles.js`），`quota-client.cjs` 必须改 `src/quota/00..05.cjs` 分片，`zusage.py` 与 `token_rate.py` 共用的计算逻辑改 `usage_stats.py`；插件专有入口（hooks、commands、manifest、`overlay_install.py` 等）直接改本体。
    - 保持 Python 3.8+ / Node / Electron 兼容目标并说明实际验证版本；开发机较新解释器通过不等于已验证所有平台或 Python 最低版本。
 4. **先定向检查，再安全同步副本**：
-   - **同步前必查并行污染**：`python3 sync_plugin.py` 会先运行 `scripts/build_overlay.py` 与 `scripts/build_quota.py` 拼接生成根 `overlay.js` 和 `quota-client.cjs`，再扫描全部 `FILES` 清单同步至插件目录并执行 `--verify-manifests`；执行前先确认根目录下其它共享文件没有并行会话未完成、未验证的改动，防止把他人半成品一并扫进插件副本和运行目录。确认安全后执行 `python3 sync_plugin.py` 与 `python3 sync_plugin.py --check`，再运行语法检查与契约回归。
+   - **同步前必查并行污染**：`python3 sync_plugin.py` 会先运行 `scripts/build_overlay.py`、`scripts/build_quota.py` 和 `scripts/build_mobile_userscript.py`，生成根 `overlay.js`、`quota-client.cjs` 及两份 `.user.js`，再扫描全部 `FILES` 清单同步至插件目录并执行 `--verify-manifests`；执行前先确认根目录下其它共享文件没有并行会话未完成、未验证的改动，防止把他人半成品一并扫进插件副本和运行目录。确认安全后执行 `python3 sync_plugin.py` 与 `python3 sync_plugin.py --check`，再运行语法检查与契约回归。
 5. **检查版本台账、文档与宣传图**：
    - 按当前 `.zcode/rules/overlay-ui.md` 在 `src/overlay/06-instance-dom-and-styles.js` 维护 `overlay.js` 的 `VERSION` 代际台账（随提交递增，注释与声明同步，号段不要求连续；并行撞号按合入顺序顺延改号并合并注释后再执行 `python3 sync_plugin.py` 与提交）；未提交的中间迭代不反复涨号，未获提交授权不为涨号自行提交。
    - 配置、默认值、协议或可见行为变化时同步 `config.example.json`、三语 `README`、`docs/user-guide.md` 及插件文档，保持各自适用范围；文档中不写死会漂移的用例数或清单长度。

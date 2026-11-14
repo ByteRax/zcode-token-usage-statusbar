@@ -69,16 +69,25 @@ async function waitFor(predicate, message) {
 }
 
 function harness(t, options = {}, setup = {}) {
-  const requests = [], spawns = [], frames = [], intervals = [];
+  const requests = [], spawns = [], frames = [], intervals = [], processes = [], hostCalls = [];
   let now = 1000000;
-  const stdout = new EventEmitter();
-  const proc = new EventEmitter();
-  proc.stdout = stdout;
-  proc.stderr = new EventEmitter();
-  proc.stdin = new EventEmitter();
-  proc.stdin.writable = true;
-  proc.stdin.write = (line) => { requests.push(JSON.parse(line)); return true; };
-  proc.kill = () => { proc.stdin.writable = false; };
+  function spawnProc(command, args) {
+    spawns.push([command, args]);
+    if (setup.legacy && args[1] === 'serve') throw new Error('serve unavailable');
+    const proc = new EventEmitter();
+    proc.stdout = new EventEmitter();
+    proc.stderr = new EventEmitter();
+    proc.stdin = new EventEmitter();
+    proc.stdin.writable = true;
+    proc.stdin.write = (line) => { requests.push(JSON.parse(line)); return true; };
+    proc.kills = 0;
+    proc.kill = () => { proc.kills++; proc.stdin.writable = false; };
+    proc.legacy = args[1] === 'json';
+    if (proc.legacy) requests.push(JSON.parse(args[2]));
+    processes.push(proc);
+    return proc;
+  }
+  const acceptPayload = function (payload) { hostCalls.push({ receiver: this, payload }); return 'original'; };
   const bridge = (identity) => {
     const e = { p: { send(frame) { frames.push({ identity, bytes: Buffer.from(frame.buffer), body: decode(frame) }); } },
       b: { workspaceIdentity: identity, readyAnnounced: true } };
@@ -86,9 +95,9 @@ function harness(t, options = {}, setup = {}) {
     return e;
   };
   const initialBridge = bridge(A);
-  if (setup.acceptPayload === 'writable') initialBridge.b.relayProtocol.acceptPayload = () => 'original';
+  if (setup.acceptPayload === 'writable') initialBridge.b.relayProtocol.acceptPayload = acceptPayload;
   if (setup.acceptPayload === 'readonly') {
-    Object.defineProperty(initialBridge.b.relayProtocol, 'acceptPayload', { value: () => 'original', writable: false });
+    Object.defineProperty(initialBridge.b.relayProtocol, 'acceptPayload', { value: acceptPayload, writable: false });
   }
   const globals = {
     Buffer, process, console, setTimeout, clearTimeout,
@@ -110,18 +119,38 @@ function harness(t, options = {}, setup = {}) {
   const load = vm.runInContext('(function(require,module,exports,__dirname){' + source + '\n})', context,
     { filename: sourcePath });
   load(isolatedRequire, module, module.exports, path.dirname(sourcePath));
-  const relay = module.exports.createMobileRelay({
-    log() {}, minIntervalMs: 300,
-    spawnProc(...args) { spawns.push(args); return proc; },
+  const createRelay = () => module.exports.createMobileRelay({
+    log() {}, minIntervalMs: 300, strictOptIn: true, isEnabled: () => true,
+    spawnProc,
     ...options,
   });
+  let relay = createRelay();
   t.after(() => relay.dispose());
   return {
-    relay, requests, spawns, frames, globals, bridge,
-    respond(value) { stdout.emit('data', Buffer.from(JSON.stringify(value) + '\n')); },
-    push(value) { relay.push({ zm: 1, ts: Date.now(), target: value }); },
+    get relay() { return relay; },
+    requests, spawns, processes, frames, globals, bridge, hostCalls,
+    reload() { relay.dispose(); relay = createRelay(); },
+    respond(value, proc = processes[processes.length - 1]) {
+      proc.stdout.emit('data', Buffer.from(JSON.stringify(value) + (proc.legacy ? '' : '\n')));
+      if (proc.legacy) proc.emit('close', 0);
+    },
+    push(value, validator, verifier) { return relay.push({ zm: 1, ts: Date.now(), target: value }, validator, verifier); },
+    uplink(gen = 1, prefs = { show: '{}' }) {
+      const b = globals.__zusageRelayStash[0].b;
+      globals.__zusageRelayUplinkQueue.push({ frame: { zuUp: 2, zuCfg: { gen, prefs } }, b, relay: b.relayProtocol });
+    },
+    rawTransport(payload) {
+      // 与 mobile_relay_patch.inject_for_uplink 的持久 onRawTransportPayload 同序同形：
+      // 在 acceptPayload dispatcher 之前无条件入队，并捕获当前 bridge/relay 的身份。
+      const runtime = { currentBridge: globals.__zusageRelayStash[0].b };
+      return (payload && payload.zuUp ? ((b) => ((globals.__zusageRelayUplinkQueue =
+        globals.__zusageRelayUplinkQueue || []).push({ frame: payload, b,
+        relay: b ? b.relayProtocol : undefined }), true))(runtime.currentBridge) : 0) ||
+        runtime.currentBridge.relayProtocol.acceptPayload(payload);
+    },
     dataFrames() { return frames.filter((f) => f.body.snap || f.body.chips); },
     announce() { const timer = intervals.find((item) => item.ms === 2500); assert.ok(timer); timer.fn(); },
+    bridgeTick() { const timer = intervals.find((item) => item.ms === 30000); assert.ok(timer); timer.fn(); },
     advance(ms) { now += ms; },
     remoteTick() { const timer = intervals.find((item) => item.ms === 1000); assert.ok(timer); timer.fn(); },
   };
@@ -392,4 +421,246 @@ test('常驻查询使用 getPythonCmd 返回的解释器', async (t) => {
   await waitFor(() => h.spawns.length === 1, '应启动常驻查询');
   assert.equal(h.spawns[0][0], 'custom-python-executable');
   assert.equal(h.spawns[0][1][1], 'serve');
+});
+
+for (const [label, getter] of [
+  ['缺 getter', undefined], ['非函数 getter', true], ['false', () => false],
+  ['undefined', () => undefined], ['null', () => null], ['字符串', () => 'true'],
+  ['数字', () => 1], ['对象', () => ({ enabled: true })], ['数组', () => [true]],
+  ['装箱布尔', () => new Boolean(true)], ['Promise', () => Promise.resolve(true)],
+  ['getter 抛错', () => { throw new Error('invalid config'); }],
+]) {
+  test(`显式启用门控：${label}时公告 tick、查询与快照全部关闭`, async (t) => {
+    const h = harness(t, { isEnabled: getter }, { acceptPayload: 'writable' });
+    h.announce();
+    h.push(target());
+    h.relay.pump(); h.remoteTick(); h.bridgeTick();
+    await wait(30);
+    assert.equal(h.frames.length, 0, '包括能力公告与 unavailable 在内零插件帧');
+    assert.equal(h.spawns.length, 0, '不得启动插件查询进程');
+    assert.equal(h.relay.status().target, null);
+    assert.equal(h.relay.status().clientReady, false);
+    assert.equal(h.relay.status().clientCfgGen, 0);
+    assert.equal(h.globals.__zusageRelayUplinkQueue.length, 0, '关闭时排空并忽略手机配置');
+  });
+}
+
+for (const legacy of [false, true]) {
+  test(`disable 同步回收${legacy ? '一次性回退' : '常驻'}查询并隔离快速关开`, async (t) => {
+    let enabled = true;
+    const h = harness(t, { isEnabled: () => enabled }, { legacy, fakeClock: true, acceptPayload: 'writable' });
+    h.announce();
+    assert.equal(h.frames.length, 1, '显式 true 才发能力公告');
+    h.push(target());
+    await waitFor(() => h.requests.length === 1, '旧查询开始');
+    const old = h.processes[0];
+    h.relay.pump(); // queryPending 必须随关闭清除
+    h.uplink(9);
+    enabled = false;
+    assert.equal(typeof h.relay.disable, 'function');
+    h.relay.disable();
+    assert.equal(old.kills, 1, '返回前已回收查询');
+    assert.equal(h.relay.status().target, null, '返回前已撤销目标');
+    assert.equal(h.relay.status().clientReady, false);
+    assert.equal(h.relay.status().clientCfgGen, 0);
+    assert.equal(h.globals.__zusageRelayUplinkQueue.length, 0, '关闭前排队的配置失效');
+    h.announce(); h.bridgeTick(); h.remoteTick(); h.relay.pump();
+    const hostRelay = h.globals.__zusageRelayStash[0].b.relayProtocol;
+    assert.equal(hostRelay.acceptPayload({ zuUp: 2, zuCfg: { gen: 10, prefs: {} } }), true);
+    assert.equal(h.globals.__zusageRelayUplinkQueue.length, 0, '关闭期间上行安全消费且不保留');
+    assert.equal(h.frames.length, 1, '关闭不发公告、数据或手机撤销帧');
+    enabled = true;
+    h.announce();
+    assert.equal(h.frames.length, 2, '重开后可立即重新公告');
+    assert.equal(h.frames[1].body.cfgGen, 0, '旧配置回执已清除');
+    h.push(target());
+    h.respond(snapshot(), old);
+    h.relay.pump();
+    await wait(40);
+    assert.equal(h.requests.length, 1, '新目标仍需重新握手');
+    assert.equal(h.dataFrames().length, 0, '关开后旧结果也不得复活');
+    h.uplink(1); // 新握手可从低 gen 开始
+    h.relay.pump();
+    await waitFor(() => h.requests.length === 2, '重新握手后启动新查询');
+    const fresh = h.processes[1];
+    h.respond({ error: 'late failure' }, old);
+    old.emit('close', 1);
+    h.relay.pump();
+    assert.equal(h.requests.length, 2, '迟到失败不得释放新查询的 busy 状态');
+    h.respond(snapshot(), fresh);
+    await waitFor(() => h.dataFrames().length === 1, '新查询正常推送');
+    assert.equal(h.dataFrames()[0].body.cfgGen, 1);
+    assert.equal(h.frames.some((f) => f.body.state === 'unavailable'), false, '旧错误不得产生不可用帧');
+  });
+}
+
+for (const payload of [snapshot(), { error: 'failed' }]) {
+  test(`关闭时丢弃旧${payload.error ? '失败' : '成功'}回包，不发送 unavailable`, async (t) => {
+    let enabled = true;
+    const h = harness(t, { isEnabled: () => enabled });
+    h.push(target());
+    await waitFor(() => h.requests.length === 1, '查询开始');
+    enabled = false;
+    h.relay.disable();
+    h.respond(payload, h.processes[0]);
+    await wait(30);
+    assert.equal(h.frames.length, 0);
+    assert.equal(h.requests.length, 1);
+  });
+}
+
+for (const unavailable of [false, true]) {
+  test(`等待目标复验的${unavailable ? 'unavailable' : '快照'}在关闭重开后失效`, async (t) => {
+    let enabled = true, finishVerify;
+    const verification = new Promise((resolve) => { finishVerify = resolve; });
+    const h = harness(t, { isEnabled: () => enabled });
+    h.push(target(), () => true, () => verification);
+    await waitFor(() => h.requests.length === 1, '查询开始');
+    h.respond(unavailable ? { error: 'failed' } : snapshot());
+    enabled = false;
+    h.relay.disable();
+    enabled = true;
+    h.uplink(); h.push(target());
+    finishVerify(true);
+    await wait(40);
+    assert.equal(h.frames.length, 0, '相同 SID 与身份重开也不能发送旧代结果');
+  });
+}
+
+test('disable 清除限频补拍排程，重开后需要新目标与新握手', async (t) => {
+  let enabled = true;
+  const h = harness(t, { isEnabled: () => enabled }, { fakeClock: true });
+  h.push(target());
+  await waitFor(() => h.requests.length === 1, '首次查询');
+  h.respond(snapshot());
+  await waitFor(() => h.dataFrames().length === 1, '首次推送');
+  h.relay.pump(); // 限频补拍已排程
+  enabled = false; h.relay.disable(); enabled = true;
+  h.relay.pump(); // 先观察重新启用边沿，之前的积压均视为旧握手
+  h.uplink(); h.relay.pump();
+  h.advance(1000);
+  await wait(350);
+  assert.equal(h.requests.length, 1, '旧排程与目标不复用');
+  h.push(target());
+  await waitFor(() => h.requests.length === 2, '新目标重新启动查询');
+});
+
+for (const strictOptIn of [undefined, null, false, 0, 1, 'true', [], {}, new Boolean(true)]) {
+  test(`旧 cold loader 能力 ${String(strictOptIn)} 不得以缺省 true 回调启用新 relay`, async (t) => {
+    const h = harness(t, { strictOptIn, isEnabled: () => true }, { acceptPayload: 'writable' });
+    const relay = h.globals.__zusageRelayStash[0].b.relayProtocol;
+    assert.equal(relay.acceptPayload({ zuUp: 2, zuCfg: { gen: 99, prefs: {} } }), true);
+    h.rawTransport({ zuUp: 2, zuCfg: { gen: 100, prefs: {} } });
+    h.push(target()); h.relay.pump(); h.announce(); h.remoteTick(); h.bridgeTick();
+    await wait(30);
+    assert.equal(h.frames.length, 0, '无能力标记时零公告/快照/unavailable');
+    assert.equal(h.spawns.length, 0, '不启动中继查询');
+    assert.equal(h.relay.status().clientReady, false);
+    assert.equal(h.globals.__zusageRelayUplinkQueue.length, 0);
+    const hostFrame = { zcode_type: 'rpc-frame', seq: 8 };
+    assert.equal(relay.acceptPayload(hostFrame), 'original');
+    assert.equal(h.hostCalls.at(-1).payload, hostFrame, '普通宿主协议仍透传');
+  });
+}
+
+for (const first of ['push', 'pump', 'announce']) {
+  test(`持久 hook 关闭期间入队后重开，首个 ${first} 丢弃旧偏好并等待新握手`, async (t) => {
+    let enabled = true;
+    const h = harness(t, { isEnabled: () => enabled }, { fakeClock: true, acceptPayload: 'writable' });
+    h.push(target());
+    await waitFor(() => h.requests.length === 1, '关闭前查询');
+    h.respond(snapshot());
+    await waitFor(() => h.dataFrames().length === 1, '关闭前发送');
+    enabled = false;
+    h.relay.disable();
+    assert.equal(h.rawTransport({ zuUp: 2, zuCfg: { gen: 99, prefs: { show: '{"win":0}' } } }), true);
+    assert.equal(h.globals.__zusageRelayUplinkQueue.length, 1, '持久 hook 绕过 dispatcher 无条件入队');
+    assert.equal(h.hostCalls.length, 0, '持久 hook 在宿主 seq 校验前消费');
+    enabled = true;
+    if (first === 'push') h.push(target());
+    if (first === 'pump') h.relay.pump();
+    if (first === 'announce') h.announce();
+    h.push(target()); h.relay.pump(); h.announce();
+    await wait(40);
+    assert.equal(h.relay.status().clientReady, false, '关闭时旧偏好不算新握手');
+    assert.equal(h.relay.status().clientCfgGen, 0);
+    assert.equal(h.requests.length, 1, '新握手前无额外查询');
+    assert.equal(h.globals.__zusageRelayUplinkQueue.length, 0);
+    assert.equal(h.frames[h.frames.length - 1].body.cfgGen, 0, '重新公告回执归零');
+    assert.equal(h.frames[h.frames.length - 1].body.chips, undefined);
+    h.rawTransport({ zuUp: 2, zuCfg: { gen: 1, prefs: { show: '{}' } } });
+    h.relay.pump();
+    await waitFor(() => h.requests.length === 2, '新鲜持久 hook 握手后查询');
+    h.respond(snapshot());
+    await waitFor(() => h.dataFrames().length === 2, '新配置正常发送');
+    const body = h.dataFrames()[1].body;
+    assert.equal(body.cfgGen, 1, '不受旧 gen99 阻挡');
+    assert.equal(body.chips, undefined, '统一 UI 不恢复旧 chips 协议');
+    assert.equal(body.snap.session.total, 333, '新握手发送受限统计快照');
+    assert.equal(h.relay.status().clientCfgGen, 1, '旧隐藏偏好的 gen99 已被清除');
+  });
+}
+
+test('初始关闭未 tick，持久 hook 入队后首次启用也丢弃旧配置', async (t) => {
+  let enabled = false;
+  const h = harness(t, { isEnabled: () => enabled }, { fakeClock: true, acceptPayload: 'writable' });
+  h.rawTransport({ zuUp: 2, zuCfg: { gen: 99, prefs: {} } });
+  enabled = true;
+  h.push(target()); h.relay.pump(); h.announce();
+  await wait(40);
+  assert.equal(h.spawns.length, 0, '初始关闭期间帧不能授权首次查询');
+  assert.equal(h.relay.status().clientReady, false);
+  assert.equal(h.frames[0].body.cfgGen, 0);
+  const hostRelay = h.globals.__zusageRelayStash[0].b.relayProtocol;
+  assert.equal(hostRelay.acceptPayload({ zuUp: 2, zuCfg: { gen: 1, prefs: {} } }), true);
+  h.relay.pump();
+  await waitFor(() => h.requests.length === 1, '启用边沿后的 dispatcher 新握手有效');
+  assert.equal(h.relay.status().clientCfgGen, 1);
+});
+
+test('同一宿主桥热换后安全上行由新实例消费，包装不累计', async (t) => {
+  let enabled = true;
+  const h = harness(t, { isEnabled: () => enabled }, { acceptPayload: 'writable' });
+  const hostRelay = h.globals.__zusageRelayStash[0].b.relayProtocol;
+  const wrapped = hostRelay.acceptPayload;
+  const old = h.relay;
+  h.reload();
+  assert.equal(hostRelay.acceptPayload, wrapped, '复用宿主桥上的稳定 dispatcher');
+  assert.equal(hostRelay.acceptPayload({ zuUp: 2, zuCfg: { gen: 1, prefs: {} } }), true);
+  h.push(target());
+  await waitFor(() => h.requests.length === 1, 'dispose 后新实例仍能收到手机握手');
+  assert.equal(h.relay.status().clientReady, true);
+  h.respond(snapshot());
+  await waitFor(() => h.dataFrames().length === 1, '新实例正常发送');
+  enabled = false; h.relay.disable();
+  h.reload();
+  assert.equal(hostRelay.acceptPayload, wrapped, '多次热换也不增加包装层');
+  hostRelay.acceptPayload({ zuUp: 2, zuCfg: { gen: 2, prefs: {} } });
+  assert.equal(h.globals.__zusageRelayUplinkQueue.length, 0, '关闭实例继续消费并忽略');
+  enabled = true;
+  old.dispose(); // 旧实例重复清理也不能移除新实例的 dispatcher handler
+  hostRelay.acceptPayload({ zuUp: 2, zuCfg: { gen: 1, prefs: {} } });
+  h.push(target());
+  await waitFor(() => h.requests.length === 2, '重开后仍能握手查询');
+  const hostFrame = { zcode_type: 'rpc-frame', seq: 8 };
+  assert.equal(hostRelay.acceptPayload(hostFrame), 'original');
+  assert.equal(h.hostCalls.length, 1);
+  assert.equal(h.hostCalls[0].receiver, hostRelay);
+  assert.equal(h.hostCalls[0].payload, hostFrame);
+});
+
+test('关闭时仅安全消费插件上行帧，宿主无标记帧保持参数、接收者与返回值', (t) => {
+  const h = harness(t, { isEnabled: () => false }, { acceptPayload: 'writable' });
+  const relay = h.globals.__zusageRelayStash[0].b.relayProtocol;
+  const pluginFrame = { zuUp: 2, zuCfg: { gen: 4, prefs: { show: '{}' } } };
+  assert.equal(relay.acceptPayload(pluginFrame), true);
+  assert.equal(h.hostCalls.length, 0, '插件帧不进入宿主 seq 校验');
+  assert.equal(h.globals.__zusageRelayUplinkQueue.length, 0, '不保留关闭时的配置');
+  for (const payload of [{ zcode_type: 'rpc-frame', seq: 7 }, { zuUp: 0 }, null]) {
+    assert.equal(relay.acceptPayload(payload), 'original');
+    assert.equal(h.hostCalls.at(-1).payload, payload);
+    assert.equal(h.hostCalls.at(-1).receiver, relay);
+  }
+  assert.equal(h.hostCalls.length, 3);
+  assert.equal(h.frames.length, 0);
 });

@@ -6,7 +6,7 @@
 
 ## 1. 分发文件登记（新增/改名文件必查）
 
-一个文件进入分发链要同步**全部**登记处，漏任一处都会在不同阶段报错或断升级（`python3 sync_plugin.py --verify-manifests` 及 `python3 sync_plugin.py --check` 会自动交叉校验以下 6 处登记，并在同步前自动调用 `scripts/build_overlay.py` 与 `scripts/build_quota.py` 拼接生成根 `overlay.js` 和 `quota-client.cjs`）：
+一个文件进入分发链要同步**全部**登记处，漏任一处都会在不同阶段报错或断升级（`python3 sync_plugin.py --verify-manifests` 及 `python3 sync_plugin.py --check` 会自动交叉校验以下 6 处登记，并在同步前自动调用 `scripts/build_overlay.py`、`scripts/build_quota.py` 与 `scripts/build_mobile_userscript.py`，生成根 `overlay.js`、`quota-client.cjs` 及两份 `.user.js`；用户脚本作为仓库 Raw 资产，不进入插件包白名单）：
 - `sync_plugin.py` 的 `FILES`（根→插件副本同步）与 `release_tool.py` 的同步清单；
 - `release_unpack.py` 的 `PLUGIN_FILES`（安全解包文件集）；
 - 两份运行清单的 `RUNTIME_FILES`（`overlay_install.py` 插件链与 `install.py` 独立链各一份，都拷到稳定运行目录：注入行指向运行目录，`inject-main.cjs` 相对 require 的每个本地模块及 `zusage.py`/`token_rate.py` 共用的 `usage_stats.py` 都必须在列，否则模块静默缺失只在加载时报错；`test_plugin_package` 对两份清单按此不变量守护）与 `overlay_install.py` 的 `cold_files`（决定哪些变更要求完全重启）；

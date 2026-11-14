@@ -1669,9 +1669,13 @@
         icon: '<path d="M4.2 18a9 9 0 1 1 15.6 0M12 13l4-4M6 18h12"/><circle cx="12" cy="13" r="1"/>' },
       { id: "update", group: "maint", zh: "插件更新", en: "Plugin updates",
         icon: '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 21H3v-5"/>' },
+      { id: "mobile", group: "maint", zh: "移动端远程控制", en: "Mobile remote control",
+        icon: '<rect x="6" y="2" width="12" height="20" rx="2"/><path d="M11 18h2"/>' },
       { id: "about", group: "maint", zh: "关于数据", en: "About the data",
         icon: '<circle cx="12" cy="12" r="9"/><path d="M11 11h1v6m-1 0h3m-2-10v.1"/>' },
     ];
+    /* 手机复用同一设置 UI，但桌面推送授权只在桌面维护；旧 sec=mobile 自动回退。 */
+    if (typeof mobileMode !== "undefined" && mobileMode) ZU_SECTIONS = ZU_SECTIONS.filter(function (it) { return it.id !== "mobile"; });
     function activeSettingsSec() {
       for (var i = 0; i < ZU_SECTIONS.length; i++) if (ZU_SECTIONS[i].id === state.settingsSec) return state.settingsSec;
       return ZU_SECTIONS[0].id;
@@ -1779,10 +1783,16 @@
       '<div class="pnote">' + L("仅更新此插件。GitHub/GitCode 来源会联网，本地目录来源只检查本地文件，不上传用量数据。", "Only this plugin is updated. GitHub/GitCode sources use the network; directory sources check local files. Usage data is never uploaded.") + '</div></div>' +
       /* v202 更新日志卡片：骨架静态，内容由 syncNotes 按状态填充（幂等签名，不抢滚动/焦点） */
       notesCardHtml() + '</section>' +
+      /* 移动端推送独立分区：脚本链接仅供选择复制，配置真值由主进程回填。 */
+      (typeof mobileMode !== "undefined" && mobileMode ? "" :
+      '<section class="zu-settings-section" data-sec="mobile"' + secOpen("mobile") + '><div class="cap">' + L("移动端远程控制", "Mobile remote control") + '</div><div class="zu-settings-card">' +
+      settingRow('<input type="checkbox" class="zu-mobile-relay">', L("推送状态栏数据到远控页", "Push status bar data to Remote Control"), L("默认关闭。仅控制插件统计推送，不影响宿主远控；安装下方脚本后仍需在此开启。", "Off by default. Controls only the plugin's statistics push; the host's remote control is unaffected. Installing the script below does not enable this switch.")) +
+      '<div class="pnote zu-mobile-relay-status" role="status" aria-live="polite"></div>' +
+      '<label><span>' + L("正式版脚本链接", "Regular userscript URL") + '</span><input type="url" class="zu-src-field zu-mobile-script" readonly aria-label="' + L("正式版脚本链接", "Regular userscript URL") + '" value="https://raw.githubusercontent.com/ByteRax/zcode-token-usage-statusbar/main/zusage-mobile.user.js"></label><div class="pnote">' + L("选择并复制链接，在打开远控页的浏览器中通过脚本管理器安装；此处仅提供链接，不会自动安装或打开外链。", "Select and copy the URL, then install it with a userscript manager in the browser that opens Remote Control. This field only provides the URL; it does not install the script or open an external page.") + '</div></div></section>') +
       '<section class="zu-settings-section" data-sec="about"' + secOpen("about") + '><div class="cap">' + L("关于数据", "About the data") + '</div><div class="pnote">' +
       L("数据库统计：只读本地用量库（默认 ~/.zcode/cli/db/db.sqlite，跟随宿主 dataBaseDir 迁移），请求完成后入库；总 token 为输入加输出，缓存已含在输入中，思考已含在输出中。", "Database statistics: read-only from the local usage database (default ~/.zcode/cli/db/db.sqlite; follows the host dataBaseDir migration), written after requests complete. Total tokens = input + output; cache is included in input and thinking in output.") + '</div><div class="pnote">' +
       L("生成速度：只读渲染器状态桥在生成时按字符增量估算，完成后切换为真实速度；桥不可用时回退数据库最近有效段。", "Generation speed: the read-only renderer bridge estimates from text deltas while running and uses actual speed after completion; without the bridge it falls back to the latest valid database segment.") + '</div><div class="pnote">' +
-      L("联网边界：额度源查询对应账号的套餐或余额接口；插件更新可联网下载代码与读取发布日志（源码渠道为注册仓库的同号 Release 参考），「联系我」弹窗会从维护者图床加载微信二维码图片。额度不是本地 token 统计推算值。SSH 数据查询使用已配置通道。", "Network boundaries: quota sources query account plan/balance endpoints; plugin updates can download code and read release notes (source channels read the registered repo's same-version release as reference), and the Contact-me dialog loads the maintainer's WeChat QR image from their image host. Quota is not inferred from local token usage. SSH statistics use configured connections.") + '</div></section></div></div>' +
+      L("联网边界：额度源查询对应账号的套餐或余额接口；插件更新可联网下载代码与读取发布日志（源码渠道为注册仓库的同号 Release 参考），「联系我」弹窗会从维护者图床加载微信二维码图片。额度不是本地 token 统计推算值。SSH 数据查询使用已配置通道。开启移动端统计推送后，数据经宿主官方中继转发；载荷无端到端加密（E2EE），服务器可见当前会话 ID 与数值统计（含今日合计、项目聚合，可能包含其他会话贡献），不含正文、工作区路径或凭据。该开关仅控制插件统计推送，不影响宿主远控。", "Network boundaries: quota sources query account plan/balance endpoints; plugin updates can download code and read release notes (source channels read the registered repo's same-version release as reference), and the Contact-me dialog loads the maintainer's WeChat QR image from their image host. Quota is not inferred from local token usage. SSH statistics use configured connections. When mobile statistics push is enabled, data passes through the host's official relay without end-to-end encryption (E2EE); the server can see the current session ID and numerical statistics (including today's total and project aggregates, which may include contributions from other sessions), but no message content, workspace paths or credentials. This switch controls only the plugin's statistics push and does not affect the host's remote control.") + '</div></section></div></div>' +
       '<div class="zu-settings-foot"><button type="button" class="zu-settings-scroll"></button>' +
       '<span class="zu-settings-feedback-status" role="status" aria-live="polite"></span>' +
       '<button type="button" class="zu-settings-contact">' + L("联系我", "Contact me") + '</button>' +

@@ -49,13 +49,17 @@ python install.py --dev
 
 此时不要删除或移动仓库。重跑不带 `--dev` 的安装器可切回稳定目录。
 
-代码修改后先检查并同步插件副本：
+代码修改后先检查并同步插件副本。`sync_plugin.py` 会先构建桌面 overlay、额度客户端和根目录的两份手机用户脚本，再复制既有共享清单；用户脚本不复制进插件包。
+
+根目录 `zusage-mobile.user.js` 与 `zusage-mobile.debug.user.js` 随源码提交，用户从上游 `main` 的 Raw HTTPS 链接安装。源码 `src/mobile/00-meta.js` 中的 `@version` 与安装/更新地址由维护者维护，正式版与调试版必须指向各自文件；修改桌面 overlay 后也需重建这两份内嵌产物。仅本地构建不能使上游链接更新，源码合入并推送后才对外可得，管理器更新策略见[用户指南](user-guide.md#web-远程控制页面)。
 
 ```bash
 python3 sync_plugin.py
 python3 sync_plugin.py --check
 node --check overlay.js
 node --check inject-main.cjs
+node --check zusage-mobile.user.js
+node --check zusage-mobile.debug.user.js
 ```
 
 不要通过直接删运行目录来更新文件；同步器用可信 hash 基线保护本地热修、协调并发更新。overlay、查询库与主进程插件模块（六个 .cjs 子模块）可热更新（子模块经 loader 热换循环），仅客户端注入壳 `inject-main.cjs` 仍需完全重启。

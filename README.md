@@ -56,6 +56,14 @@ A community toolkit for ZCode desktop: generation speed, token usage, context tr
 请排查 https://github.com/ByteRax/zcode-token-usage-statusbar 插件的状态条或工具栏 chip 未显示的原因，先检查插件启用状态、安装结果、实际加载路径及相关开关。修改客户端文件前先征求我确认；需要反馈时，整理脱敏后的复现步骤与诊断摘要，待我确认后再提交到 https://github.com/ByteRax/zcode-token-usage-statusbar/issues，不要上传凭据或完整本地日志。
 ```
 
+### 手机远控页面（当前源码功能）
+
+手机浏览器需支持用户脚本管理器（如篡改猴 / Tampermonkey），并配合支持本功能的桌面插件使用。在桌面状态条 **⚙ → 维护 → 移动端远程控制** 独立分区开启「推送状态栏数据到远控页」；正式脚本链接已从「关于数据」迁入此处，以只读输入框显示，开关关闭时仍可选择复制；面板不会自动安装或打开外链，请复制到手机浏览器的脚本管理器中安装。也可点击[安装正式版手机脚本](https://raw.githubusercontent.com/ByteRax/zcode-token-usage-statusbar/main/zusage-mobile.user.js)，再开启宿主官方「Web 远程控制」并打开 `https://zcode.z.ai/remote/`。
+
+开关写入运行目录 `config.json` 的 `mobile_relay.enabled`，仅对象内显式布尔 `true` 开启，缺字段、`false` 或异常值均关闭。旧用户缺此配置键时升级后关闭，已有显式 `true` 保留；安装脚本不会自动授权推送。关闭仅停止插件握手公告、统计查询和快照推送，不影响宿主远控正常消息，也不即时撤销手机上行偏好能力；关闭期间桌面忽略这些偏好，不应用、不回执，无需另行关闭手机上行。旧主进程不支持开关时，须先将匹配的新安装副本及冷文件 `inject-main.cjs` 部署到实际加载运行目录，再完全退出并重开 ZCode；只更新浮层或仅重启不能替代部署。
+
+该脚本跟随 `main` 源码，桌面正式渠道是否支持请以对应 Release 说明为准；安装步骤、数据边界与支持的设置见[手机远控指南](docs/user-guide.md#手机远控页面)。
+
 ### 故障排查与自动修复以及卸载说明
 
 客户端升级可能覆盖注入补丁。保持插件启用，**新建或恢复会话**可触发自动安装/修复；仅在已打开的会话里发消息不保证触发。确认修复成功后，如提示待重启，再完全退出并重开 ZCode。权限不足或宿主结构变化仍可能使修复失败。
@@ -93,7 +101,7 @@ A community toolkit for ZCode desktop: generation speed, token usage, context tr
 | **搜索弹框加宽**           | 放宽命令中心等 cmdk 搜索弹框的宽高上限，便于查看长条目；不影响所有类型的弹窗                                                                                                                                           |
 | **状态轮播**               | 默认关闭；开启后，在思考 / 生成 / 长耗时阶段的消息流 Loading 行轮播状态短语，可自定义词包；默认在文案后追加与宿主一致的「工作中 X 分 X 秒」耗时（⚙ 可关，悬停可随时查看）                                                              |
 | **SSH / WSL 远端会话**     | 在可信身份绑定下自动发现远端、按服务器独立查询统计，失败后持续重试；需手动在远端部署查询脚本，不替宿主重连 SSH。仅桌面快照链支持跨机，详见[远程会话指南](docs/user-guide.md#远程会话)                                  |
-| **Web 远控状态条（本检出）** | 接收脚本内嵌桌面同一份 overlay，本地与 WSL/SSH 复用状态条、tooltip 和设置，不切换独立回退条；需更新接收脚本，详见[使用说明](docs/user-guide.md#web-远程控制页面) |
+| **Web 远控状态条（本检出）** | 在远控浏览器的脚本管理器中[安装正式版](https://raw.githubusercontent.com/ByteRax/zcode-token-usage-statusbar/main/zusage-mobile.user.js)（[调试版](https://raw.githubusercontent.com/ByteRax/zcode-token-usage-statusbar/main/zusage-mobile.debug.user.js)）；脚本内嵌桌面同一份 overlay。本地与 WSL/SSH 共用状态条、tooltip 和设置；安装链接跟随源码 main，兼容与更新见[使用说明](docs/user-guide.md#web-远程控制页面) |
 | **子智能体明细**           | 查看子任务用量、模型、运行状态、速度和预估费用；运行中速度按字符增量估算，完成后在数据可用时回填统计值                                                                                                                 |
 | **用量查询**               | 对话中用 `/usage today`，终端在仓库目录运行 `python3 zusage.py days 7`，或调用 MCP 工具 `token_usage(scope="today")`；`current` 取数据库最近活跃会话，不保证是屏幕焦点                                                 |
 
@@ -137,10 +145,11 @@ asar 注入），装法见[宿主适配文档](docs/hosts.md#7-在-workbuddy-客
 ## 隐私与安全
 
 - **这不是 ZCode 官方功能**，是社区插件；状态条靠修改 ZCode 的程序文件（`app.asar`）实现，卸载时只删自己加的那部分。
-- **数据与联网**：本地用量查询使用 SQLite，不上传用量。额度与重置卡查询会访问对应服务；预估费用默认每 12 小时从 models.dev
+- **数据与联网**：本地用量查询使用 SQLite，查询本身不上传用量。额度与重置卡查询会访问对应服务；预估费用默认每 12 小时从 models.dev
   下载价表，并从 er-api（失败时回退 exchangerate.fun）获取汇率，可用 `pricing.fetch: false`
   关闭下载，仅关闭费用显示不会停止同步。插件更新 / 更新日志也会联网，⚙ 可关自动更新；远程会话使用已配置的 SSH / WSL
   通道。各功能开关独立，关闭额度查询不等于停止全部联网。
+- **移动端中继**：显式开启 `mobile_relay.enabled` 后，插件经 ZCode 官方中继向远控页推送状态栏数据；该通道无端到端加密，服务端可见载荷。下行仅包含当前远控会话的标识与数值统计，以及其所属主机的今日合计、项目累计等聚合；聚合可能包含其他会话的贡献，不含会话正文、工作区路径或凭据。手机上行仅包含显示偏好与代际计数。关闭开关不影响宿主远控正常消息。
 - **调试端口**：为实机调试与自动化 QA，插件默认尝试补开 Chromium 调试端口 `9229`，并保留用户显式指定的调试端口。同机其它进程可借此读取或操控
   ZCode 窗口内容，请勿将端口代理或转发到外网。在启动前设置 `ZCODE_DISABLE_FIXED_REMOTE_DEBUGGING_PORT=1`
   并完全重启，可禁止插件补开端口，但不会移除其它途径启用的端口；不接受此调试能力时，请禁用补开或卸载插件，并在重启后核验。

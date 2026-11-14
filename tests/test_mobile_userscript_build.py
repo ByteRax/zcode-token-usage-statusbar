@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""手机构建回归：精确嵌入桌面完整产物，临时构建不改仓库 docs。"""
+"""手机构建回归：精确嵌入桌面完整产物，临时构建不改仓库根产物。"""
 import contextlib
 import io
 import json
@@ -17,6 +17,8 @@ META = (
     "// ==UserScript==\n"
     "// @name         ZCode 用量状态条（远控中继接收端）\n"
     "// @description  在 ZCode Web 远程控制页面渲染 token 用量；仅在确认宿主支持后同步显示偏好\n"
+    "// @downloadURL  https://raw.githubusercontent.com/ByteRax/zcode-token-usage-statusbar/main/zusage-mobile.user.js\n"
+    "// @updateURL    https://raw.githubusercontent.com/ByteRax/zcode-token-usage-statusbar/main/zusage-mobile.user.js\n"
     "// ==/UserScript==\n"
 )
 MOBILE = META + "var DEBUG_BUILD = __ZM_DEBUG__;\nvar OVERLAY_CODE = __ZM_OVERLAY_SOURCE__;\n"
@@ -62,9 +64,44 @@ class MobileUserscriptBuildTests(unittest.TestCase):
         self.assertEqual(embedded(release), expected)
         self.assertEqual(embedded(debug), expected)
         normalized_debug = debug.replace("var DEBUG_BUILD = true;", "var DEBUG_BUILD = false;")
-        for regular, diagnostic in (self.mod.DEBUG_NAME_REPL, self.mod.DEBUG_DESC_REPL):
+        for regular, diagnostic in (self.mod.DEBUG_NAME_REPL, self.mod.DEBUG_DESC_REPL, self.mod.DEBUG_URL_REPL):
             normalized_debug = normalized_debug.replace(diagnostic, regular)
         self.assertEqual(normalized_debug, release)
+
+    def test_variants_keep_distinct_install_and_update_urls(self):
+        common, _ = self.mod.assemble()
+        for debug, filename in ((False, "zusage-mobile.user.js"), (True, "zusage-mobile.debug.user.js")):
+            source = self.mod.finalize(common, debug)
+            header = source.split("// ==/UserScript==", 1)[0]
+            expected = "https://raw.githubusercontent.com/ByteRax/zcode-token-usage-statusbar/main/" + filename
+            for key in ("downloadURL", "updateURL"):
+                lines = [line for line in header.splitlines() if line.startswith("// @" + key)]
+                self.assertEqual(len(lines), 1)
+                self.assertEqual(lines[0].split()[-1], expected)
+
+    def test_sync_builds_root_products_and_check_is_read_only(self):
+        sync = load_module("mobile_test_sync_plugin", ROOT / "sync_plugin.py")
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            self.fixture(root)
+            # 构建器按自身目录定位伙伴脚本，夹具要保留实际 scripts 布局。
+            (root / "scripts").mkdir(exist_ok=True)
+            for name in ("build_overlay.py", "build_mobile_userscript.py"):
+                shutil.copyfile(ROOT / "scripts" / name, root / "scripts" / name)
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self.assertTrue(sync._maybe_build_bundles(root))
+            overlay = (root / "overlay.js").read_bytes()
+            release = root / "zusage-mobile.user.js"
+            debug = root / "zusage-mobile.debug.user.js"
+            self.assertEqual(embedded(release.read_text(encoding="utf-8")), overlay)
+            self.assertEqual(embedded(debug.read_text(encoding="utf-8")), overlay)
+            self.assertFalse((root / "docs").exists())
+            self.assertFalse((root / "plugins").exists())
+            release.write_bytes(release.read_bytes() + b"\n// changed\n")
+            before = release.read_bytes()
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self.assertFalse(sync._maybe_build_bundles(root, check_only=True))
+            self.assertEqual(release.read_bytes(), before)
 
     def test_source_order_and_version_ledger_use_same_desktop_builder(self):
         with tempfile.TemporaryDirectory() as td:
@@ -107,14 +144,14 @@ class MobileUserscriptBuildTests(unittest.TestCase):
             with self.subTest(rel=rel), tempfile.TemporaryDirectory() as td:
                 root = Path(td)
                 self.fixture(root)
-                write(root, "docs/zusage-mobile.user.js", "keep regular")
-                write(root, "docs/zusage-mobile.debug.user.js", "keep debug")
+                write(root, "zusage-mobile.user.js", "keep regular")
+                write(root, "zusage-mobile.debug.user.js", "keep debug")
                 (root / rel).write_bytes(data)
                 code, output = self.run_main(root)
                 self.assertEqual(code, 1)
                 self.assertIn(message, output)
-                self.assertEqual((root / "docs/zusage-mobile.user.js").read_text(), "keep regular")
-                self.assertEqual((root / "docs/zusage-mobile.debug.user.js").read_text(), "keep debug")
+                self.assertEqual((root / "zusage-mobile.user.js").read_text(), "keep regular")
+                self.assertEqual((root / "zusage-mobile.debug.user.js").read_text(), "keep debug")
 
     def test_missing_or_duplicate_overlay_placeholder_fails(self):
         for text in (MOBILE.replace("var OVERLAY_CODE = __ZM_OVERLAY_SOURCE__;", ""), MOBILE + "var OVERLAY_CODE = __ZM_OVERLAY_SOURCE__;\n"):
@@ -124,7 +161,8 @@ class MobileUserscriptBuildTests(unittest.TestCase):
                     self.mod.assemble(*dirs)
 
     def test_debug_placeholder_and_metadata_fail_fast(self):
-        for old in ("var DEBUG_BUILD = __ZM_DEBUG__;", self.mod.DEBUG_NAME_REPL[0], self.mod.DEBUG_DESC_REPL[0]):
+        for old in ("var DEBUG_BUILD = __ZM_DEBUG__;", self.mod.DEBUG_NAME_REPL[0], self.mod.DEBUG_DESC_REPL[0],
+                    "// @downloadURL  " + self.mod.DEBUG_URL_REPL[0], "// @updateURL    " + self.mod.DEBUG_URL_REPL[0]):
             with self.subTest(old=old), tempfile.TemporaryDirectory() as td:
                 dirs = self.fixture(Path(td), mobile=MOBILE.replace(old, ""))
                 common, _ = self.mod.assemble(*dirs)
@@ -145,7 +183,7 @@ class MobileUserscriptBuildTests(unittest.TestCase):
             self.assertEqual(code, 0)
             code, _ = self.run_main(root, ["--check"])
             self.assertEqual(code, 0)
-            release, debug = root / "docs/zusage-mobile.user.js", root / "docs/zusage-mobile.debug.user.js"
+            release, debug = root / "zusage-mobile.user.js", root / "zusage-mobile.debug.user.js"
             saved = release.read_bytes()
             release.write_bytes(saved + b"\n// drift\n")
             before = (release.read_bytes(), debug.read_bytes())
@@ -167,7 +205,7 @@ class MobileUserscriptBuildTests(unittest.TestCase):
             self.assertEqual(self.run_main(root)[0], 0)
             self.assertEqual(self.run_main(root, ["--check"])[0], 0)
             for name in ("zusage-mobile.user.js", "zusage-mobile.debug.user.js"):
-                result = subprocess.run(["node", "--check", str(root / "docs" / name)], capture_output=True, text=True)
+                result = subprocess.run(["node", "--check", str(root / name)], capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_unknown_cli_option_does_not_create_products(self):
@@ -175,6 +213,8 @@ class MobileUserscriptBuildTests(unittest.TestCase):
             root = Path(td)
             self.fixture(root)
             self.assertEqual(self.run_main(root, ["--unknown"])[0], 2)
+            self.assertFalse((root / "zusage-mobile.user.js").exists())
+            self.assertFalse((root / "zusage-mobile.debug.user.js").exists())
             self.assertFalse((root / "docs").exists())
 
 

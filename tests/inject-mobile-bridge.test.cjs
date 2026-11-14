@@ -23,7 +23,8 @@ function mobileView(identity = A) {
 function status(view = mobileView()) { return JSON.stringify({ mobileConnected: true, mobileTaskView: view }); }
 function harness(initial = {}) {
   let cfg = { python_path: "custom-python", ...initial }, stamp = 1, mobileMtime = 1;
-  const windows = [], intervals = [], relays = [], ipc = new EventEmitter(), app = new EventEmitter();
+  const windows = [], intervals = [], relays = [], writes = [], ipc = new EventEmitter(), app = new EventEmitter();
+  let writeError = null, ignoreMerge = false;
   app.getPath = () => "/fixture/home";
   const contents = "module.exports = {};";
   const mockFs = {
@@ -40,10 +41,21 @@ function harness(initial = {}) {
     if (["path", "url", "crypto"].includes(name)) return require(name);
     if (name === "electron") return { app, ipcMain: ipc, webContents: { getAllWebContents: () => windows } };
     if (name === "child_process") return { spawn() { throw Error("disabled in fixture"); }, execFile() {} };
+    if (name === "./plugin-updater.cjs") return { async updateConfig(runtime, changes, python, defaults, merge) {
+      writes.push({ runtime, changes, python, defaults, merge });
+      if (writeError) throw Error(writeError);
+      cfg = { ...cfg, ...changes };
+      for (const [key, value] of Object.entries(ignoreMerge ? {} : merge || {})) {
+        const old = cfg[key];
+        cfg[key] = { ...(old && typeof old === "object" && !Array.isArray(old) ? old : {}), ...value };
+      }
+      stamp++;
+      return { ok: true, changed: true };
+    } };
     if (name === "./mobile-relay.cjs") return { createMobileRelay(options) {
-      const relay = { options, calls: [], disposed: 0, pump() {},
+      const relay = { options, calls: [], disposed: 0, disabled: 0, pump() {},
         push(payload, validate, verifyTarget) { this.calls.push({ payload, validate, verifyTarget }); },
-        dispose() { this.disposed++; } };
+        disable() { this.disabled++; }, dispose() { this.disposed++; } };
       relays.push(relay); return relay;
     } };
     throw Error(name);
@@ -59,13 +71,21 @@ function harness(initial = {}) {
   vm.runInNewContext(readInjectSource(), sandbox);
   function addWindow() {
     const wc = new EventEmitter();
+    wc.page = { __zusagePluginRequests: [], states: [], results: [] };
+    wc.page.__zusagePluginUpdate = state => wc.page.states.push(state);
+    wc.page.__zusagePluginResult = result => wc.page.results.push(result);
     Object.assign(wc, { id: windows.length + 1, getType: () => "window", isDestroyed: () => false,
-      getURL: () => pathToFileURL(path.join(resources, "index.html")).href, executeJavaScript: async () => "null" });
+      getURL: () => pathToFileURL(path.join(resources, "index.html")).href,
+      executeJavaScript: async script => vm.runInNewContext(script, { window: wc.page }) });
     windows.push(wc); return wc;
   }
-  return { app, ipc, windows, intervals, relays, bridge, api: sandbox.module.exports.__zusageTest, addWindow,
+  return { app, ipc, windows, intervals, relays, writes, bridge, api: sandbox.module.exports.__zusageTest, addWindow,
     stash(entries) { sandbox.__zusageRelayStash = entries; },
     config(value) { cfg = { ...cfg, ...value }; stamp++; },
+    getConfig() { return cfg; },
+    failWrite(message) { writeError = message; },
+    oldHelper() { ignoreMerge = true; },
+    poll() { return intervals.find(x => x.fn.name === "pollPluginRequests").fn(); },
     changeMobile() { mobileMtime++; },
     tick() { intervals.find(x => x.ms === 1500).fn(); },
     workspace(wc, ids) { ipc.emit("zcode:sync-web-remote-control-workspaces", { sender: wc }, ids.map(identity => ({ kind: "remote", workspacePath: "/project", workspaceIdentity: identity }))); },
@@ -76,17 +96,34 @@ function harness(initial = {}) {
 test("mobile relay receives live enabled and interpreter getters", () => {
   const h = harness({ mobile_relay: { enabled: false } });
   const opts = h.relays[0].options;
+  assert.equal(opts.strictOptIn, true);
   assert.equal(opts.isEnabled(), false);
   assert.equal(opts.getPythonCmd(), "custom-python");
   h.config({ mobile_relay: { enabled: true }, python_path: "new-python" });
   assert.equal(opts.isEnabled(), true);
   assert.equal(opts.getPythonCmd(), "new-python");
   h.config({ mobile_relay: { enabled: "invalid" } });
-  assert.equal(opts.isEnabled(), true);
+  assert.equal(opts.isEnabled(), false);
+});
+
+test("mobile relay defaults to closed and never discovers targets for malformed configuration", async () => {
+  for (const mobile of [undefined, null, false, true, 1, "true", [], {}]) {
+    const h = harness({ mobile_relay: mobile }), wc = h.addWindow();
+    let reads = 0;
+    wc.executeJavaScript = async () => { reads++; return status(); };
+    assert.equal(h.relays[0].options.isEnabled(), false);
+    h.tick(); await flush();
+    assert.equal(reads, 0);
+    assert.equal(h.relays[0].calls.some(c => c.payload.target), false);
+  }
+  for (const enabled of [undefined, null, false, 0, 1, "true", [], {}]) {
+    const h = harness({ mobile_relay: { enabled } });
+    assert.equal(h.relays[0].options.isEnabled(), false);
+  }
 });
 
 test("dynamic WSL target uses its official live bridge without a desktop tabs entry", async () => {
-  const h = harness(), wc = h.addWindow(), relay = h.relays[0];
+  const h = harness({ mobile_relay: { enabled: true } }), wc = h.addWindow(), relay = h.relays[0];
   h.stash([makeBridge(WSL)]);
   h.workspace(wc, [A]); h.tasks(wc, []);
   wc.executeJavaScript = async () => status(mobileView(WSL));
@@ -104,7 +141,7 @@ test("dynamic WSL target uses its official live bridge without a desktop tabs en
 });
 
 test("desktop pane still requires its workspace identity in the tabs whitelist", async () => {
-  const h = harness(), wc = h.addWindow();
+  const h = harness({ mobile_relay: { enabled: true } }), wc = h.addWindow();
   const wants = { s: ["s1"], w: { s1: [WSL] }, p: { "workspace-main": { sid: "s1", identity: WSL } } };
   wc.executeJavaScript = async () => JSON.stringify(wants);
   h.workspace(wc, [A]); h.tasks(wc, [WSL]);
@@ -115,8 +152,93 @@ test("desktop pane still requires its workspace identity in the tabs whitelist",
   assert.equal(h.api.ipcState().scopeBindings.get(wc.id)["workspace-main"], WSL);
 });
 
+const AUXILIARY_URLS = [
+  ["data CUA indicator", "data:text/html;charset=utf-8," + encodeURIComponent("<p>ZCode正在操作电脑</p>")],
+  ["external page", "https://example.invalid/"],
+  ["foreign file", pathToFileURL(path.resolve("/outside/prompt.html")).href],
+];
+
+for (const [label, url] of AUXILIARY_URLS) {
+  for (const auxiliaryFirst of [false, true]) {
+    test(`mobile discovery ignores ${label} with auxiliary ${auxiliaryFirst ? "first" : "last"}`, async () => {
+      const h = harness({ mobile_relay: { enabled: true } }), relay = h.relays[0];
+      const first = h.addWindow(), second = h.addWindow();
+      const wc = auxiliaryFirst ? second : first, auxiliary = auxiliaryFirst ? first : second;
+      const hostUrl = wc.getURL();
+      wc.getURL = () => hostUrl.replace(/index\.html$/, "app.asar/dist/index.html");
+      auxiliary.getURL = () => url;
+      let hostReads = 0, auxiliaryReads = 0;
+      auxiliary.executeJavaScript = async () => { auxiliaryReads++; return status(); };
+      wc.page.zcode = { async getWebRemoteControlStatus() {
+        hostReads++;
+        return { mobileConnected: true, mobileTaskView: mobileView() };
+      } };
+      h.tick(); await flush();
+      const accepted = relay.calls.at(-1);
+      assert.equal(accepted.payload.target.taskId, "s1");
+      assert.equal(accepted.validate(), true);
+      assert.equal(await accepted.verifyTarget(), true);
+      assert.equal(hostReads, 2, "discovery and send verification both read the host preload");
+      assert.equal(auxiliaryReads, 0, "auxiliary contents must never be queried");
+    });
+  }
+
+  test(`mobile discovery rejects an isolated ${label}`, async () => {
+    const h = harness({ mobile_relay: { enabled: true } }), wc = h.addWindow();
+    let reads = 0;
+    wc.getURL = () => url;
+    wc.executeJavaScript = async () => { reads++; return status(); };
+    h.tick(); await flush();
+    assert.equal(reads, 0);
+    assert.equal(h.relays[0].calls.some(c => c.payload.target), false);
+  });
+}
+
+for (const [label, url] of [...AUXILIARY_URLS, ["second trusted host", null]]) {
+  test(`discovery rechecks the trusted window set after an in-flight ${label} appears`, async () => {
+    const h = harness({ mobile_relay: { enabled: true } }), wc = h.addWindow(), relay = h.relays[0];
+    let finish, addedReads = 0;
+    wc.executeJavaScript = () => new Promise(resolve => { finish = resolve; });
+    h.tick(); await flush();
+    assert.equal(typeof finish, "function");
+    const added = h.addWindow();
+    if (url) added.getURL = () => url;
+    added.executeJavaScript = async () => { addedReads++; return status(); };
+    finish(status()); await flush();
+    assert.equal(relay.calls.some(c => c.payload.target), url !== null);
+    if (url) {
+      const accepted = relay.calls.at(-1);
+      assert.equal(accepted.validate(), true);
+      wc.executeJavaScript = async () => status();
+      assert.equal(await accepted.verifyTarget(), true);
+    } else {
+      assert.equal(relay.calls.at(-1).payload.target, null);
+    }
+    assert.equal(addedReads, 0);
+  });
+
+  test(`send verification rechecks the trusted window set after an in-flight ${label} appears`, async () => {
+    const h = harness({ mobile_relay: { enabled: true } }), wc = h.addWindow(), relay = h.relays[0];
+    wc.executeJavaScript = async () => status();
+    h.tick(); await flush();
+    const accepted = relay.calls.at(-1);
+    assert.equal(accepted.validate(), true);
+    let finish, addedReads = 0;
+    wc.executeJavaScript = () => new Promise(resolve => { finish = resolve; });
+    const pending = accepted.verifyTarget(); await flush();
+    assert.equal(typeof finish, "function");
+    const added = h.addWindow();
+    if (url) added.getURL = () => url;
+    added.executeJavaScript = async () => { addedReads++; return status(); };
+    assert.equal(accepted.validate(), url !== null);
+    finish(status());
+    assert.equal(await pending, url !== null);
+    assert.equal(addedReads, 0);
+  });
+}
+
 test("late discovery after disable or multiple windows is discarded", async () => {
-  const h = harness(), wc = h.addWindow(), relay = h.relays[0];
+  const h = harness({ mobile_relay: { enabled: true } }), wc = h.addWindow(), relay = h.relays[0];
   let resolve;
   wc.executeJavaScript = () => new Promise(r => { resolve = r; });
   h.tick(); await flush();
@@ -132,7 +254,7 @@ for (const [label, alter] of [
   ["non-window sender", wc => { wc.getType = () => "webview"; }],
 ]) {
   test(`mobile discovery rejects an ${label}`, async () => {
-    const h = harness(), wc = h.addWindow(), relay = h.relays[0];
+    const h = harness({ mobile_relay: { enabled: true } }), wc = h.addWindow(), relay = h.relays[0];
     wc.executeJavaScript = async () => status();
     alter(wc); h.tick(); await flush();
     assert.equal(relay.calls.some(c => c.payload.target), false);
@@ -140,7 +262,7 @@ for (const [label, alter] of [
 }
 
 test("mobile local target rejects explicit task contradictions", async () => {
-  const h = harness(), wc = h.addWindow(), relay = h.relays[0];
+  const h = harness({ mobile_relay: { enabled: true } }), wc = h.addWindow(), relay = h.relays[0];
   h.stash([makeBridge("")]);
   wc.executeJavaScript = async () => status(mobileView(""));
   h.tasks(wc, [A]); h.tick(); await flush();
@@ -156,7 +278,7 @@ test("mobile local target rejects explicit task contradictions", async () => {
 });
 
 test("send verifier reads live status before cached discovery changes", async () => {
-  const h = harness(), wc = h.addWindow(), relay = h.relays[0];
+  const h = harness({ mobile_relay: { enabled: true } }), wc = h.addWindow(), relay = h.relays[0];
   const view = mobileView();
   let currentStatus = { mobileConnected: true, mobileTaskView: view };
   wc.executeJavaScript = async () => JSON.stringify(currentStatus);
@@ -183,7 +305,7 @@ test("send verifier reads live status before cached discovery changes", async ()
 });
 
 test("discovery and send verifier both execute the host preload status call", async () => {
-  const h = harness(), wc = h.addWindow(), relay = h.relays[0];
+  const h = harness({ mobile_relay: { enabled: true } }), wc = h.addWindow(), relay = h.relays[0];
   let calls = 0;
   const window = { zcode: { async getWebRemoteControlStatus() {
     calls++;
@@ -207,7 +329,7 @@ test("discovery and send verifier both execute the host preload status call", as
 });
 
 test("live status without identity is accepted only for a bridge-confirmed local target", async () => {
-  const h = harness(), wc = h.addWindow(), relay = h.relays[0], bridge = makeBridge("");
+  const h = harness({ mobile_relay: { enabled: true } }), wc = h.addWindow(), relay = h.relays[0], bridge = makeBridge("");
   h.stash([bridge]);
   const view = { taskId: "s1", workspacePath: "/project" };
   wc.executeJavaScript = async () => status(view);
@@ -238,7 +360,7 @@ for (const [label, change] of [
   ["empty remote session", view => { view.remoteSessionId = ""; }],
 ]) {
   test(`mobile discovery rejects a mismatched ${label}`, async () => {
-    const h = harness(), wc = h.addWindow(), relay = h.relays[0], view = mobileView();
+    const h = harness({ mobile_relay: { enabled: true } }), wc = h.addWindow(), relay = h.relays[0], view = mobileView();
     change(view); wc.executeJavaScript = async () => status(view);
     h.tick(); await flush();
     assert.equal(relay.calls.at(-1).payload.target, null);
@@ -246,7 +368,7 @@ for (const [label, change] of [
 }
 
 test("remote session is optional only when neither bridge nor host view provides it", async () => {
-  const h = harness(), wc = h.addWindow(), relay = h.relays[0], view = mobileView();
+  const h = harness({ mobile_relay: { enabled: true } }), wc = h.addWindow(), relay = h.relays[0], view = mobileView();
   delete h.bridge.b.remoteSessionId;
   wc.executeJavaScript = async () => status(view);
   h.tick(); await flush();
@@ -276,7 +398,7 @@ for (const [label, change] of [
   ["workspace identity changed", h => { h.bridge.b.workspaceIdentity = WSL; }],
 ]) {
   test(`mobile target binding is revoked when ${label}`, async () => {
-    const h = harness(), wc = h.addWindow(), relay = h.relays[0];
+    const h = harness({ mobile_relay: { enabled: true } }), wc = h.addWindow(), relay = h.relays[0];
     wc.executeJavaScript = async () => status();
     h.tick(); await flush();
     const accepted = relay.calls.at(-1);
@@ -290,7 +412,7 @@ for (const [label, change] of [
 }
 
 test("non-live stash entries do not make the official bridge ambiguous", async () => {
-  const h = harness(), wc = h.addWindow(), relay = h.relays[0];
+  const h = harness({ mobile_relay: { enabled: true } }), wc = h.addWindow(), relay = h.relays[0];
   const stale = makeBridge(); stale.b.closed = true;
   const pending = makeBridge(); pending.b.readyAnnounced = false;
   const mismatched = makeBridge(); mismatched.b.relayProtocol.protocol = {};
@@ -310,7 +432,7 @@ for (const [label, change] of [
   ["shutdown", h => { h.app.emit("before-quit"); }],
 ]) {
   test(`live status verification rejects an in-flight ${label}`, async () => {
-    const h = harness(), wc = h.addWindow(), relay = h.relays[0];
+    const h = harness({ mobile_relay: { enabled: true } }), wc = h.addWindow(), relay = h.relays[0];
     wc.executeJavaScript = async () => status();
     h.tick(); await flush();
     const accepted = relay.calls.at(-1);
@@ -325,7 +447,7 @@ for (const [label, change] of [
 }
 
 test("live status verification cannot restore a target revoked during its await", async () => {
-  const h = harness(), wc = h.addWindow(), relay = h.relays[0];
+  const h = harness({ mobile_relay: { enabled: true } }), wc = h.addWindow(), relay = h.relays[0];
   wc.executeJavaScript = async () => status();
   h.tick(); await flush();
   const accepted = relay.calls.at(-1);
@@ -347,7 +469,7 @@ for (const [label, change] of [
   ["remote session change", h => { h.bridge.b.remoteSessionId = "remote-new"; }],
 ]) {
   test(`discovery discards a status read across ${label}`, async () => {
-    const h = harness(), wc = h.addWindow(), relay = h.relays[0];
+    const h = harness({ mobile_relay: { enabled: true } }), wc = h.addWindow(), relay = h.relays[0];
     let finish;
     wc.executeJavaScript = () => new Promise(resolve => { finish = resolve; });
     h.tick(); await flush();
@@ -363,13 +485,96 @@ for (const [label, change] of [
 }
 
 test("out-of-order discovery cannot restore a revoked target", async () => {
-  const h = harness(), wc = h.addWindow(), relay = h.relays[0];
+  const h = harness({ mobile_relay: { enabled: true } }), wc = h.addWindow(), relay = h.relays[0];
   const pending = [];
   wc.executeJavaScript = () => new Promise(r => pending.push(r));
   h.tick(); await flush(); h.tick(); await flush();
   pending[1](status(null)); await flush();
   pending[0](status()); await flush();
   assert.equal(relay.calls.some(c => c.payload.target), false);
+});
+
+test("local mobile toggle merges one nested key, broadcasts truth and revokes prior targets", async () => {
+  const h = harness({ unknown: "keep", mobile_relay: { enabled: true, keep: "nested" } });
+  const wc = h.addWindow(), execute = wc.executeJavaScript, relay = h.relays[0];
+  wc.executeJavaScript = script => script.includes("getWebRemoteControlStatus") ? Promise.resolve(status()) : execute(script);
+  h.workspace(wc, [A]); h.tasks(wc, [A]); h.tick(); await flush();
+  const accepted = relay.calls.at(-1);
+  assert.equal(accepted.validate(), true);
+  const other = h.addWindow();
+  wc.page.__zusagePluginRequests.push({ action: "mobile-relay", enabled: false, requestId: "off" });
+  await h.poll();
+  assert.equal(h.writes.length, 1);
+  assert.equal(h.writes[0].python, "custom-python");
+  assert.equal(JSON.stringify(h.writes[0].changes), "{}");
+  assert.equal(JSON.stringify(h.writes[0].merge), '{"mobile_relay":{"enabled":false}}');
+  assert.deepEqual(h.getConfig().mobile_relay, { enabled: false, keep: "nested" });
+  assert.equal(h.getConfig().unknown, "keep");
+  assert.equal(accepted.validate(), false);
+  assert.equal(relay.disabled, 1);
+  assert.equal(relay.calls.at(-1).payload.target, null);
+  for (const window of [wc, other]) {
+    assert.equal(window.page.states.at(-1).mobileRelayEnabled, false);
+    assert.equal(window.page.states.at(-1).mobileRelaySupported, true);
+  }
+  assert.equal(wc.page.results.at(-1).id, "off");
+  assert.equal(wc.page.results.at(-1).ok, true);
+  wc.page.__zusagePluginRequests.push({ action: "mobile-relay", enabled: true, requestId: "on" });
+  await h.poll();
+  assert.equal(h.getConfig().mobile_relay.enabled, true);
+  assert.equal(relay.disabled, 1);
+  assert.equal(wc.page.results.at(-1).mobileRelayEnabled, true);
+  assert.equal(other.page.states.at(-1).mobileRelayEnabled, true);
+});
+
+test("mobile toggle rejects malformed values and reports failed writes without changing truth", async () => {
+  const h = harness(), wc = h.addWindow();
+  for (const enabled of [undefined, null, 0, 1, "true", [], {}]) {
+    wc.page.__zusagePluginRequests.push({ action: "mobile-relay", enabled, requestId: "bad" });
+    await h.poll();
+    assert.equal(wc.page.results.at(-1).ok, false);
+    assert.match(wc.page.results.at(-1).error, /invalid enabled/);
+  }
+  assert.equal(h.writes.length, 0);
+  h.failWrite("config lock busy");
+  wc.page.__zusagePluginRequests.push({ action: "mobile-relay", enabled: true, requestId: "failed" });
+  await h.poll();
+  assert.equal(h.writes.length, 1);
+  assert.equal(h.getConfig().mobile_relay, undefined);
+  assert.equal(h.relays[0].options.isEnabled(), false);
+  assert.equal(wc.page.results.at(-1).id, "failed");
+  assert.equal(wc.page.results.at(-1).ok, false);
+  assert.match(wc.page.results.at(-1).error, /config lock busy/);
+  assert.equal(wc.page.states.length, 0);
+});
+
+test("mobile toggle rejects a success response from an old helper that ignores nested changes", async () => {
+  for (const enabled of [true, false]) {
+    const h = harness(), wc = h.addWindow();
+    h.oldHelper();
+    wc.page.__zusagePluginRequests.push({ action: "mobile-relay", enabled, requestId: "old-helper" });
+    await h.poll();
+    assert.equal(h.writes.length, 1);
+    assert.equal(h.getConfig().mobile_relay, undefined);
+    assert.equal(wc.page.results.at(-1).ok, false);
+    assert.match(wc.page.results.at(-1).error, /configuration was not saved/);
+    assert.equal(wc.page.states.length, 0);
+  }
+});
+
+test("external pages, foreign files and non-window contents cannot write mobile configuration", async () => {
+  for (const kind of ["external", "foreign", "webview", "destroyed"]) {
+    const h = harness(), wc = h.addWindow();
+    wc.page.__zusagePluginRequests.push({ action: "mobile-relay", enabled: true, requestId: kind });
+    if (kind === "external") wc.getURL = () => "https://example.invalid/";
+    if (kind === "foreign") wc.getURL = () => pathToFileURL(path.resolve("/outside/index.html")).href;
+    if (kind === "webview") wc.getType = () => "webview";
+    if (kind === "destroyed") wc.isDestroyed = () => true;
+    await h.poll();
+    assert.equal(h.writes.length, 0, kind);
+    assert.equal(wc.page.results.length, 0, kind);
+    assert.equal(wc.page.__zusagePluginRequests.length, 1, kind);
+  }
 });
 
 test("mobile relay hot swaps once and is disposed at shutdown", async () => {

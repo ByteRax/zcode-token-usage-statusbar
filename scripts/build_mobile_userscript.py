@@ -14,8 +14,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = ROOT / "src" / "mobile"
 OVERLAY_SRC_DIR = ROOT / "src" / "overlay"
-TARGET = ROOT / "docs" / "zusage-mobile.user.js"
-TARGET_DEBUG = ROOT / "docs" / "zusage-mobile.debug.user.js"
+TARGET = ROOT / "zusage-mobile.user.js"
+TARGET_DEBUG = ROOT / "zusage-mobile.debug.user.js"
 PART_RE = re.compile(r"^[0-9]{2}-[A-Za-z0-9_-]+\.js$")
 PLACEHOLDER_RE = re.compile(r"\b__ZM_[A-Z0-9_]+__\b")
 DEBUG_NAME_REPL = (
@@ -25,6 +25,10 @@ DEBUG_NAME_REPL = (
 DEBUG_DESC_REPL = (
     "// @description  在 ZCode Web 远程控制页面渲染 token 用量；仅在确认宿主支持后同步显示偏好",
     "// @description  调试版：默认显示排障面板（帧统计/overlay 加载状态）；日常使用请安装正式版 zusage-mobile.user.js",
+)
+DEBUG_URL_REPL = (
+    "https://raw.githubusercontent.com/ByteRax/zcode-token-usage-statusbar/main/zusage-mobile.user.js",
+    "https://raw.githubusercontent.com/ByteRax/zcode-token-usage-statusbar/main/zusage-mobile.debug.user.js",
 )
 
 
@@ -92,6 +96,9 @@ def assemble(src_dir=SRC_DIR, overlay_src_dir=OVERLAY_SRC_DIR):
 def finalize(common_src, debug):
     src = replace_once(common_src, "var DEBUG_BUILD = __ZM_DEBUG__;",
                        "var DEBUG_BUILD = " + ("true" if debug else "false") + ";", "__ZM_DEBUG__")
+    for prefix in ("// @downloadURL  ", "// @updateURL    "):
+        src = replace_once(src, prefix + DEBUG_URL_REPL[0],
+                           prefix + DEBUG_URL_REPL[1 if debug else 0], prefix.strip())
     if debug:
         src = replace_once(src, *DEBUG_NAME_REPL, "调试版 @name")
         src = replace_once(src, *DEBUG_DESC_REPL, "调试版 @description")
@@ -108,8 +115,8 @@ def main(argv=None, root=ROOT):
     try:
         common, _ = assemble(root / "src" / "mobile", root / "src" / "overlay")
         variants = [
-            (root / "docs" / TARGET.name, finalize(common, False).encode("utf-8")),
-            (root / "docs" / TARGET_DEBUG.name, finalize(common, True).encode("utf-8")),
+            (root / TARGET.name, finalize(common, False).encode("utf-8")),
+            (root / TARGET_DEBUG.name, finalize(common, True).encode("utf-8")),
         ]
     except BuildError as exc:
         print("build_mobile_userscript: " + str(exc), file=sys.stderr)

@@ -7,14 +7,13 @@
  *  4) id 与桌面 state.show 键对齐（turn/win/today/proj/tools/sub）。
  * 采集逻辑在 overlay.js 的 boot 闭包内，这里按源码契约断言（与 overlay 套件同风格）。 */
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
 const test = require('node:test');
 const vm = require('node:vm');
-const { readOverlayPart } = require('./helpers/overlay-extract.cjs');
+const { readOverlayPart, sliceOverlay } = require('./helpers/overlay-extract.cjs');
 
-const source = fs.readFileSync(path.join(__dirname, '..', 'overlay.js'), 'utf8');
 const mobilePart = readOverlayPart('13-mobile-chips.js');
+const source = mobilePart;
+const bridgePart = sliceOverlay('  window.__zusagePluginUpdate = function (s) {', '  /* 工作区身份来自当前会话节点', { file: 'src/overlay/01-git-and-doc-tooltips.js' });
 
 test('mobile chips: subagent cell included (0.2.4 full desktop copy)', () => {
   assert.doesNotMatch(source, /classList\.contains\("zu-sub"\)\) continue;/);
@@ -46,7 +45,7 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-function mobileHarness(getStatus) {
+function mobileHarness(getStatus, initialState = { mobileRelayEnabled: true, mobileRelaySupported: true }, roots = [], mobileMode = false) {
   let now = 0, nextId = 1;
   const timers = new Map();
   function schedule(fn, delay, repeat) {
@@ -54,17 +53,21 @@ function mobileHarness(getStatus) {
     timers.set(id, { fn, at: now + delay, delay, repeat });
     return id;
   }
-  const window = { __zusageGen: 1, __zusageUpdate() {}, zcode: { getWebRemoteControlStatus: getStatus } };
+  let updates = 0, scans = 0;
+  const state = { ...initialState };
+  const window = { __zusageGen: 1, __zusageUpdate() { updates++; }, zcode: { getWebRemoteControlStatus: getStatus } };
   const context = {
-    window, document: { querySelectorAll: () => [] },
+    state, mobileMode, instances: [], stale: () => false, scanRateLines() {},
+    window, document: { querySelectorAll: () => { scans++; return roots; } },
     setTimeout: (fn, delay) => schedule(fn, delay, false),
     clearTimeout: (id) => timers.delete(id),
     setInterval: (fn, delay) => schedule(fn, delay, true),
     clearInterval: (id) => timers.delete(id),
   };
-  vm.runInNewContext('(function () {\n' + mobilePart, context);
+  vm.runInNewContext('(function () {\n' + bridgePart + mobilePart, context);
   return {
-    window, timers,
+    window, timers, state, updates: () => updates, scans: () => scans,
+    configure(s) { window.__zusagePluginUpdate(s); },
     advance(ms) {
       const end = now + ms;
       for (;;) {
@@ -89,6 +92,110 @@ function mobileHarness(getStatus) {
 
 const status = (taskId, fields = {}) => ({ mobileConnected: true, mobileTaskView: { taskId, ...fields } });
 const flush = async () => { await Promise.resolve(); await Promise.resolve(); };
+
+test('mobile relay gate: missing, disabled and malformed state performs no target polling or DOM collection', async () => {
+  const cases = [{}, { mobileRelayEnabled: true }, { mobileRelaySupported: true }];
+  for (const value of [undefined, null, false, 1, 'true', [], {}]) {
+    cases.push({ mobileRelayEnabled: value, mobileRelaySupported: true });
+    cases.push({ mobileRelayEnabled: true, mobileRelaySupported: value });
+  }
+  for (const config of cases) {
+    let calls = 0;
+    const h = mobileHarness(() => { calls++; return status('private'); }, config);
+    h.window.__zusageUpdate({ session: { sid: 'desktop' } });
+    h.advance(5000); await flush();
+    assert.equal(calls, 0, JSON.stringify(config));
+    assert.equal(h.scans(), 0);
+    assert.equal(h.updates(), 1, 'desktop snapshots still reach their original consumer');
+    assert.equal(h.window.__zusageMobileChips, undefined);
+    assert.equal(h.timers.size, 0, 'closed relay owns no polling or harvesting timers');
+    h.window.__zusageDispose();
+  }
+});
+
+function chipRoot() {
+  const value = { textContent: '123' };
+  const cell = {
+    textContent: '123', classList: { contains: () => false },
+    getAttribute: key => key === 'aria-label' ? '本轮' : null,
+    querySelector: selector => selector === '.v' ? value : null,
+    querySelectorAll: () => [],
+  };
+  const main = { textContent: '123', querySelectorAll: () => [cell] };
+  return { querySelector: () => main, getAttribute: () => 'session_a' };
+}
+
+test('mobile mode never installs desktop collection, even with enabled relay state and later broadcasts', async () => {
+  let calls = 0;
+  const enabled = { mobileRelayEnabled: true, mobileRelaySupported: true };
+  const h = mobileHarness(() => { calls++; return status('private'); }, enabled, [chipRoot()], true);
+  const update = h.window.__zusageUpdate;
+  h.configure(enabled);
+  h.window.__zusageUpdate({ session: { sid: 'mobile' } });
+  h.advance(5000); await flush();
+  assert.equal(h.window.__zusageUpdate, update, 'mobile snapshots keep their original consumer');
+  assert.equal(h.updates(), 1);
+  assert.equal(calls, 0);
+  assert.equal(h.scans(), 0);
+  assert.equal(h.timers.size, 0);
+  assert.equal(h.window.__zusageMobileChips, undefined);
+  assert.equal(h.window.__zusageDispose, undefined, 'mobile collection does not wrap disposal');
+});
+
+test('mobile relay gate: enable starts immediately, disable clears target, chips and scheduled harvest without affecting desktop', async () => {
+  let calls = 0;
+  const off = { mobileRelayEnabled: false, mobileRelaySupported: true };
+  const h = mobileHarness(() => { calls++; return status('session_a'); }, off, [chipRoot()]);
+  h.configure({ mobileRelayEnabled: true, mobileRelaySupported: true }); await flush();
+  assert.equal(calls, 1); assert.equal(h.target().taskId, 'session_a');
+  h.window.__zusageUpdate({}); h.advance(50);
+  assert.equal(h.scans(), 1);
+  assert.equal(h.window.__zusageMobileChips.bySession.session_a[0].v, '123');
+  const previousPayload = h.window.__zusageMobileChips;
+  h.window.__zusageUpdate({});
+  h.configure(off);
+  assert.equal(h.window.__zusageMobileChips, undefined, 'previous payload is removed synchronously');
+  assert.equal(h.timers.size, 0);
+  h.advance(5000); await flush();
+  assert.equal(h.scans(), 1); assert.equal(calls, 1);
+  assert.equal(h.updates(), 2);
+  h.configure({ mobileRelayEnabled: true, mobileRelaySupported: true }); await flush();
+  assert.equal(calls, 2);
+  assert.notEqual(h.window.__zusageMobileChips, previousPayload);
+  assert.equal(Object.keys(h.window.__zusageMobileChips.bySession).length, 0, 're-enable cannot reuse harvested chips');
+  h.configure({ mobileRelayEnabled: true });
+  assert.equal(h.window.__zusageMobileChips, undefined, 'capability withdrawal also clears the relay');
+  assert.equal(h.timers.size, 0);
+  h.window.__zusageDispose();
+});
+
+test('mobile relay gate: rapid off/on discards the old status promise before accepting the new target', async () => {
+  const old = deferred(), fresh = deferred();
+  let calls = 0;
+  const h = mobileHarness(() => ++calls === 1 ? old.promise : fresh.promise);
+  h.configure({ mobileRelayEnabled: false, mobileRelaySupported: true });
+  assert.equal(h.timers.size, 0);
+  h.configure({ mobileRelayEnabled: true, mobileRelaySupported: true });
+  assert.equal(calls, 2, 're-enable starts a fresh status request despite an unresolved old promise');
+  old.resolve(status('old')); await flush();
+  assert.equal(h.window.__zusageMobileChips, undefined);
+  fresh.resolve(status('fresh')); await flush();
+  assert.equal(h.target().taskId, 'fresh');
+  h.configure({});
+  h.advance(5000); await flush();
+  assert.equal(h.window.__zusageMobileChips, undefined); assert.equal(h.timers.size, 0);
+  h.window.__zusageDispose();
+});
+
+test('mobile relay gate: dispose cancels a pending harvest and clears its payload', async () => {
+  const h = mobileHarness(() => status('session_a'), { mobileRelayEnabled: true, mobileRelaySupported: true }, [chipRoot()]);
+  await flush();
+  h.window.__zusageUpdate({});
+  assert.ok(h.timers.size > 1);
+  h.window.__zusageDispose();
+  h.advance(5000); await flush();
+  assert.equal(h.scans(), 0); assert.equal(h.timers.size, 0); assert.equal(h.window.__zusageMobileChips, undefined);
+});
 
 for (const failure of ['missing', 'throw', 'reject', 'timeout']) {
   test(`mobile target: ${failure} clears the previous target and permits recovery`, async () => {

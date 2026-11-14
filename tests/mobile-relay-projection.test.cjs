@@ -58,7 +58,7 @@ async function sendSnapshot(t, payload) {
   };
   vm.runInContext('(function(require,module,exports,__dirname){' + source + '\n})', context,
     { filename: sourcePath })(isolatedRequire, module, module.exports, path.dirname(sourcePath));
-  const relay = module.exports.createMobileRelay({ spawnProc: () => proc });
+  const relay = module.exports.createMobileRelay({ strictOptIn: true, isEnabled: () => true, spawnProc: () => proc });
   t.after(() => relay.dispose());
   relay.push({ zm: 1, target: { taskId: SID, workspaceIdentity: '' } });
   const deadline = Date.now() + 2000;

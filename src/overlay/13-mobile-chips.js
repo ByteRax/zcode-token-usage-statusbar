@@ -2,7 +2,7 @@
  * 从已挂载状态条（.zusage-root .zu-main）收割 .it 段的最终显示文本——与桌面渲染
  * 逐字同源（含 ⚙ 显隐项配置、万/亿进位、两态速度、色阶类），不在本层重复任何格式化。
  * 主泵 readWants 轮询读回（与 __zusageWantSids 同通道）→ mobile-relay.cjs 编码推送
- * 官方中继，远控页油猴脚本渲染（docs/zusage-mobile.user.js）。规格 specs/mobile-relay.md。
+ * 官方中继，远控页用户脚本渲染（根目录 zusage-mobile.user.js）。规格 specs/mobile-relay.md。
  * 采集节流：__zusageUpdate 后 50ms 单飞（render 同步完成后 DOM 才是本轮终态）；
  * 内容未变化不重写（mobile-relay 侧另有 2s 节流与 chips 去重兜底）。多实例（多输入卡）
  * v1 只取首个有内容的条。tip（__tip）剥 HTML 标签取前 300 字符作 detail。
@@ -15,6 +15,27 @@ if (typeof mcOrigUpdate === "function" && !(typeof mobileMode !== "undefined" &&
   var mcPending = false, mcLastJson = "";
   var mcTarget = null, mcTargetJson = "", mcStatusBusy = false;
   var mcStatusEpoch = 0, mcStatusTimeout = null, mcStopped = false, mcLastChips = {};
+  var mcTimer = null, mcHarvestTimer = null, mcGen = window.__zusageGen || 0;
+  /* 配置与能力双重授权才采集。关闭即撤销本代载荷、取消定时器并使在途目标响应失效；
+   * 普通桌面 __zusageUpdate 仍照常执行，不把中继开关扩散到桌面统计链。 */
+  function mcRelayEnabled() {
+    return !mcStopped && (window.__zusageGen || 0) === mcGen &&
+      state.mobileRelayEnabled === true && state.mobileRelaySupported === true;
+  }
+  function mcSyncRelayEnabled() {
+    if (!mcRelayEnabled()) {
+      mcCancelStatus();
+      if (mcTimer !== null) { clearInterval(mcTimer); mcTimer = null; }
+      if (mcHarvestTimer !== null) { clearTimeout(mcHarvestTimer); mcHarvestTimer = null; }
+      mcPending = false;
+      mcTarget = null; mcTargetJson = ""; mcLastChips = {}; mcLastJson = "";
+      if ((window.__zusageGen || 0) === mcGen) delete window.__zusageMobileChips;
+      return;
+    }
+    if (mcTimer !== null) return;
+    mcTimer = setInterval(mcSyncTarget, 1000);
+    mcSyncTarget();
+  }
   /* v2：目标会话由宿主报告。getWebRemoteControlStatus 是 preload 只读接口，
    * mobileTaskView 为空表示页面没有已验证的可见聊天（隐藏/首页/遮盖），
    * 此时不报告 target，主进程保留手机端上次显示，绝不回退到其它会话。 */
@@ -31,7 +52,7 @@ if (typeof mcOrigUpdate === "function" && !(typeof mobileMode !== "undefined" &&
     if (mcStatusTimeout !== null) { clearTimeout(mcStatusTimeout); mcStatusTimeout = null; }
   }
   function mcSyncTarget() {
-    if (mcStopped) return;
+    if (!mcRelayEnabled()) { mcSyncRelayEnabled(); return; }
     var z, getStatus;
     try { z = window.zcode; getStatus = z && z.getWebRemoteControlStatus; } catch (e) { }
     if (typeof getStatus !== "function") { mcCancelStatus(); mcSetTarget(null); return; }
@@ -46,7 +67,7 @@ if (typeof mcOrigUpdate === "function" && !(typeof mobileMode !== "undefined" &&
     }, 3000);
     if (mcStatusTimeout && typeof mcStatusTimeout.unref === "function") mcStatusTimeout.unref();
     function finish(next) {
-      if (mcStopped || epoch !== mcStatusEpoch || (window.__zusageGen || 0) !== mcGen) return;
+      if (!mcRelayEnabled() || epoch !== mcStatusEpoch) return;
       mcCancelStatus();
       mcSetTarget(next);
     }
@@ -65,19 +86,13 @@ if (typeof mcOrigUpdate === "function" && !(typeof mobileMode !== "undefined" &&
       } catch (e) { finish(null); }
     }, function () { finish(null); });
   }
-  var mcGen = window.__zusageGen || 0;
-  var mcTimer = setInterval(function () {
-    if ((window.__zusageGen || 0) !== mcGen) { mcStopped = true; mcCancelStatus(); clearInterval(mcTimer); mcTimer = null; return; }
-    mcSyncTarget();
-  }, 1000);
-  mcSyncTarget();   // 首次立即发起（不等 1s），不额外占一次性定时器
+  mcSyncRelayEnabled();   // 显式开启时首次立即发起，关闭/旧 loader 不启动目标轮询
   /* 定时器归属：接入 overlay dispose 链，热重载/卸载时随代际清理（不能只靠 gen 兜底） */
   var mcPrevDispose = window.__zusageDispose;
   window.__zusageDispose = function () {
     try {
       mcStopped = true;
-      mcCancelStatus();
-      if (mcTimer) { clearInterval(mcTimer); mcTimer = null; }
+      mcSyncRelayEnabled();
     } catch (e) { }
     if (typeof mcPrevDispose === "function") return mcPrevDispose.apply(this, arguments);
   };
@@ -122,6 +137,8 @@ if (typeof mcOrigUpdate === "function" && !(typeof mobileMode !== "undefined" &&
   }
   function mcHarvest() {
     mcPending = false;
+    mcHarvestTimer = null;
+    if (!mcRelayEnabled()) { mcSyncRelayEnabled(); return; }
     try {
       var bySession = {};
       var roots = document.querySelectorAll(".zusage-root");
@@ -193,6 +210,7 @@ if (typeof mcOrigUpdate === "function" && !(typeof mobileMode !== "undefined" &&
     } catch (e) { /* 采集失败只是手机端无更新，绝不影响桌面渲染 */ }
   }
   function mcPublish() {
+    if (!mcRelayEnabled()) return;
     try {
       var payload = { zm: 1, ts: Date.now(), target: mcTarget, bySession: mcLastChips };
       var json = JSON.stringify(payload);
@@ -203,7 +221,8 @@ if (typeof mcOrigUpdate === "function" && !(typeof mobileMode !== "undefined" &&
   }
   window.__zusageUpdate = function (d) {
     mcOrigUpdate(d);
-    if (!mcPending) { mcPending = true; setTimeout(mcHarvest, 50); }
+    mcSyncRelayEnabled();
+    if (mcRelayEnabled() && !mcPending) { mcPending = true; mcHarvestTimer = setTimeout(mcHarvest, 50); }
   };
 }
 })();

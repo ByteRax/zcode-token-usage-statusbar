@@ -76,6 +76,7 @@ python3 -B release_tool.py verify --zip /new/artifact-directory/zcode-token-usag
 ```bash
 python3 -B sync_plugin.py --check
 node --check overlay.js && node --check inject-main.cjs
+node --check zusage-mobile.user.js && node --check zusage-mobile.debug.user.js
 node --test tests/*.test.cjs
 python3 -B -m unittest discover -s tests -p 'test_*.py'
 ```

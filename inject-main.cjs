@@ -881,7 +881,7 @@ function pushPluginState(wc, state) {
   /* rateLine / quotaEnabled / restartNotice / enginePatch 随插件状态一起推送：⚙ 面板开关的真值都来自 config.json */
   const payload = { ...state, rateLine: readCfgCached().answer_rate_line !== false, quotaEnabled: quotaEnabled(),
     resetBadgeEnabled: resetBadgeEnabled(), restartNotice: readCfgCached().restart_notice !== false,
-    enhanceEnabled: enhanceEnabled(),
+    enhanceEnabled: enhanceEnabled(), mobileRelayEnabled: mobileEnabled(), mobileRelaySupported: true,
     quotaSources: quotaClient ? quotaClient.sourcesConfig() : [], enginePatch: enginePatcher ? enginePatcher.status() : null, feedbackVersion: 1,
     relaunchSupported: true };   // v180 issue #158：能力标记与下方 relaunch 分支同文件（inject-main），缺标记=旧主进程必然没有该动作分支
   wc.executeJavaScript(`window.__zusagePluginUpdate && window.__zusagePluginUpdate(${JSON.stringify(payload)})`, true).catch(() => { });
@@ -942,16 +942,16 @@ initEnginePatcher();
 /* v331：mobile-relay（手机远控中继，热换模块 #7）。stash 由 mobile_relay_patch.py
  * 注入主 bundle；本模块只消费——加载失败只少推送，不拖垮主链。
  * 目标发现与发送前复验均读取宿主 mobileTaskView，并绑定唯一官方 live 桥；
- * config mobile_relay.enabled === false 显式关闭。 */
+ * config mobile_relay.enabled 仅显式 true 开启。 */
 let mobileRelay = null;
 let mobileTarget = null;
 let mobileDiscovery = 0;
 function mobileEnabled() {
   const cfg = readCfgCached().mobile_relay;
-  return !(cfg && cfg.enabled === false);
+  return !!(cfg && typeof cfg === "object" && !Array.isArray(cfg) && cfg.enabled === true);
 }
 function mobileWindows() {
-  return webContents.getAllWebContents().filter((wc) => isMainWindowState(wc) && !wc.isDestroyed());
+  return webContents.getAllWebContents().filter((wc) => trustedSender({ sender: wc }));
 }
 function mobileBridgeBinding() {
   const stash = Array.isArray(globalThis.__zusageRelayStash) ? globalThis.__zusageRelayStash : [];
@@ -1022,6 +1022,7 @@ function initMobileRelay() {
       log: (...a) => LOG("[mobile-relay]", ...a),
       getMinIntervalMs: () => readCfgCached().activity_min_ms | 0 || 1500,
       getRemotePollMs: remotePollMs,
+      strictOptIn: true, // 旧 cold loader 缺此能力时，新 relay 必须关闭。
       isEnabled: mobileEnabled,
       getPythonCmd: () => readCfgCached().python_path,
     });
@@ -1709,6 +1710,26 @@ async function setResetBadgeEnabled(enabled, wc, requestId) {
     deliverPluginRequest(wc, requestId, { ok: false, error: e.message });
   }
 }
+/* 移动端推送开关：锁内只合并 enabled；关闭时撤销代际、回收中继查询，不干预宿主远控。 */
+async function setMobileRelayEnabled(enabled, wc, requestId) {
+  try {
+    const { updateConfig } = require("./plugin-updater.cjs");
+    await updateConfig(HERE, {}, readCfgCached().python_path, undefined, { mobile_relay: { enabled } });
+    cfgCache = null;
+    const saved = readCfgCached().mobile_relay;
+    if (!saved || typeof saved !== "object" || Array.isArray(saved) || saved.enabled !== enabled) {
+      throw new Error("mobile_relay configuration was not saved; update or restart the desktop plugin");
+    }
+    mobileDiscovery++;
+    revokeMobileTarget();
+    if (!mobileEnabled() && mobileRelay && typeof mobileRelay.disable === "function") mobileRelay.disable();
+    broadcastPluginState();
+    deliverPluginRequest(wc, requestId, { ok: true, mobileRelayEnabled: mobileEnabled() });
+  } catch (e) {
+    LOG("mobile_relay toggle failed:", e.message);
+    deliverPluginRequest(wc, requestId, { ok: false, error: e.message });
+  }
+}
 /* v179 自动压缩阈值开关（⚙ 面板）：写 config.json 的 auto_compact_patch（v188 起缺省开，显式 false 关闭），
  * 并即时打补丁/还原引擎——引擎子进程下次 spawn 起用，无需改 asar。 */
 async function setAutoCompactPatch(enabled, wc, requestId) {
@@ -2087,6 +2108,9 @@ async function pollPluginRequests() {
           setQuotaEnabled(req.enabled, wc, req.requestId);
         } else if (req && req.action === "quota-reset" && typeof req.enabled === "boolean") {
           setResetBadgeEnabled(req.enabled, wc, req.requestId);
+        } else if (req && req.action === "mobile-relay") {
+          if (typeof req.enabled === "boolean") await setMobileRelayEnabled(req.enabled, wc, req.requestId);
+          else deliverPluginRequest(wc, req.requestId, { ok: false, error: "invalid enabled" });
         } else if (req && req.action === "autocompact-patch" && typeof req.enabled === "boolean") {
           setAutoCompactPatch(req.enabled, wc, req.requestId);
         } else if (req && req.action === "autocompact-config") {

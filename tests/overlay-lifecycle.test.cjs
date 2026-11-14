@@ -41,9 +41,11 @@ class Element {
   getAttribute(k) { return k === 'data-pane-id' ? this.pid : k === 'data-session-id' ? this.sid : this.dataset[k] ?? null; }
   getBoundingClientRect() { return { top: 600, bottom: 650, left: 20, right: 520, width: 500, height: 50 }; }
 }
-function harness(ls = { getItem: () => null, setItem() {} }) {
+function harness(ls = { getItem: () => null, setItem() {} }, pluginState) {
   const window = new Element(), body = new Element('body'), root = new Element('html');
-  Object.assign(window, { innerWidth: 1000, innerHeight: 800 });
+  let mobileStatusCalls = 0;
+  Object.assign(window, { innerWidth: 1000, innerHeight: 800, __zusagePluginState: pluginState,
+    zcode: { getWebRemoteControlStatus() { mobileStatusCalls++; return { mobileConnected: false }; } } });
   let panes = [];
   const document = new Element();
   Object.assign(document, { body, documentElement: root, createElement: tag => new Element(tag),
@@ -76,6 +78,7 @@ function harness(ls = { getItem: () => null, setItem() {} }) {
     return panes.map(e => e.parentElement);
   }
   return { window, document, root, body, timers, frames, observers, inject, tick, boot, setPanes,
+    mobileStatusCalls: () => mobileStatusCalls,
     runFrame() { for (const [n, fn] of [...frames]) fn(); } };
 }
 
@@ -205,18 +208,32 @@ test('v80 in-card mount: bar lands inside the card after the toolbar row, no pad
   assert.equal(cards[1].children.includes(barB), false);
 });
 
-test('reinjection and repeated cleanup cancel old loops and leave one live generation', () => {
-  const h = harness(); h.setPanes(['a']); h.inject(); h.boot();
-  const cleanup = h.window.__zusageDispose;
-  h.inject(); h.boot(); cleanup();
-  assert.equal(h.frames.size, 1); assert.equal(h.observers.filter(e => e.connected).length, 2);   // v105：theme + 弹层压缩按钮 body 观察器
-  // 7 = coordinator(600) + heavy(600) + rateScan(2s) + deterministic scan(2s) + per-pane bridge probe(2s) + rotator(65ms)
-  //     + 13-mobile-chips 的 mcTimer(1s，手机远控 target 上报；随 __zusageDispose 链清理)
-  assert.equal(h.timers.size, 7);
-  h.window.__zusageDispose(); cleanup();
-  assert.equal(h.timers.size, 0); assert.equal(h.frames.size, 0);
-  assert.deepEqual(Array.from(h.window.__zusageWantSids), []); assert.equal(h.window.__zusageWantSid, '');
-});
+for (const mobileEnabled of [false, true]) {
+  test(`reinjection and repeated cleanup leave one live generation with mobile relay ${mobileEnabled ? 'enabled' : 'off by default'}`, async () => {
+    const h = harness(undefined, mobileEnabled ? { mobileRelayEnabled: true, mobileRelaySupported: true } : undefined);
+    h.setPanes(['a']); h.inject(); h.boot(); await Promise.resolve();
+    assert.equal(h.mobileStatusCalls(), mobileEnabled ? 1 : 0, 'only explicit configuration and capability may query the target');
+    const cleanup = h.window.__zusageDispose;
+    const oldMobileTimers = [...h.timers.values()].filter(t => t.interval && t.ms === 1000);
+    h.inject(); h.boot(); cleanup(); await Promise.resolve();
+    assert.equal(h.frames.size, 1); assert.equal(h.observers.filter(e => e.connected).length, 2);   // v105：theme + 弹层压缩按钮 body 观察器
+    // 六个桌面循环：coordinator/heavy(600ms)、rate/deterministic/bridge(2s)、rotator(65ms)。
+    const liveIntervals = [...h.timers.values()].filter(t => t.interval);
+    assert.equal(liveIntervals.filter(t => t.ms !== 1000).length, 6);
+    assert.equal(liveIntervals.filter(t => t.ms === 1000).length, mobileEnabled ? 1 : 0,
+      'the optional mobile target poll must not accumulate on reinjection');
+    assert.equal(h.timers.size, mobileEnabled ? 7 : 6, 'settled status queries leave no timeout behind');
+    assert.equal(h.mobileStatusCalls(), mobileEnabled ? 2 : 0);
+    h.window.__zusageDispose(); cleanup();
+    assert.equal(h.timers.size, 0); assert.equal(h.frames.size, 0);
+    assert.deepEqual(Array.from(h.window.__zusageWantSids), []); assert.equal(h.window.__zusageWantSid, '');
+    const callsAfterDispose = h.mobileStatusCalls();
+    oldMobileTimers.forEach(t => t.fn()); await Promise.resolve();
+    assert.equal(h.mobileStatusCalls(), callsAfterDispose, 'a callback retained from the old generation stays inactive');
+    assert.equal(h.timers.size, 0);
+    assert.equal(h.window.__zusageMobileChips, undefined);
+  });
+}
 
 test('node scope changes with the same sid are reflected by the live instance immediately', () => {
   const h = harness(), [card] = h.setPanes(['workspace-main']);

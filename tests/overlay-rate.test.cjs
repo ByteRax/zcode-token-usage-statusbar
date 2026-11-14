@@ -53,9 +53,9 @@ class Element extends Target {
   getBoundingClientRect() { return { left: 20, top: 400, bottom: 430, width: 500, height: 30 }; }
 }
 
-function harness(lang = 'zh', rateLine = true) {
+function harness(lang = 'zh', rateLine = true, pluginState = {}) {
   const window = new Target();
-  Object.assign(window, { innerWidth: 1000, innerHeight: 800, __zusagePluginState: { rateLine } });
+  Object.assign(window, { innerWidth: 1000, innerHeight: 800, __zusagePluginState: { rateLine, ...pluginState } });
   const body = new Element('body'), quote = body.appendChild(new Element('blockquote'));
   const line = quote.appendChild(new Element('p'));
   line.textContent = '⚡ 153.8 tok/s(本轮) · 首字 3.0s · 输出 2,000 tok';
@@ -129,10 +129,12 @@ test('notice styling cleans recycled nodes, detached nodes and previous injectio
   h.scan(); const previous = h.noticeStyle();
   h.inject();
   assert.equal(previous.parentElement, null);
-    assert.equal(n.strong.dataset.zusageNotice, String(h.window.__zusageGen));
-    // 4 = 2s rate-line scan + 2s deterministic-line scan + 65ms rotator 帧驱动 + 13-mobile-chips mcTimer(1s)
-    assert.equal(h.intervals.size, 4);
-    n.strong.textContent = 'ordinary reply'; h.scan();
+  assert.equal(n.strong.dataset.zusageNotice, String(h.window.__zusageGen));
+  // 三个桌面循环：rate-line scan + deterministic-line scan + rotator；缺能力的旧 loader 不启动手机轮询。
+  assert.equal(h.intervals.size, 3);
+  assert.equal([...h.intervals.values()].some(timer => timer.ms === 1000), false);
+  assert.equal(h.window.__zusageMobileChips, undefined);
+  n.strong.textContent = 'ordinary reply'; h.scan();
   assert.equal(n.strong.dataset.zusageNotice, undefined);
   const detached = h.addNotice(); h.scan(); detached.quote.remove(); h.scan();
   assert.equal(detached.strong.dataset.zusageNotice, undefined);
@@ -163,25 +165,41 @@ test('R9: actual bilingual rate tooltip HTML has eight populated rows and correc
   }
 });
 
-test('R10: reinjection rebinds existing nodes and removes old listeners, scan interval and scroll handler', () => {
-  const h = harness();
-  const oldTips = [], oldScans = [];
-  for (let generation = 0; generation < 4; generation++) {
-    h.line.dispatch('mouseenter');
-    assert.equal(h.tip().style.display, 'block');
-    assert.equal(h.line.count('mouseenter'), 1); assert.equal(h.line.count('mouseleave'), 1);
-    assert.equal(h.quote.count('mouseenter'), 0);
-    assert.equal(h.window.count('scroll'), 1); assert.equal(h.intervals.size, 4);   // +13-mobile-chips mcTimer
-    oldTips.push(h.tip()); oldScans.push([...h.intervals.values()][0].fn);
-    h.inject();
-    assert.equal(oldTips.at(-1).parentElement, null);
-    assert.equal(oldTips.at(-1).style.display, 'none');
-    for (const scan of oldScans) scan();
-    for (const tip of oldTips) assert.equal(tip.style.display, 'none');
-  }
-  h.line.dispatch('mouseenter'); assert.equal(h.tip().style.display, 'block');
-  h.window.dispatch('scroll'); assert.equal(h.tip().style.display, 'none');
-});
+for (const mobileEnabled of [false, true]) {
+  test(`R10: reinjection rebinds rate nodes and cleans listeners and loops with mobile relay ${mobileEnabled ? 'enabled' : 'off by default'}`, () => {
+    const h = harness('zh', true, mobileEnabled ? { mobileRelayEnabled: true, mobileRelaySupported: true } : {});
+    const oldTips = [], oldScans = [], oldMobilePolls = [];
+    for (let generation = 0; generation < 4; generation++) {
+      h.line.dispatch('mouseenter');
+      assert.equal(h.tip().style.display, 'block');
+      assert.equal(h.line.count('mouseenter'), 1); assert.equal(h.line.count('mouseleave'), 1);
+      assert.equal(h.quote.count('mouseenter'), 0);
+      assert.equal(h.window.count('scroll'), 1);
+      const timers = [...h.intervals.values()];
+      assert.equal(timers.filter(timer => timer.ms !== 1000).length, 3, 'desktop scan and rotator loops stay intact');
+      assert.equal(timers.filter(timer => timer.ms === 1000).length, mobileEnabled ? 1 : 0);
+      assert.equal(h.intervals.size, mobileEnabled ? 4 : 3);
+      oldTips.push(h.tip()); oldScans.push(timers[0].fn);
+      oldMobilePolls.push(...timers.filter(timer => timer.ms === 1000).map(timer => timer.fn));
+      h.inject();
+      assert.equal(oldTips.at(-1).parentElement, null);
+      assert.equal(oldTips.at(-1).style.display, 'none');
+      for (const scan of oldScans) scan();
+      for (const poll of oldMobilePolls) poll();
+      for (const tip of oldTips) assert.equal(tip.style.display, 'none');
+      assert.equal(h.intervals.size, mobileEnabled ? 4 : 3, 'callbacks from disposed generations cannot recreate loops');
+    }
+    h.line.dispatch('mouseenter'); assert.equal(h.tip().style.display, 'block');
+    h.window.dispatch('scroll'); assert.equal(h.tip().style.display, 'none');
+    const cleanup = h.window.__zusageDispose;
+    cleanup(); cleanup();
+    assert.equal(h.intervals.size, 0); assert.equal(h.window.count('scroll'), 0);
+    assert.equal(h.line.count('mouseenter'), 0); assert.equal(h.line.count('mouseleave'), 0);
+    assert.equal(h.window.__zusageMobileChips, undefined);
+    oldMobilePolls.forEach(poll => poll());
+    assert.equal(h.intervals.size, 0);
+  });
+}
 
 test('R10: language refreshes open tooltip and toggle off cleans bindings; re-enable rescans old lines', () => {
   const h = harness(); h.line.dispatch('mouseenter');

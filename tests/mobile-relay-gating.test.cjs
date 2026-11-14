@@ -44,7 +44,7 @@ function makeRelay(t, opts) {
   bridge.b.relayProtocol = { protocol: bridge.p };
   globalThis.__zusageRelayStash = [bridge];
   function uplink(frame) { globalThis.__zusageRelayUplinkQueue = [{ frame, b: bridge.b, relay: bridge.b.relayProtocol }]; }
-  const relay = createMobileRelay(Object.assign({ log: () => { }, diagPath: path.join(dir, 'diag.json'), spawnProc: () => proc }, opts || {}));
+  const relay = createMobileRelay(Object.assign({ strictOptIn: true, isEnabled: () => true, log: () => { }, diagPath: path.join(dir, 'diag.json'), spawnProc: () => proc }, opts || {}));
   t.after(() => {
     relay.dispose();
     delete globalThis.__zusageRelayStash;
