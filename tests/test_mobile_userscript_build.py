@@ -1,228 +1,181 @@
 # -*- coding: utf-8 -*-
-"""油猴脚本构建链测试（specs/mobile-userscript-build.md）。
-
-docs/zusage-mobile.user.js 是编译产物：手机特有逻辑在 src/mobile/ 分片，「照抄桌面」
-内容（图标/格样式/TPS 色档/显示项行）从 src/overlay/ 06/07 分片锚点提取。本测试覆盖：
-- 真实源码上的完整构建输出契约（图标集、色档展开数、显示项行）；
-- 用临时夹具验证提取改写规则与 fail-fast（锚点缺失/声明失配/占位符丢失/重复）——
-  桌面重构删锚点时构建必须红，不允许静默漂移。
-"""
+"""手机构建回归：精确嵌入桌面完整产物，临时构建不改仓库 docs。"""
+import contextlib
+import io
+import json
+import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-TESTS = Path(__file__).resolve().parent
-ROOT = TESTS.parent
-sys.path.insert(0, str(TESTS / "helpers"))
+from tests.helpers.py_test_support import load_module
 
-from py_test_support import load_module  # noqa: E402
-
-
-def write(tmp, rel, text):
-    p = tmp / rel
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(text, encoding="utf-8", newline="\n")
-    return p
-
-
-MOBILE_FALLBACK = (
+ROOT = Path(__file__).resolve().parents[1]
+META = (
     "// ==UserScript==\n"
     "// @name         ZCode 用量状态条（远控中继接收端）\n"
-    "// @description  在 ZCode Web 远程控制页面渲染与桌面状态条同源的 token 用量 chips"
-    "（observe-only，不向 WebSocket 写入任何字节）\n"
+    "// @description  在 ZCode Web 远程控制页面渲染 token 用量；仅在确认宿主支持后同步显示偏好\n"
     "// ==/UserScript==\n"
-    "// mobile fallback ui\n"
-    "var DEBUG_BUILD = __ZM_DEBUG__;\n"
-    "/*@zm-icons speed,turn@*/\n"
-    "var ICONS = __ZM_ICONS__;\n"
-    "/*@zm-show-keys turn@*/\n"
-    "var SHOW_ROWS = __ZM_SHOW_ROWS__;\n"
-    'var CSS = "a{" +\n  "__ZM_CELL_CSS__" +\n  "__ZM_BAND_CSS__" +\n"b}";\n'
 )
+MOBILE = META + "var DEBUG_BUILD = __ZM_DEBUG__;\nvar OVERLAY_CODE = __ZM_OVERLAY_SOURCE__;\n"
 
-OVL06 = (
-    "var css = \n"
-    "      /*zm-cell-css-begin：锚点*/\n"
-    '      ".it{display:flex;gap:5px}" +\n'
-    '      ".it:hover,.it:focus-visible{background:var(--color-hover,x)}" +\n'
-    '      ".zu-gear{width:26px}" +\n'
-    '      /* v319 注释里的引号 "158.9 t/s" 不得混进 CSS */\n'
-    '      ".zusage-root .it{line-height:1.3}" +\n'
-    '      ".zusage-root .it>span:not(.eb):not(.zu-live){display:inline-flex}" +\n'
-    '      ".sep{width:1px}" +\n'
-    '      ".k{color:a}.v{color:b}" +\n'
-    '      ".dim{color:c}" +\n'
-    '      ".eb{background:e}" +\n'
-    '      ".eb .ico{color:x}" +\n'
-    "      /*zm-cell-css-end*/\n"
-    "      /*zm-band-css-begin*/\n"
-    '      ".ok{color:#3ecf8e}.warm{color:#f5b944}.hot{color:#ff6b57}" +\n'
-    '      ".zu-teal{color:#2dd4bf}" +\n'
-    '      ".zu-ultra{color:#a78bfa}.zu-ultra::before{content:\\"✦\\"/\\"\\";margin-right:2px}" +\n'
-    '      "@supports(-webkit-background-clip:text){" +\n'
-    '      ".zu-ultra{background:linear-gradient(100deg,a 0%,b 50%);-webkit-background-clip:text}" +\n'
-    "      /*zm-band-css-end*/\n"
-    "      /*zm-band-css-light-begin*/\n"
-    '      ".zu-light .ok{color:#0f9d6c}" +\n'
-    '      ".zu-light .zu-teal{color:#087d74}" +\n'
-    "      /*zm-band-css-light-end*/\n"
-    "      /*zm-show-rows-begin*/\n"
-    "      settingRow('<input type=\"checkbox\" data-k=\"turn\">', L(\"本轮\", \"Turn\"), L(\"本轮描述\", \"desc\")) +\n"
-    "      settingRow('<input type=\"checkbox\" data-k=\"subRate\">', L(\"子代理行内速率\", \"Rate\"), L(\"速率描述\", \"d2\")) +\n"
-    "      /*zm-show-rows-end*/\n"
-)
 
-OVL07 = (
-    "var chip = it(ico(/*zm-ico:speed*/'<path d=\"M13.5\"/>') + x;\n"
-    "var t = it(ico(/*zm-ico:turn*/'<rect/>') + y;\n"
-    "var kpi = { speed: '<path d=\"OTHER\"/>' };   // 无锚点的同 id 串不得被收\n"
-)
+def write(root, rel, text):
+    path = root / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(text.encode("utf-8"))
+    return path
 
-OVL13 = 'var MC_BANDS = ["zu-ultra", "zu-teal", "ok", "warm", "hot"];\n'
+
+def embedded(source):
+    marker = "var OVERLAY_CODE = "
+    start = source.index(marker) + len(marker)
+    value, _ = json.JSONDecoder().raw_decode(source[start:])
+    return value.encode("utf-8")
 
 
 class MobileUserscriptBuildTests(unittest.TestCase):
     def setUp(self):
         self.mod = load_module("build_mobile_userscript", ROOT / "scripts" / "build_mobile_userscript.py")
+        self.desktop = load_module("mobile_test_build_overlay", ROOT / "scripts" / "build_overlay.py")
 
-    def test_real_source_assemble_contract(self):
-        """真实仓库源码：图标 7 键、色档 10 档×2 类×2 深浅=40 条、cell 白名单、显示项 6 行；
-        assemble 返回共同主体（仅余 __ZM_DEBUG__ 占位），finalize 产出正式/调试两变体。"""
+    def fixture(self, root, mobile=MOBILE, overlay="(() => { window.exact = '桌面'; })();\n"):
+        write(root, "src/mobile/00-meta.js", mobile)
+        write(root, "src/overlay/00-boot.js", overlay)
+        return root / "src/mobile", root / "src/overlay"
+
+    def run_main(self, root, args=None):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+            code = self.mod.main(args or [], root=root)
+        return code, output.getvalue()
+
+    def test_real_source_embeds_exact_desktop_assembly_for_both_variants(self):
         common, info = self.mod.assemble()
-        self.assertEqual(info["desktop_only_keys"], ["git", "subRate", "wfChip"])
-        for k in ("speed", "turn", "win", "today", "proj", "tools", "sub"):
-            self.assertIn(f"{k}: '<", common, f"图标 {k} 未注入")
-        for probe in (
-            ".zm-root .it{display:flex",
-            ".zm-root .it:hover,.zm-root .it:focus-visible{",
-            ".zm-root .it{line-height:1.3}",
-            ".zm-root .it>span:not(.eb):not(.zu-live){display:inline-flex",
-            ".zm-root .sep{width:1px;height:15px",
-            ".zm-root .eb{background:rgba(255,107,87,.14)",
-            ".zm-root .zm-band-ok{color:#3ecf8e}.zm-root .zm-tone-ok{color:#3ecf8e}",
-            ".zm-root .zm-band-zu-teal{color:#2dd4bf}",
-            ".zm-light .zm-band-ok{color:#0f9d6c}.zm-light .zm-tone-ok{color:#0f9d6c}",
-            'data-k="turn"><span>本轮<em>tokens、请求次数、耗时与首字延迟</em>',
-            'data-k="sub"><span>子代理<em>悬停或点击状态条上的子代理查看统计</em>',
-        ):
-            self.assertIn(probe, common, f"共同主体缺少注入段特征: {probe}")
-        for absent in ("zm-tone-mute", "158.9 t/s", "zusage-root", ".zu-gear{flex:0 0 auto;position:relative"):
-            self.assertNotIn(absent, common, f"共同主体不应包含: {absent}")
-        for p in ('"__ZM_CELL_CSS__"', '"__ZM_BAND_CSS__"', "var ICONS = __ZM_ICONS__",
-                  "var SHOW_ROWS = __ZM_SHOW_ROWS__"):
-            self.assertNotIn(p, common, f"占位符未替换: {p}")
-        self.assertIn("var DEBUG_BUILD = __ZM_DEBUG__;", common)   # 唯一留给 finalize 的占位
+        expected, _ = self.desktop.assemble_bytes()
+        self.assertEqual(embedded(common), expected)
+        self.assertEqual(info["overlay_bytes"], len(expected))
         release = self.mod.finalize(common, False)
         debug = self.mod.finalize(common, True)
-        self.assertIn("var DEBUG_BUILD = false;", release)
-        self.assertNotIn("·调试版", release)
-        self.assertIn("var DEBUG_BUILD = true;", debug)
-        self.assertIn("·调试版", debug)
-        # 两变体除 3 处元数据/开关外逐字节一致（共享全部提取与逻辑）
-        self.assertEqual(
-            release.replace("var DEBUG_BUILD = false;", "").replace(
-                "// @name         ZCode 用量状态条（远控中继接收端）", "").replace(
-                "// @description  在 ZCode Web 远程控制页面渲染与桌面状态条同源的 token 用量 chips"
-                "（observe-only，不向 WebSocket 写入任何字节）", ""),
-            debug.replace("var DEBUG_BUILD = true;", "").replace(
-                "// @name         ZCode 用量状态条（远控中继接收端·调试版）", "").replace(
-                "// @description  调试版：默认显示排障面板（帧统计/overlay 加载状态）；"
-                "日常使用请安装正式版 zusage-mobile.user.js", ""),
-        )
+        self.assertEqual(embedded(release), expected)
+        self.assertEqual(embedded(debug), expected)
+        normalized_debug = debug.replace("var DEBUG_BUILD = true;", "var DEBUG_BUILD = false;")
+        for regular, diagnostic in (self.mod.DEBUG_NAME_REPL, self.mod.DEBUG_DESC_REPL):
+            normalized_debug = normalized_debug.replace(diagnostic, regular)
+        self.assertEqual(normalized_debug, release)
 
-    def _fixture(self, tmp, ovl06=OVL06, ovl07=OVL07, ovl13=OVL13, mobile=MOBILE_FALLBACK):
-        mdir = tmp / "mobile-src"
-        mdir.mkdir()
-        (mdir / "00-meta.js").write_text("// meta\n", encoding="utf-8")
-        (mdir / "10-ui.js").write_text(mobile, encoding="utf-8")
-        return self.mod.assemble(
-            src_dir=mdir,
-            ovl06_path=write(tmp, "06.js", ovl06),
-            ovl07_path=write(tmp, "07.js", ovl07),
-            ovl13_path=write(tmp, "13.js", ovl13),
-        )
-
-    def test_fixture_rewrite_rules(self):
-        """夹具：白名单过滤（.zu-gear/.eb .ico/注释引号丢弃）、前缀改写、色档展开、::before/@supports 丢弃。"""
-        import tempfile
+    def test_source_order_and_version_ledger_use_same_desktop_builder(self):
         with tempfile.TemporaryDirectory() as td:
-            src, _ = self._fixture(Path(td))
-        for probe in (
-            ".zm-root .it{display:flex;gap:5px}",
-            ".zm-root .it:hover,.zm-root .it:focus-visible{background:var(--color-hover,x)}",
-            ".zm-root .it{line-height:1.3}",
-            ".zm-root .it>span:not(.eb):not(.zu-live){display:inline-flex}",
-            ".zm-root .sep{width:1px}",
-            ".zm-root .k{color:a}.zm-root .v{color:b}",
-            ".zm-root .dim{color:c}",
-            ".zm-root .eb{background:e}",
-            ".zm-root .zm-band-ok{color:#3ecf8e}.zm-root .zm-tone-ok{color:#3ecf8e}",
-            ".zm-root .zm-band-zu-teal{color:#2dd4bf}.zm-root .zm-tone-zu-teal{color:#2dd4bf}",
-            ".zm-light .zm-band-ok{color:#0f9d6c}",
-            "data-k=\"turn\"><span>本轮<em>本轮描述</em>",
-        ):
-            self.assertIn(probe, src, f"夹具产物缺少: {probe}")
-        for absent in (".zu-gear{", ".eb .ico", "158.9 t/s", "::before", "@supports", "linear-gradient",
-                       "subRate", "OTHER"):
-            self.assertNotIn(absent, src, f"夹具产物不应包含: {absent}")
-        # DEBUG_BUILD 开关经 finalize 落值；夹具无 @name 元数据行，调试变体仅开关不同
-        self.assertIn("var DEBUG_BUILD = false;", self.mod.finalize(src, False))
-        self.assertIn("var DEBUG_BUILD = true;", self.mod.finalize(src, True))
+            root = Path(td)
+            mobile_dir, overlay_dir = self.fixture(root, overlay="// first\n")
+            ledger = '  /* VERSION 台账\n   * v1 baseline\n   * → v2 newer\n   */\n  var VERSION = "v2";\n'
+            write(root, "src/overlay/06-styles.js", ledger)
+            write(root, "src/overlay/12-end.js", "// last\n")
+            write(root, "overlay.js", "stale generated product")
+            common, _ = self.mod.assemble(mobile_dir, overlay_dir)
+            expected, _ = self.desktop.assemble_bytes(overlay_dir)
+            self.assertEqual(embedded(common), expected)
+            self.assertIn(b'var VERSION = "v2";   //v1 baseline', expected)
+            self.assertNotIn(b"stale generated product", embedded(common))
 
-    def test_fail_fast_missing_icon_anchor(self):
-        """07 分片删锚点（桌面重构）→ 构建报错且点名缺失 id。"""
-        import tempfile
+    def test_embedded_literal_roundtrips_quotes_backslashes_unicode_and_html(self):
+        text = '// </script> quotes " ` ${doNotRun()} \\\\ \u2028 \u2029 中文\n(() => {})();\n'
         with tempfile.TemporaryDirectory() as td:
-            with self.assertRaisesRegex(self.mod.BuildError, "turn"):
-                self._fixture(Path(td), ovl07=OVL07.replace("/*zm-ico:turn*/", ""))
+            mobile_dir, overlay_dir = self.fixture(Path(td), overlay=text)
+            common, _ = self.mod.assemble(mobile_dir, overlay_dir)
+            self.assertEqual(embedded(common), text.encode("utf-8"))
+            self.assertNotIn("</script>", common)
 
-    def test_fail_fast_missing_css_anchor(self):
+    def test_desktop_css_extraction_anchors_are_no_longer_required(self):
         with tempfile.TemporaryDirectory() as td:
-            with self.assertRaises(self.mod.BuildError):
-                self._fixture(Path(td), ovl06=OVL06.replace("/*zm-cell-css-begin：锚点*/", ""))
+            mobile_dir, overlay_dir = self.fixture(Path(td), overlay="/* no mobile anchors or MC_BANDS */\n(() => {})();\n")
+            common, _ = self.mod.assemble(mobile_dir, overlay_dir)
+            self.assertEqual(embedded(common), self.desktop.assemble_bytes(overlay_dir)[0])
 
-    def test_fail_fast_decl_key_not_on_desktop(self):
+    def test_mobile_or_desktop_invalid_sources_fail_before_writing_products(self):
+        cases = [
+            ("src/mobile/stray.js", b"// stray", "命名"),
+            ("src/mobile/10-empty.js", b"", "为空"),
+            ("src/mobile/10-invalid.js", b"\xff", "utf-8"),
+            ("src/overlay/stray.js", b"// stray", "命名"),
+            ("src/overlay/10-empty.js", b"", "为空"),
+            ("src/overlay/10-invalid.js", b"\xff", "UTF-8"),
+        ]
+        for rel, data, message in cases:
+            with self.subTest(rel=rel), tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                self.fixture(root)
+                write(root, "docs/zusage-mobile.user.js", "keep regular")
+                write(root, "docs/zusage-mobile.debug.user.js", "keep debug")
+                (root / rel).write_bytes(data)
+                code, output = self.run_main(root)
+                self.assertEqual(code, 1)
+                self.assertIn(message, output)
+                self.assertEqual((root / "docs/zusage-mobile.user.js").read_text(), "keep regular")
+                self.assertEqual((root / "docs/zusage-mobile.debug.user.js").read_text(), "keep debug")
+
+    def test_missing_or_duplicate_overlay_placeholder_fails(self):
+        for text in (MOBILE.replace("var OVERLAY_CODE = __ZM_OVERLAY_SOURCE__;", ""), MOBILE + "var OVERLAY_CODE = __ZM_OVERLAY_SOURCE__;\n"):
+            with self.subTest(text=text), tempfile.TemporaryDirectory() as td:
+                dirs = self.fixture(Path(td), mobile=text)
+                with self.assertRaisesRegex(self.mod.BuildError, "__ZM_OVERLAY_SOURCE__"):
+                    self.mod.assemble(*dirs)
+
+    def test_debug_placeholder_and_metadata_fail_fast(self):
+        for old in ("var DEBUG_BUILD = __ZM_DEBUG__;", self.mod.DEBUG_NAME_REPL[0], self.mod.DEBUG_DESC_REPL[0]):
+            with self.subTest(old=old), tempfile.TemporaryDirectory() as td:
+                dirs = self.fixture(Path(td), mobile=MOBILE.replace(old, ""))
+                common, _ = self.mod.assemble(*dirs)
+                with self.assertRaises(self.mod.BuildError):
+                    self.mod.finalize(common, True)
+
+    def test_unknown_executable_placeholder_fails(self):
         with tempfile.TemporaryDirectory() as td:
-            mobile = MOBILE_FALLBACK.replace("/*@zm-show-keys turn@*/", "/*@zm-show-keys turn,win@*/")
-            with self.assertRaisesRegex(self.mod.BuildError, "win"):
-                self._fixture(Path(td), mobile=mobile)
+            dirs = self.fixture(Path(td), mobile=MOBILE + "var left = __ZM_UNEXPECTED__;\n")
+            with self.assertRaisesRegex(self.mod.BuildError, "__ZM_UNEXPECTED__"):
+                self.mod.assemble(*dirs)
 
-    def test_fail_fast_missing_placeholder(self):
+    def test_build_check_and_drift_use_temporary_products(self):
         with tempfile.TemporaryDirectory() as td:
-            mobile = MOBILE_FALLBACK.replace('"__ZM_CELL_CSS__" +\n', "")
-            with self.assertRaisesRegex(self.mod.BuildError, "__ZM_CELL_CSS__"):
-                self._fixture(Path(td), mobile=mobile)
+            root = Path(td)
+            self.fixture(root)
+            code, _ = self.run_main(root)
+            self.assertEqual(code, 0)
+            code, _ = self.run_main(root, ["--check"])
+            self.assertEqual(code, 0)
+            release, debug = root / "docs/zusage-mobile.user.js", root / "docs/zusage-mobile.debug.user.js"
+            saved = release.read_bytes()
+            release.write_bytes(saved + b"\n// drift\n")
+            before = (release.read_bytes(), debug.read_bytes())
+            code, output = self.run_main(root, ["--check"])
+            self.assertEqual(code, 1)
+            self.assertIn(release.name, output)
+            self.assertEqual((release.read_bytes(), debug.read_bytes()), before, "--check must be read-only")
+            self.assertEqual(self.run_main(root)[0], 0)
+            self.assertEqual(release.read_bytes(), saved)
+            debug.unlink()
+            self.assertEqual(self.run_main(root, ["--check"])[0], 1)
+            self.assertFalse(debug.exists())
 
-    def test_fail_fast_duplicate_placeholder(self):
+    def test_actual_temporary_products_pass_node_syntax_and_check(self):
         with tempfile.TemporaryDirectory() as td:
-            mobile = MOBILE_FALLBACK + '"__ZM_CELL_CSS__";\n'
-            with self.assertRaisesRegex(self.mod.BuildError, "__ZM_CELL_CSS__"):
-                self._fixture(Path(td), mobile=mobile)
+            root = Path(td)
+            shutil.copytree(ROOT / "src/mobile", root / "src/mobile")
+            shutil.copytree(ROOT / "src/overlay", root / "src/overlay")
+            self.assertEqual(self.run_main(root)[0], 0)
+            self.assertEqual(self.run_main(root, ["--check"])[0], 0)
+            for name in ("zusage-mobile.user.js", "zusage-mobile.debug.user.js"):
+                result = subprocess.run(["node", "--check", str(root / "docs" / name)], capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_band_extraction_driven_by_mc_bands(self):
-        """色档提取由 13 分片 MC_BANDS 驱动（唯一事实源）：档位不在 MC_BANDS 内不展开。"""
-        import tempfile
-        ovl13 = 'var MC_BANDS = ["zu-teal"];\n'
+    def test_unknown_cli_option_does_not_create_products(self):
         with tempfile.TemporaryDirectory() as td:
-            src, _ = self._fixture(Path(td), ovl13=ovl13)
-            self.assertIn(".zm-root .zm-band-zu-teal{color:#2dd4bf}", src)
-            self.assertNotIn("zm-band-ok", src)
-
-    def test_check_detects_product_drift(self):
-        """产物被手改（A5）：--check 红。"""
-        import subprocess
-        target = ROOT / "docs" / "zusage-mobile.user.js"
-        saved = target.read_bytes()
-        try:
-            target.write_bytes(saved + b"\n// drift\n")
-            r = subprocess.run(
-                [sys.executable, str(ROOT / "scripts" / "build_mobile_userscript.py"), "--check"],
-                capture_output=True, text=True,
-            )
-            self.assertNotEqual(r.returncode, 0, "产物漂移时 --check 必须红")
-        finally:
-            target.write_bytes(saved)
+            root = Path(td)
+            self.fixture(root)
+            self.assertEqual(self.run_main(root, ["--unknown"])[0], 2)
+            self.assertFalse((root / "docs").exists())
 
 
 if __name__ == "__main__":

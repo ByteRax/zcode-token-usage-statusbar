@@ -595,7 +595,7 @@ def _sync_runtime_locked(runtime, verify=lambda: None):
               "restartRecorded": True}
     cold_files = {"inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs", "quota-client.cjs", "model-puller.cjs", "engine-patch.cjs"}
     if (load_runtime_config(runtime) or {}).get("hot_reload") is False:
-        cold_files.update(("overlay.js", "zusage.py"))
+        cold_files.update(("overlay.js", "zusage.py", "mobile-relay.cjs"))
     restart_hashes = {name: hashes[name] for name in changed if name in cold_files}
     record = dict(result)
     if downgrade:
@@ -701,44 +701,35 @@ def _install_overlay(runtime, pi):
         runtime, {"state": "pending-install", "installation": installation}))
 
 
+def _ensure_mobile_patch_safely(pi, ensure):
+    """Never publish a mobile patch into the shared pending journal."""
+    try:
+        with pi._target_lock():
+            if any(path.exists() or path.is_symlink() for path in (pi.TMP, pi.TMP_META)):
+                return {"status": "deferred", "detail": "existing pending operation"}
+            result = ensure(pi.ASAR)
+            if result.get("status") != "replace-failed":
+                return result
+            try:
+                Path(result["stage"]).unlink(missing_ok=True)
+            except OSError as error:
+                return {"status": "deferred", "detail": f"stage cleanup failed: {error}"}
+            return {"status": "deferred", "version": result.get("version"),
+                    "detail": result.get("detail")}
+    except TimeoutError as error:
+        return {"status": "deferred", "detail": str(error)}
+
+
 def ensure_mobile_relay_stash(pi, quiet_monitor=False):
-    """安装/更新后补 mobile relay stash + uplink 钩子注入（mobile_relay_patch.
-    ensure_deployed 的 overlay_install 包装）：与 renderer bridge 同生命周期——客户端
-    升级重写 asar 会把注入一起抹掉，这里幂等补打。旁路增强：任何失败只进诊断，不影响
-    安装主流程，不给用户提示。
-    v346 起与桥同款待替换链：就地替换被拒（Windows 客户端运行中持有 asar）时把已
-    构建的完整包转存为待替换文件（patch_install 的 TMP+monitor 链，客户端退出后自动
-    收尾）。此前「直接丢弃让下轮补装」的设计有个死结——hooks 补装周期恒在客户端运行
-    时执行，ensure_deployed 永远撞锁，「下轮」永远轮不到（uplink 上线后 stash 不再是
-    纯旁路：缺钩子 + 已广播 zuUpCap 会诱使 0.5.3+ 油猴上行打挂会话，热修层只是运行期
-    兜底，持久层必须落装）。用户 remove 待收尾时让位。"""
+    """安全补装 mobile relay；有 pending 或无法替换时保守延后。"""
     try:
         from mobile_relay_patch import ensure_deployed as ensure_stash
-        result = ensure_stash(pi.ASAR)
+        redirect = contextlib.redirect_stdout(sys.stderr) if quiet_monitor else contextlib.nullcontext()
+        with redirect:
+            return _ensure_mobile_patch_safely(pi, lambda path: ensure_stash(path, _locked=True))
     except Exception as e:
         print(f"[zusage-plugin] mobile relay stash ensure failed（已忽略）：{e}", file=sys.stderr)
         return {"status": "skipped-error", "detail": str(e)}
-    if result.get("status") == "replace-failed":
-        stage = Path(result.get("stage") or "")
-        try:
-            existing = pi.pending_operation()
-        except Exception:
-            existing = None
-        if existing == "remove":
-            try: stage.unlink(missing_ok=True)
-            except OSError: pass
-            return {"status": "skipped-error", "detail": "已有待收尾的卸载操作，stash 补装让位"}
-        # v346 与桥同款：转存待替换链（TMP+monitor），客户端退出后自动收尾。
-        try:
-            pi.publish_external_pending(stage, source=result.get("source"), operation="install")
-        except Exception as e:
-            try: stage.unlink(missing_ok=True)
-            except OSError: pass
-            print(f"[zusage-plugin] mobile relay stash pending publish failed（已忽略）：{e}", file=sys.stderr)
-            return {"status": "skipped-error", "version": result.get("version"),
-                    "detail": f"pending publish failed: {e}"}
-        return {"status": "pending", "detail": str(result.get("detail") or "replace refused")}
-    return result
 
 
 def ensure_renderer_bridge(pi, quiet_monitor=False):
@@ -759,7 +750,6 @@ def ensure_renderer_bridge(pi, quiet_monitor=False):
         stage = Path(result["stage"])
 
         def discard_stage():
-            # 杀毒扫描短暂锁文件/ACL 有建无删时清理自身不能炸——桥绝不影响主流程
             try:
                 stage.unlink(missing_ok=True)
             except OSError:
@@ -774,8 +764,6 @@ def ensure_renderer_bridge(pi, quiet_monitor=False):
             result = {"status": "skipped-error", "version": result.get("version"),
                       "detail": "已有待收尾的卸载操作，桥补装让位"}
         else:
-            # hook 路径（quiet_monitor）stdout 只能是 hook JSON：publish/syntax 检查行
-            # 全部重定向 stderr（与 auto-install 分支包 _install_overlay 同款）
             redirect = contextlib.redirect_stdout(sys.stderr) if quiet_monitor else contextlib.nullcontext()
             try:
                 with redirect:
@@ -795,7 +783,6 @@ def ensure_renderer_bridge(pi, quiet_monitor=False):
                                ("ZUSAGE_NO_MONITOR", "ZUSAGE_MONITOR_QUIET")}
                 try:
                     if quiet_monitor:
-                        # SessionStart 场景不弹监控黑窗；pending 不再发会话文字（v172），收尾由监控在客户端退出后自动完成
                         os.environ["ZUSAGE_NO_MONITOR"] = "1"
                         os.environ["ZUSAGE_MONITOR_QUIET"] = "1"
                     with redirect:
@@ -814,6 +801,16 @@ def ensure_renderer_bridge(pi, quiet_monitor=False):
         print(f"[zusage-plugin] renderer bridge: {result.get('status')} "
               f"(v{result.get('version')}) {result.get('detail')}", file=sys.stderr)
     return result
+
+
+def _mobile_pending_notice(out, pi, mobile):
+    if "systemMessage" in out or "hookSpecificOutput" in out:
+        return out
+    if mobile.get("status") not in ("present", "patched"):
+        from restart_notice import PREFIX
+        return _nudge(out, PREFIX + "手机中继补丁尚未就绪。请先完成已有待替换操作或解除文件占用及权限问题，"
+                      "再重新运行 /install-overlay；本次未为手机中继排定替换。")
+    return out
 
 
 def _bridge_notice(out, result, pi, quiet_hook=False):
@@ -1020,7 +1017,10 @@ def run_hook():
         save_runtime_config(runtime, pi)
         if st:
             bridge = ensure_renderer_bridge(pi, quiet_monitor=True)   # 已注入也可能缺桥（客户端升级重写 asar）：幂等补一次
-            if bridge.get("status") != "pending":
+            mobile = ({"status": "deferred", "detail": "bridge pending"}
+                      if bridge.get("status") in ("pending", "deferred")
+                      else ensure_mobile_relay_stash(pi, quiet_monitor=True))
+            if bridge.get("status") != "pending" and mobile.get("status") != "pending":
                 # 本轮刚 publish 的链路已自带 launch（去重放行的旧监控靠 PendingTmpBusy
                 # 续守新世代，issue #228）：自愈只兜其余情形（含 launch 失败的下轮补拉），
                 # 不在 publish 当轮重复拉起。
@@ -1028,7 +1028,8 @@ def run_hook():
             LAST_DIAG["bridge"] = bridge.get("status")
             if unregistered and bridge.get("status") == "skipped-unknown":
                 _notify_compat_once(runtime, pi, out, host_version)
-            return _bridge_notice(out, bridge, pi, quiet_hook=True)   # 待重启提醒由状态条齿轮红点承载，不再注入会话文字；桥缺席由运行时动态桥兜底（v258）
+            _mobile_pending_notice(out, pi, mobile)
+            return _bridge_notice(out, bridge, pi, quiet_hook=True)   # 桥缺席由运行时动态桥兜底
         # 未注入：自动安装始终开启，失败只保留故障提示（补丁排定/受保护目录/请重试）
         monitor_env = {name: os.environ.get(name) for name in
                        ("ZUSAGE_NO_MONITOR", "ZUSAGE_MONITOR_QUIET")}
@@ -1045,11 +1046,15 @@ def run_hook():
                     os.environ[name] = value
         if ok:
             bridge = ensure_renderer_bridge(pi, quiet_monitor=True)
+            mobile = ({"status": "deferred", "detail": "bridge pending"}
+                      if bridge.get("status") in ("pending", "deferred")
+                      else ensure_mobile_relay_stash(pi, quiet_monitor=True))
             clear_markers(runtime)
             LAST_DIAG["bridge"] = bridge.get("status")
             LAST_DIAG["injected"] = True   # 自动安装刚成功：诊断按安装后的真实状态记录
             if unregistered and bridge.get("status") == "skipped-unknown":
                 _notify_compat_once(runtime, pi, out, host_version)   # 装上了也带不动此宿主：明确说明，不静默（issue #247）
+            _mobile_pending_notice(out, pi, mobile)
             return _bridge_notice(out, bridge, pi, quiet_hook=True)   # 自动安装刚成功（注入行在位）：同上，桥缺席静默交给运行时兜底
         from restart_notice import PREFIX
         # 未登记适配当前宿主时，三条故障提示都补上兼容性说明与最近失败原因：
@@ -1063,6 +1068,7 @@ def run_hook():
                      "会自动完成替换，之后重新打开即可生效，无需重试安装。"
                      "注意关闭窗口不等于退出：若关窗后仍未替换，说明 ZCode 仍驻留托盘/后台，"
                      "请从托盘图标退出，或在任务管理器中确认没有 ZCode 进程残留。"
+                     "客户端增强补丁尚未就绪，后续 SessionStart 将继续补装，可能需要再次完全退出。"
                      "不需要请运行 /uninstall-overlay，之后不再提示。" + compat_tail)
         elif waiting is False:
             # 受保护目录（issue #130）：「无需重试」是假承诺，提权重跑才是
@@ -1117,6 +1123,11 @@ def main():
         ok = _install_overlay(runtime, pi)
         if ok:
             bridge = ensure_renderer_bridge(pi)
+            mobile = ({"status": "deferred", "detail": "bridge pending"}
+                      if bridge.get("status") in ("pending", "deferred")
+                      else ensure_mobile_relay_stash(pi))
+            if mobile.get("status") not in ("present", "patched"):
+                print("手机中继补丁尚未就绪；请先完成已有待替换操作或解除占用及权限问题，再重试安装。本次未为手机中继排定替换。")
             if bridge.get("status") == "pending":
                 print("客户端运行中，逐问速率行补丁已排定：完全退出 ZCode 后自动完成替换。")
             from restart_notice import reminder

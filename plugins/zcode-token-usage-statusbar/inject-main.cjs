@@ -43,7 +43,7 @@ try {
 }
 catch (e) { LOG("cdp remote-debugging-port switch failed:", e.message); }
 const loadedHashes = { _loadedAt: Date.now() - process.uptime() * 1000 };
-for (const name of ["inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs", "quota-client.cjs", "model-puller.cjs", "engine-patch.cjs", "overlay.js", "zusage.py"]) {
+for (const name of ["inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs", "quota-client.cjs", "model-puller.cjs", "engine-patch.cjs", "mobile-relay.cjs", "overlay.js", "zusage.py"]) {
   try { loadedHashes[name] = createHash("sha256").update(fs.readFileSync(path.join(HERE, name))).digest("hex"); }
   catch (e) { LOG("startup fingerprint unavailable:", name, e.message); }
 }
@@ -192,6 +192,7 @@ try {
     const normalized = rows.filter((r) => r && typeof r.workspacePath === "string")
       .map((r) => ({ kind: r.kind, identity: typeof r.workspaceIdentity === "string" ? r.workspaceIdentity.trim() : "" }));
     windowWorkspaces.set(e.sender.id, normalized);
+    invalidateMobileTarget(e.sender.id);
     /* 远端证据立即生效：不等下一轮 wants 收集，缩小“查询在途时推送旧 false”的窗口。 */
     if (normalized.some((r) => r.kind === "remote" && REMOTE_IDENTITY_RE.test(r.identity))) {
       remoteEvidence.set(e.sender.id, true);
@@ -208,6 +209,7 @@ try {
       tasks.get(r.taskId).add(identity);
     }
     windowTasks.set(e.sender.id, tasks);
+    invalidateMobileTarget(e.sender.id);
     let remoteTask = false;
     for (const scopes of tasks.values()) {
       if ([...scopes].some((id) => REMOTE_IDENTITY_RE.test(id))) { remoteTask = true; break; }
@@ -939,19 +941,89 @@ function initEnginePatcher() {
 initEnginePatcher();
 /* v331：mobile-relay（手机远控中继，热换模块 #7）。stash 由 mobile_relay_patch.py
  * 注入主 bundle；本模块只消费——加载失败只少推送，不拖垮主链。
- * 渲染端 chips 由 overlay 13-mobile-chips 写 window.__zusageMobileChips，
- * 泵 readWants 读回后 push；config mobile_relay.enabled === false 显式关闭。 */
+ * 目标发现与发送前复验均读取宿主 mobileTaskView，并绑定唯一官方 live 桥；
+ * config mobile_relay.enabled === false 显式关闭。 */
 let mobileRelay = null;
+let mobileTarget = null;
+let mobileDiscovery = 0;
+function mobileEnabled() {
+  const cfg = readCfgCached().mobile_relay;
+  return !(cfg && cfg.enabled === false);
+}
+function mobileWindows() {
+  return webContents.getAllWebContents().filter((wc) => isMainWindowState(wc) && !wc.isDestroyed());
+}
+function mobileBridgeBinding() {
+  const stash = Array.isArray(globalThis.__zusageRelayStash) ? globalThis.__zusageRelayStash : [];
+  const bridges = stash.filter((e) => e && e.p && e.b && e.b.readyAnnounced === true &&
+    !e.b.degraded && !e.b.closed && !e.b.destroyed && e.b.relayProtocol && e.b.relayProtocol.protocol === e.p);
+  if (bridges.length !== 1) return null;
+  const { b, p } = bridges[0];
+  let identity;
+  if (b.kind === "local" && (b.workspaceIdentity === undefined || b.workspaceIdentity === "")) identity = "";
+  else if (b.kind === "remote" && typeof b.workspaceIdentity === "string" && REMOTE_IDENTITY_RE.test(b.workspaceIdentity)) identity = b.workspaceIdentity;
+  else return null;
+  if (typeof b.workspacePath !== "string") return null;
+  const remoteSessionId = b.remoteSessionId;
+  if (remoteSessionId !== undefined && (typeof remoteSessionId !== "string" || !remoteSessionId)) return null;
+  return { workspacePath: b.workspacePath, workspaceIdentity: identity, remoteSessionId,
+    bridge: p, bridgeState: b, relay: b.relayProtocol };
+}
+function resolveMobileTarget(target) {
+  if (!target || typeof target.taskId !== "string" || typeof target.workspacePath !== "string") return null;
+  const binding = mobileBridgeBinding();
+  if (!binding || binding.workspacePath !== target.workspacePath) return null;
+  if (target.workspaceIdentity !== binding.workspaceIdentity &&
+      !(binding.workspaceIdentity === "" && target.workspaceIdentity === undefined)) return null;
+  if (target.remoteSessionId !== binding.remoteSessionId) return null;
+  return { taskId: target.taskId, ...binding };
+}
+function sameMobileTarget(a, b) {
+  return !!a && !!b && a.taskId === b.taskId && a.workspacePath === b.workspacePath &&
+    a.workspaceIdentity === b.workspaceIdentity && a.remoteSessionId === b.remoteSessionId &&
+    a.bridge === b.bridge && a.bridgeState === b.bridgeState && a.relay === b.relay;
+}
+function resolveMobileStatus(raw) {
+  let status;
+  try { status = JSON.parse(raw || "null"); } catch (e) { return null; }
+  return resolveMobileTarget(status && status.mobileConnected === true ? status.mobileTaskView : null);
+}
+function mobileTargetTrusted(wc, target) {
+  if (shuttingDown || !mobileEnabled() || !wc || !trustedSender({ sender: wc })) return false;
+  const windows = mobileWindows();
+  if (windows.length !== 1 || windows[0] !== wc) return false;
+  if (!target || typeof target.taskId !== "string" || !/^[A-Za-z0-9_-]{1,80}$/.test(target.taskId) ||
+      typeof target.workspaceIdentity !== "string" || typeof target.workspacePath !== "string" ||
+      target.workspaceIdentity.length > 2048 || target.workspacePath.length > 4096) return false;
+  if (!sameMobileTarget(resolveMobileTarget(target), target)) return false;
+  const tasks = windowTasks.get(wc.id);
+  const scopes = tasks && tasks.get(target.taskId);
+  /* 手机可打开未出现在桌面 tabs 的动态项目；身份由官方 live 桥确认，任务明确矛盾仍拒绝。
+   * 普通桌面 pane 继续使用 maybeSpawn 中的 windowWorkspaces 白名单。 */
+  return !scopes || scopes.has(target.workspaceIdentity);
+}
+function revokeMobileTarget() {
+  mobileTarget = null;
+  if (mobileRelay) { try { mobileRelay.push({ zm: 1, target: null }); } catch (e) { } }
+}
+function invalidateMobileTarget(id) {
+  if (mobileTarget && mobileTarget.wc.id === id && !mobileTargetTrusted(mobileTarget.wc, mobileTarget.target)) {
+    mobileDiscovery++;
+    revokeMobileTarget();
+  }
+}
 function initMobileRelay() {
+  if (mobileRelay) { try { mobileRelay.dispose(); } catch (e) { } mobileRelay = null; }
+  mobileTarget = null;
+  mobileDiscovery++;
   try {
     const { createMobileRelay } = require("./mobile-relay.cjs");
-    if (mobileRelay) { try { mobileRelay.dispose(); } catch (e) { } }
-    /* 限频与主泵同源：同一个 config.activity_min_ms（缺省 1500ms）。传 getter 而不是
-     * 快照值——readCfgCached 自带 mtime 缓存，用户在 config.json 改值后下一拍即生效，
-     * 无需重启或热换模块。 */
     mobileRelay = createMobileRelay({
       log: (...a) => LOG("[mobile-relay]", ...a),
       getMinIntervalMs: () => readCfgCached().activity_min_ms | 0 || 1500,
+      getRemotePollMs: remotePollMs,
+      isEnabled: mobileEnabled,
+      getPythonCmd: () => readCfgCached().python_path,
     });
     return mobileRelay;
   } catch (e) {
@@ -961,27 +1033,42 @@ function initMobileRelay() {
   }
 }
 initMobileRelay();
-/* 手机 chips 独立泵（v343）：主泵只在「桌面请求/DB 水位变化」时运行，远控页在手机上
- * 切换会话通常不产生 DB 写入，芯片更新最坏要等 30s 兜底心跳——这是「远控端更新慢」
- * 的主因。这里每 1.5s 只读一次渲染端 __zusageMobileChips（单窗一次 executeJavaScript，
- * 不查库、不碰主泵状态），有 payload 就交给 mobile-relay（其内部 1.5s 刷新 + 内容去重）。 */
-const MOBILE_PUMP_JS = 'JSON.stringify(window.__zusageMobileChips||null)';
+/* 目标发现独立于 DB 事件，重复目标的查询去重由 relay 负责。 */
+const MOBILE_VERIFY_JS = `(async () => {
+  try {
+    if (!window.zcode || typeof window.zcode.getWebRemoteControlStatus !== "function") return null;
+    return JSON.stringify(await window.zcode.getWebRemoteControlStatus());
+  } catch (e) { return null; }
+})()`;
 const MOBILE_PUMP_MS = 1500;
 setInterval(() => {
   try {
     if (shuttingDown || !mobileRelay) return;
-    const rcfg = readCfgCached().mobile_relay;
-    if (rcfg && rcfg.enabled === false) return;
-    const wc = webContents.getAllWebContents().find((w) => isMainWindowState(w) && !w.isDestroyed());
-    if (!wc) return;
-    Promise.resolve().then(() => wc.executeJavaScript(MOBILE_PUMP_JS, true))
+    const seq = ++mobileDiscovery;
+    if (!mobileEnabled()) { revokeMobileTarget(); return; }
+    const windows = mobileWindows();
+    if (windows.length !== 1 || !trustedSender({ sender: windows[0] })) { revokeMobileTarget(); return; }
+    const wc = windows[0], relay = mobileRelay, binding = mobileBridgeBinding();
+    if (!binding) { revokeMobileTarget(); return; }
+    Promise.resolve().then(() => wc.executeJavaScript(MOBILE_VERIFY_JS, true))
       .then((v) => {
-        if (shuttingDown || !mobileRelay) return;
-        let m = null;
-        try { m = JSON.parse(v || "null"); } catch (e) { }
-        if (m && m.zm === 1) { try { mobileRelay.push(m); } catch (e) { } }
+        if (seq !== mobileDiscovery || relay !== mobileRelay || shuttingDown || !mobileEnabled()) return;
+        const target = resolveMobileStatus(v);
+        if (!sameMobileTarget(binding, mobileBridgeBinding()) || !mobileTargetTrusted(wc, target)) { revokeMobileTarget(); return; }
+        const old = mobileTarget;
+        if (!old || old.wc !== wc || !sameMobileTarget(old.target, target)) mobileTarget = { wc, target };
+        const current = mobileTarget;
+        const validate = () => relay === mobileRelay && mobileTarget === current && mobileTargetTrusted(wc, current.target);
+        const verifyTarget = async () => {
+          try {
+            if (!validate()) return false;
+            const verified = resolveMobileStatus(await wc.executeJavaScript(MOBILE_VERIFY_JS, true));
+            return sameMobileTarget(verified, current.target) && validate();
+          } catch (e) { return false; }
+        };
+        try { relay.push({ zm: 1, target: current.target }, validate, verifyTarget); } catch (e) { }
       })
-      .catch(() => { });
+      .catch(() => { if (seq === mobileDiscovery && relay === mobileRelay) revokeMobileTarget(); });
   } catch (e) { }
 }, MOBILE_PUMP_MS);
 
@@ -1259,7 +1346,7 @@ initReleaseNotes();
  * （quotaWatchers 重复注册会翻倍）。engine-patch 热换后 syncStartup 幂等，
  * 已 applied 且引擎未变不重复写盘。inject-main.cjs 自身不在热换面内：
  * 它持有 ipcMain/web-contents-created 注册与常驻泵，只能随客户端完全重启生效。 */
-const HOT_MAIN_MODULES = ["plugin-storage.cjs", "plugin-release.cjs", "plugin-updater.cjs", "quota-client.cjs", "model-puller.cjs", "engine-patch.cjs"];
+const HOT_MAIN_MODULES = ["plugin-storage.cjs", "plugin-release.cjs", "plugin-updater.cjs", "quota-client.cjs", "model-puller.cjs", "engine-patch.cjs", "mobile-relay.cjs"];
 const hotModuleMtimes = {};
 for (const name of HOT_MAIN_MODULES) {
   try { hotModuleMtimes[name] = fs.statSync(path.join(HERE, name)).mtimeMs; } catch (e) { }
@@ -1328,6 +1415,10 @@ function hotReloadMainModulesOnce() {
   if (changed.includes("engine-patch.cjs")) {
     purge("engine-patch.cjs");
     ok["engine-patch.cjs"] = !!initEnginePatcher();
+  }
+  if (changed.includes("mobile-relay.cjs")) {
+    purge("mobile-relay.cjs");
+    ok["mobile-relay.cjs"] = !!initMobileRelay();
   }
   const updaterGroup = changed.filter((n) => n === "plugin-updater.cjs" || n === "plugin-release.cjs" || n === "plugin-storage.cjs");
   if (updaterGroup.length) {
@@ -2111,6 +2202,7 @@ const hook = (wc) => {
     scopeBindings.delete(wc.id);
     remoteEvidence.delete(wc.id);
     windowQuotaSelections.delete(wc.id);
+    invalidateMobileTarget(wc.id);
     syncQuotaProviders();
     if (!hasWindows()) {
       clearTimeout(retryTimer);
@@ -2122,6 +2214,7 @@ const hook = (wc) => {
   });
   wc.on("did-start-navigation", (event, url, inPlace, isMainFrame) => {
     if (isMainFrame === false || inPlace) return;
+    if (mobileTarget && mobileTarget.wc === wc) { mobileDiscovery++; revokeMobileTarget(); }
     windowQuotaSelections.set(wc.id, {});
     syncQuotaProviders();
   });
@@ -2154,6 +2247,9 @@ LOG("injected v15 (dom-ready inject + snapshot warm-push after injection, auto r
 
 app.on("before-quit", () => {
   shuttingDown = true;
+  mobileDiscovery++;
+  mobileTarget = null;
+  if (mobileRelay) { try { mobileRelay.dispose(); } catch (e) { } mobileRelay = null; }
   clearTimeout(retryTimer);
   clearTimeout(debounceTimer);
   clearTimeout(pendingZipDebounce);

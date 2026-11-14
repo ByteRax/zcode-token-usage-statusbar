@@ -1,116 +1,93 @@
-/* 油猴接收端（docs/zusage-mobile.user.js）0.5.0 编译产物契约：
- * 手机端不再自渲染，加载桌面插件同一份 overlay.js，把中继帧里的 zusage 快照
- * 喂给它的 window.__zusageUpdate（样式/图标/完整 ⚙ 设置面板/tooltip 全量同源）；
- * overlay 加载失败回落旧 chips 条。
- * 0.5.0 起产物由 scripts/build_mobile_userscript.py 从 src/mobile/ 分片 + 桌面分片
- * 锚点提取生成（specs/mobile-userscript-build.md）——本文件同时锁产物注入段与
- * 桌面分片锚点的存在性（锚点被桌面重构删除时，即使不跑构建，Node 回归也红）。 */
+/* 实际构建结果契约；不改工作树 docs，使用当前源码构建两个变体。 */
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
+const { spawnSync } = require('node:child_process');
 const path = require('node:path');
+const vm = require('node:vm');
 const test = require('node:test');
 
 const ROOT = path.join(__dirname, '..');
-const source = fs.readFileSync(path.join(ROOT, 'docs', 'zusage-mobile.user.js'), 'utf8');
-const uiShard = fs.readFileSync(path.join(ROOT, 'src', 'mobile', '40-fallback-ui.js'), 'utf8');
-const ovl06 = fs.readFileSync(path.join(ROOT, 'src', 'overlay', '06-instance-dom-and-styles.js'), 'utf8');
-const ovl07 = fs.readFileSync(path.join(ROOT, 'src', 'overlay', '07-instance-render-and-tips.js'), 'utf8');
-const mobileSrcDir = path.join(ROOT, 'src', 'mobile');
+const build = spawnSync(process.env.ZUSAGE_TEST_PYTHON || (process.platform === 'win32' ? 'python' : 'python3'), ['-B', '-c', `
+import base64, importlib.util, json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+spec = importlib.util.spec_from_file_location('mobile_build', root / 'scripts/build_mobile_userscript.py')
+mod = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(mod)
+common, info = mod.assemble()
+print(json.dumps({'release':mod.finalize(common, False),'debug':mod.finalize(common, True),'desktop':base64.b64encode(mod.desktop_bytes()).decode('ascii')}))
+`, ROOT], { encoding: 'utf8', env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' }, maxBuffer: 32 * 1024 * 1024 });
+assert.equal(build.status, 0, build.stderr || build.error?.message);
+const products = JSON.parse(build.stdout);
+function embedded(source) {
+  const prefix = 'var OVERLAY_CODE = ', start = source.indexOf(prefix);
+  assert.ok(start >= 0);
+  const match = source.slice(start + prefix.length).match(/^"(?:[^"\\]|\\.)*"/);
+  assert.ok(match);
+  return JSON.parse(match[0]);
+}
+function boot(source) {
+  const nodes = [], timers = new Map(), updates = [], embeddedScripts = [];
+  let context, nextTimer = 0;
+  function node(tag) {
+    const el = { tag, style: {}, className: '', textContent: '', children: [], parentNode: null,
+      appendChild(child) {
+        this.children.push(child); child.parentNode = this;
+        if (child.tag === 'script') {
+          embeddedScripts.push(child.textContent);
+          new vm.Script(child.textContent, { filename: 'embedded-desktop-overlay.js' });
+          assert.equal(context.__zusageMobileMode, true);
+          context.__zusageOverlay = true;
+          context.__zusageUpdate = value => updates.push(value);
+          context.__zusageDispose = () => { context.__zusageOverlay = false; };
+        }
+      },
+      removeChild(child) { this.children = this.children.filter(item => item !== child); child.parentNode = null; },
+    };
+    nodes.push(el); return el;
+  }
+  const document = { readyState: 'complete', createElement: node, head: node('head'), body: node('body'), documentElement: node('html'),
+    addEventListener() {}, removeEventListener() {} };
+  class WS { static OPEN = 1; constructor() { this.readyState = 1; } }
+  const sandbox = { document, WebSocket: WS, URL, location: { href: 'https://zcode.z.ai/remote/' },
+    localStorage: { getItem() { return null; }, setItem() {} }, console: { info() {} },
+    addEventListener() {}, removeEventListener() {}, setInterval: fn => { timers.set(++nextTimer, fn); return nextTimer; },
+    setTimeout: fn => { timers.set(++nextTimer, fn); return nextTimer; }, clearInterval: id => timers.delete(id), clearTimeout: id => timers.delete(id),
+    fetch() { throw new Error('user script must not download a UI'); } };
+  sandbox.window = sandbox; context = vm.createContext(sandbox);
+  vm.runInContext(source, context, { filename: 'built-userscript.js' });
+  return { nodes, document, updates, embeddedScripts, timers, context };
+}
 
-test('loads desktop overlay.js from CDN with raw fallback', () => {
-  assert.match(source, /cdn\.jsdelivr\.net\/gh\/ByteRax\/zcode-token-usage-statusbar@main\/overlay\.js/);
-  assert.match(source, /raw\.githubusercontent\.com\/ByteRax\/zcode-token-usage-statusbar\/main\/overlay\.js/);
-  assert.match(source, /function loadOverlay\(\)/);
-});
-
-test('snap frames feed the desktop overlay via window.__zusageUpdate', () => {
-  assert.match(source, /if \(body\.snap\) applySnap\(body\);/);
-  assert.match(source, /d\.mine = \(body\.target && body\.target\.taskId\) \|\| body\.mine \|\| "";/);
-  assert.match(source, /window\.__zusageUpdate\(d\);/);
-  assert.match(source, /if \(root\) root\.style\.display = "none";/);   // 桌面条接管后隐藏旧条
-});
-
-test('falls back to legacy chips bar when overlay fails to load', () => {
-  assert.match(source, /overlayLoading = false; renderDebug\(\); render\(\); return;/);
-  assert.match(source, /if \(root\) root\.style\.display = "";/);
-});
-
-test('debug panel reports desktop overlay load state', () => {
-  assert.match(source, /desktop overlay  : /);
-});
-
-test('product carries no build placeholders', () => {
-  // 只断言可执行替换点形态——分片注释里的占位符名是文档，会随产物保留
-  for (const p of ['"__ZM_CELL_CSS__"', '"__ZM_BAND_CSS__"', 'var ICONS = __ZM_ICONS__',
-    'var SHOW_ROWS = __ZM_SHOW_ROWS__', 'var DEBUG_BUILD = __ZM_DEBUG__']) {
-    assert.ok(!source.includes(p), `产物残留占位符 ${p}（手改产物或构建漏替换）`);
+test('both constructed variants embed byte-identical desktop assemble_bytes output', () => {
+  const desktop = Buffer.from(products.desktop, 'base64');
+  for (const source of [products.release, products.debug]) {
+    assert.deepEqual(Buffer.from(embedded(source), 'utf8'), desktop);
+    new vm.Script(source, { filename: 'built-userscript.js' });
   }
 });
 
-test('release/debug variants differ only in the build switch and metadata', () => {
-  const dbg = fs.readFileSync(path.join(ROOT, 'docs', 'zusage-mobile.debug.user.js'), 'utf8');
-  assert.match(source, /var DEBUG_BUILD = false;/);          // 正式版：零调试痕迹
-  assert.ok(!source.includes('·调试版'));
-  assert.match(dbg, /var DEBUG_BUILD = true;/);              // 调试版：默认显示排障面板
-  assert.match(dbg, /@name         ZCode 用量状态条（远控中继接收端·调试版）/);   // 篡改猴按 name+namespace 识别身份
-  assert.match(dbg, /@noframes/);
+test('release and debug differ only by metadata and their debug switch', () => {
+  const normalized = products.debug.replace('var DEBUG_BUILD = true;', 'var DEBUG_BUILD = false;')
+    .replace('// @name         ZCode 用量状态条（远控中继接收端·调试版）', '// @name         ZCode 用量状态条（远控中继接收端）')
+    .replace('// @description  调试版：默认显示排障面板（帧统计/overlay 加载状态）；日常使用请安装正式版 zusage-mobile.user.js',
+      '// @description  在 ZCode Web 远程控制页面渲染 token 用量；仅在确认宿主支持后同步显示偏好');
+  assert.equal(normalized, products.release);
 });
 
-test('debug DOM creation is guarded by DEBUG_BUILD (feature notices stay unguarded)', () => {
-  const ui = fs.readFileSync(path.join(mobileSrcDir, '40-fallback-ui.js'), 'utf8');
-  assert.match(ui, /if \(DEBUG_BUILD\) \{\s*\n\s*dbg = document\.createElement\("div"\);/);   // 面板+☰ 只在调试变体创建
-  assert.match(ui, /if \(!DEBUG_BUILD \|\| !dbg \|\| !prefs\.debug\) return;/);               // renderDebug 守卫
-  assert.match(ui, /if \(DEBUG_BUILD\) toggle\.style\.display = "block";/);                   // ☰ 随首帧数据出现
-  // 「未捕获中继连接，请刷新页面」是功能提示，不属于调试面板：正式版保留在状态条上
-  assert.match(ui, /未捕获中继连接（注入过晚），请刷新页面/);
+test('actual release activates the embedded desktop code with waiting and no receiver UI', () => {
+  const h = boot(products.release);
+  assert.equal(h.embeddedScripts.length, 1);
+  assert.equal(h.embeddedScripts[0], embedded(products.release));
+  assert.equal(h.updates.length, 1); assert.equal(h.updates[0].mobile.state, 'waiting');
+  assert.equal(h.nodes.filter(el => el.parentNode).length, 0, 'formal receiver creates no status/settings/debug DOM');
+  assert.equal(h.timers.size, 2);
+  h.context.__zmDispose(); assert.equal(h.timers.size, 0);
 });
 
-
-
-test('v346：上行配置门控存在，且不新增任何设置块', () => {
-  const ui = fs.readFileSync(path.join(mobileSrcDir, '40-fallback-ui.js'), 'utf8');
-  const loader = fs.readFileSync(path.join(mobileSrcDir, '20-overlay-loader.js'), 'utf8');
-  // 上行：配置载荷 = overlay 的 zusage3 显示偏好（复用桌面设置面板，不另立开关）
-  assert.match(loader, /function readOverlayPrefs\(\)/);
-  assert.match(loader, /g\("zusage3\.show", "\{\}"\)/);
-  assert.match(loader, /zuCfg: \{ gen: gen, prefs: readOverlayPrefs\(\) \}/);
-  // 能力握手：无 zuUpCap 零上行（安全门）
-  assert.match(loader, /if \(Date\.now\(\) - lastCapAt > 45000\) return false;/);
-  assert.match(loader, /noteDownlink\(body\)/);
-  // 无新增设置 UI（回退条面板无"移动端推送"块、无额外浮标/注入块）
-  for (const absent of ['data-zusage-push', 'PUSH_ROWS', 'zm-cfg', 'ensurePushBlock', 'data-p="live"', 'data-p="turns"']) {
-    assert.ok(!ui.includes(absent), `不应新增设置: ${absent}`);
-  }
-  // 估算/统计行仍为已回退状态
-  for (const absent of ['estTick', 'estState', 'data-zusage-mstat', 'turnLineText']) {
-    assert.ok(!ui.includes(absent), `回退残留: ${absent}`);
-  }
-});
-
-test('product injects desktop-extracted icons, cell css, bands and show rows', () => {
-  assert.match(source, /speed: '<path d="M13\.5 2 3\.5 13\.5H11L10 22l10\.5-12H13l\.5-8z"\/>'/);   // 桌面 07 锚点提取
-  assert.match(source, /\.zm-root \.it\{display:flex;align-items:center;gap:5px/);                // 桌面 06 cell 提取
-  assert.match(source, /\.zm-root \.zm-band-zu-azure\{color:#6d9fff\}\.zm-root \.zm-tone-zu-azure\{color:#6d9fff\}/);
-  assert.match(source, /\.zm-light \.zm-band-ok\{color:#0f9d6c\}/);
-  assert.match(source, /data-k="sub"><span>子代理<em>悬停或点击状态条上的子代理查看统计<\/em>/); // 桌面 settingRow 提取
-});
-
-test('mobile fragments declare icon ids and show keys (build fail-fast contract)', () => {
-  const ui = fs.readFileSync(path.join(mobileSrcDir, '40-fallback-ui.js'), 'utf8');
-  assert.match(ui, /\/\*@zm-icons speed,turn,win,today,proj,tools,sub@\*\//);
-  assert.match(ui, /\/\*@zm-show-keys turn,win,proj,today,tools,sub@\*\//);
-});
-
-test('desktop fragments keep extraction anchors (deletion must fail the build)', () => {
-  for (const id of ['speed', 'turn', 'win', 'today', 'proj', 'tools', 'sub']) {
-    assert.ok(ovl07.includes(`/*zm-ico:${id}*/`), `07 分片缺 /*zm-ico:${id}*/ 锚点`);
-  }
-  for (const a of ['/*zm-cell-css-begin', '/*zm-cell-css-end',
-    '/*zm-band-css-begin', '/*zm-band-css-end',
-    '/*zm-band-css-light-begin', '/*zm-band-css-light-end',
-    '/*zm-show-rows-begin', '/*zm-show-rows-end']) {
-    assert.ok(ovl06.includes(a), `06 分片缺锚点 ${a}`);
-  }
-  assert.match(fs.readFileSync(path.join(ROOT, 'src', 'overlay', '13-mobile-chips.js'), 'utf8'),
-    /var MC_BANDS = \[/);
+test('actual debug creates only its diagnostic panel and toggle, cleaned by dispose', () => {
+  const h = boot(products.debug);
+  const attached = h.nodes.filter(el => el.parentNode);
+  assert.deepEqual(attached.map(el => el.className || el.tag).sort(), ['style', 'zm-dbg', 'zm-toggle']);
+  assert.match(attached.find(el => el.className === 'zm-dbg').textContent, /内嵌桌面 overlay/);
+  assert.equal(h.embeddedScripts[0], embedded(products.debug));
+  h.context.__zmDispose(); assert.equal(h.nodes.filter(el => el.parentNode).length, 0);
 });

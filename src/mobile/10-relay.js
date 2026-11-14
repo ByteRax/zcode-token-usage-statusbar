@@ -8,11 +8,41 @@
   /* 调试变体开关（构建注入 __ZM_DEBUG__）：正式版 false——不创建 zm-dbg 面板与 ☰ 钮，
    * 页面零调试痕迹；调试版 true 默认显示排障面板。stats 帧统计两版都照常收集。 */
   var DEBUG_BUILD = __ZM_DEBUG__;
+  /* 前代负责撤除自己的消费者；宿主连接保留给本代补挂。 */
+  try { if (typeof window.__zmDispose === "function") window.__zmDispose(); } catch (e) {}
+  var disposed = false, active = false;
   var RELAY_URL_HINT = "/api/v1/remote/ws2";
   var STORAGE_KEY = "zusageMobilePrefs";
-  var prefs = { debug: DEBUG_BUILD, lang: "zh", theme: "inline", just: "between", show: {} };
-  try { var s = localStorage.getItem(STORAGE_KEY); if (s) prefs = Object.assign(prefs, JSON.parse(s)); } catch (e) {}
-  function savePrefs() { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(prefs)); } catch (e) {} }
+  var prefs = { debug: DEBUG_BUILD };
+  var legacy = null;
+  try {
+    var saved = localStorage.getItem(STORAGE_KEY);
+    if (saved) legacy = JSON.parse(saved);
+    if (legacy && typeof legacy === "object" && !Array.isArray(legacy) && typeof legacy.debug === "boolean")
+      prefs.debug = legacy.debug;
+  } catch (e) {}
+  function savePrefs() {
+    try {
+      var old = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
+      if (old && typeof old === "object" && !Array.isArray(old)) {
+        old.debug = prefs.debug;
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(old));
+      }
+    } catch (e) {}
+  }
+  /* 旧回退偏好只在桌面同名键缺失时迁移，已有桌面设置始终优先。 */
+  try {
+    if (legacy && typeof legacy === "object" && !Array.isArray(legacy)) {
+      if (legacy.show && typeof legacy.show === "object" && !Array.isArray(legacy.show) && localStorage.getItem("zusage3.show") === null)
+        localStorage.setItem("zusage3.show", JSON.stringify(legacy.show));
+      if ((legacy.theme === "inline" || legacy.theme === "pill") && localStorage.getItem("zusage3.theme") === null)
+        localStorage.setItem("zusage3.theme", legacy.theme === "pill" ? "pill" : "default");
+      if (["between", "start", "end"].indexOf(legacy.just) >= 0 && localStorage.getItem("zusage3.barJust") === null)
+        localStorage.setItem("zusage3.barJust", legacy.just);
+      if ((legacy.lang === "zh" || legacy.lang === "en") && localStorage.getItem("zusage3.lang") === null)
+        localStorage.setItem("zusage3.lang", legacy.lang);
+    }
+  } catch (e) {}
 
   // ── RPC 二进制解码（@zcode/rpc serialization.ts 的 JS 移植，只读方向）──
   // tag: 0=undef 1=string 2=Buffer 3=VSBuffer 4=array 5=object(JSON) 6=int
@@ -70,4 +100,4 @@
   var stats = { wsOpened: 0, relayFrames: 0, decoded: 0, magicFrames: 0, errors: 0, lastError: "", lastTs: 0,
     wsAll: 0, lastWsUrl: "", workers: 0, sharedWorkers: 0, lastWorkerUrl: "", ranAt: "" };
 
-  var lastChips = null;
+  var previousMobileMode = window.__zusageMobileMode;

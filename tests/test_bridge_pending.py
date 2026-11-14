@@ -259,66 +259,53 @@ class OverlayBridgeNoticeTests(unittest.TestCase):
         bridge_module.ensure_deployed.return_value = result
         pi = self.pi_stub()
         pi.publish_external_pending.return_value = {"validated": True}
-        with mock.patch.dict(sys.modules, {"renderer_bridge": bridge_module}), \
-                self.ensure_quiet_env():
+        with mock.patch.dict(sys.modules, {"renderer_bridge": bridge_module}), self.ensure_quiet_env():
             with contextlib.redirect_stderr(io.StringIO()):
                 outcome = self.installer.ensure_renderer_bridge(pi, quiet_monitor=True)
         self.assertEqual(outcome["status"], "pending")
-        pi.publish_external_pending.assert_called_once_with(
-            stage, source=result["source"], operation="install")
+        pi.publish_external_pending.assert_called_once_with(stage, source=result["source"], operation="install")
         pi.launch_monitor.assert_called_once()
 
     def test_pending_publish_failure_falls_back_to_skipped_error_and_cleans_stage(self):
         stage = self.root / "stage.asar"
         stage.write_bytes(b"bridged archive")
-        result = {"status": "replace-failed", "version": "3.16.2",
-                  "detail": "拒绝访问", "stage": str(stage), "source": None}
         bridge_module = mock.Mock()
-        bridge_module.ensure_deployed.return_value = result
+        bridge_module.ensure_deployed.return_value = {"status": "replace-failed", "stage": str(stage)}
         pi = self.pi_stub()
         pi.publish_external_pending.side_effect = OSError("disk full")
         with mock.patch.dict(sys.modules, {"renderer_bridge": bridge_module}), \
-                self.ensure_quiet_env():
-            with contextlib.redirect_stderr(io.StringIO()):
-                outcome = self.installer.ensure_renderer_bridge(pi, quiet_monitor=True)
+                self.ensure_quiet_env(), contextlib.redirect_stderr(io.StringIO()):
+            outcome = self.installer.ensure_renderer_bridge(pi, quiet_monitor=True)
         self.assertEqual(outcome["status"], "skipped-error")
         self.assertIn("pending publish failed", outcome["detail"])
         self.assertFalse(stage.exists())
         pi.launch_monitor.assert_not_called()
 
     def test_pending_publish_permission_error_keeps_flag(self):
-        # 权限场景在 publish 阶段爆发（目录可读但 TMP 落盘被拒）也要保留标记
         stage = self.root / "stage.asar"
         stage.write_bytes(b"bridged archive")
-        result = {"status": "replace-failed", "version": "3.16.2",
-                  "detail": "拒绝访问", "stage": str(stage), "source": None}
         bridge_module = mock.Mock()
-        bridge_module.ensure_deployed.return_value = result
+        bridge_module.ensure_deployed.return_value = {"status": "replace-failed", "stage": str(stage)}
         pi = self.pi_stub()
         pi.publish_external_pending.side_effect = PermissionError(5, "拒绝访问")
         with mock.patch.dict(sys.modules, {"renderer_bridge": bridge_module}), \
-                self.ensure_quiet_env():
-            with contextlib.redirect_stderr(io.StringIO()):
-                outcome = self.installer.ensure_renderer_bridge(pi, quiet_monitor=True)
+                self.ensure_quiet_env(), contextlib.redirect_stderr(io.StringIO()):
+            outcome = self.installer.ensure_renderer_bridge(pi, quiet_monitor=True)
         self.assertEqual(outcome["status"], "skipped-error")
         self.assertIs(outcome.get("permission"), True)
         self.assertFalse(stage.exists())
-        # 消费端闭环：该结果经 _bridge_notice 必须产出权限提示
         self.assertIn("受保护目录", self.installer._bridge_notice({}, outcome, self.pi_stub(writable=False))["systemMessage"])
 
     def test_pending_remove_intent_wins_over_auto_bridge(self):
         stage = self.root / "stage.asar"
         stage.write_bytes(b"bridged archive")
-        result = {"status": "replace-failed", "version": "3.16.2",
-                  "detail": "拒绝访问", "stage": str(stage), "source": None}
         bridge_module = mock.Mock()
-        bridge_module.ensure_deployed.return_value = result
+        bridge_module.ensure_deployed.return_value = {"status": "replace-failed", "stage": str(stage)}
         pi = self.pi_stub()
         pi.pending_operation.return_value = "remove"
         with mock.patch.dict(sys.modules, {"renderer_bridge": bridge_module}), \
-                self.ensure_quiet_env():
-            with contextlib.redirect_stderr(io.StringIO()):
-                outcome = self.installer.ensure_renderer_bridge(pi, quiet_monitor=True)
+                self.ensure_quiet_env(), contextlib.redirect_stderr(io.StringIO()):
+            outcome = self.installer.ensure_renderer_bridge(pi, quiet_monitor=True)
         self.assertEqual(outcome["status"], "skipped-error")
         self.assertIn("卸载", outcome["detail"])
         self.assertFalse(stage.exists())
@@ -355,6 +342,7 @@ class OverlayBridgeNoticeTests(unittest.TestCase):
         bridge_module.ensure_deployed.return_value = bridge_result
         pi = self.pi_stub(writable=writable)
         with mock.patch.dict(sys.modules, {"renderer_bridge": bridge_module}), \
+                mock.patch.object(self.installer, "ensure_mobile_relay_stash", return_value={"status": "present"}), \
                 mock.patch.object(self.installer, "resolve_paths", return_value=(self.runtime, pi)), \
                 mock.patch.object(self.installer, "sync_runtime", return_value={"changed": []}), \
                 mock.patch.object(self.installer, "injected_status", return_value=injected), \
@@ -368,7 +356,7 @@ class OverlayBridgeNoticeTests(unittest.TestCase):
         # v172：桥 pending（客户端退出后监控自动收尾）不再发会话文字。
         pending = {"status": "pending", "version": "3.16.2", "detail": ""}
         outcome, stdout = self.hook_output(pending)
-        self.assertNotIn("systemMessage", outcome)
+        self.assertIn("尚未就绪", outcome["systemMessage"])
         self.assertEqual(stdout, "")
         # v258：SessionStart 自动链（quiet_hook=True）且注入行在位时，桥缺席/打不上
         # 静默放行——fiber 兜底 + 渲染端运行时合成桥接手，DB 轮询保底；受保护目录
@@ -475,6 +463,7 @@ class PendingInstallWaitingTests(unittest.TestCase):
         pi = mock.Mock()
         pi.ASAR = self.root / "app.asar"
         pi.pending_tmp.return_value = {"operation": "install"}
+        pi._target_lock.return_value = contextlib.nullcontext()
         pi.client_running.return_value = True
         pi.target_writable.return_value = writable
         return pi
@@ -594,9 +583,7 @@ class RealHookChainTests(unittest.TestCase):
             with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(io.StringIO()):
                 outcome = self.installer.run_hook()
         self.assertEqual(stdout.getvalue(), "", "hook stdout 只能是 hook JSON")
-        # v172：桥 pending 不再发会话文字（客户端退出后监控自动收尾）；
-        # 待收尾包与监控拉起行为不变。
-        self.assertNotIn("systemMessage", outcome)
+        self.assertIn("尚未就绪", outcome["systemMessage"])
         self.assertTrue(self.pi.TMP.is_file())
         self.assertEqual(self.pi.pending_tmp(operation="install")["operation"], "install")
         self.pi.launch_monitor.assert_called_once()

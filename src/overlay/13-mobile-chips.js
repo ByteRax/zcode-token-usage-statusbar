@@ -11,37 +11,63 @@
  * 契约：注入代码需访问闭包内 state/renderAll）；标识符一律 mc 前缀
  * 防与闭包内既有变量碰撞。 */
 var mcOrigUpdate = window.__zusageUpdate;
-if (typeof mcOrigUpdate === "function") {
+if (typeof mcOrigUpdate === "function" && !(typeof mobileMode !== "undefined" && mobileMode)) {
   var mcPending = false, mcLastJson = "";
   var mcTarget = null, mcTargetJson = "", mcStatusBusy = false;
+  var mcStatusEpoch = 0, mcStatusTimeout = null, mcStopped = false, mcLastChips = {};
   /* v2：目标会话由宿主报告。getWebRemoteControlStatus 是 preload 只读接口，
    * mobileTaskView 为空表示页面没有已验证的可见聊天（隐藏/首页/遮盖），
    * 此时不报告 target，主进程保留手机端上次显示，绝不回退到其它会话。 */
+  function mcSetTarget(next) {
+    var j = JSON.stringify(next);
+    if (j === mcTargetJson) return;
+    mcTargetJson = j;
+    mcTarget = next;
+    mcPublish();
+  }
+  function mcCancelStatus() {
+    mcStatusEpoch++;
+    mcStatusBusy = false;
+    if (mcStatusTimeout !== null) { clearTimeout(mcStatusTimeout); mcStatusTimeout = null; }
+  }
   function mcSyncTarget() {
-    var z = window.zcode;
-    if (!z || typeof z.getWebRemoteControlStatus !== "function") return;
+    if (mcStopped) return;
+    var z, getStatus;
+    try { z = window.zcode; getStatus = z && z.getWebRemoteControlStatus; } catch (e) { }
+    if (typeof getStatus !== "function") { mcCancelStatus(); mcSetTarget(null); return; }
     if (mcStatusBusy) return;
     mcStatusBusy = true;
+    var epoch = ++mcStatusEpoch;
+    mcStatusTimeout = setTimeout(function () {
+      if (mcStopped || epoch !== mcStatusEpoch) return;
+      mcStatusTimeout = null;
+      mcCancelStatus();
+      if ((window.__zusageGen || 0) === mcGen) mcSetTarget(null);
+    }, 3000);
+    if (mcStatusTimeout && typeof mcStatusTimeout.unref === "function") mcStatusTimeout.unref();
+    function finish(next) {
+      if (mcStopped || epoch !== mcStatusEpoch || (window.__zusageGen || 0) !== mcGen) return;
+      mcCancelStatus();
+      mcSetTarget(next);
+    }
     var p;
-    try { p = z.getWebRemoteControlStatus(); } catch (e) { mcStatusBusy = false; return; }
+    try { p = getStatus.call(z); } catch (e) { finish(null); return; }
     Promise.resolve(p).then(function (s) {
-      mcStatusBusy = false;
-      var v = s && s.mobileConnected ? s.mobileTaskView : null;
-      var next = v && v.taskId ? {
-        taskId: String(v.taskId),
-        workspacePath: v.workspacePath ? String(v.workspacePath) : "",
-        workspaceIdentity: v.workspaceIdentity ? String(v.workspaceIdentity) : ""
-      } : null;
-      var j = JSON.stringify(next);
-      if (j === mcTargetJson) return;
-      mcTargetJson = j;
-      mcTarget = next;
-      mcPublish();
-    }, function () { mcStatusBusy = false; });
+      try {
+        var v = s && s.mobileConnected ? s.mobileTaskView : null;
+        var next = v && v.taskId && (v.workspacePath == null || typeof v.workspacePath === "string") &&
+          (v.workspaceIdentity == null || typeof v.workspaceIdentity === "string") ? {
+          taskId: String(v.taskId),
+          workspacePath: typeof v.workspacePath === "string" ? v.workspacePath : null,
+          workspaceIdentity: typeof v.workspaceIdentity === "string" ? v.workspaceIdentity : null
+        } : null;
+        finish(next);
+      } catch (e) { finish(null); }
+    }, function () { finish(null); });
   }
   var mcGen = window.__zusageGen || 0;
   var mcTimer = setInterval(function () {
-    if ((window.__zusageGen || 0) !== mcGen) { clearInterval(mcTimer); mcTimer = null; return; }
+    if ((window.__zusageGen || 0) !== mcGen) { mcStopped = true; mcCancelStatus(); clearInterval(mcTimer); mcTimer = null; return; }
     mcSyncTarget();
   }, 1000);
   mcSyncTarget();   // 首次立即发起（不等 1s），不额外占一次性定时器
@@ -49,6 +75,8 @@ if (typeof mcOrigUpdate === "function") {
   var mcPrevDispose = window.__zusageDispose;
   window.__zusageDispose = function () {
     try {
+      mcStopped = true;
+      mcCancelStatus();
       if (mcTimer) { clearInterval(mcTimer); mcTimer = null; }
     } catch (e) { }
     if (typeof mcPrevDispose === "function") return mcPrevDispose.apply(this, arguments);
@@ -92,7 +120,6 @@ if (typeof mcOrigUpdate === "function") {
     if (tip.indexOf("zu-quota") !== -1) return "额度";
     return "";
   }
-  var mcLastChips = {};
   function mcHarvest() {
     mcPending = false;
     try {

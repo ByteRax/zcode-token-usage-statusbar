@@ -482,6 +482,27 @@ def remove_data_dir(dry):
     return True
 
 
+def ensure_mobile_relay_stash(pi):
+    from mobile_relay_patch import ensure_deployed
+    try:
+        with pi._target_lock():
+            if any(path.exists() or path.is_symlink() for path in (pi.TMP, pi.TMP_META)):
+                return {"status": "deferred", "detail": "existing pending operation"}
+            result = ensure_deployed(pi.ASAR, _locked=True)
+            if result.get("status") == "replace-failed":
+                try:
+                    Path(result["stage"]).unlink(missing_ok=True)
+                except OSError as error:
+                    return {"status": "deferred", "detail": f"stage cleanup failed: {error}"}
+                return {"status": "deferred", "detail": result.get("detail")}
+            return result
+    except TimeoutError as error:
+        return {"status": "deferred", "detail": str(error)}
+    except Exception as error:
+        print(f"[mobile relay] patch skipped: {error}", file=sys.stderr)
+        return {"status": "skipped-error", "detail": str(error)}
+
+
 def main():
     global LANG, args_lang
     # 轻量预解析：--help 打印时 LANG 必须已定，否则帮助文本恒为中文
@@ -574,6 +595,11 @@ def main():
         ok = True
     else:
         ok = pi.install()
+        if ok:
+            mobile = ensure_mobile_relay_stash(pi)
+            if mobile.get("status") not in ("present", "patched"):
+                print(L("手机中继补丁尚未就绪；请先完成已有待替换操作或解除占用及权限问题，再重试安装。",
+                        "The mobile relay patch is not ready; complete any pending replacement or resolve access problems, then retry installation."))
         remember_asar(asar, args.dev)   # 无论注入是否收尾成功都记住（卸载/收尾要用）
     if not ok:
         # 收尾/重试命令指向运行目录副本并带上本次目标：clone 被删/移动后提示仍可执行

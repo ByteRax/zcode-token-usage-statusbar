@@ -635,7 +635,7 @@
     }
     function bridgeTick() {
       if (inactive()) return;
-      if (!state.rateLine || !TURN_STATS) { bridgeDetach(bridge.handle); updateLive(); return; }
+      if ((typeof mobileMode !== "undefined" && mobileMode) || !state.rateLine || !TURN_STATS) { bridgeDetach(bridge.handle); updateLive(); return; }
       var sid = instSid || pickedSid || "";
       if (!sid) { bridgeDetach(bridge.handle); updateLive(); return; }
       /* v174：辅助对话实例必须有可信 scope（桥属性在位且校验通过）才绑 store——registry
@@ -702,6 +702,14 @@
       updateLive();   // subscribeStore 首次同步回调已 ingest 初始快照，这里补挂实时段
     }
     function updateLive() {
+      if (typeof mobileMode !== "undefined" && mobileMode) {
+        /* 移动端仅消费投影帧，不绑定本页 store 或合成实时/后台速率。 */
+        liveStatsCur = null;
+        if (idleRenderData === state.data && mobileIdleSid === instSid && Date.now() - idleRenderAt < 500) return;
+        idleRenderData = state.data; mobileIdleSid = instSid; idleRenderAt = Date.now();
+        render(state.data || { session: {}, recent: [] });
+        return;
+      }
       /* v73：合并「生成速度」chip 后，桥数据持续存在（生成中→完成，同一套
        * ico+'<span class="zu-live CLS">'+TEXT 结构）时只原地改 textContent/className，
        * 不重建条面（v33 原则）；桥「有/无」切换才会改变 chip 结构（图标出现/消失、
@@ -822,6 +830,7 @@
     bridge.timer = setInterval(bridgeTick, 100);
     bridgeTick();
 
+    var mobileViewKey = "", mobileIdleSid = "";
     function render(d) {
       /* v262：只有真实快照帧才更新共享数据。空对象兜底渲染（实例 spawn 首渲染/桥空窗的
        * `render(state.data || {session:{},...})`）若覆盖 state.data，会把统一轮表连同整帧
@@ -830,7 +839,22 @@
        * __zusageUpdate 外层写入，这里条件写只防回退，渲染本身仍按入参 d 照常执行。 */
       if (d && d.session && d.session.sid) state.data = d;
       var pc = null, p = null;
-      if (instSid) {
+      var mobile = typeof mobileMode !== "undefined" && mobileMode ? mobileContext(d, instSid) : null;
+      if (mobile) {
+        pickedSid = instSid || mobile.taskId;
+        p = mobile.row || { sid: pickedSid };
+        var nextMobileKey = JSON.stringify([pickedSid, mobile.taskId, mobile.binding, mobile.scopeKind, mobile.state]);
+        if (mobileViewKey !== nextMobileKey) {
+          mobileViewKey = nextMobileKey;
+          liveStatsCur = null;
+          speedTipSess = ""; speedChartHover = -1; speedTipRebuild = null;
+          speedSel.range = "recent"; speedSel.period = "recent"; speedSel.dim = "time"; speedSel.focus = "";
+          projTipKey = ""; projTipPj = null; projTipList = null;
+          if (tipStats) hideTip(true, "escape");
+          if (subPanel) subPopClose(false, "mobile-binding");
+          restoreTpsChip();
+        }
+      } else if (instSid) {
         /* v61.1 分屏多实例：本条显示哪个会话由 composer 祖先链的 data-session-id 决定
          * （客户端每个 pane 自带该标记，比窗口级 mine 更准，绝不串 pane）；
          * 会话不在池里（还没拉取）就显示本会话 0 值 —— 绝不回退到别的会话（v34 原则）。 */
@@ -902,7 +926,7 @@
       var view = {
         session: p, last_turn: p.last_turn || {}, last: p.last || {},
         /* v9：远端会话的「今日合计」用远端机数据，本地 today 只在显示本地会话时使用 */
-        today: p.remote ? (remoteToday || {}) : d.today,
+        today: (typeof mobile !== "undefined" && mobile) ? (mobile.row ? d.today : {}) : (p.remote ? (remoteToday || {}) : d.today),
         native_ctx: nativeCtxVal,
         context_window: p.context_window, context_auto: p.context_auto,
         code: p.code, ctx_exc: p.ctx_exc, tools: p.tools,
@@ -915,10 +939,24 @@
         remote_empty: !!(p.remote && !p.requests && !p.remote_missing),
         sub: p.sub || {requests: 0, total: 0, input: 0, output: 0, cache_read: 0, active: false, list: []},
       };
+      if (typeof mobile !== "undefined" && mobile) {
+        view.mobile = mobile;
+        view.speed_history = mobile.row ? d.speed_history : null;
+        view.sub = mobile.row ? p.sub : null;
+        view.remote_empty = false;
+        view.remote_error = "";
+        view.not_local = false;
+        view.remote_enabled = false;
+      }
       lastSub = view.sub;   // 子代理明细面板的数据源（开关面板/数据推送刷新用）
       lastView = view;   // v146：精简模式速率 chip 的 tooltip 摘要数据源
+      /* 只切换实际显隐，不改精简主题偏好；applyBarTheme 内重渲染时类名已收敛。 */
+      if (mobile && state.theme === "compact" && bar.classList.contains("zu-compact") === (mobile.state !== "ready")) {
+        applyBarTheme();
+        return;
+      }
       refreshWants();
-      if (state.theme === "compact" && main.children.length) {
+      if (state.theme === "compact" && !(mobile && mobile.state !== "ready") && main.children.length) {
         /* v146 精简模式：不重建条面（条已 display:none），但数据解析（lastBand/quota 选择/
          * reset 字段）照跑——它们是原生按钮增强与额度/重置卡 chip 的数据源；速率 chip 在
          * 此同步（DB 值随推送刷新），子代理明细面板开着时照常跟随。

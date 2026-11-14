@@ -8,11 +8,10 @@ MOBILE_RELAY_TARGETS 指纹表在锚点后注入一段逗号表达式，把
 {p: <relay>.protocol, b: <bridge>} push 进 globalThis.__zusageRelayStash：
 mobile-relay.cjs（主进程热换模块）消费 stash 推送，宿主 bundle 其余字节不动。
 
-第二注入（uplink，specs/mobile-relay.md「上行」）：把 transport options 的
+第二注入（uplink，specs/mobile-relay-uplink-binding.md）：把 transport options 的
 onRawTransportPayload 箭头函数包一层——载荷带 zuUp 标记时推入
-globalThis.__zusageRelayUplinkQueue 并返回 true（帧在 acceptPayload 严格 seq 校验
-之前被消费，官方 ack/水位零接触），其余帧原样走官方路径。油猴上行的安全门是
-mobile-relay 下行帧里的 zuUpCap 能力标记（无补丁宿主收不到 → 油猴零上行）。
+{frame: <原帧>, b: <当前桥>, relay: <该桥的 relayProtocol>} 并返回 true
+（帧在 acceptPayload 严格 seq 校验之前被消费），其余帧原样走官方路径。
 
 机制镜像 renderer_bridge.py：剥 patch_install 注入尾缀后按原始前缀 SHA256 校验、
 表外版本走严格推导、asar 单拼接重写（offset 位移 + integrity 重算）、
@@ -34,6 +33,7 @@ import stat
 import struct
 import tempfile
 import time
+from contextlib import nullcontext
 
 import patch_install as asar
 
@@ -55,11 +55,23 @@ _INJECT_RE = re.compile(
 # 字符串标签；body 必须恰为「单次调用」形态（3.18.1 实测），复杂化时 derive 拒绝。
 _UPLINK_ANCHOR_RE = re.compile(
     rb'onRawTransportPayload:(\w+)\((\w+)=>(\w+)\((\w+),\2\),"onRawTransportPayload"\)')
-# 注入的中段（箭头 => 之后、原调用之前）；remove 按它还原成 `param=>`
-_UPLINK_MID_RE = re.compile(
-    rb'\((\w+)&&\1\.zuUp\?\(\(globalThis\.'
-    rb'__zusageRelayUplinkQueue=globalThis\.__zusageRelayUplinkQueue\|\|\[\]\)\.push\(\1\),'
-    rb'true\):0\)\|\|')
+# 两代必须匹配完整回调，避免将游离的中段误认为可安全剥离的补丁。
+_UPLINK_V1_RE = re.compile(
+    rb'onRawTransportPayload:(?P<w>\w+)\((?P<p>\w+)=>'
+    rb'\((?P=p)&&(?P=p)\.zuUp\?\(\(globalThis\.'
+    rb'__zusageRelayUplinkQueue=globalThis\.__zusageRelayUplinkQueue\|\|\[\]\)\.push\((?P=p)\),'
+    rb'true\):0\)\|\|(?P<f>\w+)\((?P<r>\w+),(?P=p)\),"onRawTransportPayload"\)')
+_UPLINK_V2_RE = re.compile(
+    rb'onRawTransportPayload:(?P<w>\w+)\((?P<p>\w+)=>'
+    rb'\((?P=p)&&(?P=p)\.zuUp\?\(\((?P<b>\w+)\)=>\(\(globalThis\.'
+    rb'__zusageRelayUplinkQueue=globalThis\.__zusageRelayUplinkQueue\|\|\[\]\)\.push\('
+    rb'\{frame:(?P=p),b:(?P=b),relay:(?P=b)\?(?P=b)\.relayProtocol:void 0\}\),true\)\)'
+    rb'\((?P<r>\w+)\.currentBridge\):0\)\|\|(?P<f>\w+)\((?P=r),(?P=p)\),"onRawTransportPayload"\)')
+_ROUTE_RE = re.compile(
+    rb'function (?P<f>\w+)\((?P<r>\w+),(?P<p>\w+)\)\{let (?P<b>\w+)=(?P=r)\.currentBridge;'
+    rb'return!(?P=b)\|\|(?P=b)\.degraded\?!1:(?P=b)\.relayProtocol\?\.acceptPayload\((?P=p)\)\?\?!1\}')
+_UPLINK_MARKER = b"__zusageRelayUplinkQueue"
+_STASH_MARKER = STASH.encode()
 # 指纹表（新→旧）：版本以 asar package.json 为准，SHA 是剥尾缀后的原始 bundle。
 MOBILE_RELAY_TARGETS = [
     {
@@ -107,44 +119,59 @@ def inject_for(anchor):
 
 
 def inject_for_uplink(anchor2):
-    """锚点2 → 包裹后的钩子表达式：在箭头 `=>` 之后插入 zuUp 分流中段，
-    原调用与其余字节原样保留（splice，不重建）。带 zuUp 标记的载荷推入
-    globalThis.__zusageRelayUplinkQueue 并返回 true（帧在 acceptPayload 严格校验
-    之前被消费），其余走原钩子。"""
+    """包裹原回调；一次捕获当前桥，保持帧、桥和 relay 的对象身份。"""
     m = _UPLINK_ANCHOR_RE.fullmatch(anchor2)
     if not m:
         raise RelayPatchError("Malformed uplink anchor")
-    arrow = b"onRawTransportPayload:" + m.group(1) + b"(" + m.group(2) + b"=>"
-    mid = (b"(" + m.group(2) + b"&&" + m.group(2) + b".zuUp?(("
+    wrapper, param, _fn, runtime = m.groups()
+    bridge = b"__zuBridge"
+    while bridge in m.groups():
+        bridge += b"_"
+    arrow = b"onRawTransportPayload:" + wrapper + b"(" + param + b"=>"
+    mid = (b"(" + param + b"&&" + param + b".zuUp?((" + bridge + b")=>(("
            b"globalThis.__zusageRelayUplinkQueue=globalThis.__zusageRelayUplinkQueue||[]).push("
-           + m.group(2) + b"),true):0)||")
+           b"{frame:" + param + b",b:" + bridge + b",relay:" + bridge + b"?" + bridge
+           + b".relayProtocol:void 0}),true))(" + runtime + b".currentBridge):0)||")
     return arrow + mid + anchor2[len(arrow):]
 
 
+def _injection_state(prefix):
+    """只接受完整、唯一的已知指纹；未知或混合代际一律拒绝。"""
+    stash = list(_INJECT_RE.finditer(prefix))
+    uplinks = [(generation, m) for generation, regex in ((1, _UPLINK_V1_RE), (2, _UPLINK_V2_RE))
+               for m in regex.finditer(prefix)]
+    if len(stash) > 1 or prefix.count(_STASH_MARKER) != 2 * len(stash):
+        raise RelayPatchError("Unknown or duplicate stash inject")
+    if len(uplinks) > 1 or prefix.count(_UPLINK_MARKER) != 2 * len(uplinks):
+        raise RelayPatchError("Unknown or duplicate uplink inject")
+    return stash[0] if stash else None, uplinks[0] if uplinks else None
+
+
 def _strip_injects(prefix):
-    """剥离两段注入，得到与原始 bundle 逐字节一致的 pristine 前缀。"""
-    marks = _INJECT_RE.findall(prefix)
-    if len(marks) > 1:
-        raise RelayPatchError("Stash inject not unique")
-    if marks:
+    """剥离已知两代注入，逐字节还原 pristine 前缀。"""
+    stash, uplink = _injection_state(prefix)
+    if uplink:
+        _generation, match = uplink
+        original = (b'onRawTransportPayload:' + match.group('w') + b'(' + match.group('p')
+                    + b'=>' + match.group('f') + b'(' + match.group('r') + b','
+                    + match.group('p') + b'),"onRawTransportPayload")')
+        prefix = prefix[:match.start()] + original + prefix[match.end():]
+    if stash:
         match = _INJECT_RE.search(prefix)
         prefix = prefix[:match.start()] + prefix[match.end():]
-    umarks = _UPLINK_MID_RE.findall(prefix)
-    if len(umarks) > 1:
-        raise RelayPatchError("Uplink inject not unique")
-    if umarks:
-        prefix = _UPLINK_MID_RE.sub(b"", prefix, count=1)
     return prefix
 
 
 def _derive_uplink_anchor(prefix):
-    """表外版本的 uplink 锚点推导：全 bundle 唯一的 onRawTransportPayload 单调用形态。"""
-    matches = _UPLINK_ANCHOR_RE.findall(prefix)
+    """表外版本需唯一匹配回调及其读取 currentBridge 的原始路由函数。"""
+    matches = list(_UPLINK_ANCHOR_RE.finditer(prefix))
     if len(matches) != 1:
         raise RelayPatchError("Uplink anchor not derivable (missing or ambiguous)")
-    wrapper, param, fn, runtime = matches[0]
-    return (b"onRawTransportPayload:" + wrapper + b"(" + param + b"=>" + fn
-            + b"(" + runtime + b"," + param + b'),"onRawTransportPayload")')
+    match = matches[0]
+    routes = [route for route in _ROUTE_RE.finditer(prefix) if route.group('f') == match.group(3)]
+    if len(routes) != 1:
+        raise RelayPatchError("Uplink bridge route not derivable (missing or ambiguous)")
+    return match.group(0)
 
 
 def _split_tail(data):
@@ -156,48 +183,29 @@ def _split_tail(data):
 
 
 def transform_module(data, operation, target=None):
-    """apply：stash 注入 + uplink 钩子包裹（各自幂等，允许只差一段的中间态）；
-    remove：反向剥离两段。尾缀（第三方注入行）透传。
-
-    补丁检测以注入串自身为准（regex），remove 不依赖原始锚点在补丁后内容中
-    仍然连续存在（注入恰好插在锚点中间）。"""
+    """apply 升级旧代并补齐两段；remove 剥离已知注入并保留尾缀。"""
     if operation not in ("apply", "remove"):
         raise RelayPatchError("Unknown operation")
     prefix, tail = _split_tail(data)
+    pristine = _strip_injects(prefix)
     if operation == "remove":
-        marks = _INJECT_RE.findall(prefix)
-        if len(marks) > 1:
-            raise RelayPatchError("Stash inject not unique")
-        umarks = _UPLINK_MID_RE.findall(prefix)
-        if len(umarks) > 1:
-            raise RelayPatchError("Uplink inject not unique")
-        if marks:
-            match = _INJECT_RE.search(prefix)
-            prefix = prefix[:match.start()] + prefix[match.end():]
-        if umarks:
-            prefix = _UPLINK_MID_RE.sub(b"", prefix, count=1)
-        return prefix + tail
-    # apply：两段各自幂等
-    result = prefix
-    if not _INJECT_RE.search(result):
-        anchor = (target or {}).get("anchor")
-        if anchor is None:
-            anchor = _derive_anchor(result)
-        if result.count(anchor) != 1:
-            raise RelayPatchError("Missing or duplicate relay anchor")
-        inject = inject_for(anchor)
-        split = anchor.split(b",", 1)[0] + b","   # relayProtocol=<sym>,
-        if split + anchor[len(split):] != anchor:
-            # 防御：锚点逗号拆分假设被破坏时立即拒绝，不产出错位注入
-            raise RelayPatchError("Anchor split invariant broken")
-        result = result.replace(split, split + inject, 1)
-    if not _UPLINK_MID_RE.search(result):
-        anchor2 = (target or {}).get("anchor2")
-        if anchor2 is None:
-            anchor2 = _derive_uplink_anchor(result)
-        if result.count(anchor2) != 1:
-            raise RelayPatchError("Missing or duplicate uplink anchor")
-        result = result.replace(anchor2, inject_for_uplink(anchor2), 1)
+        return pristine + tail
+    # 始终从 pristine 重建，避免旧代和新代叠加；两个锚点都必须唯一。
+    anchor = (target or {}).get("anchor")
+    if anchor is None:
+        anchor = _derive_anchor(pristine)
+    anchor2 = (target or {}).get("anchor2")
+    if anchor2 is None:
+        anchor2 = _derive_uplink_anchor(pristine)
+    if pristine.count(anchor) != 1:
+        raise RelayPatchError("Missing or duplicate relay anchor")
+    if pristine.count(anchor2) != 1:
+        raise RelayPatchError("Missing or duplicate uplink anchor")
+    inject = inject_for(anchor)
+    split = anchor.split(b",", 1)[0] + b","  # relayProtocol=<sym>,
+    patched_anchor = split + inject + anchor[len(split):]
+    result = pristine.replace(anchor, patched_anchor, 1)
+    result = result.replace(anchor2, inject_for_uplink(anchor2), 1)
     return result + tail
 
 
@@ -330,7 +338,7 @@ def _sweep_stale_stages(directory):
             pass
 
 
-def ensure_deployed(asar_path):
+def ensure_deployed(asar_path, _locked=False, _cli_safe=False):
     """安装/更新链专用：确认目标 asar 带 stash 注入，没有则就地补打。
 
     与 renderer_bridge.ensure_deployed 同款约定：patch_install 同一把
@@ -343,8 +351,7 @@ def ensure_deployed(asar_path):
     try:
         from runtime_lock import file_lock
         asar_path = Path(asar_path)
-        with file_lock(asar_path.with_name(asar_path.name + ".zusage.lock")):
-            _sweep_stale_stages(asar_path.parent)
+        with (nullcontext() if _locked else file_lock(asar_path.with_name(asar_path.name + ".zusage.lock"))):
             before = asar.source_fingerprint(asar_path)
             stream, base, nodes, header, package, original, target = _load(asar_path)
             version = package.get("version")
@@ -353,6 +360,8 @@ def ensure_deployed(asar_path):
             stream = None
             if modified == original:
                 return {"status": "present", "version": version, "detail": "stash already deployed"}
+            if not _cli_safe:
+                _sweep_stale_stages(asar_path.parent)
             fd, name = tempfile.mkstemp(prefix=".mobile-relay-", dir=str(asar_path.parent))
             stage = Path(name)
             with os.fdopen(fd, "wb") as dest, asar_path.open("rb") as rstream:
@@ -379,24 +388,59 @@ def ensure_deployed(asar_path):
     finally:
         if stream is not None:
             stream.close()
+        if _cli_safe and stage is not None:
+            try:
+                stage.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def apply_cli(asar_path):
+    """Apply under the target lock without consuming any existing pending state."""
+    from runtime_lock import file_lock
+    path = Path(asar_path)
+    pending = path.with_name("app.asar.zusage.tmp")
+    try:
+        with file_lock(path.with_name(path.name + ".zusage.lock")):
+            for candidate in (pending, pending.with_name(pending.name + ".json")):
+                try:
+                    candidate.lstat()
+                except FileNotFoundError:
+                    continue
+                return {"status": "deferred", "detail": "existing pending operation"}
+            result = ensure_deployed(path, _locked=True, _cli_safe=True)
+            if result.get("status") == "replace-failed":
+                try:
+                    Path(result["stage"]).unlink(missing_ok=True)
+                except OSError as error:
+                    return {"status": "deferred", "detail": f"stage cleanup failed: {error}"}
+                return {"status": "deferred", "version": result.get("version"),
+                        "detail": result.get("detail")}
+            return result
+    except TimeoutError as error:
+        return {"status": "deferred", "detail": str(error)}
+    except OSError as error:
+        return {"status": "skipped-error", "detail": str(error)}
 
 
 def check_deployed(asar_path):
-    """只读自检：patched（两段齐）/partial（缺一段，apply 可补）/absent/error。"""
+    """只读自检：patched（两段均为当前代）/partial（缺段或旧代）/absent/error。"""
     try:
         asar_path = Path(asar_path)
         stream, _base, _nodes, _header, package, original, target = _load(asar_path)
         stream.close()
         prefix, _tail = _split_tail(original)
-        stash_present = bool(_INJECT_RE.search(prefix))
-        uplink_present = bool(_UPLINK_MID_RE.search(prefix))
-        if stash_present and uplink_present:
+        stash, uplink = _injection_state(prefix)
+        stash_present = bool(stash)
+        generation = uplink[0] if uplink else None
+        if stash_present and generation == 2:
             status = "patched"
-        elif stash_present or uplink_present:
+        elif stash_present or uplink:
             status = "partial"
         else:
             status = "absent"
-        return {"status": status, "stash": stash_present, "uplink": uplink_present,
+        return {"status": status, "stash": stash_present, "uplink": bool(uplink),
+                "uplink_generation": generation,
                 "version": package.get("version"),
                 "derived": bool(target.get("derived")), "detail": "ok"}
     except Exception as error:
@@ -404,7 +448,7 @@ def check_deployed(asar_path):
 
 
 def remove_deployed(asar_path):
-    """卸载链对称清理：只剥离本项目的 stash 注入，其余字节（含第三方尾缀）不动。"""
+    """卸载链对称清理两段已知注入，其余字节（含第三方尾缀）不动。"""
     stage = None
     stream = None
     try:
@@ -452,7 +496,7 @@ def main(argv=None):
         print(json.dumps(rewrite_asar(args.asar, args.output,
                                       "apply"), ensure_ascii=False))
         return 0
-    fn = ensure_deployed if args.command == "apply" else remove_deployed
+    fn = apply_cli if args.command == "apply" else remove_deployed
     print(json.dumps(fn(args.asar), ensure_ascii=False))
     return 0
 

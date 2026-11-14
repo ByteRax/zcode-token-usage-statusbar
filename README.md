@@ -93,6 +93,7 @@ A community toolkit for ZCode desktop: generation speed, token usage, context tr
 | **搜索弹框加宽**           | 放宽命令中心等 cmdk 搜索弹框的宽高上限，便于查看长条目；不影响所有类型的弹窗                                                                                                                                           |
 | **状态轮播**               | 默认关闭；开启后，在思考 / 生成 / 长耗时阶段的消息流 Loading 行轮播状态短语，可自定义词包；默认在文案后追加与宿主一致的「工作中 X 分 X 秒」耗时（⚙ 可关，悬停可随时查看）                                                              |
 | **SSH / WSL 远端会话**     | 在可信身份绑定下自动发现远端、按服务器独立查询统计，失败后持续重试；需手动在远端部署查询脚本，不替宿主重连 SSH。仅桌面快照链支持跨机，详见[远程会话指南](docs/user-guide.md#远程会话)                                  |
+| **Web 远控状态条（本检出）** | 接收脚本内嵌桌面同一份 overlay，本地与 WSL/SSH 复用状态条、tooltip 和设置，不切换独立回退条；需更新接收脚本，详见[使用说明](docs/user-guide.md#web-远程控制页面) |
 | **子智能体明细**           | 查看子任务用量、模型、运行状态、速度和预估费用；运行中速度按字符增量估算，完成后在数据可用时回填统计值                                                                                                                 |
 | **用量查询**               | 对话中用 `/usage today`，终端在仓库目录运行 `python3 zusage.py days 7`，或调用 MCP 工具 `token_usage(scope="today")`；`current` 取数据库最近活跃会话，不保证是屏幕焦点                                                 |
 

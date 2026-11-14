@@ -9,6 +9,9 @@
 - 表外版本走唯一锚点严格推导（两段各自），歧义拒绝；
 - rewrite 只产出到新文件；ensure_deployed 就地原子替换且幂等。
 """
+import json
+import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -28,7 +31,8 @@ SYNTHETIC_BODY = (
     b'function attach(){let re=new MessagePortProtocol(p),Ce=vy({bridgeSessionId:Q.bridgeSessionId,'
     b'sendFrame:s(je=>rr(h,je))});return Q.hostEntryId=ie.entryId,Q.relayProtocol=Ce,'
     b'Q.disposeBridge=()=>{Nr.dispose()},h.status="active"}'
-    b'let s=(f,n)=>f;let ye={},wD=()=>{},Ni=()=>{},Fg=()=>{};'
+    b'let s=(f,n)=>f;let ye={},wD=()=>{},Ni=()=>{};'
+    b'function Fg(h,y){let D=h.currentBridge;return!D||D.degraded?!1:D.relayProtocol?.acceptPayload(y)??!1}'
     b'new X({onPayload:s(ve=>wD(ye,ve),"onPayload"),'
     b'onRawTransportPayload:s(ve=>Fg(ye,ve),"onRawTransportPayload")});'
     b'function other(){let Q=1,Ce=2;return Q+Ce;}'
@@ -38,6 +42,29 @@ TAIL = (b'\n;import("file:///E:/x/inject-main.cjs").then(() => null, (e) => '
 PKG = {"name": "@zcode/desktop", "type": "module", "version": "9.9.9"}
 
 UPLINK_ANCHOR = b'onRawTransportPayload:s(ve=>Fg(ye,ve),"onRawTransportPayload")'
+LEGACY_HOOK = (b'onRawTransportPayload:s(ve=>(ve&&ve.zuUp?((globalThis.'
+               b'__zusageRelayUplinkQueue=globalThis.__zusageRelayUplinkQueue||[]).push(ve),'
+               b'true):0)||Fg(ye,ve),"onRawTransportPayload")')
+
+
+def legacy_patch(data, stash=True):
+    if stash:
+        anchor = synthetic_target()["anchor"]
+        split = b"relayProtocol=Ce,"
+        data = data.replace(anchor, split + mrp.inject_for(anchor) + b"Q.disposeBridge")
+    return data.replace(UPLINK_ANCHOR, LEGACY_HOOK)
+
+
+def archive(path, body):
+    return pts.make_asar(path, files={"out/main/index.js": body,
+                                     "package.json": json.dumps(PKG).encode()})
+
+
+def archive_body(path):
+    import patch_install as asar
+    with path.open("rb") as stream:
+        header, base = asar.read_header(stream)
+        return mrp._read(stream, dict(asar.iter_files(header)), base, mrp.ASSET)
 
 
 def synthetic_target():
@@ -57,25 +84,23 @@ class TransformTests(unittest.TestCase):
 
     def test_apply_wraps_raw_hook_with_zuup_branch(self):
         out = mrp.transform_module(SYNTHETIC_BODY, "apply", synthetic_target())
-        # 箭头参数保留、zuUp 分流在 => 之后、原调用 Fg(ye,ve) 字节不动、队列全局可达
-        self.assertIn(
-            b'onRawTransportPayload:s(ve=>(ve&&ve.zuUp?((globalThis.'
-            b'__zusageRelayUplinkQueue=globalThis.__zusageRelayUplinkQueue||[]).push(ve),'
-            b'true):0)||Fg(ye,ve),"onRawTransportPayload")', out)
-        # 官方帧路径仍以原钩子收尾（分流返回 0 时 || 落回 Fg）
+        self.assertIn(b"{frame:ve,b:__zuBridge,relay:__zuBridge?__zuBridge.relayProtocol:void 0}", out)
         self.assertEqual(out.count(b"__zusageRelayUplinkQueue"), 2)
+        self.assertIn(b"(ye.currentBridge):0)||Fg(ye,ve)", out)
 
     def test_apply_then_remove_round_trips_bytes(self):
         patched = mrp.transform_module(SYNTHETIC_BODY, "apply", synthetic_target())
         self.assertEqual(mrp.transform_module(patched, "remove", synthetic_target()), SYNTHETIC_BODY)
 
     def test_apply_is_idempotent_per_injection(self):
-        # 中间态（只有 stash）：apply 补齐 uplink 而不重复 stash
-        stash_only = mrp.transform_module(SYNTHETIC_BODY, "apply", synthetic_target())
-        stash_only = mrp.transform_module(stash_only, "remove", synthetic_target())
-        del stash_only   # 中间态由 full 逐段断言覆盖
-        once = mrp.transform_module(SYNTHETIC_BODY, "apply", synthetic_target())
-        self.assertEqual(mrp.transform_module(once, "apply", synthetic_target()), once)
+        full = mrp.transform_module(SYNTHETIC_BODY, "apply", synthetic_target())
+        stash_only = full.replace(mrp.inject_for_uplink(UPLINK_ANCHOR), UPLINK_ANCHOR)
+        uplink_only = full.replace(mrp.inject_for(synthetic_target()["anchor"]), b"")
+        for partial in (stash_only, uplink_only, legacy_patch(SYNTHETIC_BODY),
+                        legacy_patch(SYNTHETIC_BODY, stash=False)):
+            with self.subTest(partial=partial):
+                self.assertEqual(mrp.transform_module(partial, "apply", synthetic_target()), full)
+                self.assertEqual(mrp.transform_module(partial, "remove", synthetic_target()), SYNTHETIC_BODY)
 
     def test_apply_is_idempotent(self):
         once = mrp.transform_module(SYNTHETIC_BODY, "apply", synthetic_target())
@@ -90,6 +115,61 @@ class TransformTests(unittest.TestCase):
         patched = mrp.transform_module(data, "apply", synthetic_target())
         self.assertTrue(patched.endswith(TAIL))
         self.assertEqual(mrp.transform_module(patched, "remove", synthetic_target()), data)
+
+    def test_stash_inserts_only_at_full_anchor(self):
+        decoy = b'function decoy(){Q.relayProtocol=Ce,Q.other=1;}'
+        body = decoy + SYNTHETIC_BODY
+        patched = mrp.transform_module(body, "apply", synthetic_target())
+        self.assertTrue(patched.startswith(decoy))
+        self.assertEqual(mrp.transform_module(patched, "remove"), body)
+
+    def test_runtime_behavior_and_reference_binding(self):
+        hook = mrp.inject_for_uplink(UPLINK_ANCHOR).decode()
+        script = r'''
+const assert = require("node:assert/strict");
+let calls = [], reads = 0;
+const a = {relayProtocol: {id: "a"}}, b = {relayProtocol: {id: "b"}};
+let active = a;
+const ye = {get currentBridge() { reads++; return active; }};
+const s = f => f;
+const Fg = (runtime, frame) => { calls.push([runtime, frame]); return "host-result"; };
+const hook = ({HOOK}).onRawTransportPayload;
+const first = {zuUp: 2}, second = {zuUp: 1}, noBridge = {zuUp: true};
+assert.equal(hook(first), true);
+const oldRelay = a.relayProtocol;
+a.relayProtocol = {id: "replacement"};
+active = b;
+assert.equal(hook(second), true);
+active = undefined;
+assert.equal(hook(noBridge), true);
+const noRelay = {zuUp: 1};
+active = {};
+assert.equal(hook(noRelay), true);
+const q = globalThis.__zusageRelayUplinkQueue;
+assert.equal(q.length, 4);
+assert.deepEqual(Object.keys(q[0]), ["frame", "b", "relay"]);
+assert.equal(q[0].frame, first); assert.equal(q[0].b, a); assert.equal(q[0].relay, oldRelay);
+assert.equal(q[1].frame, second); assert.equal(q[1].b, b); assert.equal(q[1].relay, b.relayProtocol);
+assert.equal(q[2].frame, noBridge); assert.equal(q[2].b, undefined); assert.equal(q[2].relay, undefined);
+assert.equal(q[3].frame, noRelay); assert.equal(q[3].b, active); assert.equal(q[3].relay, undefined);
+assert.equal(reads, 4); assert.equal(calls.length, 0);
+for (const v of [null, {}, {zuUp: 0}]) assert.equal(hook(v), "host-result");
+assert.equal(calls.length, 3); assert.equal(calls[0][0], ye); assert.equal(calls[0][1], null);
+assert.equal(q.length, 4); assert.equal(reads, 4);
+'''.replace("HOOK", hook)
+        subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True,
+                       env=dict(os.environ))
+
+    def test_duplicate_mixed_or_unknown_injections_refused(self):
+        full = mrp.transform_module(SYNTHETIC_BODY, "apply", synthetic_target())
+        v2 = mrp.inject_for_uplink(UPLINK_ANCHOR)
+        bad_cases = [full + full, full + LEGACY_HOOK, full + v2,
+                     full.replace(b"relay:__zuBridge?", b"relay:__unknown?")]
+        for bad in bad_cases:
+            for operation in ("apply", "remove"):
+                with self.subTest(operation=operation, bad=bad):
+                    with self.assertRaises(mrp.RelayPatchError):
+                        mrp.transform_module(bad, operation, synthetic_target())
 
     def test_missing_or_duplicate_anchor_refused(self):
         bad = synthetic_target()
@@ -120,6 +200,22 @@ class ResolveTests(unittest.TestCase):
         self.assertTrue(target["derived"])
         self.assertEqual(target["anchor"], b"relayProtocol=Ce,Q.disposeBridge")
         self.assertEqual(target["anchor2"], UPLINK_ANCHOR)
+
+    def test_derived_route_requires_verified_unique_shape(self):
+        route = (b'function Fg(h,y){let D=h.currentBridge;return!D||D.degraded?!1:'
+                 b'D.relayProtocol?.acceptPayload(y)??!1}')
+        for body in (SYNTHETIC_BODY.replace(route, b'function Fg(h,y){return true}'),
+                     SYNTHETIC_BODY + route):
+            with self.subTest(body=body), self.assertRaises(mrp.RelayPatchError):
+                mrp._resolve_target(PKG, body)
+
+    def test_pinned_resolves_both_generations_and_rejects_drift(self):
+        with mock.patch.object(mrp, "MOBILE_RELAY_TARGETS", [synthetic_target()]):
+            new = mrp.transform_module(SYNTHETIC_BODY, "apply", synthetic_target())
+            for body in (legacy_patch(SYNTHETIC_BODY), new):
+                self.assertFalse(mrp._resolve_target(PKG, body + TAIL)["derived"])
+                with self.assertRaises(mrp.RelayPatchError):
+                    mrp._resolve_target(PKG, body + b" ")
 
     def test_ambiguous_anchor_refused(self):
         # 两个同构赋值链 → 推导歧义，fail-closed 拒绝
@@ -185,6 +281,88 @@ class RewriteTests(unittest.TestCase):
                                  b"console.log('after');")
 
 
+class CliApplyTests(unittest.TestCase):
+    def test_cli_conflicts_preserve_archive_and_pending_files(self):
+        for conflict in ("tmp", "sidecar", "both"):
+            with self.subTest(conflict=conflict), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                path = archive(root / "custom.asar", SYNTHETIC_BODY)
+                pending = root / "app.asar.zusage.tmp"
+                sidecar = root / "app.asar.zusage.tmp.json"
+                if conflict in ("tmp", "both"):
+                    pending.write_bytes(b"user pending bytes")
+                if conflict in ("sidecar", "both"):
+                    sidecar.write_bytes(b"invalid or publishing journal")
+                before = {p: p.read_bytes() for p in (path, pending, sidecar) if p.exists()}
+                env = {"PATH": os.environ.get("PATH", ""), "SYSTEMROOT": os.environ.get("SYSTEMROOT", ""),
+                       "PYTHONDONTWRITEBYTECODE": "1", "HOME": str(root)}
+                proc = subprocess.run([sys.executable, "-B", str(ROOT / "mobile_relay_patch.py"),
+                                       "apply", "--asar", str(path)],
+                                      capture_output=True, text=True, encoding="utf-8", env=env, check=True)
+                self.assertEqual(json.loads(proc.stdout)["status"], "deferred")
+                self.assertEqual({p: p.read_bytes() for p in before}, before)
+                self.assertEqual(pending.exists(), conflict in ("tmp", "both"))
+                self.assertEqual(sidecar.exists(), conflict in ("sidecar", "both"))
+                self.assertEqual(list(root.glob(".mobile-relay-*")), [])
+
+    def test_apply_checks_pending_while_holding_target_lock(self):
+        import contextlib
+        import runtime_lock
+        with tempfile.TemporaryDirectory() as tmp:
+            path = archive(Path(tmp) / "app.asar", SYNTHETIC_BODY)
+            locked = []
+            @contextlib.contextmanager
+            def lock(lock_path):
+                self.assertEqual(lock_path, path.with_name(path.name + ".zusage.lock"))
+                locked.append(True)
+                try:
+                    yield
+                finally:
+                    locked.pop()
+            original_lstat = Path.lstat
+            def lstat(candidate, *args, **kwargs):
+                if candidate.name in ("app.asar.zusage.tmp", "app.asar.zusage.tmp.json"):
+                    self.assertTrue(locked)
+                return original_lstat(candidate, *args, **kwargs)
+            with mock.patch.object(runtime_lock, "file_lock", lock), mock.patch.object(Path, "lstat", lstat):
+                self.assertEqual(mrp.main(["apply", "--asar", str(path)]), 0)
+            self.assertEqual(mrp.check_deployed(path)["status"], "patched")
+
+    def test_pending_appearing_at_lock_acquisition_blocks_apply(self):
+        import contextlib
+        import runtime_lock
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = archive(root / "app.asar", SYNTHETIC_BODY)
+            original = path.read_bytes()
+            pending = root / "app.asar.zusage.tmp"
+            @contextlib.contextmanager
+            def lock(_path):
+                pending.write_bytes(b"created by previous lock owner")
+                yield
+            with mock.patch.object(runtime_lock, "file_lock", lock):
+                self.assertEqual(mrp.apply_cli(path)["status"], "deferred")
+            self.assertEqual(path.read_bytes(), original)
+            self.assertEqual(pending.read_bytes(), b"created by previous lock owner")
+            self.assertEqual(list(root.glob(".mobile-relay-*")), [])
+
+    def test_apply_preserves_old_stage_and_cleans_only_own_failed_stage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = archive(root / "app.asar", SYNTHETIC_BODY)
+            original = path.read_bytes()
+            old_stage = root / ".mobile-relay-user"
+            old_stage.write_bytes(b"user data")
+            os.utime(old_stage, (1, 1))
+            with mock.patch.object(mrp.os, "replace", side_effect=PermissionError("locked")):
+                self.assertEqual(mrp.apply_cli(path)["status"], "deferred")
+            self.assertEqual(path.read_bytes(), original)
+            self.assertEqual(old_stage.read_bytes(), b"user data")
+            self.assertEqual(list(root.glob(".mobile-relay-*")), [old_stage])
+            self.assertEqual(mrp.apply_cli(path)["status"], "patched")
+            self.assertEqual(old_stage.read_bytes(), b"user data")
+
+
 class EnsureDeployedTests(unittest.TestCase):
     def test_ensure_deployed_patches_in_place_and_idempotent(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -208,6 +386,46 @@ class EnsureDeployedTests(unittest.TestCase):
                 nodes = dict(asar.iter_files(header))
                 self.assertEqual(mrp._read(stream, nodes, base, "/out/main/index.js"),
                                  SYNTHETIC_BODY + TAIL)
+
+    def test_check_upgrade_and_remove_legacy_archive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = archive(Path(tmp) / "app.asar", legacy_patch(SYNTHETIC_BODY) + TAIL)
+            check = mrp.check_deployed(path)
+            self.assertEqual((check["status"], check["stash"], check["uplink"],
+                              check["uplink_generation"]), ("partial", True, True, 1))
+            self.assertEqual(mrp.ensure_deployed(path)["status"], "patched")
+            check = mrp.check_deployed(path)
+            self.assertEqual((check["status"], check["uplink_generation"]), ("patched", 2))
+            self.assertEqual(mrp.ensure_deployed(path)["status"], "present")
+            self.assertEqual(mrp.remove_deployed(path)["status"], "removed")
+            self.assertEqual(archive_body(path), SYNTHETIC_BODY + TAIL)
+            self.assertEqual(mrp.remove_deployed(path)["status"], "absent")
+            self.assertEqual(mrp.check_deployed(path)["status"], "absent")
+
+    def test_remove_legacy_directly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = archive(Path(tmp) / "legacy.asar", legacy_patch(SYNTHETIC_BODY) + TAIL)
+            self.assertEqual(mrp.remove_deployed(path)["status"], "removed")
+            self.assertEqual(archive_body(path), SYNTHETIC_BODY + TAIL)
+            self.assertEqual(mrp.check_deployed(path)["status"], "absent")
+
+    def test_check_partial_and_corrupt_generations(self):
+        new = mrp.transform_module(SYNTHETIC_BODY, "apply", synthetic_target())
+        stash_only = new.replace(mrp.inject_for_uplink(UPLINK_ANCHOR), UPLINK_ANCHOR)
+        uplink_only = new.replace(mrp.inject_for(synthetic_target()["anchor"]), b"")
+        with tempfile.TemporaryDirectory() as tmp:
+            for i, (body, expected) in enumerate(((stash_only, None), (uplink_only, 2),
+                                                   (legacy_patch(SYNTHETIC_BODY, False), 1))):
+                path = archive(Path(tmp) / (str(i) + ".asar"), body)
+                result = mrp.check_deployed(path)
+                self.assertEqual((result["status"], result["uplink_generation"]),
+                                 ("partial", expected))
+                self.assertEqual(mrp.ensure_deployed(path)["status"], "patched")
+                self.assertEqual(archive_body(path), new)
+            bad = archive(Path(tmp) / "bad.asar", new + LEGACY_HOOK)
+            self.assertEqual(mrp.check_deployed(bad)["status"], "error")
+            self.assertEqual(mrp.ensure_deployed(bad)["status"], "skipped-error")
+            self.assertEqual(mrp.remove_deployed(bad)["status"], "error")
 
     def test_ensure_deployed_reports_error_without_raising(self):
         with tempfile.TemporaryDirectory() as tmp:

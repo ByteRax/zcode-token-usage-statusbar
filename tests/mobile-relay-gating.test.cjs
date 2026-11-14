@@ -1,10 +1,5 @@
-/* mobile-relay 门控与配置裁剪单元锁（specs/mobile-relay.md「v346 触发模型与门控」）：
- * - **门控**：只有收到手机上行配置（clientReady）后才查库推送；单纯建立远控通道不推；
- * - **事件驱动**：pump() 由 inject-main 的 DB watcher 调用（无内部轮询），
- *   查询节流 MIN_PUSH_INTERVAL_MS，未满足时补一拍；
- * - **配置裁剪**：按手机 zusage3.show 过滤 chips（speed/quota 恒保留，缺键全开，
- *   损坏 fail-open 不裁）。
- * spawnProc 替身：模拟常驻 serve 回罐头快照，不拉真 Python。 */
+/* mobile-relay 门控和配置握手：显示项由同一桌面 overlay 消费，主进程只投影原始统计。
+ * spawnProc 替身模拟常驻查询，不访问真实数据库。 */
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -45,21 +40,24 @@ function makeRelay(t, opts) {
     stdout: { on: (ev, cb) => { if (ev === "data") stdoutCb = cb; } },
     stderr: { on: () => { } }, on: () => { }, kill: () => { },
   };
-  globalThis.__zusageRelayStash = [{ p: { send: (f) => sent.push(decodeEventFireJson(f)) }, b: { relayProtocol: {} } }];
-  const relay = createMobileRelay(Object.assign({ log: () => { }, spawnProc: () => proc }, opts || {}));
+  const bridge = { p: { send: (f) => sent.push(decodeEventFireJson(f)) }, b: { readyAnnounced: true } };
+  bridge.b.relayProtocol = { protocol: bridge.p };
+  globalThis.__zusageRelayStash = [bridge];
+  function uplink(frame) { globalThis.__zusageRelayUplinkQueue = [{ frame, b: bridge.b, relay: bridge.b.relayProtocol }]; }
+  const relay = createMobileRelay(Object.assign({ log: () => { }, diagPath: path.join(dir, 'diag.json'), spawnProc: () => proc }, opts || {}));
   t.after(() => {
     relay.dispose();
     delete globalThis.__zusageRelayStash;
     delete globalThis.__zusageRelayUplinkQueue;
   });
-  return { relay, sent };
+  return { relay, sent, uplink };
 }
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 test("门控：未收到手机配置时不查库不推送（仅建通道不推）", async (t) => {
-  const { relay, sent } = makeRelay(t);
-  relay.push({ zm: 1, ts: Date.now(), target: { taskId: "sess_x" } });
+  const { relay, sent, uplink } = makeRelay(t);
+  relay.push({ zm: 1, ts: Date.now(), target: { taskId: "sess_x", workspaceIdentity: "" } });
   await wait(150);
   assert.equal(relay.status().clientReady, false);
   assert.equal(relay.status().queryRuns, 0, "无配置：零查询");
@@ -67,9 +65,9 @@ test("门控：未收到手机配置时不查库不推送（仅建通道不推�
 });
 
 test("门控：收到配置后开始推送，且下行帧带 zuUpCap/cfgGen 握手字段", async (t) => {
-  const { relay, sent } = makeRelay(t);
-  globalThis.__zusageRelayUplinkQueue = [{ zuUp: 2, zuCfg: { gen: 1, prefs: { show: "{}" } } }];
-  relay.push({ zm: 1, ts: Date.now(), target: { taskId: "sess_x" } });
+  const { relay, sent, uplink } = makeRelay(t);
+  uplink({ zuUp: 2, zuCfg: { gen: 1, prefs: { show: "{}" } } });
+  relay.push({ zm: 1, ts: Date.now(), target: { taskId: "sess_x", workspaceIdentity: "" } });
   await wait(200);
   assert.equal(relay.status().clientReady, true);
   assert.ok(sent.length >= 1, "有配置：推送");
@@ -81,8 +79,8 @@ test("门控：收到配置后开始推送，且下行帧带 zuUpCap/cfgGen 握�
 test("限频与桌面同源：默认 1500ms（activity_min_ms），可由 options 注入", async (t) => {
   // 注入 300ms 下限值：两次 pump 间隔 <300 只查一次
   const fast = makeRelay(t, { minIntervalMs: 300 });
-  globalThis.__zusageRelayUplinkQueue = [{ zuUp: 2, zuCfg: { gen: 1, prefs: { show: "{}" } } }];
-  fast.relay.push({ zm: 1, ts: Date.now(), target: { taskId: "sess_x" } });
+  fast.uplink({ zuUp: 2, zuCfg: { gen: 1, prefs: { show: "{}" } } });
+  fast.relay.push({ zm: 1, ts: Date.now(), target: { taskId: "sess_x", workspaceIdentity: "" } });
   await wait(150);
   const n1 = fast.relay.status().queryRuns;
   fast.relay.pump(); fast.relay.pump();
@@ -94,9 +92,9 @@ test("限频与桌面同源：默认 1500ms（activity_min_ms），可由 option
 
 test("限频 getter 热生效：改配置后下一拍即用新值（无需重建）", async (t) => {
   let limit = 2000;
-  const { relay } = makeRelay(t, { getMinIntervalMs: () => limit });
-  globalThis.__zusageRelayUplinkQueue = [{ zuUp: 2, zuCfg: { gen: 1, prefs: { show: "{}" } } }];
-  relay.push({ zm: 1, ts: Date.now(), target: { taskId: "sess_x" } });
+  const { relay, uplink } = makeRelay(t, { getMinIntervalMs: () => limit });
+  uplink({ zuUp: 2, zuCfg: { gen: 1, prefs: { show: "{}" } } });
+  relay.push({ zm: 1, ts: Date.now(), target: { taskId: "sess_x", workspaceIdentity: "" } });
   await wait(120);
   const n1 = relay.status().queryRuns;
   relay.pump();
@@ -109,9 +107,9 @@ test("限频 getter 热生效：改配置后下一拍即用新值（无需重建
 });
 
 test("事件驱动：pump() 即对账（DB 写入触发路径），节流内补拍", async (t) => {
-  const { relay } = makeRelay(t, { minIntervalMs: 300 });
-  globalThis.__zusageRelayUplinkQueue = [{ zuUp: 2, zuCfg: { gen: 1, prefs: { show: "{}" } } }];
-  relay.push({ zm: 1, ts: Date.now(), target: { taskId: "sess_x" } });
+  const { relay, uplink } = makeRelay(t, { minIntervalMs: 300 });
+  uplink({ zuUp: 2, zuCfg: { gen: 1, prefs: { show: "{}" } } });
+  relay.push({ zm: 1, ts: Date.now(), target: { taskId: "sess_x", workspaceIdentity: "" } });
   await wait(150);
   const n1 = relay.status().queryRuns;
   // 立即连发两次 pump：1s 节流内只应再查一次（补拍），不会每次 pump 都查
@@ -121,40 +119,41 @@ test("事件驱动：pump() 即对账（DB 写入触发路径），节流内补�
   assert.ok(n2 === n1 + 1, `节流窗口内补拍一次（实际 ${n1} → ${n2}）`);
 });
 
-test("配置裁剪：zusage3.show 关闭的格不推送，speed/quota 恒保留", async (t) => {
-  const { relay, sent } = makeRelay(t);
-  globalThis.__zusageRelayUplinkQueue = [{
+test("显示项交给桌面 overlay，投影不再发送第二套 chips", async (t) => {
+  const { relay, sent, uplink } = makeRelay(t);
+  uplink({
     zuUp: 2,
     zuCfg: { gen: 1, prefs: { show: JSON.stringify({ turn: 0, win: 0, today: 1, proj: 0, sub: 0, tools: 0 }) } },
-  }];
-  relay.push({ zm: 1, ts: Date.now(), target: { taskId: "sess_x" } });
+  });
+  relay.push({ zm: 1, ts: Date.now(), target: { taskId: "sess_x", workspaceIdentity: "" } });
   await wait(200);
-  const body = sent.find((b) => b.chips);
-  assert.ok(body, "有 chips 载荷");
-  const ids = body.chips.map((c) => c.id);
-  assert.ok(ids.includes("speed"), "speed 恒保留");
-  assert.ok(ids.includes("today"), "today 开启");
-  for (const off of ["turn", "win", "proj", "sub", "tools"]) {
-    assert.ok(!ids.includes(off), `${off} 已关闭应不推`);
-  }
+  const body = sent.find((b) => b.snap);
+  assert.ok(body, "有受限快照");
+  assert.equal(body.chips, undefined);
+  assert.equal(body.snap.session.total, 90);
+  assert.equal(body.snap.session.tool_calls, 7);
+  assert.equal(body.snap.today.total, 100);
 });
 
-test("配置损坏 fail-open：show 非法 JSON 时不裁剪", async (t) => {
-  const { relay, sent } = makeRelay(t);
-  globalThis.__zusageRelayUplinkQueue = [{ zuUp: 2, zuCfg: { gen: 1, prefs: { show: "{broken" } } }];
-  relay.push({ zm: 1, ts: Date.now(), target: { taskId: "sess_x" } });
+test("损坏显示配置不影响受限统计快照和能力回执", async (t) => {
+  const { relay, sent, uplink } = makeRelay(t);
+  uplink({ zuUp: 2, zuCfg: { gen: 1, prefs: { show: "{broken" } } });
+  relay.push({ zm: 1, ts: Date.now(), target: { taskId: "sess_x", workspaceIdentity: "" } });
   await wait(200);
-  const ids = (sent.find((b) => b.chips) || { chips: [] }).chips.map((c) => c.id);
-  assert.ok(ids.includes("turn") && ids.includes("tools"), "损坏配置不裁（全开）");
+  const body = sent.find((b) => b.snap);
+  assert.ok(body);
+  assert.equal(body.snap.session.last_turn.total, 1000);
+  assert.equal(body.snap.session.tool_calls, 7);
+  assert.equal(body.cfgGen, 1);
 });
 
 test("gen 幂等：旧 gen 的配置帧不覆盖新配置", async (t) => {
-  const { relay } = makeRelay(t);
-  globalThis.__zusageRelayUplinkQueue = [{ zuUp: 2, zuCfg: { gen: 5, prefs: { show: "{}" } } }];
-  relay.push({ zm: 1, ts: Date.now(), target: { taskId: "sess_x" } });
+  const { relay, uplink } = makeRelay(t);
+  uplink({ zuUp: 2, zuCfg: { gen: 5, prefs: { show: "{}" } } });
+  relay.push({ zm: 1, ts: Date.now(), target: { taskId: "sess_x", workspaceIdentity: "" } });
   await wait(150);
   assert.equal(relay.status().clientCfgGen, 5);
-  globalThis.__zusageRelayUplinkQueue = [{ zuUp: 2, zuCfg: { gen: 3, prefs: { show: '{"turn":0}' } } }];
+  uplink({ zuUp: 2, zuCfg: { gen: 3, prefs: { show: '{"turn":0}' } } });
   relay.pump();
   await wait(120);
   assert.equal(relay.status().clientCfgGen, 5, "旧 gen 忽略");

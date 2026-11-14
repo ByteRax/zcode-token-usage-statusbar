@@ -1,0 +1,395 @@
+/* 行为回归：远控目标身份、异步失效、桥路由和 wire 隐私。
+ * VM 隔离 stash、诊断写入和 spawn；不访问真实数据库或启动 Python。 */
+const assert = require('node:assert/strict');
+const { EventEmitter } = require('node:events');
+const fs = require('node:fs');
+const path = require('node:path');
+const test = require('node:test');
+const vm = require('node:vm');
+
+const sourcePath = path.join(__dirname, '..', 'mobile-relay.cjs');
+const source = fs.readFileSync(sourcePath, 'utf8');
+const A = 'remote:server:alpha';
+const B = 'remote:server:beta';
+const SID = 'session_shared';
+const target = (identity = A, taskId = SID) => ({
+  taskId, workspaceIdentity: identity, workspacePath: '/private/workspace/path',
+});
+
+function decode(frame) {
+  const b = frame.buffer;
+  let i = 1;
+  function vql() {
+    let n = 0, shift = 0, byte;
+    do { byte = b[i++]; n |= (byte & 127) << shift; shift += 7; } while (byte & 128);
+    return n >>> 0;
+  }
+  assert.equal(b[0], 4);
+  const count = vql();
+  const header = [];
+  for (let j = 0; j < count; j++) { assert.equal(b[i++], 6); header.push(vql()); }
+  assert.deepEqual(header, [204, 2147483647]);
+  assert.equal(b[i++], 5);
+  const length = vql();
+  assert.equal(i + length, b.length);
+  return JSON.parse(b.toString('utf8', i, i + length));
+}
+
+function snapshot(identity = A, taskId = SID) {
+  return {
+    today: { total: 111, requests: 1 },
+    session: { sid: 'session_other', title: 'OTHER_SESSION_TITLE', body: 'OTHER_BODY_SECRET' },
+    recent: [
+      { sid: taskId, total: 112, title: 'LOCAL_TITLE_SECRET' },
+      { sid: taskId, workspace_identity: B, remote: true, remote_target: 'beta', total: 222 },
+      { sid: taskId, workspace_identity: identity, remote: true, remote_target: 'alpha',
+        total: 333, requests: 3, title: 'TARGET_TITLE_SECRET', body: 'TARGET_BODY_SECRET',
+        directory: '/private/workspace/path' },
+      { sid: 'session_other', total: 999, title: 'OTHER_SESSION_TITLE' },
+    ],
+    remote_today: { alpha: { total: 444, requests: 4 }, beta: { total: 555, requests: 5 } },
+    known_sids: ['session_other'],
+  };
+}
+
+function assertScope(request, taskId, identity) {
+  assert.deepEqual(request.scopes, [{ sid: taskId, workspaceIdentity: identity }]);
+  assert.ok(Array.isArray(request.sids));
+  assert.ok(request.sids.length === 0 || (request.sids.length === 1 && request.sids[0] === taskId));
+}
+
+const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+async function waitFor(predicate, message) {
+  const until = Date.now() + 1500;
+  while (Date.now() < until) {
+    if (predicate()) return;
+    await wait(10);
+  }
+  assert.fail(message);
+}
+
+function harness(t, options = {}, setup = {}) {
+  const requests = [], spawns = [], frames = [], intervals = [];
+  let now = 1000000;
+  const stdout = new EventEmitter();
+  const proc = new EventEmitter();
+  proc.stdout = stdout;
+  proc.stderr = new EventEmitter();
+  proc.stdin = new EventEmitter();
+  proc.stdin.writable = true;
+  proc.stdin.write = (line) => { requests.push(JSON.parse(line)); return true; };
+  proc.kill = () => { proc.stdin.writable = false; };
+  const bridge = (identity) => {
+    const e = { p: { send(frame) { frames.push({ identity, bytes: Buffer.from(frame.buffer), body: decode(frame) }); } },
+      b: { workspaceIdentity: identity, readyAnnounced: true } };
+    e.b.relayProtocol = { protocol: e.p };
+    return e;
+  };
+  const initialBridge = bridge(A);
+  if (setup.acceptPayload === 'writable') initialBridge.b.relayProtocol.acceptPayload = () => 'original';
+  if (setup.acceptPayload === 'readonly') {
+    Object.defineProperty(initialBridge.b.relayProtocol, 'acceptPayload', { value: () => 'original', writable: false });
+  }
+  const globals = {
+    Buffer, process, console, setTimeout, clearTimeout,
+    setInterval(fn, ms) { const timer = { fn, ms, unref() {} }; intervals.push(timer); return timer; },
+    clearInterval(timer) { timer.cleared = true; },
+    __zusageRelayStash: [initialBridge],
+    __zusageRelayUplinkQueue: [],
+  };
+  if (setup.fakeClock) globals.Date = class extends Date { static now() { return now; } };
+  globals.__zusageRelayUplinkQueue.push({ frame: { zuUp: 2, zuCfg: { gen: 1, prefs: { show: '{}' } } },
+    b: globals.__zusageRelayStash[0].b, relay: globals.__zusageRelayStash[0].b.relayProtocol });
+  const context = vm.createContext(globals);
+  const module = { exports: {} };
+  const isolatedRequire = (name) => {
+    if (name === 'fs') return { writeFileSync() {} };
+    if (name === 'child_process') return { spawn() { throw new Error('unexpected real spawn'); } };
+    return require(name);
+  };
+  const load = vm.runInContext('(function(require,module,exports,__dirname){' + source + '\n})', context,
+    { filename: sourcePath });
+  load(isolatedRequire, module, module.exports, path.dirname(sourcePath));
+  const relay = module.exports.createMobileRelay({
+    log() {}, minIntervalMs: 300,
+    spawnProc(...args) { spawns.push(args); return proc; },
+    ...options,
+  });
+  t.after(() => relay.dispose());
+  return {
+    relay, requests, spawns, frames, globals, bridge,
+    respond(value) { stdout.emit('data', Buffer.from(JSON.stringify(value) + '\n')); },
+    push(value) { relay.push({ zm: 1, ts: Date.now(), target: value }); },
+    dataFrames() { return frames.filter((f) => f.body.snap || f.body.chips); },
+    announce() { const timer = intervals.find((item) => item.ms === 2500); assert.ok(timer); timer.fn(); },
+    advance(ms) { now += ms; },
+    remoteTick() { const timer = intervals.find((item) => item.ms === 1000); assert.ok(timer); timer.fn(); },
+  };
+}
+
+test('远端查询携带 scope，并只使用匹配身份及其远端 today', async (t) => {
+  const h = harness(t);
+  h.push(target());
+  await waitFor(() => h.requests.length === 1, '应发起查询');
+  assertScope(h.requests[0], SID, A);
+  h.respond(snapshot());
+  await waitFor(() => h.dataFrames().length === 1, '应发送匹配远端的数据');
+  const body = h.dataFrames()[0].body;
+  assert.equal(body.snap.session.total, 333);
+  assert.equal(body.snap.today.total, 444);
+  assert.equal(body.scopeKind, 'remote');
+  assert.equal(body.snap.session.remote, true);
+  assert.equal(body.snap.recent.length, 1);
+  assert.equal(body.snap.session.sid, SID);
+  assert.equal(body.snap.session.workspace_identity, undefined);
+  assert.equal(body.snap.session.remote_target, undefined);
+  assert.equal(body.chips, undefined, '所有目标只交给同一桌面 overlay 渲染');
+  assert.match(body.binding, /^[a-f0-9]{32}$/);
+});
+
+for (const [label, rows] of [
+  ['仅有同 SID 本地记录', [{ sid: SID, total: 112 }]],
+  ['仅有同 SID 其他远端记录', [{ sid: SID, workspace_identity: B, remote: true, remote_target: 'beta', total: 222 }]],
+  ['目标远端不可用', [{ sid: SID, workspace_identity: A, remote: true, remote_target: 'alpha', remote_missing: true, remote_error: 'unavailable' }, { sid: SID, total: 112 }]],
+]) {
+  test(`${label}时不可借用其他身份数据`, async (t) => {
+    const h = harness(t);
+    h.push(target());
+    await waitFor(() => h.requests.length === 1, '应发起查询');
+    h.respond({ today: { total: 111 }, recent: rows, remote_today: { beta: { total: 555 } } });
+    await wait(60);
+    assert.equal(h.dataFrames().length, 0, '没有可信目标数据时不推送快照');
+  });
+}
+
+for (const [label, next] of [
+  ['切换 SID', target(A, 'session_new')],
+  ['同 SID 切换身份', target(B)],
+  ['撤销目标', null],
+]) {
+  test(`在途查询${label}后丢弃旧响应`, async (t) => {
+    const h = harness(t);
+    h.push(target());
+    await waitFor(() => h.requests.length === 1, '旧目标应发起查询');
+    h.push(next);
+    if (next) h.globals.__zusageRelayStash[0].b.workspaceIdentity = next.workspaceIdentity;
+    h.respond(snapshot());
+    await wait(60);
+    assert.equal(h.dataFrames().length, 0, '过期结果不得发给当前目标');
+    if (next) {
+      await waitFor(() => h.requests.length === 2, '新目标应继续查询');
+      assertScope(h.requests[1], next.taskId, next.workspaceIdentity);
+    } else {
+      await wait(350);
+      assert.equal(h.requests.length, 1, '撤销后不再查询');
+    }
+  });
+}
+
+test('重复发现相同目标不触发重复查询，DB 事件仍可刷新', async (t) => {
+  const h = harness(t);
+  h.push(target());
+  await waitFor(() => h.requests.length === 1, '首次应查询');
+  h.respond(snapshot());
+  await waitFor(() => h.dataFrames().length === 1, '首次应推送');
+  h.push(target()); h.push(target());
+  await wait(400);
+  assert.equal(h.requests.length, 1, '重复上报不能安排补拍');
+  h.relay.pump();
+  await waitFor(() => h.requests.length === 2, 'DB 事件仍应查询');
+});
+
+test('多桥无法唯一归属时不发送数据', async (t) => {
+  const h = harness(t);
+  h.globals.__zusageRelayStash = [h.bridge(A), h.bridge(A)];
+  h.push(target());
+  await wait(100);
+  if (h.requests.length) h.respond(snapshot());
+  await wait(60);
+  assert.equal(h.dataFrames().length, 0, '歧义桥不得广播数据');
+});
+
+test("未 ready 桥不干扰唯一就绪桥的握手及推送", async (t) => {
+  const h = harness(t);
+  const pending = h.bridge(B); pending.b.readyAnnounced = false;
+  h.globals.__zusageRelayStash.push(pending);
+  h.push(target());
+  await waitFor(() => h.requests.length === 1, "只向就绪桥查询");
+  h.respond(snapshot());
+  await waitFor(() => h.dataFrames().length === 1, "就绪桥继续推送");
+  assert.equal(h.relay.status().bridges, 1);
+  assert.equal(h.relay.status().clientReady, true);
+  assert.equal(h.dataFrames()[0].identity, A);
+});
+
+test('实际编码帧不泄露路径、其他会话、标题或正文', async (t) => {
+  const h = harness(t);
+  h.push(target());
+  await waitFor(() => h.requests.length === 1, '应发起查询');
+  h.respond(snapshot());
+  await waitFor(() => h.dataFrames().length === 1, '应发送数据帧');
+  const frame = h.dataFrames()[0];
+  assert.equal(frame.body.mine, SID);
+  for (const secret of ['/private/workspace/path', 'session_other', 'LOCAL_TITLE_SECRET',
+    'OTHER_SESSION_TITLE', 'OTHER_BODY_SECRET', 'TARGET_TITLE_SECRET', 'TARGET_BODY_SECRET']) {
+    assert.equal(frame.bytes.includes(Buffer.from(secret)), false, `帧不得包含 ${secret}`);
+  }
+});
+
+test('isEnabled 为 false 时公告、查询与数据均不发送', async (t) => {
+  const h = harness(t, { isEnabled: () => false });
+  h.announce();
+  h.push(target());
+  await wait(100);
+  assert.equal(h.requests.length, 0);
+  assert.equal(h.frames.length, 0);
+});
+
+test('查询在途时关闭 isEnabled，旧响应及后续公告均不发送', async (t) => {
+  let enabled = true;
+  const h = harness(t, { isEnabled: () => enabled });
+  h.push(target());
+  await waitFor(() => h.requests.length === 1, '应发起查询');
+  enabled = false;
+  h.respond(snapshot());
+  h.announce();
+  await wait(60);
+  assert.equal(h.frames.length, 0);
+});
+
+test('实时目标复验未通过时不能发送', async (t) => {
+  const h = harness(t);
+  let valid = true;
+  h.relay.push({ zm: 1, target: target() }, () => true, async () => valid);
+  await waitFor(() => h.requests.length === 1, '应发起查询');
+  valid = false;
+  h.respond(snapshot());
+  await wait(80);
+  assert.equal(h.dataFrames().length, 0);
+});
+
+test('无来源或旧桥上行帧不能激活新桥', async (t) => {
+  const h = harness(t);
+  const old = h.globals.__zusageRelayStash[0];
+  h.globals.__zusageRelayStash = [h.bridge(A)];
+  h.push(target());
+  await wait(100);
+  assert.equal(h.requests.length, 0);
+  assert.equal(h.relay.status().clientReady, false);
+  h.globals.__zusageRelayUplinkQueue.push({ zuUp: 2, zuCfg: { gen: 2, prefs: {} } });
+  h.relay.pump();
+  await wait(50);
+  assert.equal(h.requests.length, 0);
+  assert.notEqual(old, h.globals.__zusageRelayStash[0]);
+});
+
+test('能力公告只在上行拦截可用时发送', (t) => {
+  for (const mode of ['missing', 'readonly', 'writable']) {
+    const h = harness(t, {}, { acceptPayload: mode });
+    h.announce();
+    assert.equal(h.frames.length, mode === 'writable' ? 1 : 0, mode);
+  }
+});
+
+test('远端无本地写入时按配置周期重新查询', async (t) => {
+  const h = harness(t, { getRemotePollMs: () => 3000 }, { fakeClock: true });
+  h.push(target());
+  await waitFor(() => h.requests.length === 1, '首次查询');
+  h.respond(snapshot());
+  await waitFor(() => h.dataFrames().length === 1, '首次发送');
+  h.advance(2999); h.remoteTick();
+  assert.equal(h.requests.length, 1);
+  h.advance(1); h.remoteTick();
+  await waitFor(() => h.requests.length === 2, '远端轮询查询');
+});
+
+test('切换后查询失败发送新目标不可用帧', async (t) => {
+  const h = harness(t);
+  h.push(target());
+  await waitFor(() => h.requests.length === 1, '首次查询');
+  h.respond(snapshot());
+  await waitFor(() => h.dataFrames().length === 1, '首次发送');
+  h.push(target(A, 'session_new'));
+  await waitFor(() => h.requests.length === 2, '新目标查询');
+  h.respond({ recent: [], today: { total: 111 } });
+  await waitFor(() => h.frames.some((f) => f.body.state === 'unavailable'), '发送不可用状态');
+  const body = h.frames.find((f) => f.body.state === 'unavailable').body;
+  assert.equal(body.mine, 'session_new');
+  assert.equal(body.target.taskId, 'session_new');
+  assert.equal(body.scopeKind, 'remote');
+  assert.equal(body.snap, undefined);
+  assert.equal(body.chips, undefined);
+});
+
+test('同 SID 切换身份重新生成匿名绑定，重复发现保持绑定', async (t) => {
+  const h = harness(t);
+  h.push(target());
+  await waitFor(() => h.requests.length === 1, '首次查询');
+  h.respond(snapshot());
+  await waitFor(() => h.dataFrames().length === 1, '首次发送');
+  const first = h.dataFrames()[0].body.binding;
+  h.push(target());
+  await wait(320);
+  h.relay.pump();
+  await waitFor(() => h.requests.length === 2, '相同目标重新查询');
+  const changed = snapshot(); changed.recent[2].total++;
+  h.respond(changed);
+  await waitFor(() => h.dataFrames().length === 2, '相同目标变化发送');
+  assert.equal(h.dataFrames()[1].body.binding, first);
+  h.push(target(B));
+  await waitFor(() => h.requests.length === 3, '新身份查询');
+  h.respond(snapshot(B));
+  await waitFor(() => h.dataFrames().length === 3, '新身份发送');
+  assert.notEqual(h.dataFrames()[2].body.binding, first);
+});
+
+test('相同目标的桥代次变化丢弃在途旧查询', async (t) => {
+  const h = harness(t);
+  const old = { ...target(), bridgeState: {}, relay: {}, remoteSessionId: 'route-1' };
+  h.push(old);
+  await waitFor(() => h.requests.length === 1, '旧查询');
+  h.push({ ...old, bridgeState: {}, relay: {}, remoteSessionId: 'route-2' });
+  h.respond(snapshot());
+  await wait(60);
+  assert.equal(h.dataFrames().length, 0);
+  await waitFor(() => h.requests.length === 2, '新代次继续查询');
+  h.respond(snapshot());
+  await waitFor(() => h.dataFrames().length === 1, '只发送新查询');
+});
+
+for (const [label, oldFails] of [
+  ['旧成功不得覆盖新不可用', false],
+  ['旧不可用不得清除新成功', true],
+]) {
+  test(`同 binding 发送复验乱序：${label}`, async (t) => {
+    const h = harness(t, {}, { fakeClock: true });
+    const checks = [];
+    h.relay.push({ zm: 1, target: target() }, () => true,
+      () => new Promise(resolve => checks.push(resolve)));
+    await waitFor(() => h.requests.length === 1, '第一次查询');
+    h.respond(oldFails ? { error: 'old query failed' } : snapshot());
+    await waitFor(() => checks.length === 1, '旧结果停在异步复验');
+    h.advance(1000); h.relay.pump();
+    await waitFor(() => h.requests.length === 2, '第二次查询');
+    const fresh = snapshot(); fresh.recent[2].total = 777;
+    h.respond(oldFails ? fresh : { error: 'new query failed' });
+    await waitFor(() => checks.length === 2, '新结果独立复验');
+    checks[1](true);
+    await waitFor(() => h.frames.some(f => oldFails ? f.body.snap : f.body.state === 'unavailable'), '新结果先发送');
+    const freshFrames = h.frames.filter(f => f.body.snap || f.body.state === 'unavailable');
+    assert.equal(freshFrames.length, 1);
+    if (oldFails) assert.equal(freshFrames[0].body.snap.session.total, 777);
+    else assert.equal(freshFrames[0].body.state, 'unavailable');
+    h.advance(1000); checks[0](true); await wait(40);
+    assert.equal(h.frames.filter(f => f.body.snap || f.body.state === 'unavailable').length, 1,
+      '迟到旧复验不得发送任何数据或不可用帧');
+  });
+}
+
+test('常驻查询使用 getPythonCmd 返回的解释器', async (t) => {
+  const h = harness(t, { getPythonCmd: () => 'custom-python-executable' });
+  h.push(target());
+  await waitFor(() => h.spawns.length === 1, '应启动常驻查询');
+  assert.equal(h.spawns[0][0], 'custom-python-executable');
+  assert.equal(h.spawns[0][1][1], 'serve');
+});

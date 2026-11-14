@@ -1,23 +1,8 @@
-/* mobile-relay：官方中继手机远控 chips 推送（主进程热换模块，v2 目标驱动）。
- * 数据流：overlay.js 渲染端读宿主只读接口 window.zcode.getWebRemoteControlStatus()，
- * 取 mobileTaskView 作为远控页面正在查看的会话（taskId 即聊天 sessionId），连同
- * 已挂载状态条 DOM 采集的 chips 写 window.__zusageMobileChips →
- * 主泵 readWants 轮询读回（同 __zusageWantSids 通道）→ 本模块 push() →
- * 编码为 @zcode/rpc EventFire 帧（魔数 id 2147483647，官方 ChannelClient id 从 0 递增
- * 不碰撞，未知 id 静默丢弃零干扰）→ globalThis.__zusageRelayStash 各活跃桥的
- * protocol.send（宿主 AcknowledgedRelayProtocol 唯一合法入口：seq/messageSeq/ack/
- * 降级语义全归宿主协议栈，绝不直接写 relay socket）→ 官方中继 ws2 →
- * 远控页油猴脚本（docs/zusage-mobile.user.js）解码渲染。规格 specs/mobile-relay.md。
- *
- * 目标会话来源（v2 修正）：只认宿主报告的 mobileTaskView.taskId。mobileTaskView 为空
- * （页面隐藏/首页/遮盖）时不推新数据、不清空手机端上次显示；**不**按目录、标题、
- * 最近活跃等启发式猜会话（v1 的 queryByWorkspace 已删除）。remoteSessionId 是
- * bridge/source 路由键、URL sid 是 deviceSid，均不是聊天 sessionId。
- *
- * chips 优先复用渲染端 DOM 采集（bySession[taskId]，与桌面逐字一致）；桌面没打开
- * 该会话时按精确 taskId 调 zusage.py json <sid>，从 recent 里取该 sid 的记录格式化。
- * payload 契约：{zm:1, ts:ms, target:{taskId,workspacePath,workspaceIdentity}|null,
- * bySession:{sid:[{id,label,value,detail,tone}]}}，JSON ≤ 256KB 单分片。 */
+/* mobile-relay：官方中继目标快照推送（主进程热换模块）。
+ * inject-main 以宿主 mobileTaskView 与唯一活跃桥校验目标，按 SID + identity 查询；
+ * wire 只发送数值投影和随机 binding，远控页调用桌面同一份 overlay.js。
+ * seq/ack/分片仍由官方 AcknowledgedRelayProtocol 管理，不直接写 socket。
+ * 目标代次、发送前复验与隐私契约见 specs/mobile-unified-overlay.md。 */
 "use strict";
 
 const MAGIC_ID = 2147483647;
@@ -70,89 +55,6 @@ function encodeEventFireFrame(payloadJson) {
   return { buffer: out.subarray(0, off + bodyBytes.length) };
 }
 
-/* 与桌面状态条同口径的中文单位：万/亿，toFixed(2) 去尾零。 */
-function formatTokens(n) {
-  const v = Number(n) || 0;
-  if (v >= 100000000) return (v / 100000000).toFixed(2).replace(/\.?0+$/, "") + "亿";
-  if (v >= 10000) return (v / 10000).toFixed(2).replace(/\.?0+$/, "") + "万";
-  return String(Math.round(v));
-}
-
-/* TPS_BANDS 同款档位（02-store-bridge-and-speed-v2.js:109）——桌面速度主数字按档色，
- * 手机端沿用同一档名，由油猴脚本映射同色值。 */
-const TPS_BANDS = [
-  [2000, "zu-ultra"], [1000, "zu-magenta"], [800, "zu-purple"], [500, "zu-violet"],
-  [300, "zu-azure"], [200, "zu-sky"], [150, "zu-teal"], [70, "ok"], [40, "warm"], [0, "hot"],
-];
-function tpsBand(v) {
-  if (typeof v !== "number" || !isFinite(v) || v < 0) return "";
-  for (const [lo, cls] of TPS_BANDS) if (v >= lo) return cls;
-  return "hot";
-}
-
-/* 单个会话快照（zusage json 的 recent 条目）→ 与桌面状态条同序的 chips。
- * 速度主数字沿用 v298 口径（用户拍板）：**最后一轮真实速度（r.last.tps）**，
- * 会话加权平均 avg_tps 只进 tooltip detail——此前误用 avg_tps 当主数字，
- * 导致手机端 157.2t/s 与桌面 355t/s 不一致。
- * 每格按桌面 DOM 拆成 {v 主值, dim 次要后缀}（桌面 .v 600 字重 / .dim subtitle），
- * 手机端用同一套 .zu-* 结构与 CSS 渲染，避免自造格式。 */
-function chipsFromSession(r, today) {
-  const chips = [];
-  const lastTps = Number((r.last && r.last.tps) || 0);
-  const avgTps = Number(r.avg_tps || 0);
-  const mainTps = lastTps > 0 ? lastTps : avgTps;
-  if (mainTps > 0) {
-    const band = tpsBand(mainTps);
-    const parts = ["最近一段 " + (Math.round(lastTps * 10) / 10) + "t/s"];
-    if (avgTps > 0) parts.push("会话均 " + (Math.round(avgTps * 10) / 10) + "t/s");
-    parts.push("Σ输出÷Σ生成窗口");
-    chips.push({
-      id: "speed", label: "速度", band,
-      v: String(Math.round(mainTps * 10) / 10), dim: "t/s",
-      value: (Math.round(mainTps * 10) / 10) + "t/s",
-      detail: parts.join(" · "),
-    });
-  }
-  const lt = r.last_turn || {};
-  /* id 与桌面 state.show 键对齐（turn/win/today/proj/tools/sub）：手机端「状态栏显示」
-   * 面板照抄桌面 ⚙ 的显示项行，勾选键名必须一致 */
-  if (lt.total) chips.push({ id: "turn", label: "本轮", v: formatTokens(lt.total), dim: (lt.requests || 0) + "次", value: formatTokens(lt.total) + (lt.requests || 0) + "次" });
-  if (r.total) chips.push({ id: "win", label: "会话累计", v: formatTokens(r.total), dim: (r.turns || 0) + "轮 " + (r.requests || 0) + "次", value: formatTokens(r.total) + (r.turns || 0) + "轮 " + (r.requests || 0) + "次" });
-  if (today && today.total) chips.push({ id: "today", label: "今日合计", v: formatTokens(today.total), dim: (today.turns || 0) + "轮 " + (today.requests || 0) + "次", value: formatTokens(today.total) + (today.turns || 0) + "轮 " + (today.requests || 0) + "次" });
-  const pj = r.project;
-  if (pj && pj.total) chips.push({ id: "proj", label: "项目累计", v: formatTokens(pj.total), dim: (pj.sessions || 0) + "会话 " + (pj.requests || 0) + "次", value: formatTokens(pj.total) + (pj.sessions || 0) + "会话 " + (pj.requests || 0) + "次" });
-  const sb = r.sub;
-  if (sb && sb.total) chips.push({ id: "sub", label: "子代理", v: formatTokens(sb.total), dim: (sb.requests || 0) + "次", value: formatTokens(sb.total) + (sb.requests || 0) + "次" });
-  if (r.tool_calls) {
-    /* 工具错误数单独下发（桌面 .eb 红色徽标同款），不并进总数文本 */
-    const errs = Number((r.tools && r.tools.errors) || 0);
-    const tc = { id: "tools", label: "工具", v: String(r.tool_calls), value: String(r.tool_calls) };
-    if (errs > 0) tc.err = String(errs);
-    chips.push(tc);
-  }
-  return chips;
-}
-
-/* 按手机端上报的显示项配置裁剪 chips（v346）：手机上 ⚙ 面板勾掉的格不再推送——
- * show 值形如 {"turn":1,"win":1,"proj":0,...}（zusage3.show 原始串）；缺键全开，
- * 显式 false/0 才隐藏。speed 不在 show 键域内，恒保留（与桌面同语义）。
- * 配置缺失/解析失败时不裁（fail-open：宁多推不错推）。 */
-function filterChipsByShow(chips, cfg) {
-  let show = null;
-  try {
-    const raw = cfg && cfg.prefs && cfg.prefs.show;
-    if (typeof raw === "string" && raw) show = JSON.parse(raw);
-    else if (raw && typeof raw === "object") show = raw;
-  } catch (e) { return chips; }
-  if (!show || typeof show !== "object") return chips;
-  return chips.filter((c) => {
-    if (!c || !c.id) return true;
-    if (c.id === "speed" || c.id === "quota") return true;
-    const v = show[c.id];
-    return !(v === 0 || v === false || v === "0");
-  });
-}
-
 function createMobileRelay(options) {
   const log = (options && options.log) || (() => { });
   const stash = () => {
@@ -183,48 +85,84 @@ function createMobileRelay(options) {
       return Math.max(300, v > 0 ? v : DEFAULT_ACTIVITY_MIN_MS);
     };
   })();
-  const pythonCmd = process.platform === "win32" ? "python" : "python3";
+  const defaultPython = process.platform === "win32" ? "python" : "python3";
+  const isEnabled = () => {
+    try { return !options || typeof options.isEnabled !== "function" || options.isEnabled() !== false; }
+    catch (e) { return false; }
+  };
+  const getPythonCmd = () => {
+    try { return (options && typeof options.getPythonCmd === "function" && options.getPythonCmd()) || defaultPython; }
+    catch (e) { return defaultPython; }
+  };
 
-  let currentTarget = null;      // {taskId, workspacePath, workspaceIdentity}
-  let queryBusy = false, lastQueryAt = 0;
+  let currentTarget = null;
+  let targetBinding = "", bindingBridge = null;
+  function bindingFor(bridge) {
+    if (!targetBinding || bindingBridge !== bridge) {
+      targetBinding = require("crypto").randomBytes(16).toString("hex");
+      bindingBridge = bridge;
+    }
+    return targetBinding;
+  }
+  let targetEpoch = 0, validateTarget = null, verifyTarget = null, disposed = false, readyBridge = null;
+  let queryBusy = false, lastQueryAt = 0, queryPending = false;
   /* 手机端已上报配置 = 有消费者（v346 门控）：只有收到手机上行配置后才开始查库推送，
    * 单纯建立远控通道不推（避免无消费者盲推占带宽）。 */
   let clientReady = false, clientCfg = null, clientCfgGen = 0, uplinkFrames = 0;
   let lastMode = "";
-  let lastQueryRecord = null, lastPushedChips = null;   // 诊断：查询原始记录 / 实际推送内容
+  let lastQueryRecord = null;   // 诊断只记录目标数值统计
 
   function refreshBridges() {
     const seen = new Set(), next = [];
     for (const e of stash()) {
-      if (!e || !e.p || !e.b) continue;
-      if (e.b.degraded) continue;                 // 降级桥不再发
-      if (!e.b.relayProtocol) continue;           // 已 dispose（relayProtocol 被置空）
+      if (!e || !e.p || !e.b || e.b.readyAnnounced !== true) continue;
+      if (e.b.degraded || e.b.closed || e.b.destroyed) continue;
+      if (!e.b.relayProtocol || e.b.relayProtocol.protocol !== e.p) continue;
       if (seen.has(e.p)) continue;
       seen.add(e.p); next.push(e);
     }
     live = next;
+    if (readyBridge && (live.length !== 1 || live[0].p !== readyBridge)) {
+      targetEpoch++; clientReady = false; clientCfg = null; clientCfgGen = 0; readyBridge = null;
+      targetBinding = ""; bindingBridge = null; lastSnapKey = ""; lastSnapAt = 0;
+    }
+  }
+
+  function targetIsCurrent(target, epoch, bridge) {
+    if (disposed || !isEnabled() || epoch !== targetEpoch || currentTarget !== target) return false;
+    if (typeof validateTarget === "function") {
+      try { if (!validateTarget(target)) return false; } catch (e) { return false; }
+    }
+    refreshBridges();
+    return live.length === 1 && live[0].p === readyBridge && (!bridge || live[0].p === bridge);
   }
 
   /* 上行排空：宿主钩子（mobile_relay_patch 的 injection）把带 zuUp 标记的帧推进
    * globalThis.__zusageRelayUplinkQueue——帧在 acceptPayload 严格 seq 校验前被消费，
    * 官方 ack 水位零接触。载荷 = 手机端 overlay 偏好（zusage3.* 同键），gen 单调幂等。 */
-  function drainUplink() {
+  function drainUplink(schedule) {
     let q;
     try { q = globalThis.__zusageRelayUplinkQueue; } catch (e) { return; }
     if (!Array.isArray(q) || !q.length) return;
     const frames = q.splice(0, q.length);
-    for (const p of frames) {
+    refreshBridges();
+    if (live.length !== 1 || disposed || !isEnabled()) return;
+    for (const item of frames) {
       uplinkFrames++;
+      if (!item || item.b !== live[0].b || item.relay !== live[0].b.relayProtocol ||
+          item.relay.protocol !== live[0].p) continue;
+      const p = item.frame;
       const cfg = p && typeof p === "object" ? p.zuCfg : null;
-      if (!cfg || typeof cfg !== "object") continue;
+      if (!isEnabled() || disposed || !cfg || typeof cfg !== "object") continue;
       const gen = Math.floor(Number(cfg.gen)) || 0;
       if (gen <= clientCfgGen) continue;
       clientCfgGen = gen;
       clientCfg = cfg;
       clientReady = true;
+      readyBridge = live[0].p;
       diag({ uplinkApplied: gen, clientReady, clientCfg });
       /* 首次拿到配置（或配置变化）：立即按新偏好推一帧 */
-      try { schedulePump(0); } catch (e) { }
+      if (schedule !== false) { try { schedulePump(0); } catch (e) { } }
     }
   }
 
@@ -234,19 +172,21 @@ function createMobileRelay(options) {
   function wrapUplinkHooks() {
     for (const e of stash()) {
       const relay = e && e.b && e.b.relayProtocol;
-      if (!relay || typeof relay.acceptPayload !== "function" || relay.__zusageUplinkWrapped) continue;
+      if (!relay || typeof relay.acceptPayload !== "function" || relay.__zusageUplinkWrappedV2 === relay.acceptPayload) continue;
       let orig;
       try { orig = relay.acceptPayload.bind(relay); } catch (e2) { continue; }
       const wrapped = function (payload) {
         try {
           if (payload && payload.zuUp) {
-            (globalThis.__zusageRelayUplinkQueue = globalThis.__zusageRelayUplinkQueue || []).push(payload);
+            const q = globalThis.__zusageRelayUplinkQueue = globalThis.__zusageRelayUplinkQueue || [];
+            if (q.length >= 64) q.splice(0, q.length - 63);
+            q.push({ frame: payload, b: e.b, relay });
             return true;
           }
         } catch (e2) { }
         return orig(payload);
       };
-      try { relay.acceptPayload = wrapped; relay.__zusageUplinkWrapped = true; } catch (e2) { }
+      try { relay.acceptPayload = wrapped; if (relay.acceptPayload === wrapped) relay.__zusageUplinkWrappedV2 = wrapped; } catch (e2) { }
     }
   }
 
@@ -254,11 +194,18 @@ function createMobileRelay(options) {
     refreshBridges();
     wrapUplinkHooks();
     drainUplink();
-    /* 兜底心跳（同桌面 heartbeat_ms）：事件丢失时仍按 30s 节奏对账 */
-    if (live.length && currentTarget && clientReady) { try { pump(); } catch (e) { } }
+    if (isEnabled() && live.length === 1 && currentTarget && clientReady) { try { pump(); } catch (e) { } }
   }, FALLBACK_HEARTBEAT_MS);
   if (typeof bridgeTimer.unref === "function") bridgeTimer.unref();
   /* 能力公告节拍：只做握手（有桥就发，不管有没有 target/配置） */
+  const remoteTimer = setInterval(() => {
+    if (currentTarget && currentTarget.workspaceIdentity && isEnabled()) {
+      const configured = options && typeof options.getRemotePollMs === "function" ? Number(options.getRemotePollMs()) : 3000;
+      const interval = Math.max(1000, Number.isFinite(configured) && configured > 0 ? configured : 3000, getMinIntervalMs());
+      if (Date.now() - lastQueryAt >= interval) pump();
+    }
+  }, 1000);
+  if (typeof remoteTimer.unref === "function") remoteTimer.unref();
   const announceTimer = setInterval(() => { try { announce(); } catch (e) { } }, ANNOUNCE_MS);
   if (typeof announceTimer.unref === "function") announceTimer.unref();
   refreshBridges();
@@ -270,7 +217,6 @@ function createMobileRelay(options) {
         id: e.b && e.b.bridgeSessionId ? String(e.b.bridgeSessionId).slice(0, 16) : null,
         degraded: !!(e.b && e.b.degraded),
         relay: !!(e.b && e.b.relayProtocol),
-        ws: e.b && e.b.workspacePath ? String(e.b.workspacePath).slice(0, 50) : null,
         keys: e.b ? Object.keys(e.b).slice(0, 24) : null,
         ready: !!(e.b && e.b.readyAnnounced),
         closed: !!(e.b && e.b.closed),
@@ -282,14 +228,14 @@ function createMobileRelay(options) {
 
   function diag(extra) {    try {
       const fs = require("fs");
-      fs.writeFileSync(path.join(__dirname, "mobile-relay-diag.json"), JSON.stringify(Object.assign({
+      const diagPath = options && options.diagPath || path.join(__dirname, "mobile-relay-diag.json");
+      fs.writeFileSync(diagPath, JSON.stringify(Object.assign({
         ts: Date.now(), stashCount: stash().length, liveCount: live.length,
         live: live.map(entryInfo), stashAll: stash().map(entryInfo),
         pushed, droppedOversize, skippedDup, throttled, sendErr, skippedNoTarget,
         queryRuns, lastPushAt, lastError, lastMode, clientReady, clientCfgGen, uplinkFrames, clientCfg,
-        target: currentTarget ? currentTarget.taskId : null,
-        targetWorkspace: currentTarget ? currentTarget.workspacePath : null,
-        lastQueryRecord, lastPushedChips,
+        target: !!currentTarget,
+        lastQueryRecord,
       }, extra || {}), null, 2));
     } catch (e) { }
   }
@@ -307,7 +253,9 @@ function createMobileRelay(options) {
    * 每次 spawn 新 Python 在 Windows 要 0.5~1.5s 且吃 CPU——这是远控端「更新慢」的
    * 主因。常驻进程下同一查询 5~20ms。空闲 60s 回收；早退 3 次判不稳定回退一次性 spawn。
    * turns:true 不再携带（逐轮统计块随回答统计行一并回退）。 */
-  const RESIDENT_LINE = (taskId) => JSON.stringify({ sids: [taskId], scopes: [] });
+  const RESIDENT_LINE = (target) => JSON.stringify(target.workspaceIdentity
+    ? { sids: [], scopes: [{ sid: target.taskId, workspaceIdentity: target.workspaceIdentity }] }
+    : { sids: [target.taskId], scopes: [] });
   let pyRes = null, pyFail = 0, pyIdle = 0;
   function stopResident() {
     if (pyIdle) { clearTimeout(pyIdle); pyIdle = 0; }
@@ -325,11 +273,13 @@ function createMobileRelay(options) {
     if (pyIdle && typeof pyIdle.unref === "function") pyIdle.unref();
   }
   function startResident() {
-    if (pyRes) return pyRes;
+    const pythonCmd = getPythonCmd();
+    if (pyRes && pyRes.pythonCmd === pythonCmd) return pyRes;
+    if (pyRes) stopResident();
     let proc;
     try { proc = spawn(pythonCmd, [zusagePath, "serve"], { windowsHide: true }); }
     catch (e) { pyFail++; lastError = "serve spawn: " + e.message; return null; }
-    const c = { proc, buf: "", waiters: [], born: Date.now(), intentional: false, finished: false };
+    const c = { proc, pythonCmd, buf: "", waiters: [], born: Date.now(), intentional: false, finished: false };
     pyRes = c;
     c.finish = () => {
       if (c.finished) return;
@@ -364,24 +314,29 @@ function createMobileRelay(options) {
     return c;
   }
   /* 一次查询：常驻优先，不稳定时一次性 spawn 回退；只结算一次。 */
-  function queryJson(taskId, done) {
+  function queryJson(target, done) {
     let settled = false;
     const finish = (payload) => { if (!settled) { settled = true; done(payload); } };
+    const request = RESIDENT_LINE(target);
     if (pyFail < 3) {
       const c = startResident();
       if (c && c.proc.stdin.writable) {
         const waiter = (payload) => { clearTimeout(timer); finish(payload); };
         const timer = setTimeout(() => { stopResident(); finish(null); }, RESIDENT_TIMEOUT_MS);
+        if (timer && typeof timer.unref === "function") timer.unref();
         c.waiters.push(waiter);
-        try { c.proc.stdin.write(RESIDENT_LINE(taskId) + "\n"); }
+        try { c.proc.stdin.write(request + "\n"); }
         catch (e) { try { c.proc.kill(); } catch (e2) { } c.finish(); }
         armIdle();
         return;
       }
     }
-    const proc = spawn(pythonCmd, [zusagePath, "json", taskId], { windowsHide: true });
+    let proc;
+    try { proc = spawn(getPythonCmd(), [zusagePath, "json", request], { windowsHide: true }); }
+    catch (e) { lastError = "json spawn: " + e.message; finish(null); return; }
     let out = "";
     const timer = setTimeout(() => { try { proc.kill(); } catch (e) { } finish(null); }, RESIDENT_TIMEOUT_MS);
+    if (timer && typeof timer.unref === "function") timer.unref();
     proc.stdout.on("data", (d) => { if (out.length < 8 * 1024 * 1024) out += d.toString("utf8"); });
     proc.on("error", () => { clearTimeout(timer); finish(null); });
     proc.on("close", (code) => {
@@ -391,32 +346,110 @@ function createMobileRelay(options) {
     });
   }
 
-  /* 按精确 taskId 查询会话快照并推送：主载荷 = zusage.py json 的完整快照（手机端跑
-   * 桌面 overlay.js 渲染），chips 仅为 overlay 加载失败时的降级渲染（按手机 show 裁剪）。 */
-  function queryAndPush(taskId) {
+  /* 投影数值统计，不转发标题、路径、任务正文或其他会话。 */
+  function numericProjection(value) {
+    const numeric = ["total", "input", "output", "cache_read", "cache_write", "reasoning",
+      "requests", "turns", "sessions", "tool_calls", "tool_errors", "errors", "retries",
+      "avg_tps", "tps", "rate_avg", "tps_avg", "tps_out", "tps_gen", "rated_output",
+      "unrated_output", "gen_ms", "duration_ms", "avg_duration_ms", "avg_ttft_ms", "ttft_ms",
+      "started", "ended", "startedAt", "endedAt", "last_at", "ctx", "ctx_exc",
+      "context_window", "cost_usd", "count"];
+    const models = new Map(), tools = new Map();
+    function label(map, raw, prefix) {
+      if (typeof raw !== "string" || !raw) return undefined;
+      if (!map.has(raw)) map.set(raw, prefix + " " + (map.size + 1));
+      return map.get(raw);
+    }
+    function object(v) { return v && typeof v === "object" && !Array.isArray(v); }
+    function scalars(v, keys) {
+      const out = {};
+      for (const key of keys) if (typeof v[key] === "number" && Number.isFinite(v[key])) out[key] = v[key];
+      return out;
+    }
+    function modelList(v) {
+      if (!Array.isArray(v)) return undefined;
+      return v.slice(0, 16).filter(object).map((m) => {
+        const out = scalars(m, ["total", "requests", "cost_usd"]);
+        const name = label(models, m.model, "Model");
+        if (name) out.model = name;
+        if (object(m.rates)) out.rates = scalars(m.rates, ["input", "output", "cache_read", "cache_write"]);
+        return out;
+      });
+    }
+    function project(v, kind) {
+      if (!object(v)) return undefined;
+      const out = scalars(v, numeric);
+      if (kind === "subItem" && typeof v.last === "number" && Number.isFinite(v.last)) out.last = v.last;
+      for (const key of ["active", "completed", "context_auto"]) {
+        if (typeof v[key] === "boolean") out[key] = v[key];
+      }
+      if (Array.isArray(v.models)) out.models = modelList(v.models);
+      if (kind === "last") {
+        const name = label(models, v.model, "Model");
+        if (name) out.model = name;
+        if (object(v.rates)) out.rates = scalars(v.rates, ["input", "output", "cache_read", "cache_write"]);
+      }
+      if (kind === "root") {
+        for (const key of ["last", "last_turn", "project", "sub", "tools"]) {
+          const child = project(v[key], key);
+          if (child) out[key] = child;
+        }
+        if (Array.isArray(v.speed_segs)) out.speed_segs = v.speed_segs.slice(-20).filter(object).map((s) => {
+          const seg = scalars(s, ["v", "t", "i", "o", "n", "c"]);
+          const name = label(models, s.m, "Model");
+          if (name) seg.m = name;
+          return seg;
+        });
+      }
+      if (kind === "sub" && Array.isArray(v.list)) out.list = v.list.slice(0, 32).filter(object).map((s, i) => {
+        const item = project(s, "subItem");
+        item.sid = "agent-" + (i + 1);
+        return item;
+      });
+      if (kind === "tools" && Array.isArray(v.list)) out.list = v.list.slice(0, 32).filter(object).map((t) => {
+        const item = scalars(t, ["count", "duration_ms", "errors"]);
+        item.name = label(tools, t.name, "Tool") || "Tool";
+        return item;
+      });
+      return out;
+    }
+    return project(value, "root");
+  }
+
+  function queryAndPush(target, epoch, bridge) {
     if (queryBusy) return;
     queryBusy = true;
-    queryRuns++;
-    queryJson(taskId, (d) => {
+    const runId = ++queryRuns;
+    queryJson(target, (d) => {
       queryBusy = false;
       lastQueryAt = Date.now();
-      if (!d || d.error) { lastError = "query: " + ((d && d.error) || "no payload"); diag(); return; }
+      if (queryPending) { queryPending = false; schedulePump(0); }
+      if (!targetIsCurrent(target, epoch, bridge)) return;
+      if (!d || d.error) { lastError = "query failed"; diag(); sendUnavailable(target, epoch, bridge, runId); return; }
       try {
-        const r = (d.recent || []).find((x) => x && x.sid === taskId);
-        if (!r) { lastError = "session not in recent"; diag(); return; }
-        lastQueryRecord = {   // 诊断快照：查询返回的原始字段
-          ts: Date.now(), sid: r.sid, title: r.title,
-          total: r.total, turns: r.turns, requests: r.requests,
+        const remote = !!target.workspaceIdentity;
+        const r = (d.recent || []).find((x) => x && x.sid === target.taskId &&
+          (remote ? x.workspace_identity === target.workspaceIdentity && x.remote &&
+            x.remote_target && !x.remote_error && !x.remote_missing
+            : !x.remote && !x.workspace_identity));
+        if (!r || (!remote && d.local_error)) { lastError = "session unavailable"; diag(); sendUnavailable(target, epoch, bridge, runId); return; }
+        const today = remote ? (d.remote_today || {})[r.remote_target] : d.today;
+        lastQueryRecord = {
+          ts: Date.now(), total: r.total, turns: r.turns, requests: r.requests,
           tool_calls: r.tool_calls, avg_tps: r.avg_tps,
-          last: r.last ? { tps: r.last.tps } : null,
-          last_turn: r.last_turn ? { total: r.last_turn.total, requests: r.last_turn.requests, tps: r.last_turn.tps } : null,
-          today_total: d.today ? d.today.total : null,
-          today_turns: d.today ? d.today.turns : null,
-          today_requests: d.today ? d.today.requests : null,
+          today_total: today ? today.total : null,
+          today_turns: today ? today.turns : null,
+          today_requests: today ? today.requests : null,
         };
-        const chips = filterChipsByShow(chipsFromSession(r, d.today), clientCfg);
-        sendSnapshot(taskId, d, chips);
-      } catch (e) { lastError = "parse: " + ((e && e.message) || e); diag(); }
+        const row = numericProjection(r);
+        row.sid = target.taskId;
+        if (remote) row.remote = true;
+        const snap = {
+          recent: [row], session: row, today: numericProjection(today), remote_evidence: remote,
+          last: row.last, last_turn: row.last_turn,
+        };
+        sendSnapshot(target, epoch, bridge, snap, runId);
+      } catch (e) { lastError = "parse failed"; diag(); sendUnavailable(target, epoch, bridge, runId); }
     });
   }
 
@@ -428,7 +461,9 @@ function createMobileRelay(options) {
   function announce() {
     refreshBridges();
     wrapUplinkHooks();
-    if (!live.length) return;
+    if (disposed || !isEnabled() || live.length !== 1) return;
+    const relay = live[0].b.relayProtocol;
+    if (!relay || typeof relay.acceptPayload !== "function" || relay.__zusageUplinkWrappedV2 !== relay.acceptPayload) return;
     const now = Date.now();
     if (now - lastAnnounceAt < ANNOUNCE_MS) return;
     lastAnnounceAt = now;
@@ -446,44 +481,62 @@ function createMobileRelay(options) {
     }
   }
 
-  /* 快照推送：载荷 = {zm, ts, target, mine, zuUpCap, cfgGen, snap, chips}。
-   * snap 是桌面 overlay 可直接消费的 zusage 快照（手机端跑同一份 overlay.js 渲染，
-   * 样式/面板/tooltip 全量照抄）；chips 仅作 overlay 加载失败时旧脚本的降级渲染；
-   * >256KB 时依次裁 speed_history → chips（rpc-frame 单分片上限）。 */
-  function sendSnapshot(taskId, snap, chips) {
-    refreshBridges();
-    if (!live.length) return;
-    delete snap.all_projects;      // 手机端项目格用 sess.project，整库聚合体积大且不用
-    delete snap.known_sids;
-    const mine = taskId;
+  /* 本地与远端均只发送受限快照，手机复用同一桌面 overlay；不再生成第二种状态条。
+   * 超限只裁可选明细，仍超限则发送目标专属不可用状态，不能更改目标类型。 */
+  async function sendUnavailable(target, epoch, bridge, runId) {
+    if (runId !== queryRuns || !targetIsCurrent(target, epoch, bridge)) return;
+    if (typeof verifyTarget === "function") {
+      try { if (!await verifyTarget()) return; } catch (e) { return; }
+      if (runId !== queryRuns || !targetIsCurrent(target, epoch, bridge)) return;
+    }
+    const body = { zm: 1, ts: Date.now(), target: { taskId: target.taskId }, mine: target.taskId,
+      scopeKind: target.workspaceIdentity ? "remote" : "local", state: "unavailable",
+      binding: bindingFor(bridge), zuUpCap: UPLINK_CAP, cfgGen: clientCfgGen };
+    try { live[0].p.send(encodeEventFireFrame(JSON.stringify(body))); lastSnapKey = ""; }
+    catch (e) { sendErr++; }
+  }
+
+  async function sendSnapshot(target, epoch, bridge, snap, runId) {
+    if (runId !== queryRuns || !targetIsCurrent(target, epoch, bridge)) return;
+    if (typeof verifyTarget === "function") {
+      try { if (!await verifyTarget()) return; } catch (e) { return; }
+      if (runId !== queryRuns || !targetIsCurrent(target, epoch, bridge)) return;
+    }
+    const mine = target.taskId;
     const now = Date.now();
-    const key = JSON.stringify({ t: mine, s: snap });
+    const binding = bindingFor(bridge);
+    const key = JSON.stringify({ binding, s: snap });
     if (key === lastSnapKey && now - lastSnapAt < HEARTBEAT_MS) { skippedDup++; return; }
-    /* zuUpCap/cfgGen：上行能力握手与配置回执（油猴据此决定能否上行/是否停重试） */
-    let body = { zm: 1, ts: now, target: currentTarget, mine: mine,
-      zuUpCap: UPLINK_CAP, cfgGen: clientCfgGen, snap: snap, chips: chips };
+    const body = { zm: 1, ts: now, target: { taskId: mine }, mine, binding,
+      scopeKind: target.workspaceIdentity ? "remote" : "local",
+      zuUpCap: UPLINK_CAP, cfgGen: clientCfgGen, snap };
     let json = JSON.stringify(body);
-    if (json.length > MAX_JSON_BYTES) { delete body.snap.speed_history; json = JSON.stringify(body); }
-    if (json.length > MAX_JSON_BYTES) { delete body.chips; json = JSON.stringify(body); }
-    if (json.length > MAX_JSON_BYTES) { droppedOversize++; lastError = "snap oversize"; diag(); return; }
-    if (now - lastSnapAt < getMinIntervalMs()) { throttled++; return; }
+    if (Buffer.byteLength(json, "utf8") > MAX_JSON_BYTES) {
+      // 保留主统计；明细是可选的，不能通过更改 scopeKind 或换渲染器绕过大小边界。
+      const row = Object.assign({}, snap.session);
+      for (const field of ["models", "speed_segs", "tools", "sub", "project"]) delete row[field];
+      for (const field of ["last", "last_turn"]) if (row[field]) {
+        row[field] = Object.assign({}, row[field]); delete row[field].models;
+      }
+      const today = snap.today && Object.assign({}, snap.today);
+      if (today) delete today.models;
+      body.snap = Object.assign({}, snap, { recent: [row], session: row, today,
+        last: row.last, last_turn: row.last_turn });
+      json = JSON.stringify(body);
+    }
+    if (Buffer.byteLength(json, "utf8") > MAX_JSON_BYTES) {
+      droppedOversize++; lastError = "snap oversize"; diag();
+      sendUnavailable(target, epoch, bridge, runId); return;
+    }
+    if (now - lastSnapAt < getMinIntervalMs()) { throttled++; schedulePump(getMinIntervalMs() - (now - lastSnapAt)); return; }
     let frame;
     try { frame = encodeEventFireFrame(json); }
-    catch (e) { sendErr++; lastError = "encode: " + ((e && e.message) || e); return; }
-    let okCount = 0;
-    for (const e of live.slice()) {
-      try { e.p.send(frame); okCount++; }
-      catch (err) {
-        sendErr++; lastError = ((err && err.message) || String(err)).slice(0, 160);
-        const idx = live.indexOf(e);
-        if (idx >= 0) live.splice(idx, 1);
-      }
-    }
-    if (okCount > 0) {
-      pushed++; lastPushAt = now; lastSnapAt = now; lastSnapKey = key; lastMode = "snap";
-      lastPushedChips = chips;
-      diag();
-    }
+    catch (e) { sendErr++; lastError = "encode failed"; return; }
+    if (runId !== queryRuns || !targetIsCurrent(target, epoch, bridge)) return;
+    try { live[0].p.send(frame); }
+    catch (err) { sendErr++; lastError = "send failed"; return; }
+    pushed++; lastPushAt = now; lastSnapAt = now; lastSnapKey = key; lastMode = "snap";
+    diag();
   }
 
   /* 事件驱动（v346，与桌面同款）：inject-main 的 DB watcher（300ms 去抖）与兜底心跳
@@ -512,38 +565,55 @@ function createMobileRelay(options) {
   }
   /* 一次对账：门控（clientReady）→ 目标 → 节流 → 查询推送。 */
   function pump() {
-    drainUplink();
-    if (!currentTarget || !clientReady) return false;
-    refreshBridges();
-    if (!live.length) return false;                  // 无远控连接：不查库
-    const taskId = String(currentTarget.taskId);
-    if (queryBusy) { schedulePump(300); return false; }
+    drainUplink(false);
+    if (disposed || !isEnabled() || !currentTarget || !clientReady) return false;
+    const target = currentTarget, epoch = targetEpoch;
+    if (!targetIsCurrent(target, epoch)) return false;
+    const bridge = live[0].p;
+    if (queryBusy) { queryPending = true; return false; }
     const now = Date.now();
     const limit = getMinIntervalMs();
     if (now - lastQueryAt < limit) { schedulePump(limit - (now - lastQueryAt)); return false; }
-    queryAndPush(taskId);
+    queryAndPush(target, epoch, bridge);
     diagThrottled();
     return true;
   }
 
   /* 渲染端上报：{zm:1, ts, target, bySession}。目标变化立即 pump；同一目标等 DB 事件。
    * 无手机配置（clientReady=false）时不查库不推——门控在 pump 内。 */
-  function push(payload) {
-    if (!payload || payload.zm !== 1) return false;
-    const tgt = payload.target && payload.target.taskId ? payload.target : null;
-    const prevTaskId = currentTarget ? currentTarget.taskId : "";
+  function push(payload, validator, verifier) {
+    if (disposed || !payload || payload.zm !== 1) return false;
+    if (!isEnabled()) { clientReady = false; clientCfg = null; clientCfgGen = 0; readyBridge = null; }
+    const input = payload.target;
+    const sid = input && typeof input.taskId === "string" ? input.taskId : "";
+    const identity = input && typeof input.workspaceIdentity === "string" ? input.workspaceIdentity : null;
+    const tgt = isEnabled() && /^[A-Za-z0-9_-]{1,256}$/.test(sid) &&
+      identity !== null && (!identity || /^remote:(?:ssh|wsl|docker|server):/.test(identity))
+      ? { taskId: sid, workspaceIdentity: identity, workspacePath: input.workspacePath || "",
+        bridge: input.bridge, bridgeState: input.bridgeState, relay: input.relay,
+        remoteSessionId: input.remoteSessionId } : null;
+    const prevKey = currentTarget && JSON.stringify([currentTarget.taskId, currentTarget.workspaceIdentity, currentTarget.workspacePath]);
+    const nextKey = tgt && JSON.stringify([tgt.taskId, tgt.workspaceIdentity, tgt.workspacePath]);
+    if (prevKey === nextKey && tgt && currentTarget.bridge === tgt.bridge &&
+        currentTarget.bridgeState === tgt.bridgeState && currentTarget.relay === tgt.relay &&
+        currentTarget.remoteSessionId === tgt.remoteSessionId) {
+      validateTarget = validator || null; verifyTarget = verifier || null;
+      drainUplink();
+      return true;
+    }
+    targetEpoch++;
+    targetBinding = ""; bindingBridge = null;
+    clearPump();
     currentTarget = tgt;
-    if (!tgt) { clearPump(); skippedNoTarget++; return false; }
-    const taskId = String(tgt.taskId);
-    if (taskId !== prevTaskId) clearPump();   // 目标变化：立即对账（不受旧节流限制）
-    schedulePump(taskId !== prevTaskId ? 0 : 0);
+    validateTarget = validator || null;
+    verifyTarget = verifier || null;
+    if (!tgt) { skippedNoTarget++; return false; }
+    lastQueryAt = 0; lastSnapAt = 0; lastSnapKey = "";
+    schedulePump(0);
     return true;
   }
 
-  diag({ entries: stash().filter((e) => e.b && e.b.relayProtocol).map((e) => ({
-    bridgeSessionId: e.b.bridgeSessionId ? String(e.b.bridgeSessionId).slice(0, 12) : null,
-    workspacePath: e.b.workspacePath || null,
-  })) });
+  diag();
 
   return {
     push,
@@ -555,8 +625,14 @@ function createMobileRelay(options) {
     }),
     /* 测试接缝：DB 事件正常由 inject-main 调用（冷文件），测试直调 */
     pump,
-    dispose: () => { if (bridgeTimer) clearInterval(bridgeTimer); if (announceTimer) clearInterval(announceTimer); clearPump(); stopResident(); live = []; },
+    dispose: () => {
+      disposed = true; targetEpoch++; currentTarget = null; clientReady = false;
+      if (bridgeTimer) clearInterval(bridgeTimer);
+      if (announceTimer) clearInterval(announceTimer);
+      if (remoteTimer) clearInterval(remoteTimer);
+      clearPump(); stopResident(); live = [];
+    },
   };
 }
 
-module.exports = { createMobileRelay, MOBILE_RELAY_MAGIC_ID: MAGIC_ID, chipsFromSession, tpsBand };
+module.exports = { createMobileRelay, MOBILE_RELAY_MAGIC_ID: MAGIC_ID };

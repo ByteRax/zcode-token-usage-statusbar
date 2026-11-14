@@ -1,66 +1,54 @@
-# 手机端油猴脚本构建链（mobile userscript build）
+# 手机端油猴脚本构建链
 
-`docs/zusage-mobile.user.js` 是**编译产物**，不是手写文件：手机特有逻辑（中继旁听/分片重组/overlay 加载器/回退 UI 骨架）以分片源码维护在 `src/mobile/`，其中「照抄桌面」的内容（格图标 SVG、格样式、TPS 色档、设置面板显示项行）在构建期从桌面分片（`src/overlay/`）**按锚点注释提取注入**。桌面分片更新后重新构建，油猴产物自动跟随；锚点缺失或声明失配时构建直接报错（fail-fast），不允许静默漂移。
+本规格服从 [远控统一桌面状态条](mobile-unified-overlay.md)。手机页面只运行桌面 overlay 的完整代码，不再维护 chips 条、独立设置、图标或 CSS 子集。`src/mobile/` 仅负责传输、校验、偏好握手与诊断。
 
-## 1. 文件与职责
+## 文件与构建
 
-| 文件 | 角色 |
+| 文件 | 职责 |
 |---|---|
-| `src/mobile/[0-9][0-9]-*.js` | 油猴脚本分片源码（字典序拼接；命名约束同 `src/overlay/`，杂名文件构建报错） |
-| `scripts/build_mobile_userscript.py` | 零依赖构建脚本：拼接 + 提取 + 改写 + 占位符替换，一次产出正式/调试两个产物；`--check` 校验两份产物一致 |
-| `docs/zusage-mobile.user.js` | **正式版**产物（用户从 CDN/LAN 安装的实体）：`DEBUG_BUILD = false`，不创建调试面板（`zm-dbg`）与 ☰ 钮，页面零调试痕迹 |
-| `docs/zusage-mobile.debug.user.js` | **调试版**产物：`DEBUG_BUILD = true`，默认显示排障面板（帧统计/overlay 加载状态/注入时序）；`@name` 带「·调试版」避免篡改猴按 name+namespace 与正式版互相覆盖。排障时装它，装回正式版恢复干净 |
+| `src/mobile/00-meta.js` | UserScript 元数据 |
+| `src/mobile/10-relay.js` | 代际清理、旧偏好迁移、RPC 解码、统计 |
+| `src/mobile/20-overlay-loader.js` | socket 隔离的分片/顺序/握手、受限快照校验、嵌入 overlay 激活与接口适配 |
+| `src/mobile/30-ws-hook.js` | 透明 WebSocket 包装、已有 `__zmWSList` 补挂、连接诊断脱敏 |
+| `src/mobile/40-fallback-ui.js` | 仅调试面板、启动和 dispose；文件名保留，已无 fallback UI |
+| `scripts/build_mobile_userscript.py` | 拼接手机分片，将 `build_overlay.assemble_bytes` 的完整输出编码为 JS 字符串嵌入，生成正式/调试两份产物 |
+| `docs/zusage-mobile.user.js` / `docs/zusage-mobile.debug.user.js` | 正式/调试构建产物，不进插件分发清单 |
 
-两变体**仅 3 处差异**（`DEBUG_BUILD` 开关、`@name`、`@description`），共享全部提取与逻辑代码；stats 帧统计两版都照常收集（正式版只是没有 UI 展示）。「未捕获中继连接，请刷新页面」等**功能提示**写在状态条 `zm-idle` 上，不属于调试面板，正式版保留。
+构建必须直接使用桌面构建函数（包含 VERSION 台账折叠），不能读可能滞后的根 `overlay.js`，也不能在运行时 fetch CDN。嵌入字符串经 JSON 解码还原后必须与桌面输出逐字节一致。原桌面 `zm-*` CSS/图标/设置锚点不再是手机构建依赖；此改动不要求删除桌面锚点。
 
-油猴产物**不进**插件分发清单（`sync_plugin.py` `FILES`）：它是 `docs/` 文档树资产，不随插件包发布；同步入口只有本构建脚本。桌面侧锚点注释随 `overlay.js` 产物走 `build_overlay.py` → `sync_plugin.py` 正常链。
+手机分片按 `[0-9][0-9]-*.js` 字典序拼接。杂名、空分片、非法 UTF-8、嵌入/调试占位符缺失或重复必须报错。先完成两变体组装再写产物；`--check` 只读核对两份产物。正式版不创建调试 DOM/CSS 或调试按钮；调试版默认显示面板，`@name`、`@description` 与正式版区分。
 
-## 2. 分片内容划分（唯一手写部分 = 手机特有）
+## 接收端契约
 
-| 分片 | 内容 |
+- 激活嵌入代码前设置 `window.__zusageMobileMode = true`。没有数据也激活桌面 overlay，调用空 `session`/`recent` 与 `mobile.state="waiting"`；不建立另一条状态栏。
+- 有效帧必须满足 `zm=1`、`scopeKind ∈ {local,remote}`、`target.taskId=mine`、受限非空 `binding`。`snap.session.sid` 与 `snap.recent` 的唯一目标行 SID 必须同时等于目标。快照里的 `mine` 如有也须相等。
+- 递归拒绝非空 `workspace_identity`/`workspaceIdentity` 与 `remote_target`/`remoteTarget`。远端数值快照允许 `remote=true`，远端目标行必须标记 `remote=true`。`today` 直接使用生产者给出的目标所属数据，不从浏览器或其它帧补算。
+- 每个有效快照调用 `__zusageUpdate({...snap,mine:taskId,mobile:{taskId,binding,scopeKind,state:body.state||"ready"}})`，不修改原快照对象。
+- `unavailable` 帧须有同样的目标绑定且无 `snap`/`chips`/`bySession`，向桌面接口发送空 `session`/`recent` 与 unavailable 状态，及时丢弃旧目标数字。
+- 旧 chips-only 或 bySession 帧不转成假统计，只向同一接口发送空数据和 `state="upgrade"`。能力公告不替换数据、不刷新有效数据时间、不推进数据序号。
+- URL 的 `sid` 是设备 SID，不参与聊天目标选择。
+
+## 顺序、握手与生命周期
+
+- 分片按 socket、bridge、seq 隔离；旧序号、重复帧、切换后才完成的旧分片不能恢复旧数据。残片超过 60 秒清理，关闭连接立即清理。
+- 配置只在同一 socket 收到有效 `zuUpCap>=2` 后发送；能力 45 秒过期。gen/ack、30 秒重试与偏好变化均按连接独立维护，断开或重新注入不能继承能力。
+- 旧 `zusageMobilePrefs` 的 show/theme/just 只在对应 `zusage3.*` 键缺失时迁移。读取/上行桌面同名偏好，UI 只由桌面设置写入。
+- 重新注入先调用前代 `__zmDispose`；移除本代 DOM、计时器、DOM/socket 监听与自有构造器包装，不关闭宿主 socket。保留并复用已有 `__zmWSList` 中仍存活的连接，重新握手。
+- pagehide 释放本代消费者；bfcache pageshow 重新启动本代消费者，不重复包装或监听。显式 dispose 后不恢复。
+- 绝不自动刷新页面。捕获不到连接时明确提示用户手动刷新。调试 URL 仅保留协议、host 和 pathname，去除 userinfo/query/fragment，解析失败不回显原文。
+
+## 验收
+
+| 场景 | 期望与验证 |
 |---|---|
-| `00-meta` | UserScript 元数据头（`@version` 手写管理，构建不自动 bump）+ 文件头说明 |
-| `10-relay` | IIFE 开 + 偏好（`zusageMobilePrefs`）+ @zcode/rpc 只读解码（Reader/utf8Decode/base64）+ 帧统计 |
-| `20-overlay-loader` | rpc-frame 分片重组（fragMap）+ 桌面 overlay.js 加载器（OVERLAY_URLS/applySnap） |
-| `30-ws-hook` | WebSocket/Worker/SharedWorker 透明包装（observe-only） |
-| `40-fallback-ui` | 回退 chips 条 UI 骨架 + 调试面板 + boot 收尾 `})();` |
+| 桌面源码变化、根产物滞后 | Python 构建测试逐字节核对嵌入内容取自 assemble_bytes |
+| 不带任何数据启动 | VM 行为测试确认 overlay 已激活、先启 mobile mode、收到 waiting，无手机独立 DOM |
+| 本地→远端→不可用→恢复 | 始终复用同一 overlay 实例；接口只收到该目标专属快照或空态 |
+| 目标不符、混入真实身份、缺绑定 | 不调用统计更新；有效零值照常透传 |
+| 旧 chips-only、能力公告 | chips 只触发 upgrade；公告只更新同 socket 握手 |
+| 乱序、迟到分片、跨 socket | 不回退目标，分片不混合，能力不共享 |
+| 重复注入、dispose、pagehide | 消费者/计时器清理；新代补挂已有连接且不复用能力 |
+| 正式/调试、连接 URL | 正式无调试 DOM/CSS，调试 URL 无敏感尾部，无 location.reload |
+| 临时构建及产物漂移 | build 与 --check 通过；手改临时产物后 --check 必须失败 |
 
-## 3. 锚点契约（桌面分片侧）
-
-锚点是**注释级标记**，不改变桌面运行行为；桌面重构时删改锚点会让构建报错——这是设计意图（强制人工确认手机端跟随）。
-
-| 锚点 | 位置 | 形态 |
-|---|---|---|
-| `/*zm-ico:<id>*/` | `src/overlay/07-*.js` 各状态条格图标字面量前 | `ico(/*zm-ico:speed*/'<path…/>')`；id ∈ 油猴声明集合 |
-| `/*zm-cell-css-begin*/` / `/*zm-cell-css-end*/` | `src/overlay/06-*.js` 格样式拼接区（`.it` 起、`.eb` 止，可含无关规则——构建白名单过滤） | JS 代码层注释，框住字符串拼接段 |
-| `/*zm-band-css-begin*/` / `/*zm-band-css-end*/` | `src/overlay/06-*.js` 色档规则区（深色组与 `.zu-light` 浅色组**各一对**） | 同上 |
-| `/*zm-show-rows-begin*/` / `/*zm-show-rows-end*/` | `src/overlay/06-*.js` buildPanel 显示项 `settingRow` 区 | 同上 |
-
-## 4. 提取与改写规则（构建脚本侧）
-
-- **图标**：正则收集 `/*zm-ico:<id>*/'<path>'` → `var ICONS = {…}`。油猴 `40-fallback-ui` 内声明 `/*@zm-icons <id逗号集>@*/`；声明的每个 id 必须在桌面锚点中有命中，否则报错（桌面删格 → 油猴同步删声明）。
-- **格样式 CSS**：锚点区间内全部 JS 双引号字符串段连接 → 按顶层 `}` 切规则 → 白名单过滤（`.it`/`.sep`/`.k`/`.v`/`.dim`/`.eb` 及 `.zusage-root` 前缀形态；`.zu-gear`/`.zu-live`/`.btn`/`@keyframes`/`@supports` 等桌面特有规则丢弃）→ 选择器改写：`.zusage-root` 前缀替换为 `.zm-root`，裸类逐个加 `.zm-root ` 前缀（逗号分组逐项处理）。
-- **色档 CSS**：同上切规则；深色组 `.ok/.warm/.hot/.zu-teal/.zu-sky/.zu-azure/.zu-violet/.zu-purple/.zu-magenta/.zu-ultra`（单一 color 声明）→ 每条展开为 `.zm-root .zm-band-<n>` 与 `.zm-root .zm-tone-<n>` 两份（与 `src/overlay/13-mobile-chips.js` 的 `MC_BANDS`/`mcToneOf` 值域对齐）；浅色组 `.zu-light .<n>` → `.zm-light .zm-band-<n>` + `.zm-light .zm-tone-<n>`。`.zu-ultra` 的 `::before`/`@supports` 渐变块不收（回退条保持基础色简化版）。
-- **显示项行**：锚点区间提取 `settingRow('<input type="checkbox" data-k="<k>">', L("<zh>",…), L("<zh>",…))` → 油猴声明 `/*@zm-show-keys <k逗号集>@*/` 过滤（手机 chips 数据源只有 turn/win/proj/today/tools/sub；桌面新增键不自动进手机——13 分片 `mcIds` 未映射的键没有数据）→ 生成 `<label><input type="checkbox" data-k="k"><span>标题<em>描述</em></span></label>` 行（中文分支）。声明的键必须在桌面提取结果中存在，否则报错。
-- **占位符**（`40-fallback-ui` 内）：`__ZM_ICONS__`、`__ZM_CELL_CSS__`、`__ZM_SHOW_ROWS__`。构建后不得残留任何占位符，残留即报错。
-
-## 5. 命令与回归
-
-```bash
-python3 scripts/build_mobile_userscript.py          # 生成正式版 + 调试版两份产物
-python3 scripts/build_mobile_userscript.py --check  # 两份产物与源码/锚点一致性校验
-node --test tests/mobile-userscript.test.cjs        # 产物契约（含桌面提取段与变体差异抽查）
-```
-
-`--check` 进 AGENTS.md §6 基础命令清单；修改 `src/mobile/`、桌面锚点或提取逻辑后必须重跑。桌面 06/07 分片改动（含锚点增删）后按常规跑 `build_overlay.py` + `sync_plugin.py` + overlay 回归——锚点注释进 `overlay.js` 产物属预期（注释级，零行为）。
-
-## 6. 验收场景
-
-| # | Given | When | Then |
-|---|---|---|---|
-| A1 | 桌面 07 分片图标路径改动 | 重新构建 | 油猴产物 ICONS 同步变化；`--check` 在未重建时红 |
-| A2 | 桌面删除某格图标锚点 | 构建 | 报错指出缺失 id（fail-fast，不产出静默缺图标） |
-| A3 | 桌面 06 分片调整 `.it` 样式 | 重新构建 | 产物格样式段同步（`.zm-root` 前缀正确、逗号分组逐项改写） |
-| A4 | 油猴声明引用桌面不存在的 data-k | 构建 | 报错指出失配键 |
-| A5 | 产物被手改 | `--check` | 红（产物只读，必须改分片重建） |
-| A6 | 产物在浏览器执行 | 加载回退条 | 图标/样式与桌面同代；占位符零残留；`node --check` 语法通过 |
+自动化运行 `node --test tests/mobile-userscript*.test.cjs` 和 `python3 -B -m unittest tests/test_mobile_userscript_build.py`。UI 挂载、设置、tooltip 的真实 Chrome 验收由集成任务负责，VM 不代替实机视觉证据。
