@@ -675,6 +675,7 @@
           foldDirty = false;
         }
         closeMore(false);
+        foldTrigger = false;   // 门槛态重置触发器：否则从门槛态进 narrow 档后探针恒等初值，折叠永不评估（实机实证）
         return;
       }
       var cs = getComputedStyle(main);
