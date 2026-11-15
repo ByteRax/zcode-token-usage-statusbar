@@ -1437,6 +1437,7 @@
             "enhance provider settings changed": L("已保存配置已变化，请重新打开设置后再试。", "Saved settings changed; reopen settings and try again."),
             "restart required": L("请完全重启 ZCode 后重试。", "Fully restart ZCode and retry."),
             "provider unavailable": L("供应商不可用，请重新选择并检查其配置。", "Provider unavailable; reselect it and check its settings."),
+            "unsupported platform": L("当前平台暂不支持该操作。", "Not supported on this platform."),
             "cancelled": L("操作已取消。", "Cancelled."),
             "disabled": L("增强功能已关闭。", "Prompt enhancement is disabled."),
             "model downgraded": L("已按要求拒绝降级：服务端返回了不同的模型", "Fallback rejected as requested: the server served a different model")
@@ -1577,7 +1578,7 @@
     }
     function epModelsErrorText(result) {
       var error = result && result.error || "";
-      return error === "restart required" ? L("请完全重启 ZCode 后重试。", "Fully restart ZCode and retry.") : error === "settings changed" ? L("配置版本已变化，请重新载入后重试。", "Settings changed; reload and retry.") : error === "provider unavailable" ? L("供应商不可用，请重新选择并检查其配置。", "Provider unavailable; reselect it and check its settings.") : error === "cancelled" ? L("操作已取消，输入已保留。", "Cancelled; your edits were retained.") : /^HTTP (401|403)$/.test(error) ? L("模型接口拒绝访问，请检查供应商凭据或权限。", "Model endpoint denied access; check credentials and permissions.") : /^HTTP (404|405)$/.test(error) ? L("该地址不支持模型列表，请手动填写模型 ID。", "This endpoint does not support model lists; enter a model ID.") : L("模型列表获取失败，请检查网络与接口地址，或手动输入模型 ID。", "Failed to fetch models; check network and endpoint, or enter a model ID.");
+      return error === "restart required" ? L("请完全重启 ZCode 后重试。", "Fully restart ZCode and retry.") : error === "settings changed" ? L("配置版本已变化，请重新载入后重试。", "Settings changed; reload and retry.") : error === "provider unavailable" ? L("供应商不可用，请重新选择并检查其配置。", "Provider unavailable; reselect it and check its settings.") : error === "unsupported platform" ? L("当前平台暂不支持该操作。", "Not supported on this platform.") : error === "cancelled" ? L("操作已取消，输入已保留。", "Cancelled; your edits were retained.") : /^HTTP (401|403)$/.test(error) ? L("模型接口拒绝访问，请检查供应商凭据或权限。", "Model endpoint denied access; check credentials and permissions.") : /^HTTP (404|405)$/.test(error) ? L("该地址不支持模型列表，请手动填写模型 ID。", "This endpoint does not support model lists; enter a model ID.") : L("模型列表获取失败，请检查网络与接口地址，或手动输入模型 ID。", "Failed to fetch models; check network and endpoint, or enter a model ID.");
     }
     function epRequestModels(f, formApiKey, done) {
       var ep = state.pluginUpdate && state.pluginUpdate.enhanceProvider;
@@ -1802,7 +1803,12 @@
       var epAction = e.target.closest && e.target.closest(".zu-ep-save,.zu-ep-hosts,.zu-ep-models,.zu-ep-remove,.zu-ep-reload");
       if (epAction) {
         var epStatus = panel.querySelector(".zu-ep-status"), ep = state.pluginUpdate && state.pluginUpdate.enhanceProvider;
-        if (!ep || !ep.available || ep.unreadable) { epStatus.textContent = L("增强配置不可用，请检查权限或重启 ZCode。", "Enhancement settings unavailable; check permissions or restart ZCode."); return; }
+        if (!ep || !ep.available || ep.unreadable) {
+          epStatus.textContent = ep && ep.platformLimited
+            ? L("当前平台暂不支持自定义增强供应商配置与历史落盘；增强历史仅本次运行内存可用。", "Custom enhancement provider settings and on-disk history are not supported on this platform; history stays in memory for this run only.")
+            : L("增强配置不可用，请检查权限或重启 ZCode。", "Enhancement settings unavailable; check permissions or restart ZCode.");
+          return;
+        }
         if (epAction.classList.contains("zu-ep-reload")) {
           if (epDirty()) zuConfirm(L("重新载入配置", "Reload settings"), L("重新载入将丢弃当前未保存的修改，继续吗？", "Reloading will discard unsaved edits. Continue?"), L("继续", "Continue"), function () { epApplySaved(ep); });
           else epApplySaved(ep);
@@ -1850,7 +1856,7 @@
           }
           epReconcile(state.pluginUpdate && state.pluginUpdate.enhanceProvider);
           var error = result && result.error || "";
-          epStatus.textContent = error === "restart required" ? L("请完全重启 ZCode 后重试。", "Fully restart ZCode and retry.") : error === "settings changed" ? L("配置版本已变化，请重新载入后重试。", "Settings changed; reload and retry.") : error === "provider unavailable" ? L("供应商不可用，请重新选择并检查其配置。", "Provider unavailable; reselect it and check its settings.") : error === "cancelled" ? L("操作已取消，输入已保留。", "Cancelled; your edits were retained.") : L("保存失败，请检查配置后重试；输入已保留。", "Save failed; check settings and retry. Your edits were retained.");
+          epStatus.textContent = error === "restart required" ? L("请完全重启 ZCode 后重试。", "Fully restart ZCode and retry.") : error === "settings changed" ? L("配置版本已变化，请重新载入后重试。", "Settings changed; reload and retry.") : error === "provider unavailable" ? L("供应商不可用，请重新选择并检查其配置。", "Provider unavailable; reselect it and check its settings.") : error === "unsupported platform" ? L("当前平台暂不支持该操作。", "Not supported on this platform.") : error === "cancelled" ? L("操作已取消，输入已保留。", "Cancelled; your edits were retained.") : L("保存失败，请检查配置后重试；输入已保留。", "Save failed; check settings and retry. Your edits were retained.");
         });
         };
         if (remove) {

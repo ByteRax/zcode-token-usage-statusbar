@@ -1312,7 +1312,7 @@
   }
   /* ---------- 查看全部历史浮层 ---------- */
   var ehFull = null, ehFullCache = null, ehFullSource = "all", ehFullQuery = "", ehFullPage = 0, ehFullPageSize = 20, ehFullSortField = "createdAt", ehFullSortDir = -1, ehFullProvider = "", ehFullModel = "", ehFullTime = "all", ehExpandedId = null;
-  var ehFullResizeTimer = 0, ehFullSearchTimer = 0;
+  var ehFullResizeTimer = 0, ehFullSearchTimer = 0, ehFullSearchHold = false;
   function ehFullOnResize() {   // 面板打开期间跟随窗口宽度重排版（列合并/裁剪按面板实际宽度，debounce 150ms）
     if (ehFullResizeTimer) clearTimeout(ehFullResizeTimer);
     ehFullResizeTimer = setTimeout(function () {
@@ -1348,6 +1348,7 @@
     ehExpandedId = null;
     if (ehFullResizeTimer) { clearTimeout(ehFullResizeTimer); ehFullResizeTimer = 0; }
     if (ehFullSearchTimer) { clearTimeout(ehFullSearchTimer); ehFullSearchTimer = 0; }
+    ehFullSearchHold = false;   // 组合中关面板：不依赖宿主取消组合必派 compositionend 的兜底复位
     document.removeEventListener("keydown", ehFullKeydown, true);
     window.removeEventListener("resize", ehFullOnResize);
   }
@@ -1388,6 +1389,7 @@
   }
   function renderEnhanceHistoryFull(refetch) {
     var build = function () {
+      ehFullSearchHold = false;   // 任何 build 都意味着旧搜索框即将销毁：复位 hold，防组合中重建后宿主未派 compositionend 卡真、拦死后续纯 ASCII 输入
       var all = ehFullFiltered();
       var totalPages = Math.max(1, Math.ceil(all.length / ehFullPageSize));
       if (ehFullPage >= totalPages) ehFullPage = totalPages - 1;
@@ -1479,6 +1481,9 @@
       var footer = totalPages > 1
         ? '<div class="zu-eh-pagination"><span class="zu-eh-pg-size"><select class="zu-eh-filter zu-eh-pgsize" data-f="pagesize" aria-label="' + L("每页条数", "Rows per page") + '">' + sizeOpts + '</select> ' + L("条/页", "per page") + '</span><span>' + L("第", "Page ") + (ehFullPage + 1) + "/" + totalPages + L(" 页 · 共 ", " of ") + all.length + L(" 条", "") + '</span><span class="zu-eh-pg-btns">' + pageBtns + '</span></div>'
         : "";   // 单页/空态不渲染分页页脚（Header 已有总数，避免大面积空白与冗余控件）
+      /* 重建销毁聚焦中的搜索框：记录焦点与光标，重建后恢复（连续输入/IME 不因翻页筛选打断） */
+      var searchFocus = document.activeElement && document.activeElement.classList && document.activeElement.classList.contains("zu-eh-search") ? document.activeElement : null;
+      var searchCaret = searchFocus && typeof searchFocus.selectionStart === "number" ? searchFocus.selectionStart : -1;
       ehFull.innerHTML = '<div class="zu-eh-full-head"><div class="zu-eh-head-l"><span class="zu-eh-title">' + EH_ICON.history + L("增强历史", "Enhancement history") + '</span><span class="zu-eh-total">' + L("共 ", "total ") + all.length + L(" 条", "") + '</span></div>' +
         '<div class="zu-eh-head-r"><button type="button" class="zu-eh-cfg" data-ehset>' + EH_ICON.gear + L("设置", "Settings") + '</button><button type="button" class="zu-eh-act zu-eh-clear" data-clear>' + EH_ICON.trash + L("清空记录", "Clear all") + '</button><button type="button" class="zu-eh-close" data-close aria-label="' + L("关闭", "Close") + '">' + EH_ICON.close + '</button></div></div>' +
         '<div class="zu-eh-full-filter"><div class="zu-eh-searchbox">' + EH_ICON.search + '<input class="zu-eh-search" type="search" placeholder="' + L("搜索原文、增强结果、模型或供应商", "Search texts, model or provider") + '" value="' + searchVal + '" aria-label="' + L("搜索历史记录", "Search history") + '"></div>' +
@@ -1487,6 +1492,13 @@
         '<select class="zu-eh-filter zu-eh-f-model" data-f="model" aria-label="' + L("模型筛选", "Model filter") + '">' + modelOpts + '</select>' +
         '<select class="zu-eh-filter zu-eh-f-time" data-f="time" aria-label="' + L("时间筛选", "Time filter") + '">' + timeOpts + '</select></div>' +
         '<div class="zu-eh-table-wrap"><table class="zu-eh-table">' + colgroup + '<thead>' + thead + '</thead><tbody>' + rows + '</tbody></table></div>' + footer;
+      if (searchFocus) {
+        var searchEl = ehFull.querySelector(".zu-eh-search");
+        if (searchEl) {
+          searchEl.focus();
+          try { if (searchCaret >= 0) searchEl.setSelectionRange(searchCaret, searchCaret); } catch (e) { }
+        }
+      }
     };
     if (refetch || !ehFullCache) {
       if (!ehFullCache) ehFull.innerHTML = '<div class="zu-eh-empty" style="padding:40px 16px;text-align:center;color:var(--color-foreground-subtle,#999)">' + L("正在读取历史…", "Loading history…") + '</div>';   // 首开占位，避免 IPC 往返前闪白
@@ -1509,8 +1521,26 @@
     };
     ehFull.oninput = function (e) {
       if (e.target && e.target.classList && e.target.classList.contains("zu-eh-search")) {
+        /* IME 组合期间不重建：build 整面板 innerHTML 会销毁输入框，强制取消拼音组合并把
+         * 焦点打回 body（中文输入停顿 ≥200ms 即触发）；组合结束经 compositionend 再刷新。 */
+        if (e.isComposing || ehFullSearchHold) return;
         if (ehFullSearchTimer) clearTimeout(ehFullSearchTimer);
         ehFullSearchTimer = setTimeout(function () { ehFullSearchTimer = 0; ehFullQuery = e.target.value; ehFullPage = 0; ehExpandedId = null; build(); }, 200);
+      }
+    };
+    /* compositionstart/end 挂面板（委托）：搜索框随每次 build 重建，直接挂会被换掉 */
+    ehFull.oncompositionstart = function (e) {
+      if (e.target && e.target.classList && e.target.classList.contains("zu-eh-search")) {
+        if (ehFullSearchTimer) { clearTimeout(ehFullSearchTimer); ehFullSearchTimer = 0; }   // ASCII 输入 200ms 内切入组合：撤销待触发的重建，防组合中被销毁
+        ehFullSearchHold = true;
+      }
+    };
+    ehFull.oncompositionend = function (e) {
+      if (e.target && e.target.classList && e.target.classList.contains("zu-eh-search")) {
+        ehFullSearchHold = false;
+        if (ehFullSearchTimer) clearTimeout(ehFullSearchTimer);
+        var input = e.target;
+        ehFullSearchTimer = setTimeout(function () { ehFullSearchTimer = 0; ehFullQuery = input.value; ehFullPage = 0; ehExpandedId = null; build(); }, 200);
       }
     };
     ehFull.onclick = function (e) {

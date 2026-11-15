@@ -333,3 +333,11 @@ test('v355 placeEnhanceTip: fits above keeps bottom anchor; tall panel flips bel
     assert.ok(h.enhanceTip.classList.contains('zu-eh-flip'));
   }
 });
+test('search keeps IME composition and restores focus across debounced rebuilds', () => {
+  /* v357：200ms debounce 整面板 innerHTML 重建会销毁聚焦中的搜索框——中文输入停顿即
+   * 强制取消拼音组合、焦点打回 body；组合期间挂起重建、compositionend 后刷新、
+   * 重建后恢复焦点与光标（委托挂面板，搜索框随每次 build 重建） */
+  for (const token of ['e.isComposing || ehFullSearchHold', 'oncompositionstart', 'oncompositionend',
+    'var searchFocus = document.activeElement', 'searchEl.setSelectionRange(searchCaret, searchCaret)'])
+    assert.ok(slice.includes(token), token);
+});

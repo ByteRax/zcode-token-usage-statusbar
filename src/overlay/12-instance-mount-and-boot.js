@@ -313,7 +313,8 @@
     function heavy() {
       if (inactive()) return;
       var nowMs = Date.now();
-      if (heavyLvl > 0 && nowMs - heavyRunAt < 600 * heavyLvl) return;
+      /* 时钟回拨（NTP 步进/手动改时）后差值为负会恒小于跳拍窗，对账冻结到墙钟追回——负差一律视为到期，与 08 快照 age 门、v345 宽限的回拨口径一致 */
+      if (heavyLvl > 0 && nowMs - heavyRunAt >= 0 && nowMs - heavyRunAt < 600 * heavyLvl) return;
       heavyRunAt = nowMs;
       var heavyT0 = perfMs();
       if (pid === "auto") {
@@ -697,7 +698,7 @@
       foldDirty = false; foldWidth = width; foldFont = font; foldPrioritySig = prioritySig;
       var rows = Array.prototype.slice.call(main.querySelectorAll(":scope > .it"));
       var separators = Array.prototype.slice.call(main.querySelectorAll(":scope > .sep"));
-      rows.forEach(function (el) { el.dataset.zuFolded = "0"; delete el.dataset.zuEndLead; });
+      rows.forEach(function (el) { el.dataset.zuFolded = "0"; delete el.dataset.zuEndlead; });   // data-zu-endlead（CSS/清理同名；曾误写驼峰 zuEndLead 生成 data-zu-end-lead 永不匹配）
       separators.forEach(function (el) { el.dataset.zuFolded = "0"; });
       moreButton.dataset.zuVisible = "0";
       function syncSeparators() {
@@ -742,7 +743,7 @@
        * space-between 摊满整条——把 endlead 挪到第一个可见格接管右聚拢（规则见 06 分片）。 */
       if (state.barJust === "end") {
         for (var vi = 0; vi < rows.length; vi++) {
-          if (rows[vi].dataset.zuFolded !== "1") { rows[vi].dataset.zuEndLead = "1"; break; }
+          if (rows[vi].dataset.zuFolded !== "1") { rows[vi].dataset.zuEndlead = "1"; break; }
         }
       }
       var signature = hidden.map(function (el) { return el.dataset.zuKey || ""; }).join("|");
@@ -934,6 +935,10 @@
             probe.style.fontFamily = mainStyle.fontFamily;
             probe.style.fontSize = mainStyle.fontSize;
             var probeMain = main.cloneNode(true);
+            /* 探针量的是「未折叠自然宽」：克隆里的 data-zu-folded 会命中 06 的 display:none
+             * 规则把已折叠格量成 0 宽，shrink 档据此误判「完整宽装得下」→ 反复展/折叠
+             * 以约 2Hz 震荡（v352 探针写于折叠机制之前，串联时未教它剥折叠态）。 */
+            probeMain.querySelectorAll("[data-zu-folded]").forEach(function (el) { el.removeAttribute("data-zu-folded"); });
             probeMain.classList.remove("zu-clip", "zu-clip-left");
             probeMain.style.cssText = "width:max-content;min-width:max-content;flex:none;overflow:visible";
             /* v356 修复（用户实报「开启系统状态后整条抖动」）：format:"auto" 的系统状态面随

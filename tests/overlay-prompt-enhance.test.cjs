@@ -788,3 +788,50 @@ test('disabled state arriving before reply never writes draft', () => {
  h.window.enhanceTest.state().enhanceEnabled=false; h.respond(req.requestId,{ok:true,text:'late'});
  assert.equal(ui.editor.__zuDraft,'original'); assert.equal(ui.editor.setTextCalls||0,0);
 });
+
+test('CRLF in the model reply no longer fails the read-back verify', () => {
+  /* 宿主 E2E 桥 setText 后读回可能把 CRLF 规范化为 LF（Lexical/宿主行为）：
+   * 逐字比对会恒不等 → 误报「写回输入框失败或草稿已变化」且历史不入账（v357 换行归一） */
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'sid_main', { provider: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-FlashX', draft: '原始' });
+  const bridge = ui.editor.__zcodeLexicalInputE2E;
+  const rawSetText = bridge.setText;
+  bridge.setText = t => { rawSetText(t); ui.editor.__zuReadback = String(t).replace(/\r\n/g, '\n'); };
+  bridge.getText = () => (ui.editor.__zuReadback != null ? ui.editor.__zuReadback : ui.editor.__zuDraft);
+  h.inject(); h.boot(); h.coordAttach(ui.editor, 'sid_main');
+  h.window.__zusageUpdate(h.payload({ provider: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-FlashX' }));
+  h.tick();
+  const enh = h.enhOf(ui.wrap);
+  enh.listeners.get('click')[0]();
+  const req = h.takeRequests().find(r => r.action === 'prompt-enhance');
+  h.respond(req.requestId, { ok: true, text: '第一行\r\n第二行' });
+  assert.equal(ui.editor.__zuDraft, '第一行\r\n第二行');   // 文本已实际写回
+  assert.equal(enh.getAttribute('aria-label'), '增强提示词');   // 回初始态而非误报写回失败
+});
+
+test('CRLF reply also verifies when the bridge reads back verbatim (no host normalization)', () => {
+  /* 第二场景封死单侧归一作弊面：只归一 res.text 不归一 committed 的实现，在逐字读回的
+   * 桥上仍恒不等误报——归一必须两侧对称（v357） */
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'sid_main', { provider: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-FlashX', draft: '原始' });
+  h.inject(); h.boot(); h.coordAttach(ui.editor, 'sid_main');
+  h.window.__zusageUpdate(h.payload({ provider: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-FlashX' }));
+  h.tick();
+  const enh = h.enhOf(ui.wrap);
+  enh.listeners.get('click')[0]();
+  const req = h.takeRequests().find(r => r.action === 'prompt-enhance');
+  h.respond(req.requestId, { ok: true, text: '第一行\r\n第二行' });
+  assert.equal(ui.editor.__zuDraft, '第一行\r\n第二行');   // 默认桥逐字读回（getText 返回 setText 原文）
+  assert.equal(enh.getAttribute('aria-label'), '增强提示词');
+});
+
+test('main bridge exposes platformLimited and gates provider save symmetrically on win32', () => {
+  /* Windows 无 POSIX 安全落盘：视图层带 platformLimited 供渲染端区分文案（不再误导
+   * 「检查权限或重启」），save 分支与 models 分支同款早退门 */
+  assert.match(injectSource, /platformLimited: process\.platform === "win32"/);
+  const gate = injectSource.indexOf('if (req.action !== "enhance-provider-save"');
+  assert.ok(gate > 0, 'save branch anchor');
+  const seg = injectSource.slice(gate, gate + 300);
+  assert.match(seg, /process\.platform === "win32"\) \{ reply\(\{ ok: false, error: "unsupported platform" \}\); return; \}/, 'save gate mirrors models branch');
+  assert.match(source, /ep\.platformLimited/, 'renderer consumes the platform flag for the status copy');
+});

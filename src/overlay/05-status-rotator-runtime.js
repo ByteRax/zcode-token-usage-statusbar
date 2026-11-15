@@ -2011,7 +2011,8 @@
     function tick() {
       if (stale()) return;
       var nowMs = Date.now();
-      if (coordLvl > 0 && nowMs - coordRunAt < 600 * coordLvl) return;
+      /* 时钟回拨后差值为负恒小于跳拍窗：负差视为到期（同 heavy 门，防对账冻结到墙钟追回） */
+      if (coordLvl > 0 && nowMs - coordRunAt >= 0 && nowMs - coordRunAt < 600 * coordLvl) return;
       coordRunAt = nowMs;
       var t0 = perfMs();
       try {

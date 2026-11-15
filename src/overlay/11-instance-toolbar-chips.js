@@ -756,7 +756,9 @@
                 }
                 var committed = "";
                 try { committed = String(apiNow.getText() || ""); } catch (e) { }
-                if (enhanceInputApi() !== apiNow || committed !== res.text) {
+                /* 换行归一后再比对：模型回包可能含 CRLF，宿主 E2E 桥读回时规范化为 LF，
+                 * 逐字比对会恒不等→误报「写回失败或草稿已变化」（文本实际已替换）。 */
+                if (enhanceInputApi() !== apiNow || committed.replace(/\r\n/g, "\n") !== res.text.replace(/\r\n/g, "\n")) {
                   enhanceWarn(L("写回输入框失败或草稿已变化", "Write failed or draft changed"));
                   enhanceSetPhase("idle");
                   return;

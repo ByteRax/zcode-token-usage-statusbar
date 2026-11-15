@@ -236,6 +236,11 @@ def check():
 
 
 if __name__ == "__main__":
+    try:  # 非 UTF-8 控制台（Windows cp1252/cp936）：打印登记文件里的生僻字符/emoji 路径不抛 UnicodeEncodeError
+        sys.stdout.reconfigure(errors="replace")
+        sys.stderr.reconfigure(errors="replace")
+    except (AttributeError, ValueError):
+        pass
     args = sys.argv[1:]
     if "--uninstall" in args:
         sys.exit(uninstall())

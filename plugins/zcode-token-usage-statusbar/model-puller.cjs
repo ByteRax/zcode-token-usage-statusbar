@@ -1714,6 +1714,7 @@ function createModelPuller(opts) {
       if (attempt) {
         const aborted = await new Promise((resolve) => {
           const t = setTimeout(() => { clean(); resolve(false); }, 1200);
+          if (t && typeof t.unref === "function") t.unref();   // 超时兜底定时器契约：不挂起主进程事件循环
           const onAbort = () => { clean(); resolve(true); };
           const clean = () => { clearTimeout(t); if (external) external.removeEventListener("abort", onAbort); };
           if (external) external.addEventListener("abort", onAbort, { once: true });
