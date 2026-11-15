@@ -332,5 +332,14 @@ test("apfsContainerOf/markDarwinContainer：同 diskN 前缀标共享、容量�
   // 设备名无 diskN 模式（未来形态/非常规）→ 保守不标（前端保留两行真实容量）
   const d = [{ mount: "/", dev: "weirdfs://root" }, { mount: "/System/Volumes/Data", dev: "weirdfs://data" }];
   markDarwinContainer(d);
-  assert.equal(d[0].container, undefined);
+  assert.ok(!("container" in d[0]), "无 diskN 模式不标（strict：null 冒充 undefined 也算标了）");
+  assert.ok(!("container" in d[1]));
+  // dev 缺失/null 健壮性（statfs 枚举源异常）
+  const e2 = [{ mount: "/", dev: null }, { mount: "/System/Volumes/Data", dev: null }];
+  markDarwinContainer(e2);
+  assert.ok(!("container" in e2[0]));
+  // 设备名无 slice 后缀（整盘/RAM disk 挂载）→ 正则要求 s → 不标
+  const f = [{ mount: "/", dev: "/dev/disk3" }, { mount: "/System/Volumes/Data", dev: "/dev/disk3" }];
+  markDarwinContainer(f);
+  assert.ok(!("container" in f[0]));
 });

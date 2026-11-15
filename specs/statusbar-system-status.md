@@ -19,8 +19,10 @@ Issue #338。在既有「排序 → 优先级 → 自适应 → 自动折叠 →
   "mem":  { "state": "ok", "total": 17179869184, "used": 10952166604, "avail": 6227702580,
             "pct": 63.8, "wired": 2254857830, "swap_total": 1073741824, "swap_used": 644245094 },
   "disk": { "state": "ok", "vols": [
-    { "id": "/", "name": "Macintosh HD", "mount": "/", "role": "system", "total": 549755813888, "used": 348966092800, "avail": 200746721088, "free_pct": 36.5 },
-    { "id": "/System/Volumes/Data", "name": "Data", "mount": "/System/Volumes/Data", "role": "project", "total": 1099511627776, "used": 794568949760, "avail": 304942678016, "free_pct": 27.7 } ] }
+    { "id": "/", "name": "Macintosh HD", "mount": "/", "role": "system", "total": 549755813888, "used": 348966092800, "avail": 200746721088, "free_pct": 36.5,
+      "dev": "/dev/disk3s1s1", "container": "disk3" },
+    { "id": "/System/Volumes/Data", "name": "Data", "mount": "/System/Volumes/Data", "role": "project", "total": 1099511627776, "used": 794568949760, "avail": 304942678016, "free_pct": 27.7,
+      "dev": "/dev/disk3s5", "container": "disk3" } ] }
 }
 ```
 
@@ -29,7 +31,7 @@ Issue #338。在既有「排序 → 优先级 → 自适应 → 自动折叠 →
 - CPU：`pct` 为整机使用率（`os.cpus()` tick 差分，Σ(Δtotal−Δidle)/Δtotal×100，跨核汇总；Δtotal≤0 保持 `loading`）；`cores`=逻辑核心数；`load`=1/5/15 分钟负载（`os.loadavg()`，win32 恒 `null` 不伪造）。首帧差分未成立时 `state:"loading"`。
 - 内存口径：Linux `/proc/meminfo`（used = MemTotal − MemAvailable，含 SwapTotal/SwapFree）；macOS `vm_stat` 页数×pagesize（used = active + wired + compressor occupied，对齐活动监视器主口径；avail = free + inactive + speculative；wired 单列；Swap 走 `sysctl vm.swapusage`）；Windows `os.totalmem()/os.freemem()`（GlobalMemoryStatusEx），wired/swap 恒 null（字段缺席即隐藏，不显示假值）。
 - 磁盘：卷集 = 系统卷 + 当前本地项目卷（主进程从窗口工作区路径取，缺省退系统卷）+ 可可靠识别的其他本地固定卷（上限 8，按 `statfs` 设备去重）。容量经 `fs.statfs`（Node ≥18.15，宿主 Node 24 实测可用）；卷枚举 Linux 解析 `/proc/self/mounts`（真实文件系统白名单、排除 tmpfs/overlay/squashfs 等）、macOS `df -klP`（仅本地卷）、Windows 盘符经 `fs.promises.statfs` 逐盘探测（带超时防断连网络盘阻塞）。`role:"project"` 标注项目卷（Tooltip 突出行）；同名同设备卷去重。禁止递归扫描目录算占用。
-- APFS 共享容器（v357）：macOS firmlink 下 `/`（系统快照卷）与 `/System/Volumes/Data` 共享同一 APFS 容器空间，`statfs` 对两者返回相同容量。仅当两卷同时入选且设备名同 `diskN` 前缀（`/dev/disk3s1s1` 与 `/dev/disk3s5` → `disk3`）时，两卷标 `container:"disk3"` 并随卷下发 `dev`（枚举源设备名）。**容量相同不作为判据**（不同盘可能巧合相等）；外置卷之间无法与「非 APFS 多分区盘」区分，保守不标——前端对无 `container` 的卷恒展示各自真实容量，不擅自合并。Linux/Windows 无该字段。
+- APFS 共享容器（v357）：macOS firmlink 下 `/`（系统快照卷）与 `/System/Volumes/Data` 共享同一 APFS 容器空间，`statfs` 对两者返回相同容量。所有平台每卷恒带 `dev`（枚举源设备名，取不到为 null）；仅当 macOS 的 `/` 与 `/System/Volumes/Data` 两卷同时入选且设备名同 `diskN` 前缀（`/dev/disk3s1s1` 与 `/dev/disk3s5` → `disk3`）时，两卷才标 `container:"disk3"`。**容量相同不作为判据**（不同盘可能巧合相等）；外置卷之间无法与「非 APFS 多分区盘」区分，保守不标——前端对无 `container` 的卷恒展示各自真实容量，不擅自合并；Linux/Windows 无 `container` 字段（`dev` 为惰性透传，消费端不读）。
 
 ## 渲染端模型
 
@@ -48,7 +50,7 @@ Issue #338。在既有「排序 → 优先级 → 自适应 → 自动折叠 →
   - 标题区：显示器图标 +「系统状态」+「本机」低对比标签；右上时钟图标 + `5s · 60s`（按实际 cfg 动态，title 带完整说明；时钟是纯说明不是按钮）。
   - CPU 区（Grid：标签列 | 主数值 | 右侧辅助）：主数值=使用率百分比；右侧=核数；Load 1m/5m/15m 恒两位小数进 sub 行（不支持平台整行隐藏）；loading 显「采集中…」。
   - 内存区：主数值=已用/总量（与 pct 同口径），右侧=百分比；Wired / Swap 进 sub 行（有值才渲染；`swap_used` 为有效 0 时显 `Swap 0G`，null 不渲染）。
-  - 磁盘区：区头右侧显当前主卷角色（「当前：系统卷/项目卷」），**不再单独渲染挂载点行**；表 = 卷 | 总量 | 已用 | 可用，当前监控卷轻背景+左 2px 强调线，长名省略 title 全文，>6 卷内部滚动（max-height 钳制）。带 `container` 的卷：同容器首行带「APFS 共享」徽记、次行容量区显「共享容器空间」（不重复数值、不相加）；无 `container` 的卷恒显各自真实容量。
+  - 磁盘区：区头右侧显当前主卷角色（「当前：系统卷/项目卷」），**不再单独渲染挂载点行**；表 = 卷 | 总量 | 已用 | 可用，当前监控卷轻背景+左 2px 强调线，长名省略 title 全文，>6 卷内部滚动（max-height 钳制）。带 `container` 的卷：同容器首行（非 follower）带「APFS 共享」徽记，次行（follower）容量区显「共享容器空间」（不重复数值、不相加）；无 `container` 的卷恒显各自真实容量。
   - 图例：正常/预警/危险三色点一行 + ⓘ 按钮（`data-zu-sys-th`，点击切换内联展开区 `data-zu-sys-thexp`：三行阈值表动态读 cfg、关系非法标红、warnColors 关时注明「颜色提示已关闭」）。展开态跨重建保留（tip `__zuSysExp`），关闭即复位。
   - 数据更新：Tooltip 打开期间随帧原地重建（签名幂等），保留磁盘表滚动位；从「···」菜单打开锚定 ⋯ 按钮（既有链，Escape/外点/滚动态不变）。
 - 折叠与菜单：`sysmon` 参与自动折叠（`zuBarFoldOrder` 天然纳入，system/speed 的 rank=-1 末位序不扩）与「···」菜单（`ZU_BAR_TITLES` 提供格名，图标克隆活格，实时值原地同步）——零菜单代码改动。

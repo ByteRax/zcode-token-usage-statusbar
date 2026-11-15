@@ -680,6 +680,7 @@
       ".zu-syscfg-pair{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}" +
       ".zu-syscfg-num{width:56px;height:28px;padding:0 7px;box-sizing:border-box;border:1px solid var(--color-input-border,rgba(255,255,255,.16));border-radius:6px;background:var(--color-background,rgba(0,0,0,.2));color:var(--color-foreground,#fff);font-family:inherit;font-size:calc(var(--ui-font-size,14px) - 1px);font-variant-numeric:tabular-nums;text-align:right}" +
       ".zu-syscfg-num:focus{border-color:var(--color-input-border-focused,var(--color-brand,#57c8ff));outline:none}" +
+      ".zu-syscfg-num::-webkit-inner-spin-button,.zu-syscfg-num::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}" +   // v357 review A3：固定单位后缀设计不依赖步进按钮（hover 弹出会裁三位数）
       ".zu-syscfg-num.zu-syscfg-bad{border-color:#f85149}" +
       ".zu-syscfg-thc{display:inline-flex;align-items:center;gap:4px}" +
       ".zu-syscfg-unit{color:var(--color-foreground-subtle,#a1a1a1);font-size:calc(var(--ui-font-size,14px) - 2px)}" +

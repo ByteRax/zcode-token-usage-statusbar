@@ -333,6 +333,7 @@
     ".zu-sys-sub{grid-column:2/-1;color:var(--color-foreground-subtle,#a1a1a1);font-size:calc(var(--ui-font-size, 14px) - 2px);font-variant-numeric:tabular-nums}" +
     ".zu-sys-sub b{color:var(--color-foreground,#fff);font-weight:600}" +
     ".zu-sys-dhead{display:flex;align-items:baseline;justify-content:space-between;gap:10px}" +
+    ".zu-sys-dhead>.zu-sys-dim{flex:1 1 auto}" +   // 非 ok 态说明文字左对齐（space-between 会把「采集中…」推到最右）
     ".zu-sys-dcur{color:var(--color-foreground-subtle,#a1a1a1);font-size:calc(var(--ui-font-size, 14px) - 2px)}" +
     ".zu-sys-vols{margin-top:5px;max-height:176px;overflow-y:auto;font-variant-numeric:tabular-nums;scrollbar-gutter:stable}" +
     ".zu-sys-vr{display:grid;grid-template-columns:minmax(0,1fr) 52px 52px 56px;gap:6px;padding:3px 6px;border-radius:5px;font-size:calc(var(--ui-font-size, 14px) - 2px);align-items:baseline}" +
@@ -451,7 +452,7 @@
       if (disk && disk.state === "ok" && Array.isArray(disk.vols) && disk.vols.length) {
         var cur = sysVolPick(disk.vols);
         var curRole = cur ? (cur.role === "project" ? L("项目卷", "Project") : cur.role === "system" ? L("系统卷", "System") : L("卷", "Volume")) : "—";
-        s += '<span class="zu-sys-dcur">' + L("当前", "current") + "： " + sEsc(curRole) + "</span></div>";
+        s += '<span class="zu-sys-dcur">' + L("当前： ", "current: ") + sEsc(curRole) + "</span></div>";
         s += '<div class="zu-sys-vols" role="table"><div class="zu-sys-vr zu-sys-vh" role="row">' +
           '<span role="columnheader">' + L("卷", "Volume") + "</span>" +
           '<span role="columnheader">' + L("总量", "Total") + "</span>" +
@@ -463,8 +464,8 @@
           var isCur = cur && v === cur;
           var role = v.role === "project" ? L("项目卷", "Project") : v.role === "system" ? L("系统卷", "System") : L("卷", "Volume");
           var nameTxt = v.name ? role + " " + v.name : role;
-          var badge = v.container ? '<i class="zu-sys-vbadge">' + L("APFS 共享", "APFS shared") + "</i>" : "";
           var isFollower = v.container && seenC[v.container];   // 同容器第二行起不重复容量（容器统计同源，两行相同数值会误导「磁盘翻倍」）
+          var badge = (v.container && !isFollower) ? '<i class="zu-sys-vbadge">' + L("APFS 共享", "APFS shared") + "</i>" : "";   // 徽记只挂首行（review C2：次行已有「共享容器空间」说明，双徽记冗余）
           if (v.container && !seenC[v.container]) seenC[v.container] = 1;
           s += '<div class="zu-sys-vr' + (isCur ? " zu-sys-vrowon" : "") + '" role="row"' +
             ' title="' + sAttr(nameTxt + (v.mount ? " · " + v.mount : "") + (v.container ? " · APFS " + L("与同容器卷共享空间", "shares container space") : "")) + '">' +
@@ -490,7 +491,7 @@
       '<span' + (sev.overall === "warning" ? ' class="zu-sys-lg-on"' : "") + '><i class="zu-sys-dot zu-sys-dot-w"></i>' + L("预警", "Warn") + "</span>" +
       '<span' + (sev.overall === "critical" ? ' class="zu-sys-lg-on"' : "") + '><i class="zu-sys-dot zu-sys-dot-c"></i>' + L("危险", "Crit") + "</span>" +
       (cfg.warnColors ? "" : '<span class="zu-sys-lg-off">' + L("颜色提示已关闭", "Color hints off") + "</span>") +
-      '<button type="button" class="zu-sys-thbtn" data-zu-sys-th aria-expanded="false" aria-controls="zu-sys-thexp" title="' +
+      '<button type="button" class="zu-sys-thbtn" data-zu-sys-th aria-expanded="false" title="' +
       sAttr(L("查看预警/危险阈值", "View warn/crit thresholds")) + '">' +
       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.6 9.2a2.5 2.5 0 1 1 3.6 2.3c-.8.4-1.2.9-1.2 1.8"/><path d="M12 16.8h.01"/></svg>' +
       L("阈值", "Thresholds") + '</button></div>' +

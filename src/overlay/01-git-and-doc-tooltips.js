@@ -2095,7 +2095,15 @@
   function hideSysTip() {
     clearTimeout(sysTipHideTimer);
     sysTip.style.display = "none";
-    sysTip.__zuSysExp = false;   // v357：关闭即收起阈值说明，重开默认收起
+    /* v357：关闭即收起阈值说明（标志与 DOM 同步复位）——签名未变跳过重建时，
+     * 只清标志会让重开看到残留展开态（review MAJOR 修复） */
+    sysTip.__zuSysExp = false;
+    try {
+      var expBox0 = sysTip.querySelector("[data-zu-sys-thexp]");
+      var expBtn0 = sysTip.querySelector("[data-zu-sys-th]");
+      if (expBox0) expBox0.hidden = true;
+      if (expBtn0) expBtn0.setAttribute("aria-expanded", "false");
+    } catch (eSysExp0) { }
     sysTipFor = null;
   }
   function hideSysTipSoon() { clearTimeout(sysTipHideTimer); sysTipHideTimer = setTimeout(hideSysTip, 200); }
@@ -2104,6 +2112,12 @@
   window.addEventListener("keydown", onSysKeydown, true);
   sysTip.addEventListener("mouseenter", onSysTipEnter);
   sysTip.addEventListener("mouseleave", hideSysTip);
+  /* v357：ⓘ 按下不移焦（镜像 06 全量 tip 链 mousedown 名单）——chip blur 链已加
+   * relatedTarget 守卫，此处双保险覆盖无 relatedTarget 的合成路径 */
+  sysTip.addEventListener("mousedown", function (e) {
+    var t = e.target;
+    if (t && t.closest && t.closest("[data-zu-sys-th]") && e.preventDefault) e.preventDefault();
+  });
   /* v357：点击 ⓘ 切换阈值说明内联展开区（只切 hidden 不重建，同全量 tip 链只挂 click）；
    * 切换后重定位防展开后底边越出视口 */
   sysTip.addEventListener("click", function (e) {

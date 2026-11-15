@@ -1511,15 +1511,17 @@
       var t = e && e.target;
       /* 全关早退：整条链最常见的形态是没有任何浮层打开，不做 closest 探测 */
       if (!tipFor && !quotaTipFor && !rateTipFor && !tpsTipFor && !rstTipFor &&
-          !subTipFor && !gitTipFor &&
+          !subTipFor && !gitTipFor && !sysTipFor &&
           fxTip.style.display !== "block" && spdLegendTip.style.display !== "block") return;
       if (!t || !t.closest) return;
       /* 各弹框与统一子代理浮层内部不算外点：各自已有 outside/关闭链，点弹框不联动收 */
       if (t.closest(".zu-rot-pk-dlg,.zu-mp-ov,.zu-compact-dlg,.zu-sub-pop,.zu-more-panel")) return;
       if (panel.classList.contains("open") && panel.contains(t)) return;   // 设置面板内部
-      /* 悬停浮层本体内部按压是交互不是关闭（切 Tab/选维度/看图表） */
+      /* 悬停浮层本体内部按压是交互不是关闭（切 Tab/选维度/看图表）；
+       * v357：sysmon 浮层（sysTip）同理——点 ⓘ 不联动收其它浮层 */
       if (tip.contains(t) || tpsTip.contains(t) || rstTip.contains(t) || subTip.contains(t) ||
           gitTip.contains(t) || quotaTip.contains(t) || rateTip.contains(t) ||
+          (sysTip.style.display === "block" && sysTip.contains(t)) ||
           (fxTip.style.display === "block" && fxTip.contains(t)) ||
           (spdLegendTip.style.display === "block" && spdLegendTip.contains(t))) return;
       if (bar.contains(t)) return;   // 条面内点击（切格/re-click/⚙）由既有链处理

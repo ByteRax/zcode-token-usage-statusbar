@@ -22,7 +22,7 @@ function sliceText(start, end) {
 }
 function evalHelpers(extra) {
   const ctx = extra || {};
-  vm.runInNewContext(helpers + '\nglobalThis.api = {normalizeSysmonCfg, sysmonFaceHtml, sysmonTipHtml, sysSeverityOf, sysSeveritySmoothed, sysFmtBytes, sysVolPick, sysIsStale, SYSMON_ICONS, sysSevCls};', ctx);
+  vm.runInNewContext(helpers + '\nglobalThis.api = {normalizeSysmonCfg, sysmonFaceHtml, sysmonTipHtml, sysmonPreviewHtml, sysSeverityOf, sysSeveritySmoothed, sysFmtBytes, sysVolPick, sysIsStale, SYSMON_ICONS, sysSevCls};', ctx);
   return ctx.api;
 }
 function frameOf(over) {
@@ -210,8 +210,11 @@ test('sysmonTipHtml: APFS 共享容器（v357）——同容器次行不重复�
     { id: '/System/Volumes/Data', mount: '/System/Volumes/Data', role: 'project', container: 'disk3', total: GB, used: 532 * 1024 ** 3, avail: 394 * 1024 ** 3, free_pct: 42.5 },
   ] } }), NOW);
   assert.match(shared, /APFS 共享/, '同容器首行带徽记');
+  assert.equal((shared.match(/APFS 共享/g) || []).length, 1, '徽记只挂首行（次行已有共享说明，双徽记冗余）');
   assert.ok(shared.includes('共享容器空间'), '次行显共享说明');
+  assert.equal((shared.match(/共享容器空间/g) || []).length, 1, '仅 follower 行显共享说明（角色分配锁定）');
   assert.equal((shared.match(/926G/g) || []).length, 1, '同容器容量数值只出现一次（不重复展示误导「磁盘翻倍」）');
+  assert.ok(shared.indexOf('926G') < shared.indexOf('共享容器空间'), '首行显容量、次行显共享（先标 seenC 再算 follower 的变异在此变红）');
   /* 情况 D：两行容量完全相同但无 container 字段（不同盘巧合/无法判定）——保守保留两行真实数据 */
   const twin = api.sysmonTipHtml(CFG, frameOf({ disk: { state: 'ok', vols: [
     { id: '/x1', mount: '/x1', role: 'system', total: GB, used: 532 * 1024 ** 3, avail: 394 * 1024 ** 3, free_pct: 42.5 },
@@ -224,6 +227,177 @@ test('sysmonTipHtml: APFS 共享容器（v357）——同容器次行不重复�
   const nc = api.sysmonTipHtml(noColor, frameOf({}), NOW);
   assert.match(nc, /zu-sys-legend nocolor/);
   assert.match(nc, /颜色提示已关闭/);
+});
+
+test('sysmonPreviewHtml: 跟随显示格式、全关空状态、无帧采集中尾注（v357）', () => {
+  const api = evalHelpers({ L: (zh) => zh });
+  const NOW = 1700000000000 + 1000;
+  const f = frameOf({});
+  // auto 以 full 演示：内存显已用/总量（full 特征），compact 显百分比
+  assert.match(api.sysmonPreviewHtml(CFG, f, NOW), /10\.2G\/16G/, 'auto 预览按 full 面');
+  const compactCfg = JSON.parse(JSON.stringify(CFG)); compactCfg.format = 'compact';
+  assert.match(api.sysmonPreviewHtml(compactCfg, f, NOW), /64%/);
+  assert.ok(!api.sysmonPreviewHtml(compactCfg, f, NOW).includes('10.2G/16G'), '预览跟随显示格式切换');
+  // 全关：明确空状态（不是「采集中」也不是假 0）
+  const off = api.sysmonPreviewHtml({ metrics: { cpu: 0, mem: 0, disk: 0 } }, f, NOW);
+  assert.match(off, /全部指标已关闭/);
+  // 无帧：有指标开 + 「—」占位 + 采集中尾注；有帧无尾注
+  const noFrame = api.sysmonPreviewHtml(CFG, null, NOW);
+  assert.match(noFrame, /采集中/);
+  assert.ok(!api.sysmonPreviewHtml(CFG, f, NOW).includes('采集中'), '有帧不加采集中尾注');
+});
+
+test('hideTip 行为（v357）：收起时清 __zuSysExp（重开默认收起）', () => {
+  const seg = sliceText('    function hideTip(force, cause) {', '    function positionTip(el, keepTop) {');
+  const hides = [];
+  const ctx = {
+    state: { devKeepTip: 0 },
+    tip: { style: { display: 'block' }, __zuSysExp: true, __zuSpeedSize: {}, querySelector: () => null, removeAttribute: () => {} },
+    tipStats: { hides: 0, lastHide: '', hideSeq: [] },
+    tipFor: { removeAttribute: () => {} },
+    tipSig: 'x',
+    tipGraceTimer: 0,
+    rateTipFor: null,
+    spdHoverPortalHide: () => {},
+    spdLegendTipHide: () => {},
+    hideFxTip: () => {},
+    hideSubPop: () => {},
+    subPopOpen: () => false,
+    hideGitTip: () => {},
+    hideQuotaTip: () => {},
+    hideRstTip: () => {},
+    sysmonWantRecalc: () => hides.push(1),
+  };
+  vm.runInNewContext(seg + '\nglobalThis.h = hideTip;', ctx);
+  ctx.h(true, 'escape');
+  assert.equal(ctx.tip.__zuSysExp, false, '关闭即收起阈值说明（标志清零）');
+  assert.equal(ctx.tip.style.display, 'none');
+  // 保活早退路径不清零（devKeepTip 拦截时状态保持）
+  const ctx2 = JSON.parse(JSON.stringify(ctx));
+  ctx2.tip.__zuSysExp = true; ctx2.state.devKeepTip = 1;
+  const ctx2ref = ctx2;
+  vm.runInNewContext(seg + '\nglobalThis.h = hideTip;', ctx2ref);
+  ctx2ref.h(true, 'left-bar');
+  assert.equal(ctx2ref.tip.__zuSysExp, true, 'devKeepTip 拦截路径不动展开态');
+});
+
+test('ⓘ 切换行为（v357）：click 委托 toggle + 重定位（行为级锁，替代纯源码 match）', () => {
+  const a = source.indexOf('    tip.addEventListener("click", function (e) {');
+  const b = source.indexOf('speedTabActivate(e);\n    });', a);
+  assert.ok(a >= 0 && b > a, 'click 委托切片锚点');
+  const seg = source.slice(a, b + 'speedTabActivate(e);\n    });'.length);
+  const calls = [];
+  const box = { hidden: true };
+  const btnEl = { setAttribute: (k, v) => calls.push(['aria', v]) };
+  const tipForObj = { keepTop: 1 };
+  const tipObj = {
+    __zuSysExp: false,
+    querySelector: (sel) => sel === '[data-zu-sys-thexp]' ? box : (sel === '[data-zu-sys-th]' ? btnEl : null),
+    addEventListener: (type, fn) => { tipObj['on' + type] = fn; },
+  };
+  const ctx = {
+    tip: tipObj,
+    tipFor: tipForObj,
+    positionTip: (el, keepTop) => calls.push(['pos', el === tipForObj, keepTop]),
+    projTipTabActivate: () => false,
+    projTipMoreActivate: () => false,
+    speedTabActivate: () => calls.push(['speed']),
+    L: (zh) => zh,
+  };
+  vm.runInNewContext(seg + '\nglobalThis.install = function () {};', ctx);
+  const handler = tipObj.onclick;
+  assert.ok(handler, 'click 监听已挂');
+  const target = { closest: (sel) => sel === '[data-zu-sys-th]' ? btnEl : null };
+  handler({ target });
+  assert.equal(tipObj.__zuSysExp, true, '第一次点击展开');
+  assert.equal(box.hidden, false);
+  const posCall = calls.find((c) => c[0] === 'pos');
+  assert.ok(posCall, '展开后触发重定位');
+  assert.deepEqual([...posCall], ['pos', true, true], '重定位传 tipFor + keepTop');
+  handler({ target });
+  assert.equal(tipObj.__zuSysExp, false, '第二次点击收起（toggle 而非单向赋值）');
+  assert.equal(box.hidden, true);
+  // 非 ⓘ 点击不进分支（落到 speedTabActivate）
+  const callsLen = calls.length;
+  handler({ target: { closest: () => null } });
+  assert.equal(tipObj.__zuSysExp, false, '非 ⓘ 点击不改展开态');
+  assert.ok(calls.length > callsLen && calls[calls.length - 1][0] === 'speed', '落到速度 Tab 分支');
+});
+
+test('09 阈值校验 change 分支（v357）：非法不写入+回填+红边、合法回填 clamp 生效值', () => {
+  const a = source.indexOf('if (t2.classList && (t2.classList.contains("zu-syscfg-int")');
+  const b = source.indexOf('if (t2.classList.contains("zu-theme-choice")) {', a);
+  assert.ok(a >= 0 && b > a, '阈值校验切片锚点');
+  /* 切片是「if (…) { … }」语句块：包成宿主可调函数执行 */
+  const wrapped = 'globalThis.branch = function (t2, panel, state, L, normalizeSysmonCfg, persistSysmonCfg, sysmonWantRecalc, renderAll, sysmonApplyFace) {\n' +
+    source.slice(a, b) + '\n};';
+  function branch(t2, ctx) {
+    ctx.branch(t2, ctx.panel, ctx.state, ctx.L, ctx.normalizeSysmonCfg, ctx.persistSysmonCfg, ctx.sysmonWantRecalc, ctx.renderAll, ctx.sysmonApplyFace);
+  }
+  function makeEnv(value, thKey, cfgOver) {
+    const cfg = JSON.parse(JSON.stringify(CFG));
+    if (cfgOver) cfg.thresholds = Object.assign(cfg.thresholds, cfgOver);
+    const st = { sysmonCfg: cfg };
+    const errBox = { hidden: true, textContent: '' };
+    const t2 = {
+      value, badAdded: undefined,
+      classList: { contains: (c) => c === 'zu-syscfg-th', add: () => { t2.badAdded = true; }, remove: () => { t2.badAdded = false; } },
+      getAttribute: (k) => k === 'data-th' ? thKey : null,
+    };
+    const panel = {
+      querySelector: (sel) => sel === '[data-zu-sys-therr]' ? errBox : null,
+      querySelectorAll: (sel) => sel === '.zu-syscfg-th.zu-syscfg-bad' ? (t2.badAdded ? [t2] : []) : [],
+    };
+    const persisted = [];
+    const issCtx2 = { L: (zh) => zh };
+    vm.runInNewContext(sliceText('  function sysThresholdIssues(cfg) {', '  /* 阈值明细表（ⓘ 展开区内容') + '\nglobalThis.f = sysThresholdIssues;', issCtx2);
+    const ctx = {
+      panel, state: st, L: (zh) => zh, persistSysmonCfg: () => persisted.push(1),
+      sysThresholdIssues: issCtx2.f,   // 生产函数切片（09 分支体直接调用）
+      sysmonWantRecalc: () => {}, renderAll: () => {}, sysmonApplyFace: () => {},
+      normalizeSysmonCfg: (r) => {
+        const c = JSON.parse(JSON.stringify(r));
+        const cl = (v, lo, hi, d) => { const n = Math.floor(Number(v)); return isFinite(n) ? Math.min(hi, Math.max(lo, n)) : d; };
+        if (c.intervalMs !== undefined) c.intervalMs = cl(c.intervalMs, 2000, 60000, 5000);
+        if (c.diskIntervalMs !== undefined) c.diskIntervalMs = cl(c.diskIntervalMs, 30000, 600000, 60000);
+        if (c.thresholds) for (const k of Object.keys(c.thresholds)) c.thresholds[k] = cl(c.thresholds[k], k.indexOf('diskFree') === 0 ? 0 : 1, 100, c.thresholds[k]);
+        return c;
+      },
+    };
+    vm.runInNewContext(wrapped + '\nglobalThis.branch = branch;', ctx);
+    return { ctx, t2, errBox, persisted, st };
+  }
+  // ① 非法候选：不写入、回填原生效值、红边+红字
+  const e1 = makeEnv('99', 'cpuWarn', { cpuWarn: 80, cpuCrit: 90 });
+  branch(e1.t2, e1.ctx);
+  assert.equal(e1.st.sysmonCfg.thresholds.cpuWarn, 80, '非法候选不写入 state');
+  assert.equal(e1.t2.value, '80', '回填原生效值');
+  assert.equal(e1.t2.badAdded, true, '输入框红边');
+  assert.equal(e1.errBox.hidden, false, '错误行显示');
+  assert.match(e1.errBox.textContent, /已保留原值/);
+  assert.equal(e1.persisted.length, 0, '非法路径不持久化');
+  // ② 合法写入：回填 clamp 生效值（越界 500 → 100）
+  const e2 = makeEnv('500', 'cpuCrit', {});
+  branch(e2.t2, e2.ctx);
+  assert.equal(e2.st.sysmonCfg.thresholds.cpuCrit, 100, 'clamp 写入');
+  assert.equal(e2.t2.value, '100', '回填实际生效值');
+  assert.equal(e2.t2.badAdded, false, '无红边');
+  assert.equal(e2.errBox.hidden, true);
+  assert.equal(e2.persisted.length, 1, '合法路径持久化');
+  // ③ 跨字段修复：warn 残留红边后，crit 改到 96 使 95<96 关系合法 → 残留红边统一清除
+  const e3 = makeEnv('96', 'cpuCrit', { cpuWarn: 95, cpuCrit: 90 });
+  const warnBox = { badAdded: true, classList: { remove: () => { warnBox.badAdded = false; } } };
+  e3.ctx.panel.querySelectorAll = (sel) => sel === '.zu-syscfg-th.zu-syscfg-bad' ? [warnBox] : [];
+  branch(e3.t2, e3.ctx);
+  assert.equal(warnBox.badAdded, false, '关系恢复合法后残留红边统一清除');
+  assert.equal(e3.st.sysmonCfg.thresholds.cpuCrit, 96);
+  // ④ 间隔输入 clamp 回填生效值
+  const intCtx = makeEnv('1', null);
+  intCtx.t2.classList = { contains: (c) => c === 'zu-syscfg-int', add: () => {}, remove: () => {} };
+  delete intCtx.t2.getAttribute;
+  branch(intCtx.t2, intCtx.ctx);
+  assert.equal(intCtx.st.sysmonCfg.intervalMs, 2000, '间隔 clamp 到下限');
+  assert.equal(intCtx.t2.value, '2', '回填生效秒数');
 });
 
 test('sysThresholdIssues 与展开区标红（v357）：关系非法标红不改写', () => {
@@ -410,14 +584,11 @@ test('设置页：排序卡出现系统状态行、配置卡结构与双回填�
   assert.match(cfgCard, /data-zu-sys-therr hidden/);
   const badState = JSON.parse(JSON.stringify(state));
   badState.sysmonCfg.thresholds.cpuWarn = 95;
-  const sysThresholdIssuesStub = (c) => {   // 与 00 分片同语义桩（06 生成与 09 syncPanel 共用）
-    const t = c.thresholds, out = [];
-    if (t.cpuWarn >= t.cpuCrit) out.push('CPU：预警阈值需小于危险阈值');
-    if (t.memWarn >= t.memCrit) out.push('内存：预警阈值需小于危险阈值');
-    if (t.diskFreeWarn <= t.diskFreeCrit) out.push('磁盘可用率：预警阈值需大于危险阈值');
-    return out;
-  };
-  const ctxBad = Object.assign({}, ctx, { state: badState, sysThresholdIssues: sysThresholdIssuesStub });
+  /* spCtx/ctxBad 的 sysThresholdIssues 一律用生产函数切片（手写桩会与生产漂移成假绿，review D3） */
+  const issCtx = { L: (zh) => zh };
+  vm.runInNewContext(sliceText('  function sysThresholdIssues(cfg) {', '  /* 阈值明细表（ⓘ 展开区内容') + '\nglobalThis.f = sysThresholdIssues;', issCtx);
+  const sysThresholdIssuesProd = issCtx.f;
+  const ctxBad = Object.assign({}, ctx, { state: badState, sysThresholdIssues: sysThresholdIssuesProd });
   vm.runInNewContext(helpers + '\n' + seg + '\nglobalThis.h = barOrderSettingsHtml; globalThis.sys = sysmonSettingsHtml;', ctxBad);
   assert.match(ctxBad.sys(), /data-zu-sys-therr>CPU：预警阈值需小于危险阈值/, 'LS 遗留非法阈值初始即提示');
   // 无 sysFrame 时预览显 — 占位（不用演示数字冒充真实采集结果）
@@ -450,7 +621,7 @@ test('设置页：排序卡出现系统状态行、配置卡结构与双回填�
     zuBarOrderNormalize: (r) => r, zuBarPriorityNormalize: (r) => r || {},
     refreshLayoutEditor: () => {}, syncUpdate: () => {}, LS: {}, persistSysmonCfg: () => {},
     normalizeSysmonCfg: (r) => r,
-    sysThresholdIssues: sysThresholdIssuesStub,
+    sysThresholdIssues: sysThresholdIssuesProd,
     zuRotatorSyncPanel: null, epReconcile: null, epSyncDirtyStatus: null,
   };
   const spA = source.indexOf('    function syncPanel() {');

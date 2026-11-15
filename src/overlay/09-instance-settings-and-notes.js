@@ -1677,7 +1677,10 @@
       if (thErrSync) {
         var syncIssues = sysThresholdIssues(sysCfgL);
         if (syncIssues.length) { thErrSync.textContent = syncIssues.join(L("；", "; ")); thErrSync.hidden = false; }
-        else thErrSync.hidden = true;
+        else {
+          thErrSync.hidden = true;
+          panel.querySelectorAll(".zu-syscfg-th.zu-syscfg-bad").forEach(function (inp2) { inp2.classList.remove("zu-syscfg-bad"); });
+        }
       }
       panel.querySelector(".zu-ctxov").value = state.ctxOv;
       var rstCdhIn = panel.querySelector(".zu-rst-cdh");
@@ -2208,7 +2211,7 @@
       }
       if (t2.classList && (t2.classList.contains("zu-syscfg-int") || t2.classList.contains("zu-syscfg-dint") || t2.classList.contains("zu-syscfg-th"))) {
         var nSys = Math.floor(Number(t2.value));
-        if (!isFinite(nSys)) return;   // 清空/乱码：不写不回填（留给用户继续编辑）
+        if (t2.value === "" || !isFinite(nSys)) return;   // 清空/乱码：不写不回填（Number("") 是 0，必须单独拦——review A2）
         var sc4 = normalizeSysmonCfg(Object.assign({}, state.sysmonCfg));
         if (t2.classList.contains("zu-syscfg-int")) sc4.intervalMs = nSys * 1000;
         else if (t2.classList.contains("zu-syscfg-dint")) sc4.diskIntervalMs = nSys * 1000;
@@ -2243,6 +2246,9 @@
           var stIssues = sysThresholdIssues(state.sysmonCfg);
           if (stIssues.length) { errBox4.textContent = stIssues.join(L("；", "; ")); errBox4.hidden = false; }
           else errBox4.hidden = true;
+        }
+        if (!sysThresholdIssues(state.sysmonCfg).length) {   // v357 review A1：关系恢复合法后清掉所有残留红边（跨字段修复场景）
+          panel.querySelectorAll(".zu-syscfg-th.zu-syscfg-bad").forEach(function (inp2) { inp2.classList.remove("zu-syscfg-bad"); });
         }
         persistSysmonCfg();
         sysmonWantRecalc(true);
