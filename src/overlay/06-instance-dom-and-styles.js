@@ -330,6 +330,8 @@
       ".zu-layout-priority{max-width:98px;min-width:70px;height:28px;border:1px solid var(--color-border,rgba(255,255,255,.14));border-radius:6px;background:var(--color-input,var(--color-card,#242424));color:var(--color-foreground,#fff);font:inherit;font-size:calc(var(--ui-font-size,14px) - 2px);cursor:pointer}" +
       ".zu-layout-action{border:0;background:transparent;color:var(--color-foreground-subtle,#aaa);width:24px;height:26px;flex:0 0 24px;border-radius:5px;cursor:pointer}.zu-layout-action:hover{background:var(--color-hover,rgba(255,255,255,.08));color:var(--color-foreground,#fff)}" +
       ".zu-layout-action:disabled{opacity:.25;cursor:default}" +
+      ".zu-settings .zu-layout-row>.zu-layout-label{padding:0;margin:0;align-items:center;gap:7px;cursor:pointer}" +
+      ".zu-settings .zu-layout-row>.zu-layout-label:hover{background:transparent}" +
       ".zu-main{overflow:hidden;min-width:0;flex:1 1 auto;display:flex;align-items:center;gap:1px;justify-content:space-between}" +
       /* v226 水平对齐（仅默认档挂类）：居左直接改 justify；居右不用字面 flex-end——LTR 下 start 侧
        * 溢出不可滚动也不计入 scrollWidth，收缩检测会失效、左格无声硬裁、.zu-clip 渐隐错边；改用首格
@@ -1844,7 +1846,7 @@
       /* 重建后回填全部控件状态（语言切换路径不走 syncPanel）：checkbox 按 state.show、
          上下文窗口输入框按 state.ctxOv——否则切语言后勾选态清空、首次点击语义反转 */
       panel.querySelectorAll("input[type=checkbox][data-k]").forEach(function (cb) {
-        cb.checked = !!state.show[cb.dataset.k];
+        cb.checked = cb.dataset.k === "speed" ? true : !!state.show[cb.dataset.k];
       });
       var ovInput = panel.querySelector(".zu-ctxov");
       if (ovInput) ovInput.value = state.ctxOv;
