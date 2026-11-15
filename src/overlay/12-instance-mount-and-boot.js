@@ -578,6 +578,135 @@
       } catch (e) { FATAL.panes = { err: String((e && e.stack) || e) }; }
     }
 
+
+    /* 窄宽度折叠：基于真实布局测量，而非字符数猜测。优先级低的先收起，同级右侧先收起。
+     * 只在条面内容或宽度变化时重新计算，防止 rAF 每帧触发布局和频繁写 DOM。 */
+    var foldDirty = true, foldWidth = -1, foldFont = "", foldedKeys = "";
+    function barMorePosition() {
+      if (!morePanel.classList.contains("open")) return;
+      var a = moreButton.getBoundingClientRect(), h = morePanel.offsetHeight, w = morePanel.offsetWidth;
+      morePanel.style.left = Math.round(Math.max(8, Math.min(a.right - w, innerWidth - w - 8))) + "px";
+      morePanel.style.top = Math.round(Math.max(8, a.top - h - 7)) + "px";
+    }
+    function closeMore(restoreFocus) {
+      var open = morePanel.classList.contains("open");
+      morePanel.classList.remove("open");
+      moreButton.setAttribute("aria-expanded", "false");
+      if (restoreFocus && open && moreButton.focus) moreButton.focus();
+    }
+    function moreEntriesSync() {
+      var list = Array.prototype.filter.call(main.querySelectorAll(":scope > .it"), function (el) {
+        return el.dataset.zuFolded === "1";
+      });
+      morePanel.innerHTML = '<div class="zu-more-title">' + L("已折叠项目", "Collapsed items") + ' (' + list.length + ')</div>';
+      list.forEach(function (el) {
+        var button = document.createElement("button");
+        button.type = "button"; button.className = "zu-more-option";
+        button.setAttribute("role", "menuitem");
+        button.dataset.zuKey = el.dataset.zuKey || "";
+        var icon = el.querySelector("svg");
+        if (icon) button.appendChild(icon.cloneNode(true));
+        var label = document.createElement("span");
+        label.textContent = (el.textContent || "").trim() || el.dataset.zuKey;
+        button.appendChild(label);
+        button.__tip = el.__tip;
+        morePanel.appendChild(button);
+      });
+    }
+    function syncBarOverflow() {
+      if (state.theme !== "default") {
+        if (moreButton.dataset.zuVisible !== "0") moreButton.dataset.zuVisible = "0";
+        closeMore(false);
+        main.classList.remove("zu-clip");
+        return;
+      }
+      var width = bar.clientWidth;
+      var font = getComputedStyle(main).fontSize;
+      if (!foldDirty && width === foldWidth && font === foldFont) {
+        barMorePosition();
+        return;
+      }
+      foldDirty = false; foldWidth = width; foldFont = font;
+      var rows = Array.prototype.slice.call(main.querySelectorAll(":scope > .it"));
+      var separators = Array.prototype.slice.call(main.querySelectorAll(":scope > .sep"));
+      rows.forEach(function (el) { el.dataset.zuFolded = "0"; });
+      separators.forEach(function (el) { el.dataset.zuFolded = "0"; });
+      moreButton.dataset.zuVisible = "0";
+      function syncSeparators() {
+        separators.forEach(function (el) { el.dataset.zuFolded = "1"; });
+        var previous = null;
+        rows.forEach(function (el) {
+          if (el.dataset.zuFolded === "1") return;
+          if (previous) {
+            var between = previous.nextElementSibling;
+            while (between && between !== el) {
+              if (between.classList.contains("sep")) { between.dataset.zuFolded = "0"; break; }
+              between = between.nextElementSibling;
+            }
+          }
+          previous = el;
+        });
+      }
+      var needMore = main.scrollWidth > main.clientWidth + 1;
+      if (needMore) {
+        moreButton.dataset.zuVisible = "1";
+        var ranks = {low: 2, normal: 1, high: 0};
+        var candidates = rows.map(function (el, i) {
+          var key = el.dataset.zuKey || "system";
+          return {el: el, i: i, rank: key === "system" ? -1 : (ranks[state.barPriority[key]] === undefined ? 1 : ranks[state.barPriority[key]])};
+        }).sort(function (a, b) { return b.rank - a.rank || b.i - a.i; });
+        for (var i = 0; i < candidates.length && main.scrollWidth > main.clientWidth + 1; i++) {
+          candidates[i].el.dataset.zuFolded = "1";
+          syncSeparators();
+        }
+      }
+      syncSeparators();
+      var hidden = rows.filter(function (el) { return el.dataset.zuFolded === "1"; });
+      moreButton.dataset.zuVisible = hidden.length ? "1" : "0";
+      moreButton.querySelector(".zu-more-count").textContent = hidden.length ? String(hidden.length) : "";
+      moreButton.setAttribute("aria-label", L("查看更多状态，已折叠 ", "More status items, ") + hidden.length);
+      var signature = hidden.map(function (el) { return el.dataset.zuKey || ""; }).join("|");
+      if (signature !== foldedKeys) {
+        foldedKeys = signature;
+        closeMore(false);
+        if (tipFor && tipFor.closest && main.contains(tipFor) && tipFor.dataset.zuFolded === "1") hideTip(true, "bar-hidden");
+      }
+      if (!hidden.length) closeMore(false);
+      main.classList.toggle("zu-clip", main.scrollWidth > main.clientWidth + 1);
+      if (morePanel.classList.contains("open")) moreEntriesSync();
+      barMorePosition();
+    }
+    moreButton.addEventListener("click", function (e) {
+      e.stopPropagation();
+      if (morePanel.classList.contains("open")) { closeMore(true); return; }
+      closeSettings(false);
+      hideTip(true, "bar-hidden");
+      moreEntriesSync();
+      morePanel.classList.add("open");
+      moreButton.setAttribute("aria-expanded", "true");
+      barMorePosition();
+    });
+    morePanel.addEventListener("click", function (e) {
+      var option = e.target && e.target.closest && e.target.closest(".zu-more-option");
+      if (!option) return;
+      e.stopPropagation();
+      if (option.dataset.zuKey === "sub") {
+        closeMore(false);
+        subPopShow(moreButton, true);
+        return;
+      }
+      if (option.__tip) {
+        showTipFor(option);
+        closeMore(false);
+      }
+    });
+    morePanel.addEventListener("keydown", function (e) {
+      if (e.key === "Escape") { e.stopPropagation(); closeMore(true); hideTip(true, "escape"); }
+    });
+    listenGlobal(document, "pointerdown", function (e) {
+      if (!morePanel.contains(e.target) && !moreButton.contains(e.target)) closeMore(false);
+    }, true);
+    listenGlobal(window, "resize", function () { foldDirty = true; });
     function track() {
       if (inactive()) return;   // 旧实例罢工，把舞台让给新实例
       try {
@@ -679,13 +808,7 @@
          * 的缓存命中率（核心项 tps/上下文/会话累计不动，明细仍在悬停 tooltip），
          * 迟滞 +12px/-120px 防数值刷新在阈值附近来回闪；仍装不下由 .zu-main 右缘渐隐
          * 兜底（.zu-clip）。测量基准都是 bar 自身内容宽，形态无关。 */
-        var ov = main.scrollWidth - main.clientWidth;
-        var ns = shrink;
-        if (!shrink && ov > 12) ns = 1;
-        else if (shrink && ov < -120) ns = 0;
-        if (ns !== shrink) { shrink = ns; render(state.data || { session: {}, last_turn: {}, today: {}, context_window: 0 }); }
-        var clip = state.theme !== "pill" && main.scrollWidth > main.clientWidth + 1;
-        if (clip !== fadeOn) { fadeOn = clip; main.classList.toggle("zu-clip", clip); }
+        syncBarOverflow();
         positionSettingsPanel();
         positionSubPop();
         everMounted = true;
@@ -828,6 +951,8 @@
         }
       } catch (e) { }
       wantedEl = composer = cardCache = null;
+      closeMore(false);
+      morePanel.remove();
       bar.remove();
       panel.remove();   // v80：面板挂 body，dispose 需单独摘除
       subPanel.remove();
