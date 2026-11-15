@@ -1391,6 +1391,8 @@
       if (devKeepTipBox) devKeepTipBox.checked = !!state.devKeepTip;
       var qrBox = panel.querySelector(".zu-quota-remain");
       if (qrBox) qrBox.checked = !!state.quotaRemain;
+      var qdFormBox = panel.querySelector(".zu-qdock-form");
+      if (qdFormBox) qdFormBox.checked = ls(LS.qdockForm, "chip") === "dock";   // 本地补丁：圆环卡形态勾选态
       var enhBox = panel.querySelector(".zu-enhance-toggle");   // v344：勾选态由推送面 enhanceEnabled 决定
       if (enhBox) enhBox.checked = state.enhanceEnabled !== false;
       if (typeof zuRotatorSyncPanel === "function") zuRotatorSyncPanel(panel);
@@ -1820,6 +1822,12 @@
         state.quotaRemain = t2.checked ? 1 : 0;
         persist();
         renderAll(false);
+        return;
+      }
+      if (t2.classList.contains("zu-qdock-form")) {
+        /* 本地补丁：额度显示形态切换（圆环卡/原版 chip）——LS 偏好 + 即时换挂 */
+        lsSet(LS.qdockForm, t2.checked ? "dock" : "chip");
+        enhanceQuotaChip();
         return;
       }
       if (t2.classList.contains("zu-cmdk-widen")) {

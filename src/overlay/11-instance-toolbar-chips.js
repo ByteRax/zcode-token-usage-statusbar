@@ -119,7 +119,7 @@
       return { fams: fams, text: counts.join("+"), countdown: countdown,
         band: band, earliest: earliest, total: total };
     }
-    function rstSpanText(rem) {   // 时分秒全档恒显（用户规格 2026-10-28：精确到秒、实时逐秒跳动）；中文紧邻、英文数字单位紧邻+时段间空格
+    function rstSpanText(rem) {   // 时分秒全档恒显（产品规格 2026-10-28：精确到秒、实时逐秒跳动）；中文紧邻、英文数字单位紧邻+时段间空格
       var segGap = L("", " ");
       var uh = L("时", "h"), um = L("分", "m"), us = L("秒", "s");
       var total = Math.max(0, Math.floor(rem / 1000));
@@ -157,7 +157,7 @@
       if (el.nextSibling !== wrap) host.insertBefore(el, wrap);   // 位置兜回：额度组（wrapper）左侧
       var txt = v.text + v.countdown;
       /* lucide refresh-cw：双箭头环形 = 通用「重置」视觉语言；此前卡内嵌箭头的复合图标
-       * 在 14px 下墨迹过密显糊（用户反馈 2026-10-28） */
+       * 在 14px 下墨迹过密显糊（体验反馈 2026-10-28） */
       var html = '<svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"></path><path d="M21 3v5h-5"></path><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"></path><path d="M8 16H3v5"></path></svg>' + txt;   // 图标↔数字间距走 .zu-ctxrst>svg margin（字面空格在 flex 里渲染不稳定）
       if (el.__zuSig !== html) { el.innerHTML = html; el.__zuSig = html; }
       el.setAttribute("aria-label", L("额度重置卡 ", "Quota reset cards ") + txt);
@@ -309,7 +309,7 @@
       if (state.show.win) {
         out += tpsRowHtml(L("会话累计", "Session"), fmt(sess.total) + L(" token · ", " token · ") + countFmt(sess.requests || 0) + L("次", " req") + costSuffix(sess.cost_usd));
       }
-      if (state.show.today) {   // v213 摘要行序随格序对齐（用户规格 2026-11-02）
+      if (state.show.today) {   // v213 摘要行序随格序对齐（产品规格 2026-11-02）
         out += tpsRowHtml(L("今日合计", "Today"), fmt(today.total) + L(" token · ", " token · ") + countFmt(today.requests || 0) + L("次", " req") + costSuffix(today.cost_usd));
       }
       if (state.show.proj && sess.project) {   // v159：项目累计摘要行（与会话累计同款口径）
@@ -357,7 +357,7 @@
       chip.addEventListener("focus", function () { showTpsTip(chip); });
       chip.addEventListener("blur", hideTpsTip);
       chip.addEventListener("keydown", function (e) { if (e.key === "Escape") hideTpsTip(); });
-      /* 右键直开设置（用户规格 2026-11-09）：精简下 chip 是唯一常驻入口，悬停 tooltip
+      /* 右键直开设置（产品规格 2026-11-09）：精简下 chip 是唯一常驻入口，悬停 tooltip
        * 里点「打开设置」要两步；右键镜像 .tps-cfg 路径——先收 tooltip 再开面板，
        * 并压掉宿主原生右键菜单。 */
       chip.addEventListener("contextmenu", function (e) {
@@ -371,7 +371,7 @@
       if (inactive()) { restoreTpsChip(); return; }
       var v = tpsChipView();
       if (!v) { restoreTpsChip(); return; }
-      /* v147 挂载面（用户规格）：前导区、git chip 左侧——git 在时插它前面；git 不在时占其
+      /* v147 挂载面（产品规格）：前导区、git chip 左侧——git 在时插它前面；git 不在时占其
        * 锚位（cua-entry 后方/前导区末尾），git 出现后两侧兜回收敛为 [锚][速率][git]
        * （git 的兜回容忍速率占相邻位，见 enhanceGitChip，否则逐拍互相拉锯）。
        * 前导区发现失败（异形布局）回落尾随区：重置卡/额度组 wrapper 左侧（v146 原挂载面）。 */
@@ -502,7 +502,9 @@
         var shownOf = function (pct) { return Math.round(rem ? quotaRemainPct(pct) : pct); };
         var html = segs.map(function (s) {
         /* v127：周期标签拆 zu-qlabel 子节点（静态 L() 文案，安全）——标签与数值同档色同字重成组。
-         * textContent 与原有完全一致，aria/tooltip 不受影响。档位色恒按已用原始值判定，不随口径反转。 */
+         * textContent 与原有完全一致，aria/tooltip 不受影响。档位色恒按已用原始值判定，不随口径反转。
+         * 本地补丁注：value 分支的 html 已不直接上屏（工具栏 chip 改由左/右缘竖排额度卡承载，
+         * 见 enhanceQuotaChip/quotaDockHTML），此处仅作内容签名与 Tooltip 数据源保留。 */
           return '<span class="zu-qseg ' + quotaBandOf(s.pct) + '"><span class="zu-qlabel">' + s.label + '</span> ' + shownOf(s.pct) + "%</span>";
         }).join('<span class="zu-qsep">|</span>');
         return { kind: "value", stale: !!q.stale, busy: !!q.busy,
@@ -523,19 +525,32 @@
       e.stopPropagation();
       pluginRequest("quota-refresh", quotaSourceId ? { sourceId: quotaSourceId } : undefined);
     }
-    function enhanceQuotaChip() {
-      if (inactive()) { restoreQuotaChip(); return; }
-      var mode = quotaChipMode();
-      if (!mode) { restoreQuotaChip(); return; }
+    /* 本地补丁：额度显示形态切换（产品规格）——⚙「使用自定义圆环卡」勾选时显示 dock（本补丁），
+     * 取消勾选恢复作者原版工具栏 chip（enhanceQuotaChipLegacy，源码取自上游 main 原样）。
+     * 形态存 localStorage zusage3.qdockForm（dock/chip，缺省 dock）；两形态各自独立缓存
+     * （quotaChipCache=dock / quotaChipLegacyCache=chip），切换时先彻底清掉另一形态再挂新形态。 */
+    var quotaChipLegacyCache = null;
+    function qdockFormCurrent() {
+      return ls(LS.qdockForm, "chip") === "dock" ? "dock" : "chip";   // 上游缺省保持原版 chip，圆环卡 opt-in
+    }
+    function restoreChipLegacy() {
+      if (!quotaChipLegacyCache) return;
+      if (quotaTipFor === quotaChipLegacyCache) hideQuotaTip();
+      try { quotaChipLegacyCache.remove(); } catch (e) { }
+      quotaChipLegacyCache = null;
+      ariaLiveState.__zuQuotaLive = "";
+      ariaLiveState.textContent = ariaLiveState.__zuGitLive || "";
+    }
+    function enhanceQuotaChipLegacy(mode) {
       var btn = null;
       try { btn = (ctxBtnCache && ctxBtnCache.isConnected) ? ctxBtnCache : (cardCache ? cardCache.querySelector(ZU_CTX_TRIGGER) : null); } catch (e) { }
-      if (!btn || !btn.parentElement) { restoreQuotaChip(); return; }
+      if (!btn || !btn.parentElement) { restoreChipLegacy(); return; }
       var wrap = btn.parentElement;
-      var chip = quotaChipCache;
+      var chip = quotaChipLegacyCache;
       if (!chip || !chip.isConnected || chip.parentElement !== wrap) {
         if (chip && chip.isConnected) chip.remove();
         chip = null;
-        for (var i = 0; i < wrap.children.length; i++) {   // 复用热更/重建遗留的同类节点，避免双 chip
+        for (var i = 0; i < wrap.children.length; i++) {
           if (wrap.children[i].classList && wrap.children[i].classList.contains("zu-quota")) { chip = wrap.children[i]; break; }
         }
         if (!chip) {
@@ -552,7 +567,7 @@
           chip.addEventListener("keyup", onRefreshKeyup);
           chip.addEventListener("click", onQuotaClick);
         }
-        quotaChipCache = chip;
+        quotaChipLegacyCache = chip;
       }
       if (chip.nextElementSibling !== btn) wrap.insertBefore(chip, btn);   // 位置兜回：始终紧贴按钮左侧
       var liveState = lastQuota && lastQuota.busy ? L("套餐额度查询中", "Plan quota query in progress") : mode.aria;
@@ -577,11 +592,245 @@
       chip.setAttribute("aria-busy", String(qbusy));
       if (quotaTipFor === chip) showQuotaTip(chip);   // 悬停中数据刷新：内容跟随
     }
-    function restoreQuotaChip() {
+    function enhanceQuotaChip() {   // 形态调度器：dock（本补丁）/ 原版 chip；切换时先清旧形态
+      if (inactive()) { restoreQuotaChip(); return; }
+      var mode = quotaChipMode();
+      if (!mode) { restoreQuotaChip(); return; }
+      var form = qdockFormCurrent();
+      if (form === "chip") {
+        restoreDock();
+        enhanceQuotaChipLegacy(mode);
+      } else {
+        restoreChipLegacy();
+        enhanceQuotaDock(mode);
+      }
+    }
+    /* 本地补丁：hover 开箱——hover 到列上时一次性播放「抖动→弹起→档位色粒子迸发→彩带光环」。
+     * 粒子/光环为动态注入节点（不进数据驱动 innerHTML，与 sig 幂等互不干扰），750ms 后自动清理；
+     * 1.5s 全局冷却防鼠标来回扫连刷；列上的 .zu-unbox 类同时充当该列的动画期防重入锁。 */
+    var qdockLastUnbox = 0;
+    function onDockUnbox(e) {
+      var now = Date.now();
+      if (now - qdockLastUnbox < 1500) return;   // 全局冷却：防鼠标在面板内来回扫反复触发
+      var dock = this;
+      var col = e.target && e.target.closest ? e.target.closest(".zu-qcol") : null;
+      if (!col || !dock.contains(col) || col.classList.contains("zu-unbox")) return;
+      var ring = col.querySelector(".zu-qring");
+      if (!ring) return;
+      qdockLastUnbox = now;
+      col.classList.add("zu-unbox");   // 兼动画期防重入锁
+      var halo = document.createElement("span");
+      halo.className = "zu-qr-halo";
+      ring.appendChild(halo);
+      var parts = [], count = 10;
+      for (var i = 0; i < count; i++) {
+        var p = document.createElement("span");
+        p.className = "zu-qr-part";
+        var ang = (i / count) * Math.PI * 2 + Math.random() * 0.5;
+        var dist = 16 + Math.random() * 14;
+        p.style.setProperty("--dx", Math.round(Math.cos(ang) * dist) + "px");
+        p.style.setProperty("--dy", Math.round(Math.sin(ang) * dist) + "px");
+        if (i % 2) p.style.borderRadius = "50%";   // 方圆交错，星屑感
+        ring.appendChild(p);
+        parts.push(p);
+      }
+      setTimeout(function () {   // 一次性清理（>全部动画时长），列若已随 innerHTML 重建也无害
+        col.classList.remove("zu-unbox");
+        for (var i = 0; i < parts.length; i++) if (parts[i].parentNode) parts[i].remove();
+        if (halo.parentNode) halo.remove();
+      }, 780);
+    }
+    /* 本地补丁：侧栏 footer 首行的额度 dock。每列为竖排标签、34px 环和剩余百分比。 */
+    var QDOCK_STRUCT_V = 5;
+    var QDOCK_CIRC = 2 * Math.PI * 15;
+    var QDOCK_DASH = QDOCK_CIRC.toFixed(3);
+    var QDOCK_DEFS = [
+      ["daily", "今日额度", "Daily quota"],
+      ["fiveHour", "5h额度", "5h quota"],
+      ["weekly", "周额度", "Weekly quota"],
+      ["monthly", "本月额度", "Monthly quota"],
+      ["plan", "套餐额度", "Plan quota"],
+    ];
+    var qdockAnchor = null, qdockObserver = null, qdockEvents = null;
+    function quotaDockAnchor() {
+      var gear = document.querySelector('[data-testid="task-settings-button"]');
+      if (!gear || !gear.isConnected) return null;
+      var footer = gear.closest("footer");
+      if (!footer || !footer.firstElementChild || !footer.parentElement) return null;
+      // 用任务列表确认侧栏，侧栏拖宽后齿轮坐标会变化。
+      var region = footer.parentElement.querySelector('[data-testid="sidebar-task-list-region"]');
+      return region ? { host: footer, gear: gear, region: region } : null;
+    }
+    function quotaDockInPlace(dock, anchor) {
+      return dock.isConnected && anchor && anchor.host.firstElementChild === dock;
+    }
+    function mountQuotaDock(dock, anchor) {
+      if (quotaDockInPlace(dock, anchor)) return true;
+      try {
+        anchor.host.insertBefore(dock, anchor.host.firstElementChild);
+        return true;
+      } catch (e) {
+        FATAL.qdockMountErr = { error: String(e) };
+        return false;
+      }
+    }
+    // 观察 body 才能在 React 替换整个 footer 时找回锚位。
+    function ensureQuotaDockObserver() {
+      if (qdockObserver || typeof MutationObserver === "undefined") return;
+      qdockObserver = new MutationObserver(function () {
+        var dock = quotaChipCache;
+        if (!dock || inactive() || document.__zuQuotaDock !== dock) return;
+        var anchor = qdockAnchor;
+        if (quotaDockInPlace(dock, anchor) && anchor.gear.closest("footer") === anchor.host &&
+            anchor.host.parentElement && anchor.host.parentElement.contains(anchor.region)) return;
+        qdockAnchor = quotaDockAnchor();
+        if (qdockAnchor) mountQuotaDock(dock, qdockAnchor);
+      });
+      qdockObserver.observe(document.body, { childList: true, subtree: true });
+    }
+    function quotaDockView(mode) {
+      /* 防御：热重载窗口期观测过 QDOCK_DEFS 一过性 undefined（间歇 TypeError，自愈可恢复，根因未定）——
+       * 优雅降级为文字形态并保留 FATAL 堆栈，不让渲染链中断。 */
+      if (!QDOCK_DEFS || !QDOCK_DEFS.length) {
+        return { cols: [], time: "", aria: mode.aria, sig: JSON.stringify([QDOCK_STRUCT_V, mode.kind, mode.html, ""]) };
+      }
+      var q = lastQuota;
+      var cols = [], time = "", parts = [], first;
+      if (mode.kind === "value" && q && q.windows) {
+        for (var i = 0; i < QDOCK_DEFS.length; i++) {
+          var def = QDOCK_DEFS[i], e = q.windows[def[0]];
+          if (!e || !Number.isFinite(e.percent)) continue;
+          if (!first) first = e;
+          var remain = quotaRemainPct(e.percent);
+          var percent = Math.round(remain);
+          var band = quotaBandOf(e.percent);
+          if (band === "zu-qb-mid" && e.percent >= 70) band = "zu-qb-high";
+          var label = L(def[1], def[2]);
+          var offset = percent === 0 ? QDOCK_DASH :
+            percent === 100 ? "0" : (QDOCK_CIRC * (100 - remain) / 100).toFixed(3);
+          cols.push({ label: label, band: band, percent: percent, offset: offset });
+          parts.push(label + " " + percent + "%");
+        }
+        if (cols.length === 1 && first.resetsAt) {
+          var rst = qTime(first.resetsAt);
+          if (rst) time = L(first.expires ? "到期 " : "重置 ", first.expires ? "expires " : "resets ") + rst.slice(5).replace("-", "/");
+        }
+      }
+      return {
+        cols: cols, time: time,
+        aria: parts.length ? L("剩余 ", "Remaining ") + parts.join(L("，", ", ")) : mode.aria,
+        sig: JSON.stringify([QDOCK_STRUCT_V, mode.kind, cols.length ? cols : mode.html, time]),
+      };
+    }
+    function quotaDockHTML(mode, view) {
+      if (!view.cols.length) return '<div class="zu-qdock-txt">' + mode.html + "</div>";
+      var defs = '<svg class="zu-qr-defs" width="0" height="0" focusable="false" aria-hidden="true"><defs>';
+      var gradients = ["zu-qb-calm", "zu-qb-mid", "zu-qb-high", "zu-qb-crit"];
+      for (var gi = 0; gi < gradients.length; gi++) {
+        defs += '<linearGradient id="zu-qg-' + gradients[gi] + '" x1="0" y1="0" x2="1" y2="1">' +
+          '<stop offset="0"></stop><stop offset="1"></stop></linearGradient>';
+      }
+      defs += "</defs></svg>";
+      var cols = "";
+      for (var i = 0; i < view.cols.length; i++) {
+        var col = view.cols[i], gradient = col.band;
+        if (gradient === "zu-qb-norm") gradient = "zu-qb-calm";
+        if (gradient === "zu-qb-exc") gradient = "zu-qb-crit";
+        cols += '<div class="zu-qcol ' + col.band + '">' +
+          '<span class="zu-qr-label">' + col.label + "</span>" +
+          '<span class="zu-qring"><svg viewBox="0 0 34 34" focusable="false" aria-hidden="true">' +
+          '<circle class="zu-qr-track" cx="17" cy="17" r="15"></circle>' +
+          '<circle class="zu-qr-arc" cx="17" cy="17" r="15" stroke="url(#zu-qg-' + gradient + ') currentColor"' +
+          (col.percent === 0 ? ' visibility="hidden"' : "") +
+          ' stroke-dasharray="' + QDOCK_DASH + '" stroke-dashoffset="' + col.offset + '"></circle>' +
+          "</svg></span>" +
+          '<span class="zu-qr-val">' + col.percent + "%</span></div>";
+      }
+      if (view.time) cols += '<span class="zu-qr-exp">' + view.time + "</span>";
+      return defs + cols;
+    }
+    function enhanceQuotaDock(mode) {   // dock 形态挂载（由 enhanceQuotaChip 调度器分派）
+      if (document.__zuQuotaDock && document.__zuQuotaDock !== quotaChipCache) return;
+      qdockAnchor = quotaDockAnchor();
+      if (!qdockAnchor) {
+        if (quotaChipCache) {
+          if (quotaTipFor === quotaChipCache) hideQuotaTip();
+          if (quotaChipCache.style.display !== "none") quotaChipCache.style.display = "none";
+        }
+        return;
+      }
+      var dock = quotaChipCache;
+      if (!dock) {
+        var orphan = qdockAnchor.host.querySelector(":scope > .zu-qdock");
+        if (orphan) orphan.remove();
+        dock = document.createElement("div");
+        dock.className = "zu-qdock";
+        dock.style.display = "none";
+        dock.setAttribute("role", "button");
+        dock.setAttribute("aria-keyshortcuts", "Enter Space");
+        dock.tabIndex = 0;
+        qdockEvents = new AbortController();
+        var options = { signal: qdockEvents.signal };
+        dock.addEventListener("mouseenter", onQuotaEnter, options);
+        dock.addEventListener("mouseleave", hideQuotaTip, options);
+        dock.addEventListener("focus", onQuotaEnter, options);
+        dock.addEventListener("blur", hideQuotaTip, options);
+        dock.addEventListener("keydown", onRefreshKeydown, options);
+        dock.addEventListener("keyup", onRefreshKeyup, options);
+        dock.addEventListener("mouseover", onDockUnbox, options);
+        dock.addEventListener("click", function (e) {
+          // 渲染失败且数据源已切换时，等画面追上后再接受刷新。
+          if (this.__zuQ && this.__zuQ.sourceId === quotaSourceId) onQuotaClick(e);
+        }, options);
+        quotaChipCache = document.__zuQuotaDock = dock;
+        FATAL.qdockLifecycle = { fn: "enhanceQuotaChip", result: "claimed" };
+        ensureQuotaDockObserver();
+      }
+      if (!mountQuotaDock(dock, qdockAnchor)) return;
+      var view;
+      try {
+        view = quotaDockView(mode);
+        if (dock.__zuSig !== view.sig) {
+          dock.innerHTML = quotaDockHTML(mode, view);
+          dock.__zuSig = view.sig;
+        }
+      } catch (e) {
+        FATAL.qdockRenderErr = { error: String(e), stack: String(e && e.stack || "").split("\n").slice(0, 4).join(" | ") };   // 自愈重试（sig 未写，下 tick 重建）；堆栈留档定位启动竞态
+        return;
+      }
+      if (dock.style.display === "none") dock.style.display = "";
+      if (dock.getAttribute("aria-label") !== view.aria) dock.setAttribute("aria-label", view.aria);
+      var qbusy = !!(lastQuota && lastQuota.busy);
+      var liveState = qbusy ? L("套餐额度查询中", "Plan quota query in progress") : view.aria;
+      if (ariaLiveState.__zuQuotaLive !== liveState) {
+        ariaLiveState.__zuQuotaLive = liveState;
+        ariaLiveState.textContent = ariaLiveState.__zuQuotaLive || ariaLiveState.__zuGitLive || "";
+      }
+      syncCtxLite(dock, bar.classList.contains("zu-light"));
+      var srcLabels = {};
+      for (var si = 0; si < (state.quotaSources || []).length; si++) srcLabels[state.quotaSources[si].id] = state.quotaSources[si].label;
+      var all = lastQuotaAll && lastQuotaAll.sources ? Object.assign({}, lastQuotaAll, { active: quotaSourceId }) : lastQuotaAll;
+      dock.__zuQ = { q: lastQuota, all: all, srcLabels: srcLabels, provider: quotaProvider, model: quotaModel, mode: mode, sourceId: quotaSourceId };
+      dock.classList.toggle("zu-qstale", !!mode.stale);
+      dock.classList.toggle("zu-qbusy", qbusy);
+      if (dock.getAttribute("aria-busy") !== String(qbusy)) dock.setAttribute("aria-busy", String(qbusy));
+      if (quotaTipFor === dock) showQuotaTip(dock);   // 悬停中数据刷新：内容跟随
+    }
+    function restoreQuotaChip() {   // 总兜底（所有既有调用点）：两种形态都清，各自无挂载时为 no-op
+      restoreDock();
+      restoreChipLegacy();
+    }
+    function restoreDock() {
       if (!quotaChipCache) return;
+      if (qdockObserver) qdockObserver.disconnect();
+      if (qdockEvents) qdockEvents.abort();
+      qdockAnchor = qdockObserver = qdockEvents = null;
       if (quotaTipFor === quotaChipCache) hideQuotaTip();
-      try { quotaChipCache.remove(); } catch (e) { }
+      delete quotaChipCache.__zuQ;
+      try { quotaChipCache.remove(); } catch (e) { FATAL.qdockRemoveErr = { error: String(e) }; }
+      if (document.__zuQuotaDock === quotaChipCache) delete document.__zuQuotaDock;
       quotaChipCache = null;
+      FATAL.qdockLifecycle = { fn: "restoreDock", result: "released" };
       ariaLiveState.__zuQuotaLive = "";
       ariaLiveState.textContent = ariaLiveState.__zuGitLive || "";
     }

@@ -409,6 +409,7 @@
       quotaTip.__zuTipSig = html;
     }
     quotaTip.style.display = "block";
+    quotaTip.classList.toggle("zu-qcard", !!(el.classList && el.classList.contains("zu-qdock")));   // 本地补丁：dock 触发的额度弹层升级卡片模式（渐变流光边框+入场动画），其它来源保持原样
     var r = el.getBoundingClientRect(), tw = quotaTip.offsetWidth, th = quotaTip.offsetHeight;
     var vw = window.innerWidth, vh = window.innerHeight;
     var left = Math.max(8, Math.min(r.left, vw - tw - 8));
