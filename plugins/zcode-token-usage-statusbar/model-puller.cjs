@@ -496,26 +496,35 @@ async function readAnthropicStream(res) {
   const reader = res && res.body && typeof res.body.getReader === "function" ? res.body.getReader() : null;
   if (!reader) throw Object.assign(new Error("missing stream"), { enhanceParse: true });
   const decoder = new TextDecoder();
-  let buf = "", out = "", stopped = false, complete = false, invalid = false, started = false, stopReason = "", dataLines = [], size = 0;
+  let buf = "", out = "", stopped = false, complete = false, invalid = false, started = false, stopReason = "", dataLines = [], size = 0, serverModel = "", usageIn = null, usageOut = null;
   const blocks = new Set();
   function dispatch() {
     const payload = dataLines.join("\n");
-    dataLines = [];
+        dataLines = [];
     if (!payload || payload === "[DONE]") return;
     let evt;
     try { evt = JSON.parse(payload); } catch (e) { invalid = true; return; }
     if (stopped) { invalid = true; return; }
-    if (evt && evt.type === "message_start") { if (started) invalid = true; started = true; }
+    if (evt && evt.type === "message_start") {
+      if (started) invalid = true; started = true;
+      const msg = evt.message || {};
+      if (typeof msg.model === "string" && msg.model) serverModel = msg.model;
+      if (msg.usage && Number.isFinite(msg.usage.input_tokens)) usageIn = msg.usage.input_tokens;
+    }
+    else if (evt && evt.type === "message_delta") {
+      if (evt.usage && Number.isFinite(evt.usage.output_tokens)) usageOut = evt.usage.output_tokens;   // 累计值，不重复相加
+      if (evt.delta && evt.delta.stop_reason) {
+        if (!started || blocks.size || stopReason) invalid = true;
+        stopReason = evt.delta.stop_reason;
+      }
+    }
     else if (evt && evt.type === "content_block_start") { if (!started || stopReason || blocks.has(evt.index)) invalid = true; blocks.add(evt.index); }
     else if (evt && evt.type === "content_block_delta") {
       if (!started || stopReason || !blocks.has(evt.index)) invalid = true;
       if (evt.delta && evt.delta.type === "text_delta" && typeof evt.delta.text === "string") out += evt.delta.text;
     } else if (evt && evt.type === "content_block_stop") { if (!blocks.delete(evt.index)) invalid = true; }
     else if (evt && evt.type === "error") invalid = true;
-    else if (evt && evt.type === "message_delta" && evt.delta && evt.delta.stop_reason) {
-      if (!started || blocks.size || stopReason) invalid = true;
-      stopReason = evt.delta.stop_reason;
-    } else if (evt && evt.type === "message_stop") { if (!started || !stopReason || blocks.size) invalid = true; stopped = true; }
+    else if (evt && evt.type === "message_stop") { if (!started || !stopReason || blocks.size) invalid = true; stopped = true; }
     if (out.length > 1024 * 1024) throw Object.assign(new Error("response too large"), { enhanceParse: true });
   }
   function lineOf(line) {
@@ -542,7 +551,8 @@ async function readAnthropicStream(res) {
     if (buf) lineOf(buf);
     dispatch();
     if (invalid || !stopped || !["end_turn", "stop_sequence"].includes(stopReason)) throw Object.assign(new Error("incomplete stream"), { enhanceParse: true });
-    return out;
+    const usage = usageIn == null && usageOut == null ? null : { inputTokens: usageIn == null ? null : usageIn, outputTokens: usageOut == null ? null : usageOut, totalTokens: usageIn == null || usageOut == null ? null : usageIn + usageOut };
+    return { text: out, serverModel: serverModel || undefined, usage: usage || undefined };
   } finally {
     if (!complete && typeof reader.cancel === "function") { try { Promise.resolve(reader.cancel()).catch(() => {}); } catch (e) { } }
     if (typeof reader.releaseLock === "function") { try { reader.releaseLock(); } catch (e) { } }
@@ -1665,9 +1675,10 @@ function createModelPuller(opts) {
     if (!fetchImpl) return { ok: false, kind: "network", error: "no network stack" };
     const data = readProviderCfg();
     const rule = data ? findRule(data, providerId) : null;
-    const planSrc = PLAN_SOURCES[String(providerId || "")];
-    if (!planSrc && !rule) return { ok: false, kind: "provider", error: "provider not found" };
-    const cfg = (rule && rule.config) || {};
+    const direct = o.enhanceProvider && typeof o.enhanceProvider === "object" ? o.enhanceProvider : null;
+    const planSrc = direct ? null : PLAN_SOURCES[String(providerId || "")];
+    if (!direct && !planSrc && !rule) return { ok: false, kind: "provider", error: "provider not found" };
+    const cfg = direct ? { access: { type: "api-key", apiKey: direct.apiKey }, api: { type: direct.protocol, baseUrl: direct.baseUrl } } : ((rule && rule.config) || {});
     const access = cfg.access || {}, api = cfg.api || {};
     if (!planSrc && access.type !== "api-key") return { ok: false, kind: "provider", error: "provider is not api-key type" };
     const apiType = planSrc ? "anthropic-messages" : String(api.type || "");
@@ -1720,9 +1731,10 @@ function createModelPuller(opts) {
         if (external && external.aborted) return { ok: false, kind: "cancelled", error: "cancelled" };
         const res = await fetchImpl(url, { headers: headers, body: JSON.stringify(body), method: "POST", redirect: "error", signal: ctl.signal });
         if (res && res.ok) {
-          let value;
+          let value, serverModel, usage;
           if (apiType === "anthropic-messages") {
-            value = await readAnthropicStream(res);
+            const stream = await readAnthropicStream(res);
+            value = stream.text; serverModel = stream.serverModel; usage = stream.usage;
           } else {
             const raw = await readEnhanceBody(res);
             let payload;
@@ -1731,21 +1743,30 @@ function createModelPuller(opts) {
               return { ok: false, kind: "parse", error: "incomplete completion" };
             }
             value = enhanceUnwrapText(payload);
+            if (typeof payload.model === "string" && payload.model) serverModel = payload.model;
+            const u = payload.usage || {};
+            if (apiType === "openai-responses" && (Number.isFinite(u.input_tokens) || Number.isFinite(u.output_tokens))) usage = { inputTokens: u.input_tokens ?? null, outputTokens: u.output_tokens ?? null, totalTokens: Number.isFinite(u.total_tokens) ? u.total_tokens : (Number.isFinite(u.input_tokens) && Number.isFinite(u.output_tokens) ? u.input_tokens + u.output_tokens : null) };
+            else if (Number.isFinite(u.prompt_tokens) || Number.isFinite(u.completion_tokens)) usage = { inputTokens: Number.isFinite(u.prompt_tokens) ? u.prompt_tokens : null, outputTokens: Number.isFinite(u.completion_tokens) ? u.completion_tokens : null, totalTokens: Number.isFinite(u.total_tokens) ? u.total_tokens : (Number.isFinite(u.prompt_tokens) && Number.isFinite(u.completion_tokens) ? u.prompt_tokens + u.completion_tokens : null) };
           }
           if (external && external.aborted) return { ok: false, kind: "cancelled", error: "cancelled" };
           if (timedOut) throw Object.assign(new Error("timeout"), { name: "AbortError" });
           const enhanced = stripEnhanceFences(value, text);
           if (!enhanced) return { ok: false, kind: "empty", error: "empty completion" };
-          return { ok: true, text: enhanced, model: mid };
+          return { ok: true, text: enhanced, model: mid, serverModel: serverModel || mid, usage: usage || undefined };
         }
-        if (res && res.body && typeof res.body.cancel === "function") {
-          try { Promise.resolve(res.body.cancel()).catch(() => {}); } catch (e) { }
+        if (!res.ok) {
+          let errorDetail = "";
+          try { errorDetail = maskSecrets(String(await readEnhanceBody(res)), apiKey).replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "").slice(0, 500); } catch (e) { }   // 必须在取消响应体之前读取；正文过 maskSecrets 防凭据回显
+          if (res && res.body && typeof res.body.cancel === "function") {
+            try { Promise.resolve(res.body.cancel()).catch(() => { }); } catch (e) { }
+          }
+          if (external && external.aborted) return { ok: false, kind: "cancelled", error: "cancelled" };
+          if (timedOut) throw Object.assign(new Error("timeout"), { name: "AbortError" });
+          lastFail = { ok: false, kind: classifyProbeStatus(res ? res.status : 0), status: res ? res.status : 0, error: "HTTP " + (res ? res.status : 0) };
+          if (errorDetail) lastFail.detail = errorDetail;
+          log("enhance http " + lastFail.status + " (" + attempt + ")");
+          if (lastFail.kind !== "server") return lastFail;
         }
-        if (external && external.aborted) return { ok: false, kind: "cancelled", error: "cancelled" };
-        if (timedOut) throw Object.assign(new Error("timeout"), { name: "AbortError" });
-        lastFail = { ok: false, kind: classifyProbeStatus(res ? res.status : 0), status: res ? res.status : 0 };
-        log("enhance http " + lastFail.status + " (" + attempt + ")");
-        if (lastFail.kind !== "server") return lastFail;
       } catch (e) {
         if (external && external.aborted) return { ok: false, kind: "cancelled", error: "cancelled" };
         if (e && e.enhanceParse) return { ok: false, kind: "parse", error: "invalid or incomplete stream" };
@@ -1758,7 +1779,61 @@ function createModelPuller(opts) {
     return lastFail;
   }
 
-  return { listProviders: listProviders, fetchModels: fetchModels, applyModels: applyModels, probeModel: probeModel, enhanceText: enhanceText, dispose: () => { disposed = true; fetchCache.clear(); } };
+  function resolveEnhanceHost(providerId) {
+    const planSrc = PLAN_SOURCES[String(providerId || "")];
+    if (planSrc) {   // 套餐源（BigModel/Start Plan 等）：凭据 planKeyOf 主进程内解析，协议恒 anthropic。
+      // 不沿用 planListable 的同族去重——增强选套餐是计费池选择，Start Plan 与个人档需分列；仅跳过 team（与个人同凭据同端点的纯重复）。
+      if (/team/.test(String(providerId))) return null;
+      if (!planTokenOf(providerId)) return null;
+      const entry = readV2BuiltinEntry(planSrc);
+      if (entry && entry.enabled === false) return null;
+      const apiKey = planKeyOf(providerId);
+      return apiKey ? { providerId: String(providerId), baseUrl: planSrc.baseUrl, protocol: "anthropic-messages", apiKey: apiKey, plan: true } : null;
+    }
+    const data = readProviderCfg(), rule = data ? findRule(data, providerId) : null;
+    if (!rule || !modelPullerRuleAllowed(rule)) return null;
+    const cfg = rule.config || {}, api = cfg.api || {}, access = cfg.access || {};
+    if (access.type !== "api-key" || !access.apiKey || !api.baseUrl || !["openai-chat-completions", "openai-responses", "anthropic-messages"].includes(api.type)) return null;
+    return { providerId, baseUrl: String(api.baseUrl).replace(/\/+$/, ""), protocol: api.type, apiKey: String(access.apiKey) };
+  }
+  function modelPullerRuleAllowed(rule) { return rule && rule.enabled !== false && (!rule.config || rule.config.enabled !== false); }
+  function listEnhanceHosts() {
+    const data = readProviderCfg();
+    const hosts = [];
+    for (const rule of rulesOf(data)) {
+      const d = resolveEnhanceHost(String(rule.providerId || ""));
+      if (d && !PLAN_SOURCES[String(rule.providerId || "")]) hosts.push({ id: d.providerId, name: String(rule.providerName || d.providerId).slice(0, 160), baseUrl: d.baseUrl, protocol: d.protocol });
+    }
+    for (const planId of Object.keys(PLAN_SOURCES)) {   // 套餐源（BigModel/Start Plan 等）凭据可用即列出，与 listProviders 同门控
+      const d = resolveEnhanceHost(planId);
+      if (d) hosts.push({ id: d.providerId, name: PLAN_SOURCES[planId].name, baseUrl: d.baseUrl, protocol: d.protocol });
+    }
+    return hosts;
+  }
+  async function listEnhanceModels(config, signal) {
+    const base = config.protocol === "anthropic-messages" ? anthropicBaseWithV1(config.baseUrl) : config.baseUrl.replace(/\/+$/, "");
+    const url = new URL(base + "/models");
+    const headers = { Accept: "application/json", "User-Agent": "ZCode" };
+    if (config.protocol === "anthropic-messages") {
+      headers["x-api-key"] = config.apiKey;
+      headers["anthropic-version"] = "2023-06-01";
+    } else headers.Authorization = "Bearer " + config.apiKey;
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    if (signal) signal.addEventListener("abort", abort, { once: true });
+    const timer = setTimeout(abort, FETCH_TIMEOUT_MS);
+    if (timer && timer.unref) timer.unref();
+    try {
+      if (signal && signal.aborted) return { ok: false, error: "cancelled" };
+      const res = await fetchImpl(url.toString(), { headers, signal: controller.signal, redirect: "error" });
+      if (!res.ok) { dropBody(res); return { ok: false, error: "HTTP " + res.status }; }
+      const data = await readJsonBounded(res, RESPONSE_MAX_BYTES);
+      const ids = sanitizeModelIds(parseModelsPayload(data).map(item => typeof item === "string" ? item : rawModelId(asObject(item))));
+      return { ok: true, models: ids.filter(id => !config.apiKey || !id.includes(config.apiKey)) };
+    } catch (e) { return { ok: false, error: "model list unavailable" }; }
+    finally { clearTimeout(timer); if (signal) signal.removeEventListener("abort", abort); }
+  }
+  return { enhanceProviderVersion: 1, listProviders: listProviders, fetchModels: fetchModels, applyModels: applyModels, probeModel: probeModel, enhanceText: enhanceText, listEnhanceModels: listEnhanceModels, listEnhanceHosts: listEnhanceHosts, resolveEnhanceHost: resolveEnhanceHost, dispose: () => { disposed = true; fetchCache.clear(); } };
 }
 
 /* 兼容导出：响应形状解析（OpenAI data / Ollama models / result / 顶层数组），供测试与

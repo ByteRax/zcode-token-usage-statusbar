@@ -1246,7 +1246,7 @@
       /* v232 顺带修 v217 回归：.zu-sub 走统一浮层后 __tip 恒 null，滚入判定若被
        * __tip 早退拦截，药丸窄条下子代理入口键盘聚焦不再滚入可视区（pill 夹具实测
        * scrollLeft 恒 0）。滚入只依赖条目矩形，提到 __tip 早退之前。 */
-      if (state.theme === "pill" && (item.__tip || item.classList.contains("zu-sub"))) {
+      if ((state.theme === "pill" || state.theme === "default") && (item.__tip || item.classList.contains("zu-sub"))) {
         var ir = item.getBoundingClientRect(), mr = main.getBoundingClientRect();
         if (ir.left < mr.left) main.scrollLeft -= mr.left - ir.left;
         else if (ir.right > mr.right) main.scrollLeft += ir.right - mr.right;

@@ -212,6 +212,7 @@
     }
     function applyBarTheme() {
       var pill = state.theme === "pill", compact = state.theme === "compact";
+      if (bar.getAttribute("data-zusage-theme") !== state.theme) main.scrollLeft = 0;
       bar.setAttribute("data-zusage-theme", state.theme);
       bar.classList.toggle("zu-pill", pill);
       bar.classList.toggle("zu-compact", compact);
@@ -273,6 +274,10 @@
         }
       }
       shrink = 0;
+      bar.classList.remove("zu-narrow", "zu-tight");
+      narrowMeasureKey = ""; narrowWidths = null;
+      main.classList.remove("zu-clip", "zu-clip-left");
+      fadeOn = false;
       render(state.data || { session: {}, last_turn: {}, today: {}, context_window: 0 });
       positionSettingsPanel();
     }
@@ -674,18 +679,47 @@
             lastPos = [left, top];
           }
         }
-        /* in-card 形态（v80）：无坐标跟随、无锁宽——宽度由卡片 flex-col 的 stretch 撑满内宽。
-         * 两种形态共用的收缩判定：内容超宽不撑破卡片，分级收缩：先隐藏「本轮/会话累计」
-         * 的缓存命中率（核心项 tps/上下文/会话累计不动，明细仍在悬停 tooltip），
-         * 迟滞 +12px/-120px 防数值刷新在阈值附近来回闪；仍装不下由 .zu-main 右缘渐隐
-         * 兜底（.zu-clip）。测量基准都是 bar 自身内容宽，形态无关。 */
-        var ov = main.scrollWidth - main.clientWidth;
-        var ns = shrink;
-        if (!shrink && ov > 12) ns = 1;
-        else if (shrink && ov < -120) ns = 0;
-        if (ns !== shrink) { shrink = ns; render(state.data || { session: {}, last_turn: {}, today: {}, context_window: 0 }); }
-        var clip = state.theme !== "pill" && main.scrollWidth > main.clientWidth + 1;
-        if (clip !== fadeOn) { fadeOn = clip; main.classList.toggle("zu-clip", clip); }
+        /* 用脱离布局的副本量完整/紧凑自然宽度，避免 space-between 或宿主 flex
+         * 把分配到的空白误算为内容宽度。文本或字体变化才重测，不改真实条面。 */
+        if (state.theme === "default" && main.clientWidth > 0 && Date.now() - narrowCheckAt >= 250) {
+          narrowCheckAt = Date.now();
+          var mainStyle = getComputedStyle(main);
+          var measureKey = main.innerHTML + "|" + mainStyle.font + "|" + mainStyle.letterSpacing + "|" + mainStyle.fontVariantNumeric + "|" + state.barJust + "|" + Math.floor(Date.now() / 10000);
+          if (!narrowWidths || measureKey !== narrowMeasureKey) {
+            var probe = document.createElement("div");
+            probe.className = bar.className;
+            probe.classList.remove("zu-narrow", "zu-tight", "zu-in", "zu-just-end");
+            probe.style.cssText = "position:fixed;left:-10000px;top:0;visibility:hidden;pointer-events:none;width:max-content;min-width:0;max-width:none";
+            probe.style.fontFamily = mainStyle.fontFamily;
+            probe.style.fontSize = mainStyle.fontSize;
+            var probeMain = main.cloneNode(true);
+            probeMain.classList.remove("zu-clip", "zu-clip-left");
+            probeMain.style.cssText = "width:max-content;min-width:max-content;flex:none;overflow:visible";
+            probe.appendChild(probeMain);
+            bar.parentElement.appendChild(probe);
+            try {
+              var fullWidth = probeMain.getBoundingClientRect().width;
+              probe.classList.add("zu-tight");
+              var tightWidth = probeMain.getBoundingClientRect().width;
+              narrowWidths = [fullWidth, tightWidth];
+              narrowMeasureKey = measureKey;
+            } finally { probe.remove(); }
+          }
+          var room = main.clientWidth, ns = shrink;
+          if (shrink === 0) ns = narrowWidths[0] > room + 1 ? (narrowWidths[1] <= room + 1 ? 1 : 2) : 0;
+          else if (shrink === 1) ns = narrowWidths[0] + 24 <= room ? 0 : (narrowWidths[1] > room + 1 ? 2 : 1);
+          else ns = narrowWidths[0] + 24 <= room ? 0 : (narrowWidths[1] + 24 <= room ? 1 : 2);
+          if (ns !== shrink) {
+            shrink = ns;
+            bar.classList.toggle("zu-tight", shrink > 0);
+            bar.classList.toggle("zu-narrow", shrink === 2);
+          }
+        }
+        var rightClip = state.theme === "default" && main.scrollLeft + main.clientWidth < main.scrollWidth - 1;
+        var leftClip = state.theme === "default" && main.scrollLeft > 1;
+        main.classList.toggle("zu-clip", rightClip);
+        main.classList.toggle("zu-clip-left", leftClip);
+        fadeOn = rightClip || leftClip;
         positionSettingsPanel();
         positionSubPop();
         everMounted = true;
@@ -782,6 +816,7 @@
 
     function dispose() {
       if (instanceDisposed) return;
+      if (typeof epTestStop === "function") epTestStop();
       instanceDisposed = true;
       clearInterval(heavyTimer);
       clearInterval(bridge.timer);   // v71：pane 销毁即停能力检测并释放 store 订阅

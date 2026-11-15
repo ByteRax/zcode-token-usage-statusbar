@@ -19,7 +19,7 @@ const path = require("path");
 const fs = require("fs");
 const { spawn, execFile } = require("child_process");
 const { createHash } = require("crypto");
-const { app, BrowserWindow, webContents } = require("electron");
+const { app, BrowserWindow, webContents, dialog } = require("electron");
 const { fileURLToPath } = require("url");
 
 const HERE = __dirname;   // 本 loader 被 asar 注入行按绝对 file:// URL import，__dirname 即真实目录（克隆到任意路径无需改代码）
@@ -864,6 +864,7 @@ setInterval(maybeSpawn, Math.max(10000, readCfg().heartbeat_ms | 0 || 30000));  
 watchDb();
 maybeSpawn();   // 启动先拉一次
 
+let modelPuller = null;
 let pluginUpdater = null;
 let enginePatcher = null;   // v179：声明前置——updater createUpdater 同步 notify→pushPluginState 会读它（TDZ）
 let pluginRequestBusy = false;
@@ -874,7 +875,7 @@ function pushPluginState(wc, state) {
   /* rateLine / quotaEnabled / restartNotice / enginePatch 随插件状态一起推送：⚙ 面板开关的真值都来自 config.json */
   const payload = { ...state, rateLine: readCfgCached().answer_rate_line !== false, quotaEnabled: quotaEnabled(),
     resetBadgeEnabled: resetBadgeEnabled(), restartNotice: readCfgCached().restart_notice !== false,
-    enhanceEnabled: enhanceEnabled(),
+    enhanceEnabled: enhanceEnabled(), enhanceProvider: enhanceProviderView(),
     quotaSources: quotaClient ? quotaClient.sourcesConfig() : [], enginePatch: enginePatcher ? enginePatcher.status() : null, feedbackVersion: 1,
     relaunchSupported: true };   // v180 issue #158：能力标记与下方 relaunch 分支同文件（inject-main），缺标记=旧主进程必然没有该动作分支
   wc.executeJavaScript(`window.__zusagePluginUpdate && window.__zusagePluginUpdate(${JSON.stringify(payload)})`, true).catch(() => { });
@@ -1068,7 +1069,6 @@ initQuotaSubsystem();
  * 独立模块独立 try：拉取失败只少该功能，不拖垮额度链与主泵。
  * v258：装配提炼为 initModelPuller()——decryptValue 来自 quota-client（本文件注入，
  * model-puller 不自带），热替换 quota-client 后必须重建本实例以换用新解密函数。 */
-let modelPuller = null;
 function initModelPuller() {
   if (modelPuller && typeof modelPuller.dispose === "function") modelPuller.dispose();
   try {
@@ -1350,7 +1350,65 @@ function enhanceRequestTextOk(v) {
   return typeof v === "string" && v.trim().length > 0 && v.length <= 20000;
 }
 const enhanceInFlight = new Map();   // webContents → Map<requestId, entry>，不同窗口的请求身份隔离
-function handlePromptEnhanceRequest(req, wc) {
+function readEnhanceProvider() {
+  try {
+    const file = path.join(HERE, "enhance-provider.json");
+    const st = fs.lstatSync(file);
+    if (!st.isFile() || st.isSymbolicLink() || (process.platform !== "win32" && (st.mode & 0o077))) return { version: 1, revision: 0, mode: "default", unreadable: true };
+    const d = JSON.parse(fs.readFileSync(file, "utf8"));
+    return d && d.version === 1 && Number.isSafeInteger(d.revision) && ["default", "custom"].includes(d.mode) ? d : { version: 1, revision: 0, mode: "default", unreadable: true };
+  } catch (e) { return e.code === "ENOENT" ? { version: 1, revision: 0, mode: "default" } : { version: 1, revision: 0, mode: "default", unreadable: true }; }
+}
+function enhanceProviderView() {
+  const d = readEnhanceProvider();
+  return { capability: 1, allowDowngrade: d.allowDowngrade !== false, saveHistory: d.saveHistory === true, available: process.platform !== "win32" && !!modelPuller && modelPuller.enhanceProviderVersion === 1, version: 1, revision: d.revision, mode: d.mode, unreadable: !!d.unreadable, source: d.source || "manual", providerId: d.providerId || "", target: d.target || "", baseUrl: d.baseUrl || "", protocol: d.protocol || "openai-chat-completions", model: d.model || "", keyConfigured: !!d.apiKey };
+}
+function validEnhanceUrl(value) {
+  try {
+    const u = new URL(value);
+    return ["http:", "https:"].includes(u.protocol) && !!u.hostname && !u.username && !u.password && !u.search && !u.hash;
+  } catch (e) { return false; }
+}
+function enhanceTargetRisk(value) {
+  try {
+    const u = new URL(value);
+    let h = u.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+    if (h.startsWith("::ffff:")) h = h.slice(7);   // IPv4-mapped IPv6 还原为点分四段再判私网
+    const parts = h.split(".").map(Number);
+    return u.protocol === "http:" || h === "localhost" || h.endsWith(".localhost") || h.endsWith(".local") || h.endsWith(".internal") || !h.includes(".") || h === "::1" || /^(fc|fd|fe[89ab])/i.test(h) || (parts.length === 4 && parts.every(n => Number.isInteger(n) && n >= 0 && n <= 255) && (parts[0] === 10 || parts[0] === 127 || parts[0] === 192 && parts[1] === 168 || parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31 || parts[0] === 169 && parts[1] === 254));
+  } catch (_) { return false; }
+}
+async function confirmEnhanceTarget(wc, provider) {
+  if (!enhanceTargetRisk(provider.baseUrl)) return true;
+  if (!dialog || typeof dialog.showMessageBox !== "function") return false;
+  const owner = BrowserWindow.fromWebContents(wc);
+  if (!owner) return false;
+  const result = await dialog.showMessageBox(owner, { type: "warning", buttons: ["Cancel", "Continue"], defaultId: 0, cancelId: 0, noLink: true, message: "Send data to this HTTP or local network service?", detail: provider.baseUrl + "\nThe service may receive your API key or draft. Continue only if you trust it." });
+  return result.response === 1;
+}
+function resolveEnhanceDraftProvider(settings, draft, formApiKey) {
+  if (!draft || typeof draft !== "object") return null;
+  if (draft.source === "host" && draft.providerId) {
+    const host = modelPuller.resolveEnhanceHost(String(draft.providerId));
+    return host && host.baseUrl === draft.baseUrl && host.protocol === draft.protocol && validEnhanceUrl(host.baseUrl) && host.apiKey && ["openai-chat-completions", "openai-responses", "anthropic-messages"].includes(host.protocol) ? host : null;
+  }
+  if (draft.source === "manual") {
+    const sameTarget = settings.source !== "host" && settings.baseUrl === draft.baseUrl && settings.protocol === draft.protocol;
+    const apiKey = typeof formApiKey === "string" && formApiKey ? formApiKey : (sameTarget ? settings.apiKey || "" : "");
+    return validEnhanceUrl(draft.baseUrl) && apiKey && ["openai-chat-completions", "openai-responses", "anthropic-messages"].includes(draft.protocol) ? { baseUrl: draft.baseUrl, protocol: draft.protocol, apiKey: apiKey } : null;
+  }
+  return null;
+}
+function resolveEnhanceProvider(d) {
+  if (!d || d.mode !== "custom" || !modelPuller) return null;
+  let result;
+  if (d.source === "host") {
+    result = typeof modelPuller.resolveEnhanceHost === "function" ? modelPuller.resolveEnhanceHost(d.providerId) : null;
+    if (!result || JSON.stringify([result.baseUrl, result.protocol]) !== d.target) return null;
+  } else result = { baseUrl: d.baseUrl, protocol: d.protocol, apiKey: d.apiKey };
+  return result && validEnhanceUrl(result.baseUrl) && result.apiKey && ["openai-chat-completions", "openai-responses", "anthropic-messages"].includes(result.protocol) ? result : null;
+}
+async function handlePromptEnhanceRequest(req, wc) {
   let entry = null;
   let entries = enhanceInFlight.get(wc);
   if (entries && entries.has(req.requestId)) return;   // 同 ID 回执会误消费原请求的回调
@@ -1366,8 +1424,18 @@ function handlePromptEnhanceRequest(req, wc) {
   };
   if (!enhanceEnabled()) { respond({ ok: false, kind: "disabled", error: "prompt enhance is disabled" }); return; }
   if (!modelPuller || typeof modelPuller.enhanceText !== "function") { respond({ ok: false, kind: "unavailable", error: "model puller unavailable; fully restart ZCode to load it" }); return; }   // 含热换错位窗
-  if (!modelPullerProviderOk(req.providerId)) { respond({ ok: false, kind: "invalid_input", error: "invalid provider" }); return; }
-  const model = typeof req.modelId === "string" && req.modelId.length <= 200 && !/[\x00-\x1f\x7f]/.test(req.modelId) ? req.modelId : "";
+  const settings = readEnhanceProvider();
+  if (settings.unreadable) { respond({ ok: false, kind: "unavailable", error: "enhance settings unreadable" }); return; }
+  const custom = req.action === "prompt-enhance-v2";
+  if (req.action === "prompt-enhance-v2" && (!modelPuller || modelPuller.enhanceProviderVersion !== 1)) { respond({ ok: false, kind: "unavailable", error: "restart required" }); return; }
+  if (req.action === "prompt-enhance-v2" && req.revision !== settings.revision) { respond({ ok: false, kind: "unavailable", error: "enhance provider settings changed" }); return; }
+  if (req.action !== "prompt-enhance-v2" && settings && settings.mode === "custom") { respond({ ok: false, kind: "unavailable", error: "restart required" }); return; }
+  const draftForm = custom && req.form && typeof req.form === "object" ? req.form : null;   // 设置页测试：允许未保存的表单快照（不要求已保存模式），凭据仅本次请求在主进程解析
+  let provider = custom && settings.mode === "custom" ? resolveEnhanceProvider(settings) : null;
+  if (draftForm) provider = resolveEnhanceDraftProvider(settings, draftForm, typeof req.formApiKey === "string" ? req.formApiKey : "");
+  if (custom && (!provider || !(draftForm ? draftForm.model : settings.model))) { respond({ ok: false, kind: "provider", error: "enhance provider unavailable" }); return; }
+  if (!custom && !modelPullerProviderOk(req.providerId)) { respond({ ok: false, kind: "invalid_input", error: "invalid provider" }); return; }
+  const model = custom ? (draftForm ? draftForm.model : settings.model) : (typeof req.modelId === "string" && req.modelId.length <= 200 && !/[\x00-\x1f\x7f]/.test(req.modelId) ? req.modelId : "");
   if (!enhanceRequestTextOk(req.text)) { respond({ ok: false, kind: "invalid_input", error: "draft length out of range" }); return; }
   if (typeof req.requestId !== "string" || !req.requestId) { respond({ ok: false, kind: "invalid_input", error: "invalid requestId" }); return; }   // 与 cancel 分支口径一致
   if (!entries) { entries = new Map(); enhanceInFlight.set(wc, entries); }
@@ -1383,12 +1451,156 @@ function handlePromptEnhanceRequest(req, wc) {
   };
   entries.set(req.requestId, entry);
   if (wc && typeof wc.once === "function") wc.once("destroyed", entry.onDestroyed);
-  modelPuller.enhanceText(req.providerId, model, req.text, { signal: controller.signal })
-    .then(respond)
-    .catch((e) => { LOG("prompt enhance failed:", e.message); respond({ ok: false, kind: "network", error: "enhance failed" }); });
+  if (custom && enhanceTargetRisk(provider.baseUrl)) {
+    let confirmed = false;
+    try { confirmed = await confirmEnhanceTarget(wc, provider); } catch (_) { }
+    if (controller.signal.aborted || enhanceInFlight.get(wc)?.get(req.requestId) !== entry) return;
+    if (!confirmed) { respond({ ok: false, kind: "cancelled" }); return; }
+    const current = readEnhanceProvider(), latest = draftForm ? resolveEnhanceDraftProvider(current, draftForm, typeof req.formApiKey === "string" ? req.formApiKey : "") : resolveEnhanceProvider(current);
+    if (!current || current.revision !== settings.revision || !latest || latest.baseUrl !== provider.baseUrl || latest.protocol !== provider.protocol || latest.apiKey !== provider.apiKey) { respond({ ok: false, kind: "unavailable", error: "enhance provider settings changed" }); return; }
+  }
+  modelPuller.enhanceText(custom ? "enhance-custom" : req.providerId, model, req.text, { signal: controller.signal, ...(custom ? { enhanceProvider: provider } : {}) })
+    .then((result) => {
+      const current = readEnhanceProvider();
+      if (!current || current.revision !== settings.revision || current.mode !== settings.mode) respond({ ok: false, kind: "cancelled" });
+      else if (result.ok && current.allowDowngrade === false && typeof result.serverModel === "string" && result.serverModel && result.serverModel !== model) respond({ ok: false, kind: "downgraded", error: "model downgraded", detail: result.serverModel });
+      else respond(result);
+    })
+    .catch((e) => { LOG("prompt enhance failed:", e.message); respond({ ok: false, kind: "network", error: "enhance failed", detail: String((e && e.message) || "").slice(0, 500) }); });
+}
+/* ---------- 增强历史（spec: 增强历史记录）---------- */
+const enhanceHistory = [];   // 内存常驻；saveHistory 开启时才落盘 enhance-history.json
+let enhanceHistoryLoaded = false;
+function loadEnhanceHistoryDisk() {
+  if (enhanceHistoryLoaded || process.platform === "win32") return;
+  if (readEnhanceProvider().saveHistory !== true) return;   // 关闭时不读盘：契约=关闭态重启即清空
+  enhanceHistoryLoaded = true;
+  try {
+    const st = fs.lstatSync(path.join(HERE, "enhance-history.json"));
+    if (!st.isFile() || st.isSymbolicLink() || st.mode & 0o077) return;
+    const arr = JSON.parse(fs.readFileSync(path.join(HERE, "enhance-history.json"), "utf8"));
+    if (Array.isArray(arr)) enhanceHistory.push(...arr.filter(r => r && typeof r === "object"));
+  } catch (e) { }
+}
+function persistEnhanceHistory() {
+  if (!readEnhanceProvider().saveHistory || process.platform === "win32") return;
+  try {
+    const file = path.join(HERE, "enhance-history.json");
+    const tmp = file + ".tmp";
+    fs.rmSync(tmp, { force: true });   // 防预置符号链接重定向写入
+    fs.writeFileSync(tmp, JSON.stringify(enhanceHistory), { mode: 0o600 });
+    fs.renameSync(tmp, file);
+  } catch (e) { LOG("enhance history persist failed:", e.message); }
+}
+function addEnhanceHistory(record) {
+  loadEnhanceHistoryDisk();
+  if (!record || typeof record !== "object") return { ok: false, error: "invalid record" };
+  const clean = {
+    id: typeof record.id === "string" && record.id ? record.id.slice(0, 80) : "h-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8),
+    requestId: typeof record.requestId === "string" ? record.requestId.slice(0, 120) : "",
+    source: record.source === "test" ? "test" : "chat",
+    status: "success",
+    providerName: typeof record.providerName === "string" ? record.providerName.slice(0, 160) : "",
+    modelId: typeof record.modelId === "string" ? record.modelId.slice(0, 200) : "",
+    originalText: typeof record.originalText === "string" ? record.originalText.slice(0, 20000) : "",
+    enhancedText: typeof record.enhancedText === "string" ? record.enhancedText.slice(0, 40000) : "",
+    usage: record.usage && typeof record.usage === "object" ? { inputTokens: Number.isFinite(record.usage.inputTokens) ? record.usage.inputTokens : null, outputTokens: Number.isFinite(record.usage.outputTokens) ? record.usage.outputTokens : null, totalTokens: Number.isFinite(record.usage.totalTokens) ? record.usage.totalTokens : null } : { inputTokens: null, outputTokens: null, totalTokens: null },
+    createdAt: typeof record.createdAt === "string" ? record.createdAt : new Date().toISOString(),
+    durationMs: Number.isFinite(record.durationMs) ? record.durationMs : null
+  };
+  if (clean.requestId && enhanceHistory.some(r => r.requestId === clean.requestId && r.source === clean.source)) return { ok: true, deduped: true };
+  enhanceHistory.unshift(clean);
+  const cutoff = Date.now() - 30 * 24 * 3600 * 1000;
+  for (let i = enhanceHistory.length - 1; i >= 0; i--) {
+    const t = Date.parse(enhanceHistory[i].createdAt || "");
+    if (enhanceHistory.length > 100 || (t && t < cutoff)) enhanceHistory.splice(i, 1);
+  }
+  persistEnhanceHistory();
+  return { ok: true, record: clean };
+}
+function handleEnhanceHistoryAction(req, wc) {
+  const reply = result => deliverPluginRequest(wc, req.requestId, result);
+  if (req.action === "enhance-history-list") {
+    loadEnhanceHistoryDisk();
+    const limit = Number.isFinite(req.limit) && req.limit > 0 ? Math.min(req.limit, 100) : enhanceHistory.length;
+    reply({ ok: true, records: enhanceHistory.slice(0, limit), total: enhanceHistory.length, saveHistory: readEnhanceProvider().saveHistory === true });
+    return;
+  }
+  if (req.action === "enhance-history-add") { reply(addEnhanceHistory(req.record)); return; }
+  if (req.action === "enhance-history-delete") {
+    loadEnhanceHistoryDisk();
+    const id = typeof req.id === "string" ? req.id : "";
+    const idx = enhanceHistory.findIndex(r => r.id === id);
+    if (idx >= 0) { enhanceHistory.splice(idx, 1); persistEnhanceHistory(); }
+    reply({ ok: true, deleted: idx >= 0 });
+    return;
+  }
+  if (req.action === "enhance-history-clear") {
+    loadEnhanceHistoryDisk();
+    enhanceHistory.length = 0;
+    persistEnhanceHistory();
+    reply({ ok: true });
+    return;
+  }
 }
 /* 取消在途增强（fire-and-forget，不回执）：abort 后 enhanceText 以 kind:"cancelled" 收口，
  * 渲染端在取消时已置 settled 并丢弃回执，两侧状态各自收敛。 */
+async function handleEnhanceProviderAction(req, wc) {
+  const reply = result => deliverPluginRequest(wc, req.requestId, result);
+  if (!modelPuller || modelPuller.enhanceProviderVersion !== 1 || typeof modelPuller.listEnhanceHosts !== "function") { reply({ ok: false, error: "restart required" }); return; }
+  if (req.action === "enhance-provider-list") {
+    if (req.cached) {   // 硬盘缓存：设置页打开时秒出列表，随后仍会拉取新鲜数据并回写
+      try {
+        const cached = JSON.parse(fs.readFileSync(path.join(HERE, "enhance-providers-cache.json"), "utf8"));
+        if (Array.isArray(cached.providers)) { reply({ ok: true, providers: cached.providers, cached: true }); return; }
+      } catch (e) { }
+    }
+    const providers = modelPuller.listEnhanceHosts();
+    try {
+      const cacheFile = path.join(HERE, "enhance-providers-cache.json");
+      fs.writeFileSync(cacheFile, JSON.stringify({ providers: providers, at: Date.now() }), { mode: 0o600 });
+    } catch (e) { LOG("enhance provider cache write failed:", e.message); }
+    reply({ ok: true, providers: providers });
+    return;
+  }
+  if (req.action === "enhance-provider-models") {
+    const settings = readEnhanceProvider();
+    if (!settings || settings.unreadable || process.platform === "win32") { reply({ ok: false, error: "provider unavailable" }); return; }
+    const draft = req.form && typeof req.form === "object" ? req.form : null;
+    let provider = draft ? resolveEnhanceDraftProvider(settings, draft, typeof req.formApiKey === "string" ? req.formApiKey : "") : resolveEnhanceProvider(settings);
+    if (!provider) { reply({ ok: false, error: "provider unavailable" }); return; }
+    if (req.revision !== settings.revision) { reply({ ok: false, error: "settings changed" }); return; }
+    if (enhanceTargetRisk(provider.baseUrl)) {
+      if (!await confirmEnhanceTarget(wc, provider)) { reply({ ok: false, error: "cancelled" }); return; }
+      const current = readEnhanceProvider();
+      if (!current || current.unreadable || current.revision !== settings.revision) { reply({ ok: false, error: "settings changed" }); return; }
+      if (draft) {
+        const latest = resolveEnhanceDraftProvider(current, draft, typeof req.formApiKey === "string" ? req.formApiKey : "");
+        if (!latest || latest.baseUrl !== provider.baseUrl || latest.protocol !== provider.protocol || latest.apiKey !== provider.apiKey) { reply({ ok: false, error: "provider changed" }); return; }
+      }
+    }
+    const result = await modelPuller.listEnhanceModels(provider);
+    const now = readEnhanceProvider();
+    reply(now && !now.unreadable && now.revision === (req.revision != null ? req.revision : now.revision) ? result : { ok: false, error: "settings changed" });
+    return;
+  }
+  if (req.action !== "enhance-provider-save" || !req.changes || typeof req.changes !== "object") return;
+  const changes = req.changes;
+  if (changes.source === "host") {
+    const host = modelPuller.resolveEnhanceHost(changes.providerId);
+    if (!host || !validEnhanceUrl(host.baseUrl)) { reply({ ok: false, error: "provider unavailable" }); return; }
+    changes.target = JSON.stringify([host.baseUrl, host.protocol]);
+    changes.baseUrl = host.baseUrl; changes.protocol = host.protocol; changes.keyAction = "clear";
+  } else if (changes.baseUrl && !validEnhanceUrl(changes.baseUrl)) { reply({ ok: false, error: "invalid URL" }); return; }
+  const python = readCfgCached().python_path || (process.platform === "win32" ? "python" : "python3");
+  const child = execFile(python, [path.join(HERE, "runtime_lock.py"), "--update-enhance-provider", HERE], { timeout: 15000, windowsHide: true }, (error) => {
+    if (error) { reply({ ok: false, error: "save failed; refresh settings" }); return; }
+    for (const entries of enhanceInFlight.values()) for (const item of entries.values()) item.controller.abort();
+    broadcastPluginState(); reply({ ok: true, provider: enhanceProviderView() });
+  });
+  child.stdin.on("error", () => {});
+  child.stdin.end(JSON.stringify({ revision: req.revision, changes }));
+}
 function handlePromptEnhanceCancel(req, wc) {
   const entries = enhanceInFlight.get(wc);
   const entry = entries && entries.get(req.requestId);
@@ -1973,8 +2185,12 @@ async function pollPluginRequests() {
           handleQuotaSourceRequest(req, wc);
         } else if (req && (req.action === "model-pull-list" || req.action === "model-pull-fetch" || req.action === "model-pull-apply" || req.action === "model-pull-probe")) {
           handleModelPullRequest(req, wc);
-        } else if (req && req.action === "prompt-enhance") {   // v344：增强提示词按钮（模型 chip 左侧）
+        } else if (req && (req.action === "prompt-enhance" || req.action === "prompt-enhance-v2")) {
           handlePromptEnhanceRequest(req, wc);
+        } else if (req && ["enhance-history-list", "enhance-history-add", "enhance-history-delete", "enhance-history-clear"].includes(req.action)) {
+          handleEnhanceHistoryAction(req, wc);
+        } else if (req && ["enhance-provider-list", "enhance-provider-models", "enhance-provider-save"].includes(req.action)) {
+          handleEnhanceProviderAction(req, wc).catch(() => deliverPluginRequest(wc, req.requestId, { ok: false, error: "provider operation failed" }));
         } else if (req && req.action === "prompt-enhance-cancel" && typeof req.requestId === "string") {   // v344.1：增强中再点=取消在途请求
           handlePromptEnhanceCancel(req, wc);
         } else if (req && req.action === "enhance" && typeof req.enabled === "boolean") {   // ⚙ 面板开关（同 rate-line/quota 族命名）

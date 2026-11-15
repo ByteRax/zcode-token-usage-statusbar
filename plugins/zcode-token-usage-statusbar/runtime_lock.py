@@ -157,6 +157,80 @@ def update_config(runtime, changes, defaults=None):
         return True
 
 
+def update_enhance_provider(runtime, revision, changes):
+    """Update the restricted enhancement settings under the shared runtime lock."""
+    if os.name == "nt":
+        raise ValueError("secure enhancement provider storage unavailable")
+    if not isinstance(revision, int) or isinstance(revision, bool) or revision < 0 or not isinstance(changes, dict):
+        raise ValueError("invalid enhancement settings")
+    fields = {"mode", "source", "providerId", "target", "baseUrl", "protocol", "model", "keyAction", "apiKey", "allowDowngrade", "saveHistory"}
+    if set(changes) - fields or changes.get("keyAction", "keep") not in ("keep", "replace", "clear"):
+        raise ValueError("invalid enhancement settings")
+    runtime = Path(runtime)
+    info = runtime.stat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid():
+        raise ValueError("unsafe runtime directory")
+    config = runtime / "enhance-provider.json"
+    lock = runtime / "enhance-provider.lock"
+    if lock.is_symlink():
+        raise ValueError("unsafe lock")
+    with file_lock(lock):
+        try:
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            fd = os.open(os.fspath(config), flags)
+        except FileNotFoundError:
+            current = {"version": 1, "revision": 0, "mode": "default"}
+        else:
+            with os.fdopen(fd, "r", encoding="utf-8") as stream:
+                st = os.fstat(stream.fileno())
+                if not stat.S_ISREG(st.st_mode) or st.st_uid != os.geteuid() or st.st_nlink != 1 or st.st_mode & 0o077:
+                    raise ValueError("unsafe enhancement settings")
+                current = json.load(stream)
+            if not isinstance(current, dict) or current.get("version") != 1 or not isinstance(current.get("revision"), int):
+                raise ValueError("invalid enhancement settings")
+        if current["revision"] != revision:
+            raise ValueError("enhancement settings conflict")
+        updated = dict(current)
+        for key in fields - {"keyAction", "apiKey"}:
+            if key in changes:
+                value = changes[key]
+                if key in ("allowDowngrade", "saveHistory"):
+                    if not isinstance(value, bool):
+                        raise ValueError("invalid enhancement settings")
+                elif not isinstance(value, str) or len(value) > 2048 or any(ord(c) < 32 for c in value):
+                    raise ValueError("invalid enhancement settings")
+                updated[key] = value
+        action = changes.get("keyAction", "keep")
+        if action == "replace":
+            key = changes.get("apiKey")
+            if not isinstance(key, str) or not key or len(key) > 4096 or any(ord(c) < 32 for c in key):
+                raise ValueError("invalid enhancement settings")
+            updated["apiKey"] = key
+        elif action == "clear":
+            updated.pop("apiKey", None)
+        if updated.get("mode") not in ("default", "custom") or updated.get("source", "manual") not in ("manual", "host"):
+            raise ValueError("invalid enhancement settings")
+        if (current.get("baseUrl"), current.get("protocol"), current.get("source", "manual")) != (updated.get("baseUrl"), updated.get("protocol"), updated.get("source", "manual")) and action == "keep":
+            updated.pop("apiKey", None)
+        updated["revision"] = revision + 1
+        fd, name = tempfile.mkstemp(prefix=".enhance-provider-", suffix=".tmp", dir=runtime)
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                fd = None
+                json.dump(updated, stream, ensure_ascii=False)
+                stream.write("\n")
+            os.replace(name, config)
+        finally:
+            if fd is not None:
+                os.close(fd)
+            try:
+                os.unlink(name)
+            except FileNotFoundError:
+                pass
+        return updated
+
+
 def record_restart(runtime, data):
     """Merge a restart notification while holding the independent marker lock."""
     if not isinstance(data, dict):
@@ -258,6 +332,7 @@ def main():
     operation.add_argument("--record-restart", metavar="RUNTIME")
     operation.add_argument("--ack-restart", nargs=2, metavar=("RUNTIME", "HASHES_JSON"))
     operation.add_argument("--update-config", metavar="RUNTIME")
+    operation.add_argument("--update-enhance-provider", metavar="RUNTIME")
     args = parser.parse_args()
     if args.hold:
         try:
@@ -269,6 +344,14 @@ def main():
             print(json.dumps({"locked": False}, separators=(",", ":")), flush=True)
     elif args.record_restart:
         print(json.dumps(record_restart(args.record_restart, json.load(sys.stdin))))
+    elif args.update_enhance_provider:
+        try:
+            data = json.load(sys.stdin)
+            updated = update_enhance_provider(args.update_enhance_provider, data.get("revision"), data.get("changes"))
+            print(json.dumps({"ok": True, "revision": updated["revision"]}))
+        except (OSError, ValueError, TypeError, AttributeError):
+            print(json.dumps({"ok": False, "error": "enhance_provider_save_failed"}))
+            return 1
     elif args.update_config:
         data = json.load(sys.stdin)
         if not isinstance(data, dict) or "changes" not in data:
@@ -280,4 +363,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())   # main() 的 return 1（事务失败）必须传播为非零退出码，否则调用方把失败当成功

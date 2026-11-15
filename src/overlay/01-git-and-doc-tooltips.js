@@ -1039,35 +1039,512 @@
     rstTip.style.display = "none";
     rstTipFor = null;
   }
-  /* ---------- v344 增强按钮 tooltip：rstTip 同款 body 级轻量文本浮层（.tip 样式/上方
-   * 弹出/签名幂等/主题跟随）。纯文案无交互（textContent，不经 innerHTML），文案由按钮
-   * 相位同步处写入 el.__zuEnhTip（实例闭包算好双语与相位），悬停中相位变化跟随重显。 */
+  /* ---------- 增强历史面板：悬停增强按钮弹出（替代 v344 纯文字提示）。
+   * 最近 3 条卡片 + 查看全部/清空；数据经 enhance-history-* 插件动作读写运行目录。
+   * 纯文本渲染（esc），SVG 全部 currentColor；鼠标移入面板保活，移出延迟收起。 */
   var enhanceTip = document.createElement("div");
   enhanceTip.className = "tip zusage-quota-tip zusage-enhance-tip";
   enhanceTip.style.cssText = rateTip.style.cssText;
+  enhanceTip.style.width = "600px";
+  enhanceTip.style.maxWidth = "calc(100vw - 24px)";
+  enhanceTip.style.maxHeight = "min(650px,72vh)";
+  enhanceTip.style.display = "flex";
+  enhanceTip.style.flexDirection = "column";
+  enhanceTip.style.overflow = "hidden";
+  enhanceTip.style.padding = "0";
+  enhanceTip.style.display = "none";
   document.body.appendChild(enhanceTip);
   var enhanceTipFor = null;
+  var EH_HIDE_DELAY_MS = 220;
+  var ehHideTimer = 0;
+  var ehCache = null, ehCacheAt = 0, ehLoading = false, ehError = false;
+  var EH_ICON = {
+    history: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/></svg>',
+    server: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 6.5h.01M7 17.5h.01M12 6.5h6M12 17.5h6"/></svg>',
+    chip: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2"/><path d="M9 9h6v6H9z"/><path d="M9 1v4M15 1v4M9 19v4M15 19v4"/><path d="M1 9h4M1 15h4M19 9h4M19 15h4"/></svg>',
+    doc: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8M8 17h6"/></svg>',
+    spark: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 1.9 5.9L20 11l-6.1 2.1L12 19l-1.9-5.9L4 11l6.1-2.1L12 3Z"/><path d="m19 18 .6 1.4L21 20l-1.4.6L19 22l-.6-1.4L17 20l1.4-.6L19 18Z"/></svg>',
+    db: '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v7c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 12v7c0 1.7 3.6 3 8 3s8-1.3 8-3v-7"/></svg>',
+    cal: '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18"/><path d="M8 15h3M8 18h3M15 15h1"/></svg>',
+    timer: '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l3 2"/><path d="M9 2h6M12 2v3"/><path d="m19 6 2-2"/></svg>',
+    copy: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></svg>',
+    list: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3 6h.01M3 12h.01M3 18h.01"/></svg>',
+    trash: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2"/><path d="M5 6l1 15h12l1-15"/><path d="M10 10v7M14 10v7"/></svg>',
+    chev: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>',
+    check: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg>',
+    close: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>',
+    search: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>',
+    gear: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.08a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.08a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.08a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
+    empty: '<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 3v5h5"/><path d="M8 12h8"/></svg>'
+  };
+  /* 查看全部历史：套餐源 id → 显示名（与 model-puller.cjs PLAN_SOURCES 同源，避免表格里
+   * 出现 account:bigmodel-start-plan 这类内部 id；非套餐 id 原样显示，不虚构名称） */
+  var EH_PLAN_LABELS = {
+    "account:bigmodel-individual-coding-plan": "BigModel Coding Plan",
+    "account:bigmodel-team-coding-plan": "BigModel Coding Plan (team)",
+    "account:bigmodel-start-plan": "BigModel Start Plan",
+    "account:zai-individual-coding-plan": "Z.ai Coding Plan",
+    "account:zai-team-coding-plan": "Z.ai Coding Plan (team)",
+    "account:zai-start-plan": "Z.ai Start Plan"
+  };
+  function ehProvLabel(name) {
+    name = String(name || "");
+    return EH_PLAN_LABELS[name] || name;
+  }
+  function enhanceHistoryAdd(record) {
+    pluginRequest("enhance-history-add", { record: record });
+    ehCacheAt = 0;   // 失效：下次悬停拉取含新记录
+    ehFullCache = null;   // 全量面板缓存同样失效（打开中下次交互重建）
+  }
+  function ehEsc(v) { return String(v == null ? "" : v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
+  function ehFetch(done) {
+    ehLoading = true;
+    pluginRequest("enhance-history-list", { limit: 3 }, function (res) {
+      ehLoading = false;
+      if (res && res.ok && Array.isArray(res.records)) { ehCache = res; ehCacheAt = Date.now(); ehError = false; }
+      else ehError = true;
+      done();
+    });
+  }
+  function ehFmtWhen(iso) {
+    var d = Date.parse(iso || "");
+    if (!isFinite(d)) return "—";
+    var t = new Date(d), p2 = function (n) { return n < 10 ? "0" + n : "" + n; };
+    return p2(t.getMonth() + 1) + "-" + p2(t.getDate()) + " " + p2(t.getHours()) + ":" + p2(t.getMinutes());
+  }
+  function ehFmtFull(iso) {
+    var d = Date.parse(iso || "");
+    if (!isFinite(d)) return "";
+    var t = new Date(d), p2 = function (n) { return n < 10 ? "0" + n : "" + n; };
+    return t.getFullYear() + "-" + p2(t.getMonth() + 1) + "-" + p2(t.getDate()) + " " + p2(t.getHours()) + ":" + p2(t.getMinutes()) + ":" + p2(t.getSeconds());
+  }
+  function ehFmtDur(ms) {
+    if (!Number.isFinite(ms) || ms <= 0) return "—";
+    if (ms < 60000) return (ms / 1000).toFixed(1) + "s";
+    return Math.floor(ms / 60000) + "m " + ((ms % 60000) / 1000).toFixed(1) + "s";
+  }
+  function ehTokenText(usage) {
+    var t = usage && Number.isFinite(usage.totalTokens) ? usage.totalTokens : null;
+    return t == null ? L("Token 未提供", "tokens not reported") : t.toLocaleString() + " Token";
+  }
+  function ehCardHTML(r, expanded) {
+    var src = r.source === "test" ? L("测试", "test") : L("聊天", "chat");
+    var orig = String(r.originalText || ""), enh = String(r.enhancedText || "");
+    var tok = r.usage && Number.isFinite(r.usage.totalTokens) ? r.usage.totalTokens.toLocaleString() + " tokens" : L("未提供", "not reported");
+    var when = ehFmtFull(r.createdAt);
+    return '<div class="zu-eh-card" data-id="' + ehEsc(r.id) + '">' +
+      '<div class="zu-eh-pm">' +
+      '<span class="zu-eh-ico">' + EH_ICON.server + '</span><span class="zu-eh-lab-k">' + L("供应商：", "Provider: ") + '</span><span class="zu-eh-pm-name" title="' + ehEsc(r.providerName) + '">' + ehEsc(r.providerName || "—") + '</span>' +
+      '<span class="zu-eh-sep"></span>' +
+      '<span class="zu-eh-ico">' + EH_ICON.chip + '</span><span class="zu-eh-lab-k">' + L("模型：", "Model: ") + '</span><span class="zu-eh-pm-name" title="' + ehEsc(r.modelId) + '">' + ehEsc(r.modelId || "—") + '</span></div>' +
+      '<div class="zu-eh-text"><span class="zu-eh-lab-k">' + EH_ICON.doc + L("原始文本：", "Original: ") + '</span><span class="zu-eh-body">' + ehEsc(orig) + '</span></div>' +
+      '<div class="zu-eh-text zu-eh-text-enh"><span class="zu-eh-lab-k zu-eh-lab-enh">' + EH_ICON.spark + L("增强文本：", "Enhanced: ") + '</span><span class="zu-eh-body">' + ehEsc(enh) + '</span></div>' +
+      '<div class="zu-eh-stats">' +
+      '<span class="zu-eh-stat">' + EH_ICON.db + '<span class="zu-eh-lab-k">' + L("消耗：", "Tokens: ") + '</span>' + ehEsc(tok) + '</span>' +
+      '<span class="zu-eh-stat">' + EH_ICON.cal + '<span class="zu-eh-lab-k">' + L("时间：", "Time: ") + '</span>' + ehEsc(when) + '</span>' +
+      '<span class="zu-eh-stat">' + EH_ICON.timer + '<span class="zu-eh-lab-k">' + L("耗时：", "Duration: ") + '</span>' + ehEsc(ehFmtDur(r.durationMs)) + '</span></div></div>';
+  }
+  function ehRender() {
+    var el = enhanceTipFor;
+    var phase = el && el.__zuEnhTip ? '<span class="zu-eh-phase">' + ehEsc(el.__zuEnhTip) + "</span>" : "";
+    var body;
+    if (ehLoading && !ehCache) body = '<div class="zu-eh-empty">' + L("正在读取历史…", "Loading history…") + "</div>";
+    else if (ehError) body = '<div class="zu-eh-empty">' + L("读取历史记录失败", "Failed to load history") + '<button type="button" class="zu-eh-retry zu-eh-act">' + L("重试", "Retry") + "</button><small>" + L("如果重试仍失败，请完全重启 ZCode 后再试。", "If retry fails, fully restart ZCode.") + "</small></div>";
+    else if (!ehCache || !ehCache.records || !ehCache.records.length) body = '<div class="zu-eh-empty">' + EH_ICON.empty + '<div>' + L("暂无增强历史", "No enhancement history yet") + '</div><small>' + L("成功增强提示词后，记录会显示在这里。", "Records appear here after a successful enhancement.") + "</small></div>";
+    else body = '<div class="zu-eh-scroll">' + ehCache.records.map(function (r) { return ehCardHTML(r, false); }).join("") + "</div>";
+    var footer = '<div class="zu-eh-footer"><button type="button" class="zu-eh-act zu-eh-all" data-all>' + EH_ICON.list + L("查看全部历史", "View all history") + '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></button><button type="button" class="zu-eh-act zu-eh-clear" data-clear>' + EH_ICON.trash + L("清空记录", "Clear records") + '</button><button type="button" class="zu-eh-act" data-ehset title="' + L("提示词增强设置", "Prompt enhancement settings") + '">' + EH_ICON.gear + L("设置", "Settings") + "</button></div>";
+    var total = ehCache && ehCache.total != null ? L("共 ", "total ") + ehCache.total + L(" 条", "") : "";
+    enhanceTip.innerHTML = '<div class="zu-eh-head"><div class="zu-eh-head-row"><span class="zu-eh-title">' + EH_ICON.history + L("最近增强记录", "Recent enhancements") + phase + '</span>' + (total ? '<span class="zu-eh-total">' + total + '</span>' : "") + '</div></div>' + body + '<div class="zu-eh-arrow"></div>' + footer;
+  }
   function showEnhanceTip(el) {
-    if (stale() || !el || !el.isConnected || !el.__zuEnhTip) { hideEnhanceTip(); return; }
-    var txt = el.__zuEnhTip;
-    if (enhanceTip.__zuTipText !== txt) { enhanceTip.textContent = txt; enhanceTip.__zuTipText = txt; }
+    if (stale() || !el || !el.isConnected) { hideEnhanceTip(); return; }
     var dark = true;
     try { dark = document.documentElement.classList.contains("dark"); } catch (e) { }
     enhanceTip.classList.toggle("zu-light", !dark);
-    enhanceTip.style.display = "block";
-    var r = el.getBoundingClientRect(), tw = enhanceTip.offsetWidth, th = enhanceTip.offsetHeight;
-    var vw = window.innerWidth, vh = window.innerHeight;
-    var left = Math.max(8, Math.min(r.left, vw - tw - 8));
-    var top = r.top - th - 8;
-    if (top < 8) top = Math.min(r.bottom + 8, vh - th - 8);
-    enhanceTip.style.left = Math.round(left) + "px";
-    enhanceTip.style.top = Math.round(top) + "px";
+    enhanceTip.style.display = "flex";
     enhanceTipFor = el;
+    var r = el.getBoundingClientRect(), vw = window.innerWidth;
+    var tw = Math.min(600, vw - 24);
+    var left = Math.max(8, Math.min(Math.round(r.left + r.width / 2 - tw / 2), Math.round(vw - tw - 8)));
+    enhanceTip.style.left = left + "px";
+    enhanceTip.style.top = "auto";   // bottom 锚定：面板高度变化不影响与按钮的间距
+    enhanceTip.style.bottom = (window.innerHeight - Math.round(r.top) + 12) + "px";
+    if (!ehCache || Date.now() - ehCacheAt > 5000) { if (!ehLoading) ehFetch(ehRender); }
+    ehRender();
+  }
+  function scheduleEnhHide() {
+    if (state.devKeepTip) return;   // 开发者常驻开关：不自动收，仅 Escape 手动关
+    if (ehHideTimer) clearTimeout(ehHideTimer);
+    ehHideTimer = setTimeout(function () { ehHideTimer = 0; hideEnhanceTip(); }, EH_HIDE_DELAY_MS);
+  }
+  function cancelEnhHide() {
+    if (ehHideTimer) { clearTimeout(ehHideTimer); ehHideTimer = 0; }
   }
   function hideEnhanceTip() {
+    cancelEnhHide();
     enhanceTip.style.display = "none";
     enhanceTipFor = null;
   }
+  enhanceTip.addEventListener("mouseenter", cancelEnhHide);
+  enhanceTip.addEventListener("mouseleave", scheduleEnhHide);
+  enhanceTip.addEventListener("keydown", function (e) { if (e.key === "Escape") hideEnhanceTip(); });
+  enhanceTip.addEventListener("click", function (e) {
+    var btn = e.target && e.target.closest && e.target.closest("button");
+    if (!btn) return;
+    if (btn.hasAttribute("data-all")) { openEnhanceHistoryFull(); return; }
+    if (btn.hasAttribute("data-ehset")) { openEnhanceSettings(); return; }
+    if (btn.hasAttribute("data-clear")) {
+      zuConfirm(L("清空增强历史", "Clear enhancement history"), L("确定清空全部增强历史吗？此操作无法撤销。", "Clear all enhancement history? This cannot be undone."), L("清空", "Clear"), function () {
+        pluginRequest("enhance-history-clear", {}, function () { ehCache = null; ehRender(); });
+      });
+      return;
+    }
+    if (btn.classList.contains("zu-eh-retry")) { ehFetch(ehRender); return; }
+    var card = btn.closest(".zu-eh-card");
+    if (btn.hasAttribute("data-expand") && card) {
+      card.querySelectorAll("[data-eh-prev]").forEach(function (pre) { pre.classList.toggle("open"); });
+      btn.classList.toggle("open");
+      return;
+    }
+    if (btn.hasAttribute("data-del") && card) {
+      var delCardId = card.getAttribute("data-id");
+      zuConfirm(L("删除记录", "Delete record"), L("确定删除这条增强记录？删除后无法恢复。", "Delete this enhancement record? This cannot be undone."), L("删除", "Delete"), function () {
+        pluginRequest("enhance-history-delete", { id: delCardId }, function (res) {
+          if (res && res.ok) { ehCache = null; ehFetch(ehRender); }
+        });
+      });
+      return;
+    }
+    if (btn.classList.contains("zu-eh-copy") && card) {
+      var pre = card.querySelector('[data-eh-prev="' + btn.getAttribute("data-copy") + '"]');
+      var text = pre ? pre.textContent : "";
+      var done = function () { var old = btn.innerHTML; btn.innerHTML = EH_ICON.check; setTimeout(function () { btn.innerHTML = old; }, 900); };
+      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, done);
+      else done();
+    }
+  });
+  /* ---------- 自绘确认弹框（zu-compact-dlg 同款外壳）：overlay 内确认类交互统一走它，
+   * 不用 window.confirm（原生框样式不可控、英文按钮与宿主视觉割裂，2026-11-15 用户拍板）。
+   * 复用压缩确认弹框全套类（遮罩/卡片/按钮/动画/减动效），零新增样式；规则见 overlay-ui.md。 */
+  function zuConfirm(title, desc, okText, onOk) {
+    var dlg = document.createElement("div");
+    dlg.className = "zu-compact-dlg";
+    var card = document.createElement("div");
+    card.className = "zu-compact-card";
+    var t = document.createElement("div");
+    t.className = "zu-compact-title";
+    t.textContent = title;
+    var d = document.createElement("div");
+    d.className = "zu-compact-desc";
+    d.textContent = desc;
+    var foot = document.createElement("div");
+    foot.className = "zu-compact-foot";
+    var cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "zu-compact-cancel";
+    cancel.textContent = L("取消", "Cancel");
+    var ok = document.createElement("button");
+    ok.type = "button";
+    ok.className = "zu-compact-ok";
+    ok.textContent = okText;
+    function close() {
+      document.removeEventListener("keydown", key, true);
+      try { if (dlg.parentElement) dlg.remove(); } catch (e) { }
+    }
+    function key(e) {
+      if (stale()) { document.removeEventListener("keydown", key, true); return; }   // 热更后旧代不再吞宿主按键
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(); }
+      else if (e.key === "Enter") {
+        var f = null;
+        try { f = document.activeElement; } catch (e2) { }
+        if (f && dlg.contains && !dlg.contains(f)) return;   // 焦点已逸出弹框：不劫持宿主 Enter（同压缩弹框协议）
+        e.preventDefault(); e.stopPropagation(); ok.click();
+      }
+    }
+    cancel.addEventListener("click", close);
+    dlg.addEventListener("mousedown", function (e) { if (e.target === dlg) close(); });   // 点遮罩关闭（卡片内点击不关）
+    ok.addEventListener("click", function () { close(); onOk(); });
+    document.addEventListener("keydown", key, true);
+    foot.appendChild(cancel);
+    foot.appendChild(ok);
+    card.appendChild(t);
+    card.appendChild(d);
+    card.appendChild(foot);
+    dlg.appendChild(card);
+    document.body.appendChild(dlg);
+    try { ok.focus(); } catch (e) { }
+  }
+  /* 打开提示词增强设置分区：齿轮按钮官方完整开启路径（焦点/互斥/高度重测）+ 导航分区切换，
+   * 与增强按钮右键同款（v350 增强历史双入口设置按钮共用） */
+  function openEnhanceSettings() {
+    hideEnhanceTip();
+    closeEnhanceHistoryFull();
+    if (!panel.classList.contains("open")) gear.click();
+    activateSettingsSec("enhance-provider");
+    var nav = panel.querySelector('.zu-navitem[data-sec="enhance-provider"]');
+    if (nav) nav.focus();
+  }
+  /* ---------- 查看全部历史浮层 ---------- */
+  var ehFull = null, ehFullCache = null, ehFullSource = "all", ehFullQuery = "", ehFullPage = 0, ehFullPageSize = 20, ehFullSortField = "createdAt", ehFullSortDir = -1, ehFullProvider = "", ehFullModel = "", ehFullTime = "all", ehExpandedId = null;
+  var ehFullResizeTimer = 0, ehFullSearchTimer = 0;
+  function ehFullOnResize() {   // 面板打开期间跟随窗口宽度重排版（列合并/裁剪按面板实际宽度，debounce 150ms）
+    if (ehFullResizeTimer) clearTimeout(ehFullResizeTimer);
+    ehFullResizeTimer = setTimeout(function () {
+      ehFullResizeTimer = 0;
+      if (stale()) { window.removeEventListener("resize", ehFullOnResize); return; }   // 热更后代际自卫，不在游离节点重建
+      if (ehFull && ehFull.style.display !== "none") renderEnhanceHistoryFull(false);
+    }, 150);
+  }
+  function openEnhanceHistoryFull() {
+    if (!ehFull) {
+      ehFull = document.createElement("div");
+      ehFull.className = "tip zusage-quota-tip zusage-enhance-full";
+      ehFull.style.cssText = enhanceTip.style.cssText;
+      ehFull.style.position = "fixed";
+      ehFull.style.bottom = "auto";   // 小浮层 cssText 带动态 bottom，不清掉会把 fixed 面板高度压死
+      ehFull.style.width = "min(1200px,calc(100vw - 32px))";
+      ehFull.style.height = "auto";
+      ehFull.style.minHeight = "60vh";   // 面板最低取窗体高度 60%（用户口径），数据多时仍向上滚动
+      ehFull.style.maxHeight = "min(85dvh,760px)";   // 数据少时内容撑开不出现超需空白，多时表区独立滚动
+      ehFull.style.display = "none";
+      ehFull.style.left = "50%";
+      ehFull.style.top = "50%";
+      ehFull.style.transform = "translate(-50%,-50%)";
+      document.body.appendChild(ehFull);
+    }
+    ehFull.style.display = "flex";
+    renderEnhanceHistoryFull(true);
+    document.addEventListener("keydown", ehFullKeydown, true);
+    window.addEventListener("resize", ehFullOnResize);
+  }
+  function closeEnhanceHistoryFull() {
+    if (ehFull) ehFull.style.display = "none";
+    ehExpandedId = null;
+    if (ehFullResizeTimer) { clearTimeout(ehFullResizeTimer); ehFullResizeTimer = 0; }
+    if (ehFullSearchTimer) { clearTimeout(ehFullSearchTimer); ehFullSearchTimer = 0; }
+    document.removeEventListener("keydown", ehFullKeydown, true);
+    window.removeEventListener("resize", ehFullOnResize);
+  }
+  function ehFullKeydown(e) {
+    if (stale()) { document.removeEventListener("keydown", ehFullKeydown, true); window.removeEventListener("resize", ehFullOnResize); return; }   // 热更后旧代 Escape 不再吞宿主事件
+    if (e.key === "Escape") { e.stopPropagation(); closeEnhanceHistoryFull(); }
+  }
+  function ehFullFiltered() {
+    var all = (ehFullCache && ehFullCache.records || []).slice();
+    if (ehFullSource !== "all") all = all.filter(function (r) { return r.source === ehFullSource; });
+    if (ehFullProvider) all = all.filter(function (r) { return r.providerName === ehFullProvider; });
+    if (ehFullModel) all = all.filter(function (r) { return r.modelId === ehFullModel; });
+    if (ehFullTime !== "all") {
+      var now = Date.now(), cutoff = 0;
+      if (ehFullTime === "today") { var d = new Date(); d.setHours(0,0,0,0); cutoff = d.getTime(); }
+      else if (ehFullTime === "week") cutoff = now - 7 * 86400000;
+      else if (ehFullTime === "month") { var m = new Date(); m.setDate(1); m.setHours(0,0,0,0); cutoff = m.getTime(); }
+      all = all.filter(function (r) { var t = Date.parse(r.createdAt || ""); return t && t >= cutoff; });
+    }
+    if (ehFullQuery) {
+      var q = ehFullQuery.toLowerCase();
+      all = all.filter(function (r) { return (String(r.originalText) + String(r.enhancedText) + String(r.providerName) + String(r.modelId)).toLowerCase().indexOf(q) >= 0; });
+    }
+    var field = ehFullSortField, dir = ehFullSortDir;
+    all.sort(function (a, b2) {
+      var va, vb;
+      if (field === "totalTokens") { va = a.usage && a.usage.totalTokens; vb = b2.usage && b2.usage.totalTokens; if (va == null && vb == null) return 0; if (va == null) return 1; if (vb == null) return -1; return (va - vb) * dir; }
+      if (field === "durationMs") { va = a.durationMs; vb = b2.durationMs; if (va == null && vb == null) return 0; if (va == null) return 1; if (vb == null) return -1; return (va - vb) * dir; }
+      va = Date.parse(a.createdAt || ""); vb = Date.parse(b2.createdAt || "");
+      if (!isFinite(va) && !isFinite(vb)) return 0; if (!isFinite(va)) return 1; if (!isFinite(vb)) return -1;
+      return (va - vb) * dir;
+    });
+    return all;
+  }
+  function ehSortArrow(field) {
+    if (ehFullSortField !== field) return "";
+    return ehFullSortDir === -1 ? ' <svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>' : ' <svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="m18 15-6-6-6 6"/></svg>';
+  }
+  function renderEnhanceHistoryFull(refetch) {
+    var build = function () {
+      var all = ehFullFiltered();
+      var totalPages = Math.max(1, Math.ceil(all.length / ehFullPageSize));
+      if (ehFullPage >= totalPages) ehFullPage = totalPages - 1;
+      var start = ehFullPage * ehFullPageSize;
+      var pageRecs = all.slice(start, start + ehFullPageSize);
+      var panelW = ehFull.clientWidth || Math.min(1200, window.innerWidth - 32);
+      var med = panelW < 900, narrow = panelW < 640;   // 中屏合并供应商/模型列，窄屏再隐摘要列
+      var colN = narrow ? 7 : (med ? 9 : 10);
+      var sortBtn = function (label, field, cls) {
+        return '<th class="zu-eh-th ' + cls + '" data-sort="' + field + '" scope="col" aria-sort="' + (ehFullSortField === field ? (ehFullSortDir === -1 ? "descending" : "ascending") : "none") + '">' + label + ehSortArrow(field) + '</th>';
+      };
+      /* 表头与数据行共用一套 colgroup 列宽（table-layout:fixed 下第一行/colgroup 决定列宽） */
+      var colgroup = narrow
+        ? '<colgroup><col style="width:32px"><col style="width:56px"><col style="width:26%"><col style="width:12%"><col style="width:9%"><col style="width:15%"><col style="width:64px"></colgroup>'
+        : med
+          ? '<colgroup><col style="width:32px"><col style="width:56px"><col style="width:24%"><col style="width:17%"><col style="width:20%"><col style="width:8%"><col style="width:7%"><col style="width:12%"><col style="width:64px"></colgroup>'
+          : '<colgroup><col style="width:32px"><col style="width:56px"><col style="width:11%"><col style="width:13%"><col style="width:17%"><col style="width:19%"><col style="width:7%"><col style="width:6%"><col style="width:11%"><col style="width:64px"></colgroup>';
+      var thead = '<tr class="zu-eh-tr-head">' +
+        '<th class="zu-eh-th zu-eh-th-chev" scope="col"></th>' +
+        '<th class="zu-eh-th zu-eh-th-src" scope="col">' + L("来源", "Source") + '</th>' +
+        (med || narrow
+          ? sortBtn(L("供应商 / 模型", "Provider / model"), "providerName", "zu-eh-th-prov")
+          : sortBtn(L("供应商", "Provider"), "providerName", "zu-eh-th-prov") + sortBtn(L("模型", "Model"), "modelId", "zu-eh-th-model")) +
+        (narrow ? "" :
+          '<th class="zu-eh-th zu-eh-th-orig" scope="col">' + L("原文摘要", "Original") + '</th>' +
+          '<th class="zu-eh-th zu-eh-th-enh" scope="col">' + L("增强摘要", "Enhanced") + '</th>') +
+        sortBtn("Token", "totalTokens", "zu-eh-th-num") +
+        sortBtn(L("耗时", "Duration"), "durationMs", "zu-eh-th-num") +
+        sortBtn(L("时间", "Time"), "createdAt", "zu-eh-th-time") +
+        '<th class="zu-eh-th zu-eh-th-ops" scope="col">' + L("操作", "Actions") + '</th></tr>';
+      var rows = "";
+      for (var i = 0; i < pageRecs.length; i++) {
+        var r = pageRecs[i];
+        var expanded = ehExpandedId === r.id;
+        var tok = r.usage && Number.isFinite(r.usage.totalTokens) ? r.usage.totalTokens.toLocaleString() : "—";
+        var dur = Number.isFinite(r.durationMs) && r.durationMs > 0 ? ehFmtDur(r.durationMs) : "—";
+        var src = r.source === "test" ? L("测试", "test") : L("聊天", "chat");
+        var provId = String(r.providerName || "");
+        var provTxt = ehProvLabel(provId) || L("未知供应商", "Unknown provider");
+        var modelTxt = r.modelId || L("未知模型", "Unknown model");
+        var provCell = med || narrow
+          ? '<td class="zu-eh-td zu-eh-td-prov"><span class="zu-eh-cell-text" title="' + ehEsc(provId) + '">' + ehEsc(provTxt) + '<span class="zu-eh-prov-sep"> / </span><span title="' + ehEsc(r.modelId) + '">' + ehEsc(modelTxt) + '</span></span></td>'
+          : '<td class="zu-eh-td zu-eh-td-prov"><span class="zu-eh-cell-text" title="' + ehEsc(provId) + '">' + ehEsc(provTxt) + '</span></td>' +
+            '<td class="zu-eh-td zu-eh-td-model"><span class="zu-eh-cell-text" title="' + ehEsc(r.modelId) + '">' + ehEsc(modelTxt) + '</span></td>';
+        var sumCells = narrow ? "" :
+          '<td class="zu-eh-td"><span class="zu-eh-cell-text" title="' + ehEsc(r.originalText || "") + '">' + ehEsc(r.originalText || "") + '</span></td>' +
+          '<td class="zu-eh-td"><span class="zu-eh-cell-text" title="' + ehEsc(r.enhancedText || "") + '">' + ehEsc(r.enhancedText || "") + '</span></td>';
+        rows += '<tr class="zu-eh-row' + (expanded ? " zu-eh-open" : "") + '" data-id="' + ehEsc(r.id) + '" aria-expanded="' + (expanded ? "true" : "false") + '">' +
+          '<td class="zu-eh-td zu-eh-td-chev"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="transform:rotate(' + (expanded ? "90" : "0") + 'deg);transition:transform .15s"><path d="m9 18 6-6-6-6"/></svg></td>' +
+          '<td class="zu-eh-td zu-eh-td-src">' + ehEsc(src) + '</td>' +
+          provCell + sumCells +
+          '<td class="zu-eh-td zu-eh-td-num">' + tok + '</td>' +
+          '<td class="zu-eh-td zu-eh-td-num">' + dur + '</td>' +
+          '<td class="zu-eh-td zu-eh-td-time">' + ehEsc(ehFmtWhen(r.createdAt)) + '</td>' +
+          '<td class="zu-eh-td zu-eh-td-ops">' +
+          '<button type="button" class="zu-eh-row-copy" data-copy-enh aria-label="' + L("复制增强结果", "Copy enhanced") + '">' + EH_ICON.copy + '</button>' +
+          '<button type="button" class="zu-eh-row-del" data-del aria-label="' + L("删除", "Delete") + '">' + EH_ICON.trash + '</button></td></tr>';
+        if (expanded) {
+          rows += '<tr class="zu-eh-detail-row"><td colspan="' + colN + '"><div class="zu-eh-detail">' +
+            '<div class="zu-eh-d-meta"><div class="zu-eh-d-pair"><div class="zu-eh-d-k">' + L("供应商", "Provider") + '</div><div class="zu-eh-d-wrap" title="' + ehEsc(provId) + '">' + ehEsc(provTxt) + '</div></div><div class="zu-eh-d-pair"><div class="zu-eh-d-k">' + L("模型", "Model") + '</div><div class="zu-eh-d-wrap">' + ehEsc(modelTxt) + '</div></div></div>' +
+            '<div class="zu-eh-d-text"><div class="zu-eh-d-h">' + EH_ICON.doc + L("原始提示词", "Original prompt") + '<button type="button" class="zu-eh-row-copy" data-copy-orig aria-label="' + L("复制原文", "Copy original") + '">' + EH_ICON.copy + '</button></div><div class="zu-eh-d-body">' + ehEsc(r.originalText || "") + '</div></div>' +
+            '<div class="zu-eh-d-text zu-eh-d-enh"><div class="zu-eh-d-h">' + EH_ICON.spark + L("增强后的提示词", "Enhanced prompt") + '<button type="button" class="zu-eh-row-copy" data-copy-enh2 aria-label="' + L("复制增强结果", "Copy enhanced") + '">' + EH_ICON.copy + '</button></div><div class="zu-eh-d-body">' + ehEsc(r.enhancedText || "") + '</div></div>' +
+            '<div class="zu-eh-d-inline"><div class="zu-eh-d-pair"><div class="zu-eh-d-k">' + L("来源", "Source") + '</div><div>' + ehEsc(src) + '</div></div><div class="zu-eh-d-pair"><div class="zu-eh-d-k">Token</div><div>' + tok + '</div></div><div class="zu-eh-d-pair"><div class="zu-eh-d-k">' + L("时间", "Time") + '</div><div>' + (ehEsc(ehFmtFull(r.createdAt)) || "—") + '</div></div><div class="zu-eh-d-pair"><div class="zu-eh-d-k">' + L("耗时", "Duration") + '</div><div>' + dur + '</div></div></div>' +
+            '</div></td></tr>';
+        }
+      }
+      if (!pageRecs.length) rows = '<tr><td colspan="' + colN + '" class="zu-eh-empty">' + (ehFullQuery || ehFullSource !== "all" || ehFullProvider || ehFullModel || ehFullTime !== "all" ? L("没有匹配的记录", "No matching records") : EH_ICON.empty + '<div>' + L("暂无增强历史", "No enhancement history yet") + '</div><small>' + L("成功增强提示词后，记录会显示在这里。", "Records appear here after a successful enhancement.") + "</small>") + '</td></tr>';
+      var pageBtns = "";
+      if (totalPages > 7) {
+        pageBtns += '<button type="button" class="zu-eh-pg-btn" data-page="0" ' + (ehFullPage === 0 ? "disabled" : "") + '>‹</button>';
+        for (var pg = 0; pg < totalPages; pg++) {
+          if (pg > 2 && pg < totalPages - 2 && Math.abs(pg - ehFullPage) > 1) { if (pg === 3) pageBtns += '<span class="zu-eh-pg-ellipsis">…</span>'; continue; }
+          pageBtns += '<button type="button" class="zu-eh-pg-btn' + (pg === ehFullPage ? " zu-eh-pg-cur" : "") + '" data-page="' + pg + '">' + (pg + 1) + '</button>';
+        }
+        pageBtns += '<button type="button" class="zu-eh-pg-btn" data-page="' + (totalPages - 1) + '" ' + (ehFullPage === totalPages - 1 ? "disabled" : "") + '>›</button>';
+      } else {
+        for (var pg2 = 0; pg2 < totalPages; pg2++) pageBtns += '<button type="button" class="zu-eh-pg-btn' + (pg2 === ehFullPage ? " zu-eh-pg-cur" : "") + '" data-page="' + pg2 + '">' + (pg2 + 1) + '</button>';
+      }
+      var sizeOpts = [20, 50, 100].map(function (n) { return '<option value="' + n + '"' + (ehFullPageSize === n ? " selected" : "") + ">" + n + "</option>"; }).join("");
+      var providerOpts = '<option value="">' + L("全部供应商", "All providers") + "</option>";
+      var provSet = {};
+      (ehFullCache && ehFullCache.records || []).forEach(function (r) { if (r.providerName && !provSet[r.providerName]) { provSet[r.providerName] = 1; providerOpts += '<option value="' + ehEsc(r.providerName) + '"' + (ehFullProvider === r.providerName ? " selected" : "") + ">" + ehEsc(ehProvLabel(r.providerName)) + "</option>"; } });
+      var modelOpts = '<option value="">' + L("全部模型", "All models") + "</option>";
+      var modelSet = {};
+      (ehFullCache && ehFullCache.records || []).forEach(function (r) { if (ehFullProvider && r.providerName !== ehFullProvider) return; if (r.modelId && !modelSet[r.modelId]) { modelSet[r.modelId] = 1; modelOpts += '<option value="' + ehEsc(r.modelId) + '"' + (ehFullModel === r.modelId ? " selected" : "") + ">" + ehEsc(r.modelId) + "</option>"; } });
+      var timeOpts = [["all", L("全部时间", "All time")], ["today", L("今天", "Today")], ["week", L("近 7 天", "Last 7 days")], ["month", L("本月", "This month")]].map(function (t) { return '<option value="' + t[0] + '"' + (ehFullTime === t[0] ? " selected" : "") + ">" + t[1] + "</option>"; }).join("");
+      var srcOpts = [["all", L("全部来源", "All sources")], ["chat", L("聊天", "Chat")], ["test", L("测试", "Test")]].map(function (t) { return '<option value="' + t[0] + '"' + (ehFullSource === t[0] ? " selected" : "") + ">" + t[1] + "</option>"; }).join("");
+      var searchVal = ehEsc(ehFullQuery);
+      var footer = totalPages > 1
+        ? '<div class="zu-eh-pagination"><span class="zu-eh-pg-size"><select class="zu-eh-filter zu-eh-pgsize" data-f="pagesize" aria-label="' + L("每页条数", "Rows per page") + '">' + sizeOpts + '</select> ' + L("条/页", "per page") + '</span><span>' + L("第", "Page ") + (ehFullPage + 1) + "/" + totalPages + L(" 页 · 共 ", " of ") + all.length + L(" 条", "") + '</span><span class="zu-eh-pg-btns">' + pageBtns + '</span></div>'
+        : "";   // 单页/空态不渲染分页页脚（Header 已有总数，避免大面积空白与冗余控件）
+      ehFull.innerHTML = '<div class="zu-eh-full-head"><div class="zu-eh-head-l"><span class="zu-eh-title">' + EH_ICON.history + L("增强历史", "Enhancement history") + '</span><span class="zu-eh-total">' + L("共 ", "total ") + all.length + L(" 条", "") + '</span></div>' +
+        '<div class="zu-eh-head-r"><button type="button" class="zu-eh-cfg" data-ehset>' + EH_ICON.gear + L("设置", "Settings") + '</button><button type="button" class="zu-eh-act zu-eh-clear" data-clear>' + EH_ICON.trash + L("清空记录", "Clear all") + '</button><button type="button" class="zu-eh-close" data-close aria-label="' + L("关闭", "Close") + '">' + EH_ICON.close + '</button></div></div>' +
+        '<div class="zu-eh-full-filter"><div class="zu-eh-searchbox">' + EH_ICON.search + '<input class="zu-eh-search" type="search" placeholder="' + L("搜索原文、增强结果、模型或供应商", "Search texts, model or provider") + '" value="' + searchVal + '" aria-label="' + L("搜索历史记录", "Search history") + '"></div>' +
+        '<select class="zu-eh-filter zu-eh-f-src" data-f="source" aria-label="' + L("来源筛选", "Source filter") + '">' + srcOpts + '</select>' +
+        '<select class="zu-eh-filter zu-eh-f-prov" data-f="provider" aria-label="' + L("供应商筛选", "Provider filter") + '">' + providerOpts + '</select>' +
+        '<select class="zu-eh-filter zu-eh-f-model" data-f="model" aria-label="' + L("模型筛选", "Model filter") + '">' + modelOpts + '</select>' +
+        '<select class="zu-eh-filter zu-eh-f-time" data-f="time" aria-label="' + L("时间筛选", "Time filter") + '">' + timeOpts + '</select></div>' +
+        '<div class="zu-eh-table-wrap"><table class="zu-eh-table">' + colgroup + '<thead>' + thead + '</thead><tbody>' + rows + '</tbody></table></div>' + footer;
+    };
+    if (refetch || !ehFullCache) {
+      if (!ehFullCache) ehFull.innerHTML = '<div class="zu-eh-empty" style="padding:40px 16px;text-align:center;color:var(--color-foreground-subtle,#999)">' + L("正在读取历史…", "Loading history…") + '</div>';   // 首开占位，避免 IPC 往返前闪白
+      pluginRequest("enhance-history-list", { limit: 100 }, function (res) {
+        if (res && res.ok && Array.isArray(res.records)) ehFullCache = res;
+        build();
+      });
+    } else build();
+    ehFull.onchange = function (e) {
+      var t = e.target;
+      if (!t || !t.hasAttribute || !t.hasAttribute("data-f")) return;
+      var f = t.getAttribute("data-f");
+      if (f === "pagesize") ehFullPageSize = parseInt(t.value) || 20;
+      else if (f === "source") ehFullSource = t.value;
+      else if (f === "provider") { ehFullProvider = t.value; ehFullModel = ""; }
+      else if (f === "model") ehFullModel = t.value;
+      else if (f === "time") ehFullTime = t.value;
+      ehFullPage = 0; ehExpandedId = null;
+      build();
+    };
+    ehFull.oninput = function (e) {
+      if (e.target && e.target.classList && e.target.classList.contains("zu-eh-search")) {
+        if (ehFullSearchTimer) clearTimeout(ehFullSearchTimer);
+        ehFullSearchTimer = setTimeout(function () { ehFullSearchTimer = 0; ehFullQuery = e.target.value; ehFullPage = 0; ehExpandedId = null; build(); }, 200);
+      }
+    };
+    ehFull.onclick = function (e) {
+      /* 排序列不是 button，必须在 button 判空之前拦截（否则永远不可达） */
+      var th = e.target && e.target.closest && e.target.closest("[data-sort]");
+      if (th && th.hasAttribute("data-sort")) {
+        var f = th.getAttribute("data-sort");
+        if (ehFullSortField === f) ehFullSortDir = -ehFullSortDir;
+        else { ehFullSortField = f; ehFullSortDir = -1; }
+        build(); return;
+      }
+      var btn = e.target && e.target.closest && e.target.closest("button");
+      if (!btn) {
+        var rowEl = e.target && e.target.closest && e.target.closest(".zu-eh-row");
+        if (rowEl) { ehExpandedId = ehExpandedId === rowEl.getAttribute("data-id") ? null : rowEl.getAttribute("data-id"); build(); }
+        else if (e.target === ehFull) closeEnhanceHistoryFull();
+        return;
+      }
+      if (btn.hasAttribute("data-close")) { closeEnhanceHistoryFull(); return; }
+      if (btn.hasAttribute("data-ehset")) { openEnhanceSettings(); return; }
+      if (btn.hasAttribute("data-page")) { ehFullPage = parseInt(btn.getAttribute("data-page")) || 0; build(); return; }
+      if (btn.hasAttribute("data-clear")) {
+        zuConfirm(L("清空增强历史", "Clear enhancement history"), L("确定清空全部增强历史吗？此操作无法撤销。", "Clear all enhancement history? This cannot be undone."), L("清空", "Clear"), function () {
+          pluginRequest("enhance-history-clear", {}, function () { ehFullCache = null; ehCache = null; ehFullPage = 0; ehExpandedId = null; build(); });
+        });
+        return;
+      }
+      if (btn.hasAttribute("data-del")) {
+        e.stopPropagation();
+        var drow = btn.closest(".zu-eh-row");
+        if (!drow) return;
+        var did = drow.getAttribute("data-id");
+        zuConfirm(L("删除记录", "Delete record"), L("确定删除这条增强记录？删除后无法恢复。", "Delete this enhancement record? This cannot be undone."), L("删除", "Delete"), function () {
+          pluginRequest("enhance-history-delete", { id: did }, function (res) {
+            if (!res || !res.ok) return;   // 删除失败不清表
+            if (ehFullCache && ehFullCache.records) {   // 从缓存就地滤除并保持下拉一致，不清空整表
+              ehFullCache.records = ehFullCache.records.filter(function (r) { return r.id !== did; });
+              if (ehFullCache.total != null) ehFullCache.total = Math.max(0, (ehFullCache.total || 0) - 1);
+            }
+            ehCacheAt = 0;   // 小浮层缓存同样失效
+            if (ehExpandedId === did) ehExpandedId = null;
+            build();
+          });
+        });
+        return;
+      }
+      if (btn.classList.contains("zu-eh-row-copy")) {
+        e.stopPropagation();
+        /* 行内按钮 closest 行取 id；详情行按钮经 detail-row 的前一行（同一条记录）取 id，不按行号 */
+        var prow = btn.closest(".zu-eh-row") || (btn.closest(".zu-eh-detail-row") && btn.closest(".zu-eh-detail-row").previousElementSibling);
+        var pid = prow ? prow.getAttribute("data-id") : null;
+        var prec = (ehFullCache && ehFullCache.records || []).find(function (r) { return r.id === pid; });
+        var text = btn.hasAttribute("data-copy-orig") ? (prec && prec.originalText || "") : (prec && prec.enhancedText || "");
+        var done = function () { var old = btn.innerHTML; btn.innerHTML = EH_ICON.check; setTimeout(function () { btn.innerHTML = old; }, 900); };
+        if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, done);
+        else done();
+      }
+    };
+  }
+
   /* ---------- v202 预估费用说明小气泡（费用行 ? 图标悬停）：rstTip 同款浮层/悬停桥。
    * 内容三行：价格来源（models.dev）/ 计算公式（本库口径）/ 汇率来源（快照 fx.source，
    * 无汇率标 USD 原值显示）。监听在各实例 tip 本体 mouseover/out 委托（innerHTML 重建不丢）。 */

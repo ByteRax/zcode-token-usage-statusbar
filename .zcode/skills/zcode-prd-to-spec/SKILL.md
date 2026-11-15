@@ -1,6 +1,6 @@
 ---
 name: zcode-prd-to-spec
-description: "面向 zcode-token-usage-statusbar，将功能需求或健康巡检的选定问题转成有源码依据的技术方案、实施步骤与验收标准。用于「细化需求」「为巡检问题出优化方案」「实现需求／修复问题」；只要方案时只读，明确要求实施时完成 spec、代码、适用检查及安全部署验证。不代替全仓巡检，不因收到问题清单自动改码。"
+description: "面向 zcode-token-usage-statusbar，将功能需求或健康巡检的选定问题转成有源码依据的技术方案、实施步骤与验收标准。涉及新增或调整 UI 时，强制盘点并复用现有组件/样式/交互原语，保障交互合理性与视觉美观一致。用于「细化需求」「为巡检问题出优化方案」「实现需求／修复问题」；只要方案时只读，明确要求实施时完成 spec、代码、适用检查及安全部署验证。不代替全仓巡检，不因收到问题清单自动改码。"
 ---
 
 # ZCode 需求转技术验收与实现
@@ -58,6 +58,7 @@ description: "面向 zcode-token-usage-statusbar，将功能需求或健康巡�
 规则不存在时检索当前等价说明；缺少会影响决策的关键契约才提问，不把缺文件等同于没有约束。
 
 - **按链路追踪证据**：优先用 `rg` / `grep` 定位标识符及调用点，沿「输入/持久化 -> 生产者 -> 传输（IPC/JSON/stdout） -> 消费者 -> 展示/清理」追踪相关链路，读取已有测试及配置读取实现。仅查看需求相关字段，不倾倒凭据、个人数据库或完整诊断文件；**忽略 `.zcode/plans/` 下的历史过程方案草案，不将其当作现行代码契约依据**。
+- **新增或改动 UI 必查现有资产清单**：凡涉及新增按钮、chip、tooltip、卡片、弹窗或设置项，动手设计前必须检索 `src/overlay/` 现有同类组件、样式令牌、SVG 图标、格式化/转义函数、挂载对账契约与事件委托，优先复用既有原语，严禁盲目新建平行 DOM 体系、重复监听或孤立样式表（详见 4.3 节）。
 - **跨层并发只读探索（可选）**：当需求横跨多层（如同时涉及 `usage_stats.py` / `zusage.py` / `token_rate.py` / `token_pricing.py` 数据计算、`inject-main.cjs` 主桥 IPC、`src/quota/*.cjs`（`quota-client.cjs`）额度与 `src/overlay/*.js`（`overlay.js`）浮层）且宿主支持子代理时，可在同一轮并行派发只读 subagent 分片检索源码与既有测试，主会话汇总证据。
 - **核实真实代码而非仅看模板**：核实实际配置键、默认值、枚举、IPC/JSON 字段、SQLite 类型、DOM 挂载、本地化入口、同步清单和测试命令。`config.example.json` 是模板，不能代替实际默认值逻辑（如 `readCfg()` 或各模块读取实现）。查宿主客户端行为时，以引擎 bundle（如 macOS `/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs`）为最高证据，检索 bundle 须加 `LC_ALL=C grep -a` 并同时查 kebab-case 与 camelCase。
 - **标注可复核位置**：为关键结论标注可复核的 `文件:行号` 或符号；严格区分「已证实的现状」「拟新增的设计」「待确认」。新字段可以提出，但不得称为已有；未读取的文件不得引用虚构行号。
@@ -69,7 +70,7 @@ description: "面向 zcode-token-usage-statusbar，将功能需求或健康巡�
 
 必须先提问澄清的情形：
 
-- **同一需求存在多种对用户可见且无法从上下文判定的解释**：例如「显示剩余额度」究竟切换百分比、金额/次数还是两者，是否连同进度条方向与警戒色阶（`zu-qseg` 三档绿/黄/红阈值）含义一起改变；或新增设置项存放在窗口级 `localStorage`（`zusage3.*`）还是跨进程 `config.json`。
+- **同一需求存在多种对用户可见且无法从上下文判定的解释**：例如「显示剩余额度」究竟切换百分比、金额/次数还是两者，是否连同进度条方向与警戒色阶（`zu-qseg` 三档绿/黄/红阈值）含义一起改变；新增设置项存放在窗口级 `localStorage`（`zusage3.*`）还是跨进程 `config.json`；或新增 UI 承载位置存在实质分歧（挂工具行前导/尾随 chip、挂状态条格、进既有 tooltip 卡片还是进 ⚙ 设置分区）且无法由上下文唯一确定。
 - **要求触及项目核心契约而未明确授权变更**：例如触及身份隔离、凭据只留内存、统计不重复计数（`input` 已含 `cache_read`、`output` 已含思考）、失败 fail-closed 等契约。此时给出契约证据、影响和可行替代，请用户拍板；不把既有明确决定再次当成未决问题。
 - **无法定位关键源码目标或存在受保护冲突**：无法定位关键源码目标或协议，继续会改错对象。运行目录不明只阻止部署，不阻止独立的源码实现；完成只读定位后仍有目标歧义或受保护差异无法解决时，询问所缺信息或处理决定。
 
@@ -82,7 +83,7 @@ description: "面向 zcode-token-usage-statusbar，将功能需求或健康巡�
 ### 4.1 目标、现状与作用范围
 
 - **需求编号与目标**：直接需求可分配 `R1...`；巡检输入沿用原问题编号，不重新编号导致失去追踪。写明当前行为（附 `文件:行号`）、目标行为和必须保持的不变项。
-- **改动落点与多端适用性**：列出改动文件及证据（若涉及 `overlay.js` 或 `quota-client.cjs`，标明对应的 `src/overlay/*.js` 或 `src/quota/*.cjs` 分片源码及拼接产物）、配置/协议生产者和消费者、共享清单（`sync_plugin.py`）归属、文档与本地化影响；分别判断桌面浮层、CLI、MCP 的适用性。
+- **改动落点与多端适用性**：列出改动文件及证据（若涉及 `overlay.js` 或 `quota-client.cjs`，标明对应的 `src/overlay/*.js` 或 `src/quota/*.cjs` 分片源码及拼接产物）、配置/协议生产者和消费者、共享清单（`sync_plugin.py`）归属、文档与本地化影响；分别判断桌面浮层、CLI、MCP 的适用性。涉及新增 UI 时，明确列出**复用的现有组件/样式类/辅助函数清单**及**新增或扩展的选择器**。
 
 ### 4.2 输入条件与数据契约
 
@@ -92,17 +93,28 @@ description: "面向 zcode-token-usage-statusbar，将功能需求或健康巡�
   - **三态与默认值方向**：写明键名、类型、枚举、默认值、生效范围、旧值迁移及失效策略。严格区分**缺字段（取默认）、非法类型（回退默认或忽略，不崩溃）、显式 `false`、合法 `0`**；注意本仓多处布尔开关采用「缺省开启、仅显式 `false` 才关闭（`!== false`）」（如 `quota_enabled`、`answer_rate_line`、`restart_notice`），而 `plugin_auto_update` 在损坏或非布尔值时严禁启动，禁止不查实现就随意用 `Boolean(v)` 或 `value || default`。
 - **数据与协议输入**：列出所有输入字段（SQLite 表字段、主桥 IPC 请求/快照字段、DOM 属性或套餐额度源字段）、类型、单位、来源、身份、时间口径、可空性、缺省回退值及新旧生产者/消费者组合。必要时给最小 JSON 示例，不输出真实凭据。
 
-### 4.3 业务规则与状态流转
+### 4.3 业务规则、UI 资产复用与交互视觉规范
 
 - **计算与转换逻辑**：公式、舍入顺序、精度、零分母、超限/负值的既有处理。例如 `100 - pct` 仅适用于同一额度窗口的有效已用百分比，且档位色按原始值判定而非显示取整值；未知、错误或不适用不能参与计算，超限数据不擅自截断。
-- **交互与多形态布局适配**：触发动作、状态流转、持久化、刷新链路和最终可观察结果；涉及浮层 UI 时分别检查**默认工具行后挂载、药丸样式（pill mode）、精简样式（compact，`.zu-tsb`/`.zu-ctxb` 挂 `[data-composer-trailing-actions]` 左侧且走实例自绘 tip）、窄窗收缩渐隐**、深浅主题、键盘操作与无障碍属性（`aria-*`）。
-- **挂载还原与样式脱钩**：挂在原生上下文按钮（`data-testid="chat-context-usage-trigger"`）旁的额度 chip 与原生上下文按钮增强，须遵守 `render` + `heavy` 双 reapply 与卸载还原契约；额度分段统一走 `zu-qseg` 专属类（绿/黄/红三档视觉），与全局速度 `.ok` 类脱钩。
-- **本地化与文案纪律**：不假设各端共用 `L(zh, en)` 或同一语言开关（桌面用 `zusage3.lang`，CLI 用配置 `lang`；`token_rate.py` 逐问速率行标签恒为中文）。宣传与功能文案禁用「实时」（实为入库后计算或字符增量估算）。
+- **现有 UI 资产优先复用（严禁重复造轮子）**：新增或调整 UI 时，优先组合以下已验证资产：
+  - **容器与浮层外壳**：模态弹窗复用 `openMpShell(titleText, bodyHtml)`（`09` 分片 `.zu-mp-ov` / `.zu-mp-modal`，自带 `.zu-light` 主题跟随、遮罩/右上角 `✕`/捕获相 `Escape` 关闭与 `modalOpen`/`isOwnOverlay` 豁免，仅按需叠加窄卡修饰类如 `.zu-ct-ov`）；⚙ 设置项优先并入既有分区（`ZU_SECTIONS`）与 `.zu-settings-card`，复用 `settingRow(input, title, note)`、胶囊 `checkbox`、`.zu-theme-options` 单选组、`activateSettingsSec(sec)`、`syncPanel()` 与 `showSettingsFeedback()`（确保 `buildPanel` 与 `syncPanel` 双处回填齐全，且所有顶层常量先于早期 `buildPanel()` 调用完成赋值以防 `var` 提升 `undefined`）；统计 Tooltip 复用紧凑统计卡家族（`statCompactStyle(variant)`、`statHead`、`statKpi`、`turnVBkt`、`statModelsTable`、`statTable`、`statTime`）或文档级共享轻浮层模式（`rateTip` / `quotaTip` / `rstTip` / `tpsTip` / `subTip` / `fxTip` / `enhanceTip` 的 `__zuTipSig` 签名幂等 + 180ms 悬停桥）；行内/局部轻提示优先复用纯 CSS `[data-tip]` 伪元素气泡（如 `.zu-rot-tipt` / `.zu-mp-tst[data-tip]` / `.zu-sl-model[data-tip]`，Electron 宿主内原生 `title` 气泡不可靠且易被流式重建打断）。
+  - **图标、色板与格式化原语**：SVG 图标复用 `KPI_ICON_PATHS` + `kpiIco(name, size)`、`ico(paths)`、`FXQ_ICON` / `fxqIcon(models, scopeText)`、`zuIcoThinking()`（统一 `currentColor` 描边/填充）；档位与状态色唯一事实源复用 `TPS_BANDS` / `tpsBand(v)`（含 Ultra 渐变）、`CTX_BANDS` / `QUOTA_BANDS` / `bandOf`（`.ok` `#3ecf8e` / `.warm` `#f5b944` / `.hot` `#ff6b57` / `.exc` 呼吸闪烁及 `.zu-light` 浅色深化色板，额度分段专用 `.zu-qseg` 与全局 `.ok` 脱钩）、`RST_BANDS`；格式化与转义复用 `L(zh, en)`、`fmt(n)` / `countFmt(n)`、`fmtMoney(usd)`、`sec(ms)` / `secLong(ms)`、`fmtStartS(ms)`、`zuLiveFaceHtml(text)`，以及 `ttEsc` / `escAttr` / `mEsc` / `aEsc`（严禁未转义拼接远端/用户输入或双重转义）。
+  - **宿主挂载与通信原语**：挂靠宿主工具栏（如 `[data-composer-leading-content]`、`[data-testid="chat-context-usage-trigger"]`、`[data-testid="chat-model-select-trigger"]`）或 Radix 弹层（`[data-slot="hover-card-content"]`）时，复用「`data-zusage-*` 属性标记 + `render` 与 `heavy`（600ms）双 reapply 对账 + `nextElementSibling` 位置兜回 + `__zuSig` 签名幂等 + 开关关闭/`dispose` 完整还原 + `00-boot-state-i18n.js` 启动自清选择器与 `isOwnOverlay` 豁免登记」标准范式；跨进程请求复用 `pluginRequest`（配超时兜底与回执校验），外链走 `window.zcode.openExternal(url)`（`window.open` 兜底），输入框读写走官方桥 `__zcodeLexicalInputE2E`。
+- **合理交互设计（防打断、防误触、有反馈、无障碍）**：
+  - **抗高频重绘与窗口遮挡**：流式生成期间 `updateLive`（100ms）与推送重绘频繁，浮层内可点击控件（Tab、展开按钮、操作链接）必须在 `pointerdown` 同步响应（配合 `click` 幂等吞重以兼容键盘 `Enter`/`Space`），并在 `mousedown` 对交互项 `stopPropagation()` + `preventDefault()` 防宿主编辑器失焦关闭卡片；严禁仅靠 `click`（`mousedown` 与 `mouseup` 间 `innerHTML` 重建会替换节点导致点击丢失）或依赖被遮挡窗口会暂停的 `rAF` 异步合并。
+  - **悬停保活、防误关与关闭分层**：触发器与浮层/二级气泡间保留 ~180ms 悬停桥；浮层内操作建立 1.2s 硬保活窗（`lastTipDownAt`）与 `pointermove` 保活；尊重 `zusage3.tipClick`（悬停即显 vs 点击激活）与 `zusage3.devKeepTip`；支持点击外部空白关闭（`tipOutsideDown`）与分层 `Escape` 关闭（先关二级子浮层如 `spdLegendTip` / `fxTip` 或顶层模态框，再关主浮层，焦点归还触发元素）；同级子浮层双向互斥，不叠双层浮窗。
+  - **状态保持与异步反馈**：周期对账重绘前检查 `document.activeElement`（避免打断正在输入的表单或键盘焦点）并保存恢复 `scrollTop` / `scrollLeft`；异步操作提供明确相位反馈（`aria-busy="true"`、旋转动效、禁用防重、乐观更新 + 失败回滚、4s 自愈警示或可取消/可撤销窗口），高影响操作（如重启、压缩）提供二次确认或前置门控提示；补齐键盘可达（`tabIndex=0`、`:focus-visible` 焦点环、`role` / `aria-label` / `aria-expanded` / `aria-live`）。
+- **视觉美观与多形态布局一致性**：
+  - **语义令牌与深浅主题**：配色全量引用宿主 `--color-*` 变量并配齐 `.zu-light` / `html.dark` 深浅色规则；注意宿主 `--color-brand` 在深色主题下可能解析为近白色，Tab/胶囊选中态优先采用低对比半透明底 + 1px 发丝内描边（暗 `rgba(255,255,255,.07)` / 浅 `rgba(0,0,0,.06)` + `inset 0 0 0 1px`），且选中前后字重恒定（如恒 `600`）防止文字加宽跳动；动画与过渡规则末尾必须纳入 `@media (prefers-reduced-motion: reduce)` 降级。
+  - **字体配比与数字等宽**：字号统一用 `calc(var(--ui-font-size, 14px) ± Npx)` 随宿主字号缩放；条/chip/tooltip 使用 `var(--font-sans, ...)` + `font-variant-numeric: tabular-nums`（仅代码/ID/配置输入域用 `--font-mono`，禁用已废弃的 `size-adjust` 缩放面）；数字与单位间距用 `inline-flex` + `gap` + `align-items: baseline` 控制，不靠易被 flex 剥离的尾随空格或 `word-spacing`。
+  - **多形态、大字号自适应与几何防裁剪**：分别检查**默认样式（含 `between`/`start`/`end` 水平对齐）、药丸样式（pill mode）、精简样式（compact，`.zu-tsb`/`.zu-ctxb` 挂工具行且走实例自绘 tip）、窄窗收缩渐隐（`.zu-tight` / `.zu-narrow` / `.zu-clip`）**及大字号（`--ui-font-size` 17~20px，关键状态词 `flex:0 0 auto; white-space:nowrap` 防竖排折行，长模型名配 `.zu-model-fit` 或省略号 + 悬停全名，卡片定宽防切换跳动、高度自下而上伸缩）；跨 `overflow: auto/hidden` 边界的子气泡改用 body 级 Portal（显示时移至 `document.body` 末尾保置顶）或翻转弹出方向防裁剪；挂 `document.body` 的浮层根必须加入 `-webkit-app-region: no-drag` 规则（防顶部 48px 标题栏拖拽区吞点击），小尺寸关闭按钮以 `::after { inset: -6px }` 外扩命中区。
+- **本地化与文案纪律**：不假设各端共用 `L(zh, en)` 或同一语言开关（桌面用 `zusage3.lang`，CLI 用配置 `lang`；`token_rate.py` 逐问速率行标签恒为中文）。中文时间紧邻（「3分10秒」）、英文数字与单位紧邻且时段留空（「3m 10s」）；宣传与功能文案禁用「实时」（实为入库后计算或字符增量估算）。
 
 ### 4.4 边界情况与生命周期
 
 - **空数据与极限值**：新会话无记录、`0` 值、`100%` 满额/耗尽、超大数值（万/亿进位）、窄窗挤压、旧版本快照缺字段向后兼容（热文件 `overlay.js` 先于主进程子模块或冷文件 `inject-main.cjs` 生效时对新增字段判空降级）。
 - **并发与生命周期**：快速连续切换、连发提问未入库（`started_at >= prompt_ts` 严格过滤无容差）、多窗口并发写配置锁、迟到异步响应（epoch/SID 守卫丢弃过期载荷）、分栏身份切换、热重载/导航/窗口关闭后的监听器与定时器清理（超时兜底定时器须在 `.finally()` 清理并 `.unref()`），以及重复注入幂等（`window.__zusageGen` 代际守卫，`rAF` 自调度异常保护，原地更新诊断对象不替换闭包引用）。
+- **热路径与监听预算**：遵守 `specs/perf-lag-reduction.md` 热路径预算，流式期间 `turn-stats.js ingest`、100ms `updateLive` 与每帧 `track` 内禁止直接调 `bridge.handle.store.getState()`（一律走 `handleSnapshot`）、禁止做 O(会话文本量 / 历史轮数) 的重计算或未悬停时的整张 tooltip 构建；浮层共用单个 `scroll` 监听，严禁新增全局 `scroll`/`resize` 监听。
 - **跨平台兼容**：Python 3.8 语法与标准库下限、Windows（缺 `python3` 别名、Microsoft Store 存根退出码 49、PowerShell UTF-16LE `EncodedCommand` 引号转义）与 macOS（Squirrel `pending_zip_patch.py`、`/var` 符号链接与 `--runtime` 禁 `Path.resolve()`、探测 `/Applications/ZCode.app` 捕获 `OSError`/`PermissionError`）/ Linux 路径及进程差异。
 
 ### 4.5 异常处理与按域隔离（Fail-Closed）
@@ -114,13 +126,13 @@ description: "面向 zcode-token-usage-statusbar，将功能需求或健康巡�
 
 ### 4.6 验收标准与对应表
 
-将原始需求中模糊的形容词（如「快速」「友好」「鲁棒」「实时」）转化为可观察、可验证的具体状态或指标：
+将原始需求中模糊的形容词（如「快速」「友好」「鲁棒」「实时」「美观」）转化为可观察、可验证的具体状态或指标：
 
 | 验收编号/需求 | Given：前置条件 | When：操作/输入 | Then：可观察结果 | 验证方法与位置 |
 | --- | --- | --- | --- | --- |
 | AC1 / R1 | 明确初始数据、配置与身份 | 一个可复现动作 | 确切数值、文案、DOM/协议状态 | 已有或拟新增用例/实机步骤 |
 
-- 按需求覆盖正常、缺字段/非法值、零值/耗尽、身份变化、快速操作、旧版本兼容和热重载场景；不为无关场景增加冗余测试。每项需求至少对应一条验收，标明自动化测试与实机验收各自能证明什么。
+- 按需求覆盖正常、缺字段/非法值、零值/耗尽、身份变化、快速操作、旧版本兼容和热重载场景；涉及 UI 新增或改动时，验收项须覆盖**现有资产复用核对、深浅主题（`.zu-light`）、三档状态条样式（`default`/`pill`/`compact`）、窄窗与大字号（14/17/20px）不破版不重叠、流式重绘下点击/悬停/键盘 `Escape` 交互稳定性，以及关闭/卸载后的 DOM 与监听无残留**。每项需求至少对应一条验收，标明自动化测试与实机验收各自能证明什么。
 - **严禁虚构性能时限**：数值时限必须来自明确产品要求、当前源码实现（如主桥 mtime 轮询：`hot_reload:true` 时 2000ms、缺省 5000ms；额度退避阶梯 30s -> 2min -> 10min）或实测。没有依据时写可观察的完成条件及测量办法，不凭空承诺「1 帧」「2 秒内必生效」；轮询间隔不等于端到端完成上限。
 
 ### 4.7 对抗审查：方案阶段
@@ -141,11 +153,11 @@ description: "面向 zcode-token-usage-statusbar，将功能需求或健康巡�
    - 先记录必要的定向基线，区分已有失败与新增回归；运行检查期间不编辑被测文件，前后核对并行变化，受影响结果重新验证。性能优化仅在同条件前后测量有证据时声称收益，测试套件总耗时不是产品性能基准。
    - 沿用现有测试接缝（见 `.zcode/rules/tests.md` 的「隔离接缝与替身陷阱」「假绿灯反模式」两节）：
      - 避免用 `assert.match(source, ...)` 源码字符串匹配冒充行为验证；
-     - Node VM 切片测试优先复用 `tests/helpers/overlay-extract.cjs`（`getNamedSlice`/`sliceOverlay` 切 `overlay.js`，`getInjectSlice`/`sliceInject` 切 `inject-main.cjs`），避免手写脆弱的 `indexOf`/`slice`；
+     - Node VM 切片测试优先复用 `tests/helpers/overlay-extract.cjs`（`getNamedSlice`/`sliceOverlay` 切 `overlay.js`，`getInjectSlice`/`sliceInject` 切 `inject-main.cjs`），避免手写脆弱的 `indexOf`/`slice`；注意实例/模块新增变量若被切片函数引用，必须加 `typeof` 守卫或同步补齐切片沙箱上下文，且不得改写测试 harness 按整行字符串匹配的锚点行；
      - Python 测试跨文件共享夹具一律从 `tests/helpers/py_test_support.py` 导入（`load_module`、`make_asar`、`cached_plugin_runtime_bytes`、`cached_head_bytes`），禁止 `from test_xxx import ...` 裸同级导入导致单文件独立运行失败；
      - 生产代码与测试中的超时兜底定时器必须在结算后通过 `.finally(() => { if (typeof clearTimeout === "function") clearTimeout(timer); })` 清理并调用 `timer.unref?.()`，防止挂住 Node 事件循环；
      - 注意 `ZCODE_USAGE_DB` 仅隔离插件逐问脚本 `token_rate.py`，测根 `zusage.py` 须用夹具替换数据库入口；
-     - 修改 `overlay.js` 时注意 `tests/overlay-port-patches.test.cjs` 等源码切片测试的上下文依赖，以及 `tests/overlay-bridge.test.cjs` 中 `.zu-live` 替身每次 `querySelector` 从 `innerHTML` 回放 class/text、持有旧引用不重查仍会陈旧的接缝；
+     - 修改 `overlay.js` 时注意 `tests/overlay-port-patches.test.cjs`、`tests/overlay-settings.test.cjs`、`tests/overlay-font-fit.test.cjs` 等契约测试对排除选择器计数、`no-drag` 浮层根名单、30 处 `sans` + `tabular-nums` 及 `style` 节点计数的断言，以及 `tests/overlay-bridge.test.cjs` 中 `.zu-live` 替身每次 `querySelector` 从 `innerHTML` 回放 class/text、持有旧引用不重查仍会陈旧的接缝；
      - Python 新增测试方法勿落在 `if __name__ == "__main__":` 之后，跑完用 `-v` 确认新用例名实际被收集执行；
      - 插件命令 frontmatter 按 `tests/test_command_frontmatter.py` 白名单与包契约检查；仓库 `.zcode/skills/` 不能借这两个测试宣称技能验证通过，还需检查自身 frontmatter、引用、Git 可见性和实际决策行为，不添加未验证元数据。
 3. **修改权威源码**：
@@ -194,7 +206,7 @@ python3 -B -m unittest discover -s tests -p 'test_*.py'
    - **渲染端与常驻 Python 热文件**：按当前 loader 与根规则核对监听范围，`overlay.js`／`turn-stats.js` 重注入与常驻 `zusage.py` 进程重启是不同生效链。若仅改被导入的 Python 子模块而 loader 未监听，按规则连带触发入口 mtime 或核实常驻进程更替；MCP 已导入模块另需对应 MCP 进程重启，不能互相替代。显式 `hot_reload:false` 时不主动改开关。
    - **主进程子模块与冷启动链**：按实际 loader 的 `hotReloadMainModules`、依赖重建和 `_hotLoadedAt` 核实热换，不把安装脚本中的冷文件集合直接当作运行能力。`inject-main.cjs` 本体、首次注入、加载路径与宿主 asar 补丁变化需完全重启；`pending_zip_patch.py` 等一次性工具按下一次实际调用判定，不统一归为冷文件。冷启动变更须先安全部署，再报告待完全重启，不自行退出客户端，也不把重启作为部署替代。
 5. **收集运行证据**：部署热文件前记录基线，在实际轮询周期后核对同一 renderer 未导航、未刷新时的 `window.__zusageGen` 递增（或常驻 Python 进程 PID 更替及启动日志），随后复测目标行为与新增控制台错误。注意：**文件 hash 一致只证明已落盘；单条触发日志、刷新页面或可能滞后数分钟的 `diag-*.json`（约每 15 次拉取才落盘，`diag-0.json` 为非活跃窗口）均不能单独证明热重载成功**。
-6. **验证真实 UI**：遵循用户的内置浏览器优先要求，复现目标交互并核对新增 console／network 错误；能力不足时说明原因，再用项目认可的实际 ZCode/Electron 通道取证，tooltip／悬停卡使用真实指针。外部无头 Chromium、VM/stub 只能证明各自覆盖的逻辑，不能代替宿主的真实 DOM 布局、交互和热重载证据。
+6. **验证真实 UI 与几何审美**：遵循用户的内置浏览器优先要求，复现目标交互并核对新增 console／network 错误；能力不足时说明原因，再用项目认可的实际 ZCode/Electron 通道取证（涉及速度/统计浮层布局改动时，在部署运行目录后配合 `tests/speed-tooltip-host/` 视觉 QA harness 校验 14/17/20px 字号、深浅主题与几何不重叠断言），tooltip／悬停卡使用真实指针。外部无头 Chromium、VM/stub 只能证明各自覆盖的逻辑，不能代替宿主的真实 DOM 布局、交互和热重载证据。
 
 没有客户端或可用通道时，完成能做的检查并如实标记「未部署」「未触发」或「未验证」及原因。仍有安全的只读定位手段时继续调查，不以「尚未确认路径」草率结束，也不为了获得证据擅自启动新实例、登录或产生真实模型调用。
 

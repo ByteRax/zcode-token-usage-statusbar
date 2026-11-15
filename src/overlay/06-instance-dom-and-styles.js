@@ -230,8 +230,10 @@
      * → v347 状态轮播附加工作时长与悬停提示（specs/status-rotator-work-duration.md；性能预算 specs/perf-lag-reduction.md 规则 17）：①appendWorkDuration 开关（默认 true、显式 false 保留，存 zusage3.rotator2）开启且 labelSource=phrases 时在 loading 行 label 后追加宿主同款「工作中 X 分 X 秒」兄弟 span（.zu-rotator-elapsed，格式逐句对齐宿主 formatConversationWorkDuration：max(1,round(ms/1000)) 拆天/时/分/秒非零入列至多两段、中文值与单位间空格；起点锚 turnHeader.startedAt 与宿主折叠头计时逐秒一致，宿主文案节点在虚拟滚动内无生产 API 故自算）；②悬停纯 CSS tooltip（data-tip + zu-rot-livetip 伪元素，内容同款文案）独立于开关①恒随轮播，零监听零布局读取，气泡静态 pointer-events:none 防偷 hover 抖动；③写入纪律（规则 17）：span 判位 nextElementSibling O(1) 零新增文档级查询、textContent/data-tip/classList 带比较前置判断按整型秒门控（同秒内 tick 零 DOM 写、每行至多 1 写/秒，不在打字机 15Hz 写流上叠加），文案缓存挂 rotatorRuntime 随热重载换代，restore 名单并入既有 querySelectorAll 选择器串；④⚙ 面板「追加工作时长」checkbox（.zu-rot-append-duration，启用行之后）走既有 setCb/change 尾缀统一保存链，底部预览卡不联动；⑤两轮用户实报修复——文字隐形根因=宿主 gradient label 的 -webkit-text-fill-color:transparent 是继承属性压过规则 color 使气泡文字全透明（CDP computed 实证，pointer-events 实测 auto 排除禁点），气泡显式重置 -webkit-text-fill-color:var(--color-tooltip-foreground) 堵继承；红色泛光根因=宿主 label 自带 filter:drop-shadow(rgba(255,0,85,.45) 辉光)（255,0,85=宿主渐变首色，shimmer 固有）不继承但作用整棵子树，气泡作为 label 伪元素子盒被整体泛光——data-tip/类改挂行容器 [data-testid="chat-loading"] 脱离作用域，label 旧代际属性每拍清退防热重载双气泡，还原名单行级摘除；样式对齐宿主原生 TooltipContent 视格（asar 实证 rounded-lg border-border bg-tooltip px-3 py-1.5 text-ui-sm，原生即无阴影——用户点名去阴影）：去 box-shadow、--color-tooltip/--color-tooltip-foreground 反色变量、var(--color-border) 边框、圆角 8px、padding 6px 12px。
      * → v348 速度与统计浮层适配大字号（specs/speed-tooltip-adaptive-layout.md、specs/stat-tooltip-large-text.md；开发早于 v347、晚于其合入，代际号按合入时间线顺延取 v348）：①速度卡 spdFitTip（02 分片）——固定 760×300 改 CSS 变量驱动（--zu-sv-width/--zu-sv-height/--zu-sv-left-width 注入 tip，未设置时 fallback 精确回落旧值），字号异常增大先按 14px 基准整体 zoom（下限 0.8），只按筛选栏/左卡量尺寸不读图表横滚内容，空间不足再按内容扩高（>300 加 12px 呼吸间距）并经 tip 纵滚到达，视口变化经既有定位周期 reset 重算、字号变化留待下次重建经 previous（__zuSpeedSize，含 font）失效重算，同视口同字号内 previous 防悬停中逐拍重建的尺寸抖动；②统计/模型名 fitModelNames（02 分片）——.zu-model-fit 按实际宽度缩字号至不低于 10px、仍放不下保留省略+title 全名，接入速度卡/统计卡模型表/项目卡/fxTip/子代理浮层（子代理浮层 td 补 max-width 帽让 fit 在表级溢出档生效）；③统计卡「输入」标签 .zu-kpi-label nowrap + .zu-stat-k flex-wrap（07 分片），命中率徽标允许换行不重叠；④多柱（n≥10）柱组 .zu-sv-bars--spread 均匀铺满、柱宽不拉粗（部分恢复 v273⑤ 废止的 space-between，仅多柱档）；⑤图表横滚位置 __zuChartScroll 关闭时捕获/重开同键回填（修隐藏态 scrollLeft 恒 0），root overflow:visible + tip overflow-y:auto、wheel 到边放行默认滚动，键盘 Tab 进滚动明细区（role=region）+Shift+Tab 归还；QA 门 ZU_GEOMETRY_ONLY（tests/speed-tooltip-host）覆盖 14/17/20px 字号与重叠断言。
      * → v349 宿主定时器慢拍缓释（issue #342，性能预算 specs/perf-lag-reduction.md 规则 18）：报告者（Windows/内置浏览器面板活动期）只读定时器归因记录到 bridgeTick 51–93ms、heavy 55–75ms、coordinator 54–63ms、flush 55–92ms 单拍——规则 10–12 后正常拍已 <5ms，慢拍=正常工作被宿主主线程争用拉长 + 长窗口会话 2s 回源一次的整窗深拷贝（≈86ms/次）。两处自适应缓释，只在实测单拍超预算时介入、廉价环境逐字不变：①handleSnapshot 回源实测 ≥8ms（规则 12 同阈值，perfMs=performance.now 优先缺位回退 Date.now）时本 handle 新鲜窗逐档退避 2s→4s→8s（h.freshMul），<8ms 立即回 1 档，影响面仅静默期思考合成 phase/后台清单与探活的陈旧上限 ≤8s（「已观察 Xs」走字按 bornAt 推进不受影响）；②heavy/coordinator 600ms 对账单拍 ≥16ms（含界）时跳拍（lvl∈{0..3} 每实跑升档后封顶、跳拍窗 600×lvl 右开；lvl=1 稳态不跳拍只吸收「前拍拉长后拍准点」尖峰，稳态有效降频自 1.2s 起、封顶 1.8s），<16ms 立即回 600ms（heavyLvl/heavyRunAt 实例闭包、coordLvl/coordRunAt 协调器闭包，setInterval 拓扑与 dispose 不变），降频期最坏影响 chip 兜回/pane 自藏延迟 ≤1.8s。诊断随 diag-*.json 新增 snapSrcMs/heavyCost/coordCost 三个数值字段供报告者归因。有意不做：bridgeTick 100ms 不降频（规则 1 跟手契约）、flush 已有 ≤10% 占空比上界、visibilityState 门控无增益（隐藏窗 Chromium 本就降到 ≈1Hz，报告者场景宿主窗口可见）。
+     * → v350 增强历史「查看全部」浮层表格版视觉修复（specs/prompt-enhance.md 契约更新）：①高度自适应——面板 height:auto + max-height min(85dvh,760px)（内联与 CSS 双写），去掉固定 height:min(640px,80vh) 与表区 flex:1 1 auto 撑满，数据少时内容自然撑开、多时表区独立滚动，单页/空态不渲染分页页脚；②Header 左右分组——左=图标+标题+总数徽标，右=清空记录（图标文字横排、hover 危险色）+关闭按钮（32×32 命中、EH_ICON.close，Escape 同效）；③筛选行——搜索框带图标弹性填充（flex:1 1 240px、placeholder 完整），四个筛选器统一 34px 高/圆角/边框（来源 112/供应商 150/模型 140/时间 118px）；④表格对齐——表头与行共用 <colgroup> 列宽（chev 32px/来源 56px/操作 64px 固定 + 百分比弹性列，table-layout:fixed），去掉按 td 类的宽度声明；⑤供应商友好名——EH_PLAN_LABELS 内置 6 个套餐 id→显示名映射（与 model-puller PLAN_SOURCES 同源），表格/详情/筛选下拉显示友好名，title 悬浮完整原始 id，非套餐 id 原样不虚构；⑥展开详情——三栏 minmax(0,.85fr)/minmax(0,1.5fr)/minmax(0,1.5fr)（≈22/39/39），增强正文棕色背景改中性卡色+边框，正文 max-height 240px 内滚、详情块不再二次限高，元信息标签 11px/值 12px 行距 7px、长模型名 overflow-wrap:anywhere；⑦响应式——面板 container-type:inline-size，按面板实际宽度渲染时列裁剪（<900px 合并供应商/模型列、<640px 再隐摘要列，colspan 同步 10/9/7），容器查询 <900px 详情转两栏+元信息横排、<640px 详情纵向，resize 期间 150ms debounce 重排版（监听随关闭移除）；⑧行为修复——ehFullCache 补显式 var 声明（原隐式全局）、enhance-history-add 同步失效全量缓存、复制按钮统一按记录 id 定位（详情行经 detail-row 前一行）+check 反馈，删除死代码（重复 delete/copy 分支、无 data-expand 按钮），摘要列 title 悬浮全文（去 JS 60 字截断，CSS ellipsis 承担）。同批追加：⑫筛选下拉自绘箭头（appearance:none + data-URI 背景统一，右距 10px 与文字左距对称，原生箭头贴边且各端不一致）；⑬面板 min-height 60vh（用户口径：数据少时面板不显矮，上限仍 min(85dvh,760px)）；⑭关闭按钮 margin-right:-8px 收紧贴右上（icon 距面板右缘 12px）；⑮排序箭头 svg 显式 display:inline-block（宿主全局 svg 块化样式把 th 裸 svg 挤到第二行，按钮内图标被 inline-flex 吸收无此症）；⑯展开详情来源/Token/时间/耗时四对合并为三栏下方一行元信息（分隔线横排，左栏只留供应商/模型，minmax(0,.85fr) 栏宽放不下四对才上移全宽）；⑰确认类交互统一 zuConfirm 自绘弹框（复用压缩确认 .zu-compact-dlg 全套外壳样式，替换 overlay 全部 6 处 window.confirm：增强历史删除/清空 ×4 + 设置页移除 Key/重载丢弃修改 ×2；Esc/遮罩/Enter 协议同压缩弹框，规则沉淀 overlay-ui.md §4）。⑱增强历史双入口设置按钮（用户 2026-11-15 点名）：悬停面板 footer 与全量面板 header 右上新增「设置」（EH_ICON.gear 齿轮 + .zu-eh-cfg 同清空按钮外形中性 hover），点击经 openEnhanceSettings 复用齿轮官方完整开启路径（gear.click）+ activateSettingsSec("enhance-provider")，与增强按钮右键同款。⑳增强 Provider 分区 footer（状态+重新载入/保存按钮）改 sticky 吸底（用户 2026-11-15：矮屏用户不知道要滚到底部才能保存）——position:sticky bottom:-20px（负值补偿 .zu-settings-body 底 padding 20px 使视觉贴面板底缘）+ 水平负 margin=body padding clamp 值盖满面板宽 + 实色背景 var(--color-card) 防透出 + 上阴影分层；滚到底时回到自然位置，其他分区不受影响（.zu-ep-footer 类名仅该分区使用）。㉑修复重开面板误报「配置未保存」（用户实报）：保存成功回调只更新了 epSavedRevision 未刷新 epSavedFormJson 基准，重开面板 epSyncDirtyStatus 用旧基准比对恒脏——保存成功（含移除 Key）即以当前表单 JSON 为新已保存基准；保存失败/其他窗口 conflict 保留旧基准（脏标记语义不变）。⑲删除「撤销增强，恢复原文」状态（用户拍板去掉该展示）：应用成功（写入确认）后按钮直接回 idle，不再有 20s 撤销窗/撤销点击/自愈守卫（ENHANCE_UNDO_MS、ENH_SVG_UNDO、enhanceEnhanced/State、undo 点击分支与 heavy 对账块全拆），聊天历史采集时机不变（应用成功即记录）；回填前的会话与草稿比对守卫保留。独立 review 三修（2026-11-15）：⑨修复排序列点击不可达（th 非 button，data-sort 判断提到 button 判空前——首版表格即坏未报过）；⑩删除改缓存就地滤除+res.ok 门控+小浮层缓存失效（原 cache 置 null 后 build 清空整表，直到重开才恢复），失败删除不清表；⑪cssText 复制补 bottom:auto（小浮层动态 bottom 残留会把 fixed 面板高度压死，悬停→查看全部主路径必现）+disposeOverlay 摘除面板 keydown/resize 监听+两 handler 热更 stale 自卫+搜索 debounce 改模块级随关闭清理+首开「正在读取历史…」占位防闪白+sticky 表头（长列表滚动表头常驻，box-shadow 补 collapse 边框）。
+     * → v351 状态轮播词库同步上游 01Virex/dsh-status-rotator（PR #179/#181/#184/#186/#188，仅 04-rotator-builtin-packs.js 数据）：community +3（「用户特么的…」thinking、「正在驾驶EVA~~…」「听见你说~…」running；#184 的 4 条已在存量）、internet-memes +4 相（「token来！！token来！！token来！！…」thinking/running/long 三相 + 「正在创作隐晦物品…」running）；star-ask 与上游一致未动；star-route 不随上游（用户拍板取本项目星标者）：GitHub 152 人 + GitCode 镜像 2 人 = 154 人，zh/en 镜像 308 条，替换过期旧快照 134 人，包头注明名单来源（两端 stargazers API）与刷新方式。范围外漂移保留：western-ai GPT-7 文案、coding/slacking/daily 的 weight 对象在本地转纯字符串（本项目不支持权重对象）。无增删包，ZU_ROTATOR_PACK_META 与 enabledPacks 种子不动。
      */
-    var VERSION = "v349";
+    var VERSION = "v351";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
@@ -250,8 +252,9 @@
       lastSub = null,     // 子代理明细面板数据源
       instSid = "",       // 本 pane 当前会话（composer 祖先链 data-session-id）
       pendingSid = "", wantedEl = null, scopeStamp = "",   // 协调器派发的最新 composer/会话
-      shrink = 0,         // 分级收缩（v66）：1 = 内容超卡片宽，「本轮/会话累计」缓存命中率已让位
-      fadeOn = false,     // 收缩后仍超宽：右缘渐隐（.zu-clip）
+      shrink = 0,         // 默认条：0 完整、1 紧凑、2 隐藏次要计数
+      narrowCheckAt = 0, narrowMeasureKey = "", narrowWidths = null,
+      fadeOn = false,     // 默认条横滚时的左右渐隐状态
       bridge = { handle: null, turnId: "", timer: 0 },   // v71 本 pane 的 renderer store 订阅
       lastBand = null,    // v92：本 pane 上下文分档（ctxBandOf 结果，原生按钮增强的数据源）
       ctxBtnCache = null,   // v92：本实例上次增强的原生按钮（还原/对账引用，不依赖 cardCache 存活）
@@ -310,20 +313,26 @@
       "border-radius:var(--zu-pill-radius,12px);backdrop-filter:none;-webkit-backdrop-filter:none}" +
       ".zusage-root.zu-pill .zu-main{flex:0 1 auto;justify-content:flex-start;overflow-x:auto;scrollbar-width:thin}" +
       ".zusage-root.zu-pill .ico{color:var(--color-brand,#3b82f6)}" +
-      ".zu-main{overflow:hidden;min-width:0;flex:1 1 auto;display:flex;align-items:center;gap:1px;justify-content:space-between}" +
+      ".zu-main{overflow-x:auto;overflow-y:hidden;scrollbar-width:none;min-width:0;flex:1 1 auto;display:flex;align-items:center;gap:1px;justify-content:space-between}" +
+      ".zusage-root:not(.zu-pill) .zu-main::-webkit-scrollbar{display:none}" +
+      ".zusage-root.zu-tight .zu-main>.it{font-size:min(var(--ui-font-size,14px),max(11px,calc(var(--ui-font-size,14px) - 2px)));padding-left:4px;padding-right:4px;gap:3px}" +
+      ".zusage-root.zu-tight .zu-main>.it>.ico{width:1em;height:1em}" +
+      ".zusage-root.zu-narrow .it>.zu-secondary{position:absolute;left:0;visibility:hidden;pointer-events:none}" +
       /* v226 水平对齐（仅默认档挂类）：居左直接改 justify；居右不用字面 flex-end——LTR 下 start 侧
        * 溢出不可滚动也不计入 scrollWidth，收缩检测会失效、左格无声硬裁、.zu-clip 渐隐错边；改用首格
        * margin-left:auto 吸收自由空间等效右聚拢，溢出时 auto 归零、内容右向溢出，收缩/渐隐兜底不变 */
       ".zusage-root.zu-just-start .zu-main{justify-content:flex-start}" +
       ".zusage-root.zu-just-end .zu-main > :first-child{margin-left:auto}" +
       /* 收缩兜底（v66）：分级收缩后仍装不下时右缘 26px 渐隐，替代生硬的截断 */
-      ".zu-main.zu-clip{-webkit-mask-image:linear-gradient(90deg,#000 calc(100% - 26px),transparent);" +
-      "mask-image:linear-gradient(90deg,#000 calc(100% - 26px),transparent)}" +
+      ".zu-main.zu-clip{-webkit-mask-image:linear-gradient(90deg,#000 calc(100% - 26px),transparent);mask-image:linear-gradient(90deg,#000 calc(100% - 26px),transparent)}" +
+      ".zu-main.zu-clip-left{-webkit-mask-image:linear-gradient(90deg,transparent,#000 26px);mask-image:linear-gradient(90deg,transparent,#000 26px)}" +
+      ".zu-main.zu-clip-left.zu-clip{-webkit-mask-image:linear-gradient(90deg,transparent,#000 26px,#000 calc(100% - 26px),transparent);mask-image:linear-gradient(90deg,transparent,#000 26px,#000 calc(100% - 26px),transparent)}" +
       /* zu-main 不得带 .it class：querySelectorAll('.it') 收集 tooltip 时会把它算进第 0 位，
        * tips 全部错位一位且末项为 null —— v31"悬停只有空胶囊/内容错位"的根因 */
       ".it{display:flex;align-items:center;gap:5px;padding:2px 7px;border:0;border-radius:7px;" +
       "background:transparent;color:inherit;font:inherit;line-height:inherit;text-align:left;white-space:nowrap;" +
       "transition:background-color .12s ease-out,color .12s ease-out}" +
+      ".zusage-root .zu-main>.it{flex:0 0 auto}" +
       ".it:hover,.it:focus-visible{background:var(--color-hover,rgba(255,255,255,.06))}" +
       ".it:focus-visible,.zu-gear:focus-visible{outline:2px solid var(--color-input-border-focused,var(--color-brand,#57c8ff))!important;outline-offset:2px}" +
       ".zu-gear{flex:0 0 auto;position:relative;display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;padding:0;" +
@@ -795,6 +804,89 @@
       "padding:16px clamp(16px,2vw,28px) 20px;scrollbar-width:thin;scrollbar-color:var(--color-foreground-subtlest,#6b7484) transparent}" +
       ".zu-settings .zu-settings-section{width:min(100%,960px);margin:0 auto}" +
       ".zu-settings .zu-settings-card{width:100%}" +
+      ".zu-settings .zu-settings-section[data-sec=enhance-provider]{width:min(100%,880px)}.zu-settings .zu-ep{--ep-gap:16px;width:100%;display:grid;gap:var(--ep-gap);min-width:0;font-family:var(--font-sans,system-ui,sans-serif)}.zu-settings .zu-ep,.zu-settings .zu-ep *{box-sizing:border-box}.zu-settings .zu-ep [hidden]{display:none!important}" +
+      ".zu-settings .zu-ep-note,.zu-settings .zu-ep small{color:var(--color-foreground-subtle,#999);line-height:1.5;margin:0;font-size:calc(var(--ui-font-size,14px) - 2px)}.zu-settings .zu-ep-note{margin-bottom:8px}" +
+      ".zu-settings .zu-ep-custom,.zu-settings .zu-ep-host-panel,.zu-settings .zu-ep-manual-panel{display:grid;gap:12px;min-width:0}.zu-settings .zu-ep-field{display:flex;flex-direction:column;align-items:stretch;gap:8px;padding:0;margin:0;font-weight:500;min-width:0}" +
+      ".zu-settings .zu-ep-field input,.zu-settings .zu-ep-field select,.zu-settings .zu-ep-search{width:100%;min-width:0;min-height:36px;margin:0;padding:7px 12px;border:1px solid var(--color-border,#666);border-radius:7px;background-color:var(--color-input,transparent);color:var(--color-foreground,inherit);font:inherit;font-size:calc(var(--ui-font-size,14px) - 1px)}" +
+      ".zu-settings .zu-ep-field input:hover,.zu-settings .zu-ep-field input:focus,.zu-settings .zu-ep-field select:hover,.zu-settings .zu-ep-field select:focus,.zu-settings .zu-ep-search:hover,.zu-settings .zu-ep-search:focus,.zu-settings .zu-ep-field input:-webkit-autofill,.zu-settings .zu-ep-field input:-webkit-autofill:hover,.zu-settings .zu-ep-field input:-webkit-autofill:focus{-webkit-text-fill-color:var(--color-foreground,inherit);background-color:var(--color-input,transparent)!important;box-shadow:inset 0 0 0 1000px var(--color-input,transparent)}" +
+      ".zu-settings .zu-ep-field select{appearance:none;-webkit-appearance:none;padding-right:40px;background-image:linear-gradient(45deg,transparent 50%,var(--color-foreground-subtle,#999) 50%),linear-gradient(135deg,var(--color-foreground-subtle,#999) 50%,transparent 50%);background-size:5px 5px,5px 5px;background-position:calc(100% - 23px) 50%,calc(100% - 18px) 50%;background-repeat:no-repeat}" +
+      ".zu-settings .zu-ep-box,.zu-settings .zu-ep-host-panel,.zu-settings .zu-ep-manual-panel{padding:14px;border:1px solid var(--color-border,#666);border-radius:9px;background:var(--color-card,transparent)}" +
+      ".zu-settings .zu-ep-row,.zu-settings .zu-ep-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.zu-settings .zu-ep-footer{position:sticky;bottom:-20px;z-index:2;border-top:1px solid var(--color-border,#666);padding:12px clamp(16px,2vw,28px) 14px;margin:8px calc(clamp(16px,2vw,28px) * -1) -20px;background:var(--color-card,#13161e);box-shadow:0 -10px 14px -12px rgba(0,0,0,.45)}.zu-settings .zu-ep-footer .zu-ep-status{flex:1;min-width:120px;overflow-wrap:anywhere}" +
+      ".zu-settings .zu-ep button{font:inherit;font-size:calc(var(--ui-font-size,14px) - 1px);cursor:pointer;border-radius:7px;min-height:36px;padding:6px 12px;white-space:nowrap}.zu-settings .zu-ep-secondary{border:1px solid var(--color-border,#666);background:transparent;color:inherit}.zu-settings .zu-ep-primary{border:1px solid var(--color-primary,var(--color-brand,#888));background:var(--color-primary,var(--color-brand,#888));color:var(--color-primary-foreground,#111)}" +
+      ".zu-settings .zu-ep button:hover:not(:disabled){filter:brightness(1.08)}.zu-settings .zu-ep button:disabled{opacity:.5;cursor:default}.zu-settings .zu-ep-host-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:8px;max-height:260px;overflow:auto}.zu-settings .zu-ep-host-grid button{text-align:left;min-width:0;border:1px solid var(--color-border,#666);background:transparent;color:inherit;white-space:normal;overflow-wrap:anywhere;padding:10px 12px;display:grid;gap:4px}.zu-settings .zu-ep-host-grid button[aria-pressed=true]{border-color:var(--color-input-border-focused,var(--color-border,#888));background:var(--color-secondary,var(--color-card,transparent))}" +
+      ".zu-settings .zu-ep-model-row{display:flex;align-items:stretch;gap:8px;min-width:0}.zu-settings .zu-ep-model-row input{flex:1;min-width:0}.zu-settings .zu-ep-model-row button{flex:0 0 auto}.zu-settings .zu-ep-host-status:empty,.zu-settings .zu-ep-model-status:empty{display:none}.zu-settings .zu-ep-model-status{font-size:calc(var(--ui-font-size,14px) - 2px);color:var(--color-foreground-subtle,#999);overflow-wrap:anywhere}.zu-settings .zu-ep-test-status.zu-ep-test-err{color:var(--color-error,#e5534b)}" +
+      ".zu-settings .zu-ep-allow{display:flex;align-items:flex-start;gap:10px;padding:0;margin:0}.zu-settings .zu-ep-allow>input{order:0;flex:0 0 28px;margin:2px 0 0}.zu-settings .zu-ep-allow span{flex:1;min-width:0;display:grid;gap:4px}.zu-settings .zu-ep-allow em{font-style:normal;font-weight:400;max-width:none;width:100%;color:var(--color-foreground-subtle,#999);line-height:1.5;font-size:calc(var(--ui-font-size,14px) - 2px)}.zu-settings .zu-ep-warning{padding:8px 10px;border:1px solid var(--color-warning,#b99445);border-radius:6px;color:var(--color-warning,#d3a84c);font-size:calc(var(--ui-font-size,14px) - 2px)}.zu-settings .zu-ep-remove{border:0;background:transparent;color:inherit}.zu-settings .zu-ep-hosts{min-height:32px;padding:4px 10px}.zu-settings .zu-ep select:focus-visible{outline:2px solid var(--color-input-border-focused,var(--color-brand,#888));outline-offset:2px}" +
+      ".zusage-enhance-tip .zu-eh-head{padding:14px 18px 6px;display:flex;flex-direction:column;gap:3px}" +
+      ".zusage-enhance-tip .zu-eh-head-row{display:flex;align-items:center;gap:8px}.zusage-enhance-tip .zu-eh-head-row .zu-eh-total{margin-left:auto}" +
+      ".zusage-enhance-tip .zu-eh-title{display:inline-flex;align-items:center;gap:8px;font-weight:700;font-size:calc(var(--ui-font-size,14px) + 4px);min-width:0}.zusage-enhance-tip .zu-eh-title svg{flex:0 0 auto}" +
+      ".zusage-enhance-tip .zu-eh-phase{color:var(--color-foreground-subtle,#999);font-size:calc(var(--ui-font-size,14px) - 1px);font-weight:400;margin-left:8px;white-space:nowrap}.zusage-enhance-tip .zu-eh-total{flex:0 0 auto;color:var(--color-foreground-subtle,#999);font-size:calc(var(--ui-font-size,14px) - 2px);margin-left:auto;font-variant-numeric:tabular-nums;white-space:nowrap}" +
+      ".zusage-enhance-tip .zu-eh-scroll{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;padding:6px 18px;display:grid;gap:12px}" +
+      ".zusage-enhance-tip .zu-eh-card{min-width:0;border:1px solid var(--color-border,#555);border-radius:10px;padding:12px 14px;display:grid;gap:8px;background:var(--color-card,rgba(255,255,255,.03))}" +
+      ".zusage-enhance-tip .zu-eh-pm{display:flex;align-items:center;gap:6px;min-width:0;flex-wrap:nowrap}" +
+      ".zusage-enhance-tip .zu-eh-ico{display:inline-flex;flex:0 0 auto}.zusage-enhance-tip .zu-eh-ico svg{display:block}" +
+      ".zusage-enhance-tip .zu-eh-lab-k{display:inline-flex;align-items:center;gap:4px;color:var(--color-foreground-subtle,#999);font-size:calc(var(--ui-font-size,14px) - 1px);white-space:nowrap;flex:0 0 auto}" +
+      ".zusage-enhance-tip .zu-eh-lab-k svg{flex:0 0 auto}" +
+      ".zusage-enhance-tip .zu-eh-pm-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600;font-size:calc(var(--ui-font-size,14px))}" +
+      ".zusage-enhance-tip .zu-eh-sep{flex:0 0 auto;width:1px;height:16px;background:var(--color-border,#555);margin:0 4px}" +
+      ".zusage-enhance-tip .zu-eh-text{display:flex;align-items:flex-start;gap:0;min-width:0;font-size:calc(var(--ui-font-size,14px) - 1px);line-height:1.55}.zusage-enhance-tip .zu-eh-text>.zu-eh-lab-k{flex:0 0 auto}.zusage-enhance-tip .zu-eh-text>.zu-eh-body{flex:1;min-width:0}" +
+      ".zusage-enhance-tip .zu-eh-body{min-width:0;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow-wrap:anywhere;color:var(--color-foreground,#e9edf4)}" +
+      ".zusage-enhance-tip .zu-eh-text-enh .zu-eh-body{background:rgba(255,180,60,.08);border-radius:4px;padding:2px 6px}" +
+      ".zusage-enhance-tip .zu-eh-lab-enh{color:var(--color-warning,#d3a84c)}" +
+      ".zusage-enhance-tip .zu-eh-stats{display:flex;align-items:center;flex-wrap:wrap;gap:6px 0;font-variant-numeric:tabular-nums;font-size:calc(var(--ui-font-size,14px) - 2px);min-width:0}" +
+      ".zusage-enhance-tip .zu-eh-stat{display:inline-flex;align-items:center;gap:4px;color:var(--color-foreground-subtle,#999);white-space:nowrap}.zusage-enhance-tip .zu-eh-stat+.zu-eh-stat{margin-left:12px;padding-left:12px;border-left:1px solid var(--color-border,#555)}" +
+      ".zusage-enhance-tip .zu-eh-footer{border-top:1px solid var(--color-border,#555);padding:10px 18px;display:flex;align-items:center;gap:8px}.zusage-enhance-tip .zu-eh-footer .zu-eh-clear{margin-left:auto}" +
+      ".zusage-enhance-tip .zu-eh-act{display:inline-flex;align-items:center;gap:6px;background:transparent;border:0;color:var(--color-foreground-subtle,#999);font:inherit;font-size:calc(var(--ui-font-size,14px));padding:4px 6px;cursor:pointer}.zusage-enhance-tip .zu-eh-act:hover{color:var(--color-foreground,#e9edf4)}" +
+      ".zusage-enhance-tip .zu-eh-act svg{flex:0 0 auto}" +
+      ".zusage-enhance-tip .zu-eh-clear:hover{color:var(--color-error,#e5534b)}" +
+      ".zusage-enhance-tip .zu-eh-empty{padding:30px 18px;display:flex;flex-direction:column;align-items:center;gap:10px;color:var(--color-foreground-subtle,#999);text-align:center}.zusage-enhance-tip .zu-eh-empty svg{opacity:.6}" +
+      ".zusage-enhance-tip .zu-eh-arrow{width:0;height:0;border-left:10px solid transparent;border-right:10px solid transparent;border-top:8px solid var(--color-tooltip,#1a1d24);margin:0 auto;margin-bottom:-1px}" +
+      ".zusage-enhance-tip .zu-eh-retry{margin-top:4px}" +
+      ".zusage-enhance-tip .zu-eh-savehint{padding:6px 18px;color:var(--color-warning,#d3a84c);font-size:calc(var(--ui-font-size,14px) - 2px)}" +
+      /* 查看全部历史浮层：高度随内容自适应（数据少时紧凑、多时表区独立滚动），容器查询按面板实际宽度响应 */
+      ".zusage-enhance-full{position:fixed;width:min(1200px,calc(100vw - 32px));height:auto;min-height:60vh;max-height:min(85vh,760px);max-height:min(85dvh,760px);flex-direction:column;overflow:hidden;padding:0;z-index:2147483647;container-type:inline-size}" +
+      ".zusage-enhance-full .zu-eh-full-head{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:12px 12px 12px 16px;min-height:56px;box-sizing:border-box;border-bottom:1px solid var(--color-border,#666)}" +
+      ".zusage-enhance-full .zu-eh-head-l,.zusage-enhance-full .zu-eh-head-r{display:flex;align-items:center;gap:10px;min-width:0}" +
+      ".zusage-enhance-full .zu-eh-title{display:inline-flex;align-items:center;gap:8px;font-weight:600;font-size:calc(var(--ui-font-size,14px) + 3px);white-space:nowrap}" +
+      ".zusage-enhance-full .zu-eh-total{flex:0 0 auto;padding:2px 10px;border-radius:999px;background:var(--color-card,rgba(255,255,255,.06));color:var(--color-foreground-subtle,#999);font-size:calc(var(--ui-font-size,14px) - 2px);font-variant-numeric:tabular-nums;white-space:nowrap}" +
+      ".zusage-enhance-full .zu-eh-clear,.zusage-enhance-full .zu-eh-cfg{display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 12px;border:1px solid var(--color-border,#555);border-radius:6px;background:transparent;color:var(--color-foreground-subtle,#999);font:inherit;font-size:calc(var(--ui-font-size,14px) - 1px);cursor:pointer;white-space:nowrap}.zusage-enhance-full .zu-eh-clear:hover{color:var(--color-error,#e5534b);border-color:var(--color-error,#e5534b)}.zusage-enhance-full .zu-eh-cfg:hover{color:var(--color-foreground,#e9edf4);border-color:var(--color-border,#666)}" +
+      ".zusage-enhance-full .zu-eh-close{width:32px;height:32px;margin-right:-8px;display:inline-flex;align-items:center;justify-content:center;border:0;border-radius:6px;background:transparent;color:var(--color-foreground-subtle,#999);cursor:pointer}.zusage-enhance-full .zu-eh-close:hover{background:var(--color-card,rgba(255,255,255,.08));color:var(--color-foreground,#e9edf4)}" +
+      ".zusage-enhance-full .zu-eh-full-filter{display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:10px 16px;border-bottom:1px solid var(--color-border,#555)}" +
+      ".zusage-enhance-full .zu-eh-searchbox{flex:1 1 240px;min-width:200px;display:flex;align-items:center;gap:8px;height:34px;padding:0 10px;background:var(--color-input,transparent);border:1px solid var(--color-border,#666);border-radius:6px;color:var(--color-foreground-subtle,#999)}.zusage-enhance-full .zu-eh-searchbox:focus-within{border-color:var(--color-primary,var(--color-brand,#888))}.zusage-enhance-full .zu-eh-searchbox svg{flex:0 0 auto}" +
+      ".zusage-enhance-full .zu-eh-search{flex:1 1 auto;min-width:0;height:100%;padding:0;border:0;outline:none;background:transparent;color:var(--color-foreground,inherit);font:inherit;font-size:calc(var(--ui-font-size,14px) - 1px)}" +
+      /* 自绘下拉箭头：原生 select 箭头贴右缘且各端不一致，appearance:none + 固定位背景统一（右距 10px 与文字左距 8px 视觉对称） */
+      ".zusage-enhance-full .zu-eh-filter{margin-left:0;min-width:0;height:34px;padding:0 30px 0 10px;background:var(--color-input,transparent) url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239aa3b2' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E\") no-repeat right 10px center;border:1px solid var(--color-border,#666);border-radius:6px;color:var(--color-foreground,inherit);font:inherit;font-size:calc(var(--ui-font-size,14px) - 1px);cursor:pointer;appearance:none;-webkit-appearance:none}.zusage-enhance-full .zu-eh-filter:focus{outline:none;border-color:var(--color-primary,var(--color-brand,#888))}" +
+      ".zusage-enhance-full .zu-eh-f-src{width:112px}.zusage-enhance-full .zu-eh-f-prov{width:150px}.zusage-enhance-full .zu-eh-f-model{width:140px}.zusage-enhance-full .zu-eh-f-time{width:118px}" +
+      ".zusage-enhance-full .zu-eh-table-wrap{flex:0 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden}" +
+      ".zusage-enhance-full .zu-eh-table{width:100%;table-layout:fixed;border-collapse:collapse}" +
+      ".zusage-enhance-full .zu-eh-tr-head{background:var(--color-card,rgba(255,255,255,.04))}" +
+      ".zusage-enhance-full .zu-eh-tr-head th{position:sticky;top:0;z-index:1;background:var(--color-tooltip,#171717);box-shadow:0 1px 0 var(--color-border,#555)}" +
+      ".zusage-enhance-full .zu-eh-th{text-align:left;padding:7px 8px;font-weight:600;font-size:calc(var(--ui-font-size,14px) - 2px);color:var(--color-foreground-subtle,#999);white-space:nowrap;user-select:none;overflow:hidden;text-overflow:ellipsis}" +
+      ".zusage-enhance-full .zu-eh-th[data-sort]{cursor:pointer}.zusage-enhance-full .zu-eh-th[data-sort]:hover{color:var(--color-foreground,#e9edf4)}" +
+      ".zusage-enhance-full .zu-eh-th svg{vertical-align:-1px;display:inline-block}" +
+      ".zusage-enhance-full .zu-eh-row{cursor:pointer}.zusage-enhance-full .zu-eh-row:hover{background:var(--color-card,rgba(255,255,255,.06))}" +
+      ".zusage-enhance-full .zu-eh-row.zu-eh-open{background:var(--color-card,rgba(255,255,255,.04))}" +
+      ".zusage-enhance-full .zu-eh-td{padding:8px;font-size:calc(var(--ui-font-size,14px) - 2px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle;line-height:28px}" +
+      ".zusage-enhance-full .zu-eh-td-num{text-align:right;font-variant-numeric:tabular-nums}" +
+      ".zusage-enhance-full .zu-eh-td-chev{padding-left:10px;padding-right:0;color:var(--color-foreground-subtle,#999)}" +
+      ".zusage-enhance-full .zu-eh-td-ops{text-align:right;padding-right:10px;white-space:nowrap}" +
+      ".zusage-enhance-full .zu-eh-prov-sep{color:var(--color-foreground-subtle,#999)}" +
+      ".zusage-enhance-full .zu-eh-row-copy,.zusage-enhance-full .zu-eh-row-del{background:transparent;border:0;color:var(--color-foreground-subtle,#999);cursor:pointer;padding:3px;margin-left:2px;border-radius:4px}.zusage-enhance-full .zu-eh-row-copy:hover,.zusage-enhance-full .zu-eh-row-del:hover{color:var(--color-foreground,#e9edf4)}.zusage-enhance-full .zu-eh-row-del:hover{color:var(--color-error,#e5534b)}" +
+      ".zusage-enhance-full .zu-eh-detail-row>td{padding:2px 16px 12px}" +
+      ".zusage-enhance-full .zu-eh-detail{display:grid;grid-template-columns:minmax(0,.85fr) minmax(0,1.5fr) minmax(0,1.5fr);gap:16px;min-width:0;background:var(--color-card,rgba(255,255,255,.03));border:1px solid var(--color-border,#555);border-radius:8px;padding:12px 14px}" +
+      ".zusage-enhance-full .zu-eh-d-meta{display:grid;grid-template-columns:auto minmax(0,1fr);gap:7px 10px;font-size:calc(var(--ui-font-size,14px) - 2px);align-content:start;min-width:0}.zusage-enhance-full .zu-eh-d-meta>.zu-eh-d-pair{display:contents}.zusage-enhance-full .zu-eh-d-inline{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:4px 24px;align-items:baseline;min-width:0;margin-top:2px;padding-top:10px;border-top:1px solid var(--color-border,#555)}.zusage-enhance-full .zu-eh-d-inline .zu-eh-d-pair{display:inline-flex;align-items:baseline;gap:6px;min-width:0}.zusage-enhance-full .zu-eh-d-k{color:var(--color-foreground-subtle,#999);font-weight:500;font-size:calc(var(--ui-font-size,14px) - 3px);line-height:20px;white-space:nowrap}.zusage-enhance-full .zu-eh-d-wrap{overflow-wrap:anywhere}" +
+      ".zusage-enhance-full .zu-eh-d-text{display:flex;flex-direction:column;gap:6px;min-width:0}.zusage-enhance-full .zu-eh-d-h{display:inline-flex;align-items:center;gap:6px;font-weight:600;font-size:calc(var(--ui-font-size,14px) - 1px);color:var(--color-foreground-subtle,#999)}.zusage-enhance-full .zu-eh-d-h button{margin-left:auto}" +
+      ".zusage-enhance-full .zu-eh-d-body{font-size:calc(var(--ui-font-size,14px) - 1px);line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere;max-height:240px;overflow-y:auto;min-height:0;user-select:text}.zusage-enhance-full .zu-eh-d-enh .zu-eh-d-body{background:var(--color-card,rgba(255,255,255,.04));border:1px solid var(--color-border,#555);border-radius:4px;padding:8px}" +
+      ".zusage-enhance-full .zu-eh-pagination{border-top:1px solid var(--color-border,#555);padding:8px 16px;display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;font-size:calc(var(--ui-font-size,14px) - 2px);color:var(--color-foreground-subtle,#999);font-variant-numeric:tabular-nums}" +
+      ".zusage-enhance-full .zu-eh-pgsize{width:auto;height:auto;padding:2px 22px 2px 8px;background-position:right 6px center;font-size:calc(var(--ui-font-size,14px) - 2px)}" +
+      ".zusage-enhance-full .zu-eh-pg-btn{background:transparent;border:1px solid transparent;border-radius:6px;color:inherit;font:inherit;font-size:calc(var(--ui-font-size,14px) - 2px);min-width:28px;height:28px;padding:0 6px;cursor:pointer;margin:0 1px}.zusage-enhance-full .zu-eh-pg-btn:hover:not(:disabled){background:var(--color-card,rgba(255,255,255,.06))}.zusage-enhance-full .zu-eh-pg-btn:disabled{opacity:.4;cursor:default}.zusage-enhance-full .zu-eh-pg-cur{background:var(--color-card,rgba(255,255,255,.1));color:var(--color-foreground,#e9edf4);font-weight:600}" +
+      ".zusage-enhance-full .zu-eh-pg-ellipsis{color:var(--color-foreground-subtle,#999);margin:0 2px}" +
+      ".zusage-enhance-full .zu-eh-cell-text{display:block;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}" +
+      ".zusage-enhance-full td.zu-eh-empty{padding:36px 16px;text-align:center;color:var(--color-foreground-subtle,#999);line-height:1.6;white-space:normal}.zusage-enhance-full td.zu-eh-empty svg{opacity:.5}.zusage-enhance-full td.zu-eh-empty small{display:block;margin-top:6px}" +
+      '@container (max-width:900px){.zusage-enhance-full .zu-eh-detail{grid-template-columns:1fr 1fr}.zusage-enhance-full .zu-eh-d-meta{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:4px 18px}.zusage-enhance-full .zu-eh-d-pair{display:inline-flex;align-items:baseline;gap:6px;min-width:0}.zusage-enhance-full .zu-eh-f-model{width:120px}}' +
+      '@container (max-width:640px){.zusage-enhance-full .zu-eh-detail{grid-template-columns:1fr}.zusage-enhance-full .zu-eh-f-prov,.zusage-enhance-full .zu-eh-f-model{width:130px}}' +
+      "@media(max-width:480px){.zu-settings .zu-ep-model-row{flex-wrap:wrap}.zu-settings .zu-ep-model-row input{flex-basis:160px}.zu-settings .zu-ep-footer .zu-ep-status{flex-basis:100%}}" +
+      ".zu-settings .zu-ep-test{container-type:inline-size;border:1px solid var(--color-border,#666);border-radius:9px;padding:14px;min-width:0}.zu-settings .zu-ep-test p{margin:5px 0 12px;color:var(--color-foreground-subtle,#999);font-size:calc(var(--ui-font-size,14px) - 2px)}" +
+      ".zu-settings .zu-ep-test-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px}.zu-settings .zu-ep-test-input,.zu-settings .zu-ep-test-output{display:flex;flex-direction:column;gap:8px;min-width:0;padding:0;margin:0}.zu-settings .zu-ep-test-draft,.zu-settings .zu-ep-test-result{width:100%;height:170px;min-width:0;margin:0;padding:10px;border:1px solid var(--color-border,#666);border-radius:7px;background:var(--color-input,transparent);color:var(--color-foreground,inherit);font:inherit;line-height:1.5;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;resize:none}.zu-settings .zu-ep-test-output{position:relative}.zu-settings .zu-ep-test-empty{position:absolute;top:40px;left:11px;pointer-events:none}.zu-settings .zu-ep-test-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:12px}.zu-settings .zu-ep-test-status{flex:1;min-width:100px;overflow-wrap:anywhere}.zu-settings .zu-ep-test-run{margin-left:auto}@container (max-width:520px){.zu-settings .zu-ep-test-grid{grid-template-columns:minmax(0,1fr)}}" +
       ".zu-settings-body::-webkit-scrollbar{width:8px}" +
       ".zu-settings-body::-webkit-scrollbar-thumb{background:var(--color-foreground-subtlest,#6b7484);border:2px solid var(--color-card,#13161e);border-radius:999px}" +
       ".zu-settings.zu-settings-more .zu-settings-body{mask-image:linear-gradient(#000 calc(100% - 16px),transparent)}" +
@@ -1657,6 +1749,8 @@
         icon: '<path d="M4 7h4m5 0h7M4 17h9m5 0h2"/><circle cx="10.5" cy="7" r="2.5"/><circle cx="15.5" cy="17" r="2.5"/>' },
       { id: "rotator", group: "basics", zh: "状态轮播", en: "Status rotator",
         icon: '<path d="M12 2v4m0 12v4M4.93 4.93l2.83 2.83m8.48 8.48l2.83 2.83M2 12h4m12 0h4M4.93 19.07l2.83-2.83m8.48-8.48l2.83-2.83"/>' },
+      { id: "enhance-provider", group: "basics", zh: "提示词增强", en: "Prompt enhancement",
+        icon: '<path d="M12 3l2.2 6.8L21 12l-6.8 2.2L12 21l-2.2-6.8L3 12l6.8-2.2z"/>' },
       { id: "stats", group: "data", zh: "回答统计", en: "Reply statistics",
         icon: '<path d="M4 4v16h16M8 16v-4m5 4V7m5 9v-6"/>' },
       { id: "quota", group: "data", zh: "套餐额度", en: "Plan quota",
@@ -1690,10 +1784,54 @@
       }
       return html + '</nav>';
     }
+    /* 增强厂商预设（地址/协议参考 cc-switch opencodeProviderPresets 的「模型厂商」分组，仅预填地址与协议，不含 Key 与模型） */
+    var ZU_EP_PRESETS = [
+      { group: "Baidu Qianfan Token Plan", items: [["qianfan", "Baidu Qianfan Token Plan", "https://qianfan.baidubce.com/v2/tokenplan/personal", "openai-chat-completions"]] },
+      { group: "BaiLing", items: [["bailing", "BaiLing", "https://api.ant-ling.com/v1", "openai-chat-completions"]] },
+      { group: "BytePlus", items: [["byteplus", "BytePlus", "https://ark.ap-southeast.bytepluses.com/api/coding/v3", "openai-chat-completions"]] },
+      { group: "DeepSeek", items: [["deepseek", "DeepSeek", "https://api.deepseek.com/v1", "openai-chat-completions"]] },
+      { group: L("火山引擎", "Volcengine"), items: [
+        ["volc-agent", L("火山 Agent Plan", "Volcengine Agent Plan"), "https://ark.cn-beijing.volces.com/api/plan/v3", "openai-chat-completions"],
+        ["volc-coding", L("火山 Coding Plan", "Volcengine Coding Plan"), "https://ark.cn-beijing.volces.com/api/coding/v3", "openai-chat-completions"],
+        ["volc-doubao", "Doubao", "https://ark.cn-beijing.volces.com/api/v3", "openai-chat-completions"]] },
+      { group: "Kimi", items: [
+        ["kimi-cn", "Kimi（月之暗面）", "https://api.moonshot.cn/v1", "openai-chat-completions"],
+        ["kimi-intl", "Kimi Global", "https://api.moonshot.ai/v1", "openai-chat-completions"],
+        ["kimi-coding", "Kimi For Coding", "https://api.kimi.com/coding/v1", "anthropic-messages"],
+        ["kimi-coding-intl", "Kimi For Coding Global", "https://api.kimi.ai/coding/v1", "anthropic-messages"]] },
+      { group: "Longcat", items: [["longcat", "Longcat", "https://api.longcat.chat/openai/v1", "openai-chat-completions"]] },
+      { group: "MiniMax", items: [
+        ["minimax-cn", "MiniMax", "https://api.minimax.cn/v1", "openai-chat-completions"],
+        ["minimax-intl", "MiniMax Global", "https://api.minimax.io/v1", "openai-chat-completions"]] },
+      { group: L("千问AI平台", "Qianwen"), items: [
+        ["qianwen-payg", L("千问AI平台", "Qianwen"), "https://maas.qianwenaiapi.com/compatible-mode/v1", "openai-chat-completions"],
+        ["qianwen-token", L("千问AI平台 Token Plan", "Qianwen Token Plan"), "https://token-plan.maas.qianwenaiapi.com/apps/anthropic/v1", "anthropic-messages"]] },
+      { group: "QwenCloud", items: [
+        ["qwen-payg", "QwenCloud", "https://ap-southeast-1.maas.qwencloudapi.com/compatible-mode/v1", "openai-chat-completions"],
+        ["qwen-coding", "QwenCloud For Coding", "https://coding-intl.dashscope.aliyuncs.com/apps/anthropic/v1", "anthropic-messages"],
+        ["qwen-token", "QwenCloud Token Plan", "https://token-plan.maas.qwencloudapi.com/apps/anthropic/v1", "anthropic-messages"]] },
+      { group: "StepFun", items: [["stepfun-cn", "StepFun", "https://api.stepfun.com/step_plan/v1", "openai-chat-completions"]] },
+      { group: "StepFun Step Plan", items: [["stepfun-plan", "StepFun Step Plan", "https://api.stepfun.com/step_plan/v1", "openai-chat-completions"]] },
+      { group: "StreamLake", items: [
+        ["streamlake-cn", "StreamLake", "https://wanqing.streamlakeapi.com/api/gateway/v1/endpoints", "openai-chat-completions"],
+        ["streamlake-intl", "StreamLake Global", "https://vanchin.streamlake.ai/api/gateway/v1/endpoints", "openai-chat-completions"]] },
+      { group: L("腾讯云", "Tencent Cloud"), items: [
+        ["tencent-plan", "Tencent Token Plan", "https://api.lkeap.cloud.tencent.com/plan/v3", "openai-chat-completions"],
+        ["tencent-pro", "Tencent Token Plan Enterprise Pro", "https://tokenhub.tencentmaas.com/plan/v3", "openai-chat-completions"],
+        ["tencent-intl", "Tencent Token Plan (Intl)", "https://tokenhub-intl.tencentcloudmaas.com/plan/v3", "openai-chat-completions"]] },
+      { group: "Xiaomi MiMo", items: [
+        ["mimo-payg", "Xiaomi MiMo", "https://api.xiaomimimo.com/v1", "openai-chat-completions"],
+        ["mimo-token", "Xiaomi MiMo Token Plan", "https://token-plan-cn.xiaomimimo.com/v1", "openai-chat-completions"]] },
+      { group: "Zhipu GLM", items: [
+        ["zhipu-cn", "Zhipu GLM", "https://open.bigmodel.cn/api/coding/paas/v4", "openai-chat-completions"],
+        ["zhipu-intl", "Z.ai (GLM)", "https://api.z.ai/api/coding/paas/v4", "openai-chat-completions"]] }
+    ];
     /* 面板文案可随语言重建（事件走 panel 级委托，重建不丢监听） */
     function buildPanel() {
       var oldBody = panel.querySelector(".zu-settings-body");
       var scrollTop = oldBody ? oldBody.scrollTop : 0;
+      var epDraft = typeof epCaptureDraft === "function" ? epCaptureDraft() : null;
+      if (typeof epTestStop === "function" && typeof epTest !== "undefined" && epTest && epTest.id) epTestStop(L("测试已取消。", "Test cancelled."));
       panel.innerHTML =
       '<div class="zu-settings-head"><div class="phead">' + L("状态条设置", "Status bar settings") + '<span class="pver zu-settings-version"></span></div>' +
       '<button type="button" class="zu-settings-close" aria-label="' + L("关闭设置", "Close settings") + '">✕</button></div>' +
@@ -1744,6 +1882,21 @@
       '<div class="zu-settings-langs"><label><input type="radio" name="zu-lang" value="zh"><span>中文</span></label>' +
       '<label><input type="radio" name="zu-lang" value="en"><span>English</span></label></div></div></section>' +
       (typeof zuRotatorSectionHtml === "function" ? zuRotatorSectionHtml(secOpen("rotator") === "") : "") +
+      '<section class="zu-settings-section" data-sec="enhance-provider"' + secOpen("enhance-provider") + '><div class="cap">' + L("提示词增强", "Prompt enhancement") + '</div><div class="zu-ep">' +
+      '<p class="zu-ep-note">' + L("使用所选模型优化草稿，不更改聊天模型。增强会发送草稿并可能消耗额度。", "Rewrite drafts with the selected model without changing chat settings. Enhancement sends the draft and may incur charges.") + '</p>' +
+      '<select class="zu-ep-mode" hidden><option value="default">' + L("跟随当前会话", "Follow current session") + '</option><option value="custom">' + L("自定义增强服务", "Custom enhancement service") + '</option></select>' +
+      '<label class="zu-ep-field">' + L("配置来源", "Source") + '<select class="zu-ep-source"><option value="default">' + L("跟随当前会话", "Follow current session") + '</option><option value="host">' + L("ZCode 已有供应商", "ZCode provider") + '</option><option value="manual">' + L("手动配置／厂商预设", "Manual / preset") + '</option></select></label>' +
+      '<div class="zu-ep-default zu-ep-box">' + L("当前生效配置以保存结果为准。跟随当前会话时，供应商和模型随会话变化；已保存的自定义配置会保留。", "The saved mode determines the active configuration. Following the session uses its provider and model; saved custom settings are retained.") + '</div>' +
+      '<div class="zu-ep-custom" hidden>' +
+      '<div class="zu-ep-host-panel" hidden><div class="zu-ep-row"><strong>' + L("选择供应商", "Choose provider") + '</strong><button type="button" class="zu-ep-hosts zu-ep-secondary">' + L("刷新", "Refresh") + '</button></div><input class="zu-ep-search" type="search" placeholder="' + L("搜索供应商", "Search providers") + '"><div class="zu-ep-host-status" role="status"></div><div class="zu-ep-host-grid"></div><select class="zu-ep-host" hidden></select></div>' +
+      '<div class="zu-ep-manual-panel" hidden><label class="zu-ep-field">' + L("供应商／预设", "Provider / preset") + '<select class="zu-ep-preset"><option value="">' + L("自定义配置", "Custom") + '</option>' + ZU_EP_PRESETS.map(function (g) { return '<optgroup label="' + g.group + '">' + g.items.map(function (it) { return '<option value="' + it[0] + '">' + it[1] + '</option>'; }).join("") + '</optgroup>'; }).join("") + '</select></label>' +
+      '<label class="zu-ep-field">Base URL<input class="zu-ep-url" type="url" autocomplete="off"></label><label class="zu-ep-field">' + L("API 协议", "API protocol") + '<select class="zu-ep-protocol"><option value="openai-chat-completions">OpenAI Chat Completions</option><option value="openai-responses">OpenAI Responses</option><option value="anthropic-messages">Anthropic Messages</option></select></label>' +
+      '<label class="zu-ep-field">API Key<input class="zu-ep-key" type="password" autocomplete="off" placeholder="' + L("留空保留已保存的 Key", "Leave blank to keep saved key") + '"></label><div class="zu-ep-row"><small class="zu-ep-key-state"></small><button type="button" class="zu-ep-remove zu-ep-secondary">' + L("移除已保存的 Key", "Remove saved key") + '</button></div><small>' + L("Key 以本地明文文件保存，并受文件权限保护。", "The key is stored locally in plaintext, protected by file permissions.") + '</small></div>' +
+      '<div class="zu-ep-warning" role="status" hidden></div><label class="zu-ep-field">' + L("增强模型", "Enhancement model") + '<span class="zu-ep-model-row"><input class="zu-ep-model" type="text" list="zu-ep-model-options" autocomplete="off" placeholder="' + L("输入或选择模型 ID", "Enter or select a model ID") + '"><button type="button" class="zu-ep-models zu-ep-secondary">' + L("拉取模型", "Fetch models") + '</button></span></label><datalist id="zu-ep-model-options" class="zu-ep-model-list"></datalist><div class="zu-ep-model-status" role="status" aria-live="polite"></div></div>' +
+      '<label class="zu-ep-allow"><input type="checkbox" class="zu-ep-allow-downgrade"><span>' + L("所选供应商模型报错不可用时，自动选用其它可用的模型完成增强", "Automatically use another available model when the selected one fails") + '<em>' + L("勾选：所选模型在供应商处报错不可用时，自动改用其它可用的模型完成增强。取消勾选：严格使用当前所选模型，该模型不可用时就报错。", "When checked, another available model is used if the selected one fails. When unchecked, only the selected model is used and failures are reported.") + '</em></span></label>' +
+      '<label class="zu-ep-allow"><input type="checkbox" class="zu-ep-save-history"><span>' + L("在本机保存增强历史", "Save enhancement history on this machine") + '<em>' + L("开启后，增强成功的原始与增强文本会保存在本机增强历史文件中（最多 100 条、30 天），可随时删除或清空；关闭时仅本次运行内存可用，重启清空。不含任何密钥。", "When on, the original and enhanced texts of successful enhancements are stored in the local history file (up to 100 records, 30 days) and can be deleted or cleared anytime; when off they stay in memory only for this run. Never contains keys.") + '</em></span></label>' +
+      '<div class="zu-ep-test"><strong>' + L("测试区域", "Test enhancement") + '</strong><p>' + L("输入草稿测试已保存配置；测试会发送草稿并可能消耗额度。", "Test the saved configuration. The draft is sent and may incur charges.") + '</p><div class="zu-ep-test-grid"><label class="zu-ep-test-input">' + L("待增强的草稿提示词", "Draft prompt") + '<textarea class="zu-ep-test-draft" placeholder="' + L("输入需要增强的提示词…", "Enter a prompt to enhance…") + '"></textarea></label><div class="zu-ep-test-output"><span>' + L("增强结果", "Enhanced result") + '</span><pre class="zu-ep-test-result" aria-live="polite"></pre><small class="zu-ep-test-empty">' + L("增强后的提示词将在这里显示", "The enhanced prompt will appear here") + '</small></div></div><div class="zu-ep-test-actions"><span class="zu-ep-test-status" role="status" aria-live="polite"></span><button type="button" class="zu-ep-test-cancel zu-ep-secondary" hidden>' + L("取消测试", "Cancel test") + '</button><button type="button" class="zu-ep-test-run zu-ep-secondary">✦ ' + L("增强提示词", "Enhance prompt") + '</button></div></div>' +
+      '<div class="zu-ep-footer"><span class="zu-ep-status" role="status"></span><button type="button" class="zu-ep-reload zu-ep-secondary" hidden>' + L("重新载入已保存配置", "Reload saved settings") + '</button><button type="button" class="zu-ep-save zu-ep-primary">' + L("保存配置", "Save settings") + '</button></div></div></section>' +
       '<section class="zu-settings-section" data-sec="stats"' + secOpen("stats") + '><div class="cap">' + L("回答统计", "Reply statistics") + '</div><div class="zu-settings-card">' +
       settingRow('<input type="checkbox" class="zu-rate-line">', L("回答末尾追加统计行", "Append stats to each reply"), L("切换后立即重扫：关闭会撤下插件生成的统计行，开启会补回可用记录。下一次提问沿用该设置；历史正文和已缓存统计行不重算。", "Rescans immediately: off removes plugin-generated lines; on restores available records. Applies to the next prompt; historical text and cached statistics are not recalculated.")) +
       settingRow('<input type="checkbox" class="zu-enhance-toggle">', L("增强提示词按钮", "Prompt enhance button"), L("在输入框工具条模型选择按钮左侧显示 ✦ 按钮：点击用当前会话模型把输入框草稿改写得更清晰后替换原文，20 秒内可点按钮撤销。点击会向当前模型供应商发送草稿文本并消耗其额度；默认开启，主进程端同名开关关闭时不渲染。", "Shows a ✦ button left of the model picker in the composer toolbar: click to rewrite the composer draft with the current session model and replace it (click again within 20s to undo). Clicking sends the draft text to the current model provider and consumes its quota; on by default, and the button is hidden when the main-process switch of the same name is off.")) +
@@ -1813,6 +1966,8 @@
       var qrBox = panel.querySelector(".zu-quota-remain");
       if (qrBox) qrBox.checked = !!state.quotaRemain;
       if (typeof zuRotatorSyncPanel === "function") zuRotatorSyncPanel(panel);
+      if (epDraft && typeof epRestoreDraft === "function") epRestoreDraft(epDraft);
+      if (typeof epTestRender === "function" && typeof epTest !== "undefined" && epTest) epTestRender();
       syncUpdate();
       panel.querySelector(".zu-settings-body").scrollTop = scrollTop;
       if (panel.setAttribute) panel.setAttribute("aria-label", L("状态条设置", "Status bar settings"));
@@ -1863,6 +2018,7 @@
     }
     var previousPanelFocus = null;
     function closeSettings(restoreFocus) {
+      if (typeof epTest !== "undefined" && epTest && epTest.id && typeof epTestStop === "function") epTestStop(L("测试已取消。", "Test cancelled."));
       panel.classList.remove("open");
       /* 轮播实时预览定时器随面板关闭即停（不靠 tick 的 hidden 跳过空转）；panelEl 归属守卫防跨实例误杀 */
       if (typeof rotPreview !== "undefined" && rotPreview.timer && rotPreview.panelEl === panel) { clearInterval(rotPreview.timer); rotPreview.timer = null; }

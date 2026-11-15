@@ -23,7 +23,7 @@ test('contract: renderer slices keep enhance button wiring anchors', () => {
   assert.match(source, /lucide-loader-circle/);   // 用户指定的 loader-circle（属性与 class 原样保留）
   assert.match(source, /prompt-enhance-cancel", \{ requestId: enhanceInFlightId \}/);   // 取消动作带在途 id
   assert.match(source, /enhanceSettled = true;/);   // 取消置 settled 丢弃迟到回包
-  assert.match(source, /pluginRequest\("prompt-enhance", \{ providerId: providerId, modelId: modelId, text: draft \}/);
+  assert.match(source, /pluginRequest\(useCustom \? "prompt-enhance-v2" : "prompt-enhance"/);
   assert.match(source, /current !== draft/);   // 回填前快照比对
   assert.match(source, /apiNow\.setText\(res\.text\)/);   // 唯一官方写通道
   assert.match(source, /state\.enhanceEnabled === false/);   // 开关门控（显隐层）
@@ -145,7 +145,7 @@ function harness({ enhanceOn = true } = {}) {
     },
   });
   const executable = source.replace(/\}\)\(\);\s*$/, 'window.enhanceTest = { instances: function() { return instances; }, state: function() { return state; } };})();');
-  function inject() { window.__zusageOverlay = false; vm.runInContext(executable, sandbox); }
+  function inject() { window.__zusageOverlay = false; vm.runInContext(executable, sandbox); window.enhanceTest.state().pluginUpdate = { enhanceProvider: { capability: 1, available: true, mode: 'default', revision: 0 } }; }
   function boot() { for (const [n, t] of [...timers]) if (!t.interval && t.ms === 0) { timers.delete(n); t.fn(); } }
   function tick() { for (const t of [...timers.values()]) if (t.interval && (t.ms === 600 || t.ms === 500)) t.fn(); }
   function buildComposer(pid, sid, { provider = '', model = '', draft = '' } = {}) {
@@ -219,6 +219,17 @@ function runPending(timers, ms) {
   for (const [n, t] of [...timers]) if (!t.interval && t.ms === ms) { timers.delete(n); t.fn(); }
 }
 
+test('renderer refuses an old main bridge without enhancement capability instead of falling back', () => {
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'sid_main', { provider: 'p', model: 'm', draft: 'draft' });
+  h.inject(); h.boot(); h.coordAttach(ui.editor, 'sid_main'); h.window.__zusageUpdate(h.payload()); h.tick();
+  h.window.enhanceTest.state().pluginUpdate = {};
+  h.enhOf(ui.wrap).listeners.get('click')[0]();
+  assert.equal(h.takeRequests().filter(r => /^prompt-enhance/.test(r.action)).length, 0);
+  assert.match(h.enhOf(ui.wrap).getAttribute('aria-label'), /重启/);
+  assert.equal(ui.editor.__zuDraft, 'draft');
+});
+
 test('button mounts directly left of the model chip and survives heavy ticks', () => {
   const h = harness();
   const ui = h.buildComposer('workspace-main', 'sid_main', { provider: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-FlashX' });
@@ -232,7 +243,7 @@ test('button mounts directly left of the model chip and survives heavy ticks', (
   assert.equal(h.enhOf(ui.wrap), enh);   // 幂等：一个实例，不重插
 });
 
-test('click sends prompt-enhance with live selection; reply replaces draft and arms undo', () => {
+test('click sends prompt-enhance with live selection; reply replaces draft and returns to idle', () => {
   const h = harness();
   const ui = h.buildComposer('workspace-main', 'sid_main', { provider: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-FlashX', draft: '帮我写个脚本' });
   h.inject(); h.boot(); h.coordAttach(ui.editor, 'sid_main');
@@ -249,10 +260,7 @@ test('click sends prompt-enhance with live selection; reply replaces draft and a
   h.respond(reqs[0].requestId, { ok: true, text: '更清晰的脚本需求' });
   assert.equal(ui.editor.__zuDraft, '更清晰的脚本需求');
   assert.equal(ui.editor.setTextCalls, 1);
-  assert.equal(enh.getAttribute('aria-label'), '撤销增强，恢复原文');   // undo 相位
-  enh.listeners.get('click')[0]();   // 撤销
-  assert.equal(ui.editor.__zuDraft, '帮我写个脚本');
-  assert.equal(enh.getAttribute('aria-label'), '增强提示词');
+  assert.equal(enh.getAttribute('aria-label'), '增强提示词');   // v350.1 撤销相位已删除：应用成功即回初始态
 });
 
 test('draft edited during enhance is never overwritten', () => {
@@ -322,11 +330,13 @@ test('hover shows self-drawn tooltip with phase text; leave hides it', () => {
   const enh = h.enhOf(ui.wrap);
   const tip = h.body.children.find(e => e.classList.contains('zusage-enhance-tip'));
   assert.ok(tip, 'enhance tip element should exist at module level');
-  assert.notEqual(tip.style.display, 'block');
+  assert.notEqual(tip.style.display, 'flex');
   enh.listeners.get('mouseenter')[0].call(enh);
-  assert.equal(tip.style.display, 'block');
-  assert.equal(tip.textContent, '增强提示词');
+  assert.equal(tip.style.display, 'flex');   // 悬停现在是历史面板（异步取数），phase 文案进面板头部
+  assert.match(tip.innerHTML, /最近增强记录/);   // 悬停已升级为历史面板（stub 不解析 HTML，用 innerHTML 断言）
+  assert.equal(tip.style.display, 'flex');
   enh.listeners.get('mouseleave')[0]();
+  runPending(h.timers, 220);   // mouseleave 延迟收起（给移入历史面板留时间）
   assert.equal(tip.style.display, 'none');
 });
 
@@ -358,7 +368,7 @@ test('click during enhance cancels: cancel request fired, phase resets, late rep
   assert.equal(enh.getAttribute('aria-label'), '增强提示词');
 });
 
-test('undo window self-heals when draft is sent (cleared), and undo click is guarded', () => {
+test('no undo phase after success: immediate idle, next click issues a fresh request', () => {
   const h = harness();
   const ui = h.buildComposer('workspace-main', 'sid_main', { provider: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-FlashX', draft: '原始草稿' });
   h.inject(); h.boot(); h.coordAttach(ui.editor, 'sid_main');
@@ -369,26 +379,17 @@ test('undo window self-heals when draft is sent (cleared), and undo click is gua
   const req = h.takeRequests().find(r => r.action === 'prompt-enhance');
   h.respond(req.requestId, { ok: true, text: '增强后的提示词' });
   assert.equal(ui.editor.__zuDraft, '增强后的提示词');
-  assert.match(enh.getAttribute('aria-label'), /撤销增强/);   // undo 态
-  // 模拟消息发送：宿主提交流程清空草稿
-  ui.editor.__zuDraft = '';
+  assert.equal(enh.getAttribute('aria-label'), '增强提示词');   // v350.1：应用成功即回初始态，无撤销窗
   h.tick();
-  assert.equal(enh.getAttribute('aria-label'), '增强提示词');   // ≤一拍自动回初始态，不再滞留「撤回」
-  // 此时点击（若用户手快）不得把原文塞回已清空的输入框
-  enh.listeners.get('click')[0]();
-  assert.equal(ui.editor.__zuDraft, '');
-  assert.equal(ui.editor.setTextCalls || 0, 1);   // 只有最初那次成功回填
-  // 对照：窗口内草稿被用户再编辑 → 点击撤销也不回写（守卫拒绝）
-  ui.editor.__zuDraft = '原稿二';
+  assert.equal(enh.getAttribute('aria-label'), '增强提示词');   // 恒初始，不滞留「撤回」
+  // 再点击 = 以当前草稿发起新增强（撤销恢复行为已随相位删除）
   enh.listeners.get('click')[0]();
   const req2 = h.takeRequests().find(r => r.action === 'prompt-enhance');
+  assert.ok(req2, 'next click issues a fresh enhance request');
+  assert.equal(req2.text, '增强后的提示词');
   h.respond(req2.requestId, { ok: true, text: '增强稿二' });
   assert.equal(ui.editor.__zuDraft, '增强稿二');
-  ui.editor.__zuDraft = '增强稿二（用户微调）';   // 窗口内手动编辑
-  h.tick();
-  assert.match(enh.getAttribute('aria-label'), /增强提示词/);   // 编辑后窗口自动失效（基准不再匹配）
-  enh.listeners.get('click')[0]();
-  assert.equal(ui.editor.__zuDraft, '增强稿二（用户微调）');   // 不被原文覆盖
+  assert.equal(enh.getAttribute('aria-label'), '增强提示词');
 });
 
 test('session switch during enhance: reply not applied to the new session, distinct wording', () => {
@@ -415,7 +416,7 @@ test('session switch during enhance: reply not applied to the new session, disti
   assert.match(enh.getAttribute('aria-label'), /增强提示词/);   // 警示自愈回初始态
 });
 
-test('undo sid guard: session switched inside the window, undo click must not write cross-session', () => {
+test('session switch inside enhance flow: stale window never rewrites, next click rebinds the new session', () => {
   const h = harness();
   const ui = h.buildComposer('workspace-main', 'sid_main', { provider: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-FlashX', draft: '会话A原稿' });
   h.inject(); h.boot(); h.coordAttach(ui.editor, 'sid_main');
@@ -432,26 +433,28 @@ test('undo sid guard: session switched inside the window, undo click must not wr
   switched.mine = 'sid_other';
   h.window.__zusageUpdate(switched);
   h.tick();
-  assert.match(enh.getAttribute('aria-label'), /增强提示词/);   // 对账自愈：sid 切换即收窗
-  enh.listeners.get('click')[0]();   // 窗口已失效，点击不回写原文
+  assert.match(enh.getAttribute('aria-label'), /增强提示词/);   // 对账自愈：sid 切换即回初始态
+  // 撤销窗已删除：点击=发起新增强；切换后的会话（fixture 无模型归属）被守卫拒绝（fail-closed），草稿不动
+  enh.listeners.get('click')[0]();
+  assert.match(enh.getAttribute('aria-label'), /未识别当前模型/);
+  const reqs2 = h.takeRequests().filter(r => r.action === 'prompt-enhance');
+  assert.equal(reqs2.length, 0, 'no cross-session enhance request');
   assert.equal(ui.editor.__zuDraft, '会话A增强稿');
 });
 
-test('undo window expires after 20s back to idle; missing reply hits the 75s timeout guard', () => {
+test('successful enhance returns to idle immediately; missing reply hits the 75s timeout guard', () => {
   const h = harness();
   const ui = h.buildComposer('workspace-main', 'sid_main', { provider: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-FlashX', draft: '草稿' });
   h.inject(); h.boot(); h.coordAttach(ui.editor, 'sid_main');
   h.window.__zusageUpdate(h.payload());
   h.tick();
   const enh = h.enhOf(ui.wrap);
-  // 场景一：成功回填进入 undo 态，20s 到期自动回初始态
+  // 场景一：成功回填立即回初始态（撤销窗已删除），草稿保持增强文本
   enh.listeners.get('click')[0]();
   const req = h.takeRequests().find(r => r.action === 'prompt-enhance');
   h.respond(req.requestId, { ok: true, text: '增强稿' });
-  assert.match(enh.getAttribute('aria-label'), /撤销增强/);
-  runPending(h.timers, 20000);
-  assert.match(enh.getAttribute('aria-label'), /增强提示词/);   // 到期收窗
-  assert.equal(ui.editor.__zuDraft, '增强稿');   // 收窗不改草稿
+  assert.match(enh.getAttribute('aria-label'), /增强提示词/);
+  assert.equal(ui.editor.__zuDraft, '增强稿');
   // 场景二：无回包时 75s 兜底警示超时
   enh.listeners.get('click')[0]();
   h.takeRequests();
@@ -484,7 +487,7 @@ test('main-process handlers: abort wiring, cross-window guard, fail-closed gate 
     enhanceRequestTextOk: (v) => typeof v === 'string' && v.trim().length > 0 && v.length <= 20000,
     deliverPluginRequest: (wc, id, result) => replies.push({ wc: wc.id, id, result }),
     LOG: () => { },
-    AbortController, wc1,
+    AbortController, wc1, path: require('path'), fs: require('fs'), URL, HERE: '/tmp/fake-runtime',
     console,
   };
   vm.runInNewContext(slice + '\n;globalThis.__enh = { get: (k) => enhanceInFlight.get(wc1)?.get(k), has: (k) => !!enhanceInFlight.get(wc1)?.has(k) };', sandbox);
@@ -540,7 +543,7 @@ test('R1 late reply after cancel-then-reenhance must not poison R2 (round-2 MAJO
   // R2 正常成功回包：正常回填
   h.respond(r2.requestId, { ok: true, text: '二次增强稿' });
   assert.equal(ui.editor.__zuDraft, '二次增强稿');
-  assert.match(enh.getAttribute('aria-label'), /撤销增强/);
+  assert.match(enh.getAttribute('aria-label'), /增强提示词/);   // v350.1：成功即回初始态
 });
 
 
@@ -548,8 +551,9 @@ test('same request ID is isolated by window and old replies cannot consume a rep
   const start = injectSource.indexOf('function modelPullerProviderOk(v) {');
   const end = injectSource.indexOf('/* 渠道门控');
   const calls = [], replies = [];
-  const sandbox = { AbortController, LOG:()=>{}, enhanceEnabled:()=>true,
+  const sandbox = { AbortController, LOG:()=>{}, enhanceEnabled:()=>true, path: require('path'), fs: require('fs'), URL, HERE: '/tmp/fake-runtime',
     deliverPluginRequest:(wc,id,result)=>replies.push({wc,id,result}),
+    readEnhanceProvider:()=>({version:1,revision:0,mode:"default",available:true}),
     modelPuller:{ enhanceText:(p,m,t,o)=>new Promise(resolve=>calls.push({signal:o.signal,resolve})) } };
   vm.runInNewContext(injectSource.slice(start,end), sandbox);
   const a = {}, b = {}, req = {requestId:'same',providerId:'p',modelId:'m',text:'draft'};
@@ -563,11 +567,68 @@ test('same request ID is isolated by window and old replies cannot consume a rep
   assert.equal(replies.length,2); assert.equal(replies.find(x=>x.wc===a).result.text,'a');
 });
 
+test('cancelling while native target confirmation is open never sends the draft', async () => {
+  const start = injectSource.indexOf('function modelPullerProviderOk(v) {');
+  const end = injectSource.indexOf('/* 渠道门控');
+  const calls = [], replies = [];
+  let accept;
+  const settings = { version: 1, revision: 4, mode: 'custom', source: 'manual', baseUrl: 'http://127.0.0.1:9090', protocol: 'openai-chat-completions', model: 'fixture', apiKey: 'fixture-key' };
+  const sandbox = { AbortController, URL, path: require('path'), fs: require('fs'), HERE: '/tmp/fake-runtime', LOG: () => {}, enhanceEnabled: () => true,
+    dialog: { showMessageBox: () => new Promise(resolve => { accept = resolve; }) }, BrowserWindow: { fromWebContents: () => ({}) },
+    deliverPluginRequest: (wc, id, result) => replies.push({ id, result }),
+    modelPuller: { enhanceProviderVersion: 1, enhanceText: (...args) => { calls.push(args); return Promise.resolve({ ok: true }); } } };
+  vm.runInNewContext(injectSource.slice(start, end), sandbox);
+  sandbox.readEnhanceProvider = () => settings;
+  const wc = {}, req = { action: 'prompt-enhance-v2', requestId: 'confirm-1', revision: 4, text: 'draft' };
+  const pending = sandbox.handlePromptEnhanceRequest(req, wc);
+  assert.equal(typeof accept, 'function');
+  sandbox.handlePromptEnhanceCancel({ requestId: req.requestId }, wc);
+  accept({ response: 1 });
+  await pending;
+  assert.equal(calls.length, 0);
+  assert.equal(replies.length, 0);
+});
+
+test('strict mode rejects a server-side downgrade while allowed mode passes it through', async () => {
+  const start = injectSource.indexOf('function modelPullerProviderOk(v) {');
+  const end = injectSource.indexOf('/* 渠道门控');
+  const replies = [];
+  const mk = (allowDowngrade) => {
+    const sandbox = { AbortController, URL, path: require('path'), fs: require('fs'), HERE: '/tmp/fake-runtime', LOG: () => {}, enhanceEnabled: () => true,
+      deliverPluginRequest: (wc, id, result) => replies.push(result),
+      modelPuller: { enhanceProviderVersion: 1, enhanceText: (...args) => Promise.resolve({ ok: true, text: 'out', model: args[1], serverModel: 'lite-model' }) } };
+    vm.runInNewContext(injectSource.slice(start, end), sandbox);
+    sandbox.readEnhanceProvider = () => ({ version: 1, revision: 1, mode: 'custom', allowDowngrade, baseUrl: 'https://example.test', protocol: 'openai-chat-completions', model: 'requested-model', apiKey: 'fixture-key' });   // 运行后赋值才能覆盖切片内的函数声明
+    return sandbox;
+  };
+  await mk(false).handlePromptEnhanceRequest({ action: 'prompt-enhance-v2', requestId: 'd1', revision: 1, text: 'draft' }, {});
+  assert.equal(replies[0].ok, false);
+  assert.equal(replies[0].error, 'model downgraded');
+  assert.equal(replies[0].detail, 'lite-model');
+  await mk(true).handlePromptEnhanceRequest({ action: 'prompt-enhance-v2', requestId: 'd2', revision: 1, text: 'draft' }, {});
+  assert.equal(replies[1].ok, true);
+  assert.equal(replies[1].serverModel, 'lite-model');
+});
+
+test('custom enhancement refuses an older model-puller without the capability marker', async () => {
+  const start = injectSource.indexOf('function modelPullerProviderOk(v) {');
+  const end = injectSource.indexOf('/* 渠道门控');
+  const replies = [], calls = [];
+  const sandbox = { AbortController, URL, path: require('path'), fs: require('fs'), HERE: '/tmp/fake-runtime', LOG: () => {}, enhanceEnabled: () => true,
+    deliverPluginRequest: (wc, id, result) => replies.push(result),
+    modelPuller: { enhanceText: (...args) => { calls.push(args); return Promise.resolve({ ok: true }); } } };
+  vm.runInNewContext(injectSource.slice(start, end), sandbox);
+  sandbox.readEnhanceProvider = () => ({ mode: 'custom', revision: 1 });
+  await sandbox.handlePromptEnhanceRequest({ action: 'prompt-enhance-v2', requestId: 'v', revision: 1, text: 'draft' }, {});
+  assert.equal(calls.length, 0);
+  assert.equal(replies[0].kind, 'unavailable');
+});
+
 test('main-process real gates: invalid provider and empty draft reject with zero side effects', () => {
   const start = injectSource.indexOf('function modelPullerProviderOk(v) {');
   const end = injectSource.indexOf('/* 渠道门控');
   const calls = [], replies = [];
-  const sandbox = { AbortController, LOG: () => {}, enhanceEnabled: () => true,
+  const sandbox = { AbortController, LOG: () => {}, enhanceEnabled: () => true, path: require('path'), fs: require('fs'), URL, HERE: '/tmp/fake-runtime',
     deliverPluginRequest: (wc, id, result) => replies.push({ id, result }),
     modelPuller: { enhanceText: () => { calls.push(1); return new Promise(() => {}); } } };
   vm.runInNewContext(injectSource.slice(start, end), sandbox);
@@ -585,7 +646,7 @@ test('write verification waits for asynchronous editor commit', () => {
   ui.editor.__zcodeLexicalInputE2E.setText = text => { h.timers.set(-1,{ms:0,interval:false,fn:()=>{ui.editor.__zuDraft=text;}}); };
   btn.listeners.get('click')[0](); const req=h.takeRequests().find(r=>r.action==='prompt-enhance');
   h.respond(req.requestId,{ok:true,text:'enhanced'});
-  assert.equal(ui.editor.__zuDraft,'enhanced'); assert.match(btn.getAttribute('aria-label'),/撤销增强/);
+  assert.equal(ui.editor.__zuDraft,'enhanced'); assert.match(btn.getAttribute('aria-label'),/增强提示词/);
 });
 
 
@@ -627,7 +688,7 @@ test('structural change with identical text prevents writeback', () => {
 });
 
 
-test('undo does not overwrite structurally edited draft with identical text', () => {
+test('post-success click with structurally edited draft issues a fresh request, never a restore', () => {
  const h=harness(), ui=h.buildComposer('workspace-main','sid_main',{provider:'p',model:'m',draft:'same'});
  let state={root:{children:[{type:'text',text:'same'}]}}; let restored=0;
  ui.editor.__zcodeLexicalInputE2E.getEditorState=()=>state; ui.editor.__zcodeLexicalInputE2E.setEditorStateJson=()=>{restored++};
@@ -635,7 +696,11 @@ test('undo does not overwrite structurally edited draft with identical text', ()
  h.inject(); h.boot(); h.coordAttach(ui.editor,'sid_main'); h.window.__zusageUpdate(h.payload({provider:'p',model:'m'})); h.tick();
  const btn=h.enhOf(ui.wrap); btn.listeners.get('click')[0](); const req=h.takeRequests().find(r=>r.action==='prompt-enhance');
  h.respond(req.requestId,{ok:true,text:'enhanced'}); state={root:{children:[{type:'text',text:'enhanced',format:1}]}};
- btn.listeners.get('click')[0](); assert.equal(restored,0); assert.equal(ui.editor.__zuDraft,'enhanced');
+ // v350.1 撤销恢复已删除：成功后再点击=以当前草稿发起新请求，绝无 setEditorStateJson 回写原文路径
+ btn.listeners.get('click')[0](); assert.equal(restored,0);
+ const req2=h.takeRequests().find(r=>r.action==='prompt-enhance');
+ assert.ok(req2, 'fresh enhance request instead of a restore');
+ assert.equal(req2.text,'enhanced'); assert.equal(ui.editor.__zuDraft,'enhanced');
 });
 
 

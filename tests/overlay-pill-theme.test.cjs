@@ -242,6 +242,72 @@ async function compareSurface(browser, barIndex, selector) {
 test('dual theme browser behaviour (isolated fixture)', { skip: skipReason, timeout: 90000 }, async t => {
   const b = await startBrowser(t);
 
+  await t.test('switching from scrolled default to pill resets the offset', async () => {
+    await reset(b);
+    await b.evaluate(`document.querySelector('#pane-a').style.width = '220px'`);
+    await b.waitFor(`(() => { const m = document.querySelector('#pane-a .zu-main'); return m.scrollWidth > m.clientWidth + 1; })()`);
+    await b.evaluate(`(() => { const m = document.querySelector('#pane-a .zu-main'); m.scrollLeft = m.scrollWidth; })()`);
+    assert.ok(await b.evaluate(`document.querySelector('#pane-a .zu-main').scrollLeft`) > 0);
+    await b.evaluate(`window.__testMain = document.querySelector('#pane-a .zu-main')`);
+    await choose(b, 'pill');
+    assert.equal(await b.evaluate(`window.__testMain.scrollLeft`), 0);
+  });
+
+  await t.test('secondary counts use a compact step before hiding and restore', async () => {
+    await reset(b);
+    await b.evaluate(`document.querySelector('#pane-a').style.width = '1100px'`);
+    await b.waitFor(`!document.querySelector('#pane-a .zusage-root').classList.contains('zu-narrow')`, 'wide bar did not restore');
+    const dims = await b.evaluate(`(() => {
+      const bar = document.querySelector('#pane-a .zusage-root'), main = bar.querySelector('.zu-main');
+      const probe = bar.cloneNode(false), m = main.cloneNode(true);
+      probe.classList.remove('zu-in', 'zu-narrow', 'zu-tight');
+      probe.style.cssText = 'position:fixed;left:-10000px;visibility:hidden;width:max-content;min-width:0;max-width:none';
+      m.style.cssText = 'width:max-content;min-width:max-content;flex:none;overflow:visible';
+      probe.appendChild(m); bar.parentElement.appendChild(probe);
+      const full = m.getBoundingClientRect().width;
+      probe.classList.add('zu-tight'); const tight = m.getBoundingClientRect().width;
+      probe.remove();
+      return { full, tight, delta: document.querySelector('#pane-a').getBoundingClientRect().width - main.clientWidth,
+        secondarySize: parseFloat(getComputedStyle(main.querySelector('.zu-secondary')).fontSize),
+        primarySize: parseFloat(getComputedStyle(main.querySelector('.v')).fontSize) };
+    })()`);
+    assert.ok(dims.full > dims.tight + 4, JSON.stringify(dims));
+    await b.evaluate(`document.querySelector('#pane-a').style.width = ${JSON.stringify((dims.full + dims.tight) / 2 + dims.delta)} + 'px'`);
+    await b.waitFor(`document.querySelector('#pane-a .zusage-root').classList.contains('zu-tight')`, 'compact step did not activate');
+    const tight = await b.evaluate(`(() => { const bar = document.querySelector('#pane-a .zusage-root'), m = bar.querySelector('.zu-main'), s = m.querySelector('.zu-secondary'); return { visible: getComputedStyle(s).visibility, size: parseFloat(getComputedStyle(s).fontSize), primary: parseFloat(getComputedStyle(m.querySelector('.v')).fontSize), overflow: m.scrollWidth > m.clientWidth + 1, tip: !!s.closest('.it').__tip }; })()`);
+    assert.equal(tight.visible, 'visible'); assert.ok(tight.size < dims.secondarySize && tight.size >= 11);
+    assert.ok(tight.primary < dims.primarySize && tight.primary >= 11); assert.equal(tight.overflow, false); assert.ok(tight.tip);
+    await b.evaluate(`document.querySelector('#pane-a').style.width = ${JSON.stringify(dims.tight - 10 + dims.delta)} + 'px'`);
+    await b.waitFor(`document.querySelector('#pane-a .zusage-root').classList.contains('zu-narrow')`, 'secondary counts did not hide');
+    await b.evaluate(`document.querySelector('#pane-a').style.width = ${JSON.stringify(dims.tight + 30 + dims.delta)} + 'px'`);
+    await b.waitFor(`(() => { const bar = document.querySelector('#pane-a .zusage-root'); return bar.classList.contains('zu-tight') && !bar.classList.contains('zu-narrow'); })()`, 'compact step did not return');
+    await b.evaluate(`document.querySelector('#pane-a').style.width = ${JSON.stringify(dims.full + 30 + dims.delta)} + 'px'`);
+    await b.waitFor(`(() => { const b = document.querySelector('#pane-a .zusage-root'); return !b.classList.contains('zu-tight') && !b.classList.contains('zu-narrow'); })()`, 'full counts did not return');
+  });
+
+  await t.test('default bar adapts counts, scrolls and restores independently', async () => {
+    await reset(b);
+    await b.evaluate(`document.querySelector('#pane-a').style.width = '1100px'`);
+    await b.waitFor(`!document.querySelector('#pane-a .zusage-root').classList.contains('zu-narrow')`, 'wide bar did not restore');
+    const full = await b.evaluate(`(() => { const bar = document.querySelector('#pane-a .zusage-root'); return [...bar.querySelectorAll('.zu-secondary')].map(x => x.textContent); })()`);
+    assert.ok(full.length >= 3, 'secondary counts exist');
+    await b.evaluate(`document.querySelector('#pane-a').style.width = '420px'`);
+    await b.waitFor(`document.querySelector('#pane-a .zusage-root').classList.contains('zu-narrow')`, 'narrow bar did not compact');
+    const compact = await b.evaluate(`(() => { const bar = document.querySelector('#pane-a .zusage-root'); return { counts: [...bar.querySelectorAll('.zu-secondary')].map(x => [x.textContent, getComputedStyle(x).visibility]), other: document.querySelector('#pane-b .zusage-root').classList.contains('zu-narrow') }; })()`);
+    assert.deepEqual(compact.counts.map(x => x[0]), full);
+    assert.ok(compact.counts.every(x => x[1] === 'hidden'));
+    await b.evaluate(`document.querySelector('#pane-a').style.width = '220px'`);
+    await b.waitFor(`(() => { const m = document.querySelector('#pane-a .zu-main'); return m.scrollWidth > m.clientWidth + 1 && m.classList.contains('zu-clip'); })()`, 'compact bar did not overflow');
+    await b.evaluate(`(() => { const m = document.querySelector('#pane-a .zu-main'); m.scrollLeft = m.scrollWidth; })()`);
+    await b.waitFor(`(() => { const m = document.querySelector('#pane-a .zu-main'); return m.classList.contains('zu-clip-left') && !m.classList.contains('zu-clip'); })()`, 'end fade did not update');
+    const scrolled = await b.evaluate(`(() => { const bar = document.querySelector('#pane-a .zusage-root'), m = bar.querySelector('.zu-main'), gear = bar.querySelector('.zu-gear'), r = gear.getBoundingClientRect(); return { left: m.scrollLeft, hit: document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2) === gear || gear.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)) }; })()`);
+    assert.ok(scrolled.left > 0 && scrolled.hit, 'scrolling keeps gear clickable');
+    await b.evaluate(`document.querySelector('#pane-a').style.width = '1100px'`);
+    await b.waitFor(`!document.querySelector('#pane-a .zusage-root').classList.contains('zu-narrow')`, 'wide bar did not restore after scrolling');
+    const restored = await b.evaluate(`(() => { const bar = document.querySelector('#pane-a .zusage-root'); return [...bar.querySelectorAll('.zu-secondary')].map(x => getComputedStyle(x).visibility); })()`);
+    assert.ok(restored.every(x => x === 'visible'));
+  });
+
   await t.test('default and invalid values fall back; pill restores on boot', async () => {
     for (const [stored, expected] of [[undefined, 'default'], ['', 'default'], ['invalid', 'default'], ['PILL', 'default'], ['default', 'default'], ['pill', 'pill']]) {
       await reset(b, { stored });

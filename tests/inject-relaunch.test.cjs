@@ -165,6 +165,7 @@ test("pushPluginState pushes the relaunchSupported capability flag (v180, issue 
     isMainWindowState: () => true, isLocalHostPage: () => true,
     readCfgCached: () => ({ answer_rate_line: true, restart_notice: true }),
     quotaEnabled: () => true, resetBadgeEnabled: () => true, enhanceEnabled: () => true,
+    enhanceProviderView: () => ({ available: false, version: 1, revision: 0, mode: "default", keyConfigured: false }),
     quotaClient: null, enginePatcher: null,
   });
   assert.equal(pushed.length, 1);
