@@ -140,7 +140,11 @@
       if (updBanner) {
         var bannerOn = !!(u && u.restartRequired && !relaunchDead);
         updBanner.hidden = !bannerOn;
-        if (bannerOn) updBanner.textContent = L("已更新成功，点击重启 ZCode 即可生效", "Update installed — click Restart ZCode to apply");
+        /* v359（issue #321）：桥补装 pending 也写重启标记（无 version 键，markerVersion 空
+         * 串）——此时「已更新成功」不实，改中性文案；版本可匹配（更新安装）保持原文。 */
+        if (bannerOn) updBanner.textContent =
+          (u.markerVersion ? L("已更新成功，点击重启 ZCode 即可生效", "Update installed — click Restart ZCode to apply")
+                           : L("有待生效的改动，点击重启 ZCode", "Pending changes — click Restart ZCode to apply"));
       }
       if (u && u.restartRequired && relaunchDead) text += "\n" + L("主进程或关闭热更新的文件已更新，需重启 ZCode", "Restart ZCode to load main-process updates or files with hot reload disabled");
       if (relaunchDead) text += "\n" + L("「重启 ZCode」需要新版主进程支持：当前主进程是旧版本，请完全退出 ZCode 后重新打开。", "Restarting ZCode needs a newer main process: the running main process is outdated — quit ZCode completely and reopen it.");

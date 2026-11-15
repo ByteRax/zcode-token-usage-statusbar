@@ -1598,8 +1598,24 @@
    * 单调，经 FATAL.det.rt 落 diag-*.json（03 分片写入）。sent=已入队请求数；ok=非空交付
    * 入缓存；empty=空交付（旧主进程无原因标签时也落这里）；miss=入队后 RICH_TEXT_MISS_MS
    * 内无回执；stale=未匹配在途请求的回执（换代、单位切换、owner 消失等设计内淘汰）；
-   * spawn、timeout、pyerr=新主进程标注的空交付原因（inject-main.cjs 需同版才细分，冷文件）。 */
-  var richTextDiag = { sent: 0, ok: 0, empty: 0, miss: 0, stale: 0, spawn: 0, timeout: 0, pyerr: 0 };
+   * spawn、timeout、pyerr=新主进程标注的空交付原因（inject-main.cjs 需同版才细分，冷文件）。
+   * v360（issue #321 后续诊断）：报告者 diag 实证 rt 全 0 而占位每轮常驻——请求根本没入队，
+   * 此前的桶全是「入队之后」的，补收集/flush 门控的静默拒绝归因：noKey=富文本身份拒绝
+   * （zuRichIdentity 空：scope 校验不过、无桥回退被远端证据 fail-closed 拒（#40 契约）——
+   * 静态桥补装 pending（Windows asar 占用）期间 scope 属性缺席时的典型落点）；noSid=统计行
+   * sessionId 与实例 sid 不一致；notCur=收集了但 flush 时非本实例活跃轮（含历史轮设计内
+   * 只追活跃轮的跳过）；noInst=flush 时实例已消失（现行接线收集与 flush 同拍，仅直调可达，
+   * 防御性保留）。四类共享轮键（pid|tid）去重，同一轮先后被多门拦截只记首因（入队解封或
+   * 换代后才轮到下一个）——扫描 0.5s/拍会反复重收同一轮，逐拍累加会把「卡在门前的轮数」
+   * 放大成心跳数；请求成功入队即解封该轮，同轮后续新失败可再计。 */
+  var richTextDiag = { sent: 0, ok: 0, empty: 0, miss: 0, stale: 0, spawn: 0, timeout: 0, pyerr: 0,
+    noKey: 0, noSid: 0, notCur: 0, noInst: 0 };
+  var richTextBlocked = {};   // v360：静默拒绝已计过一次的轮键，入队即清（见 richTextDiag 注）
+  function zuBlockOnce(dedupe, bucket) {
+    if (!dedupe || richTextBlocked[dedupe]) return;
+    capPut(richTextBlocked, dedupe, true, 256);   // 与 attempts/cache 同上限纪律；FIFO 淘汰后同轮可能重计一次，诊断计数允许近似
+    richTextDiag[bucket] = (richTextDiag[bucket] || 0) + 1;
+  }
   var richTextInFlight = {};   // epoch 记账：首个回执核销，同 epoch 重试刷新时限，超窗记 miss
   function zuRichIdentity(owner) {
     if (!owner || !owner.getSid || !owner.getScope) return "";
@@ -1635,6 +1651,7 @@
     richTextAttempts = {};
     richTextRequestTids = {};
     richTextWants = {};
+    richTextBlocked = {};   // v360：换代后轮键作废，静默拒绝重新可计
     richTextInFlight = {};   // 在途作废：后续回执落 stale（设计内淘汰），不再计 miss
   }
   /* 每个 scan tick 对「已完成 + 有输出 + 尚无富文本 + 未超重试上限」的 turn 收集补发候选；
@@ -1649,9 +1666,13 @@
   var richTextWants = {};
   function zuRequestTurnText(owner, tid, stats) {
     var key = zuRichKey(owner, tid);
-    if (!tid || !key || richTextCache[key] || (richTextAttempts[key] || 0) >= RICH_TEXT_MAX_ATTEMPTS) return;
+    if (!tid || !key || richTextCache[key] || (richTextAttempts[key] || 0) >= RICH_TEXT_MAX_ATTEMPTS) {
+      /* v360：!key 即零入队（rt.sent 不动）——占位每轮常驻且 rt 全 0 的头号静默落点。 */
+      if (!key && tid) zuBlockOnce(owner && owner.pid ? owner.pid + "|" + tid : "", "noKey");
+      return;
+    }
     var sid = stats && typeof stats.sessionId === "string" ? stats.sessionId : "";
-    if (!sid || owner.getSid() !== sid) return;
+    if (!sid || owner.getSid() !== sid) { zuBlockOnce(owner.pid + "|" + tid, "noSid"); return; }
     richTextWants[sid] = { owner: owner, tid: tid, key: key };
   }
   /* #321 诊断：入队后 RICH_TEXT_MISS_MS 内无任何回执记 miss（旧主进程无此动作处理器、
@@ -1670,10 +1691,12 @@
     zuSweepRichTextMiss();
     for (var sid in richTextWants) {
       var w = richTextWants[sid];
-      if (richTextCache[w.key] || instances.indexOf(w.owner) < 0) continue;
+      if (richTextCache[w.key]) continue;
+      if (instances.indexOf(w.owner) < 0) { zuBlockOnce(w.owner.pid + "|" + w.tid, "noInst"); continue; }
       /* 只追当前活跃轮：--current 只返回该会话最新一轮，给历史轮发请求会缓存错轮文本
-       * （历史轮保持占位，与 v75 起的实际生效行为一致）。 */
-      if (!w.owner.isCurrentTurn || !w.owner.isCurrentTurn(w.tid)) continue;
+       * （历史轮保持占位，与 v75 起的实际生效行为一致）。v360：该门在 sent++ 之前，
+       * 恒 false 时 sent 恒 0 且不留痕（报告者 rt 全 0 的候选落点之一），按轮键计一次。 */
+      if (!w.owner.isCurrentTurn || !w.owner.isCurrentTurn(w.tid)) { zuBlockOnce(w.owner.pid + "|" + w.tid, "notCur"); continue; }
       var pending = richTextRequestTids[sid];
       if (!pending || pending.key !== w.key || pending.unit !== richTextUnitEpoch) {
         pending = { key: w.key, tid: w.tid, owner: w.owner, unit: richTextUnitEpoch, epoch: MY_GEN + ":" + (++richTextRequestEpoch), legacy: !pending && richTextUnitEpoch === 0 };
@@ -1685,6 +1708,7 @@
       else window.__zusagePluginRequests = [req];
       capPut(richTextAttempts, w.key, (richTextAttempts[w.key] || 0) + 1, 256);
       richTextDiag.sent++;
+      delete richTextBlocked[w.owner.pid + "|" + w.tid];   // v360：入队即解封同轮静默计数，后续新失败可再计
       richTextInFlight[pending.epoch] = { at: Date.now() };   // 同 epoch 重试刷新时限：miss 按「最近一次请求」起算
     }
     richTextWants = {};
