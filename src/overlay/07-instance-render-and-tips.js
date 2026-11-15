@@ -744,14 +744,15 @@
     function html(d) {
       var sess = d.session || {}, lt = d.last_turn || {}, today = d.today || {}, last = d.last || {};
       var tls = d.tools || { total: 0, errors: 0, list: [] };
-      var items = [], tips = [];
+      var items = [], tips = [], barItemKey = "system";
       function it(inner, tipContent, cls) {
         var interactive = cls === "zu-sub";
+        var key = barItemKey;
         items.push('<' + (interactive
           ? 'button type="button" aria-label="' + L("子代理", "Sub-agents") + '"'
           : 'span tabindex="0"') +
-          ' class="it' + (cls ? " " + cls : "") + '">' + inner + (interactive ? "</button>" : "</span>"));
-        tips.push(tipContent || null);
+          ' class="it' + (cls ? " " + cls : "") + '" data-zu-key="' + key + '">' + inner + (interactive ? "</button>" : "</span>"));
+        tips.push({key: key, content: tipContent || null, index: tips.length});
       }
       if (d.remote) {   // v9：SSH 远程会话（数据取自远端机），置顶徽标标明数据源
         it(ico('<path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/>') +
@@ -782,6 +783,7 @@
        * zuBarSpeedView 对"刚绑定/重绑时捞到的历史存量已完成轮次"返回 null——这种情况
        * 和"桥完全没命中"一视同仁，同样回退 DB/不渲染，不冒充"这个会话速度不可用"。
        * 二者互斥：绝不同时渲染两枚「速度」chip。 */
+      barItemKey = "speed";
       var dbTps = last.tps || 0;
       var sessAvg = (sess && typeof sess.avg_tps === "number" && isFinite(sess.avg_tps) && sess.avg_tps > 0) ? sess.avg_tps : 0;
       var speedView = liveStatsCur ? zuBarSpeedView(liveStatsCur, bridge.handle && bridge.handle.charsPerToken, subRate.sum, sessAvg) : null;
@@ -901,6 +903,7 @@
            (lt.retries ? ttEsc(L("重试 ", "retries ") + countFmt(lt.retries) + L(" 次", " times")) : ""),
            (lt.tool_errors ? ttEsc(L("错误 ", "errors ") + countFmt(lt.tool_errors) + L(" 次", " times")) : "")].filter(Boolean).join('<i class="zu-turn-sep">·</i>')
         : "";
+      barItemKey = "turn";
       if (state.show.turn) {
         it(ico('<path d="M5 3.5h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-9l-6.5 4V5.5a2 2 0 0 1 1.5-2z"/><path d="M7.5 8.5h9m-9 4h6"/>') +
           '<span class="v">' + fmt(lt.total) + "</span>" +
@@ -975,6 +978,7 @@
           '</div>' +
           '</div>');
       }
+      barItemKey = "win";
       if (state.show.win) {
         it(ico('<path d="M7.5 3h12a2 2 0 0 1 2 2v10M4.5 7h12a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H8l-5.5 2V9a2 2 0 0 1 2-2z"/>') +
           '<span class="v">' + fmt(sess.total) + "</span>" +
@@ -1038,6 +1042,7 @@
             '<b>' + ttEsc(L("时间范围", "Time span")) + '</b><span>' +
             (sess.started ? fmtStartS(sess.started) : "—") + " — " + (sess.last_at ? fmtStartS(sess.last_at) : "—") + '</span></div>' +
           '</div>');      }
+      barItemKey = "today";
       if (state.show.today) {   // v213 移到会话累计之后（用户规格 2026-11-02，格序：速度→本轮→会话→今日→项目→工具→子代理→⚙）
         /* v301 今日合计紧凑化（同本轮 v299 / 会话 v300 三行 KPI 形态，450 宽×高度自适应）：
          * ①总用量|输入(缓存命中率副行)|输出(含思考) ②请求次数|请求轮数|请求会话
@@ -1108,6 +1113,7 @@
             '<b>' + ttEsc(L("时间范围", "Time span")) + '</b><span>' +
             (today.started ? fmtStartS(today.started) : "—") + " — " + (today.last_at ? fmtStartS(today.last_at) : "—") + '</span></div>' +
           '</div>');      }
+      barItemKey = "proj";
       if (state.show.proj && sess.project) {   // v159 项目累计：本项目全部会话（含子代理），远端/不在本地库无此字段不渲染
         var pj = sess.project;
         var pjKey = (pickedSid || "") + ":" + (pj.started || 0);   // v214 项目卡归属键：项目变化（started 变）自动重置展开态
@@ -1119,6 +1125,7 @@
             '<span class="dim zu-secondary">' + countFmt(pj.sessions || 0) + L("会话 ", " sessions · ") + countFmt(pj.requests || 0) + L("次", " req") + "</span>"),
 "\x01" + buildProjectTipHTML(pj, pjKey), "zu-pj-item");
       }
+      barItemKey = "tools";
       if (state.show.tools) {
         /* v304 工具调用紧凑化（用户 /goal，同四卡家族形态，450 宽×高度自适应）：
          * 标题前置扳手 SVG（statHead 第 4 参）；双 KPI 走 zu-turn-kpis--duo；
@@ -1153,6 +1160,7 @@
                 }).join("")) + '</div>'
             : '<div class="zu-stat-note">' + ttEsc(L("无工具调用记录", "No tool calls recorded")) + '</div>') +
           '</div>');      }
+      barItemKey = "sub";
       if (state.show.sub) {
         /* v93：随「上下文容量」格移除改为始终展示（零值也显示，口径与其他格统一）。
          * v217：悬停/点击都开统一浮层（.zu-sub-pop），__tip 置空不再走通用 tooltip
@@ -1164,7 +1172,15 @@
           null, "zu-sub");
       }
 
-      return { s: items.join('<span class="sep"></span>') || '<span class="dim">' + L("全部显示项已关闭", "All display items are off") + '</span>', tips: tips };
+      /* 一格一组，按稳定 key 排序后提示内容继续与 .it 下标严格对应。 */
+      var ordered = zuBarSortItems(tips.map(function (entry, i) {
+        return {key: entry.key, index: i, html: items[i], tip: entry.content};
+      }), state.barOrder);
+      return {
+        s: ordered.map(function (row) { return row.html; }).join('<span class="sep"></span>') ||
+          '<span class="dim">' + L("全部显示项已关闭", "All display items are off") + '</span>',
+        tips: ordered.map(function (row) { return row.tip; })
+      };
     }
 
     /* 当前会话识别（v34 起 mine 优先，此处为兜底启发式）：ZCode 在 localStorage 的

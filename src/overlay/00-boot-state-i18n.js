@@ -65,7 +65,7 @@
    * 确定性历史行（[data-zusage-deterministic]，挂在消息流 turn 容器末尾）一并自清。
    * v80：面板（.zusage-panel）挂 body 不随条走，清理选择器单列。 */
   try {
-    document.querySelectorAll(".zusage-root,.zusage-tip-root,.zusage-exc,.zusage-rate-tip,.zusage-quota-tip,.zu-quota,.zu-git,.zu-tsb,.zu-compact-btn,.zu-ac-info,.zu-ac-hint,.zu-compact-dlg,.zu-rot-pk-dlg,.zusage-git-tip,.zusage-panel,.zu-mp-host,.zu-mp-ov,[data-zusage-deterministic],[data-zusage-loading-status],.zu-subrate,.zu-wfrun,.zu-substat,.zu-enhance").forEach(function (el) { el.remove(); });
+    document.querySelectorAll(".zusage-root,.zusage-tip-root,.zusage-exc,.zusage-rate-tip,.zusage-quota-tip,.zu-quota,.zu-git,.zu-tsb,.zu-compact-btn,.zu-ac-info,.zu-ac-hint,.zu-compact-dlg,.zu-rot-pk-dlg,.zusage-git-tip,.zusage-panel,.zu-mp-host,.zu-mp-ov,[data-zusage-deterministic],[data-zusage-loading-status],.zu-more-panel,.zu-subrate,.zu-wfrun,.zu-substat,.zu-enhance").forEach(function (el) { el.remove(); });
   } catch (e) { }
 
   try {
@@ -81,13 +81,68 @@
   } catch (e) { }
 
   /* ---------- 共享状态（多实例一致）：显示项/语言/上下文覆盖/最近一次数据 ---------- */
-  var LS = { show: "zusage3.show", devKeepTip: "zusage3.devKeepTip", ctxOv: "zusage3.ctxOv", lang: "zusage3.lang", cnNum: "zusage3.cnNum", sec: "zusage3.sec", rstCdh: "zusage3.rstCdh", projPath: "zusage3.projPath", theme: "zusage3.theme", ctxEnh: "zusage3.ctxEnh", cmdkW: "zusage3.cmdkW", updSeen: "zusage3.updSeen", forceKmb: "zusage3.forceKmb", ctxCpt: "zusage3.ctxCpt", cost: "zusage3.cost", barJust: "zusage3.barJust", autoCompact: "zusage3.autoCompact", tipClick: "zusage3.tipClick", quotaRemain: "zusage3.quotaRemain" };
+  var LS = { show: "zusage3.show", devKeepTip: "zusage3.devKeepTip", ctxOv: "zusage3.ctxOv", lang: "zusage3.lang", cnNum: "zusage3.cnNum", sec: "zusage3.sec", rstCdh: "zusage3.rstCdh", projPath: "zusage3.projPath", theme: "zusage3.theme", ctxEnh: "zusage3.ctxEnh", cmdkW: "zusage3.cmdkW", updSeen: "zusage3.updSeen", forceKmb: "zusage3.forceKmb", ctxCpt: "zusage3.ctxCpt", cost: "zusage3.cost", barJust: "zusage3.barJust", barOrder: "zusage3.barOrder", barPriority: "zusage3.barPriority", autoCompact: "zusage3.autoCompact", tipClick: "zusage3.tipClick", quotaRemain: "zusage3.quotaRemain" };
+  /* 状态条排序与优先级只作用于条面七个项目，不改变工具行 Git/额度等宿主按钮。 */
+  var ZU_BAR_KEYS = ["speed", "turn", "win", "today", "proj", "tools", "sub"];
+  /* 缺省优先级按「状态栏显示升级」设计稿：速度/本轮=高、会话/今日/项目=普通、工具/子代理=低。
+   * 只影响未持久化用户；已写入 zusage3.barPriority 的存量值经 zuBarPriorityNormalize 原样保留。 */
+  var ZU_BAR_PRIORITY_DEFAULT = {
+    speed: "high", turn: "high", win: "normal", today: "normal",
+    proj: "normal", tools: "low", sub: "low"
+  };
+  /* 格名双语表：设置页排序卡与「···」折叠菜单共用同一事实源（键序即缺省显示序，v213 契约）。 */
+  var ZU_BAR_TITLES = {
+    speed: ["生成速度", "Generation speed"], turn: ["本轮", "Current turn"],
+    win: ["会话累计", "Session total"], today: ["今日合计", "Today's total"],
+    proj: ["项目累计", "Project total"], tools: ["工具调用", "Tool calls"],
+    sub: ["子代理", "Sub-agents"]
+  };
+  function zuBarOrderNormalize(raw) {
+    var seen = Object.create(null), result = [];
+    if (Array.isArray(raw)) raw.forEach(function (key) {
+      if (ZU_BAR_KEYS.indexOf(key) >= 0 && !seen[key]) { seen[key] = true; result.push(key); }
+    });
+    ZU_BAR_KEYS.forEach(function (key) { if (!seen[key]) result.push(key); });
+    return result;
+  }
+  function zuBarPriorityNormalize(raw) {
+    var value = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+    var result = {};
+    ZU_BAR_KEYS.forEach(function (key) {
+      var v = value[key];
+      result[key] = v === "high" || v === "normal" || v === "low" ? v : ZU_BAR_PRIORITY_DEFAULT[key];
+    });
+    return result;
+  }
+  function zuBarSortItems(rows, order) {
+    var rank = Object.create(null);
+    (order || ZU_BAR_KEYS).forEach(function (key, i) { rank[key] = i; });
+    return rows.slice().sort(function (a, b) {
+      var fixedA = ZU_BAR_KEYS.indexOf(a.key) < 0, fixedB = ZU_BAR_KEYS.indexOf(b.key) < 0;
+      if (fixedA !== fixedB) return fixedA ? -1 : 1;
+      if (fixedA) return a.index - b.index;
+      return (rank[a.key] === undefined ? 999 : rank[a.key]) -
+        (rank[b.key] === undefined ? 999 : rank[b.key]);
+    });
+  }
+  /* 折叠顺序（纯函数，供 VM 测试）：低优先先收、同级按显示序靠右先收；system（远端/未归属
+   * 徽标）与 speed（设计稿「固定」语义：有有效数据时优先保留，不是伪造 0）不参与自动折叠。 */
+  function zuBarFoldOrder(keys, priorities) {
+    var ranks = { low: 2, normal: 1, high: 0 }, p = priorities || {};
+    return keys.map(function (key, i) {
+      var rank = (key === "system" || key === "speed") ? -1 :
+        (ranks[p[key]] === undefined ? 1 : ranks[p[key]]);
+      return { key: key, i: i, rank: rank };
+    }).sort(function (a, b) { return b.rank - a.rank || b.i - a.i; });
+  }
   var state = {
     show: { win: 1, turn: 1, today: 1, sub: 1, tools: 1, git: 1, proj: 1, subRate: 1, wfChip: 1 },   // git：工具行 Git 状态 chip（v96，默认开）；proj：项目累计格（v159，默认开；与 zusage3.projPath 弹窗路径开关无关）；subRate：Agent 行内子代理速率 chip（v178，默认开；只门控行内展示，槽位估算与主 chip 合计不受影响）；wfChip：工作流 run 卡汇总 chip（v332，默认开；specs/workflow-support.md）
     ctxOv: "", data: null,
     lang: "zh", theme: "default", pluginUpdate: window.__zusagePluginState || null,
     /* v226 默认样式水平对齐：between|start|end（均分/居左/居右），仅默认档生效；药丸恒 flex-start */
     barJust: "between",
+    barOrder: ZU_BAR_KEYS.slice(),
+    barPriority: zuBarPriorityNormalize(null),
     /* 万/亿单位开关：缺省开启，仅显式 "0" 关闭；只在中文界面展示并生效（英文始终 K/M/B） */
     cnNum: 1,
     /* v136 编辑项目弹窗完整路径开关：缺省开启，仅显式 "0" 关闭；纯展示偏好存 localStorage */
@@ -211,6 +266,8 @@
     if (s0 && typeof s0 === "object") {
       for (var k0 in state.show) if (k0 in s0) state.show[k0] = s0[k0] ? 1 : 0;
     }
+    try { state.barOrder = zuBarOrderNormalize(JSON.parse(ls(LS.barOrder, "null"))); } catch (eOrder) { state.barOrder = ZU_BAR_KEYS.slice(); }
+    try { state.barPriority = zuBarPriorityNormalize(JSON.parse(ls(LS.barPriority, "null"))); } catch (ePriority) { state.barPriority = zuBarPriorityNormalize(null); }
     state.ctxOv = ls(LS.ctxOv, "");
     if (ls(LS.lang, "") === "en") state.lang = "en";
     if (ls(LS.cnNum, "") === "0") state.cnNum = 0;
@@ -250,6 +307,11 @@
     lsSet(LS.rstCdh, String(state.resetCdh));
     lsSet(LS.sec, state.settingsSec);
   }
+  /* 排序/优先级走定向写、不搭车全量 persist()：窗口 A 改排序、窗口 B 改其它设置时，
+   * B 的 persist() 不得用自己陈旧的内存布局覆盖 A 刚写入的值（跨窗口互覆，review P1；
+   * 配套：12 分片 storage 监听对两键做归一化回读同步）。 */
+  function persistBarOrder() { lsSet(LS.barOrder, JSON.stringify(state.barOrder)); }
+  function persistBarPriority() { lsSet(LS.barPriority, JSON.stringify(state.barPriority)); }
 
   /* ---------- 多实例注册表（v61.1）：每个分屏 pane 一个条实例 ---------- */
   var instances = [];   // spawnInstance 返回的 api：{pid, attach, render, ...}

@@ -230,10 +230,11 @@
      * → v347 状态轮播附加工作时长与悬停提示（specs/status-rotator-work-duration.md；性能预算 specs/perf-lag-reduction.md 规则 17）：①appendWorkDuration 开关（默认 true、显式 false 保留，存 zusage3.rotator2）开启且 labelSource=phrases 时在 loading 行 label 后追加宿主同款「工作中 X 分 X 秒」兄弟 span（.zu-rotator-elapsed，格式逐句对齐宿主 formatConversationWorkDuration：max(1,round(ms/1000)) 拆天/时/分/秒非零入列至多两段、中文值与单位间空格；起点锚 turnHeader.startedAt 与宿主折叠头计时逐秒一致，宿主文案节点在虚拟滚动内无生产 API 故自算）；②悬停纯 CSS tooltip（data-tip + zu-rot-livetip 伪元素，内容同款文案）独立于开关①恒随轮播，零监听零布局读取，气泡静态 pointer-events:none 防偷 hover 抖动；③写入纪律（规则 17）：span 判位 nextElementSibling O(1) 零新增文档级查询、textContent/data-tip/classList 带比较前置判断按整型秒门控（同秒内 tick 零 DOM 写、每行至多 1 写/秒，不在打字机 15Hz 写流上叠加），文案缓存挂 rotatorRuntime 随热重载换代，restore 名单并入既有 querySelectorAll 选择器串；④⚙ 面板「追加工作时长」checkbox（.zu-rot-append-duration，启用行之后）走既有 setCb/change 尾缀统一保存链，底部预览卡不联动；⑤两轮用户实报修复——文字隐形根因=宿主 gradient label 的 -webkit-text-fill-color:transparent 是继承属性压过规则 color 使气泡文字全透明（CDP computed 实证，pointer-events 实测 auto 排除禁点），气泡显式重置 -webkit-text-fill-color:var(--color-tooltip-foreground) 堵继承；红色泛光根因=宿主 label 自带 filter:drop-shadow(rgba(255,0,85,.45) 辉光)（255,0,85=宿主渐变首色，shimmer 固有）不继承但作用整棵子树，气泡作为 label 伪元素子盒被整体泛光——data-tip/类改挂行容器 [data-testid="chat-loading"] 脱离作用域，label 旧代际属性每拍清退防热重载双气泡，还原名单行级摘除；样式对齐宿主原生 TooltipContent 视格（asar 实证 rounded-lg border-border bg-tooltip px-3 py-1.5 text-ui-sm，原生即无阴影——用户点名去阴影）：去 box-shadow、--color-tooltip/--color-tooltip-foreground 反色变量、var(--color-border) 边框、圆角 8px、padding 6px 12px。
      * → v348 速度与统计浮层适配大字号（specs/speed-tooltip-adaptive-layout.md、specs/stat-tooltip-large-text.md；开发早于 v347、晚于其合入，代际号按合入时间线顺延取 v348）：①速度卡 spdFitTip（02 分片）——固定 760×300 改 CSS 变量驱动（--zu-sv-width/--zu-sv-height/--zu-sv-left-width 注入 tip，未设置时 fallback 精确回落旧值），字号异常增大先按 14px 基准整体 zoom（下限 0.8），只按筛选栏/左卡量尺寸不读图表横滚内容，空间不足再按内容扩高（>300 加 12px 呼吸间距）并经 tip 纵滚到达，视口变化经既有定位周期 reset 重算、字号变化留待下次重建经 previous（__zuSpeedSize，含 font）失效重算，同视口同字号内 previous 防悬停中逐拍重建的尺寸抖动；②统计/模型名 fitModelNames（02 分片）——.zu-model-fit 按实际宽度缩字号至不低于 10px、仍放不下保留省略+title 全名，接入速度卡/统计卡模型表/项目卡/fxTip/子代理浮层（子代理浮层 td 补 max-width 帽让 fit 在表级溢出档生效）；③统计卡「输入」标签 .zu-kpi-label nowrap + .zu-stat-k flex-wrap（07 分片），命中率徽标允许换行不重叠；④多柱（n≥10）柱组 .zu-sv-bars--spread 均匀铺满、柱宽不拉粗（部分恢复 v273⑤ 废止的 space-between，仅多柱档）；⑤图表横滚位置 __zuChartScroll 关闭时捕获/重开同键回填（修隐藏态 scrollLeft 恒 0），root overflow:visible + tip overflow-y:auto、wheel 到边放行默认滚动，键盘 Tab 进滚动明细区（role=region）+Shift+Tab 归还；QA 门 ZU_GEOMETRY_ONLY（tests/speed-tooltip-host）覆盖 14/17/20px 字号与重叠断言。
      * → v349 宿主定时器慢拍缓释（issue #342，性能预算 specs/perf-lag-reduction.md 规则 18）：报告者（Windows/内置浏览器面板活动期）只读定时器归因记录到 bridgeTick 51–93ms、heavy 55–75ms、coordinator 54–63ms、flush 55–92ms 单拍——规则 10–12 后正常拍已 <5ms，慢拍=正常工作被宿主主线程争用拉长 + 长窗口会话 2s 回源一次的整窗深拷贝（≈86ms/次）。两处自适应缓释，只在实测单拍超预算时介入、廉价环境逐字不变：①handleSnapshot 回源实测 ≥8ms（规则 12 同阈值，perfMs=performance.now 优先缺位回退 Date.now）时本 handle 新鲜窗逐档退避 2s→4s→8s（h.freshMul），<8ms 立即回 1 档，影响面仅静默期思考合成 phase/后台清单与探活的陈旧上限 ≤8s（「已观察 Xs」走字按 bornAt 推进不受影响）；②heavy/coordinator 600ms 对账单拍 ≥16ms（含界）时跳拍（lvl∈{0..3} 每实跑升档后封顶、跳拍窗 600×lvl 右开；lvl=1 稳态不跳拍只吸收「前拍拉长后拍准点」尖峰，稳态有效降频自 1.2s 起、封顶 1.8s），<16ms 立即回 600ms（heavyLvl/heavyRunAt 实例闭包、coordLvl/coordRunAt 协调器闭包，setInterval 拓扑与 dispose 不变），降频期最坏影响 chip 兜回/pane 自藏延迟 ≤1.8s。诊断随 diag-*.json 新增 snapSrcMs/heavyCost/coordCost 三个数值字段供报告者归因。有意不做：bridgeTick 100ms 不降频（规则 1 跟手契约）、flush 已有 ≤10% 占空比上界、visibilityState 门控无增益（隐藏窗 Chromium 本就降到 ≈1Hz，报告者场景宿主窗口可见）。
+     * → v352 状态栏项目排序、优先级与自动折叠（specs/statusbar-layout.md）：①数据模型 zusage3.barOrder（数组白名单归一：非法剔除/去重/缺项按 ZU_BAR_KEYS 补尾）+ zusage3.barPriority（high|normal|low 枚举，非法回缺省；缺省按设计稿 速度/本轮=高、会话/今日/项目=普通、工具/子代理=低）；排序决定显示序、优先级决定折叠序，两字段独立、定向写（persistBarOrder/persistBarPriority 不搭全量 persist，防跨窗口互覆），storage 监听对两键归一化回读同步。②条面排序：html() 每格带 data-zu-key（remote/not_local=system 恒置顶），经 zuBarSortItems 按用户序重排，tips 与 .it 下标对应不变。③自动折叠（仅 default 档）：真实布局测量 scrollWidth>clientWidth+1；折叠序=zuBarFoldOrder 纯函数（低先收、同级右先收；system 与 speed 不折叠——speed 是设计稿「固定（始终显示）」语义，有有效数据才渲染，不伪造 0）；宽/字号(含 font-family)/优先级签名+foldDirty 门控重算，每帧另测一次溢出探测流式内容变宽；恢复带 24px 迟滞带防阈值震荡；折叠集变化关菜单并收锚定 tip，折叠格 data-zu-folded display:none，sep 同步隐藏，全折仍超宽 .zu-clip 渐隐兜底；「···」入口带折叠计数，data-zu-visible 门控显隐。④「···」菜单（body 级 .zu-more-panel，实例级闭包）：图标+格名(ZU_BAR_TITLES)+实时值（原地 textContent 同步，不整卡重建不抢焦点），点击=从活格现取 __tip 锚定 ⋯ 按钮弹原有 tooltip、sub 项开子代理浮层（pinned 可再点关闭）；键盘=打开焦点入首项、↑↓/Home/End 循环、Escape（按钮/菜单两处）关闭归还焦点；外点 pointerdown 捕获关闭；hideBar/dispose 摘除，boot 旧代清理串补 .zu-more-panel，no-drag 联合规则挂载。⑤设置页排序卡（.zu-layout-card 嵌套卡，barOrderSettingsHtml 单根输出整卡替换）：拖拽手柄 SVG+格图标(与条面同 path)+两行名称说明+显示开关(speed 行为「固定（始终显示）」徽标替代)+三段优先级 radio(高|普通|低，:has 选中柔和主题底+内描边，speed 锁高禁用)+↑↓ 键盘排序（disabled 边界焦点回退对向按钮，aria-live 播报）+重置；HTML5 DND 仅手柄行可拖、交互控件排除，dragover 高亮 prevRow 记忆；syncPanel 双回填（radio 态+行序漂移整卡重建）。⑥v66 分级收缩机制整体退役（shrink/fadeOn 死变量与三处恒空三目删除），窄宽行为由折叠接管；既有 8 个切片测试的沙箱补 zuBarSortItems/ZU_BAR_KEYS 桩，data-k 契约断言转运行时求值 barOrderSettingsHtml。
      * → v350 增强历史「查看全部」浮层表格版视觉修复（specs/prompt-enhance.md 契约更新）：①高度自适应——面板 height:auto + max-height min(85dvh,760px)（内联与 CSS 双写），去掉固定 height:min(640px,80vh) 与表区 flex:1 1 auto 撑满，数据少时内容自然撑开、多时表区独立滚动，单页/空态不渲染分页页脚；②Header 左右分组——左=图标+标题+总数徽标，右=清空记录（图标文字横排、hover 危险色）+关闭按钮（32×32 命中、EH_ICON.close，Escape 同效）；③筛选行——搜索框带图标弹性填充（flex:1 1 240px、placeholder 完整），四个筛选器统一 34px 高/圆角/边框（来源 112/供应商 150/模型 140/时间 118px）；④表格对齐——表头与行共用 <colgroup> 列宽（chev 32px/来源 56px/操作 64px 固定 + 百分比弹性列，table-layout:fixed），去掉按 td 类的宽度声明；⑤供应商友好名——EH_PLAN_LABELS 内置 6 个套餐 id→显示名映射（与 model-puller PLAN_SOURCES 同源），表格/详情/筛选下拉显示友好名，title 悬浮完整原始 id，非套餐 id 原样不虚构；⑥展开详情——三栏 minmax(0,.85fr)/minmax(0,1.5fr)/minmax(0,1.5fr)（≈22/39/39），增强正文棕色背景改中性卡色+边框，正文 max-height 240px 内滚、详情块不再二次限高，元信息标签 11px/值 12px 行距 7px、长模型名 overflow-wrap:anywhere；⑦响应式——面板 container-type:inline-size，按面板实际宽度渲染时列裁剪（<900px 合并供应商/模型列、<640px 再隐摘要列，colspan 同步 10/9/7），容器查询 <900px 详情转两栏+元信息横排、<640px 详情纵向，resize 期间 150ms debounce 重排版（监听随关闭移除）；⑧行为修复——ehFullCache 补显式 var 声明（原隐式全局）、enhance-history-add 同步失效全量缓存、复制按钮统一按记录 id 定位（详情行经 detail-row 前一行）+check 反馈，删除死代码（重复 delete/copy 分支、无 data-expand 按钮），摘要列 title 悬浮全文（去 JS 60 字截断，CSS ellipsis 承担）。同批追加：⑫筛选下拉自绘箭头（appearance:none + data-URI 背景统一，右距 10px 与文字左距对称，原生箭头贴边且各端不一致）；⑬面板 min-height 60vh（用户口径：数据少时面板不显矮，上限仍 min(85dvh,760px)）；⑭关闭按钮 margin-right:-8px 收紧贴右上（icon 距面板右缘 12px）；⑮排序箭头 svg 显式 display:inline-block（宿主全局 svg 块化样式把 th 裸 svg 挤到第二行，按钮内图标被 inline-flex 吸收无此症）；⑯展开详情来源/Token/时间/耗时四对合并为三栏下方一行元信息（分隔线横排，左栏只留供应商/模型，minmax(0,.85fr) 栏宽放不下四对才上移全宽）；⑰确认类交互统一 zuConfirm 自绘弹框（复用压缩确认 .zu-compact-dlg 全套外壳样式，替换 overlay 全部 6 处 window.confirm：增强历史删除/清空 ×4 + 设置页移除 Key/重载丢弃修改 ×2；Esc/遮罩/Enter 协议同压缩弹框，规则沉淀 overlay-ui.md §4）。⑱增强历史双入口设置按钮（用户 2026-11-15 点名）：悬停面板 footer 与全量面板 header 右上新增「设置」（EH_ICON.gear 齿轮 + .zu-eh-cfg 同清空按钮外形中性 hover），点击经 openEnhanceSettings 复用齿轮官方完整开启路径（gear.click）+ activateSettingsSec("enhance-provider")，与增强按钮右键同款。⑳增强 Provider 分区 footer（状态+重新载入/保存按钮）改 sticky 吸底（用户 2026-11-15：矮屏用户不知道要滚到底部才能保存）——position:sticky bottom:-20px（负值补偿 .zu-settings-body 底 padding 20px 使视觉贴面板底缘）+ 水平负 margin=body padding clamp 值盖满面板宽 + 实色背景 var(--color-card) 防透出 + 上阴影分层；滚到底时回到自然位置，其他分区不受影响（.zu-ep-footer 类名仅该分区使用）。㉑修复重开面板误报「配置未保存」（用户实报）：保存成功回调只更新了 epSavedRevision 未刷新 epSavedFormJson 基准，重开面板 epSyncDirtyStatus 用旧基准比对恒脏——保存成功（含移除 Key）即以当前表单 JSON 为新已保存基准；保存失败/其他窗口 conflict 保留旧基准（脏标记语义不变）。⑲删除「撤销增强，恢复原文」状态（用户拍板去掉该展示）：应用成功（写入确认）后按钮直接回 idle，不再有 20s 撤销窗/撤销点击/自愈守卫（ENHANCE_UNDO_MS、ENH_SVG_UNDO、enhanceEnhanced/State、undo 点击分支与 heavy 对账块全拆），聊天历史采集时机不变（应用成功即记录）；回填前的会话与草稿比对守卫保留。独立 review 三修（2026-11-15）：⑨修复排序列点击不可达（th 非 button，data-sort 判断提到 button 判空前——首版表格即坏未报过）；⑩删除改缓存就地滤除+res.ok 门控+小浮层缓存失效（原 cache 置 null 后 build 清空整表，直到重开才恢复），失败删除不清表；⑪cssText 复制补 bottom:auto（小浮层动态 bottom 残留会把 fixed 面板高度压死，悬停→查看全部主路径必现）+disposeOverlay 摘除面板 keydown/resize 监听+两 handler 热更 stale 自卫+搜索 debounce 改模块级随关闭清理+首开「正在读取历史…」占位防闪白+sticky 表头（长列表滚动表头常驻，box-shadow 补 collapse 边框）。
      * → v351 状态轮播词库同步上游 01Virex/dsh-status-rotator（PR #179/#181/#184/#186/#188，仅 04-rotator-builtin-packs.js 数据）：community +3（「用户特么的…」thinking、「正在驾驶EVA~~…」「听见你说~…」running；#184 的 4 条已在存量）、internet-memes +4 相（「token来！！token来！！token来！！…」thinking/running/long 三相 + 「正在创作隐晦物品…」running）；star-ask 与上游一致未动；star-route 不随上游（用户拍板取本项目星标者）：GitHub 152 人 + GitCode 镜像 2 人 = 154 人，zh/en 镜像 308 条，替换过期旧快照 134 人，包头注明名单来源（两端 stargazers API）与刷新方式。范围外漂移保留：western-ai GPT-7 文案、coding/slacking/daily 的 weight 对象在本地转纯字符串（本项目不支持权重对象）。无增删包，ZU_ROTATOR_PACK_META 与 enabledPacks 种子不动。
      */
-    var VERSION = "v351";
+    var VERSION = "v352";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
@@ -318,11 +319,56 @@
       ".zusage-root.zu-tight .zu-main>.it{font-size:min(var(--ui-font-size,14px),max(11px,calc(var(--ui-font-size,14px) - 2px)));padding-left:4px;padding-right:4px;gap:3px}" +
       ".zusage-root.zu-tight .zu-main>.it>.ico{width:1em;height:1em}" +
       ".zusage-root.zu-narrow .it>.zu-secondary{position:absolute;left:0;visibility:hidden;pointer-events:none}" +
+      ".zu-main>.it[data-zu-folded='1'],.zu-main>.sep[data-zu-folded='1']{display:none!important}" +
+      ".zu-more{display:none;align-items:center;gap:3px;flex:0 0 auto;justify-content:center;height:26px;min-width:30px;padding:0 6px;border:0;border-radius:7px;background:transparent;color:var(--color-foreground-subtle,#a1a1a1);font:inherit;cursor:pointer}" +
+      ".zu-more[data-zu-visible='1']{display:inline-flex}.zu-more:hover,.zu-more[aria-expanded='true']{background:var(--color-hover,rgba(255,255,255,.08));color:var(--color-foreground,#fff)}" +
+      ".zu-more:focus-visible,.zu-more-option:focus-visible,.zu-layout-action:focus-visible{outline:2px solid var(--color-input-border-focused,var(--color-brand,#57c8ff));outline-offset:2px}" +
+      ".zu-more svg{width:15px;height:15px}.zu-more-count{font-size:calc(var(--ui-font-size,14px) - 2px);font-variant-numeric:tabular-nums}" +
+      ".zu-more-panel{position:fixed;display:none;box-sizing:border-box;z-index:2147483646;width:min(300px,calc(100vw - 16px));max-height:min(60vh,380px);overflow:auto;padding:7px;border:1px solid var(--color-border,rgba(255,255,255,.14));border-radius:11px;background:var(--color-card,#1d1d1d);color:var(--color-foreground,#fff);box-shadow:0 10px 30px rgba(0,0,0,.35);font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);font-size:var(--ui-font-size,14px);-webkit-app-region:no-drag}" +
+      ".zu-more-panel.open{display:block}.zu-more-title{font-size:calc(var(--ui-font-size,14px) - 2px);padding:5px 7px;color:var(--color-foreground-subtle,#a1a1a1)}" +
+      ".zu-more-option{display:flex;align-items:center;gap:9px;width:100%;padding:8px;border:0;border-radius:7px;background:transparent;color:inherit;cursor:pointer;font:inherit;text-align:left}" +
+      ".zu-more-option:hover{background:var(--color-hover,rgba(255,255,255,.08))}.zu-more-option svg{width:16px;height:16px;flex:0 0 16px}" +
+      ".zu-more-name{flex:0 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
+      ".zu-more-value{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right;color:var(--color-foreground-subtle,#a1a1a1);font-variant-numeric:tabular-nums}" +
+      /* 设置页排序卡：单根 .zu-layout-card（独立嵌套卡），refreshLayoutEditor 整卡替换 */
+      ".zu-layout-card{margin:10px 12px;border:1px solid var(--color-card-border,var(--color-border,rgba(255,255,255,.1)));border-radius:10px}" +
+      ".zu-layout-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:12px 12px 4px}.zu-layout-head strong{font-size:var(--ui-font-size,14px)}" +
+      ".zu-layout-note{padding:0 12px 10px;font-size:calc(var(--ui-font-size,14px) - 2px);line-height:1.5;color:var(--color-foreground-subtle,#a1a1a1)}" +
+      ".zu-layout-list{padding:0 10px 10px;display:flex;flex-direction:column;gap:4px}" +
+      ".zu-layout-row{display:flex;align-items:center;gap:8px;padding:7px 8px;border:1px solid var(--color-border,rgba(255,255,255,.1));border-radius:8px;min-width:0}" +
+      ".zu-layout-row[draggable='true']{cursor:grab}.zu-layout-row.zu-drag-over{border-color:var(--color-brand,#57c8ff);background:var(--color-hover,rgba(255,255,255,.07))}" +
+      ".zu-layout-grip{color:var(--color-foreground-subtle,#888);flex:0 0 10px;user-select:none}.zu-layout-grip svg{display:block;width:10px;height:16px}" +
+      ".zu-layout-body{min-width:0;flex:1 1 auto;display:flex;align-items:center;gap:8px;cursor:pointer}" +
+      ".zu-layout-body input{margin:0;flex:0 0 auto}" +
+      ".zu-layout-ico{flex:0 0 16px;color:var(--color-foreground-subtle,#a1a1a1)}.zu-layout-ico svg{display:block;width:16px;height:16px}" +
+      ".zu-layout-name{min-width:0;display:flex;flex-direction:column;gap:1px}" +
+      ".zu-layout-name b{font-weight:500;font-size:calc(var(--ui-font-size,14px) - 1px);line-height:1.3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}" +
+      ".zu-layout-name small{font-size:calc(var(--ui-font-size,14px) - 3px);line-height:1.35;color:var(--color-foreground-subtle,#a1a1a1);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}" +
+      ".zu-layout-fixed{flex:0 0 auto;display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border:1px solid var(--color-border,rgba(255,255,255,.12));border-radius:6px;font-size:calc(var(--ui-font-size,14px) - 3px);color:var(--color-foreground-subtle,#a1a1a1);white-space:nowrap}" +
+      /* 三段优先级（设计稿：高|普通|低 分段选择，native radio 保方向键导航）；选中=柔和主题底+内描边 */
+      ".zu-layout-prio{flex:0 0 auto;display:inline-flex;border:1px solid var(--color-border,rgba(255,255,255,.14));border-radius:7px;overflow:hidden}" +
+      ".zu-layout-prio label{position:relative;display:inline-flex;align-items:center;justify-content:center;min-width:30px;height:24px;padding:0 6px;font-size:calc(var(--ui-font-size,14px) - 3px);cursor:pointer;color:var(--color-foreground-subtle,#a1a1a1);border-left:1px solid var(--color-border,rgba(255,255,255,.14))}" +
+      ".zu-layout-prio label:first-child{border-left:0}.zu-layout-prio label:hover{background:var(--color-hover,rgba(255,255,255,.06))}" +
+      ".zu-layout-prio input{position:absolute;opacity:0;width:1px;height:1px;margin:0;pointer-events:none}" +
+      ".zu-layout-prio label:has(input:checked){background:color-mix(in srgb,var(--color-brand,#57c8ff) 16%,transparent);color:var(--color-foreground,#fff);box-shadow:inset 0 0 0 1px var(--color-brand,var(--color-input-border-focused,#57c8ff))}" +
+      ".zu-layout-prio label:has(input:checked):hover{background:color-mix(in srgb,var(--color-brand,#57c8ff) 22%,transparent)}" +
+      ".zu-layout-prio input:focus-visible+span{outline:2px solid var(--color-input-border-focused,var(--color-brand,#57c8ff));outline-offset:-2px;border-radius:4px}" +
+      ".zu-layout-prio label:has(input:disabled){cursor:default;opacity:.65}.zu-layout-prio label:has(input:disabled):hover{background:transparent}" +
+      ".zu-layout-action{display:inline-flex;align-items:center;justify-content:center;border:1px solid var(--color-border,rgba(255,255,255,.12));background:transparent;color:var(--color-foreground-subtle,#aaa);width:24px;height:26px;flex:0 0 24px;border-radius:6px;cursor:pointer;font-size:calc(var(--ui-font-size,14px) - 2px);line-height:1;padding:0}" +
+      ".zu-layout-action:hover:not(:disabled){background:var(--color-hover,rgba(255,255,255,.08));color:var(--color-foreground,#fff)}" +
+      ".zu-layout-action:disabled{opacity:.25;cursor:default}" +
+      ".zu-layout-reset{display:inline-flex;align-items:center;gap:5px;height:26px;padding:0 9px;border:1px solid var(--color-border,rgba(255,255,255,.14));border-radius:7px;background:var(--color-hover,rgba(255,255,255,.05));color:var(--color-foreground-subtle,#a1a1a1);font:inherit;font-size:calc(var(--ui-font-size,14px) - 2px);cursor:pointer}" +
+      ".zu-layout-reset:hover{background:var(--color-hover,rgba(255,255,255,.09));color:var(--color-foreground,#fff)}.zu-layout-reset svg{width:13px;height:13px}" +
+      ".zu-settings .zu-layout-body{padding:0}" +
+      ".zu-settings .zu-layout-body:hover{background:transparent}" +
       /* v226 水平对齐（仅默认档挂类）：居左直接改 justify；居右不用字面 flex-end——LTR 下 start 侧
        * 溢出不可滚动也不计入 scrollWidth，收缩检测会失效、左格无声硬裁、.zu-clip 渐隐错边；改用首格
        * margin-left:auto 吸收自由空间等效右聚拢，溢出时 auto 归零、内容右向溢出，收缩/渐隐兜底不变 */
       ".zusage-root.zu-just-start .zu-main{justify-content:flex-start}" +
       ".zusage-root.zu-just-end .zu-main > :first-child{margin-left:auto}" +
+      /* 居右 + 折叠：首格被折叠后上面的 ：first-child auto margin 落在隐藏格上失效，
+       * 剩余格会被 space-between 摊满整条——折叠重算把 data-zu-endlead 挪到第一个可见格接管 */
+      ".zusage-root.zu-just-end .zu-main > .it[data-zu-endlead='1']{margin-left:auto}" +
       /* 收缩兜底（v66）：分级收缩后仍装不下时右缘 26px 渐隐，替代生硬的截断 */
       ".zu-main.zu-clip{-webkit-mask-image:linear-gradient(90deg,#000 calc(100% - 26px),transparent);mask-image:linear-gradient(90deg,#000 calc(100% - 26px),transparent)}" +
       ".zu-main.zu-clip-left{-webkit-mask-image:linear-gradient(90deg,transparent,#000 26px);mask-image:linear-gradient(90deg,transparent,#000 26px)}" +
@@ -693,7 +739,7 @@
        * Electron 拖拽区按几何命中、穿透上层未显式标注 no-drag 的元素——面板 top:8px 时头部（✕ 关闭钮）
        * 正落在条内，真实点击被窗口拖拽吞掉（「点击关闭无效」）。与宿主自家浮层同款修法：
        * 浮层根显式 no-drag 把自身矩形从拖拽区减掉（面板/子代理浮层、tooltip、mp 与压缩全屏遮罩）。 */
-      ".zusage-panel,.tip,.zu-mp-ov,.zu-compact-dlg,.zu-rot-pk-dlg{-webkit-app-region:no-drag}" +
+      ".zusage-panel,.zu-more-panel,.tip,.zu-mp-ov,.zu-compact-dlg,.zu-rot-pk-dlg{-webkit-app-region:no-drag}" +
       ".zu-sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}" +
       ".panel::-webkit-scrollbar{width:8px}" +
       ".panel::-webkit-scrollbar-thumb{background:var(--color-border,rgba(255,255,255,.14));border-radius:999px}" +
@@ -1688,10 +1734,17 @@
     if (slot === 0) bar.id = "zusage-bar";
     bar.style.display = "none";   // 定位成功前不显示（避免占位）
     bar.innerHTML = '<span class="zu-main">…</span>' +
+      '<button type="button" class="zu-more" aria-label="' + L("查看更多状态", "More status items") + '" aria-expanded="false" aria-haspopup="menu" aria-controls="zu-more-panel-' + slot + '">' +
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg><span class="zu-more-count" aria-hidden="true"></span></button>' +
       '<button type="button" class="btn zu-gear" aria-label="' + L("打开状态条设置", "Open status bar settings") + '" aria-expanded="false" aria-haspopup="dialog">' +
       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
       '<path d="M9.5 2h5l.6 2.5 1.7 1 2.5-.7 2.5 4.4-1.9 1.8v2l1.9 1.8-2.5 4.4-2.5-.7-1.7 1-.6 2.5h-5l-.6-2.5-1.7-1-2.5.7-2.5-4.4L4.1 13v-2L2.2 9.2l2.5-4.4 2.5.7 1.7-1z"/><circle cx="12" cy="12" r="3.5"/></svg>' +
       '<span class="zu-gear-dot" aria-hidden="true"></span></button>';
+    var morePanel = document.createElement("div");
+    morePanel.className = "zu-more-panel";
+    morePanel.id = "zu-more-panel-" + slot;
+    morePanel.setAttribute("role", "menu");
+    document.body.appendChild(morePanel);
     var ariaLiveState = document.createElement("span");
     ariaLiveState.className = "zu-sr-only";
     ariaLiveState.setAttribute("role", "status");
@@ -1826,6 +1879,64 @@
         ["zhipu-cn", "Zhipu GLM", "https://open.bigmodel.cn/api/coding/paas/v4", "openai-chat-completions"],
         ["zhipu-intl", "Z.ai (GLM)", "https://api.z.ai/api/coding/paas/v4", "openai-chat-completions"]] }
     ];
+
+    function barOrderSettingsHtml() {
+      /* 行说明沿用旧六条 settingRow 文案（v352 迁移，不丢失）；图标与条面各格同 path
+       * （07 分片 it(ico(...)) 处，两处需同步改）。格名走 00 分片 ZU_BAR_TITLES 共享表。 */
+      var descs = {
+        speed: ["实时生成速度（tok/s），完成后为会话平均", "Live tok/s while generating; session average once settled"],
+        turn: ["当轮回复的 tokens、请求次数与首字延迟", "Tokens, requests and first-token latency of this reply"],
+        win: ["当前会话的 tokens、轮数与请求次数", "Tokens, turns and requests in this session"],
+        today: ["今天所有会话的消耗", "Usage across all sessions today"],
+        proj: ["本项目所有会话的消耗（含子代理），按目录归属", "Usage across all sessions in this project (sub-agents incl.), grouped by directory"],
+        tools: ["悬停查看各工具明细与错误", "Hover for per-tool details and errors"],
+        sub: ["悬停或点击状态条上的子代理查看统计", "Hover or click the bar item for sub-agent stats"]
+      };
+      var icons = {
+        speed: '<path d="M13.5 2 3.5 13.5H11L10 22l10.5-12H13l.5-8z"/>',
+        turn: '<path d="M5 3.5h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-9l-6.5 4V5.5a2 2 0 0 1 1.5-2z"/><path d="M7.5 8.5h9m-9 4h6"/>',
+        win: '<path d="M7.5 3h12a2 2 0 0 1 2 2v10M4.5 7h12a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H8l-5.5 2V9a2 2 0 0 1 2-2z"/>',
+        today: '<rect x="3" y="4.5" width="18" height="17" rx="2.5"/><path d="M7.5 2.5v4m9-4v4M3 10h18m-13.5 4h2m5 0h2m-9 4h2m5 0h2"/>',
+        proj: '<path d="M3.5 6.5a2 2 0 0 1 2-2h4.2l2 2h7.3a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5.5a2 2 0 0 1-2-2z"/>',
+        tools: '<path d="M14.5 2.5a6 6 0 0 0-5.6 8.1L3.3 16.2a3.2 3.2 0 0 0 4.5 4.5l5.6-5.6a6 6 0 0 0 8.1-5.6l-4.1 3-3.8-3.8 3-4.1a6 6 0 0 0-2.1-2.1z"/>',
+        sub: '<circle cx="5" cy="5" r="3"/><circle cx="19" cy="8" r="3"/><circle cx="5" cy="19" r="3"/><path d="M5 8v8m0-4h9a5 5 0 0 0 5-1"/>'
+      };
+      var result = '<div class="zu-layout-card">' +
+        '<div class="zu-layout-head"><strong>' + L("状态栏项目排序与优先级", "Item order & priority") + '</strong>' +
+        '<button type="button" class="zu-layout-reset"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>' + L("重置", "Reset") + '</button></div>' +
+        '<div class="zu-layout-note">' + L("拖拽排序；空间不足时优先折叠低优先级项目，仍可通过「···」查看；也可用 ↑↓ 键盘排序。", "Drag to reorder; when space runs short, lower-priority items fold first and stay reachable under More. Arrow buttons sort with the keyboard too.") + '</div>' +
+        '<div class="zu-layout-list" role="list">';
+      var order = Array.isArray(state.barOrder) ? state.barOrder : Object.keys(ZU_BAR_TITLES);
+      var priorities = state.barPriority || {};
+      order.forEach(function (key, i) {
+        var t = ZU_BAR_TITLES[key] || [key, key];
+        var title = L(t[0], t[1]);
+        var d = descs[key] || ["", ""];
+        var prioVal = priorities[key] || "normal";
+        result += '<div class="zu-layout-row" role="listitem" draggable="true" data-zu-layout-key="' + key + '">' +
+          '<span class="zu-layout-grip" aria-hidden="true"><svg viewBox="0 0 10 16" fill="currentColor" aria-hidden="true">' +
+          '<circle cx="2.5" cy="3" r="1.4"/><circle cx="7.5" cy="3" r="1.4"/>' +
+          '<circle cx="2.5" cy="8" r="1.4"/><circle cx="7.5" cy="8" r="1.4"/>' +
+          '<circle cx="2.5" cy="13" r="1.4"/><circle cx="7.5" cy="13" r="1.4"/></svg></span>' +
+          '<label class="zu-layout-body">' +
+          (key === "speed" ? '' : '<input type="checkbox" data-k="' + key + '"' + (state.show[key] ? ' checked' : '') + ' aria-label="' + title + '">') +
+          '<span class="zu-layout-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">' + (icons[key] || "") + '</svg></span>' +
+          '<span class="zu-layout-name"><b>' + title + '</b><small>' + L(d[0], d[1]) + '</small></span></label>' +
+          (key === "speed" ? '<span class="zu-layout-fixed"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M12 11v5"/></svg>' + L("固定（始终显示）", "Fixed (always shown)") + '</span>' : '') +
+          '<span class="zu-layout-prio" role="radiogroup" data-zu-priority="' + key + '" aria-label="' + title + L(" 优先级", " priority") + '">' +
+          [["high", L("高", "High")], ["normal", L("普通", "Normal")], ["low", L("低", "Low")]].map(function (opt) {
+            return '<label><input type="radio" name="zu-prio-' + slot + '-' + key + '" value="' + opt[0] + '"' +
+              (prioVal === opt[0] ? ' checked' : '') + (key === "speed" ? ' disabled' : '') +
+              '><span>' + opt[1] + '</span></label>';
+          }).join("") + '</span>' +
+          '<button type="button" class="zu-layout-action" data-zu-shift="-1" aria-label="' +
+          L("上移 ", "Move up ") + title + '"' + (i === 0 ? ' disabled' : '') + '>↑</button>' +
+          '<button type="button" class="zu-layout-action" data-zu-shift="1" aria-label="' +
+          L("下移 ", "Move down ") + title + '"' + (i === order.length - 1 ? ' disabled' : '') + '>↓</button>' +
+          '</div>';
+      });
+      return result + '</div></div>';
+    }
     /* 面板文案可随语言重建（事件走 panel 级委托，重建不丢监听） */
     function buildPanel() {
       var oldBody = panel.querySelector(".zu-settings-body");
@@ -1851,12 +1962,7 @@
       '<label><input type="radio" class="zu-just-choice" name="zu-just-' + slot + '" value="start"' + (state.barJust === "start" ? " checked" : "") + '><span>' + L("居左对齐", "Align left") + '</span></label>' +
       '<label><input type="radio" class="zu-just-choice" name="zu-just-' + slot + '" value="end"' + (state.barJust === "end" ? " checked" : "") + '><span>' + L("居右对齐", "Align right") + '</span></label></div>' +
       '<div class="pnote">' + L("仅默认样式生效：均分为格铺满整条，居左/居右时格靠一侧聚拢，⚙ 齿轮仍在最右。", "Applies to the Default style only: space between spreads the cells across the bar; left/right packs them to one side — the gear stays at the far right.") + '</div></div>' +
-      settingRow('<input type="checkbox" data-k="turn">', L("本轮", "Current turn"), L("tokens、请求次数、耗时与首字延迟", "Tokens, requests, duration and first-token latency")) +
-      settingRow('<input type="checkbox" data-k="win">', L("会话累计", "Session total"), L("当前会话的 tokens、轮数与请求次数", "Tokens, turns and requests in this session")) +
-      settingRow('<input type="checkbox" data-k="proj">', L("项目累计", "Project total"), L("本项目所有会话的消耗（含子代理），按目录归属", "Usage across all sessions in this project (sub-agents incl.), grouped by directory")) +
-      settingRow('<input type="checkbox" data-k="tools">', L("工具调用", "Tool calls"), L("悬停查看各工具明细与错误", "Hover for per-tool details and errors")) +
-      settingRow('<input type="checkbox" data-k="today">', L("今日合计", "Today's total"), L("今天所有会话的消耗", "Usage across all sessions today")) +
-      settingRow('<input type="checkbox" data-k="sub">', L("子代理", "Sub-agents"), L("悬停或点击状态条上的子代理查看统计", "Hover or click the bar item for sub-agent stats")) +
+      barOrderSettingsHtml() +
       settingRow('<input type="checkbox" data-k="subRate">', L("子代理行内速率", "Sub-agent row rate"), L("在会话流的 Agent 工具行内实时显示各子代理 tok/s（运行期估算，完成后切换为真实平均速率；悬停看明细）。默认开启。", "Shows each sub-agent's live tok/s inside its Agent tool row (running estimate, actual average after completion; hover for details). On by default.")) +
       settingRow('<input type="checkbox" data-k="wfChip">', L("工作流卡汇总", "Workflow card summary"), L("在会话流的工作流卡片上显示 token 合计与聚合速率（完成态，每次执行结算后更新；悬停看各执行者明细）。默认开启。", "Shows token total and aggregate rate on workflow cards in the conversation (settled data, refreshed as each ask completes; hover for per-actor details). On by default.")) +
       settingRow('<input type="checkbox" data-k="git">', L("Git 状态", "Git status"), L("工具行显示当前分支、↑领先 ↓落后与未提交改动（+插入行 -删除行 ?未跟踪）；优先挂在「电脑操作」右侧，缺失时留在左侧操作区末尾；仅本地仓库", "Branch, ↑ahead ↓behind and uncommitted changes (+ins -del ?untracked) in the toolbar; beside Computer Use, or at the end of the left action group when unavailable; local repositories only")) +
@@ -2462,10 +2568,29 @@
     applyTheme();
 
     var $ = function (id) { return bar.querySelector(id); };
-    var main = bar.querySelector(".zu-main"), gear = bar.querySelector(".zu-gear");
+    var main = bar.querySelector(".zu-main"), gear = bar.querySelector(".zu-gear"), moreButton = bar.querySelector(".zu-more");
     /* v172 跨窗口红点收敛：其它窗口 ack 写 zusage3.updSeen 后本实例重算（storage 只在其它窗口触发；
-       实例级注册，随 disposeOverlay 的 globalListeners 统一清理） */
+       实例级注册，随 disposeOverlay 的 globalListeners 统一清理）。
+       v352：排序/优先级两键同链回读——窗口 A 改布局后 B 即时跟进并重算折叠，
+       防止 B 后续 persist() 用陈旧内存值覆盖（与 persistBarOrder 定向写配套）。 */
     listenGlobal(window, "storage", function (e) {
+      if (e && (e.key === LS.barOrder || e.key === LS.barPriority)) {
+        var changed = false;
+        try {
+          var o = zuBarOrderNormalize(JSON.parse(ls(LS.barOrder, "null")));
+          if (JSON.stringify(o) !== JSON.stringify(state.barOrder)) { state.barOrder = o; changed = true; }
+        } catch (eO) { }
+        try {
+          var p = zuBarPriorityNormalize(JSON.parse(ls(LS.barPriority, "null")));
+          if (JSON.stringify(p) !== JSON.stringify(state.barPriority)) { state.barPriority = p; changed = true; }
+        } catch (eP) { }
+        if (changed) {
+          foldDirty = true;
+          renderAll(false);
+          if (panel.classList.contains("open")) refreshLayoutEditor(null, null);
+        }
+        return;
+      }
       if (!e || e.key !== LS.updSeen) return;
       instances.forEach(function (inst) { try { inst.syncUpdate(); } catch (e) { } });
     });

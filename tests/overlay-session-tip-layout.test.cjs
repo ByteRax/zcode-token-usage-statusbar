@@ -1,14 +1,17 @@
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const test = require('node:test');
-const { sliceOverlay } = require('./helpers/overlay-extract.cjs');
+const { sliceOverlay, getNamedSlice } = require('./helpers/overlay-extract.cjs');
 
 /* v300「会话累计」tooltip 450 自适应紧凑布局（参考本轮 v299 同款三行 KPI）：
  * 行一 总用量|输入(缓存徽标随标签)|输出(含思考)；行二 会话级耗时（zusage 聚合，
  * >0 门控）；行三 平均输出速度(会话均 avg_tps 档色)|预估费用；规模行/模型表/时间行。
  * 样式 :has(.zu-stat-tip--session) 作用域隔离。 */
 
-const helpers = sliceOverlay('    function fmtStart(', '    function ioc(') +
+// v350：html() 引用 00 分片模块级助手（zuBarSortItems/ZU_BAR_KEYS/ZU_BAR_TITLES），
+// VM 切片须前置拼入定义区，否则 ReferenceError（62 例回归根因的统一修法）
+const helpers = getNamedSlice('barOrderHelpers') +
+  sliceOverlay('    function fmtStart(', '    function ioc(') +
   sliceOverlay('    function ttEsc(', '    function stubFor(');
 const bandHelpers = sliceOverlay('  var TPS_BANDS = [', '  /* 返回 null = 调用方应把这当成');
 

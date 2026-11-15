@@ -1,14 +1,17 @@
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const test = require('node:test');
-const { sliceOverlay } = require('./helpers/overlay-extract.cjs');
+const { sliceOverlay, getNamedSlice } = require('./helpers/overlay-extract.cjs');
 
 /* v304「工具调用」tooltip 450 自适应紧凑布局（同四卡家族）：
  * 标题前置扳手 SVG（statHead 第 4 参）；双 KPI 走 zu-turn-kpis--duo（错误 >0 红/0 灰）；
  * 四列表格 table-layout:fixed + 长名省略（title 全文）+ sticky 表头 + 行 hover；
  * 累计耗时 secLong 换算（title 保留完整秒数）；表体独立滚动区；无记录空态。 */
 
-const helpers = sliceOverlay('    function fmtStart(', '    function ioc(') +
+// v350：html() 引用 00 分片模块级助手（zuBarSortItems/ZU_BAR_KEYS/ZU_BAR_TITLES），
+// VM 切片须前置拼入定义区，否则 ReferenceError（62 例回归根因的统一修法）
+const helpers = getNamedSlice('barOrderHelpers') +
+  sliceOverlay('    function fmtStart(', '    function ioc(') +
   sliceOverlay('    function ttEsc(', '    function stubFor(');
 
 function render(data, lang = 'zh', cost = 1) {

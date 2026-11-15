@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
+const { getNamedSlice } = require('./helpers/overlay-extract.cjs');
 const source = fs.readFileSync(path.join(__dirname, '..', 'overlay.js'), 'utf8');
 function extract(start, end) {
   const a = source.indexOf(start), b = source.indexOf(end, a);
@@ -81,7 +82,8 @@ test('settings geometry matches the bar outer width and edges only when open', (
   assert.equal(syncs, 2);
 });
 test('buildPanel initializes and rebuilds controls without losing state or scroll position', () => {
-  const buildSource = extract('    function settingRow(', '    function syncSettingsScroll() {');
+  const buildSource = getNamedSlice('barOrderHelpers') + '\n' +
+    extract('    function settingRow(', '    function syncSettingsScroll() {');
   let oldBody = null, syncs = 0;
   const body = { scrollTop: 0 };
   const radios = [{ value: 'zh' }, { value: 'en' }];
@@ -392,9 +394,23 @@ test('v172 relaunch wiring: badge elements, ack on section click and two-step co
 
 test('panel retains all controls, scroll position and settings-only styling', () => {
   assert.match(source, /panel.className = "panel zu-settings"/);
+  /* v350 六格开关迁移进排序卡（barOrderSettingsHtml 运行时生成 data-k）：
+   * 契约改「运行时求值生成 HTML 含各键 data-k」+ 模板串静态锁双断言，强度不降。 */
+  const layoutSource = getNamedSlice('barOrderHelpers') + '\n' +
+    extract('    function barOrderSettingsHtml() {', '    /* 面板文案可随语言重建');
+  const layoutCtx = {
+    slot: 0,
+    L: (zh) => zh,
+    ZU_BAR_TITLES: Object.fromEntries(['speed', 'turn', 'win', 'today', 'proj', 'tools', 'sub'].map(k => [k, [k, k]])),
+    state: { show: { turn: 1, win: 1, today: 1, sub: 1, tools: 1, proj: 1 }, barOrder: ['speed', 'turn', 'win', 'today', 'proj', 'tools', 'sub'], barPriority: {} },
+  };
+  vm.runInNewContext(layoutSource + '\nglobalThis.__html = barOrderSettingsHtml();', layoutCtx);
+  const layoutHtml = layoutCtx.__html;
+  assert.match(source, /data-k="' \+ key \+ '"/);   // 模板串静态锁：生成路径被删时先红
   for (const key of ['turn', 'win', 'proj', 'tools', 'today', 'sub']) {
-    assert.ok(source.includes('data-k="' + key + '"'));
+    assert.ok(layoutHtml.includes('data-k="' + key + '"'), 'layout html data-k=' + key);
   }
+  assert.ok(layoutHtml.includes('zu-layout-fixed'), 'speed 行应为「固定（始终显示）」徽标');
   for (const selector of ['zu-rate-line', 'zu-auto-update', 'zu-restart-notice', 'zu-ctxov', 'zu-cn-num', 'zu-ctx-enh', 'zu-cpt-btn', 'data-update="check"', 'data-update="update"', 'name="zu-lang"', 'zu-settings-feedback']) {
     assert.ok(source.includes(selector));
   }
@@ -408,7 +424,8 @@ test('panel retains all controls, scroll position and settings-only styling', ()
 
 const ISSUES_URL = 'https://github.com/ByteRax/zcode-token-usage-statusbar/issues';
 test('feedback button sits in the footer with localized copy', () => {
-  const buildSource = extract('    function settingRow(', '    function syncSettingsScroll() {');
+  const buildSource = getNamedSlice('barOrderHelpers') + '\n' +
+    extract('    function settingRow(', '    function syncSettingsScroll() {');
   const body = { scrollTop: 0 };
   const context = {
     slot: 0,
@@ -473,7 +490,8 @@ test('footer feedback click falls back to window.open when the bridge is absent'
 });
 
 test('v342 contact button sits left of feedback with localized copy', () => {
-  const buildSource = extract('    function settingRow(', '    function syncSettingsScroll() {');
+  const buildSource = getNamedSlice('barOrderHelpers') + '\n' +
+    extract('    function settingRow(', '    function syncSettingsScroll() {');
   const body = { scrollTop: 0 };
   const context = {
     slot: 0,
@@ -667,7 +685,8 @@ test('force KMB rounds token half boundaries up without changing count or defaul
 });
 
 test('buildPanel shows the 万/亿 toggle only in Chinese and restores its checked state', () => {
-  const buildSource = extract('    function settingRow(', '    function syncSettingsScroll() {');
+  const buildSource = getNamedSlice('barOrderHelpers') + '\n' +
+    extract('    function settingRow(', '    function syncSettingsScroll() {');
   const body = { scrollTop: 0 };
   const cnBox = {};
   const context = {
@@ -699,7 +718,8 @@ test('buildPanel shows the 万/亿 toggle only in Chinese and restores its check
 });
 
 test('buildPanel generates the force-units toggle in both languages and restores its state', () => {
-  const buildSource = extract('    function settingRow(', '    function syncSettingsScroll() {');
+  const buildSource = getNamedSlice('barOrderHelpers') + '\n' +
+    extract('    function settingRow(', '    function syncSettingsScroll() {');
   for (const lang of ['zh', 'en']) {
     const box = {}, body = { scrollTop: 0 };
     const context = {
@@ -769,11 +789,13 @@ test('force-units affects tokens but not countFmt in either language', () => {
 });
 
 test('syncPanel restores the 万/亿 toggle and tolerates its absence in English', () => {
-  const syncSource = extract('    function syncPanel() {', '    panel.addEventListener("click",');
+  const syncSource = getNamedSlice('barOrderHelpers') + '\n' +
+    extract('    function syncPanel() {', '    panel.addEventListener("click",');
   const cnBox = {}, kmbBox = {}, ctxov = { value: '' };
   let present = true, updates = 0;
   const context = {
     panel: {
+      addEventListener: () => {},   // v350：syncPanel 切片含拖拽监听注册块，桩只需可注册
       querySelectorAll: () => [],
       querySelector: selector => selector === '.zu-cn-num' ? (present ? cnBox : null) : selector === '.zu-force-kmb' ? (present ? kmbBox : null) : selector === '.zu-ctxov' ? ctxov : { value: '' },   // v135：syncPanel 还会回填 .zu-rst-cdh，独立桩避免误写 ctxov
     },
@@ -844,7 +866,8 @@ test('language toggle bumps the rich-text unit epoch too (v177: third unit switc
 });
 
 test('the update section goes straight from the buttons to the status line without the retired reinstall prompt', () => {
-  const buildSource = extract('    function settingRow(', '    function syncSettingsScroll() {');
+  const buildSource = getNamedSlice('barOrderHelpers') + '\n' +
+    extract('    function settingRow(', '    function syncSettingsScroll() {');
   const body = { scrollTop: 0 };
   for (const lang of ['zh', 'en']) {
     const context = {
@@ -987,7 +1010,8 @@ test('update source line names the host: GitHub, GitCode or the local directory'
 
 /* ---------- v100：设置面板分区导航（ZCode 设置侧栏同款） ---------- */
 function buildHarness(state) {
-  const buildSource = extract('    function settingRow(', '    function syncSettingsScroll() {');
+  const buildSource = getNamedSlice('barOrderHelpers') + '\n' +
+    extract('    function settingRow(', '    function syncSettingsScroll() {');
   const body = { scrollTop: 0 };
   const context = {
     slot: 0,
@@ -1183,7 +1207,8 @@ test('applyProjPath gates the path display on <html> and tolerates hostile docum
 });
 
 test('buildPanel shows the full-path toggle in both languages and restores its checked state', () => {
-  const buildSource = extract('    function settingRow(', '    function syncSettingsScroll() {');
+  const buildSource = getNamedSlice('barOrderHelpers') + '\n' +
+    extract('    function settingRow(', '    function syncSettingsScroll() {');
   const body = { scrollTop: 0 };
   const ppBox = {};
   const context = {
@@ -1215,11 +1240,13 @@ test('buildPanel shows the full-path toggle in both languages and restores its c
 });
 
 test('syncPanel restores the full-path toggle and tolerates its absence', () => {
-  const syncSource = extract('    function syncPanel() {', '    panel.addEventListener("click",');
+  const syncSource = getNamedSlice('barOrderHelpers') + '\n' +
+    extract('    function syncPanel() {', '    panel.addEventListener("click",');
   const ppBox = {}, ctxov = { value: '' };
   let present = true, updates = 0;
   const context = {
     panel: {
+      addEventListener: () => {},   // v350：syncPanel 切片含拖拽监听注册块，桩只需可注册
       querySelectorAll: () => [],
       querySelector: selector => selector === '.zu-pp-enable' ? (present ? ppBox : null) : selector === '.zu-ctxov' ? ctxov : { value: '' },
     },
@@ -1723,7 +1750,7 @@ test('overlay roots opt out of the host titlebar drag region (v259: settings ✕
   // 落在条内，Electron 拖拽区穿透未显式 no-drag 的覆盖层 → 点击被窗口拖拽吞掉。
   // v259：.zusage-exc 移出选择器——超限告警气泡挂在条内工具行区，不与标题栏拖拽条叠放。
   assert.ok(
-    source.includes('.zusage-panel,.tip,.zu-mp-ov,.zu-compact-dlg,.zu-rot-pk-dlg{-webkit-app-region:no-drag}'),
+    source.includes('.zusage-panel,.zu-more-panel,.tip,.zu-mp-ov,.zu-compact-dlg,.zu-rot-pk-dlg{-webkit-app-region:no-drag}'),
     '浮层根必须显式 no-drag，否则宿主标题栏拖拽区穿透面板头部',
   );
   // 规则覆盖面依赖这些类名真实挂在浮层根上：类名改名时此处先红
@@ -1732,6 +1759,7 @@ test('overlay roots opt out of the host titlebar drag region (v259: settings ✕
   assert.ok(source.includes('tip.className = "tip zusage-tip-root"'));
   assert.ok(source.includes('ov.className = "zu-mp-ov"'));
   assert.ok(source.includes('dlg.className = "zu-compact-dlg"'));
+  assert.ok(source.includes('morePanel.id = "zu-more-panel-" + slot'));   // v350「···」菜单同契约
 });
 
 

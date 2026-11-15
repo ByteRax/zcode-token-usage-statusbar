@@ -1634,6 +1634,16 @@
       panel.querySelectorAll("input[type=checkbox][data-k]").forEach(function (cb) {
         cb.checked = !!state.show[cb.dataset.k];
       });
+      /* v352 排序卡回填（v249 双回填契约）：radio 选中态按 state.barPriority；
+       * 行序与 state.barOrder 漂移（他实例已改）时整卡重建。 */
+      panel.querySelectorAll(".zu-layout-row").forEach(function (row) {
+        var key = row.dataset.zuLayoutKey;
+        row.querySelectorAll(".zu-layout-prio input").forEach(function (r) {
+          r.checked = (state.barPriority[key] || "normal") === r.value;
+        });
+      });
+      var domOrder = Array.prototype.map.call(panel.querySelectorAll(".zu-layout-row"), function (row) { return row.dataset.zuLayoutKey; });
+      if (domOrder.length && domOrder.join("|") !== (state.barOrder || []).join("|")) refreshLayoutEditor(null, null);
       panel.querySelector(".zu-ctxov").value = state.ctxOv;
       var rstCdhIn = panel.querySelector(".zu-rst-cdh");
       if (rstCdhIn) rstCdhIn.value = String(state.resetCdh);
@@ -1666,6 +1676,91 @@
     }
     var relaunchAckTimer = 0;   /* v177：relaunch 回执超时（v244 起主进程回执随投递即返，含 1s 轮询约 1s 量级；超时≈旧主进程） */
     var relaunchAliveTimer = 0; /* v244：ok 回执后 90s 仍存活兜底——防状态机永久卡死；窗口可能已被 v245 hide，主进程 15s unhide 哨兵负责恢复可见 */
+
+    /* 自定义排序：HTML Drag and Drop + 明确的键盘上下移动按钮，均沿用展示配置存储。
+     * v352：单根 .zu-layout-card 整卡替换；焦点目标被 disabled 时回退同行可用控件。 */
+    var zuDragKey = "", zuDragOverRow = null;
+    function refreshLayoutEditor(focusKey, focusSelector) {
+      var oldCard = panel.querySelector(".zu-layout-card");
+      if (!oldCard) return;
+      var container = document.createElement("div");
+      container.innerHTML = barOrderSettingsHtml();
+      var updated = container.firstElementChild;
+      if (!updated || !updated.classList || !updated.classList.contains("zu-layout-card")) return;
+      oldCard.replaceWith(updated);
+      if (focusKey && focusSelector) {
+        var row = panel.querySelector('.zu-layout-row[data-zu-layout-key="' + focusKey + '"]');
+        var focus = row && row.querySelector(focusSelector);
+        if (focus && focus.disabled) {   // 移到端点后同向按钮已禁用：焦点回退同行可用控件
+          focus = row.querySelector(".zu-layout-action:not(:disabled)") ||
+                  row.querySelector(".zu-layout-prio input:not(:disabled)");
+        }
+        if (focus && focus.focus) focus.focus();
+      }
+    }
+    function announceLayout(key) {
+      var pos = state.barOrder.indexOf(key);
+      if (pos < 0 || !ariaLiveState) return;
+      var t = ZU_BAR_TITLES[key] || [key, key];
+      ariaLiveState.textContent = L(t[0], t[1]) + L(" 已移至第 ", " moved to position ") + (pos + 1) + (state.lang === "en" ? "" : " 位");
+    }
+    function applyLayoutOrder(next, focusKey, focusSelector) {
+      state.barOrder = zuBarOrderNormalize(next);
+      persistBarOrder();
+      refreshLayoutEditor(focusKey, focusSelector);
+      if (focusKey && focusSelector) announceLayout(focusKey);   // 键盘排序播报；鼠标拖放不还焦点不播报
+      renderAll(false);
+    }
+    panel.addEventListener("dragstart", function (e) {
+      var row = e.target && e.target.closest && e.target.closest(".zu-layout-row");
+      if (!row || (e.target.closest && e.target.closest("input,select,button"))) { e.preventDefault(); return; }
+      zuDragKey = row.dataset.zuLayoutKey;
+      if (!zuDragKey || state.barOrder.indexOf(zuDragKey) < 0) { e.preventDefault(); return; }
+      if (e.dataTransfer) {
+        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData("text/plain", zuDragKey);
+      }
+    });
+    panel.addEventListener("dragover", function (e) {
+      var row = e.target && e.target.closest && e.target.closest(".zu-layout-row");
+      if (!zuDragKey) return;
+      if (!row) {   // 行间隙：清掉上一行高亮，不让描边滞留
+        if (zuDragOverRow) { zuDragOverRow.classList.remove("zu-drag-over"); zuDragOverRow = null; }
+        return;
+      }
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+      if (zuDragOverRow !== row) {   // prevRow 记忆：命中行变化才摘/挂类，避免 dragover 高频全面板扫描
+        if (zuDragOverRow) zuDragOverRow.classList.remove("zu-drag-over");
+        row.classList.add("zu-drag-over");
+        zuDragOverRow = row;
+      }
+    });
+    panel.addEventListener("dragleave", function (e) {
+      var row = e.target && e.target.closest && e.target.closest(".zu-layout-row");
+      if (row && (!e.relatedTarget || !row.contains(e.relatedTarget))) {
+        if (zuDragOverRow === row) zuDragOverRow = null;
+        row.classList.remove("zu-drag-over");
+      }
+    });
+    panel.addEventListener("drop", function (e) {
+      var row = e.target && e.target.closest && e.target.closest(".zu-layout-row");
+      if (!row || !zuDragKey) return;
+      e.preventDefault();
+      var target = row.dataset.zuLayoutKey, from = state.barOrder.indexOf(zuDragKey), to = state.barOrder.indexOf(target);
+      var moving = zuDragKey;
+      zuDragKey = "";
+      if (from < 0 || to < 0 || from === to) return;
+      var order = state.barOrder.slice();
+      order.splice(from, 1);
+      order.splice(to, 0, moving);
+      applyLayoutOrder(order, moving, null);   // HTML5 DnD 期间焦点本不在行上，鼠标拖放不还焦点
+    });
+    panel.addEventListener("dragend", function () {
+      zuDragKey = "";
+      if (zuDragOverRow) { zuDragOverRow.classList.remove("zu-drag-over"); zuDragOverRow = null; }
+      panel.querySelectorAll(".zu-drag-over").forEach(function (el) { el.classList.remove("zu-drag-over"); });
+    });
     panel.addEventListener("click", function (e) {
       var testButton = e.target.closest && e.target.closest(".zu-ep-test-run,.zu-ep-test-cancel");
       if (testButton) {
@@ -1739,6 +1834,26 @@
           return;
         }
         proceed();
+      }
+
+      var reset = e.target.closest && e.target.closest(".zu-layout-reset");
+      if (reset) {
+        state.barPriority = zuBarPriorityNormalize(null);
+        persistBarPriority();
+        applyLayoutOrder(ZU_BAR_KEYS.slice(), null, null);
+        var newReset = panel.querySelector(".zu-layout-reset");
+        if (newReset && newReset.focus) newReset.focus();   // 整卡替换后焦点跟到新按钮，键盘用户不被甩出
+        return;
+      }
+      var shift = e.target.closest && e.target.closest("[data-zu-shift]");
+      if (shift) {
+        var row = shift.closest(".zu-layout-row"), key = row && row.dataset.zuLayoutKey;
+        var from = state.barOrder.indexOf(key), to = from + Number(shift.dataset.zuShift);
+        if (from >= 0 && to >= 0 && to < state.barOrder.length) {
+          var next = state.barOrder.slice();
+          next.splice(from, 1); next.splice(to, 0, key);
+          applyLayoutOrder(next, key, '[data-zu-shift="' + shift.dataset.zuShift + '"]');
+        }
         return;
       }
       if (typeof zuRotatorPanelClick === "function" && zuRotatorPanelClick(e, panel)) return;
@@ -2011,6 +2126,14 @@
           })) autoStatus.textContent = "";
         }
         if (epValue(".zu-ep-mode") === "custom" && epValue(".zu-ep-source") === "host") epLoadHosts(false);
+      }
+      if (t2.classList && t2.closest && t2.closest(".zu-layout-prio")) {
+        var prioBox = t2.closest(".zu-layout-prio"), key = prioBox && prioBox.dataset.zuPriority;
+        if (ZU_BAR_KEYS.indexOf(key) >= 0 && !t2.disabled) {
+          state.barPriority[key] = ["high", "normal", "low"].indexOf(t2.value) >= 0 ? t2.value : ZU_BAR_PRIORITY_DEFAULT[key];
+          persistBarPriority();
+          renderAll(false);
+        }
         return;
       }
       if (typeof zuRotatorPanelChange === "function" && zuRotatorPanelChange(e, panel)) return;

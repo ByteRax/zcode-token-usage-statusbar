@@ -274,6 +274,9 @@
       if (restoreFocus) {
         trg = state.theme === "compact" ? (tpsChipCache && tpsChipCache.isConnected ? tpsChipCache : null)
           : main.querySelector(".zu-sub");
+        /* v352：入口格被自动折叠（display:none）时 focus() 静默失败——经「···」菜单打开的
+         * 场景改还菜单按钮（菜单此时已关，按钮可见可聚焦）。 */
+        if (trg && !trg.offsetParent && typeof moreButton !== "undefined" && moreButton && moreButton.isConnected) trg = moreButton;
       }
       if (subPopHideTimer) { clearTimeout(subPopHideTimer); subPopHideTimer = 0; }
       subPopMode = "closed";

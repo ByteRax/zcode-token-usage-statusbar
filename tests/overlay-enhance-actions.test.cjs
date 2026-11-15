@@ -23,7 +23,9 @@ function harness(action) {
     epRequestModels(f, key, done) { modelRequests.push({ f, key, done }); return true; },
     epValue: s => (fields[s] ? fields[s].value : ''),
     epModelsErrorText: () => 'models failed',
-    e: { target: { closest: () => ({ classList: { contains: name => name === action } }) } } };
+    /* v352 合并后 click 头部新增排序 reset/shift 分支：closest 桩收紧为仅命中含 action 名的选择器，
+     * 否则 .zu-layout-reset 查询也被误命中、提前走进排序分支（zuBarPriorityNormalize 未注入） */
+    e: { target: { closest: sel => sel && sel.indexOf(action) >= 0 ? ({ classList: { contains: name => name === action } }) : null } } };
   vm.runInNewContext('function click() {\n' + source.slice(a, b) + '\n}', ctx);
   return { ctx, fields, requests, modelRequests, timers, confirmCalls, click: () => ctx.click(), confirm: value => { confirms = value; } };
 }

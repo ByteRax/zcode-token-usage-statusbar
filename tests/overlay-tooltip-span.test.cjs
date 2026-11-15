@@ -1,9 +1,12 @@
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const test = require('node:test');
-const { sliceOverlay } = require('./helpers/overlay-extract.cjs');
+const { sliceOverlay, getNamedSlice } = require('./helpers/overlay-extract.cjs');
 
-const helpers = sliceOverlay('    function fmtStart(', '    function ioc(') +
+// v350：html() 引用 00 分片模块级助手（zuBarSortItems/ZU_BAR_KEYS/ZU_BAR_TITLES），
+// VM 切片须前置拼入定义区，否则 ReferenceError（62 例回归根因的统一修法）
+const helpers = getNamedSlice('barOrderHelpers') +
+  sliceOverlay('    function fmtStart(', '    function ioc(') +
   sliceOverlay('    function ttEsc(', '    function stubFor(');
 // v127：DB 回退分支的档位行动态调用 tpsBand/tpsBandText——注入真实分档表（不含
 // zuBarSpeedView，它仍由各用例的桩覆盖），保证 tooltip 内容按真实档位生成。

@@ -955,6 +955,7 @@
       if (didRebuild) {
         lastHtml = h.s;
         main.innerHTML = h.s;
+        foldDirty = true;
       }
       var els = main.querySelectorAll(".it");
       for (var i = 0; i < els.length; i++) els[i].__tip = h.tips[i] || null;
@@ -973,7 +974,7 @@
       /* 数据刷新时正在悬停：接管同位置的新元素继续显示。只调位置不重画内容——
        * 数字每 1.5s 都在变，重画就是闪烁；旧文本保持到鼠标下次移动为止。 */
       if (tipFor) {
-        var nu = null;
+        var nu = tipFor === moreButton ? moreButton : null;
         if (tipFor === main) nu = main;
         else if (tipFor.__n === els.length) nu = els[tipFor.__idx];
         if (nu && nu.__tip) {
@@ -1281,11 +1282,18 @@
       var el = t.closest(".it");
       if (el || !t.closest(".zu-main")) return el || null;
       var its = main.querySelectorAll(".it"), seps = main.querySelectorAll(".sep");
+      /* v352 折叠格 display:none：rect 全 0（midpoint=0 恒不命中）后兜底会把空隙命中
+       * 归到末位隐藏格，tooltip 取零矩形钳到屏幕左上角——空隙归属只认可见格。 */
+      function visible(cell) { return cell && !(cell.dataset && cell.dataset.zuFolded === "1"); }   // dataset 缺容 VM 桩容错
       for (var i = 0; i < seps.length; i++) {
+        if (!visible(its[i])) continue;
         var sr = seps[i].getBoundingClientRect();
         if (x < (sr.left + sr.right) / 2) return its[i] || null;
       }
-      var last = its.length ? its[its.length - 1] : null;
+      var last = null;
+      for (var j = its.length - 1; j >= 0; j--) {
+        if (visible(its[j])) { last = its[j]; break; }
+      }
       return (last && last.__tip) ? last : null;
     }
     /* 事件挂 document 捕获阶段（v32）：React/应用层可能在冒泡路上 stopPropagation，
@@ -1362,6 +1370,7 @@
       mouseInBar = true;
       cancelTipGrace();
       if (panel.classList.contains("open")) return;   // 面板开着：条面不弹 tooltip（弹出也会被面板盖住，只露边角）
+      if (morePanel.classList.contains("open")) return;   // v352「···」菜单开着同理：不弹 tooltip 双层浮层
       /* v249 点击激活：开关开启后悬停不再打开/切换统计卡与子代理 preview，打开一律走
        * bar.click；早退放在保活/收起分支之后——点开的 tooltip 仍靠上方分支保持与收起。
        * 开关关闭（缺省）= v246 即时悬停原语义，下方逻辑与 v246 逐行为一致。 */
@@ -1488,7 +1497,7 @@
           fxTip.style.display !== "block" && spdLegendTip.style.display !== "block") return;
       if (!t || !t.closest) return;
       /* 各弹框与统一子代理浮层内部不算外点：各自已有 outside/关闭链，点弹框不联动收 */
-      if (t.closest(".zu-rot-pk-dlg,.zu-mp-ov,.zu-compact-dlg,.zu-sub-pop")) return;
+      if (t.closest(".zu-rot-pk-dlg,.zu-mp-ov,.zu-compact-dlg,.zu-sub-pop,.zu-more-panel")) return;
       if (panel.classList.contains("open") && panel.contains(t)) return;   // 设置面板内部
       /* 悬停浮层本体内部按压是交互不是关闭（切 Tab/选维度/看图表） */
       if (tip.contains(t) || tpsTip.contains(t) || rstTip.contains(t) || subTip.contains(t) ||
