@@ -955,6 +955,7 @@
       if (didRebuild) {
         lastHtml = h.s;
         main.innerHTML = h.s;
+        foldDirty = true;
       }
       var els = main.querySelectorAll(".it");
       for (var i = 0; i < els.length; i++) els[i].__tip = h.tips[i] || null;
@@ -973,7 +974,7 @@
       /* 数据刷新时正在悬停：接管同位置的新元素继续显示。只调位置不重画内容——
        * 数字每 1.5s 都在变，重画就是闪烁；旧文本保持到鼠标下次移动为止。 */
       if (tipFor) {
-        var nu = null;
+        var nu = tipFor === moreButton ? moreButton : null;
         if (tipFor === main) nu = main;
         else if (tipFor.__n === els.length) nu = els[tipFor.__idx];
         if (nu && nu.__tip) {
