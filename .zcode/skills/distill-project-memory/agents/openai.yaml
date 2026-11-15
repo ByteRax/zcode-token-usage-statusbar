@@ -1,0 +1,14 @@
+interface:
+  display_name: 项目经验沉淀
+  short_description: 扫描 ZCode 本地记忆，核验去重并沉淀为项目规则与维护文档
+  default_prompt: 使用 $distill-project-memory 扫描当前项目关联的 ZCode 本地记忆，对照源码核验，将可复用经验增量沉淀到
+    rules、AGENTS.md 和 docs。
+  icon_small: assets/icon.svg
+  icon_large: assets/icon.svg
+policy:
+  products:
+  - chatgpt
+  - codex
+  - api
+  - atlas
+  allow_implicit_invocation: true
