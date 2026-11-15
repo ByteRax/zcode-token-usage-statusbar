@@ -81,13 +81,49 @@
   } catch (e) { }
 
   /* ---------- 共享状态（多实例一致）：显示项/语言/上下文覆盖/最近一次数据 ---------- */
-  var LS = { show: "zusage3.show", devKeepTip: "zusage3.devKeepTip", ctxOv: "zusage3.ctxOv", lang: "zusage3.lang", cnNum: "zusage3.cnNum", sec: "zusage3.sec", rstCdh: "zusage3.rstCdh", projPath: "zusage3.projPath", theme: "zusage3.theme", ctxEnh: "zusage3.ctxEnh", cmdkW: "zusage3.cmdkW", updSeen: "zusage3.updSeen", forceKmb: "zusage3.forceKmb", ctxCpt: "zusage3.ctxCpt", cost: "zusage3.cost", barJust: "zusage3.barJust", autoCompact: "zusage3.autoCompact", tipClick: "zusage3.tipClick", quotaRemain: "zusage3.quotaRemain" };
+  var LS = { show: "zusage3.show", devKeepTip: "zusage3.devKeepTip", ctxOv: "zusage3.ctxOv", lang: "zusage3.lang", cnNum: "zusage3.cnNum", sec: "zusage3.sec", rstCdh: "zusage3.rstCdh", projPath: "zusage3.projPath", theme: "zusage3.theme", ctxEnh: "zusage3.ctxEnh", cmdkW: "zusage3.cmdkW", updSeen: "zusage3.updSeen", forceKmb: "zusage3.forceKmb", ctxCpt: "zusage3.ctxCpt", cost: "zusage3.cost", barJust: "zusage3.barJust", barOrder: "zusage3.barOrder", barPriority: "zusage3.barPriority", autoCompact: "zusage3.autoCompact", tipClick: "zusage3.tipClick", quotaRemain: "zusage3.quotaRemain" };
+  /* 状态条排序与优先级只作用于条面七个项目，不改变工具行 Git/额度等宿主按钮。 */
+  var ZU_BAR_KEYS = ["speed", "turn", "win", "today", "proj", "tools", "sub"];
+  var ZU_BAR_PRIORITY_DEFAULT = {
+    speed: "high", turn: "high", win: "high", today: "normal",
+    proj: "normal", tools: "low", sub: "normal"
+  };
+  function zuBarOrderNormalize(raw) {
+    var seen = Object.create(null), result = [];
+    if (Array.isArray(raw)) raw.forEach(function (key) {
+      if (ZU_BAR_KEYS.indexOf(key) >= 0 && !seen[key]) { seen[key] = true; result.push(key); }
+    });
+    ZU_BAR_KEYS.forEach(function (key) { if (!seen[key]) result.push(key); });
+    return result;
+  }
+  function zuBarPriorityNormalize(raw) {
+    var value = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+    var result = {};
+    ZU_BAR_KEYS.forEach(function (key) {
+      var v = value[key];
+      result[key] = v === "high" || v === "normal" || v === "low" ? v : ZU_BAR_PRIORITY_DEFAULT[key];
+    });
+    return result;
+  }
+  function zuBarSortItems(rows, order) {
+    var rank = Object.create(null);
+    (order || ZU_BAR_KEYS).forEach(function (key, i) { rank[key] = i; });
+    return rows.slice().sort(function (a, b) {
+      var fixedA = ZU_BAR_KEYS.indexOf(a.key) < 0, fixedB = ZU_BAR_KEYS.indexOf(b.key) < 0;
+      if (fixedA !== fixedB) return fixedA ? -1 : 1;
+      if (fixedA) return a.index - b.index;
+      return (rank[a.key] === undefined ? 999 : rank[a.key]) -
+        (rank[b.key] === undefined ? 999 : rank[b.key]);
+    });
+  }
   var state = {
     show: { win: 1, turn: 1, today: 1, sub: 1, tools: 1, git: 1, proj: 1, subRate: 1, wfChip: 1 },   // git：工具行 Git 状态 chip（v96，默认开）；proj：项目累计格（v159，默认开；与 zusage3.projPath 弹窗路径开关无关）；subRate：Agent 行内子代理速率 chip（v178，默认开；只门控行内展示，槽位估算与主 chip 合计不受影响）；wfChip：工作流 run 卡汇总 chip（v332，默认开；specs/workflow-support.md）
     ctxOv: "", data: null,
     lang: "zh", theme: "default", pluginUpdate: window.__zusagePluginState || null,
     /* v226 默认样式水平对齐：between|start|end（均分/居左/居右），仅默认档生效；药丸恒 flex-start */
     barJust: "between",
+    barOrder: ZU_BAR_KEYS.slice(),
+    barPriority: zuBarPriorityNormalize(null),
     /* 万/亿单位开关：缺省开启，仅显式 "0" 关闭；只在中文界面展示并生效（英文始终 K/M/B） */
     cnNum: 1,
     /* v136 编辑项目弹窗完整路径开关：缺省开启，仅显式 "0" 关闭；纯展示偏好存 localStorage */
@@ -211,6 +247,8 @@
     if (s0 && typeof s0 === "object") {
       for (var k0 in state.show) if (k0 in s0) state.show[k0] = s0[k0] ? 1 : 0;
     }
+    try { state.barOrder = zuBarOrderNormalize(JSON.parse(ls(LS.barOrder, "null"))); } catch (eOrder) { state.barOrder = ZU_BAR_KEYS.slice(); }
+    try { state.barPriority = zuBarPriorityNormalize(JSON.parse(ls(LS.barPriority, "null"))); } catch (ePriority) { state.barPriority = zuBarPriorityNormalize(null); }
     state.ctxOv = ls(LS.ctxOv, "");
     if (ls(LS.lang, "") === "en") state.lang = "en";
     if (ls(LS.cnNum, "") === "0") state.cnNum = 0;
@@ -236,6 +274,8 @@
   applyCmdkW();   // v146：同款初载挂属性
   function persist() {
     lsSet(LS.show, JSON.stringify(state.show));
+    lsSet(LS.barOrder, JSON.stringify(state.barOrder));
+    lsSet(LS.barPriority, JSON.stringify(state.barPriority));
     lsSet(LS.ctxOv, state.ctxOv);
     lsSet(LS.lang, state.lang);
     lsSet(LS.cnNum, state.cnNum ? "1" : "0");
@@ -9711,6 +9751,28 @@
       "border-radius:var(--zu-pill-radius,12px);backdrop-filter:none;-webkit-backdrop-filter:none}" +
       ".zusage-root.zu-pill .zu-main{flex:0 1 auto;justify-content:flex-start;overflow-x:auto;scrollbar-width:thin}" +
       ".zusage-root.zu-pill .ico{color:var(--color-brand,#3b82f6)}" +
+      ".zu-main>.it[data-zu-folded='1'],.zu-main>.sep[data-zu-folded='1']{display:none!important}" +
+      ".zu-more{display:none;align-items:center;gap:3px;flex:0 0 auto;justify-content:center;height:26px;min-width:30px;padding:0 6px;border:0;border-radius:7px;background:transparent;color:var(--color-foreground-subtle,#a1a1a1);font:inherit;cursor:pointer}" +
+      ".zu-more[data-zu-visible='1']{display:inline-flex}.zu-more:hover,.zu-more[aria-expanded='true']{background:var(--color-hover,rgba(255,255,255,.08));color:var(--color-foreground,#fff)}" +
+      ".zu-more:focus-visible,.zu-more-option:focus-visible,.zu-layout-action:focus-visible,.zu-layout-priority:focus-visible{outline:2px solid var(--color-input-border-focused,var(--color-brand,#57c8ff));outline-offset:2px}" +
+      ".zu-more svg{width:15px;height:15px}.zu-more-count{font-size:calc(var(--ui-font-size,14px) - 2px);font-variant-numeric:tabular-nums}" +
+      ".zu-more-panel{position:fixed;display:none;box-sizing:border-box;z-index:2147483646;width:min(290px,calc(100vw - 16px));max-height:min(60vh,380px);overflow:auto;padding:7px;border:1px solid var(--color-border,rgba(255,255,255,.14));border-radius:11px;background:var(--color-card,#1d1d1d);color:var(--color-foreground,#fff);box-shadow:0 10px 30px rgba(0,0,0,.35);font-family:var(--font-sans,system-ui);font-size:var(--ui-font-size,14px);-webkit-app-region:no-drag}" +
+      ".zu-more-panel.open{display:block}.zu-more-title{font-size:calc(var(--ui-font-size,14px) - 2px);padding:5px 7px;color:var(--color-foreground-subtle,#a1a1a1)}" +
+      ".zu-more-option{display:flex;align-items:center;gap:9px;width:100%;padding:8px;border:0;border-radius:7px;background:transparent;color:inherit;cursor:pointer;font:inherit;text-align:left}" +
+      ".zu-more-option:hover{background:var(--color-hover,rgba(255,255,255,.08))}.zu-more-option svg{width:16px;height:16px;flex:0 0 16px}" +
+      ".zu-more-option span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
+      ".zu-layout-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:12px 12px 4px}.zu-layout-head strong{font-size:var(--ui-font-size,14px)}" +
+      ".zu-layout-note{padding:0 12px 10px;font-size:calc(var(--ui-font-size,14px) - 2px);line-height:1.5;color:var(--color-foreground-subtle,#a1a1a1)}" +
+      ".zu-layout-list{padding:0 10px 10px;display:flex;flex-direction:column;gap:4px}" +
+      ".zu-layout-row{display:flex;align-items:center;gap:8px;padding:7px 8px;border:1px solid var(--color-border,rgba(255,255,255,.1));border-radius:8px;min-width:0}" +
+      ".zu-layout-row[draggable='true']{cursor:grab}.zu-layout-row.zu-drag-over{border-color:var(--color-brand,#57c8ff);background:var(--color-hover,rgba(255,255,255,.07))}" +
+      ".zu-layout-grip{color:var(--color-foreground-subtle,#888);font-size:16px;user-select:none}.zu-layout-label{min-width:0;flex:1 1 auto;display:flex;align-items:center;gap:7px}" +
+      ".zu-layout-label input{margin:0}.zu-layout-label span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}" +
+      ".zu-layout-priority{max-width:98px;min-width:70px;height:28px;border:1px solid var(--color-border,rgba(255,255,255,.14));border-radius:6px;background:var(--color-input,var(--color-card,#242424));color:var(--color-foreground,#fff);font:inherit;font-size:calc(var(--ui-font-size,14px) - 2px);cursor:pointer}" +
+      ".zu-layout-action{border:0;background:transparent;color:var(--color-foreground-subtle,#aaa);width:24px;height:26px;flex:0 0 24px;border-radius:5px;cursor:pointer}.zu-layout-action:hover{background:var(--color-hover,rgba(255,255,255,.08));color:var(--color-foreground,#fff)}" +
+      ".zu-layout-action:disabled{opacity:.25;cursor:default}" +
+      ".zu-settings .zu-layout-row>.zu-layout-label{padding:0;margin:0;align-items:center;gap:7px;cursor:pointer}" +
+      ".zu-settings .zu-layout-row>.zu-layout-label:hover{background:transparent}" +
       ".zu-main{overflow:hidden;min-width:0;flex:1 1 auto;display:flex;align-items:center;gap:1px;justify-content:space-between}" +
       /* v226 水平对齐（仅默认档挂类）：居左直接改 justify；居右不用字面 flex-end——LTR 下 start 侧
        * 溢出不可滚动也不计入 scrollWidth，收缩检测会失效、左格无声硬裁、.zu-clip 渐隐错边；改用首格
@@ -10997,10 +11059,16 @@
     if (slot === 0) bar.id = "zusage-bar";
     bar.style.display = "none";   // 定位成功前不显示（避免占位）
     bar.innerHTML = '<span class="zu-main">…</span>' +
+      '<button type="button" class="zu-more" aria-label="' + L("查看更多状态", "More status items") + '" aria-expanded="false" aria-haspopup="true">' +
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg><span class="zu-more-count" aria-hidden="true"></span></button>' +
       '<button type="button" class="btn zu-gear" aria-label="' + L("打开状态条设置", "Open status bar settings") + '" aria-expanded="false" aria-haspopup="dialog">' +
       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
       '<path d="M9.5 2h5l.6 2.5 1.7 1 2.5-.7 2.5 4.4-1.9 1.8v2l1.9 1.8-2.5 4.4-2.5-.7-1.7 1-.6 2.5h-5l-.6-2.5-1.7-1-2.5.7-2.5-4.4L4.1 13v-2L2.2 9.2l2.5-4.4 2.5.7 1.7-1z"/><circle cx="12" cy="12" r="3.5"/></svg>' +
       '<span class="zu-gear-dot" aria-hidden="true"></span></button>';
+    var morePanel = document.createElement("div");
+    morePanel.className = "zu-more-panel";
+    morePanel.setAttribute("role", "menu");
+    document.body.appendChild(morePanel);
     var ariaLiveState = document.createElement("span");
     ariaLiveState.className = "zu-sr-only";
     ariaLiveState.setAttribute("role", "status");
@@ -11091,6 +11159,41 @@
       }
       return html + '</nav>';
     }
+
+    function barOrderSettingsHtml() {
+      var titles = {
+        speed: ["生成速度", "Generation speed"], turn: ["本轮", "Current turn"],
+        win: ["会话累计", "Session total"], today: ["今日合计", "Today's total"],
+        proj: ["项目累计", "Project total"], tools: ["工具调用", "Tool calls"],
+        sub: ["子代理", "Sub-agents"]
+      };
+      var result = '<div class="zu-layout-head"><strong>' + L("显示顺序与优先级", "Order and priority") + '</strong>' +
+        '<button type="button" class="zu-layout-reset zu-layout-action" style="width:auto;padding:0 8px">' + L("重置", "Reset") + '</button></div>' +
+        '<div class="zu-layout-note">' + L("拖动排序；空间不足时先收起低优先级项目，仍可通过 ··· 查看。使用 ↑↓ 键盘排序。", "Drag to reorder; lower-priority items fold first, with all items available under More. Use arrows for keyboard sorting.") + '</div>' +
+        '<div class="zu-layout-list" role="list">';
+      var order = Array.isArray(state.barOrder) ? state.barOrder : Object.keys(titles);
+      var priorities = state.barPriority || {};
+      order.forEach(function (key, i) {
+        var title = L(titles[key][0], titles[key][1]);
+        var checked = key === "speed" || !!state.show[key];
+        result += '<div class="zu-layout-row" role="listitem" draggable="true" data-zu-layout-key="' + key + '">' +
+          '<span class="zu-layout-grip" aria-hidden="true">⠿</span>' +
+          '<label class="zu-layout-label"><input type="checkbox" data-k="' + key + '"' +
+          (key === "speed" ? ' disabled' : '') + (checked ? ' checked' : '') +
+          ' aria-label="' + title + '"><span>' + title + '</span></label>' +
+          '<select class="zu-layout-priority" data-zu-priority="' + key + '" aria-label="' +
+          title + L(" 优先级", " priority") + '">' +
+          [["high", L("高", "High")], ["normal", L("普通", "Normal")], ["low", L("低", "Low")]].map(function (opt) {
+            return '<option value="' + opt[0] + '"' + ((priorities[key] || "normal") === opt[0] ? ' selected' : '') + '>' + opt[1] + '</option>';
+          }).join("") + '</select>' +
+          '<button type="button" class="zu-layout-action" data-zu-shift="-1" aria-label="' +
+          L("上移 ", "Move up ") + title + '"' + (i === 0 ? ' disabled' : '') + '>↑</button>' +
+          '<button type="button" class="zu-layout-action" data-zu-shift="1" aria-label="' +
+          L("下移 ", "Move down ") + title + '"' + (i === order.length - 1 ? ' disabled' : '') + '>↓</button>' +
+          '</div>';
+      });
+      return result + '</div>';
+    }
     /* 面板文案可随语言重建（事件走 panel 级委托，重建不丢监听） */
     function buildPanel() {
       var oldBody = panel.querySelector(".zu-settings-body");
@@ -11114,12 +11217,7 @@
       '<label><input type="radio" class="zu-just-choice" name="zu-just-' + slot + '" value="start"' + (state.barJust === "start" ? " checked" : "") + '><span>' + L("居左对齐", "Align left") + '</span></label>' +
       '<label><input type="radio" class="zu-just-choice" name="zu-just-' + slot + '" value="end"' + (state.barJust === "end" ? " checked" : "") + '><span>' + L("居右对齐", "Align right") + '</span></label></div>' +
       '<div class="pnote">' + L("仅默认样式生效：均分为格铺满整条，居左/居右时格靠一侧聚拢，⚙ 齿轮仍在最右。", "Applies to the Default style only: space between spreads the cells across the bar; left/right packs them to one side — the gear stays at the far right.") + '</div></div>' +
-      settingRow('<input type="checkbox" data-k="turn">', L("本轮", "Current turn"), L("tokens、请求次数、耗时与首字延迟", "Tokens, requests, duration and first-token latency")) +
-      settingRow('<input type="checkbox" data-k="win">', L("会话累计", "Session total"), L("当前会话的 tokens、轮数与请求次数", "Tokens, turns and requests in this session")) +
-      settingRow('<input type="checkbox" data-k="proj">', L("项目累计", "Project total"), L("本项目所有会话的消耗（含子代理），按目录归属", "Usage across all sessions in this project (sub-agents incl.), grouped by directory")) +
-      settingRow('<input type="checkbox" data-k="tools">', L("工具调用", "Tool calls"), L("悬停查看各工具明细与错误", "Hover for per-tool details and errors")) +
-      settingRow('<input type="checkbox" data-k="today">', L("今日合计", "Today's total"), L("今天所有会话的消耗", "Usage across all sessions today")) +
-      settingRow('<input type="checkbox" data-k="sub">', L("子代理", "Sub-agents"), L("悬停或点击状态条上的子代理查看统计", "Hover or click the bar item for sub-agent stats")) +
+      barOrderSettingsHtml() +
       settingRow('<input type="checkbox" data-k="subRate">', L("子代理行内速率", "Sub-agent row rate"), L("在会话流的 Agent 工具行内实时显示各子代理 tok/s（运行期估算，完成后切换为真实平均速率；悬停看明细）。默认开启。", "Shows each sub-agent's live tok/s inside its Agent tool row (running estimate, actual average after completion; hover for details). On by default.")) +
       settingRow('<input type="checkbox" data-k="wfChip">', L("工作流卡汇总", "Workflow card summary"), L("在会话流的工作流卡片上显示 token 合计与聚合速率（完成态，每次执行结算后更新；悬停看各执行者明细）。默认开启。", "Shows token total and aggregate rate on workflow cards in the conversation (settled data, refreshed as each ask completes; hover for per-actor details). On by default.")) +
       settingRow('<input type="checkbox" data-k="git">', L("Git 状态", "Git status"), L("工具行显示当前分支、↑领先 ↓落后与未提交改动（+插入行 -删除行 ?未跟踪）；优先挂在「电脑操作」右侧，缺失时留在左侧操作区末尾；仅本地仓库", "Branch, ↑ahead ↓behind and uncommitted changes (+ins -del ?untracked) in the toolbar; beside Computer Use, or at the end of the left action group when unavailable; local repositories only")) +
@@ -11191,7 +11289,7 @@
       /* 重建后回填全部控件状态（语言切换路径不走 syncPanel）：checkbox 按 state.show、
          上下文窗口输入框按 state.ctxOv——否则切语言后勾选态清空、首次点击语义反转 */
       panel.querySelectorAll("input[type=checkbox][data-k]").forEach(function (cb) {
-        cb.checked = !!state.show[cb.dataset.k];
+        cb.checked = cb.dataset.k === "speed" ? true : !!state.show[cb.dataset.k];
       });
       var ovInput = panel.querySelector(".zu-ctxov");
       if (ovInput) ovInput.value = state.ctxOv;
@@ -11707,7 +11805,7 @@
     applyTheme();
 
     var $ = function (id) { return bar.querySelector(id); };
-    var main = bar.querySelector(".zu-main"), gear = bar.querySelector(".zu-gear");
+    var main = bar.querySelector(".zu-main"), gear = bar.querySelector(".zu-gear"), moreButton = bar.querySelector(".zu-more");
     /* v172 跨窗口红点收敛：其它窗口 ack 写 zusage3.updSeen 后本实例重算（storage 只在其它窗口触发；
        实例级注册，随 disposeOverlay 的 globalListeners 统一清理） */
     listenGlobal(window, "storage", function (e) {
@@ -12461,14 +12559,15 @@
     function html(d) {
       var sess = d.session || {}, lt = d.last_turn || {}, today = d.today || {}, last = d.last || {};
       var tls = d.tools || { total: 0, errors: 0, list: [] };
-      var items = [], tips = [];
+      var items = [], tips = [], barItemKey = "system";
       function it(inner, tipContent, cls) {
         var interactive = cls === "zu-sub";
+        var key = barItemKey;
         items.push('<' + (interactive
           ? 'button type="button" aria-label="' + L("子代理", "Sub-agents") + '"'
           : 'span tabindex="0"') +
-          ' class="it' + (cls ? " " + cls : "") + '">' + inner + (interactive ? "</button>" : "</span>"));
-        tips.push(tipContent || null);
+          ' class="it' + (cls ? " " + cls : "") + '" data-zu-key="' + key + '">' + inner + (interactive ? "</button>" : "</span>"));
+        tips.push({key: key, content: tipContent || null, index: tips.length});
       }
       if (d.remote) {   // v9：SSH 远程会话（数据取自远端机），置顶徽标标明数据源
         it(ico('<path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/>') +
@@ -12499,6 +12598,7 @@
        * zuBarSpeedView 对"刚绑定/重绑时捞到的历史存量已完成轮次"返回 null——这种情况
        * 和"桥完全没命中"一视同仁，同样回退 DB/不渲染，不冒充"这个会话速度不可用"。
        * 二者互斥：绝不同时渲染两枚「速度」chip。 */
+      barItemKey = "speed";
       var dbTps = last.tps || 0;
       var sessAvg = (sess && typeof sess.avg_tps === "number" && isFinite(sess.avg_tps) && sess.avg_tps > 0) ? sess.avg_tps : 0;
       var speedView = liveStatsCur ? zuBarSpeedView(liveStatsCur, bridge.handle && bridge.handle.charsPerToken, subRate.sum, sessAvg) : null;
@@ -12618,6 +12718,7 @@
            (lt.retries ? ttEsc(L("重试 ", "retries ") + countFmt(lt.retries) + L(" 次", " times")) : ""),
            (lt.tool_errors ? ttEsc(L("错误 ", "errors ") + countFmt(lt.tool_errors) + L(" 次", " times")) : "")].filter(Boolean).join('<i class="zu-turn-sep">·</i>')
         : "";
+      barItemKey = "turn";
       if (state.show.turn) {
         it(ico('<path d="M5 3.5h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-9l-6.5 4V5.5a2 2 0 0 1 1.5-2z"/><path d="M7.5 8.5h9m-9 4h6"/>') +
           '<span class="v">' + fmt(lt.total) + "</span>" +
@@ -12693,6 +12794,7 @@
           '</div>' +
           '</div>');
       }
+      barItemKey = "win";
       if (state.show.win) {
         it(ico('<path d="M7.5 3h12a2 2 0 0 1 2 2v10M4.5 7h12a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H8l-5.5 2V9a2 2 0 0 1 2-2z"/>') +
           '<span class="v">' + fmt(sess.total) + "</span>" +
@@ -12757,6 +12859,7 @@
             '<b>' + ttEsc(L("时间范围", "Time span")) + '</b><span>' +
             (sess.started ? fmtStartS(sess.started) : "—") + " — " + (sess.last_at ? fmtStartS(sess.last_at) : "—") + '</span></div>' +
           '</div>');      }
+      barItemKey = "today";
       if (state.show.today) {   // v213 移到会话累计之后（用户规格 2026-11-02，格序：速度→本轮→会话→今日→项目→工具→子代理→⚙）
         /* v301 今日合计紧凑化（同本轮 v299 / 会话 v300 三行 KPI 形态，450 宽×高度自适应）：
          * ①总用量|输入(缓存命中率副行)|输出(含思考) ②请求次数|请求轮数|请求会话
@@ -12827,6 +12930,7 @@
             '<b>' + ttEsc(L("时间范围", "Time span")) + '</b><span>' +
             (today.started ? fmtStartS(today.started) : "—") + " — " + (today.last_at ? fmtStartS(today.last_at) : "—") + '</span></div>' +
           '</div>');      }
+      barItemKey = "proj";
       if (state.show.proj && sess.project) {   // v159 项目累计：本项目全部会话（含子代理），远端/不在本地库无此字段不渲染
         var pj = sess.project;
         var pjKey = (pickedSid || "") + ":" + (pj.started || 0);   // v214 项目卡归属键：项目变化（started 变）自动重置展开态
@@ -12839,6 +12943,7 @@
             '<span class="dim">' + countFmt(pj.sessions || 0) + L("会话 ", " sessions · ") + countFmt(pj.requests || 0) + L("次", " req") + "</span>"),
 "\x01" + buildProjectTipHTML(pj, pjKey), "zu-pj-item");
       }
+      barItemKey = "tools";
       if (state.show.tools) {
         /* v304 工具调用紧凑化（用户 /goal，同四卡家族形态，450 宽×高度自适应）：
          * 标题前置扳手 SVG（statHead 第 4 参）；双 KPI 走 zu-turn-kpis--duo；
@@ -12873,6 +12978,7 @@
                 }).join("")) + '</div>'
             : '<div class="zu-stat-note">' + ttEsc(L("无工具调用记录", "No tool calls recorded")) + '</div>') +
           '</div>');      }
+      barItemKey = "sub";
       if (state.show.sub) {
         /* v93：随「上下文容量」格移除改为始终展示（零值也显示，口径与其他格统一）。
          * v217：悬停/点击都开统一浮层（.zu-sub-pop），__tip 置空不再走通用 tooltip
@@ -12884,7 +12990,15 @@
           null, "zu-sub");
       }
 
-      return { s: items.join('<span class="sep"></span>') || '<span class="dim">' + L("全部显示项已关闭", "All display items are off") + '</span>', tips: tips };
+      /* 一格一组，按稳定 key 排序后提示内容继续与 .it 下标严格对应。 */
+      var ordered = zuBarSortItems(tips.map(function (entry, i) {
+        return {key: entry.key, index: i, html: items[i], tip: entry.content};
+      }), state.barOrder);
+      return {
+        s: ordered.map(function (row) { return row.html; }).join('<span class="sep"></span>') ||
+          '<span class="dim">' + L("全部显示项已关闭", "All display items are off") + '</span>',
+        tips: ordered.map(function (row) { return row.tip; })
+      };
     }
 
     /* 当前会话识别（v34 起 mine 优先，此处为兜底启发式）：ZCode 在 localStorage 的
@@ -13976,6 +14090,7 @@
       if (didRebuild) {
         lastHtml = h.s;
         main.innerHTML = h.s;
+        foldDirty = true;
       }
       var els = main.querySelectorAll(".it");
       for (var i = 0; i < els.length; i++) els[i].__tip = h.tips[i] || null;
@@ -13994,7 +14109,7 @@
       /* 数据刷新时正在悬停：接管同位置的新元素继续显示。只调位置不重画内容——
        * 数字每 1.5s 都在变，重画就是闪烁；旧文本保持到鼠标下次移动为止。 */
       if (tipFor) {
-        var nu = null;
+        var nu = tipFor === moreButton ? moreButton : null;
         if (tipFor === main) nu = main;
         else if (tipFor.__n === els.length) nu = els[tipFor.__idx];
         if (nu && nu.__tip) {
@@ -15914,7 +16029,7 @@
         r.checked = state.barJust === r.value;
       });
       panel.querySelectorAll("input[type=checkbox][data-k]").forEach(function (cb) {
-        cb.checked = !!state.show[cb.dataset.k];
+        cb.checked = cb.dataset.k === "speed" ? true : !!state.show[cb.dataset.k];
       });
       panel.querySelector(".zu-ctxov").value = state.ctxOv;
       var rstCdhIn = panel.querySelector(".zu-rst-cdh");
@@ -15946,7 +16061,88 @@
     }
     var relaunchAckTimer = 0;   /* v177：relaunch 回执超时（v244 起主进程回执随投递即返，含 1s 轮询约 1s 量级；超时≈旧主进程） */
     var relaunchAliveTimer = 0; /* v244：ok 回执后 90s 仍存活兜底——防状态机永久卡死；窗口可能已被 v245 hide，主进程 15s unhide 哨兵负责恢复可见 */
+
+    /* 自定义排序：HTML Drag and Drop + 明确的键盘上下移动按钮，均沿用展示配置存储。 */
+    var zuDragKey = "";
+    function refreshLayoutEditor(focusKey, focusSelector) {
+      var oldHead = panel.querySelector(".zu-layout-head");
+      var oldNote = panel.querySelector(".zu-layout-note");
+      var oldList = panel.querySelector(".zu-layout-list");
+      if (!oldHead || !oldNote || !oldList) return;
+      var container = document.createElement("div");
+      container.innerHTML = barOrderSettingsHtml();
+      var updated = Array.prototype.slice.call(container.children);
+      oldHead.replaceWith(updated[0]); oldNote.replaceWith(updated[1]); oldList.replaceWith(updated[2]);
+      if (focusKey && focusSelector) {
+        var row = panel.querySelector('.zu-layout-row[data-zu-layout-key="' + focusKey + '"]');
+        var focus = row && row.querySelector(focusSelector);
+        if (focus && focus.focus) focus.focus();
+      }
+    }
+    function applyLayoutOrder(next, focusKey, focusSelector) {
+      state.barOrder = zuBarOrderNormalize(next);
+      persist();
+      refreshLayoutEditor(focusKey, focusSelector);
+      renderAll(false);
+    }
+    panel.addEventListener("dragstart", function (e) {
+      var row = e.target && e.target.closest && e.target.closest(".zu-layout-row");
+      if (!row || (e.target.closest && e.target.closest("input,select,button"))) { e.preventDefault(); return; }
+      zuDragKey = row.dataset.zuLayoutKey;
+      if (!zuDragKey || state.barOrder.indexOf(zuDragKey) < 0) { e.preventDefault(); return; }
+      if (e.dataTransfer) {
+        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData("text/plain", zuDragKey);
+      }
+    });
+    panel.addEventListener("dragover", function (e) {
+      var row = e.target && e.target.closest && e.target.closest(".zu-layout-row");
+      if (!zuDragKey || !row) return;
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+      panel.querySelectorAll(".zu-drag-over").forEach(function (el) { el.classList.remove("zu-drag-over"); });
+      row.classList.add("zu-drag-over");
+    });
+    panel.addEventListener("dragleave", function (e) {
+      var row = e.target && e.target.closest && e.target.closest(".zu-layout-row");
+      if (row && (!e.relatedTarget || !row.contains(e.relatedTarget))) row.classList.remove("zu-drag-over");
+    });
+    panel.addEventListener("drop", function (e) {
+      var row = e.target && e.target.closest && e.target.closest(".zu-layout-row");
+      if (!row || !zuDragKey) return;
+      e.preventDefault();
+      var target = row.dataset.zuLayoutKey, from = state.barOrder.indexOf(zuDragKey), to = state.barOrder.indexOf(target);
+      var moving = zuDragKey;
+      zuDragKey = "";
+      if (from < 0 || to < 0 || from === to) return;
+      var order = state.barOrder.slice();
+      order.splice(from, 1);
+      order.splice(to, 0, moving);
+      applyLayoutOrder(order, moving, '.zu-layout-action[data-zu-shift="-1"]');
+    });
+    panel.addEventListener("dragend", function () {
+      zuDragKey = "";
+      panel.querySelectorAll(".zu-drag-over").forEach(function (el) { el.classList.remove("zu-drag-over"); });
+    });
     panel.addEventListener("click", function (e) {
+
+      var reset = e.target.closest && e.target.closest(".zu-layout-reset");
+      if (reset) {
+        state.barPriority = zuBarPriorityNormalize(null);
+        applyLayoutOrder(ZU_BAR_KEYS.slice(), null, null);
+        return;
+      }
+      var shift = e.target.closest && e.target.closest("[data-zu-shift]");
+      if (shift) {
+        var row = shift.closest(".zu-layout-row"), key = row && row.dataset.zuLayoutKey;
+        var from = state.barOrder.indexOf(key), to = from + Number(shift.dataset.zuShift);
+        if (from >= 0 && to >= 0 && to < state.barOrder.length) {
+          var next = state.barOrder.slice();
+          next.splice(from, 1); next.splice(to, 0, key);
+          applyLayoutOrder(next, key, '[data-zu-shift="' + shift.dataset.zuShift + '"]');
+        }
+        return;
+      }
       if (typeof zuRotatorPanelClick === "function" && zuRotatorPanelClick(e, panel)) return;
       var navItem = e.target.closest && e.target.closest(".zu-navitem");
       if (navItem && navItem.getAttribute("data-sec") === "update") ackUpdateDots();   // v172：含已停留时再点
@@ -16163,6 +16359,16 @@
     });
     panel.addEventListener("change", function (e) {
       var t2 = e.target;
+
+      if (t2.classList && t2.classList.contains("zu-layout-priority")) {
+        var key = t2.dataset.zuPriority;
+        if (ZU_BAR_KEYS.indexOf(key) >= 0) {
+          state.barPriority[key] = ["high", "normal", "low"].indexOf(t2.value) >= 0 ? t2.value : ZU_BAR_PRIORITY_DEFAULT[key];
+          persist();
+          renderAll(false);
+        }
+        return;
+      }
       if (typeof zuRotatorPanelChange === "function" && zuRotatorPanelChange(e, panel)) return;
       if (t2.classList.contains("zu-theme-choice")) {
         if (t2.checked && (t2.value === "default" || t2.value === "pill" || t2.value === "compact")) {
@@ -18945,6 +19151,8 @@
       syncPillSurface();
     }
     function applyBarTheme() {
+      foldDirty = true;
+      closeMore(false);
       var pill = state.theme === "pill", compact = state.theme === "compact";
       bar.setAttribute("data-zusage-theme", state.theme);
       bar.classList.toggle("zu-pill", pill);
@@ -19312,6 +19520,139 @@
       } catch (e) { FATAL.panes = { err: String((e && e.stack) || e) }; }
     }
 
+
+    /* 窄宽度折叠：基于真实布局测量，而非字符数猜测。优先级低的先收起，同级右侧先收起。
+     * 只在条面内容或宽度变化时重新计算，防止 rAF 每帧触发布局和频繁写 DOM。 */
+    var foldDirty = true, foldWidth = -1, foldFont = "", foldPrioritySig = "", foldedKeys = "";
+    function barMorePosition() {
+      if (!morePanel.classList.contains("open")) return;
+      var a = moreButton.getBoundingClientRect(), h = morePanel.offsetHeight, w = morePanel.offsetWidth;
+      morePanel.style.left = Math.round(Math.max(8, Math.min(a.right - w, innerWidth - w - 8))) + "px";
+      morePanel.style.top = Math.round(Math.max(8, a.top - h - 7)) + "px";
+    }
+    function closeMore(restoreFocus) {
+      var open = morePanel.classList.contains("open");
+      morePanel.classList.remove("open");
+      moreButton.setAttribute("aria-expanded", "false");
+      if (restoreFocus && open && moreButton.focus) moreButton.focus();
+    }
+    function moreEntriesSync() {
+      var list = Array.prototype.filter.call(main.querySelectorAll(":scope > .it"), function (el) {
+        return el.dataset.zuFolded === "1";
+      });
+      morePanel.innerHTML = '<div class="zu-more-title">' + L("已折叠项目", "Collapsed items") + ' (' + list.length + ')</div>';
+      list.forEach(function (el) {
+        var button = document.createElement("button");
+        button.type = "button"; button.className = "zu-more-option";
+        button.setAttribute("role", "menuitem");
+        button.dataset.zuKey = el.dataset.zuKey || "";
+        var icon = el.querySelector("svg");
+        if (icon) button.appendChild(icon.cloneNode(true));
+        var label = document.createElement("span");
+        label.textContent = (el.textContent || "").trim() || el.dataset.zuKey;
+        button.appendChild(label);
+        button.__tip = el.__tip;
+        morePanel.appendChild(button);
+      });
+    }
+    function syncBarOverflow() {
+      if (state.theme !== "default") {
+        if (moreButton.dataset.zuVisible !== "0") moreButton.dataset.zuVisible = "0";
+        closeMore(false);
+        main.classList.remove("zu-clip");
+        return;
+      }
+      var width = bar.clientWidth;
+      var font = getComputedStyle(main).fontSize;
+      var prioritySig = JSON.stringify(state.barPriority);
+      if (!foldDirty && width === foldWidth && font === foldFont && prioritySig === foldPrioritySig) {
+        barMorePosition();
+        return;
+      }
+      foldDirty = false; foldWidth = width; foldFont = font; foldPrioritySig = prioritySig;
+      var rows = Array.prototype.slice.call(main.querySelectorAll(":scope > .it"));
+      var separators = Array.prototype.slice.call(main.querySelectorAll(":scope > .sep"));
+      rows.forEach(function (el) { el.dataset.zuFolded = "0"; });
+      separators.forEach(function (el) { el.dataset.zuFolded = "0"; });
+      moreButton.dataset.zuVisible = "0";
+      function syncSeparators() {
+        separators.forEach(function (el) { el.dataset.zuFolded = "1"; });
+        var previous = null;
+        rows.forEach(function (el) {
+          if (el.dataset.zuFolded === "1") return;
+          if (previous) {
+            var between = previous.nextElementSibling;
+            while (between && between !== el) {
+              if (between.classList.contains("sep")) { between.dataset.zuFolded = "0"; break; }
+              between = between.nextElementSibling;
+            }
+          }
+          previous = el;
+        });
+      }
+      var needMore = main.scrollWidth > main.clientWidth + 1;
+      if (needMore) {
+        moreButton.dataset.zuVisible = "1";
+        var ranks = {low: 2, normal: 1, high: 0};
+        var candidates = rows.map(function (el, i) {
+          var key = el.dataset.zuKey || "system";
+          return {el: el, i: i, rank: key === "system" ? -1 : (ranks[state.barPriority[key]] === undefined ? 1 : ranks[state.barPriority[key]])};
+        }).sort(function (a, b) { return b.rank - a.rank || b.i - a.i; });
+        for (var i = 0; i < candidates.length && main.scrollWidth > main.clientWidth + 1; i++) {
+          candidates[i].el.dataset.zuFolded = "1";
+          syncSeparators();
+        }
+      }
+      syncSeparators();
+      var hidden = rows.filter(function (el) { return el.dataset.zuFolded === "1"; });
+      moreButton.dataset.zuVisible = hidden.length ? "1" : "0";
+      moreButton.querySelector(".zu-more-count").textContent = hidden.length ? String(hidden.length) : "";
+      moreButton.setAttribute("aria-label", L("查看更多状态，已折叠 ", "More status items, ") + hidden.length);
+      var signature = hidden.map(function (el) { return el.dataset.zuKey || ""; }).join("|");
+      if (signature !== foldedKeys) {
+        foldedKeys = signature;
+        closeMore(false);
+        if (tipFor && tipFor.closest && main.contains(tipFor) && tipFor.dataset.zuFolded === "1") hideTip(true, "bar-hidden");
+      }
+      if (!hidden.length) closeMore(false);
+      main.classList.toggle("zu-clip", main.scrollWidth > main.clientWidth + 1);
+      if (morePanel.classList.contains("open")) moreEntriesSync();
+      barMorePosition();
+    }
+    moreButton.addEventListener("click", function (e) {
+      e.stopPropagation();
+      if (morePanel.classList.contains("open")) { closeMore(true); return; }
+      closeSettings(false);
+      hideTip(true, "bar-hidden");
+      moreEntriesSync();
+      morePanel.classList.add("open");
+      moreButton.setAttribute("aria-expanded", "true");
+      barMorePosition();
+    });
+    morePanel.addEventListener("click", function (e) {
+      var option = e.target && e.target.closest && e.target.closest(".zu-more-option");
+      if (!option) return;
+      e.stopPropagation();
+      if (option.dataset.zuKey === "sub") {
+        closeMore(false);
+        subPopShow(moreButton, true);
+        return;
+      }
+      if (option.__tip) {
+        moreButton.__tip = option.__tip;
+        moreButton.__zuMoreTipKey = option.dataset.zuKey;
+        closeMore(false);
+        moreButton.focus();
+        showTipFor(moreButton);
+      }
+    });
+    morePanel.addEventListener("keydown", function (e) {
+      if (e.key === "Escape") { e.stopPropagation(); closeMore(true); hideTip(true, "escape"); }
+    });
+    listenGlobal(document, "pointerdown", function (e) {
+      if (!morePanel.contains(e.target) && !moreButton.contains(e.target)) closeMore(false);
+    }, true);
+    listenGlobal(window, "resize", function () { foldDirty = true; });
     function track() {
       if (inactive()) return;   // 旧实例罢工，把舞台让给新实例
       try {
@@ -19413,13 +19754,7 @@
          * 的缓存命中率（核心项 tps/上下文/会话累计不动，明细仍在悬停 tooltip），
          * 迟滞 +12px/-120px 防数值刷新在阈值附近来回闪；仍装不下由 .zu-main 右缘渐隐
          * 兜底（.zu-clip）。测量基准都是 bar 自身内容宽，形态无关。 */
-        var ov = main.scrollWidth - main.clientWidth;
-        var ns = shrink;
-        if (!shrink && ov > 12) ns = 1;
-        else if (shrink && ov < -120) ns = 0;
-        if (ns !== shrink) { shrink = ns; render(state.data || { session: {}, last_turn: {}, today: {}, context_window: 0 }); }
-        var clip = state.theme !== "pill" && main.scrollWidth > main.clientWidth + 1;
-        if (clip !== fadeOn) { fadeOn = clip; main.classList.toggle("zu-clip", clip); }
+        syncBarOverflow();
         positionSettingsPanel();
         positionSubPop();
         everMounted = true;
@@ -19562,6 +19897,8 @@
         }
       } catch (e) { }
       wantedEl = composer = cardCache = null;
+      closeMore(false);
+      morePanel.remove();
       bar.remove();
       panel.remove();   // v80：面板挂 body，dispose 需单独摘除
       subPanel.remove();
