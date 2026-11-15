@@ -31,6 +31,7 @@ test('contract: renderer slices keep enhance button wiring anchors', () => {
   assert.match(source, /restoreEnhanceBtn\(true\);   \/\/ v344：摘除增强按钮/);   // dispose 中断在途请求
   assert.match(source, /enhanceSid = enhanceCurSid\(\);/);   // 发起时会话身份锚定
   assert.match(source, /enhanceCurSid\(\) !== enhanceSid/);   // 回填/收窗的会话切换校验
+  assert.match(source, /readPaneScope\(wantedEl, sid, pid, true\)/);   // v354：仅增强链显式放行 draft（其余消费面不传参维持拒绝）
   assert.match(source, /b\.addEventListener\("mouseenter", function \(\) \{ showEnhanceTip\(this\); \}\)/);   // 悬停 tooltip
   assert.match(source, /b\.__zuEnhTip = label;/);   // 文案包随相位同步
   assert.doesNotMatch(source, /b\.title = label/);   // 禁原生 title（防与自绘 tooltip 双显）
@@ -440,6 +441,82 @@ test('session switch inside enhance flow: stale window never rewrites, next clic
   const reqs2 = h.takeRequests().filter(r => r.action === 'prompt-enhance');
   assert.equal(reqs2.length, 0, 'no cross-session enhance request');
   assert.equal(ui.editor.__zuDraft, '会话A增强稿');
+});
+
+test('v354 draft session (no first message sent) enhances instead of refusing', () => {
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'draft', { provider: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-FlashX', draft: '新会话的第一句' });
+  h.inject(); h.boot(); h.coordAttach(ui.editor, 'draft');
+  h.window.__zusageUpdate(h.payload());
+  h.tick();
+  const enh = h.enhOf(ui.wrap);
+  assert.ok(enh, 'enhance button should mount on a draft pane');
+  enh.listeners.get('click')[0]();
+  const reqs = h.takeRequests().filter(r => r.action === 'prompt-enhance');
+  assert.equal(reqs.length, 1, 'draft session should fire the request');
+  assert.equal(reqs[0].text, '新会话的第一句');
+  h.respond(reqs[0].requestId, { ok: true, text: '更清晰的第一句' });
+  assert.equal(ui.editor.__zuDraft, '更清晰的第一句');
+  assert.equal(enh.getAttribute('aria-label'), '增强提示词');   // 回填成功即回初始态
+});
+
+test('v354 draft without workspace scope still refuses with session warning', () => {
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'draft', { provider: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-FlashX', draft: '草稿' });
+  ui.editor.removeAttribute('data-zusage-scope-version');   // 桥缺席 → fiber 兜底；夹具无 fiber 候选 → null（同时覆盖 :112 透传的拒绝面）
+  h.inject(); h.boot(); h.coordAttach(ui.editor, 'draft');
+  h.window.__zusageUpdate(h.payload());
+  h.tick();
+  const enh = h.enhOf(ui.wrap);
+  enh.listeners.get('click')[0]();
+  assert.equal(h.takeRequests().filter(r => r.action === 'prompt-enhance').length, 0);
+  assert.match(enh.getAttribute('aria-label'), /未识别当前会话/);
+});
+
+test('v354 draft promoted mid-enhance discards the reply as session switch', () => {
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'draft', { provider: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-FlashX', draft: '原始草稿' });
+  h.inject(); h.boot(); h.coordAttach(ui.editor, 'draft');
+  h.window.__zusageUpdate(h.payload());
+  h.tick();
+  const enh = h.enhOf(ui.wrap);
+  enh.listeners.get('click')[0]();
+  const req = h.takeRequests().find(r => r.action === 'prompt-enhance');
+  assert.ok(req, 'request was fired on the draft pane');
+  ui.editor.setAttribute('data-session-id', 'sid_real');   // 宿主 draft-promotion：首条消息发出，pane 与 composer 同步换真实 sid
+  ui.pane.setAttribute('data-session-id', 'sid_real');
+  h.coordAttach(ui.editor, 'sid_real');   // 协调器派发新 sid → heavy 即拍更新 instSid
+  h.respond(req.requestId, { ok: true, text: '增强结果' });
+  assert.match(enh.getAttribute('aria-label'), /会话已切换/);   // 晋升按切换丢弃，不回填
+  assert.equal(ui.editor.__zuDraft, '原始草稿');
+  assert.equal(ui.editor.setTextCalls || 0, 0);
+});
+
+test('v354 draft scope never reaches the report chain (getScope stays null)', () => {
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'draft', { provider: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-FlashX', draft: '草稿' });
+  h.inject(); h.boot(); h.coordAttach(ui.editor, 'draft');
+  h.window.__zusageUpdate(h.payload());
+  h.tick();
+  const inst = h.window.enhanceTest.instances()[0];
+  assert.equal(inst.getScope(), null, 'report-chain getScope keeps rejecting draft (no allowDraft)');
+});
+
+test('v354 draft enhances via fiber fallback when bridge attrs are absent (allowDraft forwarded)', () => {
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'draft', { provider: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-FlashX', draft: '桥缺席的draft草稿' });
+  ui.pane.removeAttribute('data-zusage-scope-version');   // 桥缺席：走 readFiberPaneScope 兜底
+  ui.editor.removeAttribute('data-zusage-scope-version');
+  ui.editor.__reactFiber$k = { stateNode: ui.editor, memoizedProps: { workspacePath: '/fixture', paneId: 'workspace-main' }, return: null };
+  h.inject(); h.boot(); h.coordAttach(ui.editor, 'draft');
+  h.window.__zusageUpdate(h.payload());
+  h.tick();
+  const enh = h.enhOf(ui.wrap);
+  assert.ok(enh, 'button mounts on draft pane');
+  enh.listeners.get('click')[0]();
+  const reqs = h.takeRequests().filter(r => r.action === 'prompt-enhance');
+  assert.equal(reqs.length, 1, 'fiber fallback must let draft enhance (allowDraft forwarded through :112)');
+  assert.equal(reqs[0].text, '桥缺席的draft草稿');
 });
 
 test('successful enhance returns to idle immediately; missing reply hits the 75s timeout guard', () => {

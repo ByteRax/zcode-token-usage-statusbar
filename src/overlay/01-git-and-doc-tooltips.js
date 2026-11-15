@@ -89,8 +89,8 @@
     }
     return out;
   }
-  function readFiberPaneScope(root, sid, pid) {
-    if (!root || !sid || sid === "draft" || !root.getAttribute ||
+  function readFiberPaneScope(root, sid, pid, allowDraft) {
+    if (!root || !sid || (sid === "draft" && !allowDraft) || !root.getAttribute ||
         root.getAttribute("data-session-id") !== sid) return null;
     try {
       var best = fiberPaneCandidates(root, pid);
@@ -103,13 +103,13 @@
       return { sid: sid, identity: identity, workspacePath: path, remoteSessionId: remote };
     } catch (e) { return null; }
   }
-  function readPaneScope(el, sid, pid) {
-    if (!el || !sid || sid === "draft" || !el.isConnected) return null;
+  function readPaneScope(el, sid, pid, allowDraft) {
+    if (!el || !sid || (sid === "draft" && !allowDraft) || !el.isConnected) return null;
     try {
       var root = el;
       while (root && !(root.hasAttribute && root.hasAttribute("data-session-id"))) root = root.parentElement;
       if (!root || root.getAttribute("data-session-id") !== sid) return null;
-      if (root.getAttribute("data-zusage-scope-version") !== "1") return readFiberPaneScope(root, sid, pid);   // v258：桥缺席的 fiber 兜底
+      if (root.getAttribute("data-zusage-scope-version") !== "1") return readFiberPaneScope(root, sid, pid, allowDraft);   // v258：桥缺席的 fiber 兜底；v354：allowDraft 透传（draft+桥缺席仍可放行）
       if (root.getAttribute("data-zusage-pane-id") !== pid) return null;
       var path = root.getAttribute("data-zusage-workspace-path");
       var identity = root.getAttribute("data-zusage-workspace-identity");
@@ -1155,6 +1155,38 @@
     var footer = '<div class="zu-eh-footer"><button type="button" class="zu-eh-act zu-eh-all" data-all>' + EH_ICON.list + L("查看全部历史", "View all history") + '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></button><button type="button" class="zu-eh-act zu-eh-clear" data-clear>' + EH_ICON.trash + L("清空记录", "Clear records") + '</button><button type="button" class="zu-eh-act" data-ehset title="' + L("提示词增强设置", "Prompt enhancement settings") + '">' + EH_ICON.gear + L("设置", "Settings") + "</button></div>";
     var total = ehCache && ehCache.total != null ? L("共 ", "total ") + ehCache.total + L(" 条", "") : "";
     enhanceTip.innerHTML = '<div class="zu-eh-head"><div class="zu-eh-head-row"><span class="zu-eh-title">' + EH_ICON.history + L("最近增强记录", "Recent enhancements") + phase + '</span>' + (total ? '<span class="zu-eh-total">' + total + '</span>' : "") + '</div></div>' + body + '<div class="zu-eh-arrow"></div>' + footer;
+    placeEnhanceTip();   // v355：内容高度变化（加载完成/清空/删除）后重钳视口位置
+  }
+  /* v355 视口钳位（用户实报截图：多条卡片时面板顶缘越出窗口顶部被裁剪）——bottom 锚定
+   * 只保证底边间距，内容高超过按钮上方可用空间时顶部直接溢出视口。每次显示/内容重绘后按
+   * 实测高三档放置：上方够→bottom 锚定（原行为）；上方不够而下方够→翻到按钮下方（箭头
+   * 翻转，v315 cap 翻转先例）；两侧都不够→保持上方贴边并钳 maxHeight 让 .zu-eh-scroll 内滚。
+   * offsetHeight 在切片/桩环境缺席（→0），恒走「上方够」分支，既有行为与断言不变。 */
+  function placeEnhanceTip() {
+    var el = enhanceTipFor;
+    if (!el || !el.isConnected) return;
+    var r = el.getBoundingClientRect(), vw = window.innerWidth, vh = window.innerHeight;
+    var tw = Math.min(600, vw - 24);
+    enhanceTip.style.left = Math.max(8, Math.min(Math.round(r.left + r.width / 2 - tw / 2), Math.round(vw - tw - 8))) + "px";
+    var above = r.top - 20, below = vh - r.bottom - 20;   // 12px 间距 + 8px 视口边距
+    enhanceTip.style.maxHeight = "";   // 先解除上一拍的钳高，再量自然高——否则小钳位会锁死后续测量
+    var h = enhanceTip.offsetHeight || 0;
+    if (h <= above) {
+      enhanceTip.style.top = "auto";
+      enhanceTip.style.bottom = (vh - Math.round(r.top) + 12) + "px";
+      enhanceTip.style.maxHeight = "min(650px,72vh)";   // 恢复 boot 契约的 650px 帽（内部照常滚动），不因走该分支而退役
+      enhanceTip.classList.remove("zu-eh-flip");
+    } else if (below >= Math.min(h, 320)) {   // 至少 320px 高才值得翻到下方
+      enhanceTip.style.top = (Math.round(r.bottom) + 12) + "px";
+      enhanceTip.style.bottom = "auto";
+      enhanceTip.style.maxHeight = Math.min(h, below) + "px";   // 下方同样钳高，防止面板底缘越出视口
+      enhanceTip.classList.add("zu-eh-flip");
+    } else {
+      enhanceTip.style.top = "auto";
+      enhanceTip.style.bottom = (vh - Math.round(r.top) + 12) + "px";
+      enhanceTip.style.maxHeight = Math.max(above, 0) + "px";
+      enhanceTip.classList.remove("zu-eh-flip");
+    }
   }
   function showEnhanceTip(el) {
     if (stale() || !el || !el.isConnected) { hideEnhanceTip(); return; }
@@ -1163,12 +1195,6 @@
     enhanceTip.classList.toggle("zu-light", !dark);
     enhanceTip.style.display = "flex";
     enhanceTipFor = el;
-    var r = el.getBoundingClientRect(), vw = window.innerWidth;
-    var tw = Math.min(600, vw - 24);
-    var left = Math.max(8, Math.min(Math.round(r.left + r.width / 2 - tw / 2), Math.round(vw - tw - 8)));
-    enhanceTip.style.left = left + "px";
-    enhanceTip.style.top = "auto";   // bottom 锚定：面板高度变化不影响与按钮的间距
-    enhanceTip.style.bottom = (window.innerHeight - Math.round(r.top) + 12) + "px";
     if (!ehCache || Date.now() - ehCacheAt > 5000) { if (!ehLoading) ehFetch(ehRender); }
     ehRender();
   }
