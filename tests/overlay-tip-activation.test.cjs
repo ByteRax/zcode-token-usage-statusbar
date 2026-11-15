@@ -87,6 +87,7 @@ function makeMoveHandler(extra = {}) {
     tip: { contains: () => false },
     bar: { contains: () => true },
     panel: { classList: { contains: () => false } },
+    morePanel: { classList: { contains: () => false } },   // v350「···」菜单守卫
     tipFor: null, tipSig: '',
     hideTip: () => {}, drawTip: () => {}, showTipFor: () => {},
     hitItemFor: (t) => (t === subEntry ? subEntry : cell),
@@ -168,6 +169,7 @@ test('v249 click mode: first click opens (focusin race), re-click closes; dwell 
       showTipFor: el => { shown++; st.tipFor = el; },
       hideTip: () => { hidden++; st.tipFor = null; },
       panel: { classList: { contains: () => false } },
+    morePanel: { classList: { contains: () => false } },   // v350「···」菜单守卫
       Date,
     };
     vm.runInNewContext(clickSrc + '\n' + focusSrc, vm.createContext(st));
@@ -203,6 +205,7 @@ test('v249 keyboard: focusin opens immediately in BOTH modes (accessibility unch
       cancelTipGrace: () => {}, mouseInBar: false, tipFor: null, focusTipAt: 0, api: null,
       showTipFor: () => { shown++; },
       panel: { classList: { contains: () => false } },
+    morePanel: { classList: { contains: () => false } },   // v350「···」菜单守卫
     };
     vm.runInNewContext(focusSrc, vm.createContext(st));
     focusHandler({ target: it });

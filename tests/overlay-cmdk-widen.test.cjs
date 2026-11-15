@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
-const { readOverlaySource, sliceOverlay } = require('./helpers/overlay-extract.cjs');
+const { readOverlaySource, sliceOverlay, getNamedSlice } = require('./helpers/overlay-extract.cjs');
 
 const source = readOverlaySource();
 function extract(start, end) {
@@ -55,7 +55,8 @@ test('the toggle defaults to on, reads an explicit "0" and persists both ways', 
 });
 
 test('buildPanel shows the widen toggle in both languages and restores its checked state', () => {
-  const buildSource = extract('    function settingRow(', '    function syncSettingsScroll() {');
+  const buildSource = getNamedSlice('barOrderHelpers') + '\n' +
+    extract('    function settingRow(', '    function syncSettingsScroll() {');
   const body = { scrollTop: 0 };
   const cwBox = {};
   const context = {
@@ -88,11 +89,13 @@ test('buildPanel shows the widen toggle in both languages and restores its check
 });
 
 test('syncPanel restores the widen toggle and tolerates its absence', () => {
-  const syncSource = extract('    function syncPanel() {', '    panel.addEventListener("click",');
+  const syncSource = getNamedSlice('barOrderHelpers') + '\n' +
+    extract('    function syncPanel() {', '    panel.addEventListener("click",');
   const cwBox = {}, ctxov = { value: '' };
   let present = true, updates = 0;
   const context = {
     panel: {
+      addEventListener: () => {},   // v350：syncPanel 切片含拖拽监听注册块，桩只需可注册
       querySelectorAll: () => [],
       querySelector: selector => selector === '.zu-cmdk-widen' ? (present ? cwBox : null) : selector === '.zu-ctxov' ? ctxov : { value: '' },
     },

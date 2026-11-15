@@ -86,6 +86,10 @@ const NAMED_SLICES = {
   subAgentRows: ['    var SUBROW_TID_PREFIX = "v4-subagent-open-side-pane-";', '    function subRateTick('],
   wfRunCards: ['    var WF_CARD_TID = "workflow-card";', '    /* 每次主桥数据到达时 reconcile'],
   subStatItems: ['    /* 心跳读快照（issue #309', '    /* 每次主桥数据到达时 reconcile'],
+  /* v350 状态栏排序/优先级共享助手（00 分片）：html() 尾部 zuBarSortItems 的定义区。
+   * tip-layout/tooltip-span/speed-chart 家族只切 07 分片进 VM，html() 新引用模块级助手
+   * 时必须把这个切片前置拼进 helpers（zuBarSortItems is not defined 断链，62 例回归根因）。 */
+  barOrderHelpers: ['  var ZU_BAR_KEYS =', '  var state = {'],
 };
 
 /**

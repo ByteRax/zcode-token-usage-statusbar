@@ -1,7 +1,7 @@
 const assert = require('node:assert/strict');
 const vm = require('node:vm');
 const test = require('node:test');
-const { sliceOverlay } = require('./helpers/overlay-extract.cjs');
+const { sliceOverlay, getNamedSlice } = require('./helpers/overlay-extract.cjs');
 
 /* v301「今日合计」tooltip 450 自适应紧凑布局（同本轮 v299 / 会话 v300 三行 KPI 形态）：
  * 行一 总用量|输入(缓存命中率副行)|输出(含思考)；行二 平均耗时|平均延迟|重试次数
@@ -9,7 +9,10 @@ const { sliceOverlay } = require('./helpers/overlay-extract.cjs');
  * avg_tps 档色)|预估费用；八枚 KPI SVG 图标随标签；模型表独立滚动区；时间行钉底。
  * 样式 statCompactStyle("today") + today 专属规则（图标居中/副行绿/单格占满）。 */
 
-const helpers = sliceOverlay('    function fmtStart(', '    function ioc(') +
+// v350：html() 引用 00 分片模块级助手（zuBarSortItems/ZU_BAR_KEYS/ZU_BAR_TITLES），
+// VM 切片须前置拼入定义区，否则 ReferenceError（62 例回归根因的统一修法）
+const helpers = getNamedSlice('barOrderHelpers') +
+  sliceOverlay('    function fmtStart(', '    function ioc(') +
   sliceOverlay('    function ttEsc(', '    function stubFor(');
 const bandHelpers = sliceOverlay('  var TPS_BANDS = [', '  /* 返回 null = 调用方应把这当成');
 
