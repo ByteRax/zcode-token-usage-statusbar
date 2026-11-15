@@ -834,6 +834,44 @@ test('issue #309: a stale snapshot record is refreshed with exactly one read, wh
   assert.equal(instanceOf(h).statsFor('pt1'), null, 'tracker 已 dispose');
 });
 
+/* ---------- issue #342（specs/perf-lag-reduction.md 规则 18a）：回源实测 ≥8ms（含界）时新鲜窗退避
+ * 2s→4s→8s 封顶。拷贝成本经假 performance 时钟注入（h.clock.now 在 getState 桩内恰 +8ms），
+ * 新鲜度窗口仍按 Date.now 偏移（advanceDate）推进，两者独立、判定确定。 ---------- */
+test('issue #342: an expensive re-read (>= 8ms) backs the fresh window off, capped at 8s; a cheap one restores 2s', () => {
+  const h = harness();
+  const store = driveStreaming(h);
+  const reads = countReads(store);
+  const inner = store.getState;
+  store.getState = function () { const v = inner.call(this); h.clock.now += 8; return v; };   // 恰 8ms（≥ 阈值含界）
+  h.advanceDate(2500);
+  h.runTimers(100);
+  assert.equal(reads.n, 1, '陈旧后的首个心跳回源一次');
+  assert.equal(h.window.__zusageDiag.snapSrcMs, 8, 'snapSrcMs 落 diag 且恰为阈值（>8 变异在此变红）');
+  for (let i = 0; i < 25; i++) { h.advanceDate(100); h.runTimers(100); }   // 再走 2.5s：落在退避后的 4s 窗内
+  assert.equal(reads.n, 1, '回源实测 8ms ≥ 8ms：新鲜窗退避到 4s，2.5s 内不再回源（修复前此处 reads=2）');
+  h.advanceDate(1600);
+  h.runTimers(100);   // 累计 4.1s ≥ 4s：恰好再回源一次，成本仍贵 → 升到 2 档
+  assert.equal(reads.n, 2);
+  h.advanceDate(8500);
+  h.runTimers(100);   // 8s 窗届满：第三次贵回源——档位必须封顶在 2（窗不再翻倍到 16s）
+  assert.equal(reads.n, 3, '退避封顶：新鲜窗停在 8s（min(2→3) 变异在此变红）');
+  store.getState = inner;   // 恢复零成本读取（<8ms）
+  h.advanceDate(8500);
+  h.runTimers(100);   // 8s 窗届满：回源且测得廉价 → 档位回 0
+  assert.equal(reads.n, 4);
+  h.advanceDate(2500);
+  h.runTimers(100);   // 2s 窗届满：恢复原 2s 节奏
+  assert.equal(reads.n, 5, '廉价回源后档位回落：2s 节奏恢复');
+});
+
+test('issue #342: perfMs prefers performance.now and falls back to Date.now when unavailable', () => {
+  const m = source.match(/function perfMs\(\) \{[\s\S]*?\n  \}/);
+  assert.ok(m, 'perfMs 定义随 00 分片进入构建产物');
+  assert.equal(vm.runInNewContext('(' + m[0] + ')', { Date: { now: () => 1234 } })(), 1234, 'performance 缺位回退 Date.now');
+  assert.equal(vm.runInNewContext('(' + m[0] + ')', { performance: { now: () => 5.5 }, Date: { now: () => 1234 } })(), 5.5, '优先 performance.now');
+  assert.equal(vm.runInNewContext('(' + m[0] + ')', { performance: { now: 'x' }, Date: { now: () => 9 } })(), 9, 'now 非函数同样回退');
+});
+
 test('issue #309: one store push costs exactly one read through the whole overlay path', () => {
   const h = harness();
   const store = driveStreaming(h);

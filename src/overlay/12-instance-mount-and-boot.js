@@ -299,8 +299,16 @@
       }
       if (bar.classList.contains("zu-in")) mountBelowCard();   // 换卡先回落兜底形态，heavy 同 tick 重判挂载
     }
+    /* v349（issue #342，specs/perf-lag-reduction.md 规则 18b）：单拍同步 ≥16ms（一帧预算）时
+     * 跳拍降频（600ms→最长 2.4s），只在宿主主线程已被 guest 长帧/GC 占满时降低对账频率；
+     * <16ms 立即回 600ms，健康机器逐字不变。setInterval 拓扑与 dispose 不变。 */
+    var heavyLvl = 0, heavyRunAt = 0;
     function heavy() {
       if (inactive()) return;
+      var nowMs = Date.now();
+      if (heavyLvl > 0 && nowMs - heavyRunAt < 600 * heavyLvl) return;
+      heavyRunAt = nowMs;
+      var heavyT0 = perfMs();
       if (pid === "auto") {
         /* 兜底模式（主文档找不到带 pane 标记的输入框，shadow/iframe 场景）：沿用原
          * 单条查找链路（findComposer 含 deepFind 穿透），会话判定走 mine/pickCurrent */
@@ -385,6 +393,9 @@
         }
         if (pSid !== pickedSid) render(state.data);   // 切换了会话：立即按缓存 payload 重渲染
       }
+      var heavyCost = perfMs() - heavyT0;
+      FATAL.heavyCost = Math.round(heavyCost);
+      heavyLvl = heavyCost >= 16 ? Math.min(3, heavyLvl + 1) : 0;
     }
     /* v169 同容器双条去重（Windows 最小化/还原双条，用户报告）：窗口状态切换时宿主可能
      * 短暂保留旧视图副本/重建编辑框，协调器按 pane 键派发可能短暂出现两个实例、两根条

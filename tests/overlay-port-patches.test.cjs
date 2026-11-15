@@ -84,6 +84,7 @@ function runCoordinator(candidates) {
     },
     refreshWants: () => {},
     FATAL: {},
+    perfMs: () => 0,   // v349 规则 18：tick 单拍成本计时的外部依赖，切片桩恒判廉价
     setInterval: () => 1,
     coordinatorTimer: 0,
   };

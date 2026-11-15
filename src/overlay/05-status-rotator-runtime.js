@@ -2004,8 +2004,16 @@
       }
       return true;
     }
+    /* v349（issue #342，specs/perf-lag-reduction.md 规则 18b）：单拍同步 ≥16ms（一帧预算）时
+     * 跳拍降频（600ms→最长 2.4s），只在宿主主线程已被 guest 长帧/GC 占满时降低对账频率；
+     * <16ms 立即回 600ms，健康机器逐字不变。定时器拓扑与 dispose 不变。 */
+    var coordLvl = 0, coordRunAt = 0;
     function tick() {
       if (stale()) return;
+      var nowMs = Date.now();
+      if (coordLvl > 0 && nowMs - coordRunAt < 600 * coordLvl) return;
+      coordRunAt = nowMs;
+      var t0 = perfMs();
       try {
         var best = {};
         document.querySelectorAll(SEL).forEach(function (el) {
@@ -2067,6 +2075,9 @@
         reportQuotaSelections();
         FATAL.insts = instances.map(function (a) { return a.pid + "=" + (a.getSid() ? a.getSid().slice(-8) : "-"); }).join(" | ");
       } catch (e) { FATAL.coordErr = String((e && e.stack) || e); }
+      var cost = perfMs() - t0;   // 异常拍也计成本：异常路径同样占主线程
+      FATAL.coordCost = Math.round(cost);
+      coordLvl = cost >= 16 ? Math.min(3, coordLvl + 1) : 0;
     }
     tick();
     coordinatorTimer = setInterval(tick, 600);
