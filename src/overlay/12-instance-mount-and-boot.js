@@ -618,6 +618,9 @@
     function syncBarOverflow() {
       if (state.theme !== "default") {
         if (moreButton.dataset.zuVisible !== "0") moreButton.dataset.zuVisible = "0";
+        main.querySelectorAll("[data-zu-folded]").forEach(function (el) { el.removeAttribute("data-zu-folded"); });
+        foldedKeys = "";
+        foldDirty = true;
         closeMore(false);
         main.classList.remove("zu-clip");
         return;
