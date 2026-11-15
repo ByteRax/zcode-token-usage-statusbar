@@ -1730,7 +1730,9 @@
         '<button type="button" class="zu-layout-reset zu-layout-action" style="width:auto;padding:0 8px">' + L("重置", "Reset") + '</button></div>' +
         '<div class="zu-layout-note">' + L("拖动排序；空间不足时先收起低优先级项目，仍可通过 ··· 查看。使用 ↑↓ 键盘排序。", "Drag to reorder; lower-priority items fold first, with all items available under More. Use arrows for keyboard sorting.") + '</div>' +
         '<div class="zu-layout-list" role="list">';
-      state.barOrder.forEach(function (key, i) {
+      var order = Array.isArray(state.barOrder) ? state.barOrder : Object.keys(titles);
+      var priorities = state.barPriority || {};
+      order.forEach(function (key, i) {
         var title = L(titles[key][0], titles[key][1]);
         var checked = key === "speed" || !!state.show[key];
         result += '<div class="zu-layout-row" role="listitem" draggable="true" data-zu-layout-key="' + key + '">' +
@@ -1741,12 +1743,12 @@
           '<select class="zu-layout-priority" data-zu-priority="' + key + '" aria-label="' +
           title + L(" 优先级", " priority") + '">' +
           [["high", L("高", "High")], ["normal", L("普通", "Normal")], ["low", L("低", "Low")]].map(function (opt) {
-            return '<option value="' + opt[0] + '"' + (state.barPriority[key] === opt[0] ? ' selected' : '') + '>' + opt[1] + '</option>';
+            return '<option value="' + opt[0] + '"' + ((priorities[key] || "normal") === opt[0] ? ' selected' : '') + '>' + opt[1] + '</option>';
           }).join("") + '</select>' +
           '<button type="button" class="zu-layout-action" data-zu-shift="-1" aria-label="' +
           L("上移 ", "Move up ") + title + '"' + (i === 0 ? ' disabled' : '') + '>↑</button>' +
           '<button type="button" class="zu-layout-action" data-zu-shift="1" aria-label="' +
-          L("下移 ", "Move down ") + title + '"' + (i === state.barOrder.length - 1 ? ' disabled' : '') + '>↓</button>' +
+          L("下移 ", "Move down ") + title + '"' + (i === order.length - 1 ? ' disabled' : '') + '>↓</button>' +
           '</div>';
       });
       return result + '</div>';
