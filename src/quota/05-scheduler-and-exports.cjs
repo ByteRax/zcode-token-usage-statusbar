@@ -430,7 +430,7 @@ function createQuotaClient(opts) {
   function resetStateOf(fam) {
     let st = resetStates.get(fam);
     if (!st) {
-      st = { status: "idle", value: null, fetchedAt: 0, nextAt: 0, backoffIdx: 0,
+      st = { status: "idle", value: null, fetchedAt: 0, listFetchedAt: 0, nextAt: 0, backoffIdx: 0,
         fingerprint: "", epoch: 0, inFlight: null, ctl: null, lastError: "" };
       resetStates.set(fam, st);
     }
@@ -474,7 +474,7 @@ function createQuotaClient(opts) {
     if (fingerprint === st.fingerprint && (fingerprint || (st.status === "not_configured" && st.lastError === error))) return false;
     st.epoch += 1;
     if (st.ctl) { try { st.ctl.abort(); } catch (e) { } }
-    Object.assign(st, { ctl: null, inFlight: null, value: null, fetchedAt: 0,
+    Object.assign(st, { ctl: null, inFlight: null, value: null, fetchedAt: 0, listFetchedAt: 0,
       fingerprint, backoffIdx: 0, nextAt: 0, status: fingerprint ? "idle" : "not_configured", lastError: error });
     return true;
   }
@@ -508,6 +508,8 @@ function createQuotaClient(opts) {
       if (ctl.signal && typeof ctl.signal.addEventListener === "function") {
         ctl.signal.addEventListener("abort", () => clearTimeout(kill), { once: true });
       }
+      let listAttempted = false;   // v361：个人链列表增强按 RESET_LIST_TTL_MS 独立计时（尝试即计时）
+      let listFailed = false;      // 本轮尝试了列表但未取到（传输失败/形状变化）：沿用旧 list 防天窗
       const p = (async () => {
         if (cred.team) {
           /* 团队模式：个人 reset/status 不适用，只打 targetType=TEAM 列表（成员可用的卡）。
@@ -532,9 +534,13 @@ function createQuotaClient(opts) {
           "Bigmodel-Target-Type": "PERSONAL",
         }, ctl);
         const value = normalizeResetStatus(body, now());
-        if (famConf.listPath && resetListOn()) {
+        if (famConf.listPath && resetListOn() &&
+            (force || t - st.listFetchedAt >= RESET_LIST_TTL_MS)) {
           /* 网页控制台列表端点：补充近 7 天过期卡与上次重置时间（status 无过期历史）。
-           * 与 subscription 同款可选并行——失败/形状变化静默降级，不影响 status 主链。 */
+           * 与 subscription 同款可选并行——失败/形状变化静默降级，不影响 status 主链。
+           * v361 status 提频到 2min 后列表不随之翻倍：独立 10min TTL，force 仍必打；
+           * 团队分支不走这里（团队 list 就是主链）。 */
+          listAttempted = true;
           const listBody = await j.http.maybeGetJson(RESET_LIST_ORIGIN + famConf.listPath,
             { authorization: cred.oauth, "set-language": "zh" }, ctl);
           const extra = listBody ? normalizeResetList(listBody, now()) : null;
@@ -542,18 +548,31 @@ function createQuotaClient(opts) {
             value.list = extra.list;
             if (extra.lastFiveHour) value.lastFiveHour = extra.lastFiveHour;
             if (extra.lastWeek) value.lastWeek = extra.lastWeek;
+          } else {
+            listFailed = true;
           }
         }
         return value;
       })().then((value) => {
         if (!resetGateOpen() || resetStates.get(famConf.fam) !== st || ep !== st.epoch) return;
         if (syncResetCredential(st, resolveResetCred(famConf))) { if (onUpdate) onUpdate(); return; }
+        /* 列表增强按自己的 10 分钟窗口刷新：本轮未打列表或尝试失败（listFailed）时沿用上一轮
+         * 的 list/上次重置时间，否则 status 每 2 分钟重查会把深度信息清掉，tooltip 在两个列表
+         * 窗口之间开天窗；业务如实返回的空列表（extra 非 null）不沿用。仅限个人链——团队分支
+         * 每轮 list 都是新鲜抓取（listAttempted 恒 false），sticky 会把它冻结在首次抓取，
+         * tooltip 与 badge 张数从此不一致。 */
+        if (!cred.team && (!listAttempted || listFailed) && st.value) {
+          if (st.value.list) value.list = st.value.list;
+          if (st.value.lastFiveHour) value.lastFiveHour = st.value.lastFiveHour;
+          if (st.value.lastWeek) value.lastWeek = st.value.lastWeek;
+        }
         st.value = value;
         st.fetchedAt = now();
         st.status = "ok";
         st.lastError = "";
         st.backoffIdx = 0;
         st.nextAt = now() + RESET_TTL_MS;
+        if (listAttempted) st.listFetchedAt = now();
       }).catch((e) => {
         if (!resetGateOpen() || resetStates.get(famConf.fam) !== st || ep !== st.epoch) return;
         if (syncResetCredential(st, resolveResetCred(famConf))) { if (onUpdate) onUpdate(); return; }
@@ -575,10 +594,30 @@ function createQuotaClient(opts) {
       st.inFlight = p;
     }
   }
+  /* v361 事件触发的软强刷：渲染端在窗口恢复可见/悬停重置卡徽标时发 quota-poke。
+   * 与 force（chip 点击 refresh()）不同——只唤醒处于 ok 态且数据已旧于 RESET_POKE_GAP_MS
+   * 的族（置 nextAt=0 借 tickReset 既有守卫拉新）：失败态（网络退避/rate retry-after/
+   * parse 15min）与 auth 冻结族一律不唤醒，退避与冻结语义完全不被事件越过；未首发族
+   * （idle，nextAt 本就是 0）也交给泵 tick，不占 poke 名额。返回实际唤醒的族数（门控关闭=0）。 */
+  function pokeReset() {
+    if (!resetGateOpen()) return 0;
+    const t = now();
+    let poked = 0;
+    for (const st of resetStates.values()) {
+      if (st.status !== "ok") continue;
+      if (!st.fingerprint || st.inFlight) continue;   // ok 态下 fingerprint 必非空：纵深防御，防后续守卫组合演化漏保护
+      if (t - st.fetchedAt < RESET_POKE_GAP_MS) continue;
+      st.nextAt = 0;
+      poked += 1;
+    }
+    if (poked) tickReset(false);
+    return poked;
+  }
 
   const client = {
     tick,
     refresh() { v2KeyRetryNow(); return tick(true) > 0; },   // 用户显式刷新：越过 v2 密钥冷却/失配限频
+    pokeReset,
     refreshSource(id) {   // 厂商按钮刷新该厂商各账户；chip 的完整源 id 只刷新本账户
       const a = adapterOf(id);
       if (!a) return false;
@@ -773,4 +812,6 @@ module.exports = {
   },
   TTL_MS,
   RESET_TTL_MS,
+  RESET_LIST_TTL_MS,
+  RESET_POKE_GAP_MS,
 };

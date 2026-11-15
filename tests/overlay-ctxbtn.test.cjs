@@ -489,6 +489,56 @@ test('unknown capacity restores the native form including the reset badge', () =
   assert.equal(rst(ui.btn), undefined);
 });
 
+test('v361: hovering the badge pokes the reset chain (quota-poke)', () => {
+  const h = harness(), ui = resetComposer(h);
+  h.inject(); h.boot(); h.tick();
+  h.window.__zusageUpdate(payloadWithResets(h.payload, { bigmodel: rstEntry(2 * 3600e3, 1) }));
+  const pokes = () => h.window.__zusagePluginRequests.filter((r) => r.action === 'quota-poke');
+  assert.equal(pokes().length, 0);
+  const b = rst(ui.btn);
+  b.listeners.get('mouseenter')[0].call(b);
+  assert.equal(pokes().length, 1, 'viewing the tooltip pulls fresh reset data');
+  b.listeners.get('mouseleave')[0].call(b);
+});
+
+test('v361: window becoming visible pokes once; hidden and gate-off and dispose do not', () => {
+  const h = harness(), ui = resetComposer(h);
+  h.inject(); h.boot(); h.tick();
+  h.window.__zusageUpdate(payloadWithResets(h.payload, { bigmodel: rstEntry(2 * 3600e3, 1) }));
+  const pokes = () => h.window.__zusagePluginRequests.filter((r) => r.action === 'quota-poke');
+  const fireVc = () => { for (const fn of (h.document.listeners.get('visibilitychange') || [])) fn(); };
+  assert.equal(pokes().length, 0);
+  h.document.visibilityState = 'visible';
+  fireVc();
+  assert.equal(pokes().length, 1, 'restore pulls fresh reset data');
+  h.document.visibilityState = 'hidden';
+  fireVc();
+  assert.equal(pokes().length, 1, 'hidden does not poke');
+  h.window.__zusagePluginUpdate({ resetBadgeEnabled: false });
+  h.tick();
+  h.document.visibilityState = 'visible';
+  fireVc();
+  assert.equal(pokes().length, 1, 'badge gate off: no poke');
+  h.window.__zusagePluginUpdate({ resetBadgeEnabled: true });
+  h.tick();
+  h.window.ctxBtnTest.instances()[0].dispose();
+  fireVc();
+  assert.equal(pokes().length, 1, 'disposed instance no longer pokes');
+  assert.equal((h.document.listeners.get('visibilitychange') || []).length, 0,
+    'dispose removes the visibilitychange listener itself (listenGlobal cleanup)');
+});
+
+test('v361: stale generation (hot reload, not disposed) never pokes', () => {
+  const h = harness(), ui = resetComposer(h);
+  h.inject(); h.boot(); h.tick();
+  h.window.__zusageUpdate(payloadWithResets(h.payload, { bigmodel: rstEntry(2 * 3600e3, 1) }));
+  const pokes = () => h.window.__zusagePluginRequests.filter((r) => r.action === 'quota-poke');
+  h.window.__zusageGen += 1000;   // 模拟热重载：新代际已 spawn，旧实例 stale 但尚未 dispose
+  h.document.visibilityState = 'visible';
+  for (const fn of (h.document.listeners.get('visibilitychange') || [])) fn();
+  assert.equal(pokes().length, 0, 'stale instance guard blocks the poke');
+});
+
 
 
 test('moving the pointer from the badge into the tooltip keeps it open for the how-to button', () => {
@@ -599,8 +649,9 @@ test('reset tooltip shows color legend, cadence note and a how-to button opening
   assert.match(tip.innerHTML, /&lt;30 分钟/);
   assert.match(tip.innerHTML, /30 分钟–3 小时/);
   assert.match(tip.innerHTML, /&gt;3 小时/);
-  // 刷新节奏描述
-  assert.match(tip.innerHTML, /每 5 分钟查询一次/);
+  // 刷新节奏描述（v361：2 分钟稳态 + 事件触发 30s 防抖）
+  assert.match(tip.innerHTML, /每 2 分钟自动查询/);
+  assert.match(tip.innerHTML, /30 秒防抖/);
   assert.match(tip.innerHTML, /倒计时按本机时钟推算/);
   // 「如何重置」按钮：存在且点击走 openExternal（系统默认浏览器）
   assert.match(tip.innerHTML, /rst-howto/);

@@ -50,7 +50,7 @@
 
 ## 5. 状态机与显示门控
 
-- 退避阶梯 `BACKOFF_MS` = 30s → 2min → 10min 封顶；429 按 `retry-after`（钳 30s–10min）；`parse_error` 30 分钟；`not_configured` 60 秒低频探测；JWT exp 临期（`EXP_SOON_MS`）不发请求。唤醒只在 Infinity/not_configured/host 变化时置 nextAt=0，ok 态保持 TTL；点击 chip/立即刷新绕过一切间隔与冻结。
+- 退避阶梯 `BACKOFF_MS` = 30s → 2min → 10min 封顶；429 按 `retry-after`（钳 30s–10min）；`parse_error` 30 分钟；`not_configured` 60 秒低频探测；JWT exp 临期（`EXP_SOON_MS`）不发请求。唤醒只在 Infinity/not_configured/host 变化时置 nextAt=0，ok 态保持 TTL；点击 chip/立即刷新绕过一切间隔与冻结。重置卡 pokeReset（v360，quota-poke：窗口恢复可见/悬停徽标）是第三类事件唤醒，语义最窄：仅 ok 态且数据旧于 RESET_POKE_GAP_MS=30s 的族置 nextAt=0，失败态（网络退避/retry-after/parse）与 auth 冻结族一律不唤醒——退避与冻结只认凭据指纹变化与显式 force；重置卡列表增强子链独立 RESET_LIST_TTL_MS=10min 尝试即计时（force 必打，团队分支 list 即主链不受限，status 重查 sticky 沿用上一轮 list 且仅限个人链）。
 - 401/403 与无套餐冻结到凭据指纹变化：主进程 fs.watch `credentials.json` + `quota-secrets.json`/`provider_config.json` mtime 缓存失效即解冻。no-plan 判定=业务信封 `success===false` + 文案含 codingplan 不存在/未开通关键词族，不是 401；401/403 单独归 auth 并附结构化 httpStatus 供适配器分流，不靠正则匹配文案。错误分类 bytes-then-parse：读体失败=瞬时、解析失败=确定性。
 - 失败保留最近成功值并标 stale（超 TTL 未刷新成功半透明标"已过期"）；解密失败/no_plan/parse_error 一律 fail-closed，绝不显示 0%。
 - 全局 `quota_enabled` 缺省开（v111 起真值 `!== false`，answer_rate_line 同款方向；显式 `false` 才关）——主进程据此决定是否解密联网。源状态三态=已关闭（开关关，主进程对显式关闭源统一报 `disabled`）/待查询（开着未到 TTL）/未配置凭据（开着没 key），inFlight 独立字段无 busy 态；主进程下发状态须按 enabled 归一，与渲染端 entryView 同口径；关闭源的刷新按钮禁用。chip 对 `not_configured`/`unsupported` 显示中性灰提示（「额度 未配置/暂不支持」），仅 `disabled`（源被 ⚙ 显式关闭）隐藏。
