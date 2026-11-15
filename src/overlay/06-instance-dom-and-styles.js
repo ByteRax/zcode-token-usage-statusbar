@@ -1739,12 +1739,7 @@
       '<label><input type="radio" class="zu-just-choice" name="zu-just-' + slot + '" value="start"' + (state.barJust === "start" ? " checked" : "") + '><span>' + L("居左对齐", "Align left") + '</span></label>' +
       '<label><input type="radio" class="zu-just-choice" name="zu-just-' + slot + '" value="end"' + (state.barJust === "end" ? " checked" : "") + '><span>' + L("居右对齐", "Align right") + '</span></label></div>' +
       '<div class="pnote">' + L("仅默认样式生效：均分为格铺满整条，居左/居右时格靠一侧聚拢，⚙ 齿轮仍在最右。", "Applies to the Default style only: space between spreads the cells across the bar; left/right packs them to one side — the gear stays at the far right.") + '</div></div>' +
-      settingRow('<input type="checkbox" data-k="turn">', L("本轮", "Current turn"), L("tokens、请求次数、耗时与首字延迟", "Tokens, requests, duration and first-token latency")) +
-      settingRow('<input type="checkbox" data-k="win">', L("会话累计", "Session total"), L("当前会话的 tokens、轮数与请求次数", "Tokens, turns and requests in this session")) +
-      settingRow('<input type="checkbox" data-k="proj">', L("项目累计", "Project total"), L("本项目所有会话的消耗（含子代理），按目录归属", "Usage across all sessions in this project (sub-agents incl.), grouped by directory")) +
-      settingRow('<input type="checkbox" data-k="tools">', L("工具调用", "Tool calls"), L("悬停查看各工具明细与错误", "Hover for per-tool details and errors")) +
-      settingRow('<input type="checkbox" data-k="today">', L("今日合计", "Today's total"), L("今天所有会话的消耗", "Usage across all sessions today")) +
-      settingRow('<input type="checkbox" data-k="sub">', L("子代理", "Sub-agents"), L("悬停或点击状态条上的子代理查看统计", "Hover or click the bar item for sub-agent stats")) +
+      barOrderSettingsHtml() +
       settingRow('<input type="checkbox" data-k="subRate">', L("子代理行内速率", "Sub-agent row rate"), L("在会话流的 Agent 工具行内实时显示各子代理 tok/s（运行期估算，完成后切换为真实平均速率；悬停看明细）。默认开启。", "Shows each sub-agent's live tok/s inside its Agent tool row (running estimate, actual average after completion; hover for details). On by default.")) +
       settingRow('<input type="checkbox" data-k="wfChip">', L("工作流卡汇总", "Workflow card summary"), L("在会话流的工作流卡片上显示 token 合计与聚合速率（完成态，每次执行结算后更新；悬停看各执行者明细）。默认开启。", "Shows token total and aggregate rate on workflow cards in the conversation (settled data, refreshed as each ask completes; hover for per-actor details). On by default.")) +
       settingRow('<input type="checkbox" data-k="git">', L("Git 状态", "Git status"), L("工具行显示当前分支、↑领先 ↓落后与未提交改动（+插入行 -删除行 ?未跟踪）；优先挂在「电脑操作」右侧，缺失时留在左侧操作区末尾；仅本地仓库", "Branch, ↑ahead ↓behind and uncommitted changes (+ins -del ?untracked) in the toolbar; beside Computer Use, or at the end of the left action group when unavailable; local repositories only")) +
