@@ -144,12 +144,23 @@ map auto_home           0         0         0   100%     /System/Volumes/Data/ho
   assert.deepStrictEqual(rows.map((r) => r.mount), ["/", "/System/Volumes/Data"]);
 });
 
-test("longestMountPrefix 项目卷取最长前缀（纯路径语义）", () => {
+test("longestMountPrefix 项目卷取最长前缀（POSIX 分隔语义）", { skip: process.platform === "win32" }, () => {
+  /* longestMountPrefix 按真实 process.platform 选拼接分隔符（pickProjectMount 的 win32 早退
+   * 依赖它）：POSIX 形状的候选在 Windows 主机上量不出结果，改在 win32 专属用例里验证。 */
   const mounts = [{ device: "d3", mount: "/" }, { device: "d3", mount: "/System/Volumes/Data" }, { device: "d9", mount: "/Volumes/Work" }];
   assert.strictEqual(I.longestMountPrefix(mounts, "/System/Volumes/Data/Users/x").mount, "/System/Volumes/Data");
   assert.strictEqual(I.longestMountPrefix(mounts, "/Volumes/Work/proj").mount, "/Volumes/Work");
   assert.strictEqual(I.longestMountPrefix(mounts, "/etc"), mounts[0]);
   assert.strictEqual(I.longestMountPrefix(mounts, ""), null);
+});
+
+test("longestMountPrefix win32 盘符/子目录前缀（反斜杠拼接语义）", { skip: process.platform !== "win32" }, () => {
+  const mounts = [{ device: "d1", mount: "C:\\" }, { device: "d2", mount: "D:\\proj" }];
+  assert.strictEqual(I.longestMountPrefix(mounts, "D:\\proj\\sub").mount, "D:\\proj");
+  assert.strictEqual(I.longestMountPrefix(mounts, "C:\\Users\\x").mount, "C:\\");
+  assert.strictEqual(I.longestMountPrefix(mounts, "D:\\proj"), mounts[1]);   // 精确等于挂载点
+  assert.strictEqual(I.longestMountPrefix(mounts, "D:\\project"), null);   // 同名前缀但非路径边界不误配
+  assert.strictEqual(I.longestMountPrefix(mounts, "E:\\elsewhere"), null);
 });
 
 test("pickProjectMount st_dev 精确归卷（macOS firmlink：/Users 实落 Data 卷）", { skip: process.platform !== "darwin" }, () => {

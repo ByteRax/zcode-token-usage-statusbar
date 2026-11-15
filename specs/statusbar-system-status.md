@@ -6,7 +6,7 @@ Issue #338。在既有「排序 → 优先级 → 自适应 → 自动折叠 →
 
 - 链路：**本机采样器（主进程热模块 `sysmon-client.cjs`）→ 主进程统一调度与缓存 → `pushOnce` 同款信任门推 `window.__zusageSysmon(frame)` → 渲染端共享 `state.sysmon` → 条面格 / Tooltip / 折叠菜单 / 精简 chip**。
 - 单例采样：主进程唯一采样器；多窗口、多分栏、多 Tooltip 共享同一份缓存，绝不为每个实例/Tooltip/设置页单独采样。
-- 订阅制：渲染端按需经 pluginRequest `sysmon-sub {want, cfg}` 声明兴趣（条面格可见、Tooltip 打开、设置页打开、精简 chip 挂载任一成立即 want）。主进程按 wc 记账（destroyed 清理 + sweep 兜底），want>0 才轮询；want→0 停表，最近一帧保留供回读（渲染端按 ts 判过期）。
+- 订阅制：渲染端按需经 pluginRequest `sysmon-sub {want, cfg, projectPath}` 声明兴趣（条面格可见、Tooltip 打开、设置页打开、精简 chip 挂载任一成立即 want；projectPath 供主进程定位项目卷）。主进程按 wc 记账（destroyed 清理 + sweep 兜底），want>0 才轮询；want→0 停表，最近一帧保留供回读（渲染端按 ts 判过期）。
 - 刷新节奏：CPU/内存默认 5s（2s–60s 可配），磁盘默认 60s（30s–600s 可配），双定时器独立。配置由渲染端 `sysmon-sub` 携带、主进程校验 clamp 后运行时生效；不落 config.json（重启后由首个订阅窗口重发），渲染端持久化 `zusage3.sysmonCfg`。
 - 监控范围恒为**运行 ZCode 的本机**：远端/不在本地库的 scope 不渲染格（`!d.remote && !d.not_local` 门控），不把本机指标冒充远端。本期不做远端资源采集。
 
@@ -64,12 +64,13 @@ Issue #338。在既有「排序 → 优先级 → 自适应 → 自动折叠 →
 
 - 旧用户：`zusage3.barOrder/barPriority` 缺 sysmon 时归一化补尾，已有相对顺序不动；`state.show.sysmon` 缺省关，开/关不删 cfg，重开恢复选择。
 - 旧冷主进程（无 `__zusageSysmon` 注入）：帧不到达，格渲染 `--`（loading 态），无轮询无报错；热文件先行部署字段缺失是常态。
+- 采样器缺席自愈（v358）：`sysmon-sub` 到达而 `sysmon-client.cjs` 未部署（运行目录缺文件）或热换未到时，回执 `ok:false` 但 want 仍记入 `sysmonSubs`，最近一次 want 请求的 cfg/projectPath 留档回放；热模块补上（热换重建实例）后按现存订阅自动采样补帧，格自愈，不依赖用户再开关或重开窗口。`hasProjectPath=false` 的请求不回放 projectPath（保留既有值），避免误清项目卷标注。
 - 生命周期：采样器定时器只随订阅存在；窗口 destroyed 记账清理；插件热重载后渲染端重发订阅；`hot_reload:false`/旧 loader 回退重启生效（inject-main.cjs 与 sysmon-client.cjs 首次接线为冷变更）。
 - 诊断：`FATAL.sysFrame = {t, has, want}` 原地更新；主进程不新增诊断文件。
 
 ## 验收
 
-- VM 切片：cfg 归一化 clamp、severity 含等号边界、face 三格式×auto 档位映射、帧 handler 状态写入与 tick 触发、远端门控、stale 推导、字节格式化、排序卡行出现。
+- VM 切片：cfg 归一化 clamp、severity 含等号边界、face 三格式×auto 档位映射、帧 handler 状态写入与 tick 触发、远端门控、stale 推导、字节格式化、排序卡行出现；采样器缺席时 `sysmon-sub` 记账 + `ok:false`、热换重建回放 cfg/projectPath、want=false 摘订阅（inject 切片）。
 - 采样器单测（注入 os/fs 替身）：CPU 差分数学与 loading 首帧、三平台内存口径解析、磁盘枚举去重/上限/role 标注、订阅启停定时器、want=0 停采。
 - 真实 Electron（speed-tooltip-host harness 加 SYS 链 + 真机 CDP）：排序卡截图、宽屏完整、中等宽度折叠（sysmon 高优先级存活）、极窄「···」菜单、预警红色态、精简模式 chip、完整 Tooltip、浅色主题、数据不可用态。
 - 回归：既有排序/折叠/设置/菜单/font-fit/port-patches 测试全绿；`build_overlay --check`、`sync_plugin --check` 通过。

@@ -102,6 +102,7 @@ const INJECT_SLICES = {
   cdpSwitchBlock: ['/* CDP 调试口', 'catch (e) { LOG("cdp remote-debugging-port switch failed:", e.message); }', { includeEnd: true }],
   pendingZipBlock: ['/* ---------- v339 pending 更新包清理自愈', '/* ---------- v202 更新日志'],
   handleReleaseNotesRequest: ['async function handleReleaseNotesRequest(req, wc) {', '\n/* 逐问速率行开关'],
+  sysmonBlock: ['function pushSysmonTo(wc, frame) {', '\n/* ---------- v202 更新日志'],
 };
 
 function getNamedSlice(name, opts = {}) {
