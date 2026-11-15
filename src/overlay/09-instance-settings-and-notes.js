@@ -1673,7 +1673,7 @@
         var k = inp.getAttribute("data-th");
         if (k && sysCfgL.thresholds[k] !== undefined) inp.value = String(sysCfgL.thresholds[k]);
       });
-      var thErrSync = panel.querySelector("[data-zu-sys-therr]");   // v357：他窗同步后阈值关系提示跟随新值
+      var thErrSync = panel.querySelector("[data-zu-sys-therr]");   // v359：他窗同步后阈值关系提示跟随新值
       if (thErrSync) {
         var syncIssues = sysThresholdIssues(sysCfgL);
         if (syncIssues.length) { thErrSync.textContent = syncIssues.join(L("；", "; ")); thErrSync.hidden = false; }
@@ -2221,7 +2221,7 @@
           sc4.thresholds[thKey] = nSys;
         }
         var sc5 = normalizeSysmonCfg(sc4);   // clamp 是唯一事实源（范围越界在此生效）
-        /* 关系校验（v357）：CPU/内存 warn<crit、磁盘 warn>crit。非法不写入（不悄悄交换、
+        /* 关系校验（v359）：CPU/内存 warn<crit、磁盘 warn>crit。非法不写入（不悄悄交换、
          * 不静默落错误配置），回填原生效值 + 行内红字 + 输入框红边；合法则写入并回填
          * clamp 后的实际生效值（HTML min/max 不拦键入，回填让用户看到真实生效数字）。 */
         if (t2.classList.contains("zu-syscfg-th")) {
@@ -2247,7 +2247,7 @@
           if (stIssues.length) { errBox4.textContent = stIssues.join(L("；", "; ")); errBox4.hidden = false; }
           else errBox4.hidden = true;
         }
-        if (!sysThresholdIssues(state.sysmonCfg).length) {   // v357 review A1：关系恢复合法后清掉所有残留红边（跨字段修复场景）
+        if (!sysThresholdIssues(state.sysmonCfg).length) {   // v359 review A1：关系恢复合法后清掉所有残留红边（跨字段修复场景）
           panel.querySelectorAll(".zu-syscfg-th.zu-syscfg-bad").forEach(function (inp2) { inp2.classList.remove("zu-syscfg-bad"); });
         }
         persistSysmonCfg();

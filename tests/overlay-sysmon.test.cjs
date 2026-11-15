@@ -143,7 +143,7 @@ test('sysmonFaceHtml: 三格式面、loading—、预警图标切换、warnColor
   assert.equal(api.sysmonFaceHtml({ metrics: { cpu: 0, mem: 0, disk: 0 } }, f, 'full', NOW), '');
 });
 
-test('sysmonTipHtml: 紧凑结构（v357）、动态刷新说明、条件行、磁盘表与转义', () => {
+test('sysmonTipHtml: 紧凑结构（v359）、动态刷新说明、条件行、磁盘表与转义', () => {
   const api = evalHelpers({ L: (zh, en) => zh });
   const NOW = 1700000000000 + 1000;   // 新鲜度按传入时钟判（不碰真实时钟）
   const html = api.sysmonTipHtml(CFG, frameOf({}), NOW);
@@ -166,7 +166,7 @@ test('sysmonTipHtml: 紧凑结构（v357）、动态刷新说明、条件行、�
   assert.match(html, /项目卷 Data/);
   assert.match(html, /zu-sys-vrowon/);                    // 当前监控卷轻高亮行
   assert.ok(!html.includes('zu-sys-cur'), '旧大灰底高亮类已替换');
-  // 图例精简（v357）：三色点 + ⓘ 按钮；阈值明细收进内联展开区
+  // 图例精简（v359）：三色点 + ⓘ 按钮；阈值明细收进内联展开区
   assert.match(html, /data-zu-sys-th aria-expanded="false"/);
   assert.match(html, /data-zu-sys-thexp hidden/);
   assert.match(html, /zu-sys-tht/);                       // 展开区阈值表
@@ -181,7 +181,7 @@ test('sysmonTipHtml: 紧凑结构（v357）、动态刷新说明、条件行、�
   assert.ok(!bare.includes('Wired'), '无 Wired 不渲染假值');
   assert.ok(!bare.includes('Swap '), '无 Swap 不渲染假值');
   assert.ok(!bare.includes('Load 1m'), '无负载整行隐藏');
-  // Swap 有效 0 值显示（与 null 不可用区分，v357 number 判定）
+  // Swap 有效 0 值显示（与 null 不可用区分，v359 number 判定）
   const swap0 = api.sysmonTipHtml(CFG, frameOf({
     mem: { state: 'ok', total: 8589934592, used: 2147483648, avail: 6442450944, pct: 25, wired: null, swap_total: 1073741824, swap_used: 0 },
   }), NOW);
@@ -200,7 +200,7 @@ test('sysmonTipHtml: 紧凑结构（v357）、动态刷新说明、条件行、�
   assert.match(api.sysmonTipHtml(CFG, null, NOW), /采集中/);
 });
 
-test('sysmonTipHtml: APFS 共享容器（v357）——同容器次行不重复容量、独立卷不合并、warnColors 关中性化', () => {
+test('sysmonTipHtml: APFS 共享容器（v359）——同容器次行不重复容量、独立卷不合并、warnColors 关中性化', () => {
   const api = evalHelpers({ L: (zh, en) => zh });
   const NOW = 1700000000000 + 1000;
   /* 情况 B：不同 APFS 卷共享同一容器（container 字段由后端标注，前端只认字段不猜容量） */
@@ -229,7 +229,7 @@ test('sysmonTipHtml: APFS 共享容器（v357）——同容器次行不重复�
   assert.match(nc, /颜色提示已关闭/);
 });
 
-test('sysmonPreviewHtml: 跟随显示格式、全关空状态、无帧采集中尾注（v357）', () => {
+test('sysmonPreviewHtml: 跟随显示格式、全关空状态、无帧采集中尾注（v359）', () => {
   const api = evalHelpers({ L: (zh) => zh });
   const NOW = 1700000000000 + 1000;
   const f = frameOf({});
@@ -247,7 +247,7 @@ test('sysmonPreviewHtml: 跟随显示格式、全关空状态、无帧采集中�
   assert.ok(!api.sysmonPreviewHtml(CFG, f, NOW).includes('采集中'), '有帧不加采集中尾注');
 });
 
-test('hideTip 行为（v357）：收起时清 __zuSysExp（重开默认收起）', () => {
+test('hideTip 行为（v359）：收起时清 __zuSysExp（重开默认收起）', () => {
   const seg = sliceText('    function hideTip(force, cause) {', '    function positionTip(el, keepTop) {');
   const hides = [];
   const ctx = {
@@ -281,7 +281,7 @@ test('hideTip 行为（v357）：收起时清 __zuSysExp（重开默认收起）
   assert.equal(ctx2ref.tip.__zuSysExp, true, 'devKeepTip 拦截路径不动展开态');
 });
 
-test('ⓘ 切换行为（v357）：click 委托 toggle + 重定位（行为级锁，替代纯源码 match）', () => {
+test('ⓘ 切换行为（v359）：click 委托 toggle + 重定位（行为级锁，替代纯源码 match）', () => {
   const a = source.indexOf('    tip.addEventListener("click", function (e) {');
   const b = source.indexOf('speedTabActivate(e);\n    });', a);
   assert.ok(a >= 0 && b > a, 'click 委托切片锚点');
@@ -324,7 +324,7 @@ test('ⓘ 切换行为（v357）：click 委托 toggle + 重定位（行为级�
   assert.ok(calls.length > callsLen && calls[calls.length - 1][0] === 'speed', '落到速度 Tab 分支');
 });
 
-test('09 阈值校验 change 分支（v357）：非法不写入+回填+红边、合法回填 clamp 生效值', () => {
+test('09 阈值校验 change 分支（v359）：非法不写入+回填+红边、合法回填 clamp 生效值', () => {
   const a = source.indexOf('if (t2.classList && (t2.classList.contains("zu-syscfg-int")');
   const b = source.indexOf('if (t2.classList.contains("zu-theme-choice")) {', a);
   assert.ok(a >= 0 && b > a, '阈值校验切片锚点');
@@ -400,7 +400,7 @@ test('09 阈值校验 change 分支（v357）：非法不写入+回填+红边、
   assert.equal(intCtx.t2.value, '2', '回填生效秒数');
 });
 
-test('sysThresholdIssues 与展开区标红（v357）：关系非法标红不改写', () => {
+test('sysThresholdIssues 与展开区标红（v359）：关系非法标红不改写', () => {
   const seg = sliceText('  function sysThresholdIssues(cfg) {', '  /* 阈值明细表（ⓘ 展开区内容');
   const ctx = { L: (zh) => zh };
   vm.runInNewContext(seg + '\nglobalThis.issues = sysThresholdIssues;', ctx);
@@ -485,12 +485,12 @@ test('源码契约：条面格门控/远程排除/原地刷新/窄宽钩子/订�
   assert.match(source, /state\.sysmonCfg = normalizeSysmonCfg\(sc/, '设置输入裸赋值后再 clamp（review M3）');
   assert.match(source, /sysSevSnapshot = sysSeveritySmoothed\(state\.sysmonCfg, frame\);/, '防抖按采样拍推进（review M2：帧入口单点推进）');
   assert.match(source, /restoreSysmonChip\(\);   \/\/ v356/, 'dispose 摘除系统状态 chip');
-  /* v357 接线契约：ⓘ 切换/重建恢复/关闭清零/mousedown 名单/后端容器标注 */
+  /* v359 接线契约：ⓘ 切换/重建恢复/关闭清零/mousedown 名单/后端容器标注 */
   assert.match(source, /tip\.__zuSysExp = !tip\.__zuSysExp/, '全量 tip ⓘ 切换委托（只挂 click：toggle 非同值幂等）');
   assert.match(source, /if \(tipFor\) positionTip\(tipFor, true\);/, 'ⓘ 切换后重定位（展开 +124px 防底边越出视口）');
   assert.match(source, /function placeSysTip\(chip\)/, 'sysTip 定位提函数（show 与 ⓘ 切换共用）');
   assert.match(source, /if \(tip\.__zuSysExp\) \{[\s\S]{0,200}data-zu-sys-thexp[\s\S]{0,120}hidden = false/, 'drawTip 重建后恢复展开态');
-  assert.match(source, /tip\.__zuSysExp = false;   \/\/ v357：关闭即收起阈值说明/, 'hideTip 清展开态（重开默认收起）');
+  assert.match(source, /tip\.__zuSysExp = false;   \/\/ v359：关闭即收起阈值说明/, 'hideTip 清展开态（重开默认收起）');
   assert.match(source, /sysTip\.__zuSysExp = !sysTip\.__zuSysExp/, '精简 chip sysTip ⓘ 切换委托');
   assert.match(source, /t\.closest\("\.zu-sv-tab"\) \|\| t\.closest\("\[data-zu-sys-th\]"\)/, 'mousedown 名单含阈值按钮（防焦点逸出关 tooltip）');
   assert.match(source, /sysmonPreviewHtml\(cfgL, sysFrame\)/, '07 预览行走共享函数（跟随显示格式）');
@@ -563,7 +563,7 @@ test('设置页：排序卡出现系统状态行、配置卡结构与双回填�
   assert.match(cfgCard, /data-th="cpuWarn"/);
   assert.match(cfgCard, /data-th="diskFreeCrit"/);
   assert.match(cfgCard, /value="80"/);
-  /* v357 Grid 重构：分组小节标题 + 阈值三列表 + 单位固定后缀 + 输入框显式边框 */
+  /* v359 Grid 重构：分组小节标题 + 阈值三列表 + 单位固定后缀 + 输入框显式边框 */
   assert.match(cfgCard, /zu-syscfg-cap">监控指标/);
   assert.match(cfgCard, /zu-syscfg-cap">显示方式/);
   assert.match(cfgCard, /zu-syscfg-cap">采样频率/);

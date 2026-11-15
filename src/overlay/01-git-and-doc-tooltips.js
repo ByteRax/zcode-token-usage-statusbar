@@ -2068,7 +2068,7 @@
       sysTip.innerHTML = html;
       sysTip.__zuTipSig = html;
       try { var rowsEl = sysTip.querySelector(".zu-sys-vols"); if (rowsEl && keep) rowsEl.scrollTop = keep; } catch (e) { }
-      /* v357：帧刷新重建不收拢阈值说明展开区 */
+      /* v359：帧刷新重建不收拢阈值说明展开区 */
       if (sysTip.__zuSysExp) {
         var expBox = sysTip.querySelector("[data-zu-sys-thexp]");
         var expBtn = sysTip.querySelector("[data-zu-sys-th]");
@@ -2082,7 +2082,7 @@
     placeSysTip(chip);
     sysTipFor = chip;
   }
-  /* 定位（showSysTip 与 ⓘ 切换共用；v357：展开区 +~124px 后重钳防底边越出视口） */
+  /* 定位（showSysTip 与 ⓘ 切换共用；v359：展开区 +~124px 后重钳防底边越出视口） */
   function placeSysTip(chip) {
     var r = chip.getBoundingClientRect(), tw = sysTip.offsetWidth, th2 = sysTip.offsetHeight;
     var vw = window.innerWidth, vh = window.innerHeight;
@@ -2095,7 +2095,7 @@
   function hideSysTip() {
     clearTimeout(sysTipHideTimer);
     sysTip.style.display = "none";
-    /* v357：关闭即收起阈值说明（标志与 DOM 同步复位）——签名未变跳过重建时，
+    /* v359：关闭即收起阈值说明（标志与 DOM 同步复位）——签名未变跳过重建时，
      * 只清标志会让重开看到残留展开态（review MAJOR 修复） */
     sysTip.__zuSysExp = false;
     try {
@@ -2112,13 +2112,13 @@
   window.addEventListener("keydown", onSysKeydown, true);
   sysTip.addEventListener("mouseenter", onSysTipEnter);
   sysTip.addEventListener("mouseleave", hideSysTip);
-  /* v357：ⓘ 按下不移焦（镜像 06 全量 tip 链 mousedown 名单）——chip blur 链已加
+  /* v359：ⓘ 按下不移焦（镜像 06 全量 tip 链 mousedown 名单）——chip blur 链已加
    * relatedTarget 守卫，此处双保险覆盖无 relatedTarget 的合成路径 */
   sysTip.addEventListener("mousedown", function (e) {
     var t = e.target;
     if (t && t.closest && t.closest("[data-zu-sys-th]") && e.preventDefault) e.preventDefault();
   });
-  /* v357：点击 ⓘ 切换阈值说明内联展开区（只切 hidden 不重建，同全量 tip 链只挂 click）；
+  /* v359：点击 ⓘ 切换阈值说明内联展开区（只切 hidden 不重建，同全量 tip 链只挂 click）；
    * 切换后重定位防展开后底边越出视口 */
   sysTip.addEventListener("click", function (e) {
     var btn = e.target && e.target.closest ? e.target.closest("[data-zu-sys-th]") : null;

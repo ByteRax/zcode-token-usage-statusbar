@@ -308,7 +308,7 @@ test("applyConfig 运行时改间隔立即按新配置重采；纯 want 抖动�
   }
 });
 
-test("apfsContainerOf/markDarwinContainer：同 diskN 前缀标共享、容量相同不作为判据（v357）", () => {
+test("apfsContainerOf/markDarwinContainer：同 diskN 前缀标共享、容量相同不作为判据（v359）", () => {
   const { apfsContainerOf, markDarwinContainer } = mod._internals;
   assert.equal(apfsContainerOf("/dev/disk3s1s1"), "disk3");
   assert.equal(apfsContainerOf("/dev/disk3s5"), "disk3");

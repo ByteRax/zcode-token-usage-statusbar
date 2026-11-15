@@ -280,7 +280,7 @@ function pickVolumes(cands, platform, projectPath, cfg) {
   if (picked.length > MAX_VOLS) picked = picked.slice(0, MAX_VOLS);
   return picked;
 }
-/* APFS 共享容器标注（v357）：macOS firmlink 下 /（系统快照卷）与 /System/Volumes/Data
+/* APFS 共享容器标注（v359）：macOS firmlink 下 /（系统快照卷）与 /System/Volumes/Data
  * 共享同一 APFS 容器空间，fs.statfs 对两者返回相同容量——前端两行重复数值会误导
  * 「磁盘容量翻倍」。仅当两卷同时入选且设备名同 diskN 前缀（/dev/disk3s1s1 与
  * /dev/disk3s5 → disk3）才标 container；容量相同不作为判据（不同盘可能巧合相等），
@@ -370,7 +370,7 @@ async function sampleDisk(projectPath, cfg) {
         dev: c.device || null,
       });
     }
-    if (process.platform === "darwin") markDarwinContainer(vols);   // v357：仅 macOS 系统卷对判 APFS 共享容器
+    if (process.platform === "darwin") markDarwinContainer(vols);   // v359：仅 macOS 系统卷对判 APFS 共享容器
     if (!vols.length) return { state: "error", err: "statfs failed", vols: [] };
     return { state: "ok", vols };
   } catch (e) {

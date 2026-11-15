@@ -290,7 +290,7 @@
     }
     return html + segs.join('<span class="zu-sys-sep" aria-hidden="true">|</span>');
   }
-  /* 设置卡真实预览（v357，06 buildPanel 与 07 sysmonApplyFace 共用同一产出）：
+  /* 设置卡真实预览（v359，06 buildPanel 与 07 sysmonApplyFace 共用同一产出）：
    * 面跟随显示格式（auto 以 full 演示），全关显空状态，无帧显「采集中」尾注——
    * 不用演示数字冒充（spec §设置页）。 */
   function sysmonPreviewHtml(cfg, frame, now) {
@@ -310,7 +310,7 @@
   }
   /* 完整资源 Tooltip（模块级：条面格通用链与精简 chip 的 body 级浮层共用同一产出；
    * 本地 esc 与 07 分片 ttEsc 同式——07 在实例闭包内，模块级不可达，buildLiveTip 内联
-   * escHtml 同款先例）。v357 紧凑重构：三区改「标签列 | 主数值 | 右侧辅助」Grid，磁盘区
+   * escHtml 同款先例）。v359 紧凑重构：三区改「标签列 | 主数值 | 右侧辅助」Grid，磁盘区
    * 去重复挂载点行（主卷角色并入区头右侧），APFS 共享容器卷不重复容量（同容器首行带
    * 徽记、后续行显「共享容器空间」），阈值明细从图例行（冗长全文）收进 ⓘ 展开，
    * 刷新说明换时钟图标（纯说明非按钮）。样式随内容内联 <style>（统计卡 statCompactStyle
@@ -364,7 +364,7 @@
     ".zu-sys-tip .zu-sys-big.zu-sys-crit{color:#f85149}" +
     ".zu-sys-note{margin-top:7px;font-size:calc(var(--ui-font-size, 14px) - 2px);color:#d29922}" +
     "</style>";
-  /* 阈值关系校验（v357，06 设置卡初始提示与 09 change 校验共用同一判定）：
+  /* 阈值关系校验（v359，06 设置卡初始提示与 09 change 校验共用同一判定）：
    * CPU/内存 warn<crit、磁盘 warn>crit；返回问题文案数组（空=合法）。 */
   function sysThresholdIssues(cfg) {
     var th = cfg.thresholds, out = [];
@@ -484,7 +484,7 @@
       }
       s += "</div>";
     }
-    /* 图例（v357 精简）：三色点一行 + ⓘ 阈值说明（明细收进展开区，动态读 cfg）。
+    /* 图例（v359 精简）：三色点一行 + ⓘ 阈值说明（明细收进展开区，动态读 cfg）。
      * warnColors 关：点转中性灰并注明，避免误以为仍会变色；当前综合档文字提亮。 */
     s += '<div class="zu-sys-legend' + (cfg.warnColors ? "" : " nocolor") + '">' +
       "<span><i class=\"zu-sys-dot\"></i>" + L("正常", "OK") + "</span>" +
