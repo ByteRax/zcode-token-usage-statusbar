@@ -10,6 +10,7 @@
 4) sudo_hint 在 Windows 打印可执行的管理员指引，而不是 unix 的 sudo 命令。
 """
 import contextlib
+import hashlib
 import importlib.util
 import io
 import json
@@ -244,6 +245,7 @@ class OverlayBridgeNoticeTests(unittest.TestCase):
     def pi_stub(self, writable=True):
         pi = mock.Mock()
         pi.ASAR = self.root / "app.asar"
+        pi.RUNTIME = self.runtime
         pi.target_writable.return_value = writable
         return pi
 
@@ -267,6 +269,44 @@ class OverlayBridgeNoticeTests(unittest.TestCase):
         pi.publish_external_pending.assert_called_once_with(
             stage, source=result["source"], operation="install")
         pi.launch_monitor.assert_called_once()
+        # v359（issue #321）：夹具 stage 不是合法 asar → 入口指纹取不到 → 宁缺勿假不写
+        # 标记（没有 installation 的 pending-install 标记 swap 后无法销账，红点会永远亮着）
+        self.assertFalse((self.runtime / ".plugin-restart-required").exists())
+
+    def test_pending_writes_restart_marker_with_installation_fingerprint(self):
+        # v359（issue #321）：合法待收尾包 → pending 落定后写 .plugin-restart-required
+        # （v172 取消会话文字后红点是 pending 唯一用户可见信号），installation 指纹与
+        # 包入口字节一致；publish 先于标记（publish 失败不留下无主标记）。
+        stage = self.root / "stage.asar"
+        rb.archive(stage, extra={"/out/main/index.js": b"console.log('official v1');\n"})
+        result = {"status": "replace-failed", "version": "3.16.2",
+                  "detail": "拒绝访问", "stage": str(stage), "source": {"sha256": "x"}}
+        bridge_module = mock.Mock()
+        bridge_module.ensure_deployed.return_value = result
+        pi = self.pi_stub()
+        spec = importlib.util.spec_from_file_location(
+            "bridge_marker_patch_install", str(ROOT / "patch_install.py"))
+        real_pi = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(real_pi)
+        pi.entry_bytes_of = real_pi.entry_bytes_of
+        seen = {}
+
+        def fake_publish(*args, **kwargs):
+            seen["marker_at_publish"] = (self.runtime / ".plugin-restart-required").exists()
+            return {"validated": True}
+        pi.publish_external_pending.side_effect = fake_publish
+        with mock.patch.dict(sys.modules, {"renderer_bridge": bridge_module}), \
+                self.ensure_quiet_env():
+            with contextlib.redirect_stderr(io.StringIO()):
+                outcome = self.installer.ensure_renderer_bridge(pi, quiet_monitor=True)
+        self.assertEqual(outcome["status"], "pending")
+        self.assertIs(seen["marker_at_publish"], False)
+        marker_path = self.runtime / ".plugin-restart-required"
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+        self.assertEqual(marker["state"], "pending-install")
+        self.assertEqual(marker["installation"],
+                         {"asar": str(pi.ASAR.resolve()),
+                          "entryHash": hashlib.sha256(real_pi.entry_bytes_of(stage)).hexdigest()})
 
     def test_pending_publish_failure_falls_back_to_skipped_error_and_cleans_stage(self):
         stage = self.root / "stage.asar"
@@ -600,6 +640,23 @@ class RealHookChainTests(unittest.TestCase):
         self.assertTrue(self.pi.TMP.is_file())
         self.assertEqual(self.pi.pending_tmp(operation="install")["operation"], "install")
         self.pi.launch_monitor.assert_called_once()
+        # v359（issue #321）：桥 pending 落定即写重启标记（红点唯一信号源），
+        # installation 指纹与待收尾包入口字节一致——swap 时 publish_install 才能认领。
+        marker_path = self.runtime / ".plugin-restart-required"
+        self.assertTrue(marker_path.is_file(), "桥 pending 必须写 .plugin-restart-required")
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+        self.assertEqual(marker["state"], "pending-install")
+        self.assertEqual(marker["installation"]["asar"], str(self.pi.ASAR.resolve()))
+        self.assertEqual(marker["installation"]["entryHash"],
+                         hashlib.sha256(self.pi.entry_bytes_of(self.pi.TMP)).hexdigest())
+        # 全生命周期：客户端退出收尾 swap → publishedAt 落账 → loader ack 销账（红点熄灭）
+        self.assertTrue(self.pi.finalize_tmp(operation="install"))
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+        self.assertIn("publishedAt", marker, "swap 后必须按标记记账 publishedAt")
+        import runtime_lock
+        ack = runtime_lock.ack_restart(self.runtime, {"_loadedAt": marker["publishedAt"] + 5000})
+        self.assertEqual(ack, {"ok": True, "cleared": True})
+        self.assertFalse(marker_path.exists())
 
 
 class SudoHintWindowsTests(unittest.TestCase):

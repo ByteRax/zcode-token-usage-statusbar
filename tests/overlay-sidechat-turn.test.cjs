@@ -117,6 +117,64 @@ test('同 SID 多轮只追活跃轮：跨扫描重试不换代号，迟到回复
   assert.equal(c.window.__zusagePluginRequests.length, 2);
 });
 
+/* v359（issue #321 后续）：报告者 rt 全 0 而占位每轮常驻——收集/flush 门控的静默拒绝
+ * 按轮键计一次（防 0.5s 扫描逐拍翻倍），入队即解封，换代清空。 */
+test('静默拒绝按轮键计一次：noKey/noSid/notCur/noInst，入队后可再计', () => {
+  const c = setup(), m = instance('main', null, null, 'sid-a');
+  c.instances.push(m);
+  m.scope = null;   // 无 scope：本地回退要求 remote_evidence=false（切片 state 无 data）→ 拒绝
+  c.zuRequestTurnText(m, 't1', { sessionId: 'sid-a' });
+  c.zuRequestTurnText(m, 't1', { sessionId: 'sid-a' });   // 下一拍重收同一轮：不翻倍
+  assert.equal(c.richTextDiag.noKey, 1);
+  assert.equal(c.richTextDiag.sent, 0);
+
+  const c2 = setup(), m2 = instance('main', null, null, 'sid-a');
+  c2.instances.push(m2);
+  c2.zuRequestTurnText(m2, 't1', { sessionId: 'sid-b' });   // 统计行 sessionId 与实例不一致
+  c2.zuRequestTurnText(m2, 't1', { sessionId: 'sid-b' });
+  assert.equal(c2.richTextDiag.noSid, 1);
+
+  const c3 = setup(), m3 = instance('main', null, null, 'sid-a');
+  c3.instances.push(m3);
+  c3.zuRequestTurnText(m3, 't1', { sessionId: 'sid-a' });   // 收集成功
+  c3.instances.pop();                                        // flush 时实例已消失
+  c3.zuFlushRichTextWants();
+  assert.equal(c3.richTextDiag.noInst, 1);
+  assert.equal(c3.window.__zusagePluginRequests, undefined);
+
+  const c4 = setup(), m4 = instance('main', null, null, 'sid-a');
+  m4.isCurrentTurn = () => false;
+  c4.instances.push(m4);
+  c4.zuRequestTurnText(m4, 't1', { sessionId: 'sid-a' });
+  c4.zuFlushRichTextWants();
+  c4.zuRequestTurnText(m4, 't1', { sessionId: 'sid-a' });
+  c4.zuFlushRichTextWants();
+  assert.equal(c4.richTextDiag.notCur, 1);   // 非活跃轮逐拍跳过只计一次
+  m4.isCurrentTurn = () => true;
+  c4.zuRequestTurnText(m4, 't1', { sessionId: 'sid-a' });
+  c4.zuFlushRichTextWants();
+  assert.equal(c4.richTextDiag.sent, 1);     // 恢复活跃后照常入队（入队即解封）
+  assert.equal(c4.richTextDiag.notCur, 1);   // 入队不新增 notCur
+  m4.isCurrentTurn = () => false;            // 入队后再度轮转历史：同键解封后可再计
+  c4.zuRequestTurnText(m4, 't1', { sessionId: 'sid-a' });
+  c4.zuFlushRichTextWants();
+  assert.equal(c4.richTextDiag.notCur, 2, '入队解封后同键再拒可重计');
+  c4.zuRequestTurnText(m4, 't2', { sessionId: 'sid-a' });
+  c4.zuFlushRichTextWants();
+  assert.equal(c4.richTextDiag.notCur, 3);   // 新轮键是新事件
+
+  const c5 = setup(), m5 = instance('main', null, null, 'sid-a');
+  m5.isCurrentTurn = () => false;
+  c5.instances.push(m5);
+  c5.zuRequestTurnText(m5, 't1', { sessionId: 'sid-a' });
+  c5.zuFlushRichTextWants();
+  assert.equal(c5.richTextDiag.notCur, 1);
+  c5.zuResetRichText();                      // 换代：dedupe 清空，静默拒绝重新可计
+  c5.zuRequestTurnText(m5, 't1', { sessionId: 'sid-a' });
+  c5.zuFlushRichTextWants();
+  assert.equal(c5.richTextDiag.notCur, 2, '换代清空后同键可重计');
+});
+
 test('同一实例切换 SID 或 scope 不消费旧缓存，也不接受迟到响应', () => {
   const c = setup(), a = instance('main', null);
   c.instances.push(a);

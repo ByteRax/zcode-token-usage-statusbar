@@ -421,6 +421,77 @@ test('⑬b delayed DB rich text still replaces the placeholder after its tracker
   assert.equal(turnRequests(h).length, 1);
 });
 
+/* v359（issue #321 后续）：报告者实证 rt 全 0 而占位每轮常驻——v343 的桶全在「入队之后」，
+ * 收集/flush 门控的静默拒绝此前零痕迹。现在 noKey 等桶按轮键计一次落 det.rt，且
+ * bridgeInfo 带 scopeAttrs（静态桥属性在场标志）——占位常驻 + sent=0 + noKey>0 +
+ * scopeAttrs=0 即「桥补装 pending（Windows asar 占用）→ scope 缺席 → 无桥回退被远端
+ * 证据 fail-closed 拒」的签名。 */
+test('issue #321 follow-up: zero-enqueue rejections land in det.rt gate buckets with per-turn dedupe', () => {
+  const h = harness();
+  const store = driveStreaming(h);   // 有意不声明 remote_evidence:false：无桥回退被拒 → noKey
+  completeTurn(h, store);            // 占位插入，请求零入队
+  assert.equal(turnRequests(h).length, 0);
+  h.advanceDate(10500); h.runTimers(500);   // 越过 det 10s 节流并触发一次写入
+  let rt = h.window.__zusageDiag.det.rt;
+  assert.equal(rt.sent, 0);
+  assert.equal(rt.noKey, 1);
+  assert.equal(rt.noSid, 0);
+  assert.equal(rt.notCur, 0);
+  assert.equal(rt.noInst, 0);
+  assert.equal(h.window.__zusageDiag.det.bridge[0].scopeAttrs, 0, 'fixture pane has no static bridge attrs');
+  h.runTimers(500); h.runTimers(500);       // 逐拍重扫同一轮：不翻倍
+  h.advanceDate(10500); h.runTimers(500);
+  assert.equal(h.window.__zusageDiag.det.rt.noKey, 1);
+});
+
+test('issue #321 follow-up: flushed-but-no-longer-current turn counts notCur once, sent unchanged', () => {
+  const h = harness();
+  const store = driveLocalStreaming(h);
+  completeTurn(h, store, 'pt1');   // pt1 完成时即活跃轮：sent=1
+  assert.equal(turnRequests(h).length, 1);
+  h.clock.now = 2600;
+  store.set(snap(4, [
+    header('completedSuccess', { outputTokens: 1000, activeMs: 5000 }),
+    text('abcdef'),
+    header('running', { turnId: 't2', productTurnId: 'pt2' }),
+    { rowId: 4, turnId: 't2', productTurnId: 'pt2', kind: 'assistantText', text: 'x' },
+  ]));
+  const section2 = h.pane().appendChild(new Element('section'));
+  section2.dataset.turnId = 'pt2';   // 新活跃轮在位：pt1 沦为历史轮
+  h.advanceDate(10500); h.runTimers(500);
+  const rt = h.window.__zusageDiag.det.rt;
+  assert.equal(rt.notCur, 1, 'pt1 collected each tick but flush skips non-current turns');
+  assert.equal(rt.sent, 1, 'no new request for the historical turn');
+});
+
+/* v359（review 补强）：静态桥属性在场时 scopeAttrs=1，且 scope 路径直接放行——
+ * 不依赖「无远端证据」的本地回退，请求照常入队（kills 常量 0 变异）。 */
+test('issue #321 follow-up: static bridge attrs present — scopeAttrs=1 and scope path queues directly', () => {
+  const h = harness();
+  h.setPanes(['a']);
+  h.pane().setAttribute('data-zusage-scope-version', '1');
+  h.pane().setAttribute('data-zusage-pane-id', 'a');   // 夹具实例 pid（setPanes 的 paneId）
+  h.pane().setAttribute('data-zusage-workspace-path', '/fixture/ws');
+  h.pane().setAttribute('data-zusage-workspace-identity', '');
+  h.pane().setAttribute('data-zusage-remote-session-id', '');
+  h.inject(); h.boot(); h.runTimers(600);
+  const store = makeStore(snap(1, [header('running'), text('abc')]));
+  h.diagSessions.push({ key: '__base__ /fixture/ws', topic: 'conversation/sid_a', store });
+  h.runTimers(100);
+  h.clock.now = 1600;
+  store.set(snap(3, [header('completedSuccess', { outputTokens: 1000, activeMs: 5000 }), text('abcdef')]));
+  const section = h.pane().appendChild(new Element('section'));
+  section.dataset.turnId = 'pt1';
+  h.runTimers(500);
+  assert.equal(turnRequests(h).length, 1, 'scope path queues without the no-bridge fallback');
+  h.window.__zusageDeliverTurnText('sid_a', RICH);   // 交付入缓存：其后 det 写入拍的扫描不再重试
+  h.advanceDate(10500); h.runTimers(500);
+  const det = h.window.__zusageDiag.det;
+  assert.equal(det.bridge[0].scopeAttrs, 1, 'static bridge attrs detected');
+  assert.equal(det.rt.sent, 1);
+  assert.equal(det.rt.noKey, 0);
+});
+
 test('⑬c delayed DB rich text replaces the placeholder after epoch hydration restores zero output', () => {
   const h = harness();
   const store = driveLocalStreaming(h);

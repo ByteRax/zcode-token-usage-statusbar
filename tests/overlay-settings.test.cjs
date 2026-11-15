@@ -332,7 +332,10 @@ test('update badge dots follow fingerprints, the seen marker and the notice swit
   state.pluginUpdate = { supported: true, restartRequired: true, markerAt: 5, phase: 'updated', relaunchSupported: true };
   vm.runInNewContext('syncUpdate();', context);
   assert.equal(banner.hidden, false, 'v208: banner shows while a restart is pending');
-  assert.equal(banner.textContent, '已更新成功，点击重启 ZCode 即可生效');
+  assert.equal(banner.textContent, '有待生效的改动，点击重启 ZCode', 'v359: 无版本标记（桥补装 pending）走中性文案');
+  state.pluginUpdate = { supported: true, restartRequired: true, markerAt: 5, phase: 'updated', relaunchSupported: true, markerVersion: '1.5.20' };
+  vm.runInNewContext('syncUpdate();', context);
+  assert.equal(banner.textContent, '已更新成功，点击重启 ZCode 即可生效', 'v359: 版本可匹配（更新安装）保持原文案');
   state.pluginUpdate = { supported: true, restartRequired: true, markerAt: 5, phase: 'updated' };   // relaunchSupported 缺失 = 旧主进程
   vm.runInNewContext('syncUpdate();', context);
   assert.equal(banner.hidden, true, 'v208: banner hidden for legacy main process');

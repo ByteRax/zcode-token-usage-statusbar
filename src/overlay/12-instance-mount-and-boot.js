@@ -1187,6 +1187,15 @@
       /* v86 诊断：桥接绑定状态与当前快照窗口（行数/序号/代际）——重启后历史轮可见性取决于它 */
       bridgeInfo: function () {
         var h = bridge.handle, info = { bound: !!(h && !h.dead), sid: h ? String(h.sid).slice(-8) : "", rebinds: bridge.rebinds || 0 };
+        /* v359（issue #321）：静态桥属性在场标志——沿 wantedEl 上溯到会话根（与 readPaneScope
+         * 同一门）查 data-zusage-scope-version=1。0 = 静态桥缺席（表外版本未登记、桥补装
+         * pending：Windows asar 被运行中客户端占用时 ensure_deployed 转待替换链，重启前恒如此），
+         * scope 读取走 fiber 兜底或无桥回退——富文本回推的 noKey 计数与它对读即知失败层。 */
+        try {
+          var el = wantedEl;
+          while (el && !(el.hasAttribute && el.hasAttribute("data-session-id"))) el = el.parentElement;
+          info.scopeAttrs = !!(el && el.getAttribute && el.getAttribute("data-zusage-scope-version") === "1") ? 1 : 0;
+        } catch (e) { }
         if (!info.bound) return info;
         var snap = null;
         try { var st = h.store.getState(); snap = st && st.snapshot; } catch (e) { info.err = String(e); }

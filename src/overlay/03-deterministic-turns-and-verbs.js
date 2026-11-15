@@ -262,7 +262,9 @@
           time: new Date().toISOString(), boxes: boxes.length, rich: Object.keys(richTextCache).length,
           rt: { sent: richTextDiag.sent, ok: richTextDiag.ok, empty: richTextDiag.empty,
             miss: richTextDiag.miss, stale: richTextDiag.stale,
-            spawn: richTextDiag.spawn, timeout: richTextDiag.timeout, pyerr: richTextDiag.pyerr },   // v343 issue #321：回推失败可观测（spawn/timeout/pyerr 需主进程同版）
+            spawn: richTextDiag.spawn, timeout: richTextDiag.timeout, pyerr: richTextDiag.pyerr,
+            noKey: richTextDiag.noKey, noSid: richTextDiag.noSid,
+            notCur: richTextDiag.notCur, noInst: richTextDiag.noInst },   // v343/v359 issue #321：回推失败与静默拒绝可观测（spawn/timeout/pyerr 需主进程同版；四类门控拒绝按轮键计一次，sent=0 而占位常驻时先看这里）
           bridge: instances.map(function (inst) { return inst.bridgeInfo ? inst.bridgeInfo() : null; }),
           nullOwner: scanDeterministicLines.nulls,   // v345 issue #327：带行 box 令牌取不到的累计拍数与原因、宽限命中数、撤行/换代数
           turns: diagTurns.slice(0, 40),

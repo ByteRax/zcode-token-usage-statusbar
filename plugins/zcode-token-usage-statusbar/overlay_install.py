@@ -736,6 +736,20 @@ def ensure_renderer_bridge(pi, quiet_monitor=False):
             # hook 路径（quiet_monitor）stdout 只能是 hook JSON：publish/syntax 检查行
             # 全部重定向 stderr（与 auto-install 分支包 _install_overlay 同款）
             redirect = contextlib.redirect_stdout(sys.stderr) if quiet_monitor else contextlib.nullcontext()
+            # v359（issue #321）：待收尾包的入口指纹先于 publish 取（publish 接管并删除
+            # stage）；落定成功后按主安装同语义（_install_overlay 的 before_publish）补记录
+            # 重启意图——v172 取消会话文字提醒后，⚙ 红点标记（.plugin-restart-required）
+            # 是 pending 唯一用户可见信号，缺它则「桥 pending→scope 属性缺席→富文本回推
+            # fail-closed」整条链零可诊断。swap 时 patch_install._replace_pending 按该标记
+            # 经 publish_install 记 publishedAt，下次启动 loader ack 销账，生命周期与主安装一致。
+            installation = None
+            try:
+                installation = {"asar": str(pi.ASAR.resolve()),
+                                "entryHash": hashlib.sha256(pi.entry_bytes_of(stage)).hexdigest()}
+            except Exception as e:
+                # 指纹取不到（异常包/杀毒锁）就不写标记：宁缺勿假——没有 installation 的
+                # pending-install 标记 swap 后无法销账，红点会永远亮着
+                print(f"[zusage-plugin] renderer bridge pending fingerprint failed（已忽略）：{e}", file=sys.stderr)
             try:
                 with redirect:
                     pi.publish_external_pending(stage, source=result.get("source"), operation="install")
@@ -750,6 +764,12 @@ def ensure_renderer_bridge(pi, quiet_monitor=False):
                 result = {"status": "skipped-error", "version": result.get("version"),
                           "detail": f"pending publish failed: {e}"}
             else:
+                if installation is not None:
+                    try:
+                        from restart_notice import record_restart
+                        record_restart(str(pi.RUNTIME), {"state": "pending-install", "installation": installation})
+                    except Exception as e:
+                        print(f"[zusage-plugin] renderer bridge restart marker failed（已忽略）：{e}", file=sys.stderr)
                 monitor_env = {name: os.environ.get(name) for name in
                                ("ZUSAGE_NO_MONITOR", "ZUSAGE_MONITOR_QUIET")}
                 try:
