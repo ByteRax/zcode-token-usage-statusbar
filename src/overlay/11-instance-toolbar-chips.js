@@ -1627,4 +1627,12 @@
       e.stopPropagation();   // 弹层内点击不外泄（Radix/宿主不响应这次 click）
       openCompactDlg(e.currentTarget);
     }
+    /* ---------- v361 重置卡事件触发软强刷：窗口恢复可见（最小化/遮挡切回）即拉新 ----------
+     * 悬停徽标的查看即拉新在 01 分片 showRstTip 入口，同一 quota-poke action；主进程
+     * pokeReset 自带 30s 防抖、inFlight 与 auth 冻结守卫，多窗口各自上报只在主进程收敛。
+     * 徽标关闭（reset_badge_enabled=false）时不发——独立链已停，无需唤醒。 */
+    listenGlobal(document, "visibilitychange", function () {
+      if (inactive() || !state.resetBadge) return;
+      if (document.visibilityState === "visible") pluginRequest("quota-poke");
+    });
 

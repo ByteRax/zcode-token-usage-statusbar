@@ -2287,6 +2287,9 @@ async function pollPluginRequests() {
           const started = quotaClient && quotaEnabled() && (typeof req.sourceId === "string" && req.sourceId.length <= 256
             ? quotaClient.refreshSource(req.sourceId) : quotaClient.refresh());
           deliverPluginRequest(wc, req.requestId, started ? { ok: true, pending: true } : { ok: false, error: "quota query already running or unavailable" });
+        } else if (req && req.action === "quota-poke") {   // v361 重置卡软强刷（窗口恢复可见/悬停徽标）：30s 防抖，门控与退避语义在 pokeReset 内
+          const poked = quotaClient ? quotaClient.pokeReset() : 0;
+          deliverPluginRequest(wc, req.requestId, { ok: true, poked });
         } else if (req && req.action === "turn-text" && typeof req.sid === "string") {
           queryTurnText(req.sid, wc, req.cn === 0, req.forceKmb === true, req.unitEpoch);
         } else if (req && req.action === "git-refresh") {   // v96：Git chip 点击 / 快照后节流：立即重查全部已关注路径

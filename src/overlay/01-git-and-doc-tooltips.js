@@ -1008,13 +1008,14 @@
     }
     legend += "</div>";
     out += '<div class="rst-note">' + legend +
-      L("徽标颜色按最快到期卡的剩余时间变化；每 5 分钟查询一次，倒计时按本机时钟推算。", "The badge color tracks the soonest card's time left; polled every 5 minutes, countdown computed locally.") + "<br>" +
+      L("徽标颜色按最快到期卡的剩余时间变化；每 2 分钟自动查询，有可用数据时切回窗口或悬停徽标立即拉新（30 秒防抖），倒计时按本机时钟推算。", "The badge color tracks the soonest card's time left; polled every 2 minutes, refreshed on window focus or hovering the badge when data is available (30s debounce); countdown computed locally.") + "<br>" +
       L("重置卡核销后立即把对应额度窗口恢复到 100%；到期未用自动作废。", "Using a card restores its quota window to 100% instantly; unused cards expire.") +
       ' <button type="button" class="rst-howto">' + L("如何重置", "How to reset") + "</button></div>";
     return out;
   }
   function showRstTip(el) {
     if (stale() || !el || !el.isConnected || !el.__zuR) { hideRstTip(); return; }
+    pluginRequest("quota-poke");   // v361 查看即拉新（主进程 30s 防抖；旧主进程回 unknown 无害）
     var html = rstTipHTML(el.__zuR);
     if (rstTip.__zuTipSig !== html) {
       rstTip.innerHTML = html;

@@ -189,10 +189,15 @@ test("team: 重置卡走 targetType=TEAM 列表（团队头），值形与徽标
     quotaEnabled: () => false, resetEnabled: () => true,
     fetchImpl: (url, init) => {
       calls.push({ url, headers: init.headers, method: init.method });
-      if (url.indexOf("customer-package-reset/list") >= 0) return Promise.resolve(fakeRes(200, JSON.stringify({ code: 0, success: true, data: {
-        fiveHourResets: [{ available: true, expireTime: "2026-11-13 09:00:00" }, { available: false, expireTime: "2026-11-13 06:00:00" }],
-        weekResets: [{ available: true, expireTime: "2026-11-18 09:00:00" }],
-      } })));
+      if (url.indexOf("customer-package-reset/list") >= 0) {
+        const nth = calls.filter((c) => c.url.indexOf("customer-package-reset/list") >= 0).length;
+        return Promise.resolve(fakeRes(200, JSON.stringify({ code: 0, success: true, data: {
+          fiveHourResets: nth >= 2
+            ? [{ available: true, expireTime: "2026-11-13 09:00:00" }, { available: true, expireTime: "2026-11-13 07:00:00" }, { available: false, expireTime: "2026-11-13 06:00:00" }]
+            : [{ available: true, expireTime: "2026-11-13 09:00:00" }, { available: false, expireTime: "2026-11-13 06:00:00" }],
+          weekResets: [{ available: true, expireTime: "2026-11-18 09:00:00" }],
+        } })));
+      }
       if (url.indexOf("/api/biz/customer/getCustomerInfo") >= 0) return Promise.resolve(fakeRes(200, JSON.stringify({ code: 200, data: { organizations: [
         { organizationId: "org-1", projects: [{ projectId: "proj-1" }] },
       ] } })));
@@ -224,6 +229,14 @@ test("team: 重置卡走 targetType=TEAM 列表（团队头），值形与徽标
   const liveFive = (famEntry.list.fiveHour || []).filter((c) => c.available !== false);
   assert.equal(liveFive.length, 1, "只计 available 且未过期的卡");
   assert.equal(liveFive[0].expireAt, Date.parse("2026-11-13T09:00:00+08:00"));   // 服务端 UTC+8 字符串
+  clock.t += Q.RESET_TTL_MS + 1;
+  client.tick();
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(calls.filter((c) => c.url.indexOf("customer-package-reset/list?targetType=TEAM") >= 0).length, 2,
+    "团队 list 就是主链：不受个人链列表子 TTL 限制，每个 status 周期照打");
+  const famEntry2 = client.view().resets && client.view().resets.bigmodel;
+  assert.equal((famEntry2.list.fiveHour || []).filter((c) => c.available !== false).length, 2,
+    "团队 list 视图随服务端更新（sticky 不适用于团队分支，不被冻结在首轮）");
   assert.ok(calls.every((c) => JSON.stringify(c).indexOf("enc:v") < 0), "任何请求不外发密文");
 });
 

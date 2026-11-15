@@ -35,7 +35,9 @@ const EXP_RETRY_MS = 5 * 60 * 1000;
 /* v135 重置卡（coding plan reset opportunity）：独立只读链，不复用 sources 调度器。
  * 与额度 monitor 是两条链——卡是账号级「立即恢复额度池」的核销机会，每张带 expire_at。 */
 const RESET_PATH = "/api/v1/coding-plan/reset/status";
-const RESET_TTL_MS = 5 * 60 * 1000;       // 对齐宿主 STATUS_POLL_INTERVAL_MS
+const RESET_TTL_MS = 2 * 60 * 1000;       // 稳态轮询（v361 提速：5min→2min，status 是只读查询）
+const RESET_LIST_TTL_MS = 10 * 60 * 1000; // 网页列表增强子链独立 TTL（tooltip 深度信息，慢刷新控体量）
+const RESET_POKE_GAP_MS = 30 * 1000;      // pokeReset 软强刷最小间隔（visibility/hover 触发防抖）
 const RESET_PARSE_BACKOFF_MS = 15 * 60 * 1000;
 
 /* ---------- 基础工具 ---------- */
