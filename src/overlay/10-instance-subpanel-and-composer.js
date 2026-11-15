@@ -201,13 +201,20 @@
         '<div class="zu-spf">' + subPopIco('<circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/>', 14) +
           ttEsc(L("独立统计，不计入会话累计。", "Tracked separately, not counted in session total.")) + "</div>";
       var nN = subPanel.querySelector(".zu-spnav-list"), bN = subPanel.querySelector(".zu-spbody");
+      subPanel.__zuModelFitWidth = 0;   // 重建后模型名 fit 需重跑（positionSubPop 按此门控）
       if (nN) nN.scrollTop = navTop;   // 数据刷新保持左列表滚动位置
       if (bN) bN.scrollTop = bodyTop;
     }
     function positionSubPop() {
       if (!subPopOpen()) return;
       if (subPopEntry && !subPopEntry.isConnected) { subPopClose(false, "entry-gone"); return; }
-      if (typeof fitModelNames === "function") fitModelNames(subPanel);
+      /* 与 positionTip 的 __zuModelFitWidth 门控同款：浮层打开期间逐帧跟随，fit 含强制
+       * 布局读写，无门控时每帧重跑（Windows 低端机/高 DPI 帧预算更紧）；宽度变化或重建
+       * 后重跑一次。 */
+      if (typeof fitModelNames === "function" && subPanel.__zuModelFitWidth !== window.innerWidth) {
+        fitModelNames(subPanel);
+        subPanel.__zuModelFitWidth = window.innerWidth;
+      }
       var width = subPanel.offsetWidth, height = subPanel.offsetHeight;
       var ir = subPopEntry ? subPopEntry.getBoundingClientRect() : bar.getBoundingClientRect();
       if (!ir.width && !ir.height) ir = bar.getBoundingClientRect();   // 隐藏条内入口 rect 全零，回退条锚

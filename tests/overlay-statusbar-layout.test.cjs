@@ -169,3 +169,23 @@ test('compiled renderer keeps the fold/menu/layout contract tokens', () => {
   assert.ok(source.includes('foldDirty = true;   // 档位切换即重算折叠'), 'shrink tier change bumps foldDirty');
   assert.ok(source.includes('syncBarOverflow();'), 'track calls fold after narrow block');
 });
+test('v357 windows-compat fixes keep fold-probe isolation, endlead naming and clock guards', () => {
+  /* 探针必须剥折叠态再量自然宽：克隆里的 data-zu-folded 命中 display:none 规则把
+   * fullWidth 量缩，shrink 档据此误判「完整宽装得下」→ 反复展/折叠震荡 */
+  assert.ok(source.includes('probeMain.querySelectorAll("[data-zu-folded]")'), 'probe strips folded state');
+  /* 居右 endlead 属性名：dataset 驼峰 zuEndLead 生成 data-zu-end-lead，与 CSS/清理的
+   * data-zu-endlead 永不匹配（居右+首格折叠时剩余格被摊满整条不右聚拢） */
+  assert.ok(source.includes('dataset.zuEndlead'), 'endlead dataset key matches CSS');
+  assert.ok(!source.includes('dataset.zuEndLead'), 'no camelCase endlead residue');
+  /* 跳拍门时钟回拨守卫：负差值视为到期（NTP 步进/改时后对账不冻结到墙钟追回） */
+  assert.ok(source.includes('nowMs - heavyRunAt >= 0'), 'heavy clock-rollback guard');
+  assert.ok(source.includes('nowMs - coordRunAt >= 0'), 'coordinator clock-rollback guard');
+  /* 子代理浮层模型名 fit 宽度门控（浮层打开期间不逐帧强制布局）：锁条件行而非簿记
+   * 残留——只留 buildSubPop 里的 =0 赋值、拆掉门控判断时旧 token 会假绿（变异实证） */
+  assert.ok(source.includes('subPanel.__zuModelFitWidth !== window.innerWidth'), 'subPop fit width gate');
+  assert.ok(source.includes('subPanel.__zuModelFitWidth = 0'), 'subPop fit gate reset on rebuild');
+  /* 增强历史搜索框 IME 保持（组合期间不整面板重建） */
+  assert.ok(source.includes('ehFullSearchHold'), 'history search IME hold');
+  /* 速度卡模型表旧 Chromium 滚动条回退（scrollbar-width 需 Chromium 121+） */
+  assert.ok(source.includes('.zu-turn-models::-webkit-scrollbar'), 'webkit scrollbar fallback');
+});

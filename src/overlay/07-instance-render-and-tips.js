@@ -447,6 +447,11 @@
           '' + '.zu-stat-tip--' + variant + ' .zu-turn-models th{padding:1px 3px!important;white-space:nowrap!important}' +
           '' + '.zu-stat-tip--' + variant + ' .zu-turn-models td{padding:2px 3px!important;white-space:nowrap!important}' +
           '' + '.zu-stat-tip--' + variant + ' .zu-turn-models{flex:1 1 auto!important;min-height:0!important;overflow:auto!important;scrollbar-width:thin!important}' +
+          /* scrollbar-width 需 Chromium 121+：旧宿主回退 ::-webkit-scrollbar 窄条，避免 Windows
+           * 经典亮灰立体滚动条（约 17px）挤占表格；新 Chromium 设 scrollbar-width 后忽略
+           * webkit 伪元素，双写无冲突 */
+          '' + '.zu-stat-tip--' + variant + ' .zu-turn-models::-webkit-scrollbar{width:8px!important;height:8px!important}' +
+          '' + '.zu-stat-tip--' + variant + ' .zu-turn-models::-webkit-scrollbar-thumb{background:var(--color-border,rgba(128,128,128,.45))!important;border-radius:4px!important}' +
           '' + '.zu-stat-tip--' + variant + ' .zu-stat-time{margin-top:auto!important;padding-top:5px!important;border-top:1px solid var(--color-popover-border,rgba(255,255,255,.12))!important;font-size:calc(var(--ui-font-size,14px) - 4px)!important}' +
           '' + '.zu-stat-tip--' + variant + ' .zu-stat-time span{font-variant-numeric:tabular-nums!important}' +
           /* v301.1 图标规则三卡共享：flex baseline 标签行内图标 align-self:center
