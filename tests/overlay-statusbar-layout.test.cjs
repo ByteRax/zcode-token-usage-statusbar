@@ -52,7 +52,7 @@ test('sort uses user order while keeping diagnostic warnings ahead of movable ce
   const result = Array.from(api.zuBarSortItems(rows,['sub','speed','win','turn','today','proj','tools']), r => r.key);
   assert.deepEqual(result, ['system','sub','speed','win','turn']);
 });
-test('fold order: low folds first, ties fold right-first, speed and system never fold', () => {
+test('fold order: low folds first, ties fold right-first, speed and system fold last', () => {
   const api = logic();
   const keys = ['speed','turn','win','today','proj','tools','sub'];
   const prio = {speed:'high', turn:'high', win:'normal', today:'normal', proj:'normal', tools:'low', sub:'low'};
@@ -62,7 +62,7 @@ test('fold order: low folds first, ties fold right-first, speed and system never
   const allHigh = api.zuBarFoldOrder(keys, {speed:'high',turn:'high',win:'high',today:'high',proj:'high',tools:'high',sub:'high'}).map(c => c.key);
   assert.equal(allHigh[0], 'sub');
   assert.equal(allHigh[allHigh.length - 1], 'speed');
-  /* system 徽标与 speed 一样不参与折叠（rank -1 恒最后） */
+  /* system 徽标与 speed 一样排最后候选（rank -1 恒末位，极端挤压下照折非豁免） */
   const withSystem = api.zuBarFoldOrder(['system','turn'], {turn:'low'}).map(c => c.key);
   assert.deepEqual(withSystem, ['turn','system']);
   /* 未知 key 按普通档折叠 */
@@ -160,21 +160,54 @@ test('compiled renderer keeps the fold/menu/layout contract tokens', () => {
   /* v352 折叠触发器必须双向：折叠态 slack≥FOLD_HYS 也要触发重算（单向溢出探针会让
    * 「已折叠且刚好装下」的折叠集在宽度跳变时永久冻结，pill 夹具实证） */
   assert.ok(source.includes('foldedKeys ? ovNow <= 1 - FOLD_HYS : ovNow > 1'), 'bidirectional fold trigger');
-  /* speed 固定保护：折叠序纯函数排除 speed/system；设置页 speed 行用固定徽标替代开关 */
-  assert.ok(source.includes('key === "system" || key === "speed"'), 'speed/system fold exemption');
+  /* speed 固定保护：折叠序纯函数把 speed/system 排最后候选（rank -1，非豁免）；设置页 speed 行用固定徽标替代开关 */
+  assert.ok(source.includes('key === "system" || key === "speed"'), 'speed/system fold last');
   assert.ok(source.includes('zu-layout-fixed'), 'speed fixed badge');
-  /* v359 结构锁：Grid 五区 + for/id 显式关联 + 容器查询降级 */
+  /* v359 结构锁：Grid 五区 + for/id 显式关联 + 容器查询降级；Grid 模板与子项坐标
+   * 显式锁 token（变异实证：只锁类名时改列数/坐标全绿） */
   for (const token of ['zu-layout-info', 'zu-layout-vis', 'zu-layout-actions',
     'for="zu-show-', 'id="zu-show-', 'container-name:zu-layout', '@container zu-layout (max-width:440px)',
-    'M12 19V5']) assert.ok(source.includes(token), token);
+    'M12 19V5',
+    'grid-template-columns:10px minmax(0,1fr) auto auto auto',
+    'grid-column:1;grid-row:1', 'grid-column:2;grid-row:1', 'grid-column:3;grid-row:1',
+    'grid-column:4;grid-row:1', 'grid-column:5;grid-row:1',
+    'grid-row:1/3', 'grid-column:2;grid-row:2', 'grid-column:3/6;grid-row:2'])
+    assert.ok(source.includes(token), token);
   /* v359 级联锁：排序卡规则必须带 .zu-settings 前缀（通用 .zu-settings label 后置同分
-   * 压制曾把 .zu-layout-ico 拉成 129-167px——不允许裸单类形态回潮） */
-  assert.ok(!/(?<!\.zu-settings )(?<!\.zu-layout-info \.zu-settings )\\.zu-layout-(?:row|ico|name|vis|fixed|prio|action|actions|reset|grip|info)\\{/.test(source),
-    'layout card rules are .zu-settings prefixed');
+   * 压制曾把 .zu-layout-ico 拉成 129-167px——不允许裸单类形态回潮）。实现=穷举规则头
+   * （每个 { 回溯选择器段至 {};"'` 换行边界），头含 .zu-layout- 时按逗号分段逐段核
+   * 前缀——复合头（:has()/后代/属性选择器/伪元素/头中注释）全覆盖，JS 字符串经引号
+   * 边界天然隔离；先跑正反自证桩——原 lookbehind 正则 `\\.` 双重转义恒真（匹配字面
+   * 反斜杠），对本锁要防的前缀剥除变异全绿，教训：断言必须先证明它能红。 */
+  function bareLayoutRules(text) {
+    const out = [];
+    for (const m of text.matchAll(/\{/g)) {
+      let start = m.index;
+      while (start > 0 && !'{};"\'`\n'.includes(text[start - 1])) start--;
+      const head = text.slice(start, m.index);
+      if (!head.includes('.zu-layout-')) continue;
+      for (const sel of head.split(',')) {
+        if (sel.includes('.zu-layout-') && !sel.includes('.zu-settings')) out.push(sel.trim());
+      }
+    }
+    return out;
+  }
+  assert.deepEqual(bareLayoutRules('.zu-settings .zu-layout-row{a:b}'), [],
+    'cascade lock self-check: prefixed form passes');
+  assert.deepEqual(bareLayoutRules('.x{a:b}.zu-layout-row{a:b}.y{c:d}'), ['.zu-layout-row'],
+    'cascade lock self-check: bare rule-head caught');
+  assert.deepEqual(bareLayoutRules('.zu-settings .a,.zu-layout-row{a:b}'), ['.zu-layout-row'],
+    'cascade lock self-check: bare comma piece caught');
+  assert.deepEqual(bareLayoutRules('.zu-settings .zu-layout-vis,.zu-settings .zu-layout-fixed{a:b}'), [],
+    'cascade lock self-check: prefixed comma list passes');
+  assert.deepEqual(bareLayoutRules(source), [], 'layout card rules are .zu-settings prefixed');
   assert.ok(!source.includes('__zuMoreTipKey'), 'dead more-tip marker removed');
   /* v352 分层定案：窄宽三档（shrink 状态机）保留为前层，折叠仅在 shrink===2 仍溢出时接管 */
   assert.ok(source.includes('state.theme !== "default" || shrink !== 2'), 'fold gate on narrow tier');
   assert.ok(source.includes('foldDirty = true;   // 档位切换即重算折叠'), 'shrink tier change bumps foldDirty');
+  /* 排序卡排序变更置位（specs 门控清单「排序变更置位」）：锁 09 分片 applyLayoutOrder
+   * 的防御置位行——变异实证删行全绿（render 路径 didRebuild 近似兜底），规格与测试网脱节 */
+  assert.ok(source.includes('foldDirty = true;   // v359'), 'layout order change bumps foldDirty');
   assert.ok(source.includes('syncBarOverflow();'), 'track calls fold after narrow block');
 });
 test('v357 windows-compat fixes keep fold-probe isolation, endlead naming and clock guards', () => {

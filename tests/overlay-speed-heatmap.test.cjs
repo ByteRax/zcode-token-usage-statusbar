@@ -333,9 +333,11 @@ test('v294 month cell style: muted band bg, left band bar, high-contrast fg, no 
   assert.match(css, /\.zu-hm-cell::before\{content:none\}/, 'no pseudo-element on any heatmap cell (incl. ultra star)');
   assert.ok(!css.includes('zu-hm-tight .zu-hm-v{display:none}'), '6-row months never hide values (v297)');
   /* v359：断言收窄到热力图域——原全源码 includes 过宽，排序卡容器查询
-   * （@container zu-layout (max-width:440px)，无 zu-hm 前缀）合法引入同字面量 */
+   * （@container zu-layout (max-width:440px)，无 zu-hm 前缀）合法引入同字面量；
+   * at-rule 体允许先出现任意完整简单规则再命中 .zu-hm（纯 [^{}]* 会在首个嵌套 { 处
+   * 截断漏检） */
   assert.ok(!/\.zu-hm[a-z-]*[^{]*\{[^}]*440px/.test(css) &&
-    !/(?:@media|@container)[^{]*max-width:\s*440px[^{]*\{[^{}]*\.zu-hm/.test(css), 'ultra-narrow hide tier removed (v297)');
+    !/(?:@media|@container)[^{]*max-width:\s*440px[^{]*\{(?:[^{}]*\{[^{}]*\})*[^{}]*\.zu-hm/.test(css), 'ultra-narrow hide tier removed (v297)');
 });
 
 test('inject style hygiene: tip element never gets display (hide relies on inline display:none)', () => {

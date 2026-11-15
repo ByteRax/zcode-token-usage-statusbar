@@ -18,7 +18,7 @@
 ## 自动折叠（仅 default 主题）
 
 - 判定基于真实布局测量：`scrollWidth > clientWidth + 1`；不做字符数估算。折叠是**第四层**降级（v352 与窄宽收缩线串联）：完整条面 → `zu-tight` 缩字号 → `zu-narrow` 藏次要（窄宽状态机，250ms 节流探针+双向迟滞）→ **仅 shrink===2 仍溢出时折叠接管**（syncBarOverflow 入口门槛；窄宽档位切换置 foldDirty 联动重算）→ 全折仍装不下回横滚 + `zu-clip`/`zu-clip-left` 渐隐（窄宽块维护）。
-- 折叠序=`zuBarFoldOrder` 纯函数：低优先先折、同级按显示序靠右先折；`system` 与 `speed` 不参与折叠。`speed` 的「固定（始终显示）」指有有效速度数据时优先保留（无数据仍不渲染，绝不伪造 0 t/s），不是常显占位。
+- 折叠序=`zuBarFoldOrder` 纯函数：低优先先折、同级按显示序靠右先折；`system` 与 `speed` rank=-1 排为**最后候选**——普通候选收尽仍溢出时照样折叠，并非豁免。`speed` 的「固定」徽标指有有效速度数据时优先保留（无数据仍不渲染，绝不伪造 0 t/s），不是常显占位。
 - 重算门控：宽度（bar.clientWidth）+ 字号/字族（getComputedStyle fontSize+fontFamily）+ 优先级签名 + `foldDirty`（重建/主题切换/优先级变更/窄宽档位切换/排序变更置位）。每帧另测一次溢出差 `ov = scrollWidth − clientWidth` 做双向触发：展开态 `ov>1` 触发折叠重算；折叠态 `ov ≤ 1−FOLD_HYS`（FOLD_HYS=24px）才触发回展尝试——迟滞带防数值刷新在阈值附近整格反复翻转。单向溢出探针是错的（「已折叠且刚好装下」直接变宽不经过溢出态，折叠集会冻结）。
 - 折叠格 `data-zu-folded="1"` → `display:none`（CSS 属性选择器 + !important，React 不清理 data-*）；分隔线同步隐藏（首可见格前与相邻可见格间保留）。全折仍超宽由 `.zu-clip` 右缘渐隐兜底；「···」按钮与齿轮在 `.zu-main` 之外永不折叠。
 - 居右对齐（`zusage3.barJust=end`）下首格被折叠时 `:first-child` 的 auto margin 失效，重算把 `data-zu-endlead` 挪到第一个可见格接管右聚拢。
@@ -34,8 +34,10 @@
 
 ## 设置页排序卡（`.zu-layout-card` 单根嵌套卡）
 
-- 行结构：SVG 拖拽手柄（勿用盲文字符）| 格图标（与条面同 path，两处需同步改）| 名称+两行说明（旧 settingRow 说明文案迁移保留）| 显示开关 | 优先级三段选择 | 上移/下移。speed 行无开关，显示「ⓘ 固定（始终显示）」徽标，优先级三段锁高禁用。
-- 优先级控件=native radio 三段（`role=radiogroup`，方向键导航天然可用），选中态柔和主题底（color-mix brand）+ 内描边；change 走 `.zu-layout-prio` 委托。
+- 行结构（v359 Grid 五列，全部子项显式 `grid-column` 坐标，免疫通用 checkbox `order:2` 重排）：拖拽手柄 | 信息组（格图标+名称+两行说明；名称区 label `for`/`id=zu-show-<slot>-<key>` 与开关显式关联，speed 行无开关用 div）| 显示开关或「固定」胶囊徽标（同占第 3 列；完整语义在 title：有有效速度数据即保留、空间不足时最后折叠）| 优先级三段 | 上移/下移。全部 `.zu-layout-*` 规则带 `.zu-settings` 前缀升特异性（含卡片本体 `.zu-layout-card`），逐属性显式声明对抗通用 `label`/`label>span` 规则，无 `!important`。
+- 窄卡降级：卡片为容器查询锚点（`container-name:zu-layout`），`@container ≤440px` 切两行（优先级左下、↑↓ 右下），容器宽度不随 nav rail 折叠误判。两行排布内容宽下限约 234px（中文最窄；英文标签较宽约 252px，随语言/字号浮动），更窄分栏的排序卡第 2 行会被设置面板层 `overflow:hidden`（`.panel.zu-settings`）裁剪（键盘仍可达）——已知下限带。
+- ↑↓ 用 SVG 带杆箭头（规避 U+2191/93 Windows 字形偏差）；重置按钮 title 注明只还原 barOrder/barPriority 两键。speed 行优先级三段禁用（新配置缺省高；遗留手改低值原样显示但不影响折叠序——rank=-1 硬编码）。
+- 优先级控件=native radio 三段（`role=radiogroup`，方向键导航天然可用），选中态 10% 主题 tint（color-mix brand）无描边、hover 轻提亮、选中交界隐分隔线，分段等宽 + `min-height:24` 防大字号垂直裁切；change 走 `.zu-layout-prio` 委托。
 - 拖拽：HTML5 DND 仅整行可拖，dragstart 排除 input/select/button；dragover 高亮 prevRow 记忆（命中行变化才摘/挂类），行间隙清残留高亮；drop 双向 splice 数学，鼠标拖放不还焦点。↑↓ 键盘排序：焦点跟移，落点同向按钮已禁用时回退同行可用控件；aria-live 播报「已移至第 N 位」。重置只还原 barOrder/barPriority 两键并回焦新按钮。
 - 回填契约（v249 双回填）：syncPanel 同步三段选中态；行序与 `state.barOrder` 漂移（他实例已改）时整卡重建。跨窗口 storage 事件驱动同链同步。
 - 与窄宽收缩线（v351 收口进 main）的关系：**不是退役而是串联**——合并时把 PR 初版的「shrink 退役」方案改写为「窄宽三档之后折叠接管」的分层方案；`shrink`/`narrowWidths`/`fadeOn`（左右渐隐状态）保留归窄宽线，折叠不读写它们（只读档位 `shrink===2` 做门槛）。
