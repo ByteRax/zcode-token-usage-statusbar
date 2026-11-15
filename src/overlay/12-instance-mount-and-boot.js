@@ -583,7 +583,7 @@
 
     /* 窄宽度折叠：基于真实布局测量，而非字符数猜测。优先级低的先收起，同级右侧先收起。
      * 只在条面内容或宽度变化时重新计算，防止 rAF 每帧触发布局和频繁写 DOM。 */
-    var foldDirty = true, foldWidth = -1, foldFont = "", foldedKeys = "";
+    var foldDirty = true, foldWidth = -1, foldFont = "", foldPrioritySig = "", foldedKeys = "";
     function barMorePosition() {
       if (!morePanel.classList.contains("open")) return;
       var a = moreButton.getBoundingClientRect(), h = morePanel.offsetHeight, w = morePanel.offsetWidth;
@@ -624,11 +624,12 @@
       }
       var width = bar.clientWidth;
       var font = getComputedStyle(main).fontSize;
-      if (!foldDirty && width === foldWidth && font === foldFont) {
+      var prioritySig = JSON.stringify(state.barPriority);
+      if (!foldDirty && width === foldWidth && font === foldFont && prioritySig === foldPrioritySig) {
         barMorePosition();
         return;
       }
-      foldDirty = false; foldWidth = width; foldFont = font;
+      foldDirty = false; foldWidth = width; foldFont = font; foldPrioritySig = prioritySig;
       var rows = Array.prototype.slice.call(main.querySelectorAll(":scope > .it"));
       var separators = Array.prototype.slice.call(main.querySelectorAll(":scope > .sep"));
       rows.forEach(function (el) { el.dataset.zuFolded = "0"; });
