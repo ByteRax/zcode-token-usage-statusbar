@@ -19558,9 +19558,11 @@
     function syncBarOverflow() {
       if (state.theme !== "default") {
         if (moreButton.dataset.zuVisible !== "0") moreButton.dataset.zuVisible = "0";
-        main.querySelectorAll("[data-zu-folded]").forEach(function (el) { el.removeAttribute("data-zu-folded"); });
-        foldedKeys = "";
-        foldDirty = true;
+        if (foldDirty || foldedKeys) {
+          main.querySelectorAll("[data-zu-folded]").forEach(function (el) { el.removeAttribute("data-zu-folded"); });
+          foldedKeys = "";
+          foldDirty = false;
+        }
         closeMore(false);
         main.classList.remove("zu-clip");
         return;
@@ -19619,7 +19621,8 @@
       }
       if (!hidden.length) closeMore(false);
       main.classList.toggle("zu-clip", main.scrollWidth > main.clientWidth + 1);
-      if (morePanel.classList.contains("open")) moreEntriesSync();
+      /* 打开的菜单不能每次数字刷新都 innerHTML 重建：会抢走菜单按钮焦点。 */
+      if (morePanel.classList.contains("open") && !morePanel.querySelector(".zu-more-option")) moreEntriesSync();
       barMorePosition();
     }
     moreButton.addEventListener("click", function (e) {
