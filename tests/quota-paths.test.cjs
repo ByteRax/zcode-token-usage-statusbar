@@ -370,7 +370,7 @@ test("main bridge: model puller shares quota path resolution incl. migrated cred
       if (id === "./quota-client.cjs") return { decryptValue: () => null, deriveCipherKey: () => null };
       throw new Error(id);
     },
-    resolveHostQuotaPaths: () => paths, LOG() {},
+    modelPuller: null, resolveHostQuotaPaths: () => paths, LOG() {},
     path: require("path"), __dirname: "/runtime",   // #236：cachePath 用 path.join(__dirname, …)
   });
   assert.equal(opts.length, 1);

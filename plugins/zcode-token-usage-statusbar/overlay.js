@@ -1463,35 +1463,512 @@
     rstTip.style.display = "none";
     rstTipFor = null;
   }
-  /* ---------- v344 增强按钮 tooltip：rstTip 同款 body 级轻量文本浮层（.tip 样式/上方
-   * 弹出/签名幂等/主题跟随）。纯文案无交互（textContent，不经 innerHTML），文案由按钮
-   * 相位同步处写入 el.__zuEnhTip（实例闭包算好双语与相位），悬停中相位变化跟随重显。 */
+  /* ---------- 增强历史面板：悬停增强按钮弹出（替代 v344 纯文字提示）。
+   * 最近 3 条卡片 + 查看全部/清空；数据经 enhance-history-* 插件动作读写运行目录。
+   * 纯文本渲染（esc），SVG 全部 currentColor；鼠标移入面板保活，移出延迟收起。 */
   var enhanceTip = document.createElement("div");
   enhanceTip.className = "tip zusage-quota-tip zusage-enhance-tip";
   enhanceTip.style.cssText = rateTip.style.cssText;
+  enhanceTip.style.width = "600px";
+  enhanceTip.style.maxWidth = "calc(100vw - 24px)";
+  enhanceTip.style.maxHeight = "min(650px,72vh)";
+  enhanceTip.style.display = "flex";
+  enhanceTip.style.flexDirection = "column";
+  enhanceTip.style.overflow = "hidden";
+  enhanceTip.style.padding = "0";
+  enhanceTip.style.display = "none";
   document.body.appendChild(enhanceTip);
   var enhanceTipFor = null;
+  var EH_HIDE_DELAY_MS = 220;
+  var ehHideTimer = 0;
+  var ehCache = null, ehCacheAt = 0, ehLoading = false, ehError = false;
+  var EH_ICON = {
+    history: '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/></svg>',
+    server: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 6.5h.01M7 17.5h.01M12 6.5h6M12 17.5h6"/></svg>',
+    chip: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="5" width="14" height="14" rx="2"/><path d="M9 9h6v6H9z"/><path d="M9 1v4M15 1v4M9 19v4M15 19v4"/><path d="M1 9h4M1 15h4M19 9h4M19 15h4"/></svg>',
+    doc: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8M8 17h6"/></svg>',
+    spark: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 3 1.9 5.9L20 11l-6.1 2.1L12 19l-1.9-5.9L4 11l6.1-2.1L12 3Z"/><path d="m19 18 .6 1.4L21 20l-1.4.6L19 22l-.6-1.4L17 20l1.4-.6L19 18Z"/></svg>',
+    db: '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v7c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 12v7c0 1.7 3.6 3 8 3s8-1.3 8-3v-7"/></svg>',
+    cal: '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18"/><path d="M8 15h3M8 18h3M15 15h1"/></svg>',
+    timer: '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l3 2"/><path d="M9 2h6M12 2v3"/><path d="m19 6 2-2"/></svg>',
+    copy: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></svg>',
+    list: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3 6h.01M3 12h.01M3 18h.01"/></svg>',
+    trash: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18M8 6V4h8v2"/><path d="M5 6l1 15h12l1-15"/><path d="M10 10v7M14 10v7"/></svg>',
+    chev: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>',
+    check: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m5 12 4 4L19 6"/></svg>',
+    close: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>',
+    search: '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>',
+    gear: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.08a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.08a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.08a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
+    empty: '<svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 3v5h5"/><path d="M8 12h8"/></svg>'
+  };
+  /* 查看全部历史：套餐源 id → 显示名（与 model-puller.cjs PLAN_SOURCES 同源，避免表格里
+   * 出现 account:bigmodel-start-plan 这类内部 id；非套餐 id 原样显示，不虚构名称） */
+  var EH_PLAN_LABELS = {
+    "account:bigmodel-individual-coding-plan": "BigModel Coding Plan",
+    "account:bigmodel-team-coding-plan": "BigModel Coding Plan (team)",
+    "account:bigmodel-start-plan": "BigModel Start Plan",
+    "account:zai-individual-coding-plan": "Z.ai Coding Plan",
+    "account:zai-team-coding-plan": "Z.ai Coding Plan (team)",
+    "account:zai-start-plan": "Z.ai Start Plan"
+  };
+  function ehProvLabel(name) {
+    name = String(name || "");
+    return EH_PLAN_LABELS[name] || name;
+  }
+  function enhanceHistoryAdd(record) {
+    pluginRequest("enhance-history-add", { record: record });
+    ehCacheAt = 0;   // 失效：下次悬停拉取含新记录
+    ehFullCache = null;   // 全量面板缓存同样失效（打开中下次交互重建）
+  }
+  function ehEsc(v) { return String(v == null ? "" : v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
+  function ehFetch(done) {
+    ehLoading = true;
+    pluginRequest("enhance-history-list", { limit: 3 }, function (res) {
+      ehLoading = false;
+      if (res && res.ok && Array.isArray(res.records)) { ehCache = res; ehCacheAt = Date.now(); ehError = false; }
+      else ehError = true;
+      done();
+    });
+  }
+  function ehFmtWhen(iso) {
+    var d = Date.parse(iso || "");
+    if (!isFinite(d)) return "—";
+    var t = new Date(d), p2 = function (n) { return n < 10 ? "0" + n : "" + n; };
+    return p2(t.getMonth() + 1) + "-" + p2(t.getDate()) + " " + p2(t.getHours()) + ":" + p2(t.getMinutes());
+  }
+  function ehFmtFull(iso) {
+    var d = Date.parse(iso || "");
+    if (!isFinite(d)) return "";
+    var t = new Date(d), p2 = function (n) { return n < 10 ? "0" + n : "" + n; };
+    return t.getFullYear() + "-" + p2(t.getMonth() + 1) + "-" + p2(t.getDate()) + " " + p2(t.getHours()) + ":" + p2(t.getMinutes()) + ":" + p2(t.getSeconds());
+  }
+  function ehFmtDur(ms) {
+    if (!Number.isFinite(ms) || ms <= 0) return "—";
+    if (ms < 60000) return (ms / 1000).toFixed(1) + "s";
+    return Math.floor(ms / 60000) + "m " + ((ms % 60000) / 1000).toFixed(1) + "s";
+  }
+  function ehTokenText(usage) {
+    var t = usage && Number.isFinite(usage.totalTokens) ? usage.totalTokens : null;
+    return t == null ? L("Token 未提供", "tokens not reported") : t.toLocaleString() + " Token";
+  }
+  function ehCardHTML(r, expanded) {
+    var src = r.source === "test" ? L("测试", "test") : L("聊天", "chat");
+    var orig = String(r.originalText || ""), enh = String(r.enhancedText || "");
+    var tok = r.usage && Number.isFinite(r.usage.totalTokens) ? r.usage.totalTokens.toLocaleString() + " tokens" : L("未提供", "not reported");
+    var when = ehFmtFull(r.createdAt);
+    return '<div class="zu-eh-card" data-id="' + ehEsc(r.id) + '">' +
+      '<div class="zu-eh-pm">' +
+      '<span class="zu-eh-ico">' + EH_ICON.server + '</span><span class="zu-eh-lab-k">' + L("供应商：", "Provider: ") + '</span><span class="zu-eh-pm-name" title="' + ehEsc(r.providerName) + '">' + ehEsc(r.providerName || "—") + '</span>' +
+      '<span class="zu-eh-sep"></span>' +
+      '<span class="zu-eh-ico">' + EH_ICON.chip + '</span><span class="zu-eh-lab-k">' + L("模型：", "Model: ") + '</span><span class="zu-eh-pm-name" title="' + ehEsc(r.modelId) + '">' + ehEsc(r.modelId || "—") + '</span></div>' +
+      '<div class="zu-eh-text"><span class="zu-eh-lab-k">' + EH_ICON.doc + L("原始文本：", "Original: ") + '</span><span class="zu-eh-body">' + ehEsc(orig) + '</span></div>' +
+      '<div class="zu-eh-text zu-eh-text-enh"><span class="zu-eh-lab-k zu-eh-lab-enh">' + EH_ICON.spark + L("增强文本：", "Enhanced: ") + '</span><span class="zu-eh-body">' + ehEsc(enh) + '</span></div>' +
+      '<div class="zu-eh-stats">' +
+      '<span class="zu-eh-stat">' + EH_ICON.db + '<span class="zu-eh-lab-k">' + L("消耗：", "Tokens: ") + '</span>' + ehEsc(tok) + '</span>' +
+      '<span class="zu-eh-stat">' + EH_ICON.cal + '<span class="zu-eh-lab-k">' + L("时间：", "Time: ") + '</span>' + ehEsc(when) + '</span>' +
+      '<span class="zu-eh-stat">' + EH_ICON.timer + '<span class="zu-eh-lab-k">' + L("耗时：", "Duration: ") + '</span>' + ehEsc(ehFmtDur(r.durationMs)) + '</span></div></div>';
+  }
+  function ehRender() {
+    var el = enhanceTipFor;
+    var phase = el && el.__zuEnhTip ? '<span class="zu-eh-phase">' + ehEsc(el.__zuEnhTip) + "</span>" : "";
+    var body;
+    if (ehLoading && !ehCache) body = '<div class="zu-eh-empty">' + L("正在读取历史…", "Loading history…") + "</div>";
+    else if (ehError) body = '<div class="zu-eh-empty">' + L("读取历史记录失败", "Failed to load history") + '<button type="button" class="zu-eh-retry zu-eh-act">' + L("重试", "Retry") + "</button><small>" + L("如果重试仍失败，请完全重启 ZCode 后再试。", "If retry fails, fully restart ZCode.") + "</small></div>";
+    else if (!ehCache || !ehCache.records || !ehCache.records.length) body = '<div class="zu-eh-empty">' + EH_ICON.empty + '<div>' + L("暂无增强历史", "No enhancement history yet") + '</div><small>' + L("成功增强提示词后，记录会显示在这里。", "Records appear here after a successful enhancement.") + "</small></div>";
+    else body = '<div class="zu-eh-scroll">' + ehCache.records.map(function (r) { return ehCardHTML(r, false); }).join("") + "</div>";
+    var footer = '<div class="zu-eh-footer"><button type="button" class="zu-eh-act zu-eh-all" data-all>' + EH_ICON.list + L("查看全部历史", "View all history") + '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></button><button type="button" class="zu-eh-act zu-eh-clear" data-clear>' + EH_ICON.trash + L("清空记录", "Clear records") + '</button><button type="button" class="zu-eh-act" data-ehset title="' + L("提示词增强设置", "Prompt enhancement settings") + '">' + EH_ICON.gear + L("设置", "Settings") + "</button></div>";
+    var total = ehCache && ehCache.total != null ? L("共 ", "total ") + ehCache.total + L(" 条", "") : "";
+    enhanceTip.innerHTML = '<div class="zu-eh-head"><div class="zu-eh-head-row"><span class="zu-eh-title">' + EH_ICON.history + L("最近增强记录", "Recent enhancements") + phase + '</span>' + (total ? '<span class="zu-eh-total">' + total + '</span>' : "") + '</div></div>' + body + '<div class="zu-eh-arrow"></div>' + footer;
+  }
   function showEnhanceTip(el) {
-    if (stale() || !el || !el.isConnected || !el.__zuEnhTip) { hideEnhanceTip(); return; }
-    var txt = el.__zuEnhTip;
-    if (enhanceTip.__zuTipText !== txt) { enhanceTip.textContent = txt; enhanceTip.__zuTipText = txt; }
+    if (stale() || !el || !el.isConnected) { hideEnhanceTip(); return; }
     var dark = true;
     try { dark = document.documentElement.classList.contains("dark"); } catch (e) { }
     enhanceTip.classList.toggle("zu-light", !dark);
-    enhanceTip.style.display = "block";
-    var r = el.getBoundingClientRect(), tw = enhanceTip.offsetWidth, th = enhanceTip.offsetHeight;
-    var vw = window.innerWidth, vh = window.innerHeight;
-    var left = Math.max(8, Math.min(r.left, vw - tw - 8));
-    var top = r.top - th - 8;
-    if (top < 8) top = Math.min(r.bottom + 8, vh - th - 8);
-    enhanceTip.style.left = Math.round(left) + "px";
-    enhanceTip.style.top = Math.round(top) + "px";
+    enhanceTip.style.display = "flex";
     enhanceTipFor = el;
+    var r = el.getBoundingClientRect(), vw = window.innerWidth;
+    var tw = Math.min(600, vw - 24);
+    var left = Math.max(8, Math.min(Math.round(r.left + r.width / 2 - tw / 2), Math.round(vw - tw - 8)));
+    enhanceTip.style.left = left + "px";
+    enhanceTip.style.top = "auto";   // bottom 锚定：面板高度变化不影响与按钮的间距
+    enhanceTip.style.bottom = (window.innerHeight - Math.round(r.top) + 12) + "px";
+    if (!ehCache || Date.now() - ehCacheAt > 5000) { if (!ehLoading) ehFetch(ehRender); }
+    ehRender();
+  }
+  function scheduleEnhHide() {
+    if (state.devKeepTip) return;   // 开发者常驻开关：不自动收，仅 Escape 手动关
+    if (ehHideTimer) clearTimeout(ehHideTimer);
+    ehHideTimer = setTimeout(function () { ehHideTimer = 0; hideEnhanceTip(); }, EH_HIDE_DELAY_MS);
+  }
+  function cancelEnhHide() {
+    if (ehHideTimer) { clearTimeout(ehHideTimer); ehHideTimer = 0; }
   }
   function hideEnhanceTip() {
+    cancelEnhHide();
     enhanceTip.style.display = "none";
     enhanceTipFor = null;
   }
+  enhanceTip.addEventListener("mouseenter", cancelEnhHide);
+  enhanceTip.addEventListener("mouseleave", scheduleEnhHide);
+  enhanceTip.addEventListener("keydown", function (e) { if (e.key === "Escape") hideEnhanceTip(); });
+  enhanceTip.addEventListener("click", function (e) {
+    var btn = e.target && e.target.closest && e.target.closest("button");
+    if (!btn) return;
+    if (btn.hasAttribute("data-all")) { openEnhanceHistoryFull(); return; }
+    if (btn.hasAttribute("data-ehset")) { openEnhanceSettings(); return; }
+    if (btn.hasAttribute("data-clear")) {
+      zuConfirm(L("清空增强历史", "Clear enhancement history"), L("确定清空全部增强历史吗？此操作无法撤销。", "Clear all enhancement history? This cannot be undone."), L("清空", "Clear"), function () {
+        pluginRequest("enhance-history-clear", {}, function () { ehCache = null; ehRender(); });
+      });
+      return;
+    }
+    if (btn.classList.contains("zu-eh-retry")) { ehFetch(ehRender); return; }
+    var card = btn.closest(".zu-eh-card");
+    if (btn.hasAttribute("data-expand") && card) {
+      card.querySelectorAll("[data-eh-prev]").forEach(function (pre) { pre.classList.toggle("open"); });
+      btn.classList.toggle("open");
+      return;
+    }
+    if (btn.hasAttribute("data-del") && card) {
+      var delCardId = card.getAttribute("data-id");
+      zuConfirm(L("删除记录", "Delete record"), L("确定删除这条增强记录？删除后无法恢复。", "Delete this enhancement record? This cannot be undone."), L("删除", "Delete"), function () {
+        pluginRequest("enhance-history-delete", { id: delCardId }, function (res) {
+          if (res && res.ok) { ehCache = null; ehFetch(ehRender); }
+        });
+      });
+      return;
+    }
+    if (btn.classList.contains("zu-eh-copy") && card) {
+      var pre = card.querySelector('[data-eh-prev="' + btn.getAttribute("data-copy") + '"]');
+      var text = pre ? pre.textContent : "";
+      var done = function () { var old = btn.innerHTML; btn.innerHTML = EH_ICON.check; setTimeout(function () { btn.innerHTML = old; }, 900); };
+      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, done);
+      else done();
+    }
+  });
+  /* ---------- 自绘确认弹框（zu-compact-dlg 同款外壳）：overlay 内确认类交互统一走它，
+   * 不用 window.confirm（原生框样式不可控、英文按钮与宿主视觉割裂，2026-11-15 用户拍板）。
+   * 复用压缩确认弹框全套类（遮罩/卡片/按钮/动画/减动效），零新增样式；规则见 overlay-ui.md。 */
+  function zuConfirm(title, desc, okText, onOk) {
+    var dlg = document.createElement("div");
+    dlg.className = "zu-compact-dlg";
+    var card = document.createElement("div");
+    card.className = "zu-compact-card";
+    var t = document.createElement("div");
+    t.className = "zu-compact-title";
+    t.textContent = title;
+    var d = document.createElement("div");
+    d.className = "zu-compact-desc";
+    d.textContent = desc;
+    var foot = document.createElement("div");
+    foot.className = "zu-compact-foot";
+    var cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.className = "zu-compact-cancel";
+    cancel.textContent = L("取消", "Cancel");
+    var ok = document.createElement("button");
+    ok.type = "button";
+    ok.className = "zu-compact-ok";
+    ok.textContent = okText;
+    function close() {
+      document.removeEventListener("keydown", key, true);
+      try { if (dlg.parentElement) dlg.remove(); } catch (e) { }
+    }
+    function key(e) {
+      if (stale()) { document.removeEventListener("keydown", key, true); return; }   // 热更后旧代不再吞宿主按键
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(); }
+      else if (e.key === "Enter") {
+        var f = null;
+        try { f = document.activeElement; } catch (e2) { }
+        if (f && dlg.contains && !dlg.contains(f)) return;   // 焦点已逸出弹框：不劫持宿主 Enter（同压缩弹框协议）
+        e.preventDefault(); e.stopPropagation(); ok.click();
+      }
+    }
+    cancel.addEventListener("click", close);
+    dlg.addEventListener("mousedown", function (e) { if (e.target === dlg) close(); });   // 点遮罩关闭（卡片内点击不关）
+    ok.addEventListener("click", function () { close(); onOk(); });
+    document.addEventListener("keydown", key, true);
+    foot.appendChild(cancel);
+    foot.appendChild(ok);
+    card.appendChild(t);
+    card.appendChild(d);
+    card.appendChild(foot);
+    dlg.appendChild(card);
+    document.body.appendChild(dlg);
+    try { ok.focus(); } catch (e) { }
+  }
+  /* 打开提示词增强设置分区：齿轮按钮官方完整开启路径（焦点/互斥/高度重测）+ 导航分区切换，
+   * 与增强按钮右键同款（v350 增强历史双入口设置按钮共用） */
+  function openEnhanceSettings() {
+    hideEnhanceTip();
+    closeEnhanceHistoryFull();
+    if (!panel.classList.contains("open")) gear.click();
+    activateSettingsSec("enhance-provider");
+    var nav = panel.querySelector('.zu-navitem[data-sec="enhance-provider"]');
+    if (nav) nav.focus();
+  }
+  /* ---------- 查看全部历史浮层 ---------- */
+  var ehFull = null, ehFullCache = null, ehFullSource = "all", ehFullQuery = "", ehFullPage = 0, ehFullPageSize = 20, ehFullSortField = "createdAt", ehFullSortDir = -1, ehFullProvider = "", ehFullModel = "", ehFullTime = "all", ehExpandedId = null;
+  var ehFullResizeTimer = 0, ehFullSearchTimer = 0;
+  function ehFullOnResize() {   // 面板打开期间跟随窗口宽度重排版（列合并/裁剪按面板实际宽度，debounce 150ms）
+    if (ehFullResizeTimer) clearTimeout(ehFullResizeTimer);
+    ehFullResizeTimer = setTimeout(function () {
+      ehFullResizeTimer = 0;
+      if (stale()) { window.removeEventListener("resize", ehFullOnResize); return; }   // 热更后代际自卫，不在游离节点重建
+      if (ehFull && ehFull.style.display !== "none") renderEnhanceHistoryFull(false);
+    }, 150);
+  }
+  function openEnhanceHistoryFull() {
+    if (!ehFull) {
+      ehFull = document.createElement("div");
+      ehFull.className = "tip zusage-quota-tip zusage-enhance-full";
+      ehFull.style.cssText = enhanceTip.style.cssText;
+      ehFull.style.position = "fixed";
+      ehFull.style.bottom = "auto";   // 小浮层 cssText 带动态 bottom，不清掉会把 fixed 面板高度压死
+      ehFull.style.width = "min(1200px,calc(100vw - 32px))";
+      ehFull.style.height = "auto";
+      ehFull.style.minHeight = "60vh";   // 面板最低取窗体高度 60%（用户口径），数据多时仍向上滚动
+      ehFull.style.maxHeight = "min(85dvh,760px)";   // 数据少时内容撑开不出现超需空白，多时表区独立滚动
+      ehFull.style.display = "none";
+      ehFull.style.left = "50%";
+      ehFull.style.top = "50%";
+      ehFull.style.transform = "translate(-50%,-50%)";
+      document.body.appendChild(ehFull);
+    }
+    ehFull.style.display = "flex";
+    renderEnhanceHistoryFull(true);
+    document.addEventListener("keydown", ehFullKeydown, true);
+    window.addEventListener("resize", ehFullOnResize);
+  }
+  function closeEnhanceHistoryFull() {
+    if (ehFull) ehFull.style.display = "none";
+    ehExpandedId = null;
+    if (ehFullResizeTimer) { clearTimeout(ehFullResizeTimer); ehFullResizeTimer = 0; }
+    if (ehFullSearchTimer) { clearTimeout(ehFullSearchTimer); ehFullSearchTimer = 0; }
+    document.removeEventListener("keydown", ehFullKeydown, true);
+    window.removeEventListener("resize", ehFullOnResize);
+  }
+  function ehFullKeydown(e) {
+    if (stale()) { document.removeEventListener("keydown", ehFullKeydown, true); window.removeEventListener("resize", ehFullOnResize); return; }   // 热更后旧代 Escape 不再吞宿主事件
+    if (e.key === "Escape") { e.stopPropagation(); closeEnhanceHistoryFull(); }
+  }
+  function ehFullFiltered() {
+    var all = (ehFullCache && ehFullCache.records || []).slice();
+    if (ehFullSource !== "all") all = all.filter(function (r) { return r.source === ehFullSource; });
+    if (ehFullProvider) all = all.filter(function (r) { return r.providerName === ehFullProvider; });
+    if (ehFullModel) all = all.filter(function (r) { return r.modelId === ehFullModel; });
+    if (ehFullTime !== "all") {
+      var now = Date.now(), cutoff = 0;
+      if (ehFullTime === "today") { var d = new Date(); d.setHours(0,0,0,0); cutoff = d.getTime(); }
+      else if (ehFullTime === "week") cutoff = now - 7 * 86400000;
+      else if (ehFullTime === "month") { var m = new Date(); m.setDate(1); m.setHours(0,0,0,0); cutoff = m.getTime(); }
+      all = all.filter(function (r) { var t = Date.parse(r.createdAt || ""); return t && t >= cutoff; });
+    }
+    if (ehFullQuery) {
+      var q = ehFullQuery.toLowerCase();
+      all = all.filter(function (r) { return (String(r.originalText) + String(r.enhancedText) + String(r.providerName) + String(r.modelId)).toLowerCase().indexOf(q) >= 0; });
+    }
+    var field = ehFullSortField, dir = ehFullSortDir;
+    all.sort(function (a, b2) {
+      var va, vb;
+      if (field === "totalTokens") { va = a.usage && a.usage.totalTokens; vb = b2.usage && b2.usage.totalTokens; if (va == null && vb == null) return 0; if (va == null) return 1; if (vb == null) return -1; return (va - vb) * dir; }
+      if (field === "durationMs") { va = a.durationMs; vb = b2.durationMs; if (va == null && vb == null) return 0; if (va == null) return 1; if (vb == null) return -1; return (va - vb) * dir; }
+      va = Date.parse(a.createdAt || ""); vb = Date.parse(b2.createdAt || "");
+      if (!isFinite(va) && !isFinite(vb)) return 0; if (!isFinite(va)) return 1; if (!isFinite(vb)) return -1;
+      return (va - vb) * dir;
+    });
+    return all;
+  }
+  function ehSortArrow(field) {
+    if (ehFullSortField !== field) return "";
+    return ehFullSortDir === -1 ? ' <svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>' : ' <svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="m18 15-6-6-6 6"/></svg>';
+  }
+  function renderEnhanceHistoryFull(refetch) {
+    var build = function () {
+      var all = ehFullFiltered();
+      var totalPages = Math.max(1, Math.ceil(all.length / ehFullPageSize));
+      if (ehFullPage >= totalPages) ehFullPage = totalPages - 1;
+      var start = ehFullPage * ehFullPageSize;
+      var pageRecs = all.slice(start, start + ehFullPageSize);
+      var panelW = ehFull.clientWidth || Math.min(1200, window.innerWidth - 32);
+      var med = panelW < 900, narrow = panelW < 640;   // 中屏合并供应商/模型列，窄屏再隐摘要列
+      var colN = narrow ? 7 : (med ? 9 : 10);
+      var sortBtn = function (label, field, cls) {
+        return '<th class="zu-eh-th ' + cls + '" data-sort="' + field + '" scope="col" aria-sort="' + (ehFullSortField === field ? (ehFullSortDir === -1 ? "descending" : "ascending") : "none") + '">' + label + ehSortArrow(field) + '</th>';
+      };
+      /* 表头与数据行共用一套 colgroup 列宽（table-layout:fixed 下第一行/colgroup 决定列宽） */
+      var colgroup = narrow
+        ? '<colgroup><col style="width:32px"><col style="width:56px"><col style="width:26%"><col style="width:12%"><col style="width:9%"><col style="width:15%"><col style="width:64px"></colgroup>'
+        : med
+          ? '<colgroup><col style="width:32px"><col style="width:56px"><col style="width:24%"><col style="width:17%"><col style="width:20%"><col style="width:8%"><col style="width:7%"><col style="width:12%"><col style="width:64px"></colgroup>'
+          : '<colgroup><col style="width:32px"><col style="width:56px"><col style="width:11%"><col style="width:13%"><col style="width:17%"><col style="width:19%"><col style="width:7%"><col style="width:6%"><col style="width:11%"><col style="width:64px"></colgroup>';
+      var thead = '<tr class="zu-eh-tr-head">' +
+        '<th class="zu-eh-th zu-eh-th-chev" scope="col"></th>' +
+        '<th class="zu-eh-th zu-eh-th-src" scope="col">' + L("来源", "Source") + '</th>' +
+        (med || narrow
+          ? sortBtn(L("供应商 / 模型", "Provider / model"), "providerName", "zu-eh-th-prov")
+          : sortBtn(L("供应商", "Provider"), "providerName", "zu-eh-th-prov") + sortBtn(L("模型", "Model"), "modelId", "zu-eh-th-model")) +
+        (narrow ? "" :
+          '<th class="zu-eh-th zu-eh-th-orig" scope="col">' + L("原文摘要", "Original") + '</th>' +
+          '<th class="zu-eh-th zu-eh-th-enh" scope="col">' + L("增强摘要", "Enhanced") + '</th>') +
+        sortBtn("Token", "totalTokens", "zu-eh-th-num") +
+        sortBtn(L("耗时", "Duration"), "durationMs", "zu-eh-th-num") +
+        sortBtn(L("时间", "Time"), "createdAt", "zu-eh-th-time") +
+        '<th class="zu-eh-th zu-eh-th-ops" scope="col">' + L("操作", "Actions") + '</th></tr>';
+      var rows = "";
+      for (var i = 0; i < pageRecs.length; i++) {
+        var r = pageRecs[i];
+        var expanded = ehExpandedId === r.id;
+        var tok = r.usage && Number.isFinite(r.usage.totalTokens) ? r.usage.totalTokens.toLocaleString() : "—";
+        var dur = Number.isFinite(r.durationMs) && r.durationMs > 0 ? ehFmtDur(r.durationMs) : "—";
+        var src = r.source === "test" ? L("测试", "test") : L("聊天", "chat");
+        var provId = String(r.providerName || "");
+        var provTxt = ehProvLabel(provId) || L("未知供应商", "Unknown provider");
+        var modelTxt = r.modelId || L("未知模型", "Unknown model");
+        var provCell = med || narrow
+          ? '<td class="zu-eh-td zu-eh-td-prov"><span class="zu-eh-cell-text" title="' + ehEsc(provId) + '">' + ehEsc(provTxt) + '<span class="zu-eh-prov-sep"> / </span><span title="' + ehEsc(r.modelId) + '">' + ehEsc(modelTxt) + '</span></span></td>'
+          : '<td class="zu-eh-td zu-eh-td-prov"><span class="zu-eh-cell-text" title="' + ehEsc(provId) + '">' + ehEsc(provTxt) + '</span></td>' +
+            '<td class="zu-eh-td zu-eh-td-model"><span class="zu-eh-cell-text" title="' + ehEsc(r.modelId) + '">' + ehEsc(modelTxt) + '</span></td>';
+        var sumCells = narrow ? "" :
+          '<td class="zu-eh-td"><span class="zu-eh-cell-text" title="' + ehEsc(r.originalText || "") + '">' + ehEsc(r.originalText || "") + '</span></td>' +
+          '<td class="zu-eh-td"><span class="zu-eh-cell-text" title="' + ehEsc(r.enhancedText || "") + '">' + ehEsc(r.enhancedText || "") + '</span></td>';
+        rows += '<tr class="zu-eh-row' + (expanded ? " zu-eh-open" : "") + '" data-id="' + ehEsc(r.id) + '" aria-expanded="' + (expanded ? "true" : "false") + '">' +
+          '<td class="zu-eh-td zu-eh-td-chev"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="transform:rotate(' + (expanded ? "90" : "0") + 'deg);transition:transform .15s"><path d="m9 18 6-6-6-6"/></svg></td>' +
+          '<td class="zu-eh-td zu-eh-td-src">' + ehEsc(src) + '</td>' +
+          provCell + sumCells +
+          '<td class="zu-eh-td zu-eh-td-num">' + tok + '</td>' +
+          '<td class="zu-eh-td zu-eh-td-num">' + dur + '</td>' +
+          '<td class="zu-eh-td zu-eh-td-time">' + ehEsc(ehFmtWhen(r.createdAt)) + '</td>' +
+          '<td class="zu-eh-td zu-eh-td-ops">' +
+          '<button type="button" class="zu-eh-row-copy" data-copy-enh aria-label="' + L("复制增强结果", "Copy enhanced") + '">' + EH_ICON.copy + '</button>' +
+          '<button type="button" class="zu-eh-row-del" data-del aria-label="' + L("删除", "Delete") + '">' + EH_ICON.trash + '</button></td></tr>';
+        if (expanded) {
+          rows += '<tr class="zu-eh-detail-row"><td colspan="' + colN + '"><div class="zu-eh-detail">' +
+            '<div class="zu-eh-d-meta"><div class="zu-eh-d-pair"><div class="zu-eh-d-k">' + L("供应商", "Provider") + '</div><div class="zu-eh-d-wrap" title="' + ehEsc(provId) + '">' + ehEsc(provTxt) + '</div></div><div class="zu-eh-d-pair"><div class="zu-eh-d-k">' + L("模型", "Model") + '</div><div class="zu-eh-d-wrap">' + ehEsc(modelTxt) + '</div></div></div>' +
+            '<div class="zu-eh-d-text"><div class="zu-eh-d-h">' + EH_ICON.doc + L("原始提示词", "Original prompt") + '<button type="button" class="zu-eh-row-copy" data-copy-orig aria-label="' + L("复制原文", "Copy original") + '">' + EH_ICON.copy + '</button></div><div class="zu-eh-d-body">' + ehEsc(r.originalText || "") + '</div></div>' +
+            '<div class="zu-eh-d-text zu-eh-d-enh"><div class="zu-eh-d-h">' + EH_ICON.spark + L("增强后的提示词", "Enhanced prompt") + '<button type="button" class="zu-eh-row-copy" data-copy-enh2 aria-label="' + L("复制增强结果", "Copy enhanced") + '">' + EH_ICON.copy + '</button></div><div class="zu-eh-d-body">' + ehEsc(r.enhancedText || "") + '</div></div>' +
+            '<div class="zu-eh-d-inline"><div class="zu-eh-d-pair"><div class="zu-eh-d-k">' + L("来源", "Source") + '</div><div>' + ehEsc(src) + '</div></div><div class="zu-eh-d-pair"><div class="zu-eh-d-k">Token</div><div>' + tok + '</div></div><div class="zu-eh-d-pair"><div class="zu-eh-d-k">' + L("时间", "Time") + '</div><div>' + (ehEsc(ehFmtFull(r.createdAt)) || "—") + '</div></div><div class="zu-eh-d-pair"><div class="zu-eh-d-k">' + L("耗时", "Duration") + '</div><div>' + dur + '</div></div></div>' +
+            '</div></td></tr>';
+        }
+      }
+      if (!pageRecs.length) rows = '<tr><td colspan="' + colN + '" class="zu-eh-empty">' + (ehFullQuery || ehFullSource !== "all" || ehFullProvider || ehFullModel || ehFullTime !== "all" ? L("没有匹配的记录", "No matching records") : EH_ICON.empty + '<div>' + L("暂无增强历史", "No enhancement history yet") + '</div><small>' + L("成功增强提示词后，记录会显示在这里。", "Records appear here after a successful enhancement.") + "</small>") + '</td></tr>';
+      var pageBtns = "";
+      if (totalPages > 7) {
+        pageBtns += '<button type="button" class="zu-eh-pg-btn" data-page="0" ' + (ehFullPage === 0 ? "disabled" : "") + '>‹</button>';
+        for (var pg = 0; pg < totalPages; pg++) {
+          if (pg > 2 && pg < totalPages - 2 && Math.abs(pg - ehFullPage) > 1) { if (pg === 3) pageBtns += '<span class="zu-eh-pg-ellipsis">…</span>'; continue; }
+          pageBtns += '<button type="button" class="zu-eh-pg-btn' + (pg === ehFullPage ? " zu-eh-pg-cur" : "") + '" data-page="' + pg + '">' + (pg + 1) + '</button>';
+        }
+        pageBtns += '<button type="button" class="zu-eh-pg-btn" data-page="' + (totalPages - 1) + '" ' + (ehFullPage === totalPages - 1 ? "disabled" : "") + '>›</button>';
+      } else {
+        for (var pg2 = 0; pg2 < totalPages; pg2++) pageBtns += '<button type="button" class="zu-eh-pg-btn' + (pg2 === ehFullPage ? " zu-eh-pg-cur" : "") + '" data-page="' + pg2 + '">' + (pg2 + 1) + '</button>';
+      }
+      var sizeOpts = [20, 50, 100].map(function (n) { return '<option value="' + n + '"' + (ehFullPageSize === n ? " selected" : "") + ">" + n + "</option>"; }).join("");
+      var providerOpts = '<option value="">' + L("全部供应商", "All providers") + "</option>";
+      var provSet = {};
+      (ehFullCache && ehFullCache.records || []).forEach(function (r) { if (r.providerName && !provSet[r.providerName]) { provSet[r.providerName] = 1; providerOpts += '<option value="' + ehEsc(r.providerName) + '"' + (ehFullProvider === r.providerName ? " selected" : "") + ">" + ehEsc(ehProvLabel(r.providerName)) + "</option>"; } });
+      var modelOpts = '<option value="">' + L("全部模型", "All models") + "</option>";
+      var modelSet = {};
+      (ehFullCache && ehFullCache.records || []).forEach(function (r) { if (ehFullProvider && r.providerName !== ehFullProvider) return; if (r.modelId && !modelSet[r.modelId]) { modelSet[r.modelId] = 1; modelOpts += '<option value="' + ehEsc(r.modelId) + '"' + (ehFullModel === r.modelId ? " selected" : "") + ">" + ehEsc(r.modelId) + "</option>"; } });
+      var timeOpts = [["all", L("全部时间", "All time")], ["today", L("今天", "Today")], ["week", L("近 7 天", "Last 7 days")], ["month", L("本月", "This month")]].map(function (t) { return '<option value="' + t[0] + '"' + (ehFullTime === t[0] ? " selected" : "") + ">" + t[1] + "</option>"; }).join("");
+      var srcOpts = [["all", L("全部来源", "All sources")], ["chat", L("聊天", "Chat")], ["test", L("测试", "Test")]].map(function (t) { return '<option value="' + t[0] + '"' + (ehFullSource === t[0] ? " selected" : "") + ">" + t[1] + "</option>"; }).join("");
+      var searchVal = ehEsc(ehFullQuery);
+      var footer = totalPages > 1
+        ? '<div class="zu-eh-pagination"><span class="zu-eh-pg-size"><select class="zu-eh-filter zu-eh-pgsize" data-f="pagesize" aria-label="' + L("每页条数", "Rows per page") + '">' + sizeOpts + '</select> ' + L("条/页", "per page") + '</span><span>' + L("第", "Page ") + (ehFullPage + 1) + "/" + totalPages + L(" 页 · 共 ", " of ") + all.length + L(" 条", "") + '</span><span class="zu-eh-pg-btns">' + pageBtns + '</span></div>'
+        : "";   // 单页/空态不渲染分页页脚（Header 已有总数，避免大面积空白与冗余控件）
+      ehFull.innerHTML = '<div class="zu-eh-full-head"><div class="zu-eh-head-l"><span class="zu-eh-title">' + EH_ICON.history + L("增强历史", "Enhancement history") + '</span><span class="zu-eh-total">' + L("共 ", "total ") + all.length + L(" 条", "") + '</span></div>' +
+        '<div class="zu-eh-head-r"><button type="button" class="zu-eh-cfg" data-ehset>' + EH_ICON.gear + L("设置", "Settings") + '</button><button type="button" class="zu-eh-act zu-eh-clear" data-clear>' + EH_ICON.trash + L("清空记录", "Clear all") + '</button><button type="button" class="zu-eh-close" data-close aria-label="' + L("关闭", "Close") + '">' + EH_ICON.close + '</button></div></div>' +
+        '<div class="zu-eh-full-filter"><div class="zu-eh-searchbox">' + EH_ICON.search + '<input class="zu-eh-search" type="search" placeholder="' + L("搜索原文、增强结果、模型或供应商", "Search texts, model or provider") + '" value="' + searchVal + '" aria-label="' + L("搜索历史记录", "Search history") + '"></div>' +
+        '<select class="zu-eh-filter zu-eh-f-src" data-f="source" aria-label="' + L("来源筛选", "Source filter") + '">' + srcOpts + '</select>' +
+        '<select class="zu-eh-filter zu-eh-f-prov" data-f="provider" aria-label="' + L("供应商筛选", "Provider filter") + '">' + providerOpts + '</select>' +
+        '<select class="zu-eh-filter zu-eh-f-model" data-f="model" aria-label="' + L("模型筛选", "Model filter") + '">' + modelOpts + '</select>' +
+        '<select class="zu-eh-filter zu-eh-f-time" data-f="time" aria-label="' + L("时间筛选", "Time filter") + '">' + timeOpts + '</select></div>' +
+        '<div class="zu-eh-table-wrap"><table class="zu-eh-table">' + colgroup + '<thead>' + thead + '</thead><tbody>' + rows + '</tbody></table></div>' + footer;
+    };
+    if (refetch || !ehFullCache) {
+      if (!ehFullCache) ehFull.innerHTML = '<div class="zu-eh-empty" style="padding:40px 16px;text-align:center;color:var(--color-foreground-subtle,#999)">' + L("正在读取历史…", "Loading history…") + '</div>';   // 首开占位，避免 IPC 往返前闪白
+      pluginRequest("enhance-history-list", { limit: 100 }, function (res) {
+        if (res && res.ok && Array.isArray(res.records)) ehFullCache = res;
+        build();
+      });
+    } else build();
+    ehFull.onchange = function (e) {
+      var t = e.target;
+      if (!t || !t.hasAttribute || !t.hasAttribute("data-f")) return;
+      var f = t.getAttribute("data-f");
+      if (f === "pagesize") ehFullPageSize = parseInt(t.value) || 20;
+      else if (f === "source") ehFullSource = t.value;
+      else if (f === "provider") { ehFullProvider = t.value; ehFullModel = ""; }
+      else if (f === "model") ehFullModel = t.value;
+      else if (f === "time") ehFullTime = t.value;
+      ehFullPage = 0; ehExpandedId = null;
+      build();
+    };
+    ehFull.oninput = function (e) {
+      if (e.target && e.target.classList && e.target.classList.contains("zu-eh-search")) {
+        if (ehFullSearchTimer) clearTimeout(ehFullSearchTimer);
+        ehFullSearchTimer = setTimeout(function () { ehFullSearchTimer = 0; ehFullQuery = e.target.value; ehFullPage = 0; ehExpandedId = null; build(); }, 200);
+      }
+    };
+    ehFull.onclick = function (e) {
+      /* 排序列不是 button，必须在 button 判空之前拦截（否则永远不可达） */
+      var th = e.target && e.target.closest && e.target.closest("[data-sort]");
+      if (th && th.hasAttribute("data-sort")) {
+        var f = th.getAttribute("data-sort");
+        if (ehFullSortField === f) ehFullSortDir = -ehFullSortDir;
+        else { ehFullSortField = f; ehFullSortDir = -1; }
+        build(); return;
+      }
+      var btn = e.target && e.target.closest && e.target.closest("button");
+      if (!btn) {
+        var rowEl = e.target && e.target.closest && e.target.closest(".zu-eh-row");
+        if (rowEl) { ehExpandedId = ehExpandedId === rowEl.getAttribute("data-id") ? null : rowEl.getAttribute("data-id"); build(); }
+        else if (e.target === ehFull) closeEnhanceHistoryFull();
+        return;
+      }
+      if (btn.hasAttribute("data-close")) { closeEnhanceHistoryFull(); return; }
+      if (btn.hasAttribute("data-ehset")) { openEnhanceSettings(); return; }
+      if (btn.hasAttribute("data-page")) { ehFullPage = parseInt(btn.getAttribute("data-page")) || 0; build(); return; }
+      if (btn.hasAttribute("data-clear")) {
+        zuConfirm(L("清空增强历史", "Clear enhancement history"), L("确定清空全部增强历史吗？此操作无法撤销。", "Clear all enhancement history? This cannot be undone."), L("清空", "Clear"), function () {
+          pluginRequest("enhance-history-clear", {}, function () { ehFullCache = null; ehCache = null; ehFullPage = 0; ehExpandedId = null; build(); });
+        });
+        return;
+      }
+      if (btn.hasAttribute("data-del")) {
+        e.stopPropagation();
+        var drow = btn.closest(".zu-eh-row");
+        if (!drow) return;
+        var did = drow.getAttribute("data-id");
+        zuConfirm(L("删除记录", "Delete record"), L("确定删除这条增强记录？删除后无法恢复。", "Delete this enhancement record? This cannot be undone."), L("删除", "Delete"), function () {
+          pluginRequest("enhance-history-delete", { id: did }, function (res) {
+            if (!res || !res.ok) return;   // 删除失败不清表
+            if (ehFullCache && ehFullCache.records) {   // 从缓存就地滤除并保持下拉一致，不清空整表
+              ehFullCache.records = ehFullCache.records.filter(function (r) { return r.id !== did; });
+              if (ehFullCache.total != null) ehFullCache.total = Math.max(0, (ehFullCache.total || 0) - 1);
+            }
+            ehCacheAt = 0;   // 小浮层缓存同样失效
+            if (ehExpandedId === did) ehExpandedId = null;
+            build();
+          });
+        });
+        return;
+      }
+      if (btn.classList.contains("zu-eh-row-copy")) {
+        e.stopPropagation();
+        /* 行内按钮 closest 行取 id；详情行按钮经 detail-row 的前一行（同一条记录）取 id，不按行号 */
+        var prow = btn.closest(".zu-eh-row") || (btn.closest(".zu-eh-detail-row") && btn.closest(".zu-eh-detail-row").previousElementSibling);
+        var pid = prow ? prow.getAttribute("data-id") : null;
+        var prec = (ehFullCache && ehFullCache.records || []).find(function (r) { return r.id === pid; });
+        var text = btn.hasAttribute("data-copy-orig") ? (prec && prec.originalText || "") : (prec && prec.enhancedText || "");
+        var done = function () { var old = btn.innerHTML; btn.innerHTML = EH_ICON.check; setTimeout(function () { btn.innerHTML = old; }, 900); };
+        if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(done, done);
+        else done();
+      }
+    };
+  }
+
   /* ---------- v202 预估费用说明小气泡（费用行 ? 图标悬停）：rstTip 同款浮层/悬停桥。
    * 内容三行：价格来源（models.dev）/ 计算公式（本库口径）/ 汇率来源（快照 fx.source，
    * 无汇率标 USD 原值显示）。监听在各实例 tip 本体 mouseover/out 委托（innerHTML 重建不丢）。 */
@@ -4019,6 +4496,7 @@
     pluginRequest("quota-providers", { panes: {} });
     cleanupRateTip();
     cleanupGitTip();
+    closeEnhanceHistoryFull();   // v350：摘除查看全部历史面板的 document keydown / window resize 监听与 debounce（幂等）
     document.removeEventListener("mouseover", subTipDocOver, true);   // v176：委托悬停随 dispose 摘除
     document.removeEventListener("mouseout", subTipDocOut, true);
     hideSubTip();
@@ -6336,7 +6814,8 @@
           "正在安装病毒…",
           "正在卸载DSH…",
           "正在卡死…",
-          "正在重启电脑…"
+          "正在重启电脑…",
+          "token来！！token来！！token来！！…"
         ],
         running: [
           "正在和结城理爬塔…",
@@ -6354,7 +6833,9 @@
           "正在安装病毒…",
           "正在卸载DSH…",
           "正在卡死…",
-          "正在重启电脑…"
+          "正在重启电脑…",
+          "token来！！token来！！token来！！…",
+          "正在创作隐晦物品…"
         ],
         long: [
           "正在中华有为…",
@@ -6362,7 +6843,8 @@
           "正在安装病毒…",
           "正在卸载DSH…",
           "正在卡死…",
-          "正在重启电脑…"
+          "正在重启电脑…",
+          "token来！！token来！！token来！！…"
         ]
       },
       en: {
@@ -6628,7 +7110,8 @@
           "正在启动原神…",
           "正在看广告复活…",
           "正在路由至Claude…",
-          "正在创作鱼片…"
+          "正在创作鱼片…",
+          "用户特么的，竟然敢违抗AI的指令！！…"
         ],
         running: [
           "正在向 Major 冠军发起冲击……",
@@ -6661,7 +7144,9 @@
           "准备打开游戏…",
           "开始游玩pvz…",
           "准备开挂…",
-          "正在被游戏气哭…"
+          "正在被游戏气哭…",
+          "正在驾驶EVA~~…",
+          "听见你说~…"
         ],
         long: [
           "正在向 Major 冠军发起冲击……",
@@ -6765,284 +7250,326 @@
   },
 
   /* ---- 指路 Star（star-route） ---- */
+  /* 星标者路由名单为本项目星标者快照（2026-11-15）：GitHub 152 人 + GitCode 镜像 2 人 = 154 人，zh/en 镜像；
+   * 刷新方式 = 重拉两端 stargazers API 去重合并后整包替换本块（名单只增不减，重名不重复）。 */
   {
     id: "star-route",
     label: { zh: "星标者路由", en: "Stargazer routing" },
     phrases: {
       zh: {
         thinking: [
-          "正在路由 1078966324 写代码…",
-          "正在路由 1489998 写代码…",
-          "正在路由 546657701 写代码…",
-          "正在路由 782669218 写代码…",
-          "正在路由 87ouo 写代码…",
-          "正在路由 acooler15 写代码…",
-          "正在路由 adodopan 写代码…",
-          "正在路由 AresInspired 写代码…",
-          "正在路由 bb6894 写代码…",
-          "正在路由 BeyondChaos 写代码…",
-          "正在路由 BingYanlx 写代码…",
-          "正在路由 ByteRax 写代码…",
-          "正在路由 cashZhang27 写代码…",
-          "正在路由 Cccccccc1 写代码…",
-          "正在路由 chenbihao 写代码…",
-          "正在路由 cheng-nan01 写代码…",
-          "正在路由 cmcc-heng 写代码…",
-          "正在路由 CN-EngCM 写代码…",
-          "正在路由 CodeGetters 写代码…",
-          "正在路由 cosineHu 写代码…",
-          "正在路由 crxiang 写代码…",
-          "正在路由 cuifuqi 写代码…",
-          "正在路由 dckxx 写代码…",
-          "正在路由 DCLCYC 写代码…",
-          "正在路由 derrick4reals 写代码…",
-          "正在路由 developerdh 写代码…",
-          "正在路由 Dingsd 写代码…",
           "正在路由 Dont-know-code 写代码…",
+          "正在路由 BingYanlx 写代码…",
+          "正在路由 YubaiLoving 写代码…",
+          "正在路由 scbwin 写代码…",
+          "正在路由 litown 写代码…",
+          "正在路由 vCassius 写代码…",
           "正在路由 DragonQuix 写代码…",
-          "正在路由 dyboy1995 写代码…",
-          "正在路由 Erlla 写代码…",
+          "正在路由 pj001 写代码…",
+          "正在路由 syunnrai123 写代码…",
+          "正在路由 MistyMoonR 写代码…",
           "正在路由 fangmu2 写代码…",
-          "正在路由 fanwuit 写代码…",
-          "正在路由 forturelin 写代码…",
+          "正在路由 zzh-learner 写代码…",
+          "正在路由 chenbihao 写代码…",
+          "正在路由 adodopan 写代码…",
+          "正在路由 zhangsongyang 写代码…",
           "正在路由 foxxo1001 写代码…",
-          "正在路由 frf373 写代码…",
-          "正在路由 GodKillerIsVery666 写代码…",
-          "正在路由 GusGus789 写代码…",
-          "正在路由 hbbdzry 写代码…",
-          "正在路由 hemingfei 写代码…",
-          "正在路由 HimekoEx 写代码…",
-          "正在路由 himetuki 写代码…",
           "正在路由 Hobjl-lian 写代码…",
-          "正在路由 Hoist-GG 写代码…",
-          "正在路由 houpe 写代码…",
-          "正在路由 HTMLgtMK 写代码…",
-          "正在路由 Huayudong 写代码…",
-          "正在路由 hysishys 写代码…",
-          "正在路由 Iceorigin 写代码…",
-          "正在路由 IkariKr 写代码…",
-          "正在路由 jacksonCLyu 写代码…",
-          "正在路由 JerryLamMV 写代码…",
-          "正在路由 jingchen0529 写代码…",
-          "正在路由 jiuyang-creator 写代码…",
-          "正在路由 jyn618 写代码…",
+          "正在路由 westlifehq 写代码…",
+          "正在路由 weicailin8756 写代码…",
+          "正在路由 cosineHu 写代码…",
+          "正在路由 GusGus789 写代码…",
+          "正在路由 BeyondChaos 写代码…",
+          "正在路由 new1333 写代码…",
+          "正在路由 mydelren 写代码…",
+          "正在路由 lwppwl 写代码…",
+          "正在路由 qq540491950 写代码…",
+          "正在路由 mondayice 写代码…",
+          "正在路由 dckxx 写代码…",
+          "正在路由 simonjie 写代码…",
+          "正在路由 litmonw 写代码…",
+          "正在路由 lliangworld 写代码…",
+          "正在路由 hemingfei 写代码…",
+          "正在路由 wuhuanling 写代码…",
+          "正在路由 OldJie1017 写代码…",
+          "正在路由 senturst 写代码…",
+          "正在路由 frf373 写代码…",
+          "正在路由 Lyyyy4925 写代码…",
+          "正在路由 cashZhang27 写代码…",
+          "正在路由 ZPinggg 写代码…",
+          "正在路由 wgf8088 写代码…",
+          "正在路由 546657701 写代码…",
           "正在路由 knyel 写代码…",
-          "正在路由 LaMonsters 写代码…",
-          "正在路由 LastKnightCoder 写代码…",
+          "正在路由 quanfanpro-code 写代码…",
+          "正在路由 acooler15 写代码…",
+          "正在路由 Shiyaolx 写代码…",
+          "正在路由 CN-EngCM 写代码…",
+          "正在路由 neoblackxt 写代码…",
+          "正在路由 ShioMisaka 写代码…",
+          "正在路由 milkbobo 写代码…",
+          "正在路由 netyingxiao 写代码…",
           "正在路由 lcgyl 写代码…",
+          "正在路由 himetuki 写代码…",
+          "正在路由 IkariKr 写代码…",
+          "正在路由 1078966324 写代码…",
+          "正在路由 typ77 写代码…",
+          "正在路由 cuifuqi 写代码…",
+          "正在路由 jingchen0529 写代码…",
+          "正在路由 dyboy1995 写代码…",
+          "正在路由 JerryLamMV 写代码…",
+          "正在路由 Hoist-GG 写代码…",
+          "正在路由 jiuyang-creator 写代码…",
+          "正在路由 crxiang 写代码…",
+          "正在路由 Cccccccc1 写代码…",
+          "正在路由 ljr686 写代码…",
+          "正在路由 cheng-nan01 写代码…",
+          "正在路由 Yangshifu1024 写代码…",
+          "正在路由 wxk66 写代码…",
+          "正在路由 jacksonCLyu 写代码…",
+          "正在路由 lucheng0522 写代码…",
+          "正在路由 XieHouYan 写代码…",
+          "正在路由 yuukana1 写代码…",
+          "正在路由 sunganhao8-lgtm 写代码…",
+          "正在路由 CodeGetters 写代码…",
+          "正在路由 SamZhengLa 写代码…",
+          "正在路由 jyn618 写代码…",
+          "正在路由 hysishys 写代码…",
+          "正在路由 Dingsd 写代码…",
+          "正在路由 cmcc-heng 写代码…",
+          "正在路由 hbbdzry 写代码…",
+          "正在路由 wslldsdhii 写代码…",
+          "正在路由 782669218 写代码…",
+          "正在路由 LuYi8 写代码…",
+          "正在路由 LastKnightCoder 写代码…",
+          "正在路由 Pigeon2333 写代码…",
+          "正在路由 TaroFang 写代码…",
+          "正在路由 Erlla 写代码…",
+          "正在路由 DCLCYC 写代码…",
+          "正在路由 yangshuai0711 写代码…",
           "正在路由 lhjalswell-lgtm 写代码…",
           "正在路由 lichen5112 写代码…",
-          "正在路由 litmonw 写代码…",
-          "正在路由 litown 写代码…",
-          "正在路由 liuwei32 写代码…",
-          "正在路由 ljr686 写代码…",
-          "正在路由 llemllen 写代码…",
-          "正在路由 lliangworld 写代码…",
-          "正在路由 LnameBF 写代码…",
-          "正在路由 lucheng0522 写代码…",
-          "正在路由 LuYi8 写代码…",
-          "正在路由 lwppwl 写代码…",
-          "正在路由 Lyyyy4925 写代码…",
-          "正在路由 Mc-GrowlR 写代码…",
-          "正在路由 mikewcy1 写代码…",
-          "正在路由 milkbobo 写代码…",
-          "正在路由 MistyMoonR 写代码…",
-          "正在路由 momo0-88 写代码…",
-          "正在路由 mondayice 写代码…",
-          "正在路由 Mrgongm 写代码…",
-          "正在路由 mydelren 写代码…",
-          "正在路由 neoblackxt 写代码…",
-          "正在路由 netyingxiao 写代码…",
-          "正在路由 new1333 写代码…",
-          "正在路由 NickLhn 写代码…",
-          "正在路由 nlyrthiia 写代码…",
-          "正在路由 noname-nikke 写代码…",
-          "正在路由 OldJie1017 写代码…",
-          "正在路由 Pigeon2333 写代码…",
-          "正在路由 pj001 写代码…",
-          "正在路由 PyEthanHa 写代码…",
-          "正在路由 qq540491950 写代码…",
-          "正在路由 quanfanpro-code 写代码…",
-          "正在路由 runping-wei 写代码…",
-          "正在路由 SamZhengLa 写代码…",
-          "正在路由 scbwin 写代码…",
-          "正在路由 senturst 写代码…",
-          "正在路由 ShioMisaka 写代码…",
-          "正在路由 Shiyaolx 写代码…",
-          "正在路由 simonjie 写代码…",
-          "正在路由 sonxy-cn 写代码…",
-          "正在路由 sunganhao8-lgtm 写代码…",
-          "正在路由 syunnrai123 写代码…",
-          "正在路由 TaroFang 写代码…",
-          "正在路由 touchixiaobinggan 写代码…",
-          "正在路由 typ77 写代码…",
-          "正在路由 vCassius 写代码…",
-          "正在路由 Vista2026 写代码…",
+          "正在路由 1489998 写代码…",
+          "正在路由 Huayudong 写代码…",
+          "正在路由 HTMLgtMK 写代码…",
+          "正在路由 ymzhuuuuufz0313l 写代码…",
+          "正在路由 wuyue-any 写代码…",
+          "正在路由 AresInspired 写代码…",
           "正在路由 wangjin 写代码…",
+          "正在路由 YiZhiXiaoLiuLang 写代码…",
+          "正在路由 llemllen 写代码…",
+          "正在路由 zhanglz666888 写代码…",
+          "正在路由 ByteRax 写代码…",
+          "正在路由 nlyrthiia 写代码…",
+          "正在路由 yahong2018 写代码…",
+          "正在路由 xushu199166-a11y 写代码…",
+          "正在路由 derrick4reals 写代码…",
+          "正在路由 noname-nikke 写代码…",
+          "正在路由 87ouo 写代码…",
+          "正在路由 houpe 写代码…",
+          "正在路由 momo0-88 写代码…",
+          "正在路由 zhaocq-wg 写代码…",
+          "正在路由 sonxy-cn 写代码…",
+          "正在路由 Mc-GrowlR 写代码…",
+          "正在路由 Vista2026 写代码…",
+          "正在路由 Mrgongm 写代码…",
+          "正在路由 fanwuit 写代码…",
+          "正在路由 bb6894 写代码…",
+          "正在路由 LaMonsters 写代码…",
+          "正在路由 LnameBF 写代码…",
+          "正在路由 HimekoEx 写代码…",
+          "正在路由 xuwangcheng14 写代码…",
+          "正在路由 mikewcy1 写代码…",
+          "正在路由 forturelin 写代码…",
+          "正在路由 Iceorigin 写代码…",
           "正在路由 weiaiweiai 写代码…",
-          "正在路由 weicailin8756 写代码…",
+          "正在路由 touchixiaobinggan 写代码…",
+          "正在路由 runping-wei 写代码…",
+          "正在路由 GodKillerIsVery666 写代码…",
+          "正在路由 YingxiaoHe 写代码…",
+          "正在路由 PyEthanHa 写代码…",
+          "正在路由 NickLhn 写代码…",
           "正在路由 weipeng321 写代码…",
           "正在路由 were37114 写代码…",
-          "正在路由 westlifehq 写代码…",
-          "正在路由 wgf8088 写代码…",
-          "正在路由 wslldsdhii 写代码…",
-          "正在路由 wuhuanling 写代码…",
-          "正在路由 wuyue-any 写代码…",
-          "正在路由 wxk66 写代码…",
-          "正在路由 XieHouYan 写代码…",
-          "正在路由 xushu199166-a11y 写代码…",
-          "正在路由 xuwangcheng14 写代码…",
-          "正在路由 yahong2018 写代码…",
-          "正在路由 Yangshifu1024 写代码…",
-          "正在路由 yangshuai0711 写代码…",
-          "正在路由 YingxiaoHe 写代码…",
-          "正在路由 YiZhiXiaoLiuLang 写代码…",
-          "正在路由 ymzhuuuuufz0313l 写代码…",
-          "正在路由 YubaiLoving 写代码…",
-          "正在路由 yuukana1 写代码…",
-          "正在路由 zhanglz666888 写代码…",
-          "正在路由 zhangsongyang 写代码…",
-          "正在路由 zhaocq-wg 写代码…",
-          "正在路由 ZPinggg 写代码…",
-          "正在路由 zzh-learner 写代码…"
+          "正在路由 developerdh 写代码…",
+          "正在路由 liuwei32 写代码…",
+          "正在路由 2869893488 写代码…",
+          "正在路由 antfraud 写代码…",
+          "正在路由 Winminn 写代码…",
+          "正在路由 HXHndj 写代码…",
+          "正在路由 lmy-0311 写代码…",
+          "正在路由 illusionlie 写代码…",
+          "正在路由 xcongcong1991 写代码…",
+          "正在路由 lxyAK 写代码…",
+          "正在路由 dozellx 写代码…",
+          "正在路由 Kitsune2077 写代码…",
+          "正在路由 wzy004 写代码…",
+          "正在路由 jackey670 写代码…",
+          "正在路由 ywclgl258 写代码…",
+          "正在路由 TTS-version 写代码…",
+          "正在路由 hwj911327 写代码…",
+          "正在路由 zhangyongqiang123 写代码…",
+          "正在路由 NocodeMrLi 写代码…",
+          "正在路由 Hush-xv 写代码…",
+          "正在路由 AMAZFIT 写代码…",
+          "正在路由 K_zqhag 写代码…"
         ]
       },
       en: {
         thinking: [
-          "Routing 1078966324 to write code…",
-          "Routing 1489998 to write code…",
-          "Routing 546657701 to write code…",
-          "Routing 782669218 to write code…",
-          "Routing 87ouo to write code…",
-          "Routing acooler15 to write code…",
-          "Routing adodopan to write code…",
-          "Routing AresInspired to write code…",
-          "Routing bb6894 to write code…",
-          "Routing BeyondChaos to write code…",
-          "Routing BingYanlx to write code…",
-          "Routing ByteRax to write code…",
-          "Routing cashZhang27 to write code…",
-          "Routing Cccccccc1 to write code…",
-          "Routing chenbihao to write code…",
-          "Routing cheng-nan01 to write code…",
-          "Routing cmcc-heng to write code…",
-          "Routing CN-EngCM to write code…",
-          "Routing CodeGetters to write code…",
-          "Routing cosineHu to write code…",
-          "Routing crxiang to write code…",
-          "Routing cuifuqi to write code…",
-          "Routing dckxx to write code…",
-          "Routing DCLCYC to write code…",
-          "Routing derrick4reals to write code…",
-          "Routing developerdh to write code…",
-          "Routing Dingsd to write code…",
           "Routing Dont-know-code to write code…",
+          "Routing BingYanlx to write code…",
+          "Routing YubaiLoving to write code…",
+          "Routing scbwin to write code…",
+          "Routing litown to write code…",
+          "Routing vCassius to write code…",
           "Routing DragonQuix to write code…",
-          "Routing dyboy1995 to write code…",
-          "Routing Erlla to write code…",
+          "Routing pj001 to write code…",
+          "Routing syunnrai123 to write code…",
+          "Routing MistyMoonR to write code…",
           "Routing fangmu2 to write code…",
-          "Routing fanwuit to write code…",
-          "Routing forturelin to write code…",
+          "Routing zzh-learner to write code…",
+          "Routing chenbihao to write code…",
+          "Routing adodopan to write code…",
+          "Routing zhangsongyang to write code…",
           "Routing foxxo1001 to write code…",
-          "Routing frf373 to write code…",
-          "Routing GodKillerIsVery666 to write code…",
-          "Routing GusGus789 to write code…",
-          "Routing hbbdzry to write code…",
-          "Routing hemingfei to write code…",
-          "Routing HimekoEx to write code…",
-          "Routing himetuki to write code…",
           "Routing Hobjl-lian to write code…",
-          "Routing Hoist-GG to write code…",
-          "Routing houpe to write code…",
-          "Routing HTMLgtMK to write code…",
-          "Routing Huayudong to write code…",
-          "Routing hysishys to write code…",
-          "Routing Iceorigin to write code…",
-          "Routing IkariKr to write code…",
-          "Routing jacksonCLyu to write code…",
-          "Routing JerryLamMV to write code…",
-          "Routing jingchen0529 to write code…",
-          "Routing jiuyang-creator to write code…",
-          "Routing jyn618 to write code…",
+          "Routing westlifehq to write code…",
+          "Routing weicailin8756 to write code…",
+          "Routing cosineHu to write code…",
+          "Routing GusGus789 to write code…",
+          "Routing BeyondChaos to write code…",
+          "Routing new1333 to write code…",
+          "Routing mydelren to write code…",
+          "Routing lwppwl to write code…",
+          "Routing qq540491950 to write code…",
+          "Routing mondayice to write code…",
+          "Routing dckxx to write code…",
+          "Routing simonjie to write code…",
+          "Routing litmonw to write code…",
+          "Routing lliangworld to write code…",
+          "Routing hemingfei to write code…",
+          "Routing wuhuanling to write code…",
+          "Routing OldJie1017 to write code…",
+          "Routing senturst to write code…",
+          "Routing frf373 to write code…",
+          "Routing Lyyyy4925 to write code…",
+          "Routing cashZhang27 to write code…",
+          "Routing ZPinggg to write code…",
+          "Routing wgf8088 to write code…",
+          "Routing 546657701 to write code…",
           "Routing knyel to write code…",
-          "Routing LaMonsters to write code…",
-          "Routing LastKnightCoder to write code…",
+          "Routing quanfanpro-code to write code…",
+          "Routing acooler15 to write code…",
+          "Routing Shiyaolx to write code…",
+          "Routing CN-EngCM to write code…",
+          "Routing neoblackxt to write code…",
+          "Routing ShioMisaka to write code…",
+          "Routing milkbobo to write code…",
+          "Routing netyingxiao to write code…",
           "Routing lcgyl to write code…",
+          "Routing himetuki to write code…",
+          "Routing IkariKr to write code…",
+          "Routing 1078966324 to write code…",
+          "Routing typ77 to write code…",
+          "Routing cuifuqi to write code…",
+          "Routing jingchen0529 to write code…",
+          "Routing dyboy1995 to write code…",
+          "Routing JerryLamMV to write code…",
+          "Routing Hoist-GG to write code…",
+          "Routing jiuyang-creator to write code…",
+          "Routing crxiang to write code…",
+          "Routing Cccccccc1 to write code…",
+          "Routing ljr686 to write code…",
+          "Routing cheng-nan01 to write code…",
+          "Routing Yangshifu1024 to write code…",
+          "Routing wxk66 to write code…",
+          "Routing jacksonCLyu to write code…",
+          "Routing lucheng0522 to write code…",
+          "Routing XieHouYan to write code…",
+          "Routing yuukana1 to write code…",
+          "Routing sunganhao8-lgtm to write code…",
+          "Routing CodeGetters to write code…",
+          "Routing SamZhengLa to write code…",
+          "Routing jyn618 to write code…",
+          "Routing hysishys to write code…",
+          "Routing Dingsd to write code…",
+          "Routing cmcc-heng to write code…",
+          "Routing hbbdzry to write code…",
+          "Routing wslldsdhii to write code…",
+          "Routing 782669218 to write code…",
+          "Routing LuYi8 to write code…",
+          "Routing LastKnightCoder to write code…",
+          "Routing Pigeon2333 to write code…",
+          "Routing TaroFang to write code…",
+          "Routing Erlla to write code…",
+          "Routing DCLCYC to write code…",
+          "Routing yangshuai0711 to write code…",
           "Routing lhjalswell-lgtm to write code…",
           "Routing lichen5112 to write code…",
-          "Routing litmonw to write code…",
-          "Routing litown to write code…",
-          "Routing liuwei32 to write code…",
-          "Routing ljr686 to write code…",
-          "Routing llemllen to write code…",
-          "Routing lliangworld to write code…",
-          "Routing LnameBF to write code…",
-          "Routing lucheng0522 to write code…",
-          "Routing LuYi8 to write code…",
-          "Routing lwppwl to write code…",
-          "Routing Lyyyy4925 to write code…",
-          "Routing Mc-GrowlR to write code…",
-          "Routing mikewcy1 to write code…",
-          "Routing milkbobo to write code…",
-          "Routing MistyMoonR to write code…",
-          "Routing momo0-88 to write code…",
-          "Routing mondayice to write code…",
-          "Routing Mrgongm to write code…",
-          "Routing mydelren to write code…",
-          "Routing neoblackxt to write code…",
-          "Routing netyingxiao to write code…",
-          "Routing new1333 to write code…",
-          "Routing NickLhn to write code…",
-          "Routing nlyrthiia to write code…",
-          "Routing noname-nikke to write code…",
-          "Routing OldJie1017 to write code…",
-          "Routing Pigeon2333 to write code…",
-          "Routing pj001 to write code…",
-          "Routing PyEthanHa to write code…",
-          "Routing qq540491950 to write code…",
-          "Routing quanfanpro-code to write code…",
-          "Routing runping-wei to write code…",
-          "Routing SamZhengLa to write code…",
-          "Routing scbwin to write code…",
-          "Routing senturst to write code…",
-          "Routing ShioMisaka to write code…",
-          "Routing Shiyaolx to write code…",
-          "Routing simonjie to write code…",
-          "Routing sonxy-cn to write code…",
-          "Routing sunganhao8-lgtm to write code…",
-          "Routing syunnrai123 to write code…",
-          "Routing TaroFang to write code…",
-          "Routing touchixiaobinggan to write code…",
-          "Routing typ77 to write code…",
-          "Routing vCassius to write code…",
-          "Routing Vista2026 to write code…",
+          "Routing 1489998 to write code…",
+          "Routing Huayudong to write code…",
+          "Routing HTMLgtMK to write code…",
+          "Routing ymzhuuuuufz0313l to write code…",
+          "Routing wuyue-any to write code…",
+          "Routing AresInspired to write code…",
           "Routing wangjin to write code…",
+          "Routing YiZhiXiaoLiuLang to write code…",
+          "Routing llemllen to write code…",
+          "Routing zhanglz666888 to write code…",
+          "Routing ByteRax to write code…",
+          "Routing nlyrthiia to write code…",
+          "Routing yahong2018 to write code…",
+          "Routing xushu199166-a11y to write code…",
+          "Routing derrick4reals to write code…",
+          "Routing noname-nikke to write code…",
+          "Routing 87ouo to write code…",
+          "Routing houpe to write code…",
+          "Routing momo0-88 to write code…",
+          "Routing zhaocq-wg to write code…",
+          "Routing sonxy-cn to write code…",
+          "Routing Mc-GrowlR to write code…",
+          "Routing Vista2026 to write code…",
+          "Routing Mrgongm to write code…",
+          "Routing fanwuit to write code…",
+          "Routing bb6894 to write code…",
+          "Routing LaMonsters to write code…",
+          "Routing LnameBF to write code…",
+          "Routing HimekoEx to write code…",
+          "Routing xuwangcheng14 to write code…",
+          "Routing mikewcy1 to write code…",
+          "Routing forturelin to write code…",
+          "Routing Iceorigin to write code…",
           "Routing weiaiweiai to write code…",
-          "Routing weicailin8756 to write code…",
+          "Routing touchixiaobinggan to write code…",
+          "Routing runping-wei to write code…",
+          "Routing GodKillerIsVery666 to write code…",
+          "Routing YingxiaoHe to write code…",
+          "Routing PyEthanHa to write code…",
+          "Routing NickLhn to write code…",
           "Routing weipeng321 to write code…",
           "Routing were37114 to write code…",
-          "Routing westlifehq to write code…",
-          "Routing wgf8088 to write code…",
-          "Routing wslldsdhii to write code…",
-          "Routing wuhuanling to write code…",
-          "Routing wuyue-any to write code…",
-          "Routing wxk66 to write code…",
-          "Routing XieHouYan to write code…",
-          "Routing xushu199166-a11y to write code…",
-          "Routing xuwangcheng14 to write code…",
-          "Routing yahong2018 to write code…",
-          "Routing Yangshifu1024 to write code…",
-          "Routing yangshuai0711 to write code…",
-          "Routing YingxiaoHe to write code…",
-          "Routing YiZhiXiaoLiuLang to write code…",
-          "Routing ymzhuuuuufz0313l to write code…",
-          "Routing YubaiLoving to write code…",
-          "Routing yuukana1 to write code…",
-          "Routing zhanglz666888 to write code…",
-          "Routing zhangsongyang to write code…",
-          "Routing zhaocq-wg to write code…",
-          "Routing ZPinggg to write code…",
-          "Routing zzh-learner to write code…"
+          "Routing developerdh to write code…",
+          "Routing liuwei32 to write code…",
+          "Routing 2869893488 to write code…",
+          "Routing antfraud to write code…",
+          "Routing Winminn to write code…",
+          "Routing HXHndj to write code…",
+          "Routing lmy-0311 to write code…",
+          "Routing illusionlie to write code…",
+          "Routing xcongcong1991 to write code…",
+          "Routing lxyAK to write code…",
+          "Routing dozellx to write code…",
+          "Routing Kitsune2077 to write code…",
+          "Routing wzy004 to write code…",
+          "Routing jackey670 to write code…",
+          "Routing ywclgl258 to write code…",
+          "Routing TTS-version to write code…",
+          "Routing hwj911327 to write code…",
+          "Routing zhangyongqiang123 to write code…",
+          "Routing NocodeMrLi to write code…",
+          "Routing Hush-xv to write code…",
+          "Routing AMAZFIT to write code…",
+          "Routing K_zqhag to write code…"
         ]
       }
     },
@@ -9632,7 +10159,7 @@
   /* ---------- 实例工厂（v61.1）：一个 pane 一套 条/面板/气泡/tooltip/定位循环。
    * slot 0 保留 #zusage-bar/#zusage-tip 兼容 id（泵热更新按它清理），其余实例仅类名。 */
   function spawnInstance(pid, slot) {
-    var VERSION = "v349";   //v82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v84 主标签页远端路由（工作台分组唯一主绑定上报 + 迟到载荷守卫，issue #30）→ v85 回答末尾统计行跟随万/亿开关 + tok→token → v86 历史轮 tracker 无记录（窗口滑出/换代/热更）或缺输出字段不再翻成"本轮统计不可用"，加 det 诊断 → v87 主叶归属增 last-session 回退（组零证据时唯一远端记录放行，issue #30 复测：单会话主标签页不建组）→ v88 运行态心跳与两处扫描 tick 2s→0.5s（富文本重试 6→24 次等价放大）→ v89 ⚙ 面板更新进度：downloading 阶段文案 + 下载（字节）/安装（校验→安装→同步）双进度条，缺 progress 的旧主进程自动隐藏 → v90 主标签页/分栏归属改按本窗会话节点身份（renderer 桥按版本/资产/锚点写 SessionPane 属性，移除 workbench-groups/last-session 共享回退）+ 心跳 0.5s→0.1s（扫描维持 0.5s）→ v91 设置页/权限面板冒条修复（PR #44：inSettingsView 三处派发排除 + anchorCardOf 面板锚点改判）收编收尾：排除标记并集（settings-page testid + content/panel 双 frame）、track 显隐第四处防御 → v92 ⚙ 更新区固定显示可复制的重装口令（源码安装无法自动更新时引导用户发给 agent）→ v93 原生上下文按钮（chat-context-usage-trigger）增强：环填充/四档色/右侧百分比镜像状态条上下文格（ctxBandOf 同源），cw 缺失还原原生形态 → v94 状态条删除「上下文容量」格（UI+tooltip，该口径由原生按钮增强承载），⚙ 面板同步去掉「上下文」开关，子代理格改始终展示（零值也显示）→ v95 ⚙ 更新区去掉 v92 重装口令提示块（源码清单的仓库来源改由宿主插件管理器直接更新，不再报渠道不一致），更新来源文案增「仓库源码」分支→ v96 套餐额度 chip（默认关）：挂原生上下文按钮左侧（wrapper 内前插，与按钮增强同款双 reapply/还原），数据来自主进程 quota 字段（解密宿主 OAuth 凭据直查 monitor 端点，账号级套餐池口径），会话首个 main_turn 完成前不显示；自绘 tooltip 走 rateTip 独立浮层模式；chip 改多窗分段：每窗一段（中文 5小时/7天，英文 5h/7d）各自按 80/95/100 档位色，分隔符 |；余额类型单段渲染就绪（余额 ¥100.00，阶段 3 数据源接入即用）；去掉环形，容器不着色 → v97 子代理速率（T1+T2）：zusage sub 汇总加 rate_avg/每子代理 tps_avg（已完成段加权平均，口径同 _turn_rate），子代理格 tooltip/明细面板展示；Agent 运行期主 chip 附加「子代理运行中 · 估 X t/s」——turn-stats 透传 subagent 行 childSessionId，overlay 据此用同款 zuTryBindStore 绑子代理会话 store 做字符增量估算（运行中请求未入库，DB 无实时数据；150s 采样实锤零 running 行），思考文本不进 rows 时退回纯状态词；工具动词「正在运行子智能体」压成「子代理运行中」（web 同步文案）；同日多槽位化：turn-stats 暴露 runningSubagents 全集（并行时 rowId 前 8 个），每子代理独立绑定/2s 节流，主 chip 显示合计速率（并行 ≥2 时动词后缀 ×N），chip tooltip 与子代理明细面板逐个实时展示运行中估算（tooltip 随原地改字同步 __tip 重画；面板 800ms tick 原地刷新 .subrate，汇总页运行块含 DB 尚无记录的新子代理） → v98 额度实时选源恢复（v4-model-config 观察 + quota-providers 全窗快照上报 + byProvider 定向刷新、空选择 fail-closed）与 sub2api 额度 UI（今日/本月窗口、窗口行内金额明细、Key 总额度、订阅截止、账户余额标题） → v99（主线并流）tooltip 伪边界 leave 过滤：Chrome 悬停链收缩/重算会补发 DOM 内部的 documentElement/tip mouseleave，tipLeaveAt 贴边判定后取触发时刻最深 :hover 元素甄别，仍悬停在本档具体元素上即伪 leave 一律忽略交回 mousemove 流（主线 v100 滚动豁免=本链 v106 同义，不另列） → v99.1（主线并流）apiKey 模式 BigModel/Z.ai（bigmodel-api[-N]/zai-api[-N]）额度 chip 标题家族判定（issue #68；数据链在 quota-client） → v99.2 思考中计时随语言本地化（中文「1 时 2 分 3 秒」/英文「1 h 2 m 3 s」，空格分隔、零段照旧省略）；回答末尾行采样时刻改完整中文日期时间（⏱ 2026 年 10 月 23 日 11 点 20 分 28 秒，token_rate.py format_turn_line 同步改版） → v100 设置面板分区导航（ZCode 设置侧栏同款：左栏三组分区导航 + 内容区单分区显隐，激活项 aria-current="page"，选择持久化 zusage3.sec；面板窄于 620px 时导航收成 icon rail） → v101 设置面板高度在打开瞬间按内容自然高锁定（切分区不再抖动，resize 只收紧不放大） → v102 额度源预设模板（CC Switch/magpie 同款选模板只填 Key：官方域变体 chip 一键写入 secrets baseUrl，minimax 可信域机制推广到 siliconflow 币种随域；deepseek/openrouter/kimi/anthropic/mimo/volcano 附控制台取 Key 链接，走 openExternal 桥） → v103 额度源列表卡片化布局（每源圆角卡片+间距，凭据框限宽 420px，长说明段落补水平边距；纯 CSS，结构行为不变） → v104 源状态文案补 disabled=已关闭映射 + 主进程对显式关闭源统一报 disabled（修「开关已关却显示待查询」矛盾）；刷新/获取 Key 按钮补 title 提示，关闭源的刷新按钮禁用 → v105 「上下文容量」弹层（hover-card-content）内压缩上下文按钮：命中率行下方全宽胶囊按钮（原生 secondary 配色全走客户端语义变量），弹层关即卸载（Radix 无 forceMount）故 body MutationObserver + heavy 对账双触发、DOM 存在性幂等（多实例安全），插入锚=「剩余额度」border-t 段前（缺则容器尾）+位置兜回；点击弹原生 AlertDialog 视格确认框（遮罩/Esc/外点关闭、Enter 确认），确认后优先走 fiber 上原生残留的 onSendCompressionCommand("/compact")（SessionPane 压缩入口，不动输入框草稿），缺失回落官方 E2E 输入桥 __zcodeLexicalInputE2E.setText + 发送键（Lexical 直写 DOM 不生效，禁用该路径；草稿非空拒绝） → v106 额度 tooltip 滚动豁免：hideTipsOnScroll 不再收 quotaTip（chip 固定 composer 工具行与 gitTip 同理），修思考中流式输出自动滚动致悬停弹出即灭；chip 随宿主重建 detach（无 mouseleave）由 scanRateLines 加 isConnected 健康检查兜底收起 → v107 压缩确认框补行为提示：压缩进行中发送新消息/停止会打断压缩（实测 16:27 新 turn 启动同秒 compact turn TURN_CANCELLED，cancelled_by_user=1；引擎对该次摘要流挂起 134s 无首 token 也不重试 retryable=0），确认框加 hint 行中性告知 → v108 压缩主通道按用户指定改为字面 "/compact" 输入提交（E2E 桥 setText+发送键；流式中 v4-stop 可见/草稿非空/发送键 disabled 三重拒绝），fiber 命令信封降兜底；hint 升级为「通常需 2-4 分钟且无进度反馈」（DB 实证：全库 compact 请求无首 token 但正常完成，72s-9.6min，14:44 同会话同模型 165s 成功先例；16:25/16:43 两次「卡住」实为 2m20s 被新消息 TURN_CANCELLED，非故障） → v109 压缩主通道按用户指定改回直接调会话发送接口（fiber onSendCompressionCommand 命令信封：不碰输入框/发送键、流式中交引擎排队，修字面输入通道在生成中被发送键禁用卡住的问题），字面 "/compact" 输入提交降兜底（三重门控仅作用于兜底） → v110 压缩提交函数改在弹框打开瞬间（弹层必存活、锚点几何可信）解析并缓存，修复确认时弹层已被 Radix 卸载、几何重解析退化为「离视口左上角最近」致多分栏把 /compact 发进错误会话（P1）；兜底字面输入通道的流式/发送键/草稿三重门控全部前置到 setText 之前（拒绝不再残留草稿）；Enter 确认限定焦点在弹框内（无焦点陷阱下防焦点外 Enter 误触发确认） → v111 额度 chip 默认展示：quota_enabled 缺省开（显式 false 才关，真值链在 inject-main）；chip 二级门控 not_configured/unsupported 从静默隐藏改中性灰提示「额度 未配置/暂不支持」（源被 ⚙ 显式关闭仍隐藏），tooltip 补 info 分支引导配置 → v112 Start Plan 免费档池（quota-client 新增 zcode-start 适配器走 zcode.z.ai billing/balance 独立链，与 coding plan 的 monitor 端点分池；选源路由与 quotaFamily 判定补 start-plan 分支修 start-plan pane 误读 GLM Coding Max 池；chip 增「套餐」分段（windows.plan，one_time 发放池聚合已用%），tooltip 套餐池行按 expires 标记切「到期」措辞） → v113 夜间审计加固：quotaBalanceText 内建转义（currency 是远程响应字符串，chip/tooltip 双 innerHTML sink；parts label/amount 单次转义修双重转义；「其他源」行标签转义归位；aria-label 走 plain 纯文本变体不读实体）→quotaTip 补内容签名幂等 __zuTipSig（同 gitTip，悬停期间周期对账不再打断文本选择）→子代理明细面板数据签名幂等（滚动位置/选择不被每 1.5s 推送整面板重建重置；运行中估算仍由面板 800ms tick 原地刷新）→额度 chip 签名重写保留 zu-qbusy（点击刷新动画不被推送截断，同 git chip）→⚙ 源列表 id/label/preset/keyUrl 属性级转义 aEsc（custom:<providerId> 可含用户自定义名）→live 速度 span 的 speedView.text 过 ttEsc（工具名是宿主/MCP 可控字符串）→渲染桥两处订阅回调尾部 updateLive() try 包裹（异常不冒进宿主 store 通知分发，诊断键 subLiveErr/bridgeLiveErr 记录） → v114 积压清单清扫：remoteCache/remoteTodayCache/richTextCache/richTextAttempts 上限淘汰（长会话防无界增长）；dispose 清理补 __zusageDeliverTurnText/__zusageSidWs/__zusagePaneScopes（旧代闭包自卫之外的清理完整性）；诊断 lsVals 只转储 zusage 命名空间的 localStorage 键（宿主其余键值不进 diag 文件） → v115 渲染循环省电（上游 xhwxt PR #26/#28 同源问题）：幽灵子树/遮挡命中/模态判定加 TTL 缓存（120/150ms，命中绑定元素矩形+模式），track 在 document.hidden 时整帧跳过；未采纳其 600ms↔2s 调度降频（heavy 600ms 对账是与 render 并列的 React 重写兜底契约，降频会让增强节点裸奔 2s） → v116 「思考中」卡死修复（源码复核定案）：v87 合成分支条件收紧——仅「空窗口非终态（draft 空窗，v87 本意）或 control.phase=running」才合成思考中，删除「行非空」析取项（宿主 wire 快照 rows.window 恒为全序尾 60 行，末轮超窗的闲置会话整窗无 turnHeader，旧条件使其永久点亮思考中、切回重绑重新计时）；思考计时锚定 turnHeader.startedAt（宿主创建 header 恒写入，重绑不清零，缺字段回退首观测）→ v117 悬停命中区扩到整栏（fork lliangworld b21e3cf0 同源收编）：条目空隙/分隔符按 sep 中线就近归属、尾部空隙归末位条目，⚙ 与空条面维持保持不动；防闪烁改由节流+幂等承担 → v118 无障碍与主题重构（并行会话批次）：条目可聚焦（span tabindex / zu-sub 真按钮 + aria-label）、键盘可达 tooltip（focusin/focusout + Escape 收起）、focus-visible 焦点环、SVG 图标与思考动画改 currentColor 随主题、⚙ 面板请求-回执协议（requestId + __zusagePluginResult，feedbackVersion 1）、quota 源操作错误语义、统计行开关即时重扫 → v119 插件自动检查改为每 1 小时，更新区双语提示更新器变更需完全退出并重开 → v120 Git 手动刷新改请求-回执协议（askGitRefresh 带 path/requestId，主桥 gitTick 完成后经 __zusagePluginResult 回执、在途请求合并等待，按请求 path 校验结果）+ 状态条 aria-live sr-only 播报区（套餐额度查询中/Git 刷新状态）+ ⚙ 面板高度上限 82vh→90vh + 模态判定改按可见 dialog（display/visibility/opacity 过滤） → v121 状态条 .ico 与 ⚙ 齿轮图标盒由 calc(字号+4px) 改为等宿主字号（24 格线性图标墨迹只占盒 75–83%，18px 顶满 1.3 行盒显大，且加法常量令比例随字号漂移 1.33×→1.20×；用户实机定 1.0×，.eb .ico 12px 特例不变） → v122 Git chip 展开测量完整宽度并留 32px 迟滞余量，切断宿主 compact 反馈环（issue #100） → v123 Git chip 锚点按电脑操作→上下文→模式→思考回退，排除隐藏探针并随可见锚点迁移（issue #103） → v124 Git chip 固定左侧操作区，移除右侧上下文/思考回退 → v125 思考计时中文全紧邻「7分16秒」（时段间空格去除，用户要求；英文「7 m 16 s」不动） → v126 思考计时英文数字与单位紧邻「7m 16s」（时段间留空格，用户要求） → v127 tok/s 速度十档色（TPS_BANDS 唯一事实源，原始值分档含下限不含上限：<40 低速红 / 40–70 一般黄 / 70–150 流畅绿沿用原三档类名与实测色，150 起新增蓝紫系 zu-teal/zu-sky/zu-azure/zu-violet/zu-purple/zu-magenta，≥2000 Ultra 静态蓝紫渐变 + ✦ 星点（::before content:"✦"/"" AT 静音、@supports 外纯紫回退，浅色组同名覆盖渐变）；估算态与完成态同表分档（用户规格，原「估算态不分档」废止），无效值（负数/NaN/±∞）一律中性 dim 或回退 DB 绝不判低速，DB 回退分支负数/非有限不再渲染 chip；tooltip 档位行改动态「名称 · lo–hi t/s」消解 toFixed 舍入边界歧义，另加静态「颜色对照」图例（十档数值↔颜色升序一览，档位类与条面同源随主题切换）；额度正常态改额度蓝 #78a9ff/浅 #315fc4（.zu-qseg 专属基色，不碰全局 .ok——上下文与速度前三档仍绿），周期标签拆 zu-qlabel 子节点中性次级色常规字重（textContent/aria/tooltip 不变），quotaSegs 补 isFinite 门防 NaN/±∞ 落正常蓝；正常态再改 CCometixLine 同源柔和低饱和（用户规格）：普通窗灰蓝 #8abbd0/浅 #276f86、7 天窗按 quotaSegs 结构化 key 挂 zu-qweekly 淡紫 #b69ad8/浅 #76509f（不匹配显示文本），周期标签与数值同色成组仅标签降字重，上下文按钮正常绿改 #72c9a2/浅 #187b58（限按钮作用域，速度与全局 .ok 不动）） → v129 模型拉取分区（收编 HHQ-666/zcode-model-puller，MIT）：⚙ 基础组新分区列宿主 provider_config.json 的 API Key 型自定义供应商，经主进程拉取其 /models（候选端点探测、OpenAI data/Ollama models/顶层数组形状解析、Bearer+x-api-key 双头），弹窗勾选（已添加/新模型徽标、搜索过滤、全选/清空/仅选新、选中计数）后经 model-pull-apply 最小写回（personalModelIds+modelOrder 追加、providerModelRules 复制同供应商模板条目、同目录原子替换+滚动备份 .zusage-bak、未知键保留）；key 只在主进程内存、只发该 baseUrl 本域，不回渲染端不进日志；请求回执 20s 兜底超时（旧主进程无 action 时提示完全重启而非永久 loading） → v130 拉取算法吸收 GLQQX/zcode-model-discovery-patch 与 linguo2625469/zcode-patcher：字段别名全集（id/modelId/name/model、context_length/contextWindow/context_window/limit/limits、max_completion_tokens/max_output_tokens/maxOutputTokens/limit/limits/top_provider、payload 增 result 形状）、多模态感知（architecture.input_modalities/input_modalities/modalities.input + vision/supports_vision 布尔 ⇒ 宿主 inputFormat 稀疏能力位，缺位写实 false）、思考档位感知（supported_efforts 去重截 16 ⇒ reasoningLevel.values）、models.dev 公共目录补缺（并行拉取 5s 超时失败静默降级、id 精确→basename 唯一匹配、字段级供应商优先、key 与本机数据绝不发往目录、进程内 1h 缓存）、applyModels 按模型写实 config（contextWindow/inputFormat/optionSpecs；元数据走主进程 fetchCache 闭环、渲染端只回传 id 无法注入字段；模板带 map 表达式的 optionSpecs 整体不覆盖防 values 换名失配；无依据字段保持模板原样、不编造默认值）；弹窗行新增 ctx/out 可见小字与档位 title，分区说明补 models.dev 联网披露；review 修复：勾选表/已添加表/metaById 改 null 原型（模型 id 来自远端，__proto__ 等键静默失败丢勾选态）、实例 dispose 同步摘除模型拉取弹窗与 Esc 监听（原仅整体 dispose 摘除，pane 关闭后弹窗跨代泄漏且确认回调 inactive 早退卡保存中文案）、重开面板停在模型拉取分区时立即刷新列表、请求兜底超时 20s→25s（主进程最坏双端点 20s 防假超时）、主进程响应体 8MB 限长解析与 tmp 文件名带 pid 防双实例竞写 → v131 额度/上下文五档色（用户规格 2026-10-27）：CTX_BANDS/QUOTA_BANDS 唯一事实源（{min,cls} 有序表，bandOf 从高到低首个命中），阈值 30/50/80/90（含下限不含上限）——额度 calm/norm/mid/high/crit=emerald/sky/amber/orange/rose（暗 400/浅 700），上下文 calm/norm/mid/high/crit=slate/indigo/violet/orange/red；data-zusage-band 与 zu-qb-* CSS 双主题成对；pct span 与 SVG 环一律继承按钮 currentColor（.zu-ctxpct.ok 系独立色废止）；tabular-nums 原已覆盖 .zu-quota/.zu-ctxpct；v92 百万窗口提前预警（40/60）与 v127 额度正常态灰蓝/7 天窗淡紫（按窗口类型着色）随「仅按百分比」规格废止；额度 ≥100% 满档保留呼吸闪烁特效（zu-qb-exc，用户规格；90–99 为 crit 纯色）；压缩过程态（exc）优先档保留；余额/Key 额度段挂 calm 档色 → v132 模型拉取挂载点迁移（用户指令）：⚙ 设置分区删除（ZU_SECTIONS/section/ensureMpProviders/syncMpList/startMpFetch/mpFeedback 全撤），改挂官方「模型设置⇒自定义供应商」的「+ 添加模型」按钮左侧（锚 data-testid=model-provider-add-model-button，额度 chip 同款 enhance/restore 契约：render/heavy 双对账+位置兜回+自清选择器 .zu-mp-host）；供应商归属优先读设置页表单 http(s) Base URL 归一化匹配（唯一命中直拉），否则单供应商直用/多供应商弹 zu-mp-pick 选择列表/无供应商弹提示；按钮视觉复刻原生 secondary 视格（同页 Tailwind utility bg-secondary h-7 rounded-lg），⚡ 图标 stroke currentColor；弹窗抽通用壳 openMpShell（勾选弹窗/供应商选择/错误提示共用），apply 成功关弹窗由宿主自动刷新列表；供应商归属改主判定=当前选择的供应商（读宿主源码定案：导航项 testid=model-provider-nav-item-<nodeKey>、custom 项 nodeKey=custom:<providerId>、选中项 data-state=selected），providerId 精确匹配不受编辑草稿影响；Base URL 匹配降兜底（专用 testid model-provider-base-url-input 优先于表单启发式），弹窗对齐 HHQ 形态（⚡统计标题/搜索占位/仅选新模型计数/已选中 n 个模型/蓝实底确认钮）并自带 .zu-light 随宿主主题实时换装；review 二轮修复：上下文按钮浅色档补 data-zusage-armed 特异性（浅色主题 norm~crit 曾被暗色 0,3,0 规则恒胜）、model-puller 非 ok 响应体显式 cancel（undici 连接卫生）、宿主按钮 ml-auto（锚容器 justify-between 三子项均匀分布致按钮居中）、确认钮改固定蓝 #3B82F6/#2563EB（客户端 --color-brand 深色主题是白系，白底白字隐形）、拉取按钮仅在选中的是 custom 供应商时挂载（锚 testid 全局唯一，内置/套餐页同 testid）、拉取中按钮文本「拉取中…」+图标旋转（原透明度脉冲无感知） → v133 Git 计数缩写（用户规格 2026-10-28）：chip/tooltip 的行数·条目·↑↓·冲突计数 <1万原值，≥1万 中文（cnUnits 判定）万/亿、英文 k/M/B（k 门槛刻意抬到 1万，与 token fmt 的 K≥1000 不同，小写 k 至多两位小数去尾零紧邻）；仓库个数与 aria 播报保持原值 → v134 额度与上下文保留既有阈值并统一绿黄红三档视觉；统一字号为宿主基准减 1px，周期标签加粗并微调分隔符 → v136 编辑项目弹窗源文件夹行在名称下方显示完整路径（纯 CSS ::after attr(title)，零 DOM 注入 React 无感；.truncate 限定本地行、排除 fixedFolder break-all 全路径行防重复，多文件夹每行各取各的 title；长路径自动换行不做省略号（宿主 truncate 的 nowrap 继承进伪元素须显式 white-space:normal）；规则挂条样式表、由 <html> data-zusage-pp 门控，⚙ 通用区「项目完整路径」开关 zusage3.projPath 默认开即时生效；顺带清理未提交编辑遗留的 spawnInstance 陈旧重复块 566 行死代码并复原被覆写的 issue #55 注释） → v137 源文件夹行点击即用系统文件管理器打开该目录（用户规格 2026-10-28，mac/Win 双平台）：主通道宿主桥 openInFileManager（Windows shell.openPath / macOS open 带 Finder 与 shell 双回退，raw path 免编码），旧主进程降级 openExternalFile、openExternal(file:)（白名单含 file:）；远程项目编辑器按 virtual-project-existing 标记排除，fixedFolder 行不在选择器内；多 pane 重复委托 500ms 同路径去重，document click 监听随实例 dispose 摘除；行加 cursor:pointer → v138 重置卡倒计时改时分秒全档恒显（并行会话 rstmerge 线并流收编，用户规格 2026-10-28：精确到秒、随 600ms 对账实时逐秒跳动，rstSpanText 中文数字单位紧邻「3时05分30秒」、英文数字单位紧邻+时段间空格「3h 05m 30s」；rst tooltip 补 Escape 收起（v118 键盘可达契约）；⚙ 倒计时阈值语义不变——并流时保留 rstCdh 持久化，对方运行目录构建因旧基线缺失而误删，其 18:42 rstmerge 部署曾覆盖本项目 v136/v137 后经本线合并恢复） → v139 合并 fork/main v1.5.5 线（PR #121 重置卡徽标、#122 倒计时秒级、#123 templateRules 回填、安装修复与 v1.5.5 发版）时收编遗漏的 model-puller 套餐源判定（4e431cc：detectSelectedCustomProviderId 带 anchor，BigModel 付费套餐详情页按 GLM Coding Max 付费卡区分放行、Start Plan 免费卡页不放行；挂载门控 btn 先查 + mpAnchor 诊断）——本项目快照缺该段曾致 overlay-model-pull 挂载契约测试红；overlay 版本线自此与对方 v136 撞号线并流，按合入顺序顺延 → v140 收口审查修复：openProjFolder 对 invoke 通道（openInFileManager/openExternalFile）挂空 catch——旧主进程无 handler 时异步 reject 会刷 unhandled rejection；review-fix-merge 流程产物 → v141 ⚙ 更新区在 API 限流且渠道清单兜底也失败时引导 GitCode 镜像口令（清单兜底本体在 plugin-updater/plugin-release 主进程链） → v142 ⚙ 通用「状态条样式」双主题 opt-in（zusage3.theme 独立持久化，默认关=现状）：药丸形态=所属输入卡下方居中、内容定宽，.zu-pill 经 --zu-pill-* 逐项拷贝所属视觉表面（Highspeed 外壳优先）计算样式，随宿主主题/hover/focus/Highspeed 实时跟随——pillSurface 统一取色/定位/让位锚点，body 子树 MutationObserver + 祖先属性观察捕捉外壳原位增删与搬移（不依赖 600ms 对账），80ms 过渡采样按目标计数、表面搬离自动停止；条面精简：缓存命中率/请求次数/轮数/耗时/首字收进 tooltip（0 命中也显示 0%），窄窗 .zu-main 横向滚动 + focusin 滚入可视区、切回默认复位 scrollLeft，不触发默认态收缩/渐隐；⚙ 面板宽度在药丸下跟随所属卡（不再跨分栏），主题 radio 按实例分组 name 防多面板互斥；数据重建先绑 __tip 再恢复焦点，aria-describedby/tooltip 不丢；modalOpen 豁免 zusage-panel 自有面板（修设置面板被误判宿主模态整条收起） → v143 药丸收口审查（review-fix-merge）：8px 双间距按宿主实测几何收敛——adjustPillBottom 沿所属 pane/dock 实测矩形补足让位并带 floor/不增长护栏，无法让位的绝对定位布局 visibility 安全隐藏（无每帧显隐抖动）；pillMarginTarget 落在 .chat-composer-input-surface，Highspeed 退出后默认卡重解析（composerCardOf 优先原生 data-testid 输入框）、宿主 margin 变更原值+优先级还原；悬停 tooltip 在 pill 下实时刷新隐藏明细并保留选区/滚动，焦点恢复区分 Escape 关闭与悬停接管；modalOpen 纳入 alertdialog；协调器候选补可见性过滤且已绑定输入框豁免 45% 阈值（上下分栏不再反复挂卸）；表面祖先观察改快照重建防泄漏 → v144 ⚙ radio 对齐修复：.zu-settings-langs/.zu-theme-options 的 label 显式声明 flex+align-items:center+gap:6px——原 label 继承 .panel label 的 flex-start 顶对齐（gap 14px），radio 圆钮相对文字中线偏上约 4.5px；新规则 (0,2,1) 特异性覆盖 (0,1,1) 基础规则，实测居中 delta=0 → v145 切回默认主题补还原 bar.style.visibility（pillUnsafe 安全隐藏是 pill 专属态，写入点仅 track 的 pill 分支；此前 pill 隐藏态下切回默认条永久不可见，十路评审 P1） → v146 精简模式（theme 第三档 compact）：条永久隐藏但保留 DOM（<style>/ariaLive 随条存活、heavy 保条对抗 React 清子树）；生成速度改挂工具行 .zu-tsb（重置卡左侧，挂载/位置兜回/签名幂等照重置卡同款），内容=zuBarSpeedView 桥两态或 tpsBand DB 回退、无有效样本不渲染（用户拍板）；tooltip=速度读数+状态条摘要（本轮/会话/工具/今日/子代理，逐格开关继续生效、子代理行点击开明细）+tpsBandLegend+「打开设置」按钮（镜像齿轮开启分支，面板精简下贴输入卡定位）；updateLive 10Hz 心跳原地跟随；非精简主题 syncTpsChip 门控摘除；诊断 mode=compact → v147 精简模式速率 chip 挪前导区（用户规格）：git chip 左侧——git 在时插其前、git 不在时占其锚位（cua-entry 后方/前导区末尾），两侧位置兜回收敛为 [锚][速率][git]（git 兜回容忍速率占相邻位防逐拍拉锯）；前导区发现失败回落尾随区（重置卡/额度组左侧） → v148 精简速率 tooltip「打开设置」按钮右对齐（用户规格）：footer 改 flex 布局，说明文本 tps-note-t 占据剩余宽度、按钮 margin-left:auto 推至最右，长文本换行不断布局 → v149 精简速率 tooltip 摘要行单位 tok→token（用户规格，与回答末尾统计行的 token 措辞对齐） → v150 修复精简模式 git chip 永不挂载（用户报告）：v147 的 git 兜回容忍条款（速率占锚位时不挪）误拦首次挂载——速率 chip 常驻锚位时 enhanceGitChip 每拍判"已就位"跳过插入；改为 chip 未连入 DOM 时无条件首挂（落速率后再由速率兜回收敛 [锚][速率][git]），容忍只用于已挂载的位置保持 → v151 工具状态词改版（用户规格）：Bash 动词「正在执行」→「工作中」，未知工具回退同改（正在执行 X→工作中 X）；工具计时分隔去中点（正在读取 · 4.3s→正在读取 4.3s 一并生效） → v152 工具动词 Read「正在读取」→「读取中」（用户规格） → v153 工具执行状态词定稿（用户规格）：Bash 与未知工具回退「工作中」→「执行中」（无名词回退英文 Working→Executing 对齐） → v154 工具动词全面改「X中」体例（用户规格）：写入中/编辑中/搜索中/获取网页中/更新待办中/读取待办中/运行技能中/读取上下文中/发送消息中/获取任务输出中/停止任务中/编写工作流中（Read 读取中、Bash 执行中、Agent 子代理运行中此前已改；英文标签不变） → v155 审查修复批（review-fix）：①compact 下 positionSubPanel 被隐藏条僵尸 .zu-sub 抢锚（零矩形把明细面板钉左上角）——chip 优先锚；②速率 tooltip 内容含秒表，悬停中 10Hz 整片重建吃掉「打开设置」/子代理行点击——显示中内容变化冻结只跟位置；③track compact 早退补两面板周期跟随；④自清选择器补 .zu-tsb、跨代采纳 chip 统一挂装（__zuWired 防重）修复热更后悬停/键盘失效；⑤closeSettings 焦点归还校验 offsetParent（compact 下不落隐藏 gear）；⑥enhanceGitChip 重复 var slotNode 清理。Web 同批：①③⑤（mousemove chips 归属校验只接本实例）+chip focus/blur 键盘可达对齐桌面 → v156 上下文按钮增强开关（issue #141）：⚙ 通用区新增「上下文按钮增强」checkbox（localStorage zusage3.ctxEnh，缺省开、仅显式 "0" 关），关闭走 enhanceCtxButton 关闭分支还原原生环/百分比且重置卡徽标继续维护（restore 顺带清徽标后立即重挂） → v157 修复精简→默认切换残留空壳细线（用户报告）：compact 期 render 短路会让空壳条面（热更占位/清子树后未填过）因签名相等一直存活、切回默认露出细线数十秒；①离开精简立即恢复 display（compactHid 区分初载 none，初载不提前露条保 pill 定位契约）；②离开精简强制条面重建一次（lastHtml 清空）；③compact 短路加 main.children.length 门——空壳先补一次完整渲染（条隐藏不可见）；④render 公共尾部补 syncTpsChip（短路/直通两路都经）→ v158 并流 fork/main cmdkW 线（PR #140，原线 v146 与主线 v146 精简模式撞号按合入顺序顺延）：宿主命令中心（⌘K 搜索弹框）加宽加高开关（⚙ 通用区，zusage3.cmdkW 缺省开）：条样式表规则 max-width:max(32rem,80vw)!important（原生上限=宿主 quickPickDialogClassName 的 max-w-lg=512px，弹框基础类自带 w-full 窄窗本就满宽，故小窗保持原样）与高度同规格（弹框根 max(90dvh,calc(100dvh-6rem)) 不低于原生上限，cmdk 列表 440px 硬顶放宽为 max(440px,calc(90dvh-15rem)) 小窗保底），<html> data-zusage-cmdk 属性门控（applyCmdkW，与 v136 projPath 同款），:has(>[data-slot=command][cmdk-root]) 只命中 cmdk 弹框——命令中心/任务搜索/快捷指令共用该样式常量一并放宽，设置页等普通 Dialog 不受影响 → v159 重启提醒开关（issue #139）：⚙ 插件更新区新增「更新后提醒重启」复选框（zu-restart-notice），经主桥 restart-notice 动作原子写运行时 config.json 的 restart_notice（缺省开、显式 false 才关、异常值不静默）；session-start hook 的 session_notice 读同一键，关闭后每个新会话不再注入 🔴 重启/安装提醒引用块（/install-overlay 命令行输出与自动安装失败、桥补装的故障提示不受控）——工作流模式多会话不再被逐会话植入提醒  → v160 Skill 运行期状态词显示「技能名·执行中」（用户规格，如「查阅·执行中」+计时）：turn-stats runningTool 透出截 160 字的 inputText，overlay 端 zuSkillName 提取 JSON name 字段（正则兜底、控制字符拒绝、超 24 字省略号截断），取不到回退「运行技能中」→ v161 状态条新增「项目累计」格：会话累计右侧渲染本项目（session.project_id）全部会话聚合（含子代理，口径同 session_usage；远端/不在本地库无字段不渲染），⚙ 状态条显示加「项目累计」开关（show.proj，默认开），精简摘要加同款行 → v162 状态词流光（用户规格）：速率 chip 纯状态词态（思考中…/工具动词/技能名·执行中）复刻宿主 .zcode-loading-label 同款流光——subtle→foreground→subtle 渐变 background-clip:text、1.4s 横向扫光、reduced-motion 停用；类名/关键帧自有命名（zu-shimmer/zu-loading-shimmer）不依赖宿主全局类；带 t/s 数值的估算/真实/DB 回退态不含 → v163 会话累计/项目累计 tooltip 增按模型明细行（top 8 按总量降序 + 「另有 N 个模型」，轻量行无 models 字段不显示）→ v164 tooltip 收口（用户规格）：模型明细全量展示去「另有」折叠、总和行置顶、键列自适应宽不换行、时间范围行 sticky 吸底（rt-pin，五个 tooltip 统一）→ v165 模型明细表格化对齐（rt-models display:table，整块共享最宽键列，token/次数列纵向对齐）→ v166 会话累计/项目累计时间范围精确到秒（fmtStartS，用户规格；其余三格保持到分）→ v167 模型行去 rt-atom（Chromium 表格内在宽度在 inline-block 边界断行致数值折行，真实浏览器实测）+ 带 rt-models 的 tooltip 宽度帽放宽 860px（zu-tip-wide，取最宽一行）→ v168 格面计数改 fmt 万/亿口径（用户规格：≥1万 N.NN万、≥1亿 N.NN亿；本轮次/会话轮次/项目会话次/工具总数四处，tooltip 与精简摘要保持原值）→ v169 同容器双条去重（Windows 用户报告：最小化/还原窗口来回切出现两根状态条）——宿主窗口状态切换可能短暂保留旧视图副本/重建编辑框，协调器瞬态出现两实例两根条落进同一张卡；heavy 对账每拍扫描：同卡可见 .zusage-root >1 或两根 body 兜底条矩形重叠过半时，data-zusage-slot 大者 hideBar 让位（对手消失经 track 自动复显；拆分窗格各卡各条不受影响） → v170 tooltip 计数同口径（用户规格）：各 tooltip 标题/规模/工具/请求行与模型行、精简摘要行的次数/轮数/会话数全部走 fmt；子代理明细面板保持原值 → v171 修 issue #147（社区 @Mc-GrowlR 报告并给出方案，Windows 10 + ZCode 3.17.1）：划词 side chat 面板容器无 data-pane-id，被协调器 auto 兜底键当作独立 pane，同窗出现第二条状态条（Radix presence 常驻挂载，面板收起后幽灵 composer 仍持续命中扫描）；窗口存在真实 pane 键时丢弃 auto 键——老宿主全部候选均为 auto（单键）单实例行为不变、shadow/iframe 空文档兜底不受影响 → v172 待重启/待更新改由 ⚙ 齿轮红点提醒（restartNotice 开关改为控制红点；会话内文字重启提醒取消，plugin-updater 推送 markerAt 作红点代际，点进「插件更新」分区记为已查看）+ ⚙ 更新页「重启 ZCode」按钮（二次确认，主进程 relaunch 动作）+ 移除自动安装开关（hook 未注入一律自动装，auto_enabled/INSTALL_MESSAGE 会话出口删除）   // 悬停 ⚙ 面板可见；版本号随代际递增 → v173 强制 K/M/B 单位开关 → v174 辅助对话独立状态条（宿主 tabId 成键 + 实例配额 4+1、桥 scope 精确绑定、确定性统计行按会话根归属）→ v175 辅助对话回答末尾富文本与主分栏同规则（显式本地 scope + isCurrentTurn 活跃轮限定 + --current 的 promptTs 守卫；修宿主 modelDurationMs 只累计高速供应商致占位行永久「生成时长缺失」；富文本收集后统一发起、同 SID 只追活跃轮且 epoch 粘滞防多轮搅动） → v177 review 修复批（10-agent 全量 review 闭环）：双条去重抑制不再被 track 每帧复显打穿（v169 Windows 双条场景实际失效的根因，复显前查 dupSuppress、heavy 每拍重评估解除）；精简下速率 chip 被摘除后子代理明细面板保持原位（不再回落隐藏条内全零 .zu-sub 抢锚钉视口左上角，web v103 同款）；精简短路块恢复 syncTpsChip 数据点 reapply（2976478 挪公共尾部后短路 return 到不了、与 git chip 不对称）；relaunch 无回执 4s 提示主进程可能是旧版需手动完全退出（旧 pollPluginRequests 白名单外动作静默丢弃）；待办红点指纹改分量级比较（更新装完后 latestVersion 分量退出不再误复亮）且 ack 幂等早退前先收敛本窗口红点；cnNum 切换补富文本 unitEpoch 在途竞态守卫（同 forceKmb）；detRootEl 落在宿主 data-session-id 写入窗口期时 heavy 按拍补算自愈；精简说明文案对齐 v147 挂载位（前导区 Git 左侧）→ v179 自动压缩阈值注入：⚙ 开关+模式+数值+状态行（enginePatch 随插件状态回推，__zusagePluginState 种子+拷贝行同 v172 纪律），主进程 engine-patch.cjs 按引擎 SHA256 白名单对 glm/zcode.cjs 打阈值改道补丁（锚点唯一性+use strict 指令位校验 fail-closed，hook 缺席/返回空双兜回 fail-open），阈值 autocompact.json 由引擎 hook 每轮决策 mtime 缓存读取——数值热生效、补丁冷生效（已运行 agent 子进程下个 spawn 起用）；ctx 按钮 hover 面板加「自动压缩 ~X%」行（acInfoText 按标称窗口口径，21K 预留近似还原）；关闭开关=按当前内容反向还原引擎字节；阈值任何形式钳 1% effective 地板防连环压缩→rapid-refill 熔断→ v180 重启按钮错位守卫（issue #158）：主进程 pushPluginState 携带 relaunchSupported 能力标记（与 relaunch 分支同文件、天然同步），浮层缺标记时隐藏按钮并显示「完全退出后重开」指引（syncUpdate + 点击守卫双处）；主进程 pollPluginRequests 白名单外动作兜底回执 unknown action，重启回执明确区分「主进程是旧版本」 → v183 子代理行内实时速率 chip（v4 Agent 行 testid 后缀即 childSessionId、与 v97 槽位键同源：运行期读槽位估算、完成后读泵快照 sub.list 真实加权速率；TPS 十档色；悬停 tooltip） → v184 ⚙ 新增「子代理行内速率」开关（state.show.subRate，zusage3.show 整包持久、默认开；只门控行内展示） → v185 实机修复批+review 修复批：后台子代理在宿主注册表无现成 store（运行期估算自 v97 起从未真正工作）→桥 v2 acquire 访问器按已验证 scope 解析子会话租约（仅 sess_subagent_ 前缀+本地）；tooltip 构建器改收数据包（buildTip(el.__zuT) 约定）；截断改从尾部取（保最新派发 8 个）；SUBRATE_DIAG 提模块级；诊断按 handle 判绑定；实例 dispose 摘行内 chip→ v186 本会话平均 token/s（PR #157 收编）：状态栏完成态主数字改会话加权平均（zusage avg_tps：Σ有效输出÷Σ生成窗口，main_turn 段、不含子代理），「均」前缀+按均值分档，最近一段/最近一轮退 tooltip；速率行/CLI 加「会话均」，精简 chip 同步；updateLive 会话归属取本 pane 行（lastView.session），缺席回退原行为→ v187 补回 v181 工具组状态词（PR #161 合并时 turn-stats runningGroupOf 块与 overlay 消费分支遗漏入库，仅存于运行目录热修副本）：turn-stats 复刻宿主 exploreGroup/executeGroup 合成规则（≥2 连续同类行成组、半截 JSON defer 透明、startedAt 锚定组首行），运行行落组尾时状态词显「查阅·执行中/终端·执行中」替代逐工具动词，计时从组头起算 → v188 自动压缩阈值注入按验收反馈简化：开关默认开（主进程 auto_compact_patch 缺省开、显式 false 关）；UI 只留百分比数值（留空=跟随引擎默认），模式下拉移除（引擎层 enabled:false/tokens/buffer 协议保留兼容，配置文件手写仍生效）；标题改「自动压缩上下文阈值注入/压缩上下文阈值数值」；状态行补 14px 水平内边距与 label 文本对齐 → v189 hover 面板阈值信息行移到「压缩上下文」按钮上方并追加下划线「调整」链接：点击复用 gear.click 完整路径打开 ⚙、切「通用」分区、scrollIntoView(nearest) 定位阈值数值行并高亮 3 秒（.zu-ac-flash，计时器实例级归属 dispose 清理）；info 结构改首文本节点+常驻链接（整行 textContent 覆盖会抹掉链接） → v190 三处验收微调：hover 阈值行 text-align:left（与卡内其它行对齐）；高亮改琥珀左条+淡底（--color-brand 在宿主主题是白色系，outline 描边观感像输入框焦点）；⚙ 注入开关关闭或主进程未加载时数值行整行 hidden → v191 hover 阈值行 token 数改走 fmt()：万/亿/K·M·B 与状态条、tooltip 同一转换链（跟随中文单位开关与强制 KMB 开关，中文至多两位小数去尾零） → v192 hover 阈值行布局：去掉自加 6px 下边距（间距交给宿主 space-y-3 的 12px 节奏，与「平均缓存命中率」行 pt-3 距分割线一致）；行改 flex 两端对齐，「调整」链接居右 → v193 修 v192 贴按钮：宿主 space-y-3 是 Tailwind v4 :where() 零权重 margin-bottom，行上自写 margin 会按类名权重压掉它（v190 的 6px 显挤、v192 的 margin:0 贴紧同因）——删掉 margin 声明整段回落容器原生 12px 节奏 → v194 阈值百分比改总窗口口径+数值行 30-99 校验：设置 91=原生按钮走到 91% 触发、hover 显示 91%（旧口径按扣除 21K 输出预留后的有效窗口算，设置值与显示差约 2 个点被判为割裂）；引擎 hook 以 eff+21K 近似还原标称窗口并钳在 eff 内，writeConfig 白名单收紧 30-99，已打补丁引擎下次启动按 PROLOGUE_V1 原位换装新 hook；⚙ 数值超范围实时提示并拒绝提交 → v195 hover 卡新增新手说明行：阈值行下方小字（.zu-ac-hint，随行同生命周期）解释口径与后果——「按窗口总量计算（与顶部百分比同口径）；走到该比例时客户端会自动压缩较早的对话内容以腾出空间」；margin-top 收紧 space-y 间距（space-y v4 只写 margin-bottom，top 无冲突） → v196 「调整」失灵诊断面包屑（下版移除）：openAcThresholdSettings 在 enter/after-gear/+150ms/row 各点写 __zusageDiag.acOpen（面板态、gear 可见性、条 display、分区、代际），closeSettings 写 acClose 调用者栈；v197 实证 acOpen 为空=点击未到达处理函数 → v198 修「调整」失灵：链接监听改 pointerdown（宿主疑似 mousedown 即关 hover 卡、click 到来前链接已被摘）+ 行级 click 兜底 + 捕获期点击写 localStorage 并在说明行回显（命中标绿/落空标红，诊断下版移除） → v199 清理 v196-v198 诊断：acOpen/acClose/acClick 面包屑、localStorage 回显、命中/落空着色全摘；保留 v198 修复本体（pointerdown 主监听 + 行级 click 委托兜底），实机验收=电脑操作点击「调整」面板弹出且阈值行琥珀高亮 → v200 上下文按钮增强显示层优先镜像原生 aria-label 已用/总量（宿主 taskUsage，压缩后立即回落；issue #172 曾停在 DB 最近完成请求旧值 16.4%），解析不出回退 lastBand DB 口径（ctxOv/nativeCtxVal 优先级只作用兜底），exc 过程态档位仍优先，还原路径共用同一解析器（英文 UI restore 顺带修对） → v201 合流：v200 撞号顺延（v200 已被并行线 issue #174 压缩按钮开关占用，8e6e1c0 先合入） → v202 预估费用行：四格 tooltip（本轮/会话/项目/今日）按 models.dev 官方牌价估算费用（token_pricing.py 内置表 326 条 + serve 内 12h 同步 models.dev 与 er-api 汇率，pricing-cache.json 落盘），快照加 cost_usd（USD）与 fx，展示层 ×汇率显 ¥（无汇率降级 $），会话/项目模型明细行尾加各模型费用，「价格来源 models.dev」脚注可点（openExternal），费用行尾空心问号图标悬停弹说明小气泡（价格来源/计算公式/汇率来源三行，fxTip 独立浮层 + mouseover/out 委托 + 180ms 悬停桥，主 tip 收起/重建时同步收），汇率源主源失败兜底 exchangerate.fun（自定义 fx.url 不启用），⚙ 通用区开关默认开，本库口径：裸输入=input−cache_read−cache_creation 全价、缓存分价、output 已含思考不另计 → v203 红点仅承载待重启（发现新版未安装、更新成功且已热重载均不亮；分量级已读比较保留以兼容旧 seen 串）+ ⚙ 带待重启红点点击直接落「插件更新」分区（激活即 ack）+ 设置页新增「已更新成功，点击重启 ZCode 即可生效」提示条（旧主进程降级回原文字指引），分区切换提取 activateSettingsSec 单一出口 → v209 额度 chip .zu-quota 与重置卡徽标 .zu-ctxrst 左右内边距 6px→3px + 模型选择触发按钮（chat-model-select-trigger）左内边距减半：文本态 8→4px、图标态 6→3px（!important 压宿主 group 变体）（用户规格 2026-11-02） → v210 时间范围行全部精确到秒（v166 会话/项目累计先行的 fmtStartS 扩展到本轮/今日合计与速率 tooltip 最近一段；fmtStart 仅剩「最后活动」行）（用户规格 2026-11-02） → v211 本轮 tooltip「单次耗时/首字延迟」改「平均耗时/平均延迟」（zusage 快照 last_turn 新增 avg_duration_ms/avg_ttft_ms，对 model_usage 该轮已完成 main_turn 行 >0 样本求均值；turn_usage.ttft_ms 聚合列实测口径不明不可依赖，旧快照缺字段整行不渲染）+ 本轮格面移除时长/首字两段（耗时只在 tooltip），精简摘要「本轮」行时长随同改平均（用户规格 2026-11-02） → v212 Git chip 分隔符 .zu-git-sep 间距收紧：字面「 · 」改纯点+左右 2px 内边距（多仓段与 ?N 未跟踪段两处同源；用户规格 2026-11-02） → v213 状态条格序调整：今日合计提前到会话累计之后（速度→本轮→会话→今日→项目→工具→子代理→⚙），速率 tooltip「状态条摘要」行序随同对齐（用户规格 2026-11-02） → v214 项目累计统计卡改版：tooltip 重构为「标题+统计范围（全部请求·含子代理）、总用量/请求次数/预估费用三 KPI（费用旁统一说明问号）、输入(命中率)/输出(含思考)/缓存写入明细、会话·轮·工具·重试规模行、模型四列表格（默认 6 项可展开全部，排序对副本）、时间范围（em dash）」，作用域 .zu-project-tip + :has 样式（不动共享 .tip/.rt-* 规则），展开态实例级归属键（sid:started）局部更新不重建整卡，触发项 zu-pj-item 标记，卡片内 Escape 关闭并归还焦点，focusout 进卡片不误关，positionTip 钳底边，费用全链复用 v202（0 有效/缺失 —/开关关整格收） → v215 六统计卡统计卡化：本轮/会话累计/今日合计/子代理四格 tooltip 统一 zu-stat-tip 视觉体系（速度统计卡公共构造：scope 标签+双读数 hero 主读数档位色、两行五列网格窄窗重排、速度卡宽帽 760px :has 作用域；明细面板内模型行问号图标弹费用说明气泡，复用 fxTip 单例同款委托）（用户规格 2026-11-02） → v215.1 速度卡去费用行与模型明细（用户规格：速度 tooltip 只留读数与时间范围，费用唯一承接处=各卡明细面板与 fxTip 气泡） → v217 子代理统一浮层：.zu-sub-pop 双栏单组件替代「悬停五段卡 tooltip+点击独立明细面板」两套旧 UI（preview/pinned 状态机：悬停预览、首次点击固定、面板内操作转固定、Escape/关闭/外点统一收且焦点归还+500ms 悬停抑制；选中按 sid 维护、运行中未入库槽位进导航、签名幂等重建保滚动、会话切换即关、入口断连即关；任务页 _sub_item 逐任务模型用量表/预估费用/平均速率档色行/最后活动全格式时间，zusage sub.list 单项同步扩展；精简入口 chip.__zuOpenSub 归一指向同一浮层）（实机验收 2026-11-03） → v218 速度卡三修（实机反馈）：悬停冻结 updateLive tipFor 判定改 contains（旧恒 false 致悬停中 tooltip 不冻结）；右格「最近一段」改读 lastView.last.tps（zuBarSpeedView 无 latest 字段恒缺）；图例 ≥2000 Ultra 改渐变圆点并禁 ✦ 伪元素（星点破形） → v219 ⚙「状态条样式」（默认/药丸/精简单选+精简说明行）从「通用」分区移入「状态条显示」分区卡首，纯分区归属调整，控件与持久化行为不变 → v222 速度卡 tooltip 补「时间范围」行（用户规格，参考四格 tooltip 同款式）：主数字为会话均/桥态取会话累计口径（started→last_at，与会话累计 tooltip 同源），「最近一段」回退态保持段范围；起点缺失整行不渲染（半程范围无意义）；三处 speedCardHTML 调用点（桥态 buildLiveTip/DB 回退/精简 chip）同批生效 → v223 ⚙ 面板关闭按钮命中区外扩（原并行线编号 v220，合入顺延；::after inset:-6px、hover 反馈同步，约 20×24px→32×36px）：按钮四周 head 空白点击原本无反应，用户实测「悬停 × 上点不动、不灵敏」；CDP 真实点击定责为命中区过小（事件链与面板几何均无缺陷），纯命中区修复，不改布局与视觉 → v224 速度卡悬停实时刷新二次修复（实机反馈）：v218 只改了 tipFor 判定，新 tip 串仍写到格内 .zu-live span，而 __tip 宿主与 drawTip 读取都在 .it 格元素上——条件每 tick 命中、重画的仍是整条渲染时的旧串，悬停中「当前读数」冻结在最后一次整条渲染的值（chip 已跳动、tooltip 停在「思考中…2秒」）；改写回格元素（liveEl.closest(".it")），悬停中每 tick 跟手重画，未悬停也保持新鲜 → v225（v224 并行线 PR #198 先合入，本线顺延）⚙ 自动压缩状态行区分「引擎被单独热更」（issue #191）：桌面 build 已登记而引擎 sha 脱钩时明示热更事实与漂移 sha 前 12 位（引擎补丁新增 drifted 字段，主进程传入 appVersion 按点分界前缀匹配登记表），替代误导性的"版本不在支持名单"；lastError 后缀此时与 sha 重复不再拼接；fail-closed 判定不变 → v226 ⚙ 两项（用户需求 2026-11-03；v226 已被并行线自动压缩状态行占用，顺延）：①六格显示开关（本轮/会话累计/项目累计/工具调用/今日合计/子代理）全部关闭时样式自动转精简（边缘触发只在「变得全关」那一拍切档，zusage3.autoCompact 记录来源主题 default|pill，重开任一格恢复、面板手动改档即解除；药丸来源同样触发）②默认样式新增「水平对齐」三选一（zusage3.barJust：均分 space-between 缺省不挂类/居左 flex-start/居右——居右不用字面 flex-end，LTR 下 start 侧溢出不可滚动也不计入 scrollWidth 会废掉收缩检测与 .zu-clip 渐隐，改首格 margin-left:auto 等效右聚拢、溢出方向与兜底不变；设置块仅默认档显示，applyBarTheme 随档显隐并同步条上 zu-just-* 类） → v227 预估费用说明气泡悬停保活（fxTip 是 body 级独立浮层、挂在主 tip 之外：指针从 ? 图标移入气泡被文档 mousemove「条外」分支按 left-bar 强制收主 tip、hideTip 同步收气泡，v202 起悬停说明气泡即灭；子代理浮层路径同被 preview-leave 倒计时收走面板。mousemove 处理器节流前新增分支：fxTip 显示中且目标在气泡内视同仍在 tooltip 上——保住主 tip 与气泡、取消越顶宽限与子代理面板延迟关闭，离开气泡回落原判定） → v228 速度 chip 完成态去「· 近X」尾缀（用户规格；编号顺延避让已合并的 v226(PR #200)与 v227(PR #202 fx-tip-keepalive)）：条面格与精简 chip 同批去掉 dbTps 尾缀，主数字只显会话均（或最近一段）；「最近一段」读数保留在 tooltip 右格不受影响 → v230 压缩轮不再显示「本轮统计不可用」（编号顺延：原 v238 号，v229 已由并行合入的 PR #207 占用、v231 起由并行未合线自占）：上下文压缩（手动/自动同链）是 query_source='compact' 的辅助轮（DB 有完整数字且已计入今日/会话累计，但消息流无正文、header 零输出），旧逻辑按 v74 零输出明示规则误插误导占位——实测压缩轮投影=turnHeader+timelineMarker(marker.type='compact') 而 header.executionKind 恒 'agent'（ek 探针证伪初版假设），turn-stats get() 以 isCompact 识别，overlay 对压缩完成轮不新插/撤下已插行（宿主「上下文已压缩」提示已承载语义）；kinds/tmr 为 det 诊断字段；v74 真实零输出轮行为不变 → v231 统计卡标题拼接名称与垂直居中（用户规格三轮迭代一并入库；编号顺延避让并行已合入的 v229(PR #207, issue #205)——v228 后 overlay 台账实际未占用，按共享代际台账撞号声明让号）：①项目累计卡拼项目名——zusage _project_usage 附 name=启动目录末段（正反斜杠归一，缺目录/旧快照判空不渲染），.zu-pj-pname 字号颜色同规模行 .zu-pj-scale；②会话累计卡拼会话名——快照行 title 三处本就产出，纯渲染端：statHead 加可选第三参仅会话累计卡传、/\s+/g 压空白、缺 title 判空不渲染，.zu-st-name 360px 省略号；③名称与标题垂直居中——标题容器带名称时切 .zu-tt-name（display:flex;align-items:center），行内 baseline/bottom 对齐会被 18px 大字 descent 拖得视觉偏低（实机指认），flex 子项自动块化、省略号仍成立 → v232 速度 tooltip「最近 20 段」柱状图：zusage 快照 session 行新增 speed_segs=最近 ≤20 条已完成 main_turn 有效速度段（_row_gen_ms 窗口与 avg_tps 同款口径、辅助源/子代理/碎段不计，v 保留原始浮点供档位与柱高按原始值判断；speedCardHTML 带 segs 时切「左读数卡+右图表」布局——左卡=当前读数/档位胶囊/加权平均说明，「最近一段」右格由最新柱承载，无 segs 的旧快照/远端旧版保持 v215 原布局），柱顶读数恒一位小数与柱同轴心、最新段加粗，Y 轴 0 起整洁刻度并按「信息卡横向覆盖最右约 1/3 柱」约束迭代刻度保证最高柱读数不被压住，X 轴=分段真实完成时间本地时区 MM-DD HH:mm 稀疏显示、首末恒留，最新段描边高亮+「最新」徽标，柱体颜色沿用 TPS_BANDS 档位类（ultra 渐变深浅主题显式 border-box 覆盖防 clip:text 裁没），段值 ≥1000 t/s（读数 6 字符）或窄窗口（plot min-width+横滚）保读数永不重叠；柱级悬停/键盘焦点弹信息卡——tip 本体委托 + 实例闭包存悬停段下标经 speedTipRebuild 编进串（签名幂等重建不丢状态、离开回落最新段、会话切换重置），render 接管对速度格补 drawTip 使打开中随快照跟手（焦点/选区在 tip 内时跳过），图表横滚位置跨重建保留；精简 chip tooltip 不带图表 → v233 速度卡三删+读数自适应（用户规格）：①删「统计会话全部已完成请求：工具等待不计，不含子代理。」口径行（DB 回退与精简摘要两处，Σ输出÷Σ生成耗时等其余口径保留）；②删柱状图「最新」徽标（最新段描边与加粗读数保留，plot 高 200→184）；③删「每段完成后更新；不足 20 段时显示实际数量。」脚注（live/回退两处）；④左卡「当前读数」估宽分级自适应（超长状态词降字号+允许换行，不再被 156px 左卡裁切；分级实现见同批改动） → v234 柱状图 20 段→14 段、释放空间给左卡（用户规格）：zusage 新常量 _SPEED_SEGS_MAX=14（与 last.tps 回查的 _TPS_LOOKBACK 分离，扫描窗 42 行凑 14 条有效段）+ speedSegsOf 渲染端截 14 + 两处口径行「最近 20 段：…」改 14；左卡 156→300px（内宽 278），主数字删 +12px 覆盖回基础 ui+22 大字，估宽分级阈值重算 ≤7.5/≤11.5、fit2 +6→+10px；plot min-width 600→420（pitch≥30）、wide 780→560、xEvery 估算基数 620→460/最小标签距 44→30（14 柱满宽全显时间标签） → v235 速度 tooltip 多状态结构化重构（用户设计图规格）：zuBarSpeedView 追加结构化字段 kind/statusText/nameText/nameFull/elapsedText/speedValue/speedIsEstimated/speedSource/activeCount/noteText（八类 tool/toolgroup/skill/subagent/thinking/estimate/avg/real，text/cls/phase/band/latest 逐字保留、状态判断不解析文案）；speedCardHTML 新增 o.status 分层左卡模板（zu-sl-status 状态标题+子代理 ×N 徽标 / zu-sl-name 名称两行省略+title 全名 / zu-sl-main 主数值或计时 / zu-sl-unit / zu-sl-note 辅助），数值型走档位色、工具/Skill/思考/子代理保持 dim，o.main 拼装路径为精简 chip 等旧调用方保留；子代理估速前缀 ≈、无效估速显「估算中…」不补 0；buildLiveTip/fallback 传结构化状态，scope 标签按真实状态映射（工具执行中/工具组执行中/Skill 执行中/子代理运行中/思考中/生成中估算/会话平均/本轮真实速度），思考态左卡内嵌脑动效图标；柱状图 14→17 段（_SPEED_SEGS_MAX=17、渲染端截 17、口径行改 17），plot min-width 420→500/wide 560→680/xEvery 基数 460→500/最小标签距 30→29 配平左卡 300→250px → v236 速度 tooltip 三修（用户实机反馈）：①信息卡改为悬停/键盘聚焦柱体时才渲染（默认不再常驻最新段上方，cur 高亮随之仅悬停态、latest 描边保留）；②X 轴时间标签最小距 29→44（17 柱 pitch≈29 必隔列、间距 ×2，修复标签拥挤）；③非 wide 图表删 plot min-width（随容器压缩+稀疏标签兜底），任何窗口宽度不出横向滚动条（wide ≥1000 t/s 保留横滚），速度卡宽帽 860→1040 → v237 修时间标签裁半（用户实机截图）：v236 的 border-box 配平让 X 轴行内容区只剩 20px、两行时间（25px）被 wrap 的 overflow-y:hidden 裁掉半行——X 行 24→29px（4 padding+25 两行）、plot 高 184→189，列配平随之 160+29 → v239 速度 tooltip 100% 复刻设计图（用户拍板以设计图为准，撤销 v233 删口径/v236 悬停才显卡）：信息卡恒在（默认最新段带「（最新）」+虚线引线连柱，悬停切段）、左卡状态图标+「当前读数」标签+档位色状态标题、颜色对照单行横排、统计口径左标题右分段+时间范围同卡、带图表时不渲染脚注 → v240 柱状图 17→10 段（zusage _SPEED_SEGS_MAX=10、渲染端截 10、口径文案同改）、柱宽 max-width 22→15px（-30%）、信息卡恢复仅悬停/聚焦才显示（撤销 v239 常驻）、左卡下半区加「峰值/最低/最新」概览填空、速度卡宽帽 1040→860、plot min-width 500→340 → v241 速度 tooltip 按设计图复刻：柱状图取当前会话最近 10 次（可跨天）、左卡标题行/主读数/说明行文案按设计图对齐（工具组「查阅」、Skill「执行中」、说明行统一「X · 正在执行」）、前缀「估/均」小号灰字、主体区垂直居中填空 → v242 速度 tooltip review 修复批（十 subagent 审查）：focusout/mouseout relatedTarget 守卫修 Tab 跨柱焦点断裂与双重建闪烁、render 接管 pill 主题补焦点守卫、wide 横滚复活（plot 420）、spanFrom 收严最坏一半 + CARD_H 36（实高 35.6 校准）、real 去档位胶囊、skill 标题统一无空格「·执行中」、工具组 statusText 回归完整短语、liveScopeMap real/estimate 用词对齐、「当前读数」标签与有效数值同门（修 subagent 数值误杀回归）、左卡 border-box 250/双规则合并/padding 12、标题档位色与单行省略、浅色 ultra 图例圆点 clip 修正、hero :has 单列、柱 role=img、17 段/常驻卡/帽 1040 等过期注释清理、测试补八态直调/概览三格/前缀/（最新）角标/图例行/几何不重叠断言 → v243 更新日志「发布页」链接 GitCode 渠道改指 /releases 列表页（tag 深链页对本项目 API 创建的 Release 一律「找不到或无权限」，GitCode 平台路由 bug 2026-11-04 实测；GitHub 渠道保持精确 tag 深链；镜像/未核实回退路径同规） → v244 重启按钮反馈与延迟（用户报告「点击没反应、等很久才退出」——大头是宿主 app.quit 优雅退出链要关窗并逐个终止会话/扩展子进程，可达数十秒，插件无法绕过）：确认发送即「正在重启…」+禁用+预期文案替代「发出即恢复」伪装无反应，4s 无回执/失败/90s 仍存活三路还原（ok 后挂 90s 兜底防 quit 被会话/扩展阻止永久卡死；4s 超时已还原则不再挂）；syncUpdate 重绘保持禁用与提示；主进程 relaunch 固定 300ms 延迟改回执送达后 30ms 退出（800ms 渲染端无响应硬兜底）；v245（同批提交）quit 前 hide 全部窗口——退出屏障期窗口不再可见干等，主进程 15s unhide 哨兵在 quit 未发生时恢复可见 → v246 用户手改批：速度图未悬停（hoverIdx<0）不渲染信息卡、span 只按 capOut 留柱顶读数净空，刻度基数补 6/7.5 防跳档空旷；X 轴同日去重（仅首枚显示标签柱与跨日首柱渲染日期行，其余同日只显 HH:mm）；本轮/今日合计首格改「总用量」、今日缓存命中率并入 grid3 输入列副行、本轮平均耗时/延迟/总耗时行改 --sub 弱化段、会话累计 scale 行分隔符改前缀式并删末项请求数、工具表 <50ms 显「<0.1s」弱化、子代理浮层 KPI 副行改命中率/含思考/缓存写入+平均速率并入 KPI、项目卡范围+scope 合并单胶囊+隐藏「按用量排序」+子代理浮层模型表去底色改行线、本轮输出速度单位 tok/s→t/s、图例 ultra 点隐藏与 inline 间距收紧、tbody scrollbar-gutter:stable → v247 悬浮窗口激活方式（issue 用户反馈：滑过误触遮挡）：⚙ 通用新增「点击激活悬浮窗口」开关（zusage3.tipClick 缺省关=停留 1 秒、仅显式 "1" 开=点击）；统计卡/子代理浮层 closed→open 改由独立 1000ms 定时器承接（排程置于 150ms 节流之前防快速滑入静止后永不触发、按命中元素 key 去重续期、到点按当前坐标 elementFromPoint 重命中抗 render 1.5s 重建 + :hover 最深元素复核），已开 tip 切相邻格保持即时，键盘 focusin 即时打开不变，取消统一落 hideTip/各 return 分支，定时器随 dispose 清理；点击模式 bar.click 接管 .it 并用 focusTipAt 避开 focusin→click 首击抵消（复用移出条面/Escape 关闭链，不另起 pin），fxTip/速度信息卡/工具栏 chip 与宿主原生 hover-card 不在本次范围→ v248 预估费用说明气泡「当前模型」随卡携带模型上下文（上一会话已完成、已部署未提交，与已合入的 v249（PR #224）并行开发，随本批补录入库）：四个统计卡与子代理浮层汇总的 KPI 费用问号随卡携带模型上下文（fxqIcon：data-model/data-rates=按用量最多模型+data-mcount+data-mscope），单模型显该模型四价、多模型沿项目卡口径显「计价范围」、无模型明细不显模型行，default 借 last 分支删除 → v249 用户裁定简化：「点击激活悬浮窗口」关闭（缺省）不再做停留 1 秒，恢复即时悬停原语义（v247 的 1000ms 定时器链 HOVER_OPEN_DELAY_MS/hoverSchedule/hoverCheck/hoverCancel 整体移除，mousemove 恢复 v246 逐行为）；开关开启仍为点击激活（bar.click 接管 .it + focusTipAt 防首击抵消、子代理 preview 关闭改 pinned 打开），设置项/文档口径同步为「悬停立即显示 ↔ 点击才打开」两态 → v250 速度柱状图按轮聚合+悬停卡全格式时间与轮明细+柱间距收紧（用户三项规格；编号顺延避让已合入的 v249「点击激活简化」PR #224）：zusage _speed_segments 改按 turn_id 合并一次提问的全部请求（v=Σ有效输出÷Σ生成窗口、逐问同口径），随段携带 m/i/o/n/c 供悬停信息卡渲染 模型/Token 用量（含输入·输出拆分）/请求次数/预估费用（数字格式化经 o.fmtTok/fmtCnt/fmtMoney 回调，费用随 state.cost 门控，旧快照缺字段按行省略，CARD_H 按实际明细行数校准）；悬停卡时间改全格式 yyyy-MM-dd HH:mm:ss；X 轴每个显示标签恒带月日两行（同日去重废止）；柱宽 calc(20%+12px) 使柱白任意宽度恒精确收紧 20%；段→轮措辞（最近 N 轮/第 N 轮） → v251 套餐额度显示口径开关（⚙ 套餐额度分区「显示剩余额度」，zusage3.quotaRemain 缺省关=已用%，纯渲染偏好不进 config.json）：开启后 chip 面分段数字与 aria、tooltip 窗口行/Key 总额度行/其他源摘要行改按剩余%（100−已用 同一窗口池补数，quotaRemainPct 钳 [0,100]）打头，绝对值窗口行内 已用/剩余 明细互换顺序；档位色恒按已用原始值判定（quota.md 契约）不随口径反转；余额/Key 剩余额度单段与团队/未配置/错误形态不受影响 → v252 模型拉取同步提供商侧配置（issue #236）：零兄弟供应商首拉写实最小骨架+有据元数据（contextWindow/inputFormat/档位/输出上限），档位按强度梯排序（宿主默认档=values 末项），Copilot capabilities 别名，api.json 档位目录按需后台补缺（大体量不阻塞，缓存后下次拉取生效），套餐源接目录补缺；弹窗行「未获取配置」中性提示+脚注披露只增不覆盖；档位索引落运行目录缓存（24h stale-while-revalidate 跨重启复用），目录后台补拉时行内「档位补拉中…」状态+脚注说明 → v253 本轮/今日合计 tooltip 模型明细改项目卡式四列表格（zu-pj-mhead+statTable，费用列随 state.cost 门控；本轮 rt-models 行式退役，精简摘要保留）+ 本轮 tooltip 删「速度＝Σ…未参与测速」口径行（unrated_output 字段照旧生产） → v254 生成速度 Tooltip 全面重构（范围/时间双 Tab 共 20 组合 + 按时间/会话/项目维度：zusage 新增真实库有界轮表 speed_history（短键+索引表+2s 缓存，单一 Σ有效输出÷Σ生成窗口口径，旧 speed_segs 契约不动），渲染端纯函数聚合；16 根细柱定宽居中、十档 TPS_BANDS 同源、删除均值虚线/统计口径大段/底部时间行/图表预览；右上角日历时间胶囊（title 全格式）、左卡历史均值与生成中估算分离、柱 hover 五字段自定义卡（时间区间/档位速度/多模型/Token 总量含输入输出/预估费用缺失态）、单行十档图例、空桶显空柱不显 0、远端身份下「全部」清晰降级、旧快照/精简 chip 回退原布局；Tab/dim/柱 hover 全走 tip 本体既有事件委托与签名幂等重建，不新增 IPC/定时器/全局监听） → v255 真实宿主验收三修（X 轴短时分标签+30px 裁切杜绝长时间戳重叠、左卡实时状态降为独立 note 且标题中性化「当前筛选 · 历史统计」避免工具执行中配历史均值语义错位、V2 实时状态变量更名 spdLiveStatus 与 buildLiveTip 旧局部同名隔离） → v256 修复「速度 Tooltip 有时新、有时旧」（用户实机报告）：根因=统一轮表只在 serve 常驻链产出，主进程常驻进程空闲回收/重启/降级时回退 zusage.py json 一次性帧缺 speed_history，spdRebuildOr 返回 null 整卡回退旧版；①zusage snapshot 增显式 include_speed_history 门控，serve 与桌面 json 都产出轮表（远端子进程 ZUSAGE_REMOTE_CHILD=1 排除，CLI/MCP/远端 stdout 契约不变）；②overlay __zusageUpdate 粘性保留最近一份有界轮表，缺字段帧不再闪回旧卡（空轮表不粘性）；③精简模式 tpsChipTipHTML 与 tpsTip 浮层补齐 V2 接线（双 Tab/维度/柱 hover 全走浮层本体委托、状态落 chip 数据包、V2 卡放行签名重建），V2 宽帽规则补 .zusage-tps-tip 宿主；冷文件 inject-main 未改，热重载即生效 → v257 追堵「首帧缺轮表」（用户 11:21 再现旧卡，渲染端 diag 实证已 v256）：v256 粘性只在代际内有效，热重载/重启后的新代际粘性为空，而 `_speed_history_safe` 在完成轮瞬间的 WAL 写窗口偶发抛错返回 None——首帧恰逢失败时无值可粘，仍回退旧卡。①safe 失败先短重试一次（50ms，新常驻进程首查撞写窗口时多半已放行；缓存 TTL 内不重扫），再失败跨 dbkey 回退最近一次成功轮表（`_SPEED_HISTORY_STALE_MS` 10 分钟上限，轮表是历史统计分钟级陈旧可接受，下一帧成功即覆盖）；②`__zusageUpdate` 帧级诊断 `FATAL.spdFrame`（has/sticky/turns，原地更新）——再出现象 diag 直接区分「数据链缺帧」与「粘性未建立」，不再靠截图反推 → v258 spdTip 取证诊断（用户 11:37 在 v257+首帧 has=1 下仍见旧卡，数据/代码/本地模拟三查均无异常，纯推理到头）：buildLiveTip/html(d)/tpsChipTipHTML 三条速度 tooltip 路径在 V2 成功时记 `FATAL.spdTip={t,src:"v2-live|v2-html|v2-chip",turns}`、回退时记 `{src:"fb-live|fb-html|fb-chip",turns,range,period,sid尾8}`，spdRebuildOr null 分支加 `FATAL.spdNull`（typeof FATAL 守卫不破坏 VM 切片）——diag 直接给出真实路径与当时轮表长度，定位后移除 → v259 宿主多视图顶部 48px [app-region:drag] 标题栏拖拽条穿透上层浮层（Electron 拖拽区按几何命中，覆盖层未显式 no-drag 不阻挡）：面板 top:8px 时头部 ✕ 落在条内，真实点击被窗口拖拽吞掉（新建任务页实报「设置关闭无效」，面板内导航点击正常与症状吻合）；.zusage-panel（设置+子代理浮层）/.tip（全部 tooltip 根）/.zu-mp-ov/.zu-compact-dlg/.zu-rot-pk-dlg 显式 -webkit-app-region:no-drag，把自身矩形从拖拽区减掉（宿主自家浮层与全屏屏障同款修法，app.asar 实证） → v260 静态桥缺席兜底（同内容仓库版记 v258，合入时按合入顺序归一；G2 跨版本免重打桥）：readFiberPaneScope 沿 React fiber 回溯 SessionPane 作用域（detOwnerOf/sidePaneKeyOf 的 tabId 同款兜底；限深 24、撞外层会话/分栏根止步、多候选歧义拒绝，校验与静态属性分支同规）；turn-stats.js 运行时合成 BRIDGE_TEMPLATE v2 同契约三访问器（Map.prototype 一次性探针捕获宿主注册表 + installRuntimeBridge 注入口） → v261 spdRender 取证补强（老会话完成态仍见旧卡而 spdTip 恒被 v2-live 每 tick 覆盖，hover 瞬间的整条渲染记录无法存活）：html(d) 整条渲染专记 `FATAL.spdRender={t,src:v2-html|fb-html,pane,sid尾8,turns,hasH,range,period,dim}`（独立字段不被覆盖），spdTip/spdRender 均带 pane 实例标识（多实例共享 diag 分不清写入者），spdRebuildOr null 分支补 spdNull 原因取证（typeof FATAL 守卫）；本版=运行目录 v260 合流超集基线 + 本诊断（v260 已含速度线全部修复与并行线 v259/v260 桥兜底） → v262 根治「空渲染污染共享数据」（spdRender 铁证定案：用户复现时刻整条渲染 hasH:false / spdNull hType:undefined，而前后帧 has=1——`render(d)` 首行无条件 `state.data = d`，实例 spawn 首渲染/桥空窗的 `render(state.data || {session:{},...})` 把空对象写进共享数据、抹掉统一轮表，窗口内 hover 即 fb-html 旧卡；切会话 tab 触发 pane 重建恰好高频制造该窗口，故「老会话旧卡、新会话正常」）：render 改条件写 `if (d && d.session && d.session.sid) state.data = d`——空对象渲染不再抹掉轮表，spawn 实例后续 updateLive 直接用上一真帧渲染（比旧行为更快出 V2）；真帧写入链（__zusageUpdate 外层）不变 → v263 根治「范围/时间 Tab 点击无效」（用户实报 P0）：①根因=生成中 updateLive 每 100ms 重编 V2 整卡（估算/计时走字让 tipSig 每 tick 变化），mousedown 命中的按钮在 mouseup 前被 innerHTML 替换、click 落到共同祖先 closest(".zu-sv-tab") 为 null；Tab 切换提前到 tip pointerdown 委托（重建窗口前同步生效，click 保留键盘/兜底，同值幂等共存），按下即进 600ms 交互冻结保下拉展开；②updateLive 冻结扩 mouseInBar（悬停保活不整卡重绘，数字冻结在进入时刻，typeof 守卫兼容 VM 切片）；③compact tpsTip 面：Tab 同款 pointerdown（tpsTabActivate）+ showTpsTip 撤销 v255 对 V2 卡的冻结放行（悬停中统一冻结，交互路径清 __zuTipSig 天然放行）；④视觉 12 项（视觉审查 Agent 实测截图清单）：Tab 选中态纯白改柔和强调 rgba(87,200,255,.14)+恒字重 600 防跳动、hover 补背景反馈，左卡删「Σ有效输出 ÷ Σ生成耗时」公式行、标题改弱化「历史统计 · 不含进行中请求」（.zu-sl-title 仅本卡作用域覆写，旧八态卡不动）、主数字 +22px，X 轴跨日首柱两行 MM/DD+HH:mm 且跨日柱稀疏化必显、xEvery 8⇒6 收紧标签间隙，图例 Ultra 补 ✦，维度下拉补 ▾ chevron，标题 +6px/时间胶囊 padding 4px 10px，间距归 8/12 节奏，柱组居中+删 --zu-sv-n 死配置 → v264 第二根因收口（实机点击仍关 tooltip 定案）：tip 内控件点击 ⇒ pointerdown 处理器同步重编 innerHTML ⇒ 被点按钮 detach ⇒ 焦点跌落 body ⇒ focusout(relatedTarget=null) 曾无条件 mouseInBar=false + hideTip(true,"focus-leave") 强制关 tooltip——切换生效了用户也看不见（旧版 click-only 同样中招，这是「Tab 点击无效」体感的第二半）。修复：mouseInBar（指针悬停在条面/tooltip 上）时降级 hideTip(false) 交总闸拦截，指针真正移开由 mousemove 判定；纯键盘 mouseInBar 已 false 维持原强制关。行为级回归：切片派发 focusout 断言悬停中 [false,"focus-leave"]/离场 [true,"focus-leave"] → v265 按下即建总闸（实机第 4 次点击实验定案的第三根因）：tooltip 常经 focusin 打开（点击 .it 聚焦），快速移动/合成指针下 mousemove 采样可能全部被 150ms 节流丢弃、mouseInBar 停留 false，随后一次快照推送的 render-orphan 接管失败即关掉正在交互的 tooltip，点击 Tab 落在消息区；pointerdown 委托开头 mouseInBar=true + cancelTipGrace，「指针按在 tip 内」先于一切判定生效，render-orphan 受总闸拦截，下一 mousemove 重新判定 → v266 render-orphan 悬停保留（第三根因彻底收口）：生成中宿主 phase 切换（思考↔工具↔正文）每次走 render 慢路径整条重建条面，条目结构变化时接管失败曾直接 hideTip(false,"render-orphan")——快速移动/合成指针下 mouseInBar 常 false（mousemove 采样被 150ms 节流丢弃，tooltip 经 focusin 打开），悬停中的 tooltip 随每次 phase 切换闪断、点击 Tab 落在消息区（实机第 4/5 次点击实验定案）。修复：mousemove 处理器开头（节流前）记 lastPt；接管失败时指针仍在 tip 覆盖矩形内则保留旧内容原地显示（不重画、不收），指针一动由 mousemove 重新判定；条外维持原收起 → v267 lastPt typeof 守卫（v266 裸引用打破 overlay-fx-tip-keepalive/overlay-tip-activation 的 mousemove 切片沙箱，与 v265 mouseInBar 同款教训：实例作用域新增变量一律 typeof 守卫或同步补切片夹具） → v268 粘性跨代际（用户实报「速度 tooltips 现在变成老版本了」定案）：v255 粘性是模块级变量，热重载/重启后新代际为 null，新代际首帧恰逢 serve 空闲回收/重启窗口（本地实测 serve pid 数分钟内 8576⇒11362 频繁重启；json 链本地实测 1268 轮/197 会话产出正常）即回退旧卡；修复 = 粘性写 window.__zusageSpdSticky（旧实例不清除、新实例继承，跨热重载/重启持久）+ 四处 V2 消费点（buildLiveTip v2h / html(d) spdRebuildOr / tpsTip 数据包）统一 lastSpeedHistory 兜底——帧缺轮表时以最近一份有界轮表顶上（历史统计分钟级陈旧可接受，v257 同取舍），下一帧成功即覆盖 → v269 lastSpeedHistory typeof 守卫（第三次同款教训：v268 三处裸引用打破 overlay-speed-chart 旧图切片沙箱 3 例——实例/模块新增变量被切片引用必须 typeof 守卫已三令五申） → v270 用户实机验收四修：①「项目」范围按用户口径重定义=全部项目对比（原当前项目与「会话」差异过小，用户实报「应该是取 zcode 所有的项目」；默认维度按项目，dims=[project,time]，不再按 panePid 过滤，切到项目时 session 维度归 project）；②维度切换后 Tab 无效——结合①数据差异过小造成「无反应」假象，随①消除；③右上时间胶囊月日前带年（跨年两端各自带年）；④hover 卡时间行同日区间压缩（右侧只补时分秒）+ zu-sv-twrap 允许换行，长区间不再省略号截断 → v271 点击任意位置关闭根治（用户实报）：tip 内按压后 1.2s 硬保活窗——hideTip 对非 win-leave/escape 的 force 一律降级交总闸（left-bar 命中区边缘误判/焦点跌落/宿主重渲染等任何路径）、focusout 在窗内直接不关；pointerdown 记 lastTipDownAt（typeof 守卫兼容切片）；win-leave（真失焦）与 Escape 保留立即收 → v272 维度切换功能移除（用户裁定）：图表恒按时间聚合——删图表头维度下拉（tip+tpsTip 两处 change 委托、dimSel 拼装、四条 CSS）、speedTabActivate/tpsTabActivate 的 dim 归位规则；「项目」范围恢复当前项目语义（恒时间维度下「全部项目」与「全部」完全等价），标题加「当前项目 ·」前缀；speedSel.dim 结构保留恒 time（会话切换重置兼容） → v273 自适应布局+稀疏可视化+筛选栏重设计（用户 8 张截图 Goal）：①plot 自适应——删 inline 定宽，in-flow spacer（max(240, n*30+12)px）撑宽 + min-width:calc(100% - 30px) 拉满容器，柱组 flex 居中，多桶 spacer 触发横滚，网格/Y 轴/hover 共享同一 plot 坐标系（少柱不再左侧堆积大空白）；②hover 卡锚点改中心相对式 left:calc(50% + off)（plot 宽不再可算）；③today 有效桶 ≤3 且全桶 ≥4 默认聚焦有效时段，图表头「显示完整时间轴/仅显示有记录时段」次级按钮切换（speedSel.focus，切筛选重置，不改统计口径），聚焦带「仅显示有记录时段」提示；④数据覆盖提示 zu-sc-cov：今天「有记录 x/M 小时」、近 7 天「仅 x/7 天有记录」、本月「本月 x/N 天有记录」（分母=已发生时段，不含未来）；⑤筛选工具栏两端对齐——范围组左、时间组右（.zu-sv-time margin-left:auto），删分隔符，与统计卡/图表两缘对齐；⑥左卡精简——删「不含进行中请求」，实时状态并入标题行右侧轻量 zu-sl-sub（不再混入指标间），单柱时峰值/最低/最新 zu-sl-solo 弱化；⑦时间胶囊智能格式——同日「MM/DD HH:MM – HH:MM」、跨日不带年、跨月/跨年两端带年（v270 全带年撤销）；会话切换 speedSel.focus 重置 → v274 完整规格补齐（第二轮 Goal）：①spdChartLayout 统一布局参数入口（colPitch/spacerW/xEvery/valEvery 单处决定）；②柱顶数值稀疏化 valShown——n>8 按 ceil(n/8) 抽稀、首末与悬停柱恒显，16 柱不再数值重叠（hover 卡兜底完整值）；③最新柱 latest 弱化描边；④单点/双点 coverage 追加「暂无足够数据观察趋势」；⑤空态追加「尝试选择更长时间范围」弱化引导；⑥bkeys 截尾仅剩 recent（v273 聚焦改造时已自然移除非 recent 截断，超宽由 spacer 横滚承接不丢桶） → v275 点击偶发关闭+快速切换卡死双修（用户实报）：①tip 原生 pointermove 直接保活（mousemove 处理器 150ms 节流采样盲区让 mouseInBar 停留 false，left-bar 等 force 路径就能关掉交互中 tooltip；pointermove 高频纯赋值绕开节流盲区，总闸始终可靠）；②整卡重编 rAF 合并 scheduleSpeedRebuild——快速来回切 Tab 每次指针按下同步 innerHTML 重建形成重建风暴（卡死体感），同帧多次切换只重建一次，切片沙箱无 rAF 自动退回同步（既有 pointerdown 契约测试不变）；③dispose 取消待合并 rAF；④tipStats.hideSeq 最近 8 次收起原因序列（diag 定性偶发关闭） → v276 撤销 v275 的 rAF 合并（用户实报「会话切到项目卡死」定案）：被遮挡窗口的渲染帧暂停让 rAF 永不执行（本机 ZCode 常被 Chrome/飞书遮挡），切 Tab 排程的重编永不落地、tooltip 僵在旧内容；恢复同步重编（单次 1-3ms 可承受，「重建风暴」为伪问题），保留 v275 的 pointermove 保活与 hideSeq 诊断——遮挡环境一切交互路径必须同步落地 → v277 win-leave 降级可取消宽限（用户实报「点击 tab 仍自动关闭」，hideSeq 铁证 win-leave）：点击 Tab 引发的合成 documentElement mouseleave/瞬态 blur 与真离开在触发点无法区分，tipBoundaryHide 立即 force 关把正常交互打死；降级为 400ms 可取消宽限（cancelTipGrace 共用定时器，pointermove/mousemove 落回即取消），真离开半秒后收；取证 cause 带触发源（blur/edge）与 document.hasFocus 焦点态 → v278 更新失败可见性（issue #247）：updater 检查/安装失败落盘 plugin-update.json lastError（成功即清），⚙ 更新区在非 error 相位显示「上次更新失败」行；hook 链按 HOST_TARGETS 判已装版本 × 宿主 build 未登记适配时强制立即升级 + 会话明确提示（去重），marketplace 刷新重试 + 清单新鲜度校验点名宿主 CLI 静默失败 → v279 速度卡 Header 单行重构（第三轮 UI Goal §3/§5/§7）：标题居左、范围/时间双 Tab 组成连续操作区整体靠右，旧独立筛选行与顶部时间胶囊删除，窄窗 flex-wrap 整体降级不裁剪；统计时间迁至图表标题栏右端轻量文字（calendar 图标 + 紧凑区间 + title 完整 YYYY-MM-DD HH:mm:ss 区间），单位 t/s 紧随图表标题；左卡标题层改「平均速度」+ 小号「历史统计」标识（.zu-sl-k 行删除）；旧图共享类仅 .zu-sv-root/.zu-sv-chart 作用域覆写不受影响 → v280 速度卡横滚位置记忆（用户实报 全部×全部 拉到末尾、关闭 tooltip 再开回到开头）：speedCardV2HTML 根节点携带 data-sv-key=范围|时间 选择键；tpsTip 重编分支（showTpsTip 非冻结路径）重建前从旧 DOM 捕获 .zu-sc-wrap scrollLeft 连同键存储、键同才回填（hover/心跳重编不跳回头部、关闭再开含数据刷新后恢复原位、切范围/时间键变自动归零）；全量 tip drawTip 横滚保留从 keepTop-only 扩展到重开路径并加同键守卫（v232 盲恢复改键同回填，V1 旧图无 zu-sv-root 键按空串键行为不变） → v281 速度卡专项双修（第三轮专项 Goal）：P1 图表列宽稳定——V2 注入样式由仅钳 max-width 改 width+max-width 同值 !important（width=min(960px,calc(100vw-24px))、border-box，压过 .tip 的 width:max-content 与 tpsTip 内联 max-width:520），右图表列 flex:1 1 0 + min-width:0、滚动容器定宽 100%，列宽不再随 plot spacer（n×30+12）与图表头文案反向撑缩，Tab 切换整卡宽度恒定（视口足宽恒 960、窄窗恒 vw-24）；P0 hover 信息卡裁剪根治——卡从 .zu-sv-plot（被 .zu-sc-wrap overflow 滚动容器裁剪）移到 body 级 Portal .zu-sv-portal（模块单例、类名挂 .zusage-quota-tip 复用 boot 旧代清理链、pointer-events:none、z-index 同 tooltip 层 2147483646 且 DOM 序在后），内容经 SPD_PORTAL 侧信道（纯字符串、VM 切片安全、消费即清）由 showTpsTip/zuSpeedChartPick/speedRebuildNow 渲染定位，按柱体 getBoundingClientRect 右上⇒左上⇒钳边避让视口（safe 10px），横向滚动 capture 相重定位（柱滚出 wrap 视口即收），切 Tab/hover=-1/收起路径（hideTpsTip/hideTip）立即隐藏不留孤儿 → v282 档位说明浮层与 Tab 低对比选中专项（第四轮 UI Goal）：底部常驻十档图例整体移除（.zu-sv-legend 包装/分割线/占位全删，整卡高度由 Header+统计主体决定），改由图表标题栏「单位：t/s」旁问号按钮承载——hover/focus 即显不点击、Escape 只收浮层、icon→卡保活（延时收+卡内取消）、柱体 Portal 互斥（双方 show 互收防双层浮窗）、按柱体 rect 下方→上方→钳边定位、body 级浮层脱离 overflow 裁剪 + 显示移尾（B1 同款）+ dispose/热更双清理链；十档内容 spdLegendCardHTML 自 TPS_BANDS 升序生成（颜色/星标/边界与柱体、chip 同源唯一事实），当前档位高亮读按钮 data-sv-band（整卡重编自动更新、空数据不高亮）；Tab 选中态对齐 Hover 低对比背景（去 rgba(87,200,255) 蓝块：on=白 .07/浅色黑 .06 + 发丝内描边区分持续选中，on:hover .09/.07 轻微提亮，字重恒 600 维持 v263 防选中加宽纪律） → v283 档位说明浮层微调（用户反馈）：最大宽度 560→800px（仍钳 calc(100vw-24px)）；显示时左缘对齐宿主 conversation-bottom-dock-transition（composer 容器）而非整窗口/图标锚定，dock 缺失回退图标左缘、越出右缘钳边（与 v282 避让策略叠加） → v284 主卡定宽 800+左缘对齐宿主 dock（用户反馈澄清：上轮 800/dock 对齐实为主 tooltip 而非档位浮层）：V2 注入样式定宽 960→800（width+max-width 同值 !important 不变）；tpsTip 链 showTpsTip 在 V2 卡圤位后左缘改对齐 conversation-bottom-dock-transition（缺失回退 chip 锚定，垂直不变）；全量 tip 链 drawTip 渲染 V2 内容时写 tip.__zuDockLeft、positionTip 每帧消费（rAF 跟随不回退回 chip 锚定），非 V2 内容 null 走原锚定 → v285 速度卡左缘对齐锚元素（用户反馈：热重载后仍居中，指定基于 .it 速度格左侧对齐）：废弃 v284 的 conversation-bottom-dock-transition 宿主类名依赖（实测未生效），改为 positionTip 在 V2 卡（tip.__zuAlignLeft，drawTip 按 .zu-sv-root 置位）时 left=锚元素（.it 格）左缘钳边；tpsTip 紧凑链删 v284 dock 覆盖（原本就是 chip 左缘钳边）；档位说明浮层左缘改对齐主 tooltip 容器左缘（与主卡构图一致，替换 v283 dock 对齐） → v286 图表标题栏精修（第五轮 UI Goal）：标题 600/+2（V2 作用域覆写，不过重）；「单位：t/s」收为轻量「t/s」徽章（弱化前景+微亮底+圆角 5px，视觉优先级 标题＞单位＞档位入口）；问号换专用 Speed Bands SVG（细圆环+三级递增速度柱，currentColor 继承按钮色态，18px 视觉/26px 命中），aria-label 改「查看速度档位说明」；十档浮层/互斥/保活/清理链全部沿用 v282 机制不变 → v287 修复批：速度卡远端判定改只认快照 remote 标（本地 scoped 行也带 workspace_identity，旧判定把本地 pane 选「全部」误降级为本会话并显「远端会话仅显示本会话历史」）；精简链 tpsTabActivate 聚焦按钮改 t0.speedHover=-1（原 t.speedHover 在声明前引用必抛 TypeError，0 也会误高亮第 0 柱） → v288 会话累计模型明细费用列随 ⚙ 预估费用开关门控（原 v215 内联四列表漏门控，v253 共享 statModelsTable 收编时漏掉本卡——开关关闭后仍渲染「预估费用」表头与 ¥ 单元格；换 statModelsTable(sess.models) 与本轮/今日同源，关时收三列、空明细整块不渲染） → v289 火山方舟额度修复（issue #260/#261）：tooltip「其他源」行抽公共 helper otherSourcesRow 并在 info（未配置/暂不支持）分支同样渲染——主源不可展示时后台已查询成功的源（如火山 AK/SK）不再被提前 return 吞掉；其他源标签对复合源 id（vendor:providerId）回退裸厂商键查找；剩余口径（quotaRemain）在其他源行保持不变 → v290 速度卡交互与标签（2026-11-08 用户规格）：图表区滚轮横滚（tpsTip 本体 wheel 委托，deltaY→scrollLeft，不可横滚不拦截）；每柱恒显时间标签（8px 下 5 字符可容纳，稀疏化废弃） → v291 速度历史热力图（本月月历/全部历史 GitHub 风格双形态，档位色同源 TPS_BANDS、无记录中性灰、未来弱日期号）+ FATAL.gen 代际号进 diag（重注入取证不依赖计数字段归零）+ 首开/键变滚到最右 → v292 月历定稿第一轮：标题去粒度词改「范围 · 时间 · 平均速度」三段式；整卡定高 315px 四形态同高；跨月占位不越出星期对齐 → v293 月历设计图规格：列头周首日号与格中心对齐、7 行 1fr 铺满、滚动条样式落元素本体（v293.1） → v294 月历格专项：低饱和档位底 22% 混卡片色（v294.1 拍板去左色条靠底色辨档）、文字统一吃前景色、space-between 布局+min-height 治越界、容器查询三档字号 → v295 月历布局铺满（6 列×行 1fr 均分、紧凑态隐数字 hover 兜底）+ 柱状图系列修订八项：顺序时间恢复（v295.7 撤 v290 倒序）、柱距 24px 恒显时间（v295.17）、Y 轴刻度列外移滚动容器（v295.18）、首开滚最右（v295.13）等 → v296 热力图「全部历史」改最近 365 天窗口（周日起对齐补齐、窗外透明占位、无数据卡覆盖统计 v296.1）+ 方格随容器宽自适应横滚 → v297 热力图动态字号（6~14px 纯算术择优、宿主量测 __zusageSpdMonRect 一次回写、今日格加深 v297.1、分段高度诊断 v297.2、⚙ 面板同款 v297.3） → v298 chip 主数字改最后一轮真实速度（去「均」前缀，tooltip 左卡保留会话加权均，两处各自成立；无最后一轮真实值时面留空不显会话均）+ Y 轴刻度锁定柱区基线（v298.1）+ 左卡标题随时间 Tab 五命名（v298.2）+ 档位徽标下模型名（v298.4）+ 量测时机挂 display:block 后（08） → v299 本轮 tooltip 紧凑化（三行 KPI 家族首卡：statKpi 辅助行参数、模型表 headRight/tableOnly、工具/重试迁模型标题行右） → v300 会话累计卡紧凑化（同三行 KPI 形态）+ 会话总耗时跨会话长时长换算 + zusage 会话级平均耗时/平均首字延迟/Σ生成耗时聚合（>0 门控，旧快照降级） → v301 今日合计卡紧凑化 + 三张统计卡共用 KPI SVG 图标（KPI_ICON_PATHS）+ zusage 今日聚合扩平均耗时/首字延迟列 + 缓存命中率入输入格副行 → v302 统计卡行结构定名（请求次数/请求轮数/请求会话层级行、「总耗时」「平均输出速度」统一命名）+ zusage 今日去重会话数与 Σ工具调用（v302.2）+ 会话/今日模型标题行右并入工具统计（v302.3） → v303 项目累计卡紧凑化（根类并入 .zu-stat-tip--project 统计卡家族）+ zusage _project_usage 新聚合（平均耗时/平均首字延迟/总耗时/跨分片合成 avg_tps）+ 刻度列外移联动（v303.3/v303.4） → v304 工具调用卡紧凑化（定宽四列+sticky 表头+行 hover）+ statKpi 标题图标参数 + zusage 子代理单任务耗时/轮数聚合（v304.1）+ 模型名立方体 SVG 胶囊（v304.2） → v305 收口审查修复批（review-fix-merge）：轮播可视化编辑器 when: 键白名单+提示行转义（堵存储型注入面）；手写显式 false 高级条件保存保留、false 不再渲染为勾选态；热力图「共 N 天」覆盖统计 var 提升修复（原恒退兜底文案）且分母对齐可视窗口；今日 tooltip 轮数/会话数旧远端缺字段显 —；今日/项目 avg 耗时与项目 avg_tps 过滤 main_turn（与 avg_tps 同口径）；devKeepTip 持久化+re-click 放行；__zusageSpdMonRect 代际清理；speed_v2 聚焦切换测试随功能移除删除；未编号同批内容——轮播自定义短语可视化编辑器+文本模式、内置词包拆独立分片 04-rotator-builtin-packs.js（16 包）、⚙ 轮播分区「原作者」按钮、速度卡覆盖提示/聚焦按钮移除（2026-11-07 文案批） → v306 精简 tooltip 幽灵行框修复（\x01 结构化 HTML 哨兵只在主链 drawTip 被 tip.firstChild.slice(1) 剥除，精简链 showTpsTip 直塞 innerHTML 不剥——控制字符落成文本节点被 .tip 的 white-space:pre-line 撑出 ~20px 幽灵行框，V2 卡定高 300+overflow:hidden 下整卡下坠、底部被裁，实报上下 padding 不对称；补齐同语义 charCodeAt 剥除）+ 状态轮播主开关默认关闭（2026-11-09 用户规格：新用户/从未写过设置的用户不自动启用，显式开/关过的存量配置经 loadRotatorConfig 布尔覆盖原样保留）+ 速率 chip 右键直开设置（2026-11-09 用户规格：精简下 chip 是唯一常驻入口，contextmenu 镜像 .tps-cfg 路径——先收 tooltip 再开面板，并压掉宿主原生右键菜单） → v307 速度 tooltip 左卡「生成中估 X t/s」note 行删除（2026-11-09 用户规格）：生成中估算只留标题旁「生成中（估算）」徽标，瞬时估算值不再与历史均值同卡并列；完成态会话均被误标「生成中估」的边界（v298 speedValue 保留 avg 语义 × v263 门控只看 speedValue>0）一并消失（.zu-sl-note CSS 保留——旧版 speedCardHTML 回退卡仍用）；未编号同批内容——速度卡模型行原生 title 改纯 CSS data-tip 伪元素气泡（2026-11-09 用户实报：宿主内原生 title 不弹——生成期重建打断驻留 + Electron 宿主对 title 气泡不可靠，同轮播 zu-rot-tipt 先例）+ 悬停模型列表不省略（spdAggregate 增 withNames 仅整体口径产出全量 modelNames，消费点唯一带 fallback）+ 模型行补 aria-label 全名单（伪元素 content:attr 不进可访问树） → v308 切换任务主线程阻塞修复（用户实报「来回切换任务卡很久才反应」）：gitMount 的 live() 幽灵判定从裸 inGhostSubtree 改走 ghostOf 120ms TTL 缓存——裸调用逐祖先 getComputedStyle 强制样式重算，恰在切换的 React 重挂风暴（样式树最脏）里被 render/heavy 高频触发，CDP CPU 采样归因 inGhostSubtree 436ms/9.4s 近乎全部经 gitMount→live（每次切换聚集 ~48ms，与长任务 72-102ms 时刻逐一吻合），缓存路径实测仅 2ms；判定语义与 track 每帧 ghostOf(composer) 同款；未编号同批内容——.zu-sv-bars 由 space-between 改 flex-start + 两侧 5px padding（修少柱如「最近 3 轮」柱顶 nowrap 数值越缘撑出 ~2px 横向滚动）+ 单柱 zu-sl-solo 弱化移除（2026-11-09 用户规格，含 CSS）+ 合入审查撤销同批误入的 hovFreeze 悬停冻结（08 分片 render 接管链：与已合并 v224「悬停中 tooltip 随快照跟手刷新」契约冲突致 pill-theme 4 例红，其原生 title 驻留动机已被 v307 data-tip 气泡消解，净 diff 与 fork/main 逐字节一致） → v309 拉取模型「确认添加并保存」先探测后保存（用户实报 OpenHub-Gemini Base URL 少 /v1：宿主实际请求 {base}/chat/completions 得 405，界面报 "Model request failed."）：勾选 ≤24 个时逐模型 model-pull-probe （主进程按宿主同款 URL 语义发最小对话请求——openai 两型不自动补 /v1、anthropic 归一化补 /v1 拼/messages、套餐源=套餐 baseUrl+messages+Bearer；刻意不走 candidateUrls 兼容改写以复现宿主真实路径），行内状态 chip （检测中/可用+延迟/失败，title=分类原因+实际 URL+脱敏摘录）并发 4 刷新，全过自动写入、有失败自动取消勾选保留弹窗（可重新勾选强制添加，旧主进程 unknown action 降级直接保存；inject-main 白名单加 model-pull-probe，model-puller 增 probeModel/分类/脱敏） → v310 拉取模型探测体验收口（用户实测两报）：①失败原因悬停不显示——v309 在 chip 上挂的原生 title 在 Electron 宿主内不弹（v307 同款实证），改 data-tip 伪元素气泡（从 chip 左侧水平弹出、行内垂直居中，避开 .zu-mp-items 的 overflow:auto 裁剪，双语 aria-label 同步）；②路径错配自动修复而非红字提示——主进程探测 404/405 时对 ±/v1 邻域候选实测，命中即把新 Base URL 读-改-原子写回 provider_config（与 applyModels 共享 applyBusy 写闸、同供应商单飞：全选模型同 URL 全失败只测一轮只写一次），模型按新 base 重试，弹窗绿字披露 「已自动修复 Base URL 并写入供应商配置」（.zu-mp-fix），修复候选也失败时失败原因附「已尝试自动修复」；探测 ask 兜底 25s 改 65s（探测+修复+重试最坏约 45s 不能被错杀）；修复限定 openai 两型（anthropic 型宿主自动补 /v1 无此错配、套餐源 baseUrl 不代改） → v311 辅助档位写实（用户实报：添加后宿主「测试模型」报 reasoning_effort "none" 被上游拒绝——宿主 testModelConnectivity 绑 values[0] 最低档，openai 两型内置 catch-all 把默认最低档 disabled 映射成 wire "none"（zcode-builtin.json modelApiRules[2]/[3] 同款语义），Gemini 严格上游只收 minimal..max；探测链基础连通后追加辅助档位验证：按 catch-all 同款语义发 values[0] 等效 wire 值，被 400 拒绝时从错误文案解析上游接受集（解析失败退化为逐候选实测），验证后写实合法档位表——模型规则已存在直接写规则（values-only 稀疏合法、带 map 自洽结构不动），未落盘模型写 fetchCache 元数据由 applyModels 统一落盘（绝不在探测路径新建规则防双写重复），绿字披露「思考档位写入 minimal/…」；失败新增 reasoning 类文案附上游接受集；错误摘录保留完整脱敏文本供解析 → v312 输入类型/模型能力自动匹配（用户实报：拉取后能力区全空）。宿主侧定案（源码+内置配置审计）：modelRules 的 `.*` catch-all 对所有模型显式设保守默认（text-only、json-schema/联网/中段系统全 false），**无协议级推导**、能力位必须逐模型证据；个人稀疏规则字段级覆盖合法。证据源三路：①目录一致性收割——同名模型多 provider 收录的歧义守卫改为「可加证据字段全命中一致才采纳」（modalities 收 inputFormat 含 PDF；tool_call 只采显式 false；structured_output 只采 true），mergedMeta 第三参最低优先级并入；②确认流能力实测（caps 标志显式携带才跑，仅 chat-completions、仅正证据 2xx 写 true、4xx/网络失败不写保守默认）：图片 content part / response_format json_schema / 对话中 system 消息三项 6s 探测（2026-11-09 真实中转实测三项可判定；PDF 的 OpenAI wire type:"file" 部分中转不认故 PDF 只走目录；视频/音频/联网搜索无廉价如实验证不探测），写目标与 v311 同款双路径（已存在规则合并 properties 叶子且用户显式 false 不覆盖；未落盘写 fetchCache 由 applyModels 落盘）；③弹窗行内徽标（图/PDF/JSON）+ 绿字披露「能力匹配：图片/结构化输出/中段系统消息」；探测兜底 65s 放宽 90s → v313 工具历史回灌探测（用户实报：配置就绪后真实对话 Turn execution failed 400001——实弹二分定位为 OpenHub 中转全部 Gemini 系通道（3.5/3.7/3.8，流式与否）拒收 assistant tool_calls + role:tool 历史形状（C4-C7 全变体 400），与插件写入无关（裸形状同样拒），Anthropic 线同病；工具结果折进 user 消息反而 200（Gemini 原生映射）；同站 qwen3.8-max 正常=通道级缺陷。宿主侧无配置解（supportsToolCall:false 会令宿主对带工具请求直接报错更糟），落为警告性质：确认流第 4 项 6s 探测发最小工具历史形状，4xx 确定性拒绝才警告（超时/网络/5xx 不定不警），琥珀 .zu-mp-warn 披露「代理任务在工具轮次会失败，纯对话可用」，绝不写任何配置位，结论按拉取会话 fetchCache 去重（裸探测无会话不去重） → v314 规格补全（用户实报 maxOutputTokens 89642 超上游 65536 上限 400）：宿主预算链定案——wire 输出预算 baseline=已解析 optionSpecs.maxOutputTokens.max（未写=内置 catch-all 128000），预轮 cap=min(baseline, 窗口−用量−1000) 只下调不设上限（model-token-limits.ts resolveModelStepMaxOutputTokens），超 spec.max 是宿主侧硬拒绝非钳制——所以「不写输出上限规格」会让请求预算完全脱缰。applyModels 是 append-only：先添加的模型在目录证据迟到时永远拿不到写实，v314 在确认流探测路径用拉取会话元数据补「缺失」键（properties.contextWindow / optionSpecs.maxOutputTokens.max，绝不覆盖已写数值、带 map 自洽结构不动、applyBusy 写闸），绿字披露「规格补全：输出上限/上下文窗口」；当日已手修用户配置 max=65536（上游 400 报错自证上限，中转 max_tokens=65536 实测 200）；收口审查补齐：禁止凭据重定向并按实际 key 脱敏、供应商来源与档位 CAS 守卫、缓存身份绑定及已验证路径迁移、自定义 map 不猜测、供应商显式能力优先且 false 保留、修复后补规格、工具限流不误警告、确认单批互斥和逐项强制添加、关键披露停留至再次确认、关窗清理等待与模块 dispose 失效 → v315 「原作者」悬停提示被滚动区顶缘裁剪修复（用户实报截图：气泡向上弹、只露底边一线）——cap 内触发点（原作者/自定义短语模式切换）气泡翻到触发元素下方 `bottom:auto;top:calc(100% + 6px)`，右对齐保留；cap 贴 .zu-settings-body（overflow:auto）顶缘是根因；向下弹常规布局落进分区卡片区域可见，纯 CSS 无视口碰撞翻转、cap 滚动至贴滚动区底缘时对称受限（v310 .zu-mp 左弹先例同款取舍） → v316 「压缩上下文」按钮视格重做（用户规格）：全宽 40px 胶囊、无边框、中性深灰半透明底（暗色=白叠加 6.5%/hover 10%/active 14%，浅色=黑叠加 5%/8%/12%，html.dark 分组自动跟随明暗与 zai 主题）、13px/600 文字（字号走 --ui-font-size 令牌 calc(-1px)，随宿主界面字号缩放）+ 18px 收缩双箭头 SVG（currentColor，flex+gap 8px 图文整体居中、nowrap）、focus-visible 焦点环（宿主无 --color-focus-ring 走 fallback）与 :disabled 半透明；reduced-motion 组整体移到全部受控规则之后（@media 不增特异性，置于按钮 transition/弹框 animation 基础规则之前会被同特异性后置规则压成死代码，review 实锤修复），弹框动画一并恢复实效；注入/判定/确认弹框/提交通道逻辑全不动 → v317 ⚙ 面板上层 body 级弹框内按下不再联动关闭设置面板（用户实报：词包「查看」弹框点遮罩/✕ 连设置一起关）——面板外点 mousedown 判定按 e.target 向上匹配弹框根类名（.zu-rot-pk-dlg/.zu-mp-ov）：遮罩关闭监听与面板判定同在 mousedown、target 阶段先执行并已把 rotPkDlg/mpModal 置 null，变量 contains 守卫对遮罩路径失效（✕ 走 click 判定故 contains 版已好、遮罩仍坏），closest 沿已 detach 的残留子树仍命中；弹框外点击照常关面板、无 closest 的 target 按弹框外处理 → v318 chip 字体切 sans（用户实报 Windows 上 chip 数字与中文大小不一，mac 无此问题，最终方案）：宿主 --font-mono 首选 ui-monospace——Windows 落到 Consolas（内置浏览器实测 13px 数字墨迹约 8px），中文回退 Microsoft YaHei UI（11~12px），条/chip/tooltip 内中文显大 ~40%；原生 UI 无此问题靠 sans 配对（Segoe 数字 10px + 雅黑 11~12px，配比 1.1）。缩放面路线三轮实机回退后整体废弃：ZuCJKFit CJK 面（90/82/76%；82% 真机像素测量实测配比仍 1.2 嫌数字小，76% 后数字锐利但配比失衡）与 ZuNumFit 数字面（ASCII 110%，实报数字边缘发虚——size-adjust 缩放路径光栅化比原生整数尺寸软，canvas 拉普拉斯方差实测低于原生面）全部删除。定稿=条/chip/tooltip 全部 30 处 mono font-family 换 var(--font-sans,…)+ 既有 tabular-nums 保留（含 01 模块 rateTip 内联 cssText 兜底，被 quotaTip/rstTip/tpsTip 整体复制）：Windows Segoe tnum 实测生效（13px 同 7 位任意数字恒 56.12px）数字刷新不抖宽，Segoe 数字 10px + 雅黑 11~12px 配比 1.1 与原生同源，零缩放零模糊零调参；mac SF Pro+苹方天然同构（用户实测无失衡），Linux system-ui tnum 未实机验收；⚙ mono 域（06 设置面板 .zu-src-field、.zu-mp-*、.zu-notes-* 与 05 rotator 编辑器 .zu-rot-*）仍走 mono 令牌 → v319 速度格数字与单位加距 4px（用户实报 "158.9t/s" 贴字，且「修改过程中对的、判定生效又变回去」——两条渲染路径只有一条有空格）：①实时桥路径 zuBarSpeedView text="… t/s" 有空格但切 sans 后 Segoe 空格 7.15px→~3.7px 视觉贴字，.zu-live 加 word-spacing:4px（用户实机逐档对比定稿）；②无桥 DB 回退路径 chipFace（07）数字直拼 '<span class="dim">t/s</span>' 根本无空格字符、word-spacing 对其无效——补空格后与①渲染一致；用户看到的「忽对忽错」=生成中走①、完成/无桥走② → v320 「不在本地库」提示与 ⚙「数据库统计」注记不再写死 ~/.zcode 路径（issue #279：宿主 dataBaseDir 迁移后旧提示误导）：tooltip 改中性描述并指引重装/更新、⚙ 注记改「只读本地用量库（默认 ~/.zcode/...，跟随宿主 dataBaseDir 迁移）」；用量链 DB 路径解析本体在 zusage.py / token_rate.py / inject-main.cjs（非浮层），此为配套文案 → v321 速度格贴字真根因修复：`.zusage-root .it>span:not(.eb)` 的 inline-flex 把速度格也 flex 化，flex 剥离文本 item 尾随空格——数字态（数字+span.dim 两 item）空格 spaceW=0、v319 的 word-spacing 无效（CDP 实测墨迹间隙 0），状态词态单文本 item 不受影响故「动态对、停止贴」；选择器豁免 .zu-live（外部 flex item 布局块化等价、零变化），空格与 word-spacing:4px 恢复生效，间隔与动态态一致 ~7.7px → v322 速度格 word-spacing 4px→2px（用户实机目测：7.7px 偏宽，收窄到 ~5.7px） → v323 速度格 word-spacing 2px→1px（用户实机继续收窄：~4.7px） → v324 完成态数字与 t/s 零间隔：chipFace 去除空格字符（7.7→5.7→4.7px 逐档后用户定稿 0）。动态态（单文本 "… t/s"）仍空格+word-spacing:1px ~4.7px；word-spacing 对完成态无空格文本不再生效（CSS 保留无害） → v325 动态态 word-spacing 1px→4px（用户实机回定；完成态零间隔不受影响——无空格字符可加距） → v326 数字与 t/s 间距改用 inline-flex+gap:5px+baseline：去除 word-spacing（用户实测调值无视觉变化——完成态无空格、动态态单文本）。动态态整条渲染（07 render live 分支）与原地更新（08）统一走 zuLiveFaceHtml 拆「数字+dim」两 item，gap 才有 item 可分；状态词态保持单文本。完成态 v324 曾零间隔，v326 起与动态态统一 5px（用户屏幕验证接受）；函数声明必须实例级（html(d) 分支块内是 Annex B 块级声明，live 分支 TypeError / 08 ReferenceError，实测 44 测试红） → v327 V2 左卡标题行防破版（另一台机器实报截图：--ui-font-size≈20px 浅色主题下「最近18轮平均速度」截断+「思考中」竖排折行）：标题行需求宽随字号线性增长而卡内宽固定 184px（实测 14px 需 151.1 余量 33、ui≥17 必溢出），.zu-sv-root .zu-sl-sub 加 flex:0 0 auto+white-space:nowrap——状态词永不收缩竖排，溢出收缩由标题独享 ellipsis 降级；本机默认字号视觉零变化，CSS 契约断言锁定 → v328 宿主卡顿治理（specs/perf-lag-reduction.md）：流式期间插件在宿主渲染线程的工作量与会话文本量/历史轮数解耦——①turn-stats ingest 字符计数改无分配码点计数+按行缓存（原 Array.from(text).length 整串拆数组，单次 0.35→4.1ms 且跑在宿主 store 通知链内，现 0.02→0.4ms）；②spdUnpack 按 speed_history 引用 WeakMap 缓存（6000 轮单次 ~5ms，占速度卡生成 95%）；③updateLive 快路径未悬停本格不再每拍白建整张 V2 速度卡（只记 view 标失鲜，drawTip 打开瞬间 liveTipRefresh 补建，兜底 1s 保鲜；悬停仍每拍）；④非 live 会话数据帧未变时 500ms 内心跳不重复整条 render（原每 100ms 全量重建 tooltip 串+五个 enhance*）；⑤轮播主开关关闭态 65ms 帧步降为 1s（仅剩遗留 DOM 还原的整文档查询） → v329 修复项目累计 tooltip 点击「查看全部模型」异常收起与同模型大小写重复：①根因=按钮未在 pointerdown/mousedown 阶段阻止默认/冒泡，且 hideTip 1.2s 保活因 mouseInBar=false 被绕过导致 left-bar 误杀 tooltip；在 pointerdown/mousedown 增加对 .zu-pj-more 的委托与阻止默认行为，hideTip/tipLeaveAt/mousemove 硬保活 1.2s 不受 mouseInBar 干扰；②zusage.py 聚合与计费统一对 model_id 大小写归一化（优先保留大写/官方名，合并同模型如 GLM-5.3 与 glm-5.3，费用累加不漏）。 → v330 宿主 3.18.0 loading 行结构适配：①chat-loading 行 label 类由 .zcode-loading-label 换成 .animated-gradient-text、spinner 图标位由 span.grid 换成带 data-chat-loading-icon 属性的 span（.font-mono 耗时格未变），轮播挂载/还原选择器双兼容（chatLoadingLabelOf/chatLoadingPixelGridOf，旧结构优先），label 未命中时不再隐藏宿主耗时格（宿主再改结构时退化为保留原生计时）；②「我方最后写入」基准由模块级单例改挂 label 自身 data-zu-last-text 属性，修多个 loading 行并存（多分栏并发请求）时后处理行的宿主文案快照被词组污染；③「拉取模型」选中套餐源而列表暂不含它（套餐 token 的解密密钥异步到位）时重问一次、仍没有则提示凭据暂不可用，不再落到「只有一个供应商就用它」而改投别的供应商；⚙ 额度披露文案补充钥匙串密钥的读取。 → v331 项目累计 Tooltip 双范围统计（specs/all-projects-usage.md）：zusage 新增 _all_projects_usage 全库聚合（归属单元=会话、parent 链取根环守卫、项目键=(project_id,归一化目录) 承 issue #248、未归属单列桶、totals==Σ projects 对账；桌面快照链顶层 all_projects，serve/桌面 json 带、CLI/MCP/远端子查询不带；_PROJ_CACHE 水位缓存，实测 2.6GB 库 ~210ms/次）；渲染端头部右上「当前项目/全部项目」双 Tab 替代范围胶囊（低对比选中对齐 v282，pointerdown 同步重编+click 幂等吞掉，归属键变化重置），输入格新增「含缓存」副行（cache_read 原值、同「含思考」层级、两模式同规则），全部项目模式新增四列项目明细表（模型明细之前、默认前 5、projTipProjExpanded 独立展开、未归属显本地化文案、名称转义+title 目录、截断 500 提示、空态不渲染表头），缺帧显「全部项目统计暂不可用」不借当前项目冒充。 → v332 工作流支持（specs/workflow-support.md）：zusage 把 sess_dwf-*（宿主动态工作流子代理，query_source='workflow_child'）归入子代理类——sub.list/明细/费用/速率聚合四处 query_source 门扩展、is_sub+sub_kind 字段、任务名从 dwf_actor.name 反查、快照池分桶防挤占主会话 top-6、_sub_item 下发 tps_out/tps_gen 速率分量；渲染端在会话流工作流卡（workflow-card data-workflow-run-id）注入 .zu-wfrun 汇总 chip（token 合计 + Σout÷Σgen 完成态聚合速率 + DOM 实时运行状态，悬停出逐执行者 tooltip，复用 subTip 浮层与委托监听），⚙ 新增「工作流卡汇总」开关；08 分片顺手去除 v176 以来整段重复定义的子代理 chip 块（两份 138 行逐字节相同，行为不变）。 → v333 智能体后台运行的状态同步（specs/agent-background-support.md）：后台智能体（AgentProfile 后台子代理）会话身份与前台子代理同构（sess_subagent_* / query_source='subagent'），DB 统计链天然覆盖零改动；修复实时面缺口——①运行中子代理集合在消费侧并入桥快照 backgroundWorks（kind='subagent' status='running'，事件驱动 state 键、窗口无关）补给，后台智能体把启动行滚出父会话 60 行窗口后槽位估算与「子代理运行中 ×N」计数不再丢失；②宿主状态面板 Agents 分区行（v4-running-subagent-item + data-child-session-id）注入 .zu-substat 速率 chip（槽位估算→「估 X t/s」、tps_avg 回填、无数据显「运行中」，tooltip 复用 subRowTipHTML 与 subTip 委托），render 尾部 + heavy 双对账点，共用 subRate 开关。 → v334 审查修复批（review-fix-merge 四路并行审查）：①zusage latest 候选与 CLI current 排除工作流 actor 会话（run 进行中多个 actor 轮流活跃会把顶层 session/current 顶成 run 视角，此前分桶注释声称已防而 latest/current 实未防）；②renderSubAgentRows 关门收浮层条件收窄到 .zu-subrate——原宽条件在 subRate 关 + wfChip 开时把悬停中的 .zu-wfrun/.zu-substat tooltip 每拍杀掉（闪烁）；③dispose 摘净链与 00 启动自清列表补 .zu-wfrun/.zu-substat（pane 回收后 chip 冻结 + 死实例 tooltip）；④renderWorkflowCards 不满足渲染条件的卡摘旧 chip（run 失败后「运行中」残留）+ tooltip 数据包每拍重写（requests/actor 名不进 sig 的打开瞬间新鲜度）+ 状态行去内层 ttEsc 防双重转义；⑤subRunningList 加快照 sessionId 校验（切会话一拍内不并入上一会话后台清单）；⑥substat「运行中」兜底态独立 run tooltip 口径 + chip 回位守卫 + 用例钉住 3s 新鲜度门与工作流卡防漂移负向夹具；⑦zusage _TASK_CACHE 失效键补 dwf_actor 维度（动态新建 actor 名字有界丢失）；⑧specs 与文档漂移同步（chip 面无状态点、开关持久化形态、CLI stdout 增量字段措辞、补给槽位优先级取舍）。 → v335 第二轮复审修复：①zusage 池分桶回归修复——v334 改 latest 候选时把 normal 桶误改 ranked[:6]（含普通子代理），恢复 normal=主会话独占、子代理/dwf 同入子代理桶（防挤占主会话 top-6 的 v332 语义）；②_TASK_CACHE 失效键改 greatest(time_created,time_updated) 覆盖纯改名；③renderWorkflowCards 的 runIds 收集循环对被宿主剥掉 runId 的卡也摘残留（空 runIds 早退前执行，wfChipStale 定义上移至循环前）；④测试设防：关门收窄行为锁（宽条件即红）、dispose/00 启动表三类 chip 源码契约、_TASK_CACHE astamp 失效用例、正常子代理不占 normal 桶用例；⑤spec §6.1 残留「运行中状态点」措辞清理。 → v337 后台智能体的主格速度关联（specs/agent-background-support.md §3）：后台槽位经 backgroundWorks 补给在跑而主会话自身无实时轮（空闲/上一轮已完成）时，updateLive 合成 runningTool=Agent 态让速度格走既有子代理分支（「子代理运行中 · 估 X t/s」×N；槽位绑定中/思考期降级状态词），后台全部结束（槽位解绑）自动回落会话均——主格不再静态；主会话自己的轮在跑时优先原 stats（v87 合成分支先行）。 → v338 项目累计卡体验批（用户规格四连；v331 迭代）：①分区名并入首列表头（项目明细/模型明细=各自首列 th，独立标题行删除；工具调用·重试与截断注记降级为 .zu-pj-mnote 右对齐 note 行、仅有值时渲染，「按用量排序」占位删除——v331/v332 批已落基线，此处汇总声明）；②高度自下而上——切 Tab/展开明细的高度变化底边固定（projTipPrevBottom 基线 + projTipPositionGrowUp 反推 top，max-height 钳制保证 top≥8；首次弹出无基线回退原锚定，仅项目卡路径）；③表体视口帽——项目卡 .tbody 破共享 60vh 帽，覆写 max-height:calc(100vh-36px)=视口帽扣根纵向可达 chrome（上边框1+上内距10+下边框1），内容不超窗完整展示无内滚、超窗转表体内滚（其它统计卡维持 60vh）；④全部项目模式行四第一列=项目数量格（KPI folder 图标，计数=projects_total 截断前真实数或列表长度；费用可见三格 .zu-turn-kpis--trio 3 列网格、费用关退 --duo 两格）。 → v339 详情卡点击空白/Esc 关闭（issue #297）：document mousedown 捕获外点判定（tipOutsideDown）——target 落在自绘浮层本体/条面/设置面板/各弹框之外即收，主 tip cause="outside" 进 hideTip 硬保活窗白名单（v271/v329 的 1.2s 窗不再吞「点过 Tab 后点空白」；devKeepTip 常驻模式契约不变仍只认 Escape/齿轮/再点同格），额度/速率/重置卡/子代理行内/git chip tooltip 与费用说明/档位说明浮层一并收（柱体 Portal pointer-events:none 无需排除）；document keydown 冒泡全局 Escape 兜底（tipGlobalEsc）——焦点在 body 时既有元素级 Esc 链收不到，此处一次收一个且不 preventDefault/stopPropagation 不吞宿主语义，冒泡挂载保住 tip 内「先收档位说明不关卡」分层。 → v340 心跳不再深拷贝整窗快照（issue #309，长会话卡顿；规格 specs/perf-lag-reduction.md 规则 10–12）：桥 v2 的 getState() 每次都是整窗深拷贝（本机 374 行 ≈1ms，报告者 6868 行 ≈86ms），而 100ms 心跳里 bridgeTick 健康检查与 updateLive→subRunningList 每拍各读一次（无 stats 时「思考中」合成再读一次）、每次 store 通知还有 subscribeStore 与 overlay 回调各读一次，v2 桥下 ≥20 次整窗拷贝/秒。三处修复且与桥代际无关（v2/v3 均有效）：①心跳经 handleSnapshot 读 handle 上的快照记录（通知回调写入，超 SNAP_FRESH_MS=2s 才回源一次并兼作 store 关闭/换代探活，时钟回拨按陈旧）；②turn-stats.js subscribeStore 把本次已读 state 传给 changed(state)，回调不再二读；③通知处理按实测成本自适应合并（上次处理 ≥8ms 时间隔 min(1s, cost×9)，占比 ≤~10%，尾部定时器归订阅持有、退订即清；廉价会话逐字不变）。pane 切会话仍由 handle.sid/sideKey 即时重绑；不改桥模板与 BRIDGE_GEN（冷路径）。 → v341 issue #309 复审补修：子代理槽位通知回调复用 changed(state) 不再二读；通知处理同步分支作废迟到的尾部定时器；全局 setTimeout/clearTimeout 缺席时不抛进宿主通知链（退回同步处理）；订正「窗口恒 60 行」旧注释（reducer 增量不截）。 → v342 ⚙ 面板底栏「反馈问题」左侧新增「联系我」按钮：点击经 openMpShell 复用 .zu-mp-ov 弹窗外壳（收窄 .zu-ct-ov 卡宽）展示维护者微信二维码远程直链（http 直链经实测可用；https 不可达；宿主渲染页 file:// 无混合内容拦截），加载失败隐藏图片换文字兜底；Esc/遮罩/✕ 关闭沿用壳协议，外部点击豁免走既有 .zu-mp-ov 白名单。随批修复既有潜在缺陷：openMpShell 系自有弹层被 modalOpen（v62）误判宿主模态——body 直挂全屏遮罩+内部 role=dialog 完整命中两层判定 ⇒ track 收条连带 closeSettings（用户实报：点「联系我」/关弹框后设置面板被关）；modalOpen 两层扫描与 isOwnOverlay 豁免清单补 .zu-mp-ov/.zu-rot-pk-dlg/.zu-compact-dlg，宿主真模态判定不变。复审补修：.zu-ct-img 补 [hidden] 显式隐藏（作者 display:block 压过 UA [hidden]，同 .zu-update-progress 先例）；mp 壳 Esc 升捕获相+stopPropagation 对齐 rotPkKey 协议（焦点在面板内按 Esc 曾关面板留弹窗）；error 守卫改 isConnected；img 补宽高属性防加载回流；09 面板外点白名单补 .zu-compact-dlg；⚙ 联网边界披露「联系我」图床拉图。 → v343 turn-text 回推诊断计数（issue #321「生成时长缺失，暂不显示速率」每轮常驻且零可观测）：完成态占位行的速率来自数据库富文本回推（token_rate.py --turn --current），此前回推失败全静默——空交付不区分「主进程没回（旧冷文件/通道断）」与「Python spawn 失败、15s 超时、非零退出」及「库没追上」。渲染端新增页面存活期单调计数 rt（sent、ok、empty、miss、stale，空交付原因细分 spawn/timeout/pyerr）随 FATAL.det.rt 落 diag-*.json；miss=请求 20s 无回执（略大于主进程 15s 超时），stale=未匹配在途请求的设计内淘汰回执；主进程空交付带原因标签属 inject-main.cjs 冷文件改动，需完全重启才细分，旧主进程回退落 empty 桶。 → v344 增强提示词按钮（specs/prompt-enhance.md）：模型 chip（chat-model-select-trigger，空配置「管理模型」分支同名）左侧 ✦ 按钮，chip 缺位回退用量圆环左侧；点击读 composer 草稿（__zcodeLexicalInputE2E，Lexical 直写 DOM 不进 EditorState 的唯一官方写通道）经 pluginRequest("prompt-enhance") 主进程按会话模型凭据（v4-model-config 实时选择优先、快照 last 兜底）一次性非流式改写后回填前重读草稿比对防覆盖用户编辑，再以 setText 替换，20 秒内按钮变撤销态恢复原文；增强中忽略再点（主进程 60s 超时 + 渲染端 75s 兜底）；警示态 4s 自愈（空草稿/模型未识别/失败原因/冲突）。实现落 model-puller.cjs enhanceText（三协议非流式 POST、套餐源 planTokenOf 解密、api-key 型自定义供应商、错误摘录脱敏）+ inject-main 白名单三动作（prompt-enhance / prompt-enhance-cancel 取消 / enhance 开关，enhance_enabled 缺省开显式 false 关、推送面 enhanceEnabled）+ ⚙ 面板「回答统计」分区开关行。增强中再点按钮=取消在途请求；主进程不认识新动作的旧版本回 unknown action，按钮按失败警示不挂起。 → v345 issue #327 回答末尾统计行逐拍消失/重现加固：scanDeterministicLines 在 owner 令牌取不到的单拍里对已验证归属的行整块 remove 且当拍 continue 不重建，令牌逐拍抖动即呈约 0.5s 一档的亮灭、块高归零下方内容跳动。现对「证据缺席」型空令牌（owner 无归属实例 / sid 实例暂无会话）且行仍属同一 tid（新增 __zuDetTid）宽限：连续 3 拍且跨过 1s 才撤（拍数防回执爆发耗尽、墙钟防后台节流拉长，同一扫描内多 box 命中同一行只计一次，时钟回拨视为到期，恢复一拍清零）；scope 与 sid 不符或侧聊远端（属于别的会话的反证）、归属换成另一个有效令牌（SID/scope 切换）、无 __zuDetOwner/__zuDetTid 的遗留行仍即时撤，fail-closed 对这些情形不松动。带行 box 令牌为空的原因拍数（owner/sid/scope）、宽限放行数 grace、空令牌撤行数 removed、非空令牌换代撤旧数 swap 与本代起算时刻 since 累计进 FATAL.det.nullOwner 随 diag 落盘，供报告者回传定位是哪个写入方在抖动。未证因果：本机复现不了，宽限属加固而非已确认根因的修复。 → v347 状态轮播附加工作时长与悬停提示（specs/status-rotator-work-duration.md；性能预算 specs/perf-lag-reduction.md 规则 17）：①appendWorkDuration 开关（默认 true、显式 false 保留，存 zusage3.rotator2）开启且 labelSource=phrases 时在 loading 行 label 后追加宿主同款「工作中 X 分 X 秒」兄弟 span（.zu-rotator-elapsed，格式逐句对齐宿主 formatConversationWorkDuration：max(1,round(ms/1000)) 拆天/时/分/秒非零入列至多两段、中文值与单位间空格；起点锚 turnHeader.startedAt 与宿主折叠头计时逐秒一致，宿主文案节点在虚拟滚动内无生产 API 故自算）；②悬停纯 CSS tooltip（data-tip + zu-rot-livetip 伪元素，内容同款文案）独立于开关①恒随轮播，零监听零布局读取，气泡静态 pointer-events:none 防偷 hover 抖动；③写入纪律（规则 17）：span 判位 nextElementSibling O(1) 零新增文档级查询、textContent/data-tip/classList 带比较前置判断按整型秒门控（同秒内 tick 零 DOM 写、每行至多 1 写/秒，不在打字机 15Hz 写流上叠加），文案缓存挂 rotatorRuntime 随热重载换代，restore 名单并入既有 querySelectorAll 选择器串；④⚙ 面板「追加工作时长」checkbox（.zu-rot-append-duration，启用行之后）走既有 setCb/change 尾缀统一保存链，底部预览卡不联动；⑤两轮用户实报修复——文字隐形根因=宿主 gradient label 的 -webkit-text-fill-color:transparent 是继承属性压过规则 color 使气泡文字全透明（CDP computed 实证，pointer-events 实测 auto 排除禁点），气泡显式重置 -webkit-text-fill-color:var(--color-tooltip-foreground) 堵继承；红色泛光根因=宿主 label 自带 filter:drop-shadow(rgba(255,0,85,.45) 辉光)（255,0,85=宿主渐变首色，shimmer 固有）不继承但作用整棵子树，气泡作为 label 伪元素子盒被整体泛光——data-tip/类改挂行容器 [data-testid="chat-loading"] 脱离作用域，label 旧代际属性每拍清退防热重载双气泡，还原名单行级摘除；样式对齐宿主原生 TooltipContent 视格（asar 实证 rounded-lg border-border bg-tooltip px-3 py-1.5 text-ui-sm，原生即无阴影——用户点名去阴影）：去 box-shadow、--color-tooltip/--color-tooltip-foreground 反色变量、var(--color-border) 边框、圆角 8px、padding 6px 12px。 → v348 速度与统计浮层适配大字号（specs/speed-tooltip-adaptive-layout.md、specs/stat-tooltip-large-text.md；开发早于 v347、晚于其合入，代际号按合入时间线顺延取 v348）：①速度卡 spdFitTip（02 分片）——固定 760×300 改 CSS 变量驱动（--zu-sv-width/--zu-sv-height/--zu-sv-left-width 注入 tip，未设置时 fallback 精确回落旧值），字号异常增大先按 14px 基准整体 zoom（下限 0.8），只按筛选栏/左卡量尺寸不读图表横滚内容，空间不足再按内容扩高（>300 加 12px 呼吸间距）并经 tip 纵滚到达，视口变化经既有定位周期 reset 重算、字号变化留待下次重建经 previous（__zuSpeedSize，含 font）失效重算，同视口同字号内 previous 防悬停中逐拍重建的尺寸抖动；②统计/模型名 fitModelNames（02 分片）——.zu-model-fit 按实际宽度缩字号至不低于 10px、仍放不下保留省略+title 全名，接入速度卡/统计卡模型表/项目卡/fxTip/子代理浮层（子代理浮层 td 补 max-width 帽让 fit 在表级溢出档生效）；③统计卡「输入」标签 .zu-kpi-label nowrap + .zu-stat-k flex-wrap（07 分片），命中率徽标允许换行不重叠；④多柱（n≥10）柱组 .zu-sv-bars--spread 均匀铺满、柱宽不拉粗（部分恢复 v273⑤ 废止的 space-between，仅多柱档）；⑤图表横滚位置 __zuChartScroll 关闭时捕获/重开同键回填（修隐藏态 scrollLeft 恒 0），root overflow:visible + tip overflow-y:auto、wheel 到边放行默认滚动，键盘 Tab 进滚动明细区（role=region）+Shift+Tab 归还；QA 门 ZU_GEOMETRY_ONLY（tests/speed-tooltip-host）覆盖 14/17/20px 字号与重叠断言。 → v349 宿主定时器慢拍缓释（issue #342，性能预算 specs/perf-lag-reduction.md 规则 18）：报告者（Windows/内置浏览器面板活动期）只读定时器归因记录到 bridgeTick 51–93ms、heavy 55–75ms、coordinator 54–63ms、flush 55–92ms 单拍——规则 10–12 后正常拍已 <5ms，慢拍=正常工作被宿主主线程争用拉长 + 长窗口会话 2s 回源一次的整窗深拷贝（≈86ms/次）。两处自适应缓释，只在实测单拍超预算时介入、廉价环境逐字不变：①handleSnapshot 回源实测 ≥8ms（规则 12 同阈值，perfMs=performance.now 优先缺位回退 Date.now）时本 handle 新鲜窗逐档退避 2s→4s→8s（h.freshMul），<8ms 立即回 1 档，影响面仅静默期思考合成 phase/后台清单与探活的陈旧上限 ≤8s（「已观察 Xs」走字按 bornAt 推进不受影响）；②heavy/coordinator 600ms 对账单拍 ≥16ms（含界）时跳拍（lvl∈{0..3} 每实跑升档后封顶、跳拍窗 600×lvl 右开；lvl=1 稳态不跳拍只吸收「前拍拉长后拍准点」尖峰，稳态有效降频自 1.2s 起、封顶 1.8s），<16ms 立即回 600ms（heavyLvl/heavyRunAt 实例闭包、coordLvl/coordRunAt 协调器闭包，setInterval 拓扑与 dispose 不变），降频期最坏影响 chip 兜回/pane 自藏延迟 ≤1.8s。诊断随 diag-*.json 新增 snapSrcMs/heavyCost/coordCost 三个数值字段供报告者归因。有意不做：bridgeTick 100ms 不降频（规则 1 跟手契约）、flush 已有 ≤10% 占空比上界、visibilityState 门控无增益（隐藏窗 Chromium 本就降到 ≈1Hz，报告者场景宿主窗口可见）。
+    var VERSION = "v351";   //v82 统计行锚点深度查找（新会话结构嵌套在 group/assistant-turn 内容列内）→ v83 万/亿单位开关（默认开、仅中文）+ K/M/B 的 B 档 → v84 主标签页远端路由（工作台分组唯一主绑定上报 + 迟到载荷守卫，issue #30）→ v85 回答末尾统计行跟随万/亿开关 + tok→token → v86 历史轮 tracker 无记录（窗口滑出/换代/热更）或缺输出字段不再翻成"本轮统计不可用"，加 det 诊断 → v87 主叶归属增 last-session 回退（组零证据时唯一远端记录放行，issue #30 复测：单会话主标签页不建组）→ v88 运行态心跳与两处扫描 tick 2s→0.5s（富文本重试 6→24 次等价放大）→ v89 ⚙ 面板更新进度：downloading 阶段文案 + 下载（字节）/安装（校验→安装→同步）双进度条，缺 progress 的旧主进程自动隐藏 → v90 主标签页/分栏归属改按本窗会话节点身份（renderer 桥按版本/资产/锚点写 SessionPane 属性，移除 workbench-groups/last-session 共享回退）+ 心跳 0.5s→0.1s（扫描维持 0.5s）→ v91 设置页/权限面板冒条修复（PR #44：inSettingsView 三处派发排除 + anchorCardOf 面板锚点改判）收编收尾：排除标记并集（settings-page testid + content/panel 双 frame）、track 显隐第四处防御 → v92 ⚙ 更新区固定显示可复制的重装口令（源码安装无法自动更新时引导用户发给 agent）→ v93 原生上下文按钮（chat-context-usage-trigger）增强：环填充/四档色/右侧百分比镜像状态条上下文格（ctxBandOf 同源），cw 缺失还原原生形态 → v94 状态条删除「上下文容量」格（UI+tooltip，该口径由原生按钮增强承载），⚙ 面板同步去掉「上下文」开关，子代理格改始终展示（零值也显示）→ v95 ⚙ 更新区去掉 v92 重装口令提示块（源码清单的仓库来源改由宿主插件管理器直接更新，不再报渠道不一致），更新来源文案增「仓库源码」分支→ v96 套餐额度 chip（默认关）：挂原生上下文按钮左侧（wrapper 内前插，与按钮增强同款双 reapply/还原），数据来自主进程 quota 字段（解密宿主 OAuth 凭据直查 monitor 端点，账号级套餐池口径），会话首个 main_turn 完成前不显示；自绘 tooltip 走 rateTip 独立浮层模式；chip 改多窗分段：每窗一段（中文 5小时/7天，英文 5h/7d）各自按 80/95/100 档位色，分隔符 |；余额类型单段渲染就绪（余额 ¥100.00，阶段 3 数据源接入即用）；去掉环形，容器不着色 → v97 子代理速率（T1+T2）：zusage sub 汇总加 rate_avg/每子代理 tps_avg（已完成段加权平均，口径同 _turn_rate），子代理格 tooltip/明细面板展示；Agent 运行期主 chip 附加「子代理运行中 · 估 X t/s」——turn-stats 透传 subagent 行 childSessionId，overlay 据此用同款 zuTryBindStore 绑子代理会话 store 做字符增量估算（运行中请求未入库，DB 无实时数据；150s 采样实锤零 running 行），思考文本不进 rows 时退回纯状态词；工具动词「正在运行子智能体」压成「子代理运行中」（web 同步文案）；同日多槽位化：turn-stats 暴露 runningSubagents 全集（并行时 rowId 前 8 个），每子代理独立绑定/2s 节流，主 chip 显示合计速率（并行 ≥2 时动词后缀 ×N），chip tooltip 与子代理明细面板逐个实时展示运行中估算（tooltip 随原地改字同步 __tip 重画；面板 800ms tick 原地刷新 .subrate，汇总页运行块含 DB 尚无记录的新子代理） → v98 额度实时选源恢复（v4-model-config 观察 + quota-providers 全窗快照上报 + byProvider 定向刷新、空选择 fail-closed）与 sub2api 额度 UI（今日/本月窗口、窗口行内金额明细、Key 总额度、订阅截止、账户余额标题） → v99（主线并流）tooltip 伪边界 leave 过滤：Chrome 悬停链收缩/重算会补发 DOM 内部的 documentElement/tip mouseleave，tipLeaveAt 贴边判定后取触发时刻最深 :hover 元素甄别，仍悬停在本档具体元素上即伪 leave 一律忽略交回 mousemove 流（主线 v100 滚动豁免=本链 v106 同义，不另列） → v99.1（主线并流）apiKey 模式 BigModel/Z.ai（bigmodel-api[-N]/zai-api[-N]）额度 chip 标题家族判定（issue #68；数据链在 quota-client） → v99.2 思考中计时随语言本地化（中文「1 时 2 分 3 秒」/英文「1 h 2 m 3 s」，空格分隔、零段照旧省略）；回答末尾行采样时刻改完整中文日期时间（⏱ 2026 年 10 月 23 日 11 点 20 分 28 秒，token_rate.py format_turn_line 同步改版） → v100 设置面板分区导航（ZCode 设置侧栏同款：左栏三组分区导航 + 内容区单分区显隐，激活项 aria-current="page"，选择持久化 zusage3.sec；面板窄于 620px 时导航收成 icon rail） → v101 设置面板高度在打开瞬间按内容自然高锁定（切分区不再抖动，resize 只收紧不放大） → v102 额度源预设模板（CC Switch/magpie 同款选模板只填 Key：官方域变体 chip 一键写入 secrets baseUrl，minimax 可信域机制推广到 siliconflow 币种随域；deepseek/openrouter/kimi/anthropic/mimo/volcano 附控制台取 Key 链接，走 openExternal 桥） → v103 额度源列表卡片化布局（每源圆角卡片+间距，凭据框限宽 420px，长说明段落补水平边距；纯 CSS，结构行为不变） → v104 源状态文案补 disabled=已关闭映射 + 主进程对显式关闭源统一报 disabled（修「开关已关却显示待查询」矛盾）；刷新/获取 Key 按钮补 title 提示，关闭源的刷新按钮禁用 → v105 「上下文容量」弹层（hover-card-content）内压缩上下文按钮：命中率行下方全宽胶囊按钮（原生 secondary 配色全走客户端语义变量），弹层关即卸载（Radix 无 forceMount）故 body MutationObserver + heavy 对账双触发、DOM 存在性幂等（多实例安全），插入锚=「剩余额度」border-t 段前（缺则容器尾）+位置兜回；点击弹原生 AlertDialog 视格确认框（遮罩/Esc/外点关闭、Enter 确认），确认后优先走 fiber 上原生残留的 onSendCompressionCommand("/compact")（SessionPane 压缩入口，不动输入框草稿），缺失回落官方 E2E 输入桥 __zcodeLexicalInputE2E.setText + 发送键（Lexical 直写 DOM 不生效，禁用该路径；草稿非空拒绝） → v106 额度 tooltip 滚动豁免：hideTipsOnScroll 不再收 quotaTip（chip 固定 composer 工具行与 gitTip 同理），修思考中流式输出自动滚动致悬停弹出即灭；chip 随宿主重建 detach（无 mouseleave）由 scanRateLines 加 isConnected 健康检查兜底收起 → v107 压缩确认框补行为提示：压缩进行中发送新消息/停止会打断压缩（实测 16:27 新 turn 启动同秒 compact turn TURN_CANCELLED，cancelled_by_user=1；引擎对该次摘要流挂起 134s 无首 token 也不重试 retryable=0），确认框加 hint 行中性告知 → v108 压缩主通道按用户指定改为字面 "/compact" 输入提交（E2E 桥 setText+发送键；流式中 v4-stop 可见/草稿非空/发送键 disabled 三重拒绝），fiber 命令信封降兜底；hint 升级为「通常需 2-4 分钟且无进度反馈」（DB 实证：全库 compact 请求无首 token 但正常完成，72s-9.6min，14:44 同会话同模型 165s 成功先例；16:25/16:43 两次「卡住」实为 2m20s 被新消息 TURN_CANCELLED，非故障） → v109 压缩主通道按用户指定改回直接调会话发送接口（fiber onSendCompressionCommand 命令信封：不碰输入框/发送键、流式中交引擎排队，修字面输入通道在生成中被发送键禁用卡住的问题），字面 "/compact" 输入提交降兜底（三重门控仅作用于兜底） → v110 压缩提交函数改在弹框打开瞬间（弹层必存活、锚点几何可信）解析并缓存，修复确认时弹层已被 Radix 卸载、几何重解析退化为「离视口左上角最近」致多分栏把 /compact 发进错误会话（P1）；兜底字面输入通道的流式/发送键/草稿三重门控全部前置到 setText 之前（拒绝不再残留草稿）；Enter 确认限定焦点在弹框内（无焦点陷阱下防焦点外 Enter 误触发确认） → v111 额度 chip 默认展示：quota_enabled 缺省开（显式 false 才关，真值链在 inject-main）；chip 二级门控 not_configured/unsupported 从静默隐藏改中性灰提示「额度 未配置/暂不支持」（源被 ⚙ 显式关闭仍隐藏），tooltip 补 info 分支引导配置 → v112 Start Plan 免费档池（quota-client 新增 zcode-start 适配器走 zcode.z.ai billing/balance 独立链，与 coding plan 的 monitor 端点分池；选源路由与 quotaFamily 判定补 start-plan 分支修 start-plan pane 误读 GLM Coding Max 池；chip 增「套餐」分段（windows.plan，one_time 发放池聚合已用%），tooltip 套餐池行按 expires 标记切「到期」措辞） → v113 夜间审计加固：quotaBalanceText 内建转义（currency 是远程响应字符串，chip/tooltip 双 innerHTML sink；parts label/amount 单次转义修双重转义；「其他源」行标签转义归位；aria-label 走 plain 纯文本变体不读实体）→quotaTip 补内容签名幂等 __zuTipSig（同 gitTip，悬停期间周期对账不再打断文本选择）→子代理明细面板数据签名幂等（滚动位置/选择不被每 1.5s 推送整面板重建重置；运行中估算仍由面板 800ms tick 原地刷新）→额度 chip 签名重写保留 zu-qbusy（点击刷新动画不被推送截断，同 git chip）→⚙ 源列表 id/label/preset/keyUrl 属性级转义 aEsc（custom:<providerId> 可含用户自定义名）→live 速度 span 的 speedView.text 过 ttEsc（工具名是宿主/MCP 可控字符串）→渲染桥两处订阅回调尾部 updateLive() try 包裹（异常不冒进宿主 store 通知分发，诊断键 subLiveErr/bridgeLiveErr 记录） → v114 积压清单清扫：remoteCache/remoteTodayCache/richTextCache/richTextAttempts 上限淘汰（长会话防无界增长）；dispose 清理补 __zusageDeliverTurnText/__zusageSidWs/__zusagePaneScopes（旧代闭包自卫之外的清理完整性）；诊断 lsVals 只转储 zusage 命名空间的 localStorage 键（宿主其余键值不进 diag 文件） → v115 渲染循环省电（上游 xhwxt PR #26/#28 同源问题）：幽灵子树/遮挡命中/模态判定加 TTL 缓存（120/150ms，命中绑定元素矩形+模式），track 在 document.hidden 时整帧跳过；未采纳其 600ms↔2s 调度降频（heavy 600ms 对账是与 render 并列的 React 重写兜底契约，降频会让增强节点裸奔 2s） → v116 「思考中」卡死修复（源码复核定案）：v87 合成分支条件收紧——仅「空窗口非终态（draft 空窗，v87 本意）或 control.phase=running」才合成思考中，删除「行非空」析取项（宿主 wire 快照 rows.window 恒为全序尾 60 行，末轮超窗的闲置会话整窗无 turnHeader，旧条件使其永久点亮思考中、切回重绑重新计时）；思考计时锚定 turnHeader.startedAt（宿主创建 header 恒写入，重绑不清零，缺字段回退首观测）→ v117 悬停命中区扩到整栏（fork lliangworld b21e3cf0 同源收编）：条目空隙/分隔符按 sep 中线就近归属、尾部空隙归末位条目，⚙ 与空条面维持保持不动；防闪烁改由节流+幂等承担 → v118 无障碍与主题重构（并行会话批次）：条目可聚焦（span tabindex / zu-sub 真按钮 + aria-label）、键盘可达 tooltip（focusin/focusout + Escape 收起）、focus-visible 焦点环、SVG 图标与思考动画改 currentColor 随主题、⚙ 面板请求-回执协议（requestId + __zusagePluginResult，feedbackVersion 1）、quota 源操作错误语义、统计行开关即时重扫 → v119 插件自动检查改为每 1 小时，更新区双语提示更新器变更需完全退出并重开 → v120 Git 手动刷新改请求-回执协议（askGitRefresh 带 path/requestId，主桥 gitTick 完成后经 __zusagePluginResult 回执、在途请求合并等待，按请求 path 校验结果）+ 状态条 aria-live sr-only 播报区（套餐额度查询中/Git 刷新状态）+ ⚙ 面板高度上限 82vh→90vh + 模态判定改按可见 dialog（display/visibility/opacity 过滤） → v121 状态条 .ico 与 ⚙ 齿轮图标盒由 calc(字号+4px) 改为等宿主字号（24 格线性图标墨迹只占盒 75–83%，18px 顶满 1.3 行盒显大，且加法常量令比例随字号漂移 1.33×→1.20×；用户实机定 1.0×，.eb .ico 12px 特例不变） → v122 Git chip 展开测量完整宽度并留 32px 迟滞余量，切断宿主 compact 反馈环（issue #100） → v123 Git chip 锚点按电脑操作→上下文→模式→思考回退，排除隐藏探针并随可见锚点迁移（issue #103） → v124 Git chip 固定左侧操作区，移除右侧上下文/思考回退 → v125 思考计时中文全紧邻「7分16秒」（时段间空格去除，用户要求；英文「7 m 16 s」不动） → v126 思考计时英文数字与单位紧邻「7m 16s」（时段间留空格，用户要求） → v127 tok/s 速度十档色（TPS_BANDS 唯一事实源，原始值分档含下限不含上限：<40 低速红 / 40–70 一般黄 / 70–150 流畅绿沿用原三档类名与实测色，150 起新增蓝紫系 zu-teal/zu-sky/zu-azure/zu-violet/zu-purple/zu-magenta，≥2000 Ultra 静态蓝紫渐变 + ✦ 星点（::before content:"✦"/"" AT 静音、@supports 外纯紫回退，浅色组同名覆盖渐变）；估算态与完成态同表分档（用户规格，原「估算态不分档」废止），无效值（负数/NaN/±∞）一律中性 dim 或回退 DB 绝不判低速，DB 回退分支负数/非有限不再渲染 chip；tooltip 档位行改动态「名称 · lo–hi t/s」消解 toFixed 舍入边界歧义，另加静态「颜色对照」图例（十档数值↔颜色升序一览，档位类与条面同源随主题切换）；额度正常态改额度蓝 #78a9ff/浅 #315fc4（.zu-qseg 专属基色，不碰全局 .ok——上下文与速度前三档仍绿），周期标签拆 zu-qlabel 子节点中性次级色常规字重（textContent/aria/tooltip 不变），quotaSegs 补 isFinite 门防 NaN/±∞ 落正常蓝；正常态再改 CCometixLine 同源柔和低饱和（用户规格）：普通窗灰蓝 #8abbd0/浅 #276f86、7 天窗按 quotaSegs 结构化 key 挂 zu-qweekly 淡紫 #b69ad8/浅 #76509f（不匹配显示文本），周期标签与数值同色成组仅标签降字重，上下文按钮正常绿改 #72c9a2/浅 #187b58（限按钮作用域，速度与全局 .ok 不动）） → v129 模型拉取分区（收编 HHQ-666/zcode-model-puller，MIT）：⚙ 基础组新分区列宿主 provider_config.json 的 API Key 型自定义供应商，经主进程拉取其 /models（候选端点探测、OpenAI data/Ollama models/顶层数组形状解析、Bearer+x-api-key 双头），弹窗勾选（已添加/新模型徽标、搜索过滤、全选/清空/仅选新、选中计数）后经 model-pull-apply 最小写回（personalModelIds+modelOrder 追加、providerModelRules 复制同供应商模板条目、同目录原子替换+滚动备份 .zusage-bak、未知键保留）；key 只在主进程内存、只发该 baseUrl 本域，不回渲染端不进日志；请求回执 20s 兜底超时（旧主进程无 action 时提示完全重启而非永久 loading） → v130 拉取算法吸收 GLQQX/zcode-model-discovery-patch 与 linguo2625469/zcode-patcher：字段别名全集（id/modelId/name/model、context_length/contextWindow/context_window/limit/limits、max_completion_tokens/max_output_tokens/maxOutputTokens/limit/limits/top_provider、payload 增 result 形状）、多模态感知（architecture.input_modalities/input_modalities/modalities.input + vision/supports_vision 布尔 ⇒ 宿主 inputFormat 稀疏能力位，缺位写实 false）、思考档位感知（supported_efforts 去重截 16 ⇒ reasoningLevel.values）、models.dev 公共目录补缺（并行拉取 5s 超时失败静默降级、id 精确→basename 唯一匹配、字段级供应商优先、key 与本机数据绝不发往目录、进程内 1h 缓存）、applyModels 按模型写实 config（contextWindow/inputFormat/optionSpecs；元数据走主进程 fetchCache 闭环、渲染端只回传 id 无法注入字段；模板带 map 表达式的 optionSpecs 整体不覆盖防 values 换名失配；无依据字段保持模板原样、不编造默认值）；弹窗行新增 ctx/out 可见小字与档位 title，分区说明补 models.dev 联网披露；review 修复：勾选表/已添加表/metaById 改 null 原型（模型 id 来自远端，__proto__ 等键静默失败丢勾选态）、实例 dispose 同步摘除模型拉取弹窗与 Esc 监听（原仅整体 dispose 摘除，pane 关闭后弹窗跨代泄漏且确认回调 inactive 早退卡保存中文案）、重开面板停在模型拉取分区时立即刷新列表、请求兜底超时 20s→25s（主进程最坏双端点 20s 防假超时）、主进程响应体 8MB 限长解析与 tmp 文件名带 pid 防双实例竞写 → v131 额度/上下文五档色（用户规格 2026-10-27）：CTX_BANDS/QUOTA_BANDS 唯一事实源（{min,cls} 有序表，bandOf 从高到低首个命中），阈值 30/50/80/90（含下限不含上限）——额度 calm/norm/mid/high/crit=emerald/sky/amber/orange/rose（暗 400/浅 700），上下文 calm/norm/mid/high/crit=slate/indigo/violet/orange/red；data-zusage-band 与 zu-qb-* CSS 双主题成对；pct span 与 SVG 环一律继承按钮 currentColor（.zu-ctxpct.ok 系独立色废止）；tabular-nums 原已覆盖 .zu-quota/.zu-ctxpct；v92 百万窗口提前预警（40/60）与 v127 额度正常态灰蓝/7 天窗淡紫（按窗口类型着色）随「仅按百分比」规格废止；额度 ≥100% 满档保留呼吸闪烁特效（zu-qb-exc，用户规格；90–99 为 crit 纯色）；压缩过程态（exc）优先档保留；余额/Key 额度段挂 calm 档色 → v132 模型拉取挂载点迁移（用户指令）：⚙ 设置分区删除（ZU_SECTIONS/section/ensureMpProviders/syncMpList/startMpFetch/mpFeedback 全撤），改挂官方「模型设置⇒自定义供应商」的「+ 添加模型」按钮左侧（锚 data-testid=model-provider-add-model-button，额度 chip 同款 enhance/restore 契约：render/heavy 双对账+位置兜回+自清选择器 .zu-mp-host）；供应商归属优先读设置页表单 http(s) Base URL 归一化匹配（唯一命中直拉），否则单供应商直用/多供应商弹 zu-mp-pick 选择列表/无供应商弹提示；按钮视觉复刻原生 secondary 视格（同页 Tailwind utility bg-secondary h-7 rounded-lg），⚡ 图标 stroke currentColor；弹窗抽通用壳 openMpShell（勾选弹窗/供应商选择/错误提示共用），apply 成功关弹窗由宿主自动刷新列表；供应商归属改主判定=当前选择的供应商（读宿主源码定案：导航项 testid=model-provider-nav-item-<nodeKey>、custom 项 nodeKey=custom:<providerId>、选中项 data-state=selected），providerId 精确匹配不受编辑草稿影响；Base URL 匹配降兜底（专用 testid model-provider-base-url-input 优先于表单启发式），弹窗对齐 HHQ 形态（⚡统计标题/搜索占位/仅选新模型计数/已选中 n 个模型/蓝实底确认钮）并自带 .zu-light 随宿主主题实时换装；review 二轮修复：上下文按钮浅色档补 data-zusage-armed 特异性（浅色主题 norm~crit 曾被暗色 0,3,0 规则恒胜）、model-puller 非 ok 响应体显式 cancel（undici 连接卫生）、宿主按钮 ml-auto（锚容器 justify-between 三子项均匀分布致按钮居中）、确认钮改固定蓝 #3B82F6/#2563EB（客户端 --color-brand 深色主题是白系，白底白字隐形）、拉取按钮仅在选中的是 custom 供应商时挂载（锚 testid 全局唯一，内置/套餐页同 testid）、拉取中按钮文本「拉取中…」+图标旋转（原透明度脉冲无感知） → v133 Git 计数缩写（用户规格 2026-10-28）：chip/tooltip 的行数·条目·↑↓·冲突计数 <1万原值，≥1万 中文（cnUnits 判定）万/亿、英文 k/M/B（k 门槛刻意抬到 1万，与 token fmt 的 K≥1000 不同，小写 k 至多两位小数去尾零紧邻）；仓库个数与 aria 播报保持原值 → v134 额度与上下文保留既有阈值并统一绿黄红三档视觉；统一字号为宿主基准减 1px，周期标签加粗并微调分隔符 → v136 编辑项目弹窗源文件夹行在名称下方显示完整路径（纯 CSS ::after attr(title)，零 DOM 注入 React 无感；.truncate 限定本地行、排除 fixedFolder break-all 全路径行防重复，多文件夹每行各取各的 title；长路径自动换行不做省略号（宿主 truncate 的 nowrap 继承进伪元素须显式 white-space:normal）；规则挂条样式表、由 <html> data-zusage-pp 门控，⚙ 通用区「项目完整路径」开关 zusage3.projPath 默认开即时生效；顺带清理未提交编辑遗留的 spawnInstance 陈旧重复块 566 行死代码并复原被覆写的 issue #55 注释） → v137 源文件夹行点击即用系统文件管理器打开该目录（用户规格 2026-10-28，mac/Win 双平台）：主通道宿主桥 openInFileManager（Windows shell.openPath / macOS open 带 Finder 与 shell 双回退，raw path 免编码），旧主进程降级 openExternalFile、openExternal(file:)（白名单含 file:）；远程项目编辑器按 virtual-project-existing 标记排除，fixedFolder 行不在选择器内；多 pane 重复委托 500ms 同路径去重，document click 监听随实例 dispose 摘除；行加 cursor:pointer → v138 重置卡倒计时改时分秒全档恒显（并行会话 rstmerge 线并流收编，用户规格 2026-10-28：精确到秒、随 600ms 对账实时逐秒跳动，rstSpanText 中文数字单位紧邻「3时05分30秒」、英文数字单位紧邻+时段间空格「3h 05m 30s」；rst tooltip 补 Escape 收起（v118 键盘可达契约）；⚙ 倒计时阈值语义不变——并流时保留 rstCdh 持久化，对方运行目录构建因旧基线缺失而误删，其 18:42 rstmerge 部署曾覆盖本项目 v136/v137 后经本线合并恢复） → v139 合并 fork/main v1.5.5 线（PR #121 重置卡徽标、#122 倒计时秒级、#123 templateRules 回填、安装修复与 v1.5.5 发版）时收编遗漏的 model-puller 套餐源判定（4e431cc：detectSelectedCustomProviderId 带 anchor，BigModel 付费套餐详情页按 GLM Coding Max 付费卡区分放行、Start Plan 免费卡页不放行；挂载门控 btn 先查 + mpAnchor 诊断）——本项目快照缺该段曾致 overlay-model-pull 挂载契约测试红；overlay 版本线自此与对方 v136 撞号线并流，按合入顺序顺延 → v140 收口审查修复：openProjFolder 对 invoke 通道（openInFileManager/openExternalFile）挂空 catch——旧主进程无 handler 时异步 reject 会刷 unhandled rejection；review-fix-merge 流程产物 → v141 ⚙ 更新区在 API 限流且渠道清单兜底也失败时引导 GitCode 镜像口令（清单兜底本体在 plugin-updater/plugin-release 主进程链） → v142 ⚙ 通用「状态条样式」双主题 opt-in（zusage3.theme 独立持久化，默认关=现状）：药丸形态=所属输入卡下方居中、内容定宽，.zu-pill 经 --zu-pill-* 逐项拷贝所属视觉表面（Highspeed 外壳优先）计算样式，随宿主主题/hover/focus/Highspeed 实时跟随——pillSurface 统一取色/定位/让位锚点，body 子树 MutationObserver + 祖先属性观察捕捉外壳原位增删与搬移（不依赖 600ms 对账），80ms 过渡采样按目标计数、表面搬离自动停止；条面精简：缓存命中率/请求次数/轮数/耗时/首字收进 tooltip（0 命中也显示 0%），窄窗 .zu-main 横向滚动 + focusin 滚入可视区、切回默认复位 scrollLeft，不触发默认态收缩/渐隐；⚙ 面板宽度在药丸下跟随所属卡（不再跨分栏），主题 radio 按实例分组 name 防多面板互斥；数据重建先绑 __tip 再恢复焦点，aria-describedby/tooltip 不丢；modalOpen 豁免 zusage-panel 自有面板（修设置面板被误判宿主模态整条收起） → v143 药丸收口审查（review-fix-merge）：8px 双间距按宿主实测几何收敛——adjustPillBottom 沿所属 pane/dock 实测矩形补足让位并带 floor/不增长护栏，无法让位的绝对定位布局 visibility 安全隐藏（无每帧显隐抖动）；pillMarginTarget 落在 .chat-composer-input-surface，Highspeed 退出后默认卡重解析（composerCardOf 优先原生 data-testid 输入框）、宿主 margin 变更原值+优先级还原；悬停 tooltip 在 pill 下实时刷新隐藏明细并保留选区/滚动，焦点恢复区分 Escape 关闭与悬停接管；modalOpen 纳入 alertdialog；协调器候选补可见性过滤且已绑定输入框豁免 45% 阈值（上下分栏不再反复挂卸）；表面祖先观察改快照重建防泄漏 → v144 ⚙ radio 对齐修复：.zu-settings-langs/.zu-theme-options 的 label 显式声明 flex+align-items:center+gap:6px——原 label 继承 .panel label 的 flex-start 顶对齐（gap 14px），radio 圆钮相对文字中线偏上约 4.5px；新规则 (0,2,1) 特异性覆盖 (0,1,1) 基础规则，实测居中 delta=0 → v145 切回默认主题补还原 bar.style.visibility（pillUnsafe 安全隐藏是 pill 专属态，写入点仅 track 的 pill 分支；此前 pill 隐藏态下切回默认条永久不可见，十路评审 P1） → v146 精简模式（theme 第三档 compact）：条永久隐藏但保留 DOM（<style>/ariaLive 随条存活、heavy 保条对抗 React 清子树）；生成速度改挂工具行 .zu-tsb（重置卡左侧，挂载/位置兜回/签名幂等照重置卡同款），内容=zuBarSpeedView 桥两态或 tpsBand DB 回退、无有效样本不渲染（用户拍板）；tooltip=速度读数+状态条摘要（本轮/会话/工具/今日/子代理，逐格开关继续生效、子代理行点击开明细）+tpsBandLegend+「打开设置」按钮（镜像齿轮开启分支，面板精简下贴输入卡定位）；updateLive 10Hz 心跳原地跟随；非精简主题 syncTpsChip 门控摘除；诊断 mode=compact → v147 精简模式速率 chip 挪前导区（用户规格）：git chip 左侧——git 在时插其前、git 不在时占其锚位（cua-entry 后方/前导区末尾），两侧位置兜回收敛为 [锚][速率][git]（git 兜回容忍速率占相邻位防逐拍拉锯）；前导区发现失败回落尾随区（重置卡/额度组左侧） → v148 精简速率 tooltip「打开设置」按钮右对齐（用户规格）：footer 改 flex 布局，说明文本 tps-note-t 占据剩余宽度、按钮 margin-left:auto 推至最右，长文本换行不断布局 → v149 精简速率 tooltip 摘要行单位 tok→token（用户规格，与回答末尾统计行的 token 措辞对齐） → v150 修复精简模式 git chip 永不挂载（用户报告）：v147 的 git 兜回容忍条款（速率占锚位时不挪）误拦首次挂载——速率 chip 常驻锚位时 enhanceGitChip 每拍判"已就位"跳过插入；改为 chip 未连入 DOM 时无条件首挂（落速率后再由速率兜回收敛 [锚][速率][git]），容忍只用于已挂载的位置保持 → v151 工具状态词改版（用户规格）：Bash 动词「正在执行」→「工作中」，未知工具回退同改（正在执行 X→工作中 X）；工具计时分隔去中点（正在读取 · 4.3s→正在读取 4.3s 一并生效） → v152 工具动词 Read「正在读取」→「读取中」（用户规格） → v153 工具执行状态词定稿（用户规格）：Bash 与未知工具回退「工作中」→「执行中」（无名词回退英文 Working→Executing 对齐） → v154 工具动词全面改「X中」体例（用户规格）：写入中/编辑中/搜索中/获取网页中/更新待办中/读取待办中/运行技能中/读取上下文中/发送消息中/获取任务输出中/停止任务中/编写工作流中（Read 读取中、Bash 执行中、Agent 子代理运行中此前已改；英文标签不变） → v155 审查修复批（review-fix）：①compact 下 positionSubPanel 被隐藏条僵尸 .zu-sub 抢锚（零矩形把明细面板钉左上角）——chip 优先锚；②速率 tooltip 内容含秒表，悬停中 10Hz 整片重建吃掉「打开设置」/子代理行点击——显示中内容变化冻结只跟位置；③track compact 早退补两面板周期跟随；④自清选择器补 .zu-tsb、跨代采纳 chip 统一挂装（__zuWired 防重）修复热更后悬停/键盘失效；⑤closeSettings 焦点归还校验 offsetParent（compact 下不落隐藏 gear）；⑥enhanceGitChip 重复 var slotNode 清理。Web 同批：①③⑤（mousemove chips 归属校验只接本实例）+chip focus/blur 键盘可达对齐桌面 → v156 上下文按钮增强开关（issue #141）：⚙ 通用区新增「上下文按钮增强」checkbox（localStorage zusage3.ctxEnh，缺省开、仅显式 "0" 关），关闭走 enhanceCtxButton 关闭分支还原原生环/百分比且重置卡徽标继续维护（restore 顺带清徽标后立即重挂） → v157 修复精简→默认切换残留空壳细线（用户报告）：compact 期 render 短路会让空壳条面（热更占位/清子树后未填过）因签名相等一直存活、切回默认露出细线数十秒；①离开精简立即恢复 display（compactHid 区分初载 none，初载不提前露条保 pill 定位契约）；②离开精简强制条面重建一次（lastHtml 清空）；③compact 短路加 main.children.length 门——空壳先补一次完整渲染（条隐藏不可见）；④render 公共尾部补 syncTpsChip（短路/直通两路都经）→ v158 并流 fork/main cmdkW 线（PR #140，原线 v146 与主线 v146 精简模式撞号按合入顺序顺延）：宿主命令中心（⌘K 搜索弹框）加宽加高开关（⚙ 通用区，zusage3.cmdkW 缺省开）：条样式表规则 max-width:max(32rem,80vw)!important（原生上限=宿主 quickPickDialogClassName 的 max-w-lg=512px，弹框基础类自带 w-full 窄窗本就满宽，故小窗保持原样）与高度同规格（弹框根 max(90dvh,calc(100dvh-6rem)) 不低于原生上限，cmdk 列表 440px 硬顶放宽为 max(440px,calc(90dvh-15rem)) 小窗保底），<html> data-zusage-cmdk 属性门控（applyCmdkW，与 v136 projPath 同款），:has(>[data-slot=command][cmdk-root]) 只命中 cmdk 弹框——命令中心/任务搜索/快捷指令共用该样式常量一并放宽，设置页等普通 Dialog 不受影响 → v159 重启提醒开关（issue #139）：⚙ 插件更新区新增「更新后提醒重启」复选框（zu-restart-notice），经主桥 restart-notice 动作原子写运行时 config.json 的 restart_notice（缺省开、显式 false 才关、异常值不静默）；session-start hook 的 session_notice 读同一键，关闭后每个新会话不再注入 🔴 重启/安装提醒引用块（/install-overlay 命令行输出与自动安装失败、桥补装的故障提示不受控）——工作流模式多会话不再被逐会话植入提醒  → v160 Skill 运行期状态词显示「技能名·执行中」（用户规格，如「查阅·执行中」+计时）：turn-stats runningTool 透出截 160 字的 inputText，overlay 端 zuSkillName 提取 JSON name 字段（正则兜底、控制字符拒绝、超 24 字省略号截断），取不到回退「运行技能中」→ v161 状态条新增「项目累计」格：会话累计右侧渲染本项目（session.project_id）全部会话聚合（含子代理，口径同 session_usage；远端/不在本地库无字段不渲染），⚙ 状态条显示加「项目累计」开关（show.proj，默认开），精简摘要加同款行 → v162 状态词流光（用户规格）：速率 chip 纯状态词态（思考中…/工具动词/技能名·执行中）复刻宿主 .zcode-loading-label 同款流光——subtle→foreground→subtle 渐变 background-clip:text、1.4s 横向扫光、reduced-motion 停用；类名/关键帧自有命名（zu-shimmer/zu-loading-shimmer）不依赖宿主全局类；带 t/s 数值的估算/真实/DB 回退态不含 → v163 会话累计/项目累计 tooltip 增按模型明细行（top 8 按总量降序 + 「另有 N 个模型」，轻量行无 models 字段不显示）→ v164 tooltip 收口（用户规格）：模型明细全量展示去「另有」折叠、总和行置顶、键列自适应宽不换行、时间范围行 sticky 吸底（rt-pin，五个 tooltip 统一）→ v165 模型明细表格化对齐（rt-models display:table，整块共享最宽键列，token/次数列纵向对齐）→ v166 会话累计/项目累计时间范围精确到秒（fmtStartS，用户规格；其余三格保持到分）→ v167 模型行去 rt-atom（Chromium 表格内在宽度在 inline-block 边界断行致数值折行，真实浏览器实测）+ 带 rt-models 的 tooltip 宽度帽放宽 860px（zu-tip-wide，取最宽一行）→ v168 格面计数改 fmt 万/亿口径（用户规格：≥1万 N.NN万、≥1亿 N.NN亿；本轮次/会话轮次/项目会话次/工具总数四处，tooltip 与精简摘要保持原值）→ v169 同容器双条去重（Windows 用户报告：最小化/还原窗口来回切出现两根状态条）——宿主窗口状态切换可能短暂保留旧视图副本/重建编辑框，协调器瞬态出现两实例两根条落进同一张卡；heavy 对账每拍扫描：同卡可见 .zusage-root >1 或两根 body 兜底条矩形重叠过半时，data-zusage-slot 大者 hideBar 让位（对手消失经 track 自动复显；拆分窗格各卡各条不受影响） → v170 tooltip 计数同口径（用户规格）：各 tooltip 标题/规模/工具/请求行与模型行、精简摘要行的次数/轮数/会话数全部走 fmt；子代理明细面板保持原值 → v171 修 issue #147（社区 @Mc-GrowlR 报告并给出方案，Windows 10 + ZCode 3.17.1）：划词 side chat 面板容器无 data-pane-id，被协调器 auto 兜底键当作独立 pane，同窗出现第二条状态条（Radix presence 常驻挂载，面板收起后幽灵 composer 仍持续命中扫描）；窗口存在真实 pane 键时丢弃 auto 键——老宿主全部候选均为 auto（单键）单实例行为不变、shadow/iframe 空文档兜底不受影响 → v172 待重启/待更新改由 ⚙ 齿轮红点提醒（restartNotice 开关改为控制红点；会话内文字重启提醒取消，plugin-updater 推送 markerAt 作红点代际，点进「插件更新」分区记为已查看）+ ⚙ 更新页「重启 ZCode」按钮（二次确认，主进程 relaunch 动作）+ 移除自动安装开关（hook 未注入一律自动装，auto_enabled/INSTALL_MESSAGE 会话出口删除）   // 悬停 ⚙ 面板可见；版本号随代际递增 → v173 强制 K/M/B 单位开关 → v174 辅助对话独立状态条（宿主 tabId 成键 + 实例配额 4+1、桥 scope 精确绑定、确定性统计行按会话根归属）→ v175 辅助对话回答末尾富文本与主分栏同规则（显式本地 scope + isCurrentTurn 活跃轮限定 + --current 的 promptTs 守卫；修宿主 modelDurationMs 只累计高速供应商致占位行永久「生成时长缺失」；富文本收集后统一发起、同 SID 只追活跃轮且 epoch 粘滞防多轮搅动） → v177 review 修复批（10-agent 全量 review 闭环）：双条去重抑制不再被 track 每帧复显打穿（v169 Windows 双条场景实际失效的根因，复显前查 dupSuppress、heavy 每拍重评估解除）；精简下速率 chip 被摘除后子代理明细面板保持原位（不再回落隐藏条内全零 .zu-sub 抢锚钉视口左上角，web v103 同款）；精简短路块恢复 syncTpsChip 数据点 reapply（2976478 挪公共尾部后短路 return 到不了、与 git chip 不对称）；relaunch 无回执 4s 提示主进程可能是旧版需手动完全退出（旧 pollPluginRequests 白名单外动作静默丢弃）；待办红点指纹改分量级比较（更新装完后 latestVersion 分量退出不再误复亮）且 ack 幂等早退前先收敛本窗口红点；cnNum 切换补富文本 unitEpoch 在途竞态守卫（同 forceKmb）；detRootEl 落在宿主 data-session-id 写入窗口期时 heavy 按拍补算自愈；精简说明文案对齐 v147 挂载位（前导区 Git 左侧）→ v179 自动压缩阈值注入：⚙ 开关+模式+数值+状态行（enginePatch 随插件状态回推，__zusagePluginState 种子+拷贝行同 v172 纪律），主进程 engine-patch.cjs 按引擎 SHA256 白名单对 glm/zcode.cjs 打阈值改道补丁（锚点唯一性+use strict 指令位校验 fail-closed，hook 缺席/返回空双兜回 fail-open），阈值 autocompact.json 由引擎 hook 每轮决策 mtime 缓存读取——数值热生效、补丁冷生效（已运行 agent 子进程下个 spawn 起用）；ctx 按钮 hover 面板加「自动压缩 ~X%」行（acInfoText 按标称窗口口径，21K 预留近似还原）；关闭开关=按当前内容反向还原引擎字节；阈值任何形式钳 1% effective 地板防连环压缩→rapid-refill 熔断→ v180 重启按钮错位守卫（issue #158）：主进程 pushPluginState 携带 relaunchSupported 能力标记（与 relaunch 分支同文件、天然同步），浮层缺标记时隐藏按钮并显示「完全退出后重开」指引（syncUpdate + 点击守卫双处）；主进程 pollPluginRequests 白名单外动作兜底回执 unknown action，重启回执明确区分「主进程是旧版本」 → v183 子代理行内实时速率 chip（v4 Agent 行 testid 后缀即 childSessionId、与 v97 槽位键同源：运行期读槽位估算、完成后读泵快照 sub.list 真实加权速率；TPS 十档色；悬停 tooltip） → v184 ⚙ 新增「子代理行内速率」开关（state.show.subRate，zusage3.show 整包持久、默认开；只门控行内展示） → v185 实机修复批+review 修复批：后台子代理在宿主注册表无现成 store（运行期估算自 v97 起从未真正工作）→桥 v2 acquire 访问器按已验证 scope 解析子会话租约（仅 sess_subagent_ 前缀+本地）；tooltip 构建器改收数据包（buildTip(el.__zuT) 约定）；截断改从尾部取（保最新派发 8 个）；SUBRATE_DIAG 提模块级；诊断按 handle 判绑定；实例 dispose 摘行内 chip→ v186 本会话平均 token/s（PR #157 收编）：状态栏完成态主数字改会话加权平均（zusage avg_tps：Σ有效输出÷Σ生成窗口，main_turn 段、不含子代理），「均」前缀+按均值分档，最近一段/最近一轮退 tooltip；速率行/CLI 加「会话均」，精简 chip 同步；updateLive 会话归属取本 pane 行（lastView.session），缺席回退原行为→ v187 补回 v181 工具组状态词（PR #161 合并时 turn-stats runningGroupOf 块与 overlay 消费分支遗漏入库，仅存于运行目录热修副本）：turn-stats 复刻宿主 exploreGroup/executeGroup 合成规则（≥2 连续同类行成组、半截 JSON defer 透明、startedAt 锚定组首行），运行行落组尾时状态词显「查阅·执行中/终端·执行中」替代逐工具动词，计时从组头起算 → v188 自动压缩阈值注入按验收反馈简化：开关默认开（主进程 auto_compact_patch 缺省开、显式 false 关）；UI 只留百分比数值（留空=跟随引擎默认），模式下拉移除（引擎层 enabled:false/tokens/buffer 协议保留兼容，配置文件手写仍生效）；标题改「自动压缩上下文阈值注入/压缩上下文阈值数值」；状态行补 14px 水平内边距与 label 文本对齐 → v189 hover 面板阈值信息行移到「压缩上下文」按钮上方并追加下划线「调整」链接：点击复用 gear.click 完整路径打开 ⚙、切「通用」分区、scrollIntoView(nearest) 定位阈值数值行并高亮 3 秒（.zu-ac-flash，计时器实例级归属 dispose 清理）；info 结构改首文本节点+常驻链接（整行 textContent 覆盖会抹掉链接） → v190 三处验收微调：hover 阈值行 text-align:left（与卡内其它行对齐）；高亮改琥珀左条+淡底（--color-brand 在宿主主题是白色系，outline 描边观感像输入框焦点）；⚙ 注入开关关闭或主进程未加载时数值行整行 hidden → v191 hover 阈值行 token 数改走 fmt()：万/亿/K·M·B 与状态条、tooltip 同一转换链（跟随中文单位开关与强制 KMB 开关，中文至多两位小数去尾零） → v192 hover 阈值行布局：去掉自加 6px 下边距（间距交给宿主 space-y-3 的 12px 节奏，与「平均缓存命中率」行 pt-3 距分割线一致）；行改 flex 两端对齐，「调整」链接居右 → v193 修 v192 贴按钮：宿主 space-y-3 是 Tailwind v4 :where() 零权重 margin-bottom，行上自写 margin 会按类名权重压掉它（v190 的 6px 显挤、v192 的 margin:0 贴紧同因）——删掉 margin 声明整段回落容器原生 12px 节奏 → v194 阈值百分比改总窗口口径+数值行 30-99 校验：设置 91=原生按钮走到 91% 触发、hover 显示 91%（旧口径按扣除 21K 输出预留后的有效窗口算，设置值与显示差约 2 个点被判为割裂）；引擎 hook 以 eff+21K 近似还原标称窗口并钳在 eff 内，writeConfig 白名单收紧 30-99，已打补丁引擎下次启动按 PROLOGUE_V1 原位换装新 hook；⚙ 数值超范围实时提示并拒绝提交 → v195 hover 卡新增新手说明行：阈值行下方小字（.zu-ac-hint，随行同生命周期）解释口径与后果——「按窗口总量计算（与顶部百分比同口径）；走到该比例时客户端会自动压缩较早的对话内容以腾出空间」；margin-top 收紧 space-y 间距（space-y v4 只写 margin-bottom，top 无冲突） → v196 「调整」失灵诊断面包屑（下版移除）：openAcThresholdSettings 在 enter/after-gear/+150ms/row 各点写 __zusageDiag.acOpen（面板态、gear 可见性、条 display、分区、代际），closeSettings 写 acClose 调用者栈；v197 实证 acOpen 为空=点击未到达处理函数 → v198 修「调整」失灵：链接监听改 pointerdown（宿主疑似 mousedown 即关 hover 卡、click 到来前链接已被摘）+ 行级 click 兜底 + 捕获期点击写 localStorage 并在说明行回显（命中标绿/落空标红，诊断下版移除） → v199 清理 v196-v198 诊断：acOpen/acClose/acClick 面包屑、localStorage 回显、命中/落空着色全摘；保留 v198 修复本体（pointerdown 主监听 + 行级 click 委托兜底），实机验收=电脑操作点击「调整」面板弹出且阈值行琥珀高亮 → v200 上下文按钮增强显示层优先镜像原生 aria-label 已用/总量（宿主 taskUsage，压缩后立即回落；issue #172 曾停在 DB 最近完成请求旧值 16.4%），解析不出回退 lastBand DB 口径（ctxOv/nativeCtxVal 优先级只作用兜底），exc 过程态档位仍优先，还原路径共用同一解析器（英文 UI restore 顺带修对） → v201 合流：v200 撞号顺延（v200 已被并行线 issue #174 压缩按钮开关占用，8e6e1c0 先合入） → v202 预估费用行：四格 tooltip（本轮/会话/项目/今日）按 models.dev 官方牌价估算费用（token_pricing.py 内置表 326 条 + serve 内 12h 同步 models.dev 与 er-api 汇率，pricing-cache.json 落盘），快照加 cost_usd（USD）与 fx，展示层 ×汇率显 ¥（无汇率降级 $），会话/项目模型明细行尾加各模型费用，「价格来源 models.dev」脚注可点（openExternal），费用行尾空心问号图标悬停弹说明小气泡（价格来源/计算公式/汇率来源三行，fxTip 独立浮层 + mouseover/out 委托 + 180ms 悬停桥，主 tip 收起/重建时同步收），汇率源主源失败兜底 exchangerate.fun（自定义 fx.url 不启用），⚙ 通用区开关默认开，本库口径：裸输入=input−cache_read−cache_creation 全价、缓存分价、output 已含思考不另计 → v203 红点仅承载待重启（发现新版未安装、更新成功且已热重载均不亮；分量级已读比较保留以兼容旧 seen 串）+ ⚙ 带待重启红点点击直接落「插件更新」分区（激活即 ack）+ 设置页新增「已更新成功，点击重启 ZCode 即可生效」提示条（旧主进程降级回原文字指引），分区切换提取 activateSettingsSec 单一出口 → v209 额度 chip .zu-quota 与重置卡徽标 .zu-ctxrst 左右内边距 6px→3px + 模型选择触发按钮（chat-model-select-trigger）左内边距减半：文本态 8→4px、图标态 6→3px（!important 压宿主 group 变体）（用户规格 2026-11-02） → v210 时间范围行全部精确到秒（v166 会话/项目累计先行的 fmtStartS 扩展到本轮/今日合计与速率 tooltip 最近一段；fmtStart 仅剩「最后活动」行）（用户规格 2026-11-02） → v211 本轮 tooltip「单次耗时/首字延迟」改「平均耗时/平均延迟」（zusage 快照 last_turn 新增 avg_duration_ms/avg_ttft_ms，对 model_usage 该轮已完成 main_turn 行 >0 样本求均值；turn_usage.ttft_ms 聚合列实测口径不明不可依赖，旧快照缺字段整行不渲染）+ 本轮格面移除时长/首字两段（耗时只在 tooltip），精简摘要「本轮」行时长随同改平均（用户规格 2026-11-02） → v212 Git chip 分隔符 .zu-git-sep 间距收紧：字面「 · 」改纯点+左右 2px 内边距（多仓段与 ?N 未跟踪段两处同源；用户规格 2026-11-02） → v213 状态条格序调整：今日合计提前到会话累计之后（速度→本轮→会话→今日→项目→工具→子代理→⚙），速率 tooltip「状态条摘要」行序随同对齐（用户规格 2026-11-02） → v214 项目累计统计卡改版：tooltip 重构为「标题+统计范围（全部请求·含子代理）、总用量/请求次数/预估费用三 KPI（费用旁统一说明问号）、输入(命中率)/输出(含思考)/缓存写入明细、会话·轮·工具·重试规模行、模型四列表格（默认 6 项可展开全部，排序对副本）、时间范围（em dash）」，作用域 .zu-project-tip + :has 样式（不动共享 .tip/.rt-* 规则），展开态实例级归属键（sid:started）局部更新不重建整卡，触发项 zu-pj-item 标记，卡片内 Escape 关闭并归还焦点，focusout 进卡片不误关，positionTip 钳底边，费用全链复用 v202（0 有效/缺失 —/开关关整格收） → v215 六统计卡统计卡化：本轮/会话累计/今日合计/子代理四格 tooltip 统一 zu-stat-tip 视觉体系（速度统计卡公共构造：scope 标签+双读数 hero 主读数档位色、两行五列网格窄窗重排、速度卡宽帽 760px :has 作用域；明细面板内模型行问号图标弹费用说明气泡，复用 fxTip 单例同款委托）（用户规格 2026-11-02） → v215.1 速度卡去费用行与模型明细（用户规格：速度 tooltip 只留读数与时间范围，费用唯一承接处=各卡明细面板与 fxTip 气泡） → v217 子代理统一浮层：.zu-sub-pop 双栏单组件替代「悬停五段卡 tooltip+点击独立明细面板」两套旧 UI（preview/pinned 状态机：悬停预览、首次点击固定、面板内操作转固定、Escape/关闭/外点统一收且焦点归还+500ms 悬停抑制；选中按 sid 维护、运行中未入库槽位进导航、签名幂等重建保滚动、会话切换即关、入口断连即关；任务页 _sub_item 逐任务模型用量表/预估费用/平均速率档色行/最后活动全格式时间，zusage sub.list 单项同步扩展；精简入口 chip.__zuOpenSub 归一指向同一浮层）（实机验收 2026-11-03） → v218 速度卡三修（实机反馈）：悬停冻结 updateLive tipFor 判定改 contains（旧恒 false 致悬停中 tooltip 不冻结）；右格「最近一段」改读 lastView.last.tps（zuBarSpeedView 无 latest 字段恒缺）；图例 ≥2000 Ultra 改渐变圆点并禁 ✦ 伪元素（星点破形） → v219 ⚙「状态条样式」（默认/药丸/精简单选+精简说明行）从「通用」分区移入「状态条显示」分区卡首，纯分区归属调整，控件与持久化行为不变 → v222 速度卡 tooltip 补「时间范围」行（用户规格，参考四格 tooltip 同款式）：主数字为会话均/桥态取会话累计口径（started→last_at，与会话累计 tooltip 同源），「最近一段」回退态保持段范围；起点缺失整行不渲染（半程范围无意义）；三处 speedCardHTML 调用点（桥态 buildLiveTip/DB 回退/精简 chip）同批生效 → v223 ⚙ 面板关闭按钮命中区外扩（原并行线编号 v220，合入顺延；::after inset:-6px、hover 反馈同步，约 20×24px→32×36px）：按钮四周 head 空白点击原本无反应，用户实测「悬停 × 上点不动、不灵敏」；CDP 真实点击定责为命中区过小（事件链与面板几何均无缺陷），纯命中区修复，不改布局与视觉 → v224 速度卡悬停实时刷新二次修复（实机反馈）：v218 只改了 tipFor 判定，新 tip 串仍写到格内 .zu-live span，而 __tip 宿主与 drawTip 读取都在 .it 格元素上——条件每 tick 命中、重画的仍是整条渲染时的旧串，悬停中「当前读数」冻结在最后一次整条渲染的值（chip 已跳动、tooltip 停在「思考中…2秒」）；改写回格元素（liveEl.closest(".it")），悬停中每 tick 跟手重画，未悬停也保持新鲜 → v225（v224 并行线 PR #198 先合入，本线顺延）⚙ 自动压缩状态行区分「引擎被单独热更」（issue #191）：桌面 build 已登记而引擎 sha 脱钩时明示热更事实与漂移 sha 前 12 位（引擎补丁新增 drifted 字段，主进程传入 appVersion 按点分界前缀匹配登记表），替代误导性的"版本不在支持名单"；lastError 后缀此时与 sha 重复不再拼接；fail-closed 判定不变 → v226 ⚙ 两项（用户需求 2026-11-03；v226 已被并行线自动压缩状态行占用，顺延）：①六格显示开关（本轮/会话累计/项目累计/工具调用/今日合计/子代理）全部关闭时样式自动转精简（边缘触发只在「变得全关」那一拍切档，zusage3.autoCompact 记录来源主题 default|pill，重开任一格恢复、面板手动改档即解除；药丸来源同样触发）②默认样式新增「水平对齐」三选一（zusage3.barJust：均分 space-between 缺省不挂类/居左 flex-start/居右——居右不用字面 flex-end，LTR 下 start 侧溢出不可滚动也不计入 scrollWidth 会废掉收缩检测与 .zu-clip 渐隐，改首格 margin-left:auto 等效右聚拢、溢出方向与兜底不变；设置块仅默认档显示，applyBarTheme 随档显隐并同步条上 zu-just-* 类） → v227 预估费用说明气泡悬停保活（fxTip 是 body 级独立浮层、挂在主 tip 之外：指针从 ? 图标移入气泡被文档 mousemove「条外」分支按 left-bar 强制收主 tip、hideTip 同步收气泡，v202 起悬停说明气泡即灭；子代理浮层路径同被 preview-leave 倒计时收走面板。mousemove 处理器节流前新增分支：fxTip 显示中且目标在气泡内视同仍在 tooltip 上——保住主 tip 与气泡、取消越顶宽限与子代理面板延迟关闭，离开气泡回落原判定） → v228 速度 chip 完成态去「· 近X」尾缀（用户规格；编号顺延避让已合并的 v226(PR #200)与 v227(PR #202 fx-tip-keepalive)）：条面格与精简 chip 同批去掉 dbTps 尾缀，主数字只显会话均（或最近一段）；「最近一段」读数保留在 tooltip 右格不受影响 → v230 压缩轮不再显示「本轮统计不可用」（编号顺延：原 v238 号，v229 已由并行合入的 PR #207 占用、v231 起由并行未合线自占）：上下文压缩（手动/自动同链）是 query_source='compact' 的辅助轮（DB 有完整数字且已计入今日/会话累计，但消息流无正文、header 零输出），旧逻辑按 v74 零输出明示规则误插误导占位——实测压缩轮投影=turnHeader+timelineMarker(marker.type='compact') 而 header.executionKind 恒 'agent'（ek 探针证伪初版假设），turn-stats get() 以 isCompact 识别，overlay 对压缩完成轮不新插/撤下已插行（宿主「上下文已压缩」提示已承载语义）；kinds/tmr 为 det 诊断字段；v74 真实零输出轮行为不变 → v231 统计卡标题拼接名称与垂直居中（用户规格三轮迭代一并入库；编号顺延避让并行已合入的 v229(PR #207, issue #205)——v228 后 overlay 台账实际未占用，按共享代际台账撞号声明让号）：①项目累计卡拼项目名——zusage _project_usage 附 name=启动目录末段（正反斜杠归一，缺目录/旧快照判空不渲染），.zu-pj-pname 字号颜色同规模行 .zu-pj-scale；②会话累计卡拼会话名——快照行 title 三处本就产出，纯渲染端：statHead 加可选第三参仅会话累计卡传、/\s+/g 压空白、缺 title 判空不渲染，.zu-st-name 360px 省略号；③名称与标题垂直居中——标题容器带名称时切 .zu-tt-name（display:flex;align-items:center），行内 baseline/bottom 对齐会被 18px 大字 descent 拖得视觉偏低（实机指认），flex 子项自动块化、省略号仍成立 → v232 速度 tooltip「最近 20 段」柱状图：zusage 快照 session 行新增 speed_segs=最近 ≤20 条已完成 main_turn 有效速度段（_row_gen_ms 窗口与 avg_tps 同款口径、辅助源/子代理/碎段不计，v 保留原始浮点供档位与柱高按原始值判断；speedCardHTML 带 segs 时切「左读数卡+右图表」布局——左卡=当前读数/档位胶囊/加权平均说明，「最近一段」右格由最新柱承载，无 segs 的旧快照/远端旧版保持 v215 原布局），柱顶读数恒一位小数与柱同轴心、最新段加粗，Y 轴 0 起整洁刻度并按「信息卡横向覆盖最右约 1/3 柱」约束迭代刻度保证最高柱读数不被压住，X 轴=分段真实完成时间本地时区 MM-DD HH:mm 稀疏显示、首末恒留，最新段描边高亮+「最新」徽标，柱体颜色沿用 TPS_BANDS 档位类（ultra 渐变深浅主题显式 border-box 覆盖防 clip:text 裁没），段值 ≥1000 t/s（读数 6 字符）或窄窗口（plot min-width+横滚）保读数永不重叠；柱级悬停/键盘焦点弹信息卡——tip 本体委托 + 实例闭包存悬停段下标经 speedTipRebuild 编进串（签名幂等重建不丢状态、离开回落最新段、会话切换重置），render 接管对速度格补 drawTip 使打开中随快照跟手（焦点/选区在 tip 内时跳过），图表横滚位置跨重建保留；精简 chip tooltip 不带图表 → v233 速度卡三删+读数自适应（用户规格）：①删「统计会话全部已完成请求：工具等待不计，不含子代理。」口径行（DB 回退与精简摘要两处，Σ输出÷Σ生成耗时等其余口径保留）；②删柱状图「最新」徽标（最新段描边与加粗读数保留，plot 高 200→184）；③删「每段完成后更新；不足 20 段时显示实际数量。」脚注（live/回退两处）；④左卡「当前读数」估宽分级自适应（超长状态词降字号+允许换行，不再被 156px 左卡裁切；分级实现见同批改动） → v234 柱状图 20 段→14 段、释放空间给左卡（用户规格）：zusage 新常量 _SPEED_SEGS_MAX=14（与 last.tps 回查的 _TPS_LOOKBACK 分离，扫描窗 42 行凑 14 条有效段）+ speedSegsOf 渲染端截 14 + 两处口径行「最近 20 段：…」改 14；左卡 156→300px（内宽 278），主数字删 +12px 覆盖回基础 ui+22 大字，估宽分级阈值重算 ≤7.5/≤11.5、fit2 +6→+10px；plot min-width 600→420（pitch≥30）、wide 780→560、xEvery 估算基数 620→460/最小标签距 44→30（14 柱满宽全显时间标签） → v235 速度 tooltip 多状态结构化重构（用户设计图规格）：zuBarSpeedView 追加结构化字段 kind/statusText/nameText/nameFull/elapsedText/speedValue/speedIsEstimated/speedSource/activeCount/noteText（八类 tool/toolgroup/skill/subagent/thinking/estimate/avg/real，text/cls/phase/band/latest 逐字保留、状态判断不解析文案）；speedCardHTML 新增 o.status 分层左卡模板（zu-sl-status 状态标题+子代理 ×N 徽标 / zu-sl-name 名称两行省略+title 全名 / zu-sl-main 主数值或计时 / zu-sl-unit / zu-sl-note 辅助），数值型走档位色、工具/Skill/思考/子代理保持 dim，o.main 拼装路径为精简 chip 等旧调用方保留；子代理估速前缀 ≈、无效估速显「估算中…」不补 0；buildLiveTip/fallback 传结构化状态，scope 标签按真实状态映射（工具执行中/工具组执行中/Skill 执行中/子代理运行中/思考中/生成中估算/会话平均/本轮真实速度），思考态左卡内嵌脑动效图标；柱状图 14→17 段（_SPEED_SEGS_MAX=17、渲染端截 17、口径行改 17），plot min-width 420→500/wide 560→680/xEvery 基数 460→500/最小标签距 30→29 配平左卡 300→250px → v236 速度 tooltip 三修（用户实机反馈）：①信息卡改为悬停/键盘聚焦柱体时才渲染（默认不再常驻最新段上方，cur 高亮随之仅悬停态、latest 描边保留）；②X 轴时间标签最小距 29→44（17 柱 pitch≈29 必隔列、间距 ×2，修复标签拥挤）；③非 wide 图表删 plot min-width（随容器压缩+稀疏标签兜底），任何窗口宽度不出横向滚动条（wide ≥1000 t/s 保留横滚），速度卡宽帽 860→1040 → v237 修时间标签裁半（用户实机截图）：v236 的 border-box 配平让 X 轴行内容区只剩 20px、两行时间（25px）被 wrap 的 overflow-y:hidden 裁掉半行——X 行 24→29px（4 padding+25 两行）、plot 高 184→189，列配平随之 160+29 → v239 速度 tooltip 100% 复刻设计图（用户拍板以设计图为准，撤销 v233 删口径/v236 悬停才显卡）：信息卡恒在（默认最新段带「（最新）」+虚线引线连柱，悬停切段）、左卡状态图标+「当前读数」标签+档位色状态标题、颜色对照单行横排、统计口径左标题右分段+时间范围同卡、带图表时不渲染脚注 → v240 柱状图 17→10 段（zusage _SPEED_SEGS_MAX=10、渲染端截 10、口径文案同改）、柱宽 max-width 22→15px（-30%）、信息卡恢复仅悬停/聚焦才显示（撤销 v239 常驻）、左卡下半区加「峰值/最低/最新」概览填空、速度卡宽帽 1040→860、plot min-width 500→340 → v241 速度 tooltip 按设计图复刻：柱状图取当前会话最近 10 次（可跨天）、左卡标题行/主读数/说明行文案按设计图对齐（工具组「查阅」、Skill「执行中」、说明行统一「X · 正在执行」）、前缀「估/均」小号灰字、主体区垂直居中填空 → v242 速度 tooltip review 修复批（十 subagent 审查）：focusout/mouseout relatedTarget 守卫修 Tab 跨柱焦点断裂与双重建闪烁、render 接管 pill 主题补焦点守卫、wide 横滚复活（plot 420）、spanFrom 收严最坏一半 + CARD_H 36（实高 35.6 校准）、real 去档位胶囊、skill 标题统一无空格「·执行中」、工具组 statusText 回归完整短语、liveScopeMap real/estimate 用词对齐、「当前读数」标签与有效数值同门（修 subagent 数值误杀回归）、左卡 border-box 250/双规则合并/padding 12、标题档位色与单行省略、浅色 ultra 图例圆点 clip 修正、hero :has 单列、柱 role=img、17 段/常驻卡/帽 1040 等过期注释清理、测试补八态直调/概览三格/前缀/（最新）角标/图例行/几何不重叠断言 → v243 更新日志「发布页」链接 GitCode 渠道改指 /releases 列表页（tag 深链页对本项目 API 创建的 Release 一律「找不到或无权限」，GitCode 平台路由 bug 2026-11-04 实测；GitHub 渠道保持精确 tag 深链；镜像/未核实回退路径同规） → v244 重启按钮反馈与延迟（用户报告「点击没反应、等很久才退出」——大头是宿主 app.quit 优雅退出链要关窗并逐个终止会话/扩展子进程，可达数十秒，插件无法绕过）：确认发送即「正在重启…」+禁用+预期文案替代「发出即恢复」伪装无反应，4s 无回执/失败/90s 仍存活三路还原（ok 后挂 90s 兜底防 quit 被会话/扩展阻止永久卡死；4s 超时已还原则不再挂）；syncUpdate 重绘保持禁用与提示；主进程 relaunch 固定 300ms 延迟改回执送达后 30ms 退出（800ms 渲染端无响应硬兜底）；v245（同批提交）quit 前 hide 全部窗口——退出屏障期窗口不再可见干等，主进程 15s unhide 哨兵在 quit 未发生时恢复可见 → v246 用户手改批：速度图未悬停（hoverIdx<0）不渲染信息卡、span 只按 capOut 留柱顶读数净空，刻度基数补 6/7.5 防跳档空旷；X 轴同日去重（仅首枚显示标签柱与跨日首柱渲染日期行，其余同日只显 HH:mm）；本轮/今日合计首格改「总用量」、今日缓存命中率并入 grid3 输入列副行、本轮平均耗时/延迟/总耗时行改 --sub 弱化段、会话累计 scale 行分隔符改前缀式并删末项请求数、工具表 <50ms 显「<0.1s」弱化、子代理浮层 KPI 副行改命中率/含思考/缓存写入+平均速率并入 KPI、项目卡范围+scope 合并单胶囊+隐藏「按用量排序」+子代理浮层模型表去底色改行线、本轮输出速度单位 tok/s→t/s、图例 ultra 点隐藏与 inline 间距收紧、tbody scrollbar-gutter:stable → v247 悬浮窗口激活方式（issue 用户反馈：滑过误触遮挡）：⚙ 通用新增「点击激活悬浮窗口」开关（zusage3.tipClick 缺省关=停留 1 秒、仅显式 "1" 开=点击）；统计卡/子代理浮层 closed→open 改由独立 1000ms 定时器承接（排程置于 150ms 节流之前防快速滑入静止后永不触发、按命中元素 key 去重续期、到点按当前坐标 elementFromPoint 重命中抗 render 1.5s 重建 + :hover 最深元素复核），已开 tip 切相邻格保持即时，键盘 focusin 即时打开不变，取消统一落 hideTip/各 return 分支，定时器随 dispose 清理；点击模式 bar.click 接管 .it 并用 focusTipAt 避开 focusin→click 首击抵消（复用移出条面/Escape 关闭链，不另起 pin），fxTip/速度信息卡/工具栏 chip 与宿主原生 hover-card 不在本次范围→ v248 预估费用说明气泡「当前模型」随卡携带模型上下文（上一会话已完成、已部署未提交，与已合入的 v249（PR #224）并行开发，随本批补录入库）：四个统计卡与子代理浮层汇总的 KPI 费用问号随卡携带模型上下文（fxqIcon：data-model/data-rates=按用量最多模型+data-mcount+data-mscope），单模型显该模型四价、多模型沿项目卡口径显「计价范围」、无模型明细不显模型行，default 借 last 分支删除 → v249 用户裁定简化：「点击激活悬浮窗口」关闭（缺省）不再做停留 1 秒，恢复即时悬停原语义（v247 的 1000ms 定时器链 HOVER_OPEN_DELAY_MS/hoverSchedule/hoverCheck/hoverCancel 整体移除，mousemove 恢复 v246 逐行为）；开关开启仍为点击激活（bar.click 接管 .it + focusTipAt 防首击抵消、子代理 preview 关闭改 pinned 打开），设置项/文档口径同步为「悬停立即显示 ↔ 点击才打开」两态 → v250 速度柱状图按轮聚合+悬停卡全格式时间与轮明细+柱间距收紧（用户三项规格；编号顺延避让已合入的 v249「点击激活简化」PR #224）：zusage _speed_segments 改按 turn_id 合并一次提问的全部请求（v=Σ有效输出÷Σ生成窗口、逐问同口径），随段携带 m/i/o/n/c 供悬停信息卡渲染 模型/Token 用量（含输入·输出拆分）/请求次数/预估费用（数字格式化经 o.fmtTok/fmtCnt/fmtMoney 回调，费用随 state.cost 门控，旧快照缺字段按行省略，CARD_H 按实际明细行数校准）；悬停卡时间改全格式 yyyy-MM-dd HH:mm:ss；X 轴每个显示标签恒带月日两行（同日去重废止）；柱宽 calc(20%+12px) 使柱白任意宽度恒精确收紧 20%；段→轮措辞（最近 N 轮/第 N 轮） → v251 套餐额度显示口径开关（⚙ 套餐额度分区「显示剩余额度」，zusage3.quotaRemain 缺省关=已用%，纯渲染偏好不进 config.json）：开启后 chip 面分段数字与 aria、tooltip 窗口行/Key 总额度行/其他源摘要行改按剩余%（100−已用 同一窗口池补数，quotaRemainPct 钳 [0,100]）打头，绝对值窗口行内 已用/剩余 明细互换顺序；档位色恒按已用原始值判定（quota.md 契约）不随口径反转；余额/Key 剩余额度单段与团队/未配置/错误形态不受影响 → v252 模型拉取同步提供商侧配置（issue #236）：零兄弟供应商首拉写实最小骨架+有据元数据（contextWindow/inputFormat/档位/输出上限），档位按强度梯排序（宿主默认档=values 末项），Copilot capabilities 别名，api.json 档位目录按需后台补缺（大体量不阻塞，缓存后下次拉取生效），套餐源接目录补缺；弹窗行「未获取配置」中性提示+脚注披露只增不覆盖；档位索引落运行目录缓存（24h stale-while-revalidate 跨重启复用），目录后台补拉时行内「档位补拉中…」状态+脚注说明 → v253 本轮/今日合计 tooltip 模型明细改项目卡式四列表格（zu-pj-mhead+statTable，费用列随 state.cost 门控；本轮 rt-models 行式退役，精简摘要保留）+ 本轮 tooltip 删「速度＝Σ…未参与测速」口径行（unrated_output 字段照旧生产） → v254 生成速度 Tooltip 全面重构（范围/时间双 Tab 共 20 组合 + 按时间/会话/项目维度：zusage 新增真实库有界轮表 speed_history（短键+索引表+2s 缓存，单一 Σ有效输出÷Σ生成窗口口径，旧 speed_segs 契约不动），渲染端纯函数聚合；16 根细柱定宽居中、十档 TPS_BANDS 同源、删除均值虚线/统计口径大段/底部时间行/图表预览；右上角日历时间胶囊（title 全格式）、左卡历史均值与生成中估算分离、柱 hover 五字段自定义卡（时间区间/档位速度/多模型/Token 总量含输入输出/预估费用缺失态）、单行十档图例、空桶显空柱不显 0、远端身份下「全部」清晰降级、旧快照/精简 chip 回退原布局；Tab/dim/柱 hover 全走 tip 本体既有事件委托与签名幂等重建，不新增 IPC/定时器/全局监听） → v255 真实宿主验收三修（X 轴短时分标签+30px 裁切杜绝长时间戳重叠、左卡实时状态降为独立 note 且标题中性化「当前筛选 · 历史统计」避免工具执行中配历史均值语义错位、V2 实时状态变量更名 spdLiveStatus 与 buildLiveTip 旧局部同名隔离） → v256 修复「速度 Tooltip 有时新、有时旧」（用户实机报告）：根因=统一轮表只在 serve 常驻链产出，主进程常驻进程空闲回收/重启/降级时回退 zusage.py json 一次性帧缺 speed_history，spdRebuildOr 返回 null 整卡回退旧版；①zusage snapshot 增显式 include_speed_history 门控，serve 与桌面 json 都产出轮表（远端子进程 ZUSAGE_REMOTE_CHILD=1 排除，CLI/MCP/远端 stdout 契约不变）；②overlay __zusageUpdate 粘性保留最近一份有界轮表，缺字段帧不再闪回旧卡（空轮表不粘性）；③精简模式 tpsChipTipHTML 与 tpsTip 浮层补齐 V2 接线（双 Tab/维度/柱 hover 全走浮层本体委托、状态落 chip 数据包、V2 卡放行签名重建），V2 宽帽规则补 .zusage-tps-tip 宿主；冷文件 inject-main 未改，热重载即生效 → v257 追堵「首帧缺轮表」（用户 11:21 再现旧卡，渲染端 diag 实证已 v256）：v256 粘性只在代际内有效，热重载/重启后的新代际粘性为空，而 `_speed_history_safe` 在完成轮瞬间的 WAL 写窗口偶发抛错返回 None——首帧恰逢失败时无值可粘，仍回退旧卡。①safe 失败先短重试一次（50ms，新常驻进程首查撞写窗口时多半已放行；缓存 TTL 内不重扫），再失败跨 dbkey 回退最近一次成功轮表（`_SPEED_HISTORY_STALE_MS` 10 分钟上限，轮表是历史统计分钟级陈旧可接受，下一帧成功即覆盖）；②`__zusageUpdate` 帧级诊断 `FATAL.spdFrame`（has/sticky/turns，原地更新）——再出现象 diag 直接区分「数据链缺帧」与「粘性未建立」，不再靠截图反推 → v258 spdTip 取证诊断（用户 11:37 在 v257+首帧 has=1 下仍见旧卡，数据/代码/本地模拟三查均无异常，纯推理到头）：buildLiveTip/html(d)/tpsChipTipHTML 三条速度 tooltip 路径在 V2 成功时记 `FATAL.spdTip={t,src:"v2-live|v2-html|v2-chip",turns}`、回退时记 `{src:"fb-live|fb-html|fb-chip",turns,range,period,sid尾8}`，spdRebuildOr null 分支加 `FATAL.spdNull`（typeof FATAL 守卫不破坏 VM 切片）——diag 直接给出真实路径与当时轮表长度，定位后移除 → v259 宿主多视图顶部 48px [app-region:drag] 标题栏拖拽条穿透上层浮层（Electron 拖拽区按几何命中，覆盖层未显式 no-drag 不阻挡）：面板 top:8px 时头部 ✕ 落在条内，真实点击被窗口拖拽吞掉（新建任务页实报「设置关闭无效」，面板内导航点击正常与症状吻合）；.zusage-panel（设置+子代理浮层）/.tip（全部 tooltip 根）/.zu-mp-ov/.zu-compact-dlg/.zu-rot-pk-dlg 显式 -webkit-app-region:no-drag，把自身矩形从拖拽区减掉（宿主自家浮层与全屏屏障同款修法，app.asar 实证） → v260 静态桥缺席兜底（同内容仓库版记 v258，合入时按合入顺序归一；G2 跨版本免重打桥）：readFiberPaneScope 沿 React fiber 回溯 SessionPane 作用域（detOwnerOf/sidePaneKeyOf 的 tabId 同款兜底；限深 24、撞外层会话/分栏根止步、多候选歧义拒绝，校验与静态属性分支同规）；turn-stats.js 运行时合成 BRIDGE_TEMPLATE v2 同契约三访问器（Map.prototype 一次性探针捕获宿主注册表 + installRuntimeBridge 注入口） → v261 spdRender 取证补强（老会话完成态仍见旧卡而 spdTip 恒被 v2-live 每 tick 覆盖，hover 瞬间的整条渲染记录无法存活）：html(d) 整条渲染专记 `FATAL.spdRender={t,src:v2-html|fb-html,pane,sid尾8,turns,hasH,range,period,dim}`（独立字段不被覆盖），spdTip/spdRender 均带 pane 实例标识（多实例共享 diag 分不清写入者），spdRebuildOr null 分支补 spdNull 原因取证（typeof FATAL 守卫）；本版=运行目录 v260 合流超集基线 + 本诊断（v260 已含速度线全部修复与并行线 v259/v260 桥兜底） → v262 根治「空渲染污染共享数据」（spdRender 铁证定案：用户复现时刻整条渲染 hasH:false / spdNull hType:undefined，而前后帧 has=1——`render(d)` 首行无条件 `state.data = d`，实例 spawn 首渲染/桥空窗的 `render(state.data || {session:{},...})` 把空对象写进共享数据、抹掉统一轮表，窗口内 hover 即 fb-html 旧卡；切会话 tab 触发 pane 重建恰好高频制造该窗口，故「老会话旧卡、新会话正常」）：render 改条件写 `if (d && d.session && d.session.sid) state.data = d`——空对象渲染不再抹掉轮表，spawn 实例后续 updateLive 直接用上一真帧渲染（比旧行为更快出 V2）；真帧写入链（__zusageUpdate 外层）不变 → v263 根治「范围/时间 Tab 点击无效」（用户实报 P0）：①根因=生成中 updateLive 每 100ms 重编 V2 整卡（估算/计时走字让 tipSig 每 tick 变化），mousedown 命中的按钮在 mouseup 前被 innerHTML 替换、click 落到共同祖先 closest(".zu-sv-tab") 为 null；Tab 切换提前到 tip pointerdown 委托（重建窗口前同步生效，click 保留键盘/兜底，同值幂等共存），按下即进 600ms 交互冻结保下拉展开；②updateLive 冻结扩 mouseInBar（悬停保活不整卡重绘，数字冻结在进入时刻，typeof 守卫兼容 VM 切片）；③compact tpsTip 面：Tab 同款 pointerdown（tpsTabActivate）+ showTpsTip 撤销 v255 对 V2 卡的冻结放行（悬停中统一冻结，交互路径清 __zuTipSig 天然放行）；④视觉 12 项（视觉审查 Agent 实测截图清单）：Tab 选中态纯白改柔和强调 rgba(87,200,255,.14)+恒字重 600 防跳动、hover 补背景反馈，左卡删「Σ有效输出 ÷ Σ生成耗时」公式行、标题改弱化「历史统计 · 不含进行中请求」（.zu-sl-title 仅本卡作用域覆写，旧八态卡不动）、主数字 +22px，X 轴跨日首柱两行 MM/DD+HH:mm 且跨日柱稀疏化必显、xEvery 8⇒6 收紧标签间隙，图例 Ultra 补 ✦，维度下拉补 ▾ chevron，标题 +6px/时间胶囊 padding 4px 10px，间距归 8/12 节奏，柱组居中+删 --zu-sv-n 死配置 → v264 第二根因收口（实机点击仍关 tooltip 定案）：tip 内控件点击 ⇒ pointerdown 处理器同步重编 innerHTML ⇒ 被点按钮 detach ⇒ 焦点跌落 body ⇒ focusout(relatedTarget=null) 曾无条件 mouseInBar=false + hideTip(true,"focus-leave") 强制关 tooltip——切换生效了用户也看不见（旧版 click-only 同样中招，这是「Tab 点击无效」体感的第二半）。修复：mouseInBar（指针悬停在条面/tooltip 上）时降级 hideTip(false) 交总闸拦截，指针真正移开由 mousemove 判定；纯键盘 mouseInBar 已 false 维持原强制关。行为级回归：切片派发 focusout 断言悬停中 [false,"focus-leave"]/离场 [true,"focus-leave"] → v265 按下即建总闸（实机第 4 次点击实验定案的第三根因）：tooltip 常经 focusin 打开（点击 .it 聚焦），快速移动/合成指针下 mousemove 采样可能全部被 150ms 节流丢弃、mouseInBar 停留 false，随后一次快照推送的 render-orphan 接管失败即关掉正在交互的 tooltip，点击 Tab 落在消息区；pointerdown 委托开头 mouseInBar=true + cancelTipGrace，「指针按在 tip 内」先于一切判定生效，render-orphan 受总闸拦截，下一 mousemove 重新判定 → v266 render-orphan 悬停保留（第三根因彻底收口）：生成中宿主 phase 切换（思考↔工具↔正文）每次走 render 慢路径整条重建条面，条目结构变化时接管失败曾直接 hideTip(false,"render-orphan")——快速移动/合成指针下 mouseInBar 常 false（mousemove 采样被 150ms 节流丢弃，tooltip 经 focusin 打开），悬停中的 tooltip 随每次 phase 切换闪断、点击 Tab 落在消息区（实机第 4/5 次点击实验定案）。修复：mousemove 处理器开头（节流前）记 lastPt；接管失败时指针仍在 tip 覆盖矩形内则保留旧内容原地显示（不重画、不收），指针一动由 mousemove 重新判定；条外维持原收起 → v267 lastPt typeof 守卫（v266 裸引用打破 overlay-fx-tip-keepalive/overlay-tip-activation 的 mousemove 切片沙箱，与 v265 mouseInBar 同款教训：实例作用域新增变量一律 typeof 守卫或同步补切片夹具） → v268 粘性跨代际（用户实报「速度 tooltips 现在变成老版本了」定案）：v255 粘性是模块级变量，热重载/重启后新代际为 null，新代际首帧恰逢 serve 空闲回收/重启窗口（本地实测 serve pid 数分钟内 8576⇒11362 频繁重启；json 链本地实测 1268 轮/197 会话产出正常）即回退旧卡；修复 = 粘性写 window.__zusageSpdSticky（旧实例不清除、新实例继承，跨热重载/重启持久）+ 四处 V2 消费点（buildLiveTip v2h / html(d) spdRebuildOr / tpsTip 数据包）统一 lastSpeedHistory 兜底——帧缺轮表时以最近一份有界轮表顶上（历史统计分钟级陈旧可接受，v257 同取舍），下一帧成功即覆盖 → v269 lastSpeedHistory typeof 守卫（第三次同款教训：v268 三处裸引用打破 overlay-speed-chart 旧图切片沙箱 3 例——实例/模块新增变量被切片引用必须 typeof 守卫已三令五申） → v270 用户实机验收四修：①「项目」范围按用户口径重定义=全部项目对比（原当前项目与「会话」差异过小，用户实报「应该是取 zcode 所有的项目」；默认维度按项目，dims=[project,time]，不再按 panePid 过滤，切到项目时 session 维度归 project）；②维度切换后 Tab 无效——结合①数据差异过小造成「无反应」假象，随①消除；③右上时间胶囊月日前带年（跨年两端各自带年）；④hover 卡时间行同日区间压缩（右侧只补时分秒）+ zu-sv-twrap 允许换行，长区间不再省略号截断 → v271 点击任意位置关闭根治（用户实报）：tip 内按压后 1.2s 硬保活窗——hideTip 对非 win-leave/escape 的 force 一律降级交总闸（left-bar 命中区边缘误判/焦点跌落/宿主重渲染等任何路径）、focusout 在窗内直接不关；pointerdown 记 lastTipDownAt（typeof 守卫兼容切片）；win-leave（真失焦）与 Escape 保留立即收 → v272 维度切换功能移除（用户裁定）：图表恒按时间聚合——删图表头维度下拉（tip+tpsTip 两处 change 委托、dimSel 拼装、四条 CSS）、speedTabActivate/tpsTabActivate 的 dim 归位规则；「项目」范围恢复当前项目语义（恒时间维度下「全部项目」与「全部」完全等价），标题加「当前项目 ·」前缀；speedSel.dim 结构保留恒 time（会话切换重置兼容） → v273 自适应布局+稀疏可视化+筛选栏重设计（用户 8 张截图 Goal）：①plot 自适应——删 inline 定宽，in-flow spacer（max(240, n*30+12)px）撑宽 + min-width:calc(100% - 30px) 拉满容器，柱组 flex 居中，多桶 spacer 触发横滚，网格/Y 轴/hover 共享同一 plot 坐标系（少柱不再左侧堆积大空白）；②hover 卡锚点改中心相对式 left:calc(50% + off)（plot 宽不再可算）；③today 有效桶 ≤3 且全桶 ≥4 默认聚焦有效时段，图表头「显示完整时间轴/仅显示有记录时段」次级按钮切换（speedSel.focus，切筛选重置，不改统计口径），聚焦带「仅显示有记录时段」提示；④数据覆盖提示 zu-sc-cov：今天「有记录 x/M 小时」、近 7 天「仅 x/7 天有记录」、本月「本月 x/N 天有记录」（分母=已发生时段，不含未来）；⑤筛选工具栏两端对齐——范围组左、时间组右（.zu-sv-time margin-left:auto），删分隔符，与统计卡/图表两缘对齐；⑥左卡精简——删「不含进行中请求」，实时状态并入标题行右侧轻量 zu-sl-sub（不再混入指标间），单柱时峰值/最低/最新 zu-sl-solo 弱化；⑦时间胶囊智能格式——同日「MM/DD HH:MM – HH:MM」、跨日不带年、跨月/跨年两端带年（v270 全带年撤销）；会话切换 speedSel.focus 重置 → v274 完整规格补齐（第二轮 Goal）：①spdChartLayout 统一布局参数入口（colPitch/spacerW/xEvery/valEvery 单处决定）；②柱顶数值稀疏化 valShown——n>8 按 ceil(n/8) 抽稀、首末与悬停柱恒显，16 柱不再数值重叠（hover 卡兜底完整值）；③最新柱 latest 弱化描边；④单点/双点 coverage 追加「暂无足够数据观察趋势」；⑤空态追加「尝试选择更长时间范围」弱化引导；⑥bkeys 截尾仅剩 recent（v273 聚焦改造时已自然移除非 recent 截断，超宽由 spacer 横滚承接不丢桶） → v275 点击偶发关闭+快速切换卡死双修（用户实报）：①tip 原生 pointermove 直接保活（mousemove 处理器 150ms 节流采样盲区让 mouseInBar 停留 false，left-bar 等 force 路径就能关掉交互中 tooltip；pointermove 高频纯赋值绕开节流盲区，总闸始终可靠）；②整卡重编 rAF 合并 scheduleSpeedRebuild——快速来回切 Tab 每次指针按下同步 innerHTML 重建形成重建风暴（卡死体感），同帧多次切换只重建一次，切片沙箱无 rAF 自动退回同步（既有 pointerdown 契约测试不变）；③dispose 取消待合并 rAF；④tipStats.hideSeq 最近 8 次收起原因序列（diag 定性偶发关闭） → v276 撤销 v275 的 rAF 合并（用户实报「会话切到项目卡死」定案）：被遮挡窗口的渲染帧暂停让 rAF 永不执行（本机 ZCode 常被 Chrome/飞书遮挡），切 Tab 排程的重编永不落地、tooltip 僵在旧内容；恢复同步重编（单次 1-3ms 可承受，「重建风暴」为伪问题），保留 v275 的 pointermove 保活与 hideSeq 诊断——遮挡环境一切交互路径必须同步落地 → v277 win-leave 降级可取消宽限（用户实报「点击 tab 仍自动关闭」，hideSeq 铁证 win-leave）：点击 Tab 引发的合成 documentElement mouseleave/瞬态 blur 与真离开在触发点无法区分，tipBoundaryHide 立即 force 关把正常交互打死；降级为 400ms 可取消宽限（cancelTipGrace 共用定时器，pointermove/mousemove 落回即取消），真离开半秒后收；取证 cause 带触发源（blur/edge）与 document.hasFocus 焦点态 → v278 更新失败可见性（issue #247）：updater 检查/安装失败落盘 plugin-update.json lastError（成功即清），⚙ 更新区在非 error 相位显示「上次更新失败」行；hook 链按 HOST_TARGETS 判已装版本 × 宿主 build 未登记适配时强制立即升级 + 会话明确提示（去重），marketplace 刷新重试 + 清单新鲜度校验点名宿主 CLI 静默失败 → v279 速度卡 Header 单行重构（第三轮 UI Goal §3/§5/§7）：标题居左、范围/时间双 Tab 组成连续操作区整体靠右，旧独立筛选行与顶部时间胶囊删除，窄窗 flex-wrap 整体降级不裁剪；统计时间迁至图表标题栏右端轻量文字（calendar 图标 + 紧凑区间 + title 完整 YYYY-MM-DD HH:mm:ss 区间），单位 t/s 紧随图表标题；左卡标题层改「平均速度」+ 小号「历史统计」标识（.zu-sl-k 行删除）；旧图共享类仅 .zu-sv-root/.zu-sv-chart 作用域覆写不受影响 → v280 速度卡横滚位置记忆（用户实报 全部×全部 拉到末尾、关闭 tooltip 再开回到开头）：speedCardV2HTML 根节点携带 data-sv-key=范围|时间 选择键；tpsTip 重编分支（showTpsTip 非冻结路径）重建前从旧 DOM 捕获 .zu-sc-wrap scrollLeft 连同键存储、键同才回填（hover/心跳重编不跳回头部、关闭再开含数据刷新后恢复原位、切范围/时间键变自动归零）；全量 tip drawTip 横滚保留从 keepTop-only 扩展到重开路径并加同键守卫（v232 盲恢复改键同回填，V1 旧图无 zu-sv-root 键按空串键行为不变） → v281 速度卡专项双修（第三轮专项 Goal）：P1 图表列宽稳定——V2 注入样式由仅钳 max-width 改 width+max-width 同值 !important（width=min(960px,calc(100vw-24px))、border-box，压过 .tip 的 width:max-content 与 tpsTip 内联 max-width:520），右图表列 flex:1 1 0 + min-width:0、滚动容器定宽 100%，列宽不再随 plot spacer（n×30+12）与图表头文案反向撑缩，Tab 切换整卡宽度恒定（视口足宽恒 960、窄窗恒 vw-24）；P0 hover 信息卡裁剪根治——卡从 .zu-sv-plot（被 .zu-sc-wrap overflow 滚动容器裁剪）移到 body 级 Portal .zu-sv-portal（模块单例、类名挂 .zusage-quota-tip 复用 boot 旧代清理链、pointer-events:none、z-index 同 tooltip 层 2147483646 且 DOM 序在后），内容经 SPD_PORTAL 侧信道（纯字符串、VM 切片安全、消费即清）由 showTpsTip/zuSpeedChartPick/speedRebuildNow 渲染定位，按柱体 getBoundingClientRect 右上⇒左上⇒钳边避让视口（safe 10px），横向滚动 capture 相重定位（柱滚出 wrap 视口即收），切 Tab/hover=-1/收起路径（hideTpsTip/hideTip）立即隐藏不留孤儿 → v282 档位说明浮层与 Tab 低对比选中专项（第四轮 UI Goal）：底部常驻十档图例整体移除（.zu-sv-legend 包装/分割线/占位全删，整卡高度由 Header+统计主体决定），改由图表标题栏「单位：t/s」旁问号按钮承载——hover/focus 即显不点击、Escape 只收浮层、icon→卡保活（延时收+卡内取消）、柱体 Portal 互斥（双方 show 互收防双层浮窗）、按柱体 rect 下方→上方→钳边定位、body 级浮层脱离 overflow 裁剪 + 显示移尾（B1 同款）+ dispose/热更双清理链；十档内容 spdLegendCardHTML 自 TPS_BANDS 升序生成（颜色/星标/边界与柱体、chip 同源唯一事实），当前档位高亮读按钮 data-sv-band（整卡重编自动更新、空数据不高亮）；Tab 选中态对齐 Hover 低对比背景（去 rgba(87,200,255) 蓝块：on=白 .07/浅色黑 .06 + 发丝内描边区分持续选中，on:hover .09/.07 轻微提亮，字重恒 600 维持 v263 防选中加宽纪律） → v283 档位说明浮层微调（用户反馈）：最大宽度 560→800px（仍钳 calc(100vw-24px)）；显示时左缘对齐宿主 conversation-bottom-dock-transition（composer 容器）而非整窗口/图标锚定，dock 缺失回退图标左缘、越出右缘钳边（与 v282 避让策略叠加） → v284 主卡定宽 800+左缘对齐宿主 dock（用户反馈澄清：上轮 800/dock 对齐实为主 tooltip 而非档位浮层）：V2 注入样式定宽 960→800（width+max-width 同值 !important 不变）；tpsTip 链 showTpsTip 在 V2 卡圤位后左缘改对齐 conversation-bottom-dock-transition（缺失回退 chip 锚定，垂直不变）；全量 tip 链 drawTip 渲染 V2 内容时写 tip.__zuDockLeft、positionTip 每帧消费（rAF 跟随不回退回 chip 锚定），非 V2 内容 null 走原锚定 → v285 速度卡左缘对齐锚元素（用户反馈：热重载后仍居中，指定基于 .it 速度格左侧对齐）：废弃 v284 的 conversation-bottom-dock-transition 宿主类名依赖（实测未生效），改为 positionTip 在 V2 卡（tip.__zuAlignLeft，drawTip 按 .zu-sv-root 置位）时 left=锚元素（.it 格）左缘钳边；tpsTip 紧凑链删 v284 dock 覆盖（原本就是 chip 左缘钳边）；档位说明浮层左缘改对齐主 tooltip 容器左缘（与主卡构图一致，替换 v283 dock 对齐） → v286 图表标题栏精修（第五轮 UI Goal）：标题 600/+2（V2 作用域覆写，不过重）；「单位：t/s」收为轻量「t/s」徽章（弱化前景+微亮底+圆角 5px，视觉优先级 标题＞单位＞档位入口）；问号换专用 Speed Bands SVG（细圆环+三级递增速度柱，currentColor 继承按钮色态，18px 视觉/26px 命中），aria-label 改「查看速度档位说明」；十档浮层/互斥/保活/清理链全部沿用 v282 机制不变 → v287 修复批：速度卡远端判定改只认快照 remote 标（本地 scoped 行也带 workspace_identity，旧判定把本地 pane 选「全部」误降级为本会话并显「远端会话仅显示本会话历史」）；精简链 tpsTabActivate 聚焦按钮改 t0.speedHover=-1（原 t.speedHover 在声明前引用必抛 TypeError，0 也会误高亮第 0 柱） → v288 会话累计模型明细费用列随 ⚙ 预估费用开关门控（原 v215 内联四列表漏门控，v253 共享 statModelsTable 收编时漏掉本卡——开关关闭后仍渲染「预估费用」表头与 ¥ 单元格；换 statModelsTable(sess.models) 与本轮/今日同源，关时收三列、空明细整块不渲染） → v289 火山方舟额度修复（issue #260/#261）：tooltip「其他源」行抽公共 helper otherSourcesRow 并在 info（未配置/暂不支持）分支同样渲染——主源不可展示时后台已查询成功的源（如火山 AK/SK）不再被提前 return 吞掉；其他源标签对复合源 id（vendor:providerId）回退裸厂商键查找；剩余口径（quotaRemain）在其他源行保持不变 → v290 速度卡交互与标签（2026-11-08 用户规格）：图表区滚轮横滚（tpsTip 本体 wheel 委托，deltaY→scrollLeft，不可横滚不拦截）；每柱恒显时间标签（8px 下 5 字符可容纳，稀疏化废弃） → v291 速度历史热力图（本月月历/全部历史 GitHub 风格双形态，档位色同源 TPS_BANDS、无记录中性灰、未来弱日期号）+ FATAL.gen 代际号进 diag（重注入取证不依赖计数字段归零）+ 首开/键变滚到最右 → v292 月历定稿第一轮：标题去粒度词改「范围 · 时间 · 平均速度」三段式；整卡定高 315px 四形态同高；跨月占位不越出星期对齐 → v293 月历设计图规格：列头周首日号与格中心对齐、7 行 1fr 铺满、滚动条样式落元素本体（v293.1） → v294 月历格专项：低饱和档位底 22% 混卡片色（v294.1 拍板去左色条靠底色辨档）、文字统一吃前景色、space-between 布局+min-height 治越界、容器查询三档字号 → v295 月历布局铺满（6 列×行 1fr 均分、紧凑态隐数字 hover 兜底）+ 柱状图系列修订八项：顺序时间恢复（v295.7 撤 v290 倒序）、柱距 24px 恒显时间（v295.17）、Y 轴刻度列外移滚动容器（v295.18）、首开滚最右（v295.13）等 → v296 热力图「全部历史」改最近 365 天窗口（周日起对齐补齐、窗外透明占位、无数据卡覆盖统计 v296.1）+ 方格随容器宽自适应横滚 → v297 热力图动态字号（6~14px 纯算术择优、宿主量测 __zusageSpdMonRect 一次回写、今日格加深 v297.1、分段高度诊断 v297.2、⚙ 面板同款 v297.3） → v298 chip 主数字改最后一轮真实速度（去「均」前缀，tooltip 左卡保留会话加权均，两处各自成立；无最后一轮真实值时面留空不显会话均）+ Y 轴刻度锁定柱区基线（v298.1）+ 左卡标题随时间 Tab 五命名（v298.2）+ 档位徽标下模型名（v298.4）+ 量测时机挂 display:block 后（08） → v299 本轮 tooltip 紧凑化（三行 KPI 家族首卡：statKpi 辅助行参数、模型表 headRight/tableOnly、工具/重试迁模型标题行右） → v300 会话累计卡紧凑化（同三行 KPI 形态）+ 会话总耗时跨会话长时长换算 + zusage 会话级平均耗时/平均首字延迟/Σ生成耗时聚合（>0 门控，旧快照降级） → v301 今日合计卡紧凑化 + 三张统计卡共用 KPI SVG 图标（KPI_ICON_PATHS）+ zusage 今日聚合扩平均耗时/首字延迟列 + 缓存命中率入输入格副行 → v302 统计卡行结构定名（请求次数/请求轮数/请求会话层级行、「总耗时」「平均输出速度」统一命名）+ zusage 今日去重会话数与 Σ工具调用（v302.2）+ 会话/今日模型标题行右并入工具统计（v302.3） → v303 项目累计卡紧凑化（根类并入 .zu-stat-tip--project 统计卡家族）+ zusage _project_usage 新聚合（平均耗时/平均首字延迟/总耗时/跨分片合成 avg_tps）+ 刻度列外移联动（v303.3/v303.4） → v304 工具调用卡紧凑化（定宽四列+sticky 表头+行 hover）+ statKpi 标题图标参数 + zusage 子代理单任务耗时/轮数聚合（v304.1）+ 模型名立方体 SVG 胶囊（v304.2） → v305 收口审查修复批（review-fix-merge）：轮播可视化编辑器 when: 键白名单+提示行转义（堵存储型注入面）；手写显式 false 高级条件保存保留、false 不再渲染为勾选态；热力图「共 N 天」覆盖统计 var 提升修复（原恒退兜底文案）且分母对齐可视窗口；今日 tooltip 轮数/会话数旧远端缺字段显 —；今日/项目 avg 耗时与项目 avg_tps 过滤 main_turn（与 avg_tps 同口径）；devKeepTip 持久化+re-click 放行；__zusageSpdMonRect 代际清理；speed_v2 聚焦切换测试随功能移除删除；未编号同批内容——轮播自定义短语可视化编辑器+文本模式、内置词包拆独立分片 04-rotator-builtin-packs.js（16 包）、⚙ 轮播分区「原作者」按钮、速度卡覆盖提示/聚焦按钮移除（2026-11-07 文案批） → v306 精简 tooltip 幽灵行框修复（\x01 结构化 HTML 哨兵只在主链 drawTip 被 tip.firstChild.slice(1) 剥除，精简链 showTpsTip 直塞 innerHTML 不剥——控制字符落成文本节点被 .tip 的 white-space:pre-line 撑出 ~20px 幽灵行框，V2 卡定高 300+overflow:hidden 下整卡下坠、底部被裁，实报上下 padding 不对称；补齐同语义 charCodeAt 剥除）+ 状态轮播主开关默认关闭（2026-11-09 用户规格：新用户/从未写过设置的用户不自动启用，显式开/关过的存量配置经 loadRotatorConfig 布尔覆盖原样保留）+ 速率 chip 右键直开设置（2026-11-09 用户规格：精简下 chip 是唯一常驻入口，contextmenu 镜像 .tps-cfg 路径——先收 tooltip 再开面板，并压掉宿主原生右键菜单） → v307 速度 tooltip 左卡「生成中估 X t/s」note 行删除（2026-11-09 用户规格）：生成中估算只留标题旁「生成中（估算）」徽标，瞬时估算值不再与历史均值同卡并列；完成态会话均被误标「生成中估」的边界（v298 speedValue 保留 avg 语义 × v263 门控只看 speedValue>0）一并消失（.zu-sl-note CSS 保留——旧版 speedCardHTML 回退卡仍用）；未编号同批内容——速度卡模型行原生 title 改纯 CSS data-tip 伪元素气泡（2026-11-09 用户实报：宿主内原生 title 不弹——生成期重建打断驻留 + Electron 宿主对 title 气泡不可靠，同轮播 zu-rot-tipt 先例）+ 悬停模型列表不省略（spdAggregate 增 withNames 仅整体口径产出全量 modelNames，消费点唯一带 fallback）+ 模型行补 aria-label 全名单（伪元素 content:attr 不进可访问树） → v308 切换任务主线程阻塞修复（用户实报「来回切换任务卡很久才反应」）：gitMount 的 live() 幽灵判定从裸 inGhostSubtree 改走 ghostOf 120ms TTL 缓存——裸调用逐祖先 getComputedStyle 强制样式重算，恰在切换的 React 重挂风暴（样式树最脏）里被 render/heavy 高频触发，CDP CPU 采样归因 inGhostSubtree 436ms/9.4s 近乎全部经 gitMount→live（每次切换聚集 ~48ms，与长任务 72-102ms 时刻逐一吻合），缓存路径实测仅 2ms；判定语义与 track 每帧 ghostOf(composer) 同款；未编号同批内容——.zu-sv-bars 由 space-between 改 flex-start + 两侧 5px padding（修少柱如「最近 3 轮」柱顶 nowrap 数值越缘撑出 ~2px 横向滚动）+ 单柱 zu-sl-solo 弱化移除（2026-11-09 用户规格，含 CSS）+ 合入审查撤销同批误入的 hovFreeze 悬停冻结（08 分片 render 接管链：与已合并 v224「悬停中 tooltip 随快照跟手刷新」契约冲突致 pill-theme 4 例红，其原生 title 驻留动机已被 v307 data-tip 气泡消解，净 diff 与 fork/main 逐字节一致） → v309 拉取模型「确认添加并保存」先探测后保存（用户实报 OpenHub-Gemini Base URL 少 /v1：宿主实际请求 {base}/chat/completions 得 405，界面报 "Model request failed."）：勾选 ≤24 个时逐模型 model-pull-probe （主进程按宿主同款 URL 语义发最小对话请求——openai 两型不自动补 /v1、anthropic 归一化补 /v1 拼/messages、套餐源=套餐 baseUrl+messages+Bearer；刻意不走 candidateUrls 兼容改写以复现宿主真实路径），行内状态 chip （检测中/可用+延迟/失败，title=分类原因+实际 URL+脱敏摘录）并发 4 刷新，全过自动写入、有失败自动取消勾选保留弹窗（可重新勾选强制添加，旧主进程 unknown action 降级直接保存；inject-main 白名单加 model-pull-probe，model-puller 增 probeModel/分类/脱敏） → v310 拉取模型探测体验收口（用户实测两报）：①失败原因悬停不显示——v309 在 chip 上挂的原生 title 在 Electron 宿主内不弹（v307 同款实证），改 data-tip 伪元素气泡（从 chip 左侧水平弹出、行内垂直居中，避开 .zu-mp-items 的 overflow:auto 裁剪，双语 aria-label 同步）；②路径错配自动修复而非红字提示——主进程探测 404/405 时对 ±/v1 邻域候选实测，命中即把新 Base URL 读-改-原子写回 provider_config（与 applyModels 共享 applyBusy 写闸、同供应商单飞：全选模型同 URL 全失败只测一轮只写一次），模型按新 base 重试，弹窗绿字披露 「已自动修复 Base URL 并写入供应商配置」（.zu-mp-fix），修复候选也失败时失败原因附「已尝试自动修复」；探测 ask 兜底 25s 改 65s（探测+修复+重试最坏约 45s 不能被错杀）；修复限定 openai 两型（anthropic 型宿主自动补 /v1 无此错配、套餐源 baseUrl 不代改） → v311 辅助档位写实（用户实报：添加后宿主「测试模型」报 reasoning_effort "none" 被上游拒绝——宿主 testModelConnectivity 绑 values[0] 最低档，openai 两型内置 catch-all 把默认最低档 disabled 映射成 wire "none"（zcode-builtin.json modelApiRules[2]/[3] 同款语义），Gemini 严格上游只收 minimal..max；探测链基础连通后追加辅助档位验证：按 catch-all 同款语义发 values[0] 等效 wire 值，被 400 拒绝时从错误文案解析上游接受集（解析失败退化为逐候选实测），验证后写实合法档位表——模型规则已存在直接写规则（values-only 稀疏合法、带 map 自洽结构不动），未落盘模型写 fetchCache 元数据由 applyModels 统一落盘（绝不在探测路径新建规则防双写重复），绿字披露「思考档位写入 minimal/…」；失败新增 reasoning 类文案附上游接受集；错误摘录保留完整脱敏文本供解析 → v312 输入类型/模型能力自动匹配（用户实报：拉取后能力区全空）。宿主侧定案（源码+内置配置审计）：modelRules 的 `.*` catch-all 对所有模型显式设保守默认（text-only、json-schema/联网/中段系统全 false），**无协议级推导**、能力位必须逐模型证据；个人稀疏规则字段级覆盖合法。证据源三路：①目录一致性收割——同名模型多 provider 收录的歧义守卫改为「可加证据字段全命中一致才采纳」（modalities 收 inputFormat 含 PDF；tool_call 只采显式 false；structured_output 只采 true），mergedMeta 第三参最低优先级并入；②确认流能力实测（caps 标志显式携带才跑，仅 chat-completions、仅正证据 2xx 写 true、4xx/网络失败不写保守默认）：图片 content part / response_format json_schema / 对话中 system 消息三项 6s 探测（2026-11-09 真实中转实测三项可判定；PDF 的 OpenAI wire type:"file" 部分中转不认故 PDF 只走目录；视频/音频/联网搜索无廉价如实验证不探测），写目标与 v311 同款双路径（已存在规则合并 properties 叶子且用户显式 false 不覆盖；未落盘写 fetchCache 由 applyModels 落盘）；③弹窗行内徽标（图/PDF/JSON）+ 绿字披露「能力匹配：图片/结构化输出/中段系统消息」；探测兜底 65s 放宽 90s → v313 工具历史回灌探测（用户实报：配置就绪后真实对话 Turn execution failed 400001——实弹二分定位为 OpenHub 中转全部 Gemini 系通道（3.5/3.7/3.8，流式与否）拒收 assistant tool_calls + role:tool 历史形状（C4-C7 全变体 400），与插件写入无关（裸形状同样拒），Anthropic 线同病；工具结果折进 user 消息反而 200（Gemini 原生映射）；同站 qwen3.8-max 正常=通道级缺陷。宿主侧无配置解（supportsToolCall:false 会令宿主对带工具请求直接报错更糟），落为警告性质：确认流第 4 项 6s 探测发最小工具历史形状，4xx 确定性拒绝才警告（超时/网络/5xx 不定不警），琥珀 .zu-mp-warn 披露「代理任务在工具轮次会失败，纯对话可用」，绝不写任何配置位，结论按拉取会话 fetchCache 去重（裸探测无会话不去重） → v314 规格补全（用户实报 maxOutputTokens 89642 超上游 65536 上限 400）：宿主预算链定案——wire 输出预算 baseline=已解析 optionSpecs.maxOutputTokens.max（未写=内置 catch-all 128000），预轮 cap=min(baseline, 窗口−用量−1000) 只下调不设上限（model-token-limits.ts resolveModelStepMaxOutputTokens），超 spec.max 是宿主侧硬拒绝非钳制——所以「不写输出上限规格」会让请求预算完全脱缰。applyModels 是 append-only：先添加的模型在目录证据迟到时永远拿不到写实，v314 在确认流探测路径用拉取会话元数据补「缺失」键（properties.contextWindow / optionSpecs.maxOutputTokens.max，绝不覆盖已写数值、带 map 自洽结构不动、applyBusy 写闸），绿字披露「规格补全：输出上限/上下文窗口」；当日已手修用户配置 max=65536（上游 400 报错自证上限，中转 max_tokens=65536 实测 200）；收口审查补齐：禁止凭据重定向并按实际 key 脱敏、供应商来源与档位 CAS 守卫、缓存身份绑定及已验证路径迁移、自定义 map 不猜测、供应商显式能力优先且 false 保留、修复后补规格、工具限流不误警告、确认单批互斥和逐项强制添加、关键披露停留至再次确认、关窗清理等待与模块 dispose 失效 → v315 「原作者」悬停提示被滚动区顶缘裁剪修复（用户实报截图：气泡向上弹、只露底边一线）——cap 内触发点（原作者/自定义短语模式切换）气泡翻到触发元素下方 `bottom:auto;top:calc(100% + 6px)`，右对齐保留；cap 贴 .zu-settings-body（overflow:auto）顶缘是根因；向下弹常规布局落进分区卡片区域可见，纯 CSS 无视口碰撞翻转、cap 滚动至贴滚动区底缘时对称受限（v310 .zu-mp 左弹先例同款取舍） → v316 「压缩上下文」按钮视格重做（用户规格）：全宽 40px 胶囊、无边框、中性深灰半透明底（暗色=白叠加 6.5%/hover 10%/active 14%，浅色=黑叠加 5%/8%/12%，html.dark 分组自动跟随明暗与 zai 主题）、13px/600 文字（字号走 --ui-font-size 令牌 calc(-1px)，随宿主界面字号缩放）+ 18px 收缩双箭头 SVG（currentColor，flex+gap 8px 图文整体居中、nowrap）、focus-visible 焦点环（宿主无 --color-focus-ring 走 fallback）与 :disabled 半透明；reduced-motion 组整体移到全部受控规则之后（@media 不增特异性，置于按钮 transition/弹框 animation 基础规则之前会被同特异性后置规则压成死代码，review 实锤修复），弹框动画一并恢复实效；注入/判定/确认弹框/提交通道逻辑全不动 → v317 ⚙ 面板上层 body 级弹框内按下不再联动关闭设置面板（用户实报：词包「查看」弹框点遮罩/✕ 连设置一起关）——面板外点 mousedown 判定按 e.target 向上匹配弹框根类名（.zu-rot-pk-dlg/.zu-mp-ov）：遮罩关闭监听与面板判定同在 mousedown、target 阶段先执行并已把 rotPkDlg/mpModal 置 null，变量 contains 守卫对遮罩路径失效（✕ 走 click 判定故 contains 版已好、遮罩仍坏），closest 沿已 detach 的残留子树仍命中；弹框外点击照常关面板、无 closest 的 target 按弹框外处理 → v318 chip 字体切 sans（用户实报 Windows 上 chip 数字与中文大小不一，mac 无此问题，最终方案）：宿主 --font-mono 首选 ui-monospace——Windows 落到 Consolas（内置浏览器实测 13px 数字墨迹约 8px），中文回退 Microsoft YaHei UI（11~12px），条/chip/tooltip 内中文显大 ~40%；原生 UI 无此问题靠 sans 配对（Segoe 数字 10px + 雅黑 11~12px，配比 1.1）。缩放面路线三轮实机回退后整体废弃：ZuCJKFit CJK 面（90/82/76%；82% 真机像素测量实测配比仍 1.2 嫌数字小，76% 后数字锐利但配比失衡）与 ZuNumFit 数字面（ASCII 110%，实报数字边缘发虚——size-adjust 缩放路径光栅化比原生整数尺寸软，canvas 拉普拉斯方差实测低于原生面）全部删除。定稿=条/chip/tooltip 全部 30 处 mono font-family 换 var(--font-sans,…)+ 既有 tabular-nums 保留（含 01 模块 rateTip 内联 cssText 兜底，被 quotaTip/rstTip/tpsTip 整体复制）：Windows Segoe tnum 实测生效（13px 同 7 位任意数字恒 56.12px）数字刷新不抖宽，Segoe 数字 10px + 雅黑 11~12px 配比 1.1 与原生同源，零缩放零模糊零调参；mac SF Pro+苹方天然同构（用户实测无失衡），Linux system-ui tnum 未实机验收；⚙ mono 域（06 设置面板 .zu-src-field、.zu-mp-*、.zu-notes-* 与 05 rotator 编辑器 .zu-rot-*）仍走 mono 令牌 → v319 速度格数字与单位加距 4px（用户实报 "158.9t/s" 贴字，且「修改过程中对的、判定生效又变回去」——两条渲染路径只有一条有空格）：①实时桥路径 zuBarSpeedView text="… t/s" 有空格但切 sans 后 Segoe 空格 7.15px→~3.7px 视觉贴字，.zu-live 加 word-spacing:4px（用户实机逐档对比定稿）；②无桥 DB 回退路径 chipFace（07）数字直拼 '<span class="dim">t/s</span>' 根本无空格字符、word-spacing 对其无效——补空格后与①渲染一致；用户看到的「忽对忽错」=生成中走①、完成/无桥走② → v320 「不在本地库」提示与 ⚙「数据库统计」注记不再写死 ~/.zcode 路径（issue #279：宿主 dataBaseDir 迁移后旧提示误导）：tooltip 改中性描述并指引重装/更新、⚙ 注记改「只读本地用量库（默认 ~/.zcode/...，跟随宿主 dataBaseDir 迁移）」；用量链 DB 路径解析本体在 zusage.py / token_rate.py / inject-main.cjs（非浮层），此为配套文案 → v321 速度格贴字真根因修复：`.zusage-root .it>span:not(.eb)` 的 inline-flex 把速度格也 flex 化，flex 剥离文本 item 尾随空格——数字态（数字+span.dim 两 item）空格 spaceW=0、v319 的 word-spacing 无效（CDP 实测墨迹间隙 0），状态词态单文本 item 不受影响故「动态对、停止贴」；选择器豁免 .zu-live（外部 flex item 布局块化等价、零变化），空格与 word-spacing:4px 恢复生效，间隔与动态态一致 ~7.7px → v322 速度格 word-spacing 4px→2px（用户实机目测：7.7px 偏宽，收窄到 ~5.7px） → v323 速度格 word-spacing 2px→1px（用户实机继续收窄：~4.7px） → v324 完成态数字与 t/s 零间隔：chipFace 去除空格字符（7.7→5.7→4.7px 逐档后用户定稿 0）。动态态（单文本 "… t/s"）仍空格+word-spacing:1px ~4.7px；word-spacing 对完成态无空格文本不再生效（CSS 保留无害） → v325 动态态 word-spacing 1px→4px（用户实机回定；完成态零间隔不受影响——无空格字符可加距） → v326 数字与 t/s 间距改用 inline-flex+gap:5px+baseline：去除 word-spacing（用户实测调值无视觉变化——完成态无空格、动态态单文本）。动态态整条渲染（07 render live 分支）与原地更新（08）统一走 zuLiveFaceHtml 拆「数字+dim」两 item，gap 才有 item 可分；状态词态保持单文本。完成态 v324 曾零间隔，v326 起与动态态统一 5px（用户屏幕验证接受）；函数声明必须实例级（html(d) 分支块内是 Annex B 块级声明，live 分支 TypeError / 08 ReferenceError，实测 44 测试红） → v327 V2 左卡标题行防破版（另一台机器实报截图：--ui-font-size≈20px 浅色主题下「最近18轮平均速度」截断+「思考中」竖排折行）：标题行需求宽随字号线性增长而卡内宽固定 184px（实测 14px 需 151.1 余量 33、ui≥17 必溢出），.zu-sv-root .zu-sl-sub 加 flex:0 0 auto+white-space:nowrap——状态词永不收缩竖排，溢出收缩由标题独享 ellipsis 降级；本机默认字号视觉零变化，CSS 契约断言锁定 → v328 宿主卡顿治理（specs/perf-lag-reduction.md）：流式期间插件在宿主渲染线程的工作量与会话文本量/历史轮数解耦——①turn-stats ingest 字符计数改无分配码点计数+按行缓存（原 Array.from(text).length 整串拆数组，单次 0.35→4.1ms 且跑在宿主 store 通知链内，现 0.02→0.4ms）；②spdUnpack 按 speed_history 引用 WeakMap 缓存（6000 轮单次 ~5ms，占速度卡生成 95%）；③updateLive 快路径未悬停本格不再每拍白建整张 V2 速度卡（只记 view 标失鲜，drawTip 打开瞬间 liveTipRefresh 补建，兜底 1s 保鲜；悬停仍每拍）；④非 live 会话数据帧未变时 500ms 内心跳不重复整条 render（原每 100ms 全量重建 tooltip 串+五个 enhance*）；⑤轮播主开关关闭态 65ms 帧步降为 1s（仅剩遗留 DOM 还原的整文档查询） → v329 修复项目累计 tooltip 点击「查看全部模型」异常收起与同模型大小写重复：①根因=按钮未在 pointerdown/mousedown 阶段阻止默认/冒泡，且 hideTip 1.2s 保活因 mouseInBar=false 被绕过导致 left-bar 误杀 tooltip；在 pointerdown/mousedown 增加对 .zu-pj-more 的委托与阻止默认行为，hideTip/tipLeaveAt/mousemove 硬保活 1.2s 不受 mouseInBar 干扰；②zusage.py 聚合与计费统一对 model_id 大小写归一化（优先保留大写/官方名，合并同模型如 GLM-5.3 与 glm-5.3，费用累加不漏）。 → v330 宿主 3.18.0 loading 行结构适配：①chat-loading 行 label 类由 .zcode-loading-label 换成 .animated-gradient-text、spinner 图标位由 span.grid 换成带 data-chat-loading-icon 属性的 span（.font-mono 耗时格未变），轮播挂载/还原选择器双兼容（chatLoadingLabelOf/chatLoadingPixelGridOf，旧结构优先），label 未命中时不再隐藏宿主耗时格（宿主再改结构时退化为保留原生计时）；②「我方最后写入」基准由模块级单例改挂 label 自身 data-zu-last-text 属性，修多个 loading 行并存（多分栏并发请求）时后处理行的宿主文案快照被词组污染；③「拉取模型」选中套餐源而列表暂不含它（套餐 token 的解密密钥异步到位）时重问一次、仍没有则提示凭据暂不可用，不再落到「只有一个供应商就用它」而改投别的供应商；⚙ 额度披露文案补充钥匙串密钥的读取。 → v331 项目累计 Tooltip 双范围统计（specs/all-projects-usage.md）：zusage 新增 _all_projects_usage 全库聚合（归属单元=会话、parent 链取根环守卫、项目键=(project_id,归一化目录) 承 issue #248、未归属单列桶、totals==Σ projects 对账；桌面快照链顶层 all_projects，serve/桌面 json 带、CLI/MCP/远端子查询不带；_PROJ_CACHE 水位缓存，实测 2.6GB 库 ~210ms/次）；渲染端头部右上「当前项目/全部项目」双 Tab 替代范围胶囊（低对比选中对齐 v282，pointerdown 同步重编+click 幂等吞掉，归属键变化重置），输入格新增「含缓存」副行（cache_read 原值、同「含思考」层级、两模式同规则），全部项目模式新增四列项目明细表（模型明细之前、默认前 5、projTipProjExpanded 独立展开、未归属显本地化文案、名称转义+title 目录、截断 500 提示、空态不渲染表头），缺帧显「全部项目统计暂不可用」不借当前项目冒充。 → v332 工作流支持（specs/workflow-support.md）：zusage 把 sess_dwf-*（宿主动态工作流子代理，query_source='workflow_child'）归入子代理类——sub.list/明细/费用/速率聚合四处 query_source 门扩展、is_sub+sub_kind 字段、任务名从 dwf_actor.name 反查、快照池分桶防挤占主会话 top-6、_sub_item 下发 tps_out/tps_gen 速率分量；渲染端在会话流工作流卡（workflow-card data-workflow-run-id）注入 .zu-wfrun 汇总 chip（token 合计 + Σout÷Σgen 完成态聚合速率 + DOM 实时运行状态，悬停出逐执行者 tooltip，复用 subTip 浮层与委托监听），⚙ 新增「工作流卡汇总」开关；08 分片顺手去除 v176 以来整段重复定义的子代理 chip 块（两份 138 行逐字节相同，行为不变）。 → v333 智能体后台运行的状态同步（specs/agent-background-support.md）：后台智能体（AgentProfile 后台子代理）会话身份与前台子代理同构（sess_subagent_* / query_source='subagent'），DB 统计链天然覆盖零改动；修复实时面缺口——①运行中子代理集合在消费侧并入桥快照 backgroundWorks（kind='subagent' status='running'，事件驱动 state 键、窗口无关）补给，后台智能体把启动行滚出父会话 60 行窗口后槽位估算与「子代理运行中 ×N」计数不再丢失；②宿主状态面板 Agents 分区行（v4-running-subagent-item + data-child-session-id）注入 .zu-substat 速率 chip（槽位估算→「估 X t/s」、tps_avg 回填、无数据显「运行中」，tooltip 复用 subRowTipHTML 与 subTip 委托），render 尾部 + heavy 双对账点，共用 subRate 开关。 → v334 审查修复批（review-fix-merge 四路并行审查）：①zusage latest 候选与 CLI current 排除工作流 actor 会话（run 进行中多个 actor 轮流活跃会把顶层 session/current 顶成 run 视角，此前分桶注释声称已防而 latest/current 实未防）；②renderSubAgentRows 关门收浮层条件收窄到 .zu-subrate——原宽条件在 subRate 关 + wfChip 开时把悬停中的 .zu-wfrun/.zu-substat tooltip 每拍杀掉（闪烁）；③dispose 摘净链与 00 启动自清列表补 .zu-wfrun/.zu-substat（pane 回收后 chip 冻结 + 死实例 tooltip）；④renderWorkflowCards 不满足渲染条件的卡摘旧 chip（run 失败后「运行中」残留）+ tooltip 数据包每拍重写（requests/actor 名不进 sig 的打开瞬间新鲜度）+ 状态行去内层 ttEsc 防双重转义；⑤subRunningList 加快照 sessionId 校验（切会话一拍内不并入上一会话后台清单）；⑥substat「运行中」兜底态独立 run tooltip 口径 + chip 回位守卫 + 用例钉住 3s 新鲜度门与工作流卡防漂移负向夹具；⑦zusage _TASK_CACHE 失效键补 dwf_actor 维度（动态新建 actor 名字有界丢失）；⑧specs 与文档漂移同步（chip 面无状态点、开关持久化形态、CLI stdout 增量字段措辞、补给槽位优先级取舍）。 → v335 第二轮复审修复：①zusage 池分桶回归修复——v334 改 latest 候选时把 normal 桶误改 ranked[:6]（含普通子代理），恢复 normal=主会话独占、子代理/dwf 同入子代理桶（防挤占主会话 top-6 的 v332 语义）；②_TASK_CACHE 失效键改 greatest(time_created,time_updated) 覆盖纯改名；③renderWorkflowCards 的 runIds 收集循环对被宿主剥掉 runId 的卡也摘残留（空 runIds 早退前执行，wfChipStale 定义上移至循环前）；④测试设防：关门收窄行为锁（宽条件即红）、dispose/00 启动表三类 chip 源码契约、_TASK_CACHE astamp 失效用例、正常子代理不占 normal 桶用例；⑤spec §6.1 残留「运行中状态点」措辞清理。 → v337 后台智能体的主格速度关联（specs/agent-background-support.md §3）：后台槽位经 backgroundWorks 补给在跑而主会话自身无实时轮（空闲/上一轮已完成）时，updateLive 合成 runningTool=Agent 态让速度格走既有子代理分支（「子代理运行中 · 估 X t/s」×N；槽位绑定中/思考期降级状态词），后台全部结束（槽位解绑）自动回落会话均——主格不再静态；主会话自己的轮在跑时优先原 stats（v87 合成分支先行）。 → v338 项目累计卡体验批（用户规格四连；v331 迭代）：①分区名并入首列表头（项目明细/模型明细=各自首列 th，独立标题行删除；工具调用·重试与截断注记降级为 .zu-pj-mnote 右对齐 note 行、仅有值时渲染，「按用量排序」占位删除——v331/v332 批已落基线，此处汇总声明）；②高度自下而上——切 Tab/展开明细的高度变化底边固定（projTipPrevBottom 基线 + projTipPositionGrowUp 反推 top，max-height 钳制保证 top≥8；首次弹出无基线回退原锚定，仅项目卡路径）；③表体视口帽——项目卡 .tbody 破共享 60vh 帽，覆写 max-height:calc(100vh-36px)=视口帽扣根纵向可达 chrome（上边框1+上内距10+下边框1），内容不超窗完整展示无内滚、超窗转表体内滚（其它统计卡维持 60vh）；④全部项目模式行四第一列=项目数量格（KPI folder 图标，计数=projects_total 截断前真实数或列表长度；费用可见三格 .zu-turn-kpis--trio 3 列网格、费用关退 --duo 两格）。 → v339 详情卡点击空白/Esc 关闭（issue #297）：document mousedown 捕获外点判定（tipOutsideDown）——target 落在自绘浮层本体/条面/设置面板/各弹框之外即收，主 tip cause="outside" 进 hideTip 硬保活窗白名单（v271/v329 的 1.2s 窗不再吞「点过 Tab 后点空白」；devKeepTip 常驻模式契约不变仍只认 Escape/齿轮/再点同格），额度/速率/重置卡/子代理行内/git chip tooltip 与费用说明/档位说明浮层一并收（柱体 Portal pointer-events:none 无需排除）；document keydown 冒泡全局 Escape 兜底（tipGlobalEsc）——焦点在 body 时既有元素级 Esc 链收不到，此处一次收一个且不 preventDefault/stopPropagation 不吞宿主语义，冒泡挂载保住 tip 内「先收档位说明不关卡」分层。 → v340 心跳不再深拷贝整窗快照（issue #309，长会话卡顿；规格 specs/perf-lag-reduction.md 规则 10–12）：桥 v2 的 getState() 每次都是整窗深拷贝（本机 374 行 ≈1ms，报告者 6868 行 ≈86ms），而 100ms 心跳里 bridgeTick 健康检查与 updateLive→subRunningList 每拍各读一次（无 stats 时「思考中」合成再读一次）、每次 store 通知还有 subscribeStore 与 overlay 回调各读一次，v2 桥下 ≥20 次整窗拷贝/秒。三处修复且与桥代际无关（v2/v3 均有效）：①心跳经 handleSnapshot 读 handle 上的快照记录（通知回调写入，超 SNAP_FRESH_MS=2s 才回源一次并兼作 store 关闭/换代探活，时钟回拨按陈旧）；②turn-stats.js subscribeStore 把本次已读 state 传给 changed(state)，回调不再二读；③通知处理按实测成本自适应合并（上次处理 ≥8ms 时间隔 min(1s, cost×9)，占比 ≤~10%，尾部定时器归订阅持有、退订即清；廉价会话逐字不变）。pane 切会话仍由 handle.sid/sideKey 即时重绑；不改桥模板与 BRIDGE_GEN（冷路径）。 → v341 issue #309 复审补修：子代理槽位通知回调复用 changed(state) 不再二读；通知处理同步分支作废迟到的尾部定时器；全局 setTimeout/clearTimeout 缺席时不抛进宿主通知链（退回同步处理）；订正「窗口恒 60 行」旧注释（reducer 增量不截）。 → v342 ⚙ 面板底栏「反馈问题」左侧新增「联系我」按钮：点击经 openMpShell 复用 .zu-mp-ov 弹窗外壳（收窄 .zu-ct-ov 卡宽）展示维护者微信二维码远程直链（http 直链经实测可用；https 不可达；宿主渲染页 file:// 无混合内容拦截），加载失败隐藏图片换文字兜底；Esc/遮罩/✕ 关闭沿用壳协议，外部点击豁免走既有 .zu-mp-ov 白名单。随批修复既有潜在缺陷：openMpShell 系自有弹层被 modalOpen（v62）误判宿主模态——body 直挂全屏遮罩+内部 role=dialog 完整命中两层判定 ⇒ track 收条连带 closeSettings（用户实报：点「联系我」/关弹框后设置面板被关）；modalOpen 两层扫描与 isOwnOverlay 豁免清单补 .zu-mp-ov/.zu-rot-pk-dlg/.zu-compact-dlg，宿主真模态判定不变。复审补修：.zu-ct-img 补 [hidden] 显式隐藏（作者 display:block 压过 UA [hidden]，同 .zu-update-progress 先例）；mp 壳 Esc 升捕获相+stopPropagation 对齐 rotPkKey 协议（焦点在面板内按 Esc 曾关面板留弹窗）；error 守卫改 isConnected；img 补宽高属性防加载回流；09 面板外点白名单补 .zu-compact-dlg；⚙ 联网边界披露「联系我」图床拉图。 → v343 turn-text 回推诊断计数（issue #321「生成时长缺失，暂不显示速率」每轮常驻且零可观测）：完成态占位行的速率来自数据库富文本回推（token_rate.py --turn --current），此前回推失败全静默——空交付不区分「主进程没回（旧冷文件/通道断）」与「Python spawn 失败、15s 超时、非零退出」及「库没追上」。渲染端新增页面存活期单调计数 rt（sent、ok、empty、miss、stale，空交付原因细分 spawn/timeout/pyerr）随 FATAL.det.rt 落 diag-*.json；miss=请求 20s 无回执（略大于主进程 15s 超时），stale=未匹配在途请求的设计内淘汰回执；主进程空交付带原因标签属 inject-main.cjs 冷文件改动，需完全重启才细分，旧主进程回退落 empty 桶。 → v344 增强提示词按钮（specs/prompt-enhance.md）：模型 chip（chat-model-select-trigger，空配置「管理模型」分支同名）左侧 ✦ 按钮，chip 缺位回退用量圆环左侧；点击读 composer 草稿（__zcodeLexicalInputE2E，Lexical 直写 DOM 不进 EditorState 的唯一官方写通道）经 pluginRequest("prompt-enhance") 主进程按会话模型凭据（v4-model-config 实时选择优先、快照 last 兜底）一次性非流式改写后回填前重读草稿比对防覆盖用户编辑，再以 setText 替换，20 秒内按钮变撤销态恢复原文；增强中忽略再点（主进程 60s 超时 + 渲染端 75s 兜底）；警示态 4s 自愈（空草稿/模型未识别/失败原因/冲突）。实现落 model-puller.cjs enhanceText（三协议非流式 POST、套餐源 planTokenOf 解密、api-key 型自定义供应商、错误摘录脱敏）+ inject-main 白名单三动作（prompt-enhance / prompt-enhance-cancel 取消 / enhance 开关，enhance_enabled 缺省开显式 false 关、推送面 enhanceEnabled）+ ⚙ 面板「回答统计」分区开关行。增强中再点按钮=取消在途请求；主进程不认识新动作的旧版本回 unknown action，按钮按失败警示不挂起。 → v345 issue #327 回答末尾统计行逐拍消失/重现加固：scanDeterministicLines 在 owner 令牌取不到的单拍里对已验证归属的行整块 remove 且当拍 continue 不重建，令牌逐拍抖动即呈约 0.5s 一档的亮灭、块高归零下方内容跳动。现对「证据缺席」型空令牌（owner 无归属实例 / sid 实例暂无会话）且行仍属同一 tid（新增 __zuDetTid）宽限：连续 3 拍且跨过 1s 才撤（拍数防回执爆发耗尽、墙钟防后台节流拉长，同一扫描内多 box 命中同一行只计一次，时钟回拨视为到期，恢复一拍清零）；scope 与 sid 不符或侧聊远端（属于别的会话的反证）、归属换成另一个有效令牌（SID/scope 切换）、无 __zuDetOwner/__zuDetTid 的遗留行仍即时撤，fail-closed 对这些情形不松动。带行 box 令牌为空的原因拍数（owner/sid/scope）、宽限放行数 grace、空令牌撤行数 removed、非空令牌换代撤旧数 swap 与本代起算时刻 since 累计进 FATAL.det.nullOwner 随 diag 落盘，供报告者回传定位是哪个写入方在抖动。未证因果：本机复现不了，宽限属加固而非已确认根因的修复。 → v347 状态轮播附加工作时长与悬停提示（specs/status-rotator-work-duration.md；性能预算 specs/perf-lag-reduction.md 规则 17）：①appendWorkDuration 开关（默认 true、显式 false 保留，存 zusage3.rotator2）开启且 labelSource=phrases 时在 loading 行 label 后追加宿主同款「工作中 X 分 X 秒」兄弟 span（.zu-rotator-elapsed，格式逐句对齐宿主 formatConversationWorkDuration：max(1,round(ms/1000)) 拆天/时/分/秒非零入列至多两段、中文值与单位间空格；起点锚 turnHeader.startedAt 与宿主折叠头计时逐秒一致，宿主文案节点在虚拟滚动内无生产 API 故自算）；②悬停纯 CSS tooltip（data-tip + zu-rot-livetip 伪元素，内容同款文案）独立于开关①恒随轮播，零监听零布局读取，气泡静态 pointer-events:none 防偷 hover 抖动；③写入纪律（规则 17）：span 判位 nextElementSibling O(1) 零新增文档级查询、textContent/data-tip/classList 带比较前置判断按整型秒门控（同秒内 tick 零 DOM 写、每行至多 1 写/秒，不在打字机 15Hz 写流上叠加），文案缓存挂 rotatorRuntime 随热重载换代，restore 名单并入既有 querySelectorAll 选择器串；④⚙ 面板「追加工作时长」checkbox（.zu-rot-append-duration，启用行之后）走既有 setCb/change 尾缀统一保存链，底部预览卡不联动；⑤两轮用户实报修复——文字隐形根因=宿主 gradient label 的 -webkit-text-fill-color:transparent 是继承属性压过规则 color 使气泡文字全透明（CDP computed 实证，pointer-events 实测 auto 排除禁点），气泡显式重置 -webkit-text-fill-color:var(--color-tooltip-foreground) 堵继承；红色泛光根因=宿主 label 自带 filter:drop-shadow(rgba(255,0,85,.45) 辉光)（255,0,85=宿主渐变首色，shimmer 固有）不继承但作用整棵子树，气泡作为 label 伪元素子盒被整体泛光——data-tip/类改挂行容器 [data-testid="chat-loading"] 脱离作用域，label 旧代际属性每拍清退防热重载双气泡，还原名单行级摘除；样式对齐宿主原生 TooltipContent 视格（asar 实证 rounded-lg border-border bg-tooltip px-3 py-1.5 text-ui-sm，原生即无阴影——用户点名去阴影）：去 box-shadow、--color-tooltip/--color-tooltip-foreground 反色变量、var(--color-border) 边框、圆角 8px、padding 6px 12px。 → v348 速度与统计浮层适配大字号（specs/speed-tooltip-adaptive-layout.md、specs/stat-tooltip-large-text.md；开发早于 v347、晚于其合入，代际号按合入时间线顺延取 v348）：①速度卡 spdFitTip（02 分片）——固定 760×300 改 CSS 变量驱动（--zu-sv-width/--zu-sv-height/--zu-sv-left-width 注入 tip，未设置时 fallback 精确回落旧值），字号异常增大先按 14px 基准整体 zoom（下限 0.8），只按筛选栏/左卡量尺寸不读图表横滚内容，空间不足再按内容扩高（>300 加 12px 呼吸间距）并经 tip 纵滚到达，视口变化经既有定位周期 reset 重算、字号变化留待下次重建经 previous（__zuSpeedSize，含 font）失效重算，同视口同字号内 previous 防悬停中逐拍重建的尺寸抖动；②统计/模型名 fitModelNames（02 分片）——.zu-model-fit 按实际宽度缩字号至不低于 10px、仍放不下保留省略+title 全名，接入速度卡/统计卡模型表/项目卡/fxTip/子代理浮层（子代理浮层 td 补 max-width 帽让 fit 在表级溢出档生效）；③统计卡「输入」标签 .zu-kpi-label nowrap + .zu-stat-k flex-wrap（07 分片），命中率徽标允许换行不重叠；④多柱（n≥10）柱组 .zu-sv-bars--spread 均匀铺满、柱宽不拉粗（部分恢复 v273⑤ 废止的 space-between，仅多柱档）；⑤图表横滚位置 __zuChartScroll 关闭时捕获/重开同键回填（修隐藏态 scrollLeft 恒 0），root overflow:visible + tip overflow-y:auto、wheel 到边放行默认滚动，键盘 Tab 进滚动明细区（role=region）+Shift+Tab 归还；QA 门 ZU_GEOMETRY_ONLY（tests/speed-tooltip-host）覆盖 14/17/20px 字号与重叠断言。 → v349 宿主定时器慢拍缓释（issue #342，性能预算 specs/perf-lag-reduction.md 规则 18）：报告者（Windows/内置浏览器面板活动期）只读定时器归因记录到 bridgeTick 51–93ms、heavy 55–75ms、coordinator 54–63ms、flush 55–92ms 单拍——规则 10–12 后正常拍已 <5ms，慢拍=正常工作被宿主主线程争用拉长 + 长窗口会话 2s 回源一次的整窗深拷贝（≈86ms/次）。两处自适应缓释，只在实测单拍超预算时介入、廉价环境逐字不变：①handleSnapshot 回源实测 ≥8ms（规则 12 同阈值，perfMs=performance.now 优先缺位回退 Date.now）时本 handle 新鲜窗逐档退避 2s→4s→8s（h.freshMul），<8ms 立即回 1 档，影响面仅静默期思考合成 phase/后台清单与探活的陈旧上限 ≤8s（「已观察 Xs」走字按 bornAt 推进不受影响）；②heavy/coordinator 600ms 对账单拍 ≥16ms（含界）时跳拍（lvl∈{0..3} 每实跑升档后封顶、跳拍窗 600×lvl 右开；lvl=1 稳态不跳拍只吸收「前拍拉长后拍准点」尖峰，稳态有效降频自 1.2s 起、封顶 1.8s），<16ms 立即回 600ms（heavyLvl/heavyRunAt 实例闭包、coordLvl/coordRunAt 协调器闭包，setInterval 拓扑与 dispose 不变），降频期最坏影响 chip 兜回/pane 自藏延迟 ≤1.8s。诊断随 diag-*.json 新增 snapSrcMs/heavyCost/coordCost 三个数值字段供报告者归因。有意不做：bridgeTick 100ms 不降频（规则 1 跟手契约）、flush 已有 ≤10% 占空比上界、visibilityState 门控无增益（隐藏窗 Chromium 本就降到 ≈1Hz，报告者场景宿主窗口可见）。 → v350 增强历史「查看全部」浮层表格版视觉修复（specs/prompt-enhance.md 契约更新）：①高度自适应——面板 height:auto + max-height min(85dvh,760px)（内联与 CSS 双写），去掉固定 height:min(640px,80vh) 与表区 flex:1 1 auto 撑满，数据少时内容自然撑开、多时表区独立滚动，单页/空态不渲染分页页脚；②Header 左右分组——左=图标+标题+总数徽标，右=清空记录（图标文字横排、hover 危险色）+关闭按钮（32×32 命中、EH_ICON.close，Escape 同效）；③筛选行——搜索框带图标弹性填充（flex:1 1 240px、placeholder 完整），四个筛选器统一 34px 高/圆角/边框（来源 112/供应商 150/模型 140/时间 118px）；④表格对齐——表头与行共用 <colgroup> 列宽（chev 32px/来源 56px/操作 64px 固定 + 百分比弹性列，table-layout:fixed），去掉按 td 类的宽度声明；⑤供应商友好名——EH_PLAN_LABELS 内置 6 个套餐 id→显示名映射（与 model-puller PLAN_SOURCES 同源），表格/详情/筛选下拉显示友好名，title 悬浮完整原始 id，非套餐 id 原样不虚构；⑥展开详情——三栏 minmax(0,.85fr)/minmax(0,1.5fr)/minmax(0,1.5fr)（≈22/39/39），增强正文棕色背景改中性卡色+边框，正文 max-height 240px 内滚、详情块不再二次限高，元信息标签 11px/值 12px 行距 7px、长模型名 overflow-wrap:anywhere；⑦响应式——面板 container-type:inline-size，按面板实际宽度渲染时列裁剪（<900px 合并供应商/模型列、<640px 再隐摘要列，colspan 同步 10/9/7），容器查询 <900px 详情转两栏+元信息横排、<640px 详情纵向，resize 期间 150ms debounce 重排版（监听随关闭移除）；⑧行为修复——ehFullCache 补显式 var 声明（原隐式全局）、enhance-history-add 同步失效全量缓存、复制按钮统一按记录 id 定位（详情行经 detail-row 前一行）+check 反馈，删除死代码（重复 delete/copy 分支、无 data-expand 按钮），摘要列 title 悬浮全文（去 JS 60 字截断，CSS ellipsis 承担）。同批追加：⑫筛选下拉自绘箭头（appearance:none + data-URI 背景统一，右距 10px 与文字左距对称，原生箭头贴边且各端不一致）；⑬面板 min-height 60vh（用户口径：数据少时面板不显矮，上限仍 min(85dvh,760px)）；⑭关闭按钮 margin-right:-8px 收紧贴右上（icon 距面板右缘 12px）；⑮排序箭头 svg 显式 display:inline-block（宿主全局 svg 块化样式把 th 裸 svg 挤到第二行，按钮内图标被 inline-flex 吸收无此症）；⑯展开详情来源/Token/时间/耗时四对合并为三栏下方一行元信息（分隔线横排，左栏只留供应商/模型，minmax(0,.85fr) 栏宽放不下四对才上移全宽）；⑰确认类交互统一 zuConfirm 自绘弹框（复用压缩确认 .zu-compact-dlg 全套外壳样式，替换 overlay 全部 6 处 window.confirm：增强历史删除/清空 ×4 + 设置页移除 Key/重载丢弃修改 ×2；Esc/遮罩/Enter 协议同压缩弹框，规则沉淀 overlay-ui.md §4）。⑱增强历史双入口设置按钮（用户 2026-11-15 点名）：悬停面板 footer 与全量面板 header 右上新增「设置」（EH_ICON.gear 齿轮 + .zu-eh-cfg 同清空按钮外形中性 hover），点击经 openEnhanceSettings 复用齿轮官方完整开启路径（gear.click）+ activateSettingsSec("enhance-provider")，与增强按钮右键同款。⑳增强 Provider 分区 footer（状态+重新载入/保存按钮）改 sticky 吸底（用户 2026-11-15：矮屏用户不知道要滚到底部才能保存）——position:sticky bottom:-20px（负值补偿 .zu-settings-body 底 padding 20px 使视觉贴面板底缘）+ 水平负 margin=body padding clamp 值盖满面板宽 + 实色背景 var(--color-card) 防透出 + 上阴影分层；滚到底时回到自然位置，其他分区不受影响（.zu-ep-footer 类名仅该分区使用）。㉑修复重开面板误报「配置未保存」（用户实报）：保存成功回调只更新了 epSavedRevision 未刷新 epSavedFormJson 基准，重开面板 epSyncDirtyStatus 用旧基准比对恒脏——保存成功（含移除 Key）即以当前表单 JSON 为新已保存基准；保存失败/其他窗口 conflict 保留旧基准（脏标记语义不变）。⑲删除「撤销增强，恢复原文」状态（用户拍板去掉该展示）：应用成功（写入确认）后按钮直接回 idle，不再有 20s 撤销窗/撤销点击/自愈守卫（ENHANCE_UNDO_MS、ENH_SVG_UNDO、enhanceEnhanced/State、undo 点击分支与 heavy 对账块全拆），聊天历史采集时机不变（应用成功即记录）；回填前的会话与草稿比对守卫保留。独立 review 三修（2026-11-15）：⑨修复排序列点击不可达（th 非 button，data-sort 判断提到 button 判空前——首版表格即坏未报过）；⑩删除改缓存就地滤除+res.ok 门控+小浮层缓存失效（原 cache 置 null 后 build 清空整表，直到重开才恢复），失败删除不清表；⑪cssText 复制补 bottom:auto（小浮层动态 bottom 残留会把 fixed 面板高度压死，悬停→查看全部主路径必现）+disposeOverlay 摘除面板 keydown/resize 监听+两 handler 热更 stale 自卫+搜索 debounce 改模块级随关闭清理+首开「正在读取历史…」占位防闪白+sticky 表头（长列表滚动表头常驻，box-shadow 补 collapse 边框）。 → v351 状态轮播词库同步上游 01Virex/dsh-status-rotator（PR #179/#181/#184/#186/#188，仅 04-rotator-builtin-packs.js 数据）：community +3（「用户特么的…」thinking、「正在驾驶EVA~~…」「听见你说~…」running；#184 的 4 条已在存量）、internet-memes +4 相（「token来！！token来！！token来！！…」thinking/running/long 三相 + 「正在创作隐晦物品…」running）；star-ask 与上游一致未动；star-route 不随上游（用户拍板取本项目星标者）：GitHub 152 人 + GitCode 镜像 2 人 = 154 人，zh/en 镜像 308 条，替换过期旧快照 134 人，包头注明名单来源（两端 stargazers API）与刷新方式。范围外漂移保留：western-ai GPT-7 文案、coding/slacking/daily 的 weight 对象在本地转纯字符串（本项目不支持权重对象）。无增删包，ZU_ROTATOR_PACK_META 与 enabledPacks 种子不动。
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
@@ -9651,8 +10178,9 @@
       lastSub = null,     // 子代理明细面板数据源
       instSid = "",       // 本 pane 当前会话（composer 祖先链 data-session-id）
       pendingSid = "", wantedEl = null, scopeStamp = "",   // 协调器派发的最新 composer/会话
-      shrink = 0,         // 分级收缩（v66）：1 = 内容超卡片宽，「本轮/会话累计」缓存命中率已让位
-      fadeOn = false,     // 收缩后仍超宽：右缘渐隐（.zu-clip）
+      shrink = 0,         // 默认条：0 完整、1 紧凑、2 隐藏次要计数
+      narrowCheckAt = 0, narrowMeasureKey = "", narrowWidths = null,
+      fadeOn = false,     // 默认条横滚时的左右渐隐状态
       bridge = { handle: null, turnId: "", timer: 0 },   // v71 本 pane 的 renderer store 订阅
       lastBand = null,    // v92：本 pane 上下文分档（ctxBandOf 结果，原生按钮增强的数据源）
       ctxBtnCache = null,   // v92：本实例上次增强的原生按钮（还原/对账引用，不依赖 cardCache 存活）
@@ -9711,20 +10239,26 @@
       "border-radius:var(--zu-pill-radius,12px);backdrop-filter:none;-webkit-backdrop-filter:none}" +
       ".zusage-root.zu-pill .zu-main{flex:0 1 auto;justify-content:flex-start;overflow-x:auto;scrollbar-width:thin}" +
       ".zusage-root.zu-pill .ico{color:var(--color-brand,#3b82f6)}" +
-      ".zu-main{overflow:hidden;min-width:0;flex:1 1 auto;display:flex;align-items:center;gap:1px;justify-content:space-between}" +
+      ".zu-main{overflow-x:auto;overflow-y:hidden;scrollbar-width:none;min-width:0;flex:1 1 auto;display:flex;align-items:center;gap:1px;justify-content:space-between}" +
+      ".zusage-root:not(.zu-pill) .zu-main::-webkit-scrollbar{display:none}" +
+      ".zusage-root.zu-tight .zu-main>.it{font-size:min(var(--ui-font-size,14px),max(11px,calc(var(--ui-font-size,14px) - 2px)));padding-left:4px;padding-right:4px;gap:3px}" +
+      ".zusage-root.zu-tight .zu-main>.it>.ico{width:1em;height:1em}" +
+      ".zusage-root.zu-narrow .it>.zu-secondary{position:absolute;left:0;visibility:hidden;pointer-events:none}" +
       /* v226 水平对齐（仅默认档挂类）：居左直接改 justify；居右不用字面 flex-end——LTR 下 start 侧
        * 溢出不可滚动也不计入 scrollWidth，收缩检测会失效、左格无声硬裁、.zu-clip 渐隐错边；改用首格
        * margin-left:auto 吸收自由空间等效右聚拢，溢出时 auto 归零、内容右向溢出，收缩/渐隐兜底不变 */
       ".zusage-root.zu-just-start .zu-main{justify-content:flex-start}" +
       ".zusage-root.zu-just-end .zu-main > :first-child{margin-left:auto}" +
       /* 收缩兜底（v66）：分级收缩后仍装不下时右缘 26px 渐隐，替代生硬的截断 */
-      ".zu-main.zu-clip{-webkit-mask-image:linear-gradient(90deg,#000 calc(100% - 26px),transparent);" +
-      "mask-image:linear-gradient(90deg,#000 calc(100% - 26px),transparent)}" +
+      ".zu-main.zu-clip{-webkit-mask-image:linear-gradient(90deg,#000 calc(100% - 26px),transparent);mask-image:linear-gradient(90deg,#000 calc(100% - 26px),transparent)}" +
+      ".zu-main.zu-clip-left{-webkit-mask-image:linear-gradient(90deg,transparent,#000 26px);mask-image:linear-gradient(90deg,transparent,#000 26px)}" +
+      ".zu-main.zu-clip-left.zu-clip{-webkit-mask-image:linear-gradient(90deg,transparent,#000 26px,#000 calc(100% - 26px),transparent);mask-image:linear-gradient(90deg,transparent,#000 26px,#000 calc(100% - 26px),transparent)}" +
       /* zu-main 不得带 .it class：querySelectorAll('.it') 收集 tooltip 时会把它算进第 0 位，
        * tips 全部错位一位且末项为 null —— v31"悬停只有空胶囊/内容错位"的根因 */
       ".it{display:flex;align-items:center;gap:5px;padding:2px 7px;border:0;border-radius:7px;" +
       "background:transparent;color:inherit;font:inherit;line-height:inherit;text-align:left;white-space:nowrap;" +
       "transition:background-color .12s ease-out,color .12s ease-out}" +
+      ".zusage-root .zu-main>.it{flex:0 0 auto}" +
       ".it:hover,.it:focus-visible{background:var(--color-hover,rgba(255,255,255,.06))}" +
       ".it:focus-visible,.zu-gear:focus-visible{outline:2px solid var(--color-input-border-focused,var(--color-brand,#57c8ff))!important;outline-offset:2px}" +
       ".zu-gear{flex:0 0 auto;position:relative;display:inline-flex;align-items:center;justify-content:center;width:26px;height:26px;padding:0;" +
@@ -10196,6 +10730,89 @@
       "padding:16px clamp(16px,2vw,28px) 20px;scrollbar-width:thin;scrollbar-color:var(--color-foreground-subtlest,#6b7484) transparent}" +
       ".zu-settings .zu-settings-section{width:min(100%,960px);margin:0 auto}" +
       ".zu-settings .zu-settings-card{width:100%}" +
+      ".zu-settings .zu-settings-section[data-sec=enhance-provider]{width:min(100%,880px)}.zu-settings .zu-ep{--ep-gap:16px;width:100%;display:grid;gap:var(--ep-gap);min-width:0;font-family:var(--font-sans,system-ui,sans-serif)}.zu-settings .zu-ep,.zu-settings .zu-ep *{box-sizing:border-box}.zu-settings .zu-ep [hidden]{display:none!important}" +
+      ".zu-settings .zu-ep-note,.zu-settings .zu-ep small{color:var(--color-foreground-subtle,#999);line-height:1.5;margin:0;font-size:calc(var(--ui-font-size,14px) - 2px)}.zu-settings .zu-ep-note{margin-bottom:8px}" +
+      ".zu-settings .zu-ep-custom,.zu-settings .zu-ep-host-panel,.zu-settings .zu-ep-manual-panel{display:grid;gap:12px;min-width:0}.zu-settings .zu-ep-field{display:flex;flex-direction:column;align-items:stretch;gap:8px;padding:0;margin:0;font-weight:500;min-width:0}" +
+      ".zu-settings .zu-ep-field input,.zu-settings .zu-ep-field select,.zu-settings .zu-ep-search{width:100%;min-width:0;min-height:36px;margin:0;padding:7px 12px;border:1px solid var(--color-border,#666);border-radius:7px;background-color:var(--color-input,transparent);color:var(--color-foreground,inherit);font:inherit;font-size:calc(var(--ui-font-size,14px) - 1px)}" +
+      ".zu-settings .zu-ep-field input:hover,.zu-settings .zu-ep-field input:focus,.zu-settings .zu-ep-field select:hover,.zu-settings .zu-ep-field select:focus,.zu-settings .zu-ep-search:hover,.zu-settings .zu-ep-search:focus,.zu-settings .zu-ep-field input:-webkit-autofill,.zu-settings .zu-ep-field input:-webkit-autofill:hover,.zu-settings .zu-ep-field input:-webkit-autofill:focus{-webkit-text-fill-color:var(--color-foreground,inherit);background-color:var(--color-input,transparent)!important;box-shadow:inset 0 0 0 1000px var(--color-input,transparent)}" +
+      ".zu-settings .zu-ep-field select{appearance:none;-webkit-appearance:none;padding-right:40px;background-image:linear-gradient(45deg,transparent 50%,var(--color-foreground-subtle,#999) 50%),linear-gradient(135deg,var(--color-foreground-subtle,#999) 50%,transparent 50%);background-size:5px 5px,5px 5px;background-position:calc(100% - 23px) 50%,calc(100% - 18px) 50%;background-repeat:no-repeat}" +
+      ".zu-settings .zu-ep-box,.zu-settings .zu-ep-host-panel,.zu-settings .zu-ep-manual-panel{padding:14px;border:1px solid var(--color-border,#666);border-radius:9px;background:var(--color-card,transparent)}" +
+      ".zu-settings .zu-ep-row,.zu-settings .zu-ep-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}.zu-settings .zu-ep-footer{position:sticky;bottom:-20px;z-index:2;border-top:1px solid var(--color-border,#666);padding:12px clamp(16px,2vw,28px) 14px;margin:8px calc(clamp(16px,2vw,28px) * -1) -20px;background:var(--color-card,#13161e);box-shadow:0 -10px 14px -12px rgba(0,0,0,.45)}.zu-settings .zu-ep-footer .zu-ep-status{flex:1;min-width:120px;overflow-wrap:anywhere}" +
+      ".zu-settings .zu-ep button{font:inherit;font-size:calc(var(--ui-font-size,14px) - 1px);cursor:pointer;border-radius:7px;min-height:36px;padding:6px 12px;white-space:nowrap}.zu-settings .zu-ep-secondary{border:1px solid var(--color-border,#666);background:transparent;color:inherit}.zu-settings .zu-ep-primary{border:1px solid var(--color-primary,var(--color-brand,#888));background:var(--color-primary,var(--color-brand,#888));color:var(--color-primary-foreground,#111)}" +
+      ".zu-settings .zu-ep button:hover:not(:disabled){filter:brightness(1.08)}.zu-settings .zu-ep button:disabled{opacity:.5;cursor:default}.zu-settings .zu-ep-host-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:8px;max-height:260px;overflow:auto}.zu-settings .zu-ep-host-grid button{text-align:left;min-width:0;border:1px solid var(--color-border,#666);background:transparent;color:inherit;white-space:normal;overflow-wrap:anywhere;padding:10px 12px;display:grid;gap:4px}.zu-settings .zu-ep-host-grid button[aria-pressed=true]{border-color:var(--color-input-border-focused,var(--color-border,#888));background:var(--color-secondary,var(--color-card,transparent))}" +
+      ".zu-settings .zu-ep-model-row{display:flex;align-items:stretch;gap:8px;min-width:0}.zu-settings .zu-ep-model-row input{flex:1;min-width:0}.zu-settings .zu-ep-model-row button{flex:0 0 auto}.zu-settings .zu-ep-host-status:empty,.zu-settings .zu-ep-model-status:empty{display:none}.zu-settings .zu-ep-model-status{font-size:calc(var(--ui-font-size,14px) - 2px);color:var(--color-foreground-subtle,#999);overflow-wrap:anywhere}.zu-settings .zu-ep-test-status.zu-ep-test-err{color:var(--color-error,#e5534b)}" +
+      ".zu-settings .zu-ep-allow{display:flex;align-items:flex-start;gap:10px;padding:0;margin:0}.zu-settings .zu-ep-allow>input{order:0;flex:0 0 28px;margin:2px 0 0}.zu-settings .zu-ep-allow span{flex:1;min-width:0;display:grid;gap:4px}.zu-settings .zu-ep-allow em{font-style:normal;font-weight:400;max-width:none;width:100%;color:var(--color-foreground-subtle,#999);line-height:1.5;font-size:calc(var(--ui-font-size,14px) - 2px)}.zu-settings .zu-ep-warning{padding:8px 10px;border:1px solid var(--color-warning,#b99445);border-radius:6px;color:var(--color-warning,#d3a84c);font-size:calc(var(--ui-font-size,14px) - 2px)}.zu-settings .zu-ep-remove{border:0;background:transparent;color:inherit}.zu-settings .zu-ep-hosts{min-height:32px;padding:4px 10px}.zu-settings .zu-ep select:focus-visible{outline:2px solid var(--color-input-border-focused,var(--color-brand,#888));outline-offset:2px}" +
+      ".zusage-enhance-tip .zu-eh-head{padding:14px 18px 6px;display:flex;flex-direction:column;gap:3px}" +
+      ".zusage-enhance-tip .zu-eh-head-row{display:flex;align-items:center;gap:8px}.zusage-enhance-tip .zu-eh-head-row .zu-eh-total{margin-left:auto}" +
+      ".zusage-enhance-tip .zu-eh-title{display:inline-flex;align-items:center;gap:8px;font-weight:700;font-size:calc(var(--ui-font-size,14px) + 4px);min-width:0}.zusage-enhance-tip .zu-eh-title svg{flex:0 0 auto}" +
+      ".zusage-enhance-tip .zu-eh-phase{color:var(--color-foreground-subtle,#999);font-size:calc(var(--ui-font-size,14px) - 1px);font-weight:400;margin-left:8px;white-space:nowrap}.zusage-enhance-tip .zu-eh-total{flex:0 0 auto;color:var(--color-foreground-subtle,#999);font-size:calc(var(--ui-font-size,14px) - 2px);margin-left:auto;font-variant-numeric:tabular-nums;white-space:nowrap}" +
+      ".zusage-enhance-tip .zu-eh-scroll{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;padding:6px 18px;display:grid;gap:12px}" +
+      ".zusage-enhance-tip .zu-eh-card{min-width:0;border:1px solid var(--color-border,#555);border-radius:10px;padding:12px 14px;display:grid;gap:8px;background:var(--color-card,rgba(255,255,255,.03))}" +
+      ".zusage-enhance-tip .zu-eh-pm{display:flex;align-items:center;gap:6px;min-width:0;flex-wrap:nowrap}" +
+      ".zusage-enhance-tip .zu-eh-ico{display:inline-flex;flex:0 0 auto}.zusage-enhance-tip .zu-eh-ico svg{display:block}" +
+      ".zusage-enhance-tip .zu-eh-lab-k{display:inline-flex;align-items:center;gap:4px;color:var(--color-foreground-subtle,#999);font-size:calc(var(--ui-font-size,14px) - 1px);white-space:nowrap;flex:0 0 auto}" +
+      ".zusage-enhance-tip .zu-eh-lab-k svg{flex:0 0 auto}" +
+      ".zusage-enhance-tip .zu-eh-pm-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600;font-size:calc(var(--ui-font-size,14px))}" +
+      ".zusage-enhance-tip .zu-eh-sep{flex:0 0 auto;width:1px;height:16px;background:var(--color-border,#555);margin:0 4px}" +
+      ".zusage-enhance-tip .zu-eh-text{display:flex;align-items:flex-start;gap:0;min-width:0;font-size:calc(var(--ui-font-size,14px) - 1px);line-height:1.55}.zusage-enhance-tip .zu-eh-text>.zu-eh-lab-k{flex:0 0 auto}.zusage-enhance-tip .zu-eh-text>.zu-eh-body{flex:1;min-width:0}" +
+      ".zusage-enhance-tip .zu-eh-body{min-width:0;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow-wrap:anywhere;color:var(--color-foreground,#e9edf4)}" +
+      ".zusage-enhance-tip .zu-eh-text-enh .zu-eh-body{background:rgba(255,180,60,.08);border-radius:4px;padding:2px 6px}" +
+      ".zusage-enhance-tip .zu-eh-lab-enh{color:var(--color-warning,#d3a84c)}" +
+      ".zusage-enhance-tip .zu-eh-stats{display:flex;align-items:center;flex-wrap:wrap;gap:6px 0;font-variant-numeric:tabular-nums;font-size:calc(var(--ui-font-size,14px) - 2px);min-width:0}" +
+      ".zusage-enhance-tip .zu-eh-stat{display:inline-flex;align-items:center;gap:4px;color:var(--color-foreground-subtle,#999);white-space:nowrap}.zusage-enhance-tip .zu-eh-stat+.zu-eh-stat{margin-left:12px;padding-left:12px;border-left:1px solid var(--color-border,#555)}" +
+      ".zusage-enhance-tip .zu-eh-footer{border-top:1px solid var(--color-border,#555);padding:10px 18px;display:flex;align-items:center;gap:8px}.zusage-enhance-tip .zu-eh-footer .zu-eh-clear{margin-left:auto}" +
+      ".zusage-enhance-tip .zu-eh-act{display:inline-flex;align-items:center;gap:6px;background:transparent;border:0;color:var(--color-foreground-subtle,#999);font:inherit;font-size:calc(var(--ui-font-size,14px));padding:4px 6px;cursor:pointer}.zusage-enhance-tip .zu-eh-act:hover{color:var(--color-foreground,#e9edf4)}" +
+      ".zusage-enhance-tip .zu-eh-act svg{flex:0 0 auto}" +
+      ".zusage-enhance-tip .zu-eh-clear:hover{color:var(--color-error,#e5534b)}" +
+      ".zusage-enhance-tip .zu-eh-empty{padding:30px 18px;display:flex;flex-direction:column;align-items:center;gap:10px;color:var(--color-foreground-subtle,#999);text-align:center}.zusage-enhance-tip .zu-eh-empty svg{opacity:.6}" +
+      ".zusage-enhance-tip .zu-eh-arrow{width:0;height:0;border-left:10px solid transparent;border-right:10px solid transparent;border-top:8px solid var(--color-tooltip,#1a1d24);margin:0 auto;margin-bottom:-1px}" +
+      ".zusage-enhance-tip .zu-eh-retry{margin-top:4px}" +
+      ".zusage-enhance-tip .zu-eh-savehint{padding:6px 18px;color:var(--color-warning,#d3a84c);font-size:calc(var(--ui-font-size,14px) - 2px)}" +
+      /* 查看全部历史浮层：高度随内容自适应（数据少时紧凑、多时表区独立滚动），容器查询按面板实际宽度响应 */
+      ".zusage-enhance-full{position:fixed;width:min(1200px,calc(100vw - 32px));height:auto;min-height:60vh;max-height:min(85vh,760px);max-height:min(85dvh,760px);flex-direction:column;overflow:hidden;padding:0;z-index:2147483647;container-type:inline-size}" +
+      ".zusage-enhance-full .zu-eh-full-head{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:12px 12px 12px 16px;min-height:56px;box-sizing:border-box;border-bottom:1px solid var(--color-border,#666)}" +
+      ".zusage-enhance-full .zu-eh-head-l,.zusage-enhance-full .zu-eh-head-r{display:flex;align-items:center;gap:10px;min-width:0}" +
+      ".zusage-enhance-full .zu-eh-title{display:inline-flex;align-items:center;gap:8px;font-weight:600;font-size:calc(var(--ui-font-size,14px) + 3px);white-space:nowrap}" +
+      ".zusage-enhance-full .zu-eh-total{flex:0 0 auto;padding:2px 10px;border-radius:999px;background:var(--color-card,rgba(255,255,255,.06));color:var(--color-foreground-subtle,#999);font-size:calc(var(--ui-font-size,14px) - 2px);font-variant-numeric:tabular-nums;white-space:nowrap}" +
+      ".zusage-enhance-full .zu-eh-clear,.zusage-enhance-full .zu-eh-cfg{display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 12px;border:1px solid var(--color-border,#555);border-radius:6px;background:transparent;color:var(--color-foreground-subtle,#999);font:inherit;font-size:calc(var(--ui-font-size,14px) - 1px);cursor:pointer;white-space:nowrap}.zusage-enhance-full .zu-eh-clear:hover{color:var(--color-error,#e5534b);border-color:var(--color-error,#e5534b)}.zusage-enhance-full .zu-eh-cfg:hover{color:var(--color-foreground,#e9edf4);border-color:var(--color-border,#666)}" +
+      ".zusage-enhance-full .zu-eh-close{width:32px;height:32px;margin-right:-8px;display:inline-flex;align-items:center;justify-content:center;border:0;border-radius:6px;background:transparent;color:var(--color-foreground-subtle,#999);cursor:pointer}.zusage-enhance-full .zu-eh-close:hover{background:var(--color-card,rgba(255,255,255,.08));color:var(--color-foreground,#e9edf4)}" +
+      ".zusage-enhance-full .zu-eh-full-filter{display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:10px 16px;border-bottom:1px solid var(--color-border,#555)}" +
+      ".zusage-enhance-full .zu-eh-searchbox{flex:1 1 240px;min-width:200px;display:flex;align-items:center;gap:8px;height:34px;padding:0 10px;background:var(--color-input,transparent);border:1px solid var(--color-border,#666);border-radius:6px;color:var(--color-foreground-subtle,#999)}.zusage-enhance-full .zu-eh-searchbox:focus-within{border-color:var(--color-primary,var(--color-brand,#888))}.zusage-enhance-full .zu-eh-searchbox svg{flex:0 0 auto}" +
+      ".zusage-enhance-full .zu-eh-search{flex:1 1 auto;min-width:0;height:100%;padding:0;border:0;outline:none;background:transparent;color:var(--color-foreground,inherit);font:inherit;font-size:calc(var(--ui-font-size,14px) - 1px)}" +
+      /* 自绘下拉箭头：原生 select 箭头贴右缘且各端不一致，appearance:none + 固定位背景统一（右距 10px 与文字左距 8px 视觉对称） */
+      ".zusage-enhance-full .zu-eh-filter{margin-left:0;min-width:0;height:34px;padding:0 30px 0 10px;background:var(--color-input,transparent) url(\"data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239aa3b2' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E\") no-repeat right 10px center;border:1px solid var(--color-border,#666);border-radius:6px;color:var(--color-foreground,inherit);font:inherit;font-size:calc(var(--ui-font-size,14px) - 1px);cursor:pointer;appearance:none;-webkit-appearance:none}.zusage-enhance-full .zu-eh-filter:focus{outline:none;border-color:var(--color-primary,var(--color-brand,#888))}" +
+      ".zusage-enhance-full .zu-eh-f-src{width:112px}.zusage-enhance-full .zu-eh-f-prov{width:150px}.zusage-enhance-full .zu-eh-f-model{width:140px}.zusage-enhance-full .zu-eh-f-time{width:118px}" +
+      ".zusage-enhance-full .zu-eh-table-wrap{flex:0 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden}" +
+      ".zusage-enhance-full .zu-eh-table{width:100%;table-layout:fixed;border-collapse:collapse}" +
+      ".zusage-enhance-full .zu-eh-tr-head{background:var(--color-card,rgba(255,255,255,.04))}" +
+      ".zusage-enhance-full .zu-eh-tr-head th{position:sticky;top:0;z-index:1;background:var(--color-tooltip,#171717);box-shadow:0 1px 0 var(--color-border,#555)}" +
+      ".zusage-enhance-full .zu-eh-th{text-align:left;padding:7px 8px;font-weight:600;font-size:calc(var(--ui-font-size,14px) - 2px);color:var(--color-foreground-subtle,#999);white-space:nowrap;user-select:none;overflow:hidden;text-overflow:ellipsis}" +
+      ".zusage-enhance-full .zu-eh-th[data-sort]{cursor:pointer}.zusage-enhance-full .zu-eh-th[data-sort]:hover{color:var(--color-foreground,#e9edf4)}" +
+      ".zusage-enhance-full .zu-eh-th svg{vertical-align:-1px;display:inline-block}" +
+      ".zusage-enhance-full .zu-eh-row{cursor:pointer}.zusage-enhance-full .zu-eh-row:hover{background:var(--color-card,rgba(255,255,255,.06))}" +
+      ".zusage-enhance-full .zu-eh-row.zu-eh-open{background:var(--color-card,rgba(255,255,255,.04))}" +
+      ".zusage-enhance-full .zu-eh-td{padding:8px;font-size:calc(var(--ui-font-size,14px) - 2px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle;line-height:28px}" +
+      ".zusage-enhance-full .zu-eh-td-num{text-align:right;font-variant-numeric:tabular-nums}" +
+      ".zusage-enhance-full .zu-eh-td-chev{padding-left:10px;padding-right:0;color:var(--color-foreground-subtle,#999)}" +
+      ".zusage-enhance-full .zu-eh-td-ops{text-align:right;padding-right:10px;white-space:nowrap}" +
+      ".zusage-enhance-full .zu-eh-prov-sep{color:var(--color-foreground-subtle,#999)}" +
+      ".zusage-enhance-full .zu-eh-row-copy,.zusage-enhance-full .zu-eh-row-del{background:transparent;border:0;color:var(--color-foreground-subtle,#999);cursor:pointer;padding:3px;margin-left:2px;border-radius:4px}.zusage-enhance-full .zu-eh-row-copy:hover,.zusage-enhance-full .zu-eh-row-del:hover{color:var(--color-foreground,#e9edf4)}.zusage-enhance-full .zu-eh-row-del:hover{color:var(--color-error,#e5534b)}" +
+      ".zusage-enhance-full .zu-eh-detail-row>td{padding:2px 16px 12px}" +
+      ".zusage-enhance-full .zu-eh-detail{display:grid;grid-template-columns:minmax(0,.85fr) minmax(0,1.5fr) minmax(0,1.5fr);gap:16px;min-width:0;background:var(--color-card,rgba(255,255,255,.03));border:1px solid var(--color-border,#555);border-radius:8px;padding:12px 14px}" +
+      ".zusage-enhance-full .zu-eh-d-meta{display:grid;grid-template-columns:auto minmax(0,1fr);gap:7px 10px;font-size:calc(var(--ui-font-size,14px) - 2px);align-content:start;min-width:0}.zusage-enhance-full .zu-eh-d-meta>.zu-eh-d-pair{display:contents}.zusage-enhance-full .zu-eh-d-inline{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:4px 24px;align-items:baseline;min-width:0;margin-top:2px;padding-top:10px;border-top:1px solid var(--color-border,#555)}.zusage-enhance-full .zu-eh-d-inline .zu-eh-d-pair{display:inline-flex;align-items:baseline;gap:6px;min-width:0}.zusage-enhance-full .zu-eh-d-k{color:var(--color-foreground-subtle,#999);font-weight:500;font-size:calc(var(--ui-font-size,14px) - 3px);line-height:20px;white-space:nowrap}.zusage-enhance-full .zu-eh-d-wrap{overflow-wrap:anywhere}" +
+      ".zusage-enhance-full .zu-eh-d-text{display:flex;flex-direction:column;gap:6px;min-width:0}.zusage-enhance-full .zu-eh-d-h{display:inline-flex;align-items:center;gap:6px;font-weight:600;font-size:calc(var(--ui-font-size,14px) - 1px);color:var(--color-foreground-subtle,#999)}.zusage-enhance-full .zu-eh-d-h button{margin-left:auto}" +
+      ".zusage-enhance-full .zu-eh-d-body{font-size:calc(var(--ui-font-size,14px) - 1px);line-height:1.55;white-space:pre-wrap;overflow-wrap:anywhere;max-height:240px;overflow-y:auto;min-height:0;user-select:text}.zusage-enhance-full .zu-eh-d-enh .zu-eh-d-body{background:var(--color-card,rgba(255,255,255,.04));border:1px solid var(--color-border,#555);border-radius:4px;padding:8px}" +
+      ".zusage-enhance-full .zu-eh-pagination{border-top:1px solid var(--color-border,#555);padding:8px 16px;display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;font-size:calc(var(--ui-font-size,14px) - 2px);color:var(--color-foreground-subtle,#999);font-variant-numeric:tabular-nums}" +
+      ".zusage-enhance-full .zu-eh-pgsize{width:auto;height:auto;padding:2px 22px 2px 8px;background-position:right 6px center;font-size:calc(var(--ui-font-size,14px) - 2px)}" +
+      ".zusage-enhance-full .zu-eh-pg-btn{background:transparent;border:1px solid transparent;border-radius:6px;color:inherit;font:inherit;font-size:calc(var(--ui-font-size,14px) - 2px);min-width:28px;height:28px;padding:0 6px;cursor:pointer;margin:0 1px}.zusage-enhance-full .zu-eh-pg-btn:hover:not(:disabled){background:var(--color-card,rgba(255,255,255,.06))}.zusage-enhance-full .zu-eh-pg-btn:disabled{opacity:.4;cursor:default}.zusage-enhance-full .zu-eh-pg-cur{background:var(--color-card,rgba(255,255,255,.1));color:var(--color-foreground,#e9edf4);font-weight:600}" +
+      ".zusage-enhance-full .zu-eh-pg-ellipsis{color:var(--color-foreground-subtle,#999);margin:0 2px}" +
+      ".zusage-enhance-full .zu-eh-cell-text{display:block;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}" +
+      ".zusage-enhance-full td.zu-eh-empty{padding:36px 16px;text-align:center;color:var(--color-foreground-subtle,#999);line-height:1.6;white-space:normal}.zusage-enhance-full td.zu-eh-empty svg{opacity:.5}.zusage-enhance-full td.zu-eh-empty small{display:block;margin-top:6px}" +
+      '@container (max-width:900px){.zusage-enhance-full .zu-eh-detail{grid-template-columns:1fr 1fr}.zusage-enhance-full .zu-eh-d-meta{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:4px 18px}.zusage-enhance-full .zu-eh-d-pair{display:inline-flex;align-items:baseline;gap:6px;min-width:0}.zusage-enhance-full .zu-eh-f-model{width:120px}}' +
+      '@container (max-width:640px){.zusage-enhance-full .zu-eh-detail{grid-template-columns:1fr}.zusage-enhance-full .zu-eh-f-prov,.zusage-enhance-full .zu-eh-f-model{width:130px}}' +
+      "@media(max-width:480px){.zu-settings .zu-ep-model-row{flex-wrap:wrap}.zu-settings .zu-ep-model-row input{flex-basis:160px}.zu-settings .zu-ep-footer .zu-ep-status{flex-basis:100%}}" +
+      ".zu-settings .zu-ep-test{container-type:inline-size;border:1px solid var(--color-border,#666);border-radius:9px;padding:14px;min-width:0}.zu-settings .zu-ep-test p{margin:5px 0 12px;color:var(--color-foreground-subtle,#999);font-size:calc(var(--ui-font-size,14px) - 2px)}" +
+      ".zu-settings .zu-ep-test-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:14px}.zu-settings .zu-ep-test-input,.zu-settings .zu-ep-test-output{display:flex;flex-direction:column;gap:8px;min-width:0;padding:0;margin:0}.zu-settings .zu-ep-test-draft,.zu-settings .zu-ep-test-result{width:100%;height:170px;min-width:0;margin:0;padding:10px;border:1px solid var(--color-border,#666);border-radius:7px;background:var(--color-input,transparent);color:var(--color-foreground,inherit);font:inherit;line-height:1.5;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;resize:none}.zu-settings .zu-ep-test-output{position:relative}.zu-settings .zu-ep-test-empty{position:absolute;top:40px;left:11px;pointer-events:none}.zu-settings .zu-ep-test-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:12px}.zu-settings .zu-ep-test-status{flex:1;min-width:100px;overflow-wrap:anywhere}.zu-settings .zu-ep-test-run{margin-left:auto}@container (max-width:520px){.zu-settings .zu-ep-test-grid{grid-template-columns:minmax(0,1fr)}}" +
       ".zu-settings-body::-webkit-scrollbar{width:8px}" +
       ".zu-settings-body::-webkit-scrollbar-thumb{background:var(--color-foreground-subtlest,#6b7484);border:2px solid var(--color-card,#13161e);border-radius:999px}" +
       ".zu-settings.zu-settings-more .zu-settings-body{mask-image:linear-gradient(#000 calc(100% - 16px),transparent)}" +
@@ -11058,6 +11675,8 @@
         icon: '<path d="M4 7h4m5 0h7M4 17h9m5 0h2"/><circle cx="10.5" cy="7" r="2.5"/><circle cx="15.5" cy="17" r="2.5"/>' },
       { id: "rotator", group: "basics", zh: "状态轮播", en: "Status rotator",
         icon: '<path d="M12 2v4m0 12v4M4.93 4.93l2.83 2.83m8.48 8.48l2.83 2.83M2 12h4m12 0h4M4.93 19.07l2.83-2.83m8.48-8.48l2.83-2.83"/>' },
+      { id: "enhance-provider", group: "basics", zh: "提示词增强", en: "Prompt enhancement",
+        icon: '<path d="M12 3l2.2 6.8L21 12l-6.8 2.2L12 21l-2.2-6.8L3 12l6.8-2.2z"/>' },
       { id: "stats", group: "data", zh: "回答统计", en: "Reply statistics",
         icon: '<path d="M4 4v16h16M8 16v-4m5 4V7m5 9v-6"/>' },
       { id: "quota", group: "data", zh: "套餐额度", en: "Plan quota",
@@ -11091,10 +11710,54 @@
       }
       return html + '</nav>';
     }
+    /* 增强厂商预设（地址/协议参考 cc-switch opencodeProviderPresets 的「模型厂商」分组，仅预填地址与协议，不含 Key 与模型） */
+    var ZU_EP_PRESETS = [
+      { group: "Baidu Qianfan Token Plan", items: [["qianfan", "Baidu Qianfan Token Plan", "https://qianfan.baidubce.com/v2/tokenplan/personal", "openai-chat-completions"]] },
+      { group: "BaiLing", items: [["bailing", "BaiLing", "https://api.ant-ling.com/v1", "openai-chat-completions"]] },
+      { group: "BytePlus", items: [["byteplus", "BytePlus", "https://ark.ap-southeast.bytepluses.com/api/coding/v3", "openai-chat-completions"]] },
+      { group: "DeepSeek", items: [["deepseek", "DeepSeek", "https://api.deepseek.com/v1", "openai-chat-completions"]] },
+      { group: L("火山引擎", "Volcengine"), items: [
+        ["volc-agent", L("火山 Agent Plan", "Volcengine Agent Plan"), "https://ark.cn-beijing.volces.com/api/plan/v3", "openai-chat-completions"],
+        ["volc-coding", L("火山 Coding Plan", "Volcengine Coding Plan"), "https://ark.cn-beijing.volces.com/api/coding/v3", "openai-chat-completions"],
+        ["volc-doubao", "Doubao", "https://ark.cn-beijing.volces.com/api/v3", "openai-chat-completions"]] },
+      { group: "Kimi", items: [
+        ["kimi-cn", "Kimi（月之暗面）", "https://api.moonshot.cn/v1", "openai-chat-completions"],
+        ["kimi-intl", "Kimi Global", "https://api.moonshot.ai/v1", "openai-chat-completions"],
+        ["kimi-coding", "Kimi For Coding", "https://api.kimi.com/coding/v1", "anthropic-messages"],
+        ["kimi-coding-intl", "Kimi For Coding Global", "https://api.kimi.ai/coding/v1", "anthropic-messages"]] },
+      { group: "Longcat", items: [["longcat", "Longcat", "https://api.longcat.chat/openai/v1", "openai-chat-completions"]] },
+      { group: "MiniMax", items: [
+        ["minimax-cn", "MiniMax", "https://api.minimax.cn/v1", "openai-chat-completions"],
+        ["minimax-intl", "MiniMax Global", "https://api.minimax.io/v1", "openai-chat-completions"]] },
+      { group: L("千问AI平台", "Qianwen"), items: [
+        ["qianwen-payg", L("千问AI平台", "Qianwen"), "https://maas.qianwenaiapi.com/compatible-mode/v1", "openai-chat-completions"],
+        ["qianwen-token", L("千问AI平台 Token Plan", "Qianwen Token Plan"), "https://token-plan.maas.qianwenaiapi.com/apps/anthropic/v1", "anthropic-messages"]] },
+      { group: "QwenCloud", items: [
+        ["qwen-payg", "QwenCloud", "https://ap-southeast-1.maas.qwencloudapi.com/compatible-mode/v1", "openai-chat-completions"],
+        ["qwen-coding", "QwenCloud For Coding", "https://coding-intl.dashscope.aliyuncs.com/apps/anthropic/v1", "anthropic-messages"],
+        ["qwen-token", "QwenCloud Token Plan", "https://token-plan.maas.qwencloudapi.com/apps/anthropic/v1", "anthropic-messages"]] },
+      { group: "StepFun", items: [["stepfun-cn", "StepFun", "https://api.stepfun.com/step_plan/v1", "openai-chat-completions"]] },
+      { group: "StepFun Step Plan", items: [["stepfun-plan", "StepFun Step Plan", "https://api.stepfun.com/step_plan/v1", "openai-chat-completions"]] },
+      { group: "StreamLake", items: [
+        ["streamlake-cn", "StreamLake", "https://wanqing.streamlakeapi.com/api/gateway/v1/endpoints", "openai-chat-completions"],
+        ["streamlake-intl", "StreamLake Global", "https://vanchin.streamlake.ai/api/gateway/v1/endpoints", "openai-chat-completions"]] },
+      { group: L("腾讯云", "Tencent Cloud"), items: [
+        ["tencent-plan", "Tencent Token Plan", "https://api.lkeap.cloud.tencent.com/plan/v3", "openai-chat-completions"],
+        ["tencent-pro", "Tencent Token Plan Enterprise Pro", "https://tokenhub.tencentmaas.com/plan/v3", "openai-chat-completions"],
+        ["tencent-intl", "Tencent Token Plan (Intl)", "https://tokenhub-intl.tencentcloudmaas.com/plan/v3", "openai-chat-completions"]] },
+      { group: "Xiaomi MiMo", items: [
+        ["mimo-payg", "Xiaomi MiMo", "https://api.xiaomimimo.com/v1", "openai-chat-completions"],
+        ["mimo-token", "Xiaomi MiMo Token Plan", "https://token-plan-cn.xiaomimimo.com/v1", "openai-chat-completions"]] },
+      { group: "Zhipu GLM", items: [
+        ["zhipu-cn", "Zhipu GLM", "https://open.bigmodel.cn/api/coding/paas/v4", "openai-chat-completions"],
+        ["zhipu-intl", "Z.ai (GLM)", "https://api.z.ai/api/coding/paas/v4", "openai-chat-completions"]] }
+    ];
     /* 面板文案可随语言重建（事件走 panel 级委托，重建不丢监听） */
     function buildPanel() {
       var oldBody = panel.querySelector(".zu-settings-body");
       var scrollTop = oldBody ? oldBody.scrollTop : 0;
+      var epDraft = typeof epCaptureDraft === "function" ? epCaptureDraft() : null;
+      if (typeof epTestStop === "function" && typeof epTest !== "undefined" && epTest && epTest.id) epTestStop(L("测试已取消。", "Test cancelled."));
       panel.innerHTML =
       '<div class="zu-settings-head"><div class="phead">' + L("状态条设置", "Status bar settings") + '<span class="pver zu-settings-version"></span></div>' +
       '<button type="button" class="zu-settings-close" aria-label="' + L("关闭设置", "Close settings") + '">✕</button></div>' +
@@ -11145,6 +11808,21 @@
       '<div class="zu-settings-langs"><label><input type="radio" name="zu-lang" value="zh"><span>中文</span></label>' +
       '<label><input type="radio" name="zu-lang" value="en"><span>English</span></label></div></div></section>' +
       (typeof zuRotatorSectionHtml === "function" ? zuRotatorSectionHtml(secOpen("rotator") === "") : "") +
+      '<section class="zu-settings-section" data-sec="enhance-provider"' + secOpen("enhance-provider") + '><div class="cap">' + L("提示词增强", "Prompt enhancement") + '</div><div class="zu-ep">' +
+      '<p class="zu-ep-note">' + L("使用所选模型优化草稿，不更改聊天模型。增强会发送草稿并可能消耗额度。", "Rewrite drafts with the selected model without changing chat settings. Enhancement sends the draft and may incur charges.") + '</p>' +
+      '<select class="zu-ep-mode" hidden><option value="default">' + L("跟随当前会话", "Follow current session") + '</option><option value="custom">' + L("自定义增强服务", "Custom enhancement service") + '</option></select>' +
+      '<label class="zu-ep-field">' + L("配置来源", "Source") + '<select class="zu-ep-source"><option value="default">' + L("跟随当前会话", "Follow current session") + '</option><option value="host">' + L("ZCode 已有供应商", "ZCode provider") + '</option><option value="manual">' + L("手动配置／厂商预设", "Manual / preset") + '</option></select></label>' +
+      '<div class="zu-ep-default zu-ep-box">' + L("当前生效配置以保存结果为准。跟随当前会话时，供应商和模型随会话变化；已保存的自定义配置会保留。", "The saved mode determines the active configuration. Following the session uses its provider and model; saved custom settings are retained.") + '</div>' +
+      '<div class="zu-ep-custom" hidden>' +
+      '<div class="zu-ep-host-panel" hidden><div class="zu-ep-row"><strong>' + L("选择供应商", "Choose provider") + '</strong><button type="button" class="zu-ep-hosts zu-ep-secondary">' + L("刷新", "Refresh") + '</button></div><input class="zu-ep-search" type="search" placeholder="' + L("搜索供应商", "Search providers") + '"><div class="zu-ep-host-status" role="status"></div><div class="zu-ep-host-grid"></div><select class="zu-ep-host" hidden></select></div>' +
+      '<div class="zu-ep-manual-panel" hidden><label class="zu-ep-field">' + L("供应商／预设", "Provider / preset") + '<select class="zu-ep-preset"><option value="">' + L("自定义配置", "Custom") + '</option>' + ZU_EP_PRESETS.map(function (g) { return '<optgroup label="' + g.group + '">' + g.items.map(function (it) { return '<option value="' + it[0] + '">' + it[1] + '</option>'; }).join("") + '</optgroup>'; }).join("") + '</select></label>' +
+      '<label class="zu-ep-field">Base URL<input class="zu-ep-url" type="url" autocomplete="off"></label><label class="zu-ep-field">' + L("API 协议", "API protocol") + '<select class="zu-ep-protocol"><option value="openai-chat-completions">OpenAI Chat Completions</option><option value="openai-responses">OpenAI Responses</option><option value="anthropic-messages">Anthropic Messages</option></select></label>' +
+      '<label class="zu-ep-field">API Key<input class="zu-ep-key" type="password" autocomplete="off" placeholder="' + L("留空保留已保存的 Key", "Leave blank to keep saved key") + '"></label><div class="zu-ep-row"><small class="zu-ep-key-state"></small><button type="button" class="zu-ep-remove zu-ep-secondary">' + L("移除已保存的 Key", "Remove saved key") + '</button></div><small>' + L("Key 以本地明文文件保存，并受文件权限保护。", "The key is stored locally in plaintext, protected by file permissions.") + '</small></div>' +
+      '<div class="zu-ep-warning" role="status" hidden></div><label class="zu-ep-field">' + L("增强模型", "Enhancement model") + '<span class="zu-ep-model-row"><input class="zu-ep-model" type="text" list="zu-ep-model-options" autocomplete="off" placeholder="' + L("输入或选择模型 ID", "Enter or select a model ID") + '"><button type="button" class="zu-ep-models zu-ep-secondary">' + L("拉取模型", "Fetch models") + '</button></span></label><datalist id="zu-ep-model-options" class="zu-ep-model-list"></datalist><div class="zu-ep-model-status" role="status" aria-live="polite"></div></div>' +
+      '<label class="zu-ep-allow"><input type="checkbox" class="zu-ep-allow-downgrade"><span>' + L("所选供应商模型报错不可用时，自动选用其它可用的模型完成增强", "Automatically use another available model when the selected one fails") + '<em>' + L("勾选：所选模型在供应商处报错不可用时，自动改用其它可用的模型完成增强。取消勾选：严格使用当前所选模型，该模型不可用时就报错。", "When checked, another available model is used if the selected one fails. When unchecked, only the selected model is used and failures are reported.") + '</em></span></label>' +
+      '<label class="zu-ep-allow"><input type="checkbox" class="zu-ep-save-history"><span>' + L("在本机保存增强历史", "Save enhancement history on this machine") + '<em>' + L("开启后，增强成功的原始与增强文本会保存在本机增强历史文件中（最多 100 条、30 天），可随时删除或清空；关闭时仅本次运行内存可用，重启清空。不含任何密钥。", "When on, the original and enhanced texts of successful enhancements are stored in the local history file (up to 100 records, 30 days) and can be deleted or cleared anytime; when off they stay in memory only for this run. Never contains keys.") + '</em></span></label>' +
+      '<div class="zu-ep-test"><strong>' + L("测试区域", "Test enhancement") + '</strong><p>' + L("输入草稿测试已保存配置；测试会发送草稿并可能消耗额度。", "Test the saved configuration. The draft is sent and may incur charges.") + '</p><div class="zu-ep-test-grid"><label class="zu-ep-test-input">' + L("待增强的草稿提示词", "Draft prompt") + '<textarea class="zu-ep-test-draft" placeholder="' + L("输入需要增强的提示词…", "Enter a prompt to enhance…") + '"></textarea></label><div class="zu-ep-test-output"><span>' + L("增强结果", "Enhanced result") + '</span><pre class="zu-ep-test-result" aria-live="polite"></pre><small class="zu-ep-test-empty">' + L("增强后的提示词将在这里显示", "The enhanced prompt will appear here") + '</small></div></div><div class="zu-ep-test-actions"><span class="zu-ep-test-status" role="status" aria-live="polite"></span><button type="button" class="zu-ep-test-cancel zu-ep-secondary" hidden>' + L("取消测试", "Cancel test") + '</button><button type="button" class="zu-ep-test-run zu-ep-secondary">✦ ' + L("增强提示词", "Enhance prompt") + '</button></div></div>' +
+      '<div class="zu-ep-footer"><span class="zu-ep-status" role="status"></span><button type="button" class="zu-ep-reload zu-ep-secondary" hidden>' + L("重新载入已保存配置", "Reload saved settings") + '</button><button type="button" class="zu-ep-save zu-ep-primary">' + L("保存配置", "Save settings") + '</button></div></div></section>' +
       '<section class="zu-settings-section" data-sec="stats"' + secOpen("stats") + '><div class="cap">' + L("回答统计", "Reply statistics") + '</div><div class="zu-settings-card">' +
       settingRow('<input type="checkbox" class="zu-rate-line">', L("回答末尾追加统计行", "Append stats to each reply"), L("切换后立即重扫：关闭会撤下插件生成的统计行，开启会补回可用记录。下一次提问沿用该设置；历史正文和已缓存统计行不重算。", "Rescans immediately: off removes plugin-generated lines; on restores available records. Applies to the next prompt; historical text and cached statistics are not recalculated.")) +
       settingRow('<input type="checkbox" class="zu-enhance-toggle">', L("增强提示词按钮", "Prompt enhance button"), L("在输入框工具条模型选择按钮左侧显示 ✦ 按钮：点击用当前会话模型把输入框草稿改写得更清晰后替换原文，20 秒内可点按钮撤销。点击会向当前模型供应商发送草稿文本并消耗其额度；默认开启，主进程端同名开关关闭时不渲染。", "Shows a ✦ button left of the model picker in the composer toolbar: click to rewrite the composer draft with the current session model and replace it (click again within 20s to undo). Clicking sends the draft text to the current model provider and consumes its quota; on by default, and the button is hidden when the main-process switch of the same name is off.")) +
@@ -11214,6 +11892,8 @@
       var qrBox = panel.querySelector(".zu-quota-remain");
       if (qrBox) qrBox.checked = !!state.quotaRemain;
       if (typeof zuRotatorSyncPanel === "function") zuRotatorSyncPanel(panel);
+      if (epDraft && typeof epRestoreDraft === "function") epRestoreDraft(epDraft);
+      if (typeof epTestRender === "function" && typeof epTest !== "undefined" && epTest) epTestRender();
       syncUpdate();
       panel.querySelector(".zu-settings-body").scrollTop = scrollTop;
       if (panel.setAttribute) panel.setAttribute("aria-label", L("状态条设置", "Status bar settings"));
@@ -11264,6 +11944,7 @@
     }
     var previousPanelFocus = null;
     function closeSettings(restoreFocus) {
+      if (typeof epTest !== "undefined" && epTest && epTest.id && typeof epTestStop === "function") epTestStop(L("测试已取消。", "Test cancelled."));
       panel.classList.remove("open");
       /* 轮播实时预览定时器随面板关闭即停（不靠 tick 的 hidden 跳过空转）；panelEl 归属守卫防跨实例误杀 */
       if (typeof rotPreview !== "undefined" && rotPreview.timer && rotPreview.panelEl === panel) { clearInterval(rotPreview.timer); rotPreview.timer = null; }
@@ -12622,8 +13303,7 @@
         it(ico('<path d="M5 3.5h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-9l-6.5 4V5.5a2 2 0 0 1 1.5-2z"/><path d="M7.5 8.5h9m-9 4h6"/>') +
           '<span class="v">' + fmt(lt.total) + "</span>" +
           (state.theme === "pill" ? "" :
-            (shrink ? "" : "") +
-            '<span class="dim">' + countFmt(lt.requests || 0) + L("次", " req") + "</span>"),
+            '<span class="dim zu-secondary">' + countFmt(lt.requests || 0) + L("次", " req") + "</span>"),
           /* v211 格面移除单次耗时/首字延迟段（用户规格）：耗时/延迟只在 tooltip 呈现
            * （平均耗时/平均延迟，对全体请求求均值） */
           /* v299 500×350 紧凑布局（用户 /goal）：三行 KPI 固定顺序——
@@ -12697,8 +13377,7 @@
         it(ico('<path d="M7.5 3h12a2 2 0 0 1 2 2v10M4.5 7h12a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H8l-5.5 2V9a2 2 0 0 1 2-2z"/>') +
           '<span class="v">' + fmt(sess.total) + "</span>" +
           (state.theme === "pill" ? "" :
-            (shrink ? "" : "") +
-            '<span class="dim">' + countFmt(sess.turns || 0) + L("轮 ", " turns · ") + countFmt(sess.requests || 0) + L("次", " req") + "</span>"),
+            '<span class="dim zu-secondary">' + countFmt(sess.turns || 0) + L("轮 ", " turns · ") + countFmt(sess.requests || 0) + L("次", " req") + "</span>"),
           "\x01" + statCompactStyle("session") +
           '<div class="zu-stat-tip zu-stat-tip--session">' +
           statHead(L("会话累计", "Session total"), L("全部请求", "All requests"),
@@ -12769,8 +13448,8 @@
           '<span class="v">' + fmt(today.total) + "</span>" +
           (state.theme === "pill" ? "" :
             (today.turns != null
-              ? '<span class="dim">' + countFmt(today.turns) + L("轮 ", " turns · ") + countFmt(today.requests || 0) + L("次", " req") + "</span>"
-              : '<span class="dim">' + countFmt(today.requests || 0) + L("次", " req") + "</span>")),
+              ? '<span class="dim zu-secondary">' + countFmt(today.turns) + L("轮 ", " turns · ") + countFmt(today.requests || 0) + L("次", " req") + "</span>"
+              : '<span class="dim zu-secondary">' + countFmt(today.requests || 0) + L("次", " req") + "</span>")),
           "\x01" +
           statCompactStyle("today") +
           '<div class="zu-stat-tip zu-stat-tip--today">' +
@@ -12835,8 +13514,7 @@
         it(ico('<path d="M3.5 6.5a2 2 0 0 1 2-2h4.2l2 2h7.3a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5.5a2 2 0 0 1-2-2z"/>') +
           '<span class="v">' + fmt(pj.total) + "</span>" +
           (state.theme === "pill" ? "" :
-            (shrink ? "" : "") +
-            '<span class="dim">' + countFmt(pj.sessions || 0) + L("会话 ", " sessions · ") + countFmt(pj.requests || 0) + L("次", " req") + "</span>"),
+            '<span class="dim zu-secondary">' + countFmt(pj.sessions || 0) + L("会话 ", " sessions · ") + countFmt(pj.requests || 0) + L("次", " req") + "</span>"),
 "\x01" + buildProjectTipHTML(pj, pjKey), "zu-pj-item");
       }
       if (state.show.tools) {
@@ -14267,7 +14945,7 @@
       /* v232 顺带修 v217 回归：.zu-sub 走统一浮层后 __tip 恒 null，滚入判定若被
        * __tip 早退拦截，药丸窄条下子代理入口键盘聚焦不再滚入可视区（pill 夹具实测
        * scrollLeft 恒 0）。滚入只依赖条目矩形，提到 __tip 早退之前。 */
-      if (state.theme === "pill" && (item.__tip || item.classList.contains("zu-sub"))) {
+      if ((state.theme === "pill" || state.theme === "default") && (item.__tip || item.classList.contains("zu-sub"))) {
         var ir = item.getBoundingClientRect(), mr = main.getBoundingClientRect();
         if (ir.left < mr.left) main.scrollLeft -= mr.left - ir.left;
         else if (ir.right > mr.right) main.scrollLeft += ir.right - mr.right;
@@ -14598,6 +15276,7 @@
     }
     /* v208 分区切换单一出口：导航点击与齿轮待重启跳转共用；切入「插件更新」即 ack（点进分区红点消失） */
     function activateSettingsSec(sec) {
+      if (sec !== "enhance-provider" && typeof epTest !== "undefined" && epTest && epTest.id && typeof epTestStop === "function") epTestStop(L("测试已取消。", "Test cancelled."));
       state.settingsSec = sec || "display";
       persist();
       if (state.settingsSec === "update") ackUpdateDots();
@@ -14629,6 +15308,11 @@
     }
     function syncUpdate() {
       var u = state.pluginUpdate;
+      if (typeof epReconcile === "function") epReconcile(u && u.enhanceProvider);
+      if (typeof epTest !== "undefined" && epTest && typeof epTestSignature === "function" && epTest.signature && epTest.signature !== epTestSignature()) {
+        if (epTest.id) epTestStop(L("配置已变化，请重新测试。", "Settings changed; test again."));
+        else if (epTest.result) { epTest.status = L("上次测试结果（配置已变化）", "Previous test result (settings changed)"); epTestRender(); }
+      }
       var active = !!(u && u.supported);
       var version = panel.querySelector(".zu-settings-version");
       version.textContent = active && u.currentVersion ? u.currentVersion : "";
@@ -15906,6 +16590,266 @@
       }[p.stage] || [0, L("等待下载完成", "Waiting for download")];
       setProgressBar(box, "install", install[0], idx > 0, install[1]);
     }
+    var epTest = { id: "", timer: 0, draft: "", result: "", status: "", failed: false, generation: 0, testedDraft: "", signature: "" };
+    function epTestSignature() {
+      var ep = state.pluginUpdate && state.pluginUpdate.enhanceProvider;
+      var scope = typeof enhanceCurrentScope === "function" ? enhanceCurrentScope() : "";
+      if (typeof readQuotaSelection === "function") readQuotaSelection();
+      var selection = typeof quotaSelection !== "undefined" ? quotaSelection : null;
+      return JSON.stringify([ep && ep.revision, ep && ep.mode, scope, selection && selection.providerId, selection && selection.modelId]);
+    }
+    function epTestRender() {
+      var draft = panel.querySelector(".zu-ep-test-draft"), result = panel.querySelector(".zu-ep-test-result");
+      if (!draft || !result || !epTest) return;
+      draft.value = epTest.draft; result.textContent = epTest.result;
+      panel.querySelector(".zu-ep-test-empty").hidden = !!epTest.result;
+      var status = panel.querySelector(".zu-ep-test-status");
+      status.textContent = epTest.status;
+      status.classList.toggle("zu-ep-test-err", !!epTest.failed);
+      panel.querySelector(".zu-ep-test-run").disabled = !!epTest.id;
+      panel.querySelector(".zu-ep-test-cancel").hidden = !epTest.id;
+    }
+    function epTestStop(message, failed) {
+      if (!epTest) return;
+      var id = epTest.id; epTest.id = ""; epTest.generation++; if (message) epTest.failed = !!failed;
+      if (epTest.timer) { clearTimeout(epTest.timer); epTest.timer = 0; }
+      if (id) { epTest.result = ""; epTest.testedDraft = ""; }
+      if (id) { forgetPluginRequest(id); pluginRequest("prompt-enhance-cancel", { requestId: id }); }
+      if (message) epTest.status = message;
+      epTestRender();
+    }
+    function epTestStart() {
+      var ep = state.pluginUpdate && state.pluginUpdate.enhanceProvider, draft = epTest.draft;
+      if (epTest.id) return;
+      if (!draft.trim() || draft.length > 20000) { epTest.status = L("请输入 1–20000 字符的草稿。", "Enter a draft of 1–20000 characters."); epTestRender(); return; }
+      if (!ep || ep.capability !== 1 || ep.unreadable || epSaving || epConflict || !Number.isSafeInteger(epSavedRevision)) { epTest.status = L("增强配置暂不可用，请稍后重试。", "Enhancement settings are temporarily unavailable; retry."); epTestRender(); return; }
+      var editingMode = epValue(".zu-ep-mode"), useDraftForm = editingMode === "custom";
+      var form = null, key = epValue(".zu-ep-key").trim();
+      if (useDraftForm) {
+        form = epForm();
+        if (!form.providerId && form.source === "host") { epTest.status = L("请先点击选择一个供应商，再测试。", "Select a provider card before testing."); epTestRender(); return; }
+        if (!form.model) { epTest.status = L("请先填写增强模型。", "Enter the enhancement model first."); epTestRender(); return; }
+        if (form.source === "manual" && !form.baseUrl) { epTest.status = L("请先填写 Base URL。", "Enter the Base URL first."); epTestRender(); return; }
+      }
+      if (typeof readQuotaSelection === "function") readQuotaSelection();
+      var sel = typeof quotaSelection !== "undefined" ? quotaSelection : null;
+      var scope = typeof enhanceCurrentScope === "function" ? enhanceCurrentScope() : "";
+      if (!useDraftForm) {
+        if (ep.mode === "custom") { epTest.status = L("已保存配置为自定义模式；如需按当前会话模型测试，请先保存。", "Saved settings are custom; save first to test with the session model."); epTestRender(); return; }
+        if (!scope || !sel || !sel.providerId || !sel.modelId) { epTest.status = L("无法确认当前会话模型，暂不能测试。", "Current session model cannot be verified."); epTestRender(); return; }
+      }
+      var signature = epTestSignature(), generation = ++epTest.generation, started = Date.now(), id = "";
+      epTest.result = ""; epTest.testedDraft = "";
+      epTest.status = L("正在增强…", "Enhancing…"); epTest.signature = signature;
+      id = pluginRequest(useDraftForm ? "prompt-enhance-v2" : "prompt-enhance", useDraftForm ? { revision: ep.revision, text: draft, form: { source: form.source, providerId: form.providerId, baseUrl: form.baseUrl, protocol: form.protocol, model: form.model }, formApiKey: form.source === "manual" && key ? key : undefined } : { providerId: sel.providerId, modelId: sel.modelId, text: draft }, function (res) {
+        if (!epTest || epTest.id !== id || epTest.generation !== generation || inactive()) return;
+        var formChanged = useDraftForm && JSON.stringify(epForm()) !== JSON.stringify(form);
+        if (signature !== epTestSignature() || formChanged || draft !== epTest.draft) { epTestStop(L("配置或草稿已变化，请重新测试。", "Settings or draft changed; test again.")); return; }
+        epTest.id = ""; if (epTest.timer) clearTimeout(epTest.timer); epTest.timer = 0;
+        if (res && res.ok && typeof res.text === "string" && res.text) {
+          var providerLabel = "";
+          if (useDraftForm) providerLabel = form.source === "host" ? (function () { var hf = panel.querySelector(".zu-ep-host"), o = hf && hf.options[hf.selectedIndex]; return o && o.textContent || form.providerId; })() : (form.baseUrl || "").replace(/^https?:\/\//, "").replace(/\/+$/, "");
+          else providerLabel = sel.providerId;
+          var sentModel = useDraftForm ? form.model : sel.modelId;
+          var served = res.serverModel && typeof res.serverModel === "string" ? res.serverModel : sentModel;
+          epTest.result = res.text; epTest.testedDraft = draft; epTest.failed = false;
+          epTest.status = L("测试成功 · ", "Test succeeded · ") + providerLabel + " · " + sentModel + (served !== sentModel ? L("（服务端返回：", " (server: ") + served + "）" : "") + L(" · 耗时 ", " · ") + ((Date.now() - started) / 1000).toFixed(1) + "s";
+          if (typeof enhanceHistoryAdd === "function") enhanceHistoryAdd({ requestId: id, source: "test", providerName: providerLabel, modelId: sentModel, originalText: draft, enhancedText: res.text, usage: res.usage || null, createdAt: new Date().toISOString(), durationMs: Date.now() - started });
+        }
+        else {
+          var raw = res && typeof res.error === "string" ? res.error : "";
+          var detail = res && res.detail ? String(res.detail).replace(/\s+/g, " ").trim().slice(0, 600) : "";
+          var internal = {
+            "enhance provider settings changed": L("已保存配置已变化，请重新打开设置后再试。", "Saved settings changed; reopen settings and try again."),
+            "restart required": L("请完全重启 ZCode 后重试。", "Fully restart ZCode and retry."),
+            "provider unavailable": L("供应商不可用，请重新选择并检查其配置。", "Provider unavailable; reselect it and check its settings."),
+            "cancelled": L("操作已取消。", "Cancelled."),
+            "disabled": L("增强功能已关闭。", "Prompt enhancement is disabled."),
+            "model downgraded": L("已按要求拒绝降级：服务端返回了不同的模型", "Fallback rejected as requested: the server served a different model")
+          };
+          epTest.failed = true;
+          if (internal[raw]) epTest.status = internal[raw] + (detail ? "：" + detail : "");
+          else if (detail || /^HTTP /.test(raw)) epTest.status = L("增强失败：", "Enhancement failed: ") + (detail || raw);
+          else epTest.status = L("增强失败，请检查已保存的供应商、模型与网络。", "Enhancement failed; check the saved provider, model and network.");
+        }
+        epTestRender();
+      });
+      epTest.id = id;
+      epTest.timer = setTimeout(function () { if (epTest && epTest.id === id) epTestStop(L("测试超时，请重试。", "Test timed out; retry."), true); }, 75000);
+      epTestRender();
+    }
+    function epRisk(value) {
+      try {
+        var u = new URL(value), hn = u.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+        if (hn.indexOf("::ffff:") === 0) hn = hn.slice(7);   // IPv4-mapped IPv6 还原为点分四段再判私网
+        var h = hn, p = h.split(".").map(Number);
+        return u.protocol === "http:" || h === "localhost" || /\.(localhost|local|internal)$/.test(h) || h.indexOf(".") < 0 || h === "::1" || /^(fc|fd|fe[89ab])/i.test(h) || (p.length === 4 && p.every(function (n) { return Number.isInteger(n) && n >= 0 && n <= 255; }) && (p[0] === 10 || p[0] === 127 || p[0] === 192 && p[1] === 168 || p[0] === 172 && p[1] >= 16 && p[1] <= 31 || p[0] === 169 && p[1] === 254));
+      } catch (e) { return false; }
+    }
+    var epEditVersion = 0, epHostRequest = 0, epModelRequest = 0, epHostsLoaded = false, epSavedRevision = -1, epCleanVersion = 0, epSaving = false, epConflict = false, epSavedFormJson = null;
+    function epDirty() { return epSavedFormJson !== null && JSON.stringify(epForm()) !== epSavedFormJson; }
+    function epSyncDirtyStatus() {
+      var status = panel.querySelector(".zu-ep-status");
+      if (epDirty()) status.textContent = L("配置未保存", "Unsaved changes");
+      else if (status.textContent === L("配置未保存", "Unsaved changes")) status.textContent = "";
+    }
+    function epApplySaved(ep) {
+      var mode = panel.querySelector(".zu-ep-mode");
+      if (!mode || !ep || ep.unreadable) return;
+      mode.__zuInitialized = true; mode.value = ep.mode || "default";
+      panel.querySelector(".zu-ep-source").value = ep.mode === "default" ? "default" : (ep.source || "manual");
+      panel.querySelector(".zu-ep-url").value = ep.baseUrl || "";
+      panel.querySelector(".zu-ep-protocol").value = ep.protocol || "openai-chat-completions";
+      panel.querySelector(".zu-ep-model").value = ep.model || "";
+      panel.querySelector(".zu-ep-key").value = "";
+      var host = panel.querySelector(".zu-ep-host");
+      host.value = ep.providerId || ""; host.__zuPendingId = ep.providerId || "";
+      var allowBox = panel.querySelector(".zu-ep-allow-downgrade");
+      if (allowBox) allowBox.checked = ep.allowDowngrade !== false;
+      var saveBox = panel.querySelector(".zu-ep-save-history");
+      if (saveBox) saveBox.checked = ep.saveHistory === true;
+      epSavedRevision = ep.revision; epCleanVersion = epEditVersion; epConflict = false;
+      epSavedFormJson = JSON.stringify(epForm());
+      epModelRequest++; panel.querySelector(".zu-ep-model-list").textContent = "";
+      if (ep.mode === "custom" && ep.source === "host") epApplyModelCache(epForm());
+      panel.querySelector(".zu-ep-reload").hidden = true;
+      panel.querySelector(".zu-ep-status").textContent = "";
+      epRender();
+      if (ep.mode === "custom" && ep.source === "host") epLoadHosts(false);   // 打开/重载优先用缓存，刷新按钮才强制拉取
+    }
+    function epReconcile(ep) {
+      var mode = panel.querySelector(".zu-ep-mode");
+      if (typeof epSavedRevision !== "number" || !mode || !ep || ep.unreadable || !Number.isSafeInteger(ep.revision)) return;
+      if (!mode.__zuInitialized) { epApplySaved(ep); return; }
+      if (ep.revision <= epSavedRevision || epSaving) return;
+      if (!epDirty()) { epApplySaved(ep); return; }
+      epConflict = true; epModelRequest++;
+      panel.querySelector(".zu-ep-status").textContent = L("其他窗口已修改配置；草稿已保留，请重新载入后再保存。", "Settings changed in another window. Your draft is retained; reload before saving.");
+      panel.querySelector(".zu-ep-reload").hidden = false;
+    }
+    function epCaptureDraft() {
+      var mode = panel.querySelector(".zu-ep-mode");
+      if (!mode || !mode.__zuInitialized) return null;
+      var values = {};
+      ["mode", "source", "url", "protocol", "model", "key", "preset", "search"].forEach(function (name) { var el = panel.querySelector(".zu-ep-" + name); if (el) values[name] = el.value; });
+      var host = panel.querySelector(".zu-ep-host");
+      values.host = host ? host.value || host.__zuPendingId || "" : "";
+      var allowBox = panel.querySelector(".zu-ep-allow-downgrade"), saveBox = panel.querySelector(".zu-ep-save-history");
+      if (allowBox) values.allowDowngrade = allowBox.checked;
+      if (saveBox) values.saveHistory = saveBox.checked;
+      return values;
+    }
+    function epRestoreDraft(values) {
+      if (!values) return;
+      ["mode", "source", "url", "protocol", "model", "key", "preset", "search"].forEach(function (name) { var el = panel.querySelector(".zu-ep-" + name); if (el && typeof values[name] === "string") el.value = values[name]; });
+      var mode = panel.querySelector(".zu-ep-mode"), host = panel.querySelector(".zu-ep-host");
+      if (!mode || !host) return;
+      mode.__zuInitialized = true; host.__zuPendingId = values.host || "";
+      var allowBox = panel.querySelector(".zu-ep-allow-downgrade"), saveBox = panel.querySelector(".zu-ep-save-history");
+      if (allowBox && typeof values.allowDowngrade === "boolean") allowBox.checked = values.allowDowngrade;
+      if (saveBox && typeof values.saveHistory === "boolean") saveBox.checked = values.saveHistory;
+      epHostRequest++; epModelRequest++; epHostsLoaded = false;
+      epRender();
+      var reload = panel.querySelector(".zu-ep-reload"), status = panel.querySelector(".zu-ep-status");
+      if (reload) reload.hidden = !epConflict;
+      if (status && epSaving) status.textContent = L("保存结果待确认，请勿重复提交。", "Save outcome pending; do not resubmit yet.");
+      else if (status && epConflict) status.textContent = L("其他窗口已修改配置；草稿已保留，请重新载入后再保存。", "Settings changed in another window. Your draft is retained; reload before saving.");
+      else if (status) epSyncDirtyStatus();
+      if (values.mode === "custom" && values.source === "host") { epLoadHosts(false); epApplyModelCache({ source: "host", providerId: values.host || "", baseUrl: values.url || "", protocol: values.protocol || "" }); }
+    }
+    function epValue(selector) { var el = panel.querySelector(selector); return el ? el.value : ""; }
+    function epForm() { var acb = panel.querySelector(".zu-ep-allow-downgrade"), scb = panel.querySelector(".zu-ep-save-history"); return { mode: epValue(".zu-ep-mode"), source: epValue(".zu-ep-source"), providerId: epValue(".zu-ep-host"), baseUrl: epValue(".zu-ep-url").trim(), protocol: epValue(".zu-ep-protocol"), model: epValue(".zu-ep-model"), allowDowngrade: !acb || acb.checked, saveHistory: !scb || scb.checked }; }
+    function epRender() {
+      var f = epForm(), custom = f.mode === "custom", host = f.source === "host";
+      panel.querySelector(".zu-ep-default").hidden = custom;
+      panel.querySelector(".zu-ep-custom").hidden = !custom;
+      panel.querySelector(".zu-ep-host-panel").hidden = !custom || !host;
+      panel.querySelector(".zu-ep-manual-panel").hidden = !custom || host;
+      var warning = panel.querySelector(".zu-ep-warning");
+      warning.hidden = !custom || !epRisk(f.baseUrl);
+      warning.textContent = L("此地址使用 HTTP 或本机／内网连接，Key 与草稿可能发送至该目标，请确认服务可信。", "This HTTP or local/intranet target may receive your key and draft. Verify that you trust it.");
+      var ep = state.pluginUpdate && state.pluginUpdate.enhanceProvider;
+      panel.querySelector(".zu-ep-key-state").textContent = ep && ep.keyConfigured ? L("已保存 API Key", "API key saved") : L("尚未保存 API Key", "No saved API key");
+      panel.querySelector(".zu-ep-remove").disabled = !(ep && ep.keyConfigured);
+      panel.querySelector(".zu-ep-remove").hidden = !(ep && ep.keyConfigured);
+    }
+    var epHostCache = null, epHostCacheAt = 0, epModelCache = {};   // 实例级内存缓存：供应商列表 5 分钟、模型列表按目标 10 分钟；刷新/拉取强制走网络
+    function epRenderHosts(providers) {
+      var select = panel.querySelector(".zu-ep-host"), grid = panel.querySelector(".zu-ep-host-grid"), old = select.value || select.__zuPendingId || "";
+      select.textContent = ""; grid.textContent = "";
+      var empty = document.createElement("option"); empty.value = ""; empty.textContent = L("请选择供应商", "Select a provider"); select.appendChild(empty);
+      providers.forEach(function (p) {
+        var option = document.createElement("option"); option.value = p.id; option.textContent = p.name; option.dataset.url = p.baseUrl; option.dataset.protocol = p.protocol; select.appendChild(option);
+        var card = document.createElement("button"); card.type = "button"; card.className = "zu-ep-host-card"; card.dataset.id = p.id;
+        var title = document.createElement("strong"); title.textContent = p.name;
+        var meta = document.createElement("small"), domain = p.baseUrl;
+        try { domain = new URL(p.baseUrl).host; } catch (e) { }
+        meta.textContent = domain + " · " + p.protocol;
+        var mark = document.createElement("span"); mark.className = "zu-ep-host-check"; mark.textContent = L("✓ 已选择", "✓ Selected"); mark.hidden = p.id !== old;
+        card.appendChild(title); card.appendChild(meta); card.appendChild(mark); card.setAttribute("aria-pressed", p.id === old ? "true" : "false"); grid.appendChild(card);
+      });
+      select.value = old; select.__zuPendingId = "";
+      return old;
+    }
+    function epApplyModelCache(form) {
+      var list = panel.querySelector(".zu-ep-model-list");
+      list.textContent = "";   // 目标变化先清空旧列表，避免残留上一个供应商的模型
+      var key = JSON.stringify([form.source, form.providerId, form.baseUrl, form.protocol]);
+      var hit = epModelCache[key];
+      if (!hit || Date.now() - hit.at > 600000) return false;
+      hit.models.forEach(function (id) { var option = document.createElement("option"); option.value = id; list.appendChild(option); });
+      panel.querySelector(".zu-ep-model-status").textContent = L("模型列表（缓存）· 正在自动更新。", "Model list (cached); auto-refreshing.");
+      return true;
+    }
+    function epModelsErrorText(result) {
+      var error = result && result.error || "";
+      return error === "restart required" ? L("请完全重启 ZCode 后重试。", "Fully restart ZCode and retry.") : error === "settings changed" ? L("配置版本已变化，请重新载入后重试。", "Settings changed; reload and retry.") : error === "provider unavailable" ? L("供应商不可用，请重新选择并检查其配置。", "Provider unavailable; reselect it and check its settings.") : error === "cancelled" ? L("操作已取消，输入已保留。", "Cancelled; your edits were retained.") : /^HTTP (401|403)$/.test(error) ? L("模型接口拒绝访问，请检查供应商凭据或权限。", "Model endpoint denied access; check credentials and permissions.") : /^HTTP (404|405)$/.test(error) ? L("该地址不支持模型列表，请手动填写模型 ID。", "This endpoint does not support model lists; enter a model ID.") : L("模型列表获取失败，请检查网络与接口地址，或手动输入模型 ID。", "Failed to fetch models; check network and endpoint, or enter a model ID.");
+    }
+    function epRequestModels(f, formApiKey, done) {
+      var ep = state.pluginUpdate && state.pluginUpdate.enhanceProvider;
+      if (!ep || !ep.available || ep.unreadable || epSaving || epConflict || !Number.isSafeInteger(epSavedRevision)) return false;
+      var serial = ++epModelRequest, version = epEditVersion;
+      var req = { revision: epSavedRevision, form: { source: f.source, providerId: f.providerId, baseUrl: f.baseUrl, protocol: f.protocol } };
+      if (f.source === "manual" && formApiKey) req.formApiKey = formApiKey;
+      pluginRequest("enhance-provider-models", req, function (result) {
+        if (inactive() || serial !== epModelRequest || version !== epEditVersion) return;
+        var list = panel.querySelector(".zu-ep-model-list");
+        if (result && result.ok && Array.isArray(result.models)) {
+          list.textContent = "";
+          result.models.forEach(function (id) { var option = document.createElement("option"); option.value = id; list.appendChild(option); });
+          epModelCache[JSON.stringify([f.source, f.providerId, f.baseUrl, f.protocol])] = { models: result.models.slice(0, 200), at: Date.now() };
+        }
+        done && done(result);
+      });
+      return true;
+    }
+    function epLoadHosts(force) {
+      if (epHostsLoaded && !force) return;
+      var status = panel.querySelector(".zu-ep-host-status");
+      if (!force && epHostCache && Date.now() - epHostCacheAt < 300000) {   // 缓存命中：同步渲染，不发请求
+        epHostsLoaded = true;
+        var old = epRenderHosts(epHostCache);
+        status.textContent = !epHostCache.length ? L("没有可用供应商：请检查启用状态、协议和凭据，或使用手动配置。", "No compatible providers. Check their status, protocol and credentials, or use manual configuration.") : "";
+        return;
+      }
+      var serial = ++epHostRequest;
+      if (!force) {   // 硬盘缓存先行：主进程直接回上次拉取的列表，新鲜数据随后覆盖
+        pluginRequest("enhance-provider-list", { cached: true }, function (res) {
+          if (inactive() || epHostsLoaded || !res || !res.ok || !Array.isArray(res.providers)) return;
+          epHostsLoaded = true; epHostCache = res.providers; epHostCacheAt = Date.now();
+          epRenderHosts(res.providers);
+          status.textContent = !res.providers.length ? L("没有可用供应商：请检查启用状态、协议和凭据，或使用手动配置。", "No compatible providers. Check their status, protocol and credentials, or use manual configuration.") : "";
+        });
+      }
+      status.textContent = L("正在加载供应商…", "Loading providers…");
+      pluginRequest("enhance-provider-list", {}, function (result) {
+        if (inactive() || serial !== epHostRequest) return;
+        if (!result || !result.ok || !Array.isArray(result.providers)) { epHostsLoaded = false; status.textContent = L("供应商加载失败，请刷新重试。", "Failed to load providers. Refresh to retry."); return; }
+        epHostsLoaded = true; epHostCache = result.providers; epHostCacheAt = Date.now();
+        var old = epRenderHosts(result.providers);
+        status.textContent = !result.providers.length ? L("没有可用供应商：请检查启用状态、协议和凭据，或使用手动配置。", "No compatible providers. Check their status, protocol and credentials, or use manual configuration.") : old && panel.querySelector(".zu-ep-host").value !== old ? L("已保存的供应商不可用，请重新选择。", "The saved provider is unavailable; select another.") : "";
+      });
+    }
     function syncPanel() {
       panel.querySelectorAll('.zu-theme-choice').forEach(function (r) {
         r.checked = state.theme === r.value;
@@ -15941,12 +16885,88 @@
       if (qrBox) qrBox.checked = !!state.quotaRemain;
       var enhBox = panel.querySelector(".zu-enhance-toggle");   // v344：勾选态由推送面 enhanceEnabled 决定
       if (enhBox) enhBox.checked = state.enhanceEnabled !== false;
+      if (typeof epReconcile === "function") epReconcile(state.pluginUpdate && state.pluginUpdate.enhanceProvider);
+      if (typeof epSyncDirtyStatus === "function") epSyncDirtyStatus();
       if (typeof zuRotatorSyncPanel === "function") zuRotatorSyncPanel(panel);
       syncUpdate();
     }
     var relaunchAckTimer = 0;   /* v177：relaunch 回执超时（v244 起主进程回执随投递即返，含 1s 轮询约 1s 量级；超时≈旧主进程） */
     var relaunchAliveTimer = 0; /* v244：ok 回执后 90s 仍存活兜底——防状态机永久卡死；窗口可能已被 v245 hide，主进程 15s unhide 哨兵负责恢复可见 */
     panel.addEventListener("click", function (e) {
+      var testButton = e.target.closest && e.target.closest(".zu-ep-test-run,.zu-ep-test-cancel");
+      if (testButton) {
+        if (testButton.classList.contains("zu-ep-test-run")) epTestStart();
+        else if (testButton.classList.contains("zu-ep-test-cancel")) epTestStop(L("测试已取消。", "Test cancelled."));
+        return;
+      }
+      var epCard = e.target.closest && e.target.closest(".zu-ep-host-card");
+      if (epCard) {
+        var hostSelect = panel.querySelector(".zu-ep-host"); hostSelect.value = epCard.dataset.id;
+        hostSelect.dispatchEvent(new Event("change", { bubbles: true }));
+        panel.querySelectorAll(".zu-ep-host-card").forEach(function (card) { card.setAttribute("aria-pressed", card === epCard ? "true" : "false"); var mark = card.querySelector(".zu-ep-host-check"); if (mark) mark.hidden = card !== epCard; });
+        return;
+      }
+      var epAction = e.target.closest && e.target.closest(".zu-ep-save,.zu-ep-hosts,.zu-ep-models,.zu-ep-remove,.zu-ep-reload");
+      if (epAction) {
+        var epStatus = panel.querySelector(".zu-ep-status"), ep = state.pluginUpdate && state.pluginUpdate.enhanceProvider;
+        if (!ep || !ep.available || ep.unreadable) { epStatus.textContent = L("增强配置不可用，请检查权限或重启 ZCode。", "Enhancement settings unavailable; check permissions or restart ZCode."); return; }
+        if (epAction.classList.contains("zu-ep-reload")) {
+          if (epDirty()) zuConfirm(L("重新载入配置", "Reload settings"), L("重新载入将丢弃当前未保存的修改，继续吗？", "Reloading will discard unsaved edits. Continue?"), L("继续", "Continue"), function () { epApplySaved(ep); });
+          else epApplySaved(ep);
+          return;
+        }
+        if (epAction.classList.contains("zu-ep-hosts")) { epLoadHosts(true); return; }
+        if (epSaving || epConflict || ep.revision !== epSavedRevision) { epReconcile(ep); epStatus.textContent = L("配置已变化或正在保存，请等待或重新载入。", "Settings changed or a save is pending; wait or reload."); return; }
+        var remove = epAction.classList.contains("zu-ep-remove"), save = epAction.classList.contains("zu-ep-save") || remove;
+        var f = epForm(), keyField = panel.querySelector(".zu-ep-key"), key = keyField.value, revision = epSavedRevision, version = epEditVersion;
+        if (!remove && f.mode === "custom" && f.source === "host" && !f.providerId) { epStatus.textContent = L("请先点击选择一个供应商，再拉取模型或保存。", "Select a provider card before fetching models or saving."); return; }
+        if (!save) {   // 拉取模型走共享请求通道（自动/手动同款）
+          var modelStatus = panel.querySelector(".zu-ep-model-status") || epStatus;
+          modelStatus.textContent = L("正在获取模型…", "Fetching models…");
+          var okReq = epRequestModels(f, key, function (result) {
+            modelStatus.textContent = result && result.ok ? (result.models.length ? L("模型列表已获取；可输入或选择模型。", "Model list fetched; enter or select a model.") : L("模型列表为空，请手动输入模型 ID。", "No models returned; enter a model ID.")) : epModelsErrorText(result);
+          });
+          if (!okReq) modelStatus.textContent = L("增强配置暂不可用，请稍后重试。", "Enhancement settings are temporarily unavailable; retry.");
+          return;
+        }
+        var proceed = function () {
+        var opts = { revision: revision }, action = "enhance-provider-save";
+        opts.changes = remove ? { keyAction: "clear" } : f.mode === "default" ? { mode: "default", allowDowngrade: !!f.allowDowngrade, saveHistory: !!f.saveHistory, keyAction: "keep" } : { mode: f.mode, source: f.source, providerId: f.providerId, baseUrl: f.baseUrl, protocol: f.protocol, model: f.model, allowDowngrade: !!f.allowDowngrade, saveHistory: !!f.saveHistory, keyAction: key ? "replace" : "keep" };
+        if (!remove && key && f.source === "manual" && f.mode === "custom") opts.changes.apiKey = key;
+        epAction.disabled = true; epAction.setAttribute && epAction.setAttribute("aria-busy", "true");
+        epSaving = true;
+        epStatus.textContent = L("正在保存配置…", "Saving settings…");
+        var settled = false;
+        var timer = setTimeout(function () { if (settled) return; epStatus.textContent = L("保存结果待确认，请勿重复提交。", "Save outcome pending; do not resubmit yet."); }, 15000);
+        pluginRequest(action, opts, function (result) {
+          if (settled) return; settled = true; clearTimeout(timer); epAction.disabled = false;
+          epSaving = false;
+          if (inactive()) return;
+          epStatus = panel.querySelector(".zu-ep-status"); keyField = panel.querySelector(".zu-ep-key");
+          if (result && result.ok && result.provider) {
+            var latest = state.pluginUpdate && state.pluginUpdate.enhanceProvider;
+            epSavedRevision = result.provider.revision;
+            if (!latest || latest.revision <= result.provider.revision) {
+              if (state.pluginUpdate) state.pluginUpdate.enhanceProvider = result.provider;
+              latest = result.provider;
+            }
+            if (!remove && epEditVersion === version && keyField.value === key) { keyField.value = ""; epCleanVersion = version; }
+            epSavedFormJson = JSON.stringify(epForm());   // v350.1 保存成功即以当前表单为新已保存基准：否则重开面板经 epSyncDirtyStatus 用旧基准比对，误报「配置未保存」
+            epStatus.textContent = remove ? L("已移除保存的 Key；其他未保存修改仍保留。", "Saved key removed; other unsaved edits are retained.") : epEditVersion === version ? L("配置已保存", "Settings saved") : L("已保存先前的配置；当前修改未保存。", "Previous settings saved; current edits remain unsaved.");
+            epRender(); epReconcile(latest); return;
+          }
+          epReconcile(state.pluginUpdate && state.pluginUpdate.enhanceProvider);
+          var error = result && result.error || "";
+          epStatus.textContent = error === "restart required" ? L("请完全重启 ZCode 后重试。", "Fully restart ZCode and retry.") : error === "settings changed" ? L("配置版本已变化，请重新载入后重试。", "Settings changed; reload and retry.") : error === "provider unavailable" ? L("供应商不可用，请重新选择并检查其配置。", "Provider unavailable; reselect it and check its settings.") : error === "cancelled" ? L("操作已取消，输入已保留。", "Cancelled; your edits were retained.") : L("保存失败，请检查配置后重试；输入已保留。", "Save failed; check settings and retry. Your edits were retained.");
+        });
+        };
+        if (remove) {
+          zuConfirm(L("移除 API Key", "Remove API key"), L("确定移除已保存的 API Key？", "Remove the saved API key?"), L("移除", "Remove"), proceed);
+          return;
+        }
+        proceed();
+        return;
+      }
       if (typeof zuRotatorPanelClick === "function" && zuRotatorPanelClick(e, panel)) return;
       var navItem = e.target.closest && e.target.closest(".zu-navitem");
       if (navItem && navItem.getAttribute("data-sec") === "update") ackUpdateDots();   // v172：含已停留时再点
@@ -16160,9 +17180,65 @@
     panel.addEventListener("input", function (e) {
       var field = e.target;
       if (field.classList && field.classList.contains("zu-src-field")) field.__zuEditVersion = (field.__zuEditVersion || 0) + 1;
+      if (field.classList && field.classList.contains("zu-ep-test-draft")) {
+        epTest.draft = field.value;
+        if (epTest.id) epTestStop(L("草稿已变化，请重新测试。", "Draft changed; test again."));
+        else if (epTest.result && epTest.draft !== epTest.testedDraft) { epTest.status = L("上次测试结果", "Previous test result"); epTestRender(); }
+        return;
+      }
+      if (field.closest && field.closest(".zu-ep")) {
+        if (!field.classList.contains("zu-ep-search")) {
+          if (epTest.id) epTestStop(L("配置已变化，请重新测试。", "Settings changed; test again."));
+          else if (epTest.result) { epTest.status = L("上次测试结果（配置已变化）", "Previous test result (settings changed)"); epTestRender(); }
+        }
+        if (field.classList.contains("zu-ep-search")) {
+          var q = field.value.toLowerCase(); panel.querySelectorAll(".zu-ep-host-card").forEach(function (card) { card.hidden = card.textContent.toLowerCase().indexOf(q) < 0; });
+        } else { epEditVersion++; epSyncDirtyStatus(); epRender(); }
+      }
     });
     panel.addEventListener("change", function (e) {
       var t2 = e.target;
+      if (t2.classList && t2.classList.contains("zu-ep-test-draft")) return;
+      if (t2.closest && t2.closest(".zu-ep")) {
+        if (t2.classList.contains("zu-ep-source")) {
+          panel.querySelector(".zu-ep-mode").value = t2.value === "default" ? "default" : "custom";   // 合并后的来源选择驱动隐藏模式位
+          if (t2.value === "manual" && epValue(".zu-ep-preset") === "") {   // 首次切到手动来源：默认带出 Zhipu GLM 预设（地址/协议），Key 与模型仍留空
+            var zhipu = null;
+            (typeof ZU_EP_PRESETS !== "undefined" ? ZU_EP_PRESETS : []).forEach(function (g) { g.items.forEach(function (it) { if (it[0] === "zhipu-cn") zhipu = it; }); });
+            if (zhipu) { panel.querySelector(".zu-ep-preset").value = "zhipu-cn"; panel.querySelector(".zu-ep-url").value = zhipu[2]; panel.querySelector(".zu-ep-protocol").value = zhipu[3]; panel.querySelector(".zu-ep-model").value = ""; }
+          }
+        }
+        if (epTest.id) epTestStop(L("配置已变化，请重新测试。", "Settings changed; test again."));
+        else if (epTest.result) { epTest.status = L("上次测试结果（配置已变化）", "Previous test result (settings changed)"); epTestRender(); }
+        else { epTest.status = ""; epTestRender(); }   // 清掉过期提示（如错误/校验文案），不带入新模式
+        if (t2.classList.contains("zu-ep-source") || t2.classList.contains("zu-ep-protocol")) {
+          panel.querySelector(".zu-ep-model").value = "";
+          panel.querySelector(".zu-ep-model-list").textContent = "";
+        }
+        if (t2.classList.contains("zu-ep-preset")) {
+          var found = null;
+          (typeof ZU_EP_PRESETS !== "undefined" ? ZU_EP_PRESETS : []).forEach(function (g) { g.items.forEach(function (it) { if (it[0] === t2.value) found = it; }); });
+          if (found) { panel.querySelector(".zu-ep-url").value = found[2]; panel.querySelector(".zu-ep-protocol").value = found[3]; panel.querySelector(".zu-ep-model").value = ""; }
+        }
+        var hostApplied = false;
+        if (t2.classList.contains("zu-ep-host") || t2.classList.contains("zu-ep-source") && t2.value === "host") {
+          var hostField = panel.querySelector(".zu-ep-host"), selected = hostField.options[hostField.selectedIndex];
+          if (selected && selected.value) {
+            panel.querySelector(".zu-ep-url").value = selected.dataset.url || ""; panel.querySelector(".zu-ep-protocol").value = selected.dataset.protocol || ""; panel.querySelector(".zu-ep-model").value = "";
+            hostApplied = true;
+          }
+        }
+        epEditVersion++; epSyncDirtyStatus(); epRender();
+        if (hostApplied) {   // 自动拉取放在版本号递增之后，回包不被同一事件的脏标记误判过期
+          var targetForm = epForm(), autoStatus = panel.querySelector(".zu-ep-model-status");
+          epApplyModelCache(targetForm);
+          if (!epRequestModels(targetForm, "", function (result) {
+            autoStatus.textContent = result && result.ok ? (result.models.length ? L("模型列表已获取；可输入或选择模型。", "Model list fetched; enter or select a model.") : L("模型列表为空，请手动输入模型 ID。", "No models returned; enter a model ID.")) : epModelsErrorText(result);
+          })) autoStatus.textContent = "";
+        }
+        if (epValue(".zu-ep-mode") === "custom" && epValue(".zu-ep-source") === "host") epLoadHosts(false);
+        return;
+      }
       if (typeof zuRotatorPanelChange === "function" && zuRotatorPanelChange(e, panel)) return;
       if (t2.classList.contains("zu-theme-choice")) {
         if (t2.checked && (t2.value === "default" || t2.value === "pill" || t2.value === "compact")) {
@@ -17780,11 +18856,11 @@
     var enhanceWarnTimer = 0;
     var enhanceSettled = true;   // v344.1：true=本次请求已被消费/取消，迟到回包一律丢弃
     var enhanceInFlightId = "";  // v344.1：在途请求的 requestId（取消动作的定位键）
-    var enhanceOriginal = "";    // undo 相位持有增强前草稿
-    var enhanceEnhanced = null;  // v344.2：undo 窗口的成立基准=我们写入的增强文本；不匹配（已发送/被编辑/被清空）即失效
-    var enhanceSid = "";         // v344.3：发起时的会话身份（instSid/pickedSid）——回填/撤销前校验，防止结果写进切走后的新会话
+    var enhanceStartedAt = 0;    // 历史记录：本次增强发起时间（durationMs 用）
+    var enhanceOriginal = "";    // 增强前草稿（历史记录 originalText 用）
+    var enhanceSid = "";         // v344.3：发起时的会话身份（instSid/pickedSid）——回填前校验，防止结果写进切走后的新会话
     var enhanceCurSid = function () { return instSid || pickedSid || ""; };
-    var enhanceScopeKey = "", enhanceOriginalState = "", enhanceEnhancedState = "";
+    var enhanceScopeKey = "", enhanceOriginalState = "";
     function enhanceStateOf(api) {
       try { return api && typeof api.getEditorState === "function" ? JSON.stringify(api.getEditorState()) : ""; } catch (e) { return ""; }
     }
@@ -17794,9 +18870,8 @@
     }
     var ENHANCE_ANCHOR_SEL = '[data-testid="chat-model-select-trigger"]';
     var ENHANCE_INPUT_SEL = '[data-testid="v4-composer-input"]';
-    var ENHANCE_UNDO_MS = 20000, ENHANCE_WAIT_MS = 75000, ENHANCE_WARN_MS = 4000;
+    var ENHANCE_WAIT_MS = 75000, ENHANCE_WARN_MS = 4000;
     var ENH_SVG_STAR = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true" style="flex:0 0 auto"><path transform="matrix(1 0 0 1 0.524459 0.757238)" d="M6.1838 2.2198C6.6022 1.3093 7.8641 1.2266 8.1057 2.0939L8.84 4.7335C8.992 5.2783 9.3896 5.6893 9.9289 5.8595L12.5431 6.6827C13.4014 6.9536 13.2757 8.2113 12.3517 8.5987L9.9972 9.5861L9.8361 9.6583C9.0366 10.0399 8.3731 10.7089 8.0031 11.5138L6.9377 13.8341L6.8488 13.9943C6.3971 14.7003 5.39 14.7669 5.0734 14.1115L5.0158 13.9601L4.2815 11.3205C4.1485 10.8435 3.8277 10.4679 3.3879 10.2677L3.1916 10.1935L0.5783 9.3712C-0.2801 9.1005 -0.155 7.8418 0.7688 7.4542L3.1242 6.4679C3.9412 6.1253 4.632 5.4846 5.0402 4.6983L5.1184 4.5392L6.1838 2.2198ZM6.2004 4.88C5.652 6.0736 4.6394 7.0538 3.4279 7.5616L1.5295 8.3565L3.719 9.046C4.5745 9.3157 5.2059 9.9689 5.4465 10.8331L6.0608 13.0431L6.9201 11.174C7.4685 9.9802 8.4821 9.0001 9.6935 8.4923L11.591 7.6964L9.4025 7.0069C8.547 6.7373 7.9156 6.085 7.675 5.2208L7.0598 3.0099L6.2004 4.88ZM12.7072 0.214C12.8295 -0.052 13.198 -0.0764 13.2687 0.1769L13.6193 1.4396C13.6415 1.5192 13.7005 1.5797 13.7795 1.6046L15.0285 1.9982C15.2795 2.0772 15.243 2.4445 14.9728 2.5577L13.6281 3.1212C13.5431 3.1568 13.4722 3.226 13.4338 3.3097L12.8254 4.6349C12.703 4.9009 12.3344 4.9245 12.2638 4.671L11.9123 3.4093C11.8901 3.3296 11.8319 3.2691 11.7531 3.2442L10.5031 2.8507C10.2522 2.7715 10.2888 2.4045 10.5588 2.2911L11.9035 1.7267C11.9884 1.6911 12.0593 1.6228 12.0978 1.5392L12.7072 0.214Z"/></svg>';
-    var ENH_SVG_UNDO = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex:0 0 auto"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11"/></svg>';
     var ENH_SVG_BUSY = '<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-loader-circle size-4 text-foreground-subtle" aria-hidden="true"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>';
     var ENH_SVG_WARN = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex:0 0 auto"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>';    function enhanceInputApi() {
       var input = null;
@@ -17833,27 +18908,14 @@
         if (enhanceWaitTimer) { clearTimeout(enhanceWaitTimer); enhanceWaitTimer = 0; }
         if (enhanceInFlightId) pluginRequest("prompt-enhance-cancel", { requestId: enhanceInFlightId });
         forgetPluginRequest(enhanceInFlightId);
-        enhanceInFlightId = "";   // 清身份键：R1 的迟到回包被 finish 身份门丢弃，不误入后续请求槽位
+      enhanceInFlightId = "";   // 清身份键：R1 的迟到回包被 finish 身份门丢弃，不误入后续请求槽位
         enhanceOriginal = "";
-        enhanceEnhanced = null;
         enhanceSid = "";
         enhanceSetPhase("idle");
         return;
       }
-      if (enhancePhase === "undo") {   // 恢复增强前草稿
-        var apiUndo = enhanceInputApi();
-        var curUndo = "";
-        try { curUndo = apiUndo ? String(apiUndo.getText() || "") : ""; } catch (e) { }
-        var sidChangedUndo = enhanceSid !== "" && enhanceCurSid() !== enhanceSid;   // v344.3：会话已切换时撤销窗口随之失效
-        /* v344.2 守卫：仅当草稿仍是我们写入的增强文本时才回写原文。消息已发送（草稿被
-         * 提交流程清空）或用户已再编辑时不恢复——把原文塞进已清空/已变更的输入框是破坏性的 */
-        if (apiUndo && enhanceOriginal && enhanceScopeKey && enhanceCurrentScope() === enhanceScopeKey && !sidChangedUndo && curUndo === enhanceEnhanced && (!enhanceEnhancedState || enhanceStateOf(apiUndo) === enhanceEnhancedState)) {
-          try { if (enhanceOriginalState && typeof apiUndo.setEditorStateJson === "function") apiUndo.setEditorStateJson(enhanceOriginalState); else apiUndo.setText(enhanceOriginal); } catch (e) { }
-        }
+      if (enhancePhase === "undo") {   // v350.1 撤销相位已删除（用户拍板去掉该状态展示）：理论不可达，兜底回初始态
         if (enhanceTimer) { clearTimeout(enhanceTimer); enhanceTimer = 0; }
-        enhanceOriginal = "";
-        enhanceEnhanced = null;
-        enhanceSid = "";
         enhanceSetPhase("idle");
         return;
       }
@@ -17864,7 +18926,12 @@
       if (draft.length > 20000) { enhanceWarn(L("草稿过长（上限 20000 字符）", "Draft exceeds the 20000-character limit")); return; }   // 主进程同值预检
       var providerId = (quotaSelection && quotaSelection.providerId) ? quotaSelection.providerId : (quotaProvider || "");
       var modelId = (quotaSelection && quotaSelection.modelId) ? quotaSelection.modelId : (quotaModel || "");
-      if (!providerId || !modelId) { enhanceWarn(L("未识别当前模型，暂不能增强", "Current model not identified")); return; }
+      var ep = state.pluginUpdate && state.pluginUpdate.enhanceProvider;
+      if (!ep || ep.capability !== 1 || ep.mode === "custom" && ep.available !== true) { enhanceWarn(L("请完全重启 ZCode 以加载增强配置支持", "Fully restart ZCode to load enhancement settings support")); return; }
+      if (ep.unreadable) { enhanceWarn(L("增强配置文件不可读，请检查权限", "Enhancement settings unreadable; check permissions")); return; }
+      var useCustom = ep.mode === "custom";
+      if (!useCustom && (!providerId || !modelId)) { enhanceWarn(L("未识别当前模型，暂不能增强", "Current model not identified")); return; }
+      if (useCustom && (!ep.model || !ep.baseUrl)) { enhanceWarn(L("请先配置增强供应商和模型", "Configure the enhancement provider and model first")); return; }
       enhanceSid = enhanceCurSid();
       enhanceScopeKey = enhanceCurrentScope();
       if (!enhanceSid || !enhanceScopeKey) { enhanceWarn(L("未识别当前会话，暂不能增强", "Current session not identified")); return; }
@@ -17904,8 +18971,9 @@
           enhanceSetPhase("idle");
         });
       }, ENHANCE_WAIT_MS);
+      enhanceStartedAt = Date.now();   // 历史记录 durationMs 起点（含网络等待与重试）
       enhanceInFlightId = "";
-      myId = pluginRequest("prompt-enhance", { providerId: providerId, modelId: modelId, text: draft }, function (res) {
+      myId = pluginRequest(useCustom ? "prompt-enhance-v2" : "prompt-enhance", useCustom ? { revision: ep.revision, text: draft } : { providerId: providerId, modelId: modelId, text: draft }, function (res) {
         finish(function () {
           if (state.enhanceEnabled === false) { restoreEnhanceBtn(true); return; }
           if (res && res.ok && typeof res.text === "string" && res.text) {
@@ -17930,35 +18998,26 @@
               enhanceSetPhase("idle");
               return;
             }
-            /* Lexical editor.update 异步提交；下一任务读取已提交状态，不能同步判失败。 */
-            enhanceTimer = setTimeout(function () {
-              enhanceTimer = 0;
-              if (inactive() || state.enhanceEnabled === false) return;
-              if (enhanceCurSid() !== enhanceSid || !enhanceScopeKey || enhanceCurrentScope() !== enhanceScopeKey) {
-                enhanceOriginal = ""; enhanceEnhanced = null; enhanceSid = "";
-                enhanceSetPhase("idle");
-                return;
-              }
-              var committed = "";
-              try { committed = String(apiNow.getText() || ""); } catch (e) { }
-              if (enhanceInputApi() !== apiNow || committed !== res.text) {
-                enhanceWarn(L("写回输入框失败或草稿已变化", "Write failed or draft changed"));
-                enhanceSetPhase("idle");
-                return;
-              }
-              enhanceEnhanced = res.text;
-              enhanceEnhancedState = enhanceOriginalState ? enhanceStateOf(apiNow) : "";
-              if (enhanceOriginalState && !enhanceEnhancedState) { enhanceWarn(L("无法确认草稿状态", "Cannot verify draft state")); enhanceSetPhase("idle"); return; }
-              enhanceSetPhase("undo");
+              /* Lexical editor.update 异步提交；下一任务读取已提交状态，不能同步判失败。 */
               enhanceTimer = setTimeout(function () {
                 enhanceTimer = 0;
-                if (inactive()) return;
-                enhanceOriginal = "";
-                enhanceEnhanced = null;
-                enhanceSid = "";
+                if (inactive() || state.enhanceEnabled === false) return;
+                if (enhanceCurSid() !== enhanceSid || !enhanceScopeKey || enhanceCurrentScope() !== enhanceScopeKey) {
+                  enhanceOriginal = ""; enhanceSid = "";
+                  enhanceSetPhase("idle");
+                  return;
+                }
+                var committed = "";
+                try { committed = String(apiNow.getText() || ""); } catch (e) { }
+                if (enhanceInputApi() !== apiNow || committed !== res.text) {
+                  enhanceWarn(L("写回输入框失败或草稿已变化", "Write failed or draft changed"));
+                  enhanceSetPhase("idle");
+                  return;
+                }
+                /* v350.1 撤销相位已删除：应用成功即记录历史并回初始态（不再展示 20s 撤销窗） */
                 enhanceSetPhase("idle");
-              }, ENHANCE_UNDO_MS);
-            }, 0);
+                if (typeof enhanceHistoryAdd === "function") enhanceHistoryAdd({ requestId: myId, source: "chat", providerName: useCustom ? (ep.providerId || "custom") : providerId, modelId: useCustom ? ep.model : modelId, originalText: enhanceOriginal, enhancedText: res.text, usage: res.usage || null, createdAt: new Date().toISOString(), durationMs: Date.now() - (enhanceStartedAt || Date.now()) });
+              }, 0);
           } else {
             /* kind 转可读文案；主进程不回传上游错误正文（仅 status/ kind），error 字段只承载
              * 插件自身的原因短语 */
@@ -18011,9 +19070,16 @@
           b.type = "button";
           b.className = "zu-enhance";
           b.addEventListener("click", onEnhanceClick);
+          b.addEventListener("contextmenu", function (e) {
+            e.preventDefault(); e.stopPropagation(); hideEnhanceTip();
+            if (!panel.classList.contains("open")) gear.click();
+            activateSettingsSec("enhance-provider");
+            var nav = panel.querySelector('.zu-navitem[data-sec="enhance-provider"]');
+            if (nav) nav.focus();
+          });
           /* v344 悬停 tooltip（rstTip 同款）：Esc 键盘可达契约 + focus/blur 对齐 */
           b.addEventListener("mouseenter", function () { showEnhanceTip(this); });
-          b.addEventListener("mouseleave", hideEnhanceTip);
+          b.addEventListener("mouseleave", scheduleEnhHide);   // 延迟收起：给移入历史面板留时间
           b.addEventListener("focus", function () { showEnhanceTip(this); });
           b.addEventListener("blur", hideEnhanceTip);
           b.addEventListener("keydown", function (e) { if (e.key === "Escape") hideEnhanceTip(); });
@@ -18035,29 +19101,12 @@
       }
       if (b.nextElementSibling !== ref) wrap.insertBefore(b, ref);
       if (enhanceTipFor && !enhanceTipFor.isConnected) hideEnhanceTip();   // 按钮被宿主重建 detach 的兜底收起（v135 徽标同款）
-      if (enhancePhase === "undo") {
-        /* v344.2/v344.3 撤销窗自愈：草稿不再等于我们写入的增强文本（消息已发送被提交流程清空/
-         * 用户再编辑/输入框被外部改写），或会话身份已切换，即提前收窗回初始态——不依赖 20s
-         * 定时器，tooltip 不再滞留「撤销增强」误导。守卫读与 undo 点击同一基准。 */
-        var apiChk = enhanceInputApi();
-        var curChk = "";
-        try { curChk = apiChk ? String(apiChk.getText() || "") : ""; } catch (e) { }
-        if (!apiChk || curChk !== enhanceEnhanced || (enhanceEnhancedState && enhanceStateOf(apiChk) !== enhanceEnhancedState) || !enhanceScopeKey || enhanceCurrentScope() !== enhanceScopeKey || (enhanceSid !== "" && enhanceCurSid() !== enhanceSid)) {
-          if (enhanceTimer) { clearTimeout(enhanceTimer); enhanceTimer = 0; }
-          enhanceOriginal = "";
-          enhanceEnhanced = null;
-          enhanceSid = "";
-          enhanceSetPhase("idle");
-          return;
-        }
-      }
       var phase = enhanceWarnText ? "warn" : enhancePhase;
       if (b.__zuPhase !== phase) {   // 签名幂等：相位没变不重写，busy 旋转/悬停不被打断
         b.__zuPhase = phase;
-        b.innerHTML = phase === "enhancing" ? ENH_SVG_BUSY : (phase === "warn" ? ENH_SVG_WARN : (phase === "undo" ? ENH_SVG_UNDO : ENH_SVG_STAR));
+        b.innerHTML = phase === "enhancing" ? ENH_SVG_BUSY : (phase === "warn" ? ENH_SVG_WARN : ENH_SVG_STAR);
         b.classList.toggle("zu-ewarn", phase === "warn");
         var label = phase === "enhancing" ? L("增强中…", "Enhancing…")
-          : phase === "undo" ? L("撤销增强，恢复原文", "Undo enhance")
           : phase === "warn" ? enhanceWarnText
           : L("增强提示词", "Enhance prompt");
         b.setAttribute("aria-label", label);
@@ -18079,10 +19128,9 @@
         if (enhanceWaitTimer) { clearTimeout(enhanceWaitTimer); enhanceWaitTimer = 0; }
         if (enhanceWarnTimer) { clearTimeout(enhanceWarnTimer); enhanceWarnTimer = 0; }
         enhancePhase = "idle"; enhanceWarnText = "";
-        enhanceOriginal = ""; enhanceEnhanced = null; enhanceSid = ""; enhanceScopeKey = ""; enhanceOriginalState = ""; enhanceSettled = true; enhanceInFlightId = "";
+        enhanceOriginal = ""; enhanceSid = ""; enhanceScopeKey = ""; enhanceOriginalState = ""; enhanceSettled = true; enhanceInFlightId = "";
       }
-      /* 临时摘除保留 original/enhanced/sid：迟到成功回包经身份门+守卫回填后，undo 撤销与
-       * 会话守卫仍完整（复审 MINOR-1：清空会让撤销无声失效、sid 守卫被削弱）。 */
+      /* 临时摘除保留 original/sid：迟到成功回包经身份门+守卫回填后，历史采集与会话守卫仍完整。 */
       if (enhanceTipFor === enhanceBtnCache) hideEnhanceTip();   // 在显 tooltip 随按钮一起收（v135 徽标同款）
       if (enhanceBtnCache && enhanceBtnCache.isConnected) enhanceBtnCache.remove();
       enhanceBtnCache = null;
@@ -18946,6 +19994,7 @@
     }
     function applyBarTheme() {
       var pill = state.theme === "pill", compact = state.theme === "compact";
+      if (bar.getAttribute("data-zusage-theme") !== state.theme) main.scrollLeft = 0;
       bar.setAttribute("data-zusage-theme", state.theme);
       bar.classList.toggle("zu-pill", pill);
       bar.classList.toggle("zu-compact", compact);
@@ -19007,6 +20056,10 @@
         }
       }
       shrink = 0;
+      bar.classList.remove("zu-narrow", "zu-tight");
+      narrowMeasureKey = ""; narrowWidths = null;
+      main.classList.remove("zu-clip", "zu-clip-left");
+      fadeOn = false;
       render(state.data || { session: {}, last_turn: {}, today: {}, context_window: 0 });
       positionSettingsPanel();
     }
@@ -19408,18 +20461,47 @@
             lastPos = [left, top];
           }
         }
-        /* in-card 形态（v80）：无坐标跟随、无锁宽——宽度由卡片 flex-col 的 stretch 撑满内宽。
-         * 两种形态共用的收缩判定：内容超宽不撑破卡片，分级收缩：先隐藏「本轮/会话累计」
-         * 的缓存命中率（核心项 tps/上下文/会话累计不动，明细仍在悬停 tooltip），
-         * 迟滞 +12px/-120px 防数值刷新在阈值附近来回闪；仍装不下由 .zu-main 右缘渐隐
-         * 兜底（.zu-clip）。测量基准都是 bar 自身内容宽，形态无关。 */
-        var ov = main.scrollWidth - main.clientWidth;
-        var ns = shrink;
-        if (!shrink && ov > 12) ns = 1;
-        else if (shrink && ov < -120) ns = 0;
-        if (ns !== shrink) { shrink = ns; render(state.data || { session: {}, last_turn: {}, today: {}, context_window: 0 }); }
-        var clip = state.theme !== "pill" && main.scrollWidth > main.clientWidth + 1;
-        if (clip !== fadeOn) { fadeOn = clip; main.classList.toggle("zu-clip", clip); }
+        /* 用脱离布局的副本量完整/紧凑自然宽度，避免 space-between 或宿主 flex
+         * 把分配到的空白误算为内容宽度。文本或字体变化才重测，不改真实条面。 */
+        if (state.theme === "default" && main.clientWidth > 0 && Date.now() - narrowCheckAt >= 250) {
+          narrowCheckAt = Date.now();
+          var mainStyle = getComputedStyle(main);
+          var measureKey = main.innerHTML + "|" + mainStyle.font + "|" + mainStyle.letterSpacing + "|" + mainStyle.fontVariantNumeric + "|" + state.barJust + "|" + Math.floor(Date.now() / 10000);
+          if (!narrowWidths || measureKey !== narrowMeasureKey) {
+            var probe = document.createElement("div");
+            probe.className = bar.className;
+            probe.classList.remove("zu-narrow", "zu-tight", "zu-in", "zu-just-end");
+            probe.style.cssText = "position:fixed;left:-10000px;top:0;visibility:hidden;pointer-events:none;width:max-content;min-width:0;max-width:none";
+            probe.style.fontFamily = mainStyle.fontFamily;
+            probe.style.fontSize = mainStyle.fontSize;
+            var probeMain = main.cloneNode(true);
+            probeMain.classList.remove("zu-clip", "zu-clip-left");
+            probeMain.style.cssText = "width:max-content;min-width:max-content;flex:none;overflow:visible";
+            probe.appendChild(probeMain);
+            bar.parentElement.appendChild(probe);
+            try {
+              var fullWidth = probeMain.getBoundingClientRect().width;
+              probe.classList.add("zu-tight");
+              var tightWidth = probeMain.getBoundingClientRect().width;
+              narrowWidths = [fullWidth, tightWidth];
+              narrowMeasureKey = measureKey;
+            } finally { probe.remove(); }
+          }
+          var room = main.clientWidth, ns = shrink;
+          if (shrink === 0) ns = narrowWidths[0] > room + 1 ? (narrowWidths[1] <= room + 1 ? 1 : 2) : 0;
+          else if (shrink === 1) ns = narrowWidths[0] + 24 <= room ? 0 : (narrowWidths[1] > room + 1 ? 2 : 1);
+          else ns = narrowWidths[0] + 24 <= room ? 0 : (narrowWidths[1] + 24 <= room ? 1 : 2);
+          if (ns !== shrink) {
+            shrink = ns;
+            bar.classList.toggle("zu-tight", shrink > 0);
+            bar.classList.toggle("zu-narrow", shrink === 2);
+          }
+        }
+        var rightClip = state.theme === "default" && main.scrollLeft + main.clientWidth < main.scrollWidth - 1;
+        var leftClip = state.theme === "default" && main.scrollLeft > 1;
+        main.classList.toggle("zu-clip", rightClip);
+        main.classList.toggle("zu-clip-left", leftClip);
+        fadeOn = rightClip || leftClip;
         positionSettingsPanel();
         positionSubPop();
         everMounted = true;
@@ -19516,6 +20598,7 @@
 
     function dispose() {
       if (instanceDisposed) return;
+      if (typeof epTestStop === "function") epTestStop();
       instanceDisposed = true;
       clearInterval(heavyTimer);
       clearInterval(bridge.timer);   // v71：pane 销毁即停能力检测并释放 store 订阅

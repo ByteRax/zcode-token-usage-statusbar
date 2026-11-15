@@ -1,0 +1,273 @@
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const path = require('node:path');
+const source = fs.readFileSync(path.join(__dirname, '../src/overlay/01-git-and-doc-tooltips.js'), 'utf8');
+const start = source.indexOf('/* 查看全部历史：套餐源 id → 显示名');
+const end = source.indexOf('/* ---------- v202 预估费用说明小气泡');
+assert.ok(start > 0 && end > start, 'slice anchors');
+const slice = source.slice(start, end);
+
+function elStub(env) {
+  return {
+    style: {}, className: '', _html: '',
+    set innerHTML(v) { this._html = v; }, get innerHTML() { return this._html; },
+    get clientWidth() { return env.width; },
+    appendChild() {}, addEventListener() {}, removeEventListener() {},
+    querySelector() { return null; }, querySelectorAll() { return []; }
+  };
+}
+function harness(records, opts = {}) {
+  const env = { width: opts.width || 1200 };
+  const requests = [];
+  const winListeners = { add: [], remove: [] };
+  const docListeners = { add: [], remove: [] };
+  let confirms = opts.confirm !== false;
+  const confirmCalls = [];
+  const gearClicks = { n: 0 };
+  const settingsCalls = [];
+  const clip = { texts: [] };
+  const enhanceTip = elStub(env);
+  const ctx = {
+    L: zh => zh,
+    EH_ICON: { history: '<i>h</i>', close: '<i>x</i>', search: '<i>s</i>', trash: '<i>t</i>', copy: '<i>c</i>', check: '<i>ok</i>', doc: '<i>d</i>', spark: '<i>p</i>', empty: '<i>e</i>', gear: '<i>g</i>' },
+    state: {},
+    enhanceTip,
+    panel: { classList: { contains: () => false }, querySelector: () => null },
+    gear: { click: () => { gearClicks.n++; } },
+    activateSettingsSec: sec => settingsCalls.push(sec),
+    /* 悬停面板状态在切片起点之前声明（01 分片更靠前处），切片外补桩供 hideEnhanceTip/ehRender 引用 */
+    ehHideTimer: 0, ehCache: null, ehError: false, ehLoading: false, ehCacheAt: 0, enhanceTipFor: null,
+    document: {
+      createElement: () => elStub(env),
+      body: { appendChild() {} },
+      addEventListener: (t, fn) => docListeners.add.push(t),
+      removeEventListener: (t, fn) => docListeners.remove.push(t),
+      documentElement: { classList: { contains: () => true } }
+    },
+    window: {
+      innerWidth: 1400,
+      addEventListener: (t, fn) => winListeners.add.push(t),
+      removeEventListener: (t, fn) => winListeners.remove.push(t)
+    },
+    navigator: { clipboard: { writeText: t => { clip.texts.push(t); return Promise.resolve(); } } },
+    setTimeout: () => 0, clearTimeout() {},
+    pluginRequest: (name, opts2, done) => { requests.push({ name, opts: opts2, done }); if (done && name === 'enhance-history-list' && opts.autoReply !== false) done({ ok: true, records, total: records.length }); }
+  };
+  vm.runInNewContext(slice + '\nfunction openFull() { openEnhanceHistoryFull(); }\nfunction closeFull() { closeEnhanceHistoryFull(); }', ctx);
+  /* 切片内 function zuConfirm 声明会覆盖运行前赋的桩（声明提升），必须在 run 后覆写 */
+  ctx.zuConfirm = (t, d, okText, onOk) => { confirmCalls.push({ t, d, okText, onOk }); if (confirms) onOk(); };
+  ctx.openFull();
+  return { ctx, requests, winListeners, docListeners, clip, confirmCalls, gearClicks, settingsCalls, enhanceTip, setConfirm: v => { confirms = v; } };
+}
+const rec = (id, over = {}) => Object.assign({
+  id, source: 'chat', providerName: 'account:bigmodel-start-plan', modelId: 'glm-5.3-flashx',
+  originalText: 'orig-' + id, enhancedText: 'enh-' + id,
+  usage: { totalTokens: 291 }, createdAt: '2026-11-15T12:00:00.000Z', durationMs: 3100
+}, over);
+
+test('single record renders compactly: no pagination footer, header shows total', () => {
+  const h = harness([rec('r1')]);
+  const html = h.ctx.ehFull._html;
+  assert.ok(!html.includes('zu-eh-pagination'), 'single page must not render pagination footer');
+  assert.ok(!html.includes('zu-eh-pg-btn'), 'single page must not render page buttons');
+  assert.ok(html.includes('共 1 条'));
+  assert.ok(html.includes('zu-eh-head-r'), 'actions grouped on the right');
+  assert.ok(html.includes('data-close'), 'close button present');
+  assert.ok(html.includes('清空记录'));
+});
+
+test('21 records render pagination with page count and size selector', () => {
+  const recs = Array.from({ length: 21 }, (_, i) => rec('k' + i));
+  const h = harness(recs);
+  const html = h.ctx.ehFull._html;
+  assert.ok(html.includes('zu-eh-pagination'));
+  assert.ok(html.includes('第1/2 页'));
+  assert.ok(html.includes('data-f="pagesize"'));
+});
+
+test('wide panel: colgroup columns match header and data row cells', () => {
+  const h = harness([rec('r1')]);
+  const html = h.ctx.ehFull._html;
+  const colgroup = html.match(/<colgroup>[\s\S]*?<\/colgroup>/);
+  assert.ok(colgroup, 'colgroup present');
+  assert.equal((colgroup[0].match(/<col /g) || []).length, 10);
+  const headRow = html.match(/<tr class="zu-eh-tr-head">[\s\S]*?<\/tr>/)[0];
+  assert.equal((headRow.match(/<th /g) || []).length, 10);
+  const dataRow = html.match(/<tr class="zu-eh-row"[^]*?<\/tr>/)[0];
+  assert.equal((dataRow.match(/<td /g) || []).length, 10);
+  assert.ok(dataRow.includes('BigModel Start Plan'), 'friendly plan label in cell');
+  assert.ok(dataRow.includes('title="account:bigmodel-start-plan"'), 'raw id kept in title');
+});
+
+test('medium panel merges provider/model into one column', () => {
+  const h = harness([rec('r1')], { width: 800 });
+  const html = h.ctx.ehFull._html;
+  assert.ok(html.includes('供应商 / 模型'));
+  const colgroup = html.match(/<colgroup>[\s\S]*?<\/colgroup>/)[0];
+  assert.equal((colgroup.match(/<col /g) || []).length, 9);
+  assert.ok(html.includes('zu-eh-prov-sep'), 'merged cell separates provider and model');
+});
+
+test('narrow panel hides summary columns', () => {
+  const h = harness([rec('r1')], { width: 600 });
+  h.ctx.ehFull.onclick({ target: { closest: sel => (sel === '.zu-eh-row' ? { getAttribute: a => (a === 'data-id' ? 'r1' : null) } : null), stopPropagation() {} } });
+  const html = h.ctx.ehFull._html;
+  assert.ok(!html.includes('原文摘要'), 'summary headers hidden');
+  const colgroup = html.match(/<colgroup>[\s\S]*?<\/colgroup>/)[0];
+  assert.equal((colgroup.match(/<col /g) || []).length, 7);
+  assert.ok(html.includes('原始提示词'), 'detail keeps full original text');
+});
+
+test('non-plan provider id is shown as-is without fabrication', () => {
+  const h = harness([rec('r1', { providerName: 'my-relay-box' })]);
+  assert.ok(h.ctx.ehFull._html.includes('>my-relay-box<'));
+});
+
+test('row click expands exactly one detail row bound to the record id', () => {
+  const h = harness([rec('r1'), rec('r2')]);
+  const rowStub = { getAttribute: a => (a === 'data-id' ? 'r2' : null) };
+  h.ctx.ehFull.onclick({ target: { closest: sel => (sel === '.zu-eh-row' ? rowStub : null) }, stopPropagation() {} });
+  const html = h.ctx.ehFull._html;
+  assert.equal((html.match(/zu-eh-detail-row/g) || []).length, 1);
+  assert.ok(html.includes('orig-r2'), 'detail belongs to clicked id');
+  assert.match(html, /\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/, 'detail shows full time');
+});
+
+test('detail copy resolves text by record id, not row position', () => {
+  const h = harness([rec('a'), rec('b', { originalText: 'orig-b-full' })]);
+  const rowStub = { getAttribute: a => (a === 'data-id' ? 'b' : null) };
+  const btn = {
+    hasAttribute: a => a === 'data-copy-orig',
+    classList: { contains: c => c === 'zu-eh-row-copy' },
+    closest: sel => (sel === '.zu-eh-row' ? null : sel === '.zu-eh-detail-row' ? { previousElementSibling: rowStub } : null),
+    innerHTML: '<svg/>'
+  };
+  h.ctx.ehFull.onclick({ target: { closest: s => (s === 'button' ? btn : null) }, stopPropagation() {} });
+  assert.deepEqual(h.clip.texts, ['orig-b-full']);
+});
+
+test('delete asks for confirmation and sends the record id', () => {
+  const h = harness([rec('r1'), rec('r2')]);
+  const rowStub = { getAttribute: a => (a === 'data-id' ? 'r2' : null) };
+  const btn = {
+    hasAttribute: a => a === 'data-del',
+    classList: { contains: () => true },
+    closest: sel => (sel === '.zu-eh-row' ? rowStub : null),
+    innerHTML: ''
+  };
+  h.setConfirm(false);
+  h.ctx.ehFull.onclick({ target: { closest: s => (s === 'button' ? btn : null) }, stopPropagation() {} });
+  assert.equal(h.requests.filter(r => r.name === 'enhance-history-delete').length, 0, 'cancel sends nothing');
+  assert.equal(h.confirmCalls.length, 1, 'custom confirm dialog opened');
+  assert.equal(h.confirmCalls[0].okText, '删除');
+  h.setConfirm(true);
+  h.ctx.ehFull.onclick({ target: { closest: s => (s === 'button' ? btn : null) }, stopPropagation() {} });
+  const del = h.requests.find(r => r.name === 'enhance-history-delete');
+  assert.ok(del, 'confirmed delete sends request');
+  assert.equal(del.opts.id, 'r2');
+  del.done({ ok: true });
+  const html = h.ctx.ehFull._html;
+  assert.ok(!html.includes('orig-r2'), 'deleted record leaves the table');
+  assert.ok(html.includes('orig-r1'), 'remaining record stays without a refetch');
+  assert.ok(html.includes('>1<') || html.includes('共 1 条'), 'header count drops to 1');
+});
+test('failed delete keeps the table intact', () => {
+  const h = harness([rec('r1'), rec('r2')]);
+  const rowStub = { getAttribute: a => (a === 'data-id' ? 'r2' : null) };
+  const btn = {
+    hasAttribute: a => a === 'data-del',
+    classList: { contains: () => true },
+    closest: sel => (sel === '.zu-eh-row' ? rowStub : null),
+    innerHTML: ''
+  };
+  h.ctx.ehFull.onclick({ target: { closest: s => (s === 'button' ? btn : null) }, stopPropagation() {} });
+  h.requests.find(r => r.name === 'enhance-history-delete').done({ ok: false });
+  assert.ok(h.ctx.ehFull._html.includes('orig-r2'), 'failed delete must not clear the table');
+});
+
+test('deleting the last record shows the empty state without pagination', () => {
+  const h = harness([rec('only')]);
+  const rowStub = { getAttribute: a => (a === 'data-id' ? 'only' : null) };
+  const btn = {
+    hasAttribute: a => a === 'data-del',
+    classList: { contains: () => true },
+    closest: sel => (sel === '.zu-eh-row' ? rowStub : null),
+    innerHTML: ''
+  };
+  h.ctx.ehFull.onclick({ target: { closest: s => (s === 'button' ? btn : null) }, stopPropagation() {} });
+  h.requests[1].done({ ok: true });
+  const html = h.ctx.ehFull._html;
+  assert.ok(html.includes('暂无增强历史'));
+  assert.ok(!html.includes('zu-eh-pagination'));
+});
+
+test('filtering to no matches keeps the compact panel', () => {
+  const h = harness([rec('r1')]);
+  h.ctx.ehFull.onchange({ target: { hasAttribute: a => a === 'data-f', getAttribute: () => 'source', value: 'test' } });
+  const html = h.ctx.ehFull._html;
+  assert.ok(html.includes('没有匹配的记录'));
+  assert.ok(!html.includes('zu-eh-pagination'));
+});
+
+test('resize listener is added on open and removed on close', () => {
+  const h = harness([rec('r1')]);
+  assert.ok(h.winListeners.add.includes('resize'));
+  assert.ok(h.docListeners.add.includes('keydown'));
+  h.ctx.closeFull();
+  assert.ok(h.winListeners.remove.includes('resize'));
+  assert.ok(h.docListeners.remove.includes('keydown'));
+});
+
+test('sort header click toggles order and updates aria-sort (th is not a button)', () => {
+  const recs = [rec('lo', { usage: { totalTokens: 100 } }), rec('hi', { usage: { totalTokens: 900 } })];
+  const h = harness(recs);
+  const thStub = {
+    hasAttribute: a => a === 'data-sort',
+    getAttribute: a => (a === 'data-sort' ? 'totalTokens' : null),
+    closest: () => thStub
+  };
+  h.ctx.ehFull.onclick({ target: { closest: s => (s === '[data-sort]' ? thStub : null) }, stopPropagation() {} });
+  let html = h.ctx.ehFull._html;
+  assert.match(html, /aria-sort="descending"/, 'first click on a new field sorts descending');
+  let first = html.match(/zu-eh-td-num">([^<]+)</);
+  assert.equal(first[1], '900', 'descending puts the larger token count first');
+  h.ctx.ehFull.onclick({ target: { closest: s => (s === '[data-sort]' ? thStub : null) }, stopPropagation() {} });
+  html = h.ctx.ehFull._html;
+  assert.match(html, /aria-sort="ascending"/, 'second click toggles to ascending');
+  first = html.match(/zu-eh-td-num">([^<]+)</);
+  assert.equal(first[1], '100', 'ascending puts the smaller token count first');
+});
+
+test('full panel header has a settings button that opens the enhance-provider settings', () => {
+  const h = harness([rec('r1')]);
+  assert.ok(h.ctx.ehFull._html.includes('zu-eh-cfg'), 'settings button present in header');
+  assert.ok(h.ctx.ehFull._html.includes('data-ehset'));
+  const btn = {
+    hasAttribute: a => a === 'data-ehset',
+    classList: { contains: () => false },
+    closest: () => null,
+    innerHTML: ''
+  };
+  h.ctx.ehFull.onclick({ target: { closest: s => (s === 'button' ? btn : null) }, stopPropagation() {} });
+  assert.deepEqual(h.settingsCalls, ['enhance-provider'], 'activates the enhance-provider section');
+  assert.equal(h.gearClicks.n, 1, 'opens the settings panel via the official gear path');
+  assert.equal(h.ctx.ehFull.style.display, 'none', 'full panel closes when settings open');
+});
+
+test('hover tip footer renders a settings entry', () => {
+  const h = harness([rec('r1')]);
+  h.ctx.ehRender();
+  assert.ok(h.enhanceTip._html.includes('data-ehset'), 'settings entry present in footer');
+  assert.ok(h.enhanceTip._html.includes('设置'), 'settings label localized');
+});
+
+test('new history records invalidate the full-panel cache', () => {
+  const env = { width: 1200 };
+  const ctx = { L: zh => zh, pluginRequest: () => {}, window: {}, document: { createElement: () => elStub(env) } };
+  const head = source.slice(source.indexOf('function enhanceHistoryAdd'), source.indexOf('function ehEsc'));
+  vm.runInNewContext(head + '\nvar ehFullCache = { records: [1] };\nfunction add(r) { enhanceHistoryAdd(r); }', ctx);
+  ctx.add({ id: 'n1' });
+  assert.equal(ctx.ehFullCache, null);
+});

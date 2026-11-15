@@ -50,6 +50,7 @@
     }
     /* v208 分区切换单一出口：导航点击与齿轮待重启跳转共用；切入「插件更新」即 ack（点进分区红点消失） */
     function activateSettingsSec(sec) {
+      if (sec !== "enhance-provider" && typeof epTest !== "undefined" && epTest && epTest.id && typeof epTestStop === "function") epTestStop(L("测试已取消。", "Test cancelled."));
       state.settingsSec = sec || "display";
       persist();
       if (state.settingsSec === "update") ackUpdateDots();
@@ -81,6 +82,11 @@
     }
     function syncUpdate() {
       var u = state.pluginUpdate;
+      if (typeof epReconcile === "function") epReconcile(u && u.enhanceProvider);
+      if (typeof epTest !== "undefined" && epTest && typeof epTestSignature === "function" && epTest.signature && epTest.signature !== epTestSignature()) {
+        if (epTest.id) epTestStop(L("配置已变化，请重新测试。", "Settings changed; test again."));
+        else if (epTest.result) { epTest.status = L("上次测试结果（配置已变化）", "Previous test result (settings changed)"); epTestRender(); }
+      }
       var active = !!(u && u.supported);
       var version = panel.querySelector(".zu-settings-version");
       version.textContent = active && u.currentVersion ? u.currentVersion : "";
@@ -1358,6 +1364,266 @@
       }[p.stage] || [0, L("等待下载完成", "Waiting for download")];
       setProgressBar(box, "install", install[0], idx > 0, install[1]);
     }
+    var epTest = { id: "", timer: 0, draft: "", result: "", status: "", failed: false, generation: 0, testedDraft: "", signature: "" };
+    function epTestSignature() {
+      var ep = state.pluginUpdate && state.pluginUpdate.enhanceProvider;
+      var scope = typeof enhanceCurrentScope === "function" ? enhanceCurrentScope() : "";
+      if (typeof readQuotaSelection === "function") readQuotaSelection();
+      var selection = typeof quotaSelection !== "undefined" ? quotaSelection : null;
+      return JSON.stringify([ep && ep.revision, ep && ep.mode, scope, selection && selection.providerId, selection && selection.modelId]);
+    }
+    function epTestRender() {
+      var draft = panel.querySelector(".zu-ep-test-draft"), result = panel.querySelector(".zu-ep-test-result");
+      if (!draft || !result || !epTest) return;
+      draft.value = epTest.draft; result.textContent = epTest.result;
+      panel.querySelector(".zu-ep-test-empty").hidden = !!epTest.result;
+      var status = panel.querySelector(".zu-ep-test-status");
+      status.textContent = epTest.status;
+      status.classList.toggle("zu-ep-test-err", !!epTest.failed);
+      panel.querySelector(".zu-ep-test-run").disabled = !!epTest.id;
+      panel.querySelector(".zu-ep-test-cancel").hidden = !epTest.id;
+    }
+    function epTestStop(message, failed) {
+      if (!epTest) return;
+      var id = epTest.id; epTest.id = ""; epTest.generation++; if (message) epTest.failed = !!failed;
+      if (epTest.timer) { clearTimeout(epTest.timer); epTest.timer = 0; }
+      if (id) { epTest.result = ""; epTest.testedDraft = ""; }
+      if (id) { forgetPluginRequest(id); pluginRequest("prompt-enhance-cancel", { requestId: id }); }
+      if (message) epTest.status = message;
+      epTestRender();
+    }
+    function epTestStart() {
+      var ep = state.pluginUpdate && state.pluginUpdate.enhanceProvider, draft = epTest.draft;
+      if (epTest.id) return;
+      if (!draft.trim() || draft.length > 20000) { epTest.status = L("请输入 1–20000 字符的草稿。", "Enter a draft of 1–20000 characters."); epTestRender(); return; }
+      if (!ep || ep.capability !== 1 || ep.unreadable || epSaving || epConflict || !Number.isSafeInteger(epSavedRevision)) { epTest.status = L("增强配置暂不可用，请稍后重试。", "Enhancement settings are temporarily unavailable; retry."); epTestRender(); return; }
+      var editingMode = epValue(".zu-ep-mode"), useDraftForm = editingMode === "custom";
+      var form = null, key = epValue(".zu-ep-key").trim();
+      if (useDraftForm) {
+        form = epForm();
+        if (!form.providerId && form.source === "host") { epTest.status = L("请先点击选择一个供应商，再测试。", "Select a provider card before testing."); epTestRender(); return; }
+        if (!form.model) { epTest.status = L("请先填写增强模型。", "Enter the enhancement model first."); epTestRender(); return; }
+        if (form.source === "manual" && !form.baseUrl) { epTest.status = L("请先填写 Base URL。", "Enter the Base URL first."); epTestRender(); return; }
+      }
+      if (typeof readQuotaSelection === "function") readQuotaSelection();
+      var sel = typeof quotaSelection !== "undefined" ? quotaSelection : null;
+      var scope = typeof enhanceCurrentScope === "function" ? enhanceCurrentScope() : "";
+      if (!useDraftForm) {
+        if (ep.mode === "custom") { epTest.status = L("已保存配置为自定义模式；如需按当前会话模型测试，请先保存。", "Saved settings are custom; save first to test with the session model."); epTestRender(); return; }
+        if (!scope || !sel || !sel.providerId || !sel.modelId) { epTest.status = L("无法确认当前会话模型，暂不能测试。", "Current session model cannot be verified."); epTestRender(); return; }
+      }
+      var signature = epTestSignature(), generation = ++epTest.generation, started = Date.now(), id = "";
+      epTest.result = ""; epTest.testedDraft = "";
+      epTest.status = L("正在增强…", "Enhancing…"); epTest.signature = signature;
+      id = pluginRequest(useDraftForm ? "prompt-enhance-v2" : "prompt-enhance", useDraftForm ? { revision: ep.revision, text: draft, form: { source: form.source, providerId: form.providerId, baseUrl: form.baseUrl, protocol: form.protocol, model: form.model }, formApiKey: form.source === "manual" && key ? key : undefined } : { providerId: sel.providerId, modelId: sel.modelId, text: draft }, function (res) {
+        if (!epTest || epTest.id !== id || epTest.generation !== generation || inactive()) return;
+        var formChanged = useDraftForm && JSON.stringify(epForm()) !== JSON.stringify(form);
+        if (signature !== epTestSignature() || formChanged || draft !== epTest.draft) { epTestStop(L("配置或草稿已变化，请重新测试。", "Settings or draft changed; test again.")); return; }
+        epTest.id = ""; if (epTest.timer) clearTimeout(epTest.timer); epTest.timer = 0;
+        if (res && res.ok && typeof res.text === "string" && res.text) {
+          var providerLabel = "";
+          if (useDraftForm) providerLabel = form.source === "host" ? (function () { var hf = panel.querySelector(".zu-ep-host"), o = hf && hf.options[hf.selectedIndex]; return o && o.textContent || form.providerId; })() : (form.baseUrl || "").replace(/^https?:\/\//, "").replace(/\/+$/, "");
+          else providerLabel = sel.providerId;
+          var sentModel = useDraftForm ? form.model : sel.modelId;
+          var served = res.serverModel && typeof res.serverModel === "string" ? res.serverModel : sentModel;
+          epTest.result = res.text; epTest.testedDraft = draft; epTest.failed = false;
+          epTest.status = L("测试成功 · ", "Test succeeded · ") + providerLabel + " · " + sentModel + (served !== sentModel ? L("（服务端返回：", " (server: ") + served + "）" : "") + L(" · 耗时 ", " · ") + ((Date.now() - started) / 1000).toFixed(1) + "s";
+          if (typeof enhanceHistoryAdd === "function") enhanceHistoryAdd({ requestId: id, source: "test", providerName: providerLabel, modelId: sentModel, originalText: draft, enhancedText: res.text, usage: res.usage || null, createdAt: new Date().toISOString(), durationMs: Date.now() - started });
+        }
+        else {
+          var raw = res && typeof res.error === "string" ? res.error : "";
+          var detail = res && res.detail ? String(res.detail).replace(/\s+/g, " ").trim().slice(0, 600) : "";
+          var internal = {
+            "enhance provider settings changed": L("已保存配置已变化，请重新打开设置后再试。", "Saved settings changed; reopen settings and try again."),
+            "restart required": L("请完全重启 ZCode 后重试。", "Fully restart ZCode and retry."),
+            "provider unavailable": L("供应商不可用，请重新选择并检查其配置。", "Provider unavailable; reselect it and check its settings."),
+            "cancelled": L("操作已取消。", "Cancelled."),
+            "disabled": L("增强功能已关闭。", "Prompt enhancement is disabled."),
+            "model downgraded": L("已按要求拒绝降级：服务端返回了不同的模型", "Fallback rejected as requested: the server served a different model")
+          };
+          epTest.failed = true;
+          if (internal[raw]) epTest.status = internal[raw] + (detail ? "：" + detail : "");
+          else if (detail || /^HTTP /.test(raw)) epTest.status = L("增强失败：", "Enhancement failed: ") + (detail || raw);
+          else epTest.status = L("增强失败，请检查已保存的供应商、模型与网络。", "Enhancement failed; check the saved provider, model and network.");
+        }
+        epTestRender();
+      });
+      epTest.id = id;
+      epTest.timer = setTimeout(function () { if (epTest && epTest.id === id) epTestStop(L("测试超时，请重试。", "Test timed out; retry."), true); }, 75000);
+      epTestRender();
+    }
+    function epRisk(value) {
+      try {
+        var u = new URL(value), hn = u.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+        if (hn.indexOf("::ffff:") === 0) hn = hn.slice(7);   // IPv4-mapped IPv6 还原为点分四段再判私网
+        var h = hn, p = h.split(".").map(Number);
+        return u.protocol === "http:" || h === "localhost" || /\.(localhost|local|internal)$/.test(h) || h.indexOf(".") < 0 || h === "::1" || /^(fc|fd|fe[89ab])/i.test(h) || (p.length === 4 && p.every(function (n) { return Number.isInteger(n) && n >= 0 && n <= 255; }) && (p[0] === 10 || p[0] === 127 || p[0] === 192 && p[1] === 168 || p[0] === 172 && p[1] >= 16 && p[1] <= 31 || p[0] === 169 && p[1] === 254));
+      } catch (e) { return false; }
+    }
+    var epEditVersion = 0, epHostRequest = 0, epModelRequest = 0, epHostsLoaded = false, epSavedRevision = -1, epCleanVersion = 0, epSaving = false, epConflict = false, epSavedFormJson = null;
+    function epDirty() { return epSavedFormJson !== null && JSON.stringify(epForm()) !== epSavedFormJson; }
+    function epSyncDirtyStatus() {
+      var status = panel.querySelector(".zu-ep-status");
+      if (epDirty()) status.textContent = L("配置未保存", "Unsaved changes");
+      else if (status.textContent === L("配置未保存", "Unsaved changes")) status.textContent = "";
+    }
+    function epApplySaved(ep) {
+      var mode = panel.querySelector(".zu-ep-mode");
+      if (!mode || !ep || ep.unreadable) return;
+      mode.__zuInitialized = true; mode.value = ep.mode || "default";
+      panel.querySelector(".zu-ep-source").value = ep.mode === "default" ? "default" : (ep.source || "manual");
+      panel.querySelector(".zu-ep-url").value = ep.baseUrl || "";
+      panel.querySelector(".zu-ep-protocol").value = ep.protocol || "openai-chat-completions";
+      panel.querySelector(".zu-ep-model").value = ep.model || "";
+      panel.querySelector(".zu-ep-key").value = "";
+      var host = panel.querySelector(".zu-ep-host");
+      host.value = ep.providerId || ""; host.__zuPendingId = ep.providerId || "";
+      var allowBox = panel.querySelector(".zu-ep-allow-downgrade");
+      if (allowBox) allowBox.checked = ep.allowDowngrade !== false;
+      var saveBox = panel.querySelector(".zu-ep-save-history");
+      if (saveBox) saveBox.checked = ep.saveHistory === true;
+      epSavedRevision = ep.revision; epCleanVersion = epEditVersion; epConflict = false;
+      epSavedFormJson = JSON.stringify(epForm());
+      epModelRequest++; panel.querySelector(".zu-ep-model-list").textContent = "";
+      if (ep.mode === "custom" && ep.source === "host") epApplyModelCache(epForm());
+      panel.querySelector(".zu-ep-reload").hidden = true;
+      panel.querySelector(".zu-ep-status").textContent = "";
+      epRender();
+      if (ep.mode === "custom" && ep.source === "host") epLoadHosts(false);   // 打开/重载优先用缓存，刷新按钮才强制拉取
+    }
+    function epReconcile(ep) {
+      var mode = panel.querySelector(".zu-ep-mode");
+      if (typeof epSavedRevision !== "number" || !mode || !ep || ep.unreadable || !Number.isSafeInteger(ep.revision)) return;
+      if (!mode.__zuInitialized) { epApplySaved(ep); return; }
+      if (ep.revision <= epSavedRevision || epSaving) return;
+      if (!epDirty()) { epApplySaved(ep); return; }
+      epConflict = true; epModelRequest++;
+      panel.querySelector(".zu-ep-status").textContent = L("其他窗口已修改配置；草稿已保留，请重新载入后再保存。", "Settings changed in another window. Your draft is retained; reload before saving.");
+      panel.querySelector(".zu-ep-reload").hidden = false;
+    }
+    function epCaptureDraft() {
+      var mode = panel.querySelector(".zu-ep-mode");
+      if (!mode || !mode.__zuInitialized) return null;
+      var values = {};
+      ["mode", "source", "url", "protocol", "model", "key", "preset", "search"].forEach(function (name) { var el = panel.querySelector(".zu-ep-" + name); if (el) values[name] = el.value; });
+      var host = panel.querySelector(".zu-ep-host");
+      values.host = host ? host.value || host.__zuPendingId || "" : "";
+      var allowBox = panel.querySelector(".zu-ep-allow-downgrade"), saveBox = panel.querySelector(".zu-ep-save-history");
+      if (allowBox) values.allowDowngrade = allowBox.checked;
+      if (saveBox) values.saveHistory = saveBox.checked;
+      return values;
+    }
+    function epRestoreDraft(values) {
+      if (!values) return;
+      ["mode", "source", "url", "protocol", "model", "key", "preset", "search"].forEach(function (name) { var el = panel.querySelector(".zu-ep-" + name); if (el && typeof values[name] === "string") el.value = values[name]; });
+      var mode = panel.querySelector(".zu-ep-mode"), host = panel.querySelector(".zu-ep-host");
+      if (!mode || !host) return;
+      mode.__zuInitialized = true; host.__zuPendingId = values.host || "";
+      var allowBox = panel.querySelector(".zu-ep-allow-downgrade"), saveBox = panel.querySelector(".zu-ep-save-history");
+      if (allowBox && typeof values.allowDowngrade === "boolean") allowBox.checked = values.allowDowngrade;
+      if (saveBox && typeof values.saveHistory === "boolean") saveBox.checked = values.saveHistory;
+      epHostRequest++; epModelRequest++; epHostsLoaded = false;
+      epRender();
+      var reload = panel.querySelector(".zu-ep-reload"), status = panel.querySelector(".zu-ep-status");
+      if (reload) reload.hidden = !epConflict;
+      if (status && epSaving) status.textContent = L("保存结果待确认，请勿重复提交。", "Save outcome pending; do not resubmit yet.");
+      else if (status && epConflict) status.textContent = L("其他窗口已修改配置；草稿已保留，请重新载入后再保存。", "Settings changed in another window. Your draft is retained; reload before saving.");
+      else if (status) epSyncDirtyStatus();
+      if (values.mode === "custom" && values.source === "host") { epLoadHosts(false); epApplyModelCache({ source: "host", providerId: values.host || "", baseUrl: values.url || "", protocol: values.protocol || "" }); }
+    }
+    function epValue(selector) { var el = panel.querySelector(selector); return el ? el.value : ""; }
+    function epForm() { var acb = panel.querySelector(".zu-ep-allow-downgrade"), scb = panel.querySelector(".zu-ep-save-history"); return { mode: epValue(".zu-ep-mode"), source: epValue(".zu-ep-source"), providerId: epValue(".zu-ep-host"), baseUrl: epValue(".zu-ep-url").trim(), protocol: epValue(".zu-ep-protocol"), model: epValue(".zu-ep-model"), allowDowngrade: !acb || acb.checked, saveHistory: !scb || scb.checked }; }
+    function epRender() {
+      var f = epForm(), custom = f.mode === "custom", host = f.source === "host";
+      panel.querySelector(".zu-ep-default").hidden = custom;
+      panel.querySelector(".zu-ep-custom").hidden = !custom;
+      panel.querySelector(".zu-ep-host-panel").hidden = !custom || !host;
+      panel.querySelector(".zu-ep-manual-panel").hidden = !custom || host;
+      var warning = panel.querySelector(".zu-ep-warning");
+      warning.hidden = !custom || !epRisk(f.baseUrl);
+      warning.textContent = L("此地址使用 HTTP 或本机／内网连接，Key 与草稿可能发送至该目标，请确认服务可信。", "This HTTP or local/intranet target may receive your key and draft. Verify that you trust it.");
+      var ep = state.pluginUpdate && state.pluginUpdate.enhanceProvider;
+      panel.querySelector(".zu-ep-key-state").textContent = ep && ep.keyConfigured ? L("已保存 API Key", "API key saved") : L("尚未保存 API Key", "No saved API key");
+      panel.querySelector(".zu-ep-remove").disabled = !(ep && ep.keyConfigured);
+      panel.querySelector(".zu-ep-remove").hidden = !(ep && ep.keyConfigured);
+    }
+    var epHostCache = null, epHostCacheAt = 0, epModelCache = {};   // 实例级内存缓存：供应商列表 5 分钟、模型列表按目标 10 分钟；刷新/拉取强制走网络
+    function epRenderHosts(providers) {
+      var select = panel.querySelector(".zu-ep-host"), grid = panel.querySelector(".zu-ep-host-grid"), old = select.value || select.__zuPendingId || "";
+      select.textContent = ""; grid.textContent = "";
+      var empty = document.createElement("option"); empty.value = ""; empty.textContent = L("请选择供应商", "Select a provider"); select.appendChild(empty);
+      providers.forEach(function (p) {
+        var option = document.createElement("option"); option.value = p.id; option.textContent = p.name; option.dataset.url = p.baseUrl; option.dataset.protocol = p.protocol; select.appendChild(option);
+        var card = document.createElement("button"); card.type = "button"; card.className = "zu-ep-host-card"; card.dataset.id = p.id;
+        var title = document.createElement("strong"); title.textContent = p.name;
+        var meta = document.createElement("small"), domain = p.baseUrl;
+        try { domain = new URL(p.baseUrl).host; } catch (e) { }
+        meta.textContent = domain + " · " + p.protocol;
+        var mark = document.createElement("span"); mark.className = "zu-ep-host-check"; mark.textContent = L("✓ 已选择", "✓ Selected"); mark.hidden = p.id !== old;
+        card.appendChild(title); card.appendChild(meta); card.appendChild(mark); card.setAttribute("aria-pressed", p.id === old ? "true" : "false"); grid.appendChild(card);
+      });
+      select.value = old; select.__zuPendingId = "";
+      return old;
+    }
+    function epApplyModelCache(form) {
+      var list = panel.querySelector(".zu-ep-model-list");
+      list.textContent = "";   // 目标变化先清空旧列表，避免残留上一个供应商的模型
+      var key = JSON.stringify([form.source, form.providerId, form.baseUrl, form.protocol]);
+      var hit = epModelCache[key];
+      if (!hit || Date.now() - hit.at > 600000) return false;
+      hit.models.forEach(function (id) { var option = document.createElement("option"); option.value = id; list.appendChild(option); });
+      panel.querySelector(".zu-ep-model-status").textContent = L("模型列表（缓存）· 正在自动更新。", "Model list (cached); auto-refreshing.");
+      return true;
+    }
+    function epModelsErrorText(result) {
+      var error = result && result.error || "";
+      return error === "restart required" ? L("请完全重启 ZCode 后重试。", "Fully restart ZCode and retry.") : error === "settings changed" ? L("配置版本已变化，请重新载入后重试。", "Settings changed; reload and retry.") : error === "provider unavailable" ? L("供应商不可用，请重新选择并检查其配置。", "Provider unavailable; reselect it and check its settings.") : error === "cancelled" ? L("操作已取消，输入已保留。", "Cancelled; your edits were retained.") : /^HTTP (401|403)$/.test(error) ? L("模型接口拒绝访问，请检查供应商凭据或权限。", "Model endpoint denied access; check credentials and permissions.") : /^HTTP (404|405)$/.test(error) ? L("该地址不支持模型列表，请手动填写模型 ID。", "This endpoint does not support model lists; enter a model ID.") : L("模型列表获取失败，请检查网络与接口地址，或手动输入模型 ID。", "Failed to fetch models; check network and endpoint, or enter a model ID.");
+    }
+    function epRequestModels(f, formApiKey, done) {
+      var ep = state.pluginUpdate && state.pluginUpdate.enhanceProvider;
+      if (!ep || !ep.available || ep.unreadable || epSaving || epConflict || !Number.isSafeInteger(epSavedRevision)) return false;
+      var serial = ++epModelRequest, version = epEditVersion;
+      var req = { revision: epSavedRevision, form: { source: f.source, providerId: f.providerId, baseUrl: f.baseUrl, protocol: f.protocol } };
+      if (f.source === "manual" && formApiKey) req.formApiKey = formApiKey;
+      pluginRequest("enhance-provider-models", req, function (result) {
+        if (inactive() || serial !== epModelRequest || version !== epEditVersion) return;
+        var list = panel.querySelector(".zu-ep-model-list");
+        if (result && result.ok && Array.isArray(result.models)) {
+          list.textContent = "";
+          result.models.forEach(function (id) { var option = document.createElement("option"); option.value = id; list.appendChild(option); });
+          epModelCache[JSON.stringify([f.source, f.providerId, f.baseUrl, f.protocol])] = { models: result.models.slice(0, 200), at: Date.now() };
+        }
+        done && done(result);
+      });
+      return true;
+    }
+    function epLoadHosts(force) {
+      if (epHostsLoaded && !force) return;
+      var status = panel.querySelector(".zu-ep-host-status");
+      if (!force && epHostCache && Date.now() - epHostCacheAt < 300000) {   // 缓存命中：同步渲染，不发请求
+        epHostsLoaded = true;
+        var old = epRenderHosts(epHostCache);
+        status.textContent = !epHostCache.length ? L("没有可用供应商：请检查启用状态、协议和凭据，或使用手动配置。", "No compatible providers. Check their status, protocol and credentials, or use manual configuration.") : "";
+        return;
+      }
+      var serial = ++epHostRequest;
+      if (!force) {   // 硬盘缓存先行：主进程直接回上次拉取的列表，新鲜数据随后覆盖
+        pluginRequest("enhance-provider-list", { cached: true }, function (res) {
+          if (inactive() || epHostsLoaded || !res || !res.ok || !Array.isArray(res.providers)) return;
+          epHostsLoaded = true; epHostCache = res.providers; epHostCacheAt = Date.now();
+          epRenderHosts(res.providers);
+          status.textContent = !res.providers.length ? L("没有可用供应商：请检查启用状态、协议和凭据，或使用手动配置。", "No compatible providers. Check their status, protocol and credentials, or use manual configuration.") : "";
+        });
+      }
+      status.textContent = L("正在加载供应商…", "Loading providers…");
+      pluginRequest("enhance-provider-list", {}, function (result) {
+        if (inactive() || serial !== epHostRequest) return;
+        if (!result || !result.ok || !Array.isArray(result.providers)) { epHostsLoaded = false; status.textContent = L("供应商加载失败，请刷新重试。", "Failed to load providers. Refresh to retry."); return; }
+        epHostsLoaded = true; epHostCache = result.providers; epHostCacheAt = Date.now();
+        var old = epRenderHosts(result.providers);
+        status.textContent = !result.providers.length ? L("没有可用供应商：请检查启用状态、协议和凭据，或使用手动配置。", "No compatible providers. Check their status, protocol and credentials, or use manual configuration.") : old && panel.querySelector(".zu-ep-host").value !== old ? L("已保存的供应商不可用，请重新选择。", "The saved provider is unavailable; select another.") : "";
+      });
+    }
     function syncPanel() {
       panel.querySelectorAll('.zu-theme-choice').forEach(function (r) {
         r.checked = state.theme === r.value;
@@ -1393,12 +1659,88 @@
       if (qrBox) qrBox.checked = !!state.quotaRemain;
       var enhBox = panel.querySelector(".zu-enhance-toggle");   // v344：勾选态由推送面 enhanceEnabled 决定
       if (enhBox) enhBox.checked = state.enhanceEnabled !== false;
+      if (typeof epReconcile === "function") epReconcile(state.pluginUpdate && state.pluginUpdate.enhanceProvider);
+      if (typeof epSyncDirtyStatus === "function") epSyncDirtyStatus();
       if (typeof zuRotatorSyncPanel === "function") zuRotatorSyncPanel(panel);
       syncUpdate();
     }
     var relaunchAckTimer = 0;   /* v177：relaunch 回执超时（v244 起主进程回执随投递即返，含 1s 轮询约 1s 量级；超时≈旧主进程） */
     var relaunchAliveTimer = 0; /* v244：ok 回执后 90s 仍存活兜底——防状态机永久卡死；窗口可能已被 v245 hide，主进程 15s unhide 哨兵负责恢复可见 */
     panel.addEventListener("click", function (e) {
+      var testButton = e.target.closest && e.target.closest(".zu-ep-test-run,.zu-ep-test-cancel");
+      if (testButton) {
+        if (testButton.classList.contains("zu-ep-test-run")) epTestStart();
+        else if (testButton.classList.contains("zu-ep-test-cancel")) epTestStop(L("测试已取消。", "Test cancelled."));
+        return;
+      }
+      var epCard = e.target.closest && e.target.closest(".zu-ep-host-card");
+      if (epCard) {
+        var hostSelect = panel.querySelector(".zu-ep-host"); hostSelect.value = epCard.dataset.id;
+        hostSelect.dispatchEvent(new Event("change", { bubbles: true }));
+        panel.querySelectorAll(".zu-ep-host-card").forEach(function (card) { card.setAttribute("aria-pressed", card === epCard ? "true" : "false"); var mark = card.querySelector(".zu-ep-host-check"); if (mark) mark.hidden = card !== epCard; });
+        return;
+      }
+      var epAction = e.target.closest && e.target.closest(".zu-ep-save,.zu-ep-hosts,.zu-ep-models,.zu-ep-remove,.zu-ep-reload");
+      if (epAction) {
+        var epStatus = panel.querySelector(".zu-ep-status"), ep = state.pluginUpdate && state.pluginUpdate.enhanceProvider;
+        if (!ep || !ep.available || ep.unreadable) { epStatus.textContent = L("增强配置不可用，请检查权限或重启 ZCode。", "Enhancement settings unavailable; check permissions or restart ZCode."); return; }
+        if (epAction.classList.contains("zu-ep-reload")) {
+          if (epDirty()) zuConfirm(L("重新载入配置", "Reload settings"), L("重新载入将丢弃当前未保存的修改，继续吗？", "Reloading will discard unsaved edits. Continue?"), L("继续", "Continue"), function () { epApplySaved(ep); });
+          else epApplySaved(ep);
+          return;
+        }
+        if (epAction.classList.contains("zu-ep-hosts")) { epLoadHosts(true); return; }
+        if (epSaving || epConflict || ep.revision !== epSavedRevision) { epReconcile(ep); epStatus.textContent = L("配置已变化或正在保存，请等待或重新载入。", "Settings changed or a save is pending; wait or reload."); return; }
+        var remove = epAction.classList.contains("zu-ep-remove"), save = epAction.classList.contains("zu-ep-save") || remove;
+        var f = epForm(), keyField = panel.querySelector(".zu-ep-key"), key = keyField.value, revision = epSavedRevision, version = epEditVersion;
+        if (!remove && f.mode === "custom" && f.source === "host" && !f.providerId) { epStatus.textContent = L("请先点击选择一个供应商，再拉取模型或保存。", "Select a provider card before fetching models or saving."); return; }
+        if (!save) {   // 拉取模型走共享请求通道（自动/手动同款）
+          var modelStatus = panel.querySelector(".zu-ep-model-status") || epStatus;
+          modelStatus.textContent = L("正在获取模型…", "Fetching models…");
+          var okReq = epRequestModels(f, key, function (result) {
+            modelStatus.textContent = result && result.ok ? (result.models.length ? L("模型列表已获取；可输入或选择模型。", "Model list fetched; enter or select a model.") : L("模型列表为空，请手动输入模型 ID。", "No models returned; enter a model ID.")) : epModelsErrorText(result);
+          });
+          if (!okReq) modelStatus.textContent = L("增强配置暂不可用，请稍后重试。", "Enhancement settings are temporarily unavailable; retry.");
+          return;
+        }
+        var proceed = function () {
+        var opts = { revision: revision }, action = "enhance-provider-save";
+        opts.changes = remove ? { keyAction: "clear" } : f.mode === "default" ? { mode: "default", allowDowngrade: !!f.allowDowngrade, saveHistory: !!f.saveHistory, keyAction: "keep" } : { mode: f.mode, source: f.source, providerId: f.providerId, baseUrl: f.baseUrl, protocol: f.protocol, model: f.model, allowDowngrade: !!f.allowDowngrade, saveHistory: !!f.saveHistory, keyAction: key ? "replace" : "keep" };
+        if (!remove && key && f.source === "manual" && f.mode === "custom") opts.changes.apiKey = key;
+        epAction.disabled = true; epAction.setAttribute && epAction.setAttribute("aria-busy", "true");
+        epSaving = true;
+        epStatus.textContent = L("正在保存配置…", "Saving settings…");
+        var settled = false;
+        var timer = setTimeout(function () { if (settled) return; epStatus.textContent = L("保存结果待确认，请勿重复提交。", "Save outcome pending; do not resubmit yet."); }, 15000);
+        pluginRequest(action, opts, function (result) {
+          if (settled) return; settled = true; clearTimeout(timer); epAction.disabled = false;
+          epSaving = false;
+          if (inactive()) return;
+          epStatus = panel.querySelector(".zu-ep-status"); keyField = panel.querySelector(".zu-ep-key");
+          if (result && result.ok && result.provider) {
+            var latest = state.pluginUpdate && state.pluginUpdate.enhanceProvider;
+            epSavedRevision = result.provider.revision;
+            if (!latest || latest.revision <= result.provider.revision) {
+              if (state.pluginUpdate) state.pluginUpdate.enhanceProvider = result.provider;
+              latest = result.provider;
+            }
+            if (!remove && epEditVersion === version && keyField.value === key) { keyField.value = ""; epCleanVersion = version; }
+            epSavedFormJson = JSON.stringify(epForm());   // v350.1 保存成功即以当前表单为新已保存基准：否则重开面板经 epSyncDirtyStatus 用旧基准比对，误报「配置未保存」
+            epStatus.textContent = remove ? L("已移除保存的 Key；其他未保存修改仍保留。", "Saved key removed; other unsaved edits are retained.") : epEditVersion === version ? L("配置已保存", "Settings saved") : L("已保存先前的配置；当前修改未保存。", "Previous settings saved; current edits remain unsaved.");
+            epRender(); epReconcile(latest); return;
+          }
+          epReconcile(state.pluginUpdate && state.pluginUpdate.enhanceProvider);
+          var error = result && result.error || "";
+          epStatus.textContent = error === "restart required" ? L("请完全重启 ZCode 后重试。", "Fully restart ZCode and retry.") : error === "settings changed" ? L("配置版本已变化，请重新载入后重试。", "Settings changed; reload and retry.") : error === "provider unavailable" ? L("供应商不可用，请重新选择并检查其配置。", "Provider unavailable; reselect it and check its settings.") : error === "cancelled" ? L("操作已取消，输入已保留。", "Cancelled; your edits were retained.") : L("保存失败，请检查配置后重试；输入已保留。", "Save failed; check settings and retry. Your edits were retained.");
+        });
+        };
+        if (remove) {
+          zuConfirm(L("移除 API Key", "Remove API key"), L("确定移除已保存的 API Key？", "Remove the saved API key?"), L("移除", "Remove"), proceed);
+          return;
+        }
+        proceed();
+        return;
+      }
       if (typeof zuRotatorPanelClick === "function" && zuRotatorPanelClick(e, panel)) return;
       var navItem = e.target.closest && e.target.closest(".zu-navitem");
       if (navItem && navItem.getAttribute("data-sec") === "update") ackUpdateDots();   // v172：含已停留时再点
@@ -1612,9 +1954,65 @@
     panel.addEventListener("input", function (e) {
       var field = e.target;
       if (field.classList && field.classList.contains("zu-src-field")) field.__zuEditVersion = (field.__zuEditVersion || 0) + 1;
+      if (field.classList && field.classList.contains("zu-ep-test-draft")) {
+        epTest.draft = field.value;
+        if (epTest.id) epTestStop(L("草稿已变化，请重新测试。", "Draft changed; test again."));
+        else if (epTest.result && epTest.draft !== epTest.testedDraft) { epTest.status = L("上次测试结果", "Previous test result"); epTestRender(); }
+        return;
+      }
+      if (field.closest && field.closest(".zu-ep")) {
+        if (!field.classList.contains("zu-ep-search")) {
+          if (epTest.id) epTestStop(L("配置已变化，请重新测试。", "Settings changed; test again."));
+          else if (epTest.result) { epTest.status = L("上次测试结果（配置已变化）", "Previous test result (settings changed)"); epTestRender(); }
+        }
+        if (field.classList.contains("zu-ep-search")) {
+          var q = field.value.toLowerCase(); panel.querySelectorAll(".zu-ep-host-card").forEach(function (card) { card.hidden = card.textContent.toLowerCase().indexOf(q) < 0; });
+        } else { epEditVersion++; epSyncDirtyStatus(); epRender(); }
+      }
     });
     panel.addEventListener("change", function (e) {
       var t2 = e.target;
+      if (t2.classList && t2.classList.contains("zu-ep-test-draft")) return;
+      if (t2.closest && t2.closest(".zu-ep")) {
+        if (t2.classList.contains("zu-ep-source")) {
+          panel.querySelector(".zu-ep-mode").value = t2.value === "default" ? "default" : "custom";   // 合并后的来源选择驱动隐藏模式位
+          if (t2.value === "manual" && epValue(".zu-ep-preset") === "") {   // 首次切到手动来源：默认带出 Zhipu GLM 预设（地址/协议），Key 与模型仍留空
+            var zhipu = null;
+            (typeof ZU_EP_PRESETS !== "undefined" ? ZU_EP_PRESETS : []).forEach(function (g) { g.items.forEach(function (it) { if (it[0] === "zhipu-cn") zhipu = it; }); });
+            if (zhipu) { panel.querySelector(".zu-ep-preset").value = "zhipu-cn"; panel.querySelector(".zu-ep-url").value = zhipu[2]; panel.querySelector(".zu-ep-protocol").value = zhipu[3]; panel.querySelector(".zu-ep-model").value = ""; }
+          }
+        }
+        if (epTest.id) epTestStop(L("配置已变化，请重新测试。", "Settings changed; test again."));
+        else if (epTest.result) { epTest.status = L("上次测试结果（配置已变化）", "Previous test result (settings changed)"); epTestRender(); }
+        else { epTest.status = ""; epTestRender(); }   // 清掉过期提示（如错误/校验文案），不带入新模式
+        if (t2.classList.contains("zu-ep-source") || t2.classList.contains("zu-ep-protocol")) {
+          panel.querySelector(".zu-ep-model").value = "";
+          panel.querySelector(".zu-ep-model-list").textContent = "";
+        }
+        if (t2.classList.contains("zu-ep-preset")) {
+          var found = null;
+          (typeof ZU_EP_PRESETS !== "undefined" ? ZU_EP_PRESETS : []).forEach(function (g) { g.items.forEach(function (it) { if (it[0] === t2.value) found = it; }); });
+          if (found) { panel.querySelector(".zu-ep-url").value = found[2]; panel.querySelector(".zu-ep-protocol").value = found[3]; panel.querySelector(".zu-ep-model").value = ""; }
+        }
+        var hostApplied = false;
+        if (t2.classList.contains("zu-ep-host") || t2.classList.contains("zu-ep-source") && t2.value === "host") {
+          var hostField = panel.querySelector(".zu-ep-host"), selected = hostField.options[hostField.selectedIndex];
+          if (selected && selected.value) {
+            panel.querySelector(".zu-ep-url").value = selected.dataset.url || ""; panel.querySelector(".zu-ep-protocol").value = selected.dataset.protocol || ""; panel.querySelector(".zu-ep-model").value = "";
+            hostApplied = true;
+          }
+        }
+        epEditVersion++; epSyncDirtyStatus(); epRender();
+        if (hostApplied) {   // 自动拉取放在版本号递增之后，回包不被同一事件的脏标记误判过期
+          var targetForm = epForm(), autoStatus = panel.querySelector(".zu-ep-model-status");
+          epApplyModelCache(targetForm);
+          if (!epRequestModels(targetForm, "", function (result) {
+            autoStatus.textContent = result && result.ok ? (result.models.length ? L("模型列表已获取；可输入或选择模型。", "Model list fetched; enter or select a model.") : L("模型列表为空，请手动输入模型 ID。", "No models returned; enter a model ID.")) : epModelsErrorText(result);
+          })) autoStatus.textContent = "";
+        }
+        if (epValue(".zu-ep-mode") === "custom" && epValue(".zu-ep-source") === "host") epLoadHosts(false);
+        return;
+      }
       if (typeof zuRotatorPanelChange === "function" && zuRotatorPanelChange(e, panel)) return;
       if (t2.classList.contains("zu-theme-choice")) {
         if (t2.checked && (t2.value === "default" || t2.value === "pill" || t2.value === "compact")) {

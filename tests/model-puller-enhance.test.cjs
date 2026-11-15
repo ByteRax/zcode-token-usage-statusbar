@@ -81,6 +81,7 @@ function createEnhancer(file, routes, opts) {
     calls.push({ url, opts: requestOpts });
     const hit = routes.find((r) => r.url === url);
     if (!hit) throw new Error("unexpected url " + url);
+    if (hit.reader) return { ok: false, status: hit.status, body: { dead: false, getReader() { const self = this; return { read: async () => { if (self.dead) throw new Error("body cancelled"); self.reads = (self.reads || 0) + 1; return self.reads > 1 ? { done: true } : { done: false, value: Buffer.from(hit.body || "") }; } }; }, cancel() { this.dead = true; } } };
     if (hit.status) return { ok: false, status: hit.status, text: async () => hit.body || "" };
     return { ok: true, status: 200, text: async () => JSON.stringify(hit.body) };
   };
@@ -245,7 +246,7 @@ test("planKeyOf: enc: v2 config key never leaves as plaintext; falls back to oau
   assert.equal(r2.kind, "auth");
   assert.equal(seen.length, 0, "no network without a usable credential");
 });
-test("fail-closed: http errors classified without exposing response body", async () => {
+test("fail-closed: http errors classified; classified error stays clean, bounded body goes to detail", async () => {
   const file = tmpCfgPath();
   fs.writeFileSync(file, JSON.stringify(sampleCfg()));
   const { mp } = createEnhancer(file, [
@@ -256,6 +257,68 @@ test("fail-closed: http errors classified without exposing response body", async
   assert.equal(r.kind, "auth");
   assert.equal(r.status, 401);
   assert.equal(r.snippet, undefined);
+  assert.equal(r.error, "HTTP 401");   // 分类错误串保持无响应体
+  assert.equal(r.detail, "unauthorized *** echo");   // D1 修复：detail 过 maskSecrets，sk- 凭据不回显   // 设置页测试用：有界原文摘录（≤500）
+});
+
+test("token usage captured from all three protocols without fabricating values", async () => {
+  const file = tmpCfgPath();
+  fs.writeFileSync(file, JSON.stringify(sampleCfg()));
+  const routes = [
+    { url: "https://relay.example.com/chat/completions", body: { choices: [{ finish_reason: "stop", message: { content: "a" } }], usage: { prompt_tokens: 10, completion_tokens: 5 } } },
+    { url: "https://relay.example.com/responses", body: { status: "completed", output_text: "b", usage: { input_tokens: 7, output_tokens: 3 } } },
+  ];
+  const impl = async (url) => {
+    const hit = routes.find(r => url.indexOf(new URL(r.url).pathname) >= 0 || url === r.url);
+    if (hit) return { ok: true, status: 200, text: async () => JSON.stringify(hit.body) };
+    throw new Error("unexpected " + url);
+  };
+  let streamBody = null;
+  const mp = M.createModelPuller({ customCfgPath: file, fetchImpl: async (url) => {
+    if (url.indexOf("/chat/completions") >= 0) return { ok: true, status: 200, text: async () => JSON.stringify(routes[0].body) };
+    if (url.indexOf("/responses") >= 0) return { ok: true, status: 200, text: async () => JSON.stringify(routes[1].body) };
+    if (url.indexOf("/ant/") >= 0) {
+      const enc = new TextEncoder();
+      const frames = [
+        "event: message_start\ndata: " + JSON.stringify({ type: "message_start", message: { model: "served", usage: { input_tokens: 12 } } }) + "\n\n",
+        "event: content_block_start\ndata: " + JSON.stringify({ type: "content_block_start", index: 0 }) + "\n\n",
+        "event: content_block_delta\ndata: " + JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "c" } }) + "\n\n",
+        "event: content_block_stop\ndata: " + JSON.stringify({ type: "content_block_stop", index: 0 }) + "\n\n",
+        "event: message_delta\ndata: " + JSON.stringify({ type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 4 } }) + "\n\n",
+        "event: message_stop\ndata: " + JSON.stringify({ type: "message_stop" }) + "\n\n",
+      ].join("");
+      let cursor = 0;
+      const reader = { read: async () => cursor < frames.length ? { done: false, value: enc.encode(frames[cursor++]) } : { done: true } };
+      reader.cancel = function () {};
+      reader.releaseLock = function () {};
+      return { ok: true, status: 200, body: { getReader() { return reader; } } };
+    }
+    throw new Error("unexpected " + url);
+  } });
+  const cfgPatch = JSON.stringify({ config: { providerConfigRules: { providerRules: [
+    { providerId: "r-chat", enabled: true, providerName: "Chat", config: { access: { type: "api-key", apiKey: "k" }, api: { baseUrl: "https://relay.example.com", type: "openai-chat-completions" } } },
+    { providerId: "r-resp", enabled: true, providerName: "Resp", config: { access: { type: "api-key", apiKey: "k" }, api: { baseUrl: "https://relay.example.com", type: "openai-responses" } } },
+    { providerId: "r-ant", enabled: true, providerName: "Ant", config: { access: { type: "api-key", apiKey: "k" }, api: { baseUrl: "https://relay.example.com/ant", type: "anthropic-messages" } } },
+  ] } } });
+  fs.writeFileSync(file, cfgPatch);
+  const chat = await mp.enhanceText("r-chat", "m", "草稿");
+  assert.deepEqual(chat.usage, { inputTokens: 10, outputTokens: 5, totalTokens: 15 });
+  const resp = await mp.enhanceText("r-resp", "m", "草稿");
+  assert.deepEqual(resp.usage, { inputTokens: 7, outputTokens: 3, totalTokens: 10 });
+  const ant = await mp.enhanceText("r-ant", "m", "草稿");
+  assert.deepEqual(ant.usage, { inputTokens: 12, outputTokens: 4, totalTokens: 16 });
+});
+
+test("http error body is read before the stream is cancelled (real undici order)", async () => {
+  const file = tmpCfgPath();
+  fs.writeFileSync(file, JSON.stringify(sampleCfg()));
+  const { mp } = createEnhancer(file, [
+    { url: "https://relay.example.com/chat/completions", status: 503, reader: true, body: '{"error":{"message":"upstream unavailable"}}' },
+  ]);
+  const r = await mp.enhanceText("custom-relay", "gpt-4o", "写个脚本");
+  assert.equal(r.ok, false);
+  assert.equal(r.error, "HTTP 503");
+  assert.equal(r.detail, '{"error":{"message":"upstream unavailable"}}');
 });
 
 test("fail-closed: missing key, unknown protocol, provider not found, empty draft", async () => {
@@ -594,4 +657,15 @@ test("planListable gating: host disable hides, shared v2 entry dedupes, credKey 
   mp = mk(null);
   rows = (await mp.listProviders()).providers;
   assert.deepEqual(rows.map((r) => r.id), ["account:bigmodel-individual-coding-plan", "account:zai-individual-coding-plan"]);
+  // 4) 增强宿主列表同样包含凭据可用的套餐源；Start Plan 与个人档分列（计费池不同），team 去重
+  const hosts = mp.listEnhanceHosts();
+  const planHosts = hosts.filter((h) => h.id.startsWith('account:'));
+  assert.deepEqual(planHosts.map((h) => h.id), [
+    "account:bigmodel-individual-coding-plan", "account:zai-individual-coding-plan",
+    "account:zai-start-plan", "account:bigmodel-start-plan",
+  ]);
+  for (const h of planHosts) { assert.equal(h.protocol, "anthropic-messages"); assert.ok(h.baseUrl.startsWith("https://")); }
+  const resolved = mp.resolveEnhanceHost("account:bigmodel-start-plan");
+  assert.equal(resolved.plan, true); assert.ok(resolved.apiKey);   // planKeyOf 主进程内解析，不回渲染端
+  assert.equal(mp.resolveEnhanceHost("account:bigmodel-team-coding-plan"), null);   // team 与个人同凭据同端点，不重复列出
 });

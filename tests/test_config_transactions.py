@@ -14,6 +14,85 @@ sys.path.insert(0, str(ROOT))
 import runtime_lock
 
 
+class EnhanceProviderTransactionTests(unittest.TestCase):
+    def test_save_revision_key_actions_and_conflict(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = Path(directory)
+            first = runtime_lock.update_enhance_provider(runtime, 0, {
+                "mode": "custom", "source": "manual", "baseUrl": "https://example.test/v1",
+                "protocol": "openai-chat-completions", "model": "model-a",
+                "keyAction": "replace", "apiKey": "secret-fixture"})
+            self.assertEqual(first["revision"], 1)
+            second = runtime_lock.update_enhance_provider(runtime, 1, {"model": "model-b", "keyAction": "keep"})
+            self.assertEqual(second["apiKey"], "secret-fixture")
+            with self.assertRaises(ValueError):
+                runtime_lock.update_enhance_provider(runtime, 1, {"model": "stale", "keyAction": "keep"})
+            self.assertEqual(json.loads((runtime / "enhance-provider.json").read_text())["model"], "model-b")
+            third = runtime_lock.update_enhance_provider(runtime, 2, {"keyAction": "clear"})
+            self.assertNotIn("apiKey", third)
+            if os.name != "nt":
+                self.assertEqual(stat.S_IMODE((runtime / "enhance-provider.json").stat().st_mode), 0o600)
+
+    def test_changing_protocol_does_not_reuse_saved_key(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = Path(directory)
+            runtime_lock.update_enhance_provider(runtime, 0, {
+                "mode": "custom", "source": "manual", "baseUrl": "https://example.test/v1",
+                "protocol": "openai-chat-completions", "keyAction": "replace", "apiKey": "secret-fixture"})
+            updated = runtime_lock.update_enhance_provider(runtime, 1, {
+                "protocol": "openai-responses", "keyAction": "keep"})
+            self.assertNotIn("apiKey", updated)
+
+    def test_save_history_boolean_persisted_and_type_checked(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = Path(directory)
+            updated = runtime_lock.update_enhance_provider(runtime, 0, {"saveHistory": True})
+            self.assertIs(updated["saveHistory"], True)
+            with self.assertRaises(ValueError):
+                runtime_lock.update_enhance_provider(runtime, 1, {"saveHistory": "on"})
+
+    def test_allow_downgrade_boolean_persisted_and_type_checked(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = Path(directory)
+            updated = runtime_lock.update_enhance_provider(runtime, 0, {"allowDowngrade": False})
+            self.assertIs(updated["allowDowngrade"], False)
+            with self.assertRaises(ValueError):
+                runtime_lock.update_enhance_provider(runtime, 1, {"allowDowngrade": "yes"})
+
+    def test_corrupt_or_symlink_configuration_is_preserved(self):
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = Path(directory)
+            config = runtime / "enhance-provider.json"
+            config.write_text("{broken", encoding="utf-8")
+            with self.assertRaises(ValueError):
+                runtime_lock.update_enhance_provider(runtime, 0, {"keyAction": "keep"})
+            self.assertEqual(config.read_text(), "{broken")
+            if hasattr(os, "symlink") and os.name != "nt":
+                config.unlink()
+                target = runtime / "target"
+                target.write_text("untouched")
+                config.symlink_to(target)
+                with self.assertRaises((OSError, ValueError)):
+                    runtime_lock.update_enhance_provider(runtime, 0, {"keyAction": "keep"})
+                self.assertEqual(target.read_text(), "untouched")
+
+    def test_cli_conflict_exits_nonzero(self):
+        # 回归：main() 的 return 1 曾未传播为退出码，主进程把事务失败当成功（假 ok:true）
+        with tempfile.TemporaryDirectory() as directory:
+            runtime = Path(directory)
+            config = runtime / "enhance-provider.json"
+            config.write_text(json.dumps({"version": 1, "revision": 0, "mode": "default"}), encoding="utf-8")
+            if os.name != "nt":
+                config.chmod(0o600)
+            done = subprocess.run(
+                [sys.executable, str(ROOT / "runtime_lock.py"), "--update-enhance-provider", str(runtime)],
+                input=json.dumps({"revision": 999999, "changes": {"keyAction": "keep"}}),
+                capture_output=True, text=True, timeout=15)
+            self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+            self.assertFalse(json.loads(done.stdout)["ok"])
+            self.assertEqual(json.loads(config.read_text())["revision"], 0)
+
+
 class ConfigTransactionTests(unittest.TestCase):
     @unittest.skipIf(os.name == "nt", "POSIX permissions")
     def test_existing_config_mode_and_owner_survive_atomic_merge(self):

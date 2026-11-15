@@ -18,6 +18,9 @@ diag-*.json
 !.zcode/skills/source-feature-adaptation/
 !.zcode/rules/
 config.json
+enhance-provider.json
+enhance-provider.lock
+.enhance-provider-*.tmp
 .update-baseline.json
 
 .idea/

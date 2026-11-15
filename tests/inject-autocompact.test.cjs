@@ -63,7 +63,7 @@ test("pushPluginState carries enginePatch status for the settings panel", () => 
     wc,
     isMainWindowState: () => true, isLocalHostPage: () => true,
     readCfgCached: () => ({ answer_rate_line: false, restart_notice: true }),
-    quotaEnabled: () => false, resetBadgeEnabled: () => true, enhanceEnabled: () => true, quotaClient: null,
+    quotaEnabled: () => false, resetBadgeEnabled: () => true, enhanceEnabled: () => true, enhanceProviderView: () => ({ available: false, version: 1, revision: 0, mode: 'default', keyConfigured: false }), quotaClient: null,
     enginePatcher: { status: () => ({ enabled: true, state: "applied", build: "3.17.1" }) },
     JSON, webContentsDummy: 0,
   });
@@ -82,7 +82,7 @@ test("pushPluginState survives a missing engine patcher (null field)", () => {
     wc,
     isMainWindowState: () => true, isLocalHostPage: () => true,
     readCfgCached: () => ({}),
-    quotaEnabled: () => false, resetBadgeEnabled: () => false, enhanceEnabled: () => true, quotaClient: null,
+    quotaEnabled: () => false, resetBadgeEnabled: () => false, enhanceEnabled: () => true, enhanceProviderView: () => ({ available: false, version: 1, revision: 0, mode: 'default', keyConfigured: false }), quotaClient: null,
     enginePatcher: null,
     JSON,
   });

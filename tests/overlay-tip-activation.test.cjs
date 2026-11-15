@@ -157,10 +157,10 @@ test('v249 click mode: first click opens (focusin race), re-click closes; dwell 
   const focusSrc = extract('    main.addEventListener("focusin", function (e) {', '    main.addEventListener("focusout"');
   function session(tipClick) {
     let clickHandler = null, focusHandler = null, shown = 0, hidden = 0;
-    const it = { __tip: 'tip', closest(sel) { return sel === '.it' ? it : null; } };
+    const it = { __tip: 'tip', getBoundingClientRect: () => ({ left: 0, right: 50 }), closest(sel) { return sel === '.it' ? it : null; } };
     const st = {
       bar: { addEventListener: (t, fn) => { if (t === 'click') clickHandler = fn; } },
-      main: { addEventListener: (t, fn) => { if (t === 'focusin') focusHandler = fn; }, contains: () => true },
+      main: { addEventListener: (t, fn) => { if (t === 'focusin') focusHandler = fn; }, contains: () => true, getBoundingClientRect: () => ({ left: 0, right: 100 }) },
       state: { tipClick, theme: 'default' },
       inactive: () => false, restoringFocus: false,
       subPopMode: 'closed', subPopClose: () => {}, subPopShow: () => {},
@@ -195,9 +195,9 @@ test('v249 keyboard: focusin opens immediately in BOTH modes (accessibility unch
   const focusSrc = extract('    main.addEventListener("focusin", function (e) {', '    main.addEventListener("focusout"');
   for (const tipClick of [0, 1]) {
     let focusHandler = null, shown = 0;
-    const it = { __tip: 'tip', closest(sel) { return sel === '.it' ? it : null; } };
+    const it = { __tip: 'tip', getBoundingClientRect: () => ({ left: 0, right: 50 }), closest(sel) { return sel === '.it' ? it : null; } };
     const st = {
-      main: { addEventListener: (t, fn) => { if (t === 'focusin') focusHandler = fn; }, contains: () => true },
+      main: { addEventListener: (t, fn) => { if (t === 'focusin') focusHandler = fn; }, contains: () => true, getBoundingClientRect: () => ({ left: 0, right: 100 }) },
       state: { tipClick, theme: 'default' },
       inactive: () => false, restoringFocus: false,
       cancelTipGrace: () => {}, mouseInBar: false, tipFor: null, focusTipAt: 0, api: null,
