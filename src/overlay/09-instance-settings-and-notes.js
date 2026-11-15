@@ -1398,7 +1398,88 @@
     }
     var relaunchAckTimer = 0;   /* v177：relaunch 回执超时（v244 起主进程回执随投递即返，含 1s 轮询约 1s 量级；超时≈旧主进程） */
     var relaunchAliveTimer = 0; /* v244：ok 回执后 90s 仍存活兜底——防状态机永久卡死；窗口可能已被 v245 hide，主进程 15s unhide 哨兵负责恢复可见 */
+
+    /* 自定义排序：HTML Drag and Drop + 明确的键盘上下移动按钮，均沿用展示配置存储。 */
+    var zuDragKey = "";
+    function refreshLayoutEditor(focusKey, focusSelector) {
+      var oldHead = panel.querySelector(".zu-layout-head");
+      var oldNote = panel.querySelector(".zu-layout-note");
+      var oldList = panel.querySelector(".zu-layout-list");
+      if (!oldHead || !oldNote || !oldList) return;
+      var container = document.createElement("div");
+      container.innerHTML = barOrderSettingsHtml();
+      var updated = Array.prototype.slice.call(container.children);
+      oldHead.replaceWith(updated[0]); oldNote.replaceWith(updated[1]); oldList.replaceWith(updated[2]);
+      if (focusKey && focusSelector) {
+        var row = panel.querySelector('.zu-layout-row[data-zu-layout-key="' + focusKey + '"]');
+        var focus = row && row.querySelector(focusSelector);
+        if (focus && focus.focus) focus.focus();
+      }
+    }
+    function applyLayoutOrder(next, focusKey, focusSelector) {
+      state.barOrder = zuBarOrderNormalize(next);
+      persist();
+      refreshLayoutEditor(focusKey, focusSelector);
+      renderAll(false);
+    }
+    panel.addEventListener("dragstart", function (e) {
+      var row = e.target && e.target.closest && e.target.closest(".zu-layout-row");
+      if (!row || (e.target.closest && e.target.closest("input,select,button"))) { e.preventDefault(); return; }
+      zuDragKey = row.dataset.zuLayoutKey;
+      if (!zuDragKey || state.barOrder.indexOf(zuDragKey) < 0) { e.preventDefault(); return; }
+      if (e.dataTransfer) {
+        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData("text/plain", zuDragKey);
+      }
+    });
+    panel.addEventListener("dragover", function (e) {
+      var row = e.target && e.target.closest && e.target.closest(".zu-layout-row");
+      if (!zuDragKey || !row) return;
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+      panel.querySelectorAll(".zu-drag-over").forEach(function (el) { el.classList.remove("zu-drag-over"); });
+      row.classList.add("zu-drag-over");
+    });
+    panel.addEventListener("dragleave", function (e) {
+      var row = e.target && e.target.closest && e.target.closest(".zu-layout-row");
+      if (row && (!e.relatedTarget || !row.contains(e.relatedTarget))) row.classList.remove("zu-drag-over");
+    });
+    panel.addEventListener("drop", function (e) {
+      var row = e.target && e.target.closest && e.target.closest(".zu-layout-row");
+      if (!row || !zuDragKey) return;
+      e.preventDefault();
+      var target = row.dataset.zuLayoutKey, from = state.barOrder.indexOf(zuDragKey), to = state.barOrder.indexOf(target);
+      var moving = zuDragKey;
+      zuDragKey = "";
+      if (from < 0 || to < 0 || from === to) return;
+      var order = state.barOrder.slice();
+      order.splice(from, 1);
+      order.splice(to, 0, moving);
+      applyLayoutOrder(order, moving, '.zu-layout-action[data-zu-shift="-1"]');
+    });
+    panel.addEventListener("dragend", function () {
+      zuDragKey = "";
+      panel.querySelectorAll(".zu-drag-over").forEach(function (el) { el.classList.remove("zu-drag-over"); });
+    });
     panel.addEventListener("click", function (e) {
+
+      var reset = e.target.closest && e.target.closest(".zu-layout-reset");
+      if (reset) {
+        state.barPriority = zuBarPriorityNormalize(null);
+        applyLayoutOrder(ZU_BAR_KEYS.slice(), null, null);
+        return;
+      }
+      var shift = e.target.closest && e.target.closest("[data-zu-shift]");
+      if (shift) {
+        var row = shift.closest(".zu-layout-row"), key = row && row.dataset.zuLayoutKey;
+        var from = state.barOrder.indexOf(key), to = from + Number(shift.dataset.zuShift);
+        if (from >= 0 && to >= 0 && to < state.barOrder.length) {
+          var next = state.barOrder.slice();
+          next.splice(from, 1); next.splice(to, 0, key);
+          applyLayoutOrder(next, key, '[data-zu-shift="' + shift.dataset.zuShift + '"]');
+        }
+        return;
+      }
       if (typeof zuRotatorPanelClick === "function" && zuRotatorPanelClick(e, panel)) return;
       var navItem = e.target.closest && e.target.closest(".zu-navitem");
       if (navItem && navItem.getAttribute("data-sec") === "update") ackUpdateDots();   // v172：含已停留时再点
@@ -1615,6 +1696,16 @@
     });
     panel.addEventListener("change", function (e) {
       var t2 = e.target;
+
+      if (t2.classList && t2.classList.contains("zu-layout-priority")) {
+        var key = t2.dataset.zuPriority;
+        if (ZU_BAR_KEYS.indexOf(key) >= 0) {
+          state.barPriority[key] = ["high", "normal", "low"].indexOf(t2.value) >= 0 ? t2.value : ZU_BAR_PRIORITY_DEFAULT[key];
+          persist();
+          renderAll(false);
+        }
+        return;
+      }
       if (typeof zuRotatorPanelChange === "function" && zuRotatorPanelChange(e, panel)) return;
       if (t2.classList.contains("zu-theme-choice")) {
         if (t2.checked && (t2.value === "default" || t2.value === "pill" || t2.value === "compact")) {
