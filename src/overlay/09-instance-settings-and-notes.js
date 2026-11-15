@@ -1366,7 +1366,7 @@
         r.checked = state.barJust === r.value;
       });
       panel.querySelectorAll("input[type=checkbox][data-k]").forEach(function (cb) {
-        cb.checked = !!state.show[cb.dataset.k];
+        cb.checked = cb.dataset.k === "speed" ? true : !!state.show[cb.dataset.k];
       });
       panel.querySelector(".zu-ctxov").value = state.ctxOv;
       var rstCdhIn = panel.querySelector(".zu-rst-cdh");
