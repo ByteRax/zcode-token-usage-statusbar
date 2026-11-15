@@ -271,3 +271,65 @@ test('new history records invalidate the full-panel cache', () => {
   ctx.add({ id: 'n1' });
   assert.equal(ctx.ehFullCache, null);
 });
+
+/* ---------- v355 视口钳位：placeEnhanceTip 三档放置 ---------- */
+test('v355 placeEnhanceTip: fits above keeps bottom anchor; tall panel flips below; neither side caps height; unlock unlocks measurement', () => {
+  /* offsetHeight 桩尊重 style.maxHeight（真实 DOM 里钳高会压低测量值），用于见证测量解锁行 */
+  function makeTip(naturalH, presetMaxH) {
+    const cls = new Set();
+    const tip = { style: presetMaxH ? { maxHeight: presetMaxH } : {}, isConnected: true,
+      classList: { add: c => cls.add(c), remove: c => cls.delete(c), contains: c => cls.has(c) }, _cls: cls };
+    Object.defineProperty(tip, 'offsetHeight', { get() {
+      const m = parseInt(this.style.maxHeight, 10);
+      return Number.isFinite(m) ? Math.min(naturalH, m) : naturalH;
+    } });
+    return tip;
+  }
+  const rect = (top, bottom) => ({ top, bottom, left: 100, right: 140, width: 40, height: bottom - top });
+  const h = harness([]);
+  h.ctx.window.innerHeight = 800;
+  // 上方够（自然高 300 ≤ above 380）：bottom 锚定原行为，恢复 boot 契约 650px 帽、无翻转
+  {
+    const tip = makeTip(300);
+    h.ctx.enhanceTip = tip; h.enhanceTip = tip;
+    h.ctx.enhanceTipFor = { isConnected: true, getBoundingClientRect: () => rect(400, 440) };
+    h.ctx.placeEnhanceTip();
+    assert.equal(h.enhanceTip.style.top, 'auto');
+    assert.equal(h.enhanceTip.style.bottom, '412px');
+    assert.equal(h.enhanceTip.style.maxHeight, 'min(650px,72vh)');
+    assert.ok(!h.enhanceTip.classList.contains('zu-eh-flip'), 'no flip class above');
+  }
+  // 上方不够、下方够（above 280 < 541，below 440 ≥ 320）：翻到按钮下方 + flip 箭头
+  {
+    const tip = makeTip(541);
+    h.ctx.enhanceTip = tip; h.enhanceTip = tip;
+    h.ctx.enhanceTipFor = { isConnected: true, getBoundingClientRect: () => rect(300, 340) };
+    h.ctx.placeEnhanceTip();
+    assert.equal(h.enhanceTip.style.top, '352px');
+    assert.equal(h.enhanceTip.style.bottom, 'auto');
+    assert.equal(h.enhanceTip.style.maxHeight, '440px');   // 翻转分支钳下方可用高（vh 800 - bottom 340 - 20）
+    assert.ok(h.enhanceTip.classList.contains('zu-eh-flip'), 'flip class below');
+  }
+  // 两侧都不够（above 60 < 541，below 280 < 320）：上方贴边 + maxHeight 钳为可用高
+  {
+    const tip = makeTip(541);
+    h.ctx.enhanceTip = tip; h.enhanceTip = tip;
+    h.ctx.enhanceTipFor = { isConnected: true, getBoundingClientRect: () => rect(80, 500) };
+    h.ctx.placeEnhanceTip();
+    assert.equal(h.enhanceTip.style.top, 'auto');
+    assert.equal(h.enhanceTip.style.bottom, '732px');
+    assert.equal(h.enhanceTip.style.maxHeight, '60px');
+    assert.ok(!h.enhanceTip.classList.contains('zu-eh-flip'), 'no flip when capping');
+  }
+  // 第 4 档（测量解锁见证）：上一拍遗留钳高 60px，自然高 541——解锁后须量到 541 走翻转，
+  // 未解锁实现会量到 60 误判「上方够」走 bottom 锚定（top=auto），复发顶缘裁剪
+  {
+    const tip = makeTip(541, '60px');
+    h.ctx.enhanceTip = tip; h.enhanceTip = tip;
+    h.ctx.enhanceTipFor = { isConnected: true, getBoundingClientRect: () => rect(300, 340) };
+    h.ctx.placeEnhanceTip();
+    assert.equal(h.enhanceTip.style.top, '352px', 'measurement must see natural height, not the stale clamp');
+    assert.equal(h.enhanceTip.style.maxHeight, '440px');
+    assert.ok(h.enhanceTip.classList.contains('zu-eh-flip'));
+  }
+});

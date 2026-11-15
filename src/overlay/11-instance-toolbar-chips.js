@@ -592,12 +592,12 @@
      * 点击读当前 composer 草稿（__zcodeLexicalInputE2E——Lexical 直写 DOM 不进 EditorState，
      * 该 E2E 桥是唯一官方写通道），经 pluginRequest("prompt-enhance") 由主进程按会话模型
      * 凭据一次性改写后回填；回填前重读草稿比对，用户已编辑则不覆盖。相位 idle→enhancing
-     * →undo(20s 可撤销)；警示态 4s 自愈。开关 enhance_enabled（推送面 enhanceEnabled）关
+     * 警示态 4s 自愈（v350.1 撤销相位已删除）。开关 enhance_enabled（推送面 enhanceEnabled）关
      * 闭或实例停用一律 restore；双 reapply（render 数据点 + heavy 对账点）兜回位置与相位，
      * __zuPhase 签名幂等，busy 旋转走 aria-busy CSS 不打断。 */
     var enhanceBtnCache = null;
-    var enhancePhase = "idle";   // idle | enhancing | undo
-    var enhanceTimer = 0;        // undo 窗口定时器
+    var enhancePhase = "idle";   // idle | enhancing
+    var enhanceTimer = 0;        // 写入确认延时器（v350.1 起非撤销窗）
     var enhanceWaitTimer = 0;    // 渲染端等待兜底（主进程 60s 超时 + 轮询量级余量）
     var enhanceWarnText = "";    // 非空 = 警示态（4s 自愈）
     var enhanceWarnTimer = 0;
@@ -612,7 +612,7 @@
       try { return api && typeof api.getEditorState === "function" ? JSON.stringify(api.getEditorState()) : ""; } catch (e) { return ""; }
     }
     function enhanceCurrentScope() {
-      var sid = enhanceCurSid(), scope = readPaneScope(wantedEl, sid, pid);
+      var sid = enhanceCurSid(), scope = readPaneScope(wantedEl, sid, pid, true);   // v354：增强链显式放行 draft（新会话未发首条消息）；其余消费面不传该参维持拒绝
       return scope ? JSON.stringify([scope.sid, scope.identity, scope.workspacePath, scope.remoteSessionId]) : "";
     }
     var ENHANCE_ANCHOR_SEL = '[data-testid="chat-model-select-trigger"]';
