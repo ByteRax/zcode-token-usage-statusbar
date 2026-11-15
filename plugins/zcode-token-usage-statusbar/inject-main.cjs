@@ -170,6 +170,7 @@ const scopeBindings = new Map();
 const windowQuotaSelections = new Map();   // webContents.id → {paneId: {sid, providerId, modelId}}
 const sysmonSubs = new Map();   // v356 系统状态订阅：webContents.id → true（want）；声明前置——maybeSpawn 启动首拉（:866 附近）早于模块尾部声明会踩 TDZ
 let sysmonClient = null;        // v356 系统状态采样器实例（onFrame 闭包读它做存活判断）
+let sysmonSubMeta = null;       // v358 最近一次 want 请求的 {cfg, hasProjectPath, projectPath}：采样器缺席（热模块未部署）时也保留，实例建好/热换重建时回放，格自愈不丢配置与项目卷标注。单例「最后写者胜」——与 v356 既有 applyConfig 每次覆盖实例配置的语义一致，跨热换延续同一限制
 /* 本窗是否出现过任何远端工作区/任务证据：issue #40 的无桥本地兜底只在确认
  * “本窗只能查本地”时启用，有远端证据时 overlay 仍 fail-closed。 */
 const remoteEvidence = new Map();
@@ -843,7 +844,7 @@ setInterval(() => {
   if (!residentAllowed()) stopResident();
     if (cfg.hot_reload === false) return;
     hotReloadIfChanged();
-    hotReloadMainModules();   // v258：六个主进程 .cjs 子模块同拍热换（mtime 轮询，与 renderer 资产同节奏）
+    hotReloadMainModules();   // v258：主进程 .cjs 子模块同拍热换（v358 时七个：六基础模块 + sysmon-client.cjs；mtime 轮询，与 renderer 资产同节奏）
   try {
     const m = fs.statSync(ZUSAGE).mtimeMs;
     if (overlayMtimeKnown && m !== zusageMtime && pyRes) {
@@ -1214,6 +1215,9 @@ function createSysmonClientInstance() {
         }
       },
     });
+    if (sysmonSubMeta) {   // v358 热换重建/缺席后补建：回放最近一次 want 请求的 cfg 与项目卷（未订阅态只写字段，不触发采样）
+      try { sysmonClient.applyConfig(sysmonSubMeta.cfg, sysmonSubMeta.hasProjectPath ? sysmonSubMeta.projectPath : undefined); } catch (e) { LOG("sysmon meta replay failed:", (e && e.message) || e); }
+    }
     return sysmonClient;
   } catch (e) {
     sysmonClient = null;   // 热换路径旧实例已 dispose：不留僵尸引用（冷启动本就是 null）
@@ -1229,9 +1233,22 @@ function handleSysmonRequest(req, wc) {
     return;
   }
   if (want) {
+    /* v358 先留档再建实例：sysmon-client.cjs 是热模块，运行目录尚未部署（或热换前）时
+     * require 失败——此时仍把 want 记进 sysmonSubs 并返回 ok:false。否则热换路径
+     * 「按现存订阅重放」永远等不到订阅者，渲染端签名守卫又不重发，格停在 loading
+     * 直到用户开关一次或重开窗口（Windows 实测：部署采样器后格不自愈的根因）。 */
+    sysmonSubMeta = {
+      cfg: req.cfg && typeof req.cfg === "object" && !Array.isArray(req.cfg) ? req.cfg : null,
+      hasProjectPath: typeof req.projectPath === "string",
+      projectPath: typeof req.projectPath === "string" ? req.projectPath : "",
+    };
     const client = sysmonClient || createSysmonClientInstance();
-    if (!client) { deliverPluginRequest(wc, req.requestId, { ok: false, error: "sysmon unavailable; fully restart ZCode to load it" }); return; }
-    client.applyConfig(req.cfg, typeof req.projectPath === "string" ? req.projectPath : undefined);
+    if (!client) {
+      sysmonSubs.set(wc.id, true);   // 记账先于可用性：热模块补上后 sysmonWantAny() 即为真，自动采样补帧
+      deliverPluginRequest(wc, req.requestId, { ok: false, error: "sysmon unavailable; fully restart ZCode to load it" });
+      return;
+    }
+    client.applyConfig(sysmonSubMeta.cfg, sysmonSubMeta.hasProjectPath ? sysmonSubMeta.projectPath : undefined);
   }
   sysmonSubs.set(wc.id, want);
   sysmonSyncSubscribed();
@@ -1257,8 +1274,9 @@ function initReleaseNotes() {
 initReleaseNotes();
 
 /* ---------- v258 主进程子模块热替换（G3：更新除 inject-main.cjs 引导壳以外的主进程
- * 模块后零重启生效、零红点闪烁）。冷文件名单里 overlay/turn-stats/zusage 之外的六个
- * .cjs 在这里按 mtime 轮询热换：语法预检（读到半截/被 Windows 独占锁住则跳过本轮）→
+ * 模块后零重启生效、零红点闪烁）。冷文件名单里 overlay/turn-stats/zusage 之外的 .cjs
+ * 在这里按 mtime 轮询热换（六基础模块自 v258，sysmon-client.cjs 自 v356 加入）：
+ * 语法预检（读到半截/被 Windows 独占锁住则跳过本轮）→
  * dispose 旧实例 → 清 require.cache → 重建实例（依赖方向：quota-client 先落，重装
  * modelPuller 的 decryptValue 注入；release/storage 变更联动重建 updater 与 notes）→
  * 刷新 loadedHashes 与 _hotLoadedAt → acknowledgeRestart 销账 → 广播状态。

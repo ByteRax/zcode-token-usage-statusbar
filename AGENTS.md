@@ -51,7 +51,7 @@
 | `overlay.js` / `src/overlay/` / `scripts/build_overlay.py` | 桌面浮层、设置、tooltip、子代理明细、套餐额度 chip、Git 状态 chip 及速率展示；`src/overlay/00-*.js`..`12-*.js`（14 个模块，`04-` 前缀两文件：`04-rotator-builtin-packs.js` 词包纯数据 + `04-status-rotator-data.js` 其余数据）为模块化分片源码，经零依赖 `scripts/build_overlay.py` 拼接产出单文件 `overlay.js`（仓库仍提交完整 `overlay.js` 以免除用户安装期构建步骤） |
 | `turn-stats.js` | 渲染进程统计行 tracker：历史轮记录、运行中子代理身份透传 |
 | `renderer_bridge.py` | 渲染桥：按客户端版本指纹（HOST_TARGETS 登记 + derive 推导）向 SessionPane 节点写 scope 身份属性 |
-| `inject-main.cjs` | 主进程加载、窗口/工作区 IPC、查询泵、文件监听、快照推送、受限写操作与六个子模块热换循环（唯一冷文件） |
+| `inject-main.cjs` | 主进程加载、窗口/工作区 IPC、查询泵、文件监听、快照推送、受限写操作与七个子模块热换循环（唯一冷文件） |
 | `install.py` | 独立安装/卸载、运行文件、配置、独立 MCP 与 `/usage` 注册 |
 | `patch_install.py` | asar 定位、注入/移除、自检、原子替换及待替换文件 |
 | `pending_zip_patch.py` | macOS pending 更新包清理自愈（v339/issue #298）：按改写账本 sha256 对账删除旧版预注入改写的 pending zip（宿主自动重下官方包）；无记录 zip 绝不碰，update-info.json 恒不读写（宿主缓存有效性判据）。旧「Squirrel 取包前改写预注入」已废除——改写改变包大小，与 MacUpdater 本地代理按下载完成时固化的官方 Content-Length 拉流冲突，导致更新静默失败 |
@@ -59,6 +59,7 @@
 | `plugin-updater.cjs` / `plugin-release.cjs` | 宿主插件更新调度、正式 GitHub Release 与渠道校验、更新日志（Release 说明）拉取与缓存 |
 | `plugin-storage.cjs` | 按宿主存储解析用户级插件库存/缓存，不假设固定 HOME |
 | `quota-client.cjs` / `src/quota/` / `scripts/build_quota.py` | 套餐额度客户端（主进程，热换）：解密宿主 OAuth 凭据（`enc:v1`/`enc:v2` 双信封按宿主语义重写实现，v2 密钥在 OS 凭据库，见 [.zcode/rules/quota.md](.zcode/rules/quota.md)）直查 BigModel/Z.ai monitor 端点及多厂商额度/余额接口，归一化窗口/退避/冻结/epoch 竞态，凭据只在内存；`src/quota/00-*.cjs`..`05-*.cjs` 为模块化分片源码，经零依赖 `scripts/build_quota.py` 拼接产出单文件 `quota-client.cjs` |
+| `sysmon-client.cjs` | 系统资源采样器（主进程，热换，v356/issue #338）：CPU `os.cpus()` tick 差分、三平台内存口径、磁盘 `fs.statfs`+卷枚举（探测复用+超时黑名单）；订阅制双定时器轮询，帧经 `inject-main.cjs` 信任门推 `window.__zusageSysmon`；契约见 [specs/statusbar-system-status.md](specs/statusbar-system-status.md) |
 | `model-puller.cjs` / `engine-patch.cjs` | 自定义供应商模型列表与思考档位拉取写回（共源 `resolveHostQuotaPaths`）；宿主引擎 bundle 自动压缩阈值等白名单补丁（主进程，热换） |
 | `runtime_lock.py` / `release_unpack.py` | 跨进程锁、配置事务/可信同步、安全 ZIP 解包 |
 | `sync_plugin.py` / `release_tool.py` | 根源码副本同步、`overlay.js`/`quota-client.cjs` 拼接联动与 6 处分发清单一致性校验（`check_manifests` / `--verify-manifests`）；确定性发布包构建、校验、发布预演/发布 |
@@ -92,7 +93,7 @@ python3 sync_plugin.py --check
 - 上述命令只同步**仓库插件副本**，不更新宿主安装缓存或稳定运行目录。
 - 标准运行目录是 `~/.zcode/zcode-token-usage-statusbar/`；插件缓存由宿主管理且可能自定义。`--dev` 可让独立安装直接引用仓库，不能移动该仓库。
 - 本地市场仍依赖登记的来源目录，不自动 `git pull`；不要一概建议安装后删除 clone。
-- **插件到稳定运行目录的同步**有 hash 基线/mtime 热修保护；根 `install.py` 的运行文件复制是直接覆盖，不能承诺同等保护。首次注入、路径变化或 `inject-main.cjs`（唯一冷文件）变更需完全退出并重启；六个主进程子模块（quota/updater/release/storage/model-puller/engine-patch）自热换循环合入起随 mtime 轮询零重启生效（旧版 loader 上仍需重启）；可热更新文件也须确认实际加载路径。
+- **插件到稳定运行目录的同步**有 hash 基线/mtime 热修保护；根 `install.py` 的运行文件复制是直接覆盖，不能承诺同等保护。首次注入、路径变化或 `inject-main.cjs`（唯一冷文件）变更需完全退出并重启；七个主进程子模块（quota/updater/release/storage/model-puller/engine-patch/sysmon）自热换循环合入起随 mtime 轮询零重启生效（旧版 loader 上仍需重启）；可热更新文件也须确认实际加载路径。
 
 ### 每次改码后的自动热重载（必做）
 
@@ -106,7 +107,7 @@ python3 sync_plugin.py --check
 4. **按生效类型触发。**
    - `overlay.js`、`turn-stats.js`：部署到实际加载目录后，由主桥按 mtime 轮询检查（`hot_reload` 显式 `true` 时 2 秒、缺省 5 秒、显式 `false` 关闭），任一变化即整体重注入，不刷新页面或重启客户端冒充热重载。
    - `zusage.py`：同一轮询发现变化后自动重启已有常驻 Python（若单独修改被导入的 `usage_stats.py` 或 `token_pricing.py`，因主桥仅监听 `zusage.py` mtime，须连带更新运行目录 `zusage.py` mtime 或确认常驻进程已重启）；未启动常驻进程时，下一次启动读取新代码。
-   - 六个子模块 `quota-client.cjs`、`model-puller.cjs`、`plugin-updater.cjs`、`plugin-release.cjs`、`plugin-storage.cjs`、`engine-patch.cjs`：部署后由 loader `hotReloadMainModules` 在同一 mtime 轮询内热换（语法预检→dispose→清 require.cache→按依赖方向重建→`_hotLoadedAt`→ack 自动销账 marker），零重启生效；旧版 loader（未含热换循环）上仍需完全重启。`inject-main.cjs` 自身与首次注入、加载路径、asar 桥补丁变化：不能热重载，只记录并报告待完全重启，不自行退出或重启 ZCode。关闭热重载（`hot_reload:false`）时上述文件一律回退为重启生效。
+   - 七个子模块 `quota-client.cjs`、`model-puller.cjs`、`plugin-updater.cjs`、`plugin-release.cjs`、`plugin-storage.cjs`、`engine-patch.cjs`、`sysmon-client.cjs`：部署后由 loader `hotReloadMainModules` 在同一 mtime 轮询内热换（语法预检→dispose→清 require.cache→按依赖方向重建→`_hotLoadedAt`→ack 自动销账 marker），零重启生效；旧版 loader（未含热换循环）上仍需完全重启。`inject-main.cjs` 自身与首次注入、加载路径、asar 桥补丁变化：不能热重载，只记录并报告待完全重启，不自行退出或重启 ZCode。关闭热重载（`hot_reload:false`）时上述文件一律回退为重启生效。
    - 其它 Python 工具按下一次相关调用／新进程生效；MCP 已导入的模块需重启对应 MCP 进程，不能把文件同步或下一次工具调用当作重新载入。
 5. **验证确实生效。** 部署热文件前记录基线，部署后至少留出一个轮询周期，再检查运行证据：同一 renderer 未导航、未刷新时 `window.__zusageGen` 递增；Python 则核对常驻子进程更替及启动日志；主进程子模块热换的证据是 sync 链写入的 `.plugin-restart-required` 在一个热 tick 内被 `_hotLoadedAt` 路径自动销账（或该模块行为恢复），`__zusageGen` 只证明渲染端。**轮询本身可能被宿主窗口后台节流无限期延迟**（客户端被遮挡时部署可数十分钟不重注入，2026-11-07 实证）：部署后可 `touch` 运行目录热文件强制重触发，并以 `diag-0.json` 的 `FATAL.*` 计数字段归零/消失作为重注入证据（判定法与边界见 [.zcode/rules/install-release.md](.zcode/rules/install-release.md) §2）；未拿到归零证据前交付措辞保持「已部署、待重注入验证」。随后验证本次目标行为，UI 按根约束使用内置浏览器优先验收，并检查新增错误。文件 hash 一致、单条触发日志或可能滞后的 `diag-*.json` 均不能单独证明成功；客户端未运行、通道不可用或受保护而未部署时，如实标记「未触发／未验证」，不得声称热更完成。
 
@@ -211,6 +212,7 @@ python3 sync_plugin.py --check
 |---|---|
 | 统计/速率（含 `usage_stats.py`） | `test_token_rate.py`、`test_statusbar_rate.py`、`test_statusbar_cost.py`、`test_token_pricing.py`、`test_speed_history.py`、`overlay-rate.test.cjs`、`overlay-cost-tip.test.cjs`、`overlay-speed-chart.test.cjs`、`overlay-speed-v2.test.cjs`；更改共享 JSON 时加入远端及插件契约回归 |
 | 套餐额度 / 模型拉取 | `quota-client.test.cjs`、`opencode-quota.test.cjs`、`quota-zcode-start.test.cjs`、`quota-v2-credentials.test.cjs`、`quota-paths.test.cjs`、`quota-provider-revoke.test.cjs`、`quota-source-lifecycle.test.cjs`、`sub2api-protocol.test.cjs`、`model-puller.test.cjs`、`overlay-quota-chip.test.cjs`、`test_statusbar_rate.py`（provider_fallback/scnet 估算）；真实厂商响应、凭据刷新解冻与 chip 实机挂载需桌面验收，unverified 适配器待真实账号校准 |
+| 系统状态采样（sysmon） | `sysmon-client.test.cjs`（采样器纯函数/订阅启停，注入 mem/disk 采样替身与 mock timers）、`inject-sysmon.test.cjs`（主进程订阅记账/热换重放切片）、`overlay-sysmon.test.cjs`（渲染端 cfg/severity/face/tooltip）；预警变色与窄宽档位实机需桌面验收 |
 | 浮层/主桥 | `overlay-*.test.cjs`、`inject-*.test.cjs`、`plugin-loader.test.cjs`、`plugin-restart-boot.test.cjs`；语法检查，布局/多窗口需桌面验收 |
 | 桥/SSH 路由 | `test_renderer_bridge.py`、`test_bridge_pending.py`、`test_remote_targets.py`、`inject-remote-recovery.test.cjs`、`overlay-remote-scope.test.cjs`；实机身份/重连与认证另验 |
 | 安装/更新/锁/解包 | `test_install_discovery.py`、`test_plugin_sudo_install.py`、`test_pending_asar.py`、`test_quiet_monitor.py`、`test_pending_zip_patch.py`、`test_config_transactions.py`、`test_plugin_upgrade.py`、`test_runtime_sync_guard.py`、`test_release*.py` 及 `plugin-*.test.cjs`、`runtime-lock.test.cjs` |
