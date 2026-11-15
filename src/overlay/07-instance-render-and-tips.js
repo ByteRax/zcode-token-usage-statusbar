@@ -908,7 +908,7 @@
         it(ico('<path d="M5 3.5h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-9l-6.5 4V5.5a2 2 0 0 1 1.5-2z"/><path d="M7.5 8.5h9m-9 4h6"/>') +
           '<span class="v">' + fmt(lt.total) + "</span>" +
           (state.theme === "pill" ? "" :
-            (shrink ? "" : "") +
+            "" +
             '<span class="dim">' + countFmt(lt.requests || 0) + L("次", " req") + "</span>"),
           /* v211 格面移除单次耗时/首字延迟段（用户规格）：耗时/延迟只在 tooltip 呈现
            * （平均耗时/平均延迟，对全体请求求均值） */
@@ -984,7 +984,7 @@
         it(ico('<path d="M7.5 3h12a2 2 0 0 1 2 2v10M4.5 7h12a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H8l-5.5 2V9a2 2 0 0 1 2-2z"/>') +
           '<span class="v">' + fmt(sess.total) + "</span>" +
           (state.theme === "pill" ? "" :
-            (shrink ? "" : "") +
+            "" +
             '<span class="dim">' + countFmt(sess.turns || 0) + L("轮 ", " turns · ") + countFmt(sess.requests || 0) + L("次", " req") + "</span>"),
           "\x01" + statCompactStyle("session") +
           '<div class="zu-stat-tip zu-stat-tip--session">' +
@@ -1124,7 +1124,7 @@
         it(ico('<path d="M3.5 6.5a2 2 0 0 1 2-2h4.2l2 2h7.3a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5.5a2 2 0 0 1-2-2z"/>') +
           '<span class="v">' + fmt(pj.total) + "</span>" +
           (state.theme === "pill" ? "" :
-            (shrink ? "" : "") +
+            "" +
             '<span class="dim">' + countFmt(pj.sessions || 0) + L("会话 ", " sessions · ") + countFmt(pj.requests || 0) + L("次", " req") + "</span>"),
 "\x01" + buildProjectTipHTML(pj, pjKey), "zu-pj-item");
       }

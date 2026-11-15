@@ -274,7 +274,6 @@
           compactHid = false;
         }
       }
-      shrink = 0;
       render(state.data || { session: {}, last_turn: {}, today: {}, context_window: 0 });
       positionSettingsPanel();
     }
@@ -449,6 +448,7 @@
       /* v80：面板挂 body 不再随条隐藏，条隐时必须主动收起（否则面板悬空在已消失的条上方） */
       if (panel.classList.contains("open")) closeSettings(false);
       if (subPopOpen()) subPopClose(false, "bar-hidden");
+      closeMore(false);   // v350：菜单挂 body 不随条隐藏，条隐时必须主动收（否则悬空在已消失的条上方）
       hideTip(true, "bar-hidden");   // 条面整体隐藏时 tooltip 必须跟着走（force 绕过总闸）
     }
     /* 超限气泡同步（track 每帧调）：位置贴条上沿、左缘对齐；条隐藏/超限解除/已关闭则藏。
@@ -581,38 +581,79 @@
     }
 
 
-    /* 窄宽度折叠：基于真实布局测量，而非字符数猜测。优先级低的先收起，同级右侧先收起。
-     * 只在条面内容或宽度变化时重新计算，防止 rAF 每帧触发布局和频繁写 DOM。 */
+    /* 窄宽度折叠：基于真实布局测量，而非字符数猜测。折叠序=zuBarFoldOrder 纯函数（低优先
+     * 先收、同级按显示序靠右先收；system 与 speed 不参与折叠——speed 是设计稿「固定（始终
+     * 显示）」语义：有有效数据才渲染，不伪造 0）。宽/字号(含字族)/优先级签名+foldDirty 门控
+     * 重算；每帧另测一次溢出（流式原地改字会变宽，签名探测不到）；恢复带 FOLD_HYS 迟滞带，
+     * 阈值附近数字刷新不再整格反复翻转。 */
     var foldDirty = true, foldWidth = -1, foldFont = "", foldPrioritySig = "", foldedKeys = "";
+    var foldTrigger = true;
+    var FOLD_HYS = 24;   // 迟滞带（px）：进入折叠 ov>1；折叠态需 slack≥FOLD_HYS 才尝试回展
     function barMorePosition() {
       if (!morePanel.classList.contains("open")) return;
       var a = moreButton.getBoundingClientRect(), h = morePanel.offsetHeight, w = morePanel.offsetWidth;
-      morePanel.style.left = Math.round(Math.max(8, Math.min(a.right - w, innerWidth - w - 8))) + "px";
-      morePanel.style.top = Math.round(Math.max(8, a.top - h - 7)) + "px";
+      var left = Math.round(Math.max(8, Math.min(a.right - w, innerWidth - w - 8)));
+      var top = Math.round(Math.max(8, a.top - h - 7));
+      /* 写前比较：菜单开着时每帧调用，同值跳写打断「读布局→写样式→再读」的强制重排链 */
+      if (morePanel.style.left !== left + "px") morePanel.style.left = left + "px";
+      if (morePanel.style.top !== top + "px") morePanel.style.top = top + "px";
     }
     function closeMore(restoreFocus) {
-      var open = morePanel.classList.contains("open");
+      if (!morePanel.classList.contains("open")) return;   // 关态早退：非 default 档每帧调用不再产生同值 DOM 写
       morePanel.classList.remove("open");
       moreButton.setAttribute("aria-expanded", "false");
-      if (restoreFocus && open && moreButton.focus) moreButton.focus();
+      if (restoreFocus && moreButton.focus) moreButton.focus();
     }
     function moreEntriesSync() {
       var list = Array.prototype.filter.call(main.querySelectorAll(":scope > .it"), function (el) {
         return el.dataset.zuFolded === "1";
       });
+      morePanel.__zuSig = list.map(function (el) { return el.dataset.zuKey || ""; }).join("|");
       morePanel.innerHTML = '<div class="zu-more-title">' + L("已折叠项目", "Collapsed items") + ' (' + list.length + ')</div>';
       list.forEach(function (el) {
         var button = document.createElement("button");
         button.type = "button"; button.className = "zu-more-option";
         button.setAttribute("role", "menuitem");
-        button.dataset.zuKey = el.dataset.zuKey || "";
+        var key = el.dataset.zuKey || "";
+        button.dataset.zuKey = key;
         var icon = el.querySelector("svg");
         if (icon) button.appendChild(icon.cloneNode(true));
-        var label = document.createElement("span");
-        label.textContent = (el.textContent || "").trim() || el.dataset.zuKey;
-        button.appendChild(label);
-        button.__tip = el.__tip;
+        var name = document.createElement("span");
+        name.className = "zu-more-name";
+        var t = ZU_BAR_TITLES[key];
+        name.textContent = t ? L(t[0], t[1]) : (key === "system" ? L("状态徽标", "Status badge") : key);
+        button.appendChild(name);
+        var value = document.createElement("span");
+        value.className = "zu-more-value";
+        value.textContent = (el.textContent || "").trim();
+        button.appendChild(value);
+        button.__zuCell = el;   // 活格引用：点击/刷新按 key 现查活格（菜单打开期间条面会被数据泵重建）
+        button.__tip = el.__tip;   // 兜底快照：活格查不到时仍有内容可弹
         morePanel.appendChild(button);
+      });
+    }
+    /* 菜单开着时原地同步数值与 __tip（textContent/属性写，不 innerHTML、不抢焦点）——
+     * 折叠项在菜单里跟条面同拍保鲜，点击弹出的 tooltip 不再是打开瞬间的静态值。 */
+    function moreEntriesRefresh() {
+      if (!morePanel.classList.contains("open")) return;
+      var options = morePanel.querySelectorAll(".zu-more-option");
+      if (!options.length) { moreEntriesSync(); return; }
+      var sig = Array.prototype.map.call(options, function (b) { return b.dataset.zuKey || ""; }).join("|");
+      if (sig !== morePanel.__zuSig) { moreEntriesSync(); return; }   // 折叠集变了：签名分支已关菜单，重建兜底
+      Array.prototype.forEach.call(options, function (b) {
+        var el = b.__zuCell;
+        if (!el || !el.isConnected) {   // 数据泵重建后旧格断连：按 key 重查活格
+          el = main.querySelector('.it[data-zu-key="' + (b.dataset.zuKey || "") + '"]') || null;
+          b.__zuCell = el;
+          if (!el) return;
+        }
+        if (el.dataset.zuFolded !== "1") return;
+        var value = b.querySelector(".zu-more-value");
+        if (value) {
+          var v = (el.textContent || "").trim();
+          if (value.textContent !== v) value.textContent = v;
+        }
+        if (b.__tip !== el.__tip) b.__tip = el.__tip;
       });
     }
     function syncBarOverflow() {
@@ -620,6 +661,7 @@
         if (moreButton.dataset.zuVisible !== "0") moreButton.dataset.zuVisible = "0";
         if (foldDirty || foldedKeys) {
           main.querySelectorAll("[data-zu-folded]").forEach(function (el) { el.removeAttribute("data-zu-folded"); });
+          main.querySelectorAll("[data-zu-endlead]").forEach(function (el) { el.removeAttribute("data-zu-endlead"); });
           foldedKeys = "";
           foldDirty = false;
         }
@@ -627,17 +669,25 @@
         main.classList.remove("zu-clip");
         return;
       }
+      var cs = getComputedStyle(main);
       var width = bar.clientWidth;
-      var font = getComputedStyle(main).fontSize;
+      var font = cs.fontSize + "/" + cs.fontFamily;   // 字族切换不改 fontSize 但变项宽，一并进签名
       var prioritySig = JSON.stringify(state.barPriority);
       if (!foldDirty && width === foldWidth && font === foldFont && prioritySig === foldPrioritySig) {
-        barMorePosition();
-        return;
+        /* 内容宽探测（带迟滞的双向触发器）：流式原地改字/宽度跳变不触发重建，签名不变但
+         * 折叠需求可能已变。展开态 ov>1 即触发折叠；折叠态 slack≥FOLD_HYS 才触发回展尝试
+         * ——单向「当前是否溢出」探针是错的：从「已折叠且刚好装下」直接变宽的状态不经过
+         * 溢出态，探针永不翻转，折叠集冻结（pill 夹具实证）。每帧一次 scrollWidth 读，
+         * 与 base track 同款成本。 */
+        var ovNow = main.scrollWidth - main.clientWidth;
+        var trigger = foldedKeys ? ovNow <= 1 - FOLD_HYS : ovNow > 1;
+        if (trigger !== foldTrigger) { foldDirty = true; foldTrigger = trigger; }
+        else { barMorePosition(); return; }
       }
       foldDirty = false; foldWidth = width; foldFont = font; foldPrioritySig = prioritySig;
       var rows = Array.prototype.slice.call(main.querySelectorAll(":scope > .it"));
       var separators = Array.prototype.slice.call(main.querySelectorAll(":scope > .sep"));
-      rows.forEach(function (el) { el.dataset.zuFolded = "0"; });
+      rows.forEach(function (el) { el.dataset.zuFolded = "0"; delete el.dataset.zuEndLead; });
       separators.forEach(function (el) { el.dataset.zuFolded = "0"; });
       moreButton.dataset.zuVisible = "0";
       function syncSeparators() {
@@ -655,34 +705,49 @@
           previous = el;
         });
       }
-      var needMore = main.scrollWidth > main.clientWidth + 1;
-      if (needMore) {
+      var candidates = zuBarFoldOrder(rows.map(function (el) { return el.dataset.zuKey || "system"; }), state.barPriority)
+        .map(function (c) { return { el: rows[c.i] }; });
+      var fi = 0;
+      if (main.scrollWidth > main.clientWidth + 1) {
         moreButton.dataset.zuVisible = "1";
-        var ranks = {low: 2, normal: 1, high: 0};
-        var candidates = rows.map(function (el, i) {
-          var key = el.dataset.zuKey || "system";
-          return {el: el, i: i, rank: key === "system" ? -1 : (ranks[state.barPriority[key]] === undefined ? 1 : ranks[state.barPriority[key]])};
-        }).sort(function (a, b) { return b.rank - a.rank || b.i - a.i; });
-        for (var i = 0; i < candidates.length && main.scrollWidth > main.clientWidth + 1; i++) {
-          candidates[i].el.dataset.zuFolded = "1";
+        for (; fi < candidates.length && main.scrollWidth > main.clientWidth + 1; fi++) {
+          candidates[fi].el.dataset.zuFolded = "1";
           syncSeparators();
+        }
+        /* 迟滞恢复：折叠到刚好 fit 后，富余 ≥FOLD_HYS 才回展一格——进入折叠 ov>1、
+         * 退出需 slack≥FOLD_HYS，与旧 v66 收缩迟滞(+12/-120)同构的折叠版等价物。 */
+        while (fi < candidates.length) {
+          candidates[fi].el.dataset.zuFolded = "0";
+          syncSeparators();
+          if (main.scrollWidth <= main.clientWidth + 1 - FOLD_HYS) fi++;
+          else { candidates[fi].el.dataset.zuFolded = "1"; syncSeparators(); break; }
         }
       }
       syncSeparators();
       var hidden = rows.filter(function (el) { return el.dataset.zuFolded === "1"; });
       moreButton.dataset.zuVisible = hidden.length ? "1" : "0";
       moreButton.querySelector(".zu-more-count").textContent = hidden.length ? String(hidden.length) : "";
-      moreButton.setAttribute("aria-label", L("查看更多状态，已折叠 ", "More status items, ") + hidden.length);
+      moreButton.setAttribute("aria-label", L("查看更多状态，已折叠 ", "More status items (") + hidden.length + (state.lang === "en" ? ")" : ""));
+      /* 居右对齐：首格被折叠时 ：first-child 的 auto margin 落在隐藏格失效，剩余格会被
+       * space-between 摊满整条——把 endlead 挪到第一个可见格接管右聚拢（规则见 06 分片）。 */
+      if (state.barJust === "end") {
+        for (var vi = 0; vi < rows.length; vi++) {
+          if (rows[vi].dataset.zuFolded !== "1") { rows[vi].dataset.zuEndLead = "1"; break; }
+        }
+      }
       var signature = hidden.map(function (el) { return el.dataset.zuKey || ""; }).join("|");
       if (signature !== foldedKeys) {
         foldedKeys = signature;
         closeMore(false);
-        if (tipFor && tipFor.closest && main.contains(tipFor) && tipFor.dataset.zuFolded === "1") hideTip(true, "bar-hidden");
+        if (tipFor && tipFor.closest && ((main.contains(tipFor) && tipFor.dataset.zuFolded === "1") ||
+            (tipFor === moreButton && !hidden.length))) hideTip(true, "bar-hidden");   // 含零矩形锚：折叠集清空后 ⋯ 按钮隐藏
       }
       if (!hidden.length) closeMore(false);
-      main.classList.toggle("zu-clip", main.scrollWidth > main.clientWidth + 1);
-      /* 打开的菜单不能每次数字刷新都 innerHTML 重建：会抢走菜单按钮焦点。 */
-      if (morePanel.classList.contains("open") && !morePanel.querySelector(".zu-more-option")) moreEntriesSync();
+      var ovEnd = main.scrollWidth - main.clientWidth;
+      foldTrigger = foldedKeys ? ovEnd <= 1 - FOLD_HYS : ovEnd > 1;
+      main.classList.toggle("zu-clip", ovEnd > 1);
+      /* 打开的菜单不能每次数字刷新都 innerHTML 重建：会抢走焦点；原地同步数值即可。 */
+      if (morePanel.classList.contains("open")) moreEntriesRefresh();
       barMorePosition();
     }
     moreButton.addEventListener("click", function (e) {
@@ -690,35 +755,65 @@
       if (morePanel.classList.contains("open")) { closeMore(true); return; }
       closeSettings(false);
       hideTip(true, "bar-hidden");
+      if (subPopOpen()) subPopClose(false, "bar-hidden");   // 先收子代理浮层，避免菜单与浮层双层叠放
       moreEntriesSync();
       morePanel.classList.add("open");
       moreButton.setAttribute("aria-expanded", "true");
       barMorePosition();
+      var first = morePanel.querySelector(".zu-more-option");
+      if (first && first.focus) first.focus();   // 焦点入菜单：Escape/方向键从菜单内生效（APG menu 模式）
     });
     morePanel.addEventListener("click", function (e) {
       var option = e.target && e.target.closest && e.target.closest(".zu-more-option");
       if (!option) return;
       e.stopPropagation();
-      if (option.dataset.zuKey === "sub") {
-        closeMore(false);
-        subPopShow(moreButton, true);
+      var key = option.dataset.zuKey;
+      if (key === "sub") {
+        if (subPopOpen() && subPopEntry === moreButton && subPopMode === "pinned") {
+          closeMore(true);   // pinned 再点入口=关浮层，焦点归还 ⋯ 按钮（对齐 .zu-sub 的 re-click 契约）
+          subPopClose(false, "re-click");
+        } else {
+          closeMore(false);
+          subPopShow(moreButton, true);
+        }
         return;
       }
-      if (option.__tip) {
-        moreButton.__tip = option.__tip;
-        moreButton.__zuMoreTipKey = option.dataset.zuKey;
+      var cell = main.querySelector('.it[data-zu-key="' + (option.dataset.zuKey || "") + '"]') || option.__zuCell;   // 点击现查：__zuCell 可能已被条面重建甩断
+      var tipContent = cell && cell.isConnected && cell.dataset.zuFolded === "1" ? cell.__tip : option.__tip;
+      if (tipContent) {
+        moreButton.__tip = tipContent;   // 点击时从活格现取，不用打开菜单瞬间的快照
         closeMore(false);
         moreButton.focus();
         showTipFor(moreButton);
       }
     });
     morePanel.addEventListener("keydown", function (e) {
-      if (e.key === "Escape") { e.stopPropagation(); closeMore(true); hideTip(true, "escape"); }
+      if (e.key === "Escape") { e.stopPropagation(); closeMore(true); hideTip(true, "escape"); return; }
+      if (e.key !== "ArrowDown" && e.key !== "ArrowUp" && e.key !== "Home" && e.key !== "End") return;
+      var options = Array.prototype.slice.call(morePanel.querySelectorAll(".zu-more-option"));
+      if (!options.length) return;
+      e.preventDefault();
+      var idx = options.indexOf(document.activeElement);
+      var next = e.key === "ArrowDown" ? (idx < 0 ? 0 : idx + 1) :
+        e.key === "ArrowUp" ? (idx < 0 ? options.length - 1 : idx - 1) :
+        e.key === "Home" ? 0 : options.length - 1;
+      if (next < 0) next = options.length - 1;
+      else if (next >= options.length) next = 0;
+      if (options[next] && options[next].focus) options[next].focus();
+    });
+    moreButton.addEventListener("keydown", function (e) {
+      /* 焦点停在按钮上时菜单已开（外点关过又点开等路径）：Escape/↓ 也要可达 */
+      if (!morePanel.classList.contains("open")) return;
+      if (e.key === "Escape") { e.stopPropagation(); closeMore(false); hideTip(true, "escape"); }
+      else if (e.key === "ArrowDown") {
+        e.preventDefault();
+        var firstOpt = morePanel.querySelector(".zu-more-option");
+        if (firstOpt && firstOpt.focus) firstOpt.focus();
+      }
     });
     listenGlobal(document, "pointerdown", function (e) {
       if (!morePanel.contains(e.target) && !moreButton.contains(e.target)) closeMore(false);
     }, true);
-    listenGlobal(window, "resize", function () { foldDirty = true; });
     function track() {
       if (inactive()) return;   // 旧实例罢工，把舞台让给新实例
       try {
