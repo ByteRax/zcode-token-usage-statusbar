@@ -1716,6 +1716,39 @@
       }
       return html + '</nav>';
     }
+
+    function barOrderSettingsHtml() {
+      var titles = {
+        speed: ["生成速度", "Generation speed"], turn: ["本轮", "Current turn"],
+        win: ["会话累计", "Session total"], today: ["今日合计", "Today's total"],
+        proj: ["项目累计", "Project total"], tools: ["工具调用", "Tool calls"],
+        sub: ["子代理", "Sub-agents"]
+      };
+      var result = '<div class="zu-layout-head"><strong>' + L("显示顺序与优先级", "Order and priority") + '</strong>' +
+        '<button type="button" class="zu-layout-reset zu-layout-action" style="width:auto;padding:0 8px">' + L("重置", "Reset") + '</button></div>' +
+        '<div class="zu-layout-note">' + L("拖动排序；空间不足时先收起低优先级项目，仍可通过 ··· 查看。使用 ↑↓ 键盘排序。", "Drag to reorder; lower-priority items fold first, with all items available under More. Use arrows for keyboard sorting.") + '</div>' +
+        '<div class="zu-layout-list" role="list">';
+      state.barOrder.forEach(function (key, i) {
+        var title = L(titles[key][0], titles[key][1]);
+        var checked = key === "speed" || !!state.show[key];
+        result += '<div class="zu-layout-row" role="listitem" draggable="true" data-zu-layout-key="' + key + '">' +
+          '<span class="zu-layout-grip" aria-hidden="true">⠿</span>' +
+          '<label class="zu-layout-label"><input type="checkbox" data-k="' + key + '"' +
+          (key === "speed" ? ' disabled' : '') + (checked ? ' checked' : '') +
+          ' aria-label="' + title + '"><span>' + title + '</span></label>' +
+          '<select class="zu-layout-priority" data-zu-priority="' + key + '" aria-label="' +
+          title + L(" 优先级", " priority") + '">' +
+          [["high", L("高", "High")], ["normal", L("普通", "Normal")], ["low", L("低", "Low")]].map(function (opt) {
+            return '<option value="' + opt[0] + '"' + (state.barPriority[key] === opt[0] ? ' selected' : '') + '>' + opt[1] + '</option>';
+          }).join("") + '</select>' +
+          '<button type="button" class="zu-layout-action" data-zu-shift="-1" aria-label="' +
+          L("上移 ", "Move up ") + title + '"' + (i === 0 ? ' disabled' : '') + '>↑</button>' +
+          '<button type="button" class="zu-layout-action" data-zu-shift="1" aria-label="' +
+          L("下移 ", "Move down ") + title + '"' + (i === state.barOrder.length - 1 ? ' disabled' : '') + '>↓</button>' +
+          '</div>';
+      });
+      return result + '</div>';
+    }
     /* 面板文案可随语言重建（事件走 panel 级委托，重建不丢监听） */
     function buildPanel() {
       var oldBody = panel.querySelector(".zu-settings-body");
