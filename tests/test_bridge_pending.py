@@ -269,12 +269,12 @@ class OverlayBridgeNoticeTests(unittest.TestCase):
         pi.publish_external_pending.assert_called_once_with(
             stage, source=result["source"], operation="install")
         pi.launch_monitor.assert_called_once()
-        # v359（issue #321）：夹具 stage 不是合法 asar → 入口指纹取不到 → 宁缺勿假不写
+        # v360（issue #321）：夹具 stage 不是合法 asar → 入口指纹取不到 → 宁缺勿假不写
         # 标记（没有 installation 的 pending-install 标记 swap 后无法销账，红点会永远亮着）
         self.assertFalse((self.runtime / ".plugin-restart-required").exists())
 
     def test_pending_writes_restart_marker_with_installation_fingerprint(self):
-        # v359（issue #321）：合法待收尾包 → pending 落定后写 .plugin-restart-required
+        # v360（issue #321）：合法待收尾包 → pending 落定后写 .plugin-restart-required
         # （v172 取消会话文字后红点是 pending 唯一用户可见信号），installation 指纹与
         # 包入口字节一致；publish 先于标记（publish 失败不留下无主标记）。
         stage = self.root / "stage.asar"
@@ -640,7 +640,7 @@ class RealHookChainTests(unittest.TestCase):
         self.assertTrue(self.pi.TMP.is_file())
         self.assertEqual(self.pi.pending_tmp(operation="install")["operation"], "install")
         self.pi.launch_monitor.assert_called_once()
-        # v359（issue #321）：桥 pending 落定即写重启标记（红点唯一信号源），
+        # v360（issue #321）：桥 pending 落定即写重启标记（红点唯一信号源），
         # installation 指纹与待收尾包入口字节一致——swap 时 publish_install 才能认领。
         marker_path = self.runtime / ".plugin-restart-required"
         self.assertTrue(marker_path.is_file(), "桥 pending 必须写 .plugin-restart-required")

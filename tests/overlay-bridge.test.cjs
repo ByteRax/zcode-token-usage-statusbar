@@ -421,7 +421,7 @@ test('⑬b delayed DB rich text still replaces the placeholder after its tracker
   assert.equal(turnRequests(h).length, 1);
 });
 
-/* v359（issue #321 后续）：报告者实证 rt 全 0 而占位每轮常驻——v343 的桶全在「入队之后」，
+/* v360（issue #321 后续）：报告者实证 rt 全 0 而占位每轮常驻——v343 的桶全在「入队之后」，
  * 收集/flush 门控的静默拒绝此前零痕迹。现在 noKey 等桶按轮键计一次落 det.rt，且
  * bridgeInfo 带 scopeAttrs（静态桥属性在场标志）——占位常驻 + sent=0 + noKey>0 +
  * scopeAttrs=0 即「桥补装 pending（Windows asar 占用）→ scope 缺席 → 无桥回退被远端
@@ -464,7 +464,7 @@ test('issue #321 follow-up: flushed-but-no-longer-current turn counts notCur onc
   assert.equal(rt.sent, 1, 'no new request for the historical turn');
 });
 
-/* v359（review 补强）：静态桥属性在场时 scopeAttrs=1，且 scope 路径直接放行——
+/* v360（review 补强）：静态桥属性在场时 scopeAttrs=1，且 scope 路径直接放行——
  * 不依赖「无远端证据」的本地回退，请求照常入队（kills 常量 0 变异）。 */
 test('issue #321 follow-up: static bridge attrs present — scopeAttrs=1 and scope path queues directly', () => {
   const h = harness();

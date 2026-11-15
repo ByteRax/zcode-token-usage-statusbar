@@ -1738,6 +1738,7 @@
       persistBarOrder();
       refreshLayoutEditor(focusKey, focusSelector);
       if (focusKey && focusSelector) announceLayout(focusKey);   // 键盘排序播报；鼠标拖放不还焦点不播报
+      foldDirty = true;   // v359：显式联动折叠重算（render 路径经 didRebuild 本会置位，此处防御短路；同级右先折的候选位次跟手）
       renderAll(false);
     }
     panel.addEventListener("dragstart", function (e) {

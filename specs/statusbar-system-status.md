@@ -50,7 +50,7 @@ Issue #338。在既有「排序 → 优先级 → 自适应 → 自动折叠 →
   - 磁盘表：卷 | 总量 | 已用 | 可用，项目卷行高亮，长名省略 title 全文，>6 卷内部滚动（max-height 钳制）。
   - 图例：正常/预警/危险三色点 + 按当前阈值动态生成的说明文案。
   - 数据更新：Tooltip 打开期间随帧原地重建（签名幂等），保留磁盘表滚动位；从「···」菜单打开锚定 ⋯ 按钮（既有链，Escape/外点/滚动态不变）。
-- 折叠与菜单：`sysmon` 参与自动折叠（`zuBarFoldOrder` 天然纳入，system/speed 豁免不扩）与「···」菜单（`ZU_BAR_TITLES` 提供格名，图标克隆活格，实时值原地同步）——零菜单代码改动。
+- 折叠与菜单：`sysmon` 参与自动折叠（`zuBarFoldOrder` 天然纳入，system/speed 的 rank=-1 末位序不扩）与「···」菜单（`ZU_BAR_TITLES` 提供格名，图标克隆活格，实时值原地同步）——零菜单代码改动。
 - 精简模式（compact 主题）：条面隐藏，工具行新增 `.zu-sysm` chip（紧随 git chip 之后，`format:"auto"` 在此解析为 compact 面；thresholds 变色同样生效）；挂载复用 git/速率 chip 的「锚点→防双挂→nextElementSibling 判位→签名幂等→双 reapply→restore」模板，git 兜回判位容忍 sysmon 相邻（同 tps 先例）；Tooltip 走独立 body 级 `zusage-sysmon-tip`（复用 gitTip 链模式）。空间极端不足时保留 chip 本体（图标+值），不做第三行。
 - pill 主题：格面按 compact face 渲染（pill 无窄宽状态机）。
 

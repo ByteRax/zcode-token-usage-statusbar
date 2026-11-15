@@ -117,7 +117,7 @@ test('同 SID 多轮只追活跃轮：跨扫描重试不换代号，迟到回复
   assert.equal(c.window.__zusagePluginRequests.length, 2);
 });
 
-/* v359（issue #321 后续）：报告者 rt 全 0 而占位每轮常驻——收集/flush 门控的静默拒绝
+/* v360（issue #321 后续）：报告者 rt 全 0 而占位每轮常驻——收集/flush 门控的静默拒绝
  * 按轮键计一次（防 0.5s 扫描逐拍翻倍），入队即解封，换代清空。 */
 test('静默拒绝按轮键计一次：noKey/noSid/notCur/noInst，入队后可再计', () => {
   const c = setup(), m = instance('main', null, null, 'sid-a');

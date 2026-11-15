@@ -128,7 +128,8 @@
     });
   }
   /* 折叠顺序（纯函数，供 VM 测试）：低优先先收、同级按显示序靠右先收；system（远端/未归属
-   * 徽标）与 speed（设计稿「固定」语义：有有效数据时优先保留，不是伪造 0）不参与自动折叠。 */
+   * 徽标）与 speed（设计稿「固定」语义：有有效数据时优先保留，不是伪造 0）rank=-1 排为
+   * 最后候选——极端挤压、普通候选收尽仍溢出时照样折叠，并非豁免。 */
   function zuBarFoldOrder(keys, priorities) {
     var ranks = { low: 2, normal: 1, high: 0 }, p = priorities || {};
     return keys.map(function (key, i) {
