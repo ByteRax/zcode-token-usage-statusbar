@@ -81,13 +81,49 @@
   } catch (e) { }
 
   /* ---------- 共享状态（多实例一致）：显示项/语言/上下文覆盖/最近一次数据 ---------- */
-  var LS = { show: "zusage3.show", devKeepTip: "zusage3.devKeepTip", ctxOv: "zusage3.ctxOv", lang: "zusage3.lang", cnNum: "zusage3.cnNum", sec: "zusage3.sec", rstCdh: "zusage3.rstCdh", projPath: "zusage3.projPath", theme: "zusage3.theme", ctxEnh: "zusage3.ctxEnh", cmdkW: "zusage3.cmdkW", updSeen: "zusage3.updSeen", forceKmb: "zusage3.forceKmb", ctxCpt: "zusage3.ctxCpt", cost: "zusage3.cost", barJust: "zusage3.barJust", autoCompact: "zusage3.autoCompact", tipClick: "zusage3.tipClick", quotaRemain: "zusage3.quotaRemain" };
+  var LS = { show: "zusage3.show", devKeepTip: "zusage3.devKeepTip", ctxOv: "zusage3.ctxOv", lang: "zusage3.lang", cnNum: "zusage3.cnNum", sec: "zusage3.sec", rstCdh: "zusage3.rstCdh", projPath: "zusage3.projPath", theme: "zusage3.theme", ctxEnh: "zusage3.ctxEnh", cmdkW: "zusage3.cmdkW", updSeen: "zusage3.updSeen", forceKmb: "zusage3.forceKmb", ctxCpt: "zusage3.ctxCpt", cost: "zusage3.cost", barJust: "zusage3.barJust", barOrder: "zusage3.barOrder", barPriority: "zusage3.barPriority", autoCompact: "zusage3.autoCompact", tipClick: "zusage3.tipClick", quotaRemain: "zusage3.quotaRemain" };
+  /* 状态条排序与优先级只作用于条面七个项目，不改变工具行 Git/额度等宿主按钮。 */
+  var ZU_BAR_KEYS = ["speed", "turn", "win", "today", "proj", "tools", "sub"];
+  var ZU_BAR_PRIORITY_DEFAULT = {
+    speed: "high", turn: "high", win: "high", today: "normal",
+    proj: "normal", tools: "low", sub: "normal"
+  };
+  function zuBarOrderNormalize(raw) {
+    var seen = Object.create(null), result = [];
+    if (Array.isArray(raw)) raw.forEach(function (key) {
+      if (ZU_BAR_KEYS.indexOf(key) >= 0 && !seen[key]) { seen[key] = true; result.push(key); }
+    });
+    ZU_BAR_KEYS.forEach(function (key) { if (!seen[key]) result.push(key); });
+    return result;
+  }
+  function zuBarPriorityNormalize(raw) {
+    var value = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+    var result = {};
+    ZU_BAR_KEYS.forEach(function (key) {
+      var v = value[key];
+      result[key] = v === "high" || v === "normal" || v === "low" ? v : ZU_BAR_PRIORITY_DEFAULT[key];
+    });
+    return result;
+  }
+  function zuBarSortItems(rows, order) {
+    var rank = Object.create(null);
+    (order || ZU_BAR_KEYS).forEach(function (key, i) { rank[key] = i; });
+    return rows.slice().sort(function (a, b) {
+      var fixedA = ZU_BAR_KEYS.indexOf(a.key) < 0, fixedB = ZU_BAR_KEYS.indexOf(b.key) < 0;
+      if (fixedA !== fixedB) return fixedA ? -1 : 1;
+      if (fixedA) return a.index - b.index;
+      return (rank[a.key] === undefined ? 999 : rank[a.key]) -
+        (rank[b.key] === undefined ? 999 : rank[b.key]);
+    });
+  }
   var state = {
     show: { win: 1, turn: 1, today: 1, sub: 1, tools: 1, git: 1, proj: 1, subRate: 1, wfChip: 1 },   // git：工具行 Git 状态 chip（v96，默认开）；proj：项目累计格（v159，默认开；与 zusage3.projPath 弹窗路径开关无关）；subRate：Agent 行内子代理速率 chip（v178，默认开；只门控行内展示，槽位估算与主 chip 合计不受影响）；wfChip：工作流 run 卡汇总 chip（v332，默认开；specs/workflow-support.md）
     ctxOv: "", data: null,
     lang: "zh", theme: "default", pluginUpdate: window.__zusagePluginState || null,
     /* v226 默认样式水平对齐：between|start|end（均分/居左/居右），仅默认档生效；药丸恒 flex-start */
     barJust: "between",
+    barOrder: ZU_BAR_KEYS.slice(),
+    barPriority: zuBarPriorityNormalize(null),
     /* 万/亿单位开关：缺省开启，仅显式 "0" 关闭；只在中文界面展示并生效（英文始终 K/M/B） */
     cnNum: 1,
     /* v136 编辑项目弹窗完整路径开关：缺省开启，仅显式 "0" 关闭；纯展示偏好存 localStorage */
@@ -211,6 +247,8 @@
     if (s0 && typeof s0 === "object") {
       for (var k0 in state.show) if (k0 in s0) state.show[k0] = s0[k0] ? 1 : 0;
     }
+    try { state.barOrder = zuBarOrderNormalize(JSON.parse(ls(LS.barOrder, "null"))); } catch (eOrder) { state.barOrder = ZU_BAR_KEYS.slice(); }
+    try { state.barPriority = zuBarPriorityNormalize(JSON.parse(ls(LS.barPriority, "null"))); } catch (ePriority) { state.barPriority = zuBarPriorityNormalize(null); }
     state.ctxOv = ls(LS.ctxOv, "");
     if (ls(LS.lang, "") === "en") state.lang = "en";
     if (ls(LS.cnNum, "") === "0") state.cnNum = 0;
@@ -236,6 +274,8 @@
   applyCmdkW();   // v146：同款初载挂属性
   function persist() {
     lsSet(LS.show, JSON.stringify(state.show));
+    lsSet(LS.barOrder, JSON.stringify(state.barOrder));
+    lsSet(LS.barPriority, JSON.stringify(state.barPriority));
     lsSet(LS.ctxOv, state.ctxOv);
     lsSet(LS.lang, state.lang);
     lsSet(LS.cnNum, state.cnNum ? "1" : "0");
