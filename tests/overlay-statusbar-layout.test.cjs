@@ -163,11 +163,11 @@ test('compiled renderer keeps the fold/menu/layout contract tokens', () => {
   /* speed 固定保护：折叠序纯函数排除 speed/system；设置页 speed 行用固定徽标替代开关 */
   assert.ok(source.includes('key === "system" || key === "speed"'), 'speed/system fold exemption');
   assert.ok(source.includes('zu-layout-fixed'), 'speed fixed badge');
-  /* v358 结构锁：Grid 五区 + for/id 显式关联 + 容器查询降级 */
+  /* v359 结构锁：Grid 五区 + for/id 显式关联 + 容器查询降级 */
   for (const token of ['zu-layout-info', 'zu-layout-vis', 'zu-layout-actions',
     'for="zu-show-', 'id="zu-show-', 'container-name:zu-layout', '@container zu-layout (max-width:440px)',
     'M12 19V5']) assert.ok(source.includes(token), token);
-  /* v358 级联锁：排序卡规则必须带 .zu-settings 前缀（通用 .zu-settings label 后置同分
+  /* v359 级联锁：排序卡规则必须带 .zu-settings 前缀（通用 .zu-settings label 后置同分
    * 压制曾把 .zu-layout-ico 拉成 129-167px——不允许裸单类形态回潮） */
   assert.ok(!/(?<!\.zu-settings )(?<!\.zu-layout-info \.zu-settings )\\.zu-layout-(?:row|ico|name|vis|fixed|prio|action|actions|reset|grip|info)\\{/.test(source),
     'layout card rules are .zu-settings prefixed');
