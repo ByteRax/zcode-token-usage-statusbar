@@ -65,7 +65,7 @@
    * 确定性历史行（[data-zusage-deterministic]，挂在消息流 turn 容器末尾）一并自清。
    * v80：面板（.zusage-panel）挂 body 不随条走，清理选择器单列。 */
   try {
-    document.querySelectorAll(".zusage-root,.zusage-tip-root,.zusage-exc,.zusage-rate-tip,.zusage-quota-tip,.zu-quota,.zu-git,.zu-tsb,.zu-compact-btn,.zu-ac-info,.zu-ac-hint,.zu-compact-dlg,.zu-rot-pk-dlg,.zusage-git-tip,.zusage-panel,.zu-mp-host,.zu-mp-ov,[data-zusage-deterministic],[data-zusage-loading-status],.zu-more-panel,.zu-subrate,.zu-wfrun,.zu-substat,.zu-enhance").forEach(function (el) { el.remove(); });
+    document.querySelectorAll(".zusage-root,.zusage-tip-root,.zusage-exc,.zusage-rate-tip,.zusage-quota-tip,.zu-quota,.zu-git,.zu-tsb,.zu-compact-btn,.zu-ac-info,.zu-ac-hint,.zu-compact-dlg,.zu-rot-pk-dlg,.zusage-git-tip,.zusage-panel,.zu-mp-host,.zu-mp-ov,[data-zusage-deterministic],[data-zusage-loading-status],.zu-more-panel,.zu-subrate,.zu-wfrun,.zu-substat,.zu-enhance,.zu-sysm,.zusage-sysmon-tip").forEach(function (el) { el.remove(); });
   } catch (e) { }
 
   try {
@@ -81,21 +81,23 @@
   } catch (e) { }
 
   /* ---------- 共享状态（多实例一致）：显示项/语言/上下文覆盖/最近一次数据 ---------- */
-  var LS = { show: "zusage3.show", devKeepTip: "zusage3.devKeepTip", ctxOv: "zusage3.ctxOv", lang: "zusage3.lang", cnNum: "zusage3.cnNum", sec: "zusage3.sec", rstCdh: "zusage3.rstCdh", projPath: "zusage3.projPath", theme: "zusage3.theme", ctxEnh: "zusage3.ctxEnh", cmdkW: "zusage3.cmdkW", updSeen: "zusage3.updSeen", forceKmb: "zusage3.forceKmb", ctxCpt: "zusage3.ctxCpt", cost: "zusage3.cost", barJust: "zusage3.barJust", barOrder: "zusage3.barOrder", barPriority: "zusage3.barPriority", autoCompact: "zusage3.autoCompact", tipClick: "zusage3.tipClick", quotaRemain: "zusage3.quotaRemain" };
-  /* 状态条排序与优先级只作用于条面七个项目，不改变工具行 Git/额度等宿主按钮。 */
-  var ZU_BAR_KEYS = ["speed", "turn", "win", "today", "proj", "tools", "sub"];
+  var LS = { show: "zusage3.show", devKeepTip: "zusage3.devKeepTip", ctxOv: "zusage3.ctxOv", lang: "zusage3.lang", cnNum: "zusage3.cnNum", sec: "zusage3.sec", rstCdh: "zusage3.rstCdh", projPath: "zusage3.projPath", theme: "zusage3.theme", ctxEnh: "zusage3.ctxEnh", cmdkW: "zusage3.cmdkW", updSeen: "zusage3.updSeen", forceKmb: "zusage3.forceKmb", ctxCpt: "zusage3.ctxCpt", cost: "zusage3.cost", barJust: "zusage3.barJust", barOrder: "zusage3.barOrder", barPriority: "zusage3.barPriority", autoCompact: "zusage3.autoCompact", tipClick: "zusage3.tipClick", quotaRemain: "zusage3.quotaRemain", sysmonCfg: "zusage3.sysmonCfg" };
+  /* 状态条排序与优先级只作用于条面八个项目，不改变工具行 Git/额度等宿主按钮。 */
+  var ZU_BAR_KEYS = ["speed", "turn", "win", "today", "proj", "tools", "sub", "sysmon"];
   /* 缺省优先级按「状态栏显示升级」设计稿：速度/本轮=高、会话/今日/项目=普通、工具/子代理=低。
-   * 只影响未持久化用户；已写入 zusage3.barPriority 的存量值经 zuBarPriorityNormalize 原样保留。 */
+   * 只影响未持久化用户；已写入 zusage3.barPriority 的存量值经 zuBarPriorityNormalize 原样保留。
+   * sysmon（v356，issue #338）缺省低：系统状态默认关闭（state.show.sysmon=0），老用户排序
+   * 经 zuBarOrderNormalize 自动补尾，打开后才按用户自己的优先级参与折叠竞争。 */
   var ZU_BAR_PRIORITY_DEFAULT = {
     speed: "high", turn: "high", win: "normal", today: "normal",
-    proj: "normal", tools: "low", sub: "low"
+    proj: "normal", tools: "low", sub: "low", sysmon: "low"
   };
   /* 格名双语表：设置页排序卡与「···」折叠菜单共用同一事实源（键序即缺省显示序，v213 契约）。 */
   var ZU_BAR_TITLES = {
     speed: ["生成速度", "Generation speed"], turn: ["本轮", "Current turn"],
     win: ["会话累计", "Session total"], today: ["今日合计", "Today's total"],
     proj: ["项目累计", "Project total"], tools: ["工具调用", "Tool calls"],
-    sub: ["子代理", "Sub-agents"]
+    sub: ["子代理", "Sub-agents"], sysmon: ["系统状态", "System status"]
   };
   function zuBarOrderNormalize(raw) {
     var seen = Object.create(null), result = [];
@@ -135,14 +137,321 @@
       return { key: key, i: i, rank: rank };
     }).sort(function (a, b) { return b.rank - a.rank || b.i - a.i; });
   }
+
+  /* ---------- v356 系统状态（issue #338 / specs/statusbar-system-status.md）：纯展示层。
+   * 数据链=主进程 sysmon-client.cjs 采样 → __zusageSysmon 帧 → sysFrame 共享帧；本段只做
+   * 配置归一、阈值判定、格式化与 chip 面/排序注册。阈值边界含等号（CPU/内存 ≥warn、
+   * 磁盘可用 ≤warn），与主进程 sysmon-client.normalizeSysmonConfig 语义对齐。 */
+  var SYSMON_ICONS = {
+    monitor: '<rect x="2.5" y="4" width="19" height="13" rx="2"/><path d="M9 21h6m-3-4v4"/>',
+    warn: '<path d="M12 3.5 21.5 20h-19z"/><path d="M12 9.8v4.7m0 3h.01"/>'
+  };
+  var sysFrame = null;   // 最近一帧系统资源数据（__zusageSysmon 写入，格面/tooltip/菜单共享）
+  /* 防抖快照（review M2）：sysSeveritySmoothed 的计数按「采样拍」推进而非按「调用」——
+   * 帧入口每帧只推一次并落地快照；face/tip 等多次消费只读快照（缺快照回退瞬时判定不推进），
+   * 否则每拍 ≥2 次消费会让「连续 2 拍确认」退化成 1 拍即亮。 */
+  var sysSevSnapshot = null;
+  function normalizeSysmonCfg(raw) {
+    var c = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+    function bool(v, dflt) { return v === 0 || v === false ? false : v === 1 || v === true ? true : dflt; }
+    function clamp(v, lo, hi, dflt) {
+      var n = Math.floor(Number(v));
+      return isFinite(n) ? Math.min(hi, Math.max(lo, n)) : dflt;
+    }
+    var th = c.thresholds && typeof c.thresholds === "object" && !Array.isArray(c.thresholds) ? c.thresholds : {};
+    return {
+      metrics: {
+        cpu: bool(c.metrics && c.metrics.cpu, true),
+        mem: bool(c.metrics && c.metrics.mem, true),
+        disk: bool(c.metrics && c.metrics.disk, true)
+      },
+      format: ["auto", "full", "compact", "minimal"].indexOf(c.format) >= 0 ? c.format : "auto",
+      intervalMs: clamp(c.intervalMs, 2000, 60000, 5000),
+      diskIntervalMs: clamp(c.diskIntervalMs, 30000, 600000, 60000),
+      warnColors: bool(c.warnColors, true),
+      projectVol: bool(c.projectVol, true),
+      systemVol: bool(c.systemVol, true),
+      thresholds: {
+        cpuWarn: clamp(th.cpuWarn, 1, 100, 80), cpuCrit: clamp(th.cpuCrit, 1, 100, 90),
+        memWarn: clamp(th.memWarn, 1, 100, 85), memCrit: clamp(th.memCrit, 1, 100, 90),
+        diskFreeWarn: clamp(th.diskFreeWarn, 0, 100, 15), diskFreeCrit: clamp(th.diskFreeCrit, 0, 100, 10)
+      }
+    };
+  }
+  function loadSysmonCfg() { try { return normalizeSysmonCfg(JSON.parse(ls(LS.sysmonCfg, "null"))); } catch (e) { return normalizeSysmonCfg(null); } }
+  function persistSysmonCfg() { lsSet(LS.sysmonCfg, JSON.stringify(state.sysmonCfg)); }
+  /* 主卷挑选：项目卷优先（DISK 值=其可用空间），退系统卷、其余卷、首卷。 */
+  function sysVolPick(vols) {
+    if (!Array.isArray(vols)) return null;
+    var proj = null, sys = null, other = null;
+    for (var i = 0; i < vols.length; i++) {
+      var v = vols[i];
+      if (!v || typeof v !== "object") continue;
+      if (v.role === "project" && !proj) proj = v;
+      else if (v.role === "system" && !sys) sys = v;
+      else if (v.role === "other" && !other) other = v;
+    }
+    return proj || sys || other || (vols[0] && typeof vols[0] === "object" ? vols[0] : null);
+  }
+  /* 阈值判定（纯函数，VM 测试锁含等号边界）：error/stale/disabled 不参与综合（不冒充正常也不冒充危险）。 */
+  function sysSeverityOf(cfg, frame) {
+    var th = cfg.thresholds, out = { cpu: "normal", mem: "normal", disk: "normal" };
+    var rank = { normal: 0, warning: 1, critical: 2 };
+    if (cfg.metrics.cpu && frame && frame.cpu && frame.cpu.state === "ok" && typeof frame.cpu.pct === "number") {
+      out.cpu = frame.cpu.pct >= th.cpuCrit ? "critical" : frame.cpu.pct >= th.cpuWarn ? "warning" : "normal";
+    }
+    if (cfg.metrics.mem && frame && frame.mem && frame.mem.state === "ok" && typeof frame.mem.pct === "number") {
+      out.mem = frame.mem.pct >= th.memCrit ? "critical" : frame.mem.pct >= th.memWarn ? "warning" : "normal";
+    }
+    if (cfg.metrics.disk && frame && frame.disk && frame.disk.state === "ok" && Array.isArray(frame.disk.vols)) {
+      var vol = sysVolPick(frame.disk.vols);
+      if (vol && typeof vol.free_pct === "number") {
+        out.disk = vol.free_pct <= th.diskFreeCrit ? "critical" : vol.free_pct <= th.diskFreeWarn ? "warning" : "normal";
+      }
+    }
+    out.overall = (rank[out.cpu] >= rank[out.mem] && rank[out.cpu] >= rank[out.disk]) ? out.cpu :
+      (rank[out.mem] >= rank[out.disk] ? out.mem : out.disk);
+    return out;
+  }
+  /* 防抖（spec §7.3）：预警需连续 2 拍确认才亮（CPU 短抖不闪黄），危险立即生效不被防抖掩盖，
+   * 回落 1 拍即还原。计数器是模块级共享状态（原地更新，多实例同帧同判定）。 */
+  var SYS_LEVEL_RANK = { normal: 0, warning: 1, critical: 2 };
+  var sysLevelState = {};
+  function sysSeveritySmoothed(cfg, frame) {
+    var sev = sysSeverityOf(cfg, frame), out = { cpu: "normal", mem: "normal", disk: "normal" };
+    ["cpu", "mem", "disk"].forEach(function (k) {
+      var s = sysLevelState[k] || (sysLevelState[k] = { level: "normal", hits: 0 });
+      var target = sev[k];
+      if (SYS_LEVEL_RANK[target] > SYS_LEVEL_RANK[s.level]) {
+        s.hits++;
+        if (target === "critical" || s.hits >= 2) { s.level = target; s.hits = 0; }
+      } else if (target !== s.level) { s.level = target; s.hits = 0; }
+      else s.hits = 0;
+      out[k] = s.level;
+    });
+    out.overall = (SYS_LEVEL_RANK[out.cpu] >= SYS_LEVEL_RANK[out.mem] && SYS_LEVEL_RANK[out.cpu] >= SYS_LEVEL_RANK[out.disk])
+      ? out.cpu : (SYS_LEVEL_RANK[out.mem] >= SYS_LEVEL_RANK[out.disk] ? out.mem : out.disk);
+    return out;
+  }
+  /* 数据过期：want 摘除（采样暂停）后旧帧保留展示但标灰；阈值取两侧间隔的较保守者。 */
+  function sysIsStale(frame, cfg, now) {
+    if (!frame || typeof frame.ts !== "number") return true;
+    var maxAge = Math.max(3 * Math.max(cfg.intervalMs, cfg.diskIntervalMs), 20000);
+    return (now || Date.now()) - frame.ts > maxAge;
+  }
+  function sysFmtBytes(b) {
+    if (typeof b !== "number" || !isFinite(b) || b < 0) return "";
+    var tb = 1024 * 1024 * 1024 * 1024, gb = 1024 * 1024 * 1024, mb = 1024 * 1024;
+    function t1(n) { return n >= 100 ? String(Math.round(n)) : String(Math.round(n * 10) / 10); }
+    if (b >= tb) return t1(b / tb) + "T";
+    if (b >= gb) return t1(b / gb) + "G";
+    if (b >= mb) return t1(b / mb) + "M";
+    return Math.max(0, Math.round(b / 1024)) + "K";
+  }
+  /* chip 面（纯函数，html() 与原地刷新共用同一产出）：format 解析由调用方完成
+   * （auto→窄宽档位映射在 07/11 接线层），本函数只认 full/compact/minimal。 */
+  function sysmonFaceHtml(cfg, frame, format, now) {
+    format = ["full", "compact", "minimal"].indexOf(format) >= 0 ? format : "full";
+    var m = cfg.metrics;
+    var nOn = (m.cpu ? 1 : 0) + (m.mem ? 1 : 0) + (m.disk ? 1 : 0);
+    if (!nOn) return "";
+    var sev = (sysSevSnapshot && frame === sysFrame) ? sysSevSnapshot : sysSeverityOf(cfg, frame);   // 快照缺失/异帧（预览、测试）回退瞬时判定，不推进防抖计数
+    var stale = sysIsStale(frame, cfg, now);
+    var loadCls = stale ? " zu-sys-stale" : "";
+    function sevCls(key) {
+      if (!cfg.warnColors || sev[key] === "normal") return "";
+      return " zu-sys-" + (sev[key] === "critical" ? "crit" : "warn");
+    }
+    var iconPath = (cfg.warnColors && (sev.overall === "critical" || sev.overall === "warning")) ? SYSMON_ICONS.warn : SYSMON_ICONS.monitor;
+    var html = '<svg class="ico zu-sys-ico' + (cfg.warnColors && sev.overall !== "normal" ? " zu-sys-" + (sev.overall === "critical" ? "crit" : "warn") : "") +
+      '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + iconPath + "</svg>";
+    var segs = [];
+    function seg(label, value, key) {
+      var hideLabel = format === "minimal" && nOn > 1;
+      /* 值/标签挂 .v/.dim 基础类继承 .it 既有样式；zu-sys-* 只承载结构布局与预警色 */
+      return '<span class="zu-sys-seg' + loadCls + '"><span class="dim zu-sys-k"' + (hideLabel ? ' hidden' : '') + ">" + label +
+        '</span><span class="v zu-sys-v' + sevCls(key) + '">' + value + "</span></span>";
+    }
+    if (m.cpu) {
+      var cpu = frame && frame.cpu;
+      segs.push(seg("CPU", cpu && cpu.state === "ok" && typeof cpu.pct === "number" ? Math.round(cpu.pct) + "%" : "—", "cpu"));
+    }
+    if (m.mem) {
+      var mem = frame && frame.mem, memV = "—";
+      if (mem && mem.state === "ok" && typeof mem.used === "number" && typeof mem.total === "number" && mem.total > 0) {
+        memV = format === "full" ? sysFmtBytes(mem.used) + "/" + sysFmtBytes(mem.total) : Math.round(mem.pct) + "%";
+      }
+      segs.push(seg("MEM", memV, "mem"));
+    }
+    if (m.disk) {
+      var vol = frame && frame.disk && frame.disk.state === "ok" ? sysVolPick(frame.disk.vols) : null;
+      segs.push(seg("DISK", vol && typeof vol.avail === "number" && vol.avail >= 0 ? sysFmtBytes(vol.avail) : "—", "disk"));
+    }
+    return html + segs.join('<span class="zu-sys-sep" aria-hidden="true">|</span>');
+  }
+  /* 订阅意愿（渲染端 → 主进程 pluginRequest sysmon-sub）：格可见/格 tooltip/设置页/精简 chip
+   * 任一成立即 want；签名（want|cfg|projectPath）不变不重发。api.sysmonInterested 由 12 分片
+   * 逐实例上报（含本机 projectPath，供主进程定位项目卷）。 */
+  var sysmonSubSent = "";
+  function sysSevCls(key, sev, cfg) {
+    if (!cfg.warnColors || !sev || sev[key] === "normal") return "";
+    return " zu-sys-" + (sev[key] === "critical" ? "crit" : "warn");
+  }
+  /* 完整资源 Tooltip（模块级：条面格通用链与精简 chip 的 body 级浮层共用同一产出；
+   * 本地 esc 与 07 分片 ttEsc 同式——07 在实例闭包内，模块级不可达，buildLiveTip 内联
+   * escHtml 同款先例）。结构=标题区 + CPU/内存/磁盘三区 + 动态阈值图例 + 过期注记。
+   * 样式随内容内联 <style>（统计卡 statCompactStyle 同款模式，条面 tip 链与 chip 浮层
+   * 两处渲染零重复声明），选择器全部 zu-sys-* 前缀不污染共享 .tip/.rt-* 规则。 */
+  var SYS_TIP_CSS = "<style>" +
+    ".zu-sys-tip{width:440px;max-width:calc(100vw - 24px);box-sizing:border-box;padding:12px 14px;font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);font-size:calc(var(--ui-font-size, 14px) - 1px);line-height:1.5}" +
+    ".zu-sys-head{display:flex;align-items:center;gap:7px;margin-bottom:6px}" +
+    ".zu-sys-head>svg{width:16px;height:16px;flex:0 0 auto}" +
+    ".zu-sys-head b{font-size:calc(var(--ui-font-size, 14px) + 2px)}" +
+    ".zu-sys-refresh{margin-left:auto;display:inline-flex;align-items:center;gap:4px;color:var(--color-foreground-subtle,#a1a1a1);font-size:calc(var(--ui-font-size, 14px) - 3px);white-space:nowrap}" +
+    ".zu-sys-refresh svg{width:11px;height:11px}" +
+    ".zu-sys-sec{padding:8px 0 7px;border-top:1px solid var(--color-border,rgba(255,255,255,.08))}" +
+    ".zu-sys-row{display:flex;align-items:baseline;gap:10px}" +
+    ".zu-sys-row>.zu-sys-k{flex:0 0 44px;color:var(--color-foreground-subtle,#a1a1a1);font-size:calc(var(--ui-font-size, 14px) - 2px)}" +
+    ".zu-sys-main{flex:1 1 auto;min-width:0}" +
+    ".zu-sys-big{font-size:calc(var(--ui-font-size, 14px) + 4px);font-weight:600;font-variant-numeric:tabular-nums}" +
+    ".zu-sys-dim{color:var(--color-foreground-subtle,#a1a1a1);font-style:normal}" +
+    ".zu-sys-sub{margin-top:3px;padding-left:54px;font-size:calc(var(--ui-font-size, 14px) - 2px);color:var(--color-foreground-subtle,#a1a1a1);font-variant-numeric:tabular-nums}" +
+    ".zu-sys-sub b{color:var(--color-foreground,#fff);font-weight:600}" +
+    ".zu-sys-vols{margin-top:7px;max-height:176px;overflow-y:auto;font-variant-numeric:tabular-nums;scrollbar-gutter:stable}" +
+    ".zu-sys-vr{display:grid;grid-template-columns:minmax(0,1fr) 52px 52px 56px;gap:6px;padding:3px 5px;border-radius:5px;font-size:calc(var(--ui-font-size, 14px) - 2px);align-items:baseline}" +
+    ".zu-sys-vr>span:not(:first-child){text-align:right}" +
+    ".zu-sys-vh{color:var(--color-foreground-subtle,#a1a1a1);border-bottom:1px solid var(--color-border,rgba(255,255,255,.08));border-radius:0;padding-bottom:4px}" +
+    ".zu-sys-cur{background:color-mix(in srgb, var(--color-brand,#57c8ff) 13%, transparent)}" +
+    ".zu-sys-vname{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
+    ".zu-sys-vmount{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--color-foreground-subtle,#a1a1a1);font-size:calc(var(--ui-font-size, 14px) - 3px)}" +
+    ".zu-sys-legend{display:flex;flex-wrap:wrap;gap:3px 14px;padding-top:8px;margin-top:3px;border-top:1px solid var(--color-border,rgba(255,255,255,.08));font-size:calc(var(--ui-font-size, 14px) - 2px);color:var(--color-foreground-subtle,#a1a1a1)}" +
+    ".zu-sys-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;background:#3fb950}" +
+    ".zu-sys-dot-w{background:#d29922}.zu-sys-dot-c{background:#f85149}" +
+    ".zu-sys-tip .zu-sys-big.zu-sys-warn{color:#d29922}" +
+    ".zu-sys-tip .zu-sys-big.zu-sys-crit{color:#f85149}" +
+    ".zu-sys-note{margin-top:7px;font-size:calc(var(--ui-font-size, 14px) - 2px);color:#d29922}" +
+    "</style>";
+  function sysmonTipHtml(cfg, frame, now) {
+    function sEsc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+    function sAttr(s) { return sEsc(s).replace(/"/g, "&quot;"); }
+    var sev = (sysSevSnapshot && frame === sysFrame) ? sysSevSnapshot : sysSeverityOf(cfg, frame);   // 同 face：只读防抖快照
+    var stale = sysIsStale(frame, cfg, now);
+    var th = cfg.thresholds;
+    var refresh = L("实时 ", "live ") + Math.round(cfg.intervalMs / 1000) + "s · " +
+      L("磁盘 ", "disk ") + Math.round(cfg.diskIntervalMs / 1000) + "s";
+    var s = SYS_TIP_CSS + '<div class="zu-sys-tip">' +
+      '<div class="zu-sys-head">' +
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + SYSMON_ICONS.monitor + "</svg>" +
+      "<b>" + L("系统状态", "System status") + "</b>" +
+      '<span class="zu-sys-refresh"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>' + refresh + "</span></div>";
+    function secNote(st) {
+      if (!st) return L("采集中…", "sampling…");
+      if (st.state === "loading") return L("采集中…", "sampling…");
+      if (st.state === "error") return L("采集失败", "sampling failed") + (st.err ? "（" + sEsc(String(st.err).slice(0, 80)) + "）" : "");
+      if (st.state === "unavailable") return L("本平台不支持", "unavailable on this platform");
+      return "";
+    }
+    function d1(n) { return typeof n === "number" && isFinite(n) ? (Math.round(n * 100) / 100).toString() : null; }
+    if (cfg.metrics.cpu) {
+      var cpu = frame && frame.cpu, cpuMain;
+      if (cpu && cpu.state === "ok" && typeof cpu.pct === "number") {
+        cpuMain = L("整机使用率 ", "usage ") + '<b class="zu-sys-big' + sysSevCls("cpu", sev, cfg) + '">' + Math.round(cpu.pct) + "%</b>" +
+          '<i class="zu-sys-dim"> | ' + (cpu.cores || "—") + L(" 核", " cores") + "</i>";
+      } else cpuMain = '<span class="zu-sys-dim">' + secNote(cpu) + "</span>";
+      s += '<div class="zu-sys-sec"><div class="zu-sys-row"><span class="zu-sys-k">CPU</span><span class="zu-sys-main">' + cpuMain + "</span></div>";
+      if (cpu && Array.isArray(cpu.load)) {
+        s += '<div class="zu-sys-sub">Load 1m/5m/15m <b>' + cpu.load.map(function (n) { return d1(n) === null ? "—" : d1(n); }).join(" / ") + "</b></div>";
+      }
+      s += "</div>";
+    }
+    if (cfg.metrics.mem) {
+      var mem = frame && frame.mem, memMain;
+      if (mem && mem.state === "ok" && typeof mem.used === "number" && typeof mem.total === "number" && mem.total > 0) {
+        memMain = L("已用 ", "used ") + '<b class="zu-sys-big' + sysSevCls("mem", sev, cfg) + '">' + sysFmtBytes(mem.used) + "</b> / " + sysFmtBytes(mem.total) +
+          '<i class="zu-sys-dim"> · ' + Math.round(mem.pct) + "%</i>";
+      } else memMain = '<span class="zu-sys-dim">' + secNote(mem) + "</span>";
+      s += '<div class="zu-sys-sec"><div class="zu-sys-row"><span class="zu-sys-k">' + L("内存", "Memory") + '</span><span class="zu-sys-main">' + memMain + "</span></div>";
+      var memSub = [];
+      if (mem && typeof mem.wired === "number" && mem.wired > 0) memSub.push("Wired " + sysFmtBytes(mem.wired));
+      if (mem && typeof mem.swap_used === "number" && mem.swap_used > 0) {
+        memSub.push("Swap " + sysFmtBytes(mem.swap_used) + (typeof mem.swap_total === "number" && mem.swap_total > 0 ? " / " + sysFmtBytes(mem.swap_total) : ""));
+      }
+      if (memSub.length) s += '<div class="zu-sys-sub">' + memSub.join('<span class="zu-sys-dim"> | </span>') + "</div>";
+      s += "</div>";
+    }
+    if (cfg.metrics.disk) {
+      var disk = frame && frame.disk;
+      s += '<div class="zu-sys-sec"><div class="zu-sys-row"><span class="zu-sys-k">' + L("磁盘", "Disk") + "</span>";
+      if (disk && disk.state === "ok" && Array.isArray(disk.vols) && disk.vols.length) {
+        var cur = sysVolPick(disk.vols);
+        s += '<span class="zu-sys-main zu-sys-dim">' + (cur && cur.mount ? sEsc(cur.mount) : "—") + "</span></div>";
+        s += '<div class="zu-sys-vols" role="table"><div class="zu-sys-vr zu-sys-vh" role="row">' +
+          '<span role="columnheader">' + L("卷（挂载点）", "Volume") + "</span>" +
+          '<span role="columnheader">' + L("总量", "Total") + "</span>" +
+          '<span role="columnheader">' + L("已用", "Used") + "</span>" +
+          '<span role="columnheader">' + L("可用", "Free") + "</span></div>";
+        disk.vols.forEach(function (v) {
+          if (!v || typeof v !== "object") return;
+          var isCur = cur && v === cur;
+          var label = v.role === "project" ? L("项目卷", "Project") : v.role === "system" ? L("系统卷", "System") : L("卷", "Volume");
+          var nameTxt = v.name ? label + " " + v.name : label;
+          var mountTxt = v.mount || "";
+          s += '<div class="zu-sys-vr' + (isCur ? " zu-sys-cur" : "") + '" role="row"' +
+            ' title="' + sAttr(nameTxt + (mountTxt ? " · " + mountTxt : "")) + '">' +
+            '<span role="cell"><span class="zu-sys-vname">' + sEsc(nameTxt) + '</span><span class="zu-sys-vmount">' + sEsc(mountTxt) + "</span></span>" +
+            "<span>" + (typeof v.total === "number" ? sysFmtBytes(v.total) : "—") + "</span>" +
+            "<span>" + (typeof v.used === "number" ? sysFmtBytes(v.used) : "—") + "</span>" +
+            "<span>" + (typeof v.avail === "number" ? sysFmtBytes(v.avail) : "—") + "</span></div>";
+        });
+        s += "</div>";
+      } else {
+        s += '<span class="zu-sys-main"><span class="zu-sys-dim">' + secNote(disk) + "</span></span></div>";
+      }
+      s += "</div>";
+    }
+    /* 图例：阈值动态生成（改阈值文案跟随，不写死 80/90）；只列启用的指标，预警/危险两段都带指标名。 */
+    var parts = [];
+    if (cfg.metrics.cpu) parts.push("CPU ≥" + th.cpuWarn + "%", "CPU ≥" + th.cpuCrit + "%");
+    if (cfg.metrics.mem) parts.push(L("内存", "MEM") + " ≥" + th.memWarn + "%", L("内存", "MEM") + " ≥" + th.memCrit + "%");
+    if (cfg.metrics.disk) parts.push(L("磁盘可用", "disk free") + " ≤" + th.diskFreeWarn + "%", L("磁盘可用", "disk free") + " ≤" + th.diskFreeCrit + "%");
+    s += '<div class="zu-sys-legend">' +
+      '<span><i class="zu-sys-dot"></i>' + L("正常", "OK") + "</span>" +
+      '<span><i class="zu-sys-dot zu-sys-dot-w"></i>' + L("预警", "Warn") + "（" + sEsc(parts.filter(function (_, i) { return i % 2 === 0; }).join(" · ")) + "）</span>" +
+      '<span><i class="zu-sys-dot zu-sys-dot-c"></i>' + L("危险", "Crit") + "（" + sEsc(parts.filter(function (_, i) { return i % 2 === 1; }).join(" · ")) + "）</span></div>";
+    if (stale && frame) s += '<div class="zu-sys-note">' + L("数据已过期 · 采样暂停中", "Data stale · sampling paused") + "</div>";
+    return s + "</div>";
+  }
+  function sysmonWantRecalc(force) {
+    var want = false, projectPath = "";
+    for (var i = 0; i < instances.length; i++) {
+      try {
+        var r = instances[i] && instances[i].sysmonInterested && instances[i].sysmonInterested();
+        if (r && r.want) {
+          want = true;
+          if (!projectPath && r.projectPath) projectPath = r.projectPath;
+        }
+      } catch (e) { }
+    }
+    var sig;
+    try { sig = (want ? 1 : 0) + "|" + JSON.stringify(state.sysmonCfg) + "|" + projectPath; } catch (e) { return; }
+    if (!force && sig === sysmonSubSent) return;
+    sysmonSubSent = sig;
+    if (typeof pluginRequest === "function" && !stale()) {
+      pluginRequest("sysmon-sub", { want: want, cfg: state.sysmonCfg, projectPath: projectPath });
+    }
+  }
+
   var state = {
-    show: { win: 1, turn: 1, today: 1, sub: 1, tools: 1, git: 1, proj: 1, subRate: 1, wfChip: 1 },   // git：工具行 Git 状态 chip（v96，默认开）；proj：项目累计格（v159，默认开；与 zusage3.projPath 弹窗路径开关无关）；subRate：Agent 行内子代理速率 chip（v178，默认开；只门控行内展示，槽位估算与主 chip 合计不受影响）；wfChip：工作流 run 卡汇总 chip（v332，默认开；specs/workflow-support.md）
+    show: { win: 1, turn: 1, today: 1, sub: 1, tools: 1, git: 1, proj: 1, subRate: 1, wfChip: 1, sysmon: 0 },   // git：工具行 Git 状态 chip（v96，默认开）；proj：项目累计格（v159，默认开；与 zusage3.projPath 弹窗路径开关无关）；subRate：Agent 行内子代理速率 chip（v178，默认开；只门控行内展示，槽位估算与主 chip 合计不受影响）；wfChip：工作流 run 卡汇总 chip（v332，默认开；specs/workflow-support.md）；sysmon：系统状态格（v356，issue #338，默认关——保持状态栏精简，排序卡里打开）
     ctxOv: "", data: null,
     lang: "zh", theme: "default", pluginUpdate: window.__zusagePluginState || null,
     /* v226 默认样式水平对齐：between|start|end（均分/居左/居右），仅默认档生效；药丸恒 flex-start */
     barJust: "between",
     barOrder: ZU_BAR_KEYS.slice(),
     barPriority: zuBarPriorityNormalize(null),
+    /* v356 系统状态配置（刷新/格式/磁盘目标/阈值）：独立可校验模型，定向持久化
+     * zusage3.sysmonCfg（不搭全量 persist），storage 跨窗同步见 06 分片监听器。 */
+    sysmonCfg: normalizeSysmonCfg(null),
     /* 万/亿单位开关：缺省开启，仅显式 "0" 关闭；只在中文界面展示并生效（英文始终 K/M/B） */
     cnNum: 1,
     /* v136 编辑项目弹窗完整路径开关：缺省开启，仅显式 "0" 关闭；纯展示偏好存 localStorage */
@@ -268,6 +577,7 @@
     }
     try { state.barOrder = zuBarOrderNormalize(JSON.parse(ls(LS.barOrder, "null"))); } catch (eOrder) { state.barOrder = ZU_BAR_KEYS.slice(); }
     try { state.barPriority = zuBarPriorityNormalize(JSON.parse(ls(LS.barPriority, "null"))); } catch (ePriority) { state.barPriority = zuBarPriorityNormalize(null); }
+    state.sysmonCfg = loadSysmonCfg();   // v356：损坏/缺字段经归一化回缺省，不重建对象引用
     state.ctxOv = ls(LS.ctxOv, "");
     if (ls(LS.lang, "") === "en") state.lang = "en";
     if (ls(LS.cnNum, "") === "0") state.cnNum = 0;
@@ -457,6 +767,21 @@
     state.data = d;
     for (var i = 0; i < instances.length; i++) {
       try { instances[i].render(d); } catch (e) { FATAL.updateErr = String((e && e.stack) || e); }
+    }
+  };
+  window.__zusageSysmon = function (frame) {
+    /* v356 系统状态帧入口（主进程 sysmon-client 推送，pushOnce 同款信任门）：更新共享帧 +
+     * 逐实例原地刷新格面/tooltip（不整条 render，5s 节奏远轻于泵帧）。旧冷主进程不推帧：
+     * 格渲染 loading 态（—），无轮询无报错，字段缺失是常态不是错误。 */
+    if (stale() || !frame || typeof frame !== "object" || !frame.cpu || !frame.mem || !frame.disk) return;
+    sysFrame = frame;
+    sysSevSnapshot = sysSeveritySmoothed(state.sysmonCfg, frame);   // 每采样拍推进一次防抖（消费端只读快照）
+    var f = FATAL.sysFrame || (FATAL.sysFrame = { t: 0, has: 0, want: 0 });
+    f.t = Date.now();
+    f.has = 1;
+    f.want = (typeof sysmonSubSent === "string" && sysmonSubSent.charAt(0) === "1") ? 1 : 0;   // v356 review：want 分量写实（订阅意愿签名首位）
+    for (var i = 0; i < instances.length; i++) {
+      try { if (instances[i].sysmonTick) instances[i].sysmonTick(); } catch (e) { FATAL.sysTickErr = String((e && e.stack) || e); }
     }
   };
   window.__zusagePluginRequests = [];

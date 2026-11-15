@@ -605,6 +605,130 @@ function fmtTok(n) {
   return String(n);
 }
 window.__zuSel = null; window.__zuHover = -1;
+/* ---------- v356 SYS 链（issue #338）：系统状态格真实链路场景 ----------
+ * 生产 overlay 原文注入后，走真实 __zusageSysmon 帧 → sysmonTick 原地刷新 →
+ * 真实 focusin 开 tooltip / 真实「···」菜单 / 真实 ⚙ 设置页 / 真实工具行 chip。
+ * 数值对齐设计稿示例（scene A 正常态、scene D 危险态）。 */
+var SYS_FRAMES = {
+  normal: { v: 1, ts: Date.now(), cpu: { state: 'ok', pct: 23.4, cores: 10, load: [1.28, 1.11, 0.98] },
+    mem: { state: 'ok', total: 17179869184, used: 10952166604, avail: 6227702580, pct: 63.8, wired: 2254857830, swap_total: 1073741824, swap_used: 644245094 },
+    disk: { state: 'ok', vols: [
+      { id: '/', name: 'Macintosh HD', mount: '/', role: 'system', total: 549755813888, used: 348966092800, avail: 200746721088, free_pct: 36.5 },
+      { id: '/System/Volumes/Data', name: 'Data', mount: '/System/Volumes/Data', role: 'project', total: 1099511627776, used: 794568949760, avail: 304942678016, free_pct: 27.7 }] } },
+  crit: { v: 1, ts: Date.now(), cpu: { state: 'ok', pct: 92.3, cores: 10, load: [6.41, 5.87, 4.92] },
+    mem: { state: 'ok', total: 17179869184, used: 15998067916, avail: 1181801268, pct: 93.1, wired: 5103413555, swap_total: 2147483648, swap_used: 1874365432 },
+    disk: { state: 'ok', vols: [
+      { id: '/', name: 'Macintosh HD', mount: '/', role: 'system', total: 549755813888, used: 528966092800, avail: 20789721088, free_pct: 3.8 },
+      { id: '/System/Volumes/Data', name: 'Data', mount: '/System/Volumes/Data', role: 'project', total: 1099511627776, used: 1045568949760, avail: 53942678016, free_pct: 4.9 }] } },
+};
+/* 预写 localStorage 后由下一步 reload 生效（overlay 在 IIFE 启动时读这些键） */
+window.__zuSysPreset = function (opts) {
+  opts = opts || {};
+  try {
+    var show = {};
+    try { show = JSON.parse(localStorage.getItem('zusage3.show') || '{}') || {}; } catch (e) { }
+    show.sysmon = opts.off ? 0 : 1;
+    localStorage.setItem('zusage3.show', JSON.stringify(show));
+    localStorage.setItem('zusage3.barOrder', JSON.stringify(opts.order ||
+      ['speed', 'turn', 'win', 'today', 'proj', 'tools', 'sub', 'sysmon']));
+    localStorage.setItem('zusage3.barPriority', JSON.stringify(opts.prio ||
+      { speed: 'high', turn: 'high', win: 'normal', today: 'normal', proj: 'normal', tools: 'low', sub: 'low', sysmon: opts.high ? 'high' : 'low' }));
+    if (opts.theme) localStorage.setItem('zusage3.theme', opts.theme);
+    else localStorage.removeItem('zusage3.theme');
+    if (opts.cfg) localStorage.setItem('zusage3.sysmonCfg', JSON.stringify(opts.cfg));
+    else localStorage.removeItem('zusage3.sysmonCfg');
+  } catch (e) { }
+  return true;
+};
+window.__zuSysFrame = function (kind) {
+  var f = SYS_FRAMES[kind || 'normal'];
+  if (window.__zusageSysmon) window.__zusageSysmon(f);
+  return !!(f && window.__zusageSysmon);
+};
+window.__zuSysDo = function (what) {
+  if (what === 'focusCell') {
+    var cell = document.querySelector('.it[data-zu-key="sysmon"]');
+    if (cell) cell.focus();
+    return !!cell;
+  }
+  if (what === 'openMore') {
+    var b = document.querySelector('.zu-more');
+    if (b) b.click();
+    return !!b;
+  }
+  if (what === 'clickMoreSysmon') {
+    var btns = document.querySelectorAll('.zu-more-panel .zu-more-option');
+    for (var i = 0; i < btns.length; i++) {
+      if (btns[i].dataset && btns[i].dataset.zuKey === 'sysmon') {
+        btns[i].click();
+        /* 夹具帧触发的整条重渲染可能把刚开的锚定 tip 收掉（render-orphan，生产安静期不会）：
+         * 数据落定后对 ⋯ 按钮补一次 focus（真实 focusin 链重开锚定 tooltip） */
+        setTimeout(function () {
+          var mb = document.querySelector('.zu-more');
+          if (mb) mb.focus();
+        }, 350);
+        return true;
+      }
+    }
+    return false;
+  }
+  if (what === 'settings') {
+    var gear = document.querySelector('.zu-gear');
+    if (!gear) return false;
+    var mp2 = document.querySelector('.zu-more-panel');   // 菜单开着先关（与设置页截图互斥）
+    if (mp2 && mp2.offsetWidth > 0) { var mb2 = document.querySelector('.zu-more'); if (mb2) mb2.click(); }
+    gear.click();
+    var roll = function () {
+      var body = document.querySelector('.zu-settings-body');
+      var card = document.querySelector('.zu-syscfg');
+      if (!body || !card) return 'missing';
+      var d = card.getBoundingClientRect().top - body.getBoundingClientRect().top - 70;
+      if (Math.abs(d) > 8) body.scrollTop += d;
+      return 'top=' + Math.round(body.scrollTop) + ' sh=' + body.scrollHeight + '/' + body.clientHeight;
+    };
+    setTimeout(roll, 450);
+    setTimeout(roll, 950);
+    return roll();
+  }
+  if (what === 'hoverChip') {
+    var chip = document.querySelector('.zu-sysm');
+    if (chip) chip.focus();
+    return !!chip;
+  }
+  return false;
+};
+window.__zuSysHoverRect = function () {
+  var c = document.querySelector('.it[data-zu-key="sysmon"]');
+  if (!c || c.getAttribute('data-zu-folded') === '1') return null;
+  var r = c.getBoundingClientRect();
+  return { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) };
+};
+/* SYS 链几何取证：格可见性/折叠状态/菜单与 chip 存在性（随 log 落地） */
+window.__zuSysDiag = function () {
+  var cell = document.querySelector('.it[data-zu-key="sysmon"]');
+  var more = document.querySelector('.zu-more');
+  var panel = document.querySelector('.zu-more-panel');
+  var chip = document.querySelector('.zu-sysm');
+  var sysTip = document.querySelector('.zusage-sysmon-tip');
+  var mainTip = null;
+  var tips = document.querySelectorAll('.zusage-tip-root');
+  for (var i = 0; i < tips.length; i++) if (tips[i].offsetWidth > 0) mainTip = tips[i];
+  var bar = document.querySelector('.zu-main');
+  var tipStats = null;
+  try { tipStats = window.__zusageDiag && window.__zusageDiag.mount && window.__zusageDiag.mount.tip; } catch (e) { }
+  return {
+    cell: cell ? { text: (cell.textContent || '').trim().slice(0, 40), folded: cell.getAttribute('data-zu-folded') === '1' } : null,
+    barOverflow: bar ? [bar.scrollWidth, bar.clientWidth].join('/') : null,
+    moreCount: more ? more.textContent.trim() : null,
+    moreOpen: !!(panel && panel.offsetWidth > 0),
+    moreItems: panel ? panel.querySelectorAll('.zu-more-option').length : 0,
+    chip: chip ? { text: (chip.textContent || '').trim().slice(0, 40) } : null,
+    sysTipOpen: !!(sysTip && sysTip.offsetWidth > 0),
+    mainTipOpen: !!(mainTip && mainTip.querySelector('.zu-sys-tip')),
+    tipStats: tipStats ? { shows: tipStats.stats.shows, hides: tipStats.stats.hides, lastHide: tipStats.stats.lastHide, seq: (tipStats.stats.hideSeq || []).slice(-3).join(','), disp: tipStats.disp } : null,
+    settingsOpen: !!document.querySelector('.zusage-panel.open'),
+  };
+};
 function buildCard() {
   /* live 模式用泵缓存的真实轮表 + 真实 SID（spdAnalyze 按 sid 过滤会话轮） */
   var liveCard = window.__zuDataMode === 'live' && window.__zuLiveFixture;
@@ -706,7 +830,7 @@ window.__zuMount = function (sel, hover) {
   return !!tip.querySelector('.zu-sv-root');
 };
 window.__zuRectOf = function (sel) {
-  var el = document.querySelector('#zu-spd-replica ' + sel);
+  var el = document.querySelector('#zu-spd-replica ' + sel) || document.querySelector(sel);   /* v356：SYS 链点真实 UI（⋯/齿轮/chip）回退全文档选择器 */
   if (!el) return null;
   var r = el.getBoundingClientRect();
   return { x: r.x, y: r.y, w: r.width, h: r.height };
