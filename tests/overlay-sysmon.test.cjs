@@ -235,6 +235,7 @@ test('源码契约：条面格门控/远程排除/原地刷新/窄宽钩子/订�
   assert.match(source, /state\.show\.sysmon && !d\.remote && !d\.not_local/, '仅本地 scope 渲染（远端/不在本地库排除）');
   assert.match(source, /function sysmonApplyFace\(\)/, '原地刷新函数');
   assert.match(source, /try \{ sysmonApplyFace\(\); \} catch \(e\) \{ \}   \/\/ v356/, '窄宽档位切换钩子驱动 auto 重绘');
+  assert.match(source, /var probeSys = probeMain\.querySelector\('\.it\[data-zu-key="sysmon"\]'\);[\s\S]*?sysmonFaceHtml\(state\.sysmonCfg, sysFrame, "full"\)/, '探针副本内 sysmon 固定 full 面（档位↔面宽震荡环修复）');
   assert.match(source, /sysmonTick: function \(\)/, 'api 暴露 sysmonTick');
   assert.match(source, /sysmonInterested: function \(\)/, 'api 上报订阅意愿');
   assert.match(source, /window\.__zusageSysmon = function/, '帧入口');

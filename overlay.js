@@ -21791,6 +21791,14 @@
             var probeMain = main.cloneNode(true);
             probeMain.classList.remove("zu-clip", "zu-clip-left");
             probeMain.style.cssText = "width:max-content;min-width:max-content;flex:none;overflow:visible";
+            /* v356 修复（用户实报「开启系统状态后整条抖动」）：format:"auto" 的系统状态面随
+             * 档位切换（探针档位钩子换面）会改变探针测量的对象本身——full↔compact 面宽差
+             * 大于迟滞带宽，档位↔面宽互相反转成震荡环。探针副本内把系统状态格固定为 full
+             * 面（auto 的最宽形态）做保守判定：档位只由「假定 sysmon 占满宽」决定，切档后
+             * 窄面变宽不再反馈进测量，环断；measureKey 因换面仍会触发一次重测，但 full 口径
+             * 下 narrowWidths 恒定、判定收敛不再切档。 */
+            var probeSys = probeMain.querySelector('.it[data-zu-key="sysmon"]');
+            if (probeSys) { try { probeSys.innerHTML = sysmonFaceHtml(state.sysmonCfg, sysFrame, "full"); } catch (eProbe) { } }
             probe.appendChild(probeMain);
             bar.parentElement.appendChild(probe);
             try {
