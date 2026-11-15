@@ -181,8 +181,9 @@ test('实例失效与全关时零开销早退（不触发 closest）', () => {
   const ctx2 = {
     inactive: () => false,
     tipFor: null, quotaTipFor: null, rateTipFor: null, tpsTipFor: null,
-    rstTipFor: null, subTipFor: null, gitTipFor: null,
+    rstTipFor: null, subTipFor: null, gitTipFor: null, sysTipFor: null,
     fxTip: { style: { display: 'none' } }, spdLegendTip: { style: { display: 'none' } },
+    sysTip: { style: { display: 'none' } },
     target: { closest: (s) => { probes.push(s); return null; } },
   };
   vm.runInNewContext(outsideSrc + '\n__result = tipOutsideDown(__ev);',
