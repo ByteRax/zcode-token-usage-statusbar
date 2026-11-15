@@ -50,6 +50,11 @@
   /* v291：代际号进 diag——重注入取证不再依赖偶发的计数字段归零（FATAL.gen 严格
    * 递增 = 新代际首帧实证，与 window.__zusageGen 同源；单例守卫下每代恰执行一次） */
   var FATAL = (window.__zusageDiag = { gen: MY_GEN });
+  /* v349（issue #342，规则 18）：单拍成本测量——performance.now 单调且亚毫秒精度，缺位
+   * （个别 eval 切片/旧夹具）回退 Date.now。仅规则 18 的回源退避与 tick 降频门使用。 */
+  function perfMs() {
+    return (typeof performance !== "undefined" && performance && typeof performance.now === "function") ? performance.now() : Date.now();
+  }
   /* v179 子代理槽位定位诊断（随泵写 diag-*.json）：字段原地更新，对象挂模块级——
    * 多实例（分屏/辅助对话）各自身上都有 subRateTick，实例级声明会互相覆盖且
    * dispose 后残留冻结值（v180 review）；字段在最近一次 reconcile 的槽位分布，

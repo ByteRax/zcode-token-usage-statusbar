@@ -53,6 +53,10 @@ function harness(ls = { getItem: () => null, setItem() {} }) {
   const timers = new Map(), frames = new Map(), observers = []; let id = 0;
   const sandbox = vm.createContext({ window, document, console, innerHeight: 800, innerWidth: 1000,
     location: { href: 'file:///fixture' }, localStorage: ls,
+    // v349 规则 18：overlay 的 tick 降频门用 performance.now 计单拍成本——夹具冻结为 0，
+    // 既有用例恒判廉价、门永不介入；需注入耗时的用例在 inject 后经 sandbox 重写
+    // performance/Date.now（vm 上下文内全局赋值）。
+    performance: { now: () => 0 },
     getComputedStyle: el => ({ borderTopWidth: '1px', backgroundColor: 'black', opacity: el.style.opacity ?? '1', display: el.style.display ?? 'block', visibility: el.style.visibility ?? 'visible' }),
     setTimeout: (fn, ms) => { timers.set(++id, { fn, ms, interval: false }); return id; },
     clearTimeout: n => timers.delete(n),
@@ -75,7 +79,7 @@ function harness(ls = { getItem: () => null, setItem() {} }) {
       return e; });
     return panes.map(e => e.parentElement);
   }
-  return { window, document, root, body, timers, frames, observers, inject, tick, boot, setPanes,
+  return { window, document, root, body, timers, frames, observers, sandbox, inject, tick, boot, setPanes,
     runFrame() { for (const [n, fn] of [...frames]) fn(); } };
 }
 
@@ -440,5 +444,101 @@ test('v174: unknown pane-less candidates are still dropped next to real panes (g
   h.document.querySelectorAll('textarea,').push(mystery);
   h.tick();
   assert.deepEqual(Array.from(h.window.lifecycleTest.instances(), i => i.pid), ['workspace-main']);
+  h.window.__zusageDispose();
+});
+
+/* ---------- issue #342（specs/perf-lag-reduction.md 规则 18b）：heavy/coordinator 600ms 对账
+ * 自适应降频——单拍同步 ≥16ms（perfMs 差值，含界）时跳拍（600ms→封顶 600×3），<16ms 立即回
+ * 600ms。耗时经 context 内假 performance/Date.now 注入（heavy 记 appendChild 条、coordinator
+ * 记 SEL 查询，各恰好 +16ms/实跑），恰值边界与封顶阶梯全部确定性判定，不依赖计时。 */
+function fakeClock(h, start) {
+  vm.runInContext(`var __zuNow = { v: ${start} }; Date.now = function () { return __zuNow.v; }; var performance = { now: function () { return __zuNow.v; } };`, h.sandbox);
+  return h.sandbox.__zuNow;
+}
+
+test('issue #342: heavy tick skips reconciliation rounds while the measured cost stays over budget', () => {
+  const store = new Map([['zusage3.theme', 'compact']]);
+  const h = harness({ getItem: k => store.get(k) ?? null, setItem: (k, v) => store.set(k, v) });
+  h.setPanes(['a'], { toolbar: true }); h.inject(); h.boot();
+  const now = fakeClock(h, 1000000);
+  // 成本标记：heavy 每次实跑恰补挂一次 compact 条（document.body.appendChild(bar)）→ 恰 +16ms
+  const realAppend = h.document.body.appendChild.bind(h.document.body);
+  let costPerMount = 0;
+  h.document.body.appendChild = function (el) {
+    if (costPerMount && /zusage-root/.test(el.className || '')) now.v += costPerMount;
+    return realAppend(el);
+  };
+  const bar = () => h.document.body.children.find(e => /zusage-root/.test(e.className || ''));
+  // 贵拍（成本恰 16ms，≥ 阈值含界）：正常执行对账——compact 条被 React 清掉后补挂回 body
+  costPerMount = 16;
+  bar().remove();
+  h.tick();
+  assert.ok(bar(), '昂贵拍仍执行：heavy 补挂 bar');
+  assert.equal(h.window.__zusageDiag.heavyCost, 16, 'heavyCost 落 diag 且恰为阈值（>16 变异在此变红）');
+  // 降频窗口内（+300ms < 600ms×1 档）：再被清掉也不补挂
+  now.v += 300;
+  bar().remove();
+  h.tick();
+  assert.equal(bar(), undefined, '降频窗口内的 heavy 被跳过');
+  // 恰 600ms（窗口右开 < 600）：该拍必须执行（skip 步移除的条此刻补挂）；成本仍贵 → 升到 2 档
+  now.v += 300;
+  h.tick();
+  assert.ok(bar(), '恰 600ms 不跳拍（窗口右开，< 变异在此变红）');
+  // 阶梯触顶（右开探针跑完已是 2 档）：Δ1250 升到 3 封顶；封顶失效（min(3→4)）时
+  // 再下一拍 Δ1900 落进 600×4 窗被跳 → 红
+  now.v += 1250; bar().remove(); h.tick(); assert.ok(bar(), '贵拍（Δ1250 ≥ 600×2）执行，升至 3 档');
+  now.v += 1900; bar().remove(); h.tick(); assert.ok(bar(), '贵拍（Δ1900 ≥ 600×3）执行，档位封顶 3');
+  now.v += 1900; bar().remove(); h.tick(); assert.ok(bar(), '封顶后 Δ1900 ≥ 600×3 仍执行（min(3→4) 变异在此变红）');
+  // 恢复：廉价拍后档位回落，600ms 节奏照旧
+  costPerMount = 0;
+  now.v += 1900; bar().remove(); h.tick(); assert.ok(bar(), '恢复拍执行');
+  now.v += 300;  bar().remove(); h.tick(); assert.ok(bar(), '廉价拍后档位回落 600ms：下一拍正常对账');
+  h.window.__zusageDispose();
+});
+
+test('issue #342: coordinator tick skips instance reconciliation while over budget, disposes after recovery', () => {
+  const h = harness(); h.setPanes(['a']); h.inject(); h.boot();
+  const now = fakeClock(h, 2000000);
+  // 成本标记：协调器每拍恰做一次 SEL 文档查询 → 恰 +16ms（heavy 不查 SEL，互不干扰）
+  const realQS = h.document.querySelectorAll.bind(h.document);
+  let costSel = 0;
+  h.document.querySelectorAll = function (sel) {
+    if (costSel && String(sel).indexOf('textarea,') === 0) now.v += costSel;
+    return realQS(sel);
+  };
+  const pidOf = () => { const inst = h.window.lifecycleTest.instances().find(i => i.pid !== 'auto'); return inst ? inst.pid : '(none)'; };
+  costSel = 16;
+  h.tick();   // 贵拍（恰 16ms）
+  assert.equal(pidOf(), 'a');
+  assert.equal(h.window.__zusageDiag.coordCost, 16, 'coordCost 落 diag 且恰为阈值（>16 变异在此变红）');
+  h.setPanes(['b']);
+  now.v += 300;
+  h.tick();
+  assert.equal(pidOf(), 'a', '降频窗口内的 coordinator 被跳过：实例未被回收');
+  h.setPanes(['c']);
+  now.v += 300;   // 恰 600ms（窗口右开 < 600）：必须执行；成本仍贵 → 升到 2 档
+  h.tick();
+  assert.equal(pidOf(), 'c', '恰 600ms 不跳拍（窗口右开，< 变异在此变红）');
+  h.setPanes(['d']);
+  now.v += 650;
+  h.tick();
+  assert.equal(pidOf(), 'c', 'Δ650 < 600×2：跳拍');
+  h.setPanes(['e']);
+  now.v += 1250;   // Δ1900 ≥ 600×2：执行，升至 3 档
+  h.tick();
+  assert.equal(pidOf(), 'e');
+  h.setPanes(['f']);
+  now.v += 1900;   // Δ1900 ≥ 600×3：执行，档位封顶 3
+  h.tick();
+  assert.equal(pidOf(), 'f', '封顶后 Δ1900 ≥ 600×3 仍执行（min(3→4) 变异在此变红）');
+  costSel = 0;   // 恢复廉价：档位回落，600ms 节奏照旧
+  h.setPanes(['g']);
+  now.v += 1900;
+  h.tick();
+  assert.equal(pidOf(), 'g', '恢复拍执行');
+  h.setPanes(['h']);
+  now.v += 300;
+  h.tick();
+  assert.equal(pidOf(), 'h', '廉价拍后档位回落 600ms：下一拍正常对账');
   h.window.__zusageDispose();
 });

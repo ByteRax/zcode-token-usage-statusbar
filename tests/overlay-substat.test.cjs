@@ -79,6 +79,8 @@ function extractSubStat(lang) {
     ttEsc: x => String(x).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'),
     fmt: n => String(Math.round(n)),
     Date: { now: () => NOW },
+    perfMs: () => 0,   // v349 规则 18：handleSnapshot 回源计时的外部依赖，切片桩恒判廉价
+    FATAL: {},   // v349 规则 18：handleSnapshot 写 snapSrcMs 诊断的外部依赖
     document: {
       documentElement: { classList: { contains: () => true } },
       createElement: tag => new El(tag),
@@ -289,5 +291,5 @@ test('source contracts: substat wiring (style, delegation, call sites, union fee
   assert.match(source, /function synthesizeBackgroundStats\(stats\)/, '合成函数在切片内');
   assert.match(source, /stats = synthesizeBackgroundStats\(stats\);/, 'updateLive 接线');
   assert.match(source, /if \(stats && !stats\.complete\) return stats;/, '主会话实时轮优先不合成');
-  assert.match(source, /var VERSION = "v348";/);   // 只锁代际顺延；台账内容合法性由 ReleaseLedgerTests 守护
+  assert.match(source, /var VERSION = "v349";/);   // 只锁代际顺延；台账内容合法性由 ReleaseLedgerTests 守护
 });

@@ -386,16 +386,24 @@
      * SNAP_FRESH_MS 无更新才回源 getState() 一次并回写——这次回源兼作 store 关闭/换代的探活
      * （读到 null 或 sessionId 变，调用方按既有语义脱离重绑）；pane 切会话由 handle.sid/sideKey
      * 与当前会话的比对即时重绑，不靠探活。age<0（系统时钟回拨）按陈旧处理，不让记录永远「新鲜」。 */
-    var SNAP_FRESH_MS = 2000;
+    var SNAP_FRESH_MS = 2000, SNAP_SRC_BUDGET_MS = 8;   // v349：回源实测 ≥8ms（规则 12 同阈值）时新鲜窗退避
     function handleSnapshot(h) {
       if (!h || h.dead || !h.store) return null;
       var now = Date.now();
       if (typeof h.snapAt === "number") {
         var age = now - h.snapAt;
-        if (age >= 0 && age < SNAP_FRESH_MS) return h.snap || null;
+        if (age >= 0 && age < SNAP_FRESH_MS * (1 << (h.freshMul || 0))) return h.snap || null;
       }
-      var snap = null;
+      var snap = null, t0 = perfMs();
       try { var st = h.store.getState(); snap = (st && st.snapshot) || null; } catch (e) { snap = null; }
+      /* v349（issue #342，specs/perf-lag-reduction.md 规则 18a）：回源即整窗深拷贝，长窗口
+       * 会话单次可达几十 ms（报告者 6868 行 ≈86ms）——实测 ≥8ms 时把本 handle 的新鲜窗
+       * 逐档退避 2s→4s→8s，<8ms 立即回 1 档（小窗口/新会话自动恢复 2s）。影响面只有
+       * 静默期「思考中已观察 Xs」走字粒度与探活延迟（≤8s）；活跃期快照由通知回调写入，
+       * 本不回源；pane 切会话仍即时重绑。 */
+      var cost = perfMs() - t0;
+      FATAL.snapSrcMs = Math.round(cost);
+      h.freshMul = cost >= SNAP_SRC_BUDGET_MS ? Math.min(2, (h.freshMul || 0) + 1) : 0;
       h.snap = snap;
       h.snapAt = now;
       return snap;
