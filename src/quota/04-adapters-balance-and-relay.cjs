@@ -384,13 +384,63 @@ function relayQuotaUrls(baseUrl) {
   return { sub2api: url.origin + prefix + "/v1/usage", legacy: url.origin + url.pathname.replace(/\/+$/, "") };
 }
 
-/* --- OpenCode Go（$10/月订阅；转写自 cc-switch coding_plan.rs，MIT，未真实账号实测） ---
- * 用量端点第一方未文档化：GET https://opencode.ai/zen/go/v1/usage，只认
- * Authorization: Bearer（与推理侧只认 x-api-key 相反）；响应
- * {usage:{rolling|weekly|monthly:{status,percent(已用0-100),resetsAt(ISO)}}}，
- * 端点不回金额。detect 较 cc-switch 的裸子串收严：host 精确 opencode.ai +
- * 路径 /zen/go 或其子路径（两档预设），防外域伪装；Zen 按量版 /zen/v1 无
- * 用量 API（cc-switch 实测 404）刻意不命中。 */
+/* --- OpenCode Go（$10/月订阅；端点为第一方未文档化接口，2026-11-15 个人 Go 档实测） ---
+ * 主链 GET https://opencode.ai/console/api/go/status（控制台 Go 页面同源；API key
+ * 同样以 Authorization: Bearer 读取）：access.meters.{fiveHour,week,month} 各自带
+ * {startsAt?,resetsAt,limitMicroCents,usedMicroCents}，金额单位 microcent
+ * （1 USD = 1e8 microcent），percent 自算，可显示 $ 用量/额度明细。
+ * 兜底 GET https://opencode.ai/zen/go/v1/usage（cc-switch coding_plan.rs 转写，MIT）：
+ * {usage:{rolling|weekly|monthly:{status,percent(已用0-100),resetsAt(ISO)}}}；
+ * 该端点只回整数已用百分比且向下取整（5 小时窗口用量 <1% 时恒为 0），也不回金额。
+ * 两链同域 opencode.ai，凭据不出官方域。detect 较 cc-switch 的裸子串收严：host 精确
+ * opencode.ai + 路径 /zen/go 或其子路径（两档预设），防外域伪装；Zen 按量版 /zen/v1
+ * 无用量 API（cc-switch 实测 404）刻意不命中。 */
+const OPENCODE_GO_STATUS_URL = "https://opencode.ai/console/api/go/status";
+const OPENCODE_GO_USAGE_URL = "https://opencode.ai/zen/go/v1/usage";
+const OPENCODE_MICROCENTS_PER_USD = 1e8;
+const OPENCODE_STATUS_TIMEOUT_MS = Math.min(3000, FETCH_TIMEOUT_MS);
+function opencodeLinkedAbort(parent) {
+  const ctl = new AbortController();
+  const signal = parent && parent.signal;
+  if (!signal) return ctl;
+  if (signal.aborted) { try { ctl.abort(); } catch (e) { } return ctl; }
+  try { signal.addEventListener("abort", () => { try { ctl.abort(); } catch (e) { } }, { once: true }); }
+  catch (e) { /* 极简 signal 桩：仍可独立超时 */ }
+  return ctl;
+}
+function opencodeUsdOf(v) {
+  const n = num(v);
+  return n == null || n < 0 ? null : n / OPENCODE_MICROCENTS_PER_USD;
+}
+/* 控制台 meters → 窗口；形状不符/全无有效窗返回 null（调用方回落 public usage 端点，
+ * 不把一次控制台改版打成 parse_error 长退避）。percent 保留两位小数：public 端点的
+ * 整数向下取整会把 0.67% 显示成 0%，正是 5 小时窗口「看起来查不到」的根因。 */
+function normalizeOpencodeGoStatus(body) {
+  const access = body && typeof body === "object" && !Array.isArray(body) &&
+    body.access && typeof body.access === "object" && !Array.isArray(body.access) ? body.access : null;
+  const meters = access && access.meters && typeof access.meters === "object" &&
+    !Array.isArray(access.meters) ? access.meters : null;
+  if (!meters) return null;
+  const windows = {};
+  for (const pair of [["fiveHour", "fiveHour"], ["week", "weekly"], ["month", "monthly"]]) {
+    const m = meters[pair[0]] && typeof meters[pair[0]] === "object" && !Array.isArray(meters[pair[0]])
+      ? meters[pair[0]] : null;
+    if (!m) continue;
+    const limitMc = num(m.limitMicroCents), usedMc = num(m.usedMicroCents);
+    if (limitMc == null || !(limitMc > 0) || usedMc == null || usedMc < 0) continue;
+    const total = opencodeUsdOf(limitMc), used = opencodeUsdOf(usedMc);
+    windows[pair[1]] = {
+      percent: Math.round(clampPct((usedMc / limitMc) * 100) * 100) / 100,
+      resetsAt: resetOf(m.resetsAt) || (pair[0] === "month" ? resetOf(access.endsAt) : null),
+      used, total, remaining: total != null && used != null ? Math.max(0, total - used) : null,
+      currency: "USD",
+    };
+  }
+  /* 缺某窗（字段漂移/该档无此窗）时不拿兜底整数百分比补洞：避免不同来源/时刻的数据
+   * 混在同一张卡上；全部窗都缺失才整源回落，下一拍控制台恢复即自愈。 */
+  if (!Object.keys(windows).length) return null;
+  return { label: "OpenCode Go", kind: "plan", windows: windows };
+}
 function normalizeOpencodeGo(body) {
   const usage = body && typeof body === "object" && !Array.isArray(body) &&
     body.usage && typeof body.usage === "object" && !Array.isArray(body.usage) ? body.usage : null;
@@ -402,7 +452,9 @@ function normalizeOpencodeGo(body) {
     if (pct == null || pct < 0) continue;   // 坏窗跳过不整体失败（端点上线当天改过一次形态）
     windows[pair[1]] = {
       percent: Math.round(clampPct(pct) * 10) / 10,   // 已用%直取（Go 语义即已用，非剩余）
-      resetsAt: pct > 0 ? resetOf(w.resetsAt) : null,   // percent=0 时 resetsAt 是 now+窗长占位值，丢弃
+      /* percent=0 时 public 端点的 resetsAt 是 now+窗长占位值（空闲窗），丢弃；
+       * 子 1% 活跃窗由控制台 meters 主链给出精确 percent 与真实 resetsAt。 */
+      resetsAt: pct > 0 ? resetOf(w.resetsAt) : null,
     };
   }
   if (!Object.keys(windows).length) throw qErr("parse_error", "opencode windows missing");
@@ -410,7 +462,7 @@ function normalizeOpencodeGo(body) {
 }
 
 ADAPTERS.push({
-  id: "opencode", label: "OpenCode Go", kind: "plan", defaultOn: true, unverified: true,
+  id: "opencode", label: "OpenCode Go", kind: "plan", defaultOn: true,
   envKeys: ["OPENCODE_API_KEY"],
   detect(j, providerId) {
     if (providerId.indexOf("account:") === 0) return null;
@@ -434,17 +486,36 @@ ADAPTERS.push({
     return null;
   },
   async fetchOne(j, ctx, cred, ctl) {
-    let body;
-    try {
-      body = await j.http.getJson("https://opencode.ai/zen/go/v1/usage",
-        { authorization: "Bearer " + cred.token }, ctl);
-    } catch (e) {
+    const headers = { authorization: "Bearer " + cred.token };
+    /* 两个端点并行、各自独立 AbortController（仅父信号联动）：控制台 meters 给出精确金额/
+     * 子 1% 用量；public usage 端点作为独立兜底并负责 403 无订阅判定。控制台 3 秒宽限
+     * 超时后单独中止，不拖住已就绪的兜底；控制台 401/403/网络/形态变化静默降级，不让
+     * 一次控制台改版把整条链打成 parse_error 长退避。 */
+    const statusCtl = opencodeLinkedAbort(ctl);
+    const usageCtl = opencodeLinkedAbort(ctl);
+    const statusTimer = setTimeout(() => { try { statusCtl.abort(); } catch (e) { } }, OPENCODE_STATUS_TIMEOUT_MS);
+    if (statusTimer && typeof statusTimer.unref === "function") statusTimer.unref();
+    const statusP = j.http.getJson(OPENCODE_GO_STATUS_URL, headers, statusCtl)
+      .then((body) => normalizeOpencodeGoStatus(body))
+      .catch(() => null)
+      .finally(() => clearTimeout(statusTimer));
+    /* 显式信封而非 instanceof Error：fetchImpl 是注入接缝，可能以字符串/普通对象拒绝。 */
+    const usageP = j.http.getJson(OPENCODE_GO_USAGE_URL, headers, usageCtl)
+      .then((body) => ({ ok: true, value: normalizeOpencodeGo(body) }))
+      .catch((error) => ({ ok: false, error }));
+    const rich = await statusP;
+    if (rich) {
+      try { usageCtl.abort(); } catch (e) { }   // 主链已够：取消多余兜底请求
+      return rich;
+    }
+    const usage = await usageP;
+    if (!usage.ok) {
       /* 403 EntitlementError：key 本身有效（Zen/Go 共用 workspace key）但无 Go 订阅——
        * 与 401 认证失败分开（classifyStatus 把 401/403 都归 auth_failed，此处按消息分流）。 */
-      if (e && e.httpStatus === 403) return { noPlan: true };
-      throw e;
+      if (usage.error && usage.error.httpStatus === 403) return { noPlan: true };
+      throw usage.error;
     }
-    return normalizeOpencodeGo(body);
+    return usage.value;
   },
 });
 
