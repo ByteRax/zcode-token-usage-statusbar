@@ -1077,6 +1077,7 @@
         tip.style.display = "none";
       }
       tip.__zuSpeedSize = null;
+      tip.__zuSysExp = false;   // v357：关闭即收起阈值说明，重开默认收起
       if (tipFor && tipFor.removeAttribute) tipFor.removeAttribute("aria-describedby");
       tipFor = null;
       tipSig = "";
@@ -1159,6 +1160,13 @@
       if (t.charCodeAt(0) === 1) tip.firstChild.innerHTML = t.slice(1);   // \x01 前缀 = 结构化 HTML（v67.1）
       else tip.firstChild.textContent = t;
       tip.firstChild.scrollTop = oldScroll;
+      /* v357：sysmon 阈值说明展开态跨重建保留（帧刷新签名变重建不收拢展开区） */
+      if (tip.__zuSysExp) {
+        var sysExpBox = tip.querySelector("[data-zu-sys-thexp]");
+        var sysExpBtn = tip.querySelector("[data-zu-sys-th]");
+        if (sysExpBox) sysExpBox.hidden = false;
+        if (sysExpBtn) sysExpBtn.setAttribute("aria-expanded", "true");
+      }
       /* v285：V2 卡左对齐标记（positionTip 消费：left=锚元素左缘）；
        * v299.2（用户规格）：本轮 500×350 卡同款居左（与生成速度 tooltip 对齐语义一致） */
       tip.__zuAlignLeft = !!(tip.querySelector(".zu-sv-root") || tip.querySelector(".zu-stat-tip--turn"));

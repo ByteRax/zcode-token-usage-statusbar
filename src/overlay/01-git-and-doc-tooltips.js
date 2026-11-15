@@ -2068,10 +2068,22 @@
       sysTip.innerHTML = html;
       sysTip.__zuTipSig = html;
       try { var rowsEl = sysTip.querySelector(".zu-sys-vols"); if (rowsEl && keep) rowsEl.scrollTop = keep; } catch (e) { }
+      /* v357：帧刷新重建不收拢阈值说明展开区 */
+      if (sysTip.__zuSysExp) {
+        var expBox = sysTip.querySelector("[data-zu-sys-thexp]");
+        var expBtn = sysTip.querySelector("[data-zu-sys-th]");
+        if (expBox) expBox.hidden = false;
+        if (expBtn) expBtn.setAttribute("aria-expanded", "true");
+      }
     }
     if (chip.getAttribute("data-zusage-light") === "1") sysTip.setAttribute("data-zusage-light", "1");
     else sysTip.removeAttribute("data-zusage-light");
     sysTip.style.display = "block";
+    placeSysTip(chip);
+    sysTipFor = chip;
+  }
+  /* 定位（showSysTip 与 ⓘ 切换共用；v357：展开区 +~124px 后重钳防底边越出视口） */
+  function placeSysTip(chip) {
     var r = chip.getBoundingClientRect(), tw = sysTip.offsetWidth, th2 = sysTip.offsetHeight;
     var vw = window.innerWidth, vh = window.innerHeight;
     var left = Math.max(8, Math.min(r.left, vw - tw - 8));
@@ -2079,11 +2091,11 @@
     if (top < 8) top = Math.min(r.bottom + 8, vh - th2 - 8);
     sysTip.style.left = Math.round(left) + "px";
     sysTip.style.top = Math.round(top) + "px";
-    sysTipFor = chip;
   }
   function hideSysTip() {
     clearTimeout(sysTipHideTimer);
     sysTip.style.display = "none";
+    sysTip.__zuSysExp = false;   // v357：关闭即收起阈值说明，重开默认收起
     sysTipFor = null;
   }
   function hideSysTipSoon() { clearTimeout(sysTipHideTimer); sysTipHideTimer = setTimeout(hideSysTip, 200); }
@@ -2092,6 +2104,17 @@
   window.addEventListener("keydown", onSysKeydown, true);
   sysTip.addEventListener("mouseenter", onSysTipEnter);
   sysTip.addEventListener("mouseleave", hideSysTip);
+  /* v357：点击 ⓘ 切换阈值说明内联展开区（只切 hidden 不重建，同全量 tip 链只挂 click）；
+   * 切换后重定位防展开后底边越出视口 */
+  sysTip.addEventListener("click", function (e) {
+    var btn = e.target && e.target.closest ? e.target.closest("[data-zu-sys-th]") : null;
+    if (!btn) return;
+    sysTip.__zuSysExp = !sysTip.__zuSysExp;
+    var box = sysTip.querySelector("[data-zu-sys-thexp]");
+    if (box) box.hidden = !sysTip.__zuSysExp;
+    btn.setAttribute("aria-expanded", sysTip.__zuSysExp ? "true" : "false");
+    if (sysTipFor && sysTipFor.isConnected) placeSysTip(sysTipFor);
+  });
   function cleanupSysTip() {
     window.removeEventListener("keydown", onSysKeydown, true);
     clearTimeout(sysTipHideTimer);

@@ -307,3 +307,30 @@ test("applyConfig 运行时改间隔立即按新配置重采；纯 want 抖动�
     client.dispose();
   }
 });
+
+test("apfsContainerOf/markDarwinContainer：同 diskN 前缀标共享、容量相同不作为判据（v357）", () => {
+  const { apfsContainerOf, markDarwinContainer } = mod._internals;
+  assert.equal(apfsContainerOf("/dev/disk3s1s1"), "disk3");
+  assert.equal(apfsContainerOf("/dev/disk3s5"), "disk3");
+  assert.equal(apfsContainerOf("/dev/disk12s2"), "disk12");
+  assert.equal(apfsContainerOf("/dev/disk3"), null);   // 无 slice 后缀不判（非卷设备）
+  assert.equal(apfsContainerOf(""), null);
+  // / + Data 同容器 → 双双标注（firmlink 双卷共享容器空间，statfs 同源）
+  const a = [{ mount: "/", dev: "/dev/disk3s1s1" }, { mount: "/System/Volumes/Data", dev: "/dev/disk3s5" }];
+  markDarwinContainer(a);
+  assert.equal(a[0].container, "disk3");
+  assert.equal(a[1].container, "disk3");
+  // 设备不同容器（外置独立盘与系统盘容量巧合相同）→ 不标（容量相同不作为判据）
+  const b = [{ mount: "/", dev: "/dev/disk3s1s1" }, { mount: "/System/Volumes/Data", dev: "/dev/disk5s1" }];
+  markDarwinContainer(b);
+  assert.equal(b[0].container, undefined);
+  assert.equal(b[1].container, undefined);
+  // 缺 Data 卷（systemVol 关）→ 不标
+  const c1 = [{ mount: "/", dev: "/dev/disk3s1s1" }];
+  markDarwinContainer(c1);
+  assert.equal(c1[0].container, undefined);
+  // 设备名无 diskN 模式（未来形态/非常规）→ 保守不标（前端保留两行真实容量）
+  const d = [{ mount: "/", dev: "weirdfs://root" }, { mount: "/System/Volumes/Data", dev: "weirdfs://data" }];
+  markDarwinContainer(d);
+  assert.equal(d[0].container, undefined);
+});

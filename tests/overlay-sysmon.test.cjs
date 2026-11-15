@@ -143,23 +143,35 @@ test('sysmonFaceHtml: 三格式面、loading—、预警图标切换、warnColor
   assert.equal(api.sysmonFaceHtml({ metrics: { cpu: 0, mem: 0, disk: 0 } }, f, 'full', NOW), '');
 });
 
-test('sysmonTipHtml: 结构、动态刷新说明、条件行、磁盘表与转义', () => {
+test('sysmonTipHtml: 紧凑结构（v357）、动态刷新说明、条件行、磁盘表与转义', () => {
   const api = evalHelpers({ L: (zh, en) => zh });
   const NOW = 1700000000000 + 1000;   // 新鲜度按传入时钟判（不碰真实时钟）
   const html = api.sysmonTipHtml(CFG, frameOf({}), NOW);
   assert.match(html, /系统状态/);
-  assert.match(html, /实时 5s · 磁盘 60s/);   // 按 cfg 动态，不写死
-  assert.match(html, /整机使用率/);
+  assert.match(html, /zu-sys-local/);                    // 「本机」低对比标签
+  assert.match(html, /title="CPU\/内存每 5s · 磁盘每 60s"/);   // 按 cfg 动态，不写死
+  assert.match(html, />5s · 60s</);                       // 可见文案紧凑（刷新说明换时钟图标）
+  assert.ok(!html.includes('M3 12a9 9'), '刷新箭头图标已换时钟（纯说明非按钮）');
+  assert.match(html, /zu-sys-grid/);                      // 三区 Grid（标签列|主数值|右侧辅助）
+  assert.match(html, /zu-sys-big">23%</);                 // CPU 主数值直读百分比
+  assert.ok(!html.includes('整机使用率'), '去「整机使用率」前缀（主数值即使用率）');
   assert.match(html, /8 核/);
-  assert.match(html, /Load 1m\/5m\/15m/);
+  assert.match(html, /Load 1m\/5m\/15m <b>1\.28 \/ 1\.11 \/ 0\.98<\/b>/);   // 恒两位小数
+  const oneDecimal = api.sysmonTipHtml(CFG, frameOf({ cpu: { state: 'ok', pct: 10, cores: 4, load: [1.9, 2, 2.3] } }), NOW);
+  assert.match(oneDecimal, /1\.90 \/ 2\.00 \/ 2\.30/, 'Load 一位数补齐两位（列宽稳定）');
   assert.match(html, /Wired 2\.1G/);
   assert.match(html, /Swap 614M \/ 1G/);
-  assert.match(html, /zu-sys-vols/);
+  assert.match(html, /当前： 项目卷/);                     // 主卷角色入区头（重复挂载点行删除）
+  assert.ok(!html.includes('zu-sys-main'), '旧 flex 行结构已移除（Grid 替代）');
   assert.match(html, /项目卷 Data/);
-  assert.match(html, /zu-sys-cur/);            // 项目卷高亮行
-  assert.match(html, /预警（/);
-  assert.match(html, /CPU ≥80%/);              // 图例按阈值动态生成
-  assert.match(html, /磁盘可用 ≤10%/);
+  assert.match(html, /zu-sys-vrowon/);                    // 当前监控卷轻高亮行
+  assert.ok(!html.includes('zu-sys-cur'), '旧大灰底高亮类已替换');
+  // 图例精简（v357）：三色点 + ⓘ 按钮；阈值明细收进内联展开区
+  assert.match(html, /data-zu-sys-th aria-expanded="false"/);
+  assert.match(html, /data-zu-sys-thexp hidden/);
+  assert.match(html, /zu-sys-tht/);                       // 展开区阈值表
+  assert.match(html, /≥80%/);                             // 阈值动态读取 cfg
+  assert.ok(!html.includes('预警（'), '图例不再内联阈值长文案');
   assert.ok(!html.includes('数据已过期'), '新鲜帧无过期注记');
   // 条件行：无 Wired/Swap 不伪造；load 缺席整行隐藏；Windows load null 同效
   const bare = api.sysmonTipHtml(CFG, frameOf({
@@ -169,10 +181,15 @@ test('sysmonTipHtml: 结构、动态刷新说明、条件行、磁盘表与转�
   assert.ok(!bare.includes('Wired'), '无 Wired 不渲染假值');
   assert.ok(!bare.includes('Swap '), '无 Swap 不渲染假值');
   assert.ok(!bare.includes('Load 1m'), '无负载整行隐藏');
+  // Swap 有效 0 值显示（与 null 不可用区分，v357 number 判定）
+  const swap0 = api.sysmonTipHtml(CFG, frameOf({
+    mem: { state: 'ok', total: 8589934592, used: 2147483648, avail: 6442450944, pct: 25, wired: null, swap_total: 1073741824, swap_used: 0 },
+  }), NOW);
+  assert.match(swap0, /Swap 0K \/ 1G/, 'swap_used=0 是有效值（Linux 未用交换）');
   // 过期注记 + 采样秒数动态化
   const cfg2 = JSON.parse(JSON.stringify(CFG)); cfg2.intervalMs = 3000;
   const staleF = frameOf({}); staleF.ts = 1;
-  assert.match(api.sysmonTipHtml(cfg2, staleF), /实时 3s/);
+  assert.match(api.sysmonTipHtml(cfg2, staleF), /title="CPU\/内存每 3s/);
   assert.match(api.sysmonTipHtml(cfg2, staleF), /数据已过期/);
   // 卷名转义
   const evil = frameOf({ disk: { state: 'ok', vols: [{ id: '/x', name: '<script>alert(1)</script>', mount: '/x', role: 'project', total: 1, used: 0, avail: 1, free_pct: 100 }] } });
@@ -181,6 +198,49 @@ test('sysmonTipHtml: 结构、动态刷新说明、条件行、磁盘表与转�
   assert.ok(escaped.includes('&lt;script&gt;'));
   // 采集中
   assert.match(api.sysmonTipHtml(CFG, null, NOW), /采集中/);
+});
+
+test('sysmonTipHtml: APFS 共享容器（v357）——同容器次行不重复容量、独立卷不合并、warnColors 关中性化', () => {
+  const api = evalHelpers({ L: (zh, en) => zh });
+  const NOW = 1700000000000 + 1000;
+  /* 情况 B：不同 APFS 卷共享同一容器（container 字段由后端标注，前端只认字段不猜容量） */
+  const GB = 926 * 1024 * 1024 * 1024;   // sysFmtBytes 是 1024 进制，字面 926G 对齐
+  const shared = api.sysmonTipHtml(CFG, frameOf({ disk: { state: 'ok', vols: [
+    { id: '/', mount: '/', role: 'system', container: 'disk3', total: GB, used: 532 * 1024 ** 3, avail: 394 * 1024 ** 3, free_pct: 42.5 },
+    { id: '/System/Volumes/Data', mount: '/System/Volumes/Data', role: 'project', container: 'disk3', total: GB, used: 532 * 1024 ** 3, avail: 394 * 1024 ** 3, free_pct: 42.5 },
+  ] } }), NOW);
+  assert.match(shared, /APFS 共享/, '同容器首行带徽记');
+  assert.ok(shared.includes('共享容器空间'), '次行显共享说明');
+  assert.equal((shared.match(/926G/g) || []).length, 1, '同容器容量数值只出现一次（不重复展示误导「磁盘翻倍」）');
+  /* 情况 D：两行容量完全相同但无 container 字段（不同盘巧合/无法判定）——保守保留两行真实数据 */
+  const twin = api.sysmonTipHtml(CFG, frameOf({ disk: { state: 'ok', vols: [
+    { id: '/x1', mount: '/x1', role: 'system', total: GB, used: 532 * 1024 ** 3, avail: 394 * 1024 ** 3, free_pct: 42.5 },
+    { id: '/x2', mount: '/x2', role: 'project', total: GB, used: 532 * 1024 ** 3, avail: 394 * 1024 ** 3, free_pct: 42.5 },
+  ] } }), NOW);
+  assert.equal((twin.match(/926G/g) || []).length, 2, '无共享证据不合并（容量相同不作为判据）');
+  assert.ok(!twin.includes('APFS 共享'));
+  /* warnColors 关：点转中性灰 + 注记，避免误以为仍会变色 */
+  const noColor = JSON.parse(JSON.stringify(CFG)); noColor.warnColors = 0;
+  const nc = api.sysmonTipHtml(noColor, frameOf({}), NOW);
+  assert.match(nc, /zu-sys-legend nocolor/);
+  assert.match(nc, /颜色提示已关闭/);
+});
+
+test('sysThresholdIssues 与展开区标红（v357）：关系非法标红不改写', () => {
+  const seg = sliceText('  function sysThresholdIssues(cfg) {', '  /* 阈值明细表（ⓘ 展开区内容');
+  const ctx = { L: (zh) => zh };
+  vm.runInNewContext(seg + '\nglobalThis.issues = sysThresholdIssues;', ctx);
+  assert.deepEqual([...ctx.issues(CFG)], [], '合法配置零问题');
+  const bad1 = JSON.parse(JSON.stringify(CFG)); bad1.thresholds.cpuWarn = 95;   // warn >= crit
+  assert.deepEqual([...ctx.issues(bad1)], ['CPU：预警阈值需小于危险阈值']);
+  const bad2 = JSON.parse(JSON.stringify(CFG)); bad2.thresholds.diskFreeWarn = 5;   // warn <= crit（可用率方向）
+  assert.deepEqual([...ctx.issues(bad2)], ['磁盘可用率：预警阈值需大于危险阈值']);
+  const both = JSON.parse(JSON.stringify(CFG)); both.thresholds.memWarn = 90; both.thresholds.diskFreeCrit = 20;
+  assert.equal(ctx.issues(both).length, 2, '多指标问题并列');
+  // 展开区：非法阈值标红（展示层反馈，不写回配置）
+  const api = evalHelpers({ L: (zh) => zh });
+  const tbl = api.sysmonTipHtml(bad1, frameOf({}), 1700000000000 + 1000);
+  assert.match(tbl, /zu-sys-thbad/);
 });
 
 test('__zusageSysmon 帧入口：非法帧拒绝、合法帧写诊断并逐实例 tick', () => {
@@ -251,6 +311,18 @@ test('源码契约：条面格门控/远程排除/原地刷新/窄宽钩子/订�
   assert.match(source, /state\.sysmonCfg = normalizeSysmonCfg\(sc/, '设置输入裸赋值后再 clamp（review M3）');
   assert.match(source, /sysSevSnapshot = sysSeveritySmoothed\(state\.sysmonCfg, frame\);/, '防抖按采样拍推进（review M2：帧入口单点推进）');
   assert.match(source, /restoreSysmonChip\(\);   \/\/ v356/, 'dispose 摘除系统状态 chip');
+  /* v357 接线契约：ⓘ 切换/重建恢复/关闭清零/mousedown 名单/后端容器标注 */
+  assert.match(source, /tip\.__zuSysExp = !tip\.__zuSysExp/, '全量 tip ⓘ 切换委托（只挂 click：toggle 非同值幂等）');
+  assert.match(source, /if \(tipFor\) positionTip\(tipFor, true\);/, 'ⓘ 切换后重定位（展开 +124px 防底边越出视口）');
+  assert.match(source, /function placeSysTip\(chip\)/, 'sysTip 定位提函数（show 与 ⓘ 切换共用）');
+  assert.match(source, /if \(tip\.__zuSysExp\) \{[\s\S]{0,200}data-zu-sys-thexp[\s\S]{0,120}hidden = false/, 'drawTip 重建后恢复展开态');
+  assert.match(source, /tip\.__zuSysExp = false;   \/\/ v357：关闭即收起阈值说明/, 'hideTip 清展开态（重开默认收起）');
+  assert.match(source, /sysTip\.__zuSysExp = !sysTip\.__zuSysExp/, '精简 chip sysTip ⓘ 切换委托');
+  assert.match(source, /t\.closest\("\.zu-sv-tab"\) \|\| t\.closest\("\[data-zu-sys-th\]"\)/, 'mousedown 名单含阈值按钮（防焦点逸出关 tooltip）');
+  assert.match(source, /sysmonPreviewHtml\(cfgL, sysFrame\)/, '07 预览行走共享函数（跟随显示格式）');
+  const clientSrc = fs.readFileSync(path.join(root, 'sysmon-client.cjs'), 'utf8');
+  assert.match(clientSrc, /markDarwinContainer\(vols\)/, '采样器 darwin 分支标注 APFS 共享容器');
+  assert.match(clientSrc, /process\.platform === "darwin"\) markDarwinContainer/, '仅 darwin 标注（Linux/Windows 不受影响）');
 });
 
 test('inject-main sysmon 订阅链：want 记账/配置透传/非法 projectPath 拒绝', () => {
@@ -317,6 +389,37 @@ test('设置页：排序卡出现系统状态行、配置卡结构与双回填�
   assert.match(cfgCard, /data-th="cpuWarn"/);
   assert.match(cfgCard, /data-th="diskFreeCrit"/);
   assert.match(cfgCard, /value="80"/);
+  /* v357 Grid 重构：分组小节标题 + 阈值三列表 + 单位固定后缀 + 输入框显式边框 */
+  assert.match(cfgCard, /zu-syscfg-cap">监控指标/);
+  assert.match(cfgCard, /zu-syscfg-cap">显示方式/);
+  assert.match(cfgCard, /zu-syscfg-cap">采样频率/);
+  assert.match(cfgCard, /zu-syscfg-cap">磁盘监控范围/);
+  assert.match(cfgCard, /zu-syscfg-ths/);
+  assert.match(cfgCard, /zu-syscfg-thh">预警阈值/);
+  assert.match(cfgCard, /zu-syscfg-thh">危险阈值/);
+  assert.match(cfgCard, /zu-syscfg-thl">CPU 使用率/);
+  assert.match(cfgCard, /zu-syscfg-thl">内存使用率/);
+  assert.match(cfgCard, /zu-syscfg-thl">磁盘可用率/);
+  assert.match(cfgCard, /zu-syscfg-unit">%</);
+  assert.match(cfgCard, /zu-syscfg-unit">秒/);
+  assert.match(source, /\.zu-syscfg \.zu-syscfg-item>input\[type=checkbox\]\{order:0/, 'checkbox order:0 抵消通用 order:2（开关回到文字前；规则在 CSS 不在 HTML 产物）');
+  assert.match(source, /\.zu-syscfg-num\{width:56px;height:28px;[\s\S]*?border:1px solid/, '数字输入框显式边框/高度');
+  assert.match(cfgCard, /自动适配（推荐）/, '显示格式短文案（长示例移帮助行）');
+  assert.match(cfgCard, /同一挂载点或同一设备的重复卷自动去重/, '磁盘目标说明');
+  // 阈值关系校验：合法 cfg 初始 hidden；非法 cfg 初始即提示
+  assert.match(cfgCard, /data-zu-sys-therr hidden/);
+  const badState = JSON.parse(JSON.stringify(state));
+  badState.sysmonCfg.thresholds.cpuWarn = 95;
+  const sysThresholdIssuesStub = (c) => {   // 与 00 分片同语义桩（06 生成与 09 syncPanel 共用）
+    const t = c.thresholds, out = [];
+    if (t.cpuWarn >= t.cpuCrit) out.push('CPU：预警阈值需小于危险阈值');
+    if (t.memWarn >= t.memCrit) out.push('内存：预警阈值需小于危险阈值');
+    if (t.diskFreeWarn <= t.diskFreeCrit) out.push('磁盘可用率：预警阈值需大于危险阈值');
+    return out;
+  };
+  const ctxBad = Object.assign({}, ctx, { state: badState, sysThresholdIssues: sysThresholdIssuesStub });
+  vm.runInNewContext(helpers + '\n' + seg + '\nglobalThis.h = barOrderSettingsHtml; globalThis.sys = sysmonSettingsHtml;', ctxBad);
+  assert.match(ctxBad.sys(), /data-zu-sys-therr>CPU：预警阈值需小于危险阈值/, 'LS 遗留非法阈值初始即提示');
   // 无 sysFrame 时预览显 — 占位（不用演示数字冒充真实采集结果）
   assert.match(cfgCard, /zu-syscfg-prev/);
   assert.match(cfgCard, /—</);
@@ -347,6 +450,7 @@ test('设置页：排序卡出现系统状态行、配置卡结构与双回填�
     zuBarOrderNormalize: (r) => r, zuBarPriorityNormalize: (r) => r || {},
     refreshLayoutEditor: () => {}, syncUpdate: () => {}, LS: {}, persistSysmonCfg: () => {},
     normalizeSysmonCfg: (r) => r,
+    sysThresholdIssues: sysThresholdIssuesStub,
     zuRotatorSyncPanel: null, epReconcile: null, epSyncDirtyStatus: null,
   };
   const spA = source.indexOf('    function syncPanel() {');

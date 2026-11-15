@@ -280,6 +280,22 @@ function pickVolumes(cands, platform, projectPath, cfg) {
   if (picked.length > MAX_VOLS) picked = picked.slice(0, MAX_VOLS);
   return picked;
 }
+/* APFS 共享容器标注（v357）：macOS firmlink 下 /（系统快照卷）与 /System/Volumes/Data
+ * 共享同一 APFS 容器空间，fs.statfs 对两者返回相同容量——前端两行重复数值会误导
+ * 「磁盘容量翻倍」。仅当两卷同时入选且设备名同 diskN 前缀（/dev/disk3s1s1 与
+ * /dev/disk3s5 → disk3）才标 container；容量相同不作为判据（不同盘可能巧合相等），
+ * 外置卷之间无法与「非 APFS 多分区盘」区分，保守不标（保留真实容量，前端不合并）。 */
+function apfsContainerOf(dev) {
+  const m = /^\/dev\/disk(\d+)s/.exec(String(dev || ""));
+  return m ? "disk" + m[1] : null;
+}
+function markDarwinContainer(vols) {
+  const root = vols.find((v) => v.mount === "/");
+  const data = vols.find((v) => v.mount === "/System/Volumes/Data");
+  if (!root || !data) return;
+  const c = apfsContainerOf(root.dev);
+  if (c && c === apfsContainerOf(data.dev)) { root.container = c; data.container = c; }
+}
 /* statfs 探测复用表（B1，review 2026-11-16）：fs.promises.statfs 底层 uv_fs_statfs 跑在
  * 共享 libuv 线程池上，Promise.race 超时只放弃 await 不取消底层调用——Windows 断连 SMB
  * 盘符挂死时逐 tick 重发会把线程池（默认 4 线程）堆满，拖停宿主进程全部异步 fs。
@@ -351,8 +367,10 @@ async function sampleDisk(projectPath, cfg) {
         role: c.roles.indexOf("project") >= 0 ? "project" : c.roles.indexOf("system") >= 0 ? "system" : "other",
         total, used: Math.max(0, (st.blocks - st.bfree) * st.bsize), avail,
         free_pct: total > 0 ? r1(avail / total * 100) : null,
+        dev: c.device || null,
       });
     }
+    if (process.platform === "darwin") markDarwinContainer(vols);   // v357：仅 macOS 系统卷对判 APFS 共享容器
     if (!vols.length) return { state: "error", err: "statfs failed", vols: [] };
     return { state: "ok", vols };
   } catch (e) {
@@ -479,7 +497,7 @@ module.exports = {
     cpuUsageFromTicks, cpuSnapshot, loadavgOr,
     parseMemInfo, parseSwapusage, parseVmStat,
     parseProcMounts, parseDfLocal, longestMountPrefix, pickProjectMount, volNameOf, pathDriveMount, statfsWithTimeout,
-    sampleMem, sampleDisk, pickVolumes, darwinVolAllowed,
+    sampleMem, sampleDisk, pickVolumes, darwinVolAllowed, apfsContainerOf, markDarwinContainer,
     LIMITS: { CPU_DEFAULT_MS, DISK_DEFAULT_MS, CPU_MIN_MS, CPU_MAX_MS, DISK_MIN_MS, DISK_MAX_MS, MAX_VOLS },
   },
 };

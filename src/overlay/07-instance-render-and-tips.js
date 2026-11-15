@@ -774,8 +774,8 @@
       try {
         var prev = panel.querySelector(".zu-syscfg-prev");
         if (prev) {
-          var pv = sysmonFaceHtml(state.sysmonCfg, sysFrame, "full");
-          var pvHtml = pv || '<span class="zu-sys-dim">' + L("采集中…", "sampling…") + "</span>";
+          var cfgL = (state.sysmonCfg && state.sysmonCfg.thresholds) ? state.sysmonCfg : normalizeSysmonCfg(null);
+          var pvHtml = sysmonPreviewHtml(cfgL, sysFrame);   // v357：预览跟随显示格式，空状态/采集中注记同 buildPanel
           if (prev.innerHTML !== pvHtml) prev.innerHTML = pvHtml;
         }
       } catch (e) { }
