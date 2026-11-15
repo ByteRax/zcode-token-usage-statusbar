@@ -245,7 +245,15 @@ test('dual theme browser behaviour (isolated fixture)', { skip: skipReason, time
   await t.test('switching from scrolled default to pill resets the offset', async () => {
     await reset(b);
     await b.evaluate(`document.querySelector('#pane-a').style.width = '220px'`);
-    await b.waitFor(`(() => { const m = document.querySelector('#pane-a .zu-main'); return m.scrollWidth > m.clientWidth + 1; })()`);
+    /* v357① 探针修复后 220px 是稳定终态：全折后残部（speed+⋯+齿轮）恰好装下、
+     * 无可横滚内容（旧「220px 必溢出」断言骑在探针震荡的展开相上）。钳 .zu-main
+     * 宽度制造真实横滚，验证切药丸档时偏移归零。 */
+    await b.waitFor(`(() => {
+      const bar = document.querySelector('#pane-a .zusage-root'), m = bar.querySelector('.zu-main');
+      return bar.classList.contains('zu-narrow') && m.scrollWidth <= m.clientWidth + 1 && !m.classList.contains('zu-clip');
+    })()`, 'narrow bar did not settle fully folded');
+    await b.evaluate(`(() => { document.querySelector('#pane-a .zu-main').style.maxWidth = '48px'; })()`);
+    await b.waitFor(`(() => { const m = document.querySelector('#pane-a .zu-main'); return m.scrollWidth > m.clientWidth + 1 && m.classList.contains('zu-clip'); })()`, 'clamped bar did not scroll-fade');
     await b.evaluate(`(() => { const m = document.querySelector('#pane-a .zu-main'); m.scrollLeft = m.scrollWidth; })()`);
     assert.ok(await b.evaluate(`document.querySelector('#pane-a .zu-main').scrollLeft`) > 0);
     await b.evaluate(`window.__testMain = document.querySelector('#pane-a .zu-main')`);
@@ -297,11 +305,28 @@ test('dual theme browser behaviour (isolated fixture)', { skip: skipReason, time
     assert.deepEqual(compact.counts.map(x => x[0]), full);
     assert.ok(compact.counts.every(x => x[1] === 'hidden'));
     await b.evaluate(`document.querySelector('#pane-a').style.width = '220px'`);
-    await b.waitFor(`(() => { const m = document.querySelector('#pane-a .zu-main'); return m.scrollWidth > m.clientWidth + 1 && m.classList.contains('zu-clip'); })()`, 'compact bar did not overflow');
+    /* v357① 探针剥折叠态修复后，220px 是稳定终态：可折叠格全部折进「···」，残部
+     * （speed+⋯+齿轮）恰好装下——旧断言「此时必须溢出+渐隐」实际骑在折叠↔展开
+     * 震荡的展开相上（探针把已折叠克隆量成全宽装下→shrink 回 0，约 2Hz）。渐隐
+     * 兜底无法靠继续缩面板触发：夹具卡片 chrome（⋯+齿轮）恒占 ~68px，150/200px
+     * 实测均全折装下、再小进入卡片退化区。钳 .zu-main 宽度等价制造「全折仍超宽」
+     * ——speed 是最后候选折叠（zuBarFoldOrder rank -1 仅降序不豁免），残部 chrome
+     * 不可折叠，溢出/横滚/渐隐走真实折叠与渐隐链。 */
+    await b.waitFor(`(() => {
+      const bar = document.querySelector('#pane-a .zusage-root'), m = bar.querySelector('.zu-main');
+      const folded = [...m.querySelectorAll(':scope > .it')].filter(e => (e.dataset.zuKey || 'system') !== 'speed');
+      return bar.classList.contains('zu-narrow') && folded.length > 0 &&
+        folded.every(e => e.dataset.zuFolded === '1') &&
+        bar.querySelector('.zu-more').dataset.zuVisible === '1' &&
+        m.scrollWidth <= m.clientWidth + 1 && !m.classList.contains('zu-clip');
+    })()`, 'narrow bar did not settle fully folded');
+    await b.evaluate(`(() => { document.querySelector('#pane-a .zu-main').style.maxWidth = '48px'; })()`);
+    await b.waitFor(`(() => { const m = document.querySelector('#pane-a .zu-main'); return m.scrollWidth > m.clientWidth + 1 && m.classList.contains('zu-clip'); })()`, 'fully folded bar did not fall back to scroll fade');
     await b.evaluate(`(() => { const m = document.querySelector('#pane-a .zu-main'); m.scrollLeft = m.scrollWidth; })()`);
     await b.waitFor(`(() => { const m = document.querySelector('#pane-a .zu-main'); return m.classList.contains('zu-clip-left') && !m.classList.contains('zu-clip'); })()`, 'end fade did not update');
     const scrolled = await b.evaluate(`(() => { const bar = document.querySelector('#pane-a .zusage-root'), m = bar.querySelector('.zu-main'), gear = bar.querySelector('.zu-gear'), r = gear.getBoundingClientRect(); return { left: m.scrollLeft, hit: document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2) === gear || gear.contains(document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)) }; })()`);
     assert.ok(scrolled.left > 0 && scrolled.hit, 'scrolling keeps gear clickable');
+    await b.evaluate(`(() => { document.querySelector('#pane-a .zu-main').style.maxWidth = ''; })()`);
     await b.evaluate(`document.querySelector('#pane-a').style.width = '1100px'`);
     await b.waitFor(`!document.querySelector('#pane-a .zusage-root').classList.contains('zu-narrow')`, 'wide bar did not restore after scrolling');
     const restored = await b.evaluate(`(() => { const bar = document.querySelector('#pane-a .zusage-root'); return [...bar.querySelectorAll('.zu-secondary')].map(x => getComputedStyle(x).visibility); })()`);
