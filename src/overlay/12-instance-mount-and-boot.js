@@ -211,6 +211,8 @@
       syncPillSurface();
     }
     function applyBarTheme() {
+      foldDirty = true;
+      closeMore(false);
       var pill = state.theme === "pill", compact = state.theme === "compact";
       bar.setAttribute("data-zusage-theme", state.theme);
       bar.classList.toggle("zu-pill", pill);
@@ -696,8 +698,11 @@
         return;
       }
       if (option.__tip) {
-        showTipFor(option);
+        moreButton.__tip = option.__tip;
+        moreButton.__zuMoreTipKey = option.dataset.zuKey;
         closeMore(false);
+        moreButton.focus();
+        showTipFor(moreButton);
       }
     });
     morePanel.addEventListener("keydown", function (e) {
