@@ -189,8 +189,7 @@ test("opencode: console status meters expose exact sub-1% five-hour usage and US
   assert.equal(calls.length, 1, "public usage 端点并行兜底");
   assert.notEqual(statusCalls[0].signal, calls[0].signal, "两请求各自独立 AbortController");
   assert.equal(calls[0].signal.aborted, true, "控制台命中后取消多余兜底请求");
-  calls[0].d.resolve(fakeRes(200, GO_BODY));   // 兜底响应即使成功也不覆盖精确 meters
-  await flush();
+  await flush();   // abort 已令替身 fetch 拒绝，resolve 兜底是 no-op；「兜底先到仍以 rich 为准」正向锁定在下一用例
   const v = client.view();
   assert.equal(v.status, "ok");
   assert.equal(v.label, "OpenCode Go");
@@ -207,6 +206,27 @@ test("opencode: console status meters expose exact sub-1% five-hour usage and US
   assert.equal(w.monthly.percent, 1.14);
   assert.equal(w.monthly.total, 60);
   assert.equal(w.monthly.resetsAt, "2026-12-08T16:50:08.000Z");
+  client.dispose();
+});
+
+test("opencode: pending console holds the round — an early usage result is not adopted before rich lands", async () => {
+  let statusD = null;
+  const { client, calls } = adapterClient({
+    cfgEntries: [["oc", "https://opencode.ai/zen/go/v1", "sk-go"]],
+    statusRespond: (url, d) => { statusD = d; },   // 控制台挂起，宽限未到
+  });
+  client.noteProvider("oc");
+  client.tick();
+  assert.equal(calls.length, 1);
+  calls[0].d.resolve(fakeRes(200, GO_BODY));   // 兜底先回
+  await flush();
+  assert.ok(client.view().status !== "ok", "控制台未决时本轮 fetchOne 不结算，不提前采用兜底整数值");
+  statusD.resolve(fakeRes(200, GO_STATUS_BODY));   // 宽限内控制台就绪
+  await flush();
+  const v = client.view();
+  assert.equal(v.status, "ok");
+  assert.equal(v.windows.fiveHour.percent, 0.67, "以控制台 rich 为准，不采用先到的兜底整数 37");
+  assert.equal(v.windows.fiveHour.currency, "USD");
   client.dispose();
 });
 
@@ -283,6 +303,30 @@ test("opencode: pending console defers to resolved fallback after the 3s grace a
   client.dispose();
 });
 
+test("opencode: status timer is cleared once the console settles — no late abort at the grace mark", async (t) => {
+  /* MockTimers 接管 setTimeout 后原生 clearTimeout 即可清理 mock 定时器（enable 不接受
+   * 显式 "clearTimeout"）：tick 快进越过 3 秒宽限点，控制台已结算则不得再触发 abort
+   * （删除 statusP 的 finally 清理即变异红）。flush 依赖 setTimeout，mock 下改用 tickAsync 驱动。 */
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { client, calls, statusCalls } = adapterClient({
+    cfgEntries: [["oc", "https://opencode.ai/zen/go/v1", "sk-go"]],
+    statusRespond: (url, d) => d.resolve(fakeRes(200, GO_STATUS_BODY)),
+  });
+  client.noteProvider("oc");
+  client.tick();
+  calls[0].d.resolve(fakeRes(200, GO_BODY));
+  /* MockTimers 无 tickAsync（本机 Node 26 只剩同步 tick）：同步 tick 驱动 flush 定时器后，
+   * 经未被 mock 的 setImmediate 让出一轮宏任务，排空 promise 链。 */
+  const drain = () => new Promise((r) => setImmediate(r));
+  t.mock.timers.tick(5);
+  await drain();
+  assert.equal(client.view().windows.fiveHour.percent, 0.67, "rich 已结算");
+  t.mock.timers.tick(3000 + 1000);   // 越过 3 秒宽限点
+  await drain();
+  assert.equal(statusCalls[0].signal.aborted, false, "console 已结算后宽限定时器应已清理，不再触发 abort");
+  client.dispose();
+});
+
 test("opencode: disposing the client aborts both in-flight endpoint requests", async () => {
   const { client, calls, statusCalls } = adapterClient({
     cfgEntries: [["oc", "https://opencode.ai/zen/go/v1", "sk-go"]],
@@ -314,6 +358,29 @@ test("opencode: console meters with invalid limits are skipped individually", as
   assert.equal(w.fiveHour.percent, 0.67);
   assert.equal(w.weekly, undefined, "limit=0 的窗跳过");
   assert.equal(w.monthly, undefined, "used<0 的窗跳过");
+  client.dispose();
+});
+
+test("opencode: console 200 with all-invalid meters falls back entirely to the public usage chain", async () => {
+  /* meters 存在但三窗全部无效：必须整源回落兜底（normalizeOpencodeGoStatus 返回 null），
+   * 不能以 {windows:{}} 的 truthy rich 静默吞掉 public 端点。 */
+  const body = JSON.parse(GO_STATUS_BODY);
+  body.access.meters.fiveHour.limitMicroCents = "0";
+  body.access.meters.week.usedMicroCents = "-1";
+  delete body.access.meters.month.limitMicroCents;   // 字段缺失同样按无效窗跳过
+  const { client, calls, statusCalls } = adapterClient({
+    cfgEntries: [["oc", "https://opencode.ai/zen/go/v1", "sk-go"]],
+    statusRespond: (url, d) => d.resolve(fakeRes(200, JSON.stringify(body))),
+  });
+  client.noteProvider("oc");
+  client.tick();
+  assert.equal(statusCalls.length, 1);
+  calls[0].d.resolve(fakeRes(200, GO_BODY));
+  await flush();
+  const v = client.view();
+  assert.equal(v.status, "ok", "全窗无效整源回落兜底，不按空 rich 结算");
+  assert.equal(v.windows.fiveHour.percent, 37);
+  assert.equal(v.windows.fiveHour.used, undefined, "兜底链没有金额");
   client.dispose();
 });
 
