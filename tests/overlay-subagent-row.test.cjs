@@ -418,7 +418,7 @@ test('source contracts: updateLive hook, scan cleanup, delegation listener, CSS 
   assert.match(source, /"\.zu-subrate\{flex:0 0 auto;white-space:nowrap;cursor:help/, 'chip 样式入注入块');
   // v179/v180 review P1：调用侧形状锁——showSubTip 以数据包调 buildTip（v178 回归即红）；
   // 历史版本演进台账见 src/overlay/06-instance-dom-and-styles.js 的 VERSION 台账注释块。
-  assert.match(source, /var VERSION = "v355";/);   // 随批次顺延（v307 批次漏更致套件长期红）；台账内容合法性由 ReleaseLedgerTests 守护，此处不覆盖
+  assert.match(source, /var VERSION = "v356";/);   // 随批次顺延（v307 批次漏更致套件长期红）；台账内容合法性由 ReleaseLedgerTests 守护，此处不覆盖
   assert.ok(source.includes('el.__zuT.buildTip(el.__zuT)'), 'tooltip 数据包调用约定');
   assert.ok(source.includes("runningSubagents.length - 1"), '截断从尾部取（最新派发优先）');
   assert.match(source, /__zusageAcquireConversationStore/, '桥 v2 acquire 访问器消费点');
@@ -428,8 +428,8 @@ test('source contracts: updateLive hook, scan cleanup, delegation listener, CSS 
 });
 
 test('source contracts: ⚙ subRate switch (seed, panel row, render gate)', () => {
-  assert.match(source, /subRate: 1, wfChip: 1 \},/, 'state.show 种子默认开（v332 起含 wfChip）');
-  assert.match(source, /wfChip: 1 \},/, 'wfChip 工作流卡 chip 种子默认开');
+  assert.match(source, /subRate: 1, wfChip: 1, sysmon: 0 \},/, 'state.show 种子默认开（v332 起含 wfChip；v356 起 sysmon 默认关）');
+  assert.match(source, /wfChip: 1, sysmon: 0 \},/, 'wfChip 工作流卡 chip 种子默认开');
   assert.match(source, /data-k="subRate"/, '⚙ 面板行（data-k 通用 handler 零接线）');
   assert.match(source, /if \(!state\.show\.subRate\) \{/, '渲染门控读开关');
   assert.match(source, /rootEl\.contains\(subTipFor\) \|\| !subTipFor\.isConnected/, '只收本 pane 浮层');

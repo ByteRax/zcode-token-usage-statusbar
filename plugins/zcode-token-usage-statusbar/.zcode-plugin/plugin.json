@@ -43,6 +43,7 @@
       "plugins/zcode-token-usage-statusbar/plugin-release.cjs",
       "plugins/zcode-token-usage-statusbar/plugin-storage.cjs",
       "plugins/zcode-token-usage-statusbar/plugin-updater.cjs",
+      "plugins/zcode-token-usage-statusbar/sysmon-client.cjs",
       "plugins/zcode-token-usage-statusbar/plugin_auto_update.py",
       "plugins/zcode-token-usage-statusbar/quota-client.cjs",
       "plugins/zcode-token-usage-statusbar/model-puller.cjs",

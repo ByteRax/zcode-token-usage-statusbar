@@ -43,7 +43,7 @@ try {
 }
 catch (e) { LOG("cdp remote-debugging-port switch failed:", e.message); }
 const loadedHashes = { _loadedAt: Date.now() - process.uptime() * 1000 };
-for (const name of ["inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs", "quota-client.cjs", "model-puller.cjs", "engine-patch.cjs", "overlay.js", "zusage.py"]) {
+for (const name of ["inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs", "quota-client.cjs", "model-puller.cjs", "engine-patch.cjs", "sysmon-client.cjs", "overlay.js", "zusage.py"]) {
   try { loadedHashes[name] = createHash("sha256").update(fs.readFileSync(path.join(HERE, name))).digest("hex"); }
   catch (e) { LOG("startup fingerprint unavailable:", name, e.message); }
 }
@@ -168,6 +168,8 @@ const windowWorkspaces = new Map();
 const windowTasks = new Map();
 const scopeBindings = new Map();
 const windowQuotaSelections = new Map();   // webContents.id → {paneId: {sid, providerId, modelId}}
+const sysmonSubs = new Map();   // v356 系统状态订阅：webContents.id → true（want）；声明前置——maybeSpawn 启动首拉（:866 附近）早于模块尾部声明会踩 TDZ
+let sysmonClient = null;        // v356 系统状态采样器实例（onFrame 闭包读它做存活判断）
 /* 本窗是否出现过任何远端工作区/任务证据：issue #40 的无桥本地兜底只在确认
  * “本窗只能查本地”时启用，有远端证据时 overlay 仍 fail-closed。 */
 const remoteEvidence = new Map();
@@ -698,6 +700,9 @@ function maybeSpawn() {
   for (const id of windowTasks.keys()) if (!liveIds.has(id)) windowTasks.delete(id);
   for (const id of scopeBindings.keys()) if (!liveIds.has(id)) scopeBindings.delete(id);
   for (const id of windowQuotaSelections.keys()) if (!liveIds.has(id)) windowQuotaSelections.delete(id);
+  let sysmonPruned = false;   // v356：兜底清订阅（destroyed 常规路径之外）；删过要补一次同步，否则渲染端请求在队列中时窗口销毁会留下泄漏订阅
+  for (const id of sysmonSubs.keys()) if (!liveIds.has(id)) { sysmonSubs.delete(id); sysmonPruned = true; }
+  if (sysmonPruned) sysmonSyncSubscribed();
   const withTimeout = (p, ms) => {
     let timer;
     return Promise.race([p, new Promise((r) => { timer = setTimeout(() => r(""), ms); })])
@@ -1178,6 +1183,61 @@ function cleanupPendingZip() {
   }
 }
 
+/* ---------- v356 系统状态采样（issue #338 / specs/statusbar-system-status.md）：主进程单例
+ * 采样器（sysmon-client.cjs 热模块），订阅制轮询——渲染端经 pluginRequest sysmon-sub 声明兴趣
+ * {want, cfg, projectPath}，want>0 才轮询；帧经 pushOnce 同款信任门推 window.__zusageSysmon。
+ * 只推订阅窗口：未订阅窗口不收帧，收帧的信任边界与 pushOnce/isLocalHostPage 同口径。 */
+function pushSysmonTo(wc, frame) {
+  if (!isMainWindowState(wc) || wc.isDestroyed() || !isLocalHostPage(wc) || !frame || typeof frame !== "object") return;
+  /* U+2028/2029 转义同 pushOnce：卷名/挂载点可能含任意文本 */
+  const js = `window.__zusageSysmon && window.__zusageSysmon(${JSON.stringify(frame).replace(/[\u2028\u2029]/g, (c) => c === "\u2028" ? "\\u2028" : "\\u2029")})`;
+  wc.executeJavaScript(js, true).catch(() => { });
+}
+function sysmonWantAny() {
+  for (const v of sysmonSubs.values()) { if (v) return true; }
+  return false;
+}
+function sysmonSyncSubscribed() {
+  const client = sysmonClient || createSysmonClientInstance();
+  if (client) client.setSubscribed(sysmonWantAny());
+}
+function createSysmonClientInstance() {
+  try {
+    const { createSysmonClient } = require("./sysmon-client.cjs");
+    sysmonClient = createSysmonClient({
+      log: (...a) => LOG("[sysmon]", ...a),
+      onFrame: (frame) => {
+        if (!sysmonClient) return;   // dispose 在途竞窗：旧实例回调不再外发
+        for (const wc of webContents.getAllWebContents()) {
+          if (sysmonSubs.get(wc.id) !== true) continue;
+          pushSysmonTo(wc, frame);
+        }
+      },
+    });
+    return sysmonClient;
+  } catch (e) {
+    sysmonClient = null;   // 热换路径旧实例已 dispose：不留僵尸引用（冷启动本就是 null）
+    delete loadedHashes["sysmon-client.cjs"];
+    LOG("sysmon client unavailable:", e.message);
+    return null;
+  }
+}
+function handleSysmonRequest(req, wc) {
+  const want = req.want === true;
+  if (typeof req.projectPath === "string" && req.projectPath !== "" && !gitPathOk(req.projectPath)) {
+    deliverPluginRequest(wc, req.requestId, { ok: false, error: "invalid project path" });
+    return;
+  }
+  if (want) {
+    const client = sysmonClient || createSysmonClientInstance();
+    if (!client) { deliverPluginRequest(wc, req.requestId, { ok: false, error: "sysmon unavailable; fully restart ZCode to load it" }); return; }
+    client.applyConfig(req.cfg, typeof req.projectPath === "string" ? req.projectPath : undefined);
+  }
+  sysmonSubs.set(wc.id, want);
+  sysmonSyncSubscribed();
+  deliverPluginRequest(wc, req.requestId, { ok: true });
+}
+
 /* ---------- v202 更新日志：⚙ 更新页按需拉取当前 Release 渠道的发布说明。独立 try：
  * 拉取/缓存失败只少日志卡片，不拖垮更新链。渲染进程只传 version/force，flavor 与
  * repository 一律取自主进程读到的注册渠道，绝不接收页面提供的地址。缓存落运行目录
@@ -1206,7 +1266,7 @@ initReleaseNotes();
  * （quotaWatchers 重复注册会翻倍）。engine-patch 热换后 syncStartup 幂等，
  * 已 applied 且引擎未变不重复写盘。inject-main.cjs 自身不在热换面内：
  * 它持有 ipcMain/web-contents-created 注册与常驻泵，只能随客户端完全重启生效。 */
-const HOT_MAIN_MODULES = ["plugin-storage.cjs", "plugin-release.cjs", "plugin-updater.cjs", "quota-client.cjs", "model-puller.cjs", "engine-patch.cjs"];
+const HOT_MAIN_MODULES = ["plugin-storage.cjs", "plugin-release.cjs", "plugin-updater.cjs", "quota-client.cjs", "model-puller.cjs", "engine-patch.cjs", "sysmon-client.cjs"];
 const hotModuleMtimes = {};
 for (const name of HOT_MAIN_MODULES) {
   try { hotModuleMtimes[name] = fs.statSync(path.join(HERE, name)).mtimeMs; } catch (e) { }
@@ -1275,6 +1335,13 @@ function hotReloadMainModulesOnce() {
   if (changed.includes("engine-patch.cjs")) {
     purge("engine-patch.cjs");
     ok["engine-patch.cjs"] = !!initEnginePatcher();
+  }
+  if (changed.includes("sysmon-client.cjs")) {   // v356：dispose 停定时器 → purge → 重建 → 按现存订阅重放
+    if (sysmonClient) { try { sysmonClient.dispose(); } catch (e) { } }
+    sysmonClient = null;
+    purge("sysmon-client.cjs");
+    ok["sysmon-client.cjs"] = !!createSysmonClientInstance();
+    if (ok["sysmon-client.cjs"] && sysmonWantAny()) sysmonSyncSubscribed();
   }
   const updaterGroup = changed.filter((n) => n === "plugin-updater.cjs" || n === "plugin-release.cjs" || n === "plugin-storage.cjs");
   if (updaterGroup.length) {
@@ -2205,6 +2272,12 @@ async function pollPluginRequests() {
           queryTurnText(req.sid, wc, req.cn === 0, req.forceKmb === true, req.unitEpoch);
         } else if (req && req.action === "git-refresh") {   // v96：Git chip 点击 / 快照后节流：立即重查全部已关注路径
           gitTick(true, req.requestId, wc, req.path).catch(() => { });
+        } else if (req && req.action === "sysmon-sub") {   // v356：系统状态订阅（want+cfg+projectPath 合一）
+          handleSysmonRequest(req, wc);
+        } else if (req && req.action === "sysmon-refresh") {   // v356：Tooltip 手动刷新（仅订阅中生效）
+          const refreshed = !!(sysmonClient && sysmonWantAny());
+          if (refreshed) sysmonClient.refreshNow();
+          deliverPluginRequest(wc, req.requestId, refreshed ? { ok: true, pending: true } : { ok: false, error: "sysmon not subscribed" });
         } else if (req && req.action === "relaunch") {   // v172：⚙ 更新页「重启 ZCode」按钮（浮层已二次确认）
           if (pluginUpdater && pluginUpdater.status().busy) {   // 更新进行中拒绝重启：quit 会打断下载/安装
             deliverPluginRequest(wc, req.requestId, { ok: false, error: "update in progress" });
@@ -2296,6 +2369,7 @@ const hook = (wc) => {
     scopeBindings.delete(wc.id);
     remoteEvidence.delete(wc.id);
     windowQuotaSelections.delete(wc.id);
+    if (sysmonSubs.delete(wc.id)) sysmonSyncSubscribed();   // v356：窗口销毁摘订阅，末窗关闭即停采样
     syncQuotaProviders();
     if (!hasWindows()) {
       clearTimeout(retryTimer);

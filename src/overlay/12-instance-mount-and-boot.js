@@ -386,6 +386,7 @@
       enhanceGitChip();     // v96：同点对账（React 重建工具行后重挂/位置兜回/紧凑态切换）
       enhancePromptBtn();   // v344：增强按钮 DOM 对账点（React 重建工具行/位置挤走后兜回）
       syncTpsChip();        // v146：速率 chip DOM 对账点（React 重建工具行/位置挤走后兜回；非精简主题内部门控摘除）
+      if (typeof syncSysmonChip === "function") syncSysmonChip();     // v356：系统状态 chip DOM 对账点（typeof 守卫兼容切片沙箱；非精简主题内部门控摘除）
       renderWorkflowCards();   // v332：工作流 run 卡 chip DOM 对账点（React 重建卡片后兜回；数据点在 render 尾部）
       renderRunningSubagentItems();   // v333：状态面板 Agents 行 chip DOM 对账点（React 高频重写 elapsed 后兜回）
       syncCompactBtn();     // v105：弹层压缩按钮对账点（Observer 漏触发/节点移位后兜回）
@@ -954,6 +955,7 @@
             bar.classList.toggle("zu-tight", shrink > 0);
             bar.classList.toggle("zu-narrow", shrink === 2);
             foldDirty = true;   // 档位切换即重算折叠（折叠仅在 shrink===2 生效）
+            try { sysmonApplyFace(); } catch (e) { }   // v356：format:"auto" 的系统状态面随档位切换（探针节流与迟滞沿用窄宽状态机，无新探针）
           }
         }
         var rightClip = state.theme === "default" && main.scrollLeft + main.clientWidth < main.scrollWidth - 1;
@@ -1095,6 +1097,8 @@
       restoreEnhanceBtn(true);   // v344：摘除增强按钮（清相位与定时器，不留孤儿节点）；v344.3：dispose 中断在途增强请求
       restoreTpsChip();   // v146：摘除精简模式速率 chip（含在显 tooltip）
       restoreGitChip();   // v96：摘掉本 pane 的 Git chip（含在显 tooltip）
+      restoreSysmonChip();   // v356：摘掉本 pane 的系统状态 chip（含在显 tooltip）
+      if (typeof sysmonWantRecalc === "function") sysmonWantRecalc();   // v356 review：dispose 后 chip 早退分支不触发重算，须无条件补发（末实例销毁即停采样）
       /* v180 review：行内速率 chip 挂在宿主 Agent 行内（非条面自家节点），dispose
        * 不摘会在 pane 输入框暂时不可见被协调器回收时冻结在旧速率上、悬停还弹出
        * 已 dispose 实例的 tooltip——趁 wantedEl/composer 尚在按 pane 根摘净。
@@ -1185,6 +1189,23 @@
       rotatorStats: function () { return inactive() ? null : { stats: liveStatsCur, model: quotaModel, provider: quotaProvider, session: lastView && lastView.session }; },
       liveEl: function () { return liveEl; },   // 测试缝：实时段节点引用
       liveIconKind: function () { return liveIconCur; },   // 测试缝：当前 chip 图标（think/bolt/空）
+      /* v356 系统状态：帧驱动的原地格面刷新 + 订阅意愿上报（格可见/格 tooltip/设置页/精简
+       * chip 任一成立即 want；projectPath 仅本地 scope 上报，主进程据此定位项目卷）。 */
+      sysmonTick: function () { if (!inactive()) sysmonApplyFace(); },
+      sysmonInterested: function () {
+        var r = { want: false, projectPath: "" };
+        if (inactive()) return r;
+        try {
+          if (state.show.sysmon && state.theme !== "compact" && curDisplay !== "none" &&
+            main.querySelector('.it[data-zu-key="sysmon"]')) r.want = true;
+          if (tipFor && tipFor.dataset && tipFor.dataset.zuKey === "sysmon" && tip.style.display === "block") r.want = true;
+          if (panel.classList.contains("open")) r.want = true;   // 设置页开着：预览需要真实采样
+          if (typeof sysmonChipMounted === "function" && sysmonChipMounted()) r.want = true;
+          var sc = getScope();
+          if (sc && sc.sid && !sc.identity && sc.workspacePath) r.projectPath = sc.workspacePath;
+        } catch (e) { }
+        return r;
+      },
     };
     instances.push(api);
     applyBarTheme();

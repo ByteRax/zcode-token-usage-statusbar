@@ -233,10 +233,11 @@
      * → v350 增强历史「查看全部」浮层表格版视觉修复（specs/prompt-enhance.md 契约更新）：①高度自适应——面板 height:auto + max-height min(85dvh,760px)（内联与 CSS 双写），去掉固定 height:min(640px,80vh) 与表区 flex:1 1 auto 撑满，数据少时内容自然撑开、多时表区独立滚动，单页/空态不渲染分页页脚；②Header 左右分组——左=图标+标题+总数徽标，右=清空记录（图标文字横排、hover 危险色）+关闭按钮（32×32 命中、EH_ICON.close，Escape 同效）；③筛选行——搜索框带图标弹性填充（flex:1 1 240px、placeholder 完整），四个筛选器统一 34px 高/圆角/边框（来源 112/供应商 150/模型 140/时间 118px）；④表格对齐——表头与行共用 <colgroup> 列宽（chev 32px/来源 56px/操作 64px 固定 + 百分比弹性列，table-layout:fixed），去掉按 td 类的宽度声明；⑤供应商友好名——EH_PLAN_LABELS 内置 6 个套餐 id→显示名映射（与 model-puller PLAN_SOURCES 同源），表格/详情/筛选下拉显示友好名，title 悬浮完整原始 id，非套餐 id 原样不虚构；⑥展开详情——三栏 minmax(0,.85fr)/minmax(0,1.5fr)/minmax(0,1.5fr)（≈22/39/39），增强正文棕色背景改中性卡色+边框，正文 max-height 240px 内滚、详情块不再二次限高，元信息标签 11px/值 12px 行距 7px、长模型名 overflow-wrap:anywhere；⑦响应式——面板 container-type:inline-size，按面板实际宽度渲染时列裁剪（<900px 合并供应商/模型列、<640px 再隐摘要列，colspan 同步 10/9/7），容器查询 <900px 详情转两栏+元信息横排、<640px 详情纵向，resize 期间 150ms debounce 重排版（监听随关闭移除）；⑧行为修复——ehFullCache 补显式 var 声明（原隐式全局）、enhance-history-add 同步失效全量缓存、复制按钮统一按记录 id 定位（详情行经 detail-row 前一行）+check 反馈，删除死代码（重复 delete/copy 分支、无 data-expand 按钮），摘要列 title 悬浮全文（去 JS 60 字截断，CSS ellipsis 承担）。同批追加：⑫筛选下拉自绘箭头（appearance:none + data-URI 背景统一，右距 10px 与文字左距对称，原生箭头贴边且各端不一致）；⑬面板 min-height 60vh（用户口径：数据少时面板不显矮，上限仍 min(85dvh,760px)）；⑭关闭按钮 margin-right:-8px 收紧贴右上（icon 距面板右缘 12px）；⑮排序箭头 svg 显式 display:inline-block（宿主全局 svg 块化样式把 th 裸 svg 挤到第二行，按钮内图标被 inline-flex 吸收无此症）；⑯展开详情来源/Token/时间/耗时四对合并为三栏下方一行元信息（分隔线横排，左栏只留供应商/模型，minmax(0,.85fr) 栏宽放不下四对才上移全宽）；⑰确认类交互统一 zuConfirm 自绘弹框（复用压缩确认 .zu-compact-dlg 全套外壳样式，替换 overlay 全部 6 处 window.confirm：增强历史删除/清空 ×4 + 设置页移除 Key/重载丢弃修改 ×2；Esc/遮罩/Enter 协议同压缩弹框，规则沉淀 overlay-ui.md §4）。⑱增强历史双入口设置按钮（用户 2026-11-15 点名）：悬停面板 footer 与全量面板 header 右上新增「设置」（EH_ICON.gear 齿轮 + .zu-eh-cfg 同清空按钮外形中性 hover），点击经 openEnhanceSettings 复用齿轮官方完整开启路径（gear.click）+ activateSettingsSec("enhance-provider")，与增强按钮右键同款。⑳增强 Provider 分区 footer（状态+重新载入/保存按钮）改 sticky 吸底（用户 2026-11-15：矮屏用户不知道要滚到底部才能保存）——position:sticky bottom:-20px（负值补偿 .zu-settings-body 底 padding 20px 使视觉贴面板底缘）+ 水平负 margin=body padding clamp 值盖满面板宽 + 实色背景 var(--color-card) 防透出 + 上阴影分层；滚到底时回到自然位置，其他分区不受影响（.zu-ep-footer 类名仅该分区使用）。㉑修复重开面板误报「配置未保存」（用户实报）：保存成功回调只更新了 epSavedRevision 未刷新 epSavedFormJson 基准，重开面板 epSyncDirtyStatus 用旧基准比对恒脏——保存成功（含移除 Key）即以当前表单 JSON 为新已保存基准；保存失败/其他窗口 conflict 保留旧基准（脏标记语义不变）。⑲删除「撤销增强，恢复原文」状态（用户拍板去掉该展示）：应用成功（写入确认）后按钮直接回 idle，不再有 20s 撤销窗/撤销点击/自愈守卫（ENHANCE_UNDO_MS、ENH_SVG_UNDO、enhanceEnhanced/State、undo 点击分支与 heavy 对账块全拆），聊天历史采集时机不变（应用成功即记录）；回填前的会话与草稿比对守卫保留。独立 review 三修（2026-11-15）：⑨修复排序列点击不可达（th 非 button，data-sort 判断提到 button 判空前——首版表格即坏未报过）；⑩删除改缓存就地滤除+res.ok 门控+小浮层缓存失效（原 cache 置 null 后 build 清空整表，直到重开才恢复），失败删除不清表；⑪cssText 复制补 bottom:auto（小浮层动态 bottom 残留会把 fixed 面板高度压死，悬停→查看全部主路径必现）+disposeOverlay 摘除面板 keydown/resize 监听+两 handler 热更 stale 自卫+搜索 debounce 改模块级随关闭清理+首开「正在读取历史…」占位防闪白+sticky 表头（长列表滚动表头常驻，box-shadow 补 collapse 边框）。
      * → v351 状态轮播词库同步上游 01Virex/dsh-status-rotator（PR #179/#181/#184/#186/#188，仅 04-rotator-builtin-packs.js 数据）：community +3（「用户特么的…」thinking、「正在驾驶EVA~~…」「听见你说~…」running；#184 的 4 条已在存量）、internet-memes +4 相（「token来！！token来！！token来！！…」thinking/running/long 三相 + 「正在创作隐晦物品…」running）；star-ask 与上游一致未动；star-route 不随上游（用户拍板取本项目星标者）：GitHub 152 人 + GitCode 镜像 2 人 = 154 人，zh/en 镜像 308 条，替换过期旧快照 134 人，包头注明名单来源（两端 stargazers API）与刷新方式。范围外漂移保留：western-ai GPT-7 文案、coding/slacking/daily 的 weight 对象在本地转纯字符串（本项目不支持权重对象）。无增删包，ZU_ROTATOR_PACK_META 与 enabledPacks 种子不动。
      * → v352 状态栏项目排序、优先级与自动折叠（specs/statusbar-layout.md）：①数据模型 zusage3.barOrder（数组白名单归一：非法剔除/去重/缺项按 ZU_BAR_KEYS 补尾）+ zusage3.barPriority（high|normal|low 枚举，非法回缺省；缺省按设计稿 速度/本轮=高、会话/今日/项目=普通、工具/子代理=低）；排序决定显示序、优先级决定折叠序，两字段独立、定向写（persistBarOrder/persistBarPriority 不搭全量 persist，防跨窗口互覆），storage 监听对两键归一化回读同步。②条面排序：html() 每格带 data-zu-key（remote/not_local=system 恒置顶），经 zuBarSortItems 按用户序重排，tips 与 .it 下标对应不变。③自动折叠（仅 default 档）：真实布局测量 scrollWidth>clientWidth+1；折叠序=zuBarFoldOrder 纯函数（低先收、同级右先收；system 与 speed 不折叠——speed 是设计稿「固定（始终显示）」语义，有有效数据才渲染，不伪造 0）；宽/字号(含 font-family)/优先级签名+foldDirty 门控重算，每帧另测一次溢出探测流式内容变宽；恢复带 24px 迟滞带防阈值震荡；折叠集变化关菜单并收锚定 tip，折叠格 data-zu-folded display:none，sep 同步隐藏，全折仍超宽 .zu-clip 渐隐兜底；「···」入口带折叠计数，data-zu-visible 门控显隐。④「···」菜单（body 级 .zu-more-panel，实例级闭包）：图标+格名(ZU_BAR_TITLES)+实时值（原地 textContent 同步，不整卡重建不抢焦点），点击=从活格现取 __tip 锚定 ⋯ 按钮弹原有 tooltip、sub 项开子代理浮层（pinned 可再点关闭）；键盘=打开焦点入首项、↑↓/Home/End 循环、Escape（按钮/菜单两处）关闭归还焦点；外点 pointerdown 捕获关闭；hideBar/dispose 摘除，boot 旧代清理串补 .zu-more-panel，no-drag 联合规则挂载。⑤设置页排序卡（.zu-layout-card 嵌套卡，barOrderSettingsHtml 单根输出整卡替换）：拖拽手柄 SVG+格图标(与条面同 path)+两行名称说明+显示开关(speed 行为「固定（始终显示）」徽标替代)+三段优先级 radio(高|普通|低，:has 选中柔和主题底+内描边，speed 锁高禁用)+↑↓ 键盘排序（disabled 边界焦点回退对向按钮，aria-live 播报）+重置；HTML5 DND 仅手柄行可拖、交互控件排除，dragover 高亮 prevRow 记忆；syncPanel 双回填（radio 态+行序漂移整卡重建）。⑥v66 分级收缩机制整体退役（shrink/fadeOn 死变量与三处恒空三目删除），窄宽行为由折叠接管；既有 8 个切片测试的沙箱补 zuBarSortItems/ZU_BAR_KEYS 桩，data-k 契约断言转运行时求值 barOrderSettingsHtml。
-     * → v354 draft 会话增强放行（specs/prompt-enhance.md；让位说明：运行目录 2026-11-16 00:19 已被并行会话先行占用 v353=排序卡布局重做（PR #349 线在途），本代跳号避免同号两义）：宿主新会话未发首条消息时 data-session-id="draft"（SessionPane `sessionId ?? "draft"`），归属链自 v90 起 draft 一律拒绝致增强按钮必报「未识别当前会话」；现 readPaneScope/readFiberPaneScope 加第 4 参 allowDraft（默认关，:112 fiber 兜底透传），仅增强链 enhanceCurrentScope 显式传 true 放行——发起身份键="draft"+workspace scope（scope 属性与 sessionId 无关），回填闸 draft→draft 一致放行、在途晋升（draft→真实 sid）走既有「会话已切换」丢弃；quota 上报/状态条/远端路由/getScope 等其余各处调用不传参行为不变，draft scope 绝不进上报链。主进程 prompt-enhance 链不消费 sid/scope，零改动。
+     * → v354 draft 会话增强放行（specs/prompt-enhance.md；让位说明：运行目录 2026-11-16 00:19 已被并行会话先行占用 v356=排序卡布局重做（PR #349 线在途），本代跳号避免同号两义）：宿主新会话未发首条消息时 data-session-id="draft"（SessionPane `sessionId ?? "draft"`），归属链自 v90 起 draft 一律拒绝致增强按钮必报「未识别当前会话」；现 readPaneScope/readFiberPaneScope 加第 4 参 allowDraft（默认关，:112 fiber 兜底透传），仅增强链 enhanceCurrentScope 显式传 true 放行——发起身份键="draft"+workspace scope（scope 属性与 sessionId 无关），回填闸 draft→draft 一致放行、在途晋升（draft→真实 sid）走既有「会话已切换」丢弃；quota 上报/状态条/远端路由/getScope 等其余各处调用不传参行为不变，draft scope 绝不进上报链。主进程 prompt-enhance 链不消费 sid/scope，零改动。
      * → v355 增强历史悬停面板视口钳位（用户实报截图：多条卡片时面板顶缘越出窗口顶部，「最近增强记录」标题行被裁剪）：showEnhanceTip 原 bottom 锚定只保证底边间距、垂直零钳制，内容高超过按钮上方可用空间即顶部溢出。新增 placeEnhanceTip（ehRender 尾部接线，加载完成/清空/删除等高度变化后重钳）：按实测高三档放置——上方够→bottom 锚定（原行为）；上方不够而下方够（≥min(h,320)）→翻到按钮下方（zu-eh-flip：箭头 order:-1 移顶+border 翻向，v315 cap 翻转先例）；两侧都不够→上方贴边+钳 inline maxHeight 让 .zu-eh-scroll 内滚（flex:1 min-height:0 已就绪）。offsetHeight 桩环境缺席→0 恒走原分支，切片测试与既有行为不变。
+     * → v356 系统状态一等显示格（issue #338，specs/statusbar-system-status.md）：①数据链——主进程新增 sysmon-client.cjs 热模块（CPU os.cpus() tick 差分、内存三平台口径 Linux /proc/meminfo+macOS vm_stat/sysctl+Windows os.totalmem/freemem、磁盘 fs.statfs+卷枚举 Linux /proc/self/mounts 白名单+macOS df -klP+Windows 盘符探测带超时、项目卷 st_dev 精确归卷），订阅制轮询（渲染端 pluginRequest sysmon-sub {want,cfg,projectPath}，want>0 才采样、末订阅停表），帧经 pushOnce 同款信任门推 window.__zusageSysmon；只推订阅窗口。②渲染端——ZU_BAR_KEYS 加 sysmon（第 8 格，缺省序补尾、show 默认关、优先级默认低），配置 zusage3.sysmonCfg 独立可校验模型（metrics/format/interval/disk 目标/阈值 clamp），纯函数 sysmonFaceHtml（full/compact/minimal 三面+阈值含等号判定+连续 2 拍预警确认/危险立即生效/回落 1 拍还原防抖）与 sysmonTipHtml（440px 结构化卡：CPU 整机使用率+Load、内存已用/总量+Wired/Swap、磁盘多卷表格项目卷高亮、动态阈值图例、过期注记；样式随内容内联 <style> zu-sys-* 前缀），条面格仅本地 scope 渲染（!d.remote && !d.not_local）。③自适应——format:"auto" 随窄宽档位映射（zu-tight→紧凑、zu-narrow→极简，档位切换钩子驱动 sysmonApplyFace 原地重绘，无新探针；显式档不自动改写，空间不足走既有折叠链）；折叠与「···」菜单由 ZU_BAR_TITLES 数据驱动自动纳入，菜单点击锚定 ⋯ 弹原格 tooltip。④精简模式——工具行 .zu-sysm chip（git chip 同款模板：防双挂复用/签名幂等/双 reapply/restore），收敛位 [锚][速率][git][sysmon]（git 兜回容忍 sysmon 收尾防拉锯），sysTip body 级浮层（gitTip 同款单例：签名幂等+保滚动+浅色档+Esc/离开/代际清理三链收起），点击=立即刷新（pluginRequest sysmon-refresh）+弹完整卡。⑤⚙ 设置——排序卡自动出现系统状态行（descs/icons 表同步），新增「系统状态」配置卡（显示内容/格式四选/双间隔/磁盘目标/预警开关+六阈值数字输入，双回填+panel 级 change 委托+真实数据预览行），zusage3.sysmonCfg 定向写+storage 跨窗同步（06 监听器新分支），boot 清理串补 .zu-sysm/.zusage-sysmon-tip；旧冷主进程无帧时格显 loading 态（—），无轮询无报错。
      */
-    var VERSION = "v355";
+    var VERSION = "v356";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
@@ -607,6 +608,41 @@
       ".zu-tsb{display:inline-flex;align-items:center;gap:5px;height:1.75rem;padding:0 6px;border-radius:.5rem;cursor:pointer;user-select:none;flex:0 0 auto;" +
       "font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);font-size:calc(var(--text-ui-base,var(--ui-font-size,14px)) - 1px);font-weight:700;font-variant-numeric:tabular-nums}" +
       ".zu-tsb:hover,.zu-tsb:focus-visible{background:var(--color-hover,rgba(255,255,255,.08));outline:none}" +
+      /* v356 系统状态（issue #338）：格面值/标签继承 .it .v/.dim 基础样式，zu-sys-* 只承载
+       * 结构布局与预警色（柔和黄/红只染数值与图标，浅色档双套同源深化）；stale 整段降
+       * 透明度不换色。精简 chip .zu-sysm 与 .zu-git/.zu-tsb 同构。 */
+      ".zu-sys-seg{display:inline-flex;align-items:baseline;gap:3px;white-space:nowrap}" +
+      ".zu-sys-seg.zu-sys-stale{opacity:.55}" +
+      ".zu-sys-sep{opacity:.55;padding:0 2px;font-weight:400}" +
+      ".zu-sys-v.zu-sys-warn{color:#d29922}" +
+      ".zu-sys-v.zu-sys-crit{color:#f85149}" +
+      ".zu-sys-ico.zu-sys-warn{color:#d29922}" +
+      ".zu-sys-ico.zu-sys-crit{color:#f85149}" +
+      ".zusage-root.zu-light .zu-sys-v.zu-sys-warn,.zusage-root.zu-light .zu-sys-ico.zu-sys-warn{color:#946200}" +
+      ".zusage-root.zu-light .zu-sys-v.zu-sys-crit,.zusage-root.zu-light .zu-sys-ico.zu-sys-crit{color:#d20f39}" +
+      ".zu-sysm{display:inline-flex;align-items:center;gap:4px;height:1.75rem;padding:0 .375rem;border-radius:.5rem;flex:0 0 auto;box-sizing:border-box;cursor:pointer;user-select:none;white-space:nowrap;outline:none;" +
+      "font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);font-size:calc(var(--text-ui-base,var(--ui-font-size,14px)) - 1px);font-weight:700;line-height:1;font-variant-numeric:tabular-nums;color:#afafb2;transition:background-color .15s}" +
+      ".zu-sysm:hover,.zu-sysm:focus-visible{background:var(--color-hover,rgba(255,255,255,.08))}" +
+      ".zu-sysm:focus-visible{outline:2px solid var(--color-input-border-focused,var(--color-brand,#57c8ff))!important;outline-offset:2px}" +
+      ".zu-sysm>svg{width:15px;height:15px;flex:0 0 auto}" +
+      ".zu-sysm[data-zusage-light]{color:#6c6f85}" +
+      ".zu-sysm[data-zusage-light] .zu-sys-v.zu-sys-warn,.zu-sysm[data-zusage-light] .zu-sys-ico.zu-sys-warn{color:#946200}" +
+      ".zu-sysm[data-zusage-light] .zu-sys-v.zu-sys-crit,.zu-sysm[data-zusage-light] .zu-sys-ico.zu-sys-crit{color:#d20f39}" +
+      /* ⚙ 系统状态配置卡：行式布局；显式 label 布局防 .zu-settings label>span{flex:1} 拉伸
+       * （PR #349 教训：通用 label 规则压过局部布局）。 */
+      ".zu-syscfg .zu-syscfg-sub{margin-left:auto;color:var(--color-foreground-subtle,#a1a1a1);font-weight:400;font-size:calc(var(--ui-font-size,14px) - 2px)}" +
+      ".zu-syscfg-row{display:flex;align-items:baseline;gap:8px 14px;flex-wrap:wrap;padding:5px 0}" +
+      ".zu-syscfg-k{flex:0 0 76px;color:var(--color-foreground-subtle,#a1a1a1);font-size:calc(var(--ui-font-size,14px) - 1px)}" +
+      ".zu-syscfg-v{display:flex;align-items:center;gap:5px 10px;flex-wrap:wrap;flex:1 1 auto;min-width:0}" +
+      ".zu-syscfg .zu-syscfg-item{display:inline-flex;align-items:center;gap:5px;cursor:pointer;flex:0 0 auto}" +
+      ".zu-syscfg .zu-syscfg-item>span{flex:0 0 auto}" +
+      ".zu-syscfg-num{width:64px;padding:3px 6px;box-sizing:border-box}" +
+      ".zu-syscfg-fmt{max-width:100%}" +
+      ".zu-syscfg-lbl{color:var(--color-foreground-subtle,#a1a1a1);font-size:calc(var(--ui-font-size,14px) - 2px);white-space:nowrap}" +
+      ".zu-syscfg-note{flex-basis:100%;color:var(--color-foreground-subtle,#a1a1a1);font-size:calc(var(--ui-font-size,14px) - 2px)}" +
+      ".zu-syscfg-prev{margin:8px 0 2px;padding:7px 10px;border:1px solid var(--color-border,rgba(255,255,255,.08));border-radius:8px;display:flex;align-items:center;gap:6px;font-size:calc(var(--ui-font-size,14px) - 1px);flex-wrap:wrap}" +
+      ".zu-syscfg-prev svg.ico{width:15px;height:15px}" +
+      ".zu-sys-dim{color:var(--color-foreground-subtle,#a1a1a1)}" +
       /* 阶段 3 ⚙ 源列表（v103 布局）：每源一张圆角小卡片（dsh QuotaCard 同款），卡片间距与
        * 内边距呼吸开；凭据框限宽不拉满；说明段落（card 直子 pnote）补水平边距 */
       ".zu-src-list{display:flex;flex-direction:column;gap:8px;padding:4px 12px 12px}" +
@@ -1892,18 +1928,20 @@
         win: ["当前会话的 tokens、轮数与请求次数", "Tokens, turns and requests in this session"],
         today: ["今天所有会话的消耗", "Usage across all sessions today"],
         proj: ["本项目所有会话的消耗（含子代理），按目录归属", "Usage across all sessions in this project (sub-agents incl.), grouped by directory"],
-        tools: ["悬停查看各工具明细与错误", "Hover for per-tool details and errors"],
-        sub: ["悬停或点击状态条上的子代理查看统计", "Hover or click the bar item for sub-agent stats"]
-      };
-      var icons = {
-        speed: '<path d="M13.5 2 3.5 13.5H11L10 22l10.5-12H13l.5-8z"/>',
-        turn: '<path d="M5 3.5h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-9l-6.5 4V5.5a2 2 0 0 1 1.5-2z"/><path d="M7.5 8.5h9m-9 4h6"/>',
-        win: '<path d="M7.5 3h12a2 2 0 0 1 2 2v10M4.5 7h12a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H8l-5.5 2V9a2 2 0 0 1 2-2z"/>',
-        today: '<rect x="3" y="4.5" width="18" height="17" rx="2.5"/><path d="M7.5 2.5v4m9-4v4M3 10h18m-13.5 4h2m5 0h2m-9 4h2m5 0h2"/>',
-        proj: '<path d="M3.5 6.5a2 2 0 0 1 2-2h4.2l2 2h7.3a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5.5a2 2 0 0 1-2-2z"/>',
-        tools: '<path d="M14.5 2.5a6 6 0 0 0-5.6 8.1L3.3 16.2a3.2 3.2 0 0 0 4.5 4.5l5.6-5.6a6 6 0 0 0 8.1-5.6l-4.1 3-3.8-3.8 3-4.1a6 6 0 0 0-2.1-2.1z"/>',
-        sub: '<circle cx="5" cy="5" r="3"/><circle cx="19" cy="8" r="3"/><circle cx="5" cy="19" r="3"/><path d="M5 8v8m0-4h9a5 5 0 0 0 5-1"/>'
-      };
+          tools: ["悬停查看各工具明细与错误", "Hover for per-tool details and errors"],
+          sub: ["悬停或点击状态条上的子代理查看统计", "Hover or click the bar item for sub-agent stats"],
+          sysmon: ["实时监控本机 CPU、内存和磁盘资源", "Live local CPU, memory and disk monitoring"]
+        };
+        var icons = {
+          speed: '<path d="M13.5 2 3.5 13.5H11L10 22l10.5-12H13l.5-8z"/>',
+          turn: '<path d="M5 3.5h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-9l-6.5 4V5.5a2 2 0 0 1 1.5-2z"/><path d="M7.5 8.5h9m-9 4h6"/>',
+          win: '<path d="M7.5 3h12a2 2 0 0 1 2 2v10M4.5 7h12a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H8l-5.5 2V9a2 2 0 0 1 2-2z"/>',
+          today: '<rect x="3" y="4.5" width="18" height="17" rx="2.5"/><path d="M7.5 2.5v4m9-4v4M3 10h18m-13.5 4h2m5 0h2m-9 4h2m5 0h2"/>',
+          proj: '<path d="M3.5 6.5a2 2 0 0 1 2-2h4.2l2 2h7.3a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5.5a2 2 0 0 1-2-2z"/>',
+          tools: '<path d="M14.5 2.5a6 6 0 0 0-5.6 8.1L3.3 16.2a3.2 3.2 0 0 0 4.5 4.5l5.6-5.6a6 6 0 0 0 8.1-5.6l-4.1 3-3.8-3.8 3-4.1a6 6 0 0 0-2.1-2.1z"/>',
+          sub: '<circle cx="5" cy="5" r="3"/><circle cx="19" cy="8" r="3"/><circle cx="5" cy="19" r="3"/><path d="M5 8v8m0-4h9a5 5 0 0 0 5-1"/>',
+          sysmon: '<rect x="2.5" y="4" width="19" height="13" rx="2"/><path d="M9 21h6m-3-4v4"/>'   // v356：与条面 sysmon 格/0 分片 SYSMON_ICONS.monitor 同 path
+        };
       var result = '<div class="zu-layout-card">' +
         '<div class="zu-layout-head"><strong>' + L("状态栏项目排序与优先级", "Item order & priority") + '</strong>' +
         '<button type="button" class="zu-layout-reset"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>' + L("重置", "Reset") + '</button></div>' +
@@ -1940,6 +1978,62 @@
       });
       return result + '</div></div>';
     }
+    /* v356 系统状态配置卡（issue #338）：排序卡下方的独立区域。控件值一律取自
+     * state.sysmonCfg（buildPanel 重建/syncPanel 双回填）；预览行用真实采样（无帧显
+     * 「采集中…」，不用演示数字冒充），由 sysmonTick 每帧原地更新。事件走 09 分片
+     * panel 级 change 委托（.zu-syscfg-* 类分派）。 */
+    function sysmonSettingsHtml() {
+      /* 切片沙箱纪律：state.sysmonCfg/sysFrame 可能缺字段（VM 夹具/旧代际），一律守卫回退 */
+      var c = (state.sysmonCfg && state.sysmonCfg.thresholds) ? state.sysmonCfg : normalizeSysmonCfg(null);
+      var sysFrameL = (typeof sysFrame !== "undefined") ? sysFrame : null;
+      var th = c.thresholds;
+      function item(cls, attr, label, checked) {
+        return '<label class="zu-syscfg-item"><input type="checkbox" class="' + cls + '" ' + attr + (checked ? " checked" : "") + '><span>' + label + "</span></label>";
+      }
+      function num(cls, val, min, max, step, label, thKey) {
+        return '<input type="number" class="zu-syscfg-num ' + cls + '" min="' + min + '" max="' + max + '" step="' + (step || 1) + '" value="' + val + '"' +
+          (thKey ? ' data-th="' + thKey + '"' : "") + (label ? ' aria-label="' + label + '"' : "") + ">";
+      }
+      var preview = sysmonFaceHtml(c, sysFrameL, "full");
+      return '<div class="zu-layout-card zu-syscfg">' +
+        '<div class="zu-layout-head"><strong>' + L("系统状态", "System status") + '</strong><span class="zu-syscfg-sub">' + L("监控运行 ZCode 的本机", "Monitors the machine running ZCode") + "</span></div>" +
+        '<div class="zu-layout-note">' + L("按设定间隔采样本机资源；全部显示项关闭或窗口长期不订阅时自动停表。", "Samples local resources on the configured interval; sampling stops automatically when all display items are off or nothing subscribes.") + "</div>" +
+        '<div class="zu-syscfg-prev" aria-hidden="true">' + (preview || '<span class="zu-sys-dim">' + L("采集中…", "sampling…") + "</span>") + "</div>" +
+        '<div class="zu-syscfg-row"><span class="zu-syscfg-k">' + L("显示内容", "Metrics") + '</span><span class="zu-syscfg-v">' +
+        item("zu-syscfg-m", 'data-sysm="cpu"', "CPU", c.metrics.cpu) +
+        item("zu-syscfg-m", 'data-sysm="mem"', L("内存", "Memory"), c.metrics.mem) +
+        item("zu-syscfg-m", 'data-sysm="disk"', L("磁盘", "Disk"), c.metrics.disk) +
+        "</span></div>" +
+        '<div class="zu-syscfg-row"><span class="zu-syscfg-k">' + L("显示格式", "Format") + '</span><span class="zu-syscfg-v">' +
+        '<select class="zu-syscfg-fmt">' +
+        '<option value="auto"' + (c.format === "auto" ? " selected" : "") + ">" + L("自动（随空间完整→紧凑→极简）", "Auto (full → compact → minimal)") + "</option>" +
+        '<option value="full"' + (c.format === "full" ? " selected" : "") + ">" + L("完整（CPU 23% · MEM 10.2/16G · DISK 187G）", "Full (CPU 23% · MEM 10.2/16G · DISK 187G)") + "</option>" +
+        '<option value="compact"' + (c.format === "compact" ? " selected" : "") + ">" + L("紧凑（MEM 显百分比）", "Compact (MEM as %)") + "</option>" +
+        '<option value="minimal"' + (c.format === "minimal" ? " selected" : "") + ">" + L("极简（只显数值）", "Minimal (values only)") + "</option>" +
+        "</select></span></div>" +
+        '<div class="zu-syscfg-row"><span class="zu-syscfg-k">' + L("刷新间隔", "Intervals") + '</span><span class="zu-syscfg-v">' +
+        num("zu-syscfg-int", Math.round(c.intervalMs / 1000), 2, 60, 1, L("CPU/内存 采样秒数", "CPU/memory seconds")) +
+        '<span class="zu-syscfg-lbl">' + L("CPU/内存（秒）", "CPU/mem (s)") + "</span>" +
+        num("zu-syscfg-dint", Math.round(c.diskIntervalMs / 1000), 30, 600, 10, L("磁盘 采样秒数", "disk seconds")) +
+        '<span class="zu-syscfg-lbl">' + L("磁盘（秒）", "Disk (s)") + "</span></span></div>" +
+        '<div class="zu-syscfg-row"><span class="zu-syscfg-k">' + L("磁盘目标", "Disks") + '</span><span class="zu-syscfg-v">' +
+        item("zu-syscfg-vol", 'data-sysm="projectVol"', L("当前项目卷", "Project volume"), c.projectVol) +
+        item("zu-syscfg-vol", 'data-sysm="systemVol"', L("系统卷", "System volume"), c.systemVol) +
+        "</span></div>" +
+        '<div class="zu-syscfg-row"><span class="zu-syscfg-k">' + L("阈值预警", "Thresholds") + '</span><span class="zu-syscfg-v">' +
+        item("zu-syscfg-warn", "", L("颜色提示", "Color hints"), c.warnColors) +
+        "</span></div>" +
+        '<div class="zu-syscfg-row zu-syscfg-ths"><span class="zu-syscfg-k"></span><span class="zu-syscfg-v">' +
+        '<span class="zu-syscfg-lbl">CPU</span>' + num("zu-syscfg-th", th.cpuWarn, 1, 100, 1, "CPU warn %", "cpuWarn") + '<span class="zu-syscfg-lbl">' + L("预警 %", "warn %") + "</span>" +
+        num("zu-syscfg-th", th.cpuCrit, 1, 100, 1, "CPU critical %", "cpuCrit") + '<span class="zu-syscfg-lbl">' + L("危险 %", "crit %") + "</span>" +
+        '<span class="zu-syscfg-lbl">' + L("内存", "MEM") + "</span>" + num("zu-syscfg-th", th.memWarn, 1, 100, 1, "Memory warn %", "memWarn") + '<span class="zu-syscfg-lbl">' + L("预警 %", "warn %") + "</span>" +
+        num("zu-syscfg-th", th.memCrit, 1, 100, 1, "Memory critical %", "memCrit") + '<span class="zu-syscfg-lbl">' + L("危险 %", "crit %") + "</span>" +
+        '<span class="zu-syscfg-lbl">' + L("磁盘可用", "Disk free") + "</span>" + num("zu-syscfg-th", th.diskFreeWarn, 0, 100, 1, "Disk free warn %", "diskFreeWarn") + '<span class="zu-syscfg-lbl">' + L("预警 %", "warn %") + "</span>" +
+        num("zu-syscfg-th", th.diskFreeCrit, 0, 100, 1, "Disk free critical %", "diskFreeCrit") + '<span class="zu-syscfg-lbl">' + L("危险 %", "crit %") + "</span>" +
+        '<span class="zu-syscfg-note">' + L("预警/危险含等号（≥或≤阈值即触发）；CPU/内存按使用率，磁盘按可用空间占比。", "Warn/crit thresholds are inclusive (≥ or ≤ the value); CPU/memory by usage, disk by free-space ratio.") + "</span>" +
+        "</span></div>" +
+        "</div>";
+    }
     /* 面板文案可随语言重建（事件走 panel 级委托，重建不丢监听） */
     function buildPanel() {
       var oldBody = panel.querySelector(".zu-settings-body");
@@ -1966,6 +2060,7 @@
       '<label><input type="radio" class="zu-just-choice" name="zu-just-' + slot + '" value="end"' + (state.barJust === "end" ? " checked" : "") + '><span>' + L("居右对齐", "Align right") + '</span></label></div>' +
       '<div class="pnote">' + L("仅默认样式生效：均分为格铺满整条，居左/居右时格靠一侧聚拢，⚙ 齿轮仍在最右。", "Applies to the Default style only: space between spreads the cells across the bar; left/right packs them to one side — the gear stays at the far right.") + '</div></div>' +
       barOrderSettingsHtml() +
+      sysmonSettingsHtml() +
       settingRow('<input type="checkbox" data-k="subRate">', L("子代理行内速率", "Sub-agent row rate"), L("在会话流的 Agent 工具行内实时显示各子代理 tok/s（运行期估算，完成后切换为真实平均速率；悬停看明细）。默认开启。", "Shows each sub-agent's live tok/s inside its Agent tool row (running estimate, actual average after completion; hover for details). On by default.")) +
       settingRow('<input type="checkbox" data-k="wfChip">', L("工作流卡汇总", "Workflow card summary"), L("在会话流的工作流卡片上显示 token 合计与聚合速率（完成态，每次执行结算后更新；悬停看各执行者明细）。默认开启。", "Shows token total and aggregate rate on workflow cards in the conversation (settled data, refreshed as each ask completes; hover for per-actor details). On by default.")) +
       settingRow('<input type="checkbox" data-k="git">', L("Git 状态", "Git status"), L("工具行显示当前分支、↑领先 ↓落后与未提交改动（+插入行 -删除行 ?未跟踪）；优先挂在「电脑操作」右侧，缺失时留在左侧操作区末尾；仅本地仓库", "Branch, ↑ahead ↓behind and uncommitted changes (+ins -del ?untracked) in the toolbar; beside Computer Use, or at the end of the left action group when unavailable; local repositories only")) +
@@ -2139,6 +2234,7 @@
         if (target) { try { target.focus(); } catch (e) { } }
       }
       previousPanelFocus = null;
+      if (typeof sysmonWantRecalc === "function") sysmonWantRecalc();   // v356：设置页关闭后若无其他兴趣源则停采样（签名不变零开销；typeof 守卫兼容切片沙箱）
     }
     panel.addEventListener("scroll", syncSettingsScroll, true);
     panel.addEventListener("keydown", function (e) {
@@ -2591,6 +2687,18 @@
           foldDirty = true;
           renderAll(false);
           if (panel.classList.contains("open")) refreshLayoutEditor(null, null);
+        }
+        return;
+      }
+      if (e && e.key === LS.sysmonCfg) {   // v356：系统状态配置跨窗同步（他窗改阈值/格式即跟）
+        var scN;
+        try { scN = normalizeSysmonCfg(JSON.parse(ls(LS.sysmonCfg, "null"))); } catch (eS) { return; }
+        if (JSON.stringify(scN) !== JSON.stringify(state.sysmonCfg)) {
+          state.sysmonCfg = scN;
+          renderAll(false);
+          try { sysmonApplyFace(); } catch (eF) { }
+          sysmonWantRecalc(true);
+          if (panel.classList.contains("open")) syncPanel();
         }
         return;
       }

@@ -145,9 +145,13 @@ async function center(wc, expr) {
 
 async function runChain(wc, win, steps, log) {
   const preShots = {};   /* v299：turnTip 在开卡瞬间即拍（共享捕获窗口有收起竞态） */
+  const shotFilter = process.env.ZU_SYS_SHOT || '';   /* v356：调试门，只跑 shot 名含该串的步骤 */
   for (const st of steps) {
+    if (shotFilter && !(st.shot || '').includes(shotFilter)) continue;
     pumpMode = (st.live || st.fixture === 'live') ? 'live' : 'fixture';
     await send(wc, 'mouseMove', 620, 140);   // 步前鼠标归中性区
+    if (st.width) { await win.setSize(st.width, 820); await sleep(150); }   /* v356 SYS 链：按步改窗宽驱动窄宽状态机/折叠 */
+    if (st.pre) await wc.executeJavaScript(st.pre, true);   /* v356 SYS 链：reload 前预写 localStorage */
     if (st.reload) {
       await win.loadFile(path.join(OUT, 'host.final.html'));
       await sleep(500);
@@ -156,6 +160,20 @@ async function runChain(wc, win, steps, log) {
     }
     await wc.executeJavaScript(`window.__zuScenario(${JSON.stringify(st)})`, true);
     await sleep(400);
+    if (st.sysFrame) {   /* v356 SYS 链：推系统状态夹具帧（真实 __zusageSysmon 入口） */
+      const ok = await wc.executeJavaScript(`window.__zuSysFrame(${JSON.stringify(st.sysFrame)})`, true);
+      if (!ok) log.push({ shot: st.shot, sysErr: 'no __zusageSysmon (overlay too old?)' });
+      await sleep(400);
+    }
+    if (st.sysDo) {
+      var sysDoResult = await wc.executeJavaScript(`window.__zuSysDo(${JSON.stringify(st.sysDo)})`, true);
+      if (sysDoResult !== true) log.push({ shot: st.shot, sysDo: st.sysDo, sysDoResult });
+      else if (typeof sysDoResult === 'string') log.push({ shot: st.shot, sysDo: st.sysDo, sysDoResult });
+    }
+    if (st.hoverSys) {   /* v356 SYS 链：真实指针悬停系统状态格（focus 开卡之外的悬停保活路径） */
+      const hp = await wc.executeJavaScript('window.__zuSysHoverRect && window.__zuSysHoverRect()', true);
+      if (hp) { await send(wc, 'mouseMove', hp.x, hp.y); await sleep(500); }
+    }
     if (pumpMode === 'live') {
       /* live 步骤：拉真实当前会话快照推给页面（reload 后页面 live 缓存已清空，
        * 必须先到帧再 mount；夹具步骤不推，页面守卫丢弃在途帧） */
@@ -318,7 +336,9 @@ async function runChain(wc, win, steps, log) {
       try { img = await wc.capturePage(); } catch (e) { await sleep(400); }
     }
     if (img) fs.writeFileSync(path.join(OUT, 'shots', st.shot), img.toPNG());
-    log.push(Object.assign({ shot: st.shot, shotErr: img ? 0 : 'capture failed' }, diag));
+    let sysDiag = null;
+    try { sysDiag = await wc.executeJavaScript('window.__zuSysDiag && window.__zuSysDiag()', true); } catch (e) { }
+    log.push(Object.assign({ shot: st.shot, shotErr: img ? 0 : 'capture failed' }, diag, { sys: sysDiag }));
   }
 }
 
@@ -359,6 +379,47 @@ app.whenReady().then(async () => {
     console.log('GEOMETRY_PASS'); app.exit(0); return;
   }
   const log = [];
+
+  /* 链 SYS（v356 issue #338）：系统状态格真实 Electron 场景（ZU_SYS_ONLY 门独立跑）。
+   * 生产 overlay 原文注入后走真实数据链：localStorage 预写 → reload 启用 →
+   * __zusageSysmon 夹具帧 → 真实 focusin tooltip /「···」菜单 / ⚙ 设置页 / 工具行 chip。
+   * 场景编号对齐 specs/statusbar-system-status.md 验收清单与设计稿五场景。 */
+  if (process.env.ZU_SYS_ONLY) {
+    await runChain(wc, win, [
+      /* 场景 A：宽屏完整显示（full 面：CPU% | MEM 已用/总量 | DISK 可用） */
+      { pre: 'window.__zuSysPreset()', reload: true, theme: 'dark', sysFrame: 'normal', shot: 'sys-01-widescreen-full.png', open: false },
+      { sysDo: 'focusCell', hoverSys: true, wait: 700, shot: 'sys-02-tooltip-full.png', open: false },
+      /* 场景 D：资源危险（阈值预警：警告三角 + 柔和红，Bar 与 Tooltip 两拍） */
+      { sysFrame: 'crit', shot: 'sys-03-critical-bar.png', open: false },
+      { sysDo: 'focusCell', hoverSys: true, wait: 700, shot: 'sys-04-critical-tooltip.png', open: false },
+    ], log);
+    /* 场景 B：中等宽度折叠（sysmon 高优先级存活，低优先级折进「···」；680px 触发折叠层） */
+    await runChain(wc, win, [
+      { pre: 'window.__zuSysPreset({high:true})', reload: true, theme: 'dark', sysFrame: 'normal', width: 560, shot: 'sys-05-narrow-fold.png', open: false },
+    ], log);
+    /* 场景 C：极窄 + 「···」更多菜单 + 菜单点击锚定 Tooltip（默认低优先级：sysmon 先折进菜单） */
+    await runChain(wc, win, [
+      { pre: 'window.__zuSysPreset()', reload: true, theme: 'dark', sysFrame: 'normal', width: 520, shot: 'sys-06-extreme-folded.png', open: false },
+      { sysFrame: 'normal', sysDo: 'openMore', wait: 800, shot: 'sys-07-more-menu.png', open: false },
+      { sysFrame: 'normal', sysDo: 'clickMoreSysmon', hoverSys: false, wait: 800, shot: 'sys-08-more-tooltip.png', open: false },
+    ], log);
+    /* ⚙ 设置页：排序卡系统状态行 + 配置卡（真实数据预览） */
+    await runChain(wc, win, [
+      { width: 1240, sysDo: 'settings', wait: 1000, shot: 'sys-09-settings.png', open: false },
+    ], log);
+    /* 场景 E：精简模式工具行 chip */
+    await runChain(wc, win, [
+      { pre: "window.__zuSysPreset({theme:'compact'})", reload: true, theme: 'dark', sysFrame: 'normal', sysDo: 'hoverChip', wait: 700, shot: 'sys-10-compact-chip.png', open: false },
+    ], log);
+    /* 浅色主题 + 数据不可用（不推帧：— 占位） */
+    await runChain(wc, win, [
+      { pre: 'window.__zuSysPreset()', reload: true, theme: 'light', sysFrame: 'normal', shot: 'sys-11-light.png', open: false },
+      { pre: 'window.__zuSysPreset()', reload: true, theme: 'dark', shot: 'sys-12-unavailable.png', open: false },
+    ], log);
+    console.log('DONE ' + JSON.stringify(log));
+    app.exit(0);
+    return;
+  }
 
   /* 链 LIVE（2026-11-08）：真实当前会话数据。生产同款 serve 泵拉最近活跃会话快照，
    * 状态条/今日/工具/V2 卡全部为跑链瞬间的真实值——与真机同屏直接对比。

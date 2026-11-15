@@ -37,6 +37,7 @@ FILES = [
     "quota-client.cjs",
     "model-puller.cjs",
     "engine-patch.cjs",
+    "sysmon-client.cjs",
     "release_unpack.py",
     "runtime_lock.py", "usage_stats.py", "turn-stats.js",
     "overlay.js", "token_rate.py", "renderer_bridge.py", "token_pricing.py",
@@ -75,6 +76,7 @@ COLD_FILES = (
     "quota-client.cjs",
     "model-puller.cjs",
     "engine-patch.cjs",
+    "sysmon-client.cjs",
 )
 # - restart_notice.py 允许记录 hash 的文件集合（冷文件 + 禁用热重载时的热文件）
 RESTART_HASH_FILES = (*COLD_FILES, "overlay.js", "zusage.py")

@@ -355,6 +355,7 @@
     pluginRequest("quota-providers", { panes: {} });
     cleanupRateTip();
     cleanupGitTip();
+    if (typeof cleanupSysTip === "function") cleanupSysTip();   // v356：系统状态 chip 浮层同链清理
     closeEnhanceHistoryFull();   // v350：摘除查看全部历史面板的 document keydown / window resize 监听与 debounce（幂等）
     document.removeEventListener("mouseover", subTipDocOver, true);   // v176：委托悬停随 dispose 摘除
     document.removeEventListener("mouseout", subTipDocOut, true);

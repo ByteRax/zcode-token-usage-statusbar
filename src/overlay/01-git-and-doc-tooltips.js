@@ -2019,3 +2019,52 @@
     gitTip.remove();
   }
 
+  /* ---------- 系统状态 chip 的悬停说明（v356，issue #338）：gitTip 同款 document 级单例。
+   * 内容=00 分片 sysmonTipHtml（与条面格通用链同一产出）；签名幂等 + 重建保磁盘表滚动位；
+   * 浅色档随 chip data-zusage-light；Esc/离开/代际清理三链收起。 */
+  var sysTip = document.createElement("div");
+  sysTip.className = "tip zusage-sysmon-tip";
+  sysTip.style.cssText = rateTip.style.cssText;
+  document.body.appendChild(sysTip);
+  var sysTipFor = null;
+  var sysTipHideTimer = 0;
+  function showSysTip(chip) {
+    if (stale() || !chip || !chip.isConnected) { hideSysTip(); return; }
+    var html = sysmonTipHtml(state.sysmonCfg, sysFrame);
+    if (sysTip.__zuTipSig !== html) {
+      var keep = 0;
+      if (sysTipFor === chip) { try { var prevRows = sysTip.querySelector(".zu-sys-vols"); if (prevRows) keep = prevRows.scrollTop; } catch (e) { } }
+      sysTip.innerHTML = html;
+      sysTip.__zuTipSig = html;
+      try { var rowsEl = sysTip.querySelector(".zu-sys-vols"); if (rowsEl && keep) rowsEl.scrollTop = keep; } catch (e) { }
+    }
+    if (chip.getAttribute("data-zusage-light") === "1") sysTip.setAttribute("data-zusage-light", "1");
+    else sysTip.removeAttribute("data-zusage-light");
+    sysTip.style.display = "block";
+    var r = chip.getBoundingClientRect(), tw = sysTip.offsetWidth, th2 = sysTip.offsetHeight;
+    var vw = window.innerWidth, vh = window.innerHeight;
+    var left = Math.max(8, Math.min(r.left, vw - tw - 8));
+    var top = r.top - th2 - 8;
+    if (top < 8) top = Math.min(r.bottom + 8, vh - th2 - 8);
+    sysTip.style.left = Math.round(left) + "px";
+    sysTip.style.top = Math.round(top) + "px";
+    sysTipFor = chip;
+  }
+  function hideSysTip() {
+    clearTimeout(sysTipHideTimer);
+    sysTip.style.display = "none";
+    sysTipFor = null;
+  }
+  function hideSysTipSoon() { clearTimeout(sysTipHideTimer); sysTipHideTimer = setTimeout(hideSysTip, 200); }
+  function onSysTipEnter() { clearTimeout(sysTipHideTimer); }
+  function onSysKeydown(e) { if (e && e.key === "Escape") hideSysTip(); }
+  window.addEventListener("keydown", onSysKeydown, true);
+  sysTip.addEventListener("mouseenter", onSysTipEnter);
+  sysTip.addEventListener("mouseleave", hideSysTip);
+  function cleanupSysTip() {
+    window.removeEventListener("keydown", onSysKeydown, true);
+    clearTimeout(sysTipHideTimer);
+    hideSysTip();
+    sysTip.remove();
+  }
+

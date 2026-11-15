@@ -56,7 +56,7 @@ def visible_context(label, detail, message):
 RESTART_HASH_FILES = (
     "inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs",
     "plugin-storage.cjs", "quota-client.cjs", "model-puller.cjs",
-    "engine-patch.cjs", "overlay.js", "zusage.py",
+    "engine-patch.cjs", "sysmon-client.cjs", "overlay.js", "zusage.py",
 )
 
 
