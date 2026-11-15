@@ -590,8 +590,9 @@
 
 
     /* 窄宽度折叠：基于真实布局测量，而非字符数猜测。折叠序=zuBarFoldOrder 纯函数（低优先
-     * 先收、同级按显示序靠右先收；system 与 speed 不参与折叠——speed 是设计稿「固定（始终
-     * 显示）」语义：有有效数据才渲染，不伪造 0）。宽/字号(含字族)/优先级签名+foldDirty 门控
+     * 先收、同级按显示序靠右先收；system 与 speed rank=-1 排最后候选，极端挤压、普通候选
+     * 收尽仍溢出时照样折叠——speed 是设计稿「固定（始终显示）」语义：有有效数据才渲染，
+     * 不伪造 0）。宽/字号(含字族)/优先级签名+foldDirty 门控
      * 重算；每帧另测一次溢出（流式原地改字会变宽，签名探测不到）；恢复带 FOLD_HYS 迟滞带，
      * 阈值附近数字刷新不再整格反复翻转。 */
     var foldDirty = true, foldWidth = -1, foldFont = "", foldPrioritySig = "", foldedKeys = "";
