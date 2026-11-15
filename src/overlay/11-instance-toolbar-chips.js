@@ -592,12 +592,12 @@
      * 点击读当前 composer 草稿（__zcodeLexicalInputE2E——Lexical 直写 DOM 不进 EditorState，
      * 该 E2E 桥是唯一官方写通道），经 pluginRequest("prompt-enhance") 由主进程按会话模型
      * 凭据一次性改写后回填；回填前重读草稿比对，用户已编辑则不覆盖。相位 idle→enhancing
-     * →undo(20s 可撤销)；警示态 4s 自愈。开关 enhance_enabled（推送面 enhanceEnabled）关
+     * 警示态 4s 自愈（v350.1 撤销相位已删除）。开关 enhance_enabled（推送面 enhanceEnabled）关
      * 闭或实例停用一律 restore；双 reapply（render 数据点 + heavy 对账点）兜回位置与相位，
      * __zuPhase 签名幂等，busy 旋转走 aria-busy CSS 不打断。 */
     var enhanceBtnCache = null;
-    var enhancePhase = "idle";   // idle | enhancing | undo
-    var enhanceTimer = 0;        // undo 窗口定时器
+    var enhancePhase = "idle";   // idle | enhancing
+    var enhanceTimer = 0;        // 写入确认延时器（v350.1 起非撤销窗）
     var enhanceWaitTimer = 0;    // 渲染端等待兜底（主进程 60s 超时 + 轮询量级余量）
     var enhanceWarnText = "";    // 非空 = 警示态（4s 自愈）
     var enhanceWarnTimer = 0;
@@ -612,7 +612,7 @@
       try { return api && typeof api.getEditorState === "function" ? JSON.stringify(api.getEditorState()) : ""; } catch (e) { return ""; }
     }
     function enhanceCurrentScope() {
-      var sid = enhanceCurSid(), scope = readPaneScope(wantedEl, sid, pid);
+      var sid = enhanceCurSid(), scope = readPaneScope(wantedEl, sid, pid, true);   // v354：增强链显式放行 draft（新会话未发首条消息）；其余消费面不传该参维持拒绝
       return scope ? JSON.stringify([scope.sid, scope.identity, scope.workspacePath, scope.remoteSessionId]) : "";
     }
     var ENHANCE_ANCHOR_SEL = '[data-testid="chat-model-select-trigger"]';
@@ -756,7 +756,9 @@
                 }
                 var committed = "";
                 try { committed = String(apiNow.getText() || ""); } catch (e) { }
-                if (enhanceInputApi() !== apiNow || committed !== res.text) {
+                /* 换行归一后再比对：模型回包可能含 CRLF，宿主 E2E 桥读回时规范化为 LF，
+                 * 逐字比对会恒不等→误报「写回失败或草稿已变化」（文本实际已替换）。 */
+                if (enhanceInputApi() !== apiNow || committed.replace(/\r\n/g, "\n") !== res.text.replace(/\r\n/g, "\n")) {
                   enhanceWarn(L("写回输入框失败或草稿已变化", "Write failed or draft changed"));
                   enhanceSetPhase("idle");
                   return;
@@ -1137,7 +1139,7 @@
       var mis;
       if (!chip.isConnected) mis = true;   // 首挂必须插入：速率 chip 占锚位时先落其后再由速率兜回收敛 [锚][速率][git]（容忍规则只用于已挂载的位置保持，否则精简下 git chip 永不出现）
       else if (mount.after) mis = slotNode !== chip && !(tpsChipCache && slotNode === tpsChipCache);
-      else mis = wrap.lastElementChild !== chip;
+      else mis = wrap.lastElementChild !== chip && !(sysmonChipCache && wrap.lastElementChild === sysmonChipCache);   // v356：容忍系统状态 chip 收尾（[锚][速率][git][sysmon] 收敛，防两 chip 逐拍拉锯）
       if (mis) wrap.insertBefore(chip, slotNode);
       var gitLiveText = gitChipAria(view.st, view.stale);
       if (ariaLiveState.__zuGitLive !== gitLiveText) {
@@ -1174,6 +1176,105 @@
       gitChipCache = null;
       ariaLiveState.__zuGitLive = "";
       ariaLiveState.textContent = ariaLiveState.__zuQuotaLive || "";
+    }
+
+    /* ---------- v356 系统状态 chip（精简模式工具行，issue #338）：git chip 同款模板。
+     * 仅 compact 主题挂载（default 条面已有格、pill 面条内格仍走条面）；收敛位
+     * [锚][速率][git][sysmon]：git 在=紧跟其后，git 缺位=落 git 锚位（容忍速率相邻）。
+     * 面串与条面格共用 sysmonFaceHtml（format:"auto" 在此解析为 compact 档——工具行
+     * 空间比条面紧，不量宽，显式档用户自担）。点击=立即刷新+弹完整 Tooltip。 */
+    var sysmonChipCache = null;
+    function sysmonChipMounted() { return !!(sysmonChipCache && sysmonChipCache.isConnected); }
+    function sysmonChipAria() {
+      var parts = [], f = sysFrame;
+      if (state.sysmonCfg.metrics.cpu && f && f.cpu && f.cpu.state === "ok") parts.push("CPU " + Math.round(f.cpu.pct) + "%");
+      if (state.sysmonCfg.metrics.mem && f && f.mem && f.mem.state === "ok") parts.push(L("内存", "Memory") + " " + Math.round(f.mem.pct) + "%");
+      if (state.sysmonCfg.metrics.disk && f && f.disk && f.disk.state === "ok") {
+        var v = sysVolPick(f.disk.vols);
+        if (v && typeof v.avail === "number") parts.push(L("磁盘可用", "disk free") + " " + sysFmtBytes(v.avail));
+      }
+      return L("系统状态", "System status") + (parts.length ? "：" + parts.join("，") : "");
+    }
+    function onSysChipEnter() { if (this && this.isConnected) showSysTip(this); }
+    function onSysChipKey(e) {
+      if (e && e.key === "Enter") { e.preventDefault(); if (this) this.click(); }
+      else if (e && e.key === " ") e.preventDefault();
+    }
+    function onSysChipKeyup(e) { if (e && e.key === " ") { e.preventDefault(); if (this) this.click(); } }   // v356 review：Space 激活对齐 git chip 的 keydown+keyup 对（aria-keyshortcuts 已声明）
+    function onSysChipClick() {
+      try { pluginRequest("sysmon-refresh", {}); } catch (e) { }
+      if (this && this.isConnected) showSysTip(this);
+    }
+    function syncSysmonChip() {
+      if (inactive()) { restoreSysmonChip(); return; }
+      if (state.theme !== "compact" || !state.show.sysmon ||
+        !(state.sysmonCfg.metrics.cpu || state.sysmonCfg.metrics.mem || state.sysmonCfg.metrics.disk)) {
+        restoreSysmonChip(); return;
+      }
+      /* 本地性判定与条面格同源（lastView.remote/not_local 由帧级证据驱动，fail-closed）：
+       * readPaneScope 依赖渲染桥——无桥环境（QA harness/桥降级）恒 null 会让 chip 永不挂载，
+       * 而条面格在同环境正常渲染，两 gate 必须同源。 */
+      var vLocal = lastView && !lastView.remote && !lastView.not_local;
+      if (!vLocal) { restoreSysmonChip(); return; }   // 远端/不在本地库：不显示本机指标
+      var mount = null;
+      try { mount = gitMount(); } catch (e) { }
+      if (!mount) { restoreSysmonChip(); return; }
+      var wrap = mount.wrap;
+      var chip = sysmonChipCache;
+      if (!chip || !chip.isConnected) {
+        if (sysTipFor === chip) hideSysTip();
+        chip = null;
+        for (var i = 0; i < wrap.children.length; i++) {   // 复用热更/重建遗留节点，避免双 chip
+          if (wrap.children[i].classList && wrap.children[i].classList.contains("zu-sysm")) { chip = wrap.children[i]; break; }
+        }
+        if (!chip) {
+          chip = document.createElement("span");
+          chip.className = "zu-sysm";
+          chip.setAttribute("role", "button");
+          chip.setAttribute("aria-keyshortcuts", "Enter Space");
+          chip.tabIndex = 0;
+        }
+        if (!chip.__zuWired) {   // v356 review：新建与遗留采纳统一接线（遗留节点可能来自旧代际未挂监听）
+          chip.__zuWired = true;
+          chip.addEventListener("mouseenter", onSysChipEnter);
+          chip.addEventListener("mouseleave", hideSysTipSoon);
+          chip.addEventListener("focus", onSysChipEnter);
+          chip.addEventListener("blur", hideSysTip);
+          chip.addEventListener("keydown", onSysChipKey);
+          chip.addEventListener("keyup", onSysChipKeyup);
+          chip.addEventListener("click", onSysChipClick);
+        }
+        sysmonChipCache = chip;
+      }
+      var face = sysmonFaceHtml(state.sysmonCfg, sysFrame, state.sysmonCfg.format === "auto" ? "compact" : state.sysmonCfg.format);
+      if (!face) { restoreSysmonChip(); return; }   // 监控全关（运行中被关）兜底
+      var gitIn = !!(gitChipCache && gitChipCache.isConnected);
+      var slotNode = mount.after ? mount.after.nextElementSibling : null;
+      var mis;
+      if (!chip.isConnected) mis = true;   // 首挂必须插入（同 git 首挂契约）
+      else if (gitIn) mis = chip.previousElementSibling !== gitChipCache;   // git 在：紧跟其后（判位与插入方向一致，防逐拍空转）
+      else mis = slotNode !== chip && !(tpsChipCache && slotNode === tpsChipCache);   // git 缺位：占锚后位，容忍速率 chip 相邻（git chip 同款约定，review M1：旧谓词与插入方向互斥永不收敛）
+      if (mis) {
+        if (gitIn) wrap.insertBefore(chip, gitChipCache.nextElementSibling);
+        else wrap.insertBefore(chip, slotNode);
+      }
+      syncCtxLite(chip, bar.classList.contains("zu-light"));
+      var sig = "zu-sysm|" + face + "|" + state.lang;
+      if (chip.__zuSig !== sig) {
+        chip.__zuSig = sig;
+        chip.className = "zu-sysm";
+        chip.setAttribute("aria-label", sysmonChipAria());
+        chip.innerHTML = face;
+      }
+      if (sysTipFor === chip) showSysTip(chip);   // 悬停中帧刷新：内容跟随
+      sysmonWantRecalc();
+    }
+    function restoreSysmonChip() {
+      if (!sysmonChipCache) return;
+      if (sysTipFor === sysmonChipCache) hideSysTip();
+      try { sysmonChipCache.remove(); } catch (e) { }
+      sysmonChipCache = null;
+      sysmonWantRecalc();
     }
 
     /* ---------- v105 压缩上下文：「上下文容量」弹层内、命中率行下方的胶囊按钮 ----------

@@ -43,7 +43,7 @@ try {
 }
 catch (e) { LOG("cdp remote-debugging-port switch failed:", e.message); }
 const loadedHashes = { _loadedAt: Date.now() - process.uptime() * 1000 };
-for (const name of ["inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs", "quota-client.cjs", "model-puller.cjs", "engine-patch.cjs", "overlay.js", "zusage.py"]) {
+for (const name of ["inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs", "quota-client.cjs", "model-puller.cjs", "engine-patch.cjs", "sysmon-client.cjs", "overlay.js", "zusage.py"]) {
   try { loadedHashes[name] = createHash("sha256").update(fs.readFileSync(path.join(HERE, name))).digest("hex"); }
   catch (e) { LOG("startup fingerprint unavailable:", name, e.message); }
 }
@@ -168,6 +168,9 @@ const windowWorkspaces = new Map();
 const windowTasks = new Map();
 const scopeBindings = new Map();
 const windowQuotaSelections = new Map();   // webContents.id → {paneId: {sid, providerId, modelId}}
+const sysmonSubs = new Map();   // v356 系统状态订阅：webContents.id → true（want）；声明前置——maybeSpawn 启动首拉（:866 附近）早于模块尾部声明会踩 TDZ
+let sysmonClient = null;        // v356 系统状态采样器实例（onFrame 闭包读它做存活判断）
+let sysmonSubMeta = null;       // v358 最近一次 want 请求的 {cfg, hasProjectPath, projectPath}：采样器缺席（热模块未部署）时也保留，实例建好/热换重建时回放，格自愈不丢配置与项目卷标注。单例「最后写者胜」——与 v356 既有 applyConfig 每次覆盖实例配置的语义一致，跨热换延续同一限制
 /* 本窗是否出现过任何远端工作区/任务证据：issue #40 的无桥本地兜底只在确认
  * “本窗只能查本地”时启用，有远端证据时 overlay 仍 fail-closed。 */
 const remoteEvidence = new Map();
@@ -698,6 +701,9 @@ function maybeSpawn() {
   for (const id of windowTasks.keys()) if (!liveIds.has(id)) windowTasks.delete(id);
   for (const id of scopeBindings.keys()) if (!liveIds.has(id)) scopeBindings.delete(id);
   for (const id of windowQuotaSelections.keys()) if (!liveIds.has(id)) windowQuotaSelections.delete(id);
+  let sysmonPruned = false;   // v356：兜底清订阅（destroyed 常规路径之外）；删过要补一次同步，否则渲染端请求在队列中时窗口销毁会留下泄漏订阅
+  for (const id of sysmonSubs.keys()) if (!liveIds.has(id)) { sysmonSubs.delete(id); sysmonPruned = true; }
+  if (sysmonPruned) sysmonSyncSubscribed();
   const withTimeout = (p, ms) => {
     let timer;
     return Promise.race([p, new Promise((r) => { timer = setTimeout(() => r(""), ms); })])
@@ -838,7 +844,7 @@ setInterval(() => {
   if (!residentAllowed()) stopResident();
     if (cfg.hot_reload === false) return;
     hotReloadIfChanged();
-    hotReloadMainModules();   // v258：六个主进程 .cjs 子模块同拍热换（mtime 轮询，与 renderer 资产同节奏）
+    hotReloadMainModules();   // v258：主进程 .cjs 子模块同拍热换（v358 时七个：六基础模块 + sysmon-client.cjs；mtime 轮询，与 renderer 资产同节奏）
   try {
     const m = fs.statSync(ZUSAGE).mtimeMs;
     if (overlayMtimeKnown && m !== zusageMtime && pyRes) {
@@ -1178,6 +1184,77 @@ function cleanupPendingZip() {
   }
 }
 
+/* ---------- v356 系统状态采样（issue #338 / specs/statusbar-system-status.md）：主进程单例
+ * 采样器（sysmon-client.cjs 热模块），订阅制轮询——渲染端经 pluginRequest sysmon-sub 声明兴趣
+ * {want, cfg, projectPath}，want>0 才轮询；帧经 pushOnce 同款信任门推 window.__zusageSysmon。
+ * 只推订阅窗口：未订阅窗口不收帧，收帧的信任边界与 pushOnce/isLocalHostPage 同口径。 */
+function pushSysmonTo(wc, frame) {
+  if (!isMainWindowState(wc) || wc.isDestroyed() || !isLocalHostPage(wc) || !frame || typeof frame !== "object") return;
+  /* U+2028/2029 转义同 pushOnce：卷名/挂载点可能含任意文本 */
+  const js = `window.__zusageSysmon && window.__zusageSysmon(${JSON.stringify(frame).replace(/[\u2028\u2029]/g, (c) => c === "\u2028" ? "\\u2028" : "\\u2029")})`;
+  wc.executeJavaScript(js, true).catch(() => { });
+}
+function sysmonWantAny() {
+  for (const v of sysmonSubs.values()) { if (v) return true; }
+  return false;
+}
+function sysmonSyncSubscribed() {
+  const client = sysmonClient || createSysmonClientInstance();
+  if (client) client.setSubscribed(sysmonWantAny());
+}
+function createSysmonClientInstance() {
+  try {
+    const { createSysmonClient } = require("./sysmon-client.cjs");
+    sysmonClient = createSysmonClient({
+      log: (...a) => LOG("[sysmon]", ...a),
+      onFrame: (frame) => {
+        if (!sysmonClient) return;   // dispose 在途竞窗：旧实例回调不再外发
+        for (const wc of webContents.getAllWebContents()) {
+          if (sysmonSubs.get(wc.id) !== true) continue;
+          pushSysmonTo(wc, frame);
+        }
+      },
+    });
+    if (sysmonSubMeta) {   // v358 热换重建/缺席后补建：回放最近一次 want 请求的 cfg 与项目卷（未订阅态只写字段，不触发采样）
+      try { sysmonClient.applyConfig(sysmonSubMeta.cfg, sysmonSubMeta.hasProjectPath ? sysmonSubMeta.projectPath : undefined); } catch (e) { LOG("sysmon meta replay failed:", (e && e.message) || e); }
+    }
+    return sysmonClient;
+  } catch (e) {
+    sysmonClient = null;   // 热换路径旧实例已 dispose：不留僵尸引用（冷启动本就是 null）
+    delete loadedHashes["sysmon-client.cjs"];
+    LOG("sysmon client unavailable:", e.message);
+    return null;
+  }
+}
+function handleSysmonRequest(req, wc) {
+  const want = req.want === true;
+  if (typeof req.projectPath === "string" && req.projectPath !== "" && !gitPathOk(req.projectPath)) {
+    deliverPluginRequest(wc, req.requestId, { ok: false, error: "invalid project path" });
+    return;
+  }
+  if (want) {
+    /* v358 先留档再建实例：sysmon-client.cjs 是热模块，运行目录尚未部署（或热换前）时
+     * require 失败——此时仍把 want 记进 sysmonSubs 并返回 ok:false。否则热换路径
+     * 「按现存订阅重放」永远等不到订阅者，渲染端签名守卫又不重发，格停在 loading
+     * 直到用户开关一次或重开窗口（Windows 实测：部署采样器后格不自愈的根因）。 */
+    sysmonSubMeta = {
+      cfg: req.cfg && typeof req.cfg === "object" && !Array.isArray(req.cfg) ? req.cfg : null,
+      hasProjectPath: typeof req.projectPath === "string",
+      projectPath: typeof req.projectPath === "string" ? req.projectPath : "",
+    };
+    const client = sysmonClient || createSysmonClientInstance();
+    if (!client) {
+      sysmonSubs.set(wc.id, true);   // 记账先于可用性：热模块补上后 sysmonWantAny() 即为真，自动采样补帧
+      deliverPluginRequest(wc, req.requestId, { ok: false, error: "sysmon unavailable; fully restart ZCode to load it" });
+      return;
+    }
+    client.applyConfig(sysmonSubMeta.cfg, sysmonSubMeta.hasProjectPath ? sysmonSubMeta.projectPath : undefined);
+  }
+  sysmonSubs.set(wc.id, want);
+  sysmonSyncSubscribed();
+  deliverPluginRequest(wc, req.requestId, { ok: true });
+}
+
 /* ---------- v202 更新日志：⚙ 更新页按需拉取当前 Release 渠道的发布说明。独立 try：
  * 拉取/缓存失败只少日志卡片，不拖垮更新链。渲染进程只传 version/force，flavor 与
  * repository 一律取自主进程读到的注册渠道，绝不接收页面提供的地址。缓存落运行目录
@@ -1197,8 +1274,9 @@ function initReleaseNotes() {
 initReleaseNotes();
 
 /* ---------- v258 主进程子模块热替换（G3：更新除 inject-main.cjs 引导壳以外的主进程
- * 模块后零重启生效、零红点闪烁）。冷文件名单里 overlay/turn-stats/zusage 之外的六个
- * .cjs 在这里按 mtime 轮询热换：语法预检（读到半截/被 Windows 独占锁住则跳过本轮）→
+ * 模块后零重启生效、零红点闪烁）。冷文件名单里 overlay/turn-stats/zusage 之外的 .cjs
+ * 在这里按 mtime 轮询热换（六基础模块自 v258，sysmon-client.cjs 自 v356 加入）：
+ * 语法预检（读到半截/被 Windows 独占锁住则跳过本轮）→
  * dispose 旧实例 → 清 require.cache → 重建实例（依赖方向：quota-client 先落，重装
  * modelPuller 的 decryptValue 注入；release/storage 变更联动重建 updater 与 notes）→
  * 刷新 loadedHashes 与 _hotLoadedAt → acknowledgeRestart 销账 → 广播状态。
@@ -1206,7 +1284,7 @@ initReleaseNotes();
  * （quotaWatchers 重复注册会翻倍）。engine-patch 热换后 syncStartup 幂等，
  * 已 applied 且引擎未变不重复写盘。inject-main.cjs 自身不在热换面内：
  * 它持有 ipcMain/web-contents-created 注册与常驻泵，只能随客户端完全重启生效。 */
-const HOT_MAIN_MODULES = ["plugin-storage.cjs", "plugin-release.cjs", "plugin-updater.cjs", "quota-client.cjs", "model-puller.cjs", "engine-patch.cjs"];
+const HOT_MAIN_MODULES = ["plugin-storage.cjs", "plugin-release.cjs", "plugin-updater.cjs", "quota-client.cjs", "model-puller.cjs", "engine-patch.cjs", "sysmon-client.cjs"];
 const hotModuleMtimes = {};
 for (const name of HOT_MAIN_MODULES) {
   try { hotModuleMtimes[name] = fs.statSync(path.join(HERE, name)).mtimeMs; } catch (e) { }
@@ -1275,6 +1353,13 @@ function hotReloadMainModulesOnce() {
   if (changed.includes("engine-patch.cjs")) {
     purge("engine-patch.cjs");
     ok["engine-patch.cjs"] = !!initEnginePatcher();
+  }
+  if (changed.includes("sysmon-client.cjs")) {   // v356：dispose 停定时器 → purge → 重建 → 按现存订阅重放
+    if (sysmonClient) { try { sysmonClient.dispose(); } catch (e) { } }
+    sysmonClient = null;
+    purge("sysmon-client.cjs");
+    ok["sysmon-client.cjs"] = !!createSysmonClientInstance();
+    if (ok["sysmon-client.cjs"] && sysmonWantAny()) sysmonSyncSubscribed();
   }
   const updaterGroup = changed.filter((n) => n === "plugin-updater.cjs" || n === "plugin-release.cjs" || n === "plugin-storage.cjs");
   if (updaterGroup.length) {
@@ -1361,7 +1446,7 @@ function readEnhanceProvider() {
 }
 function enhanceProviderView() {
   const d = readEnhanceProvider();
-  return { capability: 1, allowDowngrade: d.allowDowngrade !== false, saveHistory: d.saveHistory === true, available: process.platform !== "win32" && !!modelPuller && modelPuller.enhanceProviderVersion === 1, version: 1, revision: d.revision, mode: d.mode, unreadable: !!d.unreadable, source: d.source || "manual", providerId: d.providerId || "", target: d.target || "", baseUrl: d.baseUrl || "", protocol: d.protocol || "openai-chat-completions", model: d.model || "", keyConfigured: !!d.apiKey };
+  return { capability: 1, allowDowngrade: d.allowDowngrade !== false, saveHistory: d.saveHistory === true, available: process.platform !== "win32" && !!modelPuller && modelPuller.enhanceProviderVersion === 1, platformLimited: process.platform === "win32", version: 1, revision: d.revision, mode: d.mode, unreadable: !!d.unreadable, source: d.source || "manual", providerId: d.providerId || "", target: d.target || "", baseUrl: d.baseUrl || "", protocol: d.protocol || "openai-chat-completions", model: d.model || "", keyConfigured: !!d.apiKey };
 }
 function validEnhanceUrl(value) {
   try {
@@ -1585,6 +1670,7 @@ async function handleEnhanceProviderAction(req, wc) {
     return;
   }
   if (req.action !== "enhance-provider-save" || !req.changes || typeof req.changes !== "object") return;
+  if (process.platform === "win32") { reply({ ok: false, error: "unsupported platform" }); return; }   // 与 models 分支对称：Windows 无 POSIX 安全落盘（runtime_lock 平台门恒拒），早退省一次必败 python 子进程
   const changes = req.changes;
   if (changes.source === "host") {
     const host = modelPuller.resolveEnhanceHost(changes.providerId);
@@ -2205,6 +2291,12 @@ async function pollPluginRequests() {
           queryTurnText(req.sid, wc, req.cn === 0, req.forceKmb === true, req.unitEpoch);
         } else if (req && req.action === "git-refresh") {   // v96：Git chip 点击 / 快照后节流：立即重查全部已关注路径
           gitTick(true, req.requestId, wc, req.path).catch(() => { });
+        } else if (req && req.action === "sysmon-sub") {   // v356：系统状态订阅（want+cfg+projectPath 合一）
+          handleSysmonRequest(req, wc);
+        } else if (req && req.action === "sysmon-refresh") {   // v356：Tooltip 手动刷新（仅订阅中生效）
+          const refreshed = !!(sysmonClient && sysmonWantAny());
+          if (refreshed) sysmonClient.refreshNow();
+          deliverPluginRequest(wc, req.requestId, refreshed ? { ok: true, pending: true } : { ok: false, error: "sysmon not subscribed" });
         } else if (req && req.action === "relaunch") {   // v172：⚙ 更新页「重启 ZCode」按钮（浮层已二次确认）
           if (pluginUpdater && pluginUpdater.status().busy) {   // 更新进行中拒绝重启：quit 会打断下载/安装
             deliverPluginRequest(wc, req.requestId, { ok: false, error: "update in progress" });
@@ -2296,6 +2388,7 @@ const hook = (wc) => {
     scopeBindings.delete(wc.id);
     remoteEvidence.delete(wc.id);
     windowQuotaSelections.delete(wc.id);
+    if (sysmonSubs.delete(wc.id)) sysmonSyncSubscribed();   // v356：窗口销毁摘订阅，末窗关闭即停采样
     syncQuotaProviders();
     if (!hasWindows()) {
       clearTimeout(retryTimer);

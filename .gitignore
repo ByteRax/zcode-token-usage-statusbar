@@ -16,6 +16,7 @@ diag-*.json
 !.zcode/skills/zcode-prd-to-spec/
 !.zcode/skills/zcode-health-review/
 !.zcode/skills/source-feature-adaptation/
+!.zcode/skills/distill-project-memory/
 !.zcode/rules/
 config.json
 enhance-provider.json

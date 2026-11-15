@@ -447,6 +447,11 @@
           '' + '.zu-stat-tip--' + variant + ' .zu-turn-models th{padding:1px 3px!important;white-space:nowrap!important}' +
           '' + '.zu-stat-tip--' + variant + ' .zu-turn-models td{padding:2px 3px!important;white-space:nowrap!important}' +
           '' + '.zu-stat-tip--' + variant + ' .zu-turn-models{flex:1 1 auto!important;min-height:0!important;overflow:auto!important;scrollbar-width:thin!important}' +
+          /* scrollbar-width 需 Chromium 121+：旧宿主回退 ::-webkit-scrollbar 窄条，避免 Windows
+           * 经典亮灰立体滚动条（约 17px）挤占表格；新 Chromium 设 scrollbar-width 后忽略
+           * webkit 伪元素，双写无冲突 */
+          '' + '.zu-stat-tip--' + variant + ' .zu-turn-models::-webkit-scrollbar{width:8px!important;height:8px!important}' +
+          '' + '.zu-stat-tip--' + variant + ' .zu-turn-models::-webkit-scrollbar-thumb{background:var(--color-border,rgba(128,128,128,.45))!important;border-radius:4px!important}' +
           '' + '.zu-stat-tip--' + variant + ' .zu-stat-time{margin-top:auto!important;padding-top:5px!important;border-top:1px solid var(--color-popover-border,rgba(255,255,255,.12))!important;font-size:calc(var(--ui-font-size,14px) - 4px)!important}' +
           '' + '.zu-stat-tip--' + variant + ' .zu-stat-time span{font-variant-numeric:tabular-nums!important}' +
           /* v301.1 图标规则三卡共享：flex baseline 标签行内图标 align-self:center
@@ -740,6 +745,46 @@
     /* 行内 SVG 线性图标（v54）：stroke 走 currentColor，颜色由 .ico 控制统一换色 */
     function ico(paths) {
       return '<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + paths + "</svg>";
+    }
+    /* ---------- v356 系统状态：格式解析 / 原地刷新（面串与 Tooltip 构建在 00 分片模块级，
+     * 条面格通用链与精简 chip 的 body 级浮层共用同一产出；本闭包只做格式解析与 DOM 写入）。 */
+    function sysFormatResolve() {
+      var f = state.sysmonCfg.format;
+      if (f === "full" || f === "compact" || f === "minimal") return f;
+      /* auto：随窄宽档位（zu-tight→紧凑、zu-narrow→极简），档位切换由窄宽状态机钩子驱动重绘；
+       * pill 无窄宽状态机恒 compact。显式档不自动改写用户偏好，空间不足走既有折叠链。 */
+      if (state.theme === "pill") return "compact";
+      if (bar.classList.contains("zu-narrow")) return "minimal";
+      if (bar.classList.contains("zu-tight")) return "compact";
+      return "full";
+    }
+    /* 原地刷新（__zusageSysmon 帧 / 窄宽档位切换共用）：只写变化的格面与 __tip，
+     * 不整条 render；tooltip 开在本格时经 drawTip 签名幂等重建并保留磁盘表滚动位。 */
+    function sysmonApplyFace() {
+      var cells = main.querySelectorAll('.it[data-zu-key="sysmon"]');
+      if (!cells.length) return;
+      var face = sysmonFaceHtml(state.sysmonCfg, sysFrame, sysFormatResolve());
+      var tipStr = "\x01" + sysmonTipHtml(state.sysmonCfg, sysFrame);
+      for (var i = 0; i < cells.length; i++) {
+        var el = cells[i];
+        if (el.innerHTML !== face) el.innerHTML = face;
+        if (el.__tip !== tipStr) el.__tip = tipStr;
+      }
+      if (typeof syncSysmonChip === "function") { try { syncSysmonChip(); } catch (e) { } }
+      try {
+        var prev = panel.querySelector(".zu-syscfg-prev");
+        if (prev) {
+          var pv = sysmonFaceHtml(state.sysmonCfg, sysFrame, "full");
+          var pvHtml = pv || '<span class="zu-sys-dim">' + L("采集中…", "sampling…") + "</span>";
+          if (prev.innerHTML !== pvHtml) prev.innerHTML = pvHtml;
+        }
+      } catch (e) { }
+      if (tipFor && tipFor.dataset && tipFor.dataset.zuKey === "sysmon" && tip.style.display === "block") {
+        var tbl = tip.querySelector(".zu-sys-vols"), st = tbl ? tbl.scrollTop : 0;
+        drawTip(tipFor, true);
+        var tbl2 = tip.querySelector(".zu-sys-vols");
+        if (tbl2 && st) tbl2.scrollTop = st;
+      }
     }
     function html(d) {
       var sess = d.session || {}, lt = d.last_turn || {}, today = d.today || {}, last = d.last || {};
@@ -1170,6 +1215,15 @@
           '<span class="v">' + fmt(sb.total) + "</span>" +
 (sb.active ? '<span class="ok dot">●</span>' : ""),
           null, "zu-sub");
+      }
+
+      /* v356 系统状态格（issue #338）：仅本地 scope 渲染——远端/不在本地库的 pane 不借本机
+       * 指标冒充（proj 格同款字段缺失排除思路，这里显式双条件）。面串与原地刷新
+       * （sysmonApplyFace）共用 sysmonFaceHtml 同一产出；监控全关时整格不渲染。 */
+      barItemKey = "sysmon";
+      if (state.show.sysmon && !d.remote && !d.not_local) {
+        var sysFace = sysmonFaceHtml(state.sysmonCfg, sysFrame, sysFormatResolve());
+        if (sysFace) it(sysFace, "\x01" + sysmonTipHtml(state.sysmonCfg, sysFrame));
       }
 
       /* 一格一组，按稳定 key 排序后提示内容继续与 .it 下标严格对应。 */

@@ -89,8 +89,8 @@
     }
     return out;
   }
-  function readFiberPaneScope(root, sid, pid) {
-    if (!root || !sid || sid === "draft" || !root.getAttribute ||
+  function readFiberPaneScope(root, sid, pid, allowDraft) {
+    if (!root || !sid || (sid === "draft" && !allowDraft) || !root.getAttribute ||
         root.getAttribute("data-session-id") !== sid) return null;
     try {
       var best = fiberPaneCandidates(root, pid);
@@ -103,13 +103,13 @@
       return { sid: sid, identity: identity, workspacePath: path, remoteSessionId: remote };
     } catch (e) { return null; }
   }
-  function readPaneScope(el, sid, pid) {
-    if (!el || !sid || sid === "draft" || !el.isConnected) return null;
+  function readPaneScope(el, sid, pid, allowDraft) {
+    if (!el || !sid || (sid === "draft" && !allowDraft) || !el.isConnected) return null;
     try {
       var root = el;
       while (root && !(root.hasAttribute && root.hasAttribute("data-session-id"))) root = root.parentElement;
       if (!root || root.getAttribute("data-session-id") !== sid) return null;
-      if (root.getAttribute("data-zusage-scope-version") !== "1") return readFiberPaneScope(root, sid, pid);   // v258：桥缺席的 fiber 兜底
+      if (root.getAttribute("data-zusage-scope-version") !== "1") return readFiberPaneScope(root, sid, pid, allowDraft);   // v258：桥缺席的 fiber 兜底；v354：allowDraft 透传（draft+桥缺席仍可放行）
       if (root.getAttribute("data-zusage-pane-id") !== pid) return null;
       var path = root.getAttribute("data-zusage-workspace-path");
       var identity = root.getAttribute("data-zusage-workspace-identity");
@@ -1155,6 +1155,38 @@
     var footer = '<div class="zu-eh-footer"><button type="button" class="zu-eh-act zu-eh-all" data-all>' + EH_ICON.list + L("查看全部历史", "View all history") + '<svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg></button><button type="button" class="zu-eh-act zu-eh-clear" data-clear>' + EH_ICON.trash + L("清空记录", "Clear records") + '</button><button type="button" class="zu-eh-act" data-ehset title="' + L("提示词增强设置", "Prompt enhancement settings") + '">' + EH_ICON.gear + L("设置", "Settings") + "</button></div>";
     var total = ehCache && ehCache.total != null ? L("共 ", "total ") + ehCache.total + L(" 条", "") : "";
     enhanceTip.innerHTML = '<div class="zu-eh-head"><div class="zu-eh-head-row"><span class="zu-eh-title">' + EH_ICON.history + L("最近增强记录", "Recent enhancements") + phase + '</span>' + (total ? '<span class="zu-eh-total">' + total + '</span>' : "") + '</div></div>' + body + '<div class="zu-eh-arrow"></div>' + footer;
+    placeEnhanceTip();   // v355：内容高度变化（加载完成/清空/删除）后重钳视口位置
+  }
+  /* v355 视口钳位（用户实报截图：多条卡片时面板顶缘越出窗口顶部被裁剪）——bottom 锚定
+   * 只保证底边间距，内容高超过按钮上方可用空间时顶部直接溢出视口。每次显示/内容重绘后按
+   * 实测高三档放置：上方够→bottom 锚定（原行为）；上方不够而下方够→翻到按钮下方（箭头
+   * 翻转，v315 cap 翻转先例）；两侧都不够→保持上方贴边并钳 maxHeight 让 .zu-eh-scroll 内滚。
+   * offsetHeight 在切片/桩环境缺席（→0），恒走「上方够」分支，既有行为与断言不变。 */
+  function placeEnhanceTip() {
+    var el = enhanceTipFor;
+    if (!el || !el.isConnected) return;
+    var r = el.getBoundingClientRect(), vw = window.innerWidth, vh = window.innerHeight;
+    var tw = Math.min(600, vw - 24);
+    enhanceTip.style.left = Math.max(8, Math.min(Math.round(r.left + r.width / 2 - tw / 2), Math.round(vw - tw - 8))) + "px";
+    var above = r.top - 20, below = vh - r.bottom - 20;   // 12px 间距 + 8px 视口边距
+    enhanceTip.style.maxHeight = "";   // 先解除上一拍的钳高，再量自然高——否则小钳位会锁死后续测量
+    var h = enhanceTip.offsetHeight || 0;
+    if (h <= above) {
+      enhanceTip.style.top = "auto";
+      enhanceTip.style.bottom = (vh - Math.round(r.top) + 12) + "px";
+      enhanceTip.style.maxHeight = "min(650px,72vh)";   // 恢复 boot 契约的 650px 帽（内部照常滚动），不因走该分支而退役
+      enhanceTip.classList.remove("zu-eh-flip");
+    } else if (below >= Math.min(h, 320)) {   // 至少 320px 高才值得翻到下方
+      enhanceTip.style.top = (Math.round(r.bottom) + 12) + "px";
+      enhanceTip.style.bottom = "auto";
+      enhanceTip.style.maxHeight = Math.min(h, below) + "px";   // 下方同样钳高，防止面板底缘越出视口
+      enhanceTip.classList.add("zu-eh-flip");
+    } else {
+      enhanceTip.style.top = "auto";
+      enhanceTip.style.bottom = (vh - Math.round(r.top) + 12) + "px";
+      enhanceTip.style.maxHeight = Math.max(above, 0) + "px";
+      enhanceTip.classList.remove("zu-eh-flip");
+    }
   }
   function showEnhanceTip(el) {
     if (stale() || !el || !el.isConnected) { hideEnhanceTip(); return; }
@@ -1163,12 +1195,6 @@
     enhanceTip.classList.toggle("zu-light", !dark);
     enhanceTip.style.display = "flex";
     enhanceTipFor = el;
-    var r = el.getBoundingClientRect(), vw = window.innerWidth;
-    var tw = Math.min(600, vw - 24);
-    var left = Math.max(8, Math.min(Math.round(r.left + r.width / 2 - tw / 2), Math.round(vw - tw - 8)));
-    enhanceTip.style.left = left + "px";
-    enhanceTip.style.top = "auto";   // bottom 锚定：面板高度变化不影响与按钮的间距
-    enhanceTip.style.bottom = (window.innerHeight - Math.round(r.top) + 12) + "px";
     if (!ehCache || Date.now() - ehCacheAt > 5000) { if (!ehLoading) ehFetch(ehRender); }
     ehRender();
   }
@@ -1286,7 +1312,7 @@
   }
   /* ---------- 查看全部历史浮层 ---------- */
   var ehFull = null, ehFullCache = null, ehFullSource = "all", ehFullQuery = "", ehFullPage = 0, ehFullPageSize = 20, ehFullSortField = "createdAt", ehFullSortDir = -1, ehFullProvider = "", ehFullModel = "", ehFullTime = "all", ehExpandedId = null;
-  var ehFullResizeTimer = 0, ehFullSearchTimer = 0;
+  var ehFullResizeTimer = 0, ehFullSearchTimer = 0, ehFullSearchHold = false;
   function ehFullOnResize() {   // 面板打开期间跟随窗口宽度重排版（列合并/裁剪按面板实际宽度，debounce 150ms）
     if (ehFullResizeTimer) clearTimeout(ehFullResizeTimer);
     ehFullResizeTimer = setTimeout(function () {
@@ -1322,6 +1348,7 @@
     ehExpandedId = null;
     if (ehFullResizeTimer) { clearTimeout(ehFullResizeTimer); ehFullResizeTimer = 0; }
     if (ehFullSearchTimer) { clearTimeout(ehFullSearchTimer); ehFullSearchTimer = 0; }
+    ehFullSearchHold = false;   // 组合中关面板：不依赖宿主取消组合必派 compositionend 的兜底复位
     document.removeEventListener("keydown", ehFullKeydown, true);
     window.removeEventListener("resize", ehFullOnResize);
   }
@@ -1362,6 +1389,7 @@
   }
   function renderEnhanceHistoryFull(refetch) {
     var build = function () {
+      ehFullSearchHold = false;   // 任何 build 都意味着旧搜索框即将销毁：复位 hold，防组合中重建后宿主未派 compositionend 卡真、拦死后续纯 ASCII 输入
       var all = ehFullFiltered();
       var totalPages = Math.max(1, Math.ceil(all.length / ehFullPageSize));
       if (ehFullPage >= totalPages) ehFullPage = totalPages - 1;
@@ -1453,6 +1481,9 @@
       var footer = totalPages > 1
         ? '<div class="zu-eh-pagination"><span class="zu-eh-pg-size"><select class="zu-eh-filter zu-eh-pgsize" data-f="pagesize" aria-label="' + L("每页条数", "Rows per page") + '">' + sizeOpts + '</select> ' + L("条/页", "per page") + '</span><span>' + L("第", "Page ") + (ehFullPage + 1) + "/" + totalPages + L(" 页 · 共 ", " of ") + all.length + L(" 条", "") + '</span><span class="zu-eh-pg-btns">' + pageBtns + '</span></div>'
         : "";   // 单页/空态不渲染分页页脚（Header 已有总数，避免大面积空白与冗余控件）
+      /* 重建销毁聚焦中的搜索框：记录焦点与光标，重建后恢复（连续输入/IME 不因翻页筛选打断） */
+      var searchFocus = document.activeElement && document.activeElement.classList && document.activeElement.classList.contains("zu-eh-search") ? document.activeElement : null;
+      var searchCaret = searchFocus && typeof searchFocus.selectionStart === "number" ? searchFocus.selectionStart : -1;
       ehFull.innerHTML = '<div class="zu-eh-full-head"><div class="zu-eh-head-l"><span class="zu-eh-title">' + EH_ICON.history + L("增强历史", "Enhancement history") + '</span><span class="zu-eh-total">' + L("共 ", "total ") + all.length + L(" 条", "") + '</span></div>' +
         '<div class="zu-eh-head-r"><button type="button" class="zu-eh-cfg" data-ehset>' + EH_ICON.gear + L("设置", "Settings") + '</button><button type="button" class="zu-eh-act zu-eh-clear" data-clear>' + EH_ICON.trash + L("清空记录", "Clear all") + '</button><button type="button" class="zu-eh-close" data-close aria-label="' + L("关闭", "Close") + '">' + EH_ICON.close + '</button></div></div>' +
         '<div class="zu-eh-full-filter"><div class="zu-eh-searchbox">' + EH_ICON.search + '<input class="zu-eh-search" type="search" placeholder="' + L("搜索原文、增强结果、模型或供应商", "Search texts, model or provider") + '" value="' + searchVal + '" aria-label="' + L("搜索历史记录", "Search history") + '"></div>' +
@@ -1461,6 +1492,13 @@
         '<select class="zu-eh-filter zu-eh-f-model" data-f="model" aria-label="' + L("模型筛选", "Model filter") + '">' + modelOpts + '</select>' +
         '<select class="zu-eh-filter zu-eh-f-time" data-f="time" aria-label="' + L("时间筛选", "Time filter") + '">' + timeOpts + '</select></div>' +
         '<div class="zu-eh-table-wrap"><table class="zu-eh-table">' + colgroup + '<thead>' + thead + '</thead><tbody>' + rows + '</tbody></table></div>' + footer;
+      if (searchFocus) {
+        var searchEl = ehFull.querySelector(".zu-eh-search");
+        if (searchEl) {
+          searchEl.focus();
+          try { if (searchCaret >= 0) searchEl.setSelectionRange(searchCaret, searchCaret); } catch (e) { }
+        }
+      }
     };
     if (refetch || !ehFullCache) {
       if (!ehFullCache) ehFull.innerHTML = '<div class="zu-eh-empty" style="padding:40px 16px;text-align:center;color:var(--color-foreground-subtle,#999)">' + L("正在读取历史…", "Loading history…") + '</div>';   // 首开占位，避免 IPC 往返前闪白
@@ -1483,8 +1521,26 @@
     };
     ehFull.oninput = function (e) {
       if (e.target && e.target.classList && e.target.classList.contains("zu-eh-search")) {
+        /* IME 组合期间不重建：build 整面板 innerHTML 会销毁输入框，强制取消拼音组合并把
+         * 焦点打回 body（中文输入停顿 ≥200ms 即触发）；组合结束经 compositionend 再刷新。 */
+        if (e.isComposing || ehFullSearchHold) return;
         if (ehFullSearchTimer) clearTimeout(ehFullSearchTimer);
         ehFullSearchTimer = setTimeout(function () { ehFullSearchTimer = 0; ehFullQuery = e.target.value; ehFullPage = 0; ehExpandedId = null; build(); }, 200);
+      }
+    };
+    /* compositionstart/end 挂面板（委托）：搜索框随每次 build 重建，直接挂会被换掉 */
+    ehFull.oncompositionstart = function (e) {
+      if (e.target && e.target.classList && e.target.classList.contains("zu-eh-search")) {
+        if (ehFullSearchTimer) { clearTimeout(ehFullSearchTimer); ehFullSearchTimer = 0; }   // ASCII 输入 200ms 内切入组合：撤销待触发的重建，防组合中被销毁
+        ehFullSearchHold = true;
+      }
+    };
+    ehFull.oncompositionend = function (e) {
+      if (e.target && e.target.classList && e.target.classList.contains("zu-eh-search")) {
+        ehFullSearchHold = false;
+        if (ehFullSearchTimer) clearTimeout(ehFullSearchTimer);
+        var input = e.target;
+        ehFullSearchTimer = setTimeout(function () { ehFullSearchTimer = 0; ehFullQuery = input.value; ehFullPage = 0; ehExpandedId = null; build(); }, 200);
       }
     };
     ehFull.onclick = function (e) {
@@ -1991,5 +2047,54 @@
     clearTimeout(gitTipHideTimer);
     hideGitTip();
     gitTip.remove();
+  }
+
+  /* ---------- 系统状态 chip 的悬停说明（v356，issue #338）：gitTip 同款 document 级单例。
+   * 内容=00 分片 sysmonTipHtml（与条面格通用链同一产出）；签名幂等 + 重建保磁盘表滚动位；
+   * 浅色档随 chip data-zusage-light；Esc/离开/代际清理三链收起。 */
+  var sysTip = document.createElement("div");
+  sysTip.className = "tip zusage-sysmon-tip";
+  sysTip.style.cssText = rateTip.style.cssText;
+  document.body.appendChild(sysTip);
+  var sysTipFor = null;
+  var sysTipHideTimer = 0;
+  function showSysTip(chip) {
+    if (stale() || !chip || !chip.isConnected) { hideSysTip(); return; }
+    var html = sysmonTipHtml(state.sysmonCfg, sysFrame);
+    if (sysTip.__zuTipSig !== html) {
+      var keep = 0;
+      if (sysTipFor === chip) { try { var prevRows = sysTip.querySelector(".zu-sys-vols"); if (prevRows) keep = prevRows.scrollTop; } catch (e) { } }
+      sysTip.innerHTML = html;
+      sysTip.__zuTipSig = html;
+      try { var rowsEl = sysTip.querySelector(".zu-sys-vols"); if (rowsEl && keep) rowsEl.scrollTop = keep; } catch (e) { }
+    }
+    if (chip.getAttribute("data-zusage-light") === "1") sysTip.setAttribute("data-zusage-light", "1");
+    else sysTip.removeAttribute("data-zusage-light");
+    sysTip.style.display = "block";
+    var r = chip.getBoundingClientRect(), tw = sysTip.offsetWidth, th2 = sysTip.offsetHeight;
+    var vw = window.innerWidth, vh = window.innerHeight;
+    var left = Math.max(8, Math.min(r.left, vw - tw - 8));
+    var top = r.top - th2 - 8;
+    if (top < 8) top = Math.min(r.bottom + 8, vh - th2 - 8);
+    sysTip.style.left = Math.round(left) + "px";
+    sysTip.style.top = Math.round(top) + "px";
+    sysTipFor = chip;
+  }
+  function hideSysTip() {
+    clearTimeout(sysTipHideTimer);
+    sysTip.style.display = "none";
+    sysTipFor = null;
+  }
+  function hideSysTipSoon() { clearTimeout(sysTipHideTimer); sysTipHideTimer = setTimeout(hideSysTip, 200); }
+  function onSysTipEnter() { clearTimeout(sysTipHideTimer); }
+  function onSysKeydown(e) { if (e && e.key === "Escape") hideSysTip(); }
+  window.addEventListener("keydown", onSysKeydown, true);
+  sysTip.addEventListener("mouseenter", onSysTipEnter);
+  sysTip.addEventListener("mouseleave", hideSysTip);
+  function cleanupSysTip() {
+    window.removeEventListener("keydown", onSysKeydown, true);
+    clearTimeout(sysTipHideTimer);
+    hideSysTip();
+    sysTip.remove();
   }
 

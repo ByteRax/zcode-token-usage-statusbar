@@ -31,6 +31,7 @@ test('contract: renderer slices keep enhance button wiring anchors', () => {
   assert.match(source, /restoreEnhanceBtn\(true\);   \/\/ v344：摘除增强按钮/);   // dispose 中断在途请求
   assert.match(source, /enhanceSid = enhanceCurSid\(\);/);   // 发起时会话身份锚定
   assert.match(source, /enhanceCurSid\(\) !== enhanceSid/);   // 回填/收窗的会话切换校验
+  assert.match(source, /readPaneScope\(wantedEl, sid, pid, true\)/);   // v354：仅增强链显式放行 draft（其余消费面不传参维持拒绝）
   assert.match(source, /b\.addEventListener\("mouseenter", function \(\) \{ showEnhanceTip\(this\); \}\)/);   // 悬停 tooltip
   assert.match(source, /b\.__zuEnhTip = label;/);   // 文案包随相位同步
   assert.doesNotMatch(source, /b\.title = label/);   // 禁原生 title（防与自绘 tooltip 双显）
@@ -442,6 +443,82 @@ test('session switch inside enhance flow: stale window never rewrites, next clic
   assert.equal(ui.editor.__zuDraft, '会话A增强稿');
 });
 
+test('v354 draft session (no first message sent) enhances instead of refusing', () => {
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'draft', { provider: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-FlashX', draft: '新会话的第一句' });
+  h.inject(); h.boot(); h.coordAttach(ui.editor, 'draft');
+  h.window.__zusageUpdate(h.payload());
+  h.tick();
+  const enh = h.enhOf(ui.wrap);
+  assert.ok(enh, 'enhance button should mount on a draft pane');
+  enh.listeners.get('click')[0]();
+  const reqs = h.takeRequests().filter(r => r.action === 'prompt-enhance');
+  assert.equal(reqs.length, 1, 'draft session should fire the request');
+  assert.equal(reqs[0].text, '新会话的第一句');
+  h.respond(reqs[0].requestId, { ok: true, text: '更清晰的第一句' });
+  assert.equal(ui.editor.__zuDraft, '更清晰的第一句');
+  assert.equal(enh.getAttribute('aria-label'), '增强提示词');   // 回填成功即回初始态
+});
+
+test('v354 draft without workspace scope still refuses with session warning', () => {
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'draft', { provider: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-FlashX', draft: '草稿' });
+  ui.editor.removeAttribute('data-zusage-scope-version');   // 桥缺席 → fiber 兜底；夹具无 fiber 候选 → null（同时覆盖 :112 透传的拒绝面）
+  h.inject(); h.boot(); h.coordAttach(ui.editor, 'draft');
+  h.window.__zusageUpdate(h.payload());
+  h.tick();
+  const enh = h.enhOf(ui.wrap);
+  enh.listeners.get('click')[0]();
+  assert.equal(h.takeRequests().filter(r => r.action === 'prompt-enhance').length, 0);
+  assert.match(enh.getAttribute('aria-label'), /未识别当前会话/);
+});
+
+test('v354 draft promoted mid-enhance discards the reply as session switch', () => {
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'draft', { provider: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-FlashX', draft: '原始草稿' });
+  h.inject(); h.boot(); h.coordAttach(ui.editor, 'draft');
+  h.window.__zusageUpdate(h.payload());
+  h.tick();
+  const enh = h.enhOf(ui.wrap);
+  enh.listeners.get('click')[0]();
+  const req = h.takeRequests().find(r => r.action === 'prompt-enhance');
+  assert.ok(req, 'request was fired on the draft pane');
+  ui.editor.setAttribute('data-session-id', 'sid_real');   // 宿主 draft-promotion：首条消息发出，pane 与 composer 同步换真实 sid
+  ui.pane.setAttribute('data-session-id', 'sid_real');
+  h.coordAttach(ui.editor, 'sid_real');   // 协调器派发新 sid → heavy 即拍更新 instSid
+  h.respond(req.requestId, { ok: true, text: '增强结果' });
+  assert.match(enh.getAttribute('aria-label'), /会话已切换/);   // 晋升按切换丢弃，不回填
+  assert.equal(ui.editor.__zuDraft, '原始草稿');
+  assert.equal(ui.editor.setTextCalls || 0, 0);
+});
+
+test('v354 draft scope never reaches the report chain (getScope stays null)', () => {
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'draft', { provider: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-FlashX', draft: '草稿' });
+  h.inject(); h.boot(); h.coordAttach(ui.editor, 'draft');
+  h.window.__zusageUpdate(h.payload());
+  h.tick();
+  const inst = h.window.enhanceTest.instances()[0];
+  assert.equal(inst.getScope(), null, 'report-chain getScope keeps rejecting draft (no allowDraft)');
+});
+
+test('v354 draft enhances via fiber fallback when bridge attrs are absent (allowDraft forwarded)', () => {
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'draft', { provider: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-FlashX', draft: '桥缺席的draft草稿' });
+  ui.pane.removeAttribute('data-zusage-scope-version');   // 桥缺席：走 readFiberPaneScope 兜底
+  ui.editor.removeAttribute('data-zusage-scope-version');
+  ui.editor.__reactFiber$k = { stateNode: ui.editor, memoizedProps: { workspacePath: '/fixture', paneId: 'workspace-main' }, return: null };
+  h.inject(); h.boot(); h.coordAttach(ui.editor, 'draft');
+  h.window.__zusageUpdate(h.payload());
+  h.tick();
+  const enh = h.enhOf(ui.wrap);
+  assert.ok(enh, 'button mounts on draft pane');
+  enh.listeners.get('click')[0]();
+  const reqs = h.takeRequests().filter(r => r.action === 'prompt-enhance');
+  assert.equal(reqs.length, 1, 'fiber fallback must let draft enhance (allowDraft forwarded through :112)');
+  assert.equal(reqs[0].text, '桥缺席的draft草稿');
+});
+
 test('successful enhance returns to idle immediately; missing reply hits the 75s timeout guard', () => {
   const h = harness();
   const ui = h.buildComposer('workspace-main', 'sid_main', { provider: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-FlashX', draft: '草稿' });
@@ -710,4 +787,51 @@ test('disabled state arriving before reply never writes draft', () => {
  const btn=h.enhOf(ui.wrap); btn.listeners.get('click')[0](); const req=h.takeRequests().find(r=>r.action==='prompt-enhance');
  h.window.enhanceTest.state().enhanceEnabled=false; h.respond(req.requestId,{ok:true,text:'late'});
  assert.equal(ui.editor.__zuDraft,'original'); assert.equal(ui.editor.setTextCalls||0,0);
+});
+
+test('CRLF in the model reply no longer fails the read-back verify', () => {
+  /* 宿主 E2E 桥 setText 后读回可能把 CRLF 规范化为 LF（Lexical/宿主行为）：
+   * 逐字比对会恒不等 → 误报「写回输入框失败或草稿已变化」且历史不入账（v357 换行归一） */
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'sid_main', { provider: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-FlashX', draft: '原始' });
+  const bridge = ui.editor.__zcodeLexicalInputE2E;
+  const rawSetText = bridge.setText;
+  bridge.setText = t => { rawSetText(t); ui.editor.__zuReadback = String(t).replace(/\r\n/g, '\n'); };
+  bridge.getText = () => (ui.editor.__zuReadback != null ? ui.editor.__zuReadback : ui.editor.__zuDraft);
+  h.inject(); h.boot(); h.coordAttach(ui.editor, 'sid_main');
+  h.window.__zusageUpdate(h.payload({ provider: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-FlashX' }));
+  h.tick();
+  const enh = h.enhOf(ui.wrap);
+  enh.listeners.get('click')[0]();
+  const req = h.takeRequests().find(r => r.action === 'prompt-enhance');
+  h.respond(req.requestId, { ok: true, text: '第一行\r\n第二行' });
+  assert.equal(ui.editor.__zuDraft, '第一行\r\n第二行');   // 文本已实际写回
+  assert.equal(enh.getAttribute('aria-label'), '增强提示词');   // 回初始态而非误报写回失败
+});
+
+test('CRLF reply also verifies when the bridge reads back verbatim (no host normalization)', () => {
+  /* 第二场景封死单侧归一作弊面：只归一 res.text 不归一 committed 的实现，在逐字读回的
+   * 桥上仍恒不等误报——归一必须两侧对称（v357） */
+  const h = harness();
+  const ui = h.buildComposer('workspace-main', 'sid_main', { provider: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-FlashX', draft: '原始' });
+  h.inject(); h.boot(); h.coordAttach(ui.editor, 'sid_main');
+  h.window.__zusageUpdate(h.payload({ provider: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-FlashX' }));
+  h.tick();
+  const enh = h.enhOf(ui.wrap);
+  enh.listeners.get('click')[0]();
+  const req = h.takeRequests().find(r => r.action === 'prompt-enhance');
+  h.respond(req.requestId, { ok: true, text: '第一行\r\n第二行' });
+  assert.equal(ui.editor.__zuDraft, '第一行\r\n第二行');   // 默认桥逐字读回（getText 返回 setText 原文）
+  assert.equal(enh.getAttribute('aria-label'), '增强提示词');
+});
+
+test('main bridge exposes platformLimited and gates provider save symmetrically on win32', () => {
+  /* Windows 无 POSIX 安全落盘：视图层带 platformLimited 供渲染端区分文案（不再误导
+   * 「检查权限或重启」），save 分支与 models 分支同款早退门 */
+  assert.match(injectSource, /platformLimited: process\.platform === "win32"/);
+  const gate = injectSource.indexOf('if (req.action !== "enhance-provider-save"');
+  assert.ok(gate > 0, 'save branch anchor');
+  const seg = injectSource.slice(gate, gate + 300);
+  assert.match(seg, /process\.platform === "win32"\) \{ reply\(\{ ok: false, error: "unsupported platform" \}\); return; \}/, 'save gate mirrors models branch');
+  assert.match(source, /ep\.platformLimited/, 'renderer consumes the platform flag for the status copy');
 });

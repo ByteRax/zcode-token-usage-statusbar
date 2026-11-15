@@ -755,7 +755,12 @@
         (lastView && lastView.session && typeof lastView.session.avg_tps === "number" &&
          isFinite(lastView.session.avg_tps) && lastView.session.avg_tps > 0) ? lastView.session.avg_tps : 0) : null;
       liveStatsCur = stats;
-      if (state.theme === "compact") { syncTpsChip(); return; }   // v146：精简模式速率走工具行 chip（10Hz 心跳原地跟随，条面不重建）
+      if (state.theme === "compact") {
+        syncTpsChip();   // v146：精简模式速率走工具行 chip（10Hz 心跳原地跟随，条面不重建）
+        if (typeof syncSysmonChip === "function") syncSysmonChip();   // v356：系统状态 chip 同链（短路 return 到不了公共尾部）
+        if (typeof sysmonWantRecalc === "function") sysmonWantRecalc();   // v356：chip 挂载即订阅采样
+        return;
+      }
       // 用 view（而非 stats）判定快速路径：stats 非空但 view 为 null（历史存量，见
       // zuBarSpeedView）时结构要切回降级拼法，必须走下面的整条重渲染，不能原地改字。
       // 阶段（思考↔工具↔正文）切换会更换 chip 的图标（动效脑/闪电），同样只能整条
@@ -940,6 +945,7 @@
         enhancePromptBtn();   /* v344：增强按钮 compact 数据点 reapply（compact 只藏条面，工具行 chip 照常） */
         syncTpsChip();   /* v177：恢复 v146 短路内调用——2976478 挪到公共尾部后短路 return 到不了，
                           * 泵推送的最坏 600ms 延迟落在速率 chip 上且与 git chip 不对称 */
+        if (typeof syncSysmonChip === "function") syncSysmonChip();   /* v356：系统状态 chip compact 短路同点（公共尾部到不了） */
         renderWorkflowCards();   // v332：工作流 run 卡 chip 数据点 reapply（compact 只藏条面，会话流 chip 照常）
         renderRunningSubagentItems();   // v333：状态面板 Agents 行速率 chip 数据点 reapply
         return;
@@ -1014,6 +1020,8 @@
       enhanceGitChip();     // v96：同点对账 Git chip（开关/会话切换/scope 变化在此收敛）
       enhancePromptBtn();   // v344：增强按钮数据点 reapply（开关显隐/锚点变化/相位外观在此收敛）
       syncTpsChip();        // v155：速率 chip 数据点 reapply（compact 短路与空壳直通两路都经此）
+      if (typeof syncSysmonChip === "function") syncSysmonChip();     // v356：系统状态 chip 数据点 reapply（typeof 守卫兼容切片沙箱）
+      if (typeof sysmonWantRecalc === "function") sysmonWantRecalc();   // v356：条面格可见性在本拍可能变化（开关/主题/scope 切换），签名不变零开销
       renderWorkflowCards();   // v332：工作流 run 卡 chip 数据点 reapply（DOM 对账由 heavy 兜）
       renderRunningSubagentItems();   // v333：状态面板 Agents 行速率 chip 数据点 reapply（DOM 对账由 heavy 兜）
     }
@@ -1077,6 +1085,7 @@
       tipStats.lastHide = cause || "?";
       tipStats.hideSeq.push(cause || "?");
       if (tipStats.hideSeq.length > 8) tipStats.hideSeq.shift();   // v275：诊断偶发关闭
+      if (typeof sysmonWantRecalc === "function") sysmonWantRecalc();   // v356：格 tooltip 关闭后若无其他兴趣源则停采样（签名不变零开销；typeof 守卫兼容切片沙箱）
     }
     function positionTip(el, keepTop) {
       if (tip.__zuSpeedSize && (tip.__zuSpeedSize.vw !== innerWidth || tip.__zuSpeedSize.vh !== innerHeight)) spdFitTip(tip, true);
@@ -1226,6 +1235,7 @@
       tipStats.shows++;
       tipStats.last = el === main ? "main" : String(el.textContent || "").slice(0, 12);
       drawTip(el, false);
+      if (typeof sysmonWantRecalc === "function") sysmonWantRecalc();   // v356：格 tooltip 开着时保持采样订阅（签名不变零开销；typeof 守卫兼容切片沙箱）
     }
     main.addEventListener("keydown", function (e) {
       if (e.key === "Escape") { e.preventDefault(); hideTip(true, "escape"); return; }

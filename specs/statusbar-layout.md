@@ -22,7 +22,7 @@
 - 重算门控：宽度（bar.clientWidth）+ 字号/字族（getComputedStyle fontSize+fontFamily）+ 优先级签名 + `foldDirty`（重建/主题切换/优先级变更/窄宽档位切换/排序变更置位）。每帧另测一次溢出差 `ov = scrollWidth − clientWidth` 做双向触发：展开态 `ov>1` 触发折叠重算；折叠态 `ov ≤ 1−FOLD_HYS`（FOLD_HYS=24px）才触发回展尝试——迟滞带防数值刷新在阈值附近整格反复翻转。单向溢出探针是错的（「已折叠且刚好装下」直接变宽不经过溢出态，折叠集会冻结）。
 - 折叠格 `data-zu-folded="1"` → `display:none`（CSS 属性选择器 + !important，React 不清理 data-*）；分隔线同步隐藏（首可见格前与相邻可见格间保留）。全折仍超宽由 `.zu-clip` 右缘渐隐兜底；「···」按钮与齿轮在 `.zu-main` 之外永不折叠。
 - 居右对齐（`zusage3.barJust=end`）下首格被折叠时 `:first-child` 的 auto margin 失效，重算把 `data-zu-endlead` 挪到第一个可见格接管右聚拢。
-- 折叠只影响显示：不写 `state.show`/localStorage；折叠集变化时关闭菜单并收起锚定在被折格/「···」按钮上的 tooltip（含折叠集清空后的零矩形锚）。窄宽状态机（shrink 0/1/2）与折叠相互独立：探针量的是脱离布局副本的自然宽，折叠 display:none 不影响其判定；变宽时窄宽先降档，shrink 离开 2 即清折叠，宽了再回 2 时折叠按迟滞重新展开。
+- 折叠只影响显示：不写 `state.show`/localStorage；折叠集变化时关闭菜单并收起锚定在被折格/「···」按钮上的 tooltip（含折叠集清空后的零矩形锚）。窄宽状态机（shrink 0/1/2）与折叠相互独立：探针量的是脱离布局副本的**未折叠**自然宽——克隆后先剥 `data-zu-folded` 再量（v357 固化：否则折叠格在探针里命中 display:none 把自然宽量缩，shrink 档据此误判「完整宽装得下」，与折叠线互相拉扯约 2Hz 震荡闪现）；变宽时窄宽先降档，shrink 离开 2 即清折叠，宽了再回 2 时折叠按迟滞重新展开。
 
 ## 「···」菜单（body 级 `.zu-more-panel`，实例级闭包）
 

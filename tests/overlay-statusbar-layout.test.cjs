@@ -22,8 +22,12 @@ function logic(extra) {
 test('order normalization rejects unknown/duplicate keys without losing new defaults', () => {
   const api = logic();
   const order = Array.from(api.zuBarOrderNormalize(['sub','sub','fake','speed','tools']));
-  assert.deepEqual(order, ['sub','speed','tools','turn','win','today','proj']);
+  assert.deepEqual(order, ['sub','speed','tools','turn','win','today','proj','sysmon']);   // v356：sysmon 缺项补尾（老配置自动追加）
   assert.equal(new Set(order).size, api.ZU_BAR_KEYS.length);
+  /* v356：老用户只有七项配置时 sysmon 自动补尾，不破坏已有相对顺序 */
+  const legacy = Array.from(api.zuBarOrderNormalize(['win','speed']));
+  assert.deepEqual(legacy.slice(0, 2), ['win','speed']);
+  assert.equal(legacy[legacy.length - 1], 'sysmon');
 });
 test('priority normalization tolerates invalid and legacy storage', () => {
   const api = logic();
@@ -39,6 +43,8 @@ test('priority normalization tolerates invalid and legacy storage', () => {
   assert.equal(api.zuBarPriorityNormalize(null).speed, 'high');
   assert.equal(api.zuBarPriorityNormalize(null).turn, 'high');
   assert.equal(api.zuBarPriorityNormalize(null).tools, 'low');
+  /* v356：sysmon 缺省低优先级（默认关，打开后低先折让位给统计格） */
+  assert.equal(api.zuBarPriorityNormalize(null).sysmon, 'low');
 });
 test('sort uses user order while keeping diagnostic warnings ahead of movable cells', () => {
   const api = logic();
@@ -62,6 +68,13 @@ test('fold order: low folds first, ties fold right-first, speed and system never
   /* 未知 key 按普通档折叠 */
   const unknown = api.zuBarFoldOrder(['mystery','tools'], {tools:'high'}).map(c => c.key);
   assert.deepEqual(unknown, ['mystery','tools']);
+  /* v356 sysmon 参与折叠：默认 low 最先收（右先收在 sysmon 最右）；调高后存活到统计格之后 */
+  const keys8 = keys.concat(['sysmon']);
+  const low8 = api.zuBarFoldOrder(keys8, Object.assign({}, prio, {sysmon:'low'})).map(c => c.key);
+  assert.equal(low8[0], 'sysmon');
+  const high8 = api.zuBarFoldOrder(keys8, Object.assign({}, prio, {sysmon:'high'})).map(c => c.key);
+  assert.equal(high8.indexOf('sysmon'), high8.indexOf('turn') - 1);   // high 同级右先收：sysmon 在 turn 之前被收
+  assert.notEqual(high8[0], 'sysmon');
 });
 test('menu options carry localized name, live value and the folded cell reference', () => {
   function makeEl(tag) {
@@ -128,13 +141,13 @@ test('drag drop splices in both directions and persists through the dedicated wr
     target: { closest(sel) { return sel === '.zu-layout-row' ? rowFor(key) : null; } },
     preventDefault() {},
   });
-  dropOnto('turn');   // 末位 sub 拖到第 1 位（from=6, to=1）
-  assert.equal(state.barOrder.join('|'), 'speed|sub|turn|win|today|proj|tools', '跨 realm 数组断言用 join');
+  dropOnto('turn');   // 末位 sub 拖到第 1 位（from=6, to=1）；sysmon 缺项经归一化补尾
+  assert.equal(state.barOrder.join('|'), 'speed|sub|turn|win|today|proj|tools|sysmon', '跨 realm 数组断言用 join');
   assert.equal(persisted, 1);
   assert.equal(renders, 1);
   handlers.dragstart[0]({ target: { closest(sel) { return sel === '.zu-layout-row' ? rowFor('sub') : null; } }, dataTransfer: { setData() {} } });
   dropOnto('tools');   // 拖回末位（from=1, to=6：向下滑动的 splice 数学）
-  assert.equal(state.barOrder.join('|'), 'speed|turn|win|today|proj|tools|sub');
+  assert.equal(state.barOrder.join('|'), 'speed|turn|win|today|proj|tools|sub|sysmon');
   handlers.drop[0]({ target: { closest: () => null } });   // 无行：忽略不崩
   assert.equal(persisted, 2);
   handlers.dragend[0]({});
@@ -150,11 +163,11 @@ test('compiled renderer keeps the fold/menu/layout contract tokens', () => {
   /* speed 固定保护：折叠序纯函数排除 speed/system；设置页 speed 行用固定徽标替代开关 */
   assert.ok(source.includes('key === "system" || key === "speed"'), 'speed/system fold exemption');
   assert.ok(source.includes('zu-layout-fixed'), 'speed fixed badge');
-  /* v353 结构锁：Grid 五区 + for/id 显式关联 + 容器查询降级 */
+  /* v358 结构锁：Grid 五区 + for/id 显式关联 + 容器查询降级 */
   for (const token of ['zu-layout-info', 'zu-layout-vis', 'zu-layout-actions',
     'for="zu-show-', 'id="zu-show-', 'container-name:zu-layout', '@container zu-layout (max-width:440px)',
     'M12 19V5']) assert.ok(source.includes(token), token);
-  /* v353 级联锁：排序卡规则必须带 .zu-settings 前缀（通用 .zu-settings label 后置同分
+  /* v358 级联锁：排序卡规则必须带 .zu-settings 前缀（通用 .zu-settings label 后置同分
    * 压制曾把 .zu-layout-ico 拉成 129-167px——不允许裸单类形态回潮） */
   assert.ok(!/(?<!\.zu-settings )(?<!\.zu-layout-info \.zu-settings )\\.zu-layout-(?:row|ico|name|vis|fixed|prio|action|actions|reset|grip|info)\\{/.test(source),
     'layout card rules are .zu-settings prefixed');
@@ -163,4 +176,24 @@ test('compiled renderer keeps the fold/menu/layout contract tokens', () => {
   assert.ok(source.includes('state.theme !== "default" || shrink !== 2'), 'fold gate on narrow tier');
   assert.ok(source.includes('foldDirty = true;   // 档位切换即重算折叠'), 'shrink tier change bumps foldDirty');
   assert.ok(source.includes('syncBarOverflow();'), 'track calls fold after narrow block');
+});
+test('v357 windows-compat fixes keep fold-probe isolation, endlead naming and clock guards', () => {
+  /* 探针必须剥折叠态再量自然宽：克隆里的 data-zu-folded 命中 display:none 规则把
+   * fullWidth 量缩，shrink 档据此误判「完整宽装得下」→ 反复展/折叠震荡 */
+  assert.ok(source.includes('probeMain.querySelectorAll("[data-zu-folded]")'), 'probe strips folded state');
+  /* 居右 endlead 属性名：dataset 驼峰 zuEndLead 生成 data-zu-end-lead，与 CSS/清理的
+   * data-zu-endlead 永不匹配（居右+首格折叠时剩余格被摊满整条不右聚拢） */
+  assert.ok(source.includes('dataset.zuEndlead'), 'endlead dataset key matches CSS');
+  assert.ok(!source.includes('dataset.zuEndLead'), 'no camelCase endlead residue');
+  /* 跳拍门时钟回拨守卫：负差值视为到期（NTP 步进/改时后对账不冻结到墙钟追回） */
+  assert.ok(source.includes('nowMs - heavyRunAt >= 0'), 'heavy clock-rollback guard');
+  assert.ok(source.includes('nowMs - coordRunAt >= 0'), 'coordinator clock-rollback guard');
+  /* 子代理浮层模型名 fit 宽度门控（浮层打开期间不逐帧强制布局）：锁条件行而非簿记
+   * 残留——只留 buildSubPop 里的 =0 赋值、拆掉门控判断时旧 token 会假绿（变异实证） */
+  assert.ok(source.includes('subPanel.__zuModelFitWidth !== window.innerWidth'), 'subPop fit width gate');
+  assert.ok(source.includes('subPanel.__zuModelFitWidth = 0'), 'subPop fit gate reset on rebuild');
+  /* 增强历史搜索框 IME 保持（组合期间不整面板重建） */
+  assert.ok(source.includes('ehFullSearchHold'), 'history search IME hold');
+  /* 速度卡模型表旧 Chromium 滚动条回退（scrollbar-width 需 Chromium 121+） */
+  assert.ok(source.includes('.zu-turn-models::-webkit-scrollbar'), 'webkit scrollbar fallback');
 });

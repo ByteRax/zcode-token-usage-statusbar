@@ -1437,6 +1437,7 @@
             "enhance provider settings changed": L("已保存配置已变化，请重新打开设置后再试。", "Saved settings changed; reopen settings and try again."),
             "restart required": L("请完全重启 ZCode 后重试。", "Fully restart ZCode and retry."),
             "provider unavailable": L("供应商不可用，请重新选择并检查其配置。", "Provider unavailable; reselect it and check its settings."),
+            "unsupported platform": L("当前平台暂不支持该操作。", "Not supported on this platform."),
             "cancelled": L("操作已取消。", "Cancelled."),
             "disabled": L("增强功能已关闭。", "Prompt enhancement is disabled."),
             "model downgraded": L("已按要求拒绝降级：服务端返回了不同的模型", "Fallback rejected as requested: the server served a different model")
@@ -1577,7 +1578,7 @@
     }
     function epModelsErrorText(result) {
       var error = result && result.error || "";
-      return error === "restart required" ? L("请完全重启 ZCode 后重试。", "Fully restart ZCode and retry.") : error === "settings changed" ? L("配置版本已变化，请重新载入后重试。", "Settings changed; reload and retry.") : error === "provider unavailable" ? L("供应商不可用，请重新选择并检查其配置。", "Provider unavailable; reselect it and check its settings.") : error === "cancelled" ? L("操作已取消，输入已保留。", "Cancelled; your edits were retained.") : /^HTTP (401|403)$/.test(error) ? L("模型接口拒绝访问，请检查供应商凭据或权限。", "Model endpoint denied access; check credentials and permissions.") : /^HTTP (404|405)$/.test(error) ? L("该地址不支持模型列表，请手动填写模型 ID。", "This endpoint does not support model lists; enter a model ID.") : L("模型列表获取失败，请检查网络与接口地址，或手动输入模型 ID。", "Failed to fetch models; check network and endpoint, or enter a model ID.");
+      return error === "restart required" ? L("请完全重启 ZCode 后重试。", "Fully restart ZCode and retry.") : error === "settings changed" ? L("配置版本已变化，请重新载入后重试。", "Settings changed; reload and retry.") : error === "provider unavailable" ? L("供应商不可用，请重新选择并检查其配置。", "Provider unavailable; reselect it and check its settings.") : error === "unsupported platform" ? L("当前平台暂不支持该操作。", "Not supported on this platform.") : error === "cancelled" ? L("操作已取消，输入已保留。", "Cancelled; your edits were retained.") : /^HTTP (401|403)$/.test(error) ? L("模型接口拒绝访问，请检查供应商凭据或权限。", "Model endpoint denied access; check credentials and permissions.") : /^HTTP (404|405)$/.test(error) ? L("该地址不支持模型列表，请手动填写模型 ID。", "This endpoint does not support model lists; enter a model ID.") : L("模型列表获取失败，请检查网络与接口地址，或手动输入模型 ID。", "Failed to fetch models; check network and endpoint, or enter a model ID.");
     }
     function epRequestModels(f, formApiKey, done) {
       var ep = state.pluginUpdate && state.pluginUpdate.enhanceProvider;
@@ -1644,6 +1645,30 @@
       });
       var domOrder = Array.prototype.map.call(panel.querySelectorAll(".zu-layout-row"), function (row) { return row.dataset.zuLayoutKey; });
       if (domOrder.length && domOrder.join("|") !== (state.barOrder || []).join("|")) refreshLayoutEditor(null, null);
+      /* v356 系统状态配置卡回填（他窗 storage 同步/重建后值态一致）；预览行由 sysmonTick 帧驱动。
+       * 切片沙箱纪律：state.sysmonCfg 可能缺字段，守卫回退归一化缺省。 */
+      var sysCfgL = (state.sysmonCfg && state.sysmonCfg.thresholds) ? state.sysmonCfg : normalizeSysmonCfg(null);
+      panel.querySelectorAll(".zu-syscfg-m").forEach(function (cb) {
+        var k = cb.getAttribute("data-sysm");
+        if (k && sysCfgL.metrics[k] !== undefined) cb.checked = !!sysCfgL.metrics[k];
+      });
+      panel.querySelectorAll(".zu-syscfg-vol").forEach(function (cb) {
+        var k = cb.getAttribute("data-sysm");
+        if (k === "projectVol") cb.checked = !!sysCfgL.projectVol;
+        else if (k === "systemVol") cb.checked = !!sysCfgL.systemVol;
+      });
+      var sysWarnBox = panel.querySelector(".zu-syscfg-warn");
+      if (sysWarnBox) sysWarnBox.checked = !!sysCfgL.warnColors;
+      var sysFmt = panel.querySelector(".zu-syscfg-fmt");
+      if (sysFmt) sysFmt.value = sysCfgL.format;
+      var sysInt = panel.querySelector(".zu-syscfg-int");
+      if (sysInt) sysInt.value = String(Math.round(sysCfgL.intervalMs / 1000));
+      var sysDInt = panel.querySelector(".zu-syscfg-dint");
+      if (sysDInt) sysDInt.value = String(Math.round(sysCfgL.diskIntervalMs / 1000));
+      panel.querySelectorAll(".zu-syscfg-th").forEach(function (inp) {
+        var k = inp.getAttribute("data-th");
+        if (k && sysCfgL.thresholds[k] !== undefined) inp.value = String(sysCfgL.thresholds[k]);
+      });
       panel.querySelector(".zu-ctxov").value = state.ctxOv;
       var rstCdhIn = panel.querySelector(".zu-rst-cdh");
       if (rstCdhIn) rstCdhIn.value = String(state.resetCdh);
@@ -1709,7 +1734,7 @@
       persistBarOrder();
       refreshLayoutEditor(focusKey, focusSelector);
       if (focusKey && focusSelector) announceLayout(focusKey);   // 键盘排序播报；鼠标拖放不还焦点不播报
-      foldDirty = true;   // v353：显式联动折叠重算（render 路径经 didRebuild 本会置位，此处防御短路；同级右先折的候选位次跟手）
+      foldDirty = true;   // v358：显式联动折叠重算（render 路径经 didRebuild 本会置位，此处防御短路；同级右先折的候选位次跟手）
       renderAll(false);
     }
     panel.addEventListener("dragstart", function (e) {
@@ -1779,7 +1804,12 @@
       var epAction = e.target.closest && e.target.closest(".zu-ep-save,.zu-ep-hosts,.zu-ep-models,.zu-ep-remove,.zu-ep-reload");
       if (epAction) {
         var epStatus = panel.querySelector(".zu-ep-status"), ep = state.pluginUpdate && state.pluginUpdate.enhanceProvider;
-        if (!ep || !ep.available || ep.unreadable) { epStatus.textContent = L("增强配置不可用，请检查权限或重启 ZCode。", "Enhancement settings unavailable; check permissions or restart ZCode."); return; }
+        if (!ep || !ep.available || ep.unreadable) {
+          epStatus.textContent = ep && ep.platformLimited
+            ? L("当前平台暂不支持自定义增强供应商配置与历史落盘；增强历史仅本次运行内存可用。", "Custom enhancement provider settings and on-disk history are not supported on this platform; history stays in memory for this run only.")
+            : L("增强配置不可用，请检查权限或重启 ZCode。", "Enhancement settings unavailable; check permissions or restart ZCode.");
+          return;
+        }
         if (epAction.classList.contains("zu-ep-reload")) {
           if (epDirty()) zuConfirm(L("重新载入配置", "Reload settings"), L("重新载入将丢弃当前未保存的修改，继续吗？", "Reloading will discard unsaved edits. Continue?"), L("继续", "Continue"), function () { epApplySaved(ep); });
           else epApplySaved(ep);
@@ -1827,7 +1857,7 @@
           }
           epReconcile(state.pluginUpdate && state.pluginUpdate.enhanceProvider);
           var error = result && result.error || "";
-          epStatus.textContent = error === "restart required" ? L("请完全重启 ZCode 后重试。", "Fully restart ZCode and retry.") : error === "settings changed" ? L("配置版本已变化，请重新载入后重试。", "Settings changed; reload and retry.") : error === "provider unavailable" ? L("供应商不可用，请重新选择并检查其配置。", "Provider unavailable; reselect it and check its settings.") : error === "cancelled" ? L("操作已取消，输入已保留。", "Cancelled; your edits were retained.") : L("保存失败，请检查配置后重试；输入已保留。", "Save failed; check settings and retry. Your edits were retained.");
+          epStatus.textContent = error === "restart required" ? L("请完全重启 ZCode 后重试。", "Fully restart ZCode and retry.") : error === "settings changed" ? L("配置版本已变化，请重新载入后重试。", "Settings changed; reload and retry.") : error === "provider unavailable" ? L("供应商不可用，请重新选择并检查其配置。", "Provider unavailable; reselect it and check its settings.") : error === "unsupported platform" ? L("当前平台暂不支持该操作。", "Not supported on this platform.") : error === "cancelled" ? L("操作已取消，输入已保留。", "Cancelled; your edits were retained.") : L("保存失败，请检查配置后重试；输入已保留。", "Save failed; check settings and retry. Your edits were retained.");
         });
         };
         if (remove) {
@@ -2053,6 +2083,7 @@
       if (!opening) { closeSettings(true); return; }
       previousPanelFocus = document.activeElement;
       panel.classList.add("open");   /* 先置打开态再 syncPanel：预览引擎认领 panelEl 以 .open 为前提（顺序错配=首开预览空白） */
+      if (typeof sysmonWantRecalc === "function") sysmonWantRecalc();   // v356：设置页开着即订阅采样（预览用真实数据；签名不变零开销；typeof 守卫兼容切片沙箱）
       try { syncPanel(); } catch (eOpenSync) { panel.classList.remove("open"); throw eOpenSync; }   /* syncPanel 抛错不残留半开面板（与旧顺序失败语义一致） */
       /* v172：持久化分区停在「插件更新」时打开面板即已查看；
        * v208：有待重启红点且未查看时直接落到「插件更新」分区（激活即 ack，红点灭），确保立刻看到提示与重启按钮 */
@@ -2138,6 +2169,50 @@
         return;
       }
       if (typeof zuRotatorPanelChange === "function" && zuRotatorPanelChange(e, panel)) return;
+      /* v356 系统状态配置卡（.zu-syscfg-*）：本地纯展示偏好，改完即持久化+重渲染，
+       * 不走主进程 config；want 签名含 cfg JSON，间隔/目标变化自动重发订阅。
+       * 裸赋值（阈值/间隔）之后必须再过一次归一化 clamp——HTML min/max 不拦键入
+       * （review M3：输入 0/-5/999999 会绕过 clamp 造成恒危险或永不过期）。 */
+      if (t2.classList && (t2.classList.contains("zu-syscfg-m") || t2.classList.contains("zu-syscfg-vol") || t2.classList.contains("zu-syscfg-warn"))) {
+        var sysKey = t2.getAttribute("data-sysm");
+        var sc2 = normalizeSysmonCfg(Object.assign({}, state.sysmonCfg));
+        if (t2.classList.contains("zu-syscfg-m") && sysKey && sc2.metrics[sysKey] !== undefined) sc2.metrics[sysKey] = t2.checked ? 1 : 0;
+        else if (t2.classList.contains("zu-syscfg-vol") && (sysKey === "projectVol" || sysKey === "systemVol")) sc2[sysKey] = t2.checked;
+        else if (t2.classList.contains("zu-syscfg-warn")) sc2.warnColors = t2.checked ? 1 : 0;
+        state.sysmonCfg = normalizeSysmonCfg(sc2);
+        persistSysmonCfg();
+        sysmonWantRecalc(true);
+        renderAll(false);
+        try { sysmonApplyFace(); } catch (eSysFace) { }
+        return;
+      }
+      if (t2.classList && t2.classList.contains("zu-syscfg-fmt")) {
+        var sc3 = normalizeSysmonCfg(Object.assign({}, state.sysmonCfg));
+        sc3.format = ["auto", "full", "compact", "minimal"].indexOf(t2.value) >= 0 ? t2.value : "auto";
+        state.sysmonCfg = normalizeSysmonCfg(sc3);
+        persistSysmonCfg();
+        sysmonWantRecalc(true);
+        renderAll(false);
+        try { sysmonApplyFace(); } catch (eSysFmt) { }
+        return;
+      }
+      if (t2.classList && (t2.classList.contains("zu-syscfg-int") || t2.classList.contains("zu-syscfg-dint") || t2.classList.contains("zu-syscfg-th"))) {
+        var nSys = Math.floor(Number(t2.value));
+        var sc4 = normalizeSysmonCfg(Object.assign({}, state.sysmonCfg));
+        if (t2.classList.contains("zu-syscfg-int") && isFinite(nSys)) sc4.intervalMs = nSys * 1000;
+        else if (t2.classList.contains("zu-syscfg-dint") && isFinite(nSys)) sc4.diskIntervalMs = nSys * 1000;
+        else {
+          var thKey = t2.getAttribute("data-th");
+          if (thKey && sc4.thresholds[thKey] !== undefined && isFinite(nSys)) sc4.thresholds[thKey] = nSys;
+          else return;
+        }
+        state.sysmonCfg = normalizeSysmonCfg(sc4);
+        persistSysmonCfg();
+        sysmonWantRecalc(true);
+        renderAll(false);
+        try { sysmonApplyFace(); } catch (eSysNum) { }
+        return;
+      }
       if (t2.classList.contains("zu-theme-choice")) {
         if (t2.checked && (t2.value === "default" || t2.value === "pill" || t2.value === "compact")) {
           if (ls(LS.autoCompact, "")) lsSet(LS.autoCompact, "");   // v226：手动改档即解除全关自动精简（无标记不写，保持持久化写面干净）

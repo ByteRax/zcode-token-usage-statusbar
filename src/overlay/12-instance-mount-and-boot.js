@@ -313,7 +313,8 @@
     function heavy() {
       if (inactive()) return;
       var nowMs = Date.now();
-      if (heavyLvl > 0 && nowMs - heavyRunAt < 600 * heavyLvl) return;
+      /* 时钟回拨（NTP 步进/手动改时）后差值为负会恒小于跳拍窗，对账冻结到墙钟追回——负差一律视为到期，与 08 快照 age 门、v345 宽限的回拨口径一致 */
+      if (heavyLvl > 0 && nowMs - heavyRunAt >= 0 && nowMs - heavyRunAt < 600 * heavyLvl) return;
       heavyRunAt = nowMs;
       var heavyT0 = perfMs();
       if (pid === "auto") {
@@ -386,6 +387,7 @@
       enhanceGitChip();     // v96：同点对账（React 重建工具行后重挂/位置兜回/紧凑态切换）
       enhancePromptBtn();   // v344：增强按钮 DOM 对账点（React 重建工具行/位置挤走后兜回）
       syncTpsChip();        // v146：速率 chip DOM 对账点（React 重建工具行/位置挤走后兜回；非精简主题内部门控摘除）
+      if (typeof syncSysmonChip === "function") syncSysmonChip();     // v356：系统状态 chip DOM 对账点（typeof 守卫兼容切片沙箱；非精简主题内部门控摘除）
       renderWorkflowCards();   // v332：工作流 run 卡 chip DOM 对账点（React 重建卡片后兜回；数据点在 render 尾部）
       renderRunningSubagentItems();   // v333：状态面板 Agents 行 chip DOM 对账点（React 高频重写 elapsed 后兜回）
       syncCompactBtn();     // v105：弹层压缩按钮对账点（Observer 漏触发/节点移位后兜回）
@@ -696,7 +698,7 @@
       foldDirty = false; foldWidth = width; foldFont = font; foldPrioritySig = prioritySig;
       var rows = Array.prototype.slice.call(main.querySelectorAll(":scope > .it"));
       var separators = Array.prototype.slice.call(main.querySelectorAll(":scope > .sep"));
-      rows.forEach(function (el) { el.dataset.zuFolded = "0"; delete el.dataset.zuEndLead; });
+      rows.forEach(function (el) { el.dataset.zuFolded = "0"; delete el.dataset.zuEndlead; });   // data-zu-endlead（CSS/清理同名；曾误写驼峰 zuEndLead 生成 data-zu-end-lead 永不匹配）
       separators.forEach(function (el) { el.dataset.zuFolded = "0"; });
       moreButton.dataset.zuVisible = "0";
       function syncSeparators() {
@@ -741,7 +743,7 @@
        * space-between 摊满整条——把 endlead 挪到第一个可见格接管右聚拢（规则见 06 分片）。 */
       if (state.barJust === "end") {
         for (var vi = 0; vi < rows.length; vi++) {
-          if (rows[vi].dataset.zuFolded !== "1") { rows[vi].dataset.zuEndLead = "1"; break; }
+          if (rows[vi].dataset.zuFolded !== "1") { rows[vi].dataset.zuEndlead = "1"; break; }
         }
       }
       var signature = hidden.map(function (el) { return el.dataset.zuKey || ""; }).join("|");
@@ -933,8 +935,20 @@
             probe.style.fontFamily = mainStyle.fontFamily;
             probe.style.fontSize = mainStyle.fontSize;
             var probeMain = main.cloneNode(true);
+            /* 探针量的是「未折叠自然宽」：克隆里的 data-zu-folded 会命中 06 的 display:none
+             * 规则把已折叠格量成 0 宽，shrink 档据此误判「完整宽装得下」→ 反复展/折叠
+             * 以约 2Hz 震荡（v352 探针写于折叠机制之前，串联时未教它剥折叠态）。 */
+            probeMain.querySelectorAll("[data-zu-folded]").forEach(function (el) { el.removeAttribute("data-zu-folded"); });
             probeMain.classList.remove("zu-clip", "zu-clip-left");
             probeMain.style.cssText = "width:max-content;min-width:max-content;flex:none;overflow:visible";
+            /* v356 修复（用户实报「开启系统状态后整条抖动」）：format:"auto" 的系统状态面随
+             * 档位切换（探针档位钩子换面）会改变探针测量的对象本身——full↔compact 面宽差
+             * 大于迟滞带宽，档位↔面宽互相反转成震荡环。探针副本内把系统状态格固定为 full
+             * 面（auto 的最宽形态）做保守判定：档位只由「假定 sysmon 占满宽」决定，切档后
+             * 窄面变宽不再反馈进测量，环断；measureKey 因换面仍会触发一次重测，但 full 口径
+             * 下 narrowWidths 恒定、判定收敛不再切档。 */
+            var probeSys = probeMain.querySelector('.it[data-zu-key="sysmon"]');
+            if (probeSys) { try { probeSys.innerHTML = sysmonFaceHtml(state.sysmonCfg, sysFrame, "full"); } catch (eProbe) { } }
             probe.appendChild(probeMain);
             bar.parentElement.appendChild(probe);
             try {
@@ -954,6 +968,7 @@
             bar.classList.toggle("zu-tight", shrink > 0);
             bar.classList.toggle("zu-narrow", shrink === 2);
             foldDirty = true;   // 档位切换即重算折叠（折叠仅在 shrink===2 生效）
+            try { sysmonApplyFace(); } catch (e) { }   // v356：format:"auto" 的系统状态面随档位切换（探针节流与迟滞沿用窄宽状态机，无新探针）
           }
         }
         var rightClip = state.theme === "default" && main.scrollLeft + main.clientWidth < main.scrollWidth - 1;
@@ -1095,6 +1110,8 @@
       restoreEnhanceBtn(true);   // v344：摘除增强按钮（清相位与定时器，不留孤儿节点）；v344.3：dispose 中断在途增强请求
       restoreTpsChip();   // v146：摘除精简模式速率 chip（含在显 tooltip）
       restoreGitChip();   // v96：摘掉本 pane 的 Git chip（含在显 tooltip）
+      restoreSysmonChip();   // v356：摘掉本 pane 的系统状态 chip（含在显 tooltip）
+      if (typeof sysmonWantRecalc === "function") sysmonWantRecalc();   // v356 review：dispose 后 chip 早退分支不触发重算，须无条件补发（末实例销毁即停采样）
       /* v180 review：行内速率 chip 挂在宿主 Agent 行内（非条面自家节点），dispose
        * 不摘会在 pane 输入框暂时不可见被协调器回收时冻结在旧速率上、悬停还弹出
        * 已 dispose 实例的 tooltip——趁 wantedEl/composer 尚在按 pane 根摘净。
@@ -1185,6 +1202,23 @@
       rotatorStats: function () { return inactive() ? null : { stats: liveStatsCur, model: quotaModel, provider: quotaProvider, session: lastView && lastView.session }; },
       liveEl: function () { return liveEl; },   // 测试缝：实时段节点引用
       liveIconKind: function () { return liveIconCur; },   // 测试缝：当前 chip 图标（think/bolt/空）
+      /* v356 系统状态：帧驱动的原地格面刷新 + 订阅意愿上报（格可见/格 tooltip/设置页/精简
+       * chip 任一成立即 want；projectPath 仅本地 scope 上报，主进程据此定位项目卷）。 */
+      sysmonTick: function () { if (!inactive()) sysmonApplyFace(); },
+      sysmonInterested: function () {
+        var r = { want: false, projectPath: "" };
+        if (inactive()) return r;
+        try {
+          if (state.show.sysmon && state.theme !== "compact" && curDisplay !== "none" &&
+            main.querySelector('.it[data-zu-key="sysmon"]')) r.want = true;
+          if (tipFor && tipFor.dataset && tipFor.dataset.zuKey === "sysmon" && tip.style.display === "block") r.want = true;
+          if (panel.classList.contains("open")) r.want = true;   // 设置页开着：预览需要真实采样
+          if (typeof sysmonChipMounted === "function" && sysmonChipMounted()) r.want = true;
+          var sc = getScope();
+          if (sc && sc.sid && !sc.identity && sc.workspacePath) r.projectPath = sc.workspacePath;
+        } catch (e) { }
+        return r;
+      },
     };
     instances.push(api);
     applyBarTheme();
