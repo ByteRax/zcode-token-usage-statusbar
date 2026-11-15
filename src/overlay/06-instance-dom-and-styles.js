@@ -310,6 +310,26 @@
       "border-radius:var(--zu-pill-radius,12px);backdrop-filter:none;-webkit-backdrop-filter:none}" +
       ".zusage-root.zu-pill .zu-main{flex:0 1 auto;justify-content:flex-start;overflow-x:auto;scrollbar-width:thin}" +
       ".zusage-root.zu-pill .ico{color:var(--color-brand,#3b82f6)}" +
+      ".zu-main>.it[data-zu-folded='1'],.zu-main>.sep[data-zu-folded='1']{display:none!important}" +
+      ".zu-more{display:none;align-items:center;gap:3px;flex:0 0 auto;justify-content:center;height:26px;min-width:30px;padding:0 6px;border:0;border-radius:7px;background:transparent;color:var(--color-foreground-subtle,#a1a1a1);font:inherit;cursor:pointer}" +
+      ".zu-more[data-zu-visible='1']{display:inline-flex}.zu-more:hover,.zu-more[aria-expanded='true']{background:var(--color-hover,rgba(255,255,255,.08));color:var(--color-foreground,#fff)}" +
+      ".zu-more:focus-visible,.zu-more-option:focus-visible,.zu-layout-action:focus-visible,.zu-layout-priority:focus-visible{outline:2px solid var(--color-input-border-focused,var(--color-brand,#57c8ff));outline-offset:2px}" +
+      ".zu-more svg{width:15px;height:15px}.zu-more-count{font-size:calc(var(--ui-font-size,14px) - 2px);font-variant-numeric:tabular-nums}" +
+      ".zu-more-panel{position:fixed;display:none;box-sizing:border-box;z-index:2147483646;width:min(290px,calc(100vw - 16px));max-height:min(60vh,380px);overflow:auto;padding:7px;border:1px solid var(--color-border,rgba(255,255,255,.14));border-radius:11px;background:var(--color-card,#1d1d1d);color:var(--color-foreground,#fff);box-shadow:0 10px 30px rgba(0,0,0,.35);font-family:var(--font-sans,system-ui);font-size:var(--ui-font-size,14px);-webkit-app-region:no-drag}" +
+      ".zu-more-panel.open{display:block}.zu-more-title{font-size:calc(var(--ui-font-size,14px) - 2px);padding:5px 7px;color:var(--color-foreground-subtle,#a1a1a1)}" +
+      ".zu-more-option{display:flex;align-items:center;gap:9px;width:100%;padding:8px;border:0;border-radius:7px;background:transparent;color:inherit;cursor:pointer;font:inherit;text-align:left}" +
+      ".zu-more-option:hover{background:var(--color-hover,rgba(255,255,255,.08))}.zu-more-option svg{width:16px;height:16px;flex:0 0 16px}" +
+      ".zu-more-option span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
+      ".zu-layout-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:12px 12px 4px}.zu-layout-head strong{font-size:var(--ui-font-size,14px)}" +
+      ".zu-layout-note{padding:0 12px 10px;font-size:calc(var(--ui-font-size,14px) - 2px);line-height:1.5;color:var(--color-foreground-subtle,#a1a1a1)}" +
+      ".zu-layout-list{padding:0 10px 10px;display:flex;flex-direction:column;gap:4px}" +
+      ".zu-layout-row{display:flex;align-items:center;gap:8px;padding:7px 8px;border:1px solid var(--color-border,rgba(255,255,255,.1));border-radius:8px;min-width:0}" +
+      ".zu-layout-row[draggable='true']{cursor:grab}.zu-layout-row.zu-drag-over{border-color:var(--color-brand,#57c8ff);background:var(--color-hover,rgba(255,255,255,.07))}" +
+      ".zu-layout-grip{color:var(--color-foreground-subtle,#888);font-size:16px;user-select:none}.zu-layout-label{min-width:0;flex:1 1 auto;display:flex;align-items:center;gap:7px}" +
+      ".zu-layout-label input{margin:0}.zu-layout-label span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}" +
+      ".zu-layout-priority{max-width:98px;min-width:70px;height:28px;border:1px solid var(--color-border,rgba(255,255,255,.14));border-radius:6px;background:var(--color-input,var(--color-card,#242424));color:var(--color-foreground,#fff);font:inherit;font-size:calc(var(--ui-font-size,14px) - 2px);cursor:pointer}" +
+      ".zu-layout-action{border:0;background:transparent;color:var(--color-foreground-subtle,#aaa);width:24px;height:26px;flex:0 0 24px;border-radius:5px;cursor:pointer}.zu-layout-action:hover{background:var(--color-hover,rgba(255,255,255,.08));color:var(--color-foreground,#fff)}" +
+      ".zu-layout-action:disabled{opacity:.25;cursor:default}" +
       ".zu-main{overflow:hidden;min-width:0;flex:1 1 auto;display:flex;align-items:center;gap:1px;justify-content:space-between}" +
       /* v226 水平对齐（仅默认档挂类）：居左直接改 justify；居右不用字面 flex-end——LTR 下 start 侧
        * 溢出不可滚动也不计入 scrollWidth，收缩检测会失效、左格无声硬裁、.zu-clip 渐隐错边；改用首格
@@ -1596,10 +1616,16 @@
     if (slot === 0) bar.id = "zusage-bar";
     bar.style.display = "none";   // 定位成功前不显示（避免占位）
     bar.innerHTML = '<span class="zu-main">…</span>' +
+      '<button type="button" class="zu-more" aria-label="' + L("查看更多状态", "More status items") + '" aria-expanded="false" aria-haspopup="true">' +
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg><span class="zu-more-count" aria-hidden="true"></span></button>' +
       '<button type="button" class="btn zu-gear" aria-label="' + L("打开状态条设置", "Open status bar settings") + '" aria-expanded="false" aria-haspopup="dialog">' +
       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
       '<path d="M9.5 2h5l.6 2.5 1.7 1 2.5-.7 2.5 4.4-1.9 1.8v2l1.9 1.8-2.5 4.4-2.5-.7-1.7 1-.6 2.5h-5l-.6-2.5-1.7-1-2.5.7-2.5-4.4L4.1 13v-2L2.2 9.2l2.5-4.4 2.5.7 1.7-1z"/><circle cx="12" cy="12" r="3.5"/></svg>' +
       '<span class="zu-gear-dot" aria-hidden="true"></span></button>';
+    var morePanel = document.createElement("div");
+    morePanel.className = "zu-more-panel";
+    morePanel.setAttribute("role", "menu");
+    document.body.appendChild(morePanel);
     var ariaLiveState = document.createElement("span");
     ariaLiveState.className = "zu-sr-only";
     ariaLiveState.setAttribute("role", "status");
@@ -2306,7 +2332,7 @@
     applyTheme();
 
     var $ = function (id) { return bar.querySelector(id); };
-    var main = bar.querySelector(".zu-main"), gear = bar.querySelector(".zu-gear");
+    var main = bar.querySelector(".zu-main"), gear = bar.querySelector(".zu-gear"), moreButton = bar.querySelector(".zu-more");
     /* v172 跨窗口红点收敛：其它窗口 ack 写 zusage3.updSeen 后本实例重算（storage 只在其它窗口触发；
        实例级注册，随 disposeOverlay 的 globalListeners 统一清理） */
     listenGlobal(window, "storage", function (e) {
