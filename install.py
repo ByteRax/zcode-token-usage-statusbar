@@ -507,7 +507,12 @@ def remove_mobile_relay_stash(pi):
     """卸载链：目标锁内清理 mobile relay 两段注入（保留 patch_install 注入尾缀与
     其它字节）。存在待替换操作时不去碰它——那属于主卸载 pending 的收尾语义。"""
     try:
-        from mobile_relay_patch import remove_deployed
+        from mobile_relay_patch import check_deployed, remove_deployed
+        # 只读探测先行：未注入时绝不拿目标锁——受保护/只读目录下建 app.asar.zusage.lock
+        # 会抛 PermissionError，被当成 cleanup 未完成打印（issue 契约：未注入静默跳过）。
+        probe = check_deployed(pi.ASAR)
+        if probe.get("status") in ("absent", "error"):
+            return {"status": "absent", "detail": probe.get("detail", "not injected")}
         with pi._target_lock():
             if any(path.exists() or path.is_symlink() for path in (pi.TMP, pi.TMP_META)):
                 return {"status": "deferred", "detail": "existing pending operation"}

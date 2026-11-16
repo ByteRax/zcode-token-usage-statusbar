@@ -180,7 +180,7 @@ class MobileInstallTests(unittest.TestCase):
         self.assertEqual(self.standalone.ensure_mobile_relay_stash(self.pi)["status"], "patched")
         with mock.patch.object(shutil, "copy2", side_effect=AssertionError("copy forbidden")), \
                 mock.patch.object(mobile, "_sweep_stale_stages", side_effect=AssertionError("write forbidden")), \
-                mock.patch.object(mobile.tempfile, "mkstemp", side_effect=AssertionError("stage forbidden")):
+                mock.patch.object(mobile.asar, "bounded_mkstemp", side_effect=AssertionError("stage forbidden")):
             self.assertEqual(self.standalone.ensure_mobile_relay_stash(self.pi)["status"], "present")
             self.assertEqual(self.installer.ensure_mobile_relay_stash(self.pi)["status"], "present")
 

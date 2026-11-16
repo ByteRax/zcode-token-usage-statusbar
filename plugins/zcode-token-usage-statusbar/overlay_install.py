@@ -939,7 +939,12 @@ def remove_mobile_relay_stash(pi):
     与 remove_renderer_bridge 同构：有 pending 时不碰既有待替换包，deferred/失败
     只写 stderr，不阻塞主卸载。"""
     try:
-        from mobile_relay_patch import remove_deployed
+        from mobile_relay_patch import check_deployed, remove_deployed
+        # 只读探测先行：未注入时不拿目标锁——受保护/只读目录下建 app.asar.zusage.lock
+        # 会抛 PermissionError，被当成 cleanup 未完成打印到 stderr（未注入应静默跳过）。
+        probe = check_deployed(pi.ASAR)
+        if probe.get("status") in ("absent", "error"):
+            return {"status": "absent", "detail": probe.get("detail", "not injected")}
         with pi._target_lock():
             if any(path.exists() or path.is_symlink() for path in (pi.TMP, pi.TMP_META)):
                 result = {"status": "deferred", "detail": "existing pending operation"}
