@@ -185,16 +185,18 @@ class BridgePendingTests(unittest.TestCase):
         self.assertFalse(list(self.root.glob(".zusage-bridge-*")))
 
     def test_stage_denial_flags_permission_without_unbounded_retry(self):
-        # issue #360 主症状：tempfile._mkstemp_inner 在 Windows 上对已存在目录吞掉
-        # PermissionError 换随机名重试至近 TMP_MAX(2^31) 次，受保护目录上 ensure_deployed
-        # 的 stage 创建等于无限挂起，SessionStart hook 被宿主 60s 超时击杀。夹具在
-        # POSIX 宿主复现该路径：chmod 555 目标目录 + 锁文件按既有文件预建（目录 555
-        # 不阻止打开既有文件）+ TMP_MAX 抬到 Windows 量级（macOS 上只有 20，stdlib
-        # 自己就会退出，复现不了「无限」）+ 仅真实 mkstemp 调用窗口内把 os.name 翻成
-        # "nt" 激活 stdlib 特判（finally 即还原，避免泄漏进 file_lock 的 nt 分支）；
-        # 名字序列超过上限即判 stdlib 仍在无限换名。修复前 PermissionError 被 stdlib
-        # 吞掉、上限触发后以裸 AssertionError 落进 except Exception（无 permission
-        # 标记，本用例红）；修复后 stage 创建单次快错并带 permission 标记。
+        # issue #360 主症状：tempfile._mkstemp_inner 在 Windows 上吞掉 PermissionError
+        # 换随机名重试（3.13.12 及更早、含 3.14.0，要求 os.access 报可写——os.access
+        # 看不见 ACL 恒报可写——TMP_MAX 取 2^31-1 ≈ 无限挂起；3.13.13 起自限 20 次），
+        # 受保护目录上 ensure_deployed 的 stage 创建挂到 SessionStart hook 被宿主 60s
+        # 超时击杀。夹具在 POSIX 宿主复现该路径：chmod 555 目标目录 + 锁文件按既有
+        # 文件预建（目录 555 不阻止打开既有文件）+ TMP_MAX 抬到 Windows 量级（macOS
+        # 上只有 20，stdlib 自己就会退出，复现不了「无限」）+ 仅真实 mkstemp 调用
+        # 窗口内把 os.name 翻成 "nt" 激活 stdlib 特判（finally 即还原，避免泄漏进
+        # file_lock 的 nt 分支）；名字序列超过上限即判 stdlib 仍在无限换名。修复前
+        # PermissionError 被 stdlib 吞掉、上限触发后以裸 AssertionError 落进
+        # except Exception（无 permission 标记，本用例红）；修复后 stage 创建单次
+        # 快错并带 permission 标记。
         if os.name == "nt":
             self.skipTest("POSIX chmod 夹具在 Windows 上模拟不了受保护目录")
         if hasattr(os, "geteuid") and os.geteuid() == 0:

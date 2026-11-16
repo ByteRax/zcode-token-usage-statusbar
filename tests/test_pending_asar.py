@@ -824,21 +824,13 @@ class ProtectedTargetTests(unittest.TestCase):
                                side_effect=PermissionError(5, "denied")):
             self.assertFalse(self.pi.target_writable())
 
-    def test_target_writable_does_not_retry_unboundedly(self):
-        # issue #360：tempfile._mkstemp_inner 在 Windows 上对 PermissionError 有特判
-        # （3.13.1 及更早还要求 os.access 报可写，而 os.access 看不见 ACL 恒报可写；
-        # 更新版仅看目录存在），吞掉异常换随机名重试至近 TMP_MAX(2^31) 次，受保护
-        # 目录上的真实写入探针等于无限挂起、SessionStart hook 被宿主 60s 超时击杀。
-        # 夹具在 POSIX 宿主复现该路径：chmod 555 目录 + os.access 谎报 + TMP_MAX
-        # 抬到 Windows 量级（macOS 上 tempfile.TMP_MAX 只有 20，stdlib 自己就会
-        # 退出，复现不了「无限」）+ 仅真实 mkstemp 调用窗口内把 os.name 翻成 "nt"
-        # 激活 stdlib 特判（finally 即还原，避免泄漏进 file_lock 的 nt 分支）；
-        # 名字序列超过上限即判 stdlib 仍在无限换名。修复前本用例红，修复后探针
-        # 走单次快错原语、根本不进 stdlib 名字序列。
-        self.refuse_root()
-        directory, asar = self.protected_target()
-        self.pi.set_target(asar)
-        self.pi.set_runtime(self.runtime)
+    def nt_mkstemp_trap(self):
+        """issue #360 红测试共用的 Windows stdlib 模拟夹具：os.access 谎报可写、
+        TMP_MAX 抬到 Windows 量级（macOS 上 tempfile.TMP_MAX 只有 20，stdlib 自己
+        就会退出，复现不了「无限」）、仅真实 mkstemp 调用窗口内把 os.name 翻成
+        "nt" 激活 stdlib 的 PermissionError 特判（finally 即还原，避免泄漏进
+        file_lock 的 nt 分支）。返回 (ExitStack, calls)：with 期间 stdlib 每换一次
+        名计一次数，超过 64 即抛 AssertionError 判「仍在无限换名」。"""
         calls = {"n": 0}
         real_next = tempfile._RandomNameSequence.__next__
         real_mkstemp = tempfile.mkstemp
@@ -847,7 +839,7 @@ class ProtectedTargetTests(unittest.TestCase):
         def guarded_next(seq):
             calls["n"] += 1
             if calls["n"] > 64:
-                raise AssertionError("target_writable probe retried unboundedly (issue #360 hang)")
+                raise AssertionError("mkstemp retried unboundedly (issue #360 hang)")
             return real_next(seq)
 
         def nt_mkstemp(*args, **kwargs):
@@ -857,12 +849,56 @@ class ProtectedTargetTests(unittest.TestCase):
             finally:
                 os.name = real_os_name
 
-        with mock.patch.object(self.pi.os, "access", return_value=True), \
-                mock.patch.object(tempfile, "TMP_MAX", 2 ** 31 - 1), \
-                mock.patch.object(tempfile._RandomNameSequence, "__next__", guarded_next), \
-                mock.patch.object(tempfile, "mkstemp", nt_mkstemp):
+        stack = contextlib.ExitStack()
+        stack.enter_context(mock.patch.object(self.pi.os, "access", return_value=True))
+        stack.enter_context(mock.patch.object(tempfile, "TMP_MAX", 2 ** 31 - 1))
+        stack.enter_context(mock.patch.object(tempfile._RandomNameSequence, "__next__", guarded_next))
+        stack.enter_context(mock.patch.object(tempfile, "mkstemp", nt_mkstemp))
+        self.addCleanup(stack.close)
+        return stack, calls
+
+    def test_target_writable_does_not_retry_unboundedly(self):
+        # issue #360：tempfile._mkstemp_inner 在 Windows 上吞掉 PermissionError 换
+        # 随机名重试（3.13.12 及更早、含 3.14.0，还要求 os.access 报可写而 os.access
+        # 看不见 ACL 恒报可写，TMP_MAX 取 Windows 的 2^31-1 ≈ 无限挂起；3.13.13 起
+        # 自限 TMP_MAX=20 不再挂起），受保护目录上的真实写入探针挂到 SessionStart
+        # hook 被宿主 60s 超时击杀。夹具在 POSIX 宿主复现该路径（nt_mkstemp_trap）；
+        # 修复前本用例红，修复后探针走单次快错原语、根本不进 stdlib 名字序列。
+        self.refuse_root()
+        directory, asar = self.protected_target()
+        self.pi.set_target(asar)
+        self.pi.set_runtime(self.runtime)
+        trap, calls = self.nt_mkstemp_trap()
+        with trap:
             self.assertFalse(self.pi.target_writable())
         self.assertEqual(calls["n"], 0)   # 快错原语不消耗 stdlib 名字序列
+
+    def test_pending_meta_write_does_not_retry_unboundedly(self):
+        # 待收尾 sidecar（TMP_META，与 asar 同目录）的原子写入同契约（review M3a）：
+        # 受保护目录 + os.access 谎报时绝不能回到 stdlib 的无限换名路径，必须
+        # 单次快错 PermissionError（post-fix 行为；修复前 stdlib 循环触发 trap 上限）。
+        self.refuse_root()
+        directory, asar = self.protected_target()
+        self.pi.set_target(asar)
+        self.pi.set_runtime(self.runtime)
+        trap, calls = self.nt_mkstemp_trap()
+        with trap:
+            with self.assertRaises(PermissionError):
+                self.pi._atomic_tmp_metadata({"state": "publishing"})
+        self.assertEqual(calls["n"], 0)
+
+    def test_prepare_tmp_stage_write_does_not_retry_unboundedly(self):
+        # 待收尾包 repack 的 stage（TMP，与 asar 同目录）同契约（review M3b）：
+        # install 链第一步的 stage 创建在受保护目录上单次快错，不进换名重试。
+        self.refuse_root()
+        directory, asar = self.protected_target()
+        self.pi.set_target(asar)
+        self.pi.set_runtime(self.runtime)
+        trap, calls = self.nt_mkstemp_trap()
+        with trap:
+            with self.assertRaises(PermissionError):
+                self.pi._prepare_tmp({"/" + self.pi.ENTRY: b"payload"})
+        self.assertEqual(calls["n"], 0)
 
     def test_bounded_mkstemp_creates_usable_file(self):
         # 正常路径与 tempfile.mkstemp 同形态：返回可用 fd 与带前缀的同目录路径。
@@ -892,7 +928,8 @@ class ProtectedTargetTests(unittest.TestCase):
 
     def test_bounded_mkstemp_caps_name_collisions(self):
         # 只有 FileExistsError（随机名碰撞）才换名重试，至多 _MKSTEMP_ATTEMPTS 次，
-        # 与 stdlib 的 TMP_MAX(2^31) 次行为划清界限。
+        # 与 stdlib 的 TMP_MAX(2^31) 次行为划清界限。断言字面量而非读被测常量，
+        # 防同义反复（review M2：常量被改坏时测试必须红）。
         collisions = {"n": 0}
 
         def occupied(path, flags, *args, **kwargs):
@@ -902,7 +939,23 @@ class ProtectedTargetTests(unittest.TestCase):
         with mock.patch.object(self.pi.os, "open", side_effect=occupied):
             with self.assertRaises(FileExistsError):
                 self.pi.bounded_mkstemp(prefix=".zusage-x.", dir=self.runtime)
-        self.assertEqual(collisions["n"], self.pi._MKSTEMP_ATTEMPTS)
+        self.assertEqual(collisions["n"], 16)
+
+    def test_bounded_mkstemp_never_reuses_name_without_unlink(self):
+        # replace-failed 移交窗口内崩溃会留下同前缀 stage 残留：名字若不随机，
+        # 残留会让后续所有 stage 创建永久 FileExistsError（review M7）。
+        # 连续两次创建（不删前者）必须得到不同名字。
+        fd1, name1 = self.pi.bounded_mkstemp(prefix=".zusage-u.", dir=self.runtime)
+        try:
+            fd2, name2 = self.pi.bounded_mkstemp(prefix=".zusage-u.", dir=self.runtime)
+            try:
+                os.close(fd2)
+                self.assertNotEqual(name1, name2)
+            finally:
+                Path(name2).unlink(missing_ok=True)
+        finally:
+            os.close(fd1)
+            Path(name1).unlink(missing_ok=True)
 
     def test_install_on_access_lying_target_hints_instead_of_spawning_monitor(self):
         # issue #130 主链：受保护目录上已有（提权执行排定的）有效待收尾包时，复用

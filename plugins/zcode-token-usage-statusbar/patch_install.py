@@ -906,14 +906,15 @@ _MKSTEMP_ATTEMPTS = 16
 
 
 def bounded_mkstemp(prefix, dir=None, suffix=""):
-    """受限次数的临时文件创建：签名兼容 tempfile.mkstemp 的常用形态，但
-    PermissionError 单次即原样抛出。stdlib 的 _mkstemp_inner 在 Windows 上对
-    PermissionError 有特判（3.13.1 及更早要求 os.access 报可写，而 os.access
-    看不见 ACL 对受保护目录恒报可写；更新版仅看目录存在），吞掉异常换随机名
-    重试至近 TMP_MAX(2^31-1) 次，Program Files 这类目录上等于无限挂起
-    （issue #360：SessionStart hook 每次被宿主 60s 超时击杀）。os.open 的单次
-    失败是快错：只有 FileExistsError（随机名碰撞）才换名重试，至多
-    _MKSTEMP_ATTEMPTS 次。asar 同目录的 stage/写入探针一律走本函数，
+    """受限次数的临时文件创建：与 tempfile.mkstemp 同形态（返回可用 fd 与路径），
+    但 PermissionError 单次即原样抛出；形参顺序与 tempfile.mkstemp 不同，
+    只应关键字传参。stdlib 的 _mkstemp_inner 在 Windows 上吞掉 PermissionError
+    换随机名重试：3.13.12 及更早（含 3.14.0）还要求 os.access 报可写——os.access
+    看不见 ACL，受保护目录恒报可写——TMP_MAX 取 Windows 的 2^31-1，等于无限
+    挂起（issue #360：SessionStart hook 每次被宿主 60s 超时击杀）；3.13.13 起
+    自限 TMP_MAX=20 不再挂起，但 PermissionError 也被换成 FileExistsError。
+    os.open 的单次失败是快错：只有 FileExistsError（随机名碰撞）才换名重试，
+    至多 _MKSTEMP_ATTEMPTS 次。asar 同目录的 stage/写入探针一律走本函数，
     不走 tempfile.mkstemp。"""
     directory = os.fspath(dir) if dir is not None else tempfile.gettempdir()
     for _ in range(_MKSTEMP_ATTEMPTS):
