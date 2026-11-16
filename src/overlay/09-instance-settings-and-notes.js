@@ -97,6 +97,19 @@
       /* 重启提醒开关真值不依赖更新器可用性（主进程无条件推送 restartNotice，缺省开；change 时代乐观更新） */
       var rn = panel.querySelector(".zu-restart-notice");
       if (rn) rn.checked = state.restartNotice !== false;
+      var mobileReadOnly = typeof mobileMode !== "undefined" && mobileMode;
+      var mobileBox = panel.querySelector(".zu-mobile-relay");
+      if (mobileBox) {
+        mobileBox.checked = !mobileReadOnly && state.mobileRelaySupported === true && (state.mobileRelayPending
+          ? state.mobileRelayPending.enabled === true : state.mobileRelayEnabled === true);
+        mobileBox.disabled = mobileReadOnly || state.mobileRelaySupported !== true || !!state.mobileRelayPending;
+      }
+      var mobileStatus = panel.querySelector(".zu-mobile-relay-status");
+      if (mobileStatus) mobileStatus.textContent = mobileReadOnly
+        ? L("手机端不可修改此开关；请在桌面端 ZCode 的「设置 → 维护 → 移动端远程控制」中开启或关闭统计推送。手机端不显示桌面当前值。", "This switch cannot be changed on mobile; turn statistics push on or off in ZCode on your desktop (Settings → Maintenance → Mobile remote control). The mobile page does not show the desktop's current value.")
+        : state.mobileRelaySupported !== true
+          ? L("需要新版桌面插件主进程支持；请完全退出并重启 ZCode，仍不可用时请升级桌面插件。", "Requires a newer desktop plugin main process; quit ZCode completely and restart it, or upgrade the desktop plugin if still unavailable.")
+          : state.mobileRelayPending ? L("操作已发出，等待确认…", "Sent; awaiting confirmation…") : "";
       panel.querySelector('[data-update=check]').disabled = !active || !!u.busy;
       panel.querySelector('[data-update=update]').disabled = !active || !!u.busy || u.phase !== "available";
       var relaunchBtn = panel.querySelector('[data-update=relaunch]');
@@ -2269,6 +2282,28 @@
       }
       if (t2.classList.contains("zu-auto-update")) {
         pluginRequest("auto", t2.checked);
+        return;
+      }
+      if (t2.classList.contains("zu-mobile-relay")) {
+        /* pending 跨 pane 共享；只改变待确认勾选，采集仍以已确认配置为准。
+         * 来源 pane 被摘除后回执仍须释放共享 pending，旧代际回执由 stale 拒收。 */
+        if ((typeof mobileMode !== "undefined" && mobileMode) || state.mobileRelaySupported !== true || state.mobileRelayPending) { syncUpdate(); return; }
+        var mobileSave = state.mobileRelayPending = { enabled: t2.checked === true, confirmed: false };
+        function syncMobilePanels() {
+          syncUpdate();
+          instances.forEach(function (inst) { inst.syncUpdate(); });
+        }
+        syncMobilePanels();
+        showSettingsFeedback(false, true);
+        pluginRequest("mobile-relay", mobileSave.enabled, function (result) {
+          if (stale() || state.mobileRelayPending !== mobileSave) return;
+          state.mobileRelayPending = null;
+          /* 主进程先广播实际值再回执；兼容回执先到的情况，后续广播仍可覆盖。
+           * 失败没有乐观配置要撤回：移除 pending 即回到最近确认的真值。 */
+          if (result && result.ok === true && !mobileSave.confirmed) state.mobileRelayEnabled = mobileSave.enabled;
+          syncMobilePanels();
+          if (!inactive()) showSettingsFeedback(!(result && result.ok === true), false);
+        });
         return;
       }
       if (t2.classList.contains("zu-restart-notice")) {

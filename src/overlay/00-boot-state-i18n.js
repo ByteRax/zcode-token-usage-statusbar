@@ -43,6 +43,8 @@
   if (window.__zusageDispose) window.__zusageDispose();
   window.__zusageOverlay = true;
   var disposed = false, coordinatorTimer = 0, bootTimer = 0;
+  /* 只有远控接收端在注入前显式开启；帧内字段不能改变普通桌面的身份选择。 */
+  var mobileMode = window.__zusageMobileMode === true, mobileBinding = "";
   var MY_GEN = (window.__zusageGen = (window.__zusageGen || 0) + 1);
   function stale() { return disposed || MY_GEN !== window.__zusageGen; }
   if (window.__zusageRateCleanup) window.__zusageRateCleanup();
@@ -606,6 +608,11 @@
     /* v344 增强提示词按钮开关：真值在 config.json 的 enhance_enabled（主进程动作入口
        fail-closed 校验，并随插件状态推送 enhanceEnabled）；缺省开启，仅显式 false 关闭 */
     enhanceEnabled: !(window.__zusagePluginState && window.__zusagePluginState.enhanceEnabled === false),
+    /* 移动端推送只认主进程配置与能力的显式 true，缺字段的旧 loader 保持关闭；
+       pending 仅保存本窗口各 pane 共享的待确认勾选，不进 localStorage。 */
+    mobileRelayEnabled: !!(window.__zusagePluginState && window.__zusagePluginState.mobileRelayEnabled === true),
+    mobileRelaySupported: !!(window.__zusagePluginState && window.__zusagePluginState.mobileRelaySupported === true),
+    mobileRelayPending: null,
     /* v135 重置卡徽标开关：真值在 config.json 的 reset_badge_enabled（主进程推送
        resetBadgeEnabled）；独立于 quota_enabled（额度关时仍查询 reset/status）。缺省开启 */
     resetBadge: !(window.__zusagePluginState && window.__zusagePluginState.resetBadgeEnabled === false),
@@ -748,6 +755,7 @@
    * 1268 轮/197 会话产出正常，serve pid 数分钟内 8576→11362 证实频繁回收重启）。
    * 轮表是历史统计，分钟级陈旧可接受（v257 同取舍），下一帧成功即覆盖。 */
   var lastSpeedHistory = (typeof window !== "undefined" && window.__zusageSpdSticky) || null;
+  if (mobileMode) lastSpeedHistory = null;
   function renderAll(rebuildPanels) {
     if (rateTipFor) showRateTip(rateTipFor);
     for (var i = 0; i < instances.length; i++) {
@@ -799,6 +807,28 @@
    * scope_bindings 取自上一轮收集，主叶身份刚切换/撤销时旧绑定可能随迟到的远端响应到达；
    * sessionFor 以此做守卫，不让旧代际绑定重新点亮远端视图。 */
   var mainScopeNow = { sid: "", identity: "" };
+  /* 移动帧已经由中继按目标裁剪；不经桌面 scope/最近会话启发式再猜一次归属。 */
+  function mobileContext(d, sid) {
+    var m = d && d.mobile, out = { taskId: "", binding: "", scopeKind: "", state: "waiting", row: null };
+    if (!m || typeof m !== "object" || Array.isArray(m)) return out;
+    var id = /^[A-Za-z0-9_-]{1,128}$/;
+    out.taskId = typeof m.taskId === "string" && id.test(m.taskId) ? m.taskId : "";
+    out.binding = typeof m.binding === "string" && id.test(m.binding) ? m.binding : "";
+    out.scopeKind = m.scopeKind === "local" || m.scopeKind === "remote" ? m.scopeKind : "";
+    out.state = ["ready", "waiting", "unavailable", "upgrade"].indexOf(m.state) >= 0 ? m.state : "unavailable";
+    if (sid && sid !== out.taskId) { out.state = "waiting"; return out; }
+    if (out.state !== "ready") return out;
+    var rows = d.recent, row = Array.isArray(rows) && rows.length === 1 ? rows[0] : null;
+    if (d.error || !out.taskId || !out.binding || !out.scopeKind || d.mine !== out.taskId ||
+        !d.session || d.session.sid !== out.taskId || !row || row.sid !== out.taskId ||
+        row.workspace_identity !== undefined || row.remote_target !== undefined ||
+        (out.scopeKind === "remote" ? row.remote !== true : !!row.remote) || row.remote_error || row.remote_missing) {
+      out.state = "unavailable";
+      return out;
+    }
+    out.row = row;
+    return out;
+  }
   function sessionFor(d, sid, pid) {
     var binding = d.scope_bindings || {};
     // 空 identity 是显式本地绑定；真实 pane 缺绑定时也不能继承同 sid 的远端。
@@ -858,22 +888,34 @@
     return found || { sid: sid, workspace_identity: identity, remote: true, remote_missing: true };
   }
   window.__zusageUpdate = function (d) {
-    if (stale() || !d || d.error) return;
+    var isMobile = typeof mobileMode !== "undefined" && mobileMode;
+    if (stale() || !d || (d.error && !isMobile)) return;
+    /* 移动帧按 target/binding/scopeKind 隔离：换目标时清远端缓存，不复用上一目标的快照。
+     * 轮表在移动启动时已置空且移动路径不会写入（setter 受 !isMobile 守卫），无需逐帧清。 */
+    if (isMobile) {
+      var mc = mobileContext(d, ""), keyMobile = JSON.stringify([mc.taskId, mc.binding, mc.scopeKind]);
+      if (keyMobile !== mobileBinding) {
+        mobileBinding = keyMobile;
+        Object.keys(remoteCache).forEach(function (k) { delete remoteCache[k]; });
+        Object.keys(remoteTodayCache).forEach(function (k) { delete remoteTodayCache[k]; });
+      }
+      FATAL.spdFrame = { t: Date.now(), has: mc.row && d.speed_history ? 1 : 0, sticky: 0, turns: 0 };
+    }
     /* v255：粘性统一轮表。常驻 serve 重启/空闲回收时主进程会回退到一次性 json，
      * 那一帧可能缺 speed_history；沿用本代最近一份有界轮表，速度 Tooltip 不再
      * 在 V2 与旧版整卡之间闪回。首帧尚无轮表（旧 Python/查询失败）才回退旧布局。 */
-    if (d.speed_history && d.speed_history.turns && d.speed_history.turns.length) {
+    if (!isMobile && d.speed_history && d.speed_history.turns && d.speed_history.turns.length) {
       lastSpeedHistory = d.speed_history;
       try { window.__zusageSpdSticky = lastSpeedHistory; } catch (_) { }
       FATAL.spdFrame = { t: Date.now(), has: 1, sticky: 0, turns: d.speed_history.turns.length };   // v257 帧级诊断
-    } else {
+    } else if (!isMobile) {
       var stickyHit = !d.speed_history && typeof lastSpeedHistory !== "undefined" && lastSpeedHistory;
       if (stickyHit) d.speed_history = lastSpeedHistory;
       /* v257 帧级诊断：缺字段/None 帧记 0，粘性补帧记 1——再出现象时 diag 直接可定位是
        * 数据链缺帧还是粘性未建立，不再靠截图反推。原地更新不替换对象（FATAL 共享引用）。 */
       FATAL.spdFrame = { t: Date.now(), has: 0, sticky: stickyHit ? 1 : 0, turns: 0 };
     }
-    if (d.remote_today) for (var key in d.remote_today) {
+    if (!isMobile && d.remote_today) for (var key in d.remote_today) {
       if (d.remote_today[key] && typeof d.remote_today[key] === "object") {
         remoteTodayCache[key] = d.remote_today[key];
         var tks = Object.keys(remoteTodayCache);

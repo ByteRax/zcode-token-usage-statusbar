@@ -86,7 +86,7 @@ LINUX_FALLBACK_BASES = ("/opt", "/usr/lib", "/usr/local/lib")
 # patch_install.py / install_monitor.py 一并进运行目录：待替换包的手动收尾命令
 # （install --finalize）只依赖运行目录内这套脚本，clone 被删/移动后仍可执行（issue #163；
 # 插件链 RUNTIME_FILES 早已同款在列）。
-RUNTIME_FILES = ("inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs", "quota-client.cjs", "model-puller.cjs", "engine-patch.cjs", "sysmon-client.cjs", "release_unpack.py", "runtime_lock.py", "usage_stats.py", "turn-stats.js", "overlay.js", "zusage.py", "usage_mcp.py", "token_rate.py", "renderer_bridge.py", "token_pricing.py", "patch_install.py", "install_monitor.py", "pending_zip_patch.py")
+RUNTIME_FILES = ("inject-main.cjs", "plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs", "quota-client.cjs", "model-puller.cjs", "engine-patch.cjs", "mobile-relay.cjs", "mobile_relay_patch.py", "sysmon-client.cjs", "release_unpack.py", "runtime_lock.py", "usage_stats.py", "turn-stats.js", "overlay.js", "zusage.py", "usage_mcp.py", "token_rate.py", "renderer_bridge.py", "token_pricing.py", "patch_install.py", "install_monitor.py", "pending_zip_patch.py")
 
 # ZCode 安装位置候选：resources/app.asar 存在即命中（按序探测，按当前平台取组）
 if sys.platform == "darwin":
@@ -482,6 +482,56 @@ def remove_data_dir(dry):
     return True
 
 
+def ensure_mobile_relay_stash(pi):
+    from mobile_relay_patch import ensure_deployed
+    try:
+        with pi._target_lock():
+            if any(path.exists() or path.is_symlink() for path in (pi.TMP, pi.TMP_META)):
+                return {"status": "deferred", "detail": "existing pending operation"}
+            result = ensure_deployed(pi.ASAR, _locked=True)
+            if result.get("status") == "replace-failed":
+                try:
+                    Path(result["stage"]).unlink(missing_ok=True)
+                except OSError as error:
+                    return {"status": "deferred", "detail": f"stage cleanup failed: {error}"}
+                return {"status": "deferred", "detail": result.get("detail")}
+            return result
+    except TimeoutError as error:
+        return {"status": "deferred", "detail": str(error)}
+    except Exception as error:
+        print(f"[mobile relay] patch skipped: {error}", file=sys.stderr)
+        return {"status": "skipped-error", "detail": str(error)}
+
+
+def remove_mobile_relay_stash(pi):
+    """卸载链：目标锁内清理 mobile relay 两段注入（保留 patch_install 注入尾缀与
+    其它字节）。存在待替换操作时不去碰它——那属于主卸载 pending 的收尾语义。"""
+    try:
+        from mobile_relay_patch import check_deployed, remove_deployed
+        # 只读探测先行：未注入时绝不拿目标锁——受保护/只读目录下建 app.asar.zusage.lock
+        # 会抛 PermissionError，被当成 cleanup 未完成打印（issue 契约：未注入静默跳过）。
+        probe = check_deployed(pi.ASAR)
+        if probe.get("status") == "absent":
+            return {"status": "absent", "detail": probe.get("detail", "not injected")}
+        if probe.get("status") == "error":
+            # 读不到目标不能假装已卸载：保留 error 上报，不再拿锁叠加权限噪声。
+            return {"status": "error", "detail": probe.get("detail", "unreadable")}
+        with pi._target_lock():
+            if any(path.exists() or path.is_symlink() for path in (pi.TMP, pi.TMP_META)):
+                return {"status": "deferred", "detail": "existing pending operation"}
+            return remove_deployed(pi.ASAR, _locked=True)
+    except TimeoutError as error:
+        return {"status": "deferred", "detail": str(error)}
+    except Exception as error:   # 模块缺失/asar 读取失败都不得中断主卸载
+        return {"status": "error", "detail": str(error)}
+
+
+def _mobile_relay_cli(path):
+    """卸载/延后场景下可执行的独立补丁命令（运行目录与仓库副本同款脚本）。"""
+    script = HERE / "mobile_relay_patch.py"
+    return f'"{sys.executable}" "{script}" {path}'
+
+
 def main():
     global LANG, args_lang
     # 轻量预解析：--help 打印时 LANG 必须已定，否则帮助文本恒为中文
@@ -523,6 +573,18 @@ def main():
             print(L(f"[目标] {asar}", f"[target] {asar}"))
             pi.set_target(asar)
             ok = pi.remove()
+            # 主卸载只剥 loader 注入行；mobile relay 的 stash/uplink 是中段注入，
+            # 必须单独清理（deferred/失败只报告，不把主卸载改成失败）。
+            if ok:
+                mobile = remove_mobile_relay_stash(pi)
+                if mobile.get("status") not in ("removed", "absent"):
+                    retry = _mobile_relay_cli(f'remove --asar "{asar}"')
+                    print(L(f"[手机中继] 补丁清理未完成（{mobile.get('status')}）：{mobile.get('detail')}。"
+                            f"如需手动重试，请先保留运行目录的 mobile_relay_patch.py / patch_install.py / "
+                            f"runtime_lock.py（数据目录随后会被删除），完全退出 ZCode 后执行：{retry}",
+                            f"[mobile relay] patch cleanup did not finish ({mobile.get('status')}): {mobile.get('detail')}. "
+                            f"To retry manually, keep mobile_relay_patch.py / patch_install.py / runtime_lock.py from the "
+                            f"runtime directory (it is removed below), quit ZCode completely, then run: {retry}"))
         else:
             print(L("[卸载] 未找到 app.asar（ZCode 可能已卸载或换了位置），跳过 asar 剥离，仅清理注册与数据。",
                     "[uninstall] app.asar not found (ZCode may be uninstalled or relocated); skipping the asar strip, cleaning registration & data only."))
@@ -568,12 +630,36 @@ def main():
     if not args.dev:
         copy_runtime(args.dry_run)
     prepare_config(args.dry_run, args.dev)
+    mobile = None
     if args.dry_run:
         print(L("[注入] （dry-run）python patch_install.py install",
                 "[inject] (dry-run) python patch_install.py install"))
         ok = True
     else:
         ok = pi.install()
+        if ok:
+            mobile = ensure_mobile_relay_stash(pi)
+            status = mobile.get("status")
+            if status == "patched":
+                if pi.client_running():
+                    print(L("手机中继补丁已写入；请完全退出并重开 ZCode 后生效（只关窗口或重开会话无效）。",
+                            "The mobile relay patch was written; quit ZCode completely and reopen it to take effect "
+                            "(closing the window or reopening the session is not enough)."))
+                else:
+                    print(L("手机中继补丁已写入；下次打开 ZCode 时生效。",
+                            "The mobile relay patch was written; it takes effect the next time ZCode starts."))
+            elif status == "deferred":
+                print(L(f"手机中继补丁尚未就绪：请在完全退出 ZCode（含托盘/后台）后，对目标 asar 执行 "
+                        f"\"{sys.executable}\" \"{HERE / 'mobile_relay_patch.py'}\" apply --asar \"{asar}\""
+                        f"（或重跑 \"{sys.executable}\" \"{HERE / 'install.py'}\" --asar \"{asar}\"）。"
+                        "在运行中的客户端里重跑 /install-overlay 无法完成该补丁。",
+                        f"The mobile relay patch is not ready: quit ZCode completely (including the tray/background), "
+                        f"then run \"{sys.executable}\" \"{HERE / 'mobile_relay_patch.py'}\" apply --asar \"{asar}\""
+                        f" (or re-run \"{sys.executable}\" \"{HERE / 'install.py'}\" --asar \"{asar}\"). "
+                        "Re-running /install-overlay inside the running client cannot finish this patch."))
+            elif status != "present":
+                print(L("手机中继补丁尚未就绪；请先完成已有待替换操作或解除占用及权限问题，再重试安装。",
+                        "The mobile relay patch is not ready; complete any pending replacement or resolve access problems, then retry installation."))
         remember_asar(asar, args.dev)   # 无论注入是否收尾成功都记住（卸载/收尾要用）
     if not ok:
         # 收尾/重试命令指向运行目录副本并带上本次目标：clone 被删/移动后提示仍可执行
@@ -585,8 +671,19 @@ def main():
     if not args.no_mcp:
         register_mcp(args.dry_run, args.dev)
         install_command(args.dry_run)
-    print("\n" + L("全部完成。重启 ZCode 后窗口底部出现悬浮条；对话内可用 /usage 查询。",
-                   "All done. After restarting ZCode the floating bar appears at the bottom of the window; use /usage in chat to query."))
+    if not ok:
+        print("\n" + L("安装未完成：asar 注入未能收尾。请按上方提示完成待替换操作或重试；"
+                       "MCP 与 /usage 命令部分已继续处理。",
+                       "Installation did not finish: the asar injection could not be finalized. "
+                       "Follow the message above to complete the pending replacement or retry; "
+                       "the MCP and /usage command parts were still processed."))
+    elif mobile is not None and mobile.get("status") not in ("present", "patched"):
+        print("\n" + L("状态条安装已处理；手机中继补丁尚未生效（见上方提示与独立命令）。",
+                       "Status bar installation was processed; the mobile relay patch is not active yet "
+                       "(see the message and standalone command above)."))
+    else:
+        print("\n" + L("全部完成。重启 ZCode 后窗口底部出现悬浮条；对话内可用 /usage 查询。",
+                       "All done. After restarting ZCode the floating bar appears at the bottom of the window; use /usage in chat to query."))
     return 0 if ok else 1
 
 

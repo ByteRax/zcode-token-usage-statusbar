@@ -98,10 +98,12 @@ function runFile(command, args, options, input, onSpawn) {
   });
 }
 
-async function updateConfig(runtime, changes, python, defaults) {
+// merge applies direct child replacements under Python's config lock, after defaults/changes.
+// Example: updateConfig(HERE, {}, py, undefined, { mobile_relay: { enabled } }).
+async function updateConfig(runtime, changes, python, defaults, merge) {
   const result = await runFile(python, [path.join(__dirname, "runtime_lock.py"), "--update-config", runtime], {
     windowsHide: true, timeout: 15000, maxBuffer: 1024 * 1024,
-  }, JSON.stringify({ changes, defaults }));
+  }, JSON.stringify({ changes, defaults, merge }));
   if (result.ok !== true || typeof result.changed !== "boolean") throw new Error("配置更新没有返回有效确认");
   return result;
 }

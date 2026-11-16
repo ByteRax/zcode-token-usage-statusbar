@@ -4,12 +4,14 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const { getNamedSlice } = require('./helpers/overlay-extract.cjs');
-const source = fs.readFileSync(path.join(__dirname, '..', 'overlay.js'), 'utf8');
+const { SRC_DIR, readOverlayPart, sliceOverlay, getNamedSlice } = require('./helpers/overlay-extract.cjs');
+// 直接验证分片，避免并行开发时生成 overlay.js 覆盖其它操作；所有切片仍走公共助手。
+const parts = fs.readdirSync(SRC_DIR).filter(name => /^\d\d-.*\.js$/.test(name)).sort();
+const source = parts.map(readOverlayPart).join('');
 function extract(start, end) {
-  const a = source.indexOf(start), b = source.indexOf(end, a);
-  assert.ok(a >= 0 && b > a);
-  return source.slice(a, b);
+  const part = parts.find(name => readOverlayPart(name).includes(start));
+  assert.ok(part, `未找到源码分片: ${start}`);
+  return sliceOverlay(start, end, { file: 'src/overlay/' + part });
 }
 const scrollSource = extract('    function syncSettingsScroll() {', '    function positionSettingsPanel() {');
 const positionSource = extract('    function positionSettingsPanel() {', '    panel.addEventListener("scroll"');
@@ -425,7 +427,237 @@ test('panel retains all controls, scroll position and settings-only styling', ()
   assert.match(source, /positionSettingsPanel\(\);\s*positionSubPop\(\);\s*everMounted = true/);
 });
 
+function relaySettingsHarness(initial = {}, lang = 'zh', options = {}) {
+  const store = new Map(), context = {
+    window: { __zusagePluginState: initial }, MY_GEN: 1, FATAL: {},
+    localStorage: { getItem: key => store.get(key) ?? null, setItem: (key, value) => store.set(key, String(value)) },
+    stale: () => false, inactive: () => false, scanRateLines() {},
+  };
+  if (options.mobileMode === true) context.mobileMode = true;
+  vm.createContext(context);
+  vm.runInContext(extract('  var LS = {', '  /* ---------- 多实例注册表') +
+    '\nvar instances = [];\n' + sliceOverlay('  window.__zusagePluginRequests = [];', '\n  };\n', { file: 'src/overlay/00-boot-state-i18n.js', includeEnd: true }) +
+    extract('  window.__zusagePluginUpdate = function (s) {', '  /* 工作区身份来自当前会话节点'), context);
+  context.state.lang = lang;
+  function panel() {
+    const nodes = new Map();
+    const get = selector => {
+      if (!nodes.has(selector)) nodes.set(selector, { checked: false, disabled: false, hidden: true, value: '',
+        textContent: '', scrollTop: 0, style: {}, dataset: {}, classList: { toggle() {} } });
+      return nodes.get(selector);
+    };
+    const el = { innerHTML: '', querySelector: get, querySelectorAll: () => [],
+      addEventListener(type, handler) { if (type === 'change') this.handler = handler; } };
+    context.__panel = el;
+    const api = vm.runInContext('(function (panel) { var slot = 0, gear = null; function syncSettingsScroll() {}\n' +
+      extract('    function settingRow(', '    function syncSettingsScroll() {') +
+      extract('    function updFingerprint(u) {', '    function syncPanel() {') +
+      extract('    panel.addEventListener("change",', '    listenGlobal(document, "mousedown",') +
+      '\nbuildPanel(); return { syncUpdate: syncUpdate, build: buildPanel, change: panel.handler }; })(__panel);', context);
+    context.instances.push(api);
+    return { api, el, get, toggle(checked) {
+      const box = get('.zu-mobile-relay'); box.checked = checked;
+      box.classList.contains = name => name === 'zu-mobile-relay';
+      api.change({ target: box });
+    } };
+  }
+  return { context, store, panel, broadcast: value => context.window.__zusagePluginUpdate(value),
+    receipt(ok) { const req = context.window.__zusagePluginRequests.at(-1);
+      context.window.__zusagePluginResult({ id: req.requestId, ok }); } };
+}
+
+test('mobile relay boot and broadcasts strictly consume booleans without a localStorage preference', () => {
+  for (const value of [undefined, null, false, 'true', 1, [], {}, true]) {
+    const h = relaySettingsHarness({ mobileRelayEnabled: value, mobileRelaySupported: value });
+    assert.equal(h.context.state.mobileRelayEnabled, value === true);
+    assert.equal(h.context.state.mobileRelaySupported, value === true);
+    h.broadcast({ mobileRelayEnabled: value, mobileRelaySupported: value, other: 1 });
+    assert.equal(h.context.state.mobileRelayEnabled, value === true);
+    assert.equal(h.context.state.mobileRelaySupported, value === true);
+    vm.runInContext('persist();', h.context);
+    assert.equal([...h.store.keys()].some(key => /mobile/i.test(key)), false);
+  }
+  const h = relaySettingsHarness({ mobileRelayEnabled: true, mobileRelaySupported: true });
+  const p = h.panel();
+  assert.equal(p.get('.zu-mobile-relay').checked, true);
+  h.broadcast({});
+  assert.equal(h.context.state.mobileRelayEnabled, false);
+  assert.equal(h.context.state.mobileRelaySupported, false);
+  assert.equal(p.get('.zu-mobile-relay').checked, false);
+  assert.equal(p.get('.zu-mobile-relay').disabled, true);
+});
+
+test('mobile relay defaults off and unsupported mobile controls cannot enqueue desktop configuration', () => {
+  for (const initial of [{}, { mobileRelayEnabled: false, mobileRelaySupported: false }]) {
+    const h = relaySettingsHarness(initial), p = h.panel();
+    assert.equal(h.context.state.mobileRelayEnabled, false);
+    assert.equal(h.context.state.mobileRelaySupported, false);
+    assert.equal(p.get('.zu-mobile-relay').checked, false);
+    assert.equal(p.get('.zu-mobile-relay').disabled, true);
+    p.toggle(true);
+    assert.equal(p.get('.zu-mobile-relay').checked, false);
+    assert.equal(h.context.window.__zusagePluginRequests.length, 0);
+  }
+});
+
+test('mobile relay legacy loaders disable the checkbox and never queue a save in either language', () => {
+  for (const lang of ['zh', 'en']) {
+    const h = relaySettingsHarness({ mobileRelayEnabled: true }, lang), p = h.panel();
+    assert.equal(p.get('.zu-mobile-relay').disabled, true);
+    assert.equal(p.get('.zu-mobile-relay').checked, false);
+    assert.match(p.get('.zu-mobile-relay-status').textContent, lang === 'zh' ? /完全退出并重启.*升级/ : /quit ZCode completely.*upgrade/);
+    p.toggle(true);
+    assert.equal(p.get('.zu-mobile-relay').checked, false);
+    assert.equal(h.context.window.__zusagePluginRequests.length, 0);
+    assert.equal(h.context.state.mobileRelayPending, null);
+  }
+});
+
+test('mobile relay save locks every pane until receipt, survives rebuild and rolls back failed changes', () => {
+  const initial = { mobileRelayEnabled: false, mobileRelaySupported: true, feedbackVersion: 1 };
+  const h = relaySettingsHarness(initial), a = h.panel(), b = h.panel();
+  a.toggle(true);
+  const request = h.context.window.__zusagePluginRequests[0];
+  assert.equal(request.action, 'mobile-relay'); assert.equal(request.enabled, true); assert.ok(request.requestId);
+  assert.equal(h.context.state.mobileRelayEnabled, false, 'unconfirmed save must not start collection');
+  for (const p of [a, b]) {
+    assert.equal(p.get('.zu-mobile-relay').checked, true);
+    assert.equal(p.get('.zu-mobile-relay').disabled, true);
+  }
+  assert.match(a.get('.zu-settings-feedback-status').textContent, /等待确认/);
+  b.toggle(false);
+  assert.equal(h.context.window.__zusagePluginRequests.length, 1, 'a second pane cannot submit during a save');
+  h.context.state.lang = 'en'; b.api.build();
+  assert.equal(b.get('.zu-mobile-relay').disabled, true);
+  assert.match(b.get('.zu-mobile-relay-status').textContent, /awaiting confirmation/);
+  h.receipt(false);
+  for (const p of [a, b]) { assert.equal(p.get('.zu-mobile-relay').checked, false); assert.equal(p.get('.zu-mobile-relay').disabled, false); }
+  assert.equal(h.context.state.mobileRelayPending, null);
+  assert.match(a.get('.zu-settings-feedback-status').textContent, /Save failed/);
+  a.toggle(true); h.broadcast({ ...initial, mobileRelayEnabled: true });
+  assert.equal(b.get('.zu-mobile-relay').disabled, true, 'broadcast must not unlock a save before its receipt');
+  h.receipt(true);
+  for (const p of [a, b]) { assert.equal(p.get('.zu-mobile-relay').checked, true); assert.equal(p.get('.zu-mobile-relay').disabled, false); }
+  assert.equal(a.get('.zu-settings-feedback-status').textContent, 'Saved');
+  h.broadcast(initial);
+  assert.equal(b.get('.zu-mobile-relay').checked, false, 'later window broadcasts converge the setting');
+  a.toggle(true); h.receipt(true);
+  assert.equal(h.context.state.mobileRelayEnabled, true, 'successful receipt can arrive before the broadcast');
+  h.broadcast(initial);
+  assert.equal(a.get('.zu-mobile-relay').checked, false);
+  assert.equal([...h.store.keys()].some(key => /mobile/i.test(key)), false);
+});
+
+test('mobile relay failure retains the newest broadcast and detached panes release the shared pending state', () => {
+  const h = relaySettingsHarness({ mobileRelayEnabled: true, mobileRelaySupported: true, feedbackVersion: 1 });
+  const a = h.panel(), b = h.panel();
+  a.toggle(false);
+  h.broadcast({ mobileRelayEnabled: false, mobileRelaySupported: true });
+  h.context.inactive = () => true;
+  h.receipt(false);
+  assert.equal(h.context.state.mobileRelayPending, null);
+  assert.equal(h.context.state.mobileRelayEnabled, false, 'failed write cannot restore an older value over a broadcast');
+  assert.equal(b.get('.zu-mobile-relay').disabled, false);
+  assert.equal(b.get('.zu-mobile-relay').checked, false);
+});
+
 const ISSUES_URL = 'https://github.com/ByteRax/zcode-token-usage-statusbar/issues';
+const MOBILE_SCRIPT_URL = 'https://raw.githubusercontent.com/ByteRax/zcode-token-usage-statusbar/main/zusage-mobile.user.js';
+test('mobile settings owns the localized script entry and relay disclosure stays in about', () => {
+  const buildSource = extract('  var ZU_BAR_KEYS =', '  var state = {') + '\n' +
+    extract('    function settingRow(', '    function syncSettingsScroll() {');
+  const body = { scrollTop: 0 };
+  const mobileBox = {}, statusNode = {};
+  const context = {
+    slot: 0,
+    state: { lang: 'zh', settingsSec: 'mobile', show: {}, ctxOv: '', mobileRelayEnabled: false, mobileRelaySupported: true },
+    panel: { innerHTML: '', querySelector: s => s === '.zu-mobile-relay' ? mobileBox : s === '.zu-mobile-relay-status' ? statusNode : body, querySelectorAll: () => [] },
+    L: (zh, en) => context.state.lang === 'en' ? en : zh,
+    syncUpdate() {}, syncSettingsScroll() {},
+  };
+  vm.runInNewContext(buildSource + '\nbuildPanel();', context);
+  for (const lang of ['zh', 'en']) {
+    context.state.lang = lang;
+    vm.runInNewContext('buildPanel();', context);
+    const html = context.panel.innerHTML;
+    const mobile = html.match(/<section[^>]*data-sec="mobile"[^>]*>([\s\S]*?)<\/section>/)[1];
+    const about = html.match(/<section[^>]*data-sec="about"[^>]*>([\s\S]*?)<\/section>/)[1];
+    const maintenance = html.match(/role="group" aria-labelledby="zu-navgroup-maint">([\s\S]*?)<\/nav>/)[1];
+    assert.match(maintenance, /data-sec="mobile" aria-current="page"/);
+    assert.match(mobile, /class="zu-mobile-relay"/);
+    const scriptInput = mobile.match(/<input\b[^>]*class="zu-src-field zu-mobile-script"[^>]*>/)[0];
+    assert.match(scriptInput, /type="url"/);
+    assert.match(scriptInput, /\sreadonly(?:\s|>)/);
+    assert.doesNotMatch(scriptInput, /\sdisabled(?:[\s=>])/);
+    assert.ok(scriptInput.includes('value="' + MOBILE_SCRIPT_URL + '"'));
+    assert.doesNotMatch(mobile, /<button\b|<a\b/);
+    assert.doesNotMatch(about, /zu-mobile-script|zu-mobile-relay/);
+    if (lang === 'zh') {
+      assert.match(mobile, /移动端远程控制/); assert.match(mobile, /推送状态栏数据到远控页/);
+      assert.match(scriptInput, /aria-label="正式版脚本链接"/);
+      assert.match(mobile, /选择并复制链接.*不会自动安装或打开外链/);
+      assert.match(about, /官方中继.*无端到端加密（E2EE）.*服务器可见当前会话 ID.*今日合计、项目聚合.*可能包含其他会话贡献.*不含正文、工作区路径或凭据.*不影响宿主远控/);
+    } else {
+      assert.match(mobile, /Mobile remote control/); assert.match(mobile, /Push status bar data to Remote Control/);
+      assert.match(scriptInput, /aria-label="Regular userscript URL"/);
+      assert.match(mobile, /Select and copy the URL.*does not install the script or open an external page/);
+      assert.match(about, /official relay without end-to-end encryption.*server can see the current session ID.*today's total and project aggregates.*contributions from other sessions.*no message content, workspace paths or credentials.*does not affect the host's remote control/);
+    }
+  }
+});
+test('mobile mode keeps desktop relay authorization in navigation and content in both languages', () => {
+  const buildSource = extract('  var ZU_BAR_KEYS =', '  var state = {') + '\n' +
+    extract('    function settingRow(', '    function syncSettingsScroll() {');
+  for (const lang of ['zh', 'en']) {
+    const body = { scrollTop: 0 };
+    const context = {
+      slot: 0, mobileMode: true,
+      state: { lang, settingsSec: 'mobile', show: {}, ctxOv: '', mobileRelayEnabled: false, mobileRelaySupported: false },
+      panel: { innerHTML: '', querySelector: () => body, querySelectorAll: () => [] },
+      L: (zh, en) => lang === 'en' ? en : zh, syncUpdate() {}, syncSettingsScroll() {},
+    };
+    vm.runInNewContext(buildSource + '\nbuildPanel();', context);
+    assert.equal(context.activeSettingsSec(), 'mobile', 'the stored mobile selection stays active');
+    assert.equal(context.ZU_SECTIONS.some(section => section.id === 'mobile'), true);
+    assert.match(context.panel.innerHTML, /data-sec="mobile" aria-current="page"/);
+    assert.match(context.panel.innerHTML, /<section[^>]*data-sec="mobile"/);
+    assert.match(context.panel.innerHTML, /class="zu-mobile-relay"/);
+    assert.match(context.panel.innerHTML, /zu-mobile-script/);
+    assert.match(context.panel.innerHTML, lang === 'zh' ? /移动端远程控制/ : /Mobile remote control/);
+  }
+});
+test('mobile mode keeps the relay switch read-only and never queues desktop configuration', () => {
+  for (const lang of ['zh', 'en']) {
+    const h = relaySettingsHarness({ mobileRelayEnabled: false, mobileRelaySupported: false }, lang, { mobileMode: true });
+    const p = h.panel();
+    assert.equal(p.get('.zu-mobile-relay').checked, false);
+    assert.equal(p.get('.zu-mobile-relay').disabled, true);
+    const status = p.get('.zu-mobile-relay-status').textContent;
+    assert.match(status, lang === 'zh' ? /手机端不可修改此开关/ : /cannot be changed on mobile/);
+    assert.doesNotMatch(status, /完全退出并重启|Requires a newer desktop plugin/);
+    p.toggle(true);
+    assert.equal(p.get('.zu-mobile-relay').checked, false);
+    assert.equal(h.context.window.__zusagePluginRequests.length, 0);
+    assert.equal(h.context.state.mobileRelayPending, null);
+  }
+});
+
+test('readonly userscript URL clicks never open a page, install or enqueue an action', () => {
+  const clickSource = extract('    panel.addEventListener("click",', '    gear.addEventListener("click"');
+  for (const bridge of [true, false]) {
+    let handler;
+    const opened = [], bridged = [];
+    const context = {
+      panel: { addEventListener: (_, fn) => { handler = fn; } },
+      window: { open: (...args) => opened.push(args), zcode: bridge ? { openExternal: url => bridged.push(url) } : null },
+      pluginRequest() { assert.fail('install entry must not enqueue a main-process action'); },
+    };
+    vm.runInNewContext(clickSource, context);
+    handler({ target: { closest: selector => selector === '.zu-mobile-script' ? {} : null } });
+    assert.deepEqual(bridged, []);
+    assert.deepEqual(opened, []);
+  }
+});
 test('feedback button sits in the footer with localized copy', () => {
   const buildSource = getNamedSlice('barOrderHelpers') + '\n' +
     extract('    function settingRow(', '    function syncSettingsScroll() {');
@@ -1054,7 +1286,7 @@ function buildHarness(state) {
   return context;
 }
 
-test('settings nav groups six sections under three captions with the active state inline', () => {
+test('settings nav groups sections under three captions with the active state inline', () => {
   const html = buildHarness({ settingsSec: 'quota' }).panel.innerHTML;
   assert.match(html, /class="zu-settings-nav" aria-label="设置分区"/);
   for (const cap of ['>基础</div>', '>数据与统计</div>', '>维护</div>']) assert.ok(html.includes(cap), cap);

@@ -166,6 +166,7 @@ test("pushPluginState pushes the relaunchSupported capability flag (v180, issue 
     readCfgCached: () => ({ answer_rate_line: true, restart_notice: true }),
     quotaEnabled: () => true, resetBadgeEnabled: () => true, enhanceEnabled: () => true,
     enhanceProviderView: () => ({ available: false, version: 1, revision: 0, mode: "default", keyConfigured: false }),
+    mobileEnabled: () => false,
     quotaClient: null, enginePatcher: null,
   });
   assert.equal(pushed.length, 1);

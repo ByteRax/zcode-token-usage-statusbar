@@ -29,7 +29,18 @@
       }
     };
   window.__zusagePluginUpdate = function (s) {
-    if (stale() || JSON.stringify(state.pluginUpdate) === JSON.stringify(s)) return;
+    if (stale()) return;
+    /* 新旧主进程混载时 fail-closed；即使整帧等值，也要以广播覆盖回执前后的本地状态。 */
+    var mobileEnabled = !!(s && s.mobileRelayEnabled === true);
+    var mobileSupported = !!(s && s.mobileRelaySupported === true);
+    var mobileChanged = state.mobileRelayEnabled !== mobileEnabled || state.mobileRelaySupported !== mobileSupported;
+    state.mobileRelayEnabled = mobileEnabled;
+    state.mobileRelaySupported = mobileSupported;
+    if (state.mobileRelayPending) state.mobileRelayPending.confirmed = true;
+    if (JSON.stringify(state.pluginUpdate) === JSON.stringify(s)) {
+      if (mobileChanged) instances.forEach(function (inst) { inst.syncUpdate(); });
+      return;
+    }
     window.__zusagePluginState = state.pluginUpdate = s;
     if (s && typeof s.rateLine === "boolean") state.rateLine = s.rateLine;
     if (s && typeof s.quotaEnabled === "boolean") state.quotaEnabled = s.quotaEnabled;

@@ -210,11 +210,16 @@
       } catch (e) { }
       syncPillSurface();
     }
+    /* 空态只临时露出原条/齿轮，保留精简偏好；ready 后恢复工具行 chip。 */
+    function mobileEmpty() {
+      return typeof mobileMode !== "undefined" && mobileMode && mobileContext(state.data, instSid).state !== "ready";
+    }
+    function compactBarHidden() { return state.theme === "compact" && !mobileEmpty(); }
     function applyBarTheme() {
       foldDirty = true;
       closeMore(false);
-      var pill = state.theme === "pill", compact = state.theme === "compact";
       if (bar.getAttribute("data-zusage-theme") !== state.theme) main.scrollLeft = 0;
+      var pill = state.theme === "pill", compact = compactBarHidden();
       bar.setAttribute("data-zusage-theme", state.theme);
       bar.classList.toggle("zu-pill", pill);
       bar.classList.toggle("zu-compact", compact);
@@ -262,7 +267,7 @@
           else { mountBelowCard(); ensureCardPad(); }
         }
       }
-      if (state.theme !== "compact") {
+      if (!compactBarHidden()) {
         restoreTpsChip();   // v146：离开精简档立即摘工具行速率 chip（精简内由 render/heavy 重挂）
         /* v156：离开精简立即恢复显示（display:none 是 compact 专属态，不留到下一帧）并
          * 强制条面重建一次——compact 期 render 跳过 innerHTML，若条面 DOM 因热更占位/清子树
@@ -350,7 +355,7 @@
         }
       }
       if (!composer && slot === 0) collectDiag();   // 一直找不到输入框的窗口：周期性写环境诊断（everMounted 门防覆盖）
-      if (state.theme === "compact") {
+      if (compactBarHidden()) {
         /* v146 精简模式：条常驻 body 且 display:none——挂载/几何/让位带全部停用。唯一职责
          * 是保条存活（chip 样式 <style> 与 ariaLive 随条，React 清 body 子树时补挂），
          * cardCache 照常维护（chips 的宿主查询面），让位带还原。 */
@@ -368,7 +373,7 @@
           var liveCard = composerCardOf(composer);
           if (liveCard && liveCard !== cardCache && liveCard !== document.body) cardCache = liveCard;
         }
-        if (state.theme === "compact") {
+        if (compactBarHidden()) {
           if (cardCache) nativeCtxVal = readNativeCtx(cardCache);   // v146：上下文窗口自动识别的备源照常刷新
         } else if (cardCache) {
           /* v80：优先挂输入卡片内部（工具行下）；无工具行回落 below-card 兜底 + 让位带 */
@@ -422,7 +427,7 @@
     }
     function barSlot(b) { var v = parseInt(b.getAttribute && b.getAttribute("data-zusage-slot"), 10); return isNaN(v) ? 99 : v; }
     function dedupBars() {
-      if (state.theme === "compact") { if (dupSuppress) { dupSuppress = false; } return; }
+      if (compactBarHidden()) { if (dupSuppress) { dupSuppress = false; } return; }
       var rival = null;
       try {
         var bars = [];
@@ -834,7 +839,7 @@
         if (document.hidden) return;
         syncExcBubble();   // 超限气泡：显示/隐藏/贴条定位（内部自判状态，隐藏分支零开销）
         if (!composer || !composer.isConnected) { hideSince = 0; hideBar(); return; }
-        if (state.theme === "compact") {
+        if (compactBarHidden()) {
           /* v146 精简模式：条已 display:none，几何/显隐/收缩全部停用（超限气泡由
            * syncExcBubble 的 curDisplay 门自兜隐藏）；面板周期跟随与诊断保留，帧循环自续。 */
           everMounted = true;
@@ -1235,4 +1240,6 @@
     refreshWants();
     return api;
   }
+/* 产物末尾以 `})();` 收尾 boot 闭包——overlay-rate/lifecycle 测试在此注入内窥代码，
+ * 需要访问闭包内 state 与 renderAll；12 是最后一个分片，必须保留该收尾。 */
 })();

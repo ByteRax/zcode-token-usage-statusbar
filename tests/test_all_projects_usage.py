@@ -460,6 +460,24 @@ class AllProjectsFrameGateTests(unittest.TestCase):
         self.assertNotIn("speed_history", d)
         self.assertNotIn("error", d)
 
+    def test_lean_serve_frame_omits_all_projects(self):
+        request = json.dumps({"sids": ["s1"], "scopes": [], "lean": True})
+        out = io.StringIO()
+        with mock.patch.object(zusage, "connect", return_value=self.con), \
+                mock.patch.object(zusage, "load_config", return_value={"context_window": 1}), \
+                mock.patch.object(zusage.sys, "stdout", out), \
+                mock.patch.object(zusage.sys, "stdin", io.StringIO(request + "\n")):
+            zusage.main(["serve"])
+        d = json.loads(out.getvalue())
+        self.assertNotIn("all_projects", d, "手机中继 projection 不消费全部项目聚合")
+        self.assertNotIn("speed_history", d)
+
+    def test_lean_oneshot_json_frame_omits_all_projects(self):
+        request = json.dumps({"sids": ["s1"], "scopes": [], "lean": True})
+        d = self.frame(["json", request])
+        self.assertNotIn("all_projects", d, "常驻回退的一次性 json 复用同一 lean 请求")
+        self.assertNotIn("speed_history", d)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -63,10 +63,16 @@ class PluginRuntimeTests(unittest.TestCase):
         patcher = mock.patch.object(installer, "_sync_verifier", fixture_verifier)
         patcher.start()
         self.addCleanup(patcher.stop)
+        # 手机补丁的真实安装与 deferred 行为由 test_mobile_relay_install 覆盖。
+        patcher = mock.patch.object(installer, "ensure_mobile_relay_stash",
+                                    return_value={"status": "present"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def patch_install_stub(self):
         pi = mock.Mock()
         pi.ASAR = self.root / "app.asar"
+        pi._target_lock.side_effect = contextlib.nullcontext
         return pi
 
     def make_plugin(self, root, version="1.0.0", prefix="original"):
@@ -695,7 +701,9 @@ class PluginRuntimeTests(unittest.TestCase):
         patch_install.target_writable.return_value = True
         result, _ = self.revive_fixture(patch_install, bridge_status="pending")
         patch_install.launch_monitor.assert_not_called()
-        self.assertEqual(result, {"suppressOutput": True})
+        installer.ensure_mobile_relay_stash.assert_not_called()
+        self.assertTrue(result["suppressOutput"])
+        self.assertIn("手机中继补丁尚未就绪", result["systemMessage"])
 
     def test_hook_revive_skips_without_legal_pending_operation(self):
         for op in (None, "cancelled"):
@@ -816,6 +824,49 @@ class PluginRuntimeTests(unittest.TestCase):
         self.assertNotIn("systemMessage", output)
         self.assertEqual(unchanged, {"suppressOutput": True})
         self.assertTrue(self.record()["restartRecorded"])
+
+    def test_mobile_relay_update_records_restart_only_when_hot_reload_disabled(self):
+        import runtime_lock
+        for setting in (None, True, False):
+            with self.subTest(hot_reload=setting):
+                self.sync()
+                marker_path = self.runtime / notice.MARKER
+                if marker_path.exists():
+                    marker_path.unlink()
+                config = {} if setting is None else {"hot_reload": setting}
+                (self.runtime / "config.json").write_text(json.dumps(config), encoding="utf-8")
+                name = "mobile-relay.cjs"
+                self.write_file(self.plugin / name, ("updated:" + str(setting)).encode())
+                result, _ = self.sync()
+                self.assertEqual(result["changed"], [name])
+                if setting is not False:
+                    self.assertFalse(marker_path.exists())
+                    continue
+                marker = json.loads(marker_path.read_text(encoding="utf-8"))
+                digest = self.digest(self.runtime / name)
+                self.assertEqual(marker["hashes"], {name: digest})
+                self.assertEqual(self.record()["hashes"][name], digest)
+                self.assertIn("用户可见·重启提醒", notice_context(self.runtime))
+                self.assertFalse(runtime_lock.ack_restart(self.runtime, {
+                    "_loadedAt": marker["createdAt"] * 1000 - 1, name: digest,
+                })["cleared"])
+                self.assertTrue(marker_path.exists())
+                self.assertTrue(runtime_lock.ack_restart(self.runtime, {
+                    "_loadedAt": marker["createdAt"] * 1000 + 1, name: digest,
+                })["cleared"])
+
+    def test_mobile_relay_preserved_update_does_not_create_restart_marker(self):
+        self.sync()
+        (self.runtime / notice.MARKER).unlink()
+        (self.runtime / "config.json").write_text('{"hot_reload": false}', encoding="utf-8")
+        name = "mobile-relay.cjs"
+        self.write_file(self.runtime / name, b"local hotfix")
+        self.write_file(self.plugin / name, b"package update")
+        result, _ = self.sync()
+        self.assertIn(name, result["preserved"])
+        self.assertNotIn(name, result["changed"])
+        self.assertEqual((self.runtime / name).read_bytes(), b"local hotfix")
+        self.assertFalse((self.runtime / notice.MARKER).exists())
 
     def test_tool_only_update_with_hot_reload_disabled_does_not_create_marker(self):
         self.sync()
@@ -1058,7 +1109,7 @@ class PluginRuntimeTests(unittest.TestCase):
         self.assertIn("install-overlay", cli_notice)
         self.assertNotIn("请完全退出 ZCode", cli_notice)
         # CLI stdout 打印的是 message 本体（模型可见 context 由 reminder()["context"] 承载）
-        self.assertEqual(output.getvalue().strip(), notice.reminder(self.runtime, injected=True)["message"])
+        self.assertTrue(output.getvalue().strip().endswith(notice.reminder(self.runtime, injected=True)["message"]))
         self.assertNotIn("已安装或更新", output.getvalue())
 
     def test_optout_errors_are_stderr_only_without_probe_or_config_write(self):

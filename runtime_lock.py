@@ -179,10 +179,23 @@ def _write_marker(marker, data, preserve=None):
             pass
 
 
-def update_config(runtime, changes, defaults=None):
-    """Merge only the requested keys after rereading config under its shared lock."""
+def update_config(runtime, changes, defaults=None, merge=None):
+    """Reread under lock, then apply defaults, top-level changes and one-level merges.
+
+    merge maps literal top-level object keys to direct child replacements; it never
+    interprets dot paths or recursively merges values.
+    """
     if not isinstance(changes, dict) or (defaults is not None and not isinstance(defaults, dict)):
         raise ValueError("config changes/defaults must be JSON objects")
+    if merge is not None:
+        if not isinstance(merge, dict):
+            raise ValueError("config merge must be a JSON object")
+        unsafe_keys = {"__proto__", "constructor", "prototype"}
+        for key, value in merge.items():
+            if not isinstance(key, str) or key in unsafe_keys or not isinstance(value, dict):
+                raise ValueError("config merge must map safe string keys to JSON objects")
+            if any(not isinstance(child, str) or child in unsafe_keys for child in value):
+                raise ValueError("config merge child keys must be safe strings")
     runtime = Path(runtime)
     runtime.mkdir(parents=True, exist_ok=True)
     config = runtime / "config.json"
@@ -203,7 +216,16 @@ def update_config(runtime, changes, defaults=None):
         for key, value in (defaults or {}).items():
             updated.setdefault(key, value)
         updated.update(changes)
-        if updated == current and config.exists():
+        merge_changed = False
+        for key, value in (merge or {}).items():
+            previous = updated.get(key)
+            nested = dict(previous) if isinstance(previous, dict) else {}
+            nested.update(value)
+            updated[key] = nested
+            # Python considers True == 1 and False == 0; a merge must persist JSON types.
+            merge_changed = merge_changed or (json.dumps(nested, sort_keys=True)
+                                               != json.dumps(current.get(key), sort_keys=True))
+        if not merge_changed and updated == current and config.exists():
             return False
         _write_marker(config, updated, config.stat() if config.exists() else None)
         return True
@@ -356,6 +378,11 @@ def ack_restart(runtime, loaded):
                                 or hot_stamp != hot_stamp or hot_stamp < created_at * 1000):   # != 自身过滤 NaN（json.loads 会放行）
                             hot_cleared = False
                             break
+            if hot_cleared and data.get("asarPatch") is True:
+                # asar 中段补丁只能随进程完全重启加载；热重载的运行时模块不能替它
+                # 销账——即使合并进来的 pending-sync hashes 已全部热加载。下一次真正
+                # 启动（createdAt 早于 loadedAt）仍走下方正常 hash/installation 流程清除。
+                return {"ok": True, "cleared": False}
             if not hot_cleared:
                 return {"ok": True, "cleared": False}
         installation = data.get("installation")
@@ -408,7 +435,7 @@ def main():
         data = json.load(sys.stdin)
         if not isinstance(data, dict) or "changes" not in data:
             raise ValueError("config update must contain changes")
-        changed = update_config(args.update_config, data["changes"], data.get("defaults"))
+        changed = update_config(args.update_config, data["changes"], data.get("defaults"), data.get("merge"))
         print(json.dumps({"ok": True, "changed": changed}))
     else:
         print(json.dumps(ack_restart(args.ack_restart[0], json.loads(args.ack_restart[1]))))

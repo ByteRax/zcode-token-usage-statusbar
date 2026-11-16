@@ -48,10 +48,13 @@
 | `usage_mcp.py` | stdio JSON-RPC MCP；调用 `zusage`，提供 `token_usage(scope)` |
 | `token_rate.py` | 逐问速率、提问身份守卫与会话累计查询（根目录与插件副本同源同步） |
 | `token_pricing.py` | 模型单价表（models.dev 内置 326 条 + 12h 运行时同步）与预估费用计算（本库口径：input 已含 cache，output 已含思考）；快照 `cost_usd`/`fx` 生产方 |
-| `overlay.js` / `src/overlay/` / `scripts/build_overlay.py` | 桌面浮层、设置、tooltip、子代理明细、套餐额度 chip、Git 状态 chip 及速率展示；`src/overlay/00-*.js`..`12-*.js`（14 个模块，`04-` 前缀两文件：`04-rotator-builtin-packs.js` 词包纯数据 + `04-status-rotator-data.js` 其余数据）为模块化分片源码，经零依赖 `scripts/build_overlay.py` 拼接产出单文件 `overlay.js`（仓库仍提交完整 `overlay.js` 以免除用户安装期构建步骤） |
+| `overlay.js` / `src/overlay/` / `scripts/build_overlay.py` | 桌面浮层、设置、tooltip、子代理明细、套餐额度 chip、Git 状态 chip 及速率展示；`src/overlay/00-*.js`..`12-*.js`（14 个模块，`04-` 前缀两文件：`04-rotator-builtin-packs.js` 词包纯数据 + `04-status-rotator-data.js` 其余数据）为模块化分片源码，经零依赖 `scripts/build_overlay.py` 拼接产出单文件 `overlay.js`（仓库仍提交完整 `overlay.js` 以免除用户安装期构建步骤）；旧手机提取锚点（`/*zm-cell-css*/`、`/*zm-band-css*/`、`/*zm-band-css-light*/`、`/*zm-show-rows*/`、`/*zm-ico:*/`）已随 v378 清理删除；当前手机构建直接内嵌完整 overlay，见 specs/mobile-userscript-build.md |
+| `mobile-relay.cjs` | 主进程热换模块（inject-main 经 `initMobileRelay` 挂载）：常驻 `zusage.py serve` 查询与官方中继 rpc-frame 快照推送（编码/分片/心跳/去重），供 `zcode.z.ai/remote` 页面油猴接收端渲染；速度主数字等口径与桌面状态条同源（specs/mobile-relay.md）。v346 起：DB 事件驱动推送（与桌面同款 fs.watch 300ms 去抖 + 30s 兜底 + `activity_min_ms` 同一限频配置，无内部轮询）、手机上行配置门控（收到 `zuUp` 配置才推）；实时估算与回答统计行均已回退移除。已登记共享分发清单（`sync_plugin.py` 的 `FILES`）。 |
+| `mobile_relay_patch.py` | 手机中继 asar 补丁模块（共享分发）：按 `MOBILE_RELAY_TARGETS` 指纹/锚点向宿主主 bundle 注入 stash 与上行钩子，提供 ensure/check/remove/CLI 及旧代升级；由安装链与 SessionStart 调用（specs/mobile-relay-install-upgrade.md、specs/mobile-relay-uplink-binding.md） |
+| `src/mobile/` / `scripts/build_mobile_userscript.py` | 远控页用户脚本的传输/校验/偏好握手/诊断分片；构建时内嵌桌面完整 overlay，输出根目录 `zusage-mobile.user.js` 正式版与 `zusage-mobile.debug.user.js` 调试版。两份产物随源码提交，安装与更新入口为上游 main 的根目录 Raw HTTPS 地址，不进插件 ZIP 或稳定运行目录。调试面板只在调试版创建；桌面状态条、设置和 tooltip 均直接复用，不提取或复制 CSS/图标子集（specs/mobile-userscript-build.md） |
 | `turn-stats.js` | 渲染进程统计行 tracker：历史轮记录、运行中子代理身份透传 |
 | `renderer_bridge.py` | 渲染桥：按客户端版本指纹（HOST_TARGETS 登记 + derive 推导）向 SessionPane 节点写 scope 身份属性 |
-| `inject-main.cjs` | 主进程加载、窗口/工作区 IPC、查询泵、文件监听、快照推送、受限写操作与七个子模块热换循环（唯一冷文件） |
+| `inject-main.cjs` | 主进程加载、窗口/工作区 IPC、查询泵、文件监听、快照推送、受限写操作与八个子模块热换循环（唯一冷文件） |
 | `install.py` | 独立安装/卸载、运行文件、配置、独立 MCP 与 `/usage` 注册 |
 | `patch_install.py` | asar 定位、注入/移除、自检、原子替换及待替换文件 |
 | `pending_zip_patch.py` | macOS pending 更新包清理自愈（v339/issue #298）：按改写账本 sha256 对账删除旧版预注入改写的 pending zip（宿主自动重下官方包）；无记录 zip 绝不碰，update-info.json 恒不读写（宿主缓存有效性判据）。旧「Squirrel 取包前改写预注入」已废除——改写改变包大小，与 MacUpdater 本地代理按下载完成时固化的官方 Content-Length 拉流冲突，导致更新静默失败 |
@@ -62,12 +65,12 @@
 | `sysmon-client.cjs` | 系统资源采样器（主进程，热换，v356/issue #338）：CPU `os.cpus()` tick 差分、三平台内存口径、磁盘 `fs.statfs`+卷枚举（探测复用+超时黑名单）；订阅制双定时器轮询，帧经 `inject-main.cjs` 信任门推 `window.__zusageSysmon`；契约见 [specs/statusbar-system-status.md](specs/statusbar-system-status.md) |
 | `model-puller.cjs` / `engine-patch.cjs` | 自定义供应商模型列表与思考档位拉取写回（共源 `resolveHostQuotaPaths`）；宿主引擎 bundle 自动压缩阈值等白名单补丁（主进程，热换） |
 | `runtime_lock.py` / `release_unpack.py` | 跨进程锁、配置事务/可信同步、安全 ZIP 解包 |
-| `sync_plugin.py` / `release_tool.py` | 根源码副本同步、`overlay.js`/`quota-client.cjs` 拼接联动与 6 处分发清单一致性校验（`check_manifests` / `--verify-manifests`）；确定性发布包构建、校验、发布预演/发布 |
+| `sync_plugin.py` / `release_tool.py` | 根源码副本同步、`overlay.js`/`quota-client.cjs` 与根目录两份用户脚本的构建联动及 6 处分发清单一致性校验（`check_manifests` / `--verify-manifests`）；确定性发布包构建、校验、发布预演/发布 |
 | `plugins/zcode-token-usage-statusbar/` | 两份 manifest、`.mcp.json`、命令、技能、hooks、专有安装/更新/提醒入口与共享副本 |
 | `plugins/workbuddy-token-usage/` | WorkBuddy 专用构建（`.codebuddy-plugin/plugin.json` 内联 mcpServers + `/usage`，**不含 hooks/asar 链**），`usage_mcp.py`/`zusage.py`/`token_pricing.py` 为 `scripts/sync_workbuddy_plugin.py` 生成的副本；安装用 `scripts/install_workbuddy_plugin.py`（WorkBuddy 运行中时其 CLI 抢不到固定端口） |
 | `tests/` / `docs/` | 隔离回归（含 `tests/helpers/overlay-extract.cjs` 统一 `overlay.js`/`inject-main.cjs` 切片助手与 `tests/helpers/py_test_support.py` Python 公共测试夹具）、宿主 CLI 沙箱/交互演示；使用、设计、维护及宣传资料 |
 
-本检出包含 `usage_stats.py`、`src/overlay/`、`scripts/build_overlay.py`、`src/quota/`、`scripts/build_quota.py`、`turn-stats.js`、`renderer_bridge.py`、`renderer_live_check.cjs`、根目录 `token_rate.py`，以及 WorkBuddy 链的 `wb_usage.py`、`wb-overlay.cjs`、`scripts/install_workbuddy_plugin.py`、`scripts/sync_workbuddy_plugin.py` 与 `plugins/workbuddy-token-usage/`；不要从其它工作树补出本检出不存在的架构。
+本检出包含 `usage_stats.py`、`src/overlay/`、`scripts/build_overlay.py`、`src/quota/`、`scripts/build_quota.py`、`src/mobile/`、`scripts/build_mobile_userscript.py`、`mobile-relay.cjs`、`mobile_relay_patch.py`、`turn-stats.js`、`renderer_bridge.py`、`renderer_live_check.cjs`、根目录 `token_rate.py`，以及 WorkBuddy 链的 `wb_usage.py`、`wb-overlay.cjs`、`scripts/install_workbuddy_plugin.py`、`scripts/sync_workbuddy_plugin.py` 与 `plugins/workbuddy-token-usage/`；不要从其它工作树补出本检出不存在的架构。
 
 关键调用链：
 - 桌面入口以绝对 `file://` 动态 `import` 引入 `inject-main.cjs`；主桥调用 Python，监听数据库及 WAL 变化，按窗口推送快照给 `overlay.js`。
@@ -80,8 +83,8 @@
 ## 3. 源文件、副本与正在运行的文件
 
 - `sync_plugin.py` 的 `FILES` 是共享分发清单（根目录是源，以脚本内定义为准）：
-  `usage_mcp.py`、`mcp-launch.cjs`、`zusage.py`、`patch_install.py`、`install_monitor.py`、`inject-main.cjs`、`plugin-updater.cjs`、`plugin-release.cjs`、`plugin-storage.cjs`、`quota-client.cjs`、`model-puller.cjs`、`engine-patch.cjs`、`release_unpack.py`、`runtime_lock.py`、`usage_stats.py`、`turn-stats.js`、`overlay.js`、`token_rate.py`、`renderer_bridge.py`、`token_pricing.py`、`pending_zip_patch.py`。
-- **桌面 `overlay.js` 与 `quota-client.cjs` 模块化源码约定**：`src/overlay/00-*.js`..`12-*.js`（14 个模块，`04-` 前缀两文件——词包纯数据 `04-rotator-builtin-packs.js` 在字典序上先于 `04-status-rotator-data.js` 加载；`VERSION` 与多行代际台账位于 `src/overlay/06-instance-dom-and-styles.js`）与 `src/quota/00-*.cjs`..`05-*.cjs`（6 个模块）分别是 `overlay.js` 和 `quota-client.cjs` 的模块化分片源，由零依赖脚本 `scripts/build_overlay.py` 与 `scripts/build_quota.py` 拼接生成根产物；仓库内仍同时提交拼接后的完整单文件产物及其 `plugins/zcode-token-usage-statusbar/` 副本，保证用户直接从 GitHub 市场安装、Release 包安装或 `git clone` 独立安装时**无需执行任何构建步骤**。修改桌面浮层或额度客户端代码时，必须优先修改 `src/overlay/` 或 `src/quota/` 下的对应分片，再运行 `python3 sync_plugin.py`（会自动先调用两个构建脚本生成根产物，再同步到插件副本；直接改根 `overlay.js` 或 `quota-client.cjs` 会在下次 `sync_plugin.py` 时被分片覆盖）。
+  `usage_mcp.py`、`mcp-launch.cjs`、`zusage.py`、`patch_install.py`、`install_monitor.py`、`inject-main.cjs`、`plugin-updater.cjs`、`plugin-release.cjs`、`plugin-storage.cjs`、`quota-client.cjs`、`model-puller.cjs`、`engine-patch.cjs`、`release_unpack.py`、`runtime_lock.py`、`usage_stats.py`、`turn-stats.js`、`overlay.js`、`token_rate.py`、`renderer_bridge.py`、`token_pricing.py`、`mobile-relay.cjs`、`mobile_relay_patch.py`、`pending_zip_patch.py`。
+- **桌面 `overlay.js` 与 `quota-client.cjs` 模块化源码约定**：`src/overlay/00-*.js`..`12-*.js`（14 个模块，`04-` 前缀两文件——词包纯数据 `04-rotator-builtin-packs.js` 在字典序上先于 `04-status-rotator-data.js` 加载；`VERSION` 与多行代际台账位于 `src/overlay/06-instance-dom-and-styles.js`）与 `src/quota/00-*.cjs`..`05-*.cjs`（6 个模块）分别是 `overlay.js` 和 `quota-client.cjs` 的模块化分片源，由零依赖脚本 `scripts/build_overlay.py` 与 `scripts/build_quota.py` 拼接生成根产物；仓库内仍同时提交拼接后的完整单文件产物及其 `plugins/zcode-token-usage-statusbar/` 副本，保证用户直接从 GitHub 市场安装、Release 包安装或 `git clone` 独立安装时**无需执行任何构建步骤**。修改桌面浮层或额度客户端代码时，必须优先修改 `src/overlay/` 或 `src/quota/` 下的对应分片，再运行 `python3 sync_plugin.py`（会自动先构建桌面、额度和根目录用户脚本产物，再同步既有插件副本；直接改生成文件会被对应分片覆盖）。油猴脚本只改 `src/mobile/` 分片，`sync_plugin.py` 会调用 `scripts/build_mobile_userscript.py`，也可单独运行后者。它直接复用桌面构建函数内嵌完整 overlay，生成根目录两份 `.user.js` 并使用上游仓库 Raw 地址提供安装/更新；不加入插件分发清单。
 - **6 处分发清单统一校验**：`sync_plugin.py` 维护 `FILES`、`PLUGIN_ONLY_FILES`、`STANDALONE_RUNTIME_FILES`、`PLUGIN_RUNTIME_FILES`、`COLD_FILES`、`RESTART_HASH_FILES`、`RELEASE_PLUGIN_FILES`、`RELEASE_ZIP_FILES` 派生集合，并在 `sync_plugin.py`、`--check`、`--verify-manifests`（以及 `test_plugin_package.py`）中通过 `check_manifests()` 自动核对 `release_tool.py`、`release_unpack.py`、`install.py`、`overlay_install.py`、`restart_notice.py` 与两份 `plugin.json` 的 `packageLayout.files`。共享文件先改根源码，再同步插件副本；清单外的插件入口、hooks、命令、技能和 manifest **不是生成文件**，应直接维护。新增分发文件须同步的全部登记处见 [.zcode/rules/install-release.md](.zcode/rules/install-release.md)。
 - 共享文件（或 `src/overlay/*.js`、`src/quota/*.cjs`）修改后在仓库根运行：
 
@@ -93,7 +96,7 @@ python3 sync_plugin.py --check
 - 上述命令只同步**仓库插件副本**，不更新宿主安装缓存或稳定运行目录。
 - 标准运行目录是 `~/.zcode/zcode-token-usage-statusbar/`；插件缓存由宿主管理且可能自定义。`--dev` 可让独立安装直接引用仓库，不能移动该仓库。
 - 本地市场仍依赖登记的来源目录，不自动 `git pull`；不要一概建议安装后删除 clone。
-- **插件到稳定运行目录的同步**有 hash 基线/mtime 热修保护；根 `install.py` 的运行文件复制是直接覆盖，不能承诺同等保护。首次注入、路径变化或 `inject-main.cjs`（唯一冷文件）变更需完全退出并重启；七个主进程子模块（quota/updater/release/storage/model-puller/engine-patch/sysmon）自热换循环合入起随 mtime 轮询零重启生效（旧版 loader 上仍需重启）；可热更新文件也须确认实际加载路径。
+- **插件到稳定运行目录的同步**有 hash 基线/mtime 热修保护；根 `install.py` 的运行文件复制是直接覆盖，不能承诺同等保护。首次注入、路径变化或 `inject-main.cjs`（唯一冷文件）变更需完全退出并重启；八个主进程子模块（quota/updater/release/storage/model-puller/engine-patch/sysmon/mobile-relay）自热换循环合入起随 mtime 轮询零重启生效（旧版 loader 上仍需重启）；可热更新文件也须确认实际加载路径。
 
 ### 每次改码后的自动热重载（必做）
 
@@ -107,7 +110,7 @@ python3 sync_plugin.py --check
 4. **按生效类型触发。**
    - `overlay.js`、`turn-stats.js`：部署到实际加载目录后，由主桥按 mtime 轮询检查（`hot_reload` 显式 `true` 时 2 秒、缺省 5 秒、显式 `false` 关闭），任一变化即整体重注入，不刷新页面或重启客户端冒充热重载。
    - `zusage.py`：同一轮询发现变化后自动重启已有常驻 Python（若单独修改被导入的 `usage_stats.py` 或 `token_pricing.py`，因主桥仅监听 `zusage.py` mtime，须连带更新运行目录 `zusage.py` mtime 或确认常驻进程已重启）；未启动常驻进程时，下一次启动读取新代码。
-   - 七个子模块 `quota-client.cjs`、`model-puller.cjs`、`plugin-updater.cjs`、`plugin-release.cjs`、`plugin-storage.cjs`、`engine-patch.cjs`、`sysmon-client.cjs`：部署后由 loader `hotReloadMainModules` 在同一 mtime 轮询内热换（语法预检→dispose→清 require.cache→按依赖方向重建→`_hotLoadedAt`→ack 自动销账 marker），零重启生效；旧版 loader（未含热换循环）上仍需完全重启。`inject-main.cjs` 自身与首次注入、加载路径、asar 桥补丁变化：不能热重载，只记录并报告待完全重启，不自行退出或重启 ZCode。关闭热重载（`hot_reload:false`）时上述文件一律回退为重启生效。
+   - 八个 .cjs 子模块 `quota-client.cjs`、`model-puller.cjs`、`plugin-updater.cjs`、`plugin-release.cjs`、`plugin-storage.cjs`、`engine-patch.cjs`、`sysmon-client.cjs`、`mobile-relay.cjs`：部署后由 loader `hotReloadMainModules` 在同一 mtime 轮询内热换（语法预检→dispose→清 require.cache→按依赖方向重建→`_hotLoadedAt`→ack 自动销账 marker），零重启生效；旧版 loader（未含热换循环）上仍需完全重启。`inject-main.cjs` 自身与首次注入、加载路径、asar 桥补丁变化：不能热重载，只记录并报告待完全重启，不自行退出或重启 ZCode。关闭热重载（`hot_reload:false`）时上述文件一律回退为重启生效。
    - 其它 Python 工具按下一次相关调用／新进程生效；MCP 已导入的模块需重启对应 MCP 进程，不能把文件同步或下一次工具调用当作重新载入。
 5. **验证确实生效。** 部署热文件前记录基线，部署后至少留出一个轮询周期，再检查运行证据：同一 renderer 未导航、未刷新时 `window.__zusageGen` 递增；Python 则核对常驻子进程更替及启动日志；主进程子模块热换的证据是 sync 链写入的 `.plugin-restart-required` 在一个热 tick 内被 `_hotLoadedAt` 路径自动销账（或该模块行为恢复），`__zusageGen` 只证明渲染端。**轮询本身可能被宿主窗口后台节流无限期延迟**（客户端被遮挡时部署可数十分钟不重注入，2026-11-07 实证）：部署后可 `touch` 运行目录热文件强制重触发，并以 `diag-0.json` 的 `FATAL.*` 计数字段归零/消失作为重注入证据（判定法与边界见 [.zcode/rules/install-release.md](.zcode/rules/install-release.md) §2）；未拿到归零证据前交付措辞保持「已部署、待重注入验证」。随后验证本次目标行为，UI 按根约束使用内置浏览器优先验收，并检查新增错误。文件 hash 一致、单条触发日志或可能滞后的 `diag-*.json` 均不能单独证明成功；客户端未运行、通道不可用或受保护而未部署时，如实标记「未触发／未验证」，不得声称热更完成。
 
@@ -173,6 +176,13 @@ python3 sync_plugin.py --check
 - 远端只需手工部署匹配的 `zusage.py`、Python 和数据库读取权限，通道必须免交互。不能解密复用宿主密码/私钥口令，不自动部署或登录；递归防护不可去除。
 - 远端支持限桌面 JSON 查询链；MCP、`/usage`、逐问速率不自动跨机。详情见 [远程会话](docs/user-guide.md#远程会话)。
 
+### 手机远控中继
+
+- 只经宿主官方 acknowledged relay 推送（`relayProtocol.protocol.send`，seq/ack 归宿主），不自建 socket、不裸写 relay；目标唯一来源是可信唯一桌面窗口的 preload `getWebRemoteControlStatus()` + 唯一 ready live 桥，禁止用 DOM chips、目录/标题或最近会话猜测。`mobile_relay.enabled` 仅对象内显式 `true` 开启；新旧 loader 混载必须同时满足 `strictOptIn:true` 与能力回调。
+- wire 只下发目标统计投影、匿名 `binding` 与所属主机今日/项目聚合（可能含其他会话贡献），真实工作区身份/路径/标题/正文/凭据不得进入 wire；上行仅带显示偏好与代际。旧宿主 chips-only 帧只显示升级提示，不复活独立状态条。
+- 安装链的 mobile 补丁独立于 renderer pending journal：存在任何 pending/sidecar 时只返回 `deferred`，不读写/合并/重发；替换失败只清理本次 stage，不发布 pending、不启动监控；`hot_reload:false` 时 `mobile-relay.cjs` 变更写入 restart hashes。SessionStart 仅对 `deferred` 提示手机中继未就绪，`skipped-error/unknown` 保持静默。
+- 完整契约见 [specs/mobile-relay.md](specs/mobile-relay.md)、[mobile-unified-overlay.md](specs/mobile-unified-overlay.md)、[mobile-relay-uplink-binding.md](specs/mobile-relay-uplink-binding.md)、[mobile-relay-install-upgrade.md](specs/mobile-relay-install-upgrade.md)、[mobile-userscript-build.md](specs/mobile-userscript-build.md)。
+
 ### 安装、数据保护与网络
 
 - 卸载只移除本项目注入，不用旧 asar 备份回滚客户端版本；未注入时移除可成功，但读不到目标不能假装已卸载。
@@ -189,7 +199,7 @@ python3 sync_plugin.py --check
 
 ## 6. 测试与验证
 
-在仓库根运行；除 `scripts/build_overlay.py` 与 `scripts/build_quota.py`（零依赖拼接 `src/overlay/*.js` → `overlay.js`、`src/quota/*.cjs` → `quota-client.cjs`）外没有第三方构建、lint 或格式化脚本。基础命令：
+在仓库根运行；除 `scripts/build_overlay.py`、`scripts/build_quota.py` 与 `scripts/build_mobile_userscript.py`（零依赖拼接 `src/overlay/*.js` → `overlay.js`、`src/quota/*.cjs` → `quota-client.cjs`、`src/mobile/*.js` + 完整桌面 overlay → 根目录 `zusage-mobile.user.js` 与 `zusage-mobile.debug.user.js`）外没有第三方构建、lint 或格式化脚本。基础命令：
 
 ```bash
 node --test tests/*.test.cjs
@@ -197,8 +207,11 @@ python3 -B -m unittest discover -s tests -p 'test_*.py'
 node --check overlay.js
 node --check inject-main.cjs
 node --check quota-client.cjs
+node --check zusage-mobile.user.js
+node --check zusage-mobile.debug.user.js
 python3 scripts/build_overlay.py --check
 python3 scripts/build_quota.py --check
+python3 scripts/build_mobile_userscript.py --check
 python3 sync_plugin.py --check
 ```
 

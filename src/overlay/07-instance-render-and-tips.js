@@ -1,5 +1,6 @@
     /* ---------- 渲染 ---------- */
     function fmt(n, count) {
+      if (typeof mobileMode !== "undefined" && mobileMode && (typeof n !== "number" || !isFinite(n))) return "—";
       n = n || 0;
       if (state.forceKmb && !count) {
         // 按原始 token 数四舍五入，避免缩放后的浮点半数偏差。
@@ -801,6 +802,8 @@
       }
     }
     function html(d) {
+      var isMobile = typeof mobileMode !== "undefined" && mobileMode;
+      var mobile = isMobile ? d.mobile : null;
       var sess = d.session || {}, lt = d.last_turn || {}, today = d.today || {}, last = d.last || {};
       var tls = d.tools || { total: 0, errors: 0, list: [] };
       var items = [], tips = [], barItemKey = "system";
@@ -812,6 +815,19 @@
           : 'span tabindex="0"') +
           ' class="it' + (cls ? " " + cls : "") + '" data-zu-key="' + key + '">' + inner + (interactive ? "</button>" : "</span>"));
         tips.push({key: key, content: tipContent || null, index: tips.length});
+      }
+      function hasNumber(obj, key) { return !!obj && typeof obj[key] === "number" && isFinite(obj[key]); }
+      function hasStats(obj, keys) {
+        return !isMobile || !!obj && keys.every(function (k) { return hasNumber(obj, k); }) &&
+          (!obj.models || obj.models.every(function (m) { return hasNumber(m, "total") && hasNumber(m, "requests"); }));
+      }
+      if (isMobile && (!mobile || mobile.state !== "ready")) {
+        liveKindCur = "none"; livePhaseCur = ""; liveIconCur = "";
+        var message = mobile && mobile.state === "upgrade" ? L("请更新桌面插件", "Please update the desktop plugin")
+          : mobile && mobile.state === "unavailable" ? L("当前目标数据暂不可用", "Target data unavailable")
+          : L("等待当前会话数据…", "Waiting for this session…");
+        it('<span class="dim">' + ttEsc(message) + '</span>');
+        return { s: items.join(""), tips: tips };
       }
       if (d.remote) {   // v9：SSH 远程会话（数据取自远端机），置顶徽标标明数据源
         it(ico('<path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"/>') +
@@ -963,7 +979,7 @@
            (lt.tool_errors ? ttEsc(L("错误 ", "errors ") + countFmt(lt.tool_errors) + L(" 次", " times")) : "")].filter(Boolean).join('<i class="zu-turn-sep">·</i>')
         : "";
       barItemKey = "turn";
-      if (state.show.turn) {
+      if (state.show.turn && hasStats(lt, ["total", "input", "output", "cache_read", "requests"]) && (!isMobile || hasNumber(sess, "turns"))) {
         it(ico('<path d="M5 3.5h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-9l-6.5 4V5.5a2 2 0 0 1 1.5-2z"/><path d="M7.5 8.5h9m-9 4h6"/>') +
           '<span class="v">' + fmt(lt.total) + "</span>" +
           (state.theme === "pill" ? "" :
@@ -1038,7 +1054,7 @@
           '</div>');
       }
       barItemKey = "win";
-      if (state.show.win) {
+      if (state.show.win && hasStats(sess, ["total", "input", "output", "cache_read", "turns", "requests"])) {
         it(ico('<path d="M7.5 3h12a2 2 0 0 1 2 2v10M4.5 7h12a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H8l-5.5 2V9a2 2 0 0 1 2-2z"/>') +
           '<span class="v">' + fmt(sess.total) + "</span>" +
           (state.theme === "pill" ? "" :
@@ -1106,7 +1122,7 @@
             (sess.started ? fmtStartS(sess.started) : "—") + " — " + (sess.last_at ? fmtStartS(sess.last_at) : "—") + '</span></div>' +
           '</div>');      }
       barItemKey = "today";
-      if (state.show.today) {   // v213 移到会话累计之后（用户规格 2026-11-02，格序：速度→本轮→会话→今日→项目→工具→子代理→⚙）
+      if (state.show.today && hasStats(today, ["total", "input", "output", "cache_read", "requests"])) {   // v213 移到会话累计之后（用户规格 2026-11-02，格序：速度→本轮→会话→今日→项目→工具→子代理→⚙）
         /* v301 今日合计紧凑化（同本轮 v299 / 会话 v300 三行 KPI 形态，450 宽×高度自适应）：
          * ①总用量|输入(缓存命中率副行)|输出(含思考) ②请求次数|请求轮数|请求会话
          * ③平均耗时|平均延迟|总耗时 ④平均输出速度(今日加权均 avg_tps 档色)|预估费用；
@@ -1177,7 +1193,7 @@
             (today.started ? fmtStartS(today.started) : "—") + " — " + (today.last_at ? fmtStartS(today.last_at) : "—") + '</span></div>' +
           '</div>');      }
       barItemKey = "proj";
-      if (state.show.proj && sess.project) {   // v159 项目累计：本项目全部会话（含子代理），远端/不在本地库无此字段不渲染
+      if (state.show.proj && sess.project && hasStats(sess.project, ["total", "input", "output", "cache_read", "sessions", "turns", "requests", "tool_calls", "retries"])) {   // v159 项目累计：本项目全部会话（含子代理），远端/不在本地库无此字段不渲染
         var pj = sess.project;
         var pjKey = (pickedSid || "") + ":" + (pj.started || 0);   // v214 项目卡归属键：项目变化（started 变）自动重置展开态
         /* v331：归属键变化同时重置范围 Tab 与项目明细展开态（新项目回到默认当前项目视角） */
@@ -1189,7 +1205,9 @@
 "\x01" + buildProjectTipHTML(pj, pjKey), "zu-pj-item");
       }
       barItemKey = "tools";
-      if (state.show.tools) {
+      if (state.show.tools && hasStats(d.tools, ["total", "errors"]) && (!isMobile || !tls.list || tls.list.every(function (t) {
+        return hasNumber(t, "count") && hasNumber(t, "duration_ms") && hasNumber(t, "errors");
+      }))) {
         /* v304 工具调用紧凑化（用户 /goal，同四卡家族形态，450 宽×高度自适应）：
          * 标题前置扳手 SVG（statHead 第 4 参）；双 KPI 走 zu-turn-kpis--duo；
          * 四列表格 table-layout:fixed + 长名省略（title 全文）+ sticky 表头；
@@ -1224,7 +1242,7 @@
             : '<div class="zu-stat-note">' + ttEsc(L("无工具调用记录", "No tool calls recorded")) + '</div>') +
           '</div>');      }
       barItemKey = "sub";
-      if (state.show.sub) {
+      if (state.show.sub && hasStats(d.sub, ["total", "input", "output", "cache_read", "requests"])) {
         /* v93：随「上下文容量」格移除改为始终展示（零值也显示，口径与其他格统一）。
          * v217：悬停/点击都开统一浮层（.zu-sub-pop），__tip 置空不再走通用 tooltip
          * ——旧五段卡与「查看子代理明细」CTA 移除，明细能力由统一浮层右侧承接。 */
@@ -1250,7 +1268,9 @@
       }), state.barOrder);
       return {
         s: ordered.map(function (row) { return row.html; }).join('<span class="sep"></span>') ||
-          '<span class="dim">' + L("全部显示项已关闭", "All display items are off") + '</span>',
+          '<span class="dim">' + (isMobile && !cellsAllOff()
+            ? L("当前目标暂无统计数据", "No statistics for this target")
+            : L("全部显示项已关闭", "All display items are off")) + '</span>',
         tips: ordered.map(function (row) { return row.tip; })
       };
     }

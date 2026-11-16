@@ -37,6 +37,8 @@ FILES = [
     "quota-client.cjs",
     "model-puller.cjs",
     "engine-patch.cjs",
+    "mobile-relay.cjs",
+    "mobile_relay_patch.py",
     "sysmon-client.cjs",
     "release_unpack.py",
     "runtime_lock.py", "usage_stats.py", "turn-stats.js",
@@ -79,7 +81,8 @@ COLD_FILES = (
     "sysmon-client.cjs",
 )
 # - restart_notice.py 允许记录 hash 的文件集合（冷文件 + 禁用热重载时的热文件）
-RESTART_HASH_FILES = (*COLD_FILES, "overlay.js", "zusage.py")
+RESTART_HASH_FILES = (*COLD_FILES, "overlay.js", "zusage.py",
+                     "mobile-relay.cjs", "mobile_relay_patch.py")
 # - Release ZIP 内的插件文件与完整条目
 RELEASE_PLUGIN_FILES = (*FILES, *PLUGIN_ONLY_FILES)
 RELEASE_ZIP_FILES = tuple(sorted((
@@ -154,10 +157,11 @@ def check_manifests(root=ROOT):
 
 
 def _maybe_build_bundles(root=ROOT, check_only=False):
-    """若存在模块化构建脚本（scripts/build_overlay.py、scripts/build_quota.py），先构建或校验根产物。"""
+    """依次构建桌面、额度和根目录用户脚本；check_only 只校验，不写产物。"""
     for script_name, mod_name in (
         ("build_overlay.py", "sync_build_overlay"),
         ("build_quota.py", "sync_build_quota"),
+        ("build_mobile_userscript.py", "sync_build_mobile_userscript"),
     ):
         builder = Path(root) / "scripts" / script_name
         if not builder.is_file():

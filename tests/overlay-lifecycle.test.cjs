@@ -209,12 +209,13 @@ test('v80 in-card mount: bar lands inside the card after the toolbar row, no pad
   assert.equal(cards[1].children.includes(barB), false);
 });
 
-test('reinjection and repeated cleanup cancel old loops and leave one live generation', () => {
+test('reinjection and repeated cleanup leave one live generation', () => {
   const h = harness(); h.setPanes(['a']); h.inject(); h.boot();
   const cleanup = h.window.__zusageDispose;
   h.inject(); h.boot(); cleanup();
   assert.equal(h.frames.size, 1); assert.equal(h.observers.filter(e => e.connected).length, 2);   // v105：theme + 弹层压缩按钮 body 观察器
-  // 6 = coordinator(600) + heavy(600) + rateScan(2s) + deterministic scan(2s) + per-pane bridge probe(2s) + rotator(65ms)
+  // 六个桌面循环：coordinator/heavy(600ms)、rate/deterministic/bridge(2s)、rotator(65ms)。
+  assert.equal([...h.timers.values()].filter(t => t.interval).length, 6);
   assert.equal(h.timers.size, 6);
   h.window.__zusageDispose(); cleanup();
   assert.equal(h.timers.size, 0); assert.equal(h.frames.size, 0);

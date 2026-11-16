@@ -3162,6 +3162,24 @@ def _parse_query(line):
     return line.strip(), {}
 
 
+def _query_lean(line):
+    """请求内 lean 开关（手机中继）：只接受 JSON 对象内显式布尔 true。
+
+    手机 projection 不消费 speed_history/all_projects 两个 ~200KB 桌面增强字段，
+    请求体带 lean:true 时 serve 与一次性 json 都跳过计算与传输。单独解析而不改
+    _parse_query 的二元组签名（远端/测试按其返回形状断言）；也**不**复用
+    ZUSAGE_REMOTE_CHILD=1——该环境变量承担远端 scope 子查询语义，混用会破坏远端查询。
+    """
+    line = (line or "").lstrip()
+    if not line.startswith("{"):
+        return False
+    try:
+        data = json.loads(line)
+    except ValueError:
+        return False
+    return isinstance(data, dict) and data.get("lean") is True
+
+
 def _remote_exec(sids, rcfg, key):
     """执行通道返回 (by_sid, today, error)，远端子查询禁止再次访问远端。"""
     argv = ["env", "ZUSAGE_REMOTE_CHILD=1", rcfg["python"], rcfg["script"], "json", ",".join(sids)]
@@ -4337,8 +4355,12 @@ def serve():
                 con = None
         try:
             force_sid, routes = _parse_query(line.strip())
-            out = json.dumps(snapshot(force_sid, routes, serve_con=con, include_speed_history=True,
-                                      include_all_projects=True))
+            # 手机中继请求体显式 lean:true：跳过两个桌面增强字段（手机 projection 不消费），
+            # 其余 CLI/MCP/桌面调用不带该键，行为不变。
+            lean = _query_lean(line)
+            out = json.dumps(snapshot(force_sid, routes, serve_con=con,
+                                      include_speed_history=not lean,
+                                      include_all_projects=not lean))
         except Exception as e:
             out = json.dumps({"error": str(e)[:200]})   # 单次查询失败不杀常驻进程
             _drop()   # 异常路径下连接状态未知：弃用，下轮重建
@@ -4406,14 +4428,16 @@ def main(argv):
             print(describe_host())
             return 0
         if cmd == "json":
-            force_sid, routes = _parse_query(argv[1] if len(argv) > 1 else "")
+            raw = argv[1] if len(argv) > 1 else ""
+            force_sid, routes = _parse_query(raw)
             if len(argv) > 2 and not isinstance(routes, list):
                 routes = _parse_routes(argv[2])
             # v255：桌面快照链常驻 serve 的回退帧（resident 空闲回收/重启/不稳定降级）
             # 也必须带统一轮表，否则那一帧缺 speed_history 会让速度 Tooltip 闪回旧版整卡。
             # 远端子进程显式置 ZUSAGE_REMOTE_CHILD=1，不带这 ~200KB 增强字段（stdout 契约）；
+            # 手机中继请求体显式 lean:true 时同样关闭这两个桌面增强字段（projection 不消费）。
             # CLI 手工 json / MCP 走 render_* 文本链，均不受影响。
-            desktop = os.environ.get("ZUSAGE_REMOTE_CHILD") != "1"
+            desktop = os.environ.get("ZUSAGE_REMOTE_CHILD") != "1" and not _query_lean(raw)
             print(json.dumps(snapshot(force_sid, routes, include_speed_history=desktop,
                                       include_all_projects=desktop)))
             return 0
