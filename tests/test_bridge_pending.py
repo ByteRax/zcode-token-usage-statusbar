@@ -755,6 +755,67 @@ class SudoHintWindowsTests(unittest.TestCase):
         self.assertIn("HOME=", text)
         self.assertIn("remove", text)
 
+    def test_protected_dir_without_lock_file_reads_present_and_unknown_status(self):
+        # 受保护目录上无既有 app.asar.zusage.lock（或锁文件归管理员/root 所有）时：
+        # 1) 提权安装已打好桥后，普通会话 ensure_deployed 只读识别 present，不误报 skipped-error；
+        # 2) 宿主升级到未登记版本且无法自动推导时，只读识别 skipped-unknown，保留兼容性提醒（issue #247）；
+        # 3) 确实需要打补丁写入时，仍报 skipped-error + permission=True。
+        if os.name == "nt":
+            self.skipTest("POSIX chmod 夹具在 Windows 上模拟不了受保护目录")
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            self.skipTest("root 对只读目录仍可写，无法模拟权限拒绝")
+        protected = self.root / "protected"
+        protected.mkdir()
+        asar_path = protected / "app.asar"
+        with mock.patch.object(bridge, "HOST_TARGETS",
+                               [rb.synthetic_target(bridge.NEWEST, rb.MINI)]):
+            rb.archive(asar_path)
+            self.assertEqual(bridge.ensure_deployed(asar_path)["status"], "patched")
+            (protected / "app.asar.zusage.lock").unlink(missing_ok=True)
+            os.chmod(protected, 0o555)
+            self.addCleanup(os.chmod, protected, 0o755)
+            self.assertEqual(bridge.ensure_deployed(asar_path)["status"], "present")
+            remove_denied = bridge.remove_deployed(asar_path)
+            self.assertEqual(remove_denied["status"], "skipped-error")
+            self.assertIs(remove_denied.get("permission"), True)
+            os.chmod(protected, 0o755)
+            rb.archive(asar_path)
+            (protected / "app.asar.zusage.lock").unlink(missing_ok=True)
+            os.chmod(protected, 0o555)
+            denied = bridge.ensure_deployed(asar_path)
+            self.assertEqual(denied["status"], "skipped-error")
+            self.assertIs(denied.get("permission"), True)
+            self.assertEqual(bridge.remove_deployed(asar_path)["status"], "absent")
+            os.chmod(protected, 0o755)
+            rb.archive(asar_path, version="9.9.9", module=b"console.log('unregistered');")
+            (protected / "app.asar.zusage.lock").unlink(missing_ok=True)
+            os.chmod(protected, 0o555)
+            unknown = bridge.ensure_deployed(asar_path)
+            self.assertEqual(unknown["status"], "skipped-unknown")
+            self.assertEqual(unknown["version"], "9.9.9")
+            self.assertEqual(bridge.remove_deployed(asar_path)["status"], "skipped-unknown")
+
+    def test_lock_denied_with_failing_readonly_inspect_keeps_permission_flag(self):
+        # 锁失败后只读检查自身出错（坏 asar、读档异常）时，无法证明无需写盘：
+        # 按锁失败原语义上报 skipped-error 并保留 permission 标记供提权指引，
+        # 不得落入无标记的通用错误分支（issue #67 场景 1）。
+        import runtime_lock
+        asar_path = self.root / "app.asar"
+        with mock.patch.object(runtime_lock, "file_lock",
+                               side_effect=PermissionError(5, "lock denied")), \
+                mock.patch.object(bridge, "_inspect_deploy",
+                                  side_effect=bridge.BridgeError("bad archive")):
+            denied = bridge.ensure_deployed(asar_path)
+        self.assertEqual(denied["status"], "skipped-error")
+        self.assertIs(denied.get("permission"), True)
+        with mock.patch.object(runtime_lock, "file_lock",
+                               side_effect=PermissionError(5, "lock denied")), \
+                mock.patch.object(bridge, "_inspect_remove",
+                                  side_effect=bridge.BridgeError("bad archive")):
+            denied = bridge.remove_deployed(asar_path)
+        self.assertEqual(denied["status"], "skipped-error")
+        self.assertIs(denied.get("permission"), True)
+
 
 if __name__ == "__main__":
     unittest.main()

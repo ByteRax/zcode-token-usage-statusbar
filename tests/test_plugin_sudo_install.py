@@ -524,5 +524,24 @@ class SudoHintCommandTests(unittest.TestCase):
         self.assertNotIn("overlay_install.py", hint)
 
 
+class RealChmodReadonlyRemoveTests(ReadonlyRemoveTests):
+    """真实 0o555 目录（无预建锁文件）下未注入卸载：remove_deployed 只读识别 absent，
+    绝不在 stderr 打印 app.asar.zusage.lock 的 Permission denied。"""
+
+    def test_remove_without_injection_on_real_chmod_555_dir_never_prints_lock_permission_error(self):
+        if os.name == "nt":
+            self.skipTest("POSIX chmod 夹具在 Windows 上模拟不了受保护目录")
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            self.skipTest("root 对只读目录仍可写，无法模拟权限拒绝")
+        os.chmod(self.asar.parent, 0o555)
+        self.addCleanup(os.chmod, self.asar.parent, 0o755)
+        with mock.patch.object(self.pi, "client_running", return_value=False):
+            code, output, errors = self.run_main("remove")
+        self.assertEqual(code, 0)
+        self.assertNotIn("Permission denied", output + errors)
+        self.assertNotIn("skipped-error", output + errors)
+        self.assertTrue((self.runtime / ".plugin-overlay-optout").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

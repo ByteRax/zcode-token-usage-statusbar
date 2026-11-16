@@ -32,7 +32,6 @@ import shutil
 import signal
 import subprocess
 import sys
-import tempfile
 import time
 from pathlib import Path
 
@@ -42,7 +41,15 @@ PLUGIN_ROOT = Path(__file__).parent.resolve()
 PYEXE = sys.executable or "python"
 if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
-from runtime_lock import file_lock, fixed_drives, real_home as _rt_real_home, sudo_user as _rt_sudo_user, update_config
+from runtime_lock import (
+    bounded_mkstemp,
+    bounded_tempdir,
+    file_lock,
+    fixed_drives,
+    real_home as _rt_real_home,
+    sudo_user as _rt_sudo_user,
+    update_config,
+)
 # 会同步进运行时目录的插件副本（usage_mcp.py 与 overlay_install.py 自身等插件入口
 # 不在其中：它们从插件目录跑；inject-main.cjs 的相对 require 依赖必须全数在列，
 # test_plugin_package 按此不变量守护）
@@ -237,7 +244,7 @@ def _version_key(version):
 def _atomic_write(dst, data, src=None):
     """同目录原子替换；已有运行时内容改变必须产生不同 mtime 供 loader 检测。"""
     previous_stat = dst.stat() if src is not None and dst.exists() else None
-    fd, temporary = tempfile.mkstemp(prefix="." + dst.name + ".", dir=str(dst.parent))
+    fd, temporary = bounded_mkstemp(prefix="." + dst.name + ".", dir=str(dst.parent))
     temporary = Path(temporary)
     try:
         with os.fdopen(fd, "wb") as stream:
@@ -253,7 +260,7 @@ def _atomic_write(dst, data, src=None):
     finally:
         try:
             temporary.unlink()
-        except FileNotFoundError:
+        except OSError:
             pass
 
 
@@ -371,7 +378,7 @@ def _sync_verifier(runtime, target_asar=None):
             " sudo env \"HOME=$HOME\" \"PATH=$PATH\" python3 overlay_install.py install"
             "（或把 node 加入 root 的 PATH / 设 ZCODE_ASAR 指向 /opt/ZCode/resources/app.asar）")
     names = ("plugin-updater.cjs", "plugin-release.cjs", "plugin-storage.cjs")
-    with tempfile.TemporaryDirectory(prefix="zusage-sync-verifier-") as directory:
+    with bounded_tempdir(prefix="zusage-sync-verifier-") as directory:
         snapshot = Path(directory)
         original = {}
         for name in names:

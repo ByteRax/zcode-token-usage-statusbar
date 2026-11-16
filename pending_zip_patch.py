@@ -26,7 +26,6 @@ import json
 import os
 import shutil
 import sys
-import tempfile
 import time
 from pathlib import Path
 
@@ -34,7 +33,7 @@ HERE = Path(__file__).parent.resolve()
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 import patch_install  # noqa: E402
-from runtime_lock import file_lock  # noqa: E402
+from runtime_lock import bounded_mkstemp, file_lock  # noqa: E402
 
 STATE_NAME = "pending-zip-patch.json"
 STATE_VERSION = 1
@@ -73,13 +72,16 @@ def save_state(runtime, state):
         recent = sorted(files.items(), key=lambda kv: kv[1].get("patchedAt", 0), reverse=True)
         state["files"] = dict(recent[:STATE_LIMIT])
     state["version"] = STATE_VERSION
-    fd, name = tempfile.mkstemp(prefix=STATE_NAME + ".", dir=runtime)
+    fd, name = bounded_mkstemp(prefix=STATE_NAME + ".", dir=runtime)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
             json.dump(state, stream, separators=(",", ":"))
         os.replace(name, runtime / STATE_NAME)
     finally:
-        Path(name).unlink(missing_ok=True)
+        try:
+            Path(name).unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _forget(runtime, name):
