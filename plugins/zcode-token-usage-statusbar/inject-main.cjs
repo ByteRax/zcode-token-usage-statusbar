@@ -1564,7 +1564,13 @@ function loadEnhanceHistoryDisk() {
     const st = fs.lstatSync(path.join(HERE, "enhance-history.json"));
     if (!st.isFile() || st.isSymbolicLink() || st.mode & 0o077) return;
     const arr = JSON.parse(fs.readFileSync(path.join(HERE, "enhance-history.json"), "utf8"));
-    if (Array.isArray(arr)) enhanceHistory.push(...arr.filter(r => r && typeof r === "object"));
+    if (Array.isArray(arr)) {
+      // 读回同走 30 天/100 条裁剪（v363 review：缺省开启后该文件对全体用户生效，清理时机不再依赖下一次成功增强）
+      const cutoff = Date.now() - 30 * 24 * 3600 * 1000;
+      const trimmed = arr.filter(r => { if (!r || typeof r !== "object") return false; const t = Date.parse(r.createdAt || ""); return !(t && t < cutoff); }).slice(0, 100);
+      enhanceHistory.push(...trimmed);
+      if (trimmed.length !== arr.length) persistEnhanceHistory();
+    }
   } catch (e) { }
 }
 function persistEnhanceHistory() {
