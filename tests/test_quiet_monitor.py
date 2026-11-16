@@ -354,7 +354,9 @@ class QuietMonitorTests(unittest.TestCase):
         self.assertFalse(request.exists())
         spawn.assert_called_once()
         args, kwargs = spawn.call_args
-        self.assertEqual(args[0], [str(exe), "--flag"])
+        # review 安全审查：拉起一律裸启动推导出的客户端 exe——请求 argv 尾部不消费
+        # （提权监控进程里 --inspect-brk/--gpu-launcher 等任意参数可构成提权代码执行面）。
+        self.assertEqual(args[0], [str(exe)])
         self.assertEqual(kwargs["cwd"], str(self.root))
         self.assertEqual(kwargs["stdin"], self.monitor.subprocess.DEVNULL)
         self.assertEqual(kwargs["stdout"], self.monitor.subprocess.DEVNULL)
@@ -378,8 +380,11 @@ class QuietMonitorTests(unittest.TestCase):
         cases = [
             ({"asar": str(self.root / "other.asar")}, "asar mismatch"),
             ({"createdAt": 0}, "stale request"),
-            ({"argv": ["/definitely/not/ZCode.exe"]}, "executable mismatch"),
             ({"version": 99}, "invalid request"),
+            # review 安全审查：未来时间戳不得绕过 15 分钟有效期窗。
+            ({"createdAt": (time.time() + 3600) * 1000}, "stale request"),
+            # review 安全审查：argv 尾部不消费，指针到别处的 argv 不再构成拒绝/放行依据。
+            ({"argv": ["C:\\evil\\tool.exe", "--inspect-brk=127.0.0.1:9229"]}, None),
         ]
         for overrides, reason in cases:
             exe, request = self.relaunch_request(**overrides)
@@ -387,11 +392,45 @@ class QuietMonitorTests(unittest.TestCase):
                     mock.patch.object(self.monitor, "zcode_pids", return_value=set()), \
                     mock.patch.object(self.patch, "zcode_exe_for", return_value=exe), \
                     mock.patch.object(self.monitor.subprocess, "Popen") as spawn:
-                self.assertFalse(self.monitor._maybe_relaunch())
-            spawn.assert_not_called()
-            self.assertFalse(request.exists())
-            self.assertIn(reason,
-                          (self.runtime / "install-monitor.log").read_text(encoding="utf-8"))
+                if reason is None:
+                    # 恶意 argv 尾部被无视：仍按推导 exe 裸启动，绝不出现在命令行里。
+                    self.assertTrue(self.monitor._maybe_relaunch())
+                    spawn.assert_called_once()
+                    self.assertEqual(spawn.call_args.args[0], [str(exe)])
+                else:
+                    self.assertFalse(self.monitor._maybe_relaunch())
+                    spawn.assert_not_called()
+            if reason is not None:
+                self.assertFalse(request.exists())
+                self.assertIn(reason,
+                              (self.runtime / "install-monitor.log").read_text(encoding="utf-8"))
+
+    def test_maybe_relaunch_skips_on_elevated_monitor_or_unknown_exe(self):
+        # review 安全审查：提权监控不拉起（不以管理员令牌拉起 GUI 宿主、封死提权链
+        # 参数注入面）；zcode_exe_for 推导失败时不做 basename 同名回退（可指向任意
+        # 同名二进制）。
+        exe, request = self.relaunch_request()
+        with mock.patch.dict(sys.modules, {"patch_install": self.patch}), \
+                mock.patch.object(self.monitor, "zcode_pids", return_value=set()), \
+                mock.patch.object(self.patch, "is_elevated", return_value=True), \
+                mock.patch.object(self.patch, "zcode_exe_for", return_value=exe), \
+                mock.patch.object(self.monitor.subprocess, "Popen") as spawn:
+            self.assertFalse(self.monitor._maybe_relaunch())
+        spawn.assert_not_called()
+        self.assertFalse(request.exists())
+        self.assertIn("elevated monitor",
+                      (self.runtime / "install-monitor.log").read_text(encoding="utf-8"))
+        exe2, request2 = self.relaunch_request()
+        with mock.patch.dict(sys.modules, {"patch_install": self.patch}), \
+                mock.patch.object(self.monitor, "zcode_pids", return_value=set()), \
+                mock.patch.object(self.patch, "is_elevated", return_value=False), \
+                mock.patch.object(self.patch, "zcode_exe_for", return_value=None), \
+                mock.patch.object(self.monitor.subprocess, "Popen") as spawn:
+            self.assertFalse(self.monitor._maybe_relaunch())
+        spawn.assert_not_called()
+        self.assertFalse(request2.exists())
+        self.assertIn("executable undetermined",
+                      (self.runtime / "install-monitor.log").read_text(encoding="utf-8"))
 
     def test_finalize_then_relaunch_in_one_quiet_run(self):
         # issue #372：quit-only 应用内重启的真实收尾链——TMP 替换后同一轮消费请求并拉起。
@@ -407,7 +446,22 @@ class QuietMonitorTests(unittest.TestCase):
         self.assertFalse(self.tmp.exists())
         self.assertFalse(request.exists())
         spawn.assert_called_once()
-        self.assertEqual(spawn.call_args.args[0], [str(exe), "--flag"])
+        self.assertEqual(spawn.call_args.args[0], [str(exe)])
+
+    def test_remove_finalize_does_not_consume_relaunch_request(self):
+        # review 一致性：与可见监控同一门控——remove 收尾不消费应用内重启交接请求。
+        self.pending(operation="remove")
+        exe, request = self.relaunch_request()
+        with mock.patch.dict(sys.modules, {"patch_install": self.patch}), \
+                mock.patch.object(self.monitor, "zcode_pids", return_value=set()), \
+                mock.patch.object(self.patch, "self_check", return_value=True), \
+                mock.patch.object(self.patch, "zcode_exe_for", return_value=exe), \
+                mock.patch.object(self.monitor.subprocess, "Popen") as spawn:
+            self.monitor.main()
+        self.assertEqual(self.asar.read_bytes(), b"verified package")   # remove 包替换后的字节
+        self.assertFalse(self.tmp.exists())
+        self.assertTrue(request.exists())
+        spawn.assert_not_called()
 
     def sidecar(self):
         return json.loads(self.tmp.with_name(self.tmp.name + ".json").read_text(encoding="utf-8"))

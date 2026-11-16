@@ -234,10 +234,15 @@ def _maybe_relaunch():
     应用内重启不能走 app.relaunch()：Windows 的 relauncher 助手本身也是 ZCode.exe，
     monitor 的「全部进程退出」判据在重启期间永不成立。inject-main 改为 quit-only +
     请求文件；这里在 TMP 已收尾、所有 ZCode 进程退出后拉起。任何校验不过都删除请求，
-    绝不拉起——宁可让用户手动重开，也不能多开一个实例。"""
+    绝不拉起——宁可让用户手动重开，也不能多开一个实例。拉起一律裸启动
+    zcode_exe_for(asar) 推导出的客户端 exe：请求里的 argv 尾部不消费（review 安全
+    审查——提权监控进程里任意启动参数可经 --inspect-brk/--gpu-launcher 等获得提权
+    代码执行），请求文件只承载「用户在应用内点过重启」这一意图。"""
     try:
         data = json.loads(RELAUNCH_REQUEST.read_text(encoding="utf-8"))
     except FileNotFoundError:
+        # 常态（绝大多数收尾没有应用内重启请求）；留一行便于 issue #372 类空窗取证。
+        _monitor_log("no relaunch request (finalize without in-app restart)")
         return False
     except (OSError, ValueError):
         return _drop_relaunch("invalid request")
@@ -248,27 +253,25 @@ def _maybe_relaunch():
             or os.path.normcase(os.path.abspath(asar)) != os.path.normcase(os.path.abspath(str(ASAR)))):
         return _drop_relaunch("asar mismatch")
     created = data.get("createdAt")
+    now_ms = time.time() * 1000
     if (not isinstance(created, (int, float)) or isinstance(created, bool)
-            or time.time() * 1000 - created > RELAUNCH_MAX_AGE_MS):
+            or created - now_ms > 60000   # 未来时间戳不得绕过 15 分钟窗（review 安全审查）
+            or now_ms - created > RELAUNCH_MAX_AGE_MS):
         return _drop_relaunch("stale request")
     pids = zcode_pids()
     if pids is None or pids:   # 客户端仍在跑（quit 被取消/手动重开）或无法确认：不拉起
         return _drop_relaunch("client still running")
-    argv = data.get("argv")
-    if not isinstance(argv, list) or not argv or not all(isinstance(arg, str) and arg for arg in argv):
-        return _drop_relaunch("invalid argv")
     pi = patch_module()
+    if pi.is_elevated():
+        # 提权监控不拉起：不以管理员令牌拉起 GUI 宿主，也封死提权链上的参数注入面
+        #（review 安全审查）；用户手动重开即可。
+        return _drop_relaunch("elevated monitor")
     expected = pi.zcode_exe_for(pi.ASAR)
-    launch = os.path.abspath(argv[0])
-    if expected:
-        allowed = os.path.normcase(os.path.abspath(str(expected)))
-    else:
-        # 非标准安装布局（zcode_exe_for 推不出）时只放行同名的客户端二进制。
-        allowed = (os.path.normcase(launch)
-                   if os.path.basename(launch).lower() in ("zcode", "zcode.exe") and os.path.isfile(launch)
-                   else "")
-    if not allowed or os.path.normcase(launch) != allowed:
-        return _drop_relaunch("executable mismatch")
+    # 推导不出客户端 exe 一律不拉起：不做 basename 同名回退（可被指向任意同名
+    # 二进制，review 安全审查）。
+    if not expected or not os.path.isfile(str(expected)):
+        return _drop_relaunch("executable undetermined")
+    exe = os.path.abspath(str(expected))
     cwd = data.get("cwd")
     cwd = cwd if isinstance(cwd, str) and os.path.isdir(cwd) else None
     # 先删请求再拉起：用户手动重开时 loader 启动清理/此处删除都避免第二次拉起。
@@ -284,7 +287,7 @@ def _maybe_relaunch():
                                         | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
         else:
             options["start_new_session"] = True
-        subprocess.Popen(argv, **options)
+        subprocess.Popen([exe], **options)
         _monitor_log("relaunch ok")
         return True
     except OSError as e:
@@ -308,10 +311,11 @@ def quiet_finalize():
             # 此后轮询 stat 命中缓存；退出窗口内不再 hash 大包（剩余为 stat、client_closed
             # 进程探测、可选 publish_install 与 rename 等原有毫秒~亚秒级小步骤），
             # 不再输给新实例首进程亚秒级重开 asar 的竞速。哈希失败（OSError）下轮重试。
-            pi.pending_tmp(operation=None, verify_hash=True, verified=verified)
+            meta = pi.pending_tmp(operation=None, verify_hash=True, verified=verified)
             pids = zcode_pids()
             if pids == set() and finalize_tmp(verified=verified):
-                _maybe_relaunch()
+                if meta["operation"] == "install":   # 与可见监控同一门控：只消费 install 收尾的交接请求
+                    _maybe_relaunch()
                 return
             if pids:   # 客户端在跑：事件驱动等任一进程退出，立即复查（见 wait_any_exit）
                 wait_any_exit(pids, POLL)

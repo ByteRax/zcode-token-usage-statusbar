@@ -17,10 +17,11 @@ const RESOURCES = path.join(path.sep, "client", "resources");
 const HOST_URL = pathToFileURL(path.join(RESOURCES, "app", "out", "main", "index.js")).href;
 
 function runPoll(requests, url = HOST_URL, main = true, updater = null, hooks = {}) {
-  const calls = { relaunch: 0, quit: 0, deliveries: [], executed: 0, hides: 0 };
+  const calls = { relaunch: 0, quit: 0, deliveries: [], executed: 0, hides: 0, beforeQuit: [] };
   const app = {
     relaunch: () => { calls.relaunch++; },
     quit: () => { calls.quit++; if (hooks.quitThrows) throw new Error("quit boom"); },
+    once: (evt, fn) => { if (evt === "before-quit") calls.beforeQuit.push(fn); },   // issue #372：取消监听
   };
   const wc = {
     isDestroyed: () => false,
@@ -88,6 +89,44 @@ test("issue #372 quit throw clears the handover request instead of leaving a gho
   await settle();
   assert.deepEqual([calls.relaunch, calls.quit, calls.hides], [0, 1, 0]);
   assert.deepEqual(cleared, [42], "quit 同步失败按本次 createdAt 清请求");
+});
+
+test("issue #372 a cancelled quit clears the handover request at the 15s sentinel", async () => {
+  // 宿主会话保护在 before-quit 里 showMessageBoxSync + preventDefault：用户取消退出后
+  // 进程继续运行，残留请求必须在哨兵时撤回，否则之后 15 分钟内的手动退出+收尾会被误拉起。
+  const cleared = [];
+  const { calls, flush, fire, of } = runPollFake([{ action: "relaunch", requestId: "zusage-handover-cancel" }], {
+    pendingAsarPath: () => "C:\\client\\resources\\app.asar",
+    writeRelaunchRequest: () => 42,
+    clearRelaunchRequest: (createdAt) => cleared.push(createdAt),
+  });
+  await flush();
+  fire(of(30));
+  assert.deepEqual([calls.relaunch, calls.quit, calls.hides], [0, 1, 0], "quit-only 路径不隐藏窗口");
+  assert.equal(calls.beforeQuit.length, 1, "quit-only 注册 before-quit 取消监听");
+  calls.beforeQuit[0]({ defaultPrevented: true });   // 用户在宿主弹窗取消退出
+  fire(of(15000));
+  assert.deepEqual(cleared, [42], "取消的退出在哨兵时撤回交接请求");
+});
+
+test("issue #372 a slow quit (no cancellation) must keep the handover request", async () => {
+  // 退出链可超过 15s、弹窗阻塞会冻结定时器使逾期哨兵立即触发：没有 preventDefault
+  // 正证据时绝不清请求，否则 monitor 收尾后无人拉起，「重启」静默变「退出」（review MAJOR）。
+  const cleared = [];
+  const { calls, flush, fire, of } = runPollFake([{ action: "relaunch", requestId: "zusage-handover-slow" }], {
+    pendingAsarPath: () => "C:\\client\\resources\\app.asar",
+    writeRelaunchRequest: () => 42,
+    clearRelaunchRequest: (createdAt) => cleared.push(createdAt),
+  });
+  await flush();
+  fire(of(30));
+  assert.equal(calls.beforeQuit.length, 1);
+  fire(of(15000));   // 慢退出中哨兵逾期触发：quit 未被取消（未收到 before-quit 事件）
+  assert.deepEqual([calls.relaunch, calls.quit], [0, 1]);
+  assert.deepEqual(cleared, [], "慢退出不清请求：请求留给 monitor 收尾后拉起");
+  calls.beforeQuit[0]({ defaultPrevented: false });   // 退出在途但未被取消，同样不清
+  fire(of(15000));
+  assert.deepEqual(cleared, []);
 });
 
 test("issue #372 helper validates pending sidecar, writes/clears a bounded request", () => {
@@ -272,10 +311,11 @@ test("pushPluginState pushes the relaunchSupported capability flag (v180, issue 
 // v244/v245 时序契约：假定时器沙箱——逐 ms 断言 30ms 正式退出/800ms 硬兜底/15s 哨兵，
 // 有状态窗口桩（visible 翻转）让 hide/show 可观察。
 function runPollFake(requests, opts = {}) {
-  const calls = { relaunch: 0, quit: 0, deliveries: [], executed: 0, hides: 0, shows: 0, timers: [] };
+  const calls = { relaunch: 0, quit: 0, deliveries: [], executed: 0, hides: 0, shows: 0, timers: [], beforeQuit: [] };
   const app = {
     relaunch: () => { if (opts.relaunchThrows) throw new Error("relaunch boom"); calls.relaunch++; },
     quit: () => { calls.quit++; },
+    once: (evt, fn) => { if (evt === "before-quit") calls.beforeQuit.push(fn); },   // issue #372：取消监听
   };
   if (opts.isQuitting !== undefined) app.isQuitting = opts.isQuitting;
   const wc = {

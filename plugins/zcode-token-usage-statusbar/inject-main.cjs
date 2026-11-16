@@ -117,7 +117,9 @@ function writeRelaunchRequest(asar) {
       createdAt: Date.now(),
     };
     const tmp = RELAUNCH_REQUEST + ".tmp";
-    fs.writeFileSync(tmp, JSON.stringify(payload), "utf8");
+    // 0600（POSIX；Windows 继承目录 ACL）：argv/cwd/pid 是宿主运行环境信息，
+    // 与 quota-secrets.json 同级的最小暴露面（review 安全审查）。
+    fs.writeFileSync(tmp, JSON.stringify(payload), { encoding: "utf8", mode: 0o600 });
     fs.renameSync(tmp, RELAUNCH_REQUEST);
     return payload.createdAt;
   } catch (e) {
@@ -2543,6 +2545,7 @@ async function pollPluginRequests() {
             // 渲染端无响应时 800ms 硬兜底也必须退出。quit 走 before-quit 清理钩子。
             let quitArmed = false;
             let relaunchRequestAt = 0;
+            let relaunchQuitCancelled = false;   // 宿主 before-quit 会话保护 preventDefault 后置位（见 quitNow）
             /* v245 review 修复：quit 同步失败或被拦截时不能让窗口消失、进程还活着——
              * 恢复全部窗口可见性（渲染端 90s 还原兜底此时才对用户可见）。 */
             const unhideWindows = () => {
@@ -2551,7 +2554,6 @@ async function pollPluginRequests() {
                   try { if (!win.isVisible()) win.show(); } catch (e2) { }
                 }
               } catch (e2) { LOG("relaunch unhide windows failed:", e2.message); }
-              if (relaunchRequestAt) clearRelaunchRequest(relaunchRequestAt);
             };
             const quitNow = () => {
               if (quitArmed) return;
@@ -2564,8 +2566,16 @@ async function pollPluginRequests() {
               const pendingAsar = pendingAsarPath();
               relaunchRequestAt = pendingAsar ? writeRelaunchRequest(pendingAsar) : 0;
               if (relaunchRequestAt) {
+                relaunchQuitCancelled = false;
+                /* 宿主会话保护在 before-quit 里 showMessageBoxSync + preventDefault：
+                 * 用户取消后 quit 中止、进程继续运行。once 监听捕获该事实，15s 哨兵
+                 * 据此撤回交接请求——慢退出/弹窗阻塞没有 preventDefault，请求必须保留
+                 * 给 monitor（退出链可超过 15s，届时清掉会让收尾后无人拉起，review MAJOR）。 */
+                try { app.once("before-quit", (e) => { relaunchQuitCancelled = !!(e && e.defaultPrevented); }); } catch (e2) { LOG("relaunch cancel watch failed:", e2.message); }
                 try { app.quit(); } catch (e) {
                   LOG("relaunch handover quit failed:", e.message);
+                  clearRelaunchRequest(relaunchRequestAt);   // quit 未发生：撤回请求，防 monitor 收尾后误拉起
+                  relaunchRequestAt = 0;
                   unhideWindows();
                 }
                 return;
@@ -2587,9 +2597,17 @@ async function pollPluginRequests() {
             /* v245 review 修复：屏障有硬上限（9s），15s 后进程仍在=quit 未发生——恢复窗口可见性；
              * unref 确保哨兵绝不拖住退出（正常路径随进程消亡，测试中不延滞事件循环）。
              * app.isQuitting 非 Electron 内建（宿主不设置）→ 条件恒真兜回 unhide；此时 relaunch
-             * 标记已留存，用户随后手动退出会被宿主转成重启——与待重启语义一致，属已知取舍。 */
+             * 标记已留存，用户随后手动退出会被宿主转成重启——与待重启语义一致，属已知取舍。
+             * 交接请求只在「退出被会话保护取消」（relaunchQuitCancelled）时撤回：quit 请求撤回
+             * 或 15s 哨兵对慢退出误判都会让 monitor 收尾后无人拉起（issue #372 review）。 */
             const unhideSentinel = setTimeout(() => {
-              if (!app.isQuitting && quitArmed) unhideWindows();   // 宿主未暴露 isQuitting 时恒真值兜回 unhide
+              if (!app.isQuitting && quitArmed) {
+                unhideWindows();
+                if (relaunchRequestAt && relaunchQuitCancelled) {
+                  clearRelaunchRequest(relaunchRequestAt);
+                  relaunchRequestAt = 0;
+                }
+              }
             }, 15000);
             if (unhideSentinel && typeof unhideSentinel.unref === "function") unhideSentinel.unref();
             Promise.resolve(deliverPluginRequest(wc, req.requestId, { ok: true })).then(() => {
