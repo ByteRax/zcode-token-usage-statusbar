@@ -316,7 +316,7 @@
    * 刷新说明换时钟图标（纯说明非按钮）。样式随内容内联 <style>（统计卡 statCompactStyle
    * 同款模式），选择器全部 zu-sys-* 前缀不污染共享 .tip/.rt-* 规则。 */
   var SYS_TIP_CSS = "<style>" +
-    ".zu-sys-tip{width:440px;max-width:calc(100vw - 24px);box-sizing:border-box;padding:11px 14px 12px;font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);font-size:calc(var(--ui-font-size, 14px) - 1px);line-height:1.5}" +
+    ".zu-sys-tip{width:440px;max-width:calc(100vw - 24px);box-sizing:border-box;font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);font-size:calc(var(--ui-font-size, 14px) - 1px);line-height:1.5}" +
     ".zu-sys-head{display:flex;align-items:center;gap:7px}" +
     ".zu-sys-head>svg{width:16px;height:16px;flex:0 0 auto}" +
     ".zu-sys-head b{font-size:calc(var(--ui-font-size, 14px) + 2px)}" +
@@ -335,11 +335,11 @@
     ".zu-sys-dhead{display:flex;align-items:baseline;justify-content:space-between;gap:10px}" +
     ".zu-sys-dhead>.zu-sys-dim{flex:1 1 auto}" +   // 非 ok 态说明文字左对齐（space-between 会把「采集中…」推到最右）
     ".zu-sys-dcur{color:var(--color-foreground-subtle,#a1a1a1);font-size:calc(var(--ui-font-size, 14px) - 2px)}" +
-    ".zu-sys-vols{margin-top:5px;max-height:176px;overflow-y:auto;font-variant-numeric:tabular-nums;scrollbar-gutter:stable}" +
+    ".zu-sys-vols{margin-top:5px;max-height:176px;overflow-y:auto;font-variant-numeric:tabular-nums}" +
     ".zu-sys-vr{display:grid;grid-template-columns:minmax(0,1fr) 52px 52px 56px;gap:6px;padding:3px 6px;border-radius:5px;font-size:calc(var(--ui-font-size, 14px) - 2px);align-items:baseline}" +
     ".zu-sys-vr>span:not(:first-child){text-align:right}" +
-    ".zu-sys-vh{color:var(--color-foreground-subtle,#a1a1a1);border-bottom:1px solid var(--color-border,rgba(255,255,255,.08));border-radius:0;padding-bottom:4px}" +
-    ".zu-sys-vrowon{background:color-mix(in srgb, var(--color-brand,#57c8ff) 8%, transparent);box-shadow:inset 2px 0 0 var(--color-brand,#57c8ff)}" +
+    ".zu-sys-vh{color:var(--color-foreground-subtle,#a1a1a1);border-bottom:1px solid var(--color-border,rgba(255,255,255,.08));border-radius:0;padding-bottom:4px;margin-bottom:4px}" +
+    ".zu-sys-vrowon{background:color-mix(in srgb, var(--color-brand,#57c8ff) 8%, transparent)}" +
     ".zu-sys-vname{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
     ".zu-sys-vmount{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--color-foreground-subtle,#a1a1a1);font-size:calc(var(--ui-font-size, 14px) - 3px)}" +
     ".zu-sys-vbadge{display:inline-block;font-style:normal;color:var(--color-foreground-subtle,#a1a1a1);border:1px solid var(--color-border,rgba(255,255,255,.12));border-radius:4px;font-size:calc(var(--ui-font-size, 14px) - 4px);line-height:14px;padding:0 4px;margin-left:4px;vertical-align:1px;white-space:nowrap}" +
@@ -363,6 +363,12 @@
     ".zu-sys-tip .zu-sys-big.zu-sys-warn{color:#d29922}" +
     ".zu-sys-tip .zu-sys-big.zu-sys-crit{color:#f85149}" +
     ".zu-sys-note{margin-top:7px;font-size:calc(var(--ui-font-size, 14px) - 2px);color:#d29922}" +
+    /* 悬停解释气泡（v364）：纯 CSS :hover，零事件链（不碰全量 tip click/mousedown 委托）；
+     * 宿主 .tip 容器 overflow:auto，气泡向下弹留在内容区内、不触发滚动区域；帧重建后 :hover 实时重算，气泡不丢。 */
+    ".zu-sys-hint{position:relative;cursor:help;border-bottom:1px dotted var(--color-border,rgba(255,255,255,.3))}" +
+    ".zu-sys-hint:hover{border-bottom-color:transparent}" +
+    ".zu-sys-hintpop{display:none;position:absolute;left:0;top:calc(100% + 7px);z-index:2;width:300px;white-space:normal;padding:7px 9px;border:1px solid var(--color-popover-border,var(--color-border,rgba(255,255,255,.12)));border-radius:7px;background:var(--color-tooltip,#171717);box-shadow:0 6px 18px rgba(0,0,0,.45);font-size:calc(var(--ui-font-size, 14px) - 3px);line-height:1.5;color:var(--color-foreground-subtle,#b8b8b8);cursor:default;font-weight:400}" +
+    ".zu-sys-hint:hover .zu-sys-hintpop{display:block}" +
     "</style>";
   /* 阈值关系校验（v362，06 设置卡初始提示与 09 change 校验共用同一判定）：
    * CPU/内存 warn<crit、磁盘 warn>crit；返回问题文案数组（空=合法）。 */
@@ -424,7 +430,8 @@
       if (cpu && cpu.state === "ok" && typeof cpu.pct === "number") {
         cpuVal = '<b class="zu-sys-big' + sysSevCls("cpu", sev, cfg) + '">' + Math.round(cpu.pct) + "%</b>";
         cpuSide = (cpu.cores || "—") + L(" 核", " cores");
-        if (Array.isArray(cpu.load)) cpuSub = "Load 1m/5m/15m <b>" + cpu.load.map(f2).join(" / ") + "</b>";
+        if (Array.isArray(cpu.load)) cpuSub = '<span class="zu-sys-hint">Load 1m/5m/15m <b>' + cpu.load.map(f2).join(" / ") + "</b>" +
+          '<span class="zu-sys-hintpop">' + L("过去 1/5/15 分钟的平均负载：正在运行加等待 CPU（含不可中断 I/O）的任务数。低于 CPU 核心数为舒适，持续高于核心数说明算力吃紧。", "Running plus waiting-for-CPU tasks (incl. uninterruptible I/O), averaged over 1/5/15 min. Below the core count is comfortable; consistently above it means CPU-starved.") + "</span></span>";
       } else cpuVal = '<span class="zu-sys-dim">' + secNote(cpu) + "</span>";
       s += '<div class="zu-sys-sec zu-sys-grid"><span class="zu-sys-k">CPU</span><span class="zu-sys-val">' + cpuVal + "</span>" +
         (cpuSide ? '<span class="zu-sys-side">' + cpuSide + "</span>" : "") +
@@ -436,9 +443,11 @@
         memVal = '<b class="zu-sys-big' + sysSevCls("mem", sev, cfg) + '">' + sysFmtBytes(mem.used) + '</b> <span class="zu-sys-dim">/ ' + sysFmtBytes(mem.total) + "</span>";
         memSide = Math.round(mem.pct) + "%";
         var sub = [];
-        if (typeof mem.wired === "number" && mem.wired > 0) sub.push("Wired " + sysFmtBytes(mem.wired));
+        if (typeof mem.wired === "number" && mem.wired > 0) sub.push('<span class="zu-sys-hint">Wired ' + sysFmtBytes(mem.wired) +
+          '<span class="zu-sys-hintpop">' + L("固定驻留在物理内存、不可换出到磁盘的部分（内核与关键数据结构）。", "Memory pinned in physical RAM that can never be swapped out (kernel and critical data).") + "</span></span>");
         if (typeof mem.swap_used === "number" && mem.swap_used >= 0) {
-          sub.push("Swap " + sysFmtBytes(mem.swap_used) + (typeof mem.swap_total === "number" && mem.swap_total > 0 ? " / " + sysFmtBytes(mem.swap_total) : ""));
+          sub.push('<span class="zu-sys-hint">Swap ' + sysFmtBytes(mem.swap_used) + (typeof mem.swap_total === "number" && mem.swap_total > 0 ? " / " + sysFmtBytes(mem.swap_total) : "") +
+            '<span class="zu-sys-hintpop">' + L("物理内存不足时换出到磁盘的部分；0 表示尚未使用。", "Memory spilled to disk when RAM runs short; 0 means none is in use.") + "</span></span>");
         }
         if (sub.length) memSub = sub.join('<span class="zu-sys-dim"> · </span>');
       } else memVal = '<span class="zu-sys-dim">' + secNote(mem) + "</span>";
