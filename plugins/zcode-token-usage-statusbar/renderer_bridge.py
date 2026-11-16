@@ -1008,7 +1008,10 @@ def ensure_deployed(asar_path):
     安装目录设计的：借用 patch_install 同一把 app.asar.zusage.lock 跨进程锁，
     输出临时文件在 asar 同目录后 os.replace 原子换。任何失败都不抛出——桥只是
     实时统计的增强，绝不影响安装/更新主流程。表内版本严格按指纹；表外版本
-    先走 derive_target 的严格结构推导，校验不过按 fail-closed 跳过。返回状态：
+    先走 derive_target 的严格结构推导，校验不过按 fail-closed 跳过。受保护目录
+    拿不到锁写权限时先做只读判定：确定无需写盘（present/skipped-unknown）直接
+    返回真实状态，确需写入才报 skipped-error（带 permission 标记，见 issue #67/#247）。
+    返回状态：
       {"status": "patched"|"present"|"skipped-unknown"|"skipped-error",
        "version": <客户端版本>, "detail": <说明>}
     例外是发布被系统拒绝（Windows 客户端运行中持有 asar 不带 FILE_SHARE_DELETE、
@@ -1027,7 +1030,12 @@ def ensure_deployed(asar_path):
                 # 先只读判定——若桥已在位（present）或版本未登记（skipped-unknown），
                 # 无需任何写操作，直接返回真实状态，避免提权安装后每次普通会话误报
                 # skipped-error 或吞掉未登记版本的兼容性提醒（issue #67/#247）。
-                kind, payload = _inspect_deploy(asar_path)
+                # 检查自身失败（坏 asar、读档异常）无法证明无需写盘，按锁失败原语义
+                # 上报，保住 permission 标记供提权指引，不降级为无标记的通用错误。
+                try:
+                    kind, payload = _inspect_deploy(asar_path)
+                except Exception:
+                    raise lock_error
                 if kind == "result":
                     return payload
                 raise lock_error
@@ -1111,7 +1119,8 @@ def remove_deployed(asar_path):
 
     表内版本按指纹逐版本识别；表外版本（自动推导补的桥）按模板剥离桥块与
     属性串。与 ensure_deployed 同样的锁/原子替换/不抛出约定，状态 dict 同构：
-    所有读取与判定都在锁内，发布前复核 source fingerprint，避免用锁外旧布局写坏归档。"""
+    常规路径的读取与判定都在锁内（锁拿不到写权限时按只读判定放行，见
+    ensure_deployed），发布前复核 source fingerprint，避免用锁外旧布局写坏归档。"""
     try:
         from runtime_lock import file_lock
         asar_path = Path(asar_path)
@@ -1121,7 +1130,11 @@ def remove_deployed(asar_path):
             except PermissionError as lock_error:
                 # 受保护目录未注入时普通用户卸载无需 root（issue #15）：若桥本就不在
                 # （absent / skipped-unknown），只读确认后直接放行，不在 stderr 报锁权限错误。
-                kind, payload = _inspect_remove(asar_path)
+                # 检查自身失败时按锁失败原语义上报（保留 permission 标记），不降级。
+                try:
+                    kind, payload = _inspect_remove(asar_path)
+                except Exception:
+                    raise lock_error
                 if kind == "result":
                     return payload
                 raise lock_error

@@ -40,7 +40,6 @@ import os
 import re
 import sqlite3
 import sys
-import tempfile
 import time
 from pathlib import Path
 

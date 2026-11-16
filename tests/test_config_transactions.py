@@ -189,6 +189,34 @@ class BoundedTempPrimitivesTests(unittest.TestCase):
     """issue #360 深化：runtime_lock.bounded_mkstemp / bounded_tempdir 与 token_rate
     临时文件创建的单次快错、碰撞上限与清理容错。"""
 
+    def test_bounded_mkstemp_fails_fast_on_permission_error_and_caps_collisions(self):
+        # patch_install 等模块经 from runtime_lock import bounded_mkstemp 共用本实现，
+        # 这里直接钉 runtime_lock 侧：PermissionError 第一次就原样抛出（Windows ACL
+        # 快错），换名重试正是 issue #360 的挂起机制；只有 FileExistsError 才重试
+        # 至多 16 次（断言字面量，防同义反复）。
+        with tempfile.TemporaryDirectory() as directory:
+            attempts = {"n": 0}
+
+            def denied(path, flags, *args, **kwargs):
+                attempts["n"] += 1
+                raise PermissionError(5, "denied", str(path))
+
+            with mock.patch.object(runtime_lock.os, "open", side_effect=denied):
+                with self.assertRaises(PermissionError):
+                    runtime_lock.bounded_mkstemp(prefix="zusage-m-", dir=directory)
+            self.assertEqual(attempts["n"], 1)
+
+            collisions = {"n": 0}
+
+            def occupied(path, flags, *args, **kwargs):
+                collisions["n"] += 1
+                raise FileExistsError(17, "exists", str(path))
+
+            with mock.patch.object(runtime_lock.os, "open", side_effect=occupied):
+                with self.assertRaises(FileExistsError):
+                    runtime_lock.bounded_mkstemp(prefix="zusage-m-", dir=directory)
+            self.assertEqual(collisions["n"], 16)
+
     def test_bounded_tempdir_fails_fast_on_permission_error_and_caps_collisions(self):
         with tempfile.TemporaryDirectory() as directory:
             attempts = {"n": 0}
