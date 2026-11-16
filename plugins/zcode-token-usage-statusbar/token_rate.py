@@ -44,7 +44,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from runtime_lock import file_lock
+from runtime_lock import bounded_mkstemp, file_lock
 from usage_stats import (MIN_GEN_MS, MAX_GEN_MS, hides_reasoning,
                          request_stats, aggregate_requests, round1 as _round1)
 try:
@@ -221,7 +221,7 @@ def write_session_state(session_id, source):
             data = {"sessionId": session_id, "ts": now, "source": source, "prompts": prompts}
             if session_id in prompts:
                 data["promptTs"] = prompts[session_id]
-            fd, tmp = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
+            fd, tmp = bounded_mkstemp(prefix=path.name + ".", suffix=".tmp", dir=path.parent)
             with os.fdopen(fd, "w", encoding="utf-8") as stream:
                 json.dump(data, stream)
             _replace_state_file(tmp, path)
@@ -231,7 +231,7 @@ def write_session_state(session_id, source):
         if tmp is not None:
             try:
                 os.unlink(tmp)
-            except FileNotFoundError:
+            except OSError:
                 pass
 
 

@@ -336,7 +336,7 @@ async function downloadRelease(release, python, fetch = fetchBytes, runUnpack = 
   if (bytes.length !== manifest.asset.size || crypto.createHash("sha256").update(bytes).digest("hex") !== manifest.asset.sha256) throw new Error("发布包下载大小或 SHA256 校验失败");
   report({ stage: "verify" });
   const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "zusage-release-")));
-  const cleanup = () => fs.rmSync(directory, { recursive: true, force: true });
+  const cleanup = () => { try { fs.rmSync(directory, { recursive: true, force: true }); } catch (e) { } };
   try {
     const archive = path.join(directory, release.archive.name), info = path.join(directory, "release-manifest.json");
     const output = path.join(directory, "marketplace");

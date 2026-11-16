@@ -1,5 +1,6 @@
 """Offline renderer bridge: pinned fingerprints, strict auto-derivation, marker strip."""
 import argparse
+import contextlib
 import copy
 import hashlib
 import json
@@ -912,7 +913,10 @@ def rewrite_asar(source, output, operation="patch"):
         return output
     finally:
         if stage is not None:
-            stage.unlink(missing_ok=True)
+            try:
+                stage.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 STALE_STAGE_SECONDS = 600
@@ -929,6 +933,72 @@ def _sweep_stale_stages(directory):
                 stale.unlink()
         except OSError:
             pass
+
+
+def _inspect_deploy(asar_path):
+    """只读检查目标 asar 的桥状态：返回 ("result", dict) 或 ("patch", tuple)。"""
+    before = asar.source_fingerprint(asar_path)
+    with asar_path.open("rb") as stream:
+        header, base = asar.read_header(stream)
+        nodes = dict(asar.iter_files(header))
+        package = json.loads(_read(stream, nodes, base, "/package.json"))
+        if (package.get("name"), package.get("type")) != ("@zcode/desktop", "module"):
+            raise BridgeError("Unknown host package")
+        version = package.get("version")
+        target = next((item for item in HOST_TARGETS if item["version"] == version), None)
+        auto = target is None
+        if not auto:
+            asset_path = target["asset"]
+            original = _read(stream, nodes, base, asset_path)
+            if MARKER not in original and _digest(original) != target["sha256"]:
+                return "result", {"status": "skipped-unknown", "version": version,
+                                  "detail": "asset hash mismatch for pinned version (host build drift)"}
+        else:
+            modules = {path: _read(stream, nodes, base, path) for path in
+                       sorted(path for path in nodes if AUTO_ASSET_RE.fullmatch(path))}
+            marked = [path for path, data in modules.items() if MARKER in data]
+            if marked:
+                if len(marked) != 1:
+                    return "result", {"status": "skipped-unknown", "version": version,
+                                      "detail": "bridged renderer asset is not unique"}
+                _verify_auto_present(modules[marked[0]])
+                # 其余资产只有在“确实可推导”时才是漏补的 live chunk；
+                # 不可推导的无关 styles-* 不能把幂等 present 变成跳过。
+                for path in modules:
+                    if path in marked:
+                        continue
+                    try:
+                        derive_target(version, modules[path], path, set(nodes))
+                    except BridgeError:
+                        continue
+                    return "result", {"status": "skipped-unknown", "version": version,
+                                      "detail": "unpatched derivable renderer asset present"}
+                return "result", {"status": "present", "version": version,
+                                  "detail": "auto-derived bridge already deployed"}
+            derived, errors = [], []
+            for path, data in modules.items():
+                if b"sourceMappingURL" in data or any(
+                        sibling in nodes for sibling in (path + ".map", path[:-3] + ".map")):
+                    errors.append(f"{path}: unverified source map layout")
+                    continue
+                try:
+                    derived.append(derive_target(version, data, path, set(nodes)))
+                except BridgeError as error:
+                    errors.append(f"{path}: {error}")
+            if not derived:
+                return "result", {"status": "skipped-unknown", "version": version,
+                                  "detail": "auto-derivation refused: " +
+                                            ("; ".join(errors) or "no renderer styles asset")}
+            if len(derived) != 1:
+                return "result", {"status": "skipped-unknown", "version": version,
+                                  "detail": "auto-derivation ambiguous across renderer assets"}
+            target = derived[0]
+            asset_path, original = target["asset"], modules[target["asset"]]
+    _original_module(original, target)
+    modified = transform_module(original, "patch", target)
+    if modified == original:
+        return "result", {"status": "present", "version": version, "detail": "bridge already deployed"}
+    return "patch", (before, base, nodes, header, version, auto, asset_path, original, modified)
 
 
 def ensure_deployed(asar_path):
@@ -949,69 +1019,23 @@ def ensure_deployed(asar_path):
     try:
         from runtime_lock import file_lock
         asar_path = Path(asar_path)
-        with file_lock(asar_path.with_name(asar_path.name + ".zusage.lock")):
+        with contextlib.ExitStack() as stack:
+            try:
+                stack.enter_context(file_lock(asar_path.with_name(asar_path.name + ".zusage.lock")))
+            except PermissionError as lock_error:
+                # 受保护目录（Program Files / /opt 等）下普通用户拿不到同目录锁文件写权限：
+                # 先只读判定——若桥已在位（present）或版本未登记（skipped-unknown），
+                # 无需任何写操作，直接返回真实状态，避免提权安装后每次普通会话误报
+                # skipped-error 或吞掉未登记版本的兼容性提醒（issue #67/#247）。
+                kind, payload = _inspect_deploy(asar_path)
+                if kind == "result":
+                    return payload
+                raise lock_error
             _sweep_stale_stages(asar_path.parent)
-            before = asar.source_fingerprint(asar_path)
-            with asar_path.open("rb") as stream:
-                header, base = asar.read_header(stream)
-                nodes = dict(asar.iter_files(header))
-                package = json.loads(_read(stream, nodes, base, "/package.json"))
-                if (package.get("name"), package.get("type")) != ("@zcode/desktop", "module"):
-                    raise BridgeError("Unknown host package")
-                version = package.get("version")
-                target = next((item for item in HOST_TARGETS if item["version"] == version), None)
-                auto = target is None
-                if not auto:
-                    asset_path = target["asset"]
-                    original = _read(stream, nodes, base, asset_path)
-                    if MARKER not in original and _digest(original) != target["sha256"]:
-                        return {"status": "skipped-unknown", "version": version,
-                                "detail": "asset hash mismatch for pinned version (host build drift)"}
-                else:
-                    modules = {path: _read(stream, nodes, base, path) for path in
-                               sorted(path for path in nodes if AUTO_ASSET_RE.fullmatch(path))}
-                    marked = [path for path, data in modules.items() if MARKER in data]
-                    if marked:
-                        if len(marked) != 1:
-                            return {"status": "skipped-unknown", "version": version,
-                                    "detail": "bridged renderer asset is not unique"}
-                        _verify_auto_present(modules[marked[0]])
-                        # 其余资产只有在“确实可推导”时才是漏补的 live chunk；
-                        # 不可推导的无关 styles-* 不能把幂等 present 变成跳过。
-                        for path in modules:
-                            if path in marked:
-                                continue
-                            try:
-                                derive_target(version, modules[path], path, set(nodes))
-                            except BridgeError:
-                                continue
-                            return {"status": "skipped-unknown", "version": version,
-                                    "detail": "unpatched derivable renderer asset present"}
-                        return {"status": "present", "version": version,
-                                "detail": "auto-derived bridge already deployed"}
-                    derived, errors = [], []
-                    for path, data in modules.items():
-                        if b"sourceMappingURL" in data or any(
-                                sibling in nodes for sibling in (path + ".map", path[:-3] + ".map")):
-                            errors.append(f"{path}: unverified source map layout")
-                            continue
-                        try:
-                            derived.append(derive_target(version, data, path, set(nodes)))
-                        except BridgeError as error:
-                            errors.append(f"{path}: {error}")
-                    if not derived:
-                        return {"status": "skipped-unknown", "version": version,
-                                "detail": "auto-derivation refused: " +
-                                          ("; ".join(errors) or "no renderer styles asset")}
-                    if len(derived) != 1:
-                        return {"status": "skipped-unknown", "version": version,
-                                "detail": "auto-derivation ambiguous across renderer assets"}
-                    target = derived[0]
-                    asset_path, original = target["asset"], modules[target["asset"]]
-            _original_module(original, target)
-            modified = transform_module(original, "patch", target)
-            if modified == original:
-                return {"status": "present", "version": version, "detail": "bridge already deployed"}
+            kind, payload = _inspect_deploy(asar_path)
+            if kind == "result":
+                return payload
+            before, base, nodes, header, version, auto, asset_path, original, modified = payload
             fd, name = asar.bounded_mkstemp(prefix=".zusage-bridge-", dir=str(asar_path.parent))
             stage = Path(name)
             try:
@@ -1034,7 +1058,10 @@ def ensure_deployed(asar_path):
                 stage = None
             finally:
                 if stage is not None:
-                    stage.unlink(missing_ok=True)
+                    try:
+                        stage.unlink(missing_ok=True)
+                    except OSError:
+                        pass
         return {"status": "patched", "version": version,
                 "detail": "auto-derived bridge deployed" if auto else "bridge deployed"}
     except PermissionError as error:
@@ -1046,6 +1073,39 @@ def ensure_deployed(asar_path):
         return {"status": "skipped-error", "version": None, "detail": str(error)}
 
 
+def _inspect_remove(asar_path):
+    """只读检查目标 asar 是否有桥待剥离：返回 ("result", dict) 或 ("remove", tuple)。"""
+    before = asar.source_fingerprint(asar_path)
+    with asar_path.open("rb") as stream:
+        header, base = asar.read_header(stream)
+        nodes = dict(asar.iter_files(header))
+        package = json.loads(_read(stream, nodes, base, "/package.json"))
+        version = package.get("version")
+        target = next((item for item in HOST_TARGETS if item["version"] == version), None)
+        auto = target is None
+        if auto:
+            bridged = []
+            for path in sorted(path for path in nodes if AUTO_ASSET_RE.fullmatch(path)):
+                data = _read(stream, nodes, base, path)
+                if MARKER in data:
+                    bridged.append((path, data))
+            if not bridged:
+                return "result", {"status": "skipped-unknown", "version": version,
+                                  "detail": "host version not pinned; nothing to remove"}
+            if len(bridged) != 1:
+                return "result", {"status": "skipped-unknown", "version": version,
+                                  "detail": "multiple bridged renderer assets"}
+            asset_path, original = bridged[0]
+            restored = _strip_auto_bridge(original)
+        else:
+            asset_path = target["asset"]
+            original = _read(stream, nodes, base, asset_path)
+            if MARKER not in original:
+                return "result", {"status": "absent", "version": target["version"], "detail": "no bridge present"}
+            restored = transform_module(original, "remove")
+    return "remove", (before, base, nodes, header, version, auto, asset_path, original, restored)
+
+
 def remove_deployed(asar_path):
     """卸载链对称清理：只剥离本项目的桥，其余内容不动。
 
@@ -1055,35 +1115,20 @@ def remove_deployed(asar_path):
     try:
         from runtime_lock import file_lock
         asar_path = Path(asar_path)
-        with file_lock(asar_path.with_name(asar_path.name + ".zusage.lock")):
-            before = asar.source_fingerprint(asar_path)
-            with asar_path.open("rb") as stream:
-                header, base = asar.read_header(stream)
-                nodes = dict(asar.iter_files(header))
-                package = json.loads(_read(stream, nodes, base, "/package.json"))
-                version = package.get("version")
-                target = next((item for item in HOST_TARGETS if item["version"] == version), None)
-                auto = target is None
-                if auto:
-                    bridged = []
-                    for path in sorted(path for path in nodes if AUTO_ASSET_RE.fullmatch(path)):
-                        data = _read(stream, nodes, base, path)
-                        if MARKER in data:
-                            bridged.append((path, data))
-                    if not bridged:
-                        return {"status": "skipped-unknown", "version": version,
-                                "detail": "host version not pinned; nothing to remove"}
-                    if len(bridged) != 1:
-                        return {"status": "skipped-unknown", "version": version,
-                                "detail": "multiple bridged renderer assets"}
-                    asset_path, original = bridged[0]
-                    restored = _strip_auto_bridge(original)
-                else:
-                    asset_path = target["asset"]
-                    original = _read(stream, nodes, base, asset_path)
-                    if MARKER not in original:
-                        return {"status": "absent", "version": target["version"], "detail": "no bridge present"}
-                    restored = transform_module(original, "remove")
+        with contextlib.ExitStack() as stack:
+            try:
+                stack.enter_context(file_lock(asar_path.with_name(asar_path.name + ".zusage.lock")))
+            except PermissionError as lock_error:
+                # 受保护目录未注入时普通用户卸载无需 root（issue #15）：若桥本就不在
+                # （absent / skipped-unknown），只读确认后直接放行，不在 stderr 报锁权限错误。
+                kind, payload = _inspect_remove(asar_path)
+                if kind == "result":
+                    return payload
+                raise lock_error
+            kind, payload = _inspect_remove(asar_path)
+            if kind == "result":
+                return payload
+            before, base, nodes, header, version, auto, asset_path, original, restored = payload
             fd, name = asar.bounded_mkstemp(prefix=".zusage-bridge-", dir=str(asar_path.parent))
             stage = Path(name)
             try:
@@ -1098,9 +1143,15 @@ def remove_deployed(asar_path):
                 stage = None
             finally:
                 if stage is not None:
-                    stage.unlink(missing_ok=True)
+                    try:
+                        stage.unlink(missing_ok=True)
+                    except OSError:
+                        pass
         return {"status": "removed", "version": version,
                 "detail": "auto-derived bridge removed" if auto else "bridge removed"}
+    except PermissionError as error:
+        return {"status": "skipped-error", "version": None, "detail": str(error),
+                "permission": True}
     except Exception as error:
         return {"status": "skipped-error", "version": None, "detail": str(error)}
 

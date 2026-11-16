@@ -4,12 +4,64 @@ import argparse
 import errno
 import json
 import os
+import shutil
 import stat
 import sys
 import tempfile
 import time
 from contextlib import contextmanager
 from pathlib import Path
+
+_MKSTEMP_ATTEMPTS = 16
+
+
+def bounded_mkstemp(prefix, dir=None, suffix=""):
+    """受限次数的临时文件创建：与 tempfile.mkstemp 同形态（返回可用 fd 与路径），
+    但 PermissionError 单次即原样抛出；形参顺序与 tempfile.mkstemp 不同，
+    只应关键字传参。stdlib 的 _mkstemp_inner 在 Windows 上吞掉 PermissionError
+    换随机名重试：旧形态（3.13.12 及更早、3.12 全线、3.14.0-3.14.3）还要求
+    os.access 报可写（os.access 看不见 ACL，受保护目录恒真），TMP_MAX 取
+    Windows 的 2^31-1，等于无限挂起（issue #360）；新形态（3.13.13+ 与 3.14.4+）
+    自限 TMP_MAX=20 不再挂起、受保护目录上最终仍原样抛 PermissionError，但仍有
+    20 次无谓重试且行为跨版本不一致。os.open 的单次失败是快错：只有
+    FileExistsError（随机名碰撞）才换名重试，至多 _MKSTEMP_ATTEMPTS 次。"""
+    directory = os.fspath(dir) if dir is not None else tempfile.gettempdir()
+    for _ in range(_MKSTEMP_ATTEMPTS):
+        name = os.path.join(directory, prefix + os.urandom(8).hex() + suffix)
+        try:
+            return os.open(name, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600), name
+        except FileExistsError:
+            continue
+    raise FileExistsError(errno.EEXIST, "No usable temporary file name found")
+
+
+@contextmanager
+def bounded_tempdir(prefix, dir=None, suffix=""):
+    """受限次数的临时目录创建与容错清理：stdlib 的 tempfile.mkdtemp 在 Windows 上
+    与 _mkstemp_inner 同构（os.access 看不见 ACL 时吞掉 PermissionError 重试 TMP_MAX 次），
+    且 TemporaryDirectory.__exit__ 在 Windows 子进程/杀软短暂持有句柄时会因 rmtree
+    PermissionError（WinError 32/5）把已成功的上层调用打崩（Python 3.8/3.9 亦无
+    ignore_cleanup_errors）。这里单次快错 PermissionError、仅 FileExistsError 换名重试
+    至多 _MKSTEMP_ATTEMPTS 次，退出时 ignore_errors=True 清理。"""
+    base = os.fspath(dir) if dir is not None else tempfile.gettempdir()
+    created = None
+    for _ in range(_MKSTEMP_ATTEMPTS):
+        candidate = os.path.join(base, prefix + os.urandom(8).hex() + suffix)
+        try:
+            os.mkdir(candidate, 0o700)
+            created = candidate
+            break
+        except FileExistsError:
+            continue
+    if created is None:
+        raise FileExistsError(errno.EEXIST, "No usable temporary directory name found")
+    try:
+        yield created
+    finally:
+        try:
+            shutil.rmtree(created, ignore_errors=True)
+        except OSError:
+            pass
 
 
 def sudo_user(sys_platform=None):
@@ -105,7 +157,7 @@ def _hashes(value):
 
 
 def _write_marker(marker, data, preserve=None):
-    fd, name = tempfile.mkstemp(prefix=marker.name + ".", suffix=".tmp", dir=marker.parent)
+    fd, name = bounded_mkstemp(prefix=marker.name + ".", suffix=".tmp", dir=marker.parent)
     try:
         if preserve is not None:
             if os.name != "nt":
@@ -123,7 +175,7 @@ def _write_marker(marker, data, preserve=None):
             os.close(fd)
         try:
             os.unlink(name)
-        except FileNotFoundError:
+        except OSError:
             pass
 
 
@@ -213,7 +265,7 @@ def update_enhance_provider(runtime, revision, changes):
         if (current.get("baseUrl"), current.get("protocol"), current.get("source", "manual")) != (updated.get("baseUrl"), updated.get("protocol"), updated.get("source", "manual")) and action == "keep":
             updated.pop("apiKey", None)
         updated["revision"] = revision + 1
-        fd, name = tempfile.mkstemp(prefix=".enhance-provider-", suffix=".tmp", dir=runtime)
+        fd, name = bounded_mkstemp(prefix=".enhance-provider-", suffix=".tmp", dir=runtime)
         try:
             os.fchmod(fd, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as stream:
@@ -226,7 +278,7 @@ def update_enhance_provider(runtime, revision, changes):
                 os.close(fd)
             try:
                 os.unlink(name)
-            except FileNotFoundError:
+            except OSError:
                 pass
         return updated
 

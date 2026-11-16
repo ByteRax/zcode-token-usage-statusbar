@@ -185,5 +185,85 @@ class ConfigTransactionTests(unittest.TestCase):
                 "asar_path": "fixture.asar", "answer_rate_line": False})
 
 
+class BoundedTempPrimitivesTests(unittest.TestCase):
+    """issue #360 深化：runtime_lock.bounded_mkstemp / bounded_tempdir 与 token_rate
+    临时文件创建的单次快错、碰撞上限与清理容错。"""
+
+    def test_bounded_tempdir_fails_fast_on_permission_error_and_caps_collisions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            attempts = {"n": 0}
+
+            def denied(path, *args, **kwargs):
+                attempts["n"] += 1
+                raise PermissionError(5, "denied", str(path))
+
+            with mock.patch.object(runtime_lock.os, "mkdir", side_effect=denied):
+                with self.assertRaises(PermissionError):
+                    with runtime_lock.bounded_tempdir(prefix="zusage-t-", dir=directory):
+                        pass
+            self.assertEqual(attempts["n"], 1)
+
+            collisions = {"n": 0}
+
+            def occupied(path, *args, **kwargs):
+                collisions["n"] += 1
+                raise FileExistsError(17, "exists", str(path))
+
+            with mock.patch.object(runtime_lock.os, "mkdir", side_effect=occupied):
+                with self.assertRaises(FileExistsError):
+                    with runtime_lock.bounded_tempdir(prefix="zusage-t-", dir=directory):
+                        pass
+            self.assertEqual(collisions["n"], 16)
+
+    def test_bounded_tempdir_tolerates_cleanup_oserror(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with mock.patch.object(runtime_lock.shutil, "rmtree",
+                                   side_effect=PermissionError(32, "used by another process")):
+                with runtime_lock.bounded_tempdir(prefix="zusage-t-", dir=directory) as created:
+                    self.assertTrue(Path(created).is_dir())
+            runtime_lock.shutil.rmtree(created, ignore_errors=True)
+
+    def test_write_session_state_tolerates_unlink_permission_error(self):
+        import token_rate
+        with tempfile.TemporaryDirectory() as directory:
+            state_file = Path(directory) / "state.json"
+            with mock.patch.object(token_rate, "STATE_FILE", str(state_file)), \
+                    mock.patch.object(token_rate, "_replace_state_file",
+                                      side_effect=PermissionError(5, "replace denied")), \
+                    mock.patch.object(token_rate.os, "unlink",
+                                      side_effect=PermissionError(32, "sharing violation")):
+                token_rate.write_session_state("sess_1", "prompt-submit")
+
+    def test_marker_and_pending_zip_and_overlay_atomic_write_fail_fast_and_tolerate_unlink_error(self):
+        import pending_zip_patch
+        from tests.test_bridge_pending import load_installer
+        installer = load_installer()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            marker = root / ".marker.json"
+            with mock.patch.object(runtime_lock.os, "replace",
+                                   side_effect=PermissionError(5, "replace denied")), \
+                    mock.patch.object(runtime_lock.os, "unlink",
+                                      side_effect=PermissionError(32, "sharing violation")):
+                with self.assertRaises(PermissionError) as ctx:
+                    runtime_lock._write_marker(marker, {"ok": True})
+                self.assertEqual(ctx.exception.errno, 5)
+            with mock.patch.object(pending_zip_patch.os, "replace",
+                                   side_effect=PermissionError(5, "replace denied")), \
+                    mock.patch.object(Path, "unlink",
+                                      side_effect=PermissionError(32, "sharing violation")):
+                with self.assertRaises(PermissionError) as ctx:
+                    pending_zip_patch.save_state(root, {"files": {}})
+                self.assertEqual(ctx.exception.errno, 5)
+            dst = root / "overlay.js"
+            with mock.patch.object(installer.os, "replace",
+                                   side_effect=PermissionError(5, "replace denied")), \
+                    mock.patch.object(Path, "unlink",
+                                      side_effect=PermissionError(32, "sharing violation")):
+                with self.assertRaises(PermissionError) as ctx:
+                    installer._atomic_write(dst, b"payload")
+                self.assertEqual(ctx.exception.errno, 5)
+
+
 if __name__ == "__main__":
     unittest.main()

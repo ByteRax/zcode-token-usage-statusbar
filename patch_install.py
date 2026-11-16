@@ -460,7 +460,10 @@ def syntax_check(asar_path: Path):
     try:
         # 入口是 ESM（package.json type:module）：临时 .js 在 HERE（无 type:module 上下文）里
         # 会被 node --check 按 CJS goal 解析，顶层 import 必报语法错误；用 .mjs 按 ESM 检查。
-        fd, name = tempfile.mkstemp(prefix=".entry-check.", suffix=".mjs", dir=HERE)
+        # 走 bounded_mkstemp：HERE 若位于受保护目录（无锁先行证明可写），stdlib 的
+        # tempfile.mkstemp 在 Windows 上会吞掉 PermissionError 无限换名挂起（issue #360），
+        # 根本进不了下方 except OSError 的跳过分支。
+        fd, name = bounded_mkstemp(prefix=".entry-check.", suffix=".mjs", dir=HERE)
         tmp_js = Path(name)
         with os.fdopen(fd, "wb") as stream:
             stream.write(src)
@@ -473,7 +476,10 @@ def syntax_check(asar_path: Path):
         run_err = str(e)
     finally:
         if tmp_js is not None:
-            tmp_js.unlink(missing_ok=True)   # mkstemp 本身失败时无临时文件可清
+            try:
+                tmp_js.unlink(missing_ok=True)   # mkstemp 本身失败时无临时文件可清
+            except OSError:
+                pass
     if r is None:
         print(L(f"  [check] 语法检查无法执行（{run_err}），跳过",
                 f"  [check] syntax check failed to run ({run_err}); skipped"))
@@ -601,7 +607,10 @@ def _atomic_tmp_metadata(meta):
             os.fsync(stream.fileno())
         os.replace(name, TMP_META)
     finally:
-        Path(name).unlink(missing_ok=True)
+        try:
+            Path(name).unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _target_lock():
@@ -772,7 +781,10 @@ def _prepare_tmp(modify, operation="install", source=None):
         return _publish_pending(stage, source, operation, previous)
     finally:
         # Only this invocation's exclusive name, never glob historical TMPs.
-        stage.unlink(missing_ok=True)
+        try:
+            stage.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def prepare_tmp(modify, operation="install", source=None):
@@ -799,7 +811,10 @@ def publish_external_pending(stage, source=None, operation="install"):
                 raise PendingTmpError("pending remove in progress; install pending refused")
             return _publish_pending(stage, source, operation, previous)
         finally:
-            stage.unlink(missing_ok=True)
+            try:
+                stage.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
 def pending_operation():
@@ -1009,6 +1024,10 @@ def install(finalize=False, before_publish=None):
     """Serialize install/remove/finalize; optional callback precedes a new install's publication."""
     if finalize:
         return _install(finalize=True)
+    assert LOADER.exists(), L(f"loader 缺失：{LOADER}", f"loader missing: {LOADER}")
+    if not target_writable():
+        sudo_hint()
+        return False
     try:
         with _target_lock():
             return _install(before_publish=before_publish)
@@ -1030,9 +1049,6 @@ def _install(finalize=False, before_publish=None):
             cleanup_legacy_bak()
         return ok
     assert LOADER.exists(), L(f"loader 缺失：{LOADER}", f"loader missing: {LOADER}")
-    if not target_writable():
-        sudo_hint()
-        return False
     try:
         source = source_fingerprint(ASAR)  # 必须在读取待修改入口和 repack 前取得。
         entry = entry_bytes_of(ASAR)

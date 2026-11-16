@@ -1160,5 +1160,45 @@ class SyntaxCheckTests(unittest.TestCase):
                 self.assertIn(shown, stdout)   # 回显的源码行（“名”）没被解坏
 
 
+class ProtectedLockOrderAndSyntaxTests(ProtectedTargetTests):
+    """深化修复回归（issue #360 衍生）：
+    1) 全新受保护目录（尚无 app.asar.zusage.lock）上 install() 必须先走 target_writable()
+       并输出 sudo_hint()，绝不能先抢 _target_lock() 报「安装锁获取失败」；
+    2) syntax_check 在 HERE 目录受 ACL 保护时走 bounded_mkstemp 快错跳过，绝不进
+       stdlib tempfile.mkstemp 的 Windows 无限换名循环。"""
+
+    def test_install_on_fresh_protected_target_prints_sudo_hint_without_lock_error(self):
+        self.refuse_root()
+        _directory, asar = self.protected_target()
+        self.pi.set_target(asar)
+        self.pi.set_runtime(self.runtime)
+        buf = io.StringIO()
+        with mock.patch.object(self.pi.os, "access", return_value=True), \
+                contextlib.redirect_stdout(buf):
+            ok = self.pi.install()
+        output = buf.getvalue()
+        self.assertFalse(ok)
+        self.assertNotIn("Cannot acquire install lock", output)
+        self.assertIn("sudo", output)
+
+    def test_syntax_check_on_protected_here_dir_skips_without_unbounded_retry(self):
+        self.refuse_root()
+        directory, asar = self.protected_target()
+        fake_exe = self.root / "fake-zcode-node"
+        fake_exe.write_bytes(b"#!/bin/sh\nexit 0\n")
+        fake_exe.chmod(0o755)
+        self.pi.set_target(asar)
+        self.pi.set_runtime(self.runtime)
+        self.pi.HERE = directory
+        self.pi.ZCODE_EXE = fake_exe
+        trap, calls = self.nt_mkstemp_trap()
+        buf = io.StringIO()
+        with trap, contextlib.redirect_stdout(buf):
+            ok = self.pi.syntax_check(asar)
+        self.assertTrue(ok)
+        self.assertEqual(calls["n"], 0)
+        self.assertIn("syntax check failed to run", buf.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()
