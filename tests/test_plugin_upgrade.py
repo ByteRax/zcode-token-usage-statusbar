@@ -504,7 +504,17 @@ class PluginUpgradeTests(unittest.TestCase):
         before = marker_path.read_bytes()
         self.assertNotIn("publishedAt", json.loads(before))
         self.assertTrue(self.pi.TMP.exists())
-        loaded = dict(json.loads(before)["hashes"], _loadedAt=time.time() * 1000)
+        # 模拟的 loader 启动时刻取 50ms 前：Windows Python≤3.12 的 time.time() 走
+        # GetSystemTimeAsFileTime，粒度最坏 ≈15.6ms（默认定时器分辨率，被
+        # timeBeginPeriod 调高时更小），与 finalize_tmp 里 publish_install 写入的
+        # publishedAt（同为 time.time()*1000）落在同一 tick 时两值恒等、严格大于
+        # 必假（2026-11-16 本机同 tick 连续读零增量实证，修复前间歇红）。
+        loaded = dict(json.loads(before)["hashes"], _loadedAt=time.time() * 1000 - 50)
+        # 发布前 ack 不得销账：不带 _loadedAt 绕开 created_at 早退分支（模拟启动
+        # 早于 createdAt 时会先被它拦下），确定性行使 pending-install 无
+        # publishedAt 的拦截门控（本测试的同名契约，2026-11-16 变异实证）。
+        self.assertFalse(runtime_lock.ack_restart(
+            self.runtime, dict(json.loads(before)["hashes"]))["cleared"])
         self.assertFalse(runtime_lock.ack_restart(self.runtime, loaded)["cleared"])
         self.assertEqual(marker_path.read_bytes(), before)
         with contextlib.redirect_stdout(io.StringIO()):
@@ -513,6 +523,11 @@ class PluginUpgradeTests(unittest.TestCase):
         self.assertEqual(published["createdAt"], json.loads(before)["createdAt"])
         self.assertGreater(published["publishedAt"], loaded["_loadedAt"])
         self.assertFalse(runtime_lock.ack_restart(self.runtime, loaded)["cleared"])
+        # 恰等边界（loaded_at == publishedAt）同样不销账：publishedAt 从 marker
+        # 读回（晚于 createdAt），created_at 早退分支不触发，确定性走
+        # loaded_at <= published_at 拦截分支。
+        self.assertFalse(runtime_lock.ack_restart(self.runtime, dict(published["hashes"],
+            _loadedAt=published["publishedAt"]))["cleared"])
         self.assertIn("用户可见·重启提醒", self.notice_context(self.runtime))
         self.assertTrue(runtime_lock.ack_restart(self.runtime, dict(published["hashes"],
             _loadedAt=published["publishedAt"] + 1))["cleared"])
