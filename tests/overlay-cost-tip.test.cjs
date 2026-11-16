@@ -137,14 +137,14 @@ function harness({ costLS = null } = {}) {
       last_turn: { requests: 2, retries: 0, tool_calls: 0, tool_errors: 0, input: 5000, output: 800,
         reasoning: 100, cache_read: 4200, cache_write: 60, total: 5800, duration_ms: 4000, ttft_ms: 300,
         started: NOW - 50000, ended: NOW - 46000, tps: 100, rated_output: 800, unrated_output: 0, gen_ms: 3000,
-        models: [{ model: 'GLM-5.3-FlashX', requests: 2, total: 5800, cost_usd: 0.5,
+        models: [{ model: 'GLM-5.3-FlashX', requests: 2, total: 5800, cost_usd: 0.5, avg_tps: 120.5,
           rates: { input: 0.29879, output: 1.04577, cache_read: 0.08516, cache_write: 0, key: 'glm-5.3-flashx' } }] } };
     if (withCost) {
       row.cost_usd = 1;                                  // ¥7.10
       row.last_turn.cost_usd = 0.5;                      // ¥3.55
       row.models = [
-        { model: 'GLM-5.3', requests: 3, total: 1000, cost_usd: 0.4 },        // ¥2.84
-        { model: 'claude-opus-5-5', requests: 1, total: 2000, cost_usd: 0.6 }, // ¥4.26
+        { model: 'GLM-5.3', requests: 3, total: 1000, cost_usd: 0.4, avg_tps: 88.8 },        // ¥2.84
+        { model: 'claude-opus-5-5', requests: 1, total: 2000, cost_usd: 0.6, avg_tps: 60.2 }, // ¥4.26
       ];
       row.sub = { requests: 3, total: 5000, input: 4000, output: 1000, cache_read: 3000, reasoning: 100,
         cache_write: 50, active: false, rate_avg: 90, cost_usd: 0.8,
@@ -152,14 +152,14 @@ function harness({ costLS = null } = {}) {
       row.project = { sessions: 2, turns: 5, requests: 9, input: 50000, output: 6000, reasoning: 400,
         cache_read: 40000, cache_write: 200, total: 56000, tool_calls: 2, retries: 1,
         started: NOW - 120000, last_at: NOW - 1000, cost_usd: 3,             // ¥21.30
-        models: [{ model: 'GLM-5.3', requests: 8, total: 3000, cost_usd: 3 }] };
+        models: [{ model: 'GLM-5.3', requests: 8, total: 3000, cost_usd: 3, avg_tps: 77.7 }] };
     }
     const out = { remote_evidence: false, not_local: [], recent: [row], last: row.last,
       today: { requests: 10, input: 90000, output: 8000, cache_read: 80000, total: 98000,
         reasoning: 500, retries: 1, cache_write: 300, started: NOW - 60000, last_at: NOW - 1000 } };
     if (withCost && todayCost !== null) {
       out.today.cost_usd = todayCost;
-      out.today.models = [{ model: 'GLM-5.3-FlashX', requests: 40, total: 98000, cost_usd: todayCost,
+      out.today.models = [{ model: 'GLM-5.3-FlashX', requests: 40, total: 98000, cost_usd: todayCost, avg_tps: 130.4,
         rates: { input: 0.29879, output: 1.04577, cache_read: 0.08516, cache_write: 0, key: 'glm-5.3-flashx' } }];
     }
     if (fx !== null) out.fx = fx;
@@ -205,24 +205,24 @@ test('四格 tooltip 显示 ¥ 费用行、模型明细费用与可点来源脚�
   // 本轮（tips[0]，v215 卡）：KPI 费用 + 模型明细表格（v253 改项目卡式四列表，行式 rt-models 退役）
   assert.match(tips[0], /预估费用<svg class="tip-fxq"[^]*?zu-stat-v">¥3\.55<\/div>/);
   assert.match(tips[0], /zu-pj-mhead[^]*?模型明细[^]*?zu-stat-table/);
-  assert.match(tips[0], /<td class="zu-pj-mname zu-model-fit" title="GLM-5\.3-FlashX">GLM-5\.3-FlashX<\/td><td>5800<\/td><td>2<\/td><td>¥3\.55<\/td>/);
+  assert.match(tips[0], /<td class="zu-pj-mname zu-model-fit" title="GLM-5\.3-FlashX">GLM-5\.3-FlashX<\/td><td>5800<\/td><td>2<\/td><td>120\.5 t\/s<\/td><td>¥3\.55<\/td>/);
   assert.doesNotMatch(tips[0], /rt-models/);
   assert.doesNotMatch(tips[0], /价格来源/);   // 底部来源脚注已移除（信息收进气泡）
   // 会话累计（tips[1]，v215 卡）：KPI 费用 + 模型表格行费用
   assert.match(tips[1], /zu-stat-tip--session/);
   assert.match(tips[1], /预估费用<svg class="tip-fxq"[^]*?zu-stat-v">¥7\.10<\/div>/);
-  assert.match(tips[1], /<thead><tr><th>模型<\/th><th>Token 用量 ↓<\/th><th>请求次数<\/th><th>预估费用<\/th><\/tr><\/thead>/);
-  assert.match(tips[1], /<td class="zu-pj-mname zu-model-fit" title="GLM-5\.3">GLM-5\.3<\/td><td>1000<\/td><td>3<\/td><td>¥2\.84<\/td>/);
-  assert.match(tips[1], /<td class="zu-pj-mname zu-model-fit" title="claude-opus-5-5">claude-opus-5-5<\/td><td>2000<\/td><td>1<\/td><td>¥4\.26<\/td>/);
+  assert.match(tips[1], /<thead><tr><th>模型<\/th><th>Token 用量 ↓<\/th><th>请求次数<\/th><th>平均速度<\/th><th>预估费用<\/th><\/tr><\/thead>/);
+  assert.match(tips[1], /<td class="zu-pj-mname zu-model-fit" title="GLM-5\.3">GLM-5\.3<\/td><td>1000<\/td><td>3<\/td><td>88\.8 t\/s<\/td><td>¥2\.84<\/td>/);
+  assert.match(tips[1], /<td class="zu-pj-mname zu-model-fit" title="claude-opus-5-5">claude-opus-5-5<\/td><td>2000<\/td><td>1<\/td><td>60\.2 t\/s<\/td><td>¥4\.26<\/td>/);
   // 今日合计（tips[2]，v301 三行 KPI 卡）：输入列缓存副行 + 费用 KPI + 模型明细表格（v253）
   assert.match(tips[2], /缓存命中率/);
   assert.match(tips[2], /预估费用<svg class="tip-fxq"[^]*?zu-stat-v">¥14\.20<\/div>/);
   assert.match(tips[2], /zu-pj-mhead[^]*?模型明细[^]*?zu-stat-table/);
-  assert.match(tips[2], /<td class="zu-pj-mname zu-model-fit" title="GLM-5\.3-FlashX">GLM-5\.3-FlashX<\/td><td>9\.8万<\/td><td>40<\/td><td>¥14\.20<\/td>/);
+  assert.match(tips[2], /<td class="zu-pj-mname zu-model-fit" title="GLM-5\.3-FlashX">GLM-5\.3-FlashX<\/td><td>9\.8万<\/td><td>40<\/td><td>130\.4 t\/s<\/td><td>¥14\.20<\/td>/);
   assert.doesNotMatch(tips[2], /价格来源/);
   // 项目累计（tips[3]，v214 统计卡）
   assert.match(tips[3], /zu-stat-tip--project" data-key="sid_main:/);   // v303 根类并入统计卡家族
-  assert.match(tips[3], /<td class="zu-pj-mname zu-model-fit" title="GLM-5\.3">GLM-5\.3<\/td><td>3000<\/td><td>8<\/td><td>¥21\.30<\/td>/);
+  assert.match(tips[3], /<td class="zu-pj-mname zu-model-fit" title="GLM-5\.3">GLM-5\.3<\/td><td>3000<\/td><td>8<\/td><td>77\.7 t\/s<\/td><td>¥21\.30<\/td>/);
   // 子代理格（tips[5]，v217）：__tip 置空——汇总/费用迁入统一浮层（.zu-sub-pop），不走通用 tooltip
   assert.equal(tips[5], null);
 });
@@ -238,9 +238,9 @@ test('v253 本轮/今日模型明细表：多模型按 Token 用量降序渲染�
   h.window.__zusageUpdate(p);
   const tips = h.tips();
   // 今日：渲染重排后 9.8万 行在前、3000 行在后；缺价模型费用 "—"
-  assert.match(tips[2], /¥14\.20<\/td><\/tr><tr><td class="zu-pj-mname zu-model-fit" title="claude-opus-5-5">claude-opus-5-5<\/td><td>3000<\/td><td>5<\/td><td>—<\/td><\/tr>/);
-  // 本轮：升序输入（1800 在前、4000 在后）渲染为降序（4000 行先），各自费用 — / ¥3.55
-  assert.match(tips[0], /<td class="zu-pj-mname zu-model-fit" title="claude-opus-5-5">claude-opus-5-5<\/td><td>4000<\/td><td>1<\/td><td>—<\/td><\/tr><tr><td class="zu-pj-mname zu-model-fit" title="GLM-5\.3-FlashX">GLM-5\.3-FlashX<\/td><td>1800<\/td><td>1<\/td><td>¥3\.55<\/td><\/tr>/);
+  assert.match(tips[2], /¥14\.20<\/td><\/tr><tr><td class="zu-pj-mname zu-model-fit" title="claude-opus-5-5">claude-opus-5-5<\/td><td>3000<\/td><td>5<\/td><td>—<\/td><td>—<\/td><\/tr>/);
+  // 本轮：升序输入（1800 在前、4000 在后）渲染为降序（4000 行先），各自费用 — / ¥3.55；无 avg_tps 显 —
+  assert.match(tips[0], /<td class="zu-pj-mname zu-model-fit" title="claude-opus-5-5">claude-opus-5-5<\/td><td>4000<\/td><td>1<\/td><td>—<\/td><td>—<\/td><\/tr><tr><td class="zu-pj-mname zu-model-fit" title="GLM-5\.3-FlashX">GLM-5\.3-FlashX<\/td><td>1800<\/td><td>1<\/td><td>—<\/td><td>¥3\.55<\/td><\/tr>/);
   // 空数组：整块不渲染（含表格骨架也不出；v301 今日卡内联 style 含同名选择器文本，先剥 style）
   p.today.models = [];
   h.window.__zusageUpdate(p);
@@ -327,16 +327,16 @@ test('⚙ 开关关闭（zusage3.cost=0）后四格均无费用行与脚注', ()
     assert.doesNotMatch(t, /价格来源 models\.dev/);
   }
   assert.doesNotMatch(h.tips()[3], /预估费用/);   // 项目卡 KPI 格与表格费用列整体不渲染
-  assert.match(h.tips()[3], /<th>[^<]*<\/th><\/tr><\/thead>/);   // 表头收为三列
-  // v253 review：本轮/今日模型表头精确锚定三列（含 </thead> 收尾，4 列表头失配），
-  // 且行内无费用 td（表头/行门控对称，双向锁死）
-  assert.match(h.tips()[0], /<thead><tr><th>模型<\/th><th>Token 用量 ↓<\/th><th>请求次数<\/th><\/tr><\/thead>/);
-  assert.match(h.tips()[2], /<thead><tr><th>模型<\/th><th>Token 用量 ↓<\/th><th>请求次数<\/th><\/tr><\/thead>/);
+  assert.match(h.tips()[3], /<th>[^<]*<\/th><\/tr><\/thead>/);   // 表头收为三列（项目明细表四类，不含模型表）
+  // v253/v375 review：本轮/今日模型表头精确锚定（费用关=模型/用量/请求/平均速度 四列，
+  // 含 </thead> 收尾），且行内无费用 td（表头/行门控对称，双向锁死）
+  assert.match(h.tips()[0], /<thead><tr><th>模型<\/th><th>Token 用量 ↓<\/th><th>请求次数<\/th><th>平均速度<\/th><\/tr><\/thead>/);
+  assert.match(h.tips()[2], /<thead><tr><th>模型<\/th><th>Token 用量 ↓<\/th><th>请求次数<\/th><th>平均速度<\/th><\/tr><\/thead>/);
   assert.doesNotMatch(h.tips()[0], /<td>¥/);
   assert.doesNotMatch(h.tips()[2], /<td>¥/);
   // 会话累计模型明细表同走 statModelsTable 门控（曾为内联四列表漏门控，费用列常驻）
   assert.doesNotMatch(h.tips()[1], /预估费用/);
-  assert.match(h.tips()[1], /<thead><tr><th>模型<\/th><th>Token 用量 ↓<\/th><th>请求次数<\/th><\/tr><\/thead>/);
+  assert.match(h.tips()[1], /<thead><tr><th>模型<\/th><th>Token 用量 ↓<\/th><th>请求次数<\/th><th>平均速度<\/th><\/tr><\/thead>/);
   assert.doesNotMatch(h.tips()[1], /<td>¥/);
 });
 

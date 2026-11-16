@@ -1702,7 +1702,7 @@
         richTextRequestTids[sid] = pending;
       }
       /* cn：万/亿开关当前值；为 0 时主进程给 token_rate.py 加 --no-cn-units */
-      var req = { action: "turn-text", sid: sid, cn: cnUnits() ? 1 : 0, forceKmb: !!state.forceKmb, unitEpoch: pending.epoch };
+      var req = { action: "turn-text", sid: sid, cn: cnUnits() ? 1 : 0, forceKmb: !!state.forceKmb, cost: state.cost === 0 ? 0 : 1, unitEpoch: pending.epoch };
       if (window.__zusagePluginRequests) window.__zusagePluginRequests.push(req);
       else window.__zusagePluginRequests = [req];
       capPut(richTextAttempts, w.key, (richTextAttempts[w.key] || 0) + 1, 256);

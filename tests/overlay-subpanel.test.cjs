@@ -113,10 +113,12 @@ test('zero-rect entry falls back to the bar anchor; a detached entry closes the 
   test('unified popover renders summary KPIs, cost and model table from real fields', () => {
     const sub = { total: 100, active: false, requests: 3, cost_usd: 0.5, rate_avg: 90,
       input: 60, output: 30, cache_read: 40, models: [
-        { model: 'glm-x', total: 100, requests: 3, cost_usd: 0.5 }] };
+        { model: 'glm-x', total: 100, requests: 3, cost_usd: 0.5, avg_tps: 55.5 }] };
     const panel = makePanel();
     runBuild(panel, sub, '');
     const html = panel.__html;
+    assert.ok(html.includes('<th>平均速度</th>'), 'v375 model table has avg-speed column');
+    assert.ok(html.includes('<td>55.5 t/s</td>'), 'v375 model row shows model avg_tps');
     assert.ok(html.includes('zu-sp-kpis3'), 'primary KPI band');
     assert.ok(html.includes('预估费用'), 'cost KPI present');
     assert.ok(html.includes('预估费用<svg class="tip-fxq" data-mcount="1" data-mscope="子代理累计"'), 'v248 KPI ? icon carries card model context');

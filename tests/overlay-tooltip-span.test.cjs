@@ -91,7 +91,7 @@ test('v214 project total card: KPI/details/scale/models table/time, bilingual', 
     cache_read: 5000, cache_write: 30, total: 6700, tool_calls: 9, retries: 2,
     started: data.session.started, last_at: data.session.last_at,
     cost_usd: 12.5,
-    models: [{ model: 'GLM-5.3', requests: 40, total: 6000, cost_usd: 12 }, { model: 'gpt-6.1-sol', requests: 5, total: 700, cost_usd: 0.5 }],
+    models: [{ model: 'GLM-5.3', requests: 40, total: 6000, cost_usd: 12, avg_tps: 66.6 }, { model: 'gpt-6.1-sol', requests: 5, total: 700, cost_usd: 0.5, avg_tps: 44.4 }],
   };
   const zh = render(data, 'zh', null, { proj: true }).find(tip => tip.includes('zu-project-tip'));
   console.error('SPANPJ:' + String(zh).slice(0, 700));
@@ -114,11 +114,11 @@ test('v214 project total card: KPI/details/scale/models table/time, bilingual', 
   assert.match(strip(zh), /请求次数\s*45\s*请求轮数\s*12\s*请求会话\s*3/);
   assert.match(strip(zh), /工具调用 9 次\s*·\s*重试 2 次/);
   assert.equal((zh.match(/zu-pj-tabs/g) || []).length, 1, 'v331 范围 Tab 仅头部一份');
-  // 模型明细四列表格（2 模型 ≤6 全显，无展开按钮）
+  // 模型明细五列表格（v375 加平均速度；2 模型 ≤6 全显，无展开按钮）
   assert.match(zh, /zu-pj-table/);
-  assert.match(strip(zh), /模型明细\s*Token 用量 ↓\s*请求次数\s*预估费用/);   // v331：分区名并入首列 th
-  assert.match(strip(zh), /GLM-5\.3\s*6000\s*40\s*\$12\.00/);
-  assert.match(strip(zh), /gpt-6\.1-sol\s*700\s*5\s*\$0\.50/);
+  assert.match(strip(zh), /模型明细\s*Token 用量 ↓\s*请求次数\s*平均速度\s*预估费用/);   // v331：分区名并入首列 th
+  assert.match(strip(zh), /GLM-5\.3\s*6000\s*40\s*66\.6 t\/s\s*\$12\.00/);
+  assert.match(strip(zh), /gpt-6\.1-sol\s*700\s*5\s*44\.4 t\/s\s*\$0\.50/);
   assert.doesNotMatch(zh.replace(/<style>[\s\S]*?<\/style>/g, ''), /zu-pj-more/);   // N<=6 无展开按钮（v303 剥内联 style）
   // 时间范围：em dash、精确到秒
   assert.match(zh, /2026-10-19 13:42:00 — 2026-10-19 13:43:00/);

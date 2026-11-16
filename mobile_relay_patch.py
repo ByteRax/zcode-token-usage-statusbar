@@ -31,7 +31,6 @@ import re
 import shutil
 import stat
 import struct
-import tempfile
 import time
 from contextlib import nullcontext
 
@@ -331,7 +330,7 @@ def rewrite_asar(source, output, operation="apply"):
     stage = None
     try:
         modified = transform_module(original, operation, target)
-        fd, name = tempfile.mkstemp(prefix=".mobile-relay-", dir=str(output.parent))
+        fd, name = asar.bounded_mkstemp(prefix=".mobile-relay-", dir=str(output.parent))
         stage = Path(name)
         with os.fdopen(fd, "wb") as dest:
             _rewrite_to(stream, base, nodes, header, ASSET, original, modified, dest)
@@ -386,7 +385,7 @@ def ensure_deployed(asar_path, _locked=False, _cli_safe=False):
                 return {"status": "present", "version": version, "detail": "stash already deployed"}
             if not _cli_safe:
                 _sweep_stale_stages(asar_path.parent)
-            fd, name = tempfile.mkstemp(prefix=".mobile-relay-", dir=str(asar_path.parent))
+            fd, name = asar.bounded_mkstemp(prefix=".mobile-relay-", dir=str(asar_path.parent))
             stage = Path(name)
             with os.fdopen(fd, "wb") as dest, asar_path.open("rb") as rstream:
                 _rewrite_to(rstream, base, nodes, header, ASSET, original, modified, dest)
@@ -492,7 +491,7 @@ def remove_deployed(asar_path, _locked=False):
             stream = None
             if modified == original:
                 return {"status": "absent", "version": target.get("version"), "detail": "nothing to remove"}
-            fd, name = tempfile.mkstemp(prefix=".mobile-relay-", dir=str(asar_path.parent))
+            fd, name = asar.bounded_mkstemp(prefix=".mobile-relay-", dir=str(asar_path.parent))
             stage = Path(name)
             with os.fdopen(fd, "wb") as dest, asar_path.open("rb") as rstream:
                 _rewrite_to(rstream, base, nodes, header, ASSET, original, modified, dest)

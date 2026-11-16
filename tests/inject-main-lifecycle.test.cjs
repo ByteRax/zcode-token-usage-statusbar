@@ -207,6 +207,20 @@ test('turn-text request passes --no-cn-units only when cn === 0', async () => {
   }
 });
 
+/* v376：渲染端预估费用开关随 turn-text 请求转达——缺省（旧渲染端不带 cost）与产品默认一致，
+ * 只有显式 cost === 0 才传 --no-cost；其它形状一律按缺省（带费用）。 */
+test('turn-text passes --no-cost only when cost === 0', async () => {
+  const h = harness(); await flush();
+  h.queue.push({ action: 'turn-text', sid: 'sid_a', cost: 0 });
+  h.poll(); await flush();
+  assert.equal(h.procs.at(-1).args.slice(1).join(' '), '--turn --current --session sid_a --no-cost');
+  for (const cost of [1, false, '0', undefined]) {
+    h.queue.push({ action: 'turn-text', sid: 'sid_a', cost });
+    h.poll(); await flush();
+    assert.equal(h.procs.at(-1).args.slice(1).join(' '), '--turn --current --session sid_a');
+  }
+});
+
 test('turn-text echoes only a valid unit epoch on success and timeout', async () => {
   const h = harness(); await flush();
   for (const [epoch, expected] of [['42:3', '"42:3"'], [undefined, 'null'], ['1:2);evil()', 'null'], ['1'.repeat(16) + ':0', 'null'], [42, 'null']]) {

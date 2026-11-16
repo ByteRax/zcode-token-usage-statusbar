@@ -2104,7 +2104,7 @@ function handleAutoCompactConfig(req, wc) {
  * v343（issue #321）：空交付带原因标签（第 4 参："spawn"=解释器拉不起、"timeout"=15s
  * 超时、"pyerr"=Python 非零退出、"empty"=exit 0 空输出即「库没追上」），渲染端据此把
  * 失败层细分进 diag（旧渲染端忽略第 4 参，双向兼容）。 */
-function queryTurnText(sid, wc, plainUnits, forceKmb, unitEpoch) {
+function queryTurnText(sid, wc, plainUnits, forceKmb, unitEpoch, noCost) {
   const deliver = (text, reason) => {
     if (!wc || wc.isDestroyed() || !isLocalHostPage(wc)) return;
     wc.executeJavaScript("window.__zusageDeliverTurnText && window.__zusageDeliverTurnText(" +
@@ -2114,9 +2114,11 @@ function queryTurnText(sid, wc, plainUnits, forceKmb, unitEpoch) {
   let py;
   try {
     /* --no-cn-units：渲染端万/亿开关（localStorage，主进程无真值）显式关闭时才传；
-       缺省（含旧渲染端不带 cn 字段）与产品默认一致，Python 侧自行用万/亿 */
+       缺省（含旧渲染端不带 cn 字段）与产品默认一致，Python 侧自行用万/亿。
+       --no-cost：v376 预估费用开关（localStorage zusage3.cost）显式关闭时才传；
+       缺省（含旧渲染端不带 cost 字段）保持产品默认开启，统计行带费用段。 */
     py = spawn(readCfgCached().python_path,
-      [TOKEN_RATE, "--turn", "--current", "--session", sid].concat(plainUnits ? ["--no-cn-units"] : [], forceKmb ? ["--force-kmb"] : []), { windowsHide: true });
+      [TOKEN_RATE, "--turn", "--current", "--session", sid].concat(plainUnits ? ["--no-cn-units"] : [], forceKmb ? ["--force-kmb"] : [], noCost ? ["--no-cost"] : []), { windowsHide: true });
   } catch (e) { LOG("turn text spawn failed:", e.message); deliver("", "spawn"); return; }
   let finished = false;
   const finish = (text, reason) => {
@@ -2467,7 +2469,7 @@ async function pollPluginRequests() {
           const poked = quotaClient ? quotaClient.pokeReset() : 0;
           deliverPluginRequest(wc, req.requestId, { ok: true, poked });
         } else if (req && req.action === "turn-text" && typeof req.sid === "string") {
-          queryTurnText(req.sid, wc, req.cn === 0, req.forceKmb === true, req.unitEpoch);
+          queryTurnText(req.sid, wc, req.cn === 0, req.forceKmb === true, req.unitEpoch, req.cost === 0);
         } else if (req && req.action === "git-refresh") {   // v96：Git chip 点击 / 快照后节流：立即重查全部已关注路径
           gitTick(true, req.requestId, wc, req.path).catch(() => { });
         } else if (req && req.action === "sysmon-sub") {   // v356：系统状态订阅（want+cfg+projectPath 合一）

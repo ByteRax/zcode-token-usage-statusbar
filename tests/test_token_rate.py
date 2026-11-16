@@ -22,6 +22,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -731,11 +732,11 @@ class TestCnUnitsFormat(unittest.TestCase):
              "session": {"totalOutput": 1640000}}
         plain = self.tr.format_turn_line(r, cn=False)
         self.assertIn("⚡ 82.6 token/s(本轮)", plain)
-        self.assertIn("输出 58,260(含 21,000 思考) token / 生成 100.5s", plain)
+        self.assertIn("输出 58,260(含 21,000 思考) token / 生成 1分40.5秒", plain)   # v376 分级中文
         self.assertIn("累计 1.6M token", plain)
         cn = self.tr.format_turn_line(r)   # 缺省即万/亿，与渲染端开关默认开启一致
         self.assertIn("⚡ 82.6 token/s(本轮)", cn)
-        self.assertIn("输出 5.83万(含 2.1万 思考) token / 生成 100.5s", cn)
+        self.assertIn("输出 5.83万(含 2.1万 思考) token / 生成 1分40.5秒", cn)
         self.assertIn("7 段 / 峰 112 token/s", cn)
         self.assertIn("累计 164万 token", cn)
         self.assertNotIn(" tok ", cn)
@@ -903,6 +904,125 @@ create table model_usage (id text primary key, session_id text, turn_id text, qu
         self.assertEqual(covered["latest"]["genMs"], 4000)   # ct−ft（首字窗口）
         before = self._with_db(self._file_db(bulk("prov-before")), "s")
         self.assertEqual(before["latest"]["genMs"], 7000)    # ct−st（默认窗口）
+
+
+class TestTurnLineV376(unittest.TestCase):
+    """v376 回答末尾统计行：生成耗时分级中文 / 模型 id 去重前置 / 本轮预估费用与开关。"""
+
+    @classmethod
+    def setUpClass(cls):
+        sys.path.insert(0, str(PLUGIN))
+        import token_rate
+        cls.tr = token_rate
+
+    def base_turn(self, **over):
+        t = {"tokPerSec": 256.9, "ttftMs": 3900, "totalOutput": 129200, "totalReasoning": 0,
+             "genMs": 464800, "requests": 2, "peak": 300, "lastAt": 0,
+             "models": ["GLM-5.3-FlashX"]}
+        t.update(over)
+        return {"turn": t, "session": {"totalOutput": 129200}}
+
+    def test_gen_duration_tiers(self):
+        f = self.tr._gen_duration
+        self.assertEqual(f(3200), "3.2s")
+        self.assertEqual(f(59940), "59.9s")       # 未达 59.95 仍在秒档
+        self.assertEqual(f(59950), "1分0.0秒")    # 59.95 四舍五入到 60.0s 后走分档
+        self.assertEqual(f(464800), "7分44.8秒")
+        self.assertEqual(f(119950), "2分0.0秒")   # 分→时进位边界（119.95→120.0）
+        self.assertEqual(f(3724800), "1时2分4.8秒")
+        self.assertEqual(f(59995000), "16时39分55.0秒")
+        self.assertEqual(f(0), "0.0s")
+        self.assertEqual(f(None), "-")
+
+    def test_gen_duration_in_turn_line(self):
+        line = self.tr.format_turn_line(self.base_turn())
+        self.assertIn("输出 12.92万 token / 生成 7分44.8秒", line)
+        self.assertIn("⚡ GLM-5.3-FlashX 256.9 token/s(本轮)", line)
+
+    def test_model_ids_dedup_in_first_seen_order(self):
+        r = self.base_turn(models=["GLM-5.3-FlashX", "claude-sonnet-5-5", "GLM-5.3-FlashX", "", None])
+        self.assertIn("⚡ GLM-5.3-FlashX/claude-sonnet-5-5 256.9 token/s(本轮)",
+                      self.tr.format_turn_line(r))
+        # 无模型 id（旧快照/空）时不拼前置段，退回原形态
+        self.assertIn("⚡ 256.9 token/s(本轮)", self.tr.format_turn_line(self.base_turn(models=[])))
+
+    def test_cost_segment_and_no_cost_switch(self):
+        r = self.base_turn(cost_usd=12.34)
+        # 价表模块可能缺失；用 mock 固定 fx 与金额格式化路径
+        with mock.patch.object(self.tr, "_money", side_effect=lambda usd: "¥87.61"):
+            on = self.tr.format_turn_line(r)
+            off = self.tr.format_turn_line(r, cost=False)
+        self.assertIn("累计 12.92万 token · 预估费用 ¥87.61", on)
+        self.assertIn("累计 12.92万 token · ⏱", off)
+        self.assertNotIn("预估费用", off)
+
+    def test_cost_segment_omitted_when_unavailable(self):
+        # cost_usd 缺失/None → 不拼费用段，不显假 0
+        self.assertNotIn("预估费用", self.tr.format_turn_line(self.base_turn()))
+
+    def test_cli_no_cost_flag_flips_cost_segment(self):
+        """main() 的 argv→cost 映射（回归：变异把 `not in` 反转成本测试仍绿）。
+        用真实子进程跑 --turn --current，同一库/状态下只有 --no-cost 有无之别；
+        费用金额由内置价表算出，故带费用态必含『预估费用』，关费用态必不含。"""
+        import tempfile, os
+        from pathlib import Path
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        db = str(Path(tmp.name) / "db.sqlite")
+        state = str(Path(tmp.name) / "state.json")
+        con = sqlite3.connect(db)
+        con.executescript(SCHEMA)
+        now = int(time.time() * 1000)
+        con.executemany("insert into model_usage values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", [
+            ("r1", SID, "turn_x", "main_turn", "test-model", "completed",
+             now - 10000, now - 9000, now - 1000, 1000, 2000, 4000, 0, 0, "account:fixture"),
+        ])
+        con.commit(); con.close()
+        Path(state).write_text(json.dumps({"sessionId": SID, "ts": now, "promptTs": now - 20000}),
+                               encoding="utf-8")
+        env = dict(os.environ, ZCODE_USAGE_DB=db, ZUSAGE_RATE_STATE_FILE=state,
+                   PYTHONDONTWRITEBYTECODE="1")
+        base = [sys.executable, "-B", str(RATE), "--turn", "--current", "--session", SID]
+        on = subprocess.run(base, capture_output=True, text=True, env=env, timeout=30).stdout
+        off = subprocess.run(base + ["--no-cost"], capture_output=True, text=True, env=env, timeout=30).stdout
+        self.assertIn("预估费用", on, on)
+        self.assertNotIn("预估费用", off, off)
+
+    def test_query_turn_populates_models_and_cost_from_db(self):
+        """query_turn 必须把本轮模型 id（去重、首次出现序）与本轮费用真值带进 turn；
+        回归：_turn_cost 曾误经 scope_for 子查询取列（SELECT 无 turn_id/缓存写列）
+        导致费用恒 None。用自建临时库直调 query_turn（_pricing 内置价表恒可用）。"""
+        import sqlite3, tempfile, os
+        fd, path = tempfile.mkstemp(suffix='.db')
+        os.close(fd)
+        try:
+            con = sqlite3.connect(path)
+            con.row_factory = sqlite3.Row
+            con.executescript(SCHEMA)
+            con.executemany("insert into model_usage values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", [
+                ("r1", SID, "turn_x", "main_turn", "GPT-A", "completed", 1000, 1200, 8000, 200,
+                 1000, 2000, 0, 0, "account:fixture"),
+                ("r2", SID, "turn_x", "main_turn", "GPT-B", "completed", 9000, 9200, 16000, 200,
+                 1000, 2000, 0, 0, "account:fixture"),
+                ("r3", SID, "turn_x", "main_turn", "GPT-A", "completed", 17000, 17200, 24000, 200,
+                 1000, 2000, 0, 0, "account:fixture"),
+            ])
+            con.commit(); con.close()
+            def _open():
+                c = sqlite3.connect(path)
+                c.row_factory = sqlite3.Row
+                return c
+            with mock.patch.object(self.tr, 'open_db', side_effect=_open):
+                with mock.patch.object(self.tr, 'DB_PATH', path):
+                    r = self.tr.query_turn(SID, current=False)
+            t = r["turn"]
+            self.assertIsNotNone(t, "turn should be found")
+            self.assertEqual(t["models"], ["GPT-A", "GPT-B"])   # 去重、首次出现序
+            self.assertIsInstance(t["cost_usd"], float)
+            self.assertGreater(t["cost_usd"], 0)
+        finally:
+            try: os.unlink(path)
+            except OSError: pass
 
 
 if __name__ == "__main__":

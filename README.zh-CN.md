@@ -58,7 +58,7 @@ A community toolkit for ZCode desktop: generation speed, token usage, context tr
 
 ### 手机远控页面（当前源码功能）
 
-手机浏览器需支持用户脚本管理器（如篡改猴 / Tampermonkey），并配合支持本功能的桌面插件使用。在桌面状态条 **⚙ → 维护 → 移动端远程控制** 独立分区开启「推送状态栏数据到远控页」；正式脚本链接已从「关于数据」迁入此处，以只读输入框显示，开关关闭时仍可选择复制；面板不会自动安装或打开外链，请复制到手机浏览器的脚本管理器中安装。也可点击[安装正式版手机脚本](https://raw.githubusercontent.com/ByteRax/zcode-token-usage-statusbar/main/zusage-mobile.user.js)，再开启宿主官方「Web 远程控制」并打开 `https://zcode.z.ai/remote/`。
+手机浏览器需支持用户脚本管理器（如篡改猴 / Tampermonkey），并配合支持本功能的桌面插件使用。在桌面状态条 **⚙ → 维护 → 移动端远程控制** 独立分区开启「推送状态栏数据到远控页」；正式脚本链接在此分区单独提供，以只读输入框显示，开关关闭时仍可选择复制；面板不会自动安装或打开外链，请复制到手机浏览器的脚本管理器中安装。也可点击[安装正式版手机脚本](https://raw.githubusercontent.com/ByteRax/zcode-token-usage-statusbar/main/zusage-mobile.user.js)，再开启宿主官方「Web 远程控制」并打开 `https://zcode.z.ai/remote/`。
 
 开关写入运行目录 `config.json` 的 `mobile_relay.enabled`，仅对象内显式布尔 `true` 开启，缺字段、`false` 或异常值均关闭。旧用户缺此配置键时升级后关闭，已有显式 `true` 保留；安装脚本不会自动授权推送。关闭仅停止插件握手公告、统计查询和快照推送，不影响宿主远控正常消息，也不即时撤销手机上行偏好能力；关闭期间桌面忽略这些偏好，不应用、不回执，无需另行关闭手机上行。旧主进程不支持开关时，须先将匹配的新安装副本及冷文件 `inject-main.cjs` 部署到实际加载运行目录，再完全退出并重开 ZCode；只更新浮层或仅重启不能替代部署。
 

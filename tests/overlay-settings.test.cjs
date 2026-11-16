@@ -1077,6 +1077,33 @@ test('万/亿 toggle change persists and re-renders without touching display ite
   assert.deepEqual(context.state.show, { ctx: 1 });
 });
 
+test('cost toggle bumps epoch but keeps cached turn-text (v376)', () => {
+  const changeSource = extract('    panel.addEventListener("change",', '    listenGlobal(document, "mousedown",');
+  let handler, renders = 0, saved = 0;
+  const context = {
+    panel: { addEventListener: (_, fn) => { handler = fn; } },
+    state: { ctxOv: '', show: { ctx: 1 }, cost: 1 },
+    richTextUnitEpoch: 5, richTextAttempts: { t1: 2 },
+    richTextCache: { t1: 'RICH_TURN1', t2: 'RICH_TURN2' },
+    persist: () => { saved++; }, renderAll: () => { renders++; },
+  };
+  vm.runInNewContext(changeSource, context);
+  const target = checked => ({ type: 'checkbox', checked, dataset: {}, classList: { contains: name => name === 'zu-cost-enable' } });
+  handler({ target: target(false) });
+  assert.equal(context.state.cost, 0, 'cost toggled off');
+  assert.equal(saved, 1);
+  assert.equal(renders, 1);
+  assert.equal(context.richTextUnitEpoch, 6, 'v376: in-flight old-cost turn-text replies rejected via epoch bump');
+  assert.equal(Object.keys(context.richTextAttempts).length, 0, 'retry budget reset with the epoch');
+  // v376 回归（复审 MAJOR）：不能清 richTextCache——它覆盖本窗口所有轮，而 turn-text
+  // 只能重取当前活跃轮，清缓存会让历史轮永久降级为简化占位（丢 v376 全部格式）。
+  assert.deepEqual(context.richTextCache, { t1: 'RICH_TURN1', t2: 'RICH_TURN2' },
+    'v376: cached historical turn lines preserved (no regression to simplified placeholder)');
+  handler({ target: target(true) });
+  assert.equal(context.state.cost, 1);
+  assert.equal(context.richTextUnitEpoch, 7, 'opposite direction bumps again');
+});
+
 test('language toggle bumps the rich-text unit epoch too (v177: third unit switch)', () => {
   // cnUnits() 依赖 state.lang：zh↔en 翻转 turn-text 的 cn 分量，在途旧单位回复必须被拒
   const changeSource = extract('    panel.addEventListener("change",', '    listenGlobal(document, "mousedown",');
