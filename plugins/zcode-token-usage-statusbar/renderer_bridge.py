@@ -886,7 +886,7 @@ def rewrite_asar(source, output, operation="patch"):
             new_nodes[asset_path]["integrity"] = asar.compute_integrity(modified)
             encoded = json.dumps(new_header, ensure_ascii=False, separators=(",", ":")).encode()
             padded = (len(encoded) + 7) // 4 * 4
-            fd, name = tempfile.mkstemp(prefix=".renderer-bridge-", dir=output.parent)
+            fd, name = asar.bounded_mkstemp(prefix=".renderer-bridge-", dir=output.parent)
             stage = Path(name)
             with os.fdopen(fd, "wb") as dest:
                 dest.write(struct.pack("<4I", 4, padded + 4, padded, len(encoded)))
@@ -1012,7 +1012,7 @@ def ensure_deployed(asar_path):
             modified = transform_module(original, "patch", target)
             if modified == original:
                 return {"status": "present", "version": version, "detail": "bridge already deployed"}
-            fd, name = tempfile.mkstemp(prefix=".zusage-bridge-", dir=str(asar_path.parent))
+            fd, name = asar.bounded_mkstemp(prefix=".zusage-bridge-", dir=str(asar_path.parent))
             stage = Path(name)
             try:
                 with os.fdopen(fd, "wb") as dest, asar_path.open("rb") as stream:
@@ -1084,7 +1084,7 @@ def remove_deployed(asar_path):
                     if MARKER not in original:
                         return {"status": "absent", "version": target["version"], "detail": "no bridge present"}
                     restored = transform_module(original, "remove")
-            fd, name = tempfile.mkstemp(prefix=".zusage-bridge-", dir=str(asar_path.parent))
+            fd, name = asar.bounded_mkstemp(prefix=".zusage-bridge-", dir=str(asar_path.parent))
             stage = Path(name)
             try:
                 with os.fdopen(fd, "wb") as dest, asar_path.open("rb") as stream:

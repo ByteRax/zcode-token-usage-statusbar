@@ -176,13 +176,72 @@ class BridgePendingTests(unittest.TestCase):
         # 权限场景 1（Program Files 只读 ACL）：stage 构建阶段就 PermissionError——
         # permission 标记的生产端必须钉住，否则 Windows 静默失效可原样回归
         before = self.target.read_bytes()
-        with mock.patch.object(bridge.tempfile, "mkstemp",
+        with mock.patch.object(bridge.asar, "bounded_mkstemp",
                                side_effect=PermissionError(13, "Permission denied")):
             result = bridge.ensure_deployed(self.target)
         self.assertEqual(result["status"], "skipped-error")
         self.assertIs(result.get("permission"), True)
         self.assertEqual(self.target.read_bytes(), before)
         self.assertFalse(list(self.root.glob(".zusage-bridge-*")))
+
+    def test_stage_denial_flags_permission_without_unbounded_retry(self):
+        # issue #360 主症状：tempfile._mkstemp_inner 在 Windows 上吞掉 PermissionError
+        # 换随机名重试——旧形态（3.13.12 及更早、3.12 全线、3.14.0-3.14.3）要求
+        # os.access 报可写（看不见 ACL 恒报可写）、TMP_MAX 取 2^31-1 ≈ 无限挂起；
+        # 新形态（3.13.13+ 与 3.14.4+）自限 20 次、不再挂起——受保护目录上
+        # ensure_deployed 的 stage 创建在旧形态上挂到 SessionStart hook 被宿主 60s
+        # 超时击杀。夹具在 POSIX 宿主复现该路径：chmod 555 目标目录 + 锁文件按既有
+        # 文件预建（目录 555 不阻止打开既有文件）+ TMP_MAX 抬到 Windows 量级（本机
+        # Python 3.13.13+ 自限 20，stdlib 自己就会退出，复现不了「无限」）+ 仅真实
+        # mkstemp 调用窗口内把 os.name 翻成 "nt" 激活 stdlib 特判（finally 即还原，
+        # 避免泄漏进 file_lock 的 nt 分支）；名字序列超过上限即判 stdlib 仍在无限
+        # 换名。修复前 PermissionError 被 stdlib 吞掉、上限触发后以裸 AssertionError
+        # 落进 except Exception（无 permission 标记，本用例红）；修复后 stage 创建
+        # 单次快错并带 permission 标记。
+        if os.name == "nt":
+            self.skipTest("POSIX chmod 夹具在 Windows 上模拟不了受保护目录")
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            self.skipTest("root 对只读目录仍可写，无法模拟权限拒绝")
+        (self.root / "app.asar.zusage.lock").write_bytes(b"")
+        before = self.target.read_bytes()
+        calls = {"n": 0}
+        real_next = tempfile._RandomNameSequence.__next__
+        real_mkstemp = tempfile.mkstemp
+        real_os_name = os.name
+
+        def guarded_next(seq):
+            calls["n"] += 1
+            if calls["n"] > 64:
+                raise AssertionError("ensure_deployed stage retried unboundedly (issue #360 hang)")
+            return real_next(seq)
+
+        def nt_mkstemp(*args, **kwargs):
+            os.name = "nt"
+            try:
+                return real_mkstemp(*args, **kwargs)
+            finally:
+                os.name = real_os_name
+
+        os.chmod(self.root, 0o555)
+        self.addCleanup(os.chmod, self.root, 0o755)
+        with mock.patch.object(tempfile, "TMP_MAX", 2 ** 31 - 1), \
+                mock.patch.object(tempfile._RandomNameSequence, "__next__", guarded_next), \
+                mock.patch.object(tempfile, "mkstemp", nt_mkstemp):
+            result = bridge.ensure_deployed(self.target)
+        self.assertEqual(result["status"], "skipped-error")
+        self.assertIs(result.get("permission"), True)
+        self.assertEqual(self.target.read_bytes(), before)
+        self.assertEqual(calls["n"], 0)   # 快错原语不消耗 stdlib 名字序列
+
+    def test_remove_stage_denial_is_reported_without_retry_loop(self):
+        # 卸载链对称：remove_deployed 的 stage 创建被拒时同样单次快错报告，
+        # 绝不进入 stdlib 的 Windows 换名重试（issue #360 同机制）。
+        self.assertEqual(bridge.ensure_deployed(self.target)["status"], "patched")
+        with mock.patch.object(bridge.asar, "bounded_mkstemp",
+                               side_effect=PermissionError(13, "Permission denied")):
+            result = bridge.remove_deployed(self.target)
+        self.assertEqual(result["status"], "skipped-error")
+        self.assertEqual(bridge.ensure_deployed(self.target)["status"], "present")
 
     def test_publish_crash_keeps_previous_tmp_in_journal(self):
         # 已有合法 TMP 时再次 publish 崩溃于 rename 前：journal 必须记 previous_tmp，
