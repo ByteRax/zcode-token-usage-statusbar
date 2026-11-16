@@ -145,8 +145,18 @@
    * 磁盘可用 ≤warn），与主进程 sysmon-client.normalizeSysmonConfig 语义对齐。 */
   var SYSMON_ICONS = {
     monitor: '<rect x="2.5" y="4" width="19" height="13" rx="2"/><path d="M9 21h6m-3-4v4"/>',
-    warn: '<path d="M12 3.5 21.5 20h-19z"/><path d="M12 9.8v4.7m0 3h.01"/>'
+    warn: '<path d="M12 3.5 21.5 20h-19z"/><path d="M12 9.8v4.7m0 3h.01"/>',
+    /* v369 Tooltip 指标行图标（lucide 同款 path，stroke 1.8 currentColor，容器见 .zu-sys-mico） */
+    cpu: '<rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/>' +
+      '<path d="M9 2v2M15 2v2M9 20v2M15 20v2M2 9h2M2 15h2M20 9h2M20 15h2"/>',
+    mem: '<path d="M2 7a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1Z"/><path d="M2 15h20"/>' +
+      '<path d="M6 18v2m4-2v2m4-2v2m4-2v2"/><path d="M7 11V9m5 2V9m5 2V9"/>',
+    db: '<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/><path d="M3 12a9 3 0 0 0 18 0"/>'
   };
+  /* 指标行图标 SVG（v369）：统一属性模板，纯装饰。 */
+  function sysMicoSvg(icon) {
+    return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + icon + "</svg>";
+  }
   var sysFrame = null;   // 最近一帧系统资源数据（__zusageSysmon 写入，格面/tooltip/菜单共享）
   /* 防抖快照（review M2）：sysSeveritySmoothed 的计数按「采样拍」推进而非按「调用」——
    * 帧入口每帧只推一次并落地快照；face/tip 等多次消费只读快照（缺快照回退瞬时判定不推进），
@@ -324,18 +334,24 @@
     ".zu-sys-refresh{margin-left:auto;display:inline-flex;align-items:center;gap:4px;color:var(--color-foreground-subtle,#a1a1a1);font-size:calc(var(--ui-font-size, 14px) - 3px);white-space:nowrap;font-variant-numeric:tabular-nums}" +
     ".zu-sys-refresh svg{width:11px;height:11px}" +
     ".zu-sys-sec{padding:8px 0 7px;border-top:1px solid var(--color-border,rgba(255,255,255,.08))}" +
-    ".zu-sys-grid{display:grid;grid-template-columns:44px 1fr auto;column-gap:10px;row-gap:2px;align-items:baseline}" +
-    ".zu-sys-k{color:var(--color-foreground-subtle,#a1a1a1);font-size:calc(var(--ui-font-size, 14px) - 2px)}" +
-    ".zu-sys-val{min-width:0}" +
+    /* v369 指标行图标区：[图标容器][标签] 跨主数值/sub 两行居中，主数值列左缘竖分隔线 */
+    ".zu-sys-grid{display:grid;grid-template-columns:auto minmax(0,1fr) auto;column-gap:12px;align-items:baseline}" +
+    ".zu-sys-lead{grid-row:1/3;align-self:center;display:flex;align-items:center;gap:8px}" +
+    ".zu-sys-mico{width:28px;height:28px;border-radius:7px;background:color-mix(in srgb, var(--color-foreground,#fff) 6%, transparent);display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;color:var(--color-foreground-subtle,#a1a1a1)}" +
+    ".zu-sys-mico svg{width:15px;height:15px}" +
+    /* .zu-sys-k 是格面 seg() 共享类（基础 -2px 不动条面），Tooltip 内 13px 走作用域覆写 */
+    ".zu-sys-k{color:var(--color-foreground-subtle,#a1a1a1);font-size:calc(var(--ui-font-size, 14px) - 2px);white-space:nowrap}" +
+    ".zu-sys-tip .zu-sys-k{font-size:calc(var(--ui-font-size, 14px) - 1px)}" +
+    ".zu-sys-val{min-width:0;border-left:1px solid var(--color-border,rgba(255,255,255,.12));padding-left:12px}" +
     ".zu-sys-big{font-size:calc(var(--ui-font-size, 14px) + 4px);font-weight:600;font-variant-numeric:tabular-nums}" +
     ".zu-sys-dim{color:var(--color-foreground-subtle,#a1a1a1);font-style:normal}" +
     ".zu-sys-side{color:var(--color-foreground-subtle,#a1a1a1);font-size:calc(var(--ui-font-size, 14px) - 1px);font-variant-numeric:tabular-nums;justify-self:end}" +
-    ".zu-sys-sub{grid-column:2/-1;color:var(--color-foreground-subtle,#a1a1a1);font-size:calc(var(--ui-font-size, 14px) - 2px);font-variant-numeric:tabular-nums}" +
+    ".zu-sys-sub{grid-column:2/-1;border-left:1px solid var(--color-border,rgba(255,255,255,.12));padding-left:12px;padding-top:3px;color:var(--color-foreground-subtle,#a1a1a1);font-size:calc(var(--ui-font-size, 14px) - 2px);font-variant-numeric:tabular-nums}" +
     ".zu-sys-sub b{color:var(--color-foreground,#fff);font-weight:600}" +
-    ".zu-sys-dhead{display:flex;align-items:baseline;justify-content:space-between;gap:10px}" +
+    ".zu-sys-dhead{display:flex;align-items:center;justify-content:space-between;gap:10px}" +
     ".zu-sys-dhead>.zu-sys-dim{flex:1 1 auto}" +   // 非 ok 态说明文字左对齐（space-between 会把「采集中…」推到最右）
     ".zu-sys-dcur{color:var(--color-foreground-subtle,#a1a1a1);font-size:calc(var(--ui-font-size, 14px) - 2px)}" +
-    ".zu-sys-vols{margin-top:5px;max-height:176px;overflow-y:auto;font-variant-numeric:tabular-nums}" +
+    ".zu-sys-vols{margin-top:5px;max-height:176px;overflow-y:auto;font-variant-numeric:tabular-nums;border:1px solid var(--color-border,rgba(255,255,255,.1));border-radius:8px;padding:3px}" +
     ".zu-sys-vr{display:grid;grid-template-columns:minmax(0,1fr) 52px 52px 56px;gap:6px;padding:3px 6px;border-radius:5px;font-size:calc(var(--ui-font-size, 14px) - 2px);align-items:baseline}" +
     ".zu-sys-vr>span:not(:first-child){text-align:right}" +
     ".zu-sys-vh{color:var(--color-foreground-subtle,#a1a1a1);border-bottom:1px solid var(--color-border,rgba(255,255,255,.08));border-radius:0;padding-bottom:4px;margin-bottom:4px}" +
@@ -355,9 +371,14 @@
     ".zu-sys-thbtn:focus-visible{outline:2px solid var(--color-input-border-focused,var(--color-brand,#57c8ff));outline-offset:1px}" +
     ".zu-sys-thbtn svg{width:11px;height:11px}" +
     ".zu-sys-thexp{margin-top:7px;padding:7px 10px 8px;border:1px solid var(--color-border,rgba(255,255,255,.1));border-radius:7px;font-variant-numeric:tabular-nums}" +
-    ".zu-sys-tht{display:grid;grid-template-columns:1fr 52px 52px;column-gap:12px;row-gap:2px;font-size:calc(var(--ui-font-size, 14px) - 2px)}" +
-    ".zu-sys-tht>.h{color:var(--color-foreground-subtle,#a1a1a1)}" +
-    ".zu-sys-tht>span:not(:first-child){text-align:right}" +
+    /* v369 阈值表按行分容器：表头行带底线；右对齐只作用数值列（旧扁平 grid 的
+     * :not(:first-child) 会把数据行的指标名也右对齐） */
+    ".zu-sys-tht{font-size:calc(var(--ui-font-size, 14px) - 2px)}" +
+    ".zu-sys-tht-h,.zu-sys-tht-r{display:grid;grid-template-columns:minmax(0,1fr) 56px 56px;column-gap:12px;align-items:baseline}" +
+    ".zu-sys-tht-h{color:var(--color-foreground-subtle,#a1a1a1);border-bottom:1px solid var(--color-border,rgba(255,255,255,.08));padding-bottom:4px}" +
+    ".zu-sys-tht-h>span:not(:first-child){text-align:right}" +
+    ".zu-sys-tht-r{padding:3px 0}" +
+    ".zu-sys-tht-r>span:not(:first-child){text-align:right}" +
     ".zu-sys-thbad{color:#f85149;font-weight:600}" +
     ".zu-sys-thnote{margin-top:5px;color:var(--color-foreground-subtle,#a1a1a1);font-size:calc(var(--ui-font-size, 14px) - 3px)}" +
     ".zu-sys-tip .zu-sys-big.zu-sys-warn{color:#d29922}" +
@@ -380,19 +401,22 @@
     return out;
   }
   /* 阈值明细表（ⓘ 展开区内容；阈值动态读取 cfg，不写死示例值）。关系非法的阈值
-   * 标红提示（CPU/内存 warn<crit、磁盘 warn>crit），不改写配置——展示层反馈。 */
+   * 标红提示（CPU/内存 warn<crit、磁盘 warn>crit），不改写配置——展示层反馈。
+   * v369 按行分容器：表头行带底线（.zu-sys-tht-h），数据行指标名左对齐、数值列右对齐。 */
   function sysThresholdTableHtml(cfg) {
     var th = cfg.thresholds;
     function row(name, wk, ck, needLt) {
       var bad = needLt ? th[wk] >= th[ck] : th[wk] <= th[ck];
       var op = needLt ? "≥" : "≤";
-      return "<span>" + name + "</span><span" + (bad ? ' class="zu-sys-thbad"' : "") + ">" + op + th[wk] + "%</span>" +
-        "<span" + (bad ? ' class="zu-sys-thbad"' : "") + ">" + op + th[ck] + "%</span>";
+      return '<div class="zu-sys-tht-r" role="row"><span role="rowheader">' + name + "</span>" +
+        '<span role="cell"' + (bad ? ' class="zu-sys-thbad"' : "") + ">" + op + th[wk] + "%</span>" +
+        '<span role="cell"' + (bad ? ' class="zu-sys-thbad"' : "") + ">" + op + th[ck] + "%</span></div>";
     }
     return '<div class="zu-sys-tht" role="table">' +
-      '<span class="h" role="columnheader">' + L("指标", "Metric") + '</span>' +
-      '<span class="h" role="columnheader">' + L("预警", "Warn") + '</span>' +
-      '<span class="h" role="columnheader">' + L("危险", "Crit") + "</span>" +
+      '<div class="zu-sys-tht-h" role="row">' +
+      '<span role="columnheader">' + L("指标", "Metric") + '</span>' +
+      '<span role="columnheader">' + L("预警", "Warn") + '</span>' +
+      '<span role="columnheader">' + L("危险", "Crit") + "</span></div>" +
       row("CPU", "cpuWarn", "cpuCrit", true) +
       row(L("内存", "Memory"), "memWarn", "memCrit", true) +
       row(L("磁盘可用", "Disk free"), "diskFreeWarn", "diskFreeCrit", false) +
@@ -433,7 +457,9 @@
         if (Array.isArray(cpu.load)) cpuSub = '<span class="zu-sys-hint">Load 1m/5m/15m <b>' + cpu.load.map(f2).join(" / ") + "</b>" +
           '<span class="zu-sys-hintpop">' + L("过去 1/5/15 分钟的平均负载：正在运行加等待 CPU（含不可中断 I/O）的任务数。低于 CPU 核心数为舒适，持续高于核心数说明算力吃紧。", "Running plus waiting-for-CPU tasks (incl. uninterruptible I/O), averaged over 1/5/15 min. Below the core count is comfortable; consistently above it means CPU-starved.") + "</span></span>";
       } else cpuVal = '<span class="zu-sys-dim">' + secNote(cpu) + "</span>";
-      s += '<div class="zu-sys-sec zu-sys-grid"><span class="zu-sys-k">CPU</span><span class="zu-sys-val">' + cpuVal + "</span>" +
+      s += '<div class="zu-sys-sec zu-sys-grid">' +
+        '<span class="zu-sys-lead"><span class="zu-sys-mico">' + sysMicoSvg(SYSMON_ICONS.cpu) + '</span><span class="zu-sys-k">CPU</span></span>' +
+        '<span class="zu-sys-val">' + cpuVal + "</span>" +
         (cpuSide ? '<span class="zu-sys-side">' + cpuSide + "</span>" : "") +
         (cpuSub ? '<span class="zu-sys-sub">' + cpuSub + "</span>" : "") + "</div>";
     }
@@ -451,17 +477,20 @@
         }
         if (sub.length) memSub = sub.join('<span class="zu-sys-dim"> · </span>');
       } else memVal = '<span class="zu-sys-dim">' + secNote(mem) + "</span>";
-      s += '<div class="zu-sys-sec zu-sys-grid"><span class="zu-sys-k">' + L("内存", "Memory") + '</span><span class="zu-sys-val">' + memVal + "</span>" +
+      s += '<div class="zu-sys-sec zu-sys-grid">' +
+        '<span class="zu-sys-lead"><span class="zu-sys-mico">' + sysMicoSvg(SYSMON_ICONS.mem) + '</span><span class="zu-sys-k">' + L("内存", "Memory") + "</span></span>" +
+        '<span class="zu-sys-val">' + memVal + "</span>" +
         (memSide ? '<span class="zu-sys-side">' + memSide + "</span>" : "") +
         (memSub ? '<span class="zu-sys-sub">' + memSub + "</span>" : "") + "</div>";
     }
     if (cfg.metrics.disk) {
       var disk = frame && frame.disk;
-      s += '<div class="zu-sys-sec"><div class="zu-sys-dhead"><span class="zu-sys-k">' + L("磁盘", "Disk") + "</span>";
+      s += '<div class="zu-sys-sec"><div class="zu-sys-dhead"><span class="zu-sys-lead"><span class="zu-sys-mico">' +
+        sysMicoSvg(SYSMON_ICONS.db) + '</span><span class="zu-sys-k">' + L("磁盘", "Disk") + "</span></span>";
       if (disk && disk.state === "ok" && Array.isArray(disk.vols) && disk.vols.length) {
         var cur = sysVolPick(disk.vols);
         var curRole = cur ? (cur.role === "project" ? L("项目卷", "Project") : cur.role === "system" ? L("系统卷", "System") : L("卷", "Volume")) : "—";
-        s += '<span class="zu-sys-dcur">' + L("当前： ", "current: ") + sEsc(curRole) + "</span></div>";
+        s += '<span class="zu-sys-dcur">' + L("当前：", "current: ") + sEsc(curRole) + "</span></div>";
         s += '<div class="zu-sys-vols" role="table"><div class="zu-sys-vr zu-sys-vh" role="row">' +
           '<span role="columnheader">' + L("卷", "Volume") + "</span>" +
           '<span role="columnheader">' + L("总量", "Total") + "</span>" +
@@ -472,7 +501,7 @@
           if (!v || typeof v !== "object") return;
           var isCur = cur && v === cur;
           var role = v.role === "project" ? L("项目卷", "Project") : v.role === "system" ? L("系统卷", "System") : L("卷", "Volume");
-          var nameTxt = v.name ? role + " " + v.name : role;
+          var nameTxt = v.name ? (v.role === "other" ? v.name : role + " " + v.name) : role;   // v369：other 角色裸卷名（「卷 Data」是噪音，设计稿只显 Data）
           var isFollower = v.container && seenC[v.container];   // 同容器第二行起不重复容量（容器统计同源，两行相同数值会误导「磁盘翻倍」）
           var badge = (v.container && !isFollower) ? '<i class="zu-sys-vbadge">' + L("APFS 共享", "APFS shared") + "</i>" : "";   // 徽记只挂首行（review C2：次行已有「共享容器空间」说明，双徽记冗余）
           if (v.container && !seenC[v.container]) seenC[v.container] = 1;

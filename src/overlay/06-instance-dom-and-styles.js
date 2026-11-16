@@ -247,8 +247,9 @@
      * → v366 磁盘表行 padding 左右对称（用户实测反馈，修正 v365①）：.zu-sys-vr 恢复 padding:3px 6px——v365 把右侧归 0 后高亮背景左 6px 右 0px 不对称；用户要求左右一致。v365 的实质（去 scrollbar-gutter:stable 槽与表头间距）保持不变。
      * → v367 系统状态设置卡内容边距统一（用户实测反馈）：.zu-syscfg.zu-layout-card 卡根加 padding:0 12px 12px，作用域内 .zu-layout-head/.zu-layout-note 自带水平 12px 归零（垂直保留）——此前卡根无内边距、仅通用 head/note 有 12px，预览/分组标题/行/阈值表全部贴卡边框，与标题错位。源顺序在通用 .zu-settings .zu-layout-head 之后、同特异性覆盖成立。
      * → v368 水平对齐说明左边距修复（用户实测反馈）：.zu-just-block 里的对齐 pnote 曾贴左缘——「仅默认样式生效…」包在 .zu-just-block 容器内，吃不到 .zu-settings-card>.pnote（直接子选择器）的 12px；补 .zu-settings .zu-just-block .pnote{padding:2px 12px 4px} 与卡直接子 pnote、.zu-theme-options 的 12px 对齐。同卡「精简」说明是直接子元素本就有 padding，不受影响。
-     */
-    var VERSION = "v368";
+     * → v369 系统状态 Tooltip 按《深色系统状态概览面板》设计稿图标化（specs/statusbar-system-status.md 同步）：①三区指标行统一图标区 .zu-sys-lead（grid-row:1/3 跨主数值/sub 两行 align-self:center）= .zu-sys-mico 28px 圆角 7px 中性轻背景（foreground 6% color-mix，非品牌非状态色）容器 + 15px 线性 SVG（SYSMON_ICONS 新增 cpu/mem/db 三个 lucide 同款 path + sysMicoSvg 统一属性模板）+ .zu-sys-k 标签升 13px——经 .zu-sys-tip .zu-sys-k 作用域覆写实现（.zu-sys-k 同时是条面格 seg() 标签共享类，基础规则保持 -2px 并加 white-space:nowrap 不动条面；review M1）+ 阈值表数值列宽 52px→56px（review N2 补记）；图标是采集范围标识不随预警变色。②主数值列/sub 行左缘加 1px 竖分隔线（border-left+padding-left:12px，grid 改 auto minmax(0,1fr) auto、row-gap 归 0 由 sub padding-top:3px 承接间距，分隔线连续）；.zu-sys-dhead 对齐 baseline→center（inline-flex lead 的基线落在图标底缘，baseline 对齐曾把「当前：」顶高）。③磁盘表套低对比外框（.zu-sys-vols 1px 边框+8px 圆角+3px 内衬，表头底线框内、高亮行内嵌）。④阈值展开表按行分容器：.zu-sys-tht-h 表头行带底线 / .zu-sys-tht-r 数据行（role=row/rowheader/cell 语义补全），右对齐选择器改 .zu-sys-tht-r>span:not(:first-child) 行内作用域——旧扁平 grid 的 :not(:first-child) 把数据行指标名也右对齐（对齐 bug）。⑤磁盘 other 角色卷名不拼「卷」前缀（「卷 Data」→「Data」，设计稿裸名；project/system 角色前缀保留）；「当前：」中文冒号后空格移除（空格只留英文串 current:）。⑥顺手修复 v367 遗留的 v359 级联锁违例（overlay-statusbar-layout bareLayoutRules 抓到 .zu-syscfg.zu-layout-card/.zu-layout-head/.zu-layout-note 三条裸规则头）——补 .zu-settings 前缀，特异性 (0,3,0) 高于通用 head/note，覆盖不再依赖源顺序，计算样式不变；该失败在 v367 会话即存在（未跑全套件），非本批引入。
+      */
+    var VERSION = "v369";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
@@ -672,8 +673,11 @@
        * 排到文字后面，v356 基线实测 computed order:"2"）；数字输入框显式边框/背景/高度
        * （通用 label 规则不管 type=number，基线实测 border:0px+透明背景；
        * PR #349 教训：通用 label 规则压过局部布局）。 */
-      ".zu-syscfg.zu-layout-card{padding:0 12px 12px}" +
-      ".zu-syscfg .zu-layout-head{padding:12px 0 4px}.zu-syscfg .zu-layout-note{padding:0 0 10px}" +
+      /* v369 补 .zu-settings 前缀：v359 级联锁（overlay-statusbar-layout bareLayoutRules）
+       * 要求含 .zu-layout- 的规则头逐段带前缀；前缀后特异性 (0,3,0) 高于通用 head/note
+       * (0,2,0)，覆盖不再依赖源顺序，计算样式不变 */
+      ".zu-settings .zu-syscfg.zu-layout-card{padding:0 12px 12px}" +
+      ".zu-settings .zu-syscfg .zu-layout-head{padding:12px 0 4px}.zu-settings .zu-syscfg .zu-layout-note{padding:0 0 10px}" +
       ".zu-syscfg .zu-syscfg-sub{margin-left:auto;color:var(--color-foreground-subtle,#a1a1a1);font-weight:400;font-size:calc(var(--ui-font-size,14px) - 2px)}" +
       ".zu-syscfg-cap{flex:0 0 100%;color:var(--color-foreground,#e9edf4);font-weight:600;font-size:calc(var(--ui-font-size,14px) - 1px);margin:10px 0 2px}" +
       ".zu-syscfg-caprow{display:flex;align-items:center;gap:10px;margin:12px 0 2px}" +

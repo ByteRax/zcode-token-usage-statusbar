@@ -161,7 +161,7 @@ test('sysmonTipHtml: 紧凑结构（v362）、动态刷新说明、条件行、�
   assert.match(oneDecimal, /1\.90 \/ 2\.00 \/ 2\.30/, 'Load 一位数补齐两位（列宽稳定）');
   assert.match(html, /Wired 2\.1G/);
   assert.match(html, /Swap 614M \/ 1G/);
-  assert.match(html, /当前： 项目卷/);                     // 主卷角色入区头（重复挂载点行删除）
+  assert.match(html, /当前：项目卷/);                      // 主卷角色入区头（重复挂载点行删除；v369 冒号后不留空格）
   assert.ok(!html.includes('zu-sys-main'), '旧 flex 行结构已移除（Grid 替代）');
   assert.match(html, /项目卷 Data/);
   assert.match(html, /zu-sys-vrowon/);                    // 当前监控卷轻高亮行
@@ -227,6 +227,43 @@ test('sysmonTipHtml: APFS 共享容器（v362）——同容器次行不重复�
   const nc = api.sysmonTipHtml(noColor, frameOf({}), NOW);
   assert.match(nc, /zu-sys-legend nocolor/);
   assert.match(nc, /颜色提示已关闭/);
+});
+
+test('sysmonTipHtml: v369 设计稿图标化——指标行图标/竖分隔线/磁盘表外框/阈值行结构/other 裸卷名', () => {
+  const api = evalHelpers({ L: (zh, en) => zh });
+  const NOW = 1700000000000 + 1000;
+  const html = api.sysmonTipHtml(CFG, frameOf({}), NOW);
+  // 三区统一图标容器（cpu/mem/db 三个 path 各出现一次，经 sysMicoSvg 统一属性模板；
+  // CSS 内联在串里，按 class= 计数避免选择器重复计）
+  assert.equal((html.match(/class="zu-sys-mico"/g) || []).length, 3, 'CPU/内存/磁盘三区各一个图标容器');
+  assert.ok(html.includes('zu-sys-lead'), '图标+标签 lead 容器');
+  assert.match(html, /<rect x="4" y="4" width="16" height="16" rx="2"/);   // cpu path
+  assert.match(html, /M2 7a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5/);             // mem path
+  assert.match(html, /<ellipse cx="12" cy="5" rx="9" ry="3"/);             // db path
+  assert.equal((html.match(/class="zu-sys-lead"/g) || []).length, 3, 'lead 只在三区区头');
+  // 竖分隔线（主数值列与 sub 行左缘）；Grid 列模板（回退 44px 固定列在此变红）
+  assert.match(html, /\.zu-sys-grid\{[^}]*grid-template-columns:auto minmax\(0,1fr\) auto/);
+  assert.match(html, /\.zu-sys-val\{[^}]*border-left/);
+  assert.match(html, /\.zu-sys-sub\{[^}]*border-left/);
+  // 标签字号走 tooltip 作用域覆写（.zu-sys-k 基础 -2px 是格面共享类，不得整体改）
+  assert.match(html, /\.zu-sys-k\{[^}]*font-size:calc\(var\(--ui-font-size, 14px\) - 2px\)/);
+  assert.match(html, /\.zu-sys-tip \.zu-sys-k\{font-size:calc\(var\(--ui-font-size, 14px\) - 1px\)\}/);
+  // 磁盘表外框
+  assert.match(html, /\.zu-sys-vols\{[^}]*border:1px solid/);
+  // 阈值表行结构：表头行带底线、数据行指标名左对齐（右对齐只作用行内非首列）
+  assert.match(html, /zu-sys-tht-h[^"]*" role="row"/);
+  assert.match(html, /zu-sys-tht-r[^"]*" role="row"><span role="rowheader">CPU<\/span>/);
+  assert.match(html, /\.zu-sys-tht-r>span:not\(:first-child\)\{text-align:right\}/);
+  assert.ok(!/\.zu-sys-tht>span:not\(:first-child\)/.test(html), '旧扁平右对齐规则已移除（曾误伤行标签）');
+  // other 角色裸卷名（「卷 Backup」→「Backup」）；project/system 前缀保留
+  const other = api.sysmonTipHtml(CFG, frameOf({ disk: { state: 'ok', vols: [
+    { id: '/x', name: 'Backup', mount: '/x', role: 'other', total: 1, used: 0, avail: 1, free_pct: 100 },
+  ] } }), NOW);
+  assert.ok(other.includes('>Backup<'), 'other 角色只显卷名本身');
+  assert.ok(!other.includes('卷 Backup') && !other.includes('Volume Backup'), 'other 角色不拼角色前缀');
+  // loading 态图标区仍在（图标是采集范围标识，不随数据态消失）
+  const loading = api.sysmonTipHtml(CFG, null, NOW);
+  assert.equal((loading.match(/class="zu-sys-mico"/g) || []).length, 3, '无帧时三区图标容器仍渲染');
 });
 
 test('sysmonPreviewHtml: 跟随显示格式、全关空状态、无帧采集中尾注（v362）', () => {
