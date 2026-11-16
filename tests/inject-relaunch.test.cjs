@@ -154,9 +154,34 @@ test("issue #372 helper validates pending sidecar, writes/clears a bounded reque
   assert.equal(ctx.pendingAsarPath(), path.resolve(asar), "install+validated 才是合法待收尾包");
   fs.writeFileSync(meta, JSON.stringify({ operation: "remove", validated: true }));
   assert.equal(ctx.pendingAsarPath(), "", "remove pending 不触发应用内重启交接");
+  fs.writeFileSync(meta, JSON.stringify({ operation: "install", validated: false }));
+  assert.equal(ctx.pendingAsarPath(), "", "未通过自检（validated!==true）的 install 也不是合法待收尾包");
   fs.writeFileSync(meta, JSON.stringify({ operation: "install", validated: true }));
+  fs.rmSync(meta);
+  assert.equal(ctx.pendingAsarPath(), "", "缺 sidecar 不触发应用内重启交接");
+  fs.writeFileSync(meta, JSON.stringify({ operation: "install", validated: true }));
+  fs.rmSync(tmp);
+  assert.equal(ctx.pendingAsarPath(), "", "缺 TMP 不触发应用内重启交接");
+  fs.writeFileSync(tmp, "patched");
+  // review 变异 N15：config 的 asar_path 优先于 resourcesPath 缺省——自定义安装路径
+  // 用户的待收尾包必须被识别（否则静默回退旧 relaunch，#372 复发）。
+  const customDir = path.join(root, "custom");
+  fs.mkdirSync(customDir);
+  const customAsar = path.join(customDir, "app.asar");
+  const customTmp = customAsar + ".zusage.tmp";
+  const customMeta = customTmp + ".json";
+  fs.writeFileSync(customAsar, "official custom");
+  fs.writeFileSync(customTmp, "patched custom");
+  fs.writeFileSync(customMeta, JSON.stringify({ operation: "install", validated: true }));
+  ctx.readCfgCached = () => ({ asar_path: customAsar });
+  assert.equal(ctx.pendingAsarPath(), path.resolve(customAsar), "asar_path 配置优先于缺省路径");
+  ctx.readCfgCached = () => ({ asar_path: asar });
   const at = ctx.writeRelaunchRequest(asar);
   assert.ok(at > 0);
+  if (process.platform !== "win32") {
+    // review 变异 M15：请求文件 0600（POSIX；Windows 忽略 mode 继承 ACL，门控跳过）。
+    assert.equal(fs.statSync(request).mode & 0o777, 0o600, "relaunch-request.json 必须最小暴露面");
+  }
   const payload = JSON.parse(fs.readFileSync(request, "utf8"));
   assert.deepEqual(payload, {
     version: 1,

@@ -346,12 +346,22 @@ class QuietMonitorTests(unittest.TestCase):
 
     def test_maybe_relaunch_spawns_the_recorded_client_after_finalize(self):
         exe, request = self.relaunch_request()
+        popen_saw_request = []
+
+        def spawn_recording_order(*args, **kwargs):
+            # review：spec 规则 4——先删请求再拉起，Popen 时请求必须已不在。
+            popen_saw_request.append(request.exists())
+            return mock.DEFAULT
+
         with mock.patch.dict(sys.modules, {"patch_install": self.patch}), \
                 mock.patch.object(self.monitor, "zcode_pids", return_value=set()), \
+                mock.patch.object(self.patch, "is_elevated", return_value=False), \
                 mock.patch.object(self.patch, "zcode_exe_for", return_value=exe), \
-                mock.patch.object(self.monitor.subprocess, "Popen") as spawn:
+                mock.patch.object(self.monitor.subprocess, "Popen",
+                                  side_effect=spawn_recording_order) as spawn:
             self.assertTrue(self.monitor._maybe_relaunch())
         self.assertFalse(request.exists())
+        self.assertEqual(popen_saw_request, [False])
         spawn.assert_called_once()
         args, kwargs = spawn.call_args
         # review 安全审查：拉起一律裸启动推导出的客户端 exe——请求 argv 尾部不消费
@@ -361,6 +371,11 @@ class QuietMonitorTests(unittest.TestCase):
         self.assertEqual(kwargs["stdin"], self.monitor.subprocess.DEVNULL)
         self.assertEqual(kwargs["stdout"], self.monitor.subprocess.DEVNULL)
         self.assertEqual(kwargs["stderr"], self.monitor.subprocess.DEVNULL)
+        if os.name == "nt":
+            self.assertTrue(kwargs["creationflags"])   # DETACHED_PROCESS|CREATE_NEW_PROCESS_GROUP
+        else:
+            self.assertTrue(kwargs["start_new_session"])
+        self.assertTrue(kwargs["close_fds"])
         self.assertIn("relaunch ok",
                       (self.runtime / "install-monitor.log").read_text(encoding="utf-8"))
 
@@ -386,10 +401,16 @@ class QuietMonitorTests(unittest.TestCase):
             # review 安全审查：argv 尾部不消费，指针到别处的 argv 不再构成拒绝/放行依据。
             ({"argv": ["C:\\evil\\tool.exe", "--inspect-brk=127.0.0.1:9229"]}, None),
         ]
+        cases += [
+            # review 变异 M9：未来容差 60s 的两侧边界——30s 内放行、91s 拒绝。
+            ({"createdAt": (time.time() + 30) * 1000}, None),
+            ({"createdAt": (time.time() + 91) * 1000}, "stale request"),
+        ]
         for overrides, reason in cases:
             exe, request = self.relaunch_request(**overrides)
             with mock.patch.dict(sys.modules, {"patch_install": self.patch}), \
                     mock.patch.object(self.monitor, "zcode_pids", return_value=set()), \
+                    mock.patch.object(self.patch, "is_elevated", return_value=False), \
                     mock.patch.object(self.patch, "zcode_exe_for", return_value=exe), \
                     mock.patch.object(self.monitor.subprocess, "Popen") as spawn:
                 if reason is None:
@@ -432,12 +453,53 @@ class QuietMonitorTests(unittest.TestCase):
         self.assertIn("executable undetermined",
                       (self.runtime / "install-monitor.log").read_text(encoding="utf-8"))
 
+    def test_maybe_relaunch_never_spawns_when_pid_probe_unavailable(self):
+        # review 变异 P5：zcode_pids() 为 None（tasklist/pgrep 不可用）时无法确认
+        # 客户端已退出——绝不拉起，与「客户端仍在跑」同一安全侧。
+        exe, request = self.relaunch_request()
+        with mock.patch.dict(sys.modules, {"patch_install": self.patch}), \
+                mock.patch.object(self.monitor, "zcode_pids", return_value=None), \
+                mock.patch.object(self.patch, "is_elevated", return_value=False), \
+                mock.patch.object(self.patch, "zcode_exe_for", return_value=exe), \
+                mock.patch.object(self.monitor.subprocess, "Popen") as spawn:
+            self.assertFalse(self.monitor._maybe_relaunch())
+        spawn.assert_not_called()
+        self.assertFalse(request.exists())
+
+    def test_visible_monitor_relaunches_and_reports_after_install_finalize(self):
+        # review 变异 P13：可见监控收尾成功后整条拉起链——Popen 恰一次、请求消费、
+        # 终屏提示「已按重启请求自动重新启动 ZCode」。
+        self.pending()
+        exe, request = self.relaunch_request()
+        screens = []
+        with mock.patch.dict(sys.modules, {"patch_install": self.patch}), \
+                mock.patch.object(self.monitor, "QUIET", False), \
+                mock.patch.object(sys, "argv", ["install_monitor.py", "0"]), \
+                mock.patch.object(self.monitor, "draw",
+                                  side_effect=lambda lines: screens.append("\n".join(lines))), \
+                mock.patch.object(self.monitor, "zcode_pids",
+                                  side_effect=[set()] * 12 + [KeyboardInterrupt]), \
+                mock.patch.object(self.monitor.time, "sleep", lambda *_: None), \
+                mock.patch.object(self.patch, "is_elevated", return_value=False), \
+                mock.patch.object(self.patch, "self_check", return_value=True), \
+                mock.patch.object(self.patch, "zcode_exe_for", return_value=exe), \
+                mock.patch.object(self.monitor.subprocess, "run"), \
+                mock.patch.object(self.monitor.subprocess, "Popen") as spawn:
+            with self.assertRaises(KeyboardInterrupt):
+                self.monitor.main()   # _run 无自然退出路径，用 KI 收束（拉起断言在其后）
+        spawn.assert_called_once()
+        self.assertEqual(spawn.call_args.args[0], [str(exe)])
+        self.assertFalse(request.exists())
+        self.assertTrue(screens)
+        self.assertTrue(any("已按重启请求自动重新启动" in line for line in screens))
+
     def test_finalize_then_relaunch_in_one_quiet_run(self):
         # issue #372：quit-only 应用内重启的真实收尾链——TMP 替换后同一轮消费请求并拉起。
         self.pending()
         exe, request = self.relaunch_request()
         with mock.patch.dict(sys.modules, {"patch_install": self.patch}), \
                 mock.patch.object(self.monitor, "zcode_pids", return_value=set()), \
+                mock.patch.object(self.patch, "is_elevated", return_value=False), \
                 mock.patch.object(self.patch, "self_check", return_value=True), \
                 mock.patch.object(self.patch, "zcode_exe_for", return_value=exe), \
                 mock.patch.object(self.monitor.subprocess, "Popen") as spawn:
