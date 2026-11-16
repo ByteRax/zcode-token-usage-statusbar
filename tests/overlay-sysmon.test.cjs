@@ -577,6 +577,9 @@ test('设置页：排序卡出现系统状态行、配置卡结构与双回填�
   assert.match(cfgCard, /zu-syscfg-unit">%</);
   assert.match(cfgCard, /zu-syscfg-unit">秒/);
   assert.match(source, /\.zu-syscfg \.zu-syscfg-item>input\[type=checkbox\]\{order:0/, 'checkbox order:0 抵消通用 order:2（开关回到文字前；规则在 CSS 不在 HTML 产物）');
+  assert.match(source, /\.zu-syscfg \.zu-syscfg-item\{display:inline-flex/, 'item 双类前缀 (0,2,0)（降级单类会输给通用 label>span 的 flex:1，review A3）');
+  assert.match(source, /\.zu-layout-card:not\(\.zu-syscfg\)/, 'refreshLayoutEditor 显式排除系统状态卡（防 DOM 序耦合，review A2）');
+  assert.match(source, /sysTip\.contains\(e\.relatedTarget\)/, 'chip blur relatedTarget 守卫（焦点入浮层不收卡）');
   assert.match(source, /\.zu-syscfg-num\{width:56px;height:28px;[\s\S]*?border:1px solid/, '数字输入框显式边框/高度');
   assert.match(cfgCard, /自动适配（推荐）/, '显示格式短文案（长示例移帮助行）');
   assert.match(cfgCard, /同一挂载点或同一设备的重复卷自动去重/, '磁盘目标说明');
@@ -632,4 +635,36 @@ test('设置页：排序卡出现系统状态行、配置卡结构与双回填�
   assert.equal(panel.querySelectorAll('.zu-syscfg-m')[2].checked, true, '磁盘开关按 cfg 回填');
   assert.equal(panel.querySelectorAll('.zu-syscfg-th')[1].value, '90', '阈值按 cfg 回填');
   assert.equal(panel.querySelector('.zu-syscfg-fmt').value, 'auto');
+});
+
+test('chip blur 守卫（v362 review C5）：焦点移入 sysTip 不收卡、真离开才收', () => {
+  /* 切片锚点（review C5 配方）：产物缩进比分片少 2 空格；__zuWired 在 git chip 区还有一处，
+   * 须以 sysmonChipCache 赋值点为界 lastIndexOf 取 sysmon 侧接线块 */
+  const b = source.indexOf('        sysmonChipCache = chip;');
+  assert.ok(b > 0, 'sysmonChipCache 锚点');
+  const a = source.lastIndexOf('        if (!chip.__zuWired) {', b);
+  assert.ok(a > 0 && a < b, '__zuWired 接线块锚点');
+  const seg = source.slice(a, b + '        sysmonChipCache = chip;'.length);
+  const handlers = {};
+  const hides = [];
+  const chip = {
+    addEventListener: (type, fn) => { handlers[type] = fn; },
+  };
+  const ctx = {
+    chip,
+    sysTip: { contains: (t) => t === 'inTip' },
+    hideSysTip: () => hides.push(1),
+    onSysChipEnter: () => {}, hideSysTipSoon: () => {},
+    onSysChipKey: () => {}, onSysChipKeyup: () => {}, onSysChipClick: () => {},
+  };
+  vm.runInNewContext(seg + '\nglobalThis.wire = () => {};', ctx);
+  assert.ok(handlers.blur, 'blur 监听已挂');
+  /* 焦点移入浮层内部：不收（Windows 上 button mousedown 即移焦，blur 先于 click 的病灶） */
+  handlers.blur({ relatedTarget: 'inTip' });
+  assert.deepEqual(hides, [], 'relatedTarget 在 sysTip 内不收卡');
+  /* 焦点真离开（relatedTarget null 或浮层外）：收 */
+  handlers.blur({ relatedTarget: null });
+  assert.deepEqual(hides, [1], 'relatedTarget null 收卡');
+  handlers.blur({ relatedTarget: 'elsewhere' });
+  assert.deepEqual(hides, [1, 1], '浮层外目标收卡');
 });

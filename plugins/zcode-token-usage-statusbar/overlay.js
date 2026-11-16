@@ -18004,7 +18004,7 @@
      * v352：单根 .zu-layout-card 整卡替换；焦点目标被 disabled 时回退同行可用控件。 */
     var zuDragKey = "", zuDragOverRow = null;
     function refreshLayoutEditor(focusKey, focusSelector) {
-      var oldCard = panel.querySelector(".zu-layout-card");
+      var oldCard = panel.querySelector(".zu-layout-card:not(.zu-syscfg)");   // v362 review A2：显式排除系统状态卡（同为 zu-layout-card，DOM 序耦合曾靠 buildPanel 顺序隐式保证）
       if (!oldCard) return;
       var container = document.createElement("div");
       container.innerHTML = barOrderSettingsHtml();
