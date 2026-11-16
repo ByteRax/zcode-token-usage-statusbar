@@ -1446,7 +1446,7 @@ function readEnhanceProvider() {
 }
 function enhanceProviderView() {
   const d = readEnhanceProvider();
-  return { capability: 1, allowDowngrade: d.allowDowngrade !== false, saveHistory: d.saveHistory === true, available: process.platform !== "win32" && !!modelPuller && modelPuller.enhanceProviderVersion === 1, platformLimited: process.platform === "win32", version: 1, revision: d.revision, mode: d.mode, unreadable: !!d.unreadable, source: d.source || "manual", providerId: d.providerId || "", target: d.target || "", baseUrl: d.baseUrl || "", protocol: d.protocol || "openai-chat-completions", model: d.model || "", keyConfigured: !!d.apiKey };
+  return { capability: 1, allowDowngrade: d.allowDowngrade !== false, saveHistory: d.saveHistory !== false, available: process.platform !== "win32" && !!modelPuller && modelPuller.enhanceProviderVersion === 1, platformLimited: process.platform === "win32", version: 1, revision: d.revision, mode: d.mode, unreadable: !!d.unreadable, source: d.source || "manual", providerId: d.providerId || "", target: d.target || "", baseUrl: d.baseUrl || "", protocol: d.protocol || "openai-chat-completions", model: d.model || "", keyConfigured: !!d.apiKey };
 }
 function validEnhanceUrl(value) {
   try {
@@ -1558,7 +1558,7 @@ const enhanceHistory = [];   // 内存常驻；saveHistory 开启时才落盘 en
 let enhanceHistoryLoaded = false;
 function loadEnhanceHistoryDisk() {
   if (enhanceHistoryLoaded || process.platform === "win32") return;
-  if (readEnhanceProvider().saveHistory !== true) return;   // 关闭时不读盘：契约=关闭态重启即清空
+  if (readEnhanceProvider().saveHistory === false) return;   // 显式关闭时不读盘：契约=关闭态重启即清空（缺省视为开启，v363）
   enhanceHistoryLoaded = true;
   try {
     const st = fs.lstatSync(path.join(HERE, "enhance-history.json"));
@@ -1568,7 +1568,7 @@ function loadEnhanceHistoryDisk() {
   } catch (e) { }
 }
 function persistEnhanceHistory() {
-  if (!readEnhanceProvider().saveHistory || process.platform === "win32") return;
+  if (readEnhanceProvider().saveHistory === false || process.platform === "win32") return;
   try {
     const file = path.join(HERE, "enhance-history.json");
     const tmp = file + ".tmp";
@@ -1608,7 +1608,7 @@ function handleEnhanceHistoryAction(req, wc) {
   if (req.action === "enhance-history-list") {
     loadEnhanceHistoryDisk();
     const limit = Number.isFinite(req.limit) && req.limit > 0 ? Math.min(req.limit, 100) : enhanceHistory.length;
-    reply({ ok: true, records: enhanceHistory.slice(0, limit), total: enhanceHistory.length, saveHistory: readEnhanceProvider().saveHistory === true });
+    reply({ ok: true, records: enhanceHistory.slice(0, limit), total: enhanceHistory.length, saveHistory: readEnhanceProvider().saveHistory !== false });
     return;
   }
   if (req.action === "enhance-history-add") { reply(addEnhanceHistory(req.record)); return; }
