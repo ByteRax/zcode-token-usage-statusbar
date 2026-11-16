@@ -511,8 +511,11 @@ def remove_mobile_relay_stash(pi):
         # 只读探测先行：未注入时绝不拿目标锁——受保护/只读目录下建 app.asar.zusage.lock
         # 会抛 PermissionError，被当成 cleanup 未完成打印（issue 契约：未注入静默跳过）。
         probe = check_deployed(pi.ASAR)
-        if probe.get("status") in ("absent", "error"):
+        if probe.get("status") == "absent":
             return {"status": "absent", "detail": probe.get("detail", "not injected")}
+        if probe.get("status") == "error":
+            # 读不到目标不能假装已卸载：保留 error 上报，不再拿锁叠加权限噪声。
+            return {"status": "error", "detail": probe.get("detail", "unreadable")}
         with pi._target_lock():
             if any(path.exists() or path.is_symlink() for path in (pi.TMP, pi.TMP_META)):
                 return {"status": "deferred", "detail": "existing pending operation"}

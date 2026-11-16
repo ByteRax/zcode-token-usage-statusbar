@@ -253,3 +253,34 @@ test('mobile mode does not start the 10Hz bridge heartbeat', () => {
 test('current source fragments parse together without generating build artifacts', () => {
   assert.doesNotThrow(() => new vm.Script(currentSource(), { filename: path.join(SRC_DIR, '(memory overlay)') }));
 });
+
+test('mobile frames never write or sticky-restore desktop speed history', () => {
+  /* v377：粘性轮表是桌面速度 Tooltip 的跨代缓存；移动模式不得写入（907 的 !isMobile），
+   * 也不得在缺字段帧用它回补（911 的 !isMobile），否则桌面历史会漏进手机 V2 卡。
+   * 变异实验：删掉任一 !isMobile 门，本用例即红。 */
+  const h = fixture(true);
+  const desktopHistory = { turns: ['desktop-history'] };
+  h.ctx.lastSpeedHistory = desktopHistory;
+  h.ctx.window.__zusageSpdSticky = desktopHistory;
+  const mobile = frame({ row: numbers(50) });
+  mobile.speed_history = { turns: ['mobile-a'] };
+  h.update(mobile);
+  assert.equal(h.ctx.lastSpeedHistory, desktopHistory, 'mobile ready frame must not overwrite sticky history');
+  assert.equal(h.ctx.window.__zusageSpdSticky, desktopHistory, 'mobile frame must not publish sticky history');
+
+  const gap = frame({ row: numbers(60) });   // 缺 speed_history：桌面会走 sticky 回补，移动不会
+  delete gap.speed_history;
+  h.update(gap);
+  assert.equal(gap.speed_history, undefined, 'mobile frame must not sticky-restore desktop history');
+
+  // 同一夹具切到桌面：写入与 sticky 回补都应生效（证明不是断言写死）
+  h.ctx.mobileMode = false;
+  const desktop = frame({ row: numbers(70) });
+  desktop.speed_history = { turns: ['desktop-new'] };
+  h.update(desktop);
+  assert.equal(h.ctx.lastSpeedHistory, desktop.speed_history, 'desktop frame still writes sticky history');
+  const desktopGap = frame({ row: numbers(80) });
+  delete desktopGap.speed_history;
+  h.update(desktopGap);
+  assert.equal(desktopGap.speed_history, desktop.speed_history, 'desktop frame sticky-restores on gap');
+});

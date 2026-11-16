@@ -65,6 +65,19 @@ test('both constructed variants embed byte-identical desktop assemble_bytes outp
   }
 });
 
+test('committed userscript artifacts match in-memory build byte for byte', () => {
+  /* 内存重建一致还不够：提交进仓库的 .user.js 若陈旧，用户安装到的就是旧 overlay。
+   * 直接读已提交产物比对，变异产物即红（build --check 之外多一道 Node 守卫）。 */
+  const fs = require('node:fs');
+  for (const [name, source] of [
+    ['zusage-mobile.user.js', products.release],
+    ['zusage-mobile.debug.user.js', products.debug],
+  ]) {
+    const committed = fs.readFileSync(path.join(ROOT, name));
+    assert.deepEqual(committed, Buffer.from(source, 'utf8'), `${name} is stale; run scripts/build_mobile_userscript.py`);
+  }
+});
+
 test('release and debug differ only by metadata and their debug switch', () => {
   const normalized = products.debug.replace('var DEBUG_BUILD = true;', 'var DEBUG_BUILD = false;')
     .replace('// @name         ZCode 用量状态条（远控中继接收端·调试版）', '// @name         ZCode 用量状态条（远控中继接收端）')

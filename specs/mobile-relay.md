@@ -14,7 +14,7 @@
   - 主进程按 taskId 与 workspaceIdentity 精确查询和匹配。不能按目录、标题或最近活跃猜目标；发送前重新读取宿主状态并验证桥/relay/protocol对象及路由。真实身份仅用于进程内验证，wire 以随机 binding 隔离同 SID 不同身份。
   - 查询在途发生目标、身份、桥代次变化或撤销时丢弃旧结果；新目标失败发送其专属 unavailable 帧，清除旧显示。能力公告仅更新握手，不能更改数据新鲜度或恢复旧快照。
   - 远端数据库变化不能触发本地文件监听，远端目标单独周期查询；间隔尊重远端 `poll_ms` 与本地限频，不与 1.5 秒目标发现轮询耦合。能力公告只在已确认持久上行钩子或运行时包裹成功时发送。
-  - 桌面渲染端不再采集 DOM chips（v376 移除 13-mobile-chips 分片；原 v350 因与主线撞号顺延，`window.__zusageMobileChips` 已无生产者与消费者）；当前手机目标发现直接读取宿主状态，不以 DOM chips 或桌面当前焦点作为目标来源。
+  - 桌面渲染端不再采集 DOM chips（v378 移除 13-mobile-chips 分片；原 v350 因与主线撞号顺延，`window.__zusageMobileChips` 已无生产者与消费者）；当前手机目标发现直接读取宿主状态，不以 DOM chips 或桌面当前焦点作为目标来源。
 - 推送节奏与去重：查询走**常驻** `zusage.py serve`（JSON 行协议，单次 5~20ms，空闲 60s 回收；早退/拉起异常累计 3 次后进入 60s 冷却，冷却期内走一次性 `zusage.py json` 回退，到期清零重试常驻；单次成功回包不清零，避免「回包后立刻崩溃」被误判为已稳定）。请求体带 `lean: true`：`serve`/`json` 在请求内显式 lean 时关闭 `speed_history` 与 `all_projects` 两个桌面增强字段（手机 projection 不消费，避免每次查询多算/多传）；**不能**改用 `ZUSAGE_REMOTE_CHILD=1` 实现 lean——该环境变量承担远端 scope 子查询语义。内容去重键不含 ts（未变即跳过），内容不变仍以 `HEARTBEAT_MS`（15s）放行心跳——消费端以载荷 ts 与接收时刻中更早者起算，超过 30s 切为同一桌面条的不可用空态；能力公告不能续期。本地目标另有独立 10s 数据心跳（`bridgeTimer` 30s 兼作桥维护与兜底心跳，通常被内容去重）：10s tick 与 15s 去重阈值配合，最坏间隔 <25s（< 手机 30s TTL），不会因 tick 被去重跳过形成 >30s 间隔；该 tick **只驱动本地目标**（`workspaceIdentity` 为空），远端目标由 `remoteTimer` 按 `poll_ms` 刷新，且不被 10s tick 拉快（30s `bridgeTimer` 兜底仍可能早于大于 30s 的 `poll_ms`，即实际取二者更早者）；tick 只在 enabled、唯一 live 桥、本地当前目标且 `clientReady` 时 pump，dispose 时清理并 unref。无活跃桥（stash 空）时零查询零流量；桥的活跃判定为 `!bridge.degraded && bridge.relayProtocol` 仍指向 stash 里的实例，失效即剪枝。
 - 目标发现节奏：inject-main 独立 1.5s 泵读取宿主当前远控状态，不查数据库；同目标不重复查询，DB事件/远端周期/兜底心跳驱动统计刷新。inject-main 是冷文件，更新后须完全重启生效。
 - 数据时效边界：用量库只在**请求完成**时落行，生成中手机端状态格不会逐字跳动（桌面端生成中的 t/s 估算来自渲染桥实时数据，不属于本链路）；这是数据源口径，不是推送延迟。
