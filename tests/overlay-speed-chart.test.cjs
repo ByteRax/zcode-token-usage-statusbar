@@ -300,6 +300,11 @@ test('speedCardHTML tiers the main reading by estimated width (fit2/fit3)', () =
   assert.doesNotMatch(card('估 268.1 t/s'), /zu-speed-fit/, '5.8em：250px 左卡大字单行（v235 阈值）');
   assert.match(card('思考中…1时2分10秒'), /zu-speed-main[^"]*zu-speed-fit2/);   // 9.0em
   assert.match(card('子代理运行中 ×2 · 估 268.1 t/s'), /zu-speed-main[^"]*zu-speed-fit3/);
+  /* v371：legacy hero（无 status/无图表旧快照回退卡）的长 MCP 工具动词也须命中分级——
+   * fit 类 CSS 已扩 .zu-speed-hero 双作用域，此前永不命中致 36px nowrap 大字溢出 KPI 卡 */
+  const longVerb = '正在调用 plugin__very-long-mcp-server-name__some_extremely_long_tool_name';
+  assert.match(card(longVerb), /zu-speed-main[^"]*zu-speed-fit3/, '长工具动词 hero 路径挂 fit3');
+  assert.match(card(longVerb), /zu-speed-hero/, '无 status 走 hero 布局');
 });
 
 test('single segment renders one bar that is both latest and cur with its label', () => {

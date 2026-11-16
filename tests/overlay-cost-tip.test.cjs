@@ -261,11 +261,50 @@ test('会话累计标题拼接会话名（v230）：title 渲染 zu-st-name、�
   const p = h.payload({});
   p.recent[0].title = '  修复\n登录页   空白与超长的会话标题应当被省略号截断而不撑破卡片布局  ';
   h.window.__zusageUpdate(p);
+  const full = '修复 登录页 空白与超长的会话标题应当被省略号截断而不撑破卡片布局';
   assert.match(h.tips()[1],
-    /zu-stat-title zu-tt-name">会话累计<span class="zu-st-name">修复 登录页 空白与超长的会话标题应当被省略号截断而不撑破卡片布局<\/span>/);
+    new RegExp('zu-stat-title zu-tt-name">会话累计<span class="zu-st-name" title="' + full + '">' + full + '</span>'));
   const h2 = harness(); setup(h2);
   h2.window.__zusageUpdate(h2.payload({}));   // 夹具 row 无 title（旧快照形态）：整段不渲染
   assert.doesNotMatch(h2.tips()[1], /zu-st-name/);
+  // v374：title 属性须属性转义（数据可控：引号不破坏 HTML）
+  const h3 = harness(); setup(h3);
+  const p3 = h3.payload({}); p3.recent[0].title = 'A "quoted" <name> & more';
+  h3.window.__zusageUpdate(p3);
+  assert.match(h3.tips()[1], /class="zu-st-name" title="A &quot;quoted&quot; &lt;name&gt; &amp; more">/);
+});
+
+/* v370：超长会话名不得挤折大字标题/撑破紧凑卡——标题行 flex 契约守卫。
+ * 根因=.zu-tt-name 的 min-width:auto 解析为 min-content，标题列被压到 min-content
+ * 以下致「会话累计」逐字竖排、名称 360px 帽溢出；修复=标题/胶囊不收缩 +
+ * 容器与名称 min-width:0 可收缩进既有 ellipsis（项目卡 .zu-pj-title 同容器受益）。 */
+function findStyleEl(el) {
+  if (el.tagName === 'STYLE') return el;
+  for (const c of el.children || []) { const hit = findStyleEl(c); if (hit) return hit; }
+  return null;
+}
+function ruleBody(css, selector) {
+  const re = new RegExp(selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\{([^}]*)\\}');
+  const m = css.match(re);
+  return m ? m[1] : null;
+}
+test('v370 标题行超长名称布局契约：标题/胶囊不收缩、名称容器与名称可收缩截断', () => {
+  const h = harness(); setup(h);
+  const css = findStyleEl(h.body).textContent;
+  const title = ruleBody(css, '.zu-stat-title');
+  assert.ok(title && /white-space:nowrap/.test(title) && /min-width:0/.test(title),
+    '大字标题恒单行（nowrap），标题列可收缩让位名称');
+  assert.ok(!/flex:0 0 auto/.test(title),
+    '标题列不得锁死不收缩（v370 实机量测：flex:0 0 auto 会把范围胶囊顶出卡外）');
+  const scope = ruleBody(css, '.zu-stat-scope');
+  assert.ok(scope && /flex:0 0 auto/.test(scope), '范围胶囊不压缩');
+  const tt = ruleBody(css, '.zu-tt-name');
+  assert.ok(tt && /min-width:0/.test(tt), '标题容器解除 flex auto 最小尺寸');
+  const name = ruleBody(css, '.zu-st-name');
+  assert.ok(name && /min-width:0/.test(name) && /flex:0 1 auto/.test(name),
+    '名称可在剩余宽度内收缩');
+  assert.ok(/max-width:360px/.test(name) && /text-overflow:ellipsis/.test(name) && /white-space:nowrap/.test(name),
+    '既有 360px 上限与省略号截断保留（正常长度名称排版不变）');
 });
 
 test('旧快照（无 cost_usd/fx 字段）不显费用行，不显假 0', () => {
@@ -321,6 +360,22 @@ test('紧凑摘要（速率 chip tooltip）四行带费用尾注 + 来源行', (
   assert.match(html, /会话累计<\/span><span class="tps-v">[^]*?· ¥7\.10/);
   assert.match(html, /项目累计<\/span><span class="tps-v">[^]*?· ¥21\.30/);
   assert.match(html, /今日合计<\/span><span class="tps-v">[^]*?· ¥14\.20/);
+});
+
+test('v371: 精简摘要 rt-models 超长模型名键列有宽度帽（table-cell ellipsis 成立前提），名与数值列都在', () => {
+  const h = harness(); setup(h);
+  const payload = h.payload({});
+  const row = payload.recent[0];
+  const longModel = 'vendor/' + 'm'.repeat(150);
+  row.models = [{ model: longModel, requests: 3, total: 1000, cost_usd: 0.4 }];
+  h.window.__zusageUpdate(payload);
+  const html = h.window.__zuTpsTip({ v: { kind: 'db', sessAvg: 130.3, band: 'mid', dbTps: 102.2 },
+    view: { session: row, last_turn: row.last_turn, today: payload.today,
+      last: row.last, tools: { total: 1, errors: 0 }, sub: { total: 0, active: false } } });
+  assert.ok(html.includes('class="zu-model-fit" title="' + longModel + '"'), '长模型名全文进 title');
+  assert.ok(html.includes('rt-models'), '行式明细仍在（精简摘要专属）');
+  /* 键列帽是全局 .tip 规则（06 基础样式），此处锁渲染侧不预截断 + 数值列不被名吞掉 */
+  assert.ok(html.includes('1000 token'), '数值列随名同行');
 });
 
 test('四格费用行带空心问号 icon；KPI 问号随卡携带模型上下文（v248）：单模型显该模型四价、多模型显计价范围，不借全局 last', () => {

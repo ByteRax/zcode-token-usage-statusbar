@@ -248,8 +248,14 @@
      * → v367 系统状态设置卡内容边距统一（用户实测反馈）：.zu-syscfg.zu-layout-card 卡根加 padding:0 12px 12px，作用域内 .zu-layout-head/.zu-layout-note 自带水平 12px 归零（垂直保留）——此前卡根无内边距、仅通用 head/note 有 12px，预览/分组标题/行/阈值表全部贴卡边框，与标题错位。源顺序在通用 .zu-settings .zu-layout-head 之后、同特异性覆盖成立。
      * → v368 水平对齐说明左边距修复（用户实测反馈）：.zu-just-block 里的对齐 pnote 曾贴左缘——「仅默认样式生效…」包在 .zu-just-block 容器内，吃不到 .zu-settings-card>.pnote（直接子选择器）的 12px；补 .zu-settings .zu-just-block .pnote{padding:2px 12px 4px} 与卡直接子 pnote、.zu-theme-options 的 12px 对齐。同卡「精简」说明是直接子元素本就有 padding，不受影响。
      * → v369 系统状态 Tooltip 按《深色系统状态概览面板》设计稿图标化（specs/statusbar-system-status.md 同步）：①三区指标行统一图标区 .zu-sys-lead（grid-row:1/3 跨主数值/sub 两行 align-self:center）= .zu-sys-mico 28px 圆角 7px 中性轻背景（foreground 6% color-mix，非品牌非状态色）容器 + 15px 线性 SVG（SYSMON_ICONS 新增 cpu/mem/db 三个 lucide 同款 path + sysMicoSvg 统一属性模板）+ .zu-sys-k 标签升 13px——经 .zu-sys-tip .zu-sys-k 作用域覆写实现（.zu-sys-k 同时是条面格 seg() 标签共享类，基础规则保持 -2px 并加 white-space:nowrap 不动条面；review M1）+ 阈值表数值列宽 52px→56px（review N2 补记）；图标是采集范围标识不随预警变色。②主数值列/sub 行左缘加 1px 竖分隔线（border-left+padding-left:12px，grid 改 auto minmax(0,1fr) auto、row-gap 归 0 由 sub padding-top:3px 承接间距，分隔线连续）；.zu-sys-dhead 对齐 baseline→center（inline-flex lead 的基线落在图标底缘，baseline 对齐曾把「当前：」顶高）。③磁盘表套低对比外框（.zu-sys-vols 1px 边框+8px 圆角+3px 内衬，表头底线框内、高亮行内嵌）。④阈值展开表按行分容器：.zu-sys-tht-h 表头行带底线 / .zu-sys-tht-r 数据行（role=row/rowheader/cell 语义补全），右对齐选择器改 .zu-sys-tht-r>span:not(:first-child) 行内作用域——旧扁平 grid 的 :not(:first-child) 把数据行指标名也右对齐（对齐 bug）。⑤磁盘 other 角色卷名不拼「卷」前缀（「卷 Data」→「Data」，设计稿裸名；project/system 角色前缀保留）；「当前：」中文冒号后空格移除（空格只留英文串 current:）。⑥顺手修复 v367 遗留的 v359 级联锁违例（overlay-statusbar-layout bareLayoutRules 抓到 .zu-syscfg.zu-layout-card/.zu-layout-head/.zu-layout-note 三条裸规则头）——补 .zu-settings 前缀，特异性 (0,3,0) 高于通用 head/note，覆盖不再依赖源顺序，计算样式不变；该失败在 v367 会话即存在（未跑全套件），非本批引入。
+     * → v370 会话累计卡标题行超长会话名布局修复（用户实测截图：大字标题被挤成「会话累/计」两行、名称溢出紧凑卡；specs/stat-tooltip-large-text.md 同步）：根因=.zu-tt-name 容器作为 .zu-stat-head 的 flex 子项 min-width:auto 解析为 min-content（标题文字+8px+名称 min-content），450px 紧凑卡内标题列被压到 min-content 以下，「会话累计」四字逐字折行、名称 360px 帽仍超剩余宽。修复四处（均 06 基础规则，项目卡 .zu-pj-title 同名容器一并受益）：.zu-stat-title 加 white-space:nowrap+min-width:0（标题文字恒单行——nowrap 继承给匿名 flex item 保其不缩；标题列保持缺省 flex:0 1 auto 可收缩，收缩额度全让给名称。初版曾加 flex:0 0 auto 锁死标题列，实机量测发现名称 360px 帽仍把范围胶囊顶出卡外，改回可收缩）、.zu-stat-scope 加 flex:0 0 auto（范围胶囊不压缩）、.zu-tt-name 加 min-width:0（解除 auto 最小尺寸）、.zu-st-name 加 flex:0 1 auto+min-width:0（名称在剩余宽度内收缩进既有 ellipsis，360px 仍为上限）；正常长度名称不触发收缩、排版不变。
+     * → v371 其它浮层长动态文本防护批（v370 同根因全面排查，两路审计+逐项核实；specs/stat-tooltip-large-text.md 同步）：①增强历史小浮层 .zu-eh-phase 补 min-width:0+overflow:hidden+ellipsis——相位可含上游错误原文（长 URL/服务端消息），nowrap 无裁切曾撑破头部（与 v370 同型）。②精简摘要 .tip .rt-models .rt-row b 补 max-width:300px——table-cell 上 zu-model-fit 的 ellipsis 与 fitModelNames 缩字号兜底在无宽度帽的 auto 布局 cell 上双双失效，超长模型名曾把摘要卡撑出横滚；口径同项目表首列帽。③子代理任务页 .zu-spsub 由 flex:0 0 auto 改 flex:0 1 auto+min-width:0+max-width:45%+ellipsis，渲染端补 title 全名——长 agent 名曾把任务名 h3 挤到逐字折行。④额度浮层 .qt-h 补 overflow-wrap:anywhere（远端可控套餐/供应商名，同浮层数据行/qt-note 本就有、唯标题漏配）。⑤四处 data-tip 伪元素气泡补 overflow-wrap:anywhere（.zu-mp-tst 探测状态含 URL/错误原文必现溢出；.zu-sl-model 单个超长模型 id；.zu-rot-tipt/.zu-rot-livetip 防护性补齐）。⑥词包弹窗 .zu-rot-pk-title 补 min-width:0+ellipsis+nowrap、JS 补 title 全名（packId 回退长名）。⑦速度 V1 估宽分级 fit2/fit3 作用域扩 .zu-speed-hero——legacy hero（精简 chip 旧快照回退卡）o.main 可含 MCP 长工具动词，此前分级类只挂 .zu-speed-left 永不命中，36px nowrap 大字溢出 KPI 卡；短读数不带 fit 类排版不变。⑧工作流 run chip tooltip 作用域前缀 .zusage-wfrun-tip 改 .zusage-subrate-tip——浮层宿主类名恒为后者（showSubTip 从不挂前者），旧前缀整段 CSS 是死代码，wf-name 单行省略/数值右对齐从未生效（靠继承 anywhere 折行侥幸不破）；wf-* 类仅该构建器产出，改前缀无串扰。已充分防护无需动：Git tooltip（break-all）、sysmon 卷表（minmax(0,1fr)+ellipsis）、项目卡 pname（v303 compact 已齐）、fxTip 模型行（inline-block+帽）、V2 左卡标题/模型/时间胶囊、增强历史全量表格（fixed+ellipsis）。
+     * → v372 统计卡/项目卡标题行外层垂直居中（用户实机指认）：.zu-stat-head 与 .zu-pj-head 的 align-items 由 baseline 改 center——baseline 把范围胶囊/Tab 中心拖低 ~2.5px（CDP 量测 cy 490.3 vs 标题 487.8）；只改外层 head 行对齐，六统计卡与项目卡同样生效，无名称的卡（本轮/今日/工具）居中无副作用。标题容器内部（.zu-tt-name）本就 center；项目卡内部 .zu-pj-title 的 baseline!important 遗留由 v373 单独修。
+     * → v373 修复收尾两处审查 MINOR（review-fix-merge 第一轮）：①项目卡内部标题+项目名垂直居中——07 分片 statCompactStyle("project") 的 .zu-stat-tip--project .zu-pj-title 由 align-items:baseline!important 改 center!important（v290–v304 遗留，CDP 量测项目名中心比大标题低 ~1.7px，同 v372 根因；ellipsis/收缩链不变）；②工作流 run tooltip 补 .zusage-subrate-tip .sub-agent 灰色小字徽标样式（两个构建器共用 subTip DOM、各注入自己的 style，旧仅 subRowTipHTML 携带，wf 的 runShort 命中不到——既存问题，v371 改作用域后同段收尾）。
+     * → v374 会话名省略号补 title 全名（PR 最终自审 F1）：截断项契约对齐项目名/词包标题/agent 名——
+       * .zu-st-name 渲染时 title=压缩后的全名（escAttr 属性转义），发版条目「鼠标悬停可看全名」落地。
       */
-    var VERSION = "v369";
+    var VERSION = "v374";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
@@ -778,7 +784,7 @@
       ".zu-mp-tst.zu-mp-tst-fail{color:#f87171;border:1px solid rgba(248,113,113,.5);background:rgba(248,113,113,.1);cursor:help}" +
       /* v310 原因气泡：宿主内原生 title 不弹（v307 实证），data-tip 伪元素从 chip 左侧
        * 水平弹出、行内垂直居中——列表容器 overflow:auto 只在上下方向裁剪，左弹不越界 */
-      ".zu-mp-tst[data-tip]:hover::after{content:attr(data-tip);position:absolute;top:50%;right:calc(100% + 8px);transform:translateY(-50%);z-index:80;max-width:340px;width:max-content;padding:7px 10px;border:1px solid var(--color-popover-border,var(--color-border,rgba(255,255,255,.14)));border-radius:8px;background:var(--color-popover,#20242e);color:var(--color-popover-foreground,var(--color-foreground,#e9edf4));font-size:calc(var(--ui-font-size,14px) - 2px);line-height:1.5;white-space:pre-line;text-align:left;box-shadow:0 6px 18px rgba(0,0,0,.28);pointer-events:none}" +
+      ".zu-mp-tst[data-tip]:hover::after{content:attr(data-tip);position:absolute;top:50%;right:calc(100% + 8px);transform:translateY(-50%);z-index:80;max-width:340px;width:max-content;padding:7px 10px;border:1px solid var(--color-popover-border,var(--color-border,rgba(255,255,255,.14)));border-radius:8px;background:var(--color-popover,#20242e);color:var(--color-popover-foreground,var(--color-foreground,#e9edf4));font-size:calc(var(--ui-font-size,14px) - 2px);line-height:1.5;white-space:pre-line;overflow-wrap:anywhere;text-align:left;box-shadow:0 6px 18px rgba(0,0,0,.28);pointer-events:none}" +   /* v371：tip 含 URL/错误原文，pre-line 不断无空格长串，补 anywhere 防溢出气泡盒 */
       ".zu-mp-fix:empty{display:none}.zu-mp-fix{color:#34D399;overflow-wrap:anywhere;font-size:calc(var(--ui-font-size,14px) - 1px)}" +   /* v310 自动修复披露（绿=已写入，与 .zu-mp-err 红区并排） */
       ".zu-mp-warn:empty{display:none}.zu-mp-warn{color:#f5b944;overflow-wrap:anywhere;font-size:calc(var(--ui-font-size,14px) - 1px)}" +   /* v313 通道缺陷警告（琥珀=可用但有关键限制，档位色同额度黄） */
       ".zu-mp-bolt{width:18px;height:18px;flex:0 0 auto;color:#3B82F6}" +   /* 标题 ⚡（HHQ 同款蓝），浅色组换 600 档 */
@@ -969,7 +975,8 @@
       ".zusage-enhance-tip .zu-eh-head{padding:14px 18px 6px;display:flex;flex-direction:column;gap:3px}" +
       ".zusage-enhance-tip .zu-eh-head-row{display:flex;align-items:center;gap:8px}.zusage-enhance-tip .zu-eh-head-row .zu-eh-total{margin-left:auto}" +
       ".zusage-enhance-tip .zu-eh-title{display:inline-flex;align-items:center;gap:8px;font-weight:700;font-size:calc(var(--ui-font-size,14px) + 4px);min-width:0}.zusage-enhance-tip .zu-eh-title svg{flex:0 0 auto}" +
-      ".zusage-enhance-tip .zu-eh-phase{color:var(--color-foreground-subtle,#999);font-size:calc(var(--ui-font-size,14px) - 1px);font-weight:400;margin-left:8px;white-space:nowrap}.zusage-enhance-tip .zu-eh-total{flex:0 0 auto;color:var(--color-foreground-subtle,#999);font-size:calc(var(--ui-font-size,14px) - 2px);margin-left:auto;font-variant-numeric:tabular-nums;white-space:nowrap}" +
+      /* v371：相位文案可含上游错误原文（长 URL/服务端消息），nowrap 无裁切曾撑破头部——补收缩+省略号 */
+      ".zusage-enhance-tip .zu-eh-phase{color:var(--color-foreground-subtle,#999);font-size:calc(var(--ui-font-size,14px) - 1px);font-weight:400;margin-left:8px;white-space:nowrap;min-width:0;overflow:hidden;text-overflow:ellipsis}.zusage-enhance-tip .zu-eh-total{flex:0 0 auto;color:var(--color-foreground-subtle,#999);font-size:calc(var(--ui-font-size,14px) - 2px);margin-left:auto;font-variant-numeric:tabular-nums;white-space:nowrap}" +
       ".zusage-enhance-tip .zu-eh-scroll{flex:1 1 auto;min-height:0;overflow-y:auto;overflow-x:hidden;padding:6px 18px;display:grid;gap:12px}" +
       ".zusage-enhance-tip .zu-eh-card{min-width:0;border:1px solid var(--color-border,#555);border-radius:10px;padding:12px 14px;display:grid;gap:8px;background:var(--color-card,rgba(255,255,255,.03))}" +
       ".zusage-enhance-tip .zu-eh-pm{display:flex;align-items:center;gap:6px;min-width:0;flex-wrap:nowrap}" +
@@ -1121,7 +1128,9 @@
       ".zu-spnav-list::-webkit-scrollbar-thumb,.zu-spbody::-webkit-scrollbar-thumb{background:var(--color-border,rgba(255,255,255,.14));border-radius:999px}" +
       ".zu-spview-head{display:flex;align-items:baseline;gap:10px;margin-bottom:10px}" +
       ".zu-spview-head h3{margin:0;font-size:calc(var(--ui-font-size,14px) + 2px);font-weight:700;color:var(--color-foreground,#f1f2f3);min-width:0;overflow-wrap:anywhere}" +
-      ".zu-spsub{color:var(--color-foreground-subtle,#a8aaae);font-size:calc(var(--ui-font-size,14px) - 2px);white-space:nowrap;flex:0 0 auto}" +
+      /* v371：agent 名数据可控，不可收缩 nowrap 曾把任务名 h3 挤到逐字折行（v370 同构）——
+       * 改可收缩+省略号+上限，title 全名由渲染端携带 */
+      ".zu-spsub{color:var(--color-foreground-subtle,#a8aaae);font-size:calc(var(--ui-font-size,14px) - 2px);white-space:nowrap;flex:0 1 auto;min-width:0;max-width:45%;overflow:hidden;text-overflow:ellipsis}" +
       ".zu-spstate{margin-left:auto;display:flex;align-items:center;gap:7px;color:var(--color-foreground-subtle,#a8aaae);font-size:calc(var(--ui-font-size,14px) - 2px);white-space:nowrap;flex:0 0 auto}" +
       ".zu-spstate .dot{width:7px;height:7px;border-radius:50%;background:var(--color-foreground-subtlest,#6b7484)}" +
       ".zu-spstate.run .dot{background:#3ecf8e}" +
@@ -1169,7 +1178,10 @@
       /* v165 模型明细表格化：整块共享最宽键列，token/次数列纵向对齐 */
       ".tip .rt-models{display:table;margin:5px 0 2px}" +
       ".tip .rt-models .rt-row{display:table-row;margin:0}" +
-      ".tip .rt-models .rt-row b{display:table-cell;padding:2.5px 14px 2.5px 0;white-space:nowrap}" +
+      /* v371：模型名键列加宽度帽——table-cell 上 ellipsis 须有 max-width 才成立（auto 布局下
+       * cell 随内容长宽，zu-model-fit 的省略号与 fitModelNames 收缩兜底此前双双失效），
+       * 超长模型名不再把精简摘要卡撑出横向滚动；口径同项目表首列 300px 帽 */
+      ".tip .rt-models .rt-row b{display:table-cell;padding:2.5px 14px 2.5px 0;white-space:nowrap;max-width:300px}" +
       ".tip .rt-models .rt-row span{display:table-cell;white-space:nowrap}" +
       ".tip .rt-tool{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:16px;margin:5px 0;align-items:baseline}.tip .rt-tool-name{overflow-wrap:anywhere}.tip .rt-tool>.rt-atom{text-align:right}" +
       ".tip .rt-atom{display:inline-block;white-space:nowrap}" +
@@ -1193,7 +1205,7 @@
       ".zusage-tip-root:has(.zu-project-tip){max-width:min(840px,calc(100vw - 24px))}" +
       ".zusage-tip-root:has(.zu-project-tip) .tbody{padding:12px 15px}" +
       ".zu-project-tip{font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);font-size:calc(var(--ui-font-size,14px) + 1px);line-height:1.5;color:var(--color-tooltip-foreground,#fafafa)}" +
-      ".zu-pj-head{display:flex;align-items:baseline;justify-content:space-between;gap:14px;margin-bottom:8px}" +
+      ".zu-pj-head{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:8px}" +   // v372：同 stat-head 改 center（标题+项目名+Tab 垂直居中）
       ".zu-pj-title{font-size:calc(var(--ui-font-size,14px) + 4px);font-weight:700;letter-spacing:.5px}" +
       ".zu-pj-sub{color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
       ".zu-pj-sub::before{content:'· ';opacity:.6}" +
@@ -1213,7 +1225,8 @@
       /* v229：标题旁项目名，字号/颜色同规模行（.zu-pj-scale）；父级 .zu-pj-title 的 700/.5px 须显式还原。
          v230.1 垂直居中：标题容器带名称时切 flex（.zu-tt-name），名称为 flex 子项中心对齐——
          行内 baseline/bottom 对齐会被 18px 大字的 descent 拖得视觉偏低（用户实机指认） */
-      ".zu-tt-name{display:flex;align-items:center}" +
+      /* v370：min-width:0 解除 flex 子项 auto 最小尺寸（=min-content），长名称才能收缩进省略号 */
+      ".zu-tt-name{display:flex;align-items:center;min-width:0}" +
       ".zu-pj-pname{font-size:calc(var(--ui-font-size,14px) - 1px);font-weight:400;letter-spacing:normal;color:var(--color-tooltip-tag-foreground,#a6a6a6);margin-left:8px}" +
       ".zu-pj-mhead{display:flex;align-items:baseline;justify-content:space-between;margin:9px 0 4px}" +
       ".zu-pj-mtitle{font-size:calc(var(--ui-font-size,14px) + 2px);font-weight:700}" +
@@ -1254,9 +1267,14 @@
       ".zusage-tip-root:has(.zu-stat-tip){max-width:min(840px,calc(100vw - 24px))}" +
       ".zusage-tip-root:has(.zu-stat-tip) .tbody{padding:12px 15px}" +
       ".zu-stat-tip{font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);font-size:calc(var(--ui-font-size,14px) + 1px);line-height:1.5;color:var(--color-tooltip-foreground,#fafafa)}" +
-      ".zu-stat-head{display:flex;align-items:baseline;justify-content:space-between;gap:14px;margin-bottom:8px}" +
-      ".zu-stat-title{font-size:calc(var(--ui-font-size,14px) + 4px);font-weight:700;letter-spacing:.5px}" +
-      ".zu-stat-scope{font-size:calc(var(--ui-font-size,14px) - 2px);color:var(--color-tooltip-foreground,#fafafa);opacity:.72;border:1px solid var(--color-popover-border,rgba(255,255,255,.16));border-radius:999px;padding:2px 10px;white-space:nowrap}" +
+      /* v372：head 改 center——baseline 对齐把范围胶囊中心拖低 ~2.5px（实机量测 cy 490.3
+       * vs 标题 487.8），用户指认不居中；标题容器内部 .zu-tt-name 本就 center，外层随同 */
+      ".zu-stat-head{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:8px}" +
+      /* v370：标题文字恒单行（nowrap 继承给匿名 flex item）；标题列自身保持可收缩
+         （flex:0 1 auto 缺省+min-width:0），收缩额度全部让给名称——曾误加 flex:0 0 auto
+         致标题列不收缩、把范围胶囊顶出卡外（实机量测抓回） */
+      ".zu-stat-title{font-size:calc(var(--ui-font-size,14px) + 4px);font-weight:700;letter-spacing:.5px;white-space:nowrap;min-width:0}" +
+      ".zu-stat-scope{font-size:calc(var(--ui-font-size,14px) - 2px);color:var(--color-tooltip-foreground,#fafafa);opacity:.72;border:1px solid var(--color-popover-border,rgba(255,255,255,.16));border-radius:999px;padding:2px 10px;white-space:nowrap;flex:0 0 auto}" +
       ".zu-light .zu-stat-scope{border-color:rgba(0,0,0,.2)}" +
       ".zu-stat-kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:0 9px;background:rgba(255,255,255,.045);border-radius:8px;padding:7px 9px}" +
       ".zu-light .zu-stat-kpis{background:rgba(0,0,0,.045)}" +
@@ -1284,7 +1302,9 @@
       ".zu-stat-scale{margin-top:7px;font-size:calc(var(--ui-font-size,14px) - 1px);color:var(--color-tooltip-tag-foreground,#a6a6a6);display:flex;flex-wrap:wrap;column-gap:8px}" +
       /* v230：会话累计标题旁会话名，字号/颜色同规模行（.zu-stat-scale）；v230.1 垂直居中走
          .zu-tt-name 容器 flex；ellipsis 仍需块级盒（flex 子项自动块化，省略号成立） */
-      ".zu-st-name{font-size:calc(var(--ui-font-size,14px) - 1px);font-weight:400;letter-spacing:normal;color:var(--color-tooltip-tag-foreground,#a6a6a6);margin-left:8px;max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
+      /* v370：flex:0 1 auto+min-width:0——名称在标题行剩余宽度内收缩截断（360px 仍为上限），
+         不再撑破 450px 紧凑卡；正常长度名称不收缩、排版不变 */
+      ".zu-st-name{font-size:calc(var(--ui-font-size,14px) - 1px);font-weight:400;letter-spacing:normal;color:var(--color-tooltip-tag-foreground,#a6a6a6);margin-left:8px;max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:0 1 auto;min-width:0}" +
       ".zu-stat-note{font-size:calc(var(--ui-font-size,14px) - 2px);color:var(--color-tooltip-tag-foreground,#a6a6a6);margin-top:6px}" +
       ".zu-stat-time .zu-stat-note{flex:0 0 100%;margin-top:4px}" +
       ".zu-stat-time{display:flex;flex-wrap:wrap;gap:4px 10px;margin-top:14px;padding-top:12px;border-top:1px solid var(--color-popover-border,rgba(255,255,255,.12));font-size:calc(var(--ui-font-size,14px) - 2px);color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
@@ -1600,8 +1620,11 @@
       ".zu-speed-left{flex:0 0 250px;min-width:0;box-sizing:border-box;display:flex;flex-direction:column;justify-content:flex-start;background:rgba(255,255,255,.045);border:1px solid var(--color-popover-border,rgba(255,255,255,.12));border-radius:12px;padding:12px;overflow:hidden}" +
       ".zu-light .zu-speed-left{background:rgba(0,0,0,.045)}" +
       /* v233 主读数估宽分级：fit2 中长状态词缩号并允许换行；fit3 更长再缩 + break-word。
-       * 只挂左卡作用域，legacy hero（无图表旧快照）维持原 nowrap 大字不动。 */
-      ".zu-speed-left .zu-speed-fit2{font-size:calc(var(--ui-font-size,14px) + 10px);white-space:normal;line-height:1.25}" +
+       * v371 起左卡与 legacy hero 双作用域（hero 的长工具动词此前分级永不命中会溢出）。 */
+      /* v371：fit 分级作用域扩到 .zu-speed-hero——legacy hero（精简 chip 旧快照回退卡）
+       * 的 o.main 可含 MCP 长工具动词，此前分级类只挂 .zu-speed-left 永不命中，
+       * 36px nowrap 大字无裁切直接溢出 KPI 卡；短读数不带 fit 类、排版不变 */
+      ".zu-speed-left .zu-speed-fit2,.zu-speed-hero .zu-speed-fit2{font-size:calc(var(--ui-font-size,14px) + 10px);white-space:normal;line-height:1.25}" +
       /* v235 结构化左卡分层节点：状态标题/名称/主数值/单位/辅助说明各自独立，
        * 数值型走档位色（st.band），工具/Skill/思考/子代理保持中性 dim 语义 */
       ".zu-sl-status{display:flex;align-items:center;gap:6px;font-size:calc(var(--ui-font-size,14px) - 1px);color:var(--color-foreground-subtle,#8791a3);min-width:0}" +
@@ -1611,7 +1634,7 @@
       ".zu-sl-unit{font-size:calc(var(--ui-font-size,14px) + 4px);font-weight:600;color:var(--color-tooltip-tag-foreground,#a6a6a6);margin-left:4px}" +
       ".zu-sl-val.dim,.zu-sl-estdim{color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
       ".zu-sl-note{margin-top:8px;font-size:calc(var(--ui-font-size,14px) - 2px);color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
-      ".zu-speed-left .zu-speed-fit3{font-size:calc(var(--ui-font-size,14px) - 1px);white-space:normal;line-height:1.3;word-break:break-word}" +
+      ".zu-speed-left .zu-speed-fit3,.zu-speed-hero .zu-speed-fit3{font-size:calc(var(--ui-font-size,14px) - 1px);white-space:normal;line-height:1.3;word-break:break-word}" +   // v371：同 fit2 扩 hero 作用域
       ".zu-speed-note{margin-top:8px;font-size:calc(var(--ui-font-size,14px) - 2px);color:var(--color-tooltip-tag-foreground,#a6a6a6)}" +
       ".zu-speed-left .zu-speed-bandtag{font-size:calc(var(--ui-font-size,14px) - 3px);padding:2px 8px;white-space:nowrap}" +
       /* v298.4：档位徽标下方模型名行（V2 左卡）——小字、超长省略 + title 全名 */
@@ -1630,7 +1653,7 @@
        * 不受影响）——否则气泡被卡片裁掉；卡内内容本就自带省略/换行自裁剪。 */
       ".zu-sv-left{overflow:visible}" +
       ".zu-sv-left .zu-sl-model{position:relative}" +
-      ".zu-sv-left .zu-sl-model[data-tip]:hover::after{content:attr(data-tip);position:absolute;bottom:calc(100% + 6px);left:0;z-index:60;max-width:280px;width:max-content;padding:6px 10px;border:1px solid var(--color-popover-border,var(--color-border,rgba(255,255,255,.14)));border-radius:8px;background:var(--color-popover,#20242e);color:var(--color-popover-foreground,var(--color-foreground,#e9edf4));font-size:calc(var(--ui-font-size,14px) - 2px);line-height:1.5;white-space:normal;text-align:left;box-shadow:0 6px 18px rgba(0,0,0,.28);pointer-events:none}" +
+      ".zu-sv-left .zu-sl-model[data-tip]:hover::after{content:attr(data-tip);position:absolute;bottom:calc(100% + 6px);left:0;z-index:60;max-width:280px;width:max-content;padding:6px 10px;border:1px solid var(--color-popover-border,var(--color-border,rgba(255,255,255,.14)));border-radius:8px;background:var(--color-popover,#20242e);color:var(--color-popover-foreground,var(--color-foreground,#e9edf4));font-size:calc(var(--ui-font-size,14px) - 2px);line-height:1.5;white-space:normal;overflow-wrap:anywhere;text-align:left;box-shadow:0 6px 18px rgba(0,0,0,.28);pointer-events:none}" +   /* v371：单个超长无空格模型 id 补 anywhere 断行 */
       ".zu-speed-chart{flex:1 1 auto;min-width:0;position:relative}" +
       /* v239（设计图复刻）：左卡深色玻璃卡 + 状态图标/当前读数标签；信息卡虚线引线；图例/口径行布局 */
       ".zu-sl-stats{padding-top:10px;display:flex;gap:6px;border-top:1px solid var(--color-border,rgba(255,255,255,.1))}" +

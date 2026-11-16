@@ -277,6 +277,20 @@ for (const lang of ['zh', 'en']) {
     assert.ok(html.includes('80') && !/80 · /.test(html), '无速率 actor 只显 token');
     const noRate = fn.tip({ ...pack, rate: null });
     assert.ok(!noRate.includes(basis), '旧快照缺分量 → 无速率无口径行');
+    /* v371：作用域前缀必须命中浮层宿主真实类名（tip zusage-subrate-tip，showSubTip
+     * 从不挂 zusage-wfrun-tip）——旧前缀整段 CSS 是死代码，wf-name 单行省略从未生效 */
+    assert.ok(html.includes('.zusage-subrate-tip .wf-name{'), 'wf 样式作用域=宿主真实类名');
+    assert.ok(!html.includes('zusage-wfrun-tip'), '死作用域前缀不得回加');
+    const wfName = html.slice(html.indexOf('.zusage-subrate-tip .wf-name{'));
+    const wfBody = wfName.slice(0, wfName.indexOf('}'));
+    assert.ok(wfBody.includes('min-width:0') && wfBody.includes('text-overflow:ellipsis') && wfBody.includes('white-space:nowrap'),
+      '执行者名单行省略防护');
+    /* v373：wf tip 的 runShort 徽标样式随本构建器注入（两构建器共用 subTip DOM、各注入自己 style） */
+    const badgeAt = html.indexOf('.zusage-subrate-tip .sub-agent{');
+    assert.ok(badgeAt >= 0, 'wf runShort 徽标样式随 wf tip 注入');
+    const badgeBody = html.slice(badgeAt, html.indexOf('}', badgeAt));
+    assert.ok(badgeBody.includes('font-size:.9em') && badgeBody.includes('color:var(--color-tooltip-tag-foreground'),
+      '徽标为灰色小字（规则体完整，非仅存在性）');
   });
 }
 
