@@ -661,7 +661,7 @@
       ".zu-sysm[data-zusage-light]{color:#6c6f85}" +
       ".zu-sysm[data-zusage-light] .zu-sys-v.zu-sys-warn,.zu-sysm[data-zusage-light] .zu-sys-ico.zu-sys-warn{color:#946200}" +
       ".zu-sysm[data-zusage-light] .zu-sys-v.zu-sys-crit,.zu-sysm[data-zusage-light] .zu-sys-ico.zu-sys-crit{color:#d20f39}" +
-      /* ⚙ 系统状态配置卡（v359 Grid 重构）：分组小节标题 + 阈值三列表替代不受控 Flex 混排；
+      /* ⚙ 系统状态配置卡（v362 Grid 重构）：分组小节标题 + 阈值三列表替代不受控 Flex 混排；
        * checkbox 显式 order:0 抵消 .zu-settings input[type=checkbox]{order:2}（否则开关被
        * 排到文字后面，v356 基线实测 computed order:"2"）；数字输入框显式边框/背景/高度
        * （通用 label 规则不管 type=number，基线实测 border:0px+透明背景；
@@ -680,7 +680,7 @@
       ".zu-syscfg-pair{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}" +
       ".zu-syscfg-num{width:56px;height:28px;padding:0 7px;box-sizing:border-box;border:1px solid var(--color-input-border,rgba(255,255,255,.16));border-radius:6px;background:var(--color-background,rgba(0,0,0,.2));color:var(--color-foreground,#fff);font-family:inherit;font-size:calc(var(--ui-font-size,14px) - 1px);font-variant-numeric:tabular-nums;text-align:right}" +
       ".zu-syscfg-num:focus{border-color:var(--color-input-border-focused,var(--color-brand,#57c8ff));outline:none}" +
-      ".zu-syscfg-num::-webkit-inner-spin-button,.zu-syscfg-num::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}" +   // v359 review A3：固定单位后缀设计不依赖步进按钮（hover 弹出会裁三位数）
+      ".zu-syscfg-num::-webkit-inner-spin-button,.zu-syscfg-num::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}" +   // v362 review A3：固定单位后缀设计不依赖步进按钮（hover 弹出会裁三位数）
       ".zu-syscfg-num.zu-syscfg-bad{border-color:#f85149}" +
       ".zu-syscfg-thc{display:inline-flex;align-items:center;gap:4px}" +
       ".zu-syscfg-unit{color:var(--color-foreground-subtle,#a1a1a1);font-size:calc(var(--ui-font-size,14px) - 2px)}" +
@@ -2051,7 +2051,7 @@
       function item(cls, attr, label, checked) {
         return '<label class="zu-syscfg-item"><input type="checkbox" class="' + cls + '" ' + attr + (checked ? " checked" : "") + '><span>' + label + "</span></label>";
       }
-      /* 数字输入框 + 固定单位后缀（v359：% / 秒不随输入变化）；.zu-syscfg-thc 包裹居中。
+      /* 数字输入框 + 固定单位后缀（v362：% / 秒不随输入变化）；.zu-syscfg-thc 包裹居中。
        * data-th/data-sysm/class 契约与 09 分片委托、09 回填共用，勿单方面改名。 */
       function numBox(cls, val, min, max, step, label, thKey, unit) {
         return '<span class="zu-syscfg-thc"><input type="number" class="zu-syscfg-num ' + cls + '" min="' + min + '" max="' + max + '" step="' + (step || 1) + '" value="' + val + '"' +
@@ -2560,7 +2560,7 @@
     tip.addEventListener("click", function (e) {
       if (projTipTabActivate(e)) return;
       if (projTipMoreActivate(e)) return;
-      /* v359 sysmon 阈值说明：点击 ⓘ 切换内联展开区（只切 hidden 不重建整卡，
+      /* v362 sysmon 阈值说明：点击 ⓘ 切换内联展开区（只切 hidden 不重建整卡，
        * 无「按钮被替换吞 click」竞态，无需进 pointerdown；toggle 非同值幂等，
        * 双路径委托会翻回去，故只挂 click（含键盘 Enter））。切换后重定位——
        * 展开区高度 +~124px，keepTop 顶边不动、底边钳制防越出视口。 */

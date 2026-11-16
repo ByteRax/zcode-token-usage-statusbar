@@ -1077,7 +1077,7 @@
         tip.style.display = "none";
       }
       tip.__zuSpeedSize = null;
-      tip.__zuSysExp = false;   // v359：关闭即收起阈值说明，重开默认收起
+      tip.__zuSysExp = false;   // v362：关闭即收起阈值说明，重开默认收起
       if (tipFor && tipFor.removeAttribute) tipFor.removeAttribute("aria-describedby");
       tipFor = null;
       tipSig = "";
@@ -1160,7 +1160,7 @@
       if (t.charCodeAt(0) === 1) tip.firstChild.innerHTML = t.slice(1);   // \x01 前缀 = 结构化 HTML（v67.1）
       else tip.firstChild.textContent = t;
       tip.firstChild.scrollTop = oldScroll;
-      /* v359：sysmon 阈值说明展开态跨重建保留（帧刷新签名变重建不收拢展开区） */
+      /* v362：sysmon 阈值说明展开态跨重建保留（帧刷新签名变重建不收拢展开区） */
       if (tip.__zuSysExp) {
         var sysExpBox = tip.querySelector("[data-zu-sys-thexp]");
         var sysExpBtn = tip.querySelector("[data-zu-sys-th]");
@@ -1518,7 +1518,7 @@
       if (t.closest(".zu-rot-pk-dlg,.zu-mp-ov,.zu-compact-dlg,.zu-sub-pop,.zu-more-panel")) return;
       if (panel.classList.contains("open") && panel.contains(t)) return;   // 设置面板内部
       /* 悬停浮层本体内部按压是交互不是关闭（切 Tab/选维度/看图表）；
-       * v359：sysmon 浮层（sysTip）同理——点 ⓘ 不联动收其它浮层 */
+       * v362：sysmon 浮层（sysTip）同理——点 ⓘ 不联动收其它浮层 */
       if (tip.contains(t) || tpsTip.contains(t) || rstTip.contains(t) || subTip.contains(t) ||
           gitTip.contains(t) || quotaTip.contains(t) || rateTip.contains(t) ||
           (sysTip.style.display === "block" && sysTip.contains(t)) ||

@@ -1239,7 +1239,7 @@
           chip.addEventListener("mouseenter", onSysChipEnter);
           chip.addEventListener("mouseleave", hideSysTipSoon);
           chip.addEventListener("focus", onSysChipEnter);
-          /* v359：焦点移入浮层内部（点/Tab 到 ⓘ）不算离开——blur 先于 click 把浮层关掉，
+          /* v362：焦点移入浮层内部（点/Tab 到 ⓘ）不算离开——blur 先于 click 把浮层关掉，
            * ⓘ 的 click 永远收不到（Windows 上 button mousedown 即移焦，macOS 恰好幸存） */
           chip.addEventListener("blur", function (e) {
             if (e.relatedTarget && sysTip.contains(e.relatedTarget)) return;

@@ -111,7 +111,7 @@ test('弹框内部不算外点（词包查看/模型选择/压缩确认/子代�
   }
 });
 
-test('sysmon 浮层（v359）：sysTip 内按压不联动收其它浮层；全关早退含 sysTipFor', () => {
+test('sysmon 浮层（v362）：sysTip 内按压不联动收其它浮层；全关早退含 sysTipFor', () => {
   /* sysTip 与主 tip 同开、按在 sysTip 内：主 tip 不收（点 ⓘ 不联动关其它浮层） */
   assert.deepEqual(runOutside({ tipFor: {}, sysTipFor: {}, sysOpen: true, targetIn: 'sys' }).calls.hideTip, []);
   /* sysTip 开、按在空白：主 tip 照常外点收（sysTip 自身靠 mouseleave 兜底） */

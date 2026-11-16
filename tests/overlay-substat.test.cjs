@@ -291,9 +291,5 @@ test('source contracts: substat wiring (style, delegation, call sites, union fee
   assert.match(source, /function synthesizeBackgroundStats\(stats\)/, '合成函数在切片内');
   assert.match(source, /stats = synthesizeBackgroundStats\(stats\);/, 'updateLive 接线');
   assert.match(source, /if \(stats && !stats\.complete\) return stats;/, '主会话实时轮优先不合成');
-<<<<<<< HEAD
-  assert.match(source, /var VERSION = "v361";/);   // 只锁代际顺延；台账内容合法性由 ReleaseLedgerTests 守护
-=======
-  assert.match(source, /var VERSION = "v359";/);   // 只锁代际顺延；台账内容合法性由 ReleaseLedgerTests 守护
->>>>>>> b51a20c (chore(statusbar): renumber sysmon UI batch to v359 after rebase onto main)
+  assert.match(source, /var VERSION = "v362";/);   // 只锁代际顺延；台账内容合法性由 ReleaseLedgerTests 守护
 });
