@@ -4,22 +4,24 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const vm = require("vm");
 const { pathToFileURL } = require("url");
 
-const { getInjectSlice } = require("./helpers/overlay-extract.cjs");
+const { getInjectSlice, sliceInject } = require("./helpers/overlay-extract.cjs");
 const slice = getInjectSlice("pollPluginRequests");
 assert.ok(slice.includes('req.action === "relaunch"'), "relaunch 分支必须在切片内（白名单契约）");
 
 const RESOURCES = path.join(path.sep, "client", "resources");
 const HOST_URL = pathToFileURL(path.join(RESOURCES, "app", "out", "main", "index.js")).href;
 
-function runPoll(requests, url = HOST_URL, main = true, updater = null) {
-  const calls = { relaunch: 0, quit: 0, deliveries: [], executed: 0, hides: 0 };
+function runPoll(requests, url = HOST_URL, main = true, updater = null, hooks = {}) {
+  const calls = { relaunch: 0, quit: 0, deliveries: [], executed: 0, hides: 0, beforeQuit: [] };
   const app = {
     relaunch: () => { calls.relaunch++; },
-    quit: () => { calls.quit++; },
+    quit: () => { calls.quit++; if (hooks.quitThrows) throw new Error("quit boom"); },
+    once: (evt, fn) => { if (evt === "before-quit") calls.beforeQuit.push(fn); },   // issue #372：取消监听
   };
   const wc = {
     isDestroyed: () => false,
@@ -36,6 +38,9 @@ function runPoll(requests, url = HOST_URL, main = true, updater = null) {
     deliverPluginRequest: (w, requestId, result) => calls.deliveries.push({ requestId, result: { ...result } }),   // 浅拷贝出宿主 realm 对象供 deepStrictEqual
     app, LOG: () => {}, pluginRequestBusy: false, pluginUpdater: updater,
     BrowserWindow: { getAllWindows: () => [win] },
+    pendingAsarPath: hooks.pendingAsarPath || (() => ""),
+    writeRelaunchRequest: hooks.writeRelaunchRequest || (() => 1),
+    clearRelaunchRequest: hooks.clearRelaunchRequest || (() => {}),
     setTimeout, clearTimeout,   // relaunch 分支延迟 quit 用（沙箱无全局定时器）
   });
   return { calls, settle: () => new Promise((resolve) => setTimeout(resolve, 60)) };
@@ -47,6 +52,153 @@ test("relaunch action replies ok then relaunches via quit (before-quit cleanup p
   assert.deepEqual(calls.deliveries, [{ requestId: "zusage-relaunch-1", result: { ok: true } }]);   // 回执先送达
   assert.deepEqual([calls.relaunch, calls.quit], [1, 1]);   // 再 relaunch 标记 + quit（清理钩子自然执行）
   assert.equal(calls.hides, 1, "v245：quit 前 hide 窗口——退出屏障期间窗口全程可见是宿主行为，感知退出应即时");
+});
+
+test("issue #372 pending asar hands the restart to the monitor (quit-only, no hide)", async () => {
+  // 有合法待收尾 asar 时不能 app.relaunch：Windows relauncher 助手是 ZCode.exe，
+  // monitor 的「全部进程退出」判据永不成立。必须写交接请求 + quit-only，且不隐藏窗口
+  // （宿主 before-quit 的「确认退出」弹窗需要可见父窗口）。
+  const written = [];
+  const { calls, settle } = runPoll([{ action: "relaunch", requestId: "zusage-handover-1" }], HOST_URL, true, null, {
+    pendingAsarPath: () => "C:\\client\\resources\\app.asar",
+    writeRelaunchRequest: (asar) => { written.push(asar); return 1794849917517; },
+  });
+  await settle();
+  assert.deepEqual(calls.deliveries, [{ requestId: "zusage-handover-1", result: { ok: true } }]);
+  assert.deepEqual([calls.relaunch, calls.quit, calls.hides], [0, 1, 0], "quit-only，且不提前隐藏窗口");
+  assert.deepEqual(written, ["C:\\client\\resources\\app.asar"]);
+});
+
+test("issue #372 falls back to app.relaunch when the handover request cannot be written", async () => {
+  const { calls, settle } = runPoll([{ action: "relaunch", requestId: "zusage-handover-2" }], HOST_URL, true, null, {
+    pendingAsarPath: () => "C:\\client\\resources\\app.asar",
+    writeRelaunchRequest: () => 0,
+  });
+  await settle();
+  assert.deepEqual([calls.relaunch, calls.quit, calls.hides], [1, 1, 1], "请求写失败回退原路径，行为不劣化");
+});
+
+test("issue #372 quit throw clears the handover request instead of leaving a ghost", async () => {
+  const cleared = [];
+  const { calls, settle } = runPoll([{ action: "relaunch", requestId: "zusage-handover-3" }], HOST_URL, true, null, {
+    pendingAsarPath: () => "C:\\client\\resources\\app.asar",
+    writeRelaunchRequest: () => 42,
+    clearRelaunchRequest: (createdAt) => cleared.push(createdAt),
+    quitThrows: true,
+  });
+  await settle();
+  assert.deepEqual([calls.relaunch, calls.quit, calls.hides], [0, 1, 0]);
+  assert.deepEqual(cleared, [42], "quit 同步失败按本次 createdAt 清请求");
+});
+
+test("issue #372 a cancelled quit clears the handover request at the 15s sentinel", async () => {
+  // 宿主会话保护在 before-quit 里 showMessageBoxSync + preventDefault：用户取消退出后
+  // 进程继续运行，残留请求必须在哨兵时撤回，否则之后 15 分钟内的手动退出+收尾会被误拉起。
+  const cleared = [];
+  const { calls, flush, fire, of } = runPollFake([{ action: "relaunch", requestId: "zusage-handover-cancel" }], {
+    pendingAsarPath: () => "C:\\client\\resources\\app.asar",
+    writeRelaunchRequest: () => 42,
+    clearRelaunchRequest: (createdAt) => cleared.push(createdAt),
+  });
+  await flush();
+  fire(of(30));
+  assert.deepEqual([calls.relaunch, calls.quit, calls.hides], [0, 1, 0], "quit-only 路径不隐藏窗口");
+  assert.equal(calls.beforeQuit.length, 1, "quit-only 注册 before-quit 取消监听");
+  calls.beforeQuit[0]({ defaultPrevented: true });   // 用户在宿主弹窗取消退出
+  fire(of(15000));
+  assert.deepEqual(cleared, [42], "取消的退出在哨兵时撤回交接请求");
+});
+
+test("issue #372 a slow quit (no cancellation) must keep the handover request", async () => {
+  // 退出链可超过 15s、弹窗阻塞会冻结定时器使逾期哨兵立即触发：没有 preventDefault
+  // 正证据时绝不清请求，否则 monitor 收尾后无人拉起，「重启」静默变「退出」（review MAJOR）。
+  const cleared = [];
+  const { calls, flush, fire, of } = runPollFake([{ action: "relaunch", requestId: "zusage-handover-slow" }], {
+    pendingAsarPath: () => "C:\\client\\resources\\app.asar",
+    writeRelaunchRequest: () => 42,
+    clearRelaunchRequest: (createdAt) => cleared.push(createdAt),
+  });
+  await flush();
+  fire(of(30));
+  assert.equal(calls.beforeQuit.length, 1);
+  fire(of(15000));   // 慢退出中哨兵逾期触发：quit 未被取消（未收到 before-quit 事件）
+  assert.deepEqual([calls.relaunch, calls.quit], [0, 1]);
+  assert.deepEqual(cleared, [], "慢退出不清请求：请求留给 monitor 收尾后拉起");
+  calls.beforeQuit[0]({ defaultPrevented: false });   // 退出在途但未被取消，同样不清
+  fire(of(15000));
+  assert.deepEqual(cleared, []);
+});
+
+test("issue #372 helper validates pending sidecar, writes/clears a bounded request", () => {
+  const block = sliceInject("/* ---------- issue #372：待收尾 asar 的应用内重启交接 ---------- */",
+    "/* ---------- issue #372 交接结束 ---------- */", { includeEnd: true });
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "zusage-relaunch-"));
+  const asar = path.join(root, "app.asar");
+  const tmp = asar + ".zusage.tmp";
+  const meta = tmp + ".json";
+  const request = path.join(root, "relaunch-request.json");
+  fs.writeFileSync(asar, "official");
+  fs.writeFileSync(tmp, "patched");
+  fs.writeFileSync(meta, JSON.stringify({ operation: "install", validated: true }));
+  const ctx = {
+    path, fs, console: { log: () => {} },
+    process: {
+      resourcesPath: root, execPath: "C:\\ZCode\\ZCode.exe",
+      argv: ["C:\\ZCode\\ZCode.exe", "--flag"], cwd: () => root, pid: 4242,
+    },
+    HERE: root,
+    readCfgCached: () => ({ asar_path: asar }),
+    LOG: () => {},
+  };
+  vm.runInNewContext(block, ctx);
+  assert.equal(ctx.pendingAsarPath(), path.resolve(asar), "install+validated 才是合法待收尾包");
+  fs.writeFileSync(meta, JSON.stringify({ operation: "remove", validated: true }));
+  assert.equal(ctx.pendingAsarPath(), "", "remove pending 不触发应用内重启交接");
+  fs.writeFileSync(meta, JSON.stringify({ operation: "install", validated: false }));
+  assert.equal(ctx.pendingAsarPath(), "", "未通过自检（validated!==true）的 install 也不是合法待收尾包");
+  fs.writeFileSync(meta, JSON.stringify({ operation: "install", validated: true }));
+  fs.rmSync(meta);
+  assert.equal(ctx.pendingAsarPath(), "", "缺 sidecar 不触发应用内重启交接");
+  fs.writeFileSync(meta, JSON.stringify({ operation: "install", validated: true }));
+  fs.rmSync(tmp);
+  assert.equal(ctx.pendingAsarPath(), "", "缺 TMP 不触发应用内重启交接");
+  fs.writeFileSync(tmp, "patched");
+  // review 变异 N15：config 的 asar_path 优先于 resourcesPath 缺省——自定义安装路径
+  // 用户的待收尾包必须被识别（否则静默回退旧 relaunch，#372 复发）。
+  const customDir = path.join(root, "custom");
+  fs.mkdirSync(customDir);
+  const customAsar = path.join(customDir, "app.asar");
+  const customTmp = customAsar + ".zusage.tmp";
+  const customMeta = customTmp + ".json";
+  fs.writeFileSync(customAsar, "official custom");
+  fs.writeFileSync(customTmp, "patched custom");
+  fs.writeFileSync(customMeta, JSON.stringify({ operation: "install", validated: true }));
+  ctx.readCfgCached = () => ({ asar_path: customAsar });
+  assert.equal(ctx.pendingAsarPath(), path.resolve(customAsar), "asar_path 配置优先于缺省路径");
+  ctx.readCfgCached = () => ({ asar_path: asar });
+  const at = ctx.writeRelaunchRequest(asar);
+  assert.ok(at > 0);
+  if (process.platform !== "win32") {
+    // review 变异 M15：请求文件 0600（POSIX；Windows 忽略 mode 继承 ACL，门控跳过）。
+    assert.equal(fs.statSync(request).mode & 0o777, 0o600, "relaunch-request.json 必须最小暴露面");
+  }
+  const payload = JSON.parse(fs.readFileSync(request, "utf8"));
+  assert.deepEqual(payload, {
+    version: 1,
+    asar: path.resolve(asar),
+    argv: ["C:\\ZCode\\ZCode.exe", "--flag"],
+    cwd: root,
+    pid: 4242,
+    createdAt: at,
+  });
+  ctx.clearRelaunchRequest(at - 1);
+  assert.ok(fs.existsSync(request), "旧 15s 哨兵不得误删新请求");
+  ctx.clearRelaunchRequest(at);
+  assert.equal(fs.existsSync(request), false, "同代 createdAt 清除");
+  ctx.writeRelaunchRequest(asar);
+  ctx.clearRelaunchRequest();
+  assert.equal(fs.existsSync(request), false, "loader 启动无参清理");
+  fs.rmSync(root, { recursive: true, force: true });
 });
 
 test("800ms hard fallback quits even when the renderer never settles the receipt delivery", async () => {
@@ -78,6 +230,9 @@ test("800ms hard fallback quits even when the renderer never settles the receipt
     isLocalHostPage: () => true,
     app, LOG: () => { }, pluginRequestBusy: false, pluginUpdater: null,
     BrowserWindow: { getAllWindows: () => [win] },
+    pendingAsarPath: () => "",
+    writeRelaunchRequest: () => 1,
+    clearRelaunchRequest: () => {},
     setTimeout, clearTimeout,
   });
   await new Promise((resolve) => setTimeout(resolve, 850));   // 越过 800ms 兜底
@@ -108,6 +263,9 @@ test("hide is rolled back when relaunch/quit throws synchronously", async () => 
     deliverPluginRequest: (w, requestId, result) => calls.deliveries.push(result),
     app, LOG: () => { }, pluginRequestBusy: false, pluginUpdater: null,
     BrowserWindow: { getAllWindows: () => [win] },
+    pendingAsarPath: () => "",
+    writeRelaunchRequest: () => 1,
+    clearRelaunchRequest: () => {},
     setTimeout, clearTimeout,
   });
   await new Promise((resolve) => setTimeout(resolve, 60));
@@ -178,10 +336,11 @@ test("pushPluginState pushes the relaunchSupported capability flag (v180, issue 
 // v244/v245 时序契约：假定时器沙箱——逐 ms 断言 30ms 正式退出/800ms 硬兜底/15s 哨兵，
 // 有状态窗口桩（visible 翻转）让 hide/show 可观察。
 function runPollFake(requests, opts = {}) {
-  const calls = { relaunch: 0, quit: 0, deliveries: [], executed: 0, hides: 0, shows: 0, timers: [] };
+  const calls = { relaunch: 0, quit: 0, deliveries: [], executed: 0, hides: 0, shows: 0, timers: [], beforeQuit: [] };
   const app = {
     relaunch: () => { if (opts.relaunchThrows) throw new Error("relaunch boom"); calls.relaunch++; },
     quit: () => { calls.quit++; },
+    once: (evt, fn) => { if (evt === "before-quit") calls.beforeQuit.push(fn); },   // issue #372：取消监听
   };
   if (opts.isQuitting !== undefined) app.isQuitting = opts.isQuitting;
   const wc = {
@@ -206,6 +365,9 @@ function runPollFake(requests, opts = {}) {
       : (w, requestId, result) => { calls.deliveries.push({ requestId, result: { ...result } }); return Promise.resolve(); },
     app, LOG: () => { }, pluginRequestBusy: false, pluginUpdater: null,
     BrowserWindow: { getAllWindows: () => [win] },
+    pendingAsarPath: opts.pendingAsarPath || (() => ""),
+    writeRelaunchRequest: opts.writeRelaunchRequest || (() => 1),
+    clearRelaunchRequest: opts.clearRelaunchRequest || (() => {}),
     setTimeout: (fn, ms) => { calls.timers.push({ fn, ms, cleared: false }); return calls.timers.length; },
     clearTimeout: (id) => { if (calls.timers[id - 1]) calls.timers[id - 1].cleared = true; },
   });

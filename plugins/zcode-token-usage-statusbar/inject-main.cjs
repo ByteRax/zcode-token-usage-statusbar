@@ -88,6 +88,64 @@ function readCfgCached() {
   return cfgCache;
 }
 
+/* ---------- issue #372：待收尾 asar 的应用内重启交接 ---------- */
+const RELAUNCH_REQUEST = path.join(HERE, "relaunch-request.json");
+
+/* 待收尾 install 包的 asar 路径；没有合法 TMP+sidecar 时返回空串。 */
+function pendingAsarPath() {
+  try {
+    const configured = readCfgCached().asar_path;
+    const asar = typeof configured === "string" && configured ? configured : path.join(process.resourcesPath, "app.asar");
+    const tmp = asar + ".zusage.tmp";
+    const metaFile = tmp + ".json";
+    if (!fs.existsSync(tmp) || !fs.existsSync(metaFile)) return "";
+    const meta = JSON.parse(fs.readFileSync(metaFile, "utf8"));
+    if (!meta || meta.operation !== "install" || meta.validated !== true) return "";
+    return path.resolve(asar);
+  } catch (e) { return ""; }
+}
+
+/* 写重启交接请求；返回 createdAt（0=失败，调用方回退原 app.relaunch 路径）。 */
+function writeRelaunchRequest(asar) {
+  try {
+    const payload = {
+      version: 1,
+      asar: path.resolve(asar),
+      argv: [process.execPath].concat(process.argv.slice(1)),
+      cwd: process.cwd(),
+      pid: process.pid,
+      createdAt: Date.now(),
+    };
+    const tmp = RELAUNCH_REQUEST + ".tmp";
+    // 0600（POSIX；Windows 继承目录 ACL）：argv/cwd/pid 是宿主运行环境信息，
+    // 与 quota-secrets.json 同级的最小暴露面（review 安全审查）。
+    fs.writeFileSync(tmp, JSON.stringify(payload), { encoding: "utf8", mode: 0o600 });
+    fs.renameSync(tmp, RELAUNCH_REQUEST);
+    return payload.createdAt;
+  } catch (e) {
+    LOG("relaunch request write failed:", e.message);
+    return 0;
+  }
+}
+
+/* 清请求；带 createdAt 时只清同一代（旧 15s 哨兵不得误删用户新点的请求）。 */
+function clearRelaunchRequest(createdAt) {
+  try {
+    if (typeof createdAt === "number") {
+      let current = null;
+      try { current = JSON.parse(fs.readFileSync(RELAUNCH_REQUEST, "utf8")); } catch (e) { current = null; }
+      if (current && current.createdAt !== createdAt) return;
+    }
+    fs.unlinkSync(RELAUNCH_REQUEST);
+  } catch (e) {
+    if (e.code !== "ENOENT") LOG("relaunch request clear failed:", e.message);
+  }
+}
+
+/* 启动即清掉上一进程可能遗留的交接请求：用户手动重开时 monitor 不应再拉起第二个实例。 */
+clearRelaunchRequest();
+/* ---------- issue #372 交接结束 ---------- */
+
 /* 页面注入源 + 热更新：mtime 变了就重注入（移除旧条+复位守卫）。
  * 载入前用 new Function 校验语法，避免把写到一半的文件载入页面。
  * turn-stats.js（renderer 会话 store 的只读投影统计）必须先于 overlay.js 注入：
@@ -2486,6 +2544,8 @@ async function pollPluginRequests() {
             // 真正的等待在宿主 app.quit 优雅退出链（关窗+逐个终止会话/扩展子进程），插件侧不再叠加固定延迟；
             // 渲染端无响应时 800ms 硬兜底也必须退出。quit 走 before-quit 清理钩子。
             let quitArmed = false;
+            let relaunchRequestAt = 0;
+            let relaunchQuitCancelled = false;   // 宿主 before-quit 会话保护 preventDefault 后置位（见 quitNow）
             /* v245 review 修复：quit 同步失败或被拦截时不能让窗口消失、进程还活着——
              * 恢复全部窗口可见性（渲染端 90s 还原兜底此时才对用户可见）。 */
             const unhideWindows = () => {
@@ -2498,6 +2558,28 @@ async function pollPluginRequests() {
             const quitNow = () => {
               if (quitArmed) return;
               quitArmed = true;
+              /* issue #372：有合法待收尾 asar 时不能 app.relaunch()——Windows 的
+               * relauncher 助手本身也是 ZCode.exe，monitor 的「全部进程退出」判据在
+               * 应用内重启期间永不成立，TMP 永远不 rename、marker 永不销账。
+               * 改为写交接请求 + quit-only：monitor 换包完成后按请求拉起新实例。
+               * 该路径不隐藏窗口，宿主 before-quit 的「确认退出」弹窗需要可见父窗口。 */
+              const pendingAsar = pendingAsarPath();
+              relaunchRequestAt = pendingAsar ? writeRelaunchRequest(pendingAsar) : 0;
+              if (relaunchRequestAt) {
+                relaunchQuitCancelled = false;
+                /* 宿主会话保护在 before-quit 里 showMessageBoxSync + preventDefault：
+                 * 用户取消后 quit 中止、进程继续运行。once 监听捕获该事实，15s 哨兵
+                 * 据此撤回交接请求——慢退出/弹窗阻塞没有 preventDefault，请求必须保留
+                 * 给 monitor（退出链可超过 15s，届时清掉会让收尾后无人拉起，review MAJOR）。 */
+                try { app.once("before-quit", (e) => { relaunchQuitCancelled = !!(e && e.defaultPrevented); }); } catch (e2) { LOG("relaunch cancel watch failed:", e2.message); }
+                try { app.quit(); } catch (e) {
+                  LOG("relaunch handover quit failed:", e.message);
+                  clearRelaunchRequest(relaunchRequestAt);   // quit 未发生：撤回请求，防 monitor 收尾后误拉起
+                  relaunchRequestAt = 0;
+                  unhideWindows();
+                }
+                return;
+              }
               /* v245：宿主退出屏障（prepareAppQuit 等 host 子进程树回收，macOS 7.5s 强杀/9s 上限）
                * 期间窗口全程可见——先隐藏全部窗口给出「立即退出」的视觉反馈，清理链后台照常，
                * relaunch 后由宿主重建窗口。 */
@@ -2515,9 +2597,17 @@ async function pollPluginRequests() {
             /* v245 review 修复：屏障有硬上限（9s），15s 后进程仍在=quit 未发生——恢复窗口可见性；
              * unref 确保哨兵绝不拖住退出（正常路径随进程消亡，测试中不延滞事件循环）。
              * app.isQuitting 非 Electron 内建（宿主不设置）→ 条件恒真兜回 unhide；此时 relaunch
-             * 标记已留存，用户随后手动退出会被宿主转成重启——与待重启语义一致，属已知取舍。 */
+             * 标记已留存，用户随后手动退出会被宿主转成重启——与待重启语义一致，属已知取舍。
+             * 交接请求只在「退出被会话保护取消」（relaunchQuitCancelled）时撤回：quit 请求撤回
+             * 或 15s 哨兵对慢退出误判都会让 monitor 收尾后无人拉起（issue #372 review）。 */
             const unhideSentinel = setTimeout(() => {
-              if (!app.isQuitting && quitArmed) unhideWindows();   // 宿主未暴露 isQuitting 时恒真值兜回 unhide
+              if (!app.isQuitting && quitArmed) {
+                unhideWindows();
+                if (relaunchRequestAt && relaunchQuitCancelled) {
+                  clearRelaunchRequest(relaunchRequestAt);
+                  relaunchRequestAt = 0;
+                }
+              }
             }, 15000);
             if (unhideSentinel && typeof unhideSentinel.unref === "function") unhideSentinel.unref();
             Promise.resolve(deliverPluginRequest(wc, req.requestId, { ok: true })).then(() => {
