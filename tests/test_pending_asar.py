@@ -820,9 +820,89 @@ class ProtectedTargetTests(unittest.TestCase):
         make_asar(asar)
         self.pi.set_target(asar)
         self.pi.set_runtime(self.runtime)
-        with mock.patch.object(self.pi.tempfile, "mkstemp",
+        with mock.patch.object(self.pi, "bounded_mkstemp",
                                side_effect=PermissionError(5, "denied")):
             self.assertFalse(self.pi.target_writable())
+
+    def test_target_writable_does_not_retry_unboundedly(self):
+        # issue #360：tempfile._mkstemp_inner 在 Windows 上对 PermissionError 有特判
+        # （3.13.1 及更早还要求 os.access 报可写，而 os.access 看不见 ACL 恒报可写；
+        # 更新版仅看目录存在），吞掉异常换随机名重试至近 TMP_MAX(2^31) 次，受保护
+        # 目录上的真实写入探针等于无限挂起、SessionStart hook 被宿主 60s 超时击杀。
+        # 夹具在 POSIX 宿主复现该路径：chmod 555 目录 + os.access 谎报 + TMP_MAX
+        # 抬到 Windows 量级（macOS 上 tempfile.TMP_MAX 只有 20，stdlib 自己就会
+        # 退出，复现不了「无限」）+ 仅真实 mkstemp 调用窗口内把 os.name 翻成 "nt"
+        # 激活 stdlib 特判（finally 即还原，避免泄漏进 file_lock 的 nt 分支）；
+        # 名字序列超过上限即判 stdlib 仍在无限换名。修复前本用例红，修复后探针
+        # 走单次快错原语、根本不进 stdlib 名字序列。
+        self.refuse_root()
+        directory, asar = self.protected_target()
+        self.pi.set_target(asar)
+        self.pi.set_runtime(self.runtime)
+        calls = {"n": 0}
+        real_next = tempfile._RandomNameSequence.__next__
+        real_mkstemp = tempfile.mkstemp
+        real_os_name = os.name
+
+        def guarded_next(seq):
+            calls["n"] += 1
+            if calls["n"] > 64:
+                raise AssertionError("target_writable probe retried unboundedly (issue #360 hang)")
+            return real_next(seq)
+
+        def nt_mkstemp(*args, **kwargs):
+            os.name = "nt"
+            try:
+                return real_mkstemp(*args, **kwargs)
+            finally:
+                os.name = real_os_name
+
+        with mock.patch.object(self.pi.os, "access", return_value=True), \
+                mock.patch.object(tempfile, "TMP_MAX", 2 ** 31 - 1), \
+                mock.patch.object(tempfile._RandomNameSequence, "__next__", guarded_next), \
+                mock.patch.object(tempfile, "mkstemp", nt_mkstemp):
+            self.assertFalse(self.pi.target_writable())
+        self.assertEqual(calls["n"], 0)   # 快错原语不消耗 stdlib 名字序列
+
+    def test_bounded_mkstemp_creates_usable_file(self):
+        # 正常路径与 tempfile.mkstemp 同形态：返回可用 fd 与带前缀的同目录路径。
+        fd, name = self.pi.bounded_mkstemp(prefix=".zusage-probe-test.", dir=self.runtime)
+        try:
+            self.assertTrue(str(Path(name).parent) == str(self.runtime))
+            self.assertIn(".zusage-probe-test.", os.path.basename(name))
+            os.write(fd, b"payload")
+            os.close(fd)
+            self.assertEqual(Path(name).read_bytes(), b"payload")
+        finally:
+            Path(name).unlink(missing_ok=True)
+
+    def test_bounded_mkstemp_permission_error_is_single_attempt(self):
+        # PermissionError 必须第一次就原样抛出（Windows ACL 快错），绝不换名重试
+        # ——重试正是 issue #360 的挂起机制。
+        attempts = {"n": 0}
+
+        def denied(path, flags, *args, **kwargs):
+            attempts["n"] += 1
+            raise PermissionError(5, "denied", str(path))
+
+        with mock.patch.object(self.pi.os, "open", side_effect=denied):
+            with self.assertRaises(PermissionError):
+                self.pi.bounded_mkstemp(prefix=".zusage-x.", dir=self.runtime)
+        self.assertEqual(attempts["n"], 1)
+
+    def test_bounded_mkstemp_caps_name_collisions(self):
+        # 只有 FileExistsError（随机名碰撞）才换名重试，至多 _MKSTEMP_ATTEMPTS 次，
+        # 与 stdlib 的 TMP_MAX(2^31) 次行为划清界限。
+        collisions = {"n": 0}
+
+        def occupied(path, flags, *args, **kwargs):
+            collisions["n"] += 1
+            raise FileExistsError(17, "exists", str(path))
+
+        with mock.patch.object(self.pi.os, "open", side_effect=occupied):
+            with self.assertRaises(FileExistsError):
+                self.pi.bounded_mkstemp(prefix=".zusage-x.", dir=self.runtime)
+        self.assertEqual(collisions["n"], self.pi._MKSTEMP_ATTEMPTS)
 
     def test_install_on_access_lying_target_hints_instead_of_spawning_monitor(self):
         # issue #130 主链：受保护目录上已有（提权执行排定的）有效待收尾包时，复用

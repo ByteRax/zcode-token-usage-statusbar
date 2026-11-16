@@ -31,6 +31,7 @@ ZCode、确认注入加载后自动退出；运行中替换失败（.tmp 待替�
 自动完成替换 —— 该收尾职责已由监控窗口承担，旧的 schtasks 计划任务方案废弃。
 """
 import base64
+import errno
 import hashlib
 import json
 import os
@@ -592,7 +593,7 @@ def _load_tmp_metadata():
 
 
 def _atomic_tmp_metadata(meta):
-    fd, name = tempfile.mkstemp(prefix=TMP_META.name + ".", dir=TMP_META.parent)
+    fd, name = bounded_mkstemp(prefix=TMP_META.name + ".", dir=TMP_META.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
             json.dump(meta, stream, separators=(",", ":"))
@@ -757,7 +758,7 @@ def _prepare_tmp(modify, operation="install", source=None):
     previous = None
     if TMP.exists() or TMP.is_symlink() or TMP_META.exists() or TMP_META.is_symlink():
         previous = _owned_tmp_metadata()
-    fd, name = tempfile.mkstemp(prefix=TMP.name + ".", suffix=".stage", dir=TMP.parent)
+    fd, name = bounded_mkstemp(prefix=TMP.name + ".", suffix=".stage", dir=TMP.parent)
     os.close(fd)
     stage = Path(name)
     try:
@@ -901,15 +902,40 @@ def finalize_tmp(operation="install", client_closed=None, verified=None):
 
 # ---------- 安装 / 卸载 ----------
 
+_MKSTEMP_ATTEMPTS = 16
+
+
+def bounded_mkstemp(prefix, dir=None, suffix=""):
+    """受限次数的临时文件创建：签名兼容 tempfile.mkstemp 的常用形态，但
+    PermissionError 单次即原样抛出。stdlib 的 _mkstemp_inner 在 Windows 上对
+    PermissionError 有特判（3.13.1 及更早要求 os.access 报可写，而 os.access
+    看不见 ACL 对受保护目录恒报可写；更新版仅看目录存在），吞掉异常换随机名
+    重试至近 TMP_MAX(2^31-1) 次，Program Files 这类目录上等于无限挂起
+    （issue #360：SessionStart hook 每次被宿主 60s 超时击杀）。os.open 的单次
+    失败是快错：只有 FileExistsError（随机名碰撞）才换名重试，至多
+    _MKSTEMP_ATTEMPTS 次。asar 同目录的 stage/写入探针一律走本函数，
+    不走 tempfile.mkstemp。"""
+    directory = os.fspath(dir) if dir is not None else tempfile.gettempdir()
+    for _ in range(_MKSTEMP_ATTEMPTS):
+        name = os.path.join(directory, prefix + os.urandom(8).hex() + suffix)
+        try:
+            return os.open(name, os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600), name
+        except FileExistsError:
+            continue
+    raise FileExistsError(errno.EEXIST, "No usable temporary file name found")
+
+
 def target_writable():
     """asar 与其所在目录都可写（/opt 等系统位置需要 root：只读目标不能再重打包）。
     Windows 的 os.access 看不见 ACL，对受保护目录恒报可写（issue #67/#130 实测），
     快速判定通过后再在同目录做一次真实写入探针兜底（即建即删，判定不过会省掉
-    一次注定失败的重打包，也让 hook 场景下「无人能收尾」可被正确识别）。"""
+    一次注定失败的重打包，也让 hook 场景下「无人能收尾」可被正确识别）；
+    探针走 bounded_mkstemp，不用会在 Windows 受保护目录上无限重试的
+    tempfile.mkstemp（issue #360）。"""
     if not (os.access(ASAR, os.W_OK) and os.access(ASAR.parent, os.W_OK)):
         return False
     try:
-        fd, name = tempfile.mkstemp(prefix=".zusage-writable-probe.", dir=ASAR.parent)
+        fd, name = bounded_mkstemp(prefix=".zusage-writable-probe.", dir=ASAR.parent)
     except OSError:
         return False
     os.close(fd)
