@@ -23,9 +23,10 @@ function makeRuntime(t, providerJson) {
     HERE: here,
     LOG: () => {},
     modelPuller: null,   // enhanceProviderView 仅读其真值；行为用例不依赖
+    deliverPluginRequest: (wc, requestId, result) => { sandbox.__lastReply = { requestId, result }; },   // handleEnhanceHistoryAction 回执捕获
   });
-  vm.runInContext(viewBlock + '\n' + historyBlock + '\nthis.__api = { readEnhanceProvider, enhanceProviderView, loadEnhanceHistoryDisk, persistEnhanceHistory, addEnhanceHistory, enhanceHistory };', sandbox);
-  return { api: sandbox.__api, here };
+  vm.runInContext(viewBlock + '\n' + historyBlock + '\nthis.__api = { readEnhanceProvider, enhanceProviderView, loadEnhanceHistoryDisk, persistEnhanceHistory, addEnhanceHistory, handleEnhanceHistoryAction, enhanceHistory };', sandbox);
+  return { api: sandbox.__api, here, sandbox };
 }
 
 function writeHistory(here, records) {
@@ -73,6 +74,10 @@ test('读回裁剪: 超期（30 天）与超量（100 条）在读回时即裁�
   assert.equal(api.enhanceHistory.length, 100, '读回仅保留最新 100 条');
   assert.ok(!api.enhanceHistory.some(r => r.id === 'h-200'), '超期记录不进内存');
   assert.ok(api.enhanceHistory.every(r => r.id !== undefined), '对象白名单过滤生效');
+  const loose = makeRuntime(t, { version: 1, revision: 0, mode: 'default' });
+  writeHistory(loose.here, [{ id: 'no-ts' }, rec(0, 1)]);   // 无 createdAt 的记录与 addEnhanceHistory 同口径保留
+  loose.api.loadEnhanceHistoryDisk();
+  assert.equal(loose.api.enhanceHistory.length, 2, '无 createdAt 记录不因裁剪误删');
   const onDisk = JSON.parse(fs.readFileSync(path.join(here, 'enhance-history.json'), 'utf8'));
   assert.equal(onDisk.length, 100, '裁剪结果回写磁盘');
   assert.ok(!onDisk.some(r => r.id === 'h-200'), '超期记录从磁盘清除');
@@ -92,6 +97,15 @@ test('落盘门: 缺省开启写出历史文件；显式 false 只留内存不�
   assert.equal(r2.ok, true);
   assert.equal(b.api.enhanceHistory.length, 1, '内存保留');
   assert.ok(!fs.existsSync(path.join(b.here, 'enhance-history.json')), '显式关闭：不写盘');
+});
+
+test('enhance-history-list 回执: saveHistory 字段同谓词归一化（缺省 true / 显式 false false）', (t) => {
+  const a = makeRuntime(t, { version: 1, revision: 0, mode: 'default' });
+  a.api.handleEnhanceHistoryAction({ action: 'enhance-history-list', requestId: 'r1' }, null);
+  assert.equal(a.sandbox.__lastReply.result.saveHistory, true, '缺省视为开启');
+  const b = makeRuntime(t, { version: 1, revision: 0, mode: 'default', saveHistory: false });
+  b.api.handleEnhanceHistoryAction({ action: 'enhance-history-list', requestId: 'r2' }, null);
+  assert.equal(b.sandbox.__lastReply.result.saveHistory, false, '显式关闭回执 false');
 });
 
 test('渲染端 EP 分区复选框初始化与主进程同谓词（!== false，源码锁）', () => {
