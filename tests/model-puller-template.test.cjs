@@ -261,17 +261,20 @@ test("builtinCfgPath defaults to process.resourcesPath; explicit ZCODE_BUILTIN_P
   const f = makeFixture(t);
   // 热更窗口：旧冷 loader 不传 builtinCfgPath，由 Electron resourcesPath 推导打包模板
   const resources = fs.mkdtempSync(path.join(os.tmpdir(), "zusage-tpl-res-"));
-  t.after(() => fs.rmSync(resources, { recursive: true, force: true }));
   const bundled = path.join(resources, "config", "provider", "zcode-builtin.json");
   fs.mkdirSync(path.dirname(bundled), { recursive: true });
   fs.copyFileSync(f.builtinCfg, bundled);
   Object.defineProperty(process, "resourcesPath", { value: resources, configurable: true, writable: true });
   const savedEnv = process.env.ZCODE_BUILTIN_PROVIDER_CONFIG_FILE;
   delete process.env.ZCODE_BUILTIN_PROVIDER_CONFIG_FILE;
+  // 全局态恢复放 finally：任一清理步骤抛异常也不把 resourcesPath/env 泄漏给后续用例
   t.after(() => {
-    delete process.resourcesPath;
-    if (savedEnv === undefined) delete process.env.ZCODE_BUILTIN_PROVIDER_CONFIG_FILE;
-    else process.env.ZCODE_BUILTIN_PROVIDER_CONFIG_FILE = savedEnv;
+    try { fs.rmSync(resources, { recursive: true, force: true }); }
+    finally {
+      delete process.resourcesPath;
+      if (savedEnv === undefined) delete process.env.ZCODE_BUILTIN_PROVIDER_CONFIG_FILE;
+      else process.env.ZCODE_BUILTIN_PROVIDER_CONFIG_FILE = savedEnv;
+    }
   });
   const mp = M.createModelPuller({ customCfgPath: f.providerCfg, fetchImpl: makeFetch([]), modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "" });
   assert.equal(mp.resolveEnhanceHost("opencode-go-chat").baseUrl, TEMPLATE_BASE);
@@ -279,4 +282,36 @@ test("builtinCfgPath defaults to process.resourcesPath; explicit ZCODE_BUILTIN_P
   process.env.ZCODE_BUILTIN_PROVIDER_CONFIG_FILE = path.join(f.dir, "nonexistent-builtin.json");
   const mp2 = M.createModelPuller({ customCfgPath: f.providerCfg, fetchImpl: makeFetch([]), modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "" });
   assert.equal(mp2.resolveEnhanceHost("opencode-go-chat"), null);
+});
+
+test("applyModels never persists template-merged fields into the personal rule (read-only merge contract)", async (t) => {
+  // 写回隔离守卫：模板合并只参与增强读取；applyModels 成功后个人 access/api 必须逐字不变，
+  // 不得 gaining 模板的 apiKeyManagementUrl/baseUrl 等字段（H4 变异 killer）。
+  const f = makeFixture(t, { api: { baseUrl: "https://my-relay.example.com/v1" } });
+  const before = JSON.parse(fs.readFileSync(f.providerCfg, "utf8")).config.providerConfigRules.providerRules[0];
+  const accessBefore = JSON.parse(JSON.stringify(before.config.access));
+  const apiBefore = JSON.parse(JSON.stringify(before.config.api));
+  const builtinBefore = fs.readFileSync(f.builtinCfg, "utf8");
+  const mp = create(f);
+  const r = await mp.applyModels("opencode-go-chat", ["new-model-x"]);
+  assert.equal(r.ok, true);
+  assert.equal(r.added, 1);
+  const after = JSON.parse(fs.readFileSync(f.providerCfg, "utf8")).config.providerConfigRules.providerRules[0];
+  assert.deepEqual(after.config.access, accessBefore, "access must not gain template fields");
+  assert.deepEqual(after.config.api, apiBefore, "api must keep the personal baseUrl verbatim");
+  assert.ok(after.config.personalModelIds.includes("new-model-x"));
+  // builtin 模板文件字节不变（只读承诺）
+  assert.equal(fs.readFileSync(f.builtinCfg, "utf8"), builtinBefore);
+});
+
+test("probeModel keeps raw rule.config semantics: template provider without explicit baseUrl is rejected", async (t) => {
+  // 口径锁定：模板回填有意只收窄到增强链；拉取/探测维持 isPullable 显式 baseUrl 门（issue #364 范围声明）。
+  const f = makeFixture(t);
+  const calls = [];
+  const mp = create(f, { fetchImpl: makeFetch(calls) });
+  const r = await mp.probeModel("opencode-go-chat", "deepseek-v4.1-flash");
+  assert.equal(r.ok, false);
+  assert.equal(r.kind, "provider");
+  assert.equal(r.error, "provider not found");
+  assert.equal(calls.length, 0);
 });
