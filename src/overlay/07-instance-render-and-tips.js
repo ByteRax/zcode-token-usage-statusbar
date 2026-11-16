@@ -483,7 +483,10 @@
               '.zu-stat-tip--project .zu-pj-table td{padding:3px!important;height:auto!important}' +
               '.zu-stat-tip--project .zu-pj-table td:first-child{max-width:150px!important}' +
               '.zu-stat-tip--project .zu-pj-more{margin:6px auto 0!important;padding:2px 10px!important;font-size:calc(var(--ui-font-size,14px) - 2px)!important}' +
-              '.zu-stat-tip--project .zu-pj-title{display:flex!important;align-items:baseline!important;white-space:nowrap!important;min-width:0!important}' +
+              /* v373：项目名与大字标题垂直居中——v290–v304 遗留 baseline!important 把项目名中心
+               * 拖低 ~1.7px（CDP 量测，同 v372 会话名根因），用户规格统一要求标题+名称居中；
+               * ellipsis/shrink 链不变，仅改对齐方式 */
+              '.zu-stat-tip--project .zu-pj-title{display:flex!important;align-items:center!important;white-space:nowrap!important;min-width:0!important}' +
               '.zu-stat-tip--project .zu-pj-pname{overflow:hidden!important;text-overflow:ellipsis!important;flex:0 1 auto!important;min-width:0!important}' +
               /* v331 用户规格：表体不受共享 60vh 帽（06 基础 .tbody 规则）限制——
                * 上限=视口帽扣根纵向可达 chrome（上边框1+上内距10+下边框1 → calc(100vh-36px)；
@@ -1032,7 +1035,11 @@
           "\x01" + statCompactStyle("session") +
           '<div class="zu-stat-tip zu-stat-tip--session">' +
           statHead(L("会话累计", "Session total"), L("全部请求", "All requests"),
-            ((sess.title || "").trim() ? '<span class="zu-st-name">' + ttEsc(String(sess.title).replace(/\s+/g, " ").trim()) + '</span>' : "")) +
+            /* v374：名称超长省略时 title 保留全名（同项目名/词包标题/agent 名的截断契约） */
+            ((sess.title || "").trim() ? (function () {
+              var full = String(sess.title).replace(/\s+/g, " ").trim();
+              return '<span class="zu-st-name" title="' + escAttr(full) + '">' + ttEsc(full) + '</span>';
+            })() : "")) +
           /* v300 行一：总用量 | 输入（缓存 N% 徽标随标签右侧）| 输出（含思考辅助行） */
           '<div class="zu-turn-kpis">' +
             statKpi(kpiIco("total") + L("总用量", "Total tokens"), ttEsc(fmt(sess.total || 0)), turnVBkt(fmt(sess.total || 0))) +

@@ -114,3 +114,57 @@ test('settings domain keeps mono token (sans scope must not leak into ⚙ panel)
     assert.ok(!body.includes('var(--font-sans'), `${sel} 不应被 sans 波及`);
   }
 });
+
+/* v371 其它 tooltip 长动态文本防护批（同 v370 会话名根因排查）：ellipsis/断行/收缩声明
+ * 是纯 CSS 行为，VM/stub 测不出渲染效果，此处锁声明不可回退；实机几何另经 CDP 量测。 */
+test('v371 long-text guards: eh-phase / rt-models key cap / spsub / qt-h / data-tip bubbles / speed fit scopes', () => {
+  const bodyOf = sel => {
+    const at = source.indexOf(sel);
+    assert.ok(at >= 0, sel + ' missing');
+    return source.slice(at, source.indexOf('}', at));
+  };
+  // 增强历史小浮层相位：可含上游错误原文（长 URL），nowrap 必须配收缩+省略号
+  const phase = bodyOf('.zusage-enhance-tip .zu-eh-phase{');
+  assert.ok(phase.includes('min-width:0') && phase.includes('overflow:hidden') && phase.includes('text-overflow:ellipsis'),
+    'zu-eh-phase 须可收缩截断（长错误文案曾撑破头部）');
+  // 精简摘要 rt-models 键列：table-cell 的 ellipsis 须有 max-width 帽才成立
+  const key = bodyOf('.tip .rt-models .rt-row b{');
+  assert.ok(key.includes('max-width:300px'), 'rt-models 键列宽度帽（auto 布局 cell 随内容长宽，无帽则省略号与缩字号兜底双失效）');
+  // 子代理任务页 agent 名：不可收缩 nowrap 改可收缩+省略号+上限
+  const spsub = bodyOf('.zu-spsub{');
+  assert.ok(spsub.includes('flex:0 1 auto') && spsub.includes('min-width:0') && spsub.includes('text-overflow:ellipsis') && spsub.includes('max-width:'),
+    'zu-spsub 须可收缩截断（长 agent 名曾把任务名 h3 挤成逐字折行）');
+  assert.ok(!spsub.includes('flex:0 0 auto'), 'zu-spsub 不得锁死不收缩');
+  // 额度 tooltip 标题：远端可控套餐/供应商名，无空格长串须可断行
+  assert.ok(bodyOf('.zusage-quota-tip .qt-h{').includes('overflow-wrap:anywhere'), 'qt-h 断行');
+  // data-tip 伪元素气泡：pre-line/normal 都不断无空格长 token（URL/模型 id）
+  assert.ok(bodyOf('.zu-mp-tst[data-tip]:hover::after{').includes('overflow-wrap:anywhere'), '探测气泡断行');
+  assert.ok(bodyOf('.zu-sv-left .zu-sl-model[data-tip]:hover::after{').includes('overflow-wrap:anywhere'), '模型胶囊气泡断行');
+  assert.ok(bodyOf('.zu-rot-tipt:hover::after{').includes('overflow-wrap:anywhere'), '轮播编辑气泡断行');
+  assert.ok(bodyOf('.zu-rot-livetip:hover::after{').includes('overflow-wrap:anywhere'), '轮播实时气泡断行');
+  // 词包弹窗标题：packId 回退长名
+  const pkt = bodyOf('.zu-rot-pk-title{');
+  assert.ok(pkt.includes('min-width:0') && pkt.includes('text-overflow:ellipsis'), '词包标题收缩截断');
+  // v372：标题行垂直居中——baseline 曾把范围胶囊/Tab 中心拖低 ~2.5px（用户实机指认）
+  assert.ok(bodyOf('.zu-stat-head{').includes('align-items:center'), 'stat-head 垂直居中');
+  assert.ok(bodyOf('.zu-pj-head{').includes('align-items:center'), 'pj-head 垂直居中');
+  // 速度 V1 估宽分级：fit2/fit3 必须同时覆盖 legacy hero（长 MCP 工具动词曾永不命中而溢出）
+  for (const fit of ['fit2', 'fit3']) {
+    const at = source.indexOf('.zu-speed-left .zu-speed-' + fit + ',.zu-speed-hero .zu-speed-' + fit + '{');
+    assert.ok(at >= 0, 'zu-speed-' + fit + ' 双作用域（.zu-speed-left + .zu-speed-hero）');
+  }
+});
+
+/* v373：项目卡紧凑样式内部标题容器也须 center（baseline!important 曾把项目名压低 1.7px）。
+ * 独立于 v371 聚合守卫，失败时能直接定位到本修复点。 */
+test('v373 project card inner title aligns center with project name', () => {
+  const at = source.indexOf('.zu-stat-tip--project .zu-pj-title{');
+  assert.ok(at >= 0, '项目卡标题规则存在');
+  const body = source.slice(at, source.indexOf('}', at));
+  assert.ok(body.includes('align-items:center!important'), '项目卡标题+项目名垂直居中');
+  assert.ok(!body.includes('align-items:baseline'), '项目卡标题内部不得回到 baseline');
+  // 收缩/省略链不受对齐改动影响
+  assert.ok(body.includes('min-width:0!important') && body.includes('white-space:nowrap!important'), '标题容器收缩链不变');
+  const pname = source.slice(source.indexOf('.zu-stat-tip--project .zu-pj-pname{'));
+  assert.ok(pname.slice(0, pname.indexOf('}')).includes('text-overflow:ellipsis!important'), '项目名省略链不变');
+});

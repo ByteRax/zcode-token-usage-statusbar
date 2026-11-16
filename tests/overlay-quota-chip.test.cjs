@@ -388,6 +388,21 @@ test('hover tooltip lists windows, built-in tools, highlights the current model 
   assert.equal(tip.style.display, 'none');
 });
 
+test('v371: 超长无空格套餐名标题可断行（qt-h overflow-wrap:anywhere），不撑破 520px 浮层', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  h.inject(); h.boot(); h.tick();
+  const longName = 'X'.repeat(200);   // 无空格长 token：normal 断行规则下不可折，须 anywhere
+  h.window.__zusageUpdate(h.payload({ quota: Object.assign({}, QUOTA_OK, {
+    plan: { version: 'V1', productName: longName, validStart: '2026-02-28', validEnd: '2027-02-28' } }) }));
+  const chip = h.chipOf(ui.wrap);
+  chip.listeners.get('mouseenter')[0].call(chip);
+  const html = h.tipEl().innerHTML;
+  assert.ok(html.includes(longName), '长套餐名原样渲染（不预截断）');
+  const at = html.indexOf('.zusage-quota-tip .qt-h{');
+  assert.ok(at >= 0, 'qt-h 规则随内容');
+  assert.ok(html.slice(at, html.indexOf('}', at)).includes('overflow-wrap:anywhere'), 'qt-h 断行防护');
+});
+
 test('tooltip survives scroll bursts: chip is fixed in the composer toolbar, streaming auto-scroll must not dismiss it (v106)', () => {
   const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
   h.inject(); h.boot(); h.tick();

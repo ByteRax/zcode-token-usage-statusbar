@@ -168,5 +168,18 @@ test('zero-rect entry falls back to the bar anchor; a detached entry closes the 
     assert.ok(html.includes('请求会话'), '行二会话格（本项=单子会话，计 1 为分组真值）');
     assert.ok(html.includes('总耗时'), '行三总耗时（secLong 入参）');
     assert.ok(html.includes('zu-sp-models'), '模型明细保留');
+    /* v371：agent 名副标题截断后 title 携带全名（CSS 收缩+省略号，长 agent 名不挤折任务名） */
+    assert.ok(html.includes('<span class="zu-spsub" title="gen · …1234">'), 'spsub title 全名');
+  });
+
+  test('v371: long agent name keeps full text in title attr (CSS ellipsis truncates display)', () => {
+    const longAgent = 'zcode-' + 'x'.repeat(120);
+    const sub = { total: 1, active: false, requests: 1, models: [],
+      list: [{ task: 'probe', title: 't', agent: longAgent, sid: 'sess_subagent_abcd1234',
+        input: 1, output: 1, cache_read: 0, reasoning: 0, cache_write: 0, requests: 1, tps_avg: 1, last: 1 }] };
+    const panel = makePanel();
+    runBuild(panel, sub, 'sess_subagent_abcd1234');
+    const expect = longAgent.replace(/^zcode-/, '') + ' · …1234';
+    assert.ok(panel.__html.includes('<span class="zu-spsub" title="' + expect + '">'), '超长 agent 名全文进 title');
   });
 }

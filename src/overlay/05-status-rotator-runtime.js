@@ -795,7 +795,7 @@
        * 原生即无阴影——用户点名去阴影）：-webkit-text-fill-color 必须显式重置——宿主 gradient
        * label 的 text-fill-color:transparent 是继承属性，会压过本规则 color 让气泡文字隐形
        * （2026-11-14 用户实报「悬停看不到」根因，CDP computed 实证 afterTextFill=transparent）。 */
-      ".zu-rot-livetip:hover::after{content:attr(data-tip);position:absolute;bottom:calc(100% + 6px);left:0;z-index:2147483646;max-width:280px;width:max-content;padding:6px 12px;border:1px solid var(--color-border,transparent);border-radius:8px;background:var(--color-tooltip,#171717);color:var(--color-tooltip-foreground,#fafafa);-webkit-text-fill-color:var(--color-tooltip-foreground,#fafafa);font-size:calc(var(--ui-font-size,14px) - 2px);line-height:1.5;white-space:normal;text-align:left;pointer-events:none}" +
+      ".zu-rot-livetip:hover::after{content:attr(data-tip);position:absolute;bottom:calc(100% + 6px);left:0;z-index:2147483646;max-width:280px;width:max-content;padding:6px 12px;border:1px solid var(--color-border,transparent);border-radius:8px;background:var(--color-tooltip,#171717);color:var(--color-tooltip-foreground,#fafafa);-webkit-text-fill-color:var(--color-tooltip-foreground,#fafafa);font-size:calc(var(--ui-font-size,14px) - 2px);line-height:1.5;white-space:normal;overflow-wrap:anywhere;text-align:left;pointer-events:none}" +   // v371：防护性断行
       ".zu-settings-section[data-sec='rotator'] .zu-settings-card+.cap{margin-top:16px}" +
       ".zu-rot-pack-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:8px;padding:10px 14px 14px}" +
       ".zu-rot-pack-item{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:8px 10px;border:1px solid var(--color-border,rgba(255,255,255,.1));border-radius:8px;font-size:calc(var(--ui-font-size,14px) - 1px);background:var(--color-hover,rgba(255,255,255,.03))}" +
@@ -809,7 +809,7 @@
       ".zu-rot-pk-dlg{position:fixed;inset:0;z-index:2147483647;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.6);-webkit-app-region:no-drag}" +
       ".zu-rot-pk-card{box-sizing:border-box;width:600px;max-width:calc(100vw - 24px);height:80vh;display:flex;flex-direction:column;border-radius:14px;background:var(--color-popover,#fff);color:var(--color-foreground,#0a0a0a);border:1px solid var(--color-border,rgba(0,0,0,.1));box-shadow:0 25px 50px -12px rgba(0,0,0,.45);font-family:inherit;overflow:hidden}" +
       ".zu-rot-pk-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 16px;border-bottom:1px solid var(--color-border,rgba(0,0,0,.1))}" +
-      ".zu-rot-pk-title{font-weight:600;font-size:calc(var(--ui-font-size,14px) + 1px)}" +
+      ".zu-rot-pk-title{font-weight:600;font-size:calc(var(--ui-font-size,14px) + 1px);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +   // v371：packId 回退长名不撑破头行
       ".zu-rot-pk-count{color:var(--color-foreground-subtle,#8791a3);font-size:12px;font-variant-numeric:tabular-nums}" +
       ".zu-rot-pk-close{flex:none;background:none;border:0;color:var(--color-foreground-subtle,#8791a3);font:inherit;font-size:18px;line-height:1;cursor:pointer;padding:4px 8px;border-radius:6px}" +
       ".zu-rot-pk-close:hover{background:var(--color-hover,rgba(0,0,0,.06));color:var(--color-foreground,#0a0a0a)}" +
@@ -833,7 +833,7 @@
       ".zu-rot-btn:hover{background:var(--color-border,rgba(255,255,255,.16))}" +
       /* 自定义短语可视化编辑器 */
       ".zu-rot-tipt{position:relative}" +
-      ".zu-rot-tipt:hover::after{content:attr(data-tip);position:absolute;bottom:calc(100% + 6px);left:0;z-index:2147483646;max-width:280px;width:max-content;padding:6px 10px;border:1px solid var(--color-popover-border,var(--color-border,rgba(255,255,255,.14)));border-radius:8px;background:var(--color-popover,#20242e);color:var(--color-popover-foreground,var(--color-foreground,#e9edf4));font-size:calc(var(--ui-font-size,14px) - 2px);line-height:1.5;white-space:normal;text-align:left;box-shadow:0 6px 18px rgba(0,0,0,.28);pointer-events:none}" +
+      ".zu-rot-tipt:hover::after{content:attr(data-tip);position:absolute;bottom:calc(100% + 6px);left:0;z-index:2147483646;max-width:280px;width:max-content;padding:6px 10px;border:1px solid var(--color-popover-border,var(--color-border,rgba(255,255,255,.14)));border-radius:8px;background:var(--color-popover,#20242e);color:var(--color-popover-foreground,var(--color-foreground,#e9edf4));font-size:calc(var(--ui-font-size,14px) - 2px);line-height:1.5;white-space:normal;overflow-wrap:anywhere;text-align:left;box-shadow:0 6px 18px rgba(0,0,0,.28);pointer-events:none}" +   // v371：防护性断行（同 mp-tst 气泡）
       ".zu-rot-cp-row .zu-rot-tipt:hover::after{left:auto;right:0}" +
       /* cap 行贴 .zu-settings-body（overflow:auto 滚动容器）顶缘：气泡翻到触发元素下方，向上弹被滚动区裁剪（v315 用户实报「原作者」悬停提示被遮） */
       ".zu-settings .cap .zu-rot-tipt:hover::after{left:auto;right:0;bottom:auto;top:calc(100% + 6px)}" +
@@ -1821,6 +1821,7 @@
     var title = document.createElement("span");
     title.className = "zu-rot-pk-title";
     title.textContent = meta ? L(meta.zh, meta.en) : packId;
+    title.title = title.textContent;   // v371：截断后 title 全名
     var count = document.createElement("span");
     count.className = "zu-rot-pk-count";
     count.textContent = L(phrases.length + " 条", phrases.length + " phrases");

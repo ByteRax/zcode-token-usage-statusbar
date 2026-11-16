@@ -159,7 +159,7 @@
         meta.push('<span class="subrate" data-sid="' + escAttr(it1.sid) + '">' + ttEsc(subRateSlotText(it1.sid)) + "</span>");
       }
       return '<div class="zu-spview-head"><h3 title="' + escAttr(name) + '">' + ttEsc(name) + "</h3>" +
-        '<span class="zu-spsub">' + ttEsc(sub2) + "</span></div>" +
+        '<span class="zu-spsub" title="' + escAttr(sub2) + '">' + ttEsc(sub2) + "</span></div>" +   // v371：截断后 title 全名
         r1 + r2 + r3 + r4 +
         subPopModelsHTML(r.models) +
         (meta.length ? '<div class="zu-sp-meta">' + meta.join("") + "</div>" : "");

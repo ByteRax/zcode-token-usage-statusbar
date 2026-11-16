@@ -263,6 +263,18 @@ test('hover tip footer renders a settings entry', () => {
   assert.ok(h.enhanceTip._html.includes('设置'), 'settings label localized');
 });
 
+test('v371: 相位警示长错误文案原样进 zu-eh-phase（CSS 收缩+省略号，不预截断不撑破头部）', () => {
+  const h = harness([rec('r1')]);
+  const longErr = 'upstream rejected: https://example.invalid/v1/' + 'x'.repeat(160);
+  h.ctx.enhanceTipFor = { isConnected: true, __zuEnhTip: longErr, getBoundingClientRect: () => ({ left: 400, top: 440, width: 40, height: 20 }) };
+  h.enhanceTip.classList = { add() {}, remove() {}, toggle() {}, contains: () => false };   // placeEnhanceTip 需要
+  h.ctx.ehCache = { records: [rec('r1')], total: 1 };   // 有数据才有总数兄弟项
+  h.ctx.ehRender();
+  const html = h.enhanceTip._html;
+  assert.ok(html.includes('<span class="zu-eh-phase">' + longErr + '</span>'), '长错误文案全文渲染（截断交给 CSS ellipsis）');
+  assert.ok(html.includes('zu-eh-total'), '总数兄弟项仍在（不被相位挤出）');
+});
+
 test('new history records invalidate the full-panel cache', () => {
   const env = { width: 1200 };
   const ctx = { L: zh => zh, pluginRequest: () => {}, window: {}, document: { createElement: () => elStub(env) } };

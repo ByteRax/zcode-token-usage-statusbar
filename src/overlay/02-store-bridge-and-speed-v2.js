@@ -138,12 +138,11 @@
    * 左卡由 o.leftNote 承载口径短语（v235 起由 o.status.noteText 承接,现无调用方传入,钩子保留）；无 segs（旧快照/远端旧版）整块保持 v215 原布局。 */
   function speedCardHTML(o) {
     function esc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
-    /* v233 估宽分级（v235 阈值随左卡 300→250px 重算；结构化 status 模板下本分级
-     * 当前无生效路径——fit 类 CSS 仅 .zu-speed-left 作用域而 legacy hero 不在其内，
-     * 为 o.main 无 status 组合预留）：剥掉 o.main 的 HTML 标签后按字符估宽（CJK/全角 1em、其余 0.6em，
-     * 空白不计量），≤6.0em 默认单行大字（ui+22，容量 222/36≈6.2em），≤9.0em 加
-     * zu-speed-fit2（缩号允换行），更长加 zu-speed-fit3（再缩号 + break-word）。分级类
-     * 与 mainCls 并存，CSS 只在 .zu-speed-left 作用域生效。 */
+    /* v233 估宽分级（v235 阈值随左卡 300→250px 重算）：剥掉 o.main 的 HTML 标签后按字符
+     * 估宽（CJK/全角 1em、其余 0.6em，空白不计量），≤6.0em 默认单行大字（ui+22，容量
+     * 222/36≈6.2em），≤9.0em 加 zu-speed-fit2（缩号允换行），更长加 zu-speed-fit3
+     * （再缩号 + break-word）。分级类与 mainCls 并存；v371 起 CSS 双作用域
+     * （.zu-speed-left 与 .zu-speed-hero）——legacy hero 的长工具动词此前永不命中会溢出。 */
     function mainFitCls(s) {
       var text = String(s == null ? "" : s).replace(/<[^>]*>/g, "");
       var w = 0;

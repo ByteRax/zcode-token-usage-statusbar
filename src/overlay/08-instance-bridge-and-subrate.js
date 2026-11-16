@@ -266,14 +266,21 @@
     /* tooltip 构建器收包不收元素（同 subRowTipHTML 约定）：showSubTip 以
      * el.__zuT.buildTip(el.__zuT) 调用，取数全走包内字段。 */
     function wfRunTipHTML(t) {
+      /* v371：作用域前缀改 .zusage-subrate-tip——浮层宿主类名恒为 tip zusage-subrate-tip
+       * （showSubTip 从不挂 zusage-wfrun-tip），旧前缀整段 CSS 是死代码，wf-name 的
+       * 单行省略/数值右对齐从未生效；wf-* 类仅本构建器产出，改前缀不影响其它 tip 内容 */
       var out = "<style>" +
-        '.zusage-wfrun-tip .rt-h{font-weight:600;color:var(--color-tooltip-foreground,#fafafa);margin:0 0 7px;overflow-wrap:anywhere}' +
-        '.zusage-wfrun-tip .rt-row{display:flex;gap:12px;margin:4px 0;align-items:flex-start}' +
-        '.zusage-wfrun-tip .rt-row b{flex:0 0 86px;min-width:0;color:var(--color-tooltip-tag-foreground,#a6a6a6);font-weight:500}' +
-        '.zusage-wfrun-tip .rt-row span{min-width:0;color:var(--color-tooltip-foreground,#fafafa);overflow-wrap:anywhere}' +
-        ".zusage-wfrun-tip .wf-actor{display:flex;gap:8px;margin:3px 0;font-size:.92em;align-items:baseline}" +
-        ".zusage-wfrun-tip .wf-name{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
-        ".zusage-wfrun-tip .wf-num{flex:0 0 auto;color:var(--color-tooltip-tag-foreground,#a6a6a6);font-variant-numeric:tabular-nums}" +
+        '.zusage-subrate-tip .rt-h{font-weight:600;color:var(--color-tooltip-foreground,#fafafa);margin:0 0 7px;overflow-wrap:anywhere}' +
+        '.zusage-subrate-tip .rt-row{display:flex;gap:12px;margin:4px 0;align-items:flex-start}' +
+        '.zusage-subrate-tip .rt-row b{flex:0 0 86px;min-width:0;color:var(--color-tooltip-tag-foreground,#a6a6a6);font-weight:500}' +
+        '.zusage-subrate-tip .rt-row span{min-width:0;color:var(--color-tooltip-foreground,#fafafa);overflow-wrap:anywhere}' +
+        /* v373：两个构建器共用 subTip DOM、每次只注入自己的 style——.sub-agent 徽标样式
+         * 原仅 subRowTipHTML 携带，wf tip 的 runShort 命中不到（既存问题，v371 改作用域后
+         * 同段收尾补齐）：灰色小字，不随 runShort 长度撑破 */
+        '.zusage-subrate-tip .sub-agent{font-weight:400;color:var(--color-tooltip-tag-foreground,#a6a6a6);font-size:.9em;overflow-wrap:anywhere}' +
+        ".zusage-subrate-tip .wf-actor{display:flex;gap:8px;margin:3px 0;font-size:.92em;align-items:baseline}" +
+        ".zusage-subrate-tip .wf-name{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
+        ".zusage-subrate-tip .wf-num{flex:0 0 auto;color:var(--color-tooltip-tag-foreground,#a6a6a6);font-variant-numeric:tabular-nums}" +
         "</style>";
       out += '<div class="rt-h">' + ttEsc(L("工作流", "Workflow")) + ' <span class="sub-agent">' + ttEsc(t.runShort) + "</span></div>";
       var stText = t.running > 0 ? L("运行中 · ", "running · ") + t.running + L(" 个执行中", " active")
