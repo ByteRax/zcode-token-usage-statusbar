@@ -46,7 +46,7 @@ Issue #338。在既有「排序 → 优先级 → 自适应 → 自动折叠 →
   - minimal：`23% | 64% | 187G`（仅一项开启时保留指标名 `[显示器] CPU 23%`）
   - `format:"auto"` 随窄宽档位：shrink 0→full、1→compact、2→minimal；档位切换由窄宽状态机钩子驱动重绘（250ms 节流+迟滞既有纪律，无新探针）。显式 full/compact/minimal 不自动改写；空间不足仍走既有折叠链。DISK 值=主卷（project 优先，退 system）可用空间；内存 full=已用/总量、compact/minimal=百分比。CPU 差分未成立显 `--`；关闭的指标整段不渲染；全部关闭不渲染格。
 - 预警视觉（`warnColors` 开，默认开）：warning=柔和黄、critical=柔和红，仅染数值/图标不染整条背景；**图标随状态切换**（warning/critical 用警告三角 SVG 替代显示器图标），色弱可辨；无高频闪烁、无声音、无系统通知。恢复即还原，迟滞在采样确认层（连续 2 拍进预警才亮、回落后 1 拍还原不拖）。
-  - Tooltip（`\x01` 结构化串走通用 `__tip` 链，440px，`.zu-sys-tip` 作用域；v362 紧凑重构；v364 起内层不再叠加 padding——宿主 `.tip` 容器自带 `10px 13px`，双叠加曾致内容离框过远；v369 按《深色系统状态概览面板》设计稿图标化）：
+- Tooltip（`\x01` 结构化串走通用 `__tip` 链，440px，`.zu-sys-tip` 作用域；v362 紧凑重构；v364 起内层不再叠加 padding——宿主 `.tip` 容器自带 `10px 13px`，双叠加曾致内容离框过远；v369 按《深色系统状态概览面板》设计稿图标化）：
   - 标题区：显示器图标 +「系统状态」+「本机」低对比标签；右上时钟图标 + `5s · 60s`（按实际 cfg 动态，title 带完整说明；时钟是纯说明不是按钮）。
   - 指标行图标区（v369，CPU/内存/磁盘三区统一 `.zu-sys-lead`）：`[图标容器][标签]` 竖排居中跨主数值与 sub 两行——图标容器 `.zu-sys-mico` 28px 圆角 7px、中性轻背景（foreground 6% 提亮，非品牌色非状态色）、内嵌 15px 线性 SVG（lucide 同款 path：monitor/cpu/memory-stick/database，stroke 1.8 currentColor）；标签 13px 弱灰（`.zu-sys-tip .zu-sys-k` 作用域覆写——`.zu-sys-k` 基础 -2px 是条面格 seg() 共享类不动，标签 nowrap）。图标与标签是采集范围标识，不随预警变色（状态色仍只染主数值，与条面格「图标随状态切换」互不影响）。
   - CPU 区（Grid：图标标签列 | 主数值 | 右侧辅助；主数值/sub 列带左竖分隔线）：主数值=使用率百分比；右侧=核数；Load 1m/5m/15m 恒两位小数进 sub 行（不支持平台整行隐藏）；loading 显「采集中…」。Load sub 行整体可悬停（v364：`.zu-sys-hint` 点状下划线 + 纯 CSS `:hover` 向下弹 `.zu-sys-hintpop` 解释气泡——零事件链、帧重建安全，说明平均负载口径与核心数参照）。
