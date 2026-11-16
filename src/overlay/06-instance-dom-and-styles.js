@@ -265,8 +265,9 @@
        * bump richTextUnitEpoch 刷代谢行；⏱ 采样时刻/上轮行格式不变。
      * → v377 手机远控中继统一桌面 overlay（specs/mobile-unified-overlay.md；移动端原 v363/v364 与主线撞号，按合入顺序顺延 v377）：目标数值投影与匿名 binding 隔离；移动接收端内嵌唯一桌面 overlay，本地/WSL/SSH 共用相同状态条、设置和 tooltip。
      * → v378 清理手机中继无消费者分片与冗余移动分支（specs/mobile-relay.md；原 v350/v364 与主线撞号，按合入顺序顺延 v378）：删除 13-mobile-chips（桌面 DOM chips 采集已无消费者，主进程目标发现改读宿主 preload 状态）、移动端不启动 10Hz 桥心跳、去掉 speed_history 与移动缓存清空的空转守卫、删除 06/07 旧手机提取锚点（zm-cell-css/zm-band-css/zm-band-css-light/zm-show-rows/zm-ico；当前构建直接内嵌完整 overlay）；桌面渲染与既有移动快照语义不变。
+     * → v379 ⚙ 设置面板底栏新增「重启 ZCode」按钮（用户规格；本地曾占 v377，因主线 v377/v378 已被手机中继批占用按合入顺序顺延）：置于滚动提示左侧，与「插件更新」分区内同名按钮共用 data-update=relaunch 点击状态机（二次确认/正在重启/回执三路还原），两枚按钮 armed/sent/禁用/待重启高亮同步；旧主进程缺 relaunchSupported 时同款降级隐藏。review 加固：5s 确认定时器发送/dispose 两路清理；ok 守卫读当前 DOM sent（非闭包旧节点）+ relaunchSeq 代际丢弃过期回执，防面板重建后迟到 ok 重挂 90s alive 误清新一轮重启。
      */
-    var VERSION = "v378";
+    var VERSION = "v379";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
@@ -1099,9 +1100,12 @@
       ".zu-settings .zu-settings-scroll:disabled{color:var(--color-foreground-subtle,#8791a3);cursor:default}" +
       /* 反馈按钮（v70）：常驻底栏右缘，点击经 window.open 交由系统默认浏览器打开 issues */
       ".zu-settings .zu-settings-feedback-status{flex:0 1 auto;min-width:0;color:var(--color-foreground-subtle,#a1a1a1);font-size:calc(var(--ui-font-size,14px) - 2px);overflow-wrap:anywhere}" +
-      ".zu-settings .zu-settings-feedback,.zu-settings .zu-settings-contact{flex:0 0 auto;font:inherit;font-size:calc(var(--ui-font-size,14px) - 2px);" +
+      ".zu-settings .zu-settings-feedback,.zu-settings .zu-settings-contact,.zu-settings .zu-settings-relaunch{flex:0 0 auto;font:inherit;font-size:calc(var(--ui-font-size,14px) - 2px);" +
       "color:var(--color-foreground,#e9edf4);background:var(--color-hover,rgba(255,255,255,.07));" +
       "border:1px solid var(--color-border,rgba(255,255,255,.14));border-radius:6px;padding:3px 10px;cursor:pointer}" +
+      /* 底栏重启按钮的二次确认/发送中与更新区同款强调（.zu-rr-armed 由 syncUpdate 按 restartRequired 挂） */
+      ".zu-settings .zu-settings-relaunch.zu-rr-armed{border-color:#ff6b57;color:#ff6b57}" +
+      ".zu-settings .zu-settings-relaunch:disabled{opacity:.5;cursor:default}" +
       /* v342 联系我弹窗：复用 .zu-mp-ov/.zu-mp-modal 外壳，收窄为二维码卡宽 */
       ".zu-ct-ov .zu-mp-modal{width:auto;max-width:min(360px,calc(100vw - 48px))}" +
       ".zu-ct-img{display:block;max-width:280px;max-height:60vh;width:auto;height:auto;margin:2px auto 0;border-radius:10px}" +
@@ -2270,7 +2274,8 @@
       L("数据库统计：只读本地用量库（默认 ~/.zcode/cli/db/db.sqlite，跟随宿主 dataBaseDir 迁移），请求完成后入库；总 token 为输入加输出，缓存已含在输入中，思考已含在输出中。", "Database statistics: read-only from the local usage database (default ~/.zcode/cli/db/db.sqlite; follows the host dataBaseDir migration), written after requests complete. Total tokens = input + output; cache is included in input and thinking in output.") + '</div><div class="pnote">' +
       L("生成速度：只读渲染器状态桥在生成时按字符增量估算，完成后切换为真实速度；桥不可用时回退数据库最近有效段。", "Generation speed: the read-only renderer bridge estimates from text deltas while running and uses actual speed after completion; without the bridge it falls back to the latest valid database segment.") + '</div><div class="pnote">' +
       L("联网边界：额度源查询对应账号的套餐或余额接口；插件更新可联网下载代码与读取发布日志（源码渠道为注册仓库的同号 Release 参考），「联系我」弹窗会从维护者图床加载微信二维码图片。额度不是本地 token 统计推算值。SSH 数据查询使用已配置通道。开启移动端统计推送后，数据经宿主官方中继转发；载荷无端到端加密（E2EE），服务器可见当前会话 ID 与数值统计（含今日合计、项目聚合，可能包含其他会话贡献），不含正文、工作区路径或凭据。该开关仅控制插件统计推送，不影响宿主远控。", "Network boundaries: quota sources query account plan/balance endpoints; plugin updates can download code and read release notes (source channels read the registered repo's same-version release as reference), and the Contact-me dialog loads the maintainer's WeChat QR image from their image host. Quota is not inferred from local token usage. SSH statistics use configured connections. When mobile statistics push is enabled, data passes through the host's official relay without end-to-end encryption (E2EE); the server can see the current session ID and numerical statistics (including today's total and project aggregates, which may include contributions from other sessions), but no message content, workspace paths or credentials. This switch controls only the plugin's statistics push and does not affect the host's remote control.") + '</div></section></div></div>' +
-      '<div class="zu-settings-foot"><button type="button" class="zu-settings-scroll"></button>' +
+      '<div class="zu-settings-foot"><button type="button" class="zu-settings-relaunch" data-update="relaunch">' + L("重启 ZCode", "Restart ZCode") + '</button>' +
+      '<button type="button" class="zu-settings-scroll"></button>' +
       '<span class="zu-settings-feedback-status" role="status" aria-live="polite"></span>' +
       '<button type="button" class="zu-settings-contact">' + L("联系我", "Contact me") + '</button>' +
       '<button type="button" class="zu-settings-feedback">' + L("反馈问题", "Report an issue") + '</button></div>';

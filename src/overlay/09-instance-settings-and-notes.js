@@ -112,13 +112,24 @@
           : state.mobileRelayPending ? L("操作已发出，等待确认…", "Sent; awaiting confirmation…") : "";
       panel.querySelector('[data-update=check]').disabled = !active || !!u.busy;
       panel.querySelector('[data-update=update]').disabled = !active || !!u.busy || u.phase !== "available";
-      var relaunchBtn = panel.querySelector('[data-update=relaunch]');
+      /* v379 底栏新增「重启 ZCode」按钮：与更新区按钮同 data-update=relaunch、共用点击状态机，
+       * 两处同步 armed/sent/禁用/待重启高亮文案；索引 0=更新区内，1=底栏 */
+      var relaunchBtns = panel.querySelectorAll ? panel.querySelectorAll('[data-update=relaunch]') : null;
+      if (!relaunchBtns || !relaunchBtns.length) {
+        var soloBtn = panel.querySelector ? panel.querySelector('[data-update=relaunch]') : null;
+        relaunchBtns = soloBtn ? [soloBtn] : [];
+      }
       var relaunchDead = !!(u && u.relaunchSupported !== true);   // v180 issue #158：主进程缺能力标记（旧版）→ relaunch 指令必然无人接收
-      var relaunchSent = !!(relaunchBtn && relaunchBtn.dataset && relaunchBtn.dataset.sent === "1");   // v244：重启请求已发出，状态推送重建状态行时保持「正在重启」态
-      if (relaunchBtn) {
-        relaunchBtn.hidden = relaunchDead;   // 降级为下方提示文案：浮层热更/主进程冷加载错位窗口里按钮「点了没反应」
-        relaunchBtn.disabled = relaunchSent || !!(u && u.busy) || relaunchDead;   // 重启不依赖更新器：仅更新进行中禁用（u 为 null 时仍可点）
-        relaunchBtn.classList.toggle("zu-rr-armed", !!(u && u.restartRequired));
+      var relaunchSent = false;   // v244：重启请求已发出，状态推送重建状态行时保持「正在重启」态
+      for (var si = 0; si < relaunchBtns.length; si++) {
+        var sBtn = relaunchBtns[si];
+        if (sBtn && sBtn.dataset && sBtn.dataset.sent === "1") { relaunchSent = true; break; }
+      }
+      for (var ri = 0; ri < relaunchBtns.length; ri++) {
+        var rBtn = relaunchBtns[ri];
+        rBtn.hidden = relaunchDead;   // 降级为下方提示文案：浮层热更/主进程冷加载错位窗口里按钮「点了没反应」
+        rBtn.disabled = relaunchSent || !!(u && u.busy) || relaunchDead;   // 重启不依赖更新器：仅更新进行中禁用（u 为 null 时仍可点）
+        rBtn.classList.toggle("zu-rr-armed", !!(u && u.restartRequired));
       }
       /* v172 待办红点 → v208 仅待重启：需重启且未查看时亮 ⚙ 与「插件更新」导航点；其他窗口经各自 syncUpdate 收敛 */
       syncUpdateDots(updDotOn());
@@ -1727,6 +1738,28 @@
     }
     var relaunchAckTimer = 0;   /* v177：relaunch 回执超时（v244 起主进程回执随投递即返，含 1s 轮询约 1s 量级；超时≈旧主进程） */
     var relaunchAliveTimer = 0; /* v244：ok 回执后 90s 仍存活兜底——防状态机永久卡死；窗口可能已被 v245 hide，主进程 15s unhide 哨兵负责恢复可见 */
+    var relaunchConfirmTimer = 0; /* v379 review：二次确认 5s 还原定时器——发送/dispose 时清理，防面板重建后旧定时器误清新按钮的确认态 */
+    var relaunchSeq = 0;          /* v379 review：每次发送递增的代际号——4s/回执/90s 回调据此丢弃过期回执，防重建后迟到 ok 重挂 alive 误清新一轮重启 */
+    /* v379：底栏与更新区的「重启 ZCode」按钮共用同一状态机——点其中一个，两处同步 armed/文案/禁用。
+       测试桩无 querySelectorAll 时退回单按钮，保持既有单按钮契约不变。 */
+    function relaunchSiblings(active) {
+      var all = panel.querySelectorAll ? panel.querySelectorAll('[data-update=relaunch]') : null;
+      return all && all.length ? Array.prototype.slice.call(all) : [active];
+    }
+    function eachRelaunch(active, fn) {
+      var arr = relaunchSiblings(active);
+      for (var ri = 0; ri < arr.length; ri++) fn(arr[ri]);
+    }
+    /* v379：ok 回执守卫读「当前 DOM」任一同 action 按钮是否处于 sent=1——
+       不能读闭包捕获的 button（面板重建后它已脱离 DOM，sent 陈旧），否则 4s 超时还原后
+       迟到 ok 会误挂 90s alive 兜底，进而误清新一轮重启状态。 */
+    function eachRelaunchSends(active) {
+      var arr = relaunchSiblings(active);
+      for (var ri = 0; ri < arr.length; ri++) {
+        if (arr[ri] && arr[ri].dataset && arr[ri].dataset.sent === "1") return true;
+      }
+      return false;
+    }
 
     /* 自定义排序：HTML Drag and Drop + 明确的键盘上下移动按钮，均沿用展示配置存储。
      * v352：单根 .zu-layout-card 整卡替换；焦点目标被 disabled 时回退同行可用控件。 */
@@ -2022,9 +2055,11 @@
         if (button.dataset.update !== "relaunch") { pluginRequest(button.dataset.update); return; }
         var pu = state.pluginUpdate;
         if (pu && pu.relaunchSupported !== true) {   // v180 issue #158：防能力标记首推前的渲染窗口——主进程无 relaunch 能力时不发指令，直接给手动指引
-          button.dataset.armed = "0";
-          if (!pu.restartRequired) button.classList.remove("zu-rr-armed");   // 待重启高亮仍由 syncUpdate 按 restartRequired 校正
-          button.textContent = L("重启 ZCode", "Restart ZCode");
+          eachRelaunch(button, function (b) {
+            b.dataset.armed = "0";
+            if (!pu.restartRequired) b.classList.remove("zu-rr-armed");   // 待重启高亮仍由 syncUpdate 按 restartRequired 校正
+            b.textContent = L("重启 ZCode", "Restart ZCode");
+          });
           var puEl = panel.querySelector(".zu-update-status");
           if (puEl) puEl.textContent = L("「重启 ZCode」需要新版主进程支持：当前主进程是旧版本，请完全退出 ZCode 后重新打开。", "Restarting ZCode needs a newer main process: the running main process is outdated — quit ZCode completely and reopen it.");
           return;
@@ -2032,61 +2067,81 @@
         /* v172 重启会关闭所有窗口：二次确认（首次变确认文案，5s 未再点还原）再发 relaunch 动作。
          * v244 退出等待期可达数十秒（宿主 app.quit 优雅退出链要关窗并逐个终止会话/扩展子进程）：
          * 发出即进入「正在重启…」禁用态并写预期文案，不再「发出即恢复」伪装无反应；
-         * 4s 无回执 / ok:false 失败 / 90s 仍存活三路全部还原按钮。 */
+         * 4s 无回执 / ok:false 失败 / 90s 仍存活三路全部还原按钮。
+         * v379：底栏与更新区两枚按钮同步全部状态（confirm/armed/sent/文案/禁用）。 */
         if (button.dataset.armed === "1") {
-          button.dataset.armed = "0";
-          if (!(state.pluginUpdate && state.pluginUpdate.restartRequired)) button.classList.remove("zu-rr-armed");
-          button.dataset.sent = "1";   // syncUpdate 状态推送重建状态行时据此保持禁用与提示
-          button.disabled = true;
-          button.textContent = L("正在重启…", "Restarting…");
+          if (relaunchConfirmTimer) { clearTimeout(relaunchConfirmTimer); relaunchConfirmTimer = 0; }   // v379：发送即取消 5s 确认还原，防旧定时器误清新按钮
+          var mySeq = ++relaunchSeq;   // v379：本次发送代际——下方 4s/回执/90s 回调只认自己这一代，过期回调直接丢弃
+          eachRelaunch(button, function (b) {
+            b.dataset.armed = "0";
+            if (!(state.pluginUpdate && state.pluginUpdate.restartRequired)) b.classList.remove("zu-rr-armed");
+            b.dataset.sent = "1";   // syncUpdate 状态推送重建状态行时据此保持禁用与提示
+            b.disabled = true;
+            b.textContent = L("正在重启…", "Restarting…");
+          });
           var stEl = panel.querySelector(".zu-update-status");
           if (stEl) stEl.textContent = L("已发出重启请求：ZCode 正在退出全部窗口并自动重新打开；等待会话与扩展子进程退出通常需要几秒到几十秒，请稍候。", "Restart request sent: ZCode is closing all windows and will reopen automatically; waiting for session and extension child processes to exit can take a few seconds to tens of seconds.");
           if (relaunchAckTimer) clearTimeout(relaunchAckTimer);
           relaunchAckTimer = setTimeout(function () {
             relaunchAckTimer = 0;
+            if (relaunchSeq !== mySeq) return;   // v379：过期回执超时（已被新一次发送取代）不得还原状态
             /* v177：旧 pollPluginRequests 白名单外动作 splice 后静默丢弃（无 ok:false 回执）——
              * 超时明确告知手动完全退出；v244 起同时还原「正在重启」态。 */
-            button.dataset.sent = "";
-            button.disabled = false;
-            button.textContent = L("重启 ZCode", "Restart ZCode");
+            eachRelaunch(button, function (b) {
+              b.dataset.sent = "";
+              b.disabled = false;
+              b.textContent = L("重启 ZCode", "Restart ZCode");
+            });
             var stEl = panel.querySelector(".zu-update-status");
             if (stEl) stEl.textContent = L("未收到重启回执：ZCode 主进程可能是旧版，请手动完全退出并重新打开。", "No receipt for the restart request; the ZCode main process may be outdated — quit ZCode completely and reopen it manually.");
           }, 4000);
           pluginRequest("relaunch", undefined, function (result) {
+            if (relaunchSeq !== mySeq) return;   // v379：迟到回执属于旧代际（面板重建/新一轮重启），整段丢弃
             if (relaunchAckTimer) { clearTimeout(relaunchAckTimer); relaunchAckTimer = 0; }
             if (result && result.ok === false) {
-              button.dataset.sent = "";
-              button.disabled = false;
-              button.textContent = L("重启 ZCode", "Restart ZCode");
+              eachRelaunch(button, function (b) {
+                b.dataset.sent = "";
+                b.disabled = false;
+                b.textContent = L("重启 ZCode", "Restart ZCode");
+              });
               var stEl = panel.querySelector(".zu-update-status");
               if (stEl) stEl.textContent = /^unknown action:/.test(String(result.error || ""))
                 ? L("重启请求未被识别：ZCode 主进程是旧版本，请完全退出 ZCode 后重新打开。", "The restart request was not recognized: the ZCode main process is outdated — quit ZCode completely and reopen it.")
                 : L("重启请求失败：", "Restart failed: ") + (result.error || "");
-            } else if (result && result.ok && button.dataset.sent === "1") {
+            } else if (result && result.ok && eachRelaunchSends(button)) {
               /* v244：ok 后保持「正在重启」态（状态文案发送时已写，回执不改写）；挂 90s 仍存活
                * 兜底——quit 被会话/扩展阻止时按钮不能永久卡死（4s 超时已还原则跳过）。
                * 正常路径渲染进程随窗口退出先于本定时器消亡，回调不再执行。 */
               if (relaunchAliveTimer) clearTimeout(relaunchAliveTimer);
               relaunchAliveTimer = setTimeout(function () {
                 relaunchAliveTimer = 0;
-                button.dataset.sent = "";
-                button.disabled = false;
-                button.textContent = L("重启 ZCode", "Restart ZCode");
+                if (relaunchSeq !== mySeq) return;   // v379：过期 alive 兜底不得误清新一轮重启状态
+                eachRelaunch(button, function (b) {
+                  b.dataset.sent = "";
+                  b.disabled = false;
+                  b.textContent = L("重启 ZCode", "Restart ZCode");
+                });
                 var stEl = panel.querySelector(".zu-update-status");
                 if (stEl) stEl.textContent = L("ZCode 仍未退出（可能被会话或扩展子进程阻止）：可再次点击重启，或手动完全退出后重新打开。", "ZCode has not exited (it may be blocked by a session or extension child process): click restart again, or quit ZCode completely and reopen it.");
               }, 90000);
             }
           });
         } else {
-          button.dataset.armed = "1";
-          button.classList.add("zu-rr-armed");
-          button.textContent = L("再次点击确认重启", "Click again to confirm restart");
-          setTimeout(function () {
-            if (button.dataset.armed === "1") {
-              button.dataset.armed = "0";
-              if (!(state.pluginUpdate && state.pluginUpdate.restartRequired)) button.classList.remove("zu-rr-armed");
-              button.textContent = L("重启 ZCode", "Restart ZCode");
-            }
+          eachRelaunch(button, function (b) {
+            b.dataset.armed = "1";
+            b.classList.add("zu-rr-armed");
+            b.textContent = L("再次点击确认重启", "Click again to confirm restart");
+          });
+          if (relaunchConfirmTimer) clearTimeout(relaunchConfirmTimer);
+          relaunchConfirmTimer = setTimeout(function () {
+            relaunchConfirmTimer = 0;
+            eachRelaunch(button, function (b) {
+              if (b.dataset.armed === "1") {
+                b.dataset.armed = "0";
+                if (!(state.pluginUpdate && state.pluginUpdate.restartRequired)) b.classList.remove("zu-rr-armed");
+                b.textContent = L("重启 ZCode", "Restart ZCode");
+              }
+            });
           }, 5000);
         }
         return;
