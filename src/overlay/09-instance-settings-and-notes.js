@@ -1486,7 +1486,7 @@
       var allowBox = panel.querySelector(".zu-ep-allow-downgrade");
       if (allowBox) allowBox.checked = ep.allowDowngrade !== false;
       var saveBox = panel.querySelector(".zu-ep-save-history");
-      if (saveBox) saveBox.checked = ep.saveHistory === true;
+      if (saveBox) saveBox.checked = ep.saveHistory !== false;
       epSavedRevision = ep.revision; epCleanVersion = epEditVersion; epConflict = false;
       epSavedFormJson = JSON.stringify(epForm());
       epModelRequest++; panel.querySelector(".zu-ep-model-list").textContent = "";
