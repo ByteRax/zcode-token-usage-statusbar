@@ -46,14 +46,18 @@ function partialCover() {
   return { getBoundingClientRect: () => ({ left: 20, top: 405, right: 400, bottom: 420 }),
     contains: () => false, closest: () => null };
 }
+/* 整体罩住且带底色的真模态遮罩（v380 起夹具显式带色：视觉透明命中层走 v380 豁免判可见，
+ * 「整体罩住判被盖」的既有语义只对有视觉呈现的遮罩成立） */
 function fullCover() {
   return { getBoundingClientRect: () => ({ left: 0, top: 0, right: 600, bottom: 600 }),
-    contains: () => false, closest: () => null };
+    contains: () => false, closest: () => null,
+    computed: { backgroundColor: 'rgba(15, 18, 25, 0.6)' } };
 }
 /* 整体罩住但命中自有浮层类：ownOK=true 走 v40/v41 自有面板豁免判可见、ownOK=false 仍判被盖 */
 function ownFullCover() {
   return { getBoundingClientRect: () => ({ left: 0, top: 0, right: 600, bottom: 600 }),
-    contains: () => false, closest: () => ".panel" };
+    contains: () => false, closest: () => ".panel",
+    computed: { backgroundColor: 'rgba(15, 18, 25, 0.6)' } };
 }
 /* 从左上角罩住但右缘未达输入框右缘：partial 判定的 right 腿（hr.right < r.right）唯一成立 */
 function cornerCover() {
@@ -111,6 +115,43 @@ test('ownOK exempts own overlays when fully covered: mode divergence is cached p
   assert.equal(sandbox.reallyVisible(el, true), true);     // "o" 键缓存命中
   assert.equal(sandbox.reallyVisible(el, false), false);   // 回落 "n" 键：重算而非读 "o" 的 true
   assert.equal(calls.efp, 3);
+});
+
+/* v380：命中层视觉透明豁免——宿主模型选择菜单（Radix DropdownMenu modal）开启时挂的
+ * 「fixed 全屏 + 无底色 + 仅 pointer-events:auto」拦截层无视觉呈现，z 序低于它的
+ * composer（辅助对话 pane）中心命中它、v65 部分遮挡豁免因整体罩住不成立，曾致
+ * 400ms 迟滞后整条收起。负向锁：带底色真模态遮罩仍判被盖；带背景图/背景模糊的
+ * 透明层同样仍判被盖（三腿任一缺失即退回遮挡，防「删任一腿」变异存活）；
+ * coverOK 链路无豁免不变。 */
+test('v380: visually transparent fullscreen hit layer is not an occluder, tinted/painted/blurred overlays still are', () => {
+  const { sandbox } = boot();
+  const el = makeEl(sandbox, { left: 10, top: 400, width: 500, height: 50, right: 510, bottom: 450 });
+  const fullLayer = computed => ({ getBoundingClientRect: () => ({ left: 0, top: 0, right: 1200, bottom: 800 }),
+    contains: () => false, closest: () => null, computed });
+  /* reallyVisible 缓存键绑 el+rect+mode 与 hitEl 无关：每场景必 recompute（同键改矩形立即
+   * 重算）——单个删缺不一定红（mode 键切换或缓存同值会掩盖），但复合变异「删步进+删源码
+   * 腿」会静默失去负向锁杀伤力，勿省。步进 25 保持 rect 恒在 fullLayer(0,0,1200,800) 与
+   * fullCover(0,0,600,600) 双覆盖区内且不压线——越出/贴齐底缘都会先命中 v65 部分遮挡豁免，
+   * 测不到 v380 腿或把越界误报成豁免失灵。 */
+  let top = 400;
+  const recompute = () => { top += 25; el.rect = { left: 10, top: top, width: 500, height: 50, right: 510, bottom: top + 50 }; };
+  sandbox.hitEl = fullLayer({ backgroundColor: 'rgba(0, 0, 0, 0)', backgroundImage: 'none', backdropFilter: 'none' });   // 真实 DOM 形状：computed 恒返字符串
+  assert.equal(sandbox.reallyVisible(el, true), true);     // v380 豁免：透明层不算遮挡
+  recompute();
+  assert.equal(sandbox.reallyVisible(el, false), true);    // 豁免不依赖 ownOK
+  recompute();
+  sandbox.hitEl = fullLayer({ backgroundColor: 'rgba(0, 0, 0, 0)', backgroundImage: 'none', backdropFilter: 'blur(4px)' });
+  assert.equal(sandbox.reallyVisible(el, true), false, '带背景模糊的透明层仍判被盖');   // 杀「删 backdropFilter 腿」变异
+  recompute();
+  sandbox.hitEl = fullLayer({ backgroundColor: 'rgba(0, 0, 0, 0)', backgroundImage: 'linear-gradient(rgb(0, 0, 0), rgb(0, 0, 0))', backdropFilter: 'none' });
+  assert.equal(sandbox.reallyVisible(el, true), false, '带背景图的透明层仍判被盖');   // 杀「删 backgroundImage 腿」变异
+  recompute();
+  sandbox.hitEl = fullLayer(undefined);   // 字段缺席（undefined 走 !x 分支）与 'none' 同判：可见
+  assert.equal(sandbox.reallyVisible(el, true), true, 'computed 字段缺席时不误判遮挡');
+  recompute();
+  sandbox.hitEl = fullCover();   // 带底色真模态遮罩：仍判被盖（负向锁）
+  assert.equal(sandbox.reallyVisible(el, true), false);
+  assert.equal(sandbox.coverOK(el), false);   // coverOK/cardHitOK 链路无 v65/v380 豁免：行为不变
 });
 
 test('coverOK and reallyVisible cache entries do not cross-pollinate (o/n vs c)', () => {
@@ -224,8 +265,11 @@ test('plugin-owned mp-ov shell and rotator/compact dialogs never count as a host
 test('own mp-ov overlay covering the composer center does not read as occluded', () => {
   const { sandbox } = boot();
   const el = makeEl(sandbox, { left: 10, top: 400, width: 500, height: 50, right: 510, bottom: 450 });
+  /* 带底色（真实 own 遮罩形状）：v380 豁免只放行无视觉呈现层，带色层必须走
+   * ownOK/isOwnOverlay 豁免路径而非透明短路——否则本用例退化为 v380 的复述。 */
   sandbox.hitEl = { getBoundingClientRect: () => ({ left: 0, top: 0, right: 1200, bottom: 800 }),
-    contains: () => false, closest: sel => String(sel).indexOf('.zu-mp-ov') >= 0 ? {} : null };
+    contains: () => false, closest: sel => String(sel).indexOf('.zu-mp-ov') >= 0 ? {} : null,
+    computed: { backgroundColor: 'rgb(20, 20, 20)' } };
   assert.equal(sandbox.reallyVisible(el, true), true, 'ownOK path exempts the mp-ov overlay');
   assert.equal(sandbox.coverOK(el), true, 'coverOK path exempts the mp-ov overlay too');
 });

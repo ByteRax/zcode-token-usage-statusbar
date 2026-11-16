@@ -516,6 +516,21 @@
        * 全屏遮罩等真接管行为不变，模态弹窗/设置页另有 modalOpen/inGhostSubtree 收口。 */
       var hr = hit.getBoundingClientRect();
       if (hr.left > r.left || hr.top > r.top || hr.right < r.right || hr.bottom < r.bottom) return true;
+      /* v380：命中层视觉透明豁免——宿主模型选择菜单（Radix DropdownMenu modal）开启时
+       * 另挂「fixed 全屏 + 无底色 + 仅 pointer-events:auto」的透明层拦 webview 插件
+       * 外侧点击；body 同时被设 pointer-events:none，应用树全被命中测试跳过，z 序
+       * 低于该层的 composer（辅助对话 pane 无主 Composer 的 z-20 抬升）中心点命中它，
+       * v65 部分遮挡豁免因整体罩住不成立，迟滞 400ms 后整条收起（用户实报：主窗口
+       * 开模型选择器，右侧辅助对话状态条消失，弹层关闭即恢复）。该层无任何视觉呈现，
+       * 与 modalOpen「遮罩必带底色」同哲学：无底色、无背景图、无背景模糊的命中层
+       * 不算视觉遮挡；带底色/模糊的真模态遮罩行为不变。 */
+      try {
+        var hs = getComputedStyle(hit);
+        var v380bg = hs.backgroundColor;
+        if ((!v380bg || v380bg === "transparent" || v380bg === "rgba(0, 0, 0, 0)") &&
+            (!hs.backgroundImage || hs.backgroundImage === "none") &&
+            (!hs.backdropFilter || hs.backdropFilter === "none")) return true;
+      } catch (e) { }
       if (ownOK && isOwnOverlay(hit)) return true;
       return false;
     }
