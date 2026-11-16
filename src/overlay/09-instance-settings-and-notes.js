@@ -2448,8 +2448,17 @@
       }
       if (t2.classList.contains("zu-cost-enable")) {
         /* v202：费用行开关即时生效——纯展示偏好，立即重渲染让四格 tooltip/模型明细/
-         * 紧凑摘要同拍带上或去掉费用行 */
-        state.cost = t2.checked ? 1 : 0;
+         * 紧凑摘要同拍带上或去掉费用行。v376：费用开关随 turn-text 请求透传给
+         * token_rate.py（--no-cost），换代拒绝在途旧费用态回执。与 cn/forceKmb 同款：
+         * 已缓存行按契约不重算（切开关后的新轮才带新费用态）——不能清 richTextCache，
+         * 它覆盖本窗口所有轮，而 turn-text 只能重取当前活跃轮，清缓存会让历史轮永久
+         * 降级为简化占位（丢模型 id/分级耗时/费用等 v376 格式）。 */
+        var nextCost = t2.checked ? 1 : 0;
+        if (nextCost !== state.cost) {
+          richTextUnitEpoch++;
+          richTextAttempts = {};
+        }
+        state.cost = nextCost;
         persist();
         renderAll(false);
         return;

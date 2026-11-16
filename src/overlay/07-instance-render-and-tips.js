@@ -184,6 +184,7 @@
           '<td class="zu-pj-mname zu-model-fit"' + (full ? ' title="' + escAttr(name) + '"' : '') + '>' + ttEsc(name) + '</td>' +
           '<td>' + ttEsc(fmt(m1.total || 0)) + '</td>' +
           '<td>' + ttEsc(countFmt(m1.requests || 0)) + '</td>' +
+          '<td>' + ttEsc(modelTpsText(m1)) + '</td>' +
           (showCost ? '<td>' + (typeof m1.cost_usd === "number" && isFinite(m1.cost_usd) ? ttEsc(fmtMoney(m1.cost_usd)) : "—") + '</td>' : "") +
           '</tr>';
       }).join("");
@@ -332,6 +333,7 @@
               : "") +
             '<table class="zu-pj-table"><thead><tr><th>' + ttEsc(L("模型明细", "Models")) + '</th>' +
             '<th>' + ttEsc(L("Token 用量 ↓", "Tokens ↓")) + '</th><th>' + ttEsc(L("请求次数", "Requests")) + '</th>' +
+            '<th>' + ttEsc(L("平均速度", "Avg speed")) + '</th>' +
             (showCost ? '<th>' + ttEsc(L("预估费用", "Est. cost")) + '</th>' : "") + '</tr></thead>' +
             '<tbody data-zu-pj-rows>' + pjRowsHTML(shown, true) + '</tbody></table>' +
             (fullList.length > 6
@@ -516,6 +518,13 @@
       return '<div class="zu-pj-time"><b>' + ttEsc(L("时间范围", "Time span")) + '</b><span>' +
         (started ? fmtStartS(started) : "—") + " — " + (ended ? fmtStartS(ended) : "—") + '</span></div>';
     }
+    /* v375 模型明细「平均速度」单元格值：快照逐模型 avg_tps（Σ有效输出÷Σ有效窗口，与
+     * 同卡 KPI 同口径），toFixed(1) + t/s；非 number/非有限/≤0 显 —（不显假 0、不冒用范围级
+     * avg_tps）。返回纯文本（ttEsc 由调用方套），单元格不用 tpsBand 色块。 */
+    function modelTpsText(m1) {
+      var v = m1 && m1.avg_tps;
+      return (typeof v === "number" && isFinite(v) && v > 0) ? v.toFixed(1) + " t/s" : "—";
+    }
     function statTable(headers, rowsHtml) {
       return '<table class="zu-stat-table"><thead><tr>' + headers.map(function (h) { return '<th>' + ttEsc(h) + '</th>'; }).join("") + '</tr></thead><tbody>' + rowsHtml + '</tbody></table>';
     }
@@ -528,6 +537,7 @@
         ? '<div class="rt-models">' + models.map(function (m1) {
             return '<div class="rt-row"><b class="zu-model-fit" title="' + escAttr(m1.model || L("未知模型", "unknown")) + '">' + ttEsc(m1.model || L("未知模型", "unknown")) + '</b><span>' +
               ttEsc(fmt(m1.total) + L(" token · ", " token · ") + countFmt(m1.requests || 0) + L("次", " req") +
+                L(" · ", " · ") + modelTpsText(m1) +
                 (state.cost && typeof m1.cost_usd === "number" ? L(" · ", " · ") + fmtMoney(m1.cost_usd) : "")) +
               (state.cost && typeof m1.cost_usd === "number" ? FXQ_ICON.replace('class="tip-fxq"', 'class="tip-fxq" data-model="' + escAttr(m1.model || "") + '"' + (m1.rates ? ' data-rates="' + escAttr(JSON.stringify(m1.rates)) + '"' : "")) : "") + "</span></div>";
           }).join("") + "</div>"
@@ -539,7 +549,7 @@
      * 空明细/旧快照缺字段整块不渲染。精简摘要的 rt-models 行式（modelsBlock）保留。 */
     function statModelsTable(models, headRight, tableOnly) {
       if (!models || !models.length) return "";
-      var heads = [L("模型", "Model"), L("Token 用量 ↓", "Tokens ↓"), L("请求次数", "Requests")];
+      var heads = [L("模型", "Model"), L("Token 用量 ↓", "Tokens ↓"), L("请求次数", "Requests"), L("平均速度", "Avg speed")];
       if (state.cost) heads.push(L("预估费用", "Est. cost"));
       /* v299：headRight=表头行右侧自定义 HTML（本轮卡放工具调用次数；已转义/可信），
        * 缺省/空串维持「按用量排序」，会话/今日调用点不变；
@@ -553,6 +563,7 @@
             '<td class="zu-pj-mname zu-model-fit" title="' + escAttr(name) + '">' + ttEsc(name) + '</td>' +
             '<td>' + ttEsc(fmt(m1.total || 0)) + '</td>' +
             '<td>' + ttEsc(countFmt(m1.requests || 0)) + '</td>' +
+            '<td>' + ttEsc(modelTpsText(m1)) + '</td>' +
             (state.cost ? '<td>' + (typeof m1.cost_usd === "number" && isFinite(m1.cost_usd) ? ttEsc(fmtMoney(m1.cost_usd)) : "—") + '</td>' : "") +
             '</tr>';
         }).join(""));

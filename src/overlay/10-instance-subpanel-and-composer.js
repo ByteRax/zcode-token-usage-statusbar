@@ -52,8 +52,17 @@
     function subPopKpis(a1, a2, a3, extraCls) {
       return '<div class="zu-sp-kpis3' + (extraCls ? " " + extraCls : "") + '">' + a1 + a2 + a3 + "</div>";
     }
-    /* 模型用量四列表（汇总页/任务页共用）：逐模型费用尾随 ? 图标（data-model/data-rates
-     * 随行携带单价，面板 fxq 委托弹说明），费开关关/无费用列显 — */
+    /* 模型用量表用的平均速度文案（与 07 分片 modelTpsText 同口径，独立实现避免跨切片依赖）：
+     * 快照逐模型 avg_tps（Σ有效输出÷Σ有效窗口，同 KPI），toFixed(1)+t/s；
+     * 非 number/非有限/≤0 显 —，不显假 0。 */
+    function subPopModelTpsText(m1) {
+      var v = m1 && m1.avg_tps;
+      return (typeof v === "number" && isFinite(v) && v > 0) ? v.toFixed(1) + " t/s" : "—";
+    }
+    /* 模型用量表（汇总页/任务页共用）：v375 起五列（模型/Token 用量/请求/平均速度/预估费用）
+     * ——平均速度=该模型 Σ有效输出÷Σ有效窗口（同 KPI），非 number/≤0 显 —；
+     * 逐模型费用尾随 ? 图标（data-model/data-rates 随行携带单价，面板 fxq 委托弹说明），
+     * 费开关关/无费用列显 — */
     function subPopModelsHTML(models) {
       if (!models || !models.length) return "";
       var rows = models.map(function (m1) {
@@ -64,11 +73,12 @@
               (m1.rates ? ' data-rates="' + escAttr(JSON.stringify(m1.rates)) + '"' : ""));
         }
         return '<tr><td class="zu-model-fit" title="' + escAttr(m1.model || L("未知模型", "unknown")) + '">' + ttEsc(m1.model || L("未知模型", "unknown")) + "</td><td>" + ttEsc(fmt(m1.total || 0)) +
-          "</td><td>" + ttEsc(countFmt(m1.requests || 0)) + "</td><td>" + mc + "</td></tr>";
+          "</td><td>" + ttEsc(countFmt(m1.requests || 0)) + "</td><td>" + ttEsc(subPopModelTpsText(m1)) + "</td><td>" + mc + "</td></tr>";
       }).join("");
       return '<div class="zu-sp-models"><h4>' + ttEsc(L("模型用量", "Model usage")) + "</h4><table><thead><tr>" +
         "<th>" + ttEsc(L("模型", "Model")) + "</th><th>" + ttEsc(L("Token 用量", "Tokens")) + "</th><th>" +
-        ttEsc(L("请求", "Requests")) + "</th><th>" + ttEsc(L("预估费用", "Est. cost")) + "</th></tr></thead><tbody>" +
+        ttEsc(L("请求", "Requests")) + "</th><th>" + ttEsc(L("平均速度", "Avg speed")) + "</th><th>" +
+        ttEsc(L("预估费用", "Est. cost")) + "</th></tr></thead><tbody>" +
         rows + "</tbody></table></div>";
     }
     function subPopSummaryHTML(sub) {

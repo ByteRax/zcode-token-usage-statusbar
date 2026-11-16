@@ -254,8 +254,16 @@
      * → v373 修复收尾两处审查 MINOR（review-fix-merge 第一轮）：①项目卡内部标题+项目名垂直居中——07 分片 statCompactStyle("project") 的 .zu-stat-tip--project .zu-pj-title 由 align-items:baseline!important 改 center!important（v290–v304 遗留，CDP 量测项目名中心比大标题低 ~1.7px，同 v372 根因；ellipsis/收缩链不变）；②工作流 run tooltip 补 .zusage-subrate-tip .sub-agent 灰色小字徽标样式（两个构建器共用 subTip DOM、各注入自己的 style，旧仅 subRowTipHTML 携带，wf 的 runShort 命中不到——既存问题，v371 改作用域后同段收尾）。
      * → v374 会话名省略号补 title 全名（PR 最终自审 F1）：截断项契约对齐项目名/词包标题/agent 名——
        * .zu-st-name 渲染时 title=压缩后的全名（escAttr 属性转义），发版条目「鼠标悬停可看全名」落地。
+     * → v375 统计 tooltip 模型明细表新增「平均速度」列（specs/model-detail-avg-tps.md）：本轮/会话
+       * 累计/今日/项目累计/子代理统一浮层五列表（模型/Token用量/请求/平均速度/预估费用，费用关收四列），
+       * 精简摘要行式明细同步追加 X.X t/s；值=zusage 快照逐模型 avg_tps（Σ有效输出÷Σ有效窗口，同 KPI），
+       * 非 number/≤0 显 —；后端 _turn_rate 顺带按模型累加、会话/今日缓存改携带结构零新增扫描。
+     * → v376 回答末尾统计行（specs/turn-text-cost-and-format.md）：生成耗时分级中文（<60s 保持一位
+       * 小数、≥60s 「分/秒」、≥1h 「时/分/秒」）；本轮模型 id 去重前置到 token/s(本轮) 之前；
+       * 累计后拼本轮预估费用（¥/$，受 state.cost 经 turn-text 请求 --no-cost 门控）；费用开关切换
+       * bump richTextUnitEpoch 刷代谢行；⏱ 采样时刻/上轮行格式不变。
       */
-    var VERSION = "v374";
+    var VERSION = "v376";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */

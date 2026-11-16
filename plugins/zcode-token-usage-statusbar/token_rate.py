@@ -50,6 +50,10 @@ try:
     from usage_stats import query_first_token_covers
 except ImportError:
     query_first_token_covers = None
+try:
+    import token_pricing as _pricing   # v376 本轮预估费用；可选，缺失时统计行不带费用段
+except ImportError:
+    _pricing = None
 
 
 def _mirror_agent_db_path(value, home):
@@ -257,15 +261,19 @@ def fallback_session_id(db):
     return row[0] if row else None
 
 
-def _has_provider_col(db):
-    """旧库可能没有 provider_id 列（见 _provider_fallback 的同款降级）：缺列时不把
-    该列选进 scope，request_stats 对缺列行按默认窗口容错，别让整条查询崩掉。"""
+def _has_col(db, name):
+    """旧库/测试桩可能缺列（见 _provider_fallback 的同款降级）：缺列时不把该列选进
+    scope，消费端按缺省容错，别让整条查询崩掉。"""
     if db is None:
         return False
     try:
-        return any(r[1] == "provider_id" for r in db.execute("pragma table_info(model_usage)"))
+        return any(r[1] == name for r in db.execute("pragma table_info(model_usage)"))
     except sqlite3.OperationalError:
         return False
+
+
+def _has_provider_col(db):
+    return _has_col(db, "provider_id")
 
 
 def scope_for(db, sid):
@@ -427,6 +435,15 @@ def query_turn(session_id=None, current=False, turn_id=None):
         turn = aggregate_requests(items)
         turn.update(ttftMs=items[0]["ttftMs"], firstAt=items[0]["completedAt"],
                     lastAt=max(i["completedAt"] for i in items))
+        # v376 本轮模型 id（首次出现顺序去重，供统计行前置）与本轮预估费用 USD
+        seen_models = []
+        for it in items:
+            mid = it.get("model")
+            if mid and mid not in seen_models:
+                seen_models.append(mid)
+        turn["models"] = seen_models
+        _pricing_configure_for_cost()
+        turn["cost_usd"] = _turn_cost(db, sid, turn_id)
         return {"sessionId": sid, "turnId": turn_id, "turn": turn, "session": session,
                 "turnIdentitySource": identity_source,
                 "currentTurnIdentityVerified": identity_source == "explicitTurnId"}
@@ -490,23 +507,123 @@ def _sec(ms):
     return f"{ms / 1000:.1f}" if isinstance(ms, (int, float)) else "-"
 
 
+def _gen_duration(ms):
+    """本轮行「生成 <耗时>」：分级中文单位（overlay-ui.md 时间文案规范）。
+    <60s 沿用 _sec 一位小数 `3.2s`；≥60s `7分44.8秒`；≥1h `1时2分4.8秒`。
+    秒保留一位小数、分/时取整不补零，数字与单位紧邻。非数值/≤0 返回 `-`/`0.0s`。"""
+    if not isinstance(ms, (int, float)):
+        return "-"
+    if ms <= 0:
+        return "0.0s"
+    secs = ms / 1000
+    # 先四舍五入到 0.1s 再分档：59.95s 起按 60.0s 走分档（输出 `1分0.0秒`），
+    # 避免秒档冒出 `60.0s` 或分档冒出 `59分60.0秒`，与「≥60s 用分秒」规范一致。
+    total_tenths = int(round(secs * 10))
+    if total_tenths < 600:
+        return f"{total_tenths / 10:.1f}s"
+    minutes, sec10 = divmod(total_tenths, 600)   # 600 个 0.1s = 1 分；商=分钟、余=0.1s
+    hours, minutes = divmod(minutes, 60)          # 60 分钟 = 1 时
+    sec_txt = f"{sec10 / 10:.1f}秒"
+    if hours:
+        return f"{hours}时{minutes}分{sec_txt}"
+    return f"{minutes}分{sec_txt}"
+
+
+def _money(usd):
+    """USD → 显示串（与 zusage._wb_money / overlay.fmtMoney 同口径）：有汇率走 ¥，否则 $；
+    非有限/缺失返回 None（调用方整段省略，不显假 0）。价表模块缺失/汇率读失败按无汇率降 $。"""
+    if not isinstance(usd, (int, float)) or isinstance(usd, bool) or not math.isfinite(usd):
+        return None
+    rate = 0
+    if _pricing is not None:
+        try:
+            rate = float((_pricing.fx_view() or {}).get("rate") or 0)
+        except Exception:
+            rate = 0
+    if rate > 0:
+        v = usd * rate
+        return "<¥0.01" if 0 < v < 0.01 else f"¥{v:.2f}"
+    return "<$0.01" if 0 < usd < 0.01 else f"${usd:.2f}"
+
+
+def _pricing_configure_for_cost():
+    """让 token_pricing 定位 pricing-cache.json（汇率/运行时牌价）：config.json
+    两跳与 _configured_db_path 同路径。任何失败静默，费用段按无汇率/内置价表降级。"""
+    if _pricing is None:
+        return
+    try:
+        home = Path.home()
+        script_dir = Path(__file__).parent
+        cfg = None
+        for file in (script_dir / "config.json",
+                     home / ".zcode" / "zcode-token-usage-statusbar" / "config.json"):
+            try:
+                cfg = json.loads(file.read_text(encoding="utf-8"))
+                break
+            except (OSError, ValueError):
+                continue
+        # config_dir=None：让 token_pricing 自己走「脚本目录 → ~/.zcode/zcode-token-usage-statusbar
+        # 」双基地探测（与 zusage 一致）。不硬传 script_dir——否则源码 clone/混装时 config.json
+        # 在 HOME 运行目录、pricing-cache.json 却定位到 clone，汇率不可得误显 $。
+        _pricing.configure(cfg, None)
+    except Exception:
+        pass
+
+
+def _turn_cost(db, sid, turn_id):
+    """本轮预估费用（USD）：本轮已完成行按 (model_id, provider_id) 计价求和。
+    直接查 model_usage（不经 scope_for——它的 SELECT 未含 turn_id/缓存写列，套子查询会
+    缺列），turn_id 即本轮身份，已完成行即可；价表缺失/查询失败/无有效分组返回 None
+    （消费端整段省略，不显假 0）。"""
+    if _pricing is None or db is None:
+        return None
+    try:
+        has_provider = _has_provider_col(db)
+        has_creation = _has_col(db, "cache_creation_input_tokens")
+        creation = "cache_creation_input_tokens" if has_creation else "0"
+        cols = (f"input_tokens, output_tokens, cache_read_input_tokens, {creation} as cw, model_id"
+                + (", provider_id" if has_provider else ""))
+        rows = db.execute(
+            f"select {cols} from model_usage where status='completed' and turn_id = ?"
+            + (" and session_id = ?" if sid else ""),
+            (turn_id, sid) if sid else (turn_id,),
+        ).fetchall()
+        groups = []
+        for r in rows:
+            groups.append((r["model_id"] or "", (r["provider_id"] or "") if has_provider else "",
+                           r["input_tokens"] or 0, r["output_tokens"] or 0,
+                           r["cache_read_input_tokens"] or 0, r["cw"] or 0))
+        if not groups:
+            return None
+        return _pricing.merge_model_costs(groups)[0]
+    except Exception:
+        return None
+
+
 # _round1 已由 usage_stats.round1 导入
 
 
 # 本问统计行（回复收尾自测用）。调用方判定 turn 为空时（含 --current 守卫）不显示任何行。
 # cn 缺省 True 与渲染端「中文单位」开关默认开启一致；只有开关关闭时 inject-main 才传 --no-cn-units。
-def format_turn_line(r, cn=True, force_kmb=False):
+def format_turn_line(r, cn=True, force_kmb=False, cost=True):
     t = r.get("turn")
     if not t:
         return "暂无本轮请求记录"
     num = fmt_kmb if force_kmb else (fmt_cn if cn else fmt_num)
     big = fmt_kmb if force_kmb else (fmt_cn if cn else fmt_compact)
+    # v376 本轮模型 id 去重前置（首次出现顺序，空 id 跳过；旧快照/无模型时不拼）
+    seen = []
+    for m in (t.get("models") or []):
+        if m and m not in seen:
+            seen.append(str(m))
+    model_prefix = "/".join(seen) + " " if seen else ""
+    gen = _gen_duration(t['genMs']) if t.get('genMs') > 0 else '-'
     parts = [
-        f"⚡ {t['tokPerSec'] if t['tokPerSec'] is not None else '-'} token/s(本轮)",
+        f"⚡ {model_prefix}{t['tokPerSec'] if t['tokPerSec'] is not None else '-'} token/s(本轮)",
         f"首字 {_sec(t['ttftMs'])}s",
         f"输出 {num(t['totalOutput'])}"
         f"{'(含 ' + num(t['totalReasoning']) + ' 思考)' if t['totalReasoning'] else ''}"
-        f" token / 生成 {_sec(t['genMs']) if t['genMs'] > 0 else '-'}s",
+        f" token / 生成 {gen}",
     ]
     if t["requests"] > 1:
         parts.append(f"{t['requests']} 段 / 峰 {t['peak']} token/s" if t["peak"] is not None else f"{t['requests']} 段 / 峰 -")
@@ -515,6 +632,11 @@ def format_turn_line(r, cn=True, force_kmb=False):
         if s.get("sessionAvg") is not None:
             parts.append(f"会话均 {s['sessionAvg']} token/s")
         parts.append(f"累计 {big(s['totalOutput'])} token")
+    # v376 本轮预估费用（受 --no-cost 门控）：价表/费用不可得整段省略，不显假 0
+    if cost:
+        money = _money(t.get("cost_usd"))
+        if money is not None:
+            parts.append(f"预估费用 {money}")
     parts.append(f"⏱ {_cn_fulltime(t['lastAt'])}")
     return " · ".join(parts)
 
@@ -565,7 +687,9 @@ def main(argv):
         if json_out:
             print(json.dumps(r, ensure_ascii=False))
         elif r.get("turn"):
-            print(format_turn_line(r, cn="--no-cn-units" not in argv, force_kmb="--force-kmb" in argv))
+            print(format_turn_line(r, cn="--no-cn-units" not in argv,
+                                   force_kmb="--force-kmb" in argv,
+                                   cost="--no-cost" not in argv))
         # --current 且本问尚无数据：不输出任何行，调用方据此不显示统计（绝不回退到上一轮）
     else:
         r = query_latest(sid)
