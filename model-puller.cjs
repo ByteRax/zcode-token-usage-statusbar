@@ -13,14 +13,15 @@
  * v309 模型探测：「确认添加并保存」先探测后写入——按宿主同款 URL 语义（openai 两型不自动
  * 补 /v1、anthropic 归一化补 /v1）发最小对话请求，Base URL 少 /v1 这类错配在写入前原样
  * 暴露；结果按状态分类、错误摘录脱敏后回渲染端；修复成功才写配置，不走 candidateUrls。
- * 只读写宿主 customCfgPath（~/.zcode/v2/provider_config.json）；key 只在主进程内存中用于
+ * 读写宿主 customCfgPath（~/.zcode/v2/provider_config.json）；只读宿主打包 builtinCfgPath
+ * 的 templateRules（模板供应商的 baseUrl/protocol 来源）；key 只在主进程内存中用于
  * 该 baseUrl 本域请求，绝不返回渲染端、不进日志。写入是读-改-同目录原子替换，保留未知键；
  * 写前滚动备份 .zusage-bak（单文件覆盖，不堆积）。拉取耗时对齐 cc-switch：目录只在供应商完成后
  * 宽限 1s 内搭车（cc-switch 拉列表不等目录），失败另有 10 分钟短缓存，均不拖慢弹窗。 */
 "use strict";
 const fs = require("fs");
 const path = require("path");
-const { createHash } = require("crypto");
+const { createHash, randomUUID } = require("crypto");
 
 const MAX_MODELS = 512;      // 单次写入与单次拉取的模型数上限，防异常网关返回巨列表撑爆弹窗
 const MODEL_ID_MAX = 200;    // 单个模型 id 长度上限（含控制字符的 id 直接丢弃）
@@ -445,6 +446,18 @@ function anthropicBaseWithV1(url) {
   if (!base) return "";
   return /\/v1$/i.test(base) ? base : base + "/v1";
 }
+/* OpenCode Go 网关要求 x-opencode-session 路由键（宿主 createModelRequestAttributionHeaders
+ * 对 opencode.ai/zen/go/v1 恒定附带，值为会话 id 去掉 sess_/subagent_agent_ 前缀）。
+ * 增强是一次性请求，没有宿主会话上下文；用同形 UUID 作为路由键即可，缺失会被网关 400
+ * MissingSessionID 拒绝。 */
+function isOpenCodeGoBaseUrl(value) {
+  try {
+    const u = new URL(String(value || ""));
+    const host = u.hostname.toLowerCase();
+    return (host === "opencode.ai" || host.endsWith(".opencode.ai"))
+      && u.pathname.replace(/\/+$/, "").toLowerCase() === "/zen/go/v1";
+  } catch (e) { return false; }
+}
 function classifyProbeStatus(status) {
   if (status === 401 || status === 403) return "auth";
   if (status === 404 || status === 405) return "path";
@@ -724,6 +737,12 @@ function agreedCapabilities(entries, id) {
 function createModelPuller(opts) {
   const o = opts || {};
   const customCfgPath = String(o.customCfgPath || "");
+  /* 宿主打包的内置配置（resources/config/provider/zcode-builtin.json）：模板创建的
+   * 供应商（如 opencode-go-chat）个人规则只存 templateId + apiKey，baseUrl/protocol
+   * 在 templateRules。issue #123 已在额度链合并模板；增强链同样需要。
+   * 缺省由 Electron 主进程的 resourcesPath 推导：热更 model-puller 时无需同时换冷文件
+   * inject-main.cjs；Node 测试环境无 resourcesPath，仍由调用方显式传 builtinCfgPath。 */
+  const builtinCfgPath = String(o.builtinCfgPath || (process.resourcesPath ? path.join(process.resourcesPath, "config", "provider", "zcode-builtin.json") : ""));
   const log = o.log || function () { };
   const fetchImpl = o.fetchImpl || (typeof fetch === "function" ? fetch : null);
   const modelsDevUrl = o.modelsDevUrl === undefined ? MODELS_DEV_URL : String(o.modelsDevUrl);
@@ -740,6 +759,7 @@ function createModelPuller(opts) {
   let apiCatalogFailedAt = 0;
   let apiCatalogPending = null;   // 在途拉取 promise：防重复触发
   const fetchCache = new Map();   // providerId → {metaById}：applyModels 只收 id（写入字段不受渲染端注入），metaById 仅供弹窗展示
+  let templateRulesCache = null;   // {stamp, byId}：模板源 stat 变化即重读（宿主升级/个人覆盖）
 
   function readProviderCfg() {
     try {
@@ -753,6 +773,62 @@ function createModelPuller(opts) {
      * truthy 非可迭代值炸掉，损坏结构走各调用方的 fail-closed 拒绝路径 */
     const rules = (((data || {}).config || {}).providerConfigRules || {}).providerRules;
     return Array.isArray(rules) ? rules : [];
+  }
+  /* 模板规则：内置 zcode-builtin.json + 个人 provider_config.json 的
+   * config.providerConfigRules.templateRules（后者覆盖前者，与 quota-client.loadProviderCfg
+   * 同序）。模板创建的供应商个人规则只存 templateId + 凭据，baseUrl/protocol 由模板提供。
+   * 按两文件 stat（mtime/ctime/birthtime/size）缓存；stat 失败清缓存，删除后同
+   * mtime/size 重建也不会复活旧模板。 */
+  function readTemplateRules() {
+    const paths = [builtinCfgPath, customCfgPath].filter(Boolean);
+    if (!paths.length) return new Map();
+    const stampParts = [], readable = [];
+    for (const p of paths) {
+      try {
+        const st = fs.statSync(p);
+        stampParts.push(p + ":" + st.mtimeMs + ":" + st.ctimeMs + ":" + st.birthtimeMs + ":" + st.size);
+        readable.push(p);
+      } catch (e) {
+        stampParts.push(p + ":missing");
+        templateRulesCache = null;   // 源文件消失：旧缓存不可再复活（同 quota-client 缓存纪律）
+      }
+    }
+    const stamp = stampParts.join("|");
+    if (templateRulesCache && templateRulesCache.stamp === stamp) return templateRulesCache.byId;
+    const byId = new Map();
+    let failed = false;
+    for (const p of readable) {
+      try {
+        const d = JSON.parse(fs.readFileSync(p, "utf8"));
+        const pcr = (((d || {}).config || {}).providerConfigRules) || {};
+        for (const t of Array.isArray(pcr.templateRules) ? pcr.templateRules : []) {
+          if (!t || !t.templateId) continue;
+          const cfg = t.config || {}, old = byId.get(String(t.templateId)) || {};
+          byId.set(String(t.templateId), {
+            access: Object.assign({}, old.access, cfg.access && typeof cfg.access === "object" ? cfg.access : {}),
+            api: Object.assign({}, old.api, cfg.api && typeof cfg.api === "object" ? cfg.api : {}),
+          });
+        }
+      } catch (e) { failed = true; }   // 单个文件损坏/半写：保留已读到的模板，下次重读
+    }
+    if (failed) { templateRulesCache = null; return byId; }
+    templateRulesCache = { stamp, byId };
+    return byId;
+  }
+  /* 读取路径的有效供应商配置：按 templateId 合并模板，显式配置优先；
+   * 显式空串 baseUrl 按未填处理回落模板（与 quota-client.loadProviderCfg 同口径）。
+   * 只读：applyModels/probe 修复写回仍用原始 rule.config，绝不把模板字段落盘。 */
+  function effectiveRuleConfig(rule) {
+    const cfg = (rule && rule.config) || {};
+    const access = cfg.access && typeof cfg.access === "object" ? cfg.access : {};
+    const api = cfg.api && typeof cfg.api === "object" ? cfg.api : {};
+    /* 只认显式 templateId：与宿主/quota 链一致。不能按 providerId 猜——宿主会按
+     * 供应商名生成 slug，自定义供应商碰巧与模板同 id 时会把个人 key 发往官方端点。 */
+    const tid = rule && rule.templateId ? String(rule.templateId) : "";
+    const tpl = tid ? readTemplateRules().get(tid) : null;
+    const mergedApi = Object.assign({}, tpl && tpl.api, api);
+    if (!mergedApi.baseUrl && tpl && tpl.api) mergedApi.baseUrl = tpl.api.baseUrl;
+    return Object.assign({}, cfg, { access: Object.assign({}, tpl && tpl.access, access), api: mergedApi });
   }
   function declaredModelIds(pcfg) {
     const ids = [];
@@ -1678,7 +1754,7 @@ function createModelPuller(opts) {
     const direct = o.enhanceProvider && typeof o.enhanceProvider === "object" ? o.enhanceProvider : null;
     const planSrc = direct ? null : PLAN_SOURCES[String(providerId || "")];
     if (!direct && !planSrc && !rule) return { ok: false, kind: "provider", error: "provider not found" };
-    const cfg = direct ? { access: { type: "api-key", apiKey: direct.apiKey }, api: { type: direct.protocol, baseUrl: direct.baseUrl } } : ((rule && rule.config) || {});
+    const cfg = direct ? { access: { type: "api-key", apiKey: direct.apiKey }, api: { type: direct.protocol, baseUrl: direct.baseUrl } } : effectiveRuleConfig(rule);
     const access = cfg.access || {}, api = cfg.api || {};
     if (!planSrc && access.type !== "api-key") return { ok: false, kind: "provider", error: "provider is not api-key type" };
     const apiType = planSrc ? "anthropic-messages" : String(api.type || "");
@@ -1691,6 +1767,7 @@ function createModelPuller(opts) {
     if (!apiKey) return { ok: false, kind: "auth", error: planSrc ? "plan token unavailable" : "no api key" };
     let url = "", body = null;
     const headers = { "Content-Type": "application/json", "User-Agent": "ZCode" };   // fetchModels 同款 UA：网关拒绝无 UA 请求（实测缺 UA 时 anthropic 端点 500 code 1234）
+    if (isOpenCodeGoBaseUrl(baseUrl)) headers["x-opencode-session"] = randomUUID();   // OpenCode Go 路由键，缺失 400 MissingSessionID
     const userContent = enhanceUserContent(text);
     if (apiType === "openai-chat-completions") {
       url = baseUrl + "/chat/completions";
@@ -1793,7 +1870,7 @@ function createModelPuller(opts) {
     }
     const data = readProviderCfg(), rule = data ? findRule(data, providerId) : null;
     if (!rule || !modelPullerRuleAllowed(rule)) return null;
-    const cfg = rule.config || {}, api = cfg.api || {}, access = cfg.access || {};
+    const cfg = effectiveRuleConfig(rule), api = cfg.api || {}, access = cfg.access || {};
     if (access.type !== "api-key" || !access.apiKey || !api.baseUrl || !["openai-chat-completions", "openai-responses", "anthropic-messages"].includes(api.type)) return null;
     return { providerId, baseUrl: String(api.baseUrl).replace(/\/+$/, ""), protocol: api.type, apiKey: String(access.apiKey) };
   }
