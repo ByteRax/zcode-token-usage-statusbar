@@ -290,6 +290,16 @@
     }
     return html + segs.join('<span class="zu-sys-sep" aria-hidden="true">|</span>');
   }
+  /* 设置卡真实预览（v362，06 buildPanel 与 07 sysmonApplyFace 共用同一产出）：
+   * 面跟随显示格式（auto 以 full 演示），全关显空状态，无帧显「采集中」尾注——
+   * 不用演示数字冒充（spec §设置页）。 */
+  function sysmonPreviewHtml(cfg, frame, now) {
+    var nOn = (cfg.metrics.cpu ? 1 : 0) + (cfg.metrics.mem ? 1 : 0) + (cfg.metrics.disk ? 1 : 0);
+    if (!nOn) return '<span class="zu-sys-dim">' + L("全部指标已关闭", "All metrics off") + "</span>";
+    var face = sysmonFaceHtml(cfg, frame, cfg.format === "auto" ? "full" : cfg.format, now);
+    if (!frame) face += '<span class="zu-sys-dim">' + L(" · 采集中…", " · sampling…") + "</span>";
+    return face;
+  }
   /* 订阅意愿（渲染端 → 主进程 pluginRequest sysmon-sub）：格可见/格 tooltip/设置页/精简 chip
    * 任一成立即 want；签名（want|cfg|projectPath）不变不重发。api.sysmonInterested 由 12 分片
    * 逐实例上报（含本机 projectPath，供主进程定位项目卷）。 */
@@ -300,51 +310,106 @@
   }
   /* 完整资源 Tooltip（模块级：条面格通用链与精简 chip 的 body 级浮层共用同一产出；
    * 本地 esc 与 07 分片 ttEsc 同式——07 在实例闭包内，模块级不可达，buildLiveTip 内联
-   * escHtml 同款先例）。结构=标题区 + CPU/内存/磁盘三区 + 动态阈值图例 + 过期注记。
-   * 样式随内容内联 <style>（统计卡 statCompactStyle 同款模式，条面 tip 链与 chip 浮层
-   * 两处渲染零重复声明），选择器全部 zu-sys-* 前缀不污染共享 .tip/.rt-* 规则。 */
+   * escHtml 同款先例）。v362 紧凑重构：三区改「标签列 | 主数值 | 右侧辅助」Grid，磁盘区
+   * 去重复挂载点行（主卷角色并入区头右侧），APFS 共享容器卷不重复容量（同容器首行带
+   * 徽记、后续行显「共享容器空间」），阈值明细从图例行（冗长全文）收进 ⓘ 展开，
+   * 刷新说明换时钟图标（纯说明非按钮）。样式随内容内联 <style>（统计卡 statCompactStyle
+   * 同款模式），选择器全部 zu-sys-* 前缀不污染共享 .tip/.rt-* 规则。 */
   var SYS_TIP_CSS = "<style>" +
-    ".zu-sys-tip{width:440px;max-width:calc(100vw - 24px);box-sizing:border-box;padding:12px 14px;font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);font-size:calc(var(--ui-font-size, 14px) - 1px);line-height:1.5}" +
-    ".zu-sys-head{display:flex;align-items:center;gap:7px;margin-bottom:6px}" +
+    ".zu-sys-tip{width:440px;max-width:calc(100vw - 24px);box-sizing:border-box;padding:11px 14px 12px;font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);font-size:calc(var(--ui-font-size, 14px) - 1px);line-height:1.5}" +
+    ".zu-sys-head{display:flex;align-items:center;gap:7px}" +
     ".zu-sys-head>svg{width:16px;height:16px;flex:0 0 auto}" +
     ".zu-sys-head b{font-size:calc(var(--ui-font-size, 14px) + 2px)}" +
-    ".zu-sys-refresh{margin-left:auto;display:inline-flex;align-items:center;gap:4px;color:var(--color-foreground-subtle,#a1a1a1);font-size:calc(var(--ui-font-size, 14px) - 3px);white-space:nowrap}" +
+    ".zu-sys-local{font-style:normal;color:var(--color-foreground-subtle,#a1a1a1);border:1px solid var(--color-border,rgba(255,255,255,.12));border-radius:4px;font-size:calc(var(--ui-font-size, 14px) - 4px);line-height:15px;padding:0 5px}" +
+    ".zu-sys-refresh{margin-left:auto;display:inline-flex;align-items:center;gap:4px;color:var(--color-foreground-subtle,#a1a1a1);font-size:calc(var(--ui-font-size, 14px) - 3px);white-space:nowrap;font-variant-numeric:tabular-nums}" +
     ".zu-sys-refresh svg{width:11px;height:11px}" +
     ".zu-sys-sec{padding:8px 0 7px;border-top:1px solid var(--color-border,rgba(255,255,255,.08))}" +
-    ".zu-sys-row{display:flex;align-items:baseline;gap:10px}" +
-    ".zu-sys-row>.zu-sys-k{flex:0 0 44px;color:var(--color-foreground-subtle,#a1a1a1);font-size:calc(var(--ui-font-size, 14px) - 2px)}" +
-    ".zu-sys-main{flex:1 1 auto;min-width:0}" +
+    ".zu-sys-grid{display:grid;grid-template-columns:44px 1fr auto;column-gap:10px;row-gap:2px;align-items:baseline}" +
+    ".zu-sys-k{color:var(--color-foreground-subtle,#a1a1a1);font-size:calc(var(--ui-font-size, 14px) - 2px)}" +
+    ".zu-sys-val{min-width:0}" +
     ".zu-sys-big{font-size:calc(var(--ui-font-size, 14px) + 4px);font-weight:600;font-variant-numeric:tabular-nums}" +
     ".zu-sys-dim{color:var(--color-foreground-subtle,#a1a1a1);font-style:normal}" +
-    ".zu-sys-sub{margin-top:3px;padding-left:54px;font-size:calc(var(--ui-font-size, 14px) - 2px);color:var(--color-foreground-subtle,#a1a1a1);font-variant-numeric:tabular-nums}" +
+    ".zu-sys-side{color:var(--color-foreground-subtle,#a1a1a1);font-size:calc(var(--ui-font-size, 14px) - 1px);font-variant-numeric:tabular-nums;justify-self:end}" +
+    ".zu-sys-sub{grid-column:2/-1;color:var(--color-foreground-subtle,#a1a1a1);font-size:calc(var(--ui-font-size, 14px) - 2px);font-variant-numeric:tabular-nums}" +
     ".zu-sys-sub b{color:var(--color-foreground,#fff);font-weight:600}" +
-    ".zu-sys-vols{margin-top:7px;max-height:176px;overflow-y:auto;font-variant-numeric:tabular-nums;scrollbar-gutter:stable}" +
-    ".zu-sys-vr{display:grid;grid-template-columns:minmax(0,1fr) 52px 52px 56px;gap:6px;padding:3px 5px;border-radius:5px;font-size:calc(var(--ui-font-size, 14px) - 2px);align-items:baseline}" +
+    ".zu-sys-dhead{display:flex;align-items:baseline;justify-content:space-between;gap:10px}" +
+    ".zu-sys-dhead>.zu-sys-dim{flex:1 1 auto}" +   // 非 ok 态说明文字左对齐（space-between 会把「采集中…」推到最右）
+    ".zu-sys-dcur{color:var(--color-foreground-subtle,#a1a1a1);font-size:calc(var(--ui-font-size, 14px) - 2px)}" +
+    ".zu-sys-vols{margin-top:5px;max-height:176px;overflow-y:auto;font-variant-numeric:tabular-nums;scrollbar-gutter:stable}" +
+    ".zu-sys-vr{display:grid;grid-template-columns:minmax(0,1fr) 52px 52px 56px;gap:6px;padding:3px 6px;border-radius:5px;font-size:calc(var(--ui-font-size, 14px) - 2px);align-items:baseline}" +
     ".zu-sys-vr>span:not(:first-child){text-align:right}" +
     ".zu-sys-vh{color:var(--color-foreground-subtle,#a1a1a1);border-bottom:1px solid var(--color-border,rgba(255,255,255,.08));border-radius:0;padding-bottom:4px}" +
-    ".zu-sys-cur{background:color-mix(in srgb, var(--color-brand,#57c8ff) 13%, transparent)}" +
+    ".zu-sys-vrowon{background:color-mix(in srgb, var(--color-brand,#57c8ff) 8%, transparent);box-shadow:inset 2px 0 0 var(--color-brand,#57c8ff)}" +
     ".zu-sys-vname{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
     ".zu-sys-vmount{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--color-foreground-subtle,#a1a1a1);font-size:calc(var(--ui-font-size, 14px) - 3px)}" +
-    ".zu-sys-legend{display:flex;flex-wrap:wrap;gap:3px 14px;padding-top:8px;margin-top:3px;border-top:1px solid var(--color-border,rgba(255,255,255,.08));font-size:calc(var(--ui-font-size, 14px) - 2px);color:var(--color-foreground-subtle,#a1a1a1)}" +
+    ".zu-sys-vbadge{display:inline-block;font-style:normal;color:var(--color-foreground-subtle,#a1a1a1);border:1px solid var(--color-border,rgba(255,255,255,.12));border-radius:4px;font-size:calc(var(--ui-font-size, 14px) - 4px);line-height:14px;padding:0 4px;margin-left:4px;vertical-align:1px;white-space:nowrap}" +
+    ".zu-sys-vshare{grid-column:2/-1;text-align:right;color:var(--color-foreground-subtle,#a1a1a1)}" +
+    ".zu-sys-legend{display:flex;flex-wrap:wrap;align-items:center;gap:3px 12px;padding-top:8px;border-top:1px solid var(--color-border,rgba(255,255,255,.08));font-size:calc(var(--ui-font-size, 14px) - 2px);color:var(--color-foreground-subtle,#a1a1a1)}" +
     ".zu-sys-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;background:#3fb950}" +
     ".zu-sys-dot-w{background:#d29922}.zu-sys-dot-c{background:#f85149}" +
+    ".zu-sys-legend.nocolor .zu-sys-dot{background:var(--color-foreground-subtle,#a1a1a1)}" +
+    ".zu-sys-lg-on{color:var(--color-foreground,#fff)}" +
+    ".zu-sys-lg-off{font-size:calc(var(--ui-font-size, 14px) - 3px)}" +
+    ".zu-sys-thbtn{margin-left:auto;display:inline-flex;align-items:center;gap:3px;background:none;border:0;color:var(--color-foreground-subtle,#a1a1a1);font-family:inherit;font-size:calc(var(--ui-font-size, 14px) - 2px);cursor:pointer;padding:1px 4px;border-radius:4px}" +
+    ".zu-sys-thbtn:hover{color:var(--color-foreground,#fff);background:var(--color-hover,rgba(255,255,255,.07))}" +
+    ".zu-sys-thbtn:focus-visible{outline:2px solid var(--color-input-border-focused,var(--color-brand,#57c8ff));outline-offset:1px}" +
+    ".zu-sys-thbtn svg{width:11px;height:11px}" +
+    ".zu-sys-thexp{margin-top:7px;padding:7px 10px 8px;border:1px solid var(--color-border,rgba(255,255,255,.1));border-radius:7px;font-variant-numeric:tabular-nums}" +
+    ".zu-sys-tht{display:grid;grid-template-columns:1fr 52px 52px;column-gap:12px;row-gap:2px;font-size:calc(var(--ui-font-size, 14px) - 2px)}" +
+    ".zu-sys-tht>.h{color:var(--color-foreground-subtle,#a1a1a1)}" +
+    ".zu-sys-tht>span:not(:first-child){text-align:right}" +
+    ".zu-sys-thbad{color:#f85149;font-weight:600}" +
+    ".zu-sys-thnote{margin-top:5px;color:var(--color-foreground-subtle,#a1a1a1);font-size:calc(var(--ui-font-size, 14px) - 3px)}" +
     ".zu-sys-tip .zu-sys-big.zu-sys-warn{color:#d29922}" +
     ".zu-sys-tip .zu-sys-big.zu-sys-crit{color:#f85149}" +
     ".zu-sys-note{margin-top:7px;font-size:calc(var(--ui-font-size, 14px) - 2px);color:#d29922}" +
     "</style>";
+  /* 阈值关系校验（v362，06 设置卡初始提示与 09 change 校验共用同一判定）：
+   * CPU/内存 warn<crit、磁盘 warn>crit；返回问题文案数组（空=合法）。 */
+  function sysThresholdIssues(cfg) {
+    var th = cfg.thresholds, out = [];
+    if (th.cpuWarn >= th.cpuCrit) out.push(L("CPU：预警阈值需小于危险阈值", "CPU: warn threshold must be below crit"));
+    if (th.memWarn >= th.memCrit) out.push(L("内存：预警阈值需小于危险阈值", "Memory: warn threshold must be below crit"));
+    if (th.diskFreeWarn <= th.diskFreeCrit) out.push(L("磁盘可用率：预警阈值需大于危险阈值", "Disk free: warn threshold must be above crit"));
+    return out;
+  }
+  /* 阈值明细表（ⓘ 展开区内容；阈值动态读取 cfg，不写死示例值）。关系非法的阈值
+   * 标红提示（CPU/内存 warn<crit、磁盘 warn>crit），不改写配置——展示层反馈。 */
+  function sysThresholdTableHtml(cfg) {
+    var th = cfg.thresholds;
+    function row(name, wk, ck, needLt) {
+      var bad = needLt ? th[wk] >= th[ck] : th[wk] <= th[ck];
+      var op = needLt ? "≥" : "≤";
+      return "<span>" + name + "</span><span" + (bad ? ' class="zu-sys-thbad"' : "") + ">" + op + th[wk] + "%</span>" +
+        "<span" + (bad ? ' class="zu-sys-thbad"' : "") + ">" + op + th[ck] + "%</span>";
+    }
+    return '<div class="zu-sys-tht" role="table">' +
+      '<span class="h" role="columnheader">' + L("指标", "Metric") + '</span>' +
+      '<span class="h" role="columnheader">' + L("预警", "Warn") + '</span>' +
+      '<span class="h" role="columnheader">' + L("危险", "Crit") + "</span>" +
+      row("CPU", "cpuWarn", "cpuCrit", true) +
+      row(L("内存", "Memory"), "memWarn", "memCrit", true) +
+      row(L("磁盘可用", "Disk free"), "diskFreeWarn", "diskFreeCrit", false) +
+      '</div><div class="zu-sys-thnote">' +
+      L("CPU/内存按使用率（达到即触发），磁盘按可用空间占比。", "CPU/memory by usage (at or above), disk by free-space ratio.") +
+      (cfg.warnColors ? "" : L("颜色提示已关闭：达到阈值不再变色。", "Color hints are off: no color change at thresholds.")) +
+      "</div>";
+  }
   function sysmonTipHtml(cfg, frame, now) {
     function sEsc(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
     function sAttr(s) { return sEsc(s).replace(/"/g, "&quot;"); }
     var sev = (sysSevSnapshot && frame === sysFrame) ? sysSevSnapshot : sysSeverityOf(cfg, frame);   // 同 face：只读防抖快照
     var stale = sysIsStale(frame, cfg, now);
-    var th = cfg.thresholds;
-    var refresh = L("实时 ", "live ") + Math.round(cfg.intervalMs / 1000) + "s · " +
-      L("磁盘 ", "disk ") + Math.round(cfg.diskIntervalMs / 1000) + "s";
+    var refreshTitle = L("CPU/内存每 ", "CPU/mem every ") + Math.round(cfg.intervalMs / 1000) + "s · " +
+      L("磁盘每 ", "disk every ") + Math.round(cfg.diskIntervalMs / 1000) + "s";
     var s = SYS_TIP_CSS + '<div class="zu-sys-tip">' +
       '<div class="zu-sys-head">' +
       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + SYSMON_ICONS.monitor + "</svg>" +
       "<b>" + L("系统状态", "System status") + "</b>" +
-      '<span class="zu-sys-refresh"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>' + refresh + "</span></div>";
+      '<i class="zu-sys-local">' + L("本机", "Local") + "</i>" +
+      '<span class="zu-sys-refresh" title="' + sAttr(refreshTitle) + '">' +
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg>' +
+      Math.round(cfg.intervalMs / 1000) + "s · " + Math.round(cfg.diskIntervalMs / 1000) + "s</span></div>";
     function secNote(st) {
       if (!st) return L("采集中…", "sampling…");
       if (st.state === "loading") return L("采集中…", "sampling…");
@@ -352,73 +417,85 @@
       if (st.state === "unavailable") return L("本平台不支持", "unavailable on this platform");
       return "";
     }
-    function d1(n) { return typeof n === "number" && isFinite(n) ? (Math.round(n * 100) / 100).toString() : null; }
+    /* Load 恒两位小数（1.90 / 2.09 / 2.34），位数统一避免列宽跳动；无效值显 —。 */
+    function f2(n) { return typeof n === "number" && isFinite(n) ? n.toFixed(2) : "—"; }
     if (cfg.metrics.cpu) {
-      var cpu = frame && frame.cpu, cpuMain;
+      var cpu = frame && frame.cpu, cpuVal, cpuSide = "", cpuSub = "";
       if (cpu && cpu.state === "ok" && typeof cpu.pct === "number") {
-        cpuMain = L("整机使用率 ", "usage ") + '<b class="zu-sys-big' + sysSevCls("cpu", sev, cfg) + '">' + Math.round(cpu.pct) + "%</b>" +
-          '<i class="zu-sys-dim"> | ' + (cpu.cores || "—") + L(" 核", " cores") + "</i>";
-      } else cpuMain = '<span class="zu-sys-dim">' + secNote(cpu) + "</span>";
-      s += '<div class="zu-sys-sec"><div class="zu-sys-row"><span class="zu-sys-k">CPU</span><span class="zu-sys-main">' + cpuMain + "</span></div>";
-      if (cpu && Array.isArray(cpu.load)) {
-        s += '<div class="zu-sys-sub">Load 1m/5m/15m <b>' + cpu.load.map(function (n) { return d1(n) === null ? "—" : d1(n); }).join(" / ") + "</b></div>";
-      }
-      s += "</div>";
+        cpuVal = '<b class="zu-sys-big' + sysSevCls("cpu", sev, cfg) + '">' + Math.round(cpu.pct) + "%</b>";
+        cpuSide = (cpu.cores || "—") + L(" 核", " cores");
+        if (Array.isArray(cpu.load)) cpuSub = "Load 1m/5m/15m <b>" + cpu.load.map(f2).join(" / ") + "</b>";
+      } else cpuVal = '<span class="zu-sys-dim">' + secNote(cpu) + "</span>";
+      s += '<div class="zu-sys-sec zu-sys-grid"><span class="zu-sys-k">CPU</span><span class="zu-sys-val">' + cpuVal + "</span>" +
+        (cpuSide ? '<span class="zu-sys-side">' + cpuSide + "</span>" : "") +
+        (cpuSub ? '<span class="zu-sys-sub">' + cpuSub + "</span>" : "") + "</div>";
     }
     if (cfg.metrics.mem) {
-      var mem = frame && frame.mem, memMain;
+      var mem = frame && frame.mem, memVal, memSide = "", memSub = "";
       if (mem && mem.state === "ok" && typeof mem.used === "number" && typeof mem.total === "number" && mem.total > 0) {
-        memMain = L("已用 ", "used ") + '<b class="zu-sys-big' + sysSevCls("mem", sev, cfg) + '">' + sysFmtBytes(mem.used) + "</b> / " + sysFmtBytes(mem.total) +
-          '<i class="zu-sys-dim"> · ' + Math.round(mem.pct) + "%</i>";
-      } else memMain = '<span class="zu-sys-dim">' + secNote(mem) + "</span>";
-      s += '<div class="zu-sys-sec"><div class="zu-sys-row"><span class="zu-sys-k">' + L("内存", "Memory") + '</span><span class="zu-sys-main">' + memMain + "</span></div>";
-      var memSub = [];
-      if (mem && typeof mem.wired === "number" && mem.wired > 0) memSub.push("Wired " + sysFmtBytes(mem.wired));
-      if (mem && typeof mem.swap_used === "number" && mem.swap_used > 0) {
-        memSub.push("Swap " + sysFmtBytes(mem.swap_used) + (typeof mem.swap_total === "number" && mem.swap_total > 0 ? " / " + sysFmtBytes(mem.swap_total) : ""));
-      }
-      if (memSub.length) s += '<div class="zu-sys-sub">' + memSub.join('<span class="zu-sys-dim"> | </span>') + "</div>";
-      s += "</div>";
+        memVal = '<b class="zu-sys-big' + sysSevCls("mem", sev, cfg) + '">' + sysFmtBytes(mem.used) + '</b> <span class="zu-sys-dim">/ ' + sysFmtBytes(mem.total) + "</span>";
+        memSide = Math.round(mem.pct) + "%";
+        var sub = [];
+        if (typeof mem.wired === "number" && mem.wired > 0) sub.push("Wired " + sysFmtBytes(mem.wired));
+        if (typeof mem.swap_used === "number" && mem.swap_used >= 0) {
+          sub.push("Swap " + sysFmtBytes(mem.swap_used) + (typeof mem.swap_total === "number" && mem.swap_total > 0 ? " / " + sysFmtBytes(mem.swap_total) : ""));
+        }
+        if (sub.length) memSub = sub.join('<span class="zu-sys-dim"> · </span>');
+      } else memVal = '<span class="zu-sys-dim">' + secNote(mem) + "</span>";
+      s += '<div class="zu-sys-sec zu-sys-grid"><span class="zu-sys-k">' + L("内存", "Memory") + '</span><span class="zu-sys-val">' + memVal + "</span>" +
+        (memSide ? '<span class="zu-sys-side">' + memSide + "</span>" : "") +
+        (memSub ? '<span class="zu-sys-sub">' + memSub + "</span>" : "") + "</div>";
     }
     if (cfg.metrics.disk) {
       var disk = frame && frame.disk;
-      s += '<div class="zu-sys-sec"><div class="zu-sys-row"><span class="zu-sys-k">' + L("磁盘", "Disk") + "</span>";
+      s += '<div class="zu-sys-sec"><div class="zu-sys-dhead"><span class="zu-sys-k">' + L("磁盘", "Disk") + "</span>";
       if (disk && disk.state === "ok" && Array.isArray(disk.vols) && disk.vols.length) {
         var cur = sysVolPick(disk.vols);
-        s += '<span class="zu-sys-main zu-sys-dim">' + (cur && cur.mount ? sEsc(cur.mount) : "—") + "</span></div>";
+        var curRole = cur ? (cur.role === "project" ? L("项目卷", "Project") : cur.role === "system" ? L("系统卷", "System") : L("卷", "Volume")) : "—";
+        s += '<span class="zu-sys-dcur">' + L("当前： ", "current: ") + sEsc(curRole) + "</span></div>";
         s += '<div class="zu-sys-vols" role="table"><div class="zu-sys-vr zu-sys-vh" role="row">' +
-          '<span role="columnheader">' + L("卷（挂载点）", "Volume") + "</span>" +
+          '<span role="columnheader">' + L("卷", "Volume") + "</span>" +
           '<span role="columnheader">' + L("总量", "Total") + "</span>" +
           '<span role="columnheader">' + L("已用", "Used") + "</span>" +
           '<span role="columnheader">' + L("可用", "Free") + "</span></div>";
+        var seenC = {};
         disk.vols.forEach(function (v) {
           if (!v || typeof v !== "object") return;
           var isCur = cur && v === cur;
-          var label = v.role === "project" ? L("项目卷", "Project") : v.role === "system" ? L("系统卷", "System") : L("卷", "Volume");
-          var nameTxt = v.name ? label + " " + v.name : label;
-          var mountTxt = v.mount || "";
-          s += '<div class="zu-sys-vr' + (isCur ? " zu-sys-cur" : "") + '" role="row"' +
-            ' title="' + sAttr(nameTxt + (mountTxt ? " · " + mountTxt : "")) + '">' +
-            '<span role="cell"><span class="zu-sys-vname">' + sEsc(nameTxt) + '</span><span class="zu-sys-vmount">' + sEsc(mountTxt) + "</span></span>" +
-            "<span>" + (typeof v.total === "number" ? sysFmtBytes(v.total) : "—") + "</span>" +
-            "<span>" + (typeof v.used === "number" ? sysFmtBytes(v.used) : "—") + "</span>" +
-            "<span>" + (typeof v.avail === "number" ? sysFmtBytes(v.avail) : "—") + "</span></div>";
+          var role = v.role === "project" ? L("项目卷", "Project") : v.role === "system" ? L("系统卷", "System") : L("卷", "Volume");
+          var nameTxt = v.name ? role + " " + v.name : role;
+          var isFollower = v.container && seenC[v.container];   // 同容器第二行起不重复容量（容器统计同源，两行相同数值会误导「磁盘翻倍」）
+          var badge = (v.container && !isFollower) ? '<i class="zu-sys-vbadge">' + L("APFS 共享", "APFS shared") + "</i>" : "";   // 徽记只挂首行（review C2：次行已有「共享容器空间」说明，双徽记冗余）
+          if (v.container && !seenC[v.container]) seenC[v.container] = 1;
+          s += '<div class="zu-sys-vr' + (isCur ? " zu-sys-vrowon" : "") + '" role="row"' +
+            ' title="' + sAttr(nameTxt + (v.mount ? " · " + v.mount : "") + (v.container ? " · APFS " + L("与同容器卷共享空间", "shares container space") : "")) + '">' +
+            '<span role="cell"><span class="zu-sys-vname">' + sEsc(nameTxt) + badge + '</span><span class="zu-sys-vmount">' + sEsc(v.mount || "") + "</span></span>";
+          if (isFollower) {
+            s += '<span class="zu-sys-vshare" role="cell">' + L("共享容器空间", "shares container") + "</span></div>";
+          } else {
+            s += "<span>" + (typeof v.total === "number" ? sysFmtBytes(v.total) : "—") + "</span>" +
+              "<span>" + (typeof v.used === "number" ? sysFmtBytes(v.used) : "—") + "</span>" +
+              "<span>" + (typeof v.avail === "number" ? sysFmtBytes(v.avail) : "—") + "</span></div>";
+          }
         });
         s += "</div>";
       } else {
-        s += '<span class="zu-sys-main"><span class="zu-sys-dim">' + secNote(disk) + "</span></span></div>";
+        s += '<span class="zu-sys-dim">' + secNote(disk) + "</span></div>";
       }
       s += "</div>";
     }
-    /* 图例：阈值动态生成（改阈值文案跟随，不写死 80/90）；只列启用的指标，预警/危险两段都带指标名。 */
-    var parts = [];
-    if (cfg.metrics.cpu) parts.push("CPU ≥" + th.cpuWarn + "%", "CPU ≥" + th.cpuCrit + "%");
-    if (cfg.metrics.mem) parts.push(L("内存", "MEM") + " ≥" + th.memWarn + "%", L("内存", "MEM") + " ≥" + th.memCrit + "%");
-    if (cfg.metrics.disk) parts.push(L("磁盘可用", "disk free") + " ≤" + th.diskFreeWarn + "%", L("磁盘可用", "disk free") + " ≤" + th.diskFreeCrit + "%");
-    s += '<div class="zu-sys-legend">' +
-      '<span><i class="zu-sys-dot"></i>' + L("正常", "OK") + "</span>" +
-      '<span><i class="zu-sys-dot zu-sys-dot-w"></i>' + L("预警", "Warn") + "（" + sEsc(parts.filter(function (_, i) { return i % 2 === 0; }).join(" · ")) + "）</span>" +
-      '<span><i class="zu-sys-dot zu-sys-dot-c"></i>' + L("危险", "Crit") + "（" + sEsc(parts.filter(function (_, i) { return i % 2 === 1; }).join(" · ")) + "）</span></div>";
+    /* 图例（v362 精简）：三色点一行 + ⓘ 阈值说明（明细收进展开区，动态读 cfg）。
+     * warnColors 关：点转中性灰并注明，避免误以为仍会变色；当前综合档文字提亮。 */
+    s += '<div class="zu-sys-legend' + (cfg.warnColors ? "" : " nocolor") + '">' +
+      "<span><i class=\"zu-sys-dot\"></i>" + L("正常", "OK") + "</span>" +
+      '<span' + (sev.overall === "warning" ? ' class="zu-sys-lg-on"' : "") + '><i class="zu-sys-dot zu-sys-dot-w"></i>' + L("预警", "Warn") + "</span>" +
+      '<span' + (sev.overall === "critical" ? ' class="zu-sys-lg-on"' : "") + '><i class="zu-sys-dot zu-sys-dot-c"></i>' + L("危险", "Crit") + "</span>" +
+      (cfg.warnColors ? "" : '<span class="zu-sys-lg-off">' + L("颜色提示已关闭", "Color hints off") + "</span>") +
+      '<button type="button" class="zu-sys-thbtn" data-zu-sys-th aria-expanded="false" title="' +
+      sAttr(L("查看预警/危险阈值", "View warn/crit thresholds")) + '">' +
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.6 9.2a2.5 2.5 0 1 1 3.6 2.3c-.8.4-1.2.9-1.2 1.8"/><path d="M12 16.8h.01"/></svg>' +
+      L("阈值", "Thresholds") + '</button></div>' +
+      '<div class="zu-sys-thexp" data-zu-sys-thexp hidden>' + sysThresholdTableHtml(cfg) + "</div>";
     if (stale && frame) s += '<div class="zu-sys-note">' + L("数据已过期 · 采样暂停中", "Data stale · sampling paused") + "</div>";
     return s + "</div>";
   }

@@ -1673,6 +1673,15 @@
         var k = inp.getAttribute("data-th");
         if (k && sysCfgL.thresholds[k] !== undefined) inp.value = String(sysCfgL.thresholds[k]);
       });
+      var thErrSync = panel.querySelector("[data-zu-sys-therr]");   // v362：他窗同步后阈值关系提示跟随新值
+      if (thErrSync) {
+        var syncIssues = sysThresholdIssues(sysCfgL);
+        if (syncIssues.length) { thErrSync.textContent = syncIssues.join(L("；", "; ")); thErrSync.hidden = false; }
+        else {
+          thErrSync.hidden = true;
+          panel.querySelectorAll(".zu-syscfg-th.zu-syscfg-bad").forEach(function (inp2) { inp2.classList.remove("zu-syscfg-bad"); });
+        }
+      }
       panel.querySelector(".zu-ctxov").value = state.ctxOv;
       var rstCdhIn = panel.querySelector(".zu-rst-cdh");
       if (rstCdhIn) rstCdhIn.value = String(state.resetCdh);
@@ -1710,7 +1719,7 @@
      * v352：单根 .zu-layout-card 整卡替换；焦点目标被 disabled 时回退同行可用控件。 */
     var zuDragKey = "", zuDragOverRow = null;
     function refreshLayoutEditor(focusKey, focusSelector) {
-      var oldCard = panel.querySelector(".zu-layout-card");
+      var oldCard = panel.querySelector(".zu-layout-card:not(.zu-syscfg)");   // v362 review A2：显式排除系统状态卡（同为 zu-layout-card，DOM 序耦合曾靠 buildPanel 顺序隐式保证）
       if (!oldCard) return;
       var container = document.createElement("div");
       container.innerHTML = barOrderSettingsHtml();
@@ -2202,15 +2211,45 @@
       }
       if (t2.classList && (t2.classList.contains("zu-syscfg-int") || t2.classList.contains("zu-syscfg-dint") || t2.classList.contains("zu-syscfg-th"))) {
         var nSys = Math.floor(Number(t2.value));
+        if (t2.value === "" || !isFinite(nSys)) return;   // 清空/乱码：不写不回填（Number("") 是 0，必须单独拦——review A2）
         var sc4 = normalizeSysmonCfg(Object.assign({}, state.sysmonCfg));
-        if (t2.classList.contains("zu-syscfg-int") && isFinite(nSys)) sc4.intervalMs = nSys * 1000;
-        else if (t2.classList.contains("zu-syscfg-dint") && isFinite(nSys)) sc4.diskIntervalMs = nSys * 1000;
+        if (t2.classList.contains("zu-syscfg-int")) sc4.intervalMs = nSys * 1000;
+        else if (t2.classList.contains("zu-syscfg-dint")) sc4.diskIntervalMs = nSys * 1000;
         else {
           var thKey = t2.getAttribute("data-th");
-          if (thKey && sc4.thresholds[thKey] !== undefined && isFinite(nSys)) sc4.thresholds[thKey] = nSys;
-          else return;
+          if (!thKey || sc4.thresholds[thKey] === undefined) return;
+          sc4.thresholds[thKey] = nSys;
         }
-        state.sysmonCfg = normalizeSysmonCfg(sc4);
+        var sc5 = normalizeSysmonCfg(sc4);   // clamp 是唯一事实源（范围越界在此生效）
+        /* 关系校验（v362）：CPU/内存 warn<crit、磁盘 warn>crit。非法不写入（不悄悄交换、
+         * 不静默落错误配置），回填原生效值 + 行内红字 + 输入框红边；合法则写入并回填
+         * clamp 后的实际生效值（HTML min/max 不拦键入，回填让用户看到真实生效数字）。 */
+        if (t2.classList.contains("zu-syscfg-th")) {
+          var candIssues = sysThresholdIssues(sc5);
+          if (candIssues.length) {
+            t2.value = String(state.sysmonCfg.thresholds[t2.getAttribute("data-th")]);
+            t2.classList.add("zu-syscfg-bad");
+            var errBox3 = panel.querySelector("[data-zu-sys-therr]");
+            if (errBox3) { errBox3.textContent = candIssues.join(L("；", "; ")) + L("（已保留原值）", " (previous value kept)"); errBox3.hidden = false; }
+            return;
+          }
+          t2.classList.remove("zu-syscfg-bad");
+          t2.value = String(sc5.thresholds[t2.getAttribute("data-th")]);
+        } else if (t2.classList.contains("zu-syscfg-int")) {
+          t2.value = String(Math.round(sc5.intervalMs / 1000));
+        } else {
+          t2.value = String(Math.round(sc5.diskIntervalMs / 1000));
+        }
+        state.sysmonCfg = sc5;
+        var errBox4 = panel.querySelector("[data-zu-sys-therr]");
+        if (errBox4) {
+          var stIssues = sysThresholdIssues(state.sysmonCfg);
+          if (stIssues.length) { errBox4.textContent = stIssues.join(L("；", "; ")); errBox4.hidden = false; }
+          else errBox4.hidden = true;
+        }
+        if (!sysThresholdIssues(state.sysmonCfg).length) {   // v362 review A1：关系恢复合法后清掉所有残留红边（跨字段修复场景）
+          panel.querySelectorAll(".zu-syscfg-th.zu-syscfg-bad").forEach(function (inp2) { inp2.classList.remove("zu-syscfg-bad"); });
+        }
         persistSysmonCfg();
         sysmonWantRecalc(true);
         renderAll(false);

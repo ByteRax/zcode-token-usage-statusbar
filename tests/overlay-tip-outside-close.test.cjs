@@ -40,15 +40,15 @@ function stubTarget({ modal = null } = {}) {
 function runOutside({
   inactive = false, modal = null, panelOpen = false,
   tipFor = null, quotaTipFor = null, rateTipFor = null, tpsTipFor = null,
-  rstTipFor = null, subTipFor = null, gitTipFor = null,
-  fxOpen = false, legendOpen = false,
-  targetIn = null,   /* 'tip'|'bar'|'panel'|'fx'|'legend'|'tps'|'rst'|'sub'|'git'|'quota'|'rate'|null(空白) */
+  rstTipFor = null, subTipFor = null, gitTipFor = null, sysTipFor = null,
+  fxOpen = false, legendOpen = false, sysOpen = false,
+  targetIn = null,   /* 'tip'|'bar'|'panel'|'fx'|'legend'|'tps'|'rst'|'sub'|'git'|'quota'|'rate'|'sys'|null(空白) */
 } = {}) {
   const calls = { hideTip: [], quota: 0, rate: 0, tps: 0, rst: 0, sub: 0, git: 0, fx: 0, legend: 0 };
   const ctx = {
     inactive: () => inactive,
     target: stubTarget({ modal }),
-    tipFor, quotaTipFor, rateTipFor, tpsTipFor, rstTipFor, subTipFor, gitTipFor,
+    tipFor, quotaTipFor, rateTipFor, tpsTipFor, rstTipFor, subTipFor, gitTipFor, sysTipFor,
     bar: stubEl('bar'),
     panel: stubEl('panel', { openClass: panelOpen }),
     tip: stubEl('tip'),
@@ -58,6 +58,7 @@ function runOutside({
     gitTip: stubEl('gitTip'),
     quotaTip: stubEl('quotaTip'),
     rateTip: stubEl('rateTip'),
+    sysTip: stubEl('sysTip', { display: sysOpen ? 'block' : 'none' }),
     fxTip: stubEl('fxTip', { display: fxOpen ? 'block' : 'none' }),
     spdLegendTip: stubEl('legend', { display: legendOpen ? 'block' : 'none' }),
     hideTip: (force, cause) => calls.hideTip.push({ force, cause }),
@@ -82,6 +83,7 @@ function runOutside({
   ctx.panel.contains = (t) => panelOpen && targetIn === 'panel';
   ctx.fxTip.contains = (t) => targetIn === 'fx' && t === ctx.target;
   ctx.spdLegendTip.contains = (t) => targetIn === 'legend' && t === ctx.target;
+  ctx.sysTip.contains = (t) => sysOpen && targetIn === 'sys' && t === ctx.target;
   const result = { calls };
   vm.runInNewContext(outsideSrc + '\n__result = tipOutsideDown(__ev);',
     Object.assign(vm.createContext(ctx), { __ev: { target: ctx.target }, __result: null }));
@@ -107,6 +109,16 @@ test('弹框内部不算外点（词包查看/模型选择/压缩确认/子代�
   for (const dlg of ['zu-rot-pk-dlg', 'zu-mp-ov', 'zu-compact-dlg', 'zu-sub-pop']) {
     assert.deepEqual(runOutside({ tipFor: {}, modal: dlg }).calls.hideTip, [], `${dlg} 内点不收`);
   }
+});
+
+test('sysmon 浮层（v362）：sysTip 内按压不联动收其它浮层；全关早退含 sysTipFor', () => {
+  /* sysTip 与主 tip 同开、按在 sysTip 内：主 tip 不收（点 ⓘ 不联动关其它浮层） */
+  assert.deepEqual(runOutside({ tipFor: {}, sysTipFor: {}, sysOpen: true, targetIn: 'sys' }).calls.hideTip, []);
+  /* sysTip 开、按在空白：主 tip 照常外点收（sysTip 自身靠 mouseleave 兜底） */
+  assert.deepEqual(runOutside({ tipFor: {}, sysTipFor: {}, sysOpen: true }).calls.hideTip,
+    [{ force: true, cause: 'outside' }]);
+  /* 仅 sysTip 开：全关早退不触发（sysTipFor 在早退名单），主 tip 无关闭调用 */
+  assert.deepEqual(runOutside({ sysTipFor: {}, sysOpen: true }).calls.hideTip, []);
 });
 
 test('v271 硬保活窗白名单：outside 不被 1.2s 窗吞掉，left-bar 仍被吞（既有回归）', () => {
@@ -169,8 +181,9 @@ test('实例失效与全关时零开销早退（不触发 closest）', () => {
   const ctx2 = {
     inactive: () => false,
     tipFor: null, quotaTipFor: null, rateTipFor: null, tpsTipFor: null,
-    rstTipFor: null, subTipFor: null, gitTipFor: null,
+    rstTipFor: null, subTipFor: null, gitTipFor: null, sysTipFor: null,
     fxTip: { style: { display: 'none' } }, spdLegendTip: { style: { display: 'none' } },
+    sysTip: { style: { display: 'none' } },
     target: { closest: (s) => { probes.push(s); return null; } },
   };
   vm.runInNewContext(outsideSrc + '\n__result = tipOutsideDown(__ev);',

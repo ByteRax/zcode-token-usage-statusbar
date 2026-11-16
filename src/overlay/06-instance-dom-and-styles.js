@@ -240,8 +240,9 @@
      * → v359 排序卡布局系统重做（原占 v353，后合两轮让位顺延：v353 空号留给主线批次、v358 被 PR #353 主进程段占用；真实宿主 CDP computed 实证根因=通用 .zu-settings label(0,1,1 后置)/label>span(0,1,2) 以同分或更高特异性压制排序卡单类规则：.zu-layout-ico 被 flex:1 拉成 129-167px 造成图标-名称大空白、prio label 被 padding:12px 14px 撑成 48px 高大格、body gap/align 被污染）：①全部 .zu-layout-* 规则加 .zu-settings 前缀升特异性（沿用 v144 radio/EP 分区/轮播 05:849 先例），对抗属性逐条显式声明不靠继承巧合，无 !important；②行布局改 Grid 五列（手柄 10px|信息组 minmax(0,1fr)|显示开关或固定徽标|优先级|排序钮），全部子项显式 grid 坐标免疫通用 checkbox order:2 重排，min-height:52 只托底不封顶；③名称区 label for/id（zu-show-<slot>-<key>）与开关显式关联（点名称即切换语义保留，speed 行无开关改 div），开关移出 label 独立成列纵向对齐；④「固定（始终显示）」徽标精简为「固定」胶囊（完整语义移 title），图标补显式 11px 尺寸（宿主 svg 块化防护）；⑤三段优先级选中态改 10% 主题 tint 无描边（废止 16%+inset 亮框）、分段 flex 等宽+min-height:24 防大字号垂直裁切（20px 实测裁切修复）、选中交界隐分隔线；⑥↑↓ 换 SVG 带杆箭头（规避 U+2191/93 Windows 字形偏差）26px、disabled .35；⑦容器查询降级：卡片 container-name:zu-layout，≤440px 两行排布（prio 左下/↑↓ 右下），容器宽度不随 nav rail 折叠误判；⑧turn 行说明文案过期修正（首字延迟已随 v211 移除）；⑨重置按钮 title 注明还原范围。配套：09 applyLayoutOrder 置 foldDirty（折叠候选序与排序变更联动，消同窗/跨窗不对称）；测试结构锁+级联锁更新。独立 review 修复批（合入前复审）：级联锁断言重写（原 lookbehind 正则 `\\.` 双重转义恒真、对本 PR 要防的前缀剥除变异全绿——改为穷举规则头回溯选择器段（逗号分段）查 .zu-settings 前缀 + 正反自证桩）；结构锁补 Grid 五列模板与子项坐标 token（此前列数/坐标变异零覆盖）；.zu-layout-card 补 .zu-settings 前缀（唯一裸规则，使「全部前缀化」声明为真）；speed 固定徽标 title 与 00/12 注释及 spec 的「不参与折叠」口径统一改「最后候选折叠」（zuBarFoldOrder rank -1 实为降序末位、极端挤压下照折，与实现及测试注释一致）。
      * → v360 turn-text 回推「零入队」可观测 + 桥补装 pending 重启标记（issue #321 后续诊断；代际让位：v358 被 PR #353 sysmon 主进程段注释占用、v359 已被 PR #349 排序卡布局重做占用且合入时间线在前，顺延 v360）：报告者 v1.5.19 实证 det.rt 全 0（sent=0）而占位行每轮常驻——v343 的桶全在「入队之后」，收集/flush 门控的静默拒绝不留痕。①richTextDiag 增 noKey/noSid/notCur/noInst 四桶（02 分片 zuRequestTurnText/zuFlushRichTextWants 门控处计数，按轮键 pid|tid 借 richTextBlocked 只计一次防逐拍翻倍，入队即解封、zuResetRichText 换代清空），noKey=富文本身份拒绝（静态桥补装 pending——Windows asar 被运行中客户端占用转待替换链——期间 scope 属性缺席、无桥回退再被远端证据 fail-closed 拒（#40 契约）时的典型落点）；det.rt（03 分片）同步落盘。②bridgeInfo 增 scopeAttrs（12 分片）：沿 wantedEl 上溯会话根查 data-zusage-scope-version=1（与 readPaneScope 同一门），0=静态桥缺席——与 noKey 对读即知「占位常驻且零入队」是否桥 pending 所致。③安装链（plugins/zcode-token-usage-statusbar/overlay_install.py）：ensure_renderer_bridge 的 replace-failed→pending 路径 publish 落定后按主安装同语义 record_restart({state:"pending-install",installation:{asar,entryHash=sha256(entry_bytes_of(stage))}}) 写 .plugin-restart-required——v172 取消会话文字提醒后红点是 pending 唯一用户可见信号，缺它则「桥 pending→scope 属性缺席→富文本 fail-closed」整条链零可诊断（报告者「升级后重启仍未见红点」即此缺口）；swap 时经 publish_install 记 publishedAt、下次启动 loader ack 销账，生命周期与主安装一致（tests/test_bridge_pending.py 全链锁定）。
      * → v361 重置卡刷新提速+事件触发（借宿主 Coding Plan 提醒链模式）：①主进程 quota-client——RESET_TTL_MS 5min→2min（status 只读查询），bigmodel 个人链列表增强子链独立 RESET_LIST_TTL_MS=10min（尝试即计时，force 仍必打，团队分支 list 即主链不受限），新增 pokeReset()（仅 ok 态、fetchedAt 旧于 RESET_POKE_GAP_MS=30s 的族置 nextAt=0 借 tickReset 守卫拉新，失败退避/auth 冻结/idle 族不唤醒——事件不越过退避与冻结，返回唤醒族数，门控关=0）。②主桥——pluginRequest 新 action quota-poke（冷文件，respond {ok,poked}；门控全在 pokeReset 内，不设 quotaEnabled 条件）。③渲染端——document visibilitychange 变 visible 且 state.resetBadge 时发 quota-poke（11 分片末尾 listenGlobal 随实例 dispose 摘除）；悬停重置卡徽标 showRstTip 入口同发（查看即拉新，对应宿主「订阅者挂载即投影」）；tooltip 图例文案同步新节奏。chip 点击 quota-refresh 强制语义不变；旧渲染端不发 poke、旧主进程回 unknown 均无害。
+     * → v362 系统状态设置页与 Tooltip 深度优化（specs/statusbar-system-status.md UI 批；原拟 v357 与 PR #352 Windows 兼容批同号顺延 v359 后，PR #349 排序卡重做线又占 v359、v360/v361 相继被 turn-text 与重置卡批次占用，再顺延 v362）：①设置卡 Grid 重构——监控指标/显示方式/采样频率/磁盘监控范围分组小节标题（.zu-syscfg-cap），阈值改三列表（.zu-syscfg-ths：指标|预警|危险，%固定后缀 .zu-syscfg-unit），数字输入框显式边框/背景/28px 高（v356 基线 computed 实证 border:0px+透明背景），checkbox 显式 order:0 抵消 .zu-settings input[type=checkbox]{order:2}（v356 基线实证开关被排到文字后面），显示格式 option 短文案（详细说明移帮助行）；真实预览 sysmonPreviewHtml 共享函数（06 buildPanel 与 07 sysmonApplyFace 同一产出）：跟随显示格式（auto 以 full 演示）、全关显空状态、无帧加「采集中」尾注；阈值关系校验（00 分片 sysThresholdIssues：CPU/内存 warn<crit、磁盘 warn>crit）——非法候选不写入不悄悄交换，回填原生效值+行内红字（.zu-syscfg-therr）+输入框红边（.zu-syscfg-bad），合法写入回填 clamp 后实际生效值（HTML min/max 不拦键入）。②Tooltip 紧凑重构——三区改「标签列|主数值|右侧辅助」Grid（.zu-sys-grid），CPU 主数值直读百分比（去「整机使用率」前缀）、Load 恒两位小数，磁盘区去重复挂载点行（主卷角色并入区头右侧「当前：系统卷」），APFS 共享容器卷不重复容量（后端 sysmon-client 仅 / 与 /System/Volumes/Data 同 diskN 前缀时标 container 字段；前端同容器首行带徽记、后续行显「共享容器空间」，两行相同数值曾误导「磁盘翻倍」），当前监控卷高亮改轻背景+左 2px 强调线（.zu-sys-vrowon 替代 .zu-sys-cur 大灰底），阈值图例精简为三色点一行+ⓘ 按钮（data-zu-sys-th 点击切换内联展开区 data-zu-sys-thexp，明细动态读 cfg 且关系非法标红；只挂 click 不进 pointerdown——toggle 非同值幂等会翻回去；tip.__zuSysExp 跨重建保留、hideTip 清零），刷新说明换时钟图标（纯说明非按钮），warnColors 关时点转中性灰+注明「颜色提示已关闭」，Swap 有效 0 值显示（number 判定替代 >0）。③接线——drawTip 重建后恢复 sysmon 展开态、全量 tip click/mousedown 委托加 [data-zu-sys-th] 分支、01 sysTip 同款三链、09 syncPanel 同步阈值提示；chip blur 加 relatedTarget 守卫（焦点入浮层不收卡，ⓘ click 可达）。
      */
-    var VERSION = "v361";
+    var VERSION = "v362";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
@@ -660,20 +661,41 @@
       ".zu-sysm[data-zusage-light]{color:#6c6f85}" +
       ".zu-sysm[data-zusage-light] .zu-sys-v.zu-sys-warn,.zu-sysm[data-zusage-light] .zu-sys-ico.zu-sys-warn{color:#946200}" +
       ".zu-sysm[data-zusage-light] .zu-sys-v.zu-sys-crit,.zu-sysm[data-zusage-light] .zu-sys-ico.zu-sys-crit{color:#d20f39}" +
-      /* ⚙ 系统状态配置卡：行式布局；显式 label 布局防 .zu-settings label>span{flex:1} 拉伸
-       * （PR #349 教训：通用 label 规则压过局部布局）。 */
+      /* ⚙ 系统状态配置卡（v362 Grid 重构）：分组小节标题 + 阈值三列表替代不受控 Flex 混排；
+       * checkbox 显式 order:0 抵消 .zu-settings input[type=checkbox]{order:2}（否则开关被
+       * 排到文字后面，v356 基线实测 computed order:"2"）；数字输入框显式边框/背景/高度
+       * （通用 label 规则不管 type=number，基线实测 border:0px+透明背景；
+       * PR #349 教训：通用 label 规则压过局部布局）。 */
       ".zu-syscfg .zu-syscfg-sub{margin-left:auto;color:var(--color-foreground-subtle,#a1a1a1);font-weight:400;font-size:calc(var(--ui-font-size,14px) - 2px)}" +
-      ".zu-syscfg-row{display:flex;align-items:baseline;gap:8px 14px;flex-wrap:wrap;padding:5px 0}" +
+      ".zu-syscfg-cap{flex:0 0 100%;color:var(--color-foreground,#e9edf4);font-weight:600;font-size:calc(var(--ui-font-size,14px) - 1px);margin:10px 0 2px}" +
+      ".zu-syscfg-caprow{display:flex;align-items:center;gap:10px;margin:12px 0 2px}" +
+      ".zu-syscfg-caprow .zu-syscfg-cap{flex:0 0 auto;margin:0}" +
+      ".zu-syscfg-caprow .zu-syscfg-item{margin-left:auto}" +
+      ".zu-syscfg-row{display:flex;align-items:center;gap:8px 14px;flex-wrap:wrap;padding:4px 0}" +
       ".zu-syscfg-k{flex:0 0 76px;color:var(--color-foreground-subtle,#a1a1a1);font-size:calc(var(--ui-font-size,14px) - 1px)}" +
-      ".zu-syscfg-v{display:flex;align-items:center;gap:5px 10px;flex-wrap:wrap;flex:1 1 auto;min-width:0}" +
+      ".zu-syscfg-v{display:flex;align-items:center;gap:6px 14px;flex-wrap:wrap;flex:1 1 auto;min-width:0}" +
       ".zu-syscfg .zu-syscfg-item{display:inline-flex;align-items:center;gap:5px;cursor:pointer;flex:0 0 auto}" +
       ".zu-syscfg .zu-syscfg-item>span{flex:0 0 auto}" +
-      ".zu-syscfg-num{width:64px;padding:3px 6px;box-sizing:border-box}" +
-      ".zu-syscfg-fmt{max-width:100%}" +
+      ".zu-syscfg .zu-syscfg-item>input[type=checkbox]{order:0;margin-top:0}" +
+      ".zu-syscfg-pair{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}" +
+      ".zu-syscfg-num{width:56px;height:28px;padding:0 7px;box-sizing:border-box;border:1px solid var(--color-input-border,rgba(255,255,255,.16));border-radius:6px;background:var(--color-background,rgba(0,0,0,.2));color:var(--color-foreground,#fff);font-family:inherit;font-size:calc(var(--ui-font-size,14px) - 1px);font-variant-numeric:tabular-nums;text-align:right}" +
+      ".zu-syscfg-num:focus{border-color:var(--color-input-border-focused,var(--color-brand,#57c8ff));outline:none}" +
+      ".zu-syscfg-num::-webkit-inner-spin-button,.zu-syscfg-num::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}" +   // v362 review A3：固定单位后缀设计不依赖步进按钮（hover 弹出会裁三位数）
+      ".zu-syscfg-num.zu-syscfg-bad{border-color:#f85149}" +
+      ".zu-syscfg-thc{display:inline-flex;align-items:center;gap:4px}" +
+      ".zu-syscfg-unit{color:var(--color-foreground-subtle,#a1a1a1);font-size:calc(var(--ui-font-size,14px) - 2px)}" +
+      ".zu-syscfg-fmt{max-width:100%;height:28px;box-sizing:border-box;border:1px solid var(--color-input-border,rgba(255,255,255,.16));border-radius:6px;background:var(--color-background,rgba(0,0,0,.2));color:var(--color-foreground,#fff);padding:0 6px}" +
       ".zu-syscfg-lbl{color:var(--color-foreground-subtle,#a1a1a1);font-size:calc(var(--ui-font-size,14px) - 2px);white-space:nowrap}" +
-      ".zu-syscfg-note{flex-basis:100%;color:var(--color-foreground-subtle,#a1a1a1);font-size:calc(var(--ui-font-size,14px) - 2px)}" +
-      ".zu-syscfg-prev{margin:8px 0 2px;padding:7px 10px;border:1px solid var(--color-border,rgba(255,255,255,.08));border-radius:8px;display:flex;align-items:center;gap:6px;font-size:calc(var(--ui-font-size,14px) - 1px);flex-wrap:wrap}" +
+      ".zu-syscfg-note{flex-basis:100%;color:var(--color-foreground-subtle,#a1a1a1);font-size:calc(var(--ui-font-size,14px) - 2px);padding:2px 0}" +
+      ".zu-syscfg-prev{margin:8px 0 2px;padding:8px 10px;border:1px solid var(--color-border,rgba(255,255,255,.08));border-radius:8px;background:var(--color-background,rgba(0,0,0,.15));display:flex;align-items:center;gap:6px;font-size:calc(var(--ui-font-size,14px) - 1px);flex-wrap:wrap;font-variant-numeric:tabular-nums}" +
       ".zu-syscfg-prev svg.ico{width:15px;height:15px}" +
+      ".zu-syscfg-div{border:0;border-top:1px solid var(--color-border,rgba(255,255,255,.08));margin:12px 0 0;width:100%}" +
+      /* 阈值三列表：指标名 | 预警 | 危险（grid 对齐；非法关系由 09 分片 JS 填 .zu-syscfg-therr 与红边） */
+      ".zu-syscfg-ths{display:grid;grid-template-columns:minmax(0,1.2fr) 96px 96px;column-gap:12px;row-gap:6px;align-items:center;padding:6px 0 0}" +
+      ".zu-syscfg-thh{color:var(--color-foreground-subtle,#a1a1a1);font-size:calc(var(--ui-font-size,14px) - 2px)}" +
+      ".zu-syscfg-thh:not(:first-child),.zu-syscfg-ths>.zu-syscfg-thc{text-align:center;justify-content:center}" +
+      ".zu-syscfg-thl{color:var(--color-foreground,#e9edf4);font-size:calc(var(--ui-font-size,14px) - 1px);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
+      ".zu-syscfg-therr{grid-column:1/-1;color:#f85149;font-size:calc(var(--ui-font-size,14px) - 2px)}" +
       ".zu-sys-dim{color:var(--color-foreground-subtle,#a1a1a1)}" +
       /* 阶段 3 ⚙ 源列表（v103 布局）：每源一张圆角小卡片（dsh QuotaCard 同款），卡片间距与
        * 内边距呼吸开；凭据框限宽不拉满；说明段落（card 直子 pnote）补水平边距 */
@@ -2029,48 +2051,71 @@
       function item(cls, attr, label, checked) {
         return '<label class="zu-syscfg-item"><input type="checkbox" class="' + cls + '" ' + attr + (checked ? " checked" : "") + '><span>' + label + "</span></label>";
       }
-      function num(cls, val, min, max, step, label, thKey) {
-        return '<input type="number" class="zu-syscfg-num ' + cls + '" min="' + min + '" max="' + max + '" step="' + (step || 1) + '" value="' + val + '"' +
-          (thKey ? ' data-th="' + thKey + '"' : "") + (label ? ' aria-label="' + label + '"' : "") + ">";
+      /* 数字输入框 + 固定单位后缀（v362：% / 秒不随输入变化）；.zu-syscfg-thc 包裹居中。
+       * data-th/data-sysm/class 契约与 09 分片委托、09 回填共用，勿单方面改名。 */
+      function numBox(cls, val, min, max, step, label, thKey, unit) {
+        return '<span class="zu-syscfg-thc"><input type="number" class="zu-syscfg-num ' + cls + '" min="' + min + '" max="' + max + '" step="' + (step || 1) + '" value="' + val + '"' +
+          (thKey ? ' data-th="' + thKey + '"' : "") + (label ? ' aria-label="' + label + '"' : "") + ">" +
+          (unit ? '<span class="zu-syscfg-unit">' + unit + "</span>" : "") + "</span>";
       }
-      var preview = sysmonFaceHtml(c, sysFrameL, "full");
+      var previewHtml = (typeof sysmonPreviewHtml === "function")
+        ? sysmonPreviewHtml(c, sysFrameL) : (sysmonFaceHtml(c, sysFrameL, "full") || '<span class="zu-sys-dim">—</span>');
+      /* 阈值关系非法（LS 遗留/他窗旧值）初始即提示；09 change 后按 state 重算同一文案 */
+      var thIssues = (typeof sysThresholdIssues === "function") ? sysThresholdIssues(c) : [];
+      var thErrHtml = thIssues.length
+        ? '<div class="zu-syscfg-therr" data-zu-sys-therr>' + thIssues.join(L("；", "; ")) + "</div>"
+        : '<div class="zu-syscfg-therr" data-zu-sys-therr hidden></div>';
       return '<div class="zu-layout-card zu-syscfg">' +
         '<div class="zu-layout-head"><strong>' + L("系统状态", "System status") + '</strong><span class="zu-syscfg-sub">' + L("监控运行 ZCode 的本机", "Monitors the machine running ZCode") + "</span></div>" +
-        '<div class="zu-layout-note">' + L("按设定间隔采样本机资源；全部显示项关闭或窗口长期不订阅时自动停表。", "Samples local resources on the configured interval; sampling stops automatically when all display items are off or nothing subscribes.") + "</div>" +
-        '<div class="zu-syscfg-prev" aria-hidden="true">' + (preview || '<span class="zu-sys-dim">' + L("采集中…", "sampling…") + "</span>") + "</div>" +
-        '<div class="zu-syscfg-row"><span class="zu-syscfg-k">' + L("显示内容", "Metrics") + '</span><span class="zu-syscfg-v">' +
+        '<div class="zu-layout-note">' + L("按设置频率采样本机 CPU、内存及磁盘资源；全部显示项关闭或无窗口订阅时自动停表。", "Samples this machine's CPU, memory and disk at the configured rate; sampling stops automatically when all metrics are off or nothing subscribes.") + "</div>" +
+        '<div class="zu-syscfg-prev" aria-hidden="true">' + previewHtml + "</div>" +
+        '<div class="zu-syscfg-cap">' + L("监控指标", "Metrics") + "</div>" +
+        '<div class="zu-syscfg-row"><span class="zu-syscfg-v">' +
         item("zu-syscfg-m", 'data-sysm="cpu"', "CPU", c.metrics.cpu) +
         item("zu-syscfg-m", 'data-sysm="mem"', L("内存", "Memory"), c.metrics.mem) +
         item("zu-syscfg-m", 'data-sysm="disk"', L("磁盘", "Disk"), c.metrics.disk) +
         "</span></div>" +
+        '<div class="zu-syscfg-cap">' + L("显示方式", "Display") + "</div>" +
         '<div class="zu-syscfg-row"><span class="zu-syscfg-k">' + L("显示格式", "Format") + '</span><span class="zu-syscfg-v">' +
         '<select class="zu-syscfg-fmt">' +
-        '<option value="auto"' + (c.format === "auto" ? " selected" : "") + ">" + L("自动（随空间完整→紧凑→极简）", "Auto (full → compact → minimal)") + "</option>" +
-        '<option value="full"' + (c.format === "full" ? " selected" : "") + ">" + L("完整（CPU 23% · MEM 10.2/16G · DISK 187G）", "Full (CPU 23% · MEM 10.2/16G · DISK 187G)") + "</option>" +
-        '<option value="compact"' + (c.format === "compact" ? " selected" : "") + ">" + L("紧凑（MEM 显百分比）", "Compact (MEM as %)") + "</option>" +
-        '<option value="minimal"' + (c.format === "minimal" ? " selected" : "") + ">" + L("极简（只显数值）", "Minimal (values only)") + "</option>" +
+        '<option value="auto"' + (c.format === "auto" ? " selected" : "") + ">" + L("自动适配（推荐）", "Auto (recommended)") + "</option>" +
+        '<option value="full"' + (c.format === "full" ? " selected" : "") + ">" + L("完整显示", "Full") + "</option>" +
+        '<option value="compact"' + (c.format === "compact" ? " selected" : "") + ">" + L("紧凑显示", "Compact") + "</option>" +
+        '<option value="minimal"' + (c.format === "minimal" ? " selected" : "") + ">" + L("极简显示", "Minimal") + "</option>" +
         "</select></span></div>" +
+        '<div class="zu-syscfg-note">' + L("自动适配：空间充足时显示完整（CPU 23% · MEM 10.2/16G · DISK 187G），变窄依次切换紧凑（内存显百分比）与极简（只显数值）。", "Auto: full layout when there is room (CPU 23% · MEM 10.2/16G · DISK 187G), switching to compact (memory as %) and then minimal (values only) as space narrows.") + "</div>" +
+        '<div class="zu-syscfg-cap">' + L("采样频率", "Sampling") + "</div>" +
         '<div class="zu-syscfg-row"><span class="zu-syscfg-k">' + L("刷新间隔", "Intervals") + '</span><span class="zu-syscfg-v">' +
-        num("zu-syscfg-int", Math.round(c.intervalMs / 1000), 2, 60, 1, L("CPU/内存 采样秒数", "CPU/memory seconds")) +
-        '<span class="zu-syscfg-lbl">' + L("CPU/内存（秒）", "CPU/mem (s)") + "</span>" +
-        num("zu-syscfg-dint", Math.round(c.diskIntervalMs / 1000), 30, 600, 10, L("磁盘 采样秒数", "disk seconds")) +
-        '<span class="zu-syscfg-lbl">' + L("磁盘（秒）", "Disk (s)") + "</span></span></div>" +
-        '<div class="zu-syscfg-row"><span class="zu-syscfg-k">' + L("磁盘目标", "Disks") + '</span><span class="zu-syscfg-v">' +
+        '<span class="zu-syscfg-pair"><span class="zu-syscfg-lbl">' + L("CPU / 内存", "CPU / memory") + "</span>" +
+        numBox("zu-syscfg-int", Math.round(c.intervalMs / 1000), 2, 60, 1, L("CPU/内存 采样秒数", "CPU/memory seconds"), "", L("秒", "s")) + "</span>" +
+        '<span class="zu-syscfg-pair"><span class="zu-syscfg-lbl">' + L("磁盘", "Disk") + "</span>" +
+        numBox("zu-syscfg-dint", Math.round(c.diskIntervalMs / 1000), 30, 600, 10, L("磁盘 采样秒数", "disk seconds"), "", L("秒", "s")) + "</span>" +
+        "</span></div>" +
+        '<div class="zu-syscfg-cap">' + L("磁盘监控范围", "Disk scope") + "</div>" +
+        '<div class="zu-syscfg-row"><span class="zu-syscfg-v">' +
         item("zu-syscfg-vol", 'data-sysm="projectVol"', L("当前项目卷", "Project volume"), c.projectVol) +
         item("zu-syscfg-vol", 'data-sysm="systemVol"', L("系统卷", "System volume"), c.systemVol) +
         "</span></div>" +
-        '<div class="zu-syscfg-row"><span class="zu-syscfg-k">' + L("阈值预警", "Thresholds") + '</span><span class="zu-syscfg-v">' +
-        item("zu-syscfg-warn", "", L("颜色提示", "Color hints"), c.warnColors) +
-        "</span></div>" +
-        '<div class="zu-syscfg-row zu-syscfg-ths"><span class="zu-syscfg-k"></span><span class="zu-syscfg-v">' +
-        '<span class="zu-syscfg-lbl">CPU</span>' + num("zu-syscfg-th", th.cpuWarn, 1, 100, 1, "CPU warn %", "cpuWarn") + '<span class="zu-syscfg-lbl">' + L("预警 %", "warn %") + "</span>" +
-        num("zu-syscfg-th", th.cpuCrit, 1, 100, 1, "CPU critical %", "cpuCrit") + '<span class="zu-syscfg-lbl">' + L("危险 %", "crit %") + "</span>" +
-        '<span class="zu-syscfg-lbl">' + L("内存", "MEM") + "</span>" + num("zu-syscfg-th", th.memWarn, 1, 100, 1, "Memory warn %", "memWarn") + '<span class="zu-syscfg-lbl">' + L("预警 %", "warn %") + "</span>" +
-        num("zu-syscfg-th", th.memCrit, 1, 100, 1, "Memory critical %", "memCrit") + '<span class="zu-syscfg-lbl">' + L("危险 %", "crit %") + "</span>" +
-        '<span class="zu-syscfg-lbl">' + L("磁盘可用", "Disk free") + "</span>" + num("zu-syscfg-th", th.diskFreeWarn, 0, 100, 1, "Disk free warn %", "diskFreeWarn") + '<span class="zu-syscfg-lbl">' + L("预警 %", "warn %") + "</span>" +
-        num("zu-syscfg-th", th.diskFreeCrit, 0, 100, 1, "Disk free critical %", "diskFreeCrit") + '<span class="zu-syscfg-lbl">' + L("危险 %", "crit %") + "</span>" +
-        '<span class="zu-syscfg-note">' + L("预警/危险含等号（≥或≤阈值即触发）；CPU/内存按使用率，磁盘按可用空间占比。", "Warn/crit thresholds are inclusive (≥ or ≤ the value); CPU/memory by usage, disk by free-space ratio.") + "</span>" +
-        "</span></div>" +
+        '<div class="zu-syscfg-note">' + L("可同时监控两个目标；同一挂载点或同一设备的重复卷自动去重。", "Both targets can be on at once; duplicate volumes on the same mount point or device are deduplicated.") + "</div>" +
+        '<hr class="zu-syscfg-div">' +
+        '<div class="zu-syscfg-caprow"><span class="zu-syscfg-cap">' + L("阈值预警", "Thresholds") + "</span>" +
+        item("zu-syscfg-warn", "", L("颜色提示", "Color hints"), c.warnColors) + "</div>" +
+        '<div class="zu-syscfg-ths">' +
+        '<span class="zu-syscfg-thh">' + L("监控指标", "Metric") + '</span>' +
+        '<span class="zu-syscfg-thh">' + L("预警阈值", "Warn") + '</span>' +
+        '<span class="zu-syscfg-thh">' + L("危险阈值", "Crit") + "</span>" +
+        '<span class="zu-syscfg-thl">' + L("CPU 使用率", "CPU usage") + "</span>" +
+        numBox("zu-syscfg-th", th.cpuWarn, 1, 100, 1, "CPU warn %", "cpuWarn", "%") +
+        numBox("zu-syscfg-th", th.cpuCrit, 1, 100, 1, "CPU critical %", "cpuCrit", "%") +
+        '<span class="zu-syscfg-thl">' + L("内存使用率", "Memory usage") + "</span>" +
+        numBox("zu-syscfg-th", th.memWarn, 1, 100, 1, "Memory warn %", "memWarn", "%") +
+        numBox("zu-syscfg-th", th.memCrit, 1, 100, 1, "Memory critical %", "memCrit", "%") +
+        '<span class="zu-syscfg-thl">' + L("磁盘可用率", "Disk free") + "</span>" +
+        numBox("zu-syscfg-th", th.diskFreeWarn, 0, 100, 1, "Disk free warn %", "diskFreeWarn", "%") +
+        numBox("zu-syscfg-th", th.diskFreeCrit, 0, 100, 1, "Disk free critical %", "diskFreeCrit", "%") +
+        thErrHtml +
+        "</div>" +
+        '<div class="zu-syscfg-note">' + L("CPU/内存按使用率（≥触发），磁盘按可用率（≤触发）；阈值含边界值。", "CPU/memory by usage (≥ triggers), disk by free ratio (≤ triggers); thresholds are inclusive.") + "</div>" +
         "</div>";
     }
     /* 面板文案可随语言重建（事件走 panel 级委托，重建不丢监听） */
@@ -2506,7 +2551,7 @@
        * v331：双范围 Tab 同入名单 */
       var t = e.target;
       if (!t || !t.closest) return;
-      var interactive = t.closest(".zu-pj-more") || t.closest(".zu-pj-tab") || t.closest(".zu-sv-tab");
+      var interactive = t.closest(".zu-pj-more") || t.closest(".zu-pj-tab") || t.closest(".zu-sv-tab") || t.closest("[data-zu-sys-th]");
       if (interactive) {
         e.stopPropagation();
         if (e.preventDefault) e.preventDefault();
@@ -2515,6 +2560,19 @@
     tip.addEventListener("click", function (e) {
       if (projTipTabActivate(e)) return;
       if (projTipMoreActivate(e)) return;
+      /* v362 sysmon 阈值说明：点击 ⓘ 切换内联展开区（只切 hidden 不重建整卡，
+       * 无「按钮被替换吞 click」竞态，无需进 pointerdown；toggle 非同值幂等，
+       * 双路径委托会翻回去，故只挂 click（含键盘 Enter））。切换后重定位——
+       * 展开区高度 +~124px，keepTop 顶边不动、底边钳制防越出视口。 */
+      if (e.target && e.target.closest && e.target.closest("[data-zu-sys-th]")) {
+        tip.__zuSysExp = !tip.__zuSysExp;
+        var sysExpBox = tip.querySelector("[data-zu-sys-thexp]");
+        if (sysExpBox) sysExpBox.hidden = !tip.__zuSysExp;
+        var sysExpBtn = e.target.closest("[data-zu-sys-th]");
+        if (sysExpBtn) sysExpBtn.setAttribute("aria-expanded", tip.__zuSysExp ? "true" : "false");
+        if (tipFor) positionTip(tipFor, true);
+        return;
+      }
       /* v254 速度 Tooltip 双 Tab：事件委托挂 tip 本体，改实例闭包选择后经
        * speedTipRebuild 整卡重编（签名幂等），旧 hover 卡随筛选切换自动收起。
        * v263：鼠标路径已提前到 pointerdown（见上），此处保留键盘 Enter 与兜底。 */
