@@ -129,9 +129,11 @@ test('notice styling cleans recycled nodes, detached nodes and previous injectio
   h.scan(); const previous = h.noticeStyle();
   h.inject();
   assert.equal(previous.parentElement, null);
-    assert.equal(n.strong.dataset.zusageNotice, String(h.window.__zusageGen));
-    assert.equal(h.intervals.size, 3);   // 2s rate-line scan + 2s deterministic-line scan + 65ms rotator 帧驱动
-    n.strong.textContent = 'ordinary reply'; h.scan();
+  assert.equal(n.strong.dataset.zusageNotice, String(h.window.__zusageGen));
+  // 三个桌面循环：rate-line scan + deterministic-line scan + rotator。
+  assert.equal(h.intervals.size, 3);
+  assert.equal([...h.intervals.values()].some(timer => timer.ms === 1000), false);
+  n.strong.textContent = 'ordinary reply'; h.scan();
   assert.equal(n.strong.dataset.zusageNotice, undefined);
   const detached = h.addNotice(); h.scan(); detached.quote.remove(); h.scan();
   assert.equal(detached.strong.dataset.zusageNotice, undefined);
@@ -180,6 +182,10 @@ test('R10: reinjection rebinds existing nodes and removes old listeners, scan in
   }
   h.line.dispatch('mouseenter'); assert.equal(h.tip().style.display, 'block');
   h.window.dispatch('scroll'); assert.equal(h.tip().style.display, 'none');
+  const cleanup = h.window.__zusageDispose;
+  cleanup(); cleanup();
+  assert.equal(h.intervals.size, 0); assert.equal(h.window.count('scroll'), 0);
+  assert.equal(h.line.count('mouseenter'), 0); assert.equal(h.line.count('mouseleave'), 0);
 });
 
 test('R10: language refreshes open tooltip and toggle off cleans bindings; re-enable rescans old lines', () => {

@@ -171,7 +171,7 @@ description: "面向 zcode-token-usage-statusbar，将功能需求或健康巡�
    - 定向检查后、共享文件同步或部署前，按 [对抗审查方法](../zcode-health-review/references/adversarial-review.md) 对照原问题、spec、当前 diff 和测试审查；按风险选择独立审查或标注非独立自审。同步生成的新产物在部署前复核受影响差异，不能用源码审查替代产物核对。
    - 本次引入或影响安全同步／部署的 `BLOCKER`／`MAJOR` 修复并回归后重新审查，直到受影响范围无未解决阻断项。无授权、并行冲突、无法安全验证或反复震荡时停止相关步骤并报告；不以固定轮次当作放行条件。
    - 仅在本次涉及共享运行文件或分片时同步；纯技能／文档改动检查其格式、引用与行为，不因进入实现流程而运行全名单同步。
-   - **同步前必查并行污染**：`python3 sync_plugin.py` 会先运行 `scripts/build_overlay.py` 与 `scripts/build_quota.py` 拼接生成根 `overlay.js` 和 `quota-client.cjs`，再扫描全部 `FILES` 清单同步至插件目录并执行 `--verify-manifests`；执行前先确认根目录下其它共享文件没有并行会话未完成、未验证的改动，防止把他人半成品一并扫进插件副本和运行目录。确认安全后执行 `python3 sync_plugin.py` 与 `python3 sync_plugin.py --check`，再运行语法检查与契约回归。
+   - **同步前必查并行污染**：`python3 sync_plugin.py` 会先运行 `scripts/build_overlay.py`、`scripts/build_quota.py` 和 `scripts/build_mobile_userscript.py`，拼接生成根 `overlay.js`、`quota-client.cjs` 及两份 `zusage-mobile*.user.js`，再扫描全部 `FILES` 清单同步至插件目录并执行 `--verify-manifests`；执行前先确认根目录下其它共享文件没有并行会话未完成、未验证的改动，防止把他人半成品一并扫进插件副本和运行目录。确认安全后执行 `python3 sync_plugin.py` 与 `python3 sync_plugin.py --check`，再运行语法检查与契约回归。
    - 分发或导入链变更补真实生成产物／分发集合的隔离加载验证，不能只测源码切片；生命周期变更按适用性覆盖连续热换、在途请求、失败保留、销毁清理及显式关闭热更。范围扩大时再运行全量回归，不为每个小修复重复跑全套。
 6. **失败即定位、重测与复审**：
    - 区分本次引入、环境基线失败（如依赖本机已安装客户端 `app.asar` 的用例随客户端升级变红）、平台跳过与环境受阻。修复本次缺陷，不删断言、跳过关键用例或吞异常换绿灯。

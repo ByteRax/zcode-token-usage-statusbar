@@ -316,6 +316,32 @@ class SpeedHistoryFrameTests(unittest.TestCase):
                          "远端子查询 stdout 不夹带桌面增强字段")
         self.assertNotIn("error", d)
 
+    def test_lean_serve_frame_omits_desktop_fields(self):
+        request = json.dumps({"sids": ["s1"], "scopes": [], "lean": True})
+        out = io.StringIO()
+        with mock.patch.object(zusage, "connect", return_value=self.con), \
+                mock.patch.object(zusage, "load_config", return_value={"context_window": 1}), \
+                mock.patch.object(zusage.sys, "stdout", out), \
+                mock.patch.object(zusage.sys, "stdin", io.StringIO(request + "\n")):
+            zusage.main(["serve"])
+        d = json.loads(out.getvalue())
+        self.assertNotIn("speed_history", d, "手机中继 lean 请求不计算桌面轮表")
+        self.assertNotIn("all_projects", d, "lean 同时关闭 all_projects")
+
+    def test_lean_oneshot_json_frame_omits_desktop_fields(self):
+        request = json.dumps({"sids": ["s1"], "scopes": [], "lean": True})
+        d = self.frame(["json", request])
+        self.assertNotIn("speed_history", d, "常驻回退的一次性 json 复用同一 lean 请求")
+        self.assertNotIn("all_projects", d)
+
+    def test_lean_requires_explicit_boolean_true(self):
+        request = json.dumps({"sids": ["s1"], "scopes": [], "lean": "true"})
+        d = self.frame(["json", request])
+        self.assertIn("speed_history", d, "非布尔真值不能当作 lean")
+        self.assertIn("all_projects", d)
+        self.assertFalse(zusage._query_lean("s1"))
+        self.assertTrue(zusage._query_lean(json.dumps({"sids": ["s1"], "lean": True})))
+
     def test_failed_scan_falls_back_to_recent_success(self):
         # v257：完成轮瞬间的写窗口可能让全库扫描偶发失败；safe 应回退最近一次成功轮表，
         # 否则热重载后首帧恰逢失败时渲染端粘性为空，Tooltip 闪回旧版整卡。

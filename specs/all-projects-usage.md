@@ -12,7 +12,7 @@
 
 - `zusage._all_projects_usage(con)`：一次聚合产出 `{totals, projects, models}`（字段见 §4）。
 - `zusage._all_projects_usage_safe(con)`：快照侧统一入口，捕获面与 `_speed_history_safe` 同款元组（sqlite3.Error/TypeError/ValueError/KeyError/IndexError/OverflowError/AttributeError）——查询失败、旧库缺列、无本地连接一律返回 None，失败只损失本帧该字段（水位缓存未命中下一帧自然重试），绝不拖垮整帧快照。
-- `snapshot(..., include_all_projects=False)`：桌面快照链显式开启（`serve` 常驻 + `zusage json` 的 `ZUSAGE_REMOTE_CHILD != 1` 桌面帧，与 `include_speed_history` 同款门控），挂在快照顶层 `all_projects` 键。CLI 报表 / MCP / 远端子查询 stdout 契约**不带**该字段。
+- `snapshot(..., include_all_projects=False)`：桌面快照链显式开启（`serve` 常驻 + `zusage json` 的 `ZUSAGE_REMOTE_CHILD != 1` 桌面帧，与 `include_speed_history` 同款门控），挂在快照顶层 `all_projects` 键。CLI 报表 / MCP / 远端子查询 stdout 契约**不带**该字段。手机中继请求体显式 `lean: true` 时 `serve`/`json` 同时关闭 `all_projects` 与 `speed_history`（手机 projection 不消费，见 [mobile-relay.md](mobile-relay.md)）；不能改用 `ZUSAGE_REMOTE_CHILD=1` 实现 lean——该环境变量承担远端 scope 子查询语义。
 - 渲染端（`overlay.js`）只读 `state.data.all_projects`，缺字段显「全部项目统计暂不可用」，不借当前项目数据冒充。
 
 ## 3. 项目身份、归属与去重

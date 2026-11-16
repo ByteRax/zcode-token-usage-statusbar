@@ -13,9 +13,19 @@ import unittest
 from unittest import mock
 
 PLUGIN = Path(__file__).resolve().parents[1] / "plugins" / "zcode-token-usage-statusbar"
+ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("restart_notice_test", PLUGIN / "restart_notice.py")
 notice = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(notice)
+
+
+def root_runtime_lock():
+    """仓库根 runtime_lock（不是插件目录的未同步副本）：热销账契约在根源码验证。"""
+    module_spec = importlib.util.spec_from_file_location(
+        "restart_notice_root_runtime_lock", ROOT / "runtime_lock.py")
+    module = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(module)
+    return module
 
 
 def notice_context(runtime=None, **kwargs):
@@ -123,6 +133,68 @@ class RestartNoticeTests(unittest.TestCase):
         self.assertTrue(runtime_lock.ack_restart(self.runtime, {"_loadedAt": marker["publishedAt"] + 1})["cleared"])
         self.assertIsNone(notice.reminder(self.runtime, injected=True))
         self.assertFalse((self.runtime / notice.MARKER).exists())
+
+    def test_installed_state_without_hashes_is_acknowledged_on_next_start(self):
+        import runtime_lock
+        notice.record_restart(self.runtime, {"state": "installed"})
+        marker = self.runtime / notice.MARKER
+        data = json.loads(marker.read_text(encoding="utf-8"))
+        self.assertEqual(data["state"], "installed")
+        self.assertEqual(data.get("hashes"), {})
+        self.assertNotIn("installation", data)
+        got = notice.reminder(self.runtime, injected=True)
+        self.assertIn("用户可见·重启提醒", got["context"])
+        self.assertIn("请完全退出 ZCode", got["message"])
+        # mobile 补丁走无 hashes / 无 installation 的 installed 标记：下一次启动
+        # 的 loader ack 必须能直接销账，不能像 pending-install 那样永久保留。
+        self.assertTrue(runtime_lock.ack_restart(
+            self.runtime, {"_loadedAt": data["createdAt"] * 1000 + 1000})["cleared"])
+        self.assertFalse(marker.exists())
+        self.assertIsNone(notice.reminder(self.runtime, injected=True))
+
+    def test_installed_merge_preserves_existing_hashes(self):
+        digest = hashlib.sha256(b"overlay").hexdigest()
+        notice.record_restart(self.runtime, {"state": "pending-sync", "hashes": {"overlay.js": digest}})
+        notice.record_restart(self.runtime, {"state": "installed"})
+        data = json.loads((self.runtime / notice.MARKER).read_text(encoding="utf-8"))
+        self.assertEqual(data["state"], "installed")
+        self.assertEqual(data["hashes"], {"overlay.js": digest})
+
+    def test_asar_patch_marker_rejects_hot_ack_but_clears_on_real_restart(self):
+        lock = root_runtime_lock()
+        digest = hashlib.sha256(b"new overlay").hexdigest()
+        notice.record_restart(self.runtime, {"state": "pending-sync", "hashes": {"overlay.js": digest}})
+        (self.runtime / "overlay.js").write_bytes(b"new overlay")
+        (self.runtime / "plugin-runtime.json").write_text(
+            json.dumps({"hashes": {"overlay.js": digest}}), encoding="utf-8")
+        notice.record_restart(self.runtime, {"state": "installed", "asarPatch": True})
+        marker = self.runtime / notice.MARKER
+        data = json.loads(marker.read_text(encoding="utf-8"))
+        self.assertIs(data["asarPatch"], True)
+        self.assertEqual(data["state"], "installed")
+        self.assertEqual(data["hashes"], {"overlay.js": digest})
+        created_ms = data["createdAt"] * 1000
+        hot = lock.ack_restart(self.runtime, {
+            "_loadedAt": created_ms - 1,
+            "_hotLoadedAt": {"overlay.js": created_ms + 1000},
+            "overlay.js": digest})
+        self.assertFalse(hot["cleared"])
+        self.assertTrue(marker.exists())
+        # 下一次真正启动：createdAt 早于 loadedAt，按正常 hash 流程销账
+        started = lock.ack_restart(self.runtime, {"_loadedAt": created_ms + 1000,
+                                                  "overlay.js": digest})
+        self.assertTrue(started["cleared"])
+        self.assertFalse(marker.exists())
+        # 对照：同样的 hot 证据、但没有 asarPatch 的 marker 仍可热销账
+        notice.record_restart(self.runtime, {"state": "pending-sync", "hashes": {"overlay.js": digest}})
+        data = json.loads(marker.read_text(encoding="utf-8"))
+        created_ms = data["createdAt"] * 1000
+        hot = lock.ack_restart(self.runtime, {
+            "_loadedAt": created_ms - 1,
+            "_hotLoadedAt": {"overlay.js": created_ms + 1000},
+            "overlay.js": digest})
+        self.assertTrue(hot["cleared"])
+        self.assertFalse(marker.exists())
 
     def test_pending_install_uses_actual_injection_and_keeps_partial_ack(self):
         import runtime_lock
