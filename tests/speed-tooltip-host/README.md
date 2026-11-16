@@ -20,6 +20,12 @@ ZU_OVERLAY=~/.zcode/zcode-token-usage-statusbar/overlay.js \
 截图/几何日志输出到 `shots/`（gitignore）。`main.cjs` 末尾的链（chain）即场景清单，
 按需增删；每步 `shot` 命名带版本前缀防止混版。
 
+## CDP 即时取证（免起 harness）
+
+真实运行的 ZCode 宿主 loader 会自动补开 `--remote-debugging-port=9229`；此时无需起本
+harness，`node cdp-probe.cjs [pageUrl片段]` 可一次性读取渲染端 `__zusageGen`、diag 挂载
+版本、sysmon 入口/帧链路与 `zusage3.show.sysmon` 开关（Node ≥22 内置 WebSocket，零依赖）。
+
 ## 为什么不能直接用 ZCode 二进制
 
 ZCode 是打包 Electron：`ZCode.app/Contents/MacOS/ZCode tests/speed-tooltip-host` 会**忽略
