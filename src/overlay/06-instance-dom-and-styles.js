@@ -266,8 +266,10 @@
      * → v377 手机远控中继统一桌面 overlay（specs/mobile-unified-overlay.md；移动端原 v363/v364 与主线撞号，按合入顺序顺延 v377）：目标数值投影与匿名 binding 隔离；移动接收端内嵌唯一桌面 overlay，本地/WSL/SSH 共用相同状态条、设置和 tooltip。
      * → v378 清理手机中继无消费者分片与冗余移动分支（specs/mobile-relay.md；原 v350/v364 与主线撞号，按合入顺序顺延 v378）：删除 13-mobile-chips（桌面 DOM chips 采集已无消费者，主进程目标发现改读宿主 preload 状态）、移动端不启动 10Hz 桥心跳、去掉 speed_history 与移动缓存清空的空转守卫、删除 06/07 旧手机提取锚点（zm-cell-css/zm-band-css/zm-band-css-light/zm-show-rows/zm-ico；当前构建直接内嵌完整 overlay）；桌面渲染与既有移动快照语义不变。
      * → v379 ⚙ 设置面板底栏新增「重启 ZCode」按钮（用户规格；本地曾占 v377，因主线 v377/v378 已被手机中继批占用按合入顺序顺延）：置于滚动提示左侧，与「插件更新」分区内同名按钮共用 data-update=relaunch 点击状态机（二次确认/正在重启/回执三路还原），两枚按钮 armed/sent/禁用/待重启高亮同步；旧主进程缺 relaunchSupported 时同款降级隐藏。review 加固：5s 确认定时器发送/dispose 两路清理；ok 守卫读当前 DOM sent（非闭包旧节点）+ relaunchSeq 代际丢弃过期回执，防面板重建后迟到 ok 重挂 90s alive 误清新一轮重启。
+     * → v380 命中层视觉透明豁免（用户实报：主窗口开模型选择器，右侧辅助对话状态条消失、弹层关闭即恢复）：宿主模型菜单 Radix DropdownMenu modal 开启时另挂「fixed 全屏 + 无底色 + 仅 pointer-events:auto」透明层拦 webview 插件外侧点击，body 同时被设 pointer-events:none 令应用树被命中测试跳过——z 序低于该层的 composer（辅助对话 pane 无主 Composer 的 z-20 抬升）中心命中该层，v65 部分遮挡豁免因整体罩住不成立，迟滞 400ms 后整条收起。hitSelf 在 v65 豁免后补「无底色、无背景图、无 backdrop-filter 的命中层不算视觉遮挡」，与 modalOpen「遮罩必带底色」同哲学；带底色/模糊的真模态遮罩行为不变，coverOK/cardHitOK 无 v65 豁免链路不动（on 判定为 reallyVisible||coverOK 的 OR，第二腿 false 无碍）。
+     * → v381 撤销 v87/v116 的「draft 空窗合成思考中」（用户实报：什么都没干的辅助对话永久假「思考中…4分30秒」走字）：宿主 product-projection.ts onTurnStarted 复核——userInput/turnHeader 行与 phase:"running" 在同一 reducer 批次原子生效，draft 且窗口为空 ⇔ 会话从未有过任何输入，不是「已发送待 header」的瞬态；辅助对话（createSelectionSideSession）新建后宿主即建好 store（draft+空窗），pane 一开桥就绑上，v87/v116 合成立即触发并按绑定时长（bornAt）走字。合成条件收窄为仅 phase==="running"；发送动作到 TurnStarted 事件的亚秒级窗口速度格退回 DB 静态数字，可接受。场景⑤断言随语义翻转，①-④/⑥ 守卫保留。
      */
-    var VERSION = "v379";
+    var VERSION = "v381";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */

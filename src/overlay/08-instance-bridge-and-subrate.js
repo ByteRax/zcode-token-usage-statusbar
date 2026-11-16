@@ -726,21 +726,24 @@
       var stats = (state.rateLine && h && !h.dead && bridge.turnId) ? h.tracker.get(bridge.turnId) : null;
       /* v87：绑定成功但 turnHeader 还没到——桥活着就别让 chip 空着，按绑定时长合成
        * "思考中"，turnHeader 到位后自然切换为真实统计。v116 条件按宿主源码收紧：
-       * ① control.phase==="running"（verifier/长轮 header 滑出，轮真的在跑）；
-       * ② 显式 phase==="draft" 且窗口为空（新会话空窗，v87 本意）。宿主 wire/hydrate
+       * control.phase==="running"（verifier/长轮 header 滑出，轮真的在跑）。宿主 wire/hydrate
        * 快照的 rows.window 截为全序尾 60 行（PROTOCOL_V4_LIMITS.snapshotTailWindowRows；渲染端
        * reducer 之后增量只增不截，窗口可达数千行，见 specs/perf-lag-reduction.md），
        * 末轮行数超窗口的闲置会话整窗没有 turnHeader——旧条件「行非空」会让这类会话
-       * 永久合成"思考中"（用户停了任务还亮着、切走切回每次重绑重新计时）；而
-       * phase=running 与 turnHeader 行同批到达，「行非空且非 running」不存在合法瞬态。
+       * 永久合成"思考中"（用户停了任务还亮着、切走切回每次重绑重新计时）。
+       * v381：撤掉 v116 的「draft 且窗口为空」析取项。宿主源码复核（3.18.x product-projection.ts
+       * onTurnStarted）：userInput/turnHeader 行与 phase:"running" 在同一 reducer 批次原子生效，
+       * draft 窗口为空 ⇔ 该会话从未有过任何输入（辅助对话新建后未发消息时宿主已建好 store，
+       * pane 一开就绑上 → v87/v116 的「新会话空窗」合成让它永久假「思考中」并按绑定时长
+       * 走字——用户实报：什么都没干的辅助对话一直显示思考中 4 分 30 秒）。发送动作后到
+       * TurnStarted 事件到达的亚秒级窗口不显示思考中（速度格退回 DB 静态数字），可接受。
        * control 缺失或 phase 未知的旧形状一律不合成（字段缺失是常态不是错误）。 */
       if (!stats && h && !h.dead && bridge.handle && h.store) {
         try {
           var snap0 = handleSnapshot(h);   // issue #309：读快照记录，不在 100ms 心跳里 getState()
           if (snap0 && snap0.sessionId === h.sid) {
-            var rows0 = snap0.rows && snap0.rows.window;
             var ph0 = snap0.control && snap0.control.phase;
-            if (ph0 === "running" || (ph0 === "draft" && rows0 && !rows0.length)) {
+            if (ph0 === "running") {
               stats = { complete: false, characterRate: null, runningTool: null,
                         phase: "thinking", observedMs: Math.max(0, Date.now() - (h.bornAt || Date.now())),
                         observedLive: true, totalCharacters: 0 };

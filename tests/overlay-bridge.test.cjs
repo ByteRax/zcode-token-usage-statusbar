@@ -1270,14 +1270,17 @@ test('㉒ new-session layout: line lands inside the nested content column, above
   assert.equal(col.children.indexOf(quote) + 1, col.children.indexOf(actions), '仍贴在工具条之前');
 });
 
-test('㉓ v87 synthetic thinking fires only for empty-window draft or phase=running, never for sessions with rows but no header in the tail window (v116)', () => {
+test('㉓ v87 synthetic thinking fires only for phase=running, never for draft (v381: draft empty window = never had input, not a bootstrap transient) nor sessions with rows but no header in the tail window (v116)', () => {
   /* 宿主源码证实：wire 快照 rows.window 恒为全序尾 60 行，末轮行数超窗口的闲置
    * 会话整窗没有 turnHeader；旧条件「行非空」让这类会话永久合成"思考中"
-   * （用户停了任务还亮着、切走切回每次重绑重新计时）。v116 收紧为：
-   * 显式 phase=running（verifier/长轮 header 滑出，轮真的活着），或显式
-   * phase=draft 且窗口为空（新会话空窗，v87 本意）；control 缺失或 phase
-   * 未知的旧形状一律不合成。子场景按判别因子正交展开，防「删掉某析取项」的
-   * 等价变异存活。 */
+   * （用户停了任务还亮着、切走切回每次重绑重新计时）。v116 收紧为
+   * 显式 phase=running（verifier/长轮 header 滑出，轮真的活着）；
+   * control 缺失或 phase 未知的旧形状一律不合成。子场景按判别因子正交展开，防
+   * 「删掉某析取项」的等价变异存活。
+   * v381 再撤 v116 的「draft 且窗口为空」析取项：宿主 product-projection.ts onTurnStarted
+   * 证实 userInput/turnHeader 行与 phase:"running" 同批次原子生效，draft 空窗 ⇔ 会话从未有过
+   * 任何输入——辅助对话新建后宿主已建好 store（draft+空窗），pane 一开就绑上，v87/v116
+   * 的合成立即让什么都没干的辅助对话永久假「思考中」并按绑定时长走字（用户实报）。 */
   const h = harness();
   h.setPanes(['a']);
   h.inject(); h.boot();
@@ -1290,7 +1293,7 @@ test('㉓ v87 synthetic thinking fires only for empty-window draft or phase=runn
   h.diagSessions.push({ key: '__base__ /fixture/ws', topic: 'conversation/sid_a', store });
   h.runTimers(100);
   assert.equal(instanceOf(h).liveEl(), null, '① 闲置：行非空 + 无 header + phase 终态 → 不合成');
-  // 行非空 + 非终态 phase（draft）→ 仍不合成：合成只认 running，行非空本身不是活性证据
+  // 行非空 + draft → 不合成：合成只认 running，行非空本身不是活性证据
   store.set(withControl(2, idleRows, 'draft'));
   h.runTimers(100);
   assert.equal(instanceOf(h).liveEl(), null, '② 行非空 + draft → 不合成（杀「running||非终态」等价变异）');
@@ -1302,10 +1305,10 @@ test('㉓ v87 synthetic thinking fires only for empty-window draft or phase=runn
   store.set(withControl(4, idleRows.concat([{ rowId: 4, kind: 'timelineMarker', lane: 'turnTailBoundary' }]), 'running'));
   h.runTimers(100);
   assert.match(instanceOf(h).liveEl().textContent, /^思考中…\d+秒$/, '④ phase=running（无 header）仍合成思考中');
-  // 新会话 draft 空窗（v87 本意）
+  // v381：draft 空窗 = 从未有过输入（辅助对话开面板即绑上的常态）→ 不合成，防永久假思考中
   store.set(withControl(5, [], 'draft'));
   h.runTimers(100);
-  assert.match(instanceOf(h).liveEl().textContent, /^思考中…/, '⑤ draft 空窗仍合成思考中');
+  assert.equal(instanceOf(h).liveEl(), null, '⑤ draft 空窗（从未有过输入）→ 不合成（用户实报：辅助对话永久思考中）');
   // 空窗但 phase 已终态（rewind 清空等）：三种终态都不合成
   store.set(withControl(6, [], 'completedSuccess'));
   h.runTimers(100);
