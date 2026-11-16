@@ -826,11 +826,12 @@ class ProtectedTargetTests(unittest.TestCase):
 
     def nt_mkstemp_trap(self):
         """issue #360 红测试共用的 Windows stdlib 模拟夹具：os.access 谎报可写、
-        TMP_MAX 抬到 Windows 量级（macOS 上 tempfile.TMP_MAX 只有 20，stdlib 自己
-        就会退出，复现不了「无限」）、仅真实 mkstemp 调用窗口内把 os.name 翻成
-        "nt" 激活 stdlib 的 PermissionError 特判（finally 即还原，避免泄漏进
-        file_lock 的 nt 分支）。返回 (ExitStack, calls)：with 期间 stdlib 每换一次
-        名计一次数，超过 64 即抛 AssertionError 判「仍在无限换名」。"""
+        TMP_MAX 抬到 Windows 量级（本机 Python 3.13.13+ 已自限 TMP_MAX=20、与平台
+        无关，stdlib 自己就会退出，复现不了「无限」）、仅真实 mkstemp 调用窗口内
+        把 os.name 翻成 "nt" 激活 stdlib 的 PermissionError 特判（POSIX 上该特判
+        不生效，不翻则首次失败即抛；finally 即还原，避免泄漏进 file_lock 的 nt
+        分支）。返回 (ExitStack, calls)：with 期间 stdlib 每换一次名计一次数，
+        超过 64 即抛 AssertionError 判「仍在无限换名」。"""
         calls = {"n": 0}
         real_next = tempfile._RandomNameSequence.__next__
         real_mkstemp = tempfile.mkstemp
@@ -859,11 +860,13 @@ class ProtectedTargetTests(unittest.TestCase):
 
     def test_target_writable_does_not_retry_unboundedly(self):
         # issue #360：tempfile._mkstemp_inner 在 Windows 上吞掉 PermissionError 换
-        # 随机名重试（3.13.12 及更早、含 3.14.0，还要求 os.access 报可写而 os.access
-        # 看不见 ACL 恒报可写，TMP_MAX 取 Windows 的 2^31-1 ≈ 无限挂起；3.13.13 起
-        # 自限 TMP_MAX=20 不再挂起），受保护目录上的真实写入探针挂到 SessionStart
-        # hook 被宿主 60s 超时击杀。夹具在 POSIX 宿主复现该路径（nt_mkstemp_trap）；
-        # 修复前本用例红，修复后探针走单次快错原语、根本不进 stdlib 名字序列。
+        # 随机名重试——旧形态（3.13.12 及更早、3.12 全线、3.14.0-3.14.3）要求
+        # os.access 报可写（看不见 ACL 恒报可写）、TMP_MAX 取 Windows 的 2^31-1 ≈
+        # 无限挂起；新形态（3.13.13+ 与 3.14.4+）自限 TMP_MAX=20 不再挂起、受保护
+        # 目录上最终仍原样抛 PermissionError。受保护目录上的真实写入探针在旧形态
+        # 上挂到 SessionStart hook 被宿主 60s 超时击杀。夹具在 POSIX 宿主复现该
+        # 路径（nt_mkstemp_trap）；修复前本用例红，修复后探针走单次快错原语、
+        # 根本不进 stdlib 名字序列。
         self.refuse_root()
         directory, asar = self.protected_target()
         self.pi.set_target(asar)
