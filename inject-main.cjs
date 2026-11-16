@@ -1083,6 +1083,7 @@ function initModelPuller() {
     const pullPaths = resolveHostQuotaPaths();
     modelPuller = createModelPuller({
       customCfgPath: pullPaths.customCfgPath,
+      builtinCfgPath: pullPaths.builtinCfgPath,   // 模板供应商（如 opencode-go-chat）的 baseUrl/protocol 在打包 templateRules
       credentialsPath: pullPaths.credsPath,   // v229：迁移后 ~/.zcode/v2/credentials.json 是宿主不读的死目录（issue #205）
       decryptValue: (enc) => decryptValue(enc, deriveCipherKey(process.env)),   // 套餐源：内存解密，同额度链纪律
       cachePath: path.join(__dirname, "model-efforts-cache.json"),   // #236：档位索引落运行目录（pricing-cache.json 同款先例），跨重启复用
