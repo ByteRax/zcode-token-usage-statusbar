@@ -387,7 +387,13 @@ test('v172 relaunch wiring: badge elements, ack on section click and two-step co
   assert.ok(source.includes('L("已更新成功，点击重启 ZCode 即可生效", "Update installed — click Restart ZCode to apply")'));   // v208 提示条文案
   assert.match(source, /function updFingerprint\(u\) \{\s*\n\s*if \(!u \|\| !u\.restartRequired\) return "";/);   // v208 指纹仅待重启分量
   assert.match(source, /data-update="relaunch"/);                                       // 重启按钮
-  assert.ok(source.includes('button.textContent = L("再次点击确认重启", "Click again to confirm restart")'));   // 二次确认文案
+  assert.ok(source.includes('b.textContent = L("再次点击确认重启", "Click again to confirm restart")'));   // 二次确认文案（v379 起经 eachRelaunch 同步两枚重启按钮）
+  // v379 review：5s 确认定时器在发送/dispose 两路清理（m5/m6），以及迟到回执代际守卫（Round 2 MAJOR）
+  assert.ok(source.includes('if (relaunchConfirmTimer) { clearTimeout(relaunchConfirmTimer); relaunchConfirmTimer = 0; }'));
+  assert.ok(source.includes('if (relaunchSeq !== mySeq) return;'));
+  assert.ok(source.includes('function eachRelaunchSends(active)'));
+  const bootSource = fs.readFileSync(path.join(__dirname, '..', 'src', 'overlay', '12-instance-mount-and-boot.js'), 'utf8');
+  assert.ok(bootSource.includes('if (relaunchConfirmTimer) { clearTimeout(relaunchConfirmTimer); relaunchConfirmTimer = 0; }'));
   assert.ok(source.includes('pluginRequest("relaunch", undefined,'));
   const im = fs.readFileSync(path.join(__dirname, '..', 'inject-main.cjs'), 'utf8');
   assert.ok(im.includes('req.action === "relaunch"'));   // 主进程白名单分支
@@ -678,6 +684,25 @@ test('feedback button sits in the footer with localized copy', () => {
   context.state.lang = 'en';
   vm.runInNewContext('buildPanel();', context);
   assert.match(context.panel.innerHTML, /class="zu-settings-feedback">Report an issue<\/button>/);
+});
+test('v379 footer restart button sits left of the scroll hint with localized copy and the relaunch action', () => {
+  const buildSource = getNamedSlice('barOrderHelpers') + '\n' +
+    extract('    function settingRow(', '    function syncSettingsScroll() {');
+  const body = { scrollTop: 0 };
+  const context = {
+    slot: 0,
+    panel: { innerHTML: '', querySelector: () => body, querySelectorAll: () => [] },
+    state: { lang: 'zh', show: {}, ctxOv: '' },
+    L: (zh, en) => context.state.lang === 'en' ? en : zh,
+    syncUpdate: () => {}, syncSettingsScroll: () => {},
+  };
+  vm.runInNewContext(buildSource + '\nbuildPanel();', context);
+  const html = context.panel.innerHTML;
+  assert.match(html, /class="zu-settings-relaunch" data-update="relaunch">重启 ZCode<\/button>/);
+  assert.ok(html.indexOf('zu-settings-relaunch') < html.indexOf('zu-settings-scroll'), '重启按钮在滚动提示左侧');
+  context.state.lang = 'en';
+  vm.runInNewContext('buildPanel();', context);
+  assert.match(context.panel.innerHTML, /class="zu-settings-relaunch" data-update="relaunch">Restart ZCode<\/button>/);
 });
 test('footer feedback click prefers the zcode openExternal bridge over window.open', () => {
   const clickSource = extract('    panel.addEventListener("click",', '    gear.addEventListener("click"');
@@ -1875,6 +1900,228 @@ test('relaunch two-step confirm state machine executes for real (v172, v177 ack 
   assert.equal(button.textContent, "重启 ZCode");
 });
 
+test('v379 footer and update-section restart buttons share one state machine and stay in sync', () => {
+  const clickSource = extract('    var relaunchAckTimer = 0;', '    gear.addEventListener("click",');
+  const foot = { dataset: { update: "relaunch", armed: "" }, disabled: false, textContent: "重启 ZCode",
+    classList: { add() {}, remove() {} } };
+  const upd = { dataset: { update: "relaunch", armed: "" }, disabled: false, textContent: "重启 ZCode",
+    classList: { add() {}, remove() {} } };
+  const statusEl = { textContent: "" };
+  const requested = [];
+  let sendReceipt = null;
+  const timers = [];
+  const context = {
+    state: { pluginUpdate: { restartRequired: true, relaunchSupported: true }, settingsSec: "update" },
+    panel: {
+      querySelector: () => statusEl,
+      querySelectorAll: sel => sel === '[data-update=relaunch]' ? [upd, foot] : [],
+      addEventListener: (_, fn) => { context.__click = fn; },
+    },
+    L: (zh) => zh,
+    pluginRequest: (action, payload, cb) => { requested.push(action); sendReceipt = cb; },
+    setTimeout: (fn) => { timers.push(fn); return timers.length; },
+    clearTimeout: (n) => { timers[n - 1] = null; },
+  };
+  vm.runInNewContext(clickSource, context);
+  // 点底栏按钮：两枚都进入确认态
+  context.__click({ target: { closest: sel => sel === "[data-update]" ? foot : null } });
+  for (const b of [foot, upd]) {
+    assert.equal(b.dataset.armed, "1");
+    assert.equal(b.textContent, "再次点击确认重启");
+  }
+  assert.deepEqual(requested, []);
+  // 点更新区按钮完成确认：两枚都进入「正在重启」态，只发一次 relaunch
+  context.__click({ target: { closest: sel => sel === "[data-update]" ? upd : null } });
+  assert.deepEqual(requested, ["relaunch"]);
+  for (const b of [foot, upd]) {
+    assert.equal(b.dataset.sent, "1");
+    assert.equal(b.disabled, true);
+    assert.equal(b.textContent, "正在重启…");
+  }
+  // 失败回执：两枚都还原
+  sendReceipt({ ok: false, error: "boom" });
+  for (const b of [foot, upd]) {
+    assert.equal(b.dataset.sent, "");
+    assert.equal(b.disabled, false);
+    assert.equal(b.textContent, "重启 ZCode");
+  }
+});
+
+test('v379 all three relaunch timeout branches restore BOTH buttons (dual-button stub)', () => {
+  // 变异存活缺口：4s 回执超时 / 90s 仍存活 / 5s 确认还原的 eachRelaunch 若退回单按钮必须红。
+  const clickSource = extract('    var relaunchAckTimer = 0;', '    gear.addEventListener("click",');
+  function setup() {
+    const foot = { dataset: { update: "relaunch", armed: "" }, disabled: false, textContent: "重启 ZCode",
+      classList: { add() {}, remove() {} } };
+    const upd = { dataset: { update: "relaunch", armed: "" }, disabled: false, textContent: "重启 ZCode",
+      classList: { add() {}, remove() {} } };
+    const statusEl = { textContent: "" };
+    let sendReceipt = null;
+    const timers = [];
+    const context = {
+      state: { pluginUpdate: { restartRequired: true, relaunchSupported: true }, settingsSec: "update" },
+      panel: {
+        querySelector: () => statusEl,
+        querySelectorAll: sel => sel === '[data-update=relaunch]' ? [upd, foot] : [],
+        addEventListener: (_, fn) => { context.__click = fn; },
+      },
+      L: (zh) => zh,
+      pluginRequest: (action, payload, cb) => { sendReceipt = cb; },
+      setTimeout: (fn) => { timers.push(fn); return timers.length; },
+      clearTimeout: (n) => { timers[n - 1] = null; },
+    };
+    vm.runInNewContext(clickSource, context);
+    const hit = (b) => ({ target: { closest: sel => sel === "[data-update]" ? b : null } });
+    return { context, foot, upd, timers, hit, receipt: () => sendReceipt };
+  }
+  const restored = (b) => b.dataset.sent === "" && b.disabled === false && b.textContent === "重启 ZCode";
+
+  // 1) 5s 确认还原：首点进入 confirm，5s 定时器触发后两枚都还原
+  {
+    const s = setup();
+    s.context.__click(s.hit(s.foot));
+    s.timers[0]();   // 确认态 5s 还原定时器（发送前未 clear）
+    for (const b of [s.foot, s.upd]) {
+      assert.equal(b.dataset.armed, "0", '5s: armed 还原');
+      assert.equal(b.textContent, "重启 ZCode", '5s: 文案还原');
+    }
+  }
+
+  // 2) 4s 回执超时：二点发送后 4s 无回执，两枚都从「正在重启」还原
+  {
+    const s = setup();
+    s.context.__click(s.hit(s.foot));   // confirm（timers[0]，发送时 clear）
+    s.context.__click(s.hit(s.upd));    // send → ack timer 落在 timers[1]
+    assert.equal(s.foot.textContent, "正在重启…");
+    s.timers[1]();                       // 4s 回执超时
+    for (const b of [s.foot, s.upd]) assert.ok(restored(b), '4s: 两枚均还原');
+  }
+
+  // 3) 90s 仍存活兜底：ok 回执后挂 90s，触发后两枚都还原
+  {
+    const s = setup();
+    s.context.__click(s.hit(s.foot));
+    s.context.__click(s.hit(s.upd));
+    s.receipt()({ ok: true });           // 清 ack timer，挂 alive timer 于 timers[2]
+    assert.equal(s.upd.dataset.sent, "1", 'ok 回执保持 sent');
+    s.timers[2]();                        // 90s 仍存活兜底
+    for (const b of [s.foot, s.upd]) assert.ok(restored(b), '90s: 两枚均还原');
+  }
+});
+
+test('v379 sending clears the 5s confirm timer and an old confirm timeout cannot rewrite a new confirmation', () => {
+  // m5/m6 守护：发送必须清掉确认定时器；过期确认回调不得改写重建后的新按钮。
+  const clickSource = extract('    var relaunchAckTimer = 0;', '    gear.addEventListener("click",');
+  const foot = { dataset: { update: "relaunch", armed: "" }, disabled: false, textContent: "重启 ZCode",
+    classList: { add() {}, remove() {} } };
+  const upd = { dataset: { update: "relaunch", armed: "" }, disabled: false, textContent: "重启 ZCode",
+    classList: { add() {}, remove() {} } };
+  const timers = [];
+  const context = {
+    state: { pluginUpdate: { restartRequired: true, relaunchSupported: true }, settingsSec: "update" },
+    panel: {
+      querySelector: () => ({ textContent: "" }),
+      querySelectorAll: sel => sel === '[data-update=relaunch]' ? [upd, foot] : [],
+      addEventListener: (_, fn) => { context.__click = fn; },
+    },
+    L: (zh) => zh,
+    pluginRequest: () => {},
+    setTimeout: (fn) => { timers.push(fn); return timers.length; },
+    clearTimeout: (n) => { timers[n - 1] = null; },
+  };
+  vm.runInNewContext(clickSource, context);
+  const hit = (b) => ({ target: { closest: sel => sel === "[data-update]" ? b : null } });
+  context.__click(hit(foot));       // 首点进确认：timers[0] = 5s 确认还原
+  assert.equal(typeof timers[0], "function");
+  context.__click(hit(upd));        // 二点发送：必须清掉确认定时器（timers[0] === null）
+  assert.equal(timers[0], null, '发送时必须 clearTimeout 5s 确认还原定时器（m5 变异即红）');
+  assert.equal(foot.textContent, "正在重启…");
+  // 即便残留确认回调被触发（模拟 m5：未清），守卫 if armed==="1" 也应空转、不把 sent 态还原成普通态
+  if (timers[0]) {
+    timers[0]();
+    assert.equal(foot.textContent, "正在重启…", '过期确认回调不得改写 sent 态');
+  }
+});
+
+test('v379 late ok receipt after 4s timeout must not hang a 90s alive timer (dual-button + rebuild)', () => {
+  // Round 2 MAJOR：面板重建后闭包 button 已脱离 DOM（sent 陈旧=1），4s 超时把新按钮还原，
+  // 迟到 ok 若读闭包 button 会重挂 90s alive，进而误清新一轮重启。
+  const clickSource = extract('    var relaunchAckTimer = 0;', '    gear.addEventListener("click",');
+  const mk = () => ({ dataset: { update: "relaunch", armed: "" }, disabled: false, textContent: "重启 ZCode",
+    classList: { add() {}, remove() {} } });
+  let upd = mk(), foot = mk();          // 旧节点（点击时闭包捕获 upd）
+  let rebuilt = false;
+  const timers = [];
+  let sendReceipt = null;
+  const context = {
+    state: { pluginUpdate: { restartRequired: true, relaunchSupported: true }, settingsSec: "update" },
+    panel: {
+      querySelector: () => ({ textContent: "" }),
+      querySelectorAll: sel => sel === '[data-update=relaunch]' ? [upd, foot] : [],
+      addEventListener: (_, fn) => { context.__click = fn; },
+    },
+    L: (zh) => zh,
+    pluginRequest: (action, payload, cb) => { sendReceipt = cb; },
+    setTimeout: (fn) => { timers.push(fn); return timers.length; },
+    clearTimeout: (n) => { timers[n - 1] = null; },
+  };
+  vm.runInNewContext(clickSource, context);
+  const hit = (b) => ({ target: { closest: sel => sel === "[data-update]" ? b : null } });
+  context.__click(hit(foot));           // 首点进确认
+  const clicked = upd;                   // 闭包捕获的按钮 = upd
+  context.__click(hit(upd));            // 二点发送：timers[1]=4s ack
+  // 模拟 buildPanel 面板重建：DOM 换成全新节点，旧 clicked 节点脱离 DOM、仍保留 sent=1
+  upd = mk(); foot = mk(); rebuilt = true;
+  timers[1]();                           // 4s 无回执：还原的是「当前」新按钮
+  assert.equal(clicked.dataset.sent, "1", '旧闭包按钮保留陈旧 sent（重建模拟前提）');
+  for (const b of [upd, foot]) { assert.equal(b.dataset.sent, ""); assert.equal(b.disabled, false); }
+  sendReceipt({ ok: true });             // 迟到 ok：守卫须读当前 DOM（已还原），不得重挂 90s alive
+  assert.equal(timers[2], undefined, '迟到 ok 不得挂 90s 存活兜底（Round 2 MAJOR 修复）');
+});
+
+test('v379 stale 90s alive timer from a previous restart must not clear the current one (seq guard)', () => {
+  // Round 3 MINOR：锁住 relaunchSeq 的 ++ 递增与 90s alive 回调的代际守卫。
+  // 场景：第一轮 ok 挂上 90s alive → 第二轮发送（quit 被阻塞时用户照提示再点）→ 旧 alive 触发不得误清第二轮。
+  const clickSource = extract('    var relaunchAckTimer = 0;', '    gear.addEventListener("click",');
+  const mk = () => ({ dataset: { update: "relaunch", armed: "" }, disabled: false, textContent: "重启 ZCode",
+    classList: { add() {}, remove() {} } });
+  let upd = mk(), foot = mk();
+  const timers = [];
+  let sendReceipt = null;
+  const context = {
+    state: { pluginUpdate: { restartRequired: true, relaunchSupported: true }, settingsSec: "update" },
+    panel: {
+      querySelector: () => ({ textContent: "" }),
+      querySelectorAll: sel => sel === '[data-update=relaunch]' ? [upd, foot] : [],
+      addEventListener: (_, fn) => { context.__click = fn; },
+    },
+    L: (zh) => zh,
+    pluginRequest: (action, payload, cb) => { sendReceipt = cb; },
+    setTimeout: (fn) => { timers.push(fn); return timers.length; },
+    clearTimeout: (n) => { timers[n - 1] = null; },
+  };
+  vm.runInNewContext(clickSource, context);
+  const hit = (b) => ({ target: { closest: sel => sel === "[data-update]" ? b : null } });
+  // 第一轮：confirm → send → ok 挂 90s alive
+  context.__click(hit(foot));
+  context.__click(hit(upd));
+  sendReceipt({ ok: true });
+  const oldAlive = timers[2];
+  assert.equal(typeof oldAlive, "function", '第一轮 ok 挂上 90s alive');
+  // 面板重建 + 第二轮重启：新 DOM 节点、新一轮发送
+  upd = mk(); foot = mk();
+  context.__click(hit(foot));
+  context.__click(hit(upd));
+  for (const b of [upd, foot]) assert.equal(b.dataset.sent, "1", '第二轮 sent=1');
+  // 旧 alive 回调（属于第一轮）触发：代际守卫必须挡住，不能清掉第二轮
+  oldAlive();
+  for (const b of [upd, foot]) {
+    assert.equal(b.dataset.sent, "1", '过期 alive 不得清第二轮 sent（++ 递增 + seq 守卫）');
+    assert.equal(b.disabled, true, '过期 alive 不得重新启用第二轮按钮');
+    assert.equal(b.textContent, "正在重启…");
+  }
+});
+
 test('v244 relaunch ok receipt keeps the restarting state and the 90s still-alive fallback restores it', () => {
   const clickSource = extract('    var relaunchAckTimer = 0;', '    gear.addEventListener("click",');
   const button = { dataset: { update: "relaunch", armed: "" }, disabled: false, textContent: "重启 ZCode",
@@ -1933,6 +2180,40 @@ test('v244 syncUpdate keeps the restarting state across state pushes (sent flag 
   vm.runInNewContext('syncUpdate();', context);
   assert.equal(relaunch.disabled, false, 'sent 清空：按钮恢复可点');
   assert.doesNotMatch(controls['.zu-update-status'].textContent, /已发出重启请求/, '还原后状态行不再追加预期文案');
+});
+
+test('v379 syncUpdate keeps both restart buttons disabled while a restart is in flight (both sent positions)', () => {
+  const syncSource = extract('    function updFingerprint(u) {', '    function syncPanel() {');
+  const mk = (sent) => {
+    const b = { hidden: false, disabled: false, dataset: { sent }, classes: {} };
+    b.classList = { toggle(n, on) { b.classes[n] = on; } };
+    return b;
+  };
+  // 镜像两种 sent 位置：硬编码只读 relaunchBtns[0] 的实现会在 sent 落在索引 1 时漏禁用
+  for (const sentAtFoot of [false, true]) {
+    const status = {};
+    const upd = mk(sentAtFoot ? '' : '1'), foot = mk(sentAtFoot ? '1' : '');
+    const controls = {};
+    const context = {
+      state: { restartNotice: true, rateLine: true, pluginUpdate: { supported: true, phase: 'idle', relaunchSupported: true, restartRequired: true, markerAt: 5 } },
+      gear: { querySelector: sel => sel === '.zu-gear-dot' ? { style: {} } : null },
+      panel: {
+        querySelector: sel => sel === '[data-update=relaunch]' ? upd : sel === '.zu-update-status' ? status : (controls[sel] ||= { style: {} }),
+        querySelectorAll: sel => sel === '[data-update=relaunch]' ? [upd, foot] : [],
+      },
+      LS: { updSeen: 'zusage3.updSeen' },
+      localStorage: { getItem: () => '5', setItem: () => {} },
+      L: (zh) => zh,
+    };
+    vm.runInNewContext(syncSource + '\nsyncUpdate();', context);
+    assert.equal(upd.disabled, true, `sentAtFoot=${sentAtFoot}: 更新区按钮禁用`);
+    assert.equal(foot.disabled, true, `sentAtFoot=${sentAtFoot}: 底栏按钮禁用（sent 在任一枚都应广播）`);
+    assert.match(status.textContent, /已发出重启请求/);
+    (sentAtFoot ? foot : upd).dataset.sent = '';
+    vm.runInNewContext('syncUpdate();', context);
+    assert.equal(upd.disabled, false);
+    assert.equal(foot.disabled, false, 'sent 清空后两枚按钮恢复');
+  }
 });
 
 test('relaunch button downgrades to a manual-restart hint while the main process predates the capability marker (v180, issue #158)', () => {
