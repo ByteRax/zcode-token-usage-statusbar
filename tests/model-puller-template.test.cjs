@@ -27,9 +27,10 @@ function writeTemplate(file, api, extra) {
   }));
 }
 
-function makeFixture(overrides) {
+function makeFixture(t, overrides) {
   const o = overrides || {};
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "zusage-tpl-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const providerCfg = path.join(dir, "provider_config.json");
   const builtinCfg = path.join(dir, "zcode-builtin.json");
   const providerRule = {
@@ -73,8 +74,10 @@ function create(f, opts) {
   });
 }
 
-test("template-created provider: enhancement resolves baseUrl/protocol from bundled templateRules", async () => {
-  const f = makeFixture();
+const UUID_V4_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+test("template-created provider: enhancement resolves baseUrl/protocol from bundled templateRules", async (t) => {
+  const f = makeFixture(t);
   const calls = [];
   const mp = create(f, { fetchImpl: makeFetch(calls) });
 
@@ -90,20 +93,26 @@ test("template-created provider: enhancement resolves baseUrl/protocol from bund
   assert.equal(calls.length, 1);
   assert.equal(calls[0].url, TEMPLATE_BASE + "/chat/completions");
   assert.equal(calls[0].opts.headers.Authorization, "Bearer sk-oc");
-  assert.match(calls[0].opts.headers["x-opencode-session"], /^[0-9a-f-]{36}$/);   // OpenCode Go 路由键
+  assert.match(calls[0].opts.headers["x-opencode-session"], UUID_V4_RE);   // OpenCode Go 路由键：v4 形状
   assert.equal(calls[0].body.model, "deepseek-v4.1-flash");
+
+  // 每请求新路由键：固定 UUID（哪怕合法 v4）不能复用
+  const r2 = await mp.enhanceText("opencode-go-chat", "deepseek-v4.1-flash", "再写一个");
+  assert.equal(r2.ok, true);
+  assert.match(calls[1].opts.headers["x-opencode-session"], UUID_V4_RE);
+  assert.notEqual(calls[1].opts.headers["x-opencode-session"], calls[0].opts.headers["x-opencode-session"]);
 });
 
-test("template merge precedence: explicit baseUrl wins, empty baseUrl falls back, explicit protocol wins", async () => {
+test("template merge precedence: explicit baseUrl wins, empty baseUrl falls back, explicit protocol wins", async (t) => {
   const calls = [];
-  const explicitBase = makeFixture({ api: { baseUrl: "https://relay.example.com" } });
+  const explicitBase = makeFixture(t, { api: { baseUrl: "https://relay.example.com" } });
   const mp1 = create(explicitBase, { fetchImpl: makeFetch(calls) });
   assert.equal((await mp1.enhanceText("opencode-go-chat", "deepseek-v4.1-flash", "写个脚本")).ok, true);
   assert.equal(calls[0].url, "https://relay.example.com/chat/completions");
   assert.equal(calls[0].opts.headers["x-opencode-session"], undefined);   // 非 OpenCode Go 不附带路由键
 
   calls.length = 0;
-  const emptyBase = makeFixture({
+  const emptyBase = makeFixture(t, {
     api: { type: "openai-chat-completions", baseUrl: "" },
     templateApi: { type: "anthropic-messages", baseUrl: TEMPLATE_BASE },   // 显式协议必须压过模板协议
   });
@@ -115,8 +124,8 @@ test("template merge precedence: explicit baseUrl wins, empty baseUrl falls back
   assert.equal(calls[0].url, TEMPLATE_BASE + "/chat/completions");
 });
 
-test("template lookup requires explicit templateId; matching providerId alone must not inherit the template", async () => {
-  const f = makeFixture({ templateId: null });
+test("template lookup requires explicit templateId; matching providerId alone must not inherit the template", async (t) => {
+  const f = makeFixture(t, { templateId: null });
   const calls = [];
   const mp = create(f, { fetchImpl: makeFetch(calls) });
   assert.equal(mp.resolveEnhanceHost("opencode-go-chat"), null);
@@ -127,8 +136,8 @@ test("template lookup requires explicit templateId; matching providerId alone mu
   assert.equal(calls.length, 0);
 });
 
-test("missing or malformed template source stays fail-closed with zero network", async () => {
-  const f = makeFixture();
+test("missing or malformed template source stays fail-closed with zero network", async (t) => {
+  const f = makeFixture(t);
   fs.writeFileSync(f.builtinCfg, "{broken");
   const calls = [];
   const mp = create(f, { fetchImpl: makeFetch(calls) });
@@ -139,15 +148,15 @@ test("missing or malformed template source stays fail-closed with zero network",
   assert.equal(calls.length, 0);
 });
 
-test("personal templateRules override the bundled template (same order as quota-client)", () => {
-  const f = makeFixture({ personalTemplateApi: { type: "openai-chat-completions", baseUrl: "https://relay.example.com" } });
+test("personal templateRules override the bundled template (same order as quota-client)", (t) => {
+  const f = makeFixture(t, { personalTemplateApi: { type: "openai-chat-completions", baseUrl: "https://relay.example.com" } });
   const mp = create(f);
   assert.equal(mp.resolveEnhanceHost("opencode-go-chat").baseUrl, "https://relay.example.com");
 });
 
-test("deleting and recreating the template between calls with the same mtime/size does not revive a stale cache", () => {
-  const f = makeFixture();
-  const fixed = 1700000000;   // 整秒：重建后 mtimeMs 可与原文件逐位相同，专测 ctime/birthtime 变化
+test("deleting and recreating the template between calls with the same mtime/size does not revive a stale cache", (t) => {
+  const f = makeFixture(t);
+  const fixed = 1700000000;   // 整秒：重建后 mtimeMs 可与原文件逐位相同，专测 ctime/birthtime 双保险（Linux 老内核 birthtime 可能恒 0，ctime 兜底）
   fs.utimesSync(f.builtinCfg, fixed, fixed);
   const mp = create(f);
   assert.equal(mp.resolveEnhanceHost("opencode-go-chat").baseUrl, TEMPLATE_BASE);
@@ -165,8 +174,8 @@ test("deleting and recreating the template between calls with the same mtime/siz
   assert.equal(mp.resolveEnhanceHost("opencode-go-chat").baseUrl, replaced);
 });
 
-test("corrupt template source recovers after repair with the same size and mtime", () => {
-  const f = makeFixture();
+test("corrupt template source recovers after repair with the same size and mtime", (t) => {
+  const f = makeFixture(t);
   const fixed = 1700000001;
   const valid = fs.readFileSync(f.builtinCfg);
   const corrupt = Buffer.concat([Buffer.from("{broken"), Buffer.alloc(valid.length - 7, 0x20)]);
@@ -178,4 +187,96 @@ test("corrupt template source recovers after repair with the same size and mtime
   fs.writeFileSync(f.builtinCfg, valid);
   fs.utimesSync(f.builtinCfg, fixed, fixed);
   assert.equal(mp.resolveEnhanceHost("opencode-go-chat").baseUrl, TEMPLATE_BASE);   // 修复后恢复
+});
+
+test("direct enhanceProvider (enhance-custom) bypasses rules and templates entirely", async (t) => {
+  // 生产路径 inject-main prompt-enhance-v2：自定义供应商增强恒以 enhance-custom + opts.enhanceProvider
+  // 直连，不走 providerRules/templateRules；同名干扰规则与模板在场也不得影响目的地与凭据。
+  const f = makeFixture(t, { providerId: "enhance-custom", api: { baseUrl: "https://wrong-rule.example.com" } });
+  const calls = [];
+  const mp = create(f, { fetchImpl: makeFetch(calls) });
+  const r = await mp.enhanceText("enhance-custom", "m1", "写个脚本", {
+    enhanceProvider: { apiKey: "sk-direct", protocol: "openai-chat-completions", baseUrl: "https://direct.example.com/v1" },
+  });
+  assert.equal(r.ok, true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "https://direct.example.com/v1/chat/completions");
+  assert.equal(calls[0].opts.headers.Authorization, "Bearer sk-direct");
+  assert.equal(calls[0].opts.headers["x-opencode-session"], undefined);
+});
+
+test("OpenCode Go route-key boundary: exact host+path only, lookalike domains and paths get no header", async (t) => {
+  const cases = [
+    ["https://opencode.ai/zen/go/v1", true],
+    ["https://api.opencode.ai/zen/go/v1/", true],   // 子域 + 尾斜杠 + 大小写不敏感
+    ["https://OPENCODE.AI/zen/go/v1", true],
+    ["https://opencode.ai/zen", false],
+    ["https://opencode.ai/zen/go/v1/extra", false],
+    ["https://evilopencode.ai/zen/go/v1", false],
+    ["https://opencode.ai.evil.test/zen/go/v1", false],
+  ];
+  for (const [base, expectHeader] of cases) {
+    const f = makeFixture(t, { api: { baseUrl: base } });
+    const calls = [];
+    const mp = create(f, { fetchImpl: makeFetch(calls) });
+    const r = await mp.enhanceText("opencode-go-chat", "m1", "草稿");
+    assert.equal(r.ok, true, base);
+    assert.equal(calls[0].url, base.replace(/\/+$/, "") + "/chat/completions", base);
+    if (expectHeader) assert.match(calls[0].opts.headers["x-opencode-session"], UUID_V4_RE, base);
+    else assert.equal(calls[0].opts.headers["x-opencode-session"], undefined, base);
+  }
+});
+
+test("corrupt bundled template keeps personal templateRules readable (partial-read preservation)", (t) => {
+  // readTemplateRules 的 failed 分支：单文件损坏只跳过该文件、保留已读到的模板且不缓存。
+  const f = makeFixture(t, { personalTemplateApi: { type: "openai-chat-completions", baseUrl: "https://personal-relay.example.com" } });
+  fs.writeFileSync(f.builtinCfg, "{broken");
+  const mp = create(f);
+  assert.equal(mp.resolveEnhanceHost("opencode-go-chat").baseUrl, "https://personal-relay.example.com");
+});
+
+test("template access backfills omitted personal access.type (mirror of quota #123)", (t) => {
+  const f = makeFixture(t);
+  // 个人 access 只有 apiKey、无 type：模板 access.type=api-key 必须回填，否则增强被 access 门拒绝
+  const personal = JSON.parse(fs.readFileSync(f.providerCfg, "utf8"));
+  personal.config.providerConfigRules.providerRules[0].config.access = { apiKey: "sk-oc" };
+  fs.writeFileSync(f.providerCfg, JSON.stringify(personal));
+  const mp = create(f);
+  const host = mp.resolveEnhanceHost("opencode-go-chat");
+  assert.ok(host);
+  assert.equal(host.baseUrl, TEMPLATE_BASE);
+  assert.equal(host.apiKey, "sk-oc");
+});
+
+test("numeric templateId is normalized to string on both rule and template sides", (t) => {
+  const f = makeFixture(t, { templateId: 123 });
+  const tpl = JSON.parse(fs.readFileSync(f.builtinCfg, "utf8"));
+  tpl.config.providerConfigRules.templateRules[0].templateId = 123;
+  fs.writeFileSync(f.builtinCfg, JSON.stringify(tpl));
+  const mp = create(f);
+  assert.equal(mp.resolveEnhanceHost("opencode-go-chat").baseUrl, TEMPLATE_BASE);
+});
+
+test("builtinCfgPath defaults to process.resourcesPath; explicit ZCODE_BUILTIN_PROVIDER_CONFIG_FILE yields", (t) => {
+  const f = makeFixture(t);
+  // 热更窗口：旧冷 loader 不传 builtinCfgPath，由 Electron resourcesPath 推导打包模板
+  const resources = fs.mkdtempSync(path.join(os.tmpdir(), "zusage-tpl-res-"));
+  t.after(() => fs.rmSync(resources, { recursive: true, force: true }));
+  const bundled = path.join(resources, "config", "provider", "zcode-builtin.json");
+  fs.mkdirSync(path.dirname(bundled), { recursive: true });
+  fs.copyFileSync(f.builtinCfg, bundled);
+  Object.defineProperty(process, "resourcesPath", { value: resources, configurable: true, writable: true });
+  const savedEnv = process.env.ZCODE_BUILTIN_PROVIDER_CONFIG_FILE;
+  delete process.env.ZCODE_BUILTIN_PROVIDER_CONFIG_FILE;
+  t.after(() => {
+    delete process.resourcesPath;
+    if (savedEnv === undefined) delete process.env.ZCODE_BUILTIN_PROVIDER_CONFIG_FILE;
+    else process.env.ZCODE_BUILTIN_PROVIDER_CONFIG_FILE = savedEnv;
+  });
+  const mp = M.createModelPuller({ customCfgPath: f.providerCfg, fetchImpl: makeFetch([]), modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "" });
+  assert.equal(mp.resolveEnhanceHost("opencode-go-chat").baseUrl, TEMPLATE_BASE);
+  // 宿主显式指定 builtin 文件时兜底让位（与 resolveHostQuotaPaths 同语义）：不猜打包副本
+  process.env.ZCODE_BUILTIN_PROVIDER_CONFIG_FILE = path.join(f.dir, "nonexistent-builtin.json");
+  const mp2 = M.createModelPuller({ customCfgPath: f.providerCfg, fetchImpl: makeFetch([]), modelsDevUrl: MODELS_DEV_TEST_URL, modelsDevApiUrl: "" });
+  assert.equal(mp2.resolveEnhanceHost("opencode-go-chat"), null);
 });
