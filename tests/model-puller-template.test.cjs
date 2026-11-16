@@ -286,7 +286,7 @@ test("builtinCfgPath defaults to process.resourcesPath; explicit ZCODE_BUILTIN_P
 
 test("applyModels never persists template-merged fields into the personal rule (read-only merge contract)", async (t) => {
   // 写回隔离守卫：模板合并只参与增强读取；applyModels 成功后个人 access/api 必须逐字不变，
-  // 不得 gaining 模板的 apiKeyManagementUrl/baseUrl 等字段（H4 变异 killer）。
+  // 不得混入模板的 apiKeyManagementUrl/baseUrl 等字段（H4 变异 killer）。
   const f = makeFixture(t, { api: { baseUrl: "https://my-relay.example.com/v1" } });
   const before = JSON.parse(fs.readFileSync(f.providerCfg, "utf8")).config.providerConfigRules.providerRules[0];
   const accessBefore = JSON.parse(JSON.stringify(before.config.access));

@@ -741,8 +741,8 @@ function createModelPuller(opts) {
    * 供应商（如 opencode-go-chat）个人规则只存 templateId + apiKey，baseUrl/protocol
    * 在 templateRules。issue #123 已在额度链合并模板；增强链同样需要。
    * 缺省由 Electron 主进程的 resourcesPath 推导：热更 model-puller 时无需同时换冷文件
-   * inject-main.cjs；宿主显式 ZCODE_BUILTIN_PROVIDER_CONFIG_FILE 时让位（真值判定与
-   * resolveHostQuotaPaths 同款；让位=不猜打包副本，env 文件本体由冷 loader 经
+   * inject-main.cjs；宿主显式 ZCODE_BUILTIN_PROVIDER_CONFIG_FILE 时让位（非空判定与
+   * resolveHostQuotaPaths 同款，空串按未设处理；让位=不猜打包副本，env 文件本体由冷 loader 经
    * resolveQuotaPaths 传入）；Node 测试环境无 resourcesPath，仍由调用方显式传 builtinCfgPath。 */
   const builtinCfgPath = String(o.builtinCfgPath || (!process.env.ZCODE_BUILTIN_PROVIDER_CONFIG_FILE && process.resourcesPath ? path.join(process.resourcesPath, "config", "provider", "zcode-builtin.json") : ""));
   const log = o.log || function () { };
