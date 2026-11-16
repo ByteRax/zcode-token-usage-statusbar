@@ -307,7 +307,10 @@ class WatermarkCacheTests(unittest.TestCase):
         dbkey = zusage._db_cache_key(self.con)
         for kind in ("usage", "avg_tps", "sess_av"):
             self.assertIn((dbkey, "s1", kind), zusage._SESS_CACHE, kind)
-        self.assertIsInstance(zusage._SESS_CACHE[(dbkey, "s1", "avg_tps")][1], float)
+        avg_tps_cached = zusage._SESS_CACHE[(dbkey, "s1", "avg_tps")][1]
+        self.assertIsInstance(avg_tps_cached, dict)   # v375: {tps, per_model} 携带结构
+        self.assertIsInstance(avg_tps_cached["tps"], float)
+        self.assertIn("per_model", avg_tps_cached)
         self.assertEqual(len(zusage._SESS_CACHE[(dbkey, "s1", "sess_av")][1]), 3)
         self.con.execute(
             "insert into model_usage (id, session_id, turn_id, query_source, provider_id, model_id,"
@@ -557,7 +560,8 @@ class WatermarkCacheTests(unittest.TestCase):
         self.assertIsNot(zusage._scan_session_ids(self.con), rows1, "新请求完成：立即重算")
 
     def test_snapshot_passes_the_connection_to_the_today_caches(self):
-        """snapshot 里的 scan / today / todayrate / todaydetail 都必须经 _WmFn 带上连接，否则水位延长静默失效。"""
+        """snapshot 里的 scan / today / todaydetail 都必须经 _WmFn 带上连接，否则水位延长静默失效。
+        v375：todayrate 已并入 todaydetail（含 tps/models/cost），不再是独立缓存键。"""
         seen = {}
 
         def recorder(key, fn):
@@ -568,9 +572,10 @@ class WatermarkCacheTests(unittest.TestCase):
              mock.patch.object(zusage, "load_config", return_value={"context_window": 200000}), \
              mock.patch.object(zusage, "_remote_setup", return_value=None):
             zusage.snapshot(serve_con=self.con)
-        for name in ("scan", "today", "todayrate", "todaydetail"):
+        for name in ("scan", "today", "todaydetail"):
             self.assertIn(name, seen, name)
             self.assertIs(seen[name], self.con, "%s 未携带连接：水位延长缓存对它失效" % name)
+        self.assertNotIn("todayrate", seen, "v375: todayrate 已并入 todaydetail")
 
     def test_watermark_carries_database_identity(self):
         """_AGG_CACHE 的键不含库身份，水位里的 dbkey 是换库时的唯一防线：两库 max(rowid) 相同也不得互用缓存。"""

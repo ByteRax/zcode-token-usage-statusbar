@@ -160,6 +160,58 @@ class StatusbarRateTests(unittest.TestCase):
         self.assertEqual(turn["rated_output"], 400)
         self.assertEqual(turn["unrated_output"], 120)
 
+    def test_model_detail_avg_tps_uses_weighted_window_per_model(self):
+        """v375 模型明细平均速度：逐模型 Σ有效输出÷Σ有效窗口，与会话 KPI 同口径；
+        无效段（缺首字/窗口超界）不进分子分母；仅含无效段的模型显 0（渲染端 —）。"""
+        con = sqlite3.connect(":memory:")
+        self.addCleanup(con.close)
+        con.row_factory = sqlite3.Row
+        con.executescript(SCHEMA)
+        con.execute("insert into session (id,title) values ('s','t')")
+        # GLM-5.3 两段：r1 有效（1000 t/s，gen 4000ms），r2 无效（缺首字）
+        self._insert_row(con, "r1", "GLM-5.3", 1000, 5000, 4000, first_token_at=1000)
+        self._insert_row(con, "r2", "GLM-5.3", 10000, 10500, 999, first_token_at=None)
+        # claude 一段：有效，gen 用 started_at（覆盖 thinking 窗口前移）
+        self._insert_row(con, "r3", "claude-opus", 20000, 24000, 800, first_token_at=23500)
+        snap = zusage._session_snapshot(con, "s", {"context_window": 200000})
+        by_model = {m["model"].lower(): m["avg_tps"] for m in snap["models"]}
+        # GLM: 4000 ÷ 4s = 1000；claude: 800 ÷ 4s = 200
+        self.assertEqual(by_model["glm-5.3"], 1000.0)
+        self.assertEqual(by_model["claude-opus"], 200.0)
+        # 会话 KPI 仍在（总有效 = 4800 ÷ 8s）
+        self.assertEqual(snap["avg_tps"], 600.0)
+
+    def test_model_detail_avg_tps_zero_when_no_valid_window(self):
+        """仅含无效段的模型 avg_tps=0（消费端显 —，不显假速度）。"""
+        con = sqlite3.connect(":memory:")
+        self.addCleanup(con.close)
+        con.row_factory = sqlite3.Row
+        con.executescript(SCHEMA)
+        con.execute("insert into session (id,title) values ('s','t')")
+        self._insert_row(con, "r1", "GLM-5.3", 1000, 10500, 999, first_token_at=None)
+        snap = zusage._session_snapshot(con, "s", {"context_window": 200000})
+        self.assertEqual(snap["models"][0]["avg_tps"], 0)
+        self.assertEqual(snap["avg_tps"], 0)
+
+    def test_turn_rate_per_model_accumulates_in_pending_dict(self):
+        """_turn_rate 的可选 per_model 在同遍循环累加，返回结构不变。"""
+        con = sqlite3.connect(":memory:")
+        self.addCleanup(con.close)
+        con.row_factory = sqlite3.Row
+        con.executescript(SCHEMA)
+        con.execute("insert into model_usage (id,session_id,model_id,status,output_tokens,first_token_at,started_at,completed_at)"
+                    " values ('a','s','Model-A','completed',500,1000,1000,1500)")
+        con.execute("insert into model_usage (id,session_id,model_id,status,output_tokens,first_token_at,started_at,completed_at)"
+                    " values ('b','s','model-a','completed',300,2000,2000,2250)")
+        rows = con.execute(
+            "select output_tokens, first_token_at, completed_at, started_at, reasoning_tokens, model_id, provider_id"
+            " from model_usage").fetchall()
+        per_model = {}
+        result = zusage._turn_rate(rows, frozenset(), per_model)
+        self.assertEqual(per_model, {"model-a": [800, 750]})
+        self.assertEqual(result["rated_output"], 800)
+        self.assertEqual(result["gen_ms"], 750)
+
     def test_unrated_request_does_not_publish_speed_sample_span(self):
         con = sqlite3.connect(":memory:")
         self.addCleanup(con.close)
