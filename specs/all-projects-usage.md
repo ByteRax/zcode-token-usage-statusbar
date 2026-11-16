@@ -33,7 +33,7 @@ totals 字段名与 `project` 行完全一致（sessions/turns/requests/input/ou
 - 总耗时=Σ`duration_ms`（全部 completed 行）。
 - 平均输出速度=Σ有效输出 ÷ Σ有效生成窗口（`_row_gen_ms` + `_turn_rate` 分量按会话累加，跨项目可加和）；`_provider_first_token_covers` 同源。
 - 预估费用：按 (model_id, provider_id) 分组经 `token_pricing.merge_model_costs` 计价；全局与各项目分组同源拆分，价表缺失/失败整体 None；未知价不冒充 0。
-- 模型明细：`{model, requests, total, cost_usd, rates?}` 按 total 降序，模型名大小写归一（`_canon_model_name`）。
+- 模型明细：`{model, requests, total, cost_usd, rates?, avg_tps?}`（`avg_tps` v375 起，Σ有效输出÷Σ有效生成窗口，见 [specs/model-detail-avg-tps.md](model-detail-avg-tps.md)）按 total 降序，模型名大小写归一（`_canon_model_name`）。
 - `projects` 条目：`{name, directory, unattributed?, total, requests, cost_usd}`，total 降序（同值按名称、目录二级键稳定排序）；`name`=目录末段（正反斜杠归一），未归属桶无 name；列表上限 500 条，超出置 `projects_truncated: true` 并附 `projects_total`（截断前真实项目数，明细表提示用；totals 仍为全量真值）。
 - 时间范围：全部有效行 min(started_at) → max(completed_at)。
 
