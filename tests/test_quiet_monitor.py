@@ -328,6 +328,87 @@ class QuietMonitorTests(unittest.TestCase):
         sleep.assert_called_once()
         self.assertEqual(self.asar.read_bytes(), b"official version")
 
+    def relaunch_request(self, **overrides):
+        exe = self.root / "ZCode.exe"
+        exe.write_bytes(b"stub executable")
+        payload = {
+            "version": 1,
+            "asar": str(self.asar.resolve()),
+            "argv": [str(exe), "--flag"],
+            "cwd": str(self.root),
+            "pid": 4242,
+            "createdAt": time.time() * 1000,
+        }
+        payload.update(overrides)
+        request = self.runtime / "relaunch-request.json"
+        request.write_text(json.dumps(payload), encoding="utf-8")
+        return exe, request
+
+    def test_maybe_relaunch_spawns_the_recorded_client_after_finalize(self):
+        exe, request = self.relaunch_request()
+        with mock.patch.dict(sys.modules, {"patch_install": self.patch}), \
+                mock.patch.object(self.monitor, "zcode_pids", return_value=set()), \
+                mock.patch.object(self.patch, "zcode_exe_for", return_value=exe), \
+                mock.patch.object(self.monitor.subprocess, "Popen") as spawn:
+            self.assertTrue(self.monitor._maybe_relaunch())
+        self.assertFalse(request.exists())
+        spawn.assert_called_once()
+        args, kwargs = spawn.call_args
+        self.assertEqual(args[0], [str(exe), "--flag"])
+        self.assertEqual(kwargs["cwd"], str(self.root))
+        self.assertEqual(kwargs["stdin"], self.monitor.subprocess.DEVNULL)
+        self.assertEqual(kwargs["stdout"], self.monitor.subprocess.DEVNULL)
+        self.assertEqual(kwargs["stderr"], self.monitor.subprocess.DEVNULL)
+        self.assertIn("relaunch ok",
+                      (self.runtime / "install-monitor.log").read_text(encoding="utf-8"))
+
+    def test_maybe_relaunch_never_spawns_while_the_client_is_running(self):
+        exe, request = self.relaunch_request()
+        with mock.patch.dict(sys.modules, {"patch_install": self.patch}), \
+                mock.patch.object(self.monitor, "zcode_pids", return_value={"1"}), \
+                mock.patch.object(self.patch, "zcode_exe_for", return_value=exe), \
+                mock.patch.object(self.monitor.subprocess, "Popen") as spawn:
+            self.assertFalse(self.monitor._maybe_relaunch())
+        spawn.assert_not_called()
+        self.assertFalse(request.exists())
+        self.assertIn("client still running",
+                      (self.runtime / "install-monitor.log").read_text(encoding="utf-8"))
+
+    def test_maybe_relaunch_rejects_invalid_requests_without_spawning(self):
+        cases = [
+            ({"asar": str(self.root / "other.asar")}, "asar mismatch"),
+            ({"createdAt": 0}, "stale request"),
+            ({"argv": ["/definitely/not/ZCode.exe"]}, "executable mismatch"),
+            ({"version": 99}, "invalid request"),
+        ]
+        for overrides, reason in cases:
+            exe, request = self.relaunch_request(**overrides)
+            with mock.patch.dict(sys.modules, {"patch_install": self.patch}), \
+                    mock.patch.object(self.monitor, "zcode_pids", return_value=set()), \
+                    mock.patch.object(self.patch, "zcode_exe_for", return_value=exe), \
+                    mock.patch.object(self.monitor.subprocess, "Popen") as spawn:
+                self.assertFalse(self.monitor._maybe_relaunch())
+            spawn.assert_not_called()
+            self.assertFalse(request.exists())
+            self.assertIn(reason,
+                          (self.runtime / "install-monitor.log").read_text(encoding="utf-8"))
+
+    def test_finalize_then_relaunch_in_one_quiet_run(self):
+        # issue #372：quit-only 应用内重启的真实收尾链——TMP 替换后同一轮消费请求并拉起。
+        self.pending()
+        exe, request = self.relaunch_request()
+        with mock.patch.dict(sys.modules, {"patch_install": self.patch}), \
+                mock.patch.object(self.monitor, "zcode_pids", return_value=set()), \
+                mock.patch.object(self.patch, "self_check", return_value=True), \
+                mock.patch.object(self.patch, "zcode_exe_for", return_value=exe), \
+                mock.patch.object(self.monitor.subprocess, "Popen") as spawn:
+            self.monitor.main()
+        self.assertEqual(self.asar.read_bytes(), b"verified package")
+        self.assertFalse(self.tmp.exists())
+        self.assertFalse(request.exists())
+        spawn.assert_called_once()
+        self.assertEqual(spawn.call_args.args[0], [str(exe), "--flag"])
+
     def sidecar(self):
         return json.loads(self.tmp.with_name(self.tmp.name + ".json").read_text(encoding="utf-8"))
 

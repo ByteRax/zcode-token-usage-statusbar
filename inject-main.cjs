@@ -88,6 +88,62 @@ function readCfgCached() {
   return cfgCache;
 }
 
+/* ---------- issue #372：待收尾 asar 的应用内重启交接 ---------- */
+const RELAUNCH_REQUEST = path.join(HERE, "relaunch-request.json");
+
+/* 待收尾 install 包的 asar 路径；没有合法 TMP+sidecar 时返回空串。 */
+function pendingAsarPath() {
+  try {
+    const configured = readCfgCached().asar_path;
+    const asar = typeof configured === "string" && configured ? configured : path.join(process.resourcesPath, "app.asar");
+    const tmp = asar + ".zusage.tmp";
+    const metaFile = tmp + ".json";
+    if (!fs.existsSync(tmp) || !fs.existsSync(metaFile)) return "";
+    const meta = JSON.parse(fs.readFileSync(metaFile, "utf8"));
+    if (!meta || meta.operation !== "install" || meta.validated !== true) return "";
+    return path.resolve(asar);
+  } catch (e) { return ""; }
+}
+
+/* 写重启交接请求；返回 createdAt（0=失败，调用方回退原 app.relaunch 路径）。 */
+function writeRelaunchRequest(asar) {
+  try {
+    const payload = {
+      version: 1,
+      asar: path.resolve(asar),
+      argv: [process.execPath].concat(process.argv.slice(1)),
+      cwd: process.cwd(),
+      pid: process.pid,
+      createdAt: Date.now(),
+    };
+    const tmp = RELAUNCH_REQUEST + ".tmp";
+    fs.writeFileSync(tmp, JSON.stringify(payload), "utf8");
+    fs.renameSync(tmp, RELAUNCH_REQUEST);
+    return payload.createdAt;
+  } catch (e) {
+    LOG("relaunch request write failed:", e.message);
+    return 0;
+  }
+}
+
+/* 清请求；带 createdAt 时只清同一代（旧 15s 哨兵不得误删用户新点的请求）。 */
+function clearRelaunchRequest(createdAt) {
+  try {
+    if (typeof createdAt === "number") {
+      let current = null;
+      try { current = JSON.parse(fs.readFileSync(RELAUNCH_REQUEST, "utf8")); } catch (e) { current = null; }
+      if (current && current.createdAt !== createdAt) return;
+    }
+    fs.unlinkSync(RELAUNCH_REQUEST);
+  } catch (e) {
+    if (e.code !== "ENOENT") LOG("relaunch request clear failed:", e.message);
+  }
+}
+
+/* 启动即清掉上一进程可能遗留的交接请求：用户手动重开时 monitor 不应再拉起第二个实例。 */
+clearRelaunchRequest();
+/* ---------- issue #372 交接结束 ---------- */
+
 /* 页面注入源 + 热更新：mtime 变了就重注入（移除旧条+复位守卫）。
  * 载入前用 new Function 校验语法，避免把写到一半的文件载入页面。
  * turn-stats.js（renderer 会话 store 的只读投影统计）必须先于 overlay.js 注入：
@@ -2486,6 +2542,7 @@ async function pollPluginRequests() {
             // 真正的等待在宿主 app.quit 优雅退出链（关窗+逐个终止会话/扩展子进程），插件侧不再叠加固定延迟；
             // 渲染端无响应时 800ms 硬兜底也必须退出。quit 走 before-quit 清理钩子。
             let quitArmed = false;
+            let relaunchRequestAt = 0;
             /* v245 review 修复：quit 同步失败或被拦截时不能让窗口消失、进程还活着——
              * 恢复全部窗口可见性（渲染端 90s 还原兜底此时才对用户可见）。 */
             const unhideWindows = () => {
@@ -2494,10 +2551,25 @@ async function pollPluginRequests() {
                   try { if (!win.isVisible()) win.show(); } catch (e2) { }
                 }
               } catch (e2) { LOG("relaunch unhide windows failed:", e2.message); }
+              if (relaunchRequestAt) clearRelaunchRequest(relaunchRequestAt);
             };
             const quitNow = () => {
               if (quitArmed) return;
               quitArmed = true;
+              /* issue #372：有合法待收尾 asar 时不能 app.relaunch()——Windows 的
+               * relauncher 助手本身也是 ZCode.exe，monitor 的「全部进程退出」判据在
+               * 应用内重启期间永不成立，TMP 永远不 rename、marker 永不销账。
+               * 改为写交接请求 + quit-only：monitor 换包完成后按请求拉起新实例。
+               * 该路径不隐藏窗口，宿主 before-quit 的「确认退出」弹窗需要可见父窗口。 */
+              const pendingAsar = pendingAsarPath();
+              relaunchRequestAt = pendingAsar ? writeRelaunchRequest(pendingAsar) : 0;
+              if (relaunchRequestAt) {
+                try { app.quit(); } catch (e) {
+                  LOG("relaunch handover quit failed:", e.message);
+                  unhideWindows();
+                }
+                return;
+              }
               /* v245：宿主退出屏障（prepareAppQuit 等 host 子进程树回收，macOS 7.5s 强杀/9s 上限）
                * 期间窗口全程可见——先隐藏全部窗口给出「立即退出」的视觉反馈，清理链后台照常，
                * relaunch 后由宿主重建窗口。 */

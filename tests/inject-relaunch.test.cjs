@@ -4,22 +4,23 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const vm = require("vm");
 const { pathToFileURL } = require("url");
 
-const { getInjectSlice } = require("./helpers/overlay-extract.cjs");
+const { getInjectSlice, sliceInject } = require("./helpers/overlay-extract.cjs");
 const slice = getInjectSlice("pollPluginRequests");
 assert.ok(slice.includes('req.action === "relaunch"'), "relaunch 分支必须在切片内（白名单契约）");
 
 const RESOURCES = path.join(path.sep, "client", "resources");
 const HOST_URL = pathToFileURL(path.join(RESOURCES, "app", "out", "main", "index.js")).href;
 
-function runPoll(requests, url = HOST_URL, main = true, updater = null) {
+function runPoll(requests, url = HOST_URL, main = true, updater = null, hooks = {}) {
   const calls = { relaunch: 0, quit: 0, deliveries: [], executed: 0, hides: 0 };
   const app = {
     relaunch: () => { calls.relaunch++; },
-    quit: () => { calls.quit++; },
+    quit: () => { calls.quit++; if (hooks.quitThrows) throw new Error("quit boom"); },
   };
   const wc = {
     isDestroyed: () => false,
@@ -36,6 +37,9 @@ function runPoll(requests, url = HOST_URL, main = true, updater = null) {
     deliverPluginRequest: (w, requestId, result) => calls.deliveries.push({ requestId, result: { ...result } }),   // 浅拷贝出宿主 realm 对象供 deepStrictEqual
     app, LOG: () => {}, pluginRequestBusy: false, pluginUpdater: updater,
     BrowserWindow: { getAllWindows: () => [win] },
+    pendingAsarPath: hooks.pendingAsarPath || (() => ""),
+    writeRelaunchRequest: hooks.writeRelaunchRequest || (() => 1),
+    clearRelaunchRequest: hooks.clearRelaunchRequest || (() => {}),
     setTimeout, clearTimeout,   // relaunch 分支延迟 quit 用（沙箱无全局定时器）
   });
   return { calls, settle: () => new Promise((resolve) => setTimeout(resolve, 60)) };
@@ -47,6 +51,90 @@ test("relaunch action replies ok then relaunches via quit (before-quit cleanup p
   assert.deepEqual(calls.deliveries, [{ requestId: "zusage-relaunch-1", result: { ok: true } }]);   // 回执先送达
   assert.deepEqual([calls.relaunch, calls.quit], [1, 1]);   // 再 relaunch 标记 + quit（清理钩子自然执行）
   assert.equal(calls.hides, 1, "v245：quit 前 hide 窗口——退出屏障期间窗口全程可见是宿主行为，感知退出应即时");
+});
+
+test("issue #372 pending asar hands the restart to the monitor (quit-only, no hide)", async () => {
+  // 有合法待收尾 asar 时不能 app.relaunch：Windows relauncher 助手是 ZCode.exe，
+  // monitor 的「全部进程退出」判据永不成立。必须写交接请求 + quit-only，且不隐藏窗口
+  // （宿主 before-quit 的「确认退出」弹窗需要可见父窗口）。
+  const written = [];
+  const { calls, settle } = runPoll([{ action: "relaunch", requestId: "zusage-handover-1" }], HOST_URL, true, null, {
+    pendingAsarPath: () => "C:\\client\\resources\\app.asar",
+    writeRelaunchRequest: (asar) => { written.push(asar); return 1794849917517; },
+  });
+  await settle();
+  assert.deepEqual(calls.deliveries, [{ requestId: "zusage-handover-1", result: { ok: true } }]);
+  assert.deepEqual([calls.relaunch, calls.quit, calls.hides], [0, 1, 0], "quit-only，且不提前隐藏窗口");
+  assert.deepEqual(written, ["C:\\client\\resources\\app.asar"]);
+});
+
+test("issue #372 falls back to app.relaunch when the handover request cannot be written", async () => {
+  const { calls, settle } = runPoll([{ action: "relaunch", requestId: "zusage-handover-2" }], HOST_URL, true, null, {
+    pendingAsarPath: () => "C:\\client\\resources\\app.asar",
+    writeRelaunchRequest: () => 0,
+  });
+  await settle();
+  assert.deepEqual([calls.relaunch, calls.quit, calls.hides], [1, 1, 1], "请求写失败回退原路径，行为不劣化");
+});
+
+test("issue #372 quit throw clears the handover request instead of leaving a ghost", async () => {
+  const cleared = [];
+  const { calls, settle } = runPoll([{ action: "relaunch", requestId: "zusage-handover-3" }], HOST_URL, true, null, {
+    pendingAsarPath: () => "C:\\client\\resources\\app.asar",
+    writeRelaunchRequest: () => 42,
+    clearRelaunchRequest: (createdAt) => cleared.push(createdAt),
+    quitThrows: true,
+  });
+  await settle();
+  assert.deepEqual([calls.relaunch, calls.quit, calls.hides], [0, 1, 0]);
+  assert.deepEqual(cleared, [42], "quit 同步失败按本次 createdAt 清请求");
+});
+
+test("issue #372 helper validates pending sidecar, writes/clears a bounded request", () => {
+  const block = sliceInject("/* ---------- issue #372：待收尾 asar 的应用内重启交接 ---------- */",
+    "/* ---------- issue #372 交接结束 ---------- */", { includeEnd: true });
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "zusage-relaunch-"));
+  const asar = path.join(root, "app.asar");
+  const tmp = asar + ".zusage.tmp";
+  const meta = tmp + ".json";
+  const request = path.join(root, "relaunch-request.json");
+  fs.writeFileSync(asar, "official");
+  fs.writeFileSync(tmp, "patched");
+  fs.writeFileSync(meta, JSON.stringify({ operation: "install", validated: true }));
+  const ctx = {
+    path, fs, console: { log: () => {} },
+    process: {
+      resourcesPath: root, execPath: "C:\\ZCode\\ZCode.exe",
+      argv: ["C:\\ZCode\\ZCode.exe", "--flag"], cwd: () => root, pid: 4242,
+    },
+    HERE: root,
+    readCfgCached: () => ({ asar_path: asar }),
+    LOG: () => {},
+  };
+  vm.runInNewContext(block, ctx);
+  assert.equal(ctx.pendingAsarPath(), path.resolve(asar), "install+validated 才是合法待收尾包");
+  fs.writeFileSync(meta, JSON.stringify({ operation: "remove", validated: true }));
+  assert.equal(ctx.pendingAsarPath(), "", "remove pending 不触发应用内重启交接");
+  fs.writeFileSync(meta, JSON.stringify({ operation: "install", validated: true }));
+  const at = ctx.writeRelaunchRequest(asar);
+  assert.ok(at > 0);
+  const payload = JSON.parse(fs.readFileSync(request, "utf8"));
+  assert.deepEqual(payload, {
+    version: 1,
+    asar: path.resolve(asar),
+    argv: ["C:\\ZCode\\ZCode.exe", "--flag"],
+    cwd: root,
+    pid: 4242,
+    createdAt: at,
+  });
+  ctx.clearRelaunchRequest(at - 1);
+  assert.ok(fs.existsSync(request), "旧 15s 哨兵不得误删新请求");
+  ctx.clearRelaunchRequest(at);
+  assert.equal(fs.existsSync(request), false, "同代 createdAt 清除");
+  ctx.writeRelaunchRequest(asar);
+  ctx.clearRelaunchRequest();
+  assert.equal(fs.existsSync(request), false, "loader 启动无参清理");
+  fs.rmSync(root, { recursive: true, force: true });
 });
 
 test("800ms hard fallback quits even when the renderer never settles the receipt delivery", async () => {
@@ -78,6 +166,9 @@ test("800ms hard fallback quits even when the renderer never settles the receipt
     isLocalHostPage: () => true,
     app, LOG: () => { }, pluginRequestBusy: false, pluginUpdater: null,
     BrowserWindow: { getAllWindows: () => [win] },
+    pendingAsarPath: () => "",
+    writeRelaunchRequest: () => 1,
+    clearRelaunchRequest: () => {},
     setTimeout, clearTimeout,
   });
   await new Promise((resolve) => setTimeout(resolve, 850));   // 越过 800ms 兜底
@@ -108,6 +199,9 @@ test("hide is rolled back when relaunch/quit throws synchronously", async () => 
     deliverPluginRequest: (w, requestId, result) => calls.deliveries.push(result),
     app, LOG: () => { }, pluginRequestBusy: false, pluginUpdater: null,
     BrowserWindow: { getAllWindows: () => [win] },
+    pendingAsarPath: () => "",
+    writeRelaunchRequest: () => 1,
+    clearRelaunchRequest: () => {},
     setTimeout, clearTimeout,
   });
   await new Promise((resolve) => setTimeout(resolve, 60));
@@ -206,6 +300,9 @@ function runPollFake(requests, opts = {}) {
       : (w, requestId, result) => { calls.deliveries.push({ requestId, result: { ...result } }); return Promise.resolve(); },
     app, LOG: () => { }, pluginRequestBusy: false, pluginUpdater: null,
     BrowserWindow: { getAllWindows: () => [win] },
+    pendingAsarPath: opts.pendingAsarPath || (() => ""),
+    writeRelaunchRequest: opts.writeRelaunchRequest || (() => 1),
+    clearRelaunchRequest: opts.clearRelaunchRequest || (() => {}),
     setTimeout: (fn, ms) => { calls.timers.push({ fn, ms, cleared: false }); return calls.timers.length; },
     clearTimeout: (id) => { if (calls.timers[id - 1]) calls.timers[id - 1].cleared = true; },
   });

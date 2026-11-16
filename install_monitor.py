@@ -36,6 +36,8 @@ ASAR = Path(sys.argv[2]) if len(sys.argv) > 2 else (
     else Path(r"D:\ZCode\resources\app.asar"))
 RUNTIME_DIR = Path(sys.argv[3]) if len(sys.argv) > 3 else HERE
 TMP = ASAR.with_name("app.asar.zusage.tmp")
+RELAUNCH_REQUEST = RUNTIME_DIR / "relaunch-request.json"
+RELAUNCH_MAX_AGE_MS = 15 * 60 * 1000
 POLL = 10            # 检测间隔（秒）
 CONFIRM_WAIT = 120   # 重启后等 diag 确认的超时（秒）
 BYE = 8              # 成功提示停留秒数
@@ -208,6 +210,88 @@ def finalize_tmp(verified=None):
                            verified=verified)
 
 
+def _monitor_log(message):
+    """静默监控没有控制台；收尾/拉起结果落盘，问题可事后取证（issue #372）。"""
+    try:
+        with open(RUNTIME_DIR / "install-monitor.log", "a", encoding="utf-8") as stream:
+            stream.write("%s [%d] %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), os.getpid(), message))
+    except OSError:
+        pass
+
+
+def _drop_relaunch(reason):
+    _monitor_log("relaunch dropped: " + reason)
+    try:
+        RELAUNCH_REQUEST.unlink()
+    except OSError:
+        pass
+    return False
+
+
+def _maybe_relaunch():
+    """换包完成后按 inject-main 写下的交接请求拉起新实例（issue #372）。
+
+    应用内重启不能走 app.relaunch()：Windows 的 relauncher 助手本身也是 ZCode.exe，
+    monitor 的「全部进程退出」判据在重启期间永不成立。inject-main 改为 quit-only +
+    请求文件；这里在 TMP 已收尾、所有 ZCode 进程退出后拉起。任何校验不过都删除请求，
+    绝不拉起——宁可让用户手动重开，也不能多开一个实例。"""
+    try:
+        data = json.loads(RELAUNCH_REQUEST.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return False
+    except (OSError, ValueError):
+        return _drop_relaunch("invalid request")
+    if not isinstance(data, dict) or data.get("version") != 1:
+        return _drop_relaunch("invalid request")
+    asar = data.get("asar")
+    if (not isinstance(asar, str)
+            or os.path.normcase(os.path.abspath(asar)) != os.path.normcase(os.path.abspath(str(ASAR)))):
+        return _drop_relaunch("asar mismatch")
+    created = data.get("createdAt")
+    if (not isinstance(created, (int, float)) or isinstance(created, bool)
+            or time.time() * 1000 - created > RELAUNCH_MAX_AGE_MS):
+        return _drop_relaunch("stale request")
+    pids = zcode_pids()
+    if pids is None or pids:   # 客户端仍在跑（quit 被取消/手动重开）或无法确认：不拉起
+        return _drop_relaunch("client still running")
+    argv = data.get("argv")
+    if not isinstance(argv, list) or not argv or not all(isinstance(arg, str) and arg for arg in argv):
+        return _drop_relaunch("invalid argv")
+    pi = patch_module()
+    expected = pi.zcode_exe_for(pi.ASAR)
+    launch = os.path.abspath(argv[0])
+    if expected:
+        allowed = os.path.normcase(os.path.abspath(str(expected)))
+    else:
+        # 非标准安装布局（zcode_exe_for 推不出）时只放行同名的客户端二进制。
+        allowed = (os.path.normcase(launch)
+                   if os.path.basename(launch).lower() in ("zcode", "zcode.exe") and os.path.isfile(launch)
+                   else "")
+    if not allowed or os.path.normcase(launch) != allowed:
+        return _drop_relaunch("executable mismatch")
+    cwd = data.get("cwd")
+    cwd = cwd if isinstance(cwd, str) and os.path.isdir(cwd) else None
+    # 先删请求再拉起：用户手动重开时 loader 启动清理/此处删除都避免第二次拉起。
+    try:
+        RELAUNCH_REQUEST.unlink()
+    except OSError:
+        pass
+    try:
+        options = dict(cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL, close_fds=True)
+        if os.name == "nt":
+            options["creationflags"] = (getattr(subprocess, "DETACHED_PROCESS", 0)
+                                        | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+        else:
+            options["start_new_session"] = True
+        subprocess.Popen(argv, **options)
+        _monitor_log("relaunch ok")
+        return True
+    except OSError as e:
+        _monitor_log("relaunch failed: %s" % e)
+        return False
+
+
 def draw(lines):
     os.system("cls" if os.name == "nt" else "clear")
     print("\n".join(lines), flush=True)
@@ -227,6 +311,7 @@ def quiet_finalize():
             pi.pending_tmp(operation=None, verify_hash=True, verified=verified)
             pids = zcode_pids()
             if pids == set() and finalize_tmp(verified=verified):
+                _maybe_relaunch()
                 return
             if pids:   # 客户端在跑：事件驱动等任一进程退出，立即复查（见 wait_any_exit）
                 wait_any_exit(pids, POLL)
@@ -243,6 +328,9 @@ def quiet_finalize():
                 return
             pass  # 文件占用等系统错误才重试，最多一天。
         time.sleep(POLL)
+    if not TMP.exists():
+        # TMP 已被其他进程收尾：交接请求仍需消费（issue #372）。
+        _maybe_relaunch()
 
 
 def main():
@@ -333,6 +421,7 @@ def _run():
                     finished = False
                     finalize_denied = not pi.target_writable()
                 if finished:
+                    relaunched = pending["operation"] == "install" and _maybe_relaunch()
                     lines = [L("[OK] ZCode 已退出，asar 替换完成。", "[OK] ZCode has exited; app.asar replacement finished."),
                              "",
                              L("请启动 ZCode，悬浮条即可显示。", "Start ZCode and the floating bar will appear.")]
@@ -340,6 +429,9 @@ def _run():
                         lines[-1] = L("注入已移除；重新启动 ZCode 后生效。",
                                       "Injection removed; takes effect when ZCode starts again.")
                         done = True
+                    elif relaunched:
+                        lines[-1] = L("已按重启请求自动重新启动 ZCode。",
+                                      "ZCode has been restarted automatically.")
                 elif finalize_denied:
                     # 受保护目录上的无提权监控重试注定失败（issue #130）：指引
                     # 管理员重跑后退出释放实例锁，让提权重跑能立即拉起新监控。
