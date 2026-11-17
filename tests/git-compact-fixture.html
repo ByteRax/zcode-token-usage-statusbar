@@ -3,7 +3,7 @@
 <style>
 :root{--ui-font-size:14px;--font-mono:monospace}*{box-sizing:border-box}body{margin:24px;background:#171717;color:#eee;font:14px system-ui}button{font:inherit;color:inherit;background:#333;border:0;border-radius:6px;padding:6px;white-space:nowrap}main>button{margin:12px 8px 12px 0}.card{position:absolute;bottom:32px;left:24px;width:660px;background:#262626;border:1px solid #555;border-radius:12px;padding:12px}.card textarea{width:100%;height:60px;background:transparent;color:inherit;border:0}.group\/toolbar{display:flex;gap:12px;align-items:center;width:100%}[data-composer-leading-actions]{flex:1;min-width:0}[data-composer-leading-content]{display:flex;align-items:center;gap:8px;width:max-content}[data-composer-trailing-actions]{flex-shrink:0}[data-composer-compact=true] .label{display:none}
 </style>
-<main><h1>Git compact feedback regression</h1><p>Isolated host-fit model with real browser geometry. No account, database or installed client is used.</p><button id="boundary">Run boundary</button><button id="wide">Run wide</button><output id="result">Loading</output></main>
+<main><h1>Git compact feedback regression</h1><p>Isolated host-fit model with real browser geometry. No account, database or installed client is used.</p><button id="boundary">Run boundary</button><button id="wide">Run wide</button><button id="levels">Run level sweep</button><output id="result">Loading</output></main>
 <section data-pane-id="workspace-main" data-testid="v4-session-pane-workspace-main" data-session-id="session_git_fixture" data-zusage-scope-version="1" data-zusage-pane-id="workspace-main" data-zusage-workspace-identity="" data-zusage-workspace-path="/fixture" data-zusage-remote-session-id=""><div class="card"><textarea placeholder="Fixture composer"></textarea><div class="group/toolbar"><div data-composer-leading-actions><div data-composer-leading-content><button data-composer-collapse-priority="1">◇ <span class="label">完全访问</span></button><button data-testid="v4-composer-cua-entry" data-composer-collapse-priority="0">▣ <span class="label">电脑操作</span></button></div></div><div data-composer-trailing-actions><button data-testid="chat-context-usage-trigger" aria-label="上下文已用 100 / 总量 1000"><svg width="16" height="16"><circle r="6" cx="8" cy="8"/><circle r="6" cx="8" cy="8"/></svg></button></div></div></div></section>
 <script>
 window.fixtureErrors=[];window.addEventListener('error',e=>fixtureErrors.push(e.message));window.addEventListener('unhandledrejection',e=>fixtureErrors.push(String(e.reason)));
@@ -37,6 +37,29 @@ window.runFeedback=wide=>{
   window.fixtureReport={wide,switches,nativeSwitches,last:samples.at(-1),errors:fixtureErrors,probes:document.body.querySelectorAll('body>.zu-git').length};result.textContent=JSON.stringify(fixtureReport);return fixtureReport;
  }finally{window.fixtureRunning=false}
 };
-document.querySelector('#boundary').onclick=()=>runFeedback(false);document.querySelector('#wide').onclick=()=>runFeedback(true);
+window.runLevels=()=>{
+ if(window.fixtureRunning)return;window.fixtureRunning=true;
+ try{
+  window.__zusageGitState('/fixture',git);
+  const widths=[900,640,520,480,420,375,320,280,240,200,240,320,420,640,900];
+  const samples=[];let overlaps=0;
+  for(const w of widths){
+   card.style.width=w+'px';
+   for(let i=0;i<6;i++){hostFit();window.__zusageGitState('/fixture',git);}
+   const chip=row.querySelector('.zu-git');
+   const cua=row.querySelector('[data-testid="v4-composer-cua-entry"]');
+   const trail=row.querySelector('[data-composer-trailing-actions]');
+   if(chip){
+    const cr=chip.getBoundingClientRect(),ar=cua.getBoundingClientRect(),tr=trail.getBoundingClientRect();
+    if(cr.left<ar.right-1||cr.right>tr.left+1)overlaps++;
+    samples.push(w+':'+(chip.getAttribute('data-zusage-glevel')||'?'));
+   }else samples.push(w+':hidden');
+  }
+  const levels=[...new Set(samples.map(s=>s.split(':')[1]))];
+  window.fixtureReport={sweep:true,samples,levels,overlaps,errors:fixtureErrors,probes:document.body.querySelectorAll('body>.zu-git').length};
+  result.textContent=JSON.stringify(fixtureReport);return fixtureReport;
+ }finally{window.fixtureRunning=false}
+};
+document.querySelector('#boundary').onclick=()=>runFeedback(false);document.querySelector('#wide').onclick=()=>runFeedback(true);document.querySelector('#levels').onclick=()=>runLevels();
 const script=document.createElement('script');script.src=new URLSearchParams(location.search).has('baseline')?'/baseline-overlay.js':'../overlay.js';script.onload=()=>setTimeout(()=>{window.__zusageUpdate(data);window.__zusageGitState('/fixture',git);result.textContent='Ready'},700);document.head.append(script);
 </script>

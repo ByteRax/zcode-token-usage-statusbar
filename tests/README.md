@@ -2,7 +2,7 @@
 
 ## Git chip 折叠反馈浏览器夹具
 
-从仓库根启动仅监听 loopback 的静态服务，打开 `tests/git-compact-fixture.html`。点击「Run boundary」验证临界宽度收敛，再点击「Run wide」验证恢复展开；结果中的 `switches` 应为 0，`nativeSwitches` 至多为 1，`errors` 为空。夹具按宿主的克隆测量方式裁决原生按钮，使用真实浏览器几何，但不替代 Windows／Electron 实机验收。
+从仓库根启动仅监听 loopback 的静态服务，打开 `tests/git-compact-fixture.html`。点击「Run boundary」验证临界宽度收敛，再点击「Run wide」验证恢复展开；结果中的 `switches` 应为 0，`nativeSwitches` 至多为 1，`errors` 为空。点击「Run level sweep」验证四级响应式（v383）：宽度 900→200→900 扫描后 `levels` 应只含 L0–L3I/hidden 的单调可达档位、`overlaps` 应为 0、`errors` 为空。夹具按宿主的克隆测量方式裁决原生按钮，使用真实浏览器几何，但不替代 Windows／Electron 实机验收。
 
 ## 自动回归
 

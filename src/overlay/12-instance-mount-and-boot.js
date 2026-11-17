@@ -1118,6 +1118,10 @@
       if (typeof window !== "undefined" && window.__zusageQuotaFns && window.__zusageQuotaFns.__zuInst === quotaSeamInst) {
         try { delete window.__zusageQuotaFns; } catch (e) { window.__zusageQuotaFns = undefined; }
       }
+      /* v383：Git 响应式测试/诊断缝同款按实例清理（本实例闭包令牌 gitSeamInst 在 11 分片） */
+      if (typeof window !== "undefined" && window.__zusageGitFns && window.__zusageGitFns.__zuInst === gitSeamInst) {
+        try { delete window.__zusageGitFns; } catch (e) { window.__zusageGitFns = undefined; }
+      }
       restoreEnhanceBtn(true);   // v344：摘除增强按钮（清相位与定时器，不留孤儿节点）；v344.3：dispose 中断在途增强请求
       restoreTpsChip();   // v146：摘除精简模式速率 chip（含在显 tooltip）
       restoreGitChip();   // v96：摘掉本 pane 的 Git chip（含在显 tooltip）

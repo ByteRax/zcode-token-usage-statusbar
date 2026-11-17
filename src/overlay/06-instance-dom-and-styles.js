@@ -269,8 +269,9 @@
      * → v380 命中层视觉透明豁免（用户实报：主窗口开模型选择器，右侧辅助对话状态条消失、弹层关闭即恢复）：宿主模型菜单 Radix DropdownMenu modal 开启时另挂「fixed 全屏 + 无底色 + 仅 pointer-events:auto」透明层拦 webview 插件外侧点击，body 同时被设 pointer-events:none 令应用树被命中测试跳过——z 序低于该层的 composer（辅助对话 pane 无主 Composer 的 z-20 抬升）中心命中该层，v65 部分遮挡豁免因整体罩住不成立，迟滞 400ms 后整条收起。hitSelf 在 v65 豁免后补「无底色、无背景图、无 backdrop-filter 的命中层不算视觉遮挡」，与 modalOpen「遮罩必带底色」同哲学；带底色/模糊的真模态遮罩行为不变，coverOK/cardHitOK 无 v65 豁免链路不动（on 判定为 reallyVisible||coverOK 的 OR，第二腿 false 无碍）。
      * → v381 撤销 v87/v116 的「draft 空窗合成思考中」（用户实报：什么都没干的辅助对话永久假「思考中…4分30秒」走字）：宿主 product-projection.ts onTurnStarted 复核——userInput/turnHeader 行与 phase:"running" 在同一 reducer 批次原子生效，draft 且窗口为空 ⇔ 会话从未有过任何输入，不是「已发送待 header」的瞬态；辅助对话（createSelectionSideSession）新建后宿主即建好 store（draft+空窗），pane 一开桥就绑上，v87/v116 合成立即触发并按绑定时长（bornAt）走字。合成条件收窄为仅 phase==="running"；发送动作到 TurnStarted 事件的亚秒级窗口速度格退回 DB 静态数字，可接受。场景⑤断言随语义翻转，①-④/⑥ 守卫保留。
      * → v382 套餐额度 chip 工具栏四级响应式（specs/quota-chip-responsive.md）：按 trailing 行真实可用宽度在 L0 完整→L1 紧凑→L2 摘要（主窗口+N）→L3 图标+值→L3I 纯图标→hidden 极限隐藏间选级，展开迟滞 20px/收缩即时/hidden 回展同门控；可用宽度按「锚点间距+当前宽」不变式测量（trailing 行右对齐贴内容，禁用容器宽−内容式相减，曾致 chip 摘除后永久隐藏黑洞）；lead 右缘锚 [data-composer-leading-content] 回退 Git chip，双缺失 fail-safe 保持 L0。窗口标签全档统一短标签（用户拍板终态=今日/5时/7天/月/套餐，tooltip 窗口行保留全称）；测量探针镜像各档盒模型（L1 gap、+N 字号）；档位色/口径/tooltip 数据全沿旧链。收口 review：quotaLeadingRight/HYST 入测试缝、L3/L3I 补 ⚠、缝随实例 dispose 清理、quotaRemainPct 单一实现。
+     * → v383 Git 状态 chip 工具栏四级响应式（specs/git-chip-responsive.md）：按前导区真实可用宽度在 L0 完整→L1 紧凑（既有 zu-compact）→L2 摘要（风险短标+工作段+⋯）→L3 最小（图标+状态点+风险短标）→L3I 纯图标（点色承载风险）→hidden 极限摘除间选级，复用额度 chip 泛型选级（展开迟滞 20/收缩即时/hidden 回展同门控）；可用宽度=「leadA 宽 −（leadC 宽 − chipW）」反自指不变式（leadA 为 flex-1 窗口驱动，实机恒等式取证），未标定结构 fail-safe 保留旧两态（gitChipCompactLegacy：宿主 compact 强制 + 32px 迟滞，绝不隐藏——pill 夹具实证伸缩行会把行内求和压成伪 0）；风险（冲突/操作中/过期）各级保留，aria 恒全量，绝不拼接 ins/del 假汇总；候选宽按「等级|候选串|语言|字号」缓存，零宽不缓存。
      */
-    var VERSION = "v382";
+    var VERSION = "v383";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
@@ -298,6 +299,7 @@
       quotaSourceId = "", quotaSelection = null, quotaPaneRoot = null, quotaSelectionObserver = null, quotaMarkerSeen = false,   // 当前 pane 模型选择与额度来源
       quotaRespLevel = "", quotaRespProbe = null,   // v382 工具栏四级响应：当前等级/离屏测量节点（实例级，dispose 清理）
       gitChipCache = null, gitRefreshPath = "", gitRefreshRequestId = "",   // Git chip 节点与刷新状态
+      gitLevel = "", gitAvailSig = "", gitAvailVal = 0, gitWidthCache = null,   // v383 Git chip 工具栏四级响应：持久等级（摘除重建不丢迟滞态）/avail 几何签名缓存/候选宽缓存（specs/git-chip-responsive.md）
       liveTextCur = "", liveStatsCur = null, liveKindCur = "fallback", liveEl = null,   // v72：合并「生成速度」用
       livePhaseCur = "", liveIconCur = "bolt",   // v77：当前 chip 阶段与图标（think=思考动效/bolt=闪电）——相位切换需整条重渲染
       tpsChipCache = null, lastView = null,   // v146：精简模式工具行速率 chip 与最近一次 render 会话视图（chip tooltip 摘要数据源）
@@ -630,6 +632,19 @@
       ".zu-git[data-zusage-light] .zu-git-dirty{color:#df8e1d}" +
       ".zu-git[data-zusage-light].zu-conflict .zu-git-dirty{color:#d20f39}" +
       ".zu-git[data-zusage-light] .zu-git-m{color:#df8e1d}" +
+      /* v383 Git chip 四级响应（specs/git-chip-responsive.md）：L2 摘要的「⋯」收起提示（非交互文本）
+       * 与 L3/L3I 的微型状态点——点色沿用 chip 既有语义色板（红=冲突/失败、黄=有变更、绿=干净、
+       * 中性=未知/过期，未知优先于变更；浅色档同源深化值）。 */
+      ".zu-git .zu-git-more{opacity:.55;margin:0 1px}" +
+      ".zu-git .zu-git-dot{width:6px;height:6px;border-radius:50%;flex:0 0 auto;margin:0 1px}" +
+      ".zu-git .zu-git-dot-r{background:#f09696}" +
+      ".zu-git .zu-git-dot-y{background:#f0e6a0}" +
+      ".zu-git .zu-git-dot-g{background:#aae6aa}" +
+      ".zu-git .zu-git-dot-n{background:#8b8e96}" +
+      ".zu-git[data-zusage-light] .zu-git-dot-r{background:#d20f39}" +
+      ".zu-git[data-zusage-light] .zu-git-dot-y{background:#df8e1d}" +
+      ".zu-git[data-zusage-light] .zu-git-dot-g{background:#2da587}" +
+      ".zu-git[data-zusage-light] .zu-git-dot-n{background:#9ca0ad}" +
       /* v96 套餐额度 chip（原生上下文按钮左侧，wrapper 内前插）：多窗分段样式——每个窗口
        * 一段（v382 起全档短标签：中文 今日/5时/7天/月/套餐，英文 1d/5h/7d/1mo/plan）各自按
        * QUOTA_BANDS 上档位色；余额类型单段（阶段 3 数据源接入即显示）；容器不着色，颜色只落在分段上。 */

@@ -494,25 +494,38 @@ test('Git compact measures the leading budget without hiding or moving the live 
   chip.cloneNode = () => {
     const probe = new Element('span');
     probe.className = chip.className;
-    probe.getBoundingClientRect = () => ({ width: probe.classList.contains('zu-compact') ? 70 : fullWidth });
+    probe.getBoundingClientRect = () => ({ width: probe.classList.contains('zu-compact') ? 70
+      : probe.classList.contains('zu-l3') || probe.classList.contains('zu-l3i') ? 26
+      : probe.classList.contains('zu-l2') ? 150 : fullWidth });
     return probe;
   };
   const children = h.body.children.length;
   h.tick();
-  assert.ok(chip.classList.contains('zu-compact'), 'outer row space cannot override the leading budget');
+  // v383：avail = min(300, 600−100) − 250 = 50 → 连紧凑（70）都放不下，降级到最小形态而不是展开全名；
+  // 外层行宽再大也不能越过前导预算。
+  assert.ok(chip.classList.contains('zu-l3'), 'leading budget governs below the compact level (L3 selected)');
+  assert.doesNotMatch(chip.innerHTML, /zu-git-name/, 'branch name stays collapsed under the leading budget');
   assert.equal(chip.parentElement, ui.row);
   assert.equal(h.body.children.length, children, 'probe is removed after measurement');
-  budget = 450; h.tick();
-  assert.ok(!chip.classList.contains('zu-compact'));
+  budget = 450; h.tick();   // avail = min(450, 500) − 250 = 200 → 紧凑态（70）回展（+20 迟滞），完整态（210）仍不够
+  assert.ok(chip.classList.contains('zu-compact'), 'compact is the most complete level that fits 200px');
+  budget = 500; h.tick();   // avail = min(500, 500) − 250 = 250 ≥ 210+20 → 完整态回展
+  assert.ok(!chip.classList.contains('zu-compact'), 'full chip plus hysteresis fits the leading budget');
+  assert.match(chip.innerHTML, /zu-git-name/);
   ui.cua.setAttribute('data-composer-compact', 'true'); h.tick();
   ui.cua.setAttribute('data-composer-compact', 'false');
-  fullWidth = 350; budget = 600; h.tick();
+  fullWidth = 350;
+  // 换分支数据换候选串绕开宽度缓存（真实宿主同 串|语言|字号 的宽度恒定，缓存键控即此不变式）
+  h.window.__zusageGitState('/repo/a', gitState({ branch: 'longer-branch-name' }));
+  budget = 600; h.tick();   // avail = min(600, 500) − 250 = 250 < 350 → 完整态放不下回紧凑
   assert.ok(chip.classList.contains('zu-compact'), 'trailing controls also constrain the full layout');
+  // 探针失效（cloneNode 抛错）：等级测量全 0 → fail-safe 回宿主模式（完整态）；换分支数据触发重测绕开宽度缓存
   chip.cloneNode = () => {
     const probe = new Element('span');
     probe.getBoundingClientRect = () => { throw new Error('unmeasurable'); };
     return probe;
   };
+  h.window.__zusageGitState('/repo/a', gitState({ branch: 'other' }));
   h.tick();
   assert.ok(!chip.classList.contains('zu-compact'), 'unknown DOM falls back to host mode');
   assert.equal(h.body.children.length, children);
