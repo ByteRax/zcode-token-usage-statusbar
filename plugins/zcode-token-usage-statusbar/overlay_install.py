@@ -90,6 +90,138 @@ def default_runtime():
     return real_home() / ".zcode" / "zcode-token-usage-statusbar"
 
 
+# 独立安装器（仓库根 install.py）把 MCP 服务注册在宿主 CLI 配置的 mcp.servers 里；插件渠道
+# 另由 .mcp.json 注册同一工具。两条渠道并存时宿主每个会话会各拉起一份 usage_mcp.py
+# （插件侧还多一个 node mcp-launch 包装），内存占用翻倍；运行目录里的副本还可能停在旧版本。
+# 插件渠道已经提供 MCP，这里只清指向本插件脚本的遗留条目，绝不改用户其它 MCP 服务。
+LEGACY_MCP_NAMES = ("zcode-token-usage-statusbar", "token-usage", "zusage")
+LEGACY_MCP_ENTRY_KEYS = frozenset(("command", "args", "type", "enabled"))
+
+
+def host_cli_config():
+    """宿主 CLI 的 MCP 配置文件（与 install.py 的 ZCODE_CONFIG 同源）。"""
+    override = os.environ.get("ZUSAGE_PLUGIN_HOST_CONFIG")   # 测试/排障接缝
+    if override:
+        try:
+            return Path(override).expanduser()
+        except (OSError, RuntimeError):   # 坏形态（如 ~未知用户）按字面路径处理，is_file 自然为 False
+            return Path(override)
+    return real_home() / ".zcode" / "cli" / "config.json"
+
+
+def _mcp_string_values(value):
+    """注册项内全部字符串（command/args 以及历史版本可能嵌套的列表）。"""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, list):
+        for item in value:
+            yield from _mcp_string_values(item)
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _mcp_string_values(item)
+
+
+def _owned_usage_mcp(entry, roots):
+    """注册项是否指向本插件的 usage_mcp.py。
+
+    只认 command/args/type/enabled 这组形态（install.py 生成的正是它）；带 env 等自定义
+    键的条目可能是用户手改过的，保留不猜。路径父目录必须正好是运行目录或插件目录——
+    同名服务指向别处（其它工具/别的仓库）一律不动。"""
+    if not isinstance(entry, dict) or set(entry) - LEGACY_MCP_ENTRY_KEYS:
+        return False
+    normal_roots = set()
+    for root in roots:
+        try:
+            normal_roots.add(os.path.normcase(str(Path(root).expanduser().resolve(strict=False))))
+        except (OSError, RuntimeError):
+            continue
+    for raw in _mcp_string_values(entry):
+        candidate = Path(os.path.expandvars(raw)).expanduser()
+        if candidate.name.lower() != "usage_mcp.py":
+            continue
+        try:
+            parent = candidate.resolve(strict=False).parent
+        except (OSError, RuntimeError):
+            parent = candidate.parent
+        if os.path.normcase(str(parent)) in normal_roots:
+            return True
+    return False
+
+
+def _legacy_mcp_names(servers, roots):
+    return [name for name in LEGACY_MCP_NAMES
+            if name in servers and _owned_usage_mcp(servers[name], roots)]
+
+
+def dedupe_legacy_mcp(runtime=None, plugin_root=None):
+    """移除独立安装遗留的 MCP 注册，消除每会话双份 usage_mcp 进程。
+
+    返回 removed / absent / skipped-invalid / skipped-locked / skipped-io / skipped-env。
+    永不抛异常：SessionStart hook 的任何失败都不能影响会话。结构异常（顶层非对象、mcp 或
+    mcp.servers 不是对象）一律原样保留；锁内重读再改，同目录备份 + 原子替换消除截断窗口。
+    """
+    if os.environ.get("ZUSAGE_KEEP_LEGACY_MCP"):
+        return "skipped-env"
+    config = host_cli_config()
+    try:
+        if not config.is_file():
+            return "absent"
+    except OSError:
+        return "absent"
+    runtime = Path(runtime or os.environ.get("ZUSAGE_PLUGIN_RUNTIME") or default_runtime())
+    roots = [runtime, Path(plugin_root or PLUGIN_ROOT)]
+
+    def load():
+        try:
+            data = json.loads(config.read_text(encoding="utf-8-sig"))
+        except FileNotFoundError:
+            return "absent", None, None
+        except (OSError, ValueError):
+            return "invalid", None, None
+        if not isinstance(data, dict):
+            return "invalid", None, None
+        mcp = data.get("mcp")
+        if mcp is None:
+            return "absent", None, None
+        if not isinstance(mcp, dict):
+            return "invalid", None, None
+        servers = mcp.get("servers")
+        if servers is None:
+            return "absent", None, None
+        if not isinstance(servers, dict):
+            return "invalid", None, None
+        return "ok", data, _legacy_mcp_names(servers, roots)
+
+    state, data, gone = load()
+    if state != "ok":
+        return "absent" if state == "absent" else "skipped-invalid"
+    if not gone:
+        return "absent"
+    lock_path = runtime / "legacy-mcp.lock"   # 锁放运行目录，不往宿主 CLI 配置目录添文件
+    try:
+        with file_lock(lock_path, timeout=5.0):
+            state, data, gone = load()   # 锁内重读：不覆盖并发会话刚写入的其它改动
+            if state != "ok":
+                return "absent" if state == "absent" else "skipped-invalid"
+            if not gone:
+                return "absent"
+            servers = data["mcp"]["servers"]
+            for name in gone:
+                del servers[name]
+            try:   # 备份失败不阻塞清理；config 本身损坏时另有 invalid 分支
+                shutil.copy2(config, config.with_name(config.name + ".zusage-mcp.bak"))
+            except OSError:
+                pass
+            _atomic_write(config, json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8"), src=config)
+    except TimeoutError:
+        return "skipped-locked"
+    except OSError:
+        return "skipped-io"
+    print("[zusage-plugin] 已移除独立安装遗留的 MCP 注册 {}：插件 .mcp.json 已提供同一工具，"
+          "避免每个会话双份 usage_mcp 进程。".format(", ".join(gone)), file=sys.stderr)
+    return "removed"
+
+
 SYSTEM_NODE_LOCATIONS = ("/usr/local/bin/node", "/usr/bin/node", "/usr/bin/nodejs")
 
 
@@ -1098,6 +1230,13 @@ def run_hook():
     try:
         runtime, pi = resolve_paths()
         sync_runtime(runtime, pi.ASAR)
+        # 独立安装遗留的 MCP 注册与插件 .mcp.json 并存会让宿主每会话拉起双份 usage_mcp；
+        # 清理是尽力而为的附加步骤，任何失败只进诊断，绝不挡会话（optout 也照常清理）。
+        try:
+            legacy_mcp = dedupe_legacy_mcp(runtime)
+        except Exception as e:  # noqa: BLE001 — hook 契约：任何异常都不得上抛
+            legacy_mcp = "skipped-error"
+            print(f"[zusage-plugin] 遗留 MCP 清理失败（已忽略）：{e}", file=sys.stderr)
         st = injected_status(pi)
         # 兼容性预判（issue #247）：已装版本未登记适配当前宿主 build 时，未注入分支的
         # 自动更新绕过 1h 限频立即升级——只重装旧版永远修不好状态条。optout 不豁免
@@ -1105,6 +1244,8 @@ def run_hook():
         host_version = _host_build(pi)
         unregistered = host_version is not None and not _host_registered(host_version)
         LAST_DIAG = {"hostBuild": host_version, "pluginVersion": _plugin_version(), "injected": st}
+        if legacy_mcp != "absent":   # 只在真有遗留注册或清理失败时留档，别给常态诊断加噪声
+            LAST_DIAG["legacyMcp"] = legacy_mcp
         try:
             from plugin_auto_update import start_auto_update
             start_auto_update(runtime, pi, force=unregistered and st is False)
