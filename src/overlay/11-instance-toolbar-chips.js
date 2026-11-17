@@ -458,17 +458,246 @@
      * main_turn（provider_id 已知）+ provider 为内置套餐档；自定义 provider 隐藏，团队档给
      * 不支持提示。数据账号级（快照 quota 字段），同套餐换模型只换 tooltip 高亮不重查。 */
     function quotaBandOf(pct) { return bandOf(QUOTA_BANDS, pct); }
-    /* chip 分段：每个窗口一段（5小时/7天），各自按已用 % 上档位色；余额类型一段（阶段 3 数据源接入即用） */
+    /* chip 分段：每个窗口一段（5时/7天/月；2026-11-17 用户规格：5小时→5时、本月→月，
+     * 全档统一短标签，tooltip 保留「5小时窗口/本月窗口」全称），各自按已用 % 上档位色；余额类型一段（阶段 3 数据源接入即用） */
     function quotaSegs(q) {
       var w = q && q.windows, out = [];
       if (!w) return out;
-      var defs = [["daily", "今日", "1d"], ["fiveHour", "5小时", "5h"], ["weekly", "7天", "7d"], ["monthly", "本月", "1mo"], ["plan", "套餐", "plan"]];
+      var defs = [["daily", "今日", "1d"], ["fiveHour", "5时", "5h"], ["weekly", "7天", "7d"], ["monthly", "月", "1mo"], ["plan", "套餐", "plan"]];
       for (var i = 0; i < defs.length; i++) {
         var e = w[defs[i][0]];
         /* isFinite 门：NaN/±Infinity 不进分段，绝不落成正常色（v127） */
-        if (e && typeof e.percent === "number" && isFinite(e.percent)) out.push({ label: L(defs[i][1], defs[i][2]), pct: e.percent });
+        if (e && typeof e.percent === "number" && isFinite(e.percent)) out.push({ label: L(defs[i][1], defs[i][2]), key: defs[i][0], pct: e.percent });
       }
       return out;
+    }
+
+    /* ---------- v382 套餐额度 chip 工具栏四级响应式（specs/quota-chip-responsive.md）----------
+     * 以下纯函数只读数据、不触 DOM，供 VM 单测；模块级 seam 暴露给测试夹具。
+     * 显示形态（L0 完整 / L1 紧凑 / L2 摘要 / L3 最小）不是固定屏幕宽度，由真实工具栏
+     * 可用宽度选。档位色、quotaRemain 口径、Tooltip 数据一律沿用旧链，不在本层重算。 */
+    var QUOTA_SHORT = {
+      daily: ["今日", "1d"], fiveHour: ["5时", "5h"], weekly: ["7天", "7d"], monthly: ["月", "1mo"], plan: ["套餐", "plan"]
+    };
+    function quotaShortLabel(seg, lang) {
+      if (!seg) return "";
+      var pair = QUOTA_SHORT[seg.key];
+      if (!pair) return seg.label;
+      return lang === "en" ? pair[1] : pair[0];
+    }
+    /* 主展示窗口：告警（原始已用≥90=crit/exc）优先，exc>crit；同级按既有顺序稳定取首个；
+     * 无告警时取第一个有明确短周期的窗口（daily/fiveHour/weekly），否则取第一个有效窗口。
+     * 一律用原始已用 pct，quotaRemain 不影响选择与严重度。 */
+    function pickQuotaPrimary(segs) {
+      if (!segs || !segs.length) return null;
+      var sev = function (pct) { return pct >= 100 ? 3 : pct >= 90 ? 2 : 0; };
+      var best = null, bestSev = 0;
+      for (var i = 0; i < segs.length; i++) {
+        var s = sev(segs[i].pct);
+        if (s > bestSev) { bestSev = s; best = segs[i]; }
+      }
+      if (best) return best;
+      for (var j = 0; j < segs.length; j++) {
+        if (segs[j].key === "daily" || segs[j].key === "fiveHour" || segs[j].key === "weekly") return segs[j];
+      }
+      return segs[0];
+    }
+    /* 候选显示串：L0/L1 全窗口，L2 主窗口+N，L3 图标+主窗口(可退化纯图标)。
+     * 每项 {html, aria}；aria 恒用完整 segs（所有窗口真实信息），不因收缩裁剪。 */
+    function quotaCandidates(mode, lang, remain, bands, bandOfFn) {
+      var esc = function (s) { return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) {
+        return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+      }); };
+      var full = [];
+      try { full = (mode && mode.segs) || []; } catch (e) { }
+      /* 非窗口形态（余额/Key剩余/info/team/error/quotaSummary）保持既有单段 html/aria 原样，
+       * 不进多窗口候选构造（原有语义逐字不动）；外层只决定是否收窄占位。 */
+      if (!mode || mode.kind !== "value" || !full.length) {
+        var unchanged = { html: (mode && mode.html) || "", aria: (mode && mode.aria) || "" };
+        /* 最小档退为额度图标（保留完整 aria + Tooltip 数据），避免窄屏直接隐藏单段形态。 */
+        var qico = '<svg class="zu-qico zu-qb-calm" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" ' +
+          'stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+          '<path d="M12 3 3 8l9 5 9-5-9-5Z"/><path d="m3 13 9 5 9-5"/><path d="m3 17 9 5 9-5"/></svg>';
+        return { L0: unchanged, L1: unchanged, L2: unchanged, L3: unchanged, L3I: { html: qico, aria: unchanged.aria } };
+      }
+      var primary = pickQuotaPrimary(full);
+      var shownPct = function (pct) { return Math.round(remain ? quotaRemainPct(pct) : pct); };
+      var segHtml = function (seg, short) {
+        var label = short ? quotaShortLabel(seg, lang) : seg.label;
+        return '<span class="zu-qseg ' + bandOfFn(bands, seg.pct) + '"><span class="zu-qlabel">' +
+          esc(label) + "</span> " + shownPct(seg.pct) + "%</span>";
+      };
+      var fullSegs = function (short, sep) {
+        return full.map(function (s) { return segHtml(s, short); }).join('<span class="zu-qsep">' + sep + "</span>");
+      };
+      var warn = mode.warn ? mode.warn : "";
+      var fullAria = (remain ? L("套餐剩余 ", "Plan remaining ") : L("套餐已用 ", "Plan used ")) +
+        full.map(function (s) { return s.label + " " + shownPct(s.pct) + "%"; }).join(L("，", ", "));
+      var extra = full.length > 1 ? '<span class="zu-qextra">+' + (full.length - 1) + "</span>" : "";
+      var icon = function (cls) {
+        return '<svg class="zu-qico ' + (cls || "") + '" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" ' +
+          'stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+          '<path d="M12 3 3 8l9 5 9-5-9-5Z"/><path d="m3 13 9 5 9-5"/><path d="m3 17 9 5 9-5"/></svg>';
+      };
+      var pcls = primary ? bandOfFn(bands, primary.pct) : "zu-qb-calm";
+      var pshort = primary ? quotaShortLabel(primary, lang) : "";
+      var pval = primary ? shownPct(primary.pct) : 0;
+      var warnOnly = mode && mode.kind !== "value" ? mode.html : "";
+      var l0 = full.length ? fullSegs(false, "|") + warn : warnOnly;
+      var l1 = full.length ? fullSegs(true, "·") + warn : warnOnly;
+      var l2 = primary ? segHtml(primary, true) + extra + warn : warnOnly;
+      var l3full = primary ? icon(pcls) + '<span class="zu-qseg ' + pcls + '">' + esc(pshort) + " " + pval + "%</span>" + warn : warnOnly;
+      var l3icon = icon(pcls) + warn;   // 极窄档也保留 ⚠：错误/过期态比宽度更重要（收口 review）
+      return {
+        L0: { html: l0, aria: fullAria || (mode && mode.aria) || "" },
+        L1: { html: l1, aria: fullAria || (mode && mode.aria) || "" },
+        L2: { html: l2, aria: fullAria || (mode && mode.aria) || "" },
+        L3: { html: l3full, aria: fullAria || (mode && mode.aria) || "" },
+        L3I: { html: l3icon, aria: fullAria || (mode && mode.aria) || "" }
+      };
+    }
+    /* 选级：candidates 顺序从最完整到最简，avail 为额度 chip 可用宽度（<0 视为无法容纳）；
+     * measure 为候选自然宽测量函数（返回 px）。展开迟滞只在"当前等级更简、新等级更完整"时
+     * 要求 avail >= need + hyst；收缩无迟滞，立即降级。返回选中等级 key。
+     * hidden=极限降级（连最简都放不下）；rank.hidden 置为最紧凑侧，使从 hidden 回展也按同一迟滞门控，防临界抖动反复建销节点。 */
+    function pickQuotaDisplayLevel(order, avail, measure, current, hyst) {
+      var h = hyst || 0;
+      var rank = {};
+      for (var i = 0; i < order.length; i++) rank[order[i]] = i;
+      rank.hidden = order.length;   // hidden 是最紧凑侧（rank 最大）：从 hidden 回展需 +hyst，防临界抖动反复建销节点
+      for (var j = 0; j < order.length; j++) {
+        var key = order[j], need = measure(key);
+        if (avail < need) continue;
+        if (current && rank[key] < rank[current] && avail < need + h) continue;
+        return key;
+      }
+      return "hidden";   // 连最简都放不下：极限降级（隐藏 chip）
+    }
+    /* 以下 DOM 适配常量/变量必须先声明再暴露测试缝（var 只提升声明不提升赋值，
+     * 曾因缝对象先赋值引用 QUOTA_ORDER 得到 undefined 埋隐患）。 */
+    var QUOTA_ORDER = ["L0", "L1", "L2", "L3", "L3I"];
+    var QUOTA_HYST = 20;   // 展开迟滞 16–24px；收缩无迟滞
+    var QUOTA_SAFE_GAP = 8;   // 与 leading 内容保持的最小安全间距
+    var quotaMeasureOverride = null;   // 测试注入点（VM 无真实布局）；生产恒 null
+    var quotaAvailSig = "", quotaAvailVal = 0;   // avail 测量签名缓存：render+heavy 双调用点同几何零强制 layout
+    if (typeof window !== "undefined") {
+      var quotaSeamInst = {};   // 实例级令牌：缝按实例创建覆盖赋值，dispose 据此只删本实例（最后创建者）的缝
+      window.__zusageQuotaFns = {
+        quotaShortLabel: quotaShortLabel, pickQuotaPrimary: pickQuotaPrimary,
+        quotaCandidates: quotaCandidates, pickQuotaDisplayLevel: pickQuotaDisplayLevel,
+        quotaMeasureAvail: quotaMeasureAvail, quotaLeadingRight: quotaLeadingRight,
+        QUOTA_BANDS: QUOTA_BANDS, QUOTA_ORDER: QUOTA_ORDER, QUOTA_HYST: QUOTA_HYST,
+        __zuInst: quotaSeamInst,
+        all: function () { return {
+          quotaShortLabel: quotaShortLabel, pickQuotaPrimary: pickQuotaPrimary, quotaCandidates: quotaCandidates,
+          pickQuotaDisplayLevel: pickQuotaDisplayLevel, quotaMeasureAvail: quotaMeasureAvail,
+          quotaLeadingRight: quotaLeadingRight,
+          QUOTA_BANDS: QUOTA_BANDS, QUOTA_ORDER: QUOTA_ORDER, QUOTA_HYST: QUOTA_HYST
+        }; },
+        setMeasureOverride: function (fn) { quotaMeasureOverride = fn; }
+      };
+    }
+    function quotaMeasureProbe() {
+      if (quotaRespProbe && quotaRespProbe.isConnected) return quotaRespProbe;
+      var probe = document.createElement("span");
+      probe.className = "zu-qmeasure";   // 独立类名（不复用 .zu-quota），避免全局 querySelector/DOM 自清误命中离屏节点
+      probe.style.cssText = "position:absolute;left:-10000px;top:0;visibility:hidden;pointer-events:none;width:max-content";
+      probe.setAttribute("aria-hidden", "true");
+      (document.body || document.documentElement).appendChild(probe);
+      quotaRespProbe = probe;
+      return probe;
+    }
+    function quotaMeasureWidth(html, levelKey) {
+      var probe = quotaMeasureProbe();
+      /* 档位属性与候选串同源更新：探针按该档盒模型测宽（L1 gap 收紧、+N 缩小字号——
+       * CSS 镜像规则见 06 分片 .zu-qmeasure[data-zusage-qlevel]）。 */
+      if (levelKey) probe.setAttribute("data-zusage-qlevel", levelKey);
+      else probe.removeAttribute("data-zusage-qlevel");
+      if (probe.__zuHtml !== html) {   // 候选串没变不重写/不重排（render+heavy 双调用点高频）
+        probe.innerHTML = html;
+        probe.__zuHtml = html;
+        try { probe.__zuW = probe.getBoundingClientRect().width || 0; } catch (e) { probe.__zuW = 0; }
+      }
+      return probe.__zuW;
+    }
+    /* leading 内容右缘：优先宿主 [data-composer-leading-content]（shrink-0 内容定宽，不随
+     * trailing 增宽移动），回退本插件 Git chip 右缘；找不到返回 null → fail-safe 保持 L0。 */
+    function quotaLeadingRight(btn) {
+      var node = btn;
+      for (var depth = 0; node && depth < 8; depth++, node = node.parentElement) {
+        var lead = null;
+        try { lead = node.querySelector ? node.querySelector("[data-composer-leading-content]") : null; } catch (e) { }
+        if (lead && typeof lead.getBoundingClientRect === "function") {
+          var r = lead.getBoundingClientRect();
+          if (r && r.width > 0 && isFinite(r.right)) return r.right;
+        }
+      }
+      try {
+        var git = gitChipCache && gitChipCache.isConnected ? gitChipCache : null;
+        if (git) {
+          var g = git.getBoundingClientRect();
+          if (g && g.width > 0 && isFinite(g.right)) return g.right;
+        }
+      } catch (e) { }
+      return null;
+    }
+    /* 返回额度 chip 的真实可用宽度；null=无法可靠测量（VM stub / 宿主结构未标定）→ 保持 L0。
+     * 不变式（真实 CDP 取证 2026-11-17）：trailing 组右对齐（ml-auto），chip 增宽 Δ 时 chip
+     * 左缘左移 Δ、压缩与 leading 内容的空隙，与 leading 右缘的间距 G 满足 chipW+G ≡ 常量——
+     * 故 avail = refW + (ref.left − leadingRight) − SAFETY 与 chip 当前宽度无关（自指相消），
+     * 收缩/隐藏都不会把它坍缩成 0（hidden 黑洞）。chip 已摘除时 ref=btn、refW=0（此时
+     * btn.left − leadingRight 就是纯空隙，加 btnW 反而虚高）。
+     * 反面教材：不能用 chip 所在 trailing 行自身 clientWidth 作分母——该行右对齐贴内容，
+     * 行宽≈内容宽，相减恒得 ≈0（v382 首版缺陷，chip 摘除后永久隐藏）。 */
+    function quotaMeasureAvail(btn, chip, leadingRight) {
+      var wrap = btn && btn.parentElement;
+      var row = wrap && wrap.parentElement;
+      if (!row || typeof row.getBoundingClientRect !== "function") return null;
+      /* clientWidth 缺席（VM stub / 脱离布局的临时节点）时无法可靠测量，fail-safe 保持完整档，绝不猜测收窄。 */
+      if (typeof row.clientWidth !== "number") return null;
+      /* 只在本项目实测过的宿主 trailing 行（overflow:hidden + min-w-0）上启用收缩；
+       * 其它宿主版本/测试夹具的行结构未标定，fail-safe 保持 L0，绝不在未知容器上误判隐藏 chip。 */
+      if (!row.classList || !row.classList.contains("overflow-hidden") || !row.classList.contains("min-w-0")) return null;
+      var L = (typeof leadingRight === "number") ? leadingRight : quotaLeadingRight(btn);
+      if (L == null) return null;
+      var hasChip = !!(chip && chip.isConnected);
+      var ref = hasChip ? chip : btn;
+      var rr = null;
+      try { rr = ref.getBoundingClientRect(); } catch (e) { }
+      if (!rr || !isFinite(rr.left)) return null;
+      /* 几何签名：ref 左缘/宽 + leading 右缘变化才重算，避免 render+heavy 高频路径反复读 rect。 */
+      var sig = Math.round(rr.left) + "|" + Math.round(rr.width) + "|" + Math.round(L) + "|" + (hasChip ? 1 : 0);
+      if (sig === quotaAvailSig) return quotaAvailVal;
+      var avail = (hasChip ? rr.width : 0) + (rr.left - L) - QUOTA_SAFE_GAP;
+      quotaAvailSig = sig;
+      quotaAvailVal = isFinite(avail) ? Math.max(0, Math.round(avail)) : 0;
+      return quotaAvailVal;
+    }
+    function quotaApplyLevel(chip, mode, btn) {
+      if (quotaMeasureOverride) {
+        var r = quotaMeasureOverride(mode, state.lang, state.quotaRemain === 1, QUOTA_BANDS, bandOf, quotaRespLevel);
+        chip.__zuQLevel = r.level; quotaRespLevel = r.level;
+        chip.setAttribute("data-zusage-qlevel", r.level);
+        return r.candidates[r.level];
+      }
+      var cands = quotaCandidates(mode, state.lang, state.quotaRemain === 1, QUOTA_BANDS, bandOf);
+      /* 非窗口形态（余额/info/team/error/quota）保持单行原样，只走 L0/L3I 两态，不做多窗口压缩。 */
+      var order = mode.kind === "value" ? QUOTA_ORDER : ["L0", "L3I"];
+      var avail = quotaMeasureAvail(btn, chip);
+      var level = "L0";
+      if (avail !== null) {
+        var measure = function (key) { return quotaMeasureWidth(cands[key].html, key); };
+        /* current 取实例级持久等级：极限降级摘除节点后重建也不丢迟滞态，防 hidden↔L0 震荡。 */
+        var chosen = pickQuotaDisplayLevel(order, avail, measure, quotaRespLevel, QUOTA_HYST);
+        /* pick 返回 "hidden"=连纯图标都放不下：极限降级隐藏 chip（不遮挡原生控件），
+         * 恢复宽度后 pick 按 hidden 的 rank 迟滞回展；避免临界抖动反复建销节点。 */
+        if (chosen === "hidden") { chip.__zuQLevel = "hidden"; quotaRespLevel = "hidden"; chip.setAttribute("data-zusage-qlevel", "hidden"); return null; }
+        level = chosen;
+      }
+      chip.__zuQLevel = level;
+      quotaRespLevel = level;
+      chip.setAttribute("data-zusage-qlevel", level);
+      return cands[level];
     }
     function quotaChipMode() {
       if (!state.quotaEnabled) return null;
@@ -505,7 +734,7 @@
          * textContent 与原有完全一致，aria/tooltip 不受影响。档位色恒按已用原始值判定，不随口径反转。 */
           return '<span class="zu-qseg ' + quotaBandOf(s.pct) + '"><span class="zu-qlabel">' + s.label + '</span> ' + shownOf(s.pct) + "%</span>";
         }).join('<span class="zu-qsep">|</span>');
-        return { kind: "value", stale: !!q.stale, busy: !!q.busy,
+        return { kind: "value", stale: !!q.stale, busy: !!q.busy, segs: segs, rem: rem, warn: warn,
           html: html + warn,
           aria: (rem ? L("套餐剩余 ", "Plan remaining ") : L("套餐已用 ", "Plan used ")) + segs.map(function (s) { return s.label + " " + shownOf(s.pct) + "%"; }).join(L("，", ", ")) };
       }
@@ -565,13 +794,22 @@
       for (var si = 0; si < (state.quotaSources || []).length; si++) srcLabels[state.quotaSources[si].id] = state.quotaSources[si].label;
       var all = lastQuotaAll && lastQuotaAll.sources ? Object.assign({}, lastQuotaAll, { active: quotaSourceId }) : lastQuotaAll;
       chip.__zuQ = { q: lastQuota, all: all, srcLabels: srcLabels, provider: quotaProvider, model: quotaModel, mode: mode };
-      var sig = mode.kind + "|" + (mode.stale ? 1 : 0) + "|" + mode.html;
+      var shown = quotaApplyLevel(chip, mode, btn);   // v382：按真实工具栏可用宽度选显示等级
+      if (!shown) {   // 极限降级：连图标都放不下→摘除 chip（保留 __zuQ 数据，恢复宽度即重现），不遮挡原生控件
+        if (quotaTipFor === chip) hideQuotaTip();
+        try { chip.remove(); } catch (e) { }
+        quotaChipCache = null;
+        ariaLiveState.__zuQuotaLive = "";
+        ariaLiveState.textContent = ariaLiveState.__zuGitLive || "";
+        return;
+      }
+      var sig = mode.kind + "|" + (mode.stale ? 1 : 0) + "|" + chip.__zuQLevel + "|" + shown.html;
       var qbusy = !!(lastQuota && lastQuota.busy);
-      if (chip.__zuSig !== sig) {   // 幂等：内容没变不重建，悬停/焦点态不被打断
+      if (chip.__zuSig !== sig) {   // 幂等：内容/等级没变不重建，悬停/焦点态不被打断
         chip.__zuSig = sig;
         chip.className = "zu-quota" + (mode.stale ? " zu-qstale" : "") + (qbusy ? " zu-qbusy" : "");
-        chip.setAttribute("aria-label", mode.aria);
-        chip.innerHTML = mode.html;
+        chip.setAttribute("aria-label", shown.aria);
+        chip.innerHTML = shown.html;
       }
       chip.classList.toggle("zu-qbusy", qbusy);
       chip.setAttribute("aria-busy", String(qbusy));

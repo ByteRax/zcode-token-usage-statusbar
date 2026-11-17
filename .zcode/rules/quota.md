@@ -1,6 +1,6 @@
 # 套餐额度链规则
 
-适用路径：`src/quota/*.cjs`、`scripts/build_quota.py`、`quota-client.cjs`（及 `plugins/zcode-token-usage-statusbar/quota-client.cjs` 副本）、`overlay.js` 的额度 chip 与 ⚙ 额度源面板段、`inject-main.cjs` 的额度推送段、`zusage.py` 的 SCNet 估算段、`tests/quota-*.test.cjs`、`tests/overlay-quota-chip.test.cjs`、`docs/quota-support-audit.md`。
+适用路径：`src/quota/*.cjs`、`scripts/build_quota.py`、`quota-client.cjs`（及 `plugins/zcode-token-usage-statusbar/quota-client.cjs` 副本）、`overlay.js` 的额度 chip 与 ⚙ 额度源面板段、`inject-main.cjs` 的额度推送段、`zusage.py` 的 SCNet 估算段、`tests/quota-*.test.cjs`、`tests/overlay-quota-*.test.cjs`（chip/响应式/几何）、`tests/helpers/quota-chip-harness.cjs`、`specs/quota-chip-responsive.md`、`docs/quota-support-audit.md`。
 
 改动上述路径或涉及套餐额度/账户余额展示前先读本文件。全局不变量（账号级口径、凭据契约、fail-closed、只进桌面链）在根 [AGENTS.md](../../AGENTS.md) §5，本文件是其细则；具体支持范围以 [docs/quota-support-audit.md](../../docs/quota-support-audit.md) 为准。
 

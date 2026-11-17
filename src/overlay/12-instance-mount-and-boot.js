@@ -1112,6 +1112,12 @@
       releasePads();
       if (ctxBtnCache) { restoreCtxButton(ctxBtnCache); ctxBtnCache = null; }   // v92：还原原生按钮形态
       restoreQuotaChip();   // v95：摘除额度 chip（不留孤儿节点）
+      if (quotaRespProbe) { try { quotaRespProbe.remove(); } catch (e) { } quotaRespProbe = null; }   // v382：离屏测量节点随实例销毁
+      /* v382 收口 review：测试/诊断缝按实例创建覆盖赋值，quotaSeamInst 是本实例闭包令牌（11 分片），
+       * 只有缝仍归属本实例（最后创建者）时才删键，防多实例下先建者 dispose 抄掉后建实例的缝。 */
+      if (typeof window !== "undefined" && window.__zusageQuotaFns && window.__zusageQuotaFns.__zuInst === quotaSeamInst) {
+        try { delete window.__zusageQuotaFns; } catch (e) { window.__zusageQuotaFns = undefined; }
+      }
       restoreEnhanceBtn(true);   // v344：摘除增强按钮（清相位与定时器，不留孤儿节点）；v344.3：dispose 中断在途增强请求
       restoreTpsChip();   // v146：摘除精简模式速率 chip（含在显 tooltip）
       restoreGitChip();   // v96：摘掉本 pane 的 Git chip（含在显 tooltip）
