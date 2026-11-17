@@ -351,15 +351,67 @@ function resolveHostDbDir() {
   }
   return path.join(home, ".zcode", "cli", "db");
 }
+/* issue #314 同源契约补齐：主进程 dbDir/dbStamp 叠一层 config.json 的 hosts.zcode.db_path
+ * 覆盖（两跳：脚本同目录 CONFIG → <home>/.zcode/zcode-token-usage-statusbar/config.json，
+ * 先到者整段胜出，支持 ~ 与 $VAR/${VAR}/%VAR% 展开，UTF-8 BOM 按损坏忽略），与
+ * zusage.zcode_db_path() 及 token_rate._configured_db_path() 完全对齐；resolveHostDbDir()
+ * 保持纯净的四层宿主会话库镜像不变。 */
+function expandDbPathVars(raw, env, home) {
+  let s = String(raw || "").trim();
+  if (!s) return "";
+  s = s.replace(/\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)|%([^%]+)%/g, (m, b, u, w) => {
+    const k = b || u || w;
+    return Object.prototype.hasOwnProperty.call(env, k) && env[k] != null ? String(env[k]) : m;
+  });
+  if (s === "~") return home;
+  if (s.startsWith("~/") || s.startsWith("~\\")) return path.join(home, s.slice(2));
+  if (s.startsWith("~")) return "";   // ~otheruser 在无 passwd 解析时按不可展开忽略（同 token_rate 规则 4）
+  return s;
+}
+function resolveConfiguredDbPath(scriptConfigPath) {
+  const env = process.env || {};
+  const home = env.ZCODE_DESKTOP_HOME_DIR || env.HOME || env.USERPROFILE || app.getPath("home");
+  const firstHop = typeof scriptConfigPath === "string" && scriptConfigPath
+    ? scriptConfigPath
+    : (typeof CONFIG === "string" && CONFIG ? CONFIG : "");
+  const secondHop = path.join(home, ".zcode", "zcode-token-usage-statusbar", "config.json");
+  const candidates = firstHop ? [firstHop, secondHop] : [secondHop];
+  for (const file of candidates) {
+    let text;
+    try { text = fs.readFileSync(file, "utf8"); } catch (e) { continue; }
+    if (!text || text.charCodeAt(0) === 0xFEFF) continue;   // UTF-8 BOM 按损坏跳过（同 Python utf-8 严格解码）
+    let data;
+    try { data = JSON.parse(text); } catch (e) { continue; }
+    if (!data || typeof data !== "object" || Array.isArray(data)) continue;
+    const hosts = data.hosts;
+    if (!hosts || typeof hosts !== "object" || Array.isArray(hosts)) continue;
+    const zcode = hosts.zcode;
+    if (!zcode || typeof zcode !== "object" || Array.isArray(zcode)) continue;
+    const raw = zcode.db_path;
+    if (typeof raw !== "string" || !raw.trim()) return "";   // 先到者整段胜出：空值也遮蔽第二跳
+    return expandDbPathVars(raw, env, home);
+  }
+  return "";
+}
+let DB_FILE = null;
+function dbFile() {
+  if (!DB_FILE) {
+    const configured = resolveConfiguredDbPath();
+    DB_FILE = configured || path.join(resolveHostDbDir(), "db.sqlite");
+  }
+  return DB_FILE;
+}
 let DB_DIR = null;
 function dbDir() {
-  if (!DB_DIR) DB_DIR = resolveHostDbDir();
+  if (!DB_DIR) DB_DIR = path.dirname(dbFile());
   return DB_DIR;
 }
 function dbStamp() {
   let m = 0;
-  const dir = dbDir();
-  for (const f of ["db.sqlite", "db.sqlite-wal", "db.sqlite-shm"]) {
+  const file = dbFile();
+  const dir = path.dirname(file);
+  const base = path.basename(file) || "db.sqlite";
+  for (const f of [base, base + "-wal", base + "-shm"]) {
     try { m = Math.max(m, fs.statSync(path.join(dir, f)).mtimeMs); } catch (e) { }
   }
   return m;
@@ -872,8 +924,9 @@ let dbWatcher = null;
 function watchDb() {
   if (dbWatcher) return;
   try {
+    const base = path.basename(dbFile()) || "db.sqlite";
     dbWatcher = fs.watch(dbDir(), (ev, f) => {
-      if (f && !/db\.sqlite/.test(f)) return;
+      if (f && !String(f).startsWith(base)) return;
       clearTimeout(debounceTimer);
       debounceTimer = setTimeout(() => {
         maybeSpawn();

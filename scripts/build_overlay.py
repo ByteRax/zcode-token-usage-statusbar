@@ -5,9 +5,29 @@
 设计目标：
 - 保持分发产物形态不变：根目录 overlay.js 与 plugins/.../overlay.js 仍为单文件 IIFE，
   无需打包器或第三方依赖，也不改变 Release ZIP 的文件清单契约。
-- 降低维护粒度：1.1MB 的 overlay.js 拆分为职责清晰的 14 个源码模块（src/overlay/，`04-` 前缀两文件：词包纯数据 `04-rotator-builtin-packs.js` 先于 `04-status-rotator-data.js` 字典序加载）。
+- 降低维护粒度：1.9MB 的 overlay.js 拆分为职责清晰的 14 个源码模块（src/overlay/，`04-` 前缀两文件：词包纯数据 `04-rotator-builtin-packs.js` 先于 `04-status-rotator-data.js` 字典序加载）。
 - 防漂移门禁：`--check` 校验 src/overlay/ 拼接结果与根 overlay.js 逐字节一致，
   并由 `sync_plugin.py` 自动串联调用。
+
+分片闭包架构与作用域边界图（Onboarding 速查）：
+  ┌─ 外层 IIFE 闭包 `(function () {`（00 开 → 12 闭）────────────────────────────────┐
+  │  00-boot-state-i18n.js              防重入守卫、进程级共享状态 state、双语 L() 与基础格式化
+  │  01-git-and-doc-tooltips.js         Git 状态 chip/Tooltip、文档气泡与通用 DOM 辅助
+  │  02-store-bridge-and-speed-v2.js    渲染桥 ZUsageTurnStats 对接与速度 20 组合筛选引擎
+  │  03-deterministic-turns-and-verbs.js 回答末尾确定性统计行、富文本回填与状态动词库
+  │  04-rotator-builtin-packs.js        内置状态词包纯数据表（builtinPacks）
+  │  04-status-rotator-data.js          内置语录库、在线热更缓存、自动轮换引擎与通知音效
+  │  05-status-rotator-runtime.js       词包编辑器弹窗、多 pane 协调器与几何可见性判定
+  │  ┌─ 实例级闭包 `function spawnInstance(pid)`（06 开 → 12 闭）──────────────────┐ │
+  │  │ 06-instance-dom-and-styles.js     VERSION 台账、实例级状态、内联 CSS 与条面根 DOM
+  │  │ 07-instance-render-and-tips.js    状态条主渲染 render()、各格 Tooltip 与复制菜单
+  │  │ 08-instance-bridge-and-subrate.js 会话归属仲裁 pickCurrent、store 订阅与子代理行内速率
+  │  │ 09-instance-settings-and-notes.js ⚙ 设置面板构建、更新日志卡片与提示词增强历史/配置
+  │  │ 10-instance-subpanel-and-composer.js 子代理任务抽屉浮层、工作流卡片与输入框查找定位
+  │  │ 11-instance-toolbar-chips.js      输入框工具行 chip（上下文/额度/Git/速率/系统/增强）与模型拉取弹窗
+  │  │ 12-instance-mount-and-boot.js     in-card/pill/compact 挂载、窄宽三档收缩、折叠与实例 dispose()
+  │  └─────────────────────────────────────────────────────────────────────────────┘ │
+  └──────────────────────────────────────────────────────────────────────────────────┘
 
 用法：
   python3 scripts/build_overlay.py          # 从 src/overlay/*.js 生成根 overlay.js
@@ -23,6 +43,13 @@ TARGET = ROOT / "overlay.js"
 PART_RE = re.compile(r"^[0-9]{2}-[A-Za-z0-9_-]+\.js$")
 _LEDGER_BLOCK_RE = re.compile(
     r"[ \t]*/\* VERSION 台账[^\n]*\r?\n((?:[ \t]*\* [^\n]*\r?\n)+)[ \t]*\*/\r?\n([ \t]*var VERSION = \"[^\"]+\";)"
+)
+# 双层闭包边界锚点校验：防分片误删/错位破坏跨文件词法作用域
+_CLOSURE_ANCHORS = (
+    ("00-", "(function () {"),
+    ("06-", "function spawnInstance("),
+    ("12-", "instances.push(api);"),
+    ("12-", "})();"),
 )
 
 
@@ -53,6 +80,7 @@ def assemble_bytes(src_dir=SRC_DIR):
     if not parts:
         raise FileNotFoundError(f"未找到任何 overlay 模块源码: {src_dir}")
     chunks = []
+    texts_by_name = {}
     for part in parts:
         data = part.read_bytes()
         if not data:
@@ -61,10 +89,17 @@ def assemble_bytes(src_dir=SRC_DIR):
             text = data.decode("utf-8")  # 校验合法 UTF-8
         except UnicodeDecodeError as exc:
             raise ValueError(f"分片非 UTF-8: {part.name}: {exc}") from None
+        texts_by_name[part.name] = text
         if "/* VERSION 台账" in text:
             text = _fold_version_ledger(text)
             data = text.encode("utf-8")
         chunks.append(data)
+    # 若包含完整 00..12 生产分片集，校验外层 IIFE 与 spawnInstance 闭包锚点完好
+    if any(name.startswith("06-") for name in texts_by_name) and any(name.startswith("12-") for name in texts_by_name):
+        for prefix, anchor in _CLOSURE_ANCHORS:
+            matched = [txt for name, txt in texts_by_name.items() if name.startswith(prefix)]
+            if not matched or not any(anchor in txt for txt in matched):
+                raise ValueError(f"overlay 闭包边界锚点缺失（{prefix}* 应包含 {anchor!r}）")
     return b"".join(chunks), parts
 
 

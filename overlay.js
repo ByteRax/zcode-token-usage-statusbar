@@ -10909,7 +10909,6 @@
       pendingSid = "", wantedEl = null, scopeStamp = "",   // 协调器派发的最新 composer/会话
       shrink = 0,         // 默认条：0 完整、1 紧凑、2 隐藏次要计数
       narrowCheckAt = 0, narrowMeasureKey = "", narrowWidths = null,
-      fadeOn = false,     // 默认条横滚时的左右渐隐状态
       bridge = { handle: null, turnId: "", timer: 0 },   // v71 本 pane 的 renderer store 订阅
       lastBand = null,    // v92：本 pane 上下文分档（ctxBandOf 结果，原生按钮增强的数据源）
       ctxBtnCache = null,   // v92：本实例上次增强的原生按钮（还原/对账引用，不依赖 cardCache 存活）
@@ -21824,7 +21823,6 @@
       bar.classList.remove("zu-narrow", "zu-tight");
       narrowMeasureKey = ""; narrowWidths = null;
       main.classList.remove("zu-clip", "zu-clip-left");
-      fadeOn = false;
       render(state.data || { session: {}, last_turn: {}, today: {}, context_window: 0 });
       positionSettingsPanel();
     }
@@ -22521,7 +22519,6 @@
         var leftClip = state.theme === "default" && main.scrollLeft > 1;
         main.classList.toggle("zu-clip", rightClip);
         main.classList.toggle("zu-clip-left", leftClip);
-        fadeOn = rightClip || leftClip;
         /* v352 优先级折叠（PR #345）：窄宽三档（完整/紧凑/藏次要）之后的空间不足由整格折叠
          * 接管——仅在 shrink===2（次要已藏）仍溢出时启用，宽了先经窄宽状态机恢复，折叠再
          * 按 FOLD_HYS 迟滞回展。全折仍装不下回到上面的横滚+渐隐兜底。 */

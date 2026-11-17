@@ -46,7 +46,7 @@ description: "面向 zcode-token-usage-statusbar，将功能需求或健康巡�
 
 | 需求涉及 | 规则入口 |
 | --- | --- |
-| 套餐额度、额度 chip、额度源、SCNet、`src/quota/*.cjs` / `quota-client.cjs`、`model-puller.cjs` 路径共源 | `.zcode/rules/quota.md` |
+| 套餐额度、额度 chip、额度源、SCNet、`src/quota/*.cjs` / `quota-client.cjs`、`src/puller/*.cjs` / `model-puller.cjs` 路径与模板规则共源 | `.zcode/rules/quota.md` |
 | 桌面浮层、统计行、tooltip、设置面板、双轨配置或展示口径（`src/overlay/*.js` / `overlay.js`） | `.zcode/rules/overlay-ui.md` |
 | 安装、注入、同步、运行目录、更新器、`pending_zip_patch.py` 或发布链 | `.zcode/rules/install-release.md` |
 | renderer 桥、窗口/分栏归属、远端查询 | `.zcode/rules/bridge-remote.md` |
@@ -161,7 +161,8 @@ description: "面向 zcode-token-usage-statusbar，将功能需求或健康巡�
      - Python 新增测试方法勿落在 `if __name__ == "__main__":` 之后，跑完用 `-v` 确认新用例名实际被收集执行；
      - 插件命令 frontmatter 按 `tests/test_command_frontmatter.py` 白名单与包契约检查；仓库 `.zcode/skills/` 不能借这两个测试宣称技能验证通过，还需检查自身 frontmatter、引用、Git 可见性和实际决策行为，不添加未验证元数据。
 3. **修改权威源码**：
-   - 共享文件先改根源码：其中 `overlay.js` 必须改 `src/overlay/00..12.js` 分片（`VERSION` 在 `src/overlay/06-instance-dom-and-styles.js`），`quota-client.cjs` 必须改 `src/quota/00..05.cjs` 分片，`zusage.py` 与 `token_rate.py` 共用的计算逻辑改 `usage_stats.py`；插件专有入口（hooks、commands、manifest、`overlay_install.py` 等）直接改本体。
+   - 共享文件先改根源码：其中 `overlay.js` 必须改 `src/overlay/00..12.js` 分片（`VERSION` 在 `src/overlay/06-instance-dom-and-styles.js`），`quota-client.cjs` 必须改 `src/quota/00..05.cjs` 分片，`model-puller.cjs` 必须改 `src/puller/00..03.cjs` 分片，`zusage.py` 与 `token_rate.py` 共用的计算逻辑改 `usage_stats.py`；插件专有入口（hooks、commands、manifest、`overlay_install.py` 等）直接改本体。
+   - **过防返工六道门禁（见 `.zcode/rules/tests.md` §6 与 `tests/test_plugin_package.py` 的 `AntiReworkContractTests`）**：① 涉及本地库路径解析（`zusage.py` / `token_rate.py` / `inject-main.cjs` 三端，含 `hosts.zcode.db_path`）或宿主供应商配置/模板规则（`src/quota/` 与 `src/puller/`）时必须多端同改并跑交叉一致性矩阵；② 触及客户端更新/Chromium 遮挡窗口调度（禁 `rAF` 合并交互）/窄宽离屏探针（剥 `data-zu-folded`、固定 `sysmon` `full` 面防震荡环）时先证伪物理机制；③ 运行/安装链 Python 禁裸调 `tempfile.mkstemp`/`mkdtemp`（统一用 `runtime_lock.bounded_mkstemp`/`bounded_tempdir`），Windows 子进程必带 `CREATE_NO_WINDOW`；④ 新增 `document.body` 浮层/模态框必须四处对称登记（`no-drag`、`00` 启动自清、`10` `isOwnOverlay`/`OWN_LAYER_SEL`、`12` `dispose`），悬停卡控件用 `pointerdown`；⑤ 100ms 热路径禁调 `store.getState()`，兜底定时器必 `.finally(clearTimeout)` + `.unref?.()`；⑥ 同步前确认工作树无并行会话半成品改动。
    - 保持 Python 3.8+ / Node / Electron 兼容目标并说明实际验证版本；开发机较新解释器通过不等于已验证所有平台或 Python 最低版本。
 4. **检查版本台账、文档与宣传图**：
    - 按当前 `.zcode/rules/overlay-ui.md` 在 `src/overlay/06-instance-dom-and-styles.js` 维护 `overlay.js` 的 `VERSION` 代际台账（随提交递增，注释与声明同步，号段不要求连续；并行撞号按合入顺序顺延改号并合并注释后再执行 `python3 sync_plugin.py` 与提交）；未提交的中间迭代不反复涨号，未获提交授权不为涨号自行提交。
@@ -171,7 +172,7 @@ description: "面向 zcode-token-usage-statusbar，将功能需求或健康巡�
    - 定向检查后、共享文件同步或部署前，按 [对抗审查方法](../zcode-health-review/references/adversarial-review.md) 对照原问题、spec、当前 diff 和测试审查；按风险选择独立审查或标注非独立自审。同步生成的新产物在部署前复核受影响差异，不能用源码审查替代产物核对。
    - 本次引入或影响安全同步／部署的 `BLOCKER`／`MAJOR` 修复并回归后重新审查，直到受影响范围无未解决阻断项。无授权、并行冲突、无法安全验证或反复震荡时停止相关步骤并报告；不以固定轮次当作放行条件。
    - 仅在本次涉及共享运行文件或分片时同步；纯技能／文档改动检查其格式、引用与行为，不因进入实现流程而运行全名单同步。
-   - **同步前必查并行污染**：`python3 sync_plugin.py` 会先运行 `scripts/build_overlay.py`、`scripts/build_quota.py` 和 `scripts/build_mobile_userscript.py`，拼接生成根 `overlay.js`、`quota-client.cjs` 及两份 `zusage-mobile*.user.js`，再扫描全部 `FILES` 清单同步至插件目录并执行 `--verify-manifests`；执行前先确认根目录下其它共享文件没有并行会话未完成、未验证的改动，防止把他人半成品一并扫进插件副本和运行目录。确认安全后执行 `python3 sync_plugin.py` 与 `python3 sync_plugin.py --check`，再运行语法检查与契约回归。
+   - **同步前必查并行污染**：`python3 sync_plugin.py` 会先运行 `scripts/build_overlay.py`、`scripts/build_quota.py`、`scripts/build_puller.py` 和 `scripts/build_mobile_userscript.py`，拼接生成根 `overlay.js`、`quota-client.cjs`、`model-puller.cjs` 及两份 `zusage-mobile*.user.js`，再扫描全部 `FILES` 清单同步至插件目录并执行 `--verify-manifests`；执行前先确认根目录下其它共享文件没有并行会话未完成、未验证的改动，防止把他人半成品一并扫进插件副本和运行目录。确认安全后执行 `python3 sync_plugin.py` 与 `python3 sync_plugin.py --check`，再运行语法检查与契约回归。
    - 分发或导入链变更补真实生成产物／分发集合的隔离加载验证，不能只测源码切片；生命周期变更按适用性覆盖连续热换、在途请求、失败保留、销毁清理及显式关闭热更。范围扩大时再运行全量回归，不为每个小修复重复跑全套。
 6. **失败即定位、重测与复审**：
    - 区分本次引入、环境基线失败（如依赖本机已安装客户端 `app.asar` 的用例随客户端升级变红）、平台跳过与环境受阻。修复本次缺陷，不删断言、跳过关键用例或吞异常换绿灯。

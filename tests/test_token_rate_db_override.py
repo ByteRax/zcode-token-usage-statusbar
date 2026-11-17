@@ -485,5 +485,95 @@ class PromptSubmitHookSymptomTest(Fixture):
         self.assertNotIn(NO_DATA, ctx)
 
 
+class NodeMainBridgeParityTest(Fixture):
+    """三端同源对拍测试：zusage.zcode_db_path、token_rate._configured_db_path 与
+    inject-main.cjs 的 dbFile/dbDir/resolveHostDbDir 在 19 种配置与环境组合下完全一致。"""
+
+    def setUp(self):
+        super().setUp()
+        env = clean_env(HOME=str(self.home), USERPROFILE=str(self.home))
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch("pathlib.Path.home", return_value=self.home):
+            self.zusage = load_module("zusage_node_parity_314", REPO / "zusage.py")
+        self.zusage.CONFIG_PATH = self.scripts / "config.json"
+        self.mod = self.load_token_rate("tr_node_parity",
+                                        ZCODE_USAGE_DB=str(self.root / "isolated.sqlite"))
+        self.a = self.root / "a" / "usage.sqlite"
+        self.b = self.root / "b" / "usage.sqlite"
+
+    def test_node_inject_main_matches_python_across_all_scenarios(self):
+        node = (shutil.which("node")
+                or next((p for p in ("/opt/homebrew/bin/node", "/usr/local/bin/node")
+                         if os.path.isfile(p)), None))
+        if not node:
+            self.skipTest("node runtime unavailable")
+        token = "%ZTUS314_DIR%" if os.name == "nt" else "$ZTUS314_DIR"
+        scenarios = [
+            ("无任何 config", None, None),
+            ("仅脚本同目录", cfg(self.a), None),
+            ("仅数据目录", None, cfg(self.b)),
+            ("两跳都有，脚本同目录胜", cfg(self.a), cfg(self.b)),
+            ("脚本同目录 db_path 为空遮蔽数据目录", {"hosts": {"zcode": {"db_path": ""}}}, cfg(self.b)),
+            ("脚本同目录 zcode 空对象遮蔽数据目录", {"hosts": {"zcode": {}}}, cfg(self.b)),
+            ("脚本同目录无 zcode，续第二跳", {"hosts": {"workbuddy": {"db_path": "x"}}}, cfg(self.b)),
+            ("zcode 非对象，续第二跳", {"hosts": {"zcode": "x"}}, cfg(self.b)),
+            ("hosts 非对象，续第二跳", {"hosts": "x"}, cfg(self.b)),
+            ("顶层数组，续第二跳", [1], cfg(self.b)),
+            ("损坏 JSON，续第二跳", "{not json", cfg(self.b)),
+            ("BOM，续第二跳", b"\xef\xbb\xbf" + json.dumps(cfg(self.a)).encode("utf-8"), cfg(self.b)),
+            ("全空白 db_path", {"hosts": {"zcode": {"db_path": "   "}}}, cfg(self.b)),
+            ("非字符串 db_path", {"hosts": {"zcode": {"db_path": 123}}}, cfg(self.b)),
+            ("首尾空白", {"hosts": {"zcode": {"db_path": "  %s  " % self.a}}}, None),
+            ("波浪号展开", cfg("~/zc/usage.sqlite"), None),
+            ("环境变量展开", cfg(token + os.sep + "usage.sqlite"), None),
+            ("相对路径", cfg("relative/usage.sqlite"), None),
+            ("不存在的绝对路径", cfg(self.root / "nowhere" / "usage.sqlite"), None),
+        ]
+        node_driver = (
+            "const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');"
+            "const { sliceInject } = require('./tests/helpers/overlay-extract.cjs');"
+            "const block = sliceInject('/* db 活动戳', '/* 远端状态按');"
+            "const sb = vm.createContext({"
+            "  process: { env: process.env }, path, fs,"
+            "  CONFIG: process.env.TEST_SCRIPT_CONFIG,"
+            "  app: { getPath: () => process.env.HOME }, LOG: () => {}"
+            "});"
+            "vm.runInContext(block + '\\nthis.out = { file: dbFile(), dir: dbDir(), hostDir: resolveHostDbDir() };', sb);"
+            "process.stdout.write(JSON.stringify(sb.out));"
+        )
+        for label, script, data in scenarios:
+            with self.subTest(label):
+                self.drop()
+                if script is not None:
+                    self.put("script", script)
+                if data is not None:
+                    self.put("data", data)
+                env_vars = {
+                    "HOME": str(self.home),
+                    "USERPROFILE": str(self.home),
+                    "ZCODE_DESKTOP_HOME_DIR": str(self.home),
+                    "ZTUS314_DIR": str(self.a.parent),
+                    "TEST_SCRIPT_CONFIG": str(self.scripts / "config.json"),
+                }
+                with mock.patch("pathlib.Path.home", return_value=self.home), \
+                        mock.patch.dict(os.environ, env_vars):
+                    got_tr = self.mod._configured_db_path(home=self.home, script_dir=self.scripts)
+                    expect_zusage = self.zusage.zcode_db_path()
+                    default_db = self.mod._default_db_path(env={}, home=self.home)
+                expected_file = default_db if got_tr is None else got_tr
+                self.assertEqual(expect_zusage, expected_file, label)
+                proc = subprocess.run(
+                    [node, "-e", node_driver],
+                    cwd=str(REPO),
+                    env=clean_env(**env_vars),
+                    capture_output=True, text=True, timeout=15,
+                )
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                node_out = json.loads(proc.stdout)
+                self.assertEqual(Path(node_out["file"]), expected_file, label)
+                self.assertEqual(Path(node_out["dir"]), expected_file.parent, label)
+                self.assertEqual(Path(node_out["hostDir"]), default_db.parent, label)
+
+
 if __name__ == "__main__":
     unittest.main()
