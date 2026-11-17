@@ -7949,6 +7949,7 @@
     ".zu-sv3-line{fill:none;stroke-width:1.6;stroke-linejoin:round;stroke-linecap:round}" +
     ".zu-sv3-nline{stroke:var(--color-tooltip-tag-foreground,#8a8f98)}" +
     ".zu-sv3-area{stroke:none;fill-opacity:.12}" +
+    ".zu-sv3-chart .zu-sc-wrap::-webkit-scrollbar{display:none}" +
     ".zu-sv3-oline{fill:none;stroke:var(--color-tooltip-tag-foreground,#8a8f98);stroke-width:1.4;stroke-dasharray:4 3}" +
     ".zu-sv3-pt{stroke:none}" +
     ".zu-sv3-npt{fill:var(--color-tooltip-tag-foreground,#8a8f98)}" +
@@ -8214,7 +8215,8 @@
         (srs.dashed ? " zu-sv3-oline" : "") + '"' + (srs.color ? ' stroke="' + srs.color + '"' : "") +
         ' d="' + d + '"/>';
       /* 近 7 天单模型实线：分段面积（模型色 12% 透明度，缺口不填充） */
-      if (weekForm && !srs.dashed && srs.color) {
+      /* v384 S6-MINOR5：多模型周视图纯折线+虚线总体（设计稿无面积；单模型保留） */
+      if (weekForm && !srs.dashed && srs.color && !(an.perModel && an.perModel.length > 1)) {
         var area = "", seg2 = false, segStart = 0;
         for (var i4 = 0; i4 <= srs.pts.length; i4++) {
           var pv2 = i4 < srs.pts.length ? srs.pts[i4] : null;
@@ -8984,6 +8986,14 @@
       ".zu-sv3-root .zu3-hh-grid{flex:1;min-height:0;display:grid;grid-auto-flow:column;" +
         "grid-template-rows:repeat(7,minmax(0,1fr));grid-auto-columns:minmax(34px,1fr);gap:3px}" +
       ".zu-sv3-root .zu3-hh-grid .zu-hm-cell{border-radius:4px;padding:2px 3px;justify-content:flex-end;gap:1px}" +
+      /* v384 S6-MAJOR1：V2 的 .zu-hm-hist .zu-sc-wrap flex 列链未随 V3 类名迁移——
+       * wrap 塌缩到内容高，grid 的 minmax(0,1fr) 行随之压扁（S6 实测 gridH 122 vs 307） */
+      ".zu-sv3-root .zu3-hh .zu-sc-wrap{flex:1;min-height:0;width:100%;display:flex;flex-direction:column}" +
+      /* v384 S6-MAJOR2：hist 空日格补底色（否则周五/周六整行视觉消失） */
+      ".zu-sv3-root .zu3-hh-grid .zu-hm-cell.zu-hm-void{background:rgba(255,255,255,.04)}" +
+      ".zu-light .zu-sv3-root .zu3-hh-grid .zu-hm-cell.zu-hm-void{background:rgba(0,0,0,.045)}" +
+      /* v384 S6-MINOR3：V3 图表横滚条隐藏（06 旧规则只匹配 .zu-sv-chart） */
+      ".zu-sv3-root .zu3-hh .zu-sc-wrap::-webkit-scrollbar,.zu-sv3-root .zu3-hm .zu-sc-wrap::-webkit-scrollbar{display:none}" +
       /* ---------- 共用：模型色点 / 图例 / 空态 ---------- */
       ".zu-sv3-root .zu3-mdots,.zu-sv-portal .zu3-mdots{display:inline-flex;align-items:center;gap:2px;flex:0 0 auto}" +
       ".zu-sv3-root .zu3-mdot,.zu-sv-portal .zu3-mdot{width:6px;height:6px;border-radius:50%;display:inline-block;flex:0 0 auto}" +
@@ -9329,7 +9339,7 @@
       : an && an.period === "today" ? SPD_L("今天", "Today")
       : an && an.period === "week" ? SPD_L("近 7 天", "Last 7 days")
       : an && an.period === "month" ? SPD_L("本月", "This month")
-      : SPD_L("全部历史", "All history");
+      : SPD_L("历史", "History");   /* v384 S6-MINOR6：设计稿措辞「历史平均速度」 */
     return t + SPD_L("平均速度", " · average speed");
   }
   function spd3StatHTML(lb, x, dayLabel) {

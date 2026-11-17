@@ -180,7 +180,7 @@ test('单模型左卡: 五 period 标题文案、主数字/档位/模型行/本�
     const sel = { range: 'session', period, sid: 'sess_main', filt: { mode: 'sel', keys: [KEYS.a] } };
     const dom = stripStyle(cardHTML(ctx, analyze(ctx, h, sel), sel));
     const want = { recent: /最近 \d+ 轮平均速度/, today: /今天平均速度/, week: /近 7 天平均速度/,
-      month: /本月平均速度/, all: /全部历史平均速度/ }[period];
+      month: /本月平均速度/, all: /历史平均速度/ }[period];
     assert.match(dom, want, 'period=' + period + ' 左卡标题');
     assert.match(dom, /zu-sv3-main-num/, 'period=' + period + ' 主数字在场');
     assert.match(dom, /唯一模型/);

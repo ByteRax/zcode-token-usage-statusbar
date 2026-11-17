@@ -54,7 +54,11 @@ function buildV3SliceFrom(src) {
   const tpsBands = src.slice(a1, src.indexOf('];', a1) + 2);
   const tpsBand = extractBraced(src, src.indexOf('function tpsBand('));
   const tpsBandText = extractBraced(src, src.indexOf('function tpsBandText('));
-  const hA = src.indexOf('var SPD_RANGES'), hB = src.indexOf('var SPD_PORTAL = "";');
+  const hA = src.indexOf('var SPD_RANGES');
+  /* v384 S6：终点延伸到 fitModelNames 注释——覆盖恢复版 spdLegendCardHTML
+   * （spdLegendTipShow 消费它；此前止于 SPD_PORTAL 锚导致档位浮层 7 次
+   * "spdLegendCardHTML is not a function" PAGE_ERROR） */
+  const hB = src.indexOf('  /* 模型名按实际宽度缩小');
   if (hA < 0 || hB < 0) throw new Error('spd helper anchors not found (02 shard)');
   const spdHelpers = src.slice(hA, hB);
   const v3 = SPD_V3_SHARDS.map(name => {
@@ -68,8 +72,8 @@ function buildV3SliceFrom(src) {
     extractBraced(src, src.indexOf('function spd3RebuildOr('));
   const spdFitTip = extractBraced(src, src.indexOf('function spdFitTip('));
   /* Portal / 档位说明浮层宿主函数原文（含其依赖的模块级计时器变量声明）。
-   * spdLegendCardHTML 已随 V2 块删除——spdLegendTipShow 仍引用它（悬空，已知产品
-   * 问题，测试报告单列），此处不再提取，运行时由 host.html 供给 undefined。 */
+   * v384：spdLegendCardHTML 已随收口恢复进 02 分片（helpers 段终点已延伸覆盖），
+   * 无需再由 host.html 供给 undefined。 */
   const hostFns = extractBraced(src, src.indexOf('function spdHoverPortalHide(')) + '\n' +
     extractBraced(src, src.indexOf('function spdHoverPortalPlace(')) + '\n' +
     extractBraced(src, src.indexOf('function spdHoverPortalSync(')) + '\n' +

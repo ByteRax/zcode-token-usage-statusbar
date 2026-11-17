@@ -815,10 +815,9 @@ window.__zuMount = function (sel, hover) {
   tip.classList.toggle('zu-light', !document.documentElement.classList.contains('dark'));
   tip.style.left = window.__zuTipRight ? 'auto' : '48px';
   if (window.__zuTipRight) tip.style.right = '12px'; else tip.style.right = 'auto';
-  /* v293.1：补生产同构 .tbody 层（全量 tip 链 tip→tbody→卡三级高度链的真实形态，
-   * 此前复刻缺该层导致高度链回归测不出） */
-  tip.innerHTML = '<div class="tbody"></div>';
-  tip.firstChild.innerHTML = buildCard();
+  /* v384 S6：V3 卡直塞 innerHTML 对齐生产 tpsTip 链（01 showTpsTip 无 .tbody 包装；
+   * 复刻页多包一层会引入生产不存在的 max-height:60vh 截痕——V2 全量链才有 tbody） */
+  tip.innerHTML = buildCard();
   if (document.querySelector('.zusage-root style')) window.__SPD.spdFitTip(tip, true);
   else setTimeout(function () { if (tip.isConnected && tip.querySelector('.zu-sv3-root')) window.__SPD.spdFitTip(tip, true); }, 100);
   if (tip.getBoundingClientRect().top < 8) { tip.style.bottom = 'auto'; tip.style.top = '8px'; }

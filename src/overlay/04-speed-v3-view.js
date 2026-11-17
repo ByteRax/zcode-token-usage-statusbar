@@ -148,7 +148,7 @@
       : an && an.period === "today" ? SPD_L("今天", "Today")
       : an && an.period === "week" ? SPD_L("近 7 天", "Last 7 days")
       : an && an.period === "month" ? SPD_L("本月", "This month")
-      : SPD_L("全部历史", "All history");
+      : SPD_L("历史", "History");   /* v384 S6-MINOR6：设计稿措辞「历史平均速度」 */
     return t + SPD_L("平均速度", " · average speed");
   }
   function spd3StatHTML(lb, x, dayLabel) {

@@ -74,6 +74,7 @@
     ".zu-sv3-line{fill:none;stroke-width:1.6;stroke-linejoin:round;stroke-linecap:round}" +
     ".zu-sv3-nline{stroke:var(--color-tooltip-tag-foreground,#8a8f98)}" +
     ".zu-sv3-area{stroke:none;fill-opacity:.12}" +
+    ".zu-sv3-chart .zu-sc-wrap::-webkit-scrollbar{display:none}" +
     ".zu-sv3-oline{fill:none;stroke:var(--color-tooltip-tag-foreground,#8a8f98);stroke-width:1.4;stroke-dasharray:4 3}" +
     ".zu-sv3-pt{stroke:none}" +
     ".zu-sv3-npt{fill:var(--color-tooltip-tag-foreground,#8a8f98)}" +
@@ -339,7 +340,8 @@
         (srs.dashed ? " zu-sv3-oline" : "") + '"' + (srs.color ? ' stroke="' + srs.color + '"' : "") +
         ' d="' + d + '"/>';
       /* 近 7 天单模型实线：分段面积（模型色 12% 透明度，缺口不填充） */
-      if (weekForm && !srs.dashed && srs.color) {
+      /* v384 S6-MINOR5：多模型周视图纯折线+虚线总体（设计稿无面积；单模型保留） */
+      if (weekForm && !srs.dashed && srs.color && !(an.perModel && an.perModel.length > 1)) {
         var area = "", seg2 = false, segStart = 0;
         for (var i4 = 0; i4 <= srs.pts.length; i4++) {
           var pv2 = i4 < srs.pts.length ? srs.pts[i4] : null;
