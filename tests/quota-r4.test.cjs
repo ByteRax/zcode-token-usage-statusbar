@@ -41,9 +41,9 @@ function r4Client({ cfgEntries, secrets, env } = {}) {
       return customCfgFile(cfgEntries || []);
     },
     customCfgPath: "/virtual/provider_config.json",
-    fetchImpl: (url) => {
+    fetchImpl: (url, opts) => {
       const d = deferred();
-      calls.push({ url, d });
+      calls.push({ url, headers: (opts && opts.headers) || {}, d });
       return d.promise;
     },
   });
@@ -194,7 +194,81 @@ test("r4: malformed money/shape is parse_error, not a silent no_plan", async () 
   assert.equal(client.view().status, "parse_error");
 });
 
-test("r4: 403 (monitoring-purpose key) is auth_failed and freezes until key changes", async () => {  const { client, clock, calls } = r4Client({ cfgEntries: [["new-provider", "https://api.r4.codes/v1", "coder_key"]] });
+test("r4: credential precedence env > secrets > provider_config; Bearer header is sent", async () => {
+  const triple = r4Client({
+    cfgEntries: [["new-provider", "https://api.r4.codes/v1", "coder_cfg"]],
+    secrets: { sources: { r4: { apiKey: "coder_sec" } } },
+    env: { R4_API_KEY: "coder_env" },
+  });
+  triple.client.noteProvider("new-provider");
+  triple.client.tick();
+  reply(triple.calls, KEY_URL, 200, KEY_BODY);
+  reply(triple.calls, META_URL, 200, META_BODY);
+  await flush();
+  assert.ok(triple.calls.length >= 2);
+  triple.calls.forEach((c) => assert.equal(c.headers.authorization, "Bearer coder_env", "env 优先且授权头为 Bearer"));
+
+  const sec = r4Client({
+    cfgEntries: [["new-provider", "https://api.r4.codes/v1", "coder_cfg"]],
+    secrets: { sources: { r4: { apiKey: "coder_sec" } } },
+  });
+  sec.client.noteProvider("new-provider");
+  sec.client.tick();
+  reply(sec.calls, KEY_URL, 200, KEY_BODY);
+  reply(sec.calls, META_URL, 200, META_BODY);
+  await flush();
+  sec.calls.forEach((c) => assert.equal(c.headers.authorization, "Bearer coder_sec", "无 env 时用 secrets"));
+});
+
+test("r4: same-name windows keep the worst; bad windows and meta fields are clamped", () => {
+  const v = Q.normalizeR4(null, {
+    plan: {
+      package_name: "X".repeat(80),
+      total_usd: "60", remaining_usd: "80",
+      limit_windows: [
+        { duration_seconds: 18000, ceiling_usd: 10, consumed_usd: 2, remaining_usd: null },
+        { duration_seconds: 10800, ceiling_usd: 10, consumed_usd: 8, remaining_usd: null },
+        { duration_seconds: 18000, ceiling_usd: null, consumed_usd: 9 },
+        { duration_seconds: 18000, ceiling_usd: 5, consumed_usd: -1 },
+      ],
+    },
+    wallet: { balance_usd: "-3" },
+  });
+  assert.equal(v.windows.fiveHour.used, 8, "同标签多窗取已用比例更高者，不让低窗掩盖受限");
+  assert.equal(v.windows.fiveHour.remaining, 2, "remaining 缺失回退 ceiling-consumed");
+  assert.deepEqual(Object.keys(v.windows), ["plan", "fiveHour"], "ceiling=null 与负 consumed 窗不渲染");
+  assert.equal(v.windows.plan.used, 0, "remaining>total 时 used 钳 0");
+  assert.equal(v.windows.plan.remaining, 60, "remaining 钳到 total");
+  assert.equal(v.plan.productName, "X".repeat(60), "productName 截 60 字符");
+  assert.equal(v.balance, undefined, "有套餐时不回退钱包");
+
+  const neg = Q.normalizeR4(null, { plan: null, wallet: { balance_usd: "-3" } });
+  assert.equal(neg.noPlan, true, "负余额是坏数据，不显示余额也不判有额度");
+
+  const over = Q.normalizeR4({ key: {}, limit_usd: "20", spent_usd: "25", held_usd: "0", remaining_usd: null },
+    { plan: null, wallet: null });
+  assert.equal(over.quotaSummary.used, 25);
+  assert.equal(over.quotaSummary.remaining, 0, "spent 超限且 remaining 缺失时回退钳 0，不进负数");
+});
+
+test("r4: window duration thresholds map to the four buckets and drop the unknown", () => {
+  const names = (s) => {
+    const v = Q.normalizeR4(null, { plan: { package_name: "P", total_usd: "10", remaining_usd: "5",
+      limit_windows: [{ duration_seconds: s, ceiling_usd: 10, consumed_usd: 1 }] }, wallet: { balance_usd: "0" } });
+    return Object.keys(v.windows).filter((k) => k !== "plan").sort();
+  };
+  assert.deepEqual(names(21600), ["fiveHour"], "6h 整点归 fiveHour");
+  assert.deepEqual(names(21601), ["daily"], "6h+1s 归 daily");
+  assert.deepEqual(names(129600), ["daily"], "36h 整点归 daily");
+  assert.deepEqual(names(129601), ["weekly"], "36h+1s 归 weekly");
+  assert.deepEqual(names(691200), ["weekly"], "8d 整点归 weekly");
+  assert.deepEqual(names(691201), ["monthly"], "8d+1s 归 monthly");
+  assert.deepEqual(names(2764800), ["monthly"], "32d 整点归 monthly");
+  assert.deepEqual(names(2764801), [], "32d+1s 未知长窗丢弃");
+});
+
+test("r4: 403 (monitoring-purpose key) is auth_failed and freezes until key changes", async () => {
+  const { client, clock, calls } = r4Client({ cfgEntries: [["new-provider", "https://api.r4.codes/v1", "coder_key"]] });
   client.noteProvider("new-provider");
   client.tick();
   reply(calls, KEY_URL, 403, { code: "STANDARD_KEY_REQUIRED" });
@@ -211,6 +285,16 @@ test("r4: lookalike host is not claimed; env-only key activates the source", asy
   spoof.client.noteProvider("evil");
   spoof.client.tick();
   assert.equal(spoof.calls[0].url, "https://api.r4.codes.evil.example/v1/usage", "落 generic 中转探测，不是 cli/key");
+
+  const sub = r4Client({ cfgEntries: [["sub", "https://sub.r4.codes/v1", "sk"]] });
+  sub.client.noteProvider("sub");
+  sub.client.tick();
+  assert.equal(sub.calls[0].url, "https://sub.r4.codes/v1/usage", "r4 子域不认领，host 精确匹配");
+
+  const insecure = r4Client({ cfgEntries: [["h", "http://api.r4.codes/v1", "sk"]] });
+  insecure.client.noteProvider("h");
+  insecure.client.tick();
+  assert.equal(insecure.calls.length, 0, "http baseUrl 不认领；generic 探测也拒明文 http，零请求");
 
   const envOnly = r4Client({ env: { R4_API_KEY: "coder_env" } });
   envOnly.client.tick();

@@ -72,7 +72,7 @@
 - OpenCode Go 个人 Go 档已做真实账号只读查询（2026-11-15）；Go Plus/Teams、`/zen/v1` 按量版仍不在覆盖范围，不能声称支持。
 - R4 Coder 只覆盖个人套餐/Key 限额/钱包与 `/v1/models` 当前基础牌价；团队/组织账号、`pricing_effective` 分时价、`queued` 待生效礼包与逐笔 `grants` 未覆盖。
 
-本轮验证：Node 全量回归与基线逐用例一致（无新增失败；opencode-quota 新增控制台 meters/回落/超时/父信号联动用例全绿；quota-r4 新增套餐池/5 小时窗/Key 限额/钱包回退/空上限/403 冻结/伪装域 6 例全绿；token_pricing 新增 R4 三档精确命中与成本用例全绿）；OpenCode Go 冻结语义与 BigModel 同款：403 判无订阅后同 key 购买订阅需 ⚙ 立即刷新或换 key 触发指纹变化；R4 Coder 的 403 同样冻结到凭据指纹变化。
+本轮验证：Node 全量回归与基线逐用例一致（无新增失败；opencode-quota 新增控制台 meters/回落/超时/父信号联动用例全绿；quota-r4 新增套餐池/5 小时窗/Key 限额/钱包回退/空上限/403 冻结/伪装域/凭据优先级/多窗钳制/时长阈值 10 例全绿；token_pricing 新增 R4 三档精确命中与成本用例全绿）；OpenCode Go 冻结语义与 BigModel 同款：403 判无订阅后同 key 购买订阅需 ⚙ 立即刷新或换 key 触发指纹变化；R4 Coder 的 403 同样冻结到凭据指纹变化。
 
 ## Issue #56：非默认数据目录与 key-only 规则
 

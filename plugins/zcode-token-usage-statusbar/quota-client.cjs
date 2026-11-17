@@ -1883,7 +1883,7 @@ function normalizeR4(keyBody, metaBody) {
       const used = spent != null ? spent + (held != null ? held : 0) : Math.max(0, limit - remaining);
       out.quotaSummary = {
         limit: r4Usd(limit), used: r4Usd(used),
-        remaining: r4Usd(remaining != null ? remaining : limit - used),
+        remaining: r4Usd(remaining != null ? remaining : Math.max(0, limit - used)),
         currency: "USD",
       };
       hasQuota = true;
@@ -1893,7 +1893,7 @@ function normalizeR4(keyBody, metaBody) {
   if (!hasQuota) {
     const wallet = meta && meta.wallet && typeof meta.wallet === "object" && !Array.isArray(meta.wallet) ? meta.wallet : null;
     const balance = wallet ? num(wallet.balance_usd) : null;
-    if (balance == null || balance < 0) return { noPlan: true };   // 无套餐/限额/钱包：合法无订阅（如免费档 0）
+    if (balance == null || balance < 0) return { noPlan: true };   // 钱包缺失/负值且无套餐/限额：无任何可展示额度（0 是合法零余额，照常显示）
     out.kind = "balance";
     out.balance = { amount: balance, currency: "USD" };
   }

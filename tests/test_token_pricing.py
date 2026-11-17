@@ -101,6 +101,7 @@ class MatchingTests(unittest.TestCase):
             rates, key, level = tp.lookup_full(model)
             self.assertEqual((level, key), ("exact", model.lower()))
             self.assertEqual((rates["input"], rates["output"]), (inp, out))
+            self.assertEqual(rates["cache_write"], 0.0, model)
             self.assertNotEqual(rates, tp.DEFAULT_RATES)
         cost = tp.compute_group_cost("deepseek-v4.1-flash", "new-provider",
                                      3_492_858, 20_271, 3_323_816, 0)

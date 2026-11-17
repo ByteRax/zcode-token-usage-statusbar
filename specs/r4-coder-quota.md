@@ -36,9 +36,9 @@
 - **套餐池**：`plan.total_usd > 0` 且 `plan.remaining_usd >= 0` 时输出 `windows.plan = {percent(已用), used, total, remaining, currency:"USD", resetsAt: plan.expires_at, expires:true}`；已用 = total − remaining（6 位小数收敛浮点尾差）。
 - **速率窗**：`plan.limit_windows[]` 按 `duration_seconds` 映射：`≤6h → fiveHour`、`≤36h → daily`、`≤8d → weekly`、`≤32d → monthly`，其余长度或缺失时长的窗丢弃（不冒充套餐池）。`ceiling_usd` 为 null 表示不限速，跳过而不是渲染 0%；`consumed_usd` 缺失/负数视为坏窗跳过。同标签多窗取已用比例更高者。
 - **Key 总额度**：`limit_usd >= 0` 时输出 `quotaSummary = {limit, used: spent+held, remaining, currency:"USD"}`（0 值是合法零额度，保留展示）；`limit_usd` 为 null 时绝不造 Key 总额度（文档语义为无限额）。
-- **钱包**：仅当没有套餐池、没有 Key 限额、也没有有效速率窗时，回退 `balance = {amount: wallet.balance_usd, currency:"USD"}`，避免钱包小额盖掉套餐主额度（chip 对 `balance` 优先）。
+- **钱包**：仅当没有套餐池、没有 Key 限额、也没有有效速率窗时，回退 `balance = {amount: wallet.balance_usd, currency:"USD"}`，避免钱包小额盖掉套餐主额度（chip 对 `balance` 优先）。钱包恰为 0 是合法零余额，照常显示。
 - **套餐元数据**：`plan.productName = plan.package_name`、`plan.validEnd = plan.expires_at` 的日期部分；tooltip 标题显示「套餐名 · 有效期至」。
-- 两个响应都合法但无任何可展示数据（无套餐、无限额、钱包为 0/null）时返回 `noPlan`；任一请求失败且无可展示数据时报真实错误（network/auth/parse），绝不用 `no_plan` 冻结到用户换 Key。
+- 两个响应都合法但无任何可展示数据（无套餐、无限额、钱包缺失或负值）时返回 `noPlan`；任一请求失败且无可展示数据时报真实错误（network/auth/parse），绝不用 `no_plan` 冻结到用户换 Key。
 - 部分失败：`key` 成功而 `meta` 失败时保留 Key 限额；`meta` 成功而 `key` 失败时保留套餐/钱包。两者都失败才向上抛错。
 
 ## 5. 模型价格
@@ -55,7 +55,7 @@ r4 的 `/v1/models` 返回 USD/百万 token 四价（`input_per_m_tokens`、`out
 
 ## 6. 验收
 
-- `tests/quota-r4.test.cjs`：套餐池 + 5 小时窗、Key 限额、钱包回退、ceiling=null、meta 失败不冻结、403 冻结、伪装域与 env-only 激活。
+- `tests/quota-r4.test.cjs`：套餐池 + 5 小时窗、Key 限额、钱包回退、ceiling=null、meta 失败不冻结、403 冻结、伪装域（含 http 与子域不认领）、env-only 激活、脏字段 parse_error、凭据优先级与 Bearer 授权头、同标签多窗取高与钳制、时长阈值映射。
 - `tests/test_token_pricing.py::test_r4_relay_catalog_is_priced_instead_of_default_fallback`：三档精确命中且成本不再落兜底均价。
 - 真机只读：`createQuotaClient` + 真实 provider_config 的 `R4Coder` key 返回 `status=ok`、`kind=plan`、`plan.productName=Code Lite +1`、`windows.plan` 与 `plan.validEnd`。
 - 2026-11-17 实测备注：`limit_windows` 可能为空数组（当前速率窗不活跃），代码按空数组降级，仅显示套餐池。
