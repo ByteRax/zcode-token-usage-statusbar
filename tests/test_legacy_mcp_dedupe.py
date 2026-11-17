@@ -169,6 +169,72 @@ class LegacyMcpDedupeTests(unittest.TestCase):
         self.assertEqual(self.config.read_bytes(), before, "锁忙时不得改写宿主配置")
         self.assertFalse(self.config.with_name(self.config.name + ".zusage-mcp.bak").exists())
 
+    def test_write_happens_inside_lock(self):
+        # 锁释放前配置必须已改写：写操作发生在锁内，不留「锁外写回」覆盖窗口。
+        test = self
+        test.write_servers({"zcode-token-usage-statusbar": test.entry()})
+        original_lock = test.module.file_lock
+        observed = {}
+
+        def watching_lock(path, timeout=10.0):
+            ctx = original_lock(path, timeout=timeout)
+
+            class Guarded:
+                def __enter__(self):
+                    return ctx.__enter__()
+
+                def __exit__(self, *exc):
+                    observed["servers"] = json.loads(
+                        test.config.read_text(encoding="utf-8"))["mcp"]["servers"]
+                    return ctx.__exit__(*exc)
+
+            return Guarded()
+
+        with mock.patch.object(test.module, "file_lock", watching_lock), mock.patch("sys.stderr"):
+            test.assertEqual(test.dedupe(), "removed")
+        test.assertNotIn("zcode-token-usage-statusbar", observed["servers"])
+
+    def test_lock_rereads_config_before_writing(self):
+        # 锁内重读：拿到锁之前其它会话写入的其它 MCP 服务不得被覆盖。
+        test = self
+        test.write_servers({"zcode-token-usage-statusbar": test.entry()})
+        original_lock = test.module.file_lock
+
+        def rival_lock(path, timeout=10.0):
+            ctx = original_lock(path, timeout=timeout)
+
+            class Guarded:
+                def __enter__(self):
+                    result = ctx.__enter__()
+                    data = json.loads(test.config.read_text(encoding="utf-8"))
+                    data["mcp"]["servers"]["rival-tool"] = {"command": "node", "args": ["r.js"]}
+                    test.config.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+                    return result
+
+                def __exit__(self, *exc):
+                    return ctx.__exit__(*exc)
+
+            return Guarded()
+
+        with mock.patch.object(test.module, "file_lock", rival_lock), mock.patch("sys.stderr"):
+            test.assertEqual(test.dedupe(), "removed")
+        servers = test.read_servers()
+        test.assertNotIn("zcode-token-usage-statusbar", servers)
+        test.assertEqual(servers["rival-tool"], {"command": "node", "args": ["r.js"]},
+                         "并发写入的其它服务不得被锁内重读遗漏")
+
+    def test_bad_host_config_override_does_not_raise(self):
+        # ~未知用户 形态 expanduser 会抛 RuntimeError；按字面路径处理并保持永不抛异常。
+        override = "~nosuchuser-zusage-4567/config.json"
+        try:
+            Path(override).expanduser()
+        except RuntimeError:
+            pass
+        else:
+            self.skipTest("本机 pathlib 对该形态不抛 RuntimeError")
+        with mock.patch.dict(os.environ, {"ZUSAGE_PLUGIN_HOST_CONFIG": override}):
+            self.assertEqual(self.dedupe(), "absent")
+
     def test_non_object_mcp_section_itself_is_never_rewritten(self):
         self.config.write_text(json.dumps({"mcp": "not-an-object"}), encoding="utf-8")
         before = self.config.read_bytes()

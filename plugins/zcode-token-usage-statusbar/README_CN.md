@@ -15,7 +15,7 @@
 
 - Python **3.8+**，仅标准库，无需安装任何 pip 包。
 - Hook 命令按 `python3` → `python` → `py -3` 自动回退（兼容 Windows）。stdio MCP 服务经 `node` 启动包内 `mcp-launch.cjs`（桌面 ZCode 3.17.1 起给 MCP 子进程 PATH 末尾追加 Electron Node 回退 shim；更旧桌面版或无此机制的宿主需本机装有 Node），由它按同一顺序实测探测解释器并透传 stdio 给 `usage_mcp.py`——任何平台都无需手工改 `.mcp.json`（issue #234）。MCP 工具是可选的，命令与 Hook 不依赖它。
-- 以前用过独立安装器（`install.py`）？它可能把同一个 MCP 服务注册进了 `~/.zcode/cli/config.json`，导致每个会话各拉起两份 `usage_mcp.py`（以及各自的 `node` 启动器）。插件会在会话启动时移除这些遗留注册（历史名 `zcode-token-usage-statusbar` / `token-usage` / `zusage`），且仅当其指向本插件运行目录或插件目录内的 `usage_mcp.py`；其它条目一律保留。插件自己的 `.mcp.json` 继续提供 `token_usage` 工具；需要保留可把 `ZUSAGE_KEEP_LEGACY_MCP` 设为任意非空值（如 `1`）。
+- 以前用过独立安装器（`install.py`）？它可能把同一个 MCP 服务注册进了 `~/.zcode/cli/config.json`，导致每个会话各拉起两份 `usage_mcp.py`（以及各自的 `node` 启动器）。插件会在会话启动时移除这些遗留注册（历史名 `zcode-token-usage-statusbar` / `token-usage` / `zusage`），且仅当其指向本插件运行目录或插件目录内的 `usage_mcp.py`；带自定义键（如 `env`）的条目与其它条目一律保留。插件自己的 `.mcp.json` 继续提供 `token_usage` 工具；需要保留可把 `ZUSAGE_KEEP_LEGACY_MCP` 设为任意非空值（如 `1`）。
 
 ## 安装与首次运行
 
