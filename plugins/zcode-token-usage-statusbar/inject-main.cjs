@@ -363,10 +363,16 @@ function expandDbPathVars(raw, env, home) {
     const k = b || u || w;
     return Object.prototype.hasOwnProperty.call(env, k) && env[k] != null ? String(env[k]) : m;
   });
-  if (s === "~") return home;
-  if (s.startsWith("~/") || s.startsWith("~\\")) return path.join(home, s.slice(2));
-  if (s.startsWith("~")) return "";   // ~otheruser 在无 passwd 解析时按不可展开忽略（同 token_rate 规则 4）
-  return s;
+  let out;
+  if (s === "~") out = home;
+  else if (s.startsWith("~/") || s.startsWith("~\\")) out = path.join(home, s.slice(2));
+  else if (s.startsWith("~")) return "";   // ~otheruser 在无 passwd 解析时按不可展开忽略（同 token_rate 规则 4）
+  else out = s;
+  /* 归一分隔符对齐 Python 端 Path(expandvars(...)) 的字符串化语义：模板字面量 "/" 混入
+   * Windows 展开值（反斜杠）时三端同形，否则 zusage/token_rate 与本端解析出异形同文件路径。
+   * normalize 亦折叠 `..`（Python 保留），无符号链接时指向同一文件，仅 dbStamp/watch 对
+   * 不存在路径得空/落空，不产生错误数据。 */
+  return out ? path.normalize(out) : "";
 }
 function resolveConfiguredDbPath(scriptConfigPath) {
   const env = process.env || {};
