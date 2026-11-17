@@ -1231,6 +1231,148 @@
       if (stale) s += L("，数据已过期", ", data stale");
       return s;
     }
+    /* ---------- v383 Git chip 工具栏四级响应式（specs/git-chip-responsive.md）----------
+     * 候选/测量/选级只读数据与几何，不重查 Git、不动 Tooltip；L0/L1 复用 gitChipHtml 同串
+     * （L1 靠既有 zu-compact CSS 收起分支名与 ↑↓）。绝不拼接 ins/del 之类假汇总数字；
+     * 风险（冲突/操作中/过期）在摘要以下以短标与状态点保留，aria 恒全量。 */
+    function gitDotCls(st, stale) {
+      if ((st.conflicts | 0) > 0) return "zu-git-dot-r";
+      if (stale) return "zu-git-dot-n";   // 未知优先于变更：过期数据不能冒充最新状态
+      /* 操作中（rebase/merge 等）与有变更同为黄：L3/L3I 丢弃操作词后点色是唯一视觉语义，
+       * 绿点会伪造干净态（v383 review M1） */
+      if (st.op || (st.ins | 0) > 0 || (st.del | 0) > 0 || (st.untracked | 0) > 0) return "zu-git-dot-y";
+      return "zu-git-dot-g";
+    }
+    function gitCandidates(view) {
+      var st = view.st, stale = view.stale;
+      var full = gitChipHtml(view);
+      if (st.kind === "multi") {   // v96 multi 独立摘要：仓库数+确认冲突+失败仓+过期保留，「M改」折叠进 ⋯
+        var agg = gitMultiAgg(st);
+        var mdot = (agg.conflict > 0 || agg.failed > 0) ? "zu-git-dot-r" : (agg.staleAny || stale) ? "zu-git-dot-n" : (agg.op > 0 || agg.changed > 0) ? "zu-git-dot-y" : "zu-git-dot-g";
+        var mdotEl = '<span class="zu-git-dot ' + mdot + '"></span>';
+        var mrisk = "";
+        if (agg.conflict > 0) mrisk += '<span class="zu-git-conflict">!' + agg.conflict + "</span>";   // 仓库个数不缩写（与 L0/aria 同口径）
+        if (agg.failed > 0) mrisk += '<span class="zu-git-warn">' + agg.failed + L("失败", " failed") + "</span>";   // 失败仓保留文字（裸数字无语义），摘要不得显得全部查询成功
+        if (stale) mrisk += '<span class="zu-git-warn">' + L("过期", "stale") + "</span>";
+        var l2m = ZU_GIT_MULTI_ICON + '<span class="zu-git-name">' + agg.total + L("仓", " repos") + "</span>" + mrisk +
+          (agg.changed > 0 ? '<span class="zu-git-more">⋯</span>' : "");
+        return { L0: full, L1: full, L2: l2m, L3: ZU_GIT_MULTI_ICON + mdotEl + mrisk, L3I: ZU_GIT_MULTI_ICON + mdotEl };
+      }
+      var name = st.detached ? "HEAD" : st.noCommits ? L("初始", "init") : String(st.branch || "HEAD");
+      var shown = name.length > 18 ? name.slice(0, 16) + "…" : name;   // 截断与转义同 L0，全名进 Tooltip
+      var nums = [];
+      if (st.ins > 0) nums.push('<span class="zu-git-ins">+' + gitNum(st.ins) + "</span>");
+      if (st.del > 0) nums.push('<span class="zu-git-del">-' + gitNum(st.del) + "</span>");
+      var work = "";
+      if (nums.length) work = nums.join(" ");
+      else if (st.untracked > 0) work = '<span class="zu-git-unt">?' + gitNum(st.untracked) + "</span>";
+      else work = '<span class="zu-git-name">' + gitEsc(shown) + "</span>";   // 无任何改动时显示分支名（分支名收纳不触发 ⋯，见 hidden 注释）
+      /* 段序对齐 spec 示例（⎇ !2 +764 -164 变基中 过期 ⋯）：冲突 → 工作段 → 操作 → 过期 → ⋯ */
+      var hidden = (nums.length && st.untracked > 0) || (st.ahead > 0 || st.behind > 0);   // ⋯=有工作区/同步信息被折叠（?N 被行数段并入、↑↓ 收起）；分支名收纳是 L2 预期行为不触发（任务书 `⎇ ?4` 示例）
+      var l2 = ZU_GIT_ICON +
+        (((st.conflicts | 0) > 0) ? '<span class="zu-git-conflict">!' + gitNum(st.conflicts) + "</span>" : "") +
+        work +
+        (st.op ? '<span class="zu-git-op">' + gitEsc(gitOpLabel(st.op)) + "</span>" : "") +   // rebase/merge 中是风险态，摘要保留
+        (stale ? '<span class="zu-git-warn">' + L("过期", "stale") + "</span>" : "") +
+        (hidden ? '<span class="zu-git-more">⋯</span>' : "");
+      var dotEl = '<span class="zu-git-dot ' + gitDotCls(st, stale) + '"></span>';
+      var l3r = (((st.conflicts | 0) > 0) ? '<span class="zu-git-conflict">!' + gitNum(st.conflicts) + "</span>" : "") +
+        (stale ? '<span class="zu-git-warn">' + L("过期", "stale") + "</span>" : "");
+      var l3s = ZU_GIT_ICON + dotEl + l3r;   // L3 不再带操作词（点色与 Tooltip 承载）
+      return { L0: full, L1: full, L2: l2, L3: l3s, L3I: ZU_GIT_ICON + dotEl };
+    }
+    var GIT_ORDER = ["L0", "L1", "L2", "L3", "L3I"];
+    var GIT_HYST = 20;   // 展开迟滞（与 QUOTA_HYST 同带）；收缩即时
+    if (typeof window !== "undefined") {
+      var gitSeamInst = {};   // 实例级令牌：缝按实例创建覆盖赋值，dispose 据此只删本实例（最后创建者）的缝
+      window.__zusageGitFns = {
+        gitCandidates: gitCandidates, gitDotCls: gitDotCls, gitMeasureAvail: function (mount, chip) { return gitMeasureAvail(mount, chip); },
+        pickQuotaDisplayLevel: pickQuotaDisplayLevel,
+        GIT_ORDER: GIT_ORDER, GIT_HYST: GIT_HYST,
+        __zuInst: gitSeamInst,
+        all: function () {
+          return {
+            gitCandidates: gitCandidates, gitDotCls: gitDotCls, gitMeasureAvail: gitMeasureAvail,
+            pickQuotaDisplayLevel: pickQuotaDisplayLevel, GIT_ORDER: GIT_ORDER, GIT_HYST: GIT_HYST
+          };
+        }
+      };
+    }
+    /* 候选自然宽：克隆 chip 离屏实测（沿用旧探测模式），按 等级|html|语言|字号 缓存——
+     * 数据/语言/字号不变时不重复克隆（render+heavy 双对账点高频）；缓存超界整体重置防长会话无界增长。 */
+    function gitMeasureWidth(html, levelKey, multi, chip) {
+      var fs = "";
+      try { fs = (chip && chip.isConnected && typeof getComputedStyle === "function") ? (getComputedStyle(chip).fontSize || "") : ""; } catch (e) { }
+      var key = levelKey + "|" + html + "|" + state.lang + "|" + fs;
+      if (gitWidthCache && Object.prototype.hasOwnProperty.call(gitWidthCache, key)) return gitWidthCache[key];
+      if (gitWidthCache === null) gitWidthCache = {};
+      var n = 0;
+      for (var k in gitWidthCache) { n++; if (n > 64) { gitWidthCache = {}; break; } }
+      var probe = null;
+      try {
+        probe = chip.cloneNode(true);
+        probe.className = "zu-git" + (multi ? " zu-git-multi" : "") +
+          (levelKey === "L1" ? " zu-compact" : "") + (levelKey === "L2" ? " zu-l2" : "") +
+          (levelKey === "L3" ? " zu-l3" : "") + (levelKey === "L3I" ? " zu-l3i" : "");
+        probe.setAttribute("aria-hidden", "true");
+        probe.inert = true;
+        probe.style.position = "fixed";
+        probe.style.visibility = "hidden";
+        probe.style.pointerEvents = "none";
+        probe.style.width = "max-content";
+        probe.style.maxWidth = "none";
+        probe.innerHTML = html;
+        document.body.appendChild(probe);
+        var w = probe.getBoundingClientRect().width || 0;
+        if (w > 0) gitWidthCache[key] = w;   // 0=探针瞬态失败（clone 异常/脱离布局）：不缓存，下一拍重试
+        return w;
+      } catch (e) { return 0; }
+      finally { if (probe) probe.remove(); }
+    }
+    /* Git chip 可用宽度；null=无法可靠测量（VM stub/未标定结构/内容自撑行）→ fail-safe 保持 L0/L1。
+     * 标定结构（真实 CDP 取证 2026-11-17）：leadA 是 flex-1 min-w-0（宽度=row−trailing−gap，窗口驱动），
+     * leadC 是 shrink-0；avail = min(leadA.w, row.w−trail.w−gap) − (leadC.w − chipW_in_leadC)。
+     * chip 变级/摘除时 chipW 自消，avail 与 chip 当前形态无关（反自指，无额度 chip v382 首版黑洞）。
+     * 未标定结构（无 leading-actions/content 对、内容自撑行、rect 异常）一律返回 null，
+     * 上层 fail-safe 走 gitChipCompactLegacy 旧两态（宿主 compact 强制 + 32px 迟滞），绝不猜测收窄。 */
+    function gitMeasureAvail(mount, chip) {
+      if (!cardCache || !mount) return null;
+      var row = toolbarRowOf(cardCache);
+      if (!row || !(row.clientWidth > 0) || typeof row.getBoundingClientRect !== "function") return null;
+      var hasAttr = function (el, a) { return !!(el && el.hasAttribute && el.hasAttribute(a)); };
+      var content = hasAttr(mount.wrap, "data-composer-leading-content") ? mount.wrap : row.querySelector("[data-composer-leading-content]");
+      var available = content && content.parentElement && hasAttr(content.parentElement, "data-composer-leading-actions") ? content.parentElement : row.querySelector("[data-composer-leading-actions]");
+      var trailing = row.querySelector("[data-composer-trailing-actions]");
+      var gap = 0;
+      try { gap = parseFloat(getComputedStyle(row).columnGap) || 0; } catch (e) { }
+      var chipW = 0, chipLive = !!(chip && chip.isConnected);
+      if (chipLive) { try { chipW = chip.getBoundingClientRect().width || 0; } catch (e) { chipW = 0; } }
+      if (hasAttr(content, "data-composer-leading-content") && hasAttr(available, "data-composer-leading-actions")) {
+        var aR = null, cR = null, rR = null, tR = null;
+        try {
+          aR = available.getBoundingClientRect();
+          cR = content.getBoundingClientRect();
+          rR = row.getBoundingClientRect();
+          if (trailing && hasAttr(trailing, "data-composer-trailing-actions")) tR = trailing.getBoundingClientRect();
+        } catch (e) { return null; }
+        if (!aR || !isFinite(aR.width) || !(aR.width > 1)) return null;   // 内容自撑行（inline 单行输入等）：未标定 fail-safe
+        if (!cR || !isFinite(cR.width) || !rR || !isFinite(rR.width)) return null;
+        var room = aR.width;
+        if (tR && isFinite(tR.width)) room = Math.min(room, rR.width - (tR.width + gap));
+        var used = cR.width - ((chipLive && chip.parentElement === content) ? chipW : 0);
+        var avail = room - used;
+        /* 几何签名：同几何零重复计算（rect 读取仍在——签名输入即读数，此处省的是算术）；hasChip 入签防摘除态读数污染 */
+        var sig = Math.round(room) + "|" + Math.round(used) + "|" + (chipLive ? 1 : 0);
+        if (sig === gitAvailSig) return gitAvailVal;
+        gitAvailSig = sig;
+        gitAvailVal = isFinite(avail) ? avail : 0;
+        return gitAvailVal;
+      }
+      /* 未标定结构（无 leading-actions+content 对）一律返回 null：行内子元素可伸缩，
+       * 「行宽 − 子元素求和」会得到 ≈0 的伪读数（pill 夹具实测），多级收缩会误判 hidden；
+       * 上层 fail-safe 走 gitChipCompactLegacy 旧两态，绝不猜测收窄或隐藏。 */
+      return null;
+    }
     function onGitEnter() { showGitTip(this); }
     function onGitClick(e) {
       e.preventDefault();
@@ -1301,7 +1443,11 @@
       ariaLiveState.__zuGitLive = "";
       ariaLiveState.textContent = ariaLiveState.__zuQuotaLive || "";
     }
-    function gitChipCompact(btn, chip, html, mount) {
+    /* v383：旧两态探测保留为「未标定结构」回退（v146 夹具实证：无 leading-actions 的宿主行
+     * 子元素可伸缩，行内求和口径会把 avail 压到 ≈0，多级收缩会把 chip 误判成 hidden）——
+     * 多级响应只在已标定结构（leading-actions+leading-content 对，真实宿主 CDP 取证）启用；
+     * 未标定结构维持 v124 以来的行为：宿主 compact 强制紧凑 + 32px 恢复迟滞探测，绝不隐藏。 */
+    function gitChipCompactLegacy(btn, chip, html, mount) {
       if (btn.getAttribute("data-composer-compact") === "true") return true;
       if (!chip.classList.contains("zu-compact")) return false;
       var row = cardCache ? toolbarRowOf(cardCache) : null, probe = null;
@@ -1386,10 +1532,36 @@
       }
       syncCtxLite(chip, bar.classList.contains("zu-light"));
       chip.__zuGit = view;
-      var html = gitChipHtml(view);
-      var compact = gitChipCompact(btn, chip, html, mount);
-      var mAgg = view.st.kind === "multi" ? gitMultiAgg(view.st) : null;
-      var cls = "zu-git" + (compact ? " zu-compact" : "") + (view.st.kind === "multi" ? " zu-git-multi" : "") + (mAgg && mAgg.conflict > 0 ? " zu-conflict" : "");   // v96：形态类（紧凑态收起份数与聚合计数段）+ 确认冲突 → 冲突段转红（类进签名保持幂等）；过期走文字徽章不降透明度
+      /* v383 四级响应式：按前导区真实可用宽度选级；hidden=极限降级摘除节点（__zuGit 数据保留，
+       * 恢复宽度经持久等级迟滞回展），不遮挡原生控件。宿主 compact 时候选序封顶 L1（不再展开全名）。 */
+      var multi = view.st.kind === "multi";
+      var cands = gitCandidates(view);
+      var hostCompact = btn.getAttribute("data-composer-compact") === "true";
+      var avail = null;
+      try { avail = gitMeasureAvail(mount, chip); } catch (e) { avail = null; }
+      var level;
+      if (avail === null) level = (hostCompact || gitChipCompactLegacy(btn, chip, cands.L0, mount)) ? "L1" : "L0";   // 未标定 fail-safe：完整保留旧两态行为（绝不猜测收窄或隐藏）
+      else {
+        level = pickQuotaDisplayLevel(   // 泛型选级与额度 chip 同款：从最完整到最简、展开迟滞、hidden 兜底
+          hostCompact ? ["L1", "L2", "L3", "L3I"] : GIT_ORDER,
+          avail,
+          function (key) { return gitMeasureWidth(cands[key], key, multi, chip); },
+          gitLevel, GIT_HYST);
+      }
+      gitLevel = level;
+      if (level === "hidden") {
+        if (gitTipFor === chip) hideGitTip();
+        try { chip.remove(); } catch (e) { }
+        gitChipCache = null;
+        ariaLiveState.__zuGitLive = "";
+        ariaLiveState.textContent = ariaLiveState.__zuQuotaLive || "";
+        return;
+      }
+      var html = cands[level];
+      var mAgg = multi ? gitMultiAgg(view.st) : null;
+      var cls = "zu-git" + (level === "L1" ? " zu-compact" : "") +
+        (level === "L2" ? " zu-l2" : "") + (level === "L3" ? " zu-l3" : "") + (level === "L3I" ? " zu-l3i" : "") +
+        (multi ? " zu-git-multi" : "") + (mAgg && mAgg.conflict > 0 ? " zu-conflict" : "");   // 形态类（L1 既有 CSS 收起分支名/L2+ 换摘要串）+ 确认冲突 → 冲突段转红；过期走文字徽章不降透明度
       var sig = cls + "|" + html + "|" + state.lang;
       var busy = chip.classList.contains("zu-gbusy");
       if (chip.__zuSig !== sig) {   // 幂等：内容不变时不重建 chip
@@ -1398,6 +1570,7 @@
         chip.setAttribute("aria-label", gitChipAria(view.st, view.stale));
         chip.innerHTML = html;
       }
+      chip.setAttribute("data-zusage-glevel", level);   // React 不动 data-*；诊断/测试读级
       chip.classList.toggle("zu-gbusy", busy);
       chip.setAttribute("aria-busy", String(busy));
       if (gitTipFor === chip) showGitTip(chip);   // 悬停中数据刷新：内容跟随
