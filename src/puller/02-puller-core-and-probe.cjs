@@ -107,9 +107,11 @@ function createModelPuller(opts) {
     return ids;
   }
   /* api-key 型自定义供应商才可拉取/写入；套餐源（PLAN_SOURCES）另行放行；
-   * coding-plan 型自定义规则的 baseUrl/模型由宿主管 */
+   * coding-plan 型自定义规则的 baseUrl/模型由宿主管。
+   * issue #383：按合并模板后的有效配置判定——模板供应商个人规则只存 templateId + key，
+   * 读原始 config 会把 baseUrl 判空、整链（列表/拉取/探测/写入）全部不可用。 */
   function isPullable(rule) {
-    const cfg = (rule && rule.config) || {};
+    const cfg = effectiveRuleConfig(rule);
     const access = cfg.access || {}, api = cfg.api || {};
     if (access.type === "api-key" && !!api.baseUrl) return true;
     return !!(isPlanProvider(rule && rule.providerId) && planTokenOf(rule.providerId));
@@ -174,7 +176,7 @@ function createModelPuller(opts) {
     return first === planId;
   }
   function providerView(rule) {
-    const cfg = (rule && rule.config) || {};
+    const cfg = effectiveRuleConfig(rule);   // issue #383：模板供应商展示合并后 baseUrl
     const access = cfg.access || {}, api = cfg.api || {};
     return {
       id: String(rule.providerId || ""),
@@ -193,7 +195,9 @@ function createModelPuller(opts) {
   function providerSource(data, providerId) {
     const src = PLAN_SOURCES[String(providerId || "")];
     const rule = findRule(data, providerId);
-    const cfg = (rule && rule.config) || {}, api = cfg.api || {}, access = cfg.access || {};
+    /* issue #383：身份随合并后配置推导——模板变更即失效（在途探测中止、拉取缓存作废）；
+     * 非模板供应商合并结果与原始 config 同值，指纹不变 */
+    const cfg = rule ? effectiveRuleConfig(rule) : {}, api = cfg.api || {}, access = cfg.access || {};
     return createHash("sha256").update(JSON.stringify(src
       ? [src.baseUrl, planTokenOf(providerId)]
       : [access.type, api.type, String(api.baseUrl || "").trim().replace(/\/+$/, ""), String(access.apiKey || "").trim()])).digest("hex");
@@ -393,8 +397,9 @@ function createModelPuller(opts) {
         return { ok: false, error: (e && e.name === "TimeoutError") ? "timeout" : "request failed" };
       }
     }
-    const apiKey = String(((rule.config || {}).access || {}).apiKey || "").trim();
-    const urls = candidateUrls((rule.config || {}).api.baseUrl);
+    const cfg = effectiveRuleConfig(rule);   // issue #383：模板供应商按合并后配置构造请求
+    const apiKey = String((cfg.access || {}).apiKey || "").trim();
+    const urls = candidateUrls(cfg.api.baseUrl);
     const headers = { "Accept": "application/json", "User-Agent": "ZCode" };
     if (apiKey) { headers["Authorization"] = "Bearer " + apiKey; headers["x-api-key"] = apiKey; }
     let lastError = "no candidate endpoint succeeded";
@@ -601,7 +606,8 @@ function createModelPuller(opts) {
     const remaining = ctx ? ctx.deadline - Date.now() : PROBE_TIMEOUT_MS;
     if (remaining <= 0) return { ok: false, model: mid, kind: "timeout", error: "timeout" };
     let url = "", body = null;
-    const headers = { "Content-Type": "application/json" };
+    const headers = { "Content-Type": "application/json", "User-Agent": "ZCode" };   // fetchModels/enhanceText 同款 UA：网关拒绝无 UA 请求（实测缺 UA 时 anthropic 端点 500 code 1234）
+    if (isOpenCodeGoBaseUrl(baseUrl)) headers["x-opencode-session"] = randomUUID();   // OpenCode Go 路由键，缺失 400 MissingSessionID（issue #383：与增强链同款）
     if (apiType === "openai-chat-completions") {
       url = baseUrl + "/chat/completions";
       headers["Authorization"] = "Bearer " + apiKey;
@@ -666,15 +672,19 @@ function createModelPuller(opts) {
         try {
           const data = readProviderCfg();
           const rule = data ? findRule(data, providerId) : null;
-          if (!currentProbe(ctx, data) || !rule || !isPullable(rule) || !rule.config || !rule.config.api) return { base: "", tried: tried };
+          if (!currentProbe(ctx, data) || !rule || !isPullable(rule) || !rule.config || typeof rule.config !== "object") return { base: "", tried: tried };
+          /* issue #383：模板供应商个人规则可无 api 对象——补建后只写实测命中的 baseUrl
+           * （稀疏 api 过宿主 strict schema；api.type 仍由模板承载不代写，显式配置覆盖模板） */
+          const api = rule.config.api && typeof rule.config.api === "object" ? rule.config.api : (rule.config.api = {});
           const cache = cachedMeta(data, providerId);
-          rule.config.api.baseUrl = cand.base;
+          api.baseUrl = cand.base;
           writeProviderCfg(data);
           ctx.source = providerSource(data, providerId);
           if (cache) cache.source = ctx.source;
           log("probe repaired baseUrl for", providerId, "->", cand.base);
           return { base: cand.base, source: ctx.source, tried: tried };
         } catch (e) {
+          log("probe repair write-back failed:", e && e.message);   // 静默吞异常曾让修复失败无从排查（issue #383）
           return { base: "", tried: tried };
         } finally {
           applyBusy = false;
@@ -951,7 +961,7 @@ function createModelPuller(opts) {
     const planSrc = PLAN_SOURCES[String(providerId || "")];
     if (!planSrc && (!rule || !isPullable(rule))) return { ok: false, model: mid, kind: "provider", error: "provider not found" };
     if (!fetchImpl) return { ok: false, model: mid, kind: "network", error: "no network stack" };
-    const cfg = (rule && rule.config) || {};
+    const cfg = rule ? effectiveRuleConfig(rule) : {};   // issue #383：probe 镜像宿主——宿主真实请求本就使用模板 baseUrl
     const api = cfg.api || {};
     const apiType = planSrc ? "anthropic-messages" : String(api.type || "");   // probe 链维持 anthropic models 端点实测语义
     const baseUrl = String((planSrc ? planSrc.baseUrl : api.baseUrl) || "").trim().replace(/\/+$/, "");
