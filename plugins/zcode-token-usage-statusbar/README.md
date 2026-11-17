@@ -15,6 +15,7 @@ See model speed, token usage, context size, plan quota, and Git status while you
 
 - Python **3.8+** with the standard library only — no pip packages.
 - Hook commands fall back `python3` → `python` → `py -3` (Windows friendly). The stdio MCP server starts `mcp-launch.cjs` via `node` (ZCode desktop 3.17.1+ appends an Electron Node fallback shim to the MCP subprocess PATH; older desktop builds or hosts without that mechanism need a real `node` on PATH), which probes the same interpreter order and pipes stdio through to `usage_mcp.py` — no manual `.mcp.json` edits on any platform (issue #234). The MCP tool is optional; commands and hooks work without it.
+- Previously using the standalone installer (`install.py`)? It may have registered the same MCP server in `~/.zcode/cli/config.json`, which would make every session spawn two `usage_mcp.py` servers (and their `node` launchers). `SessionStart` removes that legacy registration when it points at this plugin's `usage_mcp.py`; the plugin's own `.mcp.json` keeps the `token_usage` tool available. Set `ZUSAGE_KEEP_LEGACY_MCP=1` to keep the legacy entry.
 
 ## Install & first run
 

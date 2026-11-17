@@ -871,6 +871,23 @@ print(json.dumps(operations))
         self.assertEqual(self.installer.LAST_DIAG,
                          {"hostBuild": "9.9.9", "pluginVersion": "1.0.0", "injected": True, "bridge": "skipped-error"})
 
+    def test_run_hook_removes_legacy_cli_mcp_registration(self):
+        # 独立安装遗留的 CLI MCP 注册会与插件 .mcp.json 并存，每会话双份 usage_mcp；
+        # SessionStart 清理只认指向本插件脚本的条目，并在诊断里留下清理结果。
+        self.write_config({"asar_path": str(self.asar)})
+        self.write_asar(self.asar, version="9.9.9")
+        cli = self.root / "home" / ".zcode" / "cli" / "config.json"
+        cli.parent.mkdir(parents=True)
+        cli.write_text(json.dumps({"mcp": {"servers": {
+            "zcode-token-usage-statusbar": {"command": "python", "args": [str(self.runtime / "usage_mcp.py")]},
+            "other-tool": {"command": "node", "args": ["other.js"]},
+        }}}, ensure_ascii=False), encoding="utf-8")
+        self.hook()
+        servers = json.loads(cli.read_text(encoding="utf-8"))["mcp"]["servers"]
+        self.assertEqual(servers, {"other-tool": {"command": "node", "args": ["other.js"]}})
+        self.assertEqual(self.installer.LAST_DIAG.get("legacyMcp"), "removed")
+        self.assertTrue(cli.with_name("config.json.zusage-mcp.bak").is_file())
+
     def test_windows_candidates_cover_custom_drive_program_files(self):
         # 回归：ZCode 装在 D:\Program Files\ZCode 等非默认位置时探测不到，
         # 只能靠手工设 ZCODE_ASAR（1.4.2 Windows 实机问题）。盘符只枚举本地固定盘。
