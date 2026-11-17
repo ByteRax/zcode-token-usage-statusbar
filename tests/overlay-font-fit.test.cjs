@@ -25,7 +25,7 @@ test('scaling faces must stay removed (size-adjust path rasterizes soft on real 
 
 test('bar root and the four text-ui-base chips (ctxpct/ctxrst/quota/tsb) plus git chip use the sans token', () => {
   const LONG = SANS + ";font-size:calc(var(--text-ui-base,var(--ui-font-size,14px)) - 1px);font-weight:700";
-  assert.equal(countOf(LONG), 5, 'text-ui-base 四件套应切 sans（v356 起 +1：.zu-sysm 系统状态 chip 同规格）');
+  assert.equal(countOf(LONG), 6, 'text-ui-base 四件套应切 sans（v356 +1 sysmon chip；v382 +1 离屏测量探针 .zu-qmeasure 同盒模型规格）');
   assert.ok(source.includes('.zusage-root{position:fixed;box-sizing:border-box;" +\n      "' + SANS + ';" +'),
     '条根字族必须以 sans 令牌开头');
   assert.ok(source.includes('white-space:nowrap;outline:none;" +\n      "' + SANS + ';" +'),
@@ -50,7 +50,7 @@ test('sans surfaces keep tabular-nums so per-second number updates do not jitter
 
 test('tooltip surfaces (exc card/rateTip inline fallback and stat/project/sub/speed mono rows) use the sans token', () => {
   // 总数由 build 后 grep 校准；此处锁关键不可回退点
-  assert.equal(countOf(SANS), 38, 'sans 令牌总数（原 36 + v356 sysmon 两面：.zu-sysm chip 与 .zu-sys-tip 内联卡；新增 sans 面时按惯例顺延并同步本断言）');
+  assert.equal(countOf(SANS), 39, 'sans 令牌总数（原 36 + v356 sysmon 两面 + v382 离屏测量探针 .zu-qmeasure；新增 sans 面时按惯例顺延并同步本断言）');
   assert.ok(source.includes('rateTip.style.cssText =\n    "position:fixed;display:none;background:var(--color-tooltip,#171717);" +\n    "border:1px solid var(--color-border,transparent);border-radius:10px;padding:10px 14px;" +\n    "' + SANS), 'rateTip 内联兜底应切 sans');
   for (const sel of ['.zu-sp-kpi .v{', '.zu-pj-v{', '.zu-stat-v{font-family:', '.zu-speed-main{', '.zu-sl-main{margin-top:8px;font-family:', '".panel{position:fixed']) {
     const at = source.indexOf(sel);

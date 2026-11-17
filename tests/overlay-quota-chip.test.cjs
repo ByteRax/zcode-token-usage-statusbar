@@ -4,149 +4,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '..', 'overlay.js'), 'utf8');
+const { harness, Element } = require('./helpers/quota-chip-harness.cjs');
 
-/* v96 套餐额度 chip：整 IIFE 执行 + instances 接缝（overlay-ctxbtn 同款夹具）。
- * 夹具：输入卡片 group/toolbar 工具行放 wrapper span > button[data-testid=chat-context-usage-trigger]，
- * 推带 quota 字段与 recent[].last.provider_id 的 payload，断言 chip 前插/门控/档位/幂等/兜回/还原/tooltip。 */
-class Element {
-  constructor(tag = 'div') {
-    this.tagName = tag.toUpperCase(); this.children = []; this.dataset = {}; this.style = {};
-    this.style.setProperty = (k, v) => { this.style[k] = v; };
-    this.style.getPropertyValue = k => this.style[k] || '';
-    this.listeners = new Map(); this.queries = new Map(); this.classes = new Set();
-    this.classList = { contains: k => this.classes.has(k), add: k => this.classes.add(k), remove: k => this.classes.delete(k),
-      toggle: (k, on) => { if (on) this.classes.add(k); else this.classes.delete(k); } };
-    this.textContent = ''; this.innerHTML = ''; this._className = ''; this.isConnected = true;
-  }
-  set className(v) { this._className = String(v); this.classes.clear(); this._className.split(/\s+/).filter(Boolean).forEach(c => this.classes.add(c)); }
-  get className() { return this._className; }
-  get nextElementSibling() {
-    if (!this.parentElement) return null;
-    const i = this.parentElement.children.indexOf(this);
-    return this.parentElement.children[i + 1] || null;
-  }
-  setAttribute(k, v) { this.dataset[k] = String(v); }
-  removeAttribute(k) { delete this.dataset[k]; }
-  addEventListener(type, fn) { const a = this.listeners.get(type) || []; a.push(fn); this.listeners.set(type, a); }
-  removeEventListener(type, fn) { this.listeners.set(type, (this.listeners.get(type) || []).filter(f => f !== fn)); }
-  appendChild(el) { this.children.push(el); el.parentElement = this; el.isConnected = true; return el; }
-  insertBefore(el, ref) {
-    if (!ref || ref.parentElement !== this) return this.appendChild(el);
-    if (el.parentElement) el.remove();
-    const idx = this.children.indexOf(ref);
-    this.children.splice(idx, 0, el); el.parentElement = this; el.isConnected = true; return el;
-  }
-  remove() { if (this.parentElement) this.parentElement.children = this.parentElement.children.filter(e => e !== this); this.parentElement = null; this.isConnected = false; }
-  matches(sel) { return sel === '.zu-sr-only' && this.classList.contains('zu-sr-only'); }
-  querySelector(k) {
-    if (k.startsWith('.')) { const all = this.querySelectorAll(k); if (all.length) return all[0]; }
-    if (k === '[data-testid="chat-context-usage-trigger"]') {
-      for (const c of this.children) {
-        if (c.dataset && c.dataset['data-testid'] === 'chat-context-usage-trigger') return c;
-        const hit = c.querySelector && c.querySelector(k);
-        if (hit) return hit;
-      }
-      return null;
-    }
-    if (!this.queries.has(k)) this.queries.set(k, new Element());
-    return this.queries.get(k);
-  }
-  querySelectorAll(sel) {
-    if (sel === '[data-testid="v4-model-config"]') {
-      return this.children.filter(e => e.getAttribute('data-testid') === 'v4-model-config').concat(
-        ...this.children.map(e => e.querySelectorAll(sel)));
-    }
-    if (sel === 'circle') return this.children.filter(e => e.tagName === 'CIRCLE').concat(
-      ...this.children.filter(e => e.querySelectorAll).map(e => e.querySelectorAll(sel)));
-    if (sel === '.zu-sr-only') return this.children.filter(e => e.classList.contains('zu-sr-only')).concat(
-      ...this.children.filter(e => e.querySelectorAll).map(e => e.querySelectorAll(sel)));
-    return [];
-  }
-  contains(el) { return el === this || this.children.some(e => e.contains(el)); }
-  closest() { return null; }
-  hasAttribute(k) { return k === 'data-pane-id' ? !!this.pid : k === 'data-session-id' ? !!this.sid : Object.prototype.hasOwnProperty.call(this.dataset, k); }
-  getAttribute(k) { return k === 'data-pane-id' ? (this.pid || null) : k === 'data-session-id' ? (this.sid || null) : (this.dataset[k] !== undefined ? this.dataset[k] : null); }
-  getBoundingClientRect() { return { top: 600, bottom: 650, left: 20, right: 520, width: 500, height: 50 }; }
-}
-
-function harness({ quotaOn = true, prefs = {} } = {}) {
-  const window = new Element(), body = new Element('body'), root = new Element('html');
-  Object.assign(window, { innerWidth: 1000, innerHeight: 800 });
-  /* 开关真值来自主进程推送的插件状态（config.json quota_enabled），不是 localStorage；
-   * quotaOn:false 夹具模拟显式 false（v111 起缺省开） */
-  window.__zusagePluginState = { quotaEnabled: quotaOn ? true : false };
-  let panes = [];
-  const document = new Element();
-  Object.assign(document, { body, documentElement: root, createElement: tag => new Element(tag),
-    getElementById: id => body.children.find(e => e.id === id),
-    querySelectorAll: selector => selector.startsWith('textarea,') ? panes : [],
-    elementFromPoint: () => panes[0] || body });
-  const timers = new Map(), frames = new Map(), observers = []; let id = 0;
-  /* v251：localStorage 桩改 map 承载，prefs 可预种子渲染端展示偏好（如 zusage3.quotaRemain）；
-   * 空表行为与旧桩一致（getItem 缺失返回 null） */
-  const lsStore = new Map(Object.entries(prefs));
-  const sandbox = vm.createContext({ window, document, console, innerHeight: 800, innerWidth: 1000,
-    location: { href: 'file:///fixture' },
-    localStorage: { getItem: k => (lsStore.has(k) ? lsStore.get(k) : null), setItem: (k, v) => { lsStore.set(String(k), String(v)); } },
-    getComputedStyle: () => ({ borderTopWidth: '1px', backgroundColor: 'black', opacity: '1', display: 'block', visibility: 'visible' }),
-    setTimeout: (fn, ms) => { timers.set(++id, { fn, ms, interval: false }); return id; },
-    clearTimeout: n => timers.delete(n),
-    setInterval: (fn, ms) => { timers.set(++id, { fn, ms, interval: true }); return id; },
-    clearInterval: n => timers.delete(n),
-    requestAnimationFrame: fn => { frames.set(++id, fn); return id; }, cancelAnimationFrame: n => frames.delete(n),
-    MutationObserver: class {
-      constructor(fn) { this.fn = fn; this.connected = false; observers.push(this); }
-      observe(target, options) { this.target = target; this.options = options; this.connected = true; }
-      disconnect() { this.connected = false; }
-    },
-  });
-  const executable = source.replace(/\}\)\(\);\s*$/, 'window.quotaTest = { instances: function() { return instances; }, state: function() { return state; } };})();');
-  function inject() { window.__zusageOverlay = false; vm.runInContext(executable, sandbox); }
-  function tick() { for (const t of [...timers.values()]) if (t.interval && (t.ms === 600 || t.ms === 500)) t.fn(); }
-  function boot() { for (const [n, t] of [...timers]) if (!t.interval && t.ms === 0) { timers.delete(n); t.fn(); } }
-  function buildComposer(pid, sid, { live = false, provider = '', model = '' } = {}) {
-    const pane = live ? body.appendChild(new Element()) : null;
-    if (pane) {
-      pane.setAttribute('data-testid', 'v4-session-pane-' + pid);
-      pane.sid = sid;
-    }
-    const card = (pane || body).appendChild(new Element());
-    const marker = live ? card.appendChild(new Element('span')) : null;
-    if (marker) {
-      marker.setAttribute('data-testid', 'v4-model-config');
-      marker.setAttribute('data-provider', provider);
-      marker.setAttribute('data-model', model);
-    }
-    const row = card.appendChild(new Element());
-    row.className = 'group/toolbar flex items-end gap-3';
-    const wrap = row.appendChild(new Element('span'));
-    wrap.className = 'inline-flex shrink-0';
-    const btn = wrap.appendChild(new Element('button'));
-    btn.setAttribute('data-testid', 'chat-context-usage-trigger');
-    btn.setAttribute('aria-label', '上下文已用 63,400 / 总量 200,000');
-    const svg = btn.appendChild(new Element('svg'));
-    svg.appendChild(new Element('circle'));
-    svg.appendChild(new Element('circle'));
-    const editor = card.appendChild(new Element('textarea'));
-    editor.pid = pid; editor.sid = sid;
-    panes.push(editor);
-    return { card, row, wrap, btn, editor, pane, marker };
-  }
-  function payload({ provider = 'account:bigmodel-individual-coding-plan', model = 'GLM-5.3-Flash', quota } = {}) {
-    const out = { remote_evidence: false, today: {}, not_local: [],
-      recent: [{ sid: 'sid_main', workspace_identity: '', ctx: 63400, context_window: 200000, last_at: 1, ctx_exc: 0,
-        last: { provider_id: provider, model } }] };
-    if (quota !== undefined) out.quota = quota;
-    return out;
-  }
-  const chipOf = wrap => wrap.children.find(e => e.classList.contains('zu-quota'));
-  const liveOf = root => root.children.find(e => e.classList.contains('zu-sr-only'));
-  const tipEl = () => body.children.find(e => e.className === 'tip zusage-quota-tip');
-  function mutate(pane) {
-    for (const o of [...observers]) if (o.connected && o.target === pane) o.fn([]);
-  }
-  return { window, body, inject, tick, boot, buildComposer, payload, chipOf, liveOf, tipEl, mutate, observers, lsStore };
-}
 
 const NOW = Date.now();
 const QUOTA_OK = {
@@ -166,8 +25,8 @@ test('chip is inserted directly left of the context button with per-window segme
   assert.equal(ui.wrap.children.indexOf(chip), ui.wrap.children.indexOf(ui.btn) - 1);
   assert.equal(chip.className, 'zu-quota');
   assert.equal(chip.innerHTML,
-    '<span class="zu-qseg zu-qb-calm"><span class="zu-qlabel">5小时</span> 26%</span><span class="zu-qsep">|</span><span class="zu-qseg zu-qb-calm"><span class="zu-qlabel">7天</span> 12%</span>');
-  assert.equal(chip.getAttribute('aria-label'), '套餐已用 5小时 26%，7天 12%');
+    '<span class="zu-qseg zu-qb-calm"><span class="zu-qlabel">5时</span> 26%</span><span class="zu-qsep">|</span><span class="zu-qseg zu-qb-calm"><span class="zu-qlabel">7天</span> 12%</span>');
+  assert.equal(chip.getAttribute('aria-label'), '套餐已用 5时 26%，7天 12%');
   const live = h.liveOf(h.body.children.find(e => e.className === 'zusage-root'));
   assert.ok(live, 'a visually hidden live region is mounted inside this pane bar');
   assert.equal(live.getAttribute('aria-live'), 'polite');
@@ -175,7 +34,7 @@ test('chip is inserted directly left of the context button with per-window segme
   assert.equal(live.getAttribute('aria-atomic'), 'true');
   assert.equal(live.parentElement.className, 'zusage-root', 'live region is scoped to its owning pane');
   assert.equal(chip.parentElement, ui.wrap, 'button chip stays beside the native context control');
-  assert.equal(live.textContent, '套餐已用 5小时 26%，7天 12%');
+  assert.equal(live.textContent, '套餐已用 5时 26%，7天 12%');
   assert.equal(chip.getAttribute('role'), 'button');
   assert.ok(chip.listeners.get('click') && chip.listeners.get('mouseenter'));
 });
@@ -283,23 +142,23 @@ test('segments use user bands 30/50/80/90 (inclusive lower bound); mixed windows
   const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
   h.inject(); h.boot(); h.tick();
   h.window.__zusageUpdate(h.payload({ quota: withPct(29.6) }));
-  assert.match(h.chipOf(ui.wrap).innerHTML, /zu-qseg zu-qb-calm"><span class="zu-qlabel">5小时<\/span> 30%<\/span>/);   // 档位按原始值判（29.6 < 30 为 calm），显示四舍五入
+  assert.match(h.chipOf(ui.wrap).innerHTML, /zu-qseg zu-qb-calm"><span class="zu-qlabel">5时<\/span> 30%<\/span>/);   // 档位按原始值判（29.6 < 30 为 calm），显示四舍五入
   h.window.__zusageUpdate(h.payload({ quota: withPct(30) }));
-  assert.match(h.chipOf(ui.wrap).innerHTML, /zu-qseg zu-qb-norm"><span class="zu-qlabel">5小时<\/span> 30%<\/span>/);
+  assert.match(h.chipOf(ui.wrap).innerHTML, /zu-qseg zu-qb-norm"><span class="zu-qlabel">5时<\/span> 30%<\/span>/);
   h.window.__zusageUpdate(h.payload({ quota: withPct(50) }));
-  assert.match(h.chipOf(ui.wrap).innerHTML, /zu-qseg zu-qb-mid"><span class="zu-qlabel">5小时<\/span> 50%<\/span>/);
+  assert.match(h.chipOf(ui.wrap).innerHTML, /zu-qseg zu-qb-mid"><span class="zu-qlabel">5时<\/span> 50%<\/span>/);
   h.window.__zusageUpdate(h.payload({ quota: withPct(80) }));
-  assert.match(h.chipOf(ui.wrap).innerHTML, /zu-qseg zu-qb-high"><span class="zu-qlabel">5小时<\/span> 80%<\/span>/);
+  assert.match(h.chipOf(ui.wrap).innerHTML, /zu-qseg zu-qb-high"><span class="zu-qlabel">5时<\/span> 80%<\/span>/);
   h.window.__zusageUpdate(h.payload({ quota: withPct(90) }));
-  assert.match(h.chipOf(ui.wrap).innerHTML, /zu-qseg zu-qb-crit"><span class="zu-qlabel">5小时<\/span> 90%<\/span>/);
+  assert.match(h.chipOf(ui.wrap).innerHTML, /zu-qseg zu-qb-crit"><span class="zu-qlabel">5时<\/span> 90%<\/span>/);
   h.window.__zusageUpdate(h.payload({ quota: withPct(100) }));
-  assert.match(h.chipOf(ui.wrap).innerHTML, /zu-qseg zu-qb-exc"><span class="zu-qlabel">5小时<\/span> 100%<\/span>/);   // ≥100 满档呼吸闪烁（用户规格保留）
+  assert.match(h.chipOf(ui.wrap).innerHTML, /zu-qseg zu-qb-exc"><span class="zu-qlabel">5时<\/span> 100%<\/span>/);   // ≥100 满档呼吸闪烁（用户规格保留）
   h.window.__zusageUpdate(h.payload({ quota: Object.assign({}, QUOTA_OK, { windows: { fiveHour: { percent: 96, resetsAt: null, details: [] }, weekly: { percent: 10, resetsAt: null, details: [] } } }) }));
   assert.equal(h.chipOf(ui.wrap).innerHTML,
-    '<span class="zu-qseg zu-qb-crit"><span class="zu-qlabel">5小时</span> 96%</span><span class="zu-qsep">|</span><span class="zu-qseg zu-qb-calm"><span class="zu-qlabel">7天</span> 10%</span>');
-  assert.equal(h.liveOf(h.body.children.find(e => e.className === 'zusage-root')).textContent, '套餐已用 5小时 96%，7天 10%', 'live region announces changed values');
+    '<span class="zu-qseg zu-qb-crit"><span class="zu-qlabel">5时</span> 96%</span><span class="zu-qsep">|</span><span class="zu-qseg zu-qb-calm"><span class="zu-qlabel">7天</span> 10%</span>');
+  assert.equal(h.liveOf(h.body.children.find(e => e.className === 'zusage-root')).textContent, '套餐已用 5时 96%，7天 10%', 'live region announces changed values');
   h.window.__zusageUpdate(h.payload({ quota: Object.assign({}, QUOTA_OK, { windows: { fiveHour: { percent: 96, resetsAt: null, details: [] }, weekly: { percent: 10, resetsAt: null, details: [] } } }) }));
-  assert.equal(h.liveOf(h.body.children.find(e => e.className === 'zusage-root')).textContent, '套餐已用 5小时 96%，7天 10%', 'unchanged values do not rewrite the live region');
+  assert.equal(h.liveOf(h.body.children.find(e => e.className === 'zusage-root')).textContent, '套餐已用 5时 96%，7天 10%', 'unchanged values do not rewrite the live region');
   h.window.__zusageUpdate(h.payload({ quota: Object.assign({}, QUOTA_OK, { busy: true, windows: { fiveHour: { percent: 96, resetsAt: null, details: [] }, weekly: { percent: 10, resetsAt: null, details: [] } } }) }));
   assert.equal(h.liveOf(h.body.children.find(e => e.className === 'zusage-root')).textContent, '套餐额度查询中', 'busy state is announced');
   h.window.quotaTest.instances()[0].dispose();
@@ -561,7 +420,7 @@ test('session without any request history falls back to the account-level provid
   h.window.__zusageUpdate(out);
   const chip = h.chipOf(ui.wrap);
   assert.ok(chip, 'fallback shows the chip before the first request lands');
-  assert.match(chip.innerHTML, /5小时<\/span> 26%/);
+  assert.match(chip.innerHTML, /5时<\/span> 26%/);
   // 回退指向自定义 provider（理论态）：不显示
   const out2 = Object.assign({}, out, { provider_fallback: 'new-provider-4' });
   h.window.__zusageUpdate(out2);
@@ -584,10 +443,10 @@ test('stage-3 protocol {active, sources}: chip reads the active source entry; fl
       last: { provider_id: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3-Flash' } }] });
   const chip = h.chipOf(ui.wrap);
   assert.ok(chip, 'new-shape payload mounts chip from sources[active]');
-  assert.match(chip.innerHTML, /5小时<\/span> 26%/);
+  assert.match(chip.innerHTML, /5时<\/span> 26%/);
   // 平铺旧形状仍兼容
   h.window.__zusageUpdate(h.payload({ quota: QUOTA_OK }));
-  assert.match(h.chipOf(ui.wrap).innerHTML, /5小时<\/span> 26%/);
+  assert.match(h.chipOf(ui.wrap).innerHTML, /5时<\/span> 26%/);
 });
 
 test('tooltip shows monthly window, balance parts split and other-source summaries', () => {
@@ -663,7 +522,7 @@ test('issue #68: apiKey-mode BigModel/Z.ai provider shows its composite source w
         last: { provider_id: provider, model: 'GLM-5.3' } }] });
     const chip = h.chipOf(ui.wrap);
     assert.ok(chip, provider + ' 应显示额度 chip');
-    assert.match(chip.innerHTML, /5小时<\/span> 26%/);
+    assert.match(chip.innerHTML, /5时<\/span> 26%/);
     chip.listeners.get('mouseenter')[0].call(chip);
     assert.match(h.tipEl().innerHTML, new RegExp('套餐额度 · ' + title.replace('.', '\\.')));
     assert.doesNotMatch(h.tipEl().innerHTML, /自定义供应商/);
@@ -686,7 +545,7 @@ test('custom-provider session shows ITS source via byProvider mapping (multi-win
       last: { provider_id: 'new-provider-mm', model: 'MiniMax-M3' } }] });
   const chip = h.chipOf(ui.wrap);
   assert.ok(chip, '自定义会话按 byProvider 映射显示自己的源');
-  assert.match(chip.innerHTML, /5小时<\/span> 42%/, '是 MiniMax 的 42%，不是 bigmodel 的 26%');
+  assert.match(chip.innerHTML, /5时<\/span> 42%/, '是 MiniMax 的 42%，不是 bigmodel 的 26%');
   assert.doesNotMatch(chip.innerHTML, /26%/);
   // 未映射的自定义 provider（主进程没记录）：fail-closed 隐藏
   h.window.__zusageUpdate({ remote_evidence: false, today: {}, not_local: [],
@@ -711,7 +570,7 @@ test('live composer model switch changes chip before any new database request co
   h.inject(); h.boot(); h.tick();
   const data = h.payload({ quota: selectionQuota() });
   h.window.__zusageUpdate(data);
-  assert.match(h.chipOf(ui.wrap).innerHTML, /5小时<\/span> 26%/);
+  assert.match(h.chipOf(ui.wrap).innerHTML, /5时<\/span> 26%/);
   ui.marker.setAttribute('data-provider', 'new-provider-ds');
   ui.marker.setAttribute('data-model', 'deepseek-flash');
   h.mutate(ui.pane);
@@ -733,7 +592,7 @@ test('live composer model switch changes chip before any new database request co
   ui.marker.setAttribute('data-provider', 'account:bigmodel-individual-coding-plan');
   ui.marker.setAttribute('data-model', 'GLM-5.3-Flash');
   h.mutate(ui.pane);
-  assert.match(h.chipOf(ui.wrap).innerHTML, /5小时<\/span> 26%/, 'switching back reuses the matching cached pool');
+  assert.match(h.chipOf(ui.wrap).innerHTML, /5时<\/span> 26%/, 'switching back reuses the matching cached pool');
 });
 
 test('unmapped or empty live selection immediately removes old Coding Plan instead of using fallback', () => {
@@ -765,7 +624,7 @@ test('two pane live selections stay independent and missing markers never read a
   data.recent.push({ sid: 'sid_b', workspace_identity: '', context_window: 200000,
     last: { provider_id: 'account:bigmodel-individual-coding-plan', model: 'GLM-5.3' } });
   h.window.__zusageUpdate(data);
-  assert.match(h.chipOf(a.wrap).innerHTML, /5小时<\/span> 26%/);
+  assert.match(h.chipOf(a.wrap).innerHTML, /5时<\/span> 26%/);
   assert.match(h.chipOf(b.wrap).innerHTML, /余额 ¥110.00/);
   const last = h.window.__zusagePluginRequests.filter(r => r.action === 'quota-providers').at(-1);
   assert.equal(last.panes['workspace-main'].providerId, 'account:bigmodel-individual-coding-plan');
@@ -773,7 +632,7 @@ test('two pane live selections stay independent and missing markers never read a
   b.marker.remove();
   h.mutate(b.pane);
   assert.equal(h.chipOf(b.wrap), undefined, 'missing marker on B must not borrow A or stale B selection');
-  assert.match(h.chipOf(a.wrap).innerHTML, /5小时<\/span> 26%/);
+  assert.match(h.chipOf(a.wrap).innerHTML, /5时<\/span> 26%/);
 });
 
 test('session replacement and disposal invalidate live model selection observers', () => {
@@ -801,7 +660,7 @@ test('older host pane that never supplied a model marker keeps the completed-req
   ui.marker.remove();
   h.inject(); h.boot(); h.tick();
   h.window.__zusageUpdate(h.payload({ quota: QUOTA_OK }));
-  assert.match(h.chipOf(ui.wrap).innerHTML, /5小时<\/span> 26%/);
+  assert.match(h.chipOf(ui.wrap).innerHTML, /5时<\/span> 26%/);
   const snapshot = h.window.__zusagePluginRequests.filter(r => r.action === 'quota-providers').at(-1);
   assert.equal(snapshot.panes['workspace-main'].providerId, 'account:bigmodel-individual-coding-plan');
 });
@@ -827,7 +686,7 @@ test('legacy pane fallback recovers after the root SID changes ahead of coordina
   ui.marker.remove();
   h.inject(); h.boot(); h.tick();
   h.window.__zusageUpdate(h.payload({ quota: selectionQuota() }));
-  assert.match(h.chipOf(ui.wrap).innerHTML, /5小时<\/span> 26%/);
+  assert.match(h.chipOf(ui.wrap).innerHTML, /5时<\/span> 26%/);
   ui.pane.sid = 'sid_next';
   h.mutate(ui.pane);
   assert.equal(h.chipOf(ui.wrap), undefined, 'SID mismatch hides old session data during the transition');
@@ -857,7 +716,7 @@ test('sub2api subscription chip and tooltip expose daily/weekly/monthly USD limi
   } };
   h.window.__zusageUpdate(h.payload({ provider: 'gw', model: 'gpt-fixture', quota }));
   const chip = h.chipOf(ui.wrap);
-  assert.match(chip.innerHTML, /今日<\/span> 33%.*7天<\/span> 18%.*本月<\/span> 7%/);
+  assert.match(chip.innerHTML, /今日<\/span> 33%.*7天<\/span> 18%.*月<\/span> 7%/);
   assert.doesNotMatch(chip.innerHTML, /余额/);
   chip.listeners.get('mouseenter')[0].call(chip);
   const html = h.tipEl().innerHTML;
@@ -1171,23 +1030,23 @@ test('v251 remaining caliber: chip numbers show 100−used, band color still jud
   const chip = h.chipOf(ui.wrap);
   assert.ok(chip, 'chip mounted');
   assert.equal(chip.innerHTML,
-    '<span class="zu-qseg zu-qb-calm"><span class="zu-qlabel">5小时</span> 74%</span><span class="zu-qsep">|</span><span class="zu-qseg zu-qb-calm"><span class="zu-qlabel">7天</span> 88%</span>');
-  assert.equal(chip.getAttribute('aria-label'), '套餐剩余 5小时 74%，7天 88%');
+    '<span class="zu-qseg zu-qb-calm"><span class="zu-qlabel">5时</span> 74%</span><span class="zu-qsep">|</span><span class="zu-qseg zu-qb-calm"><span class="zu-qlabel">7天</span> 88%</span>');
+  assert.equal(chip.getAttribute('aria-label'), '套餐剩余 5时 74%，7天 88%');
   h.window.__zusageUpdate(h.payload({ quota: withPct(95) }));
   assert.equal(h.chipOf(ui.wrap).innerHTML,
-    '<span class="zu-qseg zu-qb-crit"><span class="zu-qlabel">5小时</span> 5%</span>',
+    '<span class="zu-qseg zu-qb-crit"><span class="zu-qlabel">5时</span> 5%</span>',
     'used 95% → crit color stays on the remaining 5% segment');
   h.window.__zusageUpdate(h.payload({ quota: withPct(100) }));
   assert.equal(h.chipOf(ui.wrap).innerHTML,
-    '<span class="zu-qseg zu-qb-exc"><span class="zu-qlabel">5小时</span> 0%</span>',
+    '<span class="zu-qseg zu-qb-exc"><span class="zu-qlabel">5时</span> 0%</span>',
     'used 100% → exc band, remaining clamps to 0%');
   h.window.__zusageUpdate(h.payload({ quota: withPct(120) }));
   assert.equal(h.chipOf(ui.wrap).innerHTML,
-    '<span class="zu-qseg zu-qb-exc"><span class="zu-qlabel">5小时</span> 0%</span>',
+    '<span class="zu-qseg zu-qb-exc"><span class="zu-qlabel">5时</span> 0%</span>',
     'over-limit used 120% (dirty backend data) → remaining still clamps to 0%, never negative');
   h.window.__zusageUpdate(h.payload({ quota: withPct(-5) }));
   assert.equal(h.chipOf(ui.wrap).innerHTML,
-    '<span class="zu-qseg zu-qb-calm"><span class="zu-qlabel">5小时</span> 100%</span>',
+    '<span class="zu-qseg zu-qb-calm"><span class="zu-qlabel">5时</span> 100%</span>',
     'negative used −5% (dirty backend data) → remaining clamps to 100%, never over');
 });
 

@@ -268,8 +268,9 @@
      * → v379 ⚙ 设置面板底栏新增「重启 ZCode」按钮（用户规格；本地曾占 v377，因主线 v377/v378 已被手机中继批占用按合入顺序顺延）：置于滚动提示左侧，与「插件更新」分区内同名按钮共用 data-update=relaunch 点击状态机（二次确认/正在重启/回执三路还原），两枚按钮 armed/sent/禁用/待重启高亮同步；旧主进程缺 relaunchSupported 时同款降级隐藏。review 加固：5s 确认定时器发送/dispose 两路清理；ok 守卫读当前 DOM sent（非闭包旧节点）+ relaunchSeq 代际丢弃过期回执，防面板重建后迟到 ok 重挂 90s alive 误清新一轮重启。
      * → v380 命中层视觉透明豁免（用户实报：主窗口开模型选择器，右侧辅助对话状态条消失、弹层关闭即恢复）：宿主模型菜单 Radix DropdownMenu modal 开启时另挂「fixed 全屏 + 无底色 + 仅 pointer-events:auto」透明层拦 webview 插件外侧点击，body 同时被设 pointer-events:none 令应用树被命中测试跳过——z 序低于该层的 composer（辅助对话 pane 无主 Composer 的 z-20 抬升）中心命中该层，v65 部分遮挡豁免因整体罩住不成立，迟滞 400ms 后整条收起。hitSelf 在 v65 豁免后补「无底色、无背景图、无 backdrop-filter 的命中层不算视觉遮挡」，与 modalOpen「遮罩必带底色」同哲学；带底色/模糊的真模态遮罩行为不变，coverOK/cardHitOK 无 v65 豁免链路不动（on 判定为 reallyVisible||coverOK 的 OR，第二腿 false 无碍）。
      * → v381 撤销 v87/v116 的「draft 空窗合成思考中」（用户实报：什么都没干的辅助对话永久假「思考中…4分30秒」走字）：宿主 product-projection.ts onTurnStarted 复核——userInput/turnHeader 行与 phase:"running" 在同一 reducer 批次原子生效，draft 且窗口为空 ⇔ 会话从未有过任何输入，不是「已发送待 header」的瞬态；辅助对话（createSelectionSideSession）新建后宿主即建好 store（draft+空窗），pane 一开桥就绑上，v87/v116 合成立即触发并按绑定时长（bornAt）走字。合成条件收窄为仅 phase==="running"；发送动作到 TurnStarted 事件的亚秒级窗口速度格退回 DB 静态数字，可接受。场景⑤断言随语义翻转，①-④/⑥ 守卫保留。
+     * → v382 套餐额度 chip 工具栏四级响应式（specs/quota-chip-responsive.md）：按 trailing 行真实可用宽度在 L0 完整→L1 紧凑→L2 摘要（主窗口+N）→L3 图标+值→L3I 纯图标→hidden 极限隐藏间选级，展开迟滞 20px/收缩即时/hidden 回展同门控；可用宽度按「锚点间距+当前宽」不变式测量（trailing 行右对齐贴内容，禁用容器宽−内容式相减，曾致 chip 摘除后永久隐藏黑洞）；lead 右缘锚 [data-composer-leading-content] 回退 Git chip，双缺失 fail-safe 保持 L0。窗口标签全档统一短标签（用户拍板终态=今日/5时/7天/月/套餐，tooltip 窗口行保留全称）；测量探针镜像各档盒模型（L1 gap、+N 字号）；档位色/口径/tooltip 数据全沿旧链。收口 review：quotaLeadingRight/HYST 入测试缝、L3/L3I 补 ⚠、缝随实例 dispose 清理、quotaRemainPct 单一实现。
      */
-    var VERSION = "v381";
+    var VERSION = "v382";
     /* issue #55：这三个 var 必须先于下方 buildPanel() 的调用完成赋值——var 只提升声明不提升
      * 赋值，而 buildPanel → syncUpdate 首轮执行就会读它们（赋值语句曾排在调用点之后，
      * v1.5.2 首轮读到 undefined 抛 TypeError 拖垮实例创建）。配套函数是声明有提升，留在原位。 */
@@ -295,6 +296,7 @@
       ctxBtnCache = null,   // v92：本实例上次增强的原生按钮（还原/对账引用，不依赖 cardCache 存活）
       lastQuota = null, lastQuotaAll = null, lastResets = null, quotaProvider = "", quotaModel = "", quotaFallback = "", quotaChipCache = null,
       quotaSourceId = "", quotaSelection = null, quotaPaneRoot = null, quotaSelectionObserver = null, quotaMarkerSeen = false,   // 当前 pane 模型选择与额度来源
+      quotaRespLevel = "", quotaRespProbe = null,   // v382 工具栏四级响应：当前等级/离屏测量节点（实例级，dispose 清理）
       gitChipCache = null, gitRefreshPath = "", gitRefreshRequestId = "",   // Git chip 节点与刷新状态
       liveTextCur = "", liveStatsCur = null, liveKindCur = "fallback", liveEl = null,   // v72：合并「生成速度」用
       livePhaseCur = "", liveIconCur = "bolt",   // v77：当前 chip 阶段与图标（think=思考动效/bolt=闪电）——相位切换需整条重渲染
@@ -629,14 +631,17 @@
       ".zu-git[data-zusage-light].zu-conflict .zu-git-dirty{color:#d20f39}" +
       ".zu-git[data-zusage-light] .zu-git-m{color:#df8e1d}" +
       /* v96 套餐额度 chip（原生上下文按钮左侧，wrapper 内前插）：多窗分段样式——每个窗口
-       * 一段（中文 5小时/7天，英文 5h/7d）各自按 QUOTA_BANDS 上档位色；余额类型单段
-       * （阶段 3 数据源接入即显示）；容器不着色，颜色只落在分段上。 */
+       * 一段（v382 起全档短标签：中文 今日/5时/7天/月/套餐，英文 1d/5h/7d/1mo/plan）各自按
+       * QUOTA_BANDS 上档位色；余额类型单段（阶段 3 数据源接入即显示）；容器不着色，颜色只落在分段上。 */
       /* v133 字体显式声明（用户规格 2026-10-28 定稿；v315 起字族 sans）：14px（--ui-font-size）+ 加粗 + tabular-nums +
        * tabular-nums，额度与上下文百分比两处恒等——不再靠继承（工具栏容器字号偏小、
        * 与带 text-ui-base 的按钮不等高，实测两段字号不一致）。 */
       ".zu-quota{display:inline-flex;align-items:center;gap:5px;height:1.75rem;padding:0 3px;border-radius:.5rem;cursor:pointer;user-select:none;flex:0 0 auto;" +   /* 左右 3px（用户规格 2026-11-02，原 6px；.zu-tsb 不随动） */
       "font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);font-size:calc(var(--text-ui-base,var(--ui-font-size,14px)) - 1px);font-weight:700;font-variant-numeric:tabular-nums}" +
       ".zu-quota:hover,.zu-quota:focus-visible{background:var(--color-hover,rgba(255,255,255,.08));outline:none}" +
+      /* v382 离屏测量探针：盒模型与 .zu-quota 同款（padding/gap/height/字体），不复用类名以避全局选择器污染 */
+      ".zu-qmeasure{display:inline-flex;align-items:center;gap:5px;height:1.75rem;padding:0 3px;border-radius:.5rem;white-space:nowrap;box-sizing:border-box;" +
+      "font-family:var(--font-sans,system-ui,-apple-system,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif);font-size:calc(var(--text-ui-base,var(--ui-font-size,14px)) - 1px);font-weight:700;font-variant-numeric:tabular-nums}" +
       /* 额度 chip 三档视觉（用户规格 2026-10-28）：绿/黄/红映射 QUOTA_BANDS 五档阈值——
        * calm+norm(<50) 绿、mid+high(50–89) 黄、crit(90–99) 红，阈值表不动仅色值收敛；
        * exc(≥100) 独立异常态仍走 destructive+光晕+呼吸（视觉归红）。dim=无数据中性态保留。 */
@@ -649,12 +654,28 @@
       ".zu-qsep{color:var(--color-foreground-subtle,rgba(255,255,255,.28));font-weight:400;font-size:.8em;line-height:1;transform:translateY(-1px)}" +
       ".zu-quota.zu-qstale{opacity:.6}" +
       ".zu-quota.zu-qbusy{animation:zupulse 1s ease-in-out infinite}" +
-      ".zu-quota .zu-qwarn{font-size:.85em;line-height:1}" +
+      ".zu-quota .zu-qwarn,.zu-qmeasure .zu-qwarn{font-size:.85em;line-height:1}" +
       ".zu-quota[data-zusage-light] .zu-qseg.zu-qb-calm,.zu-quota[data-zusage-light] .zu-qseg.zu-qb-norm{color:#0f9d6c}" +
       ".zu-quota[data-zusage-light] .zu-qseg.zu-qb-mid,.zu-quota[data-zusage-light] .zu-qseg.zu-qb-high{color:#b6791a}" +
       ".zu-quota[data-zusage-light] .zu-qseg.zu-qb-crit{color:#d8482f}" +
       ".zu-quota[data-zusage-light] .zu-qseg.zu-qb-exc{text-shadow:none}" +
       ".zu-quota[data-zusage-light] .zu-qseg.dim{color:#8a8a8a}" +
+      /* v382 工具栏四级响应：紧凑档 gap 收紧、摘要 +N 与最小档图标（SVG currentColor 随主窗口档位色）；
+       * .zu-qmeasure 两条镜像规则让离屏探针按同档盒模型测宽（否则探针恒按 L0 的 gap/全字号测，
+       * 测得偏宽只会提前降级——方向保守，收口 review 修正为精确）。 */
+      ".zu-quota[data-zusage-qlevel=L1]{gap:3px}" +
+      ".zu-qmeasure[data-zusage-qlevel=L1]{gap:3px}" +
+      ".zu-quota .zu-qextra,.zu-qmeasure .zu-qextra{color:var(--color-foreground-subtle,rgba(255,255,255,.5));font-weight:400;font-size:.9em;white-space:nowrap}" +
+      ".zu-quota .zu-qico{width:14px;height:14px;flex:0 0 auto;color:currentColor}" +
+      ".zu-quota .zu-qico.zu-qb-calm,.zu-quota .zu-qico.zu-qb-norm{color:#3ecf8e}" +
+      ".zu-quota .zu-qico.zu-qb-mid,.zu-quota .zu-qico.zu-qb-high{color:#f5b944}" +
+      ".zu-quota .zu-qico.zu-qb-crit{color:#ff6b57}" +
+      ".zu-quota .zu-qico.zu-qb-exc{color:var(--color-destructive,#ff2d55)}" +
+      ".zu-quota[data-zusage-light] .zu-qico.zu-qb-calm,.zu-quota[data-zusage-light] .zu-qico.zu-qb-norm{color:#0f9d6c}" +
+      ".zu-quota[data-zusage-light] .zu-qico.zu-qb-mid,.zu-quota[data-zusage-light] .zu-qico.zu-qb-high{color:#b6791a}" +
+      ".zu-quota[data-zusage-light] .zu-qico.zu-qb-crit{color:#d8482f}" +
+      ".zu-quota[data-zusage-light] .zu-qico.zu-qb-exc{color:#d8482f}" +
+      ".zu-quota[data-zusage-light] .zu-qextra{color:#8a8a8a}" +
             ".zu-enhance{display:inline-flex;align-items:center;justify-content:center;height:1.75rem;width:1.75rem;padding:0;border-radius:.5rem;border:none;background:transparent;color:var(--color-foreground-subtle,rgba(255,255,255,.55));cursor:pointer;user-select:none;flex:0 0 auto;outline:none}" +
       ".zu-enhance:hover,.zu-enhance:focus-visible{background:var(--color-hover,rgba(255,255,255,.08));color:var(--color-foreground,#fff)}" +
       ".zu-enhance:focus-visible{outline:2px solid var(--color-input-border-focused,var(--color-brand,#57c8ff))!important;outline-offset:2px}" +
