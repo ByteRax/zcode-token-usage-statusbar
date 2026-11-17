@@ -5,9 +5,10 @@ const path = require('node:path');
 const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '..', 'overlay.js'), 'utf8');
 
-/* v96 套餐额度 chip：整 IIFE 执行 + instances 接缝（overlay-ctxbtn 同款夹具）。
- * 夹具：输入卡片 group/toolbar 工具行放 wrapper span > button[data-testid=chat-context-usage-trigger]，
- * 推带 quota 字段与 recent[].last.provider_id 的 payload，断言 chip 前插/门控/档位/幂等/兜回/还原/tooltip。 */
+/* v385 OpenCode Go 模型口径换算（issue #382）：整 IIFE 执行 + Element 桩（overlay-quota-chip
+ * 同款夹具）。非 live composer 走 p.last.model 兜底控制当前模型，byProvider 显式映射自定义
+ * provider → 源 id（复合 opencode:<pid> 与裸 opencode 两形都有用例）；断言 chip 前插/换算
+ * 门槛/模型口径分段/tooltip 金额与披露/锚定回落/钳顶/零重取与源数据零变异。 */
 class Element {
   constructor(tag = 'div') {
     this.tagName = tag.toUpperCase(); this.children = []; this.dataset = {}; this.style = {};
@@ -262,12 +263,42 @@ test('model switch re-renders from the same unmutated source entry without refet
   const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
   h.inject(); h.boot(); h.tick();
   const quota = ocQuota();
+  const srcBefore = JSON.stringify(quota.sources['opencode:opencode-go-chat']);   // 首次换算前采集：零变异断言直设防首帧污染
   h.window.__zusageUpdate(h.payload({ provider: 'opencode-go-chat', model: 'deepseek-v4.1-flash', quota }));
   assert.equal(segsOf(h.chipOf(ui.wrap)), '1,2,4', 'deepseek-v4.1-flash → 模型口径');
-  const srcBefore = JSON.stringify(quota.sources['opencode:opencode-go-chat']);
   h.window.__zusageUpdate(h.payload({ provider: 'opencode-go-chat', model: 'glm-5.2', quota }));   // glm-5.2 月度 $60 = 基线，换算为恒等
   assert.equal(segsOf(h.chipOf(ui.wrap)), '2,3,7');
   h.window.__zusageUpdate(h.payload({ provider: 'opencode-go-chat', model: 'gpt-6-luna', quota }));   // $15：5h=3 → 0.2556/3=8.52→9、周=7.5 → 0.7902/7.5=10.54→11、月=15 → 4.3969/15=29.31→29
   assert.equal(segsOf(h.chipOf(ui.wrap)), '9,11,29');
   assert.equal(JSON.stringify(quota.sources['opencode:opencode-go-chat']), srcBefore, '原始源数据零变异');
+});
+
+test('prototype-key model names never hit the table: constructor must not kill the chip or convert', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  h.inject(); h.boot(); h.tick();
+  h.window.__zusageUpdate(h.payload({ provider: 'opencode-go-chat', model: 'constructor', quota: ocQuota() }));
+  const chip = h.chipOf(ui.wrap);
+  assert.ok(chip, 'Object.prototype 键名不得让 chip 消失（hasOwnProperty 守卫）');
+  assert.equal(segsOf(chip), '2,3,7', '未命中表 → 基线原样');
+});
+
+test('bare opencode source id (env/secrets key, non-composite) converts too', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  h.inject(); h.boot(); h.tick();
+  h.window.__zusageUpdate(h.payload({ provider: 'opencode-go-chat', model: 'deepseek-v4.1-flash',
+    quota: { active: 'opencode', byProvider: { 'opencode-go-chat': 'opencode' },
+      sources: { opencode: OC_SOURCE(OC_METERS) } } }));
+  assert.equal(segsOf(h.chipOf(ui.wrap)), '1,2,4', '裸 opencode 源 id 与复合源同门槛换算');
+});
+
+test('gate-fail passthrough never renders wire-provided modelBasis unescaped', () => {
+  const h = harness(), ui = h.buildComposer('workspace-main', 'sid_main');
+  h.inject(); h.boot(); h.tick();
+  h.window.__zusageUpdate(h.payload({ provider: 'opencode-go-chat', model: 'not-in-table',
+    quota: ocQuota(OC_METERS, { modelBasis: '<i>x</i>' }) }));
+  const chip = h.chipOf(ui.wrap);
+  chip.listeners.get('mouseenter')[0].call(chip);
+  const html = h.tipEl().innerHTML;
+  assert.ok(!/<i>x<\/i>/.test(html), '透传的 modelBasis 必须经 esc 渲染');
+  assert.match(html, /&lt;i&gt;x&lt;\/i&gt;/, '转义后可见（防直出）');
 });
