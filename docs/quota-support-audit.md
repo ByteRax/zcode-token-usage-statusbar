@@ -1,12 +1,12 @@
 # 额度支持审计矩阵
 
-审计日期：2026-10-22（2026-10-24 增补 ZCode Start Plan 行；2026-11-15 增补 OpenCode Go 控制台 meters 实测）。范围：本仓库 main 开发线及本轮修复，不代表已发布、已安装或全部厂商已真账号验收。
+审计日期：2026-10-22（2026-10-24 增补 ZCode Start Plan 行；2026-11-15 增补 OpenCode Go 控制台 meters 实测；2026-11-17 增补 R4 Coder 行与模型价格补充）。范围：本仓库 main 开发线及本轮修复，不代表已发布、已安装或全部厂商已真账号验收。
 
 ## 结论与证据等级
 
 - **v1.5.2 正式版 ≠ main 开发版**；开发源码、仓库插件副本、安装缓存、稳定运行文件须分别核对，不能以源码存在推断正式版可用。
 - 原“自动支持”承诺已收窄：只对已知协议、明确凭据与可证明的账号归属适配；不是任意供应商、任意中转自动查账。
-- **BigModel、当前 BX-GPT 的 sub2api `/v1/usage`、ZCode Start Plan（bigmodel 家族）、OpenCode Go 个人 Go 档（console meters + public usage 两链）已本机真实账号实测**。其余源码转写适配按夹具验证理解，**不是真实账号验证**；即使未标 `unverified`，也不因此升级证据等级。
+- **BigModel、当前 BX-GPT 的 sub2api `/v1/usage`、ZCode Start Plan（bigmodel 家族）、OpenCode Go 个人 Go 档（console meters + public usage 两链）、R4 Coder 个人套餐/钱包（`/v1/cli/key` + `/v1/cli/meta`）已本机真实账号实测**。其余源码转写适配按夹具验证理解，**不是真实账号验证**；即使未标 `unverified`，也不因此升级证据等级。
 - **sub2api 已接入自定义中转适配路径**，同源 `/v1/usage` 命中即停止 legacy 探测；尚未发布。
 - 未新增任意域管理接口探测；自定义中转仅在配置地址同源内查询已知用量协议，不猜测管理凭据或跨域发送 key。
 
@@ -33,6 +33,7 @@
 | SCNet | 本地账本估算 / 外部快照输入 | 不要求在线凭据；需套餐 Credits、周期、模型映射等估算配置 | **不是官方在线额度接口**；抵扣表及本地记录覆盖影响准确性，展示必须标识估算 |
 | sub2api | **本轮新增**：同源 `/v1/usage`，识别 key 用量/余额及订阅窗口 | 配置中转地址及其推理 key；不索取后台管理 key | 当前 BX-GPT 真站查询及最终运行文件的 createQuotaClient 全链均返回 status=ok、kind=plan、日/周/月 USD 窗口；remaining 不作为钱包余额 |
 | OpenCode Go | **2026-11-15 实测**：主链 `https://opencode.ai/console/api/go/status` 的 `access.meters.{fiveHour,week,month}`（microcent 额度消耗，非账单金额；percent 由客户端按 used/limit 计算，保留两位小数；$12/$30/$60 三窗），兜底 `https://opencode.ai/zen/go/v1/usage` 三窗口（rolling→5 小时/weekly→周/monthly→月，仅整数百分比无金额）；两链同域，控制台失败静默回落 | env `OPENCODE_API_KEY` / secrets `sources.opencode.apiKey` / 自定义供应商 baseUrl host 为 opencode.ai 且路径以 `/zen/go` 开头（两档命中；`/zen/v1` 按量版无用量 API，刻意不命中） | 个人 Go 档真实账号实测（2026-11-15，两链 HTTP 200；5 小时 0.67% 被 public 端点向下取整为 0%，控制台 meters 保留金额与两位小数）；Go Plus/Teams 未测；403=key 有效但无 Go 订阅（no_plan）、401=auth_failed |
+| R4 Coder（r4.codes 中转） | **2026-11-17 新增**：自定义供应商 baseUrl host 为 `api.r4.codes`（含 `r4.codes`/`www.r4.codes` 同域）时零配置认领；并行只读 `GET /v1/cli/key`（limit/spent/held）+ `GET /v1/cli/meta`（plan total/remaining/limit_windows/expires、wallet）→ 套餐池 `windows.plan`、按时长映射 5 小时/日/周/月速率窗、`limit_usd>=0`（0 为合法零额度）时 `quotaSummary`、无套餐/限额时钱包回退；`ceiling_usd=null`（不限速）跳过，`limit_usd=null` 不造 Key 总额度；同时把 `/v1/models` 的 `deepseek-v4.1-flash` 三档补入内置价表（`r4/` 前缀 + 同步脚本 OVERRIDES），修正兜底均价高估 | 普通 `coder_` 推理 key（env `R4_API_KEY`/`R4_CODER_API_KEY`/`R4CODES_API_KEY`、secrets `sources.r4.apiKey`、provider_config）；无需 management key；三端点共享 60 req/min 桶，403 `STANDARD_KEY_REQUIRED`=auth_failed | **本机真实账号实测（2026-11-17）**：`/v1/cli/key`、`/v1/cli/meta`、`/v1/models` HTTP 200，`createQuotaClient` 全链 status=ok、kind=plan、Code Lite +1 套餐池/到期正确；`limit_windows` 当前可为空数组（速率窗不活跃）按空窗降级；团队/组织账号、`pricing_effective` 分时价与 `queued` 礼包未覆盖 |
 | CLIProxyAPI | **无专用管理适配** | 管理 API 需要独立 **management key**，不能把推理 key 当管理权限 | 通用 OpenAI legacy 路径不等于支持其管理 API；不新增管理端探测——管理端**连续 5 次认证失败封禁 30 分钟**，识别（无密钥 GET `/v0/management/auth-files` 返回 401 missing management key）后一次补密钥或停手，绝不重试穷举 |
 | new-api | **无专用适配** | 用户/管理访问令牌等不能由普通推理 key 默认推定 | 部分部署兼容 legacy 不能构成 new-api 全面支持承诺 |
 | OpenHubs Pulse | **无适配，不排入** | 无 API key 通道：走 openhubs.zhidemai.com 聚合接口，浏览器 PKCE+Cookie 会话（客户端内无 Authorization/api_key）；会话 idle/absolute 双过期且无刷新令牌 | 适配需用户提供网页登录态 Cookie（比 key 敏感），与 env→secrets→provider_config 凭据契约不匹配 |
@@ -43,20 +44,20 @@
 | 类别 | 审计事实 / 本轮状态 | 验收要求 |
 |---|---|---|
 | 本轮解析修复 | DeepSeek 有效 0 值、SiliconFlow 分域与 `totalBalance`、OpenRouter 缺 usage；由主智能体本轮修复，不列为最终遗留未修项 | 以最终 diff 和对应回归结果确认，不将“在修”写成“已发布” |
-| 本轮新增接入 | sub2api 由主智能体接入，旧实现不足以表达其余额及订阅响应；OpenCode Go 为源码转写新适配（cc-switch，MIT），`/zen/go` 与 `/zen/go/v1` 两档命中，`/zen/v1` 按量版无用量 API 刻意不命中；2026-11-15 补控制台 meters 主链（精确金额/子 1% 用量）并保留 public usage 兜底 | 检查同源 URL、余额/订阅夹具和 chip 展示；OpenCode 检查三窗口/403 no_plan/401 auth_failed/控制台精确 meters 与回落夹具；个人 Go 档真实账号已验 |
+| 本轮新增接入 | sub2api 由主智能体接入，旧实现不足以表达其余额及订阅响应；OpenCode Go 为源码转写新适配（cc-switch，MIT），`/zen/go` 与 `/zen/go/v1` 两档命中，`/zen/v1` 按量版无用量 API 刻意不命中；2026-11-15 补控制台 meters 主链（精确金额/子 1% 用量）并保留 public usage 兜底；2026-11-17 R4 Coder 新增 `/v1/cli/key` + `/v1/cli/meta` 双端点适配与 `/v1/models` 三档价格补充 | 检查同源 URL、余额/订阅夹具和 chip 展示；OpenCode 检查三窗口/403 no_plan/401 auth_failed/控制台精确 meters 与回落夹具；R4 检查套餐池/5 小时窗/钱包回退/空窗口与 403 冻结夹具；个人 Go 档与 R4 Coder 真实账号已验 |
 | env 激活缺口 | `resolveCred()` 能读 env 不代表调度器能激活；`activeSet()` 对多数源未用 env 建立上下文，配置型源还受 enabled 门控 | 本轮已修并测试：env-only 默认源、enabled+env 的 Cline、无 primary 均可取数；Anthropic 继续要求显式开启 |
 | 源开关失效 | 默认源使用 `defaultOn || enabled`，显式 false 不能覆盖默认 true；primary 分支也未统一受源开关约束 | 本轮已修：primary 与后台源均尊重显式 false，关闭态不带旧额度；夹具验证无网络请求及勾选态回显 |
 | 权限提示 | 自动发现 OpenRouter 推理 key 可能随后认证失败；管理权限要求与“发现凭据”是两件事 | 文案明确 management key，不承诺零配置成功 |
 | 字段完整性 | 缺额度、usage、余额或窗口字段不是数值 0；合法零值也不能按缺失丢弃 | **响应字段不完整不补零**；解析失败 fail-closed；旧成功值如保留须标 stale |
 | 展示归属 | chip 主显跟随当前 pane 的 provider；tooltip 可列多源，均为账号池/余额，不是单模型独享 | 源激活成功不等于 chip 必然主显；未完成请求的 fallback、切源、关闭后残留需桌面验收 |
-| 验证边界 | VM / HTTP 夹具能检验解析与状态机，不能证明真实凭据、厂商权限或客户端挂载 | 除 BigModel、已验证的 BX-GPT/sub2api、ZCode Start Plan（bigmodel 家族）与 OpenCode Go 个人 Go 档外，不得把夹具通过表述成真账号实测；本项目其余适配仍按夹具/源码证据理解；Go Plus/Teams 未测 |
+| 验证边界 | VM / HTTP 夹具能检验解析与状态机，不能证明真实凭据、厂商权限或客户端挂载 | 除 BigModel、已验证的 BX-GPT/sub2api、ZCode Start Plan（bigmodel 家族）、OpenCode Go 个人 Go 档与 R4 Coder（r4.codes 个人套餐/钱包）外，不得把夹具通过表述成真账号实测；本项目其余适配仍按夹具/源码证据理解；Go Plus/Teams、R4 团队/组织账号未测 |
 
 ## 核对入口
 
 - `quota-client.cjs`：适配器、凭据发现、`resolvePrimary()`、`activeSet()`、`tickSource()` 与源列表。
 - `overlay.js`：源开关、凭据字段、chip/tooltip 的状态与归属展示。
 - `inject-main.cjs`：额度快照、配置写入与刷新桥接；`zusage.py`：SCNet 本地估算输入。
-- `tests/quota-client.test.cjs`、`tests/overlay-quota-chip.test.cjs`：隔离夹具；不是实际厂商账号凭据测试。
+- `tests/quota-client.test.cjs`、`tests/quota-r4.test.cjs`、`tests/overlay-quota-chip.test.cjs`、`tests/test_token_pricing.py`：隔离夹具；不是实际厂商账号凭据测试。
 - OpenRouter 官方文档：[Get remaining credits](https://openrouter.ai/docs/api/api-reference/credits/get-credits)（management key 要求及 `total_credits` / `total_usage` 字段）。
 
 本矩阵描述开发版修复；真账号范围仅限上述接口，部署、重启与正式发布另行记录。
@@ -69,8 +70,9 @@
 - Kimi PAYG 仍继承参考项目按金额猜分/元的启发式，低余额有单位误判风险，待明确厂商响应协议后修正；MiniMax weekly status=2 的参考实现存在分歧，不能无真实样本硬改。
 - OpenRouter 改用管理密钥是权限正确性修复，不是新增零配置支持；SiliconFlow 410 为明确不可用提示，不是已恢复端点。
 - OpenCode Go 个人 Go 档已做真实账号只读查询（2026-11-15）；Go Plus/Teams、`/zen/v1` 按量版仍不在覆盖范围，不能声称支持。
+- R4 Coder 只覆盖个人套餐/Key 限额/钱包与 `/v1/models` 当前基础牌价；团队/组织账号、`pricing_effective` 分时价、`queued` 待生效礼包与逐笔 `grants` 未覆盖。
 
-本轮验证：Node 全量回归与基线逐用例一致（无新增失败；opencode-quota 新增控制台 meters/回落/超时/父信号联动用例全绿）；OpenCode Go 冻结语义与 BigModel 同款：403 判无订阅后同 key 购买订阅需 ⚙ 立即刷新或换 key 触发指纹变化。
+本轮验证：Node 全量回归与基线逐用例一致（无新增失败；opencode-quota 新增控制台 meters/回落/超时/父信号联动用例全绿；quota-r4 新增套餐池/5 小时窗/Key 限额/钱包回退/空上限/403 冻结/伪装域/凭据优先级/多窗钳制/时长阈值 10 例全绿；token_pricing 新增 R4 三档精确命中与成本用例全绿）；OpenCode Go 冻结语义与 BigModel 同款：403 判无订阅后同 key 购买订阅需 ⚙ 立即刷新或换 key 触发指纹变化；R4 Coder 的 403 同样冻结到凭据指纹变化。
 
 ## Issue #56：非默认数据目录与 key-only 规则
 

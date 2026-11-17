@@ -91,6 +91,22 @@ class MatchingTests(unittest.TestCase):
             self.assertGreater(rates["input"], 0, model)
             self.assertGreater(rates["output"], 0, model)
 
+    def test_r4_relay_catalog_is_priced_instead_of_default_fallback(self):
+        """R4 Coder 的 deepseek-v4.1-flash 三档（/v1/models 实取）必须精确命中；
+        未收录时会落 DEFAULT_RATES（$1/$5），对 5.7M cache 的会话高估一个数量级。"""
+        for model, (inp, out) in (
+                ("deepseek-v4.1-flash", (0.15, 0.6)),
+                ("DeepSeek-V4.1-Flash-Fast", (1.2, 6.0)),
+                ("deepseek-v4.1-flash-ultrafast", (3.6, 14.4))):
+            rates, key, level = tp.lookup_full(model)
+            self.assertEqual((level, key), ("exact", model.lower()))
+            self.assertEqual((rates["input"], rates["output"]), (inp, out))
+            self.assertEqual(rates["cache_write"], 0.0, model)
+            self.assertNotEqual(rates, tp.DEFAULT_RATES)
+        cost = tp.compute_group_cost("deepseek-v4.1-flash", "new-provider",
+                                     3_492_858, 20_271, 3_323_816, 0)
+        self.assertAlmostEqual(cost, 0.04749035, places=8)
+
 
 class ComputeTests(unittest.TestCase):
     def setUp(self):

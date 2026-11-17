@@ -794,6 +794,7 @@ module.exports = {
   normalizeResetList,
   normalizeSubscriptionPlan,
   normalizeSub2api,
+  normalizeR4,
   relayQuotaUrls,
   isNoPlanMessage,
   normalizeMimoCookie,

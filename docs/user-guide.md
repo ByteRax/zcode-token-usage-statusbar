@@ -599,6 +599,8 @@ python3 patch_install.py check
 
 自定义供应商使用 sub2api 时，插件使用该配置的 key 在同源 `/v1/usage` 查询，无需后台管理密钥。订阅型数据展示日／周／月的用量、限额、剩余与已用比例；remaining 可能等于每日剩余，不能当充值余额。仅余额型响应才显示余额；重置时间只展示接口明确返回的字段。
 
+自定义供应商指向 R4 Coder（`api.r4.codes`）时，插件用该配置的 `coder_` 推理 key 并行查询 `/v1/cli/key`（Key 限额/已用/占用）与 `/v1/cli/meta`（套餐池、速率窗、钱包、到期），不需要管理密钥。套餐池与 5 小时/日/周/月窗口按接口返回归一；`limit_usd` 为空不显示 Key 总额度，`ceiling_usd` 为空的不限速窗口不渲染，没有套餐和 Key 限额时才回退钱包余额。r4 `/v1/models` 公布的 `deepseek-v4.1-flash` 三档单价已补入内置价表，缓存读取较多的会话不再按兜底均价高估。团队/组织账号与分时价格未覆盖，详见[规格](../specs/r4-coder-quota.md)与[额度支持审计矩阵](quota-support-audit.md)。
+
 OpenRouter 账户余额需设置 Management Key 或 `OPENROUTER_MANAGEMENT_KEY`；普通推理 key 不代表管理权限。SiliconFlow 返回 410 时表示接口已停用，不代表余额为零。其他厂商的发现条件、凭据依赖与实测程度见[额度支持审计矩阵](quota-support-audit.md)。
 
 ### 非默认 ZCode 数据目录
