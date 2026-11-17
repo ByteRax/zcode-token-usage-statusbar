@@ -24,6 +24,18 @@ function embedded(source) {
   assert.ok(match);
   return JSON.parse(match[0]);
 }
+/* 产物级 Buffer 比较不走 assert.deepEqual：其失败路径把整块数据字符串化再逐行
+ * diff，MB 级产物不一致时实测涨到 6~7GB 近乎挂死（2026-11-17 全量套件触发）。
+ * equals 快速判定，失败只报首个差异偏移与长度。 */
+function assertBytesEqual(actual, expected, hint) {
+  if (actual.equals(expected)) return;
+  const n = Math.min(actual.length, expected.length);
+  let at = n;
+  for (let i = 0; i < n; i++) {
+    if (actual[i] !== expected[i]) { at = i; break; }
+  }
+  assert.fail(`${hint} (first diff at byte ${at}; length ${actual.length} vs ${expected.length})`);
+}
 function boot(source) {
   const nodes = [], timers = new Map(), updates = [], embeddedScripts = [];
   let context, nextTimer = 0;
@@ -59,8 +71,8 @@ function boot(source) {
 
 test('both constructed variants embed byte-identical desktop assemble_bytes output', () => {
   const desktop = Buffer.from(products.desktop, 'base64');
-  for (const source of [products.release, products.debug]) {
-    assert.deepEqual(Buffer.from(embedded(source), 'utf8'), desktop);
+  for (const [variant, source] of [['release', products.release], ['debug', products.debug]]) {
+    assertBytesEqual(Buffer.from(embedded(source), 'utf8'), desktop, `embedded OVERLAY_CODE (${variant}) diverges from desktop assemble_bytes`);
     new vm.Script(source, { filename: 'built-userscript.js' });
   }
 });
@@ -74,7 +86,7 @@ test('committed userscript artifacts match in-memory build byte for byte', () =>
     ['zusage-mobile.debug.user.js', products.debug],
   ]) {
     const committed = fs.readFileSync(path.join(ROOT, name));
-    assert.deepEqual(committed, Buffer.from(source, 'utf8'), `${name} is stale; run scripts/build_mobile_userscript.py`);
+    assertBytesEqual(committed, Buffer.from(source, 'utf8'), `${name} is stale; run scripts/build_mobile_userscript.py`);
   }
 });
 
