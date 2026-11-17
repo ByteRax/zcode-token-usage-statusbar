@@ -354,6 +354,8 @@ test("disabled provider (enabled:false at rule or config level) is not pullable 
   const f = makeFixture(t);
   const mp = create(f);
   const raw = JSON.parse(fs.readFileSync(f.providerCfg, "utf8"));
+  // config 级 enabled 是宿主 strict schema 不产出的形状（enabled 只在 rule 层），只能来自手改文件；
+  // 插件按 modelPullerRuleAllowed 既有语义防御性拒绝（增强链同款），与 rule 级一并锁定
   raw.config.providerConfigRules.providerRules[0].config.enabled = false;
   fs.writeFileSync(f.providerCfg, JSON.stringify(raw));
   assert.equal(mp.listProviders().providers.length, 0);
