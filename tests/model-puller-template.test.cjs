@@ -158,7 +158,7 @@ test("personal templateRules override the bundled template (same order as quota-
 
 test("deleting and recreating the template between calls with the same mtime/size does not revive a stale cache", (t) => {
   const f = makeFixture(t);
-  const fixed = 1700000000;   // 整秒：重建后 mtimeMs 可与原文件逐位相同，专测 ctime/birthtime 双保险（Linux 老内核 birthtime 可能恒 0，ctime 兜底）
+  const fixed = 1700000000;   // 整秒：重建后 mtimeMs 可与原文件逐位相同，专测 ctime/birthtime 双保险（Linux 老内核 birthtime 可能恒 0，ctime 兜底；Windows 文件隧道化复用创建时间由 ino/dev 兜底）
   fs.utimesSync(f.builtinCfg, fixed, fixed);
   const mp = create(f);
   assert.equal(mp.resolveEnhanceHost("opencode-go-chat").baseUrl, TEMPLATE_BASE);
