@@ -519,6 +519,158 @@ ADAPTERS.push({
   },
 });
 
+/* --- R4 Coder（r4.codes 中转；/v1/cli/key + /v1/cli/meta 同源只读） ---
+ * 自定义供应商 baseUrl 指向 api.r4.codes 时零配置认领；普通 coder_ 推理 key 即查询
+ * 凭据（文档：Authorization Bearer 与 x-api-key 等价，三端点共享 60 req/min 桶）。
+ * key 给出调用 Key 的 limit/spent/held（reserve gate 口径），meta 给出套餐池、
+ * limit_windows（如 5 小时 ceiling）、钱包余额与到期。两请求并行：meta 失败只损失
+ * 套餐增强，key 限额仍可展示；两者都无可展示数据才 fail-closed。 */
+const R4_API_ORIGIN = "https://api.r4.codes";
+function r4WindowName(seconds) {
+  if (!(seconds > 0)) return "";
+  if (seconds <= 6 * 3600) return "fiveHour";
+  if (seconds <= 36 * 3600) return "daily";
+  if (seconds <= 8 * 86400) return "weekly";
+  if (seconds <= 32 * 86400) return "monthly";
+  return "";   // 未知长窗丢弃：绝不冒充套餐池（plan 只由 plan.total/remaining 产出）
+}
+function r4Day(value) {
+  const m = typeof value === "string" ? value.match(/^(\d{4}-\d{2}-\d{2})/) : null;
+  return m ? m[1] : "";
+}
+/* 金额是服务端字符串转来的十进制小数；减法会留下 1.392046999999998 这类尾差，
+ * 统一收到 6 位再进快照（展示层只用到 2–4 位，不影响精度）。 */
+function r4Usd(value) { return Math.round(value * 1e6) / 1e6; }
+function normalizeR4(keyBody, metaBody) {
+  const key = keyBody && typeof keyBody === "object" && !Array.isArray(keyBody) ? keyBody : null;
+  const meta = metaBody && typeof metaBody === "object" && !Array.isArray(metaBody) ? metaBody : null;
+  if (!key && !meta) throw qErr("parse_error", "r4 empty");
+  const out = { label: "R4 Coder", kind: "plan" };
+  const windows = {};
+  let hasQuota = false;
+  const plan = meta && meta.plan && typeof meta.plan === "object" && !Array.isArray(meta.plan) ? meta.plan : null;
+  if (plan) {
+    const total = num(plan.total_usd), remaining = num(plan.remaining_usd);
+    if (total != null && total > 0 && remaining != null && remaining >= 0) {
+      const used = Math.max(0, total - remaining);
+      windows.plan = {
+        percent: Math.round(clampPct((used / total) * 100) * 10) / 10,
+        used: r4Usd(used), total: r4Usd(total), remaining: r4Usd(Math.min(remaining, total)),
+        currency: "USD", resetsAt: resetOf(plan.expires_at), expires: true,
+      };
+      hasQuota = true;
+    }
+    const list = Array.isArray(plan.limit_windows) ? plan.limit_windows : [];
+    for (const lw of list) {
+      if (!lw || typeof lw !== "object" || Array.isArray(lw)) continue;
+      const ceiling = num(lw.ceiling_usd), consumed = num(lw.consumed_usd);
+      /* ceiling=null 是「该窗不限速」语义，不是 0 额度：跳过，绝不造 0% 假窗口。 */
+      if (ceiling == null || !(ceiling > 0) || consumed == null || consumed < 0) continue;
+      const left = num(lw.remaining_usd);
+      const name = r4WindowName(num(lw.duration_seconds));
+      if (!name) continue;
+      const win = {
+        percent: Math.round(clampPct((consumed / ceiling) * 100) * 10) / 10,
+        used: consumed, total: ceiling,
+        remaining: left != null && left >= 0 ? left : Math.max(0, ceiling - consumed),
+        currency: "USD", resetsAt: resetOf(lw.resets_at),
+      };
+      /* 同标签多窗（字段漂移/多档叠加）取已用比例更高者，不让低窗掩盖受限状态。 */
+      if (!windows[name] || win.percent > windows[name].percent) windows[name] = win;
+      hasQuota = true;
+    }
+    const pkg = typeof plan.package_name === "string" ? plan.package_name.trim() : "";
+    if (pkg) out.plan = { productName: pkg.slice(0, 60) };
+    const end = r4Day(plan.expires_at);
+    if (end && out.plan) out.plan.validEnd = end;
+  }
+  if (key) {
+    const limit = num(key.limit_usd), spent = num(key.spent_usd), held = num(key.held_usd);
+    const remaining = num(key.remaining_usd);
+    if (limit != null && limit >= 0 && (remaining != null || spent != null)) {
+      const used = spent != null ? spent + (held != null ? held : 0) : Math.max(0, limit - remaining);
+      out.quotaSummary = {
+        limit: r4Usd(limit), used: r4Usd(used),
+        remaining: r4Usd(remaining != null ? remaining : limit - used),
+        currency: "USD",
+      };
+      hasQuota = true;
+    }
+  }
+  if (Object.keys(windows).length) out.windows = windows;
+  if (!hasQuota) {
+    const wallet = meta && meta.wallet && typeof meta.wallet === "object" && !Array.isArray(meta.wallet) ? meta.wallet : null;
+    const balance = wallet ? num(wallet.balance_usd) : null;
+    if (balance == null || balance < 0) return { noPlan: true };   // 无套餐/限额/钱包：合法无订阅（如免费档 0）
+    out.kind = "balance";
+    out.balance = { amount: balance, currency: "USD" };
+  }
+  return out;
+}
+function r4KeyUsable(body) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return false;
+  if (!("limit_usd" in body) && !("spent_usd" in body) && !("remaining_usd" in body)) return false;
+  for (const k of ["limit_usd", "spent_usd", "held_usd", "remaining_usd"]) {
+    if (body[k] != null && num(body[k]) == null) return false;   // 字段漂移/脏值不猜 0
+  }
+  return true;
+}
+function r4MetaUsable(body) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) return false;
+  if (!("plan" in body) && !("wallet" in body)) return false;
+  for (const k of ["plan", "wallet"]) {
+    if (body[k] != null && (typeof body[k] !== "object" || Array.isArray(body[k]))) return false;
+  }
+  return true;
+}
+ADAPTERS.push({
+  id: "r4", label: "R4 Coder", kind: "plan", defaultOn: true,
+  envKeys: ["R4_API_KEY", "R4_CODER_API_KEY", "R4CODES_API_KEY"],
+  detect(j, providerId) {
+    if (providerId.indexOf("account:") === 0) return null;
+    const cp = j.customProviderOf(providerId);
+    if (!cp) return null;
+    let u = null;
+    try { u = new URL(cp.baseUrl); } catch (e) { return null; }
+    if (u.protocol !== "https:") return null;
+    const host = u.hostname.toLowerCase();
+    /* key 只发 r4 官方域；r4.codes 主站与 API 子域都只认这两个入口，路径不参与判定
+     * （/v1、/v1/anthropic 等宿主 baseUrl 变体同域命中）。 */
+    if (host === "api.r4.codes") return { key: cp.apiKey, origin: "cfg", apiOrigin: R4_API_ORIGIN };
+    if (host === "r4.codes" || host === "www.r4.codes") return { key: cp.apiKey, origin: "cfg", apiOrigin: "https://" + host };
+    return null;
+  },
+  resolveCred(j, ctx) {
+    for (const k of this.envKeys) {
+      const v = j.env[k];
+      if (v) return { token: v, fingerprint: "env:" + sha16(v), source: "env" };
+    }
+    const sec = (j.secrets.sources || {}).r4 || {};
+    if (sec.apiKey) return { token: sec.apiKey, fingerprint: "sec:" + sha16(sec.apiKey), source: "secrets" };
+    if (ctx.key) return { token: ctx.key, fingerprint: "cfg:" + sha16(ctx.key), source: "provider_config" };
+    return null;
+  },
+  async fetchOne(j, ctx, cred, ctl) {
+    const origin = ctx.apiOrigin || R4_API_ORIGIN;
+    const headers = { authorization: "Bearer " + cred.token };
+    const got = (p) => p.then((body) => ({ ok: true, body }), (error) => ({ ok: false, error }));
+    const [keyR, metaR] = await Promise.all([
+      got(j.http.getJson(origin + "/v1/cli/key", headers, ctl)),
+      got(j.http.getJson(origin + "/v1/cli/meta", headers, ctl)),
+    ]);
+    const key = keyR.ok && r4KeyUsable(keyR.body) ? keyR.body : null;
+    const meta = metaR.ok && r4MetaUsable(metaR.body) ? metaR.body : null;
+    if (!key && !meta) throw (keyR.error || metaR.error || qErr("parse_error", "r4 shape"));
+    const out = normalizeR4(key, meta);
+    /* 无可展示额度且缺任一端点：只有两端都成功才判无订阅；请求失败按瞬时错误重试，
+     * 绝不用 no_plan 把状态冻结到用户换 key。 */
+    if (out && out.noPlan && (!meta || !key)) {
+      throw (keyR.error || metaR.error || qErr("parse_error", "r4 shape"));
+    }
+    return out;
+  },
+});
+
 /* --- 自定义中转（sub2api / OpenAI legacy；仅查询配置地址的同源） --- */
 ADAPTERS.push({
   id: "custom", label: "中转站", kind: "balance", defaultOn: false,
@@ -573,6 +725,7 @@ const SOURCE_PRESETS = {
   },
   deepseek: { keyUrl: "https://platform.deepseek.com/api_keys" },
   openrouter: { keyUrl: "https://openrouter.ai/settings/keys" },
+  r4: { keyUrl: "https://r4.codes/dashboard/api-keys" },
   kimi: { keyUrl: "https://platform.moonshot.cn/console/api-keys" },
   anthropic: { keyUrl: "https://console.anthropic.com/settings/keys" },
   mimo: { keyUrl: "https://platform.xiaomimimo.com" },

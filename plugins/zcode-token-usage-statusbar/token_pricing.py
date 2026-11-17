@@ -360,6 +360,9 @@ PRICING = {
  "openai/o3-mini": {"cache_read": 0.55, "cache_write": 0.0, "input": 1.1, "output": 4.4},
  "openai/o3-pro": {"cache_read": 0.0, "cache_write": 0.0, "input": 20.0, "output": 80.0},
  "openai/o4-mini": {"cache_read": 0.275, "cache_write": 0.0, "input": 1.1, "output": 4.4},
+ "r4/deepseek-v4.1-flash": {"cache_read": 0.003, "cache_write": 0.0, "input": 0.15, "output": 0.6},
+ "r4/deepseek-v4.1-flash-fast": {"cache_read": 0.06, "cache_write": 0.0, "input": 1.2, "output": 6.0},
+ "r4/deepseek-v4.1-flash-ultrafast": {"cache_read": 0.072, "cache_write": 0.0, "input": 3.6, "output": 14.4},
  "stepfun/step-3.5-flash": {"cache_read": 0.02092, "cache_write": 0.0, "input": 0.10461, "output": 0.31384},
  "stepfun/step-3.5-flash-2603": {"cache_read": 0.02092, "cache_write": 0.0, "input": 0.10461, "output": 0.31384},
  "stepfun/step-3.7-flash": {"cache_read": 0.04035, "cache_write": 0.0, "input": 0.20175, "output": 1.21052},
@@ -430,7 +433,7 @@ PRICING = {
  "zhipuai/glm-5.3-highspeed": {"cache_read": 0.29879, "cache_write": 0.0, "input": 1.19516, "output": 4.18306},
  "zhipuai/glm-5v-turbo": {"cache_read": 0.17927, "cache_write": 0.0, "input": 0.74698, "output": 3.28669},
 }
-PRICING_META = {"count": 326, "note": "models.dev 官方渠道增量同步；人工纠错走脚本 OVERRIDES；*-highspeed 按同厂基础模型派生牌价", "source": "https://models.dev/api.json", "synced_at": "2026-11-02"}
+PRICING_META = {"count": 329, "note": "models.dev 官方渠道增量同步；人工纠错走脚本 OVERRIDES；*-highspeed 按同厂基础模型派生牌价；R4 Coder 中转价按 GET /v1/models 补充（2026-11-17）", "source": "https://models.dev/api.json", "synced_at": "2026-11-02"}
 # END PRICING DATA
 # ---------------------------------------------------------------------------
 

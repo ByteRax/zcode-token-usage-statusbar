@@ -24,7 +24,15 @@ sys.path.insert(0, str(ROOT))
 import token_pricing as tp   # noqa: E402
 
 # 人工纠错（键为 token_pricing 表内小写全限定名）：优先级最高，重跑不丢
-OVERRIDES = {}
+OVERRIDES = {
+    # R4 Coder 中转（https://r4.codes/docs/models，GET /v1/models，2026-11-17 实取）。
+    # 该三档不在 models.dev 官方渠道目录内；slug 为 r4 自有分档，价格按接口返回的
+    # USD/百万 token 四价原样落表。上游目录未来收录同名 slug 时 official 键优先（裸名
+    # 匹配按 provider 字典序取 deepseek/... 而非 r4/...）。
+    "r4/deepseek-v4.1-flash": {"cache_read": 0.003, "cache_write": 0.0, "input": 0.15, "output": 0.6},
+    "r4/deepseek-v4.1-flash-fast": {"cache_read": 0.06, "cache_write": 0.0, "input": 1.2, "output": 6.0},
+    "r4/deepseek-v4.1-flash-ultrafast": {"cache_read": 0.072, "cache_write": 0.0, "input": 3.6, "output": 14.4},
+}
 
 BEGIN_MARK = "# BEGIN PRICING DATA"
 END_MARK = "# END PRICING DATA"
@@ -73,7 +81,7 @@ def emit_segment(table):
     meta = {
         "count": len(table),
         "note": "models.dev 官方渠道增量同步；人工纠错走脚本 OVERRIDES；"
-                "*-highspeed 按同厂基础模型派生牌价",
+                "*-highspeed 按同厂基础模型派生牌价；R4 Coder 中转价按 GET /v1/models 补充（2026-11-17）",
         "source": tp.PRICING_URL,
         "synced_at": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
     }
