@@ -66,8 +66,8 @@ test('render() guards shared state.data against bare fallback frames (v262)', ()
 test('compact tps chip tip routes to the V2 card when history is present', () => {
   const fn = source.slice(source.indexOf('    function tpsChipTipHTML(t) {'),
     source.indexOf('      /* 状态条摘要'));
-  assert.match(fn, /spdRebuildOr\(t && t\.speedHistory/,
-    '精简 chip 必须用统一轮表走 V2，而不是无条件调用旧 speedCardHTML');
+  assert.match(fn, /spd3RebuildOr\(t && t\.speedHistory/,
+    '精简 chip 必须用统一轮表走 V3（v384 起），而不是无条件调用旧 speedCardHTML');
   assert.match(fn, /if \(cv2\) return cv2\(/,
     'V2 生成成功时直接返回整卡，不追加旧状态条摘要');
 });

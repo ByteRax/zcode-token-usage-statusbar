@@ -497,7 +497,60 @@
       }
     }
   }
-  tpsTip.addEventListener("pointerdown", tpsTabActivate);
+  /* v384 V3 模型筛选交互（compact 链镜像 06 分片 spd3Activate）：状态存 chip 数据包
+   * t.speedSel（10Hz 心跳不重置），改完清 __zuTipSig 让 showTpsTip 幂等重编。
+   * toggle 动作非同值幂等：pointerdown 独占鼠标路径，click 只认键盘（e.detail===0）。 */
+  function tpsSpd3Activate(e) {
+    var el = tpsTipFor;
+    if (!el || !el.__zuT) return false;
+    var t = el.__zuT, s3 = t.speedSel;
+    var hit = e.target && e.target.closest ? e.target.closest(
+      ".zu-sv3-chip,.zu-sv3-fpop-row,.zu-sv3-fsearch,[data-sv3-all],[data-sv3-none],[data-sv3-reset],[data-sv3-more]") : null;
+    if (!hit || !s3 || typeof spd3FilterToggle !== "function") return false;
+    if (!s3.filt) s3.filt = (typeof spd3FilterAuto === "function") ? spd3FilterAuto() : { mode: "auto", keys: null };
+    if (!s3.pop) s3.pop = { open: false, query: "" };
+    var key = hit.getAttribute("data-k");
+    if (key && (hit.classList.contains("zu-sv3-chip") || hit.classList.contains("zu-sv3-fpop-row"))) {
+      spd3FilterToggle(s3.filt, key);
+    } else if (hit.classList.contains("zu-sv3-fsearch")) {
+      s3.pop.open = !s3.pop.open;
+    } else if (hit.hasAttribute("data-sv3-all")) {
+      /* v384 B2：同 06 分片——SPD3_POOL 是对象数组，全选取 key 串 */
+      spd3FilterOnly(s3.filt, (typeof SPD3_POOL !== "undefined" && SPD3_POOL || []).map(function (pm) { return pm.key; }));
+    } else if (hit.hasAttribute("data-sv3-none")) {
+      spd3FilterOnly(s3.filt, []);
+    } else if (hit.hasAttribute("data-sv3-reset")) {
+      spd3FilterAll(s3.filt);
+    } else if (hit.hasAttribute("data-sv3-more")) {
+      s3.expanded = !s3.expanded;
+    } else return false;
+    if (!s3.pop.open) s3.pop.query = "";
+    t.speedHover = -1;
+    tpsTip.__zuTipSig = "";
+    showTpsTip(el);
+    /* v384 M2：弹层刚打开焦点移入搜索框（showTpsTip 同步重编完成） */
+    if (s3.pop.open) {
+      var fi3 = tpsTip.querySelector(".zu-sv3-fpop-input");
+      if (fi3 && fi3.focus) fi3.focus();
+    }
+    return true;
+  }
+  /* v384 M3：tpsTip 链补 mousedown 阻断名单（镜像 06 同名名单；搜索输入框豁免，
+   * 否则点击无法聚焦——v362 sysTip 同款镜像先例）。防 tip 内交互把焦点移出编辑器。 */
+  tpsTip.addEventListener("mousedown", function (e) {
+    var t = e.target;
+    if (!t || !t.closest) return;
+    var interactive = t.closest(".zu-sv-tab") || t.closest(".zu-sv3-fbar") ||
+      (t.closest(".zu-sv3-fpop") && !t.classList.contains("zu-sv3-fpop-input")) || t.closest(".zu-sv3-more");
+    if (interactive) {
+      e.stopPropagation();
+      if (e.preventDefault) e.preventDefault();
+    }
+  });
+  tpsTip.addEventListener("pointerdown", function (e) {
+    if (tpsSpd3Activate(e)) return;
+    tpsTabActivate(e);
+  });
   tpsTip.addEventListener("click", function (e) {
     var el = tpsTipFor;   // hideTpsTip 会清 tpsTipFor，回调目标先取
     if (!el) return;
@@ -515,19 +568,28 @@
     }
     /* v255：V2 双 Tab 走 tpsTip 本体委托（全量 tip 的同款逻辑），只改 chip 数据包，
      * 由 showTpsTip 签名幂等重编；不新增全局监听、不重建浮层。
-     * v263：鼠标路径提前到 pointerdown（见 tpsTabActivate），此处保留键盘与兜底。 */
+     * v263：鼠标路径提前到 pointerdown（见 tpsTabActivate），此处保留键盘与兜底。
+     * v384：V3 筛选 toggle 动作 click 只认键盘路径（e.detail===0）。 */
+    if (e.detail === 0 && tpsSpd3Activate(e)) return;
     tpsTabActivate(e);
   });
-  /* 柱 hover/键盘焦点：委托重建整卡，信息卡随串自愈，不额外挂逐柱监听。 */
+  /* 柱 hover/键盘焦点：委托重建整卡，信息卡随串自愈，不额外挂逐柱监听。
+   * v384 m5（镜像 06 同名守卫）：重建销毁聚焦柱节点，先记焦点、重建后归位。 */
   function tpsSpeedPick(idx) {
     var t = tpsTipFor && tpsTipFor.__zuT;
     if (!t || t.speedHover === idx) return;
+    var hadFocus = tpsTip.contains(document.activeElement) &&
+      document.activeElement.closest && document.activeElement.closest(".zu-sc-col,.zu-hm-cell,.zu-sv3-hit");
     t.speedHover = idx;
     tpsTip.__zuTipSig = "";
     showTpsTip(tpsTipFor);
+    if (hadFocus && idx >= 0) {
+      var nu3 = tpsTip.querySelector('.zu-sc-col[data-i="' + idx + '"],.zu-hm-cell[data-i="' + idx + '"],.zu-sv3-hit[data-i="' + idx + '"]');
+      if (nu3 && nu3.focus) nu3.focus();
+    }
   }
   tpsTip.addEventListener("mouseover", function (e) {
-    var col = e.target && e.target.closest && e.target.closest(".zu-sc-col,.zu-hm-cell");
+    var col = e.target && e.target.closest && e.target.closest(".zu-sc-col,.zu-hm-cell,.zu-sv3-hit");
     if (col) tpsSpeedPick(parseInt(col.getAttribute("data-i"), 10) || 0);
     var lb = e.target && e.target.closest && e.target.closest(".zu-sv-legend-btn");
     if (lb) spdLegendTipShow(lb);   // v281：问号 hover 即显档位说明
@@ -540,28 +602,84 @@
         spdLegendTipScheduleHide();
       return;
     }
-    var col = e.target && e.target.closest && e.target.closest(".zu-sc-col,.zu-hm-cell");
+    var col = e.target && e.target.closest && e.target.closest(".zu-sc-col,.zu-hm-cell,.zu-sv3-hit");
     if (!col) return;
-    if (to && to.closest && to.closest(".zu-sc-col,.zu-hm-cell")) return;
+    if (to && to.closest && to.closest(".zu-sc-col,.zu-hm-cell,.zu-sv3-hit")) return;
     tpsSpeedPick(-1);
   });
   tpsTip.addEventListener("focusin", function (e) {
-    var col = e.target && e.target.closest && e.target.closest(".zu-sc-col,.zu-hm-cell");
+    var col = e.target && e.target.closest && e.target.closest(".zu-sc-col,.zu-hm-cell,.zu-sv3-hit");
     if (col) tpsSpeedPick(parseInt(col.getAttribute("data-i"), 10) || 0);
     var lb = e.target && e.target.closest && e.target.closest(".zu-sv-legend-btn");
     if (lb) spdLegendTipShow(lb);   // v281：键盘聚焦问号同样显示
   });
   tpsTip.addEventListener("focusout", function (e) {
-    var col = e.target && e.target.closest && e.target.closest(".zu-sc-col,.zu-hm-cell");
-    if (col && !(e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest(".zu-sc-col,.zu-hm-cell"))) tpsSpeedPick(-1);
+    var col = e.target && e.target.closest && e.target.closest(".zu-sc-col,.zu-hm-cell,.zu-sv3-hit");
+    if (col && !(e.relatedTarget && e.relatedTarget.closest && e.relatedTarget.closest(".zu-sc-col,.zu-hm-cell,.zu-sv3-hit"))) tpsSpeedPick(-1);
     var lb = e.target && e.target.closest && e.target.closest(".zu-sv-legend-btn");
     if (lb && !(e.relatedTarget && e.relatedTarget.closest && (e.relatedTarget.closest(".zu-sv-legend-btn") || e.relatedTarget.closest(".zu-sv-legend-tip"))))
       spdLegendTipScheduleHide();
   });
   /* v281：浮层开着时 Escape 只收档位说明（本链无既存 Escape 监听，语义成立；
-   * 全量 tip 链的 legend 分支并入其 v254 既存 keydown，见 spawnInstance 内） */
+   * 全量 tip 链的 legend 分支并入其 v254 既存 keydown，见 spawnInstance 内）。
+   * v384：V3 筛选弹出层最先收（焦点归还搜索按钮），再走档位说明分层。 */
   tpsTip.addEventListener("keydown", function (e) {
-    if (e.key === "Escape" && spdLegendTip.style.display === "block") { e.stopPropagation(); spdLegendTipHide(); }
+    /* v384 M1：方向键移动（镜像 06 分片同款步长表）。 */
+    var ac3 = e.target && e.target.closest && e.target.closest(".zu-hm-cell,.zu-sv3-hit");
+    if (ac3 && typeof e.key === "string" && e.key.indexOf("Arrow") === 0) {
+      var idx3 = parseInt(ac3.getAttribute("data-i"), 10);
+      if (idx3 >= 0) {
+        var isHit3 = ac3.classList.contains("zu-sv3-hit");
+        var isHist3 = !isHit3 && !!ac3.closest(".zu3-hh-grid");
+        var step3 = e.key === "ArrowRight" ? (isHit3 || !isHist3 ? 1 : 7)
+          : e.key === "ArrowLeft" ? (isHit3 || !isHist3 ? -1 : -7)
+          : e.key === "ArrowDown" ? (isHist3 ? 1 : 7)
+          : e.key === "ArrowUp" ? (isHist3 ? -1 : -7) : 0;
+        if (step3) {
+          var nu3 = tpsTip.querySelector('.zu-hm-cell[data-i="' + (idx3 + step3) + '"],.zu-sv3-hit[data-i="' + (idx3 + step3) + '"]');
+          if (nu3 && nu3 !== ac3) {
+            e.preventDefault();
+            ac3.setAttribute("tabindex", "-1");
+            nu3.setAttribute("tabindex", "0");
+            if (nu3.focus) nu3.focus();
+          } else if (!nu3) e.preventDefault();
+          return;
+        }
+      }
+    }
+    if (e.key !== "Escape") return;
+    var t3 = tpsTipFor && tpsTipFor.__zuT, s3 = t3 && t3.speedSel;
+    if (s3 && s3.pop && s3.pop.open) {
+      e.stopPropagation();
+      s3.pop.open = false; s3.pop.query = "";
+      tpsTip.__zuTipSig = "";
+      showTpsTip(tpsTipFor);
+      var fsBtn3 = tpsTip.querySelector(".zu-sv3-fsearch");
+      if (fsBtn3 && fsBtn3.focus) fsBtn3.focus();
+      return;
+    }
+    if (spdLegendTip.style.display === "block") { e.stopPropagation(); spdLegendTipHide(); }
+  });
+  /* v384 V3 筛选弹出层搜索：input 委托挂 tpsTip 本体；只重渲染弹出层并回填焦点/光标，
+   * 全卡签名不动（下一次完整重编自然携带最新 query）。 */
+  tpsTip.addEventListener("input", function (e) {
+    var inp = e.target && e.target.classList && e.target.classList.contains("zu-sv3-fpop-input") ? e.target : null;
+    if (!inp) return;
+    var t3 = tpsTipFor && tpsTipFor.__zuT, s3 = t3 && t3.speedSel;
+    if (!s3) return;
+    if (!s3.pop) s3.pop = { open: false, query: "" };
+    s3.pop.query = inp.value || "";
+    var pop = inp.closest(".zu-sv3-fpop");
+    if (pop && typeof spd3FilterPopHTML === "function") {
+      var pool3 = (typeof SPD3_POOL !== "undefined" && SPD3_POOL) || [];
+      pop.innerHTML = spd3FilterPopHTML(pool3, s3.filt, s3.pop.query);
+      var ni3 = pop.querySelector(".zu-sv3-fpop-input");
+      if (ni3) {
+        ni3.value = s3.pop.query;
+        if (ni3.focus) ni3.focus();
+        try { ni3.setSelectionRange(ni3.value.length, ni3.value.length); } catch (_) { }
+      }
+    }
   });
   var TPS_HIDE_DELAY_MS = 180, tpsHideTimer = 0;
   function scheduleTpsHide() {
@@ -668,15 +786,15 @@
       /* v279：柱状图横滚位置跨重编记忆（用户实报 全部×全部 拉到末尾、关闭再开回到
        * 开头）——重建前从旧 DOM 连同选择键（data-sv-key）一起捕获，键同才回填：
        * hover/心跳重编不跳回头部，关闭再开（含期间数据刷新）恢复原位置，切换
-       * 范围/时间后键变自动归零；空态/V1 图无 .zu-sv-root 键不参与。 */
-      var sw0 = tpsTip.querySelector(".zu-sc-wrap"), sr0 = tpsTip.querySelector(".zu-sv-root"), st0 = null;
+       * 范围/时间后键变自动归零；空态/V1 图无 .zu-sv3-root 键不参与。 */
+      var sw0 = tpsTip.querySelector(".zu-sc-wrap"), sr0 = tpsTip.querySelector(".zu-sv3-root"), st0 = null;
       if (sw0 && sr0) {
         var oldKey = sr0.getAttribute("data-sv-key") || "";
         st0 = !wasVisible ? (tpsTip.__zuChartScroll && tpsTip.__zuChartScroll.key === oldKey ? tpsTip.__zuChartScroll : null) : { key: oldKey, x: sw0.scrollLeft };
       }
       tpsTip.innerHTML = html;
       if (st0) {
-        var sw1 = tpsTip.querySelector(".zu-sc-wrap"), sr1 = tpsTip.querySelector(".zu-sv-root");
+        var sw1 = tpsTip.querySelector(".zu-sc-wrap"), sr1 = tpsTip.querySelector(".zu-sv3-root");
         if (sw1 && sr1 && (sr1.getAttribute("data-sv-key") || "") === st0.key) sw1.scrollLeft = st0.x;
         else if (sw1 && sw1.hasAttribute && sw1.hasAttribute("data-sv-end"))
           sw1.scrollLeft = sw1.scrollWidth;   /* v291：键变进入全部历史=本图无有效记忆，滚到最新区 */
@@ -696,7 +814,7 @@
       if (typeof fitModelNames === "function") fitModelNames(tpsTip);
       if (rebuilt || !wasVisible) {
         if (!rebuilt) st0 = tpsTip.__zuChartScroll || null;
-        var fittedChart = tpsTip.querySelector(".zu-sc-wrap"), fittedRoot = tpsTip.querySelector(".zu-sv-root");
+        var fittedChart = tpsTip.querySelector(".zu-sc-wrap"), fittedRoot = tpsTip.querySelector(".zu-sv3-root");
         if (fittedChart && st0 && fittedRoot && (fittedRoot.getAttribute("data-sv-key") || "") === st0.key) fittedChart.scrollLeft = st0.x;
         else if (fittedChart && fittedChart.hasAttribute && fittedChart.hasAttribute("data-sv-end")) fittedChart.scrollLeft = fittedChart.scrollWidth;
       }
@@ -704,10 +822,10 @@
     }
     /* v297：tpsTip 链同款月历网格量测回写（动态字号数据源，见 08 drawTip 同名块）。
      * v298 起挂 display:block 之后——隐藏态量测全 0 会把下一帧字号压到 6px 下限。 */
-    var mgEl2 = tpsTip.querySelector(".zu-hm-grid--mon");
+    var mgEl2 = tpsTip.querySelector(".zu3-hm-grid");
     if (mgEl2) {
       var mgr2 = mgEl2.getBoundingClientRect();
-      var monRoot2 = mgEl2.closest && mgEl2.closest(".zu-sv-root");
+      var monRoot2 = mgEl2.closest && mgEl2.closest(".zu-sv3-root");
       var monZoom2 = parseFloat(monRoot2 && monRoot2.style && monRoot2.style.zoom) || 1;
       window.__zusageSpdMonRect = { w: mgr2.width / monZoom2, h: mgr2.height / monZoom2 };
     }
@@ -729,7 +847,7 @@
   function hideTpsTip() {
     cancelTpsHide();
     if (tpsTip.style.display !== "none") {
-      var closingChart = tpsTip.querySelector(".zu-sc-wrap"), closingRoot = tpsTip.querySelector(".zu-sv-root");
+      var closingChart = tpsTip.querySelector(".zu-sc-wrap"), closingRoot = tpsTip.querySelector(".zu-sv3-root");
       if (closingChart && closingRoot) tpsTip.__zuChartScroll = { key: closingRoot.getAttribute("data-sv-key") || "", x: closingChart.scrollLeft };
     }
     tpsTip.style.display = "none";
@@ -759,7 +877,7 @@
   function spdHoverPortalPlace(tipEl, idx) {
     if (!(idx >= 0) || !tipEl || !tipEl.isConnected) { spdHoverPortalHide(); return; }
     /* v291：热力图格子与柱体共用 data-i 定位契约 */
-    var col = tipEl.querySelector('.zu-sc-col[data-i="' + idx + '"],.zu-hm-cell[data-i="' + idx + '"]');
+    var col = tipEl.querySelector('.zu-sc-col[data-i="' + idx + '"],.zu-hm-cell[data-i="' + idx + '"],.zu-sv3-hit[data-i="' + idx + '"]');
     if (!col) { spdHoverPortalHide(); return; }
     var cr = col.getBoundingClientRect();
     /* 柱体滚出可视绘图区即收：与 wrap 视口无交叠不再显示（不显示错位卡）。

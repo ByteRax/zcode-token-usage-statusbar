@@ -756,6 +756,11 @@
    * 轮表是历史统计，分钟级陈旧可接受（v257 同取舍），下一帧成功即覆盖。 */
   var lastSpeedHistory = (typeof window !== "undefined" && window.__zusageSpdSticky) || null;
   if (mobileMode) lastSpeedHistory = null;
+  /* v384：speed_days（全历史日桶）同款粘性——旧 Python/serve 重启窗口缺帧时兜底，
+   * 语义与轮表粘性一致（历史统计分钟级陈旧可接受），下一帧成功即覆盖。逐帧独立
+   * 捕获/回填（M3/S10：不挂在缺轮表分支，否则正常帧永不更新）。 */
+  var lastSpeedDays = (typeof window !== "undefined" && window.__zusageSpdDaysSticky) || null;
+  if (mobileMode) lastSpeedDays = null;
   function renderAll(rebuildPanels) {
     if (rateTipFor) showRateTip(rateTipFor);
     for (var i = 0; i < instances.length; i++) {
@@ -901,19 +906,35 @@
       }
       FATAL.spdFrame = { t: Date.now(), has: mc.row && d.speed_history ? 1 : 0, sticky: 0, turns: 0 };
     }
+    /* v384（M3/S10 修复）：speed_days 粘性逐帧独立执行，不再挂在「缺轮表」分支——
+     * 正常帧恒有 speed_history，原位会让捕获/回填在主路径死代码化（speed_days 单独
+     * 瞬时失败时既不回填也不更新）。语义：新帧有 days 即捕获+写 window；缺 days
+     * （None）回填粘性；days 在场但空/畸形不粘不回填（与轮表空帧不粘同口径）。 */
+    if (!isMobile) {
+      if (d.speed_days && d.speed_days.days && d.speed_days.days.length) {
+        lastSpeedDays = d.speed_days;
+        try { window.__zusageSpdDaysSticky = lastSpeedDays; } catch (_) { }
+      } else if (!d.speed_days && typeof lastSpeedDays !== "undefined" && lastSpeedDays) {
+        d.speed_days = lastSpeedDays;
+      }
+    }
     /* v255：粘性统一轮表。常驻 serve 重启/空闲回收时主进程会回退到一次性 json，
      * 那一帧可能缺 speed_history；沿用本代最近一份有界轮表，速度 Tooltip 不再
      * 在 V2 与旧版整卡之间闪回。首帧尚无轮表（旧 Python/查询失败）才回退旧布局。 */
     if (!isMobile && d.speed_history && d.speed_history.turns && d.speed_history.turns.length) {
       lastSpeedHistory = d.speed_history;
       try { window.__zusageSpdSticky = lastSpeedHistory; } catch (_) { }
-      FATAL.spdFrame = { t: Date.now(), has: 1, sticky: 0, turns: d.speed_history.turns.length };   // v257 帧级诊断
+      /* v257 帧级诊断 + v384 sd 分量：has/sticky/turns=轮表链，sd=本帧（含粘性回填后）
+       * speed_days 在场与否——M3/S10 修复前该链无诊断分量，分支错位不可见。 */
+      FATAL.spdFrame = { t: Date.now(), has: 1, sticky: 0, turns: d.speed_history.turns.length,
+        sd: d.speed_days ? 1 : 0 };
     } else if (!isMobile) {
       var stickyHit = !d.speed_history && typeof lastSpeedHistory !== "undefined" && lastSpeedHistory;
       if (stickyHit) d.speed_history = lastSpeedHistory;
       /* v257 帧级诊断：缺字段/None 帧记 0，粘性补帧记 1——再出现象时 diag 直接可定位是
        * 数据链缺帧还是粘性未建立，不再靠截图反推。原地更新不替换对象（FATAL 共享引用）。 */
-      FATAL.spdFrame = { t: Date.now(), has: 0, sticky: stickyHit ? 1 : 0, turns: 0 };
+      FATAL.spdFrame = { t: Date.now(), has: 0, sticky: stickyHit ? 1 : 0, turns: 0,
+        sd: d.speed_days ? 1 : 0 };
     }
     if (!isMobile && d.remote_today) for (var key in d.remote_today) {
       if (d.remote_today[key] && typeof d.remote_today[key] === "object") {

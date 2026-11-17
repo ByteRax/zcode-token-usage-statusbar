@@ -1039,7 +1039,8 @@
            * （pill-theme 4 例红）；其动机（原生 title 需 ~1s 稳定悬停，生成期重建打断）
            * 已由 02 分片同批的纯 CSS data-tip 气泡消解——重建后 :hover 即时跟随新元素，
            * 无驻留要求，冻结不再有必要，撤销以恢复悬停实时刷新。 */
-          var speedFollow = !!(nu.__tip.indexOf && nu.__tip.indexOf("zu-stat-tip--speed") > 0) && !focusInTip;
+          var speedFollow = !!(nu.__tip.indexOf && (nu.__tip.indexOf("zu-stat-tip--speed") > 0 ||
+            nu.__tip.indexOf("zu-sv3-root") > 0)) && !focusInTip;   /* v384：V3 根类识别 */
           /* v242:pill 主题同样受「焦点在 tip 内跳过重绘」守卫——此前无条件 drawTip,
            * 键盘聚焦柱体时一次快照推送就把焦点打回 body(v224 修的是悬停链,此处补齐焦点链) */
           if (!focusInTip && (state.theme === "pill" || document.activeElement === nu || speedFollow)) drawTip(nu, true);
@@ -1115,7 +1116,7 @@
       spdLegendTipHide();     /* v282：档位说明浮层同链收起 */
       if (tipGraceTimer) { clearTimeout(tipGraceTimer); tipGraceTimer = 0; }
       if (tip.style.display !== "none") {
-        var closingChart = tip.querySelector && tip.querySelector(".zu-sc-wrap"), closingRoot = tip.querySelector && tip.querySelector(".zu-sv-root");
+        var closingChart = tip.querySelector && tip.querySelector(".zu-sc-wrap"), closingRoot = tip.querySelector && tip.querySelector(".zu-sv3-root");
         if (closingChart && closingRoot) tip.__zuChartScroll = { key: closingRoot.getAttribute("data-sv-key") || "", x: closingChart.scrollLeft };
         tip.style.display = "none";
       }
@@ -1185,13 +1186,13 @@
       var oldTipScroll = keepTop ? tip.scrollTop : 0;
       /* v232：速度图表横滚位置跨重建保留；v280 扩展——重开路径（keepTop=false，用户
        * 实报「全部×全部拉到末尾、关闭再开回到开头」）同样捕获，并带选择键守卫
-       * （.zu-sv-root 的 data-sv-key 同键才回填，切换范围/时间后归零；V1 旧图无键
+       * （.zu-sv3-root 的 data-sv-key 同键才回填，切换范围/时间后归零；V1 旧图无键
        * 视为空串键，同内容回填行为与 v232 一致）。 */
       var oldChartL = null, oldChartKey = "";
       if (oldBody) {
         var oc = oldBody.querySelector(".zu-sc-wrap");
         if (oc) {
-          var or0 = oldBody.querySelector(".zu-sv-root");
+          var or0 = oldBody.querySelector(".zu-sv3-root");
           oldChartKey = or0 ? (or0.getAttribute("data-sv-key") || "") : "";
           var savedChart = tip.style.display === "none" && tip.__zuChartScroll;
           oldChartL = savedChart && savedChart.key === oldChartKey ? savedChart.x : (tip.style.display === "none" ? null : oc.scrollLeft);   /* 0 也是有效记忆；隐藏态不可直接读取 */
@@ -1212,12 +1213,12 @@
       }
       /* v285：V2 卡左对齐标记（positionTip 消费：left=锚元素左缘）；
        * v299.2（用户规格）：本轮 500×350 卡同款居左（与生成速度 tooltip 对齐语义一致） */
-      tip.__zuAlignLeft = !!(tip.querySelector(".zu-sv-root") || tip.querySelector(".zu-stat-tip--turn"));
+      tip.__zuAlignLeft = !!(tip.querySelector(".zu-sv3-root") || tip.querySelector(".zu-stat-tip--turn"));
       /* v297：月历网格实测尺寸回写——builder 动态字号的数据源（量测便宜、单元素；
        * 字号变化不改变格尺寸，无测量/布局循环） */
       var nc = tip.querySelector(".zu-sc-wrap");
       if (nc && oldChartL !== null) {
-        var nr0 = tip.querySelector(".zu-sv-root");
+        var nr0 = tip.querySelector(".zu-sv3-root");
         if (nr0 ? (nr0.getAttribute("data-sv-key") || "") === oldChartKey : !oldChartKey) {
           nc.scrollLeft = oldChartL;
         } else if (nc.hasAttribute && nc.hasAttribute("data-sv-end")) {
@@ -1233,7 +1234,7 @@
       spdFitTip(tip, !keepTop);
       fitModelNames(tip);
       if (nc && oldChartL !== null) {
-        var fittedRoot = tip.querySelector(".zu-sv-root");
+        var fittedRoot = tip.querySelector(".zu-sv3-root");
         if (fittedRoot && (fittedRoot.getAttribute("data-sv-key") || "") === oldChartKey) nc.scrollLeft = oldChartL;
         else if (nc.hasAttribute && nc.hasAttribute("data-sv-end")) nc.scrollLeft = nc.scrollWidth;
       } else if (nc && nc.hasAttribute && nc.hasAttribute("data-sv-end")) nc.scrollLeft = nc.scrollWidth;
@@ -1242,10 +1243,10 @@
       positionTip(el, keepTop);
       /* v297：月历网格实测尺寸回写（动态字号数据源）。v298 起挂 display:block 之后——
        * 隐藏态量测全 0 会把下一帧字号压到 6px 下限（首开闪小字，下轮刷新才自愈）。 */
-      var mgEl = tip.querySelector(".zu-hm-grid--mon");
+      var mgEl = tip.querySelector(".zu3-hm-grid");
       if (mgEl) {
         var mgr = mgEl.getBoundingClientRect();
-        var monRoot = mgEl.closest && mgEl.closest(".zu-sv-root");
+        var monRoot = mgEl.closest && mgEl.closest(".zu-sv3-root");
         var monZoom = parseFloat(monRoot && monRoot.style && monRoot.style.zoom) || 1;
         window.__zusageSpdMonRect = { w: mgr.width / monZoom, h: mgr.height / monZoom };
       }
@@ -1254,7 +1255,7 @@
        * 必须挂 display:block 之后：隐藏态 getBoundingClientRect 全 0（v298 首版挂在
        * innerHTML 重建处实测六层全 0 废片）。 */
       try {
-        var segR = tip.querySelector(".zu-sv-root"), segWrap = tip.querySelector(".zu-sc-wrap"),
+        var segR = tip.querySelector(".zu-sv3-root"), segWrap = tip.querySelector(".zu-sc-wrap"),
           segHead = tip.querySelector(".zu-sv-head"), segPlot = tip.querySelector(".zu-sv-plot"),
           segBody = tip.querySelector(".zu-speed-body"), segChart = tip.querySelector(".zu-sv-chart"),
           segRow = tip.querySelector(".zu-sv-plotrow"), segGutcol = tip.querySelector(".zu-sv-gutcol"),

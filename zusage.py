@@ -524,6 +524,11 @@ _SPEED_HISTORY_TTL_MS = 2000      # 2s 短缓存（常驻泵 1.5s 拉一次，�
 _SPEED_HISTORY_STALE_MS = 10 * 60 * 1000
 _SPEED_CACHE = {}                 # 独立缓存：不与 _cached_agg 的 scan/today 共用上限 8 的 _AGG_CACHE
 _SPEED_WM = {}                    # 轮表缓存的 model_usage 水位（TTL 过期后水位未变续用，见 _WM_MAX_AGE_MS）
+# v384（specs/speed-tooltip-v3.md §1.2）：全历史按本地自然日聚合，解决 6000 轮截断。
+_SPEED_DAYS_MAX_DAYS = 550        # 覆盖窗口：截至今天（含）往前 N 个本地日；truncated 时渲染端明示
+_SPEED_DAYS_MAX_MODELS = 8        # 日桶 msl 每模型条目上限（超出 capFlag=1，日级总量仍精确）
+_DAYS_CACHE = {}                  # speed_days 缓存：与轮表 _SPEED_CACHE 同款独立缓存（不挤 _AGG_CACHE）
+_DAYS_WM = {}                     # speed_days 缓存的 model_usage 水位（同款续用语义）
 
 
 _AGG_TTL_MS = 2000   # 聚合短缓存：今日合计/会话池是慢变量，2s 陈旧无感；泵 1.5s 拉一次省约一半全表聚合
@@ -1997,8 +2002,10 @@ def _speed_turns(con, session_ids, covers):
     v253 轮字段（短键 + 索引表压缩帧体积）：s=会话 id、t=轮完成时刻、b=轮起始（hover
     卡显示完整区间）、out=Σ有效输出（速度分子）、ms=Σ有效生成窗口（速度分母）、
     i/o=轮内已完成行输入/输出合计（input 已含缓存、output 已含思考，不重复相加）、
-    n=请求数、msl=按有效输出排序的 [模型, 输出] 明细、c=轮预估费用 USD（价表可能
-    含兜底均价，展示层恒标「含兜底估价」，不冒充完整牌价）。
+    n=请求数、msl=按有效输出排序的 [模型, 输出, 生成窗口ms, 请求数] 明细（v384 四元组：
+    ms=该模型通过窗口过滤行的 Σ窗口毫秒、n=该模型本轮已完成行数含无效窗口行，仅 out>0
+    入列；_speed_history 转索引时按 (model, provider) 建身份表并剥掉末位 provider）、
+    c=轮预估费用 USD（价表可能含兜底均价，展示层恒标「含兜底估价」，不冒充完整牌价）。
     刻意不存 v（单点 t/s）：渲染端所有柱/桶/均值一律按 Σout÷Σms 重算，杜绝算术平均。
     返回 (turns, session_rows)：session_rows 供顶部名称表一次性取会话名/项目归属。"""
     if not session_ids:
@@ -2080,19 +2087,26 @@ def _speed_turns(con, session_ids, covers):
                 cg[2] += row["cache_read_input_tokens"] or 0
                 cg[3] += row["cache_creation_input_tokens"] or 0
                 gen_ms = _row_gen_ms(row, covers)
+                # v384 模型级速度：每行都登记模型——n 计该模型本轮全部已完成行（含无效
+                # 窗口行），ms 只累加通过窗口过滤的有效行（渲染端按 Σout÷Σms 算模型速度）
+                m = models.setdefault(key, {"out": 0, "ms": 0, "n": 0})
+                m["n"] += 1
                 if tokens > 0 and gen_ms and _TPS_MIN_GEN_MS <= gen_ms < _TPS_MAX_GEN_MS:
                     valid_out += tokens
                     valid_ms += gen_ms
-                    m = models.setdefault(key, {"model": key[0], "out": 0})
                     m["out"] += tokens
+                    m["ms"] += gen_ms
             if not valid_ms or not t1:
                 continue   # 无有效生成窗口的轮不参与任何速度统计（不显误导性 0 t/s）
             # 短键 + 顶部名称/模型表：每轮只带索引，避免长 sid/项目名/模型名在千轮帧里重复
             t = {"s": sid, "t": t1, "b": t0 or t1,
                  "out": valid_out, "ms": valid_ms,
                  "i": tin, "o": tout, "n": len(rows)}
-            ml = sorted(models.values(), key=lambda m: -m["out"])
-            t["msl"] = [[m["model"], m["out"]] for m in ml if m["out"] > 0][:8]
+            ml = sorted(models.items(), key=lambda kv: -kv[1]["out"])
+            # 预索引条目末位带 provider_id：_speed_history 以 (model, provider) 二元组建
+            # mnames/mkeys 身份表，转索引后剥掉——同名牌不同 provider 不再共享身份
+            t["msl"] = [[k[0], v["out"], int(v["ms"]), v["n"], k[1]]
+                        for k, v in ml if v["out"] > 0][:8]
             if _pricing is not None:
                 try:
                     groups_in = [(k[0], k[1], g[0], g[1], g[2], g[3])
@@ -2134,7 +2148,10 @@ def _speed_history(con, sid=""):
     # 渲染端按会话/项目比较维度取标签与归属，长字符串不随千轮重复进帧。
     # 索引表：长 sid/项目名/模型名各只存一份，轮里改存整数下标——帧体积从 ~540KB
     # 降到 ~160KB，避免 1.5s 泵每窗重复推长字符串（渲染端按表还原，数值零损失）。
-    sid_idx, sids, snames, pids, mname_idx, mnames = {}, [], [], [], {}, []
+    # v384：模型身份键从名牌改为 (model, provider) 二元组——mnames 仍存显示名 model_id，
+    # 平行的 mkeys[i] = provider_id + "\x1f" + model_id（provider 缺失用空串），同名牌
+    # 不同 provider 的模型获得独立身份；缺席 mkeys 的旧帧渲染端退化为按名称识别。
+    sid_idx, sids, snames, pids, mname_idx, mnames, mkeys = {}, [], [], [], {}, [], []
     for t in turns:
         k = t["s"]
         if k not in sid_idx:
@@ -2153,13 +2170,15 @@ def _speed_history(con, sid=""):
         while len(pids) <= sid_idx[k]:
             pids.append(["", ""])
         pids[sid_idx[k]] = [pid, pn]
-        for pair in t["msl"]:
-            if pair[0] not in mname_idx:
-                mname_idx[pair[0]] = len(mnames)
-                mnames.append(pair[0])
+        for p in t["msl"]:
+            mk = (p[0], p[4])
+            if mk not in mname_idx:
+                mname_idx[mk] = len(mnames)
+                mnames.append(p[0])
+                mkeys.append((p[4] or "") + "\x1f" + (p[0] or ""))
     for t in turns:
         t["s"] = sid_idx[t["s"]]
-        t["msl"] = [[mname_idx[p[0]], p[1]] for p in t["msl"]]
+        t["msl"] = [[mname_idx[(p[0], p[4])], p[1], p[2], p[3]] for p in t["msl"]]
     # 轮按 (完成时间, 会话, 起始) 升序；相邻时间差通常 < 2^31 ms，delta 编码省掉大整数
     prev = 0
     for t in turns:
@@ -2171,7 +2190,8 @@ def _speed_history(con, sid=""):
         "sids": sids,                    # 会话 id 索引表
         "snames": snames,                # 会话名索引表（按 sid 下标取）
         "pids": pids,                    # [project_id, 项目名] 索引表（按 sid 下标取）
-        "mnames": mnames,                # 模型名索引表
+        "mnames": mnames,                # 模型名索引表（显示名=model_id）
+        "mkeys": mkeys,                  # 模型身份索引表（provider_id+"\x1f"+model_id，与 mnames 平行）
         "turns": turns,                  # 单一事实源：全部筛选/聚合在渲染端按同一公式推导
         "truncated": window_n > _SPEED_HISTORY_MAX_TURNS,
     }
@@ -2236,6 +2256,158 @@ def _speed_history_safe(con, sid=""):
         pass
     try:
         return _speed_history_stale()
+    except Exception:
+        return None
+
+
+def _speed_days(con):
+    """v384（specs/speed-tooltip-v3.md §1.2）：全历史按**本地自然日**聚合的日桶帧——
+    解决轮表 6000 轮上限对「全部」视图的截断。聚合口径与 _speed_turns 完全同源：已完成
+    main_turn 行、_row_gen_ms 生成窗口 + 200ms–1h 有效段过滤、covers 特例，辅助
+    query_source 与子代理行不计。日界一律 datetime.fromtimestamp 本地日历推导（DST/
+    月末/跨年由标准库保证），禁止按固定 86400000 毫秒整除推日。
+    日桶 [out, ms, n, turns, capFlag, msl]：out/ms=当日通过窗口过滤行的 Σ有效输出/Σ窗口
+    （分母分子完整精确）；n=当日已完成行数（含无效窗口行）；turns=当日 distinct 轮数，
+    非空 turn_id 按 (sid, turn_id) 复合键去重，turn_id 为 NULL 的旧行按每行一个独立计次
+    （_speed_turns 把 NULL 行按会话归并一组，这里逐行计次是更细的可控口径，渲染端只做
+    展示不做跨帧对账）；capFlag=1 表示当日模型列表 >_SPEED_DAYS_MAX_MODELS(8) 条被截断
+    （日级总量不受影响）；msl 为**打平五元组序列** [mIdx,out,ms,n,tn, mIdx,out,ms,n,tn,
+    ...]——每模型 5 个元素连续排列、省掉内层括号压帧体积（≤8 模型即 ≤40 个数字；旧版
+    嵌套形态 msl[0] 是数组、新形态是数字，JS 端按 Array.isArray(msl[0]) 区分新旧）。
+    条目按 out 降序、仅 out>0 的模型入列（与 _speed_turns 一致；out=0 的模型只计入日级
+    总量不进身份列表），tn=当日含该模型已完成行（不论窗口有效性）的 distinct 轮数，
+    与日级 turns 同款 NULL 行逐行计次。
+    truncated=1 表示存在早于窗口起点（今天往前 _SPEED_DAYS_MAX_DAYS 个本地日）的已完成
+    行，渲染端据此明示「已截断」；早于起点/晚于今天的时间戳行（时钟偏移）不进任何桶，
+    不伪造未来日。mnames/mkeys 与 speed_history 同款 (model, provider) 身份表。"""
+    covers = _provider_first_token_covers(con)
+    today0 = _day_start()
+    start0 = today0 - timedelta(days=_SPEED_DAYS_MAX_DAYS - 1)
+    start_ms = _epoch_ms(start0)
+    start_date, today_date = start0.date(), today0.date()
+    probe = con.execute(
+        """select min(completed_at) from model_usage where status='completed'
+             and (query_source is null or query_source='main_turn')
+             and completed_at is not null""").fetchone()
+    truncated = 1 if probe and probe[0] is not None and probe[0] < start_ms else 0
+    days = {}   # 本地 date → [out, ms, n, 轮键集合, 模型字典]；空日不建桶，装配时补零
+    mname_idx, mnames, mkeys = {}, [], []
+    for row in con.execute(
+            """select rowid, output_tokens, completed_at, turn_id, session_id,
+                      model_id, provider_id, first_token_at, started_at, reasoning_tokens
+               from model_usage where status='completed'
+                 and (query_source is null or query_source='main_turn')
+                 and completed_at is not null"""):
+        ct = row["completed_at"]
+        if ct < start_ms:
+            continue
+        day = datetime.fromtimestamp(ct / 1000).date()
+        if day > today_date or day < start_date:
+            continue   # 未来时间戳（时钟偏移）不伪造日桶；起点判定冗余防御
+        b = days.get(day)
+        if b is None:
+            b = days[day] = [0, 0, 0, set(), {}]
+        # 轮身份：非空 turn_id 用 (sid, turn_id)；NULL 旧行每行一个独立计次（rowid 唯一）
+        tk = (row["session_id"], row["turn_id"]) if row["turn_id"] is not None else (None, row["rowid"])
+        b[3].add(tk)
+        mk = (row["model_id"] or "", row["provider_id"] or "")
+        if mk not in mname_idx:
+            mname_idx[mk] = len(mnames)
+            mnames.append(mk[0])
+            mkeys.append(mk[1] + "\x1f" + mk[0])
+        macc = b[4].get(mk)
+        if macc is None:
+            macc = b[4][mk] = [0, 0, 0, set()]
+        b[2] += 1            # n：当日已完成行数（含无效窗口行）
+        macc[2] += 1
+        macc[3].add(tk)      # tn 与日级 turns 同款 NULL 逐行计次
+        gen_ms = _row_gen_ms(row, covers)
+        tokens = row["output_tokens"] or 0
+        if tokens > 0 and gen_ms and _TPS_MIN_GEN_MS <= gen_ms < _TPS_MAX_GEN_MS:
+            b[0] += tokens
+            b[1] += gen_ms
+            macc[0] += tokens
+            macc[1] += gen_ms
+    buckets = []
+    for i in range(_SPEED_DAYS_MAX_DAYS):
+        b = days.get(start_date + timedelta(days=i))
+        if b is None:
+            buckets.append([0, 0, 0, 0, 0, 0])   # 空日：msl 槽位恒 0（无记录）
+            continue
+        ml = sorted((kv for kv in b[4].items() if kv[1][0] > 0), key=lambda kv: -kv[1][0])
+        top = ml[:_SPEED_DAYS_MAX_MODELS]
+        msl = []
+        for k, v in top:
+            msl += [mname_idx[k], v[0], int(v[1]), v[2], len(v[3])]   # 打平五元组，省内层括号
+        buckets.append([b[0], b[1], b[2], len(b[3]),
+                        1 if len(ml) > _SPEED_DAYS_MAX_MODELS else 0, msl])
+    return {
+        "v": 1,
+        "source": "local",               # 数据源边界：远端身份下渲染端禁用「全部」
+        "start": start_ms,               # 首日（最旧）本地 00:00 epoch ms，days[i]=start+i*864e5
+        "days": buckets,                 # 连续本地自然日，旧→新，末位=今天
+        "mnames": mnames,
+        "mkeys": mkeys,
+        "truncated": truncated,
+    }
+
+
+def _speed_days_cached(con):
+    """speed_days 的 2s 短缓存：完整镜像 _speed_history_cached（独立 _DAYS_CACHE 不挤
+    _AGG_CACHE/_SPEED_CACHE，dbkey 键、TTL 内直取、过期后 model_usage 水位未变续用、
+    内存库不缓存）。日桶同样是全库统一数据、与 pane 无关，key 不含 sid。"""
+    dbkey = _db_cache_key(con)
+    if dbkey is None:
+        return _speed_days(con)
+    key = dbkey
+    hit = _DAYS_CACHE.get(key)
+    now = int(time.time() * 1000)
+    if hit:
+        if now - hit[0] < _SPEED_HISTORY_TTL_MS:
+            return hit[1]
+        if _wm_alive(_DAYS_WM, key, hit, con, now):
+            return hit[1]
+    wm = _usage_watermark(con)
+    val = _speed_days(con)
+    if len(_DAYS_CACHE) > 4:
+        _DAYS_CACHE.clear()
+        _DAYS_WM.clear()
+    _DAYS_CACHE[key] = (now, val)
+    if wm is None or not any(d[2] for d in val["days"]):
+        _DAYS_WM.pop(key, None)   # 空帧可能是查询降级的结果：不延长，仍按 TTL 重试
+    else:
+        _DAYS_WM[key] = wm
+    return val
+
+
+def _speed_days_stale():
+    """跨 dbkey 取缓存里最近一份成功日桶帧：与 _speed_history_stale 同款（库文件被替换
+    的极端场景下分钟级陈旧可接受，下一帧成功即覆盖）。"""
+    now = int(time.time() * 1000)
+    best = None
+    for hit in _DAYS_CACHE.values():
+        if now - hit[0] <= _SPEED_HISTORY_STALE_MS and (best is None or hit[0] > best[0]):
+            best = hit
+    return best[1] if best else None
+
+
+def _speed_days_safe(con):
+    """可选增强字段统一入口：完整镜像 _speed_history_safe（失败先 50ms 短重试一次，
+    再回退最近成功帧，stale 上限共用 _SPEED_HISTORY_STALE_MS；捕获面同款宽捕获）。
+    查询失败/旧库缺列/无本地连接返回 None（渲染端判空），不拖垮整帧快照。"""
+    if con is None:
+        return None
+    try:
+        return _speed_days_cached(con)
+    except (sqlite3.Error, TypeError, ValueError, KeyError, IndexError, OverflowError, AttributeError):
+        pass
+    try:
+        time.sleep(0.05)
+        return _speed_days_cached(con)
+    except (sqlite3.Error, TypeError, ValueError, KeyError, IndexError, OverflowError, AttributeError):
+        pass
+    try:
+        return _speed_days_stale()
     except Exception:
         return None
 
@@ -3353,7 +3525,7 @@ def _provider_fallback_uncached(con):
 
 
 def snapshot(force_sid="", routes=None, serve_con=None, include_speed_history=False,
-             include_all_projects=False):
+             include_all_projects=False, include_speed_days=False):
     """单次快照：最新会话 + 最近 6+6 会话池 + 今日。
     force_sid：各窗口当前会话 id，逗号分隔（泵按窗口汇总上报：主进程 IPC 映射的焦点会话 +
     overlay localStorage 键兜底），全部强制纳入快照——不在 6+6 池里的会话（新开的、久远的）
@@ -3365,6 +3537,9 @@ def snapshot(force_sid="", routes=None, serve_con=None, include_speed_history=Fa
     这份 ~200KB 增强字段，保持各自 stdout 契约。
     include_all_projects（v331）：同门控产出全部项目聚合（specs/all-projects-usage.md，
     挂顶层 all_projects，~6KB 量级）；任何 sqlite3.Error/列漂移省略字段不拖垮整帧。
+    include_speed_days（v384，specs/speed-tooltip-v3.md §1.2）：同门控产出全历史按日聚合
+    日桶帧（挂顶层 speed_days，≤550 日；550 日×8 模型满桶实测 ~105-120KB，与数值位数相关）；开关点与 include_speed_history
+    完全一致，失败降级 None 不拖垮整帧。
     连接所有权归调用方：serve 模式下查询期出错会就地 close（调用方下次探活重建），
     finally 不重复关闭。"""
     cfg = load_config()
@@ -3592,6 +3767,9 @@ def snapshot(force_sid="", routes=None, serve_con=None, include_speed_history=Fa
             # 回收/重启交替期偶发缺字段而回退旧版整卡）。CLI / MCP / 远端子查询的 stdout
             # 契约不夹带这份 ~200KB 增强字段；旧远端/无本地连接/缺列降级时省略，渲染端判空回退。
             **({"speed_history": _speed_history_safe(con, latest_sid)} if include_speed_history else {}),
+            # v384 全历史按日聚合（specs/speed-tooltip-v3.md §1.2）：与 speed_history 同款
+            # 门控/降级（None=失败，渲染端判空）；CLI / MCP / 远端子查询 stdout 不夹带
+            **({"speed_days": _speed_days_safe(con)} if include_speed_days else {}),
             # v331 全部项目聚合（specs/all-projects-usage.md）：桌面快照链顶层可选字段；
             # 无连接/缺列降级时省略，渲染端判空显「暂不可用」，不借当前项目数据冒充
             **({"all_projects": all_proj} if all_proj is not None else {}),
@@ -4330,9 +4508,12 @@ def serve():
             # 手机中继请求体显式 lean:true：跳过两个桌面增强字段（手机 projection 不消费），
             # 其余 CLI/MCP/桌面调用不带该键，行为不变。
             lean = _query_lean(line)
+            # v384：紧凑分隔符（默认 ", " 每帧 ~2.5 万个多余空格；纯字节布局变化，
+            # JSON 语义不变，speed_days 满帧实测 105→81KiB）
             out = json.dumps(snapshot(force_sid, routes, serve_con=con,
                                       include_speed_history=not lean,
-                                      include_all_projects=not lean))
+                                      include_all_projects=not lean,
+                                      include_speed_days=not lean), separators=(",", ":"))
         except Exception as e:
             out = json.dumps({"error": str(e)[:200]})   # 单次查询失败不杀常驻进程
             _drop()   # 异常路径下连接状态未知：弃用，下轮重建
@@ -4411,7 +4592,8 @@ def main(argv):
             # CLI 手工 json / MCP 走 render_* 文本链，均不受影响。
             desktop = os.environ.get("ZUSAGE_REMOTE_CHILD") != "1" and not _query_lean(raw)
             print(json.dumps(snapshot(force_sid, routes, include_speed_history=desktop,
-                                      include_all_projects=desktop)))
+                                      include_all_projects=desktop,
+                                      include_speed_days=desktop), separators=(",", ":")))   # v384 同上
             return 0
         if cmd == "serve":
             serve()

@@ -5,7 +5,7 @@
 设计目标：
 - 保持分发产物形态不变：根目录 overlay.js 与 plugins/.../overlay.js 仍为单文件 IIFE，
   无需打包器或第三方依赖，也不改变 Release ZIP 的文件清单契约。
-- 降低维护粒度：1.9MB 的 overlay.js 拆分为职责清晰的 14 个源码模块（src/overlay/，`04-` 前缀两文件：词包纯数据 `04-rotator-builtin-packs.js` 先于 `04-status-rotator-data.js` 字典序加载）。
+- 降低维护粒度：2MB 的 overlay.js 拆分为职责清晰的 19 个源码模块（src/overlay/，`04-` 前缀六文件：词包纯数据与速度 V3 五分片（04-speed-v3-*）按字典序插于 `04-status-rotator-data.js` 之前）。
 - 防漂移门禁：`--check` 校验 src/overlay/ 拼接结果与根 overlay.js 逐字节一致，
   并由 `sync_plugin.py` 自动串联调用。
 
@@ -16,6 +16,11 @@
   │  02-store-bridge-and-speed-v2.js    渲染桥 ZUsageTurnStats 对接与速度 20 组合筛选引擎
   │  03-deterministic-turns-and-verbs.js 回答末尾确定性统计行、富文本回填与状态动词库
   │  04-rotator-builtin-packs.js        内置状态词包纯数据表（builtinPacks）
+  │  04-speed-v3-charts.js              v384 速度 V3：最近/今天/近7天图表与悬停卡（specs/speed-tooltip-v3.md）
+  │  04-speed-v3-core.js                v384 速度 V3：解包/模型身份配色/筛选状态机/聚合管线
+  │  04-speed-v3-heat.js                v384 速度 V3：本月日历与全部历史热力图
+  │  04-speed-v3-view.js                v384 速度 V3：920×480 外壳/头部双 Tab/模型筛选/左右卡
+  │  04-speed-v3-wire.js                v384 速度 V3：spd3RebuildOr 装配桥（图表分发+状态烘入）
   │  04-status-rotator-data.js          内置语录库、在线热更缓存、自动轮换引擎与通知音效
   │  05-status-rotator-runtime.js       词包编辑器弹窗、多 pane 协调器与几何可见性判定
   │  ┌─ 实例级闭包 `function spawnInstance(pid)`（06 开 → 12 闭）──────────────────┐ │
