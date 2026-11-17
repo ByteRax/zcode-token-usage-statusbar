@@ -102,7 +102,10 @@ def host_cli_config():
     """宿主 CLI 的 MCP 配置文件（与 install.py 的 ZCODE_CONFIG 同源）。"""
     override = os.environ.get("ZUSAGE_PLUGIN_HOST_CONFIG")   # 测试/排障接缝
     if override:
-        return Path(override).expanduser()
+        try:
+            return Path(override).expanduser()
+        except (OSError, RuntimeError):   # 坏形态（如 ~未知用户）按字面路径处理，is_file 自然为 False
+            return Path(override)
     return real_home() / ".zcode" / "cli" / "config.json"
 
 
@@ -154,8 +157,8 @@ def dedupe_legacy_mcp(runtime=None, plugin_root=None):
     """移除独立安装遗留的 MCP 注册，消除每会话双份 usage_mcp 进程。
 
     返回 removed / absent / skipped-invalid / skipped-locked / skipped-io / skipped-env。
-    永不抛异常：SessionStart hook 的任何失败都不能影响会话。结构异常（非对象、mcp.servers
-    不是对象）一律原样保留；锁内重读再改，同目录备份 + 原子替换消除截断窗口。
+    永不抛异常：SessionStart hook 的任何失败都不能影响会话。结构异常（顶层非对象、mcp 或
+    mcp.servers 不是对象）一律原样保留；锁内重读再改，同目录备份 + 原子替换消除截断窗口。
     """
     if os.environ.get("ZUSAGE_KEEP_LEGACY_MCP"):
         return "skipped-env"
@@ -180,7 +183,9 @@ def dedupe_legacy_mcp(runtime=None, plugin_root=None):
         mcp = data.get("mcp")
         if mcp is None:
             return "absent", None, None
-        servers = mcp.get("servers") if isinstance(mcp, dict) else None
+        if not isinstance(mcp, dict):
+            return "invalid", None, None
+        servers = mcp.get("servers")
         if servers is None:
             return "absent", None, None
         if not isinstance(servers, dict):

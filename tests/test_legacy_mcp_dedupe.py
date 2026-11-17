@@ -137,6 +137,44 @@ class LegacyMcpDedupeTests(unittest.TestCase):
                      if path.name.startswith("." + self.config.name + ".")]
         self.assertEqual(leftovers, [], "原子写入不留临时文件")
 
+    def test_keeps_runtime_file_that_is_not_usage_mcp(self):
+        # 文件名门：历史名条目指向运行目录内其它文件（如常驻查询脚本）不得误删。
+        self.write_servers({"zusage": self.entry(self.runtime / "zusage.py")})
+        before = self.config.read_bytes()
+        self.assertEqual(self.dedupe(), "absent")
+        self.assertEqual(self.config.read_bytes(), before)
+
+    def test_keeps_non_history_name_pointing_at_plugin_script(self):
+        # 名字门：白名单外的自定义名即使指向本插件脚本也保留。
+        self.write_servers({"my-own-zusage": self.entry()})
+        before = self.config.read_bytes()
+        self.assertEqual(self.dedupe(), "absent")
+        self.assertEqual(self.config.read_bytes(), before)
+
+    def test_lock_is_acquired_before_writing(self):
+        # 并发保护：写入前必须在运行目录锁内（file_lock 被调用且路径正确）。
+        self.write_servers({"zcode-token-usage-statusbar": self.entry()})
+        spy = mock.MagicMock(wraps=self.module.file_lock)
+        with mock.patch.object(self.module, "file_lock", spy), mock.patch("sys.stderr"):
+            self.assertEqual(self.dedupe(), "removed")
+        self.assertEqual(spy.call_count, 1)
+        self.assertEqual(Path(spy.call_args[0][0]), self.runtime / "legacy-mcp.lock")
+
+    def test_busy_lock_returns_skipped_locked(self):
+        self.write_servers({"zcode-token-usage-statusbar": self.entry()})
+        before = self.config.read_bytes()
+        with mock.patch.object(self.module, "file_lock", side_effect=TimeoutError("busy")), \
+                mock.patch("sys.stderr"):
+            self.assertEqual(self.dedupe(), "skipped-locked")
+        self.assertEqual(self.config.read_bytes(), before, "锁忙时不得改写宿主配置")
+        self.assertFalse(self.config.with_name(self.config.name + ".zusage-mcp.bak").exists())
+
+    def test_non_object_mcp_section_itself_is_never_rewritten(self):
+        self.config.write_text(json.dumps({"mcp": "not-an-object"}), encoding="utf-8")
+        before = self.config.read_bytes()
+        self.assertEqual(self.dedupe(), "skipped-invalid")
+        self.assertEqual(self.config.read_bytes(), before, "mcp 段本身非对象也按结构异常保留")
+
     @unittest.skipUnless(os.name == "nt", "Windows 路径分隔符归一")
     def test_windows_backslash_path_is_recognized(self):
         script = str(self.runtime / "usage_mcp.py").replace("/", "\\")
