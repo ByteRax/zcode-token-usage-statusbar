@@ -109,11 +109,12 @@ function createModelPuller(opts) {
   /* api-key 型自定义供应商才可拉取/写入；套餐源（PLAN_SOURCES）另行放行；
    * coding-plan 型自定义规则的 baseUrl/模型由宿主管。
    * issue #383：按合并模板后的有效配置判定——模板供应商个人规则只存 templateId + key，
-   * 读原始 config 会把 baseUrl 判空、整链（列表/拉取/探测/写入）全部不可用。 */
+   * 读原始 config 会把 baseUrl 判空、整链（列表/拉取/探测/写入）全部不可用。
+   * enabled:false（rule 级或 config 级）与增强链 modelPullerRuleAllowed 同口径拒绝。 */
   function isPullable(rule) {
     const cfg = effectiveRuleConfig(rule);
     const access = cfg.access || {}, api = cfg.api || {};
-    if (access.type === "api-key" && !!api.baseUrl) return true;
+    if (access.type === "api-key" && !!api.baseUrl && modelPullerRuleAllowed(rule)) return true;
     return !!(isPlanProvider(rule && rule.providerId) && planTokenOf(rule.providerId));
   }
   function isPlanProvider(providerId) {
@@ -606,7 +607,7 @@ function createModelPuller(opts) {
     const remaining = ctx ? ctx.deadline - Date.now() : PROBE_TIMEOUT_MS;
     if (remaining <= 0) return { ok: false, model: mid, kind: "timeout", error: "timeout" };
     let url = "", body = null;
-    const headers = { "Content-Type": "application/json", "User-Agent": "ZCode" };   // fetchModels/enhanceText 同款 UA：网关拒绝无 UA 请求（实测缺 UA 时 anthropic 端点 500 code 1234）
+    const headers = { "Content-Type": "application/json", "User-Agent": "ZCode" };   // fetchModels/enhanceText 同款 UA：网关拒绝无 UA 请求
     if (isOpenCodeGoBaseUrl(baseUrl)) headers["x-opencode-session"] = randomUUID();   // OpenCode Go 路由键，缺失 400 MissingSessionID（issue #383：与增强链同款）
     if (apiType === "openai-chat-completions") {
       url = baseUrl + "/chat/completions";

@@ -342,6 +342,73 @@ test("probeModel mirrors host runtime: template provider probes the template end
   assert.equal(calls[0].url, TEMPLATE_BASE + "/chat/completions");
   assert.equal(calls[0].opts.headers["User-Agent"], "ZCode");
   assert.match(calls[0].opts.headers["x-opencode-session"], UUID_V4_RE);   // OpenCode Go 路由键，与增强链同款
+  // 每请求新路由键（镜像增强链「固定 UUID 不能复用」口径）：连探两次，键互不相等
+  const r2 = await mp.probeModel("opencode-go-chat", "deepseek-v4.1-flash");
+  assert.equal(r2.ok, true);
+  const keys = calls.map((c) => c.opts.headers["x-opencode-session"]).filter(Boolean);
+  assert.ok(keys.length >= 2);
+  assert.equal(new Set(keys).size, keys.length);
+});
+
+test("disabled provider (enabled:false at rule or config level) is not pullable (mirror enhance gate)", async (t) => {
+  const f = makeFixture(t);
+  const mp = create(f);
+  const raw = JSON.parse(fs.readFileSync(f.providerCfg, "utf8"));
+  raw.config.providerConfigRules.providerRules[0].config.enabled = false;
+  fs.writeFileSync(f.providerCfg, JSON.stringify(raw));
+  assert.equal(mp.listProviders().providers.length, 0);
+  assert.equal((await mp.fetchModels("opencode-go-chat")).error, "provider not found");
+  assert.equal((await mp.probeModel("opencode-go-chat", "m1")).kind, "provider");
+  // rule 级 enabled:false 同判
+  const raw2 = JSON.parse(fs.readFileSync(f.providerCfg, "utf8"));
+  delete raw2.config.providerConfigRules.providerRules[0].config.enabled;
+  raw2.config.providerConfigRules.providerRules[0].enabled = false;
+  fs.writeFileSync(f.providerCfg, JSON.stringify(raw2));
+  assert.equal(mp.listProviders().providers.length, 0);
+});
+
+test("pull cache survives a path repair in the same session (meta lands via applyModels)", async (t) => {
+  // 拉取 → 探测触发路径修复（source 迁移）→ 应用：缓存身份随修复同步迁移，metaById 不被守卫丢弃
+  const bare = "https://relay.example.com";
+  const f = makeFixture(t, { noApi: true, templateApi: { type: "openai-chat-completions", baseUrl: bare } });
+  const raw = JSON.parse(fs.readFileSync(f.providerCfg, "utf8"));
+  raw.config.modelConfigRules = { providerModelRules: [], manualProviderModelRules: [] };
+  fs.writeFileSync(f.providerCfg, JSON.stringify(raw));
+  const fetchImpl = async (url, requestOpts) => {
+    if (url === MODELS_DEV_TEST_URL) return { ok: false, status: 503, body: { cancel() { } } };
+    if (url === bare + "/chat/completions") return { ok: false, status: 404, body: { cancel() { } }, text: async () => "not found" };
+    if (url.endsWith("/models")) return { ok: true, status: 200, json: async () => ({ data: [{ id: "m1", context_length: 4096 }] }) };
+    return { ok: true, status: 200, text: async () => JSON.stringify({ choices: [{ finish_reason: "stop", message: { content: "增强结果" } }] }) };
+  };
+  const mp = create(f, { fetchImpl });
+  assert.equal((await mp.fetchModels("opencode-go-chat")).ok, true);   // 候选 bare+"/v1/models" 命中
+  assert.equal((await mp.probeModel("opencode-go-chat", "m1")).ok, true);   // 探测 404 → 修复写回 bare+"/v1"
+  const r = await mp.applyModels("opencode-go-chat", ["m1"]);
+  assert.equal(r.ok, true);
+  const after = JSON.parse(fs.readFileSync(f.providerCfg, "utf8"));
+  const rule = after.config.modelConfigRules.providerModelRules.find((x) => x.modelId === "m1");
+  assert.ok(rule, "model rule written");
+  assert.equal(rule.config.properties.contextWindow, 4096);   // 缓存迁移：修复后 meta 仍随 applyModels 落盘
+});
+
+test("repair write-back failure is logged, not swallowed silently", async (t) => {
+  const bare = "https://relay.example.com";
+  const f = makeFixture(t, { noApi: true, templateApi: { type: "openai-chat-completions", baseUrl: bare } });
+  const logs = [];
+  const fetchImpl = async (url, requestOpts) => {
+    if (url === MODELS_DEV_TEST_URL) return { ok: false, status: 503, body: { cancel() { } } };
+    if (url === bare + "/chat/completions") return { ok: false, status: 404, body: { cancel() { } }, text: async () => "not found" };
+    return { ok: true, status: 200, text: async () => JSON.stringify({ choices: [{ finish_reason: "stop", message: { content: "增强结果" } }] }) };
+  };
+  const mp = create(f, { fetchImpl, log: (...args) => logs.push(args.map(String).join(" ")) });
+  const origWrite = fs.writeFileSync;   // 临时注入写失败（跨平台稳于 chmod）：修复候选已命中、写回必抛
+  fs.writeFileSync = () => { throw new Error("injected write failure"); };
+  let r;
+  try { r = await mp.probeModel("opencode-go-chat", "m1"); }
+  finally { fs.writeFileSync = origWrite; }
+  assert.equal(r.ok, false);
+  assert.equal(r.repaired, undefined);
+  assert.ok(logs.some((line) => line.includes("probe repair write-back failed")), JSON.stringify(logs));
 });
 
 test("template change mid-probe aborts the in-flight probe (source identity follows merged config)", async (t) => {
