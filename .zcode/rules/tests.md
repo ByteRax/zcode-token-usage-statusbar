@@ -55,3 +55,27 @@
 - 克隆只含**已提交**内容：变异验证前先提交新用例，并在克隆里先跑一次**未变异**基线、确认新用例名/计数出现且绿，否则跑的是旧测试，会得出「变异未被杀死」的假结论（2026-11-03、2026-11-12 两次复发）。变异脚本显式指定每个子进程的 cwd 并断言它是克隆目录，不靠 shell 链。
 - 全量基线不与编辑并行：基线要么在编辑前跑完，要么另开 `git worktree add --detach` 的干净检出跑（`git stash` 栈是跨 worktree 共享的，并行会话在场时别用 push/pop 造「干净基线」）。
 - 文档中的数字（用例数、清单长度）由只读验证代理实测对账，不凭记忆写；更优做法是文档不写死会漂移的数字。
+
+## 6. 交付前防返工六道门禁（由近一月 Bug / 回滚 / 重复修改沉淀）
+
+每次提交或发起 PR Review 前，必须逐条核对以下六类高频复发根因（自动化门禁见 `tests/test_plugin_package.py` 的 `AntiReworkContractTests`）：
+
+1. **多端共源语义矩阵门禁（防「同逻辑改 A 漏 B」）**：
+   - 本地数据库路径解析（`zusage.py`、`token_rate.py`、`inject-main.cjs` 三端，含 `dataBaseDir` 新鲜度仲裁与 `hosts.zcode.db_path` 显式覆盖）改动任一处，必须同步三端并运行 `tests/test_db_path_resolution.py`、`tests/test_token_rate_db_override.py` 与 `tests/inject-db-dir.test.cjs` 的三方交叉一致性矩阵。
+   - 宿主凭据与供应商配置读取（`src/quota/` 与 `src/puller/` 共用 `resolveHostQuotaPaths`、个人规则与内置 `zcode-builtin.json` `templateRules` 合并、`builtin:*` 归一化）改动任一处，必须核对两侧是否同步受影响。
+   - 速率与窗口聚合（`usage_stats.py`）禁止在 `zusage.py` 或 `token_rate.py` 私自复制公式分支。
+2. **宿主与平台机制先证伪门禁（防「想当然假设导致整特性回滚」）**：
+   - 触及客户端更新/打包链（如 Squirrel `MacUpdater` 固定 `Content-Length` 代理流）、Chromium 后台/遮挡窗口调度（被遮挡窗口 `requestAnimationFrame` 会无限期暂停，浮层交互/Tab 切换严禁依赖 `rAF` 合并）、或状态栏自适应宽度测量（离屏克隆探针必须剥除 `data-zu-folded` 并将 `sysmon` `auto` 面固定为最宽 `full` 态，防测量值与档位切换构成正反馈震荡环）时，先在宿主 bundle 或实机验证物理机制，不凭假设上线。
+3. **Windows 沙箱与子进程铁律门禁（防跨平台死锁与弹窗闪烁）**：
+   - 运行与安装链 Python 模块严禁直接调用标准库 `tempfile.mkstemp` / `tempfile.mkdtemp` / `NamedTemporaryFile` / `TemporaryDirectory`（Windows 受保护目录上 `os.access` 看不见 ACL 会重试 `2^31-1` 次导致永久挂起，一律走 `runtime_lock.bounded_mkstemp` / `bounded_tempdir`，由 `AntiReworkContractTests` 静态 AST 守护）。
+   - 运行期拉起子进程在 Windows 下必须带 `CREATE_NO_WINDOW`（`_win_no_window()`），防止每轮闪烁控制台黑框。
+   - 文件 `mtime` 比较测试与热重载用例不得假设亚毫秒级时钟精度（Windows 文件系统时钟粒度约 15.6ms，测试中构造先后时间戳须显式偏移 `>= 0.05s` 或直接 `os.utime`）。
+4. **浮层 DOM 生命周期与豁免对称门禁（防「开新弹窗关掉设置面板」与热更残留）**：
+   - 新增挂 `document.body` 的顶层浮层或模态框，必须**四处同步登记**：① CSS 加 `-webkit-app-region: no-drag`；② `src/overlay/00-boot-state-i18n.js` 启动自清选择器；③ `src/overlay/10-instance-subpanel-and-composer.js` 的 `isOwnOverlay()` 与 `OWN_LAYER_SEL`（`modalOpen()` 豁免）；④ `src/overlay/12-instance-mount-and-boot.js` 的 `dispose()`（由 `AntiReworkContractTests` 自动校验对称性）。
+   - 悬停卡/浮层内的可点击控件必须在 `pointerdown` 响应（配合 `mousedown` `stopPropagation` + `preventDefault`），禁止仅绑 `click` 被宿主失焦或 100ms 流式重绘吞掉点击。
+5. **热路径复杂度与定时器卫生门禁（防流式卡顿与 `node:test` 挂起）**：
+   - 100ms `updateLive`、`turn-stats.js ingest` 与每帧 `track` 内严禁调 `bridge.handle.store.getState()`（一律读已缓存的 `handleSnapshot`）或做全表/全历史重算。
+   - 所有 `Promise.race` / `AbortController` 的超时兜底 `setTimeout` 必须在 `.finally()` 中 `clearTimeout` 并调用 `timer.unref?.()`。
+6. **分片正本与工作树净空门禁（防构建产物回退与 VERSION 台账撞车）**：
+   - 严禁直接手改根级生成产物 `overlay.js`、`quota-client.cjs`、`model-puller.cjs`（正本分别在 `src/overlay/`、`src/quota/`、`src/puller/`）；运行 `python3 sync_plugin.py` 前必须确认当前工作树无其它并行会话的半成品修改，同步后跑 `ReleaseLedgerTests` 与 `sync_plugin.py --check`。
+

@@ -284,7 +284,6 @@
       bar.classList.remove("zu-narrow", "zu-tight");
       narrowMeasureKey = ""; narrowWidths = null;
       main.classList.remove("zu-clip", "zu-clip-left");
-      fadeOn = false;
       render(state.data || { session: {}, last_turn: {}, today: {}, context_window: 0 });
       positionSettingsPanel();
     }
@@ -981,7 +980,6 @@
         var leftClip = state.theme === "default" && main.scrollLeft > 1;
         main.classList.toggle("zu-clip", rightClip);
         main.classList.toggle("zu-clip-left", leftClip);
-        fadeOn = rightClip || leftClip;
         /* v352 优先级折叠（PR #345）：窄宽三档（完整/紧凑/藏次要）之后的空间不足由整格折叠
          * 接管——仅在 shrink===2（次要已藏）仍溢出时启用，宽了先经窄宽状态机恢复，折叠再
          * 按 FOLD_HYS 迟滞回展。全折仍装不下回到上面的横滚+渐隐兜底。 */

@@ -39,10 +39,11 @@ function touchDb(base) {
 
 // statPaths 记录 dbStamp 实际探测的文件路径，证明监听/活动戳跟随解析后的目录；
 // mtimes 按绝对路径覆盖 statSync 返回的 mtimeMs（新鲜度仲裁用），缺省仍为 42
-function runBlock({ env = {}, home = '/fake-home', statPaths, mtimes } = {}) {
+function runBlock({ env = {}, home = '/fake-home', configPath = '', statPaths, mtimes } = {}) {
   const sandbox = vm.createContext({
     process: { env },
     path,
+    CONFIG: configPath,
     fs: {
       existsSync: (p) => fs.existsSync(p),
       readFileSync: (p, enc) => fs.readFileSync(p, enc),
@@ -54,7 +55,7 @@ function runBlock({ env = {}, home = '/fake-home', statPaths, mtimes } = {}) {
     app: { getPath: (name) => (name === 'home' ? home : '/fake-' + name) },
     LOG: () => {},
   });
-  vm.runInContext(block + '\nthis.__api = { dbDir, dbStamp, resolveHostDbDir };', sandbox);
+  vm.runInContext(block + '\nthis.__api = { dbFile, dbDir, dbStamp, resolveHostDbDir, resolveConfiguredDbPath };', sandbox);
   return sandbox.__api;
 }
 
@@ -263,4 +264,39 @@ test('dbStamp 探测解析后目录下的 db.sqlite/-wal/-shm', (t) => {
   assert.equal(api.dbStamp(), 42);
   assert.deepEqual(statPaths, ['db.sqlite', 'db.sqlite-wal', 'db.sqlite-shm']
     .map((f) => path.join(path.dirname(db), f)));
+});
+
+test('hosts.zcode.db_path 覆盖：两跳优先序、空值遮蔽、~/ 与 $VAR 展开及自定义库文件名 dbStamp 探测', (t) => {
+  const { base, home } = makeHome(t);
+  const scriptCfg = path.join(base, 'runtime', 'config.json');
+  const dataCfg = path.join(home, '.zcode', 'zcode-token-usage-statusbar', 'config.json');
+  const customA = path.join(base, 'a', 'usage.sqlite');
+  const customB = path.join(base, 'b', 'custom.db');
+
+  // 仅第二跳（标准运行目录）配置生效，且自定义库文件名进入 dbStamp 探测
+  writeJson(dataCfg, { hosts: { zcode: { db_path: customB } } });
+  const statPaths = [];
+  let api = runBlock({ env: { ZCODE_DESKTOP_HOME_DIR: home }, configPath: scriptCfg, statPaths });
+  assert.equal(api.dbFile(), customB);
+  assert.equal(api.dbDir(), path.dirname(customB));
+  assert.equal(api.resolveHostDbDir(), path.join(home, '.zcode', 'cli', 'db'));
+  assert.equal(api.dbStamp(), 42);
+  assert.deepEqual(statPaths, ['custom.db', 'custom.db-wal', 'custom.db-shm']
+    .map((f) => path.join(path.dirname(customB), f)));
+
+  // 第一跳（脚本同目录 CONFIG）优先于第二跳
+  writeJson(scriptCfg, { hosts: { zcode: { db_path: customA } } });
+  api = runBlock({ env: { ZCODE_DESKTOP_HOME_DIR: home }, configPath: scriptCfg });
+  assert.equal(api.dbFile(), customA);
+  assert.equal(api.dbDir(), path.dirname(customA));
+
+  // 第一跳 zcode 空对象或空 db_path 遮蔽第二跳，回落默认宿主解析
+  writeJson(scriptCfg, { hosts: { zcode: { db_path: '' } } });
+  api = runBlock({ env: { ZCODE_DESKTOP_HOME_DIR: home }, configPath: scriptCfg });
+  assert.equal(api.dbFile(), path.join(home, '.zcode', 'cli', 'db', 'db.sqlite'));
+
+  // ~/ 与 $VAR 展开
+  writeJson(scriptCfg, { hosts: { zcode: { db_path: '$CUSTOM_ROOT/sub/usage.sqlite' } } });
+  api = runBlock({ env: { ZCODE_DESKTOP_HOME_DIR: home, CUSTOM_ROOT: path.join(home, 'envdir') }, configPath: scriptCfg });
+  assert.equal(api.dbFile(), path.join(home, 'envdir', 'sub', 'usage.sqlite'));
 });

@@ -1460,33 +1460,6 @@ def render_workspace(con, pattern, top=15):
 
 # ---------- 机器可读快照（悬浮条数据源） ----------
 
-CATALOG_PATH = Path(r"D:\ZCode\resources\model-providers\models_catalog_china_llm_zcode_2026-06-03.json")
-
-
-_CTX_WINDOW_CACHE = {}
-
-
-def lookup_context_window(model_id):
-    """按模型 id 在客户端自带模型目录里查 contextWindow；查不到返回 None。带缓存。"""
-    want = (model_id or "").strip().lower()
-    if not want:
-        return None
-    if want in _CTX_WINDOW_CACHE:
-        return _CTX_WINDOW_CACHE[want]
-    result = None
-    try:
-        cat = json.loads(CATALOG_PATH.read_text(encoding="utf-8"))
-    except Exception:
-        return None
-    for p in cat.get("providers", []):
-        for m in p.get("models", []):
-            if str(m.get("id", "")).lower() == want:
-                cw = m.get("contextWindow")
-                result = int(cw) if cw else None
-                break
-    _CTX_WINDOW_CACHE[want] = result
-    return result
-
 
 def _prompt_matches(title, prompt):
     """子会话 title 是否为 Agent part prompt 的截断头（ZCode 规则：prompt 前 57 字符 + "..."）。"""
@@ -2466,7 +2439,6 @@ def _session_snapshot(con, sid, cfg):
             lt["models"] = turn_models   # v202：本轮 tooltip 模型明细块（与项目累计同构）
     lr = con.execute("select max(completed_at) from model_usage where session_id=?", (sid,)).fetchone()
     active = bool(lr and lr[0] and int(time.time() * 1000) - lr[0] < SESSION_TIMEOUT_MS)
-    ctx_auto = lookup_context_window(last["model_id"]) if last else None
     rate = _last_valid_rate(con, sid, last, covers)
     sub_rows = con.execute(
         """select m.session_id, coalesce(m.agent,''), coalesce(s2.title,''), count(*),
@@ -2643,8 +2615,8 @@ def _session_snapshot(con, sid, cfg):
                from model_usage where session_id=? and context_exceeded=1""",
             (sid,),
         ).fetchone()[0],
-        "context_window": ctx_auto or cfg["context_window"],
-        "context_auto": ctx_auto is not None,
+        "context_window": cfg["context_window"],
+        "context_auto": False,
         "last_at": con.execute(
             "select max(completed_at) from model_usage where session_id=? and status='completed'", (sid,),
         ).fetchone()[0] or 0,

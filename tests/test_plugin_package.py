@@ -128,6 +128,16 @@ class PluginPackageTests(unittest.TestCase):
         self.assertEqual(assembled, (PLUGIN / "quota-client.cjs").read_bytes())
         self.assertEqual(build_mod.main(["--check"], root=ROOT), 0)
 
+    def test_modular_puller_sources_assemble_byte_identically(self):
+        build_spec = importlib.util.spec_from_file_location("build_puller_test", ROOT / "scripts" / "build_puller.py")
+        build_mod = importlib.util.module_from_spec(build_spec)
+        build_spec.loader.exec_module(build_mod)
+        assembled, parts = build_mod.assemble_bytes(ROOT / "src" / "puller")
+        self.assertEqual(len(parts), 4)
+        self.assertEqual(assembled, (ROOT / "model-puller.cjs").read_bytes())
+        self.assertEqual(assembled, (PLUGIN / "model-puller.cjs").read_bytes())
+        self.assertEqual(build_mod.main(["--check"], root=ROOT), 0)
+
     def test_release_skill_requires_post_release_pr_merge_and_verification(self):
         text = (ROOT / ".zcode/skills/zcode-github-release/SKILL.md").read_text(encoding="utf-8")
         section = text.split("## 发布后合并源码 PR\n", 1)[1].split("## 收尾\n", 1)[0]
@@ -270,6 +280,141 @@ class SyncPluginManifestFlagTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
         self.assertIn("未知参数", result.stderr)
         self.assertIn("--verify-manifests", result.stderr)
+
+
+class AntiReworkContractTests(unittest.TestCase):
+    """由近一个月高频 Bug / 回滚 / 多轮 Review 返工根因沉淀出的自动化防复发门禁。"""
+
+    @staticmethod
+    def _find_bare_tempfile_violations(source_text, label="<inline>"):
+        import ast
+        forbidden_attrs = {"mkstemp", "mkdtemp", "NamedTemporaryFile", "TemporaryDirectory"}
+        tree = ast.parse(source_text, filename=label)
+        violations = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module == "tempfile":
+                for alias in node.names:
+                    if alias.name in forbidden_attrs:
+                        violations.append(f"{label}:{node.lineno} imports tempfile.{alias.name}")
+            elif isinstance(node, ast.Call):
+                func = node.func
+                if (isinstance(func, ast.Attribute)
+                        and isinstance(func.value, ast.Name)
+                        and func.value.id == "tempfile"
+                        and func.attr in forbidden_attrs):
+                    violations.append(f"{label}:{node.lineno} calls tempfile.{func.attr}")
+                elif isinstance(func, ast.Name) and func.id in forbidden_attrs:
+                    violations.append(f"{label}:{node.lineno} calls {func.id}")
+        return violations
+
+    def test_runtime_python_modules_forbid_bare_tempfile_mkstemp_and_mkdtemp(self):
+        # 根因（issue #360 / PR #361）：Windows 受保护目录上 os.access 看不见 ACL 恒返 True，
+        # 标准库 tempfile.mkstemp / mkdtemp / NamedTemporaryFile / TemporaryDirectory 在旧版
+        # Python 上会吞 PermissionError 重试 TMP_MAX (2^31-1) 次导致进程永久挂起。
+        # 全部分发与运行链 .py 文件必须统一使用 runtime_lock.bounded_mkstemp / bounded_tempdir。
+        sync_spec = importlib.util.spec_from_file_location("sync_plugin_for_ast_guard", ROOT / "sync_plugin.py")
+        sync_mod = importlib.util.module_from_spec(sync_spec)
+        sync_spec.loader.exec_module(sync_mod)
+        runtime_py_files = [ROOT / "install.py"]
+        for rel in sync_mod.FILES:
+            if rel.endswith(".py"):
+                runtime_py_files.append(ROOT / rel)
+        for rel in sync_mod.PLUGIN_ONLY_FILES:
+            if rel.endswith(".py"):
+                runtime_py_files.append(PLUGIN / rel)
+        violations = []
+        for path in runtime_py_files:
+            violations.extend(
+                self._find_bare_tempfile_violations(path.read_text(encoding="utf-8"), str(path.relative_to(ROOT)))
+            )
+        self.assertEqual(violations, [], "运行/安装链严禁裸调 tempfile.mkstemp/mkdtemp，请改用 runtime_lock.bounded_mkstemp/bounded_tempdir")
+        # 负向变异自检：确认 AST 守卫能捕获属性调用、裸名调用与 from tempfile import 别名导入
+        self.assertTrue(self._find_bare_tempfile_violations("import tempfile\ntempfile.mkstemp()\n", "mut1"))
+        self.assertTrue(self._find_bare_tempfile_violations("from tempfile import mkdtemp as md\n", "mut2"))
+        self.assertTrue(self._find_bare_tempfile_violations("NamedTemporaryFile()\n", "mut3"))
+
+    def test_sync_plugin_wires_all_modular_shard_builders(self):
+        # 根因：分片化后若 sync_plugin._maybe_build_bundles 漏接任一构建器，分片改动不会进入根产物与插件副本。
+        from unittest import mock
+        sync_spec = importlib.util.spec_from_file_location("sync_plugin_builder_wire_test", ROOT / "sync_plugin.py")
+        sync_mod = importlib.util.module_from_spec(sync_spec)
+        sync_spec.loader.exec_module(sync_mod)
+        called = []
+
+        def fake_load(name, path):
+            m = mock.MagicMock()
+            m.main.side_effect = lambda argv, root=None: (called.append((Path(path).name, list(argv))), 0)[1]
+            return m
+
+        with mock.patch.object(sync_mod, "_load_module", side_effect=fake_load):
+            self.assertTrue(sync_mod._maybe_build_bundles(ROOT, check_only=True))
+        self.assertEqual(
+            called,
+            [
+                ("build_overlay.py", ["--check"]),
+                ("build_quota.py", ["--check"]),
+                ("build_puller.py", ["--check"]),
+                ("build_mobile_userscript.py", ["--check"]),
+            ],
+        )
+
+    def test_build_puller_rejects_unknown_flags_stray_files_and_drift(self):
+        # 行为级守卫：锁定新增 build_puller.py 的未知参数拒绝、杂散文件防丢片与漂移检测。
+        build_spec = importlib.util.spec_from_file_location("build_puller_guard_test", ROOT / "scripts" / "build_puller.py")
+        build_mod = importlib.util.module_from_spec(build_spec)
+        build_spec.loader.exec_module(build_mod)
+        self.assertEqual(build_mod.main(["--unknown-flag"], root=ROOT), 2)
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_root = Path(tmp)
+            src_dir = tmp_root / "src" / "puller"
+            src_dir.mkdir(parents=True)
+            (src_dir / "00-part.cjs").write_text("// ok\n", encoding="utf-8")
+            (src_dir / "stray.cjs").write_text("// stray\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "stray\\.cjs"):
+                build_mod.assemble_bytes(src_dir)
+            (src_dir / "stray.cjs").unlink()
+            (tmp_root / "model-puller.cjs").write_text("// stale\n", encoding="utf-8")
+            self.assertEqual(build_mod.main(["--check"], root=tmp_root), 1)
+            self.assertEqual(build_mod.main([], root=tmp_root), 0)
+            self.assertEqual(build_mod.main(["--check"], root=tmp_root), 0)
+
+    def test_overlay_own_layer_modals_have_boot_cleanup_and_exemption_symmetry(self):
+        # 根因（v317 / v334 / v342）：新增全屏弹层/遮罩若漏挂 00 启动自清选择器、isOwnOverlay()、
+        # OWN_LAYER_SEL（modalOpen 豁免）或 12 dispose()，会导致打开弹窗时设置面板被自动收起或热更残留。
+        boot_src = (ROOT / "src" / "overlay" / "00-boot-state-i18n.js").read_text(encoding="utf-8")
+        sub_src = (ROOT / "src" / "overlay" / "10-instance-subpanel-and-composer.js").read_text(encoding="utf-8")
+        dispose_src = (ROOT / "src" / "overlay" / "12-instance-mount-and-boot.js").read_text(encoding="utf-8")
+        m_boot = re.search(r'document\.querySelectorAll\("([^"]+)"\)\.forEach\(function\s*\(el\)\s*\{\s*el\.remove\(\);', boot_src)
+        self.assertIsNotNone(m_boot, "00-boot-state-i18n.js 必须包含启动自清 querySelectorAll(...).remove()")
+        boot_selectors = {s.strip() for s in m_boot.group(1).split(",") if s.strip()}
+        m_own = re.search(r'var OWN_LAYER_SEL = "([^"]+)";', sub_src)
+        self.assertIsNotNone(m_own, "10-instance-subpanel-and-composer.js 必须定义 OWN_LAYER_SEL")
+        own_selectors = [s.strip() for s in m_own.group(1).split(",") if s.strip()]
+        m_is_own = re.search(r'function isOwnOverlay\(el\)\s*\{.*?el\.closest\("([^"]+)"\)', sub_src, re.S)
+        self.assertIsNotNone(m_is_own, "10-instance-subpanel-and-composer.js 必须定义 isOwnOverlay")
+        is_own_selectors = {s.strip() for s in m_is_own.group(1).split(",") if s.strip()}
+        for sel in own_selectors:
+            self.assertIn(sel, boot_selectors, f"OWN_LAYER_SEL 中的 {sel} 必须在 00 启动自清选择器集合中精确登记")
+            if sel != ".zusage-panel":
+                self.assertIn(sel, is_own_selectors, f"OWN_LAYER_SEL 中的 {sel} 必须在 isOwnOverlay() 中豁免")
+        m_dispose = re.search(r'function dispose\(\)\s*\{(.*?)\n    \}', dispose_src, re.S)
+        self.assertIsNotNone(m_dispose, "12-instance-mount-and-boot.js 必须定义 dispose()")
+        dispose_body = m_dispose.group(1)
+        for cleanup_call in ("closeCompactDlg()", "cleanupMpModal()", "panel.remove()", "subPanel.remove()", "tip.remove()"):
+            self.assertIn(cleanup_call, dispose_body, f"dispose() 必须调用 {cleanup_call} 清理实例浮层/弹窗")
+
+    def test_three_way_db_path_override_contract_is_locked(self):
+        # 根因（issue #279 / #294 / #314）：本地库路径解析横跨 zusage.py、token_rate.py、inject-main.cjs，
+        # 任一端漏同步 hosts.zcode.db_path 都会造成静默错读或主桥去重戳失灵。
+        zusage_src = (ROOT / "zusage.py").read_text(encoding="utf-8")
+        rate_src = (ROOT / "token_rate.py").read_text(encoding="utf-8")
+        inject_src = (ROOT / "inject-main.cjs").read_text(encoding="utf-8")
+        test_src = (ROOT / "tests" / "test_token_rate_db_override.py").read_text(encoding="utf-8")
+        self.assertIn("def zcode_db_path(", zusage_src)
+        self.assertIn("def _configured_db_path(", rate_src)
+        self.assertIn("function resolveConfiguredDbPath(", inject_src)
+        self.assertRegex(inject_src, r"function dbFile\(\)\s*\{[^}]*resolveConfiguredDbPath\(\)")
+        self.assertIn("def test_node_inject_main_matches_python_across_all_scenarios(", test_src)
 
 
 if __name__ == "__main__":
