@@ -159,6 +159,42 @@ test("team: zai 家族走 api.z.ai + Bearer", async (t) => {
   assert.equal(client.view().sources["zai-team"].status, "ok");
 });
 
+test("team: 旧平铺键缺席回退 oauth:linked_bigmodel（issue #391）——PAT 交换链照常走通", async (t) => {
+  const tc = TEAM_CREDS(Q, "plan.team.key");
+  const crypto = require("crypto");
+  const seal = (plain) => {   // 复用 TEAM_CREDS 的 v2:env 密钥重封任意明文
+    const iv = crypto.randomBytes(12);
+    const c = crypto.createCipheriv("aes-256-gcm", tc.key, iv);
+    const ct = Buffer.concat([c.update(plain, "utf8"), c.final()]);
+    const keyId = crypto.createHash("sha256").update(tc.key).digest("hex").slice(0, 24);
+    return "enc:v2:env:" + keyId + ":" + [iv, c.getAuthTag(), ct].map((b) => b.toString("base64url")).join(".");
+  };
+  const linkedJson = JSON.stringify({ userId: "u1", customerId: "c1", accessToken: "plan.team.key" });
+  const calls = [];
+  /* org/project 避开前序用例：teamPatCache 模块级按 fam|org|project 缓存，同键会跳过 PAT 交换链 */
+  const setting = { providerFamilyConnectionSelections: { bigmodel: { kind: "team-coding-plan", organizationId: "org-alt", projectId: "proj-alt" } } };
+  const { client, clock } = makeTeamClient(t, {
+    setting, fam: "bigmodel",
+    creds: { "oauth:linked_bigmodel": seal(linkedJson) },
+    calls,
+  });
+  Q.setDefaultDecryptCtx({ credsPath: "/virtual/team/credentials.json", credsDir: "/virtual/team", env: { ZCODE_CREDENTIAL_SECRET: tc.env } });
+  client.noteProvider("account:bigmodel-team-coding-plan");
+  client.tick();
+  await Q.ensureDefaultV2Key();
+  clock.t += 1100;
+  client.tick();
+  await new Promise((r) => setTimeout(r, 10));
+  const info = calls.find((c) => c.url.indexOf("/api/biz/customer/getCustomerInfo") >= 0);
+  assert.ok(info, "PAT 交换链第一步发出");
+  assert.equal(info.headers.authorization, "plan.team.key");   // 裸业务 token 来自回退键
+  const monitor = calls.filter((c) => c.url === TEAM_MONITOR.bigmodel);
+  assert.equal(monitor.length, 1);
+  assert.equal(monitor[0].headers.authorization, "pat.team.token");
+  assert.equal(monitor[0].headers["Bigmodel-Organization"], "org-alt");
+  assert.equal(client.view().sources["bigmodel-team"].status, "ok");
+});
+
 test("team: 个人模式选择不得跨家族——bigmodel 选择不点亮 zai-team", async (t) => {
   const calls = [];
   const { client } = makeTeamClient(t, {

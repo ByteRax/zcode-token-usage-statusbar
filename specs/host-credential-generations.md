@@ -10,6 +10,7 @@
 - 取到的密钥必须与条目的 keyId 相符才用于解密。插件与宿主同款：受管 secret 可用即优先按 env 源取钥（不看信封声明），否则走 OS 凭据库；密钥与条目不符就解不开。桌面常驻下受管 secret 通常缺席，OS 凭据库是常态来源。
 - 密钥只在内存，不落盘、不进日志与诊断。
 - 宿主没有 keyring 依赖时（3.17.x 及更早，凭据仍是 `enc:v1`）行为与此前一致。
+- **键名代际回退（issue #391）**：宿主 3.18+ 新式登录态下 credentials.json 可能整键缺席旧平铺键 `oauth:bigmodel:access_token` / `oauth:zai:access_token`，业务 token 改存新式键——BigModel 为 `oauth:linked_bigmodel`（信封解出 JSON `{userId, customerId, accessToken}`，取 `accessToken`；实测直查 monitor 端点 200，JWT 无 exp，走「无 exp 跳过临期守卫」既有语义）；Z.ai 为 `oauth:zai_cn:access_token`（信封解出 token 本体，与旧键同构、键名带地区后缀，未真实账号实测——issue 里的 401 对照是在 bigmodel 端点做的，不代表 api.z.ai 不认）。查找顺序旧键优先，缺失或空串才回退；指纹跟随实际命中的信封（宿主换发自动重拉），解出 JSON 但字段缺失/非 JSON 按 decryptFailed 降级。个人套餐、团队套餐与重置卡三条链同款；`zcodejwttoken`、`oauth:active_provider` 等其它新式键不是额度端点认的业务 token（issue 实测 401），绝不作回退源。
 
 ## 状态所有者与接口
 
@@ -34,6 +35,7 @@
 5. 主桥注入的 `decryptValue` 无论是当前分发器还是热换竞窗里的旧透传闭包，套餐模型拉取都不外发密文。
 6. 选中套餐源而列表暂不含它时，不向任何其它供应商发起拉取。
 7. 用户显式动作越过冷却与失配限频；失配 force 重读失败保留旧钥，旧钥继续服务其余条目。
+8. 旧平铺键缺席而新式登录态键在（`oauth:linked_bigmodel` / `oauth:zai_cn:access_token`，v1/v2 信封均可）：个人套餐、团队套餐与重置卡按回退键解密取值，指纹跟随回退信封；旧键存在时行为与指纹完全不变；回退信封解不出可用 token 按 decryptFailed 降级，零请求。
 
 ## 未验证
 

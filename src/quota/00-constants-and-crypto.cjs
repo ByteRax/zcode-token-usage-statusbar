@@ -284,3 +284,36 @@ function decryptValue(value, key) {
   return decryptV1Value(value, key);
 }
 
+/* ---------- 宿主 3.18+ 新式登录态键回退（issue #391） ----------
+ * 旧平铺键 oauth:{fam}:access_token 在新式登录态下可能整键缺席：业务 token 改存
+ * oauth:linked_bigmodel（信封→JSON {userId,customerId,accessToken}，实测直查 monitor 200；
+ * JWT 无 exp 走「无 exp 跳过临期守卫」语义）或 oauth:zai_cn:access_token（信封→token 本体，
+ * 与旧键同构、键名带地区后缀；issue 的 401 对照是 bigmodel 端点，不代表 api.z.ai 不认）。
+ * 旧键优先，缺失或空串才回退；指纹跟随实际命中的信封（宿主换发自动重拉）；
+ * 回退信封解不出可用 token（非 JSON/字段缺失）按 decryptFailed 降级，零请求。
+ * zcodejwttoken / oauth:active_provider 不是额度端点认的业务 token（实测 401），不作回退。 */
+const HOST_ALT_CRED_KEYS = {
+  bigmodel: [{ key: "oauth:linked_bigmodel", field: "accessToken" }],
+  zai: [{ key: "oauth:zai_cn:access_token" }],
+};
+function hostCredDecrypt(raw, fam, credKey, env) {
+  if (!raw || typeof raw !== "object") return null;
+  let enc = raw[credKey], field = null;
+  if (typeof enc !== "string" || !enc) {
+    enc = null;
+    for (const alt of HOST_ALT_CRED_KEYS[fam] || []) {
+      const e = raw[alt.key];
+      if (typeof e === "string" && e) { enc = e; field = alt.field || null; break; }
+    }
+  }
+  if (!enc) return null;   // 旧键与新式键均缺席：未配置
+  let token = decryptValue(enc, deriveCipherKey(env));
+  if (token && field) {
+    try {
+      const obj = JSON.parse(token);
+      token = typeof obj[field] === "string" && obj[field] ? obj[field] : null;
+    } catch (e) { token = null; }
+  }
+  return { token: token || null, enc };   // token null = decryptFailed 语义（信封在但取不出可用 token）
+}
+

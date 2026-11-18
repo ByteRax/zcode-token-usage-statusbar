@@ -350,6 +350,62 @@ test("client: 401 freezes; credential refresh (ciphertext change) unfreezes; sta
   assert.equal(client.view().stale, true);
 });
 
+test("client: 宿主 3.18+ 新式登录态键回退（issue #391）——旧键缺席改读 linked_bigmodel/zai_cn，旧键在场行为不变", async () => {
+  const linkedJson = (tok) => JSON.stringify({ userId: "u1", customerId: "c1", accessToken: tok });
+  /* ① 旧平铺键缺席：回退 oauth:linked_bigmodel 信封（解 JSON 取 accessToken），裸头命中 */
+  const a = makeClient({ creds: { "oauth:linked_bigmodel": encryptValue(linkedJson("linked.jwt.token")) } });
+  a.client.noteProvider("account:bigmodel-individual-coding-plan");
+  a.client.tick();
+  assert.equal(a.calls.length, 1);
+  assert.equal(a.calls[0].auth, "linked.jwt.token");
+  a.calls[0].d.resolve(fakeRes(200, OK_BODY));
+  await flush();
+  assert.equal(a.client.view().status, "ok");
+  /* ② 指纹跟随实际命中的回退信封：401 冻结后宿主换发（新信封）凭据变化即解冻重查 */
+  a.clock.t += Q.TTL_MS + 1;
+  a.client.tick();
+  assert.equal(a.calls.length, 2);
+  a.calls[1].d.resolve(fakeRes(401, "{}"));
+  await flush();
+  assert.equal(a.client.view().status, "auth_failed");
+  a.credsRef.value = { "oauth:linked_bigmodel": encryptValue(linkedJson("linked.jwt.renewed")) };
+  a.client.credentialsChanged();
+  a.client.tick();
+  assert.equal(a.calls.length, 3);
+  assert.equal(a.calls[2].auth, "linked.jwt.renewed");
+  a.calls[2].d.resolve(fakeRes(200, OK_BODY));
+  await flush();
+  assert.equal(a.client.view().status, "ok");
+  /* ③ 旧键在场时优先旧键：行为与指纹来源完全不变 */
+  const b = makeClient({ creds: {
+    "oauth:bigmodel:access_token": encryptValue("legacy.jwt.token"),
+    "oauth:linked_bigmodel": encryptValue(linkedJson("linked.jwt.token")),
+  } });
+  b.client.noteProvider("account:bigmodel-individual-coding-plan");
+  b.client.tick();
+  assert.equal(b.calls.length, 1);
+  assert.equal(b.calls[0].auth, "legacy.jwt.token");
+  b.calls[0].d.resolve(fakeRes(200, OK_BODY));
+  await flush();
+  /* ④ 回退信封解不出可用 token（非 JSON / accessToken 缺失或非字符串）按 decryptFailed 降级，零请求 */
+  for (const bad of ["not-json{", JSON.stringify({ userId: "u1", accessToken: 42 }), JSON.stringify({ userId: "u1" })]) {
+    const c = makeClient({ creds: { "oauth:linked_bigmodel": encryptValue(bad) } });
+    c.client.noteProvider("account:bigmodel-individual-coding-plan");
+    c.client.tick();
+    assert.equal(c.calls.length, 0, bad);
+    assert.equal(c.client.view().status, "not_configured", bad);
+    assert.equal(c.client.view().error, "credential decrypt failed", bad);
+  }
+  /* ⑤ zai 家族旧键缺席回退 oauth:zai_cn:access_token（信封即 token 本体），Bearer 头 */
+  const d = makeClient({ creds: { "oauth:zai_cn:access_token": encryptValue("zai.cn.tok") } });
+  d.client.noteProvider("account:zai-pro-coding-plan");
+  d.client.tick();
+  assert.equal(d.calls.length, 1);
+  assert.equal(d.calls[0].auth, "Bearer zai.cn.tok");
+  d.calls[0].d.resolve(fakeRes(200, OK_BODY));
+  await flush();
+});
+
 test("client: no-plan freezes; manual refresh forces; env key overrides decrypt", async () => {
   const { client, calls } = makeClient({
     creds: null,
@@ -1966,6 +2022,27 @@ test("reset client: headers (Bearer jwt + bare X-Bigmodel-Authorization + PERSON
   client.tick();
   await flush();
   assert.equal(calls.filter((c) => c.url === RESET_URL).length, 4);   // 过期重查（两族再各一次）
+});
+
+test("reset client: 旧平铺键缺席回退新式登录态键（issue #391）——X-Bigmodel-Authorization 用回退 token", async () => {
+  const creds = {
+    "oauth:linked_bigmodel": encryptValue(JSON.stringify({ userId: "u1", customerId: "c1", accessToken: "linked.oauth.tok" })),
+    "oauth:zai_cn:access_token": encryptValue("zai.cn.oauth.tok"),
+    zcodejwttoken: encryptValue("zcode.jwt.tok"),
+  };
+  const { client, calls } = makeResetClient({ creds, resetList: true });
+  client.tick();
+  await flush();
+  const resetCalls = calls.filter((c) => c.url === RESET_URL);
+  assert.equal(resetCalls.length, 2);
+  const bm = resetCalls.find((c) => c.headers["X-Bigmodel-Authorization"] === "linked.oauth.tok");
+  const zai = resetCalls.find((c) => c.headers["X-Bigmodel-Authorization"] === "zai.cn.oauth.tok");
+  assert.ok(bm && zai);
+  assert.equal(bm.headers.authorization, "Bearer zcode.jwt.tok");   // 个人模式仍要 jwt 搭配
+  assert.equal(bm.headers["Bigmodel-Target-Type"], "PERSONAL");
+  const listCall = calls.find((c) => c.url === RESET_LIST_URL);
+  assert.ok(listCall);
+  assert.equal(listCall.headers.authorization, "linked.oauth.tok");   // 列表子链同样用回退 token（裸头）
 });
 
 test("reset list enrichment: independent 10min TTL (status refetch alone), force still fetches, failed attempt also counts", async () => {
