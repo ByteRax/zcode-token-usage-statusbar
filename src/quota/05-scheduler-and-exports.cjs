@@ -439,10 +439,10 @@ function createQuotaClient(opts) {
   function resolveResetCred(famConf) {
     let raw = null;
     try { raw = j.readFile(j.credsPath); } catch (e) { return null; }
-    if (!raw || typeof raw !== "object") return null;
-    const oauthEnc = raw[famConf.credKey];
-    if (typeof oauthEnc !== "string" || !oauthEnc) return null;
-    const oauth = decryptValue(oauthEnc, deriveCipherKey(j.env));
+    const hit = hostCredDecrypt(raw, famConf.fam, famConf.credKey, j.env);   // 旧平铺键缺席回退新式登录态键（issue #391）
+    if (!hit) return null;
+    const oauthEnc = hit.enc;
+    const oauth = hit.token;
     if (!oauth) return { decryptFailed: true, fingerprint: "host:" + sha16(oauthEnc) };
     if (!oauth.trim()) return null;
     const sel = teamSelectionOf(j, famConf.fam);

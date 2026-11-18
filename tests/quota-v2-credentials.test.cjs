@@ -479,6 +479,34 @@ test("client: zcode-start 链（zcodejwttoken）与重置卡链解 enc:v2，请�
   assert.ok(everyHeader(calls).every((v) => !v.startsWith("enc:")));
 });
 
+test("client: 新式登录态键回退（issue #391）——linked_bigmodel/zai_cn 走 enc:v2:env 解密，请求头明文", async (t) => {
+  const credsPath = freshCreds();
+  const dir = credDirOf(credsPath);
+  const linkedJson = JSON.stringify({ userId: "u1", customerId: "c1", accessToken: "linked.v2.tok" });
+  const { client, calls, clock } = makeClient(t, {
+    env: { ZCODE_CREDENTIAL_SECRET: ENV_SECRET }, credsPath,
+    readFile: (p) => {
+      if (p === credsPath) return {
+        "oauth:linked_bigmodel": v2Entry(linkedJson, ENV_KEY, "env"),
+        "oauth:zai_cn:access_token": v2Entry("zai.cn.v2.tok", ENV_KEY, "env"),
+      };
+      throw new Error("ENOENT");
+    },
+  });
+  Q.setDefaultDecryptCtx({ credsPath, credsDir: dir, env: { ZCODE_CREDENTIAL_SECRET: ENV_SECRET } });
+  client.noteProvider("account:bigmodel-individual-coding-plan");
+  client.tick();                 // 预热启动，本轮解密失败
+  await Q.ensureDefaultV2Key();
+  clock.t += 1100;
+  client.tick();
+  await flush();
+  const bm = calls.filter((c) => c.url === MONITOR_URL);
+  assert.equal(bm.length, 1);
+  assert.equal(bm[0].headers.authorization, "linked.v2.tok");   // 回退信封解 JSON 取 accessToken
+  assert.ok(everyHeader(calls).every((v) => !v.startsWith("enc:")));
+  assert.equal(client.view().sources.bigmodel.status, "ok");
+});
+
 /* ---------- 第四轮补口 ---------- */
 test("v2KeyRetryNow 的在途分支：读取成功也消费越窗意图，下一次无关失败仍进冷却", async () => {
   let release;

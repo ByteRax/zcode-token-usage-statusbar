@@ -34,11 +34,10 @@ for (const fam of ["bigmodel", "zai"]) {
       }
       let raw = null;
       try { raw = j.readFile(j.credsPath); } catch (e) { return null; }
-      const enc = raw && typeof raw === "object" ? raw[conf.credKey] : null;
-      if (typeof enc !== "string" || !enc) return null;
-      const token = decryptValue(enc, deriveCipherKey(j.env));   // v2 信封由 decryptValue 分发器经 defaultDec 解（上游 #289 架构）
-      if (!token) return { decryptFailed: true, fingerprint: "host:" + sha16(enc) };
-      return { token, fingerprint: "host:" + sha16(enc), source: "host" };
+      const hit = hostCredDecrypt(raw, fam, conf.credKey, j.env);   // 旧平铺键缺席回退新式登录态键（issue #391）
+      if (!hit) return null;
+      if (!hit.token) return { decryptFailed: true, fingerprint: "host:" + sha16(hit.enc) };
+      return { token: hit.token, fingerprint: "host:" + sha16(hit.enc), source: "host" };
     },
     async fetchOne(j, ctx, cred, ctl) {
       const url = (conf.envUrl && j.env[conf.envUrl]) || conf.origin + QUOTA_PATH;
@@ -170,9 +169,10 @@ for (const teamFam of ["bigmodel", "zai"]) {
       if (!sel) return null;   // 未切到团队套餐：按未配置 fail-closed
       let raw = null;
       try { raw = j.readFile(j.credsPath); } catch (e) { return null; }
-      const enc = raw && typeof raw === "object" ? raw[teamCredKey] : null;
-      if (typeof enc !== "string" || !enc) return null;
-      const token = decryptValue(enc, deriveCipherKey(j.env));   // v2 信封由分发器解
+      const hit = hostCredDecrypt(raw, teamFam, teamCredKey, j.env);   // 旧平铺键缺席回退新式登录态键（issue #391）
+      if (!hit) return null;
+      const enc = hit.enc;
+      const token = hit.token;
       if (!token) return { decryptFailed: true, fingerprint: "host:" + sha16(enc) };
       if (teamFam === "bigmodel") {
         const jwtEnc = raw["zcodejwttoken"];
