@@ -391,29 +391,35 @@ test('today 多模型折线: 每模型一条 lineg 分组线（data-m）、缺�
   assert.equal(portal(ctx), '');
 });
 
-// ---------- ⑥ week 单/多模型（§11.2 + v389 §13.1 百分比 x/y + §12.5 多模型端标签不画） ----------
-test('week 单/多: 单=lineg 分段线+面积+端标签且无总体虚线；多=逐模型线+总体虚线+端标签不画；缺失日断线+空槽轻卡+覆盖提示', () => {
+// ---------- ⑥ week 单/多模型（§16.1 单模型恒柱状 + §13.1 百分比 x/y + §12.5 多模型端标签不画） ----------
+test('week 单/多: 单=7 日槽柱状（空日空位、模型色柱、无折线/面积/端标签）；多=逐模型线+总体虚线+端标签不画；缺失日断线+空槽轻卡+覆盖提示', () => {
   const ctx = makeCtx();
-  // 单模型：只看 A
+  // 单模型：只看 A —— v392 §16.1 起恒柱状（与 today 单模型对称；恒折线在单有效日退化为孤点）
   const w1 = analyze(ctx, fixture(), { range: 'all', period: 'week', sid: 'sess_main',
     filt: { mode: 'sel', keys: [KEYS.a] } });
   assert.equal(w1.perModel.length, 1);
   const h1 = chart(ctx, w1, -1);
   const colorA = colorOf(ctx, KEYS.a);
-  assert.equal((h1.match(/class="zu-sv3-hit" data-i="/g) || []).length, 7, '恒 7 个本地日命中列');
-  assert.equal((h1.match(/class="zu-sv3-xtxt"/g) || []).length, 7, 'X 轴 7 个日标签（含无数据日）');
-  assert.equal((h1.match(/<g class="zu-sv3-lineg zu-sv3-line" data-m="[^"]*" stroke="/g) || []).length, 1, '单条模型线（lineg 分组 + data-m）');
+  assert.match(h1, /<span class="zu-sv3-bars zu-sv3-w14"/, '单模型周视图=柱状（7 槽 → w14 密度档，§16.1）');
+  assert.equal((h1.match(/class="zu-sc-col/g) || []).length, 7, '恒 7 个日槽列');
+  assert.equal((h1.match(/class="zu-sc-col[^"]*empty/g) || []).length, 5, '5 个空日槽（10-30..11-03）');
+  assert.equal((h1.match(/class="zu-sc-x"><b>/g) || []).length, 7, 'X 轴 7 个日标签（含无数据日）');
+  assert.equal((h1.match(new RegExp('<i class="zu-sc-bar" style="height:[\\d.]+%;background:' + colorA, 'g')) || []).length, 2,
+    '两个有效日（11-04/11-05）各一根模型色柱');
+  assert.equal((h1.match(/<g class="zu-sv3-lineg/g) || []).length, 0, '单模型不出折线');
+  assert.doesNotMatch(h1, /<svg class="zu-sv3-asvg"/, '单模型无面积载体元素（折线专属；类名在 CSS 常量中恒存在不能整串匹配）');
   assert.equal((domOf(h1).match(/zu-sv3-oline/g) || []).length, 0, '单模型无总体虚线');
-  // v389 §13.1：面积载体嵌套 svg viewBox 0..100 百分比坐标、基线 y=100（原 px 200 退役）
-  assert.match(h1, /<svg class="zu-sv3-asvg" width="100%" height="100%" viewBox="0 0 100 100" preserveAspectRatio="none">/,
-    '面积载体 viewBox 0..100（百分比高）');
-  assert.match(h1, new RegExp('<path class="zu-sv3-area" fill="' + colorA + '" d="M [\\d.]+ 100'),
-    '单模型面积填充（% x/y、基线 y=100）');
-  assert.equal((h1.match(/<circle class="zu-sv3-pt"/g) || []).length, 2, '11-04 与 11-05 两个真实日点');
-  assert.equal((h1.match(/class="zu-sv3-elabel/g) || []).length, 1, '单个末端数值标签');
-  assert.match(h1, /zu-sv3-elabel[^>]*x="99\.2%"/, '端标签收进右缘 x=99.2%（§11.2）');
-  assert.match(h1, /zu-sv3-elabel[^>]*>1\d\d\.0</, '端标签为一位小数速度值');
-  assert.match(h1, /zu-sv3-elabel[^>]*y="[\d.]+%" dy="3"/, '端标签 y 百分比化 + dy 基线微调（§13.1）');
+  assert.equal((h1.match(/class="zu-sv3-elabel/g) || []).length, 0, '柱状无折线端标签（数值走柱标 zu-sc-val）');
+  // 槽列 a11y 与 data-i（与 recent 柱同构，hover 委托统一）
+  const w1cols = h1.match(/<div class="zu-sc-col[^>]*>/g) || [];
+  assert.equal(w1cols.length, 7);
+  for (const col of w1cols) {
+    assert.match(col, /data-i="\d+"/);
+    assert.match(col, /role="img"/);
+    assert.match(col, /aria-label="[^"]+"/);
+  }
+  assert.match(h1, /aria-label="[^"]*10\/30[^"]*无数据/, '空日槽 aria 报无数据');
+  assert.match(h1, /data-head-sub="有效 2\/7 天"/, '单模型柱状同款覆盖提示');
   // 多模型：全池
   const w2 = analyze(ctx, fixture(), { range: 'all', period: 'week', sid: 'sess_main' });
   const h2 = chart(ctx, w2, -1);

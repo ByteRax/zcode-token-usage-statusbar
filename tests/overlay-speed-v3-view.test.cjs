@@ -513,18 +513,18 @@ test('CSS 锁: .zu-sv3-root 定宽变量、.zu-light 浅色覆写、focus-visibl
     '无常驻说明/图例类块');
 });
 
-// ---------- ⑦b 高度档位（§12.1）：root min-height 离散档 ----------
-test('spd3HeightTier: empty 320 / recent 三档 340/360/390 / today/week 400 / month 行数档 / all 日桶档；root 内联下发', () => {
+// ---------- ⑦b 高度档位（§12.1 + §16.2）：root min-height 离散档 ----------
+test('spd3HeightTier: empty 320 / recent 恒 400（§16.2 三档废除）/ today/week 400 / month 行数档 / all 日桶档；root 内联下发', () => {
   const ctx = makeCtx();
   const tier = a => host(vm.runInContext('spd3HeightTier(' + JSON.stringify(a) + ')', ctx));
   // empty 判据与 spd3CardHTML 同源：real 空 / overall 缺
   assert.deepEqual(tier({}), { tier: 'empty', px: 320 });
   assert.deepEqual(tier({ real: [], overall: { v: 1 } }), { tier: 'empty', px: 320 });
   assert.deepEqual(tier({ real: [1], overall: null, period: 'today' }), { tier: 'empty', px: 320 });
-  // recent：n≤3→340、n≤8→360、else→390
-  assert.deepEqual(tier({ real: [1, 2], overall: {}, period: 'recent' }), { tier: 'recent-s', px: 340 });
-  assert.deepEqual(tier({ real: [1, 2, 3, 4, 5, 6, 7, 8], overall: {}, period: 'recent' }), { tier: 'recent-m', px: 360 });
-  assert.deepEqual(tier({ real: new Array(10).fill(1), overall: {}, period: 'recent' }), { tier: 'recent-l', px: 390 });
+  // recent：恒 400（§16.2 用户裁定——三常用范围切换高度恒定，旧 340/360/390 废除）
+  assert.deepEqual(tier({ real: [1, 2], overall: {}, period: 'recent' }), { tier: 'recent', px: 400 });
+  assert.deepEqual(tier({ real: [1, 2, 3, 4, 5, 6, 7, 8], overall: {}, period: 'recent' }), { tier: 'recent', px: 400 });
+  assert.deepEqual(tier({ real: new Array(10).fill(1), overall: {}, period: 'recent' }), { tier: 'recent', px: 400 });
   // today/week 恒 400
   assert.deepEqual(tier({ real: [1], overall: {}, period: 'today' }), { tier: 'today', px: 400 });
   assert.deepEqual(tier({ real: new Array(9).fill(1), overall: {}, period: 'week' }), { tier: 'week', px: 400 });

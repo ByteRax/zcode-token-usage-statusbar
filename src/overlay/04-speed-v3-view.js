@@ -708,12 +708,10 @@
     /* empty 判据与 spd3CardHTML 同源（real 空 / overall 缺） */
     if (!(an.real && an.real.length) || !an.overall) return { tier: "empty", px: 320 };
     var p = an.period;
-    if (p === "recent") {
-      var n = an.real.length;
-      return n <= 3 ? { tier: "recent-s", px: 340 }
-        : n <= 8 ? { tier: "recent-m", px: 360 }
-        : { tier: "recent-l", px: 390 };
-    }
+    /* v392（spec §16，用户裁定 2026-11-18）：recent 与 today/week 统一 400——三常用
+     * 范围切换高度恒定（旧 340/360/390 三档致切换跳变 60px）；plot 弹性（v389 §13.1）
+     * 吸收增量，柱图槽位 height:100% 自适应。单档命名 recent（data-h-tier 仅诊断用） */
+    if (p === "recent") return { tier: "recent", px: 400 };
     if (p === "today") return { tier: "today", px: 400 };
     if (p === "week") return { tier: "week", px: 400 };
     if (p === "month") {

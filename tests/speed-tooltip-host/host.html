@@ -963,7 +963,10 @@ window.__zuCellRect = function (idx) {
  * 「无有效速度记录」轻卡。idx=槽位序（today 小时桶 / week 日桶 data-i）。 */
 window.__zuHitHover = function (idx) {
   var tip = document.getElementById('zu-spd-replica');
-  var hit = tip && tip.querySelector('.zu-sv3-hit[data-i="' + idx + '"]');
+  /* v392 §16.1：week 单模型改柱状（无折线 hit 列）——回退柱槽列 .zu-sc-col
+   * （生产委托 closest 三选择器已统一，合成 mouseover 同链出卡） */
+  var hit = tip && (tip.querySelector('.zu-sv3-hit[data-i="' + idx + '"]') ||
+    tip.querySelector('.zu-sc-col[data-i="' + idx + '"]'));
   if (!hit) return { ok: false, err: 'no hit ' + idx };
   var r = hit.getBoundingClientRect();
   hit.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true,

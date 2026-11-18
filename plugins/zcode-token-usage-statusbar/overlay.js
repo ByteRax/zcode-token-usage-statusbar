@@ -8593,8 +8593,20 @@
      * 仅 week 且 X<7 时追加（满 7 天不添噪） */
     var filled = 0;
     for (var f = 0; f < slots.length; f++) if (!slots[f].empty) filled++;
-    var head = spd3ChartHeadHTML(an,
-      filled < 7 ? SPD_L("有效 " + filled + "/7 天", filled + "/7 days with data") : "") || "";
+    var sub = filled < 7 ? SPD_L("有效 " + filled + "/7 天", filled + "/7 days with data") : "";
+    /* v392（spec §16，用户裁定 2026-11-18）：单模型恒柱状（与 today 单模型对称）——
+     * 恒折线在单有效日时退化为孤立点（真机反馈：近 7 天无柱状图）；7 日槽位空日=空位
+     * 不显 0。多模型保留折线+面积+总体虚线（spec §5 week 形态的多模型专属设计）。 */
+    if (an.perModel && an.perModel.length === 1) {
+      var maxV = spd3RealMax(slots);
+      if (!slots.length || !(maxV > 0)) return spd3ChartEmptyHTML(spd3ChartHeadHTML(an, sub) || "");
+      var tk = spd3Ticks(maxV), gt = spd3GridTicks(tk);
+      SPD_PORTAL = spd3PortalFor(slots, hoverIdx, o, false);
+      return SPD3_CHART_CSS +
+        '<div class="zu-speed-chart zu-sv3-chart">' + (spd3ChartHeadHTML(an, sub) || "") +
+        spd3BarsFrame(gt, slots.length, spd3BarCols(slots, hoverIdx, tk.yMax)) + "</div>";
+    }
+    var head = spd3ChartHeadHTML(an, sub) || "";
     return spd3LineHTML(an, hoverIdx, o, slots, head, true);
   }
   /* ==================== ⑪ 三形态分发（唯一入口） ==================== */
@@ -10628,12 +10640,10 @@
     /* empty 判据与 spd3CardHTML 同源（real 空 / overall 缺） */
     if (!(an.real && an.real.length) || !an.overall) return { tier: "empty", px: 320 };
     var p = an.period;
-    if (p === "recent") {
-      var n = an.real.length;
-      return n <= 3 ? { tier: "recent-s", px: 340 }
-        : n <= 8 ? { tier: "recent-m", px: 360 }
-        : { tier: "recent-l", px: 390 };
-    }
+    /* v392（spec §16，用户裁定 2026-11-18）：recent 与 today/week 统一 400——三常用
+     * 范围切换高度恒定（旧 340/360/390 三档致切换跳变 60px）；plot 弹性（v389 §13.1）
+     * 吸收增量，柱图槽位 height:100% 自适应。单档命名 recent（data-h-tier 仅诊断用） */
+    if (p === "recent") return { tier: "recent", px: 400 };
     if (p === "today") return { tier: "today", px: 400 };
     if (p === "week") return { tier: "week", px: 400 };
     if (p === "month") {
