@@ -42,7 +42,8 @@ function fixture(mobileMode = true) {
     cellsAllOff: () => false, zuBarSortItems: rows => rows, statCompactStyle: () => '', statHead: () => '', kpiIco: () => '',
     statModelsTable: () => '', fxqIcon: () => '', countFmt: String, speedSegsOf: () => [],
     tpsBand: () => ({ cls: 'ok' }), tpsBandText: () => '', speedCardHTML: () => '',
-    buildProjectTipHTML: () => '',
+    buildProjectTipHTML: () => '', escAttr: v => String(v),   // v388：statKpi title 兜底引用
+    STAT_TIP_W: { turn: 540, session: 600, today: 600, project: 760, tools: 450 },   // v388：卡根 data-zu-w 取值
   };
   const ctx = vm.createContext(s);
   vm.runInContext(contextSource + updateSource + helpers + '\nfunction ico() { return ""; }\n' + htmlSource, ctx);

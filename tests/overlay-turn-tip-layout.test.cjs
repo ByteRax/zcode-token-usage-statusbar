@@ -28,7 +28,7 @@ function render(data, lang = 'zh', cost = 1) {
   });
   vm.runInContext(bandHelpers, context);
   vm.runInContext(helpers, context);
-  return context.html(data).tips.filter(Boolean).find(t => t.includes('zu-stat-tip--turn'));
+  return context.html(data).tips.filter(Boolean).find(t => t.includes('class="zu-stat-tip zu-stat-tip--turn"'));
 }
 
 function fixture(over, proj) {
@@ -51,10 +51,10 @@ function fixture(over, proj) {
 const stripAll = s => s.replace(/<style>[\s\S]*?<\/style>/g, '').replace(/<[^>]+>/g, '');
 const noStyle = s => s.replace(/<style>[\s\S]*?<\/style>/g, '');   /* 剥 style 留标签：类名/结构切片用 */
 
-test('v299 turn tip: 450 wide auto-height scoped style with hygiene guards', () => {
+test('v299 turn tip: 540 wide auto-height scoped style with hygiene guards', () => {
   const tip = render(fixture());
   const style = (tip.match(/<style>[\s\S]*?<\/style>/) || [''])[0];
-  assert.match(style, /zusage-tip-root:has\(\.zu-stat-tip--turn\)\{width:min\(450px,calc\(100vw - 16px\)\)!important/);
+  assert.match(style, /zusage-tip-root:has\(\.zu-stat-tip--turn\)\{width:min\(540px,calc\(100vw - 16px\)\)!important/);
   assert.match(style, /max-height:calc\(100vh - 24px\)!important/);
   assert.doesNotMatch(style, /\.zusage-tip-root:has\(\.zu-stat-tip--turn\)\{[^}]*height:\d/);   // 高度自适应：不写定高
   assert.match(style, /box-sizing:border-box!important/);
@@ -62,9 +62,9 @@ test('v299 turn tip: 450 wide auto-height scoped style with hygiene guards', () 
   // 裸 .zu-stat-* / .tip / .tbody 选择器会波及其余五张统计卡=红
   for (const rule of style.replace(/^<style>/, '').replace(/<\/style>$/, '').split('}')) {
     const sel = rule.split('{')[0].trim();
-    if (!sel) continue;
+    if (!sel || sel.startsWith('@media')) continue;   // v388：@media 前导片段非选择器，内部规则各自成片段受检
     assert.ok(
-      /zu-turn-|^\.zu-stat-tip--turn|:has\(\.zu-stat-tip--turn\)/.test(sel),
+      /zu-turn-|^\.zu-stat-tip--turn|:has\(\.zu-stat-tip--turn\)|:is\(\.zu-stat-tip--(turn|session|today|project)/.test(sel),
       '越域选择器: ' + sel);
   }
   // tip 本体/滚动层禁注入 display（inline display:none 被压死=永不消失的既有事故形态）。
@@ -88,11 +88,11 @@ test('v302 turn tip: four KPI rows in fixed order with request scale row', () =>
   assert.match(raw, /zu-turn-kpis--mid/, '耗时行容器');
   assert.match(raw, /zu-turn-kpis--duo/, '速度行容器');
   // 行二数值：请求次数=本轮 17、请求轮数=会话累计 628、请求会话=项目缺失诚实显 —
-  assert.match(raw, /请求次数<\/div><div class="zu-stat-v">17<\/div>/);
-  assert.match(raw, /请求轮数<\/div><div class="zu-stat-v">628<\/div>/);
-  assert.match(raw, /请求会话<\/div><div class="zu-stat-v">—</);
+  assert.match(raw, /请求次数<\/div><div class="zu-stat-v"[^>]*>17<\/div>/);
+  assert.match(raw, /请求轮数<\/div><div class="zu-stat-v"[^>]*>628<\/div>/);
+  assert.match(raw, /请求会话<\/div><div class="zu-stat-v"[^>]*>—</);
   const withProj = noStyle(render(fixture({}, { sessions: 24 })));
-  assert.match(withProj, /请求会话<\/div><div class="zu-stat-v">24<\/div>/, '项目会话数可用时真实显示');
+  assert.match(withProj, /请求会话<\/div><div class="zu-stat-v"[^>]*>24<\/div>/, '项目会话数可用时真实显示');
 });
 
 test('v302 turn tip: 11 KPI label icons aligned with today/session cards', () => {
@@ -168,7 +168,7 @@ test('v299 turn tip: multi-model table sorted desc inside scroll zone', () => {
 
 test('v299 turn tip: honest degradation without fake zeros', () => {
   const noTps = noStyle(render(fixture({ tps: undefined })));
-  assert.match(noTps, /输出速度<\/div><div class="zu-stat-v">—</);
+  assert.match(noTps, /输出速度<\/div><div class="zu-stat-v"[^>]*>—</);
   const noTiming = noStyle(render(fixture({ avg_duration_ms: 0, avg_ttft_ms: 0, duration_ms: 0 })));
   assert.doesNotMatch(noTiming, /zu-turn-kpis--mid/, '耗时全缺=整行不渲染（不伪造 0s）');
   const partial = noStyle(render(fixture({ avg_duration_ms: 0 })));
@@ -195,7 +195,7 @@ test('v299 turn tip: english locale', () => {
 
 test('review fix: explicit zeros degrade honestly (turn avg_tps/duration 0 → — or collapse, never fake 0)', () => {
   const zeroTps = noStyle(render(fixture({ tps: 0 })));
-  assert.match(zeroTps, /平均输出速度<\/div><div class="zu-stat-v">—</, 'avg_tps 0 renders — (real zusage zero-rated-segments shape)');
+  assert.match(zeroTps, /平均输出速度<\/div><div class="zu-stat-v"[^>]*>—</, 'avg_tps 0 renders — (real zusage zero-rated-segments shape)');
   assert.doesNotMatch(zeroTps, />0(\.0)?<\/b> <small>t\/s</, 'no fake 0 t/s reading');
   const zeroDur = noStyle(render(fixture({ avg_duration_ms: 0, avg_ttft_ms: 0, duration_ms: 0 })));
   assert.doesNotMatch(zeroDur, /zu-turn-kpis--mid/, 'all-zero durations collapse the mid row');

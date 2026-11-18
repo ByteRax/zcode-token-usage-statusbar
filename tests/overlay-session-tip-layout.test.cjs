@@ -29,7 +29,7 @@ function render(data, lang = 'zh', cost = 1) {
   });
   vm.runInContext(bandHelpers, context);
   vm.runInContext(helpers, context);
-  return context.html(data).tips.filter(Boolean).find(t => t.includes('zu-stat-tip--session'));
+  return context.html(data).tips.filter(Boolean).find(t => t.includes('class="zu-stat-tip zu-stat-tip--session"'));
 }
 
 function sessionFixture(over) {
@@ -57,15 +57,15 @@ const noStyle = s => s.replace(/<style>[\s\S]*?<\/style>/g, '');
 const stripAll = s => noStyle(s).replace(/<[^>]+>/g, '');
 const ruleBodies = style => style.replace(/^<style>/, '').replace(/<\/style>$/, '').split('}');
 
-test('v300 session tip: 450 wide auto-height scoped style, per-rule hygiene', () => {
+test('v300 session tip: 600 wide auto-height scoped style, per-rule hygiene', () => {
   const style = (render(sessionFixture()).match(/<style>[\s\S]*?<\/style>/) || [''])[0];
-  assert.match(style, /zusage-tip-root:has\(\.zu-stat-tip--session\)\{width:min\(450px,calc\(100vw - 16px\)\)!important/);
+  assert.match(style, /zusage-tip-root:has\(\.zu-stat-tip--session\)\{width:min\(600px,calc\(100vw - 16px\)\)!important/);
   assert.match(style, /max-height:calc\(100vh - 24px\)!important/);
   assert.doesNotMatch(style, /:has\(\.zu-stat-tip--session\)\{[^}]*height:\d/);   // 高度自适应不写定高
   for (const r of ruleBodies(style)) {
     const sel = r.split('{')[0].trim();
-    if (!sel) continue;
-    assert.ok(/zu-turn-|^\.zu-stat-tip--session|:has\(\.zu-stat-tip--session\)/.test(sel), '越域选择器: ' + sel);
+    if (!sel || sel.startsWith('@media')) continue;   // v388：@media 前导片段非选择器，内部规则各自成片段受检
+    assert.ok(/zu-turn-|^\.zu-stat-tip--session|:has\(\.zu-stat-tip--session\)|:is\(\.zu-stat-tip--(turn|session|today|project)/.test(sel), '越域选择器: ' + sel);
     if (/^\.zusage-tip-root:has\(\.zu-stat-tip--session\)\{/.test(sel) ||
         /^\.zusage-tip-root:has\(\.zu-stat-tip--session\) \.tbody\{/.test(sel)) {
       assert.doesNotMatch(r, /display/, 'tip/tbody 禁注入 display');
@@ -84,9 +84,9 @@ test('v300 session tip: three KPI rows in fixed order with session metrics', () 
   assert.match(text, /426000000/, '会话级数值（VM 桩 fmt 直出）');
   // v302 行二数值：请求次数=17、请求轮数=628、请求会话=项目缺失显 —
   const raw2 = noStyle(render(sessionFixture()));
-  assert.match(raw2, /请求次数<\/div><div class="zu-stat-v">17<\/div>/);
-  assert.match(raw2, /请求轮数<\/div><div class="zu-stat-v">628<\/div>/);
-  assert.match(raw2, /请求会话<\/div><div class="zu-stat-v">—</);
+  assert.match(raw2, /请求次数<\/div><div class="zu-stat-v"[^>]*>17<\/div>/);
+  assert.match(raw2, /请求轮数<\/div><div class="zu-stat-v"[^>]*>628<\/div>/);
+  assert.match(raw2, /请求会话<\/div><div class="zu-stat-v"[^>]*>—</);
 });
 
 test('v302 session tip: 11 KPI label icons aligned with turn card', () => {
@@ -115,7 +115,7 @@ test('v300 session tip: avg output speed banded (session avg, not last turn)', (
 test('v300 session tip: scale row kept, models honest, timing degradation', () => {
   const tip = noStyle(render(sessionFixture()));
   // v302：轮对话以「请求轮数」升为行二第二列独立 KPI
-  assert.match(tip, /<\/svg>请求轮数<\/div><div class="zu-stat-v">628<\/div>/, '请求轮数=行二独立格');
+  assert.match(tip, /<\/svg>请求轮数<\/div><div class="zu-stat-v"[^>]*>628<\/div>/, '请求轮数=行二独立格');
   assert.doesNotMatch(tip, /zu-stat-scale|轮对话/, '旧轮对话标签与规模行已删');
   const duoIdx = tip.indexOf('请求轮数'), spIdx = tip.indexOf('>平均输出速度<');
   assert.ok(duoIdx >= 0 && duoIdx < spIdx, '请求轮数列在平均输出速度列之前');
@@ -127,7 +127,7 @@ test('v300 session tip: scale row kept, models honest, timing degradation', () =
     avg_duration_ms: undefined, avg_ttft_ms: undefined, duration_ms: undefined, avg_tps: undefined,
   })));
   assert.doesNotMatch(oldSnap, /zu-turn-kpis--mid/, '耗时字段缺失=行二收起');
-  assert.match(oldSnap, /平均输出速度<\/div><div class="zu-stat-v">—</);
+  assert.match(oldSnap, /平均输出速度<\/div><div class="zu-stat-v"[^>]*>—</);
   assert.match(tip, /2026-11-08 20:42:28 — 2026-11-08 20:46:14/, '秒级时间范围');
 });
 
@@ -143,7 +143,7 @@ test('v300 session tip: cost gating collapses fee everywhere; locale stable', ()
 
 test('review fix: explicit zeros degrade honestly (session avg_tps 0 → —, duration 0 → mid row collapses)', () => {
   const zeroTps = noStyle(render(sessionFixture({ avg_tps: 0 })));
-  assert.match(zeroTps, /平均输出速度<\/div><div class="zu-stat-v">—</, 'avg_tps 0 renders — (real zusage zero-rated-segments shape)');
+  assert.match(zeroTps, /平均输出速度<\/div><div class="zu-stat-v"[^>]*>—</, 'avg_tps 0 renders — (real zusage zero-rated-segments shape)');
   assert.doesNotMatch(zeroTps, />0(\.0)?<\/b> <small>t\/s</, 'no fake 0 t/s reading');
   const zeroDur = noStyle(render(sessionFixture({ avg_duration_ms: 0, avg_ttft_ms: 0, duration_ms: 0 })));
   assert.doesNotMatch(zeroDur, /zu-turn-kpis--mid/, 'all-zero durations collapse the mid row (undefined-only coverage before)');

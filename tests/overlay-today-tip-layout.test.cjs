@@ -30,7 +30,7 @@ function render(data, lang = 'zh', cost = 1) {
   });
   vm.runInContext(bandHelpers, context);
   vm.runInContext(helpers, context);
-  return context.html(data).tips.filter(Boolean).find(t => t.includes('zu-stat-tip--today'));
+  return context.html(data).tips.filter(Boolean).find(t => t.includes('class="zu-stat-tip zu-stat-tip--today"'));
 }
 
 function todayFixture(over) {
@@ -56,9 +56,9 @@ const noStyle = s => s.replace(/<style>[\s\S]*?<\/style>/g, '');
 const stripAll = s => noStyle(s).replace(/<[^>]+>/g, '');
 const ruleBodies = style => style.replace(/^<style>/, '').replace(/<\/style>$/, '').split('}');
 
-test('v301 today tip: 450 wide auto-height scoped style, today-specific rules, per-rule hygiene', () => {
+test('v301 today tip: 600 wide auto-height scoped style, today-specific rules, per-rule hygiene', () => {
   const style = (render(todayFixture()).match(/<style>[\s\S]*?<\/style>/) || [''])[0];
-  assert.match(style, /zusage-tip-root:has\(\.zu-stat-tip--today\)\{width:min\(450px,calc\(100vw - 16px\)\)!important/);
+  assert.match(style, /zusage-tip-root:has\(\.zu-stat-tip--today\)\{width:min\(600px,calc\(100vw - 16px\)\)!important/);
   assert.match(style, /max-height:calc\(100vh - 24px\)!important/);
   assert.doesNotMatch(style, /:has\(\.zu-stat-tip--today\)\{[^}]*height:\d/);   // 高度自适应不写定高
   // 图标规则（v301.1 三卡共享，随 today 变体同样生效）：baseline 行内 align-self:center
@@ -69,8 +69,8 @@ test('v301 today tip: 450 wide auto-height scoped style, today-specific rules, p
   assert.match(style, /\.zu-stat-tip--today \.zu-turn-kpis \.zu-stat-kpi:only-child\{grid-column:1\/-1/);
   for (const r of ruleBodies(style)) {
     const sel = r.split('{')[0].trim();
-    if (!sel) continue;
-    assert.ok(/zu-turn-|^\.zu-stat-tip--today|:has\(\.zu-stat-tip--today\)/.test(sel), '越域选择器: ' + sel);
+    if (!sel || sel.startsWith('@media')) continue;   // v388：@media 前导片段非选择器，内部规则各自成片段受检
+    assert.ok(/zu-turn-|^\.zu-stat-tip--today|:has\(\.zu-stat-tip--today\)|:is\(\.zu-stat-tip--(turn|session|today|project)/.test(sel), '越域选择器: ' + sel);
     if (/^\.zusage-tip-root:has\(\.zu-stat-tip--today\)\{/.test(sel) ||
         /^\.zusage-tip-root:has\(\.zu-stat-tip--today\) \.tbody\{/.test(sel)) {
       assert.doesNotMatch(r, /display/, 'tip/tbody 禁注入 display');
@@ -89,9 +89,9 @@ test('v302.2 today tip: four KPI rows in fixed order with 11 label icons', () =>
   assert.match(noStyle(raw), /zu-turn-kpis--duo/, '速度行容器');
   // 规模行数值（同本轮/会话口径）
   const raw2 = noStyle(raw);
-  assert.match(raw2, /请求次数<\/div><div class="zu-stat-v">1457<\/div>/);
-  assert.match(raw2, /请求轮数<\/div><div class="zu-stat-v">631<\/div>/);
-  assert.match(raw2, /请求会话<\/div><div class="zu-stat-v">109<\/div>/);
+  assert.match(raw2, /请求次数<\/div><div class="zu-stat-v"[^>]*>1457<\/div>/);
+  assert.match(raw2, /请求轮数<\/div><div class="zu-stat-v"[^>]*>631<\/div>/);
+  assert.match(raw2, /请求会话<\/div><div class="zu-stat-v"[^>]*>109<\/div>/);
   // 11 枚图标：计数（剥 style 防 CSS 选择器文本计入）+ 逐一路径签名
   assert.equal((noStyle(raw).match(/zu-kpi-ico/g) || []).length, 11, 'KPI 图标恰 11 枚');
   for (const sig of ['m12 3-9 5', 'M12 3v13', 'M12 21V8', 'M12 7v5l3 2', 'M13 2 4 13h7l-1 9',
@@ -115,7 +115,7 @@ test('v301 today tip: weighted speed banded, retry row2, models scroll zone, sec
   const tip = noStyle(render(todayFixture()));
   assert.match(tip, /<b class="zu-teal">151\.6<\/b> <small>t\/s<\/small>/, '今日加权速度档色（151.6∈较快档 zu-teal）');
   // VM 桩 secLong 直出：锁定接线（真实 s/m/h 换算由 v300.2 切片验证覆盖）
-  assert.match(tip, /总耗时<\/div><div class="zu-stat-v">12301150<\/div>/, '总耗时=Σ生成耗时（secLong 换算入参）');
+  assert.match(tip, /总耗时<\/div><div class="zu-stat-v"[^>]*>12301150<\/div>/, '总耗时=Σ生成耗时（secLong 换算入参）');
   assert.match(tip, /zu-turn-models/, '模型表在独立滚动区');
   assert.match(tip, /zu-pj-mhead[^]*?模型明细/, '标题行固定在滚动区外');
   // v302.3：标题行右侧工具调用/重试（同本轮/会话形态），不再显「按用量排序」
@@ -133,12 +133,12 @@ test('v302.2 today tip: honest degradation for missing aggregates, empty models'
     avg_duration_ms: undefined, avg_ttft_ms: undefined, avg_tps: undefined, duration_ms: undefined,
   })));
   assert.doesNotMatch(bare, /平均耗时|平均延迟|总耗时/, '耗时字段缺失=行三整行收起不伪造');
-  assert.match(bare, /请求会话<\/div><div class="zu-stat-v">109<\/div>/, '规模行不随耗时降级');
-  assert.match(bare, /平均输出速度<\/div><div class="zu-stat-v">—</, '速度缺失显 —');
+  assert.match(bare, /请求会话<\/div><div class="zu-stat-v"[^>]*>109<\/div>/, '规模行不随耗时降级');
+  assert.match(bare, /平均输出速度<\/div><div class="zu-stat-v"[^>]*>—</, '速度缺失显 —');
   const noModels = noStyle(render(todayFixture({ models: [] })));
   assert.doesNotMatch(noModels, /模型明细|zu-pj-mhead|zu-turn-models/, '无模型不渲染空表');
   const noData = noStyle(render(todayFixture({ sessions: 0 })));
-  assert.match(noData, /请求会话<\/div><div class="zu-stat-v">0<\/div>/, '0 会话=真实计数非伪造');
+  assert.match(noData, /请求会话<\/div><div class="zu-stat-v"[^>]*>0<\/div>/, '0 会话=真实计数非伪造');
 });
 
 test('v301 today tip: cost gating collapses fee; EN locale stable', () => {
@@ -157,11 +157,11 @@ test('v301 today tip: cost gating collapses fee; EN locale stable', () => {
 
 test('review fix: explicit zeros degrade honestly (today avg_tps 0 → —, duration 0 → mid row collapses)', () => {
   const zeroTps = noStyle(render(todayFixture({ avg_tps: 0 })));
-  assert.match(zeroTps, /平均输出速度<\/div><div class="zu-stat-v">—</, 'avg_tps 0 renders — (real zusage zero-rated-segments shape)');
+  assert.match(zeroTps, /平均输出速度<\/div><div class="zu-stat-v"[^>]*>—</, 'avg_tps 0 renders — (real zusage zero-rated-segments shape)');
   assert.doesNotMatch(zeroTps, />0(\.0)?<\/b> <small>t\/s</, 'no fake 0 t/s reading');
   const zeroDur = noStyle(render(todayFixture({ avg_duration_ms: 0, avg_ttft_ms: 0, duration_ms: 0 })));
   assert.doesNotMatch(zeroDur, /zu-turn-kpis--mid/, 'all-zero durations collapse the mid row (undefined-only coverage before)');
   const oldRemote = noStyle(render(todayFixture({ turns: undefined, sessions: undefined })));
-  assert.match(oldRemote, /请求轮数<\/div><div class="zu-stat-v">—</, 'missing turns field (old remote snapshot) renders — not fake 0');
-  assert.match(oldRemote, /请求会话<\/div><div class="zu-stat-v">—</, 'missing sessions field renders — not fake 0');
+  assert.match(oldRemote, /请求轮数<\/div><div class="zu-stat-v"[^>]*>—</, 'missing turns field (old remote snapshot) renders — not fake 0');
+  assert.match(oldRemote, /请求会话<\/div><div class="zu-stat-v"[^>]*>—</, 'missing sessions field renders — not fake 0');
 });

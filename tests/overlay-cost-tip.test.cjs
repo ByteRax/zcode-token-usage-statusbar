@@ -203,26 +203,26 @@ test('四格 tooltip 显示 ¥ 费用行、模型明细费用与可点来源脚�
   h.window.__zusageUpdate(h.payload({}));
   const tips = h.tips();
   // 本轮（tips[0]，v215 卡）：KPI 费用 + 模型明细表格（v253 改项目卡式四列表，行式 rt-models 退役）
-  assert.match(tips[0], /预估费用<svg class="tip-fxq"[^]*?zu-stat-v">¥3\.55<\/div>/);
+  assert.match(tips[0], /预估费用<svg class="tip-fxq"[^]*?zu-stat-v"[^>]*>¥3\.55<\/div>/);
   assert.match(tips[0], /zu-pj-mhead[^]*?模型明细[^]*?zu-stat-table/);
-  assert.match(tips[0], /<td class="zu-pj-mname zu-model-fit" title="GLM-5\.3-FlashX">GLM-5\.3-FlashX<\/td><td>5800<\/td><td>2<\/td><td>120\.5 t\/s<\/td><td>¥3\.55<\/td>/);
+  assert.match(tips[0], /<td class="zu-c-name zu-pj-mname zu-model-fit" title="GLM-5\.3-FlashX">GLM-5\.3-FlashX<div class="zu-md-sub" title="120\.5 t\/s · ¥3\.55">120\.5 t\/s · ¥3\.55<\/div><\/td><td class="zu-c-tok" data-l="Token 用量">5800<\/td><td class="zu-c-req" data-l="请求次数">2<\/td><td class="zu-c-spd">120\.5 t\/s<\/td><td class="zu-c-cost" data-l="费用">¥3\.55<\/td>/);
   assert.doesNotMatch(tips[0], /rt-models/);
   assert.doesNotMatch(tips[0], /价格来源/);   // 底部来源脚注已移除（信息收进气泡）
   // 会话累计（tips[1]，v215 卡）：KPI 费用 + 模型表格行费用
   assert.match(tips[1], /zu-stat-tip--session/);
-  assert.match(tips[1], /预估费用<svg class="tip-fxq"[^]*?zu-stat-v">¥7\.10<\/div>/);
-  assert.match(tips[1], /<thead><tr><th>模型<\/th><th>Token 用量 ↓<\/th><th>请求次数<\/th><th>平均速度<\/th><th>预估费用<\/th><\/tr><\/thead>/);
-  assert.match(tips[1], /<td class="zu-pj-mname zu-model-fit" title="GLM-5\.3">GLM-5\.3<\/td><td>1000<\/td><td>3<\/td><td>88\.8 t\/s<\/td><td>¥2\.84<\/td>/);
-  assert.match(tips[1], /<td class="zu-pj-mname zu-model-fit" title="claude-opus-5-5">claude-opus-5-5<\/td><td>2000<\/td><td>1<\/td><td>60\.2 t\/s<\/td><td>¥4\.26<\/td>/);
+  assert.match(tips[1], /预估费用<svg class="tip-fxq"[^]*?zu-stat-v"[^>]*>¥7\.10<\/div>/);
+  assert.match(tips[1], /<thead><tr><th class="zu-c-name">模型<\/th><th class="zu-c-tok">Token 用量 ↓<\/th><th class="zu-c-req">请求次数<\/th><th class="zu-c-spd">平均速度<\/th><th class="zu-c-cost">预估费用<\/th><\/tr><\/thead>/);
+  assert.match(tips[1], /<td class="zu-c-name zu-pj-mname zu-model-fit" title="GLM-5\.3">GLM-5\.3<div class="zu-md-sub" title="88\.8 t\/s · ¥2\.84">88\.8 t\/s · ¥2\.84<\/div><\/td><td class="zu-c-tok" data-l="Token 用量">1000<\/td><td class="zu-c-req" data-l="请求次数">3<\/td><td class="zu-c-spd">88\.8 t\/s<\/td><td class="zu-c-cost" data-l="费用">¥2\.84<\/td>/);
+  assert.match(tips[1], /<td class="zu-c-name zu-pj-mname zu-model-fit" title="claude-opus-5-5">claude-opus-5-5<div class="zu-md-sub" title="60\.2 t\/s · ¥4\.26">60\.2 t\/s · ¥4\.26<\/div><\/td><td class="zu-c-tok" data-l="Token 用量">2000<\/td><td class="zu-c-req" data-l="请求次数">1<\/td><td class="zu-c-spd">60\.2 t\/s<\/td><td class="zu-c-cost" data-l="费用">¥4\.26<\/td>/);
   // 今日合计（tips[2]，v301 三行 KPI 卡）：输入列缓存副行 + 费用 KPI + 模型明细表格（v253）
   assert.match(tips[2], /缓存命中率/);
-  assert.match(tips[2], /预估费用<svg class="tip-fxq"[^]*?zu-stat-v">¥14\.20<\/div>/);
+  assert.match(tips[2], /预估费用<svg class="tip-fxq"[^]*?zu-stat-v"[^>]*>¥14\.20<\/div>/);
   assert.match(tips[2], /zu-pj-mhead[^]*?模型明细[^]*?zu-stat-table/);
-  assert.match(tips[2], /<td class="zu-pj-mname zu-model-fit" title="GLM-5\.3-FlashX">GLM-5\.3-FlashX<\/td><td>9\.8万<\/td><td>40<\/td><td>130\.4 t\/s<\/td><td>¥14\.20<\/td>/);
+  assert.match(tips[2], /<td class="zu-c-name zu-pj-mname zu-model-fit" title="GLM-5\.3-FlashX">GLM-5\.3-FlashX<div class="zu-md-sub" title="130\.4 t\/s · ¥14\.20">130\.4 t\/s · ¥14\.20<\/div><\/td><td class="zu-c-tok" data-l="Token 用量">9\.8万<\/td><td class="zu-c-req" data-l="请求次数">40<\/td><td class="zu-c-spd">130\.4 t\/s<\/td><td class="zu-c-cost" data-l="费用">¥14\.20<\/td>/);
   assert.doesNotMatch(tips[2], /价格来源/);
   // 项目累计（tips[3]，v214 统计卡）
-  assert.match(tips[3], /zu-stat-tip--project" data-key="sid_main:/);   // v303 根类并入统计卡家族
-  assert.match(tips[3], /<td class="zu-pj-mname zu-model-fit" title="GLM-5\.3">GLM-5\.3<\/td><td>3000<\/td><td>8<\/td><td>77\.7 t\/s<\/td><td>¥21\.30<\/td>/);
+  assert.match(tips[3], /zu-stat-tip--project" data-zu-w="760" data-key="sid_main:/);   // v303 根类并入统计卡家族
+  assert.match(tips[3], /<td class="zu-c-name zu-pj-mname zu-model-fit" title="GLM-5\.3">GLM-5\.3<div class="zu-md-sub" title="77\.7 t\/s · ¥21\.30">77\.7 t\/s · ¥21\.30<\/div><\/td><td class="zu-c-tok" data-l="Token 用量">3000<\/td><td class="zu-c-req" data-l="请求次数">8<\/td><td class="zu-c-spd">77\.7 t\/s<\/td><td class="zu-c-cost" data-l="费用">¥21\.30<\/td>/);
   // 子代理格（tips[5]，v217）：__tip 置空——汇总/费用迁入统一浮层（.zu-sub-pop），不走通用 tooltip
   assert.equal(tips[5], null);
 });
@@ -238,9 +238,9 @@ test('v253 本轮/今日模型明细表：多模型按 Token 用量降序渲染�
   h.window.__zusageUpdate(p);
   const tips = h.tips();
   // 今日：渲染重排后 9.8万 行在前、3000 行在后；缺价模型费用 "—"
-  assert.match(tips[2], /¥14\.20<\/td><\/tr><tr><td class="zu-pj-mname zu-model-fit" title="claude-opus-5-5">claude-opus-5-5<\/td><td>3000<\/td><td>5<\/td><td>—<\/td><td>—<\/td><\/tr>/);
+  assert.match(tips[2], /¥14\.20<\/td><\/tr><tr><td class="zu-c-name zu-pj-mname zu-model-fit" title="claude-opus-5-5">claude-opus-5-5<\/td><td class="zu-c-tok" data-l="Token 用量">3000<\/td><td class="zu-c-req" data-l="请求次数">5<\/td><td class="zu-c-spd">—<\/td><td class="zu-c-cost" data-l="费用">—<\/td><\/tr>/);
   // 本轮：升序输入（1800 在前、4000 在后）渲染为降序（4000 行先），各自费用 — / ¥3.55；无 avg_tps 显 —
-  assert.match(tips[0], /<td class="zu-pj-mname zu-model-fit" title="claude-opus-5-5">claude-opus-5-5<\/td><td>4000<\/td><td>1<\/td><td>—<\/td><td>—<\/td><\/tr><tr><td class="zu-pj-mname zu-model-fit" title="GLM-5\.3-FlashX">GLM-5\.3-FlashX<\/td><td>1800<\/td><td>1<\/td><td>—<\/td><td>¥3\.55<\/td><\/tr>/);
+  assert.match(tips[0], /<td class="zu-c-name zu-pj-mname zu-model-fit" title="claude-opus-5-5">claude-opus-5-5<\/td><td class="zu-c-tok" data-l="Token 用量">4000<\/td><td class="zu-c-req" data-l="请求次数">1<\/td><td class="zu-c-spd">—<\/td><td class="zu-c-cost" data-l="费用">—<\/td><\/tr><tr><td class="zu-c-name zu-pj-mname zu-model-fit" title="GLM-5\.3-FlashX">GLM-5\.3-FlashX<div class="zu-md-sub" title="¥3\.55">¥3\.55<\/div><\/td><td class="zu-c-tok" data-l="Token 用量">1800<\/td><td class="zu-c-req" data-l="请求次数">1<\/td><td class="zu-c-spd">—<\/td><td class="zu-c-cost" data-l="费用">¥3\.55<\/td><\/tr>/);
   // 空数组：整块不渲染（含表格骨架也不出；v301 今日卡内联 style 含同名选择器文本，先剥 style）
   p.today.models = [];
   h.window.__zusageUpdate(p);
@@ -251,8 +251,8 @@ test('无 fx 汇率时诚实降级 $ 原值，脚注标 USD', () => {
   const h = harness(); setup(h);
   h.window.__zusageUpdate(h.payload({ fx: null }));
   const tips = h.tips();
-  assert.match(tips[1], /预估费用<svg class="tip-fxq"[^]*?zu-stat-v">\$1\.00<\/div>/);
-  assert.match(tips[2], /预估费用<svg class="tip-fxq"[^]*?zu-stat-v">\$2\.00<\/div>/);   // v213 格序：今日合计 tips[2]
+  assert.match(tips[1], /预估费用<svg class="tip-fxq"[^]*?zu-stat-v"[^>]*>\$1\.00<\/div>/);
+  assert.match(tips[2], /预估费用<svg class="tip-fxq"[^]*?zu-stat-v"[^>]*>\$2\.00<\/div>/);   // v213 格序：今日合计 tips[2]
   assert.doesNotMatch(tips[1], /价格来源/);
 });
 
@@ -327,16 +327,16 @@ test('⚙ 开关关闭（zusage3.cost=0）后四格均无费用行与脚注', ()
     assert.doesNotMatch(t, /价格来源 models\.dev/);
   }
   assert.doesNotMatch(h.tips()[3], /预估费用/);   // 项目卡 KPI 格与表格费用列整体不渲染
-  assert.match(h.tips()[3], /<th>[^<]*<\/th><\/tr><\/thead>/);   // 表头收为三列（项目明细表四类，不含模型表）
+  assert.match(h.tips()[3], /<th[^>]*>[^<]*<\/th><\/tr><\/thead>/);   // 表头收为三列（项目明细表四类，不含模型表）
   // v253/v375 review：本轮/今日模型表头精确锚定（费用关=模型/用量/请求/平均速度 四列，
   // 含 </thead> 收尾），且行内无费用 td（表头/行门控对称，双向锁死）
-  assert.match(h.tips()[0], /<thead><tr><th>模型<\/th><th>Token 用量 ↓<\/th><th>请求次数<\/th><th>平均速度<\/th><\/tr><\/thead>/);
-  assert.match(h.tips()[2], /<thead><tr><th>模型<\/th><th>Token 用量 ↓<\/th><th>请求次数<\/th><th>平均速度<\/th><\/tr><\/thead>/);
+  assert.match(h.tips()[0], /<thead><tr><th class="zu-c-name">模型<\/th><th class="zu-c-tok">Token 用量 ↓<\/th><th class="zu-c-req">请求次数<\/th><th class="zu-c-spd">平均速度<\/th><\/tr><\/thead>/);
+  assert.match(h.tips()[2], /<thead><tr><th class="zu-c-name">模型<\/th><th class="zu-c-tok">Token 用量 ↓<\/th><th class="zu-c-req">请求次数<\/th><th class="zu-c-spd">平均速度<\/th><\/tr><\/thead>/);
   assert.doesNotMatch(h.tips()[0], /<td>¥/);
   assert.doesNotMatch(h.tips()[2], /<td>¥/);
   // 会话累计模型明细表同走 statModelsTable 门控（曾为内联四列表漏门控，费用列常驻）
   assert.doesNotMatch(h.tips()[1], /预估费用/);
-  assert.match(h.tips()[1], /<thead><tr><th>模型<\/th><th>Token 用量 ↓<\/th><th>请求次数<\/th><th>平均速度<\/th><\/tr><\/thead>/);
+  assert.match(h.tips()[1], /<thead><tr><th class="zu-c-name">模型<\/th><th class="zu-c-tok">Token 用量 ↓<\/th><th class="zu-c-req">请求次数<\/th><th class="zu-c-spd">平均速度<\/th><\/tr><\/thead>/);
   assert.doesNotMatch(h.tips()[1], /<td>¥/);
 });
 
