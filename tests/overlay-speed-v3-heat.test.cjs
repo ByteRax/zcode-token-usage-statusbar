@@ -432,3 +432,20 @@ test('负向: 无「功能说明」常驻块；heat 源码无「引号-换行-�
   while ((m = re.exec(heat)) !== null) hits.push(heat.slice(Math.max(0, m.index - 40), m.index + 20));
   assert.deepEqual(hits, [], '字符串拼接链断链（丢行尾 +）会经 ASI 静默通过 node --check');
 });
+
+// ---------- v387 MINOR-4：区间文案「全天 / 截至 HH:mm」边界 ----------
+test('v387 区间文案: 已结束日=全天；进行中=截至 HH:mm；距末 ≤2 分钟归全天', () => {
+  const ctx = makeCtx();
+  const day = 24 * 3600000;
+  const d0 = new Date(2026, 10, 5).getTime();
+  // 已结束：b=次日零点 → 全天
+  assert.match(vm.runInContext(`spd3DaySpanTxt(${d0}, ${d0 + day})`, ctx), /全天|All day/);
+  // 进行中：b=10:53 → 截至 10:53
+  const b2 = d0 + 10 * 3600000 + 53 * 60000;
+  assert.match(vm.runInContext(`spd3DaySpanTxt(${d0}, ${b2})`, ctx), /截至 10:53|until 10:53/);
+  // 距末 ≤2 分钟：b=23:59:10 → 全天
+  const b3 = d0 + day - 50000;
+  assert.match(vm.runInContext(`spd3DaySpanTxt(${d0}, ${b3})`, ctx), /全天|All day/);
+  // b 缺席/越界（≥次日零点）按全天处理，绝不猜进行中
+  assert.match(vm.runInContext(`spd3DaySpanTxt(${d0})`, ctx), /全天|All day/);
+});

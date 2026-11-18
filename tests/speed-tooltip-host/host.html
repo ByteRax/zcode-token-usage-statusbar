@@ -771,9 +771,10 @@ window.__zuMount = function (sel, hover) {
     function rebuildKeepScroll() {
       var ow = tip.querySelector('.zu-sc-wrap'), oldRoot = tip.querySelector('.zu-sv3-root');
       var ox = ow ? ow.scrollLeft : null, oldKey = oldRoot && oldRoot.getAttribute('data-sv-key');
-      /* v387 适配：与 __zuMount 主路径对齐直塞（V3 生产链无 .tbody 包装——包装层会引入
-       * 生产不存在的 max-height:60vh 截痕，污染 §11.7 几何断言） */
-      tip.innerHTML = buildCard();
+      /* v387 审查纠偏（MINOR-3）：主链同款 .tbody 包装（真实生产形态，60vh 帽必须
+       * 被几何断言覆盖；v387 早版直塞的注释与生产事实相反） */
+      tip.innerHTML = '<div class="tbody"></div>';
+      tip.firstChild.innerHTML = buildCard();
       window.__SPD.spdFitTip(tip, false);
       if (tip.getBoundingClientRect().top < 8) { tip.style.bottom = 'auto'; tip.style.top = '8px'; }
       var nw = tip.querySelector('.zu-sc-wrap'), newRoot = tip.querySelector('.zu-sv3-root');
@@ -821,9 +822,11 @@ window.__zuMount = function (sel, hover) {
   tip.classList.toggle('zu-light', !document.documentElement.classList.contains('dark'));
   tip.style.left = window.__zuTipRight ? 'auto' : '48px';
   if (window.__zuTipRight) tip.style.right = '12px'; else tip.style.right = 'auto';
-  /* v384 S6：V3 卡直塞 innerHTML 对齐生产 tpsTip 链（01 showTpsTip 无 .tbody 包装；
-   * 复刻页多包一层会引入生产不存在的 max-height:60vh 截痕——V2 全量链才有 tbody） */
-  tip.innerHTML = buildCard();
+  /* v387 审查纠偏（MINOR-3）：本挂载模拟生产主链 drawTip 形态——恒 .tbody 包装
+   * （08:1203，max-height:60vh 是真实形态，几何断言按此覆盖）；仅 01 tpsTip
+   * compact 链才直塞 */
+  tip.innerHTML = '<div class="tbody"></div>';
+  tip.firstChild.innerHTML = buildCard();
   if (document.querySelector('.zusage-root style')) window.__SPD.spdFitTip(tip, true);
   else setTimeout(function () { if (tip.isConnected && tip.querySelector('.zu-sv3-root')) window.__SPD.spdFitTip(tip, true); }, 100);
   if (tip.getBoundingClientRect().top < 8) { tip.style.bottom = 'auto'; tip.style.top = '8px'; }

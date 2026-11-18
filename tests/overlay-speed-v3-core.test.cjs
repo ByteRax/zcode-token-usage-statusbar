@@ -810,3 +810,25 @@ test('6000 轮 20 组合重算性能基线（打印实测，宽上界防 CI 抖�
     'ms worst=' + worst.toFixed(2) + 'ms (' + worstCombo + ')');
   assert.ok(worst < 200, '最重组合也须远低于一次悬停重编预算，实测 ' + worst.toFixed(2) + 'ms');
 });
+
+// ---------- v387 MINOR-4：进行日/时桶 b 钳 now（hover 不显未来区间） ----------
+test('v387 进行桶钳 now: today 最后一小时 item.b=now 而非下一整点；已过桶不受影响', () => {
+  const ctx = makeCtx();
+  // FakeDate 冻结 2026-11-05 14:00 本地（FIXED_NOW）；today 桶 00..14，末桶下一整点=15:00 > now
+  const base = new Date(2026, 10, 5, 9, 30).getTime();
+  const h = { sid: 's0', source: 'local', truncated: false,
+    sids: ['s0'], snames: ['a'], pids: [['p0', 'P0']],
+    mnames: ['m0'], mkeys: ['p\x1fm0'],
+    turns: [{ s: 0, t: base, b: base - 20000, out: 300, ms: 1000, i: 100, o: 300, n: 1,
+      msl: [[0, 300, 1000, 1]] }] };
+  // focus:"full"=完整 00..当前小时轴；默认聚焦形态 realKeys 只含 9 点桶（同样受钳）
+  const an = analyze(ctx, h, null, { range: 'session', period: 'today', sid: 's0', focus: 'full' });
+  assert.ok(an && an.items.length === 15, 'today 全轴 15 桶（00..14 时）');
+  const last = an.items[an.items.length - 1];
+  assert.equal(last.b, FIXED_NOW, '进行中小时桶（14 时）b 钳到 now 而非 15:00');
+  assert.ok(!/15:00:00/.test(last.full), 'full 区间不含下一整点');
+  for (const it of an.items) assert.ok(it.b <= FIXED_NOW, '所有桶 b ≤ now');
+  const anF = analyze(ctx, h, null, { range: 'session', period: 'today', sid: 's0' });
+  assert.equal(anF.items[anF.items.length - 1].b, new Date(2026, 10, 5, 10).getTime(),
+    '聚焦形态末桶（9 时）b=10:00（钳后桶末）');
+});

@@ -613,8 +613,10 @@
     /* 真单模型池（§11.5）：chips 池恰 1 个且非 missing——「唯一模型」徽标只在场 */
     var poolSingle = pool.length === 1 && !pool[0].missing;
     /* §11.4：real 空 / overall 缺 → 图表占位换居中空态（占位不在，wire replace 落空
-     * 自然不注入 charts 产物）；有数据恒保留占位原样 */
-    var empty = !(an.perModel && an.perModel.length) || !an.overall;
+     * 自然不注入 charts 产物）；有数据恒保留占位原样。触发判据=an.real（spec §11.4
+     * 字面）而非 perModel——降级帧（旧二元组）+筛选时 core 保留整行 out/ms（models
+     * 置空），此时有真实数据与柱，绝不能误报「无数据」+伪造 0 轮（审查 MAJOR-1）。 */
+    var empty = !(an.real && an.real.length) || !an.overall;
     var chartSlot = empty ? spd3EmptyStateHTML(an, filt) : "<!--CHART-->";
     return '<div class="zu-sv3-root" data-sv-key="' + key + '">' + spd3StylesHTML() +
       spd3HeadHTML(an) +
