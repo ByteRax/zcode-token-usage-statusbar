@@ -11,6 +11,7 @@
 """
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -136,7 +137,10 @@ assert.equal(calls, 0);
 assert.equal(options.onRawTransportPayload({plain: true}), "host-result");
 assert.equal(calls, 1);
 '''.replace("HOOK", hook)
-        subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True,
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("本机 PATH 无 node，跳过注入钩子 JS 行为校验")
+        subprocess.run([node, "-e", script], check=True, capture_output=True, text=True,
                        env=dict(os.environ))
 
     def test_old_v2_upgrades_to_marked_and_round_trips(self):
@@ -212,7 +216,10 @@ for (const v of [null, {}, {zuUp: 0}]) assert.equal(hook(v), "host-result");
 assert.equal(calls.length, 3); assert.equal(calls[0][0], ye); assert.equal(calls[0][1], null);
 assert.equal(q.length, 4); assert.equal(reads, 4);
 '''.replace("HOOK", hook)
-        subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True,
+        node = shutil.which("node")
+        if not node:
+            self.skipTest("本机 PATH 无 node，跳过注入钩子 JS 行为校验")
+        subprocess.run([node, "-e", script], check=True, capture_output=True, text=True,
                        env=dict(os.environ))
 
     def test_duplicate_mixed_or_unknown_injections_refused(self):

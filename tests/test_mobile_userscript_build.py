@@ -106,10 +106,14 @@ class MobileUserscriptBuildTests(unittest.TestCase):
     def test_source_order_and_version_ledger_use_same_desktop_builder(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
-            mobile_dir, overlay_dir = self.fixture(root, overlay="// first\n")
-            ledger = '  /* VERSION 台账\n   * v1 baseline\n   * → v2 newer\n   */\n  var VERSION = "v2";\n'
+            # fixture 同时含 06-+12- 分片会触发 build_overlay 的 _CLOSURE_ANCHORS 双层闭包
+            # 校验（ac502a3 起），三处锚点字符串需在夹具内容中齐备
+            mobile_dir, overlay_dir = self.fixture(root, overlay="(function () {\n// first\n")
+            ledger = ('  /* VERSION 台账\n   * v1 baseline\n   * → v2 newer\n   */\n'
+                      '  var VERSION = "v2";\n'
+                      '  function spawnInstance(scope) { return scope; }\n')
             write(root, "src/overlay/06-styles.js", ledger)
-            write(root, "src/overlay/12-end.js", "// last\n")
+            write(root, "src/overlay/12-end.js", "instances.push(api);\n})();\n")
             write(root, "overlay.js", "stale generated product")
             common, _ = self.mod.assemble(mobile_dir, overlay_dir)
             expected, _ = self.desktop.assemble_bytes(overlay_dir)
@@ -204,8 +208,11 @@ class MobileUserscriptBuildTests(unittest.TestCase):
             shutil.copytree(ROOT / "src/overlay", root / "src/overlay")
             self.assertEqual(self.run_main(root)[0], 0)
             self.assertEqual(self.run_main(root, ["--check"])[0], 0)
+            node = shutil.which("node")
+            if not node:
+                self.skipTest("本机 PATH 无 node，跳过产物 node 语法校验")
             for name in ("zusage-mobile.user.js", "zusage-mobile.debug.user.js"):
-                result = subprocess.run(["node", "--check", str(root / name)], capture_output=True, text=True)
+                result = subprocess.run([node, "--check", str(root / name)], capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_unknown_cli_option_does_not_create_products(self):

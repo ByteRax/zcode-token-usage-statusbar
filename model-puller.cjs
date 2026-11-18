@@ -779,8 +779,9 @@ function createModelPuller(opts) {
   /* 模板规则：内置 zcode-builtin.json + 个人 provider_config.json 的
    * config.providerConfigRules.templateRules（后者覆盖前者，与 quota-client.loadProviderCfg
    * 同序）。模板创建的供应商个人规则只存 templateId + 凭据，baseUrl/protocol 由模板提供。
-   * 按两文件 stat（mtime/ctime/birthtime/size）缓存；stat 失败清缓存，删除后同
-   * mtime/size 重建也不会复活旧模板。 */
+   * 按两文件 stat（mtime/ctime/birthtime/size/ino/dev）缓存；stat 失败清缓存，删除后同
+   * mtime/size 重建也不会复活旧模板。ino/dev 兜底 Windows 文件隧道化：15 秒内同名重建
+   * 会被 NTFS 复用原 birthtime（ctime 在时间戳 tick 内重建时也可相同），只有文件实例 ID 必变。 */
   function readTemplateRules() {
     const paths = [builtinCfgPath, customCfgPath].filter(Boolean);
     if (!paths.length) return new Map();
@@ -788,7 +789,7 @@ function createModelPuller(opts) {
     for (const p of paths) {
       try {
         const st = fs.statSync(p);
-        stampParts.push(p + ":" + st.mtimeMs + ":" + st.ctimeMs + ":" + st.birthtimeMs + ":" + st.size);
+        stampParts.push(p + ":" + st.mtimeMs + ":" + st.ctimeMs + ":" + st.birthtimeMs + ":" + st.size + ":" + st.ino + ":" + st.dev);
         readable.push(p);
       } catch (e) {
         stampParts.push(p + ":missing");
