@@ -7961,6 +7961,13 @@
     /* 网格/沟槽 = 值区高：值区恒 = plot − X 轴带 16px（柱图 X 带在槽位列内、折线 X 带
      * 是 plot 内独立 xsvg），横线 bottom:% 与数据 y% 同一坐标系对齐 */
     ".zu-sv3-chart .zu-sc-grid,.zu-sv3-chart .zu-sc-gutter{height:calc(100% - " + SPD3_X_H + "px)}" +
+    /* v389 P0（真机 ：hover 链实证）：grid/gutter 是 absolute 定位层，按 CSS 绘制顺序
+     * 压在非定位的折线 svg 之上——真实鼠标命中 grid，.zu-sv3-hit 永远收不到
+     * mouseover（合成 dispatchEvent 绕过 hit-testing，历轮验证全被它骗过）。
+     * grid/gutter 纯装饰改 pointer-events:none；svg 提 position:relative 回到
+     * 定位层，hit 列恢复真实可达。 */
+    ".zu-sv3-chart .zu-sc-grid,.zu-sv3-chart .zu-sc-gutter{pointer-events:none}" +
+    ".zu-sv3-chart .zu-sv3-svg{position:relative}" +
     ".zu-sv3-chart .zu-sc-wrap::-webkit-scrollbar{display:none}" +
     /* 柱组：槽位 flex 平铺满幅——每槽 .zu-sv3-slot flex:1 1 0 均摊（min-width:0 防内容
      * 撑宽），两侧 5px 呼吸边距承担旧 spacer 的缘上呼吸；无 justify-content 挤左路径。

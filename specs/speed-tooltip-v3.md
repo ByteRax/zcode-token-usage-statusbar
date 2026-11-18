@@ -216,6 +216,8 @@ harness/VM 布局断言：920 标准下 tip.scrollWidth==clientWidth、`.zu-sv-f
 
 ### 13.2 折线 hover 完整化（P0）
 
+- **真因（真机 ：hover 链实证，2026-11-18）**：`.zu-sc-grid`/`.zu-sc-gutter`（Y 网格/沟槽，position:absolute）按 CSS 绘制顺序压在**非定位的折线 svg** 之上——真实鼠标 hit-testing 恒命中 grid，`.zu-sv3-hit` 收不到 mouseover（合成 dispatchEvent 绕过 hit-testing，历轮真机/harness hover 验证全被它骗过）。修复=grid/gutter `pointer-events:none`（纯装饰）+ `.zu-sv3-svg{position:relative}`（回到定位层）。
+
 - **无数据日出卡**：空槽 hover → 「M/D（周X）· 无有效速度记录」轻卡（不再静默）；进行日/已结束日区间文案沿 §11.5。
 - 有数据日卡字段增强：综合日均（档位色大字）→ 模型明细（色点+名+供应商副标+均速+请求数，>6 行截断+「另有 N 个模型」）→ 有效轮次/有效输出 → 预估费用（o.fmtMoney，缺失「暂无估价」）。
 - 两级 hover：列级（既有）+ **线级**——line path `pointer-events:stroke`，mouseover 给该模型线加高亮类（自身加粗/其余降透明），mouseout 还原；模型身份=颜色+卡内名称双识别。
