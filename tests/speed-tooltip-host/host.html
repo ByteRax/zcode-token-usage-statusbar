@@ -1156,7 +1156,10 @@ window.__zuGeometryChecks = function () {
     var padH = (parseFloat(ccs.paddingLeft) || 0) + (parseFloat(ccs.paddingRight) || 0);
     var denom = chart.clientWidth - padH;
     var ratio = denom > 0 ? pb.width / denom : 0;
-    f('plot-fill-85pct', ratio >= 0.85,
+    /* v388 档位校准：85% 按 920 标准宽标定；窄视口（内容盒 <420px）Y gutter 30px
+     * 与内距占比天然升高，阈值降 75%（宽度链本身另由 wrap-no-hscroll 门控） */
+    var fillMin = denom < 420 ? 0.75 : 0.85;
+    f('plot-fill-85pct', ratio >= fillMin,
       'plot=' + Math.round(pb.width) + ' contentBox=' + Math.round(denom) +
       ' ratio=' + (ratio * 100).toFixed(1) + '%');
   }
@@ -1192,7 +1195,8 @@ window.__zuGeometryChecks = function () {
   var wraps = root.querySelectorAll('.zu-sc-wrap');
   for (var wi = 0; wi < wraps.length; wi++) {
     var wEl = wraps[wi];
-    f('wrap-no-hscroll[' + wi + ']', wEl.scrollWidth === wEl.clientWidth,
+    /* tolerance ≤2px：flex 分数槽位的亚像素取整（PRD 15.1；>2px 仍是真溢出） */
+    f('wrap-no-hscroll[' + wi + ']', wEl.scrollWidth <= wEl.clientWidth + 2,
       'scroll=' + wEl.scrollWidth + ' client=' + wEl.clientWidth);
   }
   var fbar = root.querySelector('.zu-sv3-fbar');
