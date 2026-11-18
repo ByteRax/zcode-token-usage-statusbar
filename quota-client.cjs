@@ -694,7 +694,9 @@ let providerCfgCache = null;
 function loadProviderCfg(readFile2, cfgPath, builtinCfgPath) {
   const paths = [builtinCfgPath, cfgPath].filter(Boolean);
   let stamp = null;
-  try { stamp = JSON.stringify(paths.map((p) => { const s = fs.statSync(p); return [p, s.mtimeMs, s.size]; })); }
+  /* ino/dev 进 stamp：Windows 文件隧道化下 15 秒内同名重建复用原 birthtime、同 mtime/size
+   * 重建时旧 stamp 可逐位相同，文件实例 ID 重建必变（同 model-puller.readTemplateRules 纪律）。 */
+  try { stamp = JSON.stringify(paths.map((p) => { const s = fs.statSync(p); return [p, s.mtimeMs, s.size, s.ino, s.dev]; })); }
   catch (e) { providerCfgCache = null; /* stat 失败仍现读，并撤销旧缓存，避免同时间戳重建后复活旧 key */ }
   if (stamp !== null && providerCfgCache && providerCfgCache.stamp === stamp && providerCfgCache.readFile === readFile2) {
     return providerCfgCache.byId;
